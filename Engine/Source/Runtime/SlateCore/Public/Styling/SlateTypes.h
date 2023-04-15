@@ -339,6 +339,8 @@ struct SLATECORE_API FTextBlockStyle : public FSlateWidgetStyle
 	FTextBlockStyle& SetFontName(const ANSICHAR* InFontName) { Font = FSlateFontInfo(InFontName, Font.GetClampSize()); return *this; }
 	FTextBlockStyle& SetFontSize(uint16 InSize) { Font.Size = InSize; return *this; }
 	FTextBlockStyle& SetTypefaceFontName(const FName& InTypefaceFontName) { Font.TypefaceFontName = InTypefaceFontName; return *this; }
+	FTextBlockStyle& SetFontMaterial(UObject* InMaterial) { Font.FontMaterial = InMaterial; return *this; }
+	FTextBlockStyle& SetFontOutlineMaterial(UObject* InMaterial) { Font.OutlineSettings.OutlineMaterial = InMaterial; return *this; }
 
 	/** The color and opacity of this text */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance, meta=(DisplayName="Color"))
@@ -796,6 +798,8 @@ struct SLATECORE_API FEditableTextStyle : public FSlateWidgetStyle
 	FSlateFontInfo Font;
 	FEditableTextStyle& SetFont(const FSlateFontInfo& InFont) { Font = InFont; return *this; }
 	FEditableTextStyle& SetFont(const FName& InFontName, uint16 InSize) { Font = FSlateFontInfo(InFontName, InSize); return *this; }
+	FEditableTextStyle& SetFontMaterial(UObject* InMaterial) { Font.FontMaterial = InMaterial; return *this; }
+	FEditableTextStyle& SetFontOutlineMaterial(UObject* InMaterial) { Font.OutlineSettings.OutlineMaterial = InMaterial; return *this; }
 
 	/** The color and opacity of this text */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
@@ -926,9 +930,14 @@ struct SLATECORE_API FEditableTextBoxStyle : public FSlateWidgetStyle
 {
 	GENERATED_USTRUCT_BODY()
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FEditableTextBoxStyle();
+	FEditableTextBoxStyle(const FEditableTextBoxStyle&) = default;
 
-	virtual ~FEditableTextBoxStyle();
+	FEditableTextBoxStyle& operator=(const FEditableTextBoxStyle&) = default;
+
+	virtual ~FEditableTextBoxStyle() = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	virtual void GetResources( TArray< const FSlateBrush* >& OutBrushes ) const override;
 
@@ -962,11 +971,19 @@ struct SLATECORE_API FEditableTextBoxStyle : public FSlateWidgetStyle
 	FMargin Padding;
 	FEditableTextBoxStyle& SetPadding( const FMargin& InPadding ){ Padding = InPadding; return *this; }
 
+#if WITH_EDITORONLY_DATA
 	/** Font family and size to be used when displaying this text. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
-	FSlateFontInfo Font;
-	FEditableTextBoxStyle& SetFont(const FSlateFontInfo& InFont) { Font = InFont; return *this; }
-	FEditableTextBoxStyle& SetFont(const FName& InFontName, uint16 InSize) { Font = FSlateFontInfo(InFontName, InSize); return *this; }
+	UE_DEPRECATED(5.1, "Font has been deprecated as it was duplicated information already available elsewhere. Please use TextStyle.Font instead.")
+	UPROPERTY()
+	FSlateFontInfo Font_DEPRECATED;
+#endif
+	FEditableTextBoxStyle& SetFont(const FSlateFontInfo& InFont) { TextStyle.Font = InFont; return *this; }
+	FEditableTextBoxStyle& SetFont(const FName& InFontName, uint16 InSize) { return SetFont(FSlateFontInfo(InFontName, InSize)); }
+
+	/** The style of the text block, which dictates the font, color, and shadow options. Style overrides all other properties! */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	FTextBlockStyle TextStyle;
+	FEditableTextBoxStyle& SetTextStyle(const FTextBlockStyle& InTextStyle) { TextStyle = InTextStyle; return *this; }
 
 	/** The foreground color of text. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
@@ -1207,9 +1224,19 @@ struct SLATECORE_API FSearchBoxStyle : public FSlateWidgetStyle
 	FSearchBoxStyle& SetImagePadding(const FMargin& InImagePadding){ ImagePadding = InImagePadding; return *this; }
 
 	/** If true, buttons appear to the left of the search text */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage="Use LeftAlignSearchResultButtons and LeftAlignGlassImageAndClearButton instead"))
+	bool bLeftAlignButtons_DEPRECATED;
+	FSearchBoxStyle& SetLeftAlignButtons(bool bInLeftAlignButtons);
+
+	/** If true, search result buttons appear to the left of the search text */
 	UPROPERTY(EditAnywhere, Category = Appearance)
-	bool bLeftAlignButtons;
-	FSearchBoxStyle& SetLeftAlignButtons(bool bInLeftAlignButtons){ bLeftAlignButtons = bInLeftAlignButtons; return *this; }
+	bool bLeftAlignSearchResultButtons;
+	FSearchBoxStyle& SetLeftAlignSearchResultButtons(bool bInLeftAlignSearchResultButtons){ bLeftAlignSearchResultButtons = bInLeftAlignSearchResultButtons; return *this; }
+	
+	/** If true, glass image and clear button appear to the left of the search text */
+	UPROPERTY(EditAnywhere, Category = Appearance)
+	bool bLeftAlignGlassImageAndClearButton;
+	FSearchBoxStyle& SetLeftAlignGlassImageAndClearButton(bool bInLeftAlignGlassImageAndClearButton){ bLeftAlignGlassImageAndClearButton = bInLeftAlignGlassImageAndClearButton; return *this; }
 };
 
 

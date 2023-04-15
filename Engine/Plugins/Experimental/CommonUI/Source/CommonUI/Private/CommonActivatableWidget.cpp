@@ -1,10 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonActivatableWidget.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
+#include "Input/CommonUIActionRouterBase.h"
 #include "Input/CommonUIInputTypes.h"
+#include "Input/UIActionBinding.h"
 #include "Input/UIActionRouterTypes.h"
 #include "ICommonInputModule.h"
+#include "Slate/SObjectWidget.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonActivatableWidget)
 
 UCommonActivatableWidget::FActivatableWidgetRebuildEvent UCommonActivatableWidget::OnRebuilding;
 
@@ -146,6 +151,46 @@ void UCommonActivatableWidget::ClearActiveHoldInputs()
 	}
 }
 
+TObjectPtr<UCommonInputActionDomain> UCommonActivatableWidget::GetCalculatedActionDomain()
+{
+	if (CalculatedActionDomainCache.IsSet())
+	{
+		return CalculatedActionDomainCache.GetValue().Get();
+	}
+
+	const FName SObjectWidgetName = TEXT("SObjectWidget");
+	const ULocalPlayer* OwningLocalPlayer = GetOwningLocalPlayer();
+	TSharedPtr<SWidget> CurrentWidget = GetCachedWidget();
+	while (CurrentWidget)
+	{
+		if (CurrentWidget->GetType().IsEqual(SObjectWidgetName))
+		{
+			const TSharedPtr<ICommonInputActionDomainMetaData> Metadata = CurrentWidget->GetMetaData<ICommonInputActionDomainMetaData>();
+			if (Metadata.IsValid())
+			{
+				UCommonInputActionDomain* ActionDomain = Metadata->ActionDomain.Get();
+				CalculatedActionDomainCache = ActionDomain;
+				return ActionDomain;
+			}
+
+			if (UCommonActivatableWidget* CurrentActivatable = Cast<UCommonActivatableWidget>(StaticCastSharedPtr<SObjectWidget>(CurrentWidget)->GetWidgetObject()))
+			{
+				if (CurrentActivatable->bOverrideActionDomain)
+				{
+					UCommonInputActionDomain* CurrentActionDomain = CurrentActivatable->GetOwningLocalPlayer() == OwningLocalPlayer ? CurrentActivatable->ActionDomainOverride.Get() : nullptr;
+					CalculatedActionDomainCache = CurrentActionDomain;
+					return CurrentActionDomain;
+				}
+			}
+		}
+
+		CurrentWidget = CurrentWidget->GetParentWidget();
+	}
+
+	CalculatedActionDomainCache = nullptr;
+	return nullptr;
+}
+
 TSharedRef<SWidget> UCommonActivatableWidget::RebuildWidget()
 {
 	// Note: the scoped builder guards against design-time so we don't need to here (as it'd make the scoped lifetime more awkward to leverage)
@@ -259,3 +304,4 @@ void UCommonActivatableWidget::Reset()
 	BP_OnWidgetActivated.Clear();
 	BP_OnWidgetDeactivated.Clear();
 }
+

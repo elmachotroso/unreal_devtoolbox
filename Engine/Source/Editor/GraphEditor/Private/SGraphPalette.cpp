@@ -2,21 +2,35 @@
 
 
 #include "SGraphPalette.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/Images/SImage.h"
-#include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
-#include "GraphEditorDragDropAction.h"
 
-#include "EditorWidgetsModule.h"
-
+#include "AssetDiscoveryIndicator.h"
 //#include "AssetToolsModule.h"
-#include "AssetRegistryModule.h"
-
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EditorWidgetsModule.h"
+#include "GraphEditorDragDropAction.h"
+#include "HAL/PlatformMath.h"
 #include "IDocumentation.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Input/DragAndDrop.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
 #include "SPinTypeSelector.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+
+class SWidget;
+struct FGeometry;
+struct FPointerEvent;
+struct FSlateBrush;
 
 void SGraphPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetForActionData* const InCreateData)
 {
@@ -26,7 +40,7 @@ void SGraphPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetForActi
 	ActionPtr = InCreateData->Action;
 
 	// Find icons
-	const FSlateBrush* IconBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	const FSlateBrush* IconBrush = FAppStyle::GetBrush(TEXT("NoBrush"));
 	FSlateColor IconColor = FSlateColor::UseForeground();
 	FText IconToolTip = GraphAction->GetTooltipDescription();
 	bool bIsReadOnly = false;
@@ -178,7 +192,7 @@ void SGraphPalette::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(2.0f)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 

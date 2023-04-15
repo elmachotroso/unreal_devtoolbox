@@ -9,10 +9,13 @@
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "Evaluation/MovieSceneEvaluationOperand.h"
 
+#include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "MovieSceneExecutionToken.h"
 #include "IMovieScenePlayer.h"
 #include "IMovieScenePlaybackClient.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSpawnablesSystem)
 
 namespace UE
 {
@@ -210,3 +213,4 @@ void UMovieSceneSpawnablesSystem::OnRun(FSystemTaskPrerequisites& InPrerequisite
 	.FilterAll({ BuiltInComponents->Tags.NeedsUnlink })
 	.Iterate_PerEntity(&Linker->EntityManager, DestroyOldSpawnables);
 }
+

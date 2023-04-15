@@ -17,7 +17,7 @@
 #include "WorkflowOrientedApp/WorkflowTabFactory.h"
 #include "WorkflowOrientedApp/WorkflowTabManager.h"
 #include "IMaterialEditor.h"
-#include "Editor/PropertyEditor/Public/IDetailsView.h"
+#include "IDetailsView.h"
 #include "SMaterialEditorViewport.h"
 #include "Materials/Material.h"
 #include "Tickable.h"
@@ -41,6 +41,8 @@ class UMaterialInstance;
 class UMaterialGraphNode;
 struct FGraphAppearanceInfo;
 class UMaterialFunctionInstance;
+class FMaterialCachedHLSLTree;
+struct FMaterialCachedExpressionData;
 
 /**
  * Class for rendering previews of material expressions in the material editor's linked object viewport.
@@ -48,33 +50,10 @@ class UMaterialFunctionInstance;
 class FMatExpressionPreview : public FMaterial, public FMaterialRenderProxy
 {
 public:
-	FMatExpressionPreview()
-	: FMaterial()
-	, FMaterialRenderProxy(TEXT("FMatExpressionPreview"))
-	, UnrelatedNodesOpacity(1.0f)
-	{
-		// Register this FMaterial derivative with AddEditorLoadedMaterialResource since it does not have a corresponding UMaterialInterface
-		FMaterial::AddEditorLoadedMaterialResource(this);
-		SetQualityLevelProperties(GMaxRHIFeatureLevel);
-	}
+	FMatExpressionPreview();
+	FMatExpressionPreview(UMaterialExpression* InExpression);
 
-	FMatExpressionPreview(UMaterialExpression* InExpression)
-	: FMaterial()
-	, FMaterialRenderProxy(GetPathNameSafe(InExpression->Material))
-	, UnrelatedNodesOpacity(1.0f)
-	, Expression(InExpression)
-	{
-		FMaterial::AddEditorLoadedMaterialResource(this);
-		FPlatformMisc::CreateGuid(Id);
-
-		check(InExpression->Material && InExpression->Material->Expressions.Contains(InExpression));
-		ReferencedTextures = InExpression->Material->GetReferencedTextures();
-		SetQualityLevelProperties(GMaxRHIFeatureLevel);
-	}
-
-	virtual ~FMatExpressionPreview()
-	{
-	}
+	virtual ~FMatExpressionPreview();
 
 	virtual bool PrepareDestroy_GameThread() override
 	{
@@ -88,13 +67,7 @@ public:
 		ReleaseResource();
 	}
 
-	void AddReferencedObjects( FReferenceCollector& Collector )
-	{
-		for (int32 TextureIndex = 0; TextureIndex < ReferencedTextures.Num(); TextureIndex++)
-		{
-			Collector.AddReferencedObject(ReferencedTextures[TextureIndex]);
-		}
-	}
+	void AddReferencedObjects(FReferenceCollector& Collector);
 
 	/**
 	 * Should the shader for this material with the given platform, shader type and vertex 
@@ -108,10 +81,7 @@ public:
 	 */
 	virtual bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const override;
 
-	virtual TArrayView<const TObjectPtr<UObject>> GetReferencedTextures() const override
-	{
-		return MakeArrayView(ReferencedTextures);
-	}
+	virtual TArrayView<const TObjectPtr<UObject>> GetReferencedTextures() const override;
 
 	////////////////
 	// FMaterialRenderProxy interface.
@@ -153,6 +123,7 @@ public:
 	virtual bool IsWireframe() const override { return false; }
 	virtual bool IsMasked() const override { return false; }
 	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Translucent; }
+	virtual enum EStrataBlendMode GetStrataBlendMode() const override { return EStrataBlendMode::SBM_TranslucentGreyTransmittance; }
 	virtual FMaterialShadingModelField GetShadingModels() const override { return MSM_Unlit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override { return false; }
 	virtual float GetOpacityMaskClipValue() const override { return 0.5f; }
@@ -168,7 +139,14 @@ public:
 		return Expression.Get();
 	}
 
+	// This material interface is solely needed for the translator to be able to parse the graph for the Strata tree.
+	virtual UMaterialInterface* GetMaterialInterface() const override;
+
 	virtual void NotifyCompilationFinished() override;
+
+	virtual const FMaterialCachedHLSLTree* GetCachedHLSLTree() const override;
+	virtual bool IsUsingControlFlow() const override;
+	virtual bool IsUsingNewHLSLGenerator() const override;
 
 	friend FArchive& operator<< ( FArchive& Ar, FMatExpressionPreview& V )
 	{
@@ -186,6 +164,8 @@ public:
 	float UnrelatedNodesOpacity;
 
 private:
+	TUniquePtr<FMaterialCachedExpressionData> CachedExpressionData;
+	TUniquePtr<FMaterialCachedHLSLTree> CachedHLSLTree;
 	TWeakObjectPtr<UMaterialExpression> Expression;
 	TArray<TObjectPtr<UObject>> ReferencedTextures;
 	FGuid Id;
@@ -354,6 +334,8 @@ public:
 	// Widget Accessors
 	TSharedRef<class IDetailsView> GetDetailView() const {return MaterialDetailsView.ToSharedRef();}
 	
+	virtual void UpdateDetailView() override;
+
 	// FTickableGameObject interface
 	virtual void Tick(float DeltaTime) override;
 
@@ -442,6 +424,9 @@ public:
 	static void AddInheritanceMenuEntry(FToolMenuSection& Section, const FAssetData& AssetData, bool bIsFunctionPreviewMaterial);
 
 	virtual void AddGraphEditorPinActionsToContextMenu(FToolMenuSection& InSection) const override;
+
+	/** Overrides function in FEditorUndoClient. Called to see if the context of the current undo/redo operation is a match for the client. */
+	virtual bool MatchesContext(const FTransactionContext& InContext, const TArray<TPair<UObject*, FTransactionObjectEvent>>& TransactionObjectContexts) const override;
 
 public:
 	/** Set to true when modifications have been made to the material */
@@ -693,7 +678,8 @@ private:
 
 	/** Helper functions for the feature level node display toggling */
 	void SetFeaturePreview(ERHIFeatureLevel::Type NewFeatureLevel);
-	bool IsFeaturePreviewChecked(ERHIFeatureLevel::Type TestFeatureLevel);
+	bool IsFeaturePreviewChecked(ERHIFeatureLevel::Type TestFeatureLevel) const;
+	bool IsFeaturePreviewAvailable(ERHIFeatureLevel::Type TestFeatureLevel) const;
 
 
 public:
@@ -793,6 +779,18 @@ private:
 	/** Will  return the UClass to create from the Pin Type */
 	UClass* GetOnPromoteToParameterClass(const UEdGraphPin* TargetPin) const;
 
+	enum class EStrataNodeForPin : uint8
+	{
+		Slab,
+		HorizontalMix,
+		VerticalLayer,
+		Weight
+	};
+	/** Will create a Strata node as input to the pin */
+	void OnCreateStrataNodeForPin(const FToolMenuContext& InMenuContext, EStrataNodeForPin NodeForPin) const;
+	/** Used to know if we can create a Strata node as input to the pin */
+	bool OnCanCreateStrataNodeForPin(const FToolMenuContext& InMenuContext, EStrataNodeForPin NodeForPin) const;
+
 	/** Open documentation for the selected node class */
 	void OnGoToDocumentation();
 	/** Can we open documentation for the selected node */
@@ -800,6 +798,9 @@ private:
 
 	/** Util to try and get doc link for the currently selected node */
 	FString GetDocLinkForSelectedNode();
+
+	/** Util to try and get the base URL for the doc link for the currently selected node */
+	FString GetDocLinkBaseUrlForSelectedNode();
 
 	/** Callback from the Asset Registry when an asset is renamed. */
 	void RenameAssetFromRegistry(const FAssetData& InAddedAssetData, const FString& InNewName);

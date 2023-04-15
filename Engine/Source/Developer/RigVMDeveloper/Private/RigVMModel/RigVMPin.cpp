@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/RigVMPin.h"
+
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMLink.h"
 #include "RigVMModel/RigVMController.h"
-#include "RigVMModel/Nodes/RigVMPrototypeNode.h"
+#include "RigVMModel/Nodes/RigVMTemplateNode.h"
 #include "RigVMCompiler/RigVMCompiler.h"
 #include "RigVMCore/RigVMExecuteContext.h"
 #include "RigVMCore/RigVMUnknownType.h"
@@ -19,24 +20,13 @@
 #include "RigVMModel/Nodes/RigVMFunctionReferenceNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionEntryNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionReturnNode.h"
+#include "RigVMModel/Nodes/RigVMInvokeEntryNode.h"
 
-class FRigVMPinDefaultValueImportErrorContext : public FOutputDevice
-{
-public:
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMPin)
 
-	int32 NumErrors;
-
-	FRigVMPinDefaultValueImportErrorContext()
-		: FOutputDevice()
-		, NumErrors(0)
-	{
-	}
-
-	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
-	{
-		NumErrors++;
-	}
-};
+#if WITH_EDITOR
+#include "UObject/CoreRedirects.h"
+#endif
 
 URigVMGraph* URigVMInjectionInfo::GetGraph() const
 {
@@ -46,6 +36,16 @@ URigVMGraph* URigVMInjectionInfo::GetGraph() const
 URigVMPin* URigVMInjectionInfo::GetPin() const
 {
 	return CastChecked<URigVMPin>(GetOuter());
+}
+
+URigVMInjectionInfo::FWeakInfo URigVMInjectionInfo::GetWeakInfo() const
+{
+	FWeakInfo Info;
+	Info.bInjectedAsInput = bInjectedAsInput;
+	Info.Node = Node;
+	Info.InputPinName = InputPin != nullptr ? InputPin->GetFName() : NAME_None;
+	Info.OutputPinName = OutputPin != nullptr ? OutputPin->GetFName() : NAME_None;
+	return Info;
 }
 
 const URigVMPin::FPinOverrideMap URigVMPin::EmptyPinOverrideMap;
@@ -160,8 +160,8 @@ TArray<FString> URigVMPin::SplitDefaultValue(const FString& InDefaultValue)
 
 	if (!Content.IsEmpty())
 	{
-		// ignore whitespaces
-		Parts.Add(Content.Mid(LastPartStartIndex).Replace(TEXT(" "), TEXT("")));
+		// ignore whitespaces from the start and end of the string
+		Parts.Add(Content.Mid(LastPartStartIndex).TrimStartAndEnd());
 	}
 	return Parts;
 }
@@ -193,10 +193,62 @@ URigVMPin::URigVMPin()
 	, CPPTypeObjectPath(NAME_None)
 	, DefaultValue(FString())
 	, BoundVariablePath_DEPRECATED()
+	, LastKnownTypeIndex(INDEX_NONE)
 {
 #if UE_BUILD_DEBUG
 	CachedPinPath = GetPinPath();
 #endif
+}
+
+bool URigVMPin::NameEquals(const FString& InName, bool bFollowCoreRedirectors) const
+{
+	if(InName.Equals(GetName()))
+	{
+		return true;
+	}
+#if WITH_EDITOR
+	if(bFollowCoreRedirectors)
+	{
+		UScriptStruct* Struct = nullptr;
+		if(const URigVMPin* ParentPin = GetParentPin())
+		{
+			Struct = ParentPin->GetScriptStruct();
+		}
+		else if(const URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(GetNode()))
+		{
+			Struct = UnitNode->GetScriptStruct();
+		}
+
+		if(Struct)
+		{
+			typedef TPair<FName, FString> FRedirectPinPair;
+			const FRedirectPinPair Key(Struct->GetFName(), InName);
+			static TMap<FRedirectPinPair, FName> RedirectedPinNames;
+
+			if(const FName* RedirectedNamePtr = RedirectedPinNames.Find(Key))
+			{
+				if(RedirectedNamePtr->IsNone())
+				{
+					return false;
+				}
+				return NameEquals(*RedirectedNamePtr->ToString(), false);
+			}
+
+			const FCoreRedirectObjectName OldObjectName(*InName, Struct->GetFName(), *Struct->GetOutermost()->GetPathName());
+			const FCoreRedirectObjectName NewObjectName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Property, OldObjectName);
+			if (OldObjectName != NewObjectName)
+			{
+				RedirectedPinNames.Add(Key, NewObjectName.ObjectName);
+				
+				const FString RedirectedName = NewObjectName.ObjectName.ToString();
+				return NameEquals(RedirectedName, false);
+			}
+
+			RedirectedPinNames.Add(Key, NAME_None);
+		}
+	}
+#endif
+	return false;
 }
 
 FString URigVMPin::GetPinPath(bool bUseNodePath) const
@@ -206,14 +258,14 @@ FString URigVMPin::GetPinPath(bool bUseNodePath) const
 	URigVMPin* ParentPin = GetParentPin();
 	if (ParentPin)
 	{
-		PinPath = FString::Printf(TEXT("%s.%s"), *ParentPin->GetPinPath(), *GetName());
+		PinPath = JoinPinPath(ParentPin->GetPinPath(), GetName());
 	}
 	else
 	{
 		URigVMNode* Node = GetNode();
 		if (Node != nullptr)
 		{
-			PinPath = FString::Printf(TEXT("%s.%s"), *Node->GetNodePath(bUseNodePath), *GetName());
+			PinPath = JoinPinPath(Node->GetNodePath(bUseNodePath), GetName());
 		}
 	}
 #if UE_BUILD_DEBUG
@@ -223,6 +275,25 @@ FString URigVMPin::GetPinPath(bool bUseNodePath) const
 	}
 #endif
 	return PinPath;
+}
+
+FString URigVMPin::GetSubPinPath(const URigVMPin* InParentPin, bool bIncludeParentPinName) const
+{
+	if (const URigVMPin* ParentPin = GetParentPin())
+	{
+		if(ParentPin == InParentPin)
+		{
+			if(bIncludeParentPinName)
+			{
+				return JoinPinPath(ParentPin->GetName(),GetName());
+			}
+		}
+		else
+		{
+			return JoinPinPath(ParentPin->GetSubPinPath(InParentPin, bIncludeParentPinName), GetName());
+		}
+	}
+	return GetName();
 }
 
 FString URigVMPin::GetSegmentPath(bool bIncludeRootPin) const
@@ -235,7 +306,7 @@ FString URigVMPin::GetSegmentPath(bool bIncludeRootPin) const
 		{
 			return GetName();
 		}
-		return FString::Printf(TEXT("%s.%s"), *ParentSegmentPath, *GetName());
+		return JoinPinPath(ParentSegmentPath, GetName());
 	}
 
 	if(bIncludeRootPin)
@@ -255,7 +326,7 @@ void URigVMPin::GetExposedPinChain(TArray<const URigVMPin*>& OutExposedPins) con
 void URigVMPin::GetExposedPinChainImpl(TArray<const URigVMPin*>& OutExposedPins, TArray<const URigVMPin*>& VisitedPins) const
 {
 	// Variable nodes do not share the operand with their source link
-	if ((GetNode()->IsA<URigVMVariableNode>() || GetNode()->IsA<URigVMParameterNode>()) && GetDirection() == ERigVMPinDirection::Input)
+	if (GetNode()->IsA<URigVMVariableNode>() && GetDirection() == ERigVMPinDirection::Input)
 	{
 		OutExposedPins.Add(this);
 		return;
@@ -298,7 +369,7 @@ void URigVMPin::GetExposedPinChainImpl(TArray<const URigVMPin*>& OutExposedPins,
 			}
 		}
 		// Variable nodes do not share the operand with their source link
-		else if (SourcePin->GetNode()->IsA<URigVMVariableNode>() || SourcePin->GetNode()->IsA<URigVMParameterNode>())
+		else if (SourcePin->GetNode()->IsA<URigVMVariableNode>())
 		{
 			continue;
 		}
@@ -330,7 +401,7 @@ void URigVMPin::GetExposedPinChainImpl(TArray<const URigVMPin*>& OutExposedPins,
 			URigVMPin* TargetPin = Link->GetTargetPin();
 
 			// Variable nodes do not share the operand with their source link
-			if (TargetPin->GetNode()->IsA<URigVMVariableNode>() || TargetPin->GetNode()->IsA<URigVMParameterNode>())
+			if (TargetPin->GetNode()->IsA<URigVMVariableNode>())
 			{
 				continue;
 			}
@@ -430,6 +501,15 @@ bool URigVMPin::RequiresWatch(const bool bCheckExposedPinChain) const
 	return bRequiresWatch;
 }
 
+bool URigVMPin::IsEnum() const
+{
+	if (IsArray())
+	{
+		return false;
+	}
+	return GetEnum() != nullptr;
+}
+
 bool URigVMPin::IsStruct() const
 {
 	if (IsArray())
@@ -452,6 +532,11 @@ bool URigVMPin::IsStructMember() const
 bool URigVMPin::IsUObject() const
 {
 	return RigVMTypeUtils::IsUObjectType(CPPType);
+}
+
+bool URigVMPin::IsInterface() const
+{
+	return RigVMTypeUtils::IsInterfaceType(CPPType);
 }
 
 bool URigVMPin::IsArray() const
@@ -494,9 +579,26 @@ int32 URigVMPin::GetPinIndex() const
 	return Index;
 }
 
+int32 URigVMPin::GetAbsolutePinIndex() const
+{
+	return GetNode()->GetAllPinsRecursively().Find((URigVMPin*)this);
+}
+
 void URigVMPin::SetNameFromIndex()
 {
 	LowLevelRename(*FString::FormatAsNumber(GetPinIndex()));
+}
+
+void URigVMPin::SetDisplayName(const FName& InDisplayName)
+{
+	if(InDisplayName == GetFName())
+	{
+		DisplayName = NAME_None;
+	}
+	else
+	{
+		DisplayName = InDisplayName;
+	}
 }
 
 int32 URigVMPin::GetArraySize() const
@@ -506,7 +608,7 @@ int32 URigVMPin::GetArraySize() const
 
 FString URigVMPin::GetCPPType() const
 {
-	return URigVMController::PostProcessCPPType(CPPType, GetCPPTypeObject());
+	return RigVMTypeUtils::PostProcessCPPType(CPPType, GetCPPTypeObject());
 }
 
 FString URigVMPin::GetArrayElementCppType() const
@@ -518,6 +620,33 @@ FString URigVMPin::GetArrayElementCppType() const
 
 	const FString ResolvedType = GetCPPType();
 	return RigVMTypeUtils::BaseTypeFromArrayType(ResolvedType);
+}
+
+FRigVMTemplateArgumentType URigVMPin::GetTemplateArgumentType() const
+{
+	return FRigVMRegistry::Get().GetType(GetTypeIndex());
+}
+
+TRigVMTypeIndex URigVMPin::GetTypeIndex() const
+{
+	if(LastKnownCPPType != GetCPPType())
+	{
+		LastKnownTypeIndex = INDEX_NONE;
+	}
+	if(LastKnownTypeIndex == INDEX_NONE)
+	{
+		LastKnownCPPType = GetCPPType();
+		// cpp type can be empty if it is an unsupported type such as a UObject type
+		if (!LastKnownCPPType.IsEmpty())
+		{
+			const FRigVMTemplateArgumentType Type(*LastKnownCPPType, GetCPPTypeObject());
+			LastKnownTypeIndex = FRigVMRegistry::Get().FindOrAddType(Type);
+			// in rare cases LastKnowTypeIndex can still be NONE here because
+			// we have nodes that has constant pin that references struct type like FRuntimeFloatCurve
+			// which contains a object ptr member and is thus not registered in the registry
+		}
+	}
+	return LastKnownTypeIndex;
 }
 
 bool URigVMPin::IsStringType() const
@@ -538,7 +667,7 @@ bool URigVMPin::IsExecuteContext() const
 	return false;
 }
 
-bool URigVMPin::IsUnknownType() const
+bool URigVMPin::IsWildCard() const
 {
 	if (const UScriptStruct* ScriptStruct = GetScriptStruct())
 	{
@@ -549,6 +678,19 @@ bool URigVMPin::IsUnknownType() const
 	}
 	return false;
 }
+
+bool URigVMPin::ContainsWildCardSubPin() const
+{
+	for(const URigVMPin* SubPin : SubPins)
+	{
+		if(SubPin->IsWildCard() || SubPin->ContainsWildCardSubPin())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 
 FString URigVMPin::GetDefaultValue() const
 {
@@ -596,10 +738,10 @@ FString URigVMPin::GetDefaultValue(const URigVMPin::FPinOverride& InOverride) co
 		if (SubPins.Num() > 0)
 		{
 			TArray<FString> MemberDefaultValues;
-			for (URigVMPin* SubPin : SubPins)
+			for (const URigVMPin* SubPin : SubPins)
 			{
 				FString MemberDefaultValue = SubPin->GetDefaultValue(InOverride);
-				if (SubPin->IsStringType())
+				if (SubPin->IsStringType() && !MemberDefaultValue.IsEmpty())
 				{
 					MemberDefaultValue = TEXT("\"") + MemberDefaultValue + TEXT("\"");
 				}
@@ -693,6 +835,7 @@ bool URigVMPin::IsValidDefaultValue(const FString& InDefaultValue) const
 	FString BaseCPPType = GetCPPType()
 		.Replace(RigVMTypeUtils::TArrayPrefix, TEXT(""))
 		.Replace(RigVMTypeUtils::TObjectPtrPrefix, TEXT(""))
+		.Replace(RigVMTypeUtils::TScriptInterfacePrefix, TEXT(""))
 		.Replace(TEXT(">"), TEXT(""));
 
 	for (const FString& Value : DefaultValues)
@@ -823,6 +966,7 @@ FString URigVMPin::ClampDefaultValueFromMetaData(const FString& InDefaultValue) 
 		FString BaseCPPType = GetCPPType()
 			.Replace(RigVMTypeUtils::TArrayPrefix, TEXT(""))
 			.Replace(RigVMTypeUtils::TObjectPtrPrefix, TEXT(""))
+			.Replace(RigVMTypeUtils::TScriptInterfacePrefix, TEXT(""))
 			.Replace(TEXT(">"), TEXT(""));
 
 		RetVals.SetNumZeroed(DefaultValues.Num());
@@ -875,6 +1019,38 @@ FName URigVMPin::GetCustomWidgetName() const
 	{
 		return GetParentPin()->GetCustomWidgetName();
 	}
+
+#if WITH_EDITOR
+	if(CustomWidgetName.IsNone())
+	{
+		if(const URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(GetNode()))
+		{
+			if(const UScriptStruct* Struct = UnitNode->GetScriptStruct())
+			{
+				if(const FProperty* Property = Struct->FindPropertyByName(GetFName()))
+				{
+					const FString MetaData = Property->GetMetaData(FRigVMStruct::CustomWidgetMetaName);
+					if(!MetaData.IsEmpty())
+					{
+						return *MetaData;
+					}
+				}
+			}
+		}
+		else if(const URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(GetNode()))
+		{
+			if(const FRigVMTemplate* Template = TemplateNode->GetTemplate())
+			{
+				const FString MetaData = Template->GetArgumentMetaData(GetFName(), FRigVMStruct::CustomWidgetMetaName);
+				if(!MetaData.IsEmpty())
+				{
+					return *MetaData;
+				}
+			}
+		}
+	}
+#endif
+	
 	return CustomWidgetName;
 }
 
@@ -901,7 +1077,7 @@ UObject* URigVMPin::FindObjectFromCPPTypeObjectPath(const FString& InObjectPath)
 
 	// we do this to avoid ambiguous searches for 
 	// common names such as "transform" or "vector"
-	UPackage* Package = ANY_PACKAGE;
+	UPackage* Package = nullptr;
 	FString PackageName;
 	FString CPPTypeObjectName = InObjectPath;
 	if (InObjectPath.Split(TEXT("."), &PackageName, &CPPTypeObjectName))
@@ -914,7 +1090,7 @@ UObject* URigVMPin::FindObjectFromCPPTypeObjectPath(const FString& InObjectPath)
 		return ObjectWithinPackage;
 	}
 
-	return FindObject<UObject>(ANY_PACKAGE, *InObjectPath);
+	return FindFirstObject<UObject>(*InObjectPath, EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
 }
 
 URigVMVariableNode* URigVMPin::GetBoundVariableNode() const
@@ -1043,11 +1219,7 @@ bool URigVMPin::IsBoundToInputArgument() const
 	return false;
 }
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-bool URigVMPin::CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FRigVMRegisterOffset& InOffset) const
-#else
 bool URigVMPin::CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FString& InSegmentPath) const
-#endif
 {
 	if (!InExternalVariable.IsValid(true))
 	{
@@ -1067,11 +1239,7 @@ bool URigVMPin::CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVar
 
 	// check type validity
 	// in the future we need to allow arrays as well
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	if (IsArray() && InOffset.IsValid())
-#else
 	if (IsArray() && !InSegmentPath.IsEmpty())
-#endif
 	{
 		return false;
 	}
@@ -1083,13 +1251,6 @@ bool URigVMPin::CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVar
 	FName ExternalCPPType = InExternalVariable.TypeName;
 	UObject* ExternalCPPTypeObject = InExternalVariable.TypeObject;
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	if (InOffset.IsValid())
-	{
-		ExternalCPPType = InOffset.GetCPPType();
-		ExternalCPPTypeObject = InOffset.GetScriptStruct();
-	}
-#else
 	if(!InSegmentPath.IsEmpty())
 	{
 		check(InExternalVariable.Property);
@@ -1100,18 +1261,17 @@ bool URigVMPin::CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVar
 
 		FRigVMExternalVariable::GetTypeFromProperty(Property, ExternalCPPType, ExternalCPPTypeObject);
 	}
-#endif
 
 	const FString CPPBaseType = IsArray() ? GetArrayElementCppType() : GetCPPType();
-	return RigVMTypeUtils::AreCompatible(CPPBaseType, GetCPPTypeObject(), ExternalCPPType.ToString(), ExternalCPPTypeObject);
+	return RigVMTypeUtils::AreCompatible(*CPPBaseType, GetCPPTypeObject(), ExternalCPPType, ExternalCPPTypeObject);
 }
 
 bool URigVMPin::ShowInDetailsPanelOnly() const
 {
 #if WITH_EDITOR
-	if (URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(GetNode()))
+	if (GetParentPin() == nullptr)
 	{
-		if (GetParentPin() == nullptr)
+		if (URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(GetNode()))
 		{
 			if (UScriptStruct* ScriptStruct = UnitNode->GetScriptStruct())
 			{
@@ -1122,6 +1282,13 @@ bool URigVMPin::ShowInDetailsPanelOnly() const
 						return true;
 					}
 				}
+			}
+		}
+		else if(const URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(GetNode()))
+		{
+			if(const FRigVMTemplate* Template = TemplateNode->GetTemplate())
+			{
+				return !Template->GetArgumentMetaData(GetFName(), FRigVMStruct::DetailsOnlyMetaName).IsEmpty();
 			}
 		}
 	}
@@ -1175,6 +1342,9 @@ void URigVMPin::UpdateTypeInformationIfRequired() const
 		{
 			URigVMPin* MutableThis = (URigVMPin*)this;
 			MutableThis->CPPTypeObject = FindObjectFromCPPTypeObjectPath(CPPTypeObjectPath.ToString());
+			MutableThis->CPPType = RigVMTypeUtils::PostProcessCPPType(CPPType, CPPTypeObject);
+			MutableThis->LastKnownTypeIndex = FRigVMRegistry::Get().FindOrAddType(FRigVMTemplateArgumentType(*CPPType, CPPTypeObject));
+			MutableThis->LastKnownCPPType = MutableThis->CPPType; 
 		}
 	}
 
@@ -1182,7 +1352,7 @@ void URigVMPin::UpdateTypeInformationIfRequired() const
 	{
 		// refresh the type string 
 		URigVMPin* MutableThis = (URigVMPin*)this;
-		MutableThis->CPPType = URigVMController::PostProcessCPPType(CPPType, CPPTypeObject);
+		MutableThis->CPPType = RigVMTypeUtils::PostProcessCPPType(CPPType, CPPTypeObject);
 	}
 }
 
@@ -1245,8 +1415,26 @@ URigVMPin* URigVMPin::GetPinForLink() const
 	return PinForLink;
 }
 
+URigVMLink* URigVMPin::FindLinkForPin(const URigVMPin* InOtherPin) const
+{
+	for (URigVMLink* Link : Links)
+	{
+		if ((Link->GetSourcePin() == this && Link->GetTargetPin() == InOtherPin) ||
+			(Link->GetSourcePin() == InOtherPin && Link->GetTargetPin() == this))
+		{
+			return Link;
+		}
+	}
+	return nullptr;
+}
+
 URigVMPin* URigVMPin::GetOriginalPinFromInjectedNode() const
 {
+	if(GetNode() == nullptr)
+	{
+		return nullptr;
+	}
+	
 	if (URigVMInjectionInfo* Injection = GetNode()->GetInjectionInfo())
 	{
 		URigVMPin* RootPin = GetRootPin();
@@ -1296,7 +1484,7 @@ URigVMPin* URigVMPin::FindSubPin(const FString& InPinPath) const
 
 	for (URigVMPin* Pin : SubPins)
 	{
-		if (Pin->GetName() == Left)
+		if (Pin->NameEquals(Left, true))
 		{
 			if (Right.IsEmpty())
 			{
@@ -1317,6 +1505,27 @@ bool URigVMPin::IsLinkedTo(URigVMPin* InPin) const
 			return true;
 		}
 	}
+	return false;
+}
+
+bool URigVMPin::IsLinked(bool bRecursive) const
+{
+	if(!GetLinks().IsEmpty())
+	{
+		return true;
+	}
+
+	if(bRecursive)
+	{
+		for (const URigVMPin* SubPin : SubPins)
+		{
+			if(SubPin->IsLinked(true))
+			{
+				return true;
+			}
+		}
+	}
+
 	return false;
 }
 
@@ -1422,7 +1631,7 @@ URigVMNode* URigVMPin::GetNode() const
 	}
 
 	URigVMNode* Node = Cast<URigVMNode>(GetOuter());
-	if(Node)
+	if(IsValid(Node))
 	{
 		return Node;
 	}
@@ -1441,7 +1650,7 @@ URigVMGraph* URigVMPin::GetGraph() const
 	return nullptr;
 }
 
-bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode)
+bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection, bool bInAllowNonArgumentPins)
 {
 	if (InSourcePin == nullptr || InTargetPin == nullptr)
 	{
@@ -1515,30 +1724,67 @@ bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString*
 		bool bCPPTypesDiffer = true;
 		static const FString Float = TEXT("float");
 		static const FString Double = TEXT("double");
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 
-		if((InSourcePin->CPPType == Float && InTargetPin->CPPType == Double) ||
-			(InSourcePin->CPPType == Double && InTargetPin->CPPType == Float))
-#else
-
-		if (RigVMTypeUtils::AreCompatible(InSourcePin->CPPType, InSourcePin->CPPTypeObject, InTargetPin->CPPType, InTargetPin->CPPTypeObject))
-#endif
+		if (FRigVMRegistry::Get().CanMatchTypes(InSourcePin->GetTypeIndex(), InTargetPin->GetTypeIndex(), true))
 		{
 			bCPPTypesDiffer = false;
 		}
 
 		if (bCPPTypesDiffer)
 		{
-			if(InSourcePin->IsArray() == InTargetPin->IsArray())
 			{
-				if(InSourcePin->IsUnknownType() && !InTargetPin->IsExecuteContext())
+				auto TemplateNodeSupportsType = [](URigVMPin* InPin, const int32& InTypeIndex, FString* OutFailureReason) -> bool
 				{
+					if (URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(InPin->GetNode()))
+					{
+						if (TemplateNode->SupportsType(InPin, InTypeIndex))
+						{
+							if (OutFailureReason)
+							{
+								*OutFailureReason = FString();
+							}
+						}
+						else
+						{
+							return false;
+						}
+					}
+					return true;
+
+				};
+
+				auto IsPinValidForTypeChange = [](URigVMPin* InPin, bool bIsInput, ERigVMPinDirection InDirection) -> bool
+				{
+					if(InPin->IsWildCard())
+					{
+						return true;
+					}
+
+					if(!InPin->GetNode()->IsA<URigVMTemplateNode>() || InDirection == ERigVMPinDirection::Invalid)
+					{
+						return false;
+					}
+
+					if((bIsInput && (InDirection != ERigVMPinDirection::Input)) ||
+						(!bIsInput && (InDirection != ERigVMPinDirection::Output)))
+					{
+						if(InPin->IsRootPin() ||
+							(InPin->GetParentPin()->IsRootPin() && InPin->IsArrayElement()))
+						{
+							return true;
+						}
+					}
 					
-					return true;
-				}
-				else if(InTargetPin->IsUnknownType() && !InSourcePin->IsExecuteContext())
+					return false;
+				};
+				
+				if(IsPinValidForTypeChange(InSourcePin, false, InUserLinkDirection))
 				{
-					return true;
+					bCPPTypesDiffer = !TemplateNodeSupportsType(InSourcePin, InTargetPin->GetTypeIndex(), OutFailureReason);
+				}
+				else if(IsPinValidForTypeChange(InTargetPin, true, InUserLinkDirection))
+				{
+					bCPPTypesDiffer = !TemplateNodeSupportsType(InTargetPin, InSourcePin->GetTypeIndex(), OutFailureReason);
 				}
 			}
 		}
@@ -1549,54 +1795,7 @@ bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString*
 			{
 				*OutFailureReason = TEXT("Source and target pin types are not compatible.");
 			}
-
-			// check if this might be a prototype node
-			if (InSourcePin->CPPType.IsEmpty())
-			{
-				if (URigVMPrototypeNode* PrototypeNode = Cast<URigVMPrototypeNode>(SourceNode))
-				{
-					if (PrototypeNode->SupportsType(InSourcePin, InTargetPin->CPPType))
-					{
-						if (OutFailureReason)
-						{
-							*OutFailureReason = FString();
-						}
-					}
-					else
-					{
-						return false;
-					}
-				}
-				else
-				{
-					return false;
-				}
-			}
-			else if (InTargetPin->CPPType.IsEmpty())
-			{
-				if (URigVMPrototypeNode* PrototypeNode = Cast<URigVMPrototypeNode>(TargetNode))
-				{
-					if (PrototypeNode->SupportsType(InTargetPin, InSourcePin->CPPType))
-					{
-						if (OutFailureReason)
-						{
-							*OutFailureReason = FString();
-						}
-					}
-					else
-					{
-						return false;
-					}
-				}
-				else
-				{
-					return false;
-				}
-			}
-			else
-			{
-				return false;
-			}
+			return false;
 		}
 	}
 
@@ -1616,6 +1815,46 @@ bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString*
 			*OutFailureReason = TEXT("Node doesn't allow links on this pin.");
 		}
 		return false;
+	}
+
+	if (!bInAllowNonArgumentPins)
+	{
+		if (URigVMTemplateNode* SourceTemplateNode = Cast<URigVMTemplateNode>(SourceNode))
+		{
+			if (!SourceNode->IsA<URigVMFunctionEntryNode>() && !SourceNode->IsA<URigVMFunctionReturnNode>())
+			{
+				if (const FRigVMTemplate* Template = SourceTemplateNode->GetTemplate())
+				{
+					URigVMPin* RootPin = InSourcePin->GetRootPin();
+					if (!Template->FindArgument(RootPin->GetFName()))
+					{
+						if (OutFailureReason)
+						{
+							*OutFailureReason = FString::Printf(TEXT("Library pin %s supported types need to be reduced."), *RootPin->GetPinPath(true));
+						}
+						return false;
+					}
+				}
+			}
+		}
+		if (URigVMTemplateNode* TargetTemplateNode = Cast<URigVMTemplateNode>(TargetNode))
+		{
+			if (!TargetNode->IsA<URigVMFunctionEntryNode>() && !TargetNode->IsA<URigVMFunctionReturnNode>())
+			{
+				if (const FRigVMTemplate* Template = TargetTemplateNode->GetTemplate())
+				{
+					URigVMPin* RootPin = InTargetPin->GetRootPin();
+					if (!Template->FindArgument(RootPin->GetFName()))
+					{
+						if (OutFailureReason)
+						{
+							*OutFailureReason = FString::Printf(TEXT("Library pin %s supported types need to be reduced."), *RootPin->GetPinPath(true));
+						}
+						return false;
+					}
+				}
+			}
+		}
 	}
 
 	// only allow to link to specified input / output pins on an injected node
@@ -1663,7 +1902,9 @@ bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString*
 		{
 			for (int32 SourceNodeIndex = 0; SourceNodeIndex < SourceNodes.Num(); SourceNodeIndex++)
 			{
-				bool bNodeCanLinkAnywhere = SourceNodes[SourceNodeIndex]->IsA<URigVMRerouteNode>();
+				bool bNodeCanLinkAnywhere =
+					SourceNodes[SourceNodeIndex]->IsA<URigVMRerouteNode>() ||
+					SourceNodes[SourceNodeIndex]->IsA<URigVMVariableNode>();
 				if (!bNodeCanLinkAnywhere)
 				{
 					if (URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(SourceNodes[SourceNodeIndex]))
@@ -1679,10 +1920,21 @@ bool URigVMPin::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString*
 
 				if (!bNodeCanLinkAnywhere)
 				{
-					int32 SourceNodeInstructionIndex = InByteCode->GetFirstInstructionIndexForSubject(SourceNodes[SourceNodeIndex]);
+					const int32 SourceNodeInstructionIndex = InByteCode->GetFirstInstructionIndexForSubject(SourceNodes[SourceNodeIndex]);
 					if (SourceNodeInstructionIndex != INDEX_NONE &&
 						SourceNodeInstructionIndex > TargetNodeInstructionIndex)
 					{
+						if (OutFailureReason)
+						{
+							static constexpr TCHAR IncorrectNodeOrderMessage[] = TEXT("Source node %s (%s) and target node %s (%s) are in the incorrect order.");
+							*OutFailureReason = FString::Printf(
+								IncorrectNodeOrderMessage,
+								*SourceNodes[SourceNodeIndex]->GetName(),
+								*SourceNodes[SourceNodeIndex]->GetNodeTitle(),
+								*TargetNode->GetName(),
+								*TargetNode->GetNodeTitle());
+						}
+
 						return false;
 					}
 					SourceNodes.Append(SourceNodes[SourceNodeIndex]->GetLinkedSourceNodes());
@@ -1706,3 +1958,4 @@ bool URigVMPin::HasInjectedUnitNodes() const
 	
 	return false;
 }
+

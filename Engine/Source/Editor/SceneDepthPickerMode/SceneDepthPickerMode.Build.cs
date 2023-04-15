@@ -8,8 +8,8 @@ public class SceneDepthPickerMode : ModuleRules
 	{
         PrivateIncludePaths.AddRange(
             new string[]
-            {
-                "Editor/UnrealEd/Private"
+			{
+				System.IO.Path.Combine(GetModuleDirectory("UnrealEd"), "Private"),
             }
         );
 
@@ -21,7 +21,6 @@ public class SceneDepthPickerMode : ModuleRules
                 "InputCore",
                 "Slate",
                 "SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 			}

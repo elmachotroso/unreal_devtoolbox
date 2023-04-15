@@ -35,8 +35,7 @@ void CommonUnixCrashHandler(const FGenericCrashContext& GenericContext)
 	const_cast< FUnixCrashContext& >(Context).CaptureStackTrace(Context.ErrorFrame);
 	if (GLog)
 	{
-		GLog->SetCurrentThreadAsMasterThread();
-		GLog->Flush();
+		GLog->Panic();
 	}
 	if (GWarn)
 	{
@@ -182,6 +181,12 @@ static bool IncreasePerProcessLimits()
 			fprintf(stderr, "Alternatively, pass -nocore if you are unable or unwilling to do that.\n");
 			return false;
 		}
+	}
+
+	if constexpr (WITH_PROCESS_PRIORITY_CONTROL)
+	{
+		printf("Increasing per-process limit for scheduling priority.\n");
+		SetResourceMaxHardLimit(RLIMIT_NICE);
 	}
 
 	return true;

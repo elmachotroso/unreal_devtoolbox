@@ -22,11 +22,12 @@ public class CrashReportClientTarget : TargetRules
 	{
 		Type = TargetType.Program;
 		LinkType = TargetLinkType.Monolithic;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 		UndecoratedConfiguration = UnrealTargetConfiguration.Shipping;
 
 		LaunchModuleName = "CrashReportClient";
 
-		if (Target.Platform != UnrealTargetPlatform.Linux)
+		if (bBuildEditor == true && Target.Platform != UnrealTargetPlatform.Linux)
 		{
 			ExtraModuleNames.Add("EditorStyle");
 		}

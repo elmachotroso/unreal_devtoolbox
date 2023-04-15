@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonLoadGuard.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "Components/SizeBoxSlot.h"
 #include "CommonTextBlock.h"
 #include "CommonWidgetPaletteCategories.h"
@@ -14,6 +14,8 @@
 #include "ICommonUIModule.h"
 #include "CommonUISettings.h"
 #include "CommonUIEditorSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonLoadGuard)
 
 //////////////////////////////////////////////////////////////////////////
 // SLoadGuard
@@ -271,7 +273,7 @@ UCommonLoadGuard::UCommonLoadGuard(const FObjectInitializer& Initializer)
 	, ThrobberAlignment(EHorizontalAlignment::HAlign_Center)
 	, LoadingText(NSLOCTEXT("LoadGuard", "Loading", "Loading..."))
 {
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 
 	// Default to not showing the loading BG brush - it's an opt-in kind of thing
 	LoadingBackgroundBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
@@ -339,9 +341,9 @@ void UCommonLoadGuard::PostLoad()
 			// Copy properties from the old SizeBoxSlot
 			if (USizeBoxSlot* AsSizeBoxSlot = Cast<USizeBoxSlot>(PanelSlot))
 			{
-				LoadGuardSlot->SetPadding(AsSizeBoxSlot->Padding);
-				LoadGuardSlot->SetHorizontalAlignment(AsSizeBoxSlot->HorizontalAlignment);
-				LoadGuardSlot->SetVerticalAlignment(AsSizeBoxSlot->VerticalAlignment);
+				LoadGuardSlot->SetPadding(AsSizeBoxSlot->GetPadding());
+				LoadGuardSlot->SetHorizontalAlignment(AsSizeBoxSlot->GetHorizontalAlignment());
+				LoadGuardSlot->SetVerticalAlignment(AsSizeBoxSlot->GetVerticalAlignment());
 			}
 			Slots[0] = LoadGuardSlot;
 		}
@@ -351,7 +353,9 @@ void UCommonLoadGuard::PostLoad()
 	//TODO: I want this removed, it's needed for backwards compatibility
 	if (!TextStyle && !bStyleNoLongerNeedsConversion && !IsRunningDedicatedServer())
 	{
-		TextStyle = ICommonUIModule::GetEditorSettings().GetTemplateTextStyle();
+		UCommonUIEditorSettings& Settings = ICommonUIModule::GetEditorSettings();
+		Settings.ConditionalPostLoad();
+		TextStyle = Settings.GetTemplateTextStyle();
 	}
 
 	bStyleNoLongerNeedsConversion = true;
@@ -434,3 +438,4 @@ void UCommonLoadGuard::HandleLoadingStateChanged(bool bIsLoading)
 {
 	OnLoadingStateChanged().Broadcast(bIsLoading);
 }
+

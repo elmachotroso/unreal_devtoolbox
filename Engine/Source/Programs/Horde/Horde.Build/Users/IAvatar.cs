@@ -1,11 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-
-namespace HordeServer.Models
+namespace Horde.Build.Users
 {
 	/// <summary>
 	/// Avatar for the user

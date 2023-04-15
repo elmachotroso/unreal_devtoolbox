@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonBorder.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonUIEditorSettings.h"
 #include "CommonWidgetPaletteCategories.h"
 
@@ -9,6 +9,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SViewport.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonBorder)
 
 UCommonBorderStyle::UCommonBorderStyle()
 {
@@ -26,7 +28,7 @@ UCommonBorder::UCommonBorder(const FObjectInitializer& ObjectInitializer)
 {
 	Background.DrawAs = ESlateBrushDrawType::NoDrawType;
 
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UCommonBorder::PostLoad()
@@ -40,7 +42,9 @@ void UCommonBorder::PostLoad()
 		UCommonBorder* CDO = Cast<UCommonBorder>(GetClass()->GetDefaultObject());
 		if (Background == CDO->Background)
 		{
-			Style = ICommonUIModule::GetEditorSettings().GetTemplateBorderStyle();
+			UCommonUIEditorSettings& Settings = ICommonUIModule::GetEditorSettings();
+			Settings.ConditionalPostLoad();
+			Style = Settings.GetTemplateBorderStyle();
 		}
 	}
 
@@ -125,10 +129,10 @@ void UCommonBorder::SafeAreaUpdated()
 		}
 
 		FMargin NewMargin;
-		NewMargin.Left = FMath::Max(MinimumPadding.Left, Padding.Left - SafeMargin.Left);
-		NewMargin.Right = FMath::Max(MinimumPadding.Right, Padding.Right - SafeMargin.Right);
-		NewMargin.Top = FMath::Max(MinimumPadding.Top, Padding.Top - SafeMargin.Top);
-		NewMargin.Bottom = FMath::Max(MinimumPadding.Bottom, Padding.Bottom - SafeMargin.Bottom);
+		NewMargin.Left = FMath::Max(MinimumPadding.Left, GetPadding().Left - SafeMargin.Left);
+		NewMargin.Right = FMath::Max(MinimumPadding.Right, GetPadding().Right - SafeMargin.Right);
+		NewMargin.Top = FMath::Max(MinimumPadding.Top, GetPadding().Top - SafeMargin.Top);
+		NewMargin.Bottom = FMath::Max(MinimumPadding.Bottom, GetPadding().Bottom - SafeMargin.Bottom);
 		
 		MyBorder->SetPadding(NewMargin);
 	}
@@ -177,3 +181,4 @@ const UCommonBorderStyle* UCommonBorder::GetStyleCDO() const
 	}
 	return nullptr;
 }
+

@@ -7,11 +7,61 @@
 #include "MetasoundTrace.h"
 #include "Misc/Guid.h"
 #include "Templates/TypeHash.h"
+#include "Traits/IsContiguousContainer.h"
 
 namespace Metasound
 {
 	namespace FrontendQueryPrivate
 	{
+		void CompactSelection(FFrontendQuerySelection& InSelection)
+		{
+			InSelection.Shrink();
+		}
+
+		// Not symmetric. Elements in LHS that are not in RHS. Modifies partition by resorting.
+		FFrontendQueryPartition Difference(FFrontendQueryPartition& InLHS, FFrontendQueryPartition& InRHS)
+		{
+			static_assert(TIsContiguousContainer<FFrontendQueryPartition>::Value, "Partitions must be a contiguous container for Difference algorithm to no access invalid memory");
+
+			if ((InLHS.Num() == 0) || (InRHS.Num() == 0))
+			{
+				return InLHS;
+			}
+
+			auto IsIDLessThan = [](const FFrontendQueryEntry& InLHS, const FFrontendQueryEntry& InRHS) { return InLHS.ID < InRHS.ID; };
+			auto IsIDEqual = [](const FFrontendQueryEntry& InLHS, const FFrontendQueryEntry& InRHS) { return InLHS.ID == InRHS.ID; };
+
+			InLHS.Sort(IsIDLessThan);
+			InRHS.Sort(IsIDLessThan);
+
+			FFrontendQueryPartition Result;
+			const FFrontendQueryEntry* LHSPtr = InLHS.GetData();
+			const FFrontendQueryEntry* LHSPtrEnd = LHSPtr + InLHS.Num();
+			const FFrontendQueryEntry* RHSPtr = InRHS.GetData();
+			const FFrontendQueryEntry* RHSPtrEnd = RHSPtr + InRHS.Num();
+
+			while (LHSPtr != LHSPtrEnd)
+			{
+				if ((RHSPtr == RHSPtrEnd) || IsIDLessThan(*LHSPtr, *RHSPtr))
+				{
+					Result.Add(*LHSPtr);
+					LHSPtr++;
+				}
+				else if (IsIDLessThan(*RHSPtr, *LHSPtr))
+				{
+					RHSPtr++;
+				}
+				else
+				{
+					// Values are equal
+					LHSPtr++;
+					RHSPtr++;
+				}
+			}
+			
+			return Result;
+		}
+
 		// Wrapper for step defined by function
 		struct FStreamFunctionFrontendQueryStep: IFrontendQueryStreamStep
 		{
@@ -332,7 +382,10 @@ namespace Metasound
 
 						// Get the updated set of keys in the output.
 						InOutUpdatedKeys.Reset();
-						Result.GetKeys(InOutUpdatedKeys);
+						for (const auto& Pair : Result)
+						{
+							InOutUpdatedKeys.Add(Pair.Key);
+						}
 
 						// Append the new values to the final result.
 						Append(InOutUpdatedKeys, Result, InOutResult);
@@ -368,7 +421,8 @@ namespace Metasound
 
 								Step->Reduce(Key, Partition);
 
-								FFrontendQueryPartition Removed = OriginalPartition.Difference(Partition);
+								FFrontendQueryPartition Removed = FrontendQueryPrivate::Difference(OriginalPartition, Partition);
+
 								if (Removed.Num() > 0)
 								{
 									InOutIncremental.ActiveRemovalSelection.FindOrAdd(Key).Append(Removed);
@@ -944,6 +998,8 @@ namespace Metasound
 
 	void FFrontendQuery::UpdateInternal(TSet<FFrontendQueryKey>& OutUpdatedKeys)
 	{
+		using namespace FrontendQueryPrivate;
+
 		FIncremental Incremental;
 
 		const int32 LastStepIndex = Steps.Num() - 1;
@@ -977,15 +1033,19 @@ namespace Metasound
 			if (bIsLastStep)
 			{
 				StepInfo.Step->Merge(Incremental, *Result);
+				CompactSelection(*Result);
 				OutUpdatedKeys = Incremental.ActiveKeys.Union(Incremental.ActiveRemovalKeys);
 			}
 			else if (StepInfo.bMergeAndCacheOutput)
 			{
 				StepInfo.Step->Merge(Incremental, StepInfo.OutputCache);
+				
 				// If entries were removed during a merge, the subsequent step 
 				// needs to re-evaluate the entire partition. The entire partition 
 				// is added to the active set for each removed key.
 				AppendPartitions(Incremental.ActiveRemovalKeys, StepInfo.OutputCache, Incremental.ActiveKeys, Incremental.ActiveSelection);
+
+				CompactSelection(StepInfo.OutputCache);
 			}
 		}
 	}

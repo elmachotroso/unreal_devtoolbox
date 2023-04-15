@@ -11,12 +11,16 @@
 
 // These flags are analogous to RAY_TRACING_PAYLOAD_* flags. There are currently 6 bits available
 #define PATH_TRACING_PAYLOAD_OUTPUT_FLAG_FRONT_FACE                   (1 << 0) // Indicates that ray has hit the front face of a primitive. Set by closest hit shader.
+#define PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RECEIVER               (1 << 1) // Indicates that ray has hit a primitive that receives decals. Set by closest hit shader.
 
 #define PATH_TRACING_PAYLOAD_INPUT_FLAG_IGNORE_SKY_MATERIALS          (1 << 0) // Indicates that the AHS/CHS should skip processing if the material is tagged as sky
 #define PATH_TRACING_PAYLOAD_INPUT_FLAG_PATHTRACER_VISIBILITY         (1 << 1) // Indicates that this is a path tracer visibility ray (which supports material evaluation for transparent shadows and fake caustics)
 
-
 #define PATH_TRACING_PAYLOAD_NORMAL_BITS  24
+
+// shading model extensions beyond the default count
+#define SHADINGMODELID_MEDIUM  (SHADINGMODELID_NUM + 1)
+
 
 uint PayloadEncodeUnitVector(float3 Normal)
 {
@@ -42,15 +46,12 @@ float3 PayloadDecodeUnitVector(uint Encoded)
 struct FPackedPathTracingPayload : FMinimalPayload
 {
 	// float FMinimalPayload::HitT                       // 4  bytes
-	uint PackedRayCone;                                  // 4  bytes (fp16 width, fp16 spread)
 	uint PackedPixelCoord;                               // 4  bytes
-	uint PackedData[13];								 // 52 bytes (encoded data, depends on shading model and ray type)
+	uint PackedData[14];								 // 56 bytes (encoded data, depends on shading model and ray type)
 														 // 64 bytes total
 
 	void SetPixelCoord(uint2 PixelCoord) { PackedPixelCoord = (PixelCoord.x & 0xFFFF) | (PixelCoord.y << 16); }
 	uint2 GetPixelCoord() { return uint2(PackedPixelCoord & 0xFFFF, PackedPixelCoord >> 16); }
-
-	FRayCone GetRayCone() { return UnpackRayCone(PackedRayCone); }
 
 	uint GetFlags() { return (PackedData[7] >> 23) & 0x3F; }
 	void SetFlag(uint Flag) { PackedData[7] |= Flag << 23; }
@@ -114,7 +115,6 @@ struct FPackedPathTracingPayload : FMinimalPayload
 // This payload structure is the expanded version of the above which is more convenient to work with
 struct FPathTracingPayload : FMinimalPayload
 {
-	FRayCone RayCone;
 	float3 Radiance;
 	float3 WorldGeoNormal;           // normal of the actual triangle (faceted)
 	float3 WorldNormal;              // normal output of the material (includes normal/bump)
@@ -134,11 +134,15 @@ struct FPathTracingPayload : FMinimalPayload
 	float4 CustomData;
 	float3 CustomVector;
 	float3 WorldTangent;
+	float3 SubsurfaceRadius;
 	float  Anisotropy;
-	float3 WorldPos;
+	float3 TranslatedWorldPos;
 
 	void SetFrontFace() { Flags |= PATH_TRACING_PAYLOAD_OUTPUT_FLAG_FRONT_FACE; }
 	bool IsFrontFace() { return (Flags & PATH_TRACING_PAYLOAD_OUTPUT_FLAG_FRONT_FACE) != 0; }
+
+	void SetDecalReceiver() { Flags |= PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RECEIVER; }
+	bool IsDecalReceiver() { return (Flags & PATH_TRACING_PAYLOAD_OUTPUT_FLAG_DECAL_RECEIVER) != 0; }
 
 
 	// Various ways to interpret CustomData (depending on ShadingModelID)
@@ -147,12 +151,11 @@ struct FPathTracingPayload : FMinimalPayload
 	void SetClearCoatRoughness(float ClearCoatRoughness) { CustomData.y = ClearCoatRoughness; }
 	float3 GetClearCoatBottomNormal() { return CustomVector; }
 
+	uint GetSubsurfaceProfileId() { return uint(CustomData.a * 255.0 + 0.5); }
+
 	float3 GetSubsurfaceColor() { return CustomData.xyz; }
 	void SetSubsurfaceColor(float3 SubsurfaceColor) { CustomData.xyz = SubsurfaceColor; }
 	
-	float3 GetSubsurfaceRadius() { return CustomVector.xyz; }
-	void SetSubsurfaceRadius(float3 SubsurfaceRadius) { CustomVector.xyz = SubsurfaceRadius; }
-
 	// Steal an unused float3 (the only material with dual specular does not support anisotropy)
 	// Data is encoded as (x: roughness 0, y: roughness 1, z: roughness mix)
 	float3 GetDualRoughnessSpecular() { return WorldTangent; }
@@ -173,6 +176,8 @@ struct FPathTracingPayload : FMinimalPayload
 		return ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE ||
 			   ShadingModelID == SHADINGMODELID_THIN_TRANSLUCENT || 
 			   ShadingModelID == SHADINGMODELID_HAIR ||
+			   ShadingModelID == SHADINGMODELID_MEDIUM ||
+			   ShadingModelID == SHADINGMODELID_SINGLELAYERWATER ||	
 			   IsMaterialSolidGlass();
 	}
 
@@ -180,14 +185,14 @@ struct FPathTracingPayload : FMinimalPayload
 	{
 		return ShadingModelID == SHADINGMODELID_SUBSURFACE ||
 			   ShadingModelID == SHADINGMODELID_PREINTEGRATED_SKIN ||
-			   ShadingModelID == SHADINGMODELID_SUBSURFACE_PROFILE;
+			   ShadingModelID == SHADINGMODELID_SUBSURFACE_PROFILE ||
+			   ShadingModelID == SHADINGMODELID_EYE;
 	}
 };
 
-FPackedPathTracingPayload InitPathTracingPayload(FRayCone RayCone, uint2 PixelCoord, bool bIgnoreSkyMaterials)
+FPackedPathTracingPayload InitPathTracingPayload(uint2 PixelCoord, bool bIgnoreSkyMaterials)
 {
 	FPackedPathTracingPayload Output = (FPackedPathTracingPayload)0;
-	Output.PackedRayCone = PackRayCone(RayCone);
 	Output.SetPixelCoord(PixelCoord);
 	if (bIgnoreSkyMaterials)
 	{
@@ -214,7 +219,6 @@ FPackedPathTracingPayload PackPathTracingPayload(FPathTracingPayload Input)
 {
 	FPackedPathTracingPayload Output = (FPackedPathTracingPayload)0;
 	Output.HitT = Input.HitT;
-	Output.PackedRayCone = PackRayCone(Input.RayCone);
 
 	Output.PackedData[0] = f32tof16(Input.Radiance.x);
 	Output.PackedData[0] |= f32tof16(Input.Radiance.y) << 16;
@@ -262,12 +266,11 @@ FPackedPathTracingPayload PackPathTracingPayload(FPathTracingPayload Input)
 	return Output;
 }
 
-FPathTracingPayload UnpackPathTracingPayload(FPackedPathTracingPayload Input, RayDesc Ray)
+FPathTracingPayload UnpackPathTracingPayload(FPackedPathTracingPayload Input, FRayDesc Ray)
 {
 	FPathTracingPayload Output = (FPathTracingPayload)0;
 
 	Output.HitT = Input.HitT;
-	Output.RayCone = Input.GetRayCone();
 	Output.Radiance.x = f16tof32(Input.PackedData[0]);
 	Output.Radiance.y = f16tof32(Input.PackedData[0] >> 16);
 	Output.Radiance.z = f16tof32(Input.PackedData[1]);
@@ -299,7 +302,7 @@ FPathTracingPayload UnpackPathTracingPayload(FPackedPathTracingPayload Input, Ra
 	Output.CustomData.z = f16tof32(Input.PackedData[12]);
 	Output.CustomData.w = f16tof32(Input.PackedData[12] >> 16);
 
-	Output.WorldPos = Ray.Origin + Output.HitT * Ray.Direction;
+	Output.TranslatedWorldPos = Ray.Origin + Output.HitT * Ray.Direction;
 
 	Output.DiffuseColor = Output.BaseColor - Output.BaseColor * Output.Metallic;
 	Output.SpecularColor = ComputeF0(Output.Specular, Output.BaseColor, Output.Metallic);

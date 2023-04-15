@@ -1,30 +1,59 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
-#include "Interfaces/IInputBindingEditorModule.h"
-#include "Framework/Commands/InputBindingManager.h"
-#include "Misc/Paths.h"
-#include "UnrealEdMisc.h"
-#include "Logging/MessageLog.h"
-#include "Misc/MessageDialog.h"
-#include "IDetailCustomization.h"
-#include "ISettingsModule.h"
-#include "PropertyEditorModule.h"
-#include "EditorKeyboardShortcutSettings.h"
-#include "ISettingsSection.h"
-#include "HAL/FileManager.h"
-#include "Misc/ConfigCacheIni.h"
-
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/SChordEditBox.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "Widgets/Text/STextBlock.h"
-#include "DetailLayoutBuilder.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorKeyboardShortcutSettings.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/InputBindingManager.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "HAL/FileManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "IDetailCustomization.h"
 #include "IDetailGroup.h"
+#include "ISettingsModule.h"
+#include "ISettingsSection.h"
+#include "Interfaces/IInputBindingEditorModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Logging/MessageLog.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "SlotBase.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "TimerManager.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UnrealEdMisc.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SChordEditBox.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "InputBindingEditor"
 
@@ -125,14 +154,14 @@ public:
 	{
 		DetailBuilder = &InDetailBuilder;
 
-		UpdateContextMasterList();
+		UpdateContextList();
 		UpdateUI();
 
 		FBindingContext::CommandsChanged.AddSP( SharedThis( this ), &FEditorKeyboardShortcutSettings::OnCommandsChanged );
 	}
 
-	/** Updates the master context list with new commands. */
-	void UpdateContextMasterList()
+	/** Updates the context list with new commands. */
+	void UpdateContextList()
 	{
 		TArray< TSharedPtr<FBindingContext> > Contexts;
 		FInputBindingManager::Get().GetKnownInputContexts( Contexts );
@@ -147,20 +176,20 @@ public:
 		Contexts.Sort( FContextNameSort() );
 
 		/** List of all known contexts. */
-		ContextMasterList.Reset(Contexts.Num());
+		ContextList.Reset(Contexts.Num());
 
 		for (const TSharedPtr<FBindingContext>& Context : Contexts)
 		{
 			TSharedRef<FChordTreeItem> TreeItem( new FChordTreeItem );
 			TreeItem->BindingContext = Context;
-			ContextMasterList.Add( TreeItem );
+			ContextList.Add( TreeItem );
 		}
 	}
 
 	void ForceRefreshDetails()
 	{
 		bUpdateRequested = false;
-		UpdateContextMasterList();
+		UpdateContextList();
 
 		if (DetailBuilder)
 		{
@@ -183,7 +212,7 @@ public:
 
 	void UpdateUI()
 	{
-		for (TSharedPtr<FChordTreeItem>& TreeItem : ContextMasterList)
+		for (TSharedPtr<FChordTreeItem>& TreeItem : ContextList)
 		{
 			check(TreeItem->IsContext());
 
@@ -285,7 +314,7 @@ private:
 	bool bUpdateRequested;
 	IDetailLayoutBuilder* DetailBuilder;
 	/** List of all known contexts. */
-	TArray< TSharedPtr<FChordTreeItem> > ContextMasterList;
+	TArray< TSharedPtr<FChordTreeItem> > ContextList;
 };
 
 class FInputBindingEditorModule

@@ -73,6 +73,9 @@ public:
 	/** Get the default MaterialInterface used by the input Model Handler class to apply the post-process lens distortion effect */
 	UMaterialInterface* GetDefaultDistortionMaterial(const TSubclassOf<ULensDistortionModelHandlerBase>& InModelHandler) const;
 
+	/** Returns true if the calibration dataset import and export featuers are enabled, false otherwise */
+	bool IsCalibrationDatasetImportExportEnabled() const { return bEnableCalibrationDatasetImportExport; }
+
 #if WITH_EDITOR
 protected:
 	FOnDisplacementMapResolutionChanged DisplacementMapResolutionChangedDelegate;
@@ -115,6 +118,10 @@ private:
 	UPROPERTY(config, EditAnywhere, Category = "Overlays")
 	TMap<FName, TSoftObjectPtr<UMaterialInterface>> CalibrationOverlayMaterialOverrides;
 #endif
+
+	/** Setting to toggle the calibration dataset import and export features */
+	UPROPERTY(config, EditAnywhere, Category = "Settings")
+	bool bEnableCalibrationDatasetImportExport = true;
 
 private:
 	/** Delegate handle to run after the engine is initialized */
@@ -175,6 +182,15 @@ struct FLensDataCategoryEditorColor
 	FColor NodalOffset = FColor::Purple;
 };
 
+/** Units used to display/interpret Focal Length and Image Center */
+UENUM()
+enum class ELensDisplayUnit : uint8
+{
+	Millimeters,
+	Pixels,
+	Normalized
+};
+
 /**
  * Settings for the camera calibration when in editor and standalone.
  * @note Cooked games don't use this setting.
@@ -214,8 +230,27 @@ public:
 	/**
 	 * Time slider enable flag
 	 */
-	UPROPERTY(config, EditAnywhere, Category = "Settings", Meta = (ToolTip = "Enable or Disable Time input driven by Live Link."))
+	UPROPERTY(config, EditAnywhere, Category = "Settings", Meta = (ToolTip = "Enable or Disable Time input driven by evaluation inputs."))
 	bool bEnableTimeSlider = true;
+
+	/** 
+	 * Units used to display/interpret Focal Length and Image Center 
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Settings")
+	ELensDisplayUnit DefaultDisplayUnit = ELensDisplayUnit::Millimeters;
+
+	/**
+	 * If true, the media player in the calibration tools will always use the default step rate. 
+	 * Otherwise, it will try to use the frame rate of the media to step by exactly one frame. 
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Settings")
+	bool bForceDefaultMediaStepRate = false;
+
+	/**
+	 * The default step rate (ms) that the media player in the calibration tools should use when stepping forward/back
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Settings")
+	float DefaultMediaStepRateInMilliseconds = 100.0f;
 
 private:
 

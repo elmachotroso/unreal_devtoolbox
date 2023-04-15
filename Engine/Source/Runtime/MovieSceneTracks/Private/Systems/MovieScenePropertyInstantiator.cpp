@@ -7,11 +7,14 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneBlenderSystem.h"
 #include "EntitySystem/MovieScenePropertyRegistry.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
+#include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 
 #include "Algo/AllOf.h"
 #include "Algo/IndexOf.h"
 #include "ProfilingDebugging/CountersTrace.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScenePropertyInstantiator)
 
 DECLARE_CYCLE_STAT(TEXT("DiscoverInvalidatedProperties"), MovieSceneEval_DiscoverInvalidatedProperties, STATGROUP_MovieSceneECS);
 DECLARE_CYCLE_STAT(TEXT("ProcessInvalidatedProperties"), MovieSceneEval_ProcessInvalidatedProperties, STATGROUP_MovieSceneECS);
@@ -27,7 +30,7 @@ UMovieScenePropertyInstantiatorSystem::UMovieScenePropertyInstantiatorSystem(con
 	RecomposerImpl.OnGetPropertyInfo = FOnGetPropertyRecomposerPropertyInfo::CreateUObject(
 				this, &UMovieScenePropertyInstantiatorSystem::FindPropertyFromSource);
 
-	SystemExclusionContext = EEntitySystemContext::Interrogation;
+	SystemCategories = FSystemInterrogator::GetExcludedFromInterrogationCategory();
 	RelevantComponent = BuiltInComponents->PropertyBinding;
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -121,6 +124,7 @@ void UMovieScenePropertyInstantiatorSystem::OnRun(FSystemTaskPrerequisites& InPr
 
 	if (InvalidatedProperties.Num() != 0)
 	{
+		UpgradeFloatToDoubleProperties(InvalidatedProperties);
 		ProcessInvalidatedProperties(InvalidatedProperties);
 	}
 
@@ -210,6 +214,131 @@ void UMovieScenePropertyInstantiatorSystem::DiscoverInvalidatedProperties(TBitAr
 	.FilterNone({ BuiltInComponents->BlendChannelOutput })
 	.FilterAll({ BuiltInComponents->BoundObject, BuiltInComponents->PropertyBinding, BuiltInComponents->Tags.NeedsUnlink })
 	.Iterate_PerEntity(&Linker->EntityManager, VisitExpiredEntities);
+}
+
+void UMovieScenePropertyInstantiatorSystem::UpgradeFloatToDoubleProperties(const TBitArray<>& InvalidatedProperties)
+{
+	using namespace UE::MovieScene;
+
+	MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_ProcessInvalidatedProperties);
+
+	const FMovieSceneTracksComponentTypes* TrackComponents = FMovieSceneTracksComponentTypes::Get();
+	TArrayView<const FPropertyDefinition> Properties = BuiltInComponents->PropertyRegistry.GetProperties();
+
+	for (TConstSetBitIterator<> It(InvalidatedProperties); It; ++It)
+	{
+		const int32 PropertyIndex = It.GetIndex();
+		if (!ResolvedProperties.IsValidIndex(PropertyIndex))
+		{
+			continue;
+		}
+
+		FObjectPropertyInfo& PropertyInfo = ResolvedProperties[PropertyIndex];
+		const bool bHadConversionInfo = PropertyInfo.ConvertedFromPropertyDefinitionIndex.IsSet();
+
+		// The first time we encounter a specific property, we need to figure out if it needs type conversion or not.
+		if (!bHadConversionInfo)
+		{
+			// Don't do anything if the property isn't of the kind of type we need to care about. Right now, we only
+			// support dealing with float->double and FVectorXf->FVectorXd.
+			const FPropertyDefinition& PropertyDefinition = Properties[PropertyInfo.PropertyDefinitionIndex];
+			if (PropertyDefinition.PropertyType != TrackComponents->Float.PropertyTag &&
+				PropertyDefinition.PropertyType != TrackComponents->FloatVector.PropertyTag)
+			{
+				PropertyInfo.ConvertedFromPropertyDefinitionIndex = INDEX_NONE;
+				continue;
+			}
+
+			FProperty* BoundProperty = FTrackInstancePropertyBindings::FindProperty(PropertyInfo.BoundObject, PropertyInfo.PropertyBinding.PropertyPath.ToString());
+			if (!BoundProperty)
+			{
+				continue;
+			}
+
+			// Patch the resolved property info to point to the double-precision property definition.
+			PropertyInfo.ConvertedFromPropertyDefinitionIndex = INDEX_NONE;
+			if (PropertyDefinition.PropertyType == TrackComponents->Float.PropertyTag)
+			{
+				const bool bIsDouble = BoundProperty->IsA<FDoubleProperty>();
+				if (bIsDouble)
+				{
+					const int32 DoublePropertyDefinitionIndex = Properties.IndexOfByPredicate(
+						[TrackComponents](const FPropertyDefinition& Item) { return Item.PropertyType == TrackComponents->Double.PropertyTag; });
+					ensure(DoublePropertyDefinitionIndex != INDEX_NONE);
+					PropertyInfo.ConvertedFromPropertyDefinitionIndex = PropertyInfo.PropertyDefinitionIndex;
+					PropertyInfo.PropertyDefinitionIndex = DoublePropertyDefinitionIndex;
+				}
+			}
+			else if (PropertyDefinition.PropertyType == TrackComponents->FloatVector.PropertyTag)
+			{
+				const UScriptStruct* BoundStructProperty = CastField<FStructProperty>(BoundProperty)->Struct;
+				const bool bIsDouble = (
+					(BoundStructProperty == TBaseStructure<FVector2D>::Get()
+						) ||
+					(
+						BoundStructProperty == TBaseStructure<FVector>::Get() ||
+						BoundStructProperty == TVariantStructure<FVector3d>::Get()
+						) ||
+					(
+						BoundStructProperty == TBaseStructure<FVector4>::Get() ||
+						BoundStructProperty == TVariantStructure<FVector4d>::Get()
+						));
+				if (bIsDouble)
+				{
+					const int32 DoublePropertyDefinitionIndex = Properties.IndexOfByPredicate(
+						[TrackComponents](const FPropertyDefinition& Item) { return Item.PropertyType == TrackComponents->DoubleVector.PropertyTag; });
+					ensure(DoublePropertyDefinitionIndex != INDEX_NONE);
+					PropertyInfo.ConvertedFromPropertyDefinitionIndex = PropertyInfo.PropertyDefinitionIndex;
+					PropertyInfo.PropertyDefinitionIndex = DoublePropertyDefinitionIndex;
+				}
+			}
+			else
+			{
+				check(false);
+			}
+		}
+
+		const int32 OldPropertyDefinitionIndex = PropertyInfo.ConvertedFromPropertyDefinitionIndex.Get(INDEX_NONE);
+		if (OldPropertyDefinitionIndex == INDEX_NONE)
+		{
+			continue;
+		}
+
+		// Now we need to patch the contributors so that they have double-precision components.
+		// We only need to do it for the *new* contributors discovered this frame.
+		FComponentTypeID OldPropertyTag, NewPropertyTag;
+		const FPropertyDefinition& PropertyDefinition = Properties[PropertyInfo.PropertyDefinitionIndex];
+		if (PropertyDefinition.PropertyType == TrackComponents->Double.PropertyTag)
+		{
+			OldPropertyTag = TrackComponents->Float.PropertyTag;
+			NewPropertyTag = TrackComponents->Double.PropertyTag;
+		}
+		else if (PropertyDefinition.PropertyType == TrackComponents->DoubleVector.PropertyTag)
+		{
+			OldPropertyTag = TrackComponents->FloatVector.PropertyTag;
+			NewPropertyTag = TrackComponents->DoubleVector.PropertyTag;
+		}
+
+		if (ensure(OldPropertyTag && NewPropertyTag))
+		{
+			// Swap out the property tag
+			for (auto ContribIt = NewContributors.CreateKeyIterator(PropertyIndex); ContribIt; ++ContribIt)
+			{
+				const FMovieSceneEntityID CurID(ContribIt.Value());
+				FComponentMask EntityType = Linker->EntityManager.GetEntityType(CurID);
+				EntityType.Remove(OldPropertyTag);
+				EntityType.Set(NewPropertyTag);
+				Linker->EntityManager.ChangeEntityType(CurID, EntityType);
+			}
+
+			// Update contributor info and stats. This is only done the first time this property is encountered.
+			if (!bHadConversionInfo)
+			{
+				--PropertyStats[OldPropertyDefinitionIndex].NumProperties;
+				++PropertyStats[PropertyInfo.PropertyDefinitionIndex].NumProperties;
+			}
+		}
+	}
 }
 
 void UMovieScenePropertyInstantiatorSystem::ProcessInvalidatedProperties(const TBitArray<>& InvalidatedProperties)
@@ -451,7 +580,7 @@ void UMovieScenePropertyInstantiatorSystem::InitializeBlendPath(const FPropertyP
 
 	if (!ensureMsgf(BlenderClass, TEXT("No default blender class specified on property, and no custom blender specified on entities. Falling back to float blender.")))
 	{
-		BlenderClass = UMovieScenePiecewiseFloatBlenderSystem::StaticClass();
+		BlenderClass = UMovieScenePiecewiseDoubleBlenderSystem::StaticClass();
 	}
 
 	UMovieSceneBlenderSystem* ExistingBlender = Params.PropertyInfo->Blender.Get();
@@ -656,3 +785,4 @@ void UMovieScenePropertyInstantiatorSystem::InitializePropertyMetaData(FSystemTa
 
 	InitializePropertyMetaDataTasks.Empty();
 }
+

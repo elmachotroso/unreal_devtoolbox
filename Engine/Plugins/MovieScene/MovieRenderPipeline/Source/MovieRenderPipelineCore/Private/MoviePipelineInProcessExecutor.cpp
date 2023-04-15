@@ -12,10 +12,13 @@
 #include "Engine/GameEngine.h"
 #include "MoviePipelineUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineInProcessExecutor)
+
 #define LOCTEXT_NAMESPACE "MoviePipelineInProcessExecutor"
 
 void UMoviePipelineInProcessExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 {
+	Super::Start(InJob);
 	UWorld* World = MoviePipeline::FindCurrentWorld();
 
 	if (bUseCurrentLevel)
@@ -29,10 +32,22 @@ void UMoviePipelineInProcessExecutor::Start(const UMoviePipelineExecutorJob* InJ
 
 		if (World != InJob->Map.ResolveObject())
 		{
-			UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Current map '%s' does not match job's map: '%s'. Rendering may happen on a different map than expected and produce incorrect results."), *GetNameSafe(World), *InJob->Map.GetAssetPathName().ToString());
+			UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Current map '%s' does not match job's map: '%s'. Rendering may happen on a different map than expected and produce incorrect results."), *GetNameSafe(World), *InJob->Map.GetAssetPath().ToString());
 		}
 		
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("Starting %s"), *GetNameSafe(World));
+	}
+
+	// Check for null sequence
+	ULevelSequence* LevelSequence = Cast<ULevelSequence>(InJob->Sequence.TryLoad());
+	if (!LevelSequence)
+	{
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Failed to load Sequence specified by job: %s"), *InJob->Sequence.ToString());
+
+		FText FailureReason = LOCTEXT("InvalidSequenceFailureDialog", "One or more jobs in the queue has an invalid/null sequence. See log for details.");
+		OnPipelineErrored(nullptr, true, FailureReason);
+		OnExecutorFinishedImpl();
+		return;
 	}
 
 	BackupState();
@@ -88,6 +103,17 @@ void UMoviePipelineInProcessExecutor::OnMapLoadFinished(UWorld* NewWorld)
 	
 	// Stop listening for map load until we're done and know we want to start the next config.
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
+
+	if (CurrentPipelineIndex >= Queue->GetJobs().Num())
+	{
+		FCoreDelegates::OnBeginFrame.RemoveAll(this);
+		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Out of bounds Job Index (%d) in Queue (Length: %d)! %d"), CurrentPipelineIndex, Queue->GetJobs().Num());
+
+		FText FailureReason = LOCTEXT("OutOfBoundsFailureDialog", "The job index is out of bounds, did you clear the Queue while rendering was happening? See log for details.");
+		OnPipelineErrored(nullptr, true, FailureReason);
+		OnExecutorFinishedImpl();
+		return;
+	}
 	
 	UMoviePipelineExecutorJob* CurrentJob = Queue->GetJobs()[CurrentPipelineIndex];
 
@@ -98,7 +124,7 @@ void UMoviePipelineInProcessExecutor::OnMapLoadFinished(UWorld* NewWorld)
 	}
 
 	ActiveMoviePipeline = NewObject<UMoviePipeline>(NewWorld, MoviePipelineClass);
-	ActiveMoviePipeline->DebugWidgetClass = DebugWidgetClass;
+	ActiveMoviePipeline->SetViewportInitArgs(ViewportInitArgs);
 
 	// We allow users to set a multi-frame delay before we actually run the Initialization function and start thinking.
 	// This solves cases where there are engine systems that need to finish loading before we do anything.
@@ -162,6 +188,8 @@ void UMoviePipelineInProcessExecutor::OnMoviePipelineFinished(FMoviePipelineOutp
 {
 	FCoreDelegates::OnBeginFrame.RemoveAll(this);
 	UMoviePipeline* MoviePipeline = ActiveMoviePipeline;
+	
+	OnIndividualJobFinishedDelegateNative.Broadcast(InOutputData);
 
 	if (ActiveMoviePipeline)
 	{
@@ -256,5 +284,23 @@ void UMoviePipelineInProcessExecutor::RestoreState()
 		}
 	}
 }
+void UMoviePipelineInProcessExecutor::CancelAllJobs_Implementation()
+{
+	// Setting this flag will make the completion of the current job skip the remaining jobs
+	bIsCanceling = true;
+	CancelCurrentJob();
+}
 
+void UMoviePipelineInProcessExecutor::CancelCurrentJob_Implementation()
+{
+	if (ActiveMoviePipeline && ActiveMoviePipeline->GetPipelineState() != EMovieRenderPipelineState::Finished)
+	{
+		UE_LOG(LogMovieRenderPipeline, Log, TEXT("MoviePipelineInProcessExecutor: Application quit while Movie Pipeline was still active. Stalling to do full shutdown."));
+
+		// This will flush any outstanding work on the movie pipeline (file writes) immediately
+		ActiveMoviePipeline->RequestShutdown(); // Set the Shutdown Requested flag.
+		ActiveMoviePipeline->Shutdown(); // Flush the shutdown.
+	}
+}
 #undef LOCTEXT_NAMESPACE // "MoviePipelineInProcessExecutor"
+

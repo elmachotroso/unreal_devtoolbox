@@ -2,17 +2,34 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Platform.h"
+#include "IO/IoDispatcher.h"
 #include "Memory/CompositeBuffer.h"
+#include "Memory/SharedBuffer.h"
+#include "Misc/DateTime.h"
 #include "Misc/PackagePath.h"
 #include "PackageStoreManifest.h"
+#include "Serialization/CompactBinary.h"
+#include "Serialization/FileRegions.h"
+#include "Serialization/PackageWriter.h"
 #include "Serialization/PackageWriterToSharedBuffer.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
 
 class FAsyncIODelete;
+class FAssetRegistryState;
+class FLargeMemoryWriter;
+class FMD5;
 class IPlugin;
 class ITargetPlatform;
+template <typename ReferencedType> class TRefCountPtr;
 namespace UE::Cook { struct FPackageDatas; }
 
 /** A CookedPackageWriter that saves cooked packages in separate .uasset,.uexp,.ubulk files in the Saved\Cooked\[Platform] directory. */
@@ -40,7 +57,6 @@ public:
 	virtual void Initialize(const FCookInfo& Info) override;
 	virtual void BeginCook() override;
 	virtual void EndCook() override;
-	virtual void Flush() override;
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override;
 	virtual FCbObject GetOplogAttachment(FName PackageName, FUtf8StringView AttachmentKey) override;
 	virtual void RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove) override;
@@ -48,7 +64,7 @@ public:
 	virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override;
 	virtual bool GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData) override;
 	virtual void CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive) override;
-	virtual TFuture<FMD5Hash> CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
+	virtual void CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
 		const FCommitPackageInfo& Info) override;
 	virtual FPackageWriterRecords::FPackage* ConstructRecord() override;
 
@@ -79,8 +95,9 @@ private:
 		TArray<FFileRegion> Regions;
 		bool bIsSidecar;
 		bool bContributeToHash = true;
+		FIoChunkId ChunkId = FIoChunkId::InvalidChunkId;
 
-		void Write(FMD5& AccumulatedHash, EWriteOptions WriteOptions) const;
+		void HashAndWrite(FMD5& AccumulatedHash, const TRefCountPtr<FPackageHashes>& PackageHashes, EWriteOptions WriteOptions) const;
 	};
 
 	/** Stack data for the helper functions of CommitPackageInternal. */
@@ -107,7 +124,7 @@ private:
 		const FString& SandboxProjectDir, const FString& RelativeProjectDir,
 		const FString& CookedPath, FString& OutUncookedPath) const;
 	void RemoveCookedPackagesByUncookedFilename(const TArray<FName>& UncookedFileNamesToRemove);
-	TFuture<FMD5Hash> AsyncSave(FRecord& Record, const FCommitPackageInfo& Info);
+	void AsyncSave(FRecord& Record, const FCommitPackageInfo& Info);
 
 	void CollectForSavePackageData(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveBulkData(FRecord& Record, FCommitContext& Context);
@@ -115,10 +132,19 @@ private:
 	void CollectForSaveAdditionalFileRecords(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveExportsFooter(FRecord& Record, FCommitContext& Context);
 	void CollectForSaveExportsBuffers(FRecord& Record, FCommitContext& Context);
-	TFuture<FMD5Hash> AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context);
+	void AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context);
 	void UpdateManifest(FRecord& Record);
 
+	TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
+	{
+		return AllPackageHashes;
+	}
+
+	// If EWriteOptions::ComputeHash is not set, the package will not get added to this.
+	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
+
 	TMap<FName, FName> UncookedPathToCookedPath;
+	FCriticalSection ConcurrentSaveLock;
 	FString OutputPath;
 	FString MetadataDirectoryPath;
 	const ITargetPlatform& TargetPlatform;

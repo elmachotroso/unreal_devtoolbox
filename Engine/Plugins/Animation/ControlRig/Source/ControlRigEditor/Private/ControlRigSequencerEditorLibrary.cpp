@@ -15,9 +15,9 @@
 #include "ControlRigComponent.h"
 #include "MovieSceneToolHelpers.h"
 #include "Rigs/FKControlRig.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_InverseExecution.h"
+#include "Units/Execution/RigUnit_InverseExecution.h"
 #include "ControlRig.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "EditorModeManager.h"
 #include "Engine/Selection.h"
 #include "ControlRigObjectBinding.h"
@@ -29,14 +29,18 @@
 #include "LevelSequence.h"
 #include "LevelSequenceActor.h"
 #include "Logging/LogMacros.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_InverseExecution.h"
+#include "Units/Execution/RigUnit_InverseExecution.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Exporters/AnimSeqExportOption.h"
 #include "MovieSceneTimeHelpers.h"
 #include "ScopedTransaction.h"
-#include "ControlRigParameterTrackEditor.h"
+#include "Sequencer/ControlRigParameterTrackEditor.h"
 #include "ControlRigSpaceChannelEditors.h"
 #include "LevelSequenceEditorBlueprintLibrary.h"
+#include "Tools/ConstraintBaker.h"
+#include "TransformConstraint.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSequencerEditorLibrary)
 
 #define LOCTEXT_NAMESPACE "ControlrigSequencerEditorLibrary"
 
@@ -44,10 +48,9 @@ TArray<UControlRig*> UControlRigSequencerEditorLibrary::GetVisibleControlRigs()
 {
 	TArray<UControlRig*> ControlRigs;
 	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-	if (ControlRigEditMode && ControlRigEditMode->GetControlRig(true) && ControlRigEditMode->GetControlRig(true)->GetObjectBinding() &&\
-		ControlRigEditMode->GetControlRig(true)->GetObjectBinding()->GetBoundObject())
+	if (ControlRigEditMode)
 	{
-		ControlRigs.Add(ControlRigEditMode->GetControlRig(true));
+		ControlRigs = ControlRigEditMode->GetControlRigsArray(true /*bIsVisible*/);
 	}
 	return ControlRigs;
 }
@@ -83,16 +86,13 @@ TArray<FControlRigSequencerBindingProxy> UControlRigSequencerEditorLibrary::GetC
 	return ControlRigBindingProxies;
 }
 
-static TArray<UObject*> GetBoundObjects(UWorld* World, ULevelSequence* LevelSequence, const FSequencerBindingProxy& Binding, ULevelSequencePlayer** OutPlayer, ALevelSequenceActor** OutActor)
+static TArray<UObject*> GetBoundObjects(UWorld* World, ULevelSequence* LevelSequence, const FMovieSceneBindingProxy& Binding, ULevelSequencePlayer** OutPlayer, ALevelSequenceActor** OutActor)
 {
 	FMovieSceneSequencePlaybackSettings Settings;
 	FLevelSequenceCameraSettings CameraSettings;
 
 	ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(World, LevelSequence, Settings, *OutActor);
 	*OutPlayer = Player;
-
-	Player->Initialize(LevelSequence, World->PersistentLevel, Settings, CameraSettings);
-	Player->State.AssignSequence(MovieSceneSequenceID::Root, *LevelSequence, *Player);
 
 	// Evaluation needs to occur in order to obtain spawnables
 	Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(LevelSequence->GetMovieScene()->GetPlaybackRange().GetLowerBoundValue().Value, EUpdatePositionMethod::Play));
@@ -117,9 +117,9 @@ static void AcquireSkeletonAndSkelMeshCompFromObject(UObject* BoundObject, USkel
 			if (SkeletalMeshComp)
 			{
 				*OutSkeletalMeshComponent = SkeletalMeshComp;
-				if (SkeletalMeshComp->SkeletalMesh && SkeletalMeshComp->SkeletalMesh->GetSkeleton())
+				if (SkeletalMeshComp->GetSkeletalMeshAsset() && SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton())
 				{
-					*OutSkeleton = SkeletalMeshComp->SkeletalMesh->GetSkeleton();
+					*OutSkeleton = SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton();
 				}
 				return;
 			}
@@ -134,9 +134,9 @@ static void AcquireSkeletonAndSkelMeshCompFromObject(UObject* BoundObject, USkel
 				if (SkeletalMeshComp)
 				{
 					*OutSkeletalMeshComponent = SkeletalMeshComp;
-					if (SkeletalMeshComp->SkeletalMesh && SkeletalMeshComp->SkeletalMesh->GetSkeleton())
+					if (SkeletalMeshComp->GetSkeletalMeshAsset() && SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton())
 					{
-						*OutSkeleton = SkeletalMeshComp->SkeletalMesh->GetSkeleton();
+						*OutSkeleton = SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton();
 					}
 					return;
 				}
@@ -150,15 +150,15 @@ static void AcquireSkeletonAndSkelMeshCompFromObject(UObject* BoundObject, USkel
 
 			for (USCS_Node* Node : ActorBlueprintNodes)
 			{
-				if (Node->ComponentClass->IsChildOf(USkeletalMeshComponent::StaticClass()))
+				if (Node->ComponentClass && Node->ComponentClass->IsChildOf(USkeletalMeshComponent::StaticClass()))
 				{
 					USkeletalMeshComponent* SkeletalMeshComp = Cast<USkeletalMeshComponent>(Node->GetActualComponentTemplate(ActorBlueprintGeneratedClass));
 					if (SkeletalMeshComp)
 					{
 						*OutSkeletalMeshComponent = SkeletalMeshComp;
-						if (SkeletalMeshComp->SkeletalMesh && SkeletalMeshComp->SkeletalMesh->GetSkeleton())
+						if (SkeletalMeshComp->GetSkeletalMeshAsset() && SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton())
 						{
-							*OutSkeleton = SkeletalMeshComp->SkeletalMesh->GetSkeleton();
+							*OutSkeleton = SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton();
 						}
 					}
 				}
@@ -168,16 +168,16 @@ static void AcquireSkeletonAndSkelMeshCompFromObject(UObject* BoundObject, USkel
 	else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(BoundObject))
 	{
 		*OutSkeletalMeshComponent = SkeletalMeshComponent;
-		if (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->SkeletalMesh->GetSkeleton())
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() && SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton())
 		{
-			*OutSkeleton = SkeletalMeshComponent->SkeletalMesh->GetSkeleton();
+			*OutSkeleton = SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton();
 		}
 	}
 }
 
 static TSharedPtr<ISequencer> GetSequencerFromAsset()
 {
-	//if getting sequencer from level sequence need to use the current(master), not the focused
+	//if getting sequencer from level sequence need to use the current(leader), not the focused
 	ULevelSequence* LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetCurrentLevelSequence();
 	IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LevelSequence, false);
 	ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
@@ -253,7 +253,7 @@ static UMovieSceneControlRigParameterTrack* AddControlRig(ULevelSequence* LevelS
 			}
 			if (ControlRigEditMode)
 			{
-				ControlRigEditMode->SetObjects(ControlRig, nullptr, SharedSequencer);
+				ControlRigEditMode->AddControlRigObject(ControlRig, SharedSequencer);
 			}
 			return Track;
 		}
@@ -261,7 +261,7 @@ static UMovieSceneControlRigParameterTrack* AddControlRig(ULevelSequence* LevelS
 	return nullptr;
 }
 
-UMovieSceneTrack* UControlRigSequencerEditorLibrary::FindOrCreateControlRigTrack(UWorld* World, ULevelSequence* LevelSequence, const UClass* ControlRigClass, const FSequencerBindingProxy& InBinding)
+UMovieSceneTrack* UControlRigSequencerEditorLibrary::FindOrCreateControlRigTrack(UWorld* World, ULevelSequence* LevelSequence, const UClass* ControlRigClass, const FMovieSceneBindingProxy& InBinding)
 {
 	UMovieScene* MovieScene = InBinding.Sequence ? InBinding.Sequence->GetMovieScene() : nullptr;
 	UMovieSceneTrack* BaseTrack = nullptr;
@@ -322,7 +322,7 @@ UMovieSceneTrack* UControlRigSequencerEditorLibrary::FindOrCreateControlRigTrack
 }
 
 
-TArray<UMovieSceneTrack*> UControlRigSequencerEditorLibrary::FindOrCreateControlRigComponentTrack(UWorld* World, ULevelSequence* LevelSequence, const FSequencerBindingProxy& InBinding)
+TArray<UMovieSceneTrack*> UControlRigSequencerEditorLibrary::FindOrCreateControlRigComponentTrack(UWorld* World, ULevelSequence* LevelSequence, const FMovieSceneBindingProxy& InBinding)
 {
 	TArray< UMovieSceneTrack*> Tracks;
 	TArray<UObject*, TInlineAllocator<1>> Result;
@@ -400,6 +400,55 @@ bool UControlRigSequencerEditorLibrary::TweenControlRig(ULevelSequence* LevelSeq
 		return true;
 	}
 	return false;
+}
+
+bool UControlRigSequencerEditorLibrary::BakeConstraint(UWorld* World, UTickableConstraint* Constraint, const TArray<FFrameNumber>& Frames, ESequenceTimeUnit TimeUnit)
+{
+	if (!World)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid World"));
+		return false;
+	}
+	if (UTickableTransformConstraint* TransformConstraint = Cast<UTickableTransformConstraint>(Constraint))
+	{
+		TSharedPtr<ISequencer> Sequencer = GetSequencerFromAsset();
+		if (!Sequencer || !Sequencer->GetFocusedMovieSceneSequence())
+		{
+			UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need loaded level Sequence"));
+			return false;
+		}
+		const UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+		if (!MovieScene)
+		{
+			UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need valid Movie Scene"));
+			return false;
+		}
+		
+		TOptional<TArray<FFrameNumber>> FramesToBake;
+		TArray<FFrameNumber> RealFramesToBake;
+		RealFramesToBake.SetNum(Frames.Num());
+
+		int32 Index = 0;
+		for (FFrameNumber Frame : Frames) 
+		{
+			if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+			{
+				Frame = FFrameRate::TransformTime(FFrameTime(Frame, 0), MovieScene->GetDisplayRate(), MovieScene->GetTickResolution()).RoundToFrame();
+			}
+			RealFramesToBake[Index++] = Frame;
+		} 
+		if (RealFramesToBake.Num() > 0)
+		{
+			FramesToBake = RealFramesToBake;
+		}
+		FConstraintBaker::Bake(World, TransformConstraint, Sequencer, FramesToBake);
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("BakeConstraint: Need Valid Constraint"));
+		return false;
+	}
+	return true;
 }
 
 
@@ -616,7 +665,7 @@ void UControlRigSequencerEditorLibrary::SetControlRigWorldTransforms(ULevelSeque
 }
 
 bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSequence* LevelSequence, UClass* InClass, UAnimSeqExportOption* ExportOptions, bool bReduceKeys, float Tolerance,
-	const FSequencerBindingProxy& Binding)
+	const FMovieSceneBindingProxy& Binding)
 {
 	UMovieScene* MovieScene = LevelSequence->GetMovieScene();
 	if (Binding.Sequence != LevelSequence)
@@ -641,8 +690,6 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 	else
 	{
 		Player = LevelPlayer = ULevelSequencePlayer::CreateLevelSequencePlayer(World, LevelSequence, Settings, OutActor);
-		LevelPlayer->Initialize(LevelSequence, World->PersistentLevel, Settings, CameraSettings);
-		LevelPlayer->State.AssignSequence(MovieSceneSequenceID::Root, *LevelSequence, *Player);
 	}
 	if (Player == nullptr)
 	{
@@ -660,7 +707,8 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 		if (LevelPlayer && SpawnableRestoreState.bWasChanged)
 		{
 			// Evaluate at the beginning of the subscene time to ensure that spawnables are created before export
-			LevelPlayer->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(UE::MovieScene::DiscreteInclusiveLower(MovieScene->GetPlaybackRange()).Value, EUpdatePositionMethod::Play));
+			FFrameTime StartTime = FFrameRate::TransformTime(UE::MovieScene::DiscreteInclusiveLower(MovieScene->GetPlaybackRange()).Value, MovieScene->GetTickResolution(), MovieScene->GetDisplayRate());
+			LevelPlayer->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(StartTime, EUpdatePositionMethod::Play));
 		}
 		TArrayView<TWeakObjectPtr<>>  Result = Player->FindBoundObjects(Binding.BindingID, Template);
 	
@@ -670,7 +718,7 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 			USkeleton* Skeleton = nullptr;
 			USkeletalMeshComponent* SkeletalMeshComp = nullptr;
 			AcquireSkeletonAndSkelMeshCompFromObject(BoundObject, &Skeleton, &SkeletalMeshComp);
-			if (SkeletalMeshComp && SkeletalMeshComp->SkeletalMesh && SkeletalMeshComp->SkeletalMesh->GetSkeleton())
+			if (SkeletalMeshComp && SkeletalMeshComp->GetSkeletalMeshAsset() && SkeletalMeshComp->GetSkeletalMeshAsset()->GetSkeleton())
 			{
 				UAnimSequence* TempAnimSequence = NewObject<UAnimSequence>(GetTransientPackage(), NAME_None);
 				TempAnimSequence->SetSkeleton(Skeleton);
@@ -714,7 +762,9 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 					FString ObjectName = InClass->GetName();
 					ObjectName.RemoveFromEnd(TEXT("_C"));
 					UControlRig* ControlRig = NewObject<UControlRig>(Track, InClass, FName(*ObjectName), RF_Transactional);
-					if (InClass != UFKControlRig::StaticClass() && !ControlRig->SupportsEvent(FRigUnit_InverseExecution::EventName))
+					FName OldEventString = FName(FString(TEXT("Inverse")));
+
+					if (InClass != UFKControlRig::StaticClass() && !(ControlRig->SupportsEvent(FRigUnit_InverseExecution::EventName) || ControlRig->SupportsEvent(OldEventString)))
 					{
 						TempAnimSequence->MarkAsGarbage();
 						MovieScene->RemoveTrack(*Track);
@@ -736,11 +786,13 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 						}
 						else
 						{
+							/* mz todo we don't unbind  will test more
 							UControlRig* OldControlRig = ControlRigEditMode->GetControlRig(false);
 							if (OldControlRig)
 							{
 								WeakSequencer.Pin()->ObjectImplicitlyRemoved(OldControlRig);
 							}
+							*/
 						}
 					}
 
@@ -790,7 +842,7 @@ bool UControlRigSequencerEditorLibrary::BakeToControlRig(UWorld* World, ULevelSe
 					//Finish Setup
 					if (ControlRigEditMode)
 					{
-						ControlRigEditMode->SetObjects(ControlRig, nullptr, WeakSequencer.Pin());
+						ControlRigEditMode->AddControlRigObject(ControlRig, WeakSequencer.Pin());
 					}
 
 					TempAnimSequence->MarkAsGarbage();
@@ -868,7 +920,7 @@ static bool LocalGetControlRigControlValues(IMovieScenePlayer* Player, UMovieSce
 			GlobalTime = GlobalTime * RootToLocalTransform.InverseLinearOnly();
 			FMovieSceneContext Context = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
 
-			Player->GetEvaluationTemplate().Evaluate(Context, *Player);
+			Player->GetEvaluationTemplate().EvaluateSynchronousBlocking(Context, *Player);
 			ControlRig->Evaluate_AnyThread();
 			OutValues[Index] = ControlRig->GetControlValue(ControlName);
 		}
@@ -923,8 +975,6 @@ static bool GetControlRigValues(UWorld* World, ULevelSequence* LevelSequence, UC
 		FMovieSceneSequenceIDRef Template = MovieSceneSequenceID::Root;
 		FMovieSceneSequenceTransform RootToLocalTransform;
 		ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(World, LevelSequence, Settings, OutActor);
-		Player->Initialize(LevelSequence, World->PersistentLevel, Settings, CameraSettings);
-		Player->State.AssignSequence(MovieSceneSequenceID::Root, *LevelSequence, *Player);
 		return LocalGetControlRigControlValues(Player, LevelSequence, Template, RootToLocalTransform,
 			ControlRig, ControlName,TimeUnit, Frames, OutValues);
 
@@ -2114,8 +2164,6 @@ bool UControlRigSequencerEditorLibrary::ImportFBXToControlRigTrack(UWorld* World
 	FMovieSceneSequencePlaybackSettings Settings;
 	FLevelSequenceCameraSettings CameraSettings;
 	ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(World, Sequence, Settings, OutActor);
-	Player->Initialize(Sequence, World->GetLevel(0), Settings, CameraSettings);
-	Player->State.AssignSequence(MovieSceneSequenceID::Root, *Sequence, *Player);
 
 	INodeAndChannelMappings* ChannelMapping = Cast<INodeAndChannelMappings>(InTrack);
 	if (ChannelMapping)
@@ -2409,4 +2457,94 @@ FRigElementKey UControlRigSequencerEditorLibrary::GetWorldSpaceReferenceKey()
 	return URigHierarchy::GetWorldSpaceReferenceKey();
 }
 
+bool UControlRigSequencerEditorLibrary::GetControlsMask(UMovieSceneSection* InSection, FName ControlName)
+{
+	UMovieSceneControlRigParameterSection* ParameterSection = Cast<UMovieSceneControlRigParameterSection>(InSection);
+	if (!ParameterSection)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call GetControlsMask without a UMovieSceneControlRigParameterSection"), ELogVerbosity::Error);
+		return false;
+	}
+	
+	UControlRig* ControlRig = ParameterSection->GetControlRig();
+	if (!ControlRig)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Section does not have a control rig"), ELogVerbosity::Error);
+		return false;
+	}
+
+	TArray<FRigControlElement*> Controls;
+	ControlRig->GetControlsInOrder(Controls);
+	int32 Index = 0;
+	for (const FRigControlElement* RigControl : Controls)
+	{
+		if (RigControl->GetName() == ControlName)
+		{
+			return ParameterSection->GetControlsMask(Index);
+		}
+		++Index;
+	}
+
+	FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Control Name ('%s') not found"), *ControlName.ToString()), ELogVerbosity::Error);
+	return false;
+}
+
+void UControlRigSequencerEditorLibrary::SetControlsMask(UMovieSceneSection* InSection, const TArray<FName>& ControlNames, bool bVisible)
+{
+	UMovieSceneControlRigParameterSection* ParameterSection = Cast<UMovieSceneControlRigParameterSection>(InSection);
+	if (!ParameterSection)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetControlsMask without a UMovieSceneControlRigParameterSection"), ELogVerbosity::Error);
+		return;
+	}
+
+	UControlRig* ControlRig = ParameterSection->GetControlRig();
+	if (!ControlRig)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Section does not have a control rig"), ELogVerbosity::Error);
+		return;
+	}
+
+	ParameterSection->Modify();
+
+	TArray<FRigControlElement*> Controls;
+	ControlRig->GetControlsInOrder(Controls);
+	int32 Index = 0;
+	for (const FRigControlElement* RigControl : Controls)
+	{
+		if (ControlNames.Contains(RigControl->GetName()))
+		{
+			ParameterSection->SetControlsMask(Index, bVisible);
+		}
+		++Index;
+	}
+}
+
+void UControlRigSequencerEditorLibrary::ShowAllControls(UMovieSceneSection* InSection)
+{
+	UMovieSceneControlRigParameterSection* ParameterSection = Cast<UMovieSceneControlRigParameterSection>(InSection);
+	if (!ParameterSection)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call ShowAllControls without a UMovieSceneControlRigParameterSection"), ELogVerbosity::Error);
+		return;
+	}
+
+	ParameterSection->Modify();
+	ParameterSection->FillControlsMask(true);
+}
+
+void UControlRigSequencerEditorLibrary::HideAllControls(UMovieSceneSection* InSection)
+{
+	UMovieSceneControlRigParameterSection* ParameterSection = Cast<UMovieSceneControlRigParameterSection>(InSection);
+	if (!ParameterSection)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call HideAllControls without a UMovieSceneControlRigParameterSection"), ELogVerbosity::Error);
+		return;
+	}
+
+	ParameterSection->Modify();
+	ParameterSection->FillControlsMask(false);
+}
+
 #undef LOCTEXT_NAMESPACE
+

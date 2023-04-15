@@ -4,6 +4,8 @@
 #include "Sections/MovieScene3DConstraintSection.h"
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScene3DConstraintTrack)
+
 
 #define LOCTEXT_NAMESPACE "MovieScene3DConstraintTrack"
 
@@ -35,7 +37,7 @@ const TArray<UMovieSceneSection*>& UMovieScene3DConstraintTrack::GetAllSections(
 
 void UMovieScene3DConstraintTrack::RemoveAllAnimationData()
 {
-	// do nothing
+	ConstraintSections.Empty();
 }
 
 
@@ -76,3 +78,4 @@ FText UMovieScene3DConstraintTrack::GetDisplayName() const
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

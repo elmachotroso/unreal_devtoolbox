@@ -13,10 +13,8 @@ namespace UnrealBuildTool.Rules
                 new string[] {
                     // Relative to Engine\Plugins\Runtime\Oculus\OculusOpenXR\Source
                     "../../../OpenXR/Source/OpenXRHMD/Private",
-                    "../../../../../Source/Runtime/Renderer/Private",
-                    "../../../../../Source/Runtime/OpenGLDrv/Private",
-                    "../../../../../Source/Runtime/VulkanRHI/Private",
-                    "../../../../../Source/Runtime/Engine/Classes/Components",
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+					"../../../../../Source/Runtime/Engine/Classes/Components",
                     "../../../../../Source/Runtime/Engine/Classes/Kismet",
                 });
 
@@ -26,15 +24,6 @@ namespace UnrealBuildTool.Rules
                     "OpenXRHMD",
                 });			
 
-            if (Target.Platform == UnrealTargetPlatform.Win64)
-            {
-                PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/Windows");
-            }
-            else
-            {
-                PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/" + Target.Platform);
-            }
-
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
@@ -43,7 +32,6 @@ namespace UnrealBuildTool.Rules
                     "Engine",
                     "InputCore",
                     "RHI",
-                    "RHICore",
                     "RenderCore",
                     "Renderer",
                     "Slate",
@@ -76,30 +64,14 @@ namespace UnrealBuildTool.Rules
             {
                 // D3D
                 {
-                    PrivateDependencyModuleNames.AddRange(
-                        new string[]
-                        {
-                            "D3D11RHI",
-                            "D3D12RHI",
-                        });
+                    PrivateDependencyModuleNames.AddRange(new string[] {
+						"D3D11RHI",
+						"D3D12RHI",
+					});
 
-                    PrivateIncludePaths.AddRange(
-                        new string[]
-                        {
-                            "../../../../../Source/Runtime/Windows/D3D11RHI/Private",
-                            "../../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows",
-                            "../../../../../Source/Runtime/D3D12RHI/Private",
-                            "../../../../../Source/Runtime/D3D12RHI/Private/Windows",
-                        });
-
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
+                    AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
                     AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11Audio");
                     AddEngineThirdPartyPrivateStaticDependencies(Target, "DirectSound");
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-                    AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
                 }
 
                 // Vulkan
@@ -109,11 +81,6 @@ namespace UnrealBuildTool.Rules
             }
             else if (Target.Platform == UnrealTargetPlatform.Android)
             {
-                PrivateIncludePaths.AddRange(
-                        new string[]
-                        {
-                        });
-
                 // Vulkan
                 {
                     AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");

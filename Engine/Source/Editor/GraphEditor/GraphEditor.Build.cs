@@ -6,29 +6,12 @@ public class GraphEditor : ModuleRules
 {
 	public GraphEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/GraphEditor/Private",
-				"Editor/GraphEditor/Private/KismetNodes",
-				"Editor/GraphEditor/Private/KismetPins",
-				"Editor/GraphEditor/Private/MaterialNodes",
-				"Editor/GraphEditor/Private/MaterialPins",
-			}
-		);
-
         PublicIncludePathModuleNames.AddRange(
             new string[] {                
-                "IntroTutorials",
 				"ClassViewer",
 				"StructViewer",
 			}
         );
-         
-//         PublicDependencyModuleNames.AddRange(
-//             new string[] {
-//                 "AudioEditor"
-//             }
-//         );
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -39,12 +22,13 @@ public class GraphEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
+                
 				"EditorWidgets",
 				"EditorFramework",
 				"UnrealEd",
 				"AssetRegistry",
 				"Kismet",
+				"KismetCompiler",
 				"KismetWidgets",
 				"BlueprintGraph",
 				"Documentation",

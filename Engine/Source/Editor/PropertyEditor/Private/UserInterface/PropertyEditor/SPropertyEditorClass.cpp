@@ -72,7 +72,7 @@ private:
 
 static UClass* FindOrLoadClass(const FString& ClassName)
 {
-	UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+	UClass* Class = UClass::TryFindTypeSlow<UClass>(ClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
 
 	if (!Class)
 	{
@@ -380,7 +380,7 @@ static UObject* LoadDragDropObject(TSharedPtr<FAssetDragDropOp> UnloadedClassOp)
 	// Find the class/blueprint path
 	if (UnloadedClassOp->HasAssets())
 	{
-		AssetPath = UnloadedClassOp->GetAssets()[0].ObjectPath.ToString();
+		AssetPath = UnloadedClassOp->GetAssets()[0].GetObjectPathString();
 	}
 	else if (UnloadedClassOp->HasAssetPaths())
 	{
@@ -425,11 +425,11 @@ void SPropertyEditorClass::OnDragEnter(const FGeometry& MyGeometry, const FDragD
 		
 		if (bOK)
 		{
-			UnloadedClassOp->SetToolTip(FText::GetEmpty(), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+			UnloadedClassOp->SetToolTip(FText::GetEmpty(), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 		}
 		else
 		{
-			UnloadedClassOp->SetToolTip(FText::GetEmpty(), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+			UnloadedClassOp->SetToolTip(FText::GetEmpty(), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 		}
 	}
 }
@@ -467,7 +467,7 @@ FReply SPropertyEditorClass::OnDrop(const FGeometry& MyGeometry, const FDragDrop
 		// Find the class/blueprint path
 		if (UnloadedClassOp->HasAssets())
 		{
-			AssetPath = UnloadedClassOp->GetAssets()[0].ObjectPath.ToString();
+			AssetPath = UnloadedClassOp->GetAssets()[0].GetObjectPathString();
 		}
 		else if (UnloadedClassOp->HasAssetPaths())
 		{

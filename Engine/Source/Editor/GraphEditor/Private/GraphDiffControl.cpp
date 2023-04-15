@@ -1,10 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GraphDiffControl.h"
+
+#include "Containers/Set.h"
+#include "DiffResults.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Engine/Blueprint.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/Guid.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 #define LOCTEXT_NAMESPACE "GraphDiffControl"
 
@@ -32,7 +47,7 @@ static void DiffR_NodeAdded( const FGraphDiffControl::FNodeDiffContext& DiffCont
 		Args.Add(TEXT("NodeTitle"), Node->GetNodeTitle(ENodeTitleType::ListView));
 		Diff.ToolTip =  FText::Format(LOCTEXT("DIF_AddNode", "Added {NodeType} '{NodeTitle}'"), Args);
 		Diff.DisplayString = Diff.ToolTip;
-		Diff.DisplayColor = FLinearColor(0.3f,1.0f,0.4f);
+		Diff.Category = EDiffType::ADDITION;
 	}
 	
 	Results.Add(Diff);
@@ -53,7 +68,7 @@ static void DiffR_NodeRemoved( const FGraphDiffControl::FNodeDiffContext& DiffCo
 		Args.Add(TEXT("NodeTitle"), Node->GetNodeTitle(ENodeTitleType::ListView));
 		Diff.ToolTip =  FText::Format(LOCTEXT("DIF_RemoveNode", "Removed {NodeType} '{NodeTitle}'"), Args);
 		Diff.DisplayString = Diff.ToolTip;
-		Diff.DisplayColor = FLinearColor(1.f,0.4f,0.4f);
+		Diff.Category = EDiffType::SUBTRACTION;
 	}
 
 	Results.Add(Diff);
@@ -75,7 +90,7 @@ static void DiffR_NodeCommentChanged(const FGraphDiffControl::FNodeDiffContext& 
 		Args.Add(TEXT("NodeTitle"), NewNode->GetNodeTitle(ENodeTitleType::ListView));
 		Diff.ToolTip =  FText::Format(LOCTEXT("DIF_CommentModified", "Comment Modified {NodeType} '{NodeTitle}'"), Args);
 		Diff.DisplayString = Diff.ToolTip;
-		Diff.DisplayColor = FLinearColor(0.25f,0.4f,0.5f);
+		Diff.Category = EDiffType::MINOR;
 	}
 
 	Results.Add(Diff);
@@ -86,6 +101,7 @@ static void DiffR_NodeMoved(const FGraphDiffControl::FNodeDiffContext& DiffConte
 {
 	FDiffSingleResult Diff;
 	Diff.Diff = EDiffType::NODE_MOVED;
+	Diff.Category = EDiffType::MINOR;
 	Diff.Node1 = OldNode;
 	Diff.Node2 = NewNode;
 
@@ -97,7 +113,6 @@ static void DiffR_NodeMoved(const FGraphDiffControl::FNodeDiffContext& DiffConte
 		Args.Add(TEXT("NodeTitle"), NewNode->GetNodeTitle(ENodeTitleType::ListView));
 		Diff.ToolTip = FText::Format(LOCTEXT("DIF_MoveNode", "Moved {NodeType} '{NodeTitle}'"), Args);
 		Diff.DisplayString = Diff.ToolTip;
-		Diff.DisplayColor = FLinearColor(0.9f, 0.84f, 0.43f);
 	}
 
 	Results.Add(Diff);
@@ -122,7 +137,7 @@ static void DiffR_PinTypeChanged(FDiffResults& Results, UEdGraphPin* NewPin, UEd
 		if(Results.CanStoreResults())
 		{
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinCategoryToolTipFmt", "Pin '{0}' Category was '{1}', but is now '{2}"), FText::FromName(NewPin->PinName), FText::FromName(OldPin->PinType.PinCategory), FText::FromName(NewPin->PinType.PinCategory));
-			Diff.DisplayColor = FLinearColor(0.15f,0.53f,0.15f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinCategoryFmt", "Pin Category '{0}' ['{1}' -> '{2}']"), FText::FromName(NewPin->PinName), FText::FromName(OldPin->PinType.PinCategory), FText::FromName(NewPin->PinType.PinCategory));
 		}
 	}
@@ -134,7 +149,7 @@ static void DiffR_PinTypeChanged(FDiffResults& Results, UEdGraphPin* NewPin, UEd
 		if(Results.CanStoreResults())
 		{
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinSubCategoryToolTipFmt", "Pin '{0}' SubCategory was '{1}', but is now '{2}"), FText::FromName(NewPin->PinName), FText::FromName(OldPin->PinType.PinSubCategory), FText::FromName(NewPin->PinType.PinSubCategory));
-			Diff.DisplayColor = FLinearColor(0.45f,0.53f,0.65f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinSubCategoryFmt", "Pin SubCategory '{0}'  ['{1}' -> '{2}']"), FText::FromName(NewPin->PinName), FText::FromName(OldPin->PinType.PinSubCategory), FText::FromName(NewPin->PinType.PinSubCategory));
 		}
 	}
@@ -150,7 +165,7 @@ static void DiffR_PinTypeChanged(FDiffResults& Results, UEdGraphPin* NewPin, UEd
 			const FName Obj2 = T2Obj->GetFName();
 
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinSubCategorObjToolTipFmt", "Pin '{0}' was SubCategoryObject '{1}', but is now '{2}"), FText::FromName(NewPin->PinName), FText::FromName(Obj1), FText::FromName(Obj2));
-			Diff.DisplayColor = FLinearColor(0.45f,0.13f,0.25f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinSubCategoryObjFmt", "Pin SubCategoryObject '{0}' ['{1}' -> '{2}']"), FText::FromName(NewPin->PinName), FText::FromName(Obj1), FText::FromName(Obj2));
 		}
 	}
@@ -167,7 +182,7 @@ static void DiffR_PinTypeChanged(FDiffResults& Results, UEdGraphPin* NewPin, UEd
 
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinIsArrayToolTipFmt", "PinType IsArray for '{0}' modified. Was '{1}', but is now '{2}"), FText::FromName(NewPin->PinName), IsArray1, IsArray2);
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinIsArrayFmt", "Pin IsArray '{0}' ['{1}' -> '{2}']"), FText::FromName(NewPin->PinName), IsArray1, IsArray2);
-			Diff.DisplayColor = FLinearColor(0.45f,0.33f,0.35f);
+			Diff.Category = EDiffType::MODIFICATION;
 		}
 	}
 	else if(Type1.bIsReference != Type2.bIsReference)
@@ -181,7 +196,7 @@ static void DiffR_PinTypeChanged(FDiffResults& Results, UEdGraphPin* NewPin, UEd
 			FText IsRef2 = NewPin->PinType.bIsReference ? LOCTEXT("true", "true") : LOCTEXT("false", "false");
 
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinIsRefToolTipFmt", "PinType IsReference for '{0}' modified. Was '{1}', but is now '{2}"), FText::FromName(NewPin->PinName), IsRef1, IsRef2);
-			Diff.DisplayColor = FLinearColor(0.25f,0.43f,0.35f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinIsRefFmt", "Pin IsReference '{0}' ['{1}' -> '{2}']"), FText::FromName(NewPin->PinName), IsRef1, IsRef2);
 		}
 	}
@@ -205,13 +220,13 @@ static void DiffR_PinLinkCountChanged(FDiffResults& Results, UEdGraphPin* NewPin
 		if(Diff.Diff == EDiffType::PIN_LINKEDTO_NUM_INC)
 		{
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinLinkCountIncToolTipFmt", "Pin '{0}' has more links (was {1} now {2})"), FText::FromName(OldPin->PinName), FText::AsNumber(OldPin->LinkedTo.Num()), FText::AsNumber(NewPin->LinkedTo.Num()));
-			Diff.DisplayColor = FLinearColor(0.5f,0.3f,0.85f);
+			Diff.Category = EDiffType::ADDITION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinLinkCountIncFmt", "Added Link to '{0}'"), FText::FromName(OldPin->PinName));
 		}
 		else
 		{
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinLinkCountDecToolTipFmt", "Pin '{0}' has fewer links (was {1} now {2})"), FText::FromName(OldPin->PinName), FText::AsNumber(OldPin->LinkedTo.Num()), FText::AsNumber(NewPin->LinkedTo.Num()));
-			Diff.DisplayColor = FLinearColor(0.5f,0.3f,0.85f);
+			Diff.Category = EDiffType::SUBTRACTION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinLinkCountDecFmt", "Removed Link to '{0}'"), FText::FromName(OldPin->PinName));
 		}
 	}
@@ -241,7 +256,7 @@ static void DiffR_LinkedToNode(FDiffResults& Results, UEdGraphPin* OldPin, UEdGr
 		Args.Add(TEXT("NodeName2"), Node2Name);
 		Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinLinkMovedToolTip", "Pin '{PinNameForNode1}' was linked to Node '{NodeName1}', but is now linked to Node '{NodeName2}'"), Args);
 
-		Diff.DisplayColor = FLinearColor(0.85f,0.71f,0.25f);
+		Diff.Category = EDiffType::MODIFICATION;
 		Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinLinkMoved", "Link Moved  '{PinNameForNode1}' ['{NodeName1}' -> '{NodeName2}']"), Args);
 	}
 
@@ -264,7 +279,7 @@ static void DiffR_PinDefaultValueChanged(FDiffResults& Results, UEdGraphPin* New
 		Args.Add(TEXT("PinValue1"), FText::FromString(OldPin->GetDefaultAsString()));
 		Args.Add(TEXT("PinValue2"), FText::FromString(NewPin->GetDefaultAsString()));
 		Diff.ToolTip = FText::Format(LOCTEXT("DIF_PinDefaultValueToolTip", "Pin '{PinNameForValue1}' Default Value was '{PinValue1}', but is now '{PinValue2}"), Args);
-		Diff.DisplayColor = FLinearColor(0.665f,0.13f,0.455f);
+		Diff.Category = EDiffType::MODIFICATION;
 		Diff.DisplayString = FText::Format(LOCTEXT("DIF_PinDefaultValue", "Pin Default '{PinNameForValue1}' '{PinValue1}' -> '{PinValue2}']"), Args);
 	}
 
@@ -289,7 +304,6 @@ static void DiffR_NodePinCount(FDiffResults& Results, UEdGraphNode* NewNode, UEd
 		Args.Add(TEXT("NodeName"), NodeName);
 		Args.Add(TEXT("OriginalCount"), OriginalCount);
 		Args.Add(TEXT("NewCount"), NewCount);
-		Diff.DisplayColor = FLinearColor(0.45f,0.4f,0.4f);
 
 		struct FMatchName
 		{
@@ -331,16 +345,19 @@ static void DiffR_NodePinCount(FDiffResults& Results, UEdGraphNode* NewNode, UEd
 		if (RemovedPins.Num() > 0 && AddedPins.Num() > 0)
 		{
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_NodePinsAddedAndRemoved", "Added and removed Pins from '{NodeName}'"), Args);
+			Diff.Category = EDiffType::ADDITION;
 		}
 		else if (AddedPins.Num() > 0)
 		{
 			if (AddedPins.Num() == 1)
 			{
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_NodePinCountIncreased", "Added Pin to '{NodeName}'"), Args);
+				Diff.Category = EDiffType::ADDITION;
 			}
 			else
 			{
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_NodePinCountIncreasedSeveral", "Added Pins to '{NodeName}'"), Args);
+				Diff.Category = EDiffType::ADDITION;
 			}
 		}
 		else if (RemovedPins.Num() > 0)
@@ -348,10 +365,12 @@ static void DiffR_NodePinCount(FDiffResults& Results, UEdGraphNode* NewNode, UEd
 			if (RemovedPins.Num() == 1)
 			{
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_NodePinCountDecreased", "Removed Pin from '{NodeName}'"), Args);
+				Diff.Category = EDiffType::SUBTRACTION;
 			}
 			else
 			{
 				Diff.DisplayString = FText::Format(LOCTEXT("DIF_NodePinCountDecreasedSeveral", "Removed Pins from '{NodeName}'"), Args);
+				Diff.Category = EDiffType::SUBTRACTION;
 			}
 		}
 
@@ -726,8 +745,11 @@ bool FGraphDiffControl::DiffGraphs(UEdGraph* const LhsGraph, UEdGraph* const Rhs
 
 FString FGraphDiffControl::GetGraphPath(UEdGraph* Graph)
 {
-	FString GraphPath;
-	if (UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
+	if (Graph == nullptr)
+	{
+		return FString();
+	}
+	else if (UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
 	{
 		return Graph->GetPathName(Blueprint);
 	}
@@ -735,11 +757,8 @@ FString FGraphDiffControl::GetGraphPath(UEdGraph* Graph)
 	{
 		return Graph->GetPathName(Package);
 	}
-	else if (Graph)
-	{
-		return Graph->GetName();
-	}
-	return FString();
+	
+	return Graph->GetName();
 }
 
 #undef LOCTEXT_NAMESPACE

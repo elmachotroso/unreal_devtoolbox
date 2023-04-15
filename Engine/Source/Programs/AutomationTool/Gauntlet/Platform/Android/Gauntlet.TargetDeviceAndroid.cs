@@ -982,18 +982,17 @@ namespace Gauntlet
 
 				Build.FilesToInstall.Keys.ToList().ForEach(K =>
 				{
-
 					string SrcPath = K;
-					string DestPath = Build.FilesToInstall[K];
+					string SrcFile = Path.GetFileName(SrcPath);
 
+					string DestPath = Build.FilesToInstall[K];
 					string DestFile = Path.GetFileName(DestPath);
 
 					// If we installed a new APK we need to change the package version
-					Match OBBMatch = Regex.Match(DestFile, @"\.(\d+)\.com.*\.obb");
+					Match OBBMatch = Regex.Match(SrcFile, @"\.(\d+)\.com.*\.obb");
 					if (OBBMatch.Success)
 					{
-						string NewFileName = DestFile.Replace(OBBMatch.Groups[1].ToString(), PackageVersion);
-						DestPath = DestPath.Replace(DestFile, NewFileName);
+						DestPath = StorageLocation + "/obb/" + Build.AndroidPackageName + "/" + SrcFile.Replace(".Client.obb", ".obb").Replace(OBBMatch.Groups[1].ToString(), PackageVersion);
 					}
 
 					DestPath = Regex.Replace(DestPath, "%STORAGE%", StorageLocation, RegexOptions.IgnoreCase);
@@ -1294,6 +1293,10 @@ namespace Gauntlet
 					Log.Info("Using adb keys at {0}", KeyPath);
 
 					string LocalKeyPath = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE"), ".android");
+					if(!Directory.Exists(LocalKeyPath))
+					{
+						Directory.CreateDirectory(LocalKeyPath);
+					}
 
 					string RemoteKeyFile = Path.Combine(KeyPath, "adbkey");
 					string RemotePubKeyFile = Path.Combine(KeyPath, "adbkey.pub");

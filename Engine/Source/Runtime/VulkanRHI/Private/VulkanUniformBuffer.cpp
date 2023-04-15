@@ -113,39 +113,49 @@ FVulkanUniformBuffer::FVulkanUniformBuffer(FVulkanDevice& Device, const FRHIUnif
 		// Transfer the resource table to an internal resource-array
 		ResourceTable.Empty(NumResources);
 		ResourceTable.AddZeroed(NumResources);
-		for (uint32 Index = 0; Index < NumResources; ++Index)
+
+		if (Contents)
 		{
-			ResourceTable[Index] = GetShaderParameterResourceRHI(Contents, InLayout->Resources[Index].MemberOffset, InLayout->Resources[Index].MemberType);
+			for (uint32 Index = 0; Index < NumResources; ++Index)
+			{
+				ResourceTable[Index] = GetShaderParameterResourceRHI(Contents, InLayout->Resources[Index].MemberOffset, InLayout->Resources[Index].MemberType);
+			}
 		}
 	}
 
 	if (InLayout->ConstantBufferSize > 0)
 	{
-		if (UseRingBuffer(InUsage))
-		{
-			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-			FVulkanUniformBuffer* UniformBuffer = this;
-			int32 DataSize = InLayout->ConstantBufferSize;
-			
-			// make sure we allocate from RingBuffer on RHIT
-			const bool bCanAllocOnThisThread = RHICmdList.Bypass() || (!IsRunningRHIInSeparateThread() && IsInRenderingThread()) || IsInRHIThread();
-			if (bCanAllocOnThisThread)
-			{
-				FVulkanCommandListContextImmediate& Context = Device.GetImmediateContext();
-				UpdateUniformBufferHelper(Context, UniformBuffer, DataSize, Contents);
-			}
-			else
-			{
-				void* CmdListConstantBufferData = RHICmdList.Alloc(DataSize, 16);
-				FMemory::Memcpy(CmdListConstantBufferData, Contents, DataSize);
-				
-				RHICmdList.EnqueueLambda([UniformBuffer, DataSize, CmdListConstantBufferData](FRHICommandList& CmdList)
-				{
-					FVulkanCommandListContext& Context = FVulkanCommandListContext::GetVulkanContext(CmdList.GetContext());
-					UpdateUniformBufferHelper(Context, UniformBuffer, DataSize, CmdListConstantBufferData);
-				});
+		const bool bInRenderingThread = IsInRenderingThread();
+		const bool bInRHIThread = IsInRHIThread();
 
-				RHICmdList.RHIThreadFence(true);
+		if (UseRingBuffer(InUsage) && (bInRenderingThread || bInRHIThread))
+		{
+			if (Contents)
+			{
+				FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+				FVulkanUniformBuffer* UniformBuffer = this;
+				int32 DataSize = InLayout->ConstantBufferSize;
+
+				// make sure we allocate from RingBuffer on RHIT
+				const bool bCanAllocOnThisThread = RHICmdList.Bypass() || (!IsRunningRHIInSeparateThread() && bInRenderingThread) || bInRHIThread;
+				if (bCanAllocOnThisThread)
+				{
+					FVulkanCommandListContextImmediate& Context = Device.GetImmediateContext();
+					UpdateUniformBufferHelper(Context, UniformBuffer, DataSize, Contents);
+				}
+				else
+				{
+					void* CmdListConstantBufferData = RHICmdList.Alloc(DataSize, 16);
+					FMemory::Memcpy(CmdListConstantBufferData, Contents, DataSize);
+
+					RHICmdList.EnqueueLambda([UniformBuffer, DataSize, CmdListConstantBufferData](FRHICommandList& CmdList)
+					{
+						FVulkanCommandListContext& Context = FVulkanCommandListContext::GetVulkanContext(CmdList.GetContext());
+						UpdateUniformBufferHelper(Context, UniformBuffer, DataSize, CmdListConstantBufferData);
+					});
+
+					RHICmdList.RHIThreadFence(true);
+				}
 			}
 		}
 		else
@@ -191,17 +201,14 @@ FUniformBufferRHIRef FVulkanDynamicRHI::RHICreateUniformBuffer(const void* Conte
 	return new FVulkanUniformBuffer(*Device, Layout, Contents, Usage, Validation);
 }
 
-inline void FVulkanDynamicRHI::UpdateUniformBuffer(FVulkanUniformBuffer* UniformBuffer, const void* Contents)
+inline void FVulkanDynamicRHI::UpdateUniformBuffer(FRHICommandListBase& RHICmdList, FVulkanUniformBuffer* UniformBuffer, const void* Contents)
 {
 	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateUniformBuffers);
-	check(IsInRenderingThread());
 
 	const FRHIUniformBufferLayout& Layout = UniformBuffer->GetLayout();
 
 	const int32 ConstantBufferSize = Layout.ConstantBufferSize;
 	const int32 NumResources = Layout.Resources.Num();
-
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
 	FVulkanAllocation NewUBAlloc;
 	bool bUseUpload = GVulkanAllowUniformUpload && !RHICmdList.IsInsideRenderPass(); //inside renderpasses, a rename is enforced.
@@ -253,7 +260,15 @@ inline void FVulkanDynamicRHI::UpdateUniformBuffer(FVulkanUniformBuffer* Uniform
 			void* CmdListConstantBufferData = RHICmdList.Alloc(ConstantBufferSize, 16);
 			FMemory::Memcpy(CmdListConstantBufferData, Contents, ConstantBufferSize);
 
-			RHICmdList.EnqueueLambda([UniformBuffer, CmdListResources, NumResources, ConstantBufferSize, CmdListConstantBufferData](FRHICommandList& CmdList)
+			FVulkanCommandListContextImmediate* Context = &Device->GetImmediateContext();
+
+			// When we don't use the ring buffer, we'll need an active pipeline for a copy
+			if (!bUseRingBuffer && (RHICmdList.GetPipeline() == ERHIPipeline::None))
+			{
+				RHICmdList.SwitchPipeline(ERHIPipeline::Graphics);
+			}
+
+			RHICmdList.EnqueueLambda([UniformBuffer, CmdListResources, NumResources, ConstantBufferSize, CmdListConstantBufferData](FRHICommandListBase& CmdList)
 			{
 				FVulkanCommandListContext& Context = (FVulkanCommandListContext&)CmdList.GetContext().GetLowestLevelContext();
 				UpdateUniformBufferHelper(Context, UniformBuffer, ConstantBufferSize, CmdListConstantBufferData);
@@ -263,7 +278,7 @@ inline void FVulkanDynamicRHI::UpdateUniformBuffer(FVulkanUniformBuffer* Uniform
 		else
 		{
 			NewUBAlloc.Disown(); //this releases ownership while its put into the lambda
-			RHICmdList.EnqueueLambda([UniformBuffer, NewUBAlloc, CmdListResources, NumResources](FRHICommandList& CmdList)
+			RHICmdList.EnqueueLambda([UniformBuffer, NewUBAlloc, CmdListResources, NumResources](FRHICommandListBase& CmdList)
 			{
 				FVulkanAllocation Alloc;
 				Alloc.Reference(NewUBAlloc);
@@ -279,10 +294,10 @@ inline void FVulkanDynamicRHI::UpdateUniformBuffer(FVulkanUniformBuffer* Uniform
 }
 
 
-void FVulkanDynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
+void FVulkanDynamicRHI::RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
 {
 	FVulkanUniformBuffer* UniformBuffer = ResourceCast(UniformBufferRHI);
-	UpdateUniformBuffer(UniformBuffer, Contents);
+	UpdateUniformBuffer(RHICmdList, UniformBuffer, Contents);
 }
 
 FVulkanUniformBufferUploader::FVulkanUniformBufferUploader(FVulkanDevice* InDevice)
@@ -313,3 +328,51 @@ FVulkanUniformBufferUploader::~FVulkanUniformBufferUploader()
 }
 
 
+FVulkanRingBuffer::FVulkanRingBuffer(FVulkanDevice* InDevice, uint64 TotalSize, VkFlags Usage, VkMemoryPropertyFlags MemPropertyFlags)
+	: VulkanRHI::FDeviceChild(InDevice)
+	, BufferSize(TotalSize)
+	, BufferOffset(0)
+	, MinAlignment(0)
+{
+	check(TotalSize <= (uint64)MAX_uint32);
+	InDevice->GetMemoryManager().AllocateBufferPooled(Allocation, nullptr, TotalSize, 0, Usage, MemPropertyFlags, EVulkanAllocationMetaRingBuffer, __FILE__, __LINE__);
+	MinAlignment = Allocation.GetBufferAlignment(Device);
+	// Start by wrapping around to set up the correct fence
+	BufferOffset = TotalSize;
+}
+
+FVulkanRingBuffer::~FVulkanRingBuffer()
+{
+	Device->GetMemoryManager().FreeVulkanAllocation(Allocation);
+}
+
+uint64 FVulkanRingBuffer::WrapAroundAllocateMemory(uint64 Size, uint32 Alignment, FVulkanCmdBuffer* InCmdBuffer)
+{
+	CA_ASSUME(InCmdBuffer != nullptr); // Suppress static analysis warning
+	uint64 AllocationOffset = Align<uint64>(BufferOffset, Alignment);
+	ensure(AllocationOffset + Size > BufferSize);
+
+	// Check to see if we can wrap around the ring buffer
+	if (FenceCmdBuffer)
+	{
+		if (FenceCounter == FenceCmdBuffer->GetFenceSignaledCounterI())
+		{
+			//if (FenceCounter == FenceCmdBuffer->GetSubmittedFenceCounter())
+			{
+				//UE_LOG(LogVulkanRHI, Error, TEXT("Ringbuffer overflow during the same cmd buffer!"));
+			}
+			//else
+			{
+				//UE_LOG(LogVulkanRHI, Error, TEXT("Wrapped around the ring buffer! Waiting for the GPU..."));
+				//Device->GetImmediateContext().GetCommandBufferManager()->WaitForCmdBuffer(FenceCmdBuffer, 0.5f);
+			}
+		}
+	}
+
+	BufferOffset = Size;
+
+	FenceCmdBuffer = InCmdBuffer;
+	FenceCounter = InCmdBuffer->GetSubmittedFenceCounter();
+
+	return 0;
+}

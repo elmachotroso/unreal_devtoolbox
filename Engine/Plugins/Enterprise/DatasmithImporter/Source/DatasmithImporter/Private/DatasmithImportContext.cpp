@@ -151,7 +151,7 @@ void FDatasmithImportOptionHelper::LoadOptions(const TArray<UObject*>& ImportOpt
 					FString PropertyValue = OptionDataJsonObject->GetStringField((*It)->GetNameCPP());
 					uint8* PropertyAddr = (*It)->ContainerPtrToValuePtr<uint8>(Object);
 
-					(*It)->ImportText(*PropertyValue, PropertyAddr, 0, Object);
+					(*It)->ImportText_Direct(*PropertyValue, PropertyAddr, Object, 0);
 				}
 			}
 		}
@@ -230,7 +230,7 @@ FDatasmithImportContext::FDatasmithImportContext(const TSharedPtr<UE::DatasmithI
 		{
 			SceneTranslator->GetSceneImportOptions(AdditionalImportOptions);
 		}
-		
+
 		const FString FileName = InExternalSource->GetFallbackFilepath();
 		Options->FileName = FPaths::GetCleanFilename(FileName);
 		Options->FilePath = FPaths::ConvertRelativePathToFull(FileName);
@@ -259,11 +259,11 @@ void FDatasmithImportContext::UpdateImportOption(UDatasmithOptionsBase* NewOptio
 {
 	if (NewOption)
 	{
-		auto SameClass = [=](const TStrongObjectPtr<UDatasmithOptionsBase>& Option) { return Option->GetClass() == NewOption->GetClass(); };
+		auto SameClass = [=](const TObjectPtr<UDatasmithOptionsBase>& Option) { return Option->GetClass() == NewOption->GetClass(); };
 
-		if (TStrongObjectPtr<UDatasmithOptionsBase>* PreviousOptionPtr = AdditionalImportOptions.FindByPredicate(SameClass))
+		if (TObjectPtr<UDatasmithOptionsBase>* PreviousOptionPtr = AdditionalImportOptions.FindByPredicate(SameClass))
 		{
-			PreviousOptionPtr->Reset(NewOption);
+			*PreviousOptionPtr = NewOption;
 		}
 		else
 		{
@@ -320,9 +320,9 @@ bool FDatasmithImportContext::InitOptions(const TSharedPtr<FJsonObject>& ImportS
 	ImportOptions.Reserve(1 + AdditionalImportOptions.Num());
 
 	ImportOptions.Add(Options.Get());
-	for (const TStrongObjectPtr<UDatasmithOptionsBase>& AdditionalOption : AdditionalImportOptions)
+	for (const TObjectPtr<UDatasmithOptionsBase>& AdditionalOption : AdditionalImportOptions)
 	{
-		ImportOptions.Add(AdditionalOption.Get());
+		ImportOptions.Add(AdditionalOption);
 	}
 
 	if (bSilent)
@@ -397,7 +397,7 @@ bool FDatasmithImportContext::SetupDestination(const FString& InImportPath, EObj
 			{
 				// Check to see if there are unsaved data and user wants to save them
 				// Import will abort if user selects cancel on Save dialog
-				bool bPromptUserToSave = true; // Ask user if he/she wants to save the unsaved data
+				bool bPromptUserToSave = true; // Ask user if they want to save the unsaved data
 				bool bSaveMapPackages = true;
 				bool bSaveContentPackages = true;
 				if (FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages) == false)
@@ -555,6 +555,11 @@ void FDatasmithImportContext::FInternalReferenceCollector::AddReferencedObjects(
 		Collector.AddReferencedObject( It->Value );
 	}
 
+	for (auto& Pair : ImportContext->ImportedClothes)
+	{
+		Collector.AddReferencedObject(Pair.Value);
+	}
+
 	Collector.AddReferencedObjects(ImportContext->ImportedMaterials);
 	Collector.AddReferencedObjects(ImportContext->ImportedParentMaterials);
 
@@ -576,6 +581,12 @@ void FDatasmithImportContext::FInternalReferenceCollector::AddReferencedObjects(
 
 	DatasmithImportContextInternal::AddReferenceList(Collector, ImportContext->ImportedActorMap);
 	DatasmithImportContextInternal::AddReferenceList(Collector, ImportContext->ImportedSceneComponentMap);
+
+	Collector.AddReferencedObject(ImportContext->Options);
+	for (TObjectPtr<UDatasmithOptionsBase>& Option : ImportContext->AdditionalImportOptions)
+	{
+		Collector.AddReferencedObject(Option);
+	}
 }
 
 FDatasmithActorUniqueLabelProvider::FDatasmithActorUniqueLabelProvider(UWorld* World)
@@ -654,10 +665,10 @@ void FDatasmithAssetsImportContext::ReInit(const FString& NewRootFolder)
 	MaterialsImportPackage.Reset( NewObject< UPackage >( nullptr, *FPaths::Combine( TransientFolderPath, TEXT("Materials") ), RF_Transient ) );
 	MaterialsImportPackage->FullyLoad();
 
-	MasterMaterialsImportPackage.Reset(NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/Master")), RF_Transient));
-	MasterMaterialsImportPackage->FullyLoad();
+	ReferenceMaterialsImportPackage.Reset(NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/References")), RF_Transient));
+	ReferenceMaterialsImportPackage->FullyLoad();
 
-	MaterialFunctionsImportPackage.Reset( NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/Master/Functions")), RF_Transient));
+	MaterialFunctionsImportPackage.Reset( NewObject< UPackage >(nullptr, *FPaths::Combine(TransientFolderPath, TEXT("Materials/References/Functions")), RF_Transient));
 	MaterialFunctionsImportPackage->FullyLoad();
 
 	LevelSequencesImportPackage.Reset( NewObject< UPackage >( nullptr, *FPaths::Combine( TransientFolderPath, TEXT("Animations") ), RF_Transient ) );

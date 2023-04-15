@@ -1,19 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/ExportPakDependencies.h"
-#include "AssetRegistryModule.h"
-#include "Containers/Set.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/Array.h"
-#include "Dom/JsonValue.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "Dom/JsonObject.h"
-#include "Serialization/JsonWriter.h"
-#include "Serialization/JsonSerializer.h"
+#include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
-#include "IPlatformFilePak.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/PlatformFileManager.h"
-#include "Misc/CommandLine.h"
-#include "Misc/Paths.h"
+#include "HAL/PlatformMath.h"
+#include "IPlatformFilePak.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Modules/ModuleManager.h"
+#include "Policies/PrettyJsonPrintPolicy.h"
+#include "Serialization/Archive.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Templates/RefCounting.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
 
 struct FPackage
 {
@@ -104,8 +121,8 @@ public:
 		TSharedPtr<FJsonObject> JsonPackageObject = MakeShareable(new FJsonObject);
 		
 		JsonPackageObject->SetStringField(TEXT("Name"),*Name.ToString());
-		JsonPackageObject->SetNumberField(TEXT("InclusiveSize"),InclusiveSize);
-		JsonPackageObject->SetNumberField(TEXT("ExclusiveSize"),ExclusiveSize);
+		JsonPackageObject->SetNumberField(TEXT("InclusiveSize"),static_cast<double>(InclusiveSize));
+		JsonPackageObject->SetNumberField(TEXT("ExclusiveSize"),static_cast<double>(ExclusiveSize));
 
 		JsonPackageObject->SetArrayField(TEXT("DirectlyReferencing"),ToJsonHelper(DirectlyReferencing));
 		JsonPackageObject->SetArrayField(TEXT("DirectlyReferencedBy"),ToJsonHelper(DirectlyReferencedBy));
@@ -155,7 +172,7 @@ bool ExportDependencies(const TCHAR * PakFilename, const TCHAR* GameName, const 
 			}
 		}
 
-		TMap<FName,FName> PackageToClassMap;
+		TMap<FName, FTopLevelAssetPath> PackageToClassMap;
 
 		// Combine with dependency information from asset registry.
 		{
@@ -169,7 +186,7 @@ bool ExportDependencies(const TCHAR * PakFilename, const TCHAR* GameName, const 
 			for( int i=0; i<AssetData.Num(); i++ )
 			{
 				PackageNames.Add(AssetData[i].PackageName);
-				PackageToClassMap.Add(AssetData[i].PackageName,AssetData[i].AssetClass);
+				PackageToClassMap.Add(AssetData[i].PackageName,AssetData[i].AssetClassPath);
 			}
 
 			for( const auto& PackageName : PackageNames )
@@ -241,7 +258,7 @@ bool ExportDependencies(const TCHAR * PakFilename, const TCHAR* GameName, const 
 				CSVFileWriter->Logf(TEXT("class,name,inclusive,exclusive"));
 				for(auto Package : AllPackages)
 				{
-					FName ClassName = PackageToClassMap.FindRef(Package->Name);
+					FTopLevelAssetPath ClassName = PackageToClassMap.FindRef(Package->Name);
 					CSVFileWriter->Logf(TEXT("%s,%s,%i,%i"),*ClassName.ToString(),*Package->Name.ToString(),Package->InclusiveSize,Package->ExclusiveSize);
 				}
 				CSVFileWriter->Close();

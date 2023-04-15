@@ -28,6 +28,7 @@ FPreAnimatedStateExtension::FPreAnimatedStateExtension()
 void FPreAnimatedStateExtension::Initialize(UMovieSceneEntitySystemLinker* InLinker)
 {
 	Linker = InLinker;
+	InLinker->Events.AddReferencedObjects.AddRaw(this, &FPreAnimatedStateExtension::AddReferencedObjects);
 }
 
 FPreAnimatedStateExtension::~FPreAnimatedStateExtension()
@@ -386,6 +387,12 @@ void FPreAnimatedStateExtension::RestoreGlobalState(const FRestoreStateParams& P
 
 	GroupMetaData.Shrink();
 
+	// Invalidate cached data for any sequence instance that belongs to the terminal instance
+	if (Params.TerminalInstanceHandle.IsValid())
+	{
+		Linker->GetInstanceRegistry()->MutateInstance(Params.TerminalInstanceHandle).InvalidateCachedData(Linker);
+	}
+
 	bEntriesInvalidated = true;
 }
 
@@ -459,7 +466,7 @@ void FPreAnimatedStateExtension::DiscardStateForGroup(FPreAnimatedStorageGroupHa
 	bEntriesInvalidated = true;
 }
 
-bool FPreAnimatedStateExtension::ContainsAnyStateForInstanceHandle(FInstanceHandle RootInstanceHandle) const
+bool FPreAnimatedStateExtension::ContainsAnyStateForInstanceHandle(FRootInstanceHandle RootInstanceHandle) const
 {
 	if (FPreAnimatedEntityCaptureSource* EntityMetaData = GetEntityMetaData())
 	{
@@ -484,12 +491,16 @@ bool FPreAnimatedStateExtension::ContainsAnyStateForInstanceHandle(FInstanceHand
 bool FPreAnimatedStateExtension::HasActiveCaptureSource() const
 {
 	FScopedPreAnimatedCaptureSource* CaptureSource = FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr();
+	ensureMsgf(!CaptureSource || CaptureSource->WeakLinker.Get() == Linker,
+			TEXT("The current capture source is related to a different linker. Are you missing setting a scope capture source?"));
 	return (CaptureSource && CaptureSource->bWantsRestoreState);
 }
 
 bool FPreAnimatedStateExtension::ShouldCaptureAnyState() const
 {
 	FScopedPreAnimatedCaptureSource* CaptureSource = FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr();
+	ensureMsgf(!CaptureSource || CaptureSource->WeakLinker.Get() == Linker,
+			TEXT("The current capture source is related to a different linker. Are you missing setting a scope capture source?"));
 	return (CaptureSource && CaptureSource->bWantsRestoreState) || IsCapturingGlobalState();
 }
 
@@ -498,6 +509,8 @@ void FPreAnimatedStateExtension::AddSourceMetaData(const UE::MovieScene::FPreAni
 	using namespace UE::MovieScene;
 
 	FScopedPreAnimatedCaptureSource* CaptureSource = FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr();
+	ensureMsgf(!CaptureSource || CaptureSource->WeakLinker.Get() == Linker,
+			TEXT("The current capture source is related to a different linker. Are you missing setting a scope capture source?"));
 	if (!CaptureSource)
 	{
 		EnsureMetaData(Entry);
@@ -596,6 +609,14 @@ void FPreAnimatedStateExtension::SavePreAnimatedStateDirectly(FMovieSceneAnimTyp
 
 			MasterStorage->AssignPreAnimatedValue(StorageIndex, Requirement, MoveTemp(Token));
 		}
+	}
+}
+
+void FPreAnimatedStateExtension::AddReferencedObjects(UMovieSceneEntitySystemLinker*, FReferenceCollector& ReferenceCollector)
+{
+	for (TPair<FPreAnimatedStorageID, TSharedPtr<IPreAnimatedStorage>>& Pair : StorageImplementations)
+	{
+		Pair.Value->AddReferencedObjects(ReferenceCollector);
 	}
 }
 

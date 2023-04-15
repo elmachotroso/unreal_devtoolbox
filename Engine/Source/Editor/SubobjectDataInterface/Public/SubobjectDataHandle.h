@@ -3,7 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectMacros.h"
+
 #include "SubobjectDataHandle.generated.h"
 
 struct FSubobjectData;
@@ -67,4 +72,13 @@ struct SUBOBJECTDATAINTERFACE_API FSubobjectDataHandle
 private:
 	/** Pointer to the actual subobject data that this handle represents */
 	TSharedPtr<FSubobjectData> DataPtr;
+};
+
+template<>
+struct TStructOpsTypeTraits<FSubobjectDataHandle> : public TStructOpsTypeTraitsBase2<FSubobjectDataHandle>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+	};
 };

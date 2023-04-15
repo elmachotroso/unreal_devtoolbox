@@ -7,6 +7,7 @@ using System.Text;
 using EpicGames.Core;
 using System.IO;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -29,6 +30,11 @@ namespace UnrealBuildTool
 			/// Is the platform enabled on this host platform
 			/// </summary>
 			public bool bIsEnabled = false;
+
+			/// <summary>
+			/// If true, this platform can stage the crashreporter
+			/// </summary>
+			public bool bCanUseCrashReporter = false;
 
 			/// <summary>
 			/// Additional restricted folders for this platform.
@@ -114,6 +120,12 @@ namespace UnrealBuildTool
 							if (ParsedSection.TryGetValue("bIsConfidential", out Temp))
 							{
 								ConfigHierarchy.TryParse(Temp, out NewInfo.bIsConfidential);
+							}
+							// unspecified means true for this property
+							NewInfo.bCanUseCrashReporter = true;
+							if (ParsedSection.TryGetValue("bCanUseCrashReporter", out Temp))
+							{
+								ConfigHierarchy.TryParse(Temp, out NewInfo.bCanUseCrashReporter);
 							}
 
 							string HostKey = ConfigHierarchy.GetIniPlatformName(BuildHostPlatform.Current.Platform) + ":bIsEnabled";

@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "ReflectionEnvironment.h"
+#include "Components/ReflectionCaptureComponent.h"
 #include "Stats/Stats.h"
 #include "HAL/IConsoleManager.h"
 #include "RHI.h"
@@ -188,6 +189,250 @@ void FReflectionEnvironmentCubemapArray::ReleaseDynamicRHI()
 	ReleaseCubeArray();
 }
 
+
+const FCaptureComponentSceneState* FReflectionCaptureCache::Find(const FGuid& MapBuildDataId) const
+{
+	const FReflectionCaptureCacheEntry* Entry = CaptureData.Find(MapBuildDataId);
+	if (Entry == nullptr)
+		return nullptr;
+
+	return &(Entry->SceneState);
+}
+
+FCaptureComponentSceneState* FReflectionCaptureCache::Find(const FGuid& MapBuildDataId)
+{
+	FReflectionCaptureCacheEntry* Entry = CaptureData.Find(MapBuildDataId);
+	if (Entry == nullptr)
+		return nullptr;
+
+	return &(Entry->SceneState);
+}
+
+const FCaptureComponentSceneState* FReflectionCaptureCache::Find(const UReflectionCaptureComponent* Component) const
+{
+	if (!Component)	// Intentionally not IsValid(Component), as this often occurs when Component is explicitly PendingKill.
+		return nullptr;
+
+	const FCaptureComponentSceneState* SceneState = Find(Component->MapBuildDataId);
+	if (SceneState)
+	{
+		return SceneState;
+	}
+
+	const FGuid* Guid = RegisteredComponentMapBuildDataIds.Find(Component);
+	if (Guid)
+	{
+		return Find(*Guid);
+	}
+
+	return nullptr;
+}
+
+FCaptureComponentSceneState* FReflectionCaptureCache::Find(const UReflectionCaptureComponent* Component)
+{
+	if (!Component)	// Intentionally not IsValid(Component), as this often occurs when Component is explicitly PendingKill.
+		return nullptr;
+
+	FCaptureComponentSceneState* SceneState = Find(Component->MapBuildDataId);
+	if (SceneState)
+	{
+		return SceneState;
+	}
+
+	const FGuid* Guid = RegisteredComponentMapBuildDataIds.Find(Component);
+	if (Guid)
+	{
+		return Find(*Guid);
+	}
+	return nullptr;
+}
+
+
+const FCaptureComponentSceneState& FReflectionCaptureCache::FindChecked(const UReflectionCaptureComponent* Component) const
+{
+	const FCaptureComponentSceneState* Found = Find(Component);
+	check(Found);
+
+	return *Found;
+}
+
+FCaptureComponentSceneState& FReflectionCaptureCache::FindChecked(const UReflectionCaptureComponent* Component)
+{
+	FCaptureComponentSceneState* Found = Find(Component);
+	check(Found);
+
+	return *Found;
+}
+
+FCaptureComponentSceneState& FReflectionCaptureCache::Add(const UReflectionCaptureComponent* Component, const FCaptureComponentSceneState& Value)
+{
+	// During Reflection Capture Placement in editor, this is potentially not IsValid
+	//  So just check to make sure that the pointer is non-null
+	check(Component)
+
+	FCaptureComponentSceneState* Existing = AddReference(Component);
+	if (Existing != nullptr)
+	{
+		return *Existing;
+	}
+	else
+	{
+		FReflectionCaptureCacheEntry& Entry = CaptureData.Add(Component->MapBuildDataId, { 1, Value });
+		RegisterComponentMapBuildDataId(Component);
+		return Entry.SceneState;
+	}
+}
+
+FCaptureComponentSceneState* FReflectionCaptureCache::AddReference(const UReflectionCaptureComponent* Component)
+{
+	// During Reflection Capture Placement in editor, this is potentially not IsValid
+	//  So just check to make sure that the pointer is non-null
+	check(Component)
+
+	bool Remap = RemapRegisteredComponentMapBuildDataId(Component);
+	FReflectionCaptureCacheEntry* Found = CaptureData.Find(Component->MapBuildDataId);
+	if (Found == nullptr)
+		return nullptr;
+
+	// Should not add reference count if this is caused by capture rebuilt
+	if (!Remap)
+	{
+		Found->RefCount += 1;
+	}
+
+	return &(Found->SceneState);
+}
+
+int32 FReflectionCaptureCache::GetKeys(TArray<FGuid>& OutKeys) const
+{
+	return CaptureData.GetKeys(OutKeys);
+}
+
+int32 FReflectionCaptureCache::GetKeys(TSet<FGuid>& OutKeys) const
+{
+	return CaptureData.GetKeys(OutKeys);
+}
+
+void FReflectionCaptureCache::Empty()
+{
+	CaptureData.Empty();
+	RegisteredComponentMapBuildDataIds.Empty();
+}
+
+int32 FReflectionCaptureCache::Prune(const TSet<FGuid> KeysToKeep, TArray<int32>& ReleasedIndices)
+{
+	TSet<FGuid> ExistingKeys;
+	CaptureData.GetKeys(ExistingKeys);
+
+	TSet<FGuid> KeysToRemove = ExistingKeys.Difference(KeysToKeep);
+	ReleasedIndices.Empty();
+	ReleasedIndices.Reserve(KeysToRemove.Num());
+
+	for (const FGuid& Key : KeysToRemove)
+	{
+		FReflectionCaptureCacheEntry* Found = CaptureData.Find(Key);
+		if (Found == nullptr)
+			continue;
+
+		int32 CubemapIndex = Found->SceneState.CubemapIndex;
+		if (CubemapIndex != -1)
+			ReleasedIndices.Add(CubemapIndex);
+
+		CaptureData.Remove(Key);
+	}
+
+	return ReleasedIndices.Num();
+}
+
+bool FReflectionCaptureCache::Remove(const UReflectionCaptureComponent* Component)
+{
+	if (!Component)	// Intentionally not IsValid(Component), as this often occurs when Component is explicitly PendingKill.
+		return false;
+
+	RemapRegisteredComponentMapBuildDataId(Component);
+	FReflectionCaptureCacheEntry* Found = CaptureData.Find(Component->MapBuildDataId);
+	if (Found == nullptr)
+		return false;
+
+	if (Found->RefCount > 1)
+	{
+		Found->RefCount -= 1;
+		return false;
+	}
+	else
+	{
+		CaptureData.Remove(Component->MapBuildDataId);
+		UnregisterComponentMapBuildDataId(Component);
+		return true;
+	}
+}
+
+void FReflectionCaptureCache::RegisterComponentMapBuildDataId(const UReflectionCaptureComponent* Component)
+{
+	RegisteredComponentMapBuildDataIds.Add(Component, Component->MapBuildDataId);
+}
+
+bool FReflectionCaptureCache::RemapRegisteredComponentMapBuildDataId(const UReflectionCaptureComponent* Component)
+{
+	check(Component);
+
+	// Remap old guid to new guid when the component is the same pointer.
+	FGuid* OldBuildId = RegisteredComponentMapBuildDataIds.Find(Component);
+	if (OldBuildId &&
+		*OldBuildId != Component->MapBuildDataId)
+	{
+		FGuid OldBuildIdCopy = *OldBuildId;
+		const FReflectionCaptureCacheEntry* Current = CaptureData.Find(OldBuildIdCopy);
+		if (Current == nullptr)
+			return false; // No current entry to remap to, so no remap to perform
+
+		// Remap all pointers that point to the old guid to the new one.
+		int32 ReferenceCount = 0;
+		for (TPair<const UReflectionCaptureComponent*, FGuid>& item : RegisteredComponentMapBuildDataIds)
+		{
+			if (item.Value == OldBuildIdCopy)
+			{
+				item.Value = Component->MapBuildDataId;
+				ReferenceCount++;
+			}
+		}
+
+		FReflectionCaptureCacheEntry Entry = *Current;
+		Entry.RefCount = ReferenceCount;
+
+		CaptureData.Remove(OldBuildIdCopy);
+		CaptureData.Shrink();
+		CaptureData.Add(Component->MapBuildDataId, Entry);
+
+		return true;
+	}
+
+	return false;
+}
+
+void FReflectionCaptureCache::UnregisterComponentMapBuildDataId(const UReflectionCaptureComponent* Component)
+{
+	RegisteredComponentMapBuildDataIds.Remove(Component);
+}
+
+void FReflectionEnvironmentSceneData::SetGameThreadTrackingData(int32 MaxAllocatedCubemaps, int32 CaptureSize, int32 DesiredCaptureSize)
+{
+	MaxAllocatedReflectionCubemapsGameThread = MaxAllocatedCubemaps;
+	ReflectionCaptureSizeGameThread = CaptureSize;
+	DesiredReflectionCaptureSizeGameThread = DesiredCaptureSize;
+}
+
+bool FReflectionEnvironmentSceneData::DoesAllocatedDataNeedUpdate(int32 DesiredMaxCubemaps, int32 DesiredCaptureSize) const
+{
+	if (DesiredMaxCubemaps != MaxAllocatedReflectionCubemapsGameThread)
+		return true;
+
+	if (DesiredCaptureSize != ReflectionCaptureSizeGameThread)
+		return true;
+
+	return false;
+}
+
 void FReflectionEnvironmentSceneData::ResizeCubemapArrayGPU(uint32 InMaxCubemaps, int32 InCubemapSize)
 {
 	check(IsInRenderingThread());
@@ -221,7 +466,7 @@ void FReflectionEnvironmentSceneData::ResizeCubemapArrayGPU(uint32 InMaxCubemaps
 	CubemapArraySlotsUsed.Init(false, InMaxCubemaps);
 
 	// Spin through the AllocatedReflectionCaptureState map and remap the indices based on the LUT
-	TArray<const UReflectionCaptureComponent*> Components;
+	TArray<FGuid> Components;
 	AllocatedReflectionCaptureState.GetKeys(Components);
 	int32 UsedCubemapCount = 0;
 	for (int32 i=0; i<Components.Num(); i++ )
@@ -247,6 +492,43 @@ void FReflectionEnvironmentSceneData::ResizeCubemapArrayGPU(uint32 InMaxCubemaps
 	CubemapArray.ResizeCubemapArrayGPU(InMaxCubemaps, InCubemapSize, IndexRemapping);
 }
 
+void FReflectionEnvironmentSceneData::Reset(FScene* Scene)
+{
+	for (TSparseArray<UReflectionCaptureComponent*>::TIterator It(AllocatedReflectionCapturesGameThread); It; ++It)
+	{
+		UReflectionCaptureComponent* CurrentCapture = *It;
+
+		// Unused slots will have a null component pointer
+		if (CurrentCapture)
+		{
+			Scene->RemoveReflectionCapture(CurrentCapture);
+		}
+	}
+
+	// Fields to reset in the game thread
+	AllocatedReflectionCapturesGameThread.Empty();
+	MaxAllocatedReflectionCubemapsGameThread = 0;
+	ReflectionCaptureSizeGameThread = 0;
+	DesiredReflectionCaptureSizeGameThread = 0;
+
+	ENQUEUE_RENDER_COMMAND(ReflectionEnvironmentSceneDataReset)(
+		[this](FRHICommandList& RHICmdList)
+		{
+			// Fields to reset in the render thread
+			bRegisteredReflectionCapturesHasChanged = true;
+			AllocatedReflectionCaptureStateHasChanged = false;
+
+			RegisteredReflectionCaptures.Empty();
+			RegisteredReflectionCapturePositionAndRadius.Empty();
+			CubemapArray.Reset();
+			AllocatedReflectionCaptureState.Empty();
+			CubemapArraySlotsUsed.Empty();
+			SortedCaptures.Empty();
+			NumBoxCaptures = 0;
+			NumSphereCaptures = 0;
+		});
+}
+
 void FReflectionEnvironmentCubemapArray::ResizeCubemapArrayGPU(uint32 InMaxCubemaps, int32 InCubemapSize, const TArray<int32>& IndexRemapping)
 {
 	check(InMaxCubemaps > 0);
@@ -263,43 +545,43 @@ void FReflectionEnvironmentCubemapArray::ResizeCubemapArrayGPU(uint32 InMaxCubem
 
 	InitDynamicRHI();
 
-	FTextureRHIRef TexRef = OldReflectionEnvs->GetRenderTargetItem().TargetableTexture;
+	FTextureRHIRef TexRef = OldReflectionEnvs->GetRHI();
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	const int32 NumMips = FMath::CeilLogTwo(InCubemapSize) + 1;
 
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, ReflectionEnvironment_ResizeCubemapArray);
-		//SCOPED_GPU_STAT(RHICmdList, ReflectionEnvironment)
+
+		RHICmdList.Transition({
+			FRHITransitionInfo(OldReflectionEnvs->GetRHI(), ERHIAccess::Unknown, ERHIAccess::CopySrc),
+			FRHITransitionInfo(ReflectionEnvs->GetRHI(), ERHIAccess::Unknown, ERHIAccess::CopyDest)
+		});
 
 		// Copy the cubemaps, remapping the elements as necessary
-		FResolveParams ResolveParams;
-		ResolveParams.Rect = FResolveRect();
 		for (int32 SourceCubemapIndex = 0; SourceCubemapIndex < OldMaxCubemaps; SourceCubemapIndex++)
 		{
 			int32 DestCubemapIndex = IndexRemapping[SourceCubemapIndex];
 			if (DestCubemapIndex != -1)
 			{
-				ResolveParams.SourceArrayIndex = SourceCubemapIndex;
-				ResolveParams.DestArrayIndex = DestCubemapIndex;
-
 				check(SourceCubemapIndex < OldMaxCubemaps);
 				check(DestCubemapIndex < (int32)MaxCubemaps);
 
-				for (int Face = 0; Face < 6; Face++)
+				for (int32 Face = 0; Face < CubeFace_MAX; Face++)
 				{
-					ResolveParams.CubeFace = (ECubeFace)Face;
-					for (int Mip = 0; Mip < NumMips; Mip++)
-					{
-						ResolveParams.MipIndex = Mip;
-						//@TODO: We should use an explicit copy method for this rather than CopyToResolveTarget, but that doesn't exist right now. 
-						// For now, we'll just do this on RHIs where we know CopyToResolveTarget does the right thing. In future we should look to 
-						// add a a new RHI method
-						check(GRHISupportsResolveCubemapFaces);
-						RHICmdList.CopyToResolveTarget(OldReflectionEnvs->GetRenderTargetItem().ShaderResourceTexture, ReflectionEnvs->GetRenderTargetItem().ShaderResourceTexture, ResolveParams);
-					}
+					FRHICopyTextureInfo CopyInfo;
+					CopyInfo.SourceSliceIndex = SourceCubemapIndex * CubeFace_MAX + Face;
+					CopyInfo.DestSliceIndex   = DestCubemapIndex   * CubeFace_MAX + Face;
+					CopyInfo.NumMips          = NumMips;
+
+					RHICmdList.CopyTexture(OldReflectionEnvs->GetRHI(), ReflectionEnvs->GetRHI(), CopyInfo);
 				}
 			}
 		}
+		
+		RHICmdList.Transition({
+			FRHITransitionInfo(OldReflectionEnvs->GetRHI(), ERHIAccess::CopySrc, ERHIAccess::SRVMask),
+			FRHITransitionInfo(ReflectionEnvs->GetRHI(), ERHIAccess::CopyDest, ERHIAccess::SRVMask)
+		});
 	}
 	GRenderTargetPool.FreeUnusedResource(OldReflectionEnvs);
 }
@@ -322,5 +604,100 @@ void FReflectionEnvironmentCubemapArray::UpdateMaxCubemaps(uint32 InMaxCubemaps,
 	}
 }
 
+void FReflectionEnvironmentCubemapArray::Reset()
+{
+	ReleaseDynamicRHI();
+	MaxCubemaps = 0;
+	CubemapSize = 0;
+}
+
 IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(ReflectionCapture);
-IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(FReflectionCaptureShaderData, "ReflectionCapture", ReflectionCapture);
+IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(FReflectionCaptureShaderData, "ReflectionCaptureSM5", ReflectionCapture);
+IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT_EX(FMobileReflectionCaptureShaderData, "ReflectionCaptureES31", ReflectionCapture, FShaderParametersMetadata::EUsageFlags::NoEmulatedUniformBuffer);
+
+void SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance(FVector4f* OutSkyIrradianceEnvironmentMap, const FSHVectorRGB3 SkyIrradiance)
+{
+	const float SqrtPI = FMath::Sqrt(PI);
+	const float Coefficient0 = 1.0f / (2 * SqrtPI);
+	const float Coefficient1 = FMath::Sqrt(3.f) / (3 * SqrtPI);
+	const float Coefficient2 = FMath::Sqrt(15.f) / (8 * SqrtPI);
+	const float Coefficient3 = FMath::Sqrt(5.f) / (16 * SqrtPI);
+	const float Coefficient4 = .5f * Coefficient2;
+
+	// Pack the SH coefficients in a way that makes applying the lighting use the least shader instructions
+	// This has the diffuse convolution coefficients baked in
+	// See "Stupid Spherical Harmonics (SH) Tricks"
+	OutSkyIrradianceEnvironmentMap[0].X = -Coefficient1 * SkyIrradiance.R.V[3];
+	OutSkyIrradianceEnvironmentMap[0].Y = -Coefficient1 * SkyIrradiance.R.V[1];
+	OutSkyIrradianceEnvironmentMap[0].Z = Coefficient1 * SkyIrradiance.R.V[2];
+	OutSkyIrradianceEnvironmentMap[0].W = Coefficient0 * SkyIrradiance.R.V[0] - Coefficient3 * SkyIrradiance.R.V[6];
+
+	OutSkyIrradianceEnvironmentMap[1].X = -Coefficient1 * SkyIrradiance.G.V[3];
+	OutSkyIrradianceEnvironmentMap[1].Y = -Coefficient1 * SkyIrradiance.G.V[1];
+	OutSkyIrradianceEnvironmentMap[1].Z = Coefficient1 * SkyIrradiance.G.V[2];
+	OutSkyIrradianceEnvironmentMap[1].W = Coefficient0 * SkyIrradiance.G.V[0] - Coefficient3 * SkyIrradiance.G.V[6];
+
+	OutSkyIrradianceEnvironmentMap[2].X = -Coefficient1 * SkyIrradiance.B.V[3];
+	OutSkyIrradianceEnvironmentMap[2].Y = -Coefficient1 * SkyIrradiance.B.V[1];
+	OutSkyIrradianceEnvironmentMap[2].Z = Coefficient1 * SkyIrradiance.B.V[2];
+	OutSkyIrradianceEnvironmentMap[2].W = Coefficient0 * SkyIrradiance.B.V[0] - Coefficient3 * SkyIrradiance.B.V[6];
+
+	OutSkyIrradianceEnvironmentMap[3].X = Coefficient2 * SkyIrradiance.R.V[4];
+	OutSkyIrradianceEnvironmentMap[3].Y = -Coefficient2 * SkyIrradiance.R.V[5];
+	OutSkyIrradianceEnvironmentMap[3].Z = 3 * Coefficient3 * SkyIrradiance.R.V[6];
+	OutSkyIrradianceEnvironmentMap[3].W = -Coefficient2 * SkyIrradiance.R.V[7];
+
+	OutSkyIrradianceEnvironmentMap[4].X = Coefficient2 * SkyIrradiance.G.V[4];
+	OutSkyIrradianceEnvironmentMap[4].Y = -Coefficient2 * SkyIrradiance.G.V[5];
+	OutSkyIrradianceEnvironmentMap[4].Z = 3 * Coefficient3 * SkyIrradiance.G.V[6];
+	OutSkyIrradianceEnvironmentMap[4].W = -Coefficient2 * SkyIrradiance.G.V[7];
+
+	OutSkyIrradianceEnvironmentMap[5].X = Coefficient2 * SkyIrradiance.B.V[4];
+	OutSkyIrradianceEnvironmentMap[5].Y = -Coefficient2 * SkyIrradiance.B.V[5];
+	OutSkyIrradianceEnvironmentMap[5].Z = 3 * Coefficient3 * SkyIrradiance.B.V[6];
+	OutSkyIrradianceEnvironmentMap[5].W = -Coefficient2 * SkyIrradiance.B.V[7];
+
+	OutSkyIrradianceEnvironmentMap[6].X = Coefficient4 * SkyIrradiance.R.V[8];
+	OutSkyIrradianceEnvironmentMap[6].Y = Coefficient4 * SkyIrradiance.G.V[8];
+	OutSkyIrradianceEnvironmentMap[6].Z = Coefficient4 * SkyIrradiance.B.V[8];
+	OutSkyIrradianceEnvironmentMap[6].W = 1;
+}
+
+void UpdateSkyIrradianceGpuBuffer(FRHICommandListImmediate& RHICmdList, const FEngineShowFlags& EngineShowFlags, const FSkyLightSceneProxy* SkyLight, TRefCountPtr<FRDGPooledBuffer>& Buffer)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UpdateSkyIrradianceGpuBuffer);
+
+	const bool bUploadIrradiance =
+		SkyLight
+		// Skylights with static lighting already had their diffuse contribution baked into lightmaps
+		&& !SkyLight->bHasStaticLighting
+		&& EngineShowFlags.SkyLighting
+		&& !SkyLight->bRealTimeCaptureEnabled; // When bRealTimeCaptureEnabled is true, the buffer will be setup on GPU directly in this case
+
+	if (AllocatePooledBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), SKY_IRRADIANCE_ENVIRONMENT_MAP_VEC4_COUNT), Buffer, TEXT("SkyIrradianceEnvironmentMap"), ERDGPooledBufferAlignment::None))
+	{
+		if (!bUploadIrradiance)
+		{
+			// Ensure that sky irradiance SH buffer contains sensible initial values (zero init).
+			// If there is no sky in the level, then nothing else may fill this buffer.
+			void* DataPtr = RHICmdList.LockBuffer(Buffer->GetRHI(), 0, Buffer->GetSize(), RLM_WriteOnly);
+			FPlatformMemory::Memset(DataPtr, 0, Buffer->GetSize());
+			RHICmdList.UnlockBuffer(Buffer->GetRHI());
+		}
+
+		RHICmdList.Transition(FRHITransitionInfo(Buffer->GetRHI(), ERHIAccess::Unknown, ERHIAccess::SRVMask));
+	}
+
+	if (bUploadIrradiance)
+	{
+		FVector4f UploadData[SKY_IRRADIANCE_ENVIRONMENT_MAP_VEC4_COUNT];
+		SetupSkyIrradianceEnvironmentMapConstantsFromSkyIrradiance(UploadData, SkyLight->IrradianceEnvironmentMap);
+
+		const float SkyLightAverageBrightness = SkyLight->AverageBrightness;
+		UploadData[7] = FVector4f(SkyLightAverageBrightness, SkyLightAverageBrightness, SkyLightAverageBrightness, SkyLightAverageBrightness);
+
+		void* DataPtr = RHICmdList.LockBuffer(Buffer->GetRHI(), 0, Buffer->GetSize(), RLM_WriteOnly);
+		FPlatformMemory::Memcpy(DataPtr, &UploadData, sizeof(UploadData));
+		RHICmdList.UnlockBuffer(Buffer->GetRHI());
+	}
+}

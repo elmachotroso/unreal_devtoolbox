@@ -39,6 +39,27 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
+	/// Describes the origin and visibility of Verse code
+	/// </summary>
+	public enum VerseScope
+	{
+		/// <summary>
+		/// Created by Epic and is entirely hidden from public users
+		/// </summary>
+		InternalAPI,
+
+		/// <summary>
+		/// Created by Epic and only public definitions will be visible to public users
+		/// </summary>
+		PublicAPI,
+
+		/// <summary>
+		/// Created by a public user
+		/// </summary>
+		User
+	}
+
+	/// <summary>
 	/// ModuleRules is a data structure that contains the rules for defining a module
 	/// </summary>
 	public class ModuleRules
@@ -204,6 +225,22 @@ namespace UnrealBuildTool
 			/// Make sure symbols in this module are visible in Dll builds
 			/// </summary>
 			VisibileForDll,
+		}
+
+		/// <summary>
+		/// Alter build order of source files for specific cases where necessary
+		/// An example is test files that must be executed first for module level setup or last for module level teardown
+		/// </summary>
+		public enum SourceFileBuildOrder
+		{
+			/// <summary>
+			/// Moves the order of the module source file at the beginning of compilation
+			/// </summary>
+			First,
+			/// <summary>
+			/// Moves the order of the module source file at the end of compilation
+			/// </summary>
+			Last,
 		}
 
 		/// <summary>
@@ -448,6 +485,51 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Specifies build order overrides for source files in this module
+		/// A source file can be moved towards the beginning or end of compilation
+		/// Example use case: test setup and test teardown files that need to compile first and last respectively in a module
+		/// </summary>
+		public class SourceFilesBuildOrderSettings
+		{
+			private DirectoryReference ModuleDirectory;
+			private Dictionary<FileItem, SourceFileBuildOrder> BuildOrderOverridesPrivate;
+
+			/// <summary>
+			/// Constructs <see cref="SourceFilesBuildOrderSettings"/> given module directory.
+			/// </summary>
+			/// <param name="InModuleDirectory">Module source directory</param>
+			public SourceFilesBuildOrderSettings(DirectoryReference InModuleDirectory)
+			{
+				ModuleDirectory = InModuleDirectory;
+				BuildOrderOverridesPrivate = new Dictionary<FileItem, SourceFileBuildOrder>();
+			}
+
+			/// <summary>
+			/// Slightly alter the order of build of a module source file by placing it either at the beginning or end of compilation
+			/// </summary>
+			/// <param name="InRelativeSourceFile">Relative path of source file to module's directory</param>
+			/// <param name="InBuildOrderOverride">A <see cref="SourceFileBuildOrder"/> specifying order placement: 
+			/// <see cref="SourceFileBuildOrder.First"/> for beginning of compilation, <see cref="SourceFileBuildOrder.Last"/> for end</param>
+			public void AddBuildOrderOverride(string InRelativeSourceFile, SourceFileBuildOrder InBuildOrderOverride)
+			{
+				FileItem File = FileItem.GetItemByPath(Path.Combine(ModuleDirectory.FullName, InRelativeSourceFile));
+				if (File.Exists)
+				{
+					BuildOrderOverridesPrivate.Add(File, InBuildOrderOverride);
+				}
+				else
+				{
+					throw new BuildException($"Cannot apply build order override, file doesn't exist: {File.AbsolutePath}");
+				}
+			}
+
+			/// <summary>
+			/// Get build order overrides map of module source file to <see cref="SourceFileBuildOrder"/>.
+			/// </summary>
+			public IReadOnlyDictionary<FileItem, SourceFileBuildOrder> Overrides => BuildOrderOverridesPrivate;
+		}
+
+		/// <summary>
 		/// Name of this module
 		/// </summary>
 		public string Name
@@ -476,6 +558,11 @@ namespace UnrealBuildTool
 		/// Additional directories that contribute to this module but are not based on a subclass (NotForLicensees, etc)
 		/// </summary>
 		private List<DirectoryReference> AdditionalModuleDirectories = new List<DirectoryReference>();
+
+		/// <summary>
+		/// The rules assembly to use when searching for modules
+		/// </summary>
+		internal RulesAssembly RulesAssembly;
 
 		/// <summary>
 		/// Plugin containing this module
@@ -643,6 +730,32 @@ namespace UnrealBuildTool
 		private BuildSettingsVersion? DefaultBuildSettingsPrivate;
 
 		/// <summary>
+		/// What version of include order to use when compiling this module. Can be overridden via -ForceIncludeOrder on the command line or in a module's rules.
+		/// </summary>
+		public EngineIncludeOrderVersion IncludeOrderVersion
+		{
+			get
+			{
+				if (Target.ForcedIncludeOrder != null)
+				{
+					return Target.ForcedIncludeOrder.Value;
+				}
+				if (bTreatAsEngineModule)
+				{
+					return EngineIncludeOrderVersion.Latest;
+				}
+				return IncludeOrderVersionPrivate ?? Target.IncludeOrderVersion;
+			}
+			set { IncludeOrderVersionPrivate = value; }
+		}
+		private EngineIncludeOrderVersion? IncludeOrderVersionPrivate;
+
+		/// <summary>
+		/// Set flags for determinstic compiles (experimental, may not be fully supported). Deterministic linking is controlled via TargetRules.
+		/// </summary>
+		public bool bDeterministic = false;
+
+		/// <summary>
 		/// Use run time type information
 		/// </summary>
 		public bool bUseRTTI = false;
@@ -697,6 +810,42 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bEnableUndefinedIdentifierWarnings = true;
 
+		/// <summary>
+		/// Disable all static analysis - clang, msvc, pvs-studio.
+		/// </summary>
+		public bool bDisableStaticAnalysis = false;
+
+		/// <summary>
+		/// The static analyzer checkers that should be enabled rather than the defaults. This is only supported for Clang.
+		/// See https://clang.llvm.org/docs/analyzer/checkers.html for a full list. Or run:
+		///    'clang -Xclang -analyzer-checker-help' 
+		/// or: 
+		///    'clang -Xclang -analyzer-checker-help-alpha' 
+		/// for the list of experimental checkers.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerCheckers = new HashSet<string>();
+
+		/// <summary>
+		/// The static analyzer default checkers that should be disabled. Unused if StaticAnalyzerCheckers is populated. This is only supported for Clang.
+		/// This overrides the default disabled checkers, which are deadcode.DeadStores and security.FloatLoopCounter
+		/// See https://clang.llvm.org/docs/analyzer/checkers.html for a full list. Or run:
+		///    'clang -Xclang -analyzer-checker-help' 
+		/// or: 
+		///    'clang -Xclang -analyzer-checker-help-alpha' 
+		/// for the list of experimental checkers.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerDisabledCheckers = new HashSet<string>() { "deadcode.DeadStores", "security.FloatLoopCounter" };
+
+		/// <summary>
+		/// The static analyzer non-default checkers that should be enabled. Unused if StaticAnalyzerCheckers is populated. This is only supported for Clang.
+		/// See https://clang.llvm.org/docs/analyzer/checkers.html for a full list. Or run:
+		///    'clang -Xclang -analyzer-checker-help' 
+		/// or: 
+		///    'clang -Xclang -analyzer-checker-help-alpha' 
+		/// for the list of experimental checkers.
+		/// </summary>
+		public HashSet<string> StaticAnalyzerAdditionalCheckers = new HashSet<string>();
+
 		private bool? bUseUnityOverride;
 		/// <summary>
 		/// If unity builds are enabled this can be used to override if this specific module will build using Unity.
@@ -714,6 +863,10 @@ namespace UnrealBuildTool
 			}
 		}
 
+		/// <summary>
+		/// Whether to merge module and generated unity files for faster compilation.
+		/// </summary>
+		public bool bMergeUnityFiles = true;
 
 		/// <summary>
 		/// The number of source files in this module before unity build will be activated for that module.  If set to
@@ -727,9 +880,19 @@ namespace UnrealBuildTool
 		public int MinFilesUsingPrecompiledHeaderOverride = 0;
 
 		/// <summary>
+		/// Overrides Target.NumIncludedBytesPerUnityCPP if non-zero.
+		/// </summary>
+		public int NumIncludedBytesPerUnityCPPOverride = 0;
+
+		/// <summary>
 		/// Module uses a #import so must be built locally when compiling with SN-DBS
 		/// </summary>
 		public bool bBuildLocallyWithSNDBS = false;
+
+		/// <summary>
+		/// Enable warnings for when there are .gen.cpp files that could be inlined in a matching handwritten cpp file
+		/// </summary>
+		public bool bEnableNonInlinedGenCppWarnings = false;
 
 		/// <summary>
 		/// Redistribution override flag for this module.
@@ -747,10 +910,6 @@ namespace UnrealBuildTool
 		/// List of folders which are allowed to be referenced when compiling this binary, without propagating restricted folder names
 		/// </summary>
 		public List<string> AllowedRestrictedFolders = new List<string>();
-
-		/// <exclude/>
-		[Obsolete("Deprecated in 5.0, use AllowedRestrictedFolders instead.")]
-		public List<string> WhitelistRestrictedFolders = new List<string>();
 
 		/// <summary>
 		/// Set of aliased restricted folder references
@@ -857,6 +1016,21 @@ namespace UnrealBuildTool
 		public List<string> PublicAdditionalLibraries = new List<string>();
 
 		/// <summary>
+		/// Returns the directory of where the passed in module name lives.
+		/// </summary>
+		/// <param name="ModuleName">Name of the module</param>
+		/// <returns>Directory where the module lives</returns>
+		public string GetModuleDirectory(string ModuleName)
+		{
+			FileReference? ModuleFileReference = RulesAssembly.GetModuleFileName(ModuleName);
+			if (ModuleFileReference == null)
+			{
+				throw new BuildException("Could not find a module named '{0}'.", ModuleName);
+			}
+			return ModuleFileReference.Directory.FullName;
+		}
+
+		/// <summary>
 		/// List of additional pre-build libraries (names of the .lib files including extension) - typically used for additional targets which are still built, but using either TargetRules.PreBuildSteps or TargetRules.PreBuildTargets.
 		/// </summary>
 		public List<string> PublicPreBuildLibraries = new List<string>();
@@ -953,11 +1127,6 @@ namespace UnrealBuildTool
 		public List<string> ExternalDependencies = new List<string>();
 
 		/// <summary>
-		/// External directories containing generated interop files.
-		/// </summary>
-		public List<string> AdditionalCodeGenDirectories = new List<string>();
-
-		/// <summary>
 		/// Subclass rules files which invalidate the makefile if modified.
 		/// </summary>
 		public List<string>? SubclassRules;
@@ -969,6 +1138,16 @@ namespace UnrealBuildTool
 		public bool? bRequiresImplementModule;
 
 		/// <summary>
+		/// If this module has associated Verse code, this is the Verse root path of it
+		/// </summary>
+		public string? VersePath;
+
+		/// <summary>
+		/// Visibility of Verse code in this module's Source/Verse folder
+		/// </summary>
+		public VerseScope VerseScope = VerseScope.User;
+
+		/// <summary>
 		/// Whether this module qualifies included headers from other modules relative to the root of their 'Public' folder. This reduces the number
 		/// of search paths that have to be passed to the compiler, improving performance and reducing the length of the compiler command line.
 		/// </summary>
@@ -978,11 +1157,24 @@ namespace UnrealBuildTool
 			get { return bLegacyPublicIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V2) ? Target.bLegacyPublicIncludePaths : false); }
 		}
 		private bool? bLegacyPublicIncludePathsPrivate;
+		
+		/// <summary>
+		/// Whether circular dependencies will be validated against the allow list
+		/// Circular module dependencies result in slower builds. Disabling this option is strongly discouraged.
+        /// This option is ignored for Engine modules which will always be validated against the allow list.
+		/// </summary>
+		public bool bValidateCircularDependencies = true;
 
 		/// <summary>
 		/// Which stanard to use for compiling this module
 		/// </summary>
 		public CppStandardVersion CppStandard = CppStandardVersion.Default;
+		
+		/// <summary>
+		/// Which standard to use for compiling this module
+		/// </summary>
+		public CStandardVersion CStandard = CStandardVersion.Default;
+
 
 		/// <summary>
 		///  Control visibility of symbols
@@ -1041,6 +1233,33 @@ namespace UnrealBuildTool
 			}
 		}
 
+		/// <summary>
+		/// Returns module's low level tests directory "Tests".
+		/// </summary>
+		public string TestsDirectory
+		{
+			get
+			{
+				return Path.Combine(Directory.FullName, "Tests");
+			}
+		}
+
+		/// <summary>
+		/// Optional compilation order override rules for module's source files.
+		/// </summary>
+		public SourceFilesBuildOrderSettings BuildOrderSettings
+		{
+			get
+			{
+				if (BuildOrderOverridesPrivate == null)
+				{
+					BuildOrderOverridesPrivate = new SourceFilesBuildOrderSettings(Directory);
+				}
+				return BuildOrderOverridesPrivate;
+			}
+		}
+		private SourceFilesBuildOrderSettings BuildOrderOverridesPrivate;
+
 #nullable disable
 		/// <summary>
 		/// Constructor. For backwards compatibility while the parameterless constructor is being phased out, initialization which would happen here is done by 
@@ -1087,7 +1306,7 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Setup this module for physics support (based on the settings in UEBuildConfiguration)
+		/// Setup this module for Mesh Editor support (based on the settings in UEBuildConfiguration)
 		/// </summary>
 		public void EnableMeshEditorSupport(ReadOnlyTargetRules Target)
 		{
@@ -1102,169 +1321,108 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Setup this module for GameplayDebugger support
+		/// </summary>
+		public void SetupGameplayDebuggerSupport(ReadOnlyTargetRules Target, bool bAddAsPublicDependency = false)
+		{
+			if (Target.bUseGameplayDebugger)
+			{
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
+
+				if (bAddAsPublicDependency)
+				{
+					PublicDependencyModuleNames.Add("GameplayDebugger");
+				}
+				else
+				{
+					PrivateDependencyModuleNames.Add("GameplayDebugger");
+				}
+			}
+			else
+			{
+				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
+			}
+		}
+
+		/// <summary>
+		/// Setup this module for Iris support (based on the settings in UEBuildConfiguration)
+		/// </summary>
+		public void SetupIrisSupport(ReadOnlyTargetRules Target, bool bAddAsPublicDependency = false)
+		{
+			if (Target.bUseIris == true)
+			{
+				PublicDefinitions.Add("UE_WITH_IRIS=1");
+
+				if (bAddAsPublicDependency)
+				{
+					PublicDependencyModuleNames.Add("IrisCore");
+				}
+				else
+				{
+					PrivateDependencyModuleNames.Add("IrisCore");
+				}
+			}
+			else
+			{
+				PublicDefinitions.Add("UE_WITH_IRIS=0");
+
+				// If we compile without Iris we have a stub Iris module for UHT dependencies
+				if (bAddAsPublicDependency)
+				{
+					PublicDependencyModuleNames.Add("IrisStub");
+				}
+				else
+				{
+					PrivateDependencyModuleNames.Add("IrisStub");
+				}
+			}
+		}
+
+		/// <summary>
 		/// Setup this module for physics support (based on the settings in UEBuildConfiguration)
 		/// </summary>
 		public void SetupModulePhysicsSupport(ReadOnlyTargetRules Target)
 		{
-			PublicDependencyModuleNames.Add("PhysicsCore");
+			PublicIncludePathModuleNames.AddRange(
+					new string[] {
+					"Chaos",
+					}
+				);
 
-			bool bUseNonPhysXInterface = Target.bUseChaos == true;
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
+					"PhysicsCore",
 					"Chaos",
-				}
+					}
 				);
-			// 
-			if (Target.bCompileChaos == true || Target.bUseChaos == true)
-            {
-                PublicDefinitions.Add("INCLUDE_CHAOS=1");
-			}
-            else
-            {
-                PublicDefinitions.Add("INCLUDE_CHAOS=0");
-            }
-            // definitions used outside of PhysX/APEX need to be set here, not in PhysX.Build.cs or APEX.Build.cs, 
-            // since we need to make sure we always set it, even to 0 (because these are Private dependencies, the
-            // defines inside their Build.cs files won't leak out)
-            if (Target.bCompilePhysX == true && Target.bCompileChaos == false && Target.bUseChaos == false)
+
+			PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
+
+			// Modules may still be relying on appropriate definitions for physics.
+			// Nothing in engine should use these anymore as they were all deprecated and 
+			// assumed to be in the following configuration from 5.1, this will cause
+			// deprecation warning to fire in any module still relying on these macros
+
+			Func<string, string, string, string> GetDeprecatedPhysicsMacro = (string Macro, string Value, string Version) =>
 			{
-				PrivateDependencyModuleNames.Add("PhysX");
-			}
+				return Macro + "=UE_DEPRECATED_MACRO(" + Version + ", \"" + Macro + " is deprecated and should always be considered " + Value + ".\") " + Value;
+			};
 
-			if(Target.bCompileChaos || Target.bUseChaos || Target.bCompilePhysX)
-			{
-				PublicDefinitions.Add("WITH_PHYSX=1");
-			}
-			else
-			{
-				PublicDefinitions.Add("WITH_PHYSX=0");
-			}
-
-			if(!bUseNonPhysXInterface)
-			{
-				// Disable non-physx interfaces
-				PublicDefinitions.Add("WITH_CHAOS=0");
-				PublicDefinitions.Add("WITH_CHAOS_CLOTHING=0");
-
-				// 
-				// WITH_CHAOS_NEEDS_TO_BE_FIXED
-				//
-				// Anything wrapped in this define needs to be fixed
-				// in one of the build targets. This define was added
-				// to help identify complier failures between the
-				// the three build targets( UseChaos, PhysX, WithChaos )
-				// This defaults to off , and will be enabled for bUseChaos. 
-				// This define should be removed when all the references 
-				// have been fixed across the different builds. 
-				//
-				PublicDefinitions.Add("WITH_CHAOS_NEEDS_TO_BE_FIXED=0");
-
-				if (Target.bCompilePhysX)
-				{
-					PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=1");
-				}
-				else
-				{
-					PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=0");
-				}
-
-				if (Target.bCompileAPEX == true)
-				{
-					if (!Target.bCompilePhysX)
-					{
-						throw new BuildException("APEX is enabled, without PhysX. This is not supported!");
-					}
-					PrivateDependencyModuleNames.Add("APEX");
-					PublicDefinitions.Add("WITH_APEX=1");
-
-// @MIXEDREALITY_CHANGE : BEGIN - Do not use Apex Cloth for HoloLens.  TODO: can we enable this in the future?
-				if (Target.Platform == UnrealTargetPlatform.HoloLens)
-				{
-					PublicDefinitions.Add("WITH_APEX_CLOTHING=0");
-					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=0");
-				}
-				else
-				{
-					PublicDefinitions.Add("WITH_APEX_CLOTHING=1");
-					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
-				}
-// @MIXEDREALITY_CHANGE : END
-
-				PublicDefinitions.Add("WITH_PHYSX_COOKING=1");  // APEX currently relies on cooking even at runtime
-
-				}
-				else
-				{
-					PublicDefinitions.Add("WITH_APEX=0");
-					PublicDefinitions.Add("WITH_APEX_CLOTHING=0");
-					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=0");
-					PublicDefinitions.Add(string.Format("WITH_PHYSX_COOKING={0}", Target.bBuildEditor && Target.bCompilePhysX ? 1 : 0));  // without APEX, we only need cooking in editor builds
-				}
-
-				if (Target.bCompileNvCloth == true)
-				{
-					if (!Target.bCompilePhysX)
-					{
-						throw new BuildException("NvCloth is enabled, without PhysX. This is not supported!");
-					}
-
-					PrivateDependencyModuleNames.Add("NvCloth");
-					PublicDefinitions.Add("WITH_NVCLOTH=1");
-
-				}
-				else
-				{
-					PublicDefinitions.Add("WITH_NVCLOTH=0");
-				}
-			}
-			else
-			{
-				// Disable apex/cloth/physx interface
-				PublicDefinitions.Add("PHYSICS_INTERFACE_PHYSX=0");
-				PublicDefinitions.Add("WITH_APEX=0");
-				PublicDefinitions.Add("WITH_APEX_CLOTHING=0");
-				PublicDefinitions.Add(string.Format("WITH_PHYSX_COOKING={0}", Target.bBuildEditor && Target.bCompilePhysX ? 1 : 0));  // without APEX, we only need cooking in editor builds
-				PublicDefinitions.Add("WITH_NVCLOTH=0");
-
-				if(Target.bUseChaos)
-				{
-					PublicDefinitions.Add("WITH_CHAOS=1");
-					PublicDefinitions.Add("WITH_CHAOS_NEEDS_TO_BE_FIXED=1");
-					PublicDefinitions.Add("WITH_CHAOS_CLOTHING=1");
-					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
-					
-					PublicIncludePathModuleNames.AddRange(
-						new string[] {
-						"Chaos",
-						}
-					);
-
-					PublicDependencyModuleNames.AddRange(
-						new string[] {
-						"Chaos",
-						}
-					);
-				}
-				else
-				{
-					PublicDefinitions.Add("WITH_CHAOS=0");
-					PublicDefinitions.Add("WITH_CHAOS_NEEDS_TO_BE_FIXED=0");
-					PublicDefinitions.Add("WITH_CHAOS_CLOTHING=0");
-					PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=0");
-				}
-			}
-
-			if(Target.bCustomSceneQueryStructure)
-			{
-				PublicDefinitions.Add("WITH_CUSTOM_SQ_STRUCTURE=1");
-			}
-			else
-			{
-				PublicDefinitions.Add("WITH_CUSTOM_SQ_STRUCTURE=0");
-			}
-
-			// Unused interface
-			PublicDefinitions.Add("WITH_IMMEDIATE_PHYSX=0");
+			PublicDefinitions.AddRange(
+				new string[]{
+					GetDeprecatedPhysicsMacro("INCLUDE_CHAOS", "1", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_CHAOS", "1", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_CHAOS_CLOTHING", "1", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_CHAOS_NEEDS_TO_BE_FIXED", "1", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_PHYSX", "1", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_PHYSX_COOKING", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("PHYSICS_INTERFACE_PHYSX", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_APEX", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_APEX_CLOTHING", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_NVCLOTH", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_IMMEDIATE_PHYSX", "0", "5.1"),
+					GetDeprecatedPhysicsMacro("WITH_CUSTOM_SQ_STRUCTURE", "0", "5.1")
+				});
 		}
 
 		/// <summary>
@@ -1292,6 +1450,75 @@ namespace UnrealBuildTool
 			}
 			return false;
 		}
+
+		/// <summary>
+		/// Prepares a module for building a low level tests executable.
+		/// If we're building a module as part of a test module chain and there's a Tests folder with low level tests, then they require the LowLevelTestsRunner dependency.
+		/// We also keep track of any Editor, Engine and other conditionally compiled dependencies.
+		/// </summary>
+		internal void PrepareModuleForTests()
+		{
+			if (Name != "LowLevelTestsRunner" && System.IO.Directory.Exists(TestsDirectory))
+			{
+				if (!PrivateIncludePathModuleNames.Contains("LowLevelTestsRunner"))
+				{
+					PrivateIncludePathModuleNames.Add("LowLevelTestsRunner");
+				}
+			}
+			else if (Name == "LowLevelTestsRunner")
+			{
+				TestTargetRules.LowLevelTestsRunnerModule = this;
+			}
+
+			// If one of these modules is in the dependency graph, we must enable their appropriate global definitions
+			if (Name == "UnrealEd")
+			{
+				// TODO: more support code required...
+				TestTargetRules.bTestsRequireEditor = false;
+			}
+			if (Name == "Engine")
+			{
+				// TODO: more support code required...
+				TestTargetRules.bTestsRequireEngine = false;
+			}
+			if (Name == "ApplicationCore")
+			{
+				TestTargetRules.bTestsRequireApplicationCore = true;
+			}
+			if (Name == "CoreUObject")
+			{
+				TestTargetRules.bTestsRequireCoreUObject = true;
+			}
+
+			if (TestTargetRules.LowLevelTestsRunnerModule != null)
+			{
+				if (TestTargetRules.bTestsRequireEditor && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("UnrealEd"))
+				{
+					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("UnrealEd");
+				}
+				if (TestTargetRules.bTestsRequireEngine && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("Engine"))
+				{
+					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("Engine");
+				}
+				if (TestTargetRules.bTestsRequireApplicationCore && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("ApplicationCore"))
+				{
+					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("ApplicationCore");
+				}
+				if (TestTargetRules.bTestsRequireCoreUObject && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("CoreUObject"))
+				{
+					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("CoreUObject");
+				}
+			}
+		}
+
+		internal bool IsTestModule
+		{
+			get { return bIsTestModuleOverride ?? false; }
+		}
+		/// <summary>
+		/// Whether this is a low level tests module.
+		/// </summary>
+		protected bool? bIsTestModuleOverride;
 
 		/// <summary>
 		/// Returns the module directory for a given subclass of the module (platform extensions add subclasses of ModuleRules to add in platform-specific settings)
@@ -1374,7 +1601,7 @@ namespace UnrealBuildTool
 			string? Architecture = null;
 			string Linkage = string.Empty;
 			string Toolset = string.Empty;
-			if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				Platform = "windows";
 				Architecture = Target.WindowsPlatform.Architecture.ToString().ToLowerInvariant();

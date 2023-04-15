@@ -11,6 +11,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Framework/Commands/UICommandInfo.h"
+#include "SWorldPartitionViewportWidget.h"
 #include "EditorViewportClient.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/SWindow.h"
@@ -57,8 +58,6 @@ public:
 	 * Constructs the widgets for the viewport overlay
 	 */
 	void ConstructViewportOverlayContent();
-
-	TSharedRef<SWidget> GenerateLevelMenu() const;
 
 	/**
 	 * Constructs the level editor viewport client
@@ -311,17 +310,16 @@ public:
 	/** Get the parent level editor for this viewport */
 	TWeakPtr<ILevelEditor> GetParentLevelEditor() const { return ParentLevelEditor; }
 
-	/** Called to get the level text */
-	FText GetCurrentLevelText( bool bDrawOnlyLabel ) const;
+	/** @return whether the the actor editor context should be displayed for this viewport */
+	virtual bool IsActorEditorContextVisible() const;
 
 	/** Called to get the screen percentage preview text */
 	FText GetCurrentScreenPercentageText() const;
 
-	/** @return The visibility of the current level text display */
-	virtual EVisibility GetCurrentLevelTextVisibility() const;
-
-	/** @return The visibility of the current level button display */
-	virtual EVisibility GetCurrentLevelButtonVisibility() const;
+	UE_DEPRECATED(5.1, "GetCurrentLevelTextVisibility not used anymore.")
+	virtual EVisibility GetCurrentLevelTextVisibility() const { return EVisibility::Collapsed; }
+	UE_DEPRECATED(5.1, "GetCurrentLevelButtonVisibility not used anymore.")
+	virtual EVisibility GetCurrentLevelButtonVisibility() const { return EVisibility::Collapsed; }
 
 	/** @return The visibility of the current level text display */
 	virtual EVisibility GetSelectedActorsCurrentLevelTextVisibility() const;
@@ -345,6 +343,7 @@ public:
 	 * 
 	 * @param ConfigurationName		The name of the layout (for the names in namespace LevelViewportConfigurationNames)
 	 */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	void OnSetViewportConfiguration(FName ConfigurationName);
 
 	/**
@@ -353,18 +352,23 @@ public:
 	 * @param ConfigurationName		The name of the layout (for the names in namespace LevelViewportConfigurationNames)
 	 * @return						True, if the named layout is currently active
 	 */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	bool IsViewportConfigurationSet(FName ConfigurationName) const;
 
 	/** Get this level viewport widget's type within its parent layout */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	FName GetViewportTypeWithinLayout() const;
 
 	/** Set this level viewport widget's type within its parent layout */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	void SetViewportTypeWithinLayout(FName InLayoutType);
 
 	/** Activates the specified viewport type in the layout, if it's not already, or reverts to default if it is. */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	void ToggleViewportTypeActivationWithinLayout(FName InLayoutType);
 
 	/** Checks if the specified layout type matches our current viewport type. */
+	UE_DEPRECATED(5.1, "Moved to internal handling by FViewportTabContent. See FViewportTabContent::BindCommonViewportCommands")
 	bool IsViewportTypeWithinLayoutEqual(FName InLayoutType);
 
 	/** For the specified actor, See if we're forcing a preview */
@@ -562,7 +566,7 @@ private:
 	void OnUseDefaultShowFlags(bool bUseSavedDefaults = false);
 
 	/**
-	 * Called to toggle allowing matinee to use this viewport to preview in
+	 * Called to toggle allowing sequencer to use this viewport to preview in
 	 */
 	void OnToggleAllowCinematicPreview();
 
@@ -608,6 +612,14 @@ private:
 	 *	@param bCreateDropPreview	If true, a drop preview actor will be spawned instead of a normal actor.
 	 */
 	bool HandlePlaceDraggedObjects(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent, bool bCreateDropPreview);
+
+	/**
+	 * Tries to get assets from a drag and drop event.
+	 * 
+	 * @param DragDropEvent		Event to get assets from.
+	 * @param AssetDataArray	Asets will be added here.
+	 */
+	void GetAssetsFromDrag(const FDragDropEvent& DragDropEvent, TArray<FAssetData>& AssetDataArray);
 
 	/** SWidget Interface */
 	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
@@ -925,6 +937,9 @@ private:
 	bool bIsInViewportMenuInitialized;
 	TSharedPtr<class SInViewportDetails> InViewportMenu;
 	static bool bInViewportMenuEnabled;
+
+	TSharedPtr<SWorldPartitionViewportWidget> WorldPartitionViewportWidget;
+
 protected:
 	void LockActorInternal(AActor* NewActorToLock);
 

@@ -2,8 +2,11 @@
 
 #include "Input/CommonBoundActionButton.h"
 #include "CommonTextBlock.h"
-#include "Input/UIActionRouterTypes.h"
+#include "Input/UIActionBinding.h"
 #include "CommonActionWidget.h"
+#include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonBoundActionButton)
 
 #define LOCTEXT_NAMESPACE "CommonBoundActionButton"
 
@@ -37,7 +40,11 @@ void UCommonBoundActionButton::NativeOnClicked()
 void UCommonBoundActionButton::NativeOnCurrentTextStyleChanged()
 {
 	Super::NativeOnCurrentTextStyleChanged();
-	Text_ActionName->SetStyle(GetCurrentTextStyleClass());
+
+	if (Text_ActionName)
+	{
+		Text_ActionName->SetStyle(GetCurrentTextStyleClass());
+	}
 }
 
 void UCommonBoundActionButton::UpdateInputActionWidget()
@@ -64,8 +71,11 @@ void UCommonBoundActionButton::UpdateInputActionWidget()
 			}
 		}
 
-		Text_ActionName->SetText(ActionDisplayName);
-
+		if (Text_ActionName)
+		{
+			Text_ActionName->SetText(ActionDisplayName);
+		}
+		
 		OnUpdateInputAction();
 	}
 }

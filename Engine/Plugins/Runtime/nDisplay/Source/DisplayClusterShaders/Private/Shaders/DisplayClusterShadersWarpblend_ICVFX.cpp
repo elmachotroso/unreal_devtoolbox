@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterShadersWarpblend_ICVFX.h"
+#include "DisplayClusterShadersLog.h"
 
 #include "RenderResource.h"
 #include "CommonRenderResources.h"
@@ -44,6 +45,14 @@ static TAutoConsoleVariable<int32> CVarIcvfxMPCDIShaderType(
 	ECVF_RenderThreadSafe
 );
 
+int32 GDisplayClusterShadersICVFXEnableLightCard = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterShadersICVFXEnableLightCard(
+	TEXT("nDisplay.render.icvfx.lightcard"),
+	GDisplayClusterShadersICVFXEnableLightCard,
+	TEXT("Enable ICVFX lightcards render (0 - disable).\n"),
+	ECVF_RenderThreadSafe
+);
+
 enum class EIcvfxShaderType : uint8
 {
 	Passthrough,  // Viewport frustum (no warpblend, only frustum math)
@@ -73,6 +82,8 @@ namespace IcvfxShaderPermutation
 
 	class FIcvfxShaderMeshWarp         : SHADER_PERMUTATION_BOOL("MESH_WARP");
 
+	class FIcvfxShaderUVLightCards : SHADER_PERMUTATION_BOOL("UV_LIGHT_CARDS");
+
 	using FCommonVSDomain = TShaderPermutationDomain<FIcvfxShaderMeshWarp>;
 
 	using FCommonPSDomain = TShaderPermutationDomain<
@@ -90,7 +101,8 @@ namespace IcvfxShaderPermutation
 
 		FIcvfxShaderAlphaMapBlending,
 		FIcvfxShaderBetaMapBlending,
-		FIcvfxShaderMeshWarp
+		FIcvfxShaderMeshWarp,
+		FIcvfxShaderUVLightCards
 	>;
 	
 	bool ShouldCompileCommonPSPermutation(const FGlobalShaderPermutationParameters& Parameters, const FCommonPSDomain& PermutationVector)
@@ -150,6 +162,11 @@ namespace IcvfxShaderPermutation
 			return false;
 		}
 
+		if (PermutationVector.Get<FIcvfxShaderUVLightCards>() && !PermutationVector.Get<FIcvfxShaderMeshWarp>())
+		{
+			return false;
+		}
+
 		return true;
 	}
 
@@ -177,6 +194,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxPixelShaderParameters, )
 	SHADER_PARAMETER_TEXTURE(Texture2D, InnerCameraTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, ChromakeyCameraTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D, ChromakeyMarkerTexture)
+	SHADER_PARAMETER_TEXTURE(Texture2D, UVLightCardMapTexture)
 
 	SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, WarpMapSampler)
@@ -187,6 +205,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxPixelShaderParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, InnerCameraSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyCameraSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyMarkerSampler)
+	SHADER_PARAMETER_SAMPLER(SamplerState, UVLightCardMapSampler)
 
 	SHADER_PARAMETER(FMatrix44f, ViewportTextureProjectionMatrix)
 	SHADER_PARAMETER(FMatrix44f, OverlayProjectionMatrix)
@@ -310,7 +329,7 @@ private:
 			// 2 - second camera additive pass
 			// N - camera N
 			// N+1 - overlayOver (optional)
-			return (ICVFXParameters.IsLightcardOverUsed()) ? ( CameraIndex == (TotalUsedCameras + 1) ) : ( CameraIndex == TotalUsedCameras );
+			return (ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard) ? ( CameraIndex == (TotalUsedCameras + 1) ) : ( CameraIndex == TotalUsedCameras );
 		}
 
 		if (TotalUsedCameras>1)
@@ -320,7 +339,7 @@ private:
 			// 1   - camera2
 			// N-1 - camera N
 			// N   - overlayOver (optional)
-			return (ICVFXParameters.IsLightcardOverUsed()) ? ( CameraIndex == TotalUsedCameras ) : ( CameraIndex == (TotalUsedCameras-1) );
+			return (ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard) ? ( CameraIndex == TotalUsedCameras ) : ( CameraIndex == (TotalUsedCameras-1) );
 		}
 
 		// By default render single camera in one pass
@@ -330,7 +349,7 @@ private:
 	inline bool IsOverlayUnderUsed() const
 	{
 		// Render OverlayUnder only on first pass
-		return IsFirstPass() && ICVFXParameters.IsLightcardUnderUsed();
+		return IsFirstPass() && ICVFXParameters.IsLightcardUnderUsed() && GDisplayClusterShadersICVFXEnableLightCard;
 	}
 
 	inline bool IsOverlayOverUsed() const
@@ -338,10 +357,10 @@ private:
 		if (IsMultiPassRender())
 		{
 			// Render OverlayOver only on last additive pass
-			return IsLastPass() && ICVFXParameters.IsLightcardOverUsed();
+			return IsLastPass() && ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard;
 		}
 		
-		return ICVFXParameters.IsLightcardOverUsed();
+		return ICVFXParameters.IsLightcardOverUsed() && GDisplayClusterShadersICVFXEnableLightCard;
 	}
 
 	inline int32 GetUsedCameraIndex() const
@@ -510,22 +529,9 @@ public:
 		if (IsOverlayUnderUsed() || IsOverlayOverUsed())
 		{
 
-			if (ICVFXParameters.Lightcard_OCIO.IsValid())
-			{
-				// use OCIO with separated alpha lightmap texture
-				RenderPassData.PSParameters.OverlaySampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				RenderPassData.PSParameters.OverlayTexture = ICVFXParameters.Lightcard_OCIO.Texture;
-
-				RenderPassData.PSParameters.OverlayAlphaSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-				RenderPassData.PSParameters.OverlayAlphaTexture = ICVFXParameters.Lightcard.Texture;
-
-				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderOverlayAlpha>(true);
-			}
-			else
-			{
 				RenderPassData.PSParameters.OverlaySampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 				RenderPassData.PSParameters.OverlayTexture = ICVFXParameters.Lightcard.Texture;
-			}
+
 			if (IsOverlayUnderUsed())
 			{
 				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderOverlayUnder>(true);
@@ -633,6 +639,20 @@ public:
 		return false;
 	}
 
+	bool GetUVLightCardParameters(FIcvfxRenderPassData& RenderPassData)
+	{
+		if (ICVFXParameters.UVLightCardMap.IsValid() && GDisplayClusterShadersICVFXEnableLightCard && RenderPassData.PSPermutationVector.Get<IcvfxShaderPermutation::FIcvfxShaderMeshWarp>())
+		{
+			RenderPassData.PSParameters.UVLightCardMapSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			RenderPassData.PSParameters.UVLightCardMapTexture = ICVFXParameters.UVLightCardMap;
+
+			RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderUVLightCards>(true);
+			return true;
+		}
+
+		return false;
+	}
+
 	void InitRenderPass(FIcvfxRenderPassData& RenderPassData)
 	{
 		// Forward input viewport
@@ -658,6 +678,8 @@ public:
 					GetCameraChromakeyMarkerParameters(RenderPassData);
 				}
 			}
+
+			GetUVLightCardParameters(RenderPassData);
 		}
 	}
 
@@ -772,6 +794,22 @@ public:
 		FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 		TShaderMapRef<FIcvfxWarpVS> VertexShader(ShaderMap, RenderPassData.VSPermutationVector);
 		TShaderMapRef<FIcvfxWarpPS> PixelShader(ShaderMap, RenderPassData.PSPermutationVector);
+
+		if (!VertexShader.IsValid() || !PixelShader.IsValid())
+		{
+			// Invalid permutation vector
+			if (!PixelShader.IsValid())
+			{
+				UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpPS"), RenderPassData.PSPermutationVector.ToDimensionValueId());
+			}
+
+			if (!VertexShader.IsValid())
+			{
+				UE_LOG(LogDisplayClusterShaders, Warning, TEXT("Invalid permutation vector %d for shader FIcvfxWarpVS"), RenderPassData.VSPermutationVector.ToDimensionValueId());
+			}
+
+			return false;
+		}
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		// Set the graphic pipeline state.
@@ -930,7 +968,7 @@ bool FDisplayClusterShadersWarpblend_ICVFX::RenderWarpBlend_ICVFX(FRHICommandLis
 	// Do single warp render pass
 	bool bIsRenderSuccess = false;
 	FRHIRenderPassInfo RPInfo(InWarpBlendParameters.Dest.Texture, ERenderTargetActions::Load_Store);
-	TransitionRenderPassTargets(RHICmdList, RPInfo);
+	RHICmdList.Transition(FRHITransitionInfo(InWarpBlendParameters.Dest.Texture, ERHIAccess::Unknown, ERHIAccess::RTV));
 
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("nDisplay_IcvfxWarpBlend"));
 	{

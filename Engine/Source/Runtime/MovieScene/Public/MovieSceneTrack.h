@@ -3,23 +3,40 @@
 #pragma once
 
 #include "Compilation/MovieSceneSegmentCompiler.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Evaluation/Blending/MovieSceneBlendType.h"
 #include "Evaluation/MovieSceneEvaluationField.h"
-#include "Misc/CoreMiscDefines.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/Guid.h"
 #include "Misc/InlineValue.h"
-#include "MovieSceneSection.h"
 #include "MovieSceneSignedObject.h"
 #include "MovieSceneTrackEvaluationField.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "MovieSceneSection.h"
+#endif
+
 #include "MovieSceneTrack.generated.h"
 
+class UMovieSceneSection;
+class UObject;
 struct FMovieSceneEvaluationTrack;
-struct FMovieSceneTrackSegmentBlender;
 struct FMovieSceneTrackRowSegmentBlender;
+struct FMovieSceneTrackSegmentBlender;
 struct IMovieSceneTemplateGenerator;
-
 template<typename> struct TMovieSceneEvaluationTree;
 
 /** Flags used to perform cook-time optimization of movie scene data */
@@ -257,13 +274,7 @@ private:
 	/** Sub-classes can override this method to perform custom pre-compilation logic. */
 	virtual void PreCompileImpl(FMovieSceneTrackPreCompileResult& OutPreCompileResult)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		PreCompileImpl();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
-
-	UE_DEPRECATED(4.27, "Please override the PreCompileImpl method that takes a parameter")
-	virtual void PreCompileImpl() {}
 
 private:
 
@@ -361,7 +372,7 @@ public:
 	 *
 	 * @param Section The section to add.
 	 */
-	virtual void AddSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneSection::AddSection,);
+	virtual void AddSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneTrack::AddSection,);
 
 	/**
 	 * Generates a new section suitable for use with this track.
@@ -383,21 +394,21 @@ public:
 	 * @param Section The section to query for.
 	 * @return True if the section is in this track.
 	 */
-	virtual bool HasSection(const UMovieSceneSection& Section) const PURE_VIRTUAL(UMovieSceneSection::HasSection, return false;);
+	virtual bool HasSection(const UMovieSceneSection& Section) const PURE_VIRTUAL(UMovieSceneTrack::HasSection, return false;);
 
 	/**
 	 * Removes a section from this track.
 	 *
 	 * @param Section The section to remove.
 	 */
-	virtual void RemoveSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneSection::RemoveSection, );
+	virtual void RemoveSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneTrack::RemoveSection, );
 
 	/**
 	 * Removes a section from this track at a particular index
 	 *
 	 * @param SectionIndex The section index to remove.
 	 */
-	virtual void RemoveSectionAt(int32 SectionIndex) PURE_VIRTUAL(UMovieSceneSection::RemoveSectionAt, );
+	virtual void RemoveSectionAt(int32 SectionIndex) PURE_VIRTUAL(UMovieSceneTrack::RemoveSectionAt, );
 
 #if WITH_EDITOR
 

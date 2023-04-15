@@ -13,6 +13,7 @@
 
 class FDatasmithSceneSource;
 class IDatasmithScene;
+class IDatasmithClothElement;
 class IDatasmithMeshElement;
 class IDatasmithLevelSequenceElement;
 
@@ -94,7 +95,16 @@ public:
 	 * @param OutMeshPayload	Actual mesh data from the source
 	 * @returns					Operation succeed
 	 */
-	virtual bool LoadStaticMesh(const TSharedRef< IDatasmithMeshElement > MeshElement, FDatasmithMeshElementPayload& OutMeshPayload) { return false; }
+	virtual bool LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload) { return false; }
+
+	/**
+	 * Get payload related to the given Element
+	 *
+	 * @param ClothElement       Element for which the payload is required
+	 * @param OutClothPayload    Actual cloth data from the source
+	 * @returns                  Operation succeed
+	 */
+	virtual bool LoadCloth(const TSharedRef<IDatasmithClothElement> ClothElement, FDatasmithClothElementPayload& OutClothPayload) { return false; }
 
 	/**
 	 * Get payload related to the given Element
@@ -103,7 +113,7 @@ public:
 	 * @param OutLevelSequencePayload	Data associated with this element
 	 * @returns							Operation succeed
 	 */
-	virtual bool LoadLevelSequence(const TSharedRef< IDatasmithLevelSequenceElement > LevelSequenceElement, FDatasmithLevelSequencePayload& OutLevelSequencePayload) { return false; }
+	virtual bool LoadLevelSequence(const TSharedRef<IDatasmithLevelSequenceElement> LevelSequenceElement, FDatasmithLevelSequencePayload& OutLevelSequencePayload) { return false; }
 
 	/**
 	 * Get the additional scene import options.
@@ -111,6 +121,8 @@ public:
 	 *
 	 * @param OptionClasses list of classes that will be displayed to the user
 	 */
+	virtual void GetSceneImportOptions(TArray<TObjectPtr<UDatasmithOptionsBase>>& Options) {}
+	UE_DEPRECATED(5.1, "Deprecated, please use same method using array of TObjectPtr instead")
 	virtual void GetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options) {}
 
 	/**
@@ -118,6 +130,8 @@ public:
 	 *
 	 * @param Options Actual values for the displayed options.
 	 */
+	virtual void SetSceneImportOptions(const TArray<TObjectPtr<UDatasmithOptionsBase>>& Options) {}
+	UE_DEPRECATED(5.1, "Deprecated, please use same method using array of TObjectPtr instead")
 	virtual void SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options) {}
 
 private:
@@ -169,6 +183,12 @@ namespace Datasmith
 	{
 		TStrongObjectPtr<UOptionClass> Option(MakeOptionsPtr<UOptionClass>());
 		return Option;
+	}
+
+	template<class UOptionClass>
+	inline TObjectPtr<UOptionClass> MakeOptionsObjectPtr()
+	{
+		return NewObject<UOptionClass>(GetTransientPackage(), UOptionClass::StaticClass());
 	}
 
 	FString DATASMITHTRANSLATOR_API GetXMLFileSchema(const FString& XmlFilePath);

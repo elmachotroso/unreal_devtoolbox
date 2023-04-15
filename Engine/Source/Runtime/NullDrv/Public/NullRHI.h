@@ -10,7 +10,7 @@
 struct Rect;
 
 /** A null implementation of the dynamically bound RHI. */
-class FNullDynamicRHI : public FDynamicRHI , public IRHICommandContextPSOFallback
+class FNullDynamicRHI : public FDynamicRHIPSOFallback, public IRHICommandContextPSOFallback
 {
 public:
 
@@ -20,6 +20,7 @@ public:
 	virtual void Init();
 	virtual void Shutdown();
 	virtual const TCHAR* GetName() override { return TEXT("Null"); }
+	virtual ERHIInterfaceType GetInterfaceType() const override { return ERHIInterfaceType::Null; }
 
 	virtual FSamplerStateRHIRef RHICreateSamplerState(const FSamplerStateInitializerRHI& Initializer) final override
 	{ 
@@ -109,12 +110,12 @@ public:
 		return new FRHIUniformBuffer(Layout); 
 	}
 
-	virtual void RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override
+	virtual void RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override
 	{
 
 	}
 
-	virtual FBufferRHIRef RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState , FRHIResourceCreateInfo& CreateInfo) final override
+	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState , FRHIResourceCreateInfo& CreateInfo) final override
 	{ 
 		if(CreateInfo.ResourceArray) 
 		{ 
@@ -128,12 +129,12 @@ public:
 
 	}
 
-	virtual void* LockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) final override
-	{ 
+	virtual void* LockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) final override
+	{
 		return GetStaticBuffer(Buffer->GetSize());
 	}
 
-	virtual void UnlockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) final override
+	virtual void UnlockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer) final override
 	{
 
 	}
@@ -145,35 +146,35 @@ public:
 
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer) final override
 	{ 
-		return new FRHIUnorderedAccessView(); 
+		return new FRHIUnorderedAccessView(StructuredBuffer); 
 	}
 
 
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) final override
 	{ 
-		return new FRHIUnorderedAccessView(); 
+		return new FRHIUnorderedAccessView(Texture);
 	}
 
 
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, uint8 Format) final override
 	{ 
-		return new FRHIUnorderedAccessView(); 
+		return new FRHIUnorderedAccessView(Buffer);
 	}
 
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer) final override
 	{ 
-		return new FRHIShaderResourceView(); 
+		return new FRHIShaderResourceView(Buffer); 
 	}
 
 
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override
 	{ 
-		return new FRHIShaderResourceView(); 
+		return new FRHIShaderResourceView(Buffer);
 	}
 
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer) final override
 	{
-		return new FRHIShaderResourceView();
+		return new FRHIShaderResourceView(Initializer.AsBufferSRV().Buffer);
 	}
 
 	virtual void RHIClearUAVFloat(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FVector4f& Values) final override
@@ -186,23 +187,9 @@ public:
 
 	}
 
-	virtual uint64 RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override
-	{ 
-		OutAlign = 0; 
-		return 0; 
-	}
-
-
-	virtual uint64 RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override
-	{ 
-		OutAlign = 0; 
-		return 0; 
-	}
-
-	virtual uint64 RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override
-	{ 
-		OutAlign = 0; 
-		return 0; 
+	virtual FRHICalcTextureSizeResult RHICalcTexturePlatformSize(FRHITextureDesc const& Desc, uint32 FirstMipIndex) override final
+	{
+		return {};
 	}
 
 	virtual void RHIGetTextureMemoryStats(FTextureMemoryStats& OutStats) final override
@@ -215,33 +202,38 @@ public:
 		return false; 
 	}
 
+	class FNullTexture : public FRHITexture
+	{
+	public:
+		FNullTexture(const FRHITextureCreateDesc& InDesc)
+			: FRHITexture(InDesc)
+		{}
+	};
 
-	virtual FTexture2DRHIRef RHICreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHITexture2D(SizeX,SizeY,NumMips,NumSamples,(EPixelFormat)Format,Flags, CreateInfo.ClearValueBinding); 
+	virtual FTextureRHIRef RHICreateTexture(const FRHITextureCreateDesc& CreateDesc) final override
+	{
+		return new FNullTexture(CreateDesc);
 	}
 
-	virtual FTexture2DRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override
+	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override
 	{ 
-		return FTexture2DRHIRef(); 
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FNullDynamicRHI::RHIAsyncCreateTexture2D"), SizeX, SizeY, (EPixelFormat)Format)
+			.SetClearValue(FClearValueBinding::None)
+			.SetFlags(Flags)
+			.SetNumMips(NumMips)
+			.SetInitialState(InResourceState);
+
+		return this->RHICreateTexture(Desc);
 	}
 
 	virtual void RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D) final override
 	{
 	}
-	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHITexture2DArray(SizeX,SizeY,SizeZ,NumMips,NumSamples,(EPixelFormat)Format,Flags, CreateInfo.ClearValueBinding); 
-	}
-
-	virtual FTexture3DRHIRef RHICreateTexture3D(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHITexture3D(SizeX, SizeY, SizeZ, NumMips, (EPixelFormat)Format, Flags, CreateInfo.ClearValueBinding);
-	}
 
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) final override
 	{ 
-		return new FRHIShaderResourceView(); 
+		return new FRHIShaderResourceView(Texture); 
 	}
 
 	virtual void RHIGenerateMips(FRHITexture* Texture) final override
@@ -253,8 +245,15 @@ public:
 		return 0; 
 	}
 	virtual FTexture2DRHIRef RHIAsyncReallocateTexture2D(FRHITexture2D* Texture2D, int32 NewMipCount, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus) final override
-	{ 
-		return new FRHITexture2D(NewSizeX,NewSizeY,NewMipCount,1,Texture2D->GetFormat(),Texture2D->GetFlags(), Texture2D->GetClearBinding());
+	{
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FNullDynamicRHI::RHIAsyncReallocateTexture2D"), NewSizeX, NewSizeY, Texture2D->GetFormat())
+			.SetClearValue(Texture2D->GetClearBinding())
+			.SetFlags(Texture2D->GetFlags())
+			.SetNumMips(NewMipCount)
+			.SetNumSamples(Texture2D->GetNumSamples());
+
+		return this->RHICreateTexture(Desc);
 	}
 	virtual ETextureReallocationStatus RHIFinalizeAsyncReallocateTexture2D(FRHITexture2D* Texture2D, bool bBlockUntilCompleted) final override
 	{ 
@@ -290,14 +289,7 @@ public:
 	{
 
 	}
-	virtual FTextureCubeRHIRef RHICreateTextureCube(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHITextureCube(Size, NumMips, (EPixelFormat)Format, Flags, CreateInfo.ClearValueBinding);
-	}
-	virtual FTextureCubeRHIRef RHICreateTextureCubeArray(uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override
-	{ 
-		return new FRHITextureCube(Size, NumMips, (EPixelFormat)Format, Flags, CreateInfo.ClearValueBinding);
-	}
+
 	virtual void* RHILockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override
 	{ 
 		DestStride = 0; 
@@ -384,8 +376,12 @@ public:
 	}
 
 	virtual FTexture2DRHIRef RHIGetViewportBackBuffer(FRHIViewport* Viewport) final override
-	{ 
-		return new FRHITexture2D(1,1,1,1,PF_B8G8R8A8,TexCreate_RenderTargetable, FClearValueBinding()); 
+	{
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FNullDynamicRHI::RHIGetViewportBackBuffer"), 1, 1, PF_B8G8R8A8)
+			.SetFlags(ETextureCreateFlags::RenderTargetable);
+
+		return this->RHICreateTexture(Desc);
 	}
 
 	virtual void RHIBeginFrame() final override
@@ -585,10 +581,6 @@ public:
 	virtual void RHIBlockUntilGPUIdle() final override
 	{
 	}
-	virtual bool RHIEnqueueDecompress(uint8_t*, uint8_t*, int, void*) final override
-	{
-		return false;
-	}
 	virtual bool RHIGetAvailableResolutions(FScreenResolutionArray& Resolutions, bool bIgnoreRefreshRate) final override
 	{ 
 		return false; 
@@ -636,9 +628,19 @@ public:
 	{ 
 		return this; 
 	}
-	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) final override
-	{ 
-		return nullptr; 
+
+	virtual IRHIComputeContext* RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask) final override
+	{
+		return nullptr;
+	}
+
+	virtual IRHIPlatformCommandList* RHIFinalizeContext(IRHIComputeContext* Context) final override
+	{
+		return nullptr;
+	}
+
+	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists) final override
+	{
 	}
 
 private:

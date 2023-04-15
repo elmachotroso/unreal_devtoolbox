@@ -2,11 +2,14 @@
 
 #include "ControlRigComponent.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_Hierarchy.h"
+#include "Units/Execution/RigUnit_Hierarchy.h"
 
 #include "SkeletalDebugRendering.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "AnimCustomInstanceHelper.h"
+#include "ControlRigObjectBinding.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigComponent)
 
 // CVar to disable control rig execution within a component
 static TAutoConsoleVariable<int32> CVarControlRigDisableExecutionComponent(TEXT("ControlRig.DisableExecutionInComponent"), 0, TEXT("if nonzero we disable the execution of Control Rigs inside a ControlRigComponent."));
@@ -52,7 +55,7 @@ UControlRigComponent::UControlRigComponent(const FObjectInitializer& ObjectIniti
 
 	ControlRig = nullptr;
 	bResetTransformBeforeTick = true;
-	bResetInitialsBeforeSetup = true;
+	bResetInitialsBeforeConstruction = true;
 	bUpdateRigOnTick = true;
 	bUpdateInEditor = true;
 	bDrawBones = true;
@@ -90,6 +93,22 @@ void UControlRigComponent::BeginDestroy()
 
 	FScopeLock Lock(&gPendingSkeletalMeshesLock);
 	gPendingSkeletalMeshes.Remove(this);
+}
+
+void UControlRigComponent::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	// after compile, we have to reinitialize
+	// because it needs new execution code
+	// since memory has changed, similar to FAnimNode_ControlRig::PostSerialize
+	if (Ar.IsObjectReferenceCollector())
+	{
+		if (ControlRig)
+		{
+			ControlRig->Initialize();
+		}
+	}
 }
 
 #if WITH_EDITOR
@@ -282,14 +301,14 @@ void UControlRigComponent::OnPostInitialize_Implementation(UControlRigComponent*
 	OnPostInitializeDelegate.Broadcast(Component);
 }
 
-void UControlRigComponent::OnPreSetup_Implementation(UControlRigComponent* Component)
+void UControlRigComponent::OnPreConstruction_Implementation(UControlRigComponent* Component)
 {
-	OnPreSetupDelegate.Broadcast(Component);
+	OnPreConstructionDelegate.Broadcast(Component);
 }
 
-void UControlRigComponent::OnPostSetup_Implementation(UControlRigComponent* Component)
+void UControlRigComponent::OnPostConstruction_Implementation(UControlRigComponent* Component)
 {
-	OnPostSetupDelegate.Broadcast(Component);
+	OnPostConstructionDelegate.Broadcast(Component);
 }
 
 void UControlRigComponent::OnPreForwardsSolve_Implementation(UControlRigComponent* Component)
@@ -338,6 +357,57 @@ void UControlRigComponent::Initialize()
 			CR->RequestInit();
 		}
 	}
+
+	// we want to make sure all components driven by control rig component tick
+	// after the control rig component such that by the time they tick they can
+	// send the latest data for rendering
+	// also need to make sure all components driving the control rig component tick before
+	// the control rig component ticks
+	TMap<TObjectPtr<USceneComponent>, EControlRigComponentMapDirection> MappedComponents;
+	TSet<TObjectPtr<USceneComponent>> MappedComponentsWithErrors;
+	for (const FControlRigComponentMappedElement& MappedElement : MappedElements)
+	{
+		if (MappedElement.SceneComponent)
+		{
+			if (EControlRigComponentMapDirection* Direction = MappedComponents.Find(MappedElement.SceneComponent))
+			{
+				if (*Direction != MappedElement.Direction)
+				{
+					// elements from the same component should not be mapped to both input and output
+					MappedComponentsWithErrors.Add(MappedElement.SceneComponent);
+					continue;
+				}
+			}
+
+			// input elements should tick before ControlRig updates
+			// output elements should tick after ControlRig updates
+			if (MappedElement.Direction == EControlRigComponentMapDirection::Output)
+			{
+				MappedElement.SceneComponent->AddTickPrerequisiteComponent(this);
+			}
+			else
+			{
+				AddTickPrerequisiteComponent(MappedElement.SceneComponent);
+			}
+
+			MappedComponents.Add(MappedElement.SceneComponent) = MappedElement.Direction;
+			
+			// make sure that the animation is updated so that bone transforms are updated on the mapped component
+			// (otherwise, FControlRigAnimInstanceProxy::Evaluate is never called when moving a control in the editor)
+			if (USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(MappedElement.SceneComponent))
+			{
+				Component->SetUpdateAnimationInEditor(bUpdateInEditor);
+			}
+		}
+	}
+
+	for (const TObjectPtr<USceneComponent> ErrorComponent : MappedComponentsWithErrors)
+	{
+		FString Message = FString::Printf(
+				TEXT("Elements from the same component (%s) should not be mapped to both input and output,"
+					" because it creates ambiguity when inferring tick order."), *ErrorComponent.GetName());
+		UE_LOG(LogControlRig, Warning, TEXT("%s: %s"), *GetPathName(), *Message);
+	}
 }
 
 void UControlRigComponent::Update(float DeltaTime)
@@ -356,7 +426,7 @@ void UControlRigComponent::Update(float DeltaTime)
 		else
 		{
 			CR->SetDeltaTime(DeltaTime);
-			CR->bResetInitialTransformsBeforeSetup = bResetInitialsBeforeSetup;
+			CR->bResetInitialTransformsBeforeConstruction = bResetInitialsBeforeConstruction;
 
 			// todo: set log
 			// todo: set external data providers
@@ -461,6 +531,7 @@ void UControlRigComponent::ClearMappedElements()
 	}
 
 	MappedElements.Reset();
+	MappedElements = UserDefinedElements;
 	ValidateMappingData();
 	Initialize();
 }
@@ -553,7 +624,7 @@ void UControlRigComponent::AddMappedSkeletalMesh(USkeletalMeshComponent* Skeleta
 	TArray<FControlRigComponentMappedBone> BonesToMap = Bones;
 	if (BonesToMap.Num() == 0)
 	{
-		if (const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->SkeletalMesh)
+		if (const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
 		{
 			if (const USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 			{
@@ -579,7 +650,7 @@ void UControlRigComponent::AddMappedSkeletalMesh(USkeletalMeshComponent* Skeleta
 	TArray<FControlRigComponentMappedCurve> CurvesToMap = Curves;
 	if (CurvesToMap.Num() == 0)
 	{
-		if (USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->SkeletalMesh)
+		if (USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
 		{
 			if (USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 			{
@@ -660,7 +731,7 @@ void UControlRigComponent::SetBoneInitialTransformsFromSkeletalMesh(USkeletalMes
 		if (UControlRig* CR = SetupControlRigIfRequired())
 		{
 			CR->SetBoneInitialTransformsFromSkeletalMesh(InSkeletalMesh);
-			bResetInitialsBeforeSetup = false;
+			bResetInitialsBeforeConstruction = false;
 		}
 	}
 }
@@ -762,9 +833,9 @@ void UControlRigComponent::SetInitialBoneTransform(FName BoneName, FTransform In
 		const int32 BoneIndex = CR->GetHierarchy()->GetIndex(FRigElementKey(BoneName, ERigElementType::Bone));
 		if (BoneIndex != INDEX_NONE)
 		{
-			if(!CR->IsRunningPreSetup() && !CR->IsRunningPostSetup())
+			if(!CR->IsRunningPreConstruction() && !CR->IsRunningPostConstruction())
 			{
-				ReportError(TEXT("SetInitialBoneTransform should only be called during OnPreSetup / OnPostSetup."));
+				ReportError(TEXT("SetInitialBoneTransform should only be called during OnPreConstruction / OnPostConstruction."));
 				return;
 			}
 
@@ -1128,8 +1199,8 @@ UControlRig* UControlRigComponent::SetupControlRigIfRequired()
 		if (ControlRig->GetClass() != ControlRigClass)
 		{
 			ControlRig->OnInitialized_AnyThread().RemoveAll(this);
-			ControlRig->OnPreSetup_AnyThread().RemoveAll(this);
-			ControlRig->OnPostSetup_AnyThread().RemoveAll(this);
+			ControlRig->OnPreConstruction_AnyThread().RemoveAll(this);
+			ControlRig->OnPostConstruction_AnyThread().RemoveAll(this);
 			ControlRig->OnPreForwardsSolve_AnyThread().RemoveAll(this);
 			ControlRig->OnPostForwardsSolve_AnyThread().RemoveAll(this);
 			ControlRig->OnExecuted_AnyThread().RemoveAll(this);
@@ -1162,23 +1233,48 @@ void UControlRigComponent::SetControlRig(UControlRig* InControlRig)
 	if (ControlRig)
 	{
 		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
-		ControlRig->OnPreSetup_AnyThread().RemoveAll(this);
-		ControlRig->OnPostSetup_AnyThread().RemoveAll(this);
+		ControlRig->OnPreConstruction_AnyThread().RemoveAll(this);
+		ControlRig->OnPostConstruction_AnyThread().RemoveAll(this);
 		ControlRig->OnPreForwardsSolve_AnyThread().RemoveAll(this);
 		ControlRig->OnPostForwardsSolve_AnyThread().RemoveAll(this);
 		ControlRig->OnExecuted_AnyThread().RemoveAll(this);
 	}
 	ControlRig = InControlRig;
 	ControlRig->OnInitialized_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigInitializedEvent);
-	ControlRig->OnPreSetup_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPreSetupEvent);
-	ControlRig->OnPostSetup_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPostSetupEvent);
+	ControlRig->OnPreConstruction_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPreConstructionEvent);
+	ControlRig->OnPostConstruction_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPostConstructionEvent);
 	ControlRig->OnPreForwardsSolve_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPreForwardsSolveEvent);
 	ControlRig->OnPostForwardsSolve_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigPostForwardsSolveEvent);
 	ControlRig->OnExecuted_AnyThread().AddUObject(this, &UControlRigComponent::HandleControlRigExecutedEvent);
 
 	ControlRig->GetDataSourceRegistry()->RegisterDataSource(UControlRig::OwnerComponent, this);
+	if(ObjectBinding.IsValid())
+	{
+		ControlRig->SetObjectBinding(ObjectBinding);
+	}
 
 	ControlRig->Initialize();
+}
+
+void UControlRigComponent::SetControlRigClass(TSubclassOf<UControlRig> InControlRigClass)
+{
+	ControlRig = nullptr;
+	ControlRigClass = InControlRigClass;
+	Initialize();
+}
+
+void UControlRigComponent::SetObjectBinding(UObject* InObjectToBind)
+{
+	if(!ObjectBinding.IsValid())
+	{
+		ObjectBinding = MakeShared<FControlRigObjectBinding>();
+	}
+	ObjectBinding->BindToObject(InObjectToBind);
+
+	if(UControlRig* CR = SetupControlRigIfRequired())
+	{
+		CR->SetObjectBinding(ObjectBinding);
+	}
 }
 
 void UControlRigComponent::ValidateMappingData()
@@ -1192,8 +1288,20 @@ void UControlRigComponent::ValidateMappingData()
 			MappedElement.ElementIndex = INDEX_NONE;
 			MappedElement.SubIndex = INDEX_NONE;
 
-			AActor* MappedOwner = MappedElement.ComponentReference.OtherActor == nullptr ? GetOwner() : ToRawPtr(MappedElement.ComponentReference.OtherActor);
+			AActor* MappedOwner = !MappedElement.ComponentReference.OtherActor.IsValid() ? GetOwner() : MappedElement.ComponentReference.OtherActor.Get();
 			MappedElement.SceneComponent = Cast<USceneComponent>(MappedElement.ComponentReference.GetComponent(MappedOwner));
+
+			// try again with the path to the component
+			if (MappedElement.SceneComponent == nullptr)
+			{
+				FComponentReference TempReference;
+				TempReference.PathToComponent = MappedElement.ComponentReference.ComponentProperty.ToString();
+				if (USceneComponent* TempSceneComponent = Cast<USceneComponent>(TempReference.GetComponent(MappedOwner)))
+				{
+					MappedElement.ComponentReference = TempReference;
+					MappedElement.SceneComponent = TempSceneComponent;
+				}
+			}
 
 			if (MappedElement.SceneComponent == nullptr ||
 				MappedElement.SceneComponent == this ||
@@ -1225,7 +1333,7 @@ void UControlRigComponent::ValidateMappingData()
 				}
 				else if (!MappedElement.TransformName.IsNone())
 				{
-					if (USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->SkeletalMesh)
+					if (USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
 					{
 						if (USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 						{
@@ -1402,7 +1510,7 @@ void UControlRigComponent::TransferOutputs()
 		USceneComponent* LastComponent = nullptr;
 		FControlRigAnimInstanceProxy* Proxy = nullptr;
 
-		for (FControlRigComponentMappedElement& MappedElement : MappedElements)
+		for (const FControlRigComponentMappedElement& MappedElement : MappedElements)
 		{
 			if (LastComponent != MappedElement.SceneComponent || Proxy == nullptr)
 			{
@@ -1416,9 +1524,7 @@ void UControlRigComponent::TransferOutputs()
 			}
 		}
 
-		TArray<USkeletalMeshComponent*> ComponentsToTick;
-
-		for (FControlRigComponentMappedElement& MappedElement : MappedElements)
+		for (const FControlRigComponentMappedElement& MappedElement : MappedElements)
 		{
 			if (MappedElement.ElementIndex == INDEX_NONE || MappedElement.Direction == EControlRigComponentMapDirection::Input)
 			{
@@ -1447,7 +1553,6 @@ void UControlRigComponent::TransferOutputs()
 
 					if (Proxy && (MappedElement.SceneComponent != nullptr))
 					{
-						ComponentsToTick.AddUnique(Cast<USkeletalMeshComponent>(MappedElement.SceneComponent));
 						if(MappedElement.Space == EControlRigComponentSpace::WorldSpace)
 						{
 							Transform = Transform.GetRelativeTransform(MappedElement.SceneComponent->GetComponentToWorld());
@@ -1493,29 +1598,8 @@ void UControlRigComponent::TransferOutputs()
 
 					if (Proxy)
 					{
-						ComponentsToTick.AddUnique(Cast<USkeletalMeshComponent>(MappedElement.SceneComponent));
 						Proxy->StoredCurves.FindOrAdd((SmartName::UID_Type)MappedElement.SubIndex) = ControlRig->GetHierarchy()->GetCurveValue(MappedElement.ElementIndex);
 					}
-				}
-			}
-		}
-
-		for (USkeletalMeshComponent* SkeletalMeshComponent : ComponentsToTick)
-		{
-			if (SkeletalMeshComponent)
-			{
-				if (SkeletalMeshComponent->IsValidLowLevel() &&
-					!SkeletalMeshComponent->HasAnyFlags(RF_BeginDestroyed) &&
-					IsValid(SkeletalMeshComponent))
-				{
-					SkeletalMeshComponent->TickAnimation(0.f, false);
-					SkeletalMeshComponent->UpdateLODStatus();
-					SkeletalMeshComponent->RefreshBoneTransforms();
-					SkeletalMeshComponent->RefreshSlaveComponents();
-					SkeletalMeshComponent->UpdateComponentToWorld();
-					SkeletalMeshComponent->FinalizeBoneTransform();
-					SkeletalMeshComponent->MarkRenderTransformDirty();
-					SkeletalMeshComponent->MarkRenderDynamicDataDirty();
 				}
 			}
 		}
@@ -1584,7 +1668,7 @@ void UControlRigComponent::HandleControlRigInitializedEvent(UControlRig* InContr
 	}
 }
 
-void UControlRigComponent::HandleControlRigPreSetupEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
 {
 	TArray<USkeletalMeshComponent*> ComponentsToTick;
 
@@ -1614,7 +1698,7 @@ void UControlRigComponent::HandleControlRigPreSetupEvent(UControlRig* InControlR
 	{
 		SkeletalMeshComponent->TickAnimation(0.f, false);
 		SkeletalMeshComponent->RefreshBoneTransforms();
-		SkeletalMeshComponent->RefreshSlaveComponents();
+		SkeletalMeshComponent->RefreshFollowerComponents();
 		SkeletalMeshComponent->UpdateComponentToWorld();
 		SkeletalMeshComponent->FinalizeBoneTransform();
 		SkeletalMeshComponent->MarkRenderTransformDirty();
@@ -1625,27 +1709,27 @@ void UControlRigComponent::HandleControlRigPreSetupEvent(UControlRig* InControlR
 	if (bUpdateInEditor)
 	{
 		FEditorScriptExecutionGuard AllowScripts;
-		OnPreSetup(this);
+		OnPreConstruction(this);
 	}
 	else
 #endif
 	{
-		OnPreSetup(this);
+		OnPreConstruction(this);
 	}
 }
 
-void UControlRigComponent::HandleControlRigPostSetupEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
+void UControlRigComponent::HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName)
 {
 #if WITH_EDITOR
 	if (bUpdateInEditor)
 	{
 		FEditorScriptExecutionGuard AllowScripts;
-		OnPostSetup(this);
+		OnPostConstruction(this);
 	}
 	else
 #endif
 	{
-		OnPostSetup(this);
+		OnPostConstruction(this);
 	}
 }
 
@@ -1738,30 +1822,30 @@ bool UControlRigComponent::EnsureCalledOutsideOfBracket(const TCHAR* InCallingFu
 {
 	if (UControlRig* CR = SetupControlRigIfRequired())
 	{
-		if (CR->IsRunningPreSetup())
+		if (CR->IsRunningPreConstruction())
 		{
 			if (InCallingFunctionName)
 			{
-				ReportError(FString::Printf(TEXT("%s cannot be called during the PreSetupEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("%s cannot be called during the PreConstructionEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 			else
 			{
-				ReportError(FString::Printf(TEXT("Cannot be called during the PreSetupEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("Cannot be called during the PreConstructionEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 		}
 
-		if (CR->IsRunningPostSetup())
+		if (CR->IsRunningPostConstruction())
 		{
 			if (InCallingFunctionName)
 			{
-				ReportError(FString::Printf(TEXT("%s cannot be called during the PostSetupEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("%s cannot be called during the PostConstructionEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 			else
 			{
-				ReportError(FString::Printf(TEXT("Cannot be called during the PostSetupEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("Cannot be called during the PostConstructionEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 		}
@@ -1784,12 +1868,12 @@ bool UControlRigComponent::EnsureCalledOutsideOfBracket(const TCHAR* InCallingFu
 		{
 			if (InCallingFunctionName)
 			{
-				ReportError(FString::Printf(TEXT("%s cannot be called during the UpdateEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("%s cannot be called during the ForwardsSolveEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 			else
 			{
-				ReportError(FString::Printf(TEXT("Cannot be called during the UpdateEvent - use ConstructionScript instead."), InCallingFunctionName));
+				ReportError(FString::Printf(TEXT("Cannot be called during the ForwardsSolveEvent - use ConstructionScript instead."), InCallingFunctionName));
 				return false;
 			}
 		}
@@ -1825,7 +1909,7 @@ void UControlRigComponent::ReportError(const FString& InMessage)
 
 		FNotificationInfo Info(FText::FromString(InMessage));
 		Info.bUseSuccessFailIcons = true;
-		Info.Image = FEditorStyle::GetBrush(TEXT("MessageLog.Warning"));
+		Info.Image = FAppStyle::GetBrush(TEXT("MessageLog.Warning"));
 		Info.bFireAndForget = true;
 		Info.bUseThrobber = true;
 		Info.FadeOutDuration = 8.0f;
@@ -1910,7 +1994,7 @@ void FControlRigSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 
 					const float BoneLength = (End - Start).Size();
 					// clamp by bound, we don't want too long or big
-					const float Radius = FMath::Clamp(BoneLength * 0.05f, 0.1f, MaxDrawRadius) * RadiusMultiplier;
+					const float Radius = FMath::Clamp<float>(BoneLength * 0.05f, 0.1f, MaxDrawRadius) * RadiusMultiplier;
 
 					//Render Sphere for bone end point and a cone between it and its parent.
 					SkeletalDebugRendering::DrawWireBone(PDI, Start, End, LineColor, SDPG_Foreground, Radius);
@@ -1993,3 +2077,4 @@ uint32 FControlRigSceneProxy::GetAllocatedSize(void) const
 {
 	return FPrimitiveSceneProxy::GetAllocatedSize();
 }
+

@@ -204,11 +204,11 @@ class SettingsDialog(QtCore.QObject):
         self.ui.switchboard_settings_group = CollapsibleGroupBox()
         self.ui.switchboard_settings_group.setTitle("Switchboard")
         layout = QtWidgets.QFormLayout(self.ui.switchboard_settings_group)
-        
-        settings.IP_ADDRESS.create_ui(form_layout=layout)
+
+        settings.ADDRESS.create_ui(form_layout=layout)
         settings.TRANSPORT_PATH.create_ui(form_layout=layout)
         config.LISTENER_EXE.create_ui(form_layout=layout)
-        
+
         return self.ui.switchboard_settings_group
         
     def _create_project_settings(self, config: Config):
@@ -322,12 +322,15 @@ class SettingsDialog(QtCore.QObject):
 
         if not config_path:
             self._changed_config_path = config.Config.DEFAULT_CONFIG_PATH
-            rel_config_path_str = self._changed_config_path.stem
+            config_path_str = self._changed_config_path.stem
         else:
-            rel_config_path_str = str(
-                config.get_relative_config_path(config_path).with_suffix(''))
+            # prefer relative path when possible
+            try:
+                config_path_str = str(config.get_relative_config_path(config_path).with_suffix(''))
+            except ValueError:
+                config_path_str = str(config_path)
 
-        self.ui.config_path_line_edit.setText(rel_config_path_str)
+        self.ui.config_path_line_edit.setText(config_path_str)
 
     def config_path_text_changed(self, config_path_str):
         config_path = config.Config.DEFAULT_CONFIG_PATH

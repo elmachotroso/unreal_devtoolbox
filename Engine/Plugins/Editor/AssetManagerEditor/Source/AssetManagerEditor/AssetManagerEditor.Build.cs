@@ -6,9 +6,9 @@ public class AssetManagerEditor : ModuleRules
 {
 	public AssetManagerEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
+		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"AssetManagerEditor/Private",
+				"StatsViewer",
 			}
 		);
 
@@ -35,7 +35,6 @@ public class AssetManagerEditor : ModuleRules
 				"ContentBrowser",
 				"ContentBrowserData",
 				"WorkspaceMenuStructure",
-				"EditorStyle",
 				"AssetTools",
 				"PropertyEditor",
 				"GraphEditor",
@@ -46,6 +45,7 @@ public class AssetManagerEditor : ModuleRules
 				"EditorWidgets",
 				"TreeMap",
 				"ToolMenus",
+				"ToolWidgets",
 			}
 		);
 	}

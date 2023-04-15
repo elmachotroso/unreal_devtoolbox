@@ -27,14 +27,22 @@ class UAnimInstance;
 class UCanvas;
 struct FAnimInstanceProxy;
 struct FAnimNode_AssetPlayerBase;
+struct FAnimNode_AssetPlayerRelevancyBase;
 struct FAnimNode_StateMachine;
 struct FAnimNode_LinkedInputPose;
 struct FBakedAnimationStateMachine;
 class FCompilerResultsLog;
 struct FBoneContainer;
 struct FAnimNode_LinkedAnimLayer;
+enum class ETransitionRequestQueueMode : uint8;
+enum class ETransitionRequestOverwriteMode : uint8;
 
 typedef TArray<FTransform> FTransformArrayA2;
+
+namespace UE::Anim
+{
+	using FSlotInertializationRequest = TPair<float, const UBlendProfile*>;
+}	// namespace UE::Anim
 
 struct FParallelEvaluationData
 {
@@ -231,16 +239,19 @@ struct FQueuedMontageBlendingOutEvent
 struct FQueuedMontageEndedEvent
 {
 	class UAnimMontage* Montage;
+	int32 MontageInstanceID;
 	bool bInterrupted;
 	FOnMontageEnded Delegate;
 
 	FQueuedMontageEndedEvent()
 		: Montage(NULL)
+		, MontageInstanceID(INDEX_NONE)
 		, bInterrupted(false)
 	{}
 
-	FQueuedMontageEndedEvent(class UAnimMontage* InMontage, bool InbInterrupted, FOnMontageEnded InDelegate)
+	FQueuedMontageEndedEvent(class UAnimMontage* InMontage, int32 InInstanceID, bool InbInterrupted, FOnMontageEnded InDelegate)
 		: Montage(InMontage)
+		, MontageInstanceID(InInstanceID)
 		, bInterrupted(InbInterrupted)
 		, Delegate(InDelegate)
 	{}
@@ -427,6 +438,9 @@ private:
 	uint8 bQueueMontageEvents : 1;
 
 #if DO_CHECK
+	/** Guard flag used for checking whether we are in user callbacks for initialization */
+	uint8 bInitializing : 1;
+
 	/** Used to guard against recursive calls to UpdateAnimation */
 	bool bPostUpdatingAnimation;
 
@@ -470,14 +484,14 @@ public:
 	 * This snapshot can then be retrieved by name in the animation blueprint for blending. 
 	 * The snapshot is taken at the current LOD, so if for example you took the snapshot at LOD1 and then used it at LOD0 any bones not in LOD1 will use the reference pose 
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Pose")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Pose")
 	virtual void SavePoseSnapshot(FName SnapshotName);
 
 	/** Add an empty pose snapshot to the internal snapshot cache (or recycle an existing pose snapshot if the name is already in use) */
 	FPoseSnapshot& AddPoseSnapshot(FName SnapshotName);
 
 	/** Remove a previously saved pose snapshot from the internal snapshot cache */
-	UFUNCTION(BlueprintCallable, Category = "Pose")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Pose")
 	void RemovePoseSnapshot(FName SnapshotName);
 
 	/** Get a cached pose snapshot by name */
@@ -488,7 +502,7 @@ public:
 	 * The snapshot is taken at the current LOD, so if for example you took the snapshot at LOD1 
 	 * and then used it at LOD0 any bones not in LOD1 will use the reference pose 
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Pose")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Pose")
 	virtual void SnapshotPose(UPARAM(ref) FPoseSnapshot& Snapshot);
 
 	// Can this animation instance run Update or Evaluation work in parallel
@@ -501,30 +515,30 @@ public:
 	bool NeedsUpdate() const;
 
 	/** Get whether to process notifies from any linked anim instances */
-	UFUNCTION(BlueprintPure, Category = "Notifies")
+	UFUNCTION(BlueprintPure, Category = "Animation|Notifies")
 	bool GetReceiveNotifiesFromLinkedInstances() const { return bReceiveNotifiesFromLinkedInstances; }
 
 	/** Set whether to process notifies from any linked anim instances */
-	UFUNCTION(BlueprintCallable, Category = "Notifies")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notifies")
 	void SetReceiveNotifiesFromLinkedInstances(bool bSet) { bReceiveNotifiesFromLinkedInstances = bSet; }
 
 	/** Get whether to propagate notifies to any linked anim instances */
-	UFUNCTION(BlueprintPure, Category = "Notifies")
+	UFUNCTION(BlueprintPure, Category = "Animation|Notifies")
 	bool GetPropagateNotifiesToLinkedInstances() const { return bPropagateNotifiesToLinkedInstances; }
 
 	/** Set whether to propagate notifies to any linked anim instances */
-	UFUNCTION(BlueprintCallable, Category = "Notifies")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Notifies")
 	void SetPropagateNotifiesToLinkedInstances(bool bSet) { bPropagateNotifiesToLinkedInstances = bSet; }
 
-	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking|Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Linked Anim Graphs|Montage")
 	bool IsUsingMainInstanceMontageEvaluationData() const { return bUseMainInstanceMontageEvaluationData; }
 
-	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking|Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Linked Anim Graphs|Montage")
 	void SetUseMainInstanceMontageEvaluationData(bool bSet) { bUseMainInstanceMontageEvaluationData = bSet; }
 
 private:
 	// Does this anim instance need immediate update (rather than parallel)?
-	bool NeedsImmediateUpdate(float DeltaSeconds) const;
+	bool NeedsImmediateUpdate(float DeltaSeconds, bool bNeedsValidRootMotion) const;
 
 public:
 	/** Returns the owning actor of this AnimInstance */
@@ -569,23 +583,23 @@ public:
 public:
 
 	/** Play normal animation asset on the slot node by creating a dynamic UAnimMontage. You can only play one asset (whether montage or animsequence) at a time per SlotGroup. */
-	UFUNCTION(BlueprintCallable, Category="Animation")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	UAnimMontage* PlaySlotAnimationAsDynamicMontage(UAnimSequenceBase* Asset, FName SlotNodeName, float BlendInTime = 0.25f, float BlendOutTime = 0.25f, float InPlayRate = 1.f, int32 LoopCount = 1, float BlendOutTriggerTime = -1.f, float InTimeToStartMontageAt = 0.f);
 
 	/** Play normal animation asset on the slot node by creating a dynamic UAnimMontage with blend in arguments. You can only play one asset (whether montage or animsequence) at a time per SlotGroup. */
-	UFUNCTION(BlueprintCallable, Category = "Animation")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	UAnimMontage* PlaySlotAnimationAsDynamicMontage_WithBlendArgs(UAnimSequenceBase* Asset, FName SlotNodeName, const FAlphaBlendArgs& BlendIn, const FAlphaBlendArgs& BlendOut, float InPlayRate = 1.f, int32 LoopCount = 1, float BlendOutTriggerTime = -1.f, float InTimeToStartMontageAt = 0.f);
 
 	/** Play normal animation asset on the slot node by creating a dynamic UAnimMontage with blend in settings. You can only play one asset (whether montage or animsequence) at a time per SlotGroup. */
-	UFUNCTION(BlueprintCallable, Category = "Animation")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	UAnimMontage* PlaySlotAnimationAsDynamicMontage_WithBlendSettings(UAnimSequenceBase* Asset, FName SlotNodeName, const FMontageBlendSettings& BlendInSettings, const FMontageBlendSettings& BlendOutSettings, float InPlayRate = 1.f, int32 LoopCount = 1, float BlendOutTriggerTime = -1.f, float InTimeToStartMontageAt = 0.f);
 
 	/** Stops currently playing slot animation slot or all*/
-	UFUNCTION(BlueprintCallable, Category="Animation")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	void StopSlotAnimation(float InBlendOutTime = 0.25f, FName SlotNodeName = NAME_None);
 
 	/** Return true if it's playing the slot animation */
-	UFUNCTION(BlueprintPure, Category="Animation")
+	UFUNCTION(BlueprintPure, Category="Animation|Montage")
 	bool IsPlayingSlotAnimation(const UAnimSequenceBase* Asset, FName SlotNodeName) const;
 
 	/** Return true if this instance playing the slot animation, also returning the montage it is playing on */
@@ -596,48 +610,48 @@ public:
 	 ********************************************************************************************* */
 public:
 	/** Plays an animation montage. Returns the length of the animation montage in seconds. Returns 0.f if failed to play. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	float Montage_Play(UAnimMontage* MontageToPlay, float InPlayRate = 1.f, EMontagePlayReturnType ReturnValueType = EMontagePlayReturnType::MontageLength, float InTimeToStartMontageAt=0.f, bool bStopAllMontages = true);
 
 	/** Plays an animation montage. Same as Montage_Play, but you can specify an AlphaBlend for Blend In settings. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	float Montage_PlayWithBlendIn(UAnimMontage* MontageToPlay, const FAlphaBlendArgs& BlendIn, float InPlayRate = 1.f, EMontagePlayReturnType ReturnValueType = EMontagePlayReturnType::MontageLength, float InTimeToStartMontageAt=0.f, bool bStopAllMontages = true);
 
 	/** Plays an animation montage. Same as Montage_Play, but you can overwrite all of the montage's default blend in settings. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	float Montage_PlayWithBlendSettings(UAnimMontage* MontageToPlay, const FMontageBlendSettings& BlendInSettings, float InPlayRate = 1.f, EMontagePlayReturnType ReturnValueType = EMontagePlayReturnType::MontageLength, float InTimeToStartMontageAt=0.f, bool bStopAllMontages = true);
 
 	/** Stops the animation montage. If reference is NULL, it will stop ALL active montages. */
 	/** Stopped montages will blend out using their montage asset's BlendOut, with InBlendOutTime as the BlendTime */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_Stop(float InBlendOutTime, const UAnimMontage* Montage = NULL);
 
 	/** Same as Montage_Stop. Uses values from the AlphaBlendArgs. Other settings come from the montage asset*/
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_StopWithBlendOut(const FAlphaBlendArgs& BlendOut, const UAnimMontage* Montage = nullptr);
 
 	/** Same as Montage_Stop, but all blend settings are provided instead of using the ones on the montage asset*/
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_StopWithBlendSettings(const FMontageBlendSettings& BlendOutSettings, const UAnimMontage* Montage = nullptr);
 
 	/** Stops all active montages belonging to a group. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_StopGroupByName(float InBlendOutTime, FName GroupName);
 
 	/** Pauses the animation montage. If reference is NULL, it will pause ALL active montages. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_Pause(const UAnimMontage* Montage = NULL);
 
 	/** Resumes a paused animation montage. If reference is NULL, it will resume ALL active montages. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_Resume(const UAnimMontage* Montage);
 
 	/** Makes a montage jump to a named section. If Montage reference is NULL, it will do that to all active montages. */
-	UFUNCTION(BlueprintCallable, Category="Montage")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	void Montage_JumpToSection(FName SectionName, const UAnimMontage* Montage = NULL);
 
 	/** Makes a montage jump to the end of a named section. If Montage reference is NULL, it will do that to all active montages. */
-	UFUNCTION(BlueprintCallable, Category="Montage")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	void Montage_JumpToSectionsEnd(FName SectionName, const UAnimMontage* Montage = NULL);
 
 	/** Relink new next section AFTER SectionNameToChange in run-time
@@ -649,47 +663,47 @@ public:
 	 * @param SectionNameToChange : This should be the name of the Montage Section after which you want to insert a new next section
 	 * @param NextSection	: new next section 
 	 */
-	UFUNCTION(BlueprintCallable, Category="Montage")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	void Montage_SetNextSection(FName SectionNameToChange, FName NextSection, const UAnimMontage* Montage = NULL);
 
 	/** Change AnimMontage play rate. NewPlayRate = 1.0 is the default playback rate. */
-	UFUNCTION(BlueprintCallable, Category="Montage")
+	UFUNCTION(BlueprintCallable, Category="Animation|Montage")
 	void Montage_SetPlayRate(const UAnimMontage* Montage, float NewPlayRate = 1.f);
 
 	/** Returns true if the animation montage is active. If the Montage reference is NULL, it will return true if any Montage is active. */
-	UFUNCTION(BlueprintPure, Category="Montage")
+	UFUNCTION(BlueprintPure, Category="Animation|Montage")
 	bool Montage_IsActive(const UAnimMontage* Montage) const;
 
 	/** Returns true if the animation montage is currently active and playing. 
 	If reference is NULL, it will return true is ANY montage is currently active and playing. */
-	UFUNCTION(BlueprintPure, Category="Montage")
+	UFUNCTION(BlueprintPure, Category="Animation|Montage")
 	bool Montage_IsPlaying(const UAnimMontage* Montage) const;
 
 	/** Returns the name of the current animation montage section. */
-	UFUNCTION(BlueprintPure, Category="Montage")
+	UFUNCTION(BlueprintPure, Category="Animation|Montage")
 	FName Montage_GetCurrentSection(const UAnimMontage* Montage = NULL) const;
 
 	/** Get Current Montage Position */
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	float Montage_GetPosition(const UAnimMontage* Montage) const;
 	
 	/** Set position. */
-	UFUNCTION(BlueprintCallable, Category = "Montage")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Montage")
 	void Montage_SetPosition(const UAnimMontage* Montage, float NewPosition);
 	
 	/** return true if Montage is not currently active. (not valid or blending out) */
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	bool Montage_GetIsStopped(const UAnimMontage* Montage) const;
 
 	/** Get the current blend time of the Montage.
 	If Montage reference is NULL, it will return the current blend time on the first active Montage found. */
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	float Montage_GetBlendTime(const UAnimMontage* Montage) const;
 
 	/** Get PlayRate for Montage.
 	If Montage reference is NULL, PlayRate for any Active Montage will be returned.
 	If Montage is not playing, 0 is returned. */
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	float Montage_GetPlayRate(const UAnimMontage* Montage) const;
 
 	/*********************************************************************************************
@@ -709,12 +723,12 @@ public:
 	void MontageSync_StopFollowing(const UAnimMontage* MontageFollower);
 
 	/** Returns true if any montage is playing currently. Doesn't mean it's active though, it could be blending out. */
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	bool IsAnyMontagePlaying() const;
 
 	/** Get a current Active Montage in this AnimInstance. 
 		Note that there might be multiple Active at the same time. This will only return the first active one it finds. **/
-	UFUNCTION(BlueprintPure, Category = "Montage")
+	UFUNCTION(BlueprintPure, Category = "Animation|Montage")
 	UAnimMontage* GetCurrentActiveMontage() const;
 
 	/** Called when a montage starts blending out, whether interrupted or finished */
@@ -783,7 +797,7 @@ public:
 	UAnimInstance* GetSubInstanceByTag(FName InTag) const { return GetLinkedAnimGraphInstanceByTag(InTag); }
 
 	/** Runs through all nodes, attempting to find the first linked instance by name/tag */
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs")
 	UAnimInstance* GetLinkedAnimGraphInstanceByTag(FName InTag) const;
 
 	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimGraphInstancesByTag")
@@ -791,14 +805,14 @@ public:
 
 	/** Runs through all nodes, attempting to find all linked instances that match the name/tag */
 	UE_DEPRECATED(5.0, "Tags are unique so this function is no longer supported. Please use GetLinkedAnimGraphInstanceByTag instead")
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking", meta=(DeprecatedFunction, DeprecationMessage="Tags are unique so this function is no longer supported. Please use GetLinkedAnimGraphInstanceByTag instead"))
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs", meta=(DeprecatedFunction, DeprecationMessage="Tags are unique so this function is no longer supported. Please use GetLinkedAnimGraphInstanceByTag instead"))
 	void GetLinkedAnimGraphInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutLinkedInstances) const;
 
 	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimGraphByTag")
 	void SetSubInstanceClassByTag(FName InTag, TSubclassOf<UAnimInstance> InClass) { LinkAnimGraphByTag(InTag, InClass); }
 
 	/** Runs through all nodes, attempting to find a linked instance by name/tag, then sets the class of each node if the tag matches */
-	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Linked Anim Graphs")
 	void LinkAnimGraphByTag(FName InTag, TSubclassOf<UAnimInstance> InClass);
 
 	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimClassLayers")
@@ -810,8 +824,8 @@ public:
 	 * and a separate linked instance is allocated for each layer node.
 	 * If InClass is null, then all layers are reset to their defaults.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
-	void LinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+	UFUNCTION(BlueprintCallable, Category = "Animation|Linked Anim Graphs")
+	virtual void LinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
 
 	UE_DEPRECATED(4.24, "Function renamed, please use UnlinkAnimClassLayers")
 	void ClearLayerOverlay(TSubclassOf<UAnimInstance> InClass) { UnlinkAnimClassLayers(InClass); }
@@ -821,29 +835,29 @@ public:
 	 * State sharing rules are as with SetLayerOverlay.
 	 * If InClass is null, does nothing.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
-	void UnlinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+	UFUNCTION(BlueprintCallable, Category = "Animation|Linked Anim Graphs")
+	virtual void UnlinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
 
 	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimLayerInstanceByGroup")
 	UAnimInstance* GetLayerSubInstanceByGroup(FName InGroup) const { return GetLinkedAnimLayerInstanceByGroup(InGroup); }
 
 	/** Gets the layer linked instance corresponding to the specified group */
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs")
 	UAnimInstance* GetLinkedAnimLayerInstanceByGroup(FName InGroup) const;
 
 	/** Runs through all nodes, attempting to find all distinct layer linked instances in the group */
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs")
 	void GetLinkedAnimLayerInstancesByGroup(FName InGroup, TArray<UAnimInstance*>& OutLinkedInstances) const;
 
 	/** Gets layer linked instance that matches group and class */
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs")
 	UAnimInstance* GetLinkedAnimLayerInstanceByGroupAndClass(FName InGroup, TSubclassOf<UAnimInstance> InClass) const;
 
 	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimLayerInstanceByClass")
 	UAnimInstance* GetLayerSubInstanceByClass(TSubclassOf<UAnimInstance> InClass) const { return GetLinkedAnimLayerInstanceByClass(InClass); }
 
 	/** Gets the first layer linked instance corresponding to the specified class */
-	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UFUNCTION(BlueprintPure, Category = "Animation|Linked Anim Graphs")
 	UAnimInstance* GetLinkedAnimLayerInstanceByClass(TSubclassOf<UAnimInstance> InClass) const;
 
 	/** Sets up initial layer groupings */
@@ -884,7 +898,7 @@ protected:
 	TMap<class UAnimMontage*, struct FAnimMontageInstance*> ActiveMontagesMap;
 
 	/**  Inertialization requests gathered this frame. Gets reset in UpdateMontageEvaluationData */
-	TMap<FName, float> SlotGroupInertializationRequestMap;
+	TMap<FName, UE::Anim::FSlotInertializationRequest> SlotGroupInertializationRequestMap;
 
 	/* StopAllMontagesByGroupName needs a BlendMode and BlendProfile to function properly if using non-default ones in your montages. If you want default BlendMode/BlendProfiles, you need to update the calling code to do so. */
 	UE_DEPRECATED(5.0, "Use StopAllMontagesByGroupName with other signature.")
@@ -903,12 +917,12 @@ protected:
 
 public:
 
-	/**  Builds an inertialization request from the montage's group and provided duration */
-	void RequestMontageInertialization(const UAnimMontage* Montage, float Duration);
+	/**  Builds an inertialization request from the montage's group, provided duration and optional blend profile*/
+	void RequestMontageInertialization(const UAnimMontage* Montage, float Duration, const UBlendProfile* BlendProfile = nullptr);
 
 	/**  Requests an inertial blend during the next anim graph update. Requires your anim graph to have a slot node belonging to the specified group name */
-	UFUNCTION(BlueprintCallable, Category = "Inertial Blend")
-	void RequestSlotGroupInertialization(FName InSlotGroupName, float Duration);
+	UFUNCTION(BlueprintCallable, Category = "Animation|Inertial Blending")
+	void RequestSlotGroupInertialization(FName InSlotGroupName, float Duration, const UBlendProfile* BlendProfile = nullptr);
 
 	/** Queue a Montage BlendingOut Event to be triggered. */
 	void QueueMontageBlendingOutEvent(const FQueuedMontageBlendingOutEvent& MontageBlendingOutEvent);
@@ -937,10 +951,13 @@ public:
 #if DO_CHECK
 	/** Is this animation currently running post update */
 	bool IsPostUpdatingAnimation() const { return bPostUpdatingAnimation; }
+
+	/** Is this animation currently running update */
+	bool IsUpdatingAnimation() const { return bUpdatingAnimation; }
 #endif
 
 	/** Set RootMotionMode */
-	UFUNCTION(BlueprintCallable, Category = "Animation")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Root Motion")
 	void SetRootMotionMode(TEnumAsByte<ERootMotionMode::Type> Value);
 
 	/** 
@@ -966,103 +983,103 @@ public:
 	 */
 
 	/** Gets the length in seconds of the asset referenced in an asset player node */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta=(DisplayName="Length", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Asset Player", meta=(DisplayName="Length", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceAssetPlayerLength(int32 AssetPlayerIndex);
 
 	/** Get the current accumulated time in seconds for an asset player node */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta = (DisplayName = "Current Time", BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Asset Player", meta = (DisplayName = "Current Time", BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
 	float GetInstanceAssetPlayerTime(int32 AssetPlayerIndex);
 
 	/** Get the current accumulated time as a fraction for an asset player node */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta=(DisplayName="Current Time (ratio)", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Asset Player", meta=(DisplayName="Current Time (ratio)", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceAssetPlayerTimeFraction(int32 AssetPlayerIndex);
 
 	/** Get the time in seconds from the end of an animation in an asset player node */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta=(DisplayName="Time Remaining", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Asset Player", meta=(DisplayName="Time Remaining", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceAssetPlayerTimeFromEnd(int32 AssetPlayerIndex);
 
 	/** Get the time as a fraction of the asset length of an animation in an asset player node */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta=(DisplayName="Time Remaining (ratio)", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Asset Player", meta=(DisplayName="Time Remaining (ratio)", BlueprintInternalUseOnly="true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceAssetPlayerTimeFromEndFraction(int32 AssetPlayerIndex);
 
 	/** Get the blend weight of a specified state machine */
-	UFUNCTION(BlueprintPure, Category = "States", meta = (DisplayName = "Machine Weight", BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (DisplayName = "Machine Weight", BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
 	float GetInstanceMachineWeight(int32 MachineIndex);
 
 	/** Get the blend weight of a specified state */
-	UFUNCTION(BlueprintPure, Category="States", meta = (DisplayName="State Weight", BlueprintInternalUseOnly = "true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (DisplayName="State Weight", BlueprintInternalUseOnly = "true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceStateWeight(int32 MachineIndex, int32 StateIndex);
 
 	/** Get the current elapsed time of a state within the specified state machine */
-	UFUNCTION(BlueprintPure, Category="States", meta = (DisplayName="Current State Time", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (DisplayName="Current State Time", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="Transition", BlueprintThreadSafe))
 	float GetInstanceCurrentStateElapsedTime(int32 MachineIndex);
 
 	/** Get the crossfade duration of a specified transition */
-	UFUNCTION(BlueprintPure, Category="Transitions", meta = (DisplayName="Get Transition Crossfade Duration", BlueprintInternalUseOnly = "true", AnimGetter="true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (DisplayName="Get Transition Crossfade Duration", BlueprintInternalUseOnly = "true", AnimGetter="true", BlueprintThreadSafe))
 	float GetInstanceTransitionCrossfadeDuration(int32 MachineIndex, int32 TransitionIndex);
 
 	/** Get the elapsed time in seconds of a specified transition */
-	UFUNCTION(BlueprintPure, Category="Transitions", meta = (DisplayName="Get Transition Time Elapsed", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="CustomBlend", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (DisplayName="Get Transition Time Elapsed", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="CustomBlend", BlueprintThreadSafe))
 	float GetInstanceTransitionTimeElapsed(int32 MachineIndex, int32 TransitionIndex);
 
 	/** Get the elapsed time as a fraction of the crossfade duration of a specified transition */
-	UFUNCTION(BlueprintPure, Category="Transitions", meta = (DisplayName="Get Transition Time Elapsed (ratio)", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="CustomBlend", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (DisplayName="Get Transition Time Elapsed (ratio)", BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="CustomBlend", BlueprintThreadSafe))
 	float GetInstanceTransitionTimeElapsedFraction(int32 MachineIndex, int32 TransitionIndex);
 
 	/** Get the time remaining in seconds for the most relevant animation in the source state */
-	UFUNCTION(BlueprintPure, Category="Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter="true", GetterContext="Transition", BlueprintThreadSafe))
 	float GetRelevantAnimTimeRemaining(int32 MachineIndex, int32 StateIndex);
 
 	/** Get the time remaining as a fraction of the duration for the most relevant animation in the source state */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
 	float GetRelevantAnimTimeRemainingFraction(int32 MachineIndex, int32 StateIndex);
 
 	/** Get the length in seconds of the most relevant animation in the source state */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
 	float GetRelevantAnimLength(int32 MachineIndex, int32 StateIndex);
 
 	/** Get the current accumulated time in seconds for the most relevant animation in the source state */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
 	float GetRelevantAnimTime(int32 MachineIndex, int32 StateIndex);
 
 	/** Get the current accumulated time as a fraction of the length of the most relevant animation in the source state */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe))
 	float GetRelevantAnimTimeFraction(int32 MachineIndex, int32 StateIndex);
 
 	/** Get whether a particular notify state was active in any state machine last tick.*/
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
 	bool WasAnimNotifyStateActiveInAnyState(TSubclassOf<UAnimNotifyState> AnimNotifyStateType);
 
 	/** Get whether a particular notify state is active in a specific state machine last tick.  */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
 	bool WasAnimNotifyStateActiveInStateMachine(int32 MachineIndex, TSubclassOf<UAnimNotifyState> AnimNotifyStateType);
 
 	/** Get whether a particular notify state is active in a specific state last tick. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
 	bool WasAnimNotifyStateActiveInSourceState(int32 MachineIndex, int32 StateIndex, TSubclassOf<UAnimNotifyState> AnimNotifyStateType);
 
 	/** Get whether the most relevant animation was in a particular notify state last tick. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyTriggeredInSourceState(int32 MachineIndex, int32 StateIndex,  TSubclassOf<UAnimNotify> AnimNotifyType);
 
 	/** Get whether the most relevant animation triggered the animation notify with the specified name last tick.. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyNameTriggeredInSourceState(int32 MachineIndex, int32 StateIndex, FName NotifyName);
 
 	/** Get whether a particular notify type was active in a specific state machine last tick.  */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyTriggeredInStateMachine(int32 MachineIndex, TSubclassOf<UAnimNotify> AnimNotifyType);
 
 	/** Get whether the given state machine triggered the animation notify with the specified name last tick. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyNameTriggeredInStateMachine(int32 MachineIndex, FName NotifyName);
 	
 	/**  Get whether an animation notify of a given type was triggered last tick. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyTriggeredInAnyState(TSubclassOf<UAnimNotify> AnimNotifyType);
 
 	/** Get whether the animation notify with the specified name triggered last tick. */
-	UFUNCTION(BlueprintPure, Category = "Asset Player", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machines", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Window,TransitionWindow,NotifyState,NotifyStateTransition"))
     bool WasAnimNotifyNameTriggeredInAnyState(FName NotifyName);
 	
 	/** Gets the runtime instance of the specified state machine by Name */
@@ -1094,40 +1111,63 @@ public:
 	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
 	TArray<FAnimNode_AssetPlayerBase*> GetMutableInstanceAssetPlayers(const FName& GraphName);
 
+	/** Returns all Animation Nodes implementing FAnimNode_AssetPlayerRelevancyBase within the specified (named) Animation Graph */
+	TArray<const FAnimNode_AssetPlayerRelevancyBase*> GetInstanceRelevantAssetPlayers(const FName& GraphName) const;
+
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerRelevancyBase class within the specified (named) Animation Graph */
+	TArray<FAnimNode_AssetPlayerRelevancyBase*> GetMutableInstanceRelevantAssetPlayers(const FName& GraphName);
+
 	/** Gets the runtime instance desc of the state machine specified by name */
 	const FBakedAnimationStateMachine* GetStateMachineInstanceDesc(FName MachineName) const;
 
 	/** Gets the most relevant asset player in a specified state */
-	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex) const;
+	UE_DEPRECATED(5.1, "Please use GetRelevantAssetPlayerInterfaceFromState")
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex) const
+	{
+		return nullptr;
+	}
+
+	/** Gets the most relevant asset player in a specified state */
+	const FAnimNode_AssetPlayerRelevancyBase* GetRelevantAssetPlayerInterfaceFromState(int32 MachineIndex, int32 StateIndex) const;
 
 	//////////////////////////////////////////////////////////////////////////
 
 public:
 	/** Returns the value of a named curve. */
-	UFUNCTION(BlueprintPure, Category="Animation", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|Curves", meta=(BlueprintThreadSafe))
 	float GetCurveValue(FName CurveName) const;
 
+	/** 
+	* Returns whether a named curve was found, its value, and a default value when it's not found.
+	* @param	AnimInstance	The anim instance to find this curve value for.
+	* @param	CurveName		The name of the curve.
+	* @param	DefaultValue	Value to use when the curve is not found.
+	* @param	OutValue		The curve's value.
+	*/
+	UFUNCTION(BlueprintPure, Category="Animation|Curves", meta=(BlueprintThreadSafe))
+	bool GetCurveValueWithDefault(FName CurveName, float DefaultValue, float& OutValue);
+
 	/** This returns last up-to-date list of active curve names */
-	UFUNCTION(BlueprintPure, Category = "Animation", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|Curves", meta=(BlueprintThreadSafe))
 	void GetActiveCurveNames(EAnimCurveType CurveType, TArray<FName>& OutNames) const;
 
 	/* This returns all curve names */
-	UFUNCTION(BlueprintPure, Category = "Animation", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Animation|Curves", meta=(BlueprintThreadSafe))
 	void GetAllCurveNames(TArray<FName>& OutNames) const;
 
 	/** Returns value of named curved in OutValue, returns whether the curve was actually found or not. */
 	bool GetCurveValue(FName CurveName, float& OutValue) const;
 
 	/** Returns the name of a currently active state in a state machine. */
-	UFUNCTION(BlueprintPure, Category="Animation", meta=(BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category="Animation|State Machines", meta=(BlueprintInternalUseOnly = "true", AnimGetter = "true", BlueprintThreadSafe))
 	FName GetCurrentStateName(int32 MachineIndex);
 
 	/** Sets a morph target to a certain weight. */
-	UFUNCTION(BlueprintCallable, Category="Animation")
+	UFUNCTION(BlueprintCallable, Category="Animation|Morph Targets")
 	void SetMorphTarget(FName MorphTargetName, float Value);
 
 	/** Clears the current morph targets. */
-	UFUNCTION(BlueprintCallable, Category="Animation")
+	UFUNCTION(BlueprintCallable, Category="Animation|Morph Targets")
 	void ClearMorphTargets();
 
 	UE_DEPRECATED(5.0, "Please use UKismetAnimationLibrary::CalculateDirection instead")
@@ -1146,17 +1186,37 @@ public:
 	void UnlockAIResources(bool bUnlockMovement, bool UnlockAILogic);
 	//--- AI communication end ---//
 
-	UFUNCTION(BlueprintCallable, Category = "SyncGroup", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintCallable, Category = "Animation|Synchronization", meta=(BlueprintThreadSafe))
 	bool GetTimeToClosestMarker(FName SyncGroup, FName MarkerName, float& OutMarkerTime) const;
 
-	UFUNCTION(BlueprintCallable, Category = "SyncGroup", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintCallable, Category = "Animation|Synchronization", meta=(BlueprintThreadSafe))
 	bool HasMarkerBeenHitThisFrame(FName SyncGroup, FName MarkerName) const;
 
-	UFUNCTION(BlueprintCallable, Category = "SyncGroup", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintCallable, Category = "Animation|Synchronization", meta=(BlueprintThreadSafe))
 	bool IsSyncGroupBetweenMarkers(FName InSyncGroupName, FName PreviousMarker, FName NextMarker, bool bRespectMarkerOrder = true) const;
 
-	UFUNCTION(BlueprintCallable, Category = "SyncGroup", meta=(BlueprintThreadSafe))
+	UFUNCTION(BlueprintCallable, Category = "Animation|Synchronization", meta=(BlueprintThreadSafe))
 	FMarkerSyncAnimPosition GetSyncGroupPosition(FName InSyncGroupName) const;
+
+	/** Attempts to queue a transition request, returns true if the request was successful */
+	UFUNCTION(BlueprintCallable, Category="Animation", meta = (BlueprintThreadSafe, Keywords = "Event,Request,Transition"))
+	bool RequestTransitionEvent(const FName EventName, const double RequestTimeout, const ETransitionRequestQueueMode QueueMode, const ETransitionRequestOverwriteMode OverwriteMode);
+
+	/** Removes all queued transition requests with the given event name */
+	UFUNCTION(BlueprintCallable, Category = "Animation", meta = (BlueprintThreadSafe, Keywords = "Event,Request,Transition"))
+	void ClearTransitionEvents(const FName EventName);
+
+	/** Removes all queued transition requests */
+	UFUNCTION(BlueprintCallable, Category = "Animation", meta = (BlueprintThreadSafe, Keywords = "Event,Request,Transition"))
+	void ClearAllTransitionEvents();
+
+	/** Returns whether or not the given event transition request has been queued */
+	UFUNCTION(BlueprintPure, Category = "Transitions", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Event,Request,Transition"))
+	bool QueryTransitionEvent(int32 MachineIndex, int32 TransitionIndex, FName EventName);
+
+	/** Behaves like QueryTransitionEvent but additionally marks the event for consumption */
+	UFUNCTION(BlueprintPure, Category = "Transitions", meta = (BlueprintInternalUseOnly = "true", AnimGetter = "true", GetterContext = "Transition", BlueprintThreadSafe, Keywords = "Event,Request,Transition"))
+	bool QueryAndMarkTransitionEvent(int32 MachineIndex, int32 TransitionIndex, FName EventName);
 
 public:
 	//~ Begin UObject Interface
@@ -1209,6 +1269,9 @@ public:
 	// uninitialize happens when owner is unregistered
 	// @param	bInDeferRootNodeInitialization	When set to true, defer init of the blend tree until the first Update() call
 	void InitializeAnimation(bool bInDeferRootNodeInitialization = false);
+
+	/** Called on the game thread before UpdateAnimation is called on linked instances */
+	virtual void PreUpdateLinkedInstances(float DeltaSeconds) {}
 
 	/** Update Animation code-paths, updates and advances animation state, returns whether or not the actual update should have been called immediately */
 	void UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion, EUpdateAnimationFlag UpdateFlag = EUpdateAnimationFlag::Default );
@@ -1277,7 +1340,7 @@ public:
 	virtual void DisplayDebugInstance(FDisplayDebugManager& DisplayDebugManager, float& Indent);
 
 	/** Reset any dynamics running simulation-style updates (e.g. on teleport, time skip etc.) */
-	UFUNCTION(BlueprintCallable, Category = "Animation")
+	UFUNCTION(BlueprintCallable, Category = "Animation|Dynamics")
 	void ResetDynamics(ETeleportType InTeleportType);
 
 	UE_DEPRECATED(4.20, "Please use ResetDynamics with a ETeleportType argument")
@@ -1586,8 +1649,10 @@ protected:
 	}
 
 	friend struct FAnimNode_LinkedAnimGraph;
+	friend struct FAnimNode_LinkedAnimLayer;
 	friend struct FAnimInstanceProxy;
 	
+public:
 	/** Return whether this AnimNotifyState should be triggered */
 	virtual bool ShouldTriggerAnimNotifyState(const UAnimNotifyState* AnimNotifyState) const;
 
@@ -1605,4 +1670,12 @@ public:
 public:
 	/** Dispatch AnimEvents (AnimNotifies, Montage Events) queued during UpdateAnimation() */
 	void DispatchQueuedAnimEvents();
+
+#if WITH_EDITOR
+	// Helper function to handle reinstancing in editor
+	virtual void HandleObjectsReinstanced(const TMap<UObject*, UObject*>& OldToNewInstanceMap);
+
+	/** Returns true if this anim instance is actively being debugged, false otherwise */
+	bool IsBeingDebugged() const;
+#endif
 };

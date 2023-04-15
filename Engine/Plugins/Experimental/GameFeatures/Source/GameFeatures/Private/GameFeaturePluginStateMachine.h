@@ -8,13 +8,17 @@
 #include "Containers/Ticker.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "GameFeaturesSubsystem.h"
 #include "GameFeaturePluginOperationResult.h"
+#include "GameFeatureTypes.h"
 #include "GameFeaturePluginStateMachine.generated.h"
 
 class UGameFeatureData;
 class UGameFrameworkComponentManager;
 class UGameFeaturePluginStateMachine;
 struct FComponentRequestHandle;
+enum class EInstallBundleResult : int;
+enum class EInstallBundleReleaseResult;
 
 /*
 *************** GameFeaturePlugin state machine graph ***************
@@ -30,45 +34,58 @@ Transition states are expected to transition the machine to another state after 
                          +------+-------+
      +------------+             |
      |     *      |             |
-     |  Terminal  <-------------~------------------------------
-     |            |             |                             |
-     +--^------^--+             |                             |
-        |      |                |                             |
-        |      |         +------v-------+                     |
-        |      |         |      *       |                     |
-        |      ----------+UnknownStatus |                     |
-        |                |              |                     |
-        |                +------+-------+                     |
-        |                  |                                  |
-        |      +-----------v---+     +--------------------+   |
-        |      |               |     |         !          |   |
-        |      |CheckingStatus <-----> ErrorCheckingStatus+-->|
-        |      |               |     |                    |   |
-        |      +------+------^-+     +--------------------+   |
-        |             |      |                                |
-        |             |      |       +--------------------+   |
-        ----------    |      |       |         !          |   |
-                 |    |      --------> ErrorUnavailable   +----
-                 |    |              |                    |
-                 |    |              +--------------------+
+     |  Terminal  <-------------~-----------------------------------------------
+     |            |             |                                              |
+     +--^------^--+             ----------------------------                   |
+        |      |                                           |                   |
+        |      |                                    +------v--------+          |
+        |      |                                    |      *        |          |
+        |      -------------------------------------+ UnknownStatus |          |
+        |           ^                      ^        |               |          |
+        |           |                      |        +-------+-------+          |
+        |           |                      |                |                  |
+        |    +------+-------+    *---------+---------+      |                  |
+        |    |              |    |         !         |      |                  |
+        |    | Uninstalling <----> ErrorUninstalling |      |                  |
+        |    |              |    |                   |      |                  |
+        |    +---^----------+    +---------+---------+      |                  |
+        |        |                         |                |                  |
+        |        |    ----------------------                |                  |
+        |        |    |                                     |                  |
+        |        |    |                     -----------------                  |
+        |        |    |                     |                                  |
+        |        |    |         +-----------v---+     +--------------------+   |
+        |        |    |         |               |     |         !          |   |
+        |        |    |         |CheckingStatus <-----> ErrorCheckingStatus+-->|
+        |        |    |         |               |     |                    |   |
+        |        |    |         +------+------^-+     +--------------------+   |
+        |        |    |                |      |                                |
+        |        |    |                |      |       +--------------------+   |
+        ---------~    |                |      |       |         !          |   |
+                 |    |<----------------      --------> ErrorUnavailable   +----
+                 |    |                               |                    |
+                 |    |                               +--------------------+
                  |    |
-               +-+----v-------+                            
-               |      *       |
-     ----------+ StatusKnown  |
-     |         |              |
-     |         +-^-----+---+--+
-     |           |         |
-     |     ------~---------~-------------------------
-     |     |     |         |                        |
-     |  +--v-----+---+   +-v----------+       +-----v--------------+
-     |  |            |   |            |       |         !          |
-     |  |Uninstalling|   |Downloading <-------> ErrorInstalling    |
-     |  |            |   |            |       |                    |
-     |  +--------^---+   +-+----------+       +--------------------+
-     |           |         |
-     |         +-+---------v-+
-     |         |      *      |
-     ---------->  Installed  |
+            +----+----v----+                            
+            |      *       |
+         ---> StatusKnown  +----------------------------------------------
+         |  |              |                                 |           |
+         |  +----------^---+                                 |           |
+         |                                                   |           |
+         |                                                   |           |
+         |                                                   |           |
+         |                                                   |           |
+         |                                                   |           |
+      +--+---------+      +-------------------+       +------v-------+   |
+      |            |      |         !         |       |              |   |
+      | Releasing  <------> ErrorManagingData <-------> Downloading  |   |
+      |            |      |                   |       |              |   |  
+      +--^---------+      +-------------------+       +-------+------+   |  
+         |                                                   |           | 
+         |                                                   |           | 
+         |     +-------------+                               |           |   
+         |     |      *      |                               v           |    
+         ------+ Installed   <--------------------------------------------
                |             |
                +-^---------+-+
                  |         |
@@ -127,71 +144,80 @@ Transition states are expected to transition the machine to another state after 
                +------------+
 */
 
-/** The states a game feature plugin can be in before fully active */
-enum class EGameFeaturePluginState : uint8
+namespace UE::GameFeatures
 {
-	Uninitialized,				// Unset. Not yet been set up.
-	Terminal,					// Final State before removal of the state machine
-	UnknownStatus,				// Initialized, but the only thing known is the URL to query status.
-	CheckingStatus,				// Transition state UnknownStatus -> StatusKnown. The status is in the process of being queried.
-	ErrorCheckingStatus,		// Error state for UnknownStatus -> StatusKnown transition.
-	ErrorUnavailable,			// Error state for UnknownStatus -> StatusKnown transition.
-	StatusKnown,				// The plugin's information is known, but no action has taken place yet.
-	ErrorInstalling,			// Error state for Installed -> StatusKnown and StatusKnown -> Installed transitions.
-	Uninstalling,				// Transition state Installed -> StatusKnown. In the process of removing from local storage.
-	Downloading,				// Transition state StatusKnown -> Installed. In the process of adding to local storage.
-	Installed,					// The plugin is in local storage (i.e. it is on the hard drive)
-	ErrorMounting,				// Error state for Installed -> Registered and Registered -> Installed transitions.
-	ErrorWaitingForDependencies,// Error state for Installed -> Registered and Registered -> Installed transitions.
-	ErrorRegistering,			// Error state for Installed -> Registered and Registered -> Installed transitions.
-	WaitingForDependencies,		// Transition state Installed -> Registered. In the process of loading code/content for all dependencies into memory.
-	Unmounting,					// Transition state Registered -> Installed. The content file(s) (i.e. pak file) for the plugin is unmounting.
-	Mounting,					// Transition state Installed -> Registered. The content files(s) (i.e. pak file) for the plugin is getting mounted.
-	Unregistering,				// Transition state Registered -> Installed. Cleaning up data gathered in Registering.
-	Registering,				// Transition state Installed -> Registered. Discovering assets in the plugin, but not loading them, except a few for discovery reasons.
-	Registered,					// The assets in the plugin are known, but have not yet been loaded, except a few for discovery reasons.
-	Unloading,					// Transition state Loaded -> Registered. In the process of removing code/content from memory. 
-	Loading,					// Transition state Registered -> Loaded. In the process of loading code/content into memory.
-	Loaded,						// The plugin is loaded into memory and registered with some game systems but not yet active.
-	Deactivating,				// Transition state Active -> Loaded. Currently unregistering with game systems.
-	Activating,					// Transition state Loaded -> Active. Currently registering plugin code/content with game systems.
-	Active,						// Plugin is fully loaded and active. It is affecting the game.
-
-	MAX
-};
-
-namespace UE
-{
-	namespace GameFeatures
-	{
-		GAMEFEATURES_API FString ToString(EGameFeaturePluginState InType);
-	}
+	const TCHAR* GameFeaturePluginProtocolPrefix(EGameFeaturePluginProtocol Protocol);
 }
 
-#define GAME_FEATURE_PLUGIN_PROTOCOL_LIST(XPROTO)	\
-	XPROTO(File,			TEXT("file:"))			\
-	XPROTO(InstallBundle,	TEXT("installbundle:"))	\
-	XPROTO(Unknown,			TEXT(""))				\
-
-#define GAME_FEATURE_PLUGIN_PROTOCOL_ENUM(inEnum, inString) inEnum,
-enum class EGameFeaturePluginProtocol : uint8
+struct FGameFeaturePluginStateRange
 {
-	GAME_FEATURE_PLUGIN_PROTOCOL_LIST(GAME_FEATURE_PLUGIN_PROTOCOL_ENUM)
-	Count,
+	EGameFeaturePluginState MinState = EGameFeaturePluginState::Uninitialized;
+	EGameFeaturePluginState MaxState = EGameFeaturePluginState::Uninitialized;
+
+	FGameFeaturePluginStateRange() = default;
+
+	FGameFeaturePluginStateRange(EGameFeaturePluginState InMinState, EGameFeaturePluginState InMaxState)
+		: MinState(InMinState), MaxState(InMaxState)
+	{}
+
+	explicit FGameFeaturePluginStateRange(EGameFeaturePluginState InState)
+		: MinState(InState), MaxState(InState)
+	{}
+
+	bool IsValid() const { return MinState <= MaxState; }
+
+	bool Contains(EGameFeaturePluginState InState) const
+	{
+		return InState >= MinState && InState <= MaxState;
+	}
+
+	bool Overlaps(const FGameFeaturePluginStateRange& Other) const
+	{
+		return Other.MinState <= MaxState && Other.MaxState >= MinState;
+	}
+
+	TOptional<FGameFeaturePluginStateRange> Intersect(const FGameFeaturePluginStateRange& Other) const
+	{
+		TOptional<FGameFeaturePluginStateRange> Intersection;
+
+		if (Overlaps(Other))
+		{
+			Intersection.Emplace(FMath::Max(Other.MinState, MinState), FMath::Min(Other.MaxState, MaxState));
+		}
+
+		return Intersection;
+	}
+
+	bool operator==(const FGameFeaturePluginStateRange& Other) const { return MinState == Other.MinState && MaxState == Other.MaxState; }
+	bool operator<(const FGameFeaturePluginStateRange& Other) const { return MaxState < Other.MinState; }
+	bool operator>(const FGameFeaturePluginStateRange& Other) const { return MinState < Other.MaxState; }
 };
-#undef GAME_FEATURE_PLUGIN_PROTOCOL_ENUM
 
-ENUM_RANGE_BY_COUNT(EGameFeaturePluginProtocol, EGameFeaturePluginProtocol::Count);
-
-const TCHAR* GameFeaturePluginProtocolPrefix(EGameFeaturePluginProtocol Protocol);
-
-struct FInstallBundlePluginProtocolMetaData
+inline bool operator<(EGameFeaturePluginState State, const FGameFeaturePluginStateRange& StateRange)
 {
-	TArray<FName> InstallBundles;
-};
+	return State < StateRange.MinState;
+}
+
+inline bool operator<(const FGameFeaturePluginStateRange& StateRange, EGameFeaturePluginState State)
+{
+	return StateRange.MaxState < State;
+}
+
+inline bool operator>(EGameFeaturePluginState State, const FGameFeaturePluginStateRange& StateRange)
+{
+	return State > StateRange.MaxState;
+}
+
+inline bool operator>(const FGameFeaturePluginStateRange& StateRange, EGameFeaturePluginState State)
+{
+	return StateRange.MinState > State;
+}
 
 /** Notification that a state transition is complete */
 DECLARE_DELEGATE_TwoParams(FGameFeatureStateTransitionComplete, UGameFeaturePluginStateMachine* /*Machine*/, const UE::GameFeatures::FResult& /*Result*/);
+
+/** Notification that a state transition is canceled */
+DECLARE_DELEGATE_OneParam(FGameFeatureStateTransitionCanceled, UGameFeaturePluginStateMachine* /*Machine*/);
 
 /** A request for other state machine dependencies */
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FGameFeaturePluginRequestStateMachineDependencies, const FString& /*DependencyPluginURL*/, TArray<UGameFeaturePluginStateMachine*>& /*OutDependencyMachines*/);
@@ -208,34 +234,40 @@ struct FGameFeaturePluginStateMachineProperties
 {
 	GENERATED_BODY()
 
-	/**
-	 * The URL to find the plugin. This takes the form protocol:identifier.
-	 * Every protocol will have its own style of identifier.
-	 * For example, if the file is simply on disk, you can use file:../../../YourGameModule/Plugins/MyPlugin/MyPlugin.uplugin
-	 */
-	FString PluginURL;
+	/** 
+	* The Identifier used to find this Plugin. Parsed from the supplied PluginURL at creation.
+	* Every protocol will have its own style of identifier URL that will get parsed to generate this.
+	* For example, if the file is simply on disk, you can use file:../../../YourGameModule/Plugins/MyPlugin/MyPlugin.uplugin
+	**/
+	FGameFeaturePluginIdentifier PluginIdentifier;
 
-	/** Once installed, this is the filename on disk of the .uplugin file. */
+	/** Filename on disk of the .uplugin file. */
 	FString PluginInstalledFilename;
 	
-	/** Once installed, this is the name of the plugin. */
+	/** Name of the plugin. */
 	FString PluginName;
 
 	/** Meta data parsed from the URL for a specific protocol. */
 	TUnion<FInstallBundlePluginProtocolMetaData> ProtocolMetadata;
 
+	TArray<FName> AddedPrimaryAssetTypes;
+
+	/** Tracks whether or not this state machine added the plugin to the plugin manager. */
+	bool bAddedPluginToManager = false;
+
+	/** Whether this state machine should attempt to cancel the current transition */
+	bool bTryCancel = false;
+
 	/** The desired state during a transition. */
-	EGameFeaturePluginState DestinationState = EGameFeaturePluginState::Uninitialized;
+	FGameFeaturePluginStateRange Destination;
 
 	/** The data asset describing this game feature */
 	UPROPERTY(Transient)
-	UGameFeatureData* GameFeatureData = nullptr;
+	TObjectPtr<UGameFeatureData> GameFeatureData = nullptr;
 
-	/** Delegate for when a state transition request has completed. */
-	FGameFeatureStateTransitionComplete OnFeatureStateTransitionComplete;
-
-	/** Delegate for when this machine needs to request its dependency machines. */
-	FGameFeaturePluginRequestStateMachineDependencies OnRequestStateMachineDependencies;
+	/** Callbacks for when the current state transition is cancelled */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTransitionCanceled, UGameFeaturePluginStateMachine* /*Machine*/);
+	FOnTransitionCanceled OnTransitionCanceled;
 
 	/** Delegate to request the state machine be updated. */
 	FGameFeaturePluginRequestUpdateStateMachine OnRequestUpdateStateMachine;
@@ -246,8 +278,7 @@ struct FGameFeaturePluginStateMachineProperties
 	FGameFeaturePluginStateMachineProperties() = default;
 	FGameFeaturePluginStateMachineProperties(
 		const FString& InPluginURL,
-		EGameFeaturePluginState DesiredDestination,
-		const FGameFeaturePluginRequestStateMachineDependencies& RequestStateMachineDependenciesDelegate,
+		const FGameFeaturePluginStateRange& DesiredDestination,
 		const FGameFeaturePluginRequestUpdateStateMachine& RequestUpdateStateMachineDelegate,
 		const FGameFeatureStateProgressUpdate& FeatureStateProgressUpdateDelegate);
 
@@ -255,8 +286,8 @@ struct FGameFeaturePluginStateMachineProperties
 
 	bool ParseURL();
 
-private:
-	mutable EGameFeaturePluginProtocol CachedPluginProtocol = EGameFeaturePluginProtocol::Unknown;
+	/** Checks to see if any invalid data was changed during a URL update. True if data updated was all values expected to be changed. */
+	bool ValidateURLUpdate(const FGameFeaturePluginStateMachineProperties& OldProperties) const;
 };
 
 /** Input and output information for a state's UpdateState */
@@ -267,22 +298,13 @@ private:
 	EGameFeaturePluginState TransitionToState = EGameFeaturePluginState::Uninitialized;
 
 	/** Holds the current error for any state transition. */
-	UE::GameFeatures::FResult TransitionResult{ MakeValue() };
+	UE::GameFeatures::FResult TransitionResult = MakeValue();
 
 	friend class UGameFeaturePluginStateMachine;
 
 public:
-	void SetTransition(EGameFeaturePluginState InTransitionToState)
-	{
-		TransitionToState = InTransitionToState;
-		TransitionResult = MakeValue();
-	}
-
-	void SetTransitionError(EGameFeaturePluginState TransitionToErrorState, FString Error)
-	{
-		TransitionToState = TransitionToErrorState;
-		TransitionResult = MakeError(MoveTemp(Error));
-	}
+	void SetTransition(EGameFeaturePluginState InTransitionToState);
+	void SetTransitionError(EGameFeaturePluginState TransitionToErrorState, UE::GameFeatures::FResult TransitionResult);
 };
 
 enum class EGameFeaturePluginStateType : uint8
@@ -291,6 +313,9 @@ enum class EGameFeaturePluginStateType : uint8
 	Destination,
 	Error
 };
+
+struct FDestinationGameFeaturePluginState;
+struct FErrorGameFeaturePluginState;
 
 /** Base class for all game feature plugin states */
 struct FGameFeaturePluginState
@@ -304,35 +329,84 @@ struct FGameFeaturePluginState
 	/** Process the state's logic to decide if there should be a state transition. */
 	virtual void UpdateState(FGameFeaturePluginStateStatus& StateStatus) {}
 
+	/** Attempt to cancel any pending state transition. */
+	virtual void TryCancelState() {}
+
+	/** Called if we have updated the URL for this FGameFeaturePluginState.
+		This can be done whenever URL data is updated that isn't tied to our 
+		FGameFeaturePluginIdentifier information. EX: MetaData options information
+		that is parsed from the URL 
+		Returns false if no update occured or the update failed. True on successful update. */
+	virtual bool TryUpdateURLData(const FString& NewPluginURL);
+	
 	/** Called when this state is no longer the active state */
 	virtual void EndState() {}
 
 	/** Returns the type of state this is */
 	virtual EGameFeaturePluginStateType GetStateType() const { return EGameFeaturePluginStateType::Transition; }
 
+	FDestinationGameFeaturePluginState* AsDestinationState();
+	FErrorGameFeaturePluginState* AsErrorState();
+
 	/** The common properties that can be accessed by the states of the state machine */
 	FGameFeaturePluginStateMachineProperties& StateProperties;
 
 	void UpdateStateMachineDeferred(float Delay = 0.0f) const;
+	void GarbageCollectAndUpdateStateMachineDeferred() const;
 	void UpdateStateMachineImmediate() const;
 
 	void UpdateProgress(float Progress) const;
 
+protected:
+	/** Builds an end FResult with some minimal error information with overrides for common types we 
+		need to generate errors from */
+	UE::GameFeatures::FResult GetErrorResult(const FString& ErrorCode, const FText OptionalErrorText = FText()) const;
+	UE::GameFeatures::FResult GetErrorResult(const FString& ErrorNamespaceAddition, const FString& ErrorCode, const FText OptionalErrorText = FText()) const;
+	UE::GameFeatures::FResult GetErrorResult(const FString& ErrorNamespaceAddition, const EInstallBundleResult ErrorResult) const;
+	UE::GameFeatures::FResult GetErrorResult(const FString& ErrorNamespaceAddition, const EInstallBundleReleaseResult ErrorResult) const;
+
+	/** Returns true if this state should transition to the Uninstalled state. 
+	    returns False if it should just go directly to the Terminal state instead. */
+	bool ShouldVisitUninstallStateBeforeTerminal() const;
+
 private:
+	void CleanupDeferredUpdateCallbacks() const;
+
 	mutable FTSTicker::FDelegateHandle TickHandle;
+};
+
+/** Base class for destination game feature plugin states */
+struct FDestinationGameFeaturePluginState : public FGameFeaturePluginState
+{
+	FDestinationGameFeaturePluginState(FGameFeaturePluginStateMachineProperties& InStateProperties) : FGameFeaturePluginState(InStateProperties) {}
+
+	/** Returns the type of state this is */
+	virtual EGameFeaturePluginStateType GetStateType() const override { return EGameFeaturePluginStateType::Destination; }
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDestinationStateReached, UGameFeaturePluginStateMachine* /*Machine*/, const UE::GameFeatures::FResult& /*Result*/);
+	FOnDestinationStateReached OnDestinationStateReached;
+};
+
+/** Base class for error game feature plugin states */
+struct FErrorGameFeaturePluginState : public FDestinationGameFeaturePluginState
+{
+	FErrorGameFeaturePluginState(FGameFeaturePluginStateMachineProperties& InStateProperties) : FDestinationGameFeaturePluginState(InStateProperties) {}
+
+	/** Returns the type of state this is */
+	virtual EGameFeaturePluginStateType GetStateType() const override { return EGameFeaturePluginStateType::Error; }
 };
 
 /** Information about a given plugin state, used to expose information to external code */
 struct FGameFeaturePluginStateInfo
 {
 	/** The state this info represents */
-	EGameFeaturePluginState State;
+	EGameFeaturePluginState State = EGameFeaturePluginState::Uninitialized;
 
 	/** The progress of this state. Relevant only for transition states. */
-	float Progress;
+	float Progress = 0.0f;
 
-	FGameFeaturePluginStateInfo() : State(EGameFeaturePluginState::Uninitialized), Progress(0.f) {}
-	explicit FGameFeaturePluginStateInfo(EGameFeaturePluginState InState) : State(InState), Progress(0.f) {}
+	FGameFeaturePluginStateInfo() = default;
+	explicit FGameFeaturePluginStateInfo(EGameFeaturePluginState InState) : State(InState) {}
 };
 
 /** A state machine to manage transitioning a game feature plugin from just a URL into a fully loaded and active plugin, including registering its contents with other game systems */
@@ -345,19 +419,41 @@ public:
 	UGameFeaturePluginStateMachine(const FObjectInitializer& ObjectInitializer);
 
 	/** Initializes the state machine and assigns the URL for the plugin it manages. This sets the machine to the 'UnknownStatus' state. */
-	void InitStateMachine(const FString& InPluginURL, const FGameFeaturePluginRequestStateMachineDependencies& OnRequestStateMachineDependencies);
+	void InitStateMachine(const FString& InPluginURL);
 
-	/** Asynchronously transitions the state machine to the destination state and reports when it is done. DestinationState must not be a transition state like 'Downloading' */
-	void SetDestinationState(EGameFeaturePluginState InDestinationState, FGameFeatureStateTransitionComplete OnFeatureStateTransitionComplete);
+	/** Asynchronously transitions the state machine to the destination state range and reports when it is done. 
+	  * DestinationState must be of type EGameFeaturePluginStateType::Destination.
+	  * If returns true and OnFeatureStateTransitionComplete is not called immediately, OutCallbackHandle will be set
+	  * Returns false and does not callback if a transition is already in progress and the destination range is not compatible with the current range. */
+	bool SetDestination(FGameFeaturePluginStateRange InDestination, FGameFeatureStateTransitionComplete OnFeatureStateTransitionComplete, FDelegateHandle* OutCallbackHandle = nullptr);
+
+	/** Cancel the current transition if possible */
+	bool TryCancel(FGameFeatureStateTransitionCanceled OnFeatureStateTransitionCanceled, FDelegateHandle* OutCallbackHandle = nullptr);
+
+	/** Update the current PluginURL data for this plugin if possible. Returns false if this update fails or
+		if the supplied InPluginURL matches the existing URL data for this plugin.**/
+	bool TryUpdatePluginURLData(const FString& InPluginURL);
+
+	/** Remove any pending callback from SetDestination */
+	void RemovePendingTransitionCallback(FDelegateHandle InHandle);
+
+	/** Remove any pending callback from SetDestination */
+	void RemovePendingTransitionCallback(void* DelegateObject);
+
+	/** Remove any pending callback from TryCancel */
+	void RemovePendingCancelCallback(FDelegateHandle InHandle);
+
+	/** Remove any pending callback from TryCancel */
+	void RemovePendingCancelCallback(void* DelegateObject);
 
 	/** Returns the name of the game feature. Before StatusKnown, this returns the URL. */
-	FString GetGameFeatureName() const;
+	const FString& GetGameFeatureName() const;
 
 	/** Returns the URL */
-	FString GetPluginURL() const;
+	const FString& GetPluginURL() const;
 
 	/** Returns the plugin name if known (plugin must have been registered to know the name). */
-	FString GetPluginName() const;
+	const FString& GetPluginName() const;
 
 	/** Returns the uplugin filename of the game feature. Before StatusKnown, this returns false. */
 	bool GetPluginFilename(FString& OutPluginFilename) const;
@@ -365,11 +461,14 @@ public:
 	/** Returns the enum state for this machine */
 	EGameFeaturePluginState GetCurrentState() const;
 
-	/** Returns the state this machine is trying to move to */
-	EGameFeaturePluginState GetDestinationState() const;
+	/** Returns the state range this machine is trying to move to */
+	FGameFeaturePluginStateRange GetDestination() const;
 
 	/** Returns information about the current state */
 	const FGameFeaturePluginStateInfo& GetCurrentStateInfo() const;
+
+	/** Returns true if attempting to reach a new destination state */
+	bool IsRunning() const;
 
 	/** Returns true if the state is at least StatusKnown so we can query info about the game feature plugin */
 	bool IsStatusKnown() const;
@@ -381,11 +480,7 @@ public:
 	UGameFeatureData* GetGameFeatureDataForActivePlugin();
 
 	/** If the plugin is registered already, we will retrieve its game feature data */
-	UGameFeatureData* GetGameFeatureDataForRegisteredPlugin();
-
-	/** Delegate for the machine's state changed. */
-	DECLARE_EVENT_OneParam(UGameFeaturePluginStateMachine, FGameFeaturePluginStateChanged, UGameFeaturePluginStateMachine* /*Machine*/);
-	FGameFeaturePluginStateChanged& OnStateChanged() { return OnStateChangedEvent; }
+	UGameFeatureData* GetGameFeatureDataForRegisteredPlugin(bool bCheckForRegistering = false);
 
 private:
 	/** Returns true if the specified state is not a transition state */
@@ -403,9 +498,6 @@ private:
 	/** Update Progress for current state */
 	void UpdateCurrentStateProgress(float Progress);
 
-	/** Delegate for the machine's state changed. */
-	FGameFeaturePluginStateChanged OnStateChangedEvent;
-
 	/** Information about the current state */
 	FGameFeaturePluginStateInfo CurrentStateInfo;
 
@@ -414,7 +506,7 @@ private:
 	FGameFeaturePluginStateMachineProperties StateProperties;
 
 	/** All state machine state objects */
-	TUniquePtr<FGameFeaturePluginState> AllStates[(int32)EGameFeaturePluginState::MAX];
+	TUniquePtr<FGameFeaturePluginState> AllStates[EGameFeaturePluginState::MAX];
 
 	/** True when we are currently executing UpdateStateMachine, to avoid reentry */
 	bool bInUpdateStateMachine;

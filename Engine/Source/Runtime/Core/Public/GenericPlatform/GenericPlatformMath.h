@@ -15,13 +15,18 @@
 #include "Templates/IsFloatingPoint.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/ResolveTypeAmbiguity.h"
+#include "Templates/TypeCompatibleBytes.h"
+
+#if PLATFORM_HAS_FENV_H 
+#include <fenv.h>
+#endif 
 
 /**
  * Generic implementation for most platforms
  */
 struct FGenericPlatformMath
 {
-
+	// load half (F16) to float
 	//https://gist.github.com/rygorous/2156668
 	static FORCEINLINE float LoadHalf(const uint16* Ptr)
 	{
@@ -52,7 +57,10 @@ struct FGenericPlatformMath
 		return FP32.f;
 	}
 
-	//https://gist.github.com/rygorous/2156668
+	// store float to half (F16)
+	// converts with RTNE = round to nearest even
+	// values too large for F16 are stored as +-Inf
+	// https://gist.github.com/rygorous/2156668
 	// float_to_half_fast3_rtne
 	static FORCEINLINE void StoreHalf(uint16* Ptr, float Value)
 	{
@@ -211,7 +219,7 @@ struct FGenericPlatformMath
 	}
 
 	static CONSTEXPR FORCEINLINE int32 TruncToInt(float F) { return TruncToInt32(F); }
-	static CONSTEXPR FORCEINLINE int32 TruncToInt(double F) { return TruncToInt32(F); }
+	static CONSTEXPR FORCEINLINE int64 TruncToInt(double F) { return TruncToInt64(F); }
 
 	/**
 	 * Converts a float to an integer value with truncation towards zero.
@@ -265,7 +273,7 @@ struct FGenericPlatformMath
 	}
 
 	static FORCEINLINE int32 FloorToInt(float F) { return FloorToInt32(F); }
-	static FORCEINLINE int32 FloorToInt(double F) { return FloorToInt32(F); }
+	static FORCEINLINE int64 FloorToInt(double F) { return FloorToInt64(F); }
 	
 	
 	/**
@@ -314,7 +322,7 @@ struct FGenericPlatformMath
 	}
 	
 	static FORCEINLINE int32 RoundToInt(float F) { return RoundToInt32(F); }
-	static FORCEINLINE int32 RoundToInt(double F) { return RoundToInt32(F); }
+	static FORCEINLINE int64 RoundToInt(double F) { return RoundToInt64(F); }
 
 	/**
 	* Converts a float to the nearest integer. Rounds up when the fraction is .5
@@ -368,7 +376,7 @@ struct FGenericPlatformMath
 	}
 
 	static FORCEINLINE int32 CeilToInt(float F) { return CeilToInt32(F); }
-	static FORCEINLINE int32 CeilToInt(double F) { return CeilToInt32(F); }
+	static FORCEINLINE int64 CeilToInt(double F) { return CeilToInt64(F); }
 
 	/**
 	* Converts a float to the nearest greater or equal integer.
@@ -396,6 +404,32 @@ struct FGenericPlatformMath
 	}
 
 	RESOLVE_FLOAT_AMBIGUITY(CeilToFloat);
+
+	/**
+	 * Converts a double to nearest int64 with ties rounding to nearest even
+	 * May incur a performance penalty. Asserts on platforms that do not support this mode.
+	 * @param F		Double precision floating point value to convert
+	 * @return		The 64-bit integer closest to 'F', with ties going to the nearest even number
+	 */
+	static int64 RoundToNearestTiesToEven(double F)
+	{
+#if PLATFORM_HAS_FENV_H == 0
+		ensureAlwaysMsgf(FLT_ROUNDS == 1, TEXT("Platform does not support FE_TONEAREST for double to int64."));
+		int64 result = llrint(F);
+#else
+		int PreviousRoundingMode = fegetround();
+		if (PreviousRoundingMode != FE_TONEAREST)
+		{
+			fesetround(FE_TONEAREST);
+		}
+		int64 result = llrint(F);
+		if (PreviousRoundingMode != FE_TONEAREST)
+		{
+			fesetround(PreviousRoundingMode);
+		}
+#endif
+		return result;
+	}
 
 	/**
 	* Returns signed fractional part of a float.
@@ -494,6 +528,7 @@ struct FGenericPlatformMath
 
 	static FORCEINLINE float Sin( float Value ) { return sinf(Value); }
 	static FORCEINLINE double Sin( double Value ) { return sin(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Sin);
 
 	static FORCEINLINE float Asin( float Value ) { return asinf( (Value<-1.f) ? -1.f : ((Value<1.f) ? Value : 1.f) ); }
 	static FORCEINLINE double Asin( double Value ) { return asin( (Value<-1.0) ? -1.0 : ((Value<1.0) ? Value : 1.0) ); }
@@ -544,37 +579,55 @@ struct FGenericPlatformMath
 	/** Return true if value is NaN (not a number). */
 	static FORCEINLINE bool IsNaN( float A ) 
 	{
-		return ((*(uint32*)&A) & 0x7FFFFFFFU) > 0x7F800000U;
+		return (BitCast<uint32>(A) & 0x7FFFFFFFU) > 0x7F800000U;
 	}
 	static FORCEINLINE bool IsNaN(double A)
 	{
-		return ((*(uint64*)&A) & 0x7FFFFFFFFFFFFFFFULL) > 0x7FF0000000000000ULL;
+		return (BitCast<uint64>(A) & 0x7FFFFFFFFFFFFFFFULL) > 0x7FF0000000000000ULL;
 	}
 
 	/** Return true if value is finite (not NaN and not Infinity). */
 	static FORCEINLINE bool IsFinite( float A )
 	{
-		return ((*(uint32*)&A) & 0x7F800000U) != 0x7F800000U;
+		return (BitCast<uint32>(A) & 0x7F800000U) != 0x7F800000U;
 	}
 	static FORCEINLINE bool IsFinite(double A)
 	{
-		return ((*(uint64*)&A) & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
+		return (BitCast<uint64>(A) & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
 	}
 
-	//UE_DEPRECATED(5.0, "Use IsNegative here.")	// LWC_TODO: Enable IsNegativeFloat/Double deprecations and fix engine calls.
-	static FORCEINLINE bool IsNegativeFloat(float A) { return IsNegative(A); }
+	static FORCEINLINE bool IsNegativeOrNegativeZero(float A)
+	{
+		return BitCast<uint32>(A) >= (uint32)0x80000000; // Detects sign bit.
+	}
 
-	//UE_DEPRECATED(5.0, "Use IsNegative here.")
-	static FORCEINLINE bool IsNegativeDouble(double A) { return IsNegative(A); }
+	static FORCEINLINE bool IsNegativeOrNegativeZero(double A)
+	{
+		return BitCast<uint64>(A) >= (uint64)0x8000000000000000; // Detects sign bit.
+	}
 
+	UE_DEPRECATED(5.1, "IsNegativeFloat has been deprecated in favor of IsNegativeOrNegativeZero or simply A < 0.")
+	static FORCEINLINE bool IsNegativeFloat(float A)
+	{
+		return IsNegativeOrNegativeZero(A);
+	}
+
+	UE_DEPRECATED(5.1, "IsNegativeDouble has been deprecated in favor of IsNegativeOrNegativeZero or simply A < 0.")
+	static FORCEINLINE bool IsNegativeDouble(double A)
+	{
+		return IsNegativeOrNegativeZero(A);
+	}
+
+	UE_DEPRECATED(5.1, "IsNegative has been deprecated in favor of IsNegativeOrNegativeZero or simply A < 0.")
 	static FORCEINLINE bool IsNegative(float A)
 	{
-		return ((*(uint32*)&A) >= (uint32)0x80000000); // Detects sign bit.
+		return IsNegativeOrNegativeZero(A);
 	}
 
+	UE_DEPRECATED(5.1, "IsNegative has been deprecated in favor of IsNegativeOrNegativeZero or simply A < 0.")
 	static FORCEINLINE bool IsNegative(double A)
 	{
-		return ((*(uint64*)&A) >= (uint64)0x8000000000000000); // Detects sign bit.
+		return IsNegativeOrNegativeZero(A);
 	}
 
 	/** Returns a random integer between 0 and RAND_MAX, inclusive */
@@ -601,7 +654,7 @@ struct FGenericPlatformMath
 	static CORE_API float SRand();
 
 	/**
-	 * Computes the base 2 logarithm for an integer value that is greater than 0.
+	 * Computes the base 2 logarithm for an integer value.
 	 * The result is rounded down to the nearest integer.
 	 *
 	 * @param Value		The value to compute the log of
@@ -609,72 +662,17 @@ struct FGenericPlatformMath
 	 */	
 	static FORCEINLINE uint32 FloorLog2(uint32 Value) 
 	{
-/*		// reference implementation 
-		// 1500ms on test data
-		uint32 Bit = 32;
-		for (; Bit > 0;)
-		{
-			Bit--;
-			if (Value & (1<<Bit))
-			{
-				break;
-			}
-		}
-		return Bit;
-*/
-		// same output as reference
-
-		// see http://codinggorilla.domemtech.com/?p=81 or http://en.wikipedia.org/wiki/Binary_logarithm but modified to return 0 for a input value of 0
-		// 686ms on test data
 		uint32 pos = 0;
 		if (Value >= 1<<16) { Value >>= 16; pos += 16; }
 		if (Value >= 1<< 8) { Value >>=  8; pos +=  8; }
 		if (Value >= 1<< 4) { Value >>=  4; pos +=  4; }
 		if (Value >= 1<< 2) { Value >>=  2; pos +=  2; }
 		if (Value >= 1<< 1) {				pos +=  1; }
-		return (Value == 0) ? 0 : pos;
-
-		// even faster would be method3 but it can introduce more cache misses and it would need to store the table somewhere
-		// 304ms in test data
-		/*int LogTable256[256];
-
-		void prep()
-		{
-			LogTable256[0] = LogTable256[1] = 0;
-			for (int i = 2; i < 256; i++)
-			{
-				LogTable256[i] = 1 + LogTable256[i / 2];
-			}
-			LogTable256[0] = -1; // if you want log(0) to return -1
-		}
-
-		int _forceinline method3(uint32 v)
-		{
-			int r;     // r will be lg(v)
-			uint32 tt; // temporaries
-
-			if ((tt = v >> 24) != 0)
-			{
-				r = (24 + LogTable256[tt]);
-			}
-			else if ((tt = v >> 16) != 0)
-			{
-				r = (16 + LogTable256[tt]);
-			}
-			else if ((tt = v >> 8 ) != 0)
-			{
-				r = (8 + LogTable256[tt]);
-			}
-			else
-			{
-				r = LogTable256[v];
-			}
-			return r;
-		}*/
+		return pos;
 	}
 
 	/**
-	 * Computes the base 2 logarithm for a 64-bit value that is greater than 0.
+	 * Computes the base 2 logarithm for a 64-bit value.
 	 * The result is rounded down to the nearest integer.
 	 *
 	 * @param Value		The value to compute the log of
@@ -688,8 +686,8 @@ struct FGenericPlatformMath
 		if (Value >= 1ull<< 8) { Value >>=  8; pos +=  8; }
 		if (Value >= 1ull<< 4) { Value >>=  4; pos +=  4; }
 		if (Value >= 1ull<< 2) { Value >>=  2; pos +=  2; }
-		if (Value >= 1ull<< 1) {				pos +=  1; }
-		return (Value == 0) ? 0 : pos;
+		if (Value >= 1ull<< 1) {               pos +=  1; }
+		return pos;
 	}
 
 	/**
@@ -777,18 +775,29 @@ struct FGenericPlatformMath
 
 	/**
 	 * Returns smallest N such that (1<<N)>=Arg.
-	 * Note: CeilLogTwo(0)=0 because (1<<0)=1 >= 0.
+	 * Note: CeilLogTwo(0)=0 
 	 */
 	static FORCEINLINE uint32 CeilLogTwo( uint32 Arg )
 	{
-		int32 Bitmask = ((int32)(CountLeadingZeros(Arg) << 26)) >> 31;
-		return (32 - CountLeadingZeros(Arg - 1)) & (~Bitmask);
+		// if Arg is 0, change it to 1 so that we return 0
+		Arg = Arg ? Arg : 1;
+		return 32 - CountLeadingZeros(Arg - 1);
 	}
 
 	static FORCEINLINE uint64 CeilLogTwo64( uint64 Arg )
 	{
-		int64 Bitmask = ((int64)(CountLeadingZeros64(Arg) << 57)) >> 63;
-		return (64 - CountLeadingZeros64(Arg - 1)) & (~Bitmask);
+		// if Arg is 0, change it to 1 so that we return 0
+		Arg = Arg ? Arg : 1;
+		return 64 - CountLeadingZeros64(Arg - 1);
+	}
+
+	/**
+	 * Returns the smallest N such that (1<<N)>=Arg. This is a less efficient version of CeilLogTwo, but written in a
+	 * way that can be evaluated at compile-time.
+	 */
+	static FORCEINLINE constexpr uint8 ConstExprCeilLogTwo(SIZE_T Arg)
+	{
+		return Arg <= 1 ? 0 : (1 + ConstExprCeilLogTwo(Arg / 2));
 	}
 
 	/** @return Rounds the given number up to the next highest power of two. */
@@ -910,7 +919,7 @@ struct FGenericPlatformMath
 	template< class T > 
 	static CONSTEXPR FORCEINLINE T Abs( const T A )
 	{
-		return (A>=(T)0) ? A : -A;
+		return (A < (T)0) ? -A : A;
 	}
 
 	/** Returns 1, 0, or -1 depending on relation of T to 0 */
@@ -924,21 +933,23 @@ struct FGenericPlatformMath
 	template< class T > 
 	static CONSTEXPR FORCEINLINE T Max( const T A, const T B )
 	{
-		return (A>=B) ? A : B;
+		return (B < A) ? A : B;
 	}
 
 	/** Returns lower value in a generic way */
 	template< class T > 
 	static CONSTEXPR FORCEINLINE T Min( const T A, const T B )
 	{
-		return (A<=B) ? A : B;
+		return (A < B) ? A : B;
 	}
 
 	// Allow mixing of float types to promote to highest precision type
-	static CONSTEXPR FORCEINLINE double Max(const double A, const float B) { return Max<double>(A, B); }
-	static CONSTEXPR FORCEINLINE double Max(const float A, const double B) { return Max<double>(A, B); }
-	static CONSTEXPR FORCEINLINE double Min(const double A, const float B) { return Min<double>(A, B); }
-	static CONSTEXPR FORCEINLINE double Min(const float A, const double B) { return Min<double>(A, B); }
+	MIX_FLOATS_2_ARGS(Max);
+	MIX_FLOATS_2_ARGS(Min);
+
+	// Allow mixing of signed integral types.
+	MIX_SIGNED_INTS_2_ARGS_CONSTEXPR(Max);
+	MIX_SIGNED_INTS_2_ARGS_CONSTEXPR(Min);
 
 	/**
 	* Min of Array

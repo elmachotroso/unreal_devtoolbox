@@ -5,6 +5,8 @@
 #include "MovieSceneTakeSettings.h"
 #include "Channels/MovieSceneChannelProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneTakeSection)
+
 #define LOCTEXT_NAMESPACE "MovieSceneTakeSection"
 
 #if WITH_EDITOR
@@ -71,6 +73,8 @@ void UMovieSceneTakeSection::PostEditImport()
 
 void UMovieSceneTakeSection::ReconstructChannelProxy()
 {
+	LLM_SCOPE_BYNAME(TEXT("Takes/MovieSceneTakeSection"))
+
 	FMovieSceneChannelProxyData Channels;
 
 #if WITH_EDITOR

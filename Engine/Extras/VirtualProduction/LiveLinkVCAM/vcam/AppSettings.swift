@@ -26,7 +26,6 @@ class AppSettings : NSObject {
         static let didAcceptEULA = "didAcceptEULA"
         static let lastConnectionAddress = "lastConnectionAddress"
         
-        static let engineVersion = "engineVersion"
         static let liveLinkSubjectName = "liveLinkSubjectName"
 
         static let timecodeSource = "timecodeSource"
@@ -36,6 +35,7 @@ class AppSettings : NSObject {
 
         static let showStreamingStats = "showStreamingStats"
 
+        static let connectionType = "connectionType"
     }
     
     private class func defaultsDictionary() -> Dictionary<String, Any> {
@@ -44,7 +44,6 @@ class AppSettings : NSObject {
             Keys.didAcceptEULA : false,
             Keys.lastConnectionAddress : "",
 
-            Keys.engineVersion : "",
             Keys.liveLinkSubjectName : defaultLiveLinkSubjectName(),
             
             Keys.timecodeSource : 1,
@@ -52,7 +51,9 @@ class AppSettings : NSObject {
             Keys.tentaclePeripheralName : "",
             Keys.ntpPool : "",
 
-            Keys.showStreamingStats : false
+            Keys.showStreamingStats : false,
+            
+            Keys.connectionType : "RemoteSession"
 
         ]
     }
@@ -86,12 +87,6 @@ class AppSettings : NSObject {
     @objc dynamic var lastConnectionAddress : String = UserDefaults.standard.string(forKey: Keys.lastConnectionAddress) ?? "" {
         didSet {
             UserDefaults.standard.set(lastConnectionAddress, forKey: Keys.lastConnectionAddress)
-        }
-    }
-
-    @objc dynamic var engineVersion : String = UserDefaults.standard.string(forKey: Keys.engineVersion) ?? "" {
-        didSet {
-            UserDefaults.standard.set(engineVersion, forKey: Keys.engineVersion)
         }
     }
 
@@ -138,4 +133,12 @@ class AppSettings : NSObject {
             UserDefaults.standard.set(showStreamingStats, forKey: Keys.showStreamingStats)
         }
     }
+    
+    @objc dynamic var connectionType : String = UserDefaults.standard.string(forKey: Keys.connectionType) ?? "RemoteSession" {
+        didSet {
+            UserDefaults.standard.set(connectionType, forKey: Keys.connectionType)
+        }
+    }
+    
+
 }

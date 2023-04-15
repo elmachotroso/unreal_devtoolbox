@@ -10,6 +10,13 @@
 #include "Templates/Sorting.h"
 #include "Spatial/PointHashGrid3.h"
 
+bool UseVolumeToComputeRelativeSize = false;
+FAutoConsoleVariableRef CVarUseVolumeToComputeRelativeSize(TEXT("p.gc.UseVolumeToComputeRelativeSize"), UseVolumeToComputeRelativeSize, TEXT("Use Volume To Compute RelativeSize instead of the side of the cubic volume (def: false)"));
+
+bool UseLargestClusterToComputeRelativeSize = false;
+FAutoConsoleVariableRef CVarUseMaxClusterToComputeRelativeSize(TEXT("p.gc.UseLargestClusterToComputeRelativeSize"), UseVolumeToComputeRelativeSize, TEXT("Use the largest Cluster as reference for the releative size instead of the largest child (def: false)"));
+
+
 TOptional<FGeometryCollectionConvexUtility::FGeometryCollectionConvexData> FGeometryCollectionConvexUtility::GetConvexHullDataIfPresent(FGeometryCollection* GeometryCollection)
 {
 	check(GeometryCollection);
@@ -21,8 +28,8 @@ TOptional<FGeometryCollectionConvexUtility::FGeometryCollectionConvexData> FGeom
 	}
 
 	FGeometryCollectionConvexUtility::FGeometryCollectionConvexData ConvexData{
-		GeometryCollection->GetAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup),
-		GeometryCollection->GetAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex")
+		GeometryCollection->ModifyAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup),
+		GeometryCollection->ModifyAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex")
 	};
 	return TOptional<FGeometryCollectionConvexUtility::FGeometryCollectionConvexData>(ConvexData);
 }
@@ -55,8 +62,8 @@ FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollect
 	// Check for correct population. Make sure all rigid nodes should have a convex associated; leave convex hulls for transform nodes alone for now
 	const TManagedArray<int32>& SimulationType = GeometryCollection->GetAttribute<int32>("SimulationType", FTransformCollection::TransformGroup);
 	const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollection->GetAttribute<int32>("TransformToGeometryIndex", FTransformCollection::TransformGroup);
-	TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->GetAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
-	TManagedArray<TUniquePtr<Chaos::FConvex>>& ConvexHull = GeometryCollection->GetAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex");
+	TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->ModifyAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
+	TManagedArray<TUniquePtr<Chaos::FConvex>>& ConvexHull = GeometryCollection->ModifyAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex");
 	
 	TArray<int32> ProduceConvexHulls;
 	ProduceConvexHulls.Reserve(SimulationType.Num());
@@ -181,6 +188,49 @@ void FilterHullPoints(TArray<Chaos::FConvex::FVec3Type>& InOutPts, double Simpli
 	}
 }
 
+FVector ScaleHullPoints(TArray<Chaos::FConvex::FVec3Type>& InOutPts, double ShrinkPercentage)
+{
+	FVector Pivot = FVector::ZeroVector;
+	if (ShrinkPercentage == 0.0 || InOutPts.IsEmpty())
+	{
+		return Pivot;
+	}
+
+	double ScaleFactor = 1.0 - ShrinkPercentage / 100.0;
+	ensure(ScaleFactor != 0.0);
+
+	FVector Sum(0,0,0);
+	for (Chaos::FConvex::FVec3Type& Pt : InOutPts)
+	{
+		Sum += (FVector)Pt;
+	}
+
+	Pivot = Sum / (double)InOutPts.Num();
+	for (Chaos::FConvex::FVec3Type& Pt : InOutPts)
+	{
+		Pt = Chaos::FConvex::FVec3Type((FVector(Pt) - Pivot) * ScaleFactor + Pivot);
+	}
+
+	return Pivot;
+}
+
+void AddUnscaledPts(TArray<Chaos::FConvex::FVec3Type>& OutHullPts, const TArray<Chaos::FConvex::FVec3Type>& Vertices, const FVector& Pivot, double ShrinkPercentage)
+{
+	double ScaleFactor = 1.0 - ShrinkPercentage / 100.0;
+	double InvScaleFactor = 1.0;
+	if (ensure(ScaleFactor != 0.0))
+	{
+		InvScaleFactor = 1.0 / ScaleFactor;
+	}
+
+	int32 StartIdx = OutHullPts.AddUninitialized(Vertices.Num());
+	for (int32 VertIdx = 0, Num = Vertices.Num(); VertIdx < Num; VertIdx++)
+	{
+		FVector Vert = (FVector)Vertices[VertIdx];
+		OutHullPts[StartIdx + VertIdx] = Chaos::FConvex::FVec3Type((Vert - Pivot) * InvScaleFactor + Pivot);
+	}
+}
+
 Chaos::FConvex MakeHull(const TArray<Chaos::FConvex::FVec3Type>& Pts, double SimplificationDistanceThreshold)
 {
 	if (SimplificationDistanceThreshold > 0)
@@ -188,11 +238,11 @@ Chaos::FConvex MakeHull(const TArray<Chaos::FConvex::FVec3Type>& Pts, double Sim
 		TArray<Chaos::FConvex::FVec3Type> FilteredPts;
 		FilterHullPoints(Pts, FilteredPts, SimplificationDistanceThreshold);
 		
-		return Chaos::FConvex(FilteredPts, KINDA_SMALL_NUMBER);
+		return Chaos::FConvex(FilteredPts, UE_KINDA_SMALL_NUMBER);
 	}
 	else
 	{
-		return Chaos::FConvex(Pts, KINDA_SMALL_NUMBER);
+		return Chaos::FConvex(Pts, UE_KINDA_SMALL_NUMBER);
 	}
 }
 
@@ -295,6 +345,12 @@ bool SplitHull(const Chaos::FConvex& HullIn, FChaosPlane Plane, bool KeepSide, T
 	return true;
 }
 
+// Add a pivot and verify (in debug) that the pivot array and convexes array are in sync
+void AddPivot(TArray<TUniquePtr<Chaos::FConvex>>& Convexes, TArray<FVector>& ConvexPivots, FVector Pivot)
+{
+	ConvexPivots.Add(Pivot);
+	checkSlow(Convexes.Num() == ConvexPivots.Num());
+}
 
 /// Assumptions: 
 ///		Convexes is initialized to one convex hull for each leaf geometry in a SHARED coordinate space
@@ -302,6 +358,7 @@ bool SplitHull(const Chaos::FConvex& HullIn, FChaosPlane Plane, bool KeepSide, T
 ///		Parents, GeoProximity, and GeometryToTransformIndex are all initialized from the geometry collection
 void CreateNonoverlappingConvexHulls(
 	TArray<TUniquePtr<Chaos::FConvex>>& Convexes,
+	TArray<FVector>& ConvexPivots,
 	TArray<TSet<int32>>& TransformToConvexIndices,
 	TFunctionRef<bool(int32)> HasCustomConvexFn,
 	const TManagedArray<int32>& SimulationType,
@@ -313,9 +370,17 @@ void CreateNonoverlappingConvexHulls(
 	const TManagedArray<float>* Volume,
 	double FracAllowRemove,
 	double SimplificationDistanceThreshold,
-	double CanExceedFraction
+	double CanExceedFraction,
+	EConvexOverlapRemoval OverlapRemovalMethod,
+	double ShrinkPercentage
 )
 {
+	bool bRemoveOverlaps = OverlapRemovalMethod != EConvexOverlapRemoval::None;
+	bool bRemoveLeafOverlaps = OverlapRemovalMethod == EConvexOverlapRemoval::All;
+
+	double ScaleFactor = 1.0 - ShrinkPercentage / 100.0;
+	ensure(ScaleFactor != 0.0);
+
 	int32 NumBones = TransformToConvexIndices.Num();
 	check(Parents.Num() == NumBones);
 
@@ -336,7 +401,7 @@ void CreateNonoverlappingConvexHulls(
 
 	TArray<TSet<int32>> LeafProximity;
 	LeafProximity.SetNum(NumBones);
-	if (GeoProximity)
+	if (ensure(GeoProximity))
 	{
 		for (int32 GeomIdx = 0; GeomIdx < GeoProximity->Num(); GeomIdx++)
 		{
@@ -346,10 +411,6 @@ void CreateNonoverlappingConvexHulls(
 				LeafProximity[TransformIdx].Add(GeometryToTransformIndex[NbrGeomIdx]);
 			}
 		}
-	}
-	else
-	{
-		// TODO: fill out LeafProximity by doing IsColliding calls (may have to construct Children array before this)
 	}
 
 	auto IsColliding = [&Convexes](int32 ConvexA, int32 ConvexB)
@@ -498,7 +559,7 @@ void CreateNonoverlappingConvexHulls(
 		return true;
 	};
 
-	auto FixCollisionWithCut = [&Convexes, &FindCutPlane, &SimplificationDistanceThreshold](int32 ConvexA, int32 ConvexB)
+	auto FixCollisionWithCut = [&Convexes, &FindCutPlane, &SimplificationDistanceThreshold, &ScaleFactor](int32 ConvexA, int32 ConvexB)
 	{
 		if (Convexes[ConvexA]->NumVertices() == 0 || Convexes[ConvexB]->NumVertices() == 0)
 		{
@@ -521,12 +582,12 @@ void CreateNonoverlappingConvexHulls(
 			TArray<Chaos::FConvex::FVec3Type> CutHullPts;
 			if (CutHull(*Convexes[ConvexA], CutPlane, true, CutHullPts))
 			{
-				*Convexes[ConvexA] = MakeHull(CutHullPts, SimplificationDistanceThreshold);
+				*Convexes[ConvexA] = MakeHull(CutHullPts, SimplificationDistanceThreshold * ScaleFactor);
 			}
 			CutHullPts.Reset();
 			if (CutHull(*Convexes[ConvexB], CutPlane, false, CutHullPts))
 			{
-				*Convexes[ConvexB] = MakeHull(CutHullPts, SimplificationDistanceThreshold);
+				*Convexes[ConvexB] = MakeHull(CutHullPts, SimplificationDistanceThreshold * ScaleFactor);
 			}
 		}
 		return bCollide;
@@ -542,6 +603,11 @@ void CreateNonoverlappingConvexHulls(
 	Depths.SetNumZeroed(NumBones);
 	for (int HullIdx = 0; HullIdx < NumBones; HullIdx++)
 	{
+		if (SimulationType[HullIdx] == SkipType) // Skip any 'SkipType' elements (generally embedded geometry)
+		{
+			Depths[HullIdx] = -1;
+			continue;
+		}
 		if (Parents[HullIdx] != INDEX_NONE)
 		{
 			if (SimulationType[Parents[HullIdx]] != LeafType)
@@ -563,7 +629,7 @@ void CreateNonoverlappingConvexHulls(
 		Depths[HullIdx] = Depth;
 		MaxDepth = FMath::Max(Depth, MaxDepth);
 
-		if (!HasCustomConvexFn(HullIdx) && TransformToConvexIndices[HullIdx].Num() > 0)
+		if (bRemoveOverlaps && bRemoveLeafOverlaps && !HasCustomConvexFn(HullIdx) && TransformToConvexIndices[HullIdx].Num() > 0)
 		{
 			const TSet<int32>& Neighbors = LeafProximity[HullIdx];
 			for (int32 NbrIdx : Neighbors)
@@ -573,6 +639,19 @@ void CreateNonoverlappingConvexHulls(
 					// TODO: consider a one-sided cut if one of the bones has custom convexes
 					FixCollisionWithCut(OnlyConvex(HullIdx), OnlyConvex(NbrIdx));
 				}
+			}
+		}
+	}
+
+	TArray<int32> ByDepthOrder;
+	ByDepthOrder.Reserve(NumBones);
+	for (int32 ProcessDepth = MaxDepth; ProcessDepth >= 0; --ProcessDepth)
+	{
+		for (int32 Bone = 0; Bone < NumBones; Bone++)
+		{
+			if (Depths[Bone] == ProcessDepth)
+			{
+				ByDepthOrder.Add(Bone);
 			}
 		}
 	}
@@ -613,66 +692,145 @@ void CreateNonoverlappingConvexHulls(
 		}
 	};
 
-	auto FixLeafCollisions = [&AddLeaves, &FixCollisionWithCut, &OnlyConvex, &HasCustomConvexFn](int32 BoneA, int32 BoneB)
+	// Use initial leaf proximity to compute which cluster bones are in proximity to which neighbors at the same level of the bone hierarchy
+
+	TArray<TSet<int32>> SameDepthClusterProximity;
+	if (bRemoveOverlaps)
 	{
-		TArray<int32> LeavesA, LeavesB;
-		AddLeaves(BoneA, LeavesA);
-		AddLeaves(BoneB, LeavesB);
-		bool bAnyCollides = false;
-		for (int32 LeafA : LeavesA)
+		SameDepthClusterProximity.SetNum(NumBones);
+		for (int32 Bone = 0; Bone < NumBones; Bone++)
 		{
-			if (HasCustomConvexFn(LeafA))
+			for (int32 NbrBone : LeafProximity[Bone])
 			{
-				continue;
-			}
-			for (int32 LeafB : LeavesB)
-			{
-				if (HasCustomConvexFn(LeafB))
+				if (Bone > NbrBone)
 				{
 					continue;
 				}
-				// TODO: Instead of skipping all custom convex, if only one of the leaves is custom, we 
-				// could iterate through the custom leaf convexes and clip the non-custom convex.
-				// But need to decide a fallback if this would delete the whole non-custom convex.
-				// For now, if you have custom convex leaves we just assume you they're set up to not explode the sim.
-				bool bCollides = FixCollisionWithCut(OnlyConvex(LeafA), OnlyConvex(LeafB));
-				bAnyCollides |= bCollides;
+
+				auto FindCommonParent = [&Parents](int32 BoneA, int32 BoneB)
+				{
+					int AParent = Parents[BoneA];
+					int BParent = Parents[BoneB];
+					if (AParent == BParent) // early out if they're in the same cluster
+					{
+						return AParent;
+					}
+
+					TSet<int32> AParents;
+					while (AParent != INDEX_NONE)
+					{
+						AParents.Add(AParent);
+						AParent = Parents[AParent];
+					}
+
+					while (BParent != INDEX_NONE && !AParents.Contains(BParent))
+					{
+						BParent = Parents[BParent];
+					}
+					return BParent;
+				};
+				int32 CommonParent = FindCommonParent(Bone, NbrBone);
+
+				auto ConnectAtMatchingDepth = [&SameDepthClusterProximity, &Parents, CommonParent, &Depths](int32 BoneA, int32 BoneToWalkParents)
+				{
+					if (BoneA == INDEX_NONE || BoneToWalkParents == INDEX_NONE)
+					{
+						return;
+					}
+
+					int32 DepthA = Depths[BoneA];
+					int32 DepthB = Depths[BoneToWalkParents];
+					while (BoneToWalkParents != INDEX_NONE && BoneToWalkParents != CommonParent && DepthB >= DepthA)
+					{
+						if (DepthB == DepthA)
+						{
+							bool bWasInSet = false;
+							SameDepthClusterProximity[BoneToWalkParents].Add(BoneA, &bWasInSet);
+							if (bWasInSet)
+							{
+								break;
+							}
+							SameDepthClusterProximity[BoneA].Add(BoneToWalkParents);
+						}
+
+						BoneToWalkParents = Parents[BoneToWalkParents];
+						DepthB--;
+					}
+				};
+
+				// connect bone to neighboring bone's clusters
+				ConnectAtMatchingDepth(Bone, Parents[NbrBone]);
+
+				// walk chain of parents of bone and connect each to the chain of neighboring bone + its parents
+				int32 BoneParent = Parents[Bone];
+				while (BoneParent != INDEX_NONE && BoneParent != CommonParent)
+				{
+					ConnectAtMatchingDepth(BoneParent, NbrBone);
+					BoneParent = Parents[BoneParent];
+				}
 			}
 		}
-		return bAnyCollides;
-	};
+	}
 
-	// Compute initial hulls at all levels, and use these to fill out the full proximity links
-	// Fix collisions between any two leaf hulls
+	// Compute initial hulls at all levels and filter out any that are too large relative to the geometry they contain
 
 	TArray<TSet<int32>> ClusterProximity;
-	ClusterProximity.SetNum(NumBones);
-	int ProcessDepth = MaxDepth;
-	TArray<Chaos::FConvex::FVec3Type> JoinedHullPts;
-	TArray<int32> ChildrenWithHulls;
-	while (--ProcessDepth >= 0)
+	if (bRemoveOverlaps)
 	{
-		TSet<int32> ToProcess;
-		for (int Bone = 0; Bone < Parents.Num(); Bone++)
+		ClusterProximity.SetNum(NumBones);
+	}
+	TArrayView<int32> DepthOrderView(ByDepthOrder);
+
+	for (int32 Idx = 0, SliceEndIdx = Idx + 1; Idx < ByDepthOrder.Num(); Idx = SliceEndIdx)
+	{
+		FCriticalSection ConvexesCS;
+
+		int32 ProcessDepth = Depths[ByDepthOrder[Idx]];
+		for (SliceEndIdx = Idx + 1; SliceEndIdx < ByDepthOrder.Num(); SliceEndIdx++)
 		{
-			if (Depths[Bone] == ProcessDepth)
+			if (Depths[ByDepthOrder[SliceEndIdx]] != ProcessDepth)
+			{
+				break;
+			}
+		}
+		TArrayView<int32> SameDepthSlice = DepthOrderView.Slice(Idx, SliceEndIdx - Idx);
+		
+		ParallelFor(SameDepthSlice.Num(), [&](int32 SliceIdx)
+		{
+			int32 Bone = SameDepthSlice[SliceIdx];
+			checkSlow(Depths[Bone] == ProcessDepth);
+			if (!SkipBone(Bone))
 			{
 				if (TransformToConvexIndices[Bone].Num() == 0 && !HasCustomConvexFn(Bone))
 				{
-					JoinedHullPts.Reset();
-					ChildrenWithHulls.Reset();
+					TArray<Chaos::FConvex::FVec3Type> JoinedHullPts;
+					TArray<int32> ChildrenWithHulls;
 					AddDescendentsWithHulls(Bone, ChildrenWithHulls);
 					for (int32 Child : ChildrenWithHulls)
 					{
 						for (int32 ConvexIdx : TransformToConvexIndices[Child])
 						{
-							JoinedHullPts.Append(Convexes[ConvexIdx]->GetVertices());
+							FVector Pivot;
+							ConvexesCS.Lock();
+							Chaos::FConvex* Convex = Convexes[ConvexIdx].Get();
+							Pivot = ConvexPivots[ConvexIdx];
+							ConvexesCS.Unlock();
+							if (ShrinkPercentage != 0.0)
+							{
+								AddUnscaledPts(JoinedHullPts, Convex->GetVertices(), Pivot, ShrinkPercentage);
+							}
+							else
+							{
+								JoinedHullPts.Append(Convex->GetVertices());
+							}
 						}
 					}
+					
 					if (JoinedHullPts.Num() > 0)
 					{
 						FilterHullPoints(JoinedHullPts, SimplificationDistanceThreshold);
-						TUniquePtr<Chaos::FConvex> Hull = MakeUnique<Chaos::FConvex>(JoinedHullPts, KINDA_SMALL_NUMBER);
+						FVector Pivot = ScaleHullPoints(JoinedHullPts, ShrinkPercentage);
+						TUniquePtr<Chaos::FConvex> Hull = MakeUnique<Chaos::FConvex>(JoinedHullPts, UE_KINDA_SMALL_NUMBER);
 						bool bIsTooBig = false;
 						if (Volume)
 						{
@@ -684,96 +842,85 @@ void CreateNonoverlappingConvexHulls(
 						}
 						if (!bIsTooBig)
 						{
+							ConvexesCS.Lock();
 							int32 ConvexIdx = Convexes.Add(MoveTemp(Hull));
+							AddPivot(Convexes, ConvexPivots, Pivot);
+							ConvexesCS.Unlock();
 							TransformToConvexIndices[Bone].Add(ConvexIdx);
-							ToProcess.Add(Bone);
 						}
 					}
-				}
-				else
-				{
-					ToProcess.Add(Bone);
 				}
 			}
+		});
+
+		if (!bRemoveOverlaps)
+		{
+			continue;
 		}
 
-		// We don't have proximity at the cluster level, so reconstruct from n^2 collision tests for now
-		for (int32 BoneA : ToProcess)
+		// Compute cluster proximity
+		for (int32 BoneA : SameDepthSlice)
 		{
-			for (int32 BoneB : ToProcess)
+			if (SkipBone(BoneA) || TransformToConvexIndices[BoneA].Num() == 0)
 			{
-				if (BoneB < BoneA)
+				continue;
+			}
+			for (int32 BoneB : SameDepthClusterProximity[BoneA])
+			{
+				if (BoneB < BoneA && IsBoneColliding(BoneA, BoneB))
 				{
-					if (IsBoneColliding(BoneA, BoneB))
+					int32 Bones[2]{ BoneA, BoneB };
+					for (int32 BoneIdx = 0; BoneIdx < 2; BoneIdx++)
 					{
-						FixLeafCollisions(BoneA, BoneB);
-						int32 Bones[2]{ BoneA, BoneB };
-						for (int32 BoneIdx = 0; BoneIdx < 2; BoneIdx++)
+						int32 ParentBone = Bones[BoneIdx];
+						int32 OtherBone = Bones[1 - BoneIdx];
+						TArray<int32> TraverseBones;
+						TraverseBones.Append(Children[ParentBone]);
+						while (TraverseBones.Num() > 0)
 						{
-							int32 ParentBone = Bones[BoneIdx];
-							int32 OtherBone = Bones[1 - BoneIdx];
-							// if leaves changed flag that all hulls using those leaves must also change
-							TArray<int32> TraverseBones;
-							TraverseBones.Append(Children[ParentBone]);
-							while (TraverseBones.Num() > 0)
+							int32 ToProc = TraverseBones.Pop(false);
+							if (IsBoneColliding(OtherBone, ToProc))
 							{
-								int32 ToProc = TraverseBones.Pop(false);
-								if (IsBoneColliding(OtherBone, ToProc))
-								{
-									ClusterProximity[OtherBone].Add(ToProc);
-									ClusterProximity[ToProc].Add(OtherBone);
-									TraverseBones.Append(Children[ToProc]);
-								}
+								ClusterProximity[OtherBone].Add(ToProc);
+								ClusterProximity[ToProc].Add(OtherBone);
+								TraverseBones.Append(Children[ToProc]);
 							}
 						}
-
-						ClusterProximity[BoneA].Add(BoneB);
-						ClusterProximity[BoneB].Add(BoneA);
 					}
+
+					ClusterProximity[BoneA].Add(BoneB);
+					ClusterProximity[BoneB].Add(BoneA);
 				}
 			}
 		}
 	}
 
-	// Now that leaves don't intersect, re-compute all non-leaf hulls on the clipped leaves
-	// and record volumes for each hull
+	if (!bRemoveOverlaps)
+	{
+		return; // rest of function is just for removing overlaps
+	}
+
+
+	// Compute all initial non-leaf hull volumes
 
 	TArray<double> NonLeafVolumes; // Original volumes of non-leaf hulls (to compare against progressively cut-down volume as intersections are removed)
 	NonLeafVolumes.SetNumZeroed(Convexes.Num());
-	ProcessDepth = MaxDepth;
-	while (--ProcessDepth > 0)
+	ParallelFor(NumBones, [&](int32 Bone)
 	{
-		TSet<int32> ToProcess;
-		for (int32 Bone = 0; Bone < NumBones; Bone++)
+		bool bCustom = HasCustomConvexFn(Bone);
+		if (!bCustom && // if we need an automatic hull
+			Children[Bone].Num() > 0 && !SkipBone(Bone) && // and we have children && aren't embedded geo
+			TransformToConvexIndices[Bone].Num() == 1 // and hull wasn't already ruled out by CanExceedFraction
+			)
 		{
-			bool bCustom = HasCustomConvexFn(Bone);
-			if (!bCustom && Depths[Bone] == ProcessDepth && // if we need an automatic hull and are at the current depth
-				Children[Bone].Num() > 0 && !SkipBone(Bone) && // and we have children && aren't embedded geo
-				TransformToConvexIndices[Bone].Num() == 1 // and hull wasn't already ruled out by CanExceedFraction
-				)
-			{
-				JoinedHullPts.Reset();
-				ChildrenWithHulls.Reset();
-				AddDescendentsWithHulls(Bone, ChildrenWithHulls);
-				for (int32 Child : ChildrenWithHulls)
-				{
-					for (int32 ConvexIdx : TransformToConvexIndices[Child])
-					{
-						JoinedHullPts.Append(Convexes[ConvexIdx]->GetVertices());
-					}
-				}
-				int32 ConvexIdx = OnlyConvex(Bone);
-				if (ConvexIdx)
-				{
-					*Convexes[ConvexIdx] = MakeHull(JoinedHullPts, SimplificationDistanceThreshold);
-					NonLeafVolumes[ConvexIdx] = Convexes[ConvexIdx]->GetVolume();
-				}
-			}
+			int32 ConvexIdx = OnlyConvex(Bone);
+			checkSlow(ConvexIdx > -1); // safe to assume because the if-statement verified "TransformToConvexIndices[Bone].Num() == 1" 
+			NonLeafVolumes[ConvexIdx] = Convexes[ConvexIdx]->GetVolume();
 		}
-	}
+	});
 
 	// if bOneSidedCut, then only ConvexA is cut; ConvexB is left unchanged
-	auto CutIfOk = [&Convexes, &NonLeafVolumes, &FindCutPlane, &FracAllowRemove, &SimplificationDistanceThreshold](bool bOneSidedCut, int32 ConvexA, int32 ConvexB) -> bool
+	auto CutIfOk = [&Convexes, &NonLeafVolumes, &FindCutPlane, &FracAllowRemove, &SimplificationDistanceThreshold, &ScaleFactor](bool bOneSidedCut, int32 ConvexA, int32 ConvexB) -> bool
 	{
 		Chaos::FReal Depth;
 		Chaos::FVec3 CloseA, CloseB, Normal;
@@ -796,7 +943,7 @@ void CreateNonoverlappingConvexHulls(
 				{
 					return false;
 				}
-				CutHullA = MakeHull(CutHullPts, SimplificationDistanceThreshold);
+				CutHullA = MakeHull(CutHullPts, SimplificationDistanceThreshold * ScaleFactor);
 				bCreatedA = true;
 			}
 			if (!bOneSidedCut)
@@ -804,7 +951,7 @@ void CreateNonoverlappingConvexHulls(
 				CutHullPts.Reset();
 				if (CutHull(*Convexes[ConvexB], CutPlane, false, CutHullPts))
 				{
-					CutHullB = MakeHull(CutHullPts, SimplificationDistanceThreshold);
+					CutHullB = MakeHull(CutHullPts, SimplificationDistanceThreshold * ScaleFactor);
 					bCreatedB = true;
 				}
 			}
@@ -841,24 +988,24 @@ void CreateNonoverlappingConvexHulls(
 	};
 
 	// re-process all non-leaf bones
-	ProcessDepth = MaxDepth;
-	while (--ProcessDepth > 0)
+	for (int32 Idx = 0, SliceEndIdx = Idx + 1; Idx < DepthOrderView.Num(); Idx = SliceEndIdx)
 	{
-		TSet<int32> ToProcess;
-		for (int32 Bone = 0; Bone < NumBones; Bone++)
+		int32 ProcessDepth = Depths[DepthOrderView[Idx]];
+		for (SliceEndIdx = Idx + 1; SliceEndIdx < DepthOrderView.Num(); SliceEndIdx++)
 		{
-			if (Depths[Bone] == ProcessDepth && Children[Bone].Num() > 0)
+			if (Depths[DepthOrderView[SliceEndIdx]] != ProcessDepth)
 			{
-				ToProcess.Add(Bone);
+				break;
 			}
 		}
+		TArrayView<int32> SameDepthSlice = DepthOrderView.Slice(Idx, SliceEndIdx - Idx);
 
 		TSet<int32> WasNotOk;
 
-		for (int32 Bone : ToProcess)
+		for (int32 Bone : SameDepthSlice)
 		{
 			bool bCustom = HasCustomConvexFn(Bone);
-			if (bCustom || TransformToConvexIndices[Bone].Num() == 0 || WasNotOk.Contains(Bone))
+			if (bCustom || Children[Bone].Num() == 0 || TransformToConvexIndices[Bone].Num() == 0 || WasNotOk.Contains(Bone))
 			{
 				continue;
 			}
@@ -869,17 +1016,24 @@ void CreateNonoverlappingConvexHulls(
 					continue;
 				}
 				bool bNbrCustom = HasCustomConvexFn(Nbr);
+
+				// if the neighbor is less deep and not a leaf, skip processing this to favor processing the neighbor instead
+				if (Depths[Bone] > Depths[Nbr] && Children[Nbr].Num() > 0)
+				{
+					continue;
+				}
+				// If we only consider cluster-vs-cluster overlap, and the neighbor is a leaf, do not consider it
+				if (OverlapRemovalMethod == EConvexOverlapRemoval::OnlyClustersVsClusters && Children[Nbr].Num() == 0)
+				{
+					continue;
+				}
+
 				bool bAllOk = true;
 				for (int32 ConvexBone : TransformToConvexIndices[Bone])
 				{
 					for (int32 ConvexNbr : TransformToConvexIndices[Nbr])
 					{
 						bool bOneSidedCut = Depths[Bone] != Depths[Nbr] || Children[Nbr].Num() == 0 || bNbrCustom;
-						// if the neighbor is less deep and not a leaf, skip processing this to favor processing the neighbor instead
-						if (Depths[Bone] > Depths[Nbr] && Children[Nbr].Num() > 0)
-						{
-							continue;
-						}
 
 						bool bWasOk = CutIfOk(bOneSidedCut, ConvexBone, ConvexNbr);
 
@@ -927,10 +1081,12 @@ void HullsFromGeometry(
 	TArray<FTransform>& GlobalTransformArray,
 	TFunctionRef<bool(int32)> HasCustomConvexFn,
 	TArray<TUniquePtr<Chaos::FConvex>>& Convexes,
+	TArray<FVector>& ConvexPivots,
 	TArray<TSet<int32>>& TransformToConvexIndices,
 	const TManagedArray<int32>& SimulationType,
 	int32 RigidType,
-	double SimplificationDistanceThreshold
+	double SimplificationDistanceThreshold,
+	double OverlapRemovalShrinkPercent
 )
 {
 	TArray<FVector> GlobalVertices;
@@ -943,10 +1099,12 @@ void HullsFromGeometry(
 		GlobalVertices[Idx] = GlobalTransformArray[Geometry.BoneMap[Idx]].TransformPosition(FVector(Geometry.Vertex[Idx]));
 	}
 
+	double ScaleFactor = 1 - OverlapRemovalShrinkPercent / 100.0;
+
 	int32 NumBones = Geometry.TransformToGeometryIndex.Num();
 	TransformToConvexIndices.SetNum(NumBones);
-	TArray<Chaos::FConvex::FVec3Type> HullPts;
-	for (int32 Idx = 0; Idx < NumBones; Idx++)
+	FCriticalSection HullCS;
+	ParallelFor(NumBones, [&](int32 Idx)
 	{
 		int32 GeomIdx = Geometry.TransformToGeometryIndex[Idx];
 		if (OrigConvexData.IsSet() && HasCustomConvexFn(Idx))
@@ -955,13 +1113,22 @@ void HullsFromGeometry(
 			const FTransform& Transform = GlobalTransformArray[Idx];
 			for (int32 OrigConvexIdx : OrigConvexData->TransformToConvexIndices[Idx])
 			{
-				HullPts.Reset();
+				TArray<Chaos::FConvex::FVec3Type> HullPts;
+				// As we already have a hull, use the center of mass as the pivot
+				FVector COM = (FVector)OrigConvexData->ConvexHull[OrigConvexIdx]->GetCenterOfMass();
+				HullPts.Reserve(OrigConvexData->ConvexHull[OrigConvexIdx]->NumVertices());
 				for (const Chaos::FConvex::FVec3Type& P : OrigConvexData->ConvexHull[OrigConvexIdx]->GetVertices())
 				{
-					HullPts.Add(FVector(Transform.TransformPosition((FVector)P)));
+					HullPts.Add(Chaos::FConvex::FVec3Type(Transform.TransformPosition( // transform to the global space
+						(FVector(P) - COM) * ScaleFactor + COM // scale in the original coordinate frame
+						)));
 				}
 				// Do not simplify hulls when we're just trying to transform them
-				int32 NewConvexIdx = Convexes.Add(MakeUnique<Chaos::FConvex>(HullPts, KINDA_SMALL_NUMBER));
+				TUniquePtr Hull = MakeUnique<Chaos::FConvex>(HullPts, UE_KINDA_SMALL_NUMBER);
+				HullCS.Lock();
+				int32 NewConvexIdx = Convexes.Add(MoveTemp(Hull));
+				AddPivot(Convexes, ConvexPivots, COM);
+				HullCS.Unlock();
 				TransformToConvexIndices[Idx].Add(NewConvexIdx);
 			}
 		}
@@ -970,7 +1137,7 @@ void HullsFromGeometry(
 			int32 VStart = Geometry.VertexStart[GeomIdx];
 			int32 VCount = Geometry.VertexCount[GeomIdx];
 			int32 VEnd = VStart + VCount;
-			HullPts.Reset();
+			TArray<Chaos::FConvex::FVec3Type> HullPts;
 			HullPts.Reserve(VCount);
 			for (int32 VIdx = VStart; VIdx < VEnd; VIdx++)
 			{
@@ -978,51 +1145,35 @@ void HullsFromGeometry(
 			}
 			ensure(HullPts.Num() > 0);
 			FilterHullPoints(HullPts, SimplificationDistanceThreshold);
-			int32 ConvexIdx = Convexes.Add(MakeUnique<Chaos::FConvex>(HullPts, KINDA_SMALL_NUMBER));
-			if (Convexes[ConvexIdx]->NumVertices() == 0 && HullPts.Num() > 0)
-			{
-				// if we've failed to make a convex hull, add a tiny bounding box to try to give it a hull anyway
-				// (note it may still end up with an empty hull after cutting the hull to remove collisions with neighboring hulls; this just reduces the chance/number of empty hulls)
-				Chaos::FConvex::FAABB3Type AABB = Convexes[ConvexIdx]->GetLocalBoundingBox();
-				Chaos::FVec3 Extents = AABB.Extents();
-				constexpr Chaos::FReal SmallestConvexWidth = (Chaos::FReal).11; // Convexes that span less distance than this will become empty hulls due to the size thresholds in FConvex
-				if (Extents.GetMax() < SmallestConvexWidth * 2) // only apply this logic if the bounding box was actually small (in case FConvex fails to make a hull even for larger hulls)
-				{
-					// expand the hull to cover a .11 ^ 3 volume, so it won't disappear
-					constexpr Chaos::FReal MinExpand = (Chaos::FReal).01;
-					Chaos::FVec3 GrowVec;
-					for (int Axis = 0; Axis < 3; Axis++)
-					{
-						GrowVec[Axis] = FMath::Max((Chaos::FReal).5 * (SmallestConvexWidth - Extents[Axis]), MinExpand);
-					}
-					AABB.ThickenSymmetrically(GrowVec);
-					Chaos::FConvex::FVec3Type Min = AABB.Min();
-					Chaos::FConvex::FVec3Type Max = AABB.Max();
-					HullPts.Reset(); // we're adding the bounding box, so no need to keep the points inside
-					HullPts.Add(Min);
-					HullPts.Add(Max);
-					HullPts.Add({ Min.X, Min.Y, Max.Z });
-					HullPts.Add({ Min.X, Max.Y, Max.Z });
-					HullPts.Add({ Max.X, Min.Y, Max.Z });
-					HullPts.Add({ Max.X, Max.Y, Min.Z });
-					HullPts.Add({ Max.X, Min.Y, Min.Z });
-					HullPts.Add({ Min.X, Max.Y, Min.Z });
-					// note: Do not use SimplificationDistanceThreshold for this fixed tiny hull
-					*Convexes[ConvexIdx] = Chaos::FConvex(HullPts, KINDA_SMALL_NUMBER);
-				}
-			}
+			FVector Pivot = ScaleHullPoints(HullPts, OverlapRemovalShrinkPercent);
+			TUniquePtr Hull = MakeUnique<Chaos::FConvex>(HullPts, UE_KINDA_SMALL_NUMBER);
+			HullCS.Lock();
+			int32 ConvexIdx = Convexes.Add(MoveTemp(Hull));
+			AddPivot(Convexes, ConvexPivots, Pivot);
+			HullCS.Unlock();
 			TransformToConvexIndices[Idx].Add(ConvexIdx);
 		}
-	}
+	});
 }
 
 void TransformHullsToLocal(
 	TArray<FTransform>& GlobalTransformArray,
 	TArray<TUniquePtr<Chaos::FConvex>>& Convexes,
-	TArray<TSet<int32>>& TransformToConvexIndices
+	TArray<FVector>& ConvexPivots,
+	TArray<TSet<int32>>& TransformToConvexIndices,
+	double OverlapRemovalShrinkPercent
 )
 {
-	for (int32 Bone = 0; Bone < TransformToConvexIndices.Num(); Bone++)
+	checkSlow(Convexes.Num() == ConvexPivots.Num());
+	
+	double ScaleFactor = 1.0 - OverlapRemovalShrinkPercent / 100.0;
+	double InvScaleFactor = 1.0;
+	if (ensure(ScaleFactor != 0.0))
+	{
+		InvScaleFactor = 1.0 / ScaleFactor;
+	}
+
+	ParallelFor(TransformToConvexIndices.Num(), [&](int32 Bone)
 	{
 		FTransform& Transform = GlobalTransformArray[Bone];
 		TArray<Chaos::FConvex::FVec3Type> HullPts;
@@ -1031,12 +1182,18 @@ void TransformHullsToLocal(
 			HullPts.Reset();
 			for (const Chaos::FConvex::FVec3Type& P : Convexes[ConvexIdx]->GetVertices())
 			{
-				HullPts.Add(FVector(Transform.InverseTransformPosition((FVector)P)));
+				FVector PVec(P);
+				if (OverlapRemovalShrinkPercent != 0.0)
+				{
+
+					PVec = (PVec - ConvexPivots[ConvexIdx]) * InvScaleFactor + ConvexPivots[ConvexIdx];
+				}
+				HullPts.Add(FVector(Transform.InverseTransformPosition(PVec)));
 			}
 			// Do not simplify hulls when we're just trying to transform them
-			*Convexes[ConvexIdx] = Chaos::FConvex(HullPts, KINDA_SMALL_NUMBER);
+			*Convexes[ConvexIdx] = Chaos::FConvex(HullPts, UE_KINDA_SMALL_NUMBER);
 		}
-	}
+	});
 }
 
 // copy hulls from InBone to OutBone
@@ -1063,7 +1220,7 @@ bool CopyHulls(
 			HullPts.Add(OutTransform.InverseTransformPosition(InTransform.TransformPosition(FVector(P))));
 		}
 		// Do not simplify hulls when we're just trying to transform them
-		int32 OutIdx = OutConvexes.Add(MakeUnique<Chaos::FConvex>(HullPts, KINDA_SMALL_NUMBER));
+		int32 OutIdx = OutConvexes.Add(MakeUnique<Chaos::FConvex>(HullPts, UE_KINDA_SMALL_NUMBER));
 		OutTransformToConvexIndices[OutBone].Add(OutIdx);
 	}
 
@@ -1114,9 +1271,15 @@ double ComputeGeometryVolume(
 
 }
 
-FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollectionConvexUtility::CreateNonOverlappingConvexHullData(FGeometryCollection* GeometryCollection, double FracAllowRemove, double SimplificationDistanceThreshold, double CanExceedFraction)
+FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollectionConvexUtility::CreateNonOverlappingConvexHullData(
+	FGeometryCollection* GeometryCollection, double FracAllowRemove, double SimplificationDistanceThreshold, double CanExceedFraction, EConvexOverlapRemoval OverlapRemovalMethod,
+	double OverlapRemovalShrinkPercent)
 {
 	check(GeometryCollection);
+
+	// Prevent ~100% shrink percentage, because it would not be reversible ...
+	// Note: Could alternatively just disable convex overlap removal in this case
+	OverlapRemovalShrinkPercent = FMath::Min(99.9, OverlapRemovalShrinkPercent);
 
 	TManagedArray<int32>* CustomConvexFlags = GetCustomConvexFlags(GeometryCollection, false);
 	auto ConvexFlagsAlwaysFalse = [](int32) -> bool { return false; };
@@ -1134,14 +1297,17 @@ FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollect
 	const TManagedArray<TSet<int32>>* GCProximity = GeometryCollection->FindAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
 	const TManagedArray<float>* Volume = GeometryCollection->FindAttribute<float>("Volume", FGeometryCollection::TransformGroup);
 	TArray<TUniquePtr<Chaos::FConvex>> Convexes;
+	TArray<FVector> ConvexPivots;
 	TArray<TSet<int32>> TransformToConvexIndexArr;
 	TArray<FTransform> GlobalTransformArray;
 	GeometryCollectionAlgo::GlobalMatrices(GeometryCollection->Transform, GeometryCollection->Parent, GlobalTransformArray);
-	HullsFromGeometry(*GeometryCollection, GlobalTransformArray, HasCustomConvexFn, Convexes, TransformToConvexIndexArr, GeometryCollection->SimulationType, FGeometryCollection::ESimulationTypes::FST_Rigid, SimplificationDistanceThreshold);
+	HullsFromGeometry(*GeometryCollection, GlobalTransformArray, HasCustomConvexFn, Convexes, ConvexPivots, TransformToConvexIndexArr, GeometryCollection->SimulationType, 
+		FGeometryCollection::ESimulationTypes::FST_Rigid, SimplificationDistanceThreshold, OverlapRemovalShrinkPercent);
 
-	CreateNonoverlappingConvexHulls(Convexes, TransformToConvexIndexArr, HasCustomConvexFn, GeometryCollection->SimulationType, FGeometryCollection::ESimulationTypes::FST_Rigid, FGeometryCollection::ESimulationTypes::FST_None, GeometryCollection->Parent, GCProximity, GeometryCollection->TransformIndex, Volume, FracAllowRemove, SimplificationDistanceThreshold, CanExceedFraction);
+	CreateNonoverlappingConvexHulls(Convexes, ConvexPivots, TransformToConvexIndexArr, HasCustomConvexFn, GeometryCollection->SimulationType, FGeometryCollection::ESimulationTypes::FST_Rigid, FGeometryCollection::ESimulationTypes::FST_None,
+		GeometryCollection->Parent, GCProximity, GeometryCollection->TransformIndex, Volume, FracAllowRemove, SimplificationDistanceThreshold, CanExceedFraction, OverlapRemovalMethod, OverlapRemovalShrinkPercent);
 
-	TransformHullsToLocal(GlobalTransformArray, Convexes, TransformToConvexIndexArr);
+	TransformHullsToLocal(GlobalTransformArray, Convexes, ConvexPivots, TransformToConvexIndexArr, OverlapRemovalShrinkPercent);
 
 	if (!GeometryCollection->HasGroup("Convex"))
 	{
@@ -1159,8 +1325,8 @@ FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollect
 		GeometryCollection->AddAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex");
 	}
 
-	TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->GetAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
-	TManagedArray<TUniquePtr<Chaos::FConvex>>& ConvexHull = GeometryCollection->GetAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex");
+	TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->ModifyAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
+	TManagedArray<TUniquePtr<Chaos::FConvex>>& ConvexHull = GeometryCollection->ModifyAttribute<TUniquePtr<Chaos::FConvex>>("ConvexHull", "Convex");
 	TransformToConvexIndices = MoveTemp(TransformToConvexIndexArr);
 	GeometryCollection->EmptyGroup("Convex");
 	GeometryCollection->Resize(Convexes.Num(), "Convex");
@@ -1183,7 +1349,9 @@ FGeometryCollectionConvexUtility::FGeometryCollectionConvexData FGeometryCollect
 			EmptyConvex.Add(ConvexIdx);
 		}
 	}
-	GeometryCollection->RemoveElements("Convex", EmptyConvex);
+	FManagedArrayCollection::FProcessingParameters Params;
+	Params.bDoValidation = false; // for perf reasons
+	GeometryCollection->RemoveElements("Convex", EmptyConvex, Params);
 
 	checkSlow(FGeometryCollectionConvexUtility::ValidateConvexData(GeometryCollection));
 
@@ -1241,7 +1409,7 @@ void FGeometryCollectionConvexUtility::RemoveConvexHulls(FGeometryCollection* Ge
 {
 	if (GeometryCollection->HasGroup("Convex") && GeometryCollection->HasAttribute("TransformToConvexIndices", FTransformCollection::TransformGroup))
 	{
-		TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->GetAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
+		TManagedArray<TSet<int32>>& TransformToConvexIndices = GeometryCollection->ModifyAttribute<TSet<int32>>("TransformToConvexIndices", FTransformCollection::TransformGroup);
 		TArray<int32> ConvexIndices;
 		for (int32 TransformIdx : SortedTransformDeletes)
 		{
@@ -1258,7 +1426,9 @@ void FGeometryCollectionConvexUtility::RemoveConvexHulls(FGeometryCollection* Ge
 		if (ConvexIndices.Num())
 		{
 			ConvexIndices.Sort();
-			GeometryCollection->RemoveElements("Convex", ConvexIndices);
+			FManagedArrayCollection::FProcessingParameters Params;
+			Params.bDoValidation = false; // for perf reasons
+			GeometryCollection->RemoveElements("Convex", ConvexIndices, Params);
 		}
 	}
 }
@@ -1279,7 +1449,7 @@ TManagedArray<int32>* FGeometryCollectionConvexUtility::GetCustomConvexFlags(FGe
 		}
 		return &GeometryCollection->AddAttribute<int32>("HasCustomConvex", FTransformCollection::TransformGroup);
 	}
-	return &GeometryCollection->GetAttribute<int32>("HasCustomConvex", FTransformCollection::TransformGroup);
+	return &GeometryCollection->ModifyAttribute<int32>("HasCustomConvex", FTransformCollection::TransformGroup);
 }
 
 
@@ -1408,18 +1578,19 @@ void FGeometryCollectionConvexUtility::CopyChildConvexes(const FGeometryCollecti
 	}
 }
 
+static float GetRelativeSizeDimensionFromVolume(const float Volume)
+{
+	if (UseVolumeToComputeRelativeSize)
+	{
+		return Volume;
+	}
+	return FGenericPlatformMath::Pow(Volume, 1.0f / 3.0f);
+}
+
 void FGeometryCollectionConvexUtility::SetVolumeAttributes(FGeometryCollection* Collection)
 {
-	if (!Collection->HasAttribute("Volume", FGeometryCollection::TransformGroup))
-	{
-		Collection->AddAttribute<float>("Volume", FGeometryCollection::TransformGroup);
-	}
-	if (!Collection->HasAttribute("Size", FGeometryCollection::TransformGroup))
-	{
-		Collection->AddAttribute<float>("Size", FGeometryCollection::TransformGroup);
-	}
-	TManagedArray<float>& Volumes = Collection->GetAttribute<float>("Volume", FTransformCollection::TransformGroup);
-	TManagedArray<float>& Sizes = Collection->GetAttribute<float>("Size", FTransformCollection::TransformGroup);
+	TManagedArray<float>& Volumes = Collection->AddAttribute<float>("Volume", FTransformCollection::TransformGroup);
+	TManagedArray<float>& Sizes = Collection->AddAttribute<float>("Size", FTransformCollection::TransformGroup);
 
 	const TManagedArray<int32>& SimulationType = Collection->SimulationType;
 	const TManagedArray<int32>& TransformToGeometryIndex = Collection->TransformToGeometryIndex;
@@ -1427,10 +1598,22 @@ void FGeometryCollectionConvexUtility::SetVolumeAttributes(FGeometryCollection* 
 
 	TArray<FTransform> Transforms;
 	GeometryCollectionAlgo::GlobalMatrices(Collection->Transform, Collection->Parent, Transforms);
-	TArray<int32> RecursiveOrder = GeometryCollectionAlgo::ComputeRecursiveOrder(*Collection);
+
+	TArray<float> GeoVolumes;
+	GeoVolumes.SetNumZeroed(Collection->NumElements(FGeometryCollection::GeometryGroup));
+	ParallelFor(GeoVolumes.Num(), [&](int32 GeoIdx)
+	{
+		int32 Bone = Collection->TransformIndex[GeoIdx];
+		if (SimulationType[Bone] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+		{
+			GeoVolumes[GeoIdx] = (float)ComputeGeometryVolume(Collection, GeoIdx, Transforms[Bone], 1.0);
+		}
+	});
+
 	float MaxGeoVolume = 0.0f;
+	TArray<int32> RecursiveOrder = GeometryCollectionAlgo::ComputeRecursiveOrder(*Collection);
 	Volumes.Fill(0.0f);
-	for (int32 Bone : RecursiveOrder)
+	for (const int32 Bone : RecursiveOrder)
 	{
 		if (SimulationType[Bone] == FGeometryCollection::ESimulationTypes::FST_Rigid)
 		{
@@ -1442,22 +1625,33 @@ void FGeometryCollectionConvexUtility::SetVolumeAttributes(FGeometryCollection* 
 			}
 			else
 			{
-				float GeoVolume = (float)ComputeGeometryVolume(Collection, GeoIdx, Transforms[Bone], 1.0);
+				const float GeoVolume = GeoVolumes[GeoIdx];
 				MaxGeoVolume = FMath::Max(MaxGeoVolume, GeoVolume);
 				Volumes[Bone] = GeoVolume;
 			}
 		}
-		int32 ParentIdx = Parent[Bone];
+		const int32 ParentIdx = Parent[Bone];
 		if (ParentIdx != INDEX_NONE)
 		{
 			Volumes[ParentIdx] += Volumes[Bone];
 		}
 	}
-	float SizeScaleFactor = MaxGeoVolume > 0 ? (1.0f / FGenericPlatformMath::Pow(MaxGeoVolume, (1.0f / 3.0f))) : 1.0f;
+
+	if (UseLargestClusterToComputeRelativeSize)
+	{
+		// just go over all the bones as the largest clusters will be naturally larger in volume than any of the children
+		for (int32 BoneIdx = 0; BoneIdx < Volumes.Num(); BoneIdx++)
+		{
+			MaxGeoVolume = FMath::Max(MaxGeoVolume, Volumes[BoneIdx]);
+		}
+	}
+	
+	const float ReferenceSize = GetRelativeSizeDimensionFromVolume(MaxGeoVolume);
+	const float OneOverReferenceSize = MaxGeoVolume > 0 ? (1.0f / ReferenceSize) : 1.0f;
 	for (int32 BoneIdx = 0; BoneIdx < Volumes.Num(); BoneIdx++)
 	{
-		float Rt3Volume = FGenericPlatformMath::Pow(Volumes[BoneIdx], 1.0f / 3.0f);
-		Sizes[BoneIdx] = Rt3Volume * SizeScaleFactor;
+		const float ActualSize = GetRelativeSizeDimensionFromVolume(Volumes[BoneIdx]);
+		Sizes[BoneIdx] = ActualSize * OneOverReferenceSize;
 	}
 }
 

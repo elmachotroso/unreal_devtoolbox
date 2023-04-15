@@ -86,6 +86,7 @@ bool UseDownsampledOcclusionQueries()
 }
 
 DEFINE_GPU_STAT(HZB);
+DECLARE_GPU_DRAWCALL_STAT(BeginOcclusionTests);
 
 /** Random table for occlusion **/
 FOcclusionRandomStream GOcclusionRandomStream;
@@ -106,7 +107,7 @@ int32 FOcclusionQueryHelpers::GetNumBufferedFrames(ERHIFeatureLevel::Type Featur
 	{
 		NumExtraMobileFrames++; // the mobile renderer just doesn't do much after the basepass, and hence it will be asking for the query results almost immediately; the results can't possibly be ready in 1 frame.
 		
-		bool bNeedsAnotherExtraMobileFrame = IsVulkanPlatform(ShaderPlatform); // || IsOpenGLPlatform(ShaderPlatform)
+		bool bNeedsAnotherExtraMobileFrame = IsVulkanPlatform(ShaderPlatform) || IsOpenGLPlatform(ShaderPlatform);
 		bNeedsAnotherExtraMobileFrame = bNeedsAnotherExtraMobileFrame || IsVulkanMobileSM5Platform(ShaderPlatform);
 		bNeedsAnotherExtraMobileFrame = bNeedsAnotherExtraMobileFrame || FDataDrivenShaderPlatformInfo::GetNeedsExtraMobileFrames(ShaderPlatform);
 		bNeedsAnotherExtraMobileFrame = bNeedsAnotherExtraMobileFrame && IsRunningRHIInSeparateThread();
@@ -133,13 +134,14 @@ static FGlobalBoundShaderState GOcclusionTestBoundShaderState;
  * Returns an array of visibility data for the given view position, or NULL if none exists. 
  * The data bits are indexed by VisibilityId of each primitive in the scene.
  * This method decompresses data if necessary and caches it based on the bucket and chunk index in the view state.
+ * InScene is passed in, as the Scene pointer in the class itself may be null, if it was allocated without a scene.
  */
-const uint8* FSceneViewState::GetPrecomputedVisibilityData(FViewInfo& View, const FScene* Scene)
+const uint8* FSceneViewState::GetPrecomputedVisibilityData(FViewInfo& View, const FScene* InScene)
 {
 	const uint8* PrecomputedVisibilityData = NULL;
-	if (Scene->PrecomputedVisibilityHandler && GAllowPrecomputedVisibility && View.Family->EngineShowFlags.PrecomputedVisibility)
+	if (InScene->PrecomputedVisibilityHandler && GAllowPrecomputedVisibility && View.Family->EngineShowFlags.PrecomputedVisibility)
 	{
-		const FPrecomputedVisibilityHandler& Handler = *Scene->PrecomputedVisibilityHandler;
+		const FPrecomputedVisibilityHandler& Handler = *InScene->PrecomputedVisibilityHandler;
 		FViewElementPDI VisibilityCellsPDI(&View, nullptr, nullptr);
 
 		// Draw visibility cell bounds for debugging if enabled
@@ -181,7 +183,7 @@ const uint8* FSceneViewState::GetPrecomputedVisibilityData(FViewInfo& View, cons
 			{
 				// Reuse a cached decompressed chunk if possible
 				if (CachedVisibilityChunk
-					&& CachedVisibilityHandlerId == Scene->PrecomputedVisibilityHandler->GetId()
+					&& CachedVisibilityHandlerId == InScene->PrecomputedVisibilityHandler->GetId()
 					&& CachedVisibilityBucketIndex == PrecomputedVisibilityBucketIndex
 					&& CachedVisibilityChunkIndex == CurrentCell.ChunkIndex)
 				{
@@ -193,7 +195,7 @@ const uint8* FSceneViewState::GetPrecomputedVisibilityData(FViewInfo& View, cons
 					const FCompressedVisibilityChunk& CompressedChunk = Handler.PrecomputedVisibilityCellBuckets[PrecomputedVisibilityBucketIndex].CellDataChunks[CurrentCell.ChunkIndex];
 					CachedVisibilityBucketIndex = PrecomputedVisibilityBucketIndex;
 					CachedVisibilityChunkIndex = CurrentCell.ChunkIndex;
-					CachedVisibilityHandlerId = Scene->PrecomputedVisibilityHandler->GetId();
+					CachedVisibilityHandlerId = InScene->PrecomputedVisibilityHandler->GetId();
 
 					if (CompressedChunk.bCompressed)
 					{
@@ -447,8 +449,6 @@ void FOcclusionQueryBatcher::Flush(FRHICommandList& RHICmdList)
 {
 	if(BatchOcclusionQueries.Num())
 	{
-		FMemMark MemStackMark(FMemStack::Get());
-
 		// Create the indices for MaxBatchedPrimitives boxes.
 		FRHIBuffer* IndexBufferRHI = GOcclusionQueryIndexBuffer.IndexBufferRHI;
 
@@ -1206,7 +1206,7 @@ static FViewOcclusionQueriesPerView AllocateOcclusionTests(const FScene* Scene, 
 }
 
 static void BeginOcclusionTests(
-	FRHICommandListImmediate& RHICmdList,
+	FRHICommandList& RHICmdList,
 	TArrayView<FViewInfo> Views,
 	ERHIFeatureLevel::Type FeatureLevel,
 	const FViewOcclusionQueriesPerView& QueriesPerView,
@@ -1271,8 +1271,8 @@ static void BeginOcclusionTests(
 		{
 			uint32 BaseVertexOffset = 0;
 			FRHIResourceCreateInfo CreateInfo(TEXT("ViewOcclusionTests"));
-			FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector3f) * NumVertices, BUF_Volatile, CreateInfo);
-			void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector3f) * NumVertices, RLM_WriteOnly);
+			FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FVector3f) * NumVertices, BUF_Volatile | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+			void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FVector3f) * NumVertices, RLM_WriteOnly);
 
 			{
 				FVector3f* Vertices = reinterpret_cast<FVector3f*>(VoidPtr);
@@ -1295,7 +1295,7 @@ static void BeginOcclusionTests(
 				}
 			}
 
-			RHIUnlockBuffer(VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBufferRHI);
 
 			{
 				SCOPED_DRAW_EVENT(RHICmdList, ShadowFrustumQueries);
@@ -1410,11 +1410,12 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(
 			PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(OcclusionDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite);
 			PassParameters->RenderTargets.NumOcclusionQueries = NumQueriesForBatch;
 
+			RDG_GPU_STAT_SCOPE(GraphBuilder, BeginOcclusionTests);
 			GraphBuilder.AddPass(
 				RDG_EVENT_NAME("BeginOcclusionTests"),
 				PassParameters,
 				ERDGPassFlags::Raster | ERDGPassFlags::NeverCull,
-				[this, LocalQueriesPerView = MoveTemp(QueriesPerView), DownsampleFactor](FRHICommandListImmediate& RHICmdList)
+				[this, LocalQueriesPerView = MoveTemp(QueriesPerView), DownsampleFactor](FRHICommandList& RHICmdList)
 			{
 				BeginOcclusionTests(RHICmdList, Views, FeatureLevel, LocalQueriesPerView, DownsampleFactor);
 			});
@@ -1439,7 +1440,7 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(
 	}
 }
 
-void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList)
 {
 	if (!DoOcclusionQueries())
 	{
@@ -1454,11 +1455,6 @@ void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList,
 		{
 			BeginOcclusionTests(RHICmdList, Views, FeatureLevel, QueriesPerView, 1.0f);
 		}
-	}
-
-	if (IsRunningRHIInSeparateThread())
-	{
-		FenceOcclusionTestsInternal(RHICmdList);
 	}
 }
 
@@ -1508,7 +1504,7 @@ void FSceneRenderer::FenceOcclusionTestsInternal(FRHICommandListImmediate& RHICm
 
 void FSceneRenderer::FenceOcclusionTests(FRDGBuilder& GraphBuilder)
 {
-	if (IsRunningRHIInSeparateThread())
+	if (DoOcclusionQueries() && IsRunningRHIInSeparateThread())
 	{
 		AddPass(GraphBuilder, RDG_EVENT_NAME("FenceOcclusionTests"), [this](FRHICommandListImmediate& RHICmdList)
 		{

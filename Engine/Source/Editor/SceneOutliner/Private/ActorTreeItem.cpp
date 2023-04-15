@@ -17,14 +17,14 @@
 #include "ISceneOutlinerMode.h"
 #include "Logging/MessageLog.h"
 #include "SSocketChooser.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "WorldPartition/WorldPartition.h"
 #include "ToolMenu.h"
 #include "Engine/Level.h"
 
 #define LOCTEXT_NAMESPACE "SceneOutliner_ActorTreeItem"
 
-const FSceneOutlinerTreeItemType FActorTreeItem::Type(&ISceneOutlinerTreeItem::Type);
+const FSceneOutlinerTreeItemType FActorTreeItem::Type(&IActorBaseTreeItem::Type);
 
 struct SActorTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWidget
 {
@@ -120,14 +120,13 @@ private:
 		if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
 		{
 			const AActor* Actor = ActorPtr.Get();
-			if (const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(Actor))
+			if (const ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(Actor))
 			{
-				if (LevelInstanceActor->IsDirty() && !bInEditingMode)
+				if (!bInEditingMode)
 				{
-					FFormatNamedArguments Args;
-					Args.Add(TEXT("ActorLabel"), FText::FromString(TreeItem->GetDisplayString()));
-					Args.Add(TEXT("EditTag"), LOCTEXT("EditingLevelInstanceLabel", "*"));
-					return FText::Format(LOCTEXT("LevelInstanceDisplay", "{ActorLabel}{EditTag}"), Args);
+					FText DirtySuffixText = LevelInstance->IsDirty() ? FText(LOCTEXT("IsDirtySuffix", "*")) : FText::GetEmpty();
+					FText IsCurrentSuffixText = LevelInstance->GetLoadedLevel() && LevelInstance->GetLoadedLevel()->IsCurrentLevel() ? FText(LOCTEXT("IsCurrentSuffix", " (Current)")) : FText::GetEmpty();
+					return FText::Format(LOCTEXT("LevelInstanceDisplay", "{0}{1}{2}"), FText::FromString(TreeItem->GetDisplayString()), DirtySuffixText, IsCurrentSuffixText);
 				}
 			}
 			return FText::FromString(TreeItem->GetDisplayString());
@@ -205,7 +204,7 @@ private:
 		{
 			if (Actor->ActorHasTag(SequencerActorTag))
 			{
-				return FEditorStyle::GetBrush("Sequencer.SpawnableIconOverlay");
+				return FAppStyle::GetBrush("Sequencer.SpawnableIconOverlay");
 			}
 		}
 		return nullptr;
@@ -255,9 +254,9 @@ private:
 		AActor* Actor = ActorPtr.Get();
 
 		// Color LevelInstances differently if they are being edited
-		if (const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(Actor))
+		if (const ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(Actor))
 		{
-			if (LevelInstanceActor->IsEditing())
+			if (LevelInstance->IsEditing())
 			{
 				return FAppStyle::Get().GetSlateColor("Colors.AccentGreen");
 			}
@@ -335,12 +334,13 @@ private:
 };
 
 FActorTreeItem::FActorTreeItem(AActor* InActor)
-	: ISceneOutlinerTreeItem(Type)
+	: IActorBaseTreeItem(Type)
 	, Actor(InActor)
 	, ID(InActor)
 {
 	check(InActor);
-	ActorLabel = InActor->GetActorLabel();
+
+	UpdateDisplayStringInternal();
 
 	Flags.bIsExpanded = InActor->bDefaultOutlinerExpansionState;
 	
@@ -360,7 +360,7 @@ FFolder::FRootObject FActorTreeItem::GetRootObject() const
 
 FString FActorTreeItem::GetDisplayString() const
 {
-	return ActorLabel;
+	return DisplayString;
 }
 
 bool FActorTreeItem::CanInteract() const
@@ -390,8 +390,10 @@ bool FActorTreeItem::ShouldShowPinnedState() const
 {
 	if (const AActor* ActorPtr = Actor.Get())
 	{
+		// Pinning of Actors is only supported on the main world partition
 		const ULevel* Level = ActorPtr->GetLevel();
-		return !!Level->GetWorldPartition();
+		const UWorld* World = Level->GetWorld();
+		return World && !World->IsGameWorld() && !!World->GetWorldPartition() && Level->IsPersistentLevel();
 	}
 
 	return false;
@@ -441,23 +443,35 @@ bool FActorTreeItem::GetPinnedState() const
 
 void FActorTreeItem::OnLabelChanged()
 {
-	if (Actor.IsValid())
-	{
-		ActorLabel = Actor->GetActorLabel();
-	}
+	UpdateDisplayString();
 }
 
 void FActorTreeItem::GenerateContextMenu(UToolMenu* Menu, SSceneOutliner& Outliner)
 {
 	const AActor* ActorPtr = Actor.Get();
-	const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(ActorPtr);
-	if (LevelInstanceActor && LevelInstanceActor->IsEditing())
+	const ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(ActorPtr);
+	if (LevelInstance && LevelInstance->IsEditing())
 	{
-		auto SharedOutliner = StaticCastSharedRef<SSceneOutliner>(Outliner.AsShared());
-		const FSlateIcon NewFolderIcon(FEditorStyle::GetStyleSetName(), "SceneOutliner.NewFolderIcon");
 		FToolMenuSection& Section = Menu->AddSection("Section");
-		Section.AddMenuEntry("CreateFolder", LOCTEXT("CreateFolder", "Create Folder"), FText(), NewFolderIcon, FUIAction(FExecuteAction::CreateSP(&Outliner, &SSceneOutliner::CreateFolder)));
+		FSceneOutlinerMenuHelper::AddMenuEntryCreateFolder(Section, Outliner);
+		FSceneOutlinerMenuHelper::AddMenuEntryCleanupFolders(Section, LevelInstance->GetLoadedLevel());
 	}
+}
+
+const FGuid& FActorTreeItem::GetGuid() const
+{
+	static const FGuid InvalidGuid;
+	return Actor.IsValid() ? Actor->GetActorGuid() : InvalidGuid;
+}
+
+void FActorTreeItem::UpdateDisplayString()
+{
+	UpdateDisplayStringInternal();
+}
+
+void FActorTreeItem::UpdateDisplayStringInternal()
+{
+	DisplayString = Actor.IsValid() ? Actor->GetActorLabel() : TEXT("None");
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -44,9 +44,12 @@ bool NeedsVelocityDepth(EShaderPlatform TargetPlatform)
 		|| FDataDrivenShaderPlatformInfo::GetSupportsRayTracing(TargetPlatform);
 }
 
+// Strata::IsEnabled is only accessible in the Renderer module
+bool Engine_IsStrataEnabled();
+
 #if WITH_EDITOR
 
-static int FetchCompileInt(FShaderCompilerEnvironment& OutEnvironment, const char* SrcName)
+static int FetchCompileInt(const FShaderCompilerEnvironment& OutEnvironment, const char* SrcName)
 {
 	int32 Ret = 0;
 	if (OutEnvironment.GetDefinitions().Contains(SrcName))
@@ -88,13 +91,14 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDef
 	FETCH_COMPILE_BOOL(PROJECT_SUPPORT_SKY_ATMOSPHERE);
 	FETCH_COMPILE_BOOL(PROJECT_SUPPORT_SKY_ATMOSPHERE_AFFECTS_HEIGHFOG);
 	FETCH_COMPILE_BOOL(SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT);
+	FETCH_COMPILE_BOOL(SUPPORT_CLOUD_SHADOW_ON_SINGLE_LAYER_WATER);
 	FETCH_COMPILE_BOOL(PROJECT_MOBILE_USE_LEGACY_SHADING);
 	FETCH_COMPILE_BOOL(POST_PROCESS_ALPHA);
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_RENDERTARGET_WRITE_MASK);
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_PER_PIXEL_DBUFFER_MASK);
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_DISTANCE_FIELDS);
-	FETCH_COMPILE_BOOL(PROJECT_MOBILE_ENABLE_MOVABLE_SPOTLIGHTS);
 	FETCH_COMPILE_BOOL(COMPILE_SHADERS_FOR_DEVELOPMENT_ALLOWED);
+	FETCH_COMPILE_BOOL(PLATFORM_ALLOW_SCENE_DATA_COMPRESSED_TRANSFORMS);
 
 	// note that we are doing an if so that if we call ApplyFetchEnvironment() twice, we get the logical OR of bSupportsDualBlending support
 	if (RHISupportsDualSourceBlending(Platform))
@@ -105,9 +109,6 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderGlobalDefines& SrcDef
 
 void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderLightmapPropertyDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment)
 {
-	FETCH_COMPILE_BOOL(SIMPLE_FORWARD_SHADING);
-	FETCH_COMPILE_BOOL(SIMPLE_FORWARD_DIRECTIONAL_LIGHT);
-
 	FETCH_COMPILE_BOOL(LQ_TEXTURE_LIGHTMAP);
 	FETCH_COMPILE_BOOL(HQ_TEXTURE_LIGHTMAP);
 
@@ -155,6 +156,8 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 	FETCH_COMPILE_BOOL(MATERIAL_SHADINGMODEL_SINGLELAYERWATER);
 	FETCH_COMPILE_BOOL(MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT);
 
+	FETCH_COMPILE_BOOL(SINGLE_LAYER_WATER_DF_SHADOW_ENABLED);
+
 	FETCH_COMPILE_BOOL(MATERIAL_FULLY_ROUGH);
 
 	FETCH_COMPILE_BOOL(USES_EMISSIVE_COLOR);
@@ -166,6 +169,13 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 	FETCH_COMPILE_BOOL(MATERIALBLENDING_ADDITIVE);
 	FETCH_COMPILE_BOOL(MATERIALBLENDING_MODULATE);
 	FETCH_COMPILE_BOOL(MATERIALBLENDING_ALPHAHOLDOUT);
+
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_OPAQUE);
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_MASKED);
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_TRANSLUCENT_GREYTRANSMITTANCE);
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_TRANSLUCENT_COLOREDTRANSMITTANCE);
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_COLOREDTRANSMITTANCEONLY);
+	FETCH_COMPILE_BOOL(STRATA_BLENDING_ALPHAHOLDOUT);
 
 	FETCH_COMPILE_INT(MATERIALDECALRESPONSEMASK);
 
@@ -226,12 +236,16 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderMaterialPropertyDefin
 	FETCH_COMPILE_BOOL(IS_BASE_PASS);
 	FETCH_COMPILE_BOOL(IS_MATERIAL_SHADER);
 
-	FETCH_COMPILE_BOOL(PROJECT_STRATA);
+	FETCH_COMPILE_BOOL(STRATA_ENABLED);
 	FETCH_COMPILE_BOOL(MATERIAL_IS_STRATA);
+
+	FETCH_COMPILE_BOOL(PROJECT_OIT);
 
 	FETCH_COMPILE_BOOL(DUAL_SOURCE_COLOR_BLENDING_ENABLED);
 
 	FETCH_COMPILE_INT(DECAL_RENDERTARGET_COUNT);
+
+	FETCH_COMPILE_INT(GBUFFER_LAYOUT);
 }
 
 void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderCompilerDefines& SrcDefines, FShaderCompilerEnvironment& OutEnvironment)
@@ -251,17 +265,10 @@ void FShaderCompileUtilities::ApplyFetchEnvironment(FShaderCompilerDefines& SrcD
 	FETCH_COMPILE_BOOL(PLATFORM_SUPPORTS_DEVELOPMENT_SHADERS);
 }
 
-// Strata::IsEnabled is only accessible in the Renderer module
-static bool IsStrataEnabled()
-{
-	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Strata"));
-	return CVar->GetInt() > 0;
-}
-
 // if we change the logic, increment this number to force a DDC key change
 static const int32 GBufferGeneratorVersion = 4;
 
-static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatform)
+static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatform, EGBufferLayout GBufferLayout)
 {
 	FShaderGlobalDefines Ret = {};
 
@@ -272,7 +279,7 @@ static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatf
 		Ret.ALLOW_STATIC_LIGHTING = (CVar ? (CVar->GetValueOnAnyThread() != 0) : 1);
 	}
 
-	Ret.GBUFFER_HAS_VELOCITY = IsUsingBasePassVelocity(TargetPlatform) ? 1 : 0;
+	Ret.GBUFFER_HAS_VELOCITY = (IsUsingBasePassVelocity(TargetPlatform) || GBufferLayout == GBL_ForceVelocity) ? 1 : 0;
 	Ret.GBUFFER_HAS_TANGENT = false;//BasePassCanOutputTangent(TargetPlatform) ? 1 : 0;
 
 	{
@@ -361,6 +368,12 @@ static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatf
 	}
 
 	{
+		static IConsoleVariable *CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayerWater.SupportCloudShadow"));
+		const bool bSupportCloudShadowOnSingleLayerWater = CVar && CVar->GetInt() > 0;
+		Ret.SUPPORT_CLOUD_SHADOW_ON_SINGLE_LAYER_WATER = bSupportCloudShadowOnSingleLayerWater ? 1 : 0;
+	}
+
+	{
 		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.UseLegacyShadingModel"));
 		Ret.PROJECT_MOBILE_USE_LEGACY_SHADING = CVar ? (CVar->GetInt() != 0) : 0;
 	}
@@ -378,12 +391,7 @@ static FShaderGlobalDefines FetchShaderGlobalDefines(EShaderPlatform TargetPlatf
 	Ret.PLATFORM_SUPPORTS_RENDERTARGET_WRITE_MASK = RHISupportsRenderTargetWriteMask(EShaderPlatform(TargetPlatform)) ? 1 : 0;
 	Ret.PLATFORM_SUPPORTS_PER_PIXEL_DBUFFER_MASK = FDataDrivenShaderPlatformInfo::GetSupportsPerPixelDBufferMask(EShaderPlatform(TargetPlatform)) ? 1 : 0;
 	Ret.PLATFORM_SUPPORTS_DISTANCE_FIELDS = DoesPlatformSupportDistanceFields(EShaderPlatform(TargetPlatform)) ? 1 : 0;
-	
-	if (bIsMobilePlatform)
-	{
-		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.EnableMovableSpotlights"));
-		Ret.PROJECT_MOBILE_ENABLE_MOVABLE_SPOTLIGHTS = CVar ? (CVar->GetInt() != 0) : 0;
-	}
+	Ret.PLATFORM_ALLOW_SCENE_DATA_COMPRESSED_TRANSFORMS = FDataDrivenShaderPlatformInfo::GetSupportSceneDataCompressedTransforms(EShaderPlatform(TargetPlatform)) ? 1 : 0;
 
 	Ret.bSupportsDualBlending = RHISupportsDualSourceBlending(TargetPlatform);
 
@@ -459,6 +467,8 @@ static FString GetSlotTextName(EGBufferSlot Slot)
 		return TEXT("SubsurfaceProfileX");
 	case GBS_IrisNormal:
 		return TEXT("IrisNormal");
+	case GBS_SeparatedMainDirLight:
+		return TEXT("SeparatedMainDirLight");
 	default:
 		break;
 	};
@@ -629,6 +639,9 @@ static int32 GetBufferNumBits(EGBufferType Format, int32 Channel)
 	case GBT_Invalid:
 		check(0);
 		break;
+	case GBT_Unorm_16_16:
+		Ret = 16;
+		break;
 	case GBT_Unorm_8_8_8_8:
 		Ret = 8;
 		break;
@@ -644,6 +657,9 @@ static int32 GetBufferNumBits(EGBufferType Format, int32 Channel)
 		Ret = Sizes[Channel];
 	}
 	break;
+	case GBT_Unorm_16_16_16_16:
+		Ret = 16;
+		break;
 	case GBT_Float_16_16:
 		Ret = 16;
 		break;
@@ -667,6 +683,9 @@ static int32 GetTargetNumChannels(EGBufferType Type)
 	case GBT_Invalid:
 		Ret = 0;
 		break;
+	case GBT_Unorm_16_16:
+		Ret = 2;
+		break;
 	case GBT_Unorm_8_8_8_8:
 		Ret = 4;
 		break;
@@ -674,6 +693,9 @@ static int32 GetTargetNumChannels(EGBufferType Type)
 		Ret = 3;
 		break;
 	case GBT_Unorm_10_10_10_2:
+		Ret = 4;
+		break;
+	case GBT_Unorm_16_16_16_16:
 		Ret = 4;
 		break;
 	case GBT_Float_16_16:
@@ -1110,7 +1132,7 @@ static FString CreateGBufferDecodeFunctionDirect(const FGBufferInfo& BufferInfo)
 	// Default initialization in case no gbuffer data are generated when Strata is enabled to 
 	// prevent shader compiler error (division by zero, variable not-initialized) with passes 
 	// not converted to Strata and still using Gbuffer data
-	const bool bStrata = IsStrataEnabled();
+	const bool bStrata = Engine_IsStrataEnabled();
 	if (bStrata)
 	{
 		FullStr += TEXT("\tRet.WorldNormal = float3(0,0,1);\n");
@@ -1358,15 +1380,10 @@ static FString CreateGBufferDecodeFunctionVariation(const FGBufferInfo& BufferIn
 	{
 		FullStr += FString::Printf(TEXT("\tfloat CustomNativeDepth = Texture2DSampleLevel(SceneTexturesStruct.CustomDepthTexture, SceneTexturesStruct_CustomDepthTextureSampler, %s, 0).r;\n"), CoordName.GetCharArray().GetData());
 
-		if (FEATURE_LEVEL >= ERHIFeatureLevel::SM5)
-		{
-			FullStr += FString::Printf(TEXT("\tint2 IntUV = (int2)trunc(%s * View.BufferSizeAndInvSize.xy);\n"), CoordName.GetCharArray().GetData());
-			FullStr += TEXT("\tuint CustomStencil = SceneTexturesStruct.CustomStencilTexture.Load(int3(IntUV, 0)) STENCIL_COMPONENT_SWIZZLE;\n");
-		}
-		else
-		{
-			FullStr += TEXT("\tuint CustomStencil = 0;\n");
-		}
+		// BufferToSceneTextureScale is necessary when translucent materials are rendered in a render target 
+		// that has a different resolution than the scene color textures, e.g. r.SeparateTranslucencyScreenPercentage < 100.
+		FullStr += FString::Printf(TEXT("\tint2 IntUV = (int2)trunc(%s * View.BufferSizeAndInvSize.xy * View.BufferToSceneTextureScale.xy);\n"), CoordName.GetCharArray().GetData());
+		FullStr += TEXT("\tuint CustomStencil = SceneTexturesStruct.CustomStencilTexture.Load(int3(IntUV, 0)) STENCIL_COMPONENT_SWIZZLE;\n");
 
 		FullStr += FString::Printf(TEXT("\tfloat SceneDepth = CalcSceneDepth(%s);\n"), CoordName.GetCharArray().GetData());
 		FullStr += TEXT("\tfloat4 AnisotropicData = Texture2DSampleLevel(SceneTexturesStruct.GBufferFTexture, SceneTexturesStruct_GBufferFTextureSampler, UV, 0).xyzw;\n");
@@ -1533,7 +1550,7 @@ static FCriticalSection GCriticalSection;
 
 static FString GetAutoGenDirectory(EShaderPlatform TargetPlatform)
 {
-	FString PlatformName = LegacyShaderPlatformToShaderFormat(TargetPlatform).GetPlainNameString();
+	FString PlatformName = FDataDrivenShaderPlatformInfo::GetName(TargetPlatform).ToString();
 	FString AutogenHeaderDirectory = FPaths::ProjectIntermediateDir() / TEXT("ShaderAutogen") / PlatformName;
 	return AutogenHeaderDirectory;
 }
@@ -1668,6 +1685,7 @@ static void SetSlotsForShadingModelType(bool Slots[], EMaterialShadingModel Shad
 		break;
 	case MSM_SingleLayerWater:
 		SetSharedGBufferSlots(Slots);
+		Slots[GBS_SeparatedMainDirLight] = true;
 		break;
 	case MSM_ThinTranslucent:
 		// thin translucent doesn't write to the GBuffer
@@ -1710,7 +1728,7 @@ static void DetermineUsedMaterialSlots(
 	bool bHasTangent = SrcGlobal.GBUFFER_HAS_TANGENT;
 	bool bHasVelocity = Dst.WRITES_VELOCITY_TO_GBUFFER;
 	bool bHasStaticLighting = Dst.GBUFFER_HAS_PRECSHADOWFACTOR || Dst.WRITES_PRECSHADOWFACTOR_TO_GBUFFER;
-	bool bIsStrataMaterial = Mat.PROJECT_STRATA; // Similarly to FetchFullGBufferInfo, we do not check for MATERIAL_IS_STRATA as this is decided per project.
+	bool bIsStrataMaterial = Mat.STRATA_ENABLED; // Similarly to FetchFullGBufferInfo, we do not check for MATERIAL_IS_STRATA as this is decided per project.
 
 	// Strata doesn't use gbuffer, and thus doesn't need CustomData
 	const bool bUseCustomData = !bIsStrataMaterial;
@@ -1779,6 +1797,10 @@ static void DetermineUsedMaterialSlots(
 	{
 		// single layer water uses standard slots
 		SetStandardGBufferSlots(Slots, bWriteEmissive, bHasTangent, bHasVelocity, bHasStaticLighting, bIsStrataMaterial);
+		if (Mat.SINGLE_LAYER_WATER_DF_SHADOW_ENABLED)
+		{
+			Slots[GBS_SeparatedMainDirLight] = true;
+		}
 	}
 
 	// doesn't write to GBuffer
@@ -1810,7 +1832,7 @@ void FShaderCompileUtilities::ApplyDerivedDefines(FShaderCompilerEnvironment& Ou
 		ApplyFetchEnvironment(LightmapDefines, *SharedEnvironment);
 		ApplyFetchEnvironment(CompilerDefines, *SharedEnvironment);
 
-		OutEnvironment.FullPrecisionInPS = SharedEnvironment->FullPrecisionInPS;
+		OutEnvironment.FullPrecisionInPS |= SharedEnvironment->FullPrecisionInPS;
 	}
 
 	// for reference, here are the existing defines
@@ -1825,7 +1847,8 @@ void FShaderCompileUtilities::ApplyDerivedDefines(FShaderCompilerEnvironment& Ou
 	static bool bUseRefactor = true;
 	OutEnvironment.SetDefine(TEXT("GBUFFER_REFACTOR"), bUseRefactor ? TEXT("1") : TEXT("0"));
 
-	FGBufferParams Params = FShaderCompileUtilities::FetchGBufferParamsRuntime(Platform);
+	EGBufferLayout Layout = (EGBufferLayout)MaterialDefines.GBUFFER_LAYOUT;
+	FGBufferParams Params = FShaderCompileUtilities::FetchGBufferParamsRuntime(Platform, Layout);
 	FGBufferInfo BufferInfo = FetchFullGBufferInfo(Params);
 
 	bool bTargetUsage[FGBufferInfo::MaxTargets] = {};
@@ -1943,36 +1966,35 @@ void FShaderCompileUtilities::ApplyDerivedDefines(FShaderCompilerEnvironment& Ou
 
 void FShaderCompileUtilities::AppendGBufferDDCKeyString(const EShaderPlatform Platform, FString& KeyString)
 {
-	FShaderGlobalDefines GlobalDefines = FetchShaderGlobalDefines(Platform);
-
-	FString Key = FString::Printf(TEXT("_%d%d%d_%d;\n"),GlobalDefines.GBUFFER_HAS_VELOCITY, GlobalDefines.GBUFFER_HAS_TANGENT, GlobalDefines.ALLOW_STATIC_LIGHTING,GBufferGeneratorVersion);
-	KeyString += Key;
+	for (uint32 Layout = 0; Layout < GBL_Num; ++Layout)
+	{
+		FShaderGlobalDefines GlobalDefines = FetchShaderGlobalDefines(Platform, (EGBufferLayout)Layout);
+		KeyString.Appendf(TEXT("_%d%d%d"),GlobalDefines.GBUFFER_HAS_VELOCITY, GlobalDefines.GBUFFER_HAS_TANGENT, GlobalDefines.ALLOW_STATIC_LIGHTING);
+	}
+	KeyString.Appendf(TEXT("_%d;\n"), GBufferGeneratorVersion);
 }
 
 static FGBufferInfo GLastGBufferInfo[SP_NumPlatforms] = {};
 static bool GLastGBufferIsValid[SP_NumPlatforms] = {}; // set to all false
 
-FGBufferInfo FShaderCompileUtilities::FetchGBufferInfoAndWriteAutogen(EShaderPlatform TargetPlatform, ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::SM5)
+void FShaderCompileUtilities::WriteGBufferInfoAutogen(EShaderPlatform TargetPlatform, ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::SM5)
 {
-	FShaderGlobalDefines GlobalDefines = FetchShaderGlobalDefines(TargetPlatform);
-
-	FGBufferParams Params = FetchGBufferParamsPipeline(TargetPlatform);
+	FGBufferParams DefaultParams = FetchGBufferParamsPipeline(TargetPlatform, GBL_Default);
 
 	FScopeLock MapLock(&GCriticalSection);
 
 	// For now, the logic always calculates the new GBuffer, and if it's the first time, write it, otherwise check it hasn't changed. We are doing this for
 	// debugging, and in the near future it will only calculate the GBuffer on the first time only.
 
-	FGBufferInfo BufferInfo = FetchFullGBufferInfo(Params);
+	FGBufferInfo DefaultBufferInfo = FetchFullGBufferInfo(DefaultParams);
 
-	FString PlatformName = LegacyShaderPlatformToShaderFormat(TargetPlatform).GetPlainNameString();
 	FString AutoGenDirectory = GetAutoGenDirectory(TargetPlatform);
 	FString AutogenHeaderFilename = AutoGenDirectory / TEXT("AutogenShaderHeaders.ush");
 	FString AutogenHeaderFilenameTemp = AutoGenDirectory / TEXT("AutogenShaderHeaders_temp.ush");
 
 	if (GLastGBufferIsValid[TargetPlatform])
 	{
-		const bool bSame = IsGBufferInfoEqual(GLastGBufferInfo[TargetPlatform], BufferInfo);
+		const bool bSame = IsGBufferInfoEqual(GLastGBufferInfo[TargetPlatform], DefaultBufferInfo);
 		check(bSame);
 	}
 	else
@@ -1980,7 +2002,7 @@ FGBufferInfo FShaderCompileUtilities::FetchGBufferInfoAndWriteAutogen(EShaderPla
 		GLastGBufferIsValid[TargetPlatform] = true;
 
 		// should cache this properly, and serialize it, but this is a temporary fix.
-		GLastGBufferInfo[TargetPlatform] = BufferInfo;
+		GLastGBufferInfo[TargetPlatform] = DefaultBufferInfo;
 
 		FString OutputFileData;
 		OutputFileData += TEXT("// Copyright Epic Games, Inc. All Rights Reserved.\n");
@@ -1997,32 +2019,47 @@ FGBufferInfo FShaderCompileUtilities::FetchGBufferInfoAndWriteAutogen(EShaderPla
 		OutputFileData += TEXT("#endif\n");
 		OutputFileData += TEXT("\n");
 
-		OutputFileData += CreateGBufferEncodeFunction(BufferInfo);
-
-		OutputFileData += TEXT("\n");
-
-		OutputFileData += CreateGBufferDecodeFunctionDirect(BufferInfo);
-
-		OutputFileData += TEXT("\n");
-		//OutputFileData += TEXT("#if SHADING_PATH_DEFERRED\n");
-		OutputFileData += TEXT("#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5\n");
-		OutputFileData += TEXT("\n");
-
-		OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::CoordUV, FeatureLevel);
-		OutputFileData += TEXT("\n");
-
-		OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::CoordUInt, FeatureLevel);
-
-		OutputFileData += TEXT("\n");
-
-		OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::SceneTextures, FeatureLevel);
-		OutputFileData += TEXT("\n");
-
-		OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::SceneTexturesLoad, FeatureLevel);
-		OutputFileData += TEXT("\n");
-
+		OutputFileData += TEXT("#ifndef GBUFFER_LAYOUT\n");
+		OutputFileData += TEXT("#define GBUFFER_LAYOUT 0\n");
 		OutputFileData += TEXT("#endif\n");
 		OutputFileData += TEXT("\n");
+
+		for (uint32 Layout = 0; Layout < GBL_Num; ++Layout)
+		{
+			FGBufferParams Params = FetchGBufferParamsPipeline(TargetPlatform, (EGBufferLayout)Layout);
+			FGBufferInfo BufferInfo = FetchFullGBufferInfo(Params);
+
+			OutputFileData.Appendf(TEXT("#if GBUFFER_LAYOUT == %u\n\n"), Layout);
+			OutputFileData += CreateGBufferEncodeFunction(BufferInfo);
+
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += CreateGBufferDecodeFunctionDirect(BufferInfo);
+
+			OutputFileData += TEXT("\n");
+			//OutputFileData += TEXT("#if SHADING_PATH_DEFERRED\n");
+			OutputFileData += TEXT("#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5\n");
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::CoordUV, FeatureLevel);
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::CoordUInt, FeatureLevel);
+
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::SceneTextures, FeatureLevel);
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += CreateGBufferDecodeFunctionVariation(BufferInfo, EGBufferDecodeType::SceneTexturesLoad, FeatureLevel);
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += TEXT("#endif\n");
+			OutputFileData += TEXT("\n");
+
+			OutputFileData += TEXT("#endif\n");
+			OutputFileData += TEXT("\n");
+		}
 
 
 		UE_LOG(LogShaderCompilers, Display, TEXT("Compiling shader autogen file: %s"), *AutogenHeaderFilename);
@@ -2067,18 +2104,14 @@ FGBufferInfo FShaderCompileUtilities::FetchGBufferInfoAndWriteAutogen(EShaderPla
 			UE_LOG(LogShaderCompilers, Display, TEXT("Shader autogen file written: %s"), *AutogenHeaderFilename);
 		}
 	}
-
-	return BufferInfo;
 }
 
 void FShaderCompileUtilities::GenerateBrdfHeaders(EShaderPlatform TargetPlatform)
 {
 	ERHIFeatureLevel::Type FeatureLevel = GetMaxSupportedFeatureLevel(TargetPlatform);
 
-	//FShaderGlobalDefines GlobalDefines = FetchShaderGlobalDefines(TargetPlatform);
-
-	// Fetches the GBuffer format, which also involves writing the .ush file if it's out of date.
-	FGBufferInfo Info = FetchGBufferInfoAndWriteAutogen(TargetPlatform, FeatureLevel);
+	// Writes the GBuffer format .ush file if it's out of date.
+	WriteGBufferInfoAutogen(TargetPlatform, FeatureLevel);
 }
 
 void FShaderCompileUtilities::GenerateBrdfHeaders(const FName& ShaderFormat)
@@ -2087,16 +2120,28 @@ void FShaderCompileUtilities::GenerateBrdfHeaders(const FName& ShaderFormat)
 	FShaderCompileUtilities::GenerateBrdfHeaders(ShaderPlatform);
 }
 
-FGBufferParams FShaderCompileUtilities::FetchGBufferParamsPipeline(EShaderPlatform Platform)
+EGBufferLayout FShaderCompileUtilities::FetchGBufferLayout(const FShaderCompilerEnvironment& Environment)
+{
+	const uint32 Layout = FetchCompileInt(Environment, "GBUFFER_LAYOUT");
+	if (Layout >= GBL_Num)
+	{
+		return GBL_Default;
+	}
+	return (EGBufferLayout)Layout;
+}
+
+FGBufferParams FShaderCompileUtilities::FetchGBufferParamsPipeline(EShaderPlatform Platform, EGBufferLayout Layout)
 {
 	FGBufferParams Ret = {};
+	Ret.ShaderPlatform = Platform;
+
 #if WITH_EDITOR
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
 		Ret.bHasPrecShadowFactor = (CVar ? (CVar->GetValueOnAnyThread() != 0) : 1);
 	}
 
-	Ret.bHasVelocity = IsUsingBasePassVelocity(Platform) ? 1 : 0;
+	Ret.bHasVelocity = (IsUsingBasePassVelocity(Platform) || Layout == GBL_ForceVelocity) ? 1 : 0;
 	Ret.bHasTangent = false;//BasePassCanOutputTangent(TargetPlatform) ? 1 : 0;
 
 	{
@@ -2118,20 +2163,26 @@ FGBufferParams FShaderCompileUtilities::FetchGBufferParamsPipeline(EShaderPlatfo
 
 #endif
 
-FGBufferParams FShaderCompileUtilities::FetchGBufferParamsRuntime(EShaderPlatform Platform)
+FGBufferParams FShaderCompileUtilities::FetchGBufferParamsRuntime(EShaderPlatform Platform, EGBufferLayout Layout)
 {
+	// This code should match TBasePassPS
 
 	FGBufferParams Ret = {};
+	Ret.ShaderPlatform = Platform;
+
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
 	Ret.bHasPrecShadowFactor = (CVar ? (CVar->GetValueOnAnyThread() != 0) : 1);
 
-	Ret.bHasVelocity = IsUsingBasePassVelocity(Platform) ? 1 : 0;
+	Ret.bHasVelocity = (IsUsingBasePassVelocity(Platform) || Layout == GBL_ForceVelocity) ? 1 : 0;
 	Ret.bHasTangent = false;//BasePassCanOutputTangent(ShaderPlatform) ? 1 : 0;
 
 	Ret.bUsesVelocityDepth = NeedsVelocityDepth(Platform);
 
 	static const auto CVarFormat = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GBufferFormat"));
 	Ret.LegacyFormatIndex = CVarFormat->GetValueOnAnyThread();
+
+	// This should match with SINGLE_LAYER_WATER_SEPARATED_DIR_LIGHT
+	Ret.bHasSingleLayerWaterSeparatedMainLight = IsWaterDistanceFieldShadowEnabled(Platform);
 
 	return Ret;
 }

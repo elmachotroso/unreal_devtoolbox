@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassSimulationSubsystem.h"
-#include "MassSimulationLocalCoordinator.h"
+#include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
 #include "MassExecutor.h"
 #include "MassSimulationSettings.h"
@@ -25,20 +25,6 @@ UMassSimulationSubsystem::UMassSimulationSubsystem(const FObjectInitializer& Obj
 	: Super()
 {
 	PhaseManager = CreateDefaultSubobject<UMassProcessingPhaseManager>(TEXT("PhaseManager"));
-}
-
-void UMassSimulationSubsystem::PostInitProperties()
-{
-	REDIRECT_OBJECT_TO_VLOG(PhaseManager, this);
-
-	Super::PostInitProperties();
-
-	if (HasAnyFlags(RF_ClassDefaultObject) == false)
-	{
-#if WITH_EDITOR
-		GET_MASS_CONFIG_VALUE(GetOnTickSchematicChanged()).AddUObject(this, &UMassSimulationSubsystem::RebuildTickPipeline);
-#endif // WITH_EDITOR
-	}
 }
 
 void UMassSimulationSubsystem::BeginDestroy()
@@ -72,19 +58,19 @@ void UMassSimulationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	EntitySubsystem = Collection.InitializeDependency<UMassEntitySubsystem>();
+	UMassEntitySubsystem* EntitySubsystem = Collection.InitializeDependency<UMassEntitySubsystem>();
 	check(EntitySubsystem);
+	EntityManager = EntitySubsystem->GetMutableEntityManager().AsShared();
 	
 	GetOnProcessingPhaseStarted(EMassProcessingPhase::PrePhysics).AddUObject(this, &UMassSimulationSubsystem::OnProcessingPhaseStarted, EMassProcessingPhase::PrePhysics);
 }
 
 void UMassSimulationSubsystem::Deinitialize()
 {
-#if WITH_EDITOR
-	GET_MASS_CONFIG_VALUE(GetOnTickSchematicChanged()).RemoveAll(this);
-#endif // WITH_EDITOR
 	GetOnProcessingPhaseStarted(EMassProcessingPhase::PrePhysics).RemoveAll(this);
 	StopSimulation();
+
+	EntityManager.Reset();
 
 	Super::Deinitialize();
 }
@@ -148,10 +134,10 @@ void UMassSimulationSubsystem::OnProcessingPhaseStarted(const float DeltaSeconds
 		case EMassProcessingPhase::PrePhysics:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(DoEntityCompation);
-				check(EntitySubsystem);
+				check(EntityManager);
 				if (UE::MassSimulation::bDoEntityCompaction)
 				{
-					EntitySubsystem->DoEntityCompaction(GET_MASS_CONFIG_VALUE(DesiredEntityCompactionTimeSlicePerTick));
+					EntityManager->DoEntityCompaction(GET_MASSSIMULATION_CONFIG_VALUE(DesiredEntityCompactionTimeSlicePerTick));
 				}
 			}
 			break;

@@ -9,7 +9,6 @@
 
 // Material pass reroutes
 #define SceneTexturesStruct LumenTranslucencyRadianceCacheMarkPass.SceneTextures
-#define StrataStruct LumenTranslucencyRadianceCacheMarkPass.Strata
 
 #include "/Engine/Generated/Material.ush"
 #include "/Engine/Generated/VertexFactory.ush"
@@ -52,8 +51,8 @@ void MainVS(
 	{
 		WorldPosition.xyz += GetMaterialWorldPositionOffset(VertexParameters);
 		float4 RasterizedWorldPosition = VertexFactoryGetRasterizedWorldPosition(Input, VFIntermediates, WorldPosition);
-		ClipSpacePosition = INVARIANT(mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip));
-		Output.Position = INVARIANT(ClipSpacePosition);
+		ClipSpacePosition = mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip);
+		Output.Position = ClipSpacePosition;
 	}
 
 	Output.FactoryInterpolants = VertexFactoryGetInterpolantsVSToPS(Input, VFIntermediates, VertexParameters);
@@ -87,7 +86,7 @@ void MainPS(
 		float MaxDepth = 1000000.0f;
 #define CULL_TO_HZB 1
 #if CULL_TO_HZB
-		float2 HZBScreenUV = SvPosition.xy * View.ViewSizeAndInvSize.zw * LumenTranslucencyRadianceCacheMarkPass.ViewportUVToHZBBufferUV;
+		float2 HZBScreenUV = (SvPosition.xy - View.ViewRectMin.xy) * View.ViewSizeAndInvSize.zw * LumenTranslucencyRadianceCacheMarkPass.ViewportUVToHZBBufferUV;
 
 		MaxDepth = ConvertFromDeviceZ(LumenTranslucencyRadianceCacheMarkPass.FurthestHZBTexture.SampleLevel(GlobalPointClampedSampler, HZBScreenUV, LumenTranslucencyRadianceCacheMarkPass.HZBMipLevel).x);
 #endif

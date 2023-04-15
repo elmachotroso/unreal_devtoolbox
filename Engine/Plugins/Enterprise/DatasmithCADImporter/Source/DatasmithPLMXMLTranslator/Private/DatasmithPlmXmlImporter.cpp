@@ -20,8 +20,6 @@
 #include "CADData.h"
 #include "CADToolsModule.h"
 #include "CADKernelSurfaceExtension.h"
-#include "CoreTechSurfaceExtension.h"
-#include "CoreTechSurfaceHelper.h"
 #include "DatasmithAdditionalData.h"
 #include "DatasmithDispatcher.h"
 #include "DatasmithMeshBuilder.h"
@@ -766,7 +764,16 @@ namespace PlmXml
 
 		for (const FIdRef& InstanceRef : InstanceRefs)
 		{
-			TraverseProductInstance(MakeTraverseProductInstanceContext(Context, Context.ImportContext.GetProductInstance(InstanceRef)));
+			if (Context.ImportContext.HasProductInstance(InstanceRef))
+			{
+				TraverseProductInstance(MakeTraverseProductInstanceContext(Context, Context.ImportContext.GetProductInstance(InstanceRef)));
+			}
+			else if (Context.ImportContext.HasProductRevisionView(InstanceRef)) // in case InstanceRef is not a product instance
+			{
+				FTransform RootTransform;
+				RootTransform.SetIdentity();
+				TraverseProductRevisionView(MakeTraverseContext(Context, RootTransform, Context.ImportContext.GetProductRevisionView(InstanceRef)));
+			}
 		}
 	}
 
@@ -1028,7 +1035,7 @@ namespace PlmXml
 
 							// Every 'Occurrence' adds an object to a 'view'(ProductView, PRV only view or others too?) that should
 							// be displayed when this 'view' is active(ro whatever it's called, 'shown'). Difference Occurrence's can reference same 'instance' object but
-							// modify it, with, for example transform. transformRef is in he doc. or child nodes Transform(takes precedence over transformRef) - absolute, additional Representation, EntityMaterial, AssociatedAttachment>.
+							// modify it, with, for example transform. transformRef is in the doc. or child nodes Transform(takes precedence over transformRef) - absolute, additional Representation, EntityMaterial, AssociatedAttachment>.
 							// see 7.5.3 <Occurrence> for details
 
 							// Few examples, contradicting with PLMXML spec:
@@ -1141,7 +1148,20 @@ namespace PlmXml
 			return false;
 		}
 
+		// PLMXMLSchema.xsd
+		// rootInstanceRef: if the graph of Instances and StructureRevisionViews
+		//    in the InstanceGraph has a single root, which is an Instance,
+		//    this may be use to indicate it.
+		// rootRefs : however, in general there may be more than one root, and the
+		//    roots may be Instances or StructureRevisionViews.The use of
+		//    this attribute to specify the root(s) is preferred.
+		// 
+		// So the search of rootRefs is done first. If it doesn't exist, then rootInstanceRef is search
 		ImportContext.InstanceGraphRootRefs = PlmXml::GetAttributeIDREFS(InstanceGraphNode, TEXT("rootRefs"));
+		if (!ImportContext.InstanceGraphRootRefs.Num())
+		{
+			ImportContext.InstanceGraphRootRefs = PlmXml::GetAttributeIDREFS(InstanceGraphNode, TEXT("rootInstanceRef"));
+		}
 
 		if (!ImportContext.InstanceGraphRootRefs.Num())
 		{

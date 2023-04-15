@@ -1,13 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using MongoDB.Bson.Serialization;
-using MongoDB.Bson.Serialization.Serializers;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
-namespace HordeServer.Utilities
+namespace Horde.Build.Utilities
 {
 	/// <summary>
 	/// Case insensitive set of strings
@@ -25,8 +21,8 @@ namespace HordeServer.Utilities
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public CaseInsensitiveStringSet(IEnumerable<string> Items)
-			: base(Items, StringComparer.OrdinalIgnoreCase)
+		public CaseInsensitiveStringSet(IEnumerable<string> items)
+			: base(items, StringComparer.OrdinalIgnoreCase)
 		{
 		}
 	}

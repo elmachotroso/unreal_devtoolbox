@@ -20,6 +20,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SSegmentedControl.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "BaseToolkit"
 
@@ -394,12 +395,10 @@ void FModeToolkit::InvokeUI()
 				// Also build the toolkit here 
 				TArray<FName> PaletteNames;
 				GetToolPaletteNames(PaletteNames);
-				for (auto Palette : PaletteNames)
+				for (const FName& Palette : PaletteNames)
 				{
-					FUniformToolBarBuilder ModeToolbarBuilder(CommandList, FMultiBoxCustomization(ScriptableMode->GetModeInfo().ToolbarCustomizationName), TSharedPtr<FExtender>(), false);
-					ModeToolbarBuilder.SetStyle(&FEditorStyle::Get(), "PaletteToolBar");
-					BuildToolPalette(Palette, ModeToolbarBuilder);
-					ActiveToolBarRows.Emplace(ScriptableMode->GetID(), Palette, GetToolPaletteDisplayName(Palette), ModeToolbarBuilder.MakeWidget());
+					TSharedRef<SWidget> PaletteWidget = CreatePaletteWidget(CommandList, ScriptableMode->GetModeInfo().ToolbarCustomizationName, Palette);
+					ActiveToolBarRows.Emplace(ScriptableMode->GetID(), Palette, GetToolPaletteDisplayName(Palette), PaletteWidget);
 				}
 			}
 			TSharedPtr<SDockTab> CreatedToolbarTab = ModeUILayerPtr->GetTabManager()->TryInvokeTab(UAssetEditorUISubsystem::VerticalToolbarID);
@@ -409,10 +408,41 @@ void FModeToolkit::InvokeUI()
 	}
 }
 
+
+
+void FModeToolkit::RebuildModeToolPalette()
+{
+	if (ModeUILayer.IsValid() && HasIntegratedToolPalettes() == false)
+	{
+		if ( TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin() )
+		{
+			TSharedPtr<FUICommandList> CommandList;
+			if (GetScriptableEditorMode().IsValid())
+			{
+				UEdMode* ScriptableMode = GetScriptableEditorMode().Get();
+				CommandList = GetToolkitCommands();
+				ActiveToolBarRows.Reset();
+
+				TArray<FName> PaletteNames;
+				GetToolPaletteNames(PaletteNames);
+				for (const FName& Palette : PaletteNames)
+				{
+					TSharedRef<SWidget> PaletteWidget = CreatePaletteWidget(CommandList, ScriptableMode->GetModeInfo().ToolbarCustomizationName, Palette);
+					ActiveToolBarRows.Emplace(ScriptableMode->GetID(), Palette, GetToolPaletteDisplayName(Palette), PaletteWidget);
+				}
+
+				RebuildModeToolBar();
+			}
+		}
+	}
+
+}
+
+
 TSharedRef<SDockTab> FModeToolkit::CreatePrimaryModePanel(const FSpawnTabArgs& Args)
 {
 	TSharedRef<SWidget> TabContent = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(0.0f)
 		[
 			SNew(SVerticalBox)
@@ -421,7 +451,7 @@ TSharedRef<SDockTab> FModeToolkit::CreatePrimaryModePanel(const FSpawnTabArgs& A
 			.HAlign(HAlign_Left)
 			[
 				SAssignNew(ModeToolBarContainer, SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.Padding(FMargin(4, 0, 0, 0))
 			]
 
@@ -435,14 +465,14 @@ TSharedRef<SDockTab> FModeToolkit::CreatePrimaryModePanel(const FSpawnTabArgs& A
 				.AutoHeight()
 				[
 					SAssignNew(ModeToolHeader, SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				]
 
 				+ SVerticalBox::Slot()
 				.FillHeight(1)
 				[
 					SAssignNew(InlineContentHolder, SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.Visibility(this, &FModeToolkit::GetInlineContentHolderVisibility)
 				]
 		]
@@ -510,12 +540,7 @@ void FModeToolkit::UpdatePrimaryModePanel()
 			for (auto Palette : PaletteNames)
 			{
 				FName ToolbarCustomizationName = GetEditorMode() ?  GetEditorMode()->GetModeInfo().ToolbarCustomizationName : GetScriptableEditorMode()->GetModeInfo().ToolbarCustomizationName;
-				FUniformToolBarBuilder ModeToolbarBuilder(CommandList, FMultiBoxCustomization(ToolbarCustomizationName));
-				ModeToolbarBuilder.SetStyle(&FEditorStyle::Get(), "PaletteToolBar");
-
-				BuildToolPalette(Palette, ModeToolbarBuilder);
-
-				TSharedRef<SWidget> PaletteWidget = ModeToolbarBuilder.MakeWidget();
+				TSharedRef<SWidget> PaletteWidget = CreatePaletteWidget(CommandList, ToolbarCustomizationName, Palette);
 
 				const bool bRebuildChildren = false;
 				PaletteTabBox->AddSlot(Palette, false)
@@ -561,9 +586,17 @@ void FModeToolkit::UpdatePrimaryModePanel()
 			}
 		}
 
-		if (GetInlineContent().IsValid() && InlineContentHolder.IsValid())
+		if (InlineContentHolder.IsValid())
 		{
-			InlineContentHolder->SetContent(GetInlineContent().ToSharedRef());
+			if (TSharedPtr<SWidget> InlineContent = GetInlineContent())
+			{
+				InlineContentHolder->SetContent(
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
+						InlineContent.ToSharedRef()
+					]);
+			}
 		}
 
 	}
@@ -662,6 +695,16 @@ bool FModeToolkit::ShouldShowModeToolbar() const
 	return ActiveToolBarRows.Num() > 0;
 }
 
+TSharedRef<SWidget> FModeToolkit::CreatePaletteWidget(TSharedPtr<FUICommandList> InCommandList, FName InToolbarCustomizationName, FName InPaletteName)
+{
+	FUniformToolBarBuilder ModeToolbarBuilder(InCommandList, FMultiBoxCustomization(InToolbarCustomizationName));
+	ModeToolbarBuilder.SetStyle(&FAppStyle::Get(), "PaletteToolBar");
+
+	BuildToolPalette(InPaletteName, ModeToolbarBuilder);
+
+	return ModeToolbarBuilder.MakeWidget();
+}
+
 void FModeToolkit::SpawnOrUpdateModeToolbar()
 {
 	if (ShouldShowModeToolbar())
@@ -731,7 +774,7 @@ void FModeToolkit::RebuildModeToolBar()
 							PaletteTabBox->AddSlot()
 								[
 									SNew(SCheckBox)
-									.Style(FEditorStyle::Get(), "ToolPalette.DockingTab")
+									.Style(FAppStyle::Get(), "ToolPalette.DockingTab")
 								.OnCheckStateChanged_Lambda([PaletteSwitcher, Row, this](const ECheckBoxState) {
 										PaletteSwitcher->SetActiveWidget(Row.ToolbarWidget.ToSharedRef());
 										SetCurrentPalette(Row.PaletteName);
@@ -760,7 +803,7 @@ void FModeToolkit::RebuildModeToolBar()
 					+ SOverlay::Slot()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("ToolPalette.DockingWell"))
+					.Image(FAppStyle::GetBrush("ToolPalette.DockingWell"))
 				]
 
 			+ SOverlay::Slot()

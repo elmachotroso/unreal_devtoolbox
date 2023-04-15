@@ -2,6 +2,7 @@
 
 #include "DisplayClusterRootActor.h"
 
+#include "Blueprints/DisplayClusterBlueprint.h"
 #include "Components/SceneComponent.h"
 #include "Components/DisplayClusterOriginComponent.h"
 #include "Components/DisplayClusterCameraComponent.h"
@@ -96,12 +97,16 @@ void ADisplayClusterRootActor::Constructor_Editor()
 	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	ResetPreviewInternals_Editor();
+
+	FCoreUObjectDelegates::OnPackageReloaded.AddUObject(this, &ADisplayClusterRootActor::HandleAssetReload);
 }
 
 void ADisplayClusterRootActor::Destructor_Editor()
 {
 	OnPreviewGenerated.Unbind();
 	OnPreviewDestroyed.Unbind();
+
+	FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
 }
 
 void ADisplayClusterRootActor::Tick_Editor(float DeltaSeconds)
@@ -126,7 +131,10 @@ void ADisplayClusterRootActor::Tick_Editor(float DeltaSeconds)
 			TickPerFrameCounter = 0;
 
 			// Render viewport for preview material RTTs
-			ImplRenderPreview_Editor();
+			if (ViewportManager.IsValid())
+			{
+				ImplRenderPreview_Editor();
+			}
 		}
 
 		// preview frustums on each tick
@@ -170,8 +178,19 @@ void ADisplayClusterRootActor::RerunConstructionScripts_Editor()
 	ResetPreviewComponents_Editor(false);
 }
 
+void ADisplayClusterRootActor::EnableEditorRender(bool bValue)
+{
+	bEnableEditorRender = bValue;
+}
+
 bool ADisplayClusterRootActor::IsPreviewEnabled() const
 {
+	if (bMoviePipelineRenderPass)
+	{
+		// Disable preview rendering for MRQ
+		return false;
+	}
+
 	//@todo: (GUI) Scene preview can be disabled when the configuration window with internal preview is open.
 #if 0
 	bool bIsScenePreview = true; //@todo: handle GUI logic
@@ -183,6 +202,11 @@ bool ADisplayClusterRootActor::IsPreviewEnabled() const
 	}
 #endif
 
+	if (!PreviewEnableOverriders.IsEmpty())
+	{
+		return true;
+	}
+
 	return bPreviewEnable;
 }
 
@@ -191,7 +215,7 @@ void ADisplayClusterRootActor::GetPreviewRenderTargetableTextures(const TArray<F
 {
 	check(IsInGameThread());
 
-	for(const TPair<FString, UDisplayClusterPreviewComponent*>& PreviewComponentIt : PreviewComponents)
+	for(const TPair<FString, TObjectPtr<UDisplayClusterPreviewComponent>>& PreviewComponentIt : PreviewComponents)
 	{
 		if (PreviewComponentIt.Value)
 		{
@@ -199,7 +223,8 @@ void ADisplayClusterRootActor::GetPreviewRenderTargetableTextures(const TArray<F
 			if (OutTextureIndex != INDEX_NONE)
 			{
 				// Add scope for func GetRenderTargetTexture()
-				if (UTextureRenderTarget2D* RenderTarget2D = PreviewComponentIt.Value->GetRenderTargetTexture())
+				if (UTextureRenderTarget2D* RenderTarget2D = ShouldThisFrameOutputPreviewToPostProcessRenderTarget() ?
+					PreviewComponentIt.Value->GetRenderTargetTexturePostProcess() : PreviewComponentIt.Value->GetRenderTargetTexture())
 				{
 					FTextureRenderTargetResource* DstRenderTarget = RenderTarget2D->GameThread_GetRenderTargetResource();
 					if (DstRenderTarget != nullptr)
@@ -221,7 +246,7 @@ void ADisplayClusterRootActor::UpdateInnerFrustumPriority()
 	}
 	
 	TArray<UDisplayClusterICVFXCameraComponent*> Components;
-	GetComponents<UDisplayClusterICVFXCameraComponent>(Components);
+	GetComponents(Components);
 
 	TArray<FString> ValidCameras;
 	for (UDisplayClusterICVFXCameraComponent* Camera : Components)
@@ -252,7 +277,7 @@ void ADisplayClusterRootActor::UpdateInnerFrustumPriority()
 void ADisplayClusterRootActor::ResetInnerFrustumPriority()
 {
 	TArray<UDisplayClusterICVFXCameraComponent*> Components;
-	GetComponents<UDisplayClusterICVFXCameraComponent>(Components);
+	GetComponents(Components);
 
 	InnerFrustumPriority.Reset(Components.Num());
 	for (UDisplayClusterICVFXCameraComponent* Camera : Components)
@@ -297,15 +322,17 @@ IDisplayClusterViewport* ADisplayClusterRootActor::FindPreviewViewport(const FSt
 
 bool ADisplayClusterRootActor::ImplUpdatePreviewConfiguration_Editor(const FString& InClusterNodeId)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ADisplayClusterRootActor::ImplUpdatePreviewConfiguration_Editor"), STAT_ImplUpdatePreviewConfiguration_Editor, STATGROUP_NDisplay);
+	
 	PreviewRenderFrame.Reset();
 
-	if (bPreviewEnable && ViewportManager.IsValid())
+	if (IsPreviewEnabled() && ViewportManager.IsValid())
 	{
 		FDisplayClusterPreviewSettings PreviewSettings;
 		PreviewSettings.PreviewRenderTargetRatioMult = PreviewRenderTargetRatioMult;
 
 		PreviewSettings.bFreezePreviewRender = bFreezePreviewRender;
-		PreviewSettings.bPreviewEnablePostProcess = bPreviewEnablePostProcess;
+		PreviewSettings.bPreviewEnablePostProcess = ShouldThisFrameOutputPreviewToPostProcessRenderTarget();
 
 		PreviewSettings.PreviewMaxTextureDimension = PreviewMaxTextureDimension;
 		
@@ -327,9 +354,9 @@ bool ADisplayClusterRootActor::ImplUpdatePreviewRenderFrame_Editor(const FString
 		if (ImplUpdatePreviewConfiguration_Editor(InClusterNodeId))
 		{
 			// Update all preview components resources before render
-			for (const TTuple<FString, UDisplayClusterPreviewComponent*>& PreviewComponentIt : PreviewComponents)
+			for (const TTuple<FString, TObjectPtr<UDisplayClusterPreviewComponent>>& PreviewComponentIt : PreviewComponents)
 			{
-				if (PreviewComponentIt.Value && PreviewComponentIt.Value->GetClusterNodeId() == InClusterNodeId)
+				if (PreviewComponentIt.Value && (InClusterNodeId.IsEmpty() || PreviewComponentIt.Value->GetClusterNodeId() == InClusterNodeId))
 				{
 					PreviewComponentIt.Value->UpdatePreviewResources();
 				}
@@ -341,9 +368,17 @@ bool ADisplayClusterRootActor::ImplUpdatePreviewRenderFrame_Editor(const FString
 			{
 				PreviewRenderFrame = MakeUnique<FDisplayClusterRenderFrame>();
 
+				const bool bSceneNeedsStarting = !ViewportManager->GetCurrentWorld();
+				
 				// Update preview viewports from settings
 				if (ViewportManager->BeginNewFrame(nullptr, PreviewWorld, *PreviewRenderFrame))
 				{
+					if (bSceneNeedsStarting)
+					{
+						// Fix inner frustum possibly using the wrong post process render target
+						ImplUpdatePreviewConfiguration_Editor(InClusterNodeId);
+					}
+					
 					PreviewViewportIndex = 0;
 					return true;
 				}
@@ -398,7 +433,7 @@ bool ADisplayClusterRootActor::ImplRenderPassPreviewClusterNode_Editor()
 
 void ADisplayClusterRootActor::ImplRenderPreview_Editor()
 {
-	if (!bPreviewEnable || !ViewportManager.IsValid())
+	if (CurrentConfigData == nullptr || !IsPreviewEnabled() || !ViewportManager.IsValid())
 	{
 		// no preview
 		return;
@@ -461,6 +496,10 @@ void ADisplayClusterRootActor::ImplRenderPreview_Editor()
 		if (PreviewClusterNodeIndex >= ExistClusterNodesIDs.Num())
 		{
 			PreviewClusterNodeIndex = bFreezePreviewRender ? -1 : 0;
+
+			bOutputFrameToPostProcessRenderTarget = bOutputFrameToPostProcessRenderTarget ?
+				bPreviewEnablePostProcess :
+				bPreviewEnablePostProcess || DoObserversNeedPostProcessRenderTarget();
 		}
 
 		if (PreviewClusterNodeIndex < 0)
@@ -473,7 +512,7 @@ void ADisplayClusterRootActor::ImplRenderPreview_Editor()
 
 void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 {
-	if (!ViewportManager.IsValid())
+	if (CurrentConfigData == nullptr || !ViewportManager.IsValid())
 	{
 		return;
 	}
@@ -481,7 +520,7 @@ void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 	// frustum preview viewports
 	TArray<IDisplayClusterViewport*> FrustumPreviewViewports;
 
-	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& Node : CurrentConfigData->Cluster->Nodes)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Node : CurrentConfigData->Cluster->Nodes)
 	{
 		if (Node.Value == nullptr)
 		{
@@ -489,7 +528,7 @@ void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 		}
 
 		// collect node viewports
-		for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportConfig : Node.Value->Viewports)
+		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportConfig : Node.Value->Viewports)
 		{
 			if (ViewportConfig.Value->bAllowPreviewFrustumRendering == false || ViewportConfig.Value->bIsVisible == false || ViewportConfig.Value == nullptr)
 			{
@@ -528,8 +567,8 @@ void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 	{
 		const TArray<FDisplayClusterViewport_Context>& Contexts = ViewportIt->GetContexts();
 
-		// Due to rendering optimizations for DCRA preview (node ​​rendered over multiple frames). 
-		// As a result, viewport math values ​​(stored in contexts) may not be ready at the moment.
+		// Due to rendering optimizations for DCRA preview (node rendered over multiple frames).
+		// As a result, viewport math values (stored in contexts) may not be ready at the moment.
 		FFrustumPreviewViewportContextCache FrustumPreviewViewportContext;
 		bool bIsValidViewportContext = false;
 
@@ -658,9 +697,6 @@ static FName Name_RelativeScale3D = USceneComponent::GetRelativeScale3DPropertyN
 
 void ADisplayClusterRootActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	// any property update causes a DCRA rebuild. Restore preview material show
-	ResetPreviewComponents_Editor(true);
-
 	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
 	
 	// The AActor method, simplified and modified to skip construction scripts.
@@ -695,18 +731,23 @@ void ADisplayClusterRootActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 
 	bool bReinitializeActor = true;
 	bool bCanSkipConstructionScripts = false;
-	if (const UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass(GetClass()))
+	bool bResetPreviewComponents = false;
+	if (const UDisplayClusterBlueprint* Blueprint = Cast<UDisplayClusterBlueprint>(UBlueprint::GetBlueprintFromClass(GetClass())))
 	{
-		bCanSkipConstructionScripts = !Blueprint->bRunConstructionScriptOnDrag;
+		bCanSkipConstructionScripts = !Blueprint->bRunConstructionScriptOnInteractiveChange;
 	}
 	
 	if (bCanSkipConstructionScripts && PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive && !CurrentTransactionAnnotation.IsValid())
 	{
 		// Avoid calling construction scripts when the change occurs while the user is dragging a slider.
 		SuperCallWithoutConstructionScripts();
+		bReinitializeActor = false;
 	}
 	else
 	{
+		// any property update causes a DCRA rebuild. Restore preview material show
+		ResetPreviewComponents_Editor(true);
+		bResetPreviewComponents = true;
 		Super::PostEditChangeProperty(PropertyChangedEvent);
 	}
 	
@@ -714,7 +755,6 @@ void ADisplayClusterRootActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	// Cluster node ID has been changed
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, bFreezePreviewRender)
 	|| PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, PreviewRenderTargetRatioMult)
-	|| PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, bPreviewEnablePostProcess)
 	|| PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, bPreviewICVFXFrustums)
 	|| PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, PreviewICVFXFrustumsFarDistance)
 	|| PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, PreviewMaxTextureDimension)
@@ -734,13 +774,21 @@ void ADisplayClusterRootActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	{
 		ResetInnerFrustumPriority();
 	}
-
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, bPreviewEnablePostProcess))
+	{
+		ResetPreviewComponents_Editor(false);
+		PreviewRenderFrame.Reset();
+		bReinitializeActor = false;
+	}
 	if (bReinitializeActor)
 	{
 		InitializeRootActor();
 	}
 
-	ResetPreviewComponents_Editor(false);
+	if (bResetPreviewComponents)
+	{
+		ResetPreviewComponents_Editor(false);
+	}
 }
 
 void ADisplayClusterRootActor::PostEditMove(bool bFinished)
@@ -753,10 +801,22 @@ void ADisplayClusterRootActor::PostEditMove(bool bFinished)
 	ResetPreviewComponents_Editor(false);
 }
 
+void ADisplayClusterRootActor::HandleAssetReload(const EPackageReloadPhase InPackageReloadPhase,
+	FPackageReloadedEvent* InPackageReloadedEvent)
+{
+	if (InPackageReloadPhase == EPackageReloadPhase::PrePackageFixup)
+	{
+		// Preview components need to be released here. During a package reload BeginDestroy will be called on the
+		// actor, but the preview components are already detached and never have DestroyComponent called on them.
+		// This causes the package to keep references around and cause a crash during the reload.
+		BeginDestroy_Editor();
+	}
+}
+
 void ADisplayClusterRootActor::ResetPreviewComponents_Editor(bool bInRestoreSceneMaterial)
 {
 	TArray<UDisplayClusterPreviewComponent*> AllPreviewComponents;
-	GetComponents<UDisplayClusterPreviewComponent>(AllPreviewComponents);
+	GetComponents(AllPreviewComponents);
 
 	for (UDisplayClusterPreviewComponent* ExistingComp : AllPreviewComponents)
 	{
@@ -766,6 +826,8 @@ void ADisplayClusterRootActor::ResetPreviewComponents_Editor(bool bInRestoreScen
 
 void ADisplayClusterRootActor::UpdatePreviewComponents()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ADisplayClusterRootActor::UpdatePreviewComponents"), STAT_UpdatePreviewComponents, STATGROUP_NDisplay);
+	
 	if (IsTemplate() || bDeferPreviewGeneration)
 	{
 		return;
@@ -775,16 +837,16 @@ void ADisplayClusterRootActor::UpdatePreviewComponents()
 
 	TArray<UDisplayClusterPreviewComponent*> IteratedPreviewComponents;
 	
-	if (CurrentConfigData != nullptr && bPreviewEnable)
+	if (CurrentConfigData != nullptr && IsPreviewEnabled())
 	{
-		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& Node : CurrentConfigData->Cluster->Nodes)
+		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Node : CurrentConfigData->Cluster->Nodes)
 		{
 			if (Node.Value == nullptr)
 			{
 				continue;
 			}
 
-			for (const TPair<FString, UDisplayClusterConfigurationViewport*>& Viewport : Node.Value->Viewports)
+			for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& Viewport : Node.Value->Viewports)
 			{
 				const FString PreviewCompId = GeneratePreviewComponentName_Editor(Node.Key, Viewport.Key);
 				UDisplayClusterPreviewComponent* PreviewComp = PreviewComponents.FindRef(PreviewCompId);
@@ -814,7 +876,7 @@ void ADisplayClusterRootActor::UpdatePreviewComponents()
 
 	// Cleanup unused components.
 	TArray<UDisplayClusterPreviewComponent*> AllPreviewComponents;
-	GetComponents<UDisplayClusterPreviewComponent>(AllPreviewComponents);
+	GetComponents(AllPreviewComponents);
 	
 	for (UDisplayClusterPreviewComponent* ExistingComp : AllPreviewComponents)
 	{
@@ -833,7 +895,7 @@ void ADisplayClusterRootActor::UpdatePreviewComponents()
 
 void ADisplayClusterRootActor::ReleasePreviewComponents()
 {
-	for (const TPair<FString, UDisplayClusterPreviewComponent*>& CompPair : PreviewComponents)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterPreviewComponent>>& CompPair : PreviewComponents)
 	{
 		if (CompPair.Value)
 		{
@@ -848,12 +910,52 @@ void ADisplayClusterRootActor::ReleasePreviewComponents()
 	OnPreviewDestroyed.ExecuteIfBound();
 }
 
+int32 ADisplayClusterRootActor::SubscribeToPostProcessRenderTarget(const uint8* Object)
+{
+	check(Object);
+	PostProcessRenderTargetObservers.Add(Object);
+	return PostProcessRenderTargetObservers.Num();
+}
+
+int32 ADisplayClusterRootActor::UnsubscribeFromPostProcessRenderTarget(const uint8* Object)
+{
+	check(Object);
+	PostProcessRenderTargetObservers.Remove(Object);
+	return PostProcessRenderTargetObservers.Num();
+}
+
+bool ADisplayClusterRootActor::DoObserversNeedPostProcessRenderTarget() const
+{
+	return PostProcessRenderTargetObservers.Num() > 0;
+}
+
+bool ADisplayClusterRootActor::ShouldThisFrameOutputPreviewToPostProcessRenderTarget() const
+{
+	return bOutputFrameToPostProcessRenderTarget;
+}
+
+void ADisplayClusterRootActor::AddPreviewEnableOverride(const uint8* Object)
+{
+	check(Object);
+	PreviewEnableOverriders.Add(Object);
+
+	UpdatePreviewComponents();
+}
+
+void ADisplayClusterRootActor::RemovePreviewEnableOverride(const uint8* Object)
+{
+	check(Object);
+	PreviewEnableOverriders.Remove(Object);
+
+	UpdatePreviewComponents();
+}
+
 FString ADisplayClusterRootActor::GeneratePreviewComponentName_Editor(const FString& NodeId, const FString& ViewportId) const
 {
 	return FString::Printf(TEXT("%s_%s"), *NodeId, *ViewportId);
 }
 
-UDisplayClusterPreviewComponent* ADisplayClusterRootActor::GetPreviewComponent(const FString& NodeId, const FString& ViewportId)
+UDisplayClusterPreviewComponent* ADisplayClusterRootActor::GetPreviewComponent(const FString& NodeId, const FString& ViewportId) const
 {
 	const FString PreviewCompId = GeneratePreviewComponentName_Editor(NodeId, ViewportId);
 	if (PreviewComponents.Contains(PreviewCompId))

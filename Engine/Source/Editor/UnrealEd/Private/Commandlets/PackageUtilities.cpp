@@ -37,7 +37,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "Editor.h"
 #include "FileHelpers.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 #include "CollectionManagerTypes.h"
 #include "ICollectionManager.h"
@@ -305,22 +305,34 @@ public:
 		return CollectionManagerModule.Get().DestroyCollection(InSetName, InSetType);
 	}
 
-	static bool RemoveAssetsFromSet(FName InSetName, ECollectionShareType::Type InSetType, const TArray<FName>& InAssetPathNames )
+	static bool RemoveAssetsFromSet(FName InSetName, ECollectionShareType::Type InSetType, const TArray<FSoftObjectPath>& InAssetPathNames )
 	{
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-		return CollectionManagerModule.Get().RemoveFromCollection(InSetName, InSetType, InAssetPathNames);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return CollectionManagerModule.Get().RemoveFromCollection(InSetName, InSetType, UE::SoftObjectPath::Private::ConvertSoftObjectPaths(InAssetPathNames));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	static bool AddAssetsToSet(FName InSetName, ECollectionShareType::Type InSetType, const TArray<FName>& InAssetPathNames )
+	static bool AddAssetsToSet(FName InSetName, ECollectionShareType::Type InSetType, const TArray<FSoftObjectPath>& InAssetPathNames )
 	{
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-		return CollectionManagerModule.Get().AddToCollection(InSetName, InSetType, InAssetPathNames);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return CollectionManagerModule.Get().AddToCollection(InSetName, InSetType, UE::SoftObjectPath::Private::ConvertSoftObjectPaths(InAssetPathNames));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	static bool QueryAssetsInSet(FName InSetName, ECollectionShareType::Type InSetType, TArray<FName>& OutAssetPathNames )
+	static bool QueryAssetsInSet(FName InSetName, ECollectionShareType::Type InSetType, TArray<FSoftObjectPath>& OutAssetPathNames )
 	{
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-		return CollectionManagerModule.Get().GetAssetsInCollection(InSetName, InSetType, OutAssetPathNames);
+		TArray<FName> Temp;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (CollectionManagerModule.Get().GetAssetsInCollection(InSetName, InSetType, Temp))
+		{
+			OutAssetPathNames.Append(UE::SoftObjectPath::Private::ConvertObjectPathNames(Temp));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			return true;
+		}		
+		return false;
 	}
 };
 
@@ -352,7 +364,7 @@ bool FContentHelper::ClearAssetSet(FName InSetName, ECollectionShareType::Type I
 
 /** Sets the contents of a Tag or Collection to be the InAssetList. Assets not mentioned in the list will be untagged. */
 template <class AssetSetPolicy>	
-bool FContentHelper::AssignSetContent(FName InSetName, ECollectionShareType::Type InType, const TArray<FName>& InAssetList )
+bool FContentHelper::AssignSetContent(FName InSetName, ECollectionShareType::Type InType, const TArray<FSoftObjectPath>& InAssetList )
 {
 	bool bResult = true;
 
@@ -373,19 +385,19 @@ bool FContentHelper::AssignSetContent(FName InSetName, ECollectionShareType::Typ
 		{
 			bool bAddCompleteInAssetList = true;
 
-			TArray<FName> AssetsInCollection;
+			TArray<FSoftObjectPath> AssetsInCollection;
 			AssetSetPolicy::QueryAssetsInSet(InSetName, InType, AssetsInCollection);
 			int32 CurrentAssetCount = AssetsInCollection.Num();
 			if (CurrentAssetCount != 0)
 			{
 				// Generate the lists
-				TArray<FName> TrueAddList;
-				TArray<FName> TrueRemoveList;
+				TArray<FSoftObjectPath> TrueAddList;
+				TArray<FSoftObjectPath> TrueRemoveList;
 
 				// See how many items are really being added/removed
 				for (int32 CheckIdx = 0; CheckIdx < AssetsInCollection.Num(); CheckIdx++)
 				{
-					FName CheckAsset = AssetsInCollection[CheckIdx];
+					FSoftObjectPath CheckAsset = FSoftObjectPath(AssetsInCollection[CheckIdx]);
 					if (InAssetList.Find(CheckAsset) != INDEX_NONE)
 					{
 						TrueAddList.AddUnique(CheckAsset);
@@ -452,7 +464,7 @@ bool FContentHelper::AssignSetContent(FName InSetName, ECollectionShareType::Typ
 
 /** Add and remove assets for the specified Tag or Connection. Assets from InAddList are added; assets from InRemoveList are removed. */
 template <class AssetSetPolicy>	
-bool FContentHelper::UpdateSetContent(FName InSetName, ECollectionShareType::Type InType, const TArray<FName>& InAddList, const TArray<FName>& InRemoveList )
+bool FContentHelper::UpdateSetContent(FName InSetName, ECollectionShareType::Type InType, const TArray<FSoftObjectPath>& InAddList, const TArray<FSoftObjectPath>& InRemoveList )
 {
 	bool bResult = true;
 
@@ -471,13 +483,13 @@ bool FContentHelper::UpdateSetContent(FName InSetName, ECollectionShareType::Typ
 		// If there is nothing to update, we are done.
 		if ((InAddList.Num() >= 0) || (InRemoveList.Num() >= 0))
 		{
-			TArray<FName> AssetsInCollection;
+			TArray<FSoftObjectPath> AssetsInCollection;
 			AssetSetPolicy::QueryAssetsInSet(InSetName, InType, AssetsInCollection);
 			if (AssetsInCollection.Num() != 0)
 			{
 				// Clean up the lists
-				TArray<FName> TrueAddList;
-				TArray<FName> TrueRemoveList;
+				TArray<FSoftObjectPath> TrueAddList;
+				TArray<FSoftObjectPath> TrueRemoveList;
 
 				// Generate the true Remove list, only removing items that are actually in the collection.
 				for (int32 RemoveIdx = 0; RemoveIdx < InRemoveList.Num(); RemoveIdx++)
@@ -537,7 +549,7 @@ bool FContentHelper::UpdateSetContent(FName InSetName, ECollectionShareType::Typ
 
 /** Get the list of all assets in the specified Collection or Tag */
 template <class AssetSetPolicy>	
-bool FContentHelper::QuerySetContent(FName InSetName, ECollectionShareType::Type InType, TArray<FName>& OutAssetPathNames)
+bool FContentHelper::QuerySetContent(FName InSetName, ECollectionShareType::Type InType, TArray<FSoftObjectPath>& OutAssetPathNames)
 {
 	if (bInitialized == false)
 	{
@@ -597,7 +609,7 @@ bool FContentHelper::ClearCollection(FName InCollectionName, ECollectionShareTyp
  *
  *	@return	bool				true if successful, false if not.
  */
-bool FContentHelper::SetCollection(FName InCollectionName, ECollectionShareType::Type InType, const TArray<FName>& InAssetList)
+bool FContentHelper::SetCollection(FName InCollectionName, ECollectionShareType::Type InType, const TArray<FSoftObjectPath>& InAssetList)
 {
 	return this->AssignSetContent<FCollectionPolicy>(InCollectionName, InType, InAssetList);
 }
@@ -612,7 +624,7 @@ bool FContentHelper::SetCollection(FName InCollectionName, ECollectionShareType:
  *
  *	@return	bool				true if successful, false if not.
  */
-bool FContentHelper::UpdateCollection(FName InCollectionName, ECollectionShareType::Type InType, const TArray<FName>& InAddList, const TArray<FName>& InRemoveList)
+bool FContentHelper::UpdateCollection(FName InCollectionName, ECollectionShareType::Type InType, const TArray<FSoftObjectPath>& InAddList, const TArray<FSoftObjectPath>& InRemoveList)
 {
 	return this->UpdateSetContent<FCollectionPolicy>( InCollectionName, InType, InAddList, InRemoveList );
 }
@@ -622,15 +634,28 @@ bool FContentHelper::UpdateCollection(FName InCollectionName, ECollectionShareTy
  *
  *	@param	InCollectionName	Name of collection to query
  *	@param	InType				Type of collection
- *	@param	OutAssetPathNames	The assets contained in the collection
+ *	@param	OutAssetPaths		The assets contained in the collection
  * 
  *	@return True if collection was created successfully
  */
-bool FContentHelper::QueryAssetsInCollection(FName InCollectionName, ECollectionShareType::Type InType, TArray<FName>& OutAssetPathNames)
+bool FContentHelper::QueryAssetsInCollection(FName InCollectionName, ECollectionShareType::Type InType, TArray<FSoftObjectPath>& OutAssetPaths)
 {
-	return this->QuerySetContent<FCollectionPolicy>(InCollectionName, InType, OutAssetPathNames);
+	return this->QuerySetContent<FCollectionPolicy>(InCollectionName, InType, OutAssetPaths);
 }
 
+bool FContentHelper::QueryAssetsInCollection(FName InCollectionName, ECollectionShareType::Type InType, TArray<FName>& OutAssetPathNames)
+{
+	TArray<FSoftObjectPath> AssetPaths;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (this->QuerySetContent<FCollectionPolicy>(InCollectionName, InType, AssetPaths))
+	{
+		OutAssetPathNames.Append(UE::SoftObjectPath::Private::ConvertSoftObjectPaths(AssetPaths));
+		return true;
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	return false;
+}
 
 /*-----------------------------------------------------------------------------
 ULoadPackageCommandlet
@@ -854,7 +879,7 @@ namespace
 		// Comparison method
 		bool operator()( const FExportInfo& A, const FExportInfo& B ) const
 		{
-			int32 Result = 0;
+			int64 Result = 0;
 
 			for ( int32 PriorityType = 0; PriorityType < EXPORTSORT_MAX; PriorityType++ )
 			{
@@ -1207,9 +1232,6 @@ void FPkgInfoReporter_Log::GeneratePackageReport( FLinkerLoad* InLinker /*=nullp
 				Out.Logf(ELogVerbosity::Display, TEXT("\t\t        Parent: '%s' (%d)"), *ParentName, Export.SuperIndex.ForDebugging());
 				Out.Logf(ELogVerbosity::Display, TEXT("\t\t      Template: '%s' (%d)"), *TemplateName, Export.TemplateIndex.ForDebugging());
 				Out.Logf(ELogVerbosity::Display, TEXT("\t\t         Outer: '%s' (%d)"), *OuterName, Export.OuterIndex.ForDebugging() );
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				Out.Logf(ELogVerbosity::Display, TEXT("\t\t      Pkg Guid: %s"), *Export.PackageGuid.ToString());
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				Out.Logf(ELogVerbosity::Display, TEXT("\t\t   ObjectFlags: 0x%08X"), (uint32)Export.ObjectFlags );
 				Out.Logf(ELogVerbosity::Display, TEXT("\t\t          Size: %d"), Export.SerialSize );
 				if ( !IsHideOffsets())
@@ -1389,7 +1411,7 @@ void FPkgInfoReporter_Log::GeneratePackageReport( FLinkerLoad* InLinker /*=nullp
 			for (FAssetData* AssetData : AssetDatas)
 			{
 				// Display the asset class and path
-				Out.Logf(ELogVerbosity::Display, TEXT("\t\t%d) %s'%s' (%d Tags)"), AssetIdx++, *AssetData->AssetClass.ToString(), *AssetData->ObjectPath.ToString(), AssetData->TagsAndValues.Num());
+				Out.Logf(ELogVerbosity::Display, TEXT("\t\t%d) %s'%s' (%d Tags)"), AssetIdx++, *AssetData->AssetClassPath.ToString(), *AssetData->GetObjectPathString(), AssetData->TagsAndValues.Num());
 
 				// Display all tags on the asset
 				for (const TPair<FName, FAssetTagValueRef>& Pair : AssetData->TagsAndValues)
@@ -1760,7 +1782,7 @@ struct CompressAnimationsFunctor
 		// @todoanim: we expect this won't work properly since it won't have any skeletalmesh,
 		// but soon, the compression will changed based on skeleton. 
 		// when that happens, this doesn't have to worry about skeletalmesh not loaded
-	 	float LastSaveTime = FPlatformTime::Seconds();
+	 	double LastSaveTime = FPlatformTime::Seconds();
 		bool bDirtyPackage = false;
 		const FName& PackageName = Package->GetFName(); 
 		FString PackageFileName;
@@ -1906,7 +1928,7 @@ struct CompressAnimationsFunctor
 				// If we have found a best match
 				if( BestSkeletalMeshMatch )
 				{
-					// if it is different than our preview mesh and his match ratio is higher
+					// if it is different than our preview mesh and its match ratio is higher
 					// then replace preview mesh with this one, as it's a better match.
 					if( BestSkeletalMeshMatch != DefaultSkeletalMesh && HighestRatio > DefaultMatchRatio )
 					{
@@ -1979,7 +2001,7 @@ struct CompressAnimationsFunctor
 			if( bDirtyPackage )
 			{
 				// Save dirty package every 10 minutes at least, to avoid losing work in case of a crash on very large packages.
-				float const CurrentTime = FPlatformTime::Seconds();
+				const double CurrentTime = FPlatformTime::Seconds();
 				UE_LOG(LogPackageUtilities, Warning, TEXT("Time since last save: %f seconds"), (CurrentTime - LastSaveTime) );
 				if( (CurrentTime - LastSaveTime) > 10.f * 60.f )
 				{

@@ -6,10 +6,11 @@
 #include "AudioMixerLog.h"
 #include "Sound/AudioSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SynthComponent)
+
 
 USynthSound::USynthSound(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, OwningSynthComponent(nullptr)
 {
 }
 
@@ -47,7 +48,7 @@ void USynthSound::StartOnAudioDevice(FAudioDevice* InAudioDevice)
 
 void USynthSound::OnBeginGenerate()
 {
-	if (ensure(OwningSynthComponent))
+	if (ensure(OwningSynthComponent.IsValid()))
 	{
 		OwningSynthComponent->OnBeginGenerate();
 	}
@@ -65,7 +66,7 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 		OutAudio.AddZeroed(NumSamples * sizeof(float));
 
 		// Mark pending kill can null this out on the game thread in rare cases.
-		if (!OwningSynthComponent)
+		if (!OwningSynthComponent.IsValid())
 		{
 			return 0;
 		}
@@ -79,7 +80,7 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 		FloatBuffer.AddZeroed(NumSamples * sizeof(float));
 
 		// Mark pending kill can null this out on the game thread in rare cases.
-		if (!OwningSynthComponent)
+		if (!OwningSynthComponent.IsValid())
 		{
 			return 0;
 		}
@@ -103,7 +104,7 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 void USynthSound::OnEndGenerate()
 {
 	// Mark pending kill can null this out on the game thread in rare cases.
-	if (OwningSynthComponent)
+	if (OwningSynthComponent.IsValid())
 	{
 		OwningSynthComponent->OnEndGenerate();
 	}
@@ -111,7 +112,7 @@ void USynthSound::OnEndGenerate()
 
 ISoundGeneratorPtr USynthSound::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams)
 {
-	if (OwningSynthComponent)
+	if (OwningSynthComponent.IsValid())
 	{
 		return OwningSynthComponent->CreateSoundGeneratorInternal(InParams);
 	}
@@ -233,7 +234,7 @@ void USynthComponent::Initialize(int32 SampleRateOverride)
 
 		if (!Synth)
 		{
-			Synth = NewObject<USynthSound>(this, TEXT("Synth"));
+			Synth = NewObject<USynthSound>();
 		}
 
 		// Copy sound base data to the sound
@@ -266,7 +267,8 @@ void USynthComponent::CreateAudioComponent()
 	if (!AudioComponent)
 	{
 		// Create the audio component which will be used to play the procedural sound wave
-		AudioComponent = NewObject<UAudioComponent>(this);
+		AudioComponent = NewObject<UAudioComponent>(this, NAME_None, RF_Transactional | RF_Transient | RF_TextExportTransient);
+		AudioComponent->CreationMethod = CreationMethod;
 
 		AudioComponent->OnAudioSingleEnvelopeValueNative.AddUObject(this, &USynthComponent::OnAudioComponentEnvelopeValue);
 
@@ -346,6 +348,21 @@ void USynthComponent::OnUnregister()
 		}
 		AudioComponent->DestroyComponent();
 		AudioComponent = nullptr;
+	}
+
+	// Clear out the synth component's reference to the sound generator or it will leak until it gets GC'd
+	// Normally this is ok to wait till GC but some derived synths might need for the handle to be released
+	SoundGenerator.Reset();
+}
+
+void USynthComponent::EndPlay(const EEndPlayReason::Type Reason) 
+{	
+	Super::EndPlay(Reason);
+
+	if (GetOwner() && (Reason == EEndPlayReason::LevelTransition || Reason == EEndPlayReason::RemovedFromWorld || Reason == EEndPlayReason::Destroyed))
+	{
+		// If our world or sublevel is going away, stop immediately to prevent the containing world/level from being leaked via hard references from the audio device.
+		Stop();
 	}
 }
 
@@ -575,6 +592,29 @@ void USynthComponent::SetOutputToBusOnly(bool bInOutputToBusOnly)
 	}
 }
 
+void USynthComponent::FadeIn(float FadeInDuration, float FadeVolumeLevel/* = 1.0f*/, float StartTime/* = 0.0f*/, const EAudioFaderCurve FadeCurve/* = EAudioFaderCurve::Linear*/) const
+{
+	if(AudioComponent)
+	{
+		AudioComponent->FadeIn(FadeInDuration, FadeVolumeLevel, StartTime, FadeCurve);
+	}
+}
+
+void USynthComponent::FadeOut(float FadeOutDuration, float FadeVolumeLevel, const EAudioFaderCurve FadeCurve/* = EAudioFaderCurve::Linear*/) const
+{
+	if(AudioComponent)
+	{
+		AudioComponent->FadeOut(FadeOutDuration, FadeVolumeLevel, FadeCurve);
+	}
+}
+
+void USynthComponent::AdjustVolume(float AdjustVolumeDuration, float AdjustVolumeLevel, const EAudioFaderCurve FadeCurve/* = EAudioFaderCurve::Linear*/) const
+{
+	if(AudioComponent)
+	{
+		AudioComponent->AdjustVolume(AdjustVolumeDuration, AdjustVolumeLevel, FadeCurve);
+	}
+}
 
 void USynthComponent::SynthCommand(TFunction<void()> Command)
 {
@@ -593,3 +633,4 @@ ISoundGeneratorPtr USynthComponent::CreateSoundGeneratorInternal(const FSoundGen
 	LLM_SCOPE(ELLMTag::AudioSynthesis);	
 	return SoundGenerator = CreateSoundGenerator(InParams);
 }
+

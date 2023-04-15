@@ -5,6 +5,8 @@
 =============================================================================*/
 
 #include "MaterialGraph/MaterialGraphNode.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ToolMenus.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
@@ -47,8 +49,6 @@
 #include "GraphEditorSettings.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "ScopedTransaction.h"
-
-
 
 #define LOCTEXT_NAMESPACE "MaterialGraphNode"
 
@@ -138,6 +138,22 @@ bool UMaterialGraphNode::CanPasteHere(const UEdGraph* TargetGraph) const
 {
 	if (Super::CanPasteHere(TargetGraph))
 	{
+		if (MaterialExpression->IsA(UMaterialExpressionStrataLegacyConversion::StaticClass()))
+		{
+			// We could have used CanDuplicateNode() returning false to prevent the copy but it is nicer to have a notification about why the copy is not happening.
+			FText NotificationText = NSLOCTEXT("UMaterialGraphNode", "SkippedStrataLegacyConversion", "StrataLegacyConversion node cannot be copied! It is only used to convert legacy material to Strata.");
+			FNotificationInfo Info(NotificationText);
+			Info.ExpireDuration = 5.0f;
+			Info.bUseLargeFont = false;
+			Info.Image = FCoreStyle::Get().GetBrush(TEXT("MessageLog.Warning"));
+			TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info);
+			if (Notification.IsValid())
+			{
+				Notification->SetCompletionState(SNotificationItem::CS_None);
+			}
+			return false; // We do not allow the copy of the StrataLegacyConversion which should only be used to convert pre-strata materials.
+		}
+
 		const UMaterialGraph* MaterialGraph = Cast<const UMaterialGraph>(TargetGraph);
 		if (MaterialGraph)
 		{
@@ -635,6 +651,11 @@ uint32 UMaterialGraphNode::GetPinMaterialType(const UEdGraphPin* Pin) const
 	}
 }
 
+void UMaterialGraphNode::PinDefaultValueChanged(UEdGraphPin* Pin)
+{
+	MaterialExpression->PinDefaultValueChanged(Pin->SourceIndex, Pin->DefaultValue);
+}
+
 void UMaterialGraphNode::CreateInputPins()
 {
 	if (MaterialExpression->HasExecInput())
@@ -646,14 +667,14 @@ void UMaterialGraphNode::CreateInputPins()
 		NewPin->PinFriendlyName = SpaceText;
 	}
 
-	const TArray<FExpressionInput*> ExpressionInputs = MaterialExpression->GetInputs();
-	for (int32 Index = 0; Index < ExpressionInputs.Num(); ++Index)
+	TArray<FExpressionInput*> ExpressionInputs = MaterialExpression->GetInputs();
+	const int32 NumExpressionInputs = ExpressionInputs.Num();
+	for (int32 Index = 0; Index < NumExpressionInputs; ++Index)
 	{
-		FExpressionInput* Input = ExpressionInputs[Index];
-		FName PinCategory;
-
 		FName InputName = MaterialExpression->GetInputName(Index);
 		InputName = GetShortenPinName(InputName);
+
+		FName PinCategory;
 		if (MaterialExpression->IsInputConnectionRequired(Index))
 		{
 			PinCategory = UMaterialGraphSchema::PC_Required;
@@ -663,13 +684,60 @@ void UMaterialGraphNode::CreateInputPins()
 			PinCategory = UMaterialGraphSchema::PC_Optional;
 		}
 
-		UEdGraphPin* NewPin = CreatePin(EGPD_Input, PinCategory, InputName);
+		FName PinSubCategory = MaterialExpression->GetInputPinSubCategory(Index);
+		UObject* PinSubCategoryObject = MaterialExpression->GetInputPinSubCategoryObject(Index);
+
+		UEdGraphPin* NewPin = CreatePin(EGPD_Input, PinCategory, PinSubCategory, PinSubCategoryObject, InputName);
 		NewPin->SourceIndex = Index;
+		NewPin->DefaultValue = MaterialExpression->GetInputPinDefaultValue(Index);
 		if (NewPin->PinName.IsNone())
 		{
 			// Makes sure pin has a name for lookup purposes but user will never see it
 			NewPin->PinName = CreateUniquePinName(TEXT("Input"));
 			NewPin->PinFriendlyName = SpaceText;
+		}
+	}
+
+	// Next create pins for property inputs
+	int32 AdvancedPins = 0;
+	static FName ShowAsInputPinMetaData(TEXT("ShowAsInputPin"));
+	const TArray<FProperty*> PropertyInputs = MaterialExpression->GetPropertyInputs();
+	for (int32 i = 0; i < PropertyInputs.Num(); ++i)
+	{
+		const FProperty* Property = PropertyInputs[i];
+		FString InputName = Property->GetDisplayNameText().ToString();
+		FName PinCategory = UMaterialGraphSchema::PC_Optional;
+
+		int32 PinIndex = NumExpressionInputs + i;
+		FName PinSubCategory = MaterialExpression->GetInputPinSubCategory(PinIndex);
+		UObject* PinSubCategoryObject = MaterialExpression->GetInputPinSubCategoryObject(PinIndex);
+
+		UEdGraphPin* NewPin = CreatePin(EGPD_Input, PinCategory, PinSubCategory, PinSubCategoryObject, FName(InputName));
+		NewPin->SourceIndex = PinIndex;
+		NewPin->DefaultValue = MaterialExpression->GetInputPinDefaultValue(PinIndex);
+		// Property pins can't connect externally
+		NewPin->bNotConnectable = true;
+		NewPin->bDefaultValueIsReadOnly = !MaterialExpression->CanEditChange(Property);
+		const FString ShowAsInputPin = Property->GetMetaData(ShowAsInputPinMetaData);
+		NewPin->bAdvancedView = (ShowAsInputPin == TEXT("Advanced"));
+		if (NewPin->PinName.IsNone())
+		{
+			// Makes sure pin has a name for lookup purposes but user will never see it
+			NewPin->PinName = CreateUniquePinName(TEXT("PropertyInput"));
+			NewPin->PinFriendlyName = SpaceText;
+		}
+
+		if (NewPin->bAdvancedView)
+		{
+			AdvancedPins++;
+		}
+	}
+	if (AdvancedPins > 0)
+	{
+		// Turn on the advanced view arrow button
+		if (AdvancedPinDisplay == ENodeAdvancedPins::NoPins)
+		{
+			AdvancedPinDisplay = ENodeAdvancedPins::Hidden;
 		}
 	}
 }

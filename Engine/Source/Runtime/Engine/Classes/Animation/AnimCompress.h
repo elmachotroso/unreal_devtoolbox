@@ -201,9 +201,9 @@ private:
 	bool bEnabled;
 	bool bUsed;
 	bool bPerformedCompression;
-	int32 TotalRaw;
-	int32 TotalBeforeCompressed;
-	int32 TotalAfterCompressed;
+	int64 TotalRaw;
+	int64 TotalBeforeCompressed;
+	int64 TotalAfterCompressed;
 	int32 NumberOfAnimations;
 
 	// Total time spent compressing animations
@@ -505,10 +505,11 @@ public:
 		bool IncludeKeyTable = false);
 
 #if WITH_EDITOR
-	void PopulateDDCKeyArchive(FArchive& Ar) { PopulateDDCKey(Ar); }
+	UE_DEPRECATED(5.1, "PopulateDDCKeyArchive has been deprecated")
+	void PopulateDDCKeyArchive(FArchive& Ar) {}
 
 protected:
-	virtual void PopulateDDCKey(FArchive& Ar);
+	virtual void PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar) override;
 #endif // WITH_EDITOR
 
 	/**

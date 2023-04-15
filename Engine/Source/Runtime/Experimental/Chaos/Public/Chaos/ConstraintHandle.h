@@ -4,17 +4,32 @@
 #include "Chaos/Core.h"
 #include "Chaos/Declares.h"
 #include "Chaos/Vector.h"
+#include "Chaos/ParticleHandleFwd.h"
 
-#if UE_BUILD_DEBUG
-#define CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED  1
-#else
+// Set to 1 to help trap erros in the constraint management which typically manifests as a dangling constraint handle in the IslandManager
+// 
+// WARNING: Do not submit with either of these set to 1 !!
+//
+#ifndef CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
 #define CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED  0
+#endif
+#ifndef CHAOS_CONSTRAINTHANDLE_DEBUG_DETAILED_ENABLED
+#define CHAOS_CONSTRAINTHANDLE_DEBUG_DETAILED_ENABLED (CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED && 0)
+#endif
+
+// This is a proxy for not allowing the above to be checked in - CIS should fail if it is left enabled
+#if UE_BUILD_SHIPPING || UE_BUILD_TEST
+static_assert(CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED == 0, "CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED should be 0");
+static_assert(CHAOS_CONSTRAINTHANDLE_DEBUG_DETAILED_ENABLED == 0, "CHAOS_CONSTRAINTHANDLE_DEBUG_DETAILED_ENABLED should be 0");
 #endif
 
 namespace Chaos
 {
 	class FPBDConstraintContainer;
 	class FPBDIndexedConstraintContainer;
+
+	using FParticlePair = TVec2<FGeometryParticleHandle*>;
+	using FConstParticlePair = TVec2<const FGeometryParticleHandle*>;
 
 	/**
 	 * @brief A type id for constraint handles to support safe up/down casting (including intermediate classes in the hierrachy)
@@ -51,9 +66,9 @@ namespace Chaos
 			{
 				return true;
 			}
-			if (TypeID.BaseType != nullptr)
+			if (BaseType != nullptr)
 			{
-				return IsA(*TypeID.BaseType);
+				return BaseType->IsA(TypeID);
 			}
 			return false;
 		}
@@ -80,7 +95,7 @@ namespace Chaos
 
 		FConstraintHandle() 
 			: ConstraintContainer(nullptr)
-			, GraphIndex(INDEX_NONE) 
+			, GraphIndex(INDEX_NONE)
 		{
 		}
 
@@ -96,8 +111,7 @@ namespace Chaos
 
 		virtual bool IsValid() const
 		{
-			// @todo(chaos): why does IsValid() also check IsEnabled()?
-			return (ConstraintContainer != nullptr) && IsEnabled();
+			return (ConstraintContainer != nullptr);
 		}
 
 		FPBDConstraintContainer* GetContainer()
@@ -110,27 +124,37 @@ namespace Chaos
 			return ConstraintContainer;
 		}
 
-		int32 ConstraintGraphIndex() const
-		{
-			return GraphIndex;
-		}
-
-		void SetConstraintGraphIndex(int32 InIndex)
-		{
-			GraphIndex = InIndex;
-		}
-
 		bool IsInConstraintGraph() const
 		{
 			return (GraphIndex != INDEX_NONE);
 		}
 
+		int32 GetConstraintGraphIndex() const
+		{
+			return GraphIndex;
+		}
+
+		void SetConstraintGraphIndex(const int32 InIndex)
+		{
+			GraphIndex = InIndex;
+		}
+
+		virtual TVec2<FGeometryParticleHandle*> GetConstrainedParticles() const = 0;
+
 		virtual void SetEnabled(bool InEnabled) = 0;
 
 		virtual bool IsEnabled() const = 0;
 
+		virtual bool IsProbe() const { return false; }
+
+		// Does this constraint have the concept of sleep? (only really used for debug validation)
+		virtual bool SupportsSleeping() const { return false; }
+
 		virtual bool IsSleeping() const { return false; }
 		virtual void SetIsSleeping(const bool bInIsSleeping) {}
+		
+		virtual bool WasAwakened() const { return false; }
+		virtual void SetWasAwakened(const bool bInWasAwakened) {}
 
 		// Implemented in ConstraintContainer.h
 		int32 GetContainerId() const;
@@ -138,6 +162,10 @@ namespace Chaos
 		// Implemented in ConstraintContainer.h
 		template<typename T>  T* As();
 		template<typename T>  const T* As() const;
+
+		// For use when you absolutely know the type (asserted in non-shipping)
+		template<typename T>  T* AsUnsafe() { check(As<T>() != nullptr); return static_cast<T*>(this); }
+		template<typename T>  const T* AsUnsafe() const { check(As<T>() != nullptr); return static_cast<const T*>(this); }
 
 		const FConstraintHandleTypeID& GetType() const;
 
@@ -158,7 +186,6 @@ namespace Chaos
 
 		FPBDConstraintContainer* ConstraintContainer;
 		
-		// @todo(chaos): move constraint graph index to base constraint container
 		int32 GraphIndex;
 	};
 
@@ -225,110 +252,6 @@ namespace Chaos
 		}
 	};
 
-	/**
-	 * Base class for handles to constraints in an index-based container
-	 */
-	class CHAOS_API FIndexedConstraintHandle : public FConstraintHandle
-	{
-	public:
-		using FGeometryParticleHandle = TGeometryParticleHandle<FReal, 3>;
-
-		FIndexedConstraintHandle() 
-			: FConstraintHandle()
-			, ConstraintIndex(INDEX_NONE)
-		{
-		}
-
-		FIndexedConstraintHandle(FPBDConstraintContainer* InContainer, int32 InConstraintIndex)
-			: FConstraintHandle(InContainer)
-			, ConstraintIndex(InConstraintIndex)
-		{
-		}
-
-		virtual ~FIndexedConstraintHandle()
-		{
-		}
-
-		virtual bool IsValid() const override
-		{
-			return (ConstraintIndex != INDEX_NONE) && FConstraintHandle::IsValid();
-		}
-
-		int32 GetConstraintIndex() const
-		{
-			return ConstraintIndex;
-		}
-
-		static const FConstraintHandleTypeID& StaticType()
-		{
-			static FConstraintHandleTypeID STypeID(TEXT("FIndexedConstraintHandle"), &FConstraintHandle::StaticType());
-			return STypeID;
-		}
-
-	protected:
-		friend class FPBDIndexedConstraintContainer;
-
-		int32 ConstraintIndex;
-	};
-
-
-	/**
-	 * Utility base class for ConstraintHandles. Provides basic functionality common to most constraint containers.
-	 */
-	template<typename T_CONTAINER>
-	class CHAOS_API TIndexedContainerConstraintHandle : public FIndexedConstraintHandle
-	{
-	public:
-		using Base = FIndexedConstraintHandle;
-		using FGeometryParticleHandle = typename Base::FGeometryParticleHandle;
-		using FConstraintContainer = T_CONTAINER;
-
-		TIndexedContainerConstraintHandle()
-			: FIndexedConstraintHandle()
-		{
-		}
-		
-		TIndexedContainerConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex)
-			: FIndexedConstraintHandle(InConstraintContainer, InConstraintIndex)
-		{
-		}
-
-		inline virtual void SetEnabled(bool bInEnabled) override
-		{
-			if (ConcreteContainer() != nullptr)
-			{
-				ConcreteContainer()->SetConstraintEnabled(ConstraintIndex, bInEnabled);
-			}
-		}
-
-		inline virtual bool IsEnabled() const override
-		{
-			if (ConcreteContainer() != nullptr)
-			{
-				return ConcreteContainer()->IsConstraintEnabled(ConstraintIndex);
-			}
-			return false;
-		}
-
-		// @todo(chaos): Make this a virtual on FConstraintContainer and move to base class
-		void RemoveConstraint()
-		{
-			ConcreteContainer()->RemoveConstraint(ConstraintIndex);
-		}
-
-	protected:
-		FConstraintContainer* ConcreteContainer()
-		{
-			return static_cast<FConstraintContainer*>(ConstraintContainer);
-		}
-
-		const FConstraintContainer* ConcreteContainer() const
-		{
-			return static_cast<const FConstraintContainer*>(ConstraintContainer);
-		}
-
-		using Base::ConstraintIndex;
-	};
 
 
 	/**
@@ -353,30 +276,23 @@ namespace Chaos
 	 * @brief A debugging utility for tracking down dangling constraint issues
 	 * This acts as a FConstraintHandle*, but caches some extra debug data useful in tracking
 	 * down dangling pointer issues when they arise.
-	 * @todo(chaos): improve constraint lifetime management so that we don't get these problems!
 	*/
 	class CHAOS_API FConstraintHandleHolder
 	{
 	public:
 		FConstraintHandleHolder()
 			: Handle(nullptr)
-#if CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
-			, ConstraintType(nullptr)
-#endif
 		{
+#if CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
+			InitDebugData();
+#endif
 		}
 
 		FConstraintHandleHolder(FConstraintHandle* InHandle)
 			: Handle(InHandle)
-#if CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
-			, ConstraintType(nullptr)
-#endif
 		{
 #if CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
-			if (Handle != nullptr)
-			{
-				ConstraintType = &InHandle->GetType();
-			}
+			InitDebugData();
 #endif
 		}
 
@@ -391,8 +307,17 @@ namespace Chaos
 
 	private:
 		FConstraintHandle* Handle;
+
 #if CHAOS_CONSTRAINTHANDLE_DEBUG_ENABLED
+	public:
+		const FGeometryParticleHandle* GetParticle0() const { return Particles[0]; }
+		const FGeometryParticleHandle* GetParticle1() const { return Particles[1]; }
+
+	private:
+		void InitDebugData();
+
 		const FConstraintHandleTypeID* ConstraintType;
+		const FGeometryParticleHandle* Particles[2];
 #endif
 	};
 }

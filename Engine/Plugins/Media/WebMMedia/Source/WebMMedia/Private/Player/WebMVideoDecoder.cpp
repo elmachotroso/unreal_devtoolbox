@@ -4,6 +4,11 @@
 
 #if WITH_WEBM_LIBS
 
+THIRD_PARTY_INCLUDES_START
+#include <vpx/vpx_decoder.h>
+#include <vpx/vp8dx.h>
+THIRD_PARTY_INCLUDES_END
+
 #include "WebMMediaPrivate.h"
 #include "WebMMediaFrame.h"
 #include "WebMMediaTextureSample.h"
@@ -82,11 +87,11 @@ bool FWebMVideoDecoder::Initialize(const char* CodecName)
 	const vpx_codec_dec_cfg_t CodecConfig = { NumOfThreads, 0, 0 };
 	if (FCStringAnsi::Strcmp(CodecName, "V_VP8") == 0)
 	{
-		verify(vpx_codec_dec_init(&Context, vpx_codec_vp8_dx(), &CodecConfig, /*VPX_CODEC_USE_FRAME_THREADING*/ 0) == 0);
+		verify(vpx_codec_dec_init(Context, vpx_codec_vp8_dx(), &CodecConfig, /*VPX_CODEC_USE_FRAME_THREADING*/ 0) == 0);
 	}
 	else if (FCStringAnsi::Strcmp(CodecName, "V_VP9") == 0)
 	{
-		verify(vpx_codec_dec_init(&Context, vpx_codec_vp9_dx(), &CodecConfig, /*VPX_CODEC_USE_FRAME_THREADING*/ 0) == 0);
+		verify(vpx_codec_dec_init(Context, vpx_codec_vp9_dx(), &CodecConfig, /*VPX_CODEC_USE_FRAME_THREADING*/ 0) == 0);
 	}
 	else
 	{
@@ -129,14 +134,14 @@ void FWebMVideoDecoder::DoDecodeVideoFrames(const TArray<TSharedPtr<FWebMFrame>>
 {
 	for (const TSharedPtr<FWebMFrame>& VideoFrame : VideoFrames)
 	{
-		if (vpx_codec_decode(&Context, VideoFrame->Data.GetData(), VideoFrame->Data.Num(), nullptr, 0) != 0)
+		if (vpx_codec_decode(Context, VideoFrame->Data.GetData(), VideoFrame->Data.Num(), nullptr, 0) != 0)
 		{
 			UE_LOG(LogWebMMedia, Display, TEXT("Error decoding video frame"));
 			return;
 		}
 
 		const void* ImageIter = nullptr;
-		while (const vpx_image_t* Image = vpx_codec_get_frame(&Context, &ImageIter))
+		while (const vpx_image_t* Image = vpx_codec_get_frame(Context, &ImageIter))
 		{
 			FWebMVideoDecoder* Self = this;
 			if (!bTexturesCreated)
@@ -169,14 +174,21 @@ void FWebMVideoDecoder::DoDecodeVideoFrames(const TArray<TSharedPtr<FWebMFrame>>
 
 void FWebMVideoDecoder::CreateTextures(const vpx_image_t* Image)
 {
-	FRHIResourceCreateInfo CreateInfo(TEXT("FWebMVideoDecoder_DecodedY"));
-	DecodedY = RHICreateTexture2D(Image->stride[0], Image->d_h, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
+	const FRHITextureCreateDesc DecodedYDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("FWebMVideoDecoder_DecodedY"), Image->stride[0], Image->d_h, PF_G8)
+		.SetFlags(ETextureCreateFlags::Dynamic);
 
-	CreateInfo.DebugName = TEXT("FWebMVideoDecoder_DecodedU");
-	DecodedU = RHICreateTexture2D(Image->stride[1], Image->d_h / 2, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
+	const FRHITextureCreateDesc DecodedUDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("FWebMVideoDecoder_DecodedU"), Image->stride[1], Image->d_h / 2, PF_G8)
+		.SetFlags(ETextureCreateFlags::Dynamic);
 
-	CreateInfo.DebugName = TEXT("FWebMVideoDecoder_DecodedV");
-	DecodedV = RHICreateTexture2D(Image->stride[2], Image->d_h / 2, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
+	const FRHITextureCreateDesc DecodedVDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("FWebMVideoDecoder_DecodedV"), Image->stride[2], Image->d_h / 2, PF_G8)
+		.SetFlags(ETextureCreateFlags::Dynamic);
+
+	DecodedY = RHICreateTexture(DecodedYDesc);
+	DecodedU = RHICreateTexture(DecodedUDesc);
+	DecodedV = RHICreateTexture(DecodedVDesc);
 }
 
 void FWebMVideoDecoder::Close()
@@ -197,7 +209,7 @@ void FWebMVideoDecoder::Close()
 
 	if (bIsInitialized)
 	{
-		vpx_codec_destroy(&Context);
+		vpx_codec_destroy(Context);
 		bIsInitialized = false;
 	}
 

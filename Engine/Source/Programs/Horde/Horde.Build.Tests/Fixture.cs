@@ -5,22 +5,24 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using Horde.Build.Agents;
+using Horde.Build.Configuration;
+using Horde.Build.Jobs;
+using Horde.Build.Jobs.Artifacts;
+using Horde.Build.Jobs.Graphs;
+using Horde.Build.Jobs.Templates;
+using Horde.Build.Projects;
+using Horde.Build.Server;
+using Horde.Build.Streams;
+using Horde.Build.Utilities;
 using HordeCommon;
-using HordeServer.Collections;
-using HordeServer.Models;
-using HordeServer.Services;
-using HordeServerTests.Stubs.Services;
-using MongoDB.Bson;
-using StreamId = HordeServer.Utilities.StringId<HordeServer.Models.IStream>;
-using TemplateRefId = HordeServer.Utilities.StringId<HordeServer.Models.TemplateRef>;
-using ProjectId = HordeServer.Utilities.StringId<HordeServer.Models.IProject>;
-using HordeServer.Api;
-using HordeServer.Jobs;
-using HordeServer.Utilities;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
 	using JobId = ObjectId<IJob>;
+    using ProjectId = StringId<IProject>;
+    using StreamId = StringId<IStream>;
+    using TemplateRefId = StringId<TemplateRef>;
 
 	public class Fixture
 	{
@@ -35,64 +37,72 @@ namespace HordeServerTests
 		public string Job1ArtifactData { get; private set; } = null!;
 		public IAgent Agent1 { get; private set; } = null!;
 		public string Agent1Name { get; private set; } = null!;
+		public const string PoolName = "TestingPool";
 
-		public static async Task<Fixture> Create(IGraphCollection GraphCollection, ITemplateCollection TemplateCollection, JobService JobService, IArtifactCollection ArtifactCollection, StreamService StreamService, AgentService AgentService, IPerforceService PerforceService)
+		public static async Task<Fixture> Create(ConfigCollection configCollection, IGraphCollection graphCollection, ITemplateCollection templateCollection, JobService jobService, IArtifactCollection artifactCollection, StreamService streamService, AgentService agentService)
 		{
-			Fixture _fixture = new Fixture();
-			await _fixture.Populate(GraphCollection, TemplateCollection, JobService, ArtifactCollection, StreamService, AgentService, PerforceService);
+			Fixture fixture = new Fixture();
+			await fixture.Populate(configCollection, graphCollection, templateCollection, jobService, artifactCollection, streamService, agentService);
 
 //			(PerforceService as PerforceServiceStub)?.AddChange("//UE5/Main", 112233, "leet.coder", "Did stuff", new []{"file.cpp"});
 //			(PerforceService as PerforceServiceStub)?.AddChange("//UE5/Main", 1111, "swarm", "A shelved CL here", new []{"renderer.cpp"});
 		
-			return _fixture;
+			return fixture;
 		}
 
-		private async Task Populate(IGraphCollection GraphCollection, ITemplateCollection TemplateCollection, JobService JobService, IArtifactCollection ArtifactCollection, StreamService StreamService, AgentService AgentService, IPerforceService PerforceService)
+		private async Task Populate(ConfigCollection configCollection, IGraphCollection graphCollection, ITemplateCollection templateCollection, JobService jobService, IArtifactCollection artifactCollection, StreamService streamService, AgentService agentService)
 		{
-			var Fg = new FixtureGraph();
-			Fg.Id = ContentHash.Empty;
-			Fg.Schema = 1122;
-			Fg.Groups = new List<INodeGroup>();
-			Fg.Aggregates = new List<IAggregate>();
-			Fg.Labels = new List<ILabel>();
+			FixtureGraph fg = new FixtureGraph();
+			fg.Id = ContentHash.Empty;
+			fg.Schema = 1122;
+			fg.Groups = new List<INodeGroup>();
+			fg.Aggregates = new List<IAggregate>();
+			fg.Labels = new List<ILabel>();
 
-			Template = await TemplateCollection.AddAsync("Test template", null, false, null, null,
-				new List<string>(), new List<Parameter>());
-			Graph = await GraphCollection.AddAsync(Template);
+			Template = await templateCollection.AddAsync("Test template");
+			Graph = await graphCollection.AddAsync(Template);
 
 			TemplateRefId1 = new TemplateRefId("template1");
 			TemplateRefId2 = new TemplateRefId("template2");
 
-			List<CreateTemplateRefRequest> Templates = new List<CreateTemplateRefRequest>();
-			Templates.Add(new CreateTemplateRefRequest { Id = TemplateRefId1.ToString(), Name = "Test Template" });
-			Templates.Add(new CreateTemplateRefRequest { Id = TemplateRefId2.ToString(), Name = "Test Template" });
+			List<TemplateRefConfig> templates = new List<TemplateRefConfig>();
+			templates.Add(new TemplateRefConfig { Id = TemplateRefId1, Name = "Test Template" });
+			templates.Add(new TemplateRefConfig { Id = TemplateRefId2, Name = "Test Template" });
 
-			List<CreateStreamTabRequest> Tabs = new List<CreateStreamTabRequest>();
-			Tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<string> { TemplateRefId1.ToString(), TemplateRefId2.ToString() } });
+			List<CreateStreamTabRequest> tabs = new List<CreateStreamTabRequest>();
+			tabs.Add(new CreateJobsTabRequest { Title = "foo", Templates = new List<TemplateRefId> { TemplateRefId1, TemplateRefId2 } });
 
-			Stream = await StreamService.StreamCollection.GetAsync(new StreamId("ue5-main"));
-			Stream = await StreamService.StreamCollection.TryCreateOrReplaceAsync(
+			Dictionary<string, CreateAgentTypeRequest> agentTypes = new()
+			{
+				{ "Win64", new() { Pool = PoolName} }
+			};
+
+			StreamConfig config = new StreamConfig { Name = "//UE5/Main", Tabs = tabs, Templates = templates, AgentTypes = agentTypes };
+			await configCollection.AddConfigAsync("rev1", config);
+
+			Stream = await streamService.StreamCollection.GetAsync(new StreamId("ue5-main"));
+			Stream = await streamService.StreamCollection.TryCreateOrReplaceAsync(
 				new StreamId("ue5-main"),
 				Stream,
-				"",
-				"",
-				new ProjectId("does-not-exist"),
-				new StreamConfig { Name = "//UE5/Main", Tabs = Tabs, Templates = Templates }
+				"rev1",
+				new ProjectId("does-not-exist")
 			);
 			
-			Job1 = await JobService.CreateJobAsync(
-				JobId: new JobId("5f283932841e7fdbcafb6ab5"),
-				Stream: Stream!,
-				TemplateRefId: TemplateRefId1,
-				TemplateHash: Template.Id,
-				Graph: Graph,
-				Name: "hello1",
-				Change: 1000001,
-				CodeChange: 1000002,
-				PreflightChange: 1001,
-				ClonedPreflightChange: null,
-				StartedByUserId: null,
-				Priority: Priority.Normal,
+			Job1 = await jobService.CreateJobAsync(
+				jobId: new JobId("5f283932841e7fdbcafb6ab5"),
+				stream: Stream!,
+				templateRefId: TemplateRefId1,
+				templateHash: Template.Id,
+				graph: Graph,
+				name: "hello1",
+				change: 1000001,
+				codeChange: 1000002,
+				preflightChange: 1001,
+				clonedPreflightChange: null,
+				preflightDescription: null,
+				startedByUserId: null,
+				priority: Priority.Normal,
+				null,
 				null,
 				null,
 				null,
@@ -100,23 +110,25 @@ namespace HordeServerTests
 				false,
 				null,
 				null,
-				Arguments: new List<string>()
+				arguments: new List<string>()
 			);
-			Job1 = (await JobService.GetJobAsync(Job1.Id))!;
+			Job1 = (await jobService.GetJobAsync(Job1.Id))!;
 
-			Job2 = await JobService.CreateJobAsync(
-				JobId: new JobId("5f69ea1b68423e921b035106"),
-				Stream: Stream!,
-				TemplateRefId: new TemplateRefId("template-id-1"),
-				TemplateHash: ContentHash.MD5("made-up-template-hash"),
-				Graph: Fg,
-				Name: "hello2",
-				Change: 2000001,
-				CodeChange: 2000002,
-				PreflightChange: null,
-				ClonedPreflightChange: null,
-				StartedByUserId: null,
-				Priority: Priority.Normal,
+			Job2 = await jobService.CreateJobAsync(
+				jobId: new JobId("5f69ea1b68423e921b035106"),
+				stream: Stream!,
+				templateRefId: new TemplateRefId("template-id-1"),
+				templateHash: ContentHash.MD5("made-up-template-hash"),
+				graph: fg,
+				name: "hello2",
+				change: 2000001,
+				codeChange: 2000002,
+				preflightChange: null,
+				clonedPreflightChange: null,
+				preflightDescription: null,
+				startedByUserId: null,
+				priority: Priority.Normal,
+				null,
 				null,
 				null,
 				null,
@@ -124,16 +136,17 @@ namespace HordeServerTests
 				false,
 				null,
 				null,
-				Arguments: new List<string>()
+				arguments: new List<string>()
 			);
-			Job2 = (await JobService.GetJobAsync(Job2.Id))!;
+			Job2 = (await jobService.GetJobAsync(Job2.Id))!;
 
 			Job1ArtifactData = "For The Horde!";
-			Job1Artifact = await ArtifactCollection.CreateArtifactAsync(Job1.Id, SubResourceId.Parse("22"), "myFile.txt",
-				"text/plain", new MemoryStream(Encoding.UTF8.GetBytes(Job1ArtifactData)));
+			using MemoryStream job1ArtifactStream = new MemoryStream(Encoding.UTF8.GetBytes(Job1ArtifactData));
+			Job1Artifact = await artifactCollection.CreateArtifactAsync(Job1.Id, SubResourceId.Parse("22"), "myFile.txt",
+				"text/plain", job1ArtifactStream);
 
 			Agent1Name = "testAgent1";
-			Agent1 = await AgentService.CreateAgentAsync(Agent1Name, true, null, null);
+			Agent1 = await agentService.CreateAgentAsync(Agent1Name, true, null, null);
 		}
 
 		private class FixtureGraph : IGraph

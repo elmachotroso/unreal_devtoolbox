@@ -4,12 +4,12 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Rendering/DrawElements.h"
-#include "TraceServices/AnalysisService.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
 #include "Insights/InsightsStyle.h"
 #include "Insights/NetworkingProfiler/ViewModels/PacketViewport.h"
+#include "Insights/NetworkingProfiler/ViewModels/PacketContentViewDrawHelper.h"
 #include "Insights/ViewModels/DrawHelpers.h"
 
 #include <limits>
@@ -100,6 +100,11 @@ FNetworkPacketAggregatedSample* FNetworkPacketSeriesBuilder::AddPacket(const int
 	return nullptr;
 }
 
+void FNetworkPacketSeriesBuilder::SetHighlightEventTypeIndex(int32 EventTypeIndex)
+{
+	Series.HighlightEventTypeIndex = EventTypeIndex;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FPacketViewDrawHelper
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -174,6 +179,8 @@ void FPacketViewDrawHelper::DrawCached(const FNetworkPacketSeries& Series) const
 	const float ViewHeight = FMath::RoundToFloat(Viewport.GetHeight());
 	const float BaselineY = FMath::RoundToFloat(ViewportY.GetOffsetForValue(0.0));
 
+	const FLinearColor ColorFilterMatch = FPacketContentViewDrawHelper::GetColorByType(Series.HighlightEventTypeIndex);
+
 	for (int32 SampleIndex = 0; SampleIndex < NumSamples; SampleIndex++)
 	{
 		const FNetworkPacketAggregatedSample& Sample = Series.Samples[SampleIndex];
@@ -189,6 +196,10 @@ void FPacketViewDrawHelper::DrawCached(const FNetworkPacketSeries& Series) const
 		//const float ValueY = FMath::RoundToFloat(ViewportY.GetOffsetForValue(static_cast<double>(Sample.LargestPacket.ContentSizeInBits)));
 		const float ValueY = FMath::RoundToFloat(ViewportY.GetOffsetForValue(static_cast<double>(Sample.LargestPacket.TotalSizeInBytes * 8)));
 
+		const float FilterMatchContentValueY = FMath::RoundToFloat(ViewportY.GetOffsetForValue(static_cast<double>(Sample.FilterMatchHighlightSizeInBits)));
+		const float FilterMatchContentH = FilterMatchContentValueY - BaselineY;
+		const float FilterMatchContentY = ViewHeight - FilterMatchContentH;
+
 		const float H = ValueY - BaselineY;
 		const float Y = ViewHeight - H;
 
@@ -203,6 +214,11 @@ void FPacketViewDrawHelper::DrawCached(const FNetworkPacketSeries& Series) const
 		{
 			DrawContext.DrawBox(X + 1.0f, Y + 1.0f, SampleW - 2.0f, H - 2.0f, WhiteBrush, ColorFill);
 
+			if (Sample.FilterMatchHighlightSizeInBits > 0U)
+			{
+				DrawContext.DrawBox(X + 1.0f, FilterMatchContentY + 1.0f, SampleW - 2.0f, FilterMatchContentH - 2.0f, WhiteBrush, ColorFilterMatch);
+			}
+
 			// Draw border.
 			DrawContext.DrawBox(X, Y, 1.0, H, WhiteBrush, ColorBorder);
 			DrawContext.DrawBox(X + SampleW - 1.0f, Y, 1.0, H, WhiteBrush, ColorBorder);
@@ -212,6 +228,12 @@ void FPacketViewDrawHelper::DrawCached(const FNetworkPacketSeries& Series) const
 		else
 		{
 			DrawContext.DrawBox(X, Y, SampleW, H, WhiteBrush, ColorBorder);
+
+			if (Sample.FilterMatchHighlightSizeInBits > 0U)
+			{
+				DrawContext.DrawBox(X, FilterMatchContentY, SampleW, FilterMatchContentH, WhiteBrush, ColorFilterMatch);
+			}
+
 		}
 	}
 
@@ -262,10 +284,10 @@ void FPacketViewDrawHelper::DrawSampleHighlight(const FNetworkPacketAggregatedSa
 	{
 		// Animate color from white (if selected and hovered) or yellow (if only selected) to black, using a squared sine function.
 		const double Time = static_cast<double>(FPlatformTime::Cycles64()) * FPlatformTime::GetSecondsPerCycle64();
-		float S = FMath::Sin(2.0 * Time);
-		S = S * S; // squared, to ensure only positive [0 - 1] values
-		const float Blue = (Mode == EHighlightMode::SelectedAndHovered) ? 0.0f : S;
-		const FLinearColor Color(S, S, Blue, 1.0f);
+		float Hue = static_cast<float>(FMath::Sin(2.0 * Time));
+		Hue = Hue * Hue; // squared, to ensure only positive [0 - 1] values
+		const float Blue = (Mode == EHighlightMode::SelectedAndHovered) ? 0.0f : Hue;
+		const FLinearColor Color(Hue, Hue, Blue, 1.0f);
 
 		// Draw border around the selected box.
 #if INSIGHTS_USE_LEGACY_BORDER
@@ -300,9 +322,9 @@ void FPacketViewDrawHelper::DrawSelection(int32 StartPacketIndex, int32 EndPacke
 
 	//// Animate color from white (if selected and hovered) or yellow (if only selected) to black, using a squared sine function.
 	//const double Time = static_cast<double>(FPlatformTime::Cycles64()) * FPlatformTime::GetSecondsPerCycle64();
-	//float S = FMath::Sin(2.0 * Time);
-	//S = S * S; // squared, to ensure only positive [0 - 1] values
-	//const FLinearColor Color(S, S, S, 1.0f);
+	//float Hue = static_cast<float>(FMath::Sin(2.0 * Time));
+	//Hue = Hue * Hue; // squared, to ensure only positive [0 - 1] values
+	//const FLinearColor Color(Hue, Hue, Hue, 1.0f);
 	//
 	//// Draw border around the selected box.
 	//DrawContext.DrawBox(X1 - 1.0f, Y - 1.0f, X2 - X1 + 2.0f, H + 2.0f, SelectedEventBorderBrush, Color);

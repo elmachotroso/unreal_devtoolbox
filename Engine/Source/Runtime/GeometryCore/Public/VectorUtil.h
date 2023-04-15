@@ -230,9 +230,10 @@ namespace VectorUtil
 	 * Calculates one vector perpendicular to input Normal, as efficiently as possible.
 	 */
 	template <typename RealType>
-	inline void MakePerpVector(const TVector<RealType>& Normal, TVector<RealType>& OutPerp1)
+	inline TVector<RealType> MakePerpVector(const TVector<RealType>& Normal)
 	{
 		// Duff et al method, from https://graphics.pixar.com/library/OrthonormalB/paper.pdf
+		TVector<RealType> OutPerp1;
 		if (Normal.Z < (RealType)0)
 		{
 			RealType A = (RealType)1 / ((RealType)1 - Normal.Z);
@@ -249,6 +250,16 @@ namespace VectorUtil
 			OutPerp1.Y = B;
 			OutPerp1.Z = -Normal.X;
 		}
+		return OutPerp1;
+	}
+
+	/**
+	 * Calculates one vector perpendicular to input Normal, as efficiently as possible.
+	 */
+	template <typename RealType>
+	inline void MakePerpVector(const TVector<RealType>& Normal, TVector<RealType>& OutPerp1)
+	{
+		OutPerp1 = MakePerpVector(Normal);
 	}
 
 
@@ -270,6 +281,26 @@ namespace VectorUtil
 		}
 		RealType fSign = C.Dot(PlaneN) < 0 ? (RealType)-1 : (RealType)1;
 		return (RealType)(fSign * AngleD(vFrom, vTo));
+	}
+
+	/**
+	 * Calculates angle between VFrom and VTo after projection onto plane with normal defined by PlaneN
+	 * @return angle in radians
+	 */
+	template <typename RealType>
+	inline RealType PlaneAngleSignedR(const TVector<RealType>& VFrom, const TVector<RealType>& VTo, const TVector<RealType>& PlaneN)
+	{
+		TVector<RealType> vFrom = VFrom - VFrom.Dot(PlaneN) * PlaneN;
+		TVector<RealType> vTo = VTo - VTo.Dot(PlaneN) * PlaneN;
+		Normalize(vFrom);
+		Normalize(vTo);
+		TVector<RealType> C = vFrom.Cross(vTo);
+		if (C.SquaredLength() < TMathUtil<RealType>::ZeroTolerance)
+		{ // vectors are parallel
+			return vFrom.Dot(vTo) < 0 ? TMathUtil<RealType>::Pi : (RealType)0;
+		}
+		RealType fSign = C.Dot(PlaneN) < 0 ? (RealType)-1 : (RealType)1;
+		return (RealType)(fSign * AngleR(vFrom, vTo));
 	}
 
 	/**
@@ -418,6 +449,31 @@ namespace VectorUtil
 	}
 
 
+	/**
+	 * @return circumcenter of triangle ABC
+	 */
+	template<typename RealType>
+	inline TVector2<RealType> Circumcenter(TVector2<RealType> A, TVector2<RealType> B, const TVector2<RealType>& C, RealType Epsilon = TMathUtilConstants<RealType>::Epsilon)
+	{
+		// Compute in offset space w/ A translated to origin
+		TVector2<RealType> AB = B - A;
+		TVector2<RealType> AC = C - A;
+		
+		RealType Denom = 2 * DotPerp(AB,AC);
+		if (FMath::Abs(Denom) <= Epsilon)
+		{
+			// degenerate (flat) triangle does not have a (finite) circumcenter ...
+			// we'll just fall back to the centroid in this case
+			return A + (AB + AC) * RealType(1.0/3.0);
+		}
+		RealType ABLenSq = AB.SquaredLength();
+		RealType ACLenSq = AC.SquaredLength();
+		TVector2<RealType> Center(
+			A.X + (AC.Y * ABLenSq - AB.Y * ACLenSq) / Denom,
+			A.Y + (AB.X * ACLenSq - AC.X * ABLenSq) / Denom
+			);
+		return Center;
+	}
 
 	/**
 	 * @return sign of Bitangent relative to Normal and Tangent

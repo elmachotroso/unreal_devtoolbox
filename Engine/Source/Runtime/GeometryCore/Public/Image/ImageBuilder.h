@@ -12,6 +12,12 @@ namespace UE
 namespace Geometry
 {
 
+enum class EImageTilingMethod
+{
+	Clamp,
+	Wrap
+};
+
 /**
  * TImageBuilder is used to create and populate a 2D image with a templated "pixel" type.
  */
@@ -168,54 +174,84 @@ public:
 
 	/**
 	 * Sample the image value at floating-point pixel coords with Bilinear interpolation
+	 * The pixel coords are expected to be in the [0,Width]x[0,Height] image pixel rectangle.
 	 */
-	template<typename ScalarType>
+	template<typename ScalarType, EImageTilingMethod TilingMethod=EImageTilingMethod::Clamp>
 	PixelType BilinearSample(const FVector2d& PixelCoords, const PixelType& InvalidValue) const
 	{
-		double X = PixelCoords.X;
-		double Y = PixelCoords.Y;
-
-		int X0 = (int)X, X1 = X0 + 1;
-		int Y0 = (int)Y, Y1 = Y0 + 1;
-
-		// make sure we are in range
-		if (X0 < 0 || X1 >= Dimensions.GetWidth() ||
-			Y0 < 0 || Y1 >= Dimensions.GetHeight())
+		const FVector2i Max = FVector2i(Dimensions.GetWidth(), Dimensions.GetHeight());
+		if (PixelCoords.X < 0.0 || PixelCoords.X > Max.X || PixelCoords.Y < 0.0 || PixelCoords.Y > Max.Y)
 		{
 			return InvalidValue;
 		}
 
-		// convert double coords to [0,1] range
-		double Ax = PixelCoords.X - (double)X0;
-		double Ay = PixelCoords.Y - (double)Y0;
-		double OneMinusAx = 1.0 - Ax;
-		double OneMinusAy = 1.0 - Ay;
+		// Compute bounding pixel corners
+		const FVector2d XY0d(FMathd::Floor(PixelCoords.X - 0.5), FMathd::Floor(PixelCoords.Y - 0.5));
+		const FVector2d XY1d(FMathd::Floor(PixelCoords.X + 0.5), FMathd::Floor(PixelCoords.Y + 0.5));
+		FVector2i XY0 = FVector2i(XY0d);
+		FVector2i XY1 = FVector2i(XY1d);
 
-		PixelType V00 = GetPixel(FVector2i(X0, Y0));
-		PixelType V10 = GetPixel(FVector2i(X1, Y0));
-		PixelType V01 = GetPixel(FVector2i(X0, Y1));
-		PixelType V11 = GetPixel(FVector2i(X1, Y1));
+		// Compute interpolation factors in [0,1] range.
+		// This must be done before wrapped tiling to ensure the [0,1] range.
+		// Rather than transforming the two pixel corners (XY0,XY1), we shift
+		// our PixelCoords by half a pixel to account for pixel centers.
+		const FVector2d A = PixelCoords - FVector2d(0.5) - XY0d;
+		const FVector2d OneMinusA = FVector2d::One() - A;
 
-		return V00 * (ScalarType)(OneMinusAx * OneMinusAy) +
-			   V01 * (ScalarType)(OneMinusAx * Ay) +
-			   V10 * (ScalarType)(Ax * OneMinusAy) +
-			   V11 * (ScalarType)(Ax * Ay);
+		if constexpr (TilingMethod == EImageTilingMethod::Wrap)
+		{
+			XY0.X = XY0.X < 0 ? XY0.X + Max.X : XY0.X;
+			XY0.Y = XY0.Y < 0 ? XY0.Y + Max.Y : XY0.Y;
+			XY1.X = XY1.X >= Max.X ? 0 : XY1.X;
+			XY1.Y = XY1.Y >= Max.Y ? 0 : XY1.Y;
+		}
+		else // TilingMethod == EImageTilingMethod::Clamp
+		{
+			XY0.X = FMath::Max(0, XY0.X);
+			XY0.Y = FMath::Max(0, XY0.Y);
+			XY1.X = FMath::Min(Max.X - 1, XY1.X);
+			XY1.Y = FMath::Min(Max.Y - 1, XY1.Y);
+		}
+
+		PixelType V00 = GetPixel(XY0);
+		PixelType V10 = GetPixel(FVector2i(XY1.X, XY0.Y));
+		PixelType V01 = GetPixel(FVector2i(XY0.X, XY1.Y));
+		PixelType V11 = GetPixel(XY1);
+
+		return V00 * static_cast<ScalarType>(OneMinusA.X * OneMinusA.Y) +
+			   V01 * static_cast<ScalarType>(OneMinusA.X * A.Y) +
+			   V10 * static_cast<ScalarType>(A.X * OneMinusA.Y) +
+			   V11 * static_cast<ScalarType>(A.X * A.Y);
 	}
 
 
 	/**
 	 * Sample the image value at floating-point UV coords with Bilinear interpolation.
-	 * The UV coords are assumed to be in range [0,1]x[0,1], and that this maps to the [0,Width]x[0,Height] image pixel rectangle.
 	 */
-	template<typename ScalarType>
+	template<typename ScalarType, EImageTilingMethod TilingMethod=EImageTilingMethod::Clamp>
 	PixelType BilinearSampleUV(const FVector2d& UVCoords, const PixelType& InvalidValue) const
 	{
+		const FVector2d UV = GetTiledUV<TilingMethod>(UVCoords);
+		
 		FVector2d PixelCoords(
-			UVCoords.X * (double)Dimensions.GetWidth(),
-			UVCoords.Y * (double)Dimensions.GetHeight());
+			UV.X * (double)Dimensions.GetWidth(),
+			UV.Y * (double)Dimensions.GetHeight());
 
-		return BilinearSample<ScalarType>(PixelCoords, InvalidValue);
+		return BilinearSample<ScalarType, TilingMethod>(PixelCoords, InvalidValue);
 	}
+
+	/**
+	 * Sample the image value at floating-point UV coords with Nearest sampling.
+	 */
+	template<EImageTilingMethod TilingMethod=EImageTilingMethod::Clamp>
+	PixelType NearestSampleUV(const FVector2d& UVCoords) const
+	{
+		const FVector2d UV = GetTiledUV<TilingMethod>(UVCoords);
+		const int X = (int)(UV.X * (double)Dimensions.GetWidth());
+		const int Y = (int)(UV.Y * (double)Dimensions.GetHeight());
+		return GetPixel(X, Y);
+	}
+
 
 	/**
 	 * @return true if all pixels have the same value
@@ -288,6 +324,24 @@ public:
 
 		return DownsampleImage;
 	}
+
+protected:
+	template<EImageTilingMethod TilingMethod>
+	static FVector2d GetTiledUV(const FVector2d& UVCoords)
+	{
+		FVector2d UV(UVCoords);
+		if constexpr (TilingMethod == EImageTilingMethod::Wrap)
+		{
+			UV = UV - FVector2d(FMathd::Floor(UV.X), FMathd::Floor(UV.Y));
+		}
+		else // TilingMethod == EImageTilingMethod::Clamp
+		{
+			UV.X = FMathd::Clamp(UV.X, 0.0, 1.0);
+			UV.Y = FMathd::Clamp(UV.Y, 0.0, 1.0);
+		}
+		return UV;
+	}
+	
 };
 
 

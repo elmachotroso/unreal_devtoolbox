@@ -9,7 +9,7 @@
 #include "GameplayTagContainer.h"
 #include "Engine/DataTable.h"
 #include "GameplayTagsManager.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GameplayTagsGraphPanelPinFactory.h"
 #include "GameplayTagsGraphPanelNodeFactory.h"
@@ -24,7 +24,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SNullWidget.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
@@ -56,7 +56,7 @@ public:
 		// Register the details customizer
 		{
 			FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-			PropertyModule.RegisterCustomPropertyTypeLayout("GameplayTagContainer", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGameplayTagContainerCustomization::MakeInstance));
+			PropertyModule.RegisterCustomPropertyTypeLayout("GameplayTagContainer", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGameplayTagContainerCustomizationPublic::MakeInstance));
 			PropertyModule.RegisterCustomPropertyTypeLayout("GameplayTag", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGameplayTagCustomizationPublic::MakeInstance));
 			PropertyModule.RegisterCustomPropertyTypeLayout("GameplayTagQuery", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGameplayTagQueryCustomization::MakeInstance));
 			PropertyModule.RegisterCustomPropertyTypeLayout("GameplayTagCreationWidgetHelper", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGameplayTagCreationWidgetHelperDetails::MakeInstance));
@@ -268,8 +268,6 @@ public:
 
 				// Reload off disk
 				GConfig->LoadFile(TagList->ConfigFileName);
-				//FString DestFileName;
-				//FConfigCacheIni::LoadGlobalIniFile(DestFileName, *FString::Printf(TEXT("Tags/%s"), *Source->SourceName.ToString()), nullptr, true);
 
 				// Explicitly remove user tags section
 				GConfig->EmptySection(TEXT("UserTags"), TagList->ConfigFileName);

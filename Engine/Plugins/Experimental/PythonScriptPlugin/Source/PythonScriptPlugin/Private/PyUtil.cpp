@@ -15,6 +15,7 @@
 #include "PyWrapperFixedArray.h"
 #include "PyWrapperSet.h"
 #include "PyWrapperMap.h"
+#include "PyWrapperFieldPath.h"
 #include "PyWrapperTypeRegistry.h"
 
 #include "Misc/Paths.h"
@@ -22,6 +23,7 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/DefaultValueHelper.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "HAL/FileManager.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
@@ -304,6 +306,12 @@ bool CalculatePropertyDef(PyTypeObject* InPyType, FPropertyDef& OutPropertyDef)
 		return true;
 	}
 
+	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyWrapperFieldPathType) == 1)
+	{
+		OutPropertyDef.PropertyClass = FFieldPathProperty::StaticClass();
+		return true;
+	}
+
 	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyUnicode_Type) == 1)
 	{
 		OutPropertyDef.PropertyClass = FStrProperty::StaticClass();
@@ -482,45 +490,7 @@ bool IsOutputParameter(const FProperty* InParam)
 
 void ImportDefaultValue(const FProperty* InProp, void* InPropValue, const FString& InDefaultValue)
 {
-	if (!InDefaultValue.IsEmpty())
-	{
-		// Certain struct types export using a non-standard default value, so we have to import them manually rather than use ImportText
-		if (const FStructProperty* StructProp = CastField<FStructProperty>(InProp))
-		{
-			if (StructProp->Struct == TBaseStructure<FVector>::Get())
-			{
-				FVector* Vector = (FVector*)InPropValue;
-				FDefaultValueHelper::ParseVector(InDefaultValue, *Vector);
-				return;
-			}
-			else if (StructProp->Struct == TBaseStructure<FVector2D>::Get())
-			{
-				FVector2D* Vector2D = (FVector2D*)InPropValue;
-				FDefaultValueHelper::ParseVector2D(InDefaultValue, *Vector2D);
-				return;
-			}
-			else if (StructProp->Struct == TBaseStructure<FRotator>::Get())
-			{
-				FRotator* Rotator = (FRotator*)InPropValue;
-				FDefaultValueHelper::ParseRotator(InDefaultValue, *Rotator);
-				return;
-			}
-			else if (StructProp->Struct == TBaseStructure<FColor>::Get())
-			{
-				FColor* Color = (FColor*)InPropValue;
-				FDefaultValueHelper::ParseColor(InDefaultValue, *Color);
-				return;
-			}
-			else if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
-			{
-				FLinearColor* LinearColor = (FLinearColor*)InPropValue;
-				FDefaultValueHelper::ParseLinearColor(InDefaultValue, *LinearColor);
-				return;
-			}
-		}
-
-		InProp->ImportText(*InDefaultValue, InPropValue, PPF_None, nullptr);
-	}
+	PropertyAccessUtil::ImportDefaultPropertyValue(InProp, InPropValue, InDefaultValue);
 }
 
 bool InvokeFunctionCall(UObject* InObj, const UFunction* InFunc, void* InBaseParamsAddr, const TCHAR* InErrorCtxt)
@@ -808,10 +778,10 @@ int SetPropertyValue(const UStruct* InStruct, void* InStructData, PyObject* InVa
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::PermissionDenied))
 		{
 			if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::AccessProtected))
-		{
-			SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Property '%s' for attribute '%s' on '%s' is protected and cannot be set"), *InProp->GetName(), UTF8_TO_TCHAR(InAttributeName), *InStruct->GetName()));
-			return -1;
-		}
+			{
+				SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Property '%s' for attribute '%s' on '%s' is protected and cannot be set"), *InProp->GetName(), UTF8_TO_TCHAR(InAttributeName), *InStruct->GetName()));
+				return -1;
+			}
 
 			if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::CannotEditTemplate))
 			{
@@ -826,10 +796,10 @@ int SetPropertyValue(const UStruct* InStruct, void* InStructData, PyObject* InVa
 			}
 
 			if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::ReadOnly))
-		{
-			SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Property '%s' for attribute '%s' on '%s' is read-only and cannot be set"), *InProp->GetName(), UTF8_TO_TCHAR(InAttributeName), *InStruct->GetName()));
-			return -1;
-		}
+			{
+				SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Property '%s' for attribute '%s' on '%s' is read-only and cannot be set"), *InProp->GetName(), UTF8_TO_TCHAR(InAttributeName), *InStruct->GetName()));
+				return -1;
+			}
 
 			SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Property '%s' for attribute '%s' on '%s' cannot be set"), *InProp->GetName(), UTF8_TO_TCHAR(InAttributeName), *InStruct->GetName()));
 			return -1;
@@ -944,6 +914,8 @@ FOnDiskModules& GetOnDiskUnrealModulesCache()
 
 bool IsModuleAvailableForImport(const TCHAR* InModuleName, const FOnDiskModules* InOnDiskModules, FString* OutResolvedFile)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PyUtil::IsModuleAvailableForImport)
+
 	// Check the sys.modules table first since it avoids hitting the filesystem
 	if (PyObject* PyModulesDict = PySys_GetObject(PyCStrCast("modules")))
 	{
@@ -1055,6 +1027,11 @@ FString GetInterpreterExecutablePath(bool* OutIsEnginePython)
 
 void AddSitePackagesPath(const FString& InPath)
 {
+	if (!IFileManager::Get().DirectoryExists(*InPath))
+	{
+		return;
+	}
+
 	if (FPyObjectPtr PySiteModule = FPyObjectPtr::StealReference(PyImport_ImportModule("site")))
 	{
 		PyObject* PySiteDict = PyModule_GetDict(PySiteModule);
@@ -1176,7 +1153,7 @@ FString GetFriendlyPropertyValue(const FProperty* InProp, const void* InPropValu
 	}
 	
 	FString FriendlyPropertyValue;
-	InProp->ExportTextItem(FriendlyPropertyValue, InPropValue, InPropValue, nullptr, InPortFlags, nullptr);
+	InProp->ExportTextItem_Direct(FriendlyPropertyValue, InPropValue, InPropValue, nullptr, InPortFlags, nullptr);
 	return FriendlyPropertyValue;
 }
 
@@ -1449,7 +1426,13 @@ bool FetchPythonError(FString& OutError)
 		PyObject* PyCurrentExceptHook = PySys_GetObject(PyCStrCast("excepthook"));
 		if (PyCurrentExceptHook && PyDefaultExceptHook && PyCurrentExceptHook != PyDefaultExceptHook)
 		{
-			FPyObjectPtr PyExceptHookResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyCurrentExceptHook, PyExceptionType.Get(), PyExceptionValue.Get(), PyExceptionTraceback.Get(), nullptr));
+			FPyObjectPtr PyExceptHookResult = FPyObjectPtr::StealReference(
+				PyObject_CallFunctionObjArgs(
+					PyCurrentExceptHook,
+					PyExceptionType.Get(),
+					PyExceptionValue ? PyExceptionValue.Get() : Py_None,
+					PyExceptionTraceback ? PyExceptionTraceback.Get() : Py_None,
+					nullptr));
 		}
 	}
 

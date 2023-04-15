@@ -4,10 +4,13 @@
 #include "CoreMinimal.h"
 #include "LandscapeProxy.h"
 #include "Landscape.h"
+#include "LandscapePrivate.h"
 #include "Misc/MapErrors.h"
 #include "Misc/UObjectToken.h"
 #include "Logging/MessageLog.h"
 #include "Logging/TokenizedMessage.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LandscapeBlueprintBrushBase)
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -23,6 +26,7 @@ static TAutoConsoleVariable<int32> CVarLandscapeBrushPadding(
 ALandscapeBlueprintBrushBase::ALandscapeBlueprintBrushBase(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 	: OwningLandscape(nullptr)
+	, UpdateOnPropertyChange(true)
 	, AffectHeightmap(false)
 	, AffectWeightmap(false)
 	, bIsVisible(true)
@@ -58,6 +62,7 @@ void ALandscapeBlueprintBrushBase::Initialize_Implementation(const FTransform& I
 void ALandscapeBlueprintBrushBase::RequestLandscapeUpdate()
 {
 #if WITH_EDITORONLY_DATA
+	UE_LOG(LogLandscape, Verbose, TEXT("ALandscapeBlueprintBrushBase::RequestLandscapeUpdate"));
 	if (OwningLandscape)
 	{
 		uint32 ModeMask = 0;
@@ -186,7 +191,7 @@ void ALandscapeBlueprintBrushBase::PostEditChangeProperty(FPropertyChangedEvent&
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 #if WITH_EDITORONLY_DATA
-	if (OwningLandscape)
+	if (OwningLandscape && UpdateOnPropertyChange)
 	{
 		OwningLandscape->OnBlueprintBrushChanged();
 	}

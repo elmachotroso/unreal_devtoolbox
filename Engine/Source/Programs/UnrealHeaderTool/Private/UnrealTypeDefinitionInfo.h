@@ -462,6 +462,11 @@ public:
 	virtual void GetPathName(FUnrealObjectDefinitionInfo* StopOuter, FStringBuilderBase& ResultString) const = 0;
 
 	/**
+	 * Returns the fully qualified pathname for this object as an FTopLevelAssetPath
+	 */
+	virtual FTopLevelAssetPath GetStructPathName() const = 0;
+
+	/**
 	 * Walks up the chain of packages until it reaches the top level, which it ignores.
 	 *
 	 * @param	bStartWithOuter		whether to include this object's name in the returned string
@@ -715,6 +720,15 @@ public:
 	 */
 	virtual FString GetPathName(FUnrealObjectDefinitionInfo* StopOuter = nullptr) const override;
 	virtual void GetPathName(FUnrealObjectDefinitionInfo* StopOuter, FStringBuilderBase& ResultString) const override;
+
+	/**
+	 * Returns the fully qualified pathname for this object as an FTopLevelAssetPath
+	 */
+	virtual FTopLevelAssetPath GetStructPathName() const override
+	{
+		checkf(false, TEXT("Proeprties do not support GetStructPathName()"));
+		return FTopLevelAssetPath();
+	}
 
 	/**
 	 * Walks up the chain of packages until it reaches the top level, which it ignores.
@@ -1348,6 +1362,11 @@ public:
 	 */
 	virtual FString GetPathName(FUnrealObjectDefinitionInfo* StopOuter = nullptr) const override;
 	virtual void GetPathName(FUnrealObjectDefinitionInfo* StopOuter, FStringBuilderBase& ResultString) const override;
+
+	/**
+	 * Returns the fully qualified pathname for this object as an FTopLevelAssetPath
+	 */
+	virtual FTopLevelAssetPath GetStructPathName() const override;
 
 	/**
 	 * Walks up the chain of packages until it reaches the top level, which it ignores.
@@ -2300,10 +2319,6 @@ public:
 	virtual void ConcurrentPostParseFinalize() override;
 
 protected:
-	explicit FUnrealStructDefinitionInfo(UObject* Object)
-		: FUnrealFieldDefinitionInfo(Object)
-	{}
-
 	FUnrealStructDefinitionInfo(FUnrealSourceFile& InSourceFile, int32 InLineNumber, FString&& InNameCPP, FName InName, FUnrealObjectDefinitionInfo& InOuter);
 
 	/**
@@ -2484,7 +2499,7 @@ public:
 	 */
 	bool HasDefaults() const
 	{
-		return UScriptStruct::FindDeferredCppStructOps(GetFName()) != nullptr;
+		return UScriptStruct::FindDeferredCppStructOps(GetStructPathName()) != nullptr;
 	}
 
 
@@ -2764,12 +2779,6 @@ class FUnrealClassDefinitionInfo
 {
 public:
 	FUnrealClassDefinitionInfo(FUnrealSourceFile& InSourceFile, int32 InLineNumber, FString&& InNameCPP, FName InName, bool bInIsInterface);
-
-	explicit FUnrealClassDefinitionInfo(UClass* Class)
-		: FUnrealStructDefinitionInfo(Class)
-	{
-		InitializeFromExistingUObject(Class);
-	}
 
 	/**
 	 * Attempts to find a class definition based on the given name
@@ -3291,6 +3300,21 @@ public:
 	}
 
 	/**
+	 * Return true if the custom vtable helper destructor is declared
+	 */
+	bool IsDestructorDeclared() const
+	{
+		return bDestructorDeclared;
+	}
+	/**
+	 * Mark that the destructor has been declared
+	 */
+	void MarkDestructorDeclared()
+	{
+		bDestructorDeclared = true;
+	}
+
+	/**
 	 * Return true if the custom vtable helper constructor is declared
 	 */
 	bool IsCustomVTableHelperConstructorDeclared() const
@@ -3339,6 +3363,59 @@ public:
 	}
 
 	/**
+	 * Return true if the class has a custom FieldNotify declaration and implementation
+	 */
+	bool HasCustomFieldNotify() const
+	{
+		return bCustomFieldNotify;
+	}
+
+	/**
+	 * Mark the class as having a custom FieldNotify declaration and implementation
+	 */
+	void MarkCustomFieldNotify()
+	{
+		bCustomFieldNotify = true;
+	}
+
+	/**
+	 * Return true if the class has at least one FieldNotify field
+	 */
+	bool HasFieldNotify() const
+	{
+		return bHasFieldNotify;
+	}
+
+	/**
+	 * Mark the class as having at least one FieldNotify field
+	 */
+	void MarkHasFieldNotify();
+
+	/**
+	 * Return true if the class is compiled in
+	 */
+	bool IsCompiledIn() const
+	{
+		return bIsCompiledIn;
+	}
+
+	/**
+	 * Return true if the class should not export
+	 */
+	bool IsNoExport() const
+	{
+		return bNoExport;
+	}
+
+	/**
+	 * Mark the class as not to be exported
+	 */
+	void MarkNoExport()
+	{
+		bNoExport = true;
+	}
+
+	/**
 	 * Get the generated body access specifier
 	 */
 	EAccessSpecifier GetGeneratedBodyMacroAccessSpecifier() const
@@ -3374,12 +3451,6 @@ public:
 	 * Test to see if the class implements a specific interface
 	 */
 	bool ImplementsInterface(const FUnrealClassDefinitionInfo& SomeInterface) const;
-
-	/**
-	 * Invoked when the definition has an existing engine class
-	 */
-	void InitializeFromExistingUObject(UClass* Class);
-
 
 	FString GetNameWithPrefix(EEnforceInterfacePrefix EnforceInterfacePrefix = EEnforceInterfacePrefix::None) const;
 
@@ -3423,7 +3494,6 @@ private:
 	EClassFlags ClassFlags = CLASS_None; // Current class flags
 	EClassFlags ParsedClassFlags = CLASS_None; // Class flags from the preparse phase
 	EClassFlags InheritClassFlags = CLASS_ScriptInherit; // Flags to inherit from the super class
-	EClassFlags InitialEngineClassFlags = CLASS_None; // Class flags from a preexisting UObject
 	EClassCastFlags ClassCastFlags = CASTCLASS_None;
 	FUnrealClassDefinitionInfo* ClassWithin = nullptr;
 	ESerializerArchiveType ArchiveType = ESerializerArchiveType::None;
@@ -3455,6 +3525,9 @@ private:
 	/** Is ObjectInitializer constructor (i.e. a constructor with only one parameter of type FObjectInitializer) declared? */
 	bool bObjectInitializerConstructorDeclared = false;
 
+	/** Is destructor declared? */
+	bool bDestructorDeclared = false;
+
 	/** Is custom VTable helper constructor declared? */
 	bool bCustomVTableHelperConstructorDeclared = false;
 
@@ -3464,8 +3537,20 @@ private:
 	/** True if the class has a custom constructor */
 	bool bCustomConstructor = false;
 
+	/** True if the class has a custom FieldNotify declaration and implementation */
+	bool bCustomFieldNotify = false;
+
+	/** True if the class has at least one FProperty or UFunction that has the FieldNotify specifier */
+	bool bHasFieldNotify = false;
+
+	/** True if the class is not to be exported */
+	bool bNoExport = false;
+
 	/** True if the class is an interface */
 	bool bIsInterface = false;
+
+	/** True if the class is a compiled-in type and not created by UHT */
+	bool bIsCompiledIn = false;
 };
 
 template <typename To>

@@ -2,6 +2,16 @@
 
 #include "MeshPainterCommands.h"
 
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
 #define LOCTEXT_NAMESPACE "MeshPainterCommands"
 
 FMeshPainterCommands::FMeshPainterCommands() 
@@ -9,7 +19,7 @@ FMeshPainterCommands::FMeshPainterCommands()
 		"MeshPainter", 
 		NSLOCTEXT("Contexts", "MeshPainter", "Mesh Painter"), 
 		NAME_None, 
-		FEditorStyle::GetStyleSetName())
+		FAppStyle::GetAppStyleSetName())
 {
 }
 

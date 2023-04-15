@@ -8,6 +8,9 @@
 #include "HttpPackage.h"
 #include "Misc/SingleThreadRunnable.h"
 #include "Containers/Queue.h"
+#include "Containers/SpscQueue.h"
+
+#include <atomic>
 
 class IHttpThreadedRequest;
 
@@ -153,7 +156,7 @@ protected:
 	 * Threaded requests that have completed and are waiting for the game thread to process.
 	 * Added to on HTTP thread, processed then cleared on game thread (Single producer, single consumer)
 	 */
-	TQueue<IHttpThreadedRequest*, EQueueMode::Spsc> CompletedThreadedRequests;
+	TSpscQueue<IHttpThreadedRequest*> CompletedThreadedRequests;
 
 	/** Pointer to Runnable Thread */
 	FRunnableThread* Thread;
@@ -167,5 +170,5 @@ private:
 	bool bIsStopped;
 
 	/** Limit for threaded http requests running at the same time. If not specified through configuration values, there will be no limit */
-	int32 RunningThreadedRequestLimit = INT_MAX;
+	std::atomic<int32> RunningThreadedRequestLimit = INT_MAX;
 };

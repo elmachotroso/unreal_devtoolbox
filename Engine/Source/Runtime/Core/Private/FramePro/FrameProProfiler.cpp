@@ -114,6 +114,52 @@ public:
 	}
 };
 
+
+/** Separate memory allocator for FramePro internal memory. Allows adding profiler traces to the main allocator without causing recursion issues. */
+class FrameProAllocator : public FramePro::Allocator
+{
+public:
+	static FrameProAllocator& Get()
+	{
+		static FrameProAllocator Instance;
+		return Instance;
+	}
+
+	FMalloc* GetBaseMalloc() { return &BaseMalloc; }
+
+	virtual void* Alloc(size_t size) override
+	{
+		return BaseMalloc.Malloc(size, DEFAULT_ALIGNMENT);
+	}
+	virtual void Free(void* p) override
+	{
+		return BaseMalloc.Free(p);
+	}
+
+private:
+	FMallocAnsi BaseMalloc;
+};
+
+/** System memory allocator for TArrays. Redirects base malloc calls to the FrameProAllocator. */
+class FrameProMalloc
+{
+public:
+	static void* Malloc(SIZE_T Count, uint32 Alignment = DEFAULT_ALIGNMENT)
+	{
+		return FrameProAllocator::Get().GetBaseMalloc()->Malloc(Count, Alignment);
+	}
+
+	static void* Realloc(void* Original, SIZE_T Count, uint32 Alignment = DEFAULT_ALIGNMENT)
+	{
+		return FrameProAllocator::Get().GetBaseMalloc()->Realloc(Original, Count, Alignment);
+	}
+
+	static void Free(void* Original)
+	{
+		return FrameProAllocator::Get().GetBaseMalloc()->Free(Original);
+	}
+};
+
 /** TSL storage for per-thread scope stack */
 class FFrameProProfilerContext : public TThreadSingleton<FFrameProProfilerContext>
 {
@@ -130,7 +176,7 @@ class FFrameProProfilerContext : public TThreadSingleton<FFrameProProfilerContex
 	}
 	
 	/** Array that represents thread of scopes */
-	TArray<FFrameProProfilerScope> ProfilerScopes;
+	TArray<FFrameProProfilerScope, TSizedHeapAllocator<32, FrameProMalloc>> ProfilerScopes;
 
 public:
 
@@ -229,6 +275,22 @@ static FAutoConsoleVariableRef CVarFrameProCPUStatsUpdateRate(
 	TEXT("Update rate in seconds for collecting CPU Stats (Default: 0.001)\n")
 	TEXT("0 to disable."),
 	ECVF_Default);
+
+void FFrameProProfiler::Initialize()
+{
+	FRAMEPRO_SET_ALLOCATOR(&FrameProAllocator::Get());
+}
+
+void FFrameProProfiler::TearDown()
+{
+	GFrameProEnabled = false;
+	FRAMEPRO_SHUTDOWN();
+}
+
+bool FFrameProProfiler::IsThreadContextReady()
+{
+	return FFrameProProfilerContext::TryGet() != nullptr;
+}
 
 void FFrameProProfiler::FrameStart()
 {
@@ -340,10 +402,17 @@ void FFrameProProfiler::StartFrameProRecordingFromCommand(const TArray< FString 
 		FilenameRoot = Args[0];
 	}
 
-	StartFrameProRecording(FilenameRoot, ScopeMinTimeMicroseconds);
+	bool bAppendDateTime = true;
+	if (Args.Num() > 1)
+	{
+		// If someone wants to use the full filename they provided, they need to set the 2nd arg to false.
+		LexTryParseString(bAppendDateTime, *Args[1]);
+	}
+
+	StartFrameProRecording(FilenameRoot, ScopeMinTimeMicroseconds, bAppendDateTime);
 }
 
-FString FFrameProProfiler::StartFrameProRecording(const FString& FilenameRoot, int32 MinScopeTime)
+FString FFrameProProfiler::StartFrameProRecording(const FString& FilenameRoot, int32 MinScopeTime, bool bAppendDateTime)
 {
 	if (GFrameProIsRecording)
 	{
@@ -353,7 +422,15 @@ FString FFrameProProfiler::StartFrameProRecording(const FString& FilenameRoot, i
 	FString RelPathName = FPaths::ProfilingDir() + TEXT("FramePro/");
 	bool bSuccess = IFileManager::Get().MakeDirectory(*RelPathName, true); // ensure folder exists
 
-	FString Filename = FString::Printf(TEXT("%s(%s).framepro_recording"), *FilenameRoot, *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	FString Filename;
+	if (bAppendDateTime)
+	{
+		Filename = FString::Printf(TEXT("%s(%s).framepro_recording"), *FilenameRoot, *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	}
+	else
+	{
+		Filename = FilenameRoot;
+	}
 	FString OutputFilename = RelPathName + Filename;
 
 	UE_LOG(LogFramePro, Log, TEXT("--- Start Recording To File: %s"), *OutputFilename);
@@ -365,7 +442,7 @@ FString FFrameProProfiler::StartFrameProRecording(const FString& FilenameRoot, i
 	GFrameProEnabled = true;
 
 	// Enable named events as well
-	GCycleStatsShouldEmitNamedEvents += 1;
+	++GCycleStatsShouldEmitNamedEvents;
 
 	// Set recording flag
 	GFrameProIsRecording = true;
@@ -389,7 +466,7 @@ void FFrameProProfiler::StopFrameProRecording()
 	FramePro::StopRecording();
 
 	// Disable named events
-	GCycleStatsShouldEmitNamedEvents -= 1;
+	GCycleStatsShouldEmitNamedEvents = FMath::Max(0, GCycleStatsShouldEmitNamedEvents - 1);
 
 	// Clear recording flag
 	GFrameProIsRecording = false;

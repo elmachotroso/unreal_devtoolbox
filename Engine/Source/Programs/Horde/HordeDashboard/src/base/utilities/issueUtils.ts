@@ -4,46 +4,6 @@ import dashboard from "../../backend/Dashboard";
 import { projectStore } from "../../backend/ProjectStore";
 import { displayTimeZone } from "./timeUtils";
 
-export type IssueJira = {
-	description: string;
-	link: string;
-}
-
-// This regex could be optimized, though it works
-// eslint-disable-next-line
-const urlRegex = /([\w+]+\:\/\/)?([\w\d-]+\.)*[\w-]+[\.\:]\w+([\/\?\=\&\#\.]?[\w-]+)*\/?/gm
-
-export function getIssueJiras(issue: GetIssueResponse): IssueJira[] {
-
-	if (!issue.description) {
-		return [];
-	}
-
-	const jiras: IssueJira[] = [];
-
-	const matches = Array.from(issue.description.matchAll(urlRegex));
-
-	matches.forEach(m => {
-		m.forEach(match => {
-
-			if (!match) {
-				return;
-			}
-			// @todo: add jira match to server config
-			if (match.toLowerCase().startsWith("https://jira.it.epicgames.com")) {
-				const path = new URL(match).pathname.split("/");
-				if (path.length) {
-					jiras.push({link: match, description: path[path.length - 1]})
-				}
-				
-			}
-		})
-	})
-	
-	return jiras;
-
-}
-
 export function getIssueStatus(issue: GetIssueResponse, showResolveTime?: boolean): string {
 
 	let text = "";
@@ -56,7 +16,7 @@ export function getIssueStatus(issue: GetIssueResponse, showResolveTime?: boolea
 			resolvedText += ` in CL ${issue.fixChange}`;
 		}
 
-		resolvedText += ` by ${issue.resolvedBy ?? "Horde"}`;
+		resolvedText += ` by ${issue.resolvedByInfo?.name ?? "Horde"}`;
 
 		if (!showResolveTime) {
 			return resolvedText;
@@ -71,19 +31,19 @@ export function getIssueStatus(issue: GetIssueResponse, showResolveTime?: boolea
 		return resolvedText;
 	}
 
-	if (!issue.ownerId) {
+	if (!issue.ownerInfo) {
 		text = "Currently unassigned.";
 	} else {
-		if (issue.ownerId === dashboard.userId) {
-			if (issue.nominatedBy) {
-				text = `You have been nominated to fix this issue by ${issue.nominatedBy}.`;
+		if (issue.ownerInfo.id === dashboard.userId) {
+			if (issue.nominatedByInfo) {
+				text = `You have been nominated to fix this issue by ${issue.nominatedByInfo.name}.`;
 			} else {
-				text = `Assigned to ${issue.owner}.`;
+				text = `Assigned to ${issue.ownerInfo.name}.`;
 			}
 		} else {
-			text = `Assigned to ${issue.owner}`;
-			if (issue.nominatedBy) {
-				text += ` by ${issue.nominatedBy}`;
+			text = `Assigned to ${issue.ownerInfo.name}`;
+			if (issue.nominatedByInfo) {
+				text += ` by ${issue.nominatedByInfo.name}`;
 			}
 			if (!issue.acknowledgedAt) {
 				text += ` (Unacknowledged)`;

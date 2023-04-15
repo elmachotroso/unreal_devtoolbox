@@ -16,6 +16,9 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Azure.Storage.Blobs;
 using Dasync.Collections;
+using EpicGames.Core;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Controllers;
 using Horde.Storage.Implementation;
 using Jupiter;
@@ -23,7 +26,6 @@ using Jupiter.Implementation;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -32,6 +34,8 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Serilog;
 using Serilog.Core;
+using ContentHash = Jupiter.Implementation.ContentHash;
+using IBlobStore = Horde.Storage.Implementation.IBlobStore;
 
 namespace Horde.Storage.FunctionalTests.Storage
 {
@@ -43,7 +47,7 @@ namespace Horde.Storage.FunctionalTests.Storage
         {
             return new[]
             {
-                new KeyValuePair<string, string>("Horde.Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.S3.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.S3.ToString()),
                 new KeyValuePair<string, string>("S3:BucketName", $"tests-{TestNamespaceName}")
             };
         }
@@ -57,17 +61,17 @@ namespace Horde.Storage.FunctionalTests.Storage
             if (await _s3!.DoesS3BucketExistAsync(S3BucketName))
             {
                 // if we have failed to run the cleanup for some reason we run it now
-                await Teardown();
+                await Teardown(provider);
             }
 
             await _s3.PutBucketAsync(S3BucketName);
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = _smallFileHash.AsS3Key(), ContentBody = SmallFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = _anotherFileHash.AsS3Key(), ContentBody = AnotherFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = _deleteFileHash.AsS3Key(), ContentBody = DeletableFileContents });
-            await _s3.PutObjectAsync(new PutObjectRequest {BucketName = S3BucketName, Key = _oldBlobFileHash.AsS3Key(), ContentBody = OldFileContents});
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = SmallFileHash.AsS3Key(), ContentBody = SmallFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = AnotherFileHash.AsS3Key(), ContentBody = AnotherFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest { BucketName = S3BucketName, Key = DeleteFileHash.AsS3Key(), ContentBody = DeletableFileContents });
+            await _s3.PutObjectAsync(new PutObjectRequest {BucketName = S3BucketName, Key = OldBlobFileHash.AsS3Key(), ContentBody = OldFileContents});
         }
 
-        protected override async Task Teardown()
+        protected override async Task Teardown(IServiceProvider provider)
         {
             string S3BucketName = $"tests-{TestNamespaceName}";
             ListObjectsResponse response = await _s3!.ListObjectsAsync(S3BucketName);
@@ -85,47 +89,47 @@ namespace Horde.Storage.FunctionalTests.Storage
 
         protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
-            return new[] {new KeyValuePair<string, string>("Horde.Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.Azure.ToString())};
+            return new[] {new KeyValuePair<string, string>("Horde_Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.Azure.ToString())};
         }
 
         protected override async Task Seed(IServiceProvider provider)
         {
             _settings = provider.GetService<IOptionsMonitor<AzureSettings>>()!.CurrentValue;
 
-            string connectionString = _settings.ConnectionString;
+            string connectionString = AzureBlobStore.GetConnectionString(_settings, provider);
             BlobContainerClient container = new BlobContainerClient(connectionString, TestNamespaceName.ToString());
 
             if (await container.ExistsAsync())
             {
                 // if we have failed to run the cleanup for some reason we run it now
-                await Teardown();
+                await Teardown(provider);
             }
 
             await container.CreateAsync();
-            BlobClient smallBlob = container.GetBlobClient(_smallFileHash.ToString());
+            BlobClient smallBlob = container.GetBlobClient(SmallFileHash.ToString());
             byte[] smallContents = Encoding.ASCII.GetBytes(SmallFileContents);
             await using MemoryStream smallBlobStream = new MemoryStream(smallContents);
             await smallBlob.UploadAsync(smallBlobStream);
 
-            BlobClient anotherBlob = container.GetBlobClient(_anotherFileHash.ToString());
+            BlobClient anotherBlob = container.GetBlobClient(AnotherFileHash.ToString());
             byte[] anotherContents = Encoding.ASCII.GetBytes(AnotherFileContents);
             await using MemoryStream anotherContentsStream = new MemoryStream(anotherContents);
             await anotherBlob.UploadAsync(anotherContentsStream);
 
-            BlobClient deleteBlob = container.GetBlobClient(_deleteFileHash.ToString());
+            BlobClient deleteBlob = container.GetBlobClient(DeleteFileHash.ToString());
             byte[] deleteContents = Encoding.ASCII.GetBytes(DeletableFileContents);
             await using MemoryStream deleteContentsStream = new MemoryStream(deleteContents);
             await deleteBlob.UploadAsync(deleteContentsStream);
 
-            BlobClient oldBlob = container.GetBlobClient(_oldBlobFileHash.ToString());
+            BlobClient oldBlob = container.GetBlobClient(OldBlobFileHash.ToString());
             byte[] oldBlobContents = Encoding.ASCII.GetBytes(OldFileContents);
             await using MemoryStream oldBlobContentsSteam = new MemoryStream(oldBlobContents);
             await oldBlob.UploadAsync(oldBlobContentsSteam);
         }
 
-        protected override async Task Teardown()
+        protected override async Task Teardown(IServiceProvider provider)
         {
-            string connectionString = _settings!.ConnectionString;
+            string connectionString = AzureBlobStore.GetConnectionString( _settings!, provider);
             BlobContainerClient container = new BlobContainerClient(connectionString, TestNamespaceName.ToString());
 
             await container.DeleteAsync();
@@ -136,7 +140,7 @@ namespace Horde.Storage.FunctionalTests.Storage
     [TestClass]
     public class FileSystemStoreTests : StorageTests
     {
-        private string _localTestDir;
+        private readonly string _localTestDir;
         private readonly NamespaceId FooNamespace = new NamespaceId("foo");
 
         public FileSystemStoreTests()
@@ -146,11 +150,10 @@ namespace Horde.Storage.FunctionalTests.Storage
         protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
             return new[] { 
-                new KeyValuePair<string, string>("Horde.Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.FileSystem.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.FileSystem.ToString()),
                 new KeyValuePair<string, string>("Filesystem:RootDir", _localTestDir)
             };
         }
-
 
         protected override async Task Seed(IServiceProvider provider)
         {
@@ -158,21 +161,21 @@ namespace Horde.Storage.FunctionalTests.Storage
             
             Directory.CreateDirectory(_localTestDir);
 
-            FileInfo smallFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, _smallFileHash);
+            FileInfo smallFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, SmallFileHash);
             smallFileInfo.Directory?.Create();
             await File.WriteAllBytesAsync(
                 smallFileInfo.FullName,
                 Encoding.ASCII.GetBytes(SmallFileContents)
             );
 
-            FileInfo anotherFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, _anotherFileHash);
+            FileInfo anotherFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, AnotherFileHash);
             anotherFileInfo.Directory?.Create();
             await File.WriteAllBytesAsync(
                 anotherFileInfo.FullName,
                 Encoding.ASCII.GetBytes(AnotherFileContents)
             );
             
-            FileInfo deleteFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, _deleteFileHash);
+            FileInfo deleteFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, DeleteFileHash);
             deleteFileInfo.Directory?.Create();
             await File.WriteAllBytesAsync(
                 deleteFileInfo.FullName,
@@ -180,7 +183,7 @@ namespace Horde.Storage.FunctionalTests.Storage
             );
 
             // a old file used to verify cutoff filtering
-            FileInfo oldFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, _oldBlobFileHash);
+            FileInfo oldFileInfo = FileSystemStore.GetFilesystemPath(_localTestDir, folderName, OldBlobFileHash);
             oldFileInfo.Directory?.Create();
             await File.WriteAllBytesAsync(
                 oldFileInfo.FullName,
@@ -189,7 +192,7 @@ namespace Horde.Storage.FunctionalTests.Storage
             File.SetLastWriteTimeUtc(oldFileInfo.FullName, DateTime.Now.AddDays(-7));
         }
 
-        protected override Task Teardown()
+        protected override Task Teardown(IServiceProvider provider)
         {
             Directory.Delete(_localTestDir, true);
 
@@ -200,27 +203,28 @@ namespace Horde.Storage.FunctionalTests.Storage
         [TestMethod]
         public async Task ListOldBlobs()
         {
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
+            FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
+            Assert.IsNotNull(fsStore);
 
             // we fetch all objects that are more then a day old
             // as the old blob is set to be a week old this should be the only object returned
             DateTime cutoff = DateTime.Now.AddDays(-1);
             {
-                BlobIdentifier[] blobs = await blobStore.ListOldObjects(TestNamespaceName, cutoff).ToArrayAsync();
-                Assert.AreEqual(_oldBlobFileHash, blobs[0]);
+                BlobIdentifier[] blobs = await fsStore.ListObjects(TestNamespaceName).Where(tuple => tuple.Item2 < cutoff).Select(tuple => tuple.Item1).ToArrayAsync();
+                Assert.AreEqual(OldBlobFileHash, blobs[0]);
             }
         }
 
         [TestMethod]
         public async Task ListNamespaces()
         {
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
-            FileSystemStore fsStore = (blobStore as FileSystemStore)!;
+            FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
+            Assert.IsNotNull(fsStore);
 
             List<NamespaceId> namespaces = await fsStore.ListNamespaces().ToListAsync();
             Assert.AreEqual(1, namespaces.Count);
             
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), _smallFileHash);
+            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
             
             namespaces = await fsStore.ListNamespaces().ToListAsync();
             Assert.AreEqual(2, namespaces.Count);
@@ -233,19 +237,19 @@ namespace Horde.Storage.FunctionalTests.Storage
             Directory.Delete(_localTestDir, true);
             Directory.CreateDirectory(_localTestDir);
             
-            FilesystemSettings fsSettings = _server!.Services.GetService<IOptionsMonitor<FilesystemSettings>>()!.CurrentValue;
+            FilesystemSettings fsSettings = Server!.Services.GetService<IOptionsMonitor<FilesystemSettings>>()!.CurrentValue;
             fsSettings.MaxSizeBytes = 600;
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
-            FileSystemStore fsStore = (blobStore as FileSystemStore)!;
+            FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
+            Assert.IsNotNull(fsStore);
 
-            CancellationTokenSource cts = new CancellationTokenSource();
-            Assert.IsTrue((await fsStore.CleanupInternal(cts.Token, batchSize: 2)).Count == 0); // No garbage to collect, should return false
+            using CancellationTokenSource cts = new CancellationTokenSource();
+            Assert.IsTrue(await fsStore.CleanupInternal(cts.Token, batchSize: 2) == 0); // No garbage to collect, should return false
             
             FileInfo[] fooFiles = CreateFilesInNamespace(FooNamespace, 10);
 
             Assert.AreEqual(10 * 100, await fsStore.CalculateDiskSpaceUsed());
 
-            Assert.IsTrue((await fsStore.CleanupInternal(cts.Token, batchSize: 2)).Count > 0);
+            Assert.IsTrue(await fsStore.CleanupInternal(cts.Token, batchSize: 2) > 0);
 
             Assert.AreEqual(5 * 100, await fsStore.CalculateDiskSpaceUsed());
 
@@ -263,17 +267,17 @@ namespace Horde.Storage.FunctionalTests.Storage
         }
         
         [TestMethod]
-        public async Task GetLeastRecentlyAccessedObjects()
+        public void GetLeastRecentlyAccessedObjects()
         {
             FileInfo[] fooFiles = CreateFilesInNamespace(FooNamespace, 10);
             CreateFilesInNamespace(new NamespaceId("bar"), 10);
 
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
-            FileSystemStore fsStore = (blobStore as FileSystemStore)!;
+            FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
+            Assert.IsNotNull(fsStore);
 
-            Assert.AreEqual(10, (await fsStore.GetLeastRecentlyAccessedObjects(FooNamespace)).Length);
+            Assert.AreEqual(10, (fsStore.GetLeastRecentlyAccessedObjects(FooNamespace)).ToArray().Length);
 
-            FileInfo[] results = await fsStore.GetLeastRecentlyAccessedObjects(FooNamespace, 3);
+            FileInfo[] results = fsStore.GetLeastRecentlyAccessedObjects(FooNamespace, 3).ToArray();
             Assert.AreEqual(3, results.Length);
             Assert.AreEqual(fooFiles[7].LastAccessTime, results[2].LastAccessTime);
             Assert.AreEqual(fooFiles[8].LastAccessTime, results[1].LastAccessTime);
@@ -283,10 +287,10 @@ namespace Horde.Storage.FunctionalTests.Storage
         [TestMethod]
         public async Task CalculateUsedDiskSpace()
         {
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
-            FileSystemStore fsStore = (blobStore as FileSystemStore)!;
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), _smallFileHash);
-            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(AnotherFileContents), _anotherFileHash);
+            FileSystemStore? fsStore = Server!.Services.GetService<FileSystemStore>();
+            Assert.IsNotNull(fsStore);
+            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(SmallFileContents), SmallFileHash);
+            await fsStore.PutObject(FooNamespace, Encoding.ASCII.GetBytes(AnotherFileContents), AnotherFileHash);
             
             Assert.AreEqual(SmallFileContents.Length + AnotherFileContents.Length, await fsStore.CalculateDiskSpaceUsed(FooNamespace));
         }
@@ -312,19 +316,20 @@ namespace Horde.Storage.FunctionalTests.Storage
 
     public abstract class StorageTests
     {
-        protected TestServer? _server;
-        protected HttpClient? _httpClient;
+        protected TestServer? Server { get; set; }
+        protected NamespaceId TestNamespaceName { get; } = new NamespaceId("testbucket");
 
-        protected readonly NamespaceId TestNamespaceName = new NamespaceId("testbucket");
+        private HttpClient? _httpClient;
+
         protected const string SmallFileContents = "Small file contents";
         protected const string AnotherFileContents = "Another file with contents";
         protected const string DeletableFileContents = "Delete Me";
         protected const string OldFileContents = "a old blob used for testing cutoff filtering";
 
-        protected readonly BlobIdentifier _smallFileHash = BlobIdentifier.FromBlob( Encoding.ASCII.GetBytes(SmallFileContents));
-        protected readonly BlobIdentifier _anotherFileHash = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(AnotherFileContents));
-        protected readonly BlobIdentifier _deleteFileHash = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(DeletableFileContents));
-        protected readonly BlobIdentifier _oldBlobFileHash = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(OldFileContents));
+        protected BlobIdentifier SmallFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(SmallFileContents));
+        protected BlobIdentifier AnotherFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(AnotherFileContents));
+        protected BlobIdentifier DeleteFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(DeletableFileContents));
+        protected BlobIdentifier OldBlobFileHash { get; } = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes(OldFileContents));
 
         [TestInitialize]
         public async Task Setup()
@@ -347,42 +352,38 @@ namespace Horde.Storage.FunctionalTests.Storage
                 .UseStartup<HordeStorageStartup>()
             );
             _httpClient = server.CreateClient();
-            _server = server;
+            Server = server;
 
             // Seed storage
-            await Seed(_server.Services);
+            await Seed(Server.Services);
         }
 
         protected abstract IEnumerable<KeyValuePair<string, string>> GetSettings();
 
         protected abstract Task Seed(IServiceProvider serverServices);
-        protected abstract Task Teardown();
-
+        protected abstract Task Teardown(IServiceProvider serverServices);
 
         [TestCleanup]
         public async Task MyTeardown()
         {
-            await Teardown();
+            await Teardown(Server!.Services);
         }
-
 
         [TestMethod]
         public async Task GetSmallFile()
         {
-            HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/s/{TestNamespaceName}/{_smallFileHash}");
+            HttpResponseMessage result = await _httpClient!.GetAsync(new Uri($"api/v1/s/{TestNamespaceName}/{SmallFileHash}", UriKind.Relative));
             result.EnsureSuccessStatusCode();
             string content = await result.Content.ReadAsStringAsync();
             Assert.AreEqual(SmallFileContents, content);
         }
-
-
 
         [TestMethod]
         public async Task GetNotExistentFile()
         {
             byte[] payload = Encoding.ASCII.GetBytes("This content does not exist");
             ContentHash contentHash = ContentHash.FromBlob(payload);
-            HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/s/{TestNamespaceName}/{contentHash}");
+            HttpResponseMessage result = await _httpClient!.GetAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative));
 
             Assert.AreEqual(HttpStatusCode.NotFound, result.StatusCode);
         }
@@ -390,9 +391,7 @@ namespace Horde.Storage.FunctionalTests.Storage
         [TestMethod]
         public async Task GetInvalidHash()
         {
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/s/{TestNamespaceName}/smallFile");
-            await response;
-            HttpResponseMessage result = response.Result;
+            HttpResponseMessage result = await _httpClient!.GetAsync(new Uri($"api/v1/s/{TestNamespaceName}/smallFile", UriKind.Relative));
 
             Assert.AreEqual(HttpStatusCode.BadRequest, result.StatusCode);
         }
@@ -405,10 +404,22 @@ namespace Horde.Storage.FunctionalTests.Storage
             requestContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
             requestContent.Headers.ContentLength = payload.Length;
             BlobIdentifier contentHash = BlobIdentifier.FromBlob(payload);
-            Task<HttpResponseMessage> response =
-                _httpClient!.PutAsync(requestUri: $"api/v1/s/{TestNamespaceName}/{contentHash}", requestContent);
-            await response;
-            HttpResponseMessage result = response.Result;
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative), requestContent);
+
+            result.EnsureSuccessStatusCode();
+            InsertResponse content = await result.Content.ReadAsAsync<InsertResponse>();
+            Assert.AreEqual(contentHash, content.Identifier);
+        }
+
+        [TestMethod]
+        public async Task PostSmallBlob()
+        {
+            byte[] payload = Encoding.ASCII.GetBytes("I am a small blob");
+            using ByteArrayContent requestContent = new ByteArrayContent(payload);
+            requestContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            requestContent.Headers.ContentLength = payload.Length;
+            BlobIdentifier contentHash = BlobIdentifier.FromBlob(payload);
+            HttpResponseMessage result = await _httpClient!.PostAsync(new Uri($"api/v1/s/{TestNamespaceName}", UriKind.Relative), requestContent);
 
             result.EnsureSuccessStatusCode();
             InsertResponse content = await result.Content.ReadAsAsync<InsertResponse>();
@@ -418,7 +429,7 @@ namespace Horde.Storage.FunctionalTests.Storage
         [TestMethod]
         public async Task DeleteBlob()
         {
-            HttpResponseMessage result = await  _httpClient!.DeleteAsync($"api/v1/s/{TestNamespaceName}/{_deleteFileHash}");
+            HttpResponseMessage result = await  _httpClient!.DeleteAsync(new Uri($"api/v1/s/{TestNamespaceName}/{DeleteFileHash}", UriKind.Relative));
             result.EnsureSuccessStatusCode();
 
             Assert.AreEqual(HttpStatusCode.NoContent, result.StatusCode);
@@ -429,17 +440,15 @@ namespace Horde.Storage.FunctionalTests.Storage
         {
             List<BlobIdentifier> validBlobHashes = new List<BlobIdentifier>
             {
-                _smallFileHash,
-                _anotherFileHash,
-                _deleteFileHash,
-                _oldBlobFileHash
+                SmallFileHash,
+                AnotherFileHash,
+                DeleteFileHash,
+                OldBlobFileHash
             };
 
-            IBlobStore blobStore = _server!.Services.GetService<IBlobStore>()!;
-            // fetch all objects so set cutoff to a time in the future
-            DateTime cutoff = DateTime.Now.AddMinutes(5);
+            IBlobService blobService = Server!.Services.GetService<IBlobService>()!;
 
-            BlobIdentifier[] oldObjects = await blobStore.ListOldObjects(TestNamespaceName, cutoff).ToArrayAsync();
+            BlobIdentifier[] oldObjects = await blobService.ListObjects(TestNamespaceName).Select(tuple => tuple.Item1).ToArrayAsync();
 
             Assert.AreEqual(4, oldObjects.Length);
             Assert.IsTrue(validBlobHashes.Contains(oldObjects[0]));
@@ -452,22 +461,21 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task BlobExists()
         {
             {
-                HttpResponseMessage result = await _httpClient!.SendAsync(new HttpRequestMessage(HttpMethod.Head,
-                    requestUri: $"api/v1/s/{TestNamespaceName}/{_smallFileHash}"));
+                using HttpRequestMessage message = new(HttpMethod.Head, new Uri($"api/v1/s/{TestNamespaceName}/{SmallFileHash}", UriKind.Relative));
+                HttpResponseMessage result = await _httpClient!.SendAsync(message);
                 Assert.AreEqual(HttpStatusCode.OK, result.StatusCode);
             }
 
             {
                 ContentHash newContent = ContentHash.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
-                HttpResponseMessage resultNew = await _httpClient!.SendAsync(new HttpRequestMessage(HttpMethod.Head,
-                    requestUri: $"api/v1/s/{TestNamespaceName}/{newContent}"));
+                using HttpRequestMessage message = new (HttpMethod.Head, new Uri($"api/v1/s/{TestNamespaceName}/{newContent}", UriKind.Relative));
+                HttpResponseMessage resultNew = await _httpClient!.SendAsync(message);
                 Assert.AreEqual(HttpStatusCode.NotFound, resultNew.StatusCode);
                 string content = await resultNew.Content.ReadAsStringAsync();
                 ValidationProblemDetails result = JsonConvert.DeserializeObject<ValidationProblemDetails>(content)!;
                 Assert.AreEqual($"Blob {newContent} not found", result.Title);
             }
         }
-
 
         [TestMethod]
         public async Task BlobExistsBatch()
@@ -482,7 +490,7 @@ namespace Horde.Storage.FunctionalTests.Storage
                     {
                         Op = "HEAD",
                         Namespace = TestNamespaceName,
-                        Id = _smallFileHash,
+                        Id = SmallFileHash,
                     },
                     new
                     {
@@ -505,7 +513,6 @@ namespace Horde.Storage.FunctionalTests.Storage
             Assert.AreEqual(newContent, id);
         }
 
-
         [TestMethod]
         public async Task BatchOp()
         {
@@ -517,13 +524,13 @@ namespace Horde.Storage.FunctionalTests.Storage
                     {
                         Op = "GET",
                         Namespace = TestNamespaceName,
-                        Id = _smallFileHash,
+                        Id = SmallFileHash,
                     },
                     new
                     {
                         Op = "PUT",
                         Namespace = TestNamespaceName,
-                        Id = _deleteFileHash,
+                        Id = DeleteFileHash,
                         Content = Encoding.ASCII.GetBytes(DeletableFileContents)
                     }
                 }
@@ -541,7 +548,7 @@ namespace Horde.Storage.FunctionalTests.Storage
             string convertedContent = Encoding.ASCII.GetString(Convert.FromBase64String(base64Content));
             Assert.AreEqual(SmallFileContents, convertedContent);
             BlobIdentifier identifier = new BlobIdentifier(array[1].Value<string>()!);
-            Assert.AreEqual(_deleteFileHash, identifier);
+            Assert.AreEqual(DeleteFileHash, identifier);
         }
 
         [TestMethod]
@@ -611,8 +618,8 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task MultipleBlobChecks()
         {
             BlobIdentifier newContent = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
-            HttpResponseMessage response = await _httpClient!.SendAsync(new HttpRequestMessage(HttpMethod.Post,
-                requestUri: $"api/v1/s/{TestNamespaceName}/exists?id={_smallFileHash}&id={newContent}"));
+            using HttpRequestMessage message = new(HttpMethod.Post, new Uri($"api/v1/s/{TestNamespaceName}/exists?id={SmallFileHash}&id={newContent}", UriKind.Relative));
+            HttpResponseMessage response = await _httpClient!.SendAsync(message);
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             Assert.AreEqual("application/json", response.Content.Headers.ContentType!.MediaType);
 
@@ -628,10 +635,13 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task MultipleBlobChecksBodyCB()
         {
             BlobIdentifier newContent = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, requestUri: $"api/v1/s/{TestNamespaceName}/exist");
-            CompactBinaryWriter writer = new CompactBinaryWriter();
-            writer.AsArray(new BlobIdentifier[] { _smallFileHash, newContent}, CompactBinaryFieldType.Hash);
-            byte[] buf = writer.Save();
+            using HttpRequestMessage request = new(HttpMethod.Post, new Uri($"api/v1/s/{TestNamespaceName}/exist", UriKind.Relative));
+            CbWriter writer = new CbWriter();
+            writer.BeginUniformArray(CbFieldType.Hash);
+            writer.WriteHashValue(SmallFileHash.AsIoHash());
+            writer.WriteHashValue(newContent.AsIoHash());
+            writer.EndUniformArray();
+            byte[] buf = writer.ToByteArray();
             request.Content = new ByteArrayContent(buf);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompactBinary);
 
@@ -651,8 +661,8 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task MultipleBlobChecksBodyJson()
         {
             BlobIdentifier newContent = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, requestUri: $"api/v1/s/{TestNamespaceName}/exist");
-            string jsonBody = JsonConvert.SerializeObject(new BlobIdentifier[] { _smallFileHash, newContent });
+            using HttpRequestMessage request = new(HttpMethod.Post, new Uri($"api/v1/s/{TestNamespaceName}/exist", UriKind.Relative));
+            string jsonBody = JsonConvert.SerializeObject(new BlobIdentifier[] { SmallFileHash, newContent });
             request.Content = new StringContent(jsonBody, Encoding.UTF8, MediaTypeNames.Application.Json);
 
             HttpResponseMessage response = await _httpClient!.SendAsync(request);
@@ -671,22 +681,21 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task MultipleBlobCompactBinaryResponse()
         {
             BlobIdentifier newContent = BlobIdentifier.FromBlob(Encoding.ASCII.GetBytes("this content has never been submitted"));
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, requestUri: $"api/v1/s/{TestNamespaceName}/exists?id={_smallFileHash}&id={newContent}");
+            using HttpRequestMessage request = new(HttpMethod.Post, new Uri($"api/v1/s/{TestNamespaceName}/exists?id={SmallFileHash}&id={newContent}", UriKind.Relative));
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(CustomMediaTypeNames.UnrealCompactBinary));
             HttpResponseMessage response = await _httpClient!.SendAsync(request);
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             Assert.AreEqual(CustomMediaTypeNames.UnrealCompactBinary, response.Content.Headers.ContentType!.MediaType!);
             byte[] data = await response.Content.ReadAsByteArrayAsync();
-            ReadOnlyMemory<byte> memory = new ReadOnlyMemory<byte>(data);
-            CompactBinaryObject cb = CompactBinaryObject.Load(ref memory);
-            
-            Assert.AreEqual(1, cb.GetFields().Count());
-            CompactBinaryField? needs = cb["needs"];
+            CbObject cb = new CbObject(data);
+
+            Assert.AreEqual(1, cb.Count());
+            CbField? needs = cb["needs"];
             Assert.IsNotNull(needs);
-            BlobIdentifier?[] neededBlobs = needs!.AsArray().Select(field => field.AsHash()).ToArray();
+            IoHash[] neededBlobs = needs!.AsArray().Select(field => field.AsHash()).ToArray();
 
             Assert.AreEqual(1, neededBlobs.Length);
-            Assert.AreEqual(newContent, neededBlobs[0]);
+            Assert.AreEqual(newContent, BlobIdentifier.FromIoHash(neededBlobs[0]));
         }
 
         [TestMethod]
@@ -697,17 +706,16 @@ namespace Horde.Storage.FunctionalTests.Storage
             requestContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
             requestContent.Headers.ContentLength = payload.Length;
             BlobIdentifier contentHash = BlobIdentifier.FromBlob(payload);
-            HttpResponseMessage putResponse =
-                await _httpClient!.PutAsync(requestUri: $"api/v1/s/{TestNamespaceName}/{contentHash}", requestContent);
+            HttpResponseMessage putResponse = await _httpClient!.PutAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative), requestContent);
             putResponse.EnsureSuccessStatusCode();
             InsertResponse response = await putResponse.Content.ReadAsAsync<InsertResponse>();
             Assert.AreEqual(contentHash, response.Identifier);
 
-            HttpResponseMessage getResponse = await _httpClient.GetAsync($"api/v1/s/{TestNamespaceName}/{contentHash}");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative));
             getResponse.EnsureSuccessStatusCode();
             CollectionAssert.AreEqual(payload, actual: await getResponse.Content.ReadAsByteArrayAsync());
 
-            HttpResponseMessage deleteResponse = await _httpClient.DeleteAsync($"api/v1/s/{TestNamespaceName}/{contentHash}");
+            HttpResponseMessage deleteResponse = await _httpClient.DeleteAsync(new Uri($"api/v1/s/{TestNamespaceName}/{contentHash}", UriKind.Relative));
             deleteResponse.EnsureSuccessStatusCode();
             Assert.AreEqual(HttpStatusCode.NoContent, deleteResponse.StatusCode);
         }
@@ -720,11 +728,14 @@ namespace Horde.Storage.FunctionalTests.Storage
         public async Task PutGetLargePayload()
         {
             // we submit a blob so large that it can not fit using the memory blob store
-            IBlobStore? blobStore = _server?.Services.GetService<IBlobStore>();
+            IBlobStore? blobStore = Server?.Services.GetService<IBlobStore>();
             Assert.IsFalse(blobStore is MemoryBlobStore);
 
             if (blobStore is AzureBlobStore)
+            {
                 Assert.Inconclusive("Azure blob store gets internal server errors when receiving large blobs");
+            }
+
             FileInfo fi = new FileInfo(Path.GetTempFileName());
 
             FileInfo tempOutputFile = new FileInfo(Path.GetTempFileName());
@@ -752,9 +763,9 @@ namespace Horde.Storage.FunctionalTests.Storage
 
                 {
                     await using FileStream fs = fi.OpenRead();
-                    StreamContent content = new StreamContent(fs);
+                    using StreamContent content = new StreamContent(fs);
                     content.Headers.ContentType = new MediaTypeHeaderValue(MediaTypeNames.Application.Octet);
-                    HttpResponseMessage result = await _httpClient!.PutAsync($"api/v1/blobs/{TestNamespaceName}/{blobIdentifier}", content);
+                    HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/blobs/{TestNamespaceName}/{blobIdentifier}", UriKind.Relative), content);
                     result.EnsureSuccessStatusCode();
 
                     InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
@@ -763,7 +774,7 @@ namespace Horde.Storage.FunctionalTests.Storage
                 
                 {
                     // verify we can fetch the blob again
-                    HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/blobs/{TestNamespaceName}/{blobIdentifier}", HttpCompletionOption.ResponseHeadersRead);
+                    HttpResponseMessage result = await _httpClient!.GetAsync(new Uri($"api/v1/blobs/{TestNamespaceName}/{blobIdentifier}", UriKind.Relative), HttpCompletionOption.ResponseHeadersRead);
                     result.EnsureSuccessStatusCode();
                     Stream s = await result.Content.ReadAsStreamAsync();
 
@@ -781,22 +792,24 @@ namespace Horde.Storage.FunctionalTests.Storage
                     Assert.AreEqual(blobIdentifier, downloadedBlobIdentifier);
                     s.Close();
                 }
-
             }
             finally
             {
                 if (fi.Exists)
+                {
                     fi.Delete();
+                }
 
                 if (tempOutputFile.Exists)
+                {
                     tempOutputFile.Delete();
+                }
             }
         }
     }
 
-
     public class InsertResponse
     {
-        public BlobIdentifier? Identifier;
+        public BlobIdentifier? Identifier { get; set; }
     }
 }

@@ -15,6 +15,8 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameplayTagsEditorModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistryIdCustomization)
+
 #define LOCTEXT_NAMESPACE "DataRegistryEditor"
 
 FText FDataRegistryIdEditWrapper::GetPreviewDescription() const
@@ -69,7 +71,7 @@ void SDataRegistryItemNameWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(STextBlock)
 					.Text(this, &SDataRegistryItemNameWidget::OnGetNameValueText)
-					.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+					.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 				]
 			]
 		]
@@ -244,7 +246,7 @@ void FDataRegistryIdCustomization::CustomizeHeader(TSharedRef<class IPropertyHan
 	HeaderRow
 	.NameContent()
 	[
-		InStructPropertyHandle->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+		InStructPropertyHandle->CreatePropertyNameWidget()
 	];
 
 	FDataTableEditorUtils::AddSearchForReferencesContextMenu(HeaderRow, FExecuteAction::CreateSP(this, &FDataRegistryIdCustomization::OnSearchForReferences));
@@ -290,7 +292,7 @@ void FDataRegistryIdCustomization::CustomizeChildren(TSharedRef<class IPropertyH
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("ItemName", "Item Name"))
-				.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+				.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 			]
 			.ValueContent()
 			.MaxDesiredWidth(0.0f)
@@ -369,3 +371,4 @@ FText FDataRegistryIdCustomization::OnGetNameValueText() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

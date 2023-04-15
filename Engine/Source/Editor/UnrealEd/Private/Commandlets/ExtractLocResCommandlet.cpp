@@ -1,10 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/ExtractLocResCommandlet.h"
-#include "Misc/Paths.h"
-#include "Misc/FileHelper.h"
+
+#include "Commandlets/GatherTextCommandletBase.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/LocalizedTextSourceTypes.h"
+#include "Internationalization/TextKey.h"
 #include "Internationalization/TextLocalizationResource.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogExtractLocRes, Log, All);
 
@@ -23,15 +34,7 @@ int32 UExtractLocResCommandlet::Main(const FString& Params)
 		TArray<FString> PotentialLocResFileNames;
 		LocResParamPtr->ParseIntoArray(PotentialLocResFileNames, TEXT(";"));
 
-		FString ProjectBasePath;
-		if (!FPaths::ProjectDir().IsEmpty())
-		{
-			ProjectBasePath = FPaths::ProjectDir();
-		}
-		else
-		{
-			ProjectBasePath = FPaths::EngineDir();
-		}
+		const FString& ProjectBasePath = UGatherTextCommandletBase::GetProjectBasePath();
 
 		for (FString& PotentialLocResFileName : PotentialLocResFileNames)
 		{

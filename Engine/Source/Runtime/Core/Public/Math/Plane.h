@@ -148,7 +148,7 @@ public:
 	 * @param Tolerance Minimum squared length of vector for normalization.
 	 * @return true if the plane was normalized correctly, false otherwise.
 	 */
-	bool Normalize(T Tolerance = SMALL_NUMBER);
+	bool Normalize(T Tolerance = UE_SMALL_NUMBER);
 
 	/**
 	 * Get a flipped version of the plane.
@@ -208,7 +208,7 @@ public:
 	 * @param Tolerance Error Tolerance.
 	 * @return true if the two planes are equal within specified tolerance, otherwise false.
 	 */
-	bool Equals(const TPlane<T>& V, T Tolerance = KINDA_SMALL_NUMBER) const;
+	bool Equals(const TPlane<T>& V, T Tolerance = UE_KINDA_SMALL_NUMBER) const;
 
 	/**
 	 * Calculates dot product of two planes.
@@ -638,6 +638,15 @@ inline UE::Math::TVector<T> FMath::RayPlaneIntersection(const UE::Math::TVector<
 	return RayOrigin + RayDirection * Distance;
 }
 
+template<typename T>
+inline T FMath::RayPlaneIntersectionParam(const UE::Math::TVector<T>& RayOrigin, const UE::Math::TVector<T>& RayDirection, const UE::Math::TPlane<T>& Plane)
+{
+	using TVector = UE::Math::TVector<T>;
+	const TVector PlaneNormal = TVector(Plane.X, Plane.Y, Plane.Z);
+	const TVector PlaneOrigin = PlaneNormal * Plane.W;
+
+	return TVector::DotProduct((PlaneOrigin - RayOrigin), PlaneNormal) / TVector::DotProduct(RayDirection, PlaneNormal);
+}
 
 template<typename T>
 inline UE::Math::TVector<T> FMath::LinePlaneIntersection

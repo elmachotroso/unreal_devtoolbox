@@ -4,15 +4,16 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SWidget.h"
-#include "ISceneOutlinerTreeItem.h"
+#include "ActorBaseTreeItem.h"
 #include "UObject/ObjectKey.h"
-#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionHandle.h"
 
+class UActorDescContainer;
 class FWorldPartitionActorDesc;
 class UToolMenu;
 
 /** A tree item that represents an actor in the world */
-struct SCENEOUTLINER_API FActorDescTreeItem : ISceneOutlinerTreeItem
+struct SCENEOUTLINER_API FActorDescTreeItem : IActorBaseTreeItem
 {
 public:
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FFilterPredicate, const FWorldPartitionActorDesc*);
@@ -40,6 +41,9 @@ public:
 	/** Construct this item from an actor desc */
 	FActorDescTreeItem(const FGuid& InActorGuid, UActorDescContainer* Container);
 
+	/** Construct this item from an actor desc */
+	FActorDescTreeItem(const FGuid& InActorGuid, FActorDescContainerCollection* ContainerCollection);
+
 	/* Begin ISceneOutlinerTreeItem Implementation */
 	virtual bool IsValid() const override { return ActorDescHandle.Get() != nullptr; }
 	virtual FSceneOutlinerTreeItemID GetID() const override;
@@ -49,16 +53,23 @@ public:
 	virtual void GenerateContextMenu(UToolMenu* Menu, SSceneOutliner& Outliner) override;
 	virtual bool HasVisibilityInfo() const override { return true; }
 	virtual bool GetVisibility() const override;
-	virtual bool ShouldShowPinnedState() const override { return true; }
+	virtual bool ShouldShowPinnedState() const override;
 	virtual bool ShouldShowVisibilityState() const override { return false; }
 	virtual bool HasPinnedStateInfo() const override { return true; }
 	virtual bool GetPinnedState() const override;
 	/* End ISceneOutlinerTreeItem Implementation */
 	
-	const FGuid& GetGuid() const { return ActorGuid; }
-private:
+	/* Begin IActorBaseTreeItem Implementation */
+	virtual const FGuid& GetGuid() const override { return ActorGuid; }
+	/* End IActorBaseTreeItem Implementation */
+
 	void FocusActorBounds() const;
 
+protected:
 	FString DisplayString;
+
+private:
+	void CopyActorFilePathtoClipboard() const;
+	void Initialize();
 	FGuid ActorGuid;
 };

@@ -59,6 +59,9 @@ namespace Audio
 		// Sets the source voice's HPF filter modulation base frequency.
 		void SetModHPFFrequency(const float InFrequency);
 
+		// Set the source voice's SourceBufferListener and associated boolean.
+		void SetSourceBufferListener(FSharedISourceBufferListenerPtr& InSourceBufferListener, bool InShouldSourceBufferListenerZeroBuffer);
+
 		// Sets the source voice's channel map (2d or 3d).
 		void SetChannelMap(const uint32 NumInputChannels, const Audio::FAlignedFloatBuffer& InChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly);
 
@@ -116,7 +119,7 @@ namespace Audio
 		const FQuat GetListenerRotationForVoice() const;
 
 		// Sets the submix send levels
-		void SetSubmixSendInfo(FMixerSubmixWeakPtr Submix, const float SendLevel);
+		void SetSubmixSendInfo(FMixerSubmixWeakPtr Submix, const float SendLevel, const EMixerSourceSubmixSendStage SendStage = EMixerSourceSubmixSendStage::PostDistanceAttenuation);
 
 		// Clears the submix send to the given submix
 		void ClearSubmixSendInfo(FMixerSubmixWeakPtr Submix);

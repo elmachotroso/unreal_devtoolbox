@@ -13,7 +13,7 @@
 #include "Animation/AnimCompress.h"
 #include "Animation/AnimCompress_BitwiseCompressOnly.h"
 #include "SCreateAnimationDlg.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Animation/AnimationRecordingSettings.h"
@@ -40,6 +40,7 @@ FAnimationRecorder::FAnimationRecorder()
 	, bAutoSaveAsset(false)
 	, bRemoveRootTransform(true)
 	, bCheckDeltaTimeAtBeginning(true)
+	, Interpolation(EAnimInterpolationType::Linear)
 	, InterpMode(ERichCurveInterpMode::RCIM_Linear)
 	, TangentMode(ERichCurveTangentMode::RCTM_Auto)
 	, AnimationSerializer(nullptr)
@@ -119,7 +120,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 	FFrameRate SampleRate;
 	float MaximumLength;
 
-	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->GetSkeleton())
+	if (!Component || !Component->GetSkeletalMeshAsset() || !Component->GetSkeletalMeshAsset()->GetSkeleton())
 	{
 		return false;
 	}
@@ -136,7 +137,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 
 bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Component, const FString& InAssetPath, const FString& InAssetName)
 {
-	if (!Component || !Component->SkeletalMesh || !Component->SkeletalMesh->GetSkeleton())
+	if (!Component || !Component->GetSkeletalMeshAsset() || !Component->GetSkeletalMeshAsset()->GetSkeleton())
 	{
 		return false;
 	}
@@ -182,7 +183,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 	if (NewSeq)
 	{
 		// set skeleton
-		NewSeq->SetSkeleton(Component->SkeletalMesh->GetSkeleton());
+		NewSeq->SetSkeleton(Component->GetSkeletalMeshAsset()->GetSkeleton());
 		// Notify the asset registry
 		FAssetRegistryModule::AssetCreated(NewSeq);
 		StartRecord(Component, NewSeq);
@@ -193,25 +194,25 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 	return false;
 }
 
-/** Helper function to get space bases depending on master pose component */
+/** Helper function to get space bases depending on leader pose component */
 void FAnimationRecorder::GetBoneTransforms(USkeletalMeshComponent* Component, TArray<FTransform>& BoneTransforms)
 {
-	const USkinnedMeshComponent* const MasterPoseComponentInst = Component->MasterPoseComponent.Get();
-	if(MasterPoseComponentInst)
+	const USkinnedMeshComponent* const LeaderPoseComponentInst = Component->LeaderPoseComponent.Get();
+	if(LeaderPoseComponentInst)
 	{
-		const TArray<FTransform>& SpaceBases = MasterPoseComponentInst->GetComponentSpaceTransforms();
+		const TArray<FTransform>& SpaceBases = LeaderPoseComponentInst->GetComponentSpaceTransforms();
 		BoneTransforms.Reset(BoneTransforms.Num());
 		BoneTransforms.AddUninitialized(SpaceBases.Num());
 		for(int32 BoneIndex = 0; BoneIndex < SpaceBases.Num(); BoneIndex++)
 		{
-			if(BoneIndex < Component->GetMasterBoneMap().Num())
+			if(BoneIndex < Component->GetLeaderBoneMap().Num())
 			{
-				int32 MasterBoneIndex = Component->GetMasterBoneMap()[BoneIndex];
+				int32 LeaderBoneIndex = Component->GetLeaderBoneMap()[BoneIndex];
 
-				// If ParentBoneIndex is valid, grab matrix from MasterPoseComponent.
-				if(MasterBoneIndex != INDEX_NONE && MasterBoneIndex < SpaceBases.Num())
+				// If ParentBoneIndex is valid, grab matrix from LeaderPoseComponent.
+				if(LeaderBoneIndex != INDEX_NONE && LeaderBoneIndex < SpaceBases.Num())
 				{
-					BoneTransforms[BoneIndex] = SpaceBases[MasterBoneIndex];
+					BoneTransforms[BoneIndex] = SpaceBases[LeaderBoneIndex];
 				}
 				else
 				{
@@ -235,7 +236,10 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 	TimePassed = 0.0;
 	AnimationObject = InAnimationObject;
 
-	AnimationObject->BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationRecorderBoneCompressionSettings();
+	if (!AnimationObject->BoneCompressionSettings)
+	{
+		AnimationObject->BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationRecorderBoneCompressionSettings();
+	}
 
 	FAnimationRecorder::GetBoneTransforms(Component, PreviousSpacesBases);
 	PreviousAnimCurves = Component->GetAnimationCurves();
@@ -267,7 +271,10 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 	for (int32 BoneIndex=0; BoneIndex <PreviousSpacesBases.Num(); ++BoneIndex)
 	{
 		// verify if this bone exists in skeleton
-		const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(Component->MasterPoseComponent != nullptr ? Component->MasterPoseComponent->SkeletalMesh : Component->SkeletalMesh, BoneIndex);
+		const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(
+			Component->LeaderPoseComponent != nullptr ?
+			Component->LeaderPoseComponent->GetSkinnedAsset() :
+			Component->GetSkinnedAsset(), BoneIndex);
 		if (BoneTreeIndex != INDEX_NONE)
 		{
 			// add tracks for the bone existing
@@ -277,10 +284,16 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 		}
 	}
 
-	AnimationObject->RetargetSource = Component->SkeletalMesh ? AnimSkeleton->GetRetargetSourceForMesh(Component->SkeletalMesh) : NAME_None;
+	AnimationObject->RetargetSource = Component->GetSkeletalMeshAsset() ? AnimSkeleton->GetRetargetSourceForMesh(Component->GetSkeletalMeshAsset()) : NAME_None;
 	if (AnimationObject->RetargetSource == NAME_None)
 	{
-		AnimationObject->RetargetSourceAsset = Component->SkeletalMesh;
+		AnimationObject->RetargetSourceAsset = Component->GetSkeletalMeshAsset();
+		//UpdateRetargetSourceAssetData() is protected so need to do a posteditchagned
+#if WITH_EDITOR
+		FProperty* PropertyChanged = UAnimSequence::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAnimSequence, RetargetSourceAsset));
+		FPropertyChangedEvent PropertyUpdateStruct(PropertyChanged);
+		AnimationObject->PostEditChangeProperty(PropertyUpdateStruct);
+#endif
 	}
 
 	// record the first frame
@@ -320,6 +333,35 @@ void FAnimationRecorder::ProcessNotifies()
 	}
 }
 
+bool FAnimationRecorder::ShouldSkipName(const FName& InName) const
+{
+	bool bShouldSkipName = false;
+			
+	for (const FString& ExcludeAnimationName : ExcludeAnimationNames)
+	{
+		if (InName.ToString().Contains(ExcludeAnimationName))
+		{
+			bShouldSkipName = true;
+			break;
+		}
+	}
+
+	if (IncludeAnimationNames.Num() != 0)
+	{
+		bShouldSkipName = true;
+		for (const FString& IncludeAnimationName : IncludeAnimationNames)
+		{
+			if (InName.ToString().Contains(IncludeAnimationName))
+			{
+				bShouldSkipName = false;
+				break;
+			}
+		}
+	}
+
+	return bShouldSkipName;
+}
+
 UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 {
 	double StartTime, ElapsedTime = 0;
@@ -328,6 +370,9 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 	{
 		IAnimationDataController& Controller = AnimationObject->GetController();
 		int32 NumKeys = LastFrame.Value + 1;
+
+		//Set Interpolation type (Step or Linear), doesn't look like there is a controller for this.
+		AnimationObject->Interpolation = Interpolation;
 
 		// can't use TimePassed. That is just total time that has been passed, not necessarily match with frame count
 		Controller.SetPlayLength( (NumKeys>1) ? RecordingRate.AsSeconds(LastFrame): RecordingRate.AsSeconds(1) );
@@ -356,11 +401,23 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 						const bool bMaterialCurve = CurveMetaData->Type.bMaterial;
 						const bool bAttributeCurve = !bMorphTarget && !bMaterialCurve;
 						
+						const FSmartNameMapping* Mapping = SkeletonObj->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+						FSmartName SmartName;
+
+						bool bShouldSkipName = false;
+						if (Mapping && Mapping->FindSmartNameByUID(CurveUID, SmartName))
+						{
+							bShouldSkipName = ShouldSkipName(SmartName.DisplayName);
+						}
+
 						const bool bSkipCurve = (bMorphTarget && !bRecordMorphTargets) ||
 												(bAttributeCurve && !bRecordAttributeCurves) ||
-												(bMaterialCurve && !bRecordMaterialCurves);
+												(bMaterialCurve && !bRecordMaterialCurves) ||
+												bShouldSkipName;
+
 						if (bSkipCurve)
 						{
+							UE_LOG(LogAnimation, Log, TEXT("Animation Recorder skipping curve: %s"), *SmartName.DisplayName.ToString());
 							continue;
 						}
 					}
@@ -434,7 +491,27 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 			const FBoneAnimationTrack& AnimationTrack = BoneAnimationTracks[TrackIndex];
 			const FRawAnimSequenceTrack& RawTrack = RawTracks[TrackIndex];
 
-			Controller.SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+			FName BoneName = AnimationTrack.Name;
+
+			bool bShouldSkipName = ShouldSkipName(AnimationTrack.Name);
+
+			if (!bShouldSkipName)
+			{
+				Controller.SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+			}
+			else
+			{
+				TArray<FVector3f> SinglePosKey;
+				SinglePosKey.Add(RawTrack.PosKeys[0]);
+				TArray<FQuat4f> SingleRotKey;
+				SingleRotKey.Add(RawTrack.RotKeys[0]);
+				TArray<FVector3f> SingleScaleKey;
+				SingleScaleKey.Add(RawTrack.ScaleKeys[0]);
+
+				Controller.SetBoneTrackKeys(BoneName, SinglePosKey, SingleRotKey, SingleScaleKey);
+
+				UE_LOG(LogAnimation, Log, TEXT("Animation Recorder skipping bone: %s"), *BoneName.ToString());
+			}
 		}
 
 		if (bRecordTransforms == false)
@@ -513,7 +590,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 	return nullptr;
 }
 
-void FAnimationRecorder::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate)
+void FAnimationRecorder::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate, const FTimecodeBoneMethod& TimecodeBoneMethod)
 {
 	if (!AnimSequence || !SkeletalMeshComponent)
 	{
@@ -564,11 +641,11 @@ void FAnimationRecorder::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkel
 	
 	USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
 
-	const USkinnedMeshComponent* const MasterPoseComponentInst = SkeletalMeshComponent->MasterPoseComponent.Get();
+	const USkinnedMeshComponent* const LeaderPoseComponentInst = SkeletalMeshComponent->LeaderPoseComponent.Get();
 	const TArray<FTransform>* SpaceBases;
-	if (MasterPoseComponentInst)
+	if (LeaderPoseComponentInst)
 	{
-		SpaceBases = &MasterPoseComponentInst->GetComponentSpaceTransforms();
+		SpaceBases = &LeaderPoseComponentInst->GetComponentSpaceTransforms();
 	}
 	else
 	{
@@ -582,15 +659,56 @@ void FAnimationRecorder::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkel
 	IAnimationDataController& Controller = AnimSequence->GetController();
 	IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("AddTimeCodeAttributesBracket", "Adding Time Code attributes"));
 
+	// If the user defined bone doesn't exist, fallback to writing timecodes to the root
+	bool bHasUserDefinedBone = false;
+	if (TimecodeBoneMethod.BoneMode == ETimecodeBoneMode::UserDefined)
+	{
+		for (int32 BoneIndex = 0; BoneIndex < SpaceBases->Num(); ++BoneIndex)
+		{
+			const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(
+				SkeletalMeshComponent->LeaderPoseComponent != nullptr ?
+				SkeletalMeshComponent->LeaderPoseComponent->GetSkinnedAsset() :
+				SkeletalMeshComponent->GetSkinnedAsset(), BoneIndex);
+			if (BoneTreeIndex != INDEX_NONE)
+			{
+				FName BoneTreeName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneTreeIndex);
+				if (BoneTreeName == TimecodeBoneMethod.BoneName)
+				{
+					bHasUserDefinedBone = true;
+					break;
+				}
+			}
+		}
+
+		if (!bHasUserDefinedBone)
+		{
+			UE_LOG(LogAnimation, Warning, TEXT("User defined bone name: %s not found. Falling back to assigning timecodes to root bone"), *TimecodeBoneMethod.BoneName.ToString());
+		}
+	}
+
 	for (int32 BoneIndex = 0; BoneIndex < SpaceBases->Num(); ++BoneIndex)
 	{
 		// verify if this bone exists in skeleton
-		const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(SkeletalMeshComponent->MasterPoseComponent != nullptr ? SkeletalMeshComponent->MasterPoseComponent->SkeletalMesh : SkeletalMeshComponent->SkeletalMesh, BoneIndex);
+		const int32 BoneTreeIndex = AnimSkeleton->GetSkeletonBoneIndexFromMeshBoneIndex(
+			SkeletalMeshComponent->LeaderPoseComponent != nullptr ?
+			SkeletalMeshComponent->LeaderPoseComponent->GetSkinnedAsset() :
+			SkeletalMeshComponent->GetSkinnedAsset(), BoneIndex);
 		if (BoneTreeIndex != INDEX_NONE)
 		{
 			// add tracks for the bone existing
 			FName BoneTreeName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneTreeIndex);
 			
+			const bool bUseThisBone = 
+				TimecodeBoneMethod.BoneMode == ETimecodeBoneMode::All ||
+				(TimecodeBoneMethod.BoneMode == ETimecodeBoneMode::Root && BoneIndex == 0) ||
+				(TimecodeBoneMethod.BoneMode == ETimecodeBoneMode::UserDefined && BoneTreeName == TimecodeBoneMethod.BoneName) ||
+				(bHasUserDefinedBone == false && BoneIndex == 0);
+
+			if (!bUseThisBone)
+			{
+				continue;
+			}
+
 			UE::Anim::AddTypedCustomAttribute<FIntegerAnimationAttribute, int32>(FName(*HoursName), BoneTreeName, AnimSequence, MakeArrayView(Times), MakeArrayView(Hours));
 			UE::Anim::AddTypedCustomAttribute<FIntegerAnimationAttribute, int32>(FName(*MinutesName), BoneTreeName, AnimSequence, MakeArrayView(Times), MakeArrayView(Minutes));
 			UE::Anim::AddTypedCustomAttribute<FIntegerAnimationAttribute, int32>(FName(*SecondsName), BoneTreeName, AnimSequence, MakeArrayView(Times), MakeArrayView(Seconds));
@@ -658,7 +776,7 @@ void FAnimationRecorder::UpdateRecord(USkeletalMeshComponent* Component, float D
 
 		if (SpaceBases.Num() != PreviousSpacesBases.Num())
 		{
-			UE_LOG(LogAnimation, Log, TEXT("Current Num of Spaces %d don't match with the previous number %d so we are stopping recording"), SpaceBases.Num(), PreviousSpacesBases.Num());
+			UE_LOG(LogAnimation, Log, TEXT("Current Num of Spaces %d don't match with the previous number %d so we are stopping recording"), SpaceBases.Num(),PreviousSpacesBases.Num());
 			StopRecord(true);
 			return;
 		}
@@ -727,7 +845,10 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 	if (ensure(AnimationObject))
 	{
 		IAnimationDataController& Controller = AnimationObject->GetController();
-		USkeletalMesh* SkeletalMesh = Component->MasterPoseComponent != nullptr ? ToRawPtr(Component->MasterPoseComponent->SkeletalMesh) : ToRawPtr(Component->SkeletalMesh);
+		USkinnedAsset* SkinnedAsset =
+			Component->LeaderPoseComponent != nullptr ?
+			Component->LeaderPoseComponent->GetSkinnedAsset() :
+			Component->GetSkinnedAsset();
 
 		const TArray<FBoneAnimationTrack>& BoneAnimationTracks = AnimationObject->GetDataModel()->GetBoneAnimationTracks();
 
@@ -743,8 +864,8 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 				const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
 				if (BoneTreeIndex != INDEX_NONE)
 				{
-					const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-					const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+					const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkinnedAsset, BoneTreeIndex);
+					const int32 ParentIndex = SkinnedAsset->GetRefSkeleton().GetParentIndex(BoneIndex);
 					const FTransform LocalTransform = SpacesBases[BoneIndex];
 					if (ParentIndex == INDEX_NONE)
 					{
@@ -784,8 +905,8 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 			const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
 			if (BoneTreeIndex != INDEX_NONE)
 			{
-				const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-				const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+				const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkinnedAsset, BoneTreeIndex);
+				const int32 ParentIndex = SkinnedAsset->GetRefSkeleton().GetParentIndex(BoneIndex);
 
 				if (bRecordTransforms)
 				{
@@ -821,7 +942,7 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 				{
 					if (FrameToAdd == 0)
 					{
-						const FTransform RefPose = Component->SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex];
+						const FTransform RefPose = Component->GetSkeletalMeshAsset()->GetRefSkeleton().GetRefBonePose()[BoneIndex];
 						RawTrack.PosKeys.Add((FVector3f)RefPose.GetTranslation());
 						RawTrack.RotKeys.Add(FQuat4f(RefPose.GetRotation()));
 						RawTrack.ScaleKeys.Add((FVector3f)RefPose.GetScale3D());
@@ -1016,6 +1137,7 @@ void FAnimRecorderInstance::InitInternal(USkeletalMeshComponent* InComponent, co
 	Recorder = MakeShareable(new FAnimationRecorder());
 	Recorder->SetSampleRateAndLength(Settings.SampleFrameRate, Settings.Length);
 	Recorder->bRecordLocalToWorld = Settings.bRecordInWorldSpace;
+	Recorder->Interpolation = Settings.Interpolation;
 	Recorder->InterpMode = Settings.InterpMode;
 	Recorder->TangentMode = Settings.TangentMode;
 	Recorder->bAutoSaveAsset = Settings.bAutoSaveAsset;
@@ -1026,6 +1148,8 @@ void FAnimRecorderInstance::InitInternal(USkeletalMeshComponent* InComponent, co
 	Recorder->bRecordMorphTargets = Settings.bRecordMorphTargets;
 	Recorder->bRecordAttributeCurves = Settings.bRecordAttributeCurves;
 	Recorder->bRecordMaterialCurves = Settings.bRecordMaterialCurves;
+	Recorder->IncludeAnimationNames = Settings.IncludeAnimationNames;
+	Recorder->ExcludeAnimationNames = Settings.ExcludeAnimationNames;
 
 	if (InComponent)
 	{
@@ -1104,11 +1228,11 @@ void FAnimRecorderInstance::FinishRecording(bool bShowMessage)
 	}
 }
 
-void FAnimRecorderInstance::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate)
+void FAnimRecorderInstance::ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate, const FTimecodeBoneMethod& TimecodeBoneMethod)
 {
 	if (Recorder.IsValid())
 	{
-		Recorder->ProcessRecordedTimes(AnimSequence, SkeletalMeshComponent, HoursName, MinutesName, SecondsName, FramesName, SubFramesName, SlateName, Slate);
+		Recorder->ProcessRecordedTimes(AnimSequence, SkeletalMeshComponent, HoursName, MinutesName, SecondsName, FramesName, SubFramesName, SlateName, Slate, TimecodeBoneMethod);
 	}
 }
 

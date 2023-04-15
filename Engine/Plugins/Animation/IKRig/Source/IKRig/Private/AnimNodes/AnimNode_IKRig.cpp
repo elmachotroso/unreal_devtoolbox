@@ -9,6 +9,8 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Algo/ForEach.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_IKRig)
+
 FAnimNode_IKRig::FAnimNode_IKRig()
 	: AlphaInputType(EAnimAlphaInputType::Float)
 	, bAlphaBoolEnabled(true)
@@ -66,7 +68,7 @@ void FAnimNode_IKRig::CopyInputPoseToSolver(FCompactPose& InputPose)
 	
 	// start Solve() from INPUT pose
 	// copy local bone transforms into IKRigProcessor skeleton
-	FIKRigSkeleton& IKRigSkeleton = IKRigProcessor->GetSkeleton();
+	FIKRigSkeleton& IKRigSkeleton = IKRigProcessor->GetSkeletonWriteable();
 	for (FCompactPoseBoneIndex CPIndex : InputPose.ForEachBoneIndex())
 	{
 		if (int32* Index = CompactPoseToRigIndices.Find(CPIndex))
@@ -118,7 +120,7 @@ void FAnimNode_IKRig::AssignGoalTargets()
 
 void FAnimNode_IKRig::CopyOutputPoseToAnimGraph(FCompactPose& OutputPose)
 {
-	FIKRigSkeleton& IKRigSkeleton = IKRigProcessor->GetSkeleton();
+	FIKRigSkeleton& IKRigSkeleton = IKRigProcessor->GetSkeletonWriteable();
 	
 	// update local transforms of current IKRig pose
 	IKRigSkeleton.UpdateAllLocalTransformFromGlobal();
@@ -160,6 +162,8 @@ void FAnimNode_IKRig::GatherDebugData(FNodeDebugData& DebugData)
 		
 		DebugData.AddDebugItem(FString::Printf(TEXT("Goal supplied by node pin: %s"), *Goal.ToString()));
 	}
+
+	Source.GatherDebugData(DebugData);
 }
 
 void FAnimNode_IKRig::Initialize_AnyThread(const FAnimationInitializeContext& Context)
@@ -167,13 +171,24 @@ void FAnimNode_IKRig::Initialize_AnyThread(const FAnimationInitializeContext& Co
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	FAnimNode_Base::Initialize_AnyThread(Context);
 	Source.Initialize(Context);
+
+	// Initial update of the node, so we dont have a frame-delay on setup
+	GetEvaluateGraphExposedInputs().Execute(Context);
+
+	// ensure there is always a processor available
+	if (!IKRigProcessor && IsInGameThread())
+	{
+		IKRigProcessor = NewObject<UIKRigProcessor>(Context.AnimInstanceProxy->GetSkelMeshComponent());	
+	}
+
+	InitializeProperties(Context.GetAnimInstanceObject(), GetTargetClass());
 }
 
 void FAnimNode_IKRig::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
 	ActualAlpha = 0.f;
 
-		GetEvaluateGraphExposedInputs().Execute(Context);
+	GetEvaluateGraphExposedInputs().Execute(Context);
 
 	// alpha handlers
 	switch (AlphaInputType)
@@ -216,8 +231,7 @@ void FAnimNode_IKRig::PreUpdate(const UAnimInstance* InAnimInstance)
 	// initialize the IK Rig (will only try once on the current version of the rig asset)
 	if (!IKRigProcessor->IsInitialized())
 	{
-		const FReferenceSkeleton& RefSkeleton = InAnimInstance->GetSkelMeshComponent()->SkeletalMesh->GetRefSkeleton();
- 		IKRigProcessor->Initialize(RigDefinitionAsset, RefSkeleton);
+ 		IKRigProcessor->Initialize(RigDefinitionAsset, InAnimInstance->GetSkelMeshComponent()->GetSkeletalMeshAsset());
 	}
 	
 	// cache list of goal creator components on the actor
@@ -292,6 +306,7 @@ void FAnimNode_IKRig::CacheBones_AnyThread(const FAnimationCacheBonesContext& Co
 	CompactPoseToRigIndices.Reset();
 	const TArray<FBoneIndexType>& RequiredBonesArray = RequiredBones.GetBoneIndicesArray();
 	const FReferenceSkeleton& RefSkeleton = RequiredBones.GetReferenceSkeleton();
+	const FIKRigSkeleton& IKRigSkeleton = IKRigProcessor->GetSkeleton();
 	const int32 NumBones = RequiredBonesArray.Num();
 	for (uint16 Index = 0; Index < NumBones; ++Index)
 	{
@@ -303,7 +318,7 @@ void FAnimNode_IKRig::CacheBones_AnyThread(const FAnimationCacheBonesContext& Co
 		
 		FCompactPoseBoneIndex CPIndex = RequiredBones.MakeCompactPoseIndex(FMeshPoseBoneIndex(MeshBone));
 		const FName Name = RefSkeleton.GetBoneName(MeshBone);
-		CompactPoseToRigIndices.Add(CPIndex) = IKRigProcessor->GetSkeleton().GetBoneIndexFromName(Name);
+		CompactPoseToRigIndices.Add(CPIndex) = IKRigSkeleton.GetBoneIndexFromName(Name);
 	}
 }
 
@@ -320,7 +335,7 @@ void FAnimNode_IKRig::InitializeProperties(const UObject* InSourceInstance, UCla
 
 	check(SourcePropertyNames.Num() == DestPropertyNames.Num());
 
-	UClass* SourceClass = InSourceInstance->GetClass();
+	const UClass* SourceClass = InSourceInstance->GetClass();
 	for (int32 PropIndex = 0; PropIndex < SourcePropertyNames.Num(); ++PropIndex)
 	{
 		const FName& SourceName = SourcePropertyNames[PropIndex];
@@ -329,68 +344,76 @@ void FAnimNode_IKRig::InitializeProperties(const UObject* InSourceInstance, UCla
 		SourceProperties.Add(SourceProperty);
 		DestProperties.Add(nullptr);
 
-		if (SourceProperty)
+		// property not found
+		if (!SourceProperty)
 		{
-			// store update functions for later use in PropagateInputProperties to avoid looking for properties
-			// while evaluating
-			const FName& GoalPropertyName = DestPropertyNames[PropIndex];
+			continue;
+		}
+		
+		// store update functions for later use in PropagateInputProperties to avoid looking for properties
+		// while evaluating
+		const FName& GoalPropertyName = DestPropertyNames[PropIndex];
 
-			// find the right goal
-			const int32 GoalIndex = Goals.IndexOfByPredicate([&GoalPropertyName](const FIKRigGoal& InGoal)
+		// find the right goal
+		const int32 GoalIndex = Goals.IndexOfByPredicate([&GoalPropertyName](const FIKRigGoal& InGoal)
+		{
+			return GoalPropertyName.ToString().EndsWith(InGoal.Name.ToString());
+		});
+
+		// goal not found?
+		if (!Goals.IsValidIndex(GoalIndex))
+		{
+			continue;
+		}
+		
+		FIKRigGoal& Goal = Goals[GoalIndex];
+
+		const FString GoalPropStr = GoalPropertyName.ToString();
+
+		if (GoalPropStr.StartsWith(AlphaPosPropStr))
+		{
+			UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
 			{
-			 	return GoalPropertyName.ToString().EndsWith(InGoal.Name.ToString());
+				const double* AlphaValue = SourceProperty->ContainerPtrToValuePtr<double>(InSourceInstance);
+				Goal.PositionAlpha = FMath::Clamp<float>(*AlphaValue, 0.f, 1.f);
 			});
-
-			if (Goals.IsValidIndex(GoalIndex))
+		}
+		else if (GoalPropStr.StartsWith(AlphaRotPropStr))
+		{
+			UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
 			{
-				FIKRigGoal& Goal = Goals[GoalIndex];
-
-				const FString GoalPropStr = GoalPropertyName.ToString();
-
-				if (GoalPropStr.StartsWith(AlphaPosPropStr))
-				{
-					UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
-					{
-						const double* AlphaValue = SourceProperty->ContainerPtrToValuePtr<double>(InSourceInstance);
-						Goal.PositionAlpha = FMath::Clamp<float>(*AlphaValue, 0.f, 1.f);
-					});
-				}
-				else if (GoalPropStr.StartsWith(AlphaRotPropStr))
-				{
-					UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
-					{
-						const double* AlphaValue = SourceProperty->ContainerPtrToValuePtr<double>(InSourceInstance);
-						Goal.RotationAlpha = FMath::Clamp<float>(*AlphaValue, 0.f, 1.f);
-					});
-				}
-				else if (GoalPropStr.StartsWith(PositionPropStr))
-				{
-					UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
-					{
-						Goal.Position = *SourceProperty->ContainerPtrToValuePtr<FVector>(InSourceInstance);
-					});
-				}
-				else if (GoalPropStr.StartsWith(RotationPropStr))
-				{
-					UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
-					{
-						Goal.Rotation = *SourceProperty->ContainerPtrToValuePtr<FRotator>(InSourceInstance);
-					});
-				}
-			}
+				const double* AlphaValue = SourceProperty->ContainerPtrToValuePtr<double>(InSourceInstance);
+				Goal.RotationAlpha = FMath::Clamp<float>(*AlphaValue, 0.f, 1.f);
+			});
+		}
+		else if (GoalPropStr.StartsWith(PositionPropStr))
+		{
+			UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
+			{
+				Goal.Position = *SourceProperty->ContainerPtrToValuePtr<FVector>(InSourceInstance);
+			});
+		}
+		else if (GoalPropStr.StartsWith(RotationPropStr))
+		{
+			UpdateFunctions.Add([&Goal, SourceProperty](const UObject* InSourceInstance)
+			{
+				Goal.Rotation = *SourceProperty->ContainerPtrToValuePtr<FRotator>(InSourceInstance);
+			});
 		}
 	}
 }
 
 void FAnimNode_IKRig::PropagateInputProperties(const UObject* InSourceInstance)
 {
-	if (InSourceInstance)
+	if (!InSourceInstance)
 	{
-		Algo::ForEach(UpdateFunctions, [InSourceInstance](const UpdateFunction& InFunc)
-		{
-		 	InFunc(InSourceInstance);
-		});
+		return;
 	}
+	
+	Algo::ForEach(UpdateFunctions, [InSourceInstance](const PropertyUpdateFunction& InFunc)
+	{
+		InFunc(InSourceInstance);
+	});
 }
 
 void FAnimNode_IKRig::ConditionalDebugDraw(

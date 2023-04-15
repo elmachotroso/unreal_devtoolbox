@@ -88,6 +88,25 @@ void FSelfShadowedCachedPointIndirectLightingPolicy::GetPixelShaderBindings(
 	FSelfShadowedTranslucencyPolicy::GetPixelShaderBindings(PrimitiveSceneProxy, ShaderElementData.SelfShadowTranslucencyUniformBuffer, PixelShaderParameters, ShaderBindings);
 }
 
+void FSelfShadowedCachedPointIndirectLightingPolicy::GetComputeShaderBindings(
+	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const ElementDataType& ShaderElementData,
+	const ComputeParametersType* ComputeShaderParameters,
+	FMeshDrawSingleShaderBindings& ShaderBindings)
+{
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
+
+	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData.LCI, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
+
+	ShaderBindings.Add(ComputeShaderParameters->PrecomputedLightingBufferParameter, PrecomputedLightingBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->IndirectLightingCacheParameter, IndirectLightingCacheBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->LightmapResourceCluster, LightmapResourceClusterBuffer);
+
+	FSelfShadowedTranslucencyPolicy::GetComputeShaderBindings(PrimitiveSceneProxy, ShaderElementData.SelfShadowTranslucencyUniformBuffer, ComputeShaderParameters, ShaderBindings);
+}
+
 void FSelfShadowedVolumetricLightmapPolicy::GetPixelShaderBindings(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	const ElementDataType& ShaderElementData,
@@ -105,6 +124,25 @@ void FSelfShadowedVolumetricLightmapPolicy::GetPixelShaderBindings(
 	ShaderBindings.Add(PixelShaderParameters->LightmapResourceCluster, LightmapResourceClusterBuffer);
 
 	FSelfShadowedTranslucencyPolicy::GetPixelShaderBindings(PrimitiveSceneProxy, ShaderElementData.SelfShadowTranslucencyUniformBuffer, PixelShaderParameters, ShaderBindings);
+}
+
+void FSelfShadowedVolumetricLightmapPolicy::GetComputeShaderBindings(
+	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const ElementDataType& ShaderElementData,
+	const ComputeParametersType* ComputeShaderParameters,
+	FMeshDrawSingleShaderBindings& ShaderBindings)
+{
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
+
+	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData.LCI, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
+
+	ShaderBindings.Add(ComputeShaderParameters->PrecomputedLightingBufferParameter, PrecomputedLightingBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->IndirectLightingCacheParameter, IndirectLightingCacheBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->LightmapResourceCluster, LightmapResourceClusterBuffer);
+
+	FSelfShadowedTranslucencyPolicy::GetComputeShaderBindings(PrimitiveSceneProxy, ShaderElementData.SelfShadowTranslucencyUniformBuffer, ComputeShaderParameters, ShaderBindings);
 }
 
 void FUniformLightMapPolicy::GetVertexShaderBindings(
@@ -160,6 +198,23 @@ void FUniformLightMapPolicy::GetRayHitGroupShaderBindings(
 	RayHitGroupBindings.Add(RayHitGroupShaderParameters->LightmapResourceCluster, LightmapResourceClusterBuffer);
 }
 #endif
+
+void FUniformLightMapPolicy::GetComputeShaderBindings(
+	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const ElementDataType& ShaderElementData,
+	const ComputeParametersType* ComputeShaderParameters,
+	FMeshDrawSingleShaderBindings& ShaderBindings)
+{
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
+
+	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
+
+	ShaderBindings.Add(ComputeShaderParameters->PrecomputedLightingBufferParameter, PrecomputedLightingBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->IndirectLightingCacheParameter, IndirectLightingCacheBuffer);
+	ShaderBindings.Add(ComputeShaderParameters->LightmapResourceCluster, LightmapResourceClusterBuffer);
+}
 
 void InterpolateVolumetricLightmap(
 	FVector LookupPosition,
@@ -228,20 +283,6 @@ void InterpolateVolumetricLightmap(
 	LQSH.G = GetSHVector3(AmbientVector.Y, ReadSHCoefficient(2), ReadSHCoefficient(3));
 	LQSH.B = GetSHVector3(AmbientVector.Z, ReadSHCoefficient(4), ReadSHCoefficient(5));
 
-	if(VolumetricLightmapData.BrickData.LQLightColor.Data.Num())
-	{
-		// Add stationary direct lighting to match ILC's LQ behavior.
-		FLinearColor LQLightColour = FilteredVolumeLookup<FFloat3Packed>(BrickTextureCoordinate, VolumetricLightmapData.BrickDataDimensions, (const FFloat3Packed*)VolumetricLightmapData.BrickData.LQLightColor.Data.GetData());
-		FVector LQLightDirection = (FVector)FilteredVolumeLookup<FColor>(BrickTextureCoordinate, VolumetricLightmapData.BrickDataDimensions, (const FColor*)VolumetricLightmapData.BrickData.LQLightDirection.Data.GetData());
-		//Swap X and Z channel because it was swapped at ImportVolumetricLightmap for changing format from BGRA to RGBA
-		Swap(LQLightDirection.X, LQLightDirection.Z);
-
-		LQLightDirection = LQLightDirection*2.0f - FVector(1.0f, 1.0f, 1.0f);
-		LQLightDirection.Normalize();
-
-		LQSH.AddIncomingRadiance(LQLightColour, 1.0f, LQLightDirection);
-	}
-
 	// Pack the 3rd order SH as the shader expects
 	OutInterpolation.IndirectLightingSHCoefficients0[0] = FVector4f(LQSH.R.V[0], LQSH.R.V[1], LQSH.R.V[2], LQSH.R.V[3]) * INV_PI;
 	OutInterpolation.IndirectLightingSHCoefficients0[1] = FVector4f(LQSH.G.V[0], LQSH.G.V[1], LQSH.G.V[2], LQSH.G.V[3]) * INV_PI;
@@ -251,8 +292,8 @@ void InterpolateVolumetricLightmap(
 	OutInterpolation.IndirectLightingSHCoefficients1[2] = FVector4f(LQSH.B.V[4], LQSH.B.V[5], LQSH.B.V[6], LQSH.B.V[7]) * INV_PI;
 	OutInterpolation.IndirectLightingSHCoefficients2 = FVector4f(LQSH.R.V[8], LQSH.G.V[8], LQSH.B.V[8], 0.0f) * INV_PI;
 
-	OutInterpolation.IndirectLightingSHSingleCoefficient = FVector4f(AmbientVector.X, AmbientVector.Y, AmbientVector.Z)
-		* FSHVector2::ConstantBasisIntegral * .5f;
+	//The IndirectLightingSHSingleCoefficient should be DotSH1(AmbientVector, CalcDiffuseTransferSH1(1)) / PI, and CalcDiffuseTransferSH1(1) / PI equals to 1 / (2 * sqrt(PI)) and FSHVector2::ConstantBasisIntegral is 2 * sqrt(PI)
+	OutInterpolation.IndirectLightingSHSingleCoefficient = FVector4f(AmbientVector.X, AmbientVector.Y, AmbientVector.Z) / FSHVector2::ConstantBasisIntegral;
 
 	if (VolumetricLightmapData.BrickData.SkyBentNormal.Data.Num() > 0)
 	{
@@ -296,7 +337,7 @@ void GetIndirectLightingCacheParameters(
 {
 	// FCachedVolumeIndirectLightingPolicy, FCachedPointIndirectLightingPolicy
 	{
-		if (VolumetricLightmapSceneData)
+		if (VolumetricLightmapSceneData && VolumetricLightmapSceneData->HasData())
 		{
 			FVolumetricLightmapInterpolation* Interpolation = VolumetricLightmapSceneData->CPUInterpolationCache.Find(VolumetricLightmapLookupPosition);
 
@@ -341,8 +382,8 @@ void GetIndirectLightingCacheParameters(
 				Parameters.IndirectLightingSHCoefficients1[i] = LightingAllocation->SingleSamplePacked1[i];
 			}
 			Parameters.IndirectLightingSHCoefficients2 = LightingAllocation->SingleSamplePacked2;
-			Parameters.IndirectLightingSHSingleCoefficient = FVector4f(LightingAllocation->SingleSamplePacked0[0].X, LightingAllocation->SingleSamplePacked0[1].X, LightingAllocation->SingleSamplePacked0[2].X)
-					* FSHVector2::ConstantBasisIntegral * .5f; //@todo - why is .5f needed to match directional?
+			//The IndirectLightingSHSingleCoefficient should be DotSH1(LightingAllocation->SingleSamplePacked0[0], CalcDiffuseTransferSH1(1)) / PI, and CalcDiffuseTransferSH1(1) / PI equals to 1 / (2 * sqrt(PI)) and FSHVector2::ConstantBasisIntegral is 2 * sqrt(PI)
+			Parameters.IndirectLightingSHSingleCoefficient = FVector4f(LightingAllocation->SingleSamplePacked0[0].X, LightingAllocation->SingleSamplePacked0[1].X, LightingAllocation->SingleSamplePacked0[2].X) / FSHVector2::ConstantBasisIntegral;
 		}
 		else
 		{
@@ -367,9 +408,9 @@ void GetIndirectLightingCacheParameters(
 		// Silently skipping setting the cache texture under failure for now
 		if (FeatureLevel >= ERHIFeatureLevel::SM5 && LightingCache && LightingCache->IsInitialized() && GSupportsVolumeTextureRendering)
 		{
-			Parameters.IndirectLightingCacheTexture0 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture0().ShaderResourceTexture;
-			Parameters.IndirectLightingCacheTexture1 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture1().ShaderResourceTexture;
-			Parameters.IndirectLightingCacheTexture2 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture2().ShaderResourceTexture;
+			Parameters.IndirectLightingCacheTexture0 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture0();
+			Parameters.IndirectLightingCacheTexture1 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture1();
+			Parameters.IndirectLightingCacheTexture2 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture2();
 
 			Parameters.IndirectLightingCacheTextureSampler0 = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
 			Parameters.IndirectLightingCacheTextureSampler1 = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();

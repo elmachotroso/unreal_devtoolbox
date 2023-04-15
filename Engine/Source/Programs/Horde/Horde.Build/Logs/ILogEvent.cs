@@ -1,18 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeCommon;
-using HordeCommon.Rpc;
-using HordeServer.Utilities;
-using Microsoft.Extensions.Logging;
-using MongoDB.Bson;
-using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json;
-using System.Threading.Tasks;
+using EpicGames.Core;
+using Horde.Build.Utilities;
+using HordeCommon;
+using Microsoft.Extensions.Logging;
+using MongoDB.Bson;
 
-namespace HordeServer.Models
+namespace Horde.Build.Logs
 {
 	using LogId = ObjectId<ILogFile>;
 
@@ -128,5 +125,56 @@ namespace HordeServer.Models
 		/// The span this this event belongs to
 		/// </summary>
 		public ObjectId? SpanId { get; set; }
+	}
+
+	/// <summary>
+	/// Extensions for parsing log event properties
+	/// </summary>
+	public static class LogEventExtensions
+	{
+		/// <summary>
+		/// Find all properties of the given type in a particular log line
+		/// </summary>
+		/// <param name="data">Line data</param>
+		/// <param name="type">Type of property to return</param>
+		/// <returns></returns>
+		public static IEnumerable<JsonProperty> FindPropertiesOfType(this ILogEventData data, Utf8String type)
+		{
+			return data.Lines.SelectMany(x => FindPropertiesOfType(x, type));
+		}
+
+		/// <summary>
+		/// Find all properties of the given type in a particular log line
+		/// </summary>
+		/// <param name="line">Line data</param>
+		/// <param name="type">Type of property to return</param>
+		/// <returns></returns>
+		public static IEnumerable<JsonProperty> FindPropertiesOfType(this ILogEventLine line, Utf8String type)
+		{
+			JsonElement properties;
+			if (line.Data.TryGetProperty("properties", out properties) && properties.ValueKind == JsonValueKind.Object)
+			{
+				foreach (JsonProperty property in properties.EnumerateObject())
+				{
+					if (property.Value.ValueKind == JsonValueKind.Object)
+					{
+						foreach (JsonProperty subProperty in property.Value.EnumerateObject())
+						{
+							if (subProperty.NameEquals(LogEventPropertyName.Type.Span))
+							{
+								if (subProperty.Value.ValueKind == JsonValueKind.String && subProperty.Value.ValueEquals(type.Span))
+								{
+									yield return property;
+								}
+								else
+								{
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }

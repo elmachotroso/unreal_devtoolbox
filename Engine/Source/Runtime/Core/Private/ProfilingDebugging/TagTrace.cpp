@@ -2,9 +2,11 @@
 #include "ProfilingDebugging/TagTrace.h"
 
 #include "Experimental/Containers/GrowOnlyLockFreeHash.h"
+#include "Containers/StringView.h"
 #include "CoreTypes.h"
 #include "ProfilingDebugging/MemoryTrace.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/LowLevelMemTrackerPrivate.h"
 #include "Trace/Trace.inl"
 #include "UObject/NameTypes.h"
 
@@ -20,11 +22,11 @@ UE_TRACE_EVENT_BEGIN(Memory, TagSpec, Important|NoSync)
 	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Display)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Memory, MemoryScope)
+UE_TRACE_EVENT_BEGIN(Memory, MemoryScope, NoSync)
 	UE_TRACE_EVENT_FIELD(int32, Tag)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Memory, MemoryScopePtr)
+UE_TRACE_EVENT_BEGIN(Memory, MemoryScopePtr, NoSync)
 	UE_TRACE_EVENT_FIELD(uint64, Ptr)
 UE_TRACE_EVENT_END()
 
@@ -35,38 +37,41 @@ UE_TRACE_EVENT_END()
 thread_local int32 GActiveTag;
 
 ////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(int32 InTag)
+FMemScope::FMemScope(int32 InTag, bool bShouldActivate /*= true*/)
 {
-	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate)
 	{
 		ActivateScope(InTag);
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(ELLMTag InTag)
+FMemScope::FMemScope(ELLMTag InTag, bool bShouldActivate /*= true*/)
 {
-	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate)
 	{
 		ActivateScope(static_cast<int32>(InTag));
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(const FName& InName)
+FMemScope::FMemScope(const FName& InName, bool bShouldActivate /*= true*/)
 {
-	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate)
 	{
 		ActivateScope(MemoryTrace_AnnounceFNameTag(InName));
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(const UE::LLMPrivate::FTagData* TagData)
+FMemScope::FMemScope(const UE::LLMPrivate::FTagData* TagData, bool bShouldActivate /*= true*/)
 {
-	// TagData is opaque so we cant really use the input, additionally we 
-	// cannot count on LLM being active. Instead we have inserted an explicit 
-	// Trace scope directly following the LLM scope. 
+#if ENABLE_LOW_LEVEL_MEM_TRACKER
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate && TagData)
+	{
+		ActivateScope(MemoryTrace_AnnounceFNameTag(TagData->GetName()));
+	}
+#endif // ENABLE_LOW_LEVEL_MEM_TRACKER
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -242,7 +247,17 @@ int32 FTagTrace::AnnounceFNameTag(const FName& Name)
 	// First time encountering this name, announce it
 	ANSICHAR NameString[NAME_SIZE];
 	Name.GetPlainANSIString(NameString);
-	return AnnounceCustomTag(NameIndex, -1, NameString);
+
+	int32 ParentTag = -1;
+	FAnsiStringView NameView(NameString);
+	int32 LeafStart;
+	if (NameView.FindLastChar('/', LeafStart))
+	{
+		FName ParentName(NameView.Left(LeafStart));
+		ParentTag = AnnounceFNameTag(ParentName);
+	}
+
+	return AnnounceCustomTag(NameIndex, ParentTag, NameString);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -75,13 +75,13 @@ static TAutoConsoleVariable<float> CVarSSGISkyDistance(
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 
-DECLARE_GPU_STAT_NAMED(ScreenSpaceReflections, TEXT("ScreenSpace Reflections"));
+DECLARE_GPU_DRAWCALL_STAT_NAMED(ScreenSpaceReflections, TEXT("ScreenSpace Reflections"));
 DECLARE_GPU_STAT_NAMED(ScreenSpaceDiffuseIndirect, TEXT("Screen Space Diffuse Indirect"));
 
 
 static bool IsScreenSpaceDiffuseIndirectSupported(EShaderPlatform ShaderPlatform)
 {
-	if (IsAnyForwardShadingEnabled(ShaderPlatform))
+	if (IsForwardShadingEnabled(ShaderPlatform))
 	{
 		return false;
 	}
@@ -122,7 +122,8 @@ bool ShouldKeepBleedFreeSceneColor(const FViewInfo& View)
 bool ShouldRenderScreenSpaceReflections(const FViewInfo& View)
 {
 	if(!View.Family->EngineShowFlags.ScreenSpaceReflections 
-		|| View.FinalPostProcessSettings.ReflectionMethod != EReflectionMethod::ScreenSpace 
+		// Note: intentionally allow falling back to SSR from other reflection methods, which may be disabled by scalability
+		|| View.FinalPostProcessSettings.ReflectionMethod == EReflectionMethod::None 
 		|| HasRayTracedOverlay(*View.Family)
 		|| View.bIsReflectionCapture)
 	{
@@ -147,7 +148,7 @@ bool ShouldRenderScreenSpaceReflections(const FViewInfo& View)
 		return false;
 	}
 
-	if (IsAnyForwardShadingEnabled(View.GetShaderPlatform()))
+	if (IsForwardShadingEnabled(View.GetShaderPlatform()))
 	{
 		return false;
 	}
@@ -459,7 +460,6 @@ class FScreenSpaceReflectionsStencilPS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SSR_QUALITY"), uint32(0));
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 	}
 	
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -485,7 +485,6 @@ class FScreenSpaceReflectionsPS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 		OutEnvironment.SetDefine(TEXT("SUPPORTS_ANISOTROPIC_MATERIALS"), FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(Parameters.Platform));
 	}
 	
@@ -547,108 +546,12 @@ class FScreenSpaceCastStandaloneRayCS : public FGlobalShader
 	}
 };
 
-class FSetupScreenSpaceTraceProbeCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FSetupScreenSpaceTraceProbeCS)
-	SHADER_USE_PARAMETER_STRUCT(FSetupScreenSpaceTraceProbeCS, FGlobalShader)
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FHierarchyParameters, HierarchyParameters)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, DispatchParametersOutput)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsScreenSpaceDiffuseIndirectSupported(Parameters.Platform);
-	}
-};
-
-class FScreenSpaceTraceProbeCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FScreenSpaceTraceProbeCS);
-	SHADER_USE_PARAMETER_STRUCT(FScreenSpaceTraceProbeCS, FGlobalShader)
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(FCommonScreenSpaceRayParameters, CommonParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FHierarchyParameters, HierarchyParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FHierarchyLevelParameters, LevelParameters)
-		SHADER_PARAMETER(float, FurthestHZBStartMipLevel)
-		RDG_BUFFER_ACCESS(DispatchParameters, ERHIAccess::IndirectArgs)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, ProbeAtlasColorOutput)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, ProbeAtlasSampleMaskOutput)
-	END_SHADER_PARAMETER_STRUCT()
-
-	using FPermutationDomain = TShaderPermutationDomain<LumenProbeHierarchy::FProbeTracingPermutationDim>;
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsScreenSpaceDiffuseIndirectSupported(Parameters.Platform);
-	}
-};
-
-class FSetupScreenSpaceProbeOcclusionCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FSetupScreenSpaceProbeOcclusionCS);
-	SHADER_USE_PARAMETER_STRUCT(FSetupScreenSpaceProbeOcclusionCS, FGlobalShader)
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(int32, MaxTilePerDispatch)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, GlobalClassificationCountersBuffer)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, DispatchParametersOutput)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsScreenSpaceDiffuseIndirectSupported(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
-	}
-};
-
-class FScreenSpaceCastProbeOcclusionCS : public FGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FScreenSpaceCastProbeOcclusionCS);
-	SHADER_USE_PARAMETER_STRUCT(FScreenSpaceCastProbeOcclusionCS, FGlobalShader)
-
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(FCommonScreenSpaceRayParameters, CommonParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FSSRTTileClassificationParameters, TileClassificationParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FIndirectLightingProbeOcclusionParameters, ProbeOcclusionParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FIndirectLightingProbeOcclusionOutputParameters, ProbeOcclusionOutputParameters)
-		SHADER_PARAMETER(int32, DispatchOffset)
-		RDG_BUFFER_ACCESS(DispatchParameters, ERHIAccess::IndirectArgs)
-	END_SHADER_PARAMETER_STRUCT()
-		
-	class FTileClassificationDim : SHADER_PERMUTATION_ENUM_CLASS("DIM_PROBE_OCCLUSION_CLASSIFICATION", LumenProbeHierarchy::EProbeOcclusionClassification);
-	using FPermutationDomain = TShaderPermutationDomain<FTileClassificationDim>;
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsScreenSpaceDiffuseIndirectSupported(Parameters.Platform);
-	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
-	}
-};
-
 IMPLEMENT_GLOBAL_SHADER(FSSRTPrevFrameReductionCS, "/Engine/Private/SSRT/SSRTPrevFrameReduction.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FSSRTDiffuseTileClassificationCS, "/Engine/Private/SSRT/SSRTTileClassification.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FScreenSpaceReflectionsPS,        "/Engine/Private/SSRT/SSRTReflections.usf", "ScreenSpaceReflectionsPS", SF_Pixel);
 IMPLEMENT_GLOBAL_SHADER(FScreenSpaceReflectionsTileVS,    "/Engine/Private/SingleLayerWaterComposite.usf", "WaterTileVS", SF_Vertex);
 IMPLEMENT_GLOBAL_SHADER(FScreenSpaceReflectionsStencilPS, "/Engine/Private/SSRT/SSRTReflections.usf", "ScreenSpaceReflectionsStencilPS", SF_Pixel);
 IMPLEMENT_GLOBAL_SHADER(FScreenSpaceCastStandaloneRayCS,  "/Engine/Private/SSRT/SSRTDiffuseIndirect.usf", "MainCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FSetupScreenSpaceTraceProbeCS,    "/Engine/Private/SSRT/SSRTTraceProbe.usf", "SetupIndirectParametersCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FScreenSpaceTraceProbeCS,         "/Engine/Private/SSRT/SSRTTraceProbe.usf", "MainCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FSetupScreenSpaceProbeOcclusionCS, "/Engine/Private/SSRT/SSRTTraceProbeOcclusion.usf", "MainCS", SF_Compute);
-IMPLEMENT_GLOBAL_SHADER(FScreenSpaceCastProbeOcclusionCS, "/Engine/Private/SSRT/SSRTTraceProbeOcclusion.usf", "MainCS", SF_Compute);
-
 
 void GetSSRShaderOptionsForQuality(ESSRQuality Quality, IScreenSpaceDenoiser::FReflectionsRayTracingConfig* OutRayTracingConfigs)
 {
@@ -843,15 +746,6 @@ FPrevSceneColorMip ReducePrevSceneColorMip(
 			PassParameters->PrevSceneDepth = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.DepthBuffer);
 			PassParameters->PrevSceneDepthSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
 		}
-		else if (View.PrevViewInfo.TSRHistory.IsValid())
-		{
-			PassParameters->PrevSceneColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TSRHistory.LowFrequency);
-			PassParameters->PrevSceneColorSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
-
-			BufferSize = PassParameters->PrevSceneColor->Desc.Extent;
-			ViewportOffset = View.PrevViewInfo.TSRHistory.OutputViewportRect.Min;
-			ViewportExtent = View.PrevViewInfo.TSRHistory.OutputViewportRect.Size();
-		}
 		else
 		{
 			BufferSize = View.PrevViewInfo.TemporalAAHistory.ReferenceBufferSize;
@@ -1042,7 +936,7 @@ void RenderScreenSpaceReflections(
 	bool bDenoiser,
 	IScreenSpaceDenoiser::FReflectionsInputs* DenoiserInputs,
 	bool bSingleLayerWater,
-	FTiledScreenSpaceReflection* TiledScreenSpaceReflection)
+	FTiledReflection* TiledScreenSpaceReflection)
 {
 	FRDGTextureRef InputColor = CurrentSceneColor;
 	if (SSRQuality != ESSRQuality::VisualizeSSR)
@@ -1055,10 +949,6 @@ void RenderScreenSpaceReflections(
 		{
 			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.HalfResTemporalAAHistory);
 		}
-		else if (View.PrevViewInfo.TSRHistory.IsValid())
-		{
-			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TSRHistory.LowFrequency);
-		}
 		else if (View.PrevViewInfo.TemporalAAHistory.IsValid())
 		{
 			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
@@ -1070,7 +960,7 @@ void RenderScreenSpaceReflections(
 	// Alloc inputs for denoising.
 	{
 		FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
-			GetSceneTextureExtent(),
+			View.GetSceneTexturesConfig().Extent,
 			PF_FloatRGBA, FClearValueBinding(FLinearColor(0, 0, 0, 0)),
 			TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_UAV);
 
@@ -1122,7 +1012,7 @@ void RenderScreenSpaceReflections(
 
 		FScreenSpaceReflectionsStencilPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenSpaceReflectionsStencilPS::FParameters>();
 		PassParameters->CommonParameters = CommonParameters;
-		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		PassParameters->RenderTargets = RenderTargets;
 		
 		TShaderMapRef<FScreenSpaceReflectionsStencilPS> PixelShader(View.ShaderMap, PermutationVector);
@@ -1176,14 +1066,6 @@ void RenderScreenSpaceReflections(
 				ensure(ViewportExtent.X > 0 && ViewportExtent.Y > 0);
 				ensure(BufferSize.X > 0 && BufferSize.Y > 0);
 			}
-			else if (View.PrevViewInfo.TSRHistory.IsValid())
-			{
-				ViewportOffset = View.PrevViewInfo.TSRHistory.OutputViewportRect.Min;
-				ViewportExtent = View.PrevViewInfo.TSRHistory.OutputViewportRect.Size();
-				BufferSize = View.PrevViewInfo.TSRHistory.LowFrequency->GetDesc().Extent;
-				ensure(ViewportExtent.X > 0 && ViewportExtent.Y > 0);
-				ensure(BufferSize.X > 0 && BufferSize.Y > 0);
-			}
 			else if (View.PrevViewInfo.TemporalAAHistory.IsValid())
 			{
 				ViewportOffset = View.PrevViewInfo.TemporalAAHistory.ViewportRect.Min;
@@ -1220,7 +1102,7 @@ void RenderScreenSpaceReflections(
 	FScreenSpaceReflectionsPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenSpaceReflectionsPS::FParameters>();
 	PassParameters->CommonParameters = CommonParameters;
 	SetSSRParameters(&PassParameters->SSRPassCommonParameter);
-	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 	PassParameters->RenderTargets = RenderTargets;
 
 	TShaderMapRef<FScreenSpaceReflectionsPS> PixelShader(View.ShaderMap, PermutationVector);
@@ -1262,8 +1144,8 @@ void RenderScreenSpaceReflections(
 		FScreenSpaceReflectionsTileVS::FPermutationDomain VsPermutationVector;
 		TShaderMapRef<FScreenSpaceReflectionsTileVS> VertexShader(View.ShaderMap, VsPermutationVector);
 
-		PassParameters->TileListData = TiledScreenSpaceReflection->TileListStructureBufferSRV;
-		PassParameters->IndirectDrawParameter = TiledScreenSpaceReflection->DispatchIndirectParametersBuffer;
+		PassParameters->TileListData = TiledScreenSpaceReflection->TileListDataBufferSRV;
+		PassParameters->IndirectDrawParameter = TiledScreenSpaceReflection->DrawIndirectParametersBuffer;
 
 		ClearUnusedGraphResources(VertexShader, PixelShader, PassParameters);
 
@@ -1361,157 +1243,6 @@ IScreenSpaceDenoiser::FDiffuseIndirectInputs CastStandaloneDiffuseIndirectRays(
 		FComputeShaderUtils::GetGroupCount(CommonParameters.TracingViewportSize, GroupSize));
 
 	return DenoiserInputs;
-}
-
-void TraceProbe(
-	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
-	const FSceneTextureParameters& SceneTextures,
-	const FPrevSceneColorMip& PrevSceneColor,
-	const LumenProbeHierarchy::FHierarchyParameters& HierarchyParameters,
-	const LumenProbeHierarchy::FIndirectLightingAtlasParameters& IndirectLightingAtlasParameters)
-{
-	RDG_EVENT_SCOPE(GraphBuilder, "SSGI ProbeTracing");
-
-	FRDGBufferRef DispatchParameters = GraphBuilder.CreateBuffer(
-		FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(LumenProbeHierarchy::kProbeMaxHierarchyDepth),
-		TEXT("LumenVoxelTraceProbeDispatch"));
-
-	{
-		FSetupScreenSpaceTraceProbeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSetupScreenSpaceTraceProbeCS::FParameters>();
-		PassParameters->HierarchyParameters = HierarchyParameters;
-		PassParameters->DispatchParametersOutput = GraphBuilder.CreateUAV(DispatchParameters);
-
-		TShaderMapRef<FSetupScreenSpaceTraceProbeCS> ComputeShader(View.ShaderMap);
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("SSGI SetupTraceProbe"),
-			ComputeShader,
-			PassParameters,
-			FIntVector(1, 1, 1));
-	}
-
-	FRDGTextureUAVRef ProbeAtlasColorOutput = GraphBuilder.CreateUAV(IndirectLightingAtlasParameters.ProbeAtlasColor, ERDGUnorderedAccessViewFlags::SkipBarrier);
-	FRDGTextureUAVRef ProbeAtlasSampleMaskOutput = GraphBuilder.CreateUAV(IndirectLightingAtlasParameters.ProbeAtlasSampleMask, ERDGUnorderedAccessViewFlags::SkipBarrier);
-
-	for (int32 HierarchyLevelId = 0; HierarchyLevelId < HierarchyParameters.HierarchyDepth; HierarchyLevelId++)
-	{
-		FScreenSpaceTraceProbeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenSpaceTraceProbeCS::FParameters>();
-		ScreenSpaceRayTracing::SetupCommonScreenSpaceRayParameters(GraphBuilder, SceneTextures, PrevSceneColor, View, /* out */ &PassParameters->CommonParameters);
-		PassParameters->HierarchyParameters = HierarchyParameters;
-		PassParameters->LevelParameters = LumenProbeHierarchy::GetLevelParameters(HierarchyParameters, HierarchyLevelId);
-		PassParameters->DispatchParameters = DispatchParameters;
-
-		// Compute the mip level at wich the trace should start from.
-		{
-			float ProbePixelRadius = LumenProbeHierarchy::kProbeHierarchyMinPixelRadius * float(1 << PassParameters->LevelParameters.LevelId);
-			float TexelCount = PassParameters->LevelParameters.LevelResolution * 4;
-
-			// Amount of noise tolerated by sampling slightly more detailed mip level.
-			float kTolerableMipNoise = 1.0;
-
-			PassParameters->FurthestHZBStartMipLevel = float(FMath::FloorToInt(FMath::Log2(ProbePixelRadius * (2.0f * PI / TexelCount)))) - kTolerableMipNoise;
-		}
-
-		PassParameters->ProbeAtlasColorOutput = ProbeAtlasColorOutput;
-		PassParameters->ProbeAtlasSampleMaskOutput = ProbeAtlasSampleMaskOutput;
-
-		FScreenSpaceTraceProbeCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<LumenProbeHierarchy::FProbeTracingPermutationDim>(
-			LumenProbeHierarchy::GetProbeTracingPermutation(PassParameters->LevelParameters));
-
-		TShaderMapRef<FScreenSpaceTraceProbeCS> ComputeShader(View.ShaderMap, PermutationVector);
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("SSGI TraceProbe(Level=%d Res=%d SuperSample=%d)",
-				PassParameters->LevelParameters.LevelId,
-				PassParameters->LevelParameters.LevelResolution,
-				PassParameters->LevelParameters.LevelSuperSampling),
-			ComputeShader,
-			PassParameters,
-			DispatchParameters,
-			/* IndirectArgOffset = */ sizeof(FRHIDispatchIndirectParameters) * HierarchyLevelId);
-	}
-}
-
-
-void TraceIndirectProbeOcclusion(
-	FRDGBuilder& GraphBuilder,
-	const HybridIndirectLighting::FCommonParameters& CommonParameters,
-	const FPrevSceneColorMip& PrevSceneColor,
-	const FViewInfo& View,
-	const LumenProbeHierarchy::FIndirectLightingProbeOcclusionParameters& ProbeOcclusionParameters)
-{
-	using namespace LumenProbeHierarchy;
-
-	RDG_EVENT_SCOPE(GraphBuilder, "SSGI ProbeOcclusion %dx%d",
-		CommonParameters.TracingViewportSize.X,
-		CommonParameters.TracingViewportSize.Y);
-
-	FRDGBufferRef DispatchParameters;
-	{
-		DispatchParameters = GraphBuilder.CreateBuffer(
-			FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(int32(EProbeOcclusionClassification::MAX) * ProbeOcclusionParameters.DispatchCount),
-			TEXT("SSGI.ProbeOcclusionDispatchParameters"));
-
-		FSetupScreenSpaceProbeOcclusionCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSetupScreenSpaceProbeOcclusionCS::FParameters>();
-		PassParameters->MaxTilePerDispatch = ProbeOcclusionParameters.MaxTilePerDispatch;
-		PassParameters->GlobalClassificationCountersBuffer = ProbeOcclusionParameters.GlobalClassificationCountersBuffer;
-		PassParameters->DispatchParametersOutput = GraphBuilder.CreateUAV(DispatchParameters);
-
-		TShaderMapRef<FSetupScreenSpaceProbeOcclusionCS> ComputeShader(View.ShaderMap);
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("SetupScreenSpaceProbeOcclusion"),
-			ComputeShader,
-			PassParameters,
-			FIntVector(ProbeOcclusionParameters.DispatchCount, 1, 1));
-	}
-
-	FScreenSpaceCastProbeOcclusionCS::FParameters ReferencePassParameters;
-	{
-		ScreenSpaceRayTracing::SetupCommonScreenSpaceRayParameters(GraphBuilder, CommonParameters, PrevSceneColor, View, /* out */ &ReferencePassParameters.CommonParameters);
-		ReferencePassParameters.ProbeOcclusionParameters = ProbeOcclusionParameters;
-		ReferencePassParameters.ProbeOcclusionOutputParameters = CreateProbeOcclusionOutputParameters(
-			GraphBuilder, ProbeOcclusionParameters, ERDGUnorderedAccessViewFlags::SkipBarrier);
-		ReferencePassParameters.DispatchParameters = DispatchParameters;
-	}
-
-	for (int32 i = 0; i < int32(EProbeOcclusionClassification::MAX); i++)
-	{
-		EProbeOcclusionClassification TileClassification = EProbeOcclusionClassification(i);
-
-		FScreenSpaceCastProbeOcclusionCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenSpaceCastProbeOcclusionCS::FParameters>();
-		*PassParameters = ReferencePassParameters;
-
-		FScreenSpaceCastProbeOcclusionCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FScreenSpaceCastProbeOcclusionCS::FTileClassificationDim>(TileClassification);
-
-		TShaderMapRef<FScreenSpaceCastProbeOcclusionCS> ComputeShader(View.ShaderMap, PermutationVector);
-		ClearUnusedGraphResources(ComputeShader, PassParameters);
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("SSGI ProbeOcclusion(%s)", GetEventName(TileClassification)),
-			PassParameters,
-			ERDGPassFlags::Compute,
-			[PassParameters, ComputeShader, i](FRHICommandList& RHICmdList)
-		{
-			FScreenSpaceCastProbeOcclusionCS::FParameters ShaderParameters = *PassParameters;
-			ShaderParameters.DispatchParameters->MarkResourceAsUsed();
-
-			for (int32 DispatchId = 0; DispatchId < ShaderParameters.ProbeOcclusionParameters.DispatchCount; DispatchId++)
-			{
-				ShaderParameters.DispatchOffset = DispatchId * ShaderParameters.ProbeOcclusionParameters.MaxTilePerDispatch;
-
-				int32 IndirectArgsOffset = sizeof(FRHIDispatchIndirectParameters) * (i + DispatchId * int32(EProbeOcclusionClassification::MAX));
-				FComputeShaderUtils::DispatchIndirect(
-					RHICmdList, 
-					ComputeShader,
-					ShaderParameters,
-					ShaderParameters.DispatchParameters->GetIndirectRHICallBuffer(),
-					IndirectArgsOffset);
-			}
-		});
-	}
 }
 
 } // namespace ScreenSpaceRayTracing

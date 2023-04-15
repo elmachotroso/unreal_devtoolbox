@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Toolbars/DMXEditorToolbar.h"
+
 #include "DMXEditor.h"
+#include "DMXEditorStyle.h"
+#include "Commands/DMXEditorCommands.h"
+
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "KismetToolbar"
@@ -14,23 +18,32 @@ void FDMXEditorToolbar::AddCompileToolbar(TSharedPtr<FExtender> Extender)
 		"Asset",
 		EExtensionHook::After,
 		DMXEditorPtr->GetToolkitCommands(),
-		FToolBarExtensionDelegate::CreateSP(this, &FDMXEditorToolbar::FillCompileToolbar));
+		FToolBarExtensionDelegate::CreateSP(this, &FDMXEditorToolbar::FillDMXLibraryToolbar));
 }
 
 FSlateIcon FDMXEditorToolbar::GetStatusImage() const
 {
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Status.Good");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.Status.Good");
 }
 
-FText FDMXEditorToolbar::GetStatusTooltip() const
+void FDMXEditorToolbar::FillDMXLibraryToolbar(FToolBarBuilder& ToolbarBuilder)
 {
-	return LOCTEXT("Default_Status", "Good to go");
-}
+	ToolbarBuilder.BeginSection("DMXLibraryToolbar");
+	{
+		ToolbarBuilder.AddToolBarButton(
+			FDMXEditorCommands::Get().ImportDMXLibrary,
+			NAME_None,
+			TAttribute<FText>(),
+			TAttribute<FText>(),
+			FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.DMXLibraryToolbar.Import"));
 
-void FDMXEditorToolbar::FillCompileToolbar(FToolBarBuilder& ToolbarBuilder)
-{
-	// TODO. Implement custom toolbar
-	ToolbarBuilder.BeginSection("CompileToolbar");
+		ToolbarBuilder.AddToolBarButton(
+			FDMXEditorCommands::Get().ExportDMXLibrary,
+			NAME_None,
+			TAttribute<FText>(),
+			TAttribute<FText>(),
+			FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.DMXLibraryToolbar.Export"));
+	}
 	ToolbarBuilder.EndSection();
 }
 

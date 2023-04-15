@@ -1,81 +1,69 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
-	class DeleteFilesTask : IModalTask
+	static class DeleteFilesTask
 	{
-		PerforceConnection Perforce;
-		List<FileInfo> FilesToSync;
-		List<FileInfo> FilesToDelete;
-		List<DirectoryInfo> DirectoriesToDelete;
-
-		public DeleteFilesTask(PerforceConnection Perforce, List<FileInfo> FilesToSync, List<FileInfo> FilesToDelete, List<DirectoryInfo> DirectoriesToDelete)
+		public static async Task RunAsync(IPerforceSettings perforceSettings, List<FileInfo> filesToSync, List<FileInfo> filesToDelete, List<DirectoryInfo> directoriesToDelete, ILogger logger, CancellationToken cancellationToken)
 		{
-			this.Perforce = Perforce;
-			this.FilesToSync = FilesToSync;
-			this.FilesToDelete = FilesToDelete;
-			this.DirectoriesToDelete = DirectoriesToDelete;
-		}
+			StringBuilder failMessage = new StringBuilder();
 
-		public bool Run(out string ErrorMessage)
-		{
-			StringBuilder FailMessage = new StringBuilder();
-
-			if(FilesToSync.Count > 0)
+			if(filesToSync.Count > 0)
 			{
-				List<string> RevisionsToSync = new List<string>();
-				foreach(FileInfo FileToSync in FilesToSync)
+				using IPerforceConnection perforce = await PerforceConnection.CreateAsync(perforceSettings, logger);
+
+				List<string> revisionsToSync = new List<string>();
+				foreach(FileInfo fileToSync in filesToSync)
 				{
-					RevisionsToSync.Add(String.Format("{0}#have", PerforceUtils.EscapePath(FileToSync.FullName)));
+					revisionsToSync.Add(String.Format("{0}#have", PerforceUtils.EscapePath(fileToSync.FullName)));
 				}
 
-				StringWriter Log = new StringWriter();
-				if(!Perforce.Sync(RevisionsToSync, x => { }, new List<string>(), true, null, Log))
+				List<PerforceResponse<SyncRecord>> failedRecords = await perforce.TrySyncAsync(SyncOptions.Force, revisionsToSync, cancellationToken).Where(x => x.Failed).ToListAsync(cancellationToken);
+				foreach (PerforceResponse<SyncRecord> failedRecord in failedRecords)
 				{
-					FailMessage.Append(Log.ToString());
+					failMessage.Append(failedRecord.ToString());
 				}
 			}
 
-			foreach(FileInfo FileToDelete in FilesToDelete)
+			foreach(FileInfo fileToDelete in filesToDelete)
 			{
 				try
 				{
-					FileToDelete.IsReadOnly = false;
-					FileToDelete.Delete();
+					fileToDelete.IsReadOnly = false;
+					fileToDelete.Delete();
 				}
-				catch(Exception Ex)
+				catch(Exception ex)
 				{
-					FailMessage.AppendFormat("{0} ({1})\r\n", FileToDelete.FullName, Ex.Message.Trim());
+					logger.LogWarning(ex, "Unable to delete {File}", fileToDelete.FullName);
+					failMessage.AppendFormat("{0} ({1})\r\n", fileToDelete.FullName, ex.Message.Trim());
 				}
 			}
-			foreach(DirectoryInfo DirectoryToDelete in DirectoriesToDelete)
+			foreach(DirectoryInfo directoryToDelete in directoriesToDelete)
 			{
 				try
 				{
-					DirectoryToDelete.Delete(true);
+					directoryToDelete.Delete(true);
 				}
-				catch(Exception Ex)
+				catch(Exception ex)
 				{
-					FailMessage.AppendFormat("{0} ({1})\r\n", DirectoryToDelete.FullName, Ex.Message.Trim());
+					logger.LogWarning(ex, "Unable to delete {Directory}", directoryToDelete.FullName);
+					failMessage.AppendFormat("{0} ({1})\r\n", directoryToDelete.FullName, ex.Message.Trim());
 				}
 			}
 
-			if(FailMessage.Length == 0)
+			if(failMessage.Length > 0)
 			{
-				ErrorMessage = null;
-				return true;
-			}
-			else 
-			{
-				ErrorMessage = FailMessage.ToString();
-				return false;
+				throw new UserErrorException(failMessage.ToString());
 			}
 		}
 	}

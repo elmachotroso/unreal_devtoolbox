@@ -1,7 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#if WITH_CHAOS
-
 #include "Physics/Experimental/PhysInterface_Chaos.h"
 #include "Physics/Experimental/PhysScene_Chaos.h"
 #include "Physics/Experimental/ChaosInterfaceUtils.h"
@@ -45,14 +43,6 @@
 #include "PhysicalMaterials/PhysicalMaterialMask.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
-
-#if PHYSICS_INTERFACE_PHYSX
-#include "geometry/PxConvexMesh.h"
-#include "geometry/PxTriangleMesh.h"
-#include "foundation/PxVec3.h"
-#include "extensions/PxMassProperties.h"
-#include "Containers/ArrayView.h"
-#endif
 
 DEFINE_STAT(STAT_TotalPhysicsTime);
 DEFINE_STAT(STAT_NumCloths);
@@ -407,8 +397,8 @@ void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstra
 			}
 
 			Constraint->SetLinearDriveForceMode(Chaos::EJointForceMode::Acceleration);
-			Constraint->SetLinearDriveStiffness(Chaos::ConstraintSettings::LinearDriveStiffnessScale() * FMath::Max3(InDriveParams.XDrive.Stiffness, InDriveParams.YDrive.Stiffness, InDriveParams.ZDrive.Stiffness));
-			Constraint->SetLinearDriveDamping(Chaos::ConstraintSettings::LinearDriveDampingScale() * FMath::Max3(InDriveParams.XDrive.Damping, InDriveParams.YDrive.Damping, InDriveParams.ZDrive.Damping));
+			Constraint->SetLinearDriveStiffness(Chaos::ConstraintSettings::LinearDriveStiffnessScale() * Chaos::FVec3(InDriveParams.XDrive.Stiffness, InDriveParams.YDrive.Stiffness, InDriveParams.ZDrive.Stiffness));
+			Constraint->SetLinearDriveDamping(Chaos::ConstraintSettings::LinearDriveDampingScale() * Chaos::FVec3(InDriveParams.XDrive.Damping, InDriveParams.YDrive.Damping, InDriveParams.ZDrive.Damping));
 		}
 	}
 }
@@ -470,13 +460,21 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 				}
 				else
 				{
-					Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget * 2.0f * PI); // Rev/s to Rad/s
+					Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget * 2.0f * UE_PI); // Rev/s to Rad/s
 				}
 			}
 
 			Constraint->SetAngularDriveForceMode(Chaos::EJointForceMode::Acceleration);
-			Constraint->SetAngularDriveStiffness(Chaos::ConstraintSettings::AngularDriveStiffnessScale() * FMath::Max3(InDriveParams.SlerpDrive.Stiffness, InDriveParams.TwistDrive.Stiffness, InDriveParams.SwingDrive.Stiffness));
-			Constraint->SetAngularDriveDamping(Chaos::ConstraintSettings::AngularDriveDampingScale() * FMath::Max3(InDriveParams.SlerpDrive.Damping, InDriveParams.TwistDrive.Damping, InDriveParams.SwingDrive.Damping));
+			if (InDriveParams.AngularDriveMode == EAngularDriveMode::TwistAndSwing)
+			{
+				Constraint->SetAngularDriveStiffness(Chaos::ConstraintSettings::AngularDriveStiffnessScale() * Chaos::FVec3(InDriveParams.TwistDrive.Stiffness, InDriveParams.SwingDrive.Stiffness, InDriveParams.SwingDrive.Stiffness));
+				Constraint->SetAngularDriveDamping(Chaos::ConstraintSettings::AngularDriveDampingScale() * Chaos::FVec3(InDriveParams.TwistDrive.Damping, InDriveParams.SwingDrive.Damping, InDriveParams.SwingDrive.Damping));
+			}
+			else
+			{
+				Constraint->SetAngularDriveStiffness(Chaos::ConstraintSettings::AngularDriveStiffnessScale() * Chaos::FVec3(InDriveParams.SlerpDrive.Stiffness));
+				Constraint->SetAngularDriveDamping(Chaos::ConstraintSettings::AngularDriveDampingScale() * Chaos::FVec3(InDriveParams.SlerpDrive.Damping));
+			}
 		}
 	}
 }
@@ -848,7 +846,6 @@ void FPhysInterface_Chaos::AddGeometry(FPhysicsActorHandle& InActor, const FGeom
 	Chaos::FShapesArray Shapes;
 	ChaosInterface::CreateGeometry(InParams, Geoms, Shapes);
 
-#if WITH_CHAOS
 	if (InActor && Geoms.Num())
 	{
 		for (TUniquePtr<Chaos::FPerShapeData>& Shape : Shapes)
@@ -889,7 +886,6 @@ void FPhysInterface_Chaos::AddGeometry(FPhysicsActorHandle& InActor, const FGeom
 			InActor->GetGameThreadAPI().SetShapesArray(MoveTemp(Shapes));
 		}
 	}
-#endif
 }
 
 void FPhysInterface_Chaos::SetMaterials(const FPhysicsShapeHandle& InShape, const TArrayView<UPhysicalMaterial*> InMaterials)
@@ -921,37 +917,33 @@ void FPhysInterface_Chaos::SetMaterials(const FPhysicsShapeHandle& InShape, cons
 
 		int MaskMapMatIdx = 0;
 
-		InShape.Shape->ModifyMaterialMaskMaps([&](auto& MaterialMaskMaps)
+		for(FPhysicalMaterialMaskParams& MaterialMaskData : InMaterialMasks)
 		{
-			for(FPhysicalMaterialMaskParams& MaterialMaskData : InMaterialMasks)
-		{
-				if(MaterialMaskData.PhysicalMaterialMask && ensure(MaterialMaskData.PhysicalMaterialMap))
+			if(MaterialMaskData.PhysicalMaterialMask && ensure(MaterialMaskData.PhysicalMaterialMap))
 			{
 				NewMaterialMaskHandles.Add(MaterialMaskData.PhysicalMaterialMask->GetPhysicsMaterialMask());
-					for(int i = 0; i < EPhysicalMaterialMaskColor::MAX; i++)
+				for(int i = 0; i < EPhysicalMaterialMaskColor::MAX; i++)
 				{
-						if(UPhysicalMaterial* MapMat = MaterialMaskData.PhysicalMaterialMap->GetPhysicalMaterialFromMap(i))
+					if(UPhysicalMaterial* MapMat = MaterialMaskData.PhysicalMaterialMap->GetPhysicalMaterialFromMap(i))
 					{
-							MaterialMaskMaps.Emplace(MaskMapMatIdx);
+						NewMaterialMaskMaps.Emplace(MaskMapMatIdx);
 						MaskMapMatIdx++;
-						} else
+					} 
+					else
 					{
-							MaterialMaskMaps.Emplace(INDEX_NONE);
+						NewMaterialMaskMaps.Emplace(INDEX_NONE);
+					}
 				}
-			}
-				} else
+			} 
+			else
 			{
 				NewMaterialMaskHandles.Add(Chaos::FMaterialMaskHandle());
-					for(int i = 0; i < EPhysicalMaterialMaskColor::MAX; i++)
+				for(int i = 0; i < EPhysicalMaterialMaskColor::MAX; i++)
 				{
-						MaterialMaskMaps.Emplace(INDEX_NONE);
+					NewMaterialMaskMaps.Emplace(INDEX_NONE);
 				}
 			}
 		}
-
-		});
-		
-
 		
 		if (MaskMapMatIdx > 0)
 		{
@@ -975,6 +967,7 @@ void FPhysInterface_Chaos::SetMaterials(const FPhysicsShapeHandle& InShape, cons
 		}
 
 		InShape.Shape->SetMaterialMasks(NewMaterialMaskHandles);
+		InShape.Shape->SetMaterialMaskMaps(NewMaterialMaskMaps);
 		InShape.Shape->SetMaterialMaskMapMaterials(NewMaterialMaskMaterialHandles);
 	}
 }
@@ -995,7 +988,7 @@ bool FPhysInterface_Chaos::LineTrace_Geom(FHitResult& OutHit, const FBodyInstanc
 
 	const FVector Delta = WorldEnd - WorldStart;
 	const float DeltaMag = Delta.Size();
-	if (DeltaMag > KINDA_SMALL_NUMBER)
+	if (DeltaMag > UE_KINDA_SMALL_NUMBER)
 	{
 		{
 			// #PHYS2 Really need a concept for "multi" locks here - as we're locking ActorRef but not TargetInstance->ActorRef
@@ -1102,7 +1095,7 @@ bool FPhysInterface_Chaos::Sweep_Geom(FHitResult& OutHit, const FBodyInstance* I
 
 				const FVector Delta = InEnd - InStart;
 				const float DeltaMag = Delta.Size();
-				if (DeltaMag > KINDA_SMALL_NUMBER)
+				if (DeltaMag > UE_KINDA_SMALL_NUMBER)
 				{
 					const FTransform ActorTM(Actor->GetGameThreadAPI().R(), Actor->GetGameThreadAPI().X());
 
@@ -1177,7 +1170,7 @@ bool FPhysInterface_Chaos::Sweep_Geom(FHitResult& OutHit, const FBodyInstance* I
 	return bSweepHit;
 }
 
-bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplicitObject& InGeom, const FTransform& GeomTransform, FMTDResult* OutOptResult)
+bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplicitObject& InGeom, const FTransform& GeomTransform, FMTDResult* OutOptResult, bool bTraceComplex)
 {
 	const FBodyInstance* TargetInstance = InInstance->WeldParent ? InInstance->WeldParent : InInstance;
 	FPhysicsActorHandle RigidBody = TargetInstance->ActorHandle;
@@ -1200,41 +1193,47 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const Chaos::FImplici
 		const Chaos::FPerShapeData* Shape = ShapeRef.Shape;
 		check(Shape);
 
-		if (TargetInstance->IsShapeBoundToBody(ShapeRef))
+		FCollisionFilterData ShapeFilter = Shape->GetQueryData();
+		const bool bShapeIsComplex = (ShapeFilter.Word3 & EPDF_ComplexCollision) != 0;
+		const bool bShapeIsSimple = (ShapeFilter.Word3 & EPDF_SimpleCollision) != 0;
+		if ((bTraceComplex && bShapeIsComplex) || (!bTraceComplex && bShapeIsSimple))
 		{
-			if (OutOptResult)
+			if (TargetInstance->IsShapeBoundToBody(ShapeRef))
 			{
-				Chaos::FMTDInfo MTDInfo;
-				if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform, /*Thickness=*/0, &MTDInfo); }))
+				if (OutOptResult)
 				{
-					OutOptResult->Distance = MTDInfo.Penetration;
-					OutOptResult->Direction = MTDInfo.Normal;
-					return true;	//question: should we take most shallow penetration?
+					Chaos::FMTDInfo MTDInfo;
+					if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform, /*Thickness=*/0, &MTDInfo); }))
+					{
+						OutOptResult->Distance = MTDInfo.Penetration;
+						OutOptResult->Direction = MTDInfo.Normal;
+						return true;	//question: should we take most shallow penetration?
+					}
 				}
-			}
-			else	//question: why do we even allow user to not pass in MTD info?
-			{
-				if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform); }))
+				else	//question: why do we even allow user to not pass in MTD info?
 				{
-					return true;
+					if (Chaos::Utilities::CastHelper(InGeom, ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::OverlapQuery(*Shape->GetGeometry(), FullActorTM, Downcast, GeomTransform); }))
+					{
+						return true;
+					}
 				}
-			}
 
+			}
 		}
 	}
 
 	return false;
 }
 
-bool FPhysInterface_Chaos::Overlap_Geom(const FBodyInstance* InBodyInstance, const FPhysicsGeometryCollection& InGeometry, const FTransform& InShapeTransform, FMTDResult* OutOptResult)
+bool FPhysInterface_Chaos::Overlap_Geom(const FBodyInstance* InBodyInstance, const FPhysicsGeometryCollection& InGeometry, const FTransform& InShapeTransform, FMTDResult* OutOptResult, bool bTraceComplex)
 {
-	return Overlap_GeomInternal(InBodyInstance, InGeometry.GetGeometry(), InShapeTransform, OutOptResult);
+	return Overlap_GeomInternal(InBodyInstance, InGeometry.GetGeometry(), InShapeTransform, OutOptResult, bTraceComplex);
 }
 
-bool FPhysInterface_Chaos::Overlap_Geom(const FBodyInstance* InBodyInstance, const FCollisionShape& InCollisionShape, const FQuat& InShapeRotation, const FTransform& InShapeTransform, FMTDResult* OutOptResult)
+bool FPhysInterface_Chaos::Overlap_Geom(const FBodyInstance* InBodyInstance, const FCollisionShape& InCollisionShape, const FQuat& InShapeRotation, const FTransform& InShapeTransform, FMTDResult* OutOptResult, bool bTraceComplex)
 {
 	FPhysicsShapeAdapter Adaptor(InShapeRotation, InCollisionShape);
-	return Overlap_GeomInternal(InBodyInstance, Adaptor.GetGeometry(), Adaptor.GetGeomPose(InShapeTransform.GetTranslation()), OutOptResult);
+	return Overlap_GeomInternal(InBodyInstance, Adaptor.GetGeometry(), Adaptor.GetGeomPose(InShapeTransform.GetTranslation()), OutOptResult, bTraceComplex);
 }
 
 bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInstance, const FVector& InPoint, float& OutDistanceSquared, FVector* OutOptPointOnBody)
@@ -1246,7 +1245,7 @@ bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInsta
 	}
 
 	float ReturnDistance = -1.f;
-	float MinPhi = BIG_NUMBER;
+	float MinPhi = UE_BIG_NUMBER;
 	bool bFoundValidBody = false;
 	bool bEarlyOut = true;
 
@@ -1256,11 +1255,10 @@ bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInsta
 
 	FPhysicsCommand::ExecuteRead(UseBI->ActorHandle, [&](const FPhysicsActorHandle& Actor)
 	{
-
 		bEarlyOut = false;
 
 		TArray<FPhysicsShapeReference_Chaos> Shapes;
-		InInstance->GetAllShapes_AssumesLocked(Shapes);
+		UseBI->GetAllShapes_AssumesLocked(Shapes);
 		for (const FPhysicsShapeReference_Chaos& Shape : Shapes)
 		{
 			if (!Shape.IsValid())
@@ -1268,7 +1266,7 @@ bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInsta
 				continue;
 			}
 
-			if (UseBI->IsShapeBoundToBody(Shape) == false)	//skip welded shapes that do not belong to us
+			if (InInstance->IsShapeBoundToBody(Shape) == false)	//skip welded shapes that do not belong to us
 			{
 				continue;
 			}
@@ -1348,6 +1346,4 @@ void FPhysInterface_Chaos::CalculateMassPropertiesFromShapeCollection(Chaos::FMa
 {
 	ChaosInterface::CalculateMassPropertiesFromShapeCollection(OutProperties,InShapes,InDensityKGPerCM);
 }
-
-#endif
 

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using AutomationTool.Tasks;
 using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
@@ -11,7 +12,7 @@ using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	/// <summary>
 	/// Parameters for a task that strips symbols from a set of files
@@ -53,7 +54,7 @@ namespace BuildGraph.Tasks
 	/// Strips debugging information from a set of files.
 	/// </summary>
 	[TaskElement("Strip", typeof(StripTaskParameters))]
-	public class StripTask : CustomTask
+	public class StripTask : BgTaskImpl
 	{
 		/// <summary>
 		/// Parameters for this task
@@ -75,7 +76,7 @@ namespace BuildGraph.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Get the base directory
 			DirectoryReference BaseDir = Parameters.BaseDir;
@@ -113,6 +114,7 @@ namespace BuildGraph.Tasks
 
 			// Add the target files to the set of build products
 			BuildProducts.UnionWith(TargetFiles);
+			return Task.CompletedTask;
 		}
 
 		/// <summary>
@@ -139,6 +141,27 @@ namespace BuildGraph.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			return FindTagNamesFromList(Parameters.Tag);
+		}
+	}
+
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Strips symbols from a set of files.
+		/// </summary>
+		/// <param name="Files"></param>
+		/// <param name="Platform">The platform toolchain to strip binaries.</param>
+		/// <param name="BaseDir">The directory to find files in.</param>
+		/// <param name="OutputDir">Output directory for the stripped files. Defaults to the input path, overwriting the input files.</param>
+		/// <returns></returns>
+		public static async Task<FileSet> StripAsync(FileSet Files, UnrealTargetPlatform Platform, DirectoryReference BaseDir = null, DirectoryReference OutputDir = null)
+		{
+			StripTaskParameters Parameters = new StripTaskParameters();
+			Parameters.Platform = Platform;
+			Parameters.BaseDir = BaseDir;
+			Parameters.Files = String.Join(";", Files.Flatten().Values.Select(x => x.FullName));
+			Parameters.OutputDir = OutputDir;
+			return await ExecuteAsync(new StripTask(Parameters));
 		}
 	}
 }

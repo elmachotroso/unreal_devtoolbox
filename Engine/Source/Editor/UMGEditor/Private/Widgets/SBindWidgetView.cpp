@@ -7,7 +7,7 @@
 
 #include "IDocumentation.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
@@ -16,6 +16,8 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
+
+#include "Animation/WidgetAnimation.h"
 
 
 #define LOCTEXT_NAMESPACE "UMG.BindWidget"
@@ -117,22 +119,22 @@ public:
 				FText Tooltip = FText::GetEmpty();
 				if (EntryPtr->bIsBound && EntryPtr->bIsCorrectClass)
 				{
-					Image = FEditorStyle::GetBrush("Icons.Success");
+					Image = FAppStyle::GetBrush("Icons.Success");
 					Tooltip = LOCTEXT("BoundCorrectlyTooltip", "The widget is bound");
 				}
 				else if (EntryPtr->bIsBound) // is not of the correct class
 				{
-					Image = FEditorStyle::GetBrush("Icons.Error");
+					Image = FAppStyle::GetBrush("Icons.Error");
 					Tooltip = LOCTEXT("BoundWidgetWrongClassTooltip", "The bound widget is not of the correct type.");
 				}
 				else if (EntryPtr->bIsOptional) // is not of the correct class
 				{
-					Image = FEditorStyle::GetBrush("Icons.FilledCircle");
+					Image = FAppStyle::GetBrush("Icons.FilledCircle");
 					Tooltip = LOCTEXT("BoundOptionalTooltip", "The widget is not bound but it is optional.");
 				}
 				else
 				{
-					Image = FEditorStyle::GetBrush("Icons.Error");
+					Image = FAppStyle::GetBrush("Icons.Error");
 					Tooltip = LOCTEXT("BoundNoWidgetTooltip", "The widget is not bound.");
 				}
 
@@ -223,7 +225,7 @@ private:
 		if (Entry->EntryType == FBindWidgetListEntry::EEntryType::Category)
 		{
 			return SNew(STableRow<FBindWidgetListEntryPtr>, OwnerTable)
-				.Style(FEditorStyle::Get(), "UMGEditor.PaletteHeader")
+				.Style(FAppStyle::Get(), "UMGEditor.PaletteHeader")
 				.Padding(5.0f)
 				.ShowSelection(false)
 				[
@@ -318,7 +320,7 @@ TArray<FBindWidgetListEntryPtr> BuildSourceDataList(TSharedPtr<FWidgetBlueprintE
 		else if (WidgetProperty->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass()))
 		{
 			bool bIsOptional = false;
-			if (FWidgetBlueprintEditorUtils::IsBindWidgetProperty(WidgetProperty, bIsOptional))
+			if (FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(WidgetProperty, bIsOptional))
 			{
 				TSharedRef<FBindWidgetListEntry> Ref = MakeShared<FBindWidgetListEntry>();
 				Ref->Property = WidgetProperty;
@@ -370,11 +372,11 @@ void SBindWidgetView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBlue
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SBorder)
 			.Padding(0)
-			.BorderImage(FEditorStyle::GetBrush("NoBrush"))
+			.BorderImage(FAppStyle::GetBrush("NoBrush"))
 			[
 				SAssignNew(ListView, UE::UMG::SBindWidgetView, UE::UMG::BuildSourceDataList(InBlueprintEditor))
 			]

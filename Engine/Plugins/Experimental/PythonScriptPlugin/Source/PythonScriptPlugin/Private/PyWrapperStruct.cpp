@@ -12,6 +12,8 @@
 #include "Templates/Casts.h"
 #include "Engine/UserDefinedStruct.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PyWrapperStruct)
+
 #if WITH_PYTHON
 
 void InitializePyWrapperStruct(PyGenUtil::FNativePythonModule& ModuleInfo)
@@ -1079,7 +1081,7 @@ PyTypeObject InitializePyWrapperStructType()
 				return nullptr;
 			}
 
-			static const UEnum* PropertyAccessChangeNotifyModeEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EPropertyAccessChangeNotifyMode"));
+			static const UEnum* PropertyAccessChangeNotifyModeEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/CoreUObject.EPropertyAccessChangeNotifyMode"));
 
 			EPropertyAccessChangeNotifyMode NotifyMode = EPropertyAccessChangeNotifyMode::Default;
 			if (PyNotifyModeObj && !PyConversion::NativizeEnumEntry(PyNotifyModeObj, PropertyAccessChangeNotifyModeEnum, NotifyMode))
@@ -1191,19 +1193,89 @@ PyTypeObject InitializePyWrapperStructType()
 
 			Py_RETURN_NONE;
 		}
+
+		static PyObject* ExportToText(FPyWrapperStruct* InSelf)
+		{
+			if (!FPyWrapperStruct::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+
+			FString ExportedText;
+			InSelf->ScriptStruct->ExportText(ExportedText, InSelf->StructInstance, InSelf->StructInstance, nullptr, PPF_None, nullptr);
+			return PyConversion::Pythonize(ExportedText);
+		}
+
+		static PyObject* ImportFromText(FPyWrapperStruct* InSelf, PyObject* InArgs, PyObject* InKwds)
+		{
+			if (!FPyWrapperStruct::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+
+			PyObject* PyContentObj = nullptr;
+			static const char *ArgsKwdList[] = { "content", nullptr };
+			if (!PyArg_ParseTupleAndKeywords(InArgs, InKwds, "O:import_text", (char**)ArgsKwdList, &PyContentObj))
+			{
+				return nullptr;
+			}
+
+			FString TextToImport;
+			if(PyConversion::Nativize(PyContentObj, TextToImport).Failed())
+			{
+				return nullptr;
+			}
+
+			class FErrorPipe : public FOutputDevice
+			{
+			public:
+
+				FPyWrapperStruct* Self;
+				int32 NumErrors;
+
+				FErrorPipe(FPyWrapperStruct* InSelf)
+					: FOutputDevice()
+					, Self(InSelf)
+					, NumErrors(0)
+				{
+				}
+
+				virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+				{
+					if(Verbosity == ELogVerbosity::Fatal || Verbosity == ELogVerbosity::Error)
+					{
+						if(++NumErrors == 1)
+						{
+							PyUtil::SetPythonError(PyExc_RuntimeError, Self, V);
+						}
+					}
+					else if(Verbosity == ELogVerbosity::Warning)
+					{
+						PyUtil::SetPythonWarning(PyExc_RuntimeWarning, Self, V);
+					}
+				}
+			};
+
+			FErrorPipe ErrorPipe(InSelf);
+			InSelf->ScriptStruct->ImportText(*TextToImport, InSelf->StructInstance, nullptr, PPF_None, &ErrorPipe, InSelf->ScriptStruct->GetName());
+			return PyConversion::Pythonize(ErrorPipe.NumErrors == 0);
+		}
 	};
 
+	// NOTE: _T = typing.TypeVar('_T') and Type/Any/Union/Mapping/Sequence/Tuple are defined by the Python typing module.
 	static PyMethodDef PyMethods[] = {
-		{ PyGenUtil::PostInitFuncName, PyCFunctionCast(&FMethods::PostInit), METH_NOARGS, "x._post_init() -> None -- called during Unreal struct initialization (equivalent to PostInitProperties in C++)" },
-		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "X.cast(object) -> struct -- cast the given object to this Unreal struct type" },
-		{ "static_struct", PyCFunctionCast(&FMethods::StaticStruct), METH_NOARGS | METH_CLASS, "X.static_struct() -> Struct -- get the Unreal struct of this type" },
-		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.__copy__() -> struct -- copy this Unreal struct" },
-		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "x.copy() -> struct -- copy this Unreal struct" },
-		{ "assign", PyCFunctionCast(&FMethods::Assign), METH_VARARGS, "x.assign(object) -> None -- assign the value of this Unreal struct to value of the given object" },
-		{ "to_tuple", PyCFunctionCast(&FMethods::ToTuple), METH_NOARGS, "x.to_tuple() -> tuple -- break this Unreal struct into a tuple of its properties" },
-		{ "get_editor_property", PyCFunctionCast(&FMethods::GetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.get_editor_property(name) -> object -- get the value of any property visible to the editor" },
-		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.set_editor_property(name, value, notify_mode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
-		{ "set_editor_properties", PyCFunctionCast(&FMethods::SetEditorProperties), METH_VARARGS, "x.set_editor_properties(property_info) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called" },
+		{ PyGenUtil::PostInitFuncName, PyCFunctionCast(&FMethods::PostInit), METH_NOARGS, "_post_init(self) -> None -- called during Unreal struct initialization (equivalent to PostInitProperties in C++)" },
+		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "cast(cls: Type[_T], object: Union[object, Mapping[str, object], Iterable[object]]) -> _T -- cast the given object to this Unreal struct type. Can be partial Mapping[fieldName, fiedValue] or a sequence of field values" },
+		{ "static_struct", PyCFunctionCast(&FMethods::StaticStruct), METH_NOARGS | METH_CLASS, "static_struct(cls) -> ScriptStruct -- get the Unreal struct of this type" },
+		{ "__copy__", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "__copy__(self) -> Any -- copy this Unreal struct" },
+		{ "copy", PyCFunctionCast(&FMethods::Copy), METH_NOARGS, "copy(self) -> Any -- copy this Unreal struct" },
+		{ "assign", PyCFunctionCast(&FMethods::Assign), METH_VARARGS, "assign(self, other: object) -> None -- assign the value of this Unreal struct to value of the given object" },
+		{ "to_tuple", PyCFunctionCast(&FMethods::ToTuple), METH_NOARGS, "to_tuple(self) -> Tuple[object, ...] -- break this Unreal struct into a tuple of its properties" },
+		{ "get_editor_property", PyCFunctionCast(&FMethods::GetEditorProperty), METH_VARARGS | METH_KEYWORDS, "get_editor_property(self, name: Union[Name, str]) -> object -- get the value of any property visible to the editor" },
+		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "set_editor_property(self, name: Union[Name, str], value: object, notify_mode: PropertyAccessChangeNotifyMode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
+		{ "set_editor_properties", PyCFunctionCast(&FMethods::SetEditorProperties), METH_VARARGS, "set_editor_properties(self, properties: Mapping[str, object]) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called" },
+		{ "export_text", PyCFunctionCast(&FMethods::ExportToText), METH_NOARGS, "export_text(self) -> str -- exports the content of the Unreal struct of this type" },
+		{ "import_text", PyCFunctionCast(&FMethods::ImportFromText), METH_VARARGS | METH_KEYWORDS, "import_text(self, content: str) -> bool -- imports the provided string into the Unreal struct" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -1666,3 +1738,4 @@ UPythonGeneratedStruct* UPythonGeneratedStruct::GenerateStruct(PyTypeObject* InP
 }
 
 #endif	// WITH_PYTHON
+

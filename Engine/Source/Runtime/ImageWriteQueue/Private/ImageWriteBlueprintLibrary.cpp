@@ -9,6 +9,8 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImageWriteBlueprintLibrary)
+
 EImageFormat ImageFormatFromDesired(EDesiredImageFormat In)
 {
 	switch (In)
@@ -66,7 +68,7 @@ bool UImageWriteBlueprintLibrary::ResolvePixelData(UTexture* InTexture, const FO
 				return;
 			}
 
-			FIntRect SourceRect(0, 0, Texture2D->GetSizeX(), Texture2D->GetSizeY());
+			FIntRect SourceRect(0, 0, Texture2D->GetDesc().Extent.X, Texture2D->GetDesc().Extent.Y);
 			switch (Texture2D->GetFormat())
 			{
 				case PF_FloatRGBA:

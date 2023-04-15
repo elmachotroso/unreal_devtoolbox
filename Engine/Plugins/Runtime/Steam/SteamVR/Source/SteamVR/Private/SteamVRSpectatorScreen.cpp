@@ -8,17 +8,14 @@
 #include "SteamVRHMD.h"
 
 #include "RendererPrivate.h"
-#include "ScenePrivate.h"
 #include "PostProcess/PostProcessHMD.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 #include "DefaultSpectatorScreenController.h"
 
 #if PLATFORM_LINUX
-#include "VulkanRHIPrivate.h"
+#include "IVulkanDynamicRHI.h"
 #include "ScreenRendering.h"
-#include "VulkanPendingState.h"
-#include "VulkanContext.h"
 #endif
 
 

@@ -220,7 +220,7 @@ bool FSkeletalMeshImportData::ApplyRigToGeo(FSkeletalMeshImportData& Other)
 	Influences.Reset();
 
 	FWedgePosition OldGeoOverlappingPosition;
-	FWedgePosition::FillWedgePosition(OldGeoOverlappingPosition, Other.Points, Other.Wedges, THRESH_POINTS_ARE_SAME);
+	FWedgePosition::FillWedgePosition(OldGeoOverlappingPosition, Other.Points, Other.Wedges, UE_THRESH_POINTS_ARE_SAME);
 	FOctreeQueryHelper OctreeQueryHelper(OldGeoOverlappingPosition.GetOctree());
 
 	//////////////////////////////////////////////////////////////////////////
@@ -253,7 +253,7 @@ bool FSkeletalMeshImportData::ApplyRigToGeo(FSkeletalMeshImportData& Other)
 		bool bFoundMatch = false;
 
 		TArray<int32> OldWedgeIndexes;
-		OldGeoOverlappingPosition.FindMatchingPositionWegdeIndexes(NewPointA, THRESH_POINTS_ARE_SAME, OldWedgeIndexes);
+		OldGeoOverlappingPosition.FindMatchingPositionWegdeIndexes(NewPointA, UE_THRESH_POINTS_ARE_SAME, OldWedgeIndexes);
 		if (OldWedgeIndexes.Num() > 0)
 		{
 			//Getting the other 2 vertices of the new triangle
@@ -269,8 +269,8 @@ bool FSkeletalMeshImportData::ApplyRigToGeo(FSkeletalMeshImportData& Other)
 				int32 OldFaceCorner = (OldWedgeIndex % 3);
 				FVector3f OldNormal = OldFace.TangentZ[OldFaceCorner];
 
-				if (Other.Wedges[OldWedgeIndex].UVs[0].Equals(CurWedgeUV, THRESH_UVS_ARE_SAME)
-					&& OldNormal.Equals(NewNormal, THRESH_NORMALS_ARE_SAME))
+				if (Other.Wedges[OldWedgeIndex].UVs[0].Equals(CurWedgeUV, UE_THRESH_UVS_ARE_SAME)
+					&& OldNormal.Equals(NewNormal, UE_THRESH_NORMALS_ARE_SAME))
 				{
 					//If we have more than one good match, we select the vertex whose triangle is the most similar, 
 					//that way we avoid picking the wrong vertex on a mirror mesh seam.
@@ -481,6 +481,8 @@ void FReductionBaseSkeletalMeshBulkData::Serialize(FArchive& Ar, UObject* Owner)
 	if (Ar.IsTransacting())
 	{
 		// If transacting, keep these members alive the other side of an undo, otherwise their values will get lost
+		Ar << UEVersion;
+		Ar << LicenseeUEVersion;
 		SerializeLoadingCustomVersionContainer.Serialize(Ar);
 		Ar << bUseSerializeLoadingCustomVersion;
 	}
@@ -500,7 +502,7 @@ void FReductionBaseSkeletalMeshBulkData::Serialize(FArchive& Ar, UObject* Owner)
 	if (!Ar.IsTransacting() && Ar.IsLoading())
 	{
 		//Save the custom version so we can load FReductionSkeletalMeshData later
-		SerializeLoadingCustomVersionContainer = BulkData.GetCustomVersions(Ar);
+		BulkData.GetBulkDataVersions(Ar, UEVersion, LicenseeUEVersion, SerializeLoadingCustomVersionContainer);
 		bUseSerializeLoadingCustomVersion = true;
 	}
 }
@@ -526,6 +528,8 @@ void FReductionBaseSkeletalMeshBulkData::SaveReductionData(FSkeletalMeshLODModel
 		Ar << ReductionSkeletalMeshData;
 
 		// Preserve CustomVersions at save time so we can reuse the same ones when reloading direct from memory
+		UEVersion = Ar.UEVer();
+		LicenseeUEVersion = Ar.LicenseeUEVer();
 		SerializeLoadingCustomVersionContainer = Ar.GetCustomVersions();
 	}
 	// Unlock the bulk data
@@ -533,7 +537,7 @@ void FReductionBaseSkeletalMeshBulkData::SaveReductionData(FSkeletalMeshLODModel
 
 void FReductionBaseSkeletalMeshBulkData::LoadReductionData(FSkeletalMeshLODModel& BaseLODModel, TMap<FString, TArray<FMorphTargetDelta>>& BaseLODMorphTargetData, UObject* Owner)
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInAsyncLoadingThread());
 
 	BaseLODMorphTargetData.Empty();
 	if (BulkData.GetElementCount() > 0)
@@ -547,6 +551,8 @@ void FReductionBaseSkeletalMeshBulkData::LoadReductionData(FSkeletalMeshLODModel
 			
 			// Propagate the custom version information from the package to the bulk data, so that the MeshDescription
 			// is serialized with the same versioning.
+			Ar.SetUEVer(UEVersion);
+			Ar.SetLicenseeUEVer(LicenseeUEVersion);
 			Ar.SetCustomVersions(SerializeLoadingCustomVersionContainer);
 
 			Ar << ReductionSkeletalMeshData;
@@ -769,6 +775,8 @@ void FRawSkeletalMeshBulkData::Serialize(FArchive& Ar, UObject* Owner)
 	if (Ar.IsTransacting())
 	{
 		// If transacting, keep these members alive the other side of an undo, otherwise their values will get lost
+		Ar << UEVersion;
+		Ar << LicenseeUEVersion;
 		SerializeLoadingCustomVersionContainer.Serialize(Ar);
 		Ar << bUseSerializeLoadingCustomVersion;
 	}
@@ -806,7 +814,7 @@ void FRawSkeletalMeshBulkData::Serialize(FArchive& Ar, UObject* Owner)
 	if (!Ar.IsTransacting() && Ar.IsLoading())
 	{
 		//Save the custom version so we can load FReductionSkeletalMeshData later
-		SerializeLoadingCustomVersionContainer = BulkData.GetCustomVersions(Ar);
+		BulkData.GetBulkDataVersions(Ar, UEVersion, LicenseeUEVersion, SerializeLoadingCustomVersionContainer);
 		bUseSerializeLoadingCustomVersion = true;
 	}
 }
@@ -830,6 +838,8 @@ void FRawSkeletalMeshBulkData::SaveRawMesh(FSkeletalMeshImportData& InMesh)
 		Ar << InMesh;
 
 		// Preserve CustomVersions at save time so we can reuse the same ones when reloading direct from memory
+		UEVersion = Ar.UEVer();
+		LicenseeUEVersion = Ar.LicenseeUEVer();
 		SerializeLoadingCustomVersionContainer = Ar.GetCustomVersions();
 	}
 
@@ -871,6 +881,8 @@ void FRawSkeletalMeshBulkData::LoadRawMesh(FSkeletalMeshImportData& OutMesh)
 
 			// Propagate the custom version information from the package to the bulk data, so that the MeshDescription
 			// is serialized with the same versioning.
+			Ar.SetUEVer(UEVersion);
+			Ar.SetLicenseeUEVer(LicenseeUEVersion);
 			Ar.SetCustomVersions(SerializeLoadingCustomVersionContainer);
 			Ar << OutMesh;
 		}
@@ -919,6 +931,8 @@ void FRawSkeletalMeshBulkData::UpdateRawMeshFormat()
 
 		// Propagate the custom version information from the package to the bulk data, so that the MeshDescription
 		// is serialized with the same versioning.
+		Reader.SetUEVer(UEVersion);
+		Reader.SetLicenseeUEVer(LicenseeUEVersion);
 		Reader.SetCustomVersions(SerializeLoadingCustomVersionContainer);
 		Reader << MeshImportData;
 
@@ -1019,7 +1033,7 @@ void FWedgePosition::FindMatchingPositionWegdeIndexes(const FVector3f &Position,
 		//No possible match
 		return;
 	}
-	FWedgePositionHelper::FIndexAndZ PositionIndexAndZ(INDEX_NONE, (FVector)Position);
+	FWedgePositionHelper::FIndexAndZ PositionIndexAndZ(INDEX_NONE, Position);
 	int32 SortedIndex = SortedPositions.Num()/2;
 	int32 StartIndex = 0;
 	int32 LastTopIndex = SortedPositions.Num();
@@ -1063,7 +1077,7 @@ void FWedgePosition::FindMatchingPositionWegdeIndexes(const FVector3f &Position,
 	
 	//////////////////////////////////////////////////////////////////////////
 	//Closest point data (!bExactMatch)
-	float MinDistance = MAX_FLT;
+	float MinDistance = UE_MAX_FLT;
 	int32 ClosestIndex = LastBottomIndex;
 
 	for (int32 i = LastBottomIndex; i < SortedPositionNumber; i++)
@@ -1096,7 +1110,7 @@ void FOctreeQueryHelper::FindNearestWedgeIndexes(const FVector3f& SearchPosition
 	OutNearestWedges.Empty();
 	const float OctreeExtent = WedgePosOctree->GetRootBounds().Extent.Size3();
 	//Use the max between 1e-4 cm and 1% of the bounding box extend
-	FVector Extend(FMath::Max(KINDA_SMALL_NUMBER, OctreeExtent*0.005f));
+	FVector Extend(FMath::Max(UE_KINDA_SMALL_NUMBER, OctreeExtent*0.005f));
 
 	//Pass Extent size % of the Octree bounding box extent
 	//PassIndex 0 -> 0.5%
@@ -1115,7 +1129,7 @@ void FOctreeQueryHelper::FindNearestWedgeIndexes(const FVector3f& SearchPosition
 		if (OutNearestWedges.Num() == 0)
 		{
 			float ExtentPercent = 0.05f*((float)PassIndex+1.0f);
-			Extend = FVector(FMath::Max(KINDA_SMALL_NUMBER, OctreeExtent * ExtentPercent));
+			Extend = FVector(FMath::Max(UE_KINDA_SMALL_NUMBER, OctreeExtent * ExtentPercent));
 		}
 		else
 		{
@@ -1137,7 +1151,7 @@ void FWedgePosition::FillWedgePosition(
 	OutOverlappingPosition.SortedPositions.Reserve(NumWedges);
 	for (int32 WedgeIndex = 0; WedgeIndex < NumWedges; WedgeIndex++)
 	{
-		new(OutOverlappingPosition.SortedPositions)FWedgePositionHelper::FIndexAndZ(WedgeIndex, (FVector)OutOverlappingPosition.Points[OutOverlappingPosition.Wedges[WedgeIndex].VertexIndex]);
+		new(OutOverlappingPosition.SortedPositions)FWedgePositionHelper::FIndexAndZ(WedgeIndex, OutOverlappingPosition.Points[OutOverlappingPosition.Wedges[WedgeIndex].VertexIndex]);
 	}
 
 	// Sort the vertices by z value

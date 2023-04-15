@@ -15,11 +15,6 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				}
-			);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"MassEntity",
@@ -36,7 +31,8 @@ namespace UnrealBuildTool.Rules
 					"SmartObjectsModule",
 					"StructUtils",
 					"ZoneGraph",
-					"ZoneGraphAnnotations"
+					"ZoneGraphAnnotations",
+					"MassGameplayExternalTraits"
 				}
 			);
 		}

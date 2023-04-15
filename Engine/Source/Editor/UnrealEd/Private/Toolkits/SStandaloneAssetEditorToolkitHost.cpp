@@ -7,7 +7,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Toolkits/ToolkitManager.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -16,6 +16,7 @@
 #include "ToolMenus.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
+#include "WidgetDrawerConfig.h"
 
 #define LOCTEXT_NAMESPACE "StandaloneAssetEditorToolkit"
 
@@ -212,7 +213,7 @@ void SStandaloneAssetEditorToolkitHost::GenerateMenus(bool bForceCreateMenu)
 
 		UAssetEditorToolkitMenuContext* ContextObject = NewObject<UAssetEditorToolkitMenuContext>();
 		ContextObject->Toolkit = HostedAssetEditorToolkit;
-		FToolMenuContext ToolMenuContext(HostedAssetEditorToolkit->GetToolkitCommands(), FExtender::Combine(MenuExtenders).ToSharedRef(), ContextObject);
+		FToolMenuContext ToolMenuContext(HostedAssetEditorToolkit->GetToolkitCommands(), FExtender::Combine(MenuExtenders), ContextObject);
 		HostedAssetEditorToolkit->InitToolMenuContext(ToolMenuContext);
 		IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>( "MainFrame" );
 		DefaultMenuWidget = MainFrameModule.MakeMainMenu( MyTabManager, AssetEditorMenuName, ToolMenuContext );
@@ -242,7 +243,7 @@ void SStandaloneAssetEditorToolkitHost::SetToolbar(TSharedPtr<SWidget> Toolbar)
 	}
 }
 
-void SStandaloneAssetEditorToolkitHost::RegisterDrawer(FStatusBarDrawer&& Drawer, int32 SlotIndex)
+void SStandaloneAssetEditorToolkitHost::RegisterDrawer(FWidgetDrawerConfig&& Drawer, int32 SlotIndex)
 {
 	if (StatusBarWidget.IsValid())
 	{

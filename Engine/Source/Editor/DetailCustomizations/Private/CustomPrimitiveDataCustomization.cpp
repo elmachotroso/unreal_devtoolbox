@@ -2,30 +2,64 @@
 
 #include "CustomPrimitiveDataCustomization.h"
 
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SHyperlink.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Colors/SColorPicker.h"
-#include "Widgets/Colors/SColorBlock.h"
-#include "SlateOptMacros.h"
-
-#include "EditorStyleSet.h"
-
+#include "Components/ActorComponent.h"
+#include "Components/MeshComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/TextRenderComponent.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/SlateDelegates.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
+#include "IMaterialEditor.h"
 #include "IPropertyTypeCustomization.h"
 #include "IPropertyUtilities.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpression.h"
+#include "Materials/MaterialInterface.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Math/Vector4.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SHyperlink.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
 
-#include "Materials/MaterialInstance.h"
-#include "Materials/MaterialExpressionScalarParameter.h"
-#include "Materials/MaterialExpressionVectorParameter.h"
-#include "IMaterialEditor.h"
-
-#include "Components/PrimitiveComponent.h"
-#include "Components/MeshComponent.h"
-#include "Components/TextRenderComponent.h"
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "CustomPrimitiveDataCustomization"
 
@@ -916,8 +950,8 @@ TSharedRef<SHyperlink> FCustomPrimitiveDataCustomization::CreateHyperlink(FText 
 	return SNew(SHyperlink)
 		.Text(Text)
 		.OnNavigate(this, &FCustomPrimitiveDataCustomization::OnNavigate, Material, ExpressionID)
-		.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
-		.TextStyle(FEditorStyle::Get(), "DetailsView.HyperlinkStyle");
+		.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
+		.TextStyle(FAppStyle::Get(), "DetailsView.HyperlinkStyle");
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
@@ -939,7 +973,7 @@ TSharedRef<SWidget> FCustomPrimitiveDataCustomization::GetUndeclaredParameterWid
 		[
 			SNew(SImage)
 			.DesiredSizeOverride(FVector2D(FontSize))
-			.Image(FEditorStyle::GetBrush("Icons.Warning"))
+			.Image(FAppStyle::GetBrush("Icons.Warning"))
 		]
 		+ SHorizontalBox::Slot()
 		.HAlign(HAlign_Left)
@@ -958,7 +992,7 @@ TSharedRef<SWidget> FCustomPrimitiveDataCustomization::CreateWarningWidget(TShar
 {
 	// Similar to SWarningOrErrorBox widget
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("RoundedWarning"))
+		.BorderImage(FAppStyle::GetBrush("RoundedWarning"))
 		[
 			SNew(SHorizontalBox)
 			.ToolTipText(WarningText)
@@ -969,7 +1003,7 @@ TSharedRef<SWidget> FCustomPrimitiveDataCustomization::CreateWarningWidget(TShar
 			.AutoWidth()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.WarningWithColor"))
+				.Image(FAppStyle::GetBrush("Icons.WarningWithColor"))
 			]
 			+ SHorizontalBox::Slot()
 			.Padding(0.f, 2.f, 16.f, 2.f)

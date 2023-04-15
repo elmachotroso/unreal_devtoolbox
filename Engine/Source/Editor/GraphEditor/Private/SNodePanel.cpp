@@ -2,13 +2,36 @@
 
 
 #include "SNodePanel.h"
-#include "Rendering/DrawElements.h"
+
+#include "Delegates/Delegate.h"
+#include "DiffResults.h"
 #include "Fonts/FontMeasure.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Classes/EditorStyleSettings.h"
-#include "Settings/LevelEditorViewportSettings.h"
-#include "ScopedTransaction.h"
+#include "Framework/MarqueeRect.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/GenericApplicationMessageHandler.h"
+#include "GenericPlatform/ICursor.h"
 #include "GraphEditorSettings.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Math/IntPoint.h"
+#include "Misc/AssertionMacros.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateRenderer.h"
+#include "ScopedTransaction.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Settings/LevelEditorViewportSettings.h"
+#include "Styling/SlateBrush.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/RemoveReference.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
+
+class FWidgetStyle;
 
 struct FZoomLevelEntry
 {
@@ -228,6 +251,36 @@ void SNodePanel::SNode::FNodeSlot::Construct(const FChildren& SlotOwner, FSlotAr
 	}
 }
 
+TArray<SNodePanel::SNode::DiffHighlightInfo> SNodePanel::SNode::GetDiffHighlights(
+	const FDiffSingleResult& DiffResult) const
+{
+	FLinearColor BackgroundColor = DiffResult.GetDisplayColor();
+	BackgroundColor.A = 1.f; // give highlight some transparency so it's not so 'in your face'
+		
+	FLinearColor ShadingColorHSV = BackgroundColor.LinearRGBToHSV();
+	ShadingColorHSV.R -= 15.f; // shift hue
+	if (ShadingColorHSV.R < 0.f)
+	{
+		ShadingColorHSV.R += 360.f;
+	}
+	ShadingColorHSV.B *= 0.2f; // darken
+
+	const FSlateBrush* BackgroundBrush;
+	const FSlateBrush* ForegroundBrush;
+	GetDiffHighlightBrushes(BackgroundBrush, ForegroundBrush);
+
+	return {
+		{
+			BackgroundBrush,
+			BackgroundColor
+		},
+		{
+			ForegroundBrush,
+			ShadingColorHSV.HSVToLinearRGB()
+		},
+	};
+}
+
 SNodePanel::SNodePanel()
 	: Children(this)
 	, VisibleChildren(this)
@@ -307,6 +360,15 @@ FSlateColor SNodePanel::GetZoomTextColorAndOpacity() const
 FVector2D SNodePanel::GetViewOffset() const
 {
 	return ViewOffset;
+}
+
+bool SNodePanel::GetZoomTargetRect(FVector2D& TopLeft, FVector2D& BottomRight) const
+{
+	TopLeft = ZoomTargetTopLeft;
+	BottomRight = ZoomTargetBottomRight;
+	
+	// if the zoom target rect is all zeroed out, then notify caller that there is no target
+	return !(ZoomTargetTopLeft == FVector2D::ZeroVector && ZoomTargetBottomRight == FVector2D::ZeroVector);
 }
 
 void SNodePanel::Construct()
@@ -1270,7 +1332,7 @@ void SNodePanel::RestoreViewSettings(const FVector2D& InViewOffset, float InZoom
 	CurrentBookmarkGuid = InBookmarkGuid;
 }
 
-float SNodePanel::GetSnapGridSize()
+uint32 SNodePanel::GetSnapGridSize()
 {
 	return GetDefault<UEditorStyleSettings>()->GridSnapSize;
 }
@@ -1284,7 +1346,7 @@ void SNodePanel::PaintBackgroundAsLines(const FSlateBrush* BackgroundImage, cons
 {
 	const bool bAntialias = false;
 
-	const int32 RulePeriod = (int32)FEditorStyle::GetFloat("Graph.Panel.GridRulePeriod");
+	const int32 RulePeriod = (int32)FAppStyle::GetFloat("Graph.Panel.GridRulePeriod");
 	check(RulePeriod > 0);
 
 	const FLinearColor GraphBackGroundImageColor(BackgroundImage->TintColor.GetSpecifiedColor());
@@ -1406,7 +1468,7 @@ void SNodePanel::PaintMarquee(const FGeometry& AllottedGeometry, const FSlateRec
 			OutDrawElements,
 			DrawLayerId,
 			AllottedGeometry.ToPaintGeometry( GraphCoordToPanelCoord(Marquee.Rect.GetUpperLeft()), Marquee.Rect.GetSize()*GetZoomAmount() ),
-			FEditorStyle::GetBrush(TEXT("MarqueeSelection"))
+			FAppStyle::GetBrush(TEXT("MarqueeSelection"))
 		);
 	}
 }
@@ -1419,7 +1481,7 @@ void SNodePanel::PaintSoftwareCursor(const FGeometry& AllottedGeometry, const FS
 	}
 
 	// Get appropriate software cursor, depending on whether we're panning or zooming
-	const FSlateBrush* Brush = FEditorStyle::GetBrush(bIsPanning ? TEXT("SoftwareCursor_Grab") : TEXT("SoftwareCursor_UpDown"));
+	const FSlateBrush* Brush = FAppStyle::GetBrush(bIsPanning ? TEXT("SoftwareCursor_Grab") : TEXT("SoftwareCursor_UpDown"));
 
 	FSlateDrawElement::MakeBox(
 		OutDrawElements,
@@ -1433,11 +1495,11 @@ void SNodePanel::PaintComment(const FString& CommentText, const FGeometry& Allot
 {
 	//@TODO: Ideally we don't need to grab these resources for every comment being drawn
 	// Get resources/settings for drawing comment bubbles
-	const FSlateBrush* CommentCalloutArrow = FEditorStyle::GetBrush(TEXT("Graph.Node.CommentArrow"));
-	const FSlateBrush* CommentCalloutBubble = FEditorStyle::GetBrush(TEXT("Graph.Node.CommentBubble"));
-	const FSlateFontInfo CommentFont = FEditorStyle::GetFontStyle( TEXT("Graph.Node.CommentFont") );
-	const FSlateColor CommentTextColor = FEditorStyle::GetColor( TEXT("Graph.Node.Comment.TextColor") );
-	const FVector2D CommentBubblePadding = FEditorStyle::GetVector( TEXT("Graph.Node.Comment.BubblePadding") );
+	const FSlateBrush* CommentCalloutArrow = FAppStyle::GetBrush(TEXT("Graph.Node.CommentArrow"));
+	const FSlateBrush* CommentCalloutBubble = FAppStyle::GetBrush(TEXT("Graph.Node.CommentBubble"));
+	const FSlateFontInfo CommentFont = FAppStyle::GetFontStyle( TEXT("Graph.Node.CommentFont") );
+	const FSlateColor CommentTextColor = FAppStyle::GetColor( TEXT("Graph.Node.Comment.TextColor") );
+	const FVector2D CommentBubblePadding = FAppStyle::GetVector( TEXT("Graph.Node.Comment.BubblePadding") );
 
 	const TSharedRef< FSlateFontMeasure > FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 	FVector2D CommentTextSize = FontMeasureService->Measure( CommentText, CommentFont ) + (CommentBubblePadding * 2);
@@ -1740,6 +1802,11 @@ bool SNodePanel::HasDeferredObjectFocus() const
 	return DeferredMovementTargetObject != nullptr;
 }
 
+bool SNodePanel::HasDeferredZoomDestination() const
+{
+	return HasDeferredObjectFocus() || bDeferredZoomToSelection || bDeferredZoomToNodeExtents;
+}
+
 void SNodePanel::FinalizeNodeMovements()
 {
 	// Process moved nodes on focus lost
@@ -1809,6 +1876,10 @@ void SNodePanel::CancelZoomToFit()
 {
 	if (ActiveTimerHandle.IsValid())
 	{
+		// Reset Zoom destination
+		ZoomPadding = NodePanelDefs::DefaultZoomPadding;
+		ZoomTargetTopLeft = FVector2D::ZeroVector;
+		ZoomTargetBottomRight = FVector2D::ZeroVector;
 		UnRegisterActiveTimer(ActiveTimerHandle.Pin().ToSharedRef());
 	}
 }

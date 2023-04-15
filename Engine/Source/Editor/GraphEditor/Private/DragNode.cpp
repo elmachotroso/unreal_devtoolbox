@@ -2,15 +2,31 @@
 
 
 #include "DragNode.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+
+#include "Containers/EnumAsByte.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
 #include "SGraphNode.h"
 #include "SGraphPanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 TSharedRef<FDragNode> FDragNode::New(const TSharedRef<SGraphPanel>& InGraphPanel, const TSharedRef<SGraphNode>& InDraggedNode)
 {
@@ -86,7 +102,7 @@ void FDragNode::HoverTargetChanged()
 		bValidOperation = false;
 		// Display the place a new node icon, we're not over a valid pin
 		SetSimpleFeedbackMessage(
-			FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")),
+			FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")),
 			FLinearColor::White,
 			NSLOCTEXT("GraphEditor.Feedback", "DragNode", "This node cannot be placed here."));
 	}
@@ -103,12 +119,12 @@ void FDragNode::HoverTargetChanged()
 			switch (ResponseIt->Response)
 			{
 			case CONNECT_RESPONSE_MAKE:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 				break;
 
 			case CONNECT_RESPONSE_DISALLOW:
 			default:
-				StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+				StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 				bValidOperation = false;
 				break;
 			}

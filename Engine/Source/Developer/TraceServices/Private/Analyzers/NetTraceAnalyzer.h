@@ -2,14 +2,18 @@
 
 #pragma once
 
-#include "Trace/Analyzer.h"
+#include "Containers/Map.h"
 #include "Containers/UnrealString.h"
+#include "Templates/SharedPointer.h"
+
 #include "Model/NetProfilerProvider.h"
+#include "Trace/Analyzer.h"
 
 namespace TraceServices
 {
 
 class IAnalysisSession;
+class IFrameProvider;
 
 class FNetTraceAnalyzer
 	: public UE::Trace::IAnalyzer
@@ -33,6 +37,8 @@ private:
 		RouteId_ConnectionCreatedEvent,
 		RouteId_ConnectionUpdatedEvent,
 		RouteId_ConnectionClosedEvent,
+		RouteId_PacketStatsCounterEvent,
+		RouteId_FrameStatsCounterEvent,
 		RouteId_ObjectCreatedEvent,
 		RouteId_ObjectDestroyedEvent,
 		RouteId_ConnectionStateUpdatedEvent,
@@ -50,14 +56,19 @@ private:
 
 	IAnalysisSession& Session;
 	FNetProfilerProvider& NetProfilerProvider;
+	const IFrameProvider& FrameProvider;
 	uint32 NetTraceVersion;
 	uint32 NetTraceReporterVersion;
+
+	// Default names
 	uint32 BunchHeaderNameIndex;
 
 	// Shared for trace
 	TMap<uint16, uint32> TracedNameIdToNetProfilerNameIdMap;
 
 	TMap<uint32, uint32> TraceEventTypeToNetProfilerEventTypeIndexMap;
+
+	TMap<uint16, uint32> TraceNetStatsCounterIdToNetProfilerStatsCounterTypeIndexMap;
 
 	struct FBunchInfo
 	{
@@ -77,12 +88,16 @@ private:
 		// Current packet data
 		uint32 CurrentPacketStartIndex[ENetProfilerConnectionMode::Count];
 		uint32 CurrentPacketBitOffset[ENetProfilerConnectionMode::Count];
+		uint32 CurrentPacketStatsStartIndex[ENetProfilerConnectionMode::Count];
+
+		// StatsCounters reported during the current packet
+		TArray<FNetProfilerStats> PacketStats;
 
 		// Current bunch data
 		TArray<FNetProfilerContentEvent> BunchEvents[ENetProfilerConnectionMode::Count];
 
 		TArray<FBunchInfo> BunchInfos[ENetProfilerConnectionMode::Count];
-		
+
 		ENetProfilerConnectionState ConnectionState;
 	};
 
@@ -99,12 +114,18 @@ private:
 		TMap<uint64, FNetTraceActiveObjectState> ActiveObjects;
 		TMap<int32, uint32> ChannelNames;
 
+		// StatsCounters reported during the current frame
+		TArray<FNetProfilerStats> FrameStatsCounters;
+		uint32 CurrentEngineFrameIndex = 0;
+		uint32 CurrentNetProfilerFrameIndex = 0;
+
 		uint32 GameInstanceIndex;
 	};
 
 private:
 
 	uint32 GetTracedEventTypeIndex(uint16 NameIndex, uint8 Level);
+	uint32 GetOrCreateNetProfilerStatsCounterTypeIndex(uint32 NameId, ENetProfilerStatsCounterType StatsType);
 
 	TSharedRef<FNetTraceGameInstanceState> GetOrCreateActiveGameInstanceState(uint32 GameInstanceId);
 	void DestroyActiveGameInstanceState(uint32 GameInstanceId);
@@ -114,13 +135,18 @@ private:
 
 	void FlushPacketEvents(FNetTraceConnectionState& ConnectionState, FNetProfilerConnectionData& ConnectionData, const ENetProfilerConnectionMode ConnectionMode);
 
-	void HandlePacketEvent(const FOnEventContext& Context, const FEventData& EventData);	
+	void FlushFrameStatsCounters(FNetTraceGameInstanceState& GameInstanceState);
+	uint32 GetCurrentNetProfilerFrameIndexAndFlushFrameStatsCountersIfNeeded(uint32 GameInstanceId, uint32 EngineFrameIndex);
+
+	void HandlePacketEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandlePacketContentEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandlePacketDroppedEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleConnectionStateUpdatedEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleConnectionCreatedEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleConnectionUpdatedEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleConnectionClosedEvent(const FOnEventContext& Context, const FEventData& EventData);
+	void HandleFrameStatsCounterEvent(const FOnEventContext& Context, const FEventData& EventData);
+	void HandlePacketStatsCounterEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleObjectCreatedEvent(const FOnEventContext& Context, const FEventData& EventData);
 	void HandleObjectDestroyedEvent(const FOnEventContext& Context, const FEventData& EventData);
 

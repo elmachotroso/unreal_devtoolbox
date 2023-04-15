@@ -48,4 +48,16 @@ namespace ImgMedia
 
 	/** Name of the MipMapInfo media option. */
 	static const FName MipMapInfoOption("ImgMipMapInfo");
+
+	/** Name of the NumTilesX media option. */
+	static const FName NumTilesXOption("ImgNumTilesX");
+
+	/** Name of the NumTilesY media option. */
+	static const FName NumTilesYOption("ImgNumTilesY");
+
+	/** Name of the smart cache media option. */
+	static const FName SmartCacheEnabled("ImgMediaSmartCacheEnabled");
+
+	/** Name of the smart cache time to look ahead media option. */
+	static const FName SmartCacheTimeToLookAhead("ImgMediaSmartCacheTimeToLookAhead");
 }

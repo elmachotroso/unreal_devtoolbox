@@ -2,17 +2,34 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
-#include "Containers/Set.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/HashTable.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/MemoryBase.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformString.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "HAL/UnrealMemory.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/Crc.h"
 #include "Misc/SecureHash.h"
 #include "Serialization/Archive.h"
-#include "Serialization/MemoryLayout.h"
 #include "Serialization/MemoryImageWriter.h"
+#include "Serialization/MemoryLayout.h"
+#include "Templates/AlignmentTemplates.h"
+#include "Templates/EnableIf.h"
 #include "Templates/RefCounting.h"
+#include "Templates/TypeHash.h"
 #include "Traits/IsCharType.h"
+#include "UObject/NameTypes.h"
+
+template <typename T> struct TIsContiguousContainer;
 
 #if defined(WITH_RTTI) || defined(_CPPRTTI) || defined(__GXX_RTTI) || WITH_EDITOR
 #include <typeinfo>
@@ -162,7 +179,7 @@ struct FMemoryImageNamePointer
 };
 inline bool operator==(const FMemoryImageNamePointer& Lhs, const FMemoryImageNamePointer& Rhs)
 {
-	return Lhs.Offset == Rhs.Offset && Lhs.Name == Rhs.Name;
+	return Lhs.Offset == Rhs.Offset && Lhs.Name.Compare(Rhs.Name) == 0;
 }
 inline bool operator!=(const FMemoryImageNamePointer& Lhs, const FMemoryImageNamePointer& Rhs)
 {
@@ -184,7 +201,7 @@ struct FMemoryImageResult
 	FPlatformTypeLayoutParameters TargetLayoutParameters;
 	TArray<FMemoryImageVTablePointer> VTables;
 	TArray<FMemoryImageNamePointer> ScriptNames;
-	TArray<FMemoryImageNamePointer> MinimalNames;
+	TArray<FMemoryImageNamePointer> MemoryImageNames;
 
 	CORE_API void SaveToArchive(FArchive& Ar) const;
 	CORE_API void ApplyPatches(void* FrozenObject) const;
@@ -231,14 +248,20 @@ public:
 		return Offset;
 	}
 
+	uint32 WriteZeroBytes(int32 Num)
+	{
+		const uint32 Offset = GetOffset();
+		Bytes.SetNumZeroed(Offset + Num);
+		return Offset;
+	}
+
 	template<typename T>
 	uint32 WriteBytes(const T& Data) { return WriteBytes(&Data, sizeof(T)); }
 
 	FMemoryImageSection* WritePointer(const FTypeLayoutDesc& StaticTypeDesc, const FTypeLayoutDesc& DerivedTypeDesc, uint32* OutOffsetToBase = nullptr);
 	uint32 WriteRawPointerSizedBytes(uint64 PointerValue);
 	uint32 WriteVTable(const FTypeLayoutDesc& TypeDesc, const FTypeLayoutDesc& DerivedTypeDesc);
-	uint32 WriteFName(const FName& Name);
-	uint32 WriteFMinimalName(const FMinimalName& Name);
+	uint32 WriteFMemoryImageName(int32 NumBytes, const FName& Name);
 	uint32 WriteFScriptName(const FScriptName& Name);
 	uint32 Flatten(FMemoryImageResult& OutResult) const;
 
@@ -249,7 +272,7 @@ public:
 	TArray<FSectionPointer> Pointers;
 	TArray<FMemoryImageVTablePointer> VTables;
 	TArray<FMemoryImageNamePointer> ScriptNames;
-	TArray<FMemoryImageNamePointer> MinimalNames;
+	TArray<FMemoryImageNamePointer> MemoryImageNames;
 	FSHAHash Hash;
 	uint32 MaxAlignment;
 };

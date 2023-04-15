@@ -5,6 +5,8 @@
 #include "StateTreeTypes.h"
 #include "StateTreeNodeBase.generated.h"
 
+struct FStateTreeLinker;
+
 /**
  * Base struct of StateTree Conditions, Evaluators, and Tasks.
  */
@@ -17,7 +19,7 @@ struct STATETREEMODULE_API FStateTreeNodeBase
 
 	virtual ~FStateTreeNodeBase() {}
 
-	/** @return Struct that represents the runtime data of the evaluator. */
+	/** @return Struct that represents the runtime data of the node. */
 	virtual const UStruct* GetInstanceDataType() const { return nullptr; };
 
 	/**
@@ -27,7 +29,7 @@ struct STATETREEMODULE_API FStateTreeNodeBase
 	 * @param Linker Reference to the linker
 	 * @return true if linking succeeded. 
 	 */
-	virtual bool Link(FStateTreeLinker& Linker) { return true; }
+	[[nodiscard]] virtual bool Link(FStateTreeLinker& Linker) { return true; }
 
 	/** Name of the node. */
 	UPROPERTY(EditDefaultsOnly, Category = "", meta=(EditCondition = "false", EditConditionHides))
@@ -35,15 +37,15 @@ struct STATETREEMODULE_API FStateTreeNodeBase
 
 	/** Property binding copy batch handle. */
 	UPROPERTY()
-	FStateTreeHandle BindingsBatch = FStateTreeHandle::Invalid;
+	FStateTreeIndex16 BindingsBatch = FStateTreeIndex16::Invalid;
 
 	/** The runtime data's data view index in the StateTreeExecutionContext, and source struct index in property binding. */
 	UPROPERTY()
-	uint16 DataViewIndex = 0;
+	FStateTreeIndex16 DataViewIndex = FStateTreeIndex16::Invalid;
 
 	/** Index in runtime instance storage. */
 	UPROPERTY()
-	uint16 InstanceIndex = 0;
+	FStateTreeIndex16 InstanceIndex = FStateTreeIndex16::Invalid;
 
 	/** True if the instance is an UObject. */
 	UPROPERTY()

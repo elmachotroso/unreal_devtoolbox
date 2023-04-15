@@ -21,6 +21,7 @@ class COMMONCONVERSATIONRUNTIME_API UConversationLibrary : public UBlueprintFunc
 public:
 	UConversationLibrary();
 
-	UFUNCTION(BlueprintCallable, Category="Conversation", meta = (DeterminesOutputType = "ConversationType"))
-	static UConversationInstance* StartConversation(FGameplayTag ConversationEntryTag, AActor* Instigator, FGameplayTag InstigatorTag, AActor* Target, FGameplayTag TargetTag);
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Conversation", meta = (DeterminesOutputType = "ConversationType"))
+	static UConversationInstance* StartConversation(FGameplayTag ConversationEntryTag, AActor* Instigator, FGameplayTag InstigatorTag,
+		AActor* Target, FGameplayTag TargetTag, const TSubclassOf<UConversationInstance> ConversationInstanceClass = nullptr);
 };

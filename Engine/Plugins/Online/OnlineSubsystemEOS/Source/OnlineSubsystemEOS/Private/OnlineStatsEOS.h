@@ -3,7 +3,6 @@
 #pragma once
 
 #include "Interfaces/OnlineStatsInterface.h"
-#include "OnlineSubsystemEOSPackage.h"
 #include "OnlineSubsystemEOSTypes.h"
 
 class FOnlineSubsystemEOS;
@@ -14,8 +13,9 @@ class FOnlineSubsystemEOS;
 /**
  * Interface for interacting with EOS stats
  */
-class FOnlineStatsEOS :
-	public IOnlineStats
+class FOnlineStatsEOS
+	: public IOnlineStats
+	, public TSharedFromThis<FOnlineStatsEOS, ESPMode::ThreadSafe>
 {
 public:
 	FOnlineStatsEOS() = delete;
@@ -31,7 +31,6 @@ public:
 #endif
 // ~IOnlineStats Interface
 
-PACKAGE_SCOPE:
 	FOnlineStatsEOS(FOnlineSubsystemEOS* InSubsystem)
 		: EOSSubsystem(InSubsystem)
 	{
@@ -47,5 +46,6 @@ private:
 };
 
 typedef TSharedPtr<FOnlineStatsEOS, ESPMode::ThreadSafe> FOnlineStatsEOSPtr;
+typedef TWeakPtr<FOnlineStatsEOS, ESPMode::ThreadSafe> FOnlineStatsEOSWeakPtr;
 
 #endif

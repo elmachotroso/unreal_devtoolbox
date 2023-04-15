@@ -1,19 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GraphEditorDragDropAction.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "SGraphNode.h"
+#include "SGraphPanel.h"
+#include "SPinTypeSelector.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScaleBox.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/SWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/SWindow.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
-#include "SGraphPanel.h"
-#include "Widgets/Layout/SScaleBox.h"
-#include "SPinTypeSelector.h"
+
+class SToolTip;
 
 FGraphEditorDragDropAction::FGraphEditorDragDropAction()
 	: bDropTargetValid(true)
@@ -124,7 +139,7 @@ void FGraphEditorDragDropAction::SetFeedbackMessage(const TSharedPtr<SWidget>& M
 		CursorDecoratorWindow->SetContent
 		(
 			SNew(SBorder)
-			. BorderImage(FEditorStyle::GetBrush("Graph.ConnectorFeedback.Border"))
+			. BorderImage(FAppStyle::GetBrush("Graph.ConnectorFeedback.Border"))
 			[
 				Message.ToSharedRef()
 			]				
@@ -160,7 +175,7 @@ void FGraphEditorDragDropAction::SetSimpleFeedbackMessage(const FSlateBrush* Ico
 			[
 				SNew(SImage)
 				.Visibility(ErrorIconVisibility)
-				.Image( FEditorStyle::GetBrush( TEXT("Graph.ConnectorFeedback.Error") ))
+				.Image( FAppStyle::GetBrush( TEXT("Graph.ConnectorFeedback.Error") ))
 				.ColorAndOpacity( FLinearColor::White )
 			]
 		]
@@ -216,7 +231,7 @@ void FGraphSchemaActionDragDropAction::HoverTargetChanged()
 
 void FGraphSchemaActionDragDropAction::GetDefaultStatusSymbol(const FSlateBrush*& PrimaryBrushOut, FSlateColor& IconColorOut, FSlateBrush const*& SecondaryBrushOut, FSlateColor& SecondaryColorOut) const
 {
-	PrimaryBrushOut = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.NewNode"));
+	PrimaryBrushOut = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.NewNode"));
 	IconColorOut = FLinearColor::White;
 	SecondaryBrushOut = nullptr;
 	SecondaryColorOut = FLinearColor::White;

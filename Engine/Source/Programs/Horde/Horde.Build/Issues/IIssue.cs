@@ -1,24 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeServer.Api;
-using HordeServer.Collections;
-using HordeCommon;
-using HordeServer.Services;
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
-using MongoDB.Bson.Serialization.Serializers;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using System.Runtime.CompilerServices;
+using Horde.Build.Streams;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
+using MongoDB.Bson;
 
-namespace HordeServer.Models
+namespace Horde.Build.Issues
 {
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
 	using UserId = ObjectId<IUser>;
 
 	/// <summary>
@@ -142,6 +134,11 @@ namespace HordeServer.Models
 		/// </summary>
 		public int? FixChange { get; }
 
+//		/// <summary>
+//		/// The first stream that encountered the error. The fix will be considered failed if an error after FixChange occurs in this stream. 
+//		/// </summary>
+//		public StreamId? OriginStreamId { get; }
+
 		/// <summary>
 		/// List of streams affected by this issue
 		/// </summary>
@@ -156,6 +153,22 @@ namespace HordeServer.Models
 		/// Update index for this instance
 		/// </summary>
 		public int UpdateIndex { get; }
+
+		/// <summary>
+		/// External issue linked to this issue
+		/// </summary>
+		public string? ExternalIssueKey { get; }
+
+		/// <summary>
+		/// User who quarantined the issue
+		/// </summary>
+		public UserId? QuarantinedByUserId { get; set; }
+
+		/// <summary>
+		/// The UTC time when the issue was quarantined
+		/// </summary>
+		public DateTime? QuarantineTimeUtc { get; set; }
+
 	}
 
 	/// <summary>
@@ -169,9 +182,19 @@ namespace HordeServer.Models
 		StreamId StreamId { get; }
 
 		/// <summary>
+		/// Whether this stream is the merge origin for other streams
+		/// </summary>
+		bool? MergeOrigin { get; }
+
+		/// <summary>
 		/// Whether this stream contains the fix change
 		/// </summary>
 		bool? ContainsFix { get; }
+
+		/// <summary>
+		/// Whether the fix failed in this stream
+		/// </summary>
+		bool? FixFailed { get; }
 	}
 
 	/// <summary>
@@ -213,43 +236,43 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Creates a lookup from stream id to whether it's fixed
 		/// </summary>
-		/// <param name="Issue"></param>
+		/// <param name="issue"></param>
 		/// <returns></returns>
-		public static Dictionary<StreamId, bool> GetFixStreamIds(this IIssue Issue)
+		public static Dictionary<StreamId, bool> GetFixStreamIds(this IIssue issue)
 		{
-			Dictionary<StreamId, bool> FixStreamIds = new Dictionary<StreamId, bool>();
-			foreach (IIssueStream Stream in Issue.Streams)
+			Dictionary<StreamId, bool> fixStreamIds = new Dictionary<StreamId, bool>();
+			foreach (IIssueStream stream in issue.Streams)
 			{
-				if (Stream.ContainsFix.HasValue)
+				if (stream.ContainsFix.HasValue)
 				{
-					FixStreamIds[Stream.StreamId] = Stream.ContainsFix.Value;
+					fixStreamIds[stream.StreamId] = stream.ContainsFix.Value;
 				}
 			}
-			return FixStreamIds;
+			return fixStreamIds;
 		}
 
 		/// <summary>
 		/// Find the first fix-failed step for this issue
 		/// </summary>
-		/// <param name="Issue"></param>
-		/// <param name="Spans"></param>
+		/// <param name="issue"></param>
+		/// <param name="spans"></param>
 		/// <returns></returns>
-		public static IIssueStep? FindFixFailedStep(this IIssue Issue, IEnumerable<IIssueSpan> Spans)
+		public static IIssueStep? FindFixFailedStep(this IIssue issue, IEnumerable<IIssueSpan> spans)
 		{
-			IIssueStep? FixFailedStep = null;
-			if (Issue.FixChange != null && Issue.FixChange.Value >= 0)
+			IIssueStep? fixFailedStep = null;
+			if (issue.FixChange != null && issue.FixChange.Value >= 0)
 			{
-				foreach (IIssueSpan Span in Spans)
+				foreach (IIssueSpan span in spans)
 				{
-					IIssueStream? Stream = Issue.Streams.FirstOrDefault(x => x.StreamId == Span.StreamId);
-					if(Stream != null && (Stream.ContainsFix ?? false) && Span.LastFailure.Change >= Issue.FixChange.Value)
+					IIssueStream? stream = issue.Streams.FirstOrDefault(x => x.StreamId == span.StreamId);
+					if(stream != null && (stream.ContainsFix ?? false) && span.LastFailure.Change >= issue.FixChange.Value)
 					{
-						FixFailedStep = Span.LastFailure;
+						fixFailedStep = span.LastFailure;
 						break;
 					}
 				}
 			}
-			return FixFailedStep;
+			return fixFailedStep;
 		}
 	}
 }

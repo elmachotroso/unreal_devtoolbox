@@ -5,9 +5,11 @@
 #include "UObject/Linker.h"
 #include "UObject/Package.h"
 #include "UObject/PropertyHelper.h"
+#include "UObject/TopLevelAssetPath.h"
 
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/PackageName.h"
@@ -15,9 +17,16 @@
 #include "Serialization/DeferredMessageLog.h"
 #include "Templates/Casts.h"
 
+DEFINE_LOG_CATEGORY(LogCoreRedirects);
+
 #if !defined UE_WITH_CORE_REDIRECTS
 #	define UE_WITH_CORE_REDIRECTS 1
 #endif
+
+FCoreRedirectObjectName::FCoreRedirectObjectName(const FTopLevelAssetPath& TopLevelAssetPath)
+	: FCoreRedirectObjectName(TopLevelAssetPath.GetAssetName(), NAME_None, TopLevelAssetPath.GetPackageName())
+{
+}
 
 FCoreRedirectObjectName::FCoreRedirectObjectName(const FString& InString)
 {
@@ -56,7 +65,7 @@ FCoreRedirectObjectName::FCoreRedirectObjectName(const class UObject* Object)
 				}
 				if (!OuterString.IsEmpty())
 				{
-					OuterString.AppendChar('.');
+					OuterString.AppendChar(TEXT('.'));
 				}
 				OuterString.Append(Outer->GetName());
 
@@ -78,39 +87,43 @@ void FCoreRedirectObjectName::Reset()
 
 bool FCoreRedirectObjectName::Matches(const FCoreRedirectObjectName& Other, bool bCheckSubstring) const
 {
-	if (bCheckSubstring)
-	{
-		// Much slower
-		if (ObjectName != NAME_None && !Other.ObjectName.ToString().Contains(ObjectName.ToString()))
-		{
-			return false;
-		}
-		if (OuterName != NAME_None && !Other.OuterName.ToString().Contains(OuterName.ToString()))
-		{
-			return false;
-		}
-		if (PackageName != NAME_None && !Other.PackageName.ToString().Contains(PackageName.ToString()))
-		{
-			return false;
-		}
-	}
-	else
-	{
-		// Check all names that are non empty
-		if (ObjectName != Other.ObjectName && ObjectName != NAME_None)
-		{
-			return false;
-		}
-		if (OuterName != Other.OuterName && OuterName != NAME_None)
-		{
-			return false;
-		}
-		if (PackageName != Other.PackageName && PackageName != NAME_None)
-		{
-			return false;
-		}
-	}
+	return Matches(Other, EMatchFlags::CheckSubString);
+}
 
+bool FCoreRedirectObjectName::Matches(const FCoreRedirectObjectName& Other, EMatchFlags MatchFlags) const
+{
+	bool bPartialLHS = !EnumHasAnyFlags(MatchFlags, EMatchFlags::DisallowPartialLHSMatch);
+	bool bPartialRHS = EnumHasAnyFlags(MatchFlags, EMatchFlags::AllowPartialRHSMatch);
+	bool bSubString = EnumHasAllFlags(MatchFlags, EMatchFlags::CheckSubString);
+
+	auto FieldMatches = [bPartialLHS, bPartialRHS, bSubString](FName LHS, FName RHS)
+	{
+		if (LHS.IsNone() || RHS.IsNone())
+		{
+			return LHS == RHS || ((!LHS.IsNone() || bPartialLHS) && (!RHS.IsNone() || bPartialRHS));
+		}
+		else if (bSubString)
+		{
+			// Much slower
+			return WriteToString<FName::StringBufferSize>(RHS).ToView().Contains(WriteToString<FName::StringBufferSize>(LHS));
+		}
+		else
+		{
+			return LHS == RHS;
+		}
+	};
+	if (!FieldMatches(ObjectName, Other.ObjectName))
+	{
+		return false;
+	}
+	if (!FieldMatches(OuterName, Other.OuterName))
+	{
+		return false;
+	}
+	if (!FieldMatches(PackageName, Other.PackageName))
+	{
+		return false;
+	}
 	return true;
 }
 
@@ -158,12 +171,29 @@ int32 FCoreRedirectObjectName::MatchScore(const FCoreRedirectObjectName& Other) 
 	return MatchScore;
 }
 
-bool FCoreRedirectObjectName::HasValidCharacters() const
+void FCoreRedirectObjectName::UnionFieldsInline(const FCoreRedirectObjectName& Other)
 {
-	// ObjectNames in Blueprint may contain spaces.
-	static FString InvalidRedirectCharacters = TEXT("\"',|&!~\n\r\t@#(){}[]=;^%$`");
+	if (ObjectName.IsNone())
+	{
+		ObjectName = Other.ObjectName;
+	}
+	if (OuterName.IsNone())
+	{
+		OuterName = Other.OuterName;
+	}
+	if (PackageName.IsNone())
+	{
+		PackageName = Other.PackageName;
+	}
+}
 
-	return ObjectName.IsValidXName(InvalidRedirectCharacters) && OuterName.IsValidXName(InvalidRedirectCharacters) && PackageName.IsValidXName(InvalidRedirectCharacters);
+bool FCoreRedirectObjectName::HasValidCharacters(ECoreRedirectFlags Type) const
+{
+	static FString InvalidRedirectCharacters = TEXT("\"',|&!~\n\r\t@#(){}[]=;^%$`");
+	static FString InvalidObjectRedirectCharacters = TEXT(".\n\r\t"); // Object and field names in Blueprints are very permissive...
+
+	return ObjectName.IsValidXName(EnumHasAnyFlags(Type, ECoreRedirectFlags::Type_Object | ECoreRedirectFlags::Type_Property | ECoreRedirectFlags::Type_Function) ? InvalidObjectRedirectCharacters : InvalidRedirectCharacters)
+		&& OuterName.IsValidXName(InvalidRedirectCharacters) && PackageName.IsValidXName(InvalidRedirectCharacters);
 }
 
 bool FCoreRedirectObjectName::ExpandNames(const FString& InString, FName& OutName, FName& OutOuter, FName &OutPackage)
@@ -178,10 +208,10 @@ bool FCoreRedirectObjectName::ExpandNames(const FString& InString, FName& OutNam
 	int32 FirstColonIndex = INDEX_NONE;
 	int32 LastColonIndex = INDEX_NONE;
 
-	FullString.FindChar('/', SlashIndex);
+	FullString.FindChar(TEXT('/'), SlashIndex);
 
-	FullString.FindChar('.', FirstPeriodIndex);
-	FullString.FindChar(':', FirstColonIndex);
+	FullString.FindChar(TEXT('.'), FirstPeriodIndex);
+	FullString.FindChar(TEXT(':'), FirstColonIndex);
 
 	if (FirstColonIndex != INDEX_NONE && (FirstPeriodIndex == INDEX_NONE || FirstColonIndex < FirstPeriodIndex))
 	{
@@ -203,8 +233,8 @@ bool FCoreRedirectObjectName::ExpandNames(const FString& InString, FName& OutNam
 		return true;
 	}
 
-	FullString.FindLastChar('.', LastPeriodIndex);
-	FullString.FindLastChar(':', LastColonIndex);
+	FullString.FindLastChar(TEXT('.'), LastPeriodIndex);
+	FullString.FindLastChar(TEXT(':'), LastColonIndex);
 
 	if (LastColonIndex != INDEX_NONE && (LastPeriodIndex == INDEX_NONE || LastColonIndex > LastPeriodIndex))
 	{
@@ -243,7 +273,7 @@ FString FCoreRedirectObjectName::CombineNames(FName NewName, FName NewOuter, FNa
 
 		int32 DelimIndex = INDEX_NONE;
 
-		if (OuterString.FindChar('.', DelimIndex) || OuterString.FindChar(':', DelimIndex))
+		if (OuterString.FindChar(TEXT('.'), DelimIndex) || OuterString.FindChar(TEXT(':'), DelimIndex))
 		{
 			if (NewPackage != NAME_None)
 			{
@@ -374,15 +404,30 @@ static FORCEINLINE bool CheckRedirectFlagsMatch(ECoreRedirectFlags FlagsA, ECore
 	return bTypesOverlap && bCategoriesMatch;
 }
 
-bool FCoreRedirect::Matches(ECoreRedirectFlags InFlags, const FCoreRedirectObjectName& InName) const
+bool FCoreRedirect::Matches(ECoreRedirectFlags InFlags, const FCoreRedirectObjectName& InName,
+	ECoreRedirectMatchFlags MatchFlags) const
 {
 	// Check flags for Type/Category match
 	if (!CheckRedirectFlagsMatch(InFlags, RedirectFlags))
 	{
 		return false;
 	}
+	return Matches(InName, MatchFlags);
+}
 
-	return OldName.Matches(InName, IsSubstringMatch());
+
+bool FCoreRedirect::Matches(const FCoreRedirectObjectName& InName, ECoreRedirectMatchFlags MatchFlags) const
+{
+	FCoreRedirectObjectName::EMatchFlags NameMatchFlags = FCoreRedirectObjectName::EMatchFlags::None;
+	if (IsSubstringMatch())
+	{
+		NameMatchFlags |= FCoreRedirectObjectName::EMatchFlags::CheckSubString;
+	}
+	if (EnumHasAllFlags(MatchFlags, ECoreRedirectMatchFlags::AllowPartialMatch))
+	{
+		NameMatchFlags |= FCoreRedirectObjectName::EMatchFlags::AllowPartialRHSMatch;
+	}
+	return OldName.Matches(InName, NameMatchFlags);
 }
 
 bool FCoreRedirect::HasValueChanges() const
@@ -400,7 +445,7 @@ FCoreRedirectObjectName FCoreRedirect::RedirectName(const FCoreRedirectObjectNam
 	FCoreRedirectObjectName ModifyName(OldObjectName);
 
 	// Convert names that are different and non empty
-	if (OldName.ObjectName != NewName.ObjectName)
+	if (OldName.ObjectName != NewName.ObjectName && !ModifyName.ObjectName.IsNone())
 	{
 		if (IsSubstringMatch())
 		{
@@ -412,7 +457,7 @@ FCoreRedirectObjectName FCoreRedirect::RedirectName(const FCoreRedirectObjectNam
 		}
 	}
 	// If package name and object name are specified, copy outer also it was set to null explicitly
-	if (OldName.OuterName != NewName.OuterName || (NewName.PackageName != NAME_None && NewName.ObjectName != NAME_None))
+	if ((OldName.OuterName != NewName.OuterName || (NewName.PackageName != NAME_None && NewName.ObjectName != NAME_None)) && !ModifyName.OuterName.IsNone())
 	{
 		if (IsSubstringMatch())
 		{
@@ -423,7 +468,7 @@ FCoreRedirectObjectName FCoreRedirect::RedirectName(const FCoreRedirectObjectNam
 			ModifyName.OuterName = NewName.OuterName;
 		}
 	}
-	if (OldName.PackageName != NewName.PackageName)
+	if (OldName.PackageName != NewName.PackageName && !ModifyName.PackageName.IsNone())
 	{
 		if (IsSubstringMatch())
 		{
@@ -438,14 +483,61 @@ FCoreRedirectObjectName FCoreRedirect::RedirectName(const FCoreRedirectObjectNam
 	return ModifyName;
 }
 
+bool FCoreRedirect::IdenticalMatchRules(const FCoreRedirect& Other) const
+{
+	// All types now use the full path
+	ECoreRedirectFlags TypeFlags = RedirectFlags & ECoreRedirectFlags::Type_AllMask;
+	return RedirectFlags == Other.RedirectFlags && OldName == Other.OldName;
+}
+
+
 bool FCoreRedirects::bInitialized = false;
+bool FCoreRedirects::bInDebugMode = false;
+bool FCoreRedirects::bValidatedOnce = false;
 #if WITH_COREREDIRECTS_MULTITHREAD_WARNING
 bool FCoreRedirects::bIsInMultithreadedPhase = false;
 #endif
 
 TMap<FName, ECoreRedirectFlags> FCoreRedirects::ConfigKeyMap;
-TMap<ECoreRedirectFlags, FCoreRedirects::FRedirectNameMap> FCoreRedirects::RedirectTypeMap;
+FCoreRedirects::FRedirectTypeMap FCoreRedirects::RedirectTypeMap;
 FRWLock FCoreRedirects::KnownMissingLock;
+
+FCoreRedirects::FRedirectNameMap& FCoreRedirects::FRedirectTypeMap::FindOrAdd(ECoreRedirectFlags Key)
+{
+	FRedirectNameMap*& NameMap = Map.FindOrAdd(Key);
+	if (NameMap)
+	{
+		return *NameMap;
+	}
+
+	TPair<ECoreRedirectFlags, FRedirectNameMap>* OldData = FastIterable.GetData();
+	TPair<ECoreRedirectFlags, FRedirectNameMap>& NewPair =
+		FastIterable.Emplace_GetRef(Key, FRedirectNameMap());
+	if (FastIterable.GetData() == OldData)
+	{
+		NameMap = &NewPair.Value;
+	}
+	else
+	{
+		Map.Reset();
+		for (TPair<ECoreRedirectFlags, FRedirectNameMap>& Pair : FastIterable)
+		{
+			Map.Add(Pair.Key, &Pair.Value);
+		}
+	}
+	return NewPair.Value;
+}
+
+FCoreRedirects::FRedirectNameMap* FCoreRedirects::FRedirectTypeMap::Find(ECoreRedirectFlags Key)
+{
+	return Map.FindRef(Key);
+}
+
+void FCoreRedirects::FRedirectTypeMap::Empty()
+{
+	Map.Empty();
+	FastIterable.Empty();
+}
 
 void FCoreRedirects::Initialize()
 {
@@ -454,6 +546,23 @@ void FCoreRedirects::Initialize()
 		return;
 	}
 	bInitialized = true;
+
+#if !UE_BUILD_SHIPPING && !NO_LOGGING
+	if (FParse::Param(FCommandLine::Get(), TEXT("FullDebugCoreRedirects")))
+	{
+		// Enable debug mode and set to maximum verbosity
+		bInDebugMode = true;
+		LogCoreRedirects.SetVerbosity(ELogVerbosity::VeryVerbose);
+		FCoreDelegates::OnFEngineLoopInitComplete.AddStatic(ValidateAllRedirects);
+	}
+	else if (FParse::Param(FCommandLine::Get(), TEXT("DebugCoreRedirects")))
+	{
+		// Enable debug mode and increase log levels but don't show every message
+		bInDebugMode = true;
+		LogCoreRedirects.SetVerbosity(ELogVerbosity::Verbose);
+		FCoreDelegates::OnFEngineLoopInitComplete.AddStatic(ValidateAllRedirects);
+	}
+#endif
 
 #if WITH_COREREDIRECTS_MULTITHREAD_WARNING
 	// Setting IsInMultithreadedPhase has to occur after LoadModule("AssetRegistry") (which can write to FCoreRedirects) and
@@ -474,14 +583,13 @@ void FCoreRedirects::Initialize()
 
 	// Prepopulate RedirectTypeMap entries that some threads write to after the engine goes multi-threaded.
 	// Most RedirectTypeMap entries are written to only from InitUObject's call to ReadRedirectsFromIni, and at that point the Engine is single-threaded.
-	// Currently the only entries that can be written to later, and therefore can be written to from multiple threads are:
-	//     KnownMissing Packages.
+	// Known missing packages and plugin loads can add entries to existing lists but will not add brand new types.
 	// Taking advantage of this, we treat the list of Key/Value pairs of RedirectTypeMap as immutable and read from it without synchronization.
 	// Note that the values for those written-during-multithreading entries need to be synchronized; it is only the list of Key/Value pairs that is immutable.
 #if WITH_COREREDIRECTS_MULTITHREAD_WARNING
 	check(!bIsInMultithreadedPhase);
 #endif
-	RedirectTypeMap.Add(ECoreRedirectFlags::Type_Package | ECoreRedirectFlags::Category_Removed | ECoreRedirectFlags::Option_MissingLoad);
+	RedirectTypeMap.FindOrAdd(ECoreRedirectFlags::Type_Package | ECoreRedirectFlags::Category_Removed | ECoreRedirectFlags::Option_MissingLoad);
 
 	// Enable to run startup tests
 	//RunTests();
@@ -494,12 +602,13 @@ void FCoreRedirects::EnterMultithreadedPhase()
 }
 #endif
 
-bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreRedirectObjectName& OldObjectName, FCoreRedirectObjectName& NewObjectName, const FCoreRedirect** FoundValueRedirect)
+bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreRedirectObjectName& OldObjectName,
+	FCoreRedirectObjectName& NewObjectName, const FCoreRedirect** FoundValueRedirect, ECoreRedirectMatchFlags MatchFlags)
 {
 	NewObjectName = OldObjectName;
 	TArray<const FCoreRedirect*> FoundRedirects;
 
-	if (GetMatchingRedirects(Type, OldObjectName, FoundRedirects))
+	if (GetMatchingRedirects(Type, OldObjectName, FoundRedirects, MatchFlags))
 	{
 		// Sort them based on match
 		FoundRedirects.Sort([&OldObjectName](const FCoreRedirect& A, const FCoreRedirect& B) { return A.OldName.MatchScore(OldObjectName) > B.OldName.MatchScore(OldObjectName); });
@@ -515,7 +624,7 @@ bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreR
 			}
 
 			// Only apply if name match is still valid, if it already renamed part of it it may not apply any more. Don't want to check flags as those were checked in the gather step
-			if (Redirect->OldName.Matches(NewObjectName, Redirect->IsSubstringMatch()))
+			if (Redirect->Matches(NewObjectName, MatchFlags))
 			{
 				if (FoundValueRedirect && (Redirect->HasValueChanges() || Redirect->OverrideClassName.IsValid()))
 				{
@@ -523,7 +632,7 @@ bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreR
 					{
 						if ((*FoundValueRedirect)->ValueChanges.OrderIndependentCompareEqual(Redirect->ValueChanges) == false)
 						{
-							UE_LOG(LogLinker, Error, TEXT("RedirectNameAndValues(%s) found multiple conflicting value redirects, %s and %s!"), *OldObjectName.ToString(), *(*FoundValueRedirect)->OldName.ToString(), *Redirect->OldName.ToString());
+							UE_LOG(LogCoreRedirects, Error, TEXT("RedirectNameAndValues(%s) found multiple conflicting value redirects, %s and %s!"), *OldObjectName.ToString(), *(*FoundValueRedirect)->OldName.ToString(), *Redirect->OldName.ToString());
 						}
 					}
 					else
@@ -538,40 +647,51 @@ bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreR
 		}
 	}
 
+	UE_CLOG(bInDebugMode && NewObjectName != OldObjectName, LogCoreRedirects, Verbose, 
+		TEXT("RedirectNameAndValues(%s) replaced by %s"), *OldObjectName.ToString(), *NewObjectName.ToString());
+
 	return NewObjectName != OldObjectName;
 }
 
-FCoreRedirectObjectName FCoreRedirects::GetRedirectedName(ECoreRedirectFlags Type, const FCoreRedirectObjectName& OldObjectName)
+FCoreRedirectObjectName FCoreRedirects::GetRedirectedName(ECoreRedirectFlags Type,
+	const FCoreRedirectObjectName& OldObjectName, ECoreRedirectMatchFlags MatchFlags)
 {
 	FCoreRedirectObjectName NewObjectName;
 
-	RedirectNameAndValues(Type, OldObjectName, NewObjectName, nullptr);
+	RedirectNameAndValues(Type, OldObjectName, NewObjectName, nullptr, MatchFlags);
 
 	return NewObjectName;
 }
 
-const TMap<FString, FString>* FCoreRedirects::GetValueRedirects(ECoreRedirectFlags Type, const FCoreRedirectObjectName& OldObjectName)
+const TMap<FString, FString>* FCoreRedirects::GetValueRedirects(ECoreRedirectFlags Type,
+	const FCoreRedirectObjectName& OldObjectName, ECoreRedirectMatchFlags MatchFlags)
 {
 	FCoreRedirectObjectName NewObjectName;
 	const FCoreRedirect* FoundRedirect = nullptr;
 
-	RedirectNameAndValues(Type, OldObjectName, NewObjectName, &FoundRedirect);
+	RedirectNameAndValues(Type, OldObjectName, NewObjectName, &FoundRedirect, MatchFlags);
 
 	if (FoundRedirect && FoundRedirect->ValueChanges.Num() > 0)
 	{
+		UE_CLOG(bInDebugMode, LogCoreRedirects, VeryVerbose, TEXT("GetValueRedirects found %d matches for %s"), FoundRedirect->ValueChanges.Num(), *OldObjectName.ToString());
+
 		return &FoundRedirect->ValueChanges;
 	}
 
 	return nullptr;
 }
 
-bool FCoreRedirects::GetMatchingRedirects(ECoreRedirectFlags SearchFlags, const FCoreRedirectObjectName& OldObjectName, TArray<const FCoreRedirect*>& FoundRedirects)
+bool FCoreRedirects::GetMatchingRedirects(ECoreRedirectFlags SearchFlags, const FCoreRedirectObjectName& OldObjectName,
+	TArray<const FCoreRedirect*>& FoundRedirects, ECoreRedirectMatchFlags MatchFlags)
 {
 	// Look for all redirects that match the given names and flags
 	bool bFound = false;
 	
-	// If we're not explicitly searching for packages or looking for removed things, add the implicit (Type=Package,Category=None) redirects
-	const bool bSearchPackageRedirects = !(SearchFlags & ECoreRedirectFlags::Type_Package) && !(SearchFlags & ECoreRedirectFlags::Category_Removed);
+	// If we're not explicitly searching for packages, and not looking for removed things, and not searching for partial matches
+	// based on ObjectName only, add the implicit (Type=Package,Category=None) redirects
+	const bool bSearchPackageRedirects = !(SearchFlags & ECoreRedirectFlags::Type_Package) &&
+		!(SearchFlags & ECoreRedirectFlags::Category_Removed) &&
+			(!(MatchFlags & ECoreRedirectMatchFlags::AllowPartialMatch) || !OldObjectName.PackageName.IsNone());
 
 	// Determine list of maps to look over, need to handle being passed multiple types in a bit mask
 	for (const TPair<ECoreRedirectFlags, FRedirectNameMap>& Pair : RedirectTypeMap)
@@ -587,7 +707,7 @@ bool FCoreRedirects::GetMatchingRedirects(ECoreRedirectFlags SearchFlags, const 
 			{
 				for (const FCoreRedirect& CheckRedirect : *RedirectsForName)
 				{
-					if (CheckRedirect.Matches(PairFlags, OldObjectName))
+					if (CheckRedirect.Matches(PairFlags, OldObjectName, MatchFlags))
 					{
 						bFound = true;
 						FoundRedirects.Add(&CheckRedirect);
@@ -616,11 +736,16 @@ bool FCoreRedirects::FindPreviousNames(ECoreRedirectFlags SearchFlags, const FCo
 		// We need to check all maps that match the search or package flags
 		if (CheckRedirectFlagsMatch(PairFlags, SearchFlags) || (bSearchPackageRedirects && CheckRedirectFlagsMatch(PairFlags, ECoreRedirectFlags::Type_Package)))
 		{
-			for (const TPair<FName, TArray<FCoreRedirect> >& RedirectPair : Pair.Value.RedirectMap)
+			for (const TPair<FName, TArray<FCoreRedirect>>& RedirectPair : Pair.Value.RedirectMap)
 			{
 				for (const FCoreRedirect& Redirect : RedirectPair.Value)
 				{
-					if (Redirect.NewName.Matches(NewObjectName, Redirect.IsSubstringMatch()))
+					FCoreRedirectObjectName::EMatchFlags MatchFlags = FCoreRedirectObjectName::EMatchFlags::None;
+					if (Redirect.IsSubstringMatch())
+					{
+						MatchFlags |= FCoreRedirectObjectName::EMatchFlags::CheckSubString;
+					}
+					if (Redirect.NewName.Matches(NewObjectName, MatchFlags))
 					{
 						// Construct a reverse redirect
 						FCoreRedirect ReverseRedirect = FCoreRedirect(Redirect);
@@ -639,6 +764,8 @@ bool FCoreRedirects::FindPreviousNames(ECoreRedirectFlags SearchFlags, const FCo
 			}
 		}
 	}
+
+	UE_CLOG(bFound && bInDebugMode, LogCoreRedirects, VeryVerbose, TEXT("FindPreviousNames found %d previous names for %s"), PreviousNames.Num(), *NewObjectName.ToString());
 
 	return bFound;
 }
@@ -687,7 +814,7 @@ void FCoreRedirects::ClearKnownMissing(ECoreRedirectFlags Type, ECoreRedirectFla
 bool FCoreRedirects::RunTests()
 {
 	bool bSuccess = true;
-	TMap<ECoreRedirectFlags, FRedirectNameMap > BackupMap = RedirectTypeMap;
+	FRedirectTypeMap BackupMap = MoveTemp(RedirectTypeMap);
 #if WITH_COREREDIRECTS_MULTITHREAD_WARNING
 	bool BackupIsInMultithreadedPhase = bIsInMultithreadedPhase;
 	bIsInMultithreadedPhase = false;
@@ -723,7 +850,7 @@ bool FCoreRedirects::RunTests()
 
 	TArray<FRedirectTest> Tests;
 
-	UE_LOG(LogLinker, Log, TEXT("Running FCoreRedirect Tests"));
+	UE_LOG(LogCoreRedirects, Log, TEXT("Running FCoreRedirect Tests"));
 
 	// Package-specific property rename and package rename apply
 	Tests.Emplace(TEXT("/Game/PackageSpecific.Class:Property"), TEXT("/Game/PackageSpecific.Class:Property4"), ECoreRedirectFlags::Type_Property);
@@ -750,7 +877,7 @@ bool FCoreRedirects::RunTests()
 		if (NewName.ToString() != Test.NewName)
 		{
 			bSuccess = false;
-			UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: %s to %s, should be %s!"), *OldName.ToString(), *NewName.ToString(), *Test.NewName);
+			UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: %s to %s, should be %s!"), *OldName.ToString(), *NewName.ToString(), *Test.NewName);
 		}
 	}
 
@@ -762,26 +889,26 @@ bool FCoreRedirects::RunTests()
 	if (OldNames.Num() != 1 || OldNames[0].ToString() != TEXT("/Game/PackageOther.Class"))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: ReverseLookup!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: ReverseLookup!"));
 	}
 
 	// Check removed
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/RemovedPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/RemovedPackage should be removed!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/RemovedPackage should be removed!"));
 	}
 
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/MissingLoadPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/MissingLoadPackage should be removed!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/MissingLoadPackage should be removed!"));
 	}
 
 	if (IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should be removed!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should be removed!"));
 	}
 
 	AddKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad")), ECoreRedirectFlags::Option_MissingLoad);
@@ -789,7 +916,7 @@ bool FCoreRedirects::RunTests()
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedMissingLoad should be removed now!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedMissingLoad should be removed now!"));
 	}
 
 	RemoveKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad")), ECoreRedirectFlags::None);
@@ -797,7 +924,7 @@ bool FCoreRedirects::RunTests()
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: RemoveKnownMissing of /Game/NotRemovedMissingLoad but with bIsMissingLoad=false should not have removed the redirect!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: RemoveKnownMissing of /Game/NotRemovedMissingLoad but with bIsMissingLoad=false should not have removed the redirect!"));
 	}
 
 	RemoveKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad")), ECoreRedirectFlags::Option_MissingLoad);
@@ -805,7 +932,7 @@ bool FCoreRedirects::RunTests()
 	if (IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedMissingLoad"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedMissingLoad should no longer be removed!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedMissingLoad should no longer be removed!"));
 	}
 
 	AddKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage")), ECoreRedirectFlags::None);
@@ -813,7 +940,7 @@ bool FCoreRedirects::RunTests()
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should be removed now!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should be removed now!"));
 	}
 
 	RemoveKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage")), ECoreRedirectFlags::Option_MissingLoad);
@@ -821,7 +948,7 @@ bool FCoreRedirects::RunTests()
 	if (!IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: RemoveKnownMissing of /Game/NotRemovedPackage but with bIsMissingLoad=true should not have removed the redirect!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: RemoveKnownMissing of /Game/NotRemovedPackage but with bIsMissingLoad=true should not have removed the redirect!"));
 	}
 
 	RemoveKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage")), ECoreRedirectFlags::None);
@@ -829,11 +956,11 @@ bool FCoreRedirects::RunTests()
 	if (IsKnownMissing(ECoreRedirectFlags::Type_Package, FCoreRedirectObjectName(TEXT("/Game/NotRemovedPackage"))))
 	{
 		bSuccess = false;
-		UE_LOG(LogLinker, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should no longer be removed!"));
+		UE_LOG(LogCoreRedirects, Error, TEXT("FCoreRedirect Test Failed: /Game/NotRemovedPackage should no longer be removed!"));
 	}
 
 	// Restore old state
-	RedirectTypeMap = BackupMap;
+	RedirectTypeMap = MoveTemp(BackupMap);
 #if WITH_COREREDIRECTS_MULTITHREAD_WARNING
 	bIsInMultithreadedPhase = BackupIsInMultithreadedPhase;
 #endif
@@ -918,7 +1045,7 @@ bool FCoreRedirects::ReadRedirectsFromIni(const FString& IniName)
 
 						if (!Buffer)
 						{
-							UE_LOG(LogLinker, Error, TEXT("ReadRedirectsFromIni failed to parse ValueChanges for Redirect %s!"), *ValueString);
+							UE_LOG(LogCoreRedirects, Error, TEXT("ReadRedirectsFromIni(%s) failed to parse ValueChanges for redirect %s!"), *IniName, *ValueString);
 
 							// Remove added redirect
 							Redirect = nullptr;
@@ -928,16 +1055,20 @@ bool FCoreRedirects::ReadRedirectsFromIni(const FString& IniName)
 				}
 				else
 				{
-					UE_LOG(LogLinker, Error, TEXT("ReadRedirectsFromIni failed to parse type for Redirect %s!"), *ValueString);
+					UE_LOG(LogCoreRedirects, Error, TEXT("ReadRedirectsFromIni(%s) failed to parse type for redirect %s!"), *IniName, *ValueString);
 				}
 			}
 
 			return AddRedirectList(NewRedirects, IniName);
 		}
+		else
+		{
+			UE_LOG(LogCoreRedirects, Verbose, TEXT("ReadRedirectsFromIni(%s) did not find any redirects"), *IniName);
+		}
 	}
 	else
 	{
-		UE_LOG(LogLinker, Warning, TEXT(" **** CORE REDIRECTS UNABLE TO INITIALIZE! **** "));
+		UE_LOG(LogCoreRedirects, Warning, TEXT(" **** CORE REDIRECTS UNABLE TO INITIALIZE! **** "));
 	}
 	return false;
 }
@@ -946,31 +1077,39 @@ bool FCoreRedirects::AddRedirectList(TArrayView<const FCoreRedirect> Redirects, 
 {
 	Initialize();
 
+	UE_LOG(LogCoreRedirects, Verbose, TEXT("AddRedirect(%s) adding %d redirects"), *SourceString, Redirects.Num());
+
+	if (bInDebugMode && bValidatedOnce)
+	{
+		// Validate on apply because we finished our initial validation pass
+		ValidateRedirectList(Redirects, SourceString);
+	}
+
 	bool bAddedAny = false;
 	for (const FCoreRedirect& NewRedirect : Redirects)
 	{
 		if (!NewRedirect.OldName.IsValid() || !NewRedirect.NewName.IsValid())
 		{
-			UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) failed to add redirector from %s to %s with empty name!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("AddRedirect(%s) failed to add redirect from %s to %s with empty name!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
 			continue;
 		}
 
-		if ((!NewRedirect.OldName.HasValidCharacters() && !FPackageName::IsVersePackage(NewRedirect.OldName.PackageName.ToString()))
-			|| (!NewRedirect.NewName.HasValidCharacters() && !FPackageName::IsVersePackage(NewRedirect.NewName.PackageName.ToString())))
+		if ((!NewRedirect.OldName.HasValidCharacters(NewRedirect.RedirectFlags) && !FPackageName::IsVersePackage(NewRedirect.OldName.PackageName.ToString()))
+			|| (!NewRedirect.NewName.HasValidCharacters(NewRedirect.RedirectFlags) && !FPackageName::IsVersePackage(NewRedirect.NewName.PackageName.ToString())))
 		{
-			UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) failed to add redirector from %s to %s with invalid characters!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("AddRedirect(%s) failed to add redirect from %s to %s with invalid characters!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
 			continue;
 		}
 
 		if (NewRedirect.NewName.PackageName != NewRedirect.OldName.PackageName && NewRedirect.OldName.OuterName != NAME_None)
 		{
-			UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) failed to add redirector, it's not valid to modify package from %s to %s while specifying outer!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("AddRedirect(%s) failed to add redirect, cannot modify package from %s to %s while specifying outer!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
 			continue;
 		}
 
 		if (NewRedirect.IsSubstringMatch())
 		{
-			UE_LOG(LogLinker, Log, TEXT("AddRedirectList(%s) has substring redirect %s, these are very slow and should be resolved as soon as possible!"), *SourceString, *NewRedirect.OldName.ToString());
+			UE_LOG(LogCoreRedirects, Log, TEXT("AddRedirect(%s) has substring redirect %s, these are very slow and should be resolved as soon as possible!"), *SourceString, *NewRedirect.OldName.ToString());
 		}
 		
 		if (AddSingleRedirect(NewRedirect, SourceString))
@@ -1015,19 +1154,42 @@ bool FCoreRedirects::AddSingleRedirect(const FCoreRedirect& NewRedirect, const F
 		if (ExistingRedirect.IdenticalMatchRules(NewRedirect))
 		{
 			bFoundDuplicate = true;
-			if (ExistingRedirect.NewName == NewRedirect.NewName && NewRedirect.HasValueChanges())
+			bool bIsSameNewName = ExistingRedirect.NewName == NewRedirect.NewName;
+			bool bOneIsPartialOtherIsFull = false;
+			if (!bIsSameNewName &&
+				ExistingRedirect.OldName.Matches(NewRedirect.OldName, FCoreRedirectObjectName::EMatchFlags::AllowPartialRHSMatch) &&
+				ExistingRedirect.NewName.Matches(NewRedirect.NewName, FCoreRedirectObjectName::EMatchFlags::AllowPartialRHSMatch))
 			{
-				// Merge value redirects as names are the same
-				ExistingRedirect.ValueChanges.Append(NewRedirect.ValueChanges);
+				bIsSameNewName = true;
+				bOneIsPartialOtherIsFull = true;
 			}
-			else if (ExistingRedirect.NewName != NewRedirect.NewName)
+
+			if (bIsSameNewName)
 			{
-				UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) found conflicting redirectors for %s! Old: %s, New: %s"), *SourceString, *ExistingRedirect.OldName.ToString(), *ExistingRedirect.NewName.ToString(), *NewRedirect.NewName.ToString());
+				// Merge fields from the two duplicate redirects
+				bool bBothHaveValueChanges = ExistingRedirect.HasValueChanges() && NewRedirect.HasValueChanges();
+				ExistingRedirect.OldName.UnionFieldsInline(NewRedirect.OldName);
+				ExistingRedirect.NewName.UnionFieldsInline(NewRedirect.NewName);
+				ExistingRedirect.ValueChanges.Append(NewRedirect.ValueChanges);
+				if (bBothHaveValueChanges)
+				{
+					// No warning when there are values changes to merge
+					UE_LOG(LogCoreRedirects, Verbose, TEXT("AddRedirect(%s) merging value redirects for %s"), *SourceString, *ExistingRedirect.NewName.ToString());
+				}
+				else if (bOneIsPartialOtherIsFull)
+				{
+					UE_LOG(LogCoreRedirects, Warning, TEXT("AddRedirect(%s) found duplicate redirects for %s to %s, one a FullPath and the other ObjectName-only.")
+						TEXT(" This used to be required for StructRedirects but now you should remove the ObjectName-only redirect and keep the FullPath."),
+						*SourceString, *ExistingRedirect.OldName.ToString(), *ExistingRedirect.NewName.ToString());
+				}
+				else
+				{
+					UE_LOG(LogCoreRedirects, Verbose, TEXT("AddRedirect(%s) ignoring duplicate redirects for %s to %s"), *SourceString, *ExistingRedirect.OldName.ToString(), *ExistingRedirect.NewName.ToString());
+				}
 			}
 			else
 			{
-				// ENABLE THIS ONCE INIS ARE CONVERTED
-				//UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) found duplicate redirectors for %s to %s!), *SourceString, *ExistingRedirect.OldName.ToString(), *ExistingRedirect.NewName.ToString());
+				UE_LOG(LogCoreRedirects, Error, TEXT("AddRedirect(%s) found conflicting redirects for %s! Old: %s, New: %s"), *SourceString, *ExistingRedirect.OldName.ToString(), *ExistingRedirect.NewName.ToString(), *NewRedirect.NewName.ToString());
 			}
 			break;
 		}
@@ -1044,36 +1206,38 @@ bool FCoreRedirects::AddSingleRedirect(const FCoreRedirect& NewRedirect, const F
 
 bool FCoreRedirects::RemoveRedirectList(TArrayView<const FCoreRedirect> Redirects, const FString& SourceString)
 {
+	UE_LOG(LogCoreRedirects, Verbose, TEXT("RemoveRedirect(%s) Removing %d redirects"), *SourceString, Redirects.Num());
+
 	bool bRemovedAny = false;
 	for (const FCoreRedirect& RedirectToRemove : Redirects)
 	{
 		if (!RedirectToRemove.OldName.IsValid() || !RedirectToRemove.NewName.IsValid())
 		{
-			UE_LOG(LogLinker, Error, TEXT("RemoveRedirectList(%s) failed to remove redirector from %s to %s with empty name!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("RemoveRedirect(%s) failed to remove redirect from %s to %s with empty name!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
 			continue;
 		}
 
 		if (RedirectToRemove.HasValueChanges())
 		{
-			UE_LOG(LogLinker, Error, TEXT("RemoveRedirectList(%s) failed to remove redirector from %s to %s as it contains value changes!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("RemoveRedirect(%s) failed to remove redirect from %s to %s as it contains value changes!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
 			continue;
 		}
 
-		if (!RedirectToRemove.OldName.HasValidCharacters() || !RedirectToRemove.NewName.HasValidCharacters())
+		if (!RedirectToRemove.OldName.HasValidCharacters(RedirectToRemove.RedirectFlags) || !RedirectToRemove.NewName.HasValidCharacters(RedirectToRemove.RedirectFlags))
 		{
-			UE_LOG(LogLinker, Error, TEXT("RemoveRedirectList(%s) failed to remove redirector from %s to %s with invalid characters!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("RemoveRedirect(%s) failed to remove redirect from %s to %s with invalid characters!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
 			continue;
 		}
 
 		if (RedirectToRemove.NewName.PackageName != RedirectToRemove.OldName.PackageName && RedirectToRemove.OldName.OuterName != NAME_None)
 		{
-			UE_LOG(LogLinker, Error, TEXT("RemoveRedirectList(%s) failed to remove redirector, it's not valid to modify package from %s to %s while specifying outer!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
+			UE_LOG(LogCoreRedirects, Error, TEXT("RemoveRedirect(%s) failed to remove redirect, it's not valid to modify package from %s to %s while specifying outer!"), *SourceString, *RedirectToRemove.OldName.ToString(), *RedirectToRemove.NewName.ToString());
 			continue;
 		}
 
 		if (RedirectToRemove.IsSubstringMatch())
 		{
-			UE_LOG(LogLinker, Log, TEXT("RemoveRedirectList(%s) has substring redirect %s, these are very slow and should be resolved as soon as possible!"), *SourceString, *RedirectToRemove.OldName.ToString());
+			UE_LOG(LogCoreRedirects, Log, TEXT("RemoveRedirect(%s) has substring redirect %s, these are very slow and should be resolved as soon as possible!"), *SourceString, *RedirectToRemove.OldName.ToString());
 		}
 
 		bRemovedAny |= RemoveSingleRedirect(RedirectToRemove, SourceString);
@@ -1104,7 +1268,7 @@ bool FCoreRedirects::RemoveSingleRedirect(const FCoreRedirect& RedirectToRemove,
 		{
 			if (ExistingRedirect.NewName != RedirectToRemove.NewName)
 			{
-				// This isn't the redirector we were looking for... move on in case there's another match for our old name
+				// This isn't the redirect we were looking for... move on in case there's another match for our old name
 				continue;
 			}
 
@@ -1115,6 +1279,112 @@ bool FCoreRedirects::RemoveSingleRedirect(const FCoreRedirect& RedirectToRemove,
 	}
 
 	return bRemovedRedirect;
+}
+
+void FCoreRedirects::ValidateRedirectList(TArrayView<const FCoreRedirect> Redirects, const FString& SourceString)
+{
+	for (const FCoreRedirect& Redirect : Redirects)
+	{
+		if (Redirect.NewName.IsValid())
+		{
+			// If the new package is loaded but the new name isn't, this is very likely a bug
+			// If the new package isn't loaded the redirect can't be validated either way, so report it for manual follow up
+			UObject* NewPackage = FindObjectFast<UPackage>(nullptr, Redirect.NewName.PackageName);
+			FString NewPath = Redirect.NewName.ToString();
+			FString OldPath = Redirect.OldName.ToString();
+
+			if (CheckRedirectFlagsMatch(Redirect.RedirectFlags, ECoreRedirectFlags::Type_Class))
+			{
+				if (Redirect.NewName.PackageName.IsNone())
+				{
+					UE_LOG(LogCoreRedirects, Warning, TEXT("ValidateRedirect(%s) has missing package for Class redirect from %s to %s!"), *SourceString, *OldPath, *NewPath);
+				}
+				else
+				{
+					const UClass* FindClass = FindObject<const UClass>(FTopLevelAssetPath(NewPath));
+					if (!FindClass)
+					{
+						if (NewPackage)
+						{
+							UE_LOG(LogCoreRedirects, Error, TEXT("ValidateRedirect(%s) failed to find destination Class for redirect from %s to %s with loaded package!"), *SourceString, *OldPath, *NewPath);
+						}
+						else
+						{
+							UE_LOG(LogCoreRedirects, Log, TEXT("ValidateRedirect(%s) can't validate destination Class for redirect from %s to %s with unloaded package"), *SourceString, *OldPath, *NewPath);
+						}
+					}
+				}
+			}
+
+			if (CheckRedirectFlagsMatch(Redirect.RedirectFlags, ECoreRedirectFlags::Type_Struct))
+			{
+				if (Redirect.NewName.PackageName.IsNone())
+				{
+					UE_LOG(LogCoreRedirects, Warning, TEXT("ValidateRedirect(%s) has missing package for Struct redirect from %s to %s!"), *SourceString, *OldPath, *NewPath);
+				}
+				else
+				{
+					const UScriptStruct* FindStruct = FindObject<const UScriptStruct>(FTopLevelAssetPath(NewPath));
+					if (!FindStruct)
+					{
+						if (NewPackage)
+						{
+							UE_LOG(LogCoreRedirects, Error, TEXT("ValidateRedirect(%s) failed to find destination Struct for redirect from %s to %s with loaded package!"), *SourceString, *OldPath, *NewPath);
+						}
+						else
+						{
+							UE_LOG(LogCoreRedirects, Log, TEXT("ValidateRedirect(%s) can't validate destination Struct for redirect from %s to %s with unloaded package"), *SourceString, *OldPath, *NewPath);
+						}
+					}
+				}
+			}
+
+			if (CheckRedirectFlagsMatch(Redirect.RedirectFlags, ECoreRedirectFlags::Type_Enum))
+			{
+				if (Redirect.NewName.PackageName.IsNone())
+				{
+					// If the name is the same that's fine and this is just for value redirects
+					if (Redirect.NewName != Redirect.OldName)
+					{
+						UE_LOG(LogCoreRedirects, Warning, TEXT("ValidateRedirect(%s) has missing package for Enum redirect from %s to %s!"), *SourceString, *OldPath, *NewPath);
+					}
+				}
+				else
+				{
+					const UEnum* FindEnum = FindObject<const UEnum>(FTopLevelAssetPath(NewPath));
+					if (!FindEnum)
+					{
+						if (NewPackage)
+						{
+							UE_LOG(LogCoreRedirects, Error, TEXT("ValidateRedirect(%s) failed to find destination Enum for redirect from %s to %s with loaded package!"), *SourceString, *OldPath, *NewPath);
+						}
+						else
+						{
+							UE_LOG(LogCoreRedirects, Log, TEXT("ValidateRedirect(%s) can't validate destination Enum for redirect from %s to %s with unloaded package"), *SourceString, *OldPath, *NewPath);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void FCoreRedirects::ValidateAllRedirects()
+{
+	bValidatedOnce = true;
+
+	// Validate all existing redirects
+
+	for (const TPair<ECoreRedirectFlags, FRedirectNameMap>& Pair : RedirectTypeMap)
+	{
+		ECoreRedirectFlags PairFlags = Pair.Key;
+		FString ListName = FString::Printf(TEXT("Type %d"), (int32)PairFlags);
+
+		for (const TPair<FName, TArray<FCoreRedirect> >& ArrayPair : Pair.Value.RedirectMap)
+		{
+			ValidateRedirectList(ArrayPair.Value, ListName);
+		}
+	}
 }
 
 ECoreRedirectFlags FCoreRedirects::GetFlagsForTypeName(FName PackageName, FName TypeName)
@@ -1186,74 +1456,72 @@ PRAGMA_DISABLE_OPTIMIZATION
 
 static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 {
-	CLASS_REDIRECT("AIDebugComponent", "GameplayDebuggingComponent");
-	CLASS_REDIRECT("AnimTreeInstance", "AnimInstance");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm", "AnimCompress");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_Automatic", "AnimCompress_Automatic");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_BitwiseCompressOnly", "AnimCompress_BitwiseCompressOnly");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_LeastDestructive", "AnimCompress_LeastDestructive");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_PerTrackCompression", "AnimCompress_PerTrackCompression");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveEverySecondKey", "AnimCompress_RemoveEverySecondKey");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveLinearKeys", "AnimCompress_RemoveLinearKeys");
-	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveTrivialKeys", "AnimCompress_RemoveTrivialKeys");
-	CLASS_REDIRECT("BlueprintActorBase", "Actor");
-	CLASS_REDIRECT("DefaultPawnMovement", "FloatingPawnMovement");
-	CLASS_REDIRECT("DirectionalLightMovable", "DirectionalLight");
-	CLASS_REDIRECT("DirectionalLightStatic", "DirectionalLight");
-	CLASS_REDIRECT("DirectionalLightStationary", "DirectionalLight");
-	CLASS_REDIRECT("DynamicBlockingVolume", "BlockingVolume");
-	CLASS_REDIRECT("DynamicPhysicsVolume", "PhysicsVolume");
-	CLASS_REDIRECT("DynamicTriggerVolume", "TriggerVolume");
-	CLASS_REDIRECT("GameInfo", "/Script/Engine.GameMode");
-	CLASS_REDIRECT("GameReplicationInfo", "/Script/Engine.GameState");
-	CLASS_REDIRECT("InterpActor", "StaticMeshActor");
+	// CLASS_REDIRECT("AnimTreeInstance", "/Script/Engine.AnimInstance"); // Leaving some of these disabled as they can cause issues with the reverse class lookup in asset registry scans 
+	CLASS_REDIRECT("AnimationCompressionAlgorithm", "/Script/Engine.AnimCompress");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_BitwiseCompressOnly", "/Script/Engine.AnimCompress_BitwiseCompressOnly");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_LeastDestructive", "/Script/Engine.AnimCompress_LeastDestructive");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_PerTrackCompression", "/Script/Engine.AnimCompress_PerTrackCompression");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveEverySecondKey", "/Script/Engine.AnimCompress_RemoveEverySecondKey");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveLinearKeys", "/Script/Engine.AnimCompress_RemoveLinearKeys");
+	CLASS_REDIRECT("AnimationCompressionAlgorithm_RemoveTrivialKeys", "/Script/Engine.AnimCompress_RemoveTrivialKeys");
+	// CLASS_REDIRECT("BlueprintActorBase", "/Script/Engine.Actor");
+	CLASS_REDIRECT("DefaultPawnMovement", "/Script/Engine.FloatingPawnMovement");
+	CLASS_REDIRECT("DirectionalLightMovable", "/Script/Engine.DirectionalLight");
+	CLASS_REDIRECT("DirectionalLightStatic", "/Script/Engine.DirectionalLight");
+	CLASS_REDIRECT("DirectionalLightStationary", "/Script/Engine.DirectionalLight");
+	CLASS_REDIRECT("DynamicBlockingVolume", "/Script/Engine.BlockingVolume");
+	CLASS_REDIRECT("DynamicPhysicsVolume", "/Script/Engine.PhysicsVolume");
+	CLASS_REDIRECT("DynamicTriggerVolume", "/Script/Engine.TriggerVolume");
+	// CLASS_REDIRECT("GameInfo", "/Script/Engine.GameMode");
+	// CLASS_REDIRECT("GameReplicationInfo", "/Script/Engine.GameState");
+	CLASS_REDIRECT("InterpActor", "/Script/Engine.StaticMeshActor");
 	CLASS_REDIRECT("K2Node_CallSuperFunction", "/Script/BlueprintGraph.K2Node_CallParentFunction");
-	CLASS_REDIRECT("MaterialSpriteComponent", "MaterialBillboardComponent");
-	CLASS_REDIRECT("MovementComp_Character", "CharacterMovementComponent");
-	CLASS_REDIRECT("MovementComp_Projectile", "ProjectileMovementComponent");
-	CLASS_REDIRECT("MovementComp_Rotating", "RotatingMovementComponent");
+	CLASS_REDIRECT("MaterialSpriteComponent", "/Script/Engine.MaterialBillboardComponent");
+	CLASS_REDIRECT("MovementComp_Character", "/Script/Engine.CharacterMovementComponent");
+	CLASS_REDIRECT("MovementComp_Projectile", "/Script/Engine.ProjectileMovementComponent");
+	CLASS_REDIRECT("MovementComp_Rotating", "/Script/Engine.RotatingMovementComponent");
 	CLASS_REDIRECT("NavAreaDefault", "/Script/NavigationSystem.NavArea_Default");
 	CLASS_REDIRECT("NavAreaDefinition", "/Script/NavigationSystem.NavArea");
 	CLASS_REDIRECT("NavAreaNull", "/Script/NavigationSystem.NavArea_Null");
-	CLASS_REDIRECT("PhysicsActor", "StaticMeshActor");
-	CLASS_REDIRECT("PhysicsBSJointActor", "PhysicsConstraintActor");
-	CLASS_REDIRECT("PhysicsHingeActor", "PhysicsConstraintActor");
-	CLASS_REDIRECT("PhysicsPrismaticActor", "PhysicsConstraintActor");
-	CLASS_REDIRECT("PlayerCamera", "PlayerCameraManager");
-	CLASS_REDIRECT("PlayerReplicationInfo", "/Script/Engine.PlayerState");
-	CLASS_REDIRECT("PointLightMovable", "PointLight");
-	CLASS_REDIRECT("PointLightStatic", "PointLight");
-	CLASS_REDIRECT("PointLightStationary", "PointLight");
-	CLASS_REDIRECT("RB_BSJointSetup", "PhysicsConstraintTemplate");
-	CLASS_REDIRECT("RB_BodySetup", "BodySetup");
-	CLASS_REDIRECT("RB_ConstraintActor", "PhysicsConstraintActor");
-	CLASS_REDIRECT("RB_ConstraintComponent", "PhysicsConstraintComponent");
-	CLASS_REDIRECT("RB_ConstraintSetup", "PhysicsConstraintTemplate");
-	CLASS_REDIRECT("RB_Handle", "PhysicsHandleComponent");
-	CLASS_REDIRECT("RB_HingeSetup", "PhysicsConstraintTemplate");
-	CLASS_REDIRECT("RB_PrismaticSetup", "PhysicsConstraintTemplate");
-	CLASS_REDIRECT("RB_RadialForceComponent", "RadialForceComponent");
-	CLASS_REDIRECT("RB_SkelJointSetup", "PhysicsConstraintTemplate");
-	CLASS_REDIRECT("RB_Thruster", "PhysicsThruster");
-	CLASS_REDIRECT("RB_ThrusterComponent", "PhysicsThrusterComponent");
-	CLASS_REDIRECT("SensingComponent", "PawnSensingComponent");
-	CLASS_REDIRECT("SingleAnimSkeletalActor", "SkeletalMeshActor");
-	CLASS_REDIRECT("SingleAnimSkeletalComponent", "SkeletalMeshComponent");
-	CLASS_REDIRECT("SkeletalMeshReplicatedComponent", "SkeletalMeshComponent");
-	CLASS_REDIRECT("SkeletalPhysicsActor", "SkeletalMeshActor");
-	CLASS_REDIRECT("SoundMode", "SoundMix");
-	CLASS_REDIRECT("SpotLightMovable", "SpotLight");
-	CLASS_REDIRECT("SpotLightStatic", "SpotLight");
-	CLASS_REDIRECT("SpotLightStationary", "SpotLight");
-	CLASS_REDIRECT("SpriteComponent", "BillboardComponent");
-	CLASS_REDIRECT("StaticMeshReplicatedComponent", "StaticMeshComponent");
-	CLASS_REDIRECT("VimBlueprint", "AnimBlueprint");
-	CLASS_REDIRECT("VimGeneratedClass", "AnimBlueprintGeneratedClass");
-	CLASS_REDIRECT("VimInstance", "AnimInstance");
-	CLASS_REDIRECT("WorldInfo", "WorldSettings");
+	CLASS_REDIRECT("PhysicsActor", "/Script/Engine.StaticMeshActor");
+	CLASS_REDIRECT("PhysicsBSJointActor", "/Script/Engine.PhysicsConstraintActor");
+	CLASS_REDIRECT("PhysicsHingeActor", "/Script/Engine.PhysicsConstraintActor");
+	CLASS_REDIRECT("PhysicsPrismaticActor", "/Script/Engine.PhysicsConstraintActor");
+	// CLASS_REDIRECT("PlayerCamera", "/Script/Engine.PlayerCameraManager");
+	// CLASS_REDIRECT("PlayerReplicationInfo", "/Script/Engine.PlayerState");
+	CLASS_REDIRECT("PointLightMovable", "/Script/Engine.PointLight");
+	CLASS_REDIRECT("PointLightStatic", "/Script/Engine.PointLight");
+	CLASS_REDIRECT("PointLightStationary", "/Script/Engine.PointLight");
+	CLASS_REDIRECT("RB_BSJointSetup", "/Script/Engine.PhysicsConstraintTemplate");
+	CLASS_REDIRECT("RB_BodySetup", "/Script/Engine.BodySetup");
+	CLASS_REDIRECT("RB_ConstraintActor", "/Script/Engine.PhysicsConstraintActor");
+	CLASS_REDIRECT("RB_ConstraintComponent", "/Script/Engine.PhysicsConstraintComponent");
+	CLASS_REDIRECT("RB_ConstraintSetup", "/Script/Engine.PhysicsConstraintTemplate");
+	CLASS_REDIRECT("RB_Handle", "/Script/Engine.PhysicsHandleComponent");
+	CLASS_REDIRECT("RB_HingeSetup", "/Script/Engine.PhysicsConstraintTemplate");
+	CLASS_REDIRECT("RB_PrismaticSetup", "/Script/Engine.PhysicsConstraintTemplate");
+	CLASS_REDIRECT("RB_RadialForceComponent", "/Script/Engine.RadialForceComponent");
+	CLASS_REDIRECT("RB_SkelJointSetup", "/Script/Engine.PhysicsConstraintTemplate");
+	CLASS_REDIRECT("RB_Thruster", "/Script/Engine.PhysicsThruster");
+	CLASS_REDIRECT("RB_ThrusterComponent", "/Script/Engine.PhysicsThrusterComponent");
+	CLASS_REDIRECT("SensingComponent", "/Script/AIModule.PawnSensingComponent");
+	CLASS_REDIRECT("SingleAnimSkeletalActor", "/Script/Engine.SkeletalMeshActor");
+	CLASS_REDIRECT("SingleAnimSkeletalComponent", "/Script/Engine.SkeletalMeshComponent");
+	CLASS_REDIRECT("SkeletalMeshReplicatedComponent", "/Script/Engine.SkeletalMeshComponent");
+	CLASS_REDIRECT("SkeletalPhysicsActor", "/Script/Engine.SkeletalMeshActor");
+	CLASS_REDIRECT("SoundMode", "/Script/Engine.SoundMix");
+	CLASS_REDIRECT("SpotLightMovable", "/Script/Engine.SpotLight");
+	CLASS_REDIRECT("SpotLightStatic", "/Script/Engine.SpotLight");
+	CLASS_REDIRECT("SpotLightStationary", "/Script/Engine.SpotLight");
+	CLASS_REDIRECT("SpriteComponent", "/Script/Engine.BillboardComponent");
+	CLASS_REDIRECT("StaticMeshReplicatedComponent", "/Script/Engine.StaticMeshComponent");
+	CLASS_REDIRECT("VimBlueprint", "/Script/Engine.AnimBlueprint");
+	CLASS_REDIRECT("VimGeneratedClass", "/Script/Engine.AnimBlueprintGeneratedClass");
+	CLASS_REDIRECT("VimInstance", "/Script/Engine.AnimInstance");
+	CLASS_REDIRECT("WorldInfo", "/Script/Engine.WorldSettings");
 	CLASS_REDIRECT_INSTANCES("NavAreaMeta", "/Script/NavigationSystem.NavArea_Default");
 
-	STRUCT_REDIRECT("VimDebugData", "AnimBlueprintDebugData");
+	STRUCT_REDIRECT("VimDebugData", "/Script/Engine.AnimBlueprintDebugData");
 
 	FUNCTION_REDIRECT("Actor.GetController", "Pawn.GetController");
 	FUNCTION_REDIRECT("Actor.GetTouchingActors", "Actor.GetOverlappingActors");
@@ -1394,15 +1662,8 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("BranchingPoint.Time", "BranchingPoint.DisplayTime");
 	PROPERTY_REDIRECT("CapsuleComponent.CapsuleHeight", "CapsuleComponent.CapsuleHalfHeight");
 	PROPERTY_REDIRECT("CharacterMovementComponent.AccelRate", "CharacterMovementComponent.MaxAcceleration");
-	PROPERTY_REDIRECT("CharacterMovementComponent.AirSpeed", "CharacterMovementComponent.MaxFlySpeed");
 	PROPERTY_REDIRECT("CharacterMovementComponent.BrakingDeceleration", "CharacterMovementComponent.BrakingDecelerationWalking");
 	PROPERTY_REDIRECT("CharacterMovementComponent.CrouchHeight", "CharacterMovementComponent.CrouchedHalfHeight");
-	PROPERTY_REDIRECT("CharacterMovementComponent.CrouchedPct", "CharacterMovementComponent.CrouchedSpeedMultiplier");
-	PROPERTY_REDIRECT("CharacterMovementComponent.CrouchedSpeedPercent", "CharacterMovementComponent.CrouchedSpeedMultiplier");
-	PROPERTY_REDIRECT("CharacterMovementComponent.GroundSpeed", "CharacterMovementComponent.MaxWalkSpeed");
-	PROPERTY_REDIRECT("CharacterMovementComponent.JumpZ", "CharacterMovementComponent.JumpZVelocity");
-	PROPERTY_REDIRECT("CharacterMovementComponent.WaterSpeed", "CharacterMovementComponent.MaxSwimSpeed");
-	PROPERTY_REDIRECT("CharacterMovementComponent.bOrientToMovement", "CharacterMovementComponent.bOrientRotationToMovement");
 	PROPERTY_REDIRECT("CollisionResponseContainer.Dynamic", "CollisionResponseContainer.WorldDynamic");
 	PROPERTY_REDIRECT("CollisionResponseContainer.RigidBody", "CollisionResponseContainer.PhysicsBody");
 	PROPERTY_REDIRECT("CollisionResponseContainer.Static", "CollisionResponseContainer.WorldStatic");
@@ -1448,7 +1709,6 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("PostProcessSettings.bOverride_EyeAdaptationMinBrightness", "PostProcessSettings.bOverride_AutoExposureMinBrightness");
 	PROPERTY_REDIRECT("PostProcessSettings.bOverride_EyeAdaptionSpeedDown", "PostProcessSettings.bOverride_AutoExposureSpeedDown");
 	PROPERTY_REDIRECT("PostProcessSettings.bOverride_EyeAdaptionSpeedUp", "PostProcessSettings.bOverride_AutoExposureSpeedUp");
-	PROPERTY_REDIRECT("ProjectileMovementComponent.Speed", "ProjectileMovementComponent.InitialSpeed");
 	PROPERTY_REDIRECT("SceneComponent.ModifyFrequency", "SceneComponent.Mobility");
 	PROPERTY_REDIRECT("SceneComponent.RelativeTranslation", "SceneComponent.RelativeLocation");
 	PROPERTY_REDIRECT("SceneComponent.bAbsoluteTranslation", "SceneComponent.bAbsoluteLocation");
@@ -1458,16 +1718,16 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("SlateBrush.TextureObject", "SlateBrush.ResourceObject");
 	PROPERTY_REDIRECT("WorldSettings.DefaultGameType", "WorldSettings.DefaultGameMode");
 
-	FCoreRedirect& PointLightComponent = CLASS_REDIRECT("PointLightComponent", "PointLightComponent");
+	FCoreRedirect& PointLightComponent = CLASS_REDIRECT("PointLightComponent", "/Script/Engine.PointLightComponent");
 	PointLightComponent.ValueChanges.Add(TEXT("PointLightComponent0"), TEXT("LightComponent0"));
 
-	FCoreRedirect& DirectionalLightComponent = CLASS_REDIRECT("DirectionalLightComponent", "DirectionalLightComponent");
+	FCoreRedirect& DirectionalLightComponent = CLASS_REDIRECT("DirectionalLightComponent", "/Script/Engine.DirectionalLightComponent");
 	DirectionalLightComponent.ValueChanges.Add(TEXT("DirectionalLightComponent0"), TEXT("LightComponent0"));
 
-	FCoreRedirect& SpotLightComponent = CLASS_REDIRECT("SpotLightComponent", "SpotLightComponent");
+	FCoreRedirect& SpotLightComponent = CLASS_REDIRECT("SpotLightComponent", "/Script/Engine.SpotLightComponent");
 	SpotLightComponent.ValueChanges.Add(TEXT("SpotLightComponent0"), TEXT("LightComponent0"));
 
-	FCoreRedirect& ETransitionGetterType = ENUM_REDIRECT("ETransitionGetterType", "ETransitionGetter");
+	FCoreRedirect& ETransitionGetterType = ENUM_REDIRECT("ETransitionGetterType", "/Script/AnimGraph.ETransitionGetter");
 	ETransitionGetterType.ValueChanges.Add(TEXT("TGT_ArbitraryState_GetBlendWeight"), TEXT("ETransitionGetter::ArbitraryState_GetBlendWeight"));
 	ETransitionGetterType.ValueChanges.Add(TEXT("TGT_CurrentState_ElapsedTime"), TEXT("ETransitionGetter::CurrentState_ElapsedTime"));
 	ETransitionGetterType.ValueChanges.Add(TEXT("TGT_CurrentState_GetBlendWeight"), TEXT("ETransitionGetter::CurrentState_GetBlendWeight"));
@@ -1478,55 +1738,30 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	ETransitionGetterType.ValueChanges.Add(TEXT("TGT_SequencePlayer_GetTimeFromEnd"), TEXT("ETransitionGetter::AnimationAsset_GetTimeFromEnd"));
 	ETransitionGetterType.ValueChanges.Add(TEXT("TGT_SequencePlayer_GetTimeFromEndFraction"), TEXT("ETransitionGetter::AnimationAsset_GetTimeFromEndFraction"));
 
-	FCoreRedirect& EModifyFrequency = ENUM_REDIRECT("EModifyFrequency", "EComponentMobility");
+	FCoreRedirect& EModifyFrequency = ENUM_REDIRECT("EModifyFrequency", "/Script/Engine.EComponentMobility");
 	EModifyFrequency.ValueChanges.Add(TEXT("MF_Dynamic"), TEXT("EComponentMobility::Movable"));
 	EModifyFrequency.ValueChanges.Add(TEXT("MF_OccasionallyModified"), TEXT("EComponentMobility::Stationary"));
 	EModifyFrequency.ValueChanges.Add(TEXT("MF_Static"), TEXT("EComponentMobility::Static"));
 
-	FCoreRedirect& EAttachLocationType = ENUM_REDIRECT("EAttachLocationType", "EAttachLocation");
+	FCoreRedirect& EAttachLocationType = ENUM_REDIRECT("EAttachLocationType", "/Script/Engine.EAttachLocation");
 	EAttachLocationType.ValueChanges.Add(TEXT("EAttachLocationType_AbsoluteWorld"), TEXT("EAttachLocation::KeepWorldPosition"));
 	EAttachLocationType.ValueChanges.Add(TEXT("EAttachLocationType_RelativeOffset"), TEXT("EAttachLocation::KeepRelativeOffset"));
 	EAttachLocationType.ValueChanges.Add(TEXT("EAttachLocationType_SnapTo"), TEXT("EAttachLocation::SnapToTarget"));
 
-	FCoreRedirect& EAxis = ENUM_REDIRECT("EAxis", "EAxis");
+	FCoreRedirect& EAxis = ENUM_REDIRECT("EAxis", "/Script/CoreUObject.EAxis");
 	EAxis.ValueChanges.Add(TEXT("AXIS_BLANK"), TEXT("EAxis::None"));
 	EAxis.ValueChanges.Add(TEXT("AXIS_NONE"), TEXT("EAxis::None"));
 	EAxis.ValueChanges.Add(TEXT("AXIS_X"), TEXT("EAxis::X"));
 	EAxis.ValueChanges.Add(TEXT("AXIS_Y"), TEXT("EAxis::Y"));
 	EAxis.ValueChanges.Add(TEXT("AXIS_Z"), TEXT("EAxis::Z"));
 
-	FCoreRedirect& EKeys = ENUM_REDIRECT("EKeys", "EKeys");
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_A"), TEXT("EKeys::Gamepad_FaceButton_Bottom"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_B"), TEXT("EKeys::Gamepad_FaceButton_Right"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_X"), TEXT("EKeys::Gamepad_FaceButton_Left"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_Y"), TEXT("EKeys::Gamepad_FaceButton_Top"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_Back"), TEXT("EKeys::Gamepad_Special_Left"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_Start"), TEXT("EKeys::Gamepad_Special_Right"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_DPad_Down"), TEXT("EKeys::Gamepad_DPad_Down"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_DPad_Left"), TEXT("EKeys::Gamepad_DPad_Left"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_DPad_Right"), TEXT("EKeys::Gamepad_DPad_Right"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_DPad_Up"), TEXT("EKeys::Gamepad_DPad_Up"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftShoulder"), TEXT("EKeys::Gamepad_LeftShoulder"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftThumbstick"), TEXT("EKeys::Gamepad_LeftThumbstick"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftTrigger"), TEXT("EKeys::Gamepad_LeftTrigger"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftTriggerAxis"), TEXT("EKeys::Gamepad_LeftTriggerAxis"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftX"), TEXT("EKeys::Gamepad_LeftX"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_LeftY"), TEXT("EKeys::Gamepad_LeftY"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightShoulder"), TEXT("EKeys::Gamepad_RightShoulder"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightThumbstick"), TEXT("EKeys::Gamepad_RightThumbstick"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightTrigger"), TEXT("EKeys::Gamepad_RightTrigger"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightTriggerAxis"), TEXT("EKeys::Gamepad_RightTriggerAxis"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightX"), TEXT("EKeys::Gamepad_RightX"));
-	EKeys.ValueChanges.Add(TEXT("EKeys::XboxTypeS_RightY"), TEXT("EKeys::Gamepad_RightY"));
-
-	FCoreRedirect& EMaxConcurrentResolutionRule = ENUM_REDIRECT("EMaxConcurrentResolutionRule", "EMaxConcurrentResolutionRule");
+	FCoreRedirect& EMaxConcurrentResolutionRule = ENUM_REDIRECT("EMaxConcurrentResolutionRule", "/Script/Engine.EMaxConcurrentResolutionRule");
 	EMaxConcurrentResolutionRule.ValueChanges.Add(TEXT("EMaxConcurrentResolutionRule::StopFarthest"), TEXT("EMaxConcurrentResolutionRule::StopFarthestThenPreventNew"));
 
-
-	FCoreRedirect& EParticleEventType = ENUM_REDIRECT("EParticleEventType", "EParticleEventType");
+	FCoreRedirect& EParticleEventType = ENUM_REDIRECT("EParticleEventType", "/Script/Engine.EParticleEventType");
 	EParticleEventType.ValueChanges.Add(TEXT("EPET_Kismet"), TEXT("EPET_Blueprint"));
 
-	FCoreRedirect& ETranslucencyLightingMode = ENUM_REDIRECT("ETranslucencyLightingMode", "ETranslucencyLightingMode");
+	FCoreRedirect& ETranslucencyLightingMode = ENUM_REDIRECT("ETranslucencyLightingMode", "/Script/Engine.ETranslucencyLightingMode");
 	ETranslucencyLightingMode.ValueChanges.Add(TEXT("TLM_PerPixel"), TEXT("TLM_VolumetricDirectional"));
 	ETranslucencyLightingMode.ValueChanges.Add(TEXT("TLM_PerPixelNonDirectional"), TEXT("TLM_VolumetricNonDirectional"));
 }
@@ -1537,7 +1772,7 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 
 	CLASS_REDIRECT("K2Node_CastToInterface", "/Script/BlueprintGraph.K2Node_DynamicCast");
 	CLASS_REDIRECT("K2Node_MathExpression", "/Script/BlueprintGraph.K2Node_MathExpression");
-	CLASS_REDIRECT("EmitterSpawnable", "Emitter");
+	CLASS_REDIRECT("EmitterSpawnable", "/Script/Engine.Emitter");
 	CLASS_REDIRECT("SlateWidgetStyleAsset", "/Script/SlateCore.SlateWidgetStyleAsset");
 	CLASS_REDIRECT("SlateWidgetStyleContainerBase", "/Script/SlateCore.SlateWidgetStyleContainerBase");
 	CLASS_REDIRECT("SmartNavLinkComponent", "/Script/NavigationSystem.NavLinkCustomComponent");
@@ -1578,28 +1813,24 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("SplineMeshComponent.SplineXDir", "SplineMeshComponent.SplineUpDir");
 	PROPERTY_REDIRECT("TextureFactory.LightingModel", "TextureFactory.ShadingModel");
 
-	FCoreRedirect& EKinematicBonesUpdateToPhysics = ENUM_REDIRECT("EKinematicBonesUpdateToPhysics", "EKinematicBonesUpdateToPhysics");
+	FCoreRedirect& EKinematicBonesUpdateToPhysics = ENUM_REDIRECT("EKinematicBonesUpdateToPhysics", "/Script/Engine.EKinematicBonesUpdateToPhysics");
 	EKinematicBonesUpdateToPhysics.ValueChanges.Add(TEXT("EKinematicBonesUpdateToPhysics::SkipFixedAndSimulatingBones"), TEXT("EKinematicBonesUpdateToPhysics::SkipAllBones"));
 
-	FCoreRedirect& EMaterialLightingModel = ENUM_REDIRECT("EMaterialLightingModel", "EMaterialShadingModel");
+	FCoreRedirect& EMaterialLightingModel = ENUM_REDIRECT("EMaterialLightingModel", "/Script/Engine.EMaterialShadingModel");
 	EMaterialLightingModel.ValueChanges.Add(TEXT("MLM_DefaultLit"), TEXT("MSM_DefaultLit"));
 	EMaterialLightingModel.ValueChanges.Add(TEXT("MLM_PreintegratedSkin"), TEXT("MSM_PreintegratedSkin"));
 	EMaterialLightingModel.ValueChanges.Add(TEXT("MLM_Subsurface"), TEXT("MSM_Subsurface"));
 	EMaterialLightingModel.ValueChanges.Add(TEXT("MLM_Unlit"), TEXT("MSM_Unlit"));
 
-	FCoreRedirect& ESmartNavLinkDir = ENUM_REDIRECT("ESmartNavLinkDir", "ENavLinkDirection");
+	FCoreRedirect& ESmartNavLinkDir = ENUM_REDIRECT("ESmartNavLinkDir", "/Script/Engine.ENavLinkDirection");
 	ESmartNavLinkDir.ValueChanges.Add(TEXT("ESmartNavLinkDir::BothWays"), TEXT("ENavLinkDirection::BothWays"));
 	ESmartNavLinkDir.ValueChanges.Add(TEXT("ESmartNavLinkDir::OneWay"), TEXT("ENavLinkDirection::LeftToRight"));
-
-	FCoreRedirect& ESceneTextureId = ENUM_REDIRECT("ESceneTextureId", "ESceneTextureId");
-	ESceneTextureId.ValueChanges.Add(TEXT("PPI_LightingModel"), TEXT("PPI_ShadingModelColor"));
 
 	// 4.5
 
 	CLASS_REDIRECT("AIController", "/Script/AIModule.AIController");
 	CLASS_REDIRECT("AIResourceInterface", "/Script/AIModule.AIResourceInterface");
 	CLASS_REDIRECT("AISystem", "/Script/AIModule.AISystem");
-	CLASS_REDIRECT("AITypes", "/Script/AIModule.AITypes");
 	CLASS_REDIRECT("BTAuxiliaryNode", "/Script/AIModule.BTAuxiliaryNode");
 	CLASS_REDIRECT("BTCompositeNode", "/Script/AIModule.BTCompositeNode");
 	CLASS_REDIRECT("BTComposite_Selector", "/Script/AIModule.BTComposite_Selector");
@@ -1641,7 +1872,6 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("BehaviorTreeTypes", "/Script/AIModule.BehaviorTreeTypes");
 	CLASS_REDIRECT("BlackboardComponent", "/Script/AIModule.BlackboardComponent");
 	CLASS_REDIRECT("BlackboardData", "/Script/AIModule.BlackboardData");
-	CLASS_REDIRECT("BlackboardKeyAllTypes", "/Script/AIModule.BlackboardKeyAllTypes");
 	CLASS_REDIRECT("BlackboardKeyType", "/Script/AIModule.BlackboardKeyType");
 	CLASS_REDIRECT("BlackboardKeyType_Bool", "/Script/AIModule.BlackboardKeyType_Bool");
 	CLASS_REDIRECT("BlackboardKeyType_Class", "/Script/AIModule.BlackboardKeyType_Class");
@@ -1661,7 +1891,6 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("EQSRenderingComponent", "/Script/AIModule.EQSRenderingComponent");
 	CLASS_REDIRECT("EQSTestingPawn", "/Script/AIModule.EQSTestingPawn");
 	CLASS_REDIRECT("EnvQuery", "/Script/AIModule.EnvQuery");
-	CLASS_REDIRECT("EnvQueryAllItemTypes", "/Script/AIModule.EnvQueryAllItemTypes");
 	CLASS_REDIRECT("EnvQueryContext", "/Script/AIModule.EnvQueryContext");
 	CLASS_REDIRECT("EnvQueryContext_BlueprintBase", "/Script/AIModule.EnvQueryContext_BlueprintBase");
 	CLASS_REDIRECT("EnvQueryContext_Item", "/Script/AIModule.EnvQueryContext_Item");
@@ -1691,7 +1920,7 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("PathFollowingComponent", "/Script/AIModule.PathFollowingComponent");
 	CLASS_REDIRECT("PawnSensingComponent", "/Script/AIModule.PawnSensingComponent");
 
-	STRUCT_REDIRECT("SReply", "EventReply");
+	STRUCT_REDIRECT("SReply", "/Script/UMG.EventReply");
 
 	PROPERTY_REDIRECT("Actor.AddTickPrerequisiteActor.DependentActor", "PrerequisiteActor");
 	FUNCTION_REDIRECT("Actor.AttachRootComponentTo", "Actor.K2_AttachRootComponentTo");
@@ -1711,10 +1940,6 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	FUNCTION_REDIRECT("SkyLightComponent.SetBrightness", "SkyLightComponent.SetIntensity");
 
 	PROPERTY_REDIRECT("AnimCurveBase.CurveName", "LastObservedName");
-	PROPERTY_REDIRECT("CameraComponent.bUsePawnViewRotation", "CameraComponent.bUsePawnControlRotation");
-	PROPERTY_REDIRECT("CharacterMovementComponent.bCrouchMovesCharacterDown", "CharacterMovementComponent.bCrouchMaintainsBaseLocation");
-	PROPERTY_REDIRECT("SpringArmComponent.bUseControllerViewRotation", "SpringArmComponent.bUsePawnControlRotation");
-	PROPERTY_REDIRECT("SpringArmComponent.bUsePawnViewRotation", "SpringArmComponent.bUsePawnControlRotation");
 
 	// 4.6
 
@@ -1742,11 +1967,11 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("MaterialExpressionTerrainLayerCoords", "/Script/Landscape.MaterialExpressionLandscapeLayerCoords");
 	CLASS_REDIRECT("MaterialExpressionTerrainLayerSwitch", "/Script/Landscape.MaterialExpressionLandscapeLayerSwitch");
 	CLASS_REDIRECT("MaterialExpressionTerrainLayerWeight", "/Script/Landscape.MaterialExpressionLandscapeLayerWeight");
-	CLASS_REDIRECT("ReverbVolume", "AudioVolume");
-	CLASS_REDIRECT("ReverbVolumeToggleable", "AudioVolume");
+	CLASS_REDIRECT("ReverbVolume", "/Script/Engine.AudioVolume");
+	CLASS_REDIRECT("ReverbVolumeToggleable", "/Script/Engine.AudioVolume");
 
-	STRUCT_REDIRECT("KeyboardEvent", "KeyEvent");
-	STRUCT_REDIRECT("KeyboardFocusEvent", "FocusEvent");
+	STRUCT_REDIRECT("KeyboardEvent", "/Script/SlateCore.KeyEvent");
+	STRUCT_REDIRECT("KeyboardFocusEvent", "/Script/SlateCore.FocusEvent");
 
 	FUNCTION_REDIRECT("Actor.AddActorLocalOffset", "Actor.K2_AddActorLocalOffset");
 	FUNCTION_REDIRECT("Actor.AddActorLocalRotation", "Actor.K2_AddActorLocalRotation");
@@ -1802,7 +2027,7 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 
 	CLASS_REDIRECT("EdGraphNode_Comment", "/Script/UnrealEd.EdGraphNode_Comment");
 	CLASS_REDIRECT("K2Node_Comment", "/Script/UnrealEd.EdGraphNode_Comment");
-	CLASS_REDIRECT("VimBlueprintFactory", "AnimBlueprintFactory");
+	CLASS_REDIRECT("VimBlueprintFactory", "/Script/UnrealEd.AnimBlueprintFactory");
 
 	FUNCTION_REDIRECT("Actor.SetTickEnabled", "Actor.SetActorTickEnabled");
 	PROPERTY_REDIRECT("UserWidget.OnKeyboardFocusLost.InKeyboardFocusEvent", "InFocusEvent");
@@ -1817,7 +2042,7 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("MeshComponent.Materials", "MeshComponent.OverrideMaterials");
 	PROPERTY_REDIRECT("Pawn.AutoPossess", "Pawn.AutoPossessPlayer");
 
-	FCoreRedirect& ECollisionChannel = ENUM_REDIRECT("ECollisionChannel", "ECollisionChannel");
+	FCoreRedirect& ECollisionChannel = ENUM_REDIRECT("ECollisionChannel", "/Script/Engine.ECollisionChannel");
 	ECollisionChannel.ValueChanges.Add(TEXT("ECC_Default"), TEXT("ECC_Visibility"));
 	ECollisionChannel.ValueChanges.Add(TEXT("ECC_Dynamic"), TEXT("ECC_WorldDynamic"));
 	ECollisionChannel.ValueChanges.Add(TEXT("ECC_OverlapAll"), TEXT("ECC_OverlapAll_Deprecated"));
@@ -1839,7 +2064,6 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("EditorGameAgnosticSettings", "/Script/UnrealEd.EditorSettings");
 	CLASS_REDIRECT("FoliageType", "/Script/Foliage.FoliageType");
 	CLASS_REDIRECT("FoliageType_InstancedStaticMesh", "/Script/Foliage.FoliageType_InstancedStaticMesh");
-	CLASS_REDIRECT("FoliageVertexColorMask", "/Script/Foliage.FoliageVertexColorMask");
 	CLASS_REDIRECT("InstancedFoliageActor", "/Script/Foliage.InstancedFoliageActor");
 	CLASS_REDIRECT("InstancedFoliageSettings", "/Script/Foliage.FoliageType_InstancedStaticMesh");
 	CLASS_REDIRECT("InteractiveFoliageComponent", "/Script/Foliage.InteractiveFoliageComponent");
@@ -1848,19 +2072,19 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 	
 	STRUCT_REDIRECT("ProceduralFoliageTypeData", "/Script/Foliage.FoliageTypeObject");
 
-	FCoreRedirect& EComponentCreationMethod = ENUM_REDIRECT("EComponentCreationMethod", "EComponentCreationMethod");
+	FCoreRedirect& EComponentCreationMethod = ENUM_REDIRECT("EComponentCreationMethod", "/Script/Engine.EComponentCreationMethod");
 	EComponentCreationMethod.ValueChanges.Add(TEXT("EComponentCreationMethod::ConstructionScript"), TEXT("EComponentCreationMethod::SimpleConstructionScript"));
 
-	FCoreRedirect& EConstraintTransform = ENUM_REDIRECT("EConstraintTransform", "EConstraintTransform");
+	FCoreRedirect& EConstraintTransform = ENUM_REDIRECT("EConstraintTransform", "/Script/Engine.EConstraintTransform");
 	EConstraintTransform.ValueChanges.Add(TEXT("EConstraintTransform::Absoluate"), TEXT("EConstraintTransform::Absolute"));
 
-	FCoreRedirect& ELockedAxis = ENUM_REDIRECT("ELockedAxis", "EDOFMode");
+	FCoreRedirect& ELockedAxis = ENUM_REDIRECT("ELockedAxis", "/Script/Engine.EDOFMode");
 	ELockedAxis.ValueChanges.Add(TEXT("Custom"), TEXT("EDOFMode::CustomPlane"));
 	ELockedAxis.ValueChanges.Add(TEXT("X"), TEXT("EDOFMode::YZPlane"));
 	ELockedAxis.ValueChanges.Add(TEXT("Y"), TEXT("EDOFMode::XZPlane"));
 	ELockedAxis.ValueChanges.Add(TEXT("Z"), TEXT("EDOFMode::XYPlane"));
 
-	FCoreRedirect& EEndPlayReason = ENUM_REDIRECT("EEndPlayReason", "EEndPlayReason");
+	FCoreRedirect& EEndPlayReason = ENUM_REDIRECT("EEndPlayReason", "/Script/Engine.EEndPlayReason");
 	EEndPlayReason.ValueChanges.Add(TEXT("EEndPlayReason::ActorDestroyed"), TEXT("EEndPlayReason::Destroyed"));
 
 	FUNCTION_REDIRECT("ActorComponent.ReceiveInitializeComponent", "ActorComponent.ReceiveBeginPlay");
@@ -1897,29 +2121,20 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 	CLASS_REDIRECT("MovieScene", "/Script/MovieScene.MovieScene");
 	CLASS_REDIRECT("MovieScene3DTransformSection", "/Script/MovieSceneTracks.MovieScene3DTransformSection");
 	CLASS_REDIRECT("MovieScene3DTransformTrack", "/Script/MovieSceneTracks.MovieScene3DTransformTrack");
-	CLASS_REDIRECT("MovieSceneAnimationSection", "/Script/MovieSceneTracks.MovieSceneAnimationSection");
-	CLASS_REDIRECT("MovieSceneAnimationTrack", "/Script/MovieSceneTracks.MovieSceneAnimationTrack");
 	CLASS_REDIRECT("MovieSceneAudioSection", "/Script/MovieSceneTracks.MovieSceneAudioSection");
 	CLASS_REDIRECT("MovieSceneAudioTrack", "/Script/MovieSceneTracks.MovieSceneAudioTrack");
-	CLASS_REDIRECT("MovieSceneBindings", "/Script/MovieScene.MovieSceneBindings");
 	CLASS_REDIRECT("MovieSceneBoolTrack", "/Script/MovieSceneTracks.MovieSceneBoolTrack");
 	CLASS_REDIRECT("MovieSceneByteSection", "/Script/MovieSceneTracks.MovieSceneByteSection");
 	CLASS_REDIRECT("MovieSceneByteTrack", "/Script/MovieSceneTracks.MovieSceneByteTrack");
 	CLASS_REDIRECT("MovieSceneColorSection", "/Script/MovieSceneTracks.MovieSceneColorSection");
 	CLASS_REDIRECT("MovieSceneColorTrack", "/Script/MovieSceneTracks.MovieSceneColorTrack");
-	CLASS_REDIRECT("MovieSceneDirectorTrack", "/Script/MovieSceneTracks.MovieSceneDirectorTrack");
 	CLASS_REDIRECT("MovieSceneFloatSection", "/Script/MovieSceneTracks.MovieSceneFloatSection");
 	CLASS_REDIRECT("MovieSceneFloatTrack", "/Script/MovieSceneTracks.MovieSceneFloatTrack");
 	CLASS_REDIRECT("MovieSceneParticleSection", "/Script/MovieSceneTracks.MovieSceneParticleSection");
 	CLASS_REDIRECT("MovieSceneParticleTrack", "/Script/MovieSceneTracks.MovieSceneParticleTrack");
-	CLASS_REDIRECT("MovieScenePropertyTrack", "/Script/MovieScene.MovieScenePropertyTrack");
+	CLASS_REDIRECT("MovieScenePropertyTrack", "/Script/MovieSceneTracks.MovieScenePropertyTrack");
 	CLASS_REDIRECT("MovieSceneSection", "/Script/MovieScene.MovieSceneSection");
 	CLASS_REDIRECT("MovieSceneTrack", "/Script/MovieScene.MovieSceneTrack");
-	CLASS_REDIRECT("MovieSceneVectorSection", "/Script/MovieSceneTracks.MovieSceneVectorSection");
-	CLASS_REDIRECT("MovieSceneVectorTrack", "/Script/MovieSceneTracks.MovieSceneVectorTrack");
-	CLASS_REDIRECT("RuntimeMovieScenePlayer", "/Script/MovieScene.RuntimeMovieScenePlayer");
-	CLASS_REDIRECT("SubMovieSceneSection", "/Script/MovieSceneTracks.SubMovieSceneSection");
-	CLASS_REDIRECT("SubMovieSceneTrack", "/Script/MovieSceneTracks.SubMovieSceneTrack");
 
 	PACKAGE_REDIRECT("/Script/MovieSceneCore", "/Script/MovieScene");
 	PACKAGE_REDIRECT("/Script/MovieSceneCoreTypes", "/Script/MovieSceneTracks");
@@ -1935,13 +2150,12 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 	STRUCT_REDIRECT("AnimNode_SpringBone", "/Script/AnimGraphRuntime.AnimNode_SpringBone");
 	STRUCT_REDIRECT("AnimNode_Trail", "/Script/AnimGraphRuntime.AnimNode_Trail");
 	STRUCT_REDIRECT("AnimNode_TwoBoneIK", "/Script/AnimGraphRuntime.AnimNode_TwoBoneIK");
-	STRUCT_REDIRECT("MovieSceneBoundObject", "/Script/MovieScene.MovieSceneBoundObject");
 	STRUCT_REDIRECT("MovieSceneEditorData", "/Script/MovieScene.MovieSceneEditorData");
 	STRUCT_REDIRECT("MovieSceneObjectBinding", "/Script/MovieScene.MovieSceneBinding");
 	STRUCT_REDIRECT("MovieScenePossessable", "/Script/MovieScene.MovieScenePossessable");
 	STRUCT_REDIRECT("MovieSceneSpawnable", "/Script/MovieScene.MovieSceneSpawnable");
-	STRUCT_REDIRECT("SpritePolygon", "SpriteGeometryShape");
-	STRUCT_REDIRECT("SpritePolygonCollection", "SpriteGeometryCollection");
+	STRUCT_REDIRECT("SpritePolygon", "/Script/Paper2D.SpriteGeometryShape");
+	STRUCT_REDIRECT("SpritePolygonCollection", "/Script/Paper2D.SpriteGeometryCollection");
 
 	FUNCTION_REDIRECT("GameplayStatics.PlayDialogueAttached", "GameplayStatics.SpawnDialogueAttached");
 	FUNCTION_REDIRECT("GameplayStatics.PlaySoundAttached", "GameplayStatics.SpawnSoundAttached");
@@ -1963,10 +2177,10 @@ static void RegisterNativeRedirects49(TArray<FCoreRedirect>& Redirects)
 
 	ENUM_REDIRECT("ECheckBoxState", "/Script/SlateCore.ECheckBoxState");
 	ENUM_REDIRECT("ESlateCheckBoxState", "/Script/SlateCore.ECheckBoxState");
-	ENUM_REDIRECT("EAxisOption", "/Script/AnimGraphRuntime.EAxisOption");
-	ENUM_REDIRECT("EBoneAxis", "/Script/AnimGraphRuntime.EBoneAxis");
+	ENUM_REDIRECT("EAxisOption", "/Script/Engine.EAxisOption");
+	ENUM_REDIRECT("EBoneAxis", "/Script/Engine.EBoneAxis");
 	ENUM_REDIRECT("EBoneModificationMode", "/Script/AnimGraphRuntime.EBoneModificationMode");
-	ENUM_REDIRECT("EComponentType", "/Script/AnimGraphRuntime.EComponentType");
+	ENUM_REDIRECT("EComponentType", "/Script/Engine.EComponentType");
 	ENUM_REDIRECT("EInterpolationBlend", "/Script/AnimGraphRuntime.EInterpolationBlend");
 }
 

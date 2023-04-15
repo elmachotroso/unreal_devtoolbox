@@ -2,6 +2,7 @@
 
 #include "Widgets/SMultiDumpBrowser.h"
 
+#if STATS
 
 #define LOCTEXT_NAMESPACE "SMultiDumpBrowser"
 
@@ -20,7 +21,7 @@ void SMultiDumpBrowser::Construct(const FArguments& InArgs)
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight().Padding(2)
 			[
-				SNew(SBorder).BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder")).Padding(4).HAlign(HAlign_Fill)
+				SNew(SBorder).BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder")).Padding(4).HAlign(HAlign_Fill)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot()
@@ -35,7 +36,7 @@ void SMultiDumpBrowser::Construct(const FArguments& InArgs)
 			]
 			+ SVerticalBox::Slot().Padding(2).FillHeight(1.0f)
 			[
-				SNew(SBorder).BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder")).Padding(4).HAlign(HAlign_Fill).VAlign(VAlign_Fill)
+				SNew(SBorder).BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder")).Padding(4).HAlign(HAlign_Fill).VAlign(VAlign_Fill)
 				[
 					SAssignNew(FileList, SListView<TSharedPtr<FFileDescriptor>>)
 					.ListItemsSource(&StatsFiles)
@@ -196,3 +197,5 @@ void SMultiDumpBrowser::PrefilterTextCommitted(const FText& InText, const ETextC
 
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

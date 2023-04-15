@@ -6,14 +6,16 @@
 #include "Misc/IFilter.h"
 #include "CollectionManagerTypes.h"
 #include "Styling/SlateIconFinder.h"
-#include "EditorStyleSet.h"
-#include "SequencerDisplayNode.h"
+#include "Styling/AppStyle.h"
 #include "MovieSceneSequence.h"
 
 #include "Tracks/MovieSceneAudioTrack.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Tracks/MovieSceneEventTrack.h"
 #include "Tracks/MovieSceneLevelVisibilityTrack.h"
 #include "Tracks/MovieSceneParticleTrack.h"
+#include "Tracks/MovieSceneSubTrack.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/LightComponentBase.h"
@@ -219,12 +221,17 @@ class FSequencerTrackFilter_AudioTracks : public FSequencerTrackFilter_ClassType
 	virtual FString GetName() const override { return TEXT("SequencerAudioTracksFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_AudioTracks", "Audio"); }
 	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_AudioTracksToolTip", "Show only Audio tracks."); }
-	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Audio"); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Audio"); }
 
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const override
 	{
-		static UClass* LevelSequenceClass = FindObject<UClass>(ANY_PACKAGE, TEXT("LevelSequence"), true);
-		static UClass* WidgetAnimationClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WidgetAnimation"), true);
+		if (InSequence && InSequence->IsTrackSupported(UMovieSceneAudioTrack::StaticClass()) == ETrackSupport::NotSupported)
+		{
+			return false;
+		}
+
+		static UClass* LevelSequenceClass = FindObject<UClass>(nullptr, TEXT("/Script/LevelSequence.LevelSequence"), true);
+		static UClass* WidgetAnimationClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetAnimation"), true);
 		return InSequence != nullptr &&
 			((LevelSequenceClass != nullptr && InSequence->GetClass()->IsChildOf(LevelSequenceClass)) ||
 			(WidgetAnimationClass != nullptr && InSequence->GetClass()->IsChildOf(WidgetAnimationClass)));
@@ -236,12 +243,17 @@ class FSequencerTrackFilter_EventTracks : public FSequencerTrackFilter_ClassType
 	virtual FString GetName() const override { return TEXT("SequencerEventTracksFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_EventTracks", "Event"); }
 	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_EventTracksToolTip", "Show only Event tracks."); }
-	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Event"); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Event"); }
 
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const override
 	{
-		static UClass* LevelSequenceClass = FindObject<UClass>(ANY_PACKAGE, TEXT("LevelSequence"), true);
-		static UClass* WidgetAnimationClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WidgetAnimation"), true);
+		if (InSequence && InSequence->IsTrackSupported(UMovieSceneEventTrack::StaticClass()) == ETrackSupport::NotSupported)
+		{
+			return false;
+		}
+
+		static UClass* LevelSequenceClass = FindObject<UClass>(nullptr, TEXT("/Script/LevelSequence.LevelSequence"), true);
+		static UClass* WidgetAnimationClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetAnimation"), true);
 		return InSequence != nullptr &&
 			((LevelSequenceClass != nullptr && InSequence->GetClass()->IsChildOf(LevelSequenceClass)) ||
 			(WidgetAnimationClass != nullptr && InSequence->GetClass()->IsChildOf(WidgetAnimationClass)));
@@ -253,7 +265,7 @@ class FSequencerTrackFilter_LevelVisibilityTracks : public FSequencerTrackFilter
 	virtual FString GetName() const override { return TEXT("SequencerLevelVisibilityTracksFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_LevelVisibilityTracks", "Level Visibility"); }
 	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_LevelVisibilityTracksToolTip", "Show only Level Visibility tracks."); }
-	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.LevelVisibility"); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.LevelVisibility"); }
 };
 
 class FSequencerTrackFilter_ParticleTracks : public FSequencerTrackFilter_ClassType< UMovieSceneParticleTrack >
@@ -264,11 +276,33 @@ class FSequencerTrackFilter_ParticleTracks : public FSequencerTrackFilter_ClassT
 	virtual FSlateIcon GetIcon() const override { return FSlateIconFinder::FindIconForClass(UParticleSystem::StaticClass()); }
 };
 
+class FSequencerTrackFilter_CinematicShotTracks : public FSequencerTrackFilter_ClassType< UMovieSceneCinematicShotTrack >
+{
+	virtual FString GetName() const override { return TEXT("SequencerCinematicShotTracksFilter"); }
+	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_CinematicShotTracks", "Shots"); }
+	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_CinematicShotTracksToolTip", "Show only Shot tracks."); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.CinematicShot"); }
+};
+
+class FSequencerTrackFilter_SubTracks : public FSequencerTrackFilter_ClassType< UMovieSceneSubTrack >
+{
+	virtual FString GetName() const override { return TEXT("SequencerSubTracksFilter"); }
+	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_SubTracks", "Subsequences"); }
+	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_SubTracksToolTip", "Show only Subsequence tracks."); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Sub"); }
+
+	// IFilter implementation
+	virtual bool PassesFilter(FTrackFilterType InItem) const override
+	{
+		return InItem->IsA(UMovieSceneSubTrack::StaticClass()) && !InItem->IsA(UMovieSceneCinematicShotTrack::StaticClass());
+	}
+};
+
 class FSequencerTrackFilter_SkeletalMeshObjects : public FSequencerTrackFilter_ComponentType< USkeletalMeshComponent >
 {
 	virtual FString GetName() const override { return TEXT("SequencerSkeletalMeshObjectsFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_SkeletalMeshObjects", "Skeletal Mesh"); }
-	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_SkeletalMeshObjectsToolTip", "Show only SkeletalMesh objects."); }
+	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_SkeletalMeshObjectsToolTip", "Show only Skeletal Mesh objects."); }
 	virtual FSlateIcon GetIcon() const override { return FSlateIconFinder::FindIconForClass(USkeletalMeshComponent::StaticClass()); }
 };
 
@@ -276,8 +310,18 @@ class FSequencerTrackFilter_CameraObjects : public FSequencerTrackFilter_Compone
 {
 	virtual FString GetName() const override { return TEXT("SequencerCameraObjectsFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_CameraObjects", "Cameras"); }
-	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_CameraObjectsToolTip", "Show only Camera objects."); }
+	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_CameraObjectsToolTip", "Show only Camera objects and Camera Cut tracks."); }
 	virtual FSlateIcon GetIcon() const override { return FSlateIconFinder::FindIconForClass(UCameraComponent::StaticClass()); }
+
+	// IFilter implementation
+	virtual bool PassesFilter(FTrackFilterType InItem) const override
+	{
+		if (InItem->IsA(UMovieSceneCameraCutTrack::StaticClass()))
+		{
+			return true;
+		}
+		return FSequencerTrackFilter_ComponentType< UCameraComponent >::PassesFilter(InItem);
+	}
 };
 
 class FSequencerTrackFilter_LightObjects : public FSequencerTrackFilter_ComponentType< ULightComponentBase >
@@ -285,7 +329,7 @@ class FSequencerTrackFilter_LightObjects : public FSequencerTrackFilter_Componen
 	virtual FString GetName() const override { return TEXT("SequencerLightObjectsFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequencerTrackFilter_LightObjects", "Lights"); }
 	virtual FText GetToolTipText() const override { return LOCTEXT("SequencerTrackFilter_LightObjectsToolTip", "Show only Light objects."); }
-	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.Light"); }
+	virtual FSlateIcon GetIcon() const override { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Light"); }
 };
 
 class FSequencerTrackFilter_LevelFilter : public FSequencerTrackFilter
@@ -327,7 +371,7 @@ public:
 	virtual FString GetName() const override { return TEXT("AnimatedFilter"); }
 	virtual FText GetDisplayName() const override { return LOCTEXT("SequenceTrackFilter_Animated", "Animated Tracks"); }
 	virtual FText GetToolTipText() const override;
-	virtual FSlateIcon GetIcon() const { return FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyUser"); }
+	virtual FSlateIcon GetIcon() const { return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.IconKeyUser"); }
 
 	virtual bool ShouldUpdateOnTrackValueChanged() const override
 	{
@@ -346,13 +390,16 @@ public:
 
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const override
 	{
-		static UClass* LevelSequenceClass = FindObject<UClass>(ANY_PACKAGE, TEXT("LevelSequence"), true);
-		static UClass* WidgetAnimationClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WidgetAnimation"), true);
+		static UClass* LevelSequenceClass = FindObject<UClass>(nullptr, TEXT("/Script/LevelSequence.LevelSequence"), true);
+		static UClass* WidgetAnimationClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetAnimation"), true);
 		return InSequence != nullptr &&
 			((LevelSequenceClass != nullptr && InSequence->GetClass()->IsChildOf(LevelSequenceClass)) ||
 			(WidgetAnimationClass != nullptr && InSequence->GetClass()->IsChildOf(WidgetAnimationClass)));
 	}
 	
-	virtual void BindCommands(TSharedRef<FUICommandList> CommandBindings, TWeakPtr<ISequencer> Sequencer) override;
+	virtual void BindCommands(TSharedRef<FUICommandList> SequencerBindings, TSharedRef<FUICommandList> CurveEditorBindings, TWeakPtr<ISequencer> Sequencer) override;
+
+private:
+	mutable uint32 BindingCount;
 };
 #undef LOCTEXT_NAMESPACE

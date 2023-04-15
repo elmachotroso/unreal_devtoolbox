@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "MassSignalSubsystem.generated.h"
 
@@ -108,4 +108,13 @@ protected:
 	};
 
 	TArray<FDelayedSignal> DelayedSignals;
+};
+
+template<>
+struct TMassExternalSubsystemTraits<UMassSignalSubsystem> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
 };

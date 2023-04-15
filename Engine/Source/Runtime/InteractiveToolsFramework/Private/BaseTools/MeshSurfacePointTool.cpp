@@ -9,6 +9,10 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ToolTargetManager.h"
 
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshSurfacePointTool)
+
 #define LOCTEXT_NAMESPACE "UMeshSurfacePointTool"
 
 
@@ -45,6 +49,7 @@ void UMeshSurfacePointToolBuilder::InitializeNewTool(UMeshSurfacePointTool* NewT
 	check(Target);
 	NewTool->SetTarget(Target);
 	NewTool->SetStylusAPI(this->StylusAPI);
+	NewTool->SetWorld(SceneState.World);
 }
 
 
@@ -200,6 +205,16 @@ FInputRayHit UMeshSurfacePointTool::BeginHoverSequenceHitTest(const FInputDevice
 float UMeshSurfacePointTool::GetCurrentDevicePressure() const
 {
 	return (StylusAPI != nullptr) ? FMath::Clamp(StylusAPI->GetCurrentPressure(), 0.0f, 1.0f) : 1.0f;
+}
+
+void UMeshSurfacePointTool::SetWorld(UWorld* World)
+{
+	TargetWorld = World;
+}
+
+UWorld* UMeshSurfacePointTool::GetTargetWorld()
+{
+	return TargetWorld.Get();
 }
 
 

@@ -36,6 +36,7 @@
 
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "MaterialUtilities.h"
 
 #include "Engine/MeshMerging.h"
 
@@ -112,7 +113,7 @@ static TUniquePtr<FSceneCapturePhotoSet> CapturePhotoSet(
 
 	SceneCapture->AddStandardExteriorCapturesFromBoundingBox(
 		CaptureDimensions, FieldOfView, NearPlaneDist,
-		true, true, true);
+		true, true, true, true, true);
 	
 	return SceneCapture;
 }
@@ -828,47 +829,6 @@ static TSharedPtr<FApproximationMeshData> GenerateApproximationMesh(
 	return Result;
 }
 
-
-static int32 GetMeshTextureSizeFromTargetTexelDensity(const FDynamicMesh3& Mesh, float TargetTexelDensity)
-{
-	const FDynamicMeshUVOverlay* UVOverlay = Mesh.Attributes()->PrimaryUV();
-	double Mesh3DArea = 0;
-	double MeshUVArea = 0;
-	for (int TriangleID : Mesh.TriangleIndicesItr())
-	{
-		// World space area
-		Mesh3DArea += Mesh.GetTriArea(TriangleID);
-
-		FIndex3i UVVertices = UVOverlay->GetTriangle(TriangleID);
-		FTriangle2d TriangleUV = FTriangle2d(
-			(FVector2d)UVOverlay->GetElement(UVVertices.A),
-			(FVector2d)UVOverlay->GetElement(UVVertices.B),
-			(FVector2d)UVOverlay->GetElement(UVVertices.C));
-
-		// UV space area
-		MeshUVArea += TriangleUV.Area();
-	}
-	double TexelRatio = FMath::Sqrt(MeshUVArea / Mesh3DArea) * 100;
-
-	// Compute the perfect texture size that would get us to our texture density
-	// Also compute the nearest power of two sizes (below and above our target)
-	const int32 SizePerfect = FMath::CeilToInt(TargetTexelDensity / TexelRatio);
-	const int32 SizeHi = FMath::RoundUpToPowerOfTwo(SizePerfect);
-	const int32 SizeLo = SizeHi >> 1;
-
-	// Compute the texel density we achieve with these two texture sizes
-	const double TexelDensityLo = SizeLo * TexelRatio;
-	const double TexelDensityHi = SizeHi * TexelRatio;
-
-	// Select best match between low & high res textures.
-	const double TexelDensityLoDiff = TargetTexelDensity - TexelDensityLo;
-	const double TexelDensityHiDiff = TexelDensityHi - TargetTexelDensity;
-	const int32 BestTextureSize = TexelDensityLoDiff < TexelDensityHiDiff ? SizeLo : SizeHi;
-
-	return BestTextureSize;
-}
-
-
 IGeometryProcessing_ApproximateActors::FOptions FApproximateActorsImpl::ConstructOptions(const FMeshApproximationSettings& UseSettings)
 {
 	//
@@ -991,6 +951,14 @@ IGeometryProcessing_ApproximateActors::FOptions FApproximateActorsImpl::Construc
 
 	// Ray tracing
 	Options.bSupportRayTracing = UseSettings.bSupportRayTracing;
+
+	// Material properties baking
+	Options.bBakeBaseColor = true;
+	Options.bBakeRoughness = UseSettings.MaterialSettings.bRoughnessMap;
+	Options.bBakeMetallic = UseSettings.MaterialSettings.bMetallicMap;
+	Options.bBakeSpecular = UseSettings.MaterialSettings.bSpecularMap;
+	Options.bBakeEmissive = UseSettings.MaterialSettings.bEmissiveMap;
+	Options.bBakeNormalMap = UseSettings.MaterialSettings.bNormalMap;
 
 	return Options;
 }
@@ -1170,20 +1138,8 @@ void FApproximateActorsImpl::GenerateApproximationForActorSet(const TArray<AActo
 	// evaluate required texture size if needed
 	if (Options.TextureSizePolicy == ETextureSizePolicy::TexelDensity)
 	{
-		const int32 MaxTextureSize = 8192;
-		const int32 BestTextureSize = GetMeshTextureSizeFromTargetTexelDensity(FinalMesh, Options.MeshTexelDensity);
-
-		if (BestTextureSize > MaxTextureSize)
-		{
-			UE_LOG(LogApproximateActors, Warning, TEXT("Mesh would require %dx%d textures, clamping down to maximum (%dx%d)"), BestTextureSize, BestTextureSize, MaxTextureSize, MaxTextureSize);
-			OverridenOptions.TextureImageSize = MaxTextureSize;
-		}
-		else
-		{
-			OverridenOptions.TextureImageSize = BestTextureSize;
-		}
+		OverridenOptions.TextureImageSize = FMaterialUtilities::GetTextureSizeFromTargetTexelDensity(FinalMesh, Options.MeshTexelDensity);
 	}
-
 
 	// bake textures for Actor
 	FGeneratedResultTextures GeneratedTextures;
@@ -1312,7 +1268,8 @@ UStaticMesh* FApproximateActorsImpl::EmitGeneratedMeshAsset(
 	MeshAssetOptions.SourceMeshes.DynamicMeshes.Add(FinalMesh);
 
 	MeshAssetOptions.bGenerateNaniteEnabledMesh = Options.bGenerateNaniteEnabledMesh;
-	MeshAssetOptions.NaniteProxyTrianglePercent = Options.NaniteProxyTrianglePercent;
+	MeshAssetOptions.NaniteSettings.bEnabled = Options.bGenerateNaniteEnabledMesh;
+	MeshAssetOptions.NaniteSettings.FallbackPercentTriangles = Options.NaniteProxyTrianglePercent / 100.0;	// NaniteSettings wants value in range 0-1
 
 	MeshAssetOptions.bSupportRayTracing = Options.bSupportRayTracing;
 	MeshAssetOptions.bAllowDistanceField = Options.bAllowDistanceField;

@@ -15,6 +15,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "KismetCompiler.h"
 #include "Sections/MovieSceneEventSectionBase.h"
+#include "Sections/MovieSceneParticleSection.h"
 
 #include "TrackEditors/PropertyTrackEditors/BoolPropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/BytePropertyTrackEditor.h"
@@ -46,13 +47,17 @@
 #include "TrackEditors/SpawnTrackEditor.h"
 #include "TrackEditors/LevelVisibilityTrackEditor.h"
 #include "TrackEditors/DataLayerTrackEditor.h"
-#include "TrackEditors/CameraAnimTrackEditor.h"
 #include "TrackEditors/CameraShakeTrackEditor.h"
 #include "TrackEditors/MaterialParameterCollectionTrackEditor.h"
 #include "TrackEditors/ObjectPropertyTrackEditor.h"
 #include "TrackEditors/PrimitiveMaterialTrackEditor.h"
 #include "TrackEditors/CameraShakeSourceShakeTrackEditor.h"
 #include "TrackEditors/CVarTrackEditor.h"
+
+#include "Channels/PerlinNoiseChannelInterface.h"
+
+#include "MVVM/ViewModels/CameraCutTrackModel.h"
+#include "MVVM/ViewModels/CinematicShotTrackModel.h"
 
 #include "MovieSceneBuiltInEasingFunctionCustomization.h"
 #include "MovieSceneObjectBindingIDCustomization.h"
@@ -68,13 +73,26 @@
 #include "ISequencerChannelInterface.h"
 #include "SequencerChannelInterface.h"
 #include "Channels/BuiltInChannelEditors.h"
-#include "Channels/MovieSceneObjectPathChannel.h"
+#include "Channels/MovieSceneByteChannel.h"
+#include "Channels/MovieSceneChannel.h"
 #include "Channels/MovieSceneEventChannel.h"
+#include "Channels/MovieSceneObjectPathChannel.h"
 #include "Channels/MovieSceneCameraShakeSourceTriggerChannel.h"
+#include "Channels/MovieSceneStringChannel.h"
+#include "Channels/MovieSceneFloatPerlinNoiseChannel.h"
+#include "Channels/MovieSceneDoublePerlinNoiseChannel.h"
 #include "Channels/EventChannelCurveModel.h"
 #include "Channels/SCurveEditorEventChannelView.h"
 #include "Channels/MovieSceneAudioTriggerChannel.h"
+#include "ConstraintChannel.h"
+#include "Channels/ConstraintChannelEditor.h"
+#include "Channels/ConstraintChannelCurveModel.h"
+#include "Channels/SCurveEditorKeyBarView.h"
 #include "Sections/MovieSceneEventSection.h"
+
+#include "Channels/MovieSceneDoublePerlinNoiseChannelContainer.h"
+#include "Channels/MovieSceneFloatPerlinNoiseChannelContainer.h"
+#include "Channels/PerlinNoiseChannelDetailsCustomization.h"
 
 #include "MovieSceneEventUtils.h"
 
@@ -82,8 +100,18 @@
 #include "EditorModeManager.h"
 #include "EditModes/SkeletalAnimationTrackEditMode.h"
 
+#include "ClassViewerFilter.h"
+#include "ClassViewerModule.h"
+
+#include "LevelSequence.h"
+#include "LevelSequenceAnimSequenceLink.h"
+#include "AnimSequenceLevelSequenceLink.h"
+#include "EditorAnimUtils.h"
+#include "Animation/AnimSequence.h"
 
 #define LOCTEXT_NAMESPACE "FMovieSceneToolsModule"
+
+TAutoConsoleVariable<bool> CVarDuplicateLinkedAnimSequence(TEXT("Sequencer.DuplicateLinkedAnimSequence"), false, TEXT("When true when we duplicate a level sequence that has a linked anim sequence it will duplicate and link the anim sequencel, if false we leave any link alone."));
 
 #if !IS_MONOLITHIC
 	UE::MovieScene::FEntityManager*& GEntityManagerForDebugging = UE::MovieScene::GEntityManagerForDebuggingVisualizers;
@@ -91,6 +119,8 @@
 
 void FMovieSceneToolsModule::StartupModule()
 {
+	using namespace UE::Sequencer;
+
 	if (GIsEditor)
 	{
 		if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
@@ -138,12 +168,15 @@ void FMovieSceneToolsModule::StartupModule()
 		SpawnTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FSpawnTrackEditor::CreateTrackEditor ) );
 		LevelVisibilityTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FLevelVisibilityTrackEditor::CreateTrackEditor ) );
 		DataLayerTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FDataLayerTrackEditor::CreateTrackEditor ) );
-		CameraAnimTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraAnimTrackEditor::CreateTrackEditor));
 		CameraShakeTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraShakeTrackEditor::CreateTrackEditor));
 		MPCTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FMaterialParameterCollectionTrackEditor::CreateTrackEditor));
 		PrimitiveMaterialCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FPrimitiveMaterialTrackEditor::CreateTrackEditor));
 		CameraShakeSourceShakeCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraShakeSourceShakeTrackEditor::CreateTrackEditor));
 		CVarTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCVarTrackEditor::CreateTrackEditor));
+
+		// register track models
+		CameraCutTrackModelHandle = SequencerModule.RegisterTrackModel(FOnCreateTrackModel::CreateStatic(&FCameraCutTrackModel::CreateTrackModel));
+		CinematicShotTrackModelHandle = SequencerModule.RegisterTrackModel(FOnCreateTrackModel::CreateStatic(&FCinematicShotTrackModel::CreateTrackModel));
 
 		RegisterClipboardConversions();
 
@@ -151,6 +184,8 @@ void FMovieSceneToolsModule::StartupModule()
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout("MovieSceneToolsProjectSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneToolsProjectSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("MovieSceneBuiltInEasingFunction", FOnGetDetailCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneBuiltInEasingFunctionCustomization>));
+		PropertyModule.RegisterCustomClassLayout("MovieSceneFloatPerlinNoiseChannelContainer", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneFloatPerlinNoiseChannelDetailsCustomization::MakeInstance));
+		PropertyModule.RegisterCustomClassLayout("MovieSceneDoublePerlinNoiseChannelContainer", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneDoublePerlinNoiseChannelDetailsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneObjectBindingID", FOnGetPropertyTypeCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneObjectBindingIDCustomization>));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneEvent", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMovieSceneEventCustomization::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneCVarOverrides", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&UE::MovieScene::FCVarOverridesPropertyTypeCustomization::MakeInstance));
@@ -172,6 +207,11 @@ void FMovieSceneToolsModule::StartupModule()
 
 		SequencerModule.RegisterChannelInterface<FMovieSceneCameraShakeSourceTriggerChannel>();
 
+		SequencerModule.RegisterChannelInterface<FMovieSceneConstraintChannel>();
+
+		SequencerModule.RegisterChannelInterface<FMovieSceneFloatPerlinNoiseChannel>(MakeUnique<TPerlinNoiseChannelInterface<UMovieSceneFloatPerlinNoiseChannelContainer>>());
+		SequencerModule.RegisterChannelInterface<FMovieSceneDoublePerlinNoiseChannel>(MakeUnique<TPerlinNoiseChannelInterface<UMovieSceneDoublePerlinNoiseChannelContainer>>());
+
 		ICurveEditorModule& CurveEditorModule = FModuleManager::LoadModuleChecked<ICurveEditorModule>("CurveEditor");
 
 		FEventChannelCurveModel::EventView = CurveEditorModule.RegisterView(FOnCreateCurveEditorView::CreateStatic(
@@ -180,12 +220,21 @@ void FMovieSceneToolsModule::StartupModule()
 				return SNew(SCurveEditorEventChannelView, WeakCurveEditor);
 			}
 		));
+
+		FConstraintChannelCurveModel::ViewID = CurveEditorModule.RegisterView(FOnCreateCurveEditorView::CreateStatic(
+			[](TWeakPtr<FCurveEditor> WeakCurveEditor) -> TSharedRef<SCurveEditorView>
+			{
+				return SNew(SCurveEditorKeyBarView, WeakCurveEditor);
+			}
+		));
 	}
 
 	FixupPayloadParameterNameHandle = UMovieSceneEventSectionBase::FixupPayloadParameterNameEvent.AddStatic(FixupPayloadParameterNameForSection);
 	UMovieSceneEventSectionBase::UpgradeLegacyEventEndpoint.BindStatic(UpgradeLegacyEventEndpointForSection);
 	UMovieSceneEventSectionBase::PostDuplicateSectionEvent.BindStatic(PostDuplicateEventSection);
 	UMovieSceneEventSectionBase::RemoveForCookEvent.BindStatic(RemoveForCookEventSection);
+	UMovieScene::IsTrackClassAllowedEvent.BindStatic(IsTrackClassAllowed);
+	ULevelSequence::PostDuplicateEvent.BindStatic(PostDuplicateEvent);
 
 	auto OnObjectsReplaced = [](const TMap<UObject*, UObject*>& ReplacedObjects)
 	{
@@ -203,9 +252,6 @@ void FMovieSceneToolsModule::StartupModule()
 
 	OnObjectsReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddLambda(OnObjectsReplaced);
 
-	// EditorStyle must be initialized by now
-	FModuleManager::Get().LoadModule("EditorStyle");
-
 	FEditorModeRegistry::Get().RegisterMode<FSkeletalAnimationTrackEditMode>(
 		FSkeletalAnimationTrackEditMode::ModeName,
 		NSLOCTEXT("SkeletalAnimationTrackEditorMode", "SkelAnimTrackEditMode", "Skeletal Anim Track Mode"),
@@ -219,10 +265,13 @@ void FMovieSceneToolsModule::ShutdownModule()
 	UMovieSceneEventSectionBase::UpgradeLegacyEventEndpoint = UMovieSceneEventSectionBase::FUpgradeLegacyEventEndpoint();
 	UMovieSceneEventSectionBase::PostDuplicateSectionEvent = UMovieSceneEventSectionBase::FPostDuplicateEvent();
 	UMovieSceneEventSectionBase::RemoveForCookEvent = UMovieSceneEventSectionBase::FRemoveForCookEvent();
+	UMovieScene::IsTrackClassAllowedEvent = UMovieScene::FIsTrackClassAllowedEvent();
+	ULevelSequence::PostDuplicateEvent = ULevelSequence::FPostDuplicateEvent();
 
 	if (ICurveEditorModule* CurveEditorModule = FModuleManager::GetModulePtr<ICurveEditorModule>("CurveEditor"))
 	{
 		CurveEditorModule->UnregisterView(FEventChannelCurveModel::EventView);
+		CurveEditorModule->UnregisterView(FConstraintChannelCurveModel::ViewID);
 	}
 
 	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
@@ -273,12 +322,15 @@ void FMovieSceneToolsModule::ShutdownModule()
 	SequencerModule.UnRegisterTrackEditor( SpawnTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( LevelVisibilityTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( DataLayerTrackCreateEditorHandle );
-	SequencerModule.UnRegisterTrackEditor( CameraAnimTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( CameraShakeTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( MPCTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( ObjectTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( PrimitiveMaterialCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( CVarTrackCreateEditorHandle );
+
+	// unregister track models
+	SequencerModule.UnregisterTrackModel( CameraCutTrackModelHandle );
+	SequencerModule.UnregisterTrackModel( CinematicShotTrackModelHandle );
 
 	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
 	{	
@@ -315,6 +367,53 @@ void FMovieSceneToolsModule::RemoveForCookEventSection(UMovieSceneEventSectionBa
 	if (SequenceDirectorBP)
 	{
 		FMovieSceneEventUtils::RemoveEndpointsForEventSection(Section, SequenceDirectorBP);
+	}
+}
+
+//When we duplicate a ULevelSequence we check to see if there are any linked UAnimSequences in the asset user data,
+//if so we either make a copy of the anim sequence, or leave it alone since a rename can also be a duplicate, the user will need to clean up this link later.
+void FMovieSceneToolsModule::PostDuplicateEvent(ULevelSequence* LevelSequence)
+{
+	if (LevelSequence && LevelSequence->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass()))
+	{
+		if (IInterface_AssetUserData* AssetUserDataInterface = Cast< IInterface_AssetUserData >(LevelSequence))
+		{
+			ULevelSequenceAnimSequenceLink* LevelAnimLink = AssetUserDataInterface->GetAssetUserData< ULevelSequenceAnimSequenceLink >();
+			if (LevelAnimLink)
+			{
+				const bool bDuplicateAnimSequence = CVarDuplicateLinkedAnimSequence.GetValueOnGameThread();
+				if (bDuplicateAnimSequence)
+				{
+					for (FLevelSequenceAnimSequenceLinkItem& Item : LevelAnimLink->AnimSequenceLinks)
+					{
+						if (UAnimSequence* AnimSequence = Item.ResolveAnimSequence())
+						{
+							TArray<UAnimSequence*> AnimSequencesToDuplicate;
+							AnimSequencesToDuplicate.Add(AnimSequence);
+							UPackage* DestinationPackage = AnimSequence->GetPackage();
+							EditorAnimUtils::FNameDuplicationRule NameRule;
+							NameRule.FolderPath = FPackageName::GetLongPackagePath(AnimSequence->GetPathName()) / TEXT("");
+							TMap<UAnimSequence*, UAnimSequence*> DuplicatedAnimAssets = EditorAnimUtils::DuplicateAssets<UAnimSequence>(AnimSequencesToDuplicate, DestinationPackage, &NameRule);
+							for (TPair<UAnimSequence*, UAnimSequence*>& Duplicates : DuplicatedAnimAssets)
+							{
+								if (UAnimSequence* NewAnimSequence = Duplicates.Value)
+								{
+									Item.PathToAnimSequence = FSoftObjectPath(NewAnimSequence);
+									if (IInterface_AssetUserData* AnimAssetUserData = Cast< IInterface_AssetUserData >(NewAnimSequence))
+									{
+										UAnimSequenceLevelSequenceLink* AnimLevelLink = AnimAssetUserData->GetAssetUserData< UAnimSequenceLevelSequenceLink >();
+										if (AnimLevelLink)
+										{
+											AnimLevelLink->SetLevelSequence(LevelSequence);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -410,6 +509,26 @@ bool FMovieSceneToolsModule::UpgradeLegacyEventEndpointForSection(UMovieSceneEve
 	if (SequenceDirectorBP->bHasBeenRegenerated)
 	{
 		Section->OnPostCompile(SequenceDirectorBP);
+	}
+
+	return true;
+}
+
+bool FMovieSceneToolsModule::IsTrackClassAllowed(UClass* InClass)
+{
+	if (!InClass)
+	{
+		return false;
+	}
+
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+	const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = ClassViewerModule.GetGlobalClassViewerFilter();
+	TSharedRef<FClassViewerFilterFuncs> ClassFilterFuncs = ClassViewerModule.CreateFilterFuncs();
+	FClassViewerInitializationOptions ClassViewerOptions = {};
+
+	if (GlobalClassFilter.IsValid())
+	{
+		return GlobalClassFilter->IsClassAllowed(ClassViewerOptions, InClass, ClassFilterFuncs);
 	}
 
 	return true;

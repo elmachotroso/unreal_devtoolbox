@@ -564,23 +564,23 @@ TObjectCacheIterator<UMaterialInterface> FObjectCacheContext::GetMaterialsAffect
 	return TObjectCacheIterator<UMaterialInterface>(ComputeResult.Array());
 }
 
-TObjectCacheIterator<USkinnedMeshComponent> FObjectCacheContext::GetSkinnedMeshComponents(USkeletalMesh* InSkeletalMesh)
+TObjectCacheIterator<USkinnedMeshComponent> FObjectCacheContext::GetSkinnedMeshComponents(USkinnedAsset* InSkinnedAsset)
 {
-	if (!SkeletalMeshToComponents.IsSet())
+	if (!SkinnedAssetToComponents.IsSet())
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(ComputeSkeletalMeshToComponents);
 
-		TMap<TObjectKey<USkeletalMesh>, TSet<USkinnedMeshComponent*>> TempMap;
+		TMap<TObjectKey<USkinnedAsset>, TSet<USkinnedMeshComponent*>> TempMap;
 		TempMap.Reserve(8192);
 		for (USkinnedMeshComponent* Component : GetSkinnedMeshComponents())
 		{
-			TempMap.FindOrAdd(ToRawPtr(Component->SkeletalMesh)).Add(Component);
+			TempMap.FindOrAdd(Component->GetSkinnedAsset()).Add(Component);
 		}
-		SkeletalMeshToComponents = MoveTemp(TempMap);
+		SkinnedAssetToComponents = MoveTemp(TempMap);
 	}
 
 	static TSet<USkinnedMeshComponent*> EmptySet;
-	TSet<USkinnedMeshComponent*>* Set = SkeletalMeshToComponents.GetValue().Find(InSkeletalMesh);
+	TSet<USkinnedMeshComponent*>* Set = SkinnedAssetToComponents.GetValue().Find(InSkinnedAsset);
 	const TSet<USkinnedMeshComponent*>& Result = Set ? *Set : EmptySet;
 
 	return TObjectCacheIterator<USkinnedMeshComponent>(Result.Array());
@@ -716,7 +716,7 @@ struct FObjectCacheEventSinkPrivate
 	static std::atomic<bool> bShouldQueueSinkEvents;
 
 	using TEventAllocator = TLockFreeClassAllocator<FNotifyEvent, PLATFORM_CACHE_LINE_SIZE>;
-	using TEventList = TLockFreePointerListUnordered<FNotifyEvent, PLATFORM_CACHE_LINE_SIZE>;
+	using TEventList = TLockFreePointerListFIFO<FNotifyEvent, PLATFORM_CACHE_LINE_SIZE>;
 	static TEventAllocator& GetAllocator();
 	static TEventList& GetNotifyEvents();
 	static void AddNotifyEvent(FObjectCacheEventSinkPrivate::ECacheEventType EventType, UMaterialInterface* MaterialInterface, const UPrimitiveComponent* PrimitiveComponent, UStaticMeshComponent* StaticMeshComponent, const TArray<UMaterialInterface*>* UsedMaterials);

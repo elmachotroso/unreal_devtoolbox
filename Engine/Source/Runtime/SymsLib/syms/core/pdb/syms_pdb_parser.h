@@ -5,12 +5,12 @@
 #define SYMS_PDB_PARSER_H
 
 ////////////////////////////////
-//~ NOTE(allen): PDB's Prerequisite Formats
+//~ allen: PDB's Prerequisite Formats
 
 #include "syms/core/pdb/syms_msf_parser.h"
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Fundamental
+//~ allen: PDB Fundamental
 
 // TODO(allen): version of this with optimized memory locality could be pretty useful.
 typedef struct SYMS_PdbChain{
@@ -35,13 +35,12 @@ typedef enum SYMS_PdbPseudoUnit{
   SYMS_PdbPseudoUnit_Null,
   SYMS_PdbPseudoUnit_SYM,
   SYMS_PdbPseudoUnit_TPI,
-  SYMS_PdbPseudoUnit_LAST_PSEUDO_UNIT = SYMS_PdbPseudoUnit_TPI,
   SYMS_PdbPseudoUnit_COUNT = SYMS_PdbPseudoUnit_TPI,
   SYMS_PdbPseudoUnit_FIRST_COMP_UNIT,
 } SYMS_PdbPseudoUnit;
 
 ////////////////////////////////
-//~ NOTE(allen): CV Parsing
+//~ allen: CV Parsing
 
 typedef struct SYMS_CvElement{
   SYMS_MsfRange range;
@@ -55,7 +54,7 @@ typedef struct SYMS_CvNumeric{
 } SYMS_CvNumeric;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB DBI Information
+//~ allen: PDB DBI Information
 
 typedef struct SYMS_PdbDbiAccel{
   SYMS_B16 valid;
@@ -92,7 +91,7 @@ typedef struct SYMS_PdbStrtblAccel{
 } SYMS_PdbStrtblAccel;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Units
+//~ allen: PDB Units
 
 typedef struct SYMS_PdbCompUnit{
   SYMS_MsfStreamNumber sn;
@@ -118,6 +117,7 @@ typedef struct SYMS_PdbUnitSetAccel{
 
 typedef struct SYMS_PdbStub{
   struct SYMS_PdbStub *bucket_next;
+  struct SYMS_PdbStub *parent;
   struct SYMS_PdbStub *sibling_next;
   struct SYMS_PdbStub *first;
   struct SYMS_PdbStub *last;
@@ -152,6 +152,8 @@ typedef struct SYMS_PdbUnitAccel{
   SYMS_U64 proc_count;
   SYMS_PdbStub **var_stubs;
   SYMS_U64 var_count;
+  SYMS_PdbStub **tls_var_stubs;
+  SYMS_U64 tls_var_count;
   SYMS_PdbStub **thunk_stubs;
   SYMS_U64 thunk_count;
   SYMS_PdbStub **pub_stubs;
@@ -168,7 +170,7 @@ typedef struct SYMS_PdbLeafResolve{
 } SYMS_PdbLeafResolve;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB C13
+//~ allen: PDB C13
 
 typedef struct SYMS_PdbC13SubSection{
   struct SYMS_PdbC13SubSection *next;
@@ -178,7 +180,7 @@ typedef struct SYMS_PdbC13SubSection{
 } SYMS_PdbC13SubSection;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB TPI
+//~ allen: PDB TPI
 
 typedef struct SYMS_PdbTpiOffRange{
   SYMS_U32 first_off;
@@ -199,7 +201,7 @@ typedef struct SYMS_PdbTpiAccel{
 } SYMS_PdbTpiAccel;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB GSI
+//~ allen: PDB GSI
 
 typedef struct SYMS_PdbGsiAccel{
   SYMS_PdbChain **buckets;
@@ -207,7 +209,7 @@ typedef struct SYMS_PdbGsiAccel{
 } SYMS_PdbGsiAccel;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Accel Types
+//~ allen: PDB Accel Types
 
 typedef struct SYMS_PdbFileAccel{
   SYMS_FileFormat format;
@@ -228,7 +230,7 @@ typedef struct SYMS_PdbDbgAccel{
 } SYMS_PdbDbgAccel;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Members
+//~ allen: PDB Members
 
 typedef struct SYMS_PdbMemStubNode{
   struct SYMS_PdbMemStubNode *next;
@@ -257,7 +259,7 @@ typedef struct SYMS_EnumInfoNode{
 } SYMS_EnumInfoNode;
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Lines
+//~ allen: PDB Lines
 
 typedef struct SYMS_PdbFileNode{
   struct SYMS_PdbFileNode *next;
@@ -284,15 +286,19 @@ typedef struct SYMS_PdbLineTableLoose{
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Map Accel Type
+//~ allen: PDB Map Accel Type
 
 typedef struct SYMS_PdbMapAccel{
   SYMS_FileFormat format;
   SYMS_UnitID uid;
 } SYMS_PdbMapAccel;
 
+typedef struct SYMS_PdbLinkMapAccel{
+  SYMS_FileFormat format;
+} SYMS_PdbLinkMapAccel;
+
 ////////////////////////////////
-//~ NOTE(allen): PDB TPI Functions
+//~ allen: PDB TPI Functions
 
 //- tpi accel helpers
 SYMS_API SYMS_PdbTpiOffRange syms_pdb_tpi__hint_from_index(SYMS_PdbTpiAccel *tpi, SYMS_CvTypeIndex ti);
@@ -313,7 +319,7 @@ SYMS_API SYMS_USIDList syms_pdb_types_from_name(SYMS_Arena *arena, SYMS_String8 
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB GSI Functions
+//~ allen: PDB GSI Functions
 
 SYMS_API SYMS_PdbGsiAccel  syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAccel *msf,
                                                          SYMS_MsfRange range);
@@ -325,7 +331,7 @@ SYMS_API SYMS_USIDList     syms_pdb_symbols_from_name(SYMS_Arena *arena, SYMS_St
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Accelerator Setup
+//~ allen: PDB Accelerator Setup
 
 // pdb specific parsing
 SYMS_API SYMS_PdbDbiAccel syms_pdb_dbi_from_msf(SYMS_String8 data, SYMS_MsfAccel *msf);
@@ -352,20 +358,20 @@ SYMS_API SYMS_PdbDbgAccel*  syms_pdb_dbg_accel_from_file(SYMS_Arena *arena, SYMS
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Architecture
+//~ allen: PDB Architecture
 
 // main api
 SYMS_API SYMS_Arch syms_pdb_arch_from_dbg(SYMS_PdbDbgAccel *dbg);
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Match Keys
+//~ allen: PDB Match Keys
 
 SYMS_API SYMS_ExtMatchKey syms_pdb_ext_match_key_from_dbg(SYMS_String8 data, SYMS_PdbDbgAccel *dbg);
 
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Sections
+//~ allen: PDB Sections
 
 // pdb specific
 SYMS_API SYMS_CoffSection syms_pdb_coff_section(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_U64 n);
@@ -375,7 +381,7 @@ SYMS_API SYMS_SecInfoArray syms_pdb_sec_info_array_from_dbg(SYMS_Arena *arena, S
                                                             SYMS_PdbDbgAccel *dbg);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Compilation Units
+//~ allen: PDB Compilation Units
 
 // pdb specific
 SYMS_API SYMS_PdbCompUnit* syms_pdb_comp_unit_from_id(SYMS_PdbUnitSetAccel *unit_set, SYMS_UnitID id);
@@ -396,7 +402,7 @@ SYMS_API SYMS_UnitRangeArray  syms_pdb_unit_ranges_from_set(SYMS_Arena *arena,
 SYMS_API SYMS_UnitFeatures    syms_pdb_unit_features_from_number(SYMS_PdbUnitSetAccel *unit_set, SYMS_U64 n);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Symbol Parsing
+//~ allen: PDB Symbol Parsing
 
 // cv parsing helpers
 SYMS_API void               syms_pdb_leaf_debug_helper(SYMS_CvLeaf kind);
@@ -453,6 +459,10 @@ SYMS_API SYMS_UnitID       syms_pdb_uid_from_accel(SYMS_PdbUnitAccel *unit);
 
 SYMS_API SYMS_SymbolIDArray syms_pdb_proc_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *unit);
 SYMS_API SYMS_SymbolIDArray syms_pdb_var_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *unit);
+
+SYMS_API SYMS_UnitID       syms_pdb_tls_var_uid_from_dbg(SYMS_PdbDbgAccel *dbg);
+SYMS_API SYMS_SymbolIDArray syms_pdb_tls_var_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *unit);
+
 SYMS_API SYMS_SymbolIDArray syms_pdb_type_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *unit);
 
 SYMS_API SYMS_U64          syms_pdb_symbol_count_from_unit(SYMS_PdbUnitAccel *unit);
@@ -469,7 +479,7 @@ SYMS_API SYMS_ConstInfo    syms_pdb_const_info_from_id(SYMS_String8 data, SYMS_P
                                                        SYMS_PdbUnitAccel *unit, SYMS_SymbolID id);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Variable Info
+//~ allen: PDB Variable Info
 
 // cv parse
 SYMS_API SYMS_USID   syms_pdb_sym_type_from_var_id(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
@@ -478,6 +488,13 @@ SYMS_API SYMS_USID   syms_pdb_sym_type_from_var_id(SYMS_String8 data, SYMS_PdbDb
 SYMS_API SYMS_U64    syms_pdb_sym_voff_from_var_sid(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
                                                     SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid);
 
+SYMS_API SYMS_RegSection syms_pdb_reg_section_from_x86_reg(SYMS_CvReg cv_reg);
+SYMS_API SYMS_RegSection syms_pdb_reg_section_from_x64_reg(SYMS_CvReg cv_reg);
+SYMS_API SYMS_RegSection syms_pdb_reg_section_from_arch_reg(SYMS_Arch arch, SYMS_CvReg cv_reg);
+
+SYMS_API SYMS_RegSection syms_pdb_reg_section_from_framepointer(SYMS_String8 data,  SYMS_PdbDbgAccel *dbg,
+                                                                SYMS_MsfRange range, SYMS_PdbStub *framepointer_stub);
+
 // main api
 SYMS_API SYMS_USID   syms_pdb_type_from_var_id(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
                                                SYMS_SymbolID id);
@@ -485,9 +502,16 @@ SYMS_API SYMS_USID   syms_pdb_type_from_var_id(SYMS_String8 data, SYMS_PdbDbgAcc
 SYMS_API SYMS_U64    syms_pdb_voff_from_var_sid(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
                                                 SYMS_SymbolID sid);
 
+SYMS_API SYMS_Location syms_pdb_location_from_var_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                                      SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid);
+SYMS_API SYMS_LocRangeArray syms_pdb_location_ranges_from_var_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                                                  SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid);
+SYMS_API SYMS_Location syms_pdb_location_from_id(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                                 SYMS_PdbUnitAccel *unit, SYMS_LocID loc_id);
+
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Member Info
+//~ allen: PDB Member Info
 
 // cv parse
 SYMS_API void syms_pdb__field_list_parse(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAccel *msf,
@@ -515,7 +539,7 @@ SYMS_API SYMS_EnumInfoArray syms_pdb_enum_info_array_from_sid(SYMS_Arena *arena,
                                                               SYMS_SymbolID sid);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Procedure Info
+//~ allen: PDB Procedure Info
 
 // main api
 
@@ -525,20 +549,15 @@ SYMS_API SYMS_SigInfo      syms_pdb_sig_info_from_handle(SYMS_Arena *arena, SYMS
                                                          SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
                                                          SYMS_SigHandle handle);
 
-SYMS_API SYMS_U64RangeArray syms_pdb_proc_vranges_from_sid(SYMS_Arena *arena, SYMS_String8 data,
-                                                           SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
-                                                           SYMS_SymbolID sid);
+SYMS_API SYMS_U64RangeArray syms_pdb_scope_vranges_from_sid(SYMS_Arena *arena, SYMS_String8 data,
+                                                            SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
+                                                            SYMS_SymbolID sid);
 SYMS_API SYMS_SymbolIDArray syms_pdb_scope_children_from_sid(SYMS_Arena *arena, SYMS_String8 data,
                                                              SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
                                                              SYMS_SymbolID id);
 
-SYMS_API void                   syms_pdb_stripped_sort_in_place(SYMS_StrippedInfo *info, SYMS_U64 count);
-
-SYMS_API SYMS_StrippedInfoArray syms_pdb_stripped_from_unit(SYMS_Arena *arena, SYMS_String8 data,
-                                                            SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit);
-
 ////////////////////////////////
-//~ NOTE(allen): PDB Signature Info
+//~ allen: PDB Signature Info
 
 // pdb specific helper
 SYMS_API SYMS_SigInfo syms_pdb_sig_info_from_sig_index(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
@@ -549,7 +568,7 @@ SYMS_API SYMS_SigInfo syms_pdb_sig_info_from_id(SYMS_Arena *arena, SYMS_String8 
                                                 SYMS_PdbUnitAccel *unit, SYMS_SymbolID id);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Line Info
+//~ allen: PDB Line Info
 
 // pdb specific
 SYMS_API SYMS_PdbC13SubSection* syms_pdb_c13_sub_sections(SYMS_Arena *arena, SYMS_String8 data, 
@@ -560,7 +579,6 @@ SYMS_API SYMS_Line* syms_pdb_loose_push_sequence(SYMS_Arena *arena, SYMS_PdbLine
                                                  SYMS_U64 line_count);
 
 // main api
-
 SYMS_API SYMS_String8 syms_pdb_file_name_from_id(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
                                                  SYMS_PdbUnitSetAccel *unit_set, SYMS_UnitID uid,
                                                  SYMS_FileID id);
@@ -570,19 +588,33 @@ SYMS_API SYMS_LineParseOut syms_pdb_line_parse_from_uid(SYMS_Arena *arena, SYMS_
                                                         SYMS_UnitID uid);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB Name Maps
+//~ allen: PDB Name Maps
 
 // main api
 SYMS_API SYMS_PdbMapAccel* syms_pdb_type_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg);
-SYMS_API SYMS_PdbMapAccel* syms_pdb_image_symbol_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data,
-                                                              SYMS_PdbDbgAccel *dbg);
+SYMS_API SYMS_PdbMapAccel* syms_pdb_unmangled_symbol_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data,
+                                                                  SYMS_PdbDbgAccel *dbg);
 SYMS_API SYMS_UnitID       syms_pdb_partner_uid_from_map(SYMS_PdbMapAccel *map);
 SYMS_API SYMS_USIDList     syms_pdb_usid_list_from_string(SYMS_Arena *arena, SYMS_String8 data,
                                                           SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit,
                                                           SYMS_PdbMapAccel *map, SYMS_String8 string);
 
 ////////////////////////////////
-//~ NOTE(allen): PDB CV -> Syms Enums and Flags
+//~ allen: PDB Mangled Names
+
+// main api
+SYMS_API SYMS_UnitID syms_pdb_link_names_uid(void);
+
+SYMS_API SYMS_PdbLinkMapAccel* syms_pdb_link_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data,
+                                                          SYMS_PdbDbgAccel *dbg);
+SYMS_API SYMS_U64              syms_pdb_voff_from_link_name(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                                            SYMS_PdbLinkMapAccel *map,
+                                                            SYMS_PdbUnitAccel *link_unit, SYMS_String8 name);
+SYMS_API SYMS_LinkNameRecArray syms_pdb_link_name_array_from_unit(SYMS_Arena *arena, SYMS_String8 data,
+                                                                  SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit);
+
+////////////////////////////////
+//~ allen: PDB CV -> Syms Enums and Flags
 
 SYMS_API SYMS_TypeKind       syms_pdb_type_kind_from_cv_pointer_mode(SYMS_CvPointerMode mode);
 SYMS_API SYMS_TypeModifiers  syms_pdb_modifier_from_cv_pointer_attribs(SYMS_CvPointerAttribs attribs);

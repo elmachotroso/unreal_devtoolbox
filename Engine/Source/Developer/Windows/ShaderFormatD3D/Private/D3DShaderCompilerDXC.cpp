@@ -3,6 +3,7 @@
 #include "ShaderFormatD3D.h"
 #include "ShaderPreprocessor.h"
 #include "ShaderCompilerCommon.h"
+#include "ShaderParameterParser.h"
 #include "D3D11ShaderResources.h"
 #include "D3D12RHI.h"
 #include "Misc/Paths.h"
@@ -264,7 +265,7 @@ static bool RemoveContainerReflection(dxc::DxcDllSupport& DxcDllHelper, TRefCoun
 	
 	// Try and remove both the PDB & Reflection Data
 	bool bPDBRemoved = bRemovePDB && SUCCEEDED(Builder->RemovePart(DXC_PART_PDB));
-	bool bReflectionDataRemoved = SUCCEEDED(Builder->RemovePart(DXC_PART_REFLECTION_DATA));
+	bool bReflectionDataRemoved = bRemovePDB && SUCCEEDED(Builder->RemovePart(DXC_PART_REFLECTION_DATA));
 	if (bPDBRemoved || bReflectionDataRemoved)
 	{
 		VERIFYHRESULT(Builder->SerializeContainer(Result.GetInitReference()));
@@ -410,42 +411,6 @@ inline bool IsCompatibleBinding(const D3D12_SHADER_INPUT_BIND_DESC& BindDesc, ui
 	}
 
 	return bIsCompatibleBinding;
-}
-
-// Parses ray tracing shader entry point specification string in one of the following formats:
-// 1) Verbatim single entry point name, e.g. "MainRGS"
-// 2) Complex entry point for ray tracing hit group shaders:
-//      a) "closesthit=MainCHS"
-//      b) "closesthit=MainCHS anyhit=MainAHS"
-//      c) "closesthit=MainCHS anyhit=MainAHS intersection=MainIS"
-//      d) "closesthit=MainCHS intersection=MainIS"
-//    NOTE: closesthit attribute must always be provided for complex hit group entry points
-static void ParseRayTracingEntryPoint(const FString& Input, FString& OutMain, FString& OutAnyHit, FString& OutIntersection)
-{
-	auto ParseEntry = [&Input](const TCHAR* Marker)
-	{
-		FString Result;
-		int32 BeginIndex = Input.Find(Marker, ESearchCase::IgnoreCase, ESearchDir::FromStart);
-		if (BeginIndex != INDEX_NONE)
-		{
-			int32 EndIndex = Input.Find(TEXT(" "), ESearchCase::IgnoreCase, ESearchDir::FromStart, BeginIndex);
-			if (EndIndex == INDEX_NONE) EndIndex = Input.Len() + 1;
-			int32 MarkerLen = FCString::Strlen(Marker);
-			int32 Count = EndIndex - BeginIndex;
-			Result = Input.Mid(BeginIndex + MarkerLen, Count - MarkerLen);
-		}
-		return Result;
-	};
-
-	OutMain = ParseEntry(TEXT("closesthit="));
-	OutAnyHit = ParseEntry(TEXT("anyhit="));
-	OutIntersection = ParseEntry(TEXT("intersection="));
-
-	// If complex hit group entry is not specified, assume a single verbatim entry point
-	if (OutMain.IsEmpty() && OutAnyHit.IsEmpty() && OutIntersection.IsEmpty())
-	{
-		OutMain = Input;
-	}
 }
 
 static ShaderConductor::Compiler::ShaderModel ToDXCShaderModel(ELanguage Language)
@@ -602,6 +567,8 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 	const TCHAR* ShaderProfile, ELanguage Language, bool bProcessingSecondTime,
 	TArray<FString>& FilteredErrors, FShaderCompilerOutput& Output)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderDXC);
+
 	auto AnsiSourceFile = StringCast<ANSICHAR>(*PreprocessedShaderSource);
 
 	const bool bIsRayTracingShader = Input.IsRayTracingShader();
@@ -622,7 +589,7 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 
 	if (bIsRayTracingShader)
 	{
-		ParseRayTracingEntryPoint(Input.EntryPointName, RayEntryPoint, RayAnyHitEntryPoint, RayIntersectionEntryPoint);
+		UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(Input.EntryPointName, RayEntryPoint, RayAnyHitEntryPoint, RayIntersectionEntryPoint);
 
 		RayTracingExports = RayEntryPoint;
 
@@ -673,6 +640,8 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 
 	const bool bGenerateSymbols = Input.Environment.CompilerFlags.Contains(CFLAG_GenerateSymbols);
 	const bool bSymbolsBasedOnSource = Input.Environment.CompilerFlags.Contains(CFLAG_AllowUniqueSymbols);
+	const bool bHlslVersion2021 = Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021);
+	const uint32 HlslVersion = (bHlslVersion2021 ? 2021 : 2018);
 
 	FDxcArguments Args
 	(
@@ -686,7 +655,8 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 		bSymbolsBasedOnSource,
 		DXCFlags,
 		AutoBindingSpace,
-		ValidatorVersion
+		ValidatorVersion,
+		HlslVersion
 	);
 
 	if (bDumpDebugInfo)
@@ -871,12 +841,40 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 					NumSamplers, NumSRVs, NumCBs, NumUAVs,
 					Output, UniformBufferNames, UsedUniformBufferSlots, VendorExtensions);
 
+			NumInstructions = ShaderDesc.InstructionCount;
 			Output.bSucceeded = true;
 		}
 
 		if (!ValidateResourceCounts(NumSRVs, NumSamplers, NumUAVs, NumCBs, FilteredErrors))
 		{
 			Output.bSucceeded = false;
+		}
+
+		FShaderCodePackedResourceCounts PackedResourceCounts{};
+
+		if (Output.bSucceeded)
+		{
+			if (bGlobalUniformBufferUsed)
+			{
+				PackedResourceCounts.UsageFlags |= EShaderResourceUsageFlags::GlobalUniformBuffer;
+			}
+
+			if (ShaderRequiresFlags & D3D_SHADER_REQUIRES_RESOURCE_DESCRIPTOR_HEAP_INDEXING)
+			{
+				PackedResourceCounts.UsageFlags |= EShaderResourceUsageFlags::BindlessResources;
+			}
+
+			if (ShaderRequiresFlags & D3D_SHADER_REQUIRES_SAMPLER_DESCRIPTOR_HEAP_INDEXING)
+			{
+				PackedResourceCounts.UsageFlags |= EShaderResourceUsageFlags::BindlessSamplers;
+			}
+
+			PackedResourceCounts.NumSamplers = static_cast<uint8>(NumSamplers);
+			PackedResourceCounts.NumSRVs = static_cast<uint8>(NumSRVs);
+			PackedResourceCounts.NumCBs = static_cast<uint8>(NumCBs);
+			PackedResourceCounts.NumUAVs = static_cast<uint8>(NumUAVs);
+
+			Output.bSucceeded = UE::ShaderCompilerCommon::ValidatePackedResourceCounts(Output, PackedResourceCounts);
 		}
 
 		// Save results if compilation and reflection succeeded
@@ -941,9 +939,13 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 				}
 			};
 
+			// Return a fraction of the number of instructions as DXIL is more verbose than DXBC.
+			// Ratio 119:307 was estimated by gathering average instruction count for D3D11 and D3D12 shaders in ShooterGame with result being ~ 357:921.
+			constexpr uint32 DxbcToDxilInstructionRatio[2] = { 119, 307 };
+			NumInstructions = NumInstructions * DxbcToDxilInstructionRatio[0] / DxbcToDxilInstructionRatio[1];
+
 			//#todo-rco: Should compress ShaderCode?
 
-			FShaderCodePackedResourceCounts PackedResourceCounts = { bGlobalUniformBufferUsed, static_cast<uint8>(NumSamplers), static_cast<uint8>(NumSRVs), static_cast<uint8>(NumCBs), static_cast<uint8>(NumUAVs) };
 			GenerateFinalOutput(ShaderBlob,
 				Input, VendorExtensions,
 				UsedUniformBufferSlots, UniformBufferNames,

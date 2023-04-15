@@ -55,7 +55,7 @@ void SRigPicker::Construct(const FArguments& InArgs)
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 		FAssetPickerConfig AssetPickerConfig;
-		AssetPickerConfig.Filter.ClassNames.Add(URig::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(URig::StaticClass()->GetClassPathName());
 		// Allow child classes
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		// Set a delegate for setting the asset from the picker
@@ -105,7 +105,7 @@ void SRigPicker::OnAssetSelected(const FAssetData& AssetData)
 
 bool SRigPicker::OnShouldFilterAsset(const struct FAssetData& AssetData)
 {
-	if (EngineHumanoidRig && AssetData.ObjectPath == FName(*EngineHumanoidRig->GetPathName()))
+	if (EngineHumanoidRig && AssetData.GetSoftObjectPath() == FSoftObjectPath(EngineHumanoidRig))
 	{
 		return true;
 	}

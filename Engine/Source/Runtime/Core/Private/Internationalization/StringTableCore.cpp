@@ -1,15 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/StringTableCore.h"
-#include "Misc/ScopeLock.h"
-#include "Misc/FileHelper.h"
+
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Set.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "Internationalization/LocKeyFuncs.h"
+#include "Internationalization/TextLocalizationManager.h"
+#include "Logging/LogCategory.h"
+#include "Misc/CString.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Misc/ScopeLock.h"
+#include "Serialization/Archive.h"
 #include "Serialization/Csv/CsvParser.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+
+class UStringTable;
 
 DEFINE_LOG_CATEGORY(LogStringTable);
 
 
 IStringTableEngineBridge* IStringTableEngineBridge::InstancePtr = nullptr;
+std::atomic<int8> IStringTableEngineBridge::DeferFindOrLoad(0);
 
 
 namespace StringTableRedirects
@@ -363,7 +381,7 @@ void FStringTable::Serialize(FArchive& Ar)
 
 			KeysToMetaData.Reset();
 			KeysToMetaData.Reserve(TmpKeysToMetaData.Num());
-			for (auto& TmpKeyToMetaDataPair : KeysToMetaData)
+			for (auto& TmpKeyToMetaDataPair : TmpKeysToMetaData)
 			{
 				KeysToMetaData.Add(TmpKeyToMetaDataPair.Key, MoveTemp(TmpKeyToMetaDataPair.Value));
 			}

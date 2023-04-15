@@ -26,7 +26,7 @@ public:
 	/** Per-Component material overrides.  These must NOT be set directly or a race condition can occur between GC and the rendering thread. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Rendering, Meta=(ToolTip="Material overrides."))
 	TArray<TObjectPtr<class UMaterialInterface>> OverrideMaterials;
-	
+
 	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
 	virtual TArray<class UMaterialInterface*> GetMaterials() const;
 
@@ -39,8 +39,31 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
 	virtual bool IsMaterialSlotNameValid(FName MaterialSlotName) const;
 
-	/** Returns override Materials count */
+	/** Determines if we use the nanite overrides from any materials */
+	virtual bool UseNaniteOverrideMaterials() const { return false; }
+
+	/** Returns override materials count */
 	virtual int32 GetNumOverrideMaterials() const;
+
+	/** Translucent material to blend on top of this mesh. Mesh will be rendered twice - once with a base material and once with overlay material */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category=Rendering)
+	TObjectPtr<class UMaterialInterface> OverlayMaterial;
+	
+	/** The max draw distance for overlay material. A distance of 0 indicates that overlay will be culled using primitive max distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category=Rendering)
+	float OverlayMaterialMaxDrawDistance;
+
+	/** Get the overlay material used by this instance */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	class UMaterialInterface* GetOverlayMaterial() const;
+
+	/** Change the overlay material used by this instance */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetOverlayMaterial(class UMaterialInterface* NewOverlayMaterial);
+
+	/** Change the overlay material max draw distance used by this instance */
+	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
+	void SetOverlayMaterialMaxDrawDistance(float InMaxDrawDistance);
 
 #if WITH_EDITOR
 	/*
@@ -55,6 +78,11 @@ public:
 	 * This empties all override materials and used by editor when replacing preview mesh 
 	 */
 	void EmptyOverrideMaterials();
+
+	/**
+	 * Returns true if there are any override materials set for this component
+	 */
+	bool HasOverrideMaterials();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
@@ -97,6 +125,9 @@ public:
 
 	/** Get the material info for texture streaming. Return whether the data is valid or not. */
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const { return false; }
+
+	/** Precache all PSOs which can be used by the mesh component */
+	virtual void PrecachePSOs() {}
 
 	/** Generate streaming data for all materials. */
 	void GetStreamingTextureInfoInner(FStreamingTextureLevelContext& LevelContext, const TArray<FStreamingTextureBuildInfo>* PreBuiltData, float ComponentScaling, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingTextures) const;

@@ -45,8 +45,8 @@ struct FStoreBrowserTraceInfo
 	EBuildConfiguration ConfigurationType = EBuildConfiguration::Unknown;
 	EBuildTargetType TargetType = EBuildTargetType::Unknown;
 
-	bool bIsMetadataUpdated = false;
 	bool bIsLive = false;
+	uint8 MetadataUpdateCount = 1;
 
 	uint32 IpAddress = 0;
 
@@ -87,8 +87,11 @@ public:
 	const TMap<uint32, TSharedPtr<FStoreBrowserTraceInfo>>& GetLockedTraceMap() const { check(bTracesLocked); return TraceMap; }
 	void Unlock() { check(bTracesLocked); bTracesLocked = false; TracesCriticalSection.Unlock(); }
 
+	void Refresh();
+
 private:
 	UE::Trace::FStoreClient* GetStoreClient() const;
+	FCriticalSection& GetStoreClientCriticalSection() const;
 
 	void UpdateTraces();
 	void ResetTraces();

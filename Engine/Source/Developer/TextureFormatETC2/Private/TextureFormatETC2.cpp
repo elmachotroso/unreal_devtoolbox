@@ -9,11 +9,27 @@
 #include "Interfaces/ITextureFormatModule.h"
 #include "TextureCompressorModule.h"
 #include "PixelFormat.h"
-#include "TextureConverter.h"
 #include "HAL/PlatformProcess.h"
 #include "TextureBuildFunction.h"
 #include "DerivedDataBuildFunctionFactory.h"
 #include "DerivedDataSharedString.h"
+
+#ifndef __APPLE__
+#define __APPLE__ 0
+#endif
+#ifndef __unix__
+#define __unix__ 0
+#endif
+#include "Etc.h"
+#include "EtcErrorMetric.h"
+#include "EtcImage.h"
+
+// Workaround for: error LNK2019: unresolved external symbol __imp___std_init_once_begin_initialize referenced in function "void __cdecl std::call_once
+// https://developercommunity.visualstudio.com/t/-imp-std-init-once-complete-unresolved-external-sy/1684365
+#if defined(_MSC_VER) && (_MSC_VER >= 1932)  // Visual Studio 2022 version 17.2+
+#    pragma comment(linker, "/alternatename:__imp___std_init_once_complete=__imp_InitOnceComplete")
+#    pragma comment(linker, "/alternatename:__imp___std_init_once_begin_initialize=__imp_InitOnceBeginInitialize")
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatETC2, Log, All);
 
@@ -39,6 +55,7 @@ class FETC2TextureBuildFunction final : public FTextureBuildFunction
 #define ENUM_SUPPORTED_FORMATS(op) \
 	op(ETC2_RGB) \
 	op(ETC2_RGBA) \
+	op(ETC2_R11) \
 	op(AutoETC2)
 
 #define DECL_FORMAT_NAME(FormatName) static FName GTextureFormatName##FormatName = FName(TEXT(#FormatName));
@@ -54,91 +71,98 @@ static FName GSupportedTextureFormatNames[] =
 
 #undef ENUM_SUPPORTED_FORMATS
 
-
-/**
- * Compresses an image using Qonvert.
- * @param SourceData			Source texture data to compress, in BGRA 8bit per channel unsigned format.
- * @param PixelFormat			Texture format
- * @param SizeX					Number of texels along the X-axis
- * @param SizeY					Number of texels along the Y-axis
- * @param OutCompressedData		Compressed image data output by Qonvert.
- */
-static bool CompressImageUsingQonvert(
-	const void* SourceData,
+static bool CompressImageUsingEtc2comp(
+	const void* InSourceData,
 	EPixelFormat PixelFormat,
 	int32 SizeX,
 	int32 SizeY,
-	TArray64<uint8>& OutCompressedData
-	)
+	EGammaSpace TargetGammaSpace,
+	TArray64<uint8>& OutCompressedData)
 {
-	// Avoid dependency on GPixelFormats in RenderCore.
-	// If block size changes, please update in AndroidETC.cpp in DecompressTexture
-	const int32 BlockSizeX = 4;
-	const int32 BlockSizeY = 4;
-	const int32 BlockBytes = (PixelFormat == PF_ETC2_RGBA) ? 16 : 8;
-	const int32 ImageBlocksX = FMath::Max(SizeX / BlockSizeX, 1);
-	const int32 ImageBlocksY = FMath::Max(SizeY / BlockSizeY, 1);
-
-	// The converter doesn't support 64-bit sizes.
-	const int64 SourceDataSize = (int64)SizeX * SizeY * 4;
-	const int64 OutDataSize = (int64)ImageBlocksX * ImageBlocksY * BlockBytes;
-	if (SourceDataSize != (uint32)SourceDataSize || OutDataSize != (uint32)OutDataSize)
-	{
-		return false;
-	}
-
-	// Allocate space to store compressed data.
-	OutCompressedData.Empty(OutDataSize);
-	OutCompressedData.AddUninitialized(OutDataSize);
-
-	TQonvertImage SrcImg;
-	TQonvertImage DstImg;
-
-	FMemory::Memzero(SrcImg);
-	FMemory::Memzero(DstImg);
-
-	SrcImg.nWidth    = SizeX;
-	SrcImg.nHeight   = SizeY;
-	SrcImg.nFormat   = Q_FORMAT_BGRA_8888;
-	SrcImg.nDataSize = (uint32)SourceDataSize;
-	SrcImg.pData     = (unsigned char*)SourceData;
-
-	DstImg.nWidth    = SizeX;
-	DstImg.nHeight   = SizeY;
-	DstImg.nDataSize = (uint32)OutDataSize;
-	DstImg.pData     = OutCompressedData.GetData();
-
+	using namespace Etc;
+		
+	Image::Format EtcFormat = Image::Format::UNKNOWN;
 	switch (PixelFormat)
 	{
 	case PF_ETC2_RGB:
-		DstImg.nFormat = Q_FORMAT_ETC2_RGB8;
+		EtcFormat = Image::Format::RGB8;
 		break;
 	case PF_ETC2_RGBA:
-		DstImg.nFormat = Q_FORMAT_ETC2_RGBA8;
+		EtcFormat = Image::Format::RGBA8;
+		break;
+	case PF_ETC2_R11_EAC:
+		EtcFormat = Image::Format::R11;
+		break;
+	case PF_ETC2_RG11_EAC:
+		EtcFormat = Image::Format::RG11;
 		break;
 	default:
 		UE_LOG(LogTextureFormatETC2, Fatal, TEXT("Unsupported EPixelFormat for compression: %u"), (uint32)PixelFormat);
 		return false;
 	}
 
-	if (Qonvert(&SrcImg, &DstImg) != Q_SUCCESS)
+	// RGBA, REC709, NUMERIC will set RGB to 0 if all pixels in the block are transparent (A=0)
+	const Etc::ErrorMetric EtcErrorMetric = Etc::RGBX;
+	const float EtcEffort = ETCCOMP_DEFAULT_EFFORT_LEVEL;
+	const unsigned int MAX_JOBS = 8;
+	const unsigned int NUM_JOBS = 8;
+
+	unsigned char* paucEncodingBits = nullptr;
+	unsigned int uiEncodingBitsBytes = 0;
+	unsigned int uiExtendedWidth = 0;
+	unsigned int uiExtendedHeight = 0;
+	int iEncodingTime_ms = 0;
+	float* SourceData = (float*)InSourceData;
+	
+	// InSourceData is a linear color, we need to feed float* data to the codec in a target color space
+	TArray64<float> IntermediateData;
+	if (TargetGammaSpace == EGammaSpace::sRGB)
 	{
-		UE_LOG(LogTextureFormatETC2, Fatal, TEXT("CONVERSION FAILED"));
-		return false;
+		int64 NumPixels = SizeX * SizeY;
+		IntermediateData.Reserve(NumPixels * 4);
+		IntermediateData.AddUninitialized(NumPixels * 4);
+
+		for (int64 Idx = 0; Idx < IntermediateData.Num(); Idx += 4)
+		{
+			const FLinearColor& LinColor = *(FLinearColor*)(SourceData + Idx);
+			FColor Color = LinColor.ToFColorSRGB();
+			IntermediateData[Idx + 0] = Color.R / 255.f;
+			IntermediateData[Idx + 1] = Color.G / 255.f;
+			IntermediateData[Idx + 2] = Color.B / 255.f;
+			IntermediateData[Idx + 3] = Color.A / 255.f;
+		}
+		
+		SourceData = IntermediateData.GetData();
 	}
 
+	Encode(
+		SourceData,
+		SizeX, SizeY,
+		EtcFormat,
+		EtcErrorMetric,
+		EtcEffort,
+		NUM_JOBS,
+		MAX_JOBS,
+		&paucEncodingBits, &uiEncodingBitsBytes,
+		&uiExtendedWidth, &uiExtendedHeight,
+		&iEncodingTime_ms
+	);
+
+	OutCompressedData.SetNumUninitialized(uiEncodingBitsBytes);
+	FMemory::Memcpy(OutCompressedData.GetData(), paucEncodingBits, uiEncodingBitsBytes);
+	delete[] paucEncodingBits;
 	return true;
 }
-
 
 /**
  * ETC2 texture format handler.
  */
 class FTextureFormatETC2 : public ITextureFormat
 {
+public:
 	virtual bool AllowParallelBuild() const override
 	{
-		return !PLATFORM_MAC; // On Mac Qualcomm's TextureConverter library is not thead-safe
+		return true;
 	}
 
 	virtual uint16 GetVersion(
@@ -146,7 +170,7 @@ class FTextureFormatETC2 : public ITextureFormat
 		const struct FTextureBuildSettings* BuildSettings = nullptr
 	) const override
 	{
-		return 0;
+		return 2;
 	}
 
 	virtual FName GetEncoderName(FName Format) const override
@@ -157,67 +181,71 @@ class FTextureFormatETC2 : public ITextureFormat
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
 	{
-		for (int32 i = 0; i < UE_ARRAY_COUNT(GSupportedTextureFormatNames); ++i)
-		{
-			OutFormats.Add(GSupportedTextureFormatNames[i]);
-		}
+		OutFormats.Append(GSupportedTextureFormatNames, UE_ARRAY_COUNT(GSupportedTextureFormatNames));
 	}
 
-	virtual FTextureFormatCompressorCaps GetFormatCapabilities() const override
-	{
-		return FTextureFormatCompressorCaps(); // Default capabilities.
-	}
-
-	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	virtual EPixelFormat GetEncodedPixelFormat(const FTextureBuildSettings& BuildSettings, bool bImageHasAlphaChannel) const override
 	{
 		if (BuildSettings.TextureFormatName == GTextureFormatNameETC2_RGB ||
-			(BuildSettings.TextureFormatName == GTextureFormatNameAutoETC2 && !bImageHasAlphaChannel))
+			BuildSettings.TextureFormatName == GTextureFormatNameETC2_RGBA ||
+			BuildSettings.TextureFormatName == GTextureFormatNameAutoETC2 )
 		{
-			return PF_ETC2_RGB;
+			if ( BuildSettings.TextureFormatName == GTextureFormatNameETC2_RGB || !bImageHasAlphaChannel )
+			{
+				// even if Name was RGBA we still use the RGB profile if !bImageHasAlphaChannel
+				//	so that "Compress Without Alpha" can force us to opaque
+
+				return PF_ETC2_RGB;
+			}
+			else
+			{
+				return PF_ETC2_RGBA;
+			}
 		}
 
-		if (BuildSettings.TextureFormatName == GTextureFormatNameETC2_RGBA ||
-				(BuildSettings.TextureFormatName == GTextureFormatNameAutoETC2 && bImageHasAlphaChannel))
+		if (BuildSettings.TextureFormatName == GTextureFormatNameETC2_R11)
 		{
-			return PF_ETC2_RGBA;
+			return PF_ETC2_R11_EAC;
 		}
 
-		UE_LOG(LogTextureFormatETC2, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatAndroid::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
+		UE_LOG(LogTextureFormatETC2, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatAndroid::GetEncodedPixelFormat()"), *BuildSettings.TextureFormatName.ToString());
 		return PF_Unknown;
 	}
 
 	virtual bool CompressImage(
-		const FImage& InImage,
+		FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
 	{
-		FImage Image;
-		InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+		const FImage& Image = InImage;
+		// Source is expected to be F32 linear color
+		check(Image.Format == ERawImageFormat::RGBA32F);
 
-		EPixelFormat CompressedPixelFormat = GetPixelFormatForImage(BuildSettings, Image, bImageHasAlphaChannel);
+		EPixelFormat CompressedPixelFormat = GetEncodedPixelFormat(BuildSettings, bImageHasAlphaChannel);
 
 		bool bCompressionSucceeded = true;
 		int32 SliceSize = Image.SizeX * Image.SizeY;
 		for (int32 SliceIndex = 0; SliceIndex < Image.NumSlices && bCompressionSucceeded; ++SliceIndex)
 		{
 			TArray64<uint8> CompressedSliceData;
-			bCompressionSucceeded = CompressImageUsingQonvert(
-				Image.AsBGRA8().GetData() + SliceIndex * SliceSize,
+			bCompressionSucceeded = CompressImageUsingEtc2comp(
+				Image.AsRGBA32F().GetData() + SliceIndex * SliceSize,
 				CompressedPixelFormat,
 				Image.SizeX,
 				Image.SizeY,
+				BuildSettings.GetDestGammaSpace(),
 				CompressedSliceData
-				);
+			);
 			OutCompressedImage.RawData.Append(CompressedSliceData);
 		}
 
 		if (bCompressionSucceeded)
 		{
-			OutCompressedImage.SizeX = FMath::Max(Image.SizeX, 4);
-			OutCompressedImage.SizeY = FMath::Max(Image.SizeY, 4);
+			OutCompressedImage.SizeX = Image.SizeX;
+			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
 			OutCompressedImage.PixelFormat = CompressedPixelFormat;
 		}
@@ -226,65 +254,29 @@ class FTextureFormatETC2 : public ITextureFormat
 	}
 };
 
-static ITextureFormat* Singleton = NULL;
-
-
-
-#if PLATFORM_WINDOWS
-	void*	TextureConverterHandle = NULL;
-	FString AppLocalBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/AppLocalDependencies/Win64/Microsoft.VC.CRT");
-	FString QualCommBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/QualComm/Win64");
-	FString QualCommBinaryName = TEXT("TextureConverter.dll");
-#endif
-
-
 class FTextureFormatETC2Module : public ITextureFormatModule
 {
 public:
+	ITextureFormat* Singleton = NULL;
+
 	FTextureFormatETC2Module() { }
 	virtual ~FTextureFormatETC2Module()
 	{
-		ITextureFormat* p = Singleton;
-		Singleton = nullptr;
-		if (p)
-			delete p;
-
-#if PLATFORM_WINDOWS
-		void* handle = TextureConverterHandle;
-		TextureConverterHandle = nullptr;
-		if (handle)
-			FPlatformProcess::FreeDllHandle(handle);
-#endif
+		if ( Singleton )
+		{
+			delete Singleton;
+			Singleton = nullptr;
+		}
 	}
 
 	virtual void StartupModule() override
 	{
 	}
+	
+	virtual bool CanCallGetTextureFormats() override { return false; }
 
 	virtual ITextureFormat* GetTextureFormat()
 	{
-#if PLATFORM_WINDOWS
-		if (TextureConverterHandle == nullptr)
-		{
-			UE_LOG(LogTextureFormatETC2, Display, TEXT("ETC2 Texture loading DLL: %s"), *QualCommBinaryName);
-			FPlatformProcess::PushDllDirectory(*AppLocalBinariesRoot);
-			void* handle = FPlatformProcess::GetDllHandle(*(QualCommBinariesRoot / QualCommBinaryName));
-			FPlatformProcess::PopDllDirectory(*AppLocalBinariesRoot);
-			if (handle == nullptr )
-			{
-				UE_LOG(LogTextureFormatETC2, Warning, TEXT("ETC2 Texture %s requested but could not be loaded"), *QualCommBinaryName);
-				return nullptr;
-			}
-			TextureConverterHandle = handle;
-		}
-
-		if (TextureConverterHandle == nullptr)
-		{
-			UE_LOG(LogTextureFormatETC2, Warning, TEXT("ETC2 Texture %s requested but could not be loaded"), *QualCommBinaryName);
-			return nullptr;
-		}
-#endif
-
 		if ( Singleton == nullptr )  // not thread safe
 		{
 			FTextureFormatETC2* ptr = new FTextureFormatETC2();

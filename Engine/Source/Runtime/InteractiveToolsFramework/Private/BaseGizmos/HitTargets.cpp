@@ -2,7 +2,9 @@
 
 #include "BaseGizmos/HitTargets.h"
 #include "Components/PrimitiveComponent.h"
-#include "Engine/EngineTypes.h"    // FHitResult
+#include "Engine/HitResult.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HitTargets)
 
 FInputRayHit UGizmoLambdaHitTarget::IsHit(const FInputDeviceRay& ClickPos) const
 {
@@ -75,6 +77,7 @@ UGizmoComponentHitTarget* UGizmoComponentHitTarget::Construct(UPrimitiveComponen
 	NewHitTarget->Component = Component;
 	return NewHitTarget;
 }
+
 
 
 

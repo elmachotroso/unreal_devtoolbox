@@ -29,6 +29,92 @@ DEFINE_LOG_CATEGORY(LogOpenGL);
 ERHIFeatureLevel::Type GRequestedFeatureLevel = ERHIFeatureLevel::Num;
 
 
+int32 FOpenGLDynamicRHI::RHIGetGLMajorVersion() const
+{
+	return FOpenGL::GetMajorVersion();
+}
+
+int32 FOpenGLDynamicRHI::RHIGetGLMinorVersion() const
+{
+	return FOpenGL::GetMinorVersion();
+}
+
+bool FOpenGLDynamicRHI::RHISupportsFramebufferSRGBEnable() const
+{
+	return FOpenGL::SupportsFramebufferSRGBEnable();
+}
+
+GLuint FOpenGLDynamicRHI::RHIGetResource(FRHITexture* InTexture) const
+{
+	FOpenGLTexture* GLTexture = GetOpenGLTextureFromRHITexture(InTexture);
+	return GLTexture->GetResource();
+}
+
+bool FOpenGLDynamicRHI::RHIIsValidTexture(GLuint InTexture) const
+{
+	return glIsTexture(InTexture) == GL_TRUE;
+}
+
+void FOpenGLDynamicRHI::RHISetExternalGPUTime(uint32 InExternalGPUTime)
+{
+	GetGPUProfilingData().ExternalGPUTime = InExternalGPUTime;
+}
+
+#if PLATFORM_ANDROID
+
+EGLDisplay FOpenGLDynamicRHI::RHIGetEGLDisplay() const
+{
+	return AndroidEGL::GetInstance()->GetDisplay();
+}
+
+EGLSurface FOpenGLDynamicRHI::RHIGetEGLSurface() const
+{
+	return AndroidEGL::GetInstance()->GetSurface();
+}
+
+EGLConfig FOpenGLDynamicRHI::RHIGetEGLConfig() const
+{
+	return AndroidEGL::GetInstance()->GetConfig();
+}
+
+EGLContext FOpenGLDynamicRHI::RHIGetEGLContext() const
+{
+	return AndroidEGL::GetInstance()->GetRenderingContext()->eglContext;
+}
+
+ANativeWindow* FOpenGLDynamicRHI::RHIGetEGLNativeWindow() const
+{
+	return AndroidEGL::GetInstance()->GetNativeWindow();
+}
+
+bool FOpenGLDynamicRHI::RHIEGLSupportsNoErrorContext() const
+{
+	return AndroidEGL::GetInstance()->GetSupportsNoErrorContext();
+}
+
+void FOpenGLDynamicRHI::RHIInitEGLInstanceGLES2()
+{
+	AndroidEGL::GetInstance()->Init(AndroidEGL::AV_OpenGLES, 2, 0, false);
+	AndroidEGL::GetInstance()->InitSurface(false, false);
+}
+
+void FOpenGLDynamicRHI::RHIInitEGLBackBuffer()
+{
+	AndroidEGL::GetInstance()->InitBackBuffer();
+}
+
+void FOpenGLDynamicRHI::RHIEGLSetCurrentRenderingContext()
+{
+	AndroidEGL::GetInstance()->SetCurrentRenderingContext();
+}
+
+void FOpenGLDynamicRHI::RHIEGLTerminateContext()
+{
+	AndroidEGL::GetInstance()->Terminate();
+}
+#endif
+
+
 void FOpenGLDynamicRHI::RHIPushEvent(const TCHAR* Name, FColor Color)
 {
 #if ENABLE_OPENGL_DEBUG_GROUPS
@@ -399,6 +485,7 @@ void FOpenGLDynamicRHI::InitializeStateResources()
 
 GLint FOpenGLBase::MaxTextureImageUnits = -1;
 GLint FOpenGLBase::MaxCombinedTextureImageUnits = -1;
+GLint FOpenGLBase::MaxComputeTextureImageUnits = -1;
 GLint FOpenGLBase::MaxVertexTextureImageUnits = -1;
 GLint FOpenGLBase::MaxGeometryTextureImageUnits = -1;
 GLint FOpenGLBase::MaxVaryingVectors = -1;
@@ -418,8 +505,9 @@ bool  FOpenGLBase::bAmdWorkaround = false;
 
 void FOpenGLBase::ProcessQueryGLInt()
 {
-	GET_GL_INT(GL_MAX_TEXTURE_IMAGE_UNITS, 0, MaxTextureImageUnits);
-	GET_GL_INT(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, 0, MaxVertexTextureImageUnits);
+	LOG_AND_GET_GL_INT(GL_MAX_TEXTURE_IMAGE_UNITS, 0, MaxTextureImageUnits);
+	LOG_AND_GET_GL_INT(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, 0, MaxVertexTextureImageUnits);
+	LOG_AND_GET_GL_INT(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS, 0, MaxComputeTextureImageUnits);
 	GET_GL_INT(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, 0, MaxCombinedTextureImageUnits);
 }
 
@@ -427,27 +515,29 @@ void FOpenGLBase::ProcessExtensions( const FString& ExtensionsString )
 {
 	ProcessQueryGLInt();
 
-	// For now, just allocate additional units if available and advertise no tessellation units for HW that can't handle more
-	if ( MaxCombinedTextureImageUnits < 48 )
+	auto CheckAndSetImageUnits = [](GLint& StageImageUnitsINOUT, GLint Limit, const TCHAR* Msg) 
 	{
-		// To work around AMD driver limitation of 32 GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
-		// Going to hard code this for now (16 units in PS, 8 units in VS, 8 units in GS).
-		// This is going to be a problem for tessellation.
-		MaxTextureImageUnits = MaxTextureImageUnits > 16 ? 16 : MaxTextureImageUnits;
-		MaxVertexTextureImageUnits = MaxVertexTextureImageUnits > 8 ? 8 : MaxVertexTextureImageUnits;
-		MaxGeometryTextureImageUnits = MaxGeometryTextureImageUnits > 8 ? 8 : MaxGeometryTextureImageUnits;
-		MaxCombinedTextureImageUnits = MaxCombinedTextureImageUnits > 32 ? 32 : MaxCombinedTextureImageUnits;
+		const bool bUnsupported = StageImageUnitsINOUT < Limit;
+		UE_CLOG(bUnsupported, LogRHI, Error, TEXT("GL RHI requires a minimum %s texture unit count of %d, this device reports %d."), Msg, Limit, StageImageUnitsINOUT);
+		check(!bUnsupported);
+		StageImageUnitsINOUT = Limit;
+	};
+
+	static const GLint GLESMaxImageUnitsPerStage = 16; // gles 3 spec is a minimum of 16 per stage. 
+	static const GLint MaxCombinedImageUnits = 48;
+
+	if (IsMobilePlatform(GMaxRHIShaderPlatform))
+	{
+		// clamp things to the levels that the spec is expecting, check the minimum is supported.
+		CheckAndSetImageUnits(MaxTextureImageUnits, GLESMaxImageUnitsPerStage, TEXT("pixel stage"));
+		CheckAndSetImageUnits(MaxVertexTextureImageUnits, GLESMaxImageUnitsPerStage, TEXT("vertex stage"));
+		CheckAndSetImageUnits(MaxGeometryTextureImageUnits, 0, TEXT("geometry stage")); // gles is not expecting this.
+		CheckAndSetImageUnits(MaxComputeTextureImageUnits, GLESMaxImageUnitsPerStage, TEXT("compute stage"));
+		CheckAndSetImageUnits(MaxCombinedTextureImageUnits, MaxCombinedImageUnits, TEXT("combined"));
 	}
 	else
 	{
-		// clamp things to the levels that the other path is going, but allow additional units for tessellation
-		if (IsMobilePlatform(GMaxRHIShaderPlatform))
-		{
-			MaxTextureImageUnits = MaxTextureImageUnits > 16 ? 16 : MaxTextureImageUnits;
-			MaxVertexTextureImageUnits = MaxVertexTextureImageUnits > 8 ? 8 : MaxVertexTextureImageUnits;
-			MaxGeometryTextureImageUnits = MaxGeometryTextureImageUnits > 8 ? 8 : MaxGeometryTextureImageUnits;
-			MaxCombinedTextureImageUnits = MaxCombinedTextureImageUnits > 48 ? 48 : MaxCombinedTextureImageUnits;
-		}
+		UE_CLOG(MaxCombinedTextureImageUnits<MaxCombinedImageUnits, LogRHI, Fatal, TEXT("GL RHI requires a minimum combined texture unit count of %d, this device reports %d."), MaxCombinedImageUnits, MaxCombinedTextureImageUnits);
 	}
 
 	// Check for support for advanced texture compression (desktop and mobile)
@@ -493,7 +583,7 @@ void FOpenGLBase::ProcessExtensions( const FString& ExtensionsString )
 	{
 		GRHIVendorId = 0x10DE;
 	}
-	else if (VendorName.Contains(TEXT("ImgTec")))
+	else if (VendorName.Contains(TEXT("ImgTec")) || VendorName.Contains(TEXT("Imagination")))
 	{
 		GRHIVendorId = 0x1010;
 	}

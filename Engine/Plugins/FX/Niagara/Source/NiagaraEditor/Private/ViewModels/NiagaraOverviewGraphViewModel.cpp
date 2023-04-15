@@ -288,6 +288,15 @@ void FNiagaraOverviewGraphViewModel::CopySelectedNodes()
 bool FNiagaraOverviewGraphViewModel::CanCopyNodes() const
 {
 	UEdGraph* Graph = GetGraph();
+
+	// Copying from emitters is unsupported. An emitter overview node only references an emitter handle ID and a transient system.
+	// Since the system is transient, the emitter handle isn't always valid for duplication. Moreover the duplication would circumvent emitter inheritance. 
+	// We don't store enough information on the node to find the emitter asset in question, so adding the emitter with the correct hierarchy would require a larger refactor to properly support.
+	if (GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
+	{		
+		return false;
+	}
+
 	if (Graph != nullptr)
 	{
 		for (UObject* SelectedNode : NodeSelection->GetSelectedObjects())
@@ -308,14 +317,6 @@ void FNiagaraOverviewGraphViewModel::PasteNodes()
 	UEdGraph* Graph = GetGraph();
 	if (Graph != nullptr)
 	{
-		// Check if we need to early out due to trying to paste nodes to an emitter asset edit mode overview graph.
-		TSharedPtr<FNiagaraSystemViewModel> WeakSystemViewModel = SystemViewModel.Pin();
-		ENiagaraSystemViewModelEditMode SystemEditMode = WeakSystemViewModel->GetEditMode();
-		if (SystemEditMode == ENiagaraSystemViewModelEditMode::EmitterAsset)
-		{
-			return;
-		}
-
 		const FScopedTransaction Transaction(FGenericCommands::Get().Paste->GetDescription());;
 		Graph->Modify();
 
@@ -342,7 +343,7 @@ void FNiagaraOverviewGraphViewModel::PasteNodes()
 					// Nodes pasted from emitters have no owning system, and will be invalid, so they are destroyed here instead.
 					FNiagaraEditorUtilities::InfoWithToastAndLog(LOCTEXT("PasteFromEmitterAsset", "Cannot paste emitters from emitter assets. Please use Add Emitter from the right click menu instead."));
 					OverviewNode->DestroyNode();
-				}					
+				}
 				else if	(OverviewNode->GetEmitterHandleGuid().IsValid())
 				{
 					FNiagaraSystemViewModel::FEmitterHandleToDuplicate EmitterHandleToDuplicate;
@@ -364,6 +365,12 @@ bool FNiagaraOverviewGraphViewModel::CanPasteNodes() const
 {
 	UEdGraph* Graph = GetGraph();
 	if (Graph == nullptr)
+	{
+		return false;
+	}
+
+	// Cannot paste into emitter asset
+	if (GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
 	{
 		return false;
 	}

@@ -14,6 +14,7 @@ const IAnimRootMotionProvider* IAnimRootMotionProvider::Get()
 {
 	if (IsAvailable())
 	{
+		IModularFeatures::FScopedLockModularFeatureList ScopedLockModularFeatureList;
 		return &IModularFeatures::Get().GetModularFeature<const IAnimRootMotionProvider>(ModularFeatureName);
 	}
 	return nullptr;
@@ -21,6 +22,7 @@ const IAnimRootMotionProvider* IAnimRootMotionProvider::Get()
 
 bool IAnimRootMotionProvider::IsAvailable()
 {
+	IModularFeatures::FScopedLockModularFeatureList ScopedLockModularFeatureList;
 	return IModularFeatures::Get().IsModularFeatureAvailable(ModularFeatureName);
 }
 

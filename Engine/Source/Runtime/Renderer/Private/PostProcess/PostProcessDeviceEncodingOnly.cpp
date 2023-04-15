@@ -15,6 +15,7 @@
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+#include "HDRHelper.h"
 
 namespace
 {
@@ -24,7 +25,7 @@ namespace
 	namespace DeviceEncodingOnlyPermutation
 	{
 		// Desktop renderer permutation dimensions.
-		class FDeviceEncodingOnlyOutputDeviceDim : SHADER_PERMUTATION_ENUM_CLASS("DIM_OUTPUT_DEVICE", EDeviceEncodingOnlyOutputDevice);
+		class FDeviceEncodingOnlyOutputDeviceDim : SHADER_PERMUTATION_ENUM_CLASS("DIM_OUTPUT_DEVICE", EDisplayOutputFormat);
 
 		using FDesktopDomain = TShaderPermutationDomain<FDeviceEncodingOnlyOutputDeviceDim>;
 	
@@ -34,41 +35,39 @@ namespace
 
 FDeviceEncodingOnlyOutputDeviceParameters GetDeviceEncodingOnlyOutputDeviceParameters(const FSceneViewFamily& Family)
 {
-	static TConsoleVariableData<int32>* CVarOutputGamut = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.ColorGamut"));
-	static TConsoleVariableData<int32>* CVarOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
 	static TConsoleVariableData<float>* CVarOutputGamma = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.TonemapperGamma"));
 
-	EDeviceEncodingOnlyOutputDevice OutputDeviceValue;
+	EDisplayOutputFormat OutputDeviceValue;
 
 	if (Family.SceneCaptureSource == SCS_FinalColorHDR)
 	{
-		OutputDeviceValue = EDeviceEncodingOnlyOutputDevice::LinearNoToneCurve;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_LinearNoToneCurve;
 	}
 	else if (Family.SceneCaptureSource == SCS_FinalToneCurveHDR)
 	{
-		OutputDeviceValue = EDeviceEncodingOnlyOutputDevice::LinearWithToneCurve;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_LinearWithToneCurve;
 	}
 	else if (Family.bIsHDR)
 	{
-		OutputDeviceValue = EDeviceEncodingOnlyOutputDevice::ACES1000nitST2084;
+		OutputDeviceValue = EDisplayOutputFormat::HDR_ACES_1000nit_ST2084;
 	}
 	else
 	{
-		OutputDeviceValue = static_cast<EDeviceEncodingOnlyOutputDevice>(CVarOutputDevice->GetValueOnRenderThread());
-		OutputDeviceValue = static_cast<EDeviceEncodingOnlyOutputDevice>(FMath::Clamp(static_cast<int32>(OutputDeviceValue), 0, static_cast<int32>(EDeviceEncodingOnlyOutputDevice::MAX) - 1));
+		OutputDeviceValue = Family.RenderTarget->GetDisplayOutputFormat();
 	}
 
 	float Gamma = CVarOutputGamma->GetValueOnRenderThread();
 
-	if (PLATFORM_APPLE && Gamma == 0.0f)
+	// In case gamma is unspecified, fall back to 2.2 which is the most common case
+	if ((PLATFORM_APPLE || OutputDeviceValue == EDisplayOutputFormat::SDR_ExplicitGammaMapping) && Gamma == 0.0f)
 	{
 		Gamma = 2.2f;
 	}
 
 	// Enforce user-controlled ramp over sRGB or Rec709
-	if (Gamma > 0.0f && (OutputDeviceValue == EDeviceEncodingOnlyOutputDevice::sRGB || OutputDeviceValue == EDeviceEncodingOnlyOutputDevice::Rec709))
+	if (Gamma > 0.0f && (OutputDeviceValue == EDisplayOutputFormat::SDR_sRGB || OutputDeviceValue == EDisplayOutputFormat::SDR_Rec709))
 	{
-		OutputDeviceValue = EDeviceEncodingOnlyOutputDevice::ExplicitGammaMapping;
+		OutputDeviceValue = EDisplayOutputFormat::SDR_ExplicitGammaMapping;
 	}
 
 	FVector InvDisplayGammaValue;
@@ -79,16 +78,28 @@ FDeviceEncodingOnlyOutputDeviceParameters GetDeviceEncodingOnlyOutputDeviceParam
 	FDeviceEncodingOnlyOutputDeviceParameters Parameters;
 	Parameters.InverseGamma = (FVector3f)InvDisplayGammaValue;
 	Parameters.OutputDevice = static_cast<uint32>(OutputDeviceValue);
-	Parameters.OutputGamut = CVarOutputGamut->GetValueOnRenderThread();
+	Parameters.OutputGamut = static_cast<uint32>(Family.RenderTarget->GetDisplayColorGamut());
+	Parameters.OutputMaxLuminance = HDRGetDisplayMaximumLuminance();
 	return Parameters;
 }
 
+BEGIN_SHADER_PARAMETER_STRUCT(FDeviceEncodingACESTonemapShaderParameters, )
+	SHADER_PARAMETER(FVector4f, ACESMinMaxData) // xy = min ACES/luminance, zw = max ACES/luminance
+	SHADER_PARAMETER(FVector4f, ACESMidData) // x = mid ACES, y = mid luminance, z = mid slope
+	SHADER_PARAMETER(FVector4f, ACESCoefsLow_0) // coeflow 0-3
+	SHADER_PARAMETER(FVector4f, ACESCoefsHigh_0) // coefhigh 0-3
+	SHADER_PARAMETER(float, ACESCoefsLow_4)
+	SHADER_PARAMETER(float, ACESCoefsHigh_4)
+	SHADER_PARAMETER(float, ACESSceneColorMultiplier)
+END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDeviceEncodingOnlyParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_STRUCT_REF(FWorkingColorSpaceShaderParameters, WorkingColorSpace)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FDeviceEncodingOnlyOutputDeviceParameters, OutputDevice)
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Color)
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Output)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FDeviceEncodingACESTonemapShaderParameters, ACESTonemapParameters)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ColorTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
 	SHADER_PARAMETER(float, EditorNITLevel)
@@ -170,13 +181,13 @@ FScreenPassTexture AddDeviceEncodingOnlyPass(FRDGBuilder& GraphBuilder, const FV
 		OutputDesc.Flags |= GFastVRamConfig.Tonemap;
 
 		const FDeviceEncodingOnlyOutputDeviceParameters OutputDeviceParameters = GetDeviceEncodingOnlyOutputDeviceParameters(*View.Family);
-		const EDeviceEncodingOnlyOutputDevice OutputDevice = static_cast<EDeviceEncodingOnlyOutputDevice>(OutputDeviceParameters.OutputDevice);
+		const EDisplayOutputFormat OutputDevice = static_cast<EDisplayOutputFormat>(OutputDeviceParameters.OutputDevice);
 
-		if (OutputDevice == EDeviceEncodingOnlyOutputDevice::LinearEXR)
+		if (OutputDevice == EDisplayOutputFormat::HDR_LinearEXR)
 		{
 			OutputDesc.Format = PF_A32B32G32R32F;
 		}
-		if (OutputDevice == EDeviceEncodingOnlyOutputDevice::LinearNoToneCurve || OutputDevice == EDeviceEncodingOnlyOutputDevice::LinearWithToneCurve)
+		if (OutputDevice == EDisplayOutputFormat::HDR_LinearNoToneCurve || OutputDevice == EDisplayOutputFormat::HDR_LinearWithToneCurve)
 		{
 			OutputDesc.Format = PF_FloatRGBA;
 		}
@@ -206,9 +217,11 @@ FScreenPassTexture AddDeviceEncodingOnlyPass(FRDGBuilder& GraphBuilder, const FV
 
 	FDeviceEncodingOnlyParameters CommonParameters;
 	CommonParameters.View = View.ViewUniformBuffer;
+	CommonParameters.WorkingColorSpace = GDefaultWorkingColorSpaceUniformBuffer.GetUniformBufferRef();
 	CommonParameters.OutputDevice = GetDeviceEncodingOnlyOutputDeviceParameters(ViewFamily);
 	CommonParameters.Color = GetScreenPassTextureViewportParameters(SceneColorViewport);
 	CommonParameters.Output = GetScreenPassTextureViewportParameters(OutputViewport);
+	GetACESTonemapParameters(CommonParameters.ACESTonemapParameters);
 	CommonParameters.ColorTexture = Inputs.SceneColor.Texture;
 	CommonParameters.ColorSampler = BilinearClampSampler;
 	CommonParameters.EditorNITLevel = EditorNITLevel;
@@ -216,7 +229,7 @@ FScreenPassTexture AddDeviceEncodingOnlyPass(FRDGBuilder& GraphBuilder, const FV
 
 	// Generate permutation vector for the desktop tonemapper.
 	DeviceEncodingOnlyPermutation::FDesktopDomain DesktopPermutationVector;
-	DesktopPermutationVector.Set<DeviceEncodingOnlyPermutation::FDeviceEncodingOnlyOutputDeviceDim>(EDeviceEncodingOnlyOutputDevice(CommonParameters.OutputDevice.OutputDevice));
+	DesktopPermutationVector.Set<DeviceEncodingOnlyPermutation::FDeviceEncodingOnlyOutputDeviceDim>(EDisplayOutputFormat(CommonParameters.OutputDevice.OutputDevice));
 
 	// Override output might not support UAVs.
 	const bool bComputePass = (Output.Texture->Desc.Flags & TexCreate_UAV) == TexCreate_UAV ? View.bUseComputePasses : false;

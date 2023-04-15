@@ -15,6 +15,7 @@
 #include "SceneUtils.h"
 #include "ShaderParameterUtils.h"
 #include "GlobalShader.h"
+#include "PipelineStateCache.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGPUSort, Log, All);
 
@@ -86,26 +87,23 @@ public:
 	 */
 	virtual void InitRHI() override
 	{
-		if (RHISupportsComputeShaders(GShaderPlatformForFeatureLevel[GetFeatureLevel()]))
-		{
-			const int32 OffsetsCount = DIGIT_COUNT * MAX_GROUP_COUNT;
-			const int32 OffsetsBufferSize = OffsetsCount * sizeof(uint32);
+		const int32 OffsetsCount = DIGIT_COUNT * MAX_GROUP_COUNT;
+		const int32 OffsetsBufferSize = OffsetsCount * sizeof(uint32);
 		
-			for (int32 BufferIndex = 0; BufferIndex < 2; ++BufferIndex)
-			{
-				FRHIResourceCreateInfo CreateInfo(TEXT("SortOffset"));
-				Buffers[BufferIndex] = RHICreateVertexBuffer(
-					OffsetsBufferSize,
-					BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess,
-					CreateInfo);
-				BufferSRVs[BufferIndex] = RHICreateShaderResourceView(
-					Buffers[BufferIndex],
-					/*Stride=*/ sizeof(uint32),
-					/*Format=*/ PF_R32_UINT );
-				BufferUAVs[BufferIndex] = RHICreateUnorderedAccessView(
-					Buffers[BufferIndex],
-					/*Format=*/ PF_R32_UINT );
-			}
+		for (int32 BufferIndex = 0; BufferIndex < 2; ++BufferIndex)
+		{
+			FRHIResourceCreateInfo CreateInfo(TEXT("SortOffset"));
+			Buffers[BufferIndex] = RHICreateVertexBuffer(
+				OffsetsBufferSize,
+				BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess,
+				CreateInfo);
+			BufferSRVs[BufferIndex] = RHICreateShaderResourceView(
+				Buffers[BufferIndex],
+				/*Stride=*/ sizeof(uint32),
+				/*Format=*/ PF_R32_UINT );
+			BufferUAVs[BufferIndex] = RHICreateUnorderedAccessView(
+				Buffers[BufferIndex],
+				/*Format=*/ PF_R32_UINT );
 		}
 	}
 
@@ -187,8 +185,6 @@ public:
 	 */
 	virtual void InitRHI() override
 	{
-		if (RHISupportsComputeShaders(GShaderPlatformForFeatureLevel[GetFeatureLevel()]))
-		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("FRadixSortParametersBuffer"));
 			SortParametersBufferRHI = RHICreateVertexBuffer(
 				/*Size=*/ sizeof(FRadixSortParameters),
@@ -197,7 +193,6 @@ public:
 			SortParametersBufferSRV = RHICreateShaderResourceView(
 				SortParametersBufferRHI, /*Stride=*/ sizeof(uint32), PF_R32_UINT 
 				);
-		}
 	}
 
 	/**
@@ -224,11 +219,6 @@ class FRadixSortClearOffsetsCS : public FGlobalShader
 	DECLARE_SHADER_TYPE(FRadixSortClearOffsetsCS,Global);
 
 public:
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment )
 	{
@@ -300,11 +290,6 @@ class FRadixSortUpsweepCS : public FGlobalShader
 	DECLARE_SHADER_TYPE(FRadixSortUpsweepCS,Global);
 
 public:
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
@@ -407,11 +392,6 @@ class FRadixSortSpineCS : public FGlobalShader
 
 public:
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
@@ -493,11 +473,6 @@ class FRadixSortDownsweepCS : public FGlobalShader
 	DECLARE_SHADER_TYPE(FRadixSortDownsweepCS,Global);
 
 public:
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
@@ -671,8 +646,6 @@ int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, i
 	const bool bDebugOffsets = CVarDebugOffsets.GetValueOnRenderThread() != 0;
 	const bool bDebugSort = CVarDebugSort.GetValueOnRenderThread() != 0;
 
-	check(RHISupportsComputeShaders(GShaderPlatformForFeatureLevel[FeatureLevel]));
-
 	SCOPED_DRAW_EVENTF(RHICmdList, SortGPU, TEXT("Sort(%d)"), Count);
 
 	// Determine how many tiles need to be sorted.
@@ -746,8 +719,8 @@ int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, i
 				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::UAVCompute)
 			});
 			
-			// Clear the offsets buffer.			
-			RHICmdList.SetComputeShader(ClearOffsetsCS.GetComputeShader());			
+			// Clear the offsets buffer.
+			SetComputePipelineState(RHICmdList, ClearOffsetsCS.GetComputeShader());
 			ClearOffsetsCS->SetOutput(RHICmdList, GSortOffsetBuffers.BufferUAVs[0]);
 			DispatchComputeShader(RHICmdList, ClearOffsetsCS.GetShader(), 1, 1 ,1 );
 			ClearOffsetsCS->UnbindBuffers(RHICmdList);
@@ -759,7 +732,7 @@ int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, i
 			});
 
 			// Phase 1: Scan upsweep to compute per-digit totals.
-			RHICmdList.SetComputeShader(UpsweepCS.GetComputeShader());
+			SetComputePipelineState(RHICmdList, UpsweepCS.GetComputeShader());
 			UpsweepCS->SetOutput(RHICmdList, GSortOffsetBuffers.BufferUAVs[0]);
 			UpsweepCS->SetParameters(RHICmdList, SortBuffers.RemoteKeySRVs[BufferIndex], SortUniformBufferRef, GRadixSortParametersBuffer.SortParametersBufferSRV );
 			DispatchComputeShader(RHICmdList, UpsweepCS.GetShader(), GroupCount, 1, 1 );
@@ -778,7 +751,7 @@ int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, i
 			}
 
 			// Phase 2: Parallel prefix scan on the offsets buffer.
-			RHICmdList.SetComputeShader(SpineCS.GetComputeShader());
+			SetComputePipelineState(RHICmdList, SpineCS.GetComputeShader());
 			SpineCS->SetOutput(RHICmdList, GSortOffsetBuffers.BufferUAVs[1]);
 			SpineCS->SetParameters(RHICmdList, GSortOffsetBuffers.BufferSRVs[0] );
 			DispatchComputeShader(RHICmdList, SpineCS.GetShader(), 1, 1, 1 );
@@ -798,7 +771,7 @@ int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, i
 
 			const bool bIsLastPass = ((PassBits << RADIX_BITS) & KeyMask) == 0;
 			// Phase 3: Downsweep to compute final offsets and scatter keys.
-			RHICmdList.SetComputeShader(DownsweepCS.GetComputeShader());
+			SetComputePipelineState(RHICmdList, DownsweepCS.GetComputeShader());
 			{
 				FRHIUnorderedAccessView* ValuesUAV = nullptr;
 				if (bIsLastPass && SortBuffers.FinalValuesUAV)
@@ -876,11 +849,6 @@ static bool RunGPUSortTest(FRHICommandListImmediate& RHICmdList, int32 TestSize,
 	const int32 BufferSize = TestSize * sizeof(uint32);
 	const bool bDebugOffsets = CVarDebugOffsets.GetValueOnRenderThread() != 0;
 	const bool bDebugSort = CVarDebugSort.GetValueOnRenderThread() != 0;
-
-	if (!RHISupportsComputeShaders(GShaderPlatformForFeatureLevel[FeatureLevel]))
-	{
-		return false;
-	}
 
 	// Generate the test keys.
 	Keys.Reserve(TestSize);

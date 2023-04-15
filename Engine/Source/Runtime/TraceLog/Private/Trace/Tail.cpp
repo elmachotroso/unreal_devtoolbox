@@ -19,7 +19,6 @@ namespace Private {
 static_assert(ETransport::Active == ETransport::TidPacketSync, "Tail-tracing is transport aware");
 
 ////////////////////////////////////////////////////////////////////////////////
-static void	StressRingPacket();
 uint32		GetEncodeMaxSize(uint32);
 int32		Encode(const void*, int32, void*, int32);
 void*		Writer_MemoryAllocate(SIZE_T, uint32);
@@ -188,7 +187,7 @@ FTidPacketBase* FPacketRing::AppendImpl(uint32 InSize)
 
 	// Drop a packet from left.
 	auto* TidPacket = (FTidPacketBase*)(Data + Cursor);
-	TidPacket->PacketSize = InSize;
+	TidPacket->PacketSize = uint16(InSize);
 
 	Cursor = NextCursor;
 	return TidPacket;
@@ -199,10 +198,8 @@ FTidPacketBase* FPacketRing::AppendImpl(uint32 InSize)
 ////////////////////////////////////////////////////////////////////////////////
 static FPacketRing GPacketRing; // = {};
 
-
-
 ////////////////////////////////////////////////////////////////////////////////
-void Writer_TailAppend(uint32 ThreadId, uint8* __restrict Data, uint32 Size, bool bPartial)
+void Writer_TailAppend(uint32 ThreadId, uint8* __restrict Data, uint32 Size)
 {
 	// Perhaps tail tracing is disabled?
 	if (!GPacketRing.IsActive())
@@ -219,7 +216,6 @@ void Writer_TailAppend(uint32 ThreadId, uint8* __restrict Data, uint32 Size, boo
 	}
 
 	ThreadId &= FTidPacketBase::ThreadIdMask;
-	ThreadId |= bPartial ? FTidPacketBase::PartialMarker : 0;
 
 	// Smaller buffers usually aren't redundant enough to benefit from being
 	// compressed. They often end up being larger.
@@ -266,6 +262,7 @@ void Writer_TailOnConnect()
 void Writer_InitializeTail(int32 BufferSize)
 {
 #if defined(STRESS_PACKET_RING)
+	static void	StressRingPacket();
 	StressRingPacket();
 #endif
 
@@ -284,6 +281,12 @@ void Writer_InitializeTail(int32 BufferSize)
 	}
 
 	GPacketRing.Initialize(BufferSize);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_IsTailing()
+{
+	return GPacketRing.IsActive();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -306,10 +309,6 @@ static void StressRingPacket()
 	{
 		FTidPacket* Packet = Ring.Append<FTidPacket>((Bits & 0x1f) + 6);
 		Packet->ThreadId = i;
-		if ((Bits & 0x15) == 0)
-		{
-			Packet->ThreadId |= FTidPacketBase::PartialMarker;
-		}
 
 		Ring.IterateRanges([] (const FPacketRing::FRange&)
 		{
@@ -354,7 +353,7 @@ is off the buffer's end;
  0[SZ]==============>[SZ]=============>[SZ]=======>[SZ]==========>C-----R
                                                                   [SZ]========>N
 
-When this happens the 0-Cursor range is transfered to Left-Right and the 0-Cursor
+When this happens the 0-Cursor range is transferred to Left-Right and the 0-Cursor
 range is set such that it can contain the new packet being added.
 
  L[SZ]==============>[SZ]=============>[SZ]=======>[SZ]==========>R-----|

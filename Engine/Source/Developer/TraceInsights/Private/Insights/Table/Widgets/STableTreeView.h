@@ -8,6 +8,7 @@
 #include "Misc/TextFilter.h"
 #include "SlateFwd.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Navigation/SBreadcrumbTrail.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SWidget.h"
@@ -17,8 +18,10 @@
 #include "Widgets/Views/STreeView.h"
 
 // Insights
+#include "Insights/Common/AsyncOperationProgress.h"
 #include "Insights/Common/InsightsAsyncWorkUtils.h"
 #include "Insights/Common/Stopwatch.h"
+#include "Insights/InsightsManager.h"
 #include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/Table/ViewModels/TableTreeNode.h"
 #include "Insights/ViewModels/Filters.h"
@@ -36,6 +39,7 @@ namespace TraceServices
 namespace Insights
 {
 
+class FFilterConfigurator;
 class FTable;
 class FTableColumn;
 class FTreeNodeGrouping;
@@ -60,6 +64,44 @@ enum class EAsyncOperationType : uint32
 
 ENUM_CLASS_FLAGS(EAsyncOperationType);
 
+struct FTableColumnConfig
+{
+	FName ColumnId;
+	bool bIsVisible;
+	float Width;
+};
+
+class ITableTreeViewPreset
+{
+public:
+	virtual FText GetName() const = 0;
+	virtual FText GetToolTip() const = 0;
+	virtual FName GetSortColumn() const = 0;
+	virtual EColumnSortMode::Type GetSortMode() const = 0;
+	virtual void SetCurrentGroupings(const TArray<TSharedPtr<FTreeNodeGrouping>>& InAvailableGroupings, TArray<TSharedPtr<FTreeNodeGrouping>>& InOutCurrentGroupings) const = 0;
+	virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const = 0;
+};
+
+class FTableTaskCancellationToken
+{
+public:
+	FTableTaskCancellationToken()
+		: bCancel(false)
+	{}
+
+	bool ShouldCancel() { return bCancel.load(); }
+	void Cancel() { bCancel.store(true); }
+
+private:
+	std::atomic<bool> bCancel;
+};
+
+struct FTableTaskInfo
+{
+	FGraphEventRef Event;
+	TSharedPtr< FTableTaskCancellationToken> CancellationToken;
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /**
  * A custom widget used to display the list of tree nodes.
@@ -69,6 +111,9 @@ class STableTreeView : public SCompoundWidget, public IAsyncOperationStatusProvi
 	friend class FTableTreeViewFilterAsyncTask;
 	friend class FTableTreeViewSortAsyncTask;
 	friend class FTableTreeViewGroupAsyncTask;
+	friend class FTableTreeViewAsyncCompleteTask;
+	friend class FSearchForItemToSelectTask;
+	friend class FSelectNodeByTableRowIndexTask;
 
 public:
 	/** Default constructor. */
@@ -225,6 +270,8 @@ protected:
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Filtering
 
+	void OnFilteringChanged();
+
 	/** Populates the group and stat tree with items based on the current data. */
 	void ApplyFiltering();
 
@@ -246,11 +293,36 @@ protected:
 	void CreateGroupings();
 	virtual void InternalCreateGroupings();
 
+	void OnGroupingChanged();
+	void ApplyGrouping();
+
 	void CreateGroups(const TArray<TSharedPtr<FTreeNodeGrouping>>& Groupings);
 	void GroupNodesRec(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, int32 GroupingDepth, const TArray<TSharedPtr<FTreeNodeGrouping>>& Groupings);
 
+	void RebuildGroupingCrumbs();
+	void OnGroupingCrumbClicked(const TSharedPtr<FTreeNodeGrouping>& InEntry);
+	void BuildGroupingSubMenu_Change(FMenuBuilder& MenuBuilder, const TSharedPtr<FTreeNodeGrouping> CrumbGrouping);
+	void BuildGroupingSubMenu_Add(FMenuBuilder& MenuBuilder, const TSharedPtr<FTreeNodeGrouping> CrumbGrouping);
+	TSharedRef<SWidget> GetGroupingCrumbMenuContent(const TSharedPtr<FTreeNodeGrouping>& CrumbGrouping);
+
+	void PreChangeGroupings();
+	void PostChangeGroupings();
+	int32 GetGroupingDepth(const TSharedPtr<FTreeNodeGrouping>& Grouping) const;
+
+	void GroupingCrumbMenu_Reset_Execute();
+	void GroupingCrumbMenu_Remove_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
+	void GroupingCrumbMenu_MoveLeft_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
+	void GroupingCrumbMenu_MoveRight_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
+	void GroupingCrumbMenu_Change_Execute(const TSharedPtr<FTreeNodeGrouping> OldGrouping, const TSharedPtr<FTreeNodeGrouping> NewGrouping);
+	bool GroupingCrumbMenu_Change_CanExecute(const TSharedPtr<FTreeNodeGrouping> OldGrouping, const TSharedPtr<FTreeNodeGrouping> NewGrouping) const;
+	void GroupingCrumbMenu_Add_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping, const TSharedPtr<FTreeNodeGrouping> AfterGrouping);
+	bool GroupingCrumbMenu_Add_CanExecute(const TSharedPtr<FTreeNodeGrouping> Grouping, const TSharedPtr<FTreeNodeGrouping> AfterGrouping) const;
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Aggregation
+
 	void UpdateAggregatedValues(FTableTreeNode& GroupNode);
-	
+
 	template<typename T>
 	static void UpdateAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode, T InitialAggregatedValue, bool bSetInitialValue, TFunctionRef<T(T, const FTableCellValue&)> ValueGetterFunc)
 	{
@@ -262,7 +334,7 @@ protected:
 			{
 				continue;
 			}
-			
+
 			if (!NodePtr->IsGroup())
 			{
 				const TOptional<FTableCellValue> NodeValue = Column.GetValue(*NodePtr);
@@ -289,24 +361,7 @@ protected:
 		}
 	}
 
-	void RebuildGroupingCrumbs();
-	void OnGroupingCrumbClicked(const TSharedPtr<FTreeNodeGrouping>& InEntry);
-	void BuildGroupingSubMenu_Change(FMenuBuilder& MenuBuilder, const TSharedPtr<FTreeNodeGrouping> CrumbGrouping);
-	void BuildGroupingSubMenu_Add(FMenuBuilder& MenuBuilder, const TSharedPtr<FTreeNodeGrouping> CrumbGrouping);
-	TSharedRef<SWidget> GetGroupingCrumbMenuContent(const TSharedPtr<FTreeNodeGrouping>& CrumbGrouping);
-
-	void PreChangeGroupings();
-	void PostChangeGroupings();
-	int32 GetGroupingDepth(const TSharedPtr<FTreeNodeGrouping>& Grouping) const;
-
-	void GroupingCrumbMenu_Reset_Execute();
-	void GroupingCrumbMenu_Remove_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
-	void GroupingCrumbMenu_MoveLeft_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
-	void GroupingCrumbMenu_MoveRight_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping);
-	void GroupingCrumbMenu_Change_Execute(const TSharedPtr<FTreeNodeGrouping> OldGrouping, const TSharedPtr<FTreeNodeGrouping> NewGrouping);
-	bool GroupingCrumbMenu_Change_CanExecute(const TSharedPtr<FTreeNodeGrouping> OldGrouping, const TSharedPtr<FTreeNodeGrouping> NewGrouping) const;
-	void GroupingCrumbMenu_Add_Execute(const TSharedPtr<FTreeNodeGrouping> Grouping, const TSharedPtr<FTreeNodeGrouping> AfterGrouping);
-	bool GroupingCrumbMenu_Add_CanExecute(const TSharedPtr<FTreeNodeGrouping> Grouping, const TSharedPtr<FTreeNodeGrouping> AfterGrouping) const;
+	static void UpdateCStringSameValueAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode);
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Sorting
@@ -314,9 +369,12 @@ protected:
 	static const EColumnSortMode::Type GetDefaultColumnSortMode();
 	static const FName GetDefaultColumnBeingSorted();
 
+	void OnSortingChanged();
 	void CreateSortings();
 
 	void UpdateCurrentSortingByColumn();
+
+	void ApplySorting();
 	void SortTreeNodes(ITableCellValueSorter* InSorter, EColumnSortMode::Type InColumnSortMode);
 	void SortTreeNodesRec(FTableTreeNode& GroupNode, const ITableCellValueSorter& Sorter, EColumnSortMode::Type InColumnSortMode);
 
@@ -403,6 +461,35 @@ protected:
 
 	typedef TFunctionRef<void(TArray<Insights::FBaseTreeNodePtr>& InNodes)> WriteToFileCallback;
 	void ExportToFileRec(const FBaseTreeNodePtr& InGroupNode, TArray<Insights::FBaseTreeNodePtr>& InNodes, bool bInExportCollapsed, bool InExportLeafs, WriteToFileCallback Callback);
+
+	FText GetTreeViewBannerText() const { return TreeViewBannerText; }
+
+	virtual void InitAvailableViewPresets() {};
+	const TArray<TSharedRef<ITableTreeViewPreset>>* GetAvailableViewPresets() const { return &AvailableViewPresets; }
+	FReply OnApplyViewPreset(const ITableTreeViewPreset* InPreset);
+	void ApplyViewPreset(const ITableTreeViewPreset& InPreset);
+	void ApplyColumnConfig(const TArrayView<FTableColumnConfig>& InTableConfig);
+	void ViewPreset_OnSelectionChanged(TSharedPtr<ITableTreeViewPreset> InPreset, ESelectInfo::Type SelectInfo);
+	TSharedRef<SWidget> ViewPreset_OnGenerateWidget(TSharedRef<ITableTreeViewPreset> InPreset);
+	FText ViewPreset_GetSelectedText() const;
+	FText ViewPreset_GetSelectedToolTipText() const;
+
+	virtual void SearchForItem(TSharedPtr<FTableTaskCancellationToken> CancellationToken) {};
+
+	// Table data tasks should be tasks that operate read only operations on the data from the Table
+	// They should not operate on the tree nodes because they will run concurrently with the populated table UI.
+	template<typename T, typename... TArgs>
+	TSharedPtr<FTableTaskInfo> StartTableDataTask(TArgs&&... Args)
+	{
+		TSharedPtr<FTableTaskInfo> Info = MakeShared<FTableTaskInfo>();
+		Info->CancellationToken = MakeShared<FTableTaskCancellationToken>();
+		Info->Event = TGraphTask<T>::CreateTask().ConstructAndDispatchWhenReady(Info->CancellationToken, Forward<TArgs>(Args)...);
+		DataTaskInfos.Add(Info);
+
+		return Info;
+	}
+
+	void StopAllTableDataTasks(bool bWait = true);
 
 protected:
 	/** Table view model. */
@@ -502,6 +589,7 @@ protected:
 
 	TArray<FTableTreeNodePtr> DummyGroupNodes;
 	FGraphEventRef InProgressAsyncOperationEvent;;
+	FGraphEventRef AsyncCompleteTaskEvent;
 	EAsyncOperationType InProgressAsyncOperations = static_cast<EAsyncOperationType>(0);
 	TSharedPtr<class SAsyncOperationStatus> AsyncOperationStatus;
 	FStopwatch AsyncUpdateStopwatch;
@@ -511,8 +599,9 @@ protected:
 	EColumnSortMode::Type CurrentAsyncOpColumnSortMode;
 	TSharedPtr<FTableTreeNodeTextFilter> CurrentAsyncOpTextFilter;
 	FFilterConfigurator* CurrentAsyncOpFilterConfigurator = nullptr;
-	std::atomic<bool> bCancelCurrentAsyncOp { false };
+	FAsyncOperationProgress AsyncOperationProgress;
 	FGraphEventRef DispatchEvent;
+	TArray<TSharedPtr<FTableTaskInfo>> DataTaskInfos;
 	TArray<FTableTreeNodePtr> NodesToExpand;
 
 	//////////////////////////////////////////////////
@@ -522,6 +611,12 @@ protected:
 
 	double StatsStartTime;
 	double StatsEndTime;
+
+	FText TreeViewBannerText;
+
+	TArray<TSharedRef<ITableTreeViewPreset>> AvailableViewPresets;
+	TSharedPtr<ITableTreeViewPreset> SelectedViewPreset;
+	TSharedPtr<SComboBox<TSharedRef<ITableTreeViewPreset>>> PresetComboBox;
 
 	static constexpr int32 MAX_NUMBER_OF_NODES_TO_EXPAND = 1000 * 1000;
 	static constexpr int32 MAX_DEPTH_TO_EXPAND = 100;
@@ -634,14 +729,71 @@ public:
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
 		// The role of this task is to keep the STableTreeView object alive until the task and it's prerequisits are completed and to destroy it on the game thread.
+		FGraphEventRef Event = TableTreeViewPtr->AsyncCompleteTaskEvent;
 		if (TableTreeViewPtr.IsValid())
 		{
 			TableTreeViewPtr.Reset();
 		}
+		FInsightsManager::Get()->RemoveInProgressAsyncOp(Event);
 	}
 
 private:
 	TSharedPtr<STableTreeView> TableTreeViewPtr;
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FSearchForItemToSelectTask
+{
+public:
+	FSearchForItemToSelectTask(TSharedPtr<FTableTaskCancellationToken> InToken, TSharedPtr<STableTreeView> InPtr)
+		: CancellationToken(InToken)
+		, TableTreeViewPtr(InPtr)
+	{}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FSearchForItemToSelectTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::AnyThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		TableTreeViewPtr->SearchForItem(CancellationToken);
+	}
+
+private:
+	TSharedPtr<FTableTaskCancellationToken> CancellationToken;
+	TSharedPtr<STableTreeView> TableTreeViewPtr;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FSelectNodeByTableRowIndexTask
+{
+public:
+	FSelectNodeByTableRowIndexTask(TSharedPtr<FTableTaskCancellationToken> InToken, TSharedPtr<STableTreeView> InPtr, uint32 InRowIndex)
+		: CancellationToken(InToken)
+		, TableTreeViewPtr(InPtr)
+		, RowIndex(InRowIndex)
+		{}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FSelectNodeByTableRowIndexTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::GameThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		if (!CancellationToken->ShouldCancel())
+		{
+			TableTreeViewPtr->SelectNodeByTableRowIndex(RowIndex);
+		}
+	}
+
+private:
+	TSharedPtr< FTableTaskCancellationToken> CancellationToken;
+	TSharedPtr<STableTreeView> TableTreeViewPtr;
+	uint32 RowIndex;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 } // namespace Insights

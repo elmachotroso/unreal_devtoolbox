@@ -11,7 +11,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlProvider.h"
@@ -83,7 +83,7 @@ void SPluginTile::RecreateWidgets()
 	// create support link
 	TSharedPtr<SWidget> SupportWidget;
 	{
-		if (PluginDescriptor.SupportURL.IsEmpty())
+		if (PluginDescriptor.SupportURL.IsEmpty() || !PluginDescriptor.SupportURL.StartsWith("https://"))
 		{
 			SupportWidget = SNullWidget::NullWidget;
 		}
@@ -118,7 +118,7 @@ void SPluginTile::RecreateWidgets()
 	// create documentation link
 	TSharedPtr<SWidget> DocumentationWidget;
 	{
-		if (PluginDescriptor.DocsURL.IsEmpty())
+		if (PluginDescriptor.DocsURL.IsEmpty() || !PluginDescriptor.DocsURL.StartsWith("https://"))
 		{
 			DocumentationWidget = SNullWidget::NullWidget;
 		}
@@ -157,7 +157,7 @@ void SPluginTile::RecreateWidgets()
 		{
 			CreatedByWidget = SNullWidget::NullWidget;
 		}
-		else if (PluginDescriptor.CreatedByURL.IsEmpty())
+		else if (PluginDescriptor.CreatedByURL.IsEmpty() || !PluginDescriptor.CreatedByURL.StartsWith("https://"))
 		{
 			CreatedByWidget = SNew(SHorizontalBox)
 
@@ -167,7 +167,7 @@ void SPluginTile::RecreateWidgets()
 				[
 					SNew(SImage)
 						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper"))
+						.Image(FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper"))
 				]
 
 			+ SHorizontalBox::Slot()
@@ -685,7 +685,7 @@ void SPluginTile::OnPackagePlugin()
 #endif
 
 	IUATHelperModule::Get().CreateUatTask(CommandLine, PlatformName, LOCTEXT("PackagePluginTaskName", "Packaging Plugin"),
-		LOCTEXT("PackagePluginTaskShortName", "Package Plugin Task"), FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")));
+		LOCTEXT("PackagePluginTaskShortName", "Package Plugin Task"), FAppStyle::GetBrush(TEXT("MainFrame.CookContent")));
 }
 
 FText SPluginTile::GetBetaOrExperimentalHelpText() const

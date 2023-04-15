@@ -152,6 +152,9 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	static FEdGraphPinType TypeDefinitionToPinType(FNiagaraTypeDefinition TypeDef);
 	
 	static bool IsPinWildcard(const UEdGraphPin* Pin);
+	
+	// Fast path helper to skip doing full type conversion
+	static bool IsPinStatic(const UEdGraphPin* Pin);
 	static FPinConnectionResponse GetWildcardConnectionResponse(const UEdGraphPin* PinA, const UEdGraphPin* PinB);
 	
 	bool IsSystemConstant(const FNiagaraVariable& Variable)const;
@@ -159,7 +162,8 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	class UNiagaraParameterCollection* VariableIsFromParameterCollection(const FNiagaraVariable& Var)const;
 	class UNiagaraParameterCollection* VariableIsFromParameterCollection(const FString& VarName, bool bAllowPartialMatch, FNiagaraVariable& OutVar)const;
 
-	FNiagaraTypeDefinition GetTypeDefForProperty(const FProperty* Property)const;
+	bool IsValidNiagaraPropertyType(const FProperty* Property) const;
+	FNiagaraTypeDefinition GetTypeDefForProperty(const FProperty* Property) const;
 
 	static const FLinearColor NodeTitleColor_Attribute;
 	static const FLinearColor NodeTitleColor_Constant;

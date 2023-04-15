@@ -4,10 +4,11 @@
 #include "AudioGameplayVolumeLogs.h"
 #include "AudioGameplayVolumeComponent.h"
 #include "AudioGameplayVolumeProxy.h"
-#include "AudioGameplayVolumeProxyMutator.h"
-#include "AudioGameplayFlags.h"
+#include "AudioGameplayVolumeMutator.h"
 #include "AudioDevice.h"
 #include "Misc/CoreMisc.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioGameplayVolumeSubsystem)
 
 namespace AudioGameplayVolumeConsoleVariables
 {
@@ -60,6 +61,64 @@ void FAudioGameplayActiveSoundInfo::Update(double ListenerInteriorStartTime)
 	}
 
 	InteriorSettings.UpdateInteriorValues();
+}
+
+void FAudioProxyMutatorSearchObject::SearchVolumes(const TArray<TWeakObjectPtr<UAudioGameplayVolumeProxy>>& ProxyVolumes, FAudioProxyMutatorSearchResult& OutResult)
+{
+	check(IsInAudioThread());
+	SCOPED_NAMED_EVENT(FAudioProxyMutatorSearchObject_SearchVolumes, FColor::Blue);
+
+	OutResult.Reset();
+	FAudioProxyMutatorPriorities MutatorPriorities;
+	MutatorPriorities.PayloadType = PayloadType;
+	MutatorPriorities.bFilterPayload = bFilterPayload;
+
+	for (const TWeakObjectPtr<UAudioGameplayVolumeProxy>& ProxyVolume : ProxyVolumes)
+	{
+		if (!ProxyVolume.IsValid() || ProxyVolume->GetWorldID() != WorldID)
+		{
+			continue;
+		}
+
+		if (bFilterPayload && !ProxyVolume->HasPayloadType(PayloadType))
+		{
+			continue;
+		}
+
+		if (!ProxyVolume->ContainsPosition(Location))
+		{
+			continue;
+		}
+
+		if (bCollectMutators)
+		{
+			// We only need to calculate priorities for mutators if we're collecting them.
+			ProxyVolume->FindMutatorPriority(MutatorPriorities);
+		}
+		OutResult.VolumeSet.Add(ProxyVolume->GetVolumeID());
+	}
+
+	// Use 'world settings' as a starting point
+	if (!bAffectedByLegacySystem && AudioDeviceHandle.IsValid())
+	{
+		AudioDeviceHandle->GetDefaultAudioSettings(WorldID, OutResult.ReverbSettings, OutResult.InteriorSettings);
+	}
+
+	if (bCollectMutators)
+	{
+		for (const TWeakObjectPtr<UAudioGameplayVolumeProxy>& ProxyVolume : ProxyVolumes)
+		{
+			if (!ProxyVolume.IsValid())
+			{
+				continue;
+			}
+
+			if (OutResult.VolumeSet.Contains(ProxyVolume->GetVolumeID()))
+			{
+				ProxyVolume->GatherMutators(MutatorPriorities, OutResult);
+			}
+		}
+	}
 }
 
 void FAudioGameplayVolumeProxyInfo::Update(const TArray<FAudioGameplayVolumeListener>& VolumeListeners, FAudioGameplayProxyUpdateResult& OutResult)
@@ -217,7 +276,7 @@ void UAudioGameplayVolumeSubsystem::OnNotifyPendingDelete(const FActiveSound& Ac
 	}
 }
 
-void UAudioGameplayVolumeSubsystem::AddVolumeComponent(const UAudioGameplayVolumeProxyComponent* VolumeComponent)
+void UAudioGameplayVolumeSubsystem::AddVolumeComponent(const UAudioGameplayVolumeComponent* VolumeComponent)
 {
 	if (!VolumeComponent)
 	{
@@ -252,7 +311,7 @@ void UAudioGameplayVolumeSubsystem::AddVolumeComponent(const UAudioGameplayVolum
 	}
 }
 
-void UAudioGameplayVolumeSubsystem::UpdateVolumeComponent(const UAudioGameplayVolumeProxyComponent* VolumeComponent)
+void UAudioGameplayVolumeSubsystem::UpdateVolumeComponent(const UAudioGameplayVolumeComponent* VolumeComponent)
 {
 	if (!VolumeComponent || !VolumeComponent->GetWorld())
 	{
@@ -280,7 +339,7 @@ void UAudioGameplayVolumeSubsystem::UpdateVolumeComponent(const UAudioGameplayVo
 	}
 }
 
-void UAudioGameplayVolumeSubsystem::RemoveVolumeComponent(const UAudioGameplayVolumeProxyComponent* VolumeComponent)
+void UAudioGameplayVolumeSubsystem::RemoveVolumeComponent(const UAudioGameplayVolumeComponent* VolumeComponent)
 {
 	if (!VolumeComponent || !VolumeComponent->GetWorld())
 	{
@@ -393,7 +452,7 @@ void UAudioGameplayVolumeSubsystem::UpdateComponentsFromProxyInfo(const FAudioGa
 			continue;
 		}
 
-		if (const UAudioGameplayVolumeProxyComponent* ProxyComponent = AGVComponents[VolumeID])
+		if (const UAudioGameplayVolumeComponent* ProxyComponent = AGVComponents[VolumeID])
 		{
 			ProxyComponent->EnterProxy();
 		}
@@ -406,7 +465,7 @@ void UAudioGameplayVolumeSubsystem::UpdateComponentsFromProxyInfo(const FAudioGa
 			continue;
 		}
 
-		if (const UAudioGameplayVolumeProxyComponent* ProxyComponent = AGVComponents[VolumeID])
+		if (const UAudioGameplayVolumeComponent* ProxyComponent = AGVComponents[VolumeID])
 		{
 			ProxyComponent->ExitProxy();
 		}
@@ -420,6 +479,7 @@ void UAudioGameplayVolumeSubsystem::UpdateFromListeners()
 
 	FAudioDeviceHandle DeviceHandle = GetAudioDeviceHandle();
 	check(DeviceHandle.IsValid());
+	const uint32 AudioDeviceID = DeviceHandle.GetDeviceID();
 
 	constexpr bool bAllowShrink = false;
 	const int32 ListenerCount = DeviceHandle->GetListeners().Num();
@@ -433,6 +493,7 @@ void UAudioGameplayVolumeSubsystem::UpdateFromListeners()
 
 	FAudioProxyMutatorSearchResult Result;
 	TSet<uint32> TempVolumeSet;
+	FTransform ListenerTransform;
 
 	// Grabbing the listeners directly here should be removed when possible - done out of necessity due to the legacy audio volume system
 	const TArray<FListener>& AudioListeners = DeviceHandle->GetListeners();
@@ -440,38 +501,48 @@ void UAudioGameplayVolumeSubsystem::UpdateFromListeners()
 	// Update our audio gameplay volume listeners
 	for (int32 i = 0; i < ListenerCount; ++i)
 	{
-		// Fill location and worldID
-		if (DeviceHandle->GetListenerWorldID(i, ProxySearch.WorldID) && DeviceHandle->GetListenerPosition(i, ProxySearch.Location, bAllowAttenuationOverride))
+		const bool bValidAudioListener = DeviceHandle->GetListenerTransform(i, ListenerTransform);
+		if (bValidAudioListener && !ListenerTransform.Equals(FTransform::Identity))
 		{
-			// Find only the proxy volumes we're inside of, regardless of payload type
-			ProxySearch.bFilterPayload = false;
-			ProxySearch.bCollectMutators = false;
-			ProxySearch.bGetDefaultAudioSettings = false;
-			ProxySearch.SearchVolumes(ProxyVolumes, Result);
-
-			// Hold on to these
-			Swap(TempVolumeSet, Result.VolumeSet);
-
-			// Second search - this time for mutators
-			ProxySearch.bFilterPayload = true;
-			ProxySearch.bCollectMutators = true;
-			ProxySearch.bGetDefaultAudioSettings = true;
-			ProxySearch.SearchVolumes(ProxyVolumes, Result);
-
-			if (i < AudioListeners.Num())
+			// Fill location and worldID
+			if (DeviceHandle->GetListenerWorldID(i, ProxySearch.WorldID) && DeviceHandle->GetListenerPosition(i, ProxySearch.Location, bAllowAttenuationOverride))
 			{
-				AGVListeners[i].SetAffectedByLegacySystem(AudioListeners[i].AudioVolumeID != 0);
-			}
+				// Find only the proxy volumes we're inside of, regardless of payload type
+				ProxySearch.bFilterPayload = false;
+				ProxySearch.bCollectMutators = false;
+				ProxySearch.bGetDefaultAudioSettings = false;
+				ProxySearch.SearchVolumes(ProxyVolumes, Result);
 
-			// Reassign the set of all proxy volumes (regardless of payload type)
-			Swap(TempVolumeSet, Result.VolumeSet);
-			AGVListeners[i].Update(Result, ProxySearch.Location, ProxySearch.WorldID);
+				// Hold on to these
+				Swap(TempVolumeSet, Result.VolumeSet);
 
-			if (FAudioGameplayVolumeProxyInfo* ProxyInfo = WorldProxyLists.Find(ProxySearch.WorldID))
-			{
-				ProxyInfo->AddListenerIndex(i);
+				// Second search - this time for mutators
+				ProxySearch.bFilterPayload = true;
+				ProxySearch.bCollectMutators = true;
+				ProxySearch.bGetDefaultAudioSettings = true;
+				ProxySearch.SearchVolumes(ProxyVolumes, Result);
+
+				if (i < AudioListeners.Num())
+				{
+					AGVListeners[i].SetAffectedByLegacySystem(AudioListeners[i].AudioVolumeID != 0);
+				}
+
+				// Reassign the set of all proxy volumes (regardless of payload type)
+				Swap(TempVolumeSet, Result.VolumeSet);
+				AGVListeners[i].Update(Result, ProxySearch.Location, AudioDeviceID);
+
+				if (FAudioGameplayVolumeProxyInfo* ProxyInfo = WorldProxyLists.Find(ProxySearch.WorldID))
+				{
+					ProxyInfo->AddListenerIndex(i);
+				}
+
+				continue;
 			}
 		}
+
+		// Listener is invalid or uninitialized
+		Result.Reset();
+		AGVListeners[i].Update(Result, FVector::ZeroVector, AudioDeviceID);
 	}
 
 	FAudioGameplayProxyUpdateResult ProxyUpdateResult;
@@ -490,3 +561,4 @@ void UAudioGameplayVolumeSubsystem::UpdateFromListeners()
 		});
 	}
 }
+

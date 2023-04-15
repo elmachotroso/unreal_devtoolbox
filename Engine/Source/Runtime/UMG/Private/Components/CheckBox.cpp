@@ -7,6 +7,8 @@
 #include "Slate/SlateBrushAsset.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CheckBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -29,6 +31,7 @@ UCheckBox::UCheckBox(const FObjectInitializer& ObjectInitializer)
 		DefaultCheckboxStyle->UnlinkColors();
 	}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	WidgetStyle = *DefaultCheckboxStyle;
 
 #if WITH_EDITOR 
@@ -52,12 +55,11 @@ UCheckBox::UCheckBox(const FObjectInitializer& ObjectInitializer)
 	CheckedState = ECheckBoxState::Unchecked;
 
 	HorizontalAlignment = HAlign_Fill;
-	Padding_DEPRECATED = FMargin(0, 0, 0, 0);
-
-	BorderBackgroundColor_DEPRECATED = FLinearColor::White;
 
 	ClickMethod = EButtonClickMethod::DownAndUp;
 	TouchMethod = EButtonTouchMethod::DownAndUp;
+	PressMethod = EButtonPressMethod::DownAndUp;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	IsFocusable = true;
 #if WITH_EDITORONLY_DATA
@@ -75,6 +77,7 @@ void UCheckBox::ReleaseSlateResources(bool bReleaseChildren)
 
 TSharedRef<SWidget> UCheckBox::RebuildWidget()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	MyCheckbox = SNew(SCheckBox)
 		.OnCheckStateChanged( BIND_UOBJECT_DELEGATE(FOnCheckStateChanged, SlateOnCheckStateChangedCallback) )
 		.Style(&WidgetStyle)
@@ -84,6 +87,7 @@ TSharedRef<SWidget> UCheckBox::RebuildWidget()
 		.PressMethod(PressMethod)
 		.IsFocusable(IsFocusable)
 		;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	if ( GetChildrenCount() > 0 )
 	{
@@ -97,8 +101,14 @@ void UCheckBox::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
 
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	MyCheckbox->SetStyle(&WidgetStyle);
 	MyCheckbox->SetIsChecked( PROPERTY_BINDING(ECheckBoxState, CheckedState) );
+	MyCheckbox->SetClickMethod(ClickMethod);
+	MyCheckbox->SetTouchMethod(TouchMethod);
+	MyCheckbox->SetPressMethod(PressMethod);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UCheckBox::OnSlotAdded(UPanelSlot* InSlot)
@@ -129,6 +139,13 @@ bool UCheckBox::IsPressed() const
 	return false;
 }
 
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+EButtonClickMethod::Type UCheckBox::GetClickMethod() const
+{
+	return ClickMethod;
+}
+
 void UCheckBox::SetClickMethod(EButtonClickMethod::Type InClickMethod)
 {
 	ClickMethod = InClickMethod;
@@ -136,6 +153,11 @@ void UCheckBox::SetClickMethod(EButtonClickMethod::Type InClickMethod)
 	{
 		MyCheckbox->SetClickMethod(ClickMethod);
 	}
+}
+
+EButtonTouchMethod::Type UCheckBox::GetTouchMethod() const
+{
+	return TouchMethod;
 }
 
 void UCheckBox::SetTouchMethod(EButtonTouchMethod::Type InTouchMethod)
@@ -154,6 +176,11 @@ void UCheckBox::SetPressMethod(EButtonPressMethod::Type InPressMethod)
 	{
 		MyCheckbox->SetPressMethod(PressMethod);
 	}
+}
+
+EButtonPressMethod::Type UCheckBox::GetPressMethod() const
+{
+	return PressMethod;
 }
 
 bool UCheckBox::IsChecked() const
@@ -178,7 +205,13 @@ ECheckBoxState UCheckBox::GetCheckedState() const
 
 void UCheckBox::SetIsChecked(bool InIsChecked)
 {
-	CheckedState = InIsChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	ECheckBoxState NewState = InIsChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	if (NewState != CheckedState)
+	{
+		CheckedState = NewState;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::CheckedState);
+	}
+
 	if ( MyCheckbox.IsValid() )
 	{
 		MyCheckbox->SetIsChecked(PROPERTY_BINDING(ECheckBoxState, CheckedState));
@@ -187,105 +220,46 @@ void UCheckBox::SetIsChecked(bool InIsChecked)
 
 void UCheckBox::SetCheckedState(ECheckBoxState InCheckedState)
 {
-	CheckedState = InCheckedState;
+	if (CheckedState != InCheckedState)
+	{
+		CheckedState = InCheckedState;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::CheckedState);
+	}
+
 	if ( MyCheckbox.IsValid() )
 	{
 		MyCheckbox->SetIsChecked(PROPERTY_BINDING(ECheckBoxState, CheckedState));
 	}
 }
 
-void UCheckBox::SlateOnCheckStateChangedCallback(ECheckBoxState NewState)
+const FCheckBoxStyle& UCheckBox::GetWidgetStyle() const
 {
-	CheckedState = NewState;
-
-	//@TODO: Choosing to treat Undetermined as Checked
-	const bool bWantsToBeChecked = NewState != ECheckBoxState::Unchecked;
-	OnCheckStateChanged.Broadcast(bWantsToBeChecked);
+	return WidgetStyle;
 }
 
-void UCheckBox::PostLoad()
+void UCheckBox::SetWidgetStyle(const FCheckBoxStyle& InStyle)
 {
-	Super::PostLoad();
+	WidgetStyle = InStyle;
 
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if (MyCheckbox)
 	{
-		if ( Style_DEPRECATED != nullptr )
-		{
-			const FCheckBoxStyle* StylePtr = Style_DEPRECATED->GetStyle<FCheckBoxStyle>();
-			if ( StylePtr != nullptr )
-			{
-				WidgetStyle = *StylePtr;
-			}
-
-			Style_DEPRECATED = nullptr;
-		}
-
-		if ( UncheckedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UncheckedImage = UncheckedImage_DEPRECATED->Brush;
-			UncheckedImage_DEPRECATED = nullptr;
-		}
-
-		if ( UncheckedHoveredImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UncheckedHoveredImage = UncheckedHoveredImage_DEPRECATED->Brush;
-			UncheckedHoveredImage_DEPRECATED = nullptr;
-		}
-
-		if ( UncheckedPressedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UncheckedPressedImage = UncheckedPressedImage_DEPRECATED->Brush;
-			UncheckedPressedImage_DEPRECATED = nullptr;
-		}
-
-		if ( CheckedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.CheckedImage = CheckedImage_DEPRECATED->Brush;
-			CheckedImage_DEPRECATED = nullptr;
-		}
-
-		if ( CheckedHoveredImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.CheckedHoveredImage = CheckedHoveredImage_DEPRECATED->Brush;
-			CheckedHoveredImage_DEPRECATED = nullptr;
-		}
-
-		if ( CheckedPressedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.CheckedPressedImage = CheckedPressedImage_DEPRECATED->Brush;
-			CheckedPressedImage_DEPRECATED = nullptr;
-		}
-
-		if ( UndeterminedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UndeterminedImage = UndeterminedImage_DEPRECATED->Brush;
-			UndeterminedImage_DEPRECATED = nullptr;
-		}
-
-		if ( UndeterminedHoveredImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UndeterminedHoveredImage = UndeterminedHoveredImage_DEPRECATED->Brush;
-			UndeterminedHoveredImage_DEPRECATED = nullptr;
-		}
-
-		if ( UndeterminedPressedImage_DEPRECATED != nullptr )
-		{
-			WidgetStyle.UndeterminedPressedImage = UndeterminedPressedImage_DEPRECATED->Brush;
-			UndeterminedPressedImage_DEPRECATED = nullptr;
-		}
+		MyCheckbox->SetStyle(&WidgetStyle);
 	}
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
+void UCheckBox::SlateOnCheckStateChangedCallback(ECheckBoxState NewState)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (CheckedState != NewState)
 	{
-		WidgetStyle.Padding = Padding_DEPRECATED;
-		Padding_DEPRECATED = FMargin(0);
-
-		if (BorderBackgroundColor_DEPRECATED != FLinearColor::White)
-		{
-			WidgetStyle.BorderBackgroundColor = BorderBackgroundColor_DEPRECATED;
-			BorderBackgroundColor_DEPRECATED = FLinearColor::White;
-		}
+		CheckedState = NewState;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::CheckedState);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	const bool bWantsToBeChecked = NewState != ECheckBoxState::Unchecked;
+	OnCheckStateChanged.Broadcast(bWantsToBeChecked);
 }
 
 #if WITH_ACCESSIBILITY
@@ -307,3 +281,4 @@ const FText UCheckBox::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -14,7 +14,7 @@
 
 static const uint32 WindowsDefaultNumBackBuffers = 3;
 
-extern FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain, uint32 BackBufferIndex, TRefCountPtr<ID3D12Resource> BackBufferResourceOverride);
+extern FD3D12Texture* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain, uint32 BackBufferIndex, TRefCountPtr<ID3D12Resource> BackBufferResourceOverride);
 
 static int32 GD3D12UseAllowTearing = 1;
 static FAutoConsoleVariableRef CVarD3DUseAllowTearing(
@@ -24,36 +24,32 @@ static FAutoConsoleVariableRef CVarD3DUseAllowTearing(
 	ECVF_RenderThreadSafe | ECVF_ReadOnly
 );
 
-FD3D12Viewport::FD3D12Viewport(class FD3D12Adapter* InParent, HWND InWindowHandle, uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen, EPixelFormat InPreferredPixelFormat) :
-	FD3D12AdapterChild(InParent),
-	LastFlipTime(0),
-	LastFrameComplete(0),
-	LastCompleteTime(0),
-	SyncCounter(0),
-	bSyncedLastFrame(false),
-	WindowHandle(InWindowHandle),
-	MaximumFrameLatency(3),
-	SizeX(InSizeX),
-	SizeY(InSizeY),
-	bIsFullscreen(bInIsFullscreen),
-	bFullscreenLost(false),
-	PixelFormat(InPreferredPixelFormat),
-	bIsValid(true),
-	bHDRMetaDataSet(false),
-	ColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
-	NumBackBuffers(WindowsDefaultNumBackBuffers),
-	DummyBackBuffer_RenderThread(nullptr),
-	CurrentBackBufferIndex_RHIThread(0),
-	BackBuffer_RHIThread(nullptr),
+FD3D12Viewport::FD3D12Viewport(class FD3D12Adapter* InParent, HWND InWindowHandle, uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen, EPixelFormat InPreferredPixelFormat)
+	: FD3D12AdapterChild(InParent)
+	, WindowHandle(InWindowHandle)
+	, SizeX(InSizeX)
+	, SizeY(InSizeY)
+	, bIsFullscreen(bInIsFullscreen)
+	, bFullscreenLost(false)
+	, PixelFormat(InPreferredPixelFormat)
+	, bIsValid(true)
+	, bHDRMetaDataSet(false)
+	, ColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+	, NumBackBuffers(WindowsDefaultNumBackBuffers)
+	, DummyBackBuffer_RenderThread(nullptr)
+	, CurrentBackBufferIndex_RHIThread(0)
+	, BackBuffer_RHIThread(nullptr)
+	, BackBuffer_RenderThread(nullptr)
+	, BackBufferUAV_RenderThread(nullptr)
 #if WITH_MGPU
-	BackbufferMultiGPUBinding(0),
-	ExpectedBackBufferIndex_RenderThread(0),
+	, BackbufferMultiGPUBinding(0)
 #endif //WITH_MGPU
-	SDRDummyBackBuffer_RenderThread(nullptr),
-	SDRBackBuffer_RHIThread(nullptr),
-	SDRPixelFormat(PF_B8G8R8A8),
-	Fence(InParent, FRHIGPUMask::All(), L"Viewport Fence"),
-	LastSignaledValue(0)
+	, ExpectedBackBufferIndex_RenderThread(0)
+	, SDRDummyBackBuffer_RenderThread(nullptr)
+	, SDRBackBuffer_RHIThread(nullptr)
+	, SDRPixelFormat(PF_B8G8R8A8)
+	, DisplayColorGamut(EDisplayColorGamut::sRGB_D65)
+	, DisplayOutputFormat(EDisplayOutputFormat::SDR_sRGB)
 #if WITH_MGPU
 	, FramePacerRunnable(nullptr)
 #endif //WITH_MGPU
@@ -65,29 +61,19 @@ FD3D12Viewport::FD3D12Viewport(class FD3D12Adapter* InParent, HWND InWindowHandl
 //Init for a Viewport that will do the presenting
 void FD3D12Viewport::Init()
 {
-
 	FD3D12Adapter* Adapter = GetParentAdapter();
+	IDXGIFactory2* Factory2 = Adapter->GetDXGIFactory2();
 
 	bAllowTearing = false;
-	IDXGIFactory* Factory = Adapter->GetDXGIFactory2();
 	if (GD3D12UseAllowTearing)
 	{
-		if (Factory)
+		if (IDXGIFactory5* Factory5 = Adapter->GetDXGIFactory5())
 		{
-			TRefCountPtr<IDXGIFactory5> Factory5;
-			Factory->QueryInterface(IID_PPV_ARGS(Factory5.GetInitReference()));
-			if (Factory5.IsValid())
-			{
-				BOOL AllowTearing;
-				if (SUCCEEDED(Factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &AllowTearing, sizeof(AllowTearing))) && AllowTearing)
-				{
-					bAllowTearing = true;
-				}
-			}
+			BOOL AllowTearing = FALSE;
+			Factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &AllowTearing, sizeof(AllowTearing));
+			bAllowTearing = (AllowTearing != FALSE);
 		}
 	}
-
-	Fence.CreateFence();
 
 	CalculateSwapChainDepth(WindowsDefaultNumBackBuffers);
 
@@ -100,12 +86,14 @@ void FD3D12Viewport::Init()
 
 	const DXGI_MODE_DESC BufferDesc = SetupDXGI_MODE_DESC();
 
+	// The command queue used here is irrelevant in regard to multi - GPU as it gets overriden in the Resize
+	ID3D12CommandQueue* CommandQueue = Adapter->GetDevice(0)->GetQueue(ED3D12QueueType::Direct).D3DCommandQueue;
+
 	// Create the swapchain.
-// Change from Microsoft for HoloLens support, may require further review: : BEGIN HoloLens support
 #if PLATFORM_HOLOLENS
 	{
 		// MSAA Sample count
-		DXGI_SWAP_CHAIN_DESC1 SwapChainDesc = { 0 };
+		DXGI_SWAP_CHAIN_DESC1 SwapChainDesc{};
 		SwapChainDesc.SampleDesc.Count = 1;
 		SwapChainDesc.SampleDesc.Quality = 0;
 		SwapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
@@ -120,14 +108,11 @@ void FD3D12Viewport::Init()
 		SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 		SwapChainDesc.Flags = SwapChainFlags;
 
-		// The command queue used here is irrelevant in regard to multi - GPU as it gets overriden in the Resize
-		ID3D12CommandQueue* pCommandQueue = Adapter->GetDevice(0)->GetD3DCommandQueue();
-
-		TRefCountPtr<IDXGIFactory4> Factory4;
-		Factory->QueryInterface(IID_PPV_ARGS(Factory4.GetInitReference()));
+		IDXGIFactory4* Factory4 = Adapter->GetDXGIFactory4();
+		check(Factory4);
 
 		VERIFYD3D12RESULT(Factory4->CreateSwapChainForCoreWindow(
-			pCommandQueue,
+			CommandQueue,
 			reinterpret_cast<IUnknown*>(Windows::UI::Core::CoreWindow::GetForCurrentThread()),
 			&SwapChainDesc,
 			NULL,
@@ -135,23 +120,17 @@ void FD3D12Viewport::Init()
 		));
 	}
 #else
-// : END HoloLens support
 
 	extern bool bNeedSwapChain;
 
 	bNeedSwapChain = !FParse::Param(FCommandLine::Get(), TEXT("RenderOffScreen"));
 	if (bNeedSwapChain)
 	{
-		if (Adapter->GetOwningRHI()->IsQuadBufferStereoEnabled())
+		if (FD3D12DynamicRHI::GetD3DRHI()->IsQuadBufferStereoEnabled())
 		{
-			TRefCountPtr<IDXGIFactory2> Factory2;
-			Factory->QueryInterface(IID_PPV_ARGS(Factory2.GetInitReference()));
-
-			BOOL bIsStereoEnabled = Factory2->IsWindowedStereoEnabled();
-			if (bIsStereoEnabled)
+			if (Factory2->IsWindowedStereoEnabled())
 			{
-				DXGI_SWAP_CHAIN_DESC1 SwapChainDesc1;
-				FMemory::Memzero(&SwapChainDesc1, sizeof(DXGI_SWAP_CHAIN_DESC1));
+				DXGI_SWAP_CHAIN_DESC1 SwapChainDesc1{};
 
 				// Enable stereo 
 				SwapChainDesc1.Stereo = true;
@@ -169,22 +148,12 @@ void FD3D12Viewport::Init()
 				SwapChainDesc1.Width = SizeX;
 				SwapChainDesc1.Height = SizeY;
 
-				// The command queue used here is irrelevant in regard to multi-GPU as it gets overriden in the Resize
-				ID3D12CommandQueue* pCommandQueue = Adapter->GetDevice(0)->GetD3DCommandQueue();
-
-				VERIFYD3D12RESULT((Factory2->CreateSwapChainForHwnd(pCommandQueue, WindowHandle, &SwapChainDesc1, nullptr, nullptr, SwapChain1.GetInitReference())));
-				VERIFYD3D12RESULT(SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain4.GetInitReference())));
-
-				// Set the DXGI message hook to not change the window behind our back.
-				Adapter->GetDXGIFactory2()->MakeWindowAssociation(WindowHandle, DXGI_MWA_NO_WINDOW_CHANGES);
-
-				// Resize to setup mGPU correctly.
-				Resize(SwapChainDesc1.Width, SwapChainDesc1.Height, bIsFullscreen, PixelFormat);
+				VERIFYD3D12RESULT(Factory2->CreateSwapChainForHwnd(CommandQueue, WindowHandle, &SwapChainDesc1, nullptr, nullptr, SwapChain1.GetInitReference()));
 			}
 			else
 			{
 				UE_LOG(LogD3D12RHI, Log, TEXT("FD3D12Viewport::FD3D12Viewport was not able to create stereo SwapChain; Please enable stereo in driver settings."));
-				Adapter->GetOwningRHI()->DisableQuadBufferStereo();
+				FD3D12DynamicRHI::GetD3DRHI()->DisableQuadBufferStereo();
 			}
 		}
 
@@ -192,67 +161,66 @@ void FD3D12Viewport::Init()
 		if (SwapChain1 == nullptr)
 		{
 			// Create the swapchain.
+			DXGI_SWAP_CHAIN_DESC SwapChainDesc = {};
+			SwapChainDesc.BufferDesc = BufferDesc;
+			// MSAA Sample count
+			SwapChainDesc.SampleDesc.Count = 1;
+			SwapChainDesc.SampleDesc.Quality = 0;
+			SwapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
+			// 1:single buffering, 2:double buffering, 3:triple buffering
+			SwapChainDesc.BufferCount = NumBackBuffers;
+			SwapChainDesc.OutputWindow = WindowHandle;
+			SwapChainDesc.Windowed = !bIsFullscreen;
+			// DXGI_SWAP_EFFECT_DISCARD / DXGI_SWAP_EFFECT_SEQUENTIAL
+			SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+			SwapChainDesc.Flags = SwapChainFlags;
+
+			TRefCountPtr<IDXGISwapChain> SwapChain;
+			HRESULT hr = Factory2->CreateSwapChain(CommandQueue, &SwapChainDesc, SwapChain.GetInitReference());
+			if (FAILED(hr))
 			{
-				DXGI_SWAP_CHAIN_DESC SwapChainDesc = {};
-				SwapChainDesc.BufferDesc = BufferDesc;
-				// MSAA Sample count
-				SwapChainDesc.SampleDesc.Count = 1;
-				SwapChainDesc.SampleDesc.Quality = 0;
-				SwapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-				// 1:single buffering, 2:double buffering, 3:triple buffering
-				SwapChainDesc.BufferCount = NumBackBuffers;
-				SwapChainDesc.OutputWindow = WindowHandle;
-				SwapChainDesc.Windowed = !bIsFullscreen;
-				// DXGI_SWAP_EFFECT_DISCARD / DXGI_SWAP_EFFECT_SEQUENTIAL
-				SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-				SwapChainDesc.Flags = SwapChainFlags;
+				UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to create swapchain with the following parameters:"));
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tDXGI_MODE_DESC: width: %d height: %d DXGI format: %d"), SwapChainDesc.BufferDesc.Width, SwapChainDesc.BufferDesc.Height, SwapChainDesc.BufferDesc.Format);
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tBack buffer count: %d"), NumBackBuffers);
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tWindows handle: 0x%x (IsWindow: %s)"), WindowHandle, IsWindow(WindowHandle) ? TEXT("true") : TEXT("false"));
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tFullscreen: %s"), bIsFullscreen ? TEXT("true") : TEXT("false"));
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tSwapchain flags: %d"), SwapChainFlags);
 
-				// The command queue used here is irrelevant in regard to multi-GPU as it gets overriden in the Resize
-				ID3D12CommandQueue* pCommandQueue = Adapter->GetDevice(0)->GetD3DCommandQueue();
-
-				TRefCountPtr<IDXGISwapChain> SwapChain;
-				HRESULT hr = Adapter->GetDXGIFactory2()->CreateSwapChain(pCommandQueue, &SwapChainDesc, SwapChain.GetInitReference());
-				if (FAILED(hr))
-				{
-					UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to create swapchain with the following parameters:"));
-					UE_LOG(LogD3D12RHI, Warning, TEXT("\tDXGI_MODE_DESC: width: %d height: %d DXGI format: %d"), SwapChainDesc.BufferDesc.Width, SwapChainDesc.BufferDesc.Height, SwapChainDesc.BufferDesc.Format);
-					UE_LOG(LogD3D12RHI, Warning, TEXT("\tBack buffer count: %d"), NumBackBuffers);
-					UE_LOG(LogD3D12RHI, Warning, TEXT("\tWindows handle: 0x%x (IsWindow: %s)"), WindowHandle, IsWindow(WindowHandle) ? TEXT("true") : TEXT("false"));
-					UE_LOG(LogD3D12RHI, Warning, TEXT("\tFullscreen: %s"), bIsFullscreen ? TEXT("true") : TEXT("false"));
-					UE_LOG(LogD3D12RHI, Warning, TEXT("\tSwapchain flags: %d"), SwapChainFlags);
-
-					VERIFYD3D12RESULT(hr);
-				}
-
-				VERIFYD3D12RESULT(SwapChain->QueryInterface(IID_PPV_ARGS(SwapChain1.GetInitReference())));
-
-				// Get a SwapChain4 if supported.
-				SwapChain->QueryInterface(IID_PPV_ARGS(SwapChain4.GetInitReference()));
+				VERIFYD3D12RESULT(hr);
 			}
+
+			VERIFYD3D12RESULT(SwapChain->QueryInterface(IID_PPV_ARGS(SwapChain1.GetInitReference())));
 		}
 	}
-	// Change from Microsoft for HoloLens support, may require further review: : BEGIN HoloLens support
 #endif
-// : END HoloLens support
+
+	if (SwapChain1)
+	{
+		SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain2.GetInitReference()));
+#if DXGI_MAX_SWAPCHAIN_INTERFACE >= 3
+		SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain3.GetInitReference()));
+#endif
+#if DXGI_MAX_SWAPCHAIN_INTERFACE >= 4
+		SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain4.GetInitReference()));
+#endif
+	}
 
 	{
 		// Don't make the windows association call and release back buffer at the same time (see notes on critical section)
 		FScopeLock Lock(&DXGIBackBufferLock);
 
 		// Set the DXGI message hook to not change the window behind our back.
-		Adapter->GetDXGIFactory2()->MakeWindowAssociation(WindowHandle, DXGI_MWA_NO_WINDOW_CHANGES);
+		Factory2->MakeWindowAssociation(WindowHandle, DXGI_MWA_NO_WINDOW_CHANGES);
 	}
 
 	// Resize to setup mGPU correctly.
 	Resize(BufferDesc.Width, BufferDesc.Height, bIsFullscreen, PixelFormat);
 
-// Change from Microsoft for HoloLens support, may require further review: : BEGIN HoloLens support
 #if !PLATFORM_HOLOLENS
 	// Tell the window to redraw when they can.
 	// @todo: For Slate viewports, it doesn't make sense to post WM_PAINT messages (we swallow those.)
 	::PostMessageW(WindowHandle, WM_PAINT, 0, 0);
 #endif
-	// : END HoloLens support
 }
 
 void FD3D12Viewport::FinalDestroyInternal()
@@ -352,14 +320,12 @@ void FD3D12Viewport::ResizeInternal()
 			const uint32 GPUIndex = BackBufferGPUIndices[i];
 			FD3D12Device* Device = Adapter->GetDevice(GPUIndex);
 
-			CommandQueues.Add(Device->GetD3DCommandQueue());
+			CommandQueues.Add(Device->GetQueue(ED3D12QueueType::Direct).D3DCommandQueue);
 			NodeMasks.Add(Device->GetGPUMask().GetNative());
 		}
 
-		if (SwapChain1)
+		if (SwapChain3)
 		{
-			TRefCountPtr<IDXGISwapChain3> SwapChain3;
-			VERIFYD3D12RESULT(SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain3.GetInitReference())));
 			VERIFYD3D12RESULT_EX(SwapChain3->ResizeBuffers1(NumBackBuffers, SizeX, SizeY, GetRenderTargetFormat(PixelFormat), SwapChainFlags, NodeMasks.GetData(), (IUnknown**)CommandQueues.GetData()), Adapter->GetD3DDevice());
 		}
 
@@ -397,6 +363,12 @@ void FD3D12Viewport::ResizeInternal()
 	BackBuffer_RHIThread = BackBuffers[CurrentBackBufferIndex_RHIThread].GetReference();
 	SDRBackBuffer_RHIThread = SDRBackBuffers[CurrentBackBufferIndex_RHIThread].GetReference();
 
+#if !D3D12_USE_DUMMY_BACKBUFFER
+    static_assert(false, "D3D12_USE_DUMMY_BACKBUFFER==0 has not been tested for viewports");
+	ExpectedBackBufferIndex_RenderThread = 0;
+	BackBuffer_RenderThread = BackBuffers[ExpectedBackBufferIndex_RenderThread].GetReference();
+#endif
+
 	// Create dummy back buffer which always reference to the actual RHI thread back buffer - can't be bound directly to D3D12
 	DummyBackBuffer_RenderThread = CreateDummyBackBufferTextures(Adapter, PixelFormat, SizeX, SizeY, false);
 	SDRDummyBackBuffer_RenderThread = (SDRBackBuffer_RHIThread != nullptr) ? CreateDummyBackBufferTextures(Adapter, PixelFormat, SizeX, SizeY, true) : nullptr;
@@ -425,27 +397,22 @@ void FD3D12Viewport::EnableHDR()
 {
 	if ( GRHISupportsHDROutput && IsHDREnabled() )
 	{
-		static const auto CVarHDROutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
-		const EDisplayFormat OutputDevice = EDisplayFormat(CVarHDROutputDevice->GetValueOnAnyThread());
-
-		const float DisplayMaxOutputNits = (OutputDevice == DF_ACES2000_ST_2084 || OutputDevice == DF_ACES2000_ScRGB) ? 2000.f : 1000.f;
+		const float DisplayMaxOutputNits = HDRGetDisplayMaximumLuminance();
 		const float DisplayMinOutputNits = 0.0f;	// Min output of the display
 		const float DisplayMaxCLL = 0.0f;			// Max content light level in lumens (0.0 == unknown)
 		const float DisplayFALL = 0.0f;				// Frame average light level (0.0 == unknown)
 
 		// Ideally we can avoid setting TV meta data and instead the engine can do tone mapping based on the
 		// actual current display properties (display mapping).
-		static const auto CVarHDRColorGamut = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.ColorGamut"));
-		const EDisplayGamut DisplayGamut = EDisplayGamut(CVarHDRColorGamut->GetValueOnAnyThread());
 		SetHDRTVMode(true,
-			DisplayGamut,
+			DisplayColorGamut,
 			DisplayMaxOutputNits,
 			DisplayMinOutputNits,
 			DisplayMaxCLL,
 			DisplayFALL);
 
 		// Ensure we have the correct color space set.
-		EnsureColorSpace(DisplayGamut, OutputDevice);
+		EnsureColorSpace(DisplayColorGamut, DisplayOutputFormat);
 	}
 }
 
@@ -454,8 +421,8 @@ void FD3D12Viewport::ShutdownHDR()
 	if (GRHISupportsHDROutput)
 	{
 		// Default SDR display data
-		const EDisplayGamut DisplayGamut = DG_Rec709;
-		const EDisplayFormat OutputDevice = DF_sRGB;
+		const EDisplayColorGamut DisplayGamut = EDisplayColorGamut::sRGB_D65;
+		const EDisplayOutputFormat OutputDevice = EDisplayOutputFormat::SDR_sRGB;
 
 		// Note: These values aren't actually used.
 		const float DisplayMaxOutputNits = 100.0f;	// Max output of the display
@@ -536,31 +503,31 @@ static const FString GetDXGIColorSpaceString(DXGI_COLOR_SPACE_TYPE ColorSpace)
 	return FString::FromInt(ColorSpace);
 };
 
-void FD3D12Viewport::EnsureColorSpace(EDisplayGamut DisplayGamut, EDisplayFormat OutputDevice)
+void FD3D12Viewport::EnsureColorSpace(EDisplayColorGamut DisplayGamut, EDisplayOutputFormat OutputDevice)
 {
 	ensure(SwapChain4.GetReference());
 
 	DXGI_COLOR_SPACE_TYPE NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;	// sRGB;
-	const bool bPrimaries2020 = (DisplayGamut == DG_Rec2020);
+	const bool bPrimaries2020 = (DisplayGamut == EDisplayColorGamut::Rec2020_D65);
 
 	// See console variable r.HDR.Display.OutputDevice.
 	switch (OutputDevice)
 	{
 		// Gamma 2.2
-	case DF_sRGB:
-	case DF_Rec709:
+	case EDisplayOutputFormat::SDR_sRGB:
+	case EDisplayOutputFormat::SDR_Rec709:
 		NewColorSpace = bPrimaries2020 ? DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 		break;
 
 		// Gamma ST.2084
-	case DF_ACES1000_ST_2084:
-	case DF_ACES2000_ST_2084:
+	case EDisplayOutputFormat::HDR_ACES_1000nit_ST2084:
+	case EDisplayOutputFormat::HDR_ACES_2000nit_ST2084:
 		NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 		break;
 
 		// Gamma 1.0 (Linear)
-	case DF_ACES1000_ScRGB:
-	case DF_ACES2000_ScRGB:
+	case EDisplayOutputFormat::HDR_ACES_1000nit_ScRGB:
+	case EDisplayOutputFormat::HDR_ACES_2000nit_ScRGB:
 		// Linear. Still supports expanded color space with values >1.0f and <0.0f.
 		// The actual range is determined by the pixel format (e.g. a UNORM format can only ever have 0-1).
 		NewColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
@@ -570,32 +537,37 @@ void FD3D12Viewport::EnsureColorSpace(EDisplayGamut DisplayGamut, EDisplayFormat
 	if (ColorSpace != NewColorSpace)
 	{
 		uint32 ColorSpaceSupport = 0;
-		if (SUCCEEDED(SwapChain4->CheckColorSpaceSupport(NewColorSpace, &ColorSpaceSupport)) &&
-			((ColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) != 0))
+		HRESULT hr = SwapChain4->CheckColorSpaceSupport(NewColorSpace, &ColorSpaceSupport);
+		FString NewColorSpaceName = GetDXGIColorSpaceString(NewColorSpace);
+		if (SUCCEEDED(hr) && ((ColorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) != 0))
 		{
 			VERIFYD3D12RESULT(SwapChain4->SetColorSpace1(NewColorSpace));
-			UE_LOG(LogD3D12RHI, Log, TEXT("Setting color space on swap chain (%#016llx): %s"), SwapChain4.GetReference(), *GetDXGIColorSpaceString(NewColorSpace));
+			UE_LOG(LogD3D12RHI, Verbose, TEXT("Setting color space on swap chain (%#016llx): %s"), SwapChain4.GetReference(), *NewColorSpaceName);
 			ColorSpace = NewColorSpace;
+		}
+		else
+		{
+			UE_LOG(LogD3D12RHI, Error, TEXT("Warning: unabled to set color space %s to the swapchain: verify EDisplayOutputFormat / swapchain format"), *NewColorSpaceName);
 		}
 	}
 }
 
-void FD3D12Viewport::SetHDRTVMode(bool bEnableHDR, EDisplayGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
+void FD3D12Viewport::SetHDRTVMode(bool bEnableHDR, EDisplayColorGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
 {
 	ensure(SwapChain4.GetReference());
 
 	static const DisplayChromacities DisplayChromacityList[] =
 	{
-		{ 0.64000f, 0.33000f, 0.30000f, 0.60000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // DG_Rec709
-		{ 0.68000f, 0.32000f, 0.26500f, 0.69000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // DG_DCI-P3 D65
-		{ 0.70800f, 0.29200f, 0.17000f, 0.79700f, 0.13100f, 0.04600f, 0.31270f, 0.32900f }, // DG_Rec2020
-		{ 0.73470f, 0.26530f, 0.00000f, 1.00000f, 0.00010f,-0.07700f, 0.32168f, 0.33767f }, // DG_ACES
-		{ 0.71300f, 0.29300f, 0.16500f, 0.83000f, 0.12800f, 0.04400f, 0.32168f, 0.33767f }, // DG_ACEScg
+		{ 0.64000f, 0.33000f, 0.30000f, 0.60000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // EDisplayColorGamut::sRGB_D65
+		{ 0.68000f, 0.32000f, 0.26500f, 0.69000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // EDisplayColorGamut::DCIP3_D65
+		{ 0.70800f, 0.29200f, 0.17000f, 0.79700f, 0.13100f, 0.04600f, 0.31270f, 0.32900f }, // EDisplayColorGamut::Rec2020_D65
+		{ 0.73470f, 0.26530f, 0.00000f, 1.00000f, 0.00010f,-0.07700f, 0.32168f, 0.33767f }, // EDisplayColorGamut::ACES_D60
+		{ 0.71300f, 0.29300f, 0.16500f, 0.83000f, 0.12800f, 0.04400f, 0.32168f, 0.33767f }, // EDisplayColorGamut::ACEScg_D60
 	};
 
 	if (bEnableHDR)
 	{
-		const DisplayChromacities& Chroma = DisplayChromacityList[DisplayGamut];
+		const DisplayChromacities& Chroma = DisplayChromacityList[(int32)DisplayGamut];
 
 		// Set HDR meta data
 		DXGI_HDR_METADATA_HDR10 HDR10MetaData = {};
@@ -639,5 +611,23 @@ void FD3D12Viewport::OnResumeRendering()
 
 void FD3D12Viewport::OnSuspendRendering()
 {}
+
+FD3D12Texture* FD3D12Viewport::GetBackBuffer_RenderThread() const
+{
+	check(IsInRenderingThread());
+	const bool sIsSDR = false;
+	FD3D12Texture* const DummyBackBuffer = GetDummyBackBuffer_RenderThread(sIsSDR);
+	return DummyBackBuffer;
+}
+
+bool FD3D12Viewport::IsPresentAllowed()
+{
+	return !FD3D12DynamicRHI::GetD3DRHI()->RHIIsRenderingSuspended();
+}
+
+void FD3D12DynamicRHI::RHIGetDisplaysInformation(FDisplayInformationArray& OutDisplayInformation)
+{
+	OutDisplayInformation.Append(DisplayList);
+}
 
 #include "Windows/HideWindowsPlatformTypes.h"

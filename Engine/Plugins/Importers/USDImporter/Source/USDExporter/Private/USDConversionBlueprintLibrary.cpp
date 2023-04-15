@@ -3,8 +3,11 @@
 #include "USDConversionBlueprintLibrary.h"
 
 #include "LevelExporterUSD.h"
+#include "LevelExporterUSDOptions.h"
 #include "UnrealUSDWrapper.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
+#include "USDExporterModule.h"
 #include "USDLayerUtils.h"
 #include "USDLog.h"
 
@@ -13,12 +16,18 @@
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
+#include "AnalyticsBlueprintLibrary.h"
+#include "AnalyticsEventAttribute.h"
+#include "CoreMinimal.h"
+#include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/World.h"
+#include "InstancedFoliageActor.h"
 #include "ISequencer.h"
 #include "LevelEditorSequencerIntegration.h"
+#include "UObject/ObjectMacros.h"
 
 namespace UE
 {
@@ -282,6 +291,31 @@ TSet<AActor*> UUsdConversionBlueprintLibrary::GetActorsToConvert( UWorld* World 
 	return Result;
 }
 
+FString UUsdConversionBlueprintLibrary::GenerateObjectVersionString( const UObject* ObjectToExport, UObject* ExportOptions )
+{
+	if ( !ObjectToExport )
+	{
+		return {};
+	}
+
+	FSHA1 SHA1;
+
+	if ( !IUsdClassesModule::HashObjectPackage( ObjectToExport, SHA1 ) )
+	{
+		return {};
+	}
+
+	if ( ULevelExporterUSDOptions* LevelExportOptions = Cast<ULevelExporterUSDOptions>( ExportOptions ) )
+	{
+		UsdUtils::HashForLevelExport( *LevelExportOptions, SHA1 );
+	}
+
+	FSHAHash Hash;
+	SHA1.Final();
+	SHA1.GetHash( &Hash.Hash[ 0 ] );
+	return Hash.ToString();
+}
+
 FString UUsdConversionBlueprintLibrary::MakePathRelativeToLayer( const FString& AnchorLayerPath, const FString& PathToMakeRelative )
 {
 #if USE_USD_SDK
@@ -362,4 +396,256 @@ FString UUsdConversionBlueprintLibrary::GetSchemaNameForComponent( const USceneC
 #endif // USE_USD_SDK
 
 	return {};
+}
+
+AInstancedFoliageActor* UUsdConversionBlueprintLibrary::GetInstancedFoliageActorForLevel( bool bCreateIfNone /*= false */, ULevel* Level /*= nullptr */ )
+{
+	if ( !Level )
+	{
+		const bool bEnsureIsGWorld = false;
+		UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext( bEnsureIsGWorld ).World() : nullptr;
+		if ( !EditorWorld )
+		{
+			return nullptr;
+		}
+
+		Level = EditorWorld->GetCurrentLevel();
+		if ( !Level )
+		{
+			return nullptr;
+		}
+	}
+
+	return AInstancedFoliageActor::GetInstancedFoliageActorForLevel( Level, bCreateIfNone );
+}
+
+TArray<UFoliageType*> UUsdConversionBlueprintLibrary::GetUsedFoliageTypes( AInstancedFoliageActor* Actor )
+{
+	TArray<UFoliageType*> Result;
+	if ( !Actor )
+	{
+		return Result;
+	}
+
+	for ( const TPair<UFoliageType*, TUniqueObj<FFoliageInfo>>& FoliagePair : Actor->GetFoliageInfos() )
+	{
+		Result.Add( FoliagePair.Key );
+	}
+
+	return Result;
+}
+
+UObject* UUsdConversionBlueprintLibrary::GetSource( UFoliageType* FoliageType )
+{
+	if ( FoliageType )
+	{
+		return FoliageType->GetSource();
+	}
+
+	return nullptr;
+}
+
+TArray<FTransform> UUsdConversionBlueprintLibrary::GetInstanceTransforms( AInstancedFoliageActor* Actor, UFoliageType* FoliageType, ULevel* InstancesLevel )
+{
+	TArray<FTransform> Result;
+	if ( !Actor || !FoliageType )
+	{
+		return Result;
+	}
+
+	// Modified from AInstancedFoliageActor::GetInstancesForComponent to limit traversal only to our FoliageType
+
+	if ( const TUniqueObj<FFoliageInfo>* FoundInfo = Actor->GetFoliageInfos().Find( FoliageType ) )
+	{
+		const FFoliageInfo& Info = ( *FoundInfo ).Get();
+
+		// Collect IDs of components that are on the same level as the actor's level. This because later on we'll have level-by-level
+		// export, and we'd want one point instancer per level
+		for ( const TPair<FFoliageInstanceBaseId, FFoliageInstanceBaseInfo>& FoliageInstancePair : Actor->InstanceBaseCache.InstanceBaseMap )
+		{
+			UActorComponent* Comp = FoliageInstancePair.Value.BasePtr.Get();
+			if ( !Comp || ( InstancesLevel && ( Comp->GetComponentLevel() != InstancesLevel ) ) )
+			{
+				continue;
+			}
+
+			if ( const auto* InstanceSet = Info.ComponentHash.Find( FoliageInstancePair.Key ) )
+			{
+				Result.Reserve( Result.Num() + InstanceSet->Num() );
+				for ( int32 InstanceIndex : *InstanceSet )
+				{
+					const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
+					Result.Emplace( FQuat( Instance->Rotation ), Instance->Location, ( FVector ) Instance->DrawScale3D );
+				}
+			}
+		}
+	}
+
+	return Result;
+}
+
+TArray<FAnalyticsEventAttr> UUsdConversionBlueprintLibrary::GetAnalyticsAttributes( const ULevelExporterUSDOptions* Options )
+{
+	TArray<FAnalyticsEventAttr> Attrs;
+	if ( Options )
+	{
+		TArray<FAnalyticsEventAttribute> Attributes;
+		UsdUtils::AddAnalyticsAttributes( *Options, Attributes );
+
+		Attrs.Reserve( Attributes.Num() );
+		for(const FAnalyticsEventAttribute& Attribute : Attributes )
+		{
+			FAnalyticsEventAttr& NewAttr = Attrs.Emplace_GetRef();
+			NewAttr.Name = Attribute.GetName();
+			NewAttr.Value = Attribute.GetValue();
+		}
+	}
+	return Attrs;
+}
+
+void UUsdConversionBlueprintLibrary::SendAnalytics( const TArray<FAnalyticsEventAttr>& Attrs, const FString& EventName, bool bAutomated, double ElapsedSeconds, double NumberOfFrames, const FString& Extension )
+{
+	TArray<FAnalyticsEventAttribute> Converted;
+	Converted.Reserve( Attrs.Num() );
+	for ( const FAnalyticsEventAttr& Attr : Attrs )
+	{
+		Converted.Emplace( Attr.Name, Attr.Value );
+	}
+
+	IUsdClassesModule::SendAnalytics( MoveTemp( Converted ), EventName, bAutomated, ElapsedSeconds, NumberOfFrames, Extension );
+}
+
+void UUsdConversionBlueprintLibrary::RemoveAllPrimSpecs( const FString& StageRootLayer, const FString& PrimPath, const FString& TargetLayer )
+{
+#if USE_USD_SDK
+	const bool bUseStageCache = true;
+	UE::FUsdStage Stage = UnrealUSDWrapper::OpenStage( *StageRootLayer, EUsdInitialLoadSet::LoadAll, bUseStageCache );
+	if ( !Stage )
+	{
+		return;
+	}
+
+	UsdUtils::RemoveAllLocalPrimSpecs(
+		Stage.GetPrimAtPath( UE::FSdfPath{ *PrimPath } ),
+		UE::FSdfLayer::FindOrOpen( *TargetLayer )
+	);
+#endif // USE_USD_SDK
+}
+
+bool UUsdConversionBlueprintLibrary::CutPrims( const FString& StageRootLayer, const TArray<FString>& PrimPaths )
+{
+#if USE_USD_SDK
+	const bool bUseStageCache = true;
+	UE::FUsdStage Stage = UnrealUSDWrapper::OpenStage( *StageRootLayer, EUsdInitialLoadSet::LoadAll, bUseStageCache );
+	if ( !Stage )
+	{
+		return false;
+	}
+
+	TArray<UE::FUsdPrim> Prims;
+	Prims.Reserve( PrimPaths.Num() );
+
+	for ( const FString& PrimPath : PrimPaths )
+	{
+		Prims.Add( Stage.GetPrimAtPath( UE::FSdfPath{ *PrimPath } ) );
+	}
+
+	return UsdUtils::CutPrims( Prims );
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
+bool UUsdConversionBlueprintLibrary::CopyPrims( const FString& StageRootLayer, const TArray<FString>& PrimPaths )
+{
+#if USE_USD_SDK
+	const bool bUseStageCache = true;
+	UE::FUsdStage Stage = UnrealUSDWrapper::OpenStage( *StageRootLayer, EUsdInitialLoadSet::LoadAll, bUseStageCache );
+	if ( !Stage )
+	{
+		return false;
+	}
+
+	TArray<UE::FUsdPrim> Prims;
+	Prims.Reserve( PrimPaths.Num() );
+
+	for ( const FString& PrimPath : PrimPaths )
+	{
+		Prims.Add( Stage.GetPrimAtPath( UE::FSdfPath{ *PrimPath } ) );
+	}
+
+	return UsdUtils::CopyPrims( Prims );
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
+TArray<FString> UUsdConversionBlueprintLibrary::PastePrims( const FString& StageRootLayer, const FString& ParentPrimPath )
+{
+	TArray<FString> Result;
+
+#if USE_USD_SDK
+	const bool bUseStageCache = true;
+	UE::FUsdStage Stage = UnrealUSDWrapper::OpenStage( *StageRootLayer, EUsdInitialLoadSet::LoadAll, bUseStageCache );
+	if ( !Stage )
+	{
+		return Result;
+	}
+
+	TArray<UE::FSdfPath> PastedPrims = UsdUtils::PastePrims( Stage.GetPrimAtPath( UE::FSdfPath{ *ParentPrimPath } ) );
+
+	for ( const UE::FSdfPath& DuplicatePrim : PastedPrims )
+	{
+		Result.Add( DuplicatePrim.GetString() );
+	}
+#endif // USE_USD_SDK
+
+	return Result;
+}
+
+bool UUsdConversionBlueprintLibrary::CanPastePrims()
+{
+	return UsdUtils::CanPastePrims();
+}
+
+void UUsdConversionBlueprintLibrary::ClearPrimClipboard()
+{
+	UsdUtils::ClearPrimClipboard();
+}
+
+TArray<FString> UUsdConversionBlueprintLibrary::DuplicatePrims( const FString& StageRootLayer, const TArray<FString>& PrimPaths, EUsdDuplicateType DuplicateType, const FString& TargetLayer )
+{
+	TArray<FString> Result;
+	Result.SetNum( PrimPaths.Num() );
+
+#if USE_USD_SDK
+	const bool bUseStageCache = true;
+	UE::FUsdStage Stage = UnrealUSDWrapper::OpenStage( *StageRootLayer, EUsdInitialLoadSet::LoadAll, bUseStageCache );
+	if ( !Stage )
+	{
+		return Result;
+	}
+
+	TArray<UE::FUsdPrim> Prims;
+	Prims.Reserve( PrimPaths.Num() );
+
+	for ( const FString& PrimPath : PrimPaths )
+	{
+		Prims.Add( Stage.GetPrimAtPath( UE::FSdfPath{ *PrimPath } ) );
+	}
+
+	TArray<UE::FSdfPath> DuplicatedPrims = UsdUtils::DuplicatePrims(
+		Prims,
+		DuplicateType,
+		UE::FSdfLayer::FindOrOpen( *TargetLayer )
+	);
+
+	for ( int32 Index = 0; Index < DuplicatedPrims.Num(); ++Index )
+	{
+		const UE::FSdfPath& DuplicatePrim = DuplicatedPrims[Index];
+		Result[ Index ] = DuplicatePrim.GetString();
+	}
+#endif // USE_USD_SDK
+
+	return Result;
 }

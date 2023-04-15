@@ -51,6 +51,9 @@ struct FKeyPropertyResult
 
 	/* Was a section created */
 	TArray<TWeakObjectPtr<UMovieSceneSection> > SectionsCreated;
+
+	/* Was a section keyed */
+	TArray<TWeakObjectPtr<UMovieSceneSection> > SectionsKeyed;
 };
 
 /** Delegate for adding keys for a property
@@ -183,8 +186,6 @@ public:
 
 	virtual void OnInitialize() override;
 	virtual void OnRelease() override;
-
-	virtual int32 PaintTrackArea(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle);
 
 	virtual bool SupportsType( TSubclassOf<class UMovieSceneTrack> TrackClass ) const override = 0;
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const override { return true; }

@@ -12,12 +12,12 @@
 #include "BuiltInAttributeTypes.generated.h"
 
 /** Attribute type supporting the legacy TVariant<float> atttributes */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FFloatAnimationAttribute 
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FloatAnimationAttribute)
 	float Value = 0.f;
 
 	void Accumulate(const FFloatAnimationAttribute& Attribute, float Weight, EAdditiveAnimationType AdditiveType)
@@ -45,12 +45,12 @@ struct FFloatAnimationAttribute
 };
 
 /** Attribute type supporting the legacy TVariant<int32> atttributes */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FIntegerAnimationAttribute
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=IntegerAnimationAttribute)
 	int32 Value = 0;
 
 	void Accumulate(const FIntegerAnimationAttribute& Attribute, float Weight, EAdditiveAnimationType AdditiveType)
@@ -72,28 +72,28 @@ struct FIntegerAnimationAttribute
 
 	void Interpolate(const FIntegerAnimationAttribute& Attribute, float Alpha)
 	{
-		Value *= (1.f - Alpha);
-		Value += (Attribute.Value * Alpha);
+		Value = FMath::TruncToInt32(Value * (1.f - Alpha));
+		Value += FMath::TruncToInt32(Attribute.Value * Alpha);
 	}
 };
 
 /** Attribute type supporting the legacy TVariant<FString> atttributes */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FStringAnimationAttribute
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=StringAnimationAttribute)
 	FString Value;
 };
 
-/** Attribute type supporting the legacy TVariant<FString> atttributes */
-USTRUCT()
+/** Attribute type supporting the legacy TVariant<FTransform> atttributes */
+USTRUCT(BlueprintType)
 struct FTransformAnimationAttribute
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TransformAnimationAttribute)
 	FTransform Value;
 
 	void Accumulate(const FTransformAnimationAttribute& Attribute, float Weight, EAdditiveAnimationType AdditiveType)
@@ -144,6 +144,122 @@ struct FTransformAnimationAttribute
 	{
 		Value.BlendWith(Attribute.Value, Alpha);
 	}
+};
+
+
+USTRUCT(BlueprintType)
+struct FVectorAnimationAttribute
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=VectorAnimationAttribute)
+	FVector Value = FVector::ZeroVector;
+
+	void Accumulate(const FVectorAnimationAttribute& Attribute, float Weight, EAdditiveAnimationType AdditiveType)
+	{
+		// if (FAnimWeight::IsRelevant(Weight))
+		{
+			Value += Attribute.Value * Weight;
+		}
+	}
+
+	void MakeAdditive(const FVectorAnimationAttribute& BaseAttribute)
+	{
+		Value = Value - BaseAttribute.Value;
+	}
+
+	void Normalize()
+	{
+		Value.Normalize();
+	}
+	
+	FVectorAnimationAttribute Multiply(const float Weight) const
+	{
+		FVectorAnimationAttribute Out;
+		Out.Value = Value * Weight;
+
+		return Out;
+	}
+
+	void Interpolate(const FVectorAnimationAttribute& Attribute, float Alpha)
+	{
+		Value = FMath::Lerp<FVector>(Value, Attribute.Value, Alpha);
+	}
+};
+
+USTRUCT(BlueprintType)
+struct FQuaternionAnimationAttribute
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=QuaternionAnimationAttribute)
+	FQuat Value = FQuat::Identity;
+
+	void Accumulate(const FQuaternionAnimationAttribute& Attribute, float Weight, EAdditiveAnimationType AdditiveType)
+	{
+		// if (FAnimWeight::IsRelevant(Weight))
+		{
+			if (AdditiveType == AAT_None)
+			{
+				
+				const FQuat WeightedRotation = Attribute.Value * Weight;
+				
+				// From VectorAccumulateQuaternionShortestPath
+				// Blend rotation
+				//     To ensure the 'shortest route', we make sure the dot product between the both rotations is positive.
+				//     const float Bias = (|A.B| >= 0 ? 1 : -1)
+				//     return A + B * Bias;
+				const FQuat::FReal DotResult = (Value | WeightedRotation);
+				const FQuat::FReal Bias = FMath::FloatSelect(DotResult, FQuat::FReal(1.0f), FQuat::FReal(-1.0f));
+				
+				Value += WeightedRotation * Bias;
+			}
+			else
+			{
+				// Quaternion equivalent of FTransform::BlendFromIdentityAndAccumulate
+				const FQuat WeightedRotation = FQuat::FastLerp(FQuat::Identity, Attribute.Value, Weight).GetNormalized();
+				Value = WeightedRotation * Value;
+			}
+			
+		}
+	}
+
+	void MakeAdditive(const FQuaternionAnimationAttribute& BaseAttribute)
+	{
+		Value = Value * BaseAttribute.Value.Inverse();
+		Value.Normalize();
+	}
+
+	void Normalize()
+	{
+		Value.Normalize();
+	}
+	
+	FQuaternionAnimationAttribute Multiply(const float Weight) const
+	{
+		FQuaternionAnimationAttribute Out;
+		Out.Value = Value * Weight;
+
+		return Out;
+	}
+
+	void Interpolate(const FQuaternionAnimationAttribute& Attribute, float Alpha)
+	{
+		Value = FQuat::FastLerp(Value, Attribute.Value, Alpha).GetNormalized();
+		Value.Normalize();
+	}
+};
+
+USTRUCT()
+struct FNonBlendableQuaternionAnimationAttribute : public FQuaternionAnimationAttribute
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FNonBlendableVectorAnimationAttribute : public FVectorAnimationAttribute
+{
+	GENERATED_BODY()
 };
 
 USTRUCT()
@@ -198,6 +314,36 @@ namespace UE
 			};
 		};
 
+		/** Quaternion attribute requires normalization */
+		template<>
+		struct TAttributeTypeTraits<FQuaternionAnimationAttribute> : public TAttributeTypeTraitsBase<FQuaternionAnimationAttribute>
+		{
+			enum
+			{
+				RequiresNormalization = true,
+			};
+		};
+
+		/** Non blendable types*/
+		template<>
+		struct TAttributeTypeTraits<FNonBlendableQuaternionAnimationAttribute> : public TAttributeTypeTraitsBase<FNonBlendableQuaternionAnimationAttribute>
+		{
+			enum
+			{
+				IsBlendable = false,
+			};
+		};
+
+		/** Non blendable types*/
+		template<>
+		struct TAttributeTypeTraits<FNonBlendableVectorAnimationAttribute> : public TAttributeTypeTraitsBase<FNonBlendableVectorAnimationAttribute>
+		{
+			enum
+			{
+				IsBlendable = false,
+			};
+		};
+		
 		/** Non blendable types*/
 		template<>
 		struct TAttributeTypeTraits<FNonBlendableTransformAnimationAttribute> : public TAttributeTypeTraitsBase<FNonBlendableTransformAnimationAttribute>

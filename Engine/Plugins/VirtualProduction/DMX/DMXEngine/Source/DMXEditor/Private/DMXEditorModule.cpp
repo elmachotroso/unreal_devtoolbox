@@ -10,11 +10,13 @@
 #include "DMXProtocolTypes.h"
 #include "AssetTools/AssetTypeActions_DMXEditorLibrary.h"
 #include "Commands/DMXEditorCommands.h"
+#include "Customizations/DMXAttributeNameCustomization.h"
 #include "Customizations/DMXEntityFixtureTypeDetails.h"
 #include "Customizations/DMXEntityReferenceCustomization.h"
+#include "Customizations/DMXFixtureCategoryCustomization.h"
 #include "Customizations/DMXFixtureSignalFormatCustomization.h"
 #include "Customizations/DMXLibraryPortReferencesCustomization.h"
-#include "Customizations/DMXNameListCustomization.h"
+#include "Customizations/DMXMVRSceneActorDetails.h"
 #include "Customizations/DMXPixelMappingDistributionCustomization.h"
 #include "Customizations/TakeRecorderDMXLibrarySourceEditorCustomization.h"
 #include "Game/DMXComponent.h"
@@ -22,6 +24,7 @@
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXEntityReference.h"
 #include "Library/DMXLibrary.h"
+#include "MVR/DMXMVRSceneActor.h"
 #include "Sequencer/DMXLibraryTrackEditor.h"
 #include "Sequencer/TakeRecorderDMXLibrarySource.h"
 #include "Widgets/Monitors/SDMXActivityMonitor.h"
@@ -30,7 +33,7 @@
 #include "Widgets/PatchTool/SDMXPatchTool.h"
 
 #include "AssetToolsModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "ISequencerModule.h"
 #include "LevelEditor.h"
@@ -248,18 +251,19 @@ void FDMXEditorModule::RegisterAssetTypeActions()
 
 void FDMXEditorModule::RegisterClassCustomizations()
 {
-	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
-	// Property type customization for the UDMXEntityFixtureType class
-	PropertyModule.RegisterCustomClassLayout(UDMXEntityFixtureType::StaticClass()->GetFName(),
+	// Details customization for the UDMXEntityFixtureType class
+	RegisterCustomClassLayout(UDMXEntityFixtureType::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FDMXEntityFixtureTypeDetails::MakeInstance)
+	);
+
+	// Details customization for the ADMXMVRSceneActor class
+	RegisterCustomClassLayout(ADMXMVRSceneActor::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FDMXMVRSceneActorDetails::MakeInstance)
 	);
 }
 
 void FDMXEditorModule::RegisterPropertyTypeCustomizations()
 {
-	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
 	// Property type customization for the EDMXPixelMappingDistribution enum
 	RegisterCustomPropertyTypeLayout("EDMXPixelMappingDistribution", 
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXPixelMappingDistributionCustomization::MakeInstance)
@@ -270,18 +274,17 @@ void FDMXEditorModule::RegisterPropertyTypeCustomizations()
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXFixtureSignalFormatCustomization::MakeInstance)
 	);
 
-	// Property type customization for Name List structs
-	RegisterCustomPropertyTypeLayout(FDMXProtocolName::StaticStruct()->GetFName(), 
-		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXProtocolName>::MakeInstance)
-	);
-	RegisterCustomPropertyTypeLayout(FDMXFixtureCategory::StaticStruct()->GetFName(), 
-		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXFixtureCategory>::MakeInstance)
-	);
+	// Property type customization for the FDMXAttributeName struct
 	RegisterCustomPropertyTypeLayout(FDMXAttributeName::StaticStruct()->GetFName(), 
-		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXAttributeName>::MakeInstance)
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXAttributeNameCustomization::MakeInstance)
 	);
 
-	// Customizations for the FDMXEntityReference structs
+	// Property type customization for the FDMXFixtureCategory struct
+	RegisterCustomPropertyTypeLayout(FDMXFixtureCategory::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXFixtureCategoryCustomization::MakeInstance)
+	);
+
+	// Customizations for FDMXEntityReference structs
 	RegisterCustomPropertyTypeLayout(FDMXEntityFixtureTypeRef::StaticStruct()->GetFName(), 
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXEntityReferenceCustomization::MakeInstance)
 	);
@@ -289,7 +292,7 @@ void FDMXEditorModule::RegisterPropertyTypeCustomizations()
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXEntityReferenceCustomization::MakeInstance)
 	);
 
-	// Customization for the FDMXLibraryPortReferences struct type
+	// Customization for the FDMXLibraryPortReferences struct
 	RegisterCustomPropertyTypeLayout(FDMXLibraryPortReferences::StaticStruct()->GetFName(), 
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXLibraryPortReferencesCustomization::MakeInstance)
 	);
@@ -448,10 +451,10 @@ void FDMXEditorModule::UnregisterAssetTypeActions()
 {
 	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
 	{
-		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		IAssetTools& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		for (TSharedPtr<IAssetTypeActions>& AssetIt : RegisteredAssetTypeActions)
 		{
-			AssetTools.UnregisterAssetTypeActions(AssetIt.ToSharedRef());
+			AssetToolsModule.UnregisterAssetTypeActions(AssetIt.ToSharedRef());
 		}
 	}
 
@@ -473,13 +476,12 @@ void FDMXEditorModule::RegisterCustomClassLayout(FName ClassName, FOnGetDetailCu
 
 void FDMXEditorModule::UnregisterCustomClassLayouts()
 {
-	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
+	if (PropertyModule)
 	{
-		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
 		for (const FName& ClassName : RegisteredClassNames)
 		{
-			PropertyModule.UnregisterCustomClassLayout(ClassName);
+			PropertyModule->UnregisterCustomClassLayout(ClassName);
 		}
 	}
 
@@ -501,13 +503,12 @@ void FDMXEditorModule::RegisterCustomPropertyTypeLayout(FName PropertyTypeName, 
 
 void FDMXEditorModule::UnregisterCustomPropertyTypeLayouts()
 {
-	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	FPropertyEditorModule* PropertyModule = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor");
+	if (PropertyModule)
 	{
-		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
 		for (const FName& PropertyTypeName : RegisteredPropertyTypes)
 		{
-			PropertyModule.UnregisterCustomPropertyTypeLayout(PropertyTypeName);
+			PropertyModule->UnregisterCustomPropertyTypeLayout(PropertyTypeName);
 		}
 	}
 
@@ -522,13 +523,12 @@ void  FDMXEditorModule::RegisterCustomSequencerTrackType(const FOnCreateTrackEdi
 
 void FDMXEditorModule::UnregisterCustomSequencerTrackTypes()
 {
-	if (FModuleManager::Get().IsModuleLoaded("Sequencer"))
+	ISequencerModule* SequencerModule = FModuleManager::GetModulePtr<ISequencerModule>("Sequencer");
+	if (SequencerModule)
 	{
-		ISequencerModule& SequencerModule = FModuleManager::Get().LoadModuleChecked<ISequencerModule>("Sequencer");
-
 		for (const FDelegateHandle& TrackCreateHandle : RegisteredSequencerTrackHandles)
 		{
-			SequencerModule.UnRegisterTrackEditor(TrackCreateHandle);
+			SequencerModule->UnRegisterTrackEditor(TrackCreateHandle);
 		}
 	}
 

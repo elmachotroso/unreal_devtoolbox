@@ -90,7 +90,7 @@ namespace PerfSummaries
 
 		public override string GetName() { return "boundedstatvalues"; }
 
-		public override void WriteSummaryData(System.IO.StreamWriter htmlFile, CsvStats csvStats, bool bWriteSummaryCsv, SummaryTableRowData rowData, string htmlFileName)
+		public override void WriteSummaryData(System.IO.StreamWriter htmlFile, CsvStats csvStats, CsvStats csvStatsUnstripped, bool bWriteSummaryCsv, SummaryTableRowData rowData, string htmlFileName)
 		{
 			int startFrame = -1;
 			int endFrame = int.MaxValue;
@@ -133,7 +133,8 @@ namespace PerfSummaries
 			}
 			if (startFrame >= endFrame)
 			{
-				throw new Exception("BoundedStatValuesSummary: end event appeared before the start event");
+				Console.WriteLine("Warning: BoundedStatValuesSummary: end event "+ endEvent + " appeared before the start event "+beginEvent);
+				return;
 			}
 			endFrame = Math.Min(endFrame, csvStats.SampleCount - 1);
 			startFrame = Math.Max(startFrame, 0);

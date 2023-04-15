@@ -197,7 +197,6 @@
 #include "GenericPlatform/GenericWindow.h"
 #include "Math/TransformCalculus.h"
 #include "Math/TransformCalculus2D.h"
-#include "Misc/ITransaction.h"
 #include "Templates/ScopedCallback.h"
 #include "HAL/PlatformProcess.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
@@ -450,7 +449,7 @@
 #include "ShaderParameterUtils.h"
 
 // From AssetRegistry:
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 // From PacketHandler:
 #include "PacketHandler.h"

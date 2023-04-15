@@ -7,6 +7,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Logging/MessageLog.h"
+#include "MessageLogModule.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Images/SImage.h"
@@ -14,6 +16,8 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SScrollBar.h"
+#include "SlateOptMacros.h"
+#include "Templates/SharedPointer.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
@@ -21,6 +25,7 @@
 #include "Insights/Common/Stopwatch.h"
 #include "Insights/InsightsManager.h"
 #include "Insights/InsightsStyle.h"
+#include "Insights/NetworkingProfiler/NetworkingProfilerManager.h"
 #include "Insights/NetworkingProfiler/Widgets/SNetworkingProfilerWindow.h"
 #include "Insights/NetworkingProfiler/Widgets/SPacketView.h"
 
@@ -31,9 +36,11 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 SPacketContentView::SPacketContentView()
-	: ProfilerWindow()
+	: ProfilerWindowWeakPtr()
 	, DrawState(MakeShared<FPacketContentViewDrawState>())
 	, FilteredDrawState(MakeShared<FPacketContentViewDrawState>())
+	, AvailableAggregationModes()
+	, SelectedAggregationMode(nullptr)
 {
 	Reset();
 }
@@ -48,7 +55,7 @@ SPacketContentView::~SPacketContentView()
 
 void SPacketContentView::Reset()
 {
-	//ProfilerWindow
+	//ProfilerWindowWeakPtr
 
 	Viewport.Reset();
 	//FAxisViewportDouble& ViewportX = Viewport.GetHorizontalAxisViewport();
@@ -104,9 +111,107 @@ void SPacketContentView::Reset()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SPacketContentView::Construct(const FArguments& InArgs, TSharedPtr<SNetworkingProfilerWindow> InProfilerWindow)
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
+TSharedRef<SWidget> SPacketContentView::AggregationMode_OnGenerateWidget(TSharedPtr<FAggregationModeItem> InAggregationMode) const
 {
-	ProfilerWindow = InProfilerWindow;
+	return SNew(STextBlock)
+		.Text(InAggregationMode->GetText())
+		.ToolTipText(InAggregationMode->GetTooltipText());
+}
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SPacketContentView::AggregationMode_OnSelectionChanged(TSharedPtr<FAggregationModeItem> NewAggregationMode, ESelectInfo::Type SelectInfo)
+{
+	const bool bSameValue = (!SelectedAggregationMode.IsValid() && !NewAggregationMode.IsValid()) ||
+		(SelectedAggregationMode.IsValid() && NewAggregationMode.IsValid() &&
+			SelectedAggregationMode->Mode == NewAggregationMode->Mode);
+
+	SelectedAggregationMode = NewAggregationMode;
+
+	// Need to refresh selection
+	if (!bSameValue)
+	{
+		TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+		if (ProfilerWindow.IsValid())
+		{
+			const TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+			if (PacketView.IsValid())
+			{
+				PacketView->InvalidateState();			
+			}
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SPacketContentView::AggregationMode_GetSelectedText() const
+{
+	return SelectedAggregationMode.IsValid() ? SelectedAggregationMode->GetText() : LOCTEXT("NoAggregationModeText", "None");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SPacketContentView::AggregationMode_GetSelectedTooltipText() const
+{
+	return SelectedAggregationMode.IsValid() ? SelectedAggregationMode->GetTooltipText() : FText();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SPacketContentView::FAggregationModeItem::GetText() const
+{
+	switch (Mode)
+	{
+	case TraceServices::ENetProfilerAggregationMode::Aggregate:
+		return LOCTEXT("AggregationMode_Aggregate", "Aggregate");
+
+	case TraceServices::ENetProfilerAggregationMode::InstanceMax:
+		return LOCTEXT("AggregationMode_InstanceMax", "InstanceMax");
+
+	default:
+		return LOCTEXT("AggregationMode_None", "None");
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SPacketContentView::FAggregationModeItem::GetTooltipText() const
+{
+	return GetText();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
+TSharedRef<SWidget> SPacketContentView::CreateAggregationModeComboBox()
+{
+	AggregationModeComboBox = SNew(SComboBox<TSharedPtr<FAggregationModeItem>>)
+		.ToolTipText(this, &SPacketContentView::AggregationMode_GetSelectedTooltipText)
+		.OptionsSource(&AvailableAggregationModes)
+		.OnSelectionChanged(this, &SPacketContentView::AggregationMode_OnSelectionChanged)
+		.OnGenerateWidget(this, &SPacketContentView::AggregationMode_OnGenerateWidget)
+		[
+			SNew(STextBlock)
+			.Text(this, &SPacketContentView::AggregationMode_GetSelectedText)
+		];
+
+	return AggregationModeComboBox.ToSharedRef();
+}
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+void SPacketContentView::Construct(const FArguments& InArgs, TSharedRef<SNetworkingProfilerWindow> InProfilerWindow)
+{
+	ProfilerWindowWeakPtr = InProfilerWindow;
+
+	AvailableAggregationModes.Add(MakeShared<FAggregationModeItem>(TraceServices::ENetProfilerAggregationMode::None));
+	AvailableAggregationModes.Add(MakeShared<FAggregationModeItem>(TraceServices::ENetProfilerAggregationMode::Aggregate));
+	AvailableAggregationModes.Add(MakeShared<FAggregationModeItem>(TraceServices::ENetProfilerAggregationMode::InstanceMax));
+	SelectedAggregationMode = AvailableAggregationModes[1];
+
+	TSharedRef<SWidget> AggregationModeWidget = CreateAggregationModeComboBox();
 
 	FSlimHorizontalToolBarBuilder ToolbarBuilder(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None);
 	ToolbarBuilder.SetStyle(&FInsightsStyle::Get(), "SecondaryToolbar2");
@@ -304,6 +409,17 @@ void SPacketContentView::Construct(const FArguments& InArgs, TSharedPtr<SNetwork
 		);
 	}
 	ToolbarBuilder.EndSection();
+	ToolbarBuilder.BeginSection("AggregationType");
+	{
+		ToolbarBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(12.0f, 0.0f, 0.0f, 0.0f))
+			[
+				AggregationModeWidget
+			]
+		);
+	}
+	ToolbarBuilder.EndSection();
 
 	ChildSlot
 	[
@@ -339,10 +455,14 @@ void SPacketContentView::Construct(const FArguments& InArgs, TSharedPtr<SNetwork
 
 void SPacketContentView::FindPreviousPacket()
 {
-	TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
-	if (PacketView.IsValid())
+	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+	if (ProfilerWindow.IsValid())
 	{
-		PacketView->SelectPreviousPacket();
+		TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+		if (PacketView.IsValid())
+		{
+			PacketView->SelectPreviousPacket();
+		}
 	}
 }
 
@@ -350,10 +470,14 @@ void SPacketContentView::FindPreviousPacket()
 
 void SPacketContentView::FindNextPacket()
 {
-	TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
-	if (PacketView.IsValid())
+	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+	if (ProfilerWindow.IsValid())
 	{
-		PacketView->SelectNextPacket();
+		TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+		if (PacketView.IsValid())
+		{
+			PacketView->SelectNextPacket();
+		}
 	}
 }
 
@@ -373,10 +497,14 @@ void SPacketContentView::Packet_OnTextCommitted(const FText& InNewText, ETextCom
 		uint32 NewPacketSequence = 0;
 		TTypeFromString<uint32>::FromString(NewPacketSequence, *InNewText.ToString());
 
-		TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
-		if (PacketView.IsValid())
+		TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+		if (ProfilerWindow.IsValid())
 		{
-			PacketView->SelectPacketBySequenceNumber(NewPacketSequence);
+			TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+			if (PacketView.IsValid())
+			{
+				PacketView->SelectPacketBySequenceNumber(NewPacketSequence);
+			}
 		}
 	}
 }
@@ -391,6 +519,12 @@ void SPacketContentView::FindFirstEvent()
 		OnSelectedEventChanged();
 		BringEventIntoView(SelectedEvent);
 	}
+	else
+	{
+		FMessageLog ReportMessageLog(FNetworkingProfilerManager::Get()->GetLogListingName());
+		ReportMessageLog.Error(LOCTEXT("NoEventFound", "No event found!"));
+		ReportMessageLog.Notify();
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -402,6 +536,8 @@ void SPacketContentView::FindPreviousEvent(EEventNavigationType NavigationType)
 		FindFirstEvent();
 		return;
 	}
+
+	FNetworkPacketEventRef PreviousSelectedEvent = SelectedEvent;
 
 	const int32 EventCount = FilteredDrawState->Events.Num();
 	for (int32 EventIndex = EventCount - 1; EventIndex >= 0; --EventIndex)
@@ -447,6 +583,13 @@ void SPacketContentView::FindPreviousEvent(EEventNavigationType NavigationType)
 	}
 
 	BringEventIntoView(SelectedEvent);
+
+	if (PreviousSelectedEvent.Equals(SelectedEvent))
+	{
+		FMessageLog ReportMessageLog(FNetworkingProfilerManager::Get()->GetLogListingName());
+		ReportMessageLog.Error(LOCTEXT("NoEventFound", "No event found!"));
+		ReportMessageLog.Notify();
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -458,6 +601,8 @@ void SPacketContentView::FindNextEvent(EEventNavigationType NavigationType)
 		FindLastEvent();
 		return;
 	}
+
+	FNetworkPacketEventRef PreviousSelectedEvent = SelectedEvent;
 
 	const int32 EventCount = FilteredDrawState->Events.Num();
 	for (int32 EventIndex = 0; EventIndex < EventCount; ++EventIndex)
@@ -503,6 +648,13 @@ void SPacketContentView::FindNextEvent(EEventNavigationType NavigationType)
 	}
 
 	BringEventIntoView(SelectedEvent);
+
+	if (PreviousSelectedEvent.Equals(SelectedEvent))
+	{
+		FMessageLog ReportMessageLog(FNetworkingProfilerManager::Get()->GetLogListingName());
+		ReportMessageLog.Error(LOCTEXT("NoEventFound", "No event found!"));
+		ReportMessageLog.Notify();
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -514,6 +666,12 @@ void SPacketContentView::FindLastEvent()
 		SelectedEvent.Set(FilteredDrawState->Events.Last());
 		OnSelectedEventChanged();
 		BringEventIntoView(SelectedEvent);
+	}
+	else
+	{
+		FMessageLog ReportMessageLog(FNetworkingProfilerManager::Get()->GetLogListingName());
+		ReportMessageLog.Error(LOCTEXT("NoEventFound", "No event found!"));
+		ReportMessageLog.Notify();
 	}
 }
 
@@ -601,10 +759,14 @@ void SPacketContentView::FilterByNetId_OnCheckStateChanged(ECheckBoxState NewSta
 	bFilterByNetId = (NewState == ECheckBoxState::Checked);
 	bIsStateDirty = true;
 
-	TSharedPtr<SPacketView> PacketView = ProfilerWindow ? ProfilerWindow->GetPacketView() : nullptr;
-	if (PacketView.IsValid())
+	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+	if (ProfilerWindow.IsValid())
 	{
-		PacketView->InvalidateState();
+		TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+		if (PacketView.IsValid())
+		{
+			PacketView->InvalidateState();
+		}
 	}
 }
 
@@ -641,10 +803,14 @@ void SPacketContentView::FilterByEventType_OnCheckStateChanged(ECheckBoxState Ne
 	bFilterByEventType = (NewState == ECheckBoxState::Checked);
 	bIsStateDirty = true;
 
-	TSharedPtr<SPacketView> PacketView = ProfilerWindow ? ProfilerWindow->GetPacketView() : nullptr;
-	if (PacketView.IsValid())
+	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+	if (ProfilerWindow.IsValid())
 	{
-		PacketView->InvalidateState();
+		TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+		if (PacketView.IsValid())
+		{
+			PacketView->InvalidateState();
+		}
 	}
 }
 
@@ -670,8 +836,8 @@ void SPacketContentView::Tick(const FGeometry& AllottedGeometry, const double In
 	if (ThisGeometry != AllottedGeometry || bIsViewportDirty)
 	{
 		bIsViewportDirty = false;
-		const float ViewWidth = AllottedGeometry.GetLocalSize().X;
-		const float ViewHeight = AllottedGeometry.GetLocalSize().Y;
+		const float ViewWidth = static_cast<float>(AllottedGeometry.GetLocalSize().X);
+		const float ViewHeight = static_cast<float>(AllottedGeometry.GetLocalSize().Y);
 		Viewport.SetSize(ViewWidth, ViewHeight);
 		bIsStateDirty = true;
 	}
@@ -764,10 +930,14 @@ void SPacketContentView::SetFilterNetId(const uint32 InNetId)
 	{
 		bIsStateDirty = true;
 
-		TSharedPtr<SPacketView> PacketView = ProfilerWindow ? ProfilerWindow->GetPacketView() : nullptr;
-		if (PacketView.IsValid())
+		TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+		if (ProfilerWindow.IsValid())
 		{
-			PacketView->InvalidateState();
+			TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+			if (PacketView.IsValid())
+			{
+				PacketView->InvalidateState();
+			}
 		}
 	}
 }
@@ -783,10 +953,14 @@ void SPacketContentView::SetFilterEventType(const uint32 InEventTypeIndex, const
 	{
 		bIsStateDirty = true;
 
-		TSharedPtr<SPacketView> PacketView = ProfilerWindow ? ProfilerWindow->GetPacketView() : nullptr;
-		if (PacketView.IsValid())
+		TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+		if (ProfilerWindow.IsValid())
 		{
-			PacketView->InvalidateState();
+			TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
+			if (PacketView.IsValid())
+			{
+				PacketView->InvalidateState();
+			}
 		}
 	}
 }
@@ -873,7 +1047,7 @@ void SPacketContentView::UpdateState(float FontScale)
 				//const int64 StartPos = static_cast<int64>(FMath::FloorToDouble(ViewportX.GetValueAtOffset(0.0f)));
 				//const int64 EndPos = static_cast<int64>(FMath::CeilToDouble(ViewportX.GetValueAtOffset(ViewportX.GetSize())));
 				const uint32 StartPos = 0;
-				const uint32 EndPos = PacketBitSize;
+				const uint32 EndPos = static_cast<uint32>(PacketBitSize);
 				NetProfilerProvider->EnumeratePacketContentEventsByPosition(ConnectionIndex, ConnectionMode, PacketIndex, StartPos, EndPos, [this, &Builder, &FilteredDrawStateBuilder, NetProfilerProvider](const TraceServices::FNetProfilerContentEvent& Event)
 				{
 					const TCHAR* Name = nullptr;
@@ -914,7 +1088,7 @@ void SPacketContentView::UpdateState(float FontScale)
 
 void SPacketContentView::UpdateHoveredEvent()
 {
-	HoveredEvent = GetEventAtMousePosition(MousePosition.X, MousePosition.Y);
+	HoveredEvent = GetEventAtMousePosition(static_cast<float>(MousePosition.X), static_cast<float>(MousePosition.Y));
 	//if (!HoveredEvent.IsValid())
 	//{
 	//	HoveredEvent = GetEventAtMousePosition(MousePosition.X - 1.0f, MousePosition.Y);
@@ -966,7 +1140,7 @@ void SPacketContentView::UpdateHoveredEvent()
 		if (Event.ObjectInstanceIndex != 0)
 		{
 			Tooltip.AddNameValueTextLine(TEXT("Net Id:"), FText::AsNumber(ObjectInstance.NetId).ToString());
-			Tooltip.AddNameValueTextLine(TEXT("Type Id:"), FString::Printf(TEXT("0x%016X"), ObjectInstance.TypeId));
+			Tooltip.AddNameValueTextLine(TEXT("Type Id:"), FString::Printf(TEXT("0x%016" UINT64_x_FMT), ObjectInstance.TypeId));
 			Tooltip.AddNameValueTextLine(TEXT("Obj. LifeTime:"), FString::Format(TEXT("from {0} to {1}"),
 				{ TimeUtils::FormatTimeAuto(ObjectInstance.LifeTime.Begin), TimeUtils::FormatTimeAuto(ObjectInstance.LifeTime.End) }));
 		}
@@ -997,10 +1171,14 @@ void SPacketContentView::UpdateHoveredEvent()
 
 void SPacketContentView::OnSelectedEventChanged()
 {
-	if (SelectedEvent.IsValid() && ProfilerWindow.IsValid())
+	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+	if (ProfilerWindow.IsValid())
 	{
-		// Select the node coresponding to net event type of selected net event instance.
-		ProfilerWindow->SetSelectedEventTypeIndex(SelectedEvent.Event.EventTypeIndex);
+		if (SelectedEvent.IsValid())
+		{
+			// Select the node coresponding to net event type of selected net event instance.
+			ProfilerWindow->SetSelectedEventTypeIndex(SelectedEvent.Event.EventTypeIndex);
+		}
 	}
 }
 
@@ -1048,8 +1226,8 @@ int32 SPacketContentView::OnPaint(const FPaintArgs& Args, const FGeometry& Allot
 	const ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 	FDrawContext DrawContext(AllottedGeometry, MyCullingRect, InWidgetStyle, DrawEffects, OutDrawElements, LayerId);
 
-	const float ViewWidth = AllottedGeometry.Size.X;
-	const float ViewHeight = AllottedGeometry.Size.Y;
+	const float ViewWidth = static_cast<float>(AllottedGeometry.Size.X);
+	const float ViewHeight = static_cast<float>(AllottedGeometry.Size.Y);
 
 	//////////////////////////////////////////////////
 	{
@@ -1110,7 +1288,7 @@ int32 SPacketContentView::OnPaint(const FPaintArgs& Args, const FGeometry& Allot
 
 		const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 		const float FontScale = DrawContext.Geometry.Scale;
-		const float MaxFontCharHeight = FontMeasureService->Measure(TEXT("!"), SummaryFont, FontScale).Y / FontScale;
+		const float MaxFontCharHeight = static_cast<float>(FontMeasureService->Measure(TEXT("!"), SummaryFont, FontScale).Y / FontScale);
 		const float DbgDY = MaxFontCharHeight;
 
 		const float DbgW = 280.0f;
@@ -1311,7 +1489,7 @@ FReply SPacketContentView::OnMouseMove(const FGeometry& MyGeometry, const FPoint
 				}
 
 				FAxisViewportDouble& ViewportX = Viewport.GetHorizontalAxisViewport();
-				const float PosX = ViewportPosXOnButtonDown + (MousePositionOnButtonDown.X - MousePosition.X);
+				const float PosX = ViewportPosXOnButtonDown + static_cast<float>(MousePositionOnButtonDown.X - MousePosition.X);
 				ViewportX.ScrollAtPos(PosX);
 				UpdateHorizontalScrollBar();
 				bIsStateDirty = true;
@@ -1368,7 +1546,7 @@ FReply SPacketContentView::OnMouseWheel(const FGeometry& MyGeometry, const FPoin
 	{
 		// Zoom in/out horizontally.
 		const float Delta = MouseEvent.GetWheelDelta();
-		ZoomHorizontally(Delta, MousePosition.X);
+		ZoomHorizontally(Delta, static_cast<float>(MousePosition.X));
 	}
 
 	return FReply::Handled();
@@ -1425,6 +1603,7 @@ FReply SPacketContentView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEven
 		else if (InKeyEvent.GetModifierKeys().IsControlDown() ||
 				 InKeyEvent.GetModifierKeys().IsCommandDown())
 		{
+			TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
 			if (ProfilerWindow.IsValid())
 			{
 				const TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
@@ -1449,6 +1628,7 @@ FReply SPacketContentView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEven
 		else if (InKeyEvent.GetModifierKeys().IsControlDown() ||
 				 InKeyEvent.GetModifierKeys().IsCommandDown())
 		{
+			TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
 			if (ProfilerWindow.IsValid())
 			{
 				const TSharedPtr<SPacketView> PacketView = ProfilerWindow->GetPacketView();
@@ -1477,13 +1657,13 @@ FReply SPacketContentView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEven
 	else if (InKeyEvent.GetKey() == EKeys::Equals ||
 			 InKeyEvent.GetKey() == EKeys::Add)
 	{
-		ZoomHorizontally(1.0f, MousePosition.X);
+		ZoomHorizontally(1.0f, static_cast<float>(MousePosition.X));
 		return FReply::Handled();
 	}
 	else if (InKeyEvent.GetKey() == EKeys::Hyphen ||
 			 InKeyEvent.GetKey() == EKeys::Subtract)
 	{
-		ZoomHorizontally(-1.0f, MousePosition.X);
+		ZoomHorizontally(-1.0f, static_cast<float>(MousePosition.X));
 		return FReply::Handled();
 	}
 

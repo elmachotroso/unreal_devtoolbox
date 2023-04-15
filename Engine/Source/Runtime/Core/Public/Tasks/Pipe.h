@@ -2,12 +2,19 @@
 
 #pragma once
 
-#include "Tasks/Task.h"
+#include "Async/Fundamental/Scheduler.h"
+#include "Async/Fundamental/Task.h"
 #include "CoreTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "Tasks/Task.h"
+#include "Tasks/TaskPrivate.h"
+#include "Templates/Invoke.h"
+#include "Templates/UnrealTemplate.h"
 
 #include <atomic>
+#include <type_traits>
 
-namespace UE { namespace Tasks
+namespace UE::Tasks
 {
 	// A chain of tasks that are executed one after another. Can be used to synchronise access to a shared resource as FPipe guarantees 
 	// non-concurrent tasks execution. FPipe is a replacement for named threads because it's lightweight and flexible -
@@ -47,16 +54,23 @@ namespace UE { namespace Tasks
 
 		// launches a task in the pipe
 		// @param InDebugName helps to identify the task in debugger and profiler
-		// @param TaskBody a callable with no parameters whose return value is ignored, usually a lambda but can be also a functor object 
+		// @param TaskBody a callable with no parameters, usually a lambda but can be also a functor object 
 		// or a pointer to a function. TaskBody can return results.
 		// @Priority - task priority, can affect task scheduling once it's passed the pipe
 		// @return Task instance that can be used to wait for task completion or to obtain the result of task execution
 		template<typename TaskBodyType>
-		TTask<TInvokeResult_T<TaskBodyType>> Launch(const TCHAR* InDebugName, TaskBodyType&& TaskBody, LowLevelTasks::ETaskPriority Priority = LowLevelTasks::ETaskPriority::Default)
+		TTask<TInvokeResult_T<TaskBodyType>> Launch
+		(
+			const TCHAR* InDebugName, 
+			TaskBodyType&& TaskBody, 
+			ETaskPriority Priority = ETaskPriority::Default,
+			EExtendedTaskPriority ExtendedPriority = EExtendedTaskPriority::None
+		)
 		{
 			using FResult = TInvokeResult_T<TaskBodyType>;
-			Private::TTaskWithResult<FResult>* Task = new Private::TTaskWithResult<FResult>;
-			Task->Init(InDebugName, Forward<TaskBodyType>(TaskBody), Priority);
+			using FExecutableTask = Private::TExecutableTask<std::decay_t<TaskBodyType>>;
+
+			FExecutableTask* Task = FExecutableTask::Create(InDebugName, Forward<TaskBodyType>(TaskBody), Priority, ExtendedPriority);
 			Task->SetPipe(*this);
 			Task->TryLaunch();
 			return TTask<FResult>{ Task };
@@ -64,18 +78,26 @@ namespace UE { namespace Tasks
 
 		// launches a task in the pipe, with multiple prerequisites that must be completed before the task is scheduled
 		// @param InDebugName helps to identify the task in debugger and profiler
-		// @param TaskBody a callable with no parameters whose return value is ignored, usually a lambda but can be also a functor object 
+		// @param TaskBody a callable with no parameters, usually a lambda but can be also a functor object 
 		// or a pointer to a function. TaskBody can return results.
 		// @Priority - task priority, can affect task scheduling once it's passed the pipe
 		// @return Task instance that can be used to wait for task completion or to obtain the result of task execution
 		template<typename TaskBodyType, typename PrerequisitesCollectionType>
-		TTask<TInvokeResult_T<TaskBodyType>> Launch(const TCHAR* InDebugName, TaskBodyType&& TaskBody, PrerequisitesCollectionType&& Prerequisites, LowLevelTasks::ETaskPriority Priority = LowLevelTasks::ETaskPriority::Default)
+		TTask<TInvokeResult_T<TaskBodyType>> Launch
+		(
+			const TCHAR* InDebugName, 
+			TaskBodyType&& TaskBody, 
+			PrerequisitesCollectionType&& Prerequisites, 
+			ETaskPriority Priority = ETaskPriority::Default,
+			EExtendedTaskPriority ExtendedPriority = EExtendedTaskPriority::None
+		)
 		{
 			using FResult = TInvokeResult_T<TaskBodyType>;
-			Private::TTaskWithResult<FResult>* Task = new Private::TTaskWithResult<FResult>;
-			Task->Init(InDebugName, Forward<TaskBodyType>(TaskBody), Priority);
-			Task->AddPrerequisites(Forward<PrerequisitesCollectionType>(Prerequisites));
+			using FExecutableTask = Private::TExecutableTask<std::decay_t<TaskBodyType>>;
+
+			FExecutableTask* Task = FExecutableTask::Create(InDebugName, Forward<TaskBodyType>(TaskBody), Priority, ExtendedPriority);
 			Task->SetPipe(*this);
+			Task->AddPrerequisites(Forward<PrerequisitesCollectionType>(Prerequisites));
 			Task->TryLaunch();
 			return TTask<FResult>{ Task };
 		}
@@ -112,4 +134,4 @@ namespace UE { namespace Tasks
 	private:
 		const TCHAR* const DebugName;
 	};
-}}
+}

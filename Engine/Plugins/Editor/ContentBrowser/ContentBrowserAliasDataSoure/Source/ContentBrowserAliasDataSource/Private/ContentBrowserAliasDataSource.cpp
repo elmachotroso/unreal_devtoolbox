@@ -5,11 +5,16 @@
 #include "ContentBrowserAssetDataCore.h"
 #include "ContentBrowserAssetDataSource.h"
 #include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserItemPath.h"
 
 #include "AssetToolsModule.h"
 #include "ObjectTools.h"
 #include "Misc/NamePermissionList.h"
 #include "Modules/ModuleManager.h"
+#include "CollectionManagerModule.h"
+#include "ICollectionManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserAliasDataSource)
 
 DEFINE_LOG_CATEGORY(LogContentBrowserAliasDataSource);
 
@@ -58,7 +63,7 @@ void UContentBrowserAliasDataSource::BuildRootPathVirtualTree()
 void UContentBrowserAliasDataSource::CompileFilter(const FName InPath, const FContentBrowserDataFilter& InFilter, FContentBrowserDataCompiledFilter& OutCompiledFilter)
 {
 	UContentBrowserAssetDataSource::FAssetFilterInputParams Params;
-	if (UContentBrowserAssetDataSource::PopulateAssetFilterInputParams(Params, this, AssetRegistry, InFilter, OutCompiledFilter))
+	if (UContentBrowserAssetDataSource::PopulateAssetFilterInputParams(Params, this, AssetRegistry, InFilter, OutCompiledFilter, &FCollectionManagerModule::GetModule().Get()))
 	{
 		// Use the DataSource's custom PathTree instead of the AssetRegistry
 		const bool bCreatedPathFilter = UContentBrowserAssetDataSource::CreatePathFilter(Params, InPath, InFilter, OutCompiledFilter, [this](FName Path, TFunctionRef<bool(FName)> Callback, bool bRecursive)
@@ -70,7 +75,7 @@ void UContentBrowserAliasDataSource::CompileFilter(const FName InPath, const FCo
 		{
 			UContentBrowserAssetDataSource::CreateAssetFilter(Params, InPath, InFilter, OutCompiledFilter, [this, &Params](FARFilter& InputFilter, FARCompiledFilter& OutputFilter)
 			{
-				// Same as above - CompileFilter calls EnumerateSubPaths internally so this needs to intercept
+				// Same as CreatePathFilter - CompileFilter calls EnumerateSubPaths internally so this needs to intercept
 				// the filter compilation and use its own PathTree to generate the sub paths.
 				if (InputFilter.bRecursivePaths)
 				{
@@ -141,7 +146,7 @@ void UContentBrowserAliasDataSource::EnumerateItemsMatchingFilter(const FContent
 						const FAliasData& AliasData = AllAliases[Alias];
 						if (DoesAliasPassFilter(AliasData, *AssetDataFilter))
 						{
-							AlreadyAddedOriginalAssets.Add(AliasData.AssetData.ObjectPath, &bIsAlreadyInSet);
+							AlreadyAddedOriginalAssets.Add(AliasData.AssetData.GetSoftObjectPath(), &bIsAlreadyInSet);
 							if (!bIsAlreadyInSet)
 							{
 								if (!InCallback(CreateAssetFileItem(Alias)))
@@ -162,7 +167,7 @@ void UContentBrowserAliasDataSource::EnumerateItemsMatchingFilter(const FContent
 			{
 				if (DoesAliasPassFilter(Pair.Value, *AssetDataFilter))
 				{
-					AlreadyAddedOriginalAssets.Add(Pair.Value.AssetData.ObjectPath, &bIsAlreadyInSet);
+					AlreadyAddedOriginalAssets.Add(Pair.Value.AssetData.GetSoftObjectPath(), &bIsAlreadyInSet);
 					if (!bIsAlreadyInSet)
 					{
 						if (!InCallback(CreateAssetFileItem(Pair.Key)))
@@ -209,7 +214,7 @@ void UContentBrowserAliasDataSource::EnumerateItemsAtPath(const FName InPath, co
 			{
 				for (const FContentBrowserUniqueAlias& Alias : *Aliases)
 				{
-					AlreadyAddedOriginalAssets.Add(AllAliases[Alias].AssetData.ObjectPath, &bIsAlreadyInSet);
+					AlreadyAddedOriginalAssets.Add(AllAliases[Alias].AssetData.GetSoftObjectPath(), &bIsAlreadyInSet);
 					if (!bIsAlreadyInSet)
 					{
 						if (!InCallback(CreateAssetFileItem(Alias)))
@@ -253,7 +258,15 @@ bool UContentBrowserAliasDataSource::DoesItemPassFilter(const FContentBrowserIte
 		{
 			if (TSharedPtr<const FContentBrowserAliasItemDataPayload> AliasPayload = StaticCastSharedPtr<const FContentBrowserAliasItemDataPayload>(InItem.GetPayload()))
 			{
-				return DoesAliasPassFilter(AllAliases[AliasPayload->Alias], *AssetDataFilter);
+				FAliasData* FoundAlias = AllAliases.Find(AliasPayload->Alias);
+				// This should always be true except in the case where the item is deleted in the same tick that DoesItemPassFilter is called.
+				// This is because the alias data source processes the deletion immediately, but the content browser deletion is queued until
+				// next tick, causing them to be briefly out of sync.
+				// An alternative solution would be to add a way to synchronously flush content browser updates, but that doesn't exist atm.
+				if (FoundAlias)
+				{
+					return DoesAliasPassFilter(*FoundAlias, *AssetDataFilter);
+				}
 			}
 		}
 		break;
@@ -266,10 +279,28 @@ bool UContentBrowserAliasDataSource::DoesAliasPassFilter(const FAliasData& Alias
 {
 	// Create a fake asset data using the alias path instead of the asset's original path
 	// AssetRegistry->IsAssetIncludedByFilter is effectively a static function and does not actually use AssetRegistry data
-	FAssetData AliasAssetData(AliasData.AliasName, AliasData.PackagePath, AliasData.AliasName, AliasData.AssetData.AssetClass, AliasData.AssetData.TagsAndValues.CopyMap());
+	FAssetData AliasAssetData(AliasData.PackageName, AliasData.PackagePath, AliasData.AssetData.AssetName, AliasData.AssetData.AssetClassPath, AliasData.AssetData.TagsAndValues.CopyMap());
 
 	return (Filter.InclusiveFilter.IsEmpty() || AssetRegistry->IsAssetIncludedByFilter(AliasAssetData, Filter.InclusiveFilter)) // Passes Inclusive
 		&& (Filter.ExclusiveFilter.IsEmpty() || !AssetRegistry->IsAssetIncludedByFilter(AliasAssetData, Filter.ExclusiveFilter)); // Passes Exclusive
+}
+
+TArray<FContentBrowserItemPath> UContentBrowserAliasDataSource::GetAliasesForPath(const FSoftObjectPath& ObjectPath) const
+{
+	TArray<FContentBrowserItemPath> OutAliases;
+
+	if (const TArray<FName>* FoundAliases = AliasesForObjectPath.Find(ObjectPath))
+	{
+		for (const FName Alias : *FoundAliases)
+		{
+			if (const FAliasData* AliasData = AllAliases.Find(FContentBrowserUniqueAlias(ObjectPath, Alias)))
+			{
+				OutAliases.Add(FContentBrowserItemPath(AliasData->PackageName, EContentBrowserPathType::Internal));
+			}
+		}
+	}
+
+	return OutAliases;
 }
 
 void UContentBrowserAliasDataSource::AddAliases(const FAssetData& Asset, const TArray<FName>& Aliases, bool bInIsFromMetaData)
@@ -284,10 +315,10 @@ void UContentBrowserAliasDataSource::AddAlias(const FAssetData& Asset, const FNa
 {
 	auto LogErrorMessage = [&Alias, &Asset](const TCHAR* Reason)
 	{
-		UE_LOG(LogContentBrowserAliasDataSource, Warning, TEXT("Cannot add alias %s for %s because: %s"), *Alias.ToString(), *Asset.ObjectPath.ToString(), Reason);
+		UE_LOG(LogContentBrowserAliasDataSource, Warning, TEXT("Cannot add alias %s for %s because: %s"), *Alias.ToString(), *Asset.GetObjectPathString(), Reason);
 	};
 	
-	FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FName, FName>(Asset.ObjectPath, Alias);
+	FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FSoftObjectPath, FName>(Asset.GetSoftObjectPath(), Alias);
 	if (AllAliases.Contains(UniqueAlias))
 	{
 		LogErrorMessage(TEXT("An alias with that name already exists"));
@@ -339,7 +370,7 @@ void UContentBrowserAliasDataSource::AddAlias(const FAssetData& Asset, const FNa
 	});
 
 	AliasesInPackagePath.FindOrAdd(PackagePath).Add(UniqueAlias);
-	AliasesForObjectPath.FindOrAdd(Asset.ObjectPath).Add(Alias);
+	AliasesForObjectPath.FindOrAdd(Asset.GetSoftObjectPath()).Add(Alias);
 	AllAliases.Add(UniqueAlias, FAliasData(Asset, PackagePath, *Tokens.Last(), bInIsFromMetaData));
 	QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemAddedUpdate(CreateAssetFileItem(UniqueAlias)));
 
@@ -384,18 +415,25 @@ void UContentBrowserAliasDataSource::RemoveFoldersRecursively(FStringView LeafFo
 	}
 }
 
-void UContentBrowserAliasDataSource::RemoveAlias(const FName ObjectPath, const FName Alias)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+void UContentBrowserAliasDataSource::RemoveAlias(FName ObjectPath, const FName Alias)
 {
-    FContentBrowserUniqueAlias UniqueAlias =  TPairInitializer<FName, FName>(ObjectPath, Alias);
+	RemoveAlias(FSoftObjectPath(ObjectPath), Alias);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+void UContentBrowserAliasDataSource::RemoveAlias(const FSoftObjectPath& ObjectPath, const FName Alias)
+{
+    FContentBrowserUniqueAlias UniqueAlias =  TPairInitializer<FSoftObjectPath, FName>(ObjectPath, Alias);
 	FAliasData AliasData;
 	// Store a copy of the item data before it's removed for the MakeItemRemovedUpdate notification
 	FContentBrowserItemData ItemData = CreateAssetFileItem(UniqueAlias);
 	if (AllAliases.RemoveAndCopyValue(UniqueAlias, AliasData))
 	{
-		AliasesForObjectPath[AliasData.AssetData.ObjectPath].Remove(Alias);
-		if (AliasesForObjectPath[AliasData.AssetData.ObjectPath].Num() == 0)
+		AliasesForObjectPath[AliasData.AssetData.GetSoftObjectPath()].Remove(Alias);
+		if (AliasesForObjectPath[AliasData.AssetData.GetSoftObjectPath()].Num() == 0)
 		{
-			AliasesForObjectPath.Remove(AliasData.AssetData.ObjectPath);
+			AliasesForObjectPath.Remove(AliasData.AssetData.GetSoftObjectPath());
 		}
 
 		AliasesInPackagePath[AliasData.PackagePath].Remove(UniqueAlias);
@@ -415,7 +453,14 @@ void UContentBrowserAliasDataSource::RemoveAlias(const FName ObjectPath, const F
 	}
 }
 
-void UContentBrowserAliasDataSource::RemoveAliases(const FName ObjectPath)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+void UContentBrowserAliasDataSource::RemoveAliases(FName ObjectPath)
+{
+	RemoveAliases(FSoftObjectPath(ObjectPath));
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+void UContentBrowserAliasDataSource::RemoveAliases(const FSoftObjectPath& ObjectPath)
 {
 	const TArray<FName>* AliasesPtr = AliasesForObjectPath.Find(ObjectPath);
 	if (AliasesPtr)
@@ -450,10 +495,10 @@ void UContentBrowserAliasDataSource::OnAssetRemoved(const FAssetData& InAssetDat
 
 void UContentBrowserAliasDataSource::ReconcileAliasesFromMetaData(const FAssetData& Asset)
 {
-	const TArray<FName>* ExistingAliasesPtr = AliasesForObjectPath.Find(Asset.ObjectPath);
+	const TArray<FName>* ExistingAliasesPtr = AliasesForObjectPath.Find(Asset.GetSoftObjectPath());
 	if (ExistingAliasesPtr)
 	{
-		FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FName, FName>(Asset.ObjectPath, NAME_None);
+		FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FSoftObjectPath, FName>(Asset.GetSoftObjectPath(), NAME_None);
 		
 		FString AliasTagValue;
 		if (Asset.GetTagValue(AliasTagName, AliasTagValue))
@@ -492,7 +537,7 @@ void UContentBrowserAliasDataSource::ReconcileAliasesFromMetaData(const FAssetDa
 
 			for (const FName ExistingAlias : AliasesOnlyInExisting)
 			{
-				RemoveAlias(Asset.ObjectPath, ExistingAlias);
+				RemoveAlias(Asset.GetSoftObjectPath(), ExistingAlias);
 			}
 			AddAliases(Asset, AliasesOnlyInNew, true);
 		}
@@ -505,7 +550,7 @@ void UContentBrowserAliasDataSource::ReconcileAliasesFromMetaData(const FAssetDa
 				UniqueAlias.Value = Alias;
 				if (AllAliases[UniqueAlias].bIsFromMetaData)
 				{
-					RemoveAlias(Asset.ObjectPath, Alias);
+					RemoveAlias(Asset.GetSoftObjectPath(), Alias);
 				}
 			}
 		}
@@ -521,11 +566,11 @@ void UContentBrowserAliasDataSource::ReconcileAliasesForAsset(const FAssetData& 
 {
 	if (ensure(Asset.IsValid()))
 	{
-		const TArray<FName>* ExistingAliasesPtr = AliasesForObjectPath.Find(Asset.ObjectPath);
+		const TArray<FName>* ExistingAliasesPtr = AliasesForObjectPath.Find(Asset.GetSoftObjectPath());
 		if (ExistingAliasesPtr)
 		{
 			TArray<FName> AliasesOnlyInExisting, AliasesOnlyInNew;
-			FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FName, FName>(Asset.ObjectPath, NAME_None);
+			FContentBrowserUniqueAlias UniqueAlias = TPairInitializer<FSoftObjectPath, FName>(Asset.GetSoftObjectPath(), NAME_None);
 			for (const FName Alias : *ExistingAliasesPtr)
 			{
 				UniqueAlias.Value = Alias;
@@ -548,7 +593,7 @@ void UContentBrowserAliasDataSource::ReconcileAliasesForAsset(const FAssetData& 
 
 			for (const FName ExistingAlias : AliasesOnlyInExisting)
 			{
-				RemoveAlias(Asset.ObjectPath, ExistingAlias);
+				RemoveAlias(Asset.GetSoftObjectPath(), ExistingAlias);
 			}
 			AddAliases(Asset, AliasesOnlyInNew);
 		}
@@ -566,9 +611,9 @@ void UContentBrowserAliasDataSource::OnAssetUpdated(const FAssetData& InAssetDat
 
 void UContentBrowserAliasDataSource::MakeItemModifiedUpdate(UObject* Object)
 {
-	const FName ObjectPath = *Object->GetPathName();
+	const FSoftObjectPath ObjectPath(Object);
 	const TArray<FName>* Aliases = AliasesForObjectPath.Find(ObjectPath);
-	FContentBrowserUniqueAlias UniqueAlias =  TPairInitializer<FName, FName>(ObjectPath, NAME_None);
+	FContentBrowserUniqueAlias UniqueAlias =  TPairInitializer<FSoftObjectPath, FName>(ObjectPath, NAME_None);
 	if (Aliases)
 	{
 		for (const FName Alias : *Aliases)
@@ -687,6 +732,19 @@ bool UContentBrowserAliasDataSource::UpdateThumbnail(const FContentBrowserItemDa
 	return ContentBrowserAssetData::UpdateItemThumbnail(this, InItem, InThumbnail);
 }
 
+bool UContentBrowserAliasDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId)
+{
+	if (TSharedPtr<const FContentBrowserAliasItemDataPayload> AliasPayload = StaticCastSharedPtr<const FContentBrowserAliasItemDataPayload>(InItem.GetPayload()))
+	{
+		if (const FAliasData* AliasData = AllAliases.Find(AliasPayload->Alias))
+		{
+			OutCollectionId = FSoftObjectPath(AliasData->ObjectPath);
+			return true;
+		}
+	}
+	return false;
+}
+
 bool UContentBrowserAliasDataSource::Legacy_TryGetPackagePath(const FContentBrowserItemData& InItem, FName& OutPackagePath)
 {
 	if (TSharedPtr<const FContentBrowserAssetFolderItemDataPayload> FolderPayload = ContentBrowserAssetData::GetAssetFolderItemPayload(this, InItem))
@@ -715,8 +773,10 @@ bool UContentBrowserAliasDataSource::Legacy_TryConvertPackagePathToVirtualPath(c
 
 bool UContentBrowserAliasDataSource::Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath)
 {
-	return InAssetData.AssetClass != NAME_Class // Ignore legacy class items
+	return InAssetData.AssetClassPath != FTopLevelAssetPath(TEXT("/Script/CoreUObject"), NAME_Class) // Ignore legacy class items
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		&& TryConvertInternalPathToVirtual(InUseFolderPaths ? InAssetData.PackagePath : InAssetData.ObjectPath, OutPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FContentBrowserItemData UContentBrowserAliasDataSource::CreateAssetFolderItem(const FName InFolderPath)
@@ -731,13 +791,20 @@ FContentBrowserItemData UContentBrowserAliasDataSource::CreateAssetFolderItem(co
 
 FContentBrowserItemData UContentBrowserAliasDataSource::CreateAssetFileItem(const FContentBrowserUniqueAlias& Alias)
 {
-	const FAliasData& AliasData = AllAliases[Alias];
-	
-	FName VirtualizedPath;
-	TryConvertInternalPathToVirtual(AliasData.AliasID, VirtualizedPath);
+	const FAliasData* AliasData = AllAliases.Find(Alias);
+	// See UContentBrowserAliasDataSource::DoesItemPassFilter for more information on how this could fail
+	if (AliasData)
+	{
+		FName VirtualizedPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		TryConvertInternalPathToVirtual(AliasData->ObjectPath.ToFName(), VirtualizedPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	// Since AliasID is PackagePath/AssetName, AssetName should also be passed as the ItemName here. This provides the functionality of
-	// being able to have multiple aliases with the same display name, while still showing their original asset name in the tooltip.
-	return FContentBrowserItemData(this, EContentBrowserItemFlags::Type_File | EContentBrowserItemFlags::Category_Asset, VirtualizedPath,
-		AliasData.AssetData.AssetName, FText::FromName(AliasData.AliasName), MakeShared<FContentBrowserAliasItemDataPayload>(AliasData.AssetData, Alias));
+		// Since AliasID is PackagePath/AssetName, AssetName should also be passed as the ItemName here. This provides the functionality of
+		// being able to have multiple aliases with the same display name, while still showing their original asset name in the tooltip.
+		return FContentBrowserItemData(this, EContentBrowserItemFlags::Type_File | EContentBrowserItemFlags::Category_Asset, VirtualizedPath,
+			AliasData->AssetData.AssetName, FText::FromName(AliasData->AliasName), MakeShared<FContentBrowserAliasItemDataPayload>(AliasData->AssetData, Alias));
+	}
+	return FContentBrowserItemData();
 }
+

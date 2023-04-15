@@ -10,15 +10,18 @@ class UMorphTarget;
 class FMorphTargetVertexInfoBuffers : public FRenderResource
 {
 public:
-	FMorphTargetVertexInfoBuffers() : NumTotalBatches(0)
+	ENGINE_API FMorphTargetVertexInfoBuffers() : NumTotalBatches(0)
 	{
 	}
 
-	void InitMorphResources(EShaderPlatform ShaderPlatform, const TArray<FSkelMeshRenderSection>& RenderSections, const TArray<UMorphTarget*>& MorphTargets, int NumVertices, int32 LODIndex, float TargetPositionErrorTolerance);
+	ENGINE_API void InitMorphResources(EShaderPlatform ShaderPlatform, const TArray<FSkelMeshRenderSection>& RenderSections, const TArray<UMorphTarget*>& MorphTargets, int NumVertices, int32 LODIndex, float TargetPositionErrorTolerance);
 
 	inline bool IsMorphResourcesInitialized() const { return bResourcesInitialized; }
 	inline bool IsRHIIntialized() const { return bRHIIntialized; }
 	inline bool IsMorphCPUDataValid() const{ return bIsMorphCPUDataValid; }
+	
+	ENGINE_API bool GetEmptyMorphCPUDataOnInitRHI() const { return bEmptyMorphCPUDataOnInitRHI; }
+	ENGINE_API void SetEmptyMorphCPUDataOnInitRHI(bool bEmpty) { bEmptyMorphCPUDataOnInitRHI = bEmpty; }
 
 	ENGINE_API virtual void InitRHI() override;
 	ENGINE_API virtual void ReleaseRHI() override;
@@ -30,13 +33,13 @@ public:
 		return uint32(FMath::Min<uint64>(MaximumThreadGroupSize, UINT32_MAX));
 	}
 
-	uint32 GetNumBatches(uint32 index = UINT_MAX) const
+	ENGINE_API uint32 GetNumBatches(uint32 index = UINT_MAX) const
 	{
 		check(index == UINT_MAX || index < (uint32)BatchesPerMorph.Num());
 		return index != UINT_MAX ? BatchesPerMorph[index] : NumTotalBatches;
 	}
 
-	uint32 GetNumMorphs() const
+	ENGINE_API uint32 GetNumMorphs() const
 	{
 		return BatchesPerMorph.Num();
 	}
@@ -76,7 +79,38 @@ public:
 	FBufferRHIRef MorphDataBuffer;
 	FShaderResourceViewRHIRef MorphDataSRV;
 
-	void Reset()
+	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
+	FBufferRHIRef CreateMorphRHIBuffer_RenderThread();
+	FBufferRHIRef CreateMorphRHIBuffer_Async();
+
+	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(
+		FRHIBuffer* IntermediatMorphTargetBuffer,
+		TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (MorphDataBuffer && IntermediatMorphTargetBuffer)
+		{
+			Batcher.QueueUpdateRequest(MorphDataBuffer, IntermediatMorphTargetBuffer);
+			Batcher.QueueUpdateRequest(MorphDataSRV, MorphDataBuffer);
+		}
+	}
+
+	template<uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (MorphDataBuffer)
+		{
+			Batcher.QueueUpdateRequest(MorphDataBuffer, nullptr);
+		}
+		if (MorphDataSRV)
+		{
+			Batcher.QueueUpdateRequest(MorphDataSRV, nullptr, 0, 0);
+		}
+	}
+
+protected:
+	void ResetCPUData()
 	{
 		MorphData.Empty();
 		MaximumValuePerMorph.Empty();
@@ -87,17 +121,14 @@ public:
 		PositionPrecision = 0.0f;
 		TangentZPrecision = 0.0f;
 		bResourcesInitialized = false;
-		bRHIIntialized = false;
 		bIsMorphCPUDataValid = false;
 	}
-
-protected:
 
 	void ValidateVertexBuffers(bool bMorphTargetsShouldBeValid);
 	void Serialize(FArchive& Ar);
 
-	// Transient data. Gets deleted as soon as the GPU resource has been initialized.
-	TArray<uint32> MorphData;
+	// Transient data. Gets deleted as soon as the GPU resource has been initialized (unless excplicitly disabled by bEmptyMorphCPUDataOnInitRHI).
+	TResourceArray<uint32> MorphData;
 
 	//x,y,y separate for position and shared w for tangent
 	TArray<FVector4f> MaximumValuePerMorph;
@@ -112,9 +143,14 @@ protected:
 	bool bIsMorphCPUDataValid = false;
 	bool bResourcesInitialized = false;
 	bool bRHIIntialized = false;
+	bool bEmptyMorphCPUDataOnInitRHI = true;
 
 	friend class FSkeletalMeshLODRenderData;
-	friend FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);
+	ENGINE_API friend FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);
+
+private:
+	template <bool bRenderThread>
+	FBufferRHIRef CreateMorphRHIBuffer_Internal();
 };
 
-FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);
+ENGINE_API FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);

@@ -180,6 +180,22 @@ enum class EUsdInterpolationType : uint8
 	Linear
 };
 
+UENUM()
+enum class EUsdRootMotionHandling
+{
+	// Use for the root bone just its regular joint animation as described on the SkelAnimation prim.
+	NoAdditionalRootMotion,
+
+	// Use the transform animation from the SkelRoot prim in addition to the root bone joint animation as
+	// described on the SkelAnimation prim. Note that the SkelRoot prim's Sequencer transform track will no longer
+	// contain the transform animation data used in this manner, so as to not apply the animation twice.
+	UseMotionFromSkelRoot,
+
+	// Use the transform animation from the Skeleton prim in addition to the root bone joint animation as
+	// described on the SkelAnimation prim.
+	UseMotionFromSkeleton
+};
+
 class IUnrealUSDWrapperModule : public IModuleInterface
 {
 };
@@ -191,25 +207,78 @@ public:
 	UNREALUSDWRAPPER_API static double GetDefaultTimeCode();
 #endif  // #if USE_USD_SDK
 
-	/** Returns the file extensions the USD SDK supports reading from (e.g. ["usd", "usda", "usdc", etc.]) */
+	/**
+	 * Returns the file extensions of all file formats supported by USD.
+	 *
+	 * These include the extensions for the file formats built into USD as
+	 * well as those for any other file formats introduced through the USD
+	 * plugin system (e.g. "abc" for the Alembic file format of the usdAbc
+	 * plugin).
+	 */
 	UNREALUSDWRAPPER_API static TArray<FString> GetAllSupportedFileFormats();
 
 	/**
-	 * Opens a file as a root layer of an USD stage, and returns that stage.
+	 * Returns the file extensions that are native to USD.
+	 *
+	 * These are the extensions for the file formats built into USD (i.e. "usd", "usda", "usdc", and "usdz").
+	 */
+	UNREALUSDWRAPPER_API static TArray<FString> GetNativeFileFormats();
+
+	/**
+	 * Opens a USD stage from a file on disk or existing layers, with a population mask or not.
 	 * @param Identifier - Path to a file that the USD SDK can open (or the identifier of a root layer), which will become the root layer of the new stage
+	 * @param RootLayer - Existing root layer to use for the new stage, instead of reading it from disk
+	 * @param SessionLayer - Existing session layer to use for the new stage, instead of creating a new one
 	 * @param InitialLoadSet - How to handle USD payloads when opening this stage
+	 * @param PopulationMask - List of prim paths to import, following the USD population mask rules
 	 * @param bUseStageCache - If true, and the stage is already opened in the stage cache (or the layers are already loaded in the registry) then
 	 *						   the file reading may be skipped, and the existing stage returned. When false, the stage and all its referenced layers
 	 *						   will be re-read anew, and the stage will not be added to the stage cache.
+	 * @param bForceReloadLayersFromDisk - USD layers are always cached in the layer registry, so trying to reopen an
+	 *                                     already opened layer will just fetch it from memory (potentially with
+	 *                                     edits). If this is true, all local layers used by the stage will be force-
+	 *                                     reloaded from disk
 	 * @return The opened stage, which may be invalid.
 	 */
-	UNREALUSDWRAPPER_API static UE::FUsdStage OpenStage( const TCHAR* Identifier, EUsdInitialLoadSet InitialLoadSet, bool bUseStageCache = true );
+	UNREALUSDWRAPPER_API static UE::FUsdStage OpenStage(
+		const TCHAR* Identifier,
+		EUsdInitialLoadSet InitialLoadSet,
+		bool bUseStageCache = true,
+		bool bForceReloadLayersFromDisk = false
+	);
+	UNREALUSDWRAPPER_API static UE::FUsdStage OpenStage(
+		UE::FSdfLayer RootLayer,
+		UE::FSdfLayer SessionLayer,
+		EUsdInitialLoadSet InitialLoadSet,
+		bool bUseStageCache = true,
+		bool bForceReloadLayersFromDisk = false
+	);
+	UNREALUSDWRAPPER_API static UE::FUsdStage OpenMaskedStage(
+		const TCHAR* Identifier,
+		EUsdInitialLoadSet InitialLoadSet,
+		const TArray<FString>& PopulationMask,
+		bool bForceReloadLayersFromDisk = false
+	);
+	UNREALUSDWRAPPER_API static UE::FUsdStage OpenMaskedStage(
+		UE::FSdfLayer RootLayer,
+		UE::FSdfLayer SessionLayer,
+		EUsdInitialLoadSet InitialLoadSet,
+		const TArray<FString>& PopulationMask,
+		bool bForceReloadLayersFromDisk = false
+	);
 
 	/** Creates a new USD root layer file, opens it as a new stage and returns that stage */
 	UNREALUSDWRAPPER_API static UE::FUsdStage NewStage( const TCHAR* FilePath );
 
 	/** Creates a new memory USD root layer, opens it as a new stage and returns that stage */
 	UNREALUSDWRAPPER_API static UE::FUsdStage NewStage();
+
+	/**
+	 * Get the singleton, persistent stage used as a clipboard for prim cut/copy/paste operations.
+	 * WARNING: This stage may remain open indefinitely! If you use this directly, be aware that there may be unintended
+	 * consequences (e.g. a sublayer added to this stage may never fully close)
+	 */
+	UNREALUSDWRAPPER_API static UE::FUsdStage GetClipboardStage();
 
 	/** Returns all the stages that are currently opened in the USD utils stage cache, shared between C++ and Python */
 	UNREALUSDWRAPPER_API static TArray< UE::FUsdStage > GetAllStagesFromCache();
@@ -325,13 +394,22 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API const pxr::TfToken LOD;
 
 	/* Attribute name when assigning Unreal materials to UsdGeomMeshes */
-	extern UNREALUSDWRAPPER_API const pxr::TfToken MaterialAssignments; // DEPRECATED in favor of MaterialAssignment
 	extern UNREALUSDWRAPPER_API const pxr::TfToken MaterialAssignment;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Unreal;
 
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealNaniteOverride;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealNaniteOverrideEnable;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealNaniteOverrideDisable;
+
+	extern UNREALUSDWRAPPER_API const pxr::TfToken LiveLinkAPI;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken ControlRigAPI;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealAnimBlueprintPath;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealLiveLinkSubjectName;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealLiveLinkEnabled;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealControlRigPath;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealUseFKControlRig;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealControlRigReduceKeys;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealControlRigReductionTolerance;
 
 	extern UNREALUSDWRAPPER_API const pxr::TfToken DiffuseColor;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken EmissiveColor;
@@ -343,7 +421,7 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Anisotropy;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Tangent;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken SubsurfaceColor;
-	extern UNREALUSDWRAPPER_API const pxr::TfToken AmbientOcclusion;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Occlusion;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Refraction;
 
 	// Tokens used mostly for shade material conversion
@@ -352,6 +430,11 @@ namespace UnrealIdentifiers
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Varname;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Result;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken File;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken WrapS;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken WrapT;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Repeat;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Mirror;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken Clamp;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken Fallback;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken R;
 	extern UNREALUSDWRAPPER_API const pxr::TfToken RGB;
@@ -364,7 +447,19 @@ namespace UnrealIdentifiers
 
 	// Token used to indicate that a material parsed from a material prim should use world space normals
 	extern UNREALUSDWRAPPER_API const pxr::TfToken WorldSpaceNormals;
+
+	extern UNREALUSDWRAPPER_API const pxr::TfToken GroomAPI;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken GroomBindingAPI;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealGroomToBind;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealGroomReferenceMesh;
+
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealContentPath;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealAssetType;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealExportTime;
+	extern UNREALUSDWRAPPER_API const pxr::TfToken UnrealEngineVersion;
 #endif // #if USE_USD_SDK
+
+	extern UNREALUSDWRAPPER_API const TCHAR* LayerSavedComment;
 
 	extern UNREALUSDWRAPPER_API const TCHAR* Invisible;
 	extern UNREALUSDWRAPPER_API const TCHAR* Inherited;
@@ -403,6 +498,12 @@ namespace UnrealIdentifiers
 
 	// UDirectionalLightComponent properties
 	extern UNREALUSDWRAPPER_API FName LightSourceAnglePropertyName;
+
+	// Material purpose tokens that we convert from USD, if available
+	extern UNREALUSDWRAPPER_API FString MaterialAllPurpose;
+	extern UNREALUSDWRAPPER_API FString MaterialAllPurposeText; // Text to show on UI for "allPurpose", as its value is actually the empty string
+	extern UNREALUSDWRAPPER_API FString MaterialPreviewPurpose;
+	extern UNREALUSDWRAPPER_API FString MaterialFullPurpose;
 }
 
 struct UNREALUSDWRAPPER_API FUsdDelegates

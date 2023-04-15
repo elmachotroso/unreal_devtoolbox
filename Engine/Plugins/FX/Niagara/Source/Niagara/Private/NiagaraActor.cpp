@@ -9,6 +9,8 @@
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraActor)
+
 ANiagaraActor::ANiagaraActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -60,6 +62,9 @@ ANiagaraActor::ANiagaraActor(const FObjectInitializer& ObjectInitializer)
 			ArrowComponent->SpriteInfo.DisplayName = ConstructorStatics.NAME_Effects;
 			ArrowComponent->SetupAttachment(NiagaraComponent);
 			ArrowComponent->SetUsingAbsoluteScale(true);
+		#if WITH_EDITOR
+			ArrowComponent->SetIgnoreBoundsForEditorFocus(true);
+		#endif
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -111,3 +116,4 @@ void ANiagaraActor::ResetInLevel()
 	}
 }
 #endif // WITH_EDITOR
+

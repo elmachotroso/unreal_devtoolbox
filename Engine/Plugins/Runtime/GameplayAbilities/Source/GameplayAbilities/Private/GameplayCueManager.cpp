@@ -11,7 +11,8 @@
 #include "GameplayTagsManager.h"
 #include "GameplayTagsModule.h"
 #include "AbilitySystemGlobals.h"
-#include "AssetRegistryModule.h"
+#include "AbilitySystemLog.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "GameplayCueInterface.h"
 #include "GameplayCueSet.h"
 #include "GameplayCueNotify_Static.h"
@@ -22,6 +23,8 @@
 #include "Net/UnrealNetwork.h"
 #include "Misc/CoreDelegates.h"
 #include "AbilitySystemReplicationProxyInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueManager)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -421,7 +424,7 @@ AGameplayCueNotify_Actor* UGameplayCueManager::GetInstancedCueActor(AActor* Targ
 		
 #if WITH_EDITOR	
 		// Animtion preview hack. If we are trying to play the GC on a CDO, then don't use actor recycling and don't set the owner (to the CDO, which would cause problems)
-		if (TargetActor && TargetActor->HasAnyFlags(RF_ClassDefaultObject))
+		if (TargetActor->HasAnyFlags(RF_ClassDefaultObject))
 		{
 			NewOwnerActor = nullptr;
 			UseActorRecycling = false;
@@ -601,6 +604,8 @@ bool UGameplayCueManager::ShouldAsyncLoadRuntimeObjectLibraries() const
 
 void UGameplayCueManager::InitializeRuntimeObjectLibrary()
 {
+	UE_SCOPED_ENGINE_ACTIVITY(TEXT("Initializing GameplayCueManager Runtime Object Library"));
+
 	RuntimeGameplayCueObjectLibrary.Paths = GetAlwaysLoadedGameplayCuePaths();
 	if (RuntimeGameplayCueObjectLibrary.CueSet == nullptr)
 	{
@@ -894,7 +899,7 @@ void UGameplayCueManager::BuildCuesToAddToGlobalSet(const TArray<FAssetData>& As
 			const FString GeneratedClassTag = Data.GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
 			if (GeneratedClassTag.IsEmpty())
 			{
-				ABILITY_LOG(Warning, TEXT("Unable to find GeneratedClass value for AssetData %s"), *Data.ObjectPath.ToString());
+				ABILITY_LOG(Warning, TEXT("Unable to find GeneratedClass value for AssetData %s"), *Data.GetObjectPathString());
 				continue;
 			}
 
@@ -1032,7 +1037,7 @@ void UGameplayCueManager::HandleAssetAdded(UObject *Object)
 		
 		if (StaticCDO || ActorCDO)
 		{
-			if (VerifyNotifyAssetIsInValidPath(Blueprint->GetOuter()->GetPathName()))
+			if (!Blueprint->GetOutermost()->HasAnyPackageFlags(PKG_ForDiffing) && VerifyNotifyAssetIsInValidPath(Blueprint->GetOuter()->GetPathName()))
 			{
 				FSoftObjectPath StringRef;
 				StringRef.SetPath(Blueprint->GeneratedClass->GetPathName());
@@ -1109,7 +1114,7 @@ void UGameplayCueManager::HandleAssetRenamed(const FAssetData& Data, const FStri
 
 				for (UGameplayCueSet* Set : GetGlobalCueSets())
 				{
-					Set->UpdateCueByStringRefs(String + TEXT("_C"), Data.ObjectPath.ToString() + TEXT("_C"));
+					Set->UpdateCueByStringRefs(String + TEXT("_C"), Data.GetObjectPathString() + TEXT("_C"));
 				}
 				OnGameplayCueNotifyAddOrRemove.Broadcast();
 			}
@@ -1709,3 +1714,4 @@ FAutoConsoleCommandWithWorld PrintGameplayCueTranslatorCmd(
 #if WITH_EDITOR
 #undef LOCTEXT_NAMESPACE
 #endif
+

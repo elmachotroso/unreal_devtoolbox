@@ -42,6 +42,14 @@ MANAGED_ARRAY_TYPE(Chaos::FPBDRigidClusteredParticleHandle*, TPBDRigidClusteredP
 MANAGED_ARRAY_TYPE(TUniquePtr<Chaos::FConvex>, FConvexUniquePtr)
 MANAGED_ARRAY_TYPE(TArray<FVector2f>, Vector2DArray)
 MANAGED_ARRAY_TYPE(double, Double)
+MANAGED_ARRAY_TYPE(FIntVector4, IntVector4)
+MANAGED_ARRAY_TYPE(FVector3d, Vector3d)
+MANAGED_ARRAY_TYPE(FIntVector2, IntVector2)
+MANAGED_ARRAY_TYPE(TArray<FIntVector2>, IntVector2Array)
+MANAGED_ARRAY_TYPE(TArray<int32>, Int32Array)
+MANAGED_ARRAY_TYPE(TArray<float>, FloatArray)
+MANAGED_ARRAY_TYPE(FVector4f, Vector4f)
+MANAGED_ARRAY_TYPE(TArray<FVector3f>, FVectorArray)
 
 // NOTE: new types must be added at the bottom to keep serialization from breaking
 

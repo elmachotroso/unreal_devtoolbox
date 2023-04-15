@@ -24,6 +24,14 @@
  * TObjectPtr<T> after the transition is complete and the type won't be toggling back and forth anymore.
  */
 #define UE_TRANSITIONAL_OBJECT_PTR(Type) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE(Templ, Type) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE_SUFFIXED(Templ, Type, Suffix) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG1(Templ, Type1, Type2) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG1_SUFFIXED(Templ, Type1, Type2, Suffix) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG2(Templ, Type1, Type2) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG2_SUFFIXED(Templ, Type1, Type2, Suffix) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG_BOTH(Templ, Type1, Type2) auto 
+#define UE_TRANSITIONAL_OBJECT_PTR_TEMPLATE2_ARG_BOTH_SUFFIXED(Templ, Type1, Type2, Suffix) auto 
 
 #if PLATFORM_MICROSOFT && defined(_MSC_EXTENSIONS)
 	/**
@@ -45,7 +53,14 @@ struct TObjectPtr;
 struct FObjectPtr
 {
 public:
-	FObjectPtr() = default;
+	FObjectPtr()
+		: Handle(MakeObjectHandle(nullptr))
+	{
+	}
+
+	explicit FObjectPtr(ENoInit)
+	{
+	}
 
 	FORCEINLINE FObjectPtr(TYPE_OF_NULLPTR)
 		: Handle(MakeObjectHandle(nullptr))
@@ -118,16 +133,63 @@ public:
 	FORCEINLINE UObject* operator->() const { return Get(); }
 	FORCEINLINE UObject& operator*() const { return *Get(); }
 
-	// Forcing resolve for null check.  Non null unresolved pointers can become null resolved pointers.
+	UE_DEPRECATED(5.1, "IsNull is deprecated, please use operator bool instead.")
 	FORCEINLINE bool IsNull() const { return ResolveObjectHandleNoRead(Handle) == nullptr; }
+	
+	UE_DEPRECATED(5.1, "IsNullNoResolve is deprecated, please use operator bool instead.")
 	FORCEINLINE bool IsNullNoResolve() const { return IsObjectHandleNull(Handle); }
-
-	FORCEINLINE bool operator!() const { return IsNull(); }
-	explicit FORCEINLINE operator bool() const { return !IsNull(); }
+	
+	FORCEINLINE bool operator!() const { return IsObjectHandleNull(Handle); }
+	explicit FORCEINLINE operator bool() const { return !IsObjectHandleNull(Handle); }
 
 	FORCEINLINE bool IsResolved() const { return IsObjectHandleResolved(Handle); }
 
-	COREUOBJECT_API FString GetPath() const;
+	// Gets the PathName of the object without resolving the object reference.
+	// @TODO OBJPTR: Deprecate this.
+	FString GetPath() const { return GetPathName(); }
+
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	// Gets the PathName of the object without resolving the object reference.
+	COREUOBJECT_API FString GetPathName() const;
+
+	// Gets the FName of the object without resolving the object reference.
+	COREUOBJECT_API FName GetFName() const;
+
+	// Gets the string name of the object without resolving the object reference.
+	FORCEINLINE FString GetName() const
+	{
+		return GetFName().ToString();
+	}
+
+	/** Returns the full name for the object in the form: Class ObjectPath */
+	COREUOBJECT_API FString GetFullName(EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const;
+#else
+	FString GetPathName() const
+	{
+		return Get()->GetPathName();
+	}
+
+	FName GetFName() const
+	{
+		const UObject* ResolvedObject = Get();
+		return ResolvedObject ? ResolvedObject->GetFName() : NAME_None;
+	}
+
+	FString GetName() const
+	{
+		return GetFName().ToString();
+	}
+
+	/**
+	 * Returns the fully qualified pathname for this object as well as the name of the class, in the format:
+	 * 'ClassName Outermost.[Outer:]Name'.
+	 */
+	FString GetFullName(EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const
+	{
+		// UObjectBaseUtility::GetFullName is safe to call on null objects.
+		return Get()->GetFullName(nullptr, Flags);
+	}
+#endif
 
 	FORCEINLINE FObjectHandle GetHandle() const { return Handle; }
 	FORCEINLINE FObjectHandle& GetHandleRef() const { return Handle; }
@@ -136,22 +198,18 @@ public:
 	{
 		checkfSlow(SomeBase, TEXT("IsA(NULL) cannot yield meaningful results"));
 
-		const UClass* ThisClass = GetClass();
-		checkfSlow(ThisClass, TEXT("Object pointer class did not resolve to a non-null value"));
+		if (const UClass* ThisClass = GetClass())
+		{
+			return ThisClass->IsChildOf(SomeBase);
+		}
 
-		return ThisClass->IsChildOf(SomeBase);
+		return false;
 	}
 
 	template <typename T>
 	FORCEINLINE bool IsA() const
 	{
 		return IsA(T::StaticClass());
-	}
-
-protected:
-	FORCEINLINE UObject* GetNoRead() const
-	{
-		return ResolveObjectHandleNoRead(Handle);
 	}
 
 private:
@@ -161,7 +219,13 @@ private:
 		return GetTypeHash(Object.Handle);
 	}
 
-	mutable FObjectHandle Handle;
+	union
+	{
+		mutable FObjectHandle Handle;
+		// DebugPtr allows for easier dereferencing of a resolved FObjectPtr in watch windows of debuggers.  If the address in the pointer
+		// is an odd/uneven number, that means the object reference is unresolved and you will not be able to dereference it successfully.
+		UObject* DebugPtr;
+	};
 };
 
 template <typename T>
@@ -192,17 +256,26 @@ namespace ObjectPtr_Private
  * with FObjectPtr/TObjectPtr members instead.
  */
 template <typename T>
-struct TObjectPtr : private FObjectPtr
+struct TObjectPtr
 {
 public:
 	using ElementType = T;
 
-	TObjectPtr() = default;
-	TObjectPtr(TObjectPtr<T>&&) = default;
-	TObjectPtr(const TObjectPtr<T>&) = default;
+	TObjectPtr()
+		: ObjectPtr()
+	{
+	}
+
+	TObjectPtr(TObjectPtr<T>&& Other) = default;
+	TObjectPtr(const TObjectPtr<T>& Other) = default;
+
+	explicit FORCEINLINE TObjectPtr(ENoInit)
+		: ObjectPtr(NoInit)
+	{
+	}
 
 	FORCEINLINE TObjectPtr(TYPE_OF_NULLPTR)
-		: FObjectPtr(nullptr)
+		: ObjectPtr(nullptr)
 	{
 	}
 
@@ -211,7 +284,7 @@ public:
 		decltype(ImplicitConv<T*>(std::declval<U*>()))* = nullptr
 	>
 	FORCEINLINE TObjectPtr(const TObjectPtr<U>& Other)
-		: FObjectPtr(static_cast<const FObjectPtr&>(Other))
+		: ObjectPtr(Other.ObjectPtr)
 	{
 	}
 
@@ -223,12 +296,12 @@ public:
 		>* = nullptr
 	>
 	FORCEINLINE TObjectPtr(U&& Object)
-		: FObjectPtr(const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object)))
+		: ObjectPtr(const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object)))
 	{
 	}
 
 	explicit FORCEINLINE TObjectPtr(TPrivateObjectPtr<T>&& PrivatePtr)
-		: FObjectPtr(const_cast<UObject*>(PrivatePtr.Pointer))
+		: ObjectPtr(const_cast<UObject*>(PrivatePtr.Pointer))
 	{
 	}
 
@@ -237,7 +310,7 @@ public:
 
 	FORCEINLINE TObjectPtr<T>& operator=(TYPE_OF_NULLPTR)
 	{
-		FObjectPtr::operator=(nullptr);
+		ObjectPtr = nullptr;
 		return *this;
 	}
 
@@ -247,7 +320,7 @@ public:
 	>
 	FORCEINLINE TObjectPtr<T>& operator=(const TObjectPtr<U>& Other)
 	{
-		FObjectPtr::operator=(static_cast<const FObjectPtr&>(Other));
+		ObjectPtr = Other.ObjectPtr;
 		return *this;
 	}
 
@@ -260,13 +333,13 @@ public:
 	>
 	FORCEINLINE TObjectPtr<T>& operator=(U&& Object)
 	{
-		FObjectPtr::operator=(const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object)));
+		ObjectPtr = const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object));
 		return *this;
 	}
 
 	FORCEINLINE TObjectPtr<T>& operator=(TPrivateObjectPtr<T>&& PrivatePtr)
 	{
-		FObjectPtr::operator=(const_cast<UObject*>(PrivatePtr.Pointer));
+		ObjectPtr = const_cast<UObject*>(PrivatePtr.Pointer);
 		return *this;
 	}
 
@@ -276,7 +349,17 @@ public:
 	>
 	FORCEINLINE bool operator==(const TObjectPtr<U>& Other) const
 	{
-		return FObjectPtr::operator==(static_cast<const FObjectPtr&>(Other));
+		return ObjectPtr == Other.ObjectPtr;
+	}
+
+	bool operator==(TYPE_OF_NULLPTR) const
+	{
+		return !ObjectPtr.operator bool();
+	}
+
+	bool operator!=(TYPE_OF_NULLPTR) const
+	{
+		return ObjectPtr.operator bool();
 	}
 
 	template <
@@ -285,7 +368,7 @@ public:
 	>
 	FORCEINLINE bool operator!=(const TObjectPtr<U>& Other) const
 	{
-		return FObjectPtr::operator!=(static_cast<const FObjectPtr&>(Other));
+		return ObjectPtr != Other.ObjectPtr;
 	}
 
 	// @TODO: OBJPTR: There is a risk that the FObjectPtr is storing a reference to the wrong type.  This could
@@ -294,8 +377,8 @@ public:
 	//			a reference to the wrong type of object which we'll just send back static_casted as the wrong type.  Doing
 	//			a check or checkSlow here could catch this, but it would be better if the check could happen elsewhere that
 	//			isn't called as frequently.
-	FORCEINLINE T* Get() const { return (T*)(FObjectPtr::Get()); }
-	using FObjectPtr::GetClass;
+	FORCEINLINE T* Get() const { return (T*)(ObjectPtr.Get()); }
+	FORCEINLINE UClass* GetClass() const { return ObjectPtr.GetClass(); }
 	
 	FORCEINLINE operator T* () const { return Get(); }
 	template <typename U>
@@ -308,48 +391,78 @@ public:
 	UE_OBJPTR_DEPRECATED(5.0, "Conversion to a mutable pointer is deprecated.  Please pass a TObjectPtr<T>& instead so that assignment can be tracked accurately.")
 	explicit FORCEINLINE operator T*& () { return GetInternalRef(); }
 
-	using FObjectPtr::IsNull;
-	using FObjectPtr::IsNullNoResolve;
-	using FObjectPtr::operator!;
-	using FObjectPtr::operator bool;
-	using FObjectPtr::IsResolved;
-	using FObjectPtr::GetPath;
-	using FObjectPtr::GetHandle;
+	UE_DEPRECATED(5.1, "IsNull is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
+	FORCEINLINE bool IsNull() const { return !ObjectPtr.operator bool(); }
 
-	using FObjectPtr::IsA;
+	UE_DEPRECATED(5.1, "IsNullNoResolve is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
+	FORCEINLINE bool IsNullNoResolve() const { return !ObjectPtr.operator bool(); }
 
-	friend FORCEINLINE uint32 GetTypeHash(const TObjectPtr<T>& ObjectPtr)
+	FORCEINLINE bool operator!() const { return ObjectPtr.operator!(); }
+	explicit FORCEINLINE operator bool() const { return ObjectPtr.operator bool(); }
+	FORCEINLINE bool IsResolved() const { return ObjectPtr.IsResolved(); }
+	FORCEINLINE FString GetPath() const { return ObjectPtr.GetPath(); }
+	FORCEINLINE FString GetPathName() const { return ObjectPtr.GetPathName(); }
+	FORCEINLINE FName GetFName() const { return ObjectPtr.GetFName(); }
+	FORCEINLINE FString GetName() const { return ObjectPtr.GetName(); }
+	FORCEINLINE FString GetFullName(EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const { return ObjectPtr.GetFullName(Flags); }
+	FORCEINLINE FObjectHandle GetHandle() const { return ObjectPtr.GetHandle(); }
+	FORCEINLINE bool IsA(const UClass* SomeBase) const { return ObjectPtr.IsA(SomeBase); }
+	template <typename U> FORCEINLINE bool IsA() const { return ObjectPtr.IsA<U>(); }
+
+	friend FORCEINLINE uint32 GetTypeHash(const TObjectPtr<T>& InObjectPtr)
 	{
-		return GetTypeHash(static_cast<const FObjectPtr&>(ObjectPtr));
+		return GetTypeHash(InObjectPtr.ObjectPtr);
 	}
 
-	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, TObjectPtr<T>& ObjectPtr)
+	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, TObjectPtr<T>& InObjectPtr)
 	{
-		Ar << static_cast<FObjectPtr&>(ObjectPtr);
+		Ar << InObjectPtr.ObjectPtr;
 		return Ar;
 	}
 
-	friend FORCEINLINE void operator<<(FStructuredArchiveSlot&& Slot, TObjectPtr<T>& ObjectPtr)
+	friend FORCEINLINE void operator<<(FStructuredArchiveSlot Slot, TObjectPtr<T>& InObjectPtr)
 	{
-		Slot << static_cast<FObjectPtr&>(ObjectPtr);
+		Slot << InObjectPtr.ObjectPtr;
 	}
 
 	friend struct FObjectPtr;
 	template <typename U> friend struct TObjectPtr;
 	template <typename U, typename V> friend bool ObjectPtr_Private::IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<U>& Ptr, const V* Other);
-private:
 
-	FORCEINLINE T* GetNoRead() const { return (T*)(FObjectPtr::GetNoRead()); }
+private:
+	FORCEINLINE T* GetNoReadNoCheck() const { return (T*)(ResolveObjectHandleNoReadNoCheck(ObjectPtr.GetHandleRef())); }
+	FORCEINLINE T* GetNoResolveNoCheck() const { return (T*)(ReadObjectHandlePointerNoCheck(ObjectPtr.GetHandleRef())); }
 
 	// @TODO: OBJPTR: There is a risk of a gap in access tracking here.  The caller may get a mutable pointer, write to it, then
 	//			read from it.  That last read would happen without an access being recorded.  Not sure if there is a good way
 	//			to handle this case without forcing the calling code to be modified.
 	FORCEINLINE T*& GetInternalRef()
 	{
-		FObjectPtr::Get();
-		return (T*&)FObjectPtr::GetHandleRef();
+		ObjectPtr.Get();
+		return (T*&)ObjectPtr.GetHandleRef();
 	}
+
+	union
+	{
+		FObjectPtr ObjectPtr;
+		// DebugPtr allows for easier dereferencing of a resolved TObjectPtr in watch windows of debuggers.  If the address in the pointer
+		// is an odd/uneven number, that means the object reference is unresolved and you will not be able to dereference it successfully.
+		T* DebugPtr;
+	};
 };
+
+// Equals against nullptr to optimize comparing against nullptr as it avoids resolving
+template <typename U>
+bool operator==(TYPE_OF_NULLPTR, const TObjectPtr<U>& Rhs)
+{
+	return Rhs == nullptr;
+}
+
+template <typename U>
+bool operator!=(TYPE_OF_NULLPTR, const TObjectPtr<U>& Rhs)
+{
+	return Rhs != nullptr;
+}
 
 template <typename T> struct TIsTObjectPtr<               TObjectPtr<T>> { enum { Value = true }; };
 template <typename T> struct TIsTObjectPtr<const          TObjectPtr<T>> { enum { Value = true }; };
@@ -425,9 +538,19 @@ namespace ObjectPtr_Private
 	}
 
 	template <typename T, typename U>
-	FORCEINLINE bool IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<T>& Ptr, const U* Other)
+	bool IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<T>& Ptr, const U* Other)
 	{
-		return Ptr.GetNoRead() == Other;
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+		if (Ptr.IsResolved())
+		{
+			return Ptr.GetNoResolveNoCheck() == Other;
+		}
+		else if (!Other) //avoids resolving if Other is null
+		{
+			return !Ptr;
+		}
+#endif
+		return Ptr.GetNoReadNoCheck() == Other;
 	}
 
 	/** Perform shallow equality check between a TObjectPtr and another (non TObjectPtr) type that we can coerce to a pointer. */
@@ -439,7 +562,7 @@ namespace ObjectPtr_Private
 			decltype(CoerceToPointer<T>(std::declval<U>()) == std::declval<const T*>())
 		>* = nullptr
 	>
-	FORCEINLINE bool IsObjectPtrEqual(const TObjectPtr<T>& Ptr, U&& Other)
+	bool IsObjectPtrEqual(const TObjectPtr<T>& Ptr, U&& Other)
 	{
 		// This function deliberately avoids the tracking code path as we are only doing
 		// a shallow pointer comparison.
@@ -511,6 +634,12 @@ template <typename T>
 TPrivateObjectPtr<T> MakeObjectPtrUnsafe(const UObject* Obj)
 {
 	return TPrivateObjectPtr<T>{Obj};
+}
+
+template <typename T>
+TObjectPtr<T> ToObjectPtr(T* Obj)
+{
+	return TObjectPtr<T>{Obj};
 }
 
 template <typename T>
@@ -657,12 +786,12 @@ FORCEINLINE TWeakObjectPtr<T> MakeWeakObjectPtr(TObjectPtr<T> Ptr)
 
 FORCEINLINE TObjectPtr<UObject>& FObjectPtr::ToTObjectPtr()
 {
-	return *static_cast<TObjectPtr<UObject>*>(this);
+	return *reinterpret_cast<TObjectPtr<UObject>*>(this);
 }
 
 FORCEINLINE const TObjectPtr<UObject>& FObjectPtr::ToTObjectPtr() const
 {
-	return *static_cast<const TObjectPtr<UObject>*>(this);
+	return *reinterpret_cast<const TObjectPtr<UObject>*>(this);
 }
 
 /** Swap variants between TObjectPtr<T> and raw pointer to T */
@@ -712,3 +841,79 @@ inline void Exchange(TArray<T*>& A, TArray<TObjectPtr<T>>& B)
 {
 	Swap(A, ToRawPtrTArrayUnsafe(B));
 }
+
+/**
+ * Returns a pointer to a valid object if the Test object passes IsValid() tests, otherwise null
+ */
+template <typename T>
+T* GetValid(const TObjectPtr<T>& Test)
+{
+	T* TestPtr = ToRawPtr(Test);
+	return IsValid(TestPtr) ? TestPtr : nullptr;
+}
+
+//------------------------------------------------------------------------------
+// Suppose you want to have a function that outputs an array of either T*'s or TObjectPtr<T>'s
+// this template will make that possible to encode,
+//  
+// template<typename InstanceClass>
+// void GetItemInstances(TArray<InstanceClass>& OutInstances) const
+// {
+//     static_assert(TIsPointerOrObjectPtrToBaseOf<InstanceClass, UBaseClass>::Value, "Output array must contain pointers or TObjectPtrs to a base of UBaseClass");
+// }
+//------------------------------------------------------------------------------
+
+template <typename T, typename DerivedType>
+struct TIsPointerOrObjectPtrToBaseOfImpl
+{
+	enum { Value = false };
+};
+
+template <typename T, typename DerivedType>
+struct TIsPointerOrObjectPtrToBaseOfImpl<T*, DerivedType>
+{
+	enum { Value = std::is_base_of_v<DerivedType, T> };
+};
+
+template <typename T, typename DerivedType>
+struct TIsPointerOrObjectPtrToBaseOfImpl<TObjectPtr<T>, DerivedType>
+{
+	enum { Value = std::is_base_of_v<DerivedType, T> };
+};
+
+template <typename T, typename DerivedType>
+struct TIsPointerOrObjectPtrToBaseOf
+{
+	enum { Value = TIsPointerOrObjectPtrToBaseOfImpl<std::remove_cv_t<T>, DerivedType>::Value };
+};
+
+//------------------------------------------------------------------------------
+// Suppose now that you have a templated function that takes in an array of either
+// UBaseClass*'s or TObjectPtr<UBaseClass>'s, and you need to use that inner UBaseClass type
+// for coding,
+// 
+// This is how you can refer to that inner class.  Where InstanceClass is the template
+// argument for where TIsPointerOrObjectPtrToBaseOf is used,
+// 
+// TPointedToType<InstanceClass>* Thing = new TPointedToType<InstanceClass>();
+//------------------------------------------------------------------------------
+
+template <typename T>
+struct TPointedToTypeImpl;
+
+template <typename T>
+struct TPointedToTypeImpl<T*>
+{
+	using Type = T;
+};
+
+template <typename T>
+struct TPointedToTypeImpl<TObjectPtr<T>>
+{
+	using Type = T;
+};
+
+template <typename T>
+using TPointedToType = typename TPointedToTypeImpl<T>::Type;
+
+//------------------------------------------------------------------------------

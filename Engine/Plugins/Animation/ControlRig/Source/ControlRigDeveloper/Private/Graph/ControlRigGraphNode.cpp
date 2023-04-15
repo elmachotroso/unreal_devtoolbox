@@ -25,10 +25,15 @@
 #include "RigVMCore/RigVMExecuteContext.h"
 #include "ControlRigDeveloper.h"
 #include "ControlRigObjectVersion.h"
+#include "GraphEditAction.h"
+#include "RigVMModel/Nodes/RigVMAggregateNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionReferenceNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionEntryNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionReturnNode.h"
 #include "RigVMModel/Nodes/RigVMCollapseNode.h"
+#include "RigVMModel/Nodes/RigVMInvokeEntryNode.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigGraphNode)
 
 #if WITH_EDITOR
 #include "IControlRigEditorModule.h"
@@ -46,6 +51,7 @@ UControlRigGraphNode::UControlRigGraphNode()
 #if WITH_EDITOR
 , bEnableProfiling(false)
 #endif
+, CachedTemplate(nullptr)
 {
 	bHasCompilerMessage = false;
 	ErrorType = (int32)EMessageSeverity::Info + 1;
@@ -60,7 +66,8 @@ FText UControlRigGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 		{
 			if (URigVMUnitNode* UnitNode = Cast<URigVMUnitNode>(ModelNode))
 			{
-				if (UnitNode->GetScriptStruct()->IsChildOf(FRigUnit::StaticStruct()))
+				const UScriptStruct* ScriptStruct = UnitNode->GetScriptStruct();
+				if (ScriptStruct && ScriptStruct->IsChildOf(FRigUnit::StaticStruct()))
 				{
 					if (TSharedPtr<FStructOnScope> StructOnScope = UnitNode->ConstructStructInstance())
 					{
@@ -89,8 +96,11 @@ FText UControlRigGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 
 			else if(URigVMCollapseNode* CollapseNode = Cast<URigVMCollapseNode>(ModelNode))
 			{
-				static const FString CollapseNodeString = TEXT("Collapsed Graph");
-				SubTitle = CollapseNodeString;
+				if(!CollapseNode->IsA<URigVMAggregateNode>())
+				{
+					static const FString CollapseNodeString = TEXT("Collapsed Graph");
+					SubTitle = CollapseNodeString;
+				}
 			}
 
 			else if(URigVMVariableNode* VariableNode = Cast<URigVMVariableNode>(ModelNode))
@@ -134,8 +144,11 @@ FText UControlRigGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 									{
 										TArray<FString> Values;
 										DefaultValue.ParseIntoArray(Values, TEXT(","));
-										Values.Swap(0, 1);
-										Values.Swap(0, 2);
+										if (Values.Num() == 3)
+										{
+											Values.Swap(0, 1);
+											Values.Swap(0, 2);
+										}
 										DefaultValue = FString::Join(Values, TEXT(","));										
 									}
 									SubTitle = FString::Printf(TEXT("Default %s"), *DefaultValue);
@@ -303,13 +316,18 @@ void UControlRigGraphNode::RewireOldPinsToNewPins(TArray<UEdGraphPin*>& InOldPin
 	{
 		for(UEdGraphPin* NewPin : InNewPins)
 		{
-			if(OldPin->PinName == NewPin->PinName && OldPin->PinType == NewPin->PinType && OldPin->Direction == NewPin->Direction)
+			if(OldPin->PinName == NewPin->PinName && OldPin->Direction == NewPin->Direction)
 			{
-				// make sure to remove invalid entries from the linked to list
-				OldPin->LinkedTo.Remove(nullptr);
+				if (OldPin->PinType == NewPin->PinType ||
+					OldPin->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject() ||
+					NewPin->PinType.PinSubCategoryObject == RigVMTypeUtils::GetWildCardCPPTypeObject())
+				{
+					// make sure to remove invalid entries from the linked to list
+					OldPin->LinkedTo.Remove(nullptr);
 				
-				NewPin->MovePersistentDataFromOldPin(*OldPin);
-				break;
+					NewPin->MovePersistentDataFromOldPin(*OldPin);
+					break;
+				}
 			}
 		}
 	}
@@ -424,6 +442,31 @@ int32 UControlRigGraphNode::GetInstructionIndex(bool bAsInput) const
 	return INDEX_NONE;
 }
 
+const FRigVMTemplate* UControlRigGraphNode::GetTemplate() const
+{
+	if(CachedTemplate == nullptr)
+	{
+		if(URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(GetModelNode()))
+		{
+			CachedTemplate = TemplateNode->GetTemplate();
+		}
+		else if(ModelNodePath.Contains(TEXT("::Execute(")))
+		{
+			CachedTemplate = FRigVMRegistry::Get().FindTemplate(*ModelNodePath); 
+		}
+	}
+	return CachedTemplate;
+}
+
+void UControlRigGraphNode::ClearErrorInfo()
+{
+	bHasCompilerMessage = false;
+	// SControlRigGraphNode only updates if the error types do not match so we have
+	// clear the error type as well, see SControlRigGraphNode::RefreshErrorInfo()
+	ErrorType = (int32)EMessageSeverity::Info + 1;
+	ErrorMsg = FString();	
+}
+
 FLinearColor UControlRigGraphNode::GetNodeProfilingColor() const
 {
 #if WITH_EDITOR
@@ -493,7 +536,8 @@ void UControlRigGraphNode::AllocateDefaultPins()
 				{
 					if (ModelPin->IsStruct())
 					{
-						if (ModelPin->GetScriptStruct()->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+						const UScriptStruct* ScriptStruct = ModelPin->GetScriptStruct();
+						if (ScriptStruct && ScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct()))
 						{
 							ExecutePins.Add(ModelPin);
 							continue;
@@ -547,7 +591,7 @@ void UControlRigGraphNode::CreateExecutionPins()
 			Pair.InputPin = CreatePin(EGPD_Input, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.InputPin != nullptr)
 		{
-				Pair.InputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
+				ConfigurePin(Pair.InputPin, ModelPin, false, true);
 		}
 	}
 		if (Pair.OutputPin == nullptr)
@@ -555,7 +599,7 @@ void UControlRigGraphNode::CreateExecutionPins()
 			Pair.OutputPin = CreatePin(EGPD_Output, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.OutputPin != nullptr)
 		{
-				Pair.OutputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
+				ConfigurePin(Pair.OutputPin, ModelPin, false, true);
 		}
 	}
 		// note: no recursion for execution pins
@@ -575,9 +619,7 @@ void UControlRigGraphNode::CreateInputPins(URigVMPin* InParentPin)
 			Pair.InputPin = CreatePin(EGPD_Input, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.InputPin != nullptr)
 			{
-				Pair.InputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
-				Pair.InputPin->bNotConnectable = ModelPin->GetDirection() != ERigVMPinDirection::Input;
-				Pair.InputPin->bOrphanedPin = ModelPin->IsOrphanPin() ? 1 : 0; 
+				ConfigurePin(Pair.InputPin, ModelPin, false, ModelPin->GetDirection() == ERigVMPinDirection::Input);
 
 				SetupPinDefaultsFromModel(Pair.InputPin);
 
@@ -612,10 +654,7 @@ void UControlRigGraphNode::CreateInputOutputPins(URigVMPin* InParentPin, bool bH
 			Pair.InputPin = CreatePin(EGPD_Input, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.InputPin != nullptr)
 		{
-				Pair.InputPin->bHidden = bHidden;
-				Pair.InputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
-				Pair.InputPin->bNotConnectable = ModelPin->GetDirection() != ERigVMPinDirection::IO;
-				Pair.InputPin->bOrphanedPin = ModelPin->IsOrphanPin() ? 1 : 0; 
+				ConfigurePin(Pair.InputPin, ModelPin, bHidden, ModelPin->GetDirection() == ERigVMPinDirection::IO);
 
 				SetupPinDefaultsFromModel(Pair.InputPin);
 
@@ -632,10 +671,7 @@ void UControlRigGraphNode::CreateInputOutputPins(URigVMPin* InParentPin, bool bH
 			Pair.OutputPin = CreatePin(EGPD_Output, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.OutputPin != nullptr)
 		{
-				Pair.OutputPin->bHidden = bHidden;
-				Pair.OutputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
-				Pair.OutputPin->bNotConnectable = ModelPin->GetDirection() != ERigVMPinDirection::IO;
-				Pair.OutputPin->bOrphanedPin = ModelPin->IsOrphanPin() ? 1 : 0; 
+				ConfigurePin(Pair.OutputPin, ModelPin, bHidden, ModelPin->GetDirection() == ERigVMPinDirection::IO);
 
 				if (InParentPin != nullptr)
 		{
@@ -679,9 +715,7 @@ void UControlRigGraphNode::CreateOutputPins(URigVMPin* InParentPin)
 			Pair.OutputPin = CreatePin(EGPD_Output, GetPinTypeForModelPin(ModelPin), FName(*ModelPin->GetPinPath()));
 			if (Pair.OutputPin != nullptr)
 			{
-				Pair.OutputPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
-				Pair.OutputPin->bNotConnectable = ModelPin->GetDirection() != ERigVMPinDirection::Output;
-				Pair.OutputPin->bOrphanedPin = ModelPin->IsOrphanPin() ? 1 : 0; 
+				ConfigurePin(Pair.OutputPin, ModelPin, false,  ModelPin->GetDirection() == ERigVMPinDirection::Output);
 
 				if (InParentPin != nullptr)
 	{
@@ -728,7 +762,7 @@ FLinearColor UControlRigGraphNode::GetNodeOpacityColor() const
 {
 	if (URigVMNode* ModelNode = GetModelNode())
 	{
-		if (Cast<URigVMParameterNode>(ModelNode) || Cast<URigVMVariableNode>(ModelNode))
+		if (Cast<URigVMVariableNode>(ModelNode))
 		{
 			return FLinearColor::White;
 		}
@@ -764,12 +798,13 @@ bool UControlRigGraphNode::ShowPaletteIconOnNode() const
 	if (URigVMNode* ModelNode = GetModelNode())
 	{
 		return ModelNode->IsEvent() ||
+			ModelNode->IsA<URigVMInvokeEntryNode>() ||
 			ModelNode->IsA<URigVMFunctionEntryNode>() ||
 			ModelNode->IsA<URigVMFunctionReturnNode>() ||
 			ModelNode->IsA<URigVMFunctionReferenceNode>() ||
 			ModelNode->IsA<URigVMCollapseNode>() ||
-			ModelNode->IsLoopNode() ||
-			Cast<URigVMUnitNode>(ModelNode) != nullptr;
+			ModelNode->IsA<URigVMUnitNode>() ||
+			ModelNode->IsLoopNode();
 	}
 	return false;
 }
@@ -778,24 +813,30 @@ FSlateIcon UControlRigGraphNode::GetIconAndTint(FLinearColor& OutColor) const
 {
 	OutColor = FLinearColor::White;
 
-	static FSlateIcon FunctionIcon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
-	static FSlateIcon EventIcon("EditorStyle", "GraphEditor.Event_16x");
-	static FSlateIcon EntryReturnIcon("EditorStyle", "GraphEditor.Default_16x");
-	static FSlateIcon CollapsedNodeIcon("EditorStyle", "GraphEditor.SubGraph_16x");
-	static FSlateIcon ArrayNodeIteratorIcon("EditorStyle", "GraphEditor.Macro.ForEach_16x");
+	static FSlateIcon FunctionIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
+	static FSlateIcon EventIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
+	static FSlateIcon EntryReturnIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Default_16x");
+	static FSlateIcon CollapsedNodeIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.SubGraph_16x");
+	static FSlateIcon ArrayNodeIteratorIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Macro.ForEach_16x");
+	static FSlateIcon TemplateNodeIcon("ControlRigEditorStyle", "ControlRig.Template");
 
 	if (URigVMNode* ModelNode = GetModelNode())
 	{
-		if (ModelNode->IsEvent())
+		if (ModelNode->IsEvent() || ModelNode->IsA<URigVMInvokeEntryNode>())
 		{
 			return EventIcon;
+		}
+
+		while(const URigVMAggregateNode* AggregateNode = Cast<URigVMAggregateNode>(ModelNode))
+		{
+			ModelNode = AggregateNode->GetFirstInnerNode();
 		}
 
 		if (ModelNode->IsA<URigVMFunctionReferenceNode>())
 		{ 
 			return FunctionIcon;
 		}
-		
+
 		if (ModelNode->IsA<URigVMCollapseNode>())
 		{
 			return CollapsedNodeIcon;
@@ -817,14 +858,15 @@ FSlateIcon UControlRigGraphNode::GetIconAndTint(FLinearColor& OutColor) const
 
 		if (URigVMUnitNode *UnitNode = Cast<URigVMUnitNode>(ModelNode))
 		{
-			ensure(UnitNode->GetScriptStruct());
+			if(const FRigVMTemplate* Template = UnitNode->GetTemplate())
+			{
+				if(Template->NumPermutations() > 1)
+				{
+					return TemplateNodeIcon;
+				}
+			}
 			
 			FString IconPath;
-
-			// icon path format: StyleSetName|StyleName|SmallStyleName|StatusOverlayStyleName
-			// the last two names are optional, see FSlateIcon() for reference
-			UnitNode->GetScriptStruct()->GetStringMetaDataHierarchical(FRigVMStruct::IconMetaName, &IconPath);
-
 			const int32 NumOfIconPathNames = 4;
 			
 			FName IconPathNames[NumOfIconPathNames] = {
@@ -834,26 +876,31 @@ FSlateIcon UControlRigGraphNode::GetIconAndTint(FLinearColor& OutColor) const
 				NAME_None  // StatusOverlayStyleName
 			};
 
-			int32 NameIndex = 0;
-
-			while (!IconPath.IsEmpty() && NameIndex < NumOfIconPathNames)
+			if(UnitNode->GetScriptStruct())
 			{
-				FString Left;
-				FString Right;
+				// icon path format: StyleSetName|StyleName|SmallStyleName|StatusOverlayStyleName
+				// the last two names are optional, see FSlateIcon() for reference
+				UnitNode->GetScriptStruct()->GetStringMetaDataHierarchical(FRigVMStruct::IconMetaName, &IconPath);
 
-				if (!IconPath.Split(TEXT("|"), &Left, &Right))
+				int32 NameIndex = 0;
+
+				while (!IconPath.IsEmpty() && NameIndex < NumOfIconPathNames)
 				{
-					Left = IconPath;
+					FString Left;
+					FString Right;
+
+					if (!IconPath.Split(TEXT("|"), &Left, &Right))
+					{
+						Left = IconPath;
+					}
+
+					IconPathNames[NameIndex] = FName(*Left);
+
+					NameIndex++;
+					IconPath = Right;
 				}
-
-				IconPathNames[NameIndex] = FName(*Left);
-
-				NameIndex++;
-				IconPath = Right;
 			}
-
 			return FSlateIcon(IconPathNames[0], IconPathNames[1], IconPathNames[2], IconPathNames[3]);
-			
 		}
 	}
 
@@ -883,16 +930,17 @@ void UControlRigGraphNode::DestroyNode()
 
 	if(UControlRigGraph* Graph = Cast<UControlRigGraph>(GetOuter()))
 	{
+		BreakAllNodeLinks();
+		
 		UControlRigBlueprint* ControlRigBlueprint = Cast<UControlRigBlueprint>(Graph->GetOuter());
 		if(ControlRigBlueprint)
-	{
-			BreakAllNodeLinks();
-			if(PropertyName_DEPRECATED.IsValid())
 		{
+			if(PropertyName_DEPRECATED.IsValid())
+			{
 				FControlRigBlueprintUtils::RemoveMemberVariableIfNotUsed(ControlRigBlueprint, PropertyName_DEPRECATED, this);
 			}
 		}
-		}
+	}
 
 	UEdGraphNode::DestroyNode();
 }
@@ -924,7 +972,8 @@ void UControlRigGraphNode::CopyPinDefaultsToModel(UEdGraphPin* Pin, bool bUndo, 
 		if(DefaultValue.IsEmpty() && (
 			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object ||
 			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftObject ||
-			Pin->PinType.PinCategory == UEdGraphSchema_K2::AllObjectTypes
+			Pin->PinType.PinCategory == UEdGraphSchema_K2::AllObjectTypes ||
+			Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface
 			))
 		{
 			if(Pin->DefaultObject)
@@ -983,15 +1032,15 @@ URigVMController* UControlRigGraphNode::GetController() const
 URigVMNode* UControlRigGraphNode::GetModelNode() const
 {
 	UControlRigGraphNode* MutableThis = (UControlRigGraphNode*)this;
-	if (CachedModelNode)
+	if (CachedModelNode.IsValid())
 	{
-		if (CachedModelNode->GetOuter() == GetTransientPackage())
+		if (CachedModelNode.Get()->GetOuter() == GetTransientPackage())
 		{
-			MutableThis->CachedModelNode = nullptr;
+			MutableThis->CachedModelNode.Reset();
 		}
 		else
 		{
-			return CachedModelNode;
+			return CachedModelNode.Get();
 		}
 	}
 
@@ -1001,14 +1050,16 @@ URigVMNode* UControlRigGraphNode::GetModelNode() const
 
 		if (Graph->TemplateController != nullptr)
 		{
-			return MutableThis->CachedModelNode = Graph->TemplateController->GetGraph()->FindNode(ModelNodePath);
+			MutableThis->CachedModelNode = TWeakObjectPtr<URigVMNode>(Graph->TemplateController->GetGraph()->FindNode(ModelNodePath));
+			return MutableThis->CachedModelNode.Get();
 		}
 
 #endif
 
 		if (URigVMGraph* Model = GetModel())
 		{
-			return MutableThis->CachedModelNode = Model->FindNode(ModelNodePath);
+			MutableThis->CachedModelNode = TWeakObjectPtr<URigVMNode>(Model->FindNode(ModelNodePath));
+			return MutableThis->CachedModelNode.Get();
 		}
 	}
 
@@ -1026,12 +1077,15 @@ FName UControlRigGraphNode::GetModelNodeName() const
 
 URigVMPin* UControlRigGraphNode::GetModelPinFromPinPath(const FString& InPinPath) const
 {
-	if (TObjectPtr<URigVMPin> const* CachedModelPinPtr = CachedModelPins.Find(InPinPath))
+	if (TWeakObjectPtr<URigVMPin> const* CachedModelPinPtr = CachedModelPins.Find(InPinPath))
 	{
-		URigVMPin* CachedModelPin = *CachedModelPinPtr;
-		if (!CachedModelPin->HasAnyFlags(RF_Transient) && CachedModelPin->GetNode())
+		if(CachedModelPinPtr->IsValid())
 		{
-			return CachedModelPin;
+			URigVMPin* CachedModelPin = CachedModelPinPtr->Get();
+			if (!CachedModelPin->HasAnyFlags(RF_Transient) && CachedModelPin->GetNode())
+			{
+				return CachedModelPin;
+			}
 		}
 	}
 
@@ -1048,6 +1102,16 @@ URigVMPin* UControlRigGraphNode::GetModelPinFromPinPath(const FString& InPinPath
 	}
 	
 	return nullptr;
+}
+
+void UControlRigGraphNode::HandleAddAggregateElement(const FString& InNodePath)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+	if (URigVMController* Controller = GetController())
+	{
+		Controller->AddAggregatePin(InNodePath, FString(), FString(), true, true);
+	}	
 }
 
 void UControlRigGraphNode::SetupPinDefaultsFromModel(UEdGraphPin* Pin)
@@ -1105,8 +1169,22 @@ void UControlRigGraphNode::AutowireNewNode(UEdGraphPin* FromPin)
 
 	const UControlRigGraphSchema* Schema = GetDefault<UControlRigGraphSchema>();
 
+	// copying high level information into a local array since the try create connection below
+	// may cause the pin array to be destroyed / changed
+	TArray<TPair<FName, EEdGraphPinDirection>> PinsToVisit;
 	for(UEdGraphPin* Pin : Pins)
 	{
+		PinsToVisit.Emplace(Pin->GetFName(), Pin->Direction);
+	}
+
+	for(const TPair<FName, EEdGraphPinDirection>& PinToVisit : PinsToVisit)
+	{
+		UEdGraphPin* Pin = FindPin(PinToVisit.Key, PinToVisit.Value);
+		if(Pin == nullptr)
+		{
+			continue;
+		}
+		
 		if (Pin->ParentPin != nullptr)
 		{
 			continue;
@@ -1118,9 +1196,9 @@ void UControlRigGraphNode::AutowireNewNode(UEdGraphPin* FromPin)
 			if (Schema->TryCreateConnection(FromPin, Pin))
 			{
 				break;
-					}
-				}
+			}
 		}
+	}
 }
 
 bool UControlRigGraphNode::IsSelectedInEditor() const
@@ -1152,64 +1230,19 @@ bool UControlRigGraphNode::ShouldDrawNodeAsControlPointOnly(int32& OutInputPinIn
 
 FEdGraphPinType UControlRigGraphNode::GetPinTypeForModelPin(URigVMPin* InModelPin)
 {
-	FEdGraphPinType PinType;
-	PinType.ResetToDefaults();
-
-	FName ModelPinCPPType = InModelPin->IsArray() ? *InModelPin->GetArrayElementCppType() : *InModelPin->GetCPPType();
-	if (ModelPinCPPType == TEXT("bool"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
-	}
-	else if (ModelPinCPPType == TEXT("int32"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-	}
-	else if (ModelPinCPPType == TEXT("float"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
-	}
-	else if (ModelPinCPPType == TEXT("double"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-	}
-	else if (ModelPinCPPType == TEXT("FName"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Name;
-	}
-	else if (ModelPinCPPType == TEXT("FString"))
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_String;
-	}
-	else if (InModelPin->GetScriptStruct() != nullptr)
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-		PinType.PinSubCategoryObject = InModelPin->GetScriptStruct();
-	}
-	else if (InModelPin->IsUObject())
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
-		PinType.PinSubCategoryObject = InModelPin->GetCPPTypeObject();
-	}
-	else if (InModelPin->GetEnum() != nullptr)
-	{
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Byte;
-		PinType.PinSubCategoryObject = InModelPin->GetEnum();
-	}
-
-	if (InModelPin->IsArray())
-	{
-		PinType.ContainerType = EPinContainerType::Array;
-	}
-	else
-	{
-		PinType.ContainerType = EPinContainerType::None;
-	}
-
+	FEdGraphPinType PinType = RigVMTypeUtils::PinTypeFromCPPType(*InModelPin->GetCPPType(), InModelPin->GetCPPTypeObject());
 	PinType.bIsConst = InModelPin->IsDefinedAsConstant();
-
 	return PinType;
 }
 
+void UControlRigGraphNode::ConfigurePin(UEdGraphPin* EdGraphPin, URigVMPin* ModelPin, bool bHidden, bool bConnectable)
+{
+	EdGraphPin->bHidden = bHidden;
+	EdGraphPin->PinFriendlyName = FText::FromName(ModelPin->GetDisplayName());
+	EdGraphPin->bNotConnectable = !bConnectable;
+	EdGraphPin->bOrphanedPin = ModelPin->IsOrphanPin() ? 1 : 0; 
+	EdGraphPin->bDisplayAsMutableRef = ModelPin->IsWildCard();
+}
+
 #undef LOCTEXT_NAMESPACE
+

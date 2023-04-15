@@ -1,16 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/MathStructCustomizations.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Text/STextBlock.h"
+
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/FrameNumber.h"
+#include "PropertyEditorModule.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/EnumProperty.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
 #include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+
+class FFieldClass;
+class SWidget;
+struct FSlateBrush;
+template <typename NumericType> class SSpinBox;
 
 
 #define LOCTEXT_NAMESPACE "FMathStructCustomization"
@@ -44,18 +70,13 @@ void FMathStructCustomization::CustomizeChildren(TSharedRef<class IPropertyHandl
 
 void FMathStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>& StructPropertyHandle, FDetailWidgetRow& Row)
 {
-	// We'll set up reset to default ourselves
-	const bool bDisplayResetToDefault = false;
-	const FText DisplayNameOverride = FText::GetEmpty();
-	const FText DisplayToolTipOverride = FText::GetEmpty();
-
 	TWeakPtr<IPropertyHandle> StructWeakHandlePtr = StructPropertyHandle;
 
 	TSharedPtr<SHorizontalBox> HorizontalBox;
 
 	Row.NameContent()
 	[
-		StructPropertyHandle->CreatePropertyNameWidget(DisplayNameOverride, DisplayToolTipOverride, bDisplayResetToDefault)
+		StructPropertyHandle->CreatePropertyNameWidget()
 	]
 	.ValueContent()
 	// Make enough space for each child handle
@@ -111,7 +132,7 @@ void FMathStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>& 
 			SNew(SCheckBox)
 			.IsChecked(this, &FMathStructCustomization::IsPreserveScaleRatioChecked)
 			.OnCheckStateChanged(this, &FMathStructCustomization::OnPreserveScaleRatioToggled, StructWeakHandlePtr)
-			.Style(FEditorStyle::Get(), "TransparentCheckBox")
+			.Style(FAppStyle::Get(), "TransparentCheckBox")
 			.ToolTipText(LOCTEXT("PreserveScaleToolTip", "When locked, scales uniformly based on the current xyz scale values so the object maintains its shape in each direction when scaled"))
 			[
 				SNew(SImage)
@@ -125,7 +146,7 @@ void FMathStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>& 
 
 const FSlateBrush* FMathStructCustomization::GetPreserveScaleRatioImage() const
 {
-	return bPreserveScaleRatio ? FEditorStyle::GetBrush(TEXT("Icons.Lock")) : FEditorStyle::GetBrush(TEXT("Icons.Unlock"));
+	return bPreserveScaleRatio ? FAppStyle::GetBrush(TEXT("Icons.Lock")) : FAppStyle::GetBrush(TEXT("Icons.Unlock"));
 }
 
 
@@ -418,6 +439,21 @@ TSharedRef<SWidget> FMathStructCustomization::MakeChildWidget(
 		return MakeNumericWidget<int32>(StructurePropertyHandle, PropertyHandle);
 	}
 
+	if (PropertyClass == FInt64Property::StaticClass())
+	{
+		return MakeNumericWidget<int64>(StructurePropertyHandle, PropertyHandle);
+	}
+
+	if (PropertyClass == FUInt32Property::StaticClass())
+	{
+		return MakeNumericWidget<uint32>(StructurePropertyHandle, PropertyHandle);
+	}
+
+	if (PropertyClass == FUInt64Property::StaticClass())
+	{
+		return MakeNumericWidget<uint64>(StructurePropertyHandle, PropertyHandle);
+	}
+
 	if (PropertyClass == FByteProperty::StaticClass())
 	{
 		return MakeNumericWidget<uint8>(StructurePropertyHandle, PropertyHandle);
@@ -470,7 +506,7 @@ void FMathStructCustomization::OnValueChanged(NumericType NewValue, TWeakPtr<IPr
 {
 	if (bIsUsingSlider)
 	{
-		EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::InteractiveChange;
+		EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable;
 		SetValue(NewValue, Flags, WeakHandlePtr);
 	}
 }

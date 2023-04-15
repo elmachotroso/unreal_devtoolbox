@@ -6,8 +6,6 @@ public class AnimationBlueprintEditor : ModuleRules
 {
 	public AnimationBlueprintEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Editor/AnimationBlueprintEditor/Private");	// For PCH includes (because they don't work with relative paths, yet)
-
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry", 
@@ -17,7 +15,14 @@ public class AnimationBlueprintEditor : ModuleRules
                 "ContentBrowser",
                 "AssetTools",
                 "AnimationEditor",
-            }
+				"MessageLog"
+			}
+		);
+
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("Persona"), "Private"),
+			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
@@ -62,6 +67,7 @@ public class AnimationBlueprintEditor : ModuleRules
             new string[] {
                 "Kismet",
                 "Persona",
+				"EditorFramework"
             }
         );
     }

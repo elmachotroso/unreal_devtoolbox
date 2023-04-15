@@ -202,7 +202,6 @@
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
 #include "Containers/StaticArray.h"
-#include "Misc/ITransaction.h"
 #include "Templates/ScopedCallback.h"
 #include "Misc/CoreStats.h"
 #include "HAL/PlatformProcess.h"
@@ -446,8 +445,8 @@
 #include "IMessageContext.h"
 
 // From AssetRegistry:
-#include "AssetData.h"
-#include "ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/ARFilter.h"
 
 // From Engine:
 #include "EngineLogs.h"
@@ -458,7 +457,6 @@
 #include "EdGraph/EdGraphPin.h"
 #include "Interfaces/Interface_AssetUserData.h"
 #include "Components/ActorComponent.h"
-#include "ComponentInstanceDataCache.h"
 #include "Components/SceneComponent.h"
 #include "Engine/MaterialMerging.h"
 #include "Engine/Level.h"
@@ -584,9 +582,6 @@
 #include "Animation/AnimSequence.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 
-// From EditorStyle:
-#include "EditorStyleSet.h"
-
 // From BlueprintGraph:
 #include "BlueprintNodeSignature.h"
 #include "K2Node.h"
@@ -604,7 +599,6 @@
 #include "TickableEditorObject.h"
 #include "Editor/UnrealEdTypes.h"
 #include "Viewports.h"
-#include "Editor/Transactor.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/EditorEngine.h"
@@ -621,3 +615,6 @@
 #include "EditorViewportClient.h"
 #include "Factories/Factory.h"
 #include "Settings/EditorLoadingSavingSettings.h"
+
+// From ToolMenus
+#include "ToolMenus.h"

@@ -14,6 +14,8 @@
 #include "VT/VirtualTexture.h"
 #include "VT/VirtualTextureLevelRedirector.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RuntimeVirtualTexture)
+
 namespace
 {
 	/** Null producer to use as placeholder when no producer has been set on a URuntimeVirtualTexture */
@@ -122,7 +124,7 @@ public:
 	/** Getter for the virtual texture allocation. */
 	IAllocatedVirtualTexture* GetAllocatedVirtualTexture() const 
 	{
-		checkSlow(IsInRenderingThread());
+		checkSlow(IsInParallelRenderingThread());
 		return AdaptiveVirtualTexture != nullptr ? AdaptiveVirtualTexture->GetAllocatedVirtualTexture() : AllocatedVirtualTexture;
 	}
 
@@ -561,11 +563,14 @@ void URuntimeVirtualTexture::InitResource(IVirtualTexture* InProducer, FVTProduc
 
 void URuntimeVirtualTexture::InitNullResource()
 {
-	FNullVirtualTextureProducer* Producer = new FNullVirtualTextureProducer;
-	FVTProducerDescription ProducerDesc;
-	FNullVirtualTextureProducer::GetNullProducerDescription(ProducerDesc);
-	FRuntimeVirtualTextureRenderResource::FResourceInitDesc InitDesc;
-	Resource->Init(Producer, ProducerDesc, InitDesc);
+	if (FApp::CanEverRender() && !HasAnyFlags(RF_ClassDefaultObject))
+	{
+		FNullVirtualTextureProducer* Producer = new FNullVirtualTextureProducer;
+		FVTProducerDescription ProducerDesc;
+		FNullVirtualTextureProducer::GetNullProducerDescription(ProducerDesc);
+		FRuntimeVirtualTextureRenderResource::FResourceInitDesc InitDesc;
+		Resource->Init(Producer, ProducerDesc, InitDesc);
+	}
 }
 
 void URuntimeVirtualTexture::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -670,3 +675,4 @@ namespace RuntimeVirtualTexture
 		return (InStreamingProducer == nullptr) ? InProducer : new FVirtualTextureLevelRedirector(InProducer, InStreamingProducer, InTransitionLevel);
 	}
 }
+

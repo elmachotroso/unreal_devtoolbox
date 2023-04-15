@@ -14,6 +14,8 @@
 #include "Algo/Transform.h"
 #include "AudioDeviceManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioMixerBlueprintLibrary)
+
 // This is our global recording task:
 static TUniquePtr<Audio::FAudioRecordingData> RecordingData;
 
@@ -534,12 +536,11 @@ void UAudioMixerBlueprintLibrary::RemoveSourceEffectFromPresetChain(const UObjec
 			Chain = PresetChain->Chain;
 		}
 
-		if (EntryIndex < Chain.Num())
+		if (EntryIndex >= 0 && EntryIndex < Chain.Num())
 		{
 			Chain.RemoveAt(EntryIndex);
+			MixerDevice->UpdateSourceEffectChain(PresetChainId, Chain, PresetChain->bPlayEffectChainTails);
 		}
-
-		MixerDevice->UpdateSourceEffectChain(PresetChainId, Chain, PresetChain->bPlayEffectChainTails);
 	}
 
 }
@@ -563,12 +564,11 @@ void UAudioMixerBlueprintLibrary::SetBypassSourceEffectChainEntry(const UObject*
 			Chain = PresetChain->Chain;
 		}
 
-		if (EntryIndex < Chain.Num())
+		if (EntryIndex >= 0 && EntryIndex < Chain.Num())
 		{
 			Chain[EntryIndex].bBypass = bBypassed;
+			MixerDevice->UpdateSourceEffectChain(PresetChainId, Chain, PresetChain->bPlayEffectChainTails);
 		}
-
-		MixerDevice->UpdateSourceEffectChain(PresetChainId, Chain, PresetChain->bPlayEffectChainTails);
 	}
 }
 
@@ -644,6 +644,11 @@ float UAudioMixerBlueprintLibrary::TrimAudioCache(float InMegabytesToFree)
 
 void UAudioMixerBlueprintLibrary::StartAudioBus(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
+	if (!AudioBus)
+	{
+		UE_LOG(LogAudioMixer, Error, TEXT("Start Audio Bus called with an invalid Audio Bus."));
+		return;
+	}
 	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();
@@ -658,6 +663,11 @@ void UAudioMixerBlueprintLibrary::StartAudioBus(const UObject* WorldContextObjec
 
 void UAudioMixerBlueprintLibrary::StopAudioBus(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
+	if (!AudioBus)
+	{
+		UE_LOG(LogAudioMixer, Error, TEXT("Stop Audio Bus called with an invalid Audio Bus."));
+		return;
+	}
 	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();
@@ -671,6 +681,11 @@ void UAudioMixerBlueprintLibrary::StopAudioBus(const UObject* WorldContextObject
 
 bool UAudioMixerBlueprintLibrary::IsAudioBusActive(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
+	if (!AudioBus)
+	{
+		UE_LOG(LogAudioMixer, Error, TEXT("Is Audio Bus Active called with an invalid Audio Bus."));
+		return false;
+	}
 	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();

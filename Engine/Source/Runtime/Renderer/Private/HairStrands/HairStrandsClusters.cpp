@@ -556,14 +556,6 @@ void ComputeHairStrandsClustersCulling(
 	TRACE_CPUPROFILER_EVENT_SCOPE(ComputeHairStrandsClustersCulling);
 	RDG_GPU_STAT_SCOPE(GraphBuilder, HairStrandsClusterCulling);
 
-	uint32 ViewCount = Views.Num();
-	TArray<const FSceneView*> SceneViews;
-	SceneViews.SetNumUninitialized(ViewCount);
-	for (uint32 ViewId = 0; ViewId < ViewCount; ++ViewId)
-	{
-		SceneViews[ViewId] = &Views[ViewId];
-	}
-
 	const bool bClusterCulling = IsHairStrandsClusterCullingEnable();
 	for (const FViewInfo& View : Views)
 	{

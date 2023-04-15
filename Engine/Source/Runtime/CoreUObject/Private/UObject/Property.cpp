@@ -24,9 +24,6 @@
 #include "Math/InterpCurvePoint.h"
 #include "UObject/ReleaseObjectVersion.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 DEFINE_LOG_CATEGORY(LogProperty);
 
 // List the core ones here as they have already been included (and can be used without CoreUObject!)
@@ -46,12 +43,12 @@ struct TVector3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FVector3f> : public TVector3StructOpsTypeTraits<FVector3f> {};
 template<> struct TStructOpsTypeTraits<FVector3d> : public TVector3StructOpsTypeTraits<FVector3d> {};
-IMPLEMENT_STRUCT(Vector3f);
-IMPLEMENT_STRUCT(Vector3d);
-IMPLEMENT_STRUCT(Vector);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector);	// Aliased
 
-template<>
-struct TStructOpsTypeTraits<FIntPoint> : public TStructOpsTypeTraitsBase2<FIntPoint>
+template<typename T>
+struct TIntPointStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum 
 	{
@@ -59,12 +56,22 @@ struct TStructOpsTypeTraits<FIntPoint> : public TStructOpsTypeTraitsBase2<FIntPo
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
 		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(IntPoint);
+template<> struct TStructOpsTypeTraits<FInt32Point> : public TIntPointStructOpsTypeTraits<FInt32Point> {};
+template<> struct TStructOpsTypeTraits<FInt64Point> : public TIntPointStructOpsTypeTraits<FInt64Point> {};
+template<> struct TStructOpsTypeTraits<FUint32Point> : public TIntPointStructOpsTypeTraits<FUint32Point> {};
+template<> struct TStructOpsTypeTraits<FUint64Point> : public TIntPointStructOpsTypeTraits<FUint64Point> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int32Point);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int64Point);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint32Point);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint64Point);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", IntPoint);		// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", UintPoint);		// Aliased
 
-template<>
-struct TStructOpsTypeTraits<FIntVector> : public TStructOpsTypeTraitsBase2<FIntVector>
+template<typename T>
+struct TIntVectorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 {
 	enum
 	{
@@ -72,9 +79,41 @@ struct TStructOpsTypeTraits<FIntVector> : public TStructOpsTypeTraitsBase2<FIntV
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
 		WithSerializer = true,
+		WithSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(IntVector);
+template<> struct TStructOpsTypeTraits<FInt32Vector2> : public TIntVectorStructOpsTypeTraits<FInt32Vector2> {};
+template<> struct TStructOpsTypeTraits<FInt64Vector2> : public TIntVectorStructOpsTypeTraits<FInt64Vector2> {};
+template<> struct TStructOpsTypeTraits<FUint32Vector2> : public TIntVectorStructOpsTypeTraits<FUint32Vector2> {};
+template<> struct TStructOpsTypeTraits<FUint64Vector2> : public TIntVectorStructOpsTypeTraits<FUint64Vector2> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int32Vector2);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int64Vector2);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint32Vector2);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint64Vector2);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", IntVector2);		// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", UintVector2);	// Aliased
+
+template<> struct TStructOpsTypeTraits<FInt32Vector3> : public TIntVectorStructOpsTypeTraits<FInt32Vector3> {};
+template<> struct TStructOpsTypeTraits<FInt64Vector3> : public TIntVectorStructOpsTypeTraits<FInt64Vector3> {};
+template<> struct TStructOpsTypeTraits<FUint32Vector3> : public TIntVectorStructOpsTypeTraits<FUint32Vector3> {};
+template<> struct TStructOpsTypeTraits<FUint64Vector3> : public TIntVectorStructOpsTypeTraits<FUint64Vector3> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int32Vector);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int64Vector);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint32Vector);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint64Vector);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", IntVector);		// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", UintVector);		// Aliased
+
+template<> struct TStructOpsTypeTraits<FInt32Vector4> : public TIntVectorStructOpsTypeTraits<FInt32Vector4> {};
+template<> struct TStructOpsTypeTraits<FInt64Vector4> : public TIntVectorStructOpsTypeTraits<FInt64Vector4> {};
+template<> struct TStructOpsTypeTraits<FUint32Vector4> : public TIntVectorStructOpsTypeTraits<FUint32Vector4> {};
+template<> struct TStructOpsTypeTraits<FUint64Vector4> : public TIntVectorStructOpsTypeTraits<FUint64Vector4> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int32Vector4);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Int64Vector4);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint32Vector4);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Uint64Vector4); 
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", IntVector4);		// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", UintVector4);	// Aliased
 
 template<typename T>
 struct TVector2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -92,9 +131,9 @@ struct TVector2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FVector2f> : public TVector2StructOpsTypeTraits<FVector2f> {};
 template<> struct TStructOpsTypeTraits<FVector2d> : public TVector2StructOpsTypeTraits<FVector2d> {};
-IMPLEMENT_STRUCT(Vector2f);
-IMPLEMENT_STRUCT(Vector2d);
-IMPLEMENT_STRUCT(Vector2D);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector2f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector2d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector2D);
 
 template<typename T>
 struct TVector4StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -110,9 +149,9 @@ struct TVector4StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FVector4f> : public TVector4StructOpsTypeTraits<FVector4f> {};
 template<> struct TStructOpsTypeTraits<FVector4d> : public TVector4StructOpsTypeTraits<FVector4d> {};
-IMPLEMENT_STRUCT(Vector4f);
-IMPLEMENT_STRUCT(Vector4d);
-IMPLEMENT_STRUCT(Vector4);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector4f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector4d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Vector4);	// Aliased
 
 template<typename T>
 struct TPlaneStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -130,9 +169,9 @@ struct TPlaneStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FPlane4f> : public TPlaneStructOpsTypeTraits<FPlane4f> {};
 template<> struct TStructOpsTypeTraits<FPlane4d> : public TPlaneStructOpsTypeTraits<FPlane4d> {};
-IMPLEMENT_STRUCT(Plane4f);
-IMPLEMENT_STRUCT(Plane4d);
-IMPLEMENT_STRUCT(Plane);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Plane4f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Plane4d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Plane);	// Aliased
 
 template<typename T>
 struct TRotatorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -151,9 +190,9 @@ struct TRotatorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 
 template<> struct TStructOpsTypeTraits<FRotator3f> : public TRotatorStructOpsTypeTraits<FRotator3f> {};
 template<> struct TStructOpsTypeTraits<FRotator3d> : public TRotatorStructOpsTypeTraits<FRotator3d> {};
-IMPLEMENT_STRUCT(Rotator3f);
-IMPLEMENT_STRUCT(Rotator3d);
-IMPLEMENT_STRUCT(Rotator);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Rotator3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Rotator3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Rotator);	// Aliased
 
 template<typename T>
 struct TBox3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -169,9 +208,9 @@ struct TBox3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FBox3f> : public TBox3StructOpsTypeTraits<FBox3f> {};
 template<> struct TStructOpsTypeTraits<FBox3d> : public TBox3StructOpsTypeTraits<FBox3d> {};
-IMPLEMENT_STRUCT(Box3f);
-IMPLEMENT_STRUCT(Box3d);
-IMPLEMENT_STRUCT(Box);		// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box);		// Aliased
 
 template<typename T>
 struct TBox2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -186,9 +225,9 @@ struct TBox2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FBox2f> : public TBox2StructOpsTypeTraits<FBox2f> {};
 template<> struct TStructOpsTypeTraits<FBox2d> : public TBox2StructOpsTypeTraits<FBox2d> {};
-IMPLEMENT_STRUCT(Box2f);
-IMPLEMENT_STRUCT(Box2d);
-IMPLEMENT_STRUCT(Box2D);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box2f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box2d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Box2D);
 
 template<typename T>
 struct TMatrixStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -205,9 +244,9 @@ struct TMatrixStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 
 template<> struct TStructOpsTypeTraits<FMatrix44f> : public TMatrixStructOpsTypeTraits<FMatrix44f> {};
 template<> struct TStructOpsTypeTraits<FMatrix44d> : public TMatrixStructOpsTypeTraits<FMatrix44d> {};
-IMPLEMENT_STRUCT(Matrix44f);
-IMPLEMENT_STRUCT(Matrix44d);
-IMPLEMENT_STRUCT(Matrix);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Matrix44f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Matrix44d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Matrix);	// Aliased
 
 template<typename T>
 struct TBoxSphereBoundsStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -222,15 +261,15 @@ struct TBoxSphereBoundsStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FBoxSphereBounds3f> : public TBoxSphereBoundsStructOpsTypeTraits<FBoxSphereBounds3f> {};
 template<> struct TStructOpsTypeTraits<FBoxSphereBounds3d> : public TBoxSphereBoundsStructOpsTypeTraits<FBoxSphereBounds3d> {};
-IMPLEMENT_STRUCT(BoxSphereBounds3f);
-IMPLEMENT_STRUCT(BoxSphereBounds3d);
-IMPLEMENT_STRUCT(BoxSphereBounds);	// Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", BoxSphereBounds3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", BoxSphereBounds3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", BoxSphereBounds);	// Aliased
 
 template<>
 struct TStructOpsTypeTraits<FOrientedBox> : public TStructOpsTypeTraitsBase2<FOrientedBox>
 {
 };
-IMPLEMENT_STRUCT(OrientedBox);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", OrientedBox);
 
 template<>
 struct TStructOpsTypeTraits<FLinearColor> : public TStructOpsTypeTraitsBase2<FLinearColor>
@@ -243,7 +282,7 @@ struct TStructOpsTypeTraits<FLinearColor> : public TStructOpsTypeTraitsBase2<FLi
 		WithStructuredSerializer = true,
 	};
 };
-IMPLEMENT_STRUCT(LinearColor);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", LinearColor);
 
 template<>
 struct TStructOpsTypeTraits<FColor> : public TStructOpsTypeTraitsBase2<FColor>
@@ -256,7 +295,7 @@ struct TStructOpsTypeTraits<FColor> : public TStructOpsTypeTraitsBase2<FColor>
 		WithSerializer = true,
 	};
 };
-IMPLEMENT_STRUCT(Color);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Color);
 
 
 template<typename T>
@@ -275,9 +314,9 @@ struct TQuatStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FQuat4f> : public TQuatStructOpsTypeTraits<FQuat4f> {};
 template<> struct TStructOpsTypeTraits<FQuat4d> : public TQuatStructOpsTypeTraits<FQuat4d> {};
-IMPLEMENT_STRUCT(Quat4f);
-IMPLEMENT_STRUCT(Quat4d);
-IMPLEMENT_STRUCT(Quat);		// Aliased to one of FQuat4f/FQuat4d
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Quat4f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Quat4d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Quat);		// Aliased to one of FQuat4f/FQuat4d
 
 template<>
 struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwoVectors>
@@ -290,7 +329,7 @@ struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwo
 		WithNoDestructor = true,
 	};
 };
-IMPLEMENT_STRUCT(TwoVectors);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", TwoVectors);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointFloat> : public TStructOpsTypeTraitsBase2<FInterpCurvePointFloat>
@@ -300,7 +339,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointFloat> : public TStructOpsTypeTrait
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointFloat);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointFloat);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointVector2D> : public TStructOpsTypeTraitsBase2<FInterpCurvePointVector2D>
@@ -310,7 +349,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointVector2D> : public TStructOpsTypeTr
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointVector2D);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointVector2D);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointVector> : public TStructOpsTypeTraitsBase2<FInterpCurvePointVector>
@@ -320,7 +359,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointVector> : public TStructOpsTypeTrai
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointVector);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointVector);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointQuat> : public TStructOpsTypeTraitsBase2<FInterpCurvePointQuat>
@@ -330,7 +369,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointQuat> : public TStructOpsTypeTraits
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointQuat);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointQuat);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointTwoVectors> : public TStructOpsTypeTraitsBase2<FInterpCurvePointTwoVectors>
@@ -340,7 +379,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointTwoVectors> : public TStructOpsType
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointTwoVectors);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointTwoVectors);
 
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointLinearColor> : public TStructOpsTypeTraitsBase2<FInterpCurvePointLinearColor>
@@ -350,7 +389,7 @@ struct TStructOpsTypeTraits<FInterpCurvePointLinearColor> : public TStructOpsTyp
 		WithNoInitConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(InterpCurvePointLinearColor);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", InterpCurvePointLinearColor);
 
 template<>
 struct TStructOpsTypeTraits<FGuid> : public TStructOpsTypeTraitsBase2<FGuid>
@@ -365,7 +404,7 @@ struct TStructOpsTypeTraits<FGuid> : public TStructOpsTypeTraitsBase2<FGuid>
 		WithStructuredSerializer = true,
 	};
 };
-IMPLEMENT_STRUCT(Guid);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Guid);
 
 template<typename T>
 struct TTransformStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
@@ -379,9 +418,9 @@ struct TTransformStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 };
 template<> struct TStructOpsTypeTraits<FTransform3f> : public TTransformStructOpsTypeTraits<FTransform3f> {};
 template<> struct TStructOpsTypeTraits<FTransform3d> : public TTransformStructOpsTypeTraits<FTransform3d> {};
-IMPLEMENT_STRUCT(Transform3f);
-IMPLEMENT_STRUCT(Transform3d);
-IMPLEMENT_STRUCT(Transform); // Aliased
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Transform3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Transform3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Transform); // Aliased
 
 template<>
 struct TStructOpsTypeTraits<FRandomStream> : public TStructOpsTypeTraitsBase2<FRandomStream>
@@ -393,7 +432,7 @@ struct TStructOpsTypeTraits<FRandomStream> : public TStructOpsTypeTraitsBase2<FR
 		WithZeroConstructor = true,
 	};
 };
-IMPLEMENT_STRUCT(RandomStream);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", RandomStream);
 
 template<>
 struct TStructOpsTypeTraits<FDateTime> : public TStructOpsTypeTraitsBase2<FDateTime>
@@ -409,7 +448,7 @@ struct TStructOpsTypeTraits<FDateTime> : public TStructOpsTypeTraitsBase2<FDateT
 		WithIdenticalViaEquality = true,
 	};
 };
-IMPLEMENT_STRUCT(DateTime);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", DateTime);
 
 template<>
 struct TStructOpsTypeTraits<FTimespan> : public TStructOpsTypeTraitsBase2<FTimespan>
@@ -426,7 +465,7 @@ struct TStructOpsTypeTraits<FTimespan> : public TStructOpsTypeTraitsBase2<FTimes
 		WithIdenticalViaEquality = true,
 	};
 };
-IMPLEMENT_STRUCT(Timespan);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Timespan);
 
 template<>
 struct TStructOpsTypeTraits<FFrameNumber> : public TStructOpsTypeTraitsBase2<FFrameNumber>
@@ -437,7 +476,7 @@ struct TStructOpsTypeTraits<FFrameNumber> : public TStructOpsTypeTraitsBase2<FFr
 		WithIdenticalViaEquality = true
 	};
 };
-IMPLEMENT_STRUCT(FrameNumber);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", FrameNumber);
 
 template<>
 struct TStructOpsTypeTraits<FSoftObjectPath> : public TStructOpsTypeTraitsBase2<FSoftObjectPath>
@@ -453,7 +492,7 @@ struct TStructOpsTypeTraits<FSoftObjectPath> : public TStructOpsTypeTraitsBase2<
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(SoftObjectPath);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", SoftObjectPath);
 
 template<>
 struct TStructOpsTypeTraits<FSoftClassPath> : public TStructOpsTypeTraitsBase2<FSoftClassPath>
@@ -469,7 +508,7 @@ struct TStructOpsTypeTraits<FSoftClassPath> : public TStructOpsTypeTraitsBase2<F
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(SoftClassPath);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", SoftClassPath);
 
 template<>
 struct TStructOpsTypeTraits<FPrimaryAssetType> : public TStructOpsTypeTraitsBase2<FPrimaryAssetType>
@@ -484,7 +523,7 @@ struct TStructOpsTypeTraits<FPrimaryAssetType> : public TStructOpsTypeTraitsBase
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(PrimaryAssetType);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", PrimaryAssetType);
 
 template<>
 struct TStructOpsTypeTraits<FPrimaryAssetId> : public TStructOpsTypeTraitsBase2<FPrimaryAssetId>
@@ -499,13 +538,13 @@ struct TStructOpsTypeTraits<FPrimaryAssetId> : public TStructOpsTypeTraitsBase2<
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
 };
-IMPLEMENT_STRUCT(PrimaryAssetId);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", PrimaryAssetId);
 
 template<>
 struct TStructOpsTypeTraits<FFallbackStruct> : public TStructOpsTypeTraitsBase2<FFallbackStruct>
 {
 };
-IMPLEMENT_STRUCT(FallbackStruct);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", FallbackStruct);
 
 /*-----------------------------------------------------------------------------
 	Helpers.
@@ -522,7 +561,7 @@ FORCEINLINE constexpr FStringView ParsePropertyToken(const TCHAR* Str, bool Dott
 {
 	constexpr FAsciiSet RegularTokenChars = AlphaNumericChars  + '_' + '-' + '+';
 	constexpr FAsciiSet RegularNonTokenChars = ~RegularTokenChars;
-	constexpr FAsciiSet DottedNonTokenChars = ~(RegularTokenChars + '.' + '/' + SUBOBJECT_DELIMITER_CHAR);
+	constexpr FAsciiSet DottedNonTokenChars = ~(RegularTokenChars + '.' + '/' + (char)SUBOBJECT_DELIMITER_CHAR);
 	FAsciiSet CurrentNonTokenChars = DottedNames ? DottedNonTokenChars : RegularNonTokenChars;
 
 	const TCHAR* TokenEnd = FAsciiSet::FindFirstOrEnd(Str, CurrentNonTokenChars);
@@ -593,7 +632,7 @@ FString FGCStackSizeHelper::GetPropertyPath() const
 {
 	FString Result;
 	const FProperty* PreviousProperty = nullptr;
-	const TCHAR DelimiterChar = '.';
+	const TCHAR DelimiterChar = TEXT('.');
 
 	for (int32 PropertyIndex = 0; PropertyIndex < PropertyStack.Num(); ++PropertyIndex)
 	{
@@ -617,7 +656,7 @@ FString FGCStackSizeHelper::GetPropertyPath() const
 
 bool FGCStackSizeHelper::ConvertPathToProperties(UClass* ObjectClass, const FName& InPropertyPath, TArray<FProperty*>& OutProperties)
 {
-	const TCHAR DelimiterChar = '.';
+	const TCHAR DelimiterChar = TEXT('.');
 	FString PropertyNameOrPath = InPropertyPath.ToString();
 	int32 DelimiterIndex = -1;
 	bool bFullPathConstructed = true;
@@ -645,7 +684,7 @@ bool FGCStackSizeHelper::ConvertPathToProperties(UClass* ObjectClass, const FNam
 			OutProperties.Add(FoundProperty);
 
 			int32 StartIndex = DelimiterIndex + 1;
-			const TCHAR DelimiterStr[] = { DelimiterChar, '\0' };
+			const TCHAR DelimiterStr[] = { DelimiterChar, TEXT('\0') };
 			do
 			{
 				// Determine the next property name
@@ -713,6 +752,40 @@ FProperty::FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags In
 	, RepIndex(0)
 	, BlueprintReplicationCondition(COND_None)
 	, Offset_Internal(InOffset)
+	, PropertyLinkNext(nullptr)
+	, NextRef(nullptr)
+	, DestructorLinkNext(nullptr)
+	, PostConstructLinkNext(nullptr)
+{
+	Init();
+}
+
+FProperty::FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop, EPropertyFlags AdditionalPropertyFlags /*= CPF_None*/)
+	: FField(InOwner, UTF8_TO_TCHAR(Prop.NameUTF8), Prop.ObjectFlags)
+	, ArrayDim(1)
+	, ElementSize(0)
+	, PropertyFlags(Prop.PropertyFlags | AdditionalPropertyFlags)
+	, RepIndex(0)
+	, BlueprintReplicationCondition(COND_None)
+	, Offset_Internal(0)
+	, PropertyLinkNext(nullptr)
+	, NextRef(nullptr)
+	, DestructorLinkNext(nullptr)
+	, PostConstructLinkNext(nullptr)
+{
+	this->Offset_Internal = Prop.Offset;
+
+	Init();
+}
+
+FProperty::FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithoutOffset& Prop, EPropertyFlags AdditionalPropertyFlags /*= CPF_None*/)
+	: FField(InOwner, UTF8_TO_TCHAR(Prop.NameUTF8), Prop.ObjectFlags)
+	, ArrayDim(1)
+	, ElementSize(0)
+	, PropertyFlags(Prop.PropertyFlags | AdditionalPropertyFlags)
+	, RepIndex(0)
+	, BlueprintReplicationCondition(COND_None)
+	, Offset_Internal(0)
 	, PropertyLinkNext(nullptr)
 	, NextRef(nullptr)
 	, DestructorLinkNext(nullptr)
@@ -957,7 +1030,7 @@ void FProperty::ExportCppDeclaration(FOutputDevice& Out, EExportedDeclaration::T
 		NameCpp = FString(TEXT(", ")) + NameCpp;
 	}
 
-	TCHAR ArrayStr[MAX_SPRINTF]=TEXT("");
+	TCHAR ArrayStr[MAX_SPRINTF] = {};
 	const bool bExportStaticArray = 0 == (CPPF_NoStaticArray & AdditionalExportCPPFlags);
 	if ((ArrayDim != 1) && bExportStaticArray)
 	{
@@ -1020,7 +1093,7 @@ void FProperty::ExportCppDeclaration(FOutputDevice& Out, EExportedDeclaration::T
 				else
 				{
 					// export as a pointer if this is an optional out parm, reference if it's just an out parm, standard otherwise...
-					TCHAR ModifierString[2]={0,0};
+					TCHAR ModifierString[2] = { TCHAR('\0'), TCHAR('\0') };
 					if (bCanHaveRef && (HasAnyPropertyFlags(CPF_OutParm | CPF_ReferenceParm) || bIsInterfaceProp))
 					{
 						ModifierString[0] = TEXT('&');
@@ -1042,16 +1115,17 @@ bool FProperty::ExportText_Direct
 	const void*	Data,
 	const void*	Delta,
 	UObject*	Parent,
-	int32			PortFlags,
+	int32		PortFlags,
 	UObject*	ExportRootScope
 	) const
 {
 	if( Data==Delta || !Identical(Data,Delta,PortFlags) )
 	{
-		ExportTextItem
+		ExportText_Internal
 			(
 			ValueStr,
 			(uint8*)Data,
+			EPropertyPointerType::Direct,
 			(uint8*)Delta,
 			Parent,
 			PortFlags,
@@ -1224,6 +1298,145 @@ bool FProperty::SameType(const FProperty* Other) const
 	return Other && (GetClass() == Other->GetClass());
 }
 
+void* FProperty::AllocateAndInitializeValue() const
+{
+	void* Memory = (uint8*)FMemory::MallocZeroed(GetSize(), GetMinAlignment());
+	if (!HasAnyPropertyFlags(CPF_ZeroConstructor)) // this stuff is already zero
+	{
+		InitializeValue(Memory);
+	}
+	return Memory;
+}
+
+void FProperty::DestroyAndFreeValue(void* InMemory) const
+{
+	if (InMemory)
+	{
+		DestroyValue(InMemory);
+		FMemory::Free(InMemory);
+	}
+}
+
+void* FProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const
+{
+	checkf(Inner == nullptr, TEXT("%s should not have an inner property or it's missing specialized GetValueAddressAtIndex_Direct override"), *GetFullName());
+	checkf(Index < ArrayDim && Index >= 0, TEXT("Array index (%d) out of range"), Index);
+	return (uint8*)InValueAddress + ElementSize * Index;
+}
+
+void FProperty::SetSingleValue_InContainer(void* InContainer, const void* InValue, int32 ArrayIndex) const
+{
+	checkf(ArrayIndex <= ArrayDim, TEXT("ArrayIndex (%d) must be less than the property %s array size (%d)"), ArrayIndex, *GetFullName(), ArrayDim);
+	if (!HasSetter())
+	{
+		// Fast path - direct memory access
+		CopySingleValue(ContainerVoidPtrToValuePtrInternal((void*)InContainer, ArrayIndex), InValue);
+	}
+	else
+	{
+		if (ArrayDim == 1)
+		{
+			// Slower but no mallocs. We can copy the value directly to the resulting param
+			CallSetter(InContainer, InValue);
+		}
+		else
+		{
+			// Malloc a temp value that is the size of the array. We will then copy the entire array to the temp value
+			uint8* ValueArray = (uint8*)AllocateAndInitializeValue();
+			GetValue_InContainer(InContainer, ValueArray);
+			// Replace the value at the specified index in the temp array with the InValue
+			CopySingleValue(ValueArray + ArrayIndex * ElementSize, InValue);
+			// Now call a setter to replace the entire array and then destroy the temp value
+			CallSetter(InContainer, ValueArray);
+			DestroyAndFreeValue(ValueArray);
+		}
+	}
+}
+
+void FProperty::GetSingleValue_InContainer(const void* InContainer, void* OutValue, int32 ArrayIndex) const
+{
+	checkf(ArrayIndex <= ArrayDim, TEXT("ArrayIndex (%d) must be less than the property %s array size (%d)"), ArrayIndex, *GetFullName(), ArrayDim);
+	if (!HasGetter())
+	{
+		// Fast path - direct memory access
+		CopySingleValue(OutValue, ContainerVoidPtrToValuePtrInternal((void*)InContainer, ArrayIndex));
+	}
+	else
+	{
+		if (ArrayDim == 1)
+		{
+			// Slower but no mallocs. We can copy the value directly to the resulting param
+			CallGetter(InContainer, OutValue);
+		}
+		else
+		{
+			// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
+			uint8* ValueArray = (uint8*)AllocateAndInitializeValue();
+			GetValue_InContainer(InContainer, ValueArray);
+			// Copy the item we care about and free the temp array
+			CopySingleValue(OutValue, ValueArray + ArrayIndex * ElementSize);
+			DestroyAndFreeValue(ValueArray);
+		}
+	}
+}
+
+void FProperty::PerformOperationWithSetter(void* InContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const
+{
+	if (InContainer && HasSetterOrGetter()) // If there's a getter we need to allocate a temp value even if there's no setter
+	{
+		// When modifying container or struct properties that have a setter or getter function we first allocate a temp value
+		// that we can operate on directly (add new elements or modify existing ones)
+		void* LocalValuePtr = AllocateAndInitializeValue();
+		// Copy the value to the allocated local (using a getter if present)
+		GetValue_InContainer(InContainer, LocalValuePtr);
+
+		// Perform operation on the temp value
+		DirectValueAccessFunc(LocalValuePtr);
+
+		// Assign the temp value back to the property using a setter function
+		SetValue_InContainer(InContainer, LocalValuePtr);
+		// Destroy and free the temp value
+		DestroyAndFreeValue(LocalValuePtr);
+	}
+	else
+	{
+		// When there's no setter or getter present it's ok to perform the operation directly on the container / struct memory
+		if (!DirectPropertyAddress)
+		{
+			checkf(InContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
+			DirectPropertyAddress = PointerToValuePtr(InContainer, EPropertyPointerType::Container);
+		}
+		DirectValueAccessFunc(DirectPropertyAddress);
+	}
+}
+
+void FProperty::PerformOperationWithGetter(void* InContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const
+{
+	if (InContainer && HasGetter())
+	{
+		// When modifying container or struct properties that have a getter function we first allocate a temp value
+		// that we can operate on directly (add new elements or modify existing ones)
+		void* LocalValuePtr = AllocateAndInitializeValue();
+		// Copy the value to the allocated local using a getter
+		GetValue_InContainer(InContainer, LocalValuePtr);
+
+		// Perform read-only operation on the temp value
+		DirectValueAccessFunc(LocalValuePtr);
+
+		// Destroy and free the temp value
+		DestroyAndFreeValue(LocalValuePtr);
+	}
+	else
+	{
+		if (!DirectPropertyAddress)
+		{
+			checkf(InContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
+			DirectPropertyAddress = PointerToValuePtr(InContainer, EPropertyPointerType::Container);
+		}
+		DirectValueAccessFunc(DirectPropertyAddress);
+	}
+}
+
 /**
  * Attempts to read an array index (xxx) sequence.  Handles const/enum replacements, etc.
  * @param	ObjectStruct	the scope of the object/struct containing the property we're currently importing
@@ -1263,7 +1476,7 @@ static const int32 ReadArrayIndex(UStruct* ObjectStruct, const TCHAR*& Str, FOut
 					if (IndexTokenName != NAME_None)
 					{
 						// Search for the enum in question.
-						Index = UEnum::LookupEnumName(IndexTokenName);
+						Index = UEnum::LookupEnumName(FName(), IndexTokenName, EFindFirstObjectOptions::NativeFirst /* Only native enums can be used as array indices */);
 						if (Index == INDEX_NONE)
 						{
 							Index = 0;
@@ -1514,7 +1727,7 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 				{
 					int32	Index = ArrayHelper.AddValue();
 
-					const TCHAR* Result = ArrayProperty->Inner->ImportText(Str, ArrayHelper.GetRawPtr(Index), PortFlags, SubobjectOuter, Warn);
+					const TCHAR* Result = ArrayProperty->Inner->ImportText_Direct(Str, ArrayHelper.GetRawPtr(Index), SubobjectOuter, PortFlags, Warn);
 					if ( Result == NULL || Result == Str )
 					{
 						Warn->Logf(ELogVerbosity::Warning, TEXT("Unable to parse parameter value '%s' in defaultproperties array operation: %s"), Str, Start);
@@ -1533,7 +1746,7 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 					ArrayProperty->Inner->InitializeValue(Temp);
 							
 					// export the value specified to a temporary buffer
-					const TCHAR* Result = ArrayProperty->Inner->ImportText(Str, Temp, PortFlags, SubobjectOuter, Warn);
+					const TCHAR* Result = ArrayProperty->Inner->ImportText_Direct(Str, Temp, SubobjectOuter, PortFlags, Warn);
 					if ( Result == NULL || Result == Str )
 					{
 						Warn->Logf(ELogVerbosity::Error, TEXT("Unable to parse parameter value '%s' in defaultproperties array operation: %s"), Str, Start);
@@ -1653,7 +1866,7 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 					ArrayHelper.ExpandForIndex(Index);
 
 					FStringOutputDevice ImportError;
-					const TCHAR* Result = ArrayProperty->Inner->ImportText(Str, ArrayHelper.GetRawPtr(Index), PortFlags, SubobjectOuter, &ImportError);
+					const TCHAR* Result = ArrayProperty->Inner->ImportText_Direct(Str, ArrayHelper.GetRawPtr(Index), SubobjectOuter, PortFlags, &ImportError);
 					// Spit any error we had while importing property
 					if (ImportError.Len() > 0)
 					{
@@ -1684,7 +1897,7 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 
 					FStringOutputDevice ImportError;
 
-					const TCHAR* Result = Property->ImportText(Str, Property->ContainerPtrToValuePtr<void>(DestData, Index), PortFlags, SubobjectOuter, &ImportError);
+					const TCHAR* Result = Property->ImportText_Direct(Str, Property->ContainerPtrToValuePtr<void>(DestData, Index), SubobjectOuter, PortFlags, &ImportError);
 					
 					// Spit any error we had while importing property
 					if (ImportError.Len() > 0)
@@ -1792,9 +2005,9 @@ UPropertyWrapper* FProperty::GetUPropertyWrapper()
 }
 #endif //  WITH_EDITORONLY_DATA
 
-void FFloatProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
+void FFloatProperty::ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
-	Super::ExportTextItem(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags, ExportRootScope);
+	Super::ExportText_Internal(ValueStr, PropertyValueOrContainer, PropertyPointerType, DefaultValue, Parent, PortFlags, ExportRootScope);
 
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -1815,6 +2028,3 @@ FProperty* UStruct::FindPropertyByName(FName InName) const
 
 	return NULL;
 }
-
-
-#include "UObject/DefineUPropertyMacros.h"

@@ -2,7 +2,6 @@
 
 #include "GPULightmass.h"
 #include "ComponentRecreateRenderStateContext.h"
-#include "EngineModule.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Components/SkyLightComponent.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -12,8 +11,6 @@
 #include "GPULightmassSettings.h"
 
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
-
-extern ENGINE_API void ToggleLightmapPreview_GameThread(UWorld* InWorld);
 
 FGPULightmass::FGPULightmass(UWorld* InWorld, FGPULightmassModule* InGPULightmassModule, UGPULightmassSettings* InSettings)
 	: World(InWorld)
@@ -69,12 +66,21 @@ void FGPULightmass::GameThreadDestroy()
 
 	RemoveGameThreadEventHooks();
 
-	if (!IsEngineExitRequested() && LightBuildNotification.IsValid())
+	if (LightBuildNotification.IsValid())
 	{
-		FText CompletedText = LOCTEXT("LightBuildDoneMessage", "Lighting build completed");
-		LightBuildNotification->SetText(CompletedText);
-		LightBuildNotification->SetCompletionState(SNotificationItem::CS_Success);
-		LightBuildNotification->ExpireAndFadeout();
+		if (!IsEngineExitRequested())
+		{
+			// Shows a notification that fades out slowly
+			FText CompletedText = LOCTEXT("LightBuildDoneMessage", "Lighting build completed");
+			LightBuildNotification->SetText(CompletedText);
+			LightBuildNotification->SetCompletionState(SNotificationItem::CS_Success);
+			LightBuildNotification->ExpireAndFadeout();
+		}
+		else
+		{
+			// Immediately destroys the notification widget to avoid crash
+			LightBuildNotification.Reset();
+		}
 	}
 
 	Scene.RemoveAllComponents();
@@ -97,6 +103,7 @@ void FGPULightmass::InstallGameThreadEventHooks()
 	FStaticLightingSystemInterface::OnStationaryLightChannelReassigned.AddRaw(this, &FGPULightmass::OnStationaryLightChannelReassigned);
 	FStaticLightingSystemInterface::OnLightmassImportanceVolumeModified.AddRaw(this, &FGPULightmass::OnLightmassImportanceVolumeModified);
 	FStaticLightingSystemInterface::OnMaterialInvalidated.AddRaw(this, &FGPULightmass::OnMaterialInvalidated);
+	FStaticLightingSystemInterface::OnSkyAtmosphereModified.AddRaw(this, &FGPULightmass::OnSkyAtmosphereModified);
 }
 
 void FGPULightmass::RemoveGameThreadEventHooks()
@@ -110,6 +117,7 @@ void FGPULightmass::RemoveGameThreadEventHooks()
 	FStaticLightingSystemInterface::OnStationaryLightChannelReassigned.RemoveAll(this);
 	FStaticLightingSystemInterface::OnLightmassImportanceVolumeModified.RemoveAll(this);
 	FStaticLightingSystemInterface::OnMaterialInvalidated.RemoveAll(this);
+	FStaticLightingSystemInterface::OnSkyAtmosphereModified.RemoveAll(this);
 }
 
 void FGPULightmass::OnPrimitiveComponentRegistered(UPrimitiveComponent* InComponent)
@@ -186,8 +194,6 @@ void FGPULightmass::OnLightComponentUnregistered(ULightComponentBase* InComponen
 {
 	if (InComponent->GetWorld() != World) return;
 
-	// UE_LOG(LogGPULightmass, Display, TEXT("LightComponent %s on actor %s is being unregistered with GPULightmass"), *InComponent->GetName(), *InComponent->GetOwner()->GetName());
-
 	if (UDirectionalLightComponent* DirectionalLight = Cast<UDirectionalLightComponent>(InComponent))
 	{
 		Scene.RemoveLight(DirectionalLight);
@@ -248,16 +254,17 @@ void FGPULightmass::OnStationaryLightChannelReassigned(ULightComponentBase* InCo
 	}
 }
 
+void FGPULightmass::OnSkyAtmosphereModified()
+{
+	Scene.OnSkyAtmosphereModified();
+}
+
 void FGPULightmass::OnPreWorldFinishDestroy(UWorld* InWorld)
 {
-	UE_LOG(LogGPULightmass, Display, TEXT("World %s is being destroyed"), *World->GetName());
-
 	if (InWorld != World) return;
 
-	UE_LOG(LogGPULightmass, Display, TEXT("Removing all delegates (including this one)"), *World->GetName());
-
 	// This calls destructor of FGPULightmass
-	GPULightmassModule->RemoveStaticLightingSystemForWorld(World);
+	GPULightmassModule->RemoveGPULightmassFromWorld(World);
 }
 
 void FGPULightmass::EditorTick()
@@ -293,11 +300,14 @@ void FGPULightmass::OnLightmassImportanceVolumeModified()
 
 void FGPULightmass::OnMaterialInvalidated(FMaterialRenderProxy* Material)
 {
-	if (Scene.RenderState.CachedRayTracingScene.IsValid())
+	ENQUEUE_RENDER_COMMAND(OnMaterialInvalidatedRenderThread)([&RenderState = Scene.RenderState](FRHICommandListImmediate&) mutable
 	{
-		Scene.RenderState.CachedRayTracingScene.Reset();
-		UE_LOG(LogGPULightmass, Log, TEXT("Cached ray tracing scene is invalidated due to material changes"));
-	}
+		if (RenderState.CachedRayTracingScene.IsValid())
+		{
+			RenderState.CachedRayTracingScene.Reset();
+			UE_LOG(LogGPULightmass, Log, TEXT("Cached ray tracing scene is invalidated due to material changes"));
+		}
+	});
 }
 
 void FGPULightmass::StartRecordingVisibleTiles() 

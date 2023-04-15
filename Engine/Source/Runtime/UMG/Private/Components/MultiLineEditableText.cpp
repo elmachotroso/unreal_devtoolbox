@@ -6,6 +6,9 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
 #include "Styling/UMGCoreStyle.h"
+#include "Materials/MaterialInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MultiLineEditableText)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -18,6 +21,7 @@ static FTextBlockStyle* DefaultMultiLineEditableTextStyle = nullptr;
 static FTextBlockStyle* EditorMultiLineEditableTextStyle = nullptr;
 #endif 
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UMultiLineEditableText::UMultiLineEditableText(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -55,16 +59,18 @@ UMultiLineEditableText::UMultiLineEditableText(const FObjectInitializer& ObjectI
 	RevertTextOnEscape = false;
 	ClearKeyboardFocusOnCommit = true;
 	AllowContextMenu = true;
-	Clipping = EWidgetClipping::ClipToBounds;
+	SetClipping(EWidgetClipping::ClipToBounds);
 	VirtualKeyboardDismissAction = EVirtualKeyboardDismissAction::TextChangeOnDismiss;
 	AutoWrapText = true;
 
 	if (!IsRunningDedicatedServer())
 	{
-		static ConstructorHelpers::FObjectFinder<UFont> RobotoFontObj(*UWidget::GetDefaultFontName());
-		Font_DEPRECATED = FSlateFontInfo(RobotoFontObj.Object, 12, FName("Bold"));
-
-		WidgetStyle.SetFont(Font_DEPRECATED);
+		static ConstructorHelpers::FObjectFinder<UFont> DefaultFontObj(*UWidget::GetDefaultFontName());
+		FSlateFontInfo Font(DefaultFontObj.Object, 12, FName("Bold"));
+		//The FSlateFontInfo just created doesn't contain a composite font (while the default from the WidgetStyle does),
+		//so in the case the Font object is replaced by a null one, we have to keep the composite one as a fallback.
+		Font.CompositeFont = WidgetStyle.Font.CompositeFont;
+		WidgetStyle.SetFont(Font);
 	}
 }
 
@@ -118,8 +124,6 @@ void UMultiLineEditableText::SynchronizeProperties()
 	MyMultiLineEditableText->SetRevertTextOnEscape(RevertTextOnEscape);
 	MyMultiLineEditableText->SetClearKeyboardFocusOnCommit(ClearKeyboardFocusOnCommit);
 
-//	MyMultiLineEditableText->SetColorAndOpacity(ColorAndOpacity);
-
 	// TODO UMG Complete making all properties settable on SMultiLineEditableText
 
 	Super::SynchronizeTextLayoutProperties(*MyMultiLineEditableText);
@@ -148,7 +152,16 @@ FText UMultiLineEditableText::GetText() const
 
 void UMultiLineEditableText::SetText(FText InText)
 {
+	// We detect if the Text is internal pointing to the same thing if so, nothing to do.
+	if (GetText().IdenticalTo(InText))
+	{
+		return;
+	}
+
 	Text = InText;
+
+	BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::Text);
+
 	if ( MyMultiLineEditableText.IsValid() )
 	{
 		MyMultiLineEditableText->SetText(Text);
@@ -176,6 +189,71 @@ void UMultiLineEditableText::SetHintText(FText InHintText)
 	}
 }
 
+void UMultiLineEditableText::SetSelectAllTextWhenFocused(bool bSelectAllTextWhenFocused)
+{
+	SelectAllTextWhenFocused = bSelectAllTextWhenFocused;
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetSelectAllTextWhenFocused(bSelectAllTextWhenFocused);
+	}
+}
+
+bool UMultiLineEditableText::GetSelectAllTextWhenFocused() const
+{
+	return SelectAllTextWhenFocused;
+}
+
+void UMultiLineEditableText::SetClearTextSelectionOnFocusLoss(bool bClearTextSelectionOnFocusLoss)
+{
+	ClearTextSelectionOnFocusLoss = bClearTextSelectionOnFocusLoss;
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetClearTextSelectionOnFocusLoss(bClearTextSelectionOnFocusLoss);
+	}
+}
+
+bool UMultiLineEditableText::GetClearTextSelectionOnFocusLoss() const
+{
+	return ClearTextSelectionOnFocusLoss;
+}
+
+void UMultiLineEditableText::SetRevertTextOnEscape(bool bRevertTextOnEscape)
+{
+	RevertTextOnEscape = bRevertTextOnEscape;
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetRevertTextOnEscape(bRevertTextOnEscape);
+	}
+}
+
+bool UMultiLineEditableText::GetRevertTextOnEscape() const
+{
+	return RevertTextOnEscape;
+}
+
+void UMultiLineEditableText::SetClearKeyboardFocusOnCommit(bool bClearKeyboardFocusOnCommit)
+{
+	ClearKeyboardFocusOnCommit = bClearKeyboardFocusOnCommit;
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetClearKeyboardFocusOnCommit(bClearKeyboardFocusOnCommit);
+	}
+}
+
+bool UMultiLineEditableText::GetClearKeyboardFocusOnCommit() const
+{
+	return ClearKeyboardFocusOnCommit;
+}
+
+bool UMultiLineEditableText::GetIsReadOnly() const
+{
+	return bIsReadOnly;
+}
+
 void UMultiLineEditableText::SetIsReadOnly(bool bReadOnly)
 {
 	bIsReadOnly = bReadOnly;
@@ -185,10 +263,46 @@ void UMultiLineEditableText::SetIsReadOnly(bool bReadOnly)
 		MyMultiLineEditableText->SetIsReadOnly(bIsReadOnly);
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UMultiLineEditableText::SetWidgetStyle(const FTextBlockStyle& InWidgetStyle)
 {
 	WidgetStyle = InWidgetStyle;
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetTextStyle(&WidgetStyle);
+	}
+}
+
+const FSlateFontInfo& UMultiLineEditableText::GetFont() const
+{
+	return WidgetStyle.Font;
+}
+
+void UMultiLineEditableText::SetFont(FSlateFontInfo InFontInfo)
+{
+	WidgetStyle.SetFont(InFontInfo);
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetTextStyle(&WidgetStyle);
+	}
+}
+
+void UMultiLineEditableText::SetFontMaterial(UMaterialInterface* InMaterial)
+{
+	WidgetStyle.SetFontMaterial(InMaterial);
+
+	if (MyMultiLineEditableText.IsValid())
+	{
+		MyMultiLineEditableText->SetTextStyle(&WidgetStyle);
+	}
+}
+
+void UMultiLineEditableText::SetFontOutlineMaterial(UMaterialInterface* InMaterial)
+{
+	WidgetStyle.SetFontOutlineMaterial(InMaterial);
 
 	if (MyMultiLineEditableText.IsValid())
 	{
@@ -206,20 +320,6 @@ void UMultiLineEditableText::HandleOnTextCommitted(const FText& InText, ETextCom
 	OnTextCommitted.Broadcast(InText, CommitMethod);
 }
 
-void UMultiLineEditableText::PostLoad()
-{
-	Super::PostLoad();
-
-	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
-	{
-		if (Font_DEPRECATED.HasValidFont())
-		{
-			WidgetStyle.Font = Font_DEPRECATED;
-			Font_DEPRECATED = FSlateFontInfo();
-		}
-	}
-}
-
 #if WITH_EDITOR
 
 const FText UMultiLineEditableText::GetPaletteCategory()
@@ -232,3 +332,4 @@ const FText UMultiLineEditableText::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

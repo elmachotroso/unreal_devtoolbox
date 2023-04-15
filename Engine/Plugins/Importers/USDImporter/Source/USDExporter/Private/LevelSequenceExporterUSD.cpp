@@ -2,6 +2,7 @@
 
 #include "LevelSequenceExporterUSD.h"
 
+#include "LevelExporterUSDOptions.h"
 #include "LevelSequenceExporterUSDOptions.h"
 #include "UnrealUSDWrapper.h"
 #include "USDClassesModule.h"
@@ -10,6 +11,7 @@
 #include "USDLog.h"
 #include "USDOptionsWindow.h"
 #include "USDPrimConversion.h"
+#include "USDUnrealAssetInfo.h"
 
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/SdfPath.h"
@@ -21,6 +23,7 @@
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Editor.h"
+#include "Engine/SphereReflectionCapture.h"
 #include "EngineAnalytics.h"
 #include "Evaluation/MovieSceneSequenceHierarchy.h"
 #include "ISequencer.h"
@@ -34,6 +37,8 @@
 #include "MovieSceneTimeHelpers.h"
 #include "MovieSceneTrack.h"
 #include "Sections/MovieSceneSubSection.h"
+#include "Selection.h"
+#include "Sequencer/MovieSceneControlRigParameterTrack.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
@@ -56,96 +61,32 @@ namespace UE
 				const FString& Extension
 			)
 			{
-				if ( !LevelSequence || ExportedStages.Num() == 0 )
+				if ( !LevelSequence || ExportedStages.Num() == 0 || !FEngineAnalytics::IsAvailable() )
 				{
 					return;
 				}
 
-				if ( FEngineAnalytics::IsAvailable() )
+				FString ClassName = LevelSequence->GetClass()->GetName();
+
+				TArray<FAnalyticsEventAttribute> EventAttributes;
+				EventAttributes.Emplace( TEXT( "AssetType" ), ClassName );
+				EventAttributes.Emplace( TEXT( "NumExportedLevelSequenceLayers" ), ExportedStages.Num() );
+
+				int32 NumFrames = 0;
+				if ( Options )
 				{
-					FString ClassName = LevelSequence->GetClass()->GetName();
-
-					TArray<FAnalyticsEventAttribute> EventAttributes;
-
-					EventAttributes.Emplace( TEXT( "AssetType" ), ClassName );
-
-					if ( Options )
-					{
-						// Stage options
-						EventAttributes.Emplace( TEXT( "MetersPerUnit" ), LexToString( Options->StageOptions.MetersPerUnit ) );
-						EventAttributes.Emplace( TEXT( "UpAxis" ), Options->StageOptions.UpAxis == EUsdUpAxis::YAxis ? TEXT( "Y" ) : TEXT( "Z" ) );
-
-						// LevelSequence options
-						EventAttributes.Emplace( TEXT( "TimeCodesPerSecond" ), LexToString( Options->TimeCodesPerSecond ) );
-						EventAttributes.Emplace( TEXT( "OverrideExportRange" ), Options->bOverrideExportRange );
-						if( Options->bOverrideExportRange )
-						{
-							EventAttributes.Emplace( TEXT( "StartFrame" ), LexToString( Options->StartFrame ) );
-							EventAttributes.Emplace( TEXT( "EndFrame" ), LexToString( Options->EndFrame ) );
-						}
-						EventAttributes.Emplace( TEXT( "ExportSubsequencesAsLayers" ), Options->bExportSubsequencesAsLayers );
-						EventAttributes.Emplace( TEXT( "ExportLevel" ), Options->bExportLevel );
-						if( Options->bExportLevel )
-						{
-							EventAttributes.Emplace( TEXT( "UseExportedLevelAsSublayer" ), Options->bUseExportedLevelAsSublayer );
-						}
-						EventAttributes.Emplace( TEXT( "NumExportedLevelSequenceLayers" ), ExportedStages.Num() );
-
-						if( Options->bExportLevel )
-						{
-							// Level options
-							EventAttributes.Emplace( TEXT( "SelectionOnly" ), Options->LevelExportOptions.bSelectionOnly );
-							EventAttributes.Emplace( TEXT( "ExportActorFolders" ), Options->LevelExportOptions.bExportActorFolders );
-							EventAttributes.Emplace( TEXT( "IgnoreSequencerAnimations" ), Options->LevelExportOptions.bIgnoreSequencerAnimations );
-							EventAttributes.Emplace( TEXT( "ExportFoliageOnActorsLayer" ), Options->LevelExportOptions.bExportFoliageOnActorsLayer );
-							EventAttributes.Emplace( TEXT( "LowestLandscapeLOD" ), LexToString( Options->LevelExportOptions.LowestLandscapeLOD ) );
-							EventAttributes.Emplace( TEXT( "HighestLandscapeLOD" ), LexToString( Options->LevelExportOptions.HighestLandscapeLOD ) );
-							EventAttributes.Emplace( TEXT( "LandscapeBakeResolution" ), Options->LevelExportOptions.LandscapeBakeResolution.ToString() );
-							EventAttributes.Emplace( TEXT( "ExportSublayers" ), LexToString( Options->LevelExportOptions.bExportSublayers ) );
-							EventAttributes.Emplace( TEXT( "NumLevelsToIgnore" ), LexToString( Options->LevelExportOptions.LevelsToIgnore.Num() ) );
-						}
-
-						// Asset options
-						EventAttributes.Emplace( TEXT( "UsePayload" ), LexToString( Options->LevelExportOptions.AssetOptions.bUsePayload ) );
-						if( Options->LevelExportOptions.AssetOptions.bUsePayload )
-						{
-							EventAttributes.Emplace( TEXT( "PayloadFormat" ), Options->LevelExportOptions.AssetOptions.PayloadFormat );
-						}
-						EventAttributes.Emplace( TEXT( "BakeMaterials" ), Options->LevelExportOptions.AssetOptions.bBakeMaterials );
-						EventAttributes.Emplace( TEXT( "LowestMeshLOD" ), LexToString( Options->LevelExportOptions.AssetOptions.LowestMeshLOD ) );
-						EventAttributes.Emplace( TEXT( "HighestMeshLOD" ), LexToString( Options->LevelExportOptions.AssetOptions.HighestMeshLOD ) );
-
-						// Material baking options
-						if( Options->LevelExportOptions.AssetOptions.bBakeMaterials )
-						{
-							FString BakedPropertiesString;
-							{
-								const UEnum* PropertyEnum = StaticEnum<EMaterialProperty>();
-								for ( const FPropertyEntry& PropertyEntry : Options->LevelExportOptions.AssetOptions.MaterialBakingOptions.Properties )
-								{
-									FString PropertyString = PropertyEnum->GetNameByValue( PropertyEntry.Property ).ToString();
-									PropertyString.RemoveFromStart( TEXT( "MP_" ) );
-									BakedPropertiesString += PropertyString + TEXT( ", " );
-								}
-
-								BakedPropertiesString.RemoveFromEnd( TEXT( ", " ) );
-							}
-
-							EventAttributes.Emplace( TEXT( "RemoveUnrealMaterials" ), Options->LevelExportOptions.AssetOptions.bRemoveUnrealMaterials );
-							EventAttributes.Emplace( TEXT( "BakedProperties" ), BakedPropertiesString );
-							EventAttributes.Emplace( TEXT( "DefaultTextureSize" ), Options->LevelExportOptions.AssetOptions.MaterialBakingOptions.DefaultTextureSize.ToString() );
-						}
-
-						IUsdClassesModule::SendAnalytics(
-							MoveTemp( EventAttributes ),
-							FString::Printf( TEXT( "Export.%s" ), *ClassName ),
-							bAutomated,
-							ElapsedSeconds,
-							( Options->EndFrame - Options->StartFrame ),
-							Extension
-						);
-					}
+					NumFrames = Options->EndFrame - Options->StartFrame;
+					UsdUtils::AddAnalyticsAttributes( *Options, EventAttributes );
 				}
+
+				IUsdClassesModule::SendAnalytics(
+					MoveTemp( EventAttributes ),
+					FString::Printf( TEXT( "Export.%s" ), *ClassName ),
+					bAutomated,
+					ElapsedSeconds,
+					NumFrames,
+					Extension
+				);
 			}
 
 #if USE_USD_SDK
@@ -160,6 +101,15 @@ namespace UE
 
 				virtual UObject* SpawnObject( FMovieSceneSpawnable& Spawnable, FMovieSceneSequenceIDRef TemplateID, IMovieScenePlayer& Player ) override
 				{
+					// Never spawn ASphereReflectionCapture actors. These are useless in USD anyway, and we run into
+					// trouble after we're done exporting them because on the tick where they're destroyed the editor
+					// will still attempt to update their captures and some downstream code doesn't like that their
+					// components are pending kill (check UE-167593 for more info)
+					if ( const ASphereReflectionCapture* ReflectionCapture = Cast< const ASphereReflectionCapture >( Spawnable.GetObjectTemplate() ) )
+					{
+						return nullptr;
+					}
+
 					ISequencer* Sequencer = static_cast<ISequencer*>(&Player);
 					UMovieSceneSequence* RootSequence = Sequencer->GetRootMovieSceneSequence();
 					if ( !RootSequence )
@@ -465,6 +415,15 @@ namespace UE
 
 				ULevelSequenceExporterUsdOptions* ExportOptions;
 
+				// If ExportOptions->bSelectionOnly is true, this specifies the components whose bindings we should export
+				TSet<UActorComponent*> SelectedComponents;
+
+				// If ExportOptions->bSelectionOnly is true, this specifies the actors whose bindings we should export
+				TSet<AActor*> SelectedActors;
+
+				// Where we store our ExportTask's bReplaceIdentical, which indicates if we should overwrite files or not
+				bool bReplaceIdentical;
+
 				// Our own read-only sequencer that we use to play the level sequences while we bake them out one frame at a time
 				TSharedRef<ISequencer> Sequencer;
 
@@ -638,11 +597,11 @@ namespace UE
 					return;
 				}
 
-				// Find all components (if actors, the root components of those actors) bound to the movie scene.
-				// We use components here because when exporting actors and components to USD we basically just ignore
-				// actors altogether and export the component attachment hierarchy instead.
-				// Index from component to FGuid because we may have multiple spawned actors/components for a given spawnable Guid
-				TMap<USceneComponent*, FGuid> BoundComponents;
+				// Find all objects bound to the movie scene. We'll track UObjects here because we may have tracks
+				// bound to root components but also separate tracks bound directly to the actors, and we want to
+				// capture both.
+				// Index from UObject to FGuid because we may have multiple spawned objects for a given spawnable Guid
+				TMap<UObject*, FGuid> BoundObjects;
 
 				const TArray<FMovieSceneSequenceID>* InstancesOfThisSequence = SequenceInstances.Find( &MovieSceneSequence );
 				if ( !InstancesOfThisSequence )
@@ -673,20 +632,10 @@ namespace UE
 							Context.SpawnRegister
 						);
 
-						USceneComponent* BoundComponent = Cast<USceneComponent>( BoundObject );
-						if ( !BoundComponent )
+						if ( BoundObject && ( BoundObject->IsA<USceneComponent>() || BoundObject->IsA<AActor>() ) )
 						{
-							if ( const AActor* Actor = Cast<AActor>( BoundObject ) )
-							{
-								BoundComponent = Actor->GetRootComponent();
-							}
+							BoundObjects.Add( BoundObject, Guid );
 						}
-						if ( !BoundComponent )
-						{
-							continue;
-						}
-
-						BoundComponents.Add( BoundComponent, Guid );
 					}
 
 					// Spawnables
@@ -695,6 +644,13 @@ namespace UE
 					{
 						FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable( Index );
 						const FGuid& Guid = Spawnable.GetGuid();
+
+						// We won't have spawned ASphereReflectionCapture here.
+						// See the comment inside FLevelSequenceHidingSpawnRegister::SpawnObject and UE-167593 for more info
+						if ( ASphereReflectionCapture* ReflectionCapture = Cast< ASphereReflectionCapture>( Spawnable.GetObjectTemplate() ) )
+						{
+							continue;
+						}
 
 						UObject* BoundObject = Context.SpawnRegister->GetExistingSpawn( *RootSequence, SequenceInstance, Guid );
 						if ( !BoundObject )
@@ -705,28 +661,52 @@ namespace UE
 							continue;
 						}
 
-						USceneComponent* BoundComponent = Cast<USceneComponent>( BoundObject );
-						if ( !BoundComponent )
+						if ( BoundObject && ( BoundObject->IsA<USceneComponent>() || BoundObject->IsA<AActor>() ) )
 						{
-							if ( const AActor* Actor = Cast<AActor>( BoundObject ) )
-							{
-								BoundComponent = Actor->GetRootComponent();
-							}
+							BoundObjects.Add( BoundObject, Guid );
 						}
-						if ( !BoundComponent )
-						{
-							continue;
-						}
-
-						BoundComponents.Add( BoundComponent, Guid );
 					}
 				}
 
 				// Generate bakers
-				for ( const TPair<USceneComponent*, FGuid>& Pair : BoundComponents )
+				for ( const TPair<UObject*, FGuid>& Pair : BoundObjects )
 				{
-					USceneComponent* BoundComponent = Pair.Key;
+					UObject* BoundObject = Pair.Key;
 					const FGuid& Guid = Pair.Value;
+
+					// We always use components here because when exporting actors and components to USD we basically
+					// just ignore actors altogether and export the component attachment hierarchy instead
+					USceneComponent* BoundComponent = Cast<USceneComponent>( BoundObject );
+					if ( BoundComponent )
+					{
+						// Only ignore component bindings if we're actually selecting some components (including this one),
+						// and our parent actor is not selected. This so that if select some components of actor X but
+						// also actor Y directly (which has component bindings) we'll export all of Y's component bindings, but
+						// only the selected component bindings of X
+						if ( Context.ExportOptions->bSelectionOnly &&
+							 Context.SelectedComponents.Num() > 0 &&
+							 !Context.SelectedActors.Contains( BoundComponent->GetOwner() ) &&
+							 !Context.SelectedComponents.Contains( BoundComponent ) )
+						{
+							continue;
+						}
+					}
+					else
+					{
+						if ( const AActor* Actor = Cast<AActor>( BoundObject ) )
+						{
+							if ( Context.ExportOptions->bSelectionOnly && !Context.SelectedActors.Contains( Actor ) )
+							{
+								continue;
+							}
+
+							BoundComponent = Actor->GetRootComponent();
+						}
+					}
+					if ( !BoundComponent )
+					{
+						continue;
+					}
 
 					FString PrimPath = UsdUtils::GetPrimPathForObject(
 						BoundComponent,
@@ -770,7 +750,7 @@ namespace UE
 								const FString PropertyPath = PropertyTrack->GetPropertyPath().ToString();
 								UnrealToUsd::CreateComponentPropertyBaker( Prim, *BoundComponent, PropertyPath, Baker );
 							}
-							else if ( const UMovieSceneSpawnTrack* SpawnTrack = Cast<UMovieSceneSpawnTrack>( Track ) )
+							else if ( Track->IsA< UMovieSceneSpawnTrack >() )
 							{
 								// Just handle spawnable tracks as if they're visibility tracks, and hide the prim when not "spawned"
 								// Remember that our spawn register just hides the spawnables when they're not spawned anyway, so this
@@ -778,7 +758,9 @@ namespace UE
 								const FString PropertyPath = TEXT( "bHidden" );
 								UnrealToUsd::CreateComponentPropertyBaker( Prim, *BoundComponent, PropertyPath, Baker);
 							}
-							else if ( const UMovieSceneSkeletalAnimationTrack* SkeletalTrack = Cast<UMovieSceneSkeletalAnimationTrack>( Track ) )
+							// Check for the control rig tracks too, because if the user did "Bake to Control Rig" the controlrig code will silently set the
+							// original skeletal animation track sections as disabled, so they'd fail the "IsTrackAnimated" check above
+							else if ( Track->IsA< UMovieSceneSkeletalAnimationTrack >() || Track->IsA< UMovieSceneControlRigParameterTrack >() )
 							{
 								if ( USkeletalMeshComponent* SkeletalBoundComponent = Cast<USkeletalMeshComponent>( BoundComponent ) )
 								{
@@ -810,9 +792,9 @@ namespace UE
 				// Also note that we can't share these bakers with our parent movie scenes in case we're a subsequence, unfortunately, because our
 				// bakers will contain lambdas that write directly to a given prim, and those prims are specific to each layer that we're exporting
 				// (e.g. our parent level sequence will export to different prims than this movie scene will)
-				for ( const UMovieSceneTrack* MasterTrack : MovieScene->GetMasterTracks() )
+				for ( const UMovieSceneTrack* Track : MovieScene->GetMasterTracks() )
 				{
-					const UMovieSceneSubTrack* SubTrack = Cast<const UMovieSceneSubTrack>( MasterTrack );
+					const UMovieSceneSubTrack* SubTrack = Cast<const UMovieSceneSubTrack>( Track );
 					if ( !SubTrack )
 					{
 						continue;
@@ -938,6 +920,121 @@ namespace UE
 				// Overwriting other files is OK, as we want to allow a "repeatedly export over the same files" workflow
 				FString UniqueFilePath = UsdUtils::GetUniqueName( FilePath, Context.UsedFilePaths );
 
+				// Try exporting subsequences if needed
+				if ( Context.ExportOptions )
+				{
+					if ( Context.ExportOptions->bExportSubsequencesAsLayers )
+					{
+						FString Directory;
+						FString FileName;
+						FString Extension;
+						FPaths::Split( UniqueFilePath, Directory, FileName, Extension );
+
+						for ( const UMovieSceneTrack* Track : MovieScene->GetMasterTracks() )
+						{
+							const UMovieSceneSubTrack* SubTrack = Cast<const UMovieSceneSubTrack>( Track );
+							if ( !SubTrack )
+							{
+								continue;
+							}
+
+							for ( const UMovieSceneSection* Section : SubTrack->GetAllSections() )
+							{
+								const UMovieSceneSubSection* SubSection = Cast<const UMovieSceneSubSection>( Section );
+								if ( !SubSection )
+								{
+									continue;
+								}
+
+								UMovieSceneSequence* SubSequence = SubSection->GetSequence();
+								if ( !SubSequence )
+								{
+									continue;
+								}
+
+								FString SubSequencePath = FPaths::Combine( Directory, FString::Printf( TEXT( "%s.%s" ), *SubSequence->GetName(), *Extension ) );
+
+								ExportMovieSceneSequence( Context, *SubSequence, SubSequencePath, InOutExportedStages );
+
+								// For now we don't want to actually add the subsequence layers as sublayers since each exported level sequence
+								// contains the full baked result anyway, but this is how we'd do it:
+								/*
+								double Offset = 0.0;
+								if ( SubSection->HasStartFrame() )
+								{
+									FFrameNumber LowerBound = SubSection->GetTrueRange().GetLowerBoundValue();
+									FFrameTime LowerBoundTime{ FFrameRate::Snap( LowerBound, Resolution, DisplayRate ).FloorToFrame() };
+									Offset = FFrameRate::TransformTime( LowerBoundTime, Resolution, StageFrameRate ).AsDecimal();
+								}
+								float Scale = SubSection->Parameters.TimeScale;
+								const int32 Index = -1;
+								UsdUtils::InsertSubLayer( UsdStage.GetRootLayer(), *SubSequencePath, Index, Offset, Scale );
+								*/
+							}
+						}
+					}
+				}
+
+				FString LevelSequenceVersion = MovieSceneSequence.GetSignature().ToString();
+				{
+					// We could just use the GUID directly but all other asset types end up with SHA hash size so lets be
+					// consistent
+					FSHA1 SHA1;
+					SHA1.UpdateWithString( *LevelSequenceVersion, LevelSequenceVersion.Len() );
+					if ( Context.ExportOptions )
+					{
+						UsdUtils::HashForLevelSequenceExport( *Context.ExportOptions, SHA1 );
+					}
+					SHA1.Final();
+					FSHAHash Hash;
+					SHA1.GetHash( &Hash.Hash[ 0 ] );
+					LevelSequenceVersion = Hash.ToString();
+				}
+
+				// Check if we already have exported what we plan on exporting anyway
+				if ( FPaths::FileExists( UniqueFilePath ) )
+				{
+					if ( !Context.bReplaceIdentical )
+					{
+						UE_LOG( LogUsd, Log,
+							TEXT( "Skipping export of asset '%s' as the target file '%s' already exists." ),
+							*MovieSceneSequence.GetPathName(),
+							*UExporter::CurrentFilename
+						);
+						return;
+					}
+					// If we don't want to re-export this level sequence we need to check if its the same version
+					else if ( !Context.ExportOptions->bReExportIdenticalLevelsAndSequences )
+					{
+						// Don't use the stage cache here as we want this stage to close within this scope in case
+						// we have to overwrite its files due to e.g. missing payload or anything like that
+						const bool bUseStageCache = false;
+						const EUsdInitialLoadSet InitialLoadSet = EUsdInitialLoadSet::LoadNone;
+						if ( UE::FUsdStage TempStage = UnrealUSDWrapper::OpenStage( *UniqueFilePath, InitialLoadSet, bUseStageCache ) )
+						{
+							if ( UE::FUsdPrim RootPrim = TempStage.GetDefaultPrim() )
+							{
+								FUsdUnrealAssetInfo Info = UsdUtils::GetPrimAssetInfo( RootPrim );
+
+								const bool bVersionMatches = !Info.Version.IsEmpty() && Info.Version == LevelSequenceVersion;
+
+								const bool bAssetTypeMatches = !Info.UnrealAssetType.IsEmpty()
+									&& Info.UnrealAssetType == MovieSceneSequence.GetClass()->GetName();
+
+								if ( bVersionMatches && bAssetTypeMatches )
+								{
+									UE_LOG( LogUsd, Log,
+										TEXT( "Skipping export of asset '%s' as the target file '%s' already contains up-to-date exported data." ),
+										*MovieSceneSequence.GetPathName(),
+										*UniqueFilePath
+									);
+									return;
+								}
+							}
+						}
+					}
+				}
+
 				UE::FUsdStage UsdStage = UnrealUSDWrapper::NewStage( *UniqueFilePath );
 				if ( !UsdStage )
 				{
@@ -981,73 +1078,28 @@ namespace UE
 				// They could have differed, for example, if we had a limited the playback range of a subsequence
 				BakeMovieSceneSequence( Context, MovieSceneSequence, UsdStage, Bakers );
 
-				const TRange< FFrameNumber > PlaybackRange = MovieScene->GetPlaybackRange();
-				const FFrameRate Resolution = MovieScene->GetTickResolution();
-				const FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-				const double StageTimeCodesPerSecond = UsdStage.GetTimeCodesPerSecond();
-				const FFrameRate StageFrameRate( StageTimeCodesPerSecond, 1 );
-
-				if ( Context.ExportOptions )
+				// We can add the level as a sublayer to every exported subsequence, so that each can be opened individually and
+				// automatically load the level layer. It doesn't matter much if the parent stage has composed the level
+				// sublayer multiple times (in case we add subsequence layers as sublayers in the future), as the prims will
+				// just all override each other with the same data
+				if ( Context.ExportOptions && Context.ExportOptions->bUseExportedLevelAsSublayer && FPaths::FileExists( Context.LevelFilePath ) )
 				{
-					if ( Context.ExportOptions->bExportSubsequencesAsLayers )
-					{
-						FString Directory;
-						FString FileName;
-						FString Extension;
-						FPaths::Split( UniqueFilePath, Directory, FileName, Extension );
+					UsdUtils::InsertSubLayer( UsdStage.GetRootLayer(), *Context.LevelFilePath );
+				}
 
-						for ( const UMovieSceneTrack* MasterTrack : MovieScene->GetMasterTracks() )
-						{
-							const UMovieSceneSubTrack* SubTrack = Cast<const UMovieSceneSubTrack>( MasterTrack );
-							if ( !SubTrack )
-							{
-								continue;
-							}
+				// Write asset info now that we finished exporting
+				if ( UE::FUsdPrim AssetDefaultPrim = UsdStage.GetDefaultPrim() )
+				{
+					FUsdUnrealAssetInfo Info;
+					Info.Name = MovieSceneSequence.GetName();
+					Info.Identifier = UniqueFilePath;
+					Info.Version = LevelSequenceVersion;
+					Info.UnrealContentPath = MovieSceneSequence.GetPathName();
+					Info.UnrealAssetType = MovieSceneSequence.GetClass()->GetName();
+					Info.UnrealExportTime = FDateTime::Now().ToString();
+					Info.UnrealEngineVersion = FEngineVersion::Current().ToString();
 
-							for ( const UMovieSceneSection* Section : SubTrack->GetAllSections() )
-							{
-								const UMovieSceneSubSection* SubSection = Cast<const UMovieSceneSubSection>( Section );
-								if ( !SubSection )
-								{
-									continue;
-								}
-
-								UMovieSceneSequence* SubSequence = SubSection->GetSequence();
-								if ( !SubSequence )
-								{
-									continue;
-								}
-
-								FString SubSequencePath = FPaths::Combine( Directory, FString::Printf( TEXT( "%s.%s" ), *SubSequence->GetName(), *Extension ) );
-
-								ExportMovieSceneSequence( Context, *SubSequence, SubSequencePath, InOutExportedStages );
-
-								// For now we don't want to actually add the subsequence layers as sublayers since each exported level sequence
-								// contains the full baked result anyway, but this is how we'd do it:
-								/*
-								double Offset = 0.0;
-								if ( SubSection->HasStartFrame() )
-								{
-									FFrameNumber LowerBound = SubSection->GetTrueRange().GetLowerBoundValue();
-									FFrameTime LowerBoundTime{ FFrameRate::Snap( LowerBound, Resolution, DisplayRate ).FloorToFrame() };
-									Offset = FFrameRate::TransformTime( LowerBoundTime, Resolution, StageFrameRate ).AsDecimal();
-								}
-								float Scale = SubSection->Parameters.TimeScale;
-								const int32 Index = -1;
-								UsdUtils::InsertSubLayer( UsdStage.GetRootLayer(), *SubSequencePath, Index, Offset, Scale );
-								*/
-							}
-						}
-					}
-
-					// We can add the level as a sublayer to every exported subsequence, so that each can be opened individually and
-					// automatically load the level layer. It doesn't matter much if the parent stage has composed the level
-					// sublayer multiple times (in case we add subsequence layers as sublayers in the future), as the prims will
-					// just all override each other with the same data
-					if ( Context.ExportOptions->bUseExportedLevelAsSublayer && FPaths::FileExists( Context.LevelFilePath ) )
-					{
-						UsdUtils::InsertSubLayer( UsdStage.GetRootLayer(), *Context.LevelFilePath );
-					}
+					UsdUtils::SetPrimAssetInfo( AssetDefaultPrim, Info );
 				}
 
 				Context.ExportedMovieScenes.Add( &MovieSceneSequence, UniqueFilePath );
@@ -1065,7 +1117,7 @@ namespace UE
 ULevelSequenceExporterUsd::ULevelSequenceExporterUsd()
 {
 #if USE_USD_SDK
-	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
+	for ( const FString& Extension : UnrealUSDWrapper::GetNativeFileFormats() )
 	{
 		// USDZ is not supported for writing for now
 		if ( Extension.Equals( TEXT( "usdz" ) ) )
@@ -1103,28 +1155,30 @@ bool ULevelSequenceExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type
 	{
 		Options = Cast<ULevelSequenceExporterUsdOptions>( ExportTask->Options );
 	}
-
 	if ( !Options )
 	{
 		Options = GetMutableDefault<ULevelSequenceExporterUsdOptions>();
+
+		// Prompt with an options dialog if we can
+		if ( Options && ( !ExportTask || !ExportTask->bAutomated ) )
+		{
+			Options->LevelExportOptions.AssetFolder.Path = FPaths::Combine( FPaths::GetPath( UExporter::CurrentFilename ), TEXT( "Assets" ) );
+			Options->TimeCodesPerSecond = MovieScene->GetDisplayRate().AsDecimal();
+
+			const bool bContinue = SUsdOptionsWindow::ShowExportOptions( *Options );
+			if ( !bContinue )
+			{
+				return false;
+			}
+		}
 	}
 	if ( !Options )
 	{
 		return false;
 	}
 
-	if ( !ExportTask || !ExportTask->bAutomated )
-	{
-		Options->LevelExportOptions.AssetFolder.Path = FPaths::Combine( FPaths::GetPath( UExporter::CurrentFilename ), TEXT( "Assets" ) );
-		Options->TimeCodesPerSecond = MovieScene->GetDisplayRate().AsDecimal();
-
-		const bool bIsImport = false;
-		const bool bContinue = SUsdOptionsWindow::ShowOptions( *Options, bIsImport );
-		if ( !bContinue )
-		{
-			return false;
-		}
-	}
+	// See comment on the analogous line within StaticMeshExporterUSD.cpp
+	ExportTask->bPrompt = false;
 
 	double StartTime = FPlatformTime::Cycles64();
 
@@ -1170,6 +1224,7 @@ bool ULevelSequenceExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type
 
 	LevelSequenceExporterImpl::FLevelSequenceExportContext Context{ *LevelSequence, TempSequencer.ToSharedRef(), SpawnRegister.ToSharedRef() };
 	Context.ExportOptions = Options;
+	Context.bReplaceIdentical = ExportTask->bReplaceIdentical;
 
 	// Spawn (but hide) all spawnables so that they will also show up on the level export if we need them to.
 	// We have to traverse the template IDs when spawning spawnables, because we'll want to force each individual spawnable of each
@@ -1202,6 +1257,8 @@ bool ULevelSequenceExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type
 			ULevelExporterUSDOptions* LevelOptions = GetMutableDefault<ULevelExporterUSDOptions>();
 			LevelOptions->StageOptions = Options->StageOptions;
 			LevelOptions->Inner = Options->LevelExportOptions;
+			LevelOptions->bReExportIdenticalAssets = Options->bReExportIdenticalAssets;
+			LevelOptions->bReExportIdenticalLevelsAndSequences = Options->bReExportIdenticalLevelsAndSequences;
 
 			UAssetExportTask* LevelExportTask = NewObject<UAssetExportTask>();
 			FGCObjectScopeGuard ExportTaskGuard( LevelExportTask );
@@ -1209,12 +1266,12 @@ bool ULevelSequenceExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type
 			LevelExportTask->Options = LevelOptions;
 			LevelExportTask->Exporter = nullptr;
 			LevelExportTask->Filename = Context.LevelFilePath;
-			LevelExportTask->bSelected = false;
-			LevelExportTask->bReplaceIdentical = true;
+			LevelExportTask->bSelected = LevelOptions->Inner.bSelectionOnly; // Move this as the level exporter will favor bSelected
+			LevelExportTask->bReplaceIdentical = ExportTask->bReplaceIdentical;
 			LevelExportTask->bPrompt = false;
 			LevelExportTask->bUseFileArchive = false;
 			LevelExportTask->bWriteEmptyFiles = false;
-			LevelExportTask->bAutomated = true; // Pretend this is an automated task so it doesn't pop the dialog
+			LevelExportTask->bAutomated = true; // Pretend this is an automated task so it doesn't pop the options dialog
 
 			UExporter::RunAssetExportTask( LevelExportTask );
 		}
@@ -1255,11 +1312,34 @@ bool ULevelSequenceExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type
 		}
 	}
 
+	// Get selected objects
+	if ( GEditor && Options->bSelectionOnly )
+	{
+		USelection* ComponentSelection= GEditor->GetSelectedComponents();
+		TArray<UActorComponent*> Components;
+		ComponentSelection->GetSelectedObjects( Components );
+		Context.SelectedComponents = TSet<UActorComponent*>{ Components };
+
+		USelection* ActorSelection = GEditor->GetSelectedActors();
+		TArray<AActor*> Actors;
+		ActorSelection->GetSelectedObjects( Actors );
+		Context.SelectedActors = TSet<AActor*>{ Actors };
+		for ( const UActorComponent* Component : Components )
+		{
+			// UE will ensure that the actor selection artificially includes all owners of all selected components, so
+			// we can't tell if an actor is intentionally selected or not. To provide some control, let's make it so that
+			// if components of an actor are selected we'll select only those particular components. If the user wants
+			// the whole actor they can just select the actor itself and none of its components
+			Context.SelectedActors.Remove( Component->GetOwner() );
+		}
+	}
+
 	TArray<UE::FUsdStage> ExportedStages;
 	LevelSequenceExporterImpl::ExportMovieSceneSequence( Context, *LevelSequence, TargetFileName, ExportedStages );
 
 	// Set this back to Stopped or else it will keep the editor viewport controls permanently hidden
 	TempSequencer->SetPlaybackStatus( EMovieScenePlayerStatus::Stopped );
+	TempSequencer->Close();
 
 	if ( GEditor && GIsEditor && AssetEditorSubsystem )
 	{

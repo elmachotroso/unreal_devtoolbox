@@ -22,7 +22,7 @@
 #include "AdvancedPreviewScene.h"
 #include "SStaticMeshEditorViewport.h"
 
-#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
 #include "AI/Navigation/NavCollisionBase.h"
 #include "PhysicsEngine/BodySetup.h"
@@ -62,7 +62,7 @@ FStaticMeshEditorViewportClient::FStaticMeshEditorViewportClient(TWeakPtr<IStati
 	DrawHelper.GridColorMajor = FColor(144,144,144);
 	DrawHelper.GridColorMinor = FColor(128,128,128);
 	DrawHelper.PerspectiveGridSize = GridSize;
-	DrawHelper.NumCells = DrawHelper.PerspectiveGridSize / (CellSize * 2);
+	DrawHelper.NumCells = FMath::FloorToInt32(DrawHelper.PerspectiveGridSize / (CellSize * 2));
 
 	SetViewMode(VMI_Lit);
 
@@ -732,7 +732,7 @@ static void DrawAngles(FCanvas* Canvas, int32 XPos, int32 YPos, EAxisList::Type 
 	}
 }
 
-void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas )
+void FStaticMeshEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneView& View, FCanvas& Canvas)
 {
 	auto StaticMeshEditor = StaticMeshEditorPtr.Pin();
 	auto StaticMeshEditorViewport = StaticMeshEditorViewportPtr.Pin();
@@ -741,28 +741,28 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 		return;
 	}
 
-	const int32 HalfX = Viewport->GetSizeXY().X/2 / GetDPIScale();
-	const int32 HalfY = Viewport->GetSizeXY().Y/2 / GetDPIScale();
+	const int32 HalfX = FMath::FloorToInt32(Viewport->GetSizeXY().X / 2 / GetDPIScale());
+	const int32 HalfY = FMath::FloorToInt32(Viewport->GetSizeXY().Y / 2 / GetDPIScale());
 
 	// Draw socket names if desired.
-	if( bShowSockets )
+	if (bShowSockets)
 	{
-		for(int32 i=0; i<StaticMesh->Sockets.Num(); i++)
+		for (int32 i = 0; i < StaticMesh->Sockets.Num(); i++)
 		{
 			UStaticMeshSocket* Socket = StaticMesh->Sockets[i];
-			if(Socket!=NULL)
+			if (Socket != nullptr)
 			{
 				FMatrix SocketTM;
 				Socket->GetSocketMatrix(SocketTM, StaticMeshComponent);
-				const FVector SocketPos	= SocketTM.GetOrigin();
-				const FPlane proj		= View.Project( SocketPos );
-				if(proj.W > 0.f)
+				const FVector SocketPos = SocketTM.GetOrigin();
+				const FPlane proj = View.Project(SocketPos);
+				if (proj.W > 0.f)
 				{
-					const int32 XPos = HalfX + ( HalfX * proj.X );
-					const int32 YPos = HalfY + ( HalfY * (proj.Y * -1) );
+					const int32 XPos = FMath::FloorToInt32( HalfX + (HalfX * proj.X) );
+					const int32 YPos = FMath::FloorToInt32( HalfY + (HalfY * (proj.Y * -1)) );
 
-					FCanvasTextItem TextItem( FVector2D( XPos, YPos ), FText::FromString( Socket->SocketName.ToString() ), GEngine->GetSmallFont(), FLinearColor(FColor(255,196,196)) );
-					Canvas.DrawItem( TextItem );	
+					FCanvasTextItem TextItem(FVector2D(XPos, YPos), FText::FromString(Socket->SocketName.ToString()), GEngine->GetSmallFont(), FLinearColor(FColor(255, 196, 196)));
+					Canvas.DrawItem(TextItem);
 
 					const UStaticMeshSocket* SelectedSocket = StaticMeshEditor->GetSelectedSocket();
 					if (bManipulating && SelectedSocket == Socket)
@@ -772,8 +772,8 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 						UCanvas::CanvasStringSize(Parameters, *Socket->SocketName.ToString());
 						int32 YL = FMath::TruncToInt(Parameters.DrawYL);
 
-						DrawAngles(&Canvas, XPos, YPos + YL, 
-							Widget->GetCurrentAxis(), 
+						DrawAngles(&Canvas, XPos, YPos + YL,
+							Widget->GetCurrentAxis(),
 							GetWidgetMode(),
 							Socket->RelativeRotation,
 							Socket->RelativeLocation);
@@ -789,7 +789,7 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 	{
 		int32 LOD = StaticMeshEditor->GetCurrentLODLevel();
 		return (LOD == 0) ?
-			ComputeStaticMeshLOD(StaticMesh->GetRenderData(), StaticMeshComponent->Bounds.Origin, StaticMeshComponent->Bounds.SphereRadius, View, StaticMesh->GetDefaultMinLOD())
+			ComputeStaticMeshLOD(StaticMesh->GetRenderData(), StaticMeshComponent->Bounds.Origin, static_cast<float>(StaticMeshComponent->Bounds.SphereRadius), View, StaticMesh->GetDefaultMinLOD())
 			:
 			LOD - 1;
 	}();
@@ -805,7 +805,7 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 			{
 				const FString PositionStr = FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(Resources.PositionPrecision);
 				TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "NanitePositionPrecision", "Position Precision: {0}"), FText::FromString(PositionStr)));
-				
+
 				const uint32 NumStreamingPages = Resources.PageStreamingStates.Num() - Resources.NumRootPages;
 				const uint64 RootKB = uint64(Resources.NumRootPages) * NANITE_ROOT_PAGE_GPU_SIZE;
 				const uint64 StreamingKB = uint64(NumStreamingPages) * NANITE_STREAMING_PAGE_GPU_SIZE;
@@ -820,13 +820,13 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 					FText::AsNumber(RootKB / 1048576.0f, &NumberOptions),
 					FText::AsNumber(StreamingKB / 1048576.0f, &NumberOptions),
 					FText::AsNumber(TotalKB / 1048576.0f, &NumberOptions)
-					));
+				));
 			}
 		}
 	}
-	else
+
+	if (!StaticMesh->NaniteSettings.bEnabled || StaticMeshComponent->bDisplayNaniteFallbackMesh)
 	{
-		
 		const int32 CurrentMinLODLevel = StaticMesh->GetMinLOD().GetValue();
 		const bool bBelowMinLOD = CurrentLODLevel < CurrentMinLODLevel;
 
@@ -838,7 +838,7 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 		}
 	}
 
-	const float CurrentScreenSize = ComputeBoundsScreenSize(StaticMeshComponent->Bounds.Origin, StaticMeshComponent->Bounds.SphereRadius, View);
+	const float CurrentScreenSize = ComputeBoundsScreenSize(StaticMeshComponent->Bounds.Origin, static_cast<float>(StaticMeshComponent->Bounds.SphereRadius), View);
 	FNumberFormattingOptions FormatOptions;
 	FormatOptions.MinimumFractionalDigits = 3;
 	FormatOptions.MaximumFractionalDigits = 6;
@@ -876,7 +876,7 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 
 	TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "UVChannels_F", "UV Channels:  {0}"), FText::AsNumber(StaticMeshEditorPtr.Pin()->GetNumUVChannels(CurrentLODLevel))));
 
-	if(StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0 )
+	if (StaticMesh->GetRenderData() && StaticMesh->GetRenderData()->LODResources.Num() > 0)
 	{
 		if (StaticMesh->GetRenderData()->LODResources[0].DistanceFieldData != nullptr )
 		{
@@ -902,13 +902,13 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 		FText::AsNumber(int32(StaticMesh->GetBounds().BoxExtent.Z * 2.0f))));
 
 	// Show the number of collision primitives
-	if(StaticMesh->GetBodySetup())
+	if (StaticMesh->GetBodySetup())
 	{
 		TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "NumPrimitives_F", "Num Collision Primitives:  {0}"), FText::AsNumber(StaticMesh->GetBodySetup()->AggGeom.GetElementCount())));
 	}
 
 	// Estimated compressed size
-	if(StaticMesh->GetRenderData())
+	if (StaticMesh->GetRenderData())
 	{
 		FNumberFormattingOptions NumberOptions;
 		NumberOptions.MinimumFractionalDigits = 2;
@@ -929,15 +929,14 @@ void FStaticMeshEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneV
 
  	int32 X = Canvas.GetRenderTarget()->GetSizeXY().X - 300;
  	int32 Y = 30;
-	// Make sure draws to the canvas are not rendered upside down.
-	Canvas.SetAllowSwitchVerticalAxis(false);
+
 	if (StaticMesh->GetBodySetup() && (!(StaticMesh->GetBodySetup()->bHasCookedCollisionData || StaticMesh->GetBodySetup()->bNeverNeedsCookedCollisionData) || StaticMesh->GetBodySetup()->bFailedToCreatePhysicsMeshes))
 	{
 		static const FText Message = NSLOCTEXT("Renderer", "NoCookedCollisionObject", "NO COOKED COLLISION OBJECT: TOO SMALL?");
-		Canvas.DrawShadowedText(X, Y, Message, GetStatsFont(), FLinearColor(1.0, 0.05, 0.05, 1.0));
+		Canvas.DrawShadowedText(static_cast<float>(X), static_cast<float>(Y), Message, GetStatsFont(), FLinearColor(1.0, 0.05, 0.05, 1.0));
 	}
 
-	if(bDrawUVs && StaticMesh->GetRenderData()->LODResources.Num() > 0)
+	if (bDrawUVs && StaticMesh->GetRenderData()->LODResources.Num() > 0)
 	{
 		const int32 YPos = 160;
 		DrawUVsForMesh(Viewport, &Canvas, YPos);
@@ -961,32 +960,32 @@ void FStaticMeshEditorViewportClient::MouseMove(FViewport* InViewport,int32 x, i
 	FEditorViewportClient::MouseMove(InViewport,x,y);
 }
 
-bool FStaticMeshEditorViewportClient::InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event,float AmountDepressed, bool Gamepad)
+bool FStaticMeshEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
-	bool bHandled = FEditorViewportClient::InputKey(InViewport, ControllerId, Key, Event, AmountDepressed, false);
+	bool bHandled = FEditorViewportClient::InputKey(EventArgs);
 
 	// Handle viewport screenshot.
-	bHandled |= InputTakeScreenshot( InViewport, Key, Event );
+	bHandled |= InputTakeScreenshot( EventArgs.Viewport, EventArgs.Key, EventArgs.Event );
 
-	bHandled |= AdvancedPreviewScene->HandleInputKey(InViewport, ControllerId, Key, Event, AmountDepressed, Gamepad);
+	bHandled |= AdvancedPreviewScene->HandleInputKey(EventArgs);
 
 	return bHandled;
 }
 
-bool FStaticMeshEditorViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
+bool FStaticMeshEditorViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	bool bResult = true;
 	
 	if (!bDisableInput)
 	{
-		bResult = AdvancedPreviewScene->HandleViewportInput(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+		bResult = AdvancedPreviewScene->HandleViewportInput(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
 		if (bResult)
 		{
 			Invalidate();
 		}
 		else
 		{
-			bResult = FEditorViewportClient::InputAxis(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+			bResult = FEditorViewportClient::InputAxis(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
 		}
 	}
 
@@ -1200,7 +1199,7 @@ void FStaticMeshEditorViewportClient::ProcessClick(class FSceneView& InView, cla
 										ClosestPointToClickLineOnEdge);
 
 									// Compute the minimum distance (squared)
-									const float MinDistanceToEdgeSquared = (ClosestPointToClickLineOnEdge - ClosestPointToEdgeOnClickLine).SizeSquared();
+									const float MinDistanceToEdgeSquared = static_cast<float>( (ClosestPointToClickLineOnEdge - ClosestPointToEdgeOnClickLine).SizeSquared() );
 
 									if (MinDistanceToEdgeSquared <= WorldSpaceMinClickDistance)
 									{
@@ -1443,7 +1442,7 @@ void FStaticMeshEditorViewportClient::SetPreviewMesh(UStaticMesh* InStaticMesh, 
 		ThumbnailAngle.Roll = 0;
 		const float ThumbnailDistance = ThumbnailInfo->OrbitZoom;
 
-		const float CameraY = StaticMesh->GetBounds().SphereRadius / (75.0f * PI / 360.0f);
+		const float CameraY = static_cast<float>( StaticMesh->GetBounds().SphereRadius / (75.0f * PI / 360.0f) );
 		SetCameraSetup(
 			FVector::ZeroVector,
 			ThumbnailAngle,

@@ -6,8 +6,8 @@
 #include "ToolMenus.h"
 
 #include "AnimGraphCommands.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BlueprintActionFilter.h"
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintNodeSpawner.h"
@@ -21,7 +21,7 @@ protected:
 	FAssetData AssetInfo;
 public:
 	FNewPoseBlendNodeAction(const FAssetData& InAssetInfo, FText Title)
-		: FEdGraphSchemaAction_K2NewNode(LOCTEXT("PoseAsset", "PoseAssets"), Title, LOCTEXT("EvalCurvesToMakePose", "Evaluates curves to produce a pose from pose asset"), 0, FText::FromName(InAssetInfo.ObjectPath))
+		: FEdGraphSchemaAction_K2NewNode(LOCTEXT("PoseAsset", "PoseAssets"), Title, LOCTEXT("EvalCurvesToMakePose", "Evaluates curves to produce a pose from pose asset"), 0, FText::FromString(InAssetInfo.GetObjectPathString()))
 	{
 		AssetInfo = InAssetInfo;
 
@@ -142,7 +142,7 @@ FText UAnimGraphNode_PoseBlendNode::GetTitleGivenAssetInfo(const FText& AssetNam
 
 FText UAnimGraphNode_PoseBlendNode::GetMenuCategory() const
 {
-	return LOCTEXT("PoseAssetCategory_Label", "Poses");
+	return LOCTEXT("PoseAssetCategory_Label", "Animation|Poses");
 }
 
 bool UAnimGraphNode_PoseBlendNode::DoesSupportTimeForTransitionGetter() const

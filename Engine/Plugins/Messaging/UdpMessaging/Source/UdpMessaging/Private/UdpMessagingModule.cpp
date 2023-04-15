@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "UdpMessageProcessor.h"
 #include "UdpMessagingPrivate.h"
 
 #include "CoreTypes.h"
@@ -377,7 +378,66 @@ public:
 		AdditionalStaticEndpoints.Empty();
 	}
 
-	virtual void AddEndpoint(const FString& InEndpoint)
+	virtual bool CanProvideNetworkStatistics() const override
+	{
+		return true;
+	}
+
+	virtual FMessageTransportStatistics GetLatestNetworkStatistics(FGuid NodeId) const override
+	{
+		if (auto Transport = WeakBridgeTransport.Pin())
+		{
+			return Transport->GetLatestStatistics(NodeId);
+		}
+		return {};
+	}
+
+	virtual FGuid GetNodeIdFromAddress(const FMessageAddress& MessageAddress) const override
+	{
+		return MessageBridge->LookupAddress(MessageAddress);
+	}
+
+	virtual FOnOutboundTransferDataUpdated& OnOutboundTransferUpdatedFromThread() override
+	{
+		return UE::Private::MessageProcessor::OnSegmenterUpdated();
+	}
+
+	virtual FOnInboundTransferDataUpdated& OnInboundTransferUpdatedFromThread() override
+	{
+		return UE::Private::MessageProcessor::OnReassemblerUpdated();
+	}
+
+	virtual TArray<FString> GetListeningAddresses() const override
+	{
+		if (auto Transport = WeakBridgeTransport.Pin())
+		{
+			TArray<FString> StringifiedEndpoints;
+			TArray<FIPv4Endpoint> Endpoints = Transport->GetListeningAddresses();
+			for (const FIPv4Endpoint& Endpoint : Endpoints)
+			{
+				StringifiedEndpoints.Add(Endpoint.ToString());
+			}
+			return StringifiedEndpoints;
+		}
+		return {};
+	}
+
+	virtual TArray<FString> GetKnownEndpoints() const override
+	{
+		if (auto Transport = WeakBridgeTransport.Pin())
+		{
+			TArray<FIPv4Endpoint> Endpoints = Transport->GetKnownEndpoints();
+			TArray<FString> StringifiedEndpoints;
+			for (const FIPv4Endpoint& Endpoint : Endpoints)
+			{
+				StringifiedEndpoints.Add(Endpoint.ToString());
+			}
+			return StringifiedEndpoints;
+		}
+		return {};
+	}
+
+	virtual void AddEndpoint(const FString& InEndpoint) override
 	{
 		if (auto Transport = WeakBridgeTransport.Pin())
 		{
@@ -391,7 +451,7 @@ public:
 		}
 	}
 
-	virtual void RemoveEndpoint(const FString& InEndpoint)
+	virtual void RemoveEndpoint(const FString& InEndpoint) override
 	{
 		if (auto Transport = WeakBridgeTransport.Pin())
 		{
@@ -415,6 +475,25 @@ protected:
 			bParsedAddr = FIPv4Endpoint::FromHostAndPort(InEndpointString, OutEndpoint);
 		}
 		return bParsedAddr;
+	}
+
+	TArray<FIPv4Endpoint> ParseStringArrayAddresses(const TArray<FString>& StringAddresses)
+	{
+		TArray<FIPv4Endpoint> Endpoints;
+		for (const FString& EndpointAsString : StringAddresses)
+		{
+			FIPv4Endpoint Endpoint;
+
+			if (ParseEndpoint(EndpointAsString, Endpoint))
+			{
+				Endpoints.Add(Endpoint);
+			}
+			else
+			{
+				UE_LOG(LogUdpMessaging, Warning, TEXT("Invalid UDP Messaging Endpoint '%s'"), *EndpointAsString);
+			}
+		}
+		return Endpoints;
 	}
 
 	/** Initializes the message bridge with the current settings. */
@@ -454,20 +533,10 @@ protected:
 
 		// Initialize the service with the additional endpoints added through the modular interface
 		TArray<FIPv4Endpoint> StaticEndpoints = AdditionalStaticEndpoints.Array();
+		StaticEndpoints += ParseStringArrayAddresses(Settings->StaticEndpoints);
 
-		for (auto& StaticEndpoint : Settings->StaticEndpoints)
-		{
-			FIPv4Endpoint Endpoint;
-
-			if (ParseEndpoint(StaticEndpoint, Endpoint))
-			{
-				StaticEndpoints.Add(Endpoint);
-			}
-			else
-			{
-				UE_LOG(LogUdpMessaging, Warning, TEXT("Invalid UDP Messaging Static Endpoint '%s'"), *StaticEndpoint);
-			}
-		}
+		// Addresses to deny on transport.
+		TArray<FIPv4Endpoint> ExcludedEndpoints = ParseStringArrayAddresses(Settings->ExcludedEndpoints);
 
 		if (Settings->MulticastTimeToLive == 0)
 		{
@@ -481,7 +550,8 @@ protected:
 		}
 		UE_LOG(LogUdpMessaging, Log, TEXT("Initializing bridge on interface %s to multicast group %s."), *UnicastEndpoint.ToString(), *MulticastEndpoint.ToText().ToString());
 
-		TSharedRef<FUdpMessageTransport, ESPMode::ThreadSafe> Transport = MakeShared<FUdpMessageTransport, ESPMode::ThreadSafe>(UnicastEndpoint, MulticastEndpoint, MoveTemp(StaticEndpoints), Settings->MulticastTimeToLive);
+		TSharedRef<FUdpMessageTransport, ESPMode::ThreadSafe> Transport = MakeShared<FUdpMessageTransport, ESPMode::ThreadSafe>(
+			UnicastEndpoint, MulticastEndpoint, MoveTemp(StaticEndpoints), MoveTemp(ExcludedEndpoints), Settings->MulticastTimeToLive);
 		WeakBridgeTransport = Transport;
 		MessageBridge = FMessageBridgeBuilder()
 			.UsingTransport(Transport);
@@ -560,6 +630,7 @@ protected:
 			FParse::Bool(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_ENABLE="), Settings->EnableTransport);
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_UNICAST="), Settings->UnicastEndpoint);
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_MULTICAST="), Settings->MulticastEndpoint);
+			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_WORK_QUEUE_SIZE="), Settings->WorkQueueSize);
 
 			FString StaticEndpoints;
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_STATIC="), StaticEndpoints, false);

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "UnrealUSDWrapper.h"
+#include "USDInfoCache.h"
 #include "USDLevelSequenceHelper.h"
 #include "USDMemory.h"
 #include "USDStageOptions.h"
@@ -33,7 +34,7 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 
 	/** Spawned actor that contains the imported scene as a child hierarchy */
 	UPROPERTY()
-	AActor* SceneActor;
+	TObjectPtr<AActor> SceneActor;
 
 	/** Name to use when importing a single mesh */
 	UPROPERTY()
@@ -47,17 +48,20 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 	FString FilePath;
 
 	UPROPERTY()
-	UUsdStageImportOptions* ImportOptions;
+	TObjectPtr<UUsdStageImportOptions> ImportOptions;
 
 	/** Keep track of the last imported object so that we have something valid to return to upstream code that calls the import factories */
 	UPROPERTY()
-	UObject* ImportedAsset;
+	TObjectPtr<UObject> ImportedAsset;
 
 	/** Level sequence that will contain the animation data during the import process */
 	FUsdLevelSequenceHelper LevelSequenceHelper;
 
 	UPROPERTY()
-	UUsdAssetCache* AssetCache;
+	TObjectPtr<UUsdAssetCache> AssetCache;
+
+	/** Caches various information about prims that are expensive to query */
+	TSharedPtr<FUsdInfoCache> InfoCache;
 
 	/**
 	 * When parsing materials, we keep track of which primvar we mapped to which UV channel.
@@ -87,10 +91,14 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 	float OriginalMetersPerUnit;
 	EUsdUpAxis OriginalUpAxis;
 
+	/** If we need to run GC after the import is complete */
+	bool bNeedsGarbageCollection;
+
 public:
 	FUsdStageImportContext();
 
 	bool Init(const FString& InName, const FString& InFilePath, const FString& InInitialPackagePath, EObjectFlags InFlags, bool bInIsAutomated, bool bIsReimport = false, bool bAllowActorImport = true);
+	void Reset();
 
 private:
 	/** Error messages **/

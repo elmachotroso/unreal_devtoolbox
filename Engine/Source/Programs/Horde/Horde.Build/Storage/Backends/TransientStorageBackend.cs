@@ -1,13 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
-namespace HordeServer.Storage.Backends
+namespace Horde.Build.Storage.Backends
 {
 	/// <summary>
 	/// In-memory implementation of ILogFileStorage
@@ -17,15 +15,15 @@ namespace HordeServer.Storage.Backends
 		/// <summary>
 		/// Data storage
 		/// </summary>
-		ConcurrentDictionary<string, byte[]> PathToData = new ConcurrentDictionary<string, byte[]>();
+		readonly ConcurrentDictionary<string, byte[]> _pathToData = new ConcurrentDictionary<string, byte[]>();
 
 		/// <inheritdoc/>
-		public Task<Stream?> ReadAsync(string Path)
+		public Task<Stream?> ReadAsync(string path, CancellationToken cancellationToken)
 		{
-			byte[]? Data;
-			if (PathToData.TryGetValue(Path, out Data))
+			byte[]? data;
+			if (_pathToData.TryGetValue(path, out data))
 			{
-				return Task.FromResult<Stream?>(new MemoryStream(Data, false));
+				return Task.FromResult<Stream?>(new MemoryStream(data, false));
 			}
 			else
 			{
@@ -34,25 +32,25 @@ namespace HordeServer.Storage.Backends
 		}
 
 		/// <inheritdoc/>
-		public async Task WriteAsync(string Path, Stream Stream)
+		public async Task WriteAsync(string path, Stream stream, CancellationToken cancellationToken)
 		{
-			using (MemoryStream Buffer = new MemoryStream())
+			using (MemoryStream buffer = new MemoryStream())
 			{
-				await Stream.CopyToAsync(Buffer);
-				PathToData[Path] = Buffer.ToArray();
+				await stream.CopyToAsync(buffer);
+				_pathToData[path] = buffer.ToArray();
 			}
 		}
 
 		/// <inheritdoc/>
-		public Task<bool> ExistsAsync(string Path)
+		public Task<bool> ExistsAsync(string path, CancellationToken cancellationToken)
 		{
-			return Task.FromResult(PathToData.ContainsKey(Path));
+			return Task.FromResult(_pathToData.ContainsKey(path));
 		}
 
 		/// <inheritdoc/>
-		public Task DeleteAsync(string Path)
+		public Task DeleteAsync(string path, CancellationToken cancellationToken)
 		{
-			PathToData.TryRemove(Path, out _);
+			_pathToData.TryRemove(path, out _);
 			return Task.CompletedTask;
 		}
 	}

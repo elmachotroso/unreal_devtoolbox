@@ -2,7 +2,12 @@
 
 #pragma once
 
+#include "Containers/LockFreeList.h"
 #include "CoreTypes.h"
+
+#include <atomic>
+
+template <class T, int TPaddingForCacheContention> class TLockFreePointerListUnordered;
 
 /**
 * Data storage for the large memory reader and writer.
@@ -73,4 +78,19 @@ private:
 
 	/** Resizes the data buffer to at least NumBytes with some slack */
 	void GrowBuffer();
+};
+
+/**
+* Pooled storage of FLargeMemoryData instances, allowing allocation-free and lock-free access.
+*/
+class CORE_API FPooledLargeMemoryData
+{
+public:
+	FPooledLargeMemoryData();
+	~FPooledLargeMemoryData();
+	FLargeMemoryData& Get() { return *Data; }
+private:
+	FLargeMemoryData* Data;
+	static TLockFreePointerListUnordered<FLargeMemoryData, 0> FreeList;
+	static std::atomic<int32> FreeListLength;
 };

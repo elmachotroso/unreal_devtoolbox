@@ -6,6 +6,13 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimTrace.h"
 #include "Animation/AnimPoseSearchProvider.h"
+#include "Animation/AnimSyncScope.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SequencePlayer)
+
+#if WITH_EDITORONLY_DATA
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "AnimNode_SequencePlayer"
 
@@ -87,12 +94,43 @@ void FAnimNode_SequencePlayerBase::UpdateAssetPlayer(const FAnimationUpdateConte
 
 	if ((CurrentSequence != nullptr) && (Context.AnimInstanceProxy->IsSkeletonCompatible(CurrentSequence->GetSkeleton())))
 	{
+		// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
+		auto HACK_CreateTickRecordForNode = [this]( const FAnimationUpdateContext& Context, UAnimSequenceBase* Sequence, bool bLooping, float PlayRate)
+		{
+			// Create a tick record and push into the closest scope
+			const float FinalBlendWeight = Context.GetFinalBlendWeight();
+
+			UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
+
+			const EAnimGroupRole::Type SyncGroupRole = GetGroupRole();
+			const FName SyncGroupName = GetGroupName();
+
+			const FName GroupNameToUse = ((SyncGroupRole < EAnimGroupRole::TransitionLeader) || bHasBeenFullWeight) ? SyncGroupName : NAME_None;
+			EAnimSyncMethod MethodToUse = GetGroupMethod();
+			if(GroupNameToUse == NAME_None && MethodToUse == EAnimSyncMethod::SyncGroup)
+			{
+				MethodToUse = EAnimSyncMethod::DoNotSync;
+			}
+
+			const UE::Anim::FAnimSyncParams SyncParams(GroupNameToUse, SyncGroupRole, MethodToUse);
+			FAnimTickRecord TickRecord(Sequence, bLooping, PlayRate, FinalBlendWeight, /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
+			TickRecord.GatherContextData(Context);
+
+			TickRecord.RootMotionWeightModifier = Context.GetRootMotionWeightModifier();
+			TickRecord.DeltaTimeRecord = &DeltaTimeRecord;
+			TickRecord.BlendSpace.bIsEvaluator = false;
+
+			SyncScope.AddTickRecord(TickRecord, SyncParams, UE::Anim::FAnimSyncDebugInfo(Context));
+
+			TRACE_ANIM_TICK_RECORD(Context, TickRecord);
+		};
+		
 		const float CurrentPlayRate = GetPlayRate();
 		const float CurrentPlayRateBasis = GetPlayRateBasis();
 
 		InternalTimeAccumulator = FMath::Clamp(InternalTimeAccumulator, 0.f, CurrentSequence->GetPlayLength());
 		const float AdjustedPlayRate = PlayRateScaleBiasClampState.ApplyTo(GetPlayRateScaleBiasClampConstants(), FMath::IsNearlyZero(CurrentPlayRateBasis) ? 0.f : (CurrentPlayRate / CurrentPlayRateBasis), Context.GetDeltaTime());
-		CreateTickRecordForNode(Context, CurrentSequence, GetLoopAnimation(), AdjustedPlayRate);
+		HACK_CreateTickRecordForNode(Context, CurrentSequence, GetLoopAnimation(), AdjustedPlayRate);
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -170,18 +208,8 @@ float FAnimNode_SequencePlayerBase::GetEffectiveStartPosition(const FAnimationBa
 
 bool FAnimNode_SequencePlayer::SetSequence(UAnimSequenceBase* InSequence)
 {
-#if WITH_EDITORONLY_DATA
 	Sequence = InSequence;
-	GET_MUTABLE_ANIM_NODE_DATA(TObjectPtr<UAnimSequenceBase>, Sequence) = InSequence;
-#endif
-	
-	if(TObjectPtr<UAnimSequenceBase>* SequencePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(TObjectPtr<UAnimSequenceBase>, Sequence))
-	{
-		*SequencePtr = InSequence;
-		return true;
-	}
-
-	return false;
+	return true;
 }
 
 bool FAnimNode_SequencePlayer::SetLoopAnimation(bool bInLoopAnimation)
@@ -201,7 +229,7 @@ bool FAnimNode_SequencePlayer::SetLoopAnimation(bool bInLoopAnimation)
 
 UAnimSequenceBase* FAnimNode_SequencePlayer::GetSequence() const
 {
-	return GET_ANIM_NODE_DATA(TObjectPtr<UAnimSequenceBase>, Sequence);
+	return Sequence;
 }
 
 float FAnimNode_SequencePlayer::GetPlayRateBasis() const
@@ -338,3 +366,4 @@ bool FAnimNode_SequencePlayer::SetPlayRate(float InPlayRate)
 }
 
 #undef LOCTEXT_NAMESPACE
+

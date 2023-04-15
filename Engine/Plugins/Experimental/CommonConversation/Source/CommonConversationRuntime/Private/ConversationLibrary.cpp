@@ -6,6 +6,8 @@
 #include "ConversationSettings.h"
 #include "Engine/Engine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ConversationLibrary)
+
 #define LOCTEXT_NAMESPACE "ConversationLibrary"
 
 //////////////////////////////////////////////////////////////////////////
@@ -15,7 +17,8 @@ UConversationLibrary::UConversationLibrary()
 {
 }
 
-UConversationInstance* UConversationLibrary::StartConversation(FGameplayTag ConversationEntryTag, AActor* Instigator, FGameplayTag InstigatorTag, AActor* Target, FGameplayTag TargetTag)
+UConversationInstance* UConversationLibrary::StartConversation(FGameplayTag ConversationEntryTag, AActor* Instigator,
+	FGameplayTag InstigatorTag, AActor* Target, FGameplayTag TargetTag, const TSubclassOf<UConversationInstance> ConversationInstanceClass)
 {
 #if WITH_SERVER_CODE
 	if (Instigator == nullptr || Target == nullptr)
@@ -25,12 +28,15 @@ UConversationInstance* UConversationLibrary::StartConversation(FGameplayTag Conv
 
 	if (UWorld* World = GEngine->GetWorldFromContextObject(Instigator, EGetWorldErrorMode::LogAndReturnNull))
 	{
-		UClass* InstanceClass = GetDefault<UConversationSettings>()->GetConversationInstanceClass();
-		if (InstanceClass == nullptr)
+		UClass* InstanceClass = ConversationInstanceClass;
+		if (!InstanceClass)
 		{
-			InstanceClass = UConversationInstance::StaticClass();
+			InstanceClass = GetDefault<UConversationSettings>()->GetConversationInstanceClass();
+			if (InstanceClass == nullptr)
+			{
+				InstanceClass = UConversationInstance::StaticClass();
+			}
 		}
-
 		UConversationInstance* ConversationInstance = NewObject<UConversationInstance>(World, InstanceClass);
 		if (ensure(ConversationInstance))
 		{
@@ -50,3 +56,4 @@ UConversationInstance* UConversationLibrary::StartConversation(FGameplayTag Conv
 }
 
 #undef LOCTEXT_NAMESPACE
+

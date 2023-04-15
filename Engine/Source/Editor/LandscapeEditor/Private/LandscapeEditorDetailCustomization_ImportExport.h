@@ -6,7 +6,7 @@
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
-#include "Editor/LandscapeEditor/Private/LandscapeEdMode.h"
+#include "LandscapeEdMode.h"
 #include "IDetailCustomization.h"
 #include "IPropertyTypeCustomization.h"
 #include "PropertyHandle.h"
@@ -30,8 +30,11 @@ public:
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
-	static void FormatFilename(TSharedRef<IPropertyHandle> PropertyHandle_Filename);
+	static void FormatFilename(TSharedRef<IPropertyHandle> PropertyHandle_Filename, bool bForExport);
 private:
+	static bool GetExportSingleFileIsEnabled();
+	static ECheckBoxState GetExportSingleFileCheckState();
+	static void OnExportSingleFileCheckStateChanged(ECheckBoxState NewCheckState);
 	static EVisibility GetImportExportVisibility(bool bImport);
 	static bool IsHeightmapEnabled();
 	static ECheckBoxState GetHeightmapSelectedCheckState();
@@ -47,6 +50,9 @@ private:
 	static FText GetImportExportButtonText();
 	static FReply OnImportExportButtonClicked();
 	static bool GetImportExportButtonIsEnabled();
+
+	EVisibility GetImportExportLandscapeErrorVisibility() const;
+	FText GetImportExportLandscapeErrorText() const;
 
 	static TSharedRef<SWidget> GetImportLandscapeResolutionMenu();
 	static void OnChangeImportLandscapeResolution(int32 DescriptorIndex);

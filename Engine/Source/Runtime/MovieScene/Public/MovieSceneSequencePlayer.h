@@ -7,14 +7,22 @@
 #include "UObject/ScriptMacros.h"
 #include "IMovieScenePlayer.h"
 #include "MovieScene.h"
-#include "MovieSceneSequenceTickManager.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "IMovieScenePlaybackClient.h"
 #include "Misc/QualifiedFrameTime.h"
 #include "MovieSceneTimeController.h"
 #include "Evaluation/MovieScenePlayback.h"
-#include "MovieSceneSequenceTickManager.h"
 #include "Evaluation/MovieScenePlayback.h"
+#include "MovieSceneSequenceTickManagerClient.h"
+#include "MovieSceneSequencePlaybackSettings.h"
+#include "MovieSceneLatentActionManager.h"
+#include "IMovieSceneSequencePlayerObserver.h"
+#include "EntitySystem/MovieSceneEntityIDs.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+	#include "MovieSceneSequenceTickManager.h"
+#endif
+
 #include "MovieSceneSequencePlayer.generated.h"
 
 class UMovieSceneSequenceTickManager;
@@ -34,33 +42,6 @@ enum class EUpdatePositionMethod : uint8
 	/** Jump to a specified position, temporarily using EMovieScenePlayerStatus::Scrubbing */
 	Scrub,
 };
-
-
-
-/** POD struct that represents a number of loops where -1 signifies infinite looping, 0 means no loops, etc
- * Defined as a struct rather than an int so a property type customization can be bound to it
- */
-USTRUCT(BlueprintType)
-struct FMovieSceneSequenceLoopCount
-{
-	FMovieSceneSequenceLoopCount()
-		: Value(0)
-	{}
-
-	GENERATED_BODY()
-
-	/** Serialize this count from an int */
-	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot );
-
-	/** Whether or not to loop playback. If Loop Exactly is chosen, you can specify the number of times to loop */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback", meta=(UIMin=1, DisplayName="Loop"))
-	int32 Value;
-};
-template<> struct TStructOpsTypeTraits<FMovieSceneSequenceLoopCount> : public TStructOpsTypeTraitsBase2<FMovieSceneSequenceLoopCount>
-{
-	enum { WithStructuredSerializeFromMismatchedTag = true };
-};
-
 
 
 /**
@@ -89,80 +70,6 @@ struct FMovieSceneSequenceReplProperties
 	int32 LastKnownNumLoops;
 };
 
-
-
-/**
- * Settings for the level sequence player actor.
- */
-USTRUCT(BlueprintType)
-struct FMovieSceneSequencePlaybackSettings
-{
-	FMovieSceneSequencePlaybackSettings()
-		: bAutoPlay(false)
-		, PlayRate(1.f)
-		, StartTime(0.f)
-		, bRandomStartTime(false)
-		, bRestoreState(false)
-		, bDisableMovementInput(false)
-		, bDisableLookAtInput(false)
-		, bHidePlayer(false)
-		, bHideHud(false)
-		, bDisableCameraCuts(false)
-		, bPauseAtEnd(false)
-	{ }
-
-	GENERATED_BODY()
-
-	/** Auto-play the sequence when created */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Playback")
-	uint32 bAutoPlay : 1;
-
-	/** Number of times to loop playback. -1 for infinite, else the number of times to loop before stopping */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback", meta=(UIMin=1, DisplayName="Loop"))
-	FMovieSceneSequenceLoopCount LoopCount;
-
-	/** The rate at which to playback the animation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback", meta=(Units=Multiplier))
-	float PlayRate;
-
-	/** Start playback at the specified offset from the start of the sequence's playback range */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback", DisplayName="Start Offset", meta=(Units=s, EditCondition="!bRandomStartTime"))
-	float StartTime;
-
-	/** Start playback at a random time */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback")
-	uint32 bRandomStartTime : 1;
-
-	/** Flag used to specify whether actor states should be restored on stop */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback")
-	uint32 bRestoreState : 1;
-
-	/** Disable Input from player during play */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
-	uint32 bDisableMovementInput : 1;
-
-	/** Disable LookAt Input from player during play */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
-	uint32 bDisableLookAtInput : 1;
-
-	/** Hide Player Pawn during play */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
-	uint32 bHidePlayer : 1;
-
-	/** Hide HUD during play */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
-	uint32 bHideHud : 1;
-
-	/** Disable camera cuts */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cinematic")
-	uint32 bDisableCameraCuts : 1;
-
-	/** Pause the sequence when playback reaches the end rather than stopping it */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Playback")
-	uint32 bPauseAtEnd : 1;
-
-	MOVIESCENE_API bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
-};
 
 UENUM(BlueprintType)
 enum class EMovieScenePositionType : uint8
@@ -238,11 +145,6 @@ struct FMovieSceneSequencePlayToParams
 	bool bExclusive = true;
 };
 
-template<> struct TStructOpsTypeTraits<FMovieSceneSequencePlaybackSettings> : public TStructOpsTypeTraitsBase2<FMovieSceneSequencePlaybackSettings>
-{
-	enum { WithCopy = true, WithStructuredSerializeFromMismatchedTag = true };
-};
-
 /**
  * Abstract class that provides consistent player behaviour for various animation players
  */
@@ -250,9 +152,14 @@ UCLASS(Abstract, BlueprintType)
 class MOVIESCENE_API UMovieSceneSequencePlayer
 	: public UObject
 	, public IMovieScenePlayer
+	, public IMovieSceneSequenceTickManagerClient
 {
 public:
 	GENERATED_BODY()
+
+	/** Obeserver interface used for controlling whether the effects of this sequence can be seen even when it is playing back. */
+	UPROPERTY(replicated)
+	TScriptInterface<IMovieSceneSequencePlayerObserver> Observer;
 
 	UMovieSceneSequencePlayer(const FObjectInitializer&);
 	virtual ~UMovieSceneSequencePlayer();
@@ -499,6 +406,12 @@ public:
 	/** Ensure that this player's tick manager is set up correctly for the specified context */
 	void InitializeForTick(UObject* Context);
 
+	/** Assign this player's playback settings */
+	void SetPlaybackSettings(const FMovieSceneSequencePlaybackSettings& InSettings);
+
+	/** Initialize this player using its existing playback settings */
+	void Initialize(UMovieSceneSequence* InSequence);
+
 	/** Initialize this player with a sequence and some settings */
 	void Initialize(UMovieSceneSequence* InSequence, const FMovieSceneSequencePlaybackSettings& InSettings);
 
@@ -507,6 +420,9 @@ public:
 
 	/** Update the sequence for the current time, if playing, asynchronously */
 	void UpdateAsync(const float DeltaSeconds);
+
+	/** Perform any tear-down work when this player is no longer (and will never) be needed */
+	void TearDown();
 
 public:
 
@@ -539,6 +455,12 @@ public:
 	 * Assign a time controller for this sequence player allowing custom time management implementations.
 	 */
 	void SetTimeController(TSharedPtr<FMovieSceneTimeController> InTimeController);
+
+	/**
+	 * Sets whether to listen or ignore playback replication events.
+	 * @param bState If true, ignores playback replication.
+	 */
+	void SetIgnorePlaybackReplication(bool bState);
 
 protected:
 
@@ -603,6 +525,10 @@ protected:
 	virtual void PostNetReceive() override;
 	virtual void BeginDestroy() override;
 	/*~ End UObject interface */
+
+	//~ Begin IMovieSceneSequenceTickManagerClient interface
+	virtual void TickFromSequenceTickManager(float DeltaSeconds, FMovieSceneEntitySystemRunner* Runner) override;
+	//~ End IMovieSceneSequenceTickManagerClient interface
 
 protected:
 
@@ -705,6 +631,9 @@ protected:
 	UPROPERTY(transient)
 	FMovieSceneRootEvaluationTemplateInstance RootTemplateInstance;
 
+	/** Usually nullptr, but will be set when we are updating inside a TickFromSequenceTickManager call */
+	FMovieSceneEntitySystemRunner* CurrentRunner;
+
 	/** Play position helper */
 	FMovieScenePlaybackPosition PlayPosition;
 
@@ -745,10 +674,19 @@ protected:
 	/** (Optional) Externally supplied time controller */
 	TSharedPtr<FMovieSceneTimeController> TimeController;
 
+	/** (Optional) Synchronous runner to use when no tick manager is in use */
+	TSharedPtr<FMovieSceneEntitySystemRunner> SynchronousRunner;
+
+	/** When true, ignore playback replication events. */
+	bool bIgnorePlaybackReplication = false;
+
 private:
 
 	/** The event that will be broadcast every time the sequence is updated */
 	mutable FOnMovieSceneSequencePlayerUpdated OnMovieSceneSequencePlayerUpdate;
+
+	/** The tick interval we are currently registered with (if any) */
+	TOptional<FMovieSceneSequenceTickInterval> RegisteredTickInterval;
 
 	/** The maximum tick rate prior to playing (used for overriding delta time during playback). */
 	TOptional<double> OldMaxTickRate;

@@ -12,6 +12,9 @@
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShaderParticleID.h"
+#include "NiagaraShared.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataSet)
 
 DECLARE_CYCLE_STAT(TEXT("InitRenderData"), STAT_InitRenderData, STATGROUP_Niagara);
 
@@ -93,6 +96,14 @@ static FAutoConsoleVariableRef CVarNiagaraGPUDataWarningSize(
 	ECVF_Scalability
 );
 
+static bool GNiagaraReleaseBuffersOnReset = false;
+static FAutoConsoleVariableRef CVarNiagaraReleaseBuffersOnReset(
+	TEXT("fx.NiagaraReleaseBuffersOnReset"),
+	GNiagaraReleaseBuffersOnReset,
+	TEXT("Will release all memory associated with data buffers when the dataset is reset."),
+	ECVF_Scalability
+);
+
 void NiagaraWarnGpuBufferSize(const int32 ByteSize, const TCHAR* DebugSimName)
 {
 	static int32 MaxEncountered = 0;
@@ -169,6 +180,14 @@ void FNiagaraDataSet::ResetBuffers()
 	
 	if (GetSimTarget() == ENiagaraSimTarget::CPUSim)
 	{
+		if (GNiagaraReleaseBuffersOnReset)
+		{
+			for (FNiagaraDataBuffer* Buffer : Data)
+			{
+				Buffer->ReleaseCPU();
+			}
+		}
+
 		ResetBuffersInternal();
 	}
 	else
@@ -204,6 +223,7 @@ void FNiagaraDataSet::ResetBuffersInternal()
 	FreeIDsTable.Reset();
 	NumFreeIDs = 0;
 	MaxUsedID = INDEX_NONE;
+	NumSpawnedIDs = 0;
 	SpawnedIDsTable.Reset();
 
 	//Ensure we have a valid current buffer
@@ -356,8 +376,10 @@ void FNiagaraDataSet::Allocate(int32 NumInstances, bool bMaintainExisting)
 			RequiredIDs = ExistingNumIDs;
 		}
 
+#if VECTORVM_SUPPORTS_LEGACY //the new VM doesn't use the SpawnedIDsTable, so remove it.
 		// We know that we can't spawn more than NumFreeIDs particles, so we can pre-allocate SpawnedIDsTable here, to avoid allocations during execution.
 		SpawnedIDsTable.Reserve(NumFreeIDs);
+#endif
 
 		// We need to clear the ID to index table to -1 so we don't have stale entries for particles which died in the previous
 		// frame (when the results were written to another buffer). All the entries which are in use will be filled in by the script.
@@ -445,7 +467,7 @@ void FNiagaraDataSet::AllocateGPUFreeIDs(uint32 InNumInstances, FRHICommandList&
 	FRHIShaderResourceView* ExistingBuffer = GPUNumAllocatedIDs > 0 ? GPUFreeIDs.SRV.GetReference() : FNiagaraRenderer::GetDummyIntBuffer();
 
 	RHICmdList.Transition(FRHITransitionInfo(NewFreeIDsBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	NiagaraInitGPUFreeIDList(RHICmdList, FeatureLevel, NumIDsToAlloc, NewFreeIDsBuffer, GPUNumAllocatedIDs, ExistingBuffer);
+	NiagaraInitGPUFreeIDList(RHICmdList, FeatureLevel, NewFreeIDsBuffer.UAV, NumIDsToAlloc, ExistingBuffer, GPUNumAllocatedIDs);
 	RHICmdList.Transition(FRHITransitionInfo(NewFreeIDsBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 
 	GPUFreeIDs = MoveTemp(NewFreeIDsBuffer);
@@ -742,6 +764,26 @@ void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 		HalfStride = NewHalfStride;
 		BuildRegisterTable();
 	}
+}
+
+void FNiagaraDataBuffer::ReleaseCPU()
+{
+	NumInstances = 0;
+	NumInstancesAllocated = 0;
+	IDToIndexTable.Reset();
+
+	FloatStride = 0;
+	Int32Stride = 0;
+	HalfStride = 0;
+
+	DEC_MEMORY_STAT_BY(STAT_NiagaraParticleMemory, FloatData.GetAllocatedSize() + Int32Data.GetAllocatedSize() + HalfData.GetAllocatedSize());
+#if NIAGARA_MEMORY_TRACKING
+	Owner->BufferSizeBytes -= FloatData.GetAllocatedSize() + Int32Data.GetAllocatedSize() + HalfData.GetAllocatedSize();
+#endif
+
+	FloatData.Empty();
+	Int32Data.Empty();
+	HalfData.Empty();
 }
 
 void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumInstances, ERHIFeatureLevel::Type FeatureLevel, const TCHAR* DebugSimName)
@@ -1086,14 +1128,6 @@ void FNiagaraDataBuffer::GPUCopyFrom(const float* GPUReadBackFloat, const int* G
 			float* Dst = GetInstancePtrFloat(CompIdx, 0);
 			size_t Count = SrcEnd - SrcStart;
 			FMemory::Memcpy(Dst, SrcStart, Count * sizeof(float));
-
-			if (Count > 0)
-			{
-				for (size_t i = 0; i < Count; i++)
-				{
-					check(SrcStart[i] == Dst[i]);
-				}
-			}
 		}
 	}
 	if (GPUReadBackInt)
@@ -1108,14 +1142,6 @@ void FNiagaraDataBuffer::GPUCopyFrom(const float* GPUReadBackFloat, const int* G
 			int32* Dst = GetInstancePtrInt32(CompIdx, 0);
 			size_t Count = SrcEnd - SrcStart;
 			FMemory::Memcpy(Dst, SrcStart, Count * sizeof(int32));
-
-			if (Count > 0)
-			{
-				for (size_t i = 0; i < Count; i++)
-				{
-					check(SrcStart[i] == Dst[i]);
-				}
-			}
 		}
 	}
 	if (GPUReadBackHalf)
@@ -1130,14 +1156,6 @@ void FNiagaraDataBuffer::GPUCopyFrom(const float* GPUReadBackFloat, const int* G
 			FFloat16* Dst = GetInstancePtrHalf(CompIdx, 0);
 			size_t Count = SrcEnd - SrcStart;
 			FMemory::Memcpy(Dst, SrcStart, Count * sizeof(FFloat16));
-
-			if (Count > 0)
-			{
-				for (size_t i = 0; i < Count; i++)
-				{
-					check(SrcStart[i] == Dst[i]);
-				}
-			}
 		}
 	}
 }
@@ -1232,90 +1250,6 @@ void FNiagaraDataBuffer::Dump(int32 StartIndex, int32 InNumInstances, const FStr
 	}
 	UE_LOG(LogNiagara, Log, TEXT("%s"), *Sep);
 
-}
-
-/////////////////////////////////////////////////////////////////////////
-
-void FNiagaraDataBuffer::SetInputShaderParams(FRHICommandList& RHICmdList, class FNiagaraShader* Shader, FNiagaraDataBuffer* Buffer)
-{
-	check(IsInRenderingThread());
-
-	if (Buffer != nullptr)
-	{
-		const uint32 SafeBufferSize = Buffer->GetFloatStride() / sizeof(float);
-		FRHIComputeShader* ComputeShader = RHICmdList.GetBoundComputeShader();
-
-		const bool InstancesAllocated = Buffer->GetNumInstancesAllocated() > 0;
-
-		SetSRVParameter(RHICmdList, ComputeShader, Shader->FloatInputBufferParam, InstancesAllocated ? Buffer->GetGPUBufferFloat().SRV.GetReference() : FNiagaraRenderer::GetDummyFloatBuffer());
-		SetSRVParameter(RHICmdList, ComputeShader, Shader->IntInputBufferParam, InstancesAllocated ? Buffer->GetGPUBufferInt().SRV.GetReference() : FNiagaraRenderer::GetDummyIntBuffer());
-		SetSRVParameter(RHICmdList, ComputeShader, Shader->HalfInputBufferParam, InstancesAllocated ? Buffer->GetGPUBufferHalf().SRV.GetReference() : FNiagaraRenderer::GetDummyHalfBuffer());
-		SetShaderValue(RHICmdList, ComputeShader, Shader->ComponentBufferSizeReadParam, SafeBufferSize);
-	}
-	else
-	{
-		check(!Shader->FloatInputBufferParam.IsBound());
-		check(!Shader->IntInputBufferParam.IsBound());
-		check(!Shader->HalfInputBufferParam.IsBound());
-		check(Shader->ComponentBufferSizeReadParam.GetNumBytes() == 0);
-	}
-}
-
-void FNiagaraDataBuffer::SetOutputShaderParams(FRHICommandList& RHICmdList, class FNiagaraShader* Shader, FNiagaraDataBuffer* Buffer)
-{
-	check(IsInRenderingThread());
-
-	if (Buffer != nullptr)
-	{
-		const uint32 SafeBufferSize = Buffer->GetFloatStride() / sizeof(float);
-		FRHIComputeShader* ComputeShader = RHICmdList.GetBoundComputeShader();
-
-		Shader->FloatOutputBufferParam.SetBuffer(RHICmdList, ComputeShader, Buffer->GetGPUBufferFloat());
-		Shader->IntOutputBufferParam.SetBuffer(RHICmdList, ComputeShader, Buffer->GetGPUBufferInt());
-		Shader->HalfOutputBufferParam.SetBuffer(RHICmdList, ComputeShader, Buffer->GetGPUBufferHalf());
-		SetShaderValue(RHICmdList, ComputeShader, Shader->ComponentBufferSizeWriteParam, SafeBufferSize);
-		if (Shader->IDToIndexBufferParam.IsUAVBound())
-		{
-			ensure(Buffer->GPUIDToIndexTable.Buffer);
-			Shader->IDToIndexBufferParam.SetBuffer(RHICmdList, ComputeShader, Buffer->GPUIDToIndexTable);
-		}
-	}
-	else
-	{
-		check(!Shader->FloatOutputBufferParam.IsUAVBound());
-		check(!Shader->IntOutputBufferParam.IsUAVBound());
-		check(!Shader->HalfOutputBufferParam.IsUAVBound());
-		check(!Shader->IDToIndexBufferParam.IsUAVBound());
-		check(Shader->ComponentBufferSizeWriteParam.GetNumBytes() == 0);
-	}
-}
-
-void FNiagaraDataBuffer::UnsetShaderParams(FRHICommandList& RHICmdList, FNiagaraShader* Shader)
-{
-	check(IsInRenderingThread());
-	FRHIComputeShader* ShaderRHI = RHICmdList.GetBoundComputeShader();
-
-	if (Shader->FloatOutputBufferParam.IsUAVBound())
-	{
-		Shader->FloatOutputBufferParam.UnsetUAV(RHICmdList, ShaderRHI);
-	}
-
-	if (Shader->HalfOutputBufferParam.IsUAVBound())
-	{
-#if !PLATFORM_PS4
-		Shader->HalfOutputBufferParam.UnsetUAV(RHICmdList, ShaderRHI);
-#endif
-	}
-
-	if (Shader->IntOutputBufferParam.IsUAVBound())
-	{
-		Shader->IntOutputBufferParam.UnsetUAV(RHICmdList, ShaderRHI);
-	}
-
-	if (Shader->IDToIndexBufferParam.IsUAVBound())
-	{
-		Shader->IDToIndexBufferParam.UnsetUAV(RHICmdList, RHICmdList.GetBoundComputeShader());
-	}
 }
 
 #if WITH_EDITOR

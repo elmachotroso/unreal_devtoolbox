@@ -33,6 +33,19 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Curve")
 	FRichCurve WCurve;
+
+#if WITH_EDITORONLY_DATA
+private:
+	UPROPERTY()
+	FRichCurve XCurveCookedEditorCache;
+	UPROPERTY()
+	FRichCurve YCurveCookedEditorCache;
+	UPROPERTY()
+	FRichCurve ZCurveCookedEditorCache;
+	UPROPERTY()
+	FRichCurve WCurveCookedEditorCache;
+public:
+#endif
 	
 	enum
 	{
@@ -61,7 +74,11 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
 
-	virtual int32 GetCurveNumElems()const { return CurveLUTNumElems; }
+	virtual int32 GetCurveNumElems() const override { return CurveLUTNumElems; }
+#if WITH_EDITORONLY_DATA
+	virtual FName GetCurveSampleFunctionName() const override { return SampleCurveName; }
+#endif
+
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 

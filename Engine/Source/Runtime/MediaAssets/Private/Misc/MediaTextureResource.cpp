@@ -227,6 +227,16 @@ namespace MediaTextureResourceHelpers
 		return Sample->IsOutputSrgb();
 	}
 
+	bool RequiresUAVTexture(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& Sample, uint8 NumMips)
+	{	
+		//UAV output is needed if mips are required and uses CS to generate
+		//or if sample converter asks for it
+		const IMediaTextureSampleConverter* Converter = Sample->GetMediaTextureSampleConverter();
+		bool bNeedsUAV = (NumMips > 1 && RHIRequiresComputeGenerateMips());
+		bNeedsUAV |= (Converter && ((Converter->GetConverterInfoFlags() & IMediaTextureSampleConverter::ConverterInfoFlags_NeedUAVOutputTexture) != 0));
+		return bNeedsUAV;
+	}
+
 
 	bool RequiresSrgbInputTexture(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& Sample)
 	{
@@ -261,6 +271,7 @@ FMediaTextureResource::FMediaTextureResource(UMediaTexture& InOwner, FIntPoint& 
 	, bEnableGenMips(InEnableGenMips)
 	, CurrentNumMips(InEnableGenMips ? InNumMips : 1)
 	, CurrentSamplerFilter(ESamplerFilter_Num)
+	, CurrentMipMapBias(-1)
 	, PriorSamples(FPriorSamples::Create())
 {
 #if PLATFORM_ANDROID
@@ -282,6 +293,7 @@ void FMediaTextureResource::FlushPendingData()
 void FMediaTextureResource::Render(const FRenderParams& Params)
 {
 	check(IsInRenderingThread());
+	SCOPED_GPU_STAT(FRHICommandListExecutor::GetImmediateCommandList(), MediaTextureResource);
 
 	LLM_SCOPE(ELLMTag::MediaStreaming);
 	SCOPE_CYCLE_COUNTER(STAT_MediaAssets_MediaTextureResourceRender);
@@ -377,6 +389,8 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 				IMediaTextureSampleConverter::FConversionHints Hints;
 				Hints.NumMips = (SampleNumMips > 1) ? SampleNumMips : Params.NumMips;
 
+				const bool bNeedsUAVTexture = MediaTextureResourceHelpers::RequiresUAVTexture(Sample, Hints.NumMips);
+
 				// Does the conversion create its own output texture?
 				if ((Converter->GetConverterInfoFlags() & IMediaTextureSampleConverter::ConverterInfoFlags_WillCreateOutputTexture) == 0)
 				{
@@ -394,7 +408,8 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 					else
 					{
 						// Conversion is fully handled by converter
-						CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), Params.ClearColor, Hints.NumMips);
+
+						CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), Params.ClearColor, Hints.NumMips, bNeedsUAVTexture);
 						Converter->Convert(RenderTargetTextureRHI, Hints);
 					}
 				}
@@ -407,7 +422,7 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 						// As the converter created the texture, we might need to convert it even more to make it fit our needs. Check...
 						if (RequiresConversion(OutTexture, Sample->GetOutputDim(), NumMips))
 						{
-							CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), Params.ClearColor, Hints.NumMips);
+							CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), Params.ClearColor, Hints.NumMips, bNeedsUAVTexture);
 							ConvertTextureToOutput(OutTexture.GetReference(), Sample);
 						}
 						else
@@ -475,10 +490,9 @@ void FMediaTextureResource::Render(const FRenderParams& Params)
 
 				CacheRenderTarget(OutputTarget, TEXT("MipGeneration"), MipGenerationCache);
 
-				FMemMark MemMark(FMemStack::Get());
 				FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
 				FRDGTextureRef MipOutputTexture = GraphBuilder.RegisterExternalTexture(MipGenerationCache);
-				FGenerateMips::Execute(GraphBuilder, MipOutputTexture, FGenerateMipsParams{ SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp }, GenerateMipsPass);
+				FGenerateMips::Execute(GraphBuilder, GetFeatureLevel(), MipOutputTexture, FGenerateMipsParams{ SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp }, GenerateMipsPass);
 				GraphBuilder.Execute();
 			}
 
@@ -575,18 +589,21 @@ uint32 FMediaTextureResource::GetSizeY() const
 
 void FMediaTextureResource::SetupSampler()
 {
-	ESamplerFilter OwnerFilter = (CurrentNumMips > 1) ? (ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(&Owner) : SF_Bilinear;
+	ESamplerFilter OwnerFilter = (CurrentNumMips > 1 || Owner.NewStyleOutput) ? (ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(&Owner) : SF_Bilinear;
+	float OwnerMipMapBias = Owner.GetMipMapBias();
 
-	if (CurrentSamplerFilter != OwnerFilter)
+	if (CurrentSamplerFilter != OwnerFilter || !FMath::IsNearlyEqual(CurrentMipMapBias, OwnerMipMapBias))
 	{
 		CurrentSamplerFilter = OwnerFilter;
+		CurrentMipMapBias = OwnerMipMapBias;
 
 		// create the sampler state
 		FSamplerStateInitializerRHI SamplerStateInitializer(
 			CurrentSamplerFilter,
 			(Owner.AddressX == TA_Wrap) ? AM_Wrap : ((Owner.AddressX == TA_Clamp) ? AM_Clamp : AM_Mirror),
 			(Owner.AddressY == TA_Wrap) ? AM_Wrap : ((Owner.AddressY == TA_Clamp) ? AM_Clamp : AM_Mirror),
-			AM_Wrap
+			AM_Wrap,
+			CurrentMipMapBias
 		);
 
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
@@ -638,7 +655,9 @@ void FMediaTextureResource::ReleaseDynamicRHI()
  void FMediaTextureResource::ClearTexture(const FLinearColor& ClearColor, bool SrgbOutput)
 {
 	// create output render target if we don't have one yet
-	CreateOutputRenderTarget(FIntPoint(2, 2), PF_B8G8R8A8, SrgbOutput, ClearColor, 1);
+	constexpr uint8 NumMips = 1;
+	constexpr bool bNeedsUAVTexture = false;
+	CreateOutputRenderTarget(FIntPoint(2, 2), PF_B8G8R8A8, SrgbOutput, ClearColor, NumMips, bNeedsUAVTexture);
 
 	// draw the clear color
 	FRHICommandListImmediate& CommandList = FRHICommandListExecutor::GetImmediateCommandList();
@@ -769,15 +788,12 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 			// create a new temp input render target if necessary
 			if (!InputTarget.IsValid() || (InputTarget->GetSizeXY() != SampleDim) || (InputTarget->GetFormat() != InputPixelFormat) || ((InputTarget->GetFlags() & InputCreateFlags) != InputCreateFlags) || (InputTarget->GetNumMips() != SampleNumMips))
 			{
-				FRHIResourceCreateInfo CreateInfo(TEXT("FMediaTextureResource"));
-				InputTarget = RHICreateTexture2D(
-					SampleDim.X,
-					SampleDim.Y,
-					InputPixelFormat,
-					SampleNumMips,
-					1,
-					InputCreateFlags,
-					CreateInfo);
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("FMediaTextureResource"), SampleDim, InputPixelFormat)
+					.SetNumMips(SampleNumMips)
+					.SetFlags(InputCreateFlags);
+
+				InputTarget = RHICreateTexture(Desc);
 
 				UpdateResourceSize();
 			}
@@ -799,7 +815,9 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 
 	// create the output texture
 	const FIntPoint OutputDim = Sample->GetOutputDim();
-	CreateOutputRenderTarget(OutputDim, MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, (SampleNumMips > 1) ? SampleNumMips : InNumMips);
+	const uint8 NumMips = (SampleNumMips > 1) ? SampleNumMips : InNumMips;
+	const bool bNeedsUAVTexture = MediaTextureResourceHelpers::RequiresUAVTexture(Sample, NumMips);
+	CreateOutputRenderTarget(OutputDim, MediaTextureResourceHelpers::GetConvertedPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, NumMips, bNeedsUAVTexture);
 
 	ConvertTextureToOutput(InputTexture, Sample);
 }
@@ -838,7 +856,7 @@ void FMediaTextureResource::ConvertSample(const TSharedPtr<IMediaTextureSample, 
 			GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
 			// configure media shaders
-			auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+			auto ShaderMap = GetGlobalShaderMap(GetFeatureLevel());
 			TShaderMapRef<FMediaShadersVS> VertexShader(ShaderMap);
 
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GMediaVertexDeclaration.VertexDeclarationRHI;
@@ -1019,7 +1037,9 @@ void FMediaTextureResource::CopySample(const TSharedPtr<IMediaTextureSample, ESP
 		else
 		{
 			// Texture to receive texture from sample
-			CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, (SampleNumMips > 1) ? SampleNumMips : InNumMips);
+			const uint8 NumMips = (SampleNumMips > 1) ? SampleNumMips : InNumMips;
+			const bool bNeedsUAVTexture = MediaTextureResourceHelpers::RequiresUAVTexture(Sample, NumMips);
+			CreateOutputRenderTarget(Sample->GetOutputDim(), MediaTextureResourceHelpers::GetPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, NumMips, bNeedsUAVTexture);
 
 			// Copy data into the output texture to able to add mips later on
 			FRHICommandListExecutor::GetImmediateCommandList().CopyTexture(SampleTexture2D, OutputTarget, FRHICopyTextureInfo());
@@ -1028,7 +1048,9 @@ void FMediaTextureResource::CopySample(const TSharedPtr<IMediaTextureSample, ESP
 	else
 	{
 		// Texture to receive precisely only output pixels via CPU copy
-		CreateOutputRenderTarget(Sample->GetDim(), MediaTextureResourceHelpers::GetPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, (SampleNumMips > 1) ? SampleNumMips : InNumMips);
+		const uint8 NumMips = (SampleNumMips > 1) ? SampleNumMips : InNumMips;
+		const bool bNeedsUAVTexture = MediaTextureResourceHelpers::RequiresUAVTexture(Sample, NumMips);
+		CreateOutputRenderTarget(Sample->GetDim(), MediaTextureResourceHelpers::GetPixelFormat(Sample), MediaTextureResourceHelpers::RequiresSrgbTexture(Sample), ClearColor, NumMips, bNeedsUAVTexture);
 
 		// If we also have no source buffer and the platform generally would allow for use of external textures, we assume it is just that...
 		// (as long as the player actually produces (dummy) samples, this will enable mips support as well as auto conversion for "new style output" mode)
@@ -1117,7 +1139,7 @@ void FMediaTextureResource::CopyFromExternalTexture(const TSharedPtr <IMediaText
 			GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
 			// configure media shaders
-			auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+			auto ShaderMap = GetGlobalShaderMap(GetFeatureLevel());
 			TShaderMapRef<FMediaShadersVS> VertexShader(ShaderMap);
 
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GMediaVertexDeclaration.VertexDeclarationRHI;
@@ -1179,18 +1201,19 @@ void FMediaTextureResource::UpdateTextureReference(FRHITexture2D* NewTexture)
 }
 
 
-void FMediaTextureResource::CreateOutputRenderTarget(const FIntPoint & InDim, EPixelFormat InPixelFormat, bool bInSRGB, const FLinearColor & InClearColor, uint8 InNumMips)
+void FMediaTextureResource::CreateOutputRenderTarget(const FIntPoint & InDim, EPixelFormat InPixelFormat, bool bInSRGB, const FLinearColor & InClearColor, uint8 InNumMips, bool bNeedsUAVSupport)
 {
 	// create output render target if necessary
 	ETextureCreateFlags OutputCreateFlags = TexCreate_Dynamic | (bInSRGB ? TexCreate_SRGB : TexCreate_None);
+	if (bNeedsUAVSupport && RHIIsTypedUAVLoadSupported(InPixelFormat))
+	{
+		OutputCreateFlags |= TexCreate_UAV;
+	}
+
 	if (InNumMips > 1)
 	{
 		// Make sure can have mips & the mip generator has what it needs to work
 		OutputCreateFlags |= TexCreate_GenerateMipCapable;
-		if (MediaTextureResourceHelpers::SupportsComputeMipGen(InPixelFormat))
-		{
-			OutputCreateFlags |= TexCreate_UAV;
-		}
 
 		// Make sure we only set a number of mips that actually makes sense, given the sample size
 		uint8 MaxMips = FGenericPlatformMath::FloorToInt(FGenericPlatformMath::Log2(static_cast<float>(FGenericPlatformMath::Min(InDim.X, InDim.Y))));
@@ -1199,24 +1222,18 @@ void FMediaTextureResource::CreateOutputRenderTarget(const FIntPoint & InDim, EP
 
 	if ((InClearColor != CurrentClearColor) || !OutputTarget.IsValid() || (OutputTarget->GetSizeXY() != InDim) || (OutputTarget->GetFormat() != InPixelFormat) || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags) || CurrentNumMips != InNumMips)
 	{
-		TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
-
 		MipGenerationCache.SafeRelease();
 
-		FRHIResourceCreateInfo CreateInfo(TEXT("MediaTextureResourceOutput"), FClearValueBinding(InClearColor));
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("MediaTextureResourceOutput"))
+			.SetExtent(InDim)
+			.SetFormat(InPixelFormat)
+			.SetNumMips(InNumMips)
+			.SetFlags(OutputCreateFlags | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+			.SetInitialState(ERHIAccess::SRVMask)
+			.SetClearValue(FClearValueBinding(InClearColor));
 
-		RHICreateTargetableShaderResource2D(
-			InDim.X,
-			InDim.Y,
-			InPixelFormat,
-			InNumMips,
-			OutputCreateFlags,
-			TexCreate_RenderTargetable,
-			false,
-			CreateInfo,
-			OutputTarget,
-			DummyTexture2DRHI
-		);
+		OutputTarget = RHICreateTexture(Desc);
 
 		OutputTarget->SetName(TEXT("MediaTextureResourceOutput"));
 

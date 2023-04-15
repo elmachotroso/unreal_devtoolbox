@@ -1,24 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DragDropHandler.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ToolMenus.h"
-#include "EditorStyleSet.h"
-#include "AssetToolsModule.h"
-#include "Misc/NamePermissionList.h"
 
-#include "DragAndDrop/AssetDragDropOp.h"
-#include "ContentBrowserUtils.h"
-
-#include "ContentBrowserItem.h"
-#include "ContentBrowserDataSource.h"
+#include "AssetViewUtils.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "ContentBrowserDataDragDropOp.h"
 #include "ContentBrowserDataMenuContexts.h"
+#include "ContentBrowserDataSource.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "ContentBrowserUtils.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/DragAndDrop.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/SlateRect.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/Invoke.h"
+#include "Templates/Tuple.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuContext.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuSection.h"
+#include "ToolMenus.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -89,11 +107,11 @@ bool ValidateGenericDragEvent(const FContentBrowserItem& InItem, const FDragDrop
 	{
 		if (EnumHasAnyFlags(InItem.GetItemCategory(), EContentBrowserItemFlags::Category_Collection))
 		{
-			ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotDropOnCollectionFolder", "Cannot drop onto a collection folder. Drop onto the collection in the collection view instead."), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+			ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotDropOnCollectionFolder", "Cannot drop onto a collection folder. Drop onto the collection in the collection view instead."), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 		}
 		else if (ContentDragDropOp->GetDraggedItems().Num() == 1 && ContentDragDropOp->GetDraggedItems()[0].GetVirtualPath() == InItem.GetVirtualPath())
 		{
-			ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotSelfDrop", "Cannot move or copy a folder onto itself"), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+			ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotSelfDrop", "Cannot move or copy a folder onto itself"), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 		}
 		else
 		{
@@ -110,7 +128,7 @@ bool ValidateGenericDragEvent(const FContentBrowserItem& InItem, const FDragDrop
 
 			if (NumCanMoveOrCopy == 0)
 			{
-				ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotDrop", "Cannot move or copy to this folder"), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+				ContentDragDropOp->SetToolTip(LOCTEXT("OnDragFoldersOverFolder_CannotDrop", "Cannot move or copy to this folder"), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 			}
 			else
 			{
@@ -121,11 +139,11 @@ bool ValidateGenericDragEvent(const FContentBrowserItem& InItem, const FDragDrop
 
 				if (NumCanMoveOrCopy < NumDraggedItems)
 				{
-					ContentDragDropOp->SetToolTip(FText::Format(LOCTEXT("OnDragAssetsOverFolder_SomeInvalidItems", "{0}\n\n{1} {1}|plural(one=item,other=items) will be ignored as they cannot be moved or copied"), MoveOrCopyText, NumDraggedItems - NumCanMoveOrCopy), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OKWarn")));
+					ContentDragDropOp->SetToolTip(FText::Format(LOCTEXT("OnDragAssetsOverFolder_SomeInvalidItems", "{0}\n\n{1} {1}|plural(one=item,other=items) will be ignored as they cannot be moved or copied"), MoveOrCopyText, NumDraggedItems - NumCanMoveOrCopy), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OKWarn")));
 				}
 				else
 				{
-					ContentDragDropOp->SetToolTip(MoveOrCopyText, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+					ContentDragDropOp->SetToolTip(MoveOrCopyText, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 				}
 			}
 		}

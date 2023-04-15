@@ -21,13 +21,15 @@ public:
 
 	virtual const FConcertEndpointContext& GetEndpointContext() const override;
 
+	virtual FOnConcertMessageAcknowledgementReceived& OnConcertMessageAcknowledgementReceived() override;
+
 	/** Does this remote endpoint have a reliable channel? */
 	bool HasReliableChannel() const;
 
 	/** Is the remote endpoint registered in the underlying bus. */
 	bool IsRegistered() const;
 
-	/** Does this remote endpoint needs to resend any of his pending messages. */
+	/** Does this remote endpoint needs to resend any of its pending messages. */
 	bool IsPendingResend() const;
 
 	/** Clear the pending resend flag. */
@@ -142,6 +144,9 @@ private:
 
 	/** This context of this endpoint */
 	FConcertEndpointContext EndpointContext;
+
+	/** Callback when a message has been acknowledged by this remote endpoint */
+	FOnConcertMessageAcknowledgementReceived OnConcertMessageAcknowledgementReceivedDelegate;
 
 	/** The reliable channel ID to send with reliable messages */
 	uint16 ReliableChannelIdToSend;

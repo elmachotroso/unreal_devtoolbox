@@ -4,6 +4,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/LayoutService.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "ISourceCodeAccessModule.h"
 #include "ISourceCodeAccessor.h"
@@ -17,6 +18,8 @@
 
 // Insights
 #include "Insights/ContextSwitches/ContextSwitchesProfilerManager.h"
+#include "Insights/CookProfiler/CookProfilerManager.h"
+#include "Insights/ImportTool/TableImportTool.h"
 #include "Insights/InsightsManager.h"
 #include "Insights/InsightsStyle.h"
 #include "Insights/IUnrealInsightsModule.h"
@@ -33,6 +36,8 @@
 
 DEFINE_LOG_CATEGORY(TraceInsights);
 
+LLM_DEFINE_TAG(Insights);
+
 IMPLEMENT_MODULE(FTraceInsightsModule, TraceInsights);
 
 FString FTraceInsightsModule::UnrealInsightsLayoutIni;
@@ -43,6 +48,8 @@ FString FTraceInsightsModule::UnrealInsightsLayoutIni;
 
 void FTraceInsightsModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(Insights);
+
 	ITraceServicesModule& TraceServicesModule = FModuleManager::LoadModuleChecked<ITraceServicesModule>("TraceServices");
 	TraceAnalysisService = TraceServicesModule.GetAnalysisService();
 	TraceModuleService = TraceServicesModule.GetModuleService();
@@ -62,6 +69,8 @@ void FTraceInsightsModule::StartupModule()
 	RegisterComponent(FMemoryProfilerManager::CreateInstance());
 	RegisterComponent(Insights::FTaskGraphProfilerManager::CreateInstance());
 	RegisterComponent(Insights::FContextSwitchesProfilerManager::CreateInstance());
+	RegisterComponent(Insights::FCookProfilerManager::CreateInstance());
+	RegisterComponent(Insights::FTableImportTool::CreateInstance());
 
 #if !WITH_EDITOR
 	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
@@ -76,6 +85,10 @@ void FTraceInsightsModule::StartupModule()
 PRAGMA_DISABLE_OPTIMIZATION
 void FTraceInsightsModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(Insights);
+
+	FInsightsManager::Get()->WaitOnInProgressAsyncOps();
+
 #if !WITH_EDITOR
 	if (FModuleManager::Get().IsModuleLoaded("SourceCodeAccess"))
 	{
@@ -146,6 +159,7 @@ void FTraceInsightsModule::RegisterComponent(TSharedPtr<IInsightsComponent> Comp
 {
 	if (Component.IsValid())
 	{
+		LLM_SCOPE_BYTAG(Insights);
 		Components.Add(Component.ToSharedRef());
 		Component->Initialize(*this);
 	}
@@ -157,6 +171,7 @@ void FTraceInsightsModule::UnregisterComponent(TSharedPtr<IInsightsComponent> Co
 {
 	if (Component.IsValid())
 	{
+		LLM_SCOPE_BYTAG(Insights);
 		Component->Shutdown();
 		Components.Remove(Component.ToSharedRef());
 	}
@@ -235,7 +250,9 @@ void FTraceInsightsModule::CreateSessionBrowser(const FCreateSessionBrowserParam
 	// Get desktop metrics. It also ensures the correct metrics will be used later in SWindow.
 	FDisplayMetrics DisplayMetrics;
 	FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
-	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left, DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
+	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(
+		static_cast<float>(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left),
+		static_cast<float>(DisplayMetrics.PrimaryDisplayWorkAreaRect.Top));
 
 	const FVector2D ClientSize(960.0f * DPIScaleFactor, 640.0f * DPIScaleFactor);
 
@@ -327,8 +344,10 @@ void FTraceInsightsModule::CreateSessionViewer(bool bAllowDebugTools)
 	// Get desktop metrics. It also ensures the correct metrics will be used later in SWindow.
 	FDisplayMetrics DisplayMetrics;
 	FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
-	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left, DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
-	
+	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(
+		static_cast<float>(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left),
+		static_cast<float>(DisplayMetrics.PrimaryDisplayWorkAreaRect.Top));
+
 	const FVector2D ClientSize(1280.f * DPIScaleFactor, 720.0f * DPIScaleFactor);
 
 	TSharedRef<SWindow> RootWindow = SNew(SWindow)
@@ -377,7 +396,7 @@ void FTraceInsightsModule::CreateSessionViewer(bool bAllowDebugTools)
 	const bool bForceWindowToFront = true;
 	RootWindow->BringToFront(bForceWindowToFront);
 
-#endif
+#endif // !WITH_EDITOR
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -556,15 +575,6 @@ void FTraceInsightsModule::OnWindowClosedEvent(const TSharedRef<SWindow>&)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FTraceInsightsModule::ScheduleCommand(const FString& InCmd)
-{
-#if !UE_BUILD_SHIPPING && !WITH_EDITOR
-	FInsightsTestRunner::Get()->ScheduleCommand(InCmd);
-#endif
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void FTraceInsightsModule::InitializeTesting(bool InInitAutomationModules, bool InAutoQuit)
 {
 #if !UE_BUILD_SHIPPING && !WITH_EDITOR
@@ -575,6 +585,40 @@ void FTraceInsightsModule::InitializeTesting(bool InInitAutomationModules, bool 
 
 	RegisterComponent(TestRunner);
 #endif
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTraceInsightsModule::ScheduleCommand(const FString& InCmd)
+{
+	FString ActualCmd = InCmd;
+	ActualCmd.TrimCharInline(TEXT('\"'), nullptr);
+	ActualCmd.TrimCharInline(TEXT('\''), nullptr);
+
+#if !UE_BUILD_SHIPPING && !WITH_EDITOR
+	if (ActualCmd.StartsWith(TEXT("Automation RunTests")))
+	{
+		FInsightsTestRunner::Get()->ScheduleCommand(ActualCmd);
+		return;
+	}
+#endif
+
+	FInsightsManager::Get()->ScheduleCommand(ActualCmd);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FTraceInsightsModule::Exec(const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	for (TSharedRef<IInsightsComponent>& Component : Components)
+	{
+		if (Component->Exec(Cmd, Ar))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -1,16 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "CADKernel/Core/Entity.h"
+#include "CADKernel/Core/HaveStates.h"
+#include "CADKernel/Core/Types.h"
+#include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Geo/GeoPoint.h"
-#include "CADKernel/Geo/Surfaces/Surface.h"
 #include "CADKernel/Geo/Sampling/PolylineTools.h"
+#include "CADKernel/Geo/Surfaces/Surface.h"
+#include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Math/Curvature.h"
+#include "CADKernel/Math/Point.h"
+#include "CADKernel/Topo/TopologicalEdge.h"
 #include "CADKernel/Topo/TopologicalEntity.h"
 #include "CADKernel/Topo/TopologicalLoop.h"
 #include "CADKernel/Topo/TopologicalShapeEntity.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
+class FCADKernelArchive;
+class FCurve;
+class FDatabase;
+class FModelMesh;
+class FTopologicalVertex;
+struct FSurfacicSampling;
 
 enum class EStatut : uint8
 {
@@ -28,13 +41,6 @@ enum class EQuadType : uint8
 };
 
 struct FBBoxWithNormal;
-
-class FGrid;
-class FFaceMesh;
-class FThinZone;
-class FThinZoneFinder;
-class FBezierSurface;
-class FSegmentCurve;
 
 class CADKERNEL_API FTopologicalFace : public FTopologicalShapeEntity
 {
@@ -190,6 +196,8 @@ public:
 		return Loops;
 	}
 
+	const TSharedPtr<FTopologicalLoop> GetExternalLoop() const;
+
 	/**
 	 * Get a sampling of each loop of the face
 	 * @param OutLoopSamplings an array of 2d points
@@ -234,6 +242,16 @@ public:
 		}
 	}
 
+	int32 EdgeCount() const
+	{
+		int32 EdgeNum = 0;
+		for (const TSharedPtr<FTopologicalLoop>& Loop : Loops)
+		{
+			EdgeNum += Loop->EdgeCount();
+		}
+		return EdgeNum;
+	}
+
 	// ======   Carrier Surface Functions   ======
 
 	TSharedRef<FSurface> GetCarrierSurface() const
@@ -272,11 +290,14 @@ public:
 	bool HasSameBoundariesAs(const TSharedPtr<FTopologicalFace>& OtherFace) const;
 
 	/**
-	 * Disconnects the face of its neighbors
+	 * Disconnects the face of its neighbors i.e. remove topological edge and vertex link with its neighbors
+	 * @param OutNewBorderEdges the neighbors edges
 	 */
-	void RemoveLinksWithNeighbours();
+	void Disjoin(TArray<FTopologicalEdge*>& OutNewBorderEdges);
 
+#ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
+#endif
 
 	// ======   Meshing Function   ======
 
@@ -403,6 +424,9 @@ public:
 		States &= ~EHaveStates::IsBackOriented;
 	}
 
+	virtual void Remove(const FTopologicalShapeEntity*) override
+	{
+	}
 
 	// =========================================================================================================================================================================================================
 	// =========================================================================================================================================================================================================
@@ -426,7 +450,7 @@ private:
 	TArray<int32> StartSideIndices;
 	TArray<FEdge2DProperties> SideProperties;
 	int32 NumOfMeshedSide = 0;
-	double LoopLength;
+	double LoopLength = -1.;
 	double LengthOfMeshedSide = 0;
 	double QuadCriteria = 0;
 	FSurfaceCurvature Curvatures;
@@ -567,8 +591,8 @@ struct FBBoxWithNormal
 	FPoint2D MinCoordinates[3];
 	FVector MaxPointNormals[3];
 	FVector MinPointNormals[3];
-	bool MaxNormalNeedUpdate[3];
-	bool MinNormalNeedUpdate[3];
+	bool MaxNormalNeedUpdate[3] = {true, true, true};
+	bool MinNormalNeedUpdate[3] = {true, true, true};
 
 	FBBoxWithNormal()
 		: Max(-HUGE_VALUE, -HUGE_VALUE, -HUGE_VALUE)
@@ -600,21 +624,21 @@ struct FBBoxWithNormal
 		for (int32 Index = 0; Index < 3; ++Index)
 		{
 			double DotProduct = MaxPointNormals[Index] | BBoxNormals[Index];
-			if (DotProduct > KINDA_SMALL_NUMBER)
+			if (DotProduct > DOUBLE_KINDA_SMALL_NUMBER)
 			{
 				GoodOrientation++;
 			}
-			else if(DotProduct < KINDA_SMALL_NUMBER)
+			else if(DotProduct < DOUBLE_KINDA_SMALL_NUMBER)
 			{
 				WrongOrientation++;
 			}
 
 			DotProduct = MinPointNormals[Index] | BBoxNormals[Index];
-			if (DotProduct < KINDA_SMALL_NUMBER)
+			if (DotProduct < DOUBLE_KINDA_SMALL_NUMBER)
 			{
 				GoodOrientation++;
 			}
-			else if (DotProduct > KINDA_SMALL_NUMBER)
+			else if (DotProduct > DOUBLE_KINDA_SMALL_NUMBER)
 			{
 				WrongOrientation++;
 			}
@@ -699,4 +723,4 @@ struct FBBoxWithNormal
 };
 
 
-} // namespace CADKernel
+} // namespace UE::CADKernel

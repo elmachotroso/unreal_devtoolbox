@@ -12,7 +12,10 @@
 #include "MetasoundNodeInterface.h"
 #include "MetasoundVertex.h"
 #include "Misc/Guid.h"
+#include "Templates/Function.h"
+#include "Templates/Invoke.h"
 #include "Templates/TypeHash.h"
+#include "UObject/NoExportTypes.h"
 
 #include "MetasoundFrontendDocument.generated.h"
 
@@ -30,6 +33,11 @@ namespace Metasound
 	{
 		namespace DisplayStyle
 		{
+			namespace EdgeAnimation
+			{
+				extern const FLinearColor METASOUNDFRONTEND_API DefaultColor;
+			} // namespace EdgeStyle
+
 			namespace NodeLayout
 			{
 				extern const FVector2D METASOUNDFRONTEND_API DefaultOffsetX;
@@ -40,25 +48,92 @@ namespace Metasound
 } // namespace Metasound
 
 
+#if WITH_EDITORONLY_DATA
+// Struct containing any modified data breadcrumbs to inform what the editor/view layer must synchronize or refresh.
+class METASOUNDFRONTEND_API FMetasoundFrontendDocumentModifyContext
+{
+private:
+	// Whether or not the owning asset's MetaSoundDocument has been modified. True by default to force refreshing views on loading/reloading asset.
+	bool bDocumentModified = true;
+
+	// Whether or not to force refresh all views. True by default to force refreshing views on loading/reloading asset.
+	bool bForceRefreshViews = true;
+
+	// Which Interfaces have been modified since the last editor graph synchronization
+	TSet<FName> InterfacesModified;
+
+	// Which MemberIDs have been modified since the last editor graph synchronization
+	TSet<FGuid> MemberIDsModified;
+
+	// Which NodeIDs have been modified since the last editor graph synchronization
+	TSet<FGuid> NodeIDsModified;
+
+public:
+	void ClearDocumentModified();
+
+	bool GetDocumentModified() const;
+	bool GetForceRefreshViews() const;
+	const TSet<FName>& GetInterfacesModified() const;
+	const TSet<FGuid>& GetNodeIDsModified() const;
+	const TSet<FGuid>& GetMemberIDsModified() const;
+
+	void Reset();
+
+	void SetDocumentModified();
+	void SetForceRefreshViews();
+
+	// Adds an interface name to the set of interfaces that have been modified since last context reset/construction
+	void AddInterfaceModified(FName InInterfaceModified);
+
+	// Performs union of provided interface set with the set of interfaces that have been modified since last context reset/construction
+	void AddInterfacesModified(const TSet<FName>& InInterfacesModified);
+
+	// Adds a MemberID to the set of interfaces that have been modified since last context reset/construction
+	void AddMemberIDModified(const FGuid& InMemberIDModified);
+
+	// Performs union of provided MemberIDs set with the set of MemberIDs that have been modified since last context reset/construction
+	void AddMemberIDsModified(const TSet<FGuid>& InMemberIDsModified);
+
+	// Performs union of provided NodeID set with the set of NodeIDs that have been modified since last context reset/construction
+	void AddNodeIDModified(const FGuid& InNodeIDModified);
+
+	// Performs union of provided interface set with the set of interfaces that have been modified since last context reset/construction
+	void AddNodeIDsModified(const TSet<FGuid>& InNodeIDsModified);
+};
+#endif // WITH_EDITORONLY_DATA
+
+
+// Describes how a vertex accesses the data connected to it. 
+UENUM()
+enum class EMetasoundFrontendVertexAccessType
+{
+	Reference,	//< The vertex accesses data by reference.
+	Value,		//< The vertex accesses data by value.
+
+	Unset		//< The vertex access level is unset (ex. vertex on an unconnected reroute node).
+				//< Not reflected as a graph core access type as core does not deal with reroutes
+				//< or ambiguous accessor level (it is resolved during document pre-processing).
+};
+
 UENUM()
 enum class EMetasoundFrontendClassType : uint8
 {
-	// The Metasound class is defined externally, in compiled code or in another document.
+	// The MetaSound class is defined externally, in compiled code or in another document.
 	External,
 
-	// The Metasound class is a graph within the containing document.
+	// The MetaSound class is a graph within the containing document.
 	Graph,
 
-	// The Metasound class is an input into a graph in the containing document.
+	// The MetaSound class is an input into a graph in the containing document.
 	Input,
 
-	// The Metasound class is an output from a graph in the containing document.
+	// The MetaSound class is an output from a graph in the containing document.
 	Output,
 
-	// The Metasound class is an literal requiring an literal value to construct.
+	// The MetaSound class is an literal requiring an literal value to construct.
 	Literal,
 
-	// The Metasound class is an variable requiring an literal value to construct.
+	// The MetaSound class is an variable requiring an literal value to construct.
 	Variable,
 
 	// The MetaSound class accesses variables.
@@ -69,6 +144,10 @@ enum class EMetasoundFrontendClassType : uint8
 
 	// The MetaSound class mutates variables.
 	VariableMutator,
+
+	// The MetaSound class is defined only by the Frontend, and associatively
+	// performs a functional replacement operation in a pre-build step.
+	Template,
 
 	Invalid UMETA(Hidden)
 };
@@ -246,8 +325,6 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendVertex
 {
 	GENERATED_BODY()
 
-	virtual ~FMetasoundFrontendVertex() = default;
-
 	// Name of the vertex. Unique amongst other vertices on the same interface.
 	UPROPERTY(VisibleAnywhere, Category = CustomView)
 	FName Name;
@@ -289,6 +366,7 @@ struct FMetasoundFrontendVariable
 	UPROPERTY(VisibleAnywhere, Category = CustomView)
 	FName Name;
 
+#if WITH_EDITORONLY_DATA
 	// Variable display name
 	UPROPERTY()
 	FText DisplayName;
@@ -296,6 +374,8 @@ struct FMetasoundFrontendVariable
 	// Variable description
 	UPROPERTY()
 	FText Description;
+
+#endif // WITH_EDITORONLY_DATA
 
 	// Variable data type name
 	UPROPERTY()
@@ -363,6 +443,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendNodeStyleDisplay
 {
 	GENERATED_BODY()
 
+#if WITH_EDITORONLY_DATA
 	// DEPRECATED in Document Model v1.1: Visibility state of node
 	UPROPERTY()
 	EMetasoundFrontendNodeStyleDisplayVisibility Visibility = EMetasoundFrontendNodeStyleDisplayVisibility::Visible;
@@ -371,6 +452,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendNodeStyleDisplay
 	// more than one place on the graph (Only functionally relevant for nodes that cannot contain inputs.)
 	UPROPERTY()
 	TMap<FGuid, FVector2D> Locations;
+#endif // WITH_EDITORONLY_DATA
 };
 
 USTRUCT()
@@ -378,6 +460,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendNodeStyle
 {
 	GENERATED_BODY()
 
+#if WITH_EDITORONLY_DATA
 	// Display style of a node
 	UPROPERTY()
 	FMetasoundFrontendNodeStyleDisplay Display;
@@ -389,7 +472,9 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendNodeStyle
 
 	UPROPERTY()
 	bool bIsPrivate = false;
+#endif // WITH_EDITORONLY_DATA
 };
+
 
 // An FMetasoundFrontendNode represents a single instance of a FMetasoundFrontendClass
 USTRUCT()
@@ -424,9 +509,11 @@ public:
 	UPROPERTY()
 	TArray<FMetasoundFrontendVertexLiteral> InputLiterals;
 
+#if WITH_EDITORONLY_DATA
 	// Style info related to a node.
 	UPROPERTY()
 	FMetasoundFrontendNodeStyle Style;
+#endif // WITH_EDITORONLY_DATA
 
 	const FGuid& GetID() const
 	{
@@ -463,43 +550,41 @@ struct FMetasoundFrontendEdge
 	FGuid ToVertexID = Metasound::FrontendInvalidID;
 };
 
-// Display style for an edge.
-UENUM()
-enum class EMetasoundFrontendStyleEdgeDisplay : uint8
-{
-	Default,
-	Inherited,
-	Hidden
-};
-
-// Styling for edges
 USTRUCT()
-struct FMetasoundFrontendStyleEdge
+struct METASOUNDFRONTEND_API FMetasoundFrontendEdgeStyleLiteralColorPair
 {
 	GENERATED_BODY()
 
 	UPROPERTY()
-	EMetasoundFrontendStyleEdgeDisplay Display = EMetasoundFrontendStyleEdgeDisplay::Default;
+	FMetasoundFrontendLiteral Value;
+
+	UPROPERTY()
+	FLinearColor Color = Metasound::Frontend::DisplayStyle::EdgeAnimation::DefaultColor;
 };
 
-// Styling for a class of edges dependent upon edge data type.
+// Styling for all edges associated with a given output (characterized by NodeID & Name)
 USTRUCT()
-struct FMetasoundFrontendStyleEdgeClass
+struct METASOUNDFRONTEND_API FMetasoundFrontendEdgeStyle
 {
 	GENERATED_BODY()
 
-	// Datatype of edge to apply style to
+	// Node ID for associated edge(s) that should use the given style data.
 	UPROPERTY()
-	FName TypeName;
+	FGuid NodeID;
 
-	// Style information for edge.
+	// Name of node's output to associate style information for its associated edge(s).
 	UPROPERTY()
-	FMetasoundFrontendStyleEdge Style;
+	FName OutputName;
+
+	// Array of colors used to animate given output's associated edge(s). Interpolation
+	// between values dependent on value used.
+	UPROPERTY()
+	TArray<FMetasoundFrontendEdgeStyleLiteralColorPair> LiteralColorPairs;
 };
 
 // Styling for a class
 USTRUCT()
-struct FMetasoundFrontendGraphStyle 
+struct METASOUNDFRONTEND_API FMetasoundFrontendGraphStyle
 {
 	GENERATED_BODY()
 
@@ -507,13 +592,13 @@ struct FMetasoundFrontendGraphStyle
 	UPROPERTY()
 	bool bIsGraphEditable = true;
 
-	// Edge styles for graph.
+	// Styles for graph edges.
 	UPROPERTY()
-	TArray<FMetasoundFrontendStyleEdgeClass> EdgeStyles;
+	TArray<FMetasoundFrontendEdgeStyle> EdgeStyles;
 };
 
 USTRUCT()
-struct FMetasoundFrontendGraph
+struct METASOUNDFRONTEND_API FMetasoundFrontendGraph
 {
 	GENERATED_BODY()
 
@@ -529,14 +614,18 @@ struct FMetasoundFrontendGraph
 	UPROPERTY()
 	TArray<FMetasoundFrontendVariable> Variables;
 
+#if WITH_EDITORONLY_DATA
+
 	// Style of graph display.
 	UPROPERTY()
 	FMetasoundFrontendGraphStyle Style;
+
+#endif // WITH_EDITORONLY_DATA
 };
 
 // Metadata associated with a vertex.
 USTRUCT()
-struct FMetasoundFrontendVertexMetadata
+struct METASOUNDFRONTEND_API FMetasoundFrontendVertexMetadata
 {
 	GENERATED_BODY()
 
@@ -649,8 +738,6 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassVertex : public FMetasoundFr
 {
 	GENERATED_BODY()
 
-	virtual ~FMetasoundFrontendClassVertex() = default;
-
 	UPROPERTY()
 	FGuid NodeID = Metasound::FrontendInvalidID;
 
@@ -660,11 +747,17 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassVertex : public FMetasoundFr
 	FMetasoundFrontendVertexMetadata Metadata;
 #endif // WITH_EDITORONLY_DATA
 
+	UPROPERTY()
+	EMetasoundFrontendVertexAccessType AccessType = EMetasoundFrontendVertexAccessType::Reference;
+
 	// Splits name into namespace & parameter name
 	void SplitName(FName& OutNamespace, FName& OutParameterName) const;
 
 	static bool IsFunctionalEquivalent(const FMetasoundFrontendClassVertex& InLHS, const FMetasoundFrontendClassVertex& InRHS);
+	// Whether vertex access types are compatible when connecting from an output to an input 
+	static bool CanConnectVertexAccessTypes(EMetasoundFrontendVertexAccessType InFromType, EMetasoundFrontendVertexAccessType InToType);
 };
+
 
 // Information regarding how to display a node class
 USTRUCT()
@@ -672,6 +765,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassStyleDisplay
 {
 	GENERATED_BODY()
 
+#if WITH_EDITORONLY_DATA
 	FMetasoundFrontendClassStyleDisplay() = default;
 
 	FMetasoundFrontendClassStyleDisplay(const Metasound::FNodeDisplayStyle& InDisplayStyle)
@@ -679,6 +773,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassStyleDisplay
 	,	bShowName(InDisplayStyle.bShowName)
 	,	bShowInputNames(InDisplayStyle.bShowInputNames)
 	,	bShowOutputNames(InDisplayStyle.bShowOutputNames)
+	,	bShowLiterals(InDisplayStyle.bShowLiterals)
 	{
 	}
 
@@ -693,7 +788,12 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassStyleDisplay
 
 	UPROPERTY()
 	bool bShowOutputNames = true;
+
+	UPROPERTY()
+	bool bShowLiterals = true;
+#endif // WITH_EDITORONLY_DATA
 };
+
 
 // Contains info for input vertex of a Metasound class.
 USTRUCT() 
@@ -704,8 +804,6 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassInput : public FMetasoundFro
 	FMetasoundFrontendClassInput() = default;
 
 	FMetasoundFrontendClassInput(const FMetasoundFrontendClassVertex& InOther);
-
-	virtual ~FMetasoundFrontendClassInput() = default;
 
 	// Default value for this input.
 	UPROPERTY(EditAnywhere, Category = Parameters)
@@ -721,8 +819,6 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassVariable : public FMetasound
 	FMetasoundFrontendClassVariable() = default;
 
 	FMetasoundFrontendClassVariable(const FMetasoundFrontendClassVertex& InOther);
-
-	virtual ~FMetasoundFrontendClassVariable() = default;
 
 	// Default value for this variable.
 	UPROPERTY(EditAnywhere, Category = Parameters)
@@ -741,16 +837,12 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassOutput : public FMetasoundFr
 	:	FMetasoundFrontendClassVertex(InOther)
 	{
 	}
-
-	virtual ~FMetasoundFrontendClassOutput() = default;
 };
 
 USTRUCT()
 struct METASOUNDFRONTEND_API FMetasoundFrontendClassEnvironmentVariable
 {
 	GENERATED_BODY()
-
-	virtual ~FMetasoundFrontendClassEnvironmentVariable() = default;
 
 	// Name of environment variable.
 	UPROPERTY()
@@ -781,8 +873,8 @@ struct FMetasoundFrontendInterfaceStyle
 	UPROPERTY()
 	TMap<FName, FText> RequiredMembers;
 
-	template <typename HandleType>
-	void SortDefaults(TArray<HandleType>& OutHandles) const
+	template <typename HandleType, typename NamePredicateType>
+	void SortDefaults(TArray<HandleType>& OutHandles, NamePredicateType InGetDisplayNamePredicate) const
 	{
 		TMap<FGuid, int32> NodeIDToSortIndex;
 		int32 HighestSortOrder = TNumericLimits<int32>::Min();
@@ -802,11 +894,19 @@ struct FMetasoundFrontendInterfaceStyle
 			NodeIDToSortIndex.Add(HandleID, SortIndex);
 		}
 
-		OutHandles.Sort([&NodeIDToSortIndex](const HandleType& HandleA, const HandleType& HandleB)
+		OutHandles.Sort([&NodeIDToSortIndex, &InGetDisplayNamePredicate](const HandleType& HandleA, const HandleType& HandleB) -> bool
 		{
 			const FGuid HandleAID = HandleA->GetID();
 			const FGuid HandleBID = HandleB->GetID();
-			return NodeIDToSortIndex[HandleAID] < NodeIDToSortIndex[HandleBID];
+			const int32 AID = NodeIDToSortIndex[HandleAID];
+			const int32 BID = NodeIDToSortIndex[HandleBID];
+
+			// If IDs are equal, sort alphabetically using provided name predicate
+			if (AID == BID)
+			{
+				return Invoke(InGetDisplayNamePredicate, HandleA).CompareTo(Invoke(InGetDisplayNamePredicate, HandleB)) < 0;
+			}
+			return AID < BID;
 		});
 	}
 #endif // #if WITH_EDITORONLY_DATA
@@ -818,6 +918,7 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClassInterface
 	GENERATED_BODY()
 
 private:
+#if WITH_EDITORONLY_DATA
 
 	// Style info for inputs.
 	UPROPERTY()
@@ -826,6 +927,7 @@ private:
 	// Style info for outputs.
 	UPROPERTY()
 	FMetasoundFrontendInterfaceStyle OutputStyle;
+#endif // WITH_EDITORONLY_DATA
 
 public:
 
@@ -850,6 +952,7 @@ private:
 	FGuid ChangeID;
 
 public:
+#if WITH_EDITORONLY_DATA
 	const FMetasoundFrontendInterfaceStyle& GetInputStyle() const
 	{
 		return InputStyle;
@@ -872,7 +975,6 @@ public:
 		ChangeID = FGuid::NewGuid();
 	}
 
-#if WITH_EDITORONLY_DATA
 	void AddRequiredInputToStyle(const FName& InInputName, const FText& InRequiredText)
 	{
 		InputStyle.RequiredMembers.Add(InInputName, InRequiredText);
@@ -1206,10 +1308,13 @@ public:
 	}
 };
 
+
 USTRUCT()
 struct FMetasoundFrontendClassStyle
 {
 	GENERATED_BODY()
+
+#if WITH_EDITORONLY_DATA
 
 	UPROPERTY()
 	FMetasoundFrontendClassStyleDisplay Display;
@@ -1217,7 +1322,6 @@ struct FMetasoundFrontendClassStyle
 	// Generates class style from core node class metadata.
 	static FMetasoundFrontendClassStyle GenerateClassStyle(const Metasound::FNodeDisplayStyle& InNodeDisplayStyle);
 
-#if WITH_EDITORONLY_DATA
 	// Editor only ID that allows for pumping view to reflect changes to class.
 	void UpdateChangeID()
 	{
@@ -1251,8 +1355,12 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendClass
 	UPROPERTY(EditAnywhere, Category = CustomView)
 	FMetasoundFrontendClassInterface Interface;
 
+#if WITH_EDITORONLY_DATA
+
 	UPROPERTY()
 	FMetasoundFrontendClassStyle Style;
+
+#endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	/*
@@ -1303,19 +1411,24 @@ struct METASOUNDFRONTEND_API FMetasoundFrontendGraphClass : public FMetasoundFro
 };
 
 USTRUCT()
-struct FMetasoundFrontendDocumentMetadata
+struct METASOUNDFRONTEND_API FMetasoundFrontendDocumentMetadata
 {
 	GENERATED_BODY()
 
 	UPROPERTY()
 	FMetasoundFrontendVersion Version;
-};
 
+#if WITH_EDITORONLY_DATA
+	FMetasoundFrontendDocumentModifyContext ModifyContext;
+#endif // WITH_EDITORONLY_DATA
+};
 
 USTRUCT()
 struct METASOUNDFRONTEND_API FMetasoundFrontendDocument
 {
 	GENERATED_BODY()
+
+	static FMetasoundFrontendVersionNumber GetMaxVersion();
 
 	Metasound::Frontend::FAccessPoint AccessPoint;
 
@@ -1366,3 +1479,5 @@ public:
 		return bDidEdit;
 	}
 };
+
+METASOUNDFRONTEND_API const TCHAR* LexToString(EMetasoundFrontendVertexAccessType InVertexAccess);

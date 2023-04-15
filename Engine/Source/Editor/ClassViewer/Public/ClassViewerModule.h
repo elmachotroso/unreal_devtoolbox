@@ -2,13 +2,23 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "AssetData.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogMacros.h"
 #include "Modules/ModuleInterface.h"
+#include "Templates/SharedPointer.h"
 
+class FClassViewerFilterFuncs;
 class IClassViewerFilter;
 class IPropertyHandle;
-class FClassViewerFilterFuncs;
+class SWidget;
+class UClass;
+
+DEFINE_LOG_CATEGORY_STATIC(LogEditorClassViewer, Log, All);
 
 /** Delegate used with the Class Viewer in 'class picking' mode.  You'll bind a delegate when the
     class viewer widget is created, which will be fired off when a class is selected in the list */
@@ -64,10 +74,10 @@ class FClassViewerInitializationOptions
 public:
 	/** [Deprecated] The filter to use on classes in this instance. */
 	UE_DEPRECATED(5.0, "Please add to the ClassFilters array member instead.")
-	TSharedPtr<class IClassViewerFilter> ClassFilter;
+	TSharedPtr<IClassViewerFilter> ClassFilter;
 
 	/** The filter(s) to use on classes in this instance. */
-	TArray<TSharedRef<class IClassViewerFilter>> ClassFilters;
+	TArray<TSharedRef<IClassViewerFilter>> ClassFilters;
 
 	/** Mode to operate in */
 	EClassViewerMode::Type Mode;
@@ -109,7 +119,7 @@ public:
 	FText ViewerTitleString;
 
 	/** The property this class viewer be working on. */
-	TSharedPtr<class IPropertyHandle> PropertyHandle;
+	TSharedPtr<IPropertyHandle> PropertyHandle;
 
 	/** The passed in property handle will be used to gather referencing assets. If additional referencing assets should be reported, supply them here. */
 	TArray<FAssetData> AdditionalReferencingAssets;
@@ -183,8 +193,7 @@ public:
 	 *
 	 * @return	New class viewer widget
 	 */
-	virtual TSharedRef<class SWidget> CreateClassViewer(const FClassViewerInitializationOptions& InitOptions,
-		const FOnClassPicked& OnClassPickedDelegate );
+	virtual TSharedRef<SWidget> CreateClassViewer(const FClassViewerInitializationOptions& InitOptions, const FOnClassPicked& OnClassPickedDelegate );
 
 	/** 
 	 * Create a new class filter from the given initialization options.
@@ -199,7 +208,11 @@ public:
 	/** Returns the global filter that affects all class viewer instances */
 	virtual const TSharedPtr<IClassViewerFilter>& GetGlobalClassViewerFilter();
 
+	FSimpleMulticastDelegate& GetOnGlobalClassViewerFilterModified() { return OnGlobalClassViewerFilterModified; }
+
 private:
 
 	TSharedPtr<IClassViewerFilter> GlobalClassViewerFilter;
+
+	FSimpleMulticastDelegate OnGlobalClassViewerFilterModified;
 };

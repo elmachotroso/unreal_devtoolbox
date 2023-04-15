@@ -2,80 +2,154 @@
 
 
 #include "SContentBrowser.h"
-#include "Factories/Factory.h"
-#include "Framework/Commands/UIAction.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Algo/Transform.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Widgets/SBoxPanel.h"
-#include "Layout/WidgetPath.h"
-#include "SlateOptMacros.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SWrapBox.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SExpandableArea.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "EditorFontGlyphs.h"
-#include "Settings/ContentBrowserSettings.h"
-#include "Settings/EditorSettings.h"
-#include "Editor.h"
-#include "FileHelpers.h"
-#include "AssetRegistryModule.h"
-#include "AssetRegistryState.h"
-#include "AssetToolsModule.h"
-#include "Widgets/Navigation/SBreadcrumbTrail.h"
-#include "ContentBrowserLog.h"
-#include "FrontendFilters.h"
-#include "ContentBrowserPluginFilters.h"
-#include "ContentBrowserSingleton.h"
-#include "ContentBrowserUtils.h"
-#include "ContentBrowserDataSource.h"
-#include "SourcesSearch.h"
-#include "SFilterList.h"
-#include "SPathView.h"
-#include "SCollectionView.h"
-#include "SAssetView.h"
+
 #include "AssetContextMenu.h"
-#include "NewAssetOrClassContextMenu.h"
-#include "PathContextMenu.h"
-#include "ContentBrowserModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetDataTagMap.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetThumbnail.h"
+#include "AssetToolsModule.h"
+#include "AssetViewUtils.h"
+#include "CollectionManagerModule.h"
+#include "CollectionManagerTypes.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
 #include "ContentBrowserCommands.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "IAddContentDialogModule.h"
-#include "UObject/GCObjectScopeGuard.h"
-#include "Engine/Selection.h"
-#include "AddToProjectConfig.h"
-#include "GameProjectGenerationModule.h"
-#include "Toolkits/GlobalEditorCommonCommands.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "ContentBrowserMenuContexts.h"
-#include "ToolMenus.h"
-#include "IContentBrowserDataModule.h"
+#include "ContentBrowserDataFilter.h"
 #include "ContentBrowserDataSource.h"
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserDataUtils.h"
-#include "StatusBarSubsystem.h"
-#include "Brushes/SlateColorBrush.h"
-#include "ToolMenu.h"
-#include "Widgets/Input/SExpandableButton.h"
-#include "SSearchToggleButton.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "ContentBrowserItemPath.h"
+#include "ContentBrowserLog.h"
+#include "ContentBrowserMenuContexts.h"
+#include "ContentBrowserModule.h"
+#include "ContentBrowserSingleton.h"
+#include "ContentBrowserUtils.h"
+#include "ContentBrowserVirtualPathTree.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "FileHelpers.h"
+#include "Filters/FilterBase.h"
+#include "Filters/SAssetFilterBar.h"
+#include "Filters/SBasicFilterBar.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/InputBindingManager.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "FrontendFilters.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformCrt.h"
+#include "IAddContentDialogModule.h"
+#include "IAssetTools.h"
+#include "ICollectionManager.h"
+#include "IContentBrowserDataModule.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/ChildrenBase.h"
+#include "Layout/Clipping.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/MessageLog.h"
+#include "Logging/TokenizedMessage.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/App.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/ExpressionParserTypes.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/FilterCollection.h"
+#include "Misc/NamePermissionList.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Misc/StringBuilder.h"
+#include "Misc/TextFilterExpressionEvaluator.h"
+#include "Modules/ModuleManager.h"
+#include "NewAssetOrClassContextMenu.h"
+#include "PathContextMenu.h"
+#include "SAssetSearchBox.h"
+#include "SAssetView.h"
+#include "SCollectionView.h"
+#include "SFilterList.h"
+#include "SPathView.h"
 #include "SPositiveActionButton.h"
+#include "SSearchToggleButton.h"
+#include "Selection.h"
+#include "Settings/ContentBrowserSettings.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "SourcesData.h"
+#include "SourcesSearch.h"
+#include "StatusBarSubsystem.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Styling/StyleDefaults.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Templates/TypeHash.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuContext.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuMisc.h"
+#include "ToolMenuSection.h"
+#include "ToolMenus.h"
+#include "Toolkits/GlobalEditorCommonCommands.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/ISlateMetaData.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Navigation/SBreadcrumbTrail.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FTreeItem;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -134,6 +208,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
  	bIsLocked = InArgs._InitiallyLocked;
 	bCanSetAsPrimaryBrowser = Config != nullptr ? Config->bCanSetAsPrimaryBrowser : true;
 	bIsDrawer = InArgs._IsDrawer;
+	this->InstanceName = InInstanceName;
 
 	HistoryManager.SetOnApplyHistoryData(FOnApplyHistoryData::CreateSP(this, &SContentBrowser::OnApplyHistoryData));
 	HistoryManager.SetOnUpdateHistoryData(FOnUpdateHistoryData::CreateSP(this, &SContentBrowser::OnUpdateHistoryData));
@@ -142,6 +217,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 	PathContextMenu->SetOnRenameFolderRequested(FPathContextMenu::FOnRenameFolderRequested::CreateSP(this, &SContentBrowser::OnRenameRequested));
 	PathContextMenu->SetOnFolderDeleted(FPathContextMenu::FOnFolderDeleted::CreateSP(this, &SContentBrowser::OnOpenedFolderDeleted));
 	PathContextMenu->SetOnFolderFavoriteToggled(FPathContextMenu::FOnFolderFavoriteToggled::CreateSP(this, &SContentBrowser::ToggleFolderFavorite));
+	PathContextMenu->SetOnPrivateContentEditToggled(FPathContextMenu::FOnPrivateContentEditToggled::CreateSP(this, &SContentBrowser::TogglePrivateContentEdit));
 	FrontendFilters = MakeShareable(new FAssetFilterCollectionType());
 	TextFilter = MakeShareable( new FFrontendFilter_Text() );
 
@@ -184,6 +260,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 		.OnItemsActivated(this, &SContentBrowser::OnItemsActivated)
 		.OnGetItemContextMenu(this, &SContentBrowser::GetItemContextMenu, EContentBrowserViewContext::AssetView)
 		.OnItemRenameCommitted(this, &SContentBrowser::OnItemRenameCommitted)
+		.OnShouldFilterItem(this, &SContentBrowser::HandlePrivateContentFilter)
 		.FrontendFilters(FrontendFilters)
 		.HighlightedText(this, &SContentBrowser::GetHighlightedText)
 		.ShowBottomToolbar(bShowBottomToolbar)
@@ -261,7 +338,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 				[
 					SNew(SButton)
 					.VAlign(EVerticalAlignment::VAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 					.ToolTipText( this, &SContentBrowser::GetHistoryBackTooltip )
 					.ContentPadding( FMargin(1, 0) )
 					.OnClicked(this, &SContentBrowser::BackClicked)
@@ -280,7 +357,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 				[
 					SNew(SButton)
 					.VAlign(EVerticalAlignment::VAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 					.ToolTipText( this, &SContentBrowser::GetHistoryForwardTooltip )
 					.ContentPadding( FMargin(1, 0) )
 					.OnClicked(this, &SContentBrowser::ForwardClicked)
@@ -300,7 +377,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 				[
 					SAssignNew( PathPickerButton, SComboButton )
 					.Visibility( ( Config != nullptr ? Config->bUsePathPicker : true ) ? EVisibility::Visible : EVisibility::Collapsed )
-					.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 					.ToolTipText( LOCTEXT( "PathPickerTooltip", "Choose a path" ) )
 					.OnGetMenuContent( this, &SContentBrowser::GetPathPickerContent )
 					.HasDownArrow( false )
@@ -383,7 +460,7 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 				[
 					SNew(SBorder)
 					.Padding(FMargin(0))
-					.BorderImage(FEditorStyle::GetBrush("Brushes.Recessed"))
+					.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
 
 					[
 						// Note: If adding more widgets here, fix ContentBrowserSourcesWidgetSwitcherIndex and the code that uses it!
@@ -395,29 +472,47 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 							SAssignNew(PathFavoriteSplitterPtr, SSplitter)
 							.Clipping(EWidgetClipping::ClipToBounds)
 							.PhysicalSplitterHandleSize(2.0f)
-							.HitDetectionSplitterHandleSize(5.0f)
+							.HitDetectionSplitterHandleSize(8.0f)
 							.Orientation(EOrientation::Orient_Vertical)
 							.MinimumSlotHeight(26.0f)
 							.Visibility( this, &SContentBrowser::GetSourcesViewVisibility )
 							+SSplitter::Slot()
 							.SizeRule(TAttribute<SSplitter::ESizeRule>(this, &SContentBrowser::GetFavoritesAreaSizeRule))
+							.MinSize(TAttribute<float>(this, &SContentBrowser::GetFavoritesAreaMinSize))
 							.Value(0.2f)
 							[
-								CreateFavoritesView(Config)
+								SNew(SBorder)
+								.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
+								.Padding(0.0f, 2.0f, 0.0f, 0.0f)
+								[
+									CreateFavoritesView(Config)
+								]
 							]
 								
 							+SSplitter::Slot()
 							.SizeRule(TAttribute<SSplitter::ESizeRule>(this, &SContentBrowser::GetPathAreaSizeRule))
+							.MinSize(29.0f)
 							.Value(0.8f)
 							[
-								CreatePathView(Config)
+								SNew(SBorder)
+								.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
+								.Padding(0.0f, 2.0f, 0.0f, 0.0f)
+								[
+									CreatePathView(Config)
+								]
 							]
 
 							+SSplitter::Slot()
 							.SizeRule(TAttribute<SSplitter::ESizeRule>(this, &SContentBrowser::GetCollectionsAreaSizeRule))
+							.MinSize(TAttribute<float>(this, &SContentBrowser::GetCollectionsAreaMinSize))
 							.Value(0.4f)
 							[
-								CreateDockedCollectionsView(Config)
+								SNew(SBorder)
+								.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
+								.Padding(0.0f, 2.0f, 0.0f, 0.0f)
+								[
+									CreateDockedCollectionsView(Config)
+								]
 							]
 						]
 
@@ -480,7 +575,6 @@ void SContentBrowser::Construct( const FArguments& InArgs, const FName& InInstan
 	HistoryManager.AddHistoryData();
 
 	// Load settings if they were specified
-	this->InstanceName = InInstanceName;
 	LoadSettings(InInstanceName);
 
 	if( Config != nullptr )
@@ -626,11 +720,37 @@ void SContentBrowser::ToggleFolderFavorite(const TArray<FString>& FolderPaths)
 	}
 }
 
+void SContentBrowser::TogglePrivateContentEdit(const TArray<FString>& FolderPaths)
+{
+	for (const FString& FolderPath : FolderPaths)
+	{
+		ensure(FContentBrowserSingleton::Get().IsFolderShowPrivateContentToggleable(FolderPath));
+
+		if (FContentBrowserSingleton::Get().IsShowingPrivateContent(FolderPath))
+		{
+			ContentBrowserUtils::RemoveShowPrivateContentFolder(FolderPath, TEXT("ContentBrowser"));
+		}
+		else
+		{
+			ContentBrowserUtils::AddShowPrivateContentFolder(FolderPath, TEXT("ContentBrowser"));
+		}
+	}
+
+	OnAssetViewRefreshRequested();
+}
+
 void SContentBrowser::HandleAssetViewSearchOptionsChanged()
 {
-	TextFilter->SetIncludeClassName(AssetViewPtr->IsIncludingClassNames());
-	TextFilter->SetIncludeAssetPath(AssetViewPtr->IsIncludingAssetPaths());
-	TextFilter->SetIncludeCollectionNames(AssetViewPtr->IsIncludingCollectionNames());
+	bool bIncludeClassName = AssetViewPtr->IsIncludingClassNames();
+	bool bIncludeAssetPath = AssetViewPtr->IsIncludingAssetPaths();
+	bool bIncludeCollectionNames = AssetViewPtr->IsIncludingCollectionNames();
+	
+	TextFilter->SetIncludeClassName(bIncludeClassName);
+	TextFilter->SetIncludeAssetPath(bIncludeAssetPath);
+	TextFilter->SetIncludeCollectionNames(bIncludeCollectionNames);
+
+	// Make sure all custom text filters get the updated Asset View Search Options
+	FilterListPtr->UpdateCustomTextFilterIncludes(bIncludeClassName, bIncludeAssetPath, bIncludeCollectionNames);
 }
 
 TSharedRef<SWidget> SContentBrowser::CreateToolBar(const FContentBrowserConfig* Config)
@@ -668,127 +788,203 @@ TSharedRef<SWidget> SContentBrowser::CreateLockButton(const FContentBrowserConfi
 	return SNullWidget::NullWidget;
 }
 
-TSharedRef<SWidget> SContentBrowser::CreateAssetView(const FContentBrowserConfig* Config)
+void SContentBrowser::OnFilterBarLayoutChanging(EFilterBarLayout NewLayout)
 {
-	// Item height is specified explicitly here, rather than relying on the padding being exactly right,
-	// so that the search box doesn't subtly shift up/down when the filters are wrapped to a new row in the SWrapBox.
-	const float SearchFilterItemHeight = 32.0f;
-
 	const float SearchBoxDesiredWidth = 500.0f;
 
-	return
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot()
-		.Padding(0.0f)
-		.AutoHeight()
-		[
-			SNew(SBorder)
-			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
-			.Padding(FMargin(2.0f, 2.0f, 2.0f, 0.0f))
+	if(NewLayout == EFilterBarLayout::Horizontal)
+	{
+		TSharedPtr<SHorizontalBox> SearchBoxSlot =
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Top)
+			.Padding(6, 4, 2, 0)
 			[
-				SNew(SWrapBox)
-				.UseAllottedSize(true)
-				.InnerSlotPadding(FVector2D(4.0f, 0.0f))
-				+ SWrapBox::Slot()
-				.HAlign(HAlign_Left)
-				.VAlign(VAlign_Center)
-				.FillEmptySpace(true)
+				FilterComboButton.ToSharedRef()
+			]
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0)
+			.VAlign(VAlign_Top)
+			.Padding(0, 4, 0, 0)
+			[
+				SNew(SBox)
+				 .VAlign(VAlign_Center)
+				 .WidthOverride(SearchBoxDesiredWidth)
+				 [
+					 SearchBoxPtr.ToSharedRef()	
+				 ]
+			];
+			
+		/** We add the Combo Button and the Search Box to the FilterList itself, so that the filters wrap with them
+		 *	properly in the Horizontal Layout
+		 */
+		FilterListPtr->AddWidgetToCurrentLayout(SearchBoxSlot.ToSharedRef());
+
+		AssetViewBorder->SetContent(
+
+			SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot()
+			.Padding(0.0f)
+			.AutoHeight()
+			[
+				FilterListPtr.ToSharedRef()
+			]
+
+			+ SVerticalBox::Slot()
+			.FillHeight( 1.0f )
+			.Padding( 0, 0 )
+			[
+				AssetViewPtr.ToSharedRef()
+			]
+
+		);
+		
+	}
+	else
+	{
+		AssetViewBorder->SetContent(
+
+			SNew(SSplitter)
+			.PhysicalSplitterHandleSize(2.0f)
+
+			/* Filters in an SScrollBox */
+			+ SSplitter::Slot()
+			.Value(0.12f)
+			.MinSize(95.f)
+			[
+				SNew(SVerticalBox)
+				// Don't take up space when there are no filters
+				.Visibility_Lambda([this]
+				{
+					return FilterListPtr->HasAnyFilters() ? EVisibility::Visible : EVisibility::Collapsed;
+				})
+
+				// Header
+				+ SVerticalBox::Slot()
+				.Padding(0.0f, 2.0f)
+				.AutoHeight()
 				[
-					// Search field / Save Search button / Filter dropdown
-					SNew(SBox)
-					.MinDesiredHeight(SearchFilterItemHeight)
-					.VAlign(VAlign_Center)
-					.WidthOverride(SearchBoxDesiredWidth)
+					
+					SNew(SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
+					.Padding(FMargin(8.0f, 6.0f))
+					.Content()
 					[
-						SNew(SHorizontalBox)
-						// Search
-						+ SHorizontalBox::Slot()
-						.VAlign(VAlign_Center)
-						.Padding(5, 0, 0, 0)
-						.FillWidth(1.0)
-						[
-							SAssignNew(SearchBoxPtr, SAssetSearchBox)
+						SNew(STextBlock)
+						.Text(LOCTEXT("FilterListVerticalHeader", "Filters"))
+						.TextStyle(FAppStyle::Get(), "ButtonText")
+						.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+					]
+				]
+
+				// Filter List
+				+ SVerticalBox::Slot()
+				.Padding(0.0f)
+				.FillHeight(1.0f)
+				[
+					FilterListPtr.ToSharedRef()
+				]
+				
+			]
+		
+			+ SSplitter::Slot()
+			.Value(0.88f)
+			[
+				SNew(SVerticalBox)
+
+				+ SVerticalBox::Slot()
+				.Padding(6, 4, 0, 0)
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0, 0, 2, 0)
+					[
+						FilterComboButton.ToSharedRef()
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SBox)
+						 .VAlign(VAlign_Center)
+						 .WidthOverride(SearchBoxDesiredWidth)
+						 [
+							 SearchBoxPtr.ToSharedRef()	
+						 ]
+					]
+				]
+
+				+ SVerticalBox::Slot()
+				.FillHeight( 1.0f )
+				.Padding( 0, 0 )
+				[
+					AssetViewPtr.ToSharedRef()
+				]
+			]
+		);
+	}
+}
+
+TSharedRef<SWidget> SContentBrowser::CreateAssetView(const FContentBrowserConfig* Config)
+{
+	// Create the Filter Bar Widget
+	FilterListPtr = SNew(SFilterList)
+					.OnFilterChanged(this, &SContentBrowser::OnFilterChanged)
+					.OnGetContextMenu(this, &SContentBrowser::GetFilterContextMenu)
+					.Visibility((Config != nullptr ? Config->bCanShowFilters : true) ? EVisibility::Visible : EVisibility::Collapsed)
+					.FrontendFilters(FrontendFilters)
+					.FilterBarIdentifier(InstanceName)
+					.FilterBarLayout(EFilterBarLayout::Vertical)
+					.CanChangeOrientation(true)
+					.OnFilterBarLayoutChanging(this, &SContentBrowser::OnFilterBarLayoutChanging)
+					.UseSharedSettings(true)
+					.CreateTextFilter(SFilterList::FCreateTextFilter::CreateLambda([this]
+					{
+						TSharedPtr<FFrontendFilter_CustomText> NewFilter = MakeShareable(new FFrontendFilter_CustomText);
+
+						// Make sure the new filter has the right search options from the AssetView. We only have to set it once, SFilterList handles syncing it on change
+						NewFilter->UpdateCustomTextFilterIncludes(AssetViewPtr->IsIncludingClassNames(), AssetViewPtr->IsIncludingAssetPaths(), AssetViewPtr->IsIncludingCollectionNames());
+
+						return NewFilter;
+					}))
+					.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserFilters")));
+	
+	// Create the Filter Combo Button
+	FilterComboButton = SFilterList::MakeAddFilterButton(FilterListPtr.ToSharedRef());
+	TSharedPtr<ISlateMetaData> FilterComboButtonMetaData = MakeShared<FTagMetaData>(TEXT("ContentBrowserFiltersCombo"));
+	FilterComboButton->AddMetadata(FilterComboButtonMetaData.ToSharedRef());
+	FilterComboButton->SetVisibility((Config != nullptr ? Config->bCanShowFilters : true) ? EVisibility::Visible : EVisibility::Collapsed);
+
+	AssetViewPtr->SetFilterBar(FilterListPtr);
+
+	SearchBoxPtr = SNew(SAssetSearchBox)
 							.HintText(this, &SContentBrowser::GetSearchAssetsHintText)
+							.ShowSearchHistory(true)
 							.OnTextChanged(this, &SContentBrowser::OnSearchBoxChanged)
 							.OnTextCommitted(this, &SContentBrowser::OnSearchBoxCommitted)
 							.OnKeyDownHandler(this, &SContentBrowser::OnSearchKeyDown)
+							.OnSaveSearchClicked(this, &SContentBrowser::OnSaveSearchButtonClicked)
 							.OnAssetSearchBoxSuggestionFilter(this, &SContentBrowser::OnAssetSearchSuggestionFilter)
 							.OnAssetSearchBoxSuggestionChosen(this, &SContentBrowser::OnAssetSearchSuggestionChosen)
 							.DelayChangeNotificationsWhileTyping(true)
 							.Visibility((Config != nullptr ? Config->bCanShowAssetSearch : true) ? EVisibility::Visible : EVisibility::Collapsed)
-							.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserSearchAssets")))
-						]
-					
-						// Save Search
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2.0f, 0.0f, 0.0f, 0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-							.ToolTipText(LOCTEXT("SaveSearchButtonTooltip", "Save the current search as a dynamic collection."))
-							.IsEnabled(this, &SContentBrowser::IsSaveSearchButtonEnabled)
-							.OnClicked(this, &SContentBrowser::OnSaveSearchButtonClicked)
-							.ContentPadding(FMargin(1, 1))
-							.Visibility((Config != nullptr ? Config->bCanShowAssetSearch : true) ? EVisibility::Visible : EVisibility::Collapsed)
-							[
-								SNew(STextBlock)
-								.TextStyle(FEditorStyle::Get(), "GenericFilters.TextStyle")
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-								.Text(FEditorFontGlyphs::Floppy_O)
-							]
-						]
-						// Filter dropdown
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.HAlign(HAlign_Left)
-						.Padding(5, 0, 0, 0)
-						[
-							SNew(SComboButton)
-							.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButtonWithIcon"))
-							.ForegroundColor(FSlateColor::UseStyle())
-							.ToolTipText(LOCTEXT("AddFilterToolTip", "Add an asset filter."))
-							.OnGetMenuContent(this, &SContentBrowser::MakeAddFilterMenu)
-							.ContentPadding(FMargin(1, 0))
-							.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserFiltersCombo")))
-							.Visibility((Config != nullptr ? Config->bCanShowFilters : true) ? EVisibility::Visible : EVisibility::Collapsed)
-							.ButtonContent()
-							[
-								SNew(SImage)
-								.Image(FAppStyle::Get().GetBrush("Icons.Filter"))
-								.ColorAndOpacity(FSlateColor::UseForeground())
-							]
-						]
-					]
-				]
-				+ SWrapBox::Slot()
-				.HAlign(HAlign_Left)
-				.VAlign(VAlign_Center)
-				.FillEmptySpace(true)
-				[
-					// Filter list
-					SNew(SBox)
-					.MinDesiredHeight_Lambda([this, SearchFilterItemHeight]() { return FilterListPtr->HasAnyFilters() ? SearchFilterItemHeight : 0; })
-					.VAlign(VAlign_Center)
-					[
-						SAssignNew(FilterListPtr, SFilterList)
-						.OnFilterChanged(this, &SContentBrowser::OnFilterChanged)
-						.OnGetContextMenu(this, &SContentBrowser::GetFilterContextMenu)
-						.Visibility((Config != nullptr ? Config->bCanShowFilters : true) ? EVisibility::Visible : EVisibility::Collapsed)
-						.FrontendFilters(FrontendFilters)
-						.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserFilters")))
-					]
-				]
-			]
-		]
-		// Assets
-		+ SVerticalBox::Slot()
-		.FillHeight( 1.0f )
-		.Padding( 0, 0 )
-		[
-			AssetViewPtr.ToSharedRef()
-		];
+							.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserSearchAssets")));
+
+	/* Create the Border that the Asset View will live in, the actual layout is populated in OnFilterBarLayoutChanging, 
+	 * which is called initially called through SAssetFilterBar::LoadSettings through SContentBrowser::LoadSettings()
+	 */
+	AssetViewBorder = SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
+			.Padding(FMargin(2.0f, 2.0f, 2.0f, 0.0f));
+
+	return AssetViewBorder.ToSharedRef();
 }
 
 TSharedRef<SWidget> SContentBrowser::CreateFavoritesView(const FContentBrowserConfig* Config)
@@ -797,7 +993,8 @@ TSharedRef<SWidget> SContentBrowser::CreateFavoritesView(const FContentBrowserCo
 		SAssignNew(FavoritesArea, SExpandableArea)
 		.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
 		.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
-		.HeaderPadding(FMargin(4.0f, 2.0f))
+		.HeaderPadding(FMargin(4.0f, 0.0f))
+		.Visibility(this, &SContentBrowser::GetFavoriteFolderVisibility)
 		.Padding(0)
 		.AllowAnimatedTransition(false)
 		.OnAreaExpansionChanged_Lambda([this](bool bIsExpanded) { if (!bIsExpanded) FavoritesSearchToggleButton->SetExpanded(false); })
@@ -857,7 +1054,7 @@ TSharedRef<SWidget> SContentBrowser::CreatePathView(const FContentBrowserConfig*
 		SAssignNew(PathArea, SExpandableArea)
 		.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
 		.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
-		.HeaderPadding(FMargin(4.0f, 2.0f))
+		.HeaderPadding(FMargin(4.0f, 0.0f))
 		.Padding(0)
 		.AllowAnimatedTransition(false)
 		.OnAreaExpansionChanged_Lambda([this](bool bIsExpanded) { if (!bIsExpanded) PathSearchToggleButton->SetExpanded(false); })
@@ -922,7 +1119,7 @@ TSharedRef<SWidget> SContentBrowser::CreateDockedCollectionsView(const FContentB
 		SAssignNew(CollectionArea, SExpandableArea)
 		.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
 		.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
-		.HeaderPadding(FMargin(4.0f, 2.0f))
+		.HeaderPadding(FMargin(4.0f, 0.0f))
 		.Padding(0)
 		.Visibility(this, &SContentBrowser::GetDockedCollectionsVisibility)
 		.AllowAnimatedTransition(false)
@@ -945,7 +1142,7 @@ TSharedRef<SWidget> SContentBrowser::CreateDockedCollectionsView(const FContentB
 			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 				.ToolTipText(LOCTEXT("AddCollectionButtonTooltip", "Add a collection."))
 				.OnClicked(this, &SContentBrowser::OnAddCollectionClicked)
 				.ContentPadding(FMargin(1, 0))
@@ -1008,7 +1205,7 @@ TSharedRef<SWidget> SContentBrowser::CreateDrawerDockButton(const FContentBrowse
 				[
 					SNew(SImage)
 					.ColorAndOpacity(FSlateColor::UseForeground())
-					.Image(FAppStyle::Get().GetBrush("EditorViewport.SubMenu.Layouts"))
+					.Image(FAppStyle::Get().GetBrush("Icons.Layout"))
 				]
 				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
@@ -1159,7 +1356,8 @@ void SContentBrowser::RegisterContentBrowserToolBar()
 
 SSplitter::ESizeRule SContentBrowser::GetFavoritesAreaSizeRule() const
 {
-	return FavoritesArea->IsExpanded() ? SSplitter::ESizeRule::FractionOfParent : SSplitter::ESizeRule::SizeToContent;
+	// Make sure the area is expanded and visible 
+	return FavoritesArea->IsExpanded() && GetFavoriteFolderVisibility() == EVisibility::Visible ? SSplitter::ESizeRule::FractionOfParent : SSplitter::ESizeRule::SizeToContent;
 }
 
 SSplitter::ESizeRule SContentBrowser::GetPathAreaSizeRule() const
@@ -1169,7 +1367,18 @@ SSplitter::ESizeRule SContentBrowser::GetPathAreaSizeRule() const
 
 SSplitter::ESizeRule SContentBrowser::GetCollectionsAreaSizeRule() const
 {
-	return CollectionArea->IsExpanded() ? SSplitter::ESizeRule::FractionOfParent : SSplitter::ESizeRule::SizeToContent;
+	// Make sure the area is expanded and visible 
+	return CollectionArea->IsExpanded() && GetDockedCollectionsVisibility() == EVisibility::Visible ? SSplitter::ESizeRule::FractionOfParent : SSplitter::ESizeRule::SizeToContent;
+}
+
+float SContentBrowser::GetFavoritesAreaMinSize() const
+{
+	return GetFavoriteFolderVisibility() == EVisibility::Visible ? 29.0f : 0.0f;
+}
+
+float SContentBrowser::GetCollectionsAreaMinSize() const
+{
+	return GetDockedCollectionsVisibility() == EVisibility::Visible ? 29.0f : 0.0f;
 }
 
 FText SContentBrowser::GetHighlightedText() const
@@ -1306,6 +1515,36 @@ void SContentBrowser::SyncToFolders(TArrayView<const FString> FolderList, const 
 
 void SContentBrowser::SyncToItems(TArrayView<const FContentBrowserItem> ItemsToSync, const bool bAllowImplicitSync, const bool bDisableFiltersThatHideAssets)
 {
+	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+	const TSharedRef<FPathPermissionList>& FolderPermissions = FAssetToolsModule::GetModule().Get().GetFolderPermissionList();
+
+	// If any of the items to sync don't pass the permission filter, try to find an alias that might be visible
+	TArray<FContentBrowserItem> NewItemsToSync;
+	for (const FContentBrowserItem& Item : ItemsToSync)
+	{
+		if (FolderPermissions->PassesStartsWithFilter(Item.GetInternalPath()))
+		{
+			NewItemsToSync.Add(Item);
+		}
+		else
+		{
+			TArray<FContentBrowserItemPath> Aliases = ContentBrowserData->GetAliasesForPath(Item.GetInternalPath());
+			for (const FContentBrowserItemPath& Alias : Aliases)
+			{
+				if (FolderPermissions->PassesStartsWithFilter(Alias.GetInternalPathName()))
+				{
+					FContentBrowserItem AliasedItem = ContentBrowserData->GetItemAtPath(Alias.GetVirtualPathName(), EContentBrowserItemTypeFilter::IncludeFiles);
+					if (AliasedItem.IsValid())
+					{
+						NewItemsToSync.Add(MoveTemp(AliasedItem));
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	ItemsToSync = NewItemsToSync;
 	PrepareToSyncItems(ItemsToSync, bDisableFiltersThatHideAssets);
 
 	// Tell the sources view first so the asset view will be up to date by the time we request the sync
@@ -1316,6 +1555,32 @@ void SContentBrowser::SyncToItems(TArrayView<const FContentBrowserItem> ItemsToS
 
 void SContentBrowser::SyncToVirtualPaths(TArrayView<const FName> VirtualPathsToSync, const bool bAllowImplicitSync, const bool bDisableFiltersThatHideAssets)
 {
+	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+	const TSharedRef<FPathPermissionList>& FolderPermissions = FAssetToolsModule::GetModule().Get().GetFolderPermissionList();
+
+	// If any of the items to sync don't pass the permission filter, try to map the item to a different one that might be visible
+	TArray<FName> NewItemsToSync;
+	for (const FName VirtualPath : VirtualPathsToSync)
+	{
+		FName InternalPath;
+		ContentBrowserData->TryConvertVirtualPath(VirtualPath, InternalPath);
+		if (FolderPermissions->PassesStartsWithFilter(InternalPath))
+		{
+			NewItemsToSync.Add(VirtualPath);
+		}
+		else
+		{
+			TArray<FContentBrowserItemPath> Aliases = ContentBrowserData->GetAliasesForPath(InternalPath);
+			for (const FContentBrowserItemPath& Alias : Aliases)
+			{
+				if (FolderPermissions->PassesStartsWithFilter(Alias.GetInternalPathName()))
+				{
+					NewItemsToSync.Add(Alias.GetVirtualPathName());
+				}
+			}
+		}
+	}
+	VirtualPathsToSync = NewItemsToSync;
 	PrepareToSyncVirtualPaths(VirtualPathsToSync, bDisableFiltersThatHideAssets);
 
 	// Tell the sources view first so the asset view will be up to date by the time we request the sync
@@ -1326,6 +1591,34 @@ void SContentBrowser::SyncToVirtualPaths(TArrayView<const FName> VirtualPathsToS
 
 void SContentBrowser::SyncToLegacy(TArrayView<const FAssetData> AssetDataList, TArrayView<const FString> FolderList, const bool bAllowImplicitSync, const bool bDisableFiltersThatHideAssets)
 {
+	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+	const TSharedRef<FPathPermissionList>& FolderPermissions = FAssetToolsModule::GetModule().Get().GetFolderPermissionList();
+
+	// If any of the items to sync don't pass the permission filter, try to map the item to a different one that might be visible
+	TArray<FAssetData> NewItemsToSync;
+	for (int32 i = 0; i < AssetDataList.Num(); ++i)
+	{
+		if (FolderPermissions->PassesStartsWithFilter(AssetDataList[i].GetObjectPathString()))
+		{
+			NewItemsToSync.Add(AssetDataList[i]);
+		}
+		else
+		{
+			TArray<FContentBrowserItemPath> Aliases = ContentBrowserData->GetAliasesForPath(*AssetDataList[i].GetObjectPathString());
+			for (const FContentBrowserItemPath& Alias : Aliases)
+			{
+				const FName InternalPath = Alias.GetInternalPathName();
+				if (FolderPermissions->PassesStartsWithFilter(InternalPath))
+				{
+					FAssetData AliasAssetData(InternalPath, *FPackageName::GetLongPackagePath(InternalPath.ToString()), FPackageName::GetShortFName(InternalPath), AssetDataList[i].AssetClassPath, AssetDataList[i].TagsAndValues.CopyMap());
+					NewItemsToSync.Add(MoveTemp(AliasAssetData));
+					break;
+				}
+			}
+		}
+	}
+
+	AssetDataList = NewItemsToSync;
 	PrepareToSyncLegacy(AssetDataList, FolderList, bDisableFiltersThatHideAssets);
 
 	// Tell the sources view first so the asset view will be up to date by the time we request the sync
@@ -1338,21 +1631,11 @@ void SContentBrowser::SyncTo( const FContentBrowserSelection& ItemSelection, con
 {
 	if (ItemSelection.IsLegacy())
 	{
-		PrepareToSyncLegacy(ItemSelection.SelectedAssets, ItemSelection.SelectedFolders, bDisableFiltersThatHideAssets);
-
-		// Tell the sources view first so the asset view will be up to date by the time we request the sync
-		PathViewPtr->SyncToLegacy(ItemSelection.SelectedAssets, ItemSelection.SelectedFolders, bAllowImplicitSync);
-		FavoritePathViewPtr->SyncToLegacy(ItemSelection.SelectedAssets, ItemSelection.SelectedFolders, bAllowImplicitSync);
-		AssetViewPtr->SyncToLegacy(ItemSelection.SelectedAssets, ItemSelection.SelectedFolders);
+		SyncToLegacy(ItemSelection.SelectedAssets, ItemSelection.SelectedFolders, bAllowImplicitSync, bDisableFiltersThatHideAssets);
 	}
 	else
 	{
-		PrepareToSyncItems(ItemSelection.SelectedItems, bDisableFiltersThatHideAssets);
-
-		// Tell the sources view first so the asset view will be up to date by the time we request the sync
-		PathViewPtr->SyncToItems(ItemSelection.SelectedItems, bAllowImplicitSync);
-		FavoritePathViewPtr->SyncToItems(ItemSelection.SelectedItems, bAllowImplicitSync);
-		AssetViewPtr->SyncToItems(ItemSelection.SelectedItems);
+		SyncToItems(ItemSelection.SelectedItems, bAllowImplicitSync, bDisableFiltersThatHideAssets);
 	}
 }
 
@@ -1403,7 +1686,7 @@ void SContentBrowser::LoadSelectedObjectsIfNeeded()
 	for ( auto AssetIt = SelectedAssets.CreateConstIterator(); AssetIt; ++AssetIt )
 	{
 		const FAssetData& AssetData = *AssetIt;
-		const bool bShowProgressDialog = (!AssetData.IsAssetLoaded() && FEditorFileUtils::IsMapPackageAsset(AssetData.ObjectPath.ToString()));
+		const bool bShowProgressDialog = (!AssetData.IsAssetLoaded() && FEditorFileUtils::IsMapPackageAsset(AssetData.GetObjectPathString()));
 		GWarn->BeginSlowTask(LOCTEXT("LoadingObjects", "Loading Objects..."), bShowProgressDialog);
 
 		(*AssetIt).GetAsset();
@@ -1439,7 +1722,6 @@ void SContentBrowser::SaveSettings() const
 	const FString& SettingsString = InstanceName.ToString();
 
 	GConfig->SetBool(*SettingsIniSection, *(SettingsString + TEXT(".SourcesExpanded")), bSourcesViewExpanded, GEditorPerProjectIni);
-	GConfig->SetBool(*SettingsIniSection, *(SettingsString + TEXT(".Locked")), bIsLocked, GEditorPerProjectIni);
 
 	GConfig->SetBool(*SettingsIniSection, *(SettingsString + TEXT(".FavoritesAreaExpanded")), FavoritesArea->IsExpanded(), GEditorPerProjectIni);
 	GConfig->SetBool(*SettingsIniSection, *(SettingsString + TEXT(".PathAreaExpanded")), PathArea->IsExpanded(), GEditorPerProjectIni);
@@ -1573,7 +1855,6 @@ void SContentBrowser::LoadSettings(const FName& InInstanceName)
 	// Now that we have determined the appropriate settings string, actually load the settings
 	bSourcesViewExpanded = true;
 	GConfig->GetBool(*SettingsIniSection, *(SettingsString + TEXT(".SourcesExpanded")), bSourcesViewExpanded, GEditorPerProjectIni);
-	GConfig->GetBool(*SettingsIniSection, *(SettingsString + TEXT(".Locked")), bIsLocked, GEditorPerProjectIni);
 
 	bool bFavoritesAreaExpanded = false;
 	GConfig->GetBool(*SettingsIniSection, *(SettingsString + TEXT(".FavoritesAreaExpanded")), bFavoritesAreaExpanded, GEditorPerProjectIni);
@@ -1614,7 +1895,7 @@ void SContentBrowser::LoadSettings(const FName& InInstanceName)
 	}
 
 	// Save all our data using the settings string as a key in the user settings ini
-	FilterListPtr->LoadSettings(GEditorPerProjectIni, SettingsIniSection, SettingsString);
+	FilterListPtr->LoadSettings(InInstanceName, GEditorPerProjectIni, SettingsIniSection, SettingsString);
 	PathViewPtr->LoadSettings(GEditorPerProjectIni, SettingsIniSection, SettingsString);
 	FavoritePathViewPtr->LoadSettings(GEditorPerProjectIni, SettingsIniSection, SettingsString + TEXT(".Favorites"));
 	CollectionViewPtr->LoadSettings(GEditorPerProjectIni, SettingsIniSection, SettingsString);
@@ -1942,7 +2223,7 @@ bool SContentBrowser::IsSaveSearchButtonEnabled() const
 	return !TextFilter->GetRawFilterText().IsEmptyOrWhitespace();
 }
 
-FReply SContentBrowser::OnSaveSearchButtonClicked()
+void SContentBrowser::OnSaveSearchButtonClicked(const FText& InSearchText)
 {
 	// Need to make sure we can see the collections view
 	if (!bSourcesViewExpanded)
@@ -1985,8 +2266,12 @@ FReply SContentBrowser::OnSaveSearchButtonClicked()
 		FinalQueryText = FText::FromString(FString::Printf(TEXT("(%s) AND (%s)"), *TextFilter->GetRawFilterText().ToString(), *SelectedPathsQuery));
 	}
 
-	CollectionViewPtr->MakeSaveDynamicCollectionMenu(FinalQueryText);
-	return FReply::Handled();
+	CollectionViewPtr->MakeSaveDynamicCollectionMenu(FinalQueryText, FSimpleDelegate::CreateSP(this, &SContentBrowser::SaveSearchAsFilter));
+}
+
+void SContentBrowser::SaveSearchAsFilter()
+{
+	FilterListPtr->CreateCustomFilterDialog(TextFilter->GetRawFilterText());
 }
 
 void SContentBrowser::OnPathClicked( const FString& CrumbData )
@@ -2464,10 +2749,59 @@ void SContentBrowser::PopulateAddNewContextMenu(class UToolMenu* Menu)
 		);
 }
 
+bool SContentBrowser::CanWriteToCurrentPath() const
+{
+	if (AssetViewPtr.IsValid())
+	{
+		const FSourcesData& SourcesData = AssetViewPtr->GetSourcesData();
+		if (SourcesData.VirtualPaths.Num() == 1)
+		{
+			if (!CachedCanWriteToCurrentPath.IsSet() || CachedCanWriteToCurrentPath.GetValue() != SourcesData.VirtualPaths[0])
+			{
+				CachedCanWriteToCurrentPath = SourcesData.VirtualPaths[0];
+				bCachedCanWriteToCurrentPath = CanWriteToPath(FContentBrowserItemPath(SourcesData.VirtualPaths[0], EContentBrowserPathType::Virtual));
+			}
+
+			return bCachedCanWriteToCurrentPath;
+		}
+		else
+		{
+			CachedCanWriteToCurrentPath.Reset();
+			bCachedCanWriteToCurrentPath = false;
+		}
+	}
+
+	return false;
+}
+
+bool SContentBrowser::CanWriteToPath(const FContentBrowserItemPath InPath) const
+{
+	// Reject if only virtual
+	if (!InPath.HasInternalPath())
+	{
+		return false;
+	}
+
+	// Reject if path not inside a mount point
+	if (!FPackageName::IsValidPath(InPath.GetInternalPathString()))
+	{
+		return false;
+	}
+
+	// Reject if folder writes blocked to path
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	const TSharedRef<FPathPermissionList>& WritableFolderFilter = AssetToolsModule.Get().GetWritableFolderPermissionList();
+	if (!WritableFolderFilter->PassesStartsWithFilter(InPath.GetInternalPathName()))
+	{
+		return false;
+	}
+
+	return true;
+}
+
 bool SContentBrowser::IsAddNewEnabled() const
 {
-	const FSourcesData& SourcesData = AssetViewPtr->GetSourcesData();
-	return SourcesData.VirtualPaths.Num() == 1;
+	return CanWriteToCurrentPath();
 }
 
 FText SContentBrowser::GetAddNewToolTipText() const
@@ -2477,6 +2811,12 @@ FText SContentBrowser::GetAddNewToolTipText() const
 	if ( SourcesData.VirtualPaths.Num() == 1 )
 	{
 		const FString CurrentPath = SourcesData.VirtualPaths[0].ToString();
+
+		if (!CanWriteToCurrentPath())
+		{
+			return FText::Format(LOCTEXT("AddNewToolTip_CannotWrite", "Cannot write to path {0}..."), FText::FromString(CurrentPath));
+		}
+
 		return FText::Format( LOCTEXT("AddNewToolTip_AddNewContent", "Create a new content in {0}..."), FText::FromString(CurrentPath) );
 	}
 	else if ( SourcesData.VirtualPaths.Num() > 1 )
@@ -2585,10 +2925,10 @@ void SContentBrowser::OnItemSelectionChanged(const FContentBrowserItem& Selected
 		AssetContextMenu->SetSelectedItems(SelectedItems);
 
 		{
-			TArray<FName> SelectedCollectionItems;
+			TArray<FSoftObjectPath> SelectedCollectionItems;
 			for (const FContentBrowserItem& SelectedAssetItem : SelectedItems)
 			{
-				FName CollectionItemId;
+				FSoftObjectPath CollectionItemId;
 				if (SelectedAssetItem.TryGetCollectionId(CollectionItemId))
 				{
 					SelectedCollectionItems.Add(CollectionItemId);
@@ -3086,18 +3426,15 @@ void SContentBrowser::SyncGlobalSelectionSet()
 				}
 			}
 		}
-
-
-		// Now we'll build a list of objects that need to be removed from the global selection set
-		for( int32 CurEditorObjectIndex = 0; CurEditorObjectIndex < EditorSelection->Num(); ++CurEditorObjectIndex )
+		
+		// List of objects that need to be removed from the global selection set
+		TArray<UObject*> EditorSelectedObjects;
+		EditorSelection->GetSelectedObjects(EditorSelectedObjects);
+		for (UObject* CurEditorObject : EditorSelectedObjects)
 		{
-			UObject* CurEditorObject = EditorSelection->GetSelectedObject( CurEditorObjectIndex );
-			if( CurEditorObject != NULL ) 
+			if (CurEditorObject && !SelectedObjects.Contains(CurEditorObject))
 			{
-				if( !SelectedObjects.Contains( CurEditorObject ) )
-				{
-					EditorSelection->Deselect( CurEditorObject );
-				}
+				EditorSelection->Deselect(CurEditorObject);
 			}
 		}
 	}
@@ -3170,6 +3507,8 @@ void SContentBrowser::UpdatePath()
 		ActiveSourcesWidgetIndex = NewSourcesWidgetIndex;
 		SourcesWidgetSwitcher->SetActiveWidgetIndex(ActiveSourcesWidgetIndex);
 	}
+
+	CachedCanWriteToCurrentPath.Reset();
 }
 
 void SContentBrowser::OnFilterChanged()
@@ -3414,6 +3753,32 @@ void SContentBrowser::HandleItemDataUpdated(TArrayView<const FContentBrowserItem
 			break;
 		}
 	}
+}
+
+bool SContentBrowser::HandlePrivateContentFilter(const FContentBrowserItem& AssetItem)
+{
+	static const auto PublicAssetUIEnabledCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("ContentBrowser.PublicAsset.EnablePublicAssetFeature"));
+	bool bIsPublicAssetUIEnabled = false;
+
+	if (PublicAssetUIEnabledCVar)
+	{
+		bIsPublicAssetUIEnabled = PublicAssetUIEnabledCVar->GetBool();
+	}
+
+	if (!bIsPublicAssetUIEnabled)
+	{
+		return false;
+	}
+
+	FAssetData ItemAssetData;
+	if ((AssetItem.Legacy_TryGetAssetData(ItemAssetData) && (ItemAssetData.PackageFlags & PKG_NotExternallyReferenceable)))
+	{
+		const FNameBuilder AssetItemFolderPath(AssetItem.GetVirtualPath());
+
+		return !FContentBrowserSingleton::Get().IsShowingPrivateContent(AssetItemFolderPath);
+	}
+
+	return false;
 }
 
 FText SContentBrowser::GetSearchAssetsHintText() const
@@ -3710,7 +4075,8 @@ TSharedPtr<SWidget> SContentBrowser::GetItemContextMenu(TArrayView<const FConten
 
 		{
 			UContentBrowserDataMenuContext_FolderMenu* DataContextObject = NewObject<UContentBrowserDataMenuContext_FolderMenu>();
-			DataContextObject->SelectedItems = PathContextMenu->GetSelectedFolders();
+			// Include the items that are not folders to help the batch operations operate on these also.
+			DataContextObject->SelectedItems = SelectedItems;
 			DataContextObject->bCanBeModified = Context->bCanBeModified;
 			DataContextObject->ParentWidget = ViewContext == EContentBrowserViewContext::AssetView ? TSharedPtr<SWidget>(AssetViewPtr) : ViewContext == EContentBrowserViewContext::FavoriteView ? TSharedPtr<SWidget>(FavoritePathViewPtr) : TSharedPtr<SWidget>(PathViewPtr);
 			MenuContext.AddObject(DataContextObject);
@@ -3725,6 +4091,7 @@ TSharedPtr<SWidget> SContentBrowser::GetItemContextMenu(TArrayView<const FConten
 			AppendNewMenuContextObjects(EContentBrowserDataMenuContext_AddNewMenuDomain::PathView, SelectedVirtualPaths, MenuContext, nullptr, Context->bCanBeModified);
 		}
 
+		Context->SelectedPackagePaths = MoveTemp(SelectedPackagePaths);
 		return UToolMenus::Get()->GenerateWidget("ContentBrowser.FolderContextMenu", MenuContext);
 	}
 	else if (SelectedItems.Num() > 0)

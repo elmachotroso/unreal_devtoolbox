@@ -4,12 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PropertyHandle.h"
 #include "IDetailPropertyRow.h"
+#include "Styling/AppStyle.h"
 
 class IDetailCategoryBuilder;
 class IDetailsView;
+class IPropertyUtilities;
 
 namespace ECategoryPriority
 {
@@ -41,17 +43,17 @@ public:
 	/**
 	 * @return the font used for properties and details
 	 */ 
-	static FSlateFontInfo GetDetailFont() { return FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ); }
+	static FSlateFontInfo GetDetailFont() { return FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ); }
 
 	/**
 	 * @return the bold font used for properties and details
 	 */ 
-	static FSlateFontInfo GetDetailFontBold() { return FEditorStyle::GetFontStyle( TEXT("PropertyWindow.BoldFont") ); }
+	static FSlateFontInfo GetDetailFontBold() { return FAppStyle::GetFontStyle( TEXT("PropertyWindow.BoldFont") ); }
 	
 	/**
 	 * @return the italic font used for properties and details
 	 */ 
-	static FSlateFontInfo GetDetailFontItalic() { return FEditorStyle::GetFontStyle( TEXT("PropertyWindow.ItalicFont") ); }
+	static FSlateFontInfo GetDetailFontItalic() { return FAppStyle::GetFontStyle( TEXT("PropertyWindow.ItalicFont") ); }
 	
 	/**
 	 * @return the parent detail view for this layout builder
@@ -91,7 +93,7 @@ public:
 	/**
 	 *	@return the utilities various widgets need access to certain features of PropertyDetails
 	 */
-	virtual const TSharedRef< class IPropertyUtilities > GetPropertyUtilities() const = 0; 
+	virtual TSharedRef<IPropertyUtilities> GetPropertyUtilities() const = 0; 
 
 
 	/**
@@ -255,4 +257,16 @@ public:
 	 * @param DetailLayoutDelegate	The delegate to call when querying for custom detail layouts for the classes properties
 	 */
 	virtual void RegisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) = 0;
+
+	/**
+	 * This function sets property paths to generate PropertyNodes.This improves the performance for cases where PropertyView is only showing a few properties of the object by not generating all other PropertyNodes
+	 *
+	 * @param InPropertyGenerationAllowListPaths Set of the property paths
+	 */
+	virtual void SetPropertyGenerationAllowListPaths(const TSet<FString>& InPropertyGenerationAllowListPaths) = 0;
+
+	/**
+	 * @return True if the property path is contained within our allowed paths
+	 */
+	virtual bool IsPropertyPathAllowed(const FString& InPath) const = 0;
 };

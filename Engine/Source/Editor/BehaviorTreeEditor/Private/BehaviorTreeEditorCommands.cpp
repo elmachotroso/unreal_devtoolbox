@@ -1,12 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTreeEditorCommands.h"
-#include "EditorStyleSet.h"
+
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "BehaviorTreeEditorCommands"
 
 FBTCommonCommands::FBTCommonCommands() 
-	: TCommands<FBTCommonCommands>("BTEditor.Common", LOCTEXT("BehaviorTreeCommandLabel", "Behavior Tree"), NAME_None, FEditorStyle::GetStyleSetName())
+	: TCommands<FBTCommonCommands>("BTEditor.Common", LOCTEXT("BehaviorTreeCommandLabel", "Behavior Tree"), NAME_None, FAppStyle::GetAppStyleSetName())
 {
 }
 
@@ -17,7 +25,7 @@ void FBTCommonCommands::RegisterCommands()
 }
 
 FBTDebuggerCommands::FBTDebuggerCommands() 
-	: TCommands<FBTDebuggerCommands>("BTEditor.Debugger", LOCTEXT("Debugger", "Debugger"), NAME_None, FEditorStyle::GetStyleSetName())
+	: TCommands<FBTDebuggerCommands>("BTEditor.Debugger", LOCTEXT("Debugger", "Debugger"), NAME_None, FAppStyle::GetAppStyleSetName())
 {
 }
 
@@ -38,7 +46,7 @@ void FBTDebuggerCommands::RegisterCommands()
 }
 
 FBTBlackboardCommands::FBTBlackboardCommands() 
-	: TCommands<FBTBlackboardCommands>("BTEditor.Blackboard", LOCTEXT("Blackboard", "Blackboard"), NAME_None, FEditorStyle::GetStyleSetName())
+	: TCommands<FBTBlackboardCommands>("BTEditor.Blackboard", LOCTEXT("Blackboard", "Blackboard"), NAME_None, FAppStyle::GetAppStyleSetName())
 {
 }
 

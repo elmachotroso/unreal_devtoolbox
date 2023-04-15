@@ -18,6 +18,7 @@ class FTableColumn;
 // Column identifiers
 struct FTaskTableColumns
 {
+	static const FName DebugNameColumnId;
 	static const FName CreatedTimestampColumnId;
 	static const FName CreatedThreadIdColumnId;
 	static const FName LaunchedTimestampColumnId;
@@ -26,9 +27,12 @@ struct FTaskTableColumns
 	static const FName ScheduledThreadIdColumnId;
 	static const FName StartedTimestampColumnId;
 	static const FName StartedThreadIdColumnId;
+	static const FName FinishedTimestampColumnId;
 	static const FName CompletedTimestampColumnId;
 	static const FName CompletedThreadIdColumnId;
-	static const FName FinishedTimestampColumnId;
+	static const FName DestroyedTimestampColumnId;
+	static const FName DestroyedThreadIdColumnId;
+	static const FName NumParentColumnId;
 	static const FName NumNestedColumnId;
 	static const FName NumSubsequentsColumnId;
 	static const FName NumPrerequisitesColumnId;

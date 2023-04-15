@@ -88,7 +88,13 @@ void FMeshOcclusionMapBaker::Bake()
 			//FVector3d DetailTriNormal = DetailMesh.GetTriNormal(DetailTriID);
 			FVector3d DetailTriNormal;
 			DetailNormalOverlay->GetTriBaryInterpolate<double>(DetailTriID, &SampleData.DetailBaryCoords.X, &DetailTriNormal.X);
-			Normalize(DetailTriNormal);
+			if (!DetailTriNormal.Normalize())
+			{
+				// degenerate triangle normal
+				OutOcclusion = 0.0;
+				OutNormal = DefaultNormal;
+				return;
+			}
 
 			FVector3d BaseTangentX, BaseTangentY;
 			if (WantBentNormal() && NormalSpace == ESpace::Tangent)
@@ -218,7 +224,7 @@ void FMeshOcclusionMapBaker::Bake()
 		}
 		if (WantBentNormal())
 		{
-			FVector3f NormalColor = (FVector3f(BentNormal.X, BentNormal.Y, BentNormal.Z) + FVector3f::One()) * 0.5;
+			FVector3f NormalColor = ((FVector3f)BentNormal + FVector3f::One()) * 0.5f;
 			NormalBuilder->SetPixel(Coords, NormalColor);
 		}
 	});
@@ -240,7 +246,7 @@ void FMeshOcclusionMapBaker::Bake()
 	if (WantAmbientOcclusion() && BlurRadius > 0.01)
 	{
 		TDiscreteKernel2f BlurKernel2d;
-		TGaussian2f::MakeKernelFromRadius(BlurRadius, BlurKernel2d);
+		TGaussian2f::MakeKernelFromRadius((float)BlurRadius, BlurKernel2d);
 		TArray<float> AOBlurBuffer;
 		Occupancy.ParallelProcessingPass<float>(
 			[&](int64 Index) { return 0.0f; },

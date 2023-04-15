@@ -10,7 +10,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Serialization/ArchiveUObject.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "UObject/GCObject.h"
 #include "CollectionManagerTypes.h"
 
@@ -133,6 +133,12 @@ namespace ObjectTools
 		CancelNotAllowed
 	};
 
+	enum class EAllowCancelDuringPrivatize : uint8
+	{
+		AllowCancel,
+		CancelNotAllowed
+	};
+
 	/**
 	 * Handles fully loading packages for a set of passed in objects.
 	 *
@@ -190,6 +196,13 @@ namespace ObjectTools
 		TArray<UObject*>	FailedConsolidationObjs;
 	};
 
+	/** Helper struct for batch replacements where Old references get replaced with New */
+	struct FReplaceRequest
+	{
+		UObject* New = nullptr;
+		TArrayView<UObject*> Old; 
+	};
+
 	/**
 	 * Consolidates objects by replacing all references/uses of the provided "objects to consolidate" with references to the "object to consolidate to." This is
 	 * useful for situations such as when a particular asset is duplicated in multiple places and it would be handy to allow all uses to point to one particular copy
@@ -198,14 +211,18 @@ namespace ObjectTools
 	 *
 	 * @param	ObjectToConsolidateTo	Object to which all references of the "objects to consolidate" will instead refer to after this operation completes
 	 * @param	ObjectsToConsolidate	Objects which all references of which will be replaced with references to the "object to consolidate to"; each will also be deleted
+	 * @param	Requests				Batch of consolidations. All objects consilidated to, i.e. FReplaceRequest::New, must be non-null.
 	 *
 	 * @note	This function performs NO type checking, by design. It is potentially dangerous to replace references of one type with another, so utilize caution.
 	 * @note	The "objects to consolidate" are DELETED by this function.
 	 *
 	 * @return	Structure of consolidation results, specifying which packages were dirtied, which objects failed consolidation (if any), etc.
 	 */
-	UNREALED_API FConsolidationResults ConsolidateObjects( UObject* ObjectToConsolidateTo, TArray<UObject*>& ObjectsToConsolidate, bool bShowDeleteConfirmation = true );
+	UNREALED_API FConsolidationResults ConsolidateObjects(UObject* ObjectToConsolidateTo, TArray<UObject*>& ObjectsToConsolidate, bool bShowDeleteConfirmation = true );
 	UNREALED_API FConsolidationResults ConsolidateObjects(UObject* ObjectToConsolidateTo, TArray<UObject*>& ObjectsToConsolidate, TSet<UObject*>& ObjectsToConsolidateWithin, TSet<UObject*>& ObjectsToNotConsolidateWithin, bool bShouldDeleteAfterConsolidate, bool bWarnAboutRootSet = true);
+	UNREALED_API FConsolidationResults ConsolidateObjects(TArrayView<FReplaceRequest> Requests, TSet<UObject*>& ObjectsToConsolidateWithin, TSet<UObject*>& ObjectsToNotConsolidateWithin, bool bShouldDeleteAfterConsolidate, bool bWarnAboutRootSet = true);
+
+	
 	UNREALED_API void CompileBlueprintsAfterRefUpdate(const TArray<UObject*>& ObjectsConsolidatedWithin);
 	/**
 	 * Copies references for selected generic browser objects to the clipboard.
@@ -279,11 +296,22 @@ namespace ObjectTools
 	 * Deletes the list of objects
 	 *
 	 * @param	ObjectsToDelete		The list of objects to delete
-	 * @param	bShowConfirmation	True when a dialog should prompt the user that he/she is about to delete something
+	 * @param	bShowConfirmation	True when a dialog should prompt the user that they are about to delete something
 	 *
 	 * @return The number of objects successfully deleted
 	 */
 	UNREALED_API int32 DeleteObjects( const TArray< UObject* >& ObjectsToDelete, bool bShowConfirmation = true, EAllowCancelDuringDelete AllowCancelDuringDelete = EAllowCancelDuringDelete::AllowCancel);
+
+	/**
+	* Privatizes the list of objects (marks their packages as NotExternallyReferencable)
+	* 
+	* @param InObjectsToPrivatize The list of objects to privatize
+	* @param bShowConfirmation True when the dialog should prompt the user that they are about to privatize something and doing so would break references
+	* @param AllowCancelDuringPrivatize Whether or not canceling is allowed when not showing the confirmation dialog
+	* 
+	* @return The number of objects successfully privatized
+	*/
+	UNREALED_API int32 PrivatizeObjects(const TArray<UObject*>& InObjectsToPrivatize, bool bShowConfirmation = true, EAllowCancelDuringPrivatize AllowCancelDuringPrivatize = EAllowCancelDuringPrivatize::AllowCancel);
 
 	/**
 	* Deletes the list of objects without checking if they are still being used.  This should not be called directly
@@ -299,11 +327,21 @@ namespace ObjectTools
 	* Deletes the list of objects
 	*
 	* @param	AssetsToDelete		The list of assets to delete
-	* @param	bShowConfirmation	True when a dialog should prompt the user that he/she is about to delete something
+	* @param	bShowConfirmation	True when a dialog should prompt the user that they are about to delete something
 	*
 	* @return The number of assets successfully deleted
 	*/
 	UNREALED_API int32 DeleteAssets( const TArray<FAssetData>& AssetsToDelete, bool bShowConfirmation = true );
+	
+	/**
+	* Privatizes the list of Assets (marks their packages as NotExternallyReferenceable)
+	* 
+	* @param AssetsToPrivatize The list of assets to privatize
+	* @param bShowConfirmation True when a dialog should prompt the user that they are about to privatize something and going to break references
+	* 
+	* @return The number of assets successfully privatized
+	*/
+	UNREALED_API int32 PrivatizeAssets(const TArray<FAssetData>& AssetsToPrivatize, bool bShowConfirmation = true);
 
 	/**
 	 * Delete a single object
@@ -329,9 +367,11 @@ namespace ObjectTools
 	 *
 	 * @param ObjectToReplaceWith	Any references found to 'ObjectsToReplace' will be replaced with this object.  If the object is nullptr references will be nulled.
 	 * @param ObjectsToReplace		An array of objects that should be replaced with 'ObjectToReplaceWith'
+	 * @param Requests				Batch of replacements where all FReplaceRequest::Old are replaced with FReplaceRequest::New for each request
 	 */
 	UNREALED_API void ForceReplaceReferences(UObject* ObjectToReplaceWith, TArray<UObject*>& ObjectsToReplace);
 	UNREALED_API void ForceReplaceReferences(UObject* ObjectToReplaceWith, TArray<UObject*>& ObjectsToReplace, TSet<UObject*>& ObjectsToReplaceWithin);
+	UNREALED_API void ForceReplaceReferences(TArrayView<FReplaceRequest> Requests, TSet<UObject*>& ObjectsToReplaceWithin);
 
 	/**
 	 * Gathers additional objects to delete such as map built data
@@ -475,6 +515,16 @@ namespace ObjectTools
 	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions);
 
 	/**
+	 * Populates two strings with all of the file types and extensions the format list provides.
+	 *
+	 * @param	InFormats		Array of supported file types. Each entry needs to be of the form "ext;Description" where ext is the file extension.
+	 * @param	out_FileTypes	File types supported by the provided array of formats, concatenated into a string
+	 * @param	out_Extensions	Extensions supported by the provided array of formats, concatenated into a string
+	 * @param	out_FilterIndexToFactory	Add INDEX_NONE entry for all provided Formats
+	 */
+	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory);
+
+	/**
 	 * Iterates over all classes and assembles a list of non-abstract UExport-derived type instances.
 	 */
 	UNREALED_API void AssembleListOfExporters(TArray<UExporter*>& OutExporters);
@@ -522,14 +572,7 @@ namespace ObjectTools
 	 */
 	UNREALED_API void RemoveDeletedObjectsFromPropertyWindows( TArray<UObject*>& DeletedObjects );
 
-	/**
-	 * Determines if the asset is placeable in a world.
-	 *
-	 * @param InWorld	The world.
-	 * @param ObjectPath	Object path.
-	 *
-	 * @return true if the asset can be placed in the world.
-	 */
+	UE_DEPRECATED(5.1, "No longer used.")
 	UNREALED_API bool IsAssetValidForPlacing(UWorld* InWorld, const FString& ObjectPath);
 
 	/**

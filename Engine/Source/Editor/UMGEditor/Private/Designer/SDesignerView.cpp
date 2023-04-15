@@ -30,6 +30,7 @@
 #include "Extensions/CanvasSlotExtension.h"
 #include "Extensions/GridSlotExtension.h"
 #include "Extensions/HorizontalSlotExtension.h"
+#include "Extensions/StackBoxSlotExtension.h"
 #include "Extensions/UniformGridSlotExtension.h"
 #include "Extensions/VerticalSlotExtension.h"
 #include "Designer/SPaintSurface.h"
@@ -99,7 +100,7 @@ public:
 		ChildSlot
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::Get().GetBrush("UMGEditor.ResizeAreaHandle"))
+			.Image(FAppStyle::Get().GetBrush("UMGEditor.ResizeAreaHandle"))
 		];
 	}
 
@@ -408,7 +409,7 @@ EActiveTimerReturnType SDesignerView::EnsureTick(double InCurrentTime, float InD
 
 TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 {
-	const FToolBarStyle& ToolBarStyle = FEditorStyle::Get().GetWidgetStyle<FToolBarStyle>("EditorViewportToolBar");
+	const FToolBarStyle& ToolBarStyle = FAppStyle::Get().GetWidgetStyle<FToolBarStyle>("EditorViewportToolBar");
 
 	return SNew(SOverlay)
 
@@ -429,7 +430,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 		[
 			SNew(SImage)
 			.ColorAndOpacity(this, &SDesignerView::GetDesignerOutlineColor)
-			.Image(FEditorStyle::GetBrush(TEXT("UMGEditor.DesignerMessageBorder")))
+			.Image(FAppStyle::GetBrush(TEXT("UMGEditor.DesignerMessageBorder")))
 		]
 
 		// Top-right corner text indicating PIE is active
@@ -439,7 +440,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 		.HAlign(HAlign_Right)
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "Graph.SimulatingText")
+			.TextStyle(FAppStyle::Get(), "Graph.SimulatingText")
 			.ColorAndOpacity(this, &SDesignerView::GetDesignerOutlineColor)
 			.Text(this, &SDesignerView::GetDesignerOutlineText)
 		]
@@ -458,7 +459,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 		.Padding(6, 2, 0, 0)
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+			.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 			.Text(this, &SDesignerView::GetZoomText)
 			.ColorAndOpacity(this, &SDesignerView::GetZoomTextColorAndOpacity)
 			.Visibility(EVisibility::SelfHitTestInvisible)
@@ -470,11 +471,24 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 		.Padding(40, 2, 0, 0)
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+			.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 			.Font(FCoreStyle::GetDefaultFontStyle(TEXT("BoldCondensed"), 14))
 			.Text(this, &SDesignerView::GetCursorPositionText)
 			.ColorAndOpacity(FLinearColor(1.f, 1.f, 1.f, 0.25f))
 			.Visibility(this, &SDesignerView::GetCursorPositionTextVisibility)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(40, 2, 0, 0)
+		[
+			SNew(STextBlock)
+			.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
+			.Font(FCoreStyle::GetDefaultFontStyle(TEXT("BoldCondensed"), 14))
+			.Text(this, &SDesignerView::GetSelectedWidgetDimensionsText)
+			.ColorAndOpacity(FLinearColor(1.f, 1.f, 1.f, 0.25f))
+			.Visibility(this, &SDesignerView::GetSelectedWidgetDimensionsVisibility)
 		]
 
 		+ SHorizontalBox::Slot()
@@ -503,7 +517,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("UMGEditor.ZoomToFit"))
+				.Image(FAppStyle::GetBrush("UMGEditor.ZoomToFit"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		]
@@ -536,7 +550,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("UMGEditor.Mirror"))
+					.Image(FAppStyle::Get().GetBrush("UMGEditor.Mirror"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
@@ -640,7 +654,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 		SNew(SDisappearingBar)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FLinearColor(0.10, 0.10, 0.10, 0.75))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
@@ -648,7 +662,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			.Visibility(this, &SDesignerView::GetInfoBarVisibility)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+				.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 				.Text(this, &SDesignerView::GetInfoBarText)
 			]
 		]
@@ -669,7 +683,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			[
 				SNew(STextBlock)
 				.Visibility(this, &SDesignerView::GetResolutionTextVisibility)
-				.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+				.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 				.Text(this, &SDesignerView::GetCurrentScaleFactorText)
 				.ColorAndOpacity(this, &SDesignerView::GetResolutionTextColorAndOpacity)
 			]
@@ -677,7 +691,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			[
 				SNew(STextBlock)
 				.Visibility(this, &SDesignerView::GetResolutionTextVisibility)
-				.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+				.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 				.Text(this, &SDesignerView::GetCurrentSafeZoneText)
 				.ColorAndOpacity(this, &SDesignerView::GetResolutionTextColorAndOpacity)
 			]
@@ -685,7 +699,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			[			
 				SNew(STextBlock)
 				.Visibility(this, &SDesignerView::GetResolutionTextVisibility)
-				.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+				.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 				.Text(this, &SDesignerView::GetCurrentResolutionText)
 				.ColorAndOpacity(this, &SDesignerView::GetResolutionTextColorAndOpacity)
 			]
@@ -702,7 +716,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			.VAlign(VAlign_Bottom)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+				.TextStyle(FAppStyle::Get(), "Graph.ZoomText")
 				.Text(this, &SDesignerView::GetCurrentDPIScaleText)
 				.ColorAndOpacity(this, &SDesignerView::GetCurrentDPIScaleColor)
 			]
@@ -713,7 +727,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			.VAlign(VAlign_Bottom)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ContentPadding(FMargin(3, 1))
 				.OnClicked(this, &SDesignerView::HandleDPISettingsClicked)
 				.ToolTipText(LOCTEXT("DPISettingsTooltip", "Configure the UI Scale Curve to control how the UI is scaled on different resolutions."))
@@ -721,7 +735,7 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("UMGEditor.DPISettings"))
+					.Image(FAppStyle::GetBrush("UMGEditor.DPISettings"))
 				]
 			]
 		]
@@ -1500,6 +1514,7 @@ void SDesignerView::RegisterExtensions()
 {
 	Register(MakeShareable(new FVerticalSlotExtension()));
 	Register(MakeShareable(new FHorizontalSlotExtension()));
+	Register(MakeShareable(new FStackBoxSlotExtension()));
 	Register(MakeShareable(new FCanvasSlotExtension()));
 	Register(MakeShareable(new FUniformGridSlotExtension()));
 	Register(MakeShareable(new FGridSlotExtension()));
@@ -1665,7 +1680,7 @@ FReply SDesignerView::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 			// If the newly clicked item is a child of the active selection, add it to the pending set of selected 
 			// widgets, if they begin dragging we can just move the parent, but if it's not part of the parent set, 
 			// we want to immediately begin dragging it.  Also if the currently selected widget is the root widget, 
-			// we won't be moving him so just resolve immediately.
+			// we won't be moving it so just resolve immediately.
 			if ( bResolvePendingSelectionImmediately )
 			{
 				ResolvePendingSelectedWidgets();
@@ -1778,7 +1793,7 @@ FReply SDesignerView::OnMouseMove(const FGeometry& MyGeometry, const FPointerEve
 						{
 							const FSlateRenderTransform& AbsoluteToLocalTransform = Inverse(ParentGeometry.GetAccumulatedRenderTransform());
 
-							FWidgetTransform WidgetRenderTransform = WidgetPreview->RenderTransform;
+							FWidgetTransform WidgetRenderTransform = WidgetPreview->GetRenderTransform();
 							WidgetRenderTransform.Translation += AbsoluteToLocalTransform.TransformVector(MouseEvent.GetCursorDelta());
 
 							static const FName RenderTransformName(TEXT("RenderTransform"));
@@ -2119,7 +2134,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 {
 		const float UnsafeZoneAlpha = 0.2f;
 		const FLinearColor UnsafeZoneColor(1.0f, 0.5f, 0.5f, UnsafeZoneAlpha);
-		const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
+		const FSlateBrush* WhiteBrush = FAppStyle::GetBrush("WhiteBrush");
 			
 		FGeometry PreviewGeometry = PreviewAreaConstraint->GetTickSpaceGeometry();
 		PreviewGeometry.AppendTransform(FSlateLayoutTransform(Inverse(PaintArgs.Args.GetWindowToDesktopTransform())));
@@ -2386,7 +2401,7 @@ void SDesignerView::DrawResolution(const FDebugResolution& Resolution, const FGe
 	const float Scale = GetZoomAmount();
 	const FVector2D ZeroSpace = AllottedGeometry.AbsoluteToLocal(GridOrigin);
 
-	const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
+	const FSlateBrush* WhiteBrush = FAppStyle::GetBrush("WhiteBrush");
 
 	FVector2D ResolutionSize(Resolution.Width, Resolution.Height);
 
@@ -2399,7 +2414,7 @@ void SDesignerView::DrawResolution(const FDebugResolution& Resolution, const FGe
 		Resolution.Color
 	);
 
-	FSlateFontInfo FontInfo = FEditorStyle::GetFontStyle("UMGEditor.ResizeResolutionFont");
+	FSlateFontInfo FontInfo = FAppStyle::GetFontStyle("UMGEditor.ResizeResolutionFont");
 
 	const TSharedRef< FSlateFontMeasure > FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
@@ -3158,6 +3173,37 @@ EVisibility SDesignerView::GetCursorPositionTextVisibility() const
 	return IsHovered() ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
 }
 
+FText SDesignerView::GetSelectedWidgetDimensionsText() const
+{
+	const FWidgetReference SelectedWidget = GetSelectedWidget();
+	if ( SelectedWidget.IsValid() )
+	{
+		const UWidget* WidgetPreview = SelectedWidget.GetPreview();
+		const FVector2D& Size = WidgetPreview->GetCachedGeometry().GetLocalSize();
+
+		FNumberFormattingOptions FmtOptions;
+		FmtOptions.SetMaximumFractionalDigits(2);
+		const FText ScaleFactorText = FText::Format(
+			LOCTEXT("SelectionDimensionsScaleFormat", "(Render Scale: {0} x {1})"), 
+			FText::AsNumber(WidgetPreview->GetRenderTransform().Scale.X, &FmtOptions),
+			FText::AsNumber(WidgetPreview->GetRenderTransform().Scale.Y, &FmtOptions));
+
+		bool bShowScaleFactor = !FMath::IsNearlyEqual(WidgetPreview->GetRenderTransform().Scale.X, 1.f) || !FMath::IsNearlyEqual(WidgetPreview->GetRenderTransform().Scale.Y, 1.f);
+		return FText::Format(
+			LOCTEXT("SelectionDimensionsFormat", "Selection: {0} x {1} {2}"), 
+			FText::AsNumber(Size.X, &FmtOptions), 
+			FText::AsNumber(Size.Y, &FmtOptions), 
+			bShowScaleFactor ? ScaleFactorText : FText());
+	}
+	return FText();
+}
+
+EVisibility SDesignerView::GetSelectedWidgetDimensionsVisibility() const
+{
+	const TSet<FWidgetReference>& SelectedWidgets = BlueprintEditor.Pin()->GetSelectedWidgets();
+	return SelectedWidgets.Num() == 1 ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
+}
+
 FReply SDesignerView::HandleDPISettingsClicked()
 {
 	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Engine", "UI");
@@ -3216,8 +3262,8 @@ void SDesignerView::HandleOnCommonResolutionSelected(const FPlayScreenResolution
 
 	if (UUserWidget* DefaultWidget = GetDefaultWidget())
 	{
-		// If we using custom or desired design time sizes and the user picks a screen size, he must
-		// want to also change his visualization to be custom on screen or desired on screen, doesn't
+		// If we using custom or desired design time sizes and the user picks a screen size, they must
+		// want to also change the visualization to be custom on screen or desired on screen, doesn't
 		// make sense to change it otherwise as it would have no effect.
 		if (DefaultWidget->DesignSizeMode == EDesignPreviewSizeMode::Custom)
 		{
@@ -3410,9 +3456,9 @@ const FSlateBrush* SDesignerView::GetAspectRatioSwitchImage() const
 {
 	if (PreviewHeight > PreviewWidth)
 	{
-		return FEditorStyle::Get().GetBrush("UMGEditor.OrientPortrait");
+		return FAppStyle::Get().GetBrush("UMGEditor.OrientPortrait");
 	}
-	return FEditorStyle::Get().GetBrush("UMGEditor.OrientLandscape");
+	return FAppStyle::Get().GetBrush("UMGEditor.OrientLandscape");
 }
 
 bool SDesignerView::GetAspectRatioSwitchEnabled() const

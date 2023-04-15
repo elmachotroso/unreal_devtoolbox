@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Curves/IndexedCurve.h"
+#include "Misc/FrameRate.h"
 #include "RealCurve.generated.h"
 
 /** Method of interpolation between this key and the next. */
@@ -79,13 +80,13 @@ public:
 	virtual void DeleteKey(FKeyHandle KeyHandle) PURE_VIRTUAL(FRealCurve::DeleteKey,);
 
 	/** Finds the key at InTime, and updates its value. If it can't find the key within the KeyTimeTolerance, it adds one at that time */
-	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = KINDA_SMALL_NUMBER) PURE_VIRTUAL(FRealCurve::UpdateOrAddKey, return FKeyHandle::Invalid(););
+	virtual FKeyHandle UpdateOrAddKey(float InTime, float InValue, const bool bUnwindRotation = false, float KeyTimeTolerance = UE_KINDA_SMALL_NUMBER) PURE_VIRTUAL(FRealCurve::UpdateOrAddKey, return FKeyHandle::Invalid(););
 
 	/** Finds a key a the specified time */
-	FKeyHandle FindKey(float KeyTime, float KeyTimeTolerance = KINDA_SMALL_NUMBER) const;
+	FKeyHandle FindKey(float KeyTime, float KeyTimeTolerance = UE_KINDA_SMALL_NUMBER) const;
 
 	/** True if a key exists already, false otherwise */
-	bool KeyExistsAtTime(float KeyTime, float KeyTimeTolerance = KINDA_SMALL_NUMBER) const;
+	bool KeyExistsAtTime(float KeyTime, float KeyTimeTolerance = UE_KINDA_SMALL_NUMBER) const;
 
 	/** Set the value of the specified key */
 	virtual void SetKeyValue(FKeyHandle KeyHandle, float NewValue, bool bAutoSetTangents = true) PURE_VIRTUAL(FRealCurve::SetKeyValue,);
@@ -131,9 +132,9 @@ public:
 	virtual void BakeCurve(float SampleRate) PURE_VIRTUAL(FRealCurve::BakeCurve, );
 	virtual void BakeCurve(float SampleRate, float FirstKeyTime, float LastKeyTime) PURE_VIRTUAL(FRealCurve::BakeCurve, );
 
-	/** Remove redundant keys, comparing against Tolerance */
-	virtual void RemoveRedundantKeys(float Tolerance) PURE_VIRTUAL(FRealCurve::RemoveRedundantKeys, );
-	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime) PURE_VIRTUAL(FRealCurve::RemoveRedundantKeys, );
+	/** Remove redundant keys, comparing against Tolerance (and optional use of sample-rate for additional testing) */
+	virtual void RemoveRedundantKeys(float Tolerance, FFrameRate SampleRate = FFrameRate(0,0)) PURE_VIRTUAL(FRealCurve::RemoveRedundantKeys, );
+	virtual void RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime, FFrameRate SampleRate = FFrameRate(0,0)) PURE_VIRTUAL(FRealCurve::RemoveRedundantKeys, );
 
 protected:
 	static void CycleTime(float MinTime, float MaxTime, float& InTime, int& CycleCount);

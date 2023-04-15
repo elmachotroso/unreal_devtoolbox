@@ -2,15 +2,37 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "EditorUndoClient.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Misc/Optional.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
-#include "Widgets/Input/SComboBox.h"
-#include "EditorUndoClient.h"
 
-struct FAssetData;
-class USkeletalMesh;
+class ITableRow;
+class SButton;
+class SHorizontalBox;
+class STableViewBase;
+class SWidget;
 class UClothingAssetCommon;
+class USkeletalMesh;
+struct FAssetData;
 struct FClothPhysicalMeshData;
 struct FPointWeightMap;
 
@@ -61,10 +83,6 @@ public:
 	/** End FEditorUndoClient interface */
 
 protected:
-
-#if WITH_APEX_CLOTHING
-	FReply OnImportApexFileClicked();
-#endif
 
 	/* Copies clothing setup from source SkelMesh */
 	void OnCopyClothingAssetSelected(const FAssetData& AssetData);

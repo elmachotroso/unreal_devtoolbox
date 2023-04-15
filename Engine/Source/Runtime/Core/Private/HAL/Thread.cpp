@@ -5,6 +5,7 @@
 #include "HAL/RunnableThread.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/ThreadSafeBool.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UniquePtr.h"
@@ -62,7 +63,7 @@ private:
 	{
 		// the thread can be started before `RunnableThread` member is initialized
 		//check(RunnableThread.IsValid());
-
+		LLM_SCOPE(ELLMTag::TaskGraphTasksMisc);
 		ThreadFunction();
 
 		return 0;

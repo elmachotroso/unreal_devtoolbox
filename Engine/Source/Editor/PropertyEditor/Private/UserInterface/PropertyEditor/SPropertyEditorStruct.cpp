@@ -32,7 +32,7 @@ public:
 		return !MetaStruct || InStruct->IsChildOf(MetaStruct);
 	}
 
-	virtual bool IsUnloadedStructAllowed(const FStructViewerInitializationOptions& InInitOptions, const FName InStructPath, TSharedRef<FStructViewerFilterFuncs> InFilterFuncs) override
+	virtual bool IsUnloadedStructAllowed(const FStructViewerInitializationOptions& InInitOptions, const FSoftObjectPath& InStructPath, TSharedRef<FStructViewerFilterFuncs> InFilterFuncs) override
 	{
 		// User Defined Structs don't support inheritance, so only include them if we have don't a MetaStruct set
 		return MetaStruct == nullptr;
@@ -81,7 +81,7 @@ void SPropertyEditorStruct::Construct(const FArguments& InArgs, const TSharedPtr
 				const FString& MetaStructName = Property->GetOwnerProperty()->GetMetaData(TEXT("MetaStruct"));
 				if (!MetaStructName.IsEmpty())
 				{
-					MetaStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *MetaStructName);
+					MetaStruct = UClass::TryFindTypeSlow<UScriptStruct>(MetaStructName, EFindFirstObjectOptions::EnsureIfAmbiguous);
 					if (!MetaStruct)
 					{
 						MetaStruct = LoadObject<UScriptStruct>(nullptr, *MetaStructName);
@@ -222,7 +222,7 @@ void SPropertyEditorStruct::SendToObjects(const FString& NewValue)
 	}
 	else if (!NewValue.IsEmpty() && NewValue != TEXT("None"))
 	{
-		const UScriptStruct* NewStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *NewValue);
+		const UScriptStruct* NewStruct = FindObject<UScriptStruct>(nullptr, *NewValue);
 		if (!NewStruct)
 		{
 			NewStruct = LoadObject<UScriptStruct>(nullptr, *NewValue);
@@ -246,7 +246,7 @@ void SPropertyEditorStruct::OnDragEnter(const FGeometry& MyGeometry, const FDrag
 		// Find the struct path
 		if (UnloadedStructOp->HasAssets())
 		{
-			AssetPath = UnloadedStructOp->GetAssets()[0].ObjectPath.ToString();
+			AssetPath = UnloadedStructOp->GetAssets()[0].GetObjectPathString();
 		}
 		else if (UnloadedStructOp->HasAssetPaths())
 		{
@@ -268,11 +268,11 @@ void SPropertyEditorStruct::OnDragEnter(const FGeometry& MyGeometry, const FDrag
 		if (const UScriptStruct* Struct = Cast<UScriptStruct>(Object))
 		{
 			// This was pointing to a struct directly
-			UnloadedStructOp->SetToolTip(FText::GetEmpty(), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+			UnloadedStructOp->SetToolTip(FText::GetEmpty(), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 		}
 		else
 		{
-			UnloadedStructOp->SetToolTip(FText::GetEmpty(), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+			UnloadedStructOp->SetToolTip(FText::GetEmpty(), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 		}
 	}
 }
@@ -296,7 +296,7 @@ FReply SPropertyEditorStruct::OnDrop(const FGeometry& MyGeometry, const FDragDro
 		// Find the struct path
 		if (UnloadedStructOp->HasAssets())
 		{
-			AssetPath = UnloadedStructOp->GetAssets()[0].ObjectPath.ToString();
+			AssetPath = UnloadedStructOp->GetAssets()[0].GetObjectPathString();
 		}
 		else if (UnloadedStructOp->HasAssetPaths())
 		{

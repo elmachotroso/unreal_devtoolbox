@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "PngImageWrapper.h"
+#include "Formats/PngImageWrapper.h"
 #include "ImageWrapperPrivate.h"
 
 #include "Misc/ScopeLock.h"
@@ -117,6 +117,35 @@ FPngImageWrapper::FPngImageWrapper()
 
 /* FImageWrapper interface
  *****************************************************************************/
+ 
+// CanSetRawFormat returns true if SetRaw will accept this format
+bool FPngImageWrapper::CanSetRawFormat(const ERGBFormat InFormat, const int32 InBitDepth) const
+{
+	return (InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::Gray) && 
+		( InBitDepth == 8 || InBitDepth == 16 );
+}
+
+// returns InFormat if supported, else maps to something supported
+ERawImageFormat::Type FPngImageWrapper::GetSupportedRawFormat(const ERawImageFormat::Type InFormat) const
+{
+	switch(InFormat)
+	{
+	case ERawImageFormat::G8:
+	case ERawImageFormat::BGRA8:
+	case ERawImageFormat::RGBA16:
+	case ERawImageFormat::G16:
+		return InFormat; // directly supported
+	case ERawImageFormat::BGRE8:
+	case ERawImageFormat::RGBA16F:
+	case ERawImageFormat::RGBA32F:
+	case ERawImageFormat::R16F:
+	case ERawImageFormat::R32F:
+		return ERawImageFormat::RGBA16; // needs conversion
+	default:
+		check(0);
+		return ERawImageFormat::BGRA8;
+	};
+}
 
 void FPngImageWrapper::Compress(int32 Quality)
 {
@@ -156,6 +185,8 @@ void FPngImageWrapper::Compress(int32 Quality)
 		if (setjmp(png_jmpbuf(png_ptr)) != 0)
 #endif
 		{
+			CompressedData.Empty();
+			UE_LOG(LogImageWrapper, Error, TEXT("PNG Compress Error"));
 			return;
 		}
 
@@ -188,11 +219,11 @@ void FPngImageWrapper::Compress(int32 Quality)
 			}
 
 			png_set_compression_level(png_ptr, ZlibLevel);
-			png_set_IHDR(png_ptr, info_ptr, Width, Height, RawBitDepth, (RawFormat == ERGBFormat::Gray) ? PNG_COLOR_TYPE_GRAY : PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+			png_set_IHDR(png_ptr, info_ptr, Width, Height, BitDepth, (Format == ERGBFormat::Gray) ? PNG_COLOR_TYPE_GRAY : PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
 			png_set_write_fn(png_ptr, this, FPngImageWrapper::user_write_compressed, FPngImageWrapper::user_flush_data);
 
-			const uint64 PixelChannels = (RawFormat == ERGBFormat::Gray) ? 1 : 4;
-			const uint64 BytesPerPixel = (RawBitDepth * PixelChannels) / 8;
+			const uint64 PixelChannels = (Format == ERGBFormat::Gray) ? 1 : 4;
+			const uint64 BytesPerPixel = (BitDepth * PixelChannels) / 8;
 			const uint64 BytesPerRow = BytesPerPixel * Width;
 
 			for (int64 i = 0; i < Height; i++)
@@ -201,12 +232,12 @@ void FPngImageWrapper::Compress(int32 Quality)
 			}
 			png_set_rows(png_ptr, info_ptr, row_pointers);
 
-			uint32 Transform = (RawFormat == ERGBFormat::BGRA) ? PNG_TRANSFORM_BGR : PNG_TRANSFORM_IDENTITY;
+			uint32 Transform = (Format == ERGBFormat::BGRA) ? PNG_TRANSFORM_BGR : PNG_TRANSFORM_IDENTITY;
 
 			// PNG files store 16-bit pixels in network byte order (big-endian, ie. most significant bits first).
 #if PLATFORM_LITTLE_ENDIAN
 			// We're little endian so we need to swap
-			if (RawBitDepth == 16)
+			if (BitDepth == 16)
 			{
 				Transform |= PNG_TRANSFORM_SWAP_ENDIAN;
 			}
@@ -230,15 +261,61 @@ void FPngImageWrapper::Reset()
 
 bool FPngImageWrapper::SetCompressed(const void* InCompressedData, int64 InCompressedSize)
 {
-	bool bResult = FImageWrapperBase::SetCompressed(InCompressedData, InCompressedSize);
+	if ( ! FImageWrapperBase::SetCompressed(InCompressedData, InCompressedSize) )
+	{
+		return false;
+	}
 
-	return bResult && LoadPNGHeader();	// Fetch the variables from the header info
+	if ( ! LoadPNGHeader() )
+	{
+		return false;
+	}
+	
+	if ((BitDepth == 1 || BitDepth == 2 || BitDepth == 4) && ((ColorType & PNG_COLOR_MASK_ALPHA) == 0))
+	{
+		// PNG specfication:
+		//  (http://www.libpng.org/pub/png/spec/1.2/PNG-Chunks.html)
+		if ((ColorType == PNG_COLOR_TYPE_PALETTE) || (ColorType == PNG_COLOR_TYPE_GRAY))
+		{
+			//From png specification:
+			//  Note that the palette uses 8 bits (1 byte) per sample regardless of the image bit depth specification. 
+			//  In particular, the palette is 8 bits deep even when it is a suggested quantization of a 16-bit truecolor image.
+
+			// ColorType == PNG_COLOR_TYPE_PALETTE supported via:
+			//	png_set_palette_to_rgb (called in UncompressPNGData)
+
+			// ColorType == PNG_COLOR_TYPE_GRAYsupported via:
+			//	png_set_expand_gray_1_2_4_to_8 (called in UncompressPNGData)
+
+			if (!RawData.Num())
+			{
+				check(CompressedData.Num());
+				UncompressPNGData(Format, 8);
+			}
+		}
+		else if (ColorType == PNG_COLOR_TYPE_RGB)
+		{
+			//according to png specification this is not a possiblity
+		}
+	}
+	
+	if ( (Format == ERGBFormat::BGRA || Format == ERGBFormat::RGBA || Format == ERGBFormat::Gray) &&
+		(BitDepth == 8 || BitDepth == 16) )
+	{
+		return true;
+	}
+	else
+	{
+		// Other formats unsupported at present
+		UE_LOG(LogImageWrapper, Warning, TEXT("PNG Unsupported Format"));
+		return false;
+	}
 }
 
 
 void FPngImageWrapper::Uncompress(const ERGBFormat InFormat, const int32 InBitDepth)
 {
-	if(!RawData.Num() || InFormat != RawFormat || InBitDepth != RawBitDepth)
+	if(!RawData.Num() || InFormat != Format || InBitDepth != BitDepth)
 	{
 		check(CompressedData.Num());
 		UncompressPNGData(InFormat, InBitDepth);
@@ -259,8 +336,8 @@ void FPngImageWrapper::UncompressPNGData(const ERGBFormat InFormat, const int32 
 	check(Height > 0);
 
 	// Note that PNGs on PC tend to be BGR
-	check(InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::Gray)	// Other formats unsupported at present
-	check(InBitDepth == 8 || InBitDepth == 16)	// Other formats unsupported at present
+	check(InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::Gray);	// Other formats unsupported at present
+	check(InBitDepth == 1 || InBitDepth == 2 || InBitDepth == 4 || InBitDepth == 8 || InBitDepth == 16);	// Other formats unsupported at present
 
 	// Reset to the beginning of file so we can use png_read_png(), which expects to start at the beginning.
 	ReadOffset = 0;
@@ -288,6 +365,8 @@ void FPngImageWrapper::UncompressPNGData(const ERGBFormat InFormat, const int32 
 		if (setjmp(png_jmpbuf(png_ptr)) != 0)
 #endif
 		{
+			RawData.Empty();
+			UE_LOG(LogImageWrapper, Error, TEXT("PNG Decompress Error"));
 			return;
 		}
 
@@ -299,7 +378,9 @@ void FPngImageWrapper::UncompressPNGData(const ERGBFormat InFormat, const int32 
 				png_set_palette_to_rgb(png_ptr);
 			}
 
-			if ((ColorType & PNG_COLOR_MASK_COLOR) == 0 && BitDepth < 8)
+			// really we should just call png_expand() here and remove all these conditionals
+
+			if (((ColorType & PNG_COLOR_MASK_COLOR) == 0) && BitDepth < 8)
 			{
 				png_set_expand_gray_1_2_4_to_8(png_ptr);
 			}
@@ -308,14 +389,10 @@ void FPngImageWrapper::UncompressPNGData(const ERGBFormat InFormat, const int32 
 			if ((ColorType & PNG_COLOR_MASK_ALPHA) == 0 && (InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::RGBA))
 			{
 				// png images don't set PNG_COLOR_MASK_ALPHA if they have alpha from a tRNS chunk, but png_set_add_alpha seems to be safe regardless
-				if ((ColorType & PNG_COLOR_MASK_COLOR) == 0)
-				{
-					png_set_tRNS_to_alpha(png_ptr);
-				}
-				else if (ColorType == PNG_COLOR_TYPE_PALETTE)
-				{
-					png_set_tRNS_to_alpha(png_ptr);
-				}
+				png_set_tRNS_to_alpha(png_ptr);
+
+				// note: png_set_tRNS_to_alpha is just an alias for png_expand
+
 				if (InBitDepth == 8)
 				{
 					png_set_add_alpha(png_ptr, 0xff , PNG_FILLER_AFTER);
@@ -412,8 +489,8 @@ void FPngImageWrapper::UncompressPNGData(const ERGBFormat InFormat, const int32 
 	}
 #endif
 
-	RawFormat = InFormat;
-	RawBitDepth = InBitDepth;
+	Format = InFormat;
+	BitDepth = InBitDepth;
 }
 
 
@@ -436,7 +513,6 @@ bool FPngImageWrapper::IsPNG() const
 	return false;
 }
 
-
 bool FPngImageWrapper::LoadPNGHeader()
 {
 	check(CompressedData.Num());
@@ -454,6 +530,22 @@ bool FPngImageWrapper::LoadPNGHeader()
 		check(info_ptr);
 
 		PNGReadGuard PNGGuard(&png_ptr, &info_ptr);
+
+		// Store the current stack pointer in the jump buffer. setjmp will return non-zero in the case of a read error.
+#if PLATFORM_ANDROID
+		//Preserve old single thread code on some platform in relation to a type incompatibility at compile time.
+		if (setjmp(SetjmpBuffer) != 0)
+#else
+		//Use libPNG jump buffer solution to allow concurrent compression\decompression on concurrent threads.
+		if (setjmp(png_jmpbuf(png_ptr)) != 0)
+#endif
+		{
+			UE_LOG(LogImageWrapper, Error, TEXT("PNG Header Error"));
+			return false;
+		}
+
+		// ---------------------------------------------------------------------------------------------------------
+		// Anything allocated on the stack after this point will not be destructed correctly in the case of an error
 		{
 			png_set_read_fn(png_ptr, this, FPngImageWrapper::user_read_compressed);
 

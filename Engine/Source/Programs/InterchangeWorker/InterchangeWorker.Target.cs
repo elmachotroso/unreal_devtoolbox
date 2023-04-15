@@ -10,6 +10,7 @@ public class InterchangeWorkerTarget : TargetRules
 	{
 		Type = TargetType.Program;
 		LinkType = TargetLinkType.Monolithic;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 		LaunchModuleName = "InterchangeWorker";
 		SolutionDirectory = "Programs/InterchangeWorker";
 
@@ -33,9 +34,6 @@ public class InterchangeWorkerTarget : TargetRules
 
 		bLegalToDistributeBinary = true;
 
-		bCompilePhysX = false;
-		bCompileAPEX = false;
-		bCompileNvCloth = false;
 		bCompileICU = false;
 		bCompileCEF3 = false;
 

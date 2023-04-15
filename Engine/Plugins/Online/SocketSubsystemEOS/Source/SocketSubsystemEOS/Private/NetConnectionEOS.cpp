@@ -5,6 +5,8 @@
 #include "InternetAddrEOS.h"
 #include "SocketEOS.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetConnectionEOS)
+
 UNetConnectionEOS::UNetConnectionEOS(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bIsPassthrough(false)
@@ -56,21 +58,18 @@ void UNetConnectionEOS::CleanUp()
 
 void UNetConnectionEOS::DestroyEOSConnection()
 {
-	if (!Socket)
-	{
-		return;
-	}
+	FSocket* CurSocket = GetSocket();
 
-	if (!bHasP2PSession)
+	if (CurSocket != nullptr && bHasP2PSession)
 	{
-		return;
-	}
+		bHasP2PSession = false;
 
-	bHasP2PSession = false;
+		TSharedPtr<FInternetAddrEOS> RemoteAddrEOS = StaticCastSharedPtr<FInternetAddrEOS>(RemoteAddr);
 
-	TSharedPtr<FInternetAddrEOS> RemoteAddrEOS = StaticCastSharedPtr<FInternetAddrEOS>(RemoteAddr);
-	if (RemoteAddrEOS.IsValid())
-	{
-		static_cast<FSocketEOS*>(Socket)->Close(*RemoteAddrEOS);
+		if (RemoteAddrEOS.IsValid())
+		{
+			static_cast<FSocketEOS*>(CurSocket)->Close(*RemoteAddrEOS);
+		}
 	}
 }
+

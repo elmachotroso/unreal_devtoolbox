@@ -3,6 +3,10 @@
 import { ContextualLogger } from './logger';
 import { Change, coercePerforceWorkspace, OpenedFileRecord, PerforceContext, RoboWorkspace } from './perforce';
 
+const USER_WORKSPACE_EXCLUDE_PATTERNS: (RegExp | string)[] = [
+	'horde-p4bridge-'
+]
+
 ///////////////////
 // Error reporting
 /*function _reportFilesStillToResolve(changeNum: number, needsResolve: Object[]) {
@@ -169,7 +173,7 @@ export async function convertIntegrateToEdit(p4: PerforceContext, roboWorkspace:
 	}
 }
 
-export async function cleanWorkspaces(p4: PerforceContext, workspaces: [string, string][]) {
+export async function cleanWorkspaces(p4: PerforceContext, workspaces: [string, string][], edgeServerAddress?: string) {
 	const changes = await p4.get_pending_changes() as Change[]
 
 	const nameSet = new Set(workspaces.map(([name, _]) => name))
@@ -204,16 +208,22 @@ export async function cleanWorkspaces(p4: PerforceContext, workspaces: [string, 
 		}
 		p4utilsLogger.info(`Attempting to revert ${changeStr}`)
 		try {
-			await p4.revert(workspace, change.change)
+			await p4.revert(workspace, change.change, [], edgeServerAddress)
 		}
 		catch (err) {
 			// ignore revert errors on startup (As long as delete works, we're good)
 			p4utilsLogger.error(`Revert failed. Will try delete anyway: ${err}`)
 		}
 
-		await p4.deleteCl(workspace, change.change)
+		await p4.deleteCl(workspace, change.change, edgeServerAddress)
 	}
 
 	p4utilsLogger.info('Resetting all workspaces to revision 0')
-	await Promise.all(workspaces.map(([name, root]) => p4.sync(name, root + '#0')))
+	await Promise.all(workspaces.map(([name, root]) => p4.sync(name, root + '#0', undefined, edgeServerAddress)))
 }
+
+export async function getWorkspacesForUser(p4: PerforceContext, user: string, edgeServerAddress?: string) {
+	return (await p4.find_workspaces(user, edgeServerAddress))
+		.filter(ws => !USER_WORKSPACE_EXCLUDE_PATTERNS.some(entry => ws.client.match(entry)))
+}
+

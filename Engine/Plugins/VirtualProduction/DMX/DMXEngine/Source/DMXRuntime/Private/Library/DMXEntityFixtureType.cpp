@@ -5,17 +5,18 @@
 #include "DMXConversions.h"
 #include "DMXProtocolSettings.h"
 #include "DMXRuntimeLog.h"
-#include "DMXRuntimeObjectVersion.h"
+#include "DMXRuntimeMainStreamObjectVersion.h"
 #include "DMXRuntimeUtils.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXImport.h"
 #include "Library/DMXImportGDTF.h"
 #include "Library/DMXLibrary.h"
 
+#include "Algo/Find.h"
 
 #define LOCTEXT_NAMESPACE "DMXEntityFixtureType"
 
-uint8 FDMXFixtureFunction::GetLastChannel() const
+int32 FDMXFixtureFunction::GetLastChannel() const
 {
 	return Channel + GetNumChannels() - 1;
 }
@@ -23,25 +24,9 @@ uint8 FDMXFixtureFunction::GetLastChannel() const
 FDMXFixtureMatrix::FDMXFixtureMatrix()
 {
 	// Add a default cell attribute	
-	if (!GIsInitialLoad)
-	{
-		if (const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>())
-		{
-			FDMXAttributeName RedAttribute("Red");
-
-			if (ProtocolSettings->Attributes.Contains(RedAttribute.GetAttribute()))
-			{
-				FDMXFixtureCellAttribute RedCellAttribute;
-				RedCellAttribute.Attribute = RedAttribute;
-				CellAttributes = { RedCellAttribute };
-			}
-			else
-			{
-				FDMXFixtureCellAttribute VoidAttribute;
-				CellAttributes = { VoidAttribute };
-			}
-		}
-	}
+	FDMXFixtureCellAttribute RedCellAttribute;
+	RedCellAttribute.Attribute = FName("Red");
+	CellAttributes = { RedCellAttribute };
 }
 
 int32 FDMXFixtureMatrix::GetNumChannels() const
@@ -114,7 +99,7 @@ bool FDMXFixtureMatrix::GetChannelsFromCell(FIntPoint CellCoordinate, FDMXAttrib
 	for (const FDMXFixtureCellAttribute& CellAttribute : CellAttributes)
 	{
 		int32 CurrentFunctionSize = FDMXConversions::GetSizeOfSignalFormat(CellAttribute.DataType);
-		if (CellAttribute.Attribute.GetAttribute() == Attribute.GetAttribute())
+		if (CellAttribute.Attribute == Attribute)
 		{
 			CellAttributeIndex = CellSize;
 			CellAttributeSize = CurrentFunctionSize;
@@ -214,6 +199,15 @@ void UDMXEntityFixtureType::RemoveFixtureTypeFromLibrary(FDMXEntityFixtureTypeRe
 	{
 		if (UDMXLibrary* DMXLibrary = FixtureType->GetParentLibrary())
 		{
+			const TArray<UDMXEntityFixturePatch*> FixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
+			for (UDMXEntityFixturePatch* FixturePatch : FixturePatches)
+			{
+				if (FixturePatch->GetFixtureType() == FixtureType)
+				{
+					FixturePatch->SetFixtureType(nullptr);
+				}
+			}
+
 			DMXLibrary->Modify();
 			FixtureType->Modify();
 			FixtureType->Destroy();
@@ -225,10 +219,10 @@ void UDMXEntityFixtureType::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	Ar.UsingCustomVersion(FDMXRuntimeObjectVersion::GUID);
+	Ar.UsingCustomVersion(FDMXRuntimeMainStreamObjectVersion::GUID);
 	if (Ar.IsLoading())
 	{
-		if (Ar.CustomVer(FDMXRuntimeObjectVersion::GUID) < FDMXRuntimeObjectVersion::DMXFixtureTypeAllowMatrixInEachFixtureMode)
+		if (Ar.CustomVer(FDMXRuntimeMainStreamObjectVersion::GUID) < FDMXRuntimeMainStreamObjectVersion::DMXFixtureTypeAllowMatrixInEachFixtureMode)
 		{
 			// For assets that were created before each mode could enable or disable the matrix, copy the deprecated bFixtureMatrixEnabled property to each mode
 			for (FDMXFixtureMode& Mode : Modes)
@@ -257,9 +251,16 @@ bool UDMXEntityFixtureType::Modify(bool bAlwaysMarkDirty)
 void UDMXEntityFixtureType::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-
+	
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
+		// Update the Channel Span for all Modes
+		for (int32 ModeIndex = 0; ModeIndex < Modes.Num(); ModeIndex++)
+		{
+			AlignFunctionChannels(ModeIndex);
+			UpdateChannelSpan(ModeIndex);
+		}
+
 		OnFixtureTypeChangedDelegate.Broadcast(this);
 	}
 }
@@ -269,9 +270,8 @@ void UDMXEntityFixtureType::PostEditChangeProperty(FPropertyChangedEvent& Proper
 void UDMXEntityFixtureType::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent)
 {
 	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
-	const FName PropertyName = PropertyChangedChainEvent.GetPropertyName();
 
-	// Keep Fixture Patches' ActiveMode value valid
+	const FName PropertyName = PropertyChangedChainEvent.GetPropertyName();
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXEntityFixtureType, Modes))
 	{
 		int32 ChangedModeIndex = PropertyChangedChainEvent.GetArrayIndex(PropertyName.ToString());
@@ -286,6 +286,13 @@ void UDMXEntityFixtureType::PostEditChangeChainProperty(FPropertyChangedChainEve
 
 	if (PropertyChangedChainEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
+		// Update the Channel Span for all Modes
+		for (int32 ModeIndex = 0; ModeIndex < Modes.Num(); ModeIndex++)
+		{
+			AlignFunctionChannels(ModeIndex);
+			UpdateChannelSpan(ModeIndex);
+		}
+
 		OnFixtureTypeChangedDelegate.Broadcast(this);
 	}
 }
@@ -303,20 +310,16 @@ void UDMXEntityFixtureType::PostEditUndo()
 #if WITH_EDITOR
 void UDMXEntityFixtureType::SetModesFromDMXImport(UDMXImport* DMXImportAsset)
 {
-	if (DMXImportAsset == nullptr || !DMXImportAsset->IsValidLowLevelFast())
+	if (!IsValid(DMXImportAsset))
 	{
 		return;
 	}
 
-	if (UDMXImportGDTFDMXModes* GDTFDMXModes = Cast<UDMXImportGDTFDMXModes>(DMXImportAsset->DMXModes))
+	DMXImport = DMXImportAsset;
+	if (UDMXImportGDTFDMXModes* GDTFDMXModes = Cast<UDMXImportGDTFDMXModes>(DMXImport->DMXModes))
 	{
 		// Clear existing modes
-		Modes.Empty(DMXImportAsset->DMXModes != nullptr ? GDTFDMXModes->DMXModes.Num() : 0);
-
-		if (DMXImportAsset->DMXModes == nullptr)
-		{
-			return;
-		}
+		Modes.Empty(DMXImport->DMXModes != nullptr ? GDTFDMXModes->DMXModes.Num() : 0);
 
 		// Used to map Functions to Attributes
 		const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>();
@@ -442,7 +445,7 @@ FDMXOnFixtureTypeChangedDelegate& UDMXEntityFixtureType::GetOnFixtureTypeChanged
 	return OnFixtureTypeChangedDelegate;
 }
 
-int32 UDMXEntityFixtureType::AddMode()
+int32 UDMXEntityFixtureType::AddMode(FString BaseModeName)
 {
 	FDMXFixtureMode NewMode;
 
@@ -452,7 +455,7 @@ int32 UDMXEntityFixtureType::AddMode()
 	{
 		ModeNames.Add(Mode.ModeName);
 	}
-	NewMode.ModeName = FDMXRuntimeUtils::GenerateUniqueNameFromExisting(ModeNames, LOCTEXT("DefaultModeName", "Mode").ToString());
+	NewMode.ModeName = FDMXRuntimeUtils::GenerateUniqueNameFromExisting(ModeNames, BaseModeName);
 
 	const int32 NewModeIndex = Modes.Add(NewMode);
 
@@ -541,21 +544,12 @@ void UDMXEntityFixtureType::SetFixtureMatrixEnabled(int32 ModeIndex, bool bEnabl
 		{
 			Mode.bFixtureMatrixEnabled = bEnableMatrix;
 
-			// Align functions and matrix
-			int32 NextFreeChannel = 1;
-			bool bHandledMatrix = !bEnableMatrix;
-			for (FDMXFixtureFunction& Function : Mode.Functions)
-			{
-				if (!bHandledMatrix && Mode.FixtureMatrixConfig.FirstCellChannel <= NextFreeChannel)
-				{
-					Mode.FixtureMatrixConfig.FirstCellChannel = NextFreeChannel;
-					NextFreeChannel = NextFreeChannel + Mode.FixtureMatrixConfig.GetNumChannels();
-					bHandledMatrix = true;
-				}
+			// Some old assets may have a 0x0 matrix stored, but we expect it to be always at least one cell.
+			Mode.FixtureMatrixConfig.XCells = FMath::Max(Mode.FixtureMatrixConfig.XCells, 1);
+			Mode.FixtureMatrixConfig.YCells = FMath::Max(Mode.FixtureMatrixConfig.YCells, 1);
 
-				Function.Channel = NextFreeChannel;
-				NextFreeChannel = Function.GetLastChannel() + 1;
-			}
+			AlignFunctionChannels(ModeIndex);
+			UpdateChannelSpan(ModeIndex);
 		}
 	}
 }
@@ -587,6 +581,33 @@ void UDMXEntityFixtureType::UpdateChannelSpan(int32 ModeIndex)
 			HighestChannel = LastChannelOfMatrix > HighestChannel ? LastChannelOfMatrix : HighestChannel;
 
 			Mode.ChannelSpan = FMath::Max(HighestChannel - LowestChannel + 1, 0);
+		}
+	}
+}
+
+void UDMXEntityFixtureType::AlignFunctionChannels(int32 ModeIndex)
+{
+	if (ensureMsgf(Modes.IsValidIndex(ModeIndex), TEXT("Invalid Mode Index when aligning the Channels of all Functions in a Mode.")))
+	{
+		FDMXFixtureMode& Mode = Modes[ModeIndex];
+
+		// Align functions and matrix
+		int32 NextFreeChannel = 1;
+		bool bHandledMatrix = !Mode.bFixtureMatrixEnabled;
+		for (FDMXFixtureFunction& Function : Mode.Functions)
+		{
+			if (!bHandledMatrix && 
+				(Mode.FixtureMatrixConfig.FirstCellChannel <= NextFreeChannel || Mode.FixtureMatrixConfig.FirstCellChannel <= Function.Channel))
+			{
+				Mode.FixtureMatrixConfig.FirstCellChannel = NextFreeChannel;
+				NextFreeChannel = NextFreeChannel + Mode.FixtureMatrixConfig.GetNumChannels();
+				bHandledMatrix = true;
+			}
+
+			Function.Channel = NextFreeChannel;
+
+			// Don't assign past channel 512
+			NextFreeChannel = Function.GetLastChannel() + 1;
 		}
 	}
 }
@@ -936,7 +957,7 @@ void UDMXEntityFixtureType::AddCellAttribute(int32 ModeIndex)
 		FDMXFixtureMatrix& Matrix = Mode.FixtureMatrixConfig;
 
 		FDMXFixtureCellAttribute NewAttribute;
-		TArray<FName> AvailableAttributes = FDMXAttributeName::GetPossibleValues();
+		TArray<FName> AvailableAttributes = FDMXAttributeName::GetPredefinedValues();
 		NewAttribute.Attribute = AvailableAttributes.Num() > 0 ? FDMXAttributeName(AvailableAttributes[0]) : FDMXAttributeName();
 
 		// Disable the matrix while editing it so other functions align when enabling it again
@@ -1015,17 +1036,17 @@ void UDMXEntityFixtureType::UpdateYCellsFromXCells(int32 ModeIndex)
 	if (ensureMsgf(Modes.IsValidIndex(ModeIndex), TEXT("Trying to update YCells from XCells, but Mode Index is not valid.")))
 	{
 		FDMXFixtureMode& Mode = Modes[ModeIndex];
-		FDMXFixtureMatrix Matrix = Mode.FixtureMatrixConfig;
+		FDMXFixtureMatrix& Matrix = Mode.FixtureMatrixConfig;
 		if (ensureMsgf(Mode.bFixtureMatrixEnabled, TEXT("Trying to update YCells from XCells, but Fixture Matrix is not enabled.")))
 		{
-			// Disable the matrix while editing it so other functions align when enabling it again
-			SetFixtureMatrixEnabled(ModeIndex, false);
+			int32 NumChannelsOfCell = 0;
+			for (const FDMXFixtureCellAttribute& CellAttribute : Matrix.CellAttributes)
+			{
+				NumChannelsOfCell += CellAttribute.GetNumChannels();
+			}
+			Matrix.YCells = DMX_MAX_ADDRESS / (Matrix.XCells * NumChannelsOfCell);
 
-			constexpr int32 MaxNumCells = 512;
-			Matrix.XCells = FMath::Clamp(Matrix.XCells, 1, MaxNumCells);
-			Matrix.YCells = FMath::Clamp(Matrix.YCells, 1, MaxNumCells - Matrix.XCells + 1);
-
-			SetFixtureMatrixEnabled(ModeIndex, true);
+			AlignFunctionChannels(ModeIndex);
 			UpdateChannelSpan(ModeIndex);
 		}
 	}
@@ -1036,18 +1057,22 @@ void UDMXEntityFixtureType::UpdateXCellsFromYCells(int32 ModeIndex)
 	if (ensureMsgf(Modes.IsValidIndex(ModeIndex), TEXT("Trying to update XCells from YCells, but Mode Index is not valid.")))
 	{
 		FDMXFixtureMode& Mode = Modes[ModeIndex];
-		FDMXFixtureMatrix Matrix = Mode.FixtureMatrixConfig;
+		FDMXFixtureMatrix& Matrix = Mode.FixtureMatrixConfig;
 		if (ensureMsgf(Mode.bFixtureMatrixEnabled, TEXT("Trying to update XCells from YCells, but Fixture Matrix is not enabled.")))
 		{
-			// Disable the matrix while editing it so other functions align when enabling it again
-			SetFixtureMatrixEnabled(ModeIndex, false);
+			if (Matrix.GetNumChannels() > DMX_MAX_ADDRESS)
+			{
+				int32 NumChannelsOfCell = 0;
+				for (const FDMXFixtureCellAttribute& CellAttribute : Matrix.CellAttributes)
+				{
+					NumChannelsOfCell += CellAttribute.GetNumChannels();
+				}
 
-			constexpr int32 MaxNumCells = 512;
-			Matrix.YCells = FMath::Clamp(Matrix.YCells, 1, MaxNumCells);
-			Matrix.XCells = FMath::Clamp(Matrix.XCells, 1, MaxNumCells - Matrix.YCells + 1);
+				Matrix.XCells = DMX_MAX_ADDRESS / (Matrix.YCells * NumChannelsOfCell);
 
-			SetFixtureMatrixEnabled(ModeIndex, true);
-			UpdateChannelSpan(ModeIndex);
+				AlignFunctionChannels(ModeIndex);
+				UpdateChannelSpan(ModeIndex);
+			}
 		}
 	}
 }

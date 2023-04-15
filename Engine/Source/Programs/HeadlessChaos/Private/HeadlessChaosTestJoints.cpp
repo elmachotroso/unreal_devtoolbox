@@ -5,7 +5,6 @@
 
 #include "Modules/ModuleManager.h"
 #include "Chaos/ParticleHandle.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDRigidsEvolution.h"
 #include "Chaos/PBDRigidsEvolutionGBF.h"
 #include "Chaos/PBDRigidParticles.h"
@@ -42,21 +41,27 @@ namespace ChaosTest {
 
 		FJointConstraintsTest(const int32 NumIterations, const FReal Gravity)
 			: Base(NumIterations, Gravity)
-			, JointsRule(Joints)
 		{
-			Evolution.AddConstraintRule(&JointsRule);
+			Evolution.AddConstraintContainer(Joints);
 		}
 
-		FPBDJointConstraintHandle* AddJoint(const TVec2<FGeometryParticleHandle*>& InConstrainedParticleIndices, const FVec3& InLocation)
+		FPBDJointConstraintHandle* AddJoint(const TVec2<FGeometryParticleHandle*>& InConstrainedParticles, const FVec3& InLocation)
 		{
-			return Joints.AddConstraint(InConstrainedParticleIndices, FRigidTransform3(InLocation, FRotation3::FromIdentity()));
+			FPBDJointConstraintHandle* Constraint = Joints.AddConstraint(InConstrainedParticles, FRigidTransform3(InLocation, FRotation3::FromIdentity()));
+
+			// @todo(chaos): this should be automatic, but it's handled by the proxy. Fix this
+			InConstrainedParticles[0]->ParticleConstraints().Add(Constraint);
+			InConstrainedParticles[1]->ParticleConstraints().Add(Constraint);
+
+			return Constraint;
 		}
 
 		virtual void Create()
 		{
 			for (int32 ParticleIndex = 0; ParticleIndex < ParticlePositions.Num(); ++ParticleIndex)
 			{
-				AddParticleBox(ParticlePositions[ParticleIndex], FRotation3::MakeFromEuler(FVec3(0.f, 0.f, 0.f)).GetNormalized(), ParticleSizes[ParticleIndex], ParticleMasses[ParticleIndex]);
+				auto* Particle = AddParticleBox(ParticlePositions[ParticleIndex], FRotation3::MakeFromEuler(FVec3(0.f, 0.f, 0.f)).GetNormalized(), ParticleSizes[ParticleIndex], ParticleMasses[ParticleIndex]);
+				Evolution.EnableParticle(Particle);
 			}
 
 			for (int32 JointIndex = 0; JointIndex < JointPositions.Num(); ++JointIndex)
@@ -77,7 +82,6 @@ namespace ChaosTest {
 
 		// Solver state
 		FPBDJointConstraints Joints;
-		TPBDConstraintIslandRule<FPBDJointConstraints> JointsRule;
 	};
 
 	/**
@@ -355,7 +359,7 @@ namespace ChaosTest {
 
 			Test.GetParticle(0)->X() = RootPosition;
 
-			Test.Evolution.GetCollisionDetector().GetNarrowPhase().SetBoundsVelocityInflation(1);
+			Test.Evolution.GetCollisionDetector().SetBoundsVelocityInflation(1);
 			Test.Evolution.AdvanceOneTimeStep(Dt);
 			Test.Evolution.EndFrame(Dt);
 
@@ -429,7 +433,7 @@ namespace ChaosTest {
 		}
 
 		Test.Create();
-		Test.Evolution.GetCollisionDetector().GetNarrowPhase().SetBoundsVelocityInflation(1);
+		Test.Evolution.GetCollisionDetector().SetBoundsVelocityInflation(1);
 
 		const FVec3 Box2LocalSpaceJointPosition = Test.JointPositions[0] - Test.ParticlePositions[1];
 
@@ -497,11 +501,14 @@ namespace ChaosTest {
 		Evolution.SetPhysicsMaterial(StaticBox, MakeSerializable(PhysicalMaterial));
 		Evolution.SetPhysicsMaterial(Box2, MakeSerializable(PhysicalMaterial));
 
+		Evolution.EnableParticle(StaticBox);
+		Evolution.EnableParticle(Box2);
+
 		FPBDRigidSpringConstraints JointConstraints;
 		JointConstraints.AddConstraint(ConstrainedParticles, Points, 1.0f, 0.0f, (Points[0] - Points[1]).Size());
-		Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidSpringConstraints> JointRule(JointConstraints);
-		Evolution.AddConstraintRule(&JointRule);
+		Evolution.AddConstraintContainer(JointConstraints);
 
+		
 		const FReal Dt = 0.01f;
 		for (int32 i = 0; i < 100; ++i)
 		{
@@ -540,9 +547,11 @@ namespace ChaosTest {
 			Evolution.SetPhysicsMaterial(&StaticBox, MakeSerializable(PhysicalMaterial));
 			Evolution.SetPhysicsMaterial(&Box2, MakeSerializable(PhysicalMaterial));
 
+			Evolution.EnableParticle(&StaticBox);
+			Evolution.EnableParticle(&Box2);
+
 			Chaos::FPBDRigidDynamicSpringConstraints SpringConstraints(MoveTemp(Constraints));
-			Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints> SpringRule(SpringConstraints);
-			Evolution.AddConstraintRule(&SpringRule);
+			Evolution.AddConstraintContainer(SpringConstraints);
 
 			const FReal Dt = 0.01f;
 			for (int32 i = 0; i < 200; ++i)
@@ -571,9 +580,11 @@ namespace ChaosTest {
 			Evolution.SetPhysicsMaterial(&StaticBox, MakeSerializable(PhysicalMaterial));
 			Evolution.SetPhysicsMaterial(&Box2, MakeSerializable(PhysicalMaterial));
 
+			Evolution.EnableParticle(&StaticBox);
+			Evolution.EnableParticle(&Box2);
+
 			Chaos::FPBDRigidDynamicSpringConstraints SpringConstraints(MoveTemp(Constraints), 400);
-			Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints> SpringRule(SpringConstraints);
-			Evolution.AddConstraintRule(&SpringRule);
+			Evolution.AddConstraintContainer(SpringConstraints);
 
 			const FReal Dt = 0.01f;
 			for (int32 i = 0; i < 200; ++i)

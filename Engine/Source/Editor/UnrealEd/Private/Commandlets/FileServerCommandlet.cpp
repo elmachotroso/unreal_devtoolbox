@@ -99,22 +99,17 @@ int32 UFileServerCommandlet::Main( const FString& Params )
 	while (GIsRunning && !IsEngineExitRequested())
 	{
 		GEngine->UpdateTimeAndHandleMaxTickRate();
-		GEngine->Tick(FApp::GetDeltaTime(), false);
+		GEngine->Tick(static_cast<float>(FApp::GetDeltaTime()), false);
 
 		// tick the directory watcher
 		FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::Get().LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
-		DirectoryWatcherModule.Get()->Tick(FApp::GetDeltaTime());
+		DirectoryWatcherModule.Get()->Tick(static_cast<float>(FApp::GetDeltaTime()));
 
 		// update task graph
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 
 		// execute deferred commands
-		for (int32 DeferredCommandsIndex=0; DeferredCommandsIndex<GEngine->DeferredCommands.Num(); DeferredCommandsIndex++)
-		{
-			GEngine->Exec( GWorld, *GEngine->DeferredCommands[DeferredCommandsIndex], *GLog);
-		}
-
-		GEngine->DeferredCommands.Empty();
+		GEngine->TickDeferredCommands();
 
 		// handle server timeout
 		if (InstanceId.IsValid())
@@ -140,7 +135,7 @@ int32 UFileServerCommandlet::Main( const FString& Params )
 		}
 
 		// flush log
-		GLog->FlushThreadedLogs();
+		GLog->FlushThreadedLogs(EOutputDeviceRedirectorFlushOptions::Async);
 
 #if PLATFORM_WINDOWS
 		if (ComWrapperShutdownEvent->Wait(0))

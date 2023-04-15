@@ -122,7 +122,7 @@ const static float3 Max111110BitsFloat3 = float3(Max11BitsFloat, Max11BitsFloat,
 #define SetSceneColorLayoutToFloat4(dest,value) dest.rgb = (value).rgb
 #endif
 
-#define SUPPORTS_TEXTURE_EXTERNAL		(COMPILER_GLSL_ES3_1 || COMPILER_VULKAN)
+#define SUPPORTS_TEXTURE_EXTERNAL		(COMPILER_GLSL_ES3_1)
 
 #if !SUPPORTS_TEXTURE_EXTERNAL
 #define TextureExternal Texture2D
@@ -137,7 +137,7 @@ const static float3 Max111110BitsFloat3 = float3(Max11BitsFloat, Max11BitsFloat,
 #endif
 
 #ifndef SUPPORTS_TEXTURECUBE_ARRAY
-#define SUPPORTS_TEXTURECUBE_ARRAY (FEATURE_LEVEL >= FEATURE_LEVEL_SM5)
+#define SUPPORTS_TEXTURECUBE_ARRAY 1
 #endif
 
 #if SUPPORTS_TEXTURECUBE_ARRAY == 0
@@ -193,6 +193,11 @@ float4 FmodFloor(float4 Lhs, float4 Rhs)
 	return Lhs - floor(Lhs / Rhs) * Rhs;
 }
 
+float VectorSum(float V) { return V; }
+float VectorSum(float2 V) { return V.x + V.y; }
+float VectorSum(float3 V) { return V.x + V.y + V.z; }
+float VectorSum(float4 V) { return V.x + V.y + V.z + V.w; }
+
 #include "LargeWorldCoordinates.ush"
 
 #include "InstancedStereo.ush"
@@ -211,13 +216,19 @@ float4 FmodFloor(float4 Lhs, float4 Rhs)
 	#define VELOCITY_ENCODE_GAMMA 0
 #endif
 
+#if COMPILER_GLSL_ES3_1
+	#define ENCODED_VELOCITY_TYPE uint4
+#else
+	#define ENCODED_VELOCITY_TYPE float4
+#endif
+
 //Tie Editor features to platform support and the COMPILE_SHADERS_FOR_DEVELOPMENT which is set via CVAR.
 #define USE_EDITOR_SHADERS (PLATFORM_SUPPORTS_EDITOR_SHADERS && USE_DEVELOPMENT_SHADERS)
 
 // Using SV_ClipDistance has overhead (15% slower base pass in triangle bound test scene on PS4) so projects have to opt-in
 #define USE_GLOBAL_CLIP_PLANE (PROJECT_ALLOW_GLOBAL_CLIP_PLANE && !MATERIAL_DOMAIN_POSTPROCESS && !MATERIAL_DOMAIN_UI)
 
-#if RAYHITGROUPSHADER || RAYMISSHADER
+#if RAYHITGROUPSHADER || RAYMISSHADER || RAYCALLABLESHADER
 
 // These built-ins are not available in ray tracing
 // Define dummy versions so that ray-tracing materials will at least compile
@@ -566,17 +577,9 @@ MaterialFloat4 TextureCubeArraySampleLevel(TextureCubeArray Tex, SamplerState Sa
 #endif
 
 #else
-
 	#define TANGENTTOWORLD0					TEXCOORD10
 	#define TANGENTTOWORLD2					TEXCOORD11
-
-	// TangentToWorld0 is float4 only to match D3D11
-#if METAL_PROFILE || COMPILER_GLSL_ES3_1 || VULKAN_PROFILE
-		//@todo-rco: FIXME!
-		#define TANGENTTOWORLD_INTERPOLATOR_BLOCK	float4 TangentToWorld0 : TANGENTTOWORLD0; float4	TangentToWorld2	: TANGENTTOWORLD2;
-#else
-	#define TANGENTTOWORLD_INTERPOLATOR_BLOCK	MaterialFloat4 TangentToWorld0 : TANGENTTOWORLD0; MaterialFloat4	TangentToWorld2	: TANGENTTOWORLD2;
-#endif
+	#define TANGENTTOWORLD_INTERPOLATOR_BLOCK	half4 TangentToWorld0 : TANGENTTOWORLD0; half4 TangentToWorld2 : TANGENTTOWORLD2;
 #endif
 
 MaterialFloat Luminance( MaterialFloat3 LinearColor )
@@ -584,15 +587,15 @@ MaterialFloat Luminance( MaterialFloat3 LinearColor )
 	return dot( LinearColor, MaterialFloat3( 0.3, 0.59, 0.11 ) );
 }
 
-MaterialFloat length2(MaterialFloat2 v)
+float length2(float2 v)
 {
 	return dot(v, v);
 }
-MaterialFloat length2(MaterialFloat3 v)
+float length2(float3 v)
 {
 	return dot(v, v);
 }
-MaterialFloat length2(MaterialFloat4 v)
+float length2(float4 v)
 {
 	return dot(v, v);
 }
@@ -622,23 +625,6 @@ uint3 Mod(uint3 a, uint3 b)
 #else
 	return a - (b * (uint3)((float3)a / (float3)b));
 #endif
-}
-
-MaterialFloat UnClampedPow(MaterialFloat X, MaterialFloat Y)
-{
-	return pow(X, INVARIANT(Y));
-}
-MaterialFloat2 UnClampedPow(MaterialFloat2 X, MaterialFloat2 Y)
-{
-	return pow(X, INVARIANT(Y));
-}
-MaterialFloat3 UnClampedPow(MaterialFloat3 X, MaterialFloat3 Y)
-{
-	return pow(X, INVARIANT(Y));
-}
-MaterialFloat4 UnClampedPow(MaterialFloat4 X, MaterialFloat4 Y)
-{
-	return pow(X, INVARIANT(Y));
 }
 
 #define POW_CLAMP 0.000001f
@@ -809,109 +795,94 @@ float ConvertTangentUnormToSnorm8(float Input)
 {
 	int IntVal = int(round(Input * 255.0f));
 	//negate
-	IntVal = (IntVal > 127) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 127, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 127.0f, -1, 1);
 }
-
 float2 ConvertTangentUnormToSnorm8(float2 Input)
 {
 	int2 IntVal = int2(round(Input * 255.0f));
 	//negate
-	IntVal = (IntVal > 127) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 127, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 127.0f, -1, 1);
 }
-
 float3 ConvertTangentUnormToSnorm8(float3 Input)
 {
 	int3 IntVal = int3(round(Input * 255.0f));
-	IntVal = (IntVal > 127) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 127, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 127.0f, -1, 1);
 }
-
 float4 ConvertTangentUnormToSnorm8(float4 Input)
 {
 	int4 IntVal = int4(round(Input * 255.0f));
 	//negate
-	IntVal = (IntVal > 127) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 127, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 127.0f, -1, 1);
 }
-
 float ConvertTangentUnormToSnorm16(float Input)
 {
 	int IntVal = int(round(Input * 65535.0f));
 	//negate
-	IntVal = (IntVal > 32767) ? (IntVal | 0xFFFF8000) : IntVal;
+	IntVal = select(IntVal > 32767, IntVal | 0xFFFF8000, IntVal);
 	return clamp(IntVal / 32767.0f, -1, 1);
 }
-
 float2 ConvertTangentUnormToSnorm16(float2 Input)
 {
 	int2 IntVal = int2(round(Input * 65535.0f));
 	//negate
-	IntVal = (IntVal > 32767) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 32767, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 32767.0f, -1, 1);
 }
-
 float3 ConvertTangentUnormToSnorm16(float3 Input)
 {
 	int3 IntVal = int3(round(Input * 65535.0f));
-	IntVal = (IntVal > 32767) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 32767, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 32767.0f, -1, 1);
 }
-
 float4 ConvertTangentUnormToSnorm16(float4 Input)
 {
 	int4 IntVal = int4(round(Input * 65535.0f));
 	//negate
-	IntVal = (IntVal > 32767) ? (IntVal | 0xFFFFFF80) : IntVal;
+	IntVal = select(IntVal > 32767, IntVal | 0xFFFFFF80, IntVal);
 	return clamp(IntVal / 32767.0f, -1, 1);
 }
-
 float ConvertTangentSnormToUnorm8(float Input)
 {
-	float Res = Input >= 0.0f ? Input * 127 : ((Input + 1.0) * 127) + 128;
+	float Res = select(Input >= 0.0f, Input * 127, ((Input + 1.0) * 127) + 128);
 	return clamp(Res / 255, 0.0f, 0.99f);
 }
-
 float2 ConvertTangentSnormToUnorm8(float2 Input)
 {
-	float2 Res = Input >= 0.0f ? Input * 127 : ((Input + 1.0) * 127) + 128;
+	float2 Res = select(Input >= 0.0f, Input * 127, ((Input + 1.0) * 127) + 128);
 	return clamp(Res / 255, 0.0f, 0.99f);
 }
-
 float3 ConvertTangentSnormToUnorm8(float3 Input)
 {
-	float3 Res = Input >= 0.0f ? Input * 127 : ((Input + 1.0) * 127) + 128;
+	float3 Res = select(Input >= 0.0f, Input * 127, ((Input + 1.0) * 127) + 128);
 	return clamp(Res / 255, 0.0f, 0.99f);
 }
-
 float4 ConvertTangentSnormToUnorm8(float4 Input)
 {
-	float4 Res = Input >= 0.0f ? Input * 127 : ((Input + 1.0) * 127) + 128;
+	float4 Res = select(Input >= 0.0f, Input * 127, ((Input + 1.0) * 127) + 128);
 	return clamp(Res / 255, 0.0f, 0.99f);
 }
-
 float ConvertTangentSnormToUnorm16(float Input)
 {
-	float Res = Input >= 0.0f ? Input * 32767 : ((Input + 1.0) * 32767) + 32768;
+	float Res = select(Input >= 0.0f, Input * 32767, ((Input + 1.0) * 32767) + 32768);
 	return clamp(Res / 65535, 0.0f, 0.99f);
 }
-
 float2 ConvertTangentSnormToUnorm16(float2 Input)
 {
-	float2 Res = Input >= 0.0f ? Input * 32767 : ((Input + 1.0) * 32767) + 32768;
+	float2 Res = select(Input >= 0.0f, Input * 32767, ((Input + 1.0) * 32767) + 32768);
 	return clamp(Res / 65535, 0.0f, 0.99f);
 }
-
 float3 ConvertTangentSnormToUnorm16(float3 Input)
 {
-	float3 Res = Input >= 0.0f ? Input * 32767 : ((Input + 1.0) * 32767) + 32768;
+	float3 Res = select(Input >= 0.0f, Input * 32767, ((Input + 1.0) * 32767) + 32768);
 	return clamp(Res / 65535, 0.0f, 0.99f);
 }
-
 float4 ConvertTangentSnormToUnorm16(float4 Input)
 {
-	float4 Res = Input >= 0.0f ? Input * 32767 : ((Input + 1.0) * 32767) + 32768;
+	float4 Res = select(Input >= 0.0f, Input * 32767, ((Input + 1.0) * 32767) + 32768);
 	return clamp(Res / 65535, 0.0f, 0.99f);
 }
 
@@ -1229,21 +1200,27 @@ float ConvertFromDeviceZ(float DeviceZ)
 	return DeviceZ * View.InvDeviceZToWorldZTransform[0] + View.InvDeviceZToWorldZTransform[1] + 1.0f / (DeviceZ * View.InvDeviceZToWorldZTransform[2] - View.InvDeviceZToWorldZTransform[3]);
 }
 
+// Returns whether or not the given projection matrix is orthographic
+bool IsOrthoProjection(float4x4 ViewToClip)
+{
+	return ViewToClip[3][3] >= 1.0f;
+}
+
 // inverse operation of ConvertFromDeviceZ()
 // @param SceneDepth (linear in world units, W)
 // @return DeviceZ (Z/W)
 float ConvertToDeviceZ(float SceneDepth)
 {
 	FLATTEN
-	if (View.ViewToClip[3][3] < 1.0f)
-	{
-		// Perspective
-		return 1.0f / ((SceneDepth + View.InvDeviceZToWorldZTransform[3]) * View.InvDeviceZToWorldZTransform[2]);
-	}
-	else
+	if (IsOrthoProjection(View.ViewToClip))
 	{
 		// Ortho
 		return SceneDepth * View.ViewToClip[2][2] + View.ViewToClip[3][2];
+	}
+	else
+	{
+		// Perspective
+		return 1.0f / ((SceneDepth + View.InvDeviceZToWorldZTransform[3]) * View.InvDeviceZToWorldZTransform[2]);
 	}
 }
 
@@ -1589,8 +1566,8 @@ float2 LineBoxIntersect(float3 RayOrigin, float3 RayEnd, float3 BoxMin, float3 B
 /** Computes distance from an AABB to a point in space. */
 MaterialFloat ComputeDistanceFromBoxToPoint(MaterialFloat3 Mins, MaterialFloat3 Maxs, MaterialFloat3 InPoint)
 {
-	MaterialFloat3 DistancesToMin = InPoint < Mins ? abs(InPoint - Mins) : 0;
-	MaterialFloat3 DistancesToMax = InPoint > Maxs ? abs(InPoint - Maxs) : 0;
+	MaterialFloat3 DistancesToMin = select(InPoint < Mins, abs(InPoint - Mins), MaterialFloat(0.0));
+	MaterialFloat3 DistancesToMax = select(InPoint > Maxs, abs(InPoint - Maxs), MaterialFloat(0.0));
 
 	//@todo - this is actually incorrect, it gives manhattan distance
 	MaterialFloat Distance = dot(DistancesToMin, 1);
@@ -1714,19 +1691,14 @@ void GenerateCoordinateSystem(float3 ZAxis, out float3 XAxis, out float3 YAxis)
 /** Output of the screen vertex shader. */
 struct FScreenVertexOutput
 {
-#if METAL_PROFILE || COMPILER_GLSL_ES3_1
-	//@todo-rco: FIXME!
 	noperspective float2 UV : TEXCOORD0;
-#else
-	noperspective MaterialFloat2 UV : TEXCOORD0;
-#endif
 	float4 Position : SV_POSITION;
 };
 
 // for velocity rendering, motionblur and temporal AA
 // velocity needs to support -2..2 screen space range for x and y
 // texture is 16bit 0..1 range per channel
-float4 EncodeVelocityToTexture(float3 V)
+ENCODED_VELOCITY_TYPE EncodeVelocityToTexture(float3 V)
 {
 	#if VELOCITY_ENCODE_GAMMA
 		V.xy = sign(V.xy) * sqrt(abs(V.xy)) * (2.0 / sqrt(2.0));
@@ -1746,11 +1718,20 @@ float4 EncodeVelocityToTexture(float3 V)
 		EncodedV.zw = 0.0;
 	#endif
 
+#if COMPILER_GLSL_ES3_1
+	return uint4(EncodedV * 65535.0 + 0.5f);
+#else
 	return EncodedV;
+#endif
 }
 // see EncodeVelocityToTexture()
-float3 DecodeVelocityFromTexture(float4 EncodedV)
+float3 DecodeVelocityFromTexture(ENCODED_VELOCITY_TYPE InEncodedV)
 {
+#if COMPILER_GLSL_ES3_1
+	float4 EncodedV = InEncodedV / 65535.0f;
+#else
+	float4 EncodedV = InEncodedV;
+#endif
 	const float InvDiv = 1.0f / (0.499f * 0.5f);
 
 	float3 V;
@@ -1779,9 +1760,19 @@ bool GetGIReplaceState()
 #endif
 }
 
+// Used for the Nanite path in the NaniteReplace material expression
+bool GetNaniteReplaceState()
+{
+#if IS_NANITE_PASS
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool GetRayTracingQualitySwitch()
 {
-#if (RAYHITGROUPSHADER || LUMEN_CARD_CAPTURE) && !PATH_TRACING
+#if (RAYHITGROUPSHADER || RAYMISSSHADER || RAYCALLABLESHADER || LUMEN_CARD_CAPTURE) && !PATH_TRACING
 	return true;
 #else
 	return false;
@@ -1790,7 +1781,16 @@ bool GetRayTracingQualitySwitch()
 
 bool GetPathTracingQualitySwitch()
 {
-#if RAYHITGROUPSHADER && PATH_TRACING
+#if (RAYHITGROUPSHADER || RAYMISSSHADER || RAYCALLABLESHADER) && PATH_TRACING && !SIMPLIFIED_MATERIAL_SHADER
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool GetLightmassReplaceState()
+{
+#if (RAYHITGROUPSHADER || RAYMISSSHADER || RAYCALLABLESHADER) && PATH_TRACING && SIMPLIFIED_MATERIAL_SHADER
 	return true;
 #else
 	return false;
@@ -1808,13 +1808,11 @@ bool GetRuntimeVirtualTextureOutputSwitch()
 #endif
 }
 
-#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 struct FWriteToSliceGeometryOutput
 {
 	FScreenVertexOutput Vertex;
 	uint LayerIndex : SV_RenderTargetArrayIndex;
 };
-#endif
 
 // Helper macro to globally ignore requests for non-offset world positions in materials when lower than shader model 4. We do this
 // because we are using an extra interpolator for this second world position, and in < ES31 there may not be enough
@@ -1885,11 +1883,11 @@ booltype IsPositiveFinite(type In) \
 }\
 type MakeFinite(type In) \
 {\
-    return !IsFinite(In)? 0 : In; \
+    return select(!IsFinite(In), 0.0, In); \
 }\
 type MakePositiveFinite(type In) \
 {\
-    return !IsPositiveFinite(In)? 0 : In; \
+    return select(!IsPositiveFinite(In), 0.0, In); \
 }
 
 IsAndMakeFinite_Def(float,  bool)

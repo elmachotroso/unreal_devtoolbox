@@ -26,6 +26,18 @@ namespace Modeling
  */
 MODELINGTOOLSEDITORMODE_API FString GetNewAssetPathName(const FString& BaseName, const UWorld* TargetWorld, FString SuggestedFolder);
 
+/**
+ * Determines the world relative asset root path.
+ * @param World World the new Asset will be used in; if this is a nullptr then it will be set using the current world context.
+ * @return Asset root path relative to the world.
+ */
+MODELINGTOOLSEDITORMODE_API FString GetWorldRelativeAssetRootPath(const UWorld* World);
+
+/**
+ * Determines the global asset root path.
+ * @return Global asset root path.
+ */
+MODELINGTOOLSEDITORMODE_API FString GetGlobalAssetRootPath();
 
 /**
  * Utility function that may auto-save a newly created asset depending on current mode settings,

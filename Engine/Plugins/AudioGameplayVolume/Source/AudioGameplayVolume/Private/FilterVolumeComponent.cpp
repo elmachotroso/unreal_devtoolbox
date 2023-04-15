@@ -4,6 +4,15 @@
 #include "ActiveSound.h"
 #include "AudioGameplayFlags.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FilterVolumeComponent)
+
+constexpr TCHAR FProxyMutator_Filter::MutatorFilterName[];
+
+FProxyMutator_Filter::FProxyMutator_Filter()
+{
+	MutatorName = MutatorFilterName;
+}
+
 void FProxyMutator_Filter::Apply(FInteriorSettings& InteriorSettings) const
 {
 	FProxyVolumeMutator::Apply(InteriorSettings);
@@ -49,13 +58,12 @@ TSharedPtr<FProxyVolumeMutator> UFilterVolumeComponent::FactoryMutator() const
 	return MakeShared<FProxyMutator_Filter>();
 }
 
-void UFilterVolumeComponent::FillMutator(TSharedPtr<FProxyVolumeMutator> Mutator) const
+void UFilterVolumeComponent::CopyAudioDataToMutator(TSharedPtr<FProxyVolumeMutator>& Mutator) const
 {
-	Super::FillMutator(Mutator);
-
 	TSharedPtr<FProxyMutator_Filter> FilterMutator = StaticCastSharedPtr<FProxyMutator_Filter>(Mutator);
 	FilterMutator->ExteriorLPF = ExteriorLPF;
 	FilterMutator->ExteriorLPFTime = ExteriorLPFTime;
 	FilterMutator->InteriorLPF = InteriorLPF;
 	FilterMutator->InteriorLPFTime = InteriorLPFTime;
 }
+

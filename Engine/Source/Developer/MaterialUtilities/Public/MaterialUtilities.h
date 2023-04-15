@@ -121,7 +121,7 @@ private:
 		const uint32 Index = (uint32)Property;
 		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
 
-		static FIntPoint TempSize;
+		static FIntPoint TempSize = FIntPoint::ZeroValue;
 		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySizes[Index] : TempSize;
 	}
 
@@ -139,7 +139,7 @@ private:
 		const uint32 Index = (uint32)Property;
 		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
 
-		static const FIntPoint TempSize;
+		static const FIntPoint TempSize = FIntPoint::ZeroValue;
 		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySizes[Index] : TempSize;
 	}
 
@@ -240,6 +240,9 @@ class ULandscapeComponent;
 class FPrimitiveComponentId;
 class UMaterialInstanceConstant;
 struct FMaterialMergeData;
+struct FMeshDescription;
+
+namespace UE::Geometry { class FDynamicMesh3; }
 
 /**
  * Material utilities
@@ -491,8 +494,32 @@ public:
 	*/
 	static float ComputeRequiredTexelDensityFromDrawDistance(const float InDrawDistance, float InWorldSpaceRadius);
 
+	/** Compute the required texture size to achieve a target texel density for the given mesh.
+	* @param InMesh					The mesh for which we want to create a flatten material.
+	* @param InTargetTexelDensity	The target texel density.
+	* @return The texture size needed to achieve the required texel density.
+	*/
+	static int32 GetTextureSizeFromTargetTexelDensity(const FMeshDescription& InMesh, float InTargetTexelDensity);
+
+	/** Compute the required texture size to achieve a target texel density for the given mesh.
+	* @param InMesh					The mesh for which we want to create a flatten material.
+	* @param InTargetTexelDensity	The target texel density.
+	* @return The texture size needed to achieve the required texel density.
+	*/
+	static int32 GetTextureSizeFromTargetTexelDensity(const UE::Geometry::FDynamicMesh3& Mesh, float TargetTexelDensity);
+
+	/** Compute the required texture size to achieve a target texel density, given the world to UV space ratio.
+	* @param InMesh3DArea	World space area of the mesh
+	* @param InMeshUVArea	UV space area of the mesh
+	* @return The texture size needed to achieve the required texel density.
+	*/
+	static int32 GetTextureSizeFromTargetTexelDensity(double InMesh3DArea, double InMeshUVArea, double InTargetTexelDensity);
+
 	/** Validate that the provided material has all the required parameters needed to be considered a flattening material */
 	static bool IsValidFlattenMaterial(const UMaterialInterface* InBaseMaterial);
+
+	/** Get the name of the Texture parameter associated with a given flatten material property */
+	static FString GetFlattenMaterialTextureName(EFlattenMaterialProperties InProperty, UMaterialInterface* InBaseMaterial);
 
 private:
 	

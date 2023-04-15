@@ -6,20 +6,49 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Containers/List.h"
+#include "Algo/BinarySearch.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/EnumAsByte.h"
 #include "Containers/HashTable.h"
-#include "Misc/SecureHash.h"
-#include "RenderResource.h"
-#include "ShaderParameters.h"
-#include "RenderingThread.h"
-#include "ShaderCore.h"
-#include "ShaderPermutation.h"
-#include "ShaderCodeLibrary.h" // TODO - move to cpp
-#include "Serialization/ArchiveProxy.h"
-#include "UObject/RenderingObjectVersion.h"
-#include "Serialization/MemoryImage.h"
+#include "Containers/List.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/ThreadSafeBool.h"
+#include "HAL/UnrealMemory.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/SecureHash.h"
+#include "RHI.h"
+#include "RHIDefinitions.h"
+#include "RenderResource.h"
+#include "RenderingThread.h"
+#include "Serialization/Archive.h"
+#include "Serialization/ArchiveProxy.h"
+#include "Serialization/MemoryImage.h"
+#include "Serialization/MemoryLayout.h"
+#include "ShaderCore.h"
+#include "ShaderParameterMetadata.h"
+#include "ShaderParameters.h"
+#include "ShaderPermutation.h"
+#include "Templates/RefCounting.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "UObject/NameTypes.h"
+#include "UObject/RenderingObjectVersion.h"
+
 #include <atomic>
 
 // For FShaderUniformBufferParameter
@@ -28,21 +57,26 @@
 #include "UObject/DebugSerializationFlags.h"
 #endif
 
+class ITargetPlatform;
+class FComputeKernelShaderType;
 class FGlobalShaderType;
 class FMaterialShaderType;
+class FMemoryImageWriter;
+class FMemoryUnfreezeContent;
+class FMeshMaterialShaderType;
 class FNiagaraShaderType;
 class FOpenColorIOShaderType;
-class FMeshMaterialShaderType;
-class FComputeKernelShaderType;
+class FRHIComputeCommandList;
 class FShader;
 class FShaderMapBase;
+class FShaderMapPointerTable;
+class FShaderParametersMetadata;
 class FShaderPipelineType;
 class FShaderType;
 class FVertexFactoryType;
-class FShaderParametersMetadata;
-class FShaderMapPointerTable;
-struct FShaderCompilerOutput;
 struct FShaderCompiledShaderInitializerType;
+struct FShaderCompilerOutput;
+using FShaderMapAssetPaths = TSet<FName>; // Copied from ShaderCodeLibrary.h
 
 UE_DEPRECATED(4.26, "FShadereCompiledShaderInitializerType is deprecated. Use FShaderCompiledShaderInitializerType.")
 typedef FShaderCompiledShaderInitializerType FShadereCompiledShaderInitializerType;
@@ -103,36 +137,106 @@ public:
 	}
 };
 
-class FShaderParameterInfo
+class FShaderUniformBufferParameterInfo
 {
-	DECLARE_TYPE_LAYOUT(FShaderParameterInfo, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FShaderUniformBufferParameterInfo, NonVirtual);
+public:
+	LAYOUT_FIELD(uint16, BaseIndex);
+
+	FShaderUniformBufferParameterInfo() = default;
+
+	FShaderUniformBufferParameterInfo(uint16 InBaseIndex)
+	{
+		BaseIndex = InBaseIndex;
+		checkf(BaseIndex == InBaseIndex, TEXT("Tweak FShaderUniformBufferParameterInfo type sizes"));
+	}
+
+	friend FArchive& operator<<(FArchive& Ar, FShaderUniformBufferParameterInfo& Info)
+	{
+		Ar << Info.BaseIndex;
+		return Ar;
+	}
+
+	inline bool operator==(const FShaderUniformBufferParameterInfo& Rhs) const
+	{
+		return BaseIndex == Rhs.BaseIndex;
+	}
+
+	inline bool operator<(const FShaderUniformBufferParameterInfo& Rhs) const
+	{
+		return BaseIndex < Rhs.BaseIndex;
+	}
+};
+
+class FShaderResourceParameterInfo
+{
+	DECLARE_TYPE_LAYOUT(FShaderResourceParameterInfo, NonVirtual);
+public:
+	LAYOUT_FIELD(uint16, BaseIndex);
+	LAYOUT_FIELD(uint8, BufferIndex);
+	LAYOUT_FIELD(EShaderParameterType, Type);
+
+	FShaderResourceParameterInfo() = default;
+
+	FShaderResourceParameterInfo(uint16 InBaseIndex, uint8 InBufferIndex, EShaderParameterType InType)
+	{
+		BaseIndex = InBaseIndex;
+		BufferIndex = InBufferIndex;
+		Type = InType;
+		checkf(BaseIndex == InBaseIndex && BufferIndex == InBufferIndex && Type == InType, TEXT("Tweak FShaderResourceParameterInfo type sizes"));
+	}
+
+	friend FArchive& operator<<(FArchive& Ar, FShaderResourceParameterInfo& Info)
+	{
+		Ar << Info.BaseIndex;
+		Ar << Info.BufferIndex;
+		Ar << Info.Type;
+		return Ar;
+	}
+
+	inline bool operator==(const FShaderResourceParameterInfo& Rhs) const
+	{
+		return BaseIndex == Rhs.BaseIndex
+			&& BufferIndex == Rhs.BufferIndex
+			&& Type == Rhs.Type;
+	}
+
+	inline bool operator<(const FShaderResourceParameterInfo& Rhs) const
+	{
+		return BaseIndex < Rhs.BaseIndex;
+	}
+};
+
+class FShaderLooseParameterInfo
+{
+	DECLARE_TYPE_LAYOUT(FShaderLooseParameterInfo, NonVirtual);
 public:
 	LAYOUT_FIELD(uint16, BaseIndex);
 	LAYOUT_FIELD(uint16, Size);
 
-	FShaderParameterInfo() {}
+	FShaderLooseParameterInfo() = default;
 
-	FShaderParameterInfo(uint16 InBaseIndex, uint16 InSize)
+	FShaderLooseParameterInfo(uint16 InBaseIndex, uint16 InSize)
 	{
 		BaseIndex = InBaseIndex;
 		Size = InSize;
-		checkf(BaseIndex == InBaseIndex && Size == InSize, TEXT("Tweak FShaderParameterInfo type sizes"));
+		checkf(BaseIndex == InBaseIndex && Size == InSize, TEXT("Tweak FShaderLooseParameterInfo type sizes"));
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FShaderParameterInfo& Info)
+	friend FArchive& operator<<(FArchive& Ar, FShaderLooseParameterInfo& Info)
 	{
 		Ar << Info.BaseIndex;
 		Ar << Info.Size;
 		return Ar;
 	}
 
-	inline bool operator==(const FShaderParameterInfo& Rhs) const
+	inline bool operator==(const FShaderLooseParameterInfo& Rhs) const
 	{
 		return BaseIndex == Rhs.BaseIndex
 			&& Size == Rhs.Size;
 	}
 
-	inline bool operator<(const FShaderParameterInfo& Rhs) const
+	inline bool operator<(const FShaderLooseParameterInfo& Rhs) const
 	{
 		return BaseIndex < Rhs.BaseIndex;
 	}
@@ -145,7 +249,7 @@ public:
 	LAYOUT_FIELD(uint16, BaseIndex);
 	LAYOUT_FIELD(uint16, Size);
 
-	LAYOUT_FIELD(TMemoryImageArray<FShaderParameterInfo>, Parameters);
+	LAYOUT_FIELD(TMemoryImageArray<FShaderLooseParameterInfo>, Parameters);
 
 	FShaderLooseParameterBufferInfo() {}
 
@@ -181,9 +285,9 @@ class FShaderParameterMapInfo
 {
 	DECLARE_TYPE_LAYOUT(FShaderParameterMapInfo, NonVirtual);
 public:
-	LAYOUT_FIELD(TMemoryImageArray<FShaderParameterInfo>, UniformBuffers);
-	LAYOUT_FIELD(TMemoryImageArray<FShaderParameterInfo>, TextureSamplers);
-	LAYOUT_FIELD(TMemoryImageArray<FShaderParameterInfo>, SRVs);
+	LAYOUT_FIELD(TMemoryImageArray<FShaderUniformBufferParameterInfo>, UniformBuffers);
+	LAYOUT_FIELD(TMemoryImageArray<FShaderResourceParameterInfo>, TextureSamplers);
+	LAYOUT_FIELD(TMemoryImageArray<FShaderResourceParameterInfo>, SRVs);
 	LAYOUT_FIELD(TMemoryImageArray<FShaderLooseParameterBufferInfo>, LooseParameterBuffers);
 	LAYOUT_FIELD(uint64, Hash);
 
@@ -212,7 +316,7 @@ public:
 
 	void AddRef();
 	void Release();
-	inline int32 GetNumRefs() const { return NumRefs; }
+	inline int32 GetNumRefs() const { return NumRefs.load(std::memory_order_relaxed); }
 
 	// FRenderResource interface.
 	virtual void ReleaseRHI();
@@ -260,12 +364,42 @@ public:
 	void BeginCreateAllShaders();
 
 #if RHI_RAYTRACING
-	static void GetRayTracingMaterialLibrary(TArray<FRHIRayTracingShader*>& RayTracingMaterials, FRHIRayTracingShader* DefaultShader);
 
+	UE_DEPRECATED(5.1, "GetRayTracingMaterialLibrary is deprecated. Use GetRayTracingHitGroupLibrary instead.")
+	static void GetRayTracingMaterialLibrary(TArray<FRHIRayTracingShader*>& RayTracingMaterials, FRHIRayTracingShader* DefaultShader)
+	{
+		GetRayTracingHitGroupLibrary(RayTracingMaterials, DefaultShader);
+	}
+
+	UE_DEPRECATED(5.1, "GetRayTracingMaterialLibraryIndex is deprecated. Use GetRayTracingHitGroupLibraryIndex instead.")
 	inline uint32 GetRayTracingMaterialLibraryIndex(int32 ShaderIndex)
 	{
-		GetShader(ShaderIndex);	// make sure the shader is created
-		return RayTracingMaterialLibraryIndices[ShaderIndex];
+		return GetRayTracingHitGroupLibraryIndex(ShaderIndex);
+	}
+
+	static void GetRayTracingHitGroupLibrary(TArray<FRHIRayTracingShader*>& RayTracingHitGroupShaders, FRHIRayTracingShader* DefaultShader);
+	static void GetRayTracingCallableShaderLibrary(TArray<FRHIRayTracingShader*>& RayTracingCallableShaders, FRHIRayTracingShader* DefaultShader);
+	static void GetRayTracingMissShaderLibrary(TArray<FRHIRayTracingShader*>& RayTracingMissShaders, FRHIRayTracingShader* DefaultShader);
+
+	inline uint32 GetRayTracingHitGroupLibraryIndex(int32 ShaderIndex)
+	{
+		FRHIShader* Shader = GetShader(ShaderIndex);	// make sure the shader is created
+		checkSlow(Shader->GetFrequency() == SF_RayHitGroup);
+		return RayTracingLibraryIndices[ShaderIndex];
+	}
+
+	inline uint32 GetRayTracingCallableShaderLibraryIndex(int32 ShaderIndex)
+	{
+		FRHIShader* Shader = GetShader(ShaderIndex);	// make sure the shader is created
+		checkSlow(Shader->GetFrequency() == SF_RayCallable);
+		return RayTracingLibraryIndices[ShaderIndex];
+	}
+
+	inline uint32 GetRayTracingMissShaderLibraryIndex(int32 ShaderIndex)
+	{
+		FRHIShader* Shader = GetShader(ShaderIndex);	// make sure the shader is created
+		checkSlow(Shader->GetFrequency() == SF_RayMiss);
+		return RayTracingLibraryIndices[ShaderIndex];
 	}
 #endif // RHI_RAYTRACING
 
@@ -279,7 +413,7 @@ protected:
 	{
 		SIZE_T Size = NumRHIShaders * sizeof(std::atomic<FRHIShader*>);
 #if RHI_RAYTRACING
-		Size += RayTracingMaterialLibraryIndices.GetAllocatedSize();
+		Size += RayTracingLibraryIndices.GetAllocatedSize();
 #endif
 		return Size;
 	}
@@ -304,13 +438,13 @@ private:
 	int32 NumRHIShaders;
 
 #if RHI_RAYTRACING
-	TArray<uint32> RayTracingMaterialLibraryIndices;
+	TArray<uint32> RayTracingLibraryIndices;
 #endif // RHI_RAYTRACING
 
 	EShaderPlatform Platform;
 
 	/** The number of references to this shader. */
-	int32 NumRefs;
+	std::atomic<int32> NumRefs;
 };
 
 class FShaderMapResourceCode : public FThreadSafeRefCountedObject
@@ -366,16 +500,22 @@ public:
 	RENDERCORE_API void AddShaderCode(EShaderFrequency InFrequency, const FSHAHash& InHash, const FShaderCode& InCode);
 #if WITH_EDITORONLY_DATA
 	RENDERCORE_API void AddPlatformDebugData(TConstArrayView<uint8> InPlatformDebugData);
+	RENDERCORE_API void LogShaderCompilerWarnings();
 #endif
 
 	RENDERCORE_API void ToString(FStringBuilderBase& OutString) const;
 
+	/** A hash describing the total contents of *this. Constructed from the contents of ShaderHashes during Finalize. */
 	FSHAHash ResourceHash;
 	TArray<FSHAHash> ShaderHashes;
 	TArray<FShaderEntry> ShaderEntries;
 #if WITH_EDITORONLY_DATA
 	TArray<TArray<uint8>> PlatformDebugData;
 	TArray<FSHAHash> PlatformDebugDataHashes;
+
+	/** An array of all the compiler warnings that were emitted when this shader was compiled.
+	 *  Does not contain errors since if there were any errors, this object wouldn't exist. */
+	TArray<FString> CompilerWarnings;
 #endif // WITH_EDITORONLY_DATA
 };
 	
@@ -427,7 +567,7 @@ public:
 		NumTokens(0)
 	{}
 
-	void AddValue(uint32 InValue)
+	FORCEINLINE void AddValue(uint32 InValue)
 	{
 		const int32 UIntIndex = NumTokens / 8; 
 
@@ -457,11 +597,11 @@ public:
 		NumTokens++;
 	}
 
-	uint8 GetToken(int32 Index) const
+	FORCEINLINE uint8 GetToken(int32 Index) const
 	{
-		check(Index < NumTokens);
+		checkSlow(Index < NumTokens);
 		const int32 UIntIndex = Index / 8; 
-		check(UIntIndex < TokenBits.Num());
+		checkSlow(UIntIndex < TokenBits.Num());
 		const uint32 Shift = (Index % 8) * 4;
 		const uint8 Token = (TokenBits[UIntIndex] >> Shift) & 0xF;
 		return Token;
@@ -597,16 +737,21 @@ public:
 		LAYOUT_FIELD(uint16, ByteOffset);
 		LAYOUT_FIELD(uint8, BaseIndex);
 		LAYOUT_FIELD(EUniformBufferBaseType, BaseType);
+	};
 
+	struct FBindlessResourceParameter
+	{
+		DECLARE_INLINE_TYPE_LAYOUT(FBindlessResourceParameter, NonVirtual);
+		LAYOUT_FIELD(uint16, ByteOffset);
+		LAYOUT_FIELD(uint16, GlobalConstantOffset);
+		LAYOUT_FIELD(EUniformBufferBaseType, BaseType);
 	};
 
 	struct FParameterStructReference
 	{
 		DECLARE_INLINE_TYPE_LAYOUT(FParameterStructReference, NonVirtual);
-
 		LAYOUT_FIELD(uint16, BufferIndex);
 		LAYOUT_FIELD(uint16, ByteOffset);
-
 	};
 
 	DECLARE_TYPE_LAYOUT(FShaderParameterBindings, NonVirtual);
@@ -618,6 +763,7 @@ public:
 
 	LAYOUT_FIELD(TMemoryImageArray<FParameter>, Parameters);
 	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, ResourceParameters);
+	LAYOUT_FIELD(TMemoryImageArray<FBindlessResourceParameter>, BindlessResourceParameters);
 	LAYOUT_FIELD(TMemoryImageArray<FParameterStructReference>, GraphUniformBuffers);
 	LAYOUT_FIELD(TMemoryImageArray<FParameterStructReference>, ParameterReferences);
 
@@ -951,11 +1097,31 @@ public:
 		return RHIShader;
 	}
 
+	UE_DEPRECATED(5.1, "GetRayTracingMaterialLibraryIndex is deprecated. Use GetRayTracingHitGroupLibraryIndex instead.")
 	inline uint32 GetRayTracingMaterialLibraryIndex() const
+	{
+		return GetRayTracingHitGroupLibraryIndex();
+	}
+
+	inline uint32 GetRayTracingHitGroupLibraryIndex() const
 	{
 		checkSlow(ShaderContent);
 		checkSlow(ShaderContent->GetFrequency() == SF_RayHitGroup);
-		return GetResourceChecked().GetRayTracingMaterialLibraryIndex(ShaderContent->GetResourceIndex());
+		return GetResourceChecked().GetRayTracingHitGroupLibraryIndex(ShaderContent->GetResourceIndex());
+	}
+
+	inline uint32 GetRayTracingCallableShaderLibraryIndex() const
+	{
+		checkSlow(ShaderContent);
+		checkSlow(ShaderContent->GetFrequency() == SF_RayCallable);
+		return GetResourceChecked().GetRayTracingCallableShaderLibraryIndex(ShaderContent->GetResourceIndex());
+	}
+
+	inline uint32 GetRayTracingMissShaderLibraryIndex() const
+	{
+		checkSlow(ShaderContent);
+		checkSlow(ShaderContent->GetFrequency() == SF_RayMiss);
+		return GetResourceChecked().GetRayTracingMissShaderLibraryIndex(ShaderContent->GetResourceIndex());
 	}
 #endif // RHI_RAYTRACING
 
@@ -2202,18 +2368,18 @@ public:
 		return Value;
 	}
 
-	void StepForward()
+	FORCEINLINE void StepForward()
 	{
 		const int8 Token = History.GetToken(NextTokenIndex);
 
 		if (Token == 0)
 		{
-			check(NextFullLengthIndex - 1 < History.FullLengths.Num());
+			checkSlow(NextFullLengthIndex - 1 < History.FullLengths.Num());
 			NextFullLengthIndex++;
 		}
 
 		// Not supporting seeking past the front most serialization in the history
-		check(NextTokenIndex - 1 < History.NumTokens);
+		checkSlow(NextTokenIndex - 1 < History.NumTokens);
 		NextTokenIndex++;
 	}
 
@@ -2234,7 +2400,7 @@ public:
 };
 
 /** Archive used when saving shaders, which generates data used to detect serialization mismatches on load. */
-class FShaderSaveArchive : public FArchiveProxy
+class FShaderSaveArchive final : public FArchiveProxy
 {
 public:
 
@@ -2357,7 +2523,7 @@ inline void DispatchComputeShader(
 extern RENDERCORE_API bool IsUsingEmulatedUniformBuffers(EShaderPlatform Platform);
 
 /** Returns whether DirectXShaderCompiler (DXC) is enabled for the specified shader platform. See console variables "r.OpenGL.ForceDXC", "r.D3D.ForceDXC". */
-extern RENDERCORE_API bool IsDxcEnabledForPlatform(EShaderPlatform Platform);
+extern RENDERCORE_API bool IsDxcEnabledForPlatform(EShaderPlatform Platform, bool bHlslVersion2021 = false);
 
 /** Appends to KeyString for all shaders. */
 extern RENDERCORE_API void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString);

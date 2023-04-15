@@ -9,6 +9,8 @@
 #include "NiagaraComponent.h"
 #include "NiagaraDebugHud.h"
 #include "Containers/Ticker.h"
+#include "NiagaraSimCache.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 
 #if WITH_NIAGARA_DEBUGGER
 
@@ -29,7 +31,8 @@ FNiagaraDebuggerClient::FNiagaraDebuggerClient()
 		.Handling<FNiagaraDebuggerExecuteConsoleCommand>(this, &FNiagaraDebuggerClient::HandleExecConsoleCommandMessage)
  		.Handling<FNiagaraDebugHUDSettingsData>(this, &FNiagaraDebuggerClient::HandleDebugHUDSettingsMessage)
 		.Handling<FNiagaraRequestSimpleClientInfoMessage>(this, &FNiagaraDebuggerClient::HandleRequestSimpleClientInfoMessage)
-		.Handling<FNiagaraOutlinerCaptureSettings>(this, &FNiagaraDebuggerClient::HandleOutlinerSettingsMessage);
+		.Handling<FNiagaraOutlinerCaptureSettings>(this, &FNiagaraDebuggerClient::HandleOutlinerSettingsMessage)
+		.Handling<FNiagaraSystemSimCacheCaptureRequest>(this, &FNiagaraDebuggerClient::HandleSimCacheCaptureRequestMessage);
 
  	if (MessageEndpoint.IsValid())
  	{
@@ -55,6 +58,30 @@ FNiagaraDebuggerClient::~FNiagaraDebuggerClient()
 bool FNiagaraDebuggerClient::Tick(float DeltaSeconds)
 {
 	//Keep ticking until we destroy the debugger.
+
+
+	//Process any pending sim cache captures we have.
+	for (auto It = SimCacheCaptures.CreateIterator(); It ; ++It)
+	{
+		FNiagaraSimCacheCaptureInfo& SimCacheCapture = *It;
+		if (SimCacheCapture.Process())
+		{
+			if (MessageEndpoint.IsValid() && Connection.IsValid())
+			{
+				//Sim cache is complete. Send it back to the connected debugger.
+				FNiagaraSystemSimCacheCaptureReply* SimCacheCaptureReply = FMessageEndpoint::MakeMessage<FNiagaraSystemSimCacheCaptureReply>();
+				SimCacheCaptureReply->ComponentName = SimCacheCapture.Request.ComponentName;
+
+				SimCacheCaptureReply->SimCacheData.Reset();
+				FMemoryWriter ArWriter(SimCacheCaptureReply->SimCacheData);
+				FObjectAndNameAsStringProxyArchive ProxyArWriter(ArWriter, false);
+				SimCacheCapture.SimCache->Serialize(ProxyArWriter);
+				
+				MessageEndpoint->Send(SimCacheCaptureReply, EMessageFlags::Reliable, nullptr, TArrayBuilder<FMessageAddress>().Add(Connection), FTimespan::Zero(), FDateTime::MaxValue());
+			}
+			It.RemoveCurrent();
+		}
+	}
 	return true;
 }
 
@@ -72,7 +99,7 @@ void FNiagaraDebuggerClient::UpdateClientInfo()
 				NewInfo->Systems.Add(System->GetName());
 				for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
 				{
-					if (Handle.GetInstance())
+					if (Handle.GetInstance().Emitter)
 					{
 						NewInfo->Emitters.AddUnique(Handle.GetUniqueInstanceName());
 					}					
@@ -164,7 +191,7 @@ void FNiagaraDebuggerClient::HandleDebugHUDSettingsMessage(const FNiagaraDebugHU
 				WorldMan.GetNiagaraDebugHud()->UpdateSettings(Message);
 
 				//TODO: Move these to just take direct from the debug hud per worldman?
-				//Possibly move the debug hud itself to the debugger client rather than having one per world man and they all share global state.
+				//Possibly move the debug hud itself to the debugger client rather than having one per world manager and they all share global state.
 				const ENiagaraDebugPlaybackMode PlaybackMode = Message.IsEnabled() ? Message.PlaybackMode : ENiagaraDebugPlaybackMode::Play;
 				const float PlaybackRate = Message.IsEnabled() && Message.bPlaybackRateEnabled ? Message.PlaybackRate : 1.0f;
 				WorldMan.SetDebugPlaybackMode(PlaybackMode);
@@ -227,6 +254,30 @@ void FNiagaraDebuggerClient::HandleOutlinerSettingsMessage(const FNiagaraOutline
 		else
 		{
 			UE_LOG(LogNiagaraDebuggerClient, Log, TEXT("Recieved request to capture outliner data but the capture bool is false. | Session: %s | Instance: %s."), *SessionId.ToString(), *InstanceId.ToString(), *InstanceName);
+		}
+	}
+}
+
+void FNiagaraDebuggerClient::HandleSimCacheCaptureRequestMessage(const FNiagaraSystemSimCacheCaptureRequest& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
+{
+	if (ensure(Context->GetSender() == Connection))
+	{
+		UNiagaraComponent* Comp = nullptr;
+
+		for (TObjectIterator<UNiagaraComponent> It; It; ++It)
+		{
+			if (*It->GetPathName() == Message.ComponentName)
+			{
+				Comp = *It;
+				break;
+			}
+		}
+
+		if (Comp)
+		{
+			FNiagaraSimCacheCaptureInfo& NewCapture = SimCacheCaptures.AddDefaulted_GetRef();
+			NewCapture.Request = Message;
+			NewCapture.Component = Comp;
 		}
 	}
 }
@@ -365,7 +416,11 @@ bool FNiagaraDebuggerClient::UpdateOutliner(float DeltaSeconds)
 					if (FNiagaraSystemInstance* Inst = InstController->GetSystemInstance_Unsafe())
 					{
 						InstData.TickGroup = Inst->CalculateTickGroup();
-
+						if (const FNiagaraSystemGpuComputeProxy* SystemInstanceComputeProxy = Inst->GetSystemGpuComputeProxy())
+						{
+							InstData.GpuTickStage = SystemInstanceComputeProxy->GetComputeTickStage();
+						}
+						InstData.LWCTile = Inst->GetLWCTile();
 						InstData.bIsSolo = Inst->IsSolo();
 						InstData.bRequiresDistanceFieldData = Inst->RequiresDistanceFieldData();
 						InstData.bRequiresDepthBuffer = Inst->RequiresDepthBuffer();
@@ -377,18 +432,19 @@ bool FNiagaraDebuggerClient::UpdateOutliner(float DeltaSeconds)
 						for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInst : Inst->GetEmitters())
 						{
 							FNiagaraOutlinerEmitterInstanceData& EmitterData = InstData.Emitters.AddDefaulted_GetRef();
-							if (UNiagaraEmitter* NiagaraEmitter = EmitterInst->GetCachedEmitter())
+							FVersionedNiagaraEmitter VersionedEmitter = EmitterInst->GetCachedEmitter();
+							if (VersionedEmitter.Emitter)
 							{
 								//TODO: This is a bit wasteful to copy the name into each instance data. Though we can't rely on the debugger side data matchin the actul running data on the device.
 								//We need to build a shared representation of the asset data from the client that we then reference from this per instance data.
-								EmitterData.EmitterName = NiagaraEmitter->GetUniqueEmitterName();
-								EmitterData.SimTarget = NiagaraEmitter->SimTarget;
+								EmitterData.EmitterName = VersionedEmitter.Emitter->GetUniqueEmitterName();
+								EmitterData.SimTarget = VersionedEmitter.GetEmitterData()->SimTarget;
 								//Move all above to a shared asset representation.
 
 								EmitterData.ExecState = EmitterInst->GetExecutionState();
 								EmitterData.NumParticles = EmitterInst->GetNumParticles();
 
-								EmitterData.bRequiresPersistentIDs = NiagaraEmitter->RequiresPersistentIDs();
+								EmitterData.bRequiresPersistentIDs = VersionedEmitter.GetEmitterData()->RequiresPersistentIDs();
 							}
 						}
 					}
@@ -433,6 +489,34 @@ bool FNiagaraDebuggerClient::UpdateOutliner(float DeltaSeconds)
 
 	//Clear up the timer now that we've sent the capture.
 	//TODO: continuous/repeated capture mode?
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+bool FNiagaraSimCacheCaptureInfo::Process()
+{
+	UNiagaraComponent* Comp = Component.Get();
+	if (Comp == nullptr || ProcessedFrames >= Request.CaptureDelayFrames + Request.CaptureFrames)
+	{
+		//Capture is complete		
+		SimCache->EndWrite();
+		return true;
+	}
+
+	if(ProcessedFrames >= Request.CaptureDelayFrames)
+	{
+		//First Frame of Capture, init the sim cache.
+		if (ProcessedFrames == Request.CaptureDelayFrames)
+		{	
+			SimCache.Reset(NewObject<UNiagaraSimCache>(GetTransientPackage()));
+			SimCache->BeginWrite(FNiagaraSimCacheCreateParameters(), Comp);
+		}
+
+		SimCache->WriteFrame(Comp);
+	}
+	++ProcessedFrames;
+
 	return false;
 }
 

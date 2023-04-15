@@ -1,219 +1,64 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
+using EpicGames.Perforce;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
-	class PerforceChangeDetails
-	{
-		/// <summary>
-		/// Set of extensions to treat as code
-		/// </summary>
-		static readonly HashSet<string> CodeExtensions = new HashSet<string>
-		{
-			".c",
-			".cc",
-			".cpp",
-			".m",
-			".mm",
-			".rc",
-			".cs",
-			".csproj",
-			".h",
-			".hpp",
-			".inl",
-			".usf",
-			".ush",
-			".uproject",
-			".uplugin",
-			".sln"
-		};
-
-		public string Description;
-		public bool bContainsCode;
-		public bool bContainsContent;
-
-		public PerforceChangeDetails(PerforceDescribeRecord DescribeRecord)
-		{
-			Description = DescribeRecord.Description;
-
-			// Check whether the files are code or content
-			foreach(PerforceDescribeFileRecord File in DescribeRecord.Files)
-			{
-				if(CodeExtensions.Any(Extension => File.DepotFile.EndsWith(Extension, StringComparison.InvariantCultureIgnoreCase)))
-				{
-					bContainsCode = true;
-				}
-				else
-				{
-					bContainsContent = true;
-				}
-
-				if (bContainsCode && bContainsContent)
-				{
-					break;
-				}
-			}
-		}
-	}
-
 	interface IArchiveInfoSource
 	{
 		IReadOnlyList<IArchiveInfo> AvailableArchives { get; }
 	}
 
-	interface IArchiveInfo
-	{
-		string Name { get; }
-		string Type { get; }
-		string BasePath { get; }
-		string Target { get;  }
-		bool Exists();
-		bool TryGetArchiveKeyForChangeNumber(int ChangeNumber, out string ArchiveKey);
-		bool DownloadArchive(string ArchiveKey, string LocalRootPath, string ManifestFileName, TextWriter Log, ProgressValue Progress);
-	}
-
 	class PerforceMonitor : IDisposable, IArchiveInfoSource
 	{
-		internal class PerforceArchiveInfo : IArchiveInfo
+
+		class PerforceChangeSorter : IComparer<ChangesRecord>
 		{
-			public string Name { get; }
-			public string Type { get; }
-			public string DepotPath { get; }
-			public string Target { get; }
-			public PerforceConnection Perforce { get; }
-
-			public string BasePath
+			public int Compare(ChangesRecord? summaryA, ChangesRecord? summaryB)
 			{
-				get { return DepotPath; }
-			}
-
-			// TODO: executable/configuration?
-			public SortedList<int, string> ChangeNumberToFileRevision = new SortedList<int, string>();
-
-			public PerforceArchiveInfo(string Name, string Type, string DepotPath, string Target, PerforceConnection Perforce)
-			{
-				this.Name = Name;
-				this.Type = Type;
-				this.DepotPath = DepotPath;
-				this.Target = Target;
-				this.Perforce = Perforce;
-			}
-
-			public override bool Equals(object Other)
-			{
-				PerforceArchiveInfo OtherArchive = Other as PerforceArchiveInfo;
-				return OtherArchive != null && Name == OtherArchive.Name && Type == OtherArchive.Type && DepotPath == OtherArchive.DepotPath && Target == OtherArchive.Target && Enumerable.SequenceEqual(ChangeNumberToFileRevision, OtherArchive.ChangeNumberToFileRevision);
-			}
-
-			public override int GetHashCode()
-			{
-				throw new NotImplementedException();
-			}
-
-			public bool Exists()
-			{
-				return ChangeNumberToFileRevision.Count > 0;
-			}
-
-			public static bool TryParseConfigEntry(string Text, PerforceConnection PerforceConnection, out PerforceArchiveInfo Info)
-			{
-				ConfigObject Object = new ConfigObject(Text);
-
-				string Name = Object.GetValue("Name", null);
-				if (Name == null)
-				{
-					Info = null;
-					return false;
-				}
-
-				string DepotPath = Object.GetValue("DepotPath", null);
-				if (DepotPath == null)
-				{
-					Info = null;
-					return false;
-				}
-
-				string Target = Object.GetValue("Target", null);
-
-				string Type = Object.GetValue("Type", null) ?? Name;
-
-				Info = new PerforceArchiveInfo(Name, Type, DepotPath, Target, PerforceConnection);
-				return true;
-			}
-
-			public bool TryGetArchiveKeyForChangeNumber(int ChangeNumber, out string ArchiveKey)
-			{
-				return ChangeNumberToFileRevision.TryGetValue(ChangeNumber, out ArchiveKey);
-			}
-
-			public bool DownloadArchive(string ArchiveKey, string LocalRootPath, string ManifestFileName, TextWriter Log, ProgressValue Progress)
-			{
-				string TempZipFileName = Path.GetTempFileName();
-				try
-				{
-					if (!Perforce.PrintToFile(ArchiveKey, TempZipFileName, Log) || new FileInfo(TempZipFileName).Length == 0)
-					{
-						return false;
-					}
-
-					ArchiveUtils.ExtractFiles(TempZipFileName, LocalRootPath, ManifestFileName, Progress, Log);
-
-				}
-				finally
-				{
-					File.SetAttributes(TempZipFileName, FileAttributes.Normal);
-					File.Delete(TempZipFileName);
-				}
-
-				return true;
-			}
-
-			public override string ToString()
-			{
-				return Name;
-			}
-		}
-
-		class PerforceChangeSorter : IComparer<PerforceChangeSummary>
-		{
-			public int Compare(PerforceChangeSummary SummaryA, PerforceChangeSummary SummaryB)
-			{
-				return SummaryB.Number - SummaryA.Number;
+				return summaryB!.Number - summaryA!.Number;
 			}
 		}
 
 		public int InitialMaxChangesValue = 100;
 
-		PerforceConnection Perforce;
-		readonly string BranchClientPath;
-		readonly string SelectedClientFileName;
-		readonly string SelectedProjectIdentifier;
-		Thread WorkerThread;
-		int PendingMaxChangesValue;
-		SortedSet<PerforceChangeSummary> Changes = new SortedSet<PerforceChangeSummary>(new PerforceChangeSorter());
-		SortedDictionary<int, PerforceChangeDetails> ChangeDetails = new SortedDictionary<int,PerforceChangeDetails>();
-		SortedSet<int> PromotedChangeNumbers = new SortedSet<int>();
-		List<PerforceArchiveInfo> Archives = new List<PerforceArchiveInfo>();
-		AutoResetEvent RefreshEvent = new AutoResetEvent(false);
-		BoundedLogWriter LogWriter;
-		bool bIsEnterpriseProject;
-		bool bDisposing;
-		string CacheFolder;
-		List<KeyValuePair<string, DateTime>> LocalConfigFiles;
+		IPerforceSettings _perforceSettings;
+		readonly string _branchClientPath;
+		readonly string _selectedClientFileName;
+		readonly string _selectedProjectIdentifier;
+		Task? _workerTask;
+		CancellationTokenSource _cancellationSource;
+		int _pendingMaxChangesValue;
+		SortedSet<ChangesRecord> _changes = new SortedSet<ChangesRecord>(new PerforceChangeSorter());
+		SortedDictionary<int, PerforceChangeDetails> _changeDetails = new SortedDictionary<int,PerforceChangeDetails>();
+		SortedSet<int> _promotedChangeNumbers = new SortedSet<int>();
+		List<PerforceArchiveInfo> _archives = new List<PerforceArchiveInfo>();
+		AsyncEvent _refreshEvent = new AsyncEvent();
+		ILogger _logger;
+		bool _isEnterpriseProject;
+		DirectoryReference _cacheFolder;
+		List<KeyValuePair<FileReference, DateTime>> _localConfigFiles;
+		IAsyncDisposer _asyncDisposeTasks;
 
-		public event Action OnUpdate;
-		public event Action OnUpdateMetadata;
-		public event Action OnStreamChange;
-		public event Action OnLoginExpired;
+		SynchronizationContext _synchronizationContext;
+		public event Action? OnUpdate;
+		public event Action? OnUpdateMetadata;
+		public event Action? OnStreamChange;
+		public event Action? OnLoginExpired;
 
 		public TimeSpan ServerTimeZone
 		{
@@ -221,46 +66,47 @@ namespace UnrealGameSync
 			private set;
 		}
 
-		public PerforceMonitor(PerforceConnection InPerforce, string InBranchClientPath, string InSelectedClientFileName, string InSelectedProjectIdentifier, string InLogPath, bool bInIsEnterpriseProject, ConfigFile InProjectConfigFile, string InCacheFolder, List<KeyValuePair<string, DateTime>> InLocalConfigFiles)
+		public PerforceMonitor(IPerforceSettings inPerforceSettings, ProjectInfo projectInfo, ConfigFile inProjectConfigFile, DirectoryReference inCacheFolder, List<KeyValuePair<FileReference, DateTime>> inLocalConfigFiles, IServiceProvider inServiceProvider)
 		{
-			Perforce = InPerforce;
-			BranchClientPath = InBranchClientPath;
-			SelectedClientFileName = InSelectedClientFileName;
-			SelectedProjectIdentifier = InSelectedProjectIdentifier;
-			PendingMaxChangesValue = InitialMaxChangesValue;
+			_perforceSettings = inPerforceSettings;
+			_branchClientPath = projectInfo.ClientRootPath;
+			_selectedClientFileName = projectInfo.ClientFileName;
+			_selectedProjectIdentifier = projectInfo.ProjectIdentifier;
+			_pendingMaxChangesValue = InitialMaxChangesValue;
 			LastChangeByCurrentUser = -1;
 			LastCodeChangeByCurrentUser = -1;
-			bIsEnterpriseProject = bInIsEnterpriseProject;
-			LatestProjectConfigFile = InProjectConfigFile;
-			CacheFolder = InCacheFolder;
-			LocalConfigFiles = InLocalConfigFiles;
+			_logger = inServiceProvider.GetRequiredService<ILogger<PerforceMonitor>>();
+			_isEnterpriseProject = projectInfo.IsEnterpriseProject;
+			LatestProjectConfigFile = inProjectConfigFile;
+			_cacheFolder = inCacheFolder;
+			_localConfigFiles = inLocalConfigFiles;
+			_asyncDisposeTasks = inServiceProvider.GetRequiredService<IAsyncDisposer>();
+			_synchronizationContext = SynchronizationContext.Current!;
+			_cancellationSource = new CancellationTokenSource();
 
-			LogWriter = new BoundedLogWriter(InLogPath);
 			AvailableArchives = (new List<IArchiveInfo>()).AsReadOnly();
 		}
 
 		public void Start()
 		{
-			WorkerThread = new Thread(() => PollForUpdates());
-			WorkerThread.Start();
+			if (_workerTask == null)
+			{
+				_workerTask = Task.Run(() => PollForUpdates(_cancellationSource.Token));
+			}
 		}
 
 		public void Dispose()
 		{
-			bDisposing = true;
-			if(WorkerThread != null)
+			OnUpdate = null;
+			OnUpdateMetadata = null;
+			OnStreamChange = null;
+			OnLoginExpired = null;
+
+			if (_workerTask != null)
 			{
-				RefreshEvent.Set();
-				if(!WorkerThread.Join(100))
-				{
-					WorkerThread.Interrupt();
-				}
-				WorkerThread = null;
-			}
-			if(LogWriter != null)
-			{
-				LogWriter.Dispose();
-				LogWriter = null;
+				_cancellationSource.Cancel();
+				_asyncDisposeTasks.Add(_workerTask.ContinueWith(_ => _cancellationSource.Dispose()));
+				_workerTask = null;
 			}
 		}
 
@@ -274,7 +120,7 @@ namespace UnrealGameSync
 		{
 			get;
 			private set;
-		}
+		} = "";
 
 		public int CurrentMaxChanges
 		{
@@ -284,498 +130,409 @@ namespace UnrealGameSync
 
 		public int PendingMaxChanges
 		{
-			get { return PendingMaxChangesValue; }
-			set { lock(this){ if(value != PendingMaxChangesValue){ PendingMaxChangesValue = value; RefreshEvent.Set(); } } }
+			get { return _pendingMaxChangesValue; }
+			set { lock(this){ if(value != _pendingMaxChangesValue){ _pendingMaxChangesValue = value; _refreshEvent.Set(); } } }
 		}
 
-		void PollForUpdates()
+		async Task PollForUpdates(CancellationToken cancellationToken)
 		{
-			while (!bDisposing)
+			while (!cancellationToken.IsCancellationRequested)
 			{
 				try
 				{
-					PollForUpdatesInner();
+					await PollForUpdatesInner(cancellationToken);
 				}
-				catch (ThreadInterruptedException)
+				catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 				{
 					break;
 				}
-				catch (Exception Ex)
+				catch (Exception ex)
 				{
-					if(!bDisposing)
+					_logger.LogError(ex, "Unhandled exception in PollForUpdatesInner()");
+					if (!(ex is PerforceException))
 					{
-						LogWriter.WriteException(Ex, "Unhandled exception in PollForUpdatesInner()");
+						Program.CaptureException(ex);
 					}
+					await Task.Delay(TimeSpan.FromSeconds(20.0), cancellationToken).ContinueWith(x => { });
 				}
 			}
 		}
 
-		void PollForUpdatesInner()
+		async Task PollForUpdatesInner(CancellationToken cancellationToken)
 		{
-			string StreamName;
-			if(!Perforce.GetActiveStream(out StreamName, LogWriter))
+			string? streamName;
+			using (IPerforceConnection perforce = await PerforceConnection.CreateAsync(_perforceSettings, _logger))
 			{
-				StreamName = null;
-			}
+				streamName = await perforce.GetCurrentStreamAsync(cancellationToken);
 
-			// Get the perforce server settings
-			PerforceInfoRecord PerforceInfo;
-			if(Perforce.Info(out PerforceInfo, LogWriter))
-			{
-				ServerTimeZone = PerforceInfo.ServerTimeZone;
-			}
-
-			// Try to update the zipped binaries list before anything else, because it causes a state change in the UI
-			UpdateArchives();
-
-			while(!bDisposing)
-			{
-				Stopwatch Timer = Stopwatch.StartNew();
-
-				// Check we still have a valid login ticket
-				bool bLoggedIn;
-				if(Perforce.GetLoggedInState(out bLoggedIn, LogWriter))
+				// Get the perforce server settings
+				PerforceResponse<InfoRecord> infoResponse = await perforce.TryGetInfoAsync(InfoOptions.ShortOutput, cancellationToken);
+				if (infoResponse.Succeeded)
 				{
-					if(!bLoggedIn)
+					DateTimeOffset? serverDate = infoResponse.Data.ServerDate;
+					if (serverDate.HasValue)
+					{
+						ServerTimeZone = serverDate.Value.Offset;
+					}
+				}
+
+				// Try to update the zipped binaries list before anything else, because it causes a state change in the UI
+				await UpdateArchivesAsync(perforce, cancellationToken);
+			}
+
+			while(!cancellationToken.IsCancellationRequested)
+			{
+				Stopwatch timer = Stopwatch.StartNew();
+				Task nextRefreshTask = _refreshEvent.Task;
+
+				using (IPerforceConnection perforce = await PerforceConnection.CreateAsync(_perforceSettings, _logger))
+				{
+					// Check we still have a valid login ticket
+					PerforceResponse<LoginRecord> loginState = await perforce.TryGetLoginStateAsync(cancellationToken);
+					if (!loginState.Succeeded)
 					{
 						LastStatusMessage = "User is not logged in";
-						OnLoginExpired();
+						_synchronizationContext.Post(_ => OnLoginExpired?.Invoke(), null);
 					}
 					else
 					{
 						// Check we haven't switched streams
-						string NewStreamName;
-						if(Perforce.GetActiveStream(out NewStreamName, LogWriter) && NewStreamName != StreamName)
+						string? newStreamName = await perforce.GetCurrentStreamAsync(cancellationToken);
+						if (newStreamName != streamName)
 						{
-							OnStreamChange();
+							_synchronizationContext.Post(_ => OnStreamChange?.Invoke(), null);
 						}
 
 						// Check for any p4 changes
-						if(!UpdateChanges())
+						if (!await UpdateChangesAsync(perforce, cancellationToken))
 						{
 							LastStatusMessage = "Failed to update changes";
 						}
-						else if(!UpdateChangeTypes())
+						else if (!await UpdateChangeTypesAsync(perforce, cancellationToken))
 						{
 							LastStatusMessage = "Failed to update change types";
 						}
-						else if(!UpdateArchives())
+						else if (!await UpdateArchivesAsync(perforce, cancellationToken))
 						{
 							LastStatusMessage = "Failed to update zipped binaries list";
 						}
 						else
 						{
-							LastStatusMessage = String.Format("Last update took {0}ms", Timer.ElapsedMilliseconds);
+							LastStatusMessage = String.Format("Last update took {0}ms", timer.ElapsedMilliseconds);
 						}
 					}
 				}
 
 				// Wait for another request, or scan for new builds after a timeout
-				RefreshEvent.WaitOne((IsActive? 2 : 10) * 60 * 1000);
+				Task delayTask = Task.Delay(TimeSpan.FromMinutes(IsActive ? 2 : 10), cancellationToken);
+				await Task.WhenAny(nextRefreshTask, delayTask);
 			}
 		}
 
-		bool UpdateChanges()
+		async Task<bool> UpdateChangesAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
 		{
 			// Get the current status of the build
-			int MaxChanges;
-			int OldestChangeNumber = -1;
-			int NewestChangeNumber = -1;
-			HashSet<int> CurrentChangelists;
-			SortedSet<int> PrevPromotedChangelists;
+			int maxChanges;
+			int oldestChangeNumber = -1;
+			int newestChangeNumber = -1;
+			HashSet<int> currentChangelists;
+			SortedSet<int> prevPromotedChangelists;
 			lock(this)
 			{
-				MaxChanges = PendingMaxChanges;
-				if(Changes.Count > 0)
+				maxChanges = PendingMaxChanges;
+				if(_changes.Count > 0)
 				{
-					NewestChangeNumber = Changes.First().Number;
-					OldestChangeNumber = Changes.Last().Number;
+					newestChangeNumber = _changes.First().Number;
+					oldestChangeNumber = _changes.Last().Number;
 				}
-				CurrentChangelists = new HashSet<int>(Changes.Select(x => x.Number));
-				PrevPromotedChangelists = new SortedSet<int>(PromotedChangeNumbers);
+				currentChangelists = new HashSet<int>(_changes.Select(x => x.Number));
+				prevPromotedChangelists = new SortedSet<int>(_promotedChangeNumbers);
 			}
 
 			// Build a full list of all the paths to sync
-			List<string> DepotPaths = new List<string>();
-			if (SelectedClientFileName.EndsWith(".uprojectdirs", StringComparison.InvariantCultureIgnoreCase))
+			List<string> depotPaths = new List<string>();
+			if (_selectedClientFileName.EndsWith(".uprojectdirs", StringComparison.InvariantCultureIgnoreCase))
 			{
-				DepotPaths.Add(String.Format("{0}/...", BranchClientPath));
+				depotPaths.Add(String.Format("{0}/...", _branchClientPath));
 			}
 			else
 			{
-				DepotPaths.Add(String.Format("{0}/*", BranchClientPath));
-				DepotPaths.Add(String.Format("{0}/Engine/...", BranchClientPath));
-				DepotPaths.Add(String.Format("{0}/...", PerforceUtils.GetClientOrDepotDirectoryName(SelectedClientFileName)));
-				if (bIsEnterpriseProject)
+				depotPaths.Add(String.Format("{0}/*", _branchClientPath));
+				depotPaths.Add(String.Format("{0}/Engine/...", _branchClientPath));
+				depotPaths.Add(String.Format("{0}/...", PerforceUtils.GetClientOrDepotDirectoryName(_selectedClientFileName)));
+				if (_isEnterpriseProject)
 				{
-					DepotPaths.Add(String.Format("{0}/Enterprise/...", BranchClientPath));
+					depotPaths.Add(String.Format("{0}/Enterprise/...", _branchClientPath));
 				}
 
 				// Add in additional paths property
-				ConfigSection ProjectConfigSection = LatestProjectConfigFile.FindSection("Perforce");
-				if (ProjectConfigSection != null)
+				ConfigSection projectConfigSection = LatestProjectConfigFile.FindSection("Perforce");
+				if (projectConfigSection != null)
 				{
-					IEnumerable<string> AdditionalPaths = ProjectConfigSection.GetValues("AdditionalPathsToSync", new string[0]);
+					IEnumerable<string> additionalPaths = projectConfigSection.GetValues("AdditionalPathsToSync", new string[0]);
 
 					// turn into //ws/path
-					DepotPaths.AddRange(AdditionalPaths.Select(P => string.Format("{0}/{1}", BranchClientPath, P.TrimStart('/'))));
+					depotPaths.AddRange(additionalPaths.Select(p => string.Format("{0}/{1}", _branchClientPath, p.TrimStart('/'))));
 				}
 			}
 
 			// Read any new changes
-			List<PerforceChangeSummary> NewChanges;
-			if(MaxChanges > CurrentMaxChanges)
+			List<ChangesRecord> newChanges;
+			if(maxChanges > CurrentMaxChanges)
 			{
-				if(!Perforce.FindChanges(DepotPaths, MaxChanges, out NewChanges, LogWriter))
-				{
-					return false;
-				}
+				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, maxChanges, ChangeStatus.Submitted, depotPaths, cancellationToken);
 			}
 			else
 			{
-				if(!Perforce.FindChanges(DepotPaths.Select(DepotPath => String.Format("{0}@>{1}", DepotPath, NewestChangeNumber)), -1, out NewChanges, LogWriter))
-				{
-					return false;
-				}
+				newChanges = await perforce.GetChangesAsync(ChangesOptions.IncludeTimes | ChangesOptions.LongOutput, -1, ChangeStatus.Submitted, depotPaths.Select(x => $"{x}@>{newestChangeNumber}").ToArray(), cancellationToken);
 			}
 
 			// Remove anything we already have
-			NewChanges.RemoveAll(x => CurrentChangelists.Contains(x.Number));
+			newChanges.RemoveAll(x => currentChangelists.Contains(x.Number));
 
 			// Update the change ranges
-			if(NewChanges.Count > 0)
+			if(newChanges.Count > 0)
 			{
-				OldestChangeNumber = Math.Max(OldestChangeNumber, NewChanges.Last().Number);
-				NewestChangeNumber = Math.Min(NewestChangeNumber, NewChanges.First().Number);
+				oldestChangeNumber = Math.Max(oldestChangeNumber, newChanges.Last().Number);
+				newestChangeNumber = Math.Min(newestChangeNumber, newChanges.First().Number);
 			}
 
 			// If we are using zipped binaries, make sure we have every change since the last zip containing them. This is necessary for ensuring that content changes show as
 			// syncable in the workspace view if there have been a large number of content changes since the last code change.
-			int MinZippedChangeNumber = -1;
-			foreach (PerforceArchiveInfo Archive in Archives)
+			int minZippedChangeNumber = -1;
+			foreach (PerforceArchiveInfo archive in _archives)
 			{
-				foreach (int ChangeNumber in Archive.ChangeNumberToFileRevision.Keys)
+				foreach (int changeNumber in archive.ChangeNumberToFileRevision.Keys)
 				{
-					if (ChangeNumber > MinZippedChangeNumber && ChangeNumber <= OldestChangeNumber)
+					if (changeNumber > minZippedChangeNumber && changeNumber <= oldestChangeNumber)
 					{
-						MinZippedChangeNumber = ChangeNumber;
+						minZippedChangeNumber = changeNumber;
 					}
 				}
 			}
-			if(MinZippedChangeNumber != -1 && MinZippedChangeNumber < OldestChangeNumber)
+			if(minZippedChangeNumber != -1 && minZippedChangeNumber < oldestChangeNumber)
 			{
-				List<PerforceChangeSummary> ZipChanges;
-				if(Perforce.FindChanges(DepotPaths.Select(DepotPath => String.Format("{0}@{1},{2}", DepotPath, MinZippedChangeNumber, OldestChangeNumber - 1)), -1, out ZipChanges, LogWriter))
-				{
-					NewChanges.AddRange(ZipChanges);
-				}
+				string[] filteredPaths = depotPaths.Select(x => $"{x}@{minZippedChangeNumber},{oldestChangeNumber - 1}").ToArray();
+				List<ChangesRecord> zipChanges = await perforce.GetChangesAsync(ChangesOptions.None, -1, ChangeStatus.Submitted, filteredPaths, cancellationToken);
+				newChanges.AddRange(zipChanges);
 			}
 
 			// Fixup any ROBOMERGE authors
-			const string RoboMergePrefix = "#ROBOMERGE-AUTHOR:";
-			foreach(PerforceChangeSummary Change in NewChanges)
+			const string roboMergePrefix = "#ROBOMERGE-AUTHOR:";
+			foreach (ChangesRecord change in newChanges)
 			{
-				if(Change.Description.StartsWith(RoboMergePrefix))
+				if(change.Description != null && change.Description.StartsWith(roboMergePrefix))
 				{
-					int StartIdx = RoboMergePrefix.Length;
-					while(StartIdx < Change.Description.Length && Change.Description[StartIdx] == ' ')
+					int startIdx = roboMergePrefix.Length;
+					while(startIdx < change.Description.Length && change.Description[startIdx] == ' ')
 					{
-						StartIdx++;
+						startIdx++;
 					}
 
-					int EndIdx = StartIdx;
-					while(EndIdx < Change.Description.Length && !Char.IsWhiteSpace(Change.Description[EndIdx]))
+					int endIdx = startIdx;
+					while(endIdx < change.Description.Length && !Char.IsWhiteSpace(change.Description[endIdx]))
 					{
-						EndIdx++;
+						endIdx++;
 					}
 
-					if(EndIdx > StartIdx)
+					if(endIdx > startIdx)
 					{
-						Change.User = Change.Description.Substring(StartIdx, EndIdx - StartIdx);
-						Change.Description = "ROBOMERGE: " + Change.Description.Substring(EndIdx).TrimStart();
+						change.User = change.Description.Substring(startIdx, endIdx - startIdx);
+						change.Description = "ROBOMERGE: " + change.Description.Substring(endIdx).TrimStart();
 					}
 				}
 			}
 
 			// Process the new changes received
-			if(NewChanges.Count > 0 || MaxChanges < CurrentMaxChanges)
+			if(newChanges.Count > 0 || maxChanges < CurrentMaxChanges)
 			{
 				// Insert them into the builds list
 				lock(this)
 				{
-					Changes.UnionWith(NewChanges);
-					if(Changes.Count > MaxChanges)
+					_changes.UnionWith(newChanges);
+					if(_changes.Count > maxChanges)
 					{
 						// Remove changes to shrink it to the max requested size, being careful to avoid removing changes that would affect our ability to correctly
 						// show the availability for content changes using zipped binaries.
-						SortedSet<PerforceChangeSummary> TrimmedChanges = new SortedSet<PerforceChangeSummary>(new PerforceChangeSorter());
-						foreach(PerforceChangeSummary Change in Changes)
+						SortedSet<ChangesRecord> trimmedChanges = new SortedSet<ChangesRecord>(new PerforceChangeSorter());
+						foreach(ChangesRecord change in _changes)
 						{
-							TrimmedChanges.Add(Change);
-							if(TrimmedChanges.Count >= MaxChanges && Archives.Any(x => x.ChangeNumberToFileRevision.Count == 0 || x.ChangeNumberToFileRevision.ContainsKey(Change.Number) || x.ChangeNumberToFileRevision.First().Key > Change.Number))
+							trimmedChanges.Add(change);
+							if(trimmedChanges.Count >= maxChanges && _archives.Any(x => x.ChangeNumberToFileRevision.Count == 0 || x.ChangeNumberToFileRevision.ContainsKey(change.Number) || x.ChangeNumberToFileRevision.First().Key > change.Number))
 							{
 								break;
 							}
 						}
-						Changes = TrimmedChanges;
+						_changes = trimmedChanges;
 					}
-					CurrentMaxChanges = MaxChanges;
+					CurrentMaxChanges = maxChanges;
 				}
 
 				// Find the last submitted change by the current user
-				int NewLastChangeByCurrentUser = -1;
-				foreach(PerforceChangeSummary Change in Changes)
+				int newLastChangeByCurrentUser = -1;
+				foreach(ChangesRecord change in _changes)
 				{
-					if(String.Compare(Change.User, Perforce.UserName, StringComparison.InvariantCultureIgnoreCase) == 0)
+					if(String.Compare(change.User, perforce.Settings.UserName, StringComparison.InvariantCultureIgnoreCase) == 0)
 					{
-						NewLastChangeByCurrentUser = Math.Max(NewLastChangeByCurrentUser, Change.Number);
+						newLastChangeByCurrentUser = Math.Max(newLastChangeByCurrentUser, change.Number);
 					}
 				}
-				LastChangeByCurrentUser = NewLastChangeByCurrentUser;
+				LastChangeByCurrentUser = newLastChangeByCurrentUser;
 
 				// Notify the main window that we've got more data
-				if(OnUpdate != null)
-				{
-					OnUpdate();
-				}
+				_synchronizationContext.Post(_ => OnUpdate?.Invoke(), null);
 			}
 			return true;
 		}
 
-		public bool UpdateChangeTypes()
+		public async Task<bool> UpdateChangeTypesAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
 		{
 			// Find the changes we need to query
-			List<int> QueryChangeNumbers = new List<int>();
+			List<int> queryChangeNumbers = new List<int>();
 			lock(this)
 			{
-				foreach(PerforceChangeSummary Change in Changes)
+				foreach(ChangesRecord change in _changes)
 				{
-					if(!ChangeDetails.ContainsKey(Change.Number))
+					if(!_changeDetails.ContainsKey(change.Number))
 					{
-						QueryChangeNumbers.Add(Change.Number);
+						queryChangeNumbers.Add(change.Number);
 					}
 				}
 			}
 
 			// Update them in batches
-			foreach(int QueryChangeNumber in QueryChangeNumbers)
+			bool updatedConfigFile = false;
+			using (CancellationTokenSource cancellationSource = new CancellationTokenSource())
 			{
-				// Skip this stuff if the user wants us to query for more changes
-				if(PendingMaxChanges != CurrentMaxChanges)
+				Task notifyTask = Task.CompletedTask;
+				foreach (IReadOnlyList<int> queryChangeNumberBatch in queryChangeNumbers.OrderByDescending(x => x).Batch(10))
 				{
-					break;
-				}
+					cancellationToken.ThrowIfCancellationRequested();
 
-				// If there's something to check for, find all the content changes after this changelist
-				PerforceDescribeRecord DescribeRecord;
-				if(Perforce.Describe(QueryChangeNumber, out DescribeRecord, LogWriter))
-				{
-					// Create the details object
-					PerforceChangeDetails Details = new PerforceChangeDetails(DescribeRecord);
-					lock(this)
+					// Skip this stuff if the user wants us to query for more changes
+					if (PendingMaxChanges != CurrentMaxChanges)
 					{
-						if(!ChangeDetails.ContainsKey(QueryChangeNumber))
+						break;
+					}
+
+					// If there's something to check for, find all the content changes after this changelist
+					int maxFiles = 100;
+
+					List<DescribeRecord> describeRecords = await perforce.DescribeAsync(DescribeOptions.None, maxFiles, queryChangeNumberBatch.ToArray(), cancellationToken);
+					foreach (DescribeRecord describeRecordLoop in describeRecords.OrderByDescending(x => x.Number))
+					{
+						DescribeRecord describeRecord = describeRecordLoop;
+						int queryChangeNumber = describeRecord.Number;
+
+						PerforceChangeDetails details = new PerforceChangeDetails(describeRecord);
+
+						// Content only changes must be flagged accurately, because code changes invalidate precompiled binaries. Increase the number of files fetched until we can classify it correctly.
+						while (describeRecord.Files.Count >= maxFiles && !details.ContainsCode)
 						{
-							ChangeDetails.Add(QueryChangeNumber, Details);
-						}
-					}
+							cancellationToken.ThrowIfCancellationRequested();
+							maxFiles *= 10;
 
-					// Reload the config file if it changes
-					if(DescribeRecord.Files.Any(x => x.DepotFile.EndsWith("/UnrealGameSync.ini", StringComparison.InvariantCultureIgnoreCase)))
-					{
-						UpdateProjectConfigFile();
-					}
-				}
-
-				// Find the last submitted code change by the current user
-				int NewLastCodeChangeByCurrentUser = -1;
-				foreach(PerforceChangeSummary Change in Changes)
-				{
-					if(String.Compare(Change.User, Perforce.UserName, StringComparison.InvariantCultureIgnoreCase) == 0)
-					{
-						PerforceChangeDetails Details;
-						if(ChangeDetails.TryGetValue(Change.Number, out Details) && Details.bContainsCode)
-						{
-							NewLastCodeChangeByCurrentUser = Math.Max(NewLastCodeChangeByCurrentUser, Change.Number);
-						}
-					}
-				}
-				LastCodeChangeByCurrentUser = NewLastCodeChangeByCurrentUser;
-
-				// Notify the main window that we've got an update
-				if(OnUpdateMetadata != null)
-				{
-					OnUpdateMetadata();
-				}
-			}
-
-			if(LocalConfigFiles.Any(x => File.GetLastWriteTimeUtc(x.Key) != x.Value))
-			{
-				UpdateProjectConfigFile();
-				if(OnUpdateMetadata != null)
-				{
-					OnUpdateMetadata();
-				}
-			}
-
-			return true;
-		}
-
-		bool UpdateArchives()
-		{
-			List<PerforceArchiveInfo> NewArchives = new List<PerforceArchiveInfo>();
-
-			// Find all the zipped binaries under this stream
-			ConfigSection ProjectConfigSection = LatestProjectConfigFile.FindSection(SelectedProjectIdentifier);
-			if (ProjectConfigSection != null)
-			{
-				// Legacy
-				string LegacyEditorArchivePath = ProjectConfigSection.GetValue("ZippedBinariesPath", null);
-				if (LegacyEditorArchivePath != null)
-				{
-					NewArchives.Add(new PerforceArchiveInfo("Editor", "Editor", LegacyEditorArchivePath, null, Perforce));
-				}
-
-				// New style
-				foreach (string ArchiveValue in ProjectConfigSection.GetValues("Archives", new string[0]))
-				{
-					PerforceArchiveInfo Archive;
-					if (PerforceArchiveInfo.TryParseConfigEntry(ArchiveValue, Perforce, out Archive))
-					{
-						NewArchives.Add(Archive);
-					}
-				}
-
-				// Make sure the zipped binaries path exists
-				foreach (PerforceArchiveInfo NewArchive in NewArchives)
-				{
-					bool bExists;
-					if (!Perforce.FileExists(NewArchive.DepotPath, out bExists, LogWriter))
-					{
-						return false;
-					}
-					if (bExists)
-					{
-						// Query all the changes to this file
-						List<PerforceFileChangeSummary> Changes;
-						if (!Perforce.FindFileChanges(NewArchive.DepotPath, 100, out Changes, LogWriter))
-						{
-							return false;
-						}
-
-						// Build a new list of zipped binaries
-						foreach (PerforceFileChangeSummary Change in Changes)
-						{
-							if (Change.Action != "purge")
+							List<DescribeRecord> newDescribeRecords = await perforce.DescribeAsync(DescribeOptions.None, maxFiles, new int[] { queryChangeNumber }, cancellationToken);
+							if (newDescribeRecords.Count == 0)
 							{
-								string[] Tokens = Change.Description.Split(' ');
-								if (Tokens[0].StartsWith("[CL") && Tokens[1].EndsWith("]"))
-								{
-									int OriginalChangeNumber;
-									if (int.TryParse(Tokens[1].Substring(0, Tokens[1].Length - 1), out OriginalChangeNumber) && !NewArchive.ChangeNumberToFileRevision.ContainsKey(OriginalChangeNumber))
-									{
-										NewArchive.ChangeNumberToFileRevision[OriginalChangeNumber] = String.Format("{0}#{1}", NewArchive.DepotPath, Change.Revision);
-									}
-								}
+								break;
+							}
+
+							describeRecord = newDescribeRecords[0];
+							details = new PerforceChangeDetails(describeRecord);
+						}
+
+						lock (this)
+						{
+							if (!_changeDetails.ContainsKey(queryChangeNumber))
+							{
+								_changeDetails.Add(queryChangeNumber, details);
 							}
 						}
+
+						// Reload the config file if it changes
+						if (describeRecord.Files.Any(x => x.DepotFile.EndsWith("/UnrealGameSync.ini", StringComparison.OrdinalIgnoreCase)) && !updatedConfigFile)
+						{
+							await UpdateProjectConfigFileAsync(perforce, cancellationToken);
+							updatedConfigFile = true;
+						}
+
+						// Notify the caller after a fixed period of time, in case further updates are slow to arrive
+						if (notifyTask.IsCompleted)
+						{
+							notifyTask = Task.Delay(TimeSpan.FromSeconds(5.0), cancellationSource.Token).ContinueWith(_ => _synchronizationContext.Post(_ => OnUpdateMetadata?.Invoke(), null));
+						}
+					}
+				}
+				cancellationSource.Cancel();
+				await notifyTask.ContinueWith(_ => { }); // Ignore exceptions
+			}
+
+			// Find the last submitted code change by the current user
+			int newLastCodeChangeByCurrentUser = -1;
+			foreach(ChangesRecord change in _changes)
+			{
+				if(String.Compare(change.User, perforce.Settings.UserName, StringComparison.InvariantCultureIgnoreCase) == 0)
+				{
+					PerforceChangeDetails? otherDetails;
+					if(_changeDetails.TryGetValue(change.Number, out otherDetails) && otherDetails.ContainsCode)
+					{
+						newLastCodeChangeByCurrentUser = Math.Max(newLastCodeChangeByCurrentUser, change.Number);
 					}
 				}
 			}
+			LastCodeChangeByCurrentUser = newLastCodeChangeByCurrentUser;
+
+			// Notify the main window that we've got an update
+			_synchronizationContext.Post(_ => OnUpdateMetadata?.Invoke(), null);
+
+			if(_localConfigFiles.Any(x => FileReference.GetLastWriteTimeUtc(x.Key) != x.Value))
+			{
+				await UpdateProjectConfigFileAsync(perforce, cancellationToken);
+				_synchronizationContext.Post(_ => OnUpdateMetadata?.Invoke(), null);
+			}
+
+			return true;
+		}
+
+		async Task<bool> UpdateArchivesAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
+		{
+			List<PerforceArchiveInfo> newArchives = await PerforceArchive.EnumerateAsync(perforce, LatestProjectConfigFile, _selectedProjectIdentifier, cancellationToken);
 
 			// Check if the information has changed
-			if (!Enumerable.SequenceEqual(Archives, NewArchives))
+			if (!Enumerable.SequenceEqual(_archives, newArchives))
 			{
-				Archives = NewArchives;
-				AvailableArchives = Archives.Select(x => (IArchiveInfo)x).ToList();
+				_archives = newArchives;
+				AvailableArchives = _archives.Select(x => (IArchiveInfo)x).ToList();
 
-				if (OnUpdateMetadata != null && Changes.Count > 0)
+				if (_changes.Count > 0)
 				{
-					OnUpdateMetadata();
+					_synchronizationContext.Post(_ => OnUpdateMetadata?.Invoke(), null);
 				}
 			}
 
 			return true;
 		}
 
-		void UpdateProjectConfigFile()
+		async Task UpdateProjectConfigFileAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
 		{
-			LocalConfigFiles.Clear();
-			LatestProjectConfigFile = ReadProjectConfigFile(Perforce, BranchClientPath, SelectedClientFileName, CacheFolder, LocalConfigFiles, LogWriter);
+			_localConfigFiles.Clear();
+			LatestProjectConfigFile = await ConfigUtils.ReadProjectConfigFileAsync(perforce, _branchClientPath, _selectedClientFileName, _cacheFolder, _localConfigFiles, _logger, cancellationToken);
 		}
 
-		public static ConfigFile ReadProjectConfigFile(PerforceConnection Perforce, string BranchClientPath, string SelectedClientFileName, string CacheFolder, List<KeyValuePair<string, DateTime>> LocalConfigFiles, TextWriter Log)
-		{
-			List<string> ConfigFilePaths = Utility.GetDepotConfigPaths(BranchClientPath + "/Engine", SelectedClientFileName);
-
-			ConfigFile ProjectConfig = new ConfigFile();
-
-			List<PerforceFileRecord> FileRecords;
-			if(Perforce.Stat(new List<string> { "-Ol" }, ConfigFilePaths, out FileRecords, Log))
-			{
-				foreach(PerforceFileRecord FileRecord in FileRecords)
-				{
-					List<string> Lines = null;
-
-					// Skip file records which are still in the workspace, but were synced from a different branch. For these files, the action seems to be empty, so filter against that.
-					if(FileRecord.Action == null)
-					{
-						continue;
-					}
-
-					// If this file is open for edit, read the local version
-					string LocalFileName = FileRecord.ClientPath;
-					if(LocalFileName != null && File.Exists(LocalFileName) && (File.GetAttributes(LocalFileName) & FileAttributes.ReadOnly) == 0)
-					{
-						try
-						{
-							DateTime LastModifiedTime = File.GetLastWriteTimeUtc(LocalFileName);
-							LocalConfigFiles.Add(new KeyValuePair<string, DateTime>(LocalFileName, LastModifiedTime));
-							Lines = File.ReadAllLines(LocalFileName).ToList();
-						}
-						catch(Exception Ex)
-						{
-							Log.WriteLine("Failed to read local config file for {0}: {1}", LocalFileName, Ex.ToString());
-						}
-					}
-
-					// Otherwise try to get it from perforce
-					if(Lines == null)
-					{
-						Utility.TryPrintFileUsingCache(Perforce, FileRecord.DepotPath, CacheFolder, FileRecord.Digest, out Lines, Log);
-					}
-
-					// Merge the text with the config file
-					if(Lines != null)
-					{
-						try
-						{
-							ProjectConfig.Parse(Lines.ToArray());
-							Log.WriteLine("Read config file from {0}", FileRecord.DepotPath);
-						}
-						catch(Exception Ex)
-						{
-							Log.WriteLine("Failed to read config file from {0}: {1}", FileRecord.DepotPath, Ex.ToString());
-						}
-					}
-				}
-			}
-			return ProjectConfig;
-		}
-
-		public List<PerforceChangeSummary> GetChanges()
+		public List<ChangesRecord> GetChanges()
 		{
 			lock(this)
 			{
-				return new List<PerforceChangeSummary>(Changes);
+				return new List<ChangesRecord>(_changes);
 			}
 		}
 
-		public bool TryGetChangeDetails(int Number, out PerforceChangeDetails Details)
+		public bool TryGetChangeDetails(int number, [NotNullWhen(true)] out PerforceChangeDetails? details)
 		{
 			lock(this)
 			{
-				return ChangeDetails.TryGetValue(Number, out Details);
+				return _changeDetails.TryGetValue(number, out details);
 			}
 		}
 
@@ -783,7 +540,7 @@ namespace UnrealGameSync
 		{
 			lock(this)
 			{
-				return new HashSet<int>(PromotedChangeNumbers);
+				return new HashSet<int>(_promotedChangeNumbers);
 			}
 		}
 
@@ -813,7 +570,7 @@ namespace UnrealGameSync
 
 		public void Refresh()
 		{
-			RefreshEvent.Set();
+			_refreshEvent.Set();
 		}
 	}
 }

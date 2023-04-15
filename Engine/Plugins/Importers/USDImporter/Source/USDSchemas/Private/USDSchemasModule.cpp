@@ -15,6 +15,7 @@
 #include "USDGeomMeshTranslator.h"
 #include "USDGeomPointInstancerTranslator.h"
 #include "USDGeomXformableTranslator.h"
+#include "USDGroomTranslator.h"
 #include "USDLuxLightTranslator.h"
 #include "USDMemory.h"
 #include "USDShadeMaterialTranslator.h"
@@ -28,13 +29,16 @@ public:
 	virtual void StartupModule() override
 	{
 #if USE_USD_SDK
+		LLM_SCOPE_BYTAG(Usd);
+
 		// Register the default translators
 		UsdGeomCameraTranslatorHandle = GetTranslatorRegistry().Register< FUsdGeomCameraTranslator >( TEXT("UsdGeomCamera") );
 		UsdGeomMeshTranslatorHandle = GetTranslatorRegistry().Register< FUsdGeomMeshTranslator >( TEXT("UsdGeomMesh") );
 		UsdGeomPointInstancerTranslatorHandle = GetTranslatorRegistry().Register< FUsdGeomPointInstancerTranslator >( TEXT("UsdGeomPointInstancer") );
 		UsdGeomXformableTranslatorHandle = GetTranslatorRegistry().Register< FUsdGeomXformableTranslator >( TEXT("UsdGeomXformable") );
 		UsdShadeMaterialTranslatorHandle = GetTranslatorRegistry().Register< FUsdShadeMaterialTranslator >( TEXT("UsdShadeMaterial") );
-		UsdLuxLightTranslatorHandle = GetTranslatorRegistry().Register< FUsdLuxLightTranslator >( TEXT("UsdLuxLight") );
+		UsdLuxBoundableLightBaseTranslatorHandle = GetTranslatorRegistry().Register< FUsdLuxLightTranslator >( TEXT("UsdLuxBoundableLightBase") );
+		UsdLuxNonboundableLightBaseTranslatorHandle = GetTranslatorRegistry().Register< FUsdLuxLightTranslator >( TEXT("UsdLuxNonboundableLightBase") );
 
 #if WITH_EDITOR
 		// Creating skeletal meshes technically works in Standalone mode, but by checking for this we artificially block it
@@ -42,6 +46,7 @@ public:
 		if ( GIsEditor )
 		{
 			UsdSkelRootTranslatorHandle = GetTranslatorRegistry().Register< FUsdSkelRootTranslator >( TEXT("UsdSkelRoot") );
+			UsdGroomTranslatorHandle = GetTranslatorRegistry().Register< FUsdGroomTranslator >( TEXT("UsdGeomXformable") );
 
 			if ( IMDLImporterModule* MDLImporterModule = FModuleManager::Get().LoadModulePtr< IMDLImporterModule >( TEXT("MDLImporter") ) )
 			{
@@ -64,6 +69,7 @@ public:
 		if ( GIsEditor )
 		{
 			GetTranslatorRegistry().Unregister( UsdSkelRootTranslatorHandle );
+			GetTranslatorRegistry().Unregister( UsdGroomTranslatorHandle );
 
 			GetTranslatorRegistry().Unregister( MdlUsdShadeMaterialTranslatorHandle );
 			GetRenderContextRegistry().Unregister( FMdlUsdShadeMaterialTranslator::MdlRenderContext );
@@ -71,7 +77,8 @@ public:
 #endif // WITH_EDITOR
 		GetTranslatorRegistry().Unregister( UsdGeomXformableTranslatorHandle );
 		GetTranslatorRegistry().Unregister( UsdShadeMaterialTranslatorHandle );
-		GetTranslatorRegistry().Unregister( UsdLuxLightTranslatorHandle );
+		GetTranslatorRegistry().Unregister( UsdLuxBoundableLightBaseTranslatorHandle );
+		GetTranslatorRegistry().Unregister( UsdLuxNonboundableLightBaseTranslatorHandle );
 #endif // #if USE_USD_SDK
 	}
 
@@ -95,7 +102,9 @@ protected:
 	FRegisteredSchemaTranslatorHandle UsdSkelRootTranslatorHandle;
 	FRegisteredSchemaTranslatorHandle UsdGeomXformableTranslatorHandle;
 	FRegisteredSchemaTranslatorHandle UsdShadeMaterialTranslatorHandle;
-	FRegisteredSchemaTranslatorHandle UsdLuxLightTranslatorHandle;
+	FRegisteredSchemaTranslatorHandle UsdGroomTranslatorHandle;
+	FRegisteredSchemaTranslatorHandle UsdLuxBoundableLightBaseTranslatorHandle;
+	FRegisteredSchemaTranslatorHandle UsdLuxNonboundableLightBaseTranslatorHandle;
 
 	// Custom schemas
 	FRegisteredSchemaTranslatorHandle MdlUsdShadeMaterialTranslatorHandle;

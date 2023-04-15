@@ -32,7 +32,7 @@ public class MeshUtilities : ModuleRules
 				"Landscape",
 				"LevelEditor",
 				"PropertyEditor",
-				"EditorStyle",
+				
                 "GraphColor",
                 "MeshBuilderCommon",
                 "MeshUtilitiesCommon",
@@ -42,6 +42,7 @@ public class MeshUtilities : ModuleRules
 				"MeshUtilitiesEngine",
 				"SkeletalMeshUtilitiesCommon",
 				"ClothingSystemRuntimeCommon",
+				"Persona",
 			}
 		);
 
@@ -57,7 +58,6 @@ public class MeshUtilities : ModuleRules
 				"AnimationEditor",
                 "MeshMergeUtilities",
                 "MaterialBaking",
-				"Persona",
 				"SkeletalMeshEditor",
           }
       );

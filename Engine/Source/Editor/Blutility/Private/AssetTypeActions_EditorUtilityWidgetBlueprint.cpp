@@ -1,24 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions_EditorUtilityWidgetBlueprint.h"
-#include "ToolMenus.h"
-#include "Misc/PackageName.h"
-#include "Misc/MessageDialog.h"
-#include "EditorUtilityBlueprintFactory.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "BlueprintEditorModule.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "EditorUtilityWidgetBlueprint.h"
-#include "EditorUtilityWidget.h"
-#include "WidgetBlueprintEditor.h"
-#include "LevelEditor.h"
+
+#include "BlueprintEditor.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "Editor.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Framework/Docking/TabManager.h"
-#include "IBlutilityModule.h"
+#include "Editor/EditorEngine.h"
 #include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidget.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Commands/UIAction.h"
+#include "HAL/PlatformMisc.h"
+#include "IBlutilityModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
 #include "SBlueprintDiff.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenuSection.h"
+#include "Toolkits/IToolkit.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "WidgetBlueprint.h"
+#include "WidgetBlueprintEditor.h"
+
+#include <utility>
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -38,11 +49,6 @@ FColor FAssetTypeActions_EditorUtilityWidgetBlueprint::GetTypeColor() const
 UClass* FAssetTypeActions_EditorUtilityWidgetBlueprint::GetSupportedClass() const
 {
 	return UEditorUtilityWidgetBlueprint::StaticClass();
-}
-
-bool FAssetTypeActions_EditorUtilityWidgetBlueprint::HasActions(const TArray<UObject*>& InObjects) const
-{
-	return true;
 }
 
 void FAssetTypeActions_EditorUtilityWidgetBlueprint::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)

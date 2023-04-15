@@ -1,14 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/Stack/NiagaraStackEntry.h"
+
+#include "NiagaraEditorUtilities.h"
+#include "NiagaraEmitter.h"
 #include "ViewModels/Stack/NiagaraStackErrorItem.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/Stack/NiagaraStackItemGroup.h"
 #include "NiagaraStackEditorData.h"
 #include "NiagaraScriptMergeManager.h"
 #include "Misc/SecureHash.h"
 #include "ScopedTransaction.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackEntry)
 
 class UNiagaraStackItemGroup;
 const FName UNiagaraStackEntry::FExecutionCategoryNames::System = TEXT("System");
@@ -552,9 +556,16 @@ void UNiagaraStackEntry::SetIsSearchResult(bool bInIsSearchResult)
 
 bool UNiagaraStackEntry::HasBaseEmitter() const
 {
+	// TODO (me) the is valid check is a temp fix as it can happen that it gets deleted for some reason which leads to a crash here
+	if (!SystemViewModel.IsValid() || GetSystemViewModel()->GetIsForDataProcessingOnly())
+	{
+		// If the model is just for data processing we don't want to go through the whole merge procedure for all the stack entries and just treat all entries as non-inherited.
+		return false;
+	}
+	
 	if (bHasBaseEmitterCache.IsSet() == false)
 	{
-		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel().IsValid() ? GetEmitterViewModel()->GetParentEmitter() : nullptr;
+		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel().IsValid() ? GetEmitterViewModel()->GetParentEmitter().Emitter : nullptr;
 		bHasBaseEmitterCache = BaseEmitter != nullptr;
 	}
 	return bHasBaseEmitterCache.GetValue();
@@ -563,6 +574,17 @@ bool UNiagaraStackEntry::HasBaseEmitter() const
 bool UNiagaraStackEntry::HasIssuesOrAnyChildHasIssues() const
 {
 	return GetCollectedIssueData().HasAnyIssues();
+}
+
+bool UNiagaraStackEntry::HasUsagesOrAnyChildHasUsages() const
+{
+	return GetCollectedUsageData().bHasReferencedParameterRead || GetCollectedUsageData().bHasReferencedParameterWrite;
+}
+
+void UNiagaraStackEntry::GetRecursiveUsages(bool& bRead, bool& bWrite) const
+{
+	bRead = GetCollectedUsageData().bHasReferencedParameterRead;
+	bWrite = GetCollectedUsageData().bHasReferencedParameterWrite;
 }
 
 int32 UNiagaraStackEntry::GetTotalNumberOfCustomNotes() const
@@ -593,6 +615,53 @@ const TArray<UNiagaraStackEntry::FStackIssue>& UNiagaraStackEntry::GetIssues() c
 const TArray<UNiagaraStackEntry*>& UNiagaraStackEntry::GetAllChildrenWithIssues() const
 {
 	return GetCollectedIssueData().ChildrenWithIssues;
+}
+
+void UNiagaraStackEntry::AddValidationIssue(EStackIssueSeverity Severity, const FText& SummaryText, const FText& Description, bool bCanBeDismissed, const TArray<FNiagaraValidationFix>& Fixes, const TArray<FNiagaraValidationFix>& Links)
+{
+	TArray<FStackIssueFix> StackFixes;
+	for (const FNiagaraValidationFix& Fix : Fixes)
+	{
+		StackFixes.Add(FStackIssueFix(Fix.Description, Fix.FixDelegate, EStackIssueFixStyle::Fix));
+	}
+	for (const FNiagaraValidationFix& Link : Links)
+	{
+		StackFixes.Add(FStackIssueFix(Link.Description, Link.FixDelegate, EStackIssueFixStyle::Link));
+	}
+
+	FStackIssue NewIssue(Severity, SummaryText, Description, GetStackEditorDataKey(), bCanBeDismissed, StackFixes);
+	for (const FStackIssue& ExistingIssue : ExternalStackIssues)
+	{
+		if (ExistingIssue.GetUniqueIdentifier().Equals(NewIssue.GetUniqueIdentifier()))
+		{
+			return;
+		}
+	}
+	ExternalStackIssues.Add(NewIssue);
+	RefreshChildren();
+}
+
+void UNiagaraStackEntry::AddExternalIssue(EStackIssueSeverity Severity, const FText& SummaryText, const FText& Description, bool bCanBeDismissed)
+{
+	FStackIssue NewIssue(Severity, SummaryText, Description, GetStackEditorDataKey(), bCanBeDismissed);
+	for (const FStackIssue& ExistingIssue : ExternalStackIssues)
+	{
+		if (ExistingIssue.GetUniqueIdentifier().Equals(NewIssue.GetUniqueIdentifier()))
+		{
+			return;
+		}
+	}
+	ExternalStackIssues.Add(NewIssue);
+	RefreshChildren();
+}
+
+void UNiagaraStackEntry::ClearExternalIssues()
+{
+	if (ExternalStackIssues.Num() > 0)
+	{
+		ExternalStackIssues.Empty();
+		Cast<UNiagaraStackEntry>(GetOuter())->RefreshChildren();
+	}
 }
 
 TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackEntry::CanDropInternal(const FDropRequest& DropRequest)
@@ -700,6 +769,7 @@ void UNiagaraStackEntry::RefreshChildren()
 
 	StackIssues.Empty();
 	StackIssues.Append(NewStackIssues);
+	StackIssues.Append(ExternalStackIssues);
 	RefreshStackErrorChildren();
 	for (UNiagaraStackErrorItem* ErrorChild : ErrorChildren)
 	{
@@ -808,6 +878,7 @@ void UNiagaraStackEntry::InvalidateFilteredChildren()
 {
 	FilteredChildren.Empty();
 	CachedCollectedIssueData.Reset();
+	CachedCollectedUsageData.Reset();
 	bFilterChildrenPending = true;
 }
 
@@ -857,6 +928,42 @@ const UNiagaraStackEntry::FCollectedIssueData& UNiagaraStackEntry::GetCollectedI
 	}
 
 	return CachedCollectedIssueData.GetValue();
+}
+
+
+const UNiagaraStackEntry::FCollectedUsageData& UNiagaraStackEntry::GetCollectedUsageData() const
+{
+	if (CachedCollectedUsageData.IsSet() == false)
+	{
+		CachedCollectedUsageData = FCollectedUsageData();
+
+		TArray<UNiagaraStackEntry*> RefreshedChildren;
+		GetUnfilteredChildren(RefreshedChildren);
+
+		for (UNiagaraStackEntry* ChildStackEntry : RefreshedChildren)
+		{
+			if (ChildStackEntry->GetCollectedUsageData().bHasReferencedParameterRead)
+				CachedCollectedUsageData.GetValue().bHasReferencedParameterRead = true;
+			if (ChildStackEntry->GetCollectedUsageData().bHasReferencedParameterWrite)
+				CachedCollectedUsageData.GetValue().bHasReferencedParameterWrite = true;
+
+		}
+	}
+
+	return CachedCollectedUsageData.GetValue();
+}
+
+void UNiagaraStackEntry::InvalidateCollectedUsage()
+{
+	// Make sure to use the unfiltered children instead of filtered as the info we need is only found in certain, usually filtered children.
+	CachedCollectedUsageData.Reset();
+	TArray<UNiagaraStackEntry*> RefreshedFilteredChildren;
+	GetUnfilteredChildren(RefreshedFilteredChildren);
+
+	for (UNiagaraStackEntry* ChildStackEntry : RefreshedFilteredChildren)
+	{
+		ChildStackEntry->InvalidateCollectedUsage();
+	}
 }
 
 void UNiagaraStackEntry::BeginDestroy()
@@ -989,3 +1096,4 @@ void UNiagaraStackSpacer::Initialize(FRequiredEntryData InRequiredEntryData, flo
 	SpacerHeight = InSpacerHeight;
 	ShouldShowInStack = InShouldShowInStack;
 }
+

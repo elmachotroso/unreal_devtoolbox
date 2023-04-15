@@ -8,17 +8,15 @@
 #include "Misc/Timespan.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Delegates/Delegate.h"
+
+class FArrayReader;
+class FInternetAddr;
 
 COOKONTHEFLY_API DECLARE_LOG_CATEGORY_EXTERN(LogCookOnTheFly, Log, All);
 
 namespace UE { namespace Cook
 {
-
-enum
-{ 
-	/* The default port used by the the cook-on-the-fly server. */
-	DefaultCookOnTheFlyServingPort = 42899
-};
 
 /**
  * Flags and message types to be used with the cook-on-the-fly server.
@@ -30,16 +28,12 @@ enum class ECookOnTheFlyMessage : uint32
 	/* Represents no message. */
 	None				= 0x00,
 	
-	/* A one way message. */
-	Message				= 0x01,
 	/* A request message. */
 	Request				= 0x02,
 	/* A response message. */
 	Response			= 0x04,
 	TypeFlags			= 0x0F,
 
-	/* The handshake request message. */
-	Handshake			= 0x10,
 	/* Request to cook a package. */
 	CookPackage			= 0x20,
 	/* Get all currenlty cooked packages. */
@@ -50,8 +44,10 @@ enum class ECookOnTheFlyMessage : uint32
 	PackagesCooked		= 0x50,
 	/* One way message indicating that one or more files has been added. */
 	FilesAdded			= 0x60,
-	/* Heartbeat message. */
-	Heartbeat			= 0x70,
+	/* Request to recook packages. */
+	RecookPackages		= 0x70,
+	/* Legacy message for NetworkPlatformFile */
+	NetworkPlatformFile	= 0x80,
 };
 ENUM_CLASS_FLAGS(ECookOnTheFlyMessage);
 
@@ -66,8 +62,6 @@ inline const TCHAR* LexToString(ECookOnTheFlyMessage Message)
 	{
 		case ECookOnTheFlyMessage::None:
 			return TEXT("None");
-		case ECookOnTheFlyMessage::Handshake:
-			return TEXT("Handshake");
 		case ECookOnTheFlyMessage::CookPackage:
 			return TEXT("CookPackage");
 		case ECookOnTheFlyMessage::GetCookedPackages:
@@ -78,8 +72,10 @@ inline const TCHAR* LexToString(ECookOnTheFlyMessage Message)
 			return TEXT("PackagesCooked");
 		case ECookOnTheFlyMessage::FilesAdded:
 			return TEXT("FilesAdded");
-		case ECookOnTheFlyMessage::Heartbeat:
-			return TEXT("Heartbeat");
+		case ECookOnTheFlyMessage::RecookPackages:
+			return TEXT("RecookPackages");
+		case ECookOnTheFlyMessage::NetworkPlatformFile:
+			return TEXT("NetworkPlatformFile");
 		default:
 			return TEXT("Unknown");
 	};
@@ -124,9 +120,7 @@ struct FCookOnTheFlyMessageHeader
 	/** Type of message */
 	ECookOnTheFlyMessage MessageType = ECookOnTheFlyMessage::None;
 	/** The message status. */
-	ECookOnTheFlyMessageStatus MessageStatus = ECookOnTheFlyMessageStatus::None;
-	/** Sender id */
-	uint32 SenderId = 0;
+	ECookOnTheFlyMessageStatus MessageStatus = ECookOnTheFlyMessageStatus::Ok;
 	/** Correlation id, used to match response with request. */
 	uint32 CorrelationId = 0;
 	/** When the message was sent. */
@@ -150,6 +144,13 @@ public:
 	explicit FCookOnTheFlyMessage(ECookOnTheFlyMessage MessageType)
 	{
 		Header.MessageType = MessageType;
+	}
+
+	ECookOnTheFlyMessage GetMessageType() const
+	{
+		ECookOnTheFlyMessage MessageType = Header.MessageType;
+		EnumRemoveFlags(MessageType, ECookOnTheFlyMessage::TypeFlags);
+		return MessageType;
 	}
 
 	/** Returns the message header. */
@@ -242,51 +243,46 @@ protected:
 	TArray<uint8> Body;
 };
 
-using FCookOnTheFlyRequest = FCookOnTheFlyMessage;
-
-using FCookOnTheFlyResponse = FCookOnTheFlyMessage;
-
 /**
- * Connection status
+ * Cook-on-the-fly request.
  */
-enum class ECookOnTheFlyConnectionStatus
+class FCookOnTheFlyRequest
+	: public FCookOnTheFlyMessage
 {
-	Disconnected,
-	Connected
+public:
+	/** Creates a new instance of a cook-on-the-fly request. */
+	COOKONTHEFLY_API FCookOnTheFlyRequest() = default;
+
+	/** Creates a new instance of a cook-on-the-fly request with the specified request type. */
+	explicit FCookOnTheFlyRequest(ECookOnTheFlyMessage MessageType)
+		: FCookOnTheFlyMessage(MessageType | ECookOnTheFlyMessage::Request)
+	{
+	}
 };
 
 /**
- * A connected cook-on-the-fly client.
+ * Cook-on-the-fly response.
  */
-struct FCookOnTheFlyClient
+class FCookOnTheFlyResponse
+	: public FCookOnTheFlyMessage
 {
-	/** A client ID set by the server. */
-	uint32 ClientId = 0;
-	/** The platform. */
-	FName PlatformName;
-};
+public:
+	/** Creates a new instance of a cook-on-the-fly response. */
+	COOKONTHEFLY_API FCookOnTheFlyResponse() = default;
 
-using FCookOnTheFlyRequestHandler = TFunction<bool(FCookOnTheFlyClient, const FCookOnTheFlyRequest&, FCookOnTheFlyResponse&)>;
+	/** Creates a new instance of a cook-on-the-fly response with the specified response type. */
+	explicit FCookOnTheFlyResponse(ECookOnTheFlyMessage MessageType)
+		: FCookOnTheFlyMessage(MessageType | ECookOnTheFlyMessage::Response)
+	{
+	}
 
-using FCookOnTheFlyClientConnectionHandler = TFunction<bool(FCookOnTheFlyClient, ECookOnTheFlyConnectionStatus)>;
-
-using FFillRequest = TFunction<void(FArchive&)>;
-
-using FProcessResponse = TFunction<bool(FArchive&)>;
-
-/**
- * Cook-on-the-fly connection server options.
- */
-struct FCookOnTheFlyServerOptions
-{
-	/** The port to listen for new connections. */
-	int32 Port = DefaultCookOnTheFlyServingPort;
-
-	/** Callback invoked when a client has connected or disconnected. */
-	FCookOnTheFlyClientConnectionHandler HandleClientConnection;
-
-	/** Callback invoked when the server receives a new request. */
-	FCookOnTheFlyRequestHandler HandleRequest;
+	/** Creates a new instance of a cook-on-the-fly response for the specified request. */
+	explicit FCookOnTheFlyResponse(const FCookOnTheFlyRequest& Request)
+		: FCookOnTheFlyMessage(Request.GetMessageType())
+	{
+		Header.MessageType |= ECookOnTheFlyMessage::Response;
+		Header.CorrelationId = Request.GetHeader().CorrelationId;
+	}
 };
 
 /**
@@ -296,57 +292,34 @@ struct FCookOnTheFlyHostOptions
 {
 	/** Host address. */
 	TArray<FString> Hosts;
-	/** Host port. */
-	int32 Port = DefaultCookOnTheFlyServingPort;
 	/** How long to wait for the server to start. */
 	FTimespan ServerStartupWaitTime;
 };
 
-/**
- * A connection server used to communicate with cook-on-the-fly clients.
- */
-class ICookOnTheFlyConnectionServer
-{
-public:
-	virtual ~ICookOnTheFlyConnectionServer() { }
-
-	/** Start the cook-on-the-fly server. */
-	virtual bool StartServer() = 0;
-
-	/** Stop the cook-on-the-fly server. */
-	virtual void StopServer() = 0;
-
-	/** Broadcast message to all connected clients for the specified platform. */
-	virtual bool BroadcastMessage(const FCookOnTheFlyMessage& Message, const FName& PlatformName = NAME_None) = 0;
-};
-
-/**
- * A connection used to communicate with the cook-on-the-fly server.
- */
 class ICookOnTheFlyServerConnection
 {
 public:
 	virtual ~ICookOnTheFlyServerConnection() { }
 
+	virtual const FString& GetHost() const = 0;
+
+	virtual const FString& GetZenProjectName() const = 0;
+
+	virtual const FString& GetPlatformName() const = 0;
+
 	/**
 	 * Returns whether connected to the cook-on-the-fly server.
 	 */
 	virtual bool IsConnected() const = 0;
-	
-	/**
-	 * Disconnect from the server.
-	 */
-	virtual void Disconnect() = 0;
+
+	virtual bool IsSingleThreaded() const = 0;
 
 	/**
 	 * Sends a request to the server.
 	 *
 	 * @param Request The request message to send.
-	 * @param FillRequest Callback to populate the request message..
-	 * @param ProcessResponse Callback to process the response message.
 	 */
-	//virtual bool SendRequest(ECookOnTheFlyMessage Request, FFillRequest&& FillRequest, FProcessResponse&& ProcessResponse) = 0;
-	virtual TFuture<FCookOnTheFlyResponse> SendRequest(const FCookOnTheFlyRequest& Request) = 0;
+	virtual TFuture<FCookOnTheFlyResponse> SendRequest(FCookOnTheFlyRequest& Request) = 0;
 
 	/**
 	 * Event triggered when a new message has been sent from the server.
@@ -364,12 +337,7 @@ class ICookOnTheFlyModule
 public:
 	virtual ~ICookOnTheFlyModule() { }
 
-	/**
-	 * Creates a new instance of a cook-on-the-fly connection server.
-	 *
-	 * @param Options The cook-on-the-fly connection server options.
-	 */
-	virtual TUniquePtr<ICookOnTheFlyConnectionServer> CreateConnectionServer(FCookOnTheFlyServerOptions Options) = 0;
+	virtual TSharedPtr<ICookOnTheFlyServerConnection> GetDefaultServerConnection() = 0;
 
 	/**
 	 * Connect to the cook-on-the-fly server.

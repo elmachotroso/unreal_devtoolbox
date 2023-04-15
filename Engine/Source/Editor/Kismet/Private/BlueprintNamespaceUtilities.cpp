@@ -1,13 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNamespaceUtilities.h"
-#include "Engine/Blueprint.h"
-#include "AssetRegistryModule.h"
+
 #include "AssetRegistry/AssetData.h"
-#include "EdGraphSchema_K2.h"
-#include "Misc/AssertionMacros.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "BlueprintEditorModule.h"
+#include "BlueprintEditorSettings.h"
+#include "BlueprintNamespacePathTree.h"
+#include "Containers/Array.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "Settings/BlueprintEditorProjectSettings.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Toolkits/IToolkit.h"
 #include "Toolkits/ToolkitManager.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
 
 namespace UE::Editor::Kismet::Private
 {
@@ -16,16 +41,15 @@ namespace UE::Editor::Kismet::Private
 
 	// Delegate invoked whenever the default Blueprint namespace type is set to a different value.
 	static FBlueprintNamespaceUtilities::FOnDefaultBlueprintNamespaceTypeChanged OnDefaultBlueprintNamespaceTypeChangedDelegate;
+}
 
-	// Helper method to convert a package path to a Blueprint namespace identifier string.
-	static void ConvertPackagePathToNamespacePath(const FString& InPackagePath, FString& OutNamespacePath)
+void FBlueprintNamespaceUtilities::ConvertPackagePathToNamespacePath(const FString& InPackagePath, FString& OutNamespacePath)
+{
+	OutNamespacePath = InPackagePath;
+	OutNamespacePath.ReplaceCharInline(TEXT('/'), FBlueprintNamespacePathTree::PathSeparator[0]);
+	if (OutNamespacePath.StartsWith(FBlueprintNamespacePathTree::PathSeparator))
 	{
-		OutNamespacePath = InPackagePath;
-		OutNamespacePath.ReplaceCharInline(TEXT('/'), TEXT('.'));
-		if (OutNamespacePath.StartsWith(TEXT(".")))
-		{
-			OutNamespacePath.RemoveAt(0);
-		}
+		OutNamespacePath.RemoveAt(0);
 	}
 }
 
@@ -81,26 +105,23 @@ FString FBlueprintNamespaceUtilities::GetObjectNamespace(const UObject* InObject
 			Field = OwnerStruct;
 		}
 
-		if (const FString* TypeNamespace = Field->FindMetaData(FBlueprintMetadata::MD_Namespace))
+		const UBlueprint* Blueprint = nullptr;
+		if (const UClass* Class = Cast<UClass>(Field))
+		{
+			Blueprint = UBlueprint::GetBlueprintFromClass(Class);
+		}
+
+		if (Blueprint)
+		{
+			Namespace = GetObjectNamespace(Blueprint);
+		}
+		else if(const FString * TypeNamespace = Field->FindMetaData(FBlueprintMetadata::MD_Namespace))
 		{
 			Namespace = *TypeNamespace;
 		}
 		else
 		{
-			const UBlueprint* Blueprint = nullptr;
-			if (const UClass* Class = Cast<UClass>(Field))
-			{
-				Blueprint = UBlueprint::GetBlueprintFromClass(Class);
-			}
-
-			if (Blueprint)
-			{
-				Namespace = GetObjectNamespace(Blueprint);
-			}
-			else
-			{
-				Namespace = GetObjectNamespace(Field->GetPackage());
-			}
+			Namespace = GetObjectNamespace(Field->GetPackage());
 		}
 	}
 	else if (const UBlueprint* Blueprint = Cast<UBlueprint>(InObject))
@@ -142,31 +163,23 @@ FString FBlueprintNamespaceUtilities::GetObjectNamespace(const FSoftObjectPath& 
 		return GetObjectNamespace(Object);
 	}
 
-	FString ObjectPathAsString = InObjectPath.ToString();
 	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*ObjectPathAsString);
-	if (!AssetData.IsValid() && ObjectPathAsString.RemoveFromEnd(TEXT("_C")))
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(InObjectPath);
+	if (!AssetData.IsValid())
 	{
-		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*ObjectPathAsString);
+		FString ObjectPathAsString = InObjectPath.ToString();
+		if (ObjectPathAsString.RemoveFromEnd(TEXT("_C")))
+		{
+			AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPathAsString));
+		}
 	}
 
 	return GetAssetNamespace(AssetData);
 }
 
-void FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(const UStruct* InStruct, const FProperty* InProperty, const void* InContainer, TSet<FString>& OutNamespaces)
+void FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(const FProperty* InProperty, const void* InContainer, TSet<FString>& OutNamespaces)
 {
-	if (!InStruct || !InProperty || !InContainer)
-	{
-		return;
-	}
-
-	const UStruct* PropertyOwner = InProperty->GetOwnerStruct();
-	if (!PropertyOwner)
-	{
-		return;
-	}
-
-	if (!ensureMsgf(InStruct == PropertyOwner, TEXT("Property %s is a member of struct %s which does not match the given struct %s"), *InProperty->GetName(), *PropertyOwner->GetName(), *InStruct->GetName()))
+	if (!InProperty || !InContainer)
 	{
 		return;
 	}
@@ -179,7 +192,7 @@ void FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(const UStruct* InS
 		{
 			for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 			{
-				GetPropertyValueNamespaces(StructProperty->Struct, *It, (*It)->ContainerPtrToValuePtr<uint8>(ValuePtr), OutNamespaces);
+				GetPropertyValueNamespaces(*It, ValuePtr, OutNamespaces);
 			}
 		}
 		else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InProperty))
@@ -187,25 +200,25 @@ void FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(const UStruct* InS
 			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
 			for (int32 ValueIdx = 0; ValueIdx < ArrayHelper.Num(); ++ValueIdx)
 			{
-				GetPropertyValueNamespaces(InStruct, ArrayProperty->Inner, ArrayHelper.GetRawPtr(ValueIdx), OutNamespaces);
+				GetPropertyValueNamespaces(ArrayProperty->Inner, ArrayHelper.GetRawPtr(ValueIdx), OutNamespaces);
 			}
 		}
 		else if (const FSetProperty* SetProperty = CastField<FSetProperty>(InProperty))
 		{
 			FScriptSetHelper SetHelper(SetProperty, ValuePtr);
-			for (int32 ValueIdx = 0; ValueIdx < SetHelper.Num(); ++ValueIdx)
+			for (FScriptSetHelper::FIterator SetIt = SetHelper.CreateIterator(); SetIt; ++SetIt)
 			{
-				GetPropertyValueNamespaces(InStruct, SetProperty->ElementProp, SetHelper.GetElementPtr(ValueIdx), OutNamespaces);
+				GetPropertyValueNamespaces(SetProperty->ElementProp, SetHelper.GetElementPtr(*SetIt), OutNamespaces);
 			}
 		}
 		else if (const FMapProperty* MapProperty = CastField<FMapProperty>(InProperty))
 		{
 			FScriptMapHelper MapHelper(MapProperty, ValuePtr);
-			for (int32 ValueIdx = 0; ValueIdx < MapHelper.Num(); ++ValueIdx)
+			for (FScriptMapHelper::FIterator MapIt = MapHelper.CreateIterator(); MapIt; ++MapIt)
 			{
-				const uint8* MapValuePtr = MapHelper.GetPairPtr(ValueIdx);
-				GetPropertyValueNamespaces(InStruct, MapProperty->KeyProp, MapValuePtr, OutNamespaces);
-				GetPropertyValueNamespaces(InStruct, MapProperty->ValueProp, MapValuePtr, OutNamespaces);
+				const uint8* MapValuePtr = MapHelper.GetPairPtr(*MapIt);
+				GetPropertyValueNamespaces(MapProperty->KeyProp, MapValuePtr, OutNamespaces);
+				GetPropertyValueNamespaces(MapProperty->ValueProp, MapValuePtr, OutNamespaces);
 			}
 		}
 		else if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(InProperty))
@@ -225,6 +238,74 @@ void FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(const UStruct* InS
 				FString Namespace = GetObjectNamespace(ObjectValue);
 				OutNamespaces.Add(Namespace);
 			}
+		}
+	}
+}
+
+void FBlueprintNamespaceUtilities::GetSharedGlobalImports(TSet<FString>& OutNamespaces)
+{
+	// Local editor imports.
+	OutNamespaces.Append(GetDefault<UBlueprintEditorSettings>()->NamespacesToAlwaysInclude);
+
+	// Project-wide imports.
+	OutNamespaces.Append(GetDefault<UBlueprintEditorProjectSettings>()->NamespacesToAlwaysInclude);
+
+	// Exclude the global namespace (empty) if it was included; this is implied.
+	OutNamespaces.Remove(FString());
+}
+
+void FBlueprintNamespaceUtilities::GetDefaultImportsForBlueprint(const UBlueprint* InBlueprint, TSet<FString>& OutNamespaces)
+{
+	GetDefaultImportsForObject(InBlueprint, OutNamespaces);
+}
+
+void FBlueprintNamespaceUtilities::GetDefaultImportsForObject(const UObject* InObject, TSet<FString>& OutNamespaces)
+{
+	if (!InObject)
+	{
+		return;
+	}
+
+	// Get the object's associated namespace (if set).
+	FString ObjectNamespace = GetObjectNamespace(InObject);
+	if (!ObjectNamespace.IsEmpty())
+	{
+		OutNamespaces.Add(ObjectNamespace);
+	}
+
+	if (const UBlueprint* Blueprint = Cast<UBlueprint>(InObject))
+	{
+		// Append inherited namespaces from the parent class hierarchy.
+		GetDefaultImportsForObject(Blueprint->ParentClass, OutNamespaces);
+	}
+	else if (const UStruct* StructType = Cast<UStruct>(InObject))
+	{
+		const bool bAddParentClassImportedNamespaces = GetDefault<UBlueprintEditorSettings>()->bInheritImportedNamespacesFromParentBP;
+
+		UStruct* ParentStruct = StructType->GetSuperStruct();
+		while (ParentStruct)
+		{
+			// Parent type namespace (if set).
+			FString ParentTypeNamespace = GetObjectNamespace(ParentStruct);
+			if (!ParentTypeNamespace.IsEmpty())
+			{
+				OutNamespaces.Add(ParentTypeNamespace);
+			}
+
+			// If enabled, also include namespaces that are explicitly imported by all ancestor BPs.
+			if (bAddParentClassImportedNamespaces)
+			{
+				if (const UClass* ParentClass = Cast<UClass>(ParentStruct))
+				{
+					const UBlueprint* ParentBP = UBlueprint::GetBlueprintFromClass(ParentClass);
+					if (ParentBP)
+					{
+						OutNamespaces.Append(ParentBP->ImportedNamespaces);
+					}
+				}
+			}
+
+			ParentStruct = ParentStruct->GetSuperStruct();
 		}
 	}
 }

@@ -31,7 +31,7 @@ namespace UE::Virtualization
 class FFileSystemBackend final : public IVirtualizationBackend
 {
 public:
-	explicit FFileSystemBackend(FStringView ConfigName, FStringView DebugName);
+	explicit FFileSystemBackend(FStringView ProjectName, FStringView ConfigName, FStringView DebugName);
 	virtual ~FFileSystemBackend() = default;
 
 private:
@@ -39,9 +39,10 @@ private:
 
 	virtual bool Initialize(const FString& ConfigEntry) override;
 
-	virtual EPushResult PushData(const FIoHash& Id, const FCompressedBuffer& Payload, const FString& PackageContext) override;
+	virtual EConnectionStatus OnConnect() override;
 
-	virtual FCompressedBuffer PullData(const FIoHash& Id) override;
+	virtual bool PushData(TArrayView<FPushRequest> Requests) override;
+	virtual bool PullData(TArrayView<FPullRequest> Requests) override;
 
 	virtual bool DoesPayloadExist(const FIoHash& Id) override;
 	

@@ -19,6 +19,7 @@
 #include "StaticBoundShaderState.h"
 #include "EngineGlobals.h"
 #include "PipelineStateCache.h"
+#include "RHICoreShader.h"
 
 static const bool GUsesInvertedZ = true;
 
@@ -121,16 +122,12 @@ void FMetalRHICommandContext::RHISetStreamSource(uint32 StreamIndex, FRHIBuffer*
 	}
 }
 
-void FMetalRHICommandContext::RHISetComputeShader(FRHIComputeShader* ComputeShaderRHI)
+template <typename TRHIShader>
+void FMetalRHICommandContext::ApplyStaticUniformBuffers(TRHIShader* Shader)
 {
-	@autoreleasepool {
-	FMetalComputeShader* ComputeShader = ResourceCast(ComputeShaderRHI);
-
-	// cache this for Dispatch
-	// sets this compute shader pipeline as the current (this resets all state, so we need to set all resources after calling this)
-	Context->GetCurrentState().SetComputeShader(ComputeShader);
-
-	ApplyStaticUniformBuffers(ComputeShader);
+	if (Shader)
+	{
+		UE::RHICore::ApplyStaticUniformBuffers(this, Shader, Shader->StaticSlots, Shader->Bindings.ShaderResourceTable.ResourceTableLayoutHashes, GlobalUniformBuffers);
 	}
 }
 
@@ -311,7 +308,7 @@ void FMetalRHICommandContext::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI,
 	EMetalShaderStages Stage = GetShaderStage(ShaderRHI);
 	if (Surface != nullptr)
 	{
-        if (Surface->Texture || !(Surface->Flags & TexCreate_Presentable))
+        if (Surface->Texture || !(Surface->GetDesc().Flags & TexCreate_Presentable))
         {
             Context->GetCurrentState().SetShaderTexture(Stage, Surface->Texture, TextureIndex, (mtlpp::ResourceUsage)(mtlpp::ResourceUsage::Read|mtlpp::ResourceUsage::Sample));
         }
@@ -334,7 +331,7 @@ void FMetalRHICommandContext::RHISetShaderTexture(FRHIComputeShader* ComputeShad
 	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(NewTextureRHI);
 	if (Surface != nullptr)
     {
-        if (Surface->Texture || !(Surface->Flags & TexCreate_Presentable))
+        if (Surface->Texture || !(Surface->GetDesc().Flags & TexCreate_Presentable))
         {
             Context->GetCurrentState().SetShaderTexture(EMetalShaderStages::Compute, Surface->Texture, TextureIndex, (mtlpp::ResourceUsage)(mtlpp::ResourceUsage::Read|mtlpp::ResourceUsage::Sample));
         }
@@ -450,7 +447,6 @@ void FMetalRHICommandContext::SetRenderTargetsAndClear(const FRHISetRenderTarget
 			PassInfo.ColorRenderTargets[i].MipIndex = RenderTargetsInfo.ColorRenderTarget[i].MipIndex;
 			PassInfo.ColorRenderTargets[i].Action = MakeRenderTargetActions(RenderTargetsInfo.ColorRenderTarget[i].LoadAction, RenderTargetsInfo.ColorRenderTarget[i].StoreAction);
 		bHasTarget = (RenderTargetsInfo.ColorRenderTarget[i].Texture != nullptr);
-			PassInfo.bIsMSAA |= PassInfo.ColorRenderTargets[i].RenderTarget->GetNumSamples() > 1;
 		}
 	}
 		
@@ -459,7 +455,6 @@ void FMetalRHICommandContext::SetRenderTargetsAndClear(const FRHISetRenderTarget
 		PassInfo.DepthStencilRenderTarget.DepthStencilTarget = RenderTargetsInfo.DepthStencilRenderTarget.Texture;
 		PassInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = RenderTargetsInfo.DepthStencilRenderTarget.GetDepthStencilAccess();
 		PassInfo.DepthStencilRenderTarget.Action = MakeDepthStencilTargetActions(MakeRenderTargetActions(RenderTargetsInfo.DepthStencilRenderTarget.DepthLoadAction, RenderTargetsInfo.DepthStencilRenderTarget.DepthStoreAction), MakeRenderTargetActions(RenderTargetsInfo.DepthStencilRenderTarget.StencilLoadAction, RenderTargetsInfo.DepthStencilRenderTarget.GetStencilStoreAction()));
-		PassInfo.bIsMSAA |= RenderTargetsInfo.DepthStencilRenderTarget.Texture->GetNumSamples() > 1;
 	}
 		
 	PassInfo.NumOcclusionQueries = UINT16_MAX;
@@ -595,106 +590,9 @@ void FMetalRHICommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexB
 	}
 }
 
-void FMetalDynamicRHI::SetupRecursiveResources()
-{
-    /*
-	@autoreleasepool {
-	static bool bSetupResources = false;
-	if (GRHISupportsRHIThread && !bSetupResources)
-	{
-		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-		extern int32 GCreateShadersOnLoad;
-		TGuardValue<int32> Guard(GCreateShadersOnLoad, 1);
-		auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-		TShaderMapRef<TOneColorVS<true> > DefaultVertexShader(ShaderMap);
-		TShaderMapRef<TOneColorVS<true, true> > LayeredVertexShader(ShaderMap);
-		FVector4VertexDeclaration.InitRHI();
-		
-		for (uint32 Instanced = 0; Instanced < 2; Instanced++)
-		{
-			FShader* VertexShader = !Instanced ? (FShader*)*DefaultVertexShader : (FShader*)*LayeredVertexShader;
-			
-			for (int32 NumBuffers = 1; NumBuffers <= MaxSimultaneousRenderTargets; NumBuffers++)
-			{
-				FOneColorPS* PixelShader = NULL;
-				
-				// Set the shader to write to the appropriate number of render targets
-				// On AMD PC hardware, outputting to a color index in the shader without a matching render target set has a significant performance hit
-				if (NumBuffers <= 1)
-				{
-					TShaderMapRef<TOneColorPixelShaderMRT<1> > MRTPixelShader(ShaderMap);
-					PixelShader = *MRTPixelShader;
-				}
-				else if (IsFeatureLevelSupported( GMaxRHIShaderPlatform, ERHIFeatureLevel::SM5 ))
-				{
-					if (NumBuffers == 2)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<2> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers== 3)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<3> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers == 4)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<4> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers == 5)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<5> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers == 6)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<6> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers == 7)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<7> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-					else if (NumBuffers == 8)
-					{
-						TShaderMapRef<TOneColorPixelShaderMRT<8> > MRTPixelShader(ShaderMap);
-						PixelShader = *MRTPixelShader;
-					}
-				}
-				
-				// SetGlobalBoundShaderState(RHICmdList, GMaxRHIFeatureLevel, GClearMRTBoundShaderState[NumBuffers - 1][Instanced], FVector4VertexDeclaration.VertexDeclarationRHI, VertexShader, PixelShader);
-			}
-		}
-		
-		bSetupResources = true;
-	}
-	}
-    */
-}
-
 void FMetalRHICommandContext::RHIClearMRT(bool bClearColor,int32 NumClearColors,const FLinearColor* ClearColorArray,bool bClearDepth,float Depth,bool bClearStencil,uint32 Stencil)
 {
 	NOT_SUPPORTED("RHIClearMRT");
-}
-
-void FMetalDynamicRHI::RHIBlockUntilGPUIdle()
-{
-	@autoreleasepool {
-	ImmediateContext.Context->SubmitCommandBufferAndWait();
-	}
-}
-
-uint32 FMetalDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
-{
-	check(GPUIndex == 0);
-	return GGPUFrameTime;
-}
-
-void FMetalDynamicRHI::RHIExecuteCommandList(FRHICommandList* RHICmdList)
-{
-	NOT_SUPPORTED("RHIExecuteCommandList");
 }
 
 void FMetalRHICommandContext::RHISetDepthBounds(float MinDepth, float MaxDepth)
@@ -712,21 +610,6 @@ void FMetalRHICommandContext::RHISubmitCommandsHint()
 void FMetalRHICommandContext::RHIDiscardRenderTargets(bool Depth, bool Stencil, uint32 ColorBitMask)
 {
 	Context->GetCurrentState().DiscardRenderTargets(Depth, Stencil, ColorBitMask);
-}
-
-IRHICommandContext* FMetalDynamicRHI::RHIGetDefaultContext()
-{
-	return &ImmediateContext;
-}
-
-IRHIComputeContext* FMetalDynamicRHI::RHIGetDefaultAsyncComputeContext()
-{
-	@autoreleasepool {
-	IRHIComputeContext* ComputeContext = GSupportsEfficientAsyncCompute && AsyncComputeContext ? AsyncComputeContext : RHIGetDefaultContext();
-	// On platforms that support non-async compute we set this to the normal context.  It won't be async, but the high level
-	// code can be agnostic if it wants to be.
-	return ComputeContext;
-	}
 }
 
 #if PLATFORM_USES_FIXED_RHI_CLASS

@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Groups/CommonButtonGroupBase.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonButtonGroupBase)
+
 #include <functional>
 
 UCommonButtonGroupBase::UCommonButtonGroupBase()
@@ -140,7 +143,7 @@ void UCommonButtonGroupBase::SelectPreviousButton(bool bAllowWrap /*= true*/)
 	SelectPrevButtonRecursive(SelectedButtonIndex, bAllowWrap);
 }
 
-void UCommonButtonGroupBase::SelectButtonAtIndex(int32 ButtonIndex)
+void UCommonButtonGroupBase::SelectButtonAtIndex(int32 ButtonIndex, const bool bAllowSound)
 {
 	if (ButtonIndex < 0 || ButtonIndex >= Buttons.Num())
 	{
@@ -152,7 +155,7 @@ void UCommonButtonGroupBase::SelectButtonAtIndex(int32 ButtonIndex)
 		if (ButtonToSelect && !ButtonToSelect->GetSelected() && ButtonToSelect->GetIsEnabled())
 		{
 			SelectedButtonIndex = ButtonIndex;
-			ButtonToSelect->SetSelectedInternal(true);
+			ButtonToSelect->SetSelectedInternal(true, bAllowSound);
 		}
 	}
 }
@@ -371,3 +374,4 @@ UCommonButtonBase* UCommonButtonGroupBase::GetSelectedButtonBase() const
 {
 	return GetButtonBaseAtIndex(SelectedButtonIndex);
 }
+

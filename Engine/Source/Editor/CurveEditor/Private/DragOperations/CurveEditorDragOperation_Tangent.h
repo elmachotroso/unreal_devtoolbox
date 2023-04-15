@@ -2,11 +2,16 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "ICurveEditorDragOperation.h"
+#include "Containers/Array.h"
 #include "CurveDataAbstraction.h"
+#include "CurveEditorTypes.h"
+#include "Curves/KeyHandle.h"
+#include "ICurveEditorDragOperation.h"
+#include "Math/Vector2D.h"
+#include "Misc/Optional.h"
 
 class FCurveEditor;
+struct FPointerEvent;
 
 class FCurveEditorDragOperation_Tangent : public ICurveEditorKeyDragOperation
 {
@@ -45,7 +50,7 @@ private:
 		/** The key attributes for each of the above handles */
 		TArray<FKeyAttributes> Attributes;
 		/** Used in OnEndDrag to send final key updates */
-		TArray<FKeyAttributes> LastDraggedAttributes;
+		TOptional<TArray<FKeyAttributes> > LastDraggedAttributes;
 	};
 
 	/** Key dragging data stored per-curve */

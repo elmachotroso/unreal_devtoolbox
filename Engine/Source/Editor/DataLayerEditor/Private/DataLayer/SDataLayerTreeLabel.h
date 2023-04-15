@@ -2,16 +2,25 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
 #include "Misc/Attribute.h"
 #include "SceneOutlinerFwd.h"
 #include "SceneOutlinerStandaloneTypes.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/STableRow.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
 
+class ISceneOutliner;
+class UDataLayerInstance;
 struct FDataLayerTreeItem;
-class UDataLayer;
+struct FSlateBrush;
+template <typename ItemType> class STableRow;
 
 struct SDataLayerTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWidget
 {
@@ -33,8 +42,13 @@ private:
 	bool OnVerifyItemLabelChanged(const FText& InLabel, FText& OutErrorMessage);
 	void OnLabelCommitted(const FText& InLabel, ETextCommit::Type InCommitInfo);
 	bool ShouldBeHighlighted() const;
+	bool ShouldBeItalic() const;
+	bool IsInActorEditorContext() const;
+	void OnEnterEditingMode();
+	void OnExitEditingMode();
 
 	TWeakPtr<FDataLayerTreeItem> TreeItemPtr;
-	TWeakObjectPtr<UDataLayer> DataLayerPtr;
+	TWeakObjectPtr<UDataLayerInstance> DataLayerPtr;
 	TAttribute<FText> HighlightText;
+	bool bInEditingMode;
 };

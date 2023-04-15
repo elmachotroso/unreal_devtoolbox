@@ -12,6 +12,7 @@ class AGameplayDebuggerCategoryReplicator;
 class APlayerController;
 class UGameplayDebuggerLocalController;
 class UInputComponent;
+class AGameModeBase;
 
 USTRUCT()
 struct FGameplayDebuggerPlayerData
@@ -42,13 +43,17 @@ class GAMEPLAYDEBUGGER_API AGameplayDebuggerPlayerManager : public AActor, publi
 	virtual ETickableTickType GetTickableTickType() const override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickableInEditor() const override { return true; }
-	virtual bool IsTickable() const override;
+	/** results in this instance not being ticked in any of the game worlds */
+	virtual bool IsTickable() const override { return bEditorTimeTick; }
 	// FTickableGameObject end
 
 	virtual void PostInitProperties() override;
 
 protected:
 	virtual void BeginPlay() override;
+
+	void OnReplayScrubTeardown(UWorld* InWorld);
+	void OnGameModeLogout(AGameModeBase* GameMode, AController* Exiting);
 
 public:
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
@@ -85,6 +90,7 @@ protected:
 	FGameplayDebuggerPlayerData EditorWorldData;
 #endif // WITH_EDITORONLY_DATA
 
+	uint8 bEditorTimeTick : 1;
 	uint32 bHasAuthority : 1;
 	uint32 bIsLocal : 1;
 	uint32 bInitialized : 1;

@@ -93,7 +93,7 @@ class SLATE_API STableViewBase
 public:
 
 	/** Create the child widgets that comprise the list */
-	void ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled, const FScrollBarStyle* InScrollBarStyle = nullptr );
+	void ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled, const FScrollBarStyle* InScrollBarStyle = nullptr, const bool bInPreventThrottling = false );
 
 	/** Sets the item height */
 	void SetItemHeight(TAttribute<float> Height);
@@ -246,11 +246,24 @@ protected:
 
 	/** Add a WidgetToAppend to the bottom of the view. */
 	void AppendWidget( const TSharedRef<ITableRow>& WidgetToAppend );
-	
+
+	const FChildren* GetConstructedTableItems() const;
+
 	/**
 	 * Remove all the widgets from the view.
 	 */
 	void ClearWidgets();
+
+	/** Insert WidgetToInsert at the top of the pinned view. */
+	void InsertPinnedWidget(const TSharedRef<SWidget>& WidgetToInset);
+
+	/** Add a WidgetToAppend to the bottom of the pinned view. */
+	void AppendPinnedWidget(const TSharedRef<SWidget>& WidgetToAppend);
+
+	/**
+	 * Remove all the pinned widgets from the view.
+	 */
+	void ClearPinnedWidgets();
 
 	/**
 	 * Get the uniform item width.
@@ -335,6 +348,11 @@ protected:
 	/** @return how many items there are in the TArray being observed */
 	virtual int32 GetNumItemsBeingObserved() const = 0;
 
+	/** @return how many pinned items are in the table */
+	int32 GetNumPinnedItems() const;
+
+	EVisibility GetPinnedItemsVisiblity() const;
+
 	enum class EScrollIntoViewResult
 	{
 		/** The function scrolled an item (if set) into view (or the item was already in view) */
@@ -357,11 +375,19 @@ protected:
 	 */
 	virtual void NotifyItemScrolledIntoView() = 0;
 
+	/**
+	 * Called when CurrentScrollOffset == TargetScrollOffset at the end of a ::Tick
+	 */
+	virtual void NotifyFinishedScrolling() = 0;
+
 	/** Util Function so templates classes don't need to include SlateApplication */
 	void NavigateToWidget(const uint32 UserIndex, const TSharedPtr<SWidget>& NavigationDestination, ENavigationSource NavigationSource = ENavigationSource::FocusedWidget) const;
 
 	/** The panel which holds the visible widgets in this list */
 	TSharedPtr< SListPanel > ItemsPanel;
+
+	/** The panel which holds the pinned widgets in this list */
+	TSharedPtr< SListPanel > PinnedItemsPanel;
 
 	/** The scroll bar widget */
 	TSharedPtr< SScrollBar > ScrollBar;

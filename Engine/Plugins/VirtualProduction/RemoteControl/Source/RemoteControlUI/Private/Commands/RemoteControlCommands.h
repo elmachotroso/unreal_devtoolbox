@@ -22,7 +22,47 @@ public:
 	//~ END : TCommands<> Implementation(s)
 
 	/**
-	 * Holds the information about UI Command that toggles edit mode in RC Panel.
+	 * Holds the information about UI Command that finds the actively edited preset in the Content Browser.
 	 */
-	TSharedPtr<FUICommandInfo> ToggleEditMode;
+	TSharedPtr<FUICommandInfo> FindPresetInContentBrowser;
+
+	/**
+	 * Holds the information about UI Command that saves the actively edited preset.
+	 */
+	TSharedPtr<FUICommandInfo> SavePreset;
+
+	/**
+	 * Holds the information about UI Command that brings up a panel which holds the active protocol mappings.
+	 */
+	TSharedPtr<FUICommandInfo> ToggleProtocolMappings;
+	
+	/**
+	 * Holds the information about UI Command that brings up a panel which enables the RC Logical Behaviour.
+	 */
+	TSharedPtr<FUICommandInfo> ToggleLogicEditor;
+
+	/**
+	 * Holds the information about UI Command that deletes currently selected group/exposed entity.
+	 */
+	TSharedPtr< FUICommandInfo > DeleteEntity;
+
+	/**
+	 * Holds the information about UI Command that  renames selected group/exposed entity.
+	 */
+	TSharedPtr< FUICommandInfo > RenameEntity;
+
+	/**
+	 * UI Command for copying a UI item in the Remote Control preset. Currently used for Logic panel
+	 */
+	TSharedPtr< FUICommandInfo > CopyItem;
+
+	/**
+	 * UI Command for pasting a UI item in the Remote Control preset. Currently used for Logic panel
+	 */
+	TSharedPtr< FUICommandInfo > PasteItem;
+
+	/**
+	 * UI Command for duplicating a UI item in the Remote Control preset. Currently used for Logic panel
+	 */
+	TSharedPtr< FUICommandInfo > DuplicateItem;
 };

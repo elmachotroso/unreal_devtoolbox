@@ -9,7 +9,7 @@ FMoviePipelinePanoramicBlender::FMoviePipelinePanoramicBlender(TSharedPtr<MovieP
 	OutputEquirectangularMapSize = InOutputResolution;
 }
 
-static FLinearColor GetColorBilinearFiltered(const FImagePixelData* InSampleData, const FVector2D& InSamplePixelCoords, bool& OutClipped, bool iForceAlphaToOpaque = false)
+static FLinearColor GetColorBilinearFiltered(const FImagePixelData* InSampleData, const FVector2D& InSamplePixelCoords, bool& OutClipped, bool bInForceAlphaToOpaque = false)
 {
 	// Pixel coordinates assume that 0.5, 0.5 is the center of the pixel, so we subtract half to make it indexable.
 	const FVector2D PixelCoordinateIndex = InSamplePixelCoords - 0.5f;
@@ -82,7 +82,7 @@ static FLinearColor GetColorBilinearFiltered(const FImagePixelData* InSampleData
 		 + (UpperLeftPixelColor * (1.0f - FracX) + UpperRightPixelColor * FracX) * FracY;
 
 	// Force final color alpha to opaque if requested
-	if (iForceAlphaToOpaque)
+	if (bInForceAlphaToOpaque)
 	{
 		InterpolatedPixelColor.A = 1.0f;
 	}
@@ -123,7 +123,7 @@ void FMoviePipelinePanoramicBlender::OnCompleteRenderPassDataAvailable_AnyThread
 	const FVector SampleDirectionOnPhi = FVector(FMath::Cos(SamplePitchRad), 0.f, FMath::Sin(SamplePitchRad));
 
 	// Now construct a projection matrix representing the sample matching the original perspective it was taken from.
-	const FMatrix SampleProjectionMatrix = FReversedZPerspectiveMatrix(FMath::DegreesToRadians(SampleHalfHorizontalFoVDegrees), SampleSize.X, SampleSize.Y, GNearClippingPlane);
+	const FMatrix SampleProjectionMatrix = FReversedZPerspectiveMatrix(FMath::DegreesToRadians(SampleHalfHorizontalFoVDegrees), SampleSize.X, SampleSize.Y, DataPayload->Pane.NearClippingPlane);
 
 	// For our given output size, figure out how many degrees each pixel represents.
 	const float EquiRectMapThetaStep = 360.f / (float)OutputEquirectangularMapSize.X;
@@ -138,13 +138,13 @@ void FMoviePipelinePanoramicBlender::OnCompleteRenderPassDataAvailable_AnyThread
 	// The MinBound for X can actually be greater than the MaxBound due to wrapping, modulo is applied at eval time to ensure it wraps right.
 	float SampleYawMin = SampleRotation.Yaw - SampleHalfHorizontalFoVDegrees;
 	float SampleYawMax = SampleRotation.Yaw + SampleHalfHorizontalFoVDegrees;
-	int32 PixelIndexHorzMinBound = FMath::FloorToInt(((SampleYawMin)+180.f) / EquiRectMapThetaStep);
-	int32 PixelIndexHorzMaxBound = FMath::FloorToInt(((SampleYawMax)+180.f) / EquiRectMapThetaStep);
+	int32 PixelIndexHorzMinBound = FMath::FloorToInt(((SampleYawMin) + 180.f) / EquiRectMapThetaStep);
+	int32 PixelIndexHorzMaxBound = FMath::FloorToInt(((SampleYawMax) + 180.f) / EquiRectMapThetaStep);
 
 	float SamplePitchMin = FMath::Max(SampleRotation.Pitch - SampleHalfVerticalFoVDegrees, -90.f); // Clamped to [-90, 90]
 	float SamplePitchMax = FMath::Min(SampleRotation.Pitch + SampleHalfVerticalFoVDegrees, 90.f); // Clamped to [-90, 90]
-	int32 PixelIndexVertMinBound = FMath::Max((OutputEquirectangularMapSize.Y - 1) - FMath::FloorToInt((SamplePitchMax + 90.f) / EquiRectMapPhiStep), 0);
-	int32 PixelIndexVertMaxBound = FMath::Min((OutputEquirectangularMapSize.Y - 1) - FMath::FloorToInt((SamplePitchMin + 90.f) / EquiRectMapPhiStep), OutputEquirectangularMapSize.Y - 1);
+	int32 PixelIndexVertMinBound = FMath::Max((OutputEquirectangularMapSize.Y) - FMath::FloorToInt((SamplePitchMax + 90.f) / EquiRectMapPhiStep), 0);
+	int32 PixelIndexVertMaxBound = FMath::Min((OutputEquirectangularMapSize.Y) - FMath::FloorToInt((SamplePitchMin + 90.f) / EquiRectMapPhiStep), OutputEquirectangularMapSize.Y);
 
 	{
 		// Do a quick lock while we're iterating/adding to the PendingData array so a second sample
@@ -168,6 +168,11 @@ void FMoviePipelinePanoramicBlender::OnCompleteRenderPassDataAvailable_AnyThread
 			int32 EyeMultiplier = DataPayload->Pane.EyeIndex == -1 ? 1 : 2;
 			int32 TotalSampleCount = DataPayload->Pane.NumHorizontalSteps * DataPayload->Pane.NumVerticalSteps * EyeMultiplier;
 			OutputFrame->NumSamplesTotal = TotalSampleCount;
+
+			{
+				LLM_SCOPE_BYNAME(TEXT("MoviePipeline/PanoBlendFrameOutput"));
+				OutputFrame->OutputEquirectangularMap.SetNumZeroed(OutputEquirectangularMapSize.X * OutputEquirectangularMapSize.Y * EyeMultiplier);
+			}
 		}
 	}
 
@@ -195,119 +200,157 @@ void FMoviePipelinePanoramicBlender::OnCompleteRenderPassDataAvailable_AnyThread
 	BlendDataTarget->PixelHeight = BlendDataTarget->OutputBoundsMax.Y - BlendDataTarget->OutputBoundsMin.Y;
 
 	// These need to be zeroed as we don't always touch every pixel in the rect with blending
-	// and they get +='d together later. We allocate extra pixel here because the for loops are <= and not <.
+	// and they get +='d together later.
 	{
 		LLM_SCOPE_BYNAME(TEXT("MoviePipeline/PanoBlendPerTaskOutput"));
-		BlendDataTarget->Data.SetNumZeroed((BlendDataTarget->PixelWidth + 1) * (BlendDataTarget->PixelHeight + 1));
+		BlendDataTarget->Data.SetNumZeroed((BlendDataTarget->PixelWidth) * (BlendDataTarget->PixelHeight));
 	}
 
 	// Finally we can perform our actual blending. We blend into our intermediate buffer
 	// instead of the final output array to avoid multiple threads contending for pixels.
-// The define was confusing the static analysis for some reason, so we'll just comment it out.
-// The overhead of the ParallelFor isn't really worth it here now that we go wide with each sample
-// being accumulated on the task thread into a separate output buffer anyways.
-//#define ACCUMULATE_IN_SCANLINES 0
-//#if ACCUMULATE_IN_SCANLINES
-//	const int32 NumRowsPerTask = 1;
-//	const int32 NumScanLineTasks = FMath::DivideAndRoundUp(PixelIndexVertMaxBound - PixelIndexVertMinBound + 1, NumRowsPerTask);
-//
-//	// Like most of the Movie Pipeline, we parallelize on scanlines.
-//	ParallelFor(NumScanLineTasks,
-//		[&](int32 InScanLineTaskIndex)
-//	{
-//		int32 VertIndexStart = NumRowsPerTask * InScanLineTaskIndex + PixelIndexVertMinBound;
-//		int32 VertIndexEnd = ((NumRowsPerTask * (InScanLineTaskIndex + 1)) - 1) + PixelIndexVertMinBound;
-//		
-//		// Clamp it so we don't go out of bounds on the end rows.
-//		VertIndexEnd = FMath::Min(VertIndexEnd, PixelIndexVertMaxBound);
-//		for (int32 Y = VertIndexStart; Y <= VertIndexEnd; Y++)
-//#else
-		for (int32 Y = PixelIndexVertMinBound; Y <= PixelIndexVertMaxBound; Y++)
-//#endif
+	for (int32 Y = PixelIndexVertMinBound; Y < PixelIndexVertMaxBound; Y++)
+	{
+		for (int32 X = PixelIndexHorzMinBound; X < PixelIndexHorzMaxBound; X++)
 		{
-			for (int32 X = PixelIndexHorzMinBound; X <= PixelIndexHorzMaxBound; X++)
+			// These X, Y coordinates are in output resolution space which is where we want to blend to.
+			// Our X bounds may go OOB, but we wrap horizontally so we need to figure out the proper X index.
+			const int32 OutputPixelX = ((X % OutputEquirectangularMapSize.X) + OutputEquirectangularMapSize.X) % OutputEquirectangularMapSize.X;
+			const int32 OutputPixelY = Y;
+
+			// Get the spherical coordinates (Theta and Phi) corresponding to the X and Y of the equirectangular map coordinates, converted to
+			// [-180, 180] and [-90, 90] coordinate space respectively. The half pixel offset is used to make the center of a pixel be considered
+			// that coordinate, and Phi increments in the opposite direction of Y.
+			const float Theta = EquiRectMapThetaStep * (((float)OutputPixelX) + 0.5f) - 180.f;
+			const float Phi = EquiRectMapPhiStep * (((float)OutputEquirectangularMapSize.Y - OutputPixelY) + 0.5f) - 90.f;
+
+			// Now convert the spherical coordinates into an actual direction (on the output map)
+			const float ThetaDeg = FMath::DegreesToRadians(Theta);
+			const float PhiDeg = FMath::DegreesToRadians(Phi);
+			const FVector OutputDirection(FMath::Cos(PhiDeg) * FMath::Cos(ThetaDeg), FMath::Cos(PhiDeg) * FMath::Sin(ThetaDeg), FMath::Sin(PhiDeg));
+			const FVector OutputDirectionTheta = FVector(FMath::Cos(ThetaDeg), FMath::Sin(ThetaDeg), 0);
+			const FVector OutputDirectionPhi = FVector(FMath::Cos(PhiDeg), 0.f, FMath::Sin(PhiDeg));
+
+			// Now we can compute how much the sample should influence this pixel. It is weighted by angular distance to the direction
+			// so that the edges have less influence (where they'd be more distorted anyways).
+			const float DirectionPhiDot = FVector::DotProduct(OutputDirectionPhi, SampleDirectionOnPhi); // ToDo: This only considers the whole Pano Pane and not per pixel of sample?
+			const float DirectionThetaDot = FVector::DotProduct(OutputDirectionTheta, SampleDirectionOnTheta);
+			const float WeightTheta = FMath::Max(DirectionThetaDot - SampleHalfHorizontalFoVCosine, 0.0f) / (1.0f - SampleHalfHorizontalFoVCosine);
+			const float WeightPhi = FMath::Max(DirectionPhiDot - SampleHalfVerticalFoVCosine, 0.0f) / (1.0f - SampleHalfVerticalFoVCosine);
+
+			const float SampleWeight = WeightTheta * WeightPhi;
+			const float SampleWeightSquared = SampleWeight* SampleWeight; // Exponential falloff produces a nicer blending result.
+
+			// The sample weight may be very small and not worth influencing this pixel.
+			if (SampleWeightSquared > KINDA_SMALL_NUMBER)
 			{
-				// These X, Y coordinates are in output resolution space which is where we want to blend to.
-				// Our X bounds may go OOB, but we wrap horizontally so we need to figure out the proper X index.
-				const int32 OutputPixelX = ((X % OutputEquirectangularMapSize.X) + OutputEquirectangularMapSize.X) % OutputEquirectangularMapSize.X;
-				const int32 OutputPixelY = Y;
+				// Transform the direction vector from the equirectangular map world space to sample world space
+				FVector4 DirectionInSampleWorldSpace = FVector4(SampleRotation.UnrotateVector(OutputDirection), 1.0f);
 
-				// Get the spherical coordinates (Theta and Phi) corresponding to the X and Y of the equirectangular map coordinates, converted to
-				// [-180, 180] and [-90, 90] coordinate space respectively. The half pixel offset is used to make the center of a pixel be considered
-				// that coordinate, and Phi increments in the opposite direction of Y.
-				const float Theta = EquiRectMapThetaStep * (((float)OutputPixelX) + 0.5f) - 180.f;
-				const float Phi = EquiRectMapPhiStep * (((float)OutputEquirectangularMapSize.Y - OutputPixelY - 1) + 0.5f) - 90.f;
+				static const FMatrix UnrealCoordinateConversion = FMatrix(
+					FPlane(0, 0, 1, 0),
+					FPlane(1, 0, 0, 0),
+					FPlane(0, 1, 0, 0),
+					FPlane(0, 0, 0, 1));
+				DirectionInSampleWorldSpace = UnrealCoordinateConversion.TransformFVector4(DirectionInSampleWorldSpace);
 
-				// Now convert the spherical coordinates into an actual direction (on the output map)
-				const float ThetaDeg = FMath::DegreesToRadians(Theta);
-				const float PhiDeg = FMath::DegreesToRadians(Phi);
-				const FVector OutputDirection(FMath::Cos(PhiDeg) * FMath::Cos(ThetaDeg), FMath::Cos(PhiDeg) * FMath::Sin(ThetaDeg), FMath::Sin(PhiDeg));
-				const FVector OutputDirectionTheta = FVector(FMath::Cos(ThetaDeg), FMath::Sin(ThetaDeg), 0);
-				const FVector OutputDirectionPhi = FVector(FMath::Cos(PhiDeg), 0.f, FMath::Sin(PhiDeg));
+				// Then project that direction into sample clip space
+				FVector4 DirectionInSampleClipSpace = SampleProjectionMatrix.TransformFVector4(DirectionInSampleWorldSpace);
 
-				// Now we can compute how much the sample should influence this pixel. It is weighted by angular distance to the direction
-				// so that the edges have less influence (where they'd be more distorted anyways).
-				const float DirectionPhiDot = FVector::DotProduct(OutputDirectionPhi, SampleDirectionOnPhi); // ToDo: This only considers the whole Pano Pane and not per pixel of sample?
-				const float DirectionThetaDot = FVector::DotProduct(OutputDirectionTheta, SampleDirectionOnTheta);
-				const float WeightTheta = FMath::Max(DirectionThetaDot - SampleHalfHorizontalFoVCosine, 0.0f) / (1.0f - SampleHalfHorizontalFoVCosine);
-				const float WeightPhi = FMath::Max(DirectionPhiDot - SampleHalfVerticalFoVCosine, 0.0f) / (1.0f - SampleHalfVerticalFoVCosine);
+				// Converted into normalized device space (Divide by w for perspective)
+				FVector DirectionInSampleNDSpace = FVector(DirectionInSampleClipSpace) / DirectionInSampleClipSpace.W;
 
-				const float SampleWeight = WeightTheta * WeightPhi;
-				const float SampleWeightSquared = SampleWeight* SampleWeight; // Exponential falloff produces a nicer blending result.
+				// Get the final pixel coordinates (direction in screen space)
+				FVector2D DirectionInSampleScreenSpace = ((FVector2D(DirectionInSampleNDSpace) + 1.0f) / 2.0f) * FVector2D(SampleSize.X, SampleSize.Y);
 
-				// The sample weight may be very small and not worth influencing this pixel.
-				if (SampleWeightSquared > KINDA_SMALL_NUMBER)
+				// Flip the Y value due to Y's zero coordinate being top left.
+				DirectionInSampleScreenSpace.Y = ((float)SampleSize.Y - DirectionInSampleScreenSpace.Y) - 1.0f;
+
+				// Do a bilinear color sample at the pixel coordinates (from the sample), weight it, and add it to the output map. We store
+				// weights separately so that we can preserve the alpha channel of the main image.
+				bool bClipped = false;
+				FLinearColor SampleColor = GetColorBilinearFiltered(InData.Get(), DirectionInSampleScreenSpace, bClipped, true);
+
+				if (!bClipped)
 				{
-					// Transform the direction vector from the equirectangular map world space to sample world space
-					FVector4 DirectionInSampleWorldSpace = FVector4(SampleRotation.UnrotateVector(OutputDirection), 1.0f);
-
-					static const FMatrix UnrealCoordinateConversion = FMatrix(
-						FPlane(0, 0, 1, 0),
-						FPlane(1, 0, 0, 0),
-						FPlane(0, 1, 0, 0),
-						FPlane(0, 0, 0, 1));
-					DirectionInSampleWorldSpace = UnrealCoordinateConversion.TransformFVector4(DirectionInSampleWorldSpace);
-
-					// Then project that direction into sample clip space
-					FVector4 DirectionInSampleClipSpace = SampleProjectionMatrix.TransformFVector4(DirectionInSampleWorldSpace);
-
-					// Converted into normalized device space (Divide by w for perspective)
-					FVector DirectionInSampleNDSpace = FVector(DirectionInSampleClipSpace) / DirectionInSampleClipSpace.W;
-
-					// Get the final pixel coordinates (direction in screen space)
-					FVector2D DirectionInSampleScreenSpace = ((FVector2D(DirectionInSampleNDSpace) + 1.0f) / 2.0f) * FVector2D(SampleSize.X, SampleSize.Y);
-
-					// Flip the Y value due to Y's zero coordinate being top left.
-					DirectionInSampleScreenSpace.Y = ((float)SampleSize.Y - DirectionInSampleScreenSpace.Y) - 1.0f;
-
-					// Do a bilinear color sample at the pixel coordinates (from the sample), weight it, and add it to the output map. We store
-					// weights separately so that we can preserve the alpha channel of the main image.
-					bool bClipped = false;
-					FLinearColor SampleColor = GetColorBilinearFiltered(InData.Get(), DirectionInSampleScreenSpace, bClipped, true);
-
-					if (!bClipped)
-					{
-						// When we calculate the actual output location we need to shift the X/Y. This is because up until now the math has been done in
-						// output resolution space, but each sample only allocates a color map big enough for itself. It'll get shifted back out to the
-						// right location later.
-						int32 SampleOutputX = OutputPixelX - BlendDataTarget->OutputBoundsMin.X;
-						// Mod this again by our output map so we don't OOB on it. It'll wrap weirdly in the output map but should restore fine.
-						SampleOutputX = ((SampleOutputX % (BlendDataTarget->PixelWidth+1)) + (BlendDataTarget->PixelWidth+1)) % (BlendDataTarget->PixelWidth+1); // Positive Mod
-						int32 SampleOutputY = Y;
-						SampleOutputY -= BlendDataTarget->OutputBoundsMin.Y;
+					// When we calculate the actual output location we need to shift the X/Y. This is because up until now the math has been done in
+					// output resolution space, but each sample only allocates a color map big enough for itself. It'll get shifted back out to the
+					// right location later.
+					int32 SampleOutputX = OutputPixelX - BlendDataTarget->OutputBoundsMin.X;
+					// Mod this again by our output map so we don't OOB on it. It'll wrap weirdly in the output map but should restore fine.
+					SampleOutputX = ((SampleOutputX % (BlendDataTarget->PixelWidth)) + (BlendDataTarget->PixelWidth)) % (BlendDataTarget->PixelWidth); // Positive Mod
+					int32 SampleOutputY = Y;
+					SampleOutputY -= BlendDataTarget->OutputBoundsMin.Y;
 						
-						const int32 FinalIndex = SampleOutputX + (SampleOutputY * (BlendDataTarget->PixelWidth + 1));
-						BlendDataTarget->Data[FinalIndex] += SampleColor * SampleWeightSquared;
-						// OutputEquirectangularMap[OutputPixelX + (OutputPixelY * OutputEquirectangularMapSize.X)] += SampleColor * SampleWeightSquared; // ToDo move to weight map.
-					}
+					const int32 FinalIndex = SampleOutputX + (SampleOutputY * (BlendDataTarget->PixelWidth));
+					BlendDataTarget->Data[FinalIndex] += SampleColor * SampleWeightSquared;
+					// OutputEquirectangularMap[OutputPixelX + (OutputPixelY * OutputEquirectangularMapSize.X)] += SampleColor * SampleWeightSquared; // ToDo move to weight map.
 				}
 			}
 		}
-// #if ACCUMULATE_IN_SCANLINES
-// 	});
-// #endif
+	}
 
 	BlendDataTarget->BlendEndTime = FPlatformTime::Seconds();
+
+	// Blend the new sample into the output map as soon as possible, so that we can free the temporary memory held
+	// by this sample. This part is single-threaded (with respect to the other tasks).
+	{
+		// Lock access to our output map
+		FScopeLock ScopeLock(&OutputDataMutex);
+
+
+		// For Stereo images, just offset the second eye by the entire output size so it goes on the bottom half
+		// of the image. We've already made the array twice as big as it needs to be (in the case of stereo) and
+		// below EyeIndex 0 (left eye) will go in the first half of the image, eye index 1 in the second.
+		int32 EyeOffset = 0;
+		if (BlendDataTarget->OriginalDataPayload->Pane.EyeIndex != -1)
+		{
+			EyeOffset = (OutputEquirectangularMapSize.X * OutputEquirectangularMapSize.Y) * BlendDataTarget->OriginalDataPayload->Pane.EyeIndex;
+		}
+
+		for (int32 SampleY = 0; SampleY < BlendDataTarget->PixelHeight; SampleY++)
+		{
+			for (int32 SampleX = 0; SampleX < BlendDataTarget->PixelWidth; SampleX++)
+			{
+				int32 OriginalX = SampleX + BlendDataTarget->OutputBoundsMin.X;
+				int32 OriginalY = SampleY + BlendDataTarget->OutputBoundsMin.Y;
+				const int32 OutputPixelX = ((OriginalX % OutputEquirectangularMapSize.X) + OutputEquirectangularMapSize.X) % OutputEquirectangularMapSize.X;
+				const int32 OutputPixelY = OriginalY;
+
+				int32 SourceIndex = SampleX + (SampleY * (BlendDataTarget->PixelWidth));
+				int32 DestIndex = OutputPixelX + (OutputPixelY * OutputEquirectangularMapSize.X);
+				OutputFrame->OutputEquirectangularMap[DestIndex + EyeOffset] += BlendDataTarget->Data[SourceIndex];
+			}
+		}
+
+		bool bDebugSamples = DataPayload->SampleState.bWriteSampleToDisk;
+		if (bDebugSamples)
+		{
+			// Write each blended sample to the output as a debug sample so we can inspect the job blending is doing for each pane.
+			// Hack up the debug output name a bit so they're unique.
+			if (BlendDataTarget->OriginalDataPayload->Pane.EyeIndex >= 0)
+			{
+				BlendDataTarget->OriginalDataPayload->Debug_OverrideFilename = FString::Printf(TEXT("/%s_PaneX_%d_PaneY_%dEye_%d-Blended.%d"),
+					*BlendDataTarget->OriginalDataPayload->PassIdentifier.Name, BlendDataTarget->OriginalDataPayload->Pane.HorizontalStepIndex,
+					BlendDataTarget->OriginalDataPayload->Pane.VerticalStepIndex, DataPayload->Pane.EyeIndex, BlendDataTarget->OriginalDataPayload->SampleState.OutputState.OutputFrameNumber);
+			}
+			else
+			{
+				BlendDataTarget->OriginalDataPayload->Debug_OverrideFilename = FString::Printf(TEXT("/%s_PaneX_%d_PaneY_%d-Blended.%d"),
+					*BlendDataTarget->OriginalDataPayload->PassIdentifier.Name, BlendDataTarget->OriginalDataPayload->Pane.HorizontalStepIndex,
+					BlendDataTarget->OriginalDataPayload->Pane.VerticalStepIndex, BlendDataTarget->OriginalDataPayload->SampleState.OutputState.OutputFrameNumber);
+			}
+
+			// Now that the sample has been blended pass it (and the memory it owned, we already read from it) to the debug output step.
+			TUniquePtr<TImagePixelData<FLinearColor>> FinalPixelData = MakeUnique<TImagePixelData<FLinearColor>>(FIntPoint(BlendDataTarget->PixelWidth, BlendDataTarget->PixelHeight), TArray64<FLinearColor>(MoveTemp(BlendDataTarget->Data)), BlendDataTarget->OriginalDataPayload);
+			ensure(OutputMerger.IsValid());
+			OutputMerger.Pin()->OnSingleSampleDataAvailable_AnyThread(MoveTemp(FinalPixelData));
+		}
+		else
+		{
+			// Ensure we reset the memory we allocated, to minimize concurrent allocations.
+			BlendDataTarget->Data.Reset();
+		}
+	}
 
 	// This should only be set to true when this thread is really finished with the work.
 	bool bIsLastSample = false;
@@ -333,129 +376,38 @@ void FMoviePipelinePanoramicBlender::OnCompleteRenderPassDataAvailable_AnyThread
 
 	if (bIsLastSample)
 	{
-		// If this really was the last sample, then we can blend all the data into the output map.
-		double TotalTimeSpentBlending = 0.f;
-		double MinBlendStart = TNumericLimits<double>::Max();
-		double MaxBlendEnd = TNumericLimits<double>::Lowest();
-
 		{
-			LLM_SCOPE_BYNAME(TEXT("MoviePipeline/PanoBlendFrameOutput"));
-			int32 EyeMultiplier = DataPayload->Pane.EyeIndex == -1 ? 1 : 2;
-			OutputFrame->OutputEquirectangularMap.SetNumZeroed(OutputEquirectangularMapSize.X * OutputEquirectangularMapSize.Y * EyeMultiplier);
-		}
-
-		int32 NumSamplesAccumulated = 0;
-
-		// For each eye
-		for (TPair<int32, TArray<TSharedPtr<FPanoramicBlendData>>>& KVP : OutputFrame->BlendedData)
-		{
-			// For each sample in the eye
-			for (int32 Index = 0; Index < KVP.Value.Num(); Index++)
+			// Now that we've accumulated all the pixel values, we need to normalize them.
+			for (int32 PixelIndex = 0; PixelIndex < OutputFrame->OutputEquirectangularMap.Num(); PixelIndex++)
 			{
-				TSharedPtr<FPanoramicBlendData> BlendData = KVP.Value[Index];
-				TotalTimeSpentBlending += BlendData->BlendEndTime - BlendData->BlendStartTime;
-				if (BlendData->BlendStartTime < MinBlendStart)
-				{
-					MinBlendStart = BlendData->BlendStartTime;
-				}
-
-				if (BlendData->BlendEndTime > MaxBlendEnd)
-				{
-					MaxBlendEnd = BlendData->BlendEndTime;
-				}
-
-				// Write this sample back into the output map. It's a little tricky because we have to handle wraparound. When the array was
-				// first filled, it wrapped around.
-				NumSamplesAccumulated++;
-				// if (NumSamplesAccumulated <= 2)
-				{
-					// For Stereo images, just offset the second eye by the entire output size so it goes on the bottom half
-					// of the image. We've already made the array twice as big as it needs to be (in the case of stereo) and
-					// below EyeIndex 0 (left eye) will go in the first half of the image, eye index 1 in the second.
-					int32 EyeOffset = 0;
-					if (BlendData->OriginalDataPayload->Pane.EyeIndex != -1)
-					{
-						EyeOffset = (OutputEquirectangularMapSize.X * OutputEquirectangularMapSize.Y) * BlendData->OriginalDataPayload->Pane.EyeIndex;
-					}
-
-					for (int32 SampleY = 0; SampleY <= BlendData->PixelHeight; SampleY++)
-					{
-						for (int32 SampleX = 0; SampleX <= BlendData->PixelWidth; SampleX++)
-						{
-							int32 OriginalX = SampleX + BlendData->OutputBoundsMin.X;
-							int32 OriginalY = SampleY + BlendData->OutputBoundsMin.Y;
-							const int32 OutputPixelX = ((OriginalX % OutputEquirectangularMapSize.X) + OutputEquirectangularMapSize.X) % OutputEquirectangularMapSize.X;
-							const int32 OutputPixelY = OriginalY;
-
-							int32 SourceIndex = SampleX + (SampleY * (BlendData->PixelWidth + 1));
-							int32 DestIndex = OutputPixelX + (OutputPixelY * OutputEquirectangularMapSize.X);
-							OutputFrame->OutputEquirectangularMap[DestIndex + EyeOffset] += BlendData->Data[SourceIndex];
-						}
-					}
-				}
-
-				bool bDebugSamples = DataPayload->SampleState.bWriteSampleToDisk;
-				if (bDebugSamples)
-				{
-					// Write each blended sample to the output as a debug sample so we can inspect the job blending is doing for each pane.
-					// Hack up the debug output name a bit so they're unique.
-					if (DataPayload->Pane.EyeIndex >= 0)
-					{
-						BlendData->OriginalDataPayload->Debug_OverrideFilename = FString::Printf(TEXT("/%s_PaneX_%d_PaneY_%dEye_%d-Blended.%d.exr"),
-							*BlendData->OriginalDataPayload->PassIdentifier.Name, BlendData->OriginalDataPayload->Pane.HorizontalStepIndex,
-							BlendData->OriginalDataPayload->Pane.VerticalStepIndex, DataPayload->Pane.EyeIndex, BlendData->OriginalDataPayload->SampleState.OutputState.OutputFrameNumber);
-					}
-					else
-					{
-						BlendData->OriginalDataPayload->Debug_OverrideFilename = FString::Printf(TEXT("/%s_PaneX_%d_PaneY_%dEye_%d-Blended.%d.exr"),
-							*BlendData->OriginalDataPayload->PassIdentifier.Name, BlendData->OriginalDataPayload->Pane.HorizontalStepIndex,
-							BlendData->OriginalDataPayload->Pane.VerticalStepIndex, BlendData->OriginalDataPayload->SampleState.OutputState.OutputFrameNumber);
-					}
-
-					// Now that the sample has been blended pass it (and the memory it owned, we already read from it) to the debug output step.
-					TUniquePtr<TImagePixelData<FLinearColor>> FinalPixelData = MakeUnique<TImagePixelData<FLinearColor>>(FIntPoint(BlendData->PixelWidth + 1, BlendData->PixelHeight + 1), TArray64<FLinearColor>(MoveTemp(BlendData->Data)), BlendData->OriginalDataPayload);
-					ensure(OutputMerger.IsValid());
-					OutputMerger.Pin()->OnSingleSampleDataAvailable_AnyThread(MoveTemp(FinalPixelData));
-				}
-				else
-				{
-					// Ensure we reset the memory we allocated, to minimize concurrent allocations.
-					BlendData->Data.Reset();
-				}
+				FLinearColor& Pixel = OutputFrame->OutputEquirectangularMap[PixelIndex];
+				Pixel.R /= Pixel.A;
+				Pixel.G /= Pixel.A;
+				Pixel.B /= Pixel.A;
+				
+				// Now that we've used the weight stored in the alpha channel, restore it to full opaque-ness so
+				// the resulting png/exrs don't end up semi-transparent.
+				Pixel.A = 1.f;
 			}
 		}
+		TSharedRef<FImagePixelDataPayload, ESPMode::ThreadSafe> NewPayload = DataPayload->Copy();
 
-		const double ElapsedWallClock = (MaxBlendEnd - MinBlendStart) * 1000.0f;
-		const double ElapsedCPUClock = TotalTimeSpentBlending * 1000.0f;
+		int32 OutputSizeX = OutputEquirectangularMapSize.X;
+		int32 OutputSizeY = DataPayload->Pane.EyeIndex >= 0 ? OutputEquirectangularMapSize.Y * 2 : OutputEquirectangularMapSize.Y;
+		TUniquePtr<TImagePixelData<FLinearColor>> FinalPixelData = MakeUnique<TImagePixelData<FLinearColor>>(FIntPoint(OutputSizeX, OutputSizeY), TArray64<FLinearColor>(MoveTemp(OutputFrame->OutputEquirectangularMap)), NewPayload);
 
-		// UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Blend Time: %8.2fms (Platform Clock) %8.2fms (Total CPU Time)"), ElapsedWallClock, ElapsedCPUClock);
+		if(ensure(OutputMerger.IsValid()))
 		{
-			{
-				// Now that we've accumulated all the pixel values, we need to normalize them.
-				for (int32 PixelIndex = 0; PixelIndex < OutputFrame->OutputEquirectangularMap.Num(); PixelIndex++)
-				{
-					FLinearColor& Pixel = OutputFrame->OutputEquirectangularMap[PixelIndex];
-					Pixel.R /= Pixel.A;
-					Pixel.G /= Pixel.A;
-					Pixel.B /= Pixel.A;
-				}
-			}
-			TSharedRef<FImagePixelDataPayload, ESPMode::ThreadSafe> NewPayload = DataPayload->Copy();
-
-			int32 OutputSizeX = OutputEquirectangularMapSize.X;
-			int32 OutputSizeY = DataPayload->Pane.EyeIndex >= 0 ? OutputEquirectangularMapSize.Y * 2 : OutputEquirectangularMapSize.Y;
-			TUniquePtr<TImagePixelData<FLinearColor>> FinalPixelData = MakeUnique<TImagePixelData<FLinearColor>>(FIntPoint(OutputSizeX, OutputSizeY), TArray64<FLinearColor>(MoveTemp(OutputFrame->OutputEquirectangularMap)), NewPayload);
-
-			ensure(OutputMerger.IsValid());
 			OutputMerger.Pin()->OnCompleteRenderPassDataAvailable_AnyThread(MoveTemp(FinalPixelData));
-
-			// Remove this frame from the PendingData map so that we don't hold references for the duration of the render.
-			// It's important that we use the manually looked up OutputFrame from PendingData
-			// as PendingData uses the equality operator. Some combinations of temporal sampling + slowmo tracks results in different
-			// original source frame numbers, which would cause the tmap lookup to fail and thus returning an empty frame.
-			PendingData.Remove(DataPayload->SampleState.OutputState);
 		}
+
+		// Remove this frame from the PendingData map so that we don't hold references for the duration of the render.
+		// It's important that we use the manually looked up OutputFrame from PendingData
+		// as PendingData uses the equality operator. Some combinations of temporal sampling + slowmo tracks results in different
+		// original source frame numbers, which would cause the tmap lookup to fail and thus returning an empty frame.
+		PendingData.Remove(DataPayload->SampleState.OutputState);
 	}
+
 }
 
 void FMoviePipelinePanoramicBlender::OnSingleSampleDataAvailable_AnyThread(TUniquePtr<FImagePixelData>&& InData)

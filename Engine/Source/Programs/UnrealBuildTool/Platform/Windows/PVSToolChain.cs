@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Serialization;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -45,6 +46,29 @@ namespace UnrealBuildTool
 		/// Enable MISRA analysis
 		/// </summary>
 		MISRA = 32,
+	}
+
+  	/// <summary>
+	/// Flags for the PVS analyzer timeout
+	/// </summary>
+	public enum AnalysisTimeoutFlags
+	{
+		/// <summary>
+		/// Analisys timeout for file 10 minutes (600 seconds)
+		/// </summary>
+		After_10_minutes = 600,
+		/// <summary>
+		/// Analisys timeout for file 30 minutes (1800 seconds)
+		/// </summary>
+		After_30_minutes = 1800,
+		/// <summary>
+		/// Analisys timeout for file 60 minutes (3600 seconds)
+		/// </summary>
+		After_60_minutes = 3600,
+		/// <summary>
+		/// Analisys timeout when not set (a lot of seconds)
+		/// </summary>
+		No_timeout = 999999
 	}
 
 	/// <summary>
@@ -93,6 +117,21 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool DisableMISRAAnalysis;
 
+    		/// <summary>
+		/// File analysis timeout
+		/// </summary>
+		public AnalysisTimeoutFlags AnalysisTimeout;
+
+		/// <summary>
+		/// Disable analyzer Level 3 (Low) messages
+		/// </summary>
+		public bool NoNoise;
+
+		/// <summary>
+		/// Enable the display of analyzer rules exceptions which can be specified by comments and .pvsconfig files.
+		/// </summary>
+		public bool ReportDisabledRules;
+    
 		/// <summary>
 		/// Gets the analysis mode flags from the settings
 		/// </summary>
@@ -137,7 +176,7 @@ namespace UnrealBuildTool
 					XmlSerializer Serializer = new XmlSerializer(typeof(PVSApplicationSettings));
 					using (FileStream Stream = new FileStream(SettingsPath.FullName, FileMode.Open, FileAccess.Read, FileShare.Read))
 					{
-						return (PVSApplicationSettings)Serializer.Deserialize(Stream);
+						return (PVSApplicationSettings?)Serializer.Deserialize(Stream);
 					}
 				}
 				catch (Exception Ex)
@@ -194,6 +233,99 @@ namespace UnrealBuildTool
 		/// Private storage for the mode flags
 		/// </summary>
 		PVSAnalysisModeFlags? ModePrivate;
+    
+    		/// <summary>
+		/// Override for the analysis timeoutFlag to use
+		/// </summary>
+		public AnalysisTimeoutFlags AnalysisTimeoutFlag
+		{
+			get
+			{
+				if (TimeoutPrivate.HasValue)
+				{
+					return TimeoutPrivate.Value;
+				}
+				else if (UseApplicationSettings && ApplicationSettings.Value != null)
+				{
+					return ApplicationSettings.Value.AnalysisTimeout;
+				}
+				else
+				{
+					return AnalysisTimeoutFlags.After_30_minutes;
+				}
+			}
+			set
+			{
+				TimeoutPrivate = value;
+			}
+		}
+
+		/// <summary>
+		/// Private storage for the analysis timeout
+		/// </summary>
+		AnalysisTimeoutFlags? TimeoutPrivate;
+
+		/// <summary>
+		/// Override for the disable Level 3 (Low) analyzer messages
+		/// </summary>
+		public bool EnableNoNoise
+		{
+			get
+			{
+				if (EnableNoNoisePrivate.HasValue)
+				{
+					return EnableNoNoisePrivate.Value;
+				}
+				else if (UseApplicationSettings && ApplicationSettings.Value != null)
+				{
+					return ApplicationSettings.Value.NoNoise;
+				}
+				else
+				{
+					return false;
+				}
+			}
+			set
+			{
+				EnableNoNoisePrivate = value;
+			}
+		}
+
+		/// <summary>
+		/// Private storage for the NoNoise analyzer setting
+		/// </summary>
+		bool? EnableNoNoisePrivate;
+
+		/// <summary>
+		/// Override for the enable the display of analyzer rules exceptions which can be specified by comments and .pvsconfig files.
+		/// </summary>
+		public bool EnableReportDisabledRules
+		{
+			get
+			{
+				if (EnableReportDisabledRulesPrivate.HasValue)
+				{
+					return EnableReportDisabledRulesPrivate.Value;
+				}
+				else if (UseApplicationSettings && ApplicationSettings.Value != null)
+				{
+					return ApplicationSettings.Value.ReportDisabledRules;
+				}
+				else
+				{
+					return false;
+				}
+			}
+			set
+			{
+				EnableReportDisabledRulesPrivate = value;
+			}
+		}
+
+		/// <summary>
+		/// Private storage for the ReportDisabledRules analyzer setting
+		/// </summary>
+		bool? EnableReportDisabledRulesPrivate;
 	}
 
 	/// <summary>
@@ -238,6 +370,30 @@ namespace UnrealBuildTool
 		{
 			get { return Inner.ModeFlags; }
 		}
+    
+		/// <summary>
+		/// Override for the analysis timeout to use
+		/// </summary>
+		public AnalysisTimeoutFlags AnalysisTimeoutFlag
+		{
+			get { return Inner.AnalysisTimeoutFlag; }
+		}
+
+		/// <summary>
+		/// Override NoNoise analysis setting to use
+		/// </summary>
+		public bool EnableNoNoise
+		{
+			get { return Inner.EnableNoNoise; }
+		}
+
+		/// <summary>
+		/// Override EnableReportDisabledRules analysis setting to use
+		/// </summary>
+		public bool EnableReportDisabledRules
+		{
+			get { return Inner.EnableReportDisabledRules; }
+		}
 	}
 
 	/// <summary>
@@ -263,12 +419,13 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Arguments">List of command line arguments</param>
 		/// <returns>Always zero, or throws an exception</returns>
-		public override int Execute(CommandLineArguments Arguments)
+		/// <param name="Logger"></param>
+		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 			Arguments.CheckAllArgumentsUsed();
 
-			Log.TraceInformation("{0}", OutputFile!.GetFileName());
+			Logger.LogInformation("{File}", OutputFile!.GetFileName());
 
 			// Read the input files
 			string[] InputFileLines = FileReference.ReadAllLines(InputFileList!);
@@ -331,12 +488,12 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-			Log.TraceInformation("Written {0} {1} to {2}.", UniqueItems.Count, (UniqueItems.Count == 1)? "diagnostic" : "diagnostics", OutputFile.FullName);
+			Logger.LogInformation("Written {NumItems} {Noun} to {File}.", UniqueItems.Count, (UniqueItems.Count == 1)? "diagnostic" : "diagnostics", OutputFile.FullName);
 			return 0;
 		}
 	}
 
-	class PVSToolChain : UEToolChain
+	class PVSToolChain : ISPCToolChain
 	{
 		ReadOnlyTargetRules Target;
 		ReadOnlyPVSTargetSettings Settings;
@@ -347,11 +504,12 @@ namespace UnrealBuildTool
 		UnrealTargetPlatform Platform;
 		Version AnalyzerVersion;
 
-		public PVSToolChain(ReadOnlyTargetRules Target)
+		public PVSToolChain(ReadOnlyTargetRules Target, ILogger Logger)
+			: base(Logger)
 		{
 			this.Target = Target;
 			Platform = Target.Platform;
-			InnerToolChain = new VCToolChain(Target);
+			InnerToolChain = new VCToolChain(Target, Logger);
 
 			AnalyzerFile = FileReference.Combine(Unreal.RootDirectory, "Engine", "Restricted", "NoRedist", "Extras", "ThirdPartyNotUE", "PVS-Studio", "PVS-Studio.exe");
 			if (!FileReference.Exists(AnalyzerFile))
@@ -381,7 +539,7 @@ namespace UnrealBuildTool
 				if (!String.IsNullOrEmpty(ApplicationSettings.UserName) && !String.IsNullOrEmpty(ApplicationSettings.SerialNumber))
 				{
 					LicenseFile = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "PVS", "PVS-Studio.lic");
-					Utils.WriteFileIfChanged(LicenseFile, String.Format("{0}\n{1}\n", ApplicationSettings.UserName, ApplicationSettings.SerialNumber));
+					Utils.WriteFileIfChanged(LicenseFile, String.Format("{0}\n{1}\n", ApplicationSettings.UserName, ApplicationSettings.SerialNumber), Logger);
 				}
 			}
 			else
@@ -465,6 +623,9 @@ namespace UnrealBuildTool
 
 		public static readonly VersionNumber CLVerWithCPP20Support = new VersionNumber(14, 23);
 
+		const string CPP_20 = "c++20";
+		const string CPP_17 = "c++17";
+
 		public static string GetLangStandForCfgFile(CppStandardVersion cppStandard, VersionNumber compilerVersion)
 		{
 			string cppCfgStandard;
@@ -472,10 +633,13 @@ namespace UnrealBuildTool
 			switch (cppStandard)
 			{
 				case CppStandardVersion.Cpp17:
-					cppCfgStandard = "c++17";
+					cppCfgStandard = CPP_17;
+					break;
+        			case CppStandardVersion.Cpp20:
+					cppCfgStandard = CPP_20;
 					break;
 				case CppStandardVersion.Latest:
-					cppCfgStandard = VersionNumber.Compare(compilerVersion, CLVerWithCPP20Support) >= 0 ? "c++20" : "c++17";
+					cppCfgStandard = VersionNumber.Compare(compilerVersion, CLVerWithCPP20Support) >= 0 ? CPP_20 : CPP_17;
 					break;
 				default:
 					cppCfgStandard = "c++14";
@@ -485,8 +649,31 @@ namespace UnrealBuildTool
 			return cppCfgStandard;
 		}
 
+		public static bool ShouldCompileAsC(String compilerCommandLine, String sourceFileName)
+		{
+			int CFlagLastPosition = Math.Max(Math.Max(compilerCommandLine.LastIndexOf("/TC "), compilerCommandLine.LastIndexOf("/Tc ")),
+											 Math.Max(compilerCommandLine.LastIndexOf("-TC "), compilerCommandLine.LastIndexOf("-Tc ")));
+
+			int CppFlagLastPosition = Math.Max(Math.Max(compilerCommandLine.LastIndexOf("/TP "), compilerCommandLine.LastIndexOf("/Tp ")),
+											   Math.Max(compilerCommandLine.LastIndexOf("-TP "), compilerCommandLine.LastIndexOf("-Tp ")));
+
+			bool compileAsCCode;
+			if (CFlagLastPosition == CppFlagLastPosition)
+				//ни один флаг, определяющий язык, не задан. Определяем по расширению файла
+				compileAsCCode = Path.GetExtension(sourceFileName).Equals(".c", StringComparison.InvariantCultureIgnoreCase);
+			else
+				compileAsCCode = CFlagLastPosition > CppFlagLastPosition;
+
+			return compileAsCCode;
+		}
+
 		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
+			if (CompileEnvironment.bDisableStaticAnalysis)
+			{
+				return new CPPOutput();
+			}
+
 			// Ignore generated files
 			if (InputFiles.All(x => x.Location.GetFileName().EndsWith(".gen.cpp")))
 			{
@@ -518,14 +705,14 @@ namespace UnrealBuildTool
 				FileItem? SourceFileItem = PreprocessAction.SourceFile;
 				if (SourceFileItem == null)
 				{
-					Log.TraceWarning("Unable to find source file from command producing: {0}", String.Join(", ", PreprocessActions[Idx].ProducedItems.Select(x => x.Location.GetFileName())));
+					Logger.LogWarning("Unable to find source file from command producing: {File}", String.Join(", ", PreprocessActions[Idx].ProducedItems.Select(x => x.Location.GetFileName())));
 					continue;
 				}
 
 				FileItem? PreprocessedFileItem = PreprocessAction.PreprocessedFile;
 				if (PreprocessedFileItem == null)
 				{
-					Log.TraceWarning("Unable to find preprocessed output file from {0}", SourceFileItem.Location.GetFileName());
+					Logger.LogWarning("Unable to find preprocessed output file from {File}", SourceFileItem.Location.GetFileName());
 					continue;
 				}
 
@@ -552,7 +739,7 @@ namespace UnrealBuildTool
 						}
 					}
 				}
-				if (Platform == UnrealTargetPlatform.Win64)
+        			if (Platform == UnrealTargetPlatform.Win64)
 				{
 					ConfigFileContents.Append("platform=x64\n");
 				}
@@ -560,17 +747,44 @@ namespace UnrealBuildTool
 				{
 					throw new BuildException("PVS-Studio does not support this platform");
 				}
-				ConfigFileContents.Append("preprocessor=visualcpp\n");
-				ConfigFileContents.Append("language=C++\n");
+        		ConfigFileContents.Append("preprocessor=visualcpp\n");
+
+				bool shouldCompileAsC = ShouldCompileAsC(String.Join(" ", PreprocessAction.Arguments), SourceFileItem.AbsolutePath);
+				ConfigFileContents.AppendFormat("language={0}\n", shouldCompileAsC ? "C" : "C++");
+
 				ConfigFileContents.Append("skip-cl-exe=yes\n");
 
-				if(AnalyzerVersion.CompareTo(new Version("7.07")) >= 0)
+				WindowsCompiler WindowsCompiler = Target.WindowsPlatform.Compiler;
+				bool isVisualCppCompiler = WindowsCompiler == WindowsCompiler.VisualStudio2022 || WindowsCompiler == WindowsCompiler.VisualStudio2019;
+				if (AnalyzerVersion.CompareTo(new Version("7.07")) >= 0 && !shouldCompileAsC)
 				{
 					VersionNumber compilerVersion = Target.WindowsPlatform.Environment.CompilerVersion;
 					string languageStandardForCfg = GetLangStandForCfgFile(PreprocessCompileEnvironment.CppStandard, compilerVersion);
 
 					ConfigFileContents.AppendFormat("std={0}\n", languageStandardForCfg);
+          
+          			bool disableMsExtentinsFromArgs = PreprocessAction.Arguments.Any(arg => arg.Equals("/Za") || arg.Equals("-Za") || arg.Equals("/permissive-"));
+					bool disableMsExtentions = isVisualCppCompiler && (languageStandardForCfg == CPP_20 || disableMsExtentinsFromArgs);
+					ConfigFileContents.AppendFormat("disable-ms-extensions={0}\n", disableMsExtentions ? "yes" : "no");
 				}
+
+				if (isVisualCppCompiler && PreprocessAction.Arguments.Any(arg => arg.StartsWith("/await")))
+				{
+					ConfigFileContents.Append("msvc-await=yes\n");
+				}
+
+				if (Settings.EnableNoNoise)
+				{
+					ConfigFileContents.Append("no-noise=yes\n");
+				}
+
+				if (Settings.EnableReportDisabledRules)
+				{
+					ConfigFileContents.Append("report-disabled-rules=yes\n");
+				}
+
+        		int Timeout = (int)(Settings.AnalysisTimeoutFlag == AnalysisTimeoutFlags.No_timeout ? 0 : Settings.AnalysisTimeoutFlag);
+				ConfigFileContents.AppendFormat("timeout={0}\n", Timeout);
 
 				string BaseFileName = PreprocessedFileItem.Location.GetFileName();
 
@@ -584,17 +798,16 @@ namespace UnrealBuildTool
 				Action AnalyzeAction = Graph.CreateAction(ActionType.Compile);
 				AnalyzeAction.CommandDescription = "Analyzing";
 				AnalyzeAction.StatusDescription = BaseFileName;
-				AnalyzeAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
-				AnalyzeAction.CommandPath = BuildHostPlatform.Current.Shell;
+				AnalyzeAction.WorkingDirectory = Unreal.EngineSourceDirectory;
+				AnalyzeAction.CommandPath = AnalyzerFile;
 
 				StringBuilder Arguments = new StringBuilder();
-				Arguments.Append($"/C \"\"{AnalyzerFile}\" --source-file \"{SourceFileItem.AbsolutePath}\" --output-file \"{OutputFileLocation}\" --cfg \"{ConfigFileItem.AbsolutePath}\" --i-file=\"{PreprocessedFileItem.AbsolutePath}\" --analysis-mode {(uint)Settings.ModeFlags}");
+				Arguments.Append($"--source-file \"{SourceFileItem.AbsolutePath}\" --output-file \"{OutputFileLocation}\" --cfg \"{ConfigFileItem.AbsolutePath}\" --i-file=\"{PreprocessedFileItem.AbsolutePath}\" --analysis-mode {(uint)Settings.ModeFlags}");
 				if (LicenseFile != null)
 				{
 					Arguments.Append($" --lic-file \"{LicenseFile}\"");
 					AnalyzeAction.PrerequisiteItems.Add(FileItem.GetItemByFileReference(LicenseFile));
 				}
-				Arguments.Append($" && echo. >>\"{OutputFileLocation}\"\"");
 				AnalyzeAction.CommandArguments = Arguments.ToString();
 
 				AnalyzeAction.PrerequisiteItems.Add(ConfigFileItem);
@@ -614,7 +827,7 @@ namespace UnrealBuildTool
 			throw new BuildException("Unable to link with PVS toolchain.");
 		}
 
-		public override void FinalizeOutput(ReadOnlyTargetRules Target, TargetMakefile Makefile)
+		public override void FinalizeOutput(ReadOnlyTargetRules Target, TargetMakefileBuilder MakefileBuilder)
 		{
 			FileReference OutputFile;
 			if (Target.ProjectFile == null)
@@ -626,17 +839,20 @@ namespace UnrealBuildTool
 				OutputFile = FileReference.Combine(Target.ProjectFile.Directory, "Saved", "PVS-Studio", String.Format("{0}.pvslog", Target.Name));
 			}
 
+			TargetMakefile Makefile = MakefileBuilder.Makefile;
 			List<FileReference> InputFiles = Makefile.OutputItems.Select(x => x.Location).Where(x => x.HasExtension(".pvslog")).ToList();
 
 			// Collect the sourcefile items off of the Compile action added in CompileCPPFiles so that in SingleFileCompile mode the PVSGather step is also not filtered out
 			List<FileItem> CompileSourceFiles = Makefile.Actions.OfType<VCCompileAction>().Select(x => x.SourceFile!).ToList();
 
-			FileItem InputFileListItem = Makefile.CreateIntermediateTextFile(OutputFile.ChangeExtension(".input"), InputFiles.Select(x => x.FullName));
+			FileItem InputFileListItem = MakefileBuilder.CreateIntermediateTextFile(OutputFile.ChangeExtension(".input"), InputFiles.Select(x => x.FullName));
 
-			Action AnalyzeAction = Makefile.CreateAction(ActionType.Compile);
-			AnalyzeAction.CommandPath = UnrealBuildTool.GetUBTPath();
-			AnalyzeAction.CommandArguments = String.Format("-Mode=PVSGather -Input=\"{0}\" -Output=\"{1}\" ", InputFileListItem.Location, OutputFile);
-			AnalyzeAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
+			Action AnalyzeAction = MakefileBuilder.CreateAction(ActionType.Compile);
+			AnalyzeAction.ActionType = ActionType.PostBuildStep;
+			AnalyzeAction.CommandDescription = "Process PVS-Studio Results";
+			AnalyzeAction.CommandPath = Unreal.DotnetPath;
+			AnalyzeAction.CommandArguments = $"\"{Unreal.UnrealBuildToolDllPath}\" -Mode=PVSGather -Input=\"{InputFileListItem.Location}\" -Output=\"{OutputFile}\" ";
+			AnalyzeAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 			AnalyzeAction.PrerequisiteItems.Add(InputFileListItem);
 			AnalyzeAction.PrerequisiteItems.AddRange(Makefile.OutputItems);
 			AnalyzeAction.PrerequisiteItems.AddRange(CompileSourceFiles);

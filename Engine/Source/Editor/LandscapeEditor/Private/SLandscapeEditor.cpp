@@ -9,13 +9,14 @@
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SErrorText.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "LandscapeEditorCommands.h"
 #include "LandscapeEditorObject.h"
 #include "IDetailsView.h"
 #include "PropertyEditorModule.h"
+#include "LandscapeSettings.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeEditor"
 
@@ -183,6 +184,8 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 {
 	auto Commands = FLandscapeEditorCommands::Get();
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	const ULandscapeSettings* Settings = GetDefault<ULandscapeSettings>();
+
 	if (PaletteName == LandscapeEditorNames::Manage)
 	{
 		ToolBarBuilder.BeginSection("Manage");
@@ -215,7 +218,12 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
 		ToolBarBuilder.AddToolBarButton(Commands.RetopologizeTool);
 		ToolBarBuilder.AddToolBarButton(Commands.VisibilityTool);
-		ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
+
+		if (Settings->AreBlueprintToolsAllowed())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
+		}
+
 		ToolBarBuilder.AddToolBarButton(Commands.MirrorTool);
 
 		ToolBarBuilder.AddToolBarButton(Commands.RegionSelectTool);
@@ -229,7 +237,8 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.AddToolBarButton(Commands.SmoothTool);
 		ToolBarBuilder.AddToolBarButton(Commands.FlattenTool);
 		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
-		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
+		
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent() && Settings->AreBlueprintToolsAllowed())
 		{
 			ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
 		}
@@ -609,8 +618,16 @@ bool FLandscapeToolKit::GetIsPropertyVisibleFromProperty(const FProperty& Proper
 			Property.GetMetaData("ShowForTargetTypes").ParseIntoArray(ShowForTargetTypes, TEXT(","), true);
 
 			const ELandscapeToolTargetType::Type CurrentTargetType = LandscapeEdMode->CurrentToolTarget.TargetType;
-			if (CurrentTargetType == ELandscapeToolTargetType::Invalid ||
-				ShowForTargetTypes.FindByKey(TargetTypeNames[CurrentTargetType]) == nullptr)
+			// ELandscapeToolTargetType::Invalid means "weightmap with no valid paint layer" so we still want to display that property if it has been marked to be displayed in Weightmap target type, to be consistent 
+			//  with other paint brush properties (that don't use ShowForTargetTypes), which are still displayed in that case, even if they are ineffective :
+			if ((CurrentTargetType == ELandscapeToolTargetType::Invalid) 
+				&& (ShowForTargetTypes.FindByKey(TargetTypeNames[ELandscapeToolTargetType::Weightmap]) != nullptr))
+			{ 
+				return true;
+			}
+			// Otherwise, hide it, if ShowForTargetTypes was used on this property but doesn't correspond to the current target type :
+			else if ((CurrentTargetType == ELandscapeToolTargetType::Invalid)
+				|| (ShowForTargetTypes.FindByKey(TargetTypeNames[CurrentTargetType]) == nullptr))
 			{
 				return false;
 			}

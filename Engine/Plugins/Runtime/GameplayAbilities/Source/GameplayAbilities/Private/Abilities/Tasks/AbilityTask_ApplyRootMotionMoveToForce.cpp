@@ -6,17 +6,11 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/World.h"
 
-UAbilityTask_ApplyRootMotionMoveToForce::UAbilityTask_ApplyRootMotionMoveToForce(const FObjectInitializer& ObjectInitializer)
-: Super(ObjectInitializer)
-{
-	bSetNewMovementMode = false;
-	NewMovementMode = EMovementMode::MOVE_Walking;
-	PreviousMovementMode = EMovementMode::MOVE_None;
-	bRestrictSpeedToExpected = false;
-	PathOffsetCurve = nullptr;
-}
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_ApplyRootMotionMoveToForce)
 
 UAbilityTask_ApplyRootMotionMoveToForce* UAbilityTask_ApplyRootMotionMoveToForce::ApplyRootMotionMoveToForce(UGameplayAbility* OwningAbility, FName TaskInstanceName, FVector TargetLocation, float Duration, bool bSetNewMovementMode, EMovementMode MovementMode, bool bRestrictSpeedToExpected, UCurveVector* PathOffsetCurve, ERootMotionFinishVelocityMode VelocityOnFinishMode, FVector SetVelocityOnFinish, float ClampVelocityOnFinish)
 {
@@ -50,9 +44,10 @@ UAbilityTask_ApplyRootMotionMoveToForce* UAbilityTask_ApplyRootMotionMoveToForce
 
 void UAbilityTask_ApplyRootMotionMoveToForce::SharedInitAndApply()
 {
-	if (AbilitySystemComponent->AbilityActorInfo->MovementComponent.IsValid())
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (ASC && ASC->AbilityActorInfo->MovementComponent.IsValid())
 	{
-		MovementComponent = Cast<UCharacterMovementComponent>(AbilitySystemComponent->AbilityActorInfo->MovementComponent.Get());
+		MovementComponent = Cast<UCharacterMovementComponent>(ASC->AbilityActorInfo->MovementComponent.Get());
 		StartTime = GetWorld()->GetTimeSeconds();
 		EndTime = StartTime + Duration;
 
@@ -61,6 +56,7 @@ void UAbilityTask_ApplyRootMotionMoveToForce::SharedInitAndApply()
 			if (bSetNewMovementMode)
 			{
 				PreviousMovementMode = MovementComponent->MovementMode;
+				PreviousCustomMovementMode = MovementComponent->CustomMovementMode;
 				MovementComponent->SetMovementMode(NewMovementMode);
 			}
 
@@ -169,9 +165,10 @@ void UAbilityTask_ApplyRootMotionMoveToForce::OnDestroy(bool AbilityIsEnding)
 
 		if (bSetNewMovementMode)
 		{
-			MovementComponent->SetMovementMode(PreviousMovementMode);
+ 			MovementComponent->SetMovementMode(PreviousMovementMode, PreviousCustomMovementMode);
 		}
 	}
 
 	Super::OnDestroy(AbilityIsEnding);
 }
+

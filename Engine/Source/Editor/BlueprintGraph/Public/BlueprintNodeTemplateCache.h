@@ -2,12 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "UObject/GCObject.h"
 
+class FReferenceCollector;
 class UBlueprint;
+class UBlueprintNodeSpawner;
 class UEdGraph;
+class UEdGraphNode;
 
 /**
  * Serves as a centralized data-store for all UBlueprintNodeSpawner node-
@@ -68,7 +75,7 @@ public:
 	 * 
 	 * @return The approximated total (in bytes) that this cache has allocated.
 	 */
-	int32 GetEstimateCacheSize() const;
+	int64 GetEstimateCacheSize() const;
 
 	/**
 	 * External systems can make changes that alter the memory footprint of the
@@ -78,7 +85,7 @@ public:
 	 * 
 	 * @return The new approximated total (in bytes) that this cache has allocated.
 	 */
-	int32 RecalculateCacheSize();
+	int64 RecalculateCacheSize();
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -129,5 +136,5 @@ private:
 	 * entry is added, so we keep this approximate tally of memory allocated for
 	 * UObjects (owned by this system).
 	 */
-	int32 ApproximateObjectMem;
+	int64 ApproximateObjectMem;
 };

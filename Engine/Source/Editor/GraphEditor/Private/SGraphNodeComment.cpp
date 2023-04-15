@@ -2,15 +2,49 @@
 
 
 #include "SGraphNodeComment.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
+
+#include "Animation/CurveHandle.h"
+#include "Animation/CurveSequence.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraphNode_Comment.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/GenericApplication.h"
 #include "GraphEditorSettings.h"
-#include "SGraphPanel.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Text.h"
+#include "Layout/ChildrenBase.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
 #include "SCommentBubble.h"
+#include "SGraphNode.h"
+#include "SGraphPanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Templates/Casts.h"
 //#include "TextWrapperHelpers.h"
 #include "TutorialMetaData.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+
+class FDragDropEvent;
 
 namespace SCommentNodeDefs
 {
@@ -145,7 +179,7 @@ void SGraphNodeComment::UpdateGraphNode()
 	CachedFontSize = CommentNode->GetFontSize();
 
 	CommentStyle = FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.CommentBlock.TitleInlineEditableText");
-	CommentStyle.EditableTextBoxStyle.Font.Size = CachedFontSize;
+	CommentStyle.EditableTextBoxStyle.TextStyle.Font.Size = CachedFontSize;
 	CommentStyle.TextStyle.Font.Size = CachedFontSize;
 
 	this->ContentScale.Bind( this, &SGraphNode::GetContentScale );
@@ -154,7 +188,7 @@ void SGraphNodeComment::UpdateGraphNode()
 		.VAlign(VAlign_Fill)
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Kismet.Comment.Background") )
+			.BorderImage( FAppStyle::GetBrush("Kismet.Comment.Background") )
 			.ColorAndOpacity( FLinearColor::White )
 			.BorderBackgroundColor( this, &SGraphNodeComment::GetCommentBodyColor )
 			.Padding(  FMargin(3.0f) )
@@ -168,7 +202,7 @@ void SGraphNodeComment::UpdateGraphNode()
 				.VAlign(VAlign_Top)
 				[
 					SAssignNew(TitleBar, SBorder)
-					.BorderImage( FEditorStyle::GetBrush("Graph.Node.TitleBackground") )
+					.BorderImage( FAppStyle::GetBrush("Graph.Node.TitleBackground") )
 					.BorderBackgroundColor( this, &SGraphNodeComment::GetCommentTitleBarColor )
 					.Padding( FMargin(10,5,5,3) )
 					.HAlign(HAlign_Fill)
@@ -199,7 +233,7 @@ void SGraphNodeComment::UpdateGraphNode()
 				[
 					// NODE CONTENT AREA
 					SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+					.BorderImage( FAppStyle::GetBrush("NoBorder") )
 				]
 			]
 		];
@@ -350,7 +384,7 @@ void SGraphNodeComment::GetOverlayBrushes(bool bSelected, const FVector2D Widget
 
 	HandleSelection(bSelected);
 
-	FOverlayBrushInfo HandleBrush = FEditorStyle::GetBrush( TEXT("Graph.Node.Comment.Handle") );
+	FOverlayBrushInfo HandleBrush = FAppStyle::GetBrush( TEXT("Graph.Node.Comment.Handle") );
 
 	HandleBrush.OverlayOffset.X = WidgetSize.X - HandleBrush.Brush->ImageSize.X - Fudge;
 	HandleBrush.OverlayOffset.Y = WidgetSize.Y - HandleBrush.Brush->ImageSize.Y - Fudge;

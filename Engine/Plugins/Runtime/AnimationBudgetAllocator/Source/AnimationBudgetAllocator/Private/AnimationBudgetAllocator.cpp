@@ -72,8 +72,11 @@ FAnimationBudgetAllocator::FAnimationBudgetAllocator(UWorld* InWorld)
 	, CurrentFrameOffset(0)
 	, bEnabled(false)
 {
+	FAnimationBudgetAllocator::bCachedEnabled = GAnimationBudgetEnabled == 1;
+	
 	SetParametersFromCVars();
 
+	OnWorldBeginPlayHandle = InWorld->OnWorldBeginPlay.AddRaw(this, &FAnimationBudgetAllocator::HandleWorldBeginPlay);
 	PostGarbageCollectHandle = FCoreUObjectDelegates::GetPostGarbageCollect().AddRaw(this, &FAnimationBudgetAllocator::HandlePostGarbageCollect);
 	OnWorldPreActorTickHandle = FWorldDelegates::OnWorldPreActorTick.AddRaw(this, &FAnimationBudgetAllocator::OnWorldPreActorTick);
 	OnCVarParametersChangedHandle = GOnCVarParametersChanged.AddRaw(this, &FAnimationBudgetAllocator::SetParametersFromCVars);
@@ -87,6 +90,10 @@ FAnimationBudgetAllocator::~FAnimationBudgetAllocator()
 #if ENABLE_DRAW_DEBUG
 	AHUD::OnHUDPostRender.Remove(OnHUDPostRenderHandle);
 #endif
+	if(World)
+	{
+		World->OnWorldBeginPlay.Remove(OnWorldBeginPlayHandle);
+	}
 	FCoreUObjectDelegates::GetPostGarbageCollect().Remove(PostGarbageCollectHandle);
 	FWorldDelegates::OnWorldPreActorTick.Remove(OnWorldPreActorTickHandle);
 	GOnCVarParametersChanged.Remove(OnCVarParametersChangedHandle);
@@ -164,7 +171,9 @@ void FAnimationBudgetAllocator::QueueSortedComponentIndices(float InDeltaSeconds
 	TotalEstimatedTickTimeMs = 0.0f;
 	NumWorkUnitsForAverage = 0.0f;
 
-	auto QueueComponentTick = [InDeltaSeconds, this](FAnimBudgetAllocatorComponentData& InComponentData, int32 InComponentIndex, bool bInOnScreen)
+	const bool bUseSignificanceDelegate = USkeletalMeshComponentBudgeted::OnCalculateSignificance().IsBound();
+
+	auto QueueComponentTick = [InDeltaSeconds, this, bUseSignificanceDelegate](FAnimBudgetAllocatorComponentData& InComponentData, int32 InComponentIndex, bool bInOnScreen)
 	{
 		InComponentData.AccumulatedDeltaTime += InDeltaSeconds;
 		InComponentData.bOnScreen = bInOnScreen;
@@ -191,9 +200,16 @@ void FAnimationBudgetAllocator::QueueSortedComponentIndices(float InDeltaSeconds
 		// Auto-calculate significance here if we are set to
 		if(InComponentData.bAutoCalculateSignificance)
 		{
-			check(USkeletalMeshComponentBudgeted::OnCalculateSignificance().IsBound());
-
-			const float Significance = USkeletalMeshComponentBudgeted::OnCalculateSignificance().Execute(InComponentData.Component);
+			float Significance;
+			if(bUseSignificanceDelegate)
+			{
+				Significance = USkeletalMeshComponentBudgeted::OnCalculateSignificance().Execute(InComponentData.Component);
+			}
+			else
+			{
+				Significance = InComponentData.Component->GetDefaultSignificance();
+			}
+			
 			SetComponentSignificance(InComponentData.Component, Significance);
 		}
 	};
@@ -231,7 +247,7 @@ void FAnimationBudgetAllocator::QueueSortedComponentIndices(float InDeltaSeconds
 				// Whether or not we will tick
 				bool bShouldTick = ShouldComponentTick(Component, ComponentData);
 
-				// Avoid ticking when root prerequisites dont tick (assumes master pose or copy pose relationship)
+				// Avoid ticking when root prerequisites dont tick (assumes leader pose or copy pose relationship)
 				if(bShouldTick && ComponentData.RootPrerequisite != nullptr)
 				{
 					const int32 PrerequisiteHandle = ComponentData.RootPrerequisite->GetAnimationBudgetHandle();
@@ -373,7 +389,9 @@ int32 FAnimationBudgetAllocator::CalculateWorkDistributionAndQueue(float InDelta
 			InComponentData.Component->EnableExternalInterpolation(InComponentData.TickRate > 1 && InComponentData.bInterpolate);
 			InComponentData.Component->EnableExternalUpdate(bTickThisFrame);
 			InComponentData.Component->EnableExternalEvaluationRateLimiting(InComponentData.TickRate > 1);
-			InComponentData.Component->SetExternalDeltaTime(InComponentData.AccumulatedDeltaTime);
+			AActor* MyOwner = InComponentData.Component->GetOwner();
+			const float CustomTimeDialation = MyOwner ? MyOwner->CustomTimeDilation : 1.0f;
+			InComponentData.Component->SetExternalDeltaTime(InComponentData.AccumulatedDeltaTime * CustomTimeDialation);
 			InComponentData.Component->SetExternalTickRate(InComponentData.TickRate);
 
 			InComponentData.AccumulatedDeltaTime = bTickThisFrame ? 0.0f : InComponentData.AccumulatedDeltaTime;
@@ -845,24 +863,29 @@ void FAnimationBudgetAllocator::OnHUDPostRender(AHUD* HUD, UCanvas* Canvas)
 }
 #endif
 
-void FAnimationBudgetAllocator::RemoveHelper(int32 Index)
+void FAnimationBudgetAllocator::RemoveHelper(int32 Index, USkeletalMeshComponentBudgeted* InExpectedComponent)
 {
-	if(AllComponentData.IsValidIndex(Index))
+	// Components are removed when they have been determined unreachable by GC, but may still attempt to unregister
+	// themselves redundantly during teardown, so make sure the index refers to the object we expect to remove
+	if (AllComponentData.IsValidIndex(Index))
 	{
-		if(AllComponentData[Index].Component != nullptr)
+		USkeletalMeshComponentBudgeted* const CurrentComponent = AllComponentData[Index].Component;
+		if (CurrentComponent == InExpectedComponent)
 		{
-			AllComponentData[Index].Component->SetAnimationBudgetHandle(INDEX_NONE);
-		}
-
-		AllComponentData.RemoveAtSwap(Index, 1, false);
-
-		// Update handle of swapped component
-		const int32 NumRemaining = AllComponentData.Num();
-		if(NumRemaining > 0 && Index != NumRemaining)
-		{
-			if(AllComponentData[Index].Component != nullptr)
+			if (CurrentComponent != nullptr)
 			{
-				AllComponentData[Index].Component->SetAnimationBudgetHandle(Index);
+				CurrentComponent->SetAnimationBudgetHandle(INDEX_NONE);
+			}
+
+			AllComponentData.RemoveAtSwap(Index, 1, false);
+
+			// Update handle of swapped component
+			if (AllComponentData.IsValidIndex(Index))
+			{
+				if (USkeletalMeshComponentBudgeted* SwappedComponent = AllComponentData[Index].Component)
+				{
+					SwappedComponent->SetAnimationBudgetHandle(Index);
+				}
 			}
 		}
 	}
@@ -929,9 +952,9 @@ void FAnimationBudgetAllocator::UnregisterComponent(USkeletalMeshComponentBudget
 	if (FAnimationBudgetAllocator::bCachedEnabled && bEnabled)
 	{
 		int32 ManagerHandle = InComponent->GetAnimationBudgetHandle();
-		if(ManagerHandle != INDEX_NONE)
+		if (ManagerHandle != INDEX_NONE)
 		{
-			RemoveHelper(ManagerHandle);
+			RemoveHelper(ManagerHandle, InComponent);
 
 			InComponent->bEnableUpdateRateOptimizations = true;
 			InComponent->EnableExternalTickRateControl(false);
@@ -967,22 +990,14 @@ void FAnimationBudgetAllocator::AddReferencedObjects(FReferenceCollector& Collec
 
 void FAnimationBudgetAllocator::HandlePostGarbageCollect()
 {
-	// Remove dead components, readjusting indices
-	bool bRemoved = false;
-	do
+	// Remove dead components backwards, readjusting indices
+	for (int32 DataIndex = AllComponentData.Num() - 1; DataIndex >= 0; --DataIndex)
 	{
-		bRemoved = false;
-		for(int32 DataIndex = 0; DataIndex < AllComponentData.Num(); ++DataIndex)
+		if (AllComponentData[DataIndex].Component == nullptr)
 		{
-			if(AllComponentData[DataIndex].Component == nullptr)
-			{
-				// We can remove while iterating here as we swap internally
-				RemoveHelper(DataIndex);
-				bRemoved = true;
-			}
+			RemoveHelper(DataIndex, nullptr);
 		}
 	}
-	while(bRemoved);
 }
 
 void FAnimationBudgetAllocator::SetGameThreadLastTickTimeMs(int32 InManagerHandle, float InGameThreadLastTickTimeMs)
@@ -1061,4 +1076,23 @@ void FAnimationBudgetAllocator::SetParameters(const FAnimationBudgetAllocatorPar
 void FAnimationBudgetAllocator::SetParametersFromCVars()
 {
 	Parameters = GBudgetParameters;
+}
+
+void FAnimationBudgetAllocator::RegisterComponentDeferred(USkeletalMeshComponentBudgeted* InComponent)
+{
+	DeferredRegistrations.Add(InComponent); 
+}
+
+void FAnimationBudgetAllocator::HandleWorldBeginPlay()
+{
+	// This will catch worlds in (e.g.) PIE that try to set the CVar on startup
+	FAnimationBudgetAllocator::bCachedEnabled = GAnimationBudgetEnabled == 1;
+
+	// Run thru all deferred registrations
+	for(USkeletalMeshComponentBudgeted* Component : DeferredRegistrations)
+	{
+		RegisterComponent(Component);
+	}
+
+	DeferredRegistrations.Empty();
 }

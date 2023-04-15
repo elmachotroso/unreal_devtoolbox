@@ -7,12 +7,14 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/SToolTip.h"
 #include "MessageLogModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "ITargetDeviceServicesModule.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 #include "Async/Async.h"
@@ -36,21 +38,21 @@
 #include "Framework/Commands/Commands.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Developer/DerivedDataCache/Public/DerivedDataCacheInterface.h"
+#include "DerivedDataCacheInterface.h"
 #include "Misc/MonitoredProcess.h"
-#include "EditorStyleSet.h"
 #include "CookerSettings.h"
 #include "UObject/UObjectIterator.h"
 #include "ToolMenus.h"
 #include "TurnkeyEditorSupport.h"
 #include "ITurnkeyIOModule.h"
+#include "AnalyticsEventAttribute.h"
 #if WITH_EDITOR
 #include "ZenServerInterface.h"
 #endif
 
 #include "Misc/App.h"
 #include "Framework/Application/SlateApplication.h"
-
+#include "Styling/AppStyle.h"
 
 #if WITH_ENGINE
 #include "RenderUtils.h"
@@ -58,6 +60,9 @@
 
 DEFINE_LOG_CATEGORY(LogTurnkeySupport);
 #define LOCTEXT_NAMESPACE "FTurnkeySupportModule"
+
+
+#define ALLOW_CONTROL_TO_COPY_COMMANDLINE 0
 
 namespace 
 {
@@ -102,6 +107,7 @@ protected:
 		// If we are installed or don't have a compiler, we must assume we have a precompiled UAT.
 		return TEXT("-nocompileeditor -skipbuildeditor");
 	}
+
 
 	static bool ShowBadSDKDialog(FName IniPlatformName)
 	{
@@ -201,6 +207,16 @@ protected:
 public:
 
 
+	static FString GetLogAndReportCommandline(FString& LogFilename, FString& ReportFilename)
+	{
+		static int ReportIndex = 0;
+
+		LogFilename = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), *FString::Printf(TEXT("TurnkeyLog_%d.log"), ReportIndex)));
+		ReportFilename = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), *FString::Printf(TEXT("TurnkeyReport_%d.log"), ReportIndex++)));
+
+		return FString::Printf(TEXT("-ReportFilename=\"%s\" -log=\"%s\""), *ReportFilename, *LogFilename);
+	}
+
 	static void OpenProjectLauncher()
 	{
 		FGlobalTabmanager::Get()->TryInvokeTab(FTabId("ProjectLauncher"));
@@ -253,6 +269,8 @@ public:
 
 	static void CookOrPackage(FName IniPlatformName, EPrepareContentMode Mode)
 	{
+		TArray<FAnalyticsEventAttribute> AnalyticsParamArray;
+
 		// get a in-memory defaults which will have the user-settings, like the per-platform config/target platform stuff
 		UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
 	
@@ -323,7 +341,7 @@ public:
 			BuildCookRunParams += FString::Printf(TEXT(" -target=%s"), *BuildTargetInfo->Name);
 		}
 
-		// let the editor add options (-ue4exe in particular)
+		// let the editor add options (-unrealexe in particular)
 		{
 			BuildCookRunParams += FString::Printf(TEXT(" %s"), *FTurnkeyEditorSupport::GetUATOptions());
 		}
@@ -344,9 +362,13 @@ public:
 		{
 			BuildCookRunParams += TEXT(" -SkipCookingEditorContent");
 		}
-		if (FDerivedDataCacheInterface* DDC = GetDerivedDataCache())
+		if (FDerivedDataCacheInterface* DDC = TryGetDerivedDataCache())
 		{
-			BuildCookRunParams += FString::Printf(TEXT(" -ddc=%s"), DDC->GetGraphName());
+			const TCHAR* GraphName = DDC->GetGraphName();
+			if (FCString::Strcmp(GraphName, DDC->GetDefaultGraphName()))
+			{
+				BuildCookRunParams += FString::Printf(TEXT(" -DDC=%s"), DDC->GetGraphName());
+			}
 		}
 		if (FApp::IsEngineInstalled())
 		{
@@ -361,6 +383,9 @@ public:
 			BuildCookRunParams += TEXT(" -zenstore");
 		}
 
+		// gather analytics
+		const ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatform(PlatformInfo->Name);
+		TargetPlatform->GetPlatformSpecificProjectAnalytics( AnalyticsParamArray );
 
 		// per mode settings
 		FText ContentPrepDescription;
@@ -370,7 +395,7 @@ public:
 		{
 			ContentPrepDescription = LOCTEXT("PackagingProjectTaskName", "Packaging project");
 			ContentPrepTaskName = LOCTEXT("PackagingTaskName", "Packaging");
-			ContentPrepIcon = FEditorStyle::GetBrush(TEXT("MainFrame.PackageProject"));
+			ContentPrepIcon = FAppStyle::Get().GetBrush(TEXT("MainFrame.PackageProject"));
 
 			// let the user pick a target directory
 			if (AllPlatformPackagingSettings->StagingDirectory.Path.IsEmpty())
@@ -391,7 +416,6 @@ public:
 
 			BuildCookRunParams += TEXT(" -stage -archive -package");
 
-			const ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatform(PlatformInfo->Name);
 			if (ShouldBuildProject(PackagingSettings, TargetPlatform))
 			{
 				BuildCookRunParams += TEXT(" -build");
@@ -402,22 +426,21 @@ public:
 				BuildCookRunParams += TEXT(" -clean");
 			}
 
-			if (PackagingSettings->bCompressed)
-			{
-				BuildCookRunParams += TEXT(" -compressed");
-			}
-
-			if (PackagingSettings->bUseIoStore)
-			{
-				BuildCookRunParams += TEXT(" -iostore");
-
-				// Pak file(s) must be used when using container file(s)
-				PackagingSettings->UsePakFile = true;
-			}
+			// Pak file(s) must be used when using container file(s)
+			PackagingSettings->UsePakFile |= PackagingSettings->bUseIoStore;
 
 			if (PackagingSettings->UsePakFile)
 			{
 				BuildCookRunParams += TEXT(" -pak");
+				if (PackagingSettings->bUseIoStore)
+				{
+					BuildCookRunParams += TEXT(" -iostore");
+				}
+
+				if (PackagingSettings->bCompressed)
+				{
+					BuildCookRunParams += TEXT(" -compressed");
+				}
 			}
 
 			if (PackagingSettings->IncludePrerequisites)
@@ -494,7 +517,6 @@ public:
 		}
 // 		else if (Mode == EPrepareContentMode::PrepareForDebugging)
 // 		{
-// 			const ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatform(PlatformInfo->Name);
 // 			if (ShouldBuildProject(PackagingSettings, TargetPlatform))
 // 			{
 // 				BuildCookRunParams += TEXT(" -build");
@@ -506,7 +528,7 @@ public:
 		{
 			ContentPrepDescription = LOCTEXT("CookingContentTaskName", "Cooking content");
 			ContentPrepTaskName = LOCTEXT("CookingTaskName", "Cooking");
-			ContentPrepIcon = FEditorStyle::GetBrush(TEXT("MainFrame.CookContent"));
+			ContentPrepIcon = FAppStyle::Get().GetBrush(TEXT("MainFrame.CookContent"));
 
 
 			UCookerSettings const* CookerSettings = GetDefault<UCookerSettings>();
@@ -528,11 +550,11 @@ public:
 		FString CommandLine;
 		if (!ProjectPath.IsEmpty())
 		{
-			CommandLine.Appendf(TEXT("-ScriptsForProject=\"%s\" "), *ProjectPath);
+			CommandLine.Appendf(TEXT(" -ScriptsForProject=\"%s\" "), *ProjectPath);
 		}
 		CommandLine.Appendf(TEXT("Turnkey %s BuildCookRun %s"), *TurnkeyParams, *BuildCookRunParams);
 
-		FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, ContentPrepDescription, ContentPrepTaskName, ContentPrepIcon);
+		FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, ContentPrepDescription, ContentPrepTaskName, ContentPrepIcon, &AnalyticsParamArray);
 	}
 
 	static bool CanExecuteCustomBuild(FName IniPlatformName, FProjectBuildSettings Build)
@@ -545,25 +567,122 @@ public:
 		return true;
 	}
 
-	static void ExecuteCustomBuild(FName IniPlatformName, FProjectBuildSettings Build)
+	static FString GetCustomBuildCommandLine(FName IniPlatformName, const FString& DeviceId, const FProjectBuildSettings& Build)
 	{
-		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(IniPlatformName));
 		const FString ProjectPath = GetProjectPathForTurnkey();
 
 		FString CommandLine;
-		if (!ProjectPath.IsEmpty())
-		{
-			CommandLine.Appendf(TEXT("-ScriptsForProject=\"%s\" "), *ProjectPath);
-		}
-		CommandLine.Appendf(TEXT("Turnkey -command=ExecuteBuild -build=\"%s\" -platform=%s"),
-			*Build.Name, *IniPlatformName.ToString());
+		CommandLine.Appendf(TEXT("Turnkey -command=ExecuteBuild -build=\"%s\" -platform=%s"), *Build.Name, *ConvertToUATPlatform(IniPlatformName.ToString()));
 		if (!ProjectPath.IsEmpty())
 		{
 			CommandLine.Appendf(TEXT(" -project=\"%s\""), *ProjectPath);
 		}
+		if (!DeviceId.IsEmpty())
+		{
+			CommandLine.Appendf(TEXT(" -device=\"%s\""), *ConvertToUATDeviceId(DeviceId));
+		}
 
-		FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, LOCTEXT("Turnkey_CustomTaskNameVerbose", "Executing Custom Build"), LOCTEXT("Turnkey_CustomTaskName", "Custom"), FEditorStyle::GetBrush(TEXT("MainFrame.PackageProject")));
+		// pass the editor setting down to UAT in case they aren't saved to the ini's that UAT would read
+		{
+			UProjectPackagingSettings* PackagingSettings = FTurnkeySupportCallbacks::GetPackagingSettingsForPlatform(IniPlatformName);
+			UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
+			bool bIsProjectBuildTarget = false;
+			const FTargetInfo* BuildTargetInfo = AllPlatformPackagingSettings->GetBuildTargetInfoForPlatform(IniPlatformName, bIsProjectBuildTarget);
 
+			CommandLine.Appendf(TEXT(" -overridetarget=%s"), *BuildTargetInfo->Name);
+
+			// distribution builds can set shipping 
+			EProjectPackagingBuildConfigurations BuildConfig = PackagingSettings->ForDistribution ? 
+				EProjectPackagingBuildConfigurations::PPBC_Shipping :
+				AllPlatformPackagingSettings->GetBuildConfigurationForPlatform(IniPlatformName);
+
+			// if PPBC_MAX is set, then the project default should be used instead of the per platform build config
+			if (BuildConfig == EProjectPackagingBuildConfigurations::PPBC_MAX)
+			{
+				BuildConfig = AllPlatformPackagingSettings->BuildConfiguration;
+			}
+			const UProjectPackagingSettings::FConfigurationInfo& ConfigurationInfo = UProjectPackagingSettings::ConfigurationInfo[(int)BuildConfig];
+			CommandLine.Appendf(TEXT(" -overrideconfiguration=%s"), LexToString(ConfigurationInfo.Configuration));
+
+
+			// get the chosen cook flavor (texture format, etc)
+			const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(AllPlatformPackagingSettings->GetTargetFlavorForPlatform(IniPlatformName));
+			if (PlatformInfo->IsFlavor())
+			{
+				CommandLine.Appendf(TEXT(" -overrideflavor=%s"), *PlatformInfo->PlatformFlavor.ToString());
+			}
+		}
+
+		return CommandLine;
+	}
+
+	static void ExecuteCustomBuild(FName IniPlatformName, FString DeviceId, FProjectBuildSettings Build)
+	{
+		const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(IniPlatformName));
+		const FString ProjectPath = GetProjectPathForTurnkey();
+
+		// throw this on the command before the actual automation name (Turnkey, BuildCOokRun, etc) because they are global-to-UAT options, not options for a single command
+		// and may not carry through when Turnkey passes along to the BCR command
+		FString CommandLine = TEXT("-utf8output");
+		if (!ProjectPath.IsEmpty())
+		{
+			CommandLine.Appendf(TEXT(" -ScriptsForProject=\"%s\" "), *ProjectPath);
+		}
+		CommandLine += GetCustomBuildCommandLine(IniPlatformName, DeviceId, Build);
+
+#if ALLOW_CONTROL_TO_COPY_COMMANDLINE
+		bool bIsControlHeld = FSlateApplication::Get().GetModifierKeys().IsControlDown();
+		if (bIsControlHeld)
+		{
+			CommandLine += TEXT(" -PrintOnly ");
+
+			FString LogFilename, ReportFilename;
+			CommandLine += GetLogAndReportCommandline(LogFilename, ReportFilename);
+
+			FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, LOCTEXT("Turnkey_GettingCommandLine", "Copying Commandline"), LOCTEXT("Turnkey_CustomTaskNameCmdLine", "CustomCommandLine"), nullptr /* TaskIcon */,
+				[BuildName=Build.Name, ReportFilename](FString, double)
+				{
+					FString ReportContents;
+					FFileHelper::LoadFileToString(ReportContents, *ReportFilename);
+					UE_LOG(LogTurnkeySupport, Log, TEXT("Custom command '%s' gave commandline: %s"), *BuildName, *ReportContents);
+					if (ReportContents.Len())
+					{
+						FPlatformApplicationMisc::ClipboardCopy(*ReportContents);
+					}
+				});
+		}
+		else
+#endif
+		{
+			// append the stuff needed for running under editor
+			FString EditorSpecificCommandLine = FString::Printf(TEXT(" %s"), GetUATCompilationFlags());
+			if (FDerivedDataCacheInterface* DDC = GetDerivedDataCache())
+			{
+				EditorSpecificCommandLine += FString::Printf(TEXT(" -ddc=%s"), DDC->GetGraphName());
+			}
+
+			CommandLine += FString::Printf(TEXT(" -extraoptions=\"%s\""), *EditorSpecificCommandLine);
+
+			// if there is a Broese option, execute it now before passing to UAT to get the editor dialog
+			if (Build.BuildCookRunParams.Contains("{BrowseForDir}"))
+			{
+				// we reuse the already-presenbt StagingDirectory to save it, although it's more like "BuildOutpuDirectory" now 
+				UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
+				FString OutFolderName;
+				if (!FDesktopPlatformModule::Get()->OpenDirectoryDialog(FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr), LOCTEXT("PackageDirectoryDialogTitle", "Package project...").ToString(), AllPlatformPackagingSettings->StagingDirectory.Path, OutFolderName))
+				{
+					return;
+				}
+
+				AllPlatformPackagingSettings->StagingDirectory.Path = OutFolderName;
+				AllPlatformPackagingSettings->SaveConfig();
+
+				CommandLine += FString::Printf(TEXT(" -outputdir=\"%s\""), *OutFolderName);
+			}
+
+
+			FTurnkeyEditorSupport::RunUAT(CommandLine, PlatformInfo->DisplayName, LOCTEXT("Turnkey_CustomTaskNameVerbose", "Executing Custom Build"), LOCTEXT("Turnkey_CustomTaskName", "Custom"), FAppStyle::GetBrush(TEXT("MainFrame.PackageProject")));
+		}
 	}
 
 	static void SetPackageBuildConfiguration(const PlatformInfo::FTargetPlatformInfo* Info, EProjectPackagingBuildConfigurations BuildConfiguration)
@@ -697,7 +816,7 @@ private:
 	friend class TCommands<FTurnkeySupportCommands>;
 
 	FTurnkeySupportCommands()
-		: TCommands<FTurnkeySupportCommands>("TurnkeySupport", LOCTEXT("TurnkeySupport", "Turnkey and General Platform Options"), "MainFrame", FEditorStyle::GetStyleSetName())
+		: TCommands<FTurnkeySupportCommands>("TurnkeySupport", LOCTEXT("TurnkeySupport", "Turnkey and General Platform Options"), "MainFrame", FAppStyle::Get().GetStyleSetName())
 	{
 
 	}
@@ -746,12 +865,12 @@ static void TurnkeyInstallSdk(FString IniPlatformName, bool bPreferFull, bool bF
 	FString CommandLine;
 	if (!ProjectPath.IsEmpty())
 	{
-		CommandLine.Appendf(TEXT("-ScriptsForProject=\"%s\" "), *ProjectPath);
+		CommandLine.Appendf(TEXT(" -ScriptsForProject=\"%s\" "), *ProjectPath);
 	}
 	CommandLine.Appendf(TEXT("Turnkey -command=VerifySdk -UpdateIfNeeded -platform=%s %s %s -noturnkeyvariables -utf8output -WaitForUATMutex"), *IniPlatformName, *OptionalOptions, *ITurnkeyIOModule::Get().GetUATParams());
 
 	FText TaskName = LOCTEXT("InstallingSdk", "Installing Sdk");
-	FTurnkeyEditorSupport::RunUAT(CommandLine, FText::FromString(IniPlatformName), TaskName, TaskName, FEditorStyle::GetBrush(TEXT("MainFrame.PackageProject")),
+	FTurnkeyEditorSupport::RunUAT(CommandLine, FText::FromString(IniPlatformName), TaskName, TaskName, FAppStyle::GetBrush(TEXT("MainFrame.PackageProject")), nullptr,
 		[IniPlatformName](FString, double)
 	{
 		AsyncTask(ENamedThreads::GameThread, [IniPlatformName]()
@@ -834,71 +953,135 @@ static FSlateIcon MakePlatformSdkIconAttribute(FName IniPlatformName, TSharedPtr
 
 			if (Status == ETurnkeyPlatformSdkStatus::OutOfDate || Status == ETurnkeyPlatformSdkStatus::NoSdk || bDeviceWarning)
 			{
-				return FSlateIcon(FEditorStyle::GetStyleSetName(), TEXT("Icons.Warning"));
+				return FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.Warning"));
 			}
 			else if (Status == ETurnkeyPlatformSdkStatus::Error)
 			{
-				return FSlateIcon(FEditorStyle::GetStyleSetName(), TEXT("Icons.Error"));
+				return FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.Error"));
 			}
 			else if (Status == ETurnkeyPlatformSdkStatus::Unknown)
 			{
-				return FSlateIcon(FEditorStyle::GetStyleSetName(), TEXT("Icons.Help"));
+				return FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.Help"));
 			}
 			else
 			{
-				return FSlateIcon(FEditorStyle::GetStyleSetName(), FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName).GetIconStyleName(EPlatformIconSize::Normal));
+				return FSlateIcon(FAppStyle::Get().GetStyleSetName(), FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName).GetIconStyleName(EPlatformIconSize::Normal));
 			}
 		}
 //		));
 }
 
-static FText FormatSdkInfo(const FTurnkeySdkInfo& SdkInfo, bool bIncludeAutoSdk)
+static void FormatSdkInfo(const FString& PlatformOrDevice, const FTurnkeySdkInfo& SdkInfo, FText& OutInfo, FText& OutToolTip)
 {
-	FFormatOrderedArguments Args;
-	Args.Add(FText::FromString(SdkInfo.InstalledVersion));
-	Args.Add(FText::FromString(SdkInfo.AutoSDKVersion));
-	Args.Add(FText::FromString(SdkInfo.MinAllowedVersion));
-	Args.Add(FText::FromString(SdkInfo.MaxAllowedVersion));
-	Args.Add(SdkInfo.SdkErrorInformation);
 
 	TArray<FText> Lines;
-	Lines.Add(FText::Format(LOCTEXT("SdkInfo_Installed", "Installed SDK: {0}"), Args));
-	if (bIncludeAutoSdk)
+
+	for (TPair<FString, FTurnkeySdkInfo::Version> Pair : SdkInfo.SDKVersions)
 	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AutoSDK", "AutoSDK: {1}"), Args));
+		const FString& Name = Pair.Key;
+		const FString& Min = Pair.Value.Min;
+		const FString& Max = Pair.Value.Max;
+		const FString& Current = Pair.Value.Current;
+		FFormatNamedArguments VersionArgs;
+		VersionArgs.Add(TEXT("Name"), FText::FromString(Name));
+		VersionArgs.Add(TEXT("Min"), FText::FromString(Min));
+		VersionArgs.Add(TEXT("Max"), FText::FromString(Max));
+		VersionArgs.Add(TEXT("Current"), FText::FromString(Current.Len() ? Current : FString(TEXT("--"))));
+
+		if (Min == Max)
+		{
+			Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_Single", "Allowed {Name} Version: {Min}"), VersionArgs));
+		}
+		else if (Min == TEXT(""))
+		{
+			Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_MaxOnly", "Allowed {Name} Versions: Up to {Max}"), VersionArgs));
+		}
+		else if (Max == TEXT(""))
+		{
+			Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_MinOnly", "Allowed {Name} Versions: {Min} and up"), VersionArgs));
+		}
+		else
+		{
+			Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_Range", "Allowed {Name} Versions: {Min} through {Max}"), VersionArgs));
+		}
+		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_Current", "  Installed: {Current}"), VersionArgs));
 	}
-	
-	if (SdkInfo.MinAllowedVersion == SdkInfo.MaxAllowedVersion)
-	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_Single", "Allowed Version: {2}"), Args));
-	}
-	else if (SdkInfo.MinAllowedVersion == TEXT(""))
-	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_MaxOnly", "Allowed Versions: Up to {3}"), Args));
-	}
-	else if (SdkInfo.MaxAllowedVersion == TEXT(""))
-	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_MinOnly", "Allowed Versions: {2} and up"), Args));
-	}
-	else
-	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_AllowedSDK_Range", "Allowed Versions: {2} through {3}"), Args));
-	}
+
+	FFormatOrderedArguments Args;
+	Args.Add(SdkInfo.SdkErrorInformation);
+	Args.Add(FText::FromString(PlatformOrDevice));
 
 	if (!SdkInfo.SdkErrorInformation.IsEmpty())
 	{
-		Lines.Add(FText::Format(LOCTEXT("SdkInfo_Error", "Error Info:\n{4}"), Args));
+		Lines.Add(FText::Format(LOCTEXT("SdkInfo_Error", "Error Info:\n{0}"), Args));
 	}
 
 	// now make a single \n delimted text
-	return FText::Join(FText::FromString(TEXT("\n")), Lines);
+	OutInfo = FText::Join(FText::FromString(TEXT("\n")), Lines);
+
+	// make a tooltip
+	if (PlatformOrDevice.Contains(TEXT("@")))
+	{
+		OutToolTip = FText::Format(LOCTEXT("SdkInfo_ToolTip", "Information returned from:\nRunUAT Turnkey -command=VerifySdk -device={1}"), Args);
+	}
+	else
+	{
+		OutToolTip = FText::Format(LOCTEXT("SdkInfo_ToolTipPlatform", "Information returned from:\nRunUAT Turnkey -command=VerifySdk -platform={1}"), Args);
+	}
 }
 
 
+static bool HasBuildForDeviceOrNot(const TArray<FProjectBuildSettings> Builds, bool bLookForDeviceBuilds)
+{
+	for (const FProjectBuildSettings& Build : Builds)
+	{
+		const bool bHasDeviceEntry = Build.BuildCookRunParams.Contains(TEXT("{DeviceId}"));
+		// if it has a device, and we are looking for device, or vice versa, return true
+		if (bHasDeviceEntry == bLookForDeviceBuilds)
+		{
+			return true;
+		}
+	}
 
+	return true;
+}
 
+static void MakeCustomBuildMenuEntries(FToolMenuSection& Section, const TArray<FProjectBuildSettings> Builds, FName IniPlatformName, const FString& DeviceId, const FString& DeviceName, const FText& ToolTipFormat)
+{
+	FString PlatformString = IniPlatformName.ToString();
 
-static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatformName, ITargetDeviceServicesModule* TargetDeviceServicesModule)
+	for (FProjectBuildSettings Build : Builds)
+	{
+		if (Build.SpecificPlatforms.Num() == 0 || Build.SpecificPlatforms.Contains(PlatformString))
+		{
+			const bool bHasDeviceEntry = Build.BuildCookRunParams.Contains(TEXT("{DeviceId}"));
+			const bool bNeedsDeviceEntry = !DeviceId.IsEmpty();
+			if (bHasDeviceEntry == bNeedsDeviceEntry)
+			{
+				FString CommandLine = FTurnkeySupportCallbacks::GetCustomBuildCommandLine(IniPlatformName, DeviceId, Build);
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("CommandLine"), FText::FromString(CommandLine));
+				Args.Add(TEXT("BuildName"), FText::FromString(Build.Name));
+				Args.Add(TEXT("BuildHelp"), FText::FromString(Build.HelpText));
+				Args.Add(TEXT("DeviceName"), FText::FromString(DeviceName));
+
+				Section.AddMenuEntry(
+					NAME_None,
+					FText::FromString(Build.Name),
+					FText::Format(ToolTipFormat, Args),
+					FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::ExecuteCustomBuild, IniPlatformName, DeviceId, Build),
+						FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanExecuteCustomBuild, IniPlatformName, Build)
+					)
+				);
+			}
+		}
+	}
+
+}
+
+static void MakeTurnkeyPlatformMenu(UToolMenu* ToolMenu, FName IniPlatformName, ITargetDeviceServicesModule* TargetDeviceServicesModule)
 {
 	const FDataDrivenPlatformInfo& DDPI = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName);
 	FString UBTPlatformString = DDPI.UBTPlatformString;
@@ -907,10 +1090,10 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 
 	if (VanillaInfo != nullptr)
 	{
+		FToolMenuSection& Section = ToolMenu->AddSection("ContentManagement", LOCTEXT("TurnkeySection_Content", "Content Management"));
 
-		MenuBuilder.BeginSection("ContentManagement", LOCTEXT("TurnkeySection_Content", "Content Management"));
-
-		MenuBuilder.AddMenuEntry(
+		Section.AddMenuEntry(
+			NAME_None,
 			LOCTEXT("Turnkey_PackageProject", "Package Project"),
 			LOCTEXT("TurnkeyTooltip_PackageProject", "Package this project and archive it to a user-selected directory. This can then be used to install and run."),
 			FSlateIcon(),
@@ -920,7 +1103,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 			)
 		);
 
-		MenuBuilder.AddMenuEntry(
+		Section.AddMenuEntry(
+			NAME_None,
 			LOCTEXT("Turnkey_CookContent", "Cook Content"),
 			LOCTEXT("TurnkeyTooltip_CookContent", "Cook this project for the selected configuration and target"),
 			FSlateIcon(),
@@ -930,7 +1114,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 			)
 		);
 // 
-// 		MenuBuilder.AddMenuEntry(
+// 		Section.AddMenuEntry(
+//			NAME_None,
 // 			LOCTEXT("Turnkey_PrepareForDebugging", "Prepare For Debugging"),
 // 			LOCTEXT("TurnkeyTooltip_PrepareForDebugging", "Prepare this project for debugging"),
 // 			FSlateIcon(),
@@ -941,44 +1126,26 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 // 		);
 // 
 
-		FString PlatformString = IniPlatformName.ToString();
 		UProjectPackagingSettings* PackagingSettings = FTurnkeySupportCallbacks::GetPackagingSettingsForPlatform(IniPlatformName);
 
-		for (FProjectBuildSettings Build : PackagingSettings->EngineCustomBuilds)
-		{
-			if (Build.SpecificPlatforms.Num() == 0 || Build.SpecificPlatforms.Contains(PlatformString))
-			{
-				MenuBuilder.AddMenuEntry(
-					FText::FromString(Build.Name),
-					// @todo turnkey: add the build string to the tooltip
-					LOCTEXT("TurnkeyTooltip_EngineCustomBuild", "Execute a custom build"),
-					FSlateIcon(),
-					FUIAction(
-						FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::ExecuteCustomBuild, IniPlatformName, Build),
-						FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanExecuteCustomBuild, IniPlatformName, Build)
-					)
-				);
-			}
-		}
 
-		for (FProjectBuildSettings Build : PackagingSettings->ProjectCustomBuilds)
-		{
-			if (Build.SpecificPlatforms.Num() == 0 || Build.SpecificPlatforms.Contains(PlatformString))
-			{
-				MenuBuilder.AddMenuEntry(
-					FText::FromString(Build.Name),
-					// @todo turnkey: add the build string to the tooltip
-					LOCTEXT("TurnkeyTooltip_ProjectCustomBuild", "Execute a custom build (this comes from Packaging Settings)"),
-					FSlateIcon(),
-					FUIAction(
-						FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::ExecuteCustomBuild, IniPlatformName, Build),
-						FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanExecuteCustomBuild, IniPlatformName, Build)
-					)
-				);
-			}
-		}
+			
+		// these ToolTipFormats will be formatted inside the MakeCustomBuildMenuEntries function with some named args
+		// the empty strings passed in is the deviceId, which means to show builds that don't contain DeviceId components
+#if ALLOW_CONTROL_TO_COPY_COMMANDLINE
+		FText ToolTipFormat = LOCTEXT("TurnkeyTooltip_EngineCustomBuild_WithCopy", "Execute the '{BuildName}' command.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nHold Control to copy the final underlying BuildCookRun commandline to the clipboard.");
+#else
+		FText ToolTipFormat = LOCTEXT("TurnkeyTooltip_EngineCustomBuild", "Execute the '{BuildName}' command.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}");
+#endif
+		MakeCustomBuildMenuEntries(Section, PackagingSettings->EngineCustomBuilds, IniPlatformName, FString(), FString(), ToolTipFormat);
+		
+#if ALLOW_CONTROL_TO_COPY_COMMANDLINE
+		ToolTipFormat = LOCTEXT("TurnkeyTooltip_ProjectCustomBuild_WithCopy", "Execute this project's custom '{BuildName}' command.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nHold Control to copy the final BuildCookRun commandline to the clipboard.\nThis custom command comes from Project Settings.");
+#else
+		ToolTipFormat = LOCTEXT("TurnkeyTooltip_ProjectCustomBuild", "Execute this project's custom '{BuildName}' command.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nThis custom command comes from Project Settings.");
+#endif
+		MakeCustomBuildMenuEntries(Section, PackagingSettings->ProjectCustomBuilds, IniPlatformName, FString(), FString(), ToolTipFormat);
 
-		MenuBuilder.EndSection();
 
 		UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
 
@@ -1000,12 +1167,13 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 				{
 					FTurnkeySupportCallbacks::SetActiveFlavor(ValidFlavors[0]);
 				}
-				
-				MenuBuilder.BeginSection("FlavorSelection", LOCTEXT("TurnkeySection_FlavorSelection", "Flavor Selection"));
+
+				FToolMenuSection& FlavorSection = ToolMenu->AddSection("FlavorSelection", LOCTEXT("TurnkeySection_FlavorSelection", "Flavor Selection"));
 				
 				for (const PlatformInfo::FTargetPlatformInfo* Info : ValidFlavors)
 				{
-					MenuBuilder.AddMenuEntry(
+					FlavorSection.AddMenuEntry(
+						NAME_None,
 						Info->DisplayName,
 						FText(),
 						FSlateIcon(),
@@ -1014,30 +1182,25 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 							FCanExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::CanSetActiveFlavor, Info),
 							FIsActionChecked::CreateStatic(&FTurnkeySupportCallbacks::SetActiveFlavorIsChecked, Info)
 						),
-						NAME_None,
 						EUserInterfaceActionType::RadioButton
 					);
 				}
-				MenuBuilder.EndSection();
 			}
 		}
 
-		MenuBuilder.BeginSection("BuildConfig", LOCTEXT("TurnkeySection_BuildConfig", "Binary Configuration"));
-
-		UEnum* Enum = StaticEnum<EProjectPackagingBuildConfigurations>();
-		check(Enum);
-		FString Metadata = Enum->GetMetaData(TEXT("DisplayName"), (int32)AllPlatformPackagingSettings->BuildConfiguration);
-
-		MenuBuilder.AddMenuEntry(
-			FText::Format(LOCTEXT("DefaultConfiguration",  "Use Project Setting ({0})"), FText::FromString(Metadata)),
-			FText::Format(LOCTEXT("DefaultConfigurationTooltip", "Package the game in {0} configuration"), FText::FromString(Metadata)),
+		FToolMenuSection& ConfigSection = ToolMenu->AddSection("BuildConfig", LOCTEXT("TurnkeySection_BuildConfig", "Binary Configuration"));
+		
+		const UProjectPackagingSettings::FConfigurationInfo& ConfigInfo = UProjectPackagingSettings::ConfigurationInfo[static_cast<int32>(AllPlatformPackagingSettings->BuildConfiguration)];
+		ConfigSection.AddMenuEntry(
+			NAME_None,
+			FText::Format(LOCTEXT("DefaultConfiguration",  "Use Project Setting ({0})"), ConfigInfo.Name),
+			ConfigInfo.ToolTip,
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::SetPackageBuildConfiguration, VanillaInfo, EProjectPackagingBuildConfigurations::PPBC_MAX),
 				FCanExecuteAction(),
 				FIsActionChecked::CreateStatic(&FTurnkeySupportCallbacks::PackageBuildConfigurationIsChecked, VanillaInfo, EProjectPackagingBuildConfigurations::PPBC_MAX)
 			),
-			NAME_None,
 			EUserInterfaceActionType::RadioButton
 		);
 
@@ -1049,7 +1212,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 			const UProjectPackagingSettings::FConfigurationInfo& ConfigurationInfo = UProjectPackagingSettings::ConfigurationInfo[(int)PackagingConfiguration];
 			if (FInstalledPlatformInfo::Get().IsValid(TOptional<EBuildTargetType>(), TOptional<FString>(), ConfigurationInfo.Configuration, ProjectType, EInstalledPlatformState::Downloaded))
 			{
-				MenuBuilder.AddMenuEntry(
+				ConfigSection.AddMenuEntry(
+					NAME_None,
 					ConfigurationInfo.Name,
 					ConfigurationInfo.ToolTip,
 					FSlateIcon(),
@@ -1058,12 +1222,10 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 						FCanExecuteAction(),
 						FIsActionChecked::CreateStatic(&FTurnkeySupportCallbacks::PackageBuildConfigurationIsChecked, VanillaInfo, PackagingConfiguration)
 					),
-					NAME_None,
 					EUserInterfaceActionType::RadioButton
 				);
 			}
 		}
-		MenuBuilder.EndSection();
 
 		// Collect build targets. Content-only projects use Engine targets
 		FProjectStatus ProjectStatus;
@@ -1096,9 +1258,10 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 					AllPlatformPackagingSettings->SaveConfig();
 				}
 
-				MenuBuilder.BeginSection("BuildTarget", LOCTEXT("TurnkeySection_BuildTarget", "Build Target"));
+				FToolMenuSection& TargetSection = ToolMenu->AddSection("BuildTarget", LOCTEXT("TurnkeySection_BuildTarget", "Build Target"));
 
-				MenuBuilder.AddMenuEntry(
+				TargetSection.AddMenuEntry(
+					NAME_None,
 					FText::Format(LOCTEXT("DefaultPackageTarget",  "Use Project Setting ({0})"), FText::FromString(AllPlatformPackagingSettings->BuildTarget)),
 					FText::Format(LOCTEXT("DefaultPackageTargetTooltip", "Package the {0} target"), FText::FromString(AllPlatformPackagingSettings->BuildTarget)),
 					FSlateIcon(),
@@ -1107,13 +1270,13 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 						FCanExecuteAction(),
 						FIsActionChecked::CreateStatic(&FTurnkeySupportCallbacks::PackageBuildTargetIsChecked, VanillaInfo, FString(""))
 						),
-					NAME_None,
 					EUserInterfaceActionType::RadioButton
 				);
 
 				for (const FTargetInfo& Target : ValidTargets)
 				{
-					MenuBuilder.AddMenuEntry(
+					TargetSection.AddMenuEntry(
+						NAME_None,
 						FText::FromString(Target.Name),
 						FText::Format(LOCTEXT("PackageTargetName", "Package the '{0}' target."), FText::FromString(Target.Name)),
 						FSlateIcon(),
@@ -1122,16 +1285,13 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 							FCanExecuteAction(),
 							FIsActionChecked::CreateStatic(&FTurnkeySupportCallbacks::PackageBuildTargetIsChecked, VanillaInfo, Target.Name)
 						),
-						NAME_None,
 						EUserInterfaceActionType::RadioButton
 					);
 				}
-				
-				MenuBuilder.EndSection();
 			}
 		}
 
-		MenuBuilder.BeginSection("AllDevices", LOCTEXT("TurnkeySection_AllDevices", "All Devices"));
+		FToolMenuSection& DevicesSection = ToolMenu->AddSection("AllDevices", LOCTEXT("TurnkeySection_AllDevices", "All Devices"));
 
 		TArray<TSharedPtr<ITargetDeviceProxy>> DeviceProxies;
 		TargetDeviceServicesModule->GetDeviceProxyManager()->GetAllProxies(IniPlatformName, DeviceProxies);
@@ -1140,23 +1300,54 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 		{
 			FString DeviceName = Proxy->GetName();
 			FString DeviceId = Proxy->GetTargetDeviceId(NAME_None);
-			MenuBuilder.AddSubMenu(
+			DevicesSection.AddSubMenu(
+				NAME_None,
 				MakeSdkStatusAttribute(IniPlatformName, Proxy),
 				FText(),
-				FNewMenuDelegate::CreateLambda([IniPlatformName, DeviceName, DeviceId](FMenuBuilder& SubMenuBuilder)
+				FNewToolMenuDelegate::CreateLambda([IniPlatformName, DeviceName, DeviceId, PackagingSettings](UToolMenu* SubToolMenu)
 				{
-					FTurnkeySdkInfo SdkInfo = ITurnkeySupportModule::Get().GetSdkInfoForDeviceId(DeviceId);
+					if (HasBuildForDeviceOrNot(PackagingSettings->EngineCustomBuilds, true) || HasBuildForDeviceOrNot(PackagingSettings->ProjectCustomBuilds, true))
+					{
+						FToolMenuSection& CustomBuildSection = SubToolMenu->AddSection("DeviceCustomBuilds", LOCTEXT("TurnkeySection_DeviceCustomBuilds", "Builds For Devices"));
 
-					SubMenuBuilder.AddWidget(
-						SNew(STextBlock)
-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-						.Text(FormatSdkInfo(SdkInfo, false)),
-						FText::GetEmpty()
+						// these ToolTipFormats will be formatted inside the MakeCustomBuildMenuEntries function with some named args
+						// the empty strings passed in is the deviceId, which means to show builds that don't contain DeviceId components
+#if ALLOW_CONTROL_TO_COPY_COMMANDLINE
+						FText ToolTipFormat = LOCTEXT("TurnkeyTooltip_EngineCustomBuild_WithCopyDevice", "Execute the '{BuildName}' command on {DeviceName}.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nHold Control to copy the final underlying BuildCookRun commandline to the clipboard.");
+#else
+						FText ToolTipFormat = LOCTEXT("TurnkeyTooltip_EngineCustomBuildDevice", "Execute the '{BuildName}' command on {DeviceName}.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}");
+#endif
+						MakeCustomBuildMenuEntries(CustomBuildSection, PackagingSettings->EngineCustomBuilds, IniPlatformName, DeviceId, DeviceName, ToolTipFormat);
+
+#if ALLOW_CONTROL_TO_COPY_COMMANDLINE
+						ToolTipFormat = LOCTEXT("TurnkeyTooltip_ProjectCustomBuildDevice", "Execute this project's custom '{BuildName}' command on {DeviceName}.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nHold Control to copy the final BuildCookRun commandline to the clipboard.\nThis custom command comes from Project Settings.");
+#else
+						ToolTipFormat = LOCTEXT("TurnkeyTooltip_ProjectCustomBuild_WithCopyDevice", "Execute this project's custom '{BuildName}' command on {DeviceName}.\n{BuildHelp}\n--\nThis runs the following command:\nRunUAT {CommandLine}\nThis custom command comes from Project Settings.");
+#endif
+						MakeCustomBuildMenuEntries(CustomBuildSection, PackagingSettings->ProjectCustomBuilds, IniPlatformName, DeviceId, DeviceName, ToolTipFormat);
+					}
+
+
+					FTurnkeySdkInfo SdkInfo = ITurnkeySupportModule::Get().GetSdkInfoForDeviceId(DeviceId);
+					FText SdkText, SdkToolTip;
+					FormatSdkInfo(DeviceId, SdkInfo, SdkText, SdkToolTip);
+
+					FToolMenuSection& Section = SubToolMenu->AddSection("DeviceSdkInfo", LOCTEXT("TurnkeySection_DeviceSdkInfo", "Sdk Info"));
+					Section.AddEntry(
+						FToolMenuEntry::InitWidget(
+							NAME_None,
+							SNew(STextBlock)
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							.Text(SdkText)
+							.ToolTip(SNew(SToolTip).Text(SdkToolTip)),
+							FText::GetEmpty()
+						)
 					);
 
 					if (SdkInfo.DeviceStatus == ETurnkeyDeviceStatus::SoftwareValid)
 					{
-						SubMenuBuilder.AddMenuEntry(
+						Section.AddMenuEntry(
+							NAME_None,
 							LOCTEXT("Turnkey_ForceRepairDevice", "Force Update Device"),
 							LOCTEXT("TurnkeyTooltip_ForceRepairDevice", "Force repairing anything on the device needed (update firmware, etc). Will perform all steps possible, even if not needed."),
 							FSlateIcon(),
@@ -1165,7 +1356,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 					}
 					else
 					{
-						SubMenuBuilder.AddMenuEntry(
+						Section.AddMenuEntry(
+							NAME_None,
 							LOCTEXT("Turnkey_RepairDevice", "Update Device"),
 							LOCTEXT("TurnkeyTooltip_RepairDevice", "Perform any fixup that may be needed on this device. If up to date already, nothing will be done."),
 							FSlateIcon(),
@@ -1177,47 +1369,36 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 				false, MakePlatformSdkIconAttribute(IniPlatformName, Proxy)
 			);
 		}
-
-
-		MenuBuilder.EndSection();
 	}
 
-	MenuBuilder.BeginSection("SdkManagement", LOCTEXT("TurnkeySection_Sdks", "Sdk Managment"));
+	FToolMenuSection& SdkSection = ToolMenu->AddSection("SdkManagement", LOCTEXT("TurnkeySection_Sdks", "Sdk Managment"));
 
 	const FTurnkeySdkInfo& SdkInfo = ITurnkeySupportModule::Get().GetSdkInfo(IniPlatformName, true);
-	FFormatOrderedArguments Args;
-	Args.Add(FText::FromString(SdkInfo.InstalledVersion));
-	Args.Add(FText::FromString(SdkInfo.AutoSDKVersion));
-	Args.Add(FText::FromString(SdkInfo.MinAllowedVersion));
-	Args.Add(FText::FromString(SdkInfo.MaxAllowedVersion));
-	if (SdkInfo.SdkErrorInformation.IsEmpty())
-	{
-		Args.Add(FText::GetEmpty());
-		Args.Add(FText::GetEmpty());
-	}
-	else
-	{
-		Args.Add(LOCTEXT("ErrorPrefix", "\nErrors:\n"));
-		Args.Add(FText::GetEmpty());
-	}
+	FText SdkText, SdkToolTip;
+	FormatSdkInfo(IniPlatformName.ToString(), SdkInfo, SdkText, SdkToolTip);
 
-	MenuBuilder.AddWidget(
-		SNew(SBox)
-		.Padding(FMargin(16.0f, 3.0f))
-		[
-			SNew(STextBlock)
-			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-			.Text(FormatSdkInfo(SdkInfo, true))
-		],
-		FText::GetEmpty()
+	SdkSection.AddEntry(
+		FToolMenuEntry::InitWidget(
+			NAME_None,
+			SNew(SBox)
+			.Padding(FMargin(16.0f, 3.0f))
+			[
+				SNew(STextBlock)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Text(SdkText)
+				.ToolTip(SNew(SToolTip).Text(SdkToolTip))
+			],
+			FText::GetEmpty()
+		)
 	);
 
 	FString NoDevice;
 	if (SdkInfo.bCanInstallFullSdk || SdkInfo.bCanInstallAutoSdk)
 	{
-		if (SdkInfo.Status == ETurnkeyPlatformSdkStatus::OutOfDate)
+		if (SdkInfo.Status == ETurnkeyPlatformSdkStatus::OutOfDate || (SdkInfo.Status == ETurnkeyPlatformSdkStatus::Valid && SdkInfo.bHasBestSdk == false))
 		{
-			MenuBuilder.AddMenuEntry(
+			SdkSection.AddMenuEntry(
+				NAME_None,
 				LOCTEXT("Turnkey_UpdateSdkMinimal", "Update Sdk"),
 				LOCTEXT("TurnkeyTooltip_UpdateSdkMinimal", "Attempt to update an Sdk, as hosted by your studio. Will attempt to install a minimal Sdk (useful for building/running only)"),
 				FSlateIcon(),
@@ -1226,7 +1407,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 
 			if (SdkInfo.bCanInstallFullSdk && SdkInfo.bCanInstallAutoSdk)
 			{
-				MenuBuilder.AddMenuEntry(
+				SdkSection.AddMenuEntry(
+					NAME_None,
 					LOCTEXT("Turnkey_UpdateSdkFull", "Update Sdk (Full Platform Installer)"),
 					LOCTEXT("TurnkeyTooltip_UpdateSdkFull", "Attempt to update an Sdk, as hosted by your studio. Will attempt to install a full Sdk (useful profiling or other use cases)"),
 					FSlateIcon(),
@@ -1236,7 +1418,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 		}
 		else if (SdkInfo.Status == ETurnkeyPlatformSdkStatus::Valid)
 		{
-			MenuBuilder.AddMenuEntry(
+			SdkSection.AddMenuEntry(
+				NAME_None,
 				LOCTEXT("Turnkey_ForceSdkMinimal", "Force Reinstall Sdk"),
 				LOCTEXT("TurnkeyTooltip_ForceSdkMinimal", "Attempt to force re-install an Sdk, as hosted by your studio. Will attempt to install a minimal Sdk (useful for building/running only)"),
 				FSlateIcon(),
@@ -1245,7 +1428,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 
 			if (SdkInfo.bCanInstallFullSdk && SdkInfo.bCanInstallAutoSdk)
 			{
-				MenuBuilder.AddMenuEntry(
+				SdkSection.AddMenuEntry(
+					NAME_None,
 					LOCTEXT("Turnkey_ForceSdkFull", "Force Reinstall (Full Platform Installer)"),
 					LOCTEXT("TurnkeyTooltip_ForceSdkForce", "Attempt to force re-install an Sdk, as hosted by your studio. Will attempt to install a full Sdk (useful profiling or other use cases)"),
 					FSlateIcon(),
@@ -1255,14 +1439,16 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 		}
 		else
 		{
-			MenuBuilder.AddMenuEntry(
+			SdkSection.AddMenuEntry(
+				NAME_None,
 				LOCTEXT("Turnkey_InstallSdkMinimal", "Install Sdk"),
 				LOCTEXT("TurnkeyTooltip_InstallSdkMinimal", "Attempt to install an Sdk, as hosted by your studio. Will attempt to install a minimal Sdk (useful for building/running only)"),
 				FSlateIcon(),
 				FExecuteAction::CreateStatic(TurnkeyInstallSdk, IniPlatformName.ToString(), false, false, NoDevice)
 			);
 
-			MenuBuilder.AddMenuEntry(
+			SdkSection.AddMenuEntry(
+				NAME_None,
 				LOCTEXT("Turnkey_InstallSdkFull", "Install Sdk (Full Platform Installer)"),
 				LOCTEXT("TurnkeyTooltip_InstallSdkFull", "Attempt to install an Sdk, as hosted by your studio. Will attempt to install a full Sdk (useful profiling or other use cases)"),
 				FSlateIcon(),
@@ -1273,7 +1459,8 @@ static void MakeTurnkeyPlatformMenu(FMenuBuilder& MenuBuilder, FName IniPlatform
 
 #if 0 // @todo turnkey enable and always show documentation for installation help when we have URLs in place
 	// Link to documentation
-	MenuBuilder.AddMenuEntry(
+	SdkSection.AddMenuEntry(
+		NAME_None,
 		LOCTEXT("Turnkey_ShowDocumentation", "Installation Help..."),
 		LOCTEXT("TurnkeyTooltip_ShowDocumentation", "Show documentation with help installing the SDK for this platform"),
 		FSlateIcon(),
@@ -1354,7 +1541,7 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 	// 	if (DeviceProxy->IsAggregated())
 	// 	{
 	// 		FString AggregateDevicedName(FString::Printf(TEXT("  %s"), *DeviceProxy->GetName())); //align with the other menu entries
-	// 		FSlateIcon AggregateDeviceIcon(FEditorStyle::GetStyleSetName(), EditorPlatformInfo->GetIconStyleName(PlatformInfo::EPlatformIconSize::Normal));
+	// 		FSlateIcon AggregateDeviceIcon(FAppStyle::Get().GetStyleSetName(), EditorPlatformInfo->GetIconStyleName(PlatformInfo::EPlatformIconSize::Normal));
 	// 
 	// 		MenuBuilder.AddSubMenu(
 	// 			FText::FromString(AggregateDevicedName),
@@ -1371,6 +1558,32 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 			{
 				// only game and client devices are supported for launch on but devices only signal if they target client builds by their name e.g. "WindowsClient"
 				// if the user has a EBuildTargetType::Client target selected we will launch on a client device, otherwise we fall back to the default game device
+
+				// Initialize default flavor if not yet initialized
+				const PlatformInfo::FTargetPlatformInfo* VanillaInfo = PlatformInfo::FindVanillaPlatformInfo(PlatformName);
+				if(VanillaInfo != nullptr)
+				{
+					
+
+					// gather all valid flavors
+					const TArray<const PlatformInfo::FTargetPlatformInfo*> ValidFlavors = VanillaInfo->Flavors.FilterByPredicate([](const PlatformInfo::FTargetPlatformInfo* Target)
+						{
+							// Editor isn't a valid platform type that users can target
+							// The Build Target will choose client or server, so no need to show them as well
+							return Target->PlatformType != EBuildTargetType::Editor && Target->PlatformType != EBuildTargetType::Client && Target->PlatformType != EBuildTargetType::Server;
+						});
+
+					if (ValidFlavors.Num() > 1)
+					{
+						// Set the first flavor as the default if it hasn't been set
+						UProjectPackagingSettings* AllPlatformPackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
+						FName CurrentFlavor = AllPlatformPackagingSettings->GetTargetFlavorForPlatform(PlatformName);
+						if (CurrentFlavor == VanillaInfo->Name)
+						{
+							FTurnkeySupportCallbacks::SetActiveFlavor(ValidFlavors[0]);
+						}
+					}
+				}
 
 				// We need to use flavors to launch on correctly on Android_ASTC / Android_ETC2, etc
 				const PlatformInfo::FTargetPlatformInfo* PlatformInfo = nullptr;
@@ -1390,6 +1603,7 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 				if (DesktopPlatform->GetTargetsForCurrentProject().Num() > 0)
 				{
 					TArray<FTargetInfo> Targets = DesktopPlatform->GetTargetsForCurrentProject();
+					const FTargetInfo* TargetInfo = GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo();
 
 					const TArray<FTargetInfo> ClientTargets = Targets.FilterByPredicate([](const FTargetInfo& Target)
 						{
@@ -1399,7 +1613,7 @@ static void GenerateDeviceProxyMenuParams(TSharedPtr<ITargetDeviceProxy> DeviceP
 					// we just want to know if any client build is selected, the correct flavor was picked above
 					for (const auto& Target : ClientTargets)
 					{
-						if (GetDefault<UProjectPackagingSettings>()->GetBuildTargetForPlatform(PlatformName) == Target.Name)
+						if (TargetInfo != nullptr && TargetInfo->Name == Target.Name)
 						{
 							VariantName += "Client";
 							break;
@@ -1479,7 +1693,6 @@ void FTurnkeySupportModule::MakeQuickLaunchItems(class UToolMenu* Menu, FOnQuick
 
 				if (DeviceProxies.Num() == 1)
 				{
-					UE_LOG(LogTurnkeySupport, Display, TEXT("Adding device menu item for %s"), *DeviceProxies[0]->GetName());
 					DynamicSection.AddMenuEntry(
 						NAME_None,
 						MakeSdkStatusAttribute(PlatformName, DeviceProxies[0]),
@@ -1494,8 +1707,10 @@ void FTurnkeySupportModule::MakeQuickLaunchItems(class UToolMenu* Menu, FOnQuick
 						NAME_None,
 						MakeSdkStatusAttribute(PlatformName, DeviceProxies[0]),
 						Tooltip,
-						FNewMenuDelegate::CreateLambda([TargetDeviceServicesModule, PlatformName, ExternalOnClickDelegate](FMenuBuilder& SubMenuBuilder)
+						FNewToolMenuDelegate::CreateLambda([TargetDeviceServicesModule, PlatformName, ExternalOnClickDelegate](UToolMenu* SubToolMenu)
 							{
+								FToolMenuSection& Section = SubToolMenu->AddSection(NAME_None);
+
 								// re-get the proxies, just in case they changed
 								TArray<TSharedPtr<ITargetDeviceProxy>> DeviceProxies;
 								TargetDeviceServicesModule->GetDeviceProxyManager()->GetAllProxies(PlatformName, DeviceProxies);
@@ -1505,12 +1720,12 @@ void FTurnkeySupportModule::MakeQuickLaunchItems(class UToolMenu* Menu, FOnQuick
 									FUIAction SubAction;
 									FText SubTooltip;
 									GenerateDeviceProxyMenuParams(Proxy, PlatformName, SubAction, SubTooltip, ExternalOnClickDelegate);
-									SubMenuBuilder.AddMenuEntry(
+									Section.AddMenuEntry(
+										NAME_None,
 										MakeSdkStatusAttribute(PlatformName, Proxy),
 										SubTooltip,
 										MakePlatformSdkIconAttribute(PlatformName, Proxy),
 										SubAction,
-										NAME_None,
 										EUserInterfaceActionType::Button
 									);
 								}
@@ -1601,7 +1816,6 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 	const FTurnkeySupportCommands& Commands = FTurnkeySupportCommands::Get();
 
 	const bool bShouldCloseWindowAfterMenuSelection = true;
-//	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, FTurnkeySupportCommands::ActionList);
 
 	static const FName MenuName("UnrealEd.PlayWorldCommands.PlatformsMenu");
 
@@ -1656,7 +1870,7 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 					NAME_None,
 					MakeSdkStatusAttribute(PlatformName, nullptr),
 					FText::FromString(PlatformName.ToString()),
-					FNewMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, PlatformName, TargetDeviceServicesModule),
+					FNewToolMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, PlatformName, TargetDeviceServicesModule),
 					false,
 					MakePlatformSdkIconAttribute(PlatformName, nullptr),
 					true
@@ -1681,14 +1895,16 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 					NAME_None,
 					LOCTEXT("Turnkey_UnsupportedPlatforms", "Platforms Not Supported by Project"),
 					LOCTEXT("Turnkey_UnsupportedPlatformsToolTip", "List of platforms that are not marked as supported by this platform. Use the \"Supported Platforms...\""),
-					FNewMenuDelegate::CreateLambda([UnsupportedPlatforms, TargetDeviceServicesModule](FMenuBuilder& SubMenuBuilder)
+					FNewToolMenuDelegate::CreateLambda([UnsupportedPlatforms, TargetDeviceServicesModule](UToolMenu* SubToolMenu)
 						{
+							FToolMenuSection& Section = SubToolMenu->AddSection(NAME_None);
 							for (const auto It : UnsupportedPlatforms)
 							{
-								SubMenuBuilder.AddSubMenu(
+								Section.AddSubMenu(
+									NAME_None,
 									MakeSdkStatusAttribute(It.Key, nullptr),
 									FText::FromString(It.Key.ToString()),
-									FNewMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, It.Key, TargetDeviceServicesModule),
+									FNewToolMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, It.Key, TargetDeviceServicesModule),
 									false,
 									MakePlatformSdkIconAttribute(It.Key, nullptr),
 									true
@@ -1706,14 +1922,16 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 					NAME_None,
 					LOCTEXT("Turnkey_UncompiledPlatforms", "Platforms With No Compiled Support"),
 					LOCTEXT("Turnkey_UncompiledPlatformsToolTip", "List of platforms that you have access to, but support is not compiled in to the editor. It may be caused by missing an SDK, so you attempt to install an SDK here."),
-					FNewMenuDelegate::CreateLambda([UncompiledPlatforms, TargetDeviceServicesModule](FMenuBuilder& SubMenuBuilder)
+					FNewToolMenuDelegate::CreateLambda([UncompiledPlatforms, TargetDeviceServicesModule](UToolMenu* SubToolMenu)
 						{
+							FToolMenuSection& Section = SubToolMenu->AddSection(NAME_None);
 							for (const auto It : UncompiledPlatforms)
 							{
-								SubMenuBuilder.AddSubMenu(
+								Section.AddSubMenu(
+									NAME_None,
 									MakeSdkStatusAttribute(It.Key, nullptr),
 									FText::FromString(It.Key.ToString()),
-									FNewMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, It.Key, TargetDeviceServicesModule),
+									FNewToolMenuDelegate::CreateStatic(&MakeTurnkeyPlatformMenu, It.Key, TargetDeviceServicesModule),
 									false,
 									MakePlatformSdkIconAttribute(It.Key, nullptr),
 									true
@@ -1732,7 +1950,7 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 				NAME_None,
 				LOCTEXT("OpenProjectLauncher", "Project Launcher..."),
 				LOCTEXT("OpenProjectLauncher_ToolTip", "Open the Project Launcher for advanced packaging, deploying and launching of your projects"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Launcher.TabIcon"),
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Launcher.TabIcon"),
 				FUIAction(FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::OpenProjectLauncher))
 			);
 
@@ -1740,7 +1958,7 @@ TSharedRef<SWidget> FTurnkeySupportModule::MakeTurnkeyMenuWidget() const
 				NAME_None,
 				LOCTEXT("OpenDeviceManager", "Device Manager..."),
 				LOCTEXT("OpenDeviceManager_ToolTip", "View and manage connected devices."),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "DeviceDetails.TabIcon"),
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "DeviceDetails.TabIcon"),
 				FUIAction(FExecuteAction::CreateStatic(&FTurnkeySupportCallbacks::OpenDeviceManager))
 			);
 
@@ -1772,22 +1990,12 @@ void FTurnkeySupportModule::MakeTurnkeyMenu(FToolMenuSection& MenuSection) const
 		FOnGetContent::CreateLambda([this] { return MakeTurnkeyMenuWidget(); }),
 		LOCTEXT("PlatformMenu", "Platforms"),
 		LOCTEXT("PlatformMenu_Tooltip", "Platform related actions and settings (Launching, Packaging, custom builds, etc)"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.RepeatLastLaunch"), // not great name for a good "platforms" icon
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "PlayWorld.RepeatLastLaunch"), // not great name for a good "platforms" icon
 		false,
 		"PlatformsMenu");
 	Entry.StyleNameOverride = "CalloutToolbar";
 
 	MenuSection.AddEntry(Entry);
-}
-
-static FString GetLogAndReportCommandline(FString& LogFilename, FString& ReportFilename)
-{
-	static int ReportIndex = 0;
-
-	LogFilename = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), *FString::Printf(TEXT("TurnkeyLog_%d.log"), ReportIndex)));
-	ReportFilename = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), *FString::Printf(TEXT("TurnkeyReport_%d.log"), ReportIndex++)));
-
-	return FString::Printf(TEXT("-ReportFilename=\"%s\" -log=\"%s\""), *ReportFilename, *LogFilename);
 }
 
 // some shared functionality
@@ -1804,7 +2012,7 @@ static void PrepForTurnkeyReport(FString& BaseCommandline, FString& ReportFilena
 	}
 
 	FString LogFilename;
-	FString LogAndReportParams = GetLogAndReportCommandline(LogFilename, ReportFilename);
+	FString LogAndReportParams = FTurnkeySupportCallbacks::GetLogAndReportCommandline(LogFilename, ReportFilename);
 
 	BaseCommandline = BaseCommandline.Appendf(TEXT("Turnkey -utf8output -WaitForUATMutex -command=VerifySdk %s"), *LogAndReportParams);
 	// now pass a project to Turnkey
@@ -1843,13 +2051,42 @@ bool GetSdkInfoFromTurnkey(FString Line, FName& PlatformName, FString& DeviceId,
 	FString FlagsString;
 	FParse::Value(*Info, TEXT("Status="), StatusString);
 	FParse::Value(*Info, TEXT("Flags="), FlagsString);
-	FParse::Value(*Info, TEXT("Installed="), SdkInfo.InstalledVersion);
-	FParse::Value(*Info, TEXT("AutoSDK="), SdkInfo.AutoSDKVersion);
-	FParse::Value(*Info, TEXT("MinAllowed="), SdkInfo.MinAllowedVersion);
-	FParse::Value(*Info, TEXT("MaxAllowed="), SdkInfo.MaxAllowedVersion);
 	FString ErrorString;
 	FParse::Value(*Info, TEXT("Error="), ErrorString);
 	SdkInfo.SdkErrorInformation = FText::FromString(ErrorString.Replace(TEXT("|"), TEXT("\n")));
+
+	FString SDKNamesString;
+	TArray<FString> SDKNames;
+	if (FParse::Value(*Info, TEXT("SDKs="), SDKNamesString))
+	{
+		SDKNamesString.ParseIntoArray(SDKNames, TEXT(","), true);
+	}
+	else
+	{
+		SDKNames.Add("SDK");
+	}
+	if (DeviceId.Len() == 0)
+	{
+		SDKNames.Add("AutoSDK");
+	}
+
+	for (const FString& Name : SDKNames)
+	{
+		FString Min, Max, Current;
+		// handle both AutoSDK and manual (auto only has Allowed_AutoSDK, others have Min/Max)
+		FParse::Value(*Info, *FString::Printf(TEXT("MinAllowed_%s="), *Name), Min);
+		FParse::Value(*Info, *FString::Printf(TEXT("MaxAllowed_%s="), *Name), Max);
+		FParse::Value(*Info, *FString::Printf(TEXT("Allowed_%s="), *Name), Min);
+		FParse::Value(*Info, *FString::Printf(TEXT("Allowed_%s="), *Name), Max);
+		FParse::Value(*Info, *FString::Printf(TEXT("Current_%s="), *Name), Current);
+		// also handle no name at all (for device, etc)
+		FParse::Value(*Info, *FString::Printf(TEXT("MinAllowed="), *Name), Min);
+		FParse::Value(*Info, *FString::Printf(TEXT("MaxAllowed="), *Name), Max);
+		FParse::Value(*Info, *FString::Printf(TEXT("Allowed="), *Name), Min);
+		FParse::Value(*Info, *FString::Printf(TEXT("Allowed="), *Name), Max);
+		FParse::Value(*Info, *FString::Printf(TEXT("Current=")), Current);
+		SdkInfo.SDKVersions.Add(Name, { Min, Max, Current });
+	}
 
 	SdkInfo.Status = ETurnkeyPlatformSdkStatus::Unknown;
 	if (StatusString == TEXT("Valid"))
@@ -1869,6 +2106,7 @@ bool GetSdkInfoFromTurnkey(FString Line, FName& PlatformName, FString& DeviceId,
 	}
 	SdkInfo.bCanInstallFullSdk = FlagsString.Contains(TEXT("Support_FullSdk"));
 	SdkInfo.bCanInstallAutoSdk = FlagsString.Contains(TEXT("Support_AutoSdk"));
+	SdkInfo.bHasBestSdk = FlagsString.Contains(TEXT("Sdk_HasBestVersion"));
 
 	SdkInfo.DeviceStatus = ETurnkeyDeviceStatus::Unknown;
 	if (FlagsString.Contains(TEXT("Device_InvalidPrerequisites")))
@@ -1944,6 +2182,11 @@ void FTurnkeySupportModule::UpdateSdkInfo()
 
 		AsyncTask(ENamedThreads::GameThread, [this, ReportFilename, ExitCode, TurnkeyProcess, OnExitHandle]()
 		{
+			if (IsEngineExitRequested())
+			{
+				return;
+			}
+
 			FScopeLock Lock(&GTurnkeySection);
 
 			if (ExitCode == 0 || ExitCode == 10)
@@ -1976,32 +2219,34 @@ void FTurnkeySupportModule::UpdateSdkInfo()
 						// future calls to Turnkey will inherit the AutoSDK env vars, and it won't be able to determine the manual SDK versions anymore. If we use the editor to
 						// install an SDK via Turnkey, it will directly update the installed version based on the result of that command, not this Update operation
 
-						FString OriginalManualInstallValue = PerPlatformSdkInfo[PlatformName].InstalledVersion;
+						TMap<FString, FTurnkeySdkInfo::Version> OriginalVersions = PerPlatformSdkInfo[PlatformName].SDKVersions;
 
 						// set it into the platform
 						PerPlatformSdkInfo[PlatformName] = SdkInfo;
 
-						// restore the original installed version if it set after the first time
-						if (OriginalManualInstallValue.Len() > 0)
+						// restore the original installed version if it set after the first time, except for AutoVersion
+						if (OriginalVersions.Num() > 0)
 						{
-							PerPlatformSdkInfo[PlatformName].InstalledVersion = OriginalManualInstallValue;
+							PerPlatformSdkInfo[PlatformName].SDKVersions = OriginalVersions;
+							if (SdkInfo.SDKVersions.Contains(TEXT("AutoSDK")))
+							{
+								PerPlatformSdkInfo[PlatformName].SDKVersions.Add(TEXT("AutoSDK"), SdkInfo.SDKVersions[TEXT("AutoSDK")]);
+							}
 						}
-
-
-// 						UE_LOG(LogTurnkeySupport, Log, TEXT("[TEST] Turnkey Platform: %s - %d, Installed: %s, AudoSDK: %s, Allowed: %s-%s"), *PlatformName.ToString(), (int)SdkInfo.Status, *SdkInfo.InstalledVersion,
-// 							*SdkInfo.AutoSDKVersion, *SdkInfo.MinAllowedVersion, *SdkInfo.MaxAllowedVersion);
 					}
 				}
+
+				// update all deviecs
+				UpdateSdkInfoForAllDevices();
 			}
 			else
 			{
 				for (auto& It : PerPlatformSdkInfo)
 				{
 					It.Value.Status = ETurnkeyPlatformSdkStatus::Error;
-					It.Value.SdkErrorInformation = FText::Format(NSLOCTEXT("Turnkey", "TurnkeyError_ReturnedError", "Turnkey returned an error, code {0}"), { ExitCode });
-
-					// @todo turnkey error description!
+					It.Value.SdkErrorInformation = FText::Format(NSLOCTEXT("Turnkey", "TurnkeyError_ReturnedError", "Turnkey returned an error, code {0} (See log)"), { ExitCode });
 				}
+				UE_LOG(LogTurnkeySupport, Warning, TEXT("Turnkey failed to run properly, full Turnkey output:\n%s"), *TurnkeyProcess->GetFullOutputWithoutDelegate());
 			}
 
 
@@ -2034,8 +2279,81 @@ void FTurnkeySupportModule::UpdateSdkInfo()
 	TurnkeyProcess->Launch();
 }
 
+void FTurnkeySupportModule::UpdateSdkInfoForAllDevices()
+{
+	TArray<FString> HostDevices;
+	TArray<FString> OtherDevices;
+
+	{
+		FScopeLock Lock(&GTurnkeySection);
+
+		// now kick off status update for all devices (host platform first, then everything else)
+		ITargetDeviceServicesModule* TargetDeviceServicesModule = static_cast<ITargetDeviceServicesModule*>(FModuleManager::Get().LoadModule(TEXT("TargetDeviceServices")));
+		for (const auto& Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
+		{
+			FName PlatformName = Pair.Key;
+			if (!Pair.Value.bIsFakePlatform && !FDataDrivenPlatformInfoRegistry::IsPlatformHiddenFromUI(PlatformName))
+			{
+				ITargetPlatform* TP = GetTargetPlatformManager()->FindTargetPlatform(PlatformName);
+				if (TP == nullptr)
+				{
+					continue;
+				}
+
+				TArray<ITargetDevicePtr> Devices;
+				TP->GetAllDevices(Devices);
+
+				for (ITargetDevicePtr Device : Devices)
+				{
+					if (!Device.IsValid())
+					{
+						UE_LOG(LogTurnkeySupport, Log, TEXT("Platform %s returned an invlid device from GetAllDevices, which is not expected"), *PlatformName.ToString());
+						continue;
+					}
+					FString DeviceId = Device->GetId().ToString();
+					if (GetSdkInfoForDeviceId(DeviceId).Status == ETurnkeyPlatformSdkStatus::Unknown)
+					{
+						if (Pair.Value.IniPlatformName == FPlatformProperties::IniPlatformName())
+						{
+							HostDevices.Add(DeviceId);
+						}
+						else
+						{
+							OtherDevices.Add(DeviceId);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	UpdateSdkInfoForDevices(HostDevices);
+	UpdateSdkInfoForDevices(OtherDevices);
+}
+
+void FTurnkeySupportModule::UpdateSdkInfoForProxy(const TSharedRef<ITargetDeviceProxy>& AddedProxy)
+{
+	bool bIsNeeded;
+
+	FString DeviceId = AddedProxy->GetTargetDeviceId(NAME_None);
+	{
+		FScopeLock Lock(&GTurnkeySection);
+		bIsNeeded = GetSdkInfoForDeviceId(DeviceId).Status == ETurnkeyPlatformSdkStatus::Unknown;
+	}
+
+	if (bIsNeeded)
+	{
+		UpdateSdkInfoForDevices({ DeviceId });
+	}
+}
+
 void FTurnkeySupportModule::UpdateSdkInfoForDevices(TArray<FString> PlatformDeviceIds)
 {
+	if (PlatformDeviceIds.Num() == 0)
+	{
+		return;
+	}
+
 	FString BaseCommandline, ReportFilename;
 	PrepForTurnkeyReport(BaseCommandline, ReportFilename);
 
@@ -2099,17 +2417,28 @@ void FTurnkeySupportModule::UpdateSdkInfoForDevices(TArray<FString> PlatformDevi
 						PerDeviceSdkInfo[DDPIDeviceId] = SdkInfo;
 					}
 				}
+
+			    for (const FString& Id : PlatformDeviceIds)
+			    {
+				    FTurnkeySdkInfo& SdkInfo = PerDeviceSdkInfo[ConvertToDDPIDeviceId(Id)];
+				    if (SdkInfo.Status == ETurnkeyPlatformSdkStatus::Querying)
+				    {
+					    SdkInfo.Status = ETurnkeyPlatformSdkStatus::Error;
+					    SdkInfo.SdkErrorInformation = NSLOCTEXT("Turnkey", "TurnkeyError_DeviceNotReturned", "A device's Sdk status was not returned from Turnkey");
+				    }
+			    }
+			}
+			else
+			{
+			    for (const FString& Id : PlatformDeviceIds)
+			    {
+				    FTurnkeySdkInfo& SdkInfo = PerDeviceSdkInfo[ConvertToDDPIDeviceId(Id)];
+				    SdkInfo.Status = ETurnkeyPlatformSdkStatus::Error;
+					SdkInfo.SdkErrorInformation = FText::Format(NSLOCTEXT("Turnkey", "TurnkeyError_ReturnedError", "Turnkey returned an error, code {0} (See log)"), { ExitCode });
+				}
+				UE_LOG(LogTurnkeySupport, Warning, TEXT("Turnkey failed to run properly, full Turnkey output:\n%s"), *TurnkeyProcess->GetFullOutputWithoutDelegate());
 			}
 
-			for (const FString& Id : PlatformDeviceIds)
-			{
-				FTurnkeySdkInfo& SdkInfo = PerDeviceSdkInfo[ConvertToDDPIDeviceId(Id)];
-				if (SdkInfo.Status == ETurnkeyPlatformSdkStatus::Querying)
-				{
-					SdkInfo.Status = ETurnkeyPlatformSdkStatus::Error;
-					SdkInfo.SdkErrorInformation = NSLOCTEXT("Turnkey", "TurnkeyError_DeviceNotReturned", "A device's Sdk status was not returned from Turnkey");
-				}
-			}
 
 			// cleanup
 			delete TurnkeyProcess;
@@ -2180,14 +2509,14 @@ bool FTurnkeySupportModule::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevi
 	{
 		// run Turnkey via UAT. The Cmd is added at the end in case the user wants to run additional commands
 		const FString CommandLine = FString::Printf( TEXT("Turnkey %s %s %s"), *ITurnkeyIOModule::Get().GetUATParams(), *FTurnkeyEditorSupport::GetUATOptions(), Cmd );
-		FTurnkeyEditorSupport::RunUAT(CommandLine, FText::GetEmpty(), LOCTEXT("Turnkey_CustomTurnkeyName", "Executing Turnkey"), LOCTEXT("Turnkey_CustomTurnkeyShortName", "Turnkey"), FEditorStyle::GetBrush(TEXT("MainFrame.PackageProject")));
+		FTurnkeyEditorSupport::RunUAT(CommandLine, FText::GetEmpty(), LOCTEXT("Turnkey_CustomTurnkeyName", "Executing Turnkey"), LOCTEXT("Turnkey_CustomTurnkeyShortName", "Turnkey"), FAppStyle::Get().GetBrush(TEXT("MainFrame.PackageProject")));
 		return true;
 	}
 	else if ( FParse::Command( &Cmd, TEXT("RunUAT")) )
 	{
 		// run UAT directly. The Cmd is added at the start on the assumption that it contains the command to run
 		const FString CommandLine = FString::Printf( TEXT("%s %s %s"), Cmd, *ITurnkeyIOModule::Get().GetUATParams(), *FTurnkeyEditorSupport::GetUATOptions() );
-		FTurnkeyEditorSupport::RunUAT(CommandLine, FText::GetEmpty(), LOCTEXT("Turnkey_CustomUATName", "Executing Custom UAT Task"), LOCTEXT("Turnkey_CustomUATShortName", "UAT"), FEditorStyle::GetBrush(TEXT("MainFrame.PackageProject")));
+		FTurnkeyEditorSupport::RunUAT(CommandLine, FText::GetEmpty(), LOCTEXT("Turnkey_CustomUATName", "Executing Custom UAT Task"), LOCTEXT("Turnkey_CustomUATShortName", "UAT"), FAppStyle::Get().GetBrush(TEXT("MainFrame.PackageProject")));
 		return true;
 	}
 

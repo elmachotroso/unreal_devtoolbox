@@ -12,7 +12,7 @@
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
 #include "Toolkits/SimpleAssetEditor.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 
 struct FAssetData;
 struct FARFilter;
@@ -28,21 +28,6 @@ public:
 	virtual FString GetObjectDisplayName(UObject* Object) const override
 	{
 		return Object->GetName();
-	}
-
-	virtual bool HasActions( const TArray<UObject*>& InObjects ) const override
-	{
-		return false;
-	}
-
-	virtual void GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder ) override
-	{
-
-	}
-
-	virtual void GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section) override
-	{
-
 	}
 
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override
@@ -158,7 +143,7 @@ public:
 	virtual void BuildBackendFilter(FARFilter& InFilter) override
 	{
 		// Add the supported class for this type to a filter
-		InFilter.ClassNames.Add(GetFilterName());
+		InFilter.ClassPaths.Add(GetClassPathName());
 		InFilter.bRecursiveClasses = true;
 	}
 	
@@ -179,8 +164,17 @@ public:
 
 	virtual FName GetFilterName() const override
 	{
-		return GetSupportedClass()->GetFName();
+		return FName(*GetSupportedClass()->GetPathName());
 	}
+
+	virtual FTopLevelAssetPath GetClassPathName() const override
+	{
+		return GetSupportedClass()->GetClassPathName();
+	}
+
+	virtual const FSlateBrush* GetThumbnailBrush(const FAssetData& InAssetData, const FName InClassName) const override { return nullptr; }
+
+	virtual const FSlateBrush* GetIconBrush(const FAssetData& InAssetData, const FName InClassName) const override { return nullptr; }
 
 protected:
 

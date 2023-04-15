@@ -5,15 +5,19 @@
 #include "Algo/Find.h"
 #include "Algo/FindLast.h"
 #include "Algo/Replace.h"
-#include "Containers/UnrealString.h"
+#include "Containers/ArrayView.h"
 #include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
 #include "Misc/Char.h"
 #include "Misc/StringBuilder.h"
 #include "String/Find.h"
 #include "String/ParseTokens.h"
 #include "Templates/Function.h"
-#include "UObject/NameTypes.h"
 
 namespace UE4PathViews_Private
 {
@@ -675,4 +679,33 @@ void FPathViews::AppendPath(FStringBuilderBase& InOutPath, FStringView AppendPat
 		InOutPath.Reset();
 		InOutPath << AppendPath;
 	}
+}
+
+FStringView FPathViews::GetMountPointNameFromPath(const FStringView InPath, bool* bOutHadClassesPrefix /*= nullptr*/)
+{
+	FStringView MountPointStringView;
+
+	int32 SecondForwardSlash = INDEX_NONE;
+	if (FStringView(InPath.GetData() + 1, InPath.Len() - 1).FindChar(TEXT('/'), SecondForwardSlash))
+	{
+		MountPointStringView = FStringView(InPath.GetData() + 1, SecondForwardSlash);
+	}
+	else
+	{
+		MountPointStringView = FStringView(InPath.GetData() + 1, InPath.Len() - 1);
+	}
+
+	static const FString ClassesPrefix = TEXT("Classes_");
+	const bool bHasClassesPrefix = MountPointStringView.StartsWith(ClassesPrefix);
+	if (bHasClassesPrefix)
+	{
+		MountPointStringView.RightInline(MountPointStringView.Len() - ClassesPrefix.Len());
+	}
+
+	if (bOutHadClassesPrefix)
+	{
+		*bOutHadClassesPrefix = bHasClassesPrefix;
+	}
+
+	return MountPointStringView;
 }

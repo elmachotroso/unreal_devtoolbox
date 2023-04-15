@@ -47,7 +47,7 @@ ADatasmithSceneActor::~ADatasmithSceneActor()
 		GEngine->OnLevelActorDeleted().Remove( OnActorDeletedDelegateHandle );
 	}
 
-	if ( GEditor )
+	if ( GEditor && GEditor->GetEditorSubsystem<UImportSubsystem>() )
 	{
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
 	}

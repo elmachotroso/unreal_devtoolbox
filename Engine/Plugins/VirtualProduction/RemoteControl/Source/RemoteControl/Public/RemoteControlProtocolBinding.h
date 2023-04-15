@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 
+#include "RemoteControlCommon.h"
 #include "RCPropertyUtilities.h"
 #include "RCTypeTraits.h"
 #include "Containers/UnrealString.h"
@@ -23,6 +24,16 @@ struct FRCObjectReference;
 
 using FGetProtocolMappingCallback = TFunctionRef<void(FRemoteControlProtocolMapping&)>;
 
+#if WITH_EDITOR
+
+#define EXPOSE_PROTOCOL_PROPERTY(ColumnName, ClassName, MemberName) \
+	if (!ColumnsToProperties.Contains(ColumnName)) \
+	{	\
+		ColumnsToProperties.Add(ColumnName, GET_MEMBER_NAME_CHECKED(ClassName, MemberName)); \
+	}
+
+#endif // WITH_EDITOR
+
 /**
  * Status of the binding 
  */
@@ -33,7 +44,6 @@ enum class ERCBindingStatus : uint8
 	Awaiting,
 	Bound
 };
-
 
 /*
  * Mapping of the range of the values for the protocol
@@ -54,7 +64,7 @@ struct REMOTECONTROL_API FRemoteControlProtocolMapping
 
 public:
 	FRemoteControlProtocolMapping() = default;
-	FRemoteControlProtocolMapping(FProperty* InProperty, uint8 InRangeValueSize);
+	FRemoteControlProtocolMapping(FProperty* InProperty, uint8 InRangeValueSize, const FGuid& InMappingId = FGuid::NewGuid());
 
 	bool operator==(const FRemoteControlProtocolMapping& InProtocolMapping) const;
 	bool operator==(FGuid InProtocolMappingId) const;
@@ -417,6 +427,25 @@ public:
 	 */
 	virtual bool IsSame(const FRemoteControlProtocolEntity* InOther) { return false; }
 
+	/** Masking Support */
+
+	/** Disables the given mask. */
+	virtual void ClearMask(ERCMask InMaskBit);
+	/** Enables the given mask. */
+	virtual void EnableMask(ERCMask InMaskBit);
+	/** Returns true if the given mask is enabled, false otherwise. */
+	virtual bool HasMask(ERCMask InMaskBit) const;
+
+#if WITH_EDITOR
+
+	/** Retrieves the name of property corresponding to the given column name. */
+	const FName GetPropertyName(const FName& ForColumnName);
+	
+	/** Register(s) all the properties (to be exposed) of this protocol entity. */
+	virtual void RegisterProperties() {};
+
+#endif // WITH_EDITOR
+
 public:
 	/** Container for range and mapping value pointers, and an optional number of elements (arrays, strings). */
 	struct FRangeMappingData
@@ -517,6 +546,19 @@ protected:
 	UPROPERTY()
 	TSet<FRemoteControlProtocolMapping> Mappings;
 
+	/** Holds the overriden masks. */
+	UPROPERTY()
+	ERCMask OverridenMasks = ERCMask::NoMask;
+
+#if WITH_EDITOR
+
+	/**
+	 * Holds column specific properties for this protocol.
+	 */
+	TMap<FName, FName> ColumnsToProperties;
+
+#endif // WITH_EDITOR
+
 private:
 	/** Binding status of this protocol entity */
 	UPROPERTY()
@@ -535,7 +577,7 @@ struct REMOTECONTROL_API FRemoteControlProtocolBinding
 
 public:
 	FRemoteControlProtocolBinding() = default;
-	FRemoteControlProtocolBinding(const FName InProtocolName, const FGuid& InPropertyId, TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InRemoteControlProtocolEntityPtr);
+	FRemoteControlProtocolBinding(const FName InProtocolName, const FGuid& InPropertyId, TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InRemoteControlProtocolEntityPtr, const FGuid& InBindingId = FGuid::NewGuid());
 
 	bool operator==(const FRemoteControlProtocolBinding& InProtocolBinding) const;
 	bool operator==(FGuid InProtocolBindingId) const;
@@ -629,7 +671,7 @@ public:
 	/** Custom struct serialize */
 	bool Serialize(FArchive& Ar);
 	friend FArchive& operator<<(FArchive& Ar, FRemoteControlProtocolBinding& InProtocolBinding);
-
+	
 private:
 	/** Return FRemoteControlProtocolEntity pointer from RemoteControlProtocolEntityPtr */
 	FRemoteControlProtocolEntity* GetRemoteControlProtocolEntity();

@@ -5,6 +5,8 @@
 
 #include "Components/SafeZoneSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SafeZone)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 USafeZone::USafeZone()
@@ -14,7 +16,7 @@ USafeZone::USafeZone()
 	, PadBottom(true)
 {
 	bCanHaveMultipleChildren = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 #if WITH_EDITOR
@@ -128,3 +130,4 @@ void USafeZone::ReleaseSlateResources(bool bReleaseChildren)
 }
 
 #undef LOCTEXT_NAMESPACE
+

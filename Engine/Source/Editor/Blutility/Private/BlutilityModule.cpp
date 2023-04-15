@@ -1,49 +1,74 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Framework/Docking/TabManager.h"
-#include "IBlutilityModule.h"
-#include "EditorUtilityWidget.h"
-#include "EditorUtilityBlueprint.h"
-#include "GlobalEditorUtilityBase.h"
-
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
-#include "PropertyEditorModule.h"
 #include "AssetTypeActions_EditorUtilityBlueprint.h"
-#include "WorkspaceMenuStructure.h"
-#include "WorkspaceMenuStructureModule.h"
-
-#include "Widgets/Docking/SDockTab.h"
+#include "AssetTypeActions_EditorUtilityWidgetBlueprint.h"
+#include "AssetTypeCategories.h"
 #include "BlutilityContentBrowserExtensions.h"
 #include "BlutilityLevelEditorExtensions.h"
-#include "AssetTypeActions_EditorUtilityWidgetBlueprint.h"
-#include "KismetCompiler.h"
-#include "EditorUtilityWidgetBlueprint.h"
-#include "ComponentReregisterContext.h"
-#include "KismetCompilerModule.h"
-#include "WidgetBlueprintCompiler.h"
-#include "UMGEditorModule.h"
-#include "EditorUtilitySubsystem.h"
-#include "LevelEditor.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "Editor.h"
-#include "UnrealEdMisc.h"
+#include "Editor/EditorEngine.h"
 #include "EditorSupportDelegates.h"
-#include "UObject/PurgingReferenceCollector.h"
-#include "AssetRegistryModule.h"
+#include "EditorUtilityBlueprint.h"
 #include "EditorUtilityCommon.h"
-#include "EditorUtilityToolMenu.h"
+#include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidget.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/Docking/WorkspaceItem.h"
+#include "GlobalEditorUtilityBase.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IAssetTools.h"
+#include "IBlutilityModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "KismetCompiler.h"
+#include "KismetCompilerModule.h"
+#include "LevelEditor.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Textures/SlateIcon.h"
+#include "Trace/Detail/Channel.h"
+#include "UMGEditorModule.h"
+#include "UObject/Class.h"
+#include "UObject/GCObject.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/Package.h"
+#include "UObject/PurgingReferenceCollector.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectBase.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UnrealEdMisc.h"
+#include "WidgetBlueprint.h"
+#include "WidgetBlueprintCompiler.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
 DEFINE_LOG_CATEGORY(LogEditorUtilityBlueprint);
 
 /////////////////////////////////////////////////////
-
-namespace BlutilityModule
-{
-}
 
 /////////////////////////////////////////////////////
 // FBlutilityModule 
@@ -80,7 +105,7 @@ public:
 		ScriptedEditorWidgetsGroup = WorkspaceMenu::GetMenuStructure().GetToolsCategory()->AddGroup(
 			LOCTEXT("WorkspaceMenu_EditorUtilityWidgetsGroup", "Editor Utility Widgets"),
 			LOCTEXT("ScriptedEditorWidgetsGroupTooltipText", "Custom editor UI created with Blueprints or Python."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "WorkspaceMenu.AdditionalUI"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "WorkspaceMenu.AdditionalUI"),
 			true);
 
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
@@ -111,7 +136,7 @@ public:
 						const UEditorUtilityWidget* CDO = Blueprint->GeneratedClass->GetDefaultObject<UEditorUtilityWidget>();
 						FName RegistrationName = FName(*(Blueprint->GetPathName() + LOCTEXT("ActiveTabSuffix", "_ActiveTab").ToString()));
 						Blueprint->SetRegistrationName(RegistrationName);
-						FText DisplayName = FText::FromString(Blueprint->GetName());
+						FText DisplayName = FText::FromString(FName::NameToDisplayString(Blueprint->GetName(), false));
 						if (LevelEditorTabManager && !LevelEditorTabManager->HasTabSpawner(RegistrationName))
 						{
 							LevelEditorTabManager->RegisterTabSpawner(RegistrationName, FOnSpawnTab::CreateUObject(Blueprint, &UEditorUtilityWidgetBlueprint::SpawnEditorUITab))
@@ -280,9 +305,13 @@ protected:
 	void HandleAssetRemoved(const FAssetData& InAssetData)
 	{
 		bool bDeletingLoadedUI = false;
+		if (!GEditor || !GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>())
+		{
+			return;
+		}
 		for (const FSoftObjectPath& LoadedUIPath : GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>()->LoadedUIs)
 		{
-			if (LoadedUIPath.GetAssetPathName() == InAssetData.ObjectPath)
+			if (LoadedUIPath == InAssetData.GetSoftObjectPath())
 			{
 				bDeletingLoadedUI = true;
 				break;
@@ -291,7 +320,7 @@ protected:
 
 		if (bDeletingLoadedUI)
 		{
-			FName UIToCleanup = FName(*(InAssetData.ObjectPath.ToString() + LOCTEXT("ActiveTabSuffix", "_ActiveTab").ToString()));
+			FName UIToCleanup = FName(*(InAssetData.GetObjectPathString() + LOCTEXT("ActiveTabSuffix", "_ActiveTab").ToString()));
 			FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 			TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 			TSharedPtr<SDockTab> CurrentTab = LevelEditorTabManager->FindExistingLiveTab(UIToCleanup);

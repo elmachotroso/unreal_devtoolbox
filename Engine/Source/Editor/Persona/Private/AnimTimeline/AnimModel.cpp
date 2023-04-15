@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimModel.h"
+#include "AnimTimeline/AnimModel.h"
 #include "IPersonaPreviewScene.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimPreviewInstance.h"
 #include "Preferences/PersonaOptions.h"
 #include "Animation/EditorAnimBaseObj.h"
-#include "AnimTimelineTrack.h"
+#include "AnimTimeline/AnimTimelineTrack.h"
 #include "Animation/AnimSequence.h"
 
 #define LOCTEXT_NAMESPACE "FAnimModel"
@@ -344,6 +344,33 @@ void FAnimModel::BuildContextMenu(FMenuBuilder& InMenuBuilder)
 	{
 		SelectedItem->AddToContextMenu(InMenuBuilder, ExistingMenuTypes);
 	}
+}
+
+void FAnimModel::AddRootTrack(TSharedRef<FAnimTimelineTrack> InTrack)
+{
+	if (GetMutableDefault<UPersonaOptions>()->GetAllowedAnimationEditorTracks().PassesFilter(InTrack->GetTypeName()))
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		RootTracks.Add(InTrack);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+}
+
+void FAnimModel::ClearRootTracks()
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	RootTracks.Empty();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void FAnimModel::ForEachRootTrack(TFunctionRef<void(FAnimTimelineTrack&)> InFunction)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	for (TSharedRef<FAnimTimelineTrack>& Track : RootTracks)
+	{
+		InFunction(Track.Get());
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 #undef LOCTEXT_NAMESPACE

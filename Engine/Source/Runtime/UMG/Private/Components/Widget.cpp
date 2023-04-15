@@ -19,16 +19,21 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SToolTip.h"
 #include "Binding/PropertyBinding.h"
+#include "Binding/WidgetFieldNotificationExtension.h"
 #include "Logging/MessageLog.h"
+#include "Blueprint/GameViewportSubsystem.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/UserWidgetBlueprint.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Slate/SObjectWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "UMGStyle.h"
 #include "Types/ReflectionMetadata.h"
+#include "Trace/SlateMemoryTags.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "Components/NamedSlotInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Widget)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -152,11 +157,32 @@ namespace
 
 TArray<TSubclassOf<UPropertyBinding>> UWidget::BinderClasses;
 
+
+/////////////////////////////////////////////////////
+void UWidget::FFieldNotificationClassDescriptor::ForEachField(const UClass* Class, TFunctionRef<bool(::UE::FieldNotification::FFieldId FielId)> Callback) const
+{
+	for (int32 Index = 0; Index < Max_IndexOf_; ++Index)
+	{
+		if (!Callback(*AllFields[Index]))
+		{
+			return;
+		}
+	}
+	if (const UWidgetBlueprintGeneratedClass* WidgetBPClass = Cast<const UWidgetBlueprintGeneratedClass>(Class))
+	{
+		WidgetBPClass->ForEachField(Callback);
+	}
+}
+UE_FIELD_NOTIFICATION_IMPLEMENT_CLASS_DESCRIPTOR_ThreeFields(UWidget, ToolTipText, Visibility, bIsEnabled);
+
+
 UWidget::UWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bIsEnabled = true;
 	bIsVariable = true;
+	bIsManagedByGameViewportSubsystem = false;
 #if WITH_EDITOR
 	DesignerFlags = static_cast<uint8>(EWidgetDesignFlags::None);
 #endif
@@ -173,11 +199,19 @@ UWidget::UWidget(const FObjectInitializer& ObjectInitializer)
 #endif
 	AccessibleWidgetData = nullptr;
 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 #if WITH_EDITORONLY_DATA
 	{ static const FAutoRegisterLocalizationDataGatheringCallback AutomaticRegistrationOfLocalizationGatherer(UWidget::StaticClass(), &GatherWidgetForLocalization); }
 #endif
 
 	INC_DWORD_STAT(STAT_SlateUTotalWidgets);
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+const FWidgetTransform& UWidget::GetRenderTransform() const
+{
+	return RenderTransform;
 }
 
 void UWidget::SetRenderTransform(FWidgetTransform Transform)
@@ -231,6 +265,11 @@ void UWidget::UpdateRenderTransform()
 	}
 }
 
+FVector2D UWidget::GetRenderTransformPivot() const
+{
+	return RenderTransformPivot;
+}
+
 void UWidget::SetRenderTransformPivot(FVector2D Pivot)
 {
 	RenderTransformPivot = Pivot;
@@ -242,6 +281,21 @@ void UWidget::SetRenderTransformPivot(FVector2D Pivot)
 	}
 }
 
+EFlowDirectionPreference UWidget::GetFlowDirectionPreference() const
+{
+	return FlowDirectionPreference;
+}
+
+void UWidget::SetFlowDirectionPreference(EFlowDirectionPreference FlowDirection)
+{
+	FlowDirectionPreference = FlowDirection;
+	
+	if (TSharedPtr<SWidget> SafeWidget = GetCachedWidget())
+	{
+		SafeWidget->SetFlowDirectionPreference(FlowDirectionPreference);
+	}
+}
+
 bool UWidget::GetIsEnabled() const
 {
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
@@ -250,13 +304,34 @@ bool UWidget::GetIsEnabled() const
 
 void UWidget::SetIsEnabled(bool bInIsEnabled)
 {
-	bIsEnabled = bInIsEnabled;
+	if (bIsEnabled != bInIsEnabled)
+	{
+		bIsEnabled = bInIsEnabled;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::bIsEnabled);
+	}
 
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if (SafeWidget.IsValid())
 	{
 		SafeWidget->SetEnabled(bInIsEnabled);
 	}
+}
+
+bool UWidget::IsInViewport() const
+{
+	if (bIsManagedByGameViewportSubsystem)
+	{
+		if (UGameViewportSubsystem* Subsystem = UGameViewportSubsystem::Get(GetWorld()))
+		{
+			return Subsystem->IsWidgetAdded(this);
+		}
+	}
+	return false;
+}
+
+EMouseCursor::Type UWidget::GetCursor() const
+{
+	return Cursor;
 }
 
 void UWidget::SetCursor(EMouseCursor::Type InCursor)
@@ -280,6 +355,17 @@ void UWidget::ResetCursor()
 	{
 		SafeWidget->SetCursor(TOptional<EMouseCursor::Type>());
 	}
+}
+
+bool UWidget::IsRendered() const
+{
+	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
+	if ( SafeWidget.IsValid() )
+	{
+		return SafeWidget->GetVisibility().IsVisible() && SafeWidget->GetRenderOpacity() > 0.0f;
+	}
+
+	return false;
 }
 
 bool UWidget::IsVisible() const
@@ -306,7 +392,16 @@ ESlateVisibility UWidget::GetVisibility() const
 
 void UWidget::SetVisibility(ESlateVisibility InVisibility)
 {
-	Visibility = InVisibility;
+	SetVisibilityInternal(InVisibility);
+}
+
+void UWidget::SetVisibilityInternal(ESlateVisibility InVisibility)
+{
+	if (Visibility != InVisibility)
+	{
+		Visibility = InVisibility;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::Visibility);
+	}
 
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if (SafeWidget.IsValid())
@@ -359,6 +454,7 @@ void UWidget::SetClipping(EWidgetClipping InClipping)
 		SafeWidget->SetClipping(InClipping);
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UWidget::ForceVolatile(bool bForce)
 {
@@ -370,15 +466,27 @@ void UWidget::ForceVolatile(bool bForce)
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FText UWidget::GetToolTipText() const
+{
+	return ToolTipText;
+}
+
 void UWidget::SetToolTipText(const FText& InToolTipText)
 {
 	ToolTipText = InToolTipText;
+	BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::ToolTipText);
 
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if (SafeWidget.IsValid())
 	{
 		SafeWidget->SetToolTipText(InToolTipText);
 	}
+}
+
+UWidget* UWidget::GetToolTip() const
+{
+	return ToolTipWidget;
 }
 
 void UWidget::SetToolTip(UWidget* InToolTipWidget)
@@ -405,6 +513,7 @@ void UWidget::SetToolTip(UWidget* InToolTipWidget)
 		}
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 bool UWidget::IsHovered() const
 {
@@ -737,8 +846,14 @@ void UWidget::RemoveFromParent()
 {
 	if (!HasAnyFlags(RF_BeginDestroyed))
 	{
-		UPanelWidget* CurrentParent = GetParent();
-		if (CurrentParent)
+		if (bIsManagedByGameViewportSubsystem)
+		{
+			if (UGameViewportSubsystem* Subsystem = UGameViewportSubsystem::Get(GetWorld()))
+			{
+				Subsystem->RemoveWidget(this);
+			}
+		}
+		else if (UPanelWidget* CurrentParent = GetParent())
 		{
 			CurrentParent->RemoveChild(this);
 		}
@@ -796,7 +911,7 @@ void UWidget::OnWidgetRebuilt()
 
 TSharedRef<SWidget> UWidget::TakeWidget()
 {
-	LLM_SCOPE(ELLMTag::UI);
+	LLM_SCOPE_BYTAG(UI_UMG);
 
 	return TakeWidget_Private( []( UUserWidget* Widget, TSharedRef<SWidget> Content ) -> TSharedPtr<SObjectWidget> {
 		       return SNew( SObjectWidget, Widget )[ Content ];
@@ -1157,13 +1272,6 @@ void UWidget::DeselectByDesigner()
 #define LOCTEXT_NAMESPACE "UMG"
 #endif // WITH_EDITOR
 
-void UWidget::PreSave(const class ITargetPlatform* TargetPlatform)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-	Super::PreSave(TargetPlatform);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
 void UWidget::PreSave(FObjectPreSaveContext ObjectSaveContext)
 {
 	Super::PreSave(ObjectSaveContext);
@@ -1231,6 +1339,7 @@ void UWidget::SynchronizeProperties()
 	TSharedPtr<SWidget> SafeContentWidget = MyGCWidget.IsValid() ? MyGCWidget.Pin() : MyWidget.Pin();
 #endif
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 #if WITH_EDITOR
 	// Always use an enabled and visible state in the designer.
 	if ( IsDesignTime() )
@@ -1303,6 +1412,7 @@ void UWidget::SynchronizeProperties()
 		}
 	}
 #endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
@@ -1416,6 +1526,18 @@ UWorld* UWidget::GetWorld() const
 	}
 
 	return nullptr;
+}
+
+void UWidget::BeginDestroy()
+{
+	if (bIsManagedByGameViewportSubsystem)
+	{
+		if (UGameViewportSubsystem* Subsystem = UGameViewportSubsystem::Get(GetWorld()))
+		{
+			Subsystem->RemoveWidget(this);
+		}
+	}
+	Super::BeginDestroy();
 }
 
 void UWidget::FinishDestroy()
@@ -1618,4 +1740,175 @@ void UWidget::OnBindingChanged(const FName& Property)
 
 }
 
+
+namespace UE::UMG::Private
+{
+	UWidgetFieldNotificationExtension* FindOrAddWidgetNotifyExtension(UWidget* Widget)
+	{
+		if (UUserWidget* UserWidget = Cast<UUserWidget>(Widget))
+		{
+			if (UWidgetFieldNotificationExtension* Extension = UserWidget->GetExtension<UWidgetFieldNotificationExtension>())
+			{
+				return Extension;
+			}
+			return UserWidget->AddExtension<UWidgetFieldNotificationExtension>();
+		}
+		else if (UWidgetTree* WidgetTree = Cast<UWidgetTree>(Widget->GetOuter()))
+		{
+			if (UUserWidget* InnerUserWidget = Cast<UUserWidget>(WidgetTree->GetOuter()))
+			{
+				if (UWidgetFieldNotificationExtension* Extension = InnerUserWidget->GetExtension<UWidgetFieldNotificationExtension>())
+				{
+					return Extension;
+				}
+				return InnerUserWidget->AddExtension<UWidgetFieldNotificationExtension>();
+			}
+		}
+		return nullptr;
+	}
+	UWidgetFieldNotificationExtension* FindWidgetNotifyExtension(const UWidget* Widget)
+	{
+		if (const UUserWidget* UserWidget = Cast<const UUserWidget>(Widget))
+		{
+			if (UWidgetFieldNotificationExtension* Extension = UserWidget->GetExtension<UWidgetFieldNotificationExtension>())
+			{
+				return Extension;
+			}
+		}
+		else if (const UWidgetTree* WidgetTree = Cast<const UWidgetTree>(Widget->GetOuter()))
+		{
+			if (const UUserWidget* InnerUserWidget = Cast<const UUserWidget>(WidgetTree->GetOuter()))
+			{
+				if (UWidgetFieldNotificationExtension* Extension = InnerUserWidget->GetExtension<UWidgetFieldNotificationExtension>())
+				{
+					return Extension;
+				}
+			}
+		}
+		return nullptr;
+	}
+}
+
+FDelegateHandle UWidget::AddFieldValueChangedDelegate(UE::FieldNotification::FFieldId InFieldId, FFieldValueChangedDelegate InNewDelegate)
+{
+	FDelegateHandle Result;
+	if (InFieldId.IsValid())
+	{
+		if (UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindOrAddWidgetNotifyExtension(this))
+		{
+			Result = Extension->AddFieldValueChangedDelegate(this, InFieldId, MoveTemp(InNewDelegate));
+			if (Result.IsValid())
+			{
+				EnabledFieldNotifications.PadToNum(InFieldId.GetIndex() + 1, false);
+				EnabledFieldNotifications[InFieldId.GetIndex()] = true;
+			}
+		}
+	}
+	return Result;
+}
+
+void UWidget::K2_AddFieldValueChangedDelegate(FFieldNotificationId InFieldId, FFieldValueChangedDynamicDelegate InDelegate)
+{
+	if (InFieldId.IsValid())
+	{
+		const UE::FieldNotification::FFieldId FieldId = GetFieldNotificationDescriptor().GetField(GetClass(), InFieldId.FieldName);
+		if (ensureMsgf(FieldId.IsValid(), TEXT("The field should be compiled correctly.")))
+		{
+			if (UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindOrAddWidgetNotifyExtension(this))
+			{
+				if (Extension->AddFieldValueChangedDelegate(this, FieldId, InDelegate).IsValid())
+				{
+					EnabledFieldNotifications.PadToNum(FieldId.GetIndex() + 1, false);
+					EnabledFieldNotifications[FieldId.GetIndex()] = true;
+				}
+			}
+		}
+	}
+}
+
+bool UWidget::RemoveFieldValueChangedDelegate(UE::FieldNotification::FFieldId InFieldId, FDelegateHandle InHandle)
+{
+	bool bResult = false;
+	if (InFieldId.IsValid() && InHandle.IsValid() && EnabledFieldNotifications.IsValidIndex(InFieldId.GetIndex()) && EnabledFieldNotifications[InFieldId.GetIndex()])
+	{
+		UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindWidgetNotifyExtension(this);
+		checkf(Extension, TEXT("If the EnabledFieldNotifications is valid, then the Extension must also be valid."));
+		UWidgetFieldNotificationExtension::FRemoveFromResult RemoveResult = Extension->RemoveFieldValueChangedDelegate(this, InFieldId, InHandle);
+		bResult = RemoveResult.bRemoved;
+		EnabledFieldNotifications[InFieldId.GetIndex()] = RemoveResult.bHasOtherBoundDelegates;
+	}
+	return bResult;
+}
+
+void UWidget::K2_RemoveFieldValueChangedDelegate(FFieldNotificationId InFieldId, FFieldValueChangedDynamicDelegate InDelegate)
+{
+	if (InFieldId.IsValid())
+	{
+		const UE::FieldNotification::FFieldId FieldId = GetFieldNotificationDescriptor().GetField(GetClass(), InFieldId.FieldName);
+		if (ensureMsgf(FieldId.IsValid(), TEXT("The field should be compiled correctly.")))
+		{
+			if (EnabledFieldNotifications.IsValidIndex(FieldId.GetIndex()) && EnabledFieldNotifications[FieldId.GetIndex()])
+			{
+				UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindWidgetNotifyExtension(this);
+				checkf(Extension, TEXT("If the EnabledFieldNotifications is valid, then the Extension must also be valid."));
+				UWidgetFieldNotificationExtension::FRemoveFromResult RemoveResult = Extension->RemoveFieldValueChangedDelegate(this, FieldId, InDelegate);
+				EnabledFieldNotifications[FieldId.GetIndex()] = RemoveResult.bHasOtherBoundDelegates;
+			}
+		}
+	}
+}
+
+int32 UWidget::RemoveAllFieldValueChangedDelegates(const void* InUserObject)
+{
+	int32 bResult = 0;
+	if (InUserObject)
+	{
+		if (UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindWidgetNotifyExtension(this))
+		{
+			UWidgetFieldNotificationExtension::FRemoveAllResult RemoveResult = Extension->RemoveAllFieldValueChangedDelegates(this, InUserObject);
+			bResult = RemoveResult.RemoveCount;
+			EnabledFieldNotifications = RemoveResult.HasFields;
+		}
+	}
+	return bResult;
+}
+
+int32 UWidget::RemoveAllFieldValueChangedDelegates(UE::FieldNotification::FFieldId InFieldId, const void* InUserObject)
+{
+	int32 bResult = 0;
+	if (InUserObject)
+	{
+		if (UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindWidgetNotifyExtension(this))
+		{
+			UWidgetFieldNotificationExtension::FRemoveAllResult RemoveResult = Extension->RemoveAllFieldValueChangedDelegates(this, InFieldId, InUserObject);
+			bResult = RemoveResult.RemoveCount;
+			EnabledFieldNotifications = RemoveResult.HasFields;
+		}
+	}
+	return bResult;
+}
+
+void UWidget::BroadcastFieldValueChanged(UE::FieldNotification::FFieldId InFieldId)
+{
+	if (InFieldId.IsValid() && EnabledFieldNotifications.IsValidIndex(InFieldId.GetIndex()) && EnabledFieldNotifications[InFieldId.GetIndex()])
+	{
+		UWidgetFieldNotificationExtension* Extension = UE::UMG::Private::FindWidgetNotifyExtension(this);
+		checkf(Extension, TEXT("If the EnabledFieldNotifications is valid, then the Extension must also be valid."));
+		Extension->BroadcastFieldValueChanged(this, InFieldId);
+	}
+}
+
+void UWidget::K2_BroadcastFieldValueChanged(FFieldNotificationId InFieldId)
+{
+	if (InFieldId.IsValid())
+	{
+		const UE::FieldNotification::FFieldId FieldId = GetFieldNotificationDescriptor().GetField(GetClass(), InFieldId.FieldName);
+		if (ensureMsgf(FieldId.IsValid(), TEXT("The field should be compiled correctly.")))
+		{
+			BroadcastFieldValueChanged(FieldId);
+		}
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
+

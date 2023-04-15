@@ -4,6 +4,7 @@
 
 #include "DatasmithActorImporter.h"
 #include "DatasmithAdditionalData.h"
+#include "DatasmithAnimationElements.h"
 #include "DatasmithAssetImportData.h"
 #include "DatasmithAssetUserData.h"
 #include "DatasmithCameraImporter.h"
@@ -18,16 +19,14 @@
 #include "DatasmithSceneActor.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithStaticMeshImporter.h"
-#include "DatasmithTranslator.h"
 #include "DatasmithTextureImporter.h"
+#include "DatasmithTranslator.h"
 #include "IDatasmithSceneElements.h"
-#include "DatasmithAnimationElements.h"
-#include "LevelVariantSets.h"
 #include "ObjectTemplates/DatasmithObjectTemplate.h"
 #include "Utility/DatasmithImporterUtils.h"
 #include "Utility/DatasmithTextureResize.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "Async/Async.h"
 #include "Async/AsyncWork.h"
@@ -49,11 +48,12 @@
 #include "Landscape.h"
 #include "Layers/LayersSubsystem.h"
 #include "LevelSequence.h"
+#include "LevelVariantSets.h"
 #include "MaterialEditingLibrary.h"
-#include "MaterialShared.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "MaterialShared.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -64,11 +64,10 @@
 #include "Serialization/ArchiveReplaceObjectRef.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/ObjectReader.h"
+#include "Serialization/ObjectWriter.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "SourceControlOperations.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "Templates/UniquePtr.h"
-#include "UObject/Package.h"
 #include "UnrealEdGlobals.h"
 
 extern UNREALED_API UEditorEngine* GEditor;
@@ -76,11 +75,7 @@ extern UNREALED_API UEditorEngine* GEditor;
 #define LOCTEXT_NAMESPACE "DatasmithImporter"
 
 
-namespace DatasmithImporter
-{
-namespace Private
-{
-namespace DatasmithImporterImpl
+namespace UE::DatasmithImporterImpl::Private
 {
 	class FDatasmithWriter final : public FObjectWriter
 	{
@@ -88,13 +83,13 @@ namespace DatasmithImporterImpl
 		FDatasmithWriter(UObject& Object, TArray< uint8 >& Bytes)
 			: FObjectWriter(Bytes)
 		{
-				SetIsLoading(false);
-				SetIsSaving(true);
-				SetIsPersistent(true);
+			SetIsLoading(false);
+			SetIsSaving(true);
+			SetIsPersistent(true);
 
-				SetPortFlags(GetPortFlags() | PPF_Duplicate);
+			SetPortFlags(GetPortFlags() | PPF_Duplicate);
 
-				Object.Serialize(*this);
+			Object.Serialize(*this);
 		}
 	};
 
@@ -113,19 +108,9 @@ namespace DatasmithImporterImpl
 			Object.Serialize(*this);
 		}
 	};
-}
-}
-}
+} // namespace UE::DatasmithImporterImpl::Private
 
 void FDatasmithImporterImpl::ReportProgress(FScopedSlowTask* SlowTask, const float ExpectedWorkThisFrame, const FText& Text)
-{
-	if (SlowTask)
-	{
-		SlowTask->EnterProgressFrame(ExpectedWorkThisFrame, Text);
-	}
-}
-
-void FDatasmithImporterImpl::ReportProgress(FScopedSlowTask* SlowTask, const float ExpectedWorkThisFrame, FText&& Text)
 {
 	if (SlowTask)
 	{
@@ -147,15 +132,16 @@ UObject* FDatasmithImporterImpl::PublicizeAsset( UObject* SourceAsset, const TCH
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporterImpl::PublicizeAsset);
 
-	UPackage* DestinationPackage;
+	UPackage* DestinationPackage = nullptr;
+
+	const FString AssetName = UPackageTools::SanitizePackageName(SourceAsset->GetName());
 
 	if ( !ExistingAsset )
 	{
-		const FString AssetName = SourceAsset->GetName();
-		bool bPathIsComplete = AssetName == FPaths::GetBaseFilename( DestinationPath );
-		FString DestinationPackagePath = UPackageTools::SanitizePackageName( bPathIsComplete ? DestinationPath : FPaths::Combine( DestinationPath, AssetName ) );
-		FString DestinationAssetPath = DestinationPackagePath + TEXT(".") + UPackageTools::SanitizePackageName( AssetName );
-
+		FString SanitizedDestinationPath = UPackageTools::SanitizePackageName( DestinationPath );
+		bool bPathIsComplete = AssetName == FPaths::GetBaseFilename( SanitizedDestinationPath );
+		FString DestinationPackagePath = bPathIsComplete ? SanitizedDestinationPath : FPaths::Combine( SanitizedDestinationPath, AssetName );
+		FString DestinationAssetPath = DestinationPackagePath + TEXT(".") + AssetName;
 		ExistingAsset = FDatasmithImporterUtils::FindObject<UObject>( nullptr, DestinationAssetPath );
 
 		DestinationPackage = ExistingAsset ? ExistingAsset->GetOutermost() : CreatePackage( *DestinationPackagePath );
@@ -188,7 +174,7 @@ UObject* FDatasmithImporterImpl::PublicizeAsset( UObject* SourceAsset, const TCH
 		// If mesh's label has changed, update its name
 		if ( ExistingAsset->GetFName() != SourceAsset->GetFName() )
 		{
-			DestinationAsset->Rename( *SourceAsset->GetName(), DestinationPackage, REN_DontCreateRedirectors | REN_NonTransactional );
+			DestinationAsset->Rename( *AssetName, DestinationPackage, REN_DontCreateRedirectors | REN_NonTransactional );
 		}
 
 		if ( UStaticMesh* DestinationMesh = Cast< UStaticMesh >( DestinationAsset ) )
@@ -206,7 +192,7 @@ UObject* FDatasmithImporterImpl::PublicizeAsset( UObject* SourceAsset, const TCH
 	}
 	else
 	{
-		SourceAsset->Rename( *SourceAsset->GetName(), DestinationPackage, REN_DontCreateRedirectors | REN_NonTransactional );
+		SourceAsset->Rename( *AssetName, DestinationPackage, REN_DontCreateRedirectors | REN_NonTransactional );
 		DestinationAsset = SourceAsset;
 	}
 
@@ -383,7 +369,7 @@ void FDatasmithImporterImpl::CompileMaterial( UObject* Material, FMaterialUpdate
 			FStaticParameterSet StaticParameters;
 			ConstantMaterialInstance->GetStaticParameterValues( StaticParameters );
 
-			for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
+			for ( FStaticSwitchParameter& Switch : StaticParameters.EditorOnly.StaticSwitchParameters )
 			{
 				if ( Switch.bOverride )
 				{
@@ -408,11 +394,11 @@ void FDatasmithImporterImpl::FixReferencesForObject( UObject* Object, const TMap
 }
 
 /**
-	* Creates templates to apply the values from the SourceObject on the DestinationObject.
-	*
-	* @returns An array of template pairs. The key is the template for the object, the value is a template to force apply to the object,
-	*			it contains the values from the key and any overrides that were present on the DestinationObject.
-	*/
+ * Creates templates to apply the values from the SourceObject on the DestinationObject.
+ *
+ * @returns An array of template pairs. The key is the template for the object, the value is a template to force apply to the object,
+ *			it contains the values from the key and any overrides that were present on the DestinationObject.
+ */
 TArray< FDatasmithImporterImpl::FMigratedTemplatePairType > FDatasmithImporterImpl::MigrateTemplates( UObject* SourceObject, UObject* DestinationObject, const TMap< UObject*, UObject* >* ReferencesToRemap, bool bIsForActor )
 {
 	TArray< FMigratedTemplatePairType > Results;
@@ -461,13 +447,13 @@ TArray< FDatasmithImporterImpl::FMigratedTemplatePairType > FDatasmithImporterIm
 }
 
 /**
-	* Applies the templates created from MigrateTemplates to DestinationObject.
-	*
-	* For an Object A that should be duplicated over an existing A', for which we want to keep the Datasmith overrides:
-	* - Call MigrateTemplates(A, A')
-	* - Duplicate A over A'
-	* - ApplyMigratedTemplates(A')
-	*/
+ * Applies the templates created from MigrateTemplates to DestinationObject.
+ *
+ * For an Object A that should be duplicated over an existing A', for which we want to keep the Datasmith overrides:
+ * - Call MigrateTemplates(A, A')
+ * - Duplicate A over A'
+ * - ApplyMigratedTemplates(A')
+ */
 void FDatasmithImporterImpl::ApplyMigratedTemplates( TArray< FMigratedTemplatePairType >& MigratedTemplates, UObject* DestinationObject )
 {
 	for ( FMigratedTemplatePairType& MigratedTemplate : MigratedTemplates )
@@ -582,7 +568,9 @@ UActorComponent* FDatasmithImporterImpl::PublicizeComponent(UActorComponent& Sou
 
 USceneComponent* FDatasmithImporterImpl::FinalizeSceneComponent(FDatasmithImportContext& ImportContext, USceneComponent& SourceComponent, AActor& DestinationActor, USceneComponent* DestinationParent, TMap<UObject *, UObject *>& ReferencesToRemap, TArray<uint8>& ReusableBuffer, TArray<TPair<USceneComponent&, TArray<FMigratedTemplatePairType>>>& ComponentsToApplyMigratedTemplate)
 {
-	USceneComponent* DestinationComponent = static_cast<USceneComponent*>( FindObjectWithOuter( &DestinationActor, SourceComponent.GetClass(), SourceComponent.GetFName() ) );
+	bool bExactClass = true; // Need exact class (UHierarchicalInstancedStaticMeshComponent should not be reused for UStaticMeshComponent)
+	USceneComponent* DestinationComponent = static_cast<USceneComponent*>( StaticFindObjectFastSafe(SourceComponent.GetClass(), &DestinationActor, SourceComponent.GetFName(), bExactClass) );
+	
 	FName SourceComponentDatasmithId = FDatasmithImporterUtils::GetDatasmithElementId(&SourceComponent);
 
 	if ( SourceComponentDatasmithId.IsNone() )
@@ -610,7 +598,7 @@ USceneComponent* FDatasmithImporterImpl::FinalizeSceneComponent(FDatasmithImport
 			// Look at components of the actor, we might find the scene component we are looking for.
 			for ( UActorComponent* Component : DestinationActor.GetInstanceComponents() )
 			{
-				if ( Component && Component->IsA( SourceComponent.GetClass() ) )
+				if ( Component && ( Component->GetClass() == SourceComponent.GetClass() ) )
 				{
 					FName ComponentDatasmithId = FDatasmithImporterUtils::GetDatasmithElementId( Component );
 					if ( ComponentDatasmithId.IsEqual( SourceComponentDatasmithId ) )
@@ -744,7 +732,7 @@ void FDatasmithImporterImpl::CopyObject(UObject& Source, UObject& Destination, T
 {
 	// Keep the previous allocation
 	TempBuffer.Reset();
-	using namespace DatasmithImporter::Private::DatasmithImporterImpl;
+	using namespace UE::DatasmithImporterImpl::Private;
 	FDatasmithWriter DatasmithWriter( Source, TempBuffer );
 	FDatasmithReader DatasmithReader( Destination, TempBuffer );
 }
@@ -788,7 +776,7 @@ void FDatasmithImporterImpl::GatherUnsupportedVirtualTexturesAndMaterials(const 
 				TextureParametersToConvertMap.Add(BaseMaterial, FMaterialParameterInfo());
 
 				//If no unsupported texture parameters were found, it's possible that a texture needing conversion is simply not exposed as a parameter, so we still need to check for those.
-				for (UObject* ReferencedTexture : BaseMaterial->GetCachedExpressionData().ReferencedTextures)
+				for (UObject* ReferencedTexture : BaseMaterial->GetReferencedTextures())
 				{
 					if (VirtualTexturesToConvert.Contains(Cast<UTexture2D>(ReferencedTexture)))
 					{
@@ -919,7 +907,7 @@ bool FDatasmithImporterImpl::CheckAssetPersistenceValidity(const FString& Packag
 				FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(FakeAbsolutePathToAsset, EStateCacheUsage::Use);
 				if( SourceControlState.IsValid() && SourceControlState->CanCheckout() )
 				{
-					// User will be prompted to check out this file when he/she saves the asset. No need to warn.
+					// User will be prompted to check out this file when they save the asset. No need to warn.
 					bCanCheckedOut = true;
 				}
 			}

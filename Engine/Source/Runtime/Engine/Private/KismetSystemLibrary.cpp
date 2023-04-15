@@ -40,28 +40,38 @@
 #include "Commandlets/Commandlet.h"
 #include "PlatformFeatures.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(KismetSystemLibrary)
+
 //////////////////////////////////////////////////////////////////////////
 // UKismetSystemLibrary
 
 #define LOCTEXT_NAMESPACE "UKismetSystemLibrary"
 
-const FName PropertyGetFailedWarning = FName("PropertyGetFailedWarning");
-const FName PropertySetFailedWarning = FName("PropertySetFailedWarning");
+namespace UE::Blueprint::Private
+{
+	const FName PropertyGetFailedWarning = FName("PropertyGetFailedWarning");
+	const FName PropertySetFailedWarning = FName("PropertySetFailedWarning");
+
+	bool bBlamePrintString = false;
+	FAutoConsoleVariableRef CVarBlamePrintString(TEXT("bp.BlamePrintString"), 
+		bBlamePrintString,
+		TEXT("When true, prints the Blueprint Asset and Function that generated calls to Print String. Useful for tracking down screen message spam."));
+}
 
 UKismetSystemLibrary::UKismetSystemLibrary(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	FBlueprintSupport::RegisterBlueprintWarning(
 		FBlueprintWarningDeclaration(
-			PropertyGetFailedWarning,
-			LOCTEXT("PropertyGetFailedWarning", "Property Get Failed")
+			UE::Blueprint::Private::PropertyGetFailedWarning,
+			LOCTEXT("UE::Blueprint::Private::PropertyGetFailedWarning", "Property Get Failed")
 		)
 	);
 
 	FBlueprintSupport::RegisterBlueprintWarning(
 		FBlueprintWarningDeclaration(
-			PropertySetFailedWarning,
-			LOCTEXT("PropertySetFailedWarning", "Property Set Failed")
+			UE::Blueprint::Private::PropertySetFailedWarning,
+			LOCTEXT("UE::Blueprint::Private::PropertySetFailedWarning", "Property Set Failed")
 		)
 	);
 }
@@ -80,6 +90,11 @@ FString UKismetSystemLibrary::GetObjectName(const UObject* Object)
 FString UKismetSystemLibrary::GetPathName(const UObject* Object)
 {
 	return GetPathNameSafe(Object);
+}
+
+FSoftObjectPath UKismetSystemLibrary::GetSoftObjectPath(const UObject* Object)
+{
+	return FSoftObjectPath(Object);
 }
 
 FString UKismetSystemLibrary::GetSystemPath(const UObject* Object)
@@ -111,9 +126,14 @@ FString UKismetSystemLibrary::GetDisplayName(const UObject* Object)
 	return Object ? Object->GetName() : FString();
 }
 
-FString UKismetSystemLibrary::GetClassDisplayName(UClass* Class)
+FString UKismetSystemLibrary::GetClassDisplayName(const UClass* Class)
 {
 	return Class ? Class->GetName() : FString();
+}
+
+FSoftClassPath UKismetSystemLibrary::GetSoftClassPath(const UClass* Class)
+{
+	return FSoftClassPath(Class);
 }
 
 UObject* UKismetSystemLibrary::GetOuterObject(const UObject* Object)
@@ -199,10 +219,10 @@ bool UKismetSystemLibrary::DoesImplementInterface(const UObject* TestObject, TSu
 	return false;
 }
 
-float UKismetSystemLibrary::GetGameTimeInSeconds(const UObject* WorldContextObject)
+double UKismetSystemLibrary::GetGameTimeInSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetTimeSeconds() : 0.f;
+	return World ? World->GetTimeSeconds() : 0.0;
 }
 
 int64 UKismetSystemLibrary::GetFrameCount()
@@ -308,7 +328,16 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 			}
 		}
 	}
-	
+
+	if (UE::Blueprint::Private::bBlamePrintString && !FBlueprintContextTracker::Get().GetCurrentScriptStack().IsEmpty())
+	{
+		const TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
+		Prefix = FString::Printf(TEXT("Blueprint Object: %s\nBlueprint Function: %s\n%s"), 
+			*ScriptStack.Last()->Node->GetPackage()->GetPathName(),
+			*ScriptStack.Last()->Node->GetName(),
+			*Prefix);
+	}
+
 	const FString FinalDisplayString = Prefix + InString;
 	FString FinalLogString = FinalDisplayString;
 
@@ -1133,6 +1162,11 @@ TSoftObjectPtr<UObject> UKismetSystemLibrary::Conv_SoftObjPathToSoftObjRef(const
 	return TSoftObjectPtr<UObject>(SoftObjectPath);
 }
 
+FSoftObjectPath UKismetSystemLibrary::Conv_SoftObjRefToSoftObjPath(TSoftObjectPtr<UObject> SoftObjectReference)
+{
+	return SoftObjectReference.ToSoftObjectPath();
+}
+
 FSoftClassPath UKismetSystemLibrary::MakeSoftClassPath(const FString& PathString)
 {
 	FSoftClassPath SoftClassPath(PathString);
@@ -1154,6 +1188,12 @@ void UKismetSystemLibrary::BreakSoftClassPath(FSoftClassPath InSoftClassPath, FS
 TSoftClassPtr<UObject> UKismetSystemLibrary::Conv_SoftClassPathToSoftClassRef(const FSoftClassPath& SoftClassPath)
 {
 	return TSoftClassPtr<UObject>(SoftClassPath);
+}
+
+FSoftClassPath UKismetSystemLibrary::Conv_SoftObjRefToSoftClassPath(TSoftClassPtr<UObject> SoftClassReference)
+{
+	// TSoftClassPtr and FSoftClassPath are not directly compatible
+	return FSoftClassPath(SoftClassReference.ToString());
 }
 
 bool UKismetSystemLibrary::IsValidSoftObjectReference(const TSoftObjectPtr<UObject>& SoftObjectReference)
@@ -2875,17 +2915,17 @@ bool UKismetSystemLibrary::Generic_GetEditorProperty(const UObject* Object, cons
 	{
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::AccessProtected))
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is protected and cannot be read"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertyGetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is protected and cannot be read"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertyGetFailedWarning);
 			return false;
 		}
 
-		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be read"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertyGetFailedWarning);
+		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be read"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertyGetFailedWarning);
 		return false;
 	}
 
 	if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::ConversionFailed))
 	{
-		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' (%s) on '%s' (%s) tried to get to a property value of the incorrect type (%s)"), *ObjectProp->GetName(), *ObjectProp->GetClass()->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName(), *ValueProp->GetClass()->GetName()), ELogVerbosity::Warning, PropertyGetFailedWarning);
+		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' (%s) on '%s' (%s) tried to get to a property value of the incorrect type (%s)"), *ObjectProp->GetName(), *ObjectProp->GetClass()->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName(), *ValueProp->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertyGetFailedWarning);
 		return false;
 	}
 
@@ -2934,7 +2974,7 @@ DEFINE_FUNCTION(UKismetSystemLibrary::execGetEditorProperty)
 		}
 		else
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) was missing"), *PropertyName.ToString(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertyGetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) was missing"), *PropertyName.ToString(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertyGetFailedWarning);
 		}
 	}
 
@@ -2956,35 +2996,35 @@ bool UKismetSystemLibrary::Generic_SetEditorProperty(UObject* Object, const FPro
 	{
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::AccessProtected))
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is protected and cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is protected and cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 			return false;
 		}
 
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::CannotEditTemplate))
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be edited on templates"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be edited on templates"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 			return false;
 		}
 
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::CannotEditInstance))
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be edited on instances"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be edited on instances"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 			return false;
 		}
 
 		if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::ReadOnly))
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is read-only and cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) is read-only and cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 			return false;
 		}
 
-		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) cannot be set"), *ObjectProp->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 		return false;
 	}
 
 	if (EnumHasAnyFlags(AccessResult, EPropertyAccessResultFlags::ConversionFailed))
 	{
-		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' (%s) on '%s' (%s) tried to set from a property value of the incorrect type (%s)"), *ObjectProp->GetName(), *ObjectProp->GetClass()->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName(), *ValueProp->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' (%s) on '%s' (%s) tried to set from a property value of the incorrect type (%s)"), *ObjectProp->GetName(), *ObjectProp->GetClass()->GetName(), *Object->GetPathName(), *Object->GetClass()->GetName(), *ValueProp->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 		return false;
 	}
 
@@ -3035,7 +3075,7 @@ DEFINE_FUNCTION(UKismetSystemLibrary::execSetEditorProperty)
 		}
 		else
 		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) was missing"), *PropertyName.ToString(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, PropertySetFailedWarning);
+			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Property '%s' on '%s' (%s) was missing"), *PropertyName.ToString(), *Object->GetPathName(), *Object->GetClass()->GetName()), ELogVerbosity::Warning, UE::Blueprint::Private::PropertySetFailedWarning);
 		}
 	}
 
@@ -3269,4 +3309,93 @@ void UKismetSystemLibrary::GetPrimaryAssetsWithBundleState(const TArray<FName>& 
 		Manager->GetPrimaryAssetsWithBundleState(OutPrimaryAssetIdList, ValidTypes, RequiredBundles, ExcludedBundles, bForceCurrentState);
 	}
 }
+
+FARFilter UKismetSystemLibrary::MakeARFilter(
+	const TArray<FName>& PackageNames, 
+	const TArray<FName>& PackagePaths, 
+	const TArray<FSoftObjectPath>& SoftObjectPaths, 
+	const TArray<FTopLevelAssetPath>& ClassPaths,
+	const TSet<FTopLevelAssetPath>& RecursiveClassPathsExclusionSet, 
+	const TArray<FName>& ClassNames, 
+	const TSet<FName>& RecursiveClassesExclusionSet, 
+	const bool bRecursivePaths, 
+	const bool bRecursiveClasses, 
+	const bool bIncludeOnlyOnDiskAssets
+	)
+{
+	FARFilter NewFilter;
+	NewFilter.PackageNames = PackageNames;
+	NewFilter.PackagePaths = PackagePaths;
+	NewFilter.SoftObjectPaths = SoftObjectPaths;
+	NewFilter.bRecursivePaths = bRecursivePaths;
+	NewFilter.bRecursiveClasses = bRecursiveClasses;
+	NewFilter.bIncludeOnlyOnDiskAssets = bIncludeOnlyOnDiskAssets;
+
+	NewFilter.ClassPaths = ClassPaths;
+	NewFilter.RecursiveClassPathsExclusionSet = RecursiveClassPathsExclusionSet;
+
+	// Fixup to move to FTopLevelAssetPath
+	for (const FName& ClassName : ClassNames)
+	{
+		FTopLevelAssetPath ClassPathName;
+		if (!ClassName.IsNone())
+		{
+			FString ShortClassName = ClassName.ToString();
+			ClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(*ShortClassName, ELogVerbosity::Warning, TEXT("MakeARFilter should use ClassPaths, ClassNames is deprecated."));
+			UE_CLOG(ClassPathName.IsNull(), LogClass, Error, TEXT("Failed to convert short class name %s to class path name."), *ShortClassName);
+		}
+		
+		NewFilter.ClassPaths.Add(ClassPathName);
+	}
+	for (const FName& RecursiveClassToExclude : RecursiveClassesExclusionSet)
+	{
+		FTopLevelAssetPath ClassPathName;
+		if (!RecursiveClassToExclude.IsNone())
+		{
+			FString ShortClassName = RecursiveClassToExclude.ToString();
+			ClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(*ShortClassName, ELogVerbosity::Warning, TEXT("MakeARFilter should use RecursiveClassPathsExclusionSet, RecursiveClassesExclusionSet is deprecated."));
+			UE_CLOG(ClassPathName.IsNull(), LogClass, Error, TEXT("Failed to convert short class name %s to class path name."), *ShortClassName);
+		}
+		
+		NewFilter.RecursiveClassPathsExclusionSet.Add(ClassPathName);
+	}
+
+	return NewFilter;
+}
+
+void UKismetSystemLibrary::BreakARFilter(
+	FARFilter InARFilter,
+	TArray<FName>& PackageNames,
+	TArray<FName>& PackagePaths,
+	TArray<FSoftObjectPath>& SoftObjectPaths,
+	TArray<FTopLevelAssetPath>& ClassPaths,
+	TSet<FTopLevelAssetPath>& RecursiveClassPathsExclusionSet,
+	TArray<FName>& ClassNames,
+	TSet<FName>& RecursiveClassesExclusionSet,
+	bool& bRecursivePaths,
+	bool& bRecursiveClasses,
+	bool& bIncludeOnlyOnDiskAssets
+	)
+{
+	PackageNames = InARFilter.PackageNames;
+	PackagePaths = InARFilter.PackagePaths;
+	SoftObjectPaths = InARFilter.SoftObjectPaths;
+	ClassPaths = InARFilter.ClassPaths;
+	RecursiveClassPathsExclusionSet = InARFilter.RecursiveClassPathsExclusionSet;
+	bRecursivePaths = InARFilter.bRecursivePaths;
+	bRecursiveClasses = InARFilter.bRecursiveClasses;
+	bIncludeOnlyOnDiskAssets = InARFilter.bIncludeOnlyOnDiskAssets;
+
+	// Fixup to move from FTopLevelAssetPath to legacy types
+	for (const FTopLevelAssetPath& ClassPath : ClassPaths)
+	{
+		ClassNames.Add(ClassPath.GetAssetName());
+	}
+	for (const FTopLevelAssetPath& RecursiveClassPathToExclude : RecursiveClassPathsExclusionSet)
+	{
+		RecursiveClassesExclusionSet.Add(RecursiveClassPathToExclude.GetAssetName());
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
+

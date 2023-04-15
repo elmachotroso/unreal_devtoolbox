@@ -2,12 +2,19 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "CoreTypes.h"
 #include "Engine/EngineTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "ClassViewerProjectSettings.generated.h"
+
+struct FDirectoryPath;
+struct FSoftClassPath;
 
 
 /**
@@ -24,7 +31,7 @@ class CLASSVIEWER_API UClassViewerProjectSettings : public UObject
 	TArray<FDirectoryPath> InternalOnlyPaths;
 
 	/** The base classes to be considered Internal Only for the class picker.*/
-	UPROPERTY(EditAnywhere, config, Category = ClassVisibilityManagement, meta = (MetaClass = "Object", DisplayName = "List of base classes to consider Internal Only.", AllowAbstract = "true", ShowTreeView, HideViewOptions))
+	UPROPERTY(EditAnywhere, config, Category = ClassVisibilityManagement, meta = (MetaClass = "/Script/CoreUObject.Object", DisplayName = "List of base classes to consider Internal Only.", AllowAbstract = "true", ShowTreeView, HideViewOptions))
 	TArray<FSoftClassPath> InternalOnlyClasses;
 #endif
 };

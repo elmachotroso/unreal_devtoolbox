@@ -13,7 +13,7 @@
 #include "Misc/App.h"
 #include "Misc/MemStack.h"
 #include "HAL/IConsoleManager.h"
-#include "HAL/LowLevelMemTracker.h"
+#include "HAL/LowLevelMemStats.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -58,7 +58,9 @@
 #include "NetworkingDistanceConstants.h"
 #include "Engine/ChildConnection.h"
 #include "Net/Core/Trace/NetTrace.h"
+#include "Net/Core/PropertyConditions/PropertyConditions.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/NetworkVersion.h"
 #include "Net/DataChannel.h"
 #include "GameFramework/PlayerState.h"
 #include "Net/PerfCountersHelpers.h"
@@ -68,17 +70,34 @@
 #include "Engine/LevelScriptActor.h"
 #include "Engine/NetworkSettings.h"
 #include "Engine/NetworkDelegates.h"
+#include "Net/NetSubObjectRegistryGetter.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "SocketSubsystem.h"
 #include "AddressInfoTypes.h"
+#if UE_WITH_IRIS
+#include "Iris/IrisConfig.h"
+#include "Iris/Core/IrisProfiler.h"
+#include "Iris/Core/IrisMemoryTracker.h"
+#include "Iris/ReplicationSystem/ReplicationSystem.h"
+#include "Iris/ReplicationSystem/ReplicationView.h"
+#include "Iris/ReplicationSystem/Filtering/NetObjectFilter.h"
+#include "Net/Iris/ReplicationSystem/ActorReplicationBridge.h"
+#include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
+#endif // UE_WITH_IRIS
+
 #if USE_SERVER_PERF_COUNTERS
 #include "PerfCountersModule.h"
 #endif
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetDriver)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #endif
+
+DECLARE_LLM_MEMORY_STAT(TEXT("NetDriver"), STAT_NetDriverLLM, STATGROUP_LLMFULL);
+LLM_DEFINE_TAG(NetDriver, NAME_None, TEXT("Networking"), GET_STATFNAME(STAT_NetDriverLLM), GET_STATFNAME(STAT_NetworkingSummaryLLM));
 
 // Default net driver stats
 DEFINE_STAT(STAT_Ping);
@@ -161,6 +180,38 @@ int32 GNumSharedSerializationMiss;
 int32 GNumSkippedObjectEmptyUpdates;
 
 extern int32 GNetRPCDebug;
+
+namespace UE::Net::Private
+{
+	static const FString PerfCounter_NumClients(TEXT("NumClients"));
+	static const FString PerfCounter_MaxPacketOverhead(TEXT("MaxPacketOverhead"));
+	static const FString PerfCounter_InRateClientMax(TEXT("InRateClientMax"));
+	static const FString PerfCounter_InRateClientMin(TEXT("InRateClientMin"));
+	static const FString PerfCounter_InRateClientAvg(TEXT("InRateClientAvg"));
+	static const FString PerfCounter_InPacketsClientMax(TEXT("InPacketsClientMax"));
+	static const FString PerfCounter_InPacketsClientMin(TEXT("InPacketsClientMin"));
+	static const FString PerfCounter_InPacketsClientAvg(TEXT("InPacketsClientAvg"));
+	static const FString PerfCounter_OutRateClientMax(TEXT("OutRateClientMax"));
+	static const FString PerfCounter_OutRateClientMin(TEXT("OutRateClientMin"));
+	static const FString PerfCounter_OutRateClientAvg(TEXT("OutRateClientAvg"));
+	static const FString PerfCounter_OutPacketsClientMax(TEXT("OutPacketsClientMax"));
+	static const FString PerfCounter_OutPacketsClientMin(TEXT("OutPacketsClientMin"));
+	static const FString PerfCounter_OutPacketsClientAvg(TEXT("OutPacketsClientAvg"));
+
+	static const FString PerfCounter_InRate(TEXT("InRate"));
+	static const FString PerfCounter_OutRate(TEXT("OutRate"));
+	static const FString PerfCounter_InPacketsLost(TEXT("InPacketsLost"));
+	static const FString PerfCounter_OutPacketsLost(TEXT("OutPacketsLost"));
+	static const FString PerfCounter_InPackets(TEXT("InPackets"));
+	static const FString PerfCounter_OutPackets(TEXT("OutPackets"));
+	static const FString PerfCounter_InBunches(TEXT("InBunches"));
+	static const FString PerfCounter_OutBunches(TEXT("OutBunches"));
+
+	static const FString PerfCounter_AvgPing(TEXT("AvgPing"));
+	static const FString PerfCounter_MaxPing(TEXT("MaxPing"));
+	static const FString PerfCounter_MinPing(TEXT("MinPing"));
+	static const FString PerfCounter_NumConnections(TEXT("NumConnections"));
+}
 
 namespace NetEmulationHelper
 {
@@ -254,6 +305,7 @@ namespace NetDriverInternal
 
 				check(((uint8*)Dest - (uint8*)LocalParms) + CopySize <= Function->ParmsSize);
 
+				It->InitializeValue(Dest);
 				It->CopyCompleteValue(Dest, Out->PropAddr);
 
 				CopiedProperties.Emplace(*It, LocalParms);
@@ -317,7 +369,10 @@ static TAutoConsoleVariable<int32> CVarUseAdaptiveNetUpdateFrequency(
 TAutoConsoleVariable<int32> CVarNetAllowEncryption(
 	TEXT("net.AllowEncryption"),
 	1,
-	TEXT("If true, the engine will attempt to load an encryption PacketHandler component and fill in the EncryptionToken parameter of the NMT_Hello message based on the ?EncryptionToken= URL option and call callbacks if it's non-empty."));
+	TEXT("If true, the engine will attempt to load an encryption PacketHandler component and fill in the EncryptionToken parameter ")
+	TEXT("of the NMT_Hello message based on the ?EncryptionToken= URL option and call callbacks if it's non-empty. ")
+	TEXT("Additionally, a value of '2' will make the EncryptionToken required - which is enforced serverside. ")
+	TEXT("(0 = Disabled, 1 = Allowed (default), 2 = Required)"));
 
 static TAutoConsoleVariable<int32> CVarActorChannelPool(
 	TEXT("net.ActorChannelPool"),
@@ -344,6 +399,49 @@ static FAutoConsoleVariableRef CVarNetResetAckStatePostSeamlessTravel(
 	TEXT("If 1, the server will reset the ack state of the package map after seamless travel. Increases bandwidth usage, but may resolve some issues with GUIDs not being available on clients after seamlessly traveling."),
 	ECVF_Default);
 
+namespace UE::Net
+{
+	static FString GRequiredEncryptionNetDriverDefNames_Internal = TEXT("all");
+	static TArray<FName> GRequiredEncryptionNetDriverDefNames;
+
+	// Safe to update static here, but not CVar system cached value
+	static void ParseRequiredEncryptionCVars(IConsoleVariable* =nullptr)
+	{
+		GRequiredEncryptionNetDriverDefNames.Reset();
+
+		if (GRequiredEncryptionNetDriverDefNames_Internal.TrimStartAndEnd() == TEXT("all"))
+		{
+			if (GEngine != nullptr)
+			{
+				for (const FNetDriverDefinition& CurDef : GEngine->NetDriverDefinitions)
+				{
+					if (CurDef.DefName != NAME_DemoNetDriver)
+					{
+						GRequiredEncryptionNetDriverDefNames.Add(CurDef.DefName);
+					}
+				}
+			}
+		}
+		else
+		{
+			TArray<FString> NetDriverNames;
+			GRequiredEncryptionNetDriverDefNames_Internal.ParseIntoArray(NetDriverNames, TEXT(","));
+
+			for (const FString& CurName : NetDriverNames)
+			{
+				GRequiredEncryptionNetDriverDefNames.Add(FName(CurName.TrimStartAndEnd()));
+			};
+		}
+	}
+
+	static FAutoConsoleVariableRef CVarNetRequiredEncryptionNetDriverDefNames(
+		TEXT("net.RequiredEncryptionNetDriverDefNames"),
+		GRequiredEncryptionNetDriverDefNames_Internal,
+		TEXT("Comma-delimited list of NetDriverDefinition's where 'IsEncryptionRequired' will return true, when 'net.AllowEncryption' is 2. ")
+		TEXT("(specifying 'all' will enable this for all NetDriverDefinition's)"),
+		FConsoleVariableDelegate::CreateStatic(&ParseRequiredEncryptionCVars));
+}
+
 
 /*-----------------------------------------------------------------------------
 	UNetDriver implementation.
@@ -353,7 +451,6 @@ UNetDriver::UNetDriver(const FObjectInitializer& ObjectInitializer)
 :	UObject(ObjectInitializer)
 ,	MaxInternetClientRate(10000)
 , 	MaxClientRate(15000)
-,   bNoTimeouts(false)
 ,   ServerConnection(nullptr)
 ,	ClientConnections()
 ,	MappedClientConnections()
@@ -364,13 +461,29 @@ UNetDriver::UNetDriver(const FObjectInitializer& ObjectInitializer)
 ,	AnalyticsProvider()
 ,	AnalyticsAggregator()
 ,   World(nullptr)
+,	NetDriverDefinition(NAME_None)
+,	MaxChannelsOverride(0)
 ,   Notify(nullptr)
 ,	ElapsedTime( 0.0 )
 ,	bInTick(false)
 ,	bPendingDestruction(false)
-,	LastTickDispatchRealtime( 0.f )
+#if DO_ENABLE_NET_TEST
+,   bForcedPacketSettings(false)
+#endif
+,   bDidHitchLastFrame(false)
+,   bHasReplayConnection(false)
+,   bMaySendProperties(false)
+,   bSkipServerReplicateActors(false)
+,   bSkipClearVoicePackets(false)
+,   bNoTimeouts(false)
+,   bNeverApplyNetworkEmulationSettings(false)
 ,   bIsPeer(false)
-,	bSkipLocalStats(false)
+,   ProfileStats(false)
+,   bSkipLocalStats(false)
+,   bCollectNetStats(false)
+,   bIsStandbyCheckingEnabled(false)
+,   bHasStandbyCheatTriggered(false)
+,	LastTickDispatchRealtime( 0.f )
 ,	InBytes(0)
 ,	InTotalBytes(0)
 ,	OutBytes(0)
@@ -393,21 +506,26 @@ UNetDriver::UNetDriver(const FObjectInitializer& ObjectInitializer)
 ,	StatPeriod(1.f)
 ,	TotalRPCsCalled(0)
 ,	OutTotalAcks(0)
-,	bCollectNetStats(false)
 ,	LastCleanupTime(0.0)
 ,	NetTag(0)
+#if NET_DEBUG_RELEVANT_ACTORS
 ,	DebugRelevantActors(false)
+#endif // NET_DEBUG_RELEVANT_ACTORS
 #if !UE_BUILD_SHIPPING
 ,	SendRPCDel()
 #endif
 ,	ProcessQueuedBunchesCurrentFrameMilliseconds(0.0f)
 ,	DDoS()
 ,	LocalAddr(nullptr)
+#if UE_WITH_IRIS
+,	DummyNetworkObjectInfo(MakePimpl<FNetworkObjectInfo>())
+#endif // UE_WITH_IRIS
 ,	NetworkObjects(new FNetworkObjectList)
 ,	LagState(ENetworkLagState::NotLagging)
 ,	DuplicateLevelID(INDEX_NONE)
 ,	PacketLossBurstEndTime(-1.0f)
 ,	OutTotalNotifiedPackets(0u)
+,	NetTraceId(NetTraceInvalidGameInstanceId)
 {
 	UpdateDelayRandomStream.Initialize(FApp::bUseFixedSeed ? GetFName() : NAME_None);
 }
@@ -433,8 +551,8 @@ void UNetDriver::InitPacketSimulationSettings()
 
 	// Read the settings from .ini and command line, with the command line taking precedence	
 	PacketSimulationSettings.ResetSettings();
-	PacketSimulationSettings.LoadConfig(*NetDriverName.ToString());
-	PacketSimulationSettings.ParseSettings(FCommandLine::Get(), *NetDriverName.ToString());
+	PacketSimulationSettings.LoadConfig(*NetDriverDefinition.ToString());
+	PacketSimulationSettings.ParseSettings(FCommandLine::Get(), *NetDriverDefinition.ToString());
 #endif
 }
 
@@ -499,6 +617,8 @@ void UNetDriver::PostReloadConfig(FProperty* PropertyToLoad)
 
 void UNetDriver::LoadChannelDefinitions()
 {
+	LLM_SCOPE_BYTAG(NetDriver);
+
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 		if (ServerConnection != nullptr)
@@ -541,10 +661,11 @@ void UNetDriver::LoadChannelDefinitions()
 void UNetDriver::NotifyGameInstanceUpdated()
 {
 #if UE_NET_TRACE_ENABLED
-	if (GetWorld() && GetWorld()->WorldType)
+	const UWorld* LocalWorld = GetWorld();
+	if (GetNetTraceId() != NetTraceInvalidGameInstanceId && LocalWorld && LocalWorld->WorldType)
 	{
-		FString InstanceName = FString::Printf(TEXT("%s (%s)"), *GetNameSafe(GetWorld()->GetGameInstance()), LexToString(GetWorld()->WorldType.GetValue()));
-		UE_NET_TRACE_UPDATE_INSTANCE(GetUniqueID(), IsServer(), *InstanceName);
+		FString InstanceName = FString::Printf(TEXT("%s (%s)"), *GetNameSafe(LocalWorld->GetGameInstance()), LexToString(LocalWorld->WorldType.GetValue()));
+		UE_NET_TRACE_UPDATE_INSTANCE(GetNetTraceId(), IsServer(), *InstanceName);
 	}
 #endif
 }
@@ -563,6 +684,15 @@ void UNetDriver::AddNetworkActor(AActor* Actor)
 {
 	LLM_SCOPE(ELLMTag::Networking);
 	ensureMsgf(Actor == nullptr || !(Actor->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject)), TEXT("%s is a CDO or Archetype and should not be replicated."), *GetFullNameSafe(Actor));
+
+#if UE_WITH_IRIS
+	// We currently only want to do this on the server as we want to replicate the actor to the client
+	// but we rely on the old system for actor instantiation
+	if (ReplicationSystem)
+	{
+		return;
+	}
+#endif // UE_WITH_IRIS
 
 	if (!IsDormInitialStartupActor(Actor))
 	{
@@ -593,6 +723,14 @@ FNetworkObjectInfo* UNetDriver::FindOrAddNetworkObjectInfo(const AActor* InActor
 	ensureMsgf(InActor == nullptr || !(InActor->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject)), TEXT("%s is a CDO or Archetype and should not be replicated."), *GetFullNameSafe(InActor));
 
 	bool bWasAdded = false;
+
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		return FindNetworkObjectInfo(InActor);
+	}
+#endif // UE_WITH_IRIS
+
 	if (TSharedPtr<FNetworkObjectInfo>* InfoPtr = GetNetworkObjectList().FindOrAdd(const_cast<AActor*>(InActor), this, &bWasAdded))
 	{
 		if (bWasAdded && ReplicationDriver)
@@ -608,6 +746,21 @@ FNetworkObjectInfo* UNetDriver::FindOrAddNetworkObjectInfo(const AActor* InActor
 
 FNetworkObjectInfo* UNetDriver::FindNetworkObjectInfo(const AActor* InActor)
 {
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		// Return default initialized NetworkObjectInfo so the presence of a pointer can at least indicate whether the actor is replicated or not.
+		const UE::Net::FNetHandle NetHandle = UE::Net::FReplicationSystemUtil::GetNetHandle(InActor);
+		if (NetHandle.IsValid())
+		{
+			*DummyNetworkObjectInfo = FNetworkObjectInfo();
+			return DummyNetworkObjectInfo.Get();
+		}
+
+		return nullptr;
+	}
+#endif // UE_WITH_IRIS
+
 	return GetNetworkObjectList().Find(InActor).Get();
 }
 
@@ -667,7 +820,16 @@ void UNetDriver::CancelAdaptiveReplication(FNetworkObjectInfo& InNetworkActor)
 
 static TAutoConsoleVariable<int32> CVarOptimizedRemapping( TEXT( "net.OptimizedRemapping" ), 1, TEXT( "Uses optimized path to remap unmapped network guids" ) );
 static TAutoConsoleVariable<int32> CVarMaxClientGuidRemaps( TEXT( "net.MaxClientGuidRemaps" ), 100, TEXT( "Max client resolves of unmapped network guids per tick" ) );
-TAutoConsoleVariable<int32> CVarFilterGuidRemapping( TEXT( "net.FilterGuidRemapping" ), 1, TEXT( "Remove destroyed and parent guids from unmapped list" ) );
+
+namespace UE
+{
+	namespace Net
+	{
+		int32 FilterGuidRemapping = 1;
+		static FAutoConsoleVariableRef CVarFilterGuidRemapping(TEXT("net.FilterGuidRemapping"), FilterGuidRemapping, TEXT("Remove destroyed and parent guids from unmapped list"));
+	};
+};
+
 bool CVar_NetDriver_ReportGameTickFlushTime = false;
 static FAutoConsoleVariableRef CVarNetDriverReportTickFlushTime(TEXT("net.ReportGameTickFlushTime"), CVar_NetDriver_ReportGameTickFlushTime, TEXT("Record and report to the perf tracking system the processing time of the GameNetDriver's TickFlush."), ECVF_Default);
 
@@ -687,6 +849,8 @@ bool ShouldEnableScopeSecondsTimers()
 
 void UNetDriver::TickFlush(float DeltaSeconds)
 {
+	LLM_SCOPE_BYTAG(NetDriver);
+
 	TGuardValue<bool> GuardInNetTick(bInTick, true);
 
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(NetworkOutgoing);
@@ -702,7 +866,20 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 	{
 		// Update all clients.
 #if WITH_SERVER_CODE
-		int32 Updated = ServerReplicateActors( DeltaSeconds );
+		int32 Updated = 0;
+
+#if UE_WITH_IRIS
+		if (ReplicationSystem)
+		{
+			UpdateReplicationViews();
+			SendClientMoveAdjustments();
+			ReplicationSystem->PreSendUpdate(DeltaSeconds);
+		}
+		else
+#endif // UE_WITH_IRIS
+		{
+			Updated = ServerReplicateActors(DeltaSeconds);
+		}
 
 		static int32 LastUpdateCount = 0;
 		// Only log the zero replicated actors once after replicating an actor
@@ -713,428 +890,19 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 		LastUpdateCount = Updated;
 #endif // WITH_SERVER_CODE
 	}
+#if UE_WITH_IRIS
+	else if (!IsServer() && ServerConnection != nullptr)
+	{
+		if (ReplicationSystem)
+		{
+			UpdateReplicationViews();
+			ReplicationSystem->PreSendUpdate(DeltaSeconds);
+		}
+	}
+#endif // UE_WITH_IRIS
 
 	// Reset queued bunch amortization timer
 	ProcessQueuedBunchesCurrentFrameMilliseconds = 0.0f;
-
-	const double CurrentRealtimeSeconds = FPlatformTime::Seconds();
-
-	bool bCollectServerStats = false;
-#if USE_SERVER_PERF_COUNTERS || STATS
-	bCollectServerStats = true;
-#endif
-
-	if (bCollectNetStats || bCollectServerStats)
-	{
-		SCOPE_CYCLE_COUNTER(STAT_NetTickFlushGatherStats);
-		// Update network stats (only main game net driver for now) if stats or perf counters are used
-		if (NetDriverName == NAME_GameNetDriver &&
-			CurrentRealtimeSeconds - StatUpdateTime > StatPeriod)
-		{
-			int32 ClientInBytesMax = 0;
-			int32 ClientInBytesMin = 0;
-			int32 ClientInBytesAvg = 0;
-			int32 ClientInPacketsMax = 0;
-			int32 ClientInPacketsMin = 0;
-			int32 ClientInPacketsAvg = 0;
-			int32 ClientOutBytesMax = 0;
-			int32 ClientOutBytesMin = 0;
-			int32 ClientOutBytesAvg = 0;
-			int32 ClientOutPacketsMax = 0;
-			int32 ClientOutPacketsMin = 0;
-			int32 ClientOutPacketsAvg = 0;
-			int NumClients = 0;
-			int32 MaxPacketOverhead = 0;
-
-			// these need to be updated even if we are not collecting stats, since they get reported to analytics/QoS
-			for (UNetConnection * Client : ClientConnections)
-			{
-				if (Client)
-				{
-#define UpdatePerClientMinMaxAvg(VariableName) \
-				Client##VariableName##Max = FMath::Max(Client##VariableName##Max, Client->VariableName##PerSecond); \
-				if (Client##VariableName##Min == 0 || Client->VariableName##PerSecond < Client##VariableName##Min) \
-				{ \
-					Client##VariableName##Min = Client->VariableName##PerSecond; \
-				} \
-				Client##VariableName##Avg += Client->VariableName##PerSecond; \
-
-					UpdatePerClientMinMaxAvg(InBytes);
-					UpdatePerClientMinMaxAvg(OutBytes);
-					UpdatePerClientMinMaxAvg(InPackets);
-					UpdatePerClientMinMaxAvg(OutPackets);
-
-					MaxPacketOverhead = FMath::Max(Client->PacketOverhead, MaxPacketOverhead);
-
-#undef UpdatePerClientMinMaxAvg
-
-					++NumClients;
-				}
-			}
-
-			if (NumClients > 1)
-			{
-				ClientInBytesAvg /= NumClients;
-				ClientInPacketsAvg /= NumClients;
-				ClientOutBytesAvg /= NumClients;
-				ClientOutPacketsAvg /= NumClients;
-			}
-
-			int32 Ping = 0;
-			int32 NumOpenChannels = 0;
-			int32 NumActorChannels = 0;
-			int32 NumDormantActors = 0;
-			int32 NumActors = 0;
-			int32 AckCount = 0;
-			int32 UnAckCount = 0;
-			int32 PendingCount = 0;
-			int32 NetSaturated = 0;
-			int32 NumActiveNetActors = GetNetworkObjectList().GetActiveObjects().Num();
-
-			if (
-#if STATS
-				FThreadStats::IsCollectingData() ||
-#endif
-				bCollectNetStats)
-			{
-				const float RealTime = CurrentRealtimeSeconds - StatUpdateTime;
-
-				// Use the elapsed time to keep things scaled to one measured unit
-				InBytes = FMath::TruncToInt(InBytes / RealTime);
-				OutBytes = FMath::TruncToInt(OutBytes / RealTime);
-
-				NetGUIDOutBytes = FMath::TruncToInt(NetGUIDOutBytes / RealTime);
-				NetGUIDInBytes = FMath::TruncToInt(NetGUIDInBytes / RealTime);
-
-				// Save off for stats later
-
-				InBytesPerSecond = InBytes;
-				OutBytesPerSecond = OutBytes;
-
-				InPackets = FMath::TruncToInt(InPackets / RealTime);
-				OutPackets = FMath::TruncToInt(OutPackets / RealTime);
-				InBunches = FMath::TruncToInt(InBunches / RealTime);
-				OutBunches = FMath::TruncToInt(OutBunches / RealTime);
-				OutPacketsLost = FMath::TruncToInt(100.f * OutPacketsLost / FMath::Max((float)OutPackets, 1.f));
-				InPacketsLost = FMath::TruncToInt(100.f * InPacketsLost / FMath::Max((float)InPackets + InPacketsLost, 1.f));
-
-				if (ServerConnection != NULL && ServerConnection->PlayerController != NULL && ServerConnection->PlayerController->PlayerState != NULL)
-				{
-					Ping = FMath::TruncToInt(ServerConnection->PlayerController->PlayerState->ExactPing);
-				}
-
-				if (ServerConnection != NULL)
-				{
-					NumOpenChannels = ServerConnection->OpenChannels.Num();
-				}
-
-				for (int32 i = 0; i < ClientConnections.Num(); i++)
-				{
-					NumOpenChannels += ClientConnections[i]->OpenChannels.Num();
-				}
-
-				// Use the elapsed time to keep things scaled to one measured unit
-				VoicePacketsSent = FMath::TruncToInt(VoicePacketsSent / RealTime);
-				VoicePacketsRecv = FMath::TruncToInt(VoicePacketsRecv / RealTime);
-				VoiceBytesSent = FMath::TruncToInt(VoiceBytesSent / RealTime);
-				VoiceBytesRecv = FMath::TruncToInt(VoiceBytesRecv / RealTime);
-
-				// Determine voice percentages
-				VoiceInPercent = (InBytes > 0) ? FMath::TruncToInt(100.f * (float)VoiceBytesRecv / (float)InBytes) : 0;
-				VoiceOutPercent = (OutBytes > 0) ? FMath::TruncToInt(100.f * (float)VoiceBytesSent / (float)OutBytes) : 0;
-
-				if (World)
-				{
-					NumActors = World->GetActorCount();
-				}
-				
-				// Handle these stats to do this differently for client & server
-				if (ServerConnection != nullptr)
-				{
-					NumActorChannels = ServerConnection->ActorChannelsNum();
-					NumDormantActors = GetNetworkObjectList().GetNumDormantActorsForConnection(ServerConnection);
-#if STATS
-					ServerConnection->PackageMap->GetNetGUIDStats(AckCount, UnAckCount, PendingCount);
-#endif
-					NetSaturated = ServerConnection->IsNetReady(false) ? 0 : 1;
-				}
-				else
-				{
-					int32 SharedDormantActors = GetNetworkObjectList().GetDormantObjectsOnAllConnections().Num();
-					for (int32 i = 0; i < ClientConnections.Num(); i++)
-					{
-						NumActorChannels += ClientConnections[i]->ActorChannelsNum();
-						NumDormantActors += GetNetworkObjectList().GetNumDormantActorsForConnection(ClientConnections[i]);
-#if STATS
-						int32 ClientAckCount = 0;
-						int32 ClientUnAckCount = 0;
-						int32 ClientPendingCount = 0;
-						ClientConnections[i]->PackageMap->GetNetGUIDStats(AckCount, UnAckCount, PendingCount);
-						AckCount += ClientAckCount;
-						UnAckCount += ClientUnAckCount;
-						PendingCount += ClientPendingCount;
-#endif
-						NetSaturated |= ClientConnections[i]->IsNetReady(false) ? 0 : 1;
-					}
-					// Subtract out the duplicate counted dormant actors
-					NumDormantActors -= FMath::Max(0, ClientConnections.Num() - 1) * SharedDormantActors;
-				}
-			}
-
-#if STATS
-			if (!bSkipLocalStats)
-			{
-				// Copy the net status values over
-				SET_DWORD_STAT(STAT_Ping, Ping);
-				SET_DWORD_STAT(STAT_Channels, NumOpenChannels);
-				SET_DWORD_STAT(STAT_MaxPacketOverhead, MaxPacketOverhead);
-
-				SET_DWORD_STAT(STAT_OutLoss, OutPacketsLost);
-				SET_DWORD_STAT(STAT_InLoss, InPacketsLost);
-				SET_DWORD_STAT(STAT_InRate, InBytes);
-				SET_DWORD_STAT(STAT_OutRate, OutBytes);
-				SET_DWORD_STAT(STAT_InRateClientMax, ClientInBytesMax);
-				SET_DWORD_STAT(STAT_InRateClientMin, ClientInBytesMin);
-				SET_DWORD_STAT(STAT_InRateClientAvg, ClientInBytesAvg);
-				SET_DWORD_STAT(STAT_InPacketsClientMax, ClientInPacketsMax);
-				SET_DWORD_STAT(STAT_InPacketsClientMin, ClientInPacketsMin);
-				SET_DWORD_STAT(STAT_InPacketsClientAvg, ClientInPacketsAvg);
-				SET_DWORD_STAT(STAT_OutRateClientMax, ClientOutBytesMax);
-				SET_DWORD_STAT(STAT_OutRateClientMin, ClientOutBytesMin);
-				SET_DWORD_STAT(STAT_OutRateClientAvg, ClientOutBytesAvg);
-				SET_DWORD_STAT(STAT_OutPacketsClientMax, ClientOutPacketsMax);
-				SET_DWORD_STAT(STAT_OutPacketsClientMin, ClientOutPacketsMin);
-				SET_DWORD_STAT(STAT_OutPacketsClientAvg, ClientOutPacketsAvg);
-
-				SET_DWORD_STAT(STAT_NetNumClients, NumClients);
-				SET_DWORD_STAT(STAT_InPackets, InPackets);
-				SET_DWORD_STAT(STAT_OutPackets, OutPackets);
-				SET_DWORD_STAT(STAT_InBunches, InBunches);
-				SET_DWORD_STAT(STAT_OutBunches, OutBunches);
-
-				SET_DWORD_STAT(STAT_NetGUIDInRate, NetGUIDInBytes);
-				SET_DWORD_STAT(STAT_NetGUIDOutRate, NetGUIDOutBytes);
-
-				SET_DWORD_STAT(STAT_VoicePacketsSent, VoicePacketsSent);
-				SET_DWORD_STAT(STAT_VoicePacketsRecv, VoicePacketsRecv);
-				SET_DWORD_STAT(STAT_VoiceBytesSent, VoiceBytesSent);
-				SET_DWORD_STAT(STAT_VoiceBytesRecv, VoiceBytesRecv);
-
-				SET_DWORD_STAT(STAT_PercentInVoice, VoiceInPercent);
-				SET_DWORD_STAT(STAT_PercentOutVoice, VoiceOutPercent);
-
-				SET_DWORD_STAT(STAT_NumActorChannels, NumActorChannels);
-				SET_DWORD_STAT(STAT_NumDormantActors, NumDormantActors);
-				SET_DWORD_STAT(STAT_NumActors, NumActors);
-				SET_DWORD_STAT(STAT_NumNetActors, NumActiveNetActors);
-				SET_DWORD_STAT(STAT_NumNetGUIDsAckd, AckCount);
-				SET_DWORD_STAT(STAT_NumNetGUIDsPending, UnAckCount);
-				SET_DWORD_STAT(STAT_NumNetGUIDsUnAckd, PendingCount);
-				SET_DWORD_STAT(STAT_NetSaturated, NetSaturated);
-			}
-
-			// If we are to replicate server stats out to an observer, then set those values
-			if (AGameModeBase* GMBase = World->GetAuthGameMode())
-			{
-				if (GMBase->ServerStatReplicator != nullptr)
-				{
-					GMBase->ServerStatReplicator->Channels = NumOpenChannels;
-					GMBase->ServerStatReplicator->MaxPacketOverhead = MaxPacketOverhead;
-					GMBase->ServerStatReplicator->OutLoss = OutPacketsLost;
-					GMBase->ServerStatReplicator->InLoss = InPacketsLost;
-					GMBase->ServerStatReplicator->InRate = InBytes;
-					GMBase->ServerStatReplicator->OutRate = OutBytes;
-					GMBase->ServerStatReplicator->InRateClientMax = ClientInBytesMax;
-					GMBase->ServerStatReplicator->InRateClientMin = ClientInBytesMin;
-					GMBase->ServerStatReplicator->InRateClientAvg = ClientInBytesAvg;
-					GMBase->ServerStatReplicator->InPacketsClientMax = ClientInPacketsMax;
-					GMBase->ServerStatReplicator->InPacketsClientMin = ClientInPacketsMin;
-					GMBase->ServerStatReplicator->InPacketsClientAvg = ClientInPacketsAvg;
-					GMBase->ServerStatReplicator->OutRateClientMax = ClientOutBytesMax;
-					GMBase->ServerStatReplicator->OutRateClientMin = ClientOutBytesMin;
-					GMBase->ServerStatReplicator->OutRateClientAvg = ClientOutBytesAvg;
-					GMBase->ServerStatReplicator->OutPacketsClientMax = ClientOutPacketsMax;
-					GMBase->ServerStatReplicator->OutPacketsClientMin = ClientOutPacketsMin;
-					GMBase->ServerStatReplicator->OutPacketsClientAvg = ClientOutPacketsAvg;
-					GMBase->ServerStatReplicator->NetNumClients = NumClients;
-					GMBase->ServerStatReplicator->InPackets = InPackets;
-					GMBase->ServerStatReplicator->OutPackets = OutPackets;
-					GMBase->ServerStatReplicator->InBunches = InBunches;
-					GMBase->ServerStatReplicator->OutBunches = OutBunches;
-					GMBase->ServerStatReplicator->NetGUIDInRate = NetGUIDInBytes;
-					GMBase->ServerStatReplicator->NetGUIDOutRate = NetGUIDOutBytes;
-					GMBase->ServerStatReplicator->VoicePacketsSent = VoicePacketsSent;
-					GMBase->ServerStatReplicator->VoicePacketsRecv = VoicePacketsRecv;
-					GMBase->ServerStatReplicator->VoiceBytesSent = VoiceBytesSent;
-					GMBase->ServerStatReplicator->VoiceBytesRecv = VoiceBytesRecv;
-					GMBase->ServerStatReplicator->PercentInVoice = VoiceInPercent;
-					GMBase->ServerStatReplicator->PercentOutVoice = VoiceOutPercent;
-					GMBase->ServerStatReplicator->NumActorChannels = NumActorChannels;
-					GMBase->ServerStatReplicator->NumDormantActors = NumDormantActors;
-					GMBase->ServerStatReplicator->NumActors = NumActors;
-					GMBase->ServerStatReplicator->NumNetActors = NumActiveNetActors;
-					GMBase->ServerStatReplicator->NumNetGUIDsAckd = AckCount;
-					GMBase->ServerStatReplicator->NumNetGUIDsPending = UnAckCount;
-					GMBase->ServerStatReplicator->NumNetGUIDsUnAckd = PendingCount;
-					GMBase->ServerStatReplicator->NetSaturated = NetSaturated;
-				}
-			}
-#endif // STATS
-
-#if USE_SERVER_PERF_COUNTERS
-			IPerfCounters* PerfCounters = IPerfCountersModule::Get().GetPerformanceCounters();
-			if (PerfCounters)
-			{
-				SCOPE_CYCLE_COUNTER(STAT_NetTickFlushGatherStatsPerfCounters);
-
-				static const FString PerfCounter_AvgPing = TEXT("AvgPing");
-				static const FString PerfCounter_MaxPing = TEXT("MaxPing");
-				static const FString PerfCounter_MinPing = TEXT("MinPing");
-				static const FString PerfCounter_NumConnections = TEXT("NumConnections");
-
-				// Update total connections
-				PerfCounters->Set(PerfCounter_NumConnections, ClientConnections.Num());
-
-				const int kNumBuckets = 8;	// evenly spaced with increment of 30 ms; last bucket collects all off-scale pings as well
-				if (ClientConnections.Num() > 0)
-				{
-					// Update per connection statistics
-					float MinPing = MAX_FLT;
-					float AvgPing = 0;
-					float MaxPing = -MAX_FLT;
-					float PingCount = 0;
-
-					int32 Buckets[kNumBuckets] = { 0 };
-
-					for (int32 i = 0; i < ClientConnections.Num(); i++)
-					{
-						UNetConnection* Connection = ClientConnections[i];
-
-						if (Connection != nullptr)
-						{
-							if (Connection->PlayerController != nullptr && Connection->PlayerController->PlayerState != nullptr)
-							{
-								// Ping value calculated per client
-								float ConnPing = Connection->PlayerController->PlayerState->ExactPing;
-
-								int Bucket = FMath::Max(0, FMath::Min(kNumBuckets - 1, (static_cast<int>(ConnPing) / 30)));
-								++Buckets[Bucket];
-
-								if (ConnPing < MinPing)
-								{
-									MinPing = ConnPing;
-								}
-
-								if (ConnPing > MaxPing)
-								{
-									MaxPing = ConnPing;
-								}
-
-								AvgPing += ConnPing;
-								PingCount++;
-							}
-						}
-					}
-
-					if (PingCount > 0)
-					{
-						AvgPing /= static_cast<float>(PingCount);
-					}
-
-					PerfCounters->Set(PerfCounter_AvgPing, AvgPing, IPerfCounters::Flags::Transient);
-					PerfCounters->Set(PerfCounter_MaxPing, MaxPing, IPerfCounters::Flags::Transient);
-					PerfCounters->Set(PerfCounter_MinPing, MinPing, IPerfCounters::Flags::Transient);
-
-					// update buckets
-					for (int BucketIdx = 0; BucketIdx < UE_ARRAY_COUNT(Buckets); ++BucketIdx)
-					{
-						PerfCountersIncrement(FString::Printf(TEXT("PingBucketInt%d"), BucketIdx), Buckets[BucketIdx], 0, IPerfCounters::Flags::Transient);
-					}
-				}
-				else
-				{
-					PerfCounters->Set(PerfCounter_AvgPing, 0.0f, IPerfCounters::Flags::Transient);
-					PerfCounters->Set(PerfCounter_MaxPing, -FLT_MAX, IPerfCounters::Flags::Transient);
-					PerfCounters->Set(PerfCounter_MinPing, FLT_MAX, IPerfCounters::Flags::Transient);
-
-					for (int BucketIdx = 0; BucketIdx < kNumBuckets; ++BucketIdx)
-					{
-						PerfCounters->Set(FString::Printf(TEXT("PingBucketInt%d"), BucketIdx), 0, IPerfCounters::Flags::Transient);
-					}
-				}
-
-				static const FString PerfCounter_NumClients = TEXT("NumClients");
-				static const FString PerfCounter_MaxPacketOverhead = TEXT("MaxPacketOverhead");
-				static const FString PerfCounter_InRateClientMax = TEXT("InRateClientMax");
-				static const FString PerfCounter_InRateClientMin = TEXT("InRateClientMin");
-				static const FString PerfCounter_InRateClientAvg = TEXT("InRateClientAvg");
-				static const FString PerfCounter_InPacketsClientMax = TEXT("InPacketsClientMax");
-				static const FString PerfCounter_InPacketsClientMin = TEXT("InPacketsClientMin");
-				static const FString PerfCounter_InPacketsClientAvg = TEXT("InPacketsClientAvg");
-				static const FString PerfCounter_OutRateClientMax = TEXT("OutRateClientMax");
-				static const FString PerfCounter_OutRateClientMin = TEXT("OutRateClientMin");
-				static const FString PerfCounter_OutRateClientAvg = TEXT("OutRateClientAvg");
-				static const FString PerfCounter_OutPacketsClientMax = TEXT("OutPacketsClientMax");
-				static const FString PerfCounter_OutPacketsClientMin = TEXT("OutPacketsClientMin");
-				static const FString PerfCounter_OutPacketsClientAvg = TEXT("OutPacketsClientAvg");
-
-				static const FString PerfCounter_InRate = TEXT("InRate");
-				static const FString PerfCounter_OutRate = TEXT("OutRate");
-				static const FString PerfCounter_InPacketsLost = TEXT("InPacketsLost");
-				static const FString PerfCounter_OutPacketsLost = TEXT("OutPacketsLost");
-				static const FString PerfCounter_InPackets = TEXT("InPackets");
-				static const FString PerfCounter_OutPackets = TEXT("OutPackets");
-				static const FString PerfCounter_InBunches = TEXT("InBunches");
-				static const FString PerfCounter_OutBunches = TEXT("OutBunches");
-
-				// set the per connection stats (these are calculated earlier).
-				// Note that NumClients may be != NumConnections. Also, if NumClients is 0, the rest of counters should be 0 as well
-				PerfCounters->Set(PerfCounter_NumClients, NumClients);
-				PerfCounters->Set(PerfCounter_MaxPacketOverhead, MaxPacketOverhead);
-				PerfCounters->Set(PerfCounter_InRateClientMax, ClientInBytesMax);
-				PerfCounters->Set(PerfCounter_InRateClientMin, ClientInBytesMin);
-				PerfCounters->Set(PerfCounter_InRateClientAvg, ClientInBytesAvg);
-				PerfCounters->Set(PerfCounter_InPacketsClientMax, ClientInPacketsMax);
-				PerfCounters->Set(PerfCounter_InPacketsClientMin, ClientInPacketsMin);
-				PerfCounters->Set(PerfCounter_InPacketsClientAvg, ClientInPacketsAvg);
-				PerfCounters->Set(PerfCounter_OutRateClientMax, ClientOutBytesMax);
-				PerfCounters->Set(PerfCounter_OutRateClientMin, ClientOutBytesMin);
-				PerfCounters->Set(PerfCounter_OutRateClientAvg, ClientOutBytesAvg);
-				PerfCounters->Set(PerfCounter_OutPacketsClientMax, ClientOutPacketsMax);
-				PerfCounters->Set(PerfCounter_OutPacketsClientMin, ClientOutPacketsMin);
-				PerfCounters->Set(PerfCounter_OutPacketsClientAvg, ClientOutPacketsAvg);
-
-				PerfCounters->Set(PerfCounter_InRate, InBytes);
-				PerfCounters->Set(PerfCounter_OutRate, OutBytes);
-				PerfCounters->Set(PerfCounter_InPacketsLost, InPacketsLost);
-				PerfCounters->Set(PerfCounter_OutPacketsLost, OutPacketsLost);
-				PerfCounters->Set(PerfCounter_InPackets, InPackets);
-				PerfCounters->Set(PerfCounter_OutPackets, OutPackets);
-				PerfCounters->Set(PerfCounter_InBunches, InBunches);
-				PerfCounters->Set(PerfCounter_OutBunches, OutBunches);
-			}
-#endif // USE_SERVER_PERF_COUNTERS
-
-			// Reset everything
-			InBytes = 0;
-			OutBytes = 0;
-			NetGUIDOutBytes = 0;
-			NetGUIDInBytes = 0;
-			InPackets = 0;
-			OutPackets = 0;
-			InBunches = 0;
-			OutBunches = 0;
-			OutPacketsLost = 0;
-			InPacketsLost = 0;
-			VoicePacketsSent = 0;
-			VoiceBytesSent = 0;
-			VoicePacketsRecv = 0;
-			VoiceBytesRecv = 0;
-			VoiceInPercent = 0;
-			VoiceOutPercent = 0;
-			StatUpdateTime = CurrentRealtimeSeconds;
-		}
-	} // bCollectNetStats ||(USE_SERVER_PERF_COUNTERS) || STATS
 
 	// Poll all sockets.
 	if( ServerConnection )
@@ -1155,6 +923,13 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 		{
 			Connection->Tick(DeltaSeconds);
 		}
+
+#if UE_WITH_IRIS
+		if (ReplicationSystem && (ServerConnection != nullptr || ClientConnections.Num() > 0))
+		{
+			ReplicationSystem->PostSendUpdate();
+		}
+#endif // UE_WITH_IRIS
 	}
 
 	if (ConnectionlessHandler.IsValid())
@@ -1176,14 +951,14 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 		if (CVarOptimizedRemapping.GetValueOnAnyThread() && GuidCache.IsValid())
 		{
 			// Go over recently imported network guids, and see if there are any replicators that need to map them
-			TSet< FNetworkGUID >& ImportedNetGuids = GuidCache->ImportedNetGuids;
-			TMap< FNetworkGUID, TSet< FNetworkGUID > >& PendingOuterNetGuids = GuidCache->PendingOuterNetGuids;
+			TSet<FNetworkGUID>& ImportedNetGuidsRef = GuidCache->ImportedNetGuids;
+			TMap<FNetworkGUID, TSet<FNetworkGUID>>& PendingOuterNetGuidsRef = GuidCache->PendingOuterNetGuids;
 
-			SET_DWORD_STAT(STAT_ImportedNetGuids, ImportedNetGuids.Num());
-			SET_DWORD_STAT(STAT_PendingOuterNetGuids, PendingOuterNetGuids.Num());
+			SET_DWORD_STAT(STAT_ImportedNetGuids, ImportedNetGuidsRef.Num());
+			SET_DWORD_STAT(STAT_PendingOuterNetGuids, PendingOuterNetGuidsRef.Num());
 			SET_DWORD_STAT(STAT_UnmappedReplicators, UnmappedReplicators.Num());
 
-			TSet< FObjectReplicator* > ForceUpdateReplicators;
+			TSet<FObjectReplicator*> ForceUpdateReplicators;
 
 			for (FObjectReplicator* Replicator : UnmappedReplicators)
 			{
@@ -1194,16 +969,15 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 				}
 			}
 
-			if (ImportedNetGuids.Num() || ForceUpdateReplicators.Num())
+			if (ImportedNetGuidsRef.Num() || ForceUpdateReplicators.Num())
 			{
 				int32 NumRemapTests = 0;
-				int32 MaxRemaps = IsServer() ? 0 : CVarMaxClientGuidRemaps.GetValueOnAnyThread();
-				bool bFilterGuidRemapping = (CVarFilterGuidRemapping.GetValueOnAnyThread() > 0);
+				const int32 MaxRemaps = IsServer() ? 0 : CVarMaxClientGuidRemaps.GetValueOnAnyThread();
 
-				TArray< FNetworkGUID > UnmappedGuids;
-				TArray< FNetworkGUID > NewlyMappedGuids;
+				TArray<FNetworkGUID> UnmappedGuids;
+				TArray<FNetworkGUID> NewlyMappedGuids;
 
-				for (auto It = ImportedNetGuids.CreateIterator(); It; ++It)
+				for (auto It = ImportedNetGuidsRef.CreateIterator(); It; ++It)
 				{
 					const FNetworkGUID NetworkGuid = *It;
 					bool bMappedOrBroken = false;
@@ -1223,15 +997,15 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 
 					if (!bMappedOrBroken)
 					{
-						FNetworkGUID OuterGUID = GuidCache->GetOuterNetGUID(NetworkGuid);
+						const FNetworkGUID OuterGUID = GuidCache->GetOuterNetGUID(NetworkGuid);
 
 						// we're missing the outer, stop checking until we map it
-						if (bFilterGuidRemapping && OuterGUID.IsValid() && !OuterGUID.IsDefault() && !GuidCache->IsGUIDLoaded(OuterGUID) && !GuidCache->IsGUIDPending(OuterGUID))
+						if ((UE::Net::FilterGuidRemapping != 0) && OuterGUID.IsValid() && !OuterGUID.IsDefault() && !GuidCache->IsGUIDLoaded(OuterGUID) && !GuidCache->IsGUIDPending(OuterGUID))
 						{
-							UE_LOG(LogNetPackageMap, Log, TEXT("Missing outer (%s) for unmapped guid (%s), marking pending"), *GuidCache->FullNetGUIDPath(OuterGUID), *GuidCache->FullNetGUIDPath(NetworkGuid));
+							UE_LOG(LogNetPackageMap, Log, TEXT("Missing outer (%s) for unmapped guid (%s), marking pending"), *GuidCache->Describe(OuterGUID), *GuidCache->Describe(NetworkGuid));
 
-							TSet<FNetworkGUID>& PendingGuids = PendingOuterNetGuids.FindOrAdd(OuterGUID);
-							PendingGuids.Add(NetworkGuid);
+							TSet<FNetworkGUID>& PendingGuidsRef = PendingOuterNetGuidsRef.FindOrAdd(OuterGUID);
+							PendingGuidsRef.Add(NetworkGuid);
 						}
 						else
 						{
@@ -1253,38 +1027,35 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 				// attempt to resolve dependent guids next tick (outer is now mapped)
 				for (const FNetworkGUID& NetGuid : NewlyMappedGuids)
 				{
-					TSet< FNetworkGUID >* DependentGuids = PendingOuterNetGuids.Find(NetGuid);
-					if (DependentGuids)
+					if (TSet<FNetworkGUID>* DependentGuids = PendingOuterNetGuidsRef.Find(NetGuid))
 					{
 						UE_LOG(LogNetPackageMap, Log, TEXT("Newly mapped outer (%s) removing from pending"), *GuidCache->FullNetGUIDPath(NetGuid));
 
-						ImportedNetGuids.Append(*DependentGuids);
-						PendingOuterNetGuids.Remove(NetGuid);
+						ImportedNetGuidsRef.Append(*DependentGuids);
+						PendingOuterNetGuidsRef.Remove(NetGuid);
 					}
 				}
 
 				// any tested guids that could not yet be mapped are added back to the list
 				if (UnmappedGuids.Num())
 				{
-					ImportedNetGuids.CompactStable();
-					ImportedNetGuids.Append(UnmappedGuids);
+					ImportedNetGuidsRef.CompactStable();
+					ImportedNetGuidsRef.Append(UnmappedGuids);
 				}
 
 				if (NewlyMappedGuids.Num() || ForceUpdateReplicators.Num())
 				{
-					TSet< FObjectReplicator* > AllReplicators = ForceUpdateReplicators;
+					TSet<FObjectReplicator*> ReplicatorsToUpdate = MoveTemp(ForceUpdateReplicators);
 
 					for (const FNetworkGUID& NetGuid : NewlyMappedGuids)
 					{
-						TSet< FObjectReplicator* >* Replicators = GuidToReplicatorMap.Find(NetGuid);
-
-						if (Replicators)
+						if (TSet<FObjectReplicator*>* Replicators = GuidToReplicatorMap.Find(NetGuid))
 						{
-							AllReplicators.Append(*Replicators);
+							ReplicatorsToUpdate.Append(*Replicators);
 						}
 					}
 
-					for (FObjectReplicator* Replicator : AllReplicators)
+					for (FObjectReplicator* Replicator : ReplicatorsToUpdate)
 					{
 						if (UnmappedReplicators.Contains(Replicator))
 						{
@@ -1324,9 +1095,12 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 	// Unfortunately if you mark an object as pending kill, it will no longer find itself in this map,
 	// so we do this as a fail safe to make sure we never leak memory from this map
 	const double CleanupTimeSeconds = 10.0;
+	const double CurrentRealtimeSeconds = FPlatformTime::Seconds();
 
 	if ( CurrentRealtimeSeconds - LastCleanupTime > CleanupTimeSeconds )
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_NetUpdateCleanupTime);
+
 		for ( auto It = ReplicationChangeListMap.CreateIterator(); It; ++It )
 		{
 			if ( !It.Value().IsObjectValid() )
@@ -1350,6 +1124,8 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 
 		LastCleanupTime = CurrentRealtimeSeconds;
 	}
+
+	UpdateNetworkStats();
 
 	// Update the lag state
 	UpdateNetworkLagState();
@@ -1522,7 +1298,7 @@ void UNetDriver::ProcessLocalClientPackets()
 
 void UNetDriver::PostTickFlush()
 {
-	if (World)
+	if (World && !bSkipClearVoicePackets)
 	{
 		UOnlineEngineInterface::Get()->ClearVoicePackets(World);
 	}
@@ -1600,9 +1376,12 @@ bool UNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FU
 	if (!bInitAsClient)
 	{
 		ConnectionlessHandler.Reset(nullptr);
-		InitDestroyedStartupActors();
-		InitReplicationDriverClass();
-		SetReplicationDriver(UReplicationDriver::CreateReplicationDriver(this, URL, GetWorld()));
+		
+		if (!IsUsingIrisReplication())
+		{
+			InitReplicationDriverClass();
+			SetReplicationDriver(UReplicationDriver::CreateReplicationDriver(this, URL, GetWorld()));
+		}
 
 		DDoS.Init(FMath::Clamp(NetServerMaxTickRate, 1, 1000));
 
@@ -1630,8 +1409,47 @@ bool UNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FU
 
 	Notify = InNotify;
 
-	// If we are not using Iris, we use the UniqueId to identify the NetDriver.
-	NetTraceId = GetUniqueID();
+#if UE_WITH_IRIS
+	if (IsUsingIrisReplication() && !ReplicationSystem)
+	{
+		LLM_SCOPE_BYTAG(Iris);
+
+		if (ensureAlways(InitReplicationBridgeClass()))
+		{
+			const bool bAllowSend = !bInitAsClient;
+
+			UReplicationBridge* ReplicationBridge = NewObject<UActorReplicationBridge>(GetTransientPackage(), ReplicationBridgeClass);
+			if (ReplicationBridge)
+			{
+				ReplicationBridge->SetNetDriver(this);
+
+				// Create ReplicationSystem
+				UReplicationSystem::FReplicationSystemParams Params;
+				Params.ReplicationBridge = ReplicationBridge;
+				Params.bIsServer = !bInitAsClient;
+				Params.bAllowObjectReplication = !bInitAsClient;
+
+				SetReplicationSystem(UE::Net::FReplicationSystemFactory::CreateReplicationSystem(Params));
+			}
+			else
+			{
+				UE_LOG(LogNet, Error, TEXT("Failed to initialize ReplicationSystem"));
+			}
+		}
+	}
+#endif // UE_WITH_IRIS
+	
+	InitNetTraceId();
+
+	// NotifyGameInstanceUpdate might have been called prior to setting up the NetTraceId so we call it again
+	NotifyGameInstanceUpdated();
+
+	if (!bInitAsClient)
+	{
+		InitDestroyedStartupActors();
+	}
+
+	CachedGlobalNetTravelCount = GEngine->GetGlobalNetTravelCount();
 
 	return bSuccess;
 }
@@ -1649,7 +1467,7 @@ void UNetDriver::InitConnectionlessHandler()
 		if (ConnectionlessHandler.IsValid())
 		{
 			ConnectionlessHandler->NotifyAnalyticsProvider(AnalyticsProvider, AnalyticsAggregator);
-			ConnectionlessHandler->Initialize(Handler::Mode::Server, MAX_PACKET_SIZE, true, nullptr, nullptr, NetDriverName);
+			ConnectionlessHandler->Initialize(Handler::Mode::Server, MAX_PACKET_SIZE, true, nullptr, nullptr, NetDriverDefinition);
 
 			// Add handling for the stateless connect handshake, for connectionless packets, as the outermost layer
 			TSharedPtr<HandlerComponent> NewComponent =
@@ -1687,7 +1505,9 @@ ENetMode UNetDriver::GetNetMode() const
 #if WITH_EDITOR
 	if (World && World->WorldType == EWorldType::PIE && IsServer())
 	{
-		if ( GEngine->GetWorldContextFromWorldChecked(World).RunAsDedicated )
+		//@todo: world context won't be valid during seamless travel CopyWorldData
+		FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(World);
+		if (WorldContext && WorldContext->RunAsDedicated)
 		{
 			return NM_DedicatedServer;
 		}
@@ -1778,11 +1598,13 @@ void UNetDriver::Shutdown()
 	// Server closing connections with clients
 	if (ClientConnections.Num() > 0)
 	{
-		for (int32 ClientIndex = 0; ClientIndex < ClientConnections.Num(); ClientIndex++)
+		FString ErrorMsg = NSLOCTEXT("NetworkErrors", "HostClosedConnection", "Host closed the connection.").ToString();
+
+		for (UNetConnection* CurClient : ClientConnections)
 		{
-			FString ErrorMsg = NSLOCTEXT("NetworkErrors", "HostClosedConnection", "Host closed the connection.").ToString();
-			FNetControlMessage<NMT_Failure>::Send(ClientConnections[ClientIndex], ErrorMsg);
-			ClientConnections[ClientIndex]->FlushNet(true);
+			CurClient->SendCloseReason(ENetCloseResult::HostClosedConnection);
+			FNetControlMessage<NMT_Failure>::Send(CurClient, ErrorMsg);
+			CurClient->FlushNet(true);
 		}
 
 		for (int32 ClientIndex = ClientConnections.Num() - 1; ClientIndex >= 0; ClientIndex--)
@@ -1808,11 +1630,18 @@ void UNetDriver::Shutdown()
 	ReplicationChangeListMap.Empty();
 
 	// Clean up the actor channel pool
+	for (TObjectPtr<UChannel> Channel : ActorChannelPool)
+	{
+		Channel->MarkAsGarbage();
+	}
 	ActorChannelPool.Empty();
 
 	ConnectionlessHandler.Reset(nullptr);
 
 	SetReplicationDriver(nullptr);
+#if UE_WITH_IRIS
+	SetReplicationSystem(nullptr);
+#endif // UE_WITH_IRIS
 
 	// End NetTrace session for this instance
 	UE_NET_TRACE_END_SESSION(GetNetTraceId());
@@ -1831,6 +1660,18 @@ bool UNetDriver::IsServer() const
 	// Client connections ALWAYS set the server connection object in InitConnect()
 	// @todo ONLINE improve this with a bool
 	return ServerConnection == NULL;
+}
+
+EEngineNetworkRuntimeFeatures UNetDriver::GetNetworkRuntimeFeatures() const
+{
+	EEngineNetworkRuntimeFeatures NetDriverFeatures = EEngineNetworkRuntimeFeatures::None;
+	
+	if (IsUsingIrisReplication())
+	{
+		EnumAddFlags(NetDriverFeatures, EEngineNetworkRuntimeFeatures::IrisEnabled);
+	}
+	
+	return NetDriverFeatures;
 }
 
 // ----------------------------------------------------------------------------------------
@@ -2045,8 +1886,30 @@ bool UNetDriver::IsLevelInitializedForActor(const AActor* InActor, const UNetCon
 
 	// we can't create channels while the client is in the wrong world
 	const bool bCorrectWorld = GetWorldPackage() != nullptr && (InConnection->GetClientWorldPackageName() == GetWorldPackage()->GetFName()) && InConnection->ClientHasInitializedLevelFor(InActor);
+	
 	// exception: Special case for PlayerControllers as they are required for the client to travel to the new world correctly			
-	const bool bIsConnectionPC = (InActor == InConnection->PlayerController);
+	bool bIsConnectionPC = false;
+	// Make sure we have Parent Connection
+	const UNetConnection* const ParentConnection = InConnection->IsA<UChildConnection>() ? Cast<UChildConnection>(InConnection)->Parent : InConnection;
+
+	// Check Parent Connection
+	if (InActor == ParentConnection->PlayerController)
+	{
+		bIsConnectionPC = true;
+	}
+	// Check Child Connections
+	else
+	{	
+		for (const UChildConnection* const ChildConnection : ParentConnection->Children)
+		{
+			if (InActor == ChildConnection->PlayerController)
+			{
+				bIsConnectionPC = true;
+				break;
+			}
+		}
+	}
+
 	return bCorrectWorld || bIsConnectionPC;
 }
 
@@ -2250,8 +2113,15 @@ void UNetDriver::ProcessRemoteFunctionForChannelPrivate(
 			RemoteFunctionFlags |= EProcessRemoteFunctionFlags::ReplicatedActor;
 		}
 
+		if (!Ch->IsActorReadyForReplication())
+		{
+			// Build the list of replicated components since the actor isn't BeginPlay yet. Otherwise none of the components would be replicated by this initial ReplicateActor.
+			UE::Net::FSubObjectRegistryGetter::InitReplicatedComponentsList(Ch->GetActor());
+		}
 
+		Ch->SetForcedSerializeFromRPC(true);
 		Ch->ReplicateActor();
+		Ch->SetForcedSerializeFromRPC(false);
 	}
 
 	// Clients may be "closing" this connection but still processing bunches, we can't send anything if we have an invalid ChIndex.
@@ -2288,9 +2158,11 @@ void UNetDriver::ProcessRemoteFunctionForChannelPrivate(
 			UE_LOG(LogNet, Warning, TEXT("Closing connection. Can't send function '%s' on '%s': Reliable buffer overflow. FieldCache->FieldNetIndex: %d Max %d. Ch MaxPacket: %d."), *GetNameSafe(Function), *GetFullNameSafe(TargetObj), FieldCache->FieldNetIndex, ClassCache->GetMaxIndex(), Ch->Connection->MaxPacket );
 
 			FString ErrorMsg = NSLOCTEXT("NetworkErrors", "ClientReliableBufferOverflow", "Outgoing reliable buffer overflow").ToString();
+
+			Connection->SendCloseReason(ENetCloseResult::RPCReliableBufferOverflow);
 			FNetControlMessage<NMT_Failure>::Send(Connection, ErrorMsg);
 			Connection->FlushNet(true);
-			Connection->Close();
+			Connection->Close(ENetCloseResult::RPCReliableBufferOverflow);
 #if USE_SERVER_PERF_COUNTERS
 			PerfCountersIncrement(TEXT("ClosedConnectionsDueToReliableBufferOverflow"));
 #endif
@@ -2307,6 +2179,7 @@ void UNetDriver::ProcessRemoteFunctionForChannelPrivate(
 	}
 #endif
 
+	// Init bunch for rpc
 #if UE_NET_TRACE_ENABLED
 	SetTraceCollector(Bunch, UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace));
 #endif
@@ -2551,7 +2424,7 @@ void UNetDriver::SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider)
 		}
 		else
 		{
-			AnalyticsAggregator = MakeShareable(new FNetAnalyticsAggregator(InProvider, NetDriverName));
+			AnalyticsAggregator = MakeShareable(new FNetAnalyticsAggregator(InProvider, NetDriverDefinition));
 
 			AnalyticsAggregator->Init();
 		}
@@ -2579,7 +2452,6 @@ void UNetDriver::SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider)
 		}
 	}
 }
-
 
 void UNetDriver::FRepChangedPropertyTrackerWrapper::CountBytes(FArchive& Ar) const
 {
@@ -2632,10 +2504,12 @@ void UNetDriver::Serialize( FArchive& Ar )
 			}
 		);
 
+#if NET_DEBUG_RELEVANT_ACTORS
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastPrioritizedActors", LastPrioritizedActors.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastRelevantActors", LastRelevantActors.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastSentActors", LastSentActors.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastNonRelevantActors", LastNonRelevantActors.CountBytes(Ar));
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DestroyedStartupOrDormantActors",
 			DestroyedStartupOrDormantActors.CountBytes(Ar);
@@ -2650,8 +2524,18 @@ void UNetDriver::Serialize( FArchive& Ar )
 			}
 		);
 
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DestroyedStartupOrDormantActorsByLevel", 
+			DestroyedStartupOrDormantActorsByLevel.CountBytes(Ar);
+
+			for (const auto& DestroyedPair : DestroyedStartupOrDormantActorsByLevel)
+			{
+				DestroyedPair.Value.CountBytes(Ar);
+			}
+		);
+
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RenamedStartupActors", RenamedStartupActors.CountBytes(Ar));
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RepChangedPropertyTrackerMap",
 			RepChangedPropertyTrackerMap.CountBytes(Ar);
 
@@ -2660,6 +2544,7 @@ void UNetDriver::Serialize( FArchive& Ar )
 				RepChangedPropertyTrackerPair.Value.CountBytes(Ar);
 			}
 		);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RepLayoutMap",
 			RepLayoutMap.CountBytes(Ar);
@@ -2899,7 +2784,10 @@ bool UNetDriver::HandleNetDisconnectCommand( const TCHAR* Cmd, FOutputDevice& Ar
 		UE_LOG(LogNet, Log, TEXT("%s disconnecting connection from host [%s]"), 
 			*GetDescription(),*ServerConnection->LowLevelDescribe());
 
+		ServerConnection->SendCloseReason(ENetCloseResult::Disconnect);
 		FNetControlMessage<NMT_Failure>::Send(ServerConnection, Msg);
+		ServerConnection->FlushNet(true);
+		ServerConnection->Close(ENetCloseResult::Disconnect);
 	}
 #if WITH_SERVER_CODE
 	else
@@ -2912,8 +2800,20 @@ bool UNetDriver::HandleNetDisconnectCommand( const TCHAR* Cmd, FOutputDevice& Ar
 				UE_LOG(LogNet, Log, TEXT("%s disconnecting from client [%s]"), 
 					*GetDescription(),*Connection->LowLevelDescribe());
 
+				Connection->SendCloseReason(ENetCloseResult::Disconnect);
 				FNetControlMessage<NMT_Failure>::Send(Connection, Msg);
 				Connection->FlushNet(true);
+			}
+		}
+
+		// Copy ClientConnections to close each connection, in case closing modifies the ClientConnnection list
+		const TArray<UNetConnection*> ClientConnCopy = ClientConnections;
+
+		for (UNetConnection* Connection : ClientConnCopy)
+		{
+			if (Connection != nullptr)
+			{
+				Connection->Close(ENetCloseResult::Disconnect);
 			}
 		}
 	}
@@ -3160,6 +3060,11 @@ bool UNetDriver::HandlePushModelMemCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 	return true;
 }
 
+bool UNetDriver::HandlePropertyConditionsMemCommand(const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	UE::Net::Private::FNetPropertyConditionManager::Get().LogMemory(Ar);
+	return true;
+}
 #endif // !UE_BUILD_SHIPPING
 
 void UNetDriver::HandlePacketLossBurstCommand( int32 DurationInMilliseconds )
@@ -3243,7 +3148,7 @@ bool UNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 #if DO_ENABLE_NET_TEST
 	// This will allow changing the Pkt* options at runtime
 	else if (bNeverApplyNetworkEmulationSettings == false && 
-			 PacketSimulationSettings.ParseSettings(Cmd, *NetDriverName.ToString()))
+			 PacketSimulationSettings.ParseSettings(Cmd, *NetDriverDefinition.ToString()))
 	{
 		OnPacketSimulationSettingsChanged();
 		return true;
@@ -3290,6 +3195,11 @@ bool UNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 		HandlePushModelMemCommand(Cmd, Ar);
 		return true;
 	}
+	else if (FParse::Command(&Cmd, TEXT("PROPERTYCONDITIONMEM")))
+	{
+		HandlePropertyConditionsMemCommand(Cmd, Ar);
+		return true;
+	}
 	else
 #endif // !UE_BUILD_SHIPPING
 	{
@@ -3297,21 +3207,21 @@ bool UNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	}
 }
 
-FActorDestructionInfo* UNetDriver::CreateDestructionInfo( UNetDriver* NetDriver, AActor* ThisActor, FActorDestructionInfo *DestructionInfo )
+FActorDestructionInfo* UNetDriver::CreateDestructionInfo(AActor* ThisActor, FActorDestructionInfo *DestructionInfo )
 {
 	if (DestructionInfo)
 	{
 		return DestructionInfo;
 	}
 
-	FNetworkGUID NetGUID = NetDriver->GuidCache->GetOrAssignNetGUID( ThisActor );
+	FNetworkGUID NetGUID = GuidCache->GetOrAssignNetGUID( ThisActor );
 	if (NetGUID.IsDefault())
 	{
 		UE_LOG(LogNet, Error, TEXT("CreateDestructionInfo got an invalid NetGUID for %s"), *ThisActor->GetName());
 		return nullptr;
 	}
 
-	TUniquePtr<FActorDestructionInfo>& NewInfoPtr = NetDriver->DestroyedStartupOrDormantActors.FindOrAdd( NetGUID );
+	TUniquePtr<FActorDestructionInfo>& NewInfoPtr = DestroyedStartupOrDormantActors.FindOrAdd(NetGUID);
 	if (NewInfoPtr.IsValid() == false)
 	{
 		NewInfoPtr = MakeUnique<FActorDestructionInfo>();
@@ -3325,7 +3235,7 @@ FActorDestructionInfo* UNetDriver::CreateDestructionInfo( UNetDriver* NetDriver,
 	NewInfo.PathName = ThisActor->GetName();
 
 	// Look for renamed actor now so we can clear it after the destroy is queued
-	FName RenamedPath = NetDriver->RenamedStartupActors.FindRef(ThisActor->GetFName());
+	FName RenamedPath = RenamedStartupActors.FindRef(ThisActor->GetFName());
 	if (RenamedPath != NAME_None)
 	{
 		NewInfo.PathName = RenamedPath.ToString();
@@ -3340,6 +3250,9 @@ FActorDestructionInfo* UNetDriver::CreateDestructionInfo( UNetDriver* NetDriver,
 		NewInfo.StreamingLevelName = NAME_None;
 	}
 
+	TSet<FNetworkGUID>& DestroyedGuidsForLevel = DestroyedStartupOrDormantActorsByLevel.FindOrAdd(NewInfo.StreamingLevelName);
+	DestroyedGuidsForLevel.Add(NetGUID);
+
 	NewInfo.Reason = EChannelCloseReason::Destroyed;
 
 	return &NewInfo;
@@ -3347,8 +3260,14 @@ FActorDestructionInfo* UNetDriver::CreateDestructionInfo( UNetDriver* NetDriver,
 
 void UNetDriver::NotifyActorDestroyed( AActor* ThisActor, bool IsSeamlessTravel )
 {
-	// Remove the actor from the property tracker map
-	RepChangedPropertyTrackerMap.Remove(ThisActor);
+#if UE_WITH_IRIS
+	// For Iris this is handled through a call to AActor::EndReplication
+	// NOTE: The reason for doing this after the removal from the call to RepChangedPropertyTrackerMap.Remove is that Iris currently relies on this to invoke PreReplication which will create a RepChangePropertyTracker
+	if (ReplicationSystem)
+	{
+		return;
+	}
+#endif // UE_WITH_IRIS
 
 	const bool bIsServer = IsServer();
 	
@@ -3363,7 +3282,7 @@ void UNetDriver::NotifyActorDestroyed( AActor* ThisActor, bool IsSeamlessTravel 
 		if (bShouldCreateDestructionInfo)
 		{
 			UE_LOG(LogNet, VeryVerbose, TEXT("NotifyActorDestroyed %s - StartupActor"), *ThisActor->GetPathName() );
-			DestructionInfo = CreateDestructionInfo( this, ThisActor, DestructionInfo);
+			DestructionInfo = CreateDestructionInfo(ThisActor, DestructionInfo);
 		}
 
 		const FNetworkObjectInfo* NetworkObjectInfo = GetNetworkObjectList().Find( ThisActor ).Get();
@@ -3388,7 +3307,7 @@ void UNetDriver::NotifyActorDestroyed( AActor* ThisActor, bool IsSeamlessTravel 
 				{
 					// Make a new destruction info if necessary. It is necessary if the actor is dormant or recently dormant because
 					// even though the client knew about the actor at some point, it doesn't have a channel to handle destruction.
-					DestructionInfo = CreateDestructionInfo(this, ThisActor, DestructionInfo);
+					DestructionInfo = CreateDestructionInfo(ThisActor, DestructionInfo);
 					if (DestructionInfo)
 					{
 						Connection->AddDestructionInfo(DestructionInfo);
@@ -3409,6 +3328,10 @@ void UNetDriver::NotifyActorDestroyed( AActor* ThisActor, bool IsSeamlessTravel 
 	RemoveNetworkActor( ThisActor );
 }
 
+void UNetDriver::NotifySubObjectDestroyed(UObject* SubObject)
+{
+	UE::Net::Private::FNetPropertyConditionManager::Get().NotifyObjectDestroyed(SubObject);
+}
 
 void UNetDriver::RemoveNetworkActor(AActor* Actor)
 {
@@ -3425,6 +3348,8 @@ void UNetDriver::RemoveNetworkActor(AActor* Actor)
 
 void UNetDriver::NotifyActorRenamed(AActor* ThisActor, FName PreviousName)
 {
+	LLM_SCOPE_BYTAG(NetDriver);
+
 	const bool bIsServer = IsServer();
 	const bool bIsActorStatic = !GuidCache->IsDynamicObject(ThisActor);
 	const bool bActorHasRole = ThisActor->GetRemoteRole() != ROLE_None;
@@ -3472,6 +3397,13 @@ void UNetDriver::NotifyStreamingLevelUnload(ULevel* Level)
 				NotifyActorLevelUnloaded(Actor);
 			}
 		}
+
+#if UE_WITH_IRIS
+		if (ReplicationSystem)
+		{
+			ReplicationSystem->NotifyStreamingLevelUnload(Level);
+		}
+#endif // UE_WITH_IRIS
 		
 		TArray<FNetworkGUID> RemovedGUIDs;
 		for (auto It = DestroyedStartupOrDormantActors.CreateIterator(); It; ++It)
@@ -3488,6 +3420,8 @@ void UNetDriver::NotifyStreamingLevelUnload(ULevel* Level)
 				It.RemoveCurrent();
 			}
 		}
+
+		RemoveDestroyedGuidsByLevel(Level, RemovedGUIDs);
 	}	
 
 	if (Level->LevelScriptActor)
@@ -3507,9 +3441,7 @@ void UNetDriver::NotifyStreamingLevelUnload(ULevel* Level)
 			{
 				UE_LOG(LogNet, Log, TEXT("NotifyStreamingLevelUnload: BREAKING"));
 
-				Channel->Actor = NULL;
-				Channel->Broken = true;
-				Channel->CleanupReplicators();
+				Channel->BreakAndReleaseReferences();
 			}
 		}
 
@@ -3542,9 +3474,7 @@ void UNetDriver::NotifyActorLevelUnloaded( AActor* TheActor )
 		if (Channel != NULL)
 		{
 			ServerConnection->RemoveActorChannel(TheActor);
-			Channel->Actor = NULL;
-			Channel->Broken = true;
-			Channel->CleanupReplicators();
+			Channel->BreakAndReleaseReferences();
 		}
 	}
 }
@@ -3555,6 +3485,13 @@ void UNetDriver::NotifyActorTearOff(AActor* Actor)
 	{
 		ReplicationDriver->NotifyActorTearOff(Actor);
 	}
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		// Set the actor to be torn-off during the next update of the replication systeem
+		ReplicationSystem->TearOffNextUpdate(UE::Net::FReplicationSystemUtil::GetNetHandle(Actor));
+	}
+#endif // UE_WITH_IRIS
 }
 
 void UNetDriver::ForceNetUpdate(AActor* Actor)
@@ -3565,6 +3502,14 @@ void UNetDriver::ForceNetUpdate(AActor* Actor)
 		ReplicationDriver->ForceNetUpdate(Actor);
 		return;
 	}
+
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		ReplicationSystem->MarkDirty(UE::Net::FReplicationSystemUtil::GetNetHandle(Actor));
+		return;
+	}
+#endif // UE_WITH_IRIS
 	
 	// Legacy implementation
 	if (FNetworkObjectInfo* NetActor = FindNetworkObjectInfo(Actor))
@@ -3615,14 +3560,22 @@ void UNetDriver::FlushActorDormancy(AActor* Actor, bool bWasDormInitial)
 		return;
 
 	check(Actor);
-	check(ServerConnection == NULL);
 
 	if (ReplicationDriver)
 	{
 		ReplicationDriver->FlushNetDormancy(Actor, bWasDormInitial);
 	}
 
-	FlushActorDormancyInternal(Actor);
+#if UE_WITH_IRIS
+	if (ReplicationSystem && ReplicationSystem->IsServer())
+	{
+		UE::Net::FReplicationSystemUtil::FlushNetDormancy(Actor, bWasDormInitial);
+	}
+	else
+#endif // UE_WITH_IRIS
+	{
+		FlushActorDormancyInternal(Actor);
+	}
 }
 
 void UNetDriver::NotifyActorDormancyChange(AActor* Actor, ENetDormancy OldDormancyState)
@@ -3632,7 +3585,16 @@ void UNetDriver::NotifyActorDormancyChange(AActor* Actor, ENetDormancy OldDorman
 		ReplicationDriver->NotifyActorDormancyChange(Actor, OldDormancyState);
 	}
 
-	FlushActorDormancyInternal(Actor);
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		UE::Net::FReplicationSystemUtil::NotifyActorDormancyChange(Actor, OldDormancyState);
+	}
+	else
+#endif // UE_WITH_IRIS
+	{
+		FlushActorDormancyInternal(Actor);
+	}
 }
 
 void UNetDriver::FlushActorDormancyInternal(AActor *Actor)
@@ -3677,15 +3639,10 @@ void UNetDriver::ForceActorRelevantNextUpdate(AActor* Actor)
 UChildConnection* UNetDriver::CreateChild(UNetConnection* Parent)
 {
 	UE_LOG(LogNet, Log, TEXT("Creating child connection with %s parent"), *Parent->GetName());
-	auto Child = NewObject<UChildConnection>();
-	Child->Driver = this;
-	Child->URL = FURL();
-	Child->SetConnectionState(Parent->GetConnectionState());
-	Child->URL.Host = Parent->URL.Host;
-	Child->Parent = Parent;
-	Child->PackageMap = Parent->PackageMap;
-	Child->CurrentNetSpeed = Parent->CurrentNetSpeed;
+	UChildConnection* Child = NewObject<UChildConnection>();
+	Child->InitChildConnection(this, Parent);
 	Parent->Children.Add(Child);
+
 	return Child;
 }
 
@@ -3712,11 +3669,21 @@ void UNetDriver::PostGarbageCollect()
 		}
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (auto It = RepChangedPropertyTrackerMap.CreateIterator(); It; ++It)
 	{
 		if (!It.Value().IsObjectValid())
 		{
 			It.RemoveCurrent();
+		}
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	for (FObjectReplicator* Replicator : AllOwnedReplicators)
+	{
+		if (!Replicator->GetWeakObjectPtr().IsValid())
+		{
+			Replicator->ReleaseStrongReference();
 		}
 	}
 }
@@ -3737,7 +3704,11 @@ void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	
 	for (FObjectReplicator* Replicator : This->AllOwnedReplicators)
 	{
-		Collector.AddReferencedObject(Replicator->ObjectPtr, This);
+		if (Replicator->GetWeakObjectPtr().IsValid())
+		{
+			Collector.AddReferencedObject(Replicator->ObjectPtr, This);
+		}
+
 		Collector.AddReferencedObject(Replicator->ObjectClass, This);
 	}
 
@@ -3860,13 +3831,13 @@ bool FPacketSimulationSettings::LoadEmulationProfile(const TCHAR* ProfileName)
 			}
 			else if (FProperty* StructProperty = ThisStruct->FindPropertyByName(FName(*VarName, FNAME_Find)))
 			{
-				StructProperty->ImportText(*VarValue, StructProperty->ContainerPtrToValuePtr<void>(this), 0, nullptr);
-	}
+				StructProperty->ImportText_InContainer(*VarValue, this, nullptr, 0);
+			}
 			else
-	{
+			{
 				UE_LOG(LogNet, Warning, TEXT("FPacketSimulationSettings::LoadEmulationProfile could not find property named %s"), *VarName);
 			}
-	}
+		}
 	}
 	
 	ValidateSettings();
@@ -4214,14 +4185,19 @@ int32 UNetDriver::ServerReplicateActors_PrepConnections( const float DeltaSecond
 			{
 				UNetConnection *Child = Connection->Children[ChildIdx];
 				APlayerController* ChildPlayerController = Child->PlayerController;
-				if ( ChildPlayerController != NULL )
+				AActor* DesiredChildViewTarget = Child->OwningActor;
+
+				if (ChildPlayerController)
 				{
-					Child->ViewTarget = ChildPlayerController->GetViewTarget();
+					AActor* ChildViewTarget = ChildPlayerController->GetViewTarget();
+
+					if (ChildViewTarget && ChildViewTarget->GetWorld())
+					{
+						DesiredChildViewTarget = ChildViewTarget;
+					}
 				}
-				else
-				{
-					Child->ViewTarget = NULL;
-				}
+
+				Child->ViewTarget = DesiredChildViewTarget;
 			}
 		}
 		else
@@ -4452,7 +4428,7 @@ static FORCEINLINE_DEBUGGABLE bool ShouldActorGoDormant( AActor* Actor, const TA
 	return true;
 }
 
-int32 UNetDriver::ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*> ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors )
+int32 UNetDriver::ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*>& ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors )
 {
 	SCOPE_CYCLE_COUNTER( STAT_NetPrioritizeActorsTime );
 
@@ -4563,10 +4539,12 @@ int32 UNetDriver::ServerReplicateActors_PrioritizeActors( UNetConnection* Connec
 
 				FinalSortedCount++;
 
+#if NET_DEBUG_RELEVANT_ACTORS
 				if ( DebugRelevantActors )
 				{
 					LastPrioritizedActors.Add( Actor );
 				}
+#endif // NET_DEBUG_RELEVANT_ACTORS
 			}
 		}
 
@@ -4662,10 +4640,12 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 					{
 						bIsRelevant = true;
 					}
+#if NET_DEBUG_RELEVANT_ACTORS
 					else if ( DebugRelevantActors )
 					{
 						LastNonRelevantActors.Add( Actor );
 					}
+#endif // NET_DEBUG_RELEVANT_ACTORS
 				}
 			}
 			else
@@ -4723,10 +4703,13 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 					{
 						// replicate the actor
 						UE_LOG( LogNetTraffic, Log, TEXT( "- Replicate %s. %d" ), *Actor->GetName(), PriorityActors[j]->Priority );
+
+#if NET_DEBUG_RELEVANT_ACTORS
 						if ( DebugRelevantActors )
 						{
 							LastRelevantActors.Add( Actor );
 						}
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 						double ChannelLastNetUpdateTime = Channel->LastUpdateTime;
 
@@ -4741,10 +4724,13 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 #endif
 
 							ActorUpdatesThisConnectionSent++;
+
+#if NET_DEBUG_RELEVANT_ACTORS
 							if ( DebugRelevantActors )
 							{
 								LastSentActors.Add( Actor );
 							}
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 							// Calculate min delta (max rate actor will upate), and max delta (slowest rate actor will update)
 							const float MinOptimalDelta				= 1.0f / Actor->NetUpdateFrequency;
@@ -4796,6 +4782,7 @@ int32 UNetDriver::ServerReplicateActors_ProcessPrioritizedActors( UNetConnection
 
 int64 UNetDriver::SendDestructionInfo(UNetConnection* Connection, FActorDestructionInfo* DestructionInfo)
 {
+	LLM_SCOPE_BYTAG(NetDriver);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_NetSendDestructionInfo);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(SendDestructionInfo);
 
@@ -4819,9 +4806,31 @@ int64 UNetDriver::SendDestructionInfo(UNetConnection* Connection, FActorDestruct
 		if (Channel)
 		{
 			// Send a close bunch on the new channel
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			NumBits = Channel->SetChannelActorForDestroy(DestructionInfo);
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			if(!Channel->Closing && (Connection->GetConnectionState() == USOCK_Open || Connection->GetConnectionState() == USOCK_Pending))
+			{
+				// Outer must be valid to call PackageMap->WriteObject. In the case of streaming out levels, this can go null out of from underneath us. In that case, just skip the destruct info.
+				// We assume that if server unloads a level that clients will to and this will implicitly destroy all actors in it, so not worried about leaking actors client side here.
+				if (UObject* ObjOuter = DestructionInfo->ObjOuter.Get())
+				{
+					// Send a close notify, and wait for ack.
+					FOutBunch CloseBunch(Channel, true);
+					check(!CloseBunch.IsError());
+					check(CloseBunch.bClose);
+					CloseBunch.bReliable = 1;
+					CloseBunch.CloseReason = DestructionInfo->Reason;
+
+					// Serialize DestructInfo
+					NET_CHECKSUM(CloseBunch); // This is to mirror the Checksum in UPackageMapClient::SerializeNewActor
+					Connection->PackageMap->WriteObject(CloseBunch, ObjOuter, DestructionInfo->NetGUID, DestructionInfo->PathName);
+
+					UE_LOG(LogNetTraffic, Log, TEXT("SendDestructionInfo: Channel %d. NetGUID <%s> Path: %s. Bits: %d"), Channel->ChIndex, *DestructionInfo->NetGUID.ToString(), *DestructionInfo->PathName, CloseBunch.GetNumBits());
+					UE_LOG(LogNetDormancy, Verbose, TEXT("SendDestructionInfo: Channel %d. NetGUID <%s> Path: %s. Bits: %d"), Channel->ChIndex, *DestructionInfo->NetGUID.ToString(), *DestructionInfo->PathName, CloseBunch.GetNumBits());
+
+					Channel->SendBunch(&CloseBunch, false);
+
+					NumBits = CloseBunch.GetNumBits();
+				}
+			}
 		}
 	}
 
@@ -4928,7 +4937,7 @@ struct FReplicationAutoCapture
 			--KillProcessFrames;
 			if (KillProcessFrames == 0)
 			{
-				GLog->PanicFlushThreadedLogs();
+				GLog->Flush();
 				FPlatformMisc::RequestExit(1);
 			}
 		}
@@ -4959,6 +4968,9 @@ struct FScopedNetDriverStats
 			// Whatever these values currently are were (mostly) set by RPCs (technically something else could have force ReplicateActor to be called but this is rare).
 			SET_DWORD_STAT(STAT_SharedSerializationRPCHit, GNumSharedSerializationHit);
 			SET_DWORD_STAT(STAT_SharedSerializationRPCMiss, GNumSharedSerializationMiss);
+
+			CSV_CUSTOM_STAT(Replication, SharedSerializationRPCHit, GNumSharedSerializationHit, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(Replication, SharedSerializationRPCMiss, GNumSharedSerializationMiss, ECsvCustomStatOp::Set);
 
 			const FNetworkObjectList& NetworkObjectList = NetDriver->GetNetworkObjectList();
 			CSV_CUSTOM_STAT(Replication, NumberOfActiveActors, NetworkObjectList.GetActiveObjects().Num(), ECsvCustomStatOp::Set);
@@ -4998,6 +5010,21 @@ struct FScopedNetDriverStats
 
 			SET_DWORD_STAT(STAT_SharedSerializationPropertyHit, GNumSharedSerializationHit);
 			SET_DWORD_STAT(STAT_SharedSerializationPropertyMiss, GNumSharedSerializationMiss);
+
+			CSV_CUSTOM_STAT(Replication, SharedSerializationPropertyHit, GNumSharedSerializationHit, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(Replication, SharedSerializationPropertyMiss, GNumSharedSerializationMiss, ECsvCustomStatOp::Set);
+
+			int32 NumOpenChannels = 0;
+			int32 NumTickingChannels = 0;
+
+			for (const UNetConnection* ClientConnection : NetDriver->ClientConnections)
+			{
+				NumOpenChannels += ClientConnection->OpenChannels.Num();
+				NumTickingChannels += ClientConnection->GetNumTickingChannels();
+			}
+
+			CSV_CUSTOM_STAT(Replication, NumOpenChannels, (float)NumOpenChannels, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(Replication, NumTickingChannels, (float)NumTickingChannels, ECsvCustomStatOp::Set);
 
 			// Note: we want to reset this at the end of the frame since the RPC stats are incremented at the top (recv)
 			GNumSharedSerializationHit = 0;
@@ -5238,6 +5265,7 @@ int32 UNetDriver::ServerReplicateActors(float DeltaSeconds)
 	}
 	Mark.Pop();
 
+#if NET_DEBUG_RELEVANT_ACTORS
 	if (DebugRelevantActors)
 	{
 		PrintDebugRelevantActors();
@@ -5248,6 +5276,7 @@ int32 UNetDriver::ServerReplicateActors(float DeltaSeconds)
 
 		DebugRelevantActors  = false;
 	}
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 	for (UNetConnection* ConnectionToClose : ConnectionsToClose)
 	{
@@ -5293,11 +5322,13 @@ UChannel* UNetDriver::GetOrCreateChannelByName(const FName& ChName)
 
 UChannel* UNetDriver::InternalCreateChannelByName(const FName& ChName)
 {
-	return NewObject<UChannel>(GetTransientPackage(), ChannelDefinitionMap[ChName].ChannelClass);
+	LLM_SCOPE_BYTAG(NetChannel);
+	return NewObject<UChannel>(this, ChannelDefinitionMap[ChName].ChannelClass);
 }
 
 void UNetDriver::ReleaseToChannelPool(UChannel* Channel)
 {
+	LLM_SCOPE_BYTAG(NetChannel);
 	check(IsValid(Channel));
 	if (Channel->ChName == NAME_Actor && CVarActorChannelPool.GetValueOnAnyThread() != 0)
 	{
@@ -5310,9 +5341,28 @@ void UNetDriver::ReleaseToChannelPool(UChannel* Channel)
 void UNetDriver::SetNetDriverName(FName NewNetDriverNamed)
 {
 	NetDriverName = NewNetDriverNamed;
+}
+
+void UNetDriver::SetNetDriverDefinition(FName NewNetDriverDefinition)
+{
+	NetDriverDefinition = NewNetDriverDefinition;
+
+	if (const FNetDriverDefinition* DriverDef = GEngine->NetDriverDefinitions.FindByPredicate([this](const FNetDriverDefinition& Def) { return (Def.DefName == NetDriverDefinition); }))
+	{
+		MaxChannelsOverride = DriverDef->MaxChannelsOverride;
+	}
+
 	InitPacketSimulationSettings();
 }
 
+void UNetDriver::PostCreation(bool bInitializeWithIris)
+{
+#if UE_WITH_IRIS
+	bIsUsingIris = bInitializeWithIris;
+#endif //UE_WITH_IRIS
+}
+
+#if NET_DEBUG_RELEVANT_ACTORS
 void UNetDriver::PrintDebugRelevantActors()
 {
 	struct SLocal
@@ -5380,8 +5430,8 @@ void UNetDriver::PrintDebugRelevantActors()
 	UE_LOG(LogNet, Warning, TEXT(" Num Connections: %d"), ClientConnections.Num() );
 
 	UE_LOG(LogNet, Warning, TEXT("---------------------------------") );
-
 }
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 void UNetDriver::DrawNetDriverDebug()
 {
@@ -5505,6 +5555,8 @@ bool UNetDriver::NetObjectIsDynamic(const UObject *Object) const
 
 void UNetDriver::AddClientConnection(UNetConnection* NewConnection)
 {
+	LLM_SCOPE_BYTAG(NetDriver);
+
 	SCOPE_CYCLE_COUNTER(Stat_NetDriverAddClientConnection);
 
 	UE_CLOG(!DDoS.CheckLogRestrictions(), LogNet, Log, TEXT("AddClientConnection: Added client connection: %s"),
@@ -5582,20 +5634,37 @@ void UNetDriver::UpdateCrashContext()
 	}
 }
 
-void UNetDriver::CreateReplicatedStaticActorDestructionInfo(UNetDriver* NetDriver, ULevel* Level, const FReplicatedStaticActorDestructionInfo& Info)
+void UNetDriver::CreateReplicatedStaticActorDestructionInfo(ULevel* Level, const FReplicatedStaticActorDestructionInfo& Info)
 {
-	check(NetDriver && Level);
+	check(Level);
 
-	FNetworkGUID NetGUID = NetDriver->GuidCache->AssignNewNetGUIDFromPath_Server( Info.PathName.ToString(), Info.ObjOuter.Get(), Info.ObjClass );
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		if (UActorReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UActorReplicationBridge>())
+		{			
+			// Add explicit destruction info for this object
+			UReplicationBridge::FEndReplicationParameters Params;
+			Params.Level = Level;
+			Params.Location = Info.DestroyedPosition;
+			Params.bUseDistanceBasedPrioritization = true;
+
+			Bridge->AddStaticDestructionInfo(Info.PathName.ToString(), Info.ObjOuter.Get(), Params);
+		}
+		return;
+	}
+#endif // UE_WITH_IRIS
+
+	FNetworkGUID NetGUID = GuidCache->AssignNewNetGUIDFromPath_Server(Info.PathName.ToString(), Info.ObjOuter.Get(), Info.ObjClass);
 	if (NetGUID.IsDefault())
 	{
 		UE_LOG(LogNet, Error, TEXT("CreateReplicatedStaticActorDestructionInfo got an invalid NetGUID for %s"), *Info.PathName.ToString());
 		return;
 	}
 
-	UE_LOG(LogNet, VeryVerbose, TEXT("CreateReplicatedStaticActorDestructionInfo %s %s %s %s"), *NetDriver->GetName(), *Level->GetName(), *Info.PathName.ToString(), *NetGUID.ToString());
+	UE_LOG(LogNet, VeryVerbose, TEXT("CreateReplicatedStaticActorDestructionInfo %s %s %s %s"), *GetName(), *Level->GetName(), *Info.PathName.ToString(), *NetGUID.ToString());
 	
-	TUniquePtr<FActorDestructionInfo>& NewInfoPtr = NetDriver->DestroyedStartupOrDormantActors.FindOrAdd( NetGUID );
+	TUniquePtr<FActorDestructionInfo>& NewInfoPtr = DestroyedStartupOrDormantActors.FindOrAdd(NetGUID);
 	if (NewInfoPtr.IsValid() == false)
 	{
 		NewInfoPtr = MakeUnique<FActorDestructionInfo>();
@@ -5609,7 +5678,7 @@ void UNetDriver::CreateReplicatedStaticActorDestructionInfo(UNetDriver* NetDrive
 	NewInfo.PathName = Info.PathName.ToString();
 
 	// Look for renamed actor now so we can clear it after the destroy is queued
-	FName RenamedPath = NetDriver->RenamedStartupActors.FindRef(Info.PathName);
+	FName RenamedPath = RenamedStartupActors.FindRef(Info.PathName);
 	if (RenamedPath != NAME_None)
 	{
 		NewInfo.PathName = RenamedPath.ToString();
@@ -5624,11 +5693,16 @@ void UNetDriver::CreateReplicatedStaticActorDestructionInfo(UNetDriver* NetDrive
 		NewInfo.StreamingLevelName = NAME_None;
 	}
 
+	TSet<FNetworkGUID>& DestroyedGuidsForLevel = DestroyedStartupOrDormantActorsByLevel.FindOrAdd(NewInfo.StreamingLevelName);
+	DestroyedGuidsForLevel.Add(NetGUID);
+
 	NewInfo.Reason = EChannelCloseReason::Destroyed;
 }
 
 void UNetDriver::InitDestroyedStartupActors()
 {
+	LLM_SCOPE_BYTAG(NetDriver);
+
 	if (World)
 	{
 		// add startup actors destroyed before the creation of this net driver
@@ -5640,7 +5714,7 @@ void UNetDriver::InitDestroyedStartupActors()
 				const TArray<FReplicatedStaticActorDestructionInfo>& DestroyedReplicatedStaticActors = Level->GetDestroyedReplicatedStaticActors();
 				for(const FReplicatedStaticActorDestructionInfo& Info : DestroyedReplicatedStaticActors)
 				{
-					CreateReplicatedStaticActorDestructionInfo(this, Level, Info);
+					CreateReplicatedStaticActorDestructionInfo(Level, Info);
 				}
 			}
 		}
@@ -5745,9 +5819,9 @@ void UNetDriver::SetWorld(class UWorld* InWorld)
 	{
 		// Remove old world association
 		UnregisterTickEvents(World);
-		World = NULL;
-		WorldPackage = NULL;
-		Notify = NULL;
+		World = nullptr;
+		WorldPackage = nullptr;
+		Notify = nullptr;
 
 		GetNetworkObjectList().Reset();
 	}
@@ -5760,7 +5834,25 @@ void UNetDriver::SetWorld(class UWorld* InWorld)
 		Notify = InWorld;
 		RegisterTickEvents(InWorld);
 
-		GetNetworkObjectList().AddInitialObjects(InWorld, this);
+
+#if UE_WITH_IRIS
+		if (IsUsingIrisReplication())
+		{
+			if (bSkipBeginReplicationForWorld)
+			{
+				// We skipped, reset the flag in case there is another call.
+				bSkipBeginReplicationForWorld = false;
+			}
+			else
+			{
+				UE::Net::FReplicationSystemUtil::BeginReplicationForActorsInWorld(InWorld);
+			}
+		}
+		else
+#endif // UE_WITH_IRIS
+		{
+			GetNetworkObjectList().AddInitialObjects(InWorld, this);
+		}
 
 		NotifyGameInstanceUpdated();
 	}
@@ -5775,6 +5867,7 @@ void UNetDriver::SetWorld(class UWorld* InWorld)
 void UNetDriver::ResetGameWorldState()
 {
 	DestroyedStartupOrDormantActors.Empty();
+	DestroyedStartupOrDormantActorsByLevel.Empty();
 	RenamedStartupActors.Empty();
 
 	if ( NetCache.IsValid() )
@@ -5797,6 +5890,13 @@ void UNetDriver::ResetGameWorldState()
 	{
 		ReplicationDriver->ResetGameWorldState();
 	}
+
+#if UE_WITH_IRIS
+	if (ReplicationSystem)
+	{
+		ReplicationSystem->ResetGameWorldState();
+	}
+#endif // UE_WITH_IRIS
 }
 
 void UNetDriver::CleanPackageMaps()
@@ -5901,6 +6001,15 @@ void UNetDriver::SetReplicationDriver(UReplicationDriver* NewReplicationDriver)
 		}
 	}
 
+#if UE_WITH_IRIS
+	if (IsUsingIrisReplication() && NewReplicationDriver)
+	{
+		checkf(false, TEXT("ReplicationDriver (%s) are not supported with a NetDriver (%s) configured to use Iris"), *NewReplicationDriver->GetName(), *NetDriverName.ToString());
+		NewReplicationDriver->MarkAsGarbage();
+		return;
+	}
+#endif
+
 	ReplicationDriver = NewReplicationDriver;
 	if (ReplicationDriver)
 	{
@@ -5930,6 +6039,228 @@ UNetConnection* UNetDriver::GetConnectionById(uint32 ConnectionId) const
 	return nullptr;
 }
 
+#if UE_WITH_IRIS
+bool UNetDriver::InitReplicationBridgeClass()
+{
+	if (ReplicationBridgeClass != nullptr)
+	{
+		return true;
+	}
+
+	if (!ReplicationBridgeClassName.IsEmpty())
+	{
+		ReplicationBridgeClass = LoadClass<UReplicationBridge>(nullptr, *ReplicationBridgeClassName, nullptr, LOAD_None, nullptr);
+		if (ReplicationBridgeClass == nullptr)
+		{
+			UE_LOG(LogNet, Error, TEXT("Failed to load class '%s'"), *ReplicationBridgeClassName);
+			return false;
+		}
+	}
+	else
+	{
+		// Fall back on ActorReplicationBridge
+		ReplicationBridgeClass = UActorReplicationBridge::StaticClass();
+	}
+
+	return ReplicationBridgeClass != nullptr;
+}
+
+void UNetDriver::UpdateGroupFilterStatusForLevel(const ULevel* Level, UE::Net::FNetObjectGroupHandle LevelGroupHandle)
+{
+	using namespace UE::Net;
+
+	if (ReplicationSystem == nullptr || LevelGroupHandle == InvalidNetObjectGroupHandle)
+	{
+		return;
+	}
+
+	const FName WorldPackageName = GetWorldPackage()->GetFName();
+	const FName LevelPackageName = Level->GetOutermost()->GetFName();
+	const bool bIsPersistentLevel = Level->IsPersistentLevel();
+
+	// Build connection mask
+	FNetBitArray ConnectionMask(ReplicationSystem->GetMaxConnectionCount());
+		
+	for (UNetConnection* Connection : ClientConnections)
+	{
+		const bool bIsVisible = (bIsPersistentLevel && WorldPackageName == Connection->GetClientWorldPackageName()) || Connection->ClientVisibleLevelNames.Contains(LevelPackageName);
+		ConnectionMask.SetBitValue(Connection->GetConnectionId(), bIsVisible);
+	}
+
+	// Set group filter status
+	ReplicationSystem->SetGroupFilterStatus(LevelGroupHandle, ConnectionMask, ENetFilterStatus::Allow);
+}
+
+void UNetDriver::SetReplicationSystem(UReplicationSystem* InReplicationSystem)
+{
+	if (ReplicationSystem)
+	{
+		UE::Net::FReplicationSystemFactory::DestroyReplicationSystem(ReplicationSystem);
+	}
+
+	ReplicationSystem = InReplicationSystem;
+
+	if (ReplicationSystem)
+	{
+		// When we run using Iris, we use ReplicationSystemId as our unique identifier
+		NetTraceId = ReplicationSystem->GetId();
+
+		UE::Net::FReplicationSystemUtil::BeginReplicationForActorsInWorld(GetWorld());
+	}
+}
+
+void UNetDriver::ClearIrisSystem()
+{
+	if (ReplicationSystem)
+	{
+		UReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridge();
+		if (ensureAlways(Bridge))
+		{
+			Bridge->SetNetDriver(nullptr);
+		}
+	}
+
+	ReplicationSystem = nullptr;
+}
+
+void UNetDriver::RestoreIrisSystem(UReplicationSystem* InReplicationSystem)
+{
+	check(InReplicationSystem != nullptr);
+	check(InReplicationSystem->GetReplicationBridge() != nullptr);
+	checkf(ReplicationSystem == nullptr, TEXT("Cannot restore IrisSystem in %s since one system is already initialized."), *GetName());
+
+	ReplicationSystem = InReplicationSystem;
+	ReplicationSystem->GetReplicationBridge()->SetNetDriver(this);
+
+	// When we run using Iris, we use ReplicationSystemId as our unique identifier
+	NetTraceId = ReplicationSystem->GetId();
+	
+	// World Actors have already been registered in this IrisSystem, prevent adding them twice when the World gets set.
+	bSkipBeginReplicationForWorld = true;
+}
+
+void UNetDriver::UpdateReplicationViews() const
+{
+	using namespace UE::Net;
+
+	FReplicationView ReplicationView;
+
+	FReplicationView::FView DefaultView;
+	{
+		const APlayerCameraManager* CameraManager = GetDefault<APlayerCameraManager>();
+		DefaultView.FoVRadians = FMath::DegreesToRadians(CameraManager->DefaultFOV);
+	}
+
+	TObjectPtr<UNetConnection> const* Connections = (ServerConnection != nullptr ? &ServerConnection : ClientConnections.GetData());
+	const bool bUpdateConnectionViewTarget = ServerConnection == nullptr;
+
+	const uint32 ConnectionCount = (ServerConnection != nullptr ? 1U : uint32(ClientConnections.Num()));
+	TArray<UNetConnection*, TInlineAllocator<4>> SubConnections;
+	for (uint32 ConnIt = 0, ConnEndIt = ConnectionCount; ConnIt != ConnEndIt; ++ConnIt)
+	{
+		ReplicationView.Views.Reset();
+
+		UNetConnection* Conn = Connections[ConnIt];
+		SubConnections.Reset();
+		SubConnections.Add(Conn);
+		if (Conn->Children.Num() > 0)
+		{
+			SubConnections.Insert(reinterpret_cast<UNetConnection*const*>(Conn->Children.GetData()), Conn->Children.Num(), 1);
+		}
+
+		// As we no longer call ServerReplicateActors we must make sure to update the ViewTarget
+		if (bUpdateConnectionViewTarget)
+		{
+			Conn->ViewTarget = Conn->PlayerController ? Conn->PlayerController->GetViewTarget() : ToRawPtr(Conn->OwningActor);
+		}
+
+		for (UNetConnection* SubConn : SubConnections)
+		{
+			// See comment above
+			if (bUpdateConnectionViewTarget)
+			{
+				SubConn->ViewTarget = SubConn->PlayerController ? SubConn->PlayerController->GetViewTarget() : ToRawPtr(SubConn->OwningActor);
+			}
+
+			const AActor* ViewTarget = Conn->ViewTarget;
+			const APlayerController* ViewingController = Conn->PlayerController;
+			if (ViewTarget == nullptr && ViewingController == nullptr)
+			{
+				continue;
+			}
+
+			FReplicationView::FView View;
+			View.FoVRadians = DefaultView.FoVRadians;
+			if (ViewTarget)
+			{
+				View.Pos = ViewTarget->GetActorLocation();
+				View.Dir = ViewTarget->GetActorRotation().Vector();
+			}
+			if (ViewingController)
+			{
+				FRotator ViewRotation = ViewingController->GetControlRotation();
+				ViewingController->GetPlayerViewPoint(View.Pos, ViewRotation);
+				View.Dir = ViewRotation.Vector();
+
+				if (const APlayerCameraManager* CameraManager = ViewingController->PlayerCameraManager)
+				{
+					View.FoVRadians = FMath::DegreesToRadians(CameraManager->GetFOVAngle());
+				}
+			}
+
+			ReplicationView.Views.Add(View);
+		}
+
+		ReplicationSystem->SetReplicationView(Conn->GetConnectionId(), ReplicationView);
+	}
+}
+
+void UNetDriver::SendClientMoveAdjustments()
+{
+	for (UNetConnection* Connection : ClientConnections)
+	{
+		if (Connection == nullptr || Connection->ViewTarget == nullptr)
+		{
+			continue;
+		}
+
+		if (APlayerController* PC = Connection->PlayerController)
+		{
+			PC->SendClientAdjustment();
+		}
+
+		for (UNetConnection* ChildConnection : Connection->Children)
+		{
+			if (ChildConnection == nullptr)
+			{
+				continue;
+			}
+
+			if (APlayerController* PC = ChildConnection->PlayerController)
+			{
+				PC->SendClientAdjustment();
+			}
+		}
+	}
+}
+#endif // UE_WITH_IRIS
+
+void UNetDriver::InitNetTraceId()
+{
+	if (IsUsingIrisReplication())
+	{
+		return;
+	}
+
+	if (NetTraceId == NetTraceInvalidGameInstanceId)
+	{
+		// We just need to make sure that all active NetDriver`s running in the same game instance uses different NetTraceId`s.
+		static uint8 CurrentNetTraceId = 255;
+		NetTraceId = ++CurrentNetTraceId;
+	}
+}
+
+#if NET_DEBUG_RELEVANT_ACTORS
 static void	DumpRelevantActors( UWorld* InWorld )
 {
 	UNetDriver *NetDriver = InWorld->NetDriver;
@@ -5940,34 +6271,21 @@ static void	DumpRelevantActors( UWorld* InWorld )
 
 	NetDriver->DebugRelevantActors = true;
 }
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 TSharedPtr<FRepChangedPropertyTracker> UNetDriver::FindOrCreateRepChangedPropertyTracker(UObject* Obj)
 {
 	check(IsServer() || MaySendProperties());
 
-	FRepChangedPropertyTrackerWrapper * GlobalPropertyTrackerPtr = RepChangedPropertyTrackerMap.Find( Obj );
+	const FObjectKey ObjectKey = Obj;
+	checkf(ObjectKey.ResolveObjectPtr() != nullptr, TEXT("Unresolveable object %s received in FindOrCreateRepChangedPropertyTracker"), *GetNameSafe(Obj));
 
-	// Obj can be a new object with a pointer that matches an old, no longer valid, object
-	if ( GlobalPropertyTrackerPtr != nullptr && !GlobalPropertyTrackerPtr->IsObjectValid() )
-	{
-		RepChangedPropertyTrackerMap.Remove(Obj);
-		GlobalPropertyTrackerPtr = nullptr;
-	}
+	return UE::Net::Private::FNetPropertyConditionManager::Get().FindOrCreatePropertyTracker(ObjectKey);
+}
 
-	if ( !GlobalPropertyTrackerPtr ) 
-	{
-		const UWorld* const LocalWorld = GetWorld();
-		const bool bIsReplay = LocalWorld != nullptr && static_cast<void*>(LocalWorld->GetDemoNetDriver()) == static_cast<void*>(this);
-		const bool bIsClientReplayRecording = LocalWorld != nullptr ? LocalWorld->IsRecordingClientReplay() : false;
-
-		FRepChangedPropertyTracker * Tracker = new FRepChangedPropertyTracker(bIsReplay, bIsClientReplayRecording);
-
-		GetObjectClassRepLayout( Obj->GetClass() )->InitChangedTracker( Tracker );
-
-		GlobalPropertyTrackerPtr = &RepChangedPropertyTrackerMap.Add( Obj, FRepChangedPropertyTrackerWrapper( Obj, TSharedPtr<FRepChangedPropertyTracker>( Tracker ) ) );
-	}
-
-	return GlobalPropertyTrackerPtr->RepChangedPropertyTracker;
+TSharedPtr<FRepChangedPropertyTracker> UNetDriver::FindRepChangedPropertyTracker(UObject* Obj)
+{
+	return UE::Net::Private::FNetPropertyConditionManager::Get().FindPropertyTracker(Obj);
 }
 
 TSharedPtr<FRepLayout> UNetDriver::GetObjectClassRepLayout( UClass * Class )
@@ -6032,6 +6350,21 @@ TSharedPtr< FReplicationChangelistMgr > UNetDriver::GetReplicationChangeListMgr(
 	return ReplicationChangeListMgrPtr->ReplicationChangelistMgr;
 }
 
+void UNetDriver::RemoveDestroyedGuidsByLevel(const ULevel* Level, const TArray<FNetworkGUID>& RemovedGUIDs)
+{
+	check(Level);
+
+	const FName StreamingLevelName = !Level->IsPersistentLevel() ? Level->GetOutermost()->GetFName() : NAME_None;
+
+	if (TSet<FNetworkGUID>* DestroyedGuidsForLevel = DestroyedStartupOrDormantActorsByLevel.Find(StreamingLevelName))
+	{
+		for (const FNetworkGUID& NetGUID : RemovedGUIDs)
+		{
+			DestroyedGuidsForLevel->Remove(NetGUID);
+		}
+	}
+}
+
 // This method will be called when Streaming Levels become Visible.
 void UNetDriver::OnLevelAddedToWorld(ULevel* Level, UWorld* InWorld)
 {
@@ -6056,45 +6389,47 @@ void UNetDriver::OnLevelRemovedFromWorld(class ULevel* Level, class UWorld* InWo
 			}
 		}	
 		else
-	{
-			for (AActor* Actor : Level->Actors)
 		{
-			if (Actor)
+			for (AActor* Actor : Level->Actors)
 			{
+				if (Actor)
+				{
 					// Keep Startup actors alive, because they haven't been destroyed yet.
 					// Technically, Dynamic actors may not have been destroyed either, but this
 					// resembles relevancy.
 					if (!Actor->IsNetStartupActor())
 					{
-				NotifyActorLevelUnloaded(Actor);
+						NotifyActorLevelUnloaded(Actor);
 					}
 					else
 					{
 						// We still want to remove Startup actors from the Network list so they aren't processed anymore.
 						GetNetworkObjectList().Remove(Actor);
 					}
+				}
 			}
-		}
 
-		TArray<FNetworkGUID> RemovedGUIDs;
-		for (auto It = DestroyedStartupOrDormantActors.CreateIterator(); It; ++It)
-		{
+			TArray<FNetworkGUID> RemovedGUIDs;
+			for (auto It = DestroyedStartupOrDormantActors.CreateIterator(); It; ++It)
+			{
 				FActorDestructionInfo* DestructInfo = It->Value.Get();
 				
 				// Until the level is actually unloaded / reloaded, any Static Actors that have been
 				// destroyed will not be recreated, so we still need to track them.
 				if (DestructInfo->Level == Level && !DestructInfo->NetGUID.IsStatic())
-			{
-				for (UNetConnection* Connection : ClientConnections)
 				{
-					Connection->RemoveDestructionInfo(DestructInfo);
-				}
+					for (UNetConnection* Connection : ClientConnections)
+					{
+						Connection->RemoveDestructionInfo(DestructInfo);
+					}
 
-				RemovedGUIDs.Add(It->Key);
-				It.RemoveCurrent();
+					RemovedGUIDs.Add(It->Key);
+					It.RemoveCurrent();
+				}
 			}
+
+			RemoveDestroyedGuidsByLevel(Level, RemovedGUIDs);
 		}
-	}
 	}
 }
 
@@ -6213,6 +6548,37 @@ void UNetDriver::ProcessRemoteFunction(
 			UObject* TargetObj = SubObject ? SubObject : Actor;
 			LocalOutParms = NetDriverInternal::CopyOutParametersToLocalParameters(Function, OutParms, Parameters, TargetObj);
 		}
+
+#if UE_WITH_IRIS
+		if (ReplicationSystem)
+		{
+			if (bIsServerMulticast)
+			{
+				if (ReplicationSystem->SendRPC(Actor, SubObject, Function, Parameters))
+				{
+					return;
+				}
+			}
+			else
+			{
+				if (UNetConnection* Connection = Actor->GetNetConnection())
+				{
+					if (UChildConnection* ChildConnection = Connection->GetUChildConnection())
+					{
+						Connection = ChildConnection->Parent;
+					}
+
+					if (ReplicationSystem->SendRPC(Connection->GetConnectionId(), Actor, SubObject, Function, Parameters))
+					{
+						return;
+					}
+				}
+			}
+
+			// If we are using Iris replication, we should never fall back on normal replication path
+			return;
+		}
+#endif // UE_WITH_IRIS
 
 		// Forward to replication Driver if there is one
 		if (ReplicationDriver && ReplicationDriver->ProcessRemoteFunction(Actor, Function, Parameters, OutParms, Stack, SubObject))
@@ -6343,6 +6709,46 @@ void UNetDriver::NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelClo
 	}
 }
 
+void UNetDriver::ClientSetActorTornOff(AActor* Actor)
+{
+	check(Actor);
+
+	if (IsServer())
+	{
+		UE_LOG(LogNet, Error, TEXT("ClientSetActorTornOff should only be called on clients."));
+		return;
+	}
+
+	if (Actor->GetIsReplicated() && (Actor->GetRemoteRole() == ROLE_Authority))
+	{
+		Actor->SetRole(ROLE_Authority);
+		Actor->SetReplicates(false);
+
+		if (Actor->GetWorld() != nullptr && !IsEngineExitRequested())
+		{
+			Actor->TornOff();
+		}
+
+		if (World)
+		{
+			if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(World))
+			{
+				for (FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+				{
+					if (Driver.NetDriver != nullptr && Driver.NetDriver->ShouldReplicateActor(Actor))
+					{
+						Driver.NetDriver->NotifyActorTornOff(Actor);
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		UE_LOG(LogNet, Warning, TEXT("ClientSetActorTornOff called with invalid actor: %s"), *GetNameSafe(Actor));
+	}
+}
+
 void UNetDriver::NotifyActorTornOff(AActor* Actor)
 {
 
@@ -6439,12 +6845,428 @@ void UNetDriver::MoveMappedObjectToUnmapped(const UObject* Object)
 	}
 }
 
+bool UNetDriver::IsEncryptionRequired() const
+{
+	using namespace UE::Net;
+
+	if (GRequiredEncryptionNetDriverDefNames.Num() == 0)
+	{
+		ParseRequiredEncryptionCVars();
+	}
+
+	const FWorldContext* const WorldContext = (NetDriverName == NAME_PendingNetDriver ? GEngine->GetWorldContextFromPendingNetGameNetDriver(this) :
+												GEngine->GetWorldContextFromWorld(World));
+	const int32 AllowEncryption = CVarNetAllowEncryption.GetValueOnGameThread();
+	const bool bDevDisableEncryptionCheck = !IsServer() && !(UE_BUILD_SHIPPING || UE_BUILD_TEST); // Clientside only
+	const bool bPIEDisableEncryptionCheck = WorldContext != nullptr && WorldContext->WorldType == EWorldType::PIE;
+	const bool bNetDriverDefNameRequiresEncryption = GRequiredEncryptionNetDriverDefNames.Contains(NetDriverDefinition);
+
+	return DoesSupportEncryption() && bNetDriverDefNameRequiresEncryption && AllowEncryption == 2 && !bDevDisableEncryptionCheck &&
+			!bPIEDisableEncryptionCheck;
+}
+
+void UNetDriver::UpdateNetworkStats()
+{
+	using namespace UE::Net::Private;
+
+	const double CurrentRealtimeSeconds = FPlatformTime::Seconds();
+
+	bool bCollectServerStats = false;
+#if USE_SERVER_PERF_COUNTERS || STATS
+	bCollectServerStats = true;
+#endif
+
+	if (bCollectNetStats || bCollectServerStats)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_NetTickFlushGatherStats);
+		// Update network stats (only main game net driver for now) if stats or perf counters are used
+		if (NetDriverName == NAME_GameNetDriver &&
+			CurrentRealtimeSeconds - StatUpdateTime > StatPeriod)
+		{
+			int32 ClientInBytesMax = 0;
+			int32 ClientInBytesMin = 0;
+			int32 ClientInBytesAvg = 0;
+			int32 ClientInPacketsMax = 0;
+			int32 ClientInPacketsMin = 0;
+			int32 ClientInPacketsAvg = 0;
+			int32 ClientOutBytesMax = 0;
+			int32 ClientOutBytesMin = 0;
+			int32 ClientOutBytesAvg = 0;
+			int32 ClientOutPacketsMax = 0;
+			int32 ClientOutPacketsMin = 0;
+			int32 ClientOutPacketsAvg = 0;
+			int NumClients = 0;
+			int32 MaxPacketOverhead = 0;
+
+			// these need to be updated even if we are not collecting stats, since they get reported to analytics/QoS
+			for (UNetConnection* Client : ClientConnections)
+			{
+				if (Client)
+				{
+#define UpdatePerClientMinMaxAvg(VariableName) \
+				Client##VariableName##Max = FMath::Max(Client##VariableName##Max, Client->VariableName##PerSecond); \
+				if (Client##VariableName##Min == 0 || Client->VariableName##PerSecond < Client##VariableName##Min) \
+				{ \
+					Client##VariableName##Min = Client->VariableName##PerSecond; \
+				} \
+				Client##VariableName##Avg += Client->VariableName##PerSecond; \
+
+					UpdatePerClientMinMaxAvg(InBytes);
+					UpdatePerClientMinMaxAvg(OutBytes);
+					UpdatePerClientMinMaxAvg(InPackets);
+					UpdatePerClientMinMaxAvg(OutPackets);
+
+					MaxPacketOverhead = FMath::Max(Client->PacketOverhead, MaxPacketOverhead);
+
+#undef UpdatePerClientMinMaxAvg
+
+					++NumClients;
+				}
+			}
+
+			if (NumClients > 1)
+			{
+				ClientInBytesAvg /= NumClients;
+				ClientInPacketsAvg /= NumClients;
+				ClientOutBytesAvg /= NumClients;
+				ClientOutPacketsAvg /= NumClients;
+			}
+
+			int32 Ping = 0;
+			int32 NumOpenChannels = 0;
+			int32 NumActorChannels = 0;
+			int32 NumDormantActors = 0;
+			int32 NumActors = 0;
+			int32 AckCount = 0;
+			int32 UnAckCount = 0;
+			int32 PendingCount = 0;
+			int32 NetSaturated = 0;
+			int32 NumActiveNetActors = GetNetworkObjectList().GetActiveObjects().Num();
+
+			if (
+#if STATS
+				FThreadStats::IsCollectingData() ||
+#endif
+				bCollectNetStats)
+			{
+				const float RealTime = CurrentRealtimeSeconds - StatUpdateTime;
+
+				// Use the elapsed time to keep things scaled to one measured unit
+				InBytes = FMath::TruncToInt(InBytes / RealTime);
+				OutBytes = FMath::TruncToInt(OutBytes / RealTime);
+
+				NetGUIDOutBytes = FMath::TruncToInt(NetGUIDOutBytes / RealTime);
+				NetGUIDInBytes = FMath::TruncToInt(NetGUIDInBytes / RealTime);
+
+				// Save off for stats later
+
+				InBytesPerSecond = InBytes;
+				OutBytesPerSecond = OutBytes;
+
+				InPackets = FMath::TruncToInt(InPackets / RealTime);
+				OutPackets = FMath::TruncToInt(OutPackets / RealTime);
+				InBunches = FMath::TruncToInt(InBunches / RealTime);
+				OutBunches = FMath::TruncToInt(OutBunches / RealTime);
+				OutPacketsLost = FMath::TruncToInt(100.f * OutPacketsLost / FMath::Max((float)OutPackets, 1.f));
+				InPacketsLost = FMath::TruncToInt(100.f * InPacketsLost / FMath::Max((float)InPackets + InPacketsLost, 1.f));
+
+				if (ServerConnection != nullptr && ServerConnection->PlayerController != nullptr && ServerConnection->PlayerController->PlayerState != nullptr)
+				{
+					Ping = FMath::TruncToInt(ServerConnection->PlayerController->PlayerState->ExactPing);
+				}
+
+				if (ServerConnection != nullptr)
+				{
+					NumOpenChannels = ServerConnection->OpenChannels.Num();
+				}
+
+				for (int32 i = 0; i < ClientConnections.Num(); i++)
+				{
+					NumOpenChannels += ClientConnections[i]->OpenChannels.Num();
+				}
+
+				// Use the elapsed time to keep things scaled to one measured unit
+				VoicePacketsSent = FMath::TruncToInt(VoicePacketsSent / RealTime);
+				VoicePacketsRecv = FMath::TruncToInt(VoicePacketsRecv / RealTime);
+				VoiceBytesSent = FMath::TruncToInt(VoiceBytesSent / RealTime);
+				VoiceBytesRecv = FMath::TruncToInt(VoiceBytesRecv / RealTime);
+
+				// Determine voice percentages
+				VoiceInPercent = (InBytes > 0) ? FMath::TruncToInt(100.f * (float)VoiceBytesRecv / (float)InBytes) : 0;
+				VoiceOutPercent = (OutBytes > 0) ? FMath::TruncToInt(100.f * (float)VoiceBytesSent / (float)OutBytes) : 0;
+
+				if (World)
+				{
+					NumActors = World->GetActorCount();
+				}
+				
+				// Handle these stats to do this differently for client & server
+				if (ServerConnection != nullptr)
+				{
+					NumActorChannels = ServerConnection->ActorChannelsNum();
+					NumDormantActors = GetNetworkObjectList().GetNumDormantActorsForConnection(ServerConnection);
+#if STATS
+					ServerConnection->PackageMap->GetNetGUIDStats(AckCount, UnAckCount, PendingCount);
+#endif
+					NetSaturated = ServerConnection->IsNetReady(false) ? 0 : 1;
+				}
+				else
+				{
+					int32 SharedDormantActors = GetNetworkObjectList().GetDormantObjectsOnAllConnections().Num();
+					for (int32 i = 0; i < ClientConnections.Num(); i++)
+					{
+						NumActorChannels += ClientConnections[i]->ActorChannelsNum();
+						NumDormantActors += GetNetworkObjectList().GetNumDormantActorsForConnection(ClientConnections[i]);
+#if STATS
+						int32 ClientAckCount = 0;
+						int32 ClientUnAckCount = 0;
+						int32 ClientPendingCount = 0;
+						ClientConnections[i]->PackageMap->GetNetGUIDStats(AckCount, UnAckCount, PendingCount);
+						AckCount += ClientAckCount;
+						UnAckCount += ClientUnAckCount;
+						PendingCount += ClientPendingCount;
+#endif
+						NetSaturated |= ClientConnections[i]->IsNetReady(false) ? 0 : 1;
+					}
+					// Subtract out the duplicate counted dormant actors
+					NumDormantActors -= FMath::Max(0, ClientConnections.Num() - 1) * SharedDormantActors;
+				}
+			}
+
+#if STATS
+			if (!bSkipLocalStats)
+			{
+				// Copy the net status values over
+				SET_DWORD_STAT(STAT_Ping, Ping);
+				SET_DWORD_STAT(STAT_Channels, NumOpenChannels);
+				SET_DWORD_STAT(STAT_MaxPacketOverhead, MaxPacketOverhead);
+
+				SET_DWORD_STAT(STAT_OutLoss, OutPacketsLost);
+				SET_DWORD_STAT(STAT_InLoss, InPacketsLost);
+				SET_DWORD_STAT(STAT_InRate, InBytes);
+				SET_DWORD_STAT(STAT_OutRate, OutBytes);
+				SET_DWORD_STAT(STAT_InRateClientMax, ClientInBytesMax);
+				SET_DWORD_STAT(STAT_InRateClientMin, ClientInBytesMin);
+				SET_DWORD_STAT(STAT_InRateClientAvg, ClientInBytesAvg);
+				SET_DWORD_STAT(STAT_InPacketsClientMax, ClientInPacketsMax);
+				SET_DWORD_STAT(STAT_InPacketsClientMin, ClientInPacketsMin);
+				SET_DWORD_STAT(STAT_InPacketsClientAvg, ClientInPacketsAvg);
+				SET_DWORD_STAT(STAT_OutRateClientMax, ClientOutBytesMax);
+				SET_DWORD_STAT(STAT_OutRateClientMin, ClientOutBytesMin);
+				SET_DWORD_STAT(STAT_OutRateClientAvg, ClientOutBytesAvg);
+				SET_DWORD_STAT(STAT_OutPacketsClientMax, ClientOutPacketsMax);
+				SET_DWORD_STAT(STAT_OutPacketsClientMin, ClientOutPacketsMin);
+				SET_DWORD_STAT(STAT_OutPacketsClientAvg, ClientOutPacketsAvg);
+
+				SET_DWORD_STAT(STAT_NetNumClients, NumClients);
+				SET_DWORD_STAT(STAT_InPackets, InPackets);
+				SET_DWORD_STAT(STAT_OutPackets, OutPackets);
+				SET_DWORD_STAT(STAT_InBunches, InBunches);
+				SET_DWORD_STAT(STAT_OutBunches, OutBunches);
+
+				SET_DWORD_STAT(STAT_NetGUIDInRate, NetGUIDInBytes);
+				SET_DWORD_STAT(STAT_NetGUIDOutRate, NetGUIDOutBytes);
+
+				SET_DWORD_STAT(STAT_VoicePacketsSent, VoicePacketsSent);
+				SET_DWORD_STAT(STAT_VoicePacketsRecv, VoicePacketsRecv);
+				SET_DWORD_STAT(STAT_VoiceBytesSent, VoiceBytesSent);
+				SET_DWORD_STAT(STAT_VoiceBytesRecv, VoiceBytesRecv);
+
+				SET_DWORD_STAT(STAT_PercentInVoice, VoiceInPercent);
+				SET_DWORD_STAT(STAT_PercentOutVoice, VoiceOutPercent);
+
+				SET_DWORD_STAT(STAT_NumActorChannels, NumActorChannels);
+				SET_DWORD_STAT(STAT_NumDormantActors, NumDormantActors);
+				SET_DWORD_STAT(STAT_NumActors, NumActors);
+				SET_DWORD_STAT(STAT_NumNetActors, NumActiveNetActors);
+				SET_DWORD_STAT(STAT_NumNetGUIDsAckd, AckCount);
+				SET_DWORD_STAT(STAT_NumNetGUIDsPending, UnAckCount);
+				SET_DWORD_STAT(STAT_NumNetGUIDsUnAckd, PendingCount);
+				SET_DWORD_STAT(STAT_NetSaturated, NetSaturated);
+			}
+
+			// If we are to replicate server stats out to an observer, then set those values
+			if (AGameModeBase* GMBase = World->GetAuthGameMode())
+			{
+				if (GMBase->ServerStatReplicator != nullptr)
+				{
+					GMBase->ServerStatReplicator->Channels = NumOpenChannels;
+					GMBase->ServerStatReplicator->MaxPacketOverhead = MaxPacketOverhead;
+					GMBase->ServerStatReplicator->OutLoss = OutPacketsLost;
+					GMBase->ServerStatReplicator->InLoss = InPacketsLost;
+					GMBase->ServerStatReplicator->InRate = InBytes;
+					GMBase->ServerStatReplicator->OutRate = OutBytes;
+					GMBase->ServerStatReplicator->InRateClientMax = ClientInBytesMax;
+					GMBase->ServerStatReplicator->InRateClientMin = ClientInBytesMin;
+					GMBase->ServerStatReplicator->InRateClientAvg = ClientInBytesAvg;
+					GMBase->ServerStatReplicator->InPacketsClientMax = ClientInPacketsMax;
+					GMBase->ServerStatReplicator->InPacketsClientMin = ClientInPacketsMin;
+					GMBase->ServerStatReplicator->InPacketsClientAvg = ClientInPacketsAvg;
+					GMBase->ServerStatReplicator->OutRateClientMax = ClientOutBytesMax;
+					GMBase->ServerStatReplicator->OutRateClientMin = ClientOutBytesMin;
+					GMBase->ServerStatReplicator->OutRateClientAvg = ClientOutBytesAvg;
+					GMBase->ServerStatReplicator->OutPacketsClientMax = ClientOutPacketsMax;
+					GMBase->ServerStatReplicator->OutPacketsClientMin = ClientOutPacketsMin;
+					GMBase->ServerStatReplicator->OutPacketsClientAvg = ClientOutPacketsAvg;
+					GMBase->ServerStatReplicator->NetNumClients = NumClients;
+					GMBase->ServerStatReplicator->InPackets = InPackets;
+					GMBase->ServerStatReplicator->OutPackets = OutPackets;
+					GMBase->ServerStatReplicator->InBunches = InBunches;
+					GMBase->ServerStatReplicator->OutBunches = OutBunches;
+					GMBase->ServerStatReplicator->NetGUIDInRate = NetGUIDInBytes;
+					GMBase->ServerStatReplicator->NetGUIDOutRate = NetGUIDOutBytes;
+					GMBase->ServerStatReplicator->VoicePacketsSent = VoicePacketsSent;
+					GMBase->ServerStatReplicator->VoicePacketsRecv = VoicePacketsRecv;
+					GMBase->ServerStatReplicator->VoiceBytesSent = VoiceBytesSent;
+					GMBase->ServerStatReplicator->VoiceBytesRecv = VoiceBytesRecv;
+					GMBase->ServerStatReplicator->PercentInVoice = VoiceInPercent;
+					GMBase->ServerStatReplicator->PercentOutVoice = VoiceOutPercent;
+					GMBase->ServerStatReplicator->NumActorChannels = NumActorChannels;
+					GMBase->ServerStatReplicator->NumDormantActors = NumDormantActors;
+					GMBase->ServerStatReplicator->NumActors = NumActors;
+					GMBase->ServerStatReplicator->NumNetActors = NumActiveNetActors;
+					GMBase->ServerStatReplicator->NumNetGUIDsAckd = AckCount;
+					GMBase->ServerStatReplicator->NumNetGUIDsPending = UnAckCount;
+					GMBase->ServerStatReplicator->NumNetGUIDsUnAckd = PendingCount;
+					GMBase->ServerStatReplicator->NetSaturated = NetSaturated;
+				}
+			}
+#endif // STATS
+
+#if USE_SERVER_PERF_COUNTERS
+			IPerfCounters* PerfCounters = IPerfCountersModule::Get().GetPerformanceCounters();
+			if (PerfCounters)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_NetTickFlushGatherStatsPerfCounters);
+
+				// Update total connections
+				PerfCounters->Set(PerfCounter_NumConnections, ClientConnections.Num());
+
+				const int kNumBuckets = 8;	// evenly spaced with increment of 30 ms; last bucket collects all off-scale pings as well
+				if (ClientConnections.Num() > 0)
+				{
+					// Update per connection statistics
+					float MinPing = UE_MAX_FLT;
+					float AvgPing = 0;
+					float MaxPing = -UE_MAX_FLT;
+					float PingCount = 0;
+
+					int32 Buckets[kNumBuckets] = { 0 };
+
+					for (int32 i = 0; i < ClientConnections.Num(); i++)
+					{
+						UNetConnection* Connection = ClientConnections[i];
+
+						if (Connection != nullptr)
+						{
+							if (Connection->PlayerController != nullptr && Connection->PlayerController->PlayerState != nullptr)
+							{
+								// Ping value calculated per client
+								float ConnPing = Connection->PlayerController->PlayerState->ExactPing;
+
+								int Bucket = FMath::Max(0, FMath::Min(kNumBuckets - 1, (static_cast<int>(ConnPing) / 30)));
+								++Buckets[Bucket];
+
+								if (ConnPing < MinPing)
+								{
+									MinPing = ConnPing;
+								}
+
+								if (ConnPing > MaxPing)
+								{
+									MaxPing = ConnPing;
+								}
+
+								AvgPing += ConnPing;
+								PingCount++;
+							}
+						}
+					}
+
+					if (PingCount > 0)
+					{
+						AvgPing /= static_cast<float>(PingCount);
+					}
+
+					PerfCounters->Set(PerfCounter_AvgPing, AvgPing, IPerfCounters::Flags::Transient);
+					PerfCounters->Set(PerfCounter_MaxPing, MaxPing, IPerfCounters::Flags::Transient);
+					PerfCounters->Set(PerfCounter_MinPing, MinPing, IPerfCounters::Flags::Transient);
+
+					// update buckets
+					for (int BucketIdx = 0; BucketIdx < UE_ARRAY_COUNT(Buckets); ++BucketIdx)
+					{
+						PerfCountersIncrement(FString::Printf(TEXT("PingBucketInt%d"), BucketIdx), Buckets[BucketIdx], 0, IPerfCounters::Flags::Transient);
+					}
+				}
+				else
+				{
+					PerfCounters->Set(PerfCounter_AvgPing, 0.0f, IPerfCounters::Flags::Transient);
+					PerfCounters->Set(PerfCounter_MaxPing, -FLT_MAX, IPerfCounters::Flags::Transient);
+					PerfCounters->Set(PerfCounter_MinPing, FLT_MAX, IPerfCounters::Flags::Transient);
+
+					for (int BucketIdx = 0; BucketIdx < kNumBuckets; ++BucketIdx)
+					{
+						PerfCounters->Set(FString::Printf(TEXT("PingBucketInt%d"), BucketIdx), 0, IPerfCounters::Flags::Transient);
+					}
+				}
+
+				// set the per connection stats (these are calculated earlier).
+				// Note that NumClients may be != NumConnections. Also, if NumClients is 0, the rest of counters should be 0 as well
+				PerfCounters->Set(PerfCounter_NumClients, NumClients);
+				PerfCounters->Set(PerfCounter_MaxPacketOverhead, MaxPacketOverhead);
+				PerfCounters->Set(PerfCounter_InRateClientMax, ClientInBytesMax);
+				PerfCounters->Set(PerfCounter_InRateClientMin, ClientInBytesMin);
+				PerfCounters->Set(PerfCounter_InRateClientAvg, ClientInBytesAvg);
+				PerfCounters->Set(PerfCounter_InPacketsClientMax, ClientInPacketsMax);
+				PerfCounters->Set(PerfCounter_InPacketsClientMin, ClientInPacketsMin);
+				PerfCounters->Set(PerfCounter_InPacketsClientAvg, ClientInPacketsAvg);
+				PerfCounters->Set(PerfCounter_OutRateClientMax, ClientOutBytesMax);
+				PerfCounters->Set(PerfCounter_OutRateClientMin, ClientOutBytesMin);
+				PerfCounters->Set(PerfCounter_OutRateClientAvg, ClientOutBytesAvg);
+				PerfCounters->Set(PerfCounter_OutPacketsClientMax, ClientOutPacketsMax);
+				PerfCounters->Set(PerfCounter_OutPacketsClientMin, ClientOutPacketsMin);
+				PerfCounters->Set(PerfCounter_OutPacketsClientAvg, ClientOutPacketsAvg);
+
+				PerfCounters->Set(PerfCounter_InRate, InBytes);
+				PerfCounters->Set(PerfCounter_OutRate, OutBytes);
+				PerfCounters->Set(PerfCounter_InPacketsLost, InPacketsLost);
+				PerfCounters->Set(PerfCounter_OutPacketsLost, OutPacketsLost);
+				PerfCounters->Set(PerfCounter_InPackets, InPackets);
+				PerfCounters->Set(PerfCounter_OutPackets, OutPackets);
+				PerfCounters->Set(PerfCounter_InBunches, InBunches);
+				PerfCounters->Set(PerfCounter_OutBunches, OutBunches);
+			}
+#endif // USE_SERVER_PERF_COUNTERS
+
+			// Reset everything
+			InBytes = 0;
+			OutBytes = 0;
+			NetGUIDOutBytes = 0;
+			NetGUIDInBytes = 0;
+			InPackets = 0;
+			OutPackets = 0;
+			InBunches = 0;
+			OutBunches = 0;
+			OutPacketsLost = 0;
+			InPacketsLost = 0;
+			VoicePacketsSent = 0;
+			VoiceBytesSent = 0;
+			VoicePacketsRecv = 0;
+			VoiceBytesRecv = 0;
+			VoiceInPercent = 0;
+			VoiceOutPercent = 0;
+			StatUpdateTime = CurrentRealtimeSeconds;
+		}
+	} // bCollectNetStats ||(USE_SERVER_PERF_COUNTERS) || STATS
+}
+
+#if NET_DEBUG_RELEVANT_ACTORS
 FAutoConsoleCommandWithWorld	DumpRelevantActorsCommand(
 	TEXT("net.DumpRelevantActors"), 
 	TEXT( "Dumps information on relevant actors during next network update" ), 
 	FConsoleCommandWithWorldDelegate::CreateStatic(DumpRelevantActors)
 	);
-
+#endif // NET_DEBUG_RELEVANT_ACTORS
 
 #if DO_ENABLE_NET_TEST
 
@@ -6570,3 +7392,4 @@ static bool NetDriverExec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 
 /** Our entry point for all net driver related exec routing */
 FStaticSelfRegisteringExec NetDriverExecRegistration(NetDriverExec);
+

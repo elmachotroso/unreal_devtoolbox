@@ -16,27 +16,35 @@ class AActor;
 class IStructSerializerBackend;
 class IStructDeserializerBackend;
 enum class EPackageReloadPhase : uint8;
+enum class EPropertyBagPropertyType : uint8;
 struct FPropertyChangedEvent;
 struct FRCFieldPathInfo;
 struct FRemoteControlActor;
 struct FRemoteControlPresetLayout;
-class FTransactionObjectEvent;
 class FRemoteControlPresetRebindingManager;
+class FTransactionObjectEvent;
 class UBlueprint;
+class URCVirtualPropertyBase;
+class URCVirtualPropertyContainerBase;
+class URCVirtualPropertyInContainer;
 class URemoteControlExposeRegistry;
 class URemoteControlBinding;
 class URemoteControlPreset;
+
+DECLARE_MULTICAST_DELEGATE(FOnVirtualPropertyContainerModified);
 
 /** Arguments used to expose an entity (Actor, property, function, etc.) */
 struct REMOTECONTROL_API FRemoteControlPresetExposeArgs
 {
 	FRemoteControlPresetExposeArgs();
-	FRemoteControlPresetExposeArgs(FString Label, FGuid GroupId);
+	FRemoteControlPresetExposeArgs(FString Label, FGuid GroupId, bool bEnableEditCondition = true);
 
 	/** (Optional) The label to use for the new exposed entity. */
 	FString Label;
 	/** (Optional) The group in which to put the field. */
 	FGuid GroupId;
+	/** Whether to automatically enable the edit condition for the exposed property. */
+	bool bEnableEditCondition;
 };
 
 /**
@@ -95,11 +103,14 @@ struct REMOTECONTROL_API FRemoteControlPresetGroup
 {
 	GENERATED_BODY()
 
-	FRemoteControlPresetGroup() = default;
+	FRemoteControlPresetGroup()
+		:TagColor(ForceInit)
+	{}
 
 	FRemoteControlPresetGroup(FName InName, FGuid InId)
 		: Name(InName)
 		, Id(MoveTemp(InId))
+		, TagColor(MakeSimilarSaturatedColor())
 	{}
 
 	/** Get the fields under this group. */
@@ -112,6 +123,18 @@ struct REMOTECONTROL_API FRemoteControlPresetGroup
 	{
 		return LHS.Id == RHS.Id;
 	}
+
+private:
+
+	/**
+	* Makes a random but similar saturated color.
+	*/
+	static FLinearColor MakeSimilarSaturatedColor(float InSaturationLevel = 0.5f)
+	{
+		const uint8 Hue = (uint8)(FMath::FRand() * 255.f);
+		const uint8 Saturation = (uint8)(255.f * InSaturationLevel);
+		return FLinearColor::MakeFromHSV8(Hue, Saturation, 255);
+	}
  
 public:
 	/** Name of this group. */
@@ -121,6 +144,10 @@ public:
 	/** This group's ID. */
 	UPROPERTY()
 	FGuid Id;
+
+	/* Color Tag for this group. */
+	UPROPERTY()
+	FLinearColor TagColor;
 
 private:
 	/** The list of exposed fields under this group. */
@@ -148,6 +175,12 @@ struct REMOTECONTROL_API FRemoteControlPresetLayout
 
 	/** Get or create the default group. */
 	FRemoteControlPresetGroup& GetDefaultGroup();
+
+	/** Returns true when the given group id is a default one. */
+	bool IsDefaultGroup(FGuid GroupId) const;
+	
+	/** Returns the tag color of the given group id. */
+	FLinearColor GetTagColor(FGuid GroupId);
 
 	/**
 	 * Get a group by searching by ID.
@@ -268,190 +301,23 @@ private:
 };
 
 /**
- * Represents objects grouped under a single alias that contain exposed functions and properties.
- */
-struct UE_DEPRECATED(4.27, "FRemoteControlTarget is deprecated. Expose properties directly on a remote control preset instead.") FRemoteControlTarget;
-USTRUCT()
-struct REMOTECONTROL_API FRemoteControlTarget
-{
-public:
-	GENERATED_BODY()
-
-	FRemoteControlTarget() = default;
-
-	FRemoteControlTarget(class URemoteControlPreset* InOwner)
-		: Owner(InOwner)
-		{}
-
-	/**
-	* Expose a property in this target.
-	* @param FieldPathInfo the path data from the owner object, including component chain, to this field. (ie. LightComponent0.Intensity)
-	* @param DesiredDisplayName the display name desired for this control. If the name is not unique preset-wise, a number will be appended.
-	*/
-	UE_DEPRECATED(4.27, "A component hierarchy is no longer needed to expose properties, use the overloaded function instead.")
-	TOptional<FRemoteControlProperty> ExposeProperty(FRCFieldPathInfo FieldPathInfo, TArray<FString> ComponentHierarchy, const FString& DesiredDisplayName, FGuid GroupId = FGuid());
-
-	/**
-	 * Expose a property in this target.
-	 * @param FieldPathInfo the path data from the owner object, including component chain, to this field. (ie. LightComponent0.Intensity)
-	 * @param DesiredDisplayName the display name desired for this control. If the name is not unique preset-wise, a number will be appended.
-	 */
-	TOptional<FRemoteControlProperty> ExposeProperty(FRCFieldPathInfo FieldPathInfo, const FString& DesiredDisplayName, FGuid GroupId = FGuid(), bool bAppendAliasToLabel = false);
-
-	/**
-	 * Expose a function in this target.
-	 * @param RelativeFieldPath the path from the owner object  to this field. (ie. Subcomponent.GetName)
-	 * @param DesiredDisplayName the display name desired for this control. If the name is not unique target-wide, a number will be appended.
-	 */
-	TOptional<FRemoteControlFunction> ExposeFunction(FString RelativeFieldPath, const FString& DesiredDisplayName, FGuid GroupId = FGuid(), bool bAppendAliasToLabel = false);
-
-	/**
-	 * Unexpose a field from this target.
-	 * @param TargetFieldId The ID of the field to remove.
-	 */
-	void Unexpose(FGuid TargetFieldId);
-
-	/**
-	 * Find a field label using a property name.
-	 * @param PropertyName the FName of the property to find.
-	 * @return the field's label or an empty name if not found.
-	 */
-	FName FindFieldLabel(FName FieldName) const;
-
-	/**
-	 * Find a field label using a a field path info.
-	 * @param Path the FieldPathInfo of the field to find.
-	 * @return the field's label or an empty name if not found.
-	 */
-	FName FindFieldLabel(const FRCFieldPathInfo& Path) const;
-
-	/**
-	 * Get a property using its label.
-	 * @param FieldLabel the property's label.
-	 * @return The target property if found.
-	 */
-	TOptional<FRemoteControlProperty> GetProperty(FGuid PropertyId) const;
-
-	/**
-	 * Get an exposed function using it's name.
-	 * @param FunctionName the function name to query.
-	 * @return The function if found.
-	 */
-	TOptional<FRemoteControlFunction> GetFunction(FGuid FunctionId) const;
-
-	/**
-	 * Resolve a remote controlled property to its FProperty and owner objects.
-	 * @param PropertyLabel the label of the remote controlled property.
-	 * @return The resolved exposed property if found.
-	 */
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TOptional<FExposedProperty> ResolveExposedProperty(FGuid PropertyId) const;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	/**
-	 * Resolve a remote controlled function to its UFunction and owner objects.
-	 * @param FunctionLabel the label of the remote controlled function.
-	 * @return The resolved exposed function if found.
-	 */
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TOptional<FExposedFunction> ResolveExposedFunction(FGuid FunctionId) const;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	/**
-	 * Resolve the target bindings to return the target's underlying objects.
-	 * @return The target's underlying objects.
-	 */
-	TArray<UObject*> ResolveBoundObjects() const;
-
-	/**
-	 * Adds objects to the target's underlying objects, binding them to the target's alias.
-	 * @param ObjectsToBind The objects to bind.
-	 */
-	void BindObjects(const TArray<UObject*>& ObjectsToBind);
-
-	/**
-	 * Verifies if the list of objects provided is bound under this target's alias.
-	 * @param ObjectsToTest The objects to validate.
-	 * @return true if the target has  underlying objects.
-	 */
-	bool HasBoundObjects(const TArray<UObject*>& ObjectsToTest) const;
-
-	/**
-	 * Verifies if an object is bound under this target's alias.
-	 * @param ObjectToTest The objects to validate.
-	 * @return true if the target has the object bound.
-	 */
-	bool HasBoundObject(const UObject* ObjectToTest) const;
-
-	/**
-	 * Returns whether the provided list of objects can be bound under this target.
-	 * @param ObjectsToTest The object list.
-	 * @return Whether the objects can be bound.
-	 */
-	bool CanBindObjects(const TArray<UObject*>& ObjectsToTest) const;
-
-private:
-
-	/** Remove a field from the specified fields array. */
-	template <typename Type> 
-	void RemoveField(TSet<Type>& Fields, FGuid FieldId)
-	{
-		Fields.RemoveByHash(GetTypeHash(FieldId), FieldId);
-	}
-
-	FProperty* FindPropertyRecursive(UStruct* Container, TArray<FString>& DesiredPropertyPath) const;
-
-public:
-	/**
-	 * The common class of the target's underlying objects.
-	 */
-	UPROPERTY()
-	UClass* Class = nullptr;
-
-	/**
-	 * The target's exposed functions.
-	 */
-	UPROPERTY()
-	TSet<FRemoteControlFunction> ExposedFunctions;
-
-	/**
-	 * The target's exposed properties.
-	 */
-	UPROPERTY()
-	TSet<FRemoteControlProperty> ExposedProperties;
-
-	/**
-	 * The alias for this target.
-	 */
-	UPROPERTY()
-	FName Alias;
-private:
-	/**
-	 * The objects bound under the target's alias.
-	 */
-	UPROPERTY()
-	TArray<FSoftObjectPath> Bindings;
-
-	/**
-	 * The preset that owns this target.
-	 */
-	UPROPERTY()
-	TWeakObjectPtr<URemoteControlPreset> Owner;
-
-	friend URemoteControlPreset;
-};
-
-/**
- * Holds targets that contain exposed functions and properties.
+ * Holds exposed functions and properties.
  */
 UCLASS(BlueprintType, EditInlineNew)
 class REMOTECONTROL_API URemoteControlPreset : public UObject
 {
 public:
 	GENERATED_BODY()
+
+	using UObject::GetWorld;
 	
 	/** Callback for post remote control preset load, called by URemoteControlPreset::PostLoad function */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostLoadRemoteControlPreset, URemoteControlPreset* /* InPreset */);
 	static FOnPostLoadRemoteControlPreset OnPostLoadRemoteControlPreset;
+
+	/** Callback for post init properties of remote control preset, called by URemoteControlPreset::PostInitProperties function */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostInitPropertiesRemoteControlPreset, URemoteControlPreset* /* InPreset */);
+	static FOnPostInitPropertiesRemoteControlPreset OnPostInitPropertiesRemoteControlPreset;
 	
 	URemoteControlPreset();
 
@@ -472,33 +338,9 @@ public:
 	const FGuid& GetPresetId() const { return PresetId; }
 
 	/**
-	 * Get this preset's targets.
+	 * Returns the FName that represents this asset or hosted preset.
 	 */
-	UE_DEPRECATED(4.27, "FRemoteControlTarget is deprecated, use URemoteControlPreset::Bindings instead.")
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TMap<FName, FRemoteControlTarget>& GetRemoteControlTargets() { return RemoteControlTargets; }
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	/**
-	 * Get this preset's targets.
-	 */
-	UE_DEPRECATED(4.27, "FRemoteControlTarget is deprecated, use URemoteControlPreset::Bindings instead.")
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	const TMap<FName, FRemoteControlTarget>& GetRemoteControlTargets() const { return RemoteControlTargets; }
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	/**
-	 * Get the target that owns this exposed field.
-	 */
-	UE_DEPRECATED(4.27, "FRemoteControlTarget is deprecated, access the entity's bindings by accessing FRemoteControlEntity::Bindings.")
-	FName GetOwnerAlias(FGuid FieldId) const;
-
-	/**
-	 * Get the ID for a field using its label.
-	 * @param FieldLabel the field's label.
-	 * @return the field's id, or an invalid GUID if not found.
-	 */
-	UE_DEPRECATED(4.27, "Use URemoteControlPreset::GetExposedEntityId instead.")
-	FGuid GetFieldId(FName FieldLabel) const;
+	FName GetPresetName() const;
 
 	/**
 	 * Expose an actor on this preset.
@@ -597,7 +439,10 @@ public:
 	const UScriptStruct* GetExposedEntityType(const FGuid& ExposedEntityId) const;
 	
 	/** Get all types of exposed entities currently exposed. (ie. FRemoteControlActor) */
-	const TSet<UScriptStruct*>& GetExposedEntityTypes() const;
+	const TSet<TObjectPtr<UScriptStruct>>& GetExposedEntityTypes() const;
+
+	/** Returns true when Exposed Entities is populated. */
+	const bool HasEntities() const;
 
 	/** Returns whether an entity is exposed on the preset. */
 	bool IsExposed(const FGuid& ExposedEntityId) const;
@@ -689,41 +534,6 @@ public:
 	 */
 	void Unexpose(const FGuid& EntityId);
 
-	/**
-	 * Create a new target under this preset.
-	 * @param TargetObjects The objects to group under a common alias for the target.
-	 * @return The new target's alias if successful.
-	 * @note A target must be created with at least one object and they must have a common base class.
-	 */
-	UE_DEPRECATED(4.27, "Targets are deprecated in favor of exposing directly on the preset. You do not need to create a target beforehand.")
-	FName CreateTarget(const TArray<UObject*>& TargetObjects);
-
-	/**
-	 * Create a new target under this preset.
-	 * @param TargetObjects The objects to group under a common alias for the target.
-	 * @return The new target.
-	 * @note A target must be created with at least one object and they must have a common base class.
-	 */
-	UE_DEPRECATED(4.27, "Targets are deprecated in favor of exposing directly on the preset. You do not need to create a target beforehand.")
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FRemoteControlTarget& CreateAndGetTarget(const TArray<UObject*>& TargetObjects);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	/**
-	 * Remove a target from the preset.
-	 * @param TargetName The target to delete.
-	 */
-	UE_DEPRECATED(4.27, "Targets are deprecated, you do not need to delete them anymore.")
-	void DeleteTarget(FName TargetName);
-
-	/**
-	 * Rename a target.
-	 * @param TargetName The name of the target to rename.
-	 * @param NewTargetName The new target's name.
-	 */
-	UE_DEPRECATED(4.27, "Targets are deprecated in favor of bindings, you can now change the name of the binding directly.")
-	void RenameTarget(FName TargetName, FName NewTargetName);
-
 	/** Cache this preset's layout data. */
 	void CacheLayoutData();
 
@@ -777,6 +587,18 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPresetLayoutModified, URemoteControlPreset* /*Preset*/);
 	FOnPresetLayoutModified& OnPresetLayoutModified() { return OnPresetLayoutModifiedDelegate; }
 
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnControllerAdded, URemoteControlPreset* /*Preset*/, const FName /*NewControllerName*/, const FGuid& /*ControllerId*/);
+	FOnControllerAdded& OnControllerAdded() { return OnControllerAddedDelegate; }
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnControllerRemoved, URemoteControlPreset* /*Preset*/, const FGuid& /*ControllerId*/);
+	FOnControllerRemoved& OnControllerRemoved() { return OnControllerRemovedDelegate; }
+
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnControllerRenamed, URemoteControlPreset* /*Preset*/, const FName /*OldLabel*/, const FName /*NewLabel*/);
+	FOnControllerRenamed& OnControllerRenamed() { return OnControllerRenamedDelegate; }
+	
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnControllerModified, URemoteControlPreset* /*Preset*/, const TSet<FGuid>& /*ModifiedControllerIds*/);
+	FOnControllerModified& OnControllerModified() { return OnControllerModifiedDelegate; }
+	
 	UE_DEPRECATED(4.27, "This function is deprecated.")
 	void NotifyExposedPropertyChanged(FName PropertyLabel);
 
@@ -805,14 +627,68 @@ public:
 
 	/** This preset's list of objects that are exposed or that have exposed fields. */
 	UPROPERTY(EditAnywhere, Category = "Remote Control Preset")
-	TArray<URemoteControlBinding*> Bindings;
+	TArray<TObjectPtr<URemoteControlBinding>> Bindings;
+
+	/** ~~~Virtual Property Wrapper Functions ~~~
+	* 
+	* The goal is to hide the Controller Container and provide a simple interface for Controller access to UI and Web.
+	*/
+
+	/** Fetches a controller by internal property name. */
+	URCVirtualPropertyBase* GetController(const FName InPropertyName) const;
+
+	/** Fetches a controller by unique Id. */
+	URCVirtualPropertyBase* GetController(const FGuid& InId) const;
+
+	/** Fetches all controller */
+	TArray<URCVirtualPropertyBase*> GetControllers() const;
+
+	/** Fetches a virtual property by specified name. */
+	URCVirtualPropertyBase* GetControllerByDisplayName(const FName InDisplayName) const;
+
+	/** Adds a Virtual Property (Controller) to the Remote Control Preset */
+	URCVirtualPropertyInContainer* AddController(TSubclassOf<URCVirtualPropertyInContainer> InPropertyClass, const EPropertyBagPropertyType InValueType, UObject* InValueTypeObject = nullptr, const FName InPropertyName = NAME_None);
+
+	/** Removes a given Virtual Property (by Name) from the Remote Control preset */
+	bool RemoveController(const FName& InPropertyName);
+
+	/** Duplicates a given Virtual Property from the Remote Control preset */
+	URCVirtualPropertyInContainer* DuplicateController(URCVirtualPropertyInContainer* InVirtualProperty);
+
+	/** Removes all virtual properties held by this Remote Control preset*/
+	void ResetControllers();
+
+	/** Returns the number of Virtual Properties contained in this Remote Control preset*/
+	int32 GetNumControllers() const;
+
+	/** Returns the Struct On Scope of the Controller Container (value ptr of the virtual properties)*
+	* Currently used by the UI class SRCControllerPanelList for user value entry via the RC Controllers panel*/
+	TSharedPtr<FStructOnScope> GetControllerContainerStructOnScope();
+
+	/** Sets the Controller Container (holds all Virtual Properties) */
+	void SetControllerContainer(URCVirtualPropertyContainerBase* InControllerContainer);
+
+	/** Checks whether the Controller Container (which holds all Virtual Properties) is currently valid*/
+	bool IsControllerContainerValid()
+	{
+		return ControllerContainer != nullptr;
+	}
+
+#if WITH_EDITOR
+	/** Called when a virtual property's value is being scrubbed by the user in the UI.
+	* This call is routed to the Controller for evaluating associated Logic & Behaviours*/
+	void OnNotifyPreChangeVirtualProperty(const FPropertyChangedEvent& PropertyChangedEvent);
+
+	/** Called when a virtual property is modified. This call is routed to the Controller for evaluating associated Logic & Behaviours*/
+	void OnModifyController(const FPropertyChangedEvent& PropertyChangedEvent);
+#endif
+
+	FOnVirtualPropertyContainerModified& OnVirtualPropertyContainerModified() const;
 
 private:
-	/** Generate a unique alias for this target. */
-	FName GenerateAliasForObjects(const TArray<UObject*>& Objects);
-	
-	/** Generate a label for a field that is unique preset-wide. */
-	FName GenerateUniqueFieldLabel(FName Alias, const FString& BaseName, bool bAppendAlias);
+	/** Holds virtual controllers properties, behaviours and actions */
+	UPROPERTY(Instanced)
+	TObjectPtr<URCVirtualPropertyContainerBase> ControllerContainer;
 
 	/** Holds information about an exposed field. */
 	struct FExposeInfo
@@ -827,7 +703,6 @@ private:
 	void OnUnexpose(FGuid UnexposedFieldId);
 	
 	//~ Cache operations.
-	void CacheFieldsData();
 	void CacheFieldLayoutData();
 	
 	//~ Register/Unregister delegates
@@ -861,11 +736,6 @@ private:
 	/** Get a field ptr using it's id. */
 	FRemoteControlField* GetFieldPtr(FGuid FieldId);
 
-	//~ Utility functions to update the asset format.
-	void ConvertFieldsToRemoveComponentChain();
-	void ConvertFieldsToEntities();
-	void ConvertTargetsToBindings();
-
 	//~ Helper methods that interact with the expose registry.,
 	TSharedPtr<const FRemoteControlEntity> FindEntityById(const FGuid& EntityId, const UScriptStruct* EntityType = FRemoteControlEntity::StaticStruct()) const;
 	TSharedPtr<FRemoteControlEntity> FindEntityById(const FGuid& EntityId, const UScriptStruct* EntityType = FRemoteControlEntity::StaticStruct());
@@ -892,6 +762,9 @@ private:
 	
 	/** Initialize an entity's metadata based on the module's externally registered initializers. */
 	void InitializeEntityMetadata(const TSharedPtr<FRemoteControlEntity>& Entity);
+	
+	/** Initialize an controllers's metadata based on the module's externally registered initializers. */
+	void InitializeEntityMetadata(URCVirtualPropertyBase* Controller);
 
 	/** Register delegates for all exposed entities. */
 	void RegisterEntityDelegates();
@@ -913,17 +786,14 @@ private:
 
 	/** Call post load function for exposed properties. */
 	void PostLoadProperties();
+
+	/** Handle a change on a ndisplay config data, used to replace bindings. */
+	void HandleDisplayClusterConfigChange(UObject* DisplayClusterConfigData);
 	
 private:
 	/** Preset unique ID */
 	UPROPERTY(AssetRegistrySearchable)
 	FGuid PresetId;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	/** The mappings of alias to targets. */
-	UPROPERTY()
-	TMap<FName, FRemoteControlTarget> RemoteControlTargets;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** The cache for information about an exposed field. */
 	UPROPERTY(Transient)
@@ -935,7 +805,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	UPROPERTY(Instanced)
 	/** Holds exposed entities on the preset. */
-	URemoteControlExposeRegistry* Registry = nullptr;
+	TObjectPtr<URemoteControlExposeRegistry> Registry = nullptr;
 
 	/** Delegate triggered when an entity is exposed. */
 	FOnPresetEntityEvent OnEntityExposedDelegate;
@@ -957,6 +827,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FOnActorPropertyModified OnActorPropertyModifiedDelegate;
 	/** Delegate triggered when the layout is modified. */
 	FOnPresetLayoutModified OnPresetLayoutModifiedDelegate;
+	/** Delegate triggered when a controller is added */
+	FOnControllerAdded OnControllerAddedDelegate;
+	/** Delegate triggered when a controller is removed */
+	FOnControllerRemoved OnControllerRemovedDelegate;
+	/** Delegate triggered when a Controller is renamed */
+	FOnControllerRenamed OnControllerRenamedDelegate;
+	/** Delegate triggered when a Controller has been changed */
+	FOnControllerModified OnControllerModifiedDelegate;
 
 	struct FPreObjectsModifiedCache
 	{
@@ -1010,6 +888,27 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	/** Frame counter for delaying property change checks. */
 	int32 PropertyChangeWatchFrameCounter = 0;
 
+public:
+
+	static UWorld* GetWorld(const URemoteControlPreset* Preset = nullptr, bool bAllowPIE = false);
+	UWorld* GetWorld(bool bAllowPIE = false) const;
+	UWorld* GetEmbeddedWorld() const;
+	
+	/** Returns true if the preset is hosted within another asset. */
+	bool IsEmbeddedPreset() const;
+
+#if WITH_EDITOR
+	const TArray<FName>& GetDetailsTabIdentifierOverrides() const { return DetailsTabIdentifierOverrides; }
+	void SetDetailsTabIdentifierOverrides(const TArray<FName>& NewOverrides) { DetailsTabIdentifierOverrides = NewOverrides; }
+#endif
+
+private:
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<FName> DetailsTabIdentifierOverrides;
+#endif
+
 #if WITH_EDITOR
 	/** List of blueprints for which we have registered events. */
 	TSet<TWeakObjectPtr<UBlueprint>> BlueprintsWithRegisteredDelegates;
@@ -1018,9 +917,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	TSet<URemoteControlBinding*> PerFrameBindingsToClean;
 #endif
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	friend FRemoteControlTarget;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	friend FRemoteControlPresetLayout;
 	friend FRemoteControlEntity;
 	friend class FRemoteControlPresetRebindingManager;

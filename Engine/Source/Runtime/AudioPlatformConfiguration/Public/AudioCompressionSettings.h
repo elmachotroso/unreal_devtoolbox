@@ -1,6 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Math/UnrealMathSSE.h"
+#include "Templates/Tuple.h"
+#include "UObject/ObjectMacros.h"
+
 #include "AudioCompressionSettings.generated.h"
 
 UENUM()
@@ -11,8 +18,7 @@ enum class ESoundwaveSampleRateSettings : uint8
 	Medium,
 	Low,
 	Min,
-	// Use this setting to resample soundwaves to the device's sample rate to avoid having to perform sample rate conversion at runtime.
-	MatchDevice
+	MatchDevice_DEPRECATED
 };
 
 /************************************************************************/
@@ -100,6 +106,7 @@ struct FPlatformAudioCookOverrides
 		{
 			return;
 		}
+		OutSuffix.AppendChar('_');
 
 		int32 CompressionQualityHash = FMath::FloorToInt(InOverrides->CompressionQualityModifier * 100.0f);
 		OutSuffix.AppendInt(CompressionQualityHash);

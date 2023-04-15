@@ -6,7 +6,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "Editor.h"
@@ -16,7 +16,7 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "AnimationEditorUtils.h"
 #include "PhysicsAssetUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PhysicsAssetGenerationSettings.h"
 
 #define LOCTEXT_NAMESPACE "PhysicsAssetFactory"
@@ -41,7 +41,7 @@ bool UPhysicsAssetFactory::ConfigureProperties()
 	AssetPickerConfig.SelectionMode = ESelectionMode::Single;
 
 	/** The asset picker will only show skeletal meshes */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = false;
 
 	/** The delegate that fires when an asset was selected */
@@ -57,7 +57,7 @@ bool UPhysicsAssetFactory::ConfigureProperties()
 	.SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]

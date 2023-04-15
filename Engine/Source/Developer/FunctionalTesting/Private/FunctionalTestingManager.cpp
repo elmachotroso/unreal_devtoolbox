@@ -10,6 +10,8 @@
 #include "Engine/Engine.h"
 #include "Misc/RuntimeErrors.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FunctionalTestingManager)
+
 #if WITH_EDITOR
 
 //----------------------------------------------------------------------//
@@ -160,11 +162,11 @@ void UFunctionalTestingManager::TriggerFirstValidTest()
 {
 	UWorld* World = GetWorld();
 	check(World);
-	bIsRunning = World->GetNavigationSystem() != nullptr;
+	bIsRunning = true;
 
 	const bool bIsWorldInitialized =
 		World->AreActorsInitialized() &&
-		!UNavigationSystemV1::IsNavigationBeingBuilt(World);
+		(!World->GetWorldSettings()->IsNavigationSystemEnabled() || !UNavigationSystemV1::IsNavigationBeingBuilt(World));
 
 	if (bInitialDelayApplied == true && bIsWorldInitialized)
 	{
@@ -423,3 +425,4 @@ void UFunctionalTestingManager::SetReproString(FString ReproString)
 		ReproString.ParseIntoArray(TestReproStrings, FFunctionalTesting::ReproStringTestSeparator, /*InCullEmpty=*/true);
 	}
 }
+

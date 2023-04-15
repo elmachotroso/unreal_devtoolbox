@@ -15,6 +15,8 @@
 #include "UObject/Package.h"
 #include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneEvaluationTemplateInstance)
+
 DECLARE_CYCLE_STAT(TEXT("Entire Evaluation Cost"), MovieSceneEval_EntireEvaluationCost, STATGROUP_MovieSceneEval);
 
 
@@ -32,9 +34,16 @@ void FMovieSceneRootEvaluationTemplateInstance::BeginDestroy()
 {
 	if (EntitySystemLinker && IsValidChecked(EntitySystemLinker) && !EntitySystemLinker->IsUnreachable() && !EntitySystemLinker->HasAnyFlags(RF_BeginDestroyed))
 	{
+		if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin())
+		{
+			Runner->DiscardQueuedUpdates(RootInstanceHandle);
+		}
+
 		EntitySystemLinker->GetInstanceRegistry()->DestroyInstance(RootInstanceHandle);
+		EntitySystemLinker->ResetActiveRunners();
 	}
 
+	RootInstanceHandle = UE::MovieScene::FRootInstanceHandle();
 	CompiledDataManager = nullptr;
 	EntitySystemLinker = nullptr;
 }
@@ -53,18 +62,16 @@ UMovieSceneEntitySystemLinker* FMovieSceneRootEvaluationTemplateInstance::Constr
 	}
 
 	UObject* PlaybackContext = Player.GetPlaybackContext();
-	return UMovieSceneEntitySystemLinker::FindOrCreateLinker(PlaybackContext, TEXT("DefaultEntitySystemLinker"));
+	return UMovieSceneEntitySystemLinker::FindOrCreateLinker(PlaybackContext, UE::MovieScene::EEntitySystemLinkerRole::Standalone, TEXT("DefaultEntitySystemLinker"));
 }
 
-void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& InRootSequence, IMovieScenePlayer& Player, UMovieSceneCompiledDataManager* InCompiledDataManager)
+void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& InRootSequence, IMovieScenePlayer& Player, UMovieSceneCompiledDataManager* InCompiledDataManager, TWeakPtr<FMovieSceneEntitySystemRunner> InWeakRunner)
 {
 	bool bReinitialize = (
 			// Initialize if we weren't initialized before and this is our first sequence.
 			WeakRootSequence.Get() == nullptr ||
 			// Initialize if we lost our linker.
-			EntitySystemLinker == nullptr ||
-			// Initialize if our linker was reset and forced our runner to detach.
-			!EntitySystemRunner.IsAttachedToLinker());
+			EntitySystemLinker == nullptr);
 
 	const UMovieSceneCompiledDataManager* PreviousCompiledDataManager = CompiledDataManager;
 	if (InCompiledDataManager)
@@ -100,12 +107,12 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	}
 	bReinitialize |= (PreviousCompiledDataManager != CompiledDataManager);
 
+	TSharedPtr<FMovieSceneEntitySystemRunner> PreviousRunner = WeakRunner.Pin();
+
 	if (UMovieSceneSequence* ExistingSequence = WeakRootSequence.Get())
 	{
 		if (ExistingSequence != &InRootSequence)
 		{
-			Finish(Player);
-
 			bReinitialize = true;
 		}
 	}
@@ -113,24 +120,45 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	CompiledDataID = CompiledDataManager->GetDataID(&InRootSequence);
 	WeakRootSequence = &InRootSequence;
 	RootID = MovieSceneSequenceID::Root;
+	WeakRunner = InWeakRunner;
 
 	if (bReinitialize)
 	{
-		if (RootInstanceHandle.IsValid() && EntitySystemLinker)
+		if (RootInstanceHandle.IsValid())
 		{
-			EntitySystemLinker->GetInstanceRegistry()->DestroyInstance(RootInstanceHandle);
+			if (PreviousRunner)
+			{
+				PreviousRunner->AbandonAndDestroyInstance(RootInstanceHandle);
+			}
+			else if (EntitySystemLinker)
+			{
+				EntitySystemLinker->GetInstanceRegistry()->DestroyInstance(RootInstanceHandle);
+			}
+			else
+			{
+				ensureMsgf(false, TEXT("Unable to destroy previously allocated sequence instance - this could indicate a memory leak."));
+			}
 		}
 
 		Player.State.PersistentEntityData.Reset();
 		Player.State.PersistentSharedData.Reset();
 
-		if (EntitySystemRunner.IsAttachedToLinker())
-		{
-			EntitySystemRunner.DetachFromLinker();
-		}
 		EntitySystemLinker = ConstructEntityLinker(Player);
-		EntitySystemRunner.AttachToLinker(EntitySystemLinker);
 		RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
+
+		TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin();
+		if (ensure(Runner) && EntitySystemLinker)
+		{
+			if (Runner->IsAttachedToLinker() && Runner->GetLinker() != EntitySystemLinker)
+			{
+				Runner->DetachFromLinker();
+			}
+
+			if (!Runner->IsAttachedToLinker())
+			{
+				Runner->AttachToLinker(EntitySystemLinker);
+			}
+		}
 
 		Player.PreAnimatedState.Initialize(EntitySystemLinker, RootInstanceHandle);
 	}
@@ -138,23 +166,25 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 
 void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player)
 {
-	SCOPE_CYCLE_COUNTER(MovieSceneEval_EntireEvaluationCost);
+	EvaluateSynchronousBlocking(Context, Player);
+}
 
-	check(EntitySystemLinker);
-
-	if (EntitySystemRunner.IsAttachedToLinker())
+void FMovieSceneRootEvaluationTemplateInstance::EvaluateSynchronousBlocking(FMovieSceneContext Context, IMovieScenePlayer& Player)
+{
+	if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin())
 	{
-		EntitySystemRunner.Update(Context, RootInstanceHandle);
+		Runner->QueueUpdate(Context, RootInstanceHandle);
+		Runner->Flush();
 	}
 }
 
-void FMovieSceneRootEvaluationTemplateInstance::Finish(IMovieScenePlayer& Player)
+void FMovieSceneRootEvaluationTemplateInstance::OnFinished()
 {
-	if (EntitySystemRunner.IsAttachedToLinker())
-	{
-		EntitySystemRunner.FinishInstance(RootInstanceHandle);
-	}
+	ResetDirectorInstances();
+}
 
+void FMovieSceneRootEvaluationTemplateInstance::ResetDirectorInstances()
+{
 	DirectorInstances.Reset();
 }
 
@@ -190,11 +220,6 @@ UMovieSceneSequence* FMovieSceneRootEvaluationTemplateInstance::GetSequence(FMov
 UMovieSceneEntitySystemLinker* FMovieSceneRootEvaluationTemplateInstance::GetEntitySystemLinker() const
 {
 	return EntitySystemLinker;
-}
-
-FMovieSceneEntitySystemRunner& FMovieSceneRootEvaluationTemplateInstance::GetEntitySystemRunner()
-{
-	return EntitySystemRunner;
 }
 
 bool FMovieSceneRootEvaluationTemplateInstance::HasEverUpdated() const
@@ -312,6 +337,16 @@ UE::MovieScene::FMovieSceneEntityID FMovieSceneRootEvaluationTemplateInstance::F
 	return FMovieSceneEntityID::Invalid();
 }
 
+void FMovieSceneRootEvaluationTemplateInstance::FindEntitiesFromOwner(UObject* Owner, FMovieSceneSequenceID SequenceID, TArray<UE::MovieScene::FMovieSceneEntityID>& OutEntityIDs) const
+{
+	using namespace UE::MovieScene;
+
+	if (const FSequenceInstance* SequenceInstance = FindInstance(SequenceID))
+	{
+		SequenceInstance->FindEntities(Owner, OutEntityIDs);
+	}
+}
+
 UObject* FMovieSceneRootEvaluationTemplateInstance::GetOrCreateDirectorInstance(FMovieSceneSequenceIDRef SequenceID, IMovieScenePlayer& Player)
 {
 	UObject* ExistingDirectorInstance = DirectorInstances.FindRef(SequenceID);
@@ -349,11 +384,16 @@ void FMovieSceneRootEvaluationTemplateInstance::PlaybackContextChanged(IMovieSce
 
 	const bool bGlobalCapture = Player.PreAnimatedState.IsCapturingGlobalPreAnimatedState();
 
-	if (EntitySystemLinker && IsValidChecked(EntitySystemLinker) && !EntitySystemLinker->IsUnreachable() && !EntitySystemLinker->HasAnyFlags(RF_BeginDestroyed))
+	if (RootInstanceHandle.IsValid() && EntitySystemLinker && IsValidChecked(EntitySystemLinker) && !EntitySystemLinker->IsUnreachable() && !EntitySystemLinker->HasAnyFlags(RF_BeginDestroyed))
 	{
 		EntitySystemLinker->CleanupInvalidBoundObjects();
 
-		Finish(Player);
+		if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin())
+		{
+			Runner->QueueFinalUpdate(RootInstanceHandle);
+			Runner->Flush();
+		}
+
 		if (bGlobalCapture)
 		{
 			Player.RestorePreAnimatedState();
@@ -361,12 +401,16 @@ void FMovieSceneRootEvaluationTemplateInstance::PlaybackContextChanged(IMovieSce
 		EntitySystemLinker->GetInstanceRegistry()->DestroyInstance(RootInstanceHandle);
 	}
 
-	if (EntitySystemRunner.IsAttachedToLinker())
-	{
-		EntitySystemRunner.DetachFromLinker();
-	}
 	EntitySystemLinker = ConstructEntityLinker(Player);
-	EntitySystemRunner.AttachToLinker(EntitySystemLinker);
+	if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = WeakRunner.Pin())
+	{
+		if (Runner->IsAttachedToLinker())
+		{
+			Runner->DetachFromLinker();
+		}
+
+		Runner->AttachToLinker(EntitySystemLinker);
+	}
 
 	RootInstanceHandle = EntitySystemLinker->GetInstanceRegistry()->AllocateRootInstance(&Player);
 	DirectorInstances.Reset();
@@ -409,3 +453,4 @@ EMovieSceneServerClientMask FMovieSceneRootEvaluationTemplateInstance::GetEmulat
 	return EmulatedNetworkMask;
 }
 #endif
+

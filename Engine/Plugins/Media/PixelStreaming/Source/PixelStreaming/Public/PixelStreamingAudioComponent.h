@@ -11,10 +11,9 @@
 #include "PixelStreamingAudioComponent.generated.h"
 
 /*
-* An `ISoundGenerator` implementation to pump some audio from WebRTC into this synth component
-*/
-
-class FWebRTCSoundGenerator : public ISoundGenerator
+ * An `ISoundGenerator` implementation to pump some audio from WebRTC into this synth component
+ */
+class PIXELSTREAMING_API FWebRTCSoundGenerator : public ISoundGenerator
 {
 public:
 	FWebRTCSoundGenerator();
@@ -23,7 +22,7 @@ public:
 	virtual int32 OnGenerateAudio(float* OutAudio, int32 NumSamples) override;
 
 	// Returns the number of samples to render per callback
-	virtual int32 GetDesiredNumSamplesToRenderPerCallback() const { return Params.NumFramesPerCallback * Params.NumChannels; }
+	virtual int32 GetDesiredNumSamplesToRenderPerCallback() const;
 
 	// Optional. Called on audio generator thread right when the generator begins generating.
 	virtual void OnBeginGenerate() { bGeneratingAudio = true; };
@@ -38,7 +37,6 @@ public:
 
 	int32 GetSampleRate() { return Params.SampleRate; }
 	int32 GetNumChannels() { return Params.NumChannels; }
-	bool UpdateChannelsAndSampleRate(int InNumChannels, int InSampleRate);
 	void EmptyBuffers();
 	void SetParameters(const FSoundGeneratorInitParams& InitParams);
 
@@ -79,11 +77,18 @@ protected:
 	//~ End UActorComponent interface
 
 public:
-	/** 
-	*   The Pixel Streaming player/peer whose audio we wish to listen to.
-	*   If this is left blank this component will listen to the first non-listened to peer that connects after this component is ready.
-	*   Note: that when the listened to peer disconnects this component is reset to blank and will once again listen to the next non-listened to peer that connects.
-	*/
+	/**
+	 *   The Pixel Streaming streamer of the player that we wish to listen to.
+	 *   If this is left blank this component will use the default Pixel Streaming streamer
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pixel Streaming Audio Component")
+	FString StreamerToHear;
+
+	/**
+	 *   The Pixel Streaming player/peer whose audio we wish to listen to.
+	 *   If this is left blank this component will listen to the first non-listened to peer that connects after this component is ready.
+	 *   Note: that when the listened to peer disconnects this component is reset to blank and will once again listen to the next non-listened to peer that connects.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pixel Streaming Audio Component")
 	FString PlayerToHear;
 
@@ -98,9 +103,13 @@ private:
 	TSharedPtr<FWebRTCSoundGenerator, ESPMode::ThreadSafe> SoundGenerator;
 
 public:
-	// Listen to a specific player. If the player is not found this component will be silent.
+	// Listen to a specific player on the default streamer. If the player is not found this component will be silent.
 	UFUNCTION(BlueprintCallable, Category = "Pixel Streaming Audio Component")
 	bool ListenTo(FString PlayerToListenTo);
+
+	// Listen to a specific player. If the player is not found this component will be silent.
+	UFUNCTION(BlueprintCallable, Category = "Pixel Streaming Audio Component")
+	bool StreamerListenTo(FString StreamerId, FString PlayerToListenTo);
 
 	// True if listening to a connected WebRTC peer through Pixel Streaming.
 	UFUNCTION(BlueprintCallable, Category = "Pixel Streaming Audio Component")

@@ -53,73 +53,82 @@ void SetVariableByType(FNiagaraVariable& DataVariable, FNiagaraDataSet& Data, in
 	else if (VarType == FNiagaraTypeDefinition::GetPositionDef()) {	SetValueWithAccessor<FNiagaraPosition>(DataVariable, Data, ParticleIndex); }
 }
 
-void ConvertVariableToType(const FNiagaraVariable& SourceVariable, FNiagaraVariable& TargetVariable, const FNiagaraLWCConverter& LwcConverter)
+void ConvertVariableToType(const FNiagaraVariable& SourceVariable, const FNiagaraTypeDefinition& TargetType, TArray<uint8, TInlineAllocator<32>>& TargetData, const FNiagaraLWCConverter& LwcConverter)
 {
 	FNiagaraTypeDefinition SourceType = SourceVariable.GetType();
-	FNiagaraTypeDefinition TargetType = TargetVariable.GetType();
 
 	if (SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType == UNiagaraComponentRendererProperties::GetFColorDef())
 	{
-		FVector3f Data = SourceVariable.GetValue<FVector3f>();
-		FColor ColorData((uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.X * 255.f), 0, 255),
+		const FVector3f Data = SourceVariable.GetValue<FVector3f>();
+		TargetData.AddUninitialized(sizeof(FColor));
+		*reinterpret_cast<FColor*>(TargetData.GetData()) = FColor(
+			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.X * 255.f), 0, 255),
 			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.Y * 255.f), 0, 255),
 			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.Z * 255.f), 0, 255));
-		TargetVariable.SetValue<FColor>(ColorData);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetVec4Def() && TargetType == UNiagaraComponentRendererProperties::GetFColorDef())
 	{
-		FVector4f Data = SourceVariable.GetValue<FVector4f>();
-		FColor ColorData((uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.X * 255.f), 0, 255),
+		const FVector4f Data = SourceVariable.GetValue<FVector4f>();
+		TargetData.AddUninitialized(sizeof(FColor));
+		*reinterpret_cast<FColor*>(TargetData.GetData()) = FColor(
+			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.X * 255.f), 0, 255),
 			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.Y * 255.f), 0, 255),
 			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.Z * 255.f), 0, 255),
 			(uint8)FMath::Clamp<int32>(FMath::TruncToInt(Data.W * 255.f), 0, 255));
-		TargetVariable.SetValue<FColor>(ColorData);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetColorDef() && TargetType == UNiagaraComponentRendererProperties::GetFColorDef())
 	{
-		FLinearColor Data = SourceVariable.GetValue<FLinearColor>();
-		TargetVariable.SetValue<FColor>(Data.QuantizeRound());
+		const FLinearColor Data = SourceVariable.GetValue<FLinearColor>();
+		TargetData.AddUninitialized(sizeof(FColor));
+		*reinterpret_cast<FColor*>(TargetData.GetData()) = Data.QuantizeRound();
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType == UNiagaraComponentRendererProperties::GetFRotatorDef())
 	{
-		FVector3f Data = SourceVariable.GetValue<FVector3f>();
-		FRotator Rotator(Data.X, Data.Y, Data.Z);
-		TargetVariable.SetDoubleValue<FRotator>(Rotator);
+		const FVector3f Data = SourceVariable.GetValue<FVector3f>();
+		TargetData.AddUninitialized(sizeof(FRotator));
+		*reinterpret_cast<FRotator*>(TargetData.GetData()) = FRotator(Data.X, Data.Y, Data.Z);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetVec2Def() && TargetType == UNiagaraComponentRendererProperties::GetFVector2DDef())
 	{
-		FVector2f Data = SourceVariable.GetValue<FVector2f>();
-		TargetVariable.SetDoubleValue<FVector2D>(FVector2D(Data));
+		const FVector2f Data = SourceVariable.GetValue<FVector2f>();
+		TargetData.AddUninitialized(sizeof(FVector2D));
+		*reinterpret_cast<FVector2D*>(TargetData.GetData()) = FVector2D(Data);
 	}	
 	else if (SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType == UNiagaraComponentRendererProperties::GetFVectorDef())
 	{
-		FVector3f Data = SourceVariable.GetValue<FVector3f>();
-		TargetVariable.SetDoubleValue<FVector>(FVector(Data));
+		const FVector3f Data = SourceVariable.GetValue<FVector3f>();
+		TargetData.AddUninitialized(sizeof(FVector));
+		*reinterpret_cast<FVector*>(TargetData.GetData()) = FVector(Data);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetVec4Def() && TargetType == UNiagaraComponentRendererProperties::GetFVector4Def())
 	{
-		FVector4f Data = SourceVariable.GetValue<FVector4f>();
-		TargetVariable.SetDoubleValue<FVector4>(FVector4(Data));
+		const FVector4f Data = SourceVariable.GetValue<FVector4f>();
+		TargetData.AddUninitialized(sizeof(FVector4));
+		*reinterpret_cast<FVector4*>(TargetData.GetData()) = FVector4(Data);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType == UNiagaraComponentRendererProperties::GetFVectorDef())
 	{
-		FVector Data = LwcConverter.ConvertSimulationPositionToWorld(SourceVariable.GetValue<FNiagaraPosition>());
-		TargetVariable.SetDoubleValue<FVector>(Data);
+		const FVector Data = LwcConverter.ConvertSimulationPositionToWorld(SourceVariable.GetValue<FNiagaraPosition>());
+		TargetData.AddUninitialized(sizeof(FVector));
+		*reinterpret_cast<FVector*>(TargetData.GetData()) = Data;
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType == UNiagaraComponentRendererProperties::GetFVector3fDef())
 	{
-		FVector3f Data = (FVector3f)LwcConverter.ConvertSimulationPositionToWorld(SourceVariable.GetValue<FNiagaraPosition>());
-		TargetVariable.SetValue<FVector3f>(Data);
+		const FVector3f Data = FVector3f(LwcConverter.ConvertSimulationPositionToWorld(SourceVariable.GetValue<FNiagaraPosition>()));
+		TargetData.AddUninitialized(sizeof(FVector3f));
+		*reinterpret_cast<FVector3f*>(TargetData.GetData()) = Data;
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType == UNiagaraComponentRendererProperties::GetFQuatDef())
 	{
-		FQuat4f Data = SourceVariable.GetValue<FQuat4f>();
-		TargetVariable.SetDoubleValue<FQuat>(FQuat(Data));
+		const FQuat4f Data = SourceVariable.GetValue<FQuat4f>();
+		TargetData.AddUninitialized(sizeof(FQuat));
+		*reinterpret_cast<FQuat*>(TargetData.GetData()) = FQuat(Data);
 	}
 	else if (SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType == UNiagaraComponentRendererProperties::GetFRotatorDef())
 	{
-		FQuat4f Data = SourceVariable.GetValue<FQuat4f>();
-		TargetVariable.SetDoubleValue<FRotator>(FRotator(Data.Rotator()));
+		const FQuat4f Data = SourceVariable.GetValue<FQuat4f>();
+		TargetData.AddUninitialized(sizeof(FRotator));
+		*reinterpret_cast<FRotator*>(TargetData.GetData()) = FRotator(Data.Rotator());
 	}
 }
 
@@ -145,7 +154,7 @@ void InvokeSetterFunction(UObject* InRuntimeObject, UFunction* Setter, const uin
 				const FString* DefaultValue = SetterDefaultValues.Find(Property->GetName());
 				if (DefaultValue)
 				{
-					Property->ImportText(**DefaultValue, Property->ContainerPtrToValuePtr<uint8>(Params), PPF_None, InRuntimeObject);
+					Property->ImportText_Direct(**DefaultValue, Property->ContainerPtrToValuePtr<uint8>(Params), InRuntimeObject, PPF_None);
 				}
 				else
 				{
@@ -279,27 +288,78 @@ void FNiagaraRendererComponents::DestroyRenderState_Concurrent()
 	}
 #endif
 
-	// Rendering resources are being destroyed, but the component pool and their owner actor must be destroyed on the game thread
-	AsyncTask(
-		ENamedThreads::GameThread,
-		[Pool_GT = MoveTemp(ComponentPool), Owner_GT = MoveTemp(SpawnedOwner)]()
+	// If we are on the GameThread immediately execute, but only if not inside EOF updates
+	// Failure to do so can cause issue with construction scripts rerunning as the components can linger when they should not
+	bool bRequiresAyncTask = true;
+	if (IsInGameThread())
+	{
+		UWorld* FoundWorld = nullptr;
+		if (AActor* OwnerActor = SpawnedOwner.Get())
 		{
-			// we do not reset ParticlesWithComponents here because it's possible the render state is destroyed without destroying the renderer. In this case we want to know which particles
-			// had spawned some components previously
-			for (auto& PoolEntry : Pool_GT)
+			FoundWorld = OwnerActor->GetWorld();
+			if (FoundWorld != nullptr)
 			{
-				if (PoolEntry.Component.IsValid())
-				{
-					PoolEntry.Component->DestroyComponent();
-				}
-			}
-
-			if (AActor* OwnerActor = Owner_GT.Get())
-			{
-				OwnerActor->Destroy();
+				bRequiresAyncTask = FoundWorld->bPostTickComponentUpdate;
 			}
 		}
-	);
+
+		if ( FoundWorld == nullptr )
+		{
+			for (auto& PoolEntry : ComponentPool)
+			{
+				if (USceneComponent* Component = PoolEntry.Component.Get())
+				{
+					FoundWorld = Component->GetWorld();
+					if (FoundWorld != nullptr)
+					{
+						bRequiresAyncTask = FoundWorld->bPostTickComponentUpdate;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	if (bRequiresAyncTask)
+	{
+		// Rendering resources are being destroyed, but the component pool and their owner actor must be destroyed on the game thread
+		AsyncTask(
+			ENamedThreads::GameThread,
+			[Pool_GT=MoveTemp(ComponentPool), Owner_GT=MoveTemp(SpawnedOwner)]()
+			{
+				// we do not reset ParticlesWithComponents here because it's possible the render state is destroyed without destroying the renderer. In this case we want to know which particles
+				// had spawned some components previously
+				for (auto& PoolEntry : Pool_GT)
+				{
+					if (USceneComponent* Component = PoolEntry.Component.Get())
+					{
+						Component->DestroyComponent();
+					}
+				}
+
+				if (AActor* OwnerActor = Owner_GT.Get())
+				{
+					OwnerActor->Destroy();
+				}
+			}
+		);
+	}
+	else
+	{
+		if (AActor* OwnerActor = SpawnedOwner.Get())
+		{
+			OwnerActor->Destroy();
+		}
+
+		for (auto& PoolEntry : ComponentPool)
+		{
+			if (USceneComponent* Component = PoolEntry.Component.Get())
+			{
+				Component->DestroyComponent();
+			}
+		}
+	}
+	ComponentPool.Empty();
 	SpawnedOwner.Reset();
 }
 
@@ -429,7 +489,7 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 			ParticleID = UniqueIDAccessor.GetSafe(ParticleIndex, -1);
 			ParticlesWithComponents.RemoveAndCopyValue(ParticleID, PoolIndex);
 
-			if (PoolIndex == -1 && Properties->bOnlyCreateComponentsOnParticleSpawn)
+			if (PoolIndex == -1 && Properties->bCreateComponentFirstParticleFrame)
 			{
 				// Don't allow this particle to acquire a component unless it was just spawned or had a component assigned to it previously
 				bool bIsNewlySpawnedParticle = Emitter->IsParticleComponentActive(ComponentKey, ParticleID) || ParticleIndex >= ParticleData.GetNumInstances() - ParticleData.GetNumSpawnedInstances();
@@ -512,7 +572,7 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 		}
 
 		FComponentPoolEntry& PoolEntry = ComponentPool[PoolIndex];
-		FNiagaraLWCConverter LwcConverter = SystemInstance->GetLWCConverter(Emitter->GetCachedEmitter()->bLocalSpace);
+		FNiagaraLWCConverter LwcConverter = SystemInstance->GetLWCConverter(Emitter->GetCachedEmitter().GetEmitterData()->bLocalSpace);
 		TickPropertyBindings(Properties, SceneComponent, Data, ParticleIndex, PoolEntry, LwcConverter);
 
 		// Activate the component.
@@ -528,7 +588,7 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 
 		PoolEntry.LastAssignedToParticleID = ParticleID;
 		PoolEntry.LastActiveTime = CurrentTime;
-		if (Properties->bOnlyCreateComponentsOnParticleSpawn)
+		if (Properties->bCreateComponentFirstParticleFrame)
 		{
 			Emitter->SetParticleComponentActive(ComponentKey, ParticleID);
 		}
@@ -617,11 +677,7 @@ void FNiagaraRendererComponents::TickPropertyBindings(
 			continue;
 		}
 
-		FNiagaraVariable DataVariable = PropertyBinding.WritableValue;
-		const FNiagaraVariableBase& FoundVar = PropertyBinding.AttributeBinding.GetDataSetBindableVariable();
-		DataVariable.SetType(FoundVar.GetType());
-		DataVariable.SetName(FoundVar.GetName());
-		DataVariable.ClearData();
+		FNiagaraVariable DataVariable(PropertyBinding.AttributeBinding.GetDataSetBindableVariable());
 		if (!DataVariable.IsValid() || !Data.HasVariable(DataVariable))
 		{
 			continue;
@@ -679,12 +735,17 @@ void FNiagaraRendererComponents::TickPropertyBindings(
 		}
 
 		bool bForceStructConversion = PropertyType.GetScriptStruct() && !FNiagaraTypeHelper::IsNiagaraFriendlyTopLevelStruct(PropertyType.GetScriptStruct(), ENiagaraStructConversion::UserFacing);
-		
+
+		TArrayView<uint8> TargetData;
+		TArray<uint8, TInlineAllocator<32>> ConvertedData;
 		if (PropertyType.IsValid() && DataVariable.GetType() != PropertyType && (!PropertySetter->bIgnoreConversion || bForceStructConversion))
 		{
-			FNiagaraVariable TargetVariable(PropertyType, DataVariable.GetName());
-			ConvertVariableToType(DataVariable, TargetVariable, LwcConverter);
-			DataVariable = TargetVariable;
+			ConvertVariableToType(DataVariable, PropertyType, ConvertedData, LwcConverter);
+			TargetData = MakeArrayView(ConvertedData);
+		}
+		else
+		{
+			TargetData = MakeArrayView(DataVariable.GetData(), DataVariable.GetSizeInBytes());
 		}
 
 		if (!DataVariable.IsDataAllocated())
@@ -696,7 +757,7 @@ void FNiagaraRendererComponents::TickPropertyBindings(
 		if (PropertySetter->Function && PropertySetter->Function->NumParms >= 1)
 		{
 			// if we have a setter function we invoke it instead of setting the property directly, because then the object gets a chance to react to the new value
-			InvokeSetterFunction(Component, PropertySetter->Function, DataVariable.GetData(), DataVariable.GetSizeInBytes(), PropertyBinding.PropertySetterParameterDefaults);
+			InvokeSetterFunction(Component, PropertySetter->Function, TargetData.GetData(), TargetData.Num(), PropertyBinding.PropertySetterParameterDefaults);
 		}
 		else
 		{
@@ -711,7 +772,7 @@ void FNiagaraRendererComponents::TickPropertyBindings(
 				continue;
 			}
 			uint8* Dest = (uint8*)Component + PropertyAddress.GetProperty()->GetOffset_ForInternal();
-			DataVariable.CopyTo(Dest);
+			FMemory::Memcpy(Dest, TargetData.GetData(), TargetData.Num());
 		}
 	}
 }

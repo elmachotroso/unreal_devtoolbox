@@ -15,6 +15,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "HAL/PlatformTime.h"
 #include "Interfaces/IPluginManager.h"
+#include "PlatformInfo.h"
 
 
 /**
@@ -367,10 +368,6 @@ bool FNetworkFileServerClientConnection::ProcessPayload(FArchive& Ar)
 			bSendUnsolicitedFiles = true;
 			break;
 
-		case NFS_Messages::RecompileShaders:
-			ProcessRecompileShaders(Ar, Out);
-			break;
-
 		default:
 
 			UE_LOG(LogFileServer, Error, TEXT("Bad incomming message tag (%d)."), (int32)Msg);
@@ -508,28 +505,41 @@ void FNetworkFileServerClientConnection::ProcessReadFile( FArchive& In, FArchive
 	int64 BytesToRead = 0;
 	In << BytesToRead;
 
-	int64 BytesRead = 0;
 	IFileHandle* File = FindOpenFile(HandleId);
 
 	if (File)
 	{
-		uint8* Dest = (uint8*)FMemory::Malloc(BytesToRead);		
-
-		if (File->Read(Dest, BytesToRead))
+		constexpr int64 BufferSize = 4 << 20;
+		uint8* Buffer = (uint8*)FMemory::Malloc(BufferSize);
+		bool bIsFirstRead = true;
+		while (BytesToRead > 0)
 		{
-			BytesRead = BytesToRead;
-			Out << BytesRead;
-			Out.Serialize(Dest, BytesRead);
+			int64 CappedBytesToRead = FMath::Min(BufferSize, BytesToRead);
+			if (!File->Read(Buffer, CappedBytesToRead))
+			{
+				if (bIsFirstRead)
+				{
+					int64 BytesRead = 0;
+					Out << BytesRead;
+					break;
+				}
+				// If this is not the first read we've already written the expected number of bytes to the stream so we have to deliver on that
+				FMemory::Memset(Buffer, 0, CappedBytesToRead);
+			}
+			else if (bIsFirstRead)
+			{
+				Out << BytesToRead;
+			}
+			Out.Serialize(Buffer, CappedBytesToRead);
+			BytesToRead -= CappedBytesToRead;
+			bIsFirstRead = false;
+			
 		}
-		else
-		{
-			Out << BytesRead;
-		}
-
-		FMemory::Free(Dest);
+		FMemory::Free(Buffer);
 	}
 	else
 	{
+		int64 BytesRead = 0;
 		Out << BytesRead;
 	}
 }
@@ -549,15 +559,20 @@ void FNetworkFileServerClientConnection::ProcessWriteFile( FArchive& In, FArchiv
 		int64 BytesToWrite = 0;
 		In << BytesToWrite;
 
-		uint8* Source = (uint8*)FMemory::Malloc(BytesToWrite);
-		In.Serialize(Source, BytesToWrite);
-
-		if (File->Write(Source, BytesToWrite))
+		constexpr int64 BufferSize = 4 << 20;
+		uint8* Buffer = (uint8*)FMemory::Malloc(BufferSize);
+		while (BytesToWrite > 0)
 		{
-			BytesWritten = BytesToWrite;
+			int64 CappedBytesToWrite = FMath::Min(BufferSize, BytesToWrite);
+			In.Serialize(Buffer, CappedBytesToWrite);
+			if (!File->Write(Buffer, CappedBytesToWrite))
+			{
+				break;
+			}
+			BytesWritten += CappedBytesToWrite;
+			BytesToWrite -= CappedBytesToWrite;
 		}
-
-		FMemory::Free(Source); 
+		FMemory::Free(Buffer);
 	}
 		
 	Out << BytesWritten;
@@ -1010,14 +1025,6 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 
 	GetSandboxRootDirectories(Sandbox.Get(), SandboxEngine, SandboxProject, SandboxEnginePlatformExtensions, SandboxProjectPlatformExtensions, LocalEngineDir, LocalProjectDir, LocalEnginePlatformExtensionsDir, LocalProjectPlatformExtensionsDir);
 
-
-	// make sure the global shaders are up to date before letting the client read any shaders
-	// @todo: This will probably add about 1/2 second to the boot-up time of the client while the server does this
-	// @note: We assume the delegate will write to the proper sandbox directory, should we pass in SandboxDirectory, or Sandbox?
-	TArray<uint8> GlobalShaderMap;
-	FShaderRecompileData RecompileData(ConnectedPlatformName, SP_NumPlatforms, ODSCRecompileCommand::Global, nullptr, nullptr, &GlobalShaderMap);
-	NetworkFileDelegates->RecompileShadersDelegate.ExecuteIfBound(RecompileData);
-
 	UE_LOG(LogFileServer, Display, TEXT("Getting files for %d directories, game = %s, platform = %s"), RootDirectories.Num(), *GameName, *ConnectedPlatformName);
 	UE_LOG(LogFileServer, Display, TEXT("    Sandbox dir = %s"), *SandboxDirectory);
 
@@ -1081,10 +1088,27 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 	ConvertClientFilenameToServerFilename(ServerEnginePlatformExtensionsRelativePath);
 	FString ServerProjectPlatformExtensionsRelativePath = ProjectPlatformExtensionsRelativePath;
 	ConvertClientFilenameToServerFilename(ServerProjectPlatformExtensionsRelativePath);
+
+	TArray<FString> PlatformDirectoryNames;
 	for (const FString& TargetPlatform : TargetPlatformNames)
 	{
-		ScanExtensionRootDirectory(Sandbox.Get(), ServerEnginePlatformExtensionsRelativePath / TargetPlatform, RootDirectories, Visitor.FileTimes);
-		ScanExtensionRootDirectory(Sandbox.Get(), ServerProjectPlatformExtensionsRelativePath / TargetPlatform, RootDirectories, Visitor.FileTimes);
+		FName IniPlatformName = PlatformInfo::FindPlatformInfo(*TargetPlatform)->IniPlatformName;
+		const FDataDrivenPlatformInfo& PlatformInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(IniPlatformName);
+		PlatformDirectoryNames.Reserve(PlatformInfo.IniParentChain.Num() + PlatformInfo.AdditionalRestrictedFolders.Num() + 1);
+		PlatformDirectoryNames.Add(IniPlatformName.ToString());
+		for (const FString& PlatformName : PlatformInfo.AdditionalRestrictedFolders)
+		{
+			PlatformDirectoryNames.AddUnique(PlatformName);
+		}
+		for (const FString& PlatformName : PlatformInfo.IniParentChain)
+		{
+			PlatformDirectoryNames.AddUnique(PlatformName);
+		}
+	}
+	for (const FString& PlatformDirectoryName : PlatformDirectoryNames)
+	{
+		ScanExtensionRootDirectory(Sandbox.Get(), ServerEnginePlatformExtensionsRelativePath / PlatformDirectoryName, RootDirectories, Visitor.FileTimes);
+		ScanExtensionRootDirectory(Sandbox.Get(), ServerProjectPlatformExtensionsRelativePath / PlatformDirectoryName, RootDirectories, Visitor.FileTimes);
 	}
 
 	UE_LOG(LogFileServer, Display, TEXT("Scanned server files, found %d files in %.2f seconds"), Visitor.FileTimes.Num(), FPlatformTime::Seconds() - FileScanStartTime);
@@ -1269,31 +1293,6 @@ bool FNetworkFileServerClientConnection::PackageFile( FString& Filename, FString
 	Out.Serialize(Contents.GetData(), FileSize);
 	return bRetVal;
 }
-
-
-void FNetworkFileServerClientConnection::ProcessRecompileShaders( FArchive& In, FArchive& Out )
-{
-	TArray<FString> RecompileModifiedFiles;
-	TArray<uint8> MeshMaterialMaps;
-	TArray<uint8> GlobalShaderMap;
-	FShaderRecompileData RecompileData(ConnectedPlatformName, SP_NumPlatforms, ODSCRecompileCommand::Changed, &RecompileModifiedFiles, &MeshMaterialMaps, &GlobalShaderMap);
-
-	// tell other side all the materials to load, by pathname
-	In << RecompileData.MaterialsToLoad;
-
-	int32 iShaderPlatform = static_cast<int32>(RecompileData.ShaderPlatform);
-	In << iShaderPlatform;
-	In << RecompileData.CommandType;
-	In << RecompileData.ShadersToRecompile;
-
-	NetworkFileDelegates->RecompileShadersDelegate.ExecuteIfBound(RecompileData);
-
-	// tell other side what to do!
-	Out << RecompileModifiedFiles;
-	Out << MeshMaterialMaps;
-	Out << GlobalShaderMap;
-}
-
 
 bool FNetworkFileServerClientConnection::ProcessSyncFile( FArchive& In, FArchive& Out )
 {

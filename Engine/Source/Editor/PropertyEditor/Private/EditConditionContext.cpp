@@ -13,16 +13,33 @@ FEditConditionContext::FEditConditionContext(FPropertyNode& InPropertyNode)
 	PropertyNode = InPropertyNode.AsShared();
 }
 
+FName FEditConditionContext::GetContextName() const
+{
+	TSharedPtr<FPropertyNode> PinnedNode = PropertyNode.Pin();
+	if (!PinnedNode.IsValid())
+	{
+		return FName();
+	}
+
+	return PinnedNode->GetProperty()->GetOwnerStruct()->GetFName();
+}
+
 const FBoolProperty* FEditConditionContext::GetSingleBoolProperty(const TSharedPtr<FEditConditionExpression>& Expression) const
 {
-	if (!PropertyNode.IsValid())
+	TSharedPtr<FPropertyNode> PinnedNode = PropertyNode.Pin();
+	if (!PinnedNode.IsValid())
 	{
 		return nullptr;
 	}
 
-	const FProperty* Property = PropertyNode.Pin()->GetProperty();
+	const FProperty* Property = PinnedNode->GetProperty();
+	if (Property == nullptr)
+	{
+		return nullptr;
+	}
 
 	const FBoolProperty* BoolProperty = nullptr;
+
 	for (const FCompiledToken& Token : Expression->Tokens)
 	{
 		if (const EditConditionParserTokens::FPropertyToken* PropertyToken = Token.Node.Cast<EditConditionParserTokens::FPropertyToken>())
@@ -169,7 +186,18 @@ TOptional<int64> FEditConditionContext::GetIntegerValue(const FString& PropertyN
 		return TOptional<int64>();
 	}
 
-	const FNumericProperty* NumericProperty = FindTypedField<FNumericProperty>(PinnedNode, PropertyName);
+	const FProperty* Property = FindTypedField<FProperty>(PinnedNode, PropertyName);
+	const FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property);
+
+	if (NumericProperty == nullptr)
+	{
+		// Retry with an enum and its underlying property
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+		{
+			NumericProperty = EnumProperty->GetUnderlyingProperty();
+		}
+	}
+
 	if (NumericProperty == nullptr || !NumericProperty->IsInteger())
 	{
 		return TOptional<int64>();
@@ -190,7 +218,7 @@ TOptional<int64> FEditConditionContext::GetIntegerValue(const FString& PropertyN
 	TOptional<int64> Result;
 	for (int32 Index = 0; Index < ComplexParentNode->GetInstancesNum(); ++Index)
 	{
-		const uint8* ValuePtr = GetPropertyValuePtr(NumericProperty, PinnedNode, ParentNode, ComplexParentNode, Index);
+		const uint8* ValuePtr = GetPropertyValuePtr(Property, PinnedNode, ParentNode, ComplexParentNode, Index);
 		if (ValuePtr == nullptr)
 		{
 			return TOptional<int64>();
@@ -434,7 +462,7 @@ TOptional<FString> FEditConditionContext::GetTypeName(const FString& PropertyNam
 
 TOptional<int64> FEditConditionContext::GetIntegerValueOfEnum(const FString& EnumTypeName, const FString& MemberName) const
 {
-	const UEnum* EnumType = FindObject<UEnum>((UObject*) ANY_PACKAGE, *EnumTypeName, true);
+	const UEnum* EnumType = UClass::TryFindTypeSlow<UEnum>(EnumTypeName, EFindFirstObjectOptions::ExactClass);
 	if (EnumType == nullptr)
 	{
 		return TOptional<int64>();

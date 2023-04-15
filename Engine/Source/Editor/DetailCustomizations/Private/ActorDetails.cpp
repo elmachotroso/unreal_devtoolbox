@@ -22,7 +22,7 @@
 #include "ToolMenus.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Brush.h"
 #include "Editor/UnrealEdEngine.h"
@@ -38,7 +38,7 @@
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
 #include "IDetailsView.h"
-#include "Editor/Layers/Public/LayersModule.h"
+#include "LayersModule.h"
 #include "LevelEditor.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
@@ -149,14 +149,15 @@ void FActorDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 		const bool bShouldDisplayWorldPartitionProperties = Algo::AnyOf(SelectedActors, [](const TWeakObjectPtr<AActor> Actor)
 		{
 			UWorld* World = Actor.IsValid() ? Actor->GetTypedOuter<UWorld>() : nullptr;
-			return World != nullptr && UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
+			return UWorld::IsPartitionedWorld(World);
 		});
 
 		if (!bShouldDisplayWorldPartitionProperties)
 		{
 			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetRuntimeGridPropertyName(), AActor::StaticClass()));
 			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetIsSpatiallyLoadedPropertyName(), AActor::StaticClass()));
-			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetDataLayersPropertyName(), AActor::StaticClass()));
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetDataLayerAssetsPropertyName(), AActor::StaticClass()));
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetDataLayerPropertyName(), AActor::StaticClass()));
 			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetHLODLayerPropertyName(), AActor::StaticClass()));
 		}
 
@@ -360,9 +361,7 @@ TSharedRef<SWidget> FActorDetails::OnGetConvertContent()
 
 EVisibility FActorDetails::GetConvertMenuVisibility() const
 {
-	return GLevelEditorModeTools().EnsureNotInMode(FBuiltinEditorModes::EM_InterpEdit) ?
-		EVisibility::Visible :
-		EVisibility::Collapsed;
+	return EVisibility::Visible;
 }
 
 TSharedRef<SWidget> FActorDetails::MakeConvertMenu( const FSelectedActorInfo& SelectedActorInfo )
@@ -518,7 +517,7 @@ void FActorDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder)
 			FText EventText = Property->GetDisplayNameText();
 
 			EventsCategory.AddCustomRow(EventText)
-			.NameContent()
+			.WholeRowContent()
 			[
 				SNew(SHorizontalBox)
 				.ToolTipText(Property->GetToolTipText())
@@ -529,7 +528,7 @@ void FActorDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder)
 				.Padding(0.0f, 0.0f, 5.0f, 0.0f)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("GraphEditor.Event_16x"))
+					.Image(FAppStyle::GetBrush("GraphEditor.Event_16x"))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -539,21 +538,23 @@ void FActorDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.Text(EventText)
 				]
-			]
-			// A green "Plus" button to add a binding. For dynamic delegates on the CDO, you can always
-			// make a new binding, so always display the "Plus"
-			.ValueContent()
-			.MinDesiredWidth(150.0f)
-			.MaxDesiredWidth(200.0f)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-				.HAlign(HAlign_Center)
-				.OnClicked(this, &FActorDetails::HandleAddOrViewEventForVariable, Blueprint, Property)
-				.ForegroundColor(FSlateColor::UseForeground())
-				[			
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Plus"))			
+
+				+ SHorizontalBox::Slot()
+				.HAlign(HAlign_Left)
+				.VAlign(VAlign_Center)
+				.Padding(0)
+				[
+					// A "Plus" button to add a binding. For dynamic delegates on the CDO, you can always
+					// make a new binding, so always display the "Plus"
+					SNew(SButton)
+					.ContentPadding(FMargin(3.0, 2.0))
+					.HAlign(HAlign_Center)
+					.OnClicked(this, &FActorDetails::HandleAddOrViewEventForVariable, Blueprint, Property)
+					[
+						SNew(SImage)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+						.Image(FAppStyle::Get().GetBrush("Icons.Plus"))
+					]
 				]
 			];
 		}
@@ -618,22 +619,45 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 	{
 		if (AActor* Actor = GEditor->GetSelectedActors()->GetTop<AActor>())
 		{
-			const FText ActorGuidText = FText::FromString(Actor->GetActorGuid().ToString());
-			ActorCategory.AddCustomRow( LOCTEXT("ActorGuid", "ActorGuid") )
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("ActorGuid2", "Actor Guid"))
-					.ToolTipText(LOCTEXT("ActorGuid_ToolTip", "Actor Guid"))
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-				]
-				.ValueContent()
-				[
-					SNew(STextBlock)
-						.Text(ActorGuidText)
+			if (Actor->GetActorGuid().IsValid())
+			{
+				const FText ActorGuidText = FText::FromString(Actor->GetActorGuid().ToString());
+				ActorCategory.AddCustomRow( LOCTEXT("ActorGuid", "ActorGuid") )
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ActorGuid2", "Actor Guid"))
+						.ToolTipText(LOCTEXT("ActorGuid_ToolTip", "Actor Guid"))
 						.Font(IDetailLayoutBuilder::GetDetailFont())
-						.IsEnabled(false)
-				];
+					]
+					.ValueContent()
+					[
+						SNew(STextBlock)
+							.Text(ActorGuidText)
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+							.IsEnabled(false)
+					];
+			}
+
+			if (Actor->GetContentBundleGuid().IsValid())
+			{
+				const FText ActorContentBundleGuidText = FText::FromString(Actor->GetContentBundleGuid().ToString());
+				ActorCategory.AddCustomRow( LOCTEXT("ContentBundleGuid", "ContentBundleGuid") )
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ContentBundleGuid2", "Content Bundle Guid"))
+						.ToolTipText(LOCTEXT("ActorContentBundleGuid_ToolTip", "Actor Content BundleGuid"))
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+					]
+					.ValueContent()
+					[
+						SNew(STextBlock)
+							.Text(ActorContentBundleGuidText)
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+							.IsEnabled(false)
+					];
+			}
 		}
 	};
 
@@ -663,10 +687,10 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 		.NameContent()
 		[
 			SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+				.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				.OnNavigate(this, &FActorDetails::OnNarrowSelectionSetToSpecificLevel, WeakLevelPtr)
 				.Text(ActorCountDescription)
-				.TextStyle(FEditorStyle::Get(), "DetailsView.HyperlinkStyle")
+				.TextStyle(FAppStyle::Get(), "DetailsView.HyperlinkStyle")
 				.ToolTipText(Tooltip)
 		]
 		.ValueContent()
@@ -704,7 +728,7 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 		if (SelectedActorInfo.SelectionClass != AWorldSettings::StaticClass())
 		{
 			// Actor Packaging Mode
-			const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(SelectedActorInfo.SharedWorld);
+			const bool bIsPartitionedWorld = UWorld::IsPartitionedWorld(SelectedActorInfo.SharedWorld);
 
 			auto OnGetMenuContent = [=]() -> TSharedRef<SWidget> {
 				FMenuBuilder MenuBuilder(true, nullptr);

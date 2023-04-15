@@ -2,6 +2,7 @@
 
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Misc/Paths.h"
+#include "Scalability.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectHash.h"
@@ -10,6 +11,8 @@
 
 #include "DeviceProfiles/DeviceProfileFragment.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DeviceProfile)
 
 DEFINE_LOG_CATEGORY_STATIC(LogDeviceProfile, Log, All);
 
@@ -24,6 +27,7 @@ UDeviceProfile::UDeviceProfile(const FObjectInitializer& ObjectInitializer)
 {
 	BaseProfileName = TEXT("");
 	DeviceType = TEXT("");
+	bIsVisibleForAssets = false;
 
 	bVisible = true;
 
@@ -31,6 +35,17 @@ UDeviceProfile::UDeviceProfile(const FObjectInitializer& ObjectInitializer)
 //	LoadConfig(GetClass(), *DeviceProfileFileName, UE::LCPF_ReadParentSections);
 }
 
+const FSelectedFragmentProperties* UDeviceProfile::GetFragmentByTag(FName& FragmentTag) const
+{
+	for (const FSelectedFragmentProperties& SelectedFragment : SelectedFragments)
+	{
+		if (SelectedFragment.Tag == FragmentTag)
+		{
+			return &SelectedFragment;
+		}
+	}
+	return nullptr;
+}
 
 void UDeviceProfile::GatherParentCVarInformationRecursively(OUT TMap<FString, FString>& CVarInformation) const
 {
@@ -75,19 +90,15 @@ UDeviceProfile* UDeviceProfile::GetParentProfile(bool bIncludeDefaultObject) con
 		{
 			ParentProfile = FindObject<UDeviceProfile>(GetTransientPackage(), *BaseProfileName);
 		}
-		if (!ParentProfile && bIncludeDefaultObject)
+		// don't find a parent for GlobalDefaults as it's the implied parent for everything (it would
+		// return itself which is bad)
+		if (!ParentProfile && bIncludeDefaultObject && GetName() != TEXT("GlobalDefaults"))
 		{
-			ParentProfile = CastChecked<UDeviceProfile>(UDeviceProfile::StaticClass()->GetDefaultObject());
+			ParentProfile = FindObject<UDeviceProfile>(GetTransientPackage(), TEXT("GlobalDefaults"));
 		}
 	}
 
 	return ParentProfile;
-}
-
-void UDeviceProfile::PostInitProperties()
-{
-	Super::PostInitProperties();
-	ValidateTextureLODGroups();
 }
 
 void UDeviceProfile::BeginDestroy()
@@ -375,12 +386,31 @@ const TMap<FString, FString>& UDeviceProfile::GetConsolidatedCVars() const
 
 
 #if ALLOW_OTHER_PLATFORM_CONFIG
+
+void UDeviceProfile::ExpandDeviceProfileCVars()
+{
+	// VisitPlatformCVarsForEmulation can't access Scalability.h, so make sure it doesn't change away from 3, or if it does, to fix up the hardcoded number
+	static_assert(Scalability::DefaultQualityLevel == 3, "If this trips, update this and IConsoleManager::VisitPlatformCVarsForEmulation with the new value!");
+
+	TMap<FString, FString> CVarsToAdd;
+	TMap<FString, FString> PreviewCVars;
+	IConsoleManager::VisitPlatformCVarsForEmulation(*DeviceType, GetName(),
+		[this](const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetByAndPreview)
+		{
+			AllExpandedCVars.Add(CVarName, CVarValue);
+			if (SetByAndPreview & EConsoleVariableFlags::ECVF_Preview)
+			{
+				AllPreviewCVars.Add(CVarName, CVarValue);
+			}
+		});
+}
+
 const TMap<FString, FString>& UDeviceProfile::GetAllExpandedCVars()
 {
 	// expand on first use
 	if (AllExpandedCVars.Num() == 0)
 	{
-		UDeviceProfileManager::Get().ExpandDeviceProfileCVars(this);
+		ExpandDeviceProfileCVars();
 	}
 
 	return AllExpandedCVars;
@@ -391,27 +421,10 @@ const TMap<FString, FString>& UDeviceProfile::GetAllPreviewCVars()
 	// expand on first use
 	if (AllPreviewCVars.Num() == 0)
 	{
-		UDeviceProfileManager::Get().ExpandDeviceProfileCVars(this);
+		ExpandDeviceProfileCVars();
 	}
 
 	return AllPreviewCVars;
-}
-
-void UDeviceProfile::AddExpandedCVars(const TMap<FString, FString>& CVarsToMerge)
-{
-	// merge the cvars, overwriting any existing ones
-	for (const auto& Pair : CVarsToMerge)
-	{
-		AllExpandedCVars.Add(Pair.Key, Pair.Value);
-	}
-}
-
-void UDeviceProfile::AddPreviewCVars(const TMap<FString, FString>& CVarsToMerge)
-{
-	for (const auto& Pair : CVarsToMerge)
-	{
-		AllPreviewCVars.Add(Pair.Key, Pair.Value);
-	}
 }
 
 void UDeviceProfile::ClearAllExpandedCVars()
@@ -420,6 +433,19 @@ void UDeviceProfile::ClearAllExpandedCVars()
 	AllPreviewCVars.Empty();
 }
 
+void UDeviceProfile::SetPreviewMemorySizeBucket(EPlatformMemorySizeBucket PreviewMemorySizeBucketIn)
+{ 
+	if (PreviewMemorySizeBucket != PreviewMemorySizeBucketIn)
+	{
+		PreviewMemorySizeBucket = PreviewMemorySizeBucketIn;
+		// If this changes then any cached cvars are likely to be invalid too.
+		ClearAllExpandedCVars();
+	}
+}
 
+EPlatformMemorySizeBucket UDeviceProfile::GetPreviewMemorySizeBucket() const
+{ 
+	return PreviewMemorySizeBucket;
+}
 
 #endif

@@ -9,7 +9,7 @@
 
 #include "ClearQuad.h"
 #include "SceneRendering.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RenderTargetPool.h"
 #include "RHIResources.h"
 #include "UniformBuffer.h"
@@ -291,14 +291,12 @@ class FRayTracingReflectionsRGS : public FGlobalShader
 
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColor)
-		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
 
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSkyLightVisibilityRaysData, SkyLightVisibilityRaysData)
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
-		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRaytracingLightDataPacked, LightDataPacked)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformParameters)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
@@ -399,7 +397,7 @@ bool ShouldRenderRayTracingReflections(const FViewInfo& View)
 		? bThisViewHasRaytracingReflections 
 		: GRayTracingReflections != 0;
 
-	const bool bReflectionPassEnabled = bReflectionsCvarEnabled && (GetRayTracingReflectionsSamplesPerPixel(View) > 0) && !View.bIsReflectionCapture;
+	const bool bReflectionPassEnabled = bReflectionsCvarEnabled && (GetRayTracingReflectionsSamplesPerPixel(View) > 0) && !View.bIsReflectionCapture && !Strata::IsStrataEnabled();
 		
 	return ShouldRenderRayTracingEffect(bReflectionPassEnabled, ERayTracingPipelineCompatibilityFlags::FullPipeline, &View);
 }
@@ -483,6 +481,11 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingReflections(const FViewInfo
 void FDeferredShadingSceneRenderer::PrepareRayTracingReflectionsDeferredMaterial(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
 	// Declare all RayGen shaders that are used with deferred material sorts
+
+	if (!ShouldRenderRayTracingReflections(View))
+	{
+		return;
+	}
 
 	if (CVarRayTracingReflectionsExperimentalDeferred.GetValueOnRenderThread())
 	{
@@ -670,18 +673,15 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 	CommonParameters.SkyLightDecoupleSampleGeneration = GetRayTracingSkyLightDecoupleSampleGenerationCVarValue();
 	CommonParameters.SampleMode = (int32)ESamplePhase::Monlithic;
 
-	CommonParameters.TLAS = View.GetRayTracingSceneViewChecked();
+	CommonParameters.TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	CommonParameters.ViewUniformBuffer = View.ViewUniformBuffer;
-	CommonParameters.LightDataPacked = View.RayTracingLightData.UniformBuffer;
-	CommonParameters.LightDataBuffer = View.RayTracingLightData.LightBufferSRV;
+	CommonParameters.LightDataPacked = View.RayTracingLightDataUniformBuffer;
 
 	CommonParameters.SceneTextures = SceneTextureParameters;
 	SetupSkyLightVisibilityRaysParameters(GraphBuilder, View, &CommonParameters.SkyLightVisibilityRaysData);
 
 	// Hybrid reflection path samples lit scene color texture instead of performing a ray trace.
 	CommonParameters.SceneColor = bHybridReflections ? SceneTextures.Color.Resolve : SystemTextures.Black;
-
-	CommonParameters.SSProfilesTexture = View.RayTracingSubSurfaceProfileTexture;
 
 	CommonParameters.ReflectionStruct = CreateReflectionUniformBuffer(View, EUniformBufferUsage::UniformBuffer_SingleFrame);
 	CommonParameters.FogUniformParameters = CreateFogUniformBuffer(GraphBuilder, View);
@@ -833,7 +833,8 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 		// Create a texture for the world-space normal imaginary reflection g-buffer.
 		FRDGTextureRef ImaginaryReflectionGBufferATexture;
 		{
-			FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(RayTracingBufferSize, SceneTextures.Config.GBufferA.Format, FClearValueBinding::Transparent, TexCreate_ShaderResource | TexCreate_UAV));
+			const FGBufferBindings& Bindings = SceneTextures.Config.GBufferBindings[GBL_Default];
+			FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(RayTracingBufferSize, Bindings.GBufferA.Format, FClearValueBinding::Transparent, TexCreate_ShaderResource | TexCreate_UAV));
 			ImaginaryReflectionGBufferATexture = GraphBuilder.CreateTexture(Desc, TEXT("ImaginaryReflectionGBufferA"));
 		}
 

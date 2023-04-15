@@ -8,6 +8,8 @@
 #include "NiagaraParameterDefinitions.h"
 #include "NiagaraScriptVariable.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEditorData)
+
 
 void UNiagaraEditorParametersAdapter::PostLoad()
 {
@@ -27,7 +29,7 @@ void UNiagaraEditorParametersAdapter::PostLoad()
 	{
 		for (TObjectPtr<UNiagaraScriptVariable> ScriptVariable : EditorOnlyScriptVars)
 		{
-			if (!ScriptVariable.IsNull() && ScriptVariable->Variable == OldVarType)
+			if (ScriptVariable && ScriptVariable->Variable == OldVarType)
 			{
 				ScriptVariable->Variable.SetType(FNiagaraTypeDefinition::GetPositionDef());
 			}
@@ -178,3 +180,4 @@ bool UNiagaraEditorParametersAdapter::SynchronizeParameterDefinitionsScriptVaria
 	}
 	return false;
 }
+

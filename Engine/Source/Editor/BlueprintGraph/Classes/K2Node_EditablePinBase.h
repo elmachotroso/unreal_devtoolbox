@@ -2,11 +2,30 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "CoreTypes.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
+#include "Math/Color.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_EditablePinBase.generated.h"
+
+class FArchive;
+class FFeedbackContext;
+class FOutputDevice;
+class UFunction;
+class UObject;
 
 USTRUCT()
 struct FUserPinInfo
@@ -45,7 +64,7 @@ struct FUserPinInfo
 USTRUCT()
 struct FKismetUserDeclaredFunctionMetadata
 {
-	GENERATED_USTRUCT_BODY()
+	GENERATED_BODY()
 
 	UPROPERTY()
 	FText ToolTip;
@@ -87,6 +106,23 @@ public:
 		, HasLatentFunctions(INDEX_NONE)
 	{
 	}
+
+	/** Set a metadata value on the function */
+	BLUEPRINTGRAPH_API void SetMetaData(FName Key, FString&& Value);
+	/** Set a metadata value on the function */
+	BLUEPRINTGRAPH_API void SetMetaData(FName Key, const FStringView Value);
+	/** Gets a metadata value on the function; asserts if the value isn't present. */
+	BLUEPRINTGRAPH_API const FString& GetMetaData(FName Key) const;
+	/** Clear metadata value on the function */
+	BLUEPRINTGRAPH_API void RemoveMetaData(FName Key);
+	/** Checks if there is metadata for a key */
+	BLUEPRINTGRAPH_API bool HasMetaData(FName Key) const;
+	/** Gets all metadata associated with this function */
+	BLUEPRINTGRAPH_API const TMap<FName, FString>& GetMetaDataMap() const;
+
+private:
+	UPROPERTY()
+	TMap<FName, FString> MetaDataMap;
 };
 
 UCLASS(abstract, MinimalAPI)

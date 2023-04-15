@@ -3,29 +3,26 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Volume.h"
+#include "WorldPartition/WorldPartitionActorLoaderInterface.h"
 #include "WorldPartitionVolume.generated.h"
 
-/**
- * A world partition volume to allow loading cells inside (editor-only)
- */
-UCLASS()
-class ENGINE_API AWorldPartitionVolume : public AVolume
+class FLoaderAdapterActor;
+
+UCLASS(Deprecated, meta = (DeprecationMessage = "WorldPartitionVolume has been replaced by LocationVolume"))
+class ENGINE_API ADEPRECATED_WorldPartitionVolume : public AVolume
 {
-	GENERATED_BODY()
-
-public:
-	AWorldPartitionVolume(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
-
-	// Begin AActor
-	virtual bool IsEditorOnly() const final { return true; }
-	// End AActor
-
-#if WITH_EDITOR
-	void LoadIntersectingCells(bool bIsFromUserChange);
-	void UnloadIntersectingCells(bool bIsFromUserChange);
-	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+	GENERATED_UCLASS_BODY()
 
 private:
-	virtual bool SupportsDataLayer() const override { return false; }
+#if WITH_EDITOR
+	virtual bool ActorTypeSupportsDataLayer() const override { return false; }
 #endif
+
+public:
+	//~ Begin AActor Interface
+	virtual bool IsEditorOnly() const override { return true; }
+#if WITH_EDITOR
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+#endif
+	//~ End AActor Interface
 };

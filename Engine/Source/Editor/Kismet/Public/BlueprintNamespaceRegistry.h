@@ -2,8 +2,17 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Delegates/IDelegateInstance.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
 
+class FName;
+class UObject;
 struct FAssetData;
 struct FBlueprintNamespacePathTree;
 
@@ -34,6 +43,16 @@ public:
 	 * @return TRUE if the given path identifier is currently registered.
 	 */
 	bool IsRegisteredPath(const FString& InPath) const;
+	
+	/**
+	 * @return TRUE if the given path identifier is inclusive of any registered paths.
+	 * 
+	 * Example: If "MyProject.MyNamespace" is a registered path, then both "MyProject" and "MyProject.MyNamespace" are inclusive paths.
+	 * 
+	 * Also note if a registered path is removed, inclusive paths may still be valid. For instance, if both "MyProject.MyNamespace" and
+	 * "MyProject.MyNamespace_2" are registered paths, and "MyProject.MyNamespace_2" is removed, "MyProject" is still an inclusive path.
+	 */
+	bool IsInclusivePath(const FString& InPath) const;
 
 	/**
 	 * @param InPath	Path identifier string (e.g. "X.Y" or "X.Y.").
@@ -53,6 +72,11 @@ public:
 	 */
 	void RegisterNamespace(const FString& InPath);
 
+	/**
+	 * Recreates the namespace registry.
+	 */
+	void Rebuild();
+
 protected:
 	FBlueprintNamespaceRegistry();
 
@@ -71,6 +95,9 @@ protected:
 	void DumpAllRegisteredPaths();
 	void OnDefaultNamespaceTypeChanged();
 
+	/** Handler for hot reload / live coding completion events. */
+	void OnReloadComplete(EReloadCompleteReason InReason);
+
 private:
 	/** Indicates whether the registry has been initialized. */
 	bool bIsInitialized;
@@ -79,8 +106,12 @@ private:
 	FDelegateHandle OnAssetAddedDelegateHandle;
 	FDelegateHandle OnAssetRemovedDelegateHandle;
 	FDelegateHandle OnAssetRenamedDelegateHandle;
+	FDelegateHandle OnReloadCompleteDelegateHandle;
 	FDelegateHandle OnDefaultNamespaceTypeChangedDelegateHandle;
 
 	/** Handles storage and retrieval for namespace path identifiers. */
 	TUniquePtr<FBlueprintNamespacePathTree> PathTree;
+
+	/** Internal set of objects to exclude during namespace registration. */
+	TSet<FSoftObjectPath> ExcludedObjectPaths;
 };

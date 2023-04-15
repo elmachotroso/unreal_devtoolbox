@@ -23,6 +23,7 @@ class FSceneView;
 class FSceneViewFamily;
 class UCanvas;
 class FOpenXRRenderBridge;
+class IOpenXRInputModule;
 
 /**
  * Simple Head Mounted Display
@@ -50,6 +51,28 @@ public:
 		XrPath Path;
 	};
 
+	class FTrackingSpace
+	{
+	public:
+		FTrackingSpace(XrReferenceSpaceType InType);
+		FTrackingSpace(XrReferenceSpaceType InType, XrPosef InBasePose);
+		~FTrackingSpace();
+
+		bool CreateSpace(XrSession InSession);
+		void DestroySpace();
+
+		XrReferenceSpaceType Type;
+		XrSpace Handle;
+		XrPosef BasePose;
+	};
+
+	struct FPluginViewInfo
+	{
+		class IOpenXRExtensionPlugin* Plugin = nullptr;
+		EStereoscopicPass PassType = EStereoscopicPass::eSSP_PRIMARY;
+		bool bIsPluginManaged = false;
+	};
+
 	// The game and render threads each have a separate copy of these structures so that they don't stomp on each other or cause tearing
 	// when the game thread progresses to the next frame while the render thread is still working on the previous frame.
 	struct FPipelinedFrameState
@@ -58,11 +81,12 @@ public:
 		XrViewState ViewState{XR_TYPE_VIEW_STATE};
 		TArray<XrView> Views;
 		TArray<XrSpaceLocation> DeviceLocations;
-		XrSpace TrackingSpace = XR_NULL_HANDLE;
+		TSharedPtr<FTrackingSpace> TrackingSpace;
 		float WorldToMetersScale = 100.0f;
+		float PixelDensity = 1.0f;
 
 		TArray<XrViewConfigurationView> ViewConfigs;
-		TArray<class IOpenXRExtensionPlugin*> PluginViews;
+		TArray<FPluginViewInfo> PluginViewInfos;
 
 		bool bXrFrameStateUpdated = false;
 	};
@@ -79,6 +103,9 @@ public:
 		FXRSwapChainPtr ColorSwapchain;
 		FXRSwapChainPtr DepthSwapchain;
 		TArray<FXRSwapChainPtr> QuadSwapchains;
+
+		bool bBackgroundLayerVisible = true;
+		bool bSubmitBackgroundLayer = true;
 	};
 
 	class FVulkanExtensions : public IHeadMountedDisplayVulkanExtensions
@@ -131,24 +158,33 @@ public:
 	virtual float GetInterpupillaryDistance() const override;
 	virtual bool GetRelativeEyePose(int32 InDeviceId, int32 InViewIndex, FQuat& OutOrientation, FVector& OutPosition) override;
 
-	virtual void ResetOrientationAndPosition(float yaw = 0.f) override;
+	virtual void ResetOrientationAndPosition(float Yaw = 0.f) override;
 	virtual void ResetOrientation(float Yaw = 0.f) override;
 	virtual void ResetPosition() override;
+	virtual void Recenter(EOrientPositionSelector::Type Selector, float Yaw = 0.f);
 
 	virtual bool GetIsTracked(int32 DeviceId);
 	virtual bool GetCurrentPose(int32 DeviceId, FQuat& CurrentOrientation, FVector& CurrentPosition) override;
 	virtual bool GetPoseForTime(int32 DeviceId, FTimespan Timespan, bool& OutTimeWasUsed, FQuat& CurrentOrientation, FVector& CurrentPosition, bool& bProvidedLinearVelocity, FVector& LinearVelocity, bool& bProvidedAngularVelocity, FVector& AngularVelocityRadPerSec, bool& bProvidedLinearAcceleration, FVector& LinearAcceleration, float WorldToMetersScale);
-	virtual void SetBaseRotation(const FRotator& BaseRot) override;
+	virtual bool GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile) override;
+	
+	virtual void SetBaseRotation(const FRotator& InBaseRotation) override;
 	virtual FRotator GetBaseRotation() const override;
 
-	virtual void SetBaseOrientation(const FQuat& BaseOrient) override;
+	virtual void SetBaseOrientation(const FQuat& InBaseOrientation) override;
 	virtual FQuat GetBaseOrientation() const override;
+
+	virtual void SetBasePosition(const FVector& InBasePosition) override;
+	virtual FVector GetBasePosition() const override;
 
 	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override
 	{
-		TrackingSpaceType = (NewOrigin == EHMDTrackingOrigin::Eye || StageSpace == XR_NULL_HANDLE) ? XR_REFERENCE_SPACE_TYPE_LOCAL : XR_REFERENCE_SPACE_TYPE_STAGE;
+		if (!bUseCustomReferenceSpace)
+		{
+			TrackingSpaceType = (NewOrigin == EHMDTrackingOrigin::Eye || StageSpace == XR_NULL_HANDLE) ? XR_REFERENCE_SPACE_TYPE_LOCAL : XR_REFERENCE_SPACE_TYPE_STAGE;
+			bTrackingSpaceInvalid = true;
+		}
 	}
-
 	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() const override
 	{
 		return (TrackingSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) ? EHMDTrackingOrigin::Eye : EHMDTrackingOrigin::Stage;
@@ -175,6 +211,10 @@ public:
 	virtual float GetWorldToMetersScale() const override;
 
 	virtual FVector2D GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const override;
+	virtual bool GetPlayAreaRect(FTransform& OutTransform, FVector2D& OutExtent) const override;
+	virtual bool GetTrackingOriginTransform(TEnumAsByte<EHMDTrackingOrigin::Type> Origin, FTransform& OutTransform)  const override;
+
+	virtual bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported) override;
 
 protected:
 
@@ -196,11 +236,23 @@ protected:
 	void UpdateDeviceLocations(bool bUpdateOpenXRExtensionPlugins);
 	void EnumerateViews(FPipelinedFrameState& PipelineState);
 	void LocateViews(FPipelinedFrameState& PipelinedState, bool ResizeViewsArray = false);
+	bool IsViewManagedByPlugin(int32 ViewIndex) const;
 
 	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, 
 								  bool bClearBlack, bool bNoAlpha, ERenderTargetActions RTAction, ERHIAccess FinalDstAccess) const;
 	
 	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const;
+
+	void AllocateDepthTextureInternal(uint32 Index, uint32 SizeX, uint32 SizeY, uint32 NumSamples);
+
+	// Used with FCoreDelegates
+	void VRHeadsetRecenterDelegate();
+
+	void SetupFrameQuadLayers_RenderThread(FRHICommandListImmediate& RHICmdList);
+	void DrawEmulatedQuadLayers_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& InView);
+
+	/** TStereoLayerManager<FOpenXRLayer> */
+	void UpdateLayer(FOpenXRLayer& ManagerLayer, uint32 LayerId, bool bIsValid) override;
 
 public:
 	/** IXRTrackingSystem interface */
@@ -217,6 +269,8 @@ public:
 	virtual bool GetHMDMonitorInfo(MonitorInfo&) override;
 	virtual void GetFieldOfView(float& OutHFOVInDegrees, float& OutVFOVInDegrees) const override;
 	virtual bool IsChromaAbCorrectionEnabled() const override;
+	virtual float GetPixelDenity() const override;
+	virtual void SetPixelDensity(const float NewDensity) override;
 	virtual FIntPoint GetIdealRenderTargetSize() const override;
 	virtual bool GetHMDDistortionEnabled(EShadingPath ShadingPath) const override { return false; }
 	virtual FIntRect GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const override;
@@ -239,31 +293,37 @@ public:
 	virtual int32 GetDesiredNumberOfViews(bool bStereoRequested) const override;
 	virtual EStereoscopicPass GetViewPassForIndex(bool bStereoRequested, int32 ViewIndex) const override;
 	virtual uint32 GetLODViewIndex() const override;
-	
+	virtual bool IsStandaloneStereoOnlyDevice() const override { return bIsStandaloneStereoOnlyDevice; }
+
 	virtual FMatrix GetStereoProjectionMatrix(const int32 StereoViewIndex) const override;
 	virtual void GetEyeRenderParams_RenderThread(const struct FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override;
-	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
+	virtual void RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture* BackBuffer, class FRHITexture* SrcTexture, FVector2D WindowSize) const override;
 
 	/** ISceneViewExtension interface */
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override;
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
+	virtual void PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override; // for non-face locked compositing
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
+	virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
 
 	/** FHMDSceneViewExtension interface */
-	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const;
+	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 
 	/** IStereoRenderTargetManager */
-	virtual bool ShouldUseSeparateRenderTarget() const override { return IsStereoEnabled(); }
+	virtual bool ShouldUseSeparateRenderTarget() const override { return IsStereoEnabled() && RenderBridge.IsValid(); }
+	virtual void CalculateRenderTargetSize(const FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY) override;
 	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
 	virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<IPooledRenderTarget>& DepthTarget) override final { return bNeedReAllocatedDepth; }
 	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override final;
+	virtual EPixelFormat GetActualColorSwapchainFormat() const override { return static_cast<EPixelFormat>(LastActualColorSwapchainFormat); }
 
+	/** FXRRenderTargetManager */
 	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget) override;
 
-	/** IStereoRenderTargetManager */
+	/** IXRTrackingSystem */
 	virtual void OnBeginPlay(FWorldContext& InWorldContext) override;
 	virtual void OnEndPlay(FWorldContext& InWorldContext) override;
 
@@ -280,6 +340,11 @@ public:
 	/** Constructor */
 	FOpenXRHMD(const FAutoRegister&, XrInstance InInstance, XrSystemId InSystem, TRefCountPtr<FOpenXRRenderBridge>& InRenderBridge, TArray<const char*> InEnabledExtensions, TArray<class IOpenXRExtensionPlugin*> InExtensionPlugins, IARSystemSupport* ARSystemSupport);
 
+	void SetInputModule(IOpenXRInputModule* InInputModule)
+	{
+		InputModule = InInputModule;
+	}
+
 	/** Destructor */
 	virtual ~FOpenXRHMD();
 
@@ -295,24 +360,15 @@ public:
 	OPENXRHMD_API int32 AddActionDevice(XrAction Action, XrPath Path);
 	OPENXRHMD_API void ResetActionDevices();
 	OPENXRHMD_API XrPath GetTrackedDevicePath(const int32 DeviceId);
+	OPENXRHMD_API XrSpace GetTrackedDeviceSpace(const int32 DeviceId);
 
 	OPENXRHMD_API bool IsExtensionEnabled(const FString& Name) const { return EnabledExtensions.Contains(Name); }
 	OPENXRHMD_API XrInstance GetInstance() { return Instance; }
 	OPENXRHMD_API XrSystemId GetSystem() { return System; }
 	OPENXRHMD_API XrSession GetSession() { return Session; }
-	OPENXRHMD_API XrSpace GetTrackingSpace()
-	{
-		if (CustomSpace != XR_NULL_HANDLE)
-		{
-			return CustomSpace;
-		}
-		
-		return (TrackingSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE) ? StageSpace : LocalSpace;
-	}
 	OPENXRHMD_API XrTime GetDisplayTime() const;
+	OPENXRHMD_API XrSpace GetTrackingSpace() const;
 	OPENXRHMD_API TArray<IOpenXRExtensionPlugin*>& GetExtensionPlugins() { return ExtensionPlugins; }
-
-	OPENXRHMD_API bool IsStandaloneStereoOnlyDevice() const { return bIsStandaloneStereoOnlyDevice; }
 
 private:
 	bool					bStereoEnabled;
@@ -329,14 +385,17 @@ private:
 	bool					bNeedReBuildOcclusionMesh;
 	bool					bIsMobileMultiViewEnabled;
 	bool					bSupportsHandTracking;
+	bool					bSpaceAccellerationSupported;
 	bool					bProjectionLayerAlphaEnabled;
 	bool					bIsStandaloneStereoOnlyDevice;
 	float					WorldToMetersScale = 100.0f;
+	float					RuntimePixelDensityMax = FHeadMountedDisplayBase::PixelDensityMax;
 
 	XrSessionState			CurrentSessionState;
 	FRWLock					SessionHandleMutex;
 
 	TArray<const char*>		EnabledExtensions;
+	IOpenXRInputModule*		InputModule;
 	TArray<class IOpenXRExtensionPlugin*> ExtensionPlugins;
 	XrInstance				Instance;
 	XrSystemId				System;
@@ -357,15 +416,25 @@ private:
 	FPipelinedLayerState	PipelinedLayerStateRendering;
 	FPipelinedLayerState	PipelinedLayerStateRHI;
 
-	FRWLock					DeviceMutex;
+	mutable FRWLock			DeviceMutex;
 	TArray<FDeviceSpace>	DeviceSpaces;
 
 	TRefCountPtr<FOpenXRRenderBridge> RenderBridge;
 	IRendererModule*		RendererModule;
 
-	uint8					LastRequestedSwapchainFormat;
+	uint8					LastRequestedColorSwapchainFormat;
+	uint8					LastActualColorSwapchainFormat;
 	uint8					LastRequestedDepthSwapchainFormat;
 
 	TArray<FHMDViewMesh>	HiddenAreaMeshes;
 	TArray<FHMDViewMesh>	VisibleAreaMeshes;
+
+	bool					bTrackingSpaceInvalid;
+	bool					bUseCustomReferenceSpace;
+	FQuat					BaseOrientation;
+	FVector					BasePosition;
+
+	bool					bNativeWorldQuadLayerSupport;
+	TArray<IStereoLayers::FLayerDesc> EmulatedSceneLayers;
+	TArray<FOpenXRLayer>			  NativeQuadLayers;
 };

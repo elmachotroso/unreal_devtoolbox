@@ -17,12 +17,15 @@
 #include "DynamicMeshToMeshDescription.h"
 
 #include "Physics/ComponentCollisionUtil.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #include "TargetInterfaces/MeshDescriptionCommitter.h"
 #include "TargetInterfaces/MeshDescriptionProvider.h"
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ToolTargetManager.h"
 #include "ModelingToolTargetUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BakeTransformTool)
 
 using namespace UE::Geometry;
 
@@ -71,10 +74,15 @@ void UBakeTransformTool::Setup()
 	}
 
 	bool bHasZeroScales = false;
+	BasicProperties->bAllowNoScale = true;
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
 	{
 		FTransform Transform = (FTransform)UE::ToolTarget::GetLocalToWorldTransform(Targets[ComponentIdx]);
-		if (Transform.GetScale3D().GetAbsMin() < KINDA_SMALL_NUMBER)
+		FVector Scale = Transform.GetScale3D();
+		// Set variable so a DetailCustomization can disable "DoNotBakeScale" if we have some targets w/ both rotation and non-uniform scale
+		// Note we could relax this to allow DoNotBakeScale if the rotation axis is aligned to the non-uniform scale axis, but that might make the enable/disable condition harder to understand.
+		BasicProperties->bAllowNoScale = BasicProperties->bAllowNoScale && (Transform.GetRotation().IsIdentity() || Transform.GetScale3D().AllComponentsEqual());
+		if (Scale.GetAbsMin() < KINDA_SMALL_NUMBER)
 		{
 			bHasZeroScales = true;
 		}
@@ -110,20 +118,48 @@ void UBakeTransformTool::UpdateAssets()
 	// This is to avoid potential stability issues related to creation/load of
 	// mesh descriptions inside a transaction.
 	// TODO: this may not be necessary anymore. Also may not be the most efficient
-	TArray<FMeshDescription> SourceMeshes;
+	// Note: for the crash workaround below, this also now pre-computes the source mesh bounds
+	TArray<FBox> SourceMeshBounds;
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
 	{
-		UE::ToolTarget::GetMeshDescription(Targets[ComponentIdx]);
+		const FMeshDescription* MeshDescription = UE::ToolTarget::GetMeshDescription(Targets[ComponentIdx]);
+		if (MapToFirstOccurrences[ComponentIdx] < ComponentIdx)
+		{
+			SourceMeshBounds.Add(SourceMeshBounds[MapToFirstOccurrences[ComponentIdx]]);
+		}
+		else
+		{
+			SourceMeshBounds.Add(MeshDescription->ComputeBoundingBox());
+		}
 	}
 
-	GetToolManager()->BeginUndoTransaction(LOCTEXT("BakeTransformToolTransactionName", "Bake Transforms"));
+	constexpr bool bWorkaroundForCrashIfConvexAndMeshModifiedInSameTransaction = true;
+	bool bNeedSeparateTransactionForSimpleCollision = false;
+	if constexpr (bWorkaroundForCrashIfConvexAndMeshModifiedInSameTransaction)
+	{
+		for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
+		{
+			UToolTarget* Target = Targets[ComponentIdx];
+			UPrimitiveComponent* Component = UE::ToolTarget::GetTargetComponent(Target);
+			if (UE::Geometry::ComponentTypeSupportsCollision(Component))
+			{
+				if (UBodySetup* BodySetup = UE::Geometry::GetBodySetup(Component))
+				{
+					if (BodySetup->AggGeom.ConvexElems.Num() > 0)
+					{
+						bNeedSeparateTransactionForSimpleCollision = true;
+						break;
+					}
+				}
+			}
+		}
+	}
 
-	TArray<FTransformSRT3d> BakedTransforms;
+	// Compute all the transforms that we should bake to the assets or apply to the components
+	TArray<FTransformSRT3d> BakedTransforms, ComponentTransforms;
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
 	{
 		UToolTarget* Target = Targets[ComponentIdx];
-		UPrimitiveComponent* Component = UE::ToolTarget::GetTargetComponent(Target);
-		Component->Modify();
 
 		FTransformSRT3d ComponentToWorld = UE::ToolTarget::GetLocalToWorldTransform(Target);
 		FTransformSRT3d ToBakePart = FTransformSRT3d::Identity();
@@ -192,19 +228,62 @@ void UBakeTransformTool::UpdateAssets()
 				check(false); // must explicitly handle all cases
 			}
 
-			// apply edit
-			FMeshDescription SourceMesh(UE::ToolTarget::GetMeshDescriptionCopy(Targets[ComponentIdx]));
-			FMeshDescriptionEditableTriangleMeshAdapter EditableMeshDescAdapter(&SourceMesh);
-
 			// do this part within the commit because we have the MeshDescription already computed
 			if (BasicProperties->bRecenterPivot)
 			{
-				FBox BBox = SourceMesh.ComputeBoundingBox();
+				FBox BBox = SourceMeshBounds[ComponentIdx];
 				FVector3d Center(BBox.GetCenter());
 				FFrame3d LocalFrame(Center);
 				ToBakePart.SetTranslation(ToBakePart.GetTranslation() - Center);
 				NewWorldPart.SetTranslation(NewWorldPart.GetTranslation() + NewWorldPart.TransformVector(Center));
 			}
+
+			BakedTransforms.Add(ToBakePart);
+		}
+
+		ComponentTransforms.Add(NewWorldPart);
+	}
+
+	auto UpdateSimpleCollision = [](UPrimitiveComponent* Component, const FTransformSRT3d& ToBakePart)
+	{
+		// try to transform simple collision
+		if (UE::Geometry::ComponentTypeSupportsCollision(Component))
+		{
+			UE::Geometry::TransformSimpleCollision(Component, ToBakePart);
+		}
+	};
+
+	// If necessary, make a first transaction to bake simple collision updates separately (works around crash in undo/redo of transactions that update both hulls and static meshes together)
+	if (bNeedSeparateTransactionForSimpleCollision)
+	{
+		GetToolManager()->BeginUndoTransaction(LOCTEXT("BakeTransformToolSimpleCollisionTransactionName", "Bake Transforms Part 1 (Simple Collision)"));
+		for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
+		{
+			UToolTarget* Target = Targets[ComponentIdx];
+			UPrimitiveComponent* Component = UE::ToolTarget::GetTargetComponent(Target);
+			Component->Modify();
+			UpdateSimpleCollision(Component, BakedTransforms[ComponentIdx]);
+		}
+		GetToolManager()->EndUndoTransaction();
+	}
+
+	GetToolManager()->BeginUndoTransaction(bNeedSeparateTransactionForSimpleCollision ?
+		LOCTEXT("BakeTransformToolGeometryTransactionName", "Bake Transforms Part 2 (Visible Geometry)") :
+		LOCTEXT("BakeTransformToolTransactionName", "Bake Transforms"));
+
+	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
+	{
+		UToolTarget* Target = Targets[ComponentIdx];
+		UPrimitiveComponent* Component = UE::ToolTarget::GetTargetComponent(Target);
+		Component->Modify();
+
+		FTransformSRT3d ToBakePart = BakedTransforms[ComponentIdx];
+
+		if (MapToFirstOccurrences[ComponentIdx] == ComponentIdx)
+		{
+			// apply edit
+			FMeshDescription SourceMesh(UE::ToolTarget::GetMeshDescriptionCopy(Targets[ComponentIdx]));
+			FMeshDescriptionEditableTriangleMeshAdapter EditableMeshDescAdapter(&SourceMesh);
 
 			MeshAdapterTransforms::ApplyTransform(EditableMeshDescAdapter, ToBakePart);
 
@@ -217,16 +296,15 @@ void UBakeTransformTool::UpdateAssets()
 			// todo: support vertex-only update
 			UE::ToolTarget::CommitMeshDescriptionUpdate(Target, &SourceMesh);
 
-			// try to transform simple collision
-			if (UE::Geometry::ComponentTypeSupportsCollision(Component))
+			if (!bNeedSeparateTransactionForSimpleCollision)
 			{
-				UE::Geometry::TransformSimpleCollision(Component, ToBakePart);
+				UpdateSimpleCollision(Component, ToBakePart);
 			}
 
 			BakedTransforms.Add(ToBakePart);
 		}
 
-		Component->SetWorldTransform((FTransform)NewWorldPart);
+		Component->SetWorldTransform((FTransform)ComponentTransforms[ComponentIdx]);
 
 		AActor* TargetActor = UE::ToolTarget::GetTargetActor(Target);
 		if (TargetActor)
@@ -258,3 +336,4 @@ void UBakeTransformTool::UpdateAssets()
 
 
 #undef LOCTEXT_NAMESPACE
+

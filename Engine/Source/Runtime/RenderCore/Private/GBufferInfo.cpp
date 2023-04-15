@@ -19,7 +19,7 @@ static const int32 EGBufferFormat_Force16BitsPerChannel = 5;
 
 
 // Strata::IsEnabled is only accessible in the Renderer module
-static bool IsStrataEnabled()
+bool RenderCore_IsStrataEnabled()
 {
 	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Strata"));
 	return CVar->GetInt() > 0;
@@ -148,6 +148,9 @@ FGBufferBinding FindGBufferBindingByName(const FGBufferInfo& GBufferInfo, const 
 
 		switch (Target.TargetType)
 		{
+		case GBT_Unorm_16_16:
+			PixelFormat = PF_G16R16;
+			break;
 		case GBT_Unorm_8_8_8_8:
 			PixelFormat = PF_B8G8R8A8;
 			break;
@@ -157,11 +160,14 @@ FGBufferBinding FindGBufferBindingByName(const FGBufferInfo& GBufferInfo, const 
 		case GBT_Unorm_10_10_10_2:
 			PixelFormat = PF_A2B10G10R10;
 			break;
+		case GBT_Unorm_16_16_16_16:
+			PixelFormat = PF_A16B16G16R16;
+			break;
 		case GBT_Float_16_16:
-			PixelFormat = PF_G16R16;
+			PixelFormat = PF_G16R16F;
 			break;
 		case GBT_Float_16_16_16_16:
-			PixelFormat = PF_A16B16G16R16;
+			PixelFormat = PF_FloatRGBA;
 			break;
 		case GBT_Invalid:
 		default:
@@ -236,9 +242,10 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 	int32 TargetGBufferE = -1;
 	int32 TargetGBufferF = -1;
 	int32 TargetVelocity = -1;
+	int32 TargetSeparatedMainDirLight = -1;
 
 	// Strata ouputs material data through UAV. Only SceneColor, PrecalcShadow & Velocity data are still emitted through RenderTargets
-	const bool bStrata = IsStrataEnabled();
+	const bool bStrata = RenderCore_IsStrataEnabled();
 	if (bStrata)
 	{
 		TargetGBufferA = -1;
@@ -254,6 +261,10 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 		{
 			TargetGBufferE = Info.NumTargets++;
 		}
+		if (Params.bHasSingleLayerWaterSeparatedMainLight)
+		{
+			TargetSeparatedMainDirLight = Info.NumTargets++;
+		}
 
 		// this value isn't correct, becuase it doesn't resepect the scene color format cvar, but it's ignored anyways
 		// so it's ok for now
@@ -265,7 +276,7 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 
 		if (Params.bHasVelocity)
 		{
-			Info.Targets[TargetVelocity].Init(Params.bUsesVelocityDepth ? GBT_Float_16_16_16_16 : GBT_Float_16_16, TEXT("Velocity"), false, true, true, false); // Velocity
+			Info.Targets[TargetVelocity].Init(Params.bUsesVelocityDepth ? GBT_Unorm_16_16_16_16 : (IsAndroidOpenGLESPlatform(Params.ShaderPlatform) ? GBT_Float_16_16 : GBT_Unorm_16_16), TEXT("Velocity"), false, true, true, false); // Velocity
 			Info.Slots[GBS_Velocity] = FGBufferItem(GBS_Velocity, Params.bUsesVelocityDepth ? GBC_Raw_Float_16_16_16_16 : GBC_Raw_Float_16_16, GBCH_Both);
 			Info.Slots[GBS_Velocity].Packing[0] = FGBufferPacking(TargetVelocity, 0, 0);
 			Info.Slots[GBS_Velocity].Packing[1] = FGBufferPacking(TargetVelocity, 1, 1);
@@ -287,6 +298,14 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 			Info.Slots[GBS_PrecomputedShadowFactor].Packing[3] = FGBufferPacking(TargetGBufferE, 3, 3);
 		}
 
+		// Special water output
+		if (Params.bHasSingleLayerWaterSeparatedMainLight)
+		{
+			Info.Slots[GBS_SeparatedMainDirLight] = FGBufferItem(GBS_SeparatedMainDirLight, GBC_Raw_Float_11_11_10, GBCH_Both);
+			Info.Slots[GBS_SeparatedMainDirLight].Packing[0] = FGBufferPacking(TargetSeparatedMainDirLight, 0, 0);
+			Info.Slots[GBS_SeparatedMainDirLight].Packing[1] = FGBufferPacking(TargetSeparatedMainDirLight, 1, 1);
+			Info.Slots[GBS_SeparatedMainDirLight].Packing[2] = FGBufferPacking(TargetSeparatedMainDirLight, 2, 2);
+		}
 
 		return Info;
 	}
@@ -330,15 +349,18 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 	const bool bLegacyAlbedoSrgb = true;
 	Info.Targets[3].Init(DiffuseAndSpecularGBufferFormat,  TEXT("GBufferC"), bLegacyAlbedoSrgb && !bHighPrecisionGBuffers,  true,  true,  true);
 
+	// This code should match TBasePassPS
 	if (Params.bHasVelocity == 0 && Params.bHasTangent == 0)
 	{
 		TargetGBufferD = 4;
 		Info.Targets[4].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferD"), false,  true,  true,  true);
+		TargetSeparatedMainDirLight = 5;
 
 		if (Params.bHasPrecShadowFactor)
 		{
 			TargetGBufferE = 5;
-			Info.Targets[5].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferE"), false,  true,  true,  true);
+			Info.Targets[5].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferE"), false, true, true, true);
+			TargetSeparatedMainDirLight = 6;
 		}
 	}
 	else if (Params.bHasVelocity)
@@ -347,13 +369,15 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 		TargetGBufferD = 5;
 
 		// note the false for use extra flags for velocity, not quite sure of all the ramifications, but this keeps it consistent with previous usage
-		Info.Targets[4].Init(Params.bUsesVelocityDepth ? GBT_Float_16_16_16_16 : GBT_Float_16_16,   TEXT("Velocity"), false,  true,  true, false);
-		Info.Targets[5].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferD"), false,  true,  true,  true);
+		Info.Targets[4].Init(Params.bUsesVelocityDepth ? GBT_Unorm_16_16_16_16 : (IsAndroidOpenGLESPlatform(Params.ShaderPlatform) ? GBT_Float_16_16 : GBT_Unorm_16_16), TEXT("Velocity"), false, true, true, false);
+		Info.Targets[5].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferD"), false, true, true, true);
+		TargetSeparatedMainDirLight = 6;
 
 		if (Params.bHasPrecShadowFactor)
 		{
 			TargetGBufferE = 6;
-			Info.Targets[6].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferE"), false,  true,  true, false);
+			Info.Targets[6].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferE"), false, true, true, false);
+			TargetSeparatedMainDirLight = 7;
 		}
 	}
 	else if (Params.bHasTangent)
@@ -361,11 +385,13 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 		TargetGBufferF = 4;
 		TargetGBufferD = 5;
 		Info.Targets[4].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferF"), false,  true,  true,  true);
-		Info.Targets[5].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferD"), false,  true,  true,  true);
+		Info.Targets[5].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferD"), false, true, true, true);
+		TargetSeparatedMainDirLight = 6;
 		if (Params.bHasPrecShadowFactor)
 		{
 			TargetGBufferE = 6;
-			Info.Targets[6].Init(GBT_Unorm_8_8_8_8,  TEXT("GBufferE"), false,  true,  true,  true);
+			Info.Targets[6].Init(GBT_Unorm_8_8_8_8, TEXT("GBufferE"), false, true, true, true);
+			TargetSeparatedMainDirLight = 7;
 		}
 	}
 	else
@@ -499,6 +525,15 @@ FGBufferInfo RENDERCORE_API FetchLegacyGBufferInfo(const FGBufferParams& Params)
 	Info.Slots[GBS_CustomData].Packing[1] = FGBufferPacking(TargetGBufferD, 1, 1);
 	Info.Slots[GBS_CustomData].Packing[2] = FGBufferPacking(TargetGBufferD, 2, 2);
 	Info.Slots[GBS_CustomData].Packing[3] = FGBufferPacking(TargetGBufferD, 3, 3);
+
+	// Special water output
+	if (Params.bHasSingleLayerWaterSeparatedMainLight)
+	{
+		Info.Slots[GBS_SeparatedMainDirLight] = FGBufferItem(GBS_SeparatedMainDirLight, GBC_Raw_Float_11_11_10, GBCH_Both);
+		Info.Slots[GBS_SeparatedMainDirLight].Packing[0] = FGBufferPacking(TargetSeparatedMainDirLight, 0, 0);
+		Info.Slots[GBS_SeparatedMainDirLight].Packing[1] = FGBufferPacking(TargetSeparatedMainDirLight, 1, 1);
+		Info.Slots[GBS_SeparatedMainDirLight].Packing[2] = FGBufferPacking(TargetSeparatedMainDirLight, 2, 2);
+	}
 
 	return Info;
 }

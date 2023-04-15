@@ -18,77 +18,8 @@
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
 
-namespace FStateTreeViewUtilities
+namespace UE::StateTree::Editor
 {
-	// Remove state from the array. Recurses into children if no match found.
-	bool RemoveRecursive(TArray<UStateTreeState*>& Array, UStateTreeState* StateToRemove)
-	{
-		if (!StateToRemove)
-		{
-			return false;
-		}
-
-		int32 ItemIndex = Array.Find(StateToRemove);
-		if (ItemIndex != INDEX_NONE)
-		{
-			Array.RemoveAt(ItemIndex);
-			StateToRemove->Parent = nullptr;
-			return true;
-		}
-
-		// Did not successfully remove an item. Try all the children.
-		for (int32 i = 0; i < Array.Num(); ++i)
-		{
-			if (RemoveRecursive(Array[i]->Children, StateToRemove))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	// Insert state in the array relative to target state. Recurses into children if no match found.
-	bool InsertRecursive(UStateTreeState* ParentState, TArray<UStateTreeState*>& ParentArray, UStateTreeState* TargetState, UStateTreeState* StateToInsert, int32 RelativeLocation)
-	{
-		if (!StateToInsert || !TargetState)
-		{
-			return false;
-		}
-
-		const int32 TargetIndex = ParentArray.Find(TargetState);
-		if (TargetIndex != INDEX_NONE)
-		{
-			if (RelativeLocation == -1)
-			{
-				ParentArray.Insert(StateToInsert, TargetIndex);
-				StateToInsert->Parent = ParentState;
-			}
-			else if (RelativeLocation == 1)
-			{
-				ParentArray.Insert(StateToInsert, TargetIndex + 1);
-				StateToInsert->Parent = ParentState;
-			}
-			else
-			{
-				ensure(RelativeLocation == 0);
-				ParentArray[TargetIndex]->Children.Insert(StateToInsert, 0);
-				StateToInsert->Parent = ParentArray[TargetIndex];
-			}
-			return true;
-		}
-
-		for (int32 i = 0; i < ParentArray.Num(); ++i)
-		{
-			if (InsertRecursive(ParentArray[i], ParentArray[i]->Children, TargetState, StateToInsert, RelativeLocation))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	// Removes states from the array which are children of any other state.
 	void RemoveContainedChildren(TArray<UStateTreeState*>& States)
 	{
@@ -148,7 +79,7 @@ namespace FStateTreeViewUtilities
 
 
 FStateTreeViewModel::FStateTreeViewModel()
-	: TreeData(nullptr)
+	: TreeDataWeak(nullptr)
 {
 }
 
@@ -161,15 +92,16 @@ FStateTreeViewModel::~FStateTreeViewModel()
 
 void FStateTreeViewModel::Init(UStateTreeEditorData* InTreeData)
 {
-	TreeData = InTreeData;
+	TreeDataWeak = InTreeData;
 
 	GEditor->RegisterForUndo(this);
 
 	UE::StateTree::Delegates::OnIdentifierChanged.AddSP(this, &FStateTreeViewModel::HandleIdentifierChanged);
 }
 
-void FStateTreeViewModel::HandleIdentifierChanged(const UStateTree& StateTree)
+void FStateTreeViewModel::HandleIdentifierChanged(const UStateTree& StateTree) const
 {
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
 	const UStateTree* OuterStateTree = TreeData ? Cast<UStateTree>(TreeData->GetOuter()) : nullptr;
 	if (OuterStateTree == &StateTree)
 	{
@@ -177,24 +109,38 @@ void FStateTreeViewModel::HandleIdentifierChanged(const UStateTree& StateTree)
 	}
 }
 
-void FStateTreeViewModel::NotifyAssetChangedExternally()
+void FStateTreeViewModel::NotifyAssetChangedExternally() const
 {
 	OnAssetChanged.Broadcast();
 }
 
-void FStateTreeViewModel::NotifyStatesChangedExternally(const TSet<UStateTreeState*>& ChangedStates, const FPropertyChangedEvent& PropertyChangedEvent)
+void FStateTreeViewModel::NotifyStatesChangedExternally(const TSet<UStateTreeState*>& ChangedStates, const FPropertyChangedEvent& PropertyChangedEvent) const
 {
 	OnStatesChanged.Broadcast(ChangedStates, PropertyChangedEvent);
 }
 
-TArray<UStateTreeState*>* FStateTreeViewModel::GetSubTrees()
+TArray<UStateTreeState*>* FStateTreeViewModel::GetSubTrees() const
 {
-	return TreeData != nullptr ? &TreeData->SubTrees : nullptr;
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	return TreeData != nullptr ? &ToRawPtrTArrayUnsafe(TreeData->SubTrees) : nullptr;
 }
 
 int32 FStateTreeViewModel::GetSubTreeCount() const
 {
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
 	return TreeData != nullptr ? TreeData->SubTrees.Num() : 0;
+}
+
+void FStateTreeViewModel::GetSubTrees(TArray<TWeakObjectPtr<UStateTreeState>>& OutSubtrees) const
+{
+	OutSubtrees.Reset();
+	if (UStateTreeEditorData* TreeData = TreeDataWeak.Get())
+	{
+		for (UStateTreeState* Subtree : TreeData->SubTrees)
+		{
+			OutSubtrees.Add(Subtree);
+		}
+	}
 }
 
 void FStateTreeViewModel::PostUndo(bool bSuccess)
@@ -212,28 +158,28 @@ void FStateTreeViewModel::ClearSelection()
 {
 	SelectedStates.Reset();
 
-	TArray<UStateTreeState*> SelectedStatesArr;
+	const TArray<TWeakObjectPtr<UStateTreeState>> SelectedStatesArr;
 	OnSelectionChanged.Broadcast(SelectedStatesArr);
 }
 
-void FStateTreeViewModel::SetSelection(UStateTreeState* SelectedState)
+void FStateTreeViewModel::SetSelection(UStateTreeState* Selected)
 {
 	SelectedStates.Reset();
 
-	SelectedStates.Add(SelectedState);
+	SelectedStates.Add(Selected);
 
-	TArray<UStateTreeState*> SelectedStatesArr;
-	SelectedStatesArr.Add(SelectedState);
+	TArray<TWeakObjectPtr<UStateTreeState>> SelectedStatesArr;
+	SelectedStatesArr.Add(Selected);
 	OnSelectionChanged.Broadcast(SelectedStatesArr);
 }
 
-void FStateTreeViewModel::SetSelection(const TArray<UStateTreeState*>& InSelectedStates)
+void FStateTreeViewModel::SetSelection(const TArray<TWeakObjectPtr<UStateTreeState>>& InSelectedStates)
 {
 	SelectedStates.Reset();
 
-	for (UStateTreeState* State : InSelectedStates)
+	for (const TWeakObjectPtr<UStateTreeState>& State : InSelectedStates)
 	{
-		if (State)
+		if (State.Get())
 		{
 			SelectedStates.Add(State);
 		}
@@ -245,12 +191,13 @@ void FStateTreeViewModel::SetSelection(const TArray<UStateTreeState*>& InSelecte
 
 bool FStateTreeViewModel::IsSelected(const UStateTreeState* State) const
 {
-	return SelectedStates.Contains(State);
+	const TWeakObjectPtr<UStateTreeState> WeakState = const_cast<UStateTreeState*>(State);
+	return SelectedStates.Contains(WeakState);
 }
 
 bool FStateTreeViewModel::IsChildOfSelection(const UStateTreeState* State) const
 {
-	for (const FWeakObjectPtr& WeakSelectedState : SelectedStates)
+	for (const TWeakObjectPtr<UStateTreeState>& WeakSelectedState : SelectedStates)
 	{
 		if (const UStateTreeState* SelectedState = Cast<UStateTreeState>(WeakSelectedState.Get()))
 		{
@@ -258,12 +205,10 @@ bool FStateTreeViewModel::IsChildOfSelection(const UStateTreeState* State) const
 			{
 				return true;
 			}
-			else
+			
+			if (UE::StateTree::Editor::IsChildOf(SelectedState, State))
 			{
-				if (FStateTreeViewUtilities::IsChildOf(SelectedState, State))
-				{
-					return true;
-				}
+				return true;
 			}
 		}
 	}
@@ -273,11 +218,23 @@ bool FStateTreeViewModel::IsChildOfSelection(const UStateTreeState* State) const
 void FStateTreeViewModel::GetSelectedStates(TArray<UStateTreeState*>& OutSelectedStates)
 {
 	OutSelectedStates.Reset();
-	for (FWeakObjectPtr& WeakState : SelectedStates)
+	for (TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
 	{
-		if (UStateTreeState* State = Cast<UStateTreeState>(WeakState.Get()))
+		if (UStateTreeState* State = WeakState.Get())
 		{
 			OutSelectedStates.Add(State);
+		}
+	}
+}
+
+void FStateTreeViewModel::GetSelectedStates(TArray<TWeakObjectPtr<UStateTreeState>>& OutSelectedStates)
+{
+	OutSelectedStates.Reset();
+	for (TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
+	{
+		if (WeakState.Get())
+		{
+			OutSelectedStates.Add(WeakState);
 		}
 	}
 }
@@ -287,20 +244,19 @@ bool FStateTreeViewModel::HasSelection() const
 	return SelectedStates.Num() > 0;
 }
 
-void FStateTreeViewModel::GetPersistentExpandedStates(TSet<UStateTreeState*>& OutExpandedStates)
+void FStateTreeViewModel::GetPersistentExpandedStates(TSet<TWeakObjectPtr<UStateTreeState>>& OutExpandedStates)
 {
 	OutExpandedStates.Reset();
-	if (!TreeData)
+	if (UStateTreeEditorData* TreeData = TreeDataWeak.Get())
 	{
-		return;
-	}
-	for (UStateTreeState* SubTree : TreeData->SubTrees)
-	{
-		GetExpandedStatesRecursive(SubTree, OutExpandedStates);
+		for (UStateTreeState* SubTree : TreeData->SubTrees)
+		{
+			GetExpandedStatesRecursive(SubTree, OutExpandedStates);
+		}
 	}
 }
 
-void FStateTreeViewModel::GetExpandedStatesRecursive(UStateTreeState* State, TSet<UStateTreeState*>& OutExpandedStates)
+void FStateTreeViewModel::GetExpandedStatesRecursive(UStateTreeState* State, TSet<TWeakObjectPtr<UStateTreeState>>& OutExpandedStates)
 {
 	if (State->bExpanded)
 	{
@@ -312,18 +268,20 @@ void FStateTreeViewModel::GetExpandedStatesRecursive(UStateTreeState* State, TSe
 	}
 }
 
-void FStateTreeViewModel::SetPersistentExpandedStates(TSet<UStateTreeState*>& InExpandedStates)
+
+void FStateTreeViewModel::SetPersistentExpandedStates(TSet<TWeakObjectPtr<UStateTreeState>>& InExpandedStates)
 {
-	if (!TreeData)
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
 	{
 		return;
 	}
 
 	TreeData->Modify();
 
-	for (UStateTreeState* State : InExpandedStates)
+	for (TWeakObjectPtr<UStateTreeState>& WeakState : InExpandedStates)
 	{
-		if (State)
+		if (UStateTreeState* State = WeakState.Get())
 		{
 			State->bExpanded = true;
 		}
@@ -333,7 +291,8 @@ void FStateTreeViewModel::SetPersistentExpandedStates(TSet<UStateTreeState*>& In
 
 void FStateTreeViewModel::AddState(UStateTreeState* AfterState)
 {
-	if (!TreeData)
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
 	{
 		return;
 	}
@@ -343,28 +302,54 @@ void FStateTreeViewModel::AddState(UStateTreeState* AfterState)
 	UStateTreeState* NewState = NewObject<UStateTreeState>(TreeData, FName(), RF_Transactional);
 	UStateTreeState* ParentState = nullptr;
 
-	if (AfterState)
+	if (AfterState == nullptr)
+	{
+		// If no subtrees, add a subtree, or add to the root state.
+		if (TreeData->SubTrees.IsEmpty())
+		{
+			TreeData->Modify();
+			TreeData->SubTrees.Add(NewState);
+		}
+		else
+		{
+			UStateTreeState* RootState = TreeData->SubTrees[0];
+			if (ensureMsgf(RootState, TEXT("%s: Root state is empty."), *GetNameSafe(TreeData->GetOuter())))
+			{
+				RootState->Modify();
+				RootState->Children.Add(NewState);
+				NewState->Parent = RootState;
+				ParentState = RootState;
+			}
+		}
+	}
+	else
 	{
 		ParentState = AfterState->Parent;
-		if (ParentState)
+		if (ParentState != nullptr)
 		{
 			ParentState->Modify();
-			NewState->Parent = ParentState;
 		}
 		else
 		{
 			TreeData->Modify();
-			NewState->Parent = nullptr;
 		}
 
-		TArray<UStateTreeState*>& ArrayToAddTo = ParentState ? ParentState->Children : TreeData->SubTrees;
-		FStateTreeViewUtilities::InsertRecursive(ParentState, ArrayToAddTo, AfterState, NewState, 1); // Insert after
-	}
-	else
-	{
-		TreeData->Modify();
-		NewState->Parent = nullptr;
-		TreeData->SubTrees.Add(NewState);
+		TArray<UStateTreeState*>& ParentArray = ParentState ? ParentState->Children : TreeData->SubTrees;
+
+		const int32 TargetIndex = ParentArray.Find(AfterState);
+		if (TargetIndex != INDEX_NONE)
+		{
+			// Insert After
+			ParentArray.Insert(NewState, TargetIndex + 1);
+			NewState->Parent = ParentState;
+		}
+		else
+		{
+			// Fallback, should never happen.
+			ensureMsgf(false, TEXT("%s: Failed to find specified target state %s on state %s while adding new state."), *GetNameSafe(TreeData->GetOuter()), *GetNameSafe(AfterState), *GetNameSafe(ParentState));
+			ParentArray.Add(NewState);
+			NewState->Parent = ParentState;
+		}
 	}
 
 	OnStateAdded.Broadcast(ParentState, NewState);
@@ -372,16 +357,15 @@ void FStateTreeViewModel::AddState(UStateTreeState* AfterState)
 
 void FStateTreeViewModel::AddChildState(UStateTreeState* ParentState)
 {
-	if (!TreeData || !ParentState)
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr || ParentState == nullptr)
 	{
 		return;
 	}
 
 	const FScopedTransaction Transaction(LOCTEXT("AddChildStateTransaction", "Add Child State"));
 
-	TreeData->Modify();
-
-	UStateTreeState* NewState = NewObject<UStateTreeState>(TreeData, FName(), RF_Transactional);
+	UStateTreeState* NewState = NewObject<UStateTreeState>(ParentState, FName(), RF_Transactional);
 
 	ParentState->Modify();
 	
@@ -393,7 +377,7 @@ void FStateTreeViewModel::AddChildState(UStateTreeState* ParentState)
 
 void FStateTreeViewModel::RenameState(UStateTreeState* State, FName NewName)
 {
-	if (!State)
+	if (State == nullptr)
 	{
 		return;
 	}
@@ -412,7 +396,8 @@ void FStateTreeViewModel::RenameState(UStateTreeState* State, FName NewName)
 
 void FStateTreeViewModel::RemoveSelectedStates()
 {
-	if (!TreeData)
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr)
 	{
 		return;
 	}
@@ -421,7 +406,7 @@ void FStateTreeViewModel::RemoveSelectedStates()
 	GetSelectedStates(States);
 
 	// Remove items whose parent also exists in the selection.
-	FStateTreeViewUtilities::RemoveContainedChildren(States);
+	UE::StateTree::Editor::RemoveContainedChildren(States);
 
 	if (States.Num() > 0)
 	{
@@ -429,22 +414,32 @@ void FStateTreeViewModel::RemoveSelectedStates()
 
 		TSet<UStateTreeState*> AffectedParents;
 
-		for (UStateTreeState* State : States)
+		for (UStateTreeState* StateToRemove : States)
 		{
-			if (State)
+			if (StateToRemove)
 			{
-				if (UStateTreeState* ParentState = State->Parent)
+				StateToRemove->Modify();
+
+				UStateTreeState* ParentState = StateToRemove->Parent;
+				if (ParentState != nullptr)
 				{
 					AffectedParents.Add(ParentState);
 					ParentState->Modify();
-					FStateTreeViewUtilities::RemoveRecursive(ParentState->Children, State);
 				}
 				else
 				{
 					AffectedParents.Add(nullptr);
 					TreeData->Modify();
-					FStateTreeViewUtilities::RemoveRecursive(TreeData->SubTrees, State);
 				}
+				
+				TArray<UStateTreeState*>& ArrayToRemoveFrom = ParentState ? ParentState->Children : TreeData->SubTrees;
+				const int32 ItemIndex = ArrayToRemoveFrom.Find(StateToRemove);
+				if (ItemIndex != INDEX_NONE)
+				{
+					ArrayToRemoveFrom.RemoveAt(ItemIndex);
+					StateToRemove->Parent = nullptr;
+				}
+
 			}
 		}
 
@@ -456,22 +451,23 @@ void FStateTreeViewModel::RemoveSelectedStates()
 
 void FStateTreeViewModel::MoveSelectedStatesBefore(UStateTreeState* TargetState)
 {
-	MoveSelectedStates(TargetState, -1);
+	MoveSelectedStates(TargetState, FStateTreeViewModelInsert::Before);
 }
 
 void FStateTreeViewModel::MoveSelectedStatesAfter(UStateTreeState* TargetState)
 {
-	MoveSelectedStates(TargetState, 1);
+	MoveSelectedStates(TargetState, FStateTreeViewModelInsert::After);
 }
 
 void FStateTreeViewModel::MoveSelectedStatesInto(UStateTreeState* TargetState)
 {
-	MoveSelectedStates(TargetState, 0);
+	MoveSelectedStates(TargetState, FStateTreeViewModelInsert::Into);
 }
 
-void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, int32 RelativeLocation)
+void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, const FStateTreeViewModelInsert RelativeLocation)
 {
-	if (!TreeData || !TargetState)
+	UStateTreeEditorData* TreeData = TreeDataWeak.Get();
+	if (TreeData == nullptr || TargetState == nullptr)
 	{
 		return;
 	}
@@ -479,29 +475,45 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, int32
 	TArray<UStateTreeState*> States;
 	GetSelectedStates(States);
 
-	UStateTreeState* TargetParent = TargetState->Parent;
-
 	// Remove child items whose parent also exists in the selection.
-	FStateTreeViewUtilities::RemoveContainedChildren(States);
-	FStateTreeViewUtilities::RemoveRecursive(States, TargetState);
+	UE::StateTree::Editor::RemoveContainedChildren(States);
 
-	if (States.Num() > 0 && TargetState)
+	// Remove states which contain target state as child.
+	States.RemoveAll([TargetState](const UStateTreeState* State)
+	{
+		return UE::StateTree::Editor::IsChildOf(State, TargetState);
+	});
+
+	if (States.Num() > 0 && TargetState != nullptr)
 	{
 		const FScopedTransaction Transaction(LOCTEXT("MoveTransaction", "Move"));
 
 		TSet<UStateTreeState*> AffectedParents;
 		TSet<UStateTreeState*> AffectedStates;
 
-		AffectedParents.Add(TargetParent);
+		UStateTreeState* TargetParent = TargetState->Parent;
+		if (RelativeLocation == FStateTreeViewModelInsert::Into)
+		{
+			AffectedParents.Add(TargetState);
+		}
+		else
+		{
+			AffectedParents.Add(TargetParent);
+		}
+		
 		for (int32 i = States.Num() - 1; i >= 0; i--)
 		{
 			if (UStateTreeState* State = States[i])
 			{
-				AffectedParents.Add(State->Parent);
+				State->Modify();
+				if (State->Parent)
+				{
+					AffectedParents.Add(State->Parent);
+				}
 			}
 		}
 
-		if (RelativeLocation == 0)
+		if (RelativeLocation == FStateTreeViewModelInsert::Into)
 		{
 			// Move into
 			TargetState->Modify();
@@ -524,19 +536,65 @@ void FStateTreeViewModel::MoveSelectedStates(UStateTreeState* TargetState, int32
 		{
 			if (UStateTreeState* SelectedState = States[i])
 			{
-				UStateTreeState* SelectedParent = SelectedState->Parent;
 				AffectedStates.Add(SelectedState);
 
+				UStateTreeState* SelectedParent = SelectedState->Parent;
+
+				// Remove from current parent
 				TArray<UStateTreeState*>& ArrayToRemoveFrom = SelectedParent ? SelectedParent->Children : TreeData->SubTrees;
-				TArray<UStateTreeState*>& ArrayToMoveTo = TargetParent ? TargetParent->Children : TreeData->SubTrees;
-				FStateTreeViewUtilities::RemoveRecursive(ArrayToRemoveFrom, SelectedState);
-				FStateTreeViewUtilities::InsertRecursive(TargetParent, ArrayToMoveTo, TargetState, SelectedState, RelativeLocation);
+				const int32 ItemIndex = ArrayToRemoveFrom.Find(SelectedState);
+				if (ItemIndex != INDEX_NONE)
+				{
+					ArrayToRemoveFrom.RemoveAt(ItemIndex);
+					SelectedState->Parent = nullptr;
+				}
+
+				// Insert to new parent
+				if (RelativeLocation == FStateTreeViewModelInsert::Into)
+				{
+					// Into
+					TargetState->Children.Insert(SelectedState, /*Index*/0);
+					SelectedState->Parent = TargetState;
+				}
+				else
+				{
+					TArray<UStateTreeState*>& ArrayToMoveTo = TargetParent ? TargetParent->Children : TreeData->SubTrees;
+					const int32 TargetIndex = ArrayToMoveTo.Find(TargetState);
+					if (TargetIndex != INDEX_NONE)
+					{
+						if (RelativeLocation == FStateTreeViewModelInsert::Before)
+						{
+							// Before
+							ArrayToMoveTo.Insert(SelectedState, TargetIndex);
+							SelectedState->Parent = TargetParent;
+						}
+						else if (RelativeLocation == FStateTreeViewModelInsert::After)
+						{
+							// After
+							ArrayToMoveTo.Insert(SelectedState, TargetIndex + 1);
+							SelectedState->Parent = TargetParent;
+						}
+					}
+					else
+					{
+						// Fallback, should never happen.
+						ensureMsgf(false, TEXT("%s: Failed to find specified target state %s on state %s while moving a state."), *GetNameSafe(TreeData->GetOuter()), *GetNameSafe(TargetState), *GetNameSafe(SelectedParent));
+						ArrayToMoveTo.Add(SelectedState);
+						SelectedState->Parent = TargetParent;
+					}
+				}
 			}
 		}
 
 		OnStatesMoved.Broadcast(AffectedParents, AffectedStates);
 
-		SetSelection(States);
+		TArray<TWeakObjectPtr<UStateTreeState>> WeakStates;
+		for (UStateTreeState* State : States)
+		{
+			WeakStates.Add(State);
+		}
+
+		SetSelection(WeakStates);
 	}
 }
 

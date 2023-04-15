@@ -2,6 +2,8 @@
 
 #include "ImgMediaSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImgMediaSettings)
+
 
 /* UImgMediaSettings structors
  *****************************************************************************/
@@ -10,7 +12,7 @@ UImgMediaSettings::UImgMediaSettings()
 	: DefaultFrameRate(24, 1)
 	, CacheBehindPercentage(25)
 	, CacheSizeGB(1.0f)
-	, CacheThreads(8)
+	, CacheThreads(2)
 	, CacheThreadStackSizeKB(128)
 	, GlobalCacheSizeGB(1.0f)
 	, UseGlobalCache(true)
@@ -50,3 +52,4 @@ void UImgMediaSettings::ValidateSettings()
 		GlobalCacheSizeGB = CacheSizeGB;
 	}
 }
+

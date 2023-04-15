@@ -8,7 +8,7 @@
 #include "CADKernel/Mesh/Structure/Grid.h"
 #include "CADKernel/Topo/TopologicalFace.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 FLoopCleaner::FLoopCleaner(FIsoTriangulator& Triangulator)
@@ -16,7 +16,6 @@ FLoopCleaner::FLoopCleaner(FIsoTriangulator& Triangulator)
 	, LoopNodes(Triangulator.LoopNodes)
 	, LoopSegments(Triangulator.LoopSegments)
 	, IsoSegmentFactory(Triangulator.IsoSegmentFactory)
-	, MesherReport(Triangulator.MesherReport)
 	, bDisplay(Triangulator.bDisplay)
 	, LoopSegmentsIntersectionTool(Grid)
 	, GeometricTolerance(Triangulator.GeometricTolerance)
@@ -27,16 +26,13 @@ FLoopCleaner::FLoopCleaner(FIsoTriangulator& Triangulator)
 	, GetFirst(LoopCleanerImpl::GetFirstNode)
 	, GetSecond(LoopCleanerImpl::GetSecondNode)
 {
-
+#ifdef CADKERNEL_DEV
+	SetMesherReport(*Triangulator.MesherReport);
+#endif
 }
 
 bool FLoopCleaner::CleanLoops()
 {
-
-	//{
-	//	FPoint2D Point = LoopNodes[36].Get2DPoint(EGridSpace::UniformScaled, Grid);
-	//	LoopNodes[56].Set2DPoint(EGridSpace::UniformScaled, Grid, Point);
-	//}
 
 	FindBestLoopExtremity();
 
@@ -534,7 +530,7 @@ bool FLoopCleaner::TryToRemoveSelfIntersectionByMovingTheClosedOusidePoint(const
 	{
 		double Coordinate;
 		ProjectedPoints[OtherSegmentIndex][OtherSegmentNodeIndex] = ProjectPointOnSegment(Points[OtherSegmentIndex][OtherSegmentNodeIndex], Points[SegmentIndex][0], Points[SegmentIndex][1], Coordinate, false);
-		bool bProjectedPoint1IsInside = (Coordinate >= -SMALL_NUMBER && Coordinate <= 1 + SMALL_NUMBER);
+		bool bProjectedPoint1IsInside = (Coordinate >= -DOUBLE_SMALL_NUMBER && Coordinate <= 1 + DOUBLE_SMALL_NUMBER);
 		if (bProjectedPoint1IsInside)
 		{
 			Distance[OtherSegmentIndex][OtherSegmentNodeIndex] = ProjectedPoints[OtherSegmentIndex][OtherSegmentNodeIndex].SquareDistance(Points[OtherSegmentIndex][OtherSegmentNodeIndex]);
@@ -663,7 +659,7 @@ bool FLoopCleaner::TryToRemoveIntersectionByMovingTheClosedOusidePoint(const FIs
 	{
 		double Coordinate;
 		ProjectedPoints[OtherSegmentIndex] = ProjectPointOnSegment(Points[OtherSegmentIndex][OtherSegmentNodeIndex], Points[SegmentIndex][0], Points[SegmentIndex][1], Coordinate, false);
-		bool bProjectedPoint1IsInside = (Coordinate >= -SMALL_NUMBER && Coordinate <= 1 + SMALL_NUMBER);
+		bool bProjectedPoint1IsInside = (Coordinate >= -DOUBLE_SMALL_NUMBER && Coordinate <= 1 + DOUBLE_SMALL_NUMBER);
 		if (bProjectedPoint1IsInside)
 		{
 			Distance[OtherSegmentIndex] = ProjectedPoints[OtherSegmentIndex].Distance(Points[OtherSegmentIndex][OtherSegmentNodeIndex]);
@@ -1747,10 +1743,24 @@ void FLoopCleaner::SwapSegments(FIsoSegment& IntersectingSegment, FIsoSegment& S
 
 void FLoopCleaner::SwapSubLoopOrientation(int32 FirstSegmentIndex, int32 LastSegmentIndex)
 {
-	TArray<FIsoSegment*> Segments;
-	Segments.Reserve(LastSegmentIndex - FirstSegmentIndex);
-
 	LastSegmentIndex = FitSegmentIndex(LastSegmentIndex);
+
+	TArray<FIsoSegment*> Segments;
+	{
+		int32 SegCount = LastSegmentIndex - FirstSegmentIndex;
+		if (SegCount < 0)
+		{
+			SegCount = 0;
+			int32 SegIndex = FitSegmentIndex(FirstSegmentIndex);
+			do
+			{
+				SegCount++;
+				SegIndex = NextSegmentIndex(SegIndex);
+			} while (SegIndex != LastSegmentIndex);
+		}
+		Segments.Reserve(SegCount);
+	}
+
 	int32 Index = FitSegmentIndex(FirstSegmentIndex);
 	do
 	{

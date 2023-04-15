@@ -52,6 +52,7 @@ public:
 	UConcertSyncConfig()
 		: bInteractiveHotReload(false)
 		, bShowPresenceInPIE(true)
+		, bIncludeAnnotationObjectChanges(false)
 		, SnapshotTransactionsPerSecond(30.0f)
 	{}
 
@@ -67,6 +68,13 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category="Transaction Settings")
 	bool bShowPresenceInPIE;
+
+	/**
+	 * Should we include object changes that have been generated via a transaction annotation
+	 * (where possible), or should we send the entire transaction annotation blob instead.
+	 */
+	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category="Transaction Settings")
+	bool bIncludeAnnotationObjectChanges;
 
 	/**
 	 * Number of snapshot transactions (eg, moving an object or dragging a slider) that should be sent per-second to other clients.
@@ -93,7 +101,7 @@ public:
 	/**
 	 * Array of transient class properties that we should send transaction updates for even if usually filtered out.
 	 */
-	UPROPERTY(config, EditAnywhere, Category="Transaction Settings", meta=(AllowedClasses="Property"))
+	UPROPERTY(config, EditAnywhere, Category="Transaction Settings", meta=(AllowedClasses="/Script/CoreUObject.Property"))
 	TArray<TFieldPath<FProperty>> AllowedTransientProperties;
 
 	/**

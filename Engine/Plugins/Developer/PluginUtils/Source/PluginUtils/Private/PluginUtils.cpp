@@ -6,20 +6,23 @@
 #include "SourceControlHelpers.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
+#include "Editor.h"
 #include "GameProjectUtils.h"
 #include "Interfaces/IProjectManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "PluginDescriptor.h"
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
-#include "AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "DesktopPlatformModule.h"
 #include "PackageTools.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Misc/Paths.h"
+#include "Misc/PathViews.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/FeedbackContext.h"
@@ -104,6 +107,7 @@ namespace PluginUtils
 				NameReplacementFileTypes.Add(TEXT("cpp"));
 				NameReplacementFileTypes.Add(TEXT("h"));
 				NameReplacementFileTypes.Add(TEXT("vcxproj"));
+				NameReplacementFileTypes.Add(TEXT("uplugin"));
 
 				// Which file types do we want to ignore
 				IgnoredFileTypes.Add(TEXT("opensdf"));
@@ -215,7 +219,7 @@ namespace PluginUtils
 		return PlatformFile.IterateDirectoryRecursively(*SourceDir, CopyFilesAndDirs);
 	}
 
-	void FixupPluginTemplateAssets(const FString& PluginName)
+	void FixupPluginTemplateAssets(const FString& PluginName, TMap<FString, FString>& OutModifiedAssetPaths)
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
@@ -254,9 +258,9 @@ namespace PluginUtils
 
 			/**
 			 * Fixes up any assets that contain the PLUGIN_NAME text macro, since those need to be renamed by the engine for the change to
-			 * stick (as opposed to just renaming the file)
+			 * stick (as opposed to just renaming the file) as well as regenerating the localization ids for the assets in the plugin.
 			 */
-			void PerformFixup()
+			void PerformFixup(TMap<FString, FString>& OutModifiedAssetPaths)
 			{
 				TArray<FAssetRenameData> AssetRenameData;
 
@@ -265,6 +269,7 @@ namespace PluginUtils
 					IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
 					AssetRegistry.ScanFilesSynchronous(FilesToScan);
 
+					TMap<TWeakObjectPtr<UObject>, FString> AssetToOriginalFilePathMap;
 					for (const FString& File : FilesToScan)
 					{
 						TArray<FAssetData> Assets;
@@ -275,14 +280,21 @@ namespace PluginUtils
 							AssetRegistry.GetAssetsByPackageName(*PackageName, Assets);
 						}
 
-						for (FAssetData Asset : Assets)
+						for (FAssetData AssetData : Assets)
 						{
-							const FString AssetName = Asset.AssetName.ToString().Replace(*PLUGIN_NAME, *PluginName, ESearchCase::CaseSensitive);
-							const FString AssetPath = Asset.PackagePath.ToString().Replace(*PLUGIN_NAME, *PluginName, ESearchCase::CaseSensitive);
-
-							FAssetRenameData RenameData(Asset.GetAsset(), AssetPath, AssetName);
+							const FString AssetName = AssetData.AssetName.ToString().Replace(*PLUGIN_NAME, *PluginName, ESearchCase::CaseSensitive);
+							const FString AssetPath = AssetData.PackagePath.ToString().Replace(*PLUGIN_NAME, *PluginName, ESearchCase::CaseSensitive);
+							AssetToOriginalFilePathMap.Add(AssetData.GetAsset(), File);
+							FAssetRenameData RenameData(AssetData.GetAsset(), AssetPath, AssetName);
 
 							AssetRenameData.Add(RenameData);
+
+							if (UObject* Asset = AssetData.GetAsset())
+							{
+								Asset->Modify();
+								TextNamespaceUtil::ClearPackageNamespace(Asset);
+								TextNamespaceUtil::EnsurePackageNamespace(Asset);
+							}
 						}
 					}
 
@@ -290,6 +302,26 @@ namespace PluginUtils
 					{
 						FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 						AssetToolsModule.Get().RenameAssetsWithDialog(AssetRenameData);
+
+						for(const FAssetRenameData& RenamedAsset : AssetRenameData)
+						{
+							if (RenamedAsset.Asset.IsValid())
+							{
+								if (FString* OldPath = AssetToOriginalFilePathMap.Find(RenamedAsset.Asset))
+								{
+									if (const UPackage* Package = RenamedAsset.Asset->GetPackage())
+									{
+										FString PackageFilename;
+										if (FPackageName::TryConvertLongPackageNameToFilename(Package->GetName(), PackageFilename, Package->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension()))
+										{
+											FString FullOldPath = FPaths::ConvertRelativePathToFull(*OldPath);
+											FPaths::RemoveDuplicateSlashes(FullOldPath);
+											OutModifiedAssetPaths.Add(FullOldPath, PackageFilename);
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -300,7 +332,7 @@ namespace PluginUtils
 			const FString PluginBaseDir = Plugin->GetBaseDir();
 			FFixupPluginAssets FixupPluginAssets(PlatformFile, PluginName, PluginBaseDir);
 			PlatformFile.IterateDirectoryRecursively(*PluginBaseDir, FixupPluginAssets);
-			FixupPluginAssets.PerformFixup();
+			FixupPluginAssets.PerformFixup(OutModifiedAssetPaths);
 		}
 	}
 
@@ -467,8 +499,10 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndLoadNewPlugin(const FString& PluginNa
 	ExCreationParams.Descriptor.Description = CreationParams.Description;
 	ExCreationParams.Descriptor.bIsBetaVersion = CreationParams.bIsBetaVersion;
 	ExCreationParams.Descriptor.bCanContainContent = CreationParams.bCanContainContent;
+	ExCreationParams.Descriptor.bCanContainVerse = CreationParams.bCanContainVerse;
 	ExCreationParams.Descriptor.EnabledByDefault = CreationParams.EnabledByDefault;
 	ExCreationParams.Descriptor.bExplicitlyLoaded = CreationParams.bExplicitelyLoaded;
+	ExCreationParams.Descriptor.VersePath = CreationParams.VersePath;
 
 	if (CreationParams.bHasModules)
 	{
@@ -600,7 +634,14 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndLoadNewPlugin(const FString& PluginNa
 		if (CreationParams.Descriptor.Modules.Num() > 0)
 		{
 			const FString ProjectFileName = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::GetProjectFilePath());
-			const FString Arguments = FString::Printf(TEXT("%s %s %s -Plugin=\"%s\" -Project=\"%s\" -Progress -NoHotReloadFromIDE"), FPlatformMisc::GetUBTTargetName(), FModuleManager::Get().GetUBTConfiguration(), FPlatformMisc::GetUBTPlatform(), *PluginFilePath, *ProjectFileName);
+
+			// Internal plugins will be found and built automatically, and using the -Plugin param will mark them as external plugins causing them to fail to load.
+			const bool bIsEnginePlugin = FPaths::IsUnderDirectory(PluginFilePath, FPaths::EnginePluginsDir());
+			const bool bIsProjectPlugin = FPaths::IsUnderDirectory(PluginFilePath, FPaths::ProjectPluginsDir());
+			const FString ExternalPluginArgument = !(bIsEnginePlugin || bIsProjectPlugin) ? FString::Printf(TEXT("-Plugin=\"%s\" "), *PluginFilePath) : FString();
+
+			const FString Arguments = FString::Printf(TEXT("%s %s %s %s-Project=\"%s\" -Progress -NoHotReloadFromIDE"), FPlatformMisc::GetUBTTargetName(), FModuleManager::Get().GetUBTConfiguration(), FPlatformMisc::GetUBTPlatform(), *ExternalPluginArgument, *ProjectFileName);
+
 			if (!FDesktopPlatformModule::Get()->RunUnrealBuildTool(FText::Format(LOCTEXT("CompilingPlugin", "Compiling {0} plugin..."), FText::FromString(PluginName)), FPaths::RootDir(), Arguments, GWarn))
 			{
 				if (LoadParams.OutFailReason)
@@ -638,7 +679,18 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndLoadNewPlugin(const FString& PluginNa
 		if (CreationParams.Descriptor.bCanContainContent)
 		{	
 			GWarn->BeginSlowTask(LOCTEXT("LoadingContent", "Loading Content..."), /*ShowProgressDialog*/ true, /*bShowCancelButton*/ false);
-			PluginUtils::FixupPluginTemplateAssets(PluginName);
+			TMap<FString, FString> ModifiedAssetPaths;
+			PluginUtils::FixupPluginTemplateAssets(PluginName, ModifiedAssetPaths);
+
+			for (FString& CopiedFilePath : NewFilePaths)
+			{
+				FString FullCopiedPath = FPaths::ConvertRelativePathToFull(CopiedFilePath);
+				FPaths::RemoveDuplicateSlashes(FullCopiedPath);
+				if (FString* NewPath = ModifiedAssetPaths.Find(FullCopiedPath))
+				{
+					CopiedFilePath = *NewPath;
+				}
+			}
 			GWarn->EndSlowTask();
 		}
 
@@ -685,32 +737,29 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 TSharedPtr<IPlugin> FPluginUtils::LoadPlugin(const FString& PluginName, const FString& PluginLocation, FLoadPluginParams& LoadParams)
 {
-	// Valide that the uplugin file exists.
-	const FString PluginFilePath = FPluginUtils::GetPluginFilePath(PluginLocation, PluginName, /*bFullPath*/ true);
+	return LoadPlugin(FPluginUtils::GetPluginFilePath(PluginLocation, PluginName), LoadParams);
+}
 
-	if (!FPaths::FileExists(PluginFilePath))
+TSharedPtr<IPlugin> FPluginUtils::LoadPlugin(const FString& PluginFileName, FLoadPluginParams& LoadParams)
+{
+	// Valide that the uplugin file exists.
+	if (!FPaths::FileExists(PluginFileName))
 	{
 		if (LoadParams.OutFailReason)
 		{
-			*LoadParams.OutFailReason = FText::Format(LOCTEXT("PluginFileDoesNotExist", "Plugin file does not exist\n{0}"), FText::FromString(PluginFilePath));
+			*LoadParams.OutFailReason = FText::Format(LOCTEXT("PluginFileDoesNotExist", "Plugin file does not exist\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(PluginFileName)));
 		}
 		return nullptr;
 	}
 
+	const FString PluginName = FPaths::GetBaseFilename(PluginFileName);
 	if (!IsValidPluginName(PluginName, LoadParams.OutFailReason))
 	{
 		return nullptr;
 	}
 
-	return PluginUtils::LoadPluginInternal(PluginName, PluginLocation, PluginFilePath, LoadParams, /*bIsNewPlugin*/ false);
-}
-
-TSharedPtr<IPlugin> FPluginUtils::LoadPlugin(const FString& PluginFileName, FLoadPluginParams& LoadParams)
-{
 	const FString PluginLocation = FPaths::GetPath(FPaths::GetPath(PluginFileName));
-	const FString PluginName = FPaths::GetBaseFilename(PluginFileName);
-
-	return LoadPlugin(PluginName, PluginLocation, LoadParams);
+	return PluginUtils::LoadPluginInternal(PluginName, PluginLocation, PluginFileName, LoadParams, /*bIsNewPlugin*/ false);
 }
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -755,67 +804,12 @@ bool FPluginUtils::UnloadPlugins(const TConstArrayView<TSharedRef<IPlugin>> Plug
 		return true;
 	}
 
-	TArray<FString> PluginContentMountPoints;
-	PluginContentMountPoints.Reserve(Plugins.Num());
-
-	for (const TSharedRef<IPlugin>& Plugin : Plugins)
 	{
-		if (Plugin->IsEnabled())
+		FText ErrorMsg;
+		if (!UnloadPluginsAssets(Plugins, &ErrorMsg))
 		{
-			FString PluginContentMountPoint = Plugin->GetMountedAssetPath();
-			if (FPackageName::MountPointExists(PluginContentMountPoint))
-			{
-				PluginContentMountPoints.Add(MoveTemp(PluginContentMountPoint));
-			}
-		}
-	}
-
-	// Synchronous scan plugins to make sure we find all their assets.
-	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
-
-	if (!PluginContentMountPoints.IsEmpty())
-	{
-		AssetRegistry.ScanPathsSynchronous(PluginContentMountPoints, /*bForceRescan=*/ true);
-	}
-
-	// Unload plugin packages
-	{
-		FARFilter ARFilter;
-		ARFilter.PackagePaths.Reserve(PluginContentMountPoints.Num());
-		for (const FString& PluginContentMountPoint : PluginContentMountPoints)
-		{
-			FString PluginRoot = PluginContentMountPoint;
-			PluginRoot.RemoveFromEnd(TEXT("/"));
-			ARFilter.PackagePaths.Add(*PluginRoot);
-		}
-		ARFilter.bRecursivePaths = true;
-
-		TArray<FAssetData> PluginAssets;
-		if (AssetRegistry.GetAssets(ARFilter, PluginAssets))
-		{
-			TSet<UPackage*> PackagesToUnload;
-			PackagesToUnload.Reserve(PluginAssets.Num());
-			for (const FAssetData& AssetData : PluginAssets)
-			{
-				if (UPackage* Package = FindPackage(NULL, *AssetData.PackageName.ToString()))
-				{
-					PackagesToUnload.Add(Package);
-				}
-			}
-
-			if (PackagesToUnload.Num() > 0)
-			{
-				FText ErrorMsg;
-				UPackageTools::UnloadPackages(PackagesToUnload.Array(), ErrorMsg, /*bUnloadDirtyPackages=*/true);
-
-				// Log an error if some packages fail to unload, but unmount the plugins anyway.
-				// @note UnloadPackages returned bool indicates whether some packages were unloaded
-				// To tell whether all packages were successfully unloaded we must check the ErrorMsg output param
-				if (!ErrorMsg.IsEmpty())
-				{
-					UE_LOG(LogPluginUtils, Error, TEXT("%s"), *ErrorMsg.ToString());
-				}
-			}
+			// If some assets fail to unload, log an error, but unmount the plugins anyway
+			UE_LOG(LogPluginUtils, Error, TEXT("Failed to unload some assets prior to unmounting plugins\n%s"), *ErrorMsg.ToString());
 		}
 	}
 
@@ -867,6 +861,115 @@ bool FPluginUtils::UnloadPlugins(const TConstArrayView<FString> PluginNames, FTe
 		}
 	}
 	return UnloadPlugins(Plugins, OutFailReason);
+}
+
+bool FPluginUtils::UnloadPluginAssets(const TSharedRef<IPlugin>& Plugin, FText* OutFailReason /*= nullptr*/)
+{
+	return UnloadPluginsAssets({ Plugin }, OutFailReason);
+}
+
+bool FPluginUtils::UnloadPluginAssets(const FString& PluginName, FText* OutFailReason /*= nullptr*/)
+{
+	if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+	{
+		return UnloadPluginAssets(Plugin.ToSharedRef(), OutFailReason);
+	}
+	return true;
+}
+
+bool FPluginUtils::UnloadPluginsAssets(const TConstArrayView<TSharedRef<IPlugin>> Plugins, FText* OutFailReason /*= nullptr*/)
+{
+	if (Plugins.IsEmpty())
+	{
+		return true;
+	}
+
+	TArray<FString> PluginContentMountPoints;
+	TSet<FString> PluginNames;
+	PluginContentMountPoints.Reserve(Plugins.Num());
+	PluginNames.Reserve(Plugins.Num());
+
+	for (const TSharedRef<IPlugin>& Plugin : Plugins)
+	{
+		if (Plugin->IsEnabled())
+		{
+			FString PluginContentMountPoint = Plugin->GetMountedAssetPath();
+			if (FPackageName::MountPointExists(PluginContentMountPoint))
+			{
+				PluginContentMountPoints.Add(MoveTemp(PluginContentMountPoint));
+				PluginNames.Add(Plugin->GetName());
+			}
+		}
+	}
+
+	if (PluginContentMountPoints.IsEmpty())
+	{
+		return true;
+	}
+
+	// Synchronous scan plugins to make sure we find all their assets.
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+	AssetRegistry.ScanPathsSynchronous(PluginContentMountPoints, /*bForceRescan=*/ true);
+
+	// Unload plugin packages
+	{
+		FARFilter ARFilter;
+		ARFilter.PackagePaths.Reserve(PluginContentMountPoints.Num());
+		for (const FString& PluginContentMountPoint : PluginContentMountPoints)
+		{
+			FString PluginRoot = PluginContentMountPoint;
+			PluginRoot.RemoveFromEnd(TEXT("/"));
+			ARFilter.PackagePaths.Add(*PluginRoot);
+		}
+		ARFilter.bRecursivePaths = true;
+
+		TArray<FAssetData> PluginAssets;
+		if (AssetRegistry.GetAssets(ARFilter, PluginAssets))
+		{
+			TSet<UPackage*> PackagesToUnload;
+			PackagesToUnload.Reserve(PluginAssets.Num());
+			for (const FAssetData& AssetData : PluginAssets)
+			{
+				if (UPackage* Package = FindPackage(NULL, *AssetData.PackageName.ToString()))
+				{
+					PackagesToUnload.Add(Package);
+				}
+			}
+
+			if (PackagesToUnload.Num() > 0)
+			{
+				FText ErrorMsg;
+				UPackageTools::UnloadPackages(PackagesToUnload.Array(), ErrorMsg, /*bUnloadDirtyPackages=*/true);
+
+				// @note UnloadPackages returned bool indicates whether some packages were unloaded
+				// To tell whether all packages were successfully unloaded we must check the ErrorMsg output param
+				if (!ErrorMsg.IsEmpty())
+				{
+					if (OutFailReason)
+					{
+						*OutFailReason = MoveTemp(ErrorMsg);
+					}
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+bool FPluginUtils::UnloadPluginsAssets(const TConstArrayView<FString> PluginNames, FText* OutFailReason /*= nullptr*/)
+{
+	TArray<TSharedRef<IPlugin>> Plugins;
+	Plugins.Reserve(PluginNames.Num());
+	for (const FString& PluginName : PluginNames)
+	{
+		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+		{
+			Plugins.Add(Plugin.ToSharedRef());
+		}
+	}
+	return UnloadPluginsAssets(Plugins, OutFailReason);
 }
 
 bool FPluginUtils::AddToPluginSearchPathIfNeeded(const FString& Dir, bool bRefreshPlugins, bool bUpdateProjectFile)
@@ -1001,55 +1104,56 @@ bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReaso
 	static const FText PluginTerm = LOCTEXT("PluginTerm", "Plugin");
 	const FText& PluginTermToUse = PluginTermReplacement ? *PluginTermReplacement : PluginTerm;
 
-	bool bIsNameValid = true;
-
 	// Cannot be empty
 	if (PluginName.IsEmpty())
 	{
-		bIsNameValid = false;
 		if (FailReason)
 		{
 			*FailReason = FText::Format(LOCTEXT("PluginNameIsEmpty", "{0} name cannot be empty"), PluginTermToUse);
 		}
+		return false;
 	}
 
 	// Must begin with an alphabetic character
-	if (bIsNameValid && !FChar::IsAlpha(PluginName[0]))
+	if (!FChar::IsAlpha(PluginName[0]))
 	{
-		bIsNameValid = false;
 		if (FailReason)
 		{
 			*FailReason = FText::Format(LOCTEXT("PluginNameMustBeginWithAlphabetic", "{0} name must begin with an alphabetic character"), PluginTermToUse);
 		}
+		return false;
 	}
 
 	// Only allow alphanumeric characters and underscore in the name
-	if (bIsNameValid)
+	FString IllegalCharacters;
+	for (int32 CharIdx = 0; CharIdx < PluginName.Len(); ++CharIdx)
 	{
-		FString IllegalCharacters;
-		for (int32 CharIdx = 0; CharIdx < PluginName.Len(); ++CharIdx)
+		const FString& Char = PluginName.Mid(CharIdx, 1);
+		if (!FChar::IsAlnum(Char[0]) && Char != TEXT("_") && Char != TEXT("-"))
 		{
-			const FString& Char = PluginName.Mid(CharIdx, 1);
-			if (!FChar::IsAlnum(Char[0]) && Char != TEXT("_") && Char != TEXT("-"))
+			if (!IllegalCharacters.Contains(Char))
 			{
-				if (!IllegalCharacters.Contains(Char))
-				{
-					IllegalCharacters += Char;
-				}
-			}
-		}
-		
-		if (IllegalCharacters.Len() > 0)
-		{
-			bIsNameValid = false;
-			if (FailReason)
-			{
-				*FailReason = FText::Format(LOCTEXT("PluginNameContainsIllegalCharacters", "{0} name cannot contain characters such as \"{1}\""), PluginTermToUse, FText::FromString(IllegalCharacters));
+				IllegalCharacters += Char;
 			}
 		}
 	}
 
-	return bIsNameValid;
+	if (IllegalCharacters.Len() > 0)
+	{
+		if (FailReason)
+		{
+			*FailReason = FText::Format(LOCTEXT("PluginNameContainsIllegalCharacters", "{0} name cannot contain characters such as \"{1}\""), PluginTermToUse, FText::FromString(IllegalCharacters));
+		}
+		return false;
+	}
+
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (!AssetToolsModule.Get().IsNameAllowed(PluginName, FailReason))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -8,17 +8,14 @@
 #include "GroomCacheActions.h"
 
 #include "Styling/SlateStyleRegistry.h"
-#include "Styling/SlateTypes.h"
-#include "EditorStyleSet.h"
 #include "Interfaces/IPluginManager.h"
-#include "SlateOptMacros.h"
+#include "ToolMenus.h"
 
 #include "GroomAsset.h"
 #include "GroomBindingAsset.h"
 #include "GroomBindingDetailsCustomization.h"
 #include "GroomCacheImportOptions.h"
 #include "GroomCacheImportSettingsCustomization.h"
-#include "GroomCacheStreamingManager.h"
 #include "GroomCacheTrackEditor.h"
 #include "GroomComponentDetailsCustomization.h"
 #include "GroomCreateBindingOptions.h"
@@ -26,7 +23,7 @@
 #include "GroomEditorMode.h"
 #include "GroomPluginSettings.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FileHelpers.h"
 #include "ISettingsModule.h"
 #include "ISettingsSection.h"
@@ -35,6 +32,8 @@
 IMPLEMENT_MODULE(FGroomEditor, HairStrandsEditor);
 
 #define LOCTEXT_NAMESPACE "GroomEditor"
+
+LLM_DEFINE_TAG(GroomEditor);
 
 FName FGroomEditor::GroomEditorAppIdentifier(TEXT("GroomEditor"));
 
@@ -71,6 +70,10 @@ void SaveAsset(UObject* Object)
 
 void FGroomEditor::StartupModule()
 {
+	LLM_SCOPE_BYTAG(GroomEditor)
+
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FGroomEditor::RegisterMenus));
+
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	TSharedRef<IAssetTypeActions> GroomAssetActions = MakeShared<FGroomActions>();
 	TSharedRef<IAssetTypeActions> BindingAssetActions = MakeShared<FGroomBindingActions>();
@@ -145,13 +148,12 @@ void FGroomEditor::StartupModule()
 			GetMutableDefault<UGroomPluginSettings>()
 		);
 	}
-
-	IGroomCacheStreamingManager::Register();
 }
 
 void FGroomEditor::ShutdownModule()
 {
-	IGroomCacheStreamingManager::Unregister();
+	UToolMenus::UnRegisterStartupCallback(this);
+	UToolMenus::UnregisterOwner(UE_MODULE_NAME);
 
 	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
 	if (SettingsModule != nullptr)
@@ -196,6 +198,11 @@ void FGroomEditor::ShutdownModule()
 		ensure(StyleSet.IsUnique());
 		StyleSet.Reset();
 	}
+}
+
+void FGroomEditor::RegisterMenus()
+{
+	FGroomBindingActions::RegisterMenus();
 }
 
 TArray<TSharedPtr<IGroomTranslator>> FGroomEditor::GetHairTranslators()

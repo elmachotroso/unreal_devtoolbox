@@ -11,6 +11,8 @@
 class UMaterialInterface;
 class UStaticMesh;
 class UTexture2D;
+enum class EHairAtlasTextureType : uint8;
+class UGroomAsset;
 
 UENUM(BlueprintType)
 enum class EHairCardsClusterType : uint8
@@ -185,7 +187,22 @@ struct HAIRSTRANDSCORE_API FHairGroupCardsTextures
 	UPROPERTY(EditAnywhere, Category = "CardsAttributes")
 	TObjectPtr<UTexture2D> MaterialTexture = nullptr;
 
+	void SetTexture(EHairAtlasTextureType SlotID, UTexture2D* Texture);
+
 	bool bNeedToBeSaved = false;
+};
+
+/** 
+ * Since hair-card generation can be controlled external to this plugin, this  
+ * provides a way for those external generators a way to store their own 
+ * generation data along with the groom/cards-entry.
+ */
+UCLASS(Abstract, EditInlineNew)
+class HAIRSTRANDSCORE_API UHairCardGenerationSettings : public UObject
+{
+	GENERATED_BODY()
+public:
+	virtual void BuildDDCKey(FArchive& Ar) PURE_VIRTUAL(BuildDDCKey,);
 };
 
 USTRUCT(BlueprintType)
@@ -227,6 +244,12 @@ struct HAIRSTRANDSCORE_API FHairGroupsCardsSourceDescription
 	/* LOD on which this cards geometry will be used. -1 means not used  (#hair_todo: change this to be a dropdown selection menu in FHairLODSettings instead) */
 	UPROPERTY(EditAnywhere, Category = "CardsSource")
 	int32 LODIndex = -1; 
+
+#if WITH_EDITORONLY_DATA
+	/* Card generation data saved from the last procedural run. Dependent on the generator responsible for running the generation. */
+	UPROPERTY(meta=(EditInline))
+	TObjectPtr<UHairCardGenerationSettings> GenerationSettings = nullptr;
+#endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY(VisibleAnywhere, Transient, Category = "CardsSource")
 	mutable FHairGroupCardsInfo CardsInfo;

@@ -1,9 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineUserCloudInterfaceIOS.h"
+#include "Engine/Engine.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/FileHelper.h"
 #include "Misc/ScopeLock.h"
 #include "PlatformFeatures.h"
+#include "GameFramework/GameUserSettings.h"
 
 @implementation IOSCloudStorage
 
@@ -80,7 +84,12 @@
 			CKModifyRecordsOperation *modifyRecords = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:@[record] recordIDsToDelete:nil];
 			modifyRecords.savePolicy = CKRecordSaveAllKeys;
 			modifyRecords.qualityOfService = NSQualityOfServiceUserInitiated;
-			modifyRecords.perRecordCompletionBlock = handler;
+			
+//			modifyRecords.perRecordCompletionBlock = handler; /* Deprecated iOS15. */
+			// Since only 1 record is being saved per run, use the global completion block instead */
+			modifyRecords.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *savedRecords, NSArray<CKRecordID *> *deletedRecordIDs, NSError *operationError) {
+				handler([savedRecords firstObject], operationError);
+			};
 			[DB addOperation : modifyRecords];
 
 			return true;
@@ -114,7 +123,7 @@
 			CKQuery* query = [[[CKQuery alloc] initWithRecordType:@"file" predicate:[NSPredicate predicateWithFormat : @"TRUEPREDICATE"]] autorelease];
 			CKQueryOperation* queryOp = [[CKQueryOperation alloc] initWithQuery:query];
 			queryOp.desiredKeys = @[@"record.recordID.recordName"];
-			queryOp.recordFetchedBlock = fetch;
+//			queryOp.recordFetchedBlock = fetch;  /* Deprecated in iOS15.  Now performs once all records are loaded */
 			queryOp.queryCompletionBlock = complete;
 			queryOp.resultsLimit = CKQueryOperationMaximumResults;
 			[DB addOperation : queryOp];
@@ -480,9 +489,9 @@ void FOnlineUserCloudInterfaceIOS::InitCloudSave(bool InIOSAlwaysSyncCloudFiles)
 	OnDeleteUserCloudFileCompleteDelegate = FOnDeleteUserFileCompleteDelegate::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnDeleteUserCloudFileComplete);
 
 	// link delegates to the iOS save system
-	SaveSystem->OnWriteUserCloudFileBeginDelegate = FIOSSaveGameSystem::FOnWriteUserCloudFileBegin::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnWriteUserCloudFileBegin);
-	SaveSystem->OnReadUserCloudFileBeginDelegate = FIOSSaveGameSystem::FOnReadUserCloudFileBegin::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin);
-	SaveSystem->OnDeleteUserCloudFileBeginDelegate = FIOSSaveGameSystem::FOnDeleteUserCloudFileBegin::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnDeleteUserCloudFileBegin);
+	SaveSystem->OnUpdateCloudDataFromLocalSave = FIOSSaveGameSystem::FUpdateCloudDataFromLocalSave::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnWriteUserCloudFileBegin);
+	SaveSystem->OnUpdateLocalSaveFileFromCloud = FIOSSaveGameSystem::FUpdateLocalSaveFileFromCloud::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin);
+	SaveSystem->OnDeleteCloudData = FIOSSaveGameSystem::FDeleteCloudData::CreateRaw(this, &FOnlineUserCloudInterfaceIOS::OnDeleteUserCloudFileBegin);
 
 	UniqueNetId = FUniqueNetIdIOS::Create();
 
@@ -490,6 +499,25 @@ void FOnlineUserCloudInterfaceIOS::InitCloudSave(bool InIOSAlwaysSyncCloudFiles)
 	
 	OnEnumerateUserCloudFilesCompleteDelegateHandle = AddOnEnumerateUserFilesCompleteDelegate_Handle(OnEnumerateUserCloudFilesCompleteDelegate);
 	EnumerateUserFiles(*UniqueNetId);
+    
+    auto RegisterItems = [](auto classToCall)
+    {
+		UGameUserSettings* UserSettings;
+        UserSettings = GEngine->GetGameUserSettings();
+        check(UserSettings);
+
+    	UserSettings->OnUpdateCloudDataFromGameUserSettings = UGameUserSettings::FUpdateCloudDataFromGameUserSettings::CreateRaw(classToCall, &FOnlineUserCloudInterfaceIOS::OnWriteUserCloudFileBegin);
+        UserSettings->OnUpdateGameUserSettingsFileFromCloud = UGameUserSettings::FUpdateGameUserSettingsFileFromCloud::CreateRaw(classToCall, &FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin);
+    };
+
+    if (GEngine)
+    {
+        RegisterItems(this);
+    }
+    else
+    {
+		FCoreDelegates::OnPostEngineInit.AddLambda(RegisterItems, this);
+    }
 }
 
 void FOnlineUserCloudInterfaceIOS::OnEnumerateUserFilesComplete(bool bWasSuccessful, const FUniqueNetId & UserId)
@@ -546,10 +574,7 @@ void FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileComplete(bool bWasSuccessf
 		// locally cache the server data
 		TArray<uint8> FileContents;
 		GetFileContents(UserId, FileName, FileContents);
-
-		check(SaveSystem);
-
-		SaveSystem->SaveGameNoCloud(*FileName, FileContents);
+        FFileHelper::SaveArrayToFile(FileContents, *FileName);
 		
 		//flag that we have the latest record
 		[UpdateDictionary setObject : [NSNumber numberWithBool : false]  forKey : FileName.GetNSString()];
@@ -561,10 +586,18 @@ void FOnlineUserCloudInterfaceIOS::OnDeleteUserCloudFileComplete(bool bWasSucces
 	ClearOnDeleteUserFileCompleteDelegate_Handle(OnDeleteUserCloudFileCompleteDelegateHandle);
 }
 
-void FOnlineUserCloudInterfaceIOS::OnWriteUserCloudFileBegin(const FString &  FileName, const TArray<uint8>& FileContents)
+bool FOnlineUserCloudInterfaceIOS::OnWriteUserCloudFileBegin(const FString &  FileName)
 {
-	OnWriteUserCloudFileCompleteDelegateHandle = AddOnWriteUserFileCompleteDelegate_Handle(OnWriteUserCloudFileCompleteDelegate);
-	WriteUserFile(*UniqueNetId, FileName, (TArray<uint8>&)FileContents);
+    OnWriteUserCloudFileCompleteDelegateHandle = AddOnWriteUserFileCompleteDelegate_Handle(OnWriteUserCloudFileCompleteDelegate);
+    
+    TArray<uint8> FileData;
+    
+    if (FFileHelper::LoadFileToArray(FileData, *FileName))
+    {
+        return WriteUserFile(*UniqueNetId, FileName, FileData);
+    }
+    
+    return false;
 }
 
 bool FOnlineUserCloudInterfaceIOS::ShouldFetchRecordFromCloud(const FString &  FileName)
@@ -582,7 +615,7 @@ bool FOnlineUserCloudInterfaceIOS::ShouldFetchRecordFromCloud(const FString &  F
 	return true;
 }
 
-void FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin(const FString &  FileName, TArray<uint8>& FileContents)
+bool FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin(const FString & FileName)
 {
 #if !PLATFORM_TVOS
 	if (ShouldFetchRecordFromCloud(FileName))
@@ -599,11 +632,10 @@ void FOnlineUserCloudInterfaceIOS::OnReadUserCloudFileBegin(const FString &  Fil
 			FPlatformProcess::Sleep(0.01f);
 		}
 
-		GetFileContents(*UniqueNetId, FileName, FileContents);
-
 		// clean up temporary data
 		ClearFile(*UniqueNetId, FileName);
 	}
+    return true;
 }
 
 void FOnlineUserCloudInterfaceIOS::OnDeleteUserCloudFileBegin(const FString &  FileName)

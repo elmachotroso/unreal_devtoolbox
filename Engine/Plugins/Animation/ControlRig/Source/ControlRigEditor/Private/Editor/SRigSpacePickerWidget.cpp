@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SRigSpacePickerWidget.h"
+#include "Editor/SRigSpacePickerWidget.h"
 #include "DetailLayoutBuilder.h"
 #include "Editor.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SButton.h"
-#include "SRigHierarchyTreeView.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Editor/SRigHierarchyTreeView.h"
 #include "ControlRigEditorStyle.h"
 #include "PropertyCustomizationHelpers.h"
 #include "ISequencer.h"
@@ -104,7 +105,7 @@ void SRigSpacePickerWidget::Construct(const FArguments& InArgs)
 			TopLevelListBox,
 			ESpacePickerType_World,
 			URigHierarchy::GetWorldSpaceReferenceKey(),
-			FEditorStyle::GetBrush("EditorViewport.RelativeCoordinateSystem_World"),
+			FAppStyle::GetBrush("EditorViewport.RelativeCoordinateSystem_World"),
 			FSlateColor::UseForeground(),
 			LOCTEXT("World", "World"),
 			FOnClicked::CreateSP(this, &SRigSpacePickerWidget::HandleWorldSpaceClicked)
@@ -149,13 +150,13 @@ void SRigSpacePickerWidget::Construct(const FArguments& InArgs)
 			[
 				SNew(SButton)
 				.ContentPadding(0.0f)
-				.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+				.ButtonStyle(FAppStyle::Get(), "NoBorder")
 				.OnClicked(this, &SRigSpacePickerWidget::HandleAddElementClicked)
 				.Cursor(EMouseCursor::Default)
 				.ToolTipText(LOCTEXT("AddSpace", "Add Space"))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
+					.Image(FAppStyle::GetBrush(TEXT("Icons.PlusCircle")))
 				]
 			];
 		}
@@ -176,7 +177,7 @@ void SRigSpacePickerWidget::Construct(const FArguments& InArgs)
 			.Padding(0.f)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Default")
+				.ButtonStyle(FAppStyle::Get(), "FlatButton.Default")
 				.Text(LOCTEXT("BakeButton", "Bake..."))
 				.OnClicked(InArgs._OnBakeButtonClicked)
 				.ToolTipText(LOCTEXT("BakeButtonToolTip", "Allows to bake the animation of one or more controls to a single space."))
@@ -195,7 +196,7 @@ SRigSpacePickerWidget::~SRigSpacePickerWidget()
 
 	if(HierarchyModifiedHandle.IsValid())
 	{
-		if(Hierarchy)
+		if(Hierarchy.IsValid())
 		{
 			Hierarchy->OnModified().Remove(HierarchyModifiedHandle);
 			HierarchyModifiedHandle.Reset();
@@ -207,20 +208,46 @@ void SRigSpacePickerWidget::SetControls(
 	URigHierarchy* InHierarchy,
 	const TArray<FRigElementKey>& InControls)
 {
-	if(Hierarchy && Hierarchy != InHierarchy)
+	if(Hierarchy.IsValid())
 	{
-		if(HierarchyModifiedHandle.IsValid())
+		URigHierarchy* StrongHierarchy = Hierarchy.Get();
+		if (StrongHierarchy != InHierarchy)
 		{
-			Hierarchy->OnModified().Remove(HierarchyModifiedHandle);
-			HierarchyModifiedHandle.Reset();
+			if(HierarchyModifiedHandle.IsValid())
+			{
+				StrongHierarchy->OnModified().Remove(HierarchyModifiedHandle);
+				HierarchyModifiedHandle.Reset();
+			}
 		}
 	}
 	
 	Hierarchy = InHierarchy;
-	ControlKeys = InControls;
-	if (Hierarchy && HierarchyModifiedHandle.IsValid() == false)
+	ControlKeys.SetNum(0);
+	for (const FRigElementKey& Key : InControls)
 	{
-		HierarchyModifiedHandle = Hierarchy->OnModified().AddSP(this, &SRigSpacePickerWidget::OnHierarchyModified);
+		if (const FRigControlElement* ControlElement = Hierarchy->FindChecked<FRigControlElement>(Key))
+		{
+			//if it has no shape or not animatable then bail
+			if (ControlElement->Settings.SupportsShape() == false || Hierarchy->IsAnimatable(ControlElement) == false)
+			{
+				continue;
+			}
+			if (ControlElement->Settings.ControlType == ERigControlType::Bool ||
+				ControlElement->Settings.ControlType == ERigControlType::Float ||
+				ControlElement->Settings.ControlType == ERigControlType::Integer)
+			{
+				//if it has a channel and has a parent bail
+				if (const FRigControlElement* ParentControlElement = Cast<FRigControlElement>(Hierarchy->GetFirstParent(ControlElement)))
+				{
+					continue;
+				}
+			}
+		}
+		ControlKeys.Add(Key);
+	}
+	if (Hierarchy.IsValid() && HierarchyModifiedHandle.IsValid() == false)
+	{
+		HierarchyModifiedHandle = InHierarchy->OnModified().AddSP(this, &SRigSpacePickerWidget::OnHierarchyModified);
 	}
 	UpdateActiveSpaces();
 	RepopulateItemSpaces();
@@ -324,15 +351,19 @@ void SRigSpacePickerWidget::Tick(const FGeometry& AllottedGeometry, const double
 	}
 	else if(GetAdditionalSpacesDelegate.IsBound())
 	{
-		TArray<FRigElementKey> CurrentAdditionalSpaces;
-		for(const FRigElementKey& ControlKey: ControlKeys)
+		if (Hierarchy.IsValid())
 		{
-			CurrentAdditionalSpaces.Append(GetAdditionalSpacesDelegate.Execute(Hierarchy, ControlKey));
-		}
+			URigHierarchy* StrongHierarchy = Hierarchy.Get();
+			TArray<FRigElementKey> CurrentAdditionalSpaces;
+			for(const FRigElementKey& ControlKey: ControlKeys)
+			{
+				CurrentAdditionalSpaces.Append(GetAdditionalSpacesDelegate.Execute(StrongHierarchy, ControlKey));
+			}
 		
-		if(CurrentAdditionalSpaces != AdditionalSpaces)
-		{
-			RepopulateItemSpaces();
+			if(CurrentAdditionalSpaces != AdditionalSpaces)
+			{
+				RepopulateItemSpaces();
+			}
 		}
 	}
 }
@@ -464,7 +495,7 @@ void SRigSpacePickerWidget::AddSpacePickerRow(
 				.ToolTipText(LOCTEXT("MoveSpaceDown", "Move this space down in the list."))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.ChevronUp"))
+					.Image(FAppStyle::GetBrush("Icons.ChevronUp"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			];
@@ -483,7 +514,7 @@ void SRigSpacePickerWidget::AddSpacePickerRow(
 				.ToolTipText(LOCTEXT("MoveSpaceUp", "Move this space up in the list."))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.ChevronDown"))
+					.Image(FAppStyle::GetBrush("Icons.ChevronDown"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			];
@@ -515,11 +546,16 @@ FReply SRigSpacePickerWidget::HandleWorldSpaceClicked()
 
 FReply SRigSpacePickerWidget::HandleElementSpaceClicked(FRigElementKey InKey)
 {
-	//need to make copy since array may get shrunk during the event broadcast
-	TArray<FRigElementKey> ControlKeysCopy = ControlKeys;
-	for (const FRigElementKey& ControlKey : ControlKeysCopy)
+	if (Hierarchy.IsValid())
 	{
-		ActiveSpaceChangedEvent.Broadcast(Hierarchy, ControlKey, InKey);
+		URigHierarchy* StrongHierarchy = Hierarchy.Get();
+		
+		//need to make copy since array may get shrunk during the event broadcast
+		TArray<FRigElementKey> ControlKeysCopy = ControlKeys;
+		for (const FRigElementKey& ControlKey : ControlKeysCopy)
+		{
+			ActiveSpaceChangedEvent.Broadcast(StrongHierarchy, ControlKey, InKey);
+		}
 	}
 
 	if(DialogWindow.IsValid())
@@ -542,9 +578,13 @@ FReply SRigSpacePickerWidget::HandleSpaceMoveUp(FRigElementKey InKey)
 				TArray<FRigElementKey> ChangedSpaceKeys = CurrentSpaceKeys;
 				ChangedSpaceKeys.Swap(Index, Index - 1);
 
-				for(const FRigElementKey& ControlKey : ControlKeys)
+				if (Hierarchy.IsValid())
 				{
-					SpaceListChangedEvent.Broadcast(Hierarchy, ControlKey, ChangedSpaceKeys);
+					URigHierarchy* StrongHierarchy = Hierarchy.Get();
+					for(const FRigElementKey& ControlKey : ControlKeys)
+					{
+						SpaceListChangedEvent.Broadcast(StrongHierarchy, ControlKey, ChangedSpaceKeys);
+					}
 				}
 
 				return FReply::Handled();
@@ -566,9 +606,13 @@ FReply SRigSpacePickerWidget::HandleSpaceMoveDown(FRigElementKey InKey)
 				TArray<FRigElementKey> ChangedSpaceKeys = CurrentSpaceKeys;
 				ChangedSpaceKeys.Swap(Index, Index + 1);
 
-				for(const FRigElementKey& ControlKey : ControlKeys)
+				if (Hierarchy.IsValid())
 				{
-					SpaceListChangedEvent.Broadcast(Hierarchy, ControlKey, ChangedSpaceKeys);
+					URigHierarchy* StrongHierarchy = Hierarchy.Get();
+					for(const FRigElementKey& ControlKey : ControlKeys)
+					{
+						SpaceListChangedEvent.Broadcast(StrongHierarchy, ControlKey, ChangedSpaceKeys);
+					}
 				}
 				
 				return FReply::Handled();
@@ -583,9 +627,13 @@ void SRigSpacePickerWidget::HandleSpaceDelete(FRigElementKey InKey)
 	TArray<FRigElementKey> ChangedSpaceKeys = CurrentSpaceKeys;
 	if(ChangedSpaceKeys.Remove(InKey) > 0)
 	{
-		for(const FRigElementKey& ControlKey : ControlKeys)
+		if (Hierarchy.IsValid())
 		{
-			SpaceListChangedEvent.Broadcast(Hierarchy, ControlKey, ChangedSpaceKeys);
+			URigHierarchy* StrongHierarchy = Hierarchy.Get();
+			for(const FRigElementKey& ControlKey : ControlKeys)
+			{
+				SpaceListChangedEvent.Broadcast(StrongHierarchy, ControlKey, ChangedSpaceKeys);
+			}
 		}
 	}
 }
@@ -601,43 +649,47 @@ FReply SRigSpacePickerWidget::HandleAddElementClicked()
 			const FRigElementKey Key = InItem->Key;
 			if(!IsDefaultSpace(Key) && IsValidKey(Key))
 			{
-				for(const FRigElementKey& ControlKey : ControlKeys)
+				if (Hierarchy.IsValid())
 				{
-					URigHierarchy::TElementDependencyMap DependencyMap;
-					FString FailureReason;
+					URigHierarchy* StrongHierarchy = Hierarchy.Get();
+					for(const FRigElementKey& ControlKey : ControlKeys)
+					{
+						URigHierarchy::TElementDependencyMap DependencyMap;
+						FString FailureReason;
 
-					if(UControlRig* ControlRig = Hierarchy->GetTypedOuter<UControlRig>())
-					{
-						DependencyMap = Hierarchy->GetDependenciesForVM(ControlRig->GetVM()); 
-					}
-					else if(UControlRigBlueprint* RigBlueprint = Hierarchy->GetTypedOuter<UControlRigBlueprint>())
-					{
-						if(UControlRig* CDO = Cast<UControlRig>(RigBlueprint->GetControlRigClass()->GetDefaultObject()))
+						if(UControlRig* ControlRig = StrongHierarchy->GetTypedOuter<UControlRig>())
 						{
-							DependencyMap = Hierarchy->GetDependenciesForVM(CDO->GetVM()); 
+							DependencyMap = StrongHierarchy->GetDependenciesForVM(ControlRig->GetVM()); 
+						}
+						else if(UControlRigBlueprint* RigBlueprint = StrongHierarchy->GetTypedOuter<UControlRigBlueprint>())
+						{
+							if(UControlRig* CDO = Cast<UControlRig>(RigBlueprint->GetControlRigClass()->GetDefaultObject()))
+							{
+								DependencyMap = StrongHierarchy->GetDependenciesForVM(CDO->GetVM()); 
+							}
+						}
+						
+						if(!StrongHierarchy->CanSwitchToParent(ControlKey, Key, DependencyMap, &FailureReason))
+						{
+							// notification
+							FNotificationInfo Info(FText::FromString(FailureReason));
+							Info.bFireAndForget = true;
+							Info.FadeOutDuration = 2.0f;
+							Info.ExpireDuration = 8.0f;
+
+							const TSharedPtr<SNotificationItem> NotificationPtr = FSlateNotificationManager::Get().AddNotification(Info);
+							NotificationPtr->SetCompletionState(SNotificationItem::CS_Fail);
+							return;
 						}
 					}
 					
-					if(!Hierarchy->CanSwitchToParent(ControlKey, Key, DependencyMap, &FailureReason))
+					TArray<FRigElementKey> ChangedSpaceKeys = CurrentSpaceKeys;
+					ChangedSpaceKeys.AddUnique(Key);
+
+					for(const FRigElementKey& ControlKey : ControlKeys)
 					{
-						// notification
-						FNotificationInfo Info(FText::FromString(FailureReason));
-						Info.bFireAndForget = true;
-						Info.FadeOutDuration = 2.0f;
-						Info.ExpireDuration = 8.0f;
-
-						const TSharedPtr<SNotificationItem> NotificationPtr = FSlateNotificationManager::Get().AddNotification(Info);
-						NotificationPtr->SetCompletionState(SNotificationItem::CS_Fail);
-						return;
+						SpaceListChangedEvent.Broadcast(StrongHierarchy, ControlKey, ChangedSpaceKeys);
 					}
-				}
-				
-				TArray<FRigElementKey> ChangedSpaceKeys = CurrentSpaceKeys;
-				ChangedSpaceKeys.AddUnique(Key);
-
-				for(const FRigElementKey& ControlKey : ControlKeys)
-				{
-					SpaceListChangedEvent.Broadcast(Hierarchy, ControlKey, ChangedSpaceKeys);
 				}
 			}
 		}
@@ -667,6 +719,7 @@ FReply SRigSpacePickerWidget::HandleAddElementClicked()
 	.RigTreeDelegates(TreeDelegates);
 	SearchableTreeView->GetTreeView()->RefreshTreeView(true);
 
+	const bool bFocusImmediately = false;
 	// Create as context menu
 	TGuardValue<bool> AboutToShowMenu(bLaunchingContextMenu, true);
 	ContextMenu = FSlateApplication::Get().PushMenu(
@@ -674,7 +727,8 @@ FReply SRigSpacePickerWidget::HandleAddElementClicked()
 		FWidgetPath(),
 		SearchableTreeView.ToSharedRef(),
 		FSlateApplication::Get().GetCursorPos(),
-		FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu)
+		FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu),
+		bFocusImmediately
 	);
 
 	if(!ContextMenu.IsValid())
@@ -697,7 +751,7 @@ FReply SRigSpacePickerWidget::HandleAddElementClicked()
 		}
 	});
 
-	return FReply::Handled();
+	return FReply::Handled().SetUserFocus(SearchableTreeView->GetSearchBox(), EFocusCause::SetDirectly);
 }
 
 bool SRigSpacePickerWidget::IsSpaceMoveUpEnabled(FRigElementKey InKey) const
@@ -819,10 +873,12 @@ void SRigSpacePickerWidget::RepopulateItemSpaces()
 	{
 		return;
 	}
-	if(Hierarchy == nullptr)
+	if(!Hierarchy.IsValid())
 	{
 		return;
 	}
+
+	URigHierarchy* StrongHierarchy = Hierarchy.Get();
 	
 	TArray<FRigElementKey> FavoriteKeys, SpacesFromDelegate;
 
@@ -833,7 +889,7 @@ void SRigSpacePickerWidget::RepopulateItemSpaces()
 			const FRigControlElementCustomization* Customization = nullptr;
 			if(GetControlCustomizationDelegate.IsBound())
 			{
-				Customization = GetControlCustomizationDelegate.Execute(Hierarchy, ControlKey);
+				Customization = GetControlCustomizationDelegate.Execute(StrongHierarchy, ControlKey);
 			}
 
 			if(Customization)
@@ -849,7 +905,7 @@ void SRigSpacePickerWidget::RepopulateItemSpaces()
 			}
 			
 			// check if the customization is different from the base one in the asset
-			if(const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(ControlKey))
+			if(const FRigControlElement* ControlElement = StrongHierarchy->Find<FRigControlElement>(ControlKey))
 			{
 				if(Customization != &ControlElement->Settings.Customization)
 				{
@@ -884,7 +940,7 @@ void SRigSpacePickerWidget::RepopulateItemSpaces()
 		AdditionalSpaces.Reset();
 		for(const FRigElementKey& ControlKey: ControlKeys)
 		{
-			AdditionalSpaces.Append(GetAdditionalSpacesDelegate.Execute(Hierarchy, ControlKey));
+			AdditionalSpaces.Append(GetAdditionalSpacesDelegate.Execute(StrongHierarchy, ControlKey));
 		}
 		
 		for(const FRigElementKey& Key : AdditionalSpaces)
@@ -940,7 +996,7 @@ void SRigSpacePickerWidget::RepopulateItemSpaces()
 
 	for(const FRigElementKey& Key : Keys)
 	{
-		TPair<const FSlateBrush*, FSlateColor> IconAndColor = SRigHierarchyItem::GetBrushForElementType(Hierarchy, Key);
+		TPair<const FSlateBrush*, FSlateColor> IconAndColor = SRigHierarchyItem::GetBrushForElementType(StrongHierarchy, Key);
 		
 		AddSpacePickerRow(
 			ItemSpacesListBox,
@@ -965,18 +1021,19 @@ void SRigSpacePickerWidget::UpdateActiveSpaces()
 {
 	ActiveSpaceKeys.Reset();
 
-	if(Hierarchy == nullptr)
+	if(!Hierarchy.IsValid())
 	{
 		return;
 	}
-	
+
+	URigHierarchy* StrongHierarchy = Hierarchy.Get();	
 	for(int32 ControlIndex=0;ControlIndex<ControlKeys.Num();ControlIndex++)
 	{
 		ActiveSpaceKeys.Add(URigHierarchy::GetDefaultParentKey());
 
 		if(GetActiveSpaceDelegate.IsBound())
 		{
-			ActiveSpaceKeys[ControlIndex] = GetActiveSpaceDelegate.Execute(Hierarchy, ControlKeys[ControlIndex]);
+			ActiveSpaceKeys[ControlIndex] = GetActiveSpaceDelegate.Execute(StrongHierarchy, ControlKeys[ControlIndex]);
 		}
 	}
 }
@@ -1117,7 +1174,7 @@ void SRigSpacePickerBakeWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("OK", "OK"))
 					.OnClicked_Lambda([this, InArgs]()
 					{
@@ -1140,7 +1197,7 @@ void SRigSpacePickerBakeWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text(LOCTEXT("Cancel", "Cancel"))
 					.OnClicked_Lambda([this]()
 					{

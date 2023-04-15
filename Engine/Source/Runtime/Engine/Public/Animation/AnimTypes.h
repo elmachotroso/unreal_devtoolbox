@@ -10,6 +10,7 @@
 #include "Animation/AnimEnums.h"
 #include "Misc/SecureHash.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "AnimTypes.generated.h"
 
 struct FMarkerPair;
@@ -424,7 +425,7 @@ public:
 	/** Returns true if this is blueprint derived notifies **/
 	bool IsBlueprintNotify() const
 	{
-		return Notify != NULL || NotifyStateClass != NULL;
+		return Notify != nullptr || NotifyStateClass != nullptr;
 	}
 
 	bool operator ==(const FAnimNotifyEvent& Other) const
@@ -469,7 +470,7 @@ FORCEINLINE bool FAnimNotifyEvent::operator<(const FAnimNotifyEvent& Other) cons
 	// using SMALL_NUMBER here incase the underlying default changes as
 	// notifies can have an offset of KINDA_SMALL_NUMBER to be consider
 	// distinct
-	if (FMath::IsNearlyEqual(ATime, BTime, SMALL_NUMBER))
+	if (FMath::IsNearlyEqual(ATime, BTime, UE_SMALL_NUMBER))
 	{
 		return TrackIndex < Other.TrackIndex;
 	}
@@ -880,7 +881,27 @@ struct ENGINE_API FRawAnimSequenceTrack
 		return Ar;
 	}
 
+	bool Serialize(FArchive& Ar)
+	{
+		Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID); 
+
+		// Previously generated content was saved without bulk array serialization, so have to rely on UProperty serialization until resaved
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::RawAnimSequenceTrackSerializer)
+		{
+			return false;
+		}
+ 
+		Ar << *this;
+ 
+		return true;
+	}
+
 	static const uint32 SingleKeySize = sizeof(FVector3f) + sizeof(FQuat4f) + sizeof(FVector3f);
+};
+
+template<> struct TStructOpsTypeTraits<FRawAnimSequenceTrack> : public TStructOpsTypeTraitsBase2<FRawAnimSequenceTrack>
+{
+	enum { WithSerializer = true };
 };
 
 UCLASS()

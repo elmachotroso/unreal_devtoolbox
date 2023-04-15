@@ -1,19 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimModel_AnimMontage.h"
+#include "AnimTimeline/AnimModel_AnimMontage.h"
 #include "Animation/AnimMontage.h"
-#include "AnimTimelineTrack.h"
-#include "AnimTimelineTrack_Notifies.h"
-#include "AnimTimelineTrack_TimingPanel.h"
-#include "AnimTimelineTrack_MontagePanel.h"
+#include "AnimTimeline/AnimTimelineTrack.h"
+#include "AnimTimeline/AnimTimelineTrack_Notifies.h"
+#include "AnimTimeline/AnimTimelineTrack_TimingPanel.h"
+#include "AnimTimeline/AnimTimelineTrack_MontagePanel.h"
 #include "ScopedTransaction.h"
 #include "Factories/AnimMontageFactory.h"
 #include "Animation/EditorCompositeSection.h"
 #include "IPersonaPreviewScene.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimPreviewInstance.h"
-#include "AnimTimelineTrack_MontageSections.h"
-#include "AnimTimelineTrack_Montage.h"
+#include "AnimTimeline/AnimTimelineTrack_MontageSections.h"
+#include "AnimTimeline/AnimTimelineTrack_Montage.h"
 #include "SAnimMontagePanel.h"
 #include "IEditableSkeleton.h"
 
@@ -46,7 +46,7 @@ void FAnimModel_AnimMontage::RefreshTracks()
 	ClearTrackSelection();
 
 	// Clear all tracks
-	RootTracks.Empty();
+	ClearRootTracks();
 
 	bool bIsChildAnimMontage = AnimMontage->HasParentAsset();
 
@@ -57,7 +57,7 @@ void FAnimModel_AnimMontage::RefreshTracks()
 	}
 
 	MontageRoot->ClearChildren();
-	RootTracks.Add(MontageRoot.ToSharedRef());
+	AddRootTrack(MontageRoot.ToSharedRef());
 
 	// Create & add the montage panel
 	MontagePanel = MakeShared<FAnimTimelineTrack_MontagePanel>(SharedThis(this));
@@ -135,7 +135,7 @@ void FAnimModel_AnimMontage::OnSetEditableTime(int32 TimeIndex, double Time, boo
 	
 			FCompositeSection& Section = AnimMontage->CompositeSections[TimeIndex];
 			Section.SetTime(Time);
-			Section.LinkMontage(AnimMontage, Time);
+			Section.Link(AnimMontage, Time);
 
 			SortSections();
 			RefreshNotifyTriggerOffsets();
@@ -256,14 +256,12 @@ bool FAnimModel_AnimMontage::ClampToEndTime(float NewEndTime)
 	bool bClampingNeeded = (SequenceLength > 0.f && NewEndTime < SequenceLength);
 	if(bClampingNeeded)
 	{
-		float ratio = NewEndTime / AnimMontage->GetPlayLength();
-
 		for(int32 i=0; i < AnimMontage->CompositeSections.Num(); i++)
 		{
 			if(AnimMontage->CompositeSections[i].GetTime() > NewEndTime)
 			{
 				float CurrentTime = AnimMontage->CompositeSections[i].GetTime();
-				AnimMontage->CompositeSections[i].SetTime(CurrentTime * ratio);
+				AnimMontage->CompositeSections[i].SetTime(NewEndTime);
 			}
 		}
 
@@ -274,7 +272,7 @@ bool FAnimModel_AnimMontage::ClampToEndTime(float NewEndTime)
 
 			if(NotifyTime >= NewEndTime)
 			{
-				Notify.SetTime(NotifyTime * ratio);
+				Notify.SetTime(NewEndTime);
 				Notify.TriggerTimeOffset = GetTriggerTimeOffsetForType(AnimMontage->CalculateOffsetForNotify(Notify.GetTime()));
 			}
 		}

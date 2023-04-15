@@ -6,6 +6,12 @@
 #include "AnimGraphRuntimeTrace.h"
 #include "Animation/AnimSyncScope.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_BlendSpaceGraphBase)
+
+#if WITH_EDITORONLY_DATA
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#endif
+
 void FAnimNode_BlendSpaceGraphBase::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
@@ -76,7 +82,8 @@ void FAnimNode_BlendSpaceGraphBase::Update_AnyThread(const FAnimationUpdateConte
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	GetEvaluateGraphExposedInputs().Execute(Context);
 
-	UE::Anim::TScopedGraphMessage<UE::Anim::FAnimSyncGroupScope> Message(Context, Context, GroupName, GroupRole);
+	const bool bApplySyncing = GroupName != NAME_None;
+	UE::Anim::TOptionalScopedGraphMessage<UE::Anim::FAnimSyncGroupScope> Message(bApplySyncing, Context, Context, GroupName, GroupRole);
 
 	UpdateInternal(Context);
 }

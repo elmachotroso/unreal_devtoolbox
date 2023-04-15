@@ -6,6 +6,9 @@
 #include "NiagaraRendererGeometryCache.h"
 #include "NiagaraComponent.h"
 #include "Modules/ModuleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraGeometryCacheRendererProperties)
+
 #if WITH_EDITOR
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
@@ -333,24 +336,7 @@ const TArray<FNiagaraVariable>& UNiagaraGeometryCacheRendererProperties::GetOpti
 	return Attrs;
 }
 
-bool UNiagaraGeometryCacheRendererProperties::IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage)
-{
-	if (Material->bUsedWithGeometryCache == false)
-	{
-		InvalidMessage = NSLOCTEXT("NiagaraGeometryCacheRendererProperties", "InvalidMaterialMessage", "The material isn't marked as \"Used with Geometry Cache\"");
-		return false;
-	}
-	return true;
-}
-
-void UNiagaraGeometryCacheRendererProperties::FixMaterial(UMaterial* Material)
-{
-	Material->Modify();
-	Material->bUsedWithGeometryCache = true;
-	Material->ForceRecompileForRendering();
-}
-
-void UNiagaraGeometryCacheRendererProperties::GetRendererFeedback(const UNiagaraEmitter* InEmitter,	TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const
+void UNiagaraGeometryCacheRendererProperties::GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const
 {
 	OutInfo.Add(FText::FromString(TEXT("The geometry cache renderer is still an experimental feature.")));
 }

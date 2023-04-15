@@ -3,27 +3,27 @@
 using System.Threading;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
-    [TestClass]
+	[TestClass]
     public class DatabaseRunnerTest
     {
         [TestMethod]
         public void RunMongoDbTest()
         {
-	        MongoDbRunnerLocal Runner = new MongoDbRunnerLocal();
-	        Runner.Start();
+	        MongoDbRunnerLocal runner = new MongoDbRunnerLocal();
+	        runner.Start();
             Thread.Sleep(100);
-            Runner.Stop();
+            runner.Stop();
         }
         
         [TestMethod]
         public void RunRedisTest()
         {
-	        RedisRunner Runner = new RedisRunner();
-	        Runner.Start();
+	        RedisRunner runner = new RedisRunner();
+	        runner.Start();
 	        Thread.Sleep(100);
-	        Runner.Stop();
+	        runner.Stop();
         }
     }
 }

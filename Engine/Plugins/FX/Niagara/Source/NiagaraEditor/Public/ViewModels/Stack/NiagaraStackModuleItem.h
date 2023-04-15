@@ -126,7 +126,9 @@ public:
 	void SetDebugDrawEnabled(bool bInEnabled);
 
 	FOnNoteModeSet& OnNoteModeSet() { return OnNoteModeSetDelegate;}
-	
+
+	bool OpenSourceAsset() const;
+
 protected:
 	FOnRequestDeprecationRecommended DeprecationDelegate;
 
@@ -136,6 +138,8 @@ protected:
 
 	virtual TOptional<FDropRequestResponse> CanDropInternal(const FDropRequest& DropRequest) override;
 	virtual TOptional<FDropRequestResponse> DropInternal(const FDropRequest& DropRequest) override;
+
+	virtual const FCollectedUsageData& GetCollectedUsageData() const override;
 
 private:
 	bool FilterOutputCollection(const UNiagaraStackEntry& Child) const;

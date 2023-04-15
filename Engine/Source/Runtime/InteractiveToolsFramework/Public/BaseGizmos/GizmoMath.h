@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "BaseGizmos/GizmoInterfaces.h"
+#include "CoreMinimal.h"
+#include "Math/MathFwd.h"
+#include "Math/Vector2D.h"
 
 /**
  * GizmoMath functions implement various vector math/geometry operations
@@ -62,7 +64,6 @@ namespace GizmoMath
 		bool& bIntersectsOut, FVector& SphereIntersectionPointOut);
 
 	/**
-	 * @todo change FVector to a templated vector type specialized by RealType (double or float)
 	 * Find the intersection of the ray defined by RayOrigin and RayDirection
 	 * with the cylinder defined by CylinderCenter, CylinderAxis, CylinderRadius, and CylinderHeight.
 	 * Returns intersection success/failure in bOutIntersects and the hit depth parameter 
@@ -76,7 +77,6 @@ namespace GizmoMath
 
 
 	/**
-	 * @todo change FVector to a templated vector type specialized by RealType (double or float)
 	 * Find the intersection of the ray defined by RayOrigin and RayDirection
 	 * with the cone defined by ConeCenter, ConeDirection, ConeCosAngle, and ConeHeight.
 	 * Where ConeCosAngle is the cosine of the cone opening angle, defined as the angle
@@ -154,7 +154,8 @@ namespace GizmoMath
 	 * Round Value to nearest step of Increment
 	 * @return snapped/rounded value
 	 */
-	INTERACTIVETOOLSFRAMEWORK_API float SnapToIncrement(float Value, float Increment);
+	template <typename RealType>
+	INTERACTIVETOOLSFRAMEWORK_API RealType SnapToIncrement(RealType Value, RealType Increment);
 
 	/**
 	 * @todo change FVector to a templated vector type specialized by RealType (double or float)

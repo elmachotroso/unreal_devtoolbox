@@ -86,14 +86,19 @@ namespace DatasmithRevitExporter
 
 	public class DatasmithRevitSettingsDialog : Form
 	{
+		private ComboBox InsertionPointCombo;
 		private ListBox GroupsList;
 		private NumericUpDown LevelOfTessellation;
 		private FSettings Settings;
 		private Autodesk.Revit.DB.Document Document;
 		private SortedList<string, int> AddedBuiltinParamGroups = new SortedList<string, int>();
 		private List<string> AddedParamNames = new List<string>();
+		private bool bSettingsChanged = false;
 
-		public DatasmithRevitSettingsDialog(Autodesk.Revit.DB.Document InDocument)
+		private static FormStartPosition ShowStartPosition = FormStartPosition.CenterParent;
+		private static Point ShowLocation = new Point(0, 0);
+
+		public DatasmithRevitSettingsDialog(Autodesk.Revit.DB.Document InDocument, FSettings InSettings)
 		{
 			string FormatTooltip(string InText)
 			{
@@ -104,16 +109,55 @@ namespace DatasmithRevitExporter
 			Document = InDocument;
 			FormClosing += OnClosing;
 
-			Settings = FSettingsManager.CurrentSettings;
+			Settings = InSettings;
 
 			ToolTip OptionToolTip = new ToolTip();
 			OptionToolTip.AutoPopDelay = 10000; // milliseconds
 
-			FlowLayoutPanel LevelOfTesselationPanel = new FlowLayoutPanel();
-			LevelOfTesselationPanel.FlowDirection = FlowDirection.LeftToRight;
-			LevelOfTesselationPanel.WrapContents = false;
-			LevelOfTesselationPanel.AutoSize = true;
-			LevelOfTesselationPanel.Margin = new Padding(0, 0, 0, 30);
+			// Table layout for top level controls
+			TableLayoutPanel ControlsLayout = new TableLayoutPanel();
+			ControlsLayout.Name = "ControlsLayout";
+			ControlsLayout.ColumnCount = 2;
+			ControlsLayout.ColumnStyles.Add(new ColumnStyle());
+			ControlsLayout.ColumnStyles.Add(new ColumnStyle());
+			ControlsLayout.ColumnStyles.Add(new ColumnStyle());
+			ControlsLayout.RowCount = 4;
+			ControlsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+			ControlsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+			ControlsLayout.AutoSize = true;
+			ControlsLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+			ControlsLayout.Dock = DockStyle.Fill;
+			ControlsLayout.TabIndex = 0;
+			ControlsLayout.Margin = new Padding(0, 0, 0, 30);
+
+			// Insertion point option
+			{
+				Label InsertionPointLabel = new Label();
+				InsertionPointLabel.Name = "LevelOfTessellationLabel";
+				InsertionPointLabel.Text = DatasmithRevitResources.Strings.SettingsDialog_InsertionPoint;
+				InsertionPointLabel.Anchor = AnchorStyles.Left;
+				InsertionPointLabel.AutoSize = true;
+				InsertionPointLabel.Margin = new Padding(0, 0, 3, 0);
+				InsertionPointLabel.TabIndex = 2;
+				InsertionPointLabel.TextAlign = ContentAlignment.MiddleLeft;
+
+				InsertionPointCombo = new ComboBox();
+				InsertionPointCombo.Name = "InsertionPoint";
+				InsertionPointCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+				InsertionPointCombo.AutoSize = true;
+				InsertionPointCombo.TabIndex = 3;
+
+				InsertionPointCombo.Items.Add("Default");
+				InsertionPointCombo.Items.Add("Base Point");
+				InsertionPointCombo.Items.Add("Survey Point");
+
+				OptionToolTip.SetToolTip(InsertionPointLabel, FormatTooltip(DatasmithRevitResources.Strings.SettingsDialog_InsertionPointTooltip));
+
+				ControlsLayout.Controls.Add(InsertionPointLabel, 0, 0);
+				ControlsLayout.Controls.Add(InsertionPointCombo, 1, 0);
+			}
+
+			// Tesselation level option
 			{
 				Label LevelOfTessellationLabel = new Label();
 				LevelOfTessellationLabel.Name = "LevelOfTessellationLabel";
@@ -136,8 +180,8 @@ namespace DatasmithRevitExporter
 
 				OptionToolTip.SetToolTip(LevelOfTessellationLabel, FormatTooltip(DatasmithRevitResources.Strings.SettingsDialog_LevelOfTesselationTooltip));
 
-				LevelOfTesselationPanel.Controls.Add(LevelOfTessellationLabel);
-				LevelOfTesselationPanel.Controls.Add(LevelOfTessellation);
+				ControlsLayout.Controls.Add(LevelOfTessellationLabel, 0, 1);
+				ControlsLayout.Controls.Add(LevelOfTessellation, 1, 1);
 			}
 
 			Label GroupsLabel = new Label();
@@ -189,6 +233,7 @@ namespace DatasmithRevitExporter
 
 						if (bAddedNewGroups)
 						{
+							bSettingsChanged = true;
 							ReloadAddedGroupsList();
 						}
 					}
@@ -209,6 +254,8 @@ namespace DatasmithRevitExporter
 						int[] IndicesToRemove = new int[GroupsList.SelectedIndices.Count];
 						GroupsList.SelectedIndices.CopyTo(IndicesToRemove, 0);
 						Array.Sort(IndicesToRemove, (A, B) => B.CompareTo(A));
+
+						bSettingsChanged = true;
 
 						foreach (int Index in IndicesToRemove)
 						{
@@ -247,12 +294,12 @@ namespace DatasmithRevitExporter
 			DialogLayout.Dock = DockStyle.Fill;
 			DialogLayout.TabIndex = 0;
 		
-			DialogLayout.Controls.Add(LevelOfTesselationPanel, 0, 0);
+			DialogLayout.Controls.Add(ControlsLayout, 0, 0);
 			DialogLayout.Controls.Add(GroupsLabel, 0, 1);
 			DialogLayout.Controls.Add(GroupsList, 0, 2);
 			DialogLayout.Controls.Add(ButtonsPanel, 1, 2);
 
-			DialogLayout.SetColumnSpan(LevelOfTesselationPanel, 2);
+			DialogLayout.SetColumnSpan(ControlsLayout, 2);
 			DialogLayout.SetColumnSpan(GroupsLabel, 2);
 
 			Name = "MetadataExportFilter";
@@ -264,7 +311,9 @@ namespace DatasmithRevitExporter
 			MinimizeBox = false;
 			//Padding = new Padding(7);
 			SizeGripStyle = SizeGripStyle.Hide;
-			StartPosition = FormStartPosition.CenterParent;
+
+			StartPosition = ShowStartPosition;
+			Location = ShowLocation;
 
 			Panel ParentPanel = new Panel();
 			ParentPanel.BorderStyle = BorderStyle.FixedSingle;
@@ -285,12 +334,9 @@ namespace DatasmithRevitExporter
 
 			Controls.Add(TopLayout);
 
-			if (Settings == null)
+			if (Settings != null)
 			{
-				Settings = new FSettings();
-			}
-			else
-			{
+				InsertionPointCombo.SelectedIndex = (int)Settings.InsertionPoint;
 				LevelOfTessellation.Value = Settings.LevelOfTesselation;
 
 				foreach (int Group in Settings.MetadataParamGroupsFilter)
@@ -301,6 +347,16 @@ namespace DatasmithRevitExporter
 
 				ReloadAddedGroupsList();
 			}
+
+			LevelOfTessellation.ValueChanged += (S, E) =>
+			{
+				bSettingsChanged = true;
+			};
+
+			InsertionPointCombo.SelectedValueChanged += (S, E) =>
+			{
+				bSettingsChanged = true;
+			};
 		}
 
 		private void ReloadAddedGroupsList()
@@ -315,9 +371,16 @@ namespace DatasmithRevitExporter
 
 		private void OnClosing(object InSender, FormClosingEventArgs InArgs)
 		{
-			Settings.LevelOfTesselation = Decimal.ToInt32(LevelOfTessellation.Value);
-			Settings.MetadataParamGroupsFilter = AddedBuiltinParamGroups.Values;
-			FSettingsManager.WriteSettings(Document, Settings);
+			ShowStartPosition = FormStartPosition.Manual;
+			ShowLocation = Location;
+
+			if (bSettingsChanged)
+			{
+				Settings.LevelOfTesselation = Decimal.ToInt32(LevelOfTessellation.Value);
+				Settings.InsertionPoint = (FSettings.EInsertionPoint)InsertionPointCombo.SelectedIndex;
+				Settings.MetadataParamGroupsFilter = AddedBuiltinParamGroups.Values;
+				FSettingsManager.WriteSettings(Document, Settings);
+			}
 		}
 	}
 }

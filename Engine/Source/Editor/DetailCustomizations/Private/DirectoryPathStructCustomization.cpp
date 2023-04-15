@@ -1,21 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DirectoryPathStructCustomization.h"
-#include "Misc/PackageName.h"
-#include "Misc/MessageDialog.h"
-#include "HAL/FileManager.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "EditorDirectories.h"
-#include "DetailWidgetRow.h"
-#include "DesktopPlatformModule.h"
-#include "IContentBrowserSingleton.h"
+
+#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
+#include "Delegates/Delegate.h"
+#include "DesktopPlatformModule.h"
+#include "DetailWidgetRow.h"
+#include "EditorDirectories.h"
+#include "Framework/Application/IMenu.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/SlateDelegates.h"
+#include "GenericPlatform/GenericWindow.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/PlatformMisc.h"
+#include "IContentBrowserSingleton.h"
+#include "IDesktopPlatform.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "DirectoryPathStructCustomization"
 
@@ -41,15 +66,16 @@ void FDirectoryPathStructCustomization::CustomizeHeader( TSharedRef<IPropertyHan
 		if(bContentDir)
 		{
 			PickerWidget = SAssignNew(PickerButton, SButton)
-			.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+			.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 			.ToolTipText( LOCTEXT( "FolderComboToolTipText", "Choose a content directory") )
-			.OnClicked(FOnClicked::CreateSP(this, &FDirectoryPathStructCustomization::OnPickContent, PathProperty.ToSharedRef()))
+			.OnClicked( this, &FDirectoryPathStructCustomization::OnPickContent, PathProperty.ToSharedRef() )
 			.ContentPadding(2.0f)
 			.ForegroundColor( FSlateColor::UseForeground() )
 			.IsFocusable(false)
+			.IsEnabled(this, &FDirectoryPathStructCustomization::IsBrowseEnabled, StructPropertyHandle)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+				.Image(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			];
 
@@ -57,15 +83,16 @@ void FDirectoryPathStructCustomization::CustomizeHeader( TSharedRef<IPropertyHan
 		else
 		{
 			PickerWidget = SAssignNew(BrowseButton, SButton)
-			.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+			.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 			.ToolTipText( LOCTEXT( "FolderButtonToolTipText", "Choose a directory from this computer") )
-			.OnClicked( FOnClicked::CreateSP(this, &FDirectoryPathStructCustomization::OnPickDirectory, PathProperty.ToSharedRef(), bRelativeToGameContentDir, bUseRelativePath) )
+			.OnClicked( this, &FDirectoryPathStructCustomization::OnPickDirectory, PathProperty.ToSharedRef(), bRelativeToGameContentDir, bUseRelativePath )
 			.ContentPadding( 2.0f )
 			.ForegroundColor( FSlateColor::UseForeground() )
 			.IsFocusable( false )
+			.IsEnabled( this, &FDirectoryPathStructCustomization::IsBrowseEnabled, StructPropertyHandle )
 			[
 				SNew( SImage )
-				.Image( FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis") )
+				.Image( FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis") )
 				.ColorAndOpacity( FSlateColor::UseForeground() )
 			];
 		}
@@ -203,6 +230,11 @@ void FDirectoryPathStructCustomization::OnPathPicked(const FString& Path, TShare
 	}
 
 	PropertyHandle->SetValue(Path);
+}
+
+bool FDirectoryPathStructCustomization::IsBrowseEnabled(TSharedRef<IPropertyHandle> PropertyHandle) const
+{
+	return PropertyHandle->IsEditable();
 }
 
 #undef LOCTEXT_NAMESPACE

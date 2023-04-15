@@ -15,6 +15,7 @@
 
 class IAnimClassInterface;
 struct FAnimNode_AssetPlayerBase;
+struct FAnimNode_AssetPlayerRelevancyBase;
 struct FAnimNode_StateMachine;
 struct FAnimNode_TransitionPoseEvaluator;
 
@@ -77,6 +78,9 @@ public:
 
 public:
 	FAnimationActiveTransitionEntry();
+	FAnimationActiveTransitionEntry(int32 NextStateID, float ExistingWeightOfNextState, int32 PreviousStateID, const FAnimationTransitionBetweenStates& ReferenceTransitionInfo, float CrossfadeTimeAdjustment);
+	
+	UE_DEPRECATED(5.1, "Please use FAnimationActiveTransitionEntry constructor with different signature")
 	FAnimationActiveTransitionEntry(int32 NextStateID, float ExistingWeightOfNextState, FAnimationActiveTransitionEntry* ExistingTransitionForNextState, int32 PreviousStateID, const FAnimationTransitionBetweenStates& ReferenceTransitionInfo, const FAnimationPotentialTransition& PotentialTransition);
 
 	void InitializeCustomGraphLinks(const FAnimationUpdateContext& Context, const FBakedStateExitTransition& TransitionRule);
@@ -127,6 +131,11 @@ public:
 	// The maximum number of transitions that can be taken by this machine 'simultaneously' in a single frame
 	UPROPERTY(EditAnywhere, Category=Settings)
 	int32 MaxTransitionsPerFrame;
+
+	// The maximum number of transition requests that can be buffered at any time.
+	// The oldest transition requests are dropped to accommodate for newly created requests.
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (ClampMin = "0"))
+	int32 MaxTransitionsRequests = 32;
 
 	// When the state machine becomes relevant, it is initialized into the Entry state.
 	// It then tries to take any valid transitions to possibly end up in a different state on that same frame.
@@ -198,6 +207,14 @@ protected:
 	// Delegates that native code can hook into to handle state exits
 	TArray<FOnGraphStateChanged> OnGraphStatesExited;
 
+	// All alive transition requests that have been queued
+	TArray<FTransitionEvent> QueuedTransitionEvents;
+
+#if WITH_EDITORONLY_DATA
+	// The set of transition requests handled this update
+	TArray<FTransitionEvent> HandledTransitionEvents;
+#endif
+
 private:
 	TArray<FPoseContext*> StateCachedPoses;
 
@@ -241,11 +258,14 @@ public:
 	/** Cache the internal machine description */
 	void CacheMachineDescription(IAnimClassInterface* AnimBlueprintClass);
 
+	void SetState(const FAnimationBaseContext& Context, int32 NewStateIndex);
+	void TransitionToState(const FAnimationUpdateContext& Context, const FAnimationTransitionBetweenStates& TransitionInfo, const FAnimationPotentialTransition* BakedTransitionInfo = nullptr);
+	const int32 GetStateIndex(FName StateName) const;
+
 protected:
 	// Tries to get the instance information for the state machine
 	const FBakedAnimationStateMachine* GetMachineDescription() const;
 
-	void SetState(const FAnimationBaseContext& Context, int32 NewStateIndex);
 	void SetStateInternal(int32 NewStateIndex);
 
 	const FBakedAnimationState& GetStateInfo() const;
@@ -273,14 +293,59 @@ protected:
 	void EvaluateTransitionStandardBlendInternal(FPoseContext& Output, FAnimationActiveTransitionEntry& Transition, const FPoseContext& PreviousStateResult, const FPoseContext& NextStateResult);
 	void EvaluateTransitionCustomBlend(FPoseContext& Output, FAnimationActiveTransitionEntry& Transition, bool bIntermediatePoseIsValid);
 
-	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimInstanceProxy* InAnimInstanceProxy, const FBakedAnimationState& StateInfo) const;
+	// Get the time remaining in seconds for the most relevant animation in the source state 
+	float GetRelevantAnimTimeRemaining(const FAnimInstanceProxy* InAnimInstanceProxy, int32 StateIndex) const;
+	float GetRelevantAnimTimeRemaining(const FAnimationUpdateContext& Context, int32 StateIndex) const
+	{
+		return GetRelevantAnimTimeRemaining(Context.AnimInstanceProxy, StateIndex);
+	}
+
+	// Get the time remaining as a fraction of the duration for the most relevant animation in the source state 
+	float GetRelevantAnimTimeRemainingFraction(const FAnimInstanceProxy* InAnimInstanceProxy, int32 StateIndex) const;
+	float GetRelevantAnimTimeRemainingFraction(const FAnimationUpdateContext& Context, int32 StateIndex) const
+	{
+		return GetRelevantAnimTimeRemainingFraction(Context.AnimInstanceProxy, StateIndex);
+	}
+
+	UE_DEPRECATED(5.1, "Please use GetRelevantAssetPlayerInterfaceFromState")
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimInstanceProxy* InAnimInstanceProxy, const FBakedAnimationState& StateInfo) const
+	{
+		return nullptr;
+	}
+
+	UE_DEPRECATED(5.1, "Please use GetRelevantAssetPlayerInterfaceFromState")
 	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimationUpdateContext& Context, const FBakedAnimationState& StateInfo) const
 	{
-		return GetRelevantAssetPlayerFromState(Context.AnimInstanceProxy, StateInfo);
+		return nullptr;
+	}
+
+	const FAnimNode_AssetPlayerRelevancyBase* GetRelevantAssetPlayerInterfaceFromState(const FAnimInstanceProxy* InAnimInstanceProxy, const FBakedAnimationState& StateInfo) const;
+	const FAnimNode_AssetPlayerRelevancyBase* GetRelevantAssetPlayerInterfaceFromState(const FAnimationUpdateContext& Context, const FBakedAnimationState& StateInfo) const
+	{
+		return GetRelevantAssetPlayerInterfaceFromState(Context.AnimInstanceProxy, StateInfo);
 	}
 
 	void LogInertializationRequestError(const FAnimationUpdateContext& Context, int32 PreviousState, int32 NextState);
 
+	/** Queues a new transition request, returns true if the transition request was successfully queued */
+	bool RequestTransitionEvent(const FTransitionEvent& InTransitionEvent);
+
+	/** Removes all queued transition requests with the given event name */
+	void ClearTransitionEvents(const FName& EventName);
+
+	/** Removes all queued transition requests*/
+	void ClearAllTransitionEvents();
+
+	/** Returns whether or not the given event transition request has been queued */
+	bool QueryTransitionEvent(const int32 TransitionIndex, const FName& EventName) const;
+
+	/** Behaves like QueryTransitionEvent but additionally marks the event for consumption */
+	bool QueryAndMarkTransitionEvent(const int32 TransitionIndex, const FName& EventName);
+
+	/** Removes all marked events that are queued */
+	void ConsumeMarkedTransitionEvents();
+
 public:
 	friend struct FAnimInstanceProxy;
+	friend class UAnimationStateMachineLibrary;
 };

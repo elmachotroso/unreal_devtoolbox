@@ -23,7 +23,7 @@
 #endif
 
 #if WITH_EDITOR
-	#include "AssetRegistryModule.h"
+	#include "AssetRegistry/AssetRegistryModule.h"
 #endif
 
 
@@ -160,6 +160,8 @@ void FAutomationWorkerModule::Initialize()
 	ExecutionCount = INDEX_NONE;
 	bExecutingNetworkCommandResults = false;
 	bSendAnalytics = false;
+
+	FParse::Value(FCommandLine::Get(), TEXT("-DeviceTag="), DeviceTag);
 }
 
 void FAutomationWorkerModule::ReportNetworkCommandComplete()
@@ -174,42 +176,6 @@ void FAutomationWorkerModule::ReportNetworkCommandComplete()
 		}
 	}
 }
-
-
-/**
- *	Takes a large transport array and splits it into pieces of a desired size and returns the portion of this which is requested
- *
- * @param FullTransportArray The whole series of data
- * @param CurrentChunkIndex The The chunk we are requesting
- * @param NumToSend The maximum number of bytes we should be splitting into.
- * @return The section of the transport array which matches our index requested
- */
-TArray< uint8 > GetTransportSection( const TArray< uint8 >& FullTransportArray, const int32 NumToSend, const int32 RequestedChunkIndex )
-{
-	TArray< uint8 > TransportArray = FullTransportArray;
-
-	if( NumToSend > 0 )
-	{
-		int32 NumToRemoveFromStart = RequestedChunkIndex * NumToSend;
-		if( NumToRemoveFromStart > 0 )
-		{
-			TransportArray.RemoveAt( 0, NumToRemoveFromStart );
-		}
-
-		int32 NumToRemoveFromEnd = FullTransportArray.Num() - NumToRemoveFromStart - NumToSend;
-		if( NumToRemoveFromEnd > 0 )
-		{
-			TransportArray.RemoveAt( TransportArray.Num()-NumToRemoveFromEnd, NumToRemoveFromEnd );
-		}
-	}
-	else
-	{
-		TransportArray.Empty();
-	}
-
-	return TransportArray;
-}
-
 
 void FAutomationWorkerModule::ReportTestComplete()
 {
@@ -273,6 +239,7 @@ void FAutomationWorkerModule::ReportTestComplete()
 
 void FAutomationWorkerModule::SendTests( const FMessageAddress& ControllerAddress )
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Worker"));
 	FAutomationWorkerRequestTestsReplyComplete* Reply = FMessageEndpoint::MakeMessage<FAutomationWorkerRequestTestsReplyComplete>();
 	for( int32 TestIndex = 0; TestIndex < TestInfo.Num(); TestIndex++ )
 	{
@@ -329,8 +296,11 @@ void FAutomationWorkerModule::SendWorkerFound(const FMessageAddress& ControllerA
 	FString OSVersionString = OSMajorVersionString + TEXT(" ") + OSSubVersionString;
 	FString CPUModelString = FPlatformMisc::GetCPUBrand().TrimStart();
 
-	Response->DeviceName = FPlatformProcess::ComputerName();
-	Response->InstanceName = FString::Printf(TEXT("%s-%i"), FPlatformProcess::ComputerName(), FPlatformProcess::GetCurrentProcessId());
+	FString DeviceName = DeviceTag.IsEmpty() ? FPlatformProcess::ComputerName() : DeviceTag;
+	FString DeviceId = FPlatformMisc::GetDeviceId().IsEmpty() ? DeviceName : FPlatformMisc::GetDeviceId();
+
+	Response->DeviceName = DeviceName;
+	Response->InstanceName = FString::Printf(TEXT("%s-%s"), *DeviceId, *FApp::GetSessionId().ToString());
 	Response->Platform = FPlatformProperties::PlatformName();
 	Response->SessionId = FApp::GetSessionId();
 	Response->OSVersionName = OSVersionString;
@@ -445,6 +415,7 @@ void FAutomationWorkerModule::HandleScreenShotCapturedWithName(const TArray<FCol
 void FAutomationWorkerModule::HandleScreenShotAndTraceCapturedWithName(const TArray<FColor>& RawImageData, const TArray<uint8>& CapturedFrameTrace, const FAutomationScreenshotData& Data)
 {
 #if WITH_AUTOMATION_TESTS
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/ImageCompare"));
 	int32 NewHeight = Data.Height;
 	int32 NewWidth = Data.Width;
 
@@ -515,11 +486,24 @@ void FAutomationWorkerModule::HandleScreenShotAndTraceCapturedWithName(const TAr
 }
 #endif
 
+FString GetRHIForAutomation()
+{
+	// Remove any extra information in () from RHI string
+	FString RHI = FApp::GetGraphicsRHI();
+	int Pos;
+	if (RHI.FindChar(*TEXT("("), Pos))
+	{
+		RHI = RHI.Left(Pos).TrimEnd();
+	}
+	return RHI;
+}
 
 void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunTests& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context )
 {
 	UE_LOG(LogAutomationWorker, Log, TEXT("Received RunTests %s from %s"), *Message.BeautifiedTestName, *Context->GetSender().ToString());
 
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/Worker"));
+	
 	if (TestRequesterAddress.IsValid() && !TestName.IsEmpty())
 	{
 		if (TestRequesterAddress == Context->GetSender())
@@ -548,7 +532,8 @@ void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunT
 	FName SkipReason;
 	bool bWarn(false);
 	UAutomationTestExcludelist* Excludelist = UAutomationTestExcludelist::Get();
-	if (Excludelist->IsTestExcluded(Message.FullTestPath, FApp::GetGraphicsRHI(), &SkipReason, &bWarn))
+	static FString RHI = GetRHIForAutomation();
+	if (Excludelist->IsTestExcluded(Message.FullTestPath, RHI, &SkipReason, &bWarn))
 	{
 		FString SkippingMessage = FString::Format(TEXT("Test Skipped. Name={{0}} Reason={{1}} Path={{2}}"),
 			{ *Message.BeautifiedTestName, *SkipReason.ToString(), *Message.FullTestPath });

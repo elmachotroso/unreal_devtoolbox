@@ -36,7 +36,7 @@ public:
 	uint64 PivotNodeUid;
 	FString PivotNodeName; //Transient variable use for the ui to not display a uid
 
-	//If there is more then one Pivots we have to present a list to the user so he can choose which node pivot he want to bake
+	//If there is more then one Pivots we have to present a list to the user so they can choose which node pivot they want to bake
 	TMap<FVector, TArray<uint64>> NodeReferencePivots;
 
 	FString GetImportPath()
@@ -351,6 +351,7 @@ class UNREALED_API UFbxSceneImportFactory : public USceneImportFactory
 	virtual UObject* FactoryCreateBinary(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, UObject* Context, const TCHAR* Type, const uint8*& Buffer, const uint8* BufferEnd, FFeedbackContext* Warn) override;
 	virtual UObject* FactoryCreateBinary(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, UObject* Context, const TCHAR* Type, const uint8*& Buffer, const uint8* BufferEnd, FFeedbackContext* Warn, bool& bOutOperationCanceled) override;
 	virtual bool FactoryCanImport(const FString& Filename) override;
+	virtual TArray<FString> GetFormats() const override;
 
 	/** USceneImportFactory Interface */
 	virtual bool ImportsAssets() const override { return true; }

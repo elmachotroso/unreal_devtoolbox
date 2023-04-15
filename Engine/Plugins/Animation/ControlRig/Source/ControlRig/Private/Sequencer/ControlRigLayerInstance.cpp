@@ -6,7 +6,9 @@
 =============================================================================*/ 
 
 #include "Sequencer/ControlRigLayerInstance.h"
-#include "ControlRigLayerInstanceProxy.h"
+#include "Sequencer/ControlRigLayerInstanceProxy.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigLayerInstance)
 
 /////////////////////////////////////////////////////
 // UControlRigLayerInstance
@@ -121,7 +123,7 @@ void UControlRigLayerInstance::SavePose()
 {
 	if (USkeletalMeshComponent* SkeletalMeshComponent = GetSkelMeshComponent())
 	{
-		if (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->GetComponentSpaceTransforms().Num() > 0)
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() && SkeletalMeshComponent->GetComponentSpaceTransforms().Num() > 0)
 		{
 			SavePoseSnapshot(UControlRigLayerInstance::SequencerPoseName);
 		}
@@ -132,4 +134,5 @@ UAnimInstance* UControlRigLayerInstance::GetSourceAnimInstance()
 {	
 	return GetProxyOnGameThread<FControlRigLayerInstanceProxy>().GetSourceAnimInstance();
 }
+
 

@@ -10,6 +10,8 @@
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraParameterDefinitions.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScriptVariable)
+
 UNiagaraScriptVariable::UNiagaraScriptVariable(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, DefaultMode(ENiagaraDefaultMode::Value)
@@ -108,11 +110,19 @@ void UNiagaraScriptVariable::PostLoad()
 
 bool UNiagaraScriptVariable::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
-	if (!FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(static_cast<const void*>(this), StaticClass(), EFieldIteratorFlags::ExcludeSuper, StaticClass()->GetName(), InVisitor))
+	bool bSuccess = InVisitor->UpdatePOD<uint8>(TEXT("NiagaraScriptVariable.DefaultMode"), static_cast<uint8>(DefaultMode))
+		&& InVisitor->UpdateName(TEXT("NiagaraScriptVariable.DefaultBinding.Name"), DefaultBinding.Name)
+		&& InVisitor->UpdatePOD(TEXT("NiagaraScriptVariable.StaticSwitchDefaultValue"), StaticSwitchDefaultValue)
+		&& InVisitor->UpdatePOD(TEXT("NiagaraScriptVariable.bIsStaticSwitch"), bIsStaticSwitch)
+		&& Variable.AppendCompileHash(InVisitor)
+		&& DefaultValueVariant.AppendCompileHash(InVisitor);
+
+	for (const FName& AlternateAlias : Metadata.AlternateAliases)
 	{
-		return false;
+		bSuccess = bSuccess && InVisitor->UpdateName(TEXT("NiagaraScriptVariable.Metadata.AlternateAliases"), AlternateAlias);
 	}
-	return true;
+
+	return bSuccess;
 }
 
 void UNiagaraScriptVariable::SetIsSubscribedToParameterDefinitions(bool bInSubscribedToParameterDefinitions)
@@ -177,4 +187,72 @@ FGuid UNiagaraScriptVariable::GenerateStableGuid(const UNiagaraScriptVariable* S
 
 	// Assign the guid components from the hash.
 	return FGuid(HashBuffer[0], HashBuffer[1], HashBuffer[2], HashBuffer[3]);
+}
+
+void FNiagaraScriptVariableData::Init(const FNiagaraVariable& InVariable, const FNiagaraVariableMetaData& InMetadata)
+{
+	Variable = InVariable;
+	Metadata = InMetadata;
+
+	AllocateData();
+
+	if (!Metadata.GetVariableGuid().IsValid())
+	{
+		Metadata.CreateNewGuid();
+	}
+	if (ChangeId.IsValid() == false)
+	{
+		UpdateChangeId();
+	}
+}
+
+void FNiagaraScriptVariableData::InitFrom(const UNiagaraScriptVariable& ScriptVariable, bool bCreateNewGuid)
+{
+	Init(ScriptVariable.Variable, ScriptVariable.Metadata);
+
+	DefaultMode = ScriptVariable.DefaultMode;
+	DefaultBinding = ScriptVariable.DefaultBinding;
+	bSubscribedToParameterDefinitions = ScriptVariable.GetIsSubscribedToParameterDefinitions();
+	bOverrideParameterDefinitionsDefaultValue = ScriptVariable.GetIsOverridingParameterDefinitionsDefaultValue();
+
+	DefaultValueVariant = ScriptVariable.GetDefaultValueVariant();
+	StaticSwitchDefaultValue = ScriptVariable.GetStaticSwitchDefaultValue();
+	bIsStaticSwitch = ScriptVariable.GetIsStaticSwitch();
+	ChangeId = ScriptVariable.GetChangeId();
+
+	// we generally want to create a new metadata guid as that is used to identify variables for renames, unless we specifically want to copy the entire variable
+	if (bCreateNewGuid)
+	{
+		Metadata.CreateNewGuid();
+	}
+}
+
+void FNiagaraScriptVariableData::InitFrom(const FNiagaraScriptVariableData& Source, bool bCreateNewGuid)
+{
+	Init(Source.Variable, Source.Metadata);
+
+	DefaultMode = Source.DefaultMode;
+	DefaultBinding = Source.DefaultBinding;
+	bSubscribedToParameterDefinitions = Source.GetIsSubscribedToParameterDefinitions();
+	bOverrideParameterDefinitionsDefaultValue = Source.GetIsOverridingParameterDefinitionsDefaultValue();
+
+	DefaultValueVariant = Source.DefaultValueVariant;
+	StaticSwitchDefaultValue = Source.StaticSwitchDefaultValue;
+	bIsStaticSwitch = Source.bIsStaticSwitch;
+	ChangeId = Source.ChangeId;
+
+	// we generally want to create a new metadata guid as that is used to identify variables for renames, unless we specifically want to copy the entire variable
+	if (bCreateNewGuid)
+	{
+		Metadata.CreateNewGuid();
+	}
+}
+
+bool FNiagaraScriptVariableData::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	if (!FNiagaraEditorUtilities::NestedPropertiesAppendCompileHash(static_cast<const void*>(this), StaticStruct(), EFieldIteratorFlags::ExcludeSuper, StaticStruct()->GetName(), InVisitor))
+	{
+		return false;
+	}
+	return true;
 }

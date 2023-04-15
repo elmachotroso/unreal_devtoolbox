@@ -30,6 +30,8 @@ public:
 	FOnExternalObjectAddRemoveEvent& GetExternalObjectAddRemoveEventDelegate() override { return ExternalObjectAddRemoveEvent; }
 	FOnRecordErrorCheck&  GetRecordErrorCheckGenerator() override { return RecordErrorCheck; }
 	TArray<TWeakObjectPtr<>>& GetExternalObjects() override { return ExternalObjects; }
+	FLastRecordedLevelSequenceProvider& GetLastLevelSequenceProvider() override { return LastLevelSequenceProvider; }
+	FCanReviewLastRecordedLevelSequence& GetCanReviewLastRecordedLevelSequenceDelegate() override { return CanReviewLastRecordedSequence; };
 
 	void RegisterExternalObject(UObject* InExternalObject) override;
 	void UnregisterExternalObject(UObject* InExternalObject) override;
@@ -78,6 +80,8 @@ private:
 
 	void RegisterMenus();
 
+	void OnEditorClose();
+
 private:
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnExtendSourcesMenuEvent, TSharedRef<FExtender>, UTakeRecorderSources*);
@@ -85,6 +89,8 @@ private:
 	FOnExtendSourcesMenuEvent SourcesMenuExtenderEvent;
 	FOnGenerateWidgetExtensions ToolbarExtensionGenerators;
 	FOnGenerateWidgetExtensions ButtonExtensionGenerators;
+	FLastRecordedLevelSequenceProvider LastLevelSequenceProvider;
+	FCanReviewLastRecordedLevelSequence CanReviewLastRecordedSequence;
 
 	FOnExternalObjectAddRemoveEvent ExternalObjectAddRemoveEvent;
 	FOnForceSaveAsPreset ForceSaveAsPresetEvent;

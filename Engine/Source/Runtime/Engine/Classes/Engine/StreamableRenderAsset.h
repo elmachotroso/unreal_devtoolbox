@@ -7,7 +7,7 @@
 #include "UObject/Object.h"
 #include "Misc/App.h"
 #include "Engine/TextureStreamingTypes.h"
-#include "Serialization/BulkData2.h"
+#include "Serialization/BulkData.h"
 #include "Templates/RefCounting.h"
 #include "RenderAssetUpdate.h"
 #include "Streaming/StreamableRenderResourceState.h"
@@ -29,7 +29,7 @@ enum class EStreamableRenderAssetType : uint8
 	Texture,
 	StaticMesh,
 	SkeletalMesh,
-	LandscapeMeshMobile,
+	LandscapeMeshMobile UE_DEPRECATED(5.1, "LandscapeMeshMobile is now deprecated and will be removed."),
 	NaniteCoarseMesh,
 };
 

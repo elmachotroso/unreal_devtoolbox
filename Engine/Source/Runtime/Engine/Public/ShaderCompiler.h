@@ -25,7 +25,9 @@
 #include "AssetCompilingManager.h"
 #include "Containers/HashTable.h"
 #include "Containers/List.h"
+#include "Containers/Deque.h"
 #include "Hash/Blake3.h"
+#include "SceneTypes.h"
 
 class FShaderCompileJob;
 class FShaderPipelineCompileJob;
@@ -39,46 +41,6 @@ class FShaderCompileJob;
 class FShaderPipelineCompileJob;
 
 #define DEBUG_INFINITESHADERCOMPILE 0
-
-enum class EShaderCompilerWorkerType : uint8
-{
-	None,
-	LocalThread,
-	Distributed,
-};
-
-enum class EShaderCompileJobType : uint8
-{
-	Single,
-	Pipeline,
-	Num,
-};
-static const int32 NumShaderCompileJobTypes = (int32)EShaderCompileJobType::Num;
-
-enum class EShaderCompileJobPriority : uint8
-{
-	None = 0xff,
-
-	Low = 0u,
-	Normal,
-	High,
-	ForceLocal, // Force shader to skip XGE and compile on local machine
-	Num,
-};
-static const int32 NumShaderCompileJobPriorities = (int32)EShaderCompileJobPriority::Num;
-
-inline const TCHAR* ShaderCompileJobPriorityToString(EShaderCompileJobPriority v)
-{
-	switch (v)
-	{
-	case EShaderCompileJobPriority::None: return TEXT("None");
-	case EShaderCompileJobPriority::Low: return TEXT("Low");
-	case EShaderCompileJobPriority::Normal: return TEXT("Normal");
-	case EShaderCompileJobPriority::High: return TEXT("High");
-	case EShaderCompileJobPriority::ForceLocal: return TEXT("ForceLocal");
-	default: checkNoEntry(); return TEXT("");
-	}
-}
 
 extern ENGINE_API bool IsShaderJobCacheDDCEnabled();
 
@@ -192,13 +154,13 @@ protected:
 	friend class FShaderCompilingManager;
 	friend class FShaderPipelineCompileJob;
 
-	FShaderCommonCompileJob(EShaderCompileJobType InType, uint32 InHash, uint32 InId, EShaderCompileJobPriority InPriroity) :
+	FShaderCommonCompileJob(EShaderCompileJobType InType, uint32 InHash, uint32 InId, EShaderCompileJobPriority InPriority) :
 		NumRefs(0),
 		JobIndex(INDEX_NONE),
 		Hash(InHash),
 		Id(InId),
 		Type(InType),
-		Priority(InPriroity),
+		Priority(InPriority),
 		PendingPriority(EShaderCompileJobPriority::None),
 		CurrentWorker(EShaderCompilerWorkerType::None),
 		bFinalized(false),
@@ -210,7 +172,7 @@ protected:
 		bIsGlobalShader(false)
 
 	{
-		check(InPriroity != EShaderCompileJobPriority::None);
+		check(InPriority != EShaderCompileJobPriority::None);
 	}
 
 	virtual ~FShaderCommonCompileJob() {}
@@ -339,10 +301,14 @@ inline void FShaderCommonCompileJob::Destroy() const
 	}
 }
 
+struct FShaderJobCacheStoredOutput;
+
 class FShaderJobCache
 {
 public:
+
 	FShaderJobCache();
+	~FShaderJobCache();
 
 	using FJobInputHash = FShaderCommonCompileJob::FInputHash;
 	using FJobCachedOutput = TArray<uint8>;
@@ -363,24 +329,20 @@ public:
 	uint64 GetCurrentMemoryBudget() const;
 
 private:
+
 	using FJobOutputHash = FBlake3Hash;
-	struct FStoredOutput
-	{
-		/** How many times this output is referenced by the cached jobs */
-		int32 NumReferences;
+	using FStoredOutput = FShaderJobCacheStoredOutput;
 
-		/** How many times this output has been returned as a cached result, no matter the input hash */
-		int32 NumHits;
-		
-		/** Canned output */
-		TArray<uint8> JobOutput;
-	};
+	void RemoveByInputHash(const FJobInputHash& InputHash);
 
-	/* a lot of outputs can be duplicated, so they are deduplicated before storing */
+	/* A lot of outputs can be duplicated, so they are deduplicated before storing */
 	TMap<FJobOutputHash, FStoredOutput*> Outputs;
 
 	/** Map of input hashes to output hashes */
 	TMap<FJobInputHash, FJobOutputHash> InputHashToOutput;
+
+	/** Queue to evict oldest elements when memory budget is exceeded */
+	TDeque<FJobInputHash> EvictionQueue;
 
 	/** Statistics - total number of times we tried to Find() some input hash */
 	uint64 TotalSearchAttempts = 0;
@@ -594,6 +556,9 @@ public:
 
 	/** Main work loop. */
 	virtual int32 CompilingLoop() = 0;
+
+	/** Events from the manager */
+	virtual void OnMachineResourcesChanged() {}
 };
 
 /** 
@@ -606,7 +571,9 @@ class FShaderCompileThreadRunnable : public FShaderCompileThreadRunnableBase
 private:
 
 	/** Information about the active workers that this thread is tracking. */
-	TArray<struct FShaderCompileWorkerInfo*> WorkerInfos;
+	TArray<TUniquePtr<struct FShaderCompileWorkerInfo>> WorkerInfos;
+	FCriticalSection WorkerInfosLock;
+
 	/** Tracks the last time that this thread checked if the workers were still active. */
 	double LastCheckForWorkersTime;
 
@@ -644,11 +611,13 @@ private:
 
 	/** Main work loop. */
 	virtual int32 CompilingLoop() override;
+
+	virtual void OnMachineResourcesChanged() override;
 };
 
 namespace FShaderCompileUtilities
 {
-	bool DoWriteTasks(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& TransferFile, bool bUseRelativePaths = false, bool bCompressTaskFile = false);
+	bool DoWriteTasks(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& TransferFile, IDistributedBuildController* BuildDistributionController = nullptr, bool bUseRelativePaths = false, bool bCompressTaskFile = false);
 	void DoReadTaskResults(const TArray<FShaderCommonCompileJobPtr>& QueuedJobs, FArchive& OutputFile);
 
 	/** Execute the specified (single or pipeline) shader compile job. */
@@ -662,7 +631,7 @@ namespace FShaderCompileUtilities
 	ENGINE_API void GenerateBrdfHeaders(const FName& ShaderFormat);
 	void ApplyDerivedDefines(FShaderCompilerEnvironment& OutEnvironment, FShaderCompilerEnvironment * SharedEnvironment, const EShaderPlatform Platform);
 	void AppendGBufferDDCKeyString(const EShaderPlatform Platform, FString& KeyString);
-	ENGINE_API FGBufferInfo FetchGBufferInfoAndWriteAutogen(EShaderPlatform TargetPlatform, ERHIFeatureLevel::Type FeatureLevel);
+	ENGINE_API void WriteGBufferInfoAutogen(EShaderPlatform TargetPlatform, ERHIFeatureLevel::Type FeatureLevel);
 
 	void ApplyFetchEnvironment(FShaderMaterialPropertyDefines& DefineData, FShaderCompilerEnvironment& OutEnvironment);
 	void ApplyFetchEnvironment(FShaderGlobalDefines& DefineData, FShaderCompilerEnvironment& OutEnvironment, const EShaderPlatform Platform);
@@ -671,8 +640,10 @@ namespace FShaderCompileUtilities
 
 	void ApplyModifyEnvironment(const FShaderMaterialDerivedDefines& DefineData, FShaderCompilerEnvironment& OutEnvironment);
 
-	ENGINE_API FGBufferParams FetchGBufferParamsRuntime(EShaderPlatform Platform); // this function is called from renderer
-	FGBufferParams FetchGBufferParamsPipeline(EShaderPlatform Platform);
+	ENGINE_API EGBufferLayout FetchGBufferLayout(const FShaderCompilerEnvironment& Environment);
+
+	ENGINE_API FGBufferParams FetchGBufferParamsRuntime(EShaderPlatform Platform, EGBufferLayout Layout); // this function is called from renderer
+	FGBufferParams FetchGBufferParamsPipeline(EShaderPlatform Platform, EGBufferLayout Layout);
 
 }
 
@@ -746,11 +717,12 @@ public:
 	/** Structure used to describe compiling time of a shader type (for all the instances of it that we have seen). */
 	struct FShaderTimings
 	{
-		float MinCompileTime;
-		float MaxCompileTime;
-		float TotalCompileTime;
-		int32 NumCompiled;
-		float AverageCompileTime;	// stored explicitly as an optimization
+		float MinCompileTime = 0.0f;
+		float MaxCompileTime = 0.0f;
+		float TotalCompileTime = 0.0f;
+		float TotalPreprocessTime = 0.0f;
+		int32 NumCompiled = 0;
+		float AverageCompileTime = 0.0f;	// stored explicitly as an optimization
 	};
 
 	ENGINE_API void RegisterCookedShaders(uint32 NumCooked, float CompileTime, EShaderPlatform Platform, const FString MaterialPath, FString PermutationString = FString(""));
@@ -758,6 +730,13 @@ public:
 	ENGINE_API const TSparseArray<ShaderCompilerStats>& GetShaderCompilerStats() { return CompileStats; }
 	ENGINE_API void WriteStats(class FOutputDevice* Ar = nullptr);
 	ENGINE_API void WriteStatSummary();
+	ENGINE_API uint32 GetTotalShadersCompiled();
+
+	void AddDDCMiss(uint32 NumMisses);
+	uint32 GetDDCMisses() const;
+	void AddDDCHit(uint32 NumHits);
+	uint32 GetDDCHits() const;
+	double GetTimeShaderCompilationWasActive();
 
 	enum class EExecutionType
 	{
@@ -834,6 +813,12 @@ private:
 
 	/** Map of shader names to their compilation timings */
 	TMap<FString, FShaderTimings> ShaderTimings;
+
+	/** Total number of DDC misses on shader maps. */
+	uint32 ShaderMapDDCMisses = 0;
+
+	/** Total number of DDC hits on shader maps. */
+	uint32 ShaderMapDDCHits = 0;
 };
 
 
@@ -905,7 +890,7 @@ private:
 	/** Number of runs through single-threaded compiling before we can retry to compile through workers. -1 if not used. */
 	int32 NumSingleThreadedRunsBeforeRetry;
 	/** Number of preprocessed shader sources that are dumped due to a crash of the shader compiler. Only used for D3DCompile exceptions at the moment. */
-	uint32 NumDumpedShaderSources;
+	int32 NumDumpedShaderSources;
 	/** Process Id of UE. */
 	uint32 ProcessId;
 	/** Whether to allow compiling shaders through the worker application, which allows multiple cores to be used. */
@@ -926,6 +911,8 @@ private:
 	FString AbsoluteShaderDebugInfoDirectory;
 	/** Name of the shader worker application. */
 	FString ShaderCompileWorkerName;
+	/** Last value of GetNumRemainingAssets */
+	int32 LastNumRemainingAssets = 0;
 
 	/** 
 	 * Tracks the total time that shader compile workers have been busy since startup.  
@@ -950,6 +937,9 @@ private:
 	/** Used to show a notification accompanying progress. */
 	FAsyncCompilationNotification Notification;
 
+	/** Calculate NumShaderCompilingThreads, during construction or OnMachineResourcesChanged */
+	void CalculateNumberOfCompilingThreads(int32 NumberOfCores, int32 NumberOfCoresIncludingHyperthreads);
+
 	/** Launches the worker, returns the launched process handle. */
 	FProcHandle LaunchWorker(const FString& WorkingDirectory, uint32 ProcessId, uint32 ThreadId, const FString& WorkerInputFile, const FString& WorkerOutputFile);
 
@@ -969,14 +959,17 @@ private:
 	void ProcessCompiledNiagaraShaderMaps(TMap<int32, FShaderMapFinalizeResults>& CompiledShaderMaps, float TimeBudget);
 
 	/** Propagate the completed compile to primitives that might be using the materials compiled. */
-	void PropagateMaterialChangesToPrimitives(const TMap<TRefCountPtr<FMaterial>, TRefCountPtr<FMaterialShaderMap>>& MaterialsToUpdate);
+	void PropagateMaterialChangesToPrimitives(TMap<TRefCountPtr<FMaterial>, TRefCountPtr<FMaterialShaderMap>>& MaterialsToUpdate);
 
 	/** Recompiles shader jobs with errors if requested, and returns true if a retry was needed. */
 	bool HandlePotentialRetryOnError(TMap<int32, FShaderMapFinalizeResults>& CompletedShaderMaps);
 	
 	/** Checks if any target platform down't support remote shader compiling */
 	bool AllTargetPlatformSupportsRemoteShaderCompiling();
-	
+
+	/** Take some action whenever the number of remaining asset changes. */
+	void UpdateNumRemainingAssets();
+
 	/** Returns the first remote compiler controller found */
 	IDistributedBuildController* FindRemoteCompilerController() const;
 
@@ -984,6 +977,9 @@ public:
 	
 	ENGINE_API FShaderCompilingManager();
 	ENGINE_API ~FShaderCompilingManager();
+
+	/** Called by external systems that have updated the number of worker threads available. */
+	ENGINE_API void OnMachineResourcesChanged(int32 NumberOfCores, int32 NumberOfCoresIncludingHyperthreads);
 
 	ENGINE_API int32 GetNumPendingJobs() const;
 	ENGINE_API int32 GetNumOutstandingJobs() const;
@@ -1219,6 +1215,9 @@ extern ENGINE_API FOnGlobalShadersCompilation& GetOnGlobalShaderCompilation();
 extern ENGINE_API void VerifyGlobalShaders(EShaderPlatform Platform, bool bLoadedFromCacheFile, const TArray<const FShaderType*>* OutdatedShaderTypes = nullptr, const TArray<const FShaderPipelineType*>* OutdatedShaderPipelineTypes = nullptr);
 extern ENGINE_API void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, bool bLoadedFromCacheFile, const TArray<const FShaderType*>* OutdatedShaderTypes = nullptr, const TArray<const FShaderPipelineType*>* OutdatedShaderPipelineTypes = nullptr);
 
+/** Precreates compute PSOs for global shaders. Separate from Compile/VerifyGlobalShaders to avoid blocking loads. */
+extern ENGINE_API void PrecacheComputePipelineStatesForGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform);
+
 /**
 * Forces a recompile of the global shaders.
 */
@@ -1261,6 +1260,12 @@ struct FODSCRequestPayload
 	/** The shader platform to compile for. */
 	EShaderPlatform ShaderPlatform;
 
+	/** Which feature level to compile for. */
+	ERHIFeatureLevel::Type FeatureLevel;
+
+	/** Which material quality level to compile for. */
+	EMaterialQualityLevel::Type QualityLevel;
+
 	/** Which material do we compile for?. */
 	FString MaterialName;
 
@@ -1277,7 +1282,7 @@ struct FODSCRequestPayload
 	FString RequestHash;
 
 	ENGINE_API FODSCRequestPayload() {};
-	ENGINE_API FODSCRequestPayload(EShaderPlatform InShaderPlatform, const FString& InMaterialName, const FString& InVertexFactoryName, const FString& InPipelineName, const TArray<FString>& InShaderTypeNames, const FString& InRequestHash);
+	ENGINE_API FODSCRequestPayload(EShaderPlatform InShaderPlatform, ERHIFeatureLevel::Type InFeatureLevel, EMaterialQualityLevel::Type InQualityLevel, const FString& InMaterialName, const FString& InVertexFactoryName, const FString& InPipelineName, const TArray<FString>& InShaderTypeNames, const FString& InRequestHash);
 
 	/**
 	* Serializes FODSCRequestPayload value from or into this archive.
@@ -1294,8 +1299,11 @@ enum class ODSCRecompileCommand
 	None,
 	Changed,
 	Global,
-	Material
+	Material,
+	SingleShader
 };
+
+extern ENGINE_API const TCHAR* ODSCCmdEnumToString(ODSCRecompileCommand Cmd);
 
 struct FShaderRecompileData
 {
@@ -1305,6 +1313,10 @@ struct FShaderRecompileData
 	/** Shader platform */
 	EShaderPlatform ShaderPlatform = SP_NumPlatforms;
 
+	ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::SM5;
+
+	EMaterialQualityLevel::Type QualityLevel = EMaterialQualityLevel::High;
+
 	/** All filenames that have been changed during the shader compilation. */
 	TArray<FString>* ModifiedFiles = nullptr;
 
@@ -1313,6 +1325,9 @@ struct FShaderRecompileData
 
 	/** Materials to load. */
 	TArray<FString> MaterialsToLoad;
+
+	/** The names of shader type file names to compile shaders for. */
+	FString ShaderTypesToLoad;
 
 	/** What type of shaders to recompile. All, Changed, Global, or Material? */
 	ODSCRecompileCommand CommandType = ODSCRecompileCommand::Changed;
@@ -1336,9 +1351,12 @@ struct FShaderRecompileData
 	{
 		PlatformName = Other.PlatformName;
 		ShaderPlatform = Other.ShaderPlatform;
+		FeatureLevel = Other.FeatureLevel;
+		QualityLevel = Other.QualityLevel;
 		ModifiedFiles = Other.ModifiedFiles;
 		MeshMaterialMaps = Other.MeshMaterialMaps;
 		MaterialsToLoad = Other.MaterialsToLoad;
+		ShaderTypesToLoad = Other.ShaderTypesToLoad;
 		CommandType = Other.CommandType;
 		GlobalShaderMap = Other.GlobalShaderMap;
 
@@ -1346,6 +1364,8 @@ struct FShaderRecompileData
 
 		return *this;
 	}
+
+	ENGINE_API friend FArchive& operator<<(FArchive& Ar, FShaderRecompileData& Elem);
 };
 
 #if WITH_EDITOR
@@ -1365,9 +1385,12 @@ extern ENGINE_API void CompileGlobalShaderMap(ERHIFeatureLevel::Type InFeatureLe
 extern ENGINE_API void CompileGlobalShaderMap(EShaderPlatform Platform, bool bRefreshShaderMap = false);
 extern ENGINE_API void CompileGlobalShaderMap(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, bool bRefreshShaderMap);
 
-extern ENGINE_API FString GetGlobalShaderMapDDCKey();
+extern ENGINE_API const FString& GetGlobalShaderMapDDCKey();
 
-extern ENGINE_API FString GetMaterialShaderMapDDCKey();
+extern ENGINE_API const FString& GetMaterialShaderMapDDCKey();
+
+extern ENGINE_API bool ShouldDumpShaderDDCKeys();
+extern ENGINE_API void DumpShaderDDCKeyToFile(const EShaderPlatform InPlatform, bool bWithEditor, const FString& FileName, const FString& DDCKey);
 
 /**
 * Handles serializing in MeshMaterialMaps or GlobalShaderMap from a CookOnTheFly command and applying them to the in-memory shadermaps.

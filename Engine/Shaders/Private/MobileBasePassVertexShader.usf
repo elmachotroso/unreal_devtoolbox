@@ -6,11 +6,6 @@
 
 #define IS_MOBILE_BASEPASS_VERTEX_SHADER 1
 
-// @todo urban: branch was: #define FORCE_FLOATS 1
-#ifndef FORCE_FLOATS
-#define FORCE_FLOATS (COMPILER_METAL)
-#endif
-
 #include "Common.ush"
 
 // Reroute MobileSceneTextures uniform buffer references to the base pass uniform buffer
@@ -40,7 +35,6 @@ void Main(
 	FVertexFactoryInput Input
 	, out FMobileShadingBasePassVSOutput Output
 #if INSTANCED_STEREO
-	, uint InstanceId : SV_InstanceID
 	, out uint LayerIndex : SV_RenderTargetArrayIndex
 #elif MOBILE_MULTI_VIEW
 	, in uint ViewId : SV_ViewID
@@ -48,19 +42,13 @@ void Main(
 	)
 {
 #if INSTANCED_STEREO
-	const uint EyeIndex = GetEyeIndex(InstanceId);
+	const uint EyeIndex = GetEyeIndexFromVF(Input);
 	ResolvedView = ResolveView(EyeIndex);
 	LayerIndex = EyeIndex;
-	Output.BasePassInterpolants.MultiViewId = float(EyeIndex);
+	Output.BasePassInterpolants.MultiViewId = EyeIndex;
 #elif MOBILE_MULTI_VIEW
-#if COMPILER_GLSL_ES3_1
-	const int MultiViewId = int(ViewId);
-	ResolvedView = ResolveView(uint(MultiViewId));
-	Output.BasePassInterpolants.MultiViewId = float(MultiViewId);
-#else
 	ResolvedView = ResolveView(ViewId);
-	Output.BasePassInterpolants.MultiViewId = float(ViewId);
-#endif
+	Output.BasePassInterpolants.MultiViewId = ViewId;
 #else
 	ResolvedView = ResolveView();
 #endif
@@ -106,7 +94,7 @@ void Main(
 		// Sample the aerial perspective (AP). It is also blended under the VertexFog parameter.
 		VertexFog = GetAerialPerspectiveLuminanceTransmittanceWithFogOver(
 			ResolvedView.RealTimeReflectionCapture, ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
-			Output.Position, WorldPosition.xyz*CM_TO_SKY_UNIT, ResolvedView.TranslatedWorldCameraOrigin*CM_TO_SKY_UNIT,
+			Output.Position, (WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin) * CM_TO_SKY_UNIT,
 			View.CameraAerialPerspectiveVolume, View.CameraAerialPerspectiveVolumeSampler,
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolutionInv,
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolution,
@@ -137,8 +125,4 @@ void Main(
 #if PACK_INTERPOLANTS
 	VertexFactoryPackInterpolants(Output.FactoryInterpolants, PackedInterps);
 #endif // PACK_INTERPOLANTS
-
-#if !OUTPUT_MOBILE_HDR && COMPILER_GLSL_ES3_1
-	Output.Position.y *= -1;
-#endif
 }

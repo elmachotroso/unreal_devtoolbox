@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "CountersTraceAnalysis.h"
+
 #include "Common/Utils.h"
-#include "TraceServices/Model/Counters.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/CountersTrace.h"
+#include "TraceServices/Model/Counters.h"
 
 namespace TraceServices
 {
 
-FCountersAnalyzer::FCountersAnalyzer(IAnalysisSession& InSession, ICounterProvider& InCounterProvider)
+FCountersAnalyzer::FCountersAnalyzer(IAnalysisSession& InSession, IEditableCounterProvider& InEditableCounterProvider)
 	: Session(InSession)
-	, CounterProvider(InCounterProvider)
+	, EditableCounterProvider(InEditableCounterProvider)
 {
 }
 
@@ -24,6 +27,8 @@ void FCountersAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 
 bool FCountersAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FCountersAnalyzer"));
+
 	FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
@@ -34,19 +39,23 @@ bool FCountersAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		uint16 CounterId = EventData.GetValue<uint16>("Id");
 		ETraceCounterType CounterType = static_cast<ETraceCounterType>(EventData.GetValue<uint8>("Type"));
 		ETraceCounterDisplayHint CounterDisplayHint = static_cast<ETraceCounterDisplayHint>(EventData.GetValue<uint8>("DisplayHint"));
-		IEditableCounter* Counter = CounterProvider.CreateCounter();
+		IEditableCounter* EditableCounter = EditableCounterProvider.CreateEditableCounter();
 		if (CounterType == TraceCounterType_Float)
 		{
-			Counter->SetIsFloatingPoint(true);
+			EditableCounter->SetIsFloatingPoint(true);
 		}
 		if (CounterDisplayHint == TraceCounterDisplayHint_Memory)
 		{
-			Counter->SetDisplayHint(CounterDisplayHint_Memory);
+			EditableCounter->SetDisplayHint(CounterDisplayHint_Memory);
 		}
 		FString Name = FTraceAnalyzerUtils::LegacyAttachmentString<TCHAR>("Name", Context);
-		const TCHAR* NamePtr = Session.StoreString(*Name);
-		Counter->SetName(NamePtr);
-		CountersMap.Add(CounterId, Counter);
+		if (Name.IsEmpty())
+		{
+			UE_LOG(LogTraceServices, Warning, TEXT("Invalid counter name for counter %u."), uint32(CounterId));
+			Name = FString::Printf(TEXT("<noname counter %u>"), uint32(CounterId));
+		}
+		EditableCounter->SetName(Session.StoreString(*Name));
+		EditableCountersMap.Add(CounterId, EditableCounter);
 		break;
 	}
 	case RouteId_SetValueInt:
@@ -54,10 +63,10 @@ bool FCountersAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		uint16 CounterId = EventData.GetValue<uint16>("CounterId");
 		int64 Value = EventData.GetValue<int64>("Value");
 		double Timestamp = Context.EventTime.AsSeconds(EventData.GetValue<uint64>("Cycle"));
-		IEditableCounter** FindCounter = CountersMap.Find(CounterId);
-		if (FindCounter)
+		IEditableCounter* FindEditableCounter = EditableCountersMap.FindRef(CounterId);
+		if (ensure(FindEditableCounter))
 		{
-			(*FindCounter)->SetValue(Timestamp, Value);
+			FindEditableCounter->SetValue(Timestamp, Value);
 		}
 		break;
 	}
@@ -66,10 +75,10 @@ bool FCountersAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		uint16 CounterId = EventData.GetValue<uint16>("CounterId");
 		float Value = EventData.GetValue<float>("Value");
 		double Timestamp = Context.EventTime.AsSeconds(EventData.GetValue<uint64>("Cycle"));
-		IEditableCounter* FindCounter = CountersMap.FindRef(CounterId);
-		if (FindCounter)
+		IEditableCounter* FindEditableCounter = EditableCountersMap.FindRef(CounterId);
+		if (ensure(FindEditableCounter))
 		{
-			FindCounter->SetValue(Timestamp, Value);
+			FindEditableCounter->SetValue(Timestamp, Value);
 		}
 		break;
 	}

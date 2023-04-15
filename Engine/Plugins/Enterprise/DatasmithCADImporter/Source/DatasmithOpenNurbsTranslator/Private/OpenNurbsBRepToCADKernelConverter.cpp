@@ -3,7 +3,6 @@
 #include "OpenNurbsBRepToCADKernelConverter.h"
 
 #ifdef USE_OPENNURBS
-#include "CoreTechSurfaceHelper.h"
 
 #pragma warning(push)
 #pragma warning(disable:4265)
@@ -14,9 +13,10 @@
 #include "CADKernelTools.h"
 
 #include "CADKernel/Core/Session.h"
-#include "CADKernel/Geo/Curves/NURBSCurve.h"
-#include "CADKernel/Geo/Surfaces/NURBSSurface.h"
+#include "CADKernel/Geo/Curves/Curve.h"
+#include "CADKernel/Geo/Curves/NURBSCurveData.h"
 #include "CADKernel/Geo/Surfaces/Surface.h"
+#include "CADKernel/Geo/Surfaces/NurbsSurfaceData.h"
 
 #include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Math/Point.h"
@@ -31,11 +31,11 @@
 #include "CADKernel/Topo/TopologicalLoop.h"
 
 
-namespace
+namespace OpenNurbsBRepConverterTool
 {
 	enum EAxis { U, V };
 
-	void FillPerAxisInfo(EAxis Axis, ON_NurbsSurface& OpenNurbsSurface, CADKernel::FNurbsSurfaceHomogeneousData& OutNurbsInfo)
+	void FillPerAxisInfo(EAxis Axis, ON_NurbsSurface& OpenNurbsSurface, UE::CADKernel::FNurbsSurfaceHomogeneousData& OutNurbsInfo)
 	{
 		int32& Degree = Axis == EAxis::U ? OutNurbsInfo.UDegree : OutNurbsInfo.VDegree;
 		Degree = OpenNurbsSurface.Order(Axis) - 1;
@@ -65,11 +65,11 @@ namespace
 	}
 }
 
-TSharedRef<CADKernel::FSurface> FOpenNurbsBRepToCADKernelConverter::AddSurface(ON_NurbsSurface& OpenNurbsSurface)
+TSharedPtr<UE::CADKernel::FSurface> FOpenNurbsBRepToCADKernelConverter::AddSurface(ON_NurbsSurface& OpenNurbsSurface)
 {
-	CADKernel::FNurbsSurfaceHomogeneousData NurbsData;
-	FillPerAxisInfo(U, OpenNurbsSurface, NurbsData);
-	FillPerAxisInfo(V, OpenNurbsSurface, NurbsData);
+	UE::CADKernel::FNurbsSurfaceHomogeneousData NurbsData;
+	OpenNurbsBRepConverterTool::FillPerAxisInfo(OpenNurbsBRepConverterTool::U, OpenNurbsSurface, NurbsData);
+	OpenNurbsBRepConverterTool::FillPerAxisInfo(OpenNurbsBRepConverterTool::V, OpenNurbsSurface, NurbsData);
 
 	{
 		int32 ControlVertexDimension = OpenNurbsSurface.CVSize();
@@ -98,12 +98,12 @@ TSharedRef<CADKernel::FSurface> FOpenNurbsBRepToCADKernelConverter::AddSurface(O
 		}
 	}
 
-	return CADKernel::FEntity::MakeShared<CADKernel::FNURBSSurface>(GeometricTolerance, NurbsData);
+	return UE::CADKernel::FSurface::MakeNurbsSurface(GeometricTolerance, NurbsData);
 }
 
-TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddLoop(const ON_BrepLoop& OpenNurbsLoop, TSharedRef<CADKernel::FSurface> & CarrierSurface, const bool bIsExternal)
+TSharedPtr<UE::CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddLoop(const ON_BrepLoop& OpenNurbsLoop, TSharedPtr<UE::CADKernel::FSurface> & CarrierSurface, const bool bIsExternal)
 {
-	using namespace CADKernel;
+	using namespace UE::CADKernel;
 
 	if (!OpenNurbsLoop.IsValid())
 	{
@@ -115,7 +115,7 @@ TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddL
 
 	int32 EdgeCount = OpenNurbsLoop.TrimCount();
 	TArray<TSharedPtr<FTopologicalEdge>> Edges;
-	TArray<CADKernel::EOrientation> Directions;
+	TArray<UE::CADKernel::EOrientation> Directions;
 
 	Edges.Reserve(EdgeCount);
 	Directions.Reserve(EdgeCount);
@@ -128,7 +128,7 @@ TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddL
 		if (Edge.IsValid())
 		{
 			Edges.Add(Edge);
-			Directions.Emplace(CADKernel::EOrientation::Front);
+			Directions.Emplace(UE::CADKernel::EOrientation::Front);
 		}
 	}
 
@@ -137,15 +137,10 @@ TSharedPtr<CADKernel::FTopologicalLoop> FOpenNurbsBRepToCADKernelConverter::AddL
 		return TSharedPtr<FTopologicalLoop>();
 	}
 
-	TSharedPtr<CADKernel::FTopologicalLoop> Loop = FTopologicalLoop::Make(Edges, Directions, GeometricTolerance);
-	if (!bIsExternal)
-	{
-		Loop->SetAsInnerBoundary();
-	}
-	return Loop;
+	return FTopologicalLoop::Make(Edges, Directions, bIsExternal, GeometricTolerance);
 }
 
-void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNurbsLoop, CADKernel::FTopologicalLoop& Loop)
+void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNurbsLoop, UE::CADKernel::FTopologicalLoop& Loop)
 {
 	int32 EdgeCount = OpenNurbsLoop.TrimCount();
 	for (int32 Index = 0; Index < EdgeCount; ++Index)
@@ -157,7 +152,7 @@ void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNu
 			continue;
 		}
 
-		TSharedPtr<CADKernel::FTopologicalEdge>* Edge = OpenNurbsTrimId2CADKernelEdge.Find(OpenNurbsTrim.m_trim_index);
+		TSharedPtr<UE::CADKernel::FTopologicalEdge>* Edge = OpenNurbsTrimId2CADKernelEdge.Find(OpenNurbsTrim.m_trim_index);
 		if (!Edge || !Edge->IsValid() || (*Edge)->IsDeleted() || (*Edge)->IsDegenerated())
 		{
 			continue;
@@ -171,19 +166,19 @@ void FOpenNurbsBRepToCADKernelConverter::LinkEdgesLoop(const ON_BrepLoop& OpenNu
 				continue;
 			}
 
-			TSharedPtr<CADKernel::FTopologicalEdge>* TwinEdge = OpenNurbsTrimId2CADKernelEdge.Find(LinkedEdgeId);
+			TSharedPtr<UE::CADKernel::FTopologicalEdge>* TwinEdge = OpenNurbsTrimId2CADKernelEdge.Find(LinkedEdgeId);
 			if (TwinEdge != nullptr && TwinEdge->IsValid() && !(*TwinEdge)->IsDeleted() && !(*TwinEdge)->IsDegenerated())
 			{
-				(*Edge)->Link(**TwinEdge, SquareTolerance);
+				(*Edge)->LinkIfCoincident(**TwinEdge, EdgeLengthTolerance, SquareTolerance);
 				break;
 			}
 		}
 	}
 }
 
-TSharedPtr<CADKernel::FTopologicalEdge> FOpenNurbsBRepToCADKernelConverter::AddEdge(const ON_BrepTrim& OpenNurbsTrim, TSharedRef<CADKernel::FSurface>& CarrierSurface)
+TSharedPtr<UE::CADKernel::FTopologicalEdge> FOpenNurbsBRepToCADKernelConverter::AddEdge(const ON_BrepTrim& OpenNurbsTrim, TSharedPtr<UE::CADKernel::FSurface>& CarrierSurface)
 {
-	using namespace CADKernel;
+	using namespace UE::CADKernel;
 
 	ON_BrepEdge* OpenNurbsEdge = OpenNurbsTrim.Edge();
 	if (OpenNurbsEdge == nullptr)
@@ -192,7 +187,7 @@ TSharedPtr<CADKernel::FTopologicalEdge> FOpenNurbsBRepToCADKernelConverter::AddE
 	}
 
 	ON_NurbsCurve OpenNurbsCurve;
-	int32 NurbFormSuccess = OpenNurbsTrim.GetNurbForm(OpenNurbsCurve); // 0:Nok 1:Ok 2:OkBut
+	int32 NurbFormSuccess = OpenNurbsTrim.GetNurbForm(OpenNurbsCurve); // 0:No ok 1:Ok 2:OkBut
 	if (NurbFormSuccess == 0)
 	{
 		return TSharedPtr<FTopologicalEdge>();
@@ -238,9 +233,9 @@ TSharedPtr<CADKernel::FTopologicalEdge> FOpenNurbsBRepToCADKernelConverter::AddE
 		NurbsCurveData.Poles[Index].Z = 0;
 	}
 
-	TSharedRef<FNURBSCurve> Nurbs = FEntity::MakeShared<FNURBSCurve>(NurbsCurveData);
+	TSharedPtr<FCurve> Nurbs = FCurve::MakeNurbsCurve(NurbsCurveData);
 
-	TSharedRef<FRestrictionCurve> RestrictionCurve = FEntity::MakeShared<FRestrictionCurve>(CarrierSurface, Nurbs);
+	TSharedRef<FRestrictionCurve> RestrictionCurve = FEntity::MakeShared<FRestrictionCurve>(CarrierSurface.ToSharedRef(), Nurbs.ToSharedRef());
 
 	ON_Interval dom = OpenNurbsCurve.Domain();
 	FLinearBoundary Boundary(dom.m_t[0], dom.m_t[1]);
@@ -260,14 +255,18 @@ TSharedPtr<CADKernel::FTopologicalEdge> FOpenNurbsBRepToCADKernelConverter::AddE
 	return Edge;
 }
 
-TSharedPtr<CADKernel::FTopologicalFace> FOpenNurbsBRepToCADKernelConverter::AddFace(const ON_BrepFace& OpenNurbsFace)
+TSharedPtr<UE::CADKernel::FTopologicalFace> FOpenNurbsBRepToCADKernelConverter::AddFace(const ON_BrepFace& OpenNurbsFace)
 {
-	using namespace CADKernel;
+	using namespace UE::CADKernel;
 
 	ON_NurbsSurface OpenNurbsSurface;
 	OpenNurbsFace.NurbsSurface(&OpenNurbsSurface);
 
-	TSharedRef<FSurface> Surface = AddSurface(OpenNurbsSurface);
+	TSharedPtr<FSurface> Surface = AddSurface(OpenNurbsSurface);
+	if (!Surface.IsValid())
+	{
+		return TSharedPtr<FTopologicalFace>();
+	}
 
 	TSharedRef<FTopologicalFace> Face = FEntity::MakeShared<FTopologicalFace>(Surface);
 
@@ -297,7 +296,7 @@ TSharedPtr<CADKernel::FTopologicalFace> FOpenNurbsBRepToCADKernelConverter::AddF
 
 bool FOpenNurbsBRepToCADKernelConverter::AddBRep(ON_Brep& BRep, const ON_3dVector& Offset)
 {
-	using namespace CADKernel;
+	using namespace UE::CADKernel;
 
 	OpenNurbsTrimId2CADKernelEdge.Empty();
 
@@ -317,7 +316,7 @@ bool FOpenNurbsBRepToCADKernelConverter::AddBRep(ON_Brep& BRep, const ON_3dVecto
 		TSharedPtr<FTopologicalFace> Face = AddFace(OpenNurbsFace);
 		if (Face.IsValid())
 		{
-			Shell->Add(Face.ToSharedRef(), CADKernel::EOrientation::Front);
+			Shell->Add(Face.ToSharedRef(), UE::CADKernel::EOrientation::Front);
 		}
 	}
 

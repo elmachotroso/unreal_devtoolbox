@@ -10,10 +10,12 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/Blueprint.h"
 #include "Editor.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 #include "ObjectEditorUtils.h"
 #include "Logging/MessageLog.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeNodeClassCache)
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -105,10 +107,13 @@ FStateTreeNodeClassCache::~FStateTreeNodeClassCache()
 	// Unregister with the Asset Registry to be informed when it is done loading up files.
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().OnFilesLoaded().RemoveAll(this);
-		AssetRegistryModule.Get().OnAssetAdded().RemoveAll(this);
-		AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+		}
 
 		// Unregister to have Populate called when doing a Reload.
 		FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
@@ -263,7 +268,7 @@ void FStateTreeNodeClassCache::CacheClasses()
 	TArray<FAssetData> BlueprintList;
 
 	FARFilter Filter;
-	Filter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 	AssetRegistryModule.Get().GetAssets(Filter, BlueprintList);
 
 	for (int32 i = 0; i < BlueprintList.Num(); i++)
@@ -273,3 +278,4 @@ void FStateTreeNodeClassCache::CacheClasses()
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -17,12 +17,12 @@
 
 // This file contains private utilities shared by UPackage::Save and UPackage::Save2 
 
-class FMD5;
+class FCbFieldView;
+class FCbWriter;
 class FPackagePath;
 class FSaveContext;
 class FSavePackageContext;
 class IPackageWriter;
-template<typename StateType> class TAsyncWorkSequence;
 
 enum class ESavePackageResult;
 
@@ -30,8 +30,10 @@ enum class ESavePackageResult;
 #if UE_TRACE_ENABLED && !UE_BUILD_SHIPPING
 UE_TRACE_CHANNEL_EXTERN(SaveTimeChannel)
 #define SCOPED_SAVETIMER(TimerName) TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(TimerName, SaveTimeChannel)
+#define SCOPED_SAVETIMER_TEXT(TimerName) TRACE_CPUPROFILER_EVENT_SCOPE_TEXT_ON_CHANNEL(TimerName, SaveTimeChannel)
 #else
 #define SCOPED_SAVETIMER(TimerName)
+#define SCOPED_SAVETIMER_TEXT(TimerName)
 #endif
 
 struct FLargeMemoryDelete
@@ -48,8 +50,7 @@ typedef TUniquePtr<uint8, FLargeMemoryDelete> FLargeMemoryPtr;
 
 enum class EAsyncWriteOptions
 {
-	None = 0,
-	ComputeHash = 0x01,
+	None = 0
 };
 ENUM_CLASS_FLAGS(EAsyncWriteOptions)
 
@@ -168,10 +169,12 @@ private:
 	TMap<UObject*, FString>			ObjectToFullNameMap;
 };
 
+struct FEDLCookCheckerThreadState;
+
 /**
  * Helper struct used during cooking to validate EDL dependencies
  */
-struct FEDLCookChecker : public TThreadSingleton<FEDLCookChecker>
+struct FEDLCookChecker
 {
 	void SetActiveIfNeeded();
 
@@ -184,8 +187,14 @@ struct FEDLCookChecker : public TThreadSingleton<FEDLCookChecker>
 
 	static void StartSavingEDLCookInfoForVerification();
 	static void Verify(bool bFullReferencesExpected);
+	static void MoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData);
+	static bool AppendFromCompactBinary(FCbFieldView Field);
 
 private:
+	static FEDLCookChecker AccumulateAndClear();
+	void WriteToCompactBinary(FCbWriter& Writer);
+	bool ReadFromCompactBinary(FCbFieldView Field);
+
 	typedef uint32 FEDLNodeID;
 	static const FEDLNodeID NodeIDInvalid = static_cast<FEDLNodeID>(-1);
 
@@ -194,7 +203,8 @@ public: // FEDLNodeHash is public only so that GetTypeHash can be defined
 	enum class EObjectEvent : uint8
 	{
 		Create,
-		Serialize
+		Serialize,
+		Max = Serialize,
 	};
 
 	/**
@@ -263,6 +273,7 @@ private:
 		/** True if the UObject represented by this node has been exported by a SavePackage call; used to verify that the imports requested by packages are present somewhere in the cook. */
 		bool bIsExport;
 
+		FEDLNodeData() { /* Fields are uninitialized */ }
 		FEDLNodeData(FEDLNodeID InID, FEDLNodeID InParentID, FName InName, EObjectEvent InObjectEvent);
 		FEDLNodeData(FEDLNodeID InID, FEDLNodeID InParentID, FName InName, FEDLNodeData&& Other);
 		FEDLNodeHash GetNodeHash(const FEDLCookChecker& Owner) const;
@@ -273,14 +284,6 @@ private:
 		void Merge(FEDLNodeData&& Other);
 	};
 
-	enum class EInternalConstruct
-	{
-		Type
-	};
-
-	FEDLCookChecker();
-	FEDLCookChecker(EInternalConstruct);
-
 	FEDLNodeID FindOrAddNode(const FEDLNodeHash& NodeLookup);
 	FEDLNodeID FindOrAddNode(FEDLNodeData&& NodeData, const FEDLCookChecker& OldOwnerOfNode, FEDLNodeID ParentIDInThis, bool& bNew);
 	FEDLNodeID FindNode(const FEDLNodeHash& NodeHash);
@@ -290,7 +293,7 @@ private:
 
 	/**
 	 * All the FEDLNodeDatas that have been created for this checker. These are allocated as elements of an array rather than pointers to reduce cputime and
-	 * memory due to many small allocations, and to provide index-based identifiers. Nodes are not deleted during the lifetime of the checker.
+	 * memory due to many small allocations, and to provide index-based identifiers. Nodes are not deleted until the checker is reset.
 	 */
 	TArray<FEDLNodeData> Nodes;
 	/** A map to lookup the node for a UObject or for the corresponding node in another thread's FEDLCookChecker. */
@@ -303,13 +306,41 @@ private:
 	 */
 	TSet<FName> PackagesWithUnknownExports;
 	/** True if the EDLCookChecker should be active; it is turned off if the runtime will not be using EDL. */
-	bool bIsActive;
+	bool bIsActive = false;
 
 	/** When cooking with concurrent saving, each thread has its own FEDLCookChecker, and these are merged after the cook is complete. */
 	static FCriticalSection CookCheckerInstanceCritical;
 	static TArray<FEDLCookChecker*> CookCheckerInstances;
 
-	friend TThreadSingleton<FEDLCookChecker>;
+	friend FEDLCookCheckerThreadState;
+};
+
+/** Per-thread accessor for writing EDL dependencies to global FEDLCookChecker storage. */
+struct FEDLCookCheckerThreadState : public TThreadSingleton<FEDLCookCheckerThreadState>
+{
+	FEDLCookCheckerThreadState();
+
+	void AddImport(UObject* Import, UPackage* ImportingPackage)
+	{
+		Checker.AddImport(Import, ImportingPackage);
+	}
+	void AddExport(UObject* Export)
+	{
+		Checker.AddExport(Export);
+	}
+	void AddArc(UObject* DepObject, bool bDepIsSerialize, UObject* Export, bool bExportIsSerialize)
+	{
+		Checker.AddArc(DepObject, bDepIsSerialize, Export, bExportIsSerialize);
+	}
+	void AddPackageWithUnknownExports(FName LongPackageName)
+	{
+		Checker.AddPackageWithUnknownExports(LongPackageName);
+	}
+
+private:
+	FEDLCookChecker Checker;
+	friend TThreadSingleton<FEDLCookCheckerThreadState>;
+	friend FEDLCookChecker;
 };
 
 #if WITH_EDITORONLY_DATA
@@ -352,14 +383,12 @@ namespace SavePackageUtilities
 	extern const FName NAME_Level;
 	extern const FName NAME_PrestreamPackage;
 
-	// return if the new save algorithm is enabled for cooked or uncooked
-	bool IsNewSaveEnabled(bool bForCooking = false);
-
 	void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
 
 	/**
 	 * Save all of the BulkDatas that have registered as not being inline.
 	 * They may be saved to the end of the file, or to an archive for a separate file.
+	 * Kicks off async writes, use UPackage::WaitForAsyncFileWrites(); to ensure they are complete.
 	 * 
 	 * @param Linker The linker containing the exports. Provides metadata for BulkData, and BulkData may write to it as their target archive.
 	 * @param InOutStartOffset In value is the offset in the Linker's archive where the BulkDatas will be put. If SavePackageContext settings direct
@@ -372,14 +401,12 @@ namespace SavePackageUtilities
 	 * @param SaveFlags The flags passed into SavePackage; affects how the bulkdata should be saved.
 	 * @param bTextFormat True if package is saving to text. Bulkdata has special handling for text output.
 	 * @param bDiffing True if the package is only diffing, so bulk data should be recorded but not saved to disk.
-	 * @param bComputeHash True if package hash needs to be computed; bulkdatas contribute to the hash.
-	 * @param AsyncWriteAndHashSequence Output: Collects the writes of the bulkdata to disk for async writing.
 	 * @param TotalPackageSizeUncompressed Output: Bulkdata sizes are added to it.
 	 */
 	ESavePackageResult SaveBulkData(FLinkerSave* Linker, int64& InOutStartOffset, const UPackage* InOuter,
 		const TCHAR* Filename, const ITargetPlatform* TargetPlatform, FSavePackageContext* SavePackageContext,
-		uint32 SaveFlags, const bool bTextFormat, const bool bComputeHash,
-		TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, int64& TotalPackageSizeUncompressed, bool bIsOptionalRealm = false);
+		uint32 SaveFlags, const bool bTextFormat,
+		int64& TotalPackageSizeUncompressed, bool bIsOptionalRealm = false);
 	
 	/**
 	 * Used to append additional data to the end of the package file by invoking callbacks stored in the linker.
@@ -400,25 +427,24 @@ namespace SavePackageUtilities
 	
 	void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FRecord Record);
 	EObjectMark GetExcludedObjectMarksForTargetPlatform(const class ITargetPlatform* TargetPlatform);
-	bool HasUnsaveableOuter(UObject* InObj, UPackage* InSavingPackage);
-	void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage* InSavingPackage);
-	void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjectMarks, const ITargetPlatform* TargetPlatform);
 	void FindMostLikelyCulprit(const TArray<UObject*>& BadObjects, UObject*& MostLikelyCulprit, FString& OutReferencer, FSaveContext* InOptionalSaveContext = nullptr);
-	void AddFileToHash(FString const& Filename, FMD5& Hash);
-
+	
 	/** 
 	  * Search 'OutputFiles' for output files that were saved to the temp directory and move those files
 	  * to their final location. Output files that were not saved to the temp directory will be ignored.
 	  * 
 	  * If errors are encountered then the original state of the package will be restored and should continue to work.
 	  */
-	ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const bool bComputeHash, const FDateTime& FinalTimeStamp, TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence);
+	ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const FDateTime& FinalTimeStamp);
 
 	void WriteToFile(const FString& Filename, const uint8* InDataPtr, int64 InDataSize);
-	void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
-	void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, EAsyncWriteOptions Options, FSavePackageOutputFile& File);
+	void AsyncWriteFile(FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
+	void AsyncWriteFile(EAsyncWriteOptions Options, FSavePackageOutputFile& File);
 
 	void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects);
+
+	/** Returns result of IsEditorOnlyObject if Engine:[Core.System]:CanStripEditorOnlyExportsAndImports (ini) is set to true */
+	bool IsStrippedEditorOnlyObject(const UObject* InObject, bool bCheckRecursive = true, bool bCheckMarks = true);
 }
 
 #if ENABLE_COOK_STATS

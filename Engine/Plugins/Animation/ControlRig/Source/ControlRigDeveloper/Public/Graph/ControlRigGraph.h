@@ -21,12 +21,17 @@ struct FRigCurveContainer;
 DECLARE_MULTICAST_DELEGATE_OneParam(FControlRigGraphNodeClicked, UControlRigGraphNode*);
 
 UCLASS()
-class CONTROLRIGDEVELOPER_API UControlRigGraph : public UEdGraph
+class CONTROLRIGDEVELOPER_API UControlRigGraph : public UEdGraph, public IRigVMEditorSideObject
 {
 	GENERATED_BODY()
 
 public:
 	UControlRigGraph();
+
+	/** IRigVMEditorSideObject interface */
+	virtual FRigVMClient* GetRigVMClient() const override;
+	virtual FString GetRigVMNodePath() const override;
+	virtual void HandleRigVMGraphRenamed(const FString& InOldNodePath, const FString& InNewNodePath) override;
 
 	/** Set up this graph */
 	void Initialize(UControlRigBlueprint* InBlueprint);
@@ -48,6 +53,10 @@ public:
 	{
 		return GetElementNameList(ERigElementType::Control);
 	}
+	FORCEINLINE const TArray<TSharedPtr<FString>>* GetControlNameListWithoutAnimationChannels(URigVMPin* InPin = nullptr) const
+	{
+		return &ControlNameListWithoutAnimationChannels;
+	}
 	FORCEINLINE const TArray<TSharedPtr<FString>>* GetNullNameList(URigVMPin* InPin = nullptr) const
 	{
 		return GetElementNameList(ERigElementType::Null);
@@ -57,11 +66,13 @@ public:
 		return GetElementNameList(ERigElementType::Curve);
 	}
 
-	void CacheNameLists(URigHierarchy* InHierarchy, const FControlRigDrawContainer* DrawContainer);
+	void CacheNameLists(URigHierarchy* InHierarchy, const FControlRigDrawContainer* DrawContainer, TArray<TSoftObjectPtr<UControlRigShapeLibrary>> ShapeLibraries);
 	const TArray<TSharedPtr<FString>>* GetElementNameList(ERigElementType InElementType = ERigElementType::Bone) const;
 	const TArray<TSharedPtr<FString>>* GetElementNameList(URigVMPin* InPin = nullptr) const;
 	const TArray<TSharedPtr<FString>> GetSelectedElementsNameList() const;
 	const TArray<TSharedPtr<FString>>* GetDrawingNameList(URigVMPin* InPin = nullptr) const;
+	const TArray<TSharedPtr<FString>>* GetEntryNameList(URigVMPin* InPin = nullptr) const;
+	const TArray<TSharedPtr<FString>>* GetShapeNameList(URigVMPin* InPin = nullptr) const;
 
 	bool bSuspendModelNotifications;
 	bool bIsTemporaryGraphForCopyPaste;
@@ -71,6 +82,8 @@ public:
 	UControlRigBlueprint* GetBlueprint() const;
 	URigVMGraph* GetModel() const;
 	URigVMController* GetController() const;
+	bool IsRootGraph() const { return GetRootGraph() == this; }
+	const UControlRigGraph* GetRootGraph() const;
 
 	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
 
@@ -87,14 +100,23 @@ public:
 private:
 
 	template<class T>
-	void CacheNameListForHierarchy(URigHierarchy* InHierarchy, TArray<TSharedPtr<FString>>& OutNameList)
+	static bool IncludeElementInNameList(const T* InElement)
+	{
+		return true;
+	}
+
+	template<class T>
+	void CacheNameListForHierarchy(URigHierarchy* InHierarchy, TArray<TSharedPtr<FString>>& OutNameList, bool bFilter = true)
 	{
         TArray<FString> Names;
 		for (auto Element : *InHierarchy)
 		{
 			if(Element->IsA<T>())
 			{
-				Names.Add(Element->GetName().ToString());
+				if(!bFilter || IncludeElementInNameList<T>(Cast<T>(Element)))
+				{
+					Names.Add(Element->GetName().ToString());
+				}
 			}
 		}
 		Names.Sort();
@@ -126,7 +148,10 @@ private:
 	}
 
 	TMap<ERigElementType, TArray<TSharedPtr<FString>>> ElementNameLists;
+	TArray<TSharedPtr<FString>>	ControlNameListWithoutAnimationChannels;
 	TArray<TSharedPtr<FString>> DrawingNameList;
+	TArray<TSharedPtr<FString>> EntryNameList;
+	TArray<TSharedPtr<FString>> ShapeNameList;
 	int32 LastHierarchyTopologyVersion;
 
 	bool bIsSelecting;
@@ -134,6 +159,8 @@ private:
 	FControlRigGraphNodeClicked OnGraphNodeClicked;
 
 	TMap<URigVMNode*, TPair<int32, int32>> CachedInstructionIndices;
+
+	void RemoveNode(UEdGraphNode* InNode);
 
 #endif
 #if WITH_EDITORONLY_DATA
@@ -145,11 +172,15 @@ private:
 #if WITH_EDITOR
 
 	URigVMController* GetTemplateController();
-	void HandleVMCompiledEvent(UBlueprint* InBlueprint, URigVM* InVM);
 
+protected:
+	void HandleVMCompiledEvent(UObject* InCompiledObject, URigVM* InVM);
+
+private:
 	static TArray<TSharedPtr<FString>> EmptyElementNameList;
 	TMap<FName, UEdGraphNode*> ModelNodePathToEdNode;
-	
+	mutable TWeakObjectPtr<URigVMGraph> CachedModelGraph;
+
 	friend class UControlRigUnitNodeSpawner;
 	friend class UControlRigVariableNodeSpawner;
 	friend class UControlRigParameterNodeSpawner;
@@ -157,10 +188,11 @@ private:
 	friend class UControlRigBranchNodeSpawner;
 	friend class UControlRigIfNodeSpawner;
 	friend class UControlRigSelectNodeSpawner;
-	friend class UControlRigPrototypeNodeSpawner;
+	friend class UControlRigTemplateNodeSpawner;
 	friend class UControlRigEnumNodeSpawner;
 	friend class UControlRigFunctionRefNodeSpawner;
 	friend class UControlRigArrayNodeSpawner;
+	friend class UControlRigInvokeEntryNodeSpawner;
 
 #endif
 	friend class UControlRigGraphNode;
@@ -169,3 +201,8 @@ private:
 	friend class UControlRigBlueprint;
 };
 
+template<>
+inline bool UControlRigGraph::IncludeElementInNameList<FRigControlElement>(const FRigControlElement* InElement)
+{
+	return !InElement->IsAnimationChannel();
+}

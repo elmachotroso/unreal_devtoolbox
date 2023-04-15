@@ -17,6 +17,7 @@
 
 #include "AssetToolsModule.h"
 #include "Engine/Texture2D.h"
+#include "Engine/RendererSettings.h"
 #include "Factories/TextureFactory.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -78,20 +79,22 @@ namespace MDLImporterImpl
 
 	void ClearMaterial(UMaterial* Material)
 	{
-		Material->BaseColor.Expression          = nullptr;
-		Material->EmissiveColor.Expression      = nullptr;
-		Material->SubsurfaceColor.Expression    = nullptr;
-		Material->Roughness.Expression          = nullptr;
-		Material->Metallic.Expression           = nullptr;
-		Material->Specular.Expression           = nullptr;
-		Material->Opacity.Expression            = nullptr;
-		Material->Refraction.Expression         = nullptr;
-		Material->OpacityMask.Expression        = nullptr;
-		Material->ClearCoat.Expression          = nullptr;
-		Material->ClearCoatRoughness.Expression = nullptr;
-		Material->Normal.Expression             = nullptr;
+		UMaterialEditorOnlyData* MaterialEditorOnly = Material->GetEditorOnlyData();
 
-		Material->Expressions.Empty();
+		MaterialEditorOnly->BaseColor.Expression          = nullptr;
+		MaterialEditorOnly->EmissiveColor.Expression      = nullptr;
+		MaterialEditorOnly->SubsurfaceColor.Expression    = nullptr;
+		MaterialEditorOnly->Roughness.Expression          = nullptr;
+		MaterialEditorOnly->Metallic.Expression           = nullptr;
+		MaterialEditorOnly->Specular.Expression           = nullptr;
+		MaterialEditorOnly->Opacity.Expression            = nullptr;
+		MaterialEditorOnly->Refraction.Expression         = nullptr;
+		MaterialEditorOnly->OpacityMask.Expression        = nullptr;
+		MaterialEditorOnly->ClearCoat.Expression          = nullptr;
+		MaterialEditorOnly->ClearCoatRoughness.Expression = nullptr;
+		MaterialEditorOnly->Normal.Expression             = nullptr;
+
+		Material->GetExpressionCollection().Empty();
 	}
 }
 
@@ -267,7 +270,13 @@ bool FMDLImporter::DistillMaterials(const TMap<FString, UMaterial*>& MaterialsMa
 
 void FMDLImporter::ConvertUnsuportedVirtualTextures() const 
 {
-#if MATERIAL_OPACITYMASK_DOESNT_SUPPORT_VIRTUALTEXTURE
+	//This function only converts virtual textures connected to opacity mask.
+	//Early out if the project supports this.
+	if (GetDefault<URendererSettings>()->bEnableVirtualTextureOpacityMask)
+	{
+		return;
+	}
+
 	const TArray<UMaterialInterface*>& CreatedMaterials = MaterialFactory->GetCreatedMaterials();
 	TArray<UTexture2D*> VirtualTexturesToConvert;
 	TArray<UMaterial*> MaterialsToRefreshAfterVirtualTextureConversion;
@@ -297,7 +306,7 @@ void FMDLImporter::ConvertUnsuportedVirtualTextures() const
 		{
 			for (UTexture2D* VirtualTexture : VirtualTexturesToConvert)
 			{
-				if (CurrentMaterial->GetCachedExpressionData().ReferencedTextures.Contains(VirtualTexture))
+				if (CurrentMaterial->GetReferencedTextures().Contains(VirtualTexture))
 				{
 					MaterialsToRefreshAfterVirtualTextureConversion.Add(CurrentMaterial);
 					break;
@@ -308,7 +317,6 @@ void FMDLImporter::ConvertUnsuportedVirtualTextures() const
 
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	AssetTools.ConvertVirtualTextures(VirtualTexturesToConvert, true, &MaterialsToRefreshAfterVirtualTextureConversion);
-#endif
 }
 
 bool FMDLImporter::ImportMaterials(UObject* ParentPackage, EObjectFlags Flags, Mdl::FMaterialCollection& Materials,
@@ -392,7 +400,7 @@ bool FMDLImporter::Reimport(const FString& InFileName, const UMDLImporterOptions
 	UMaterial*      Material    = Cast<UMaterial>(OutMaterial);
 	MDLImporterImpl::ClearMaterial(Material);
 
-	const FString                   DbName       = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.Name, true);
+	const FString                   DbName       = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.BaseName, true);
 	const TMap<FString, UMaterial*> MaterialsMap = {{DbName, Material}};
 
 	MdlContext->GetDistiller()->SetBakingSettings(InImporterOptions.BakingResolution, InImporterOptions.BakingSamples);

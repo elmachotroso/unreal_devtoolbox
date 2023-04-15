@@ -7,6 +7,8 @@
 #include "GameplayEffectExtension.h"
 #include "Net/UnrealNetwork.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilitySystemTestAttributeSet)
+
 
 UAbilitySystemTestAttributeSet::UAbilitySystemTestAttributeSet(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -57,7 +59,7 @@ bool UAbilitySystemTestAttributeSet::PreGameplayEffectExecute(struct FGameplayEf
 		
 		if (Data.EvaluatedData.Magnitude > 0.f)
 		{
-			// Check the source - does he have Crit?
+			// Check the source - does it have Crit?
 			const UAbilitySystemTestAttributeSet* SourceAttributes = Data.EffectSpec.EffectContext.GetOriginalInstigatorAbilitySystemComponent()->GetSet<UAbilitySystemTestAttributeSet>();
 			if (SourceAttributes && SourceAttributes->CritChance > 0.f)
 			{
@@ -137,3 +139,4 @@ void UAbilitySystemTestAttributeSet::GetLifetimeReplicatedProps(TArray< FLifetim
 	DOREPLIFETIME( UAbilitySystemTestAttributeSet, Strength);
 	*/
 }
+

@@ -3,46 +3,45 @@
 #include "USDPrimViewModel.h"
 
 #include "USDConversionUtils.h"
+#include "USDIntegrationUtils.h"
 #include "USDLog.h"
 #include "USDMemory.h"
 #include "USDTypesConversion.h"
 
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/SdfPath.h"
-
-#include "Misc/Paths.h"
-#include "ScopedTransaction.h"
-
-#include <iterator>
+#include "UsdWrappers/UsdPrim.h"
+#include "UsdWrappers/UsdStage.h"
 
 #if USE_USD_SDK
 
 #include "USDIncludesStart.h"
 	#include "pxr/pxr.h"
-	#include "pxr/usd/sdf/namespaceEdit.h"
 	#include "pxr/usd/sdf/path.h"
 	#include "pxr/usd/usd/modelAPI.h"
+	#include "pxr/usd/usd/payloads.h"
 	#include "pxr/usd/usd/prim.h"
-	#include "pxr/usd/usd/references.h"
+	#include "pxr/usd/usd/tokens.h"
 	#include "pxr/usd/usdGeom/xform.h"
+	#include "pxr/usd/usdSkel/root.h"
 #include "USDIncludesEnd.h"
 
 #endif // #if USE_USD_SDK
 
-FUsdPrimViewModel::FUsdPrimViewModel( FUsdPrimViewModel* InParentItem, const UE::FUsdStageWeak& InUsdStage, const UE::FUsdPrim& InUsdPrim )
-	: FUsdPrimViewModel( InParentItem, InUsdStage )
-{
-	UsdPrim = InUsdPrim;
+#define LOCTEXT_NAMESPACE "USDPrimViewModel"
 
-	RefreshData( false );
-	FillChildren();
-}
-
-FUsdPrimViewModel::FUsdPrimViewModel( FUsdPrimViewModel* InParentItem, const UE::FUsdStageWeak& InUsdStage )
+FUsdPrimViewModel::FUsdPrimViewModel(
+	FUsdPrimViewModel* InParentItem,
+	const UE::FUsdStageWeak& InUsdStage,
+	const UE::FUsdPrim& InPrim
+)
 	: UsdStage( InUsdStage )
+	, UsdPrim( InPrim )
 	, ParentItem( InParentItem )
 	, RowData( MakeShared< FUsdPrimModel >() )
 {
+	RefreshData( false );
+	FillChildren();
 }
 
 TArray< FUsdPrimViewModelRef >& FUsdPrimViewModel::UpdateChildren()
@@ -112,7 +111,15 @@ TArray< FUsdPrimViewModelRef >& FUsdPrimViewModel::UpdateChildren()
 void FUsdPrimViewModel::FillChildren()
 {
 #if USE_USD_SDK
+	if ( !UsdPrim )
+	{
+		return;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
 	pxr::UsdPrimSiblingRange PrimChildren = pxr::UsdPrim( UsdPrim ).GetFilteredChildren( pxr::UsdTraverseInstanceProxies( pxr::UsdPrimAllPrimsPredicate ) );
+
+	FScopedUnrealAllocs UnrealAllocs;
 	for ( pxr::UsdPrim Child : PrimChildren )
 	{
 		Children.Add( MakeShared< FUsdPrimViewModel >( this, UsdStage, UE::FUsdPrim( Child ) ) );
@@ -166,25 +173,6 @@ void FUsdPrimViewModel::RefreshData( bool bRefreshChildren )
 #endif // #if USE_USD_SDK
 }
 
-bool FUsdPrimViewModel::CanExecutePrimAction() const
-{
-#if USE_USD_SDK
-	if ( UsdPrim.IsPseudoRoot() )
-	{
-		return false;
-	}
-
-	UE::FSdfPath SpecPath = UsdUtils::GetPrimSpecPathForLayer( UsdPrim, UsdStage.GetEditTarget() );
-	if ( !SpecPath.IsEmpty() )
-	{
-		return true;
-	}
-
-#endif // #if USE_USD_SDK
-
-	return false;
-}
-
 bool FUsdPrimViewModel::HasVisibilityAttribute() const
 {
 #if USE_USD_SDK
@@ -222,7 +210,7 @@ void FUsdPrimViewModel::ToggleVisibility()
 
 void FUsdPrimViewModel::TogglePayload()
 {
-	if ( UsdPrim.HasPayload() )
+	if ( UsdPrim && UsdPrim.HasPayload() )
 	{
 		if ( UsdPrim.IsLoaded() )
 		{
@@ -235,6 +223,82 @@ void FUsdPrimViewModel::TogglePayload()
 
 		RefreshData( false );
 	}
+}
+
+void FUsdPrimViewModel::ApplySchema( FName SchemaName )
+{
+#if USE_USD_SDK
+	UsdUtils::ApplySchema( UsdPrim, UnrealToUsd::ConvertToken( *SchemaName.ToString() ).Get() );
+#endif // #if USE_USD_SDK
+}
+
+bool FUsdPrimViewModel::CanApplySchema( FName SchemaName ) const
+{
+#if USE_USD_SDK
+	if ( !UsdPrim || UsdPrim.IsPseudoRoot() )
+	{
+		return false;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPrim PxrUsdPrim{ UsdPrim };
+	pxr::TfToken SchemaToken = UnrealToUsd::ConvertToken( *SchemaName.ToString() ).Get();
+
+	if ( SchemaToken == UnrealIdentifiers::ControlRigAPI && !PxrUsdPrim.IsA<pxr::UsdSkelRoot>() )
+	{
+		return false;
+	}
+
+	if ( !PxrUsdPrim.IsA<pxr::UsdGeomXformable>() )
+	{
+		return false;
+	}
+
+	return UsdUtils::CanApplySchema( UsdPrim, SchemaToken );
+#else
+	return false;
+#endif // #if USE_USD_SDK
+}
+
+void FUsdPrimViewModel::RemoveSchema( FName SchemaName )
+{
+#if USE_USD_SDK
+	UsdUtils::RemoveSchema( UsdPrim, UnrealToUsd::ConvertToken( *SchemaName.ToString() ).Get() );
+#endif // #if USE_USD_SDK
+}
+
+bool FUsdPrimViewModel::CanRemoveSchema( FName SchemaName ) const
+{
+#if USE_USD_SDK
+	return UsdUtils::CanRemoveSchema( UsdPrim, UnrealToUsd::ConvertToken( *SchemaName.ToString() ).Get() );
+#else
+	return false;
+#endif // #if USE_USD_SDK
+}
+
+bool FUsdPrimViewModel::HasSpecsOnLocalLayer() const
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPrim PxrUsdPrim{ UsdPrim };
+	if ( PxrUsdPrim )
+	{
+		if ( pxr::UsdStageRefPtr PrimUsdStage = PxrUsdPrim.GetStage() )
+		{
+			for ( const pxr::SdfPrimSpecHandle& Spec : PxrUsdPrim.GetPrimStack() )
+			{
+				if ( Spec && PrimUsdStage->HasLocalLayer( Spec->GetLayer() ) )
+				{
+					return true;
+				}
+			}
+		}
+	}
+#endif // #if USE_USD_SDK
+
+	return false;
 }
 
 void FUsdPrimViewModel::DefinePrim( const TCHAR* PrimName )
@@ -259,17 +323,34 @@ void FUsdPrimViewModel::DefinePrim( const TCHAR* PrimName )
 #endif // #if USE_USD_SDK
 }
 
-void FUsdPrimViewModel::AddReference( const TCHAR* AbsoluteFilePath )
-{
-	UsdUtils::AddReference( UsdPrim, AbsoluteFilePath );
-}
-
 void FUsdPrimViewModel::ClearReferences()
 {
 #if USE_USD_SDK
+	if ( !UsdPrim )
+	{
+		return;
+	}
+
 	FScopedUsdAllocs UsdAllocs;
 
 	pxr::UsdReferences References = pxr::UsdPrim( UsdPrim ).GetReferences();
 	References.ClearReferences();
 #endif // #if USE_USD_SDK
 }
+
+void FUsdPrimViewModel::ClearPayloads()
+{
+#if USE_USD_SDK
+	if ( !UsdPrim )
+	{
+		return;
+	}
+
+	FScopedUsdAllocs UsdAllocs;
+
+	pxr::UsdPayloads Payloads = pxr::UsdPrim( UsdPrim ).GetPayloads();
+	Payloads.ClearPayloads();
+#endif // #if USE_USD_SDK
+}
+
+#undef LOCTEXT_NAMESPACE

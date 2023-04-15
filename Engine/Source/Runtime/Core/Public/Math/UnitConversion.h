@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
-#include "Misc/Optional.h"
 #include "Internationalization/Text.h"
+#include "Misc/Optional.h"
 #include "Templates/ValueOrError.h"
 
+class FText;
 template<typename NumericType> struct FNumericUnit;
 
 /** Enum *must* be zero-indexed and sequential. Must be grouped by relevance and ordered by magnitude. */
@@ -47,7 +48,7 @@ enum class EUnit : uint8
 	Lumens, Candela, Lux, CandelaPerMeter2,
 
 	/** Time units */
-	Milliseconds, Seconds, Minutes, Hours, Days, Months, Years,
+	Nanoseconds, Microseconds, Milliseconds, Seconds, Minutes, Hours, Days, Months, Years,
 
 	/** Pixel density units */
 	PixelsPerInch,
@@ -210,4 +211,4 @@ bool LexTryParseString(FNumericUnit<T>& OutValue, const TCHAR* String);
 
 
 // Include template definitions
-#include "Math/UnitConversion.inl"
+#include "Math/UnitConversion.inl" // IWYU pragma: export

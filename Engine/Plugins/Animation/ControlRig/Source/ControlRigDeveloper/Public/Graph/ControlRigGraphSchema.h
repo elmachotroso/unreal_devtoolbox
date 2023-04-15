@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "ControlRigGraphNode.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "GraphEditorDragDropAction.h"
 #include "RigVMModel/RigVMGraph.h"
@@ -140,6 +141,37 @@ private:
 	bool bLocalVariable;
 };
 
+USTRUCT()
+struct CONTROLRIGDEVELOPER_API FControlRigGraphSchemaAction_Event : public FEdGraphSchemaAction
+{
+	GENERATED_BODY()
+
+public:
+
+	// Simple type info
+	static FName StaticGetTypeId() {static FName Type("FControlRigGraphSchemaAction_Event"); return Type;}
+	virtual FName GetTypeId() const override { return StaticGetTypeId(); } 
+
+	FControlRigGraphSchemaAction_Event()
+		: FEdGraphSchemaAction()
+	{}
+
+	FControlRigGraphSchemaAction_Event(const FName& InEventName, const FString& InNodePath, const FText& InNodeCategory);
+
+	virtual bool IsA(const FName& InType) const override
+	{
+		return InType == GetTypeId() || Super::IsA(InType);
+	}
+	virtual bool IsParentable() const override { return true; }
+	virtual FReply OnDoubleClick(UBlueprint* InBlueprint) override;
+	virtual bool CanBeRenamed() const override { return false; }
+	virtual FSlateBrush const* GetPaletteIcon() const override;
+
+private:
+
+	FString NodePath;
+};
+
 /** DragDropAction class for drag and dropping an item from the My Blueprints tree (e.g., variable or function) */
 class CONTROLRIGDEVELOPER_API FControlRigFunctionDragDropAction : public FGraphSchemaActionDragDropAction
 {
@@ -201,6 +233,7 @@ public:
 	virtual void BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotifcation) const override;
 	virtual void BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin) const override;
 	virtual bool CanGraphBeDropped(TSharedPtr<FEdGraphSchemaAction> InAction) const override;
+	virtual FString GetFindReferenceSearchTerm(const FEdGraphSchemaAction* InGraphAction) const override;
 	virtual FReply BeginGraphDragAction(TSharedPtr<FEdGraphSchemaAction> InAction, const FPointerEvent& MouseEvent = FPointerEvent() ) const override;
 	virtual class FConnectionDrawingPolicy* CreateConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor, const FSlateRect& InClippingRect, class FSlateWindowElementList& InDrawElements, class UEdGraph* InGraphObj) const override;
 	virtual bool ShouldHidePinDefaultValue(UEdGraphPin* Pin) const override;
@@ -225,9 +258,11 @@ public:
 	virtual bool GetLocalVariables(const UEdGraph* InGraph, TArray<FBPVariableDescription>& OutLocalVariables) const override;
 	virtual TSharedPtr<FEdGraphSchemaAction> MakeActionFromVariableDescription(const UEdGraph* InEdGraph, const FBPVariableDescription& Variable) const override;
 	virtual FText GetGraphCategory(const UEdGraph* InGraph) const override;
+	virtual EGraphType GetGraphType(const UEdGraph* TestEdGraph) const override;
 	virtual FReply TrySetGraphCategory(const UEdGraph* InGraph, const FText& InCategory) override;
 	virtual bool TryDeleteGraph(UEdGraph* GraphToDelete) const override;
 	virtual bool TryRenameGraph(UEdGraph* GraphToRename, const FName& InNewName) const override;
+	virtual bool TryToGetChildEvents(const UEdGraph* Graph, const int32 SectionId, TArray<TSharedPtr<FEdGraphSchemaAction>>& Actions, const FText& ParentCategory) const override;
 	virtual bool CanDuplicateGraph(UEdGraph* InSourceGraph) const { return false; }
 	virtual UEdGraphPin* DropPinOnNode(UEdGraphNode* InTargetNode, const FName& InSourcePinName, const FEdGraphPinType& InSourcePinType, EEdGraphPinDirection InSourcePinDirection) const override;
 	virtual bool SupportsDropPinOnNode(UEdGraphNode* InTargetNode, const FEdGraphPinType& InSourcePinType, EEdGraphPinDirection InSourcePinDirection, FText& OutErrorMessage) const override;
@@ -260,6 +295,11 @@ public:
 
 	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
 
+	// Allow derived classes to spawn derived node classes
+	virtual TSubclassOf<UControlRigGraphNode> GetGraphNodeClass() const { return UControlRigGraphNode::StaticClass(); }
+
+	static bool IsControlRigDefaultEvent(const FName& InEventName);
+
 private:
 
 	const UEdGraphPin* LastPinForCompatibleCheck = nullptr;
@@ -277,4 +317,3 @@ private:
 	friend class UControlRigUnitNodeSpawner;
 	friend class UControlRigArrayNodeSpawner;
 };
-

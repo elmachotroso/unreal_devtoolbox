@@ -2,12 +2,17 @@
 
 #pragma once
 
+#include "Containers/ArrayView.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "HAL/PlatformMath.h"
 #include "RigVMDefines.h"
 #include "RigVMTraits.h"
-#include "RigVMArray.h"
+#include "Templates/TypeHash.h"
+#include "UObject/ObjectMacros.h"
+
 #include "RigVMMemoryCommon.generated.h"
+
+class FArchive;
 
 #ifdef UE_BUILD_DEBUG
 	#define DEBUG_RIGVMMEMORY 0
@@ -142,13 +147,4 @@ private:
 	friend class URigVMCompiler;
 };
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-typedef FRigVMFixedArray<FRigVMOperand> FRigVMOperandArray;
-
-#else
-
 typedef TArrayView<const FRigVMOperand> FRigVMOperandArray;
-
-#endif
-

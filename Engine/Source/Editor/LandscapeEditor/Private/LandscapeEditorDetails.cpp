@@ -19,9 +19,8 @@
 #include "DetailWidgetRow.h"
 #include "LandscapeEditorDetailCustomization_TargetLayers.h"
 #include "DetailCategoryBuilder.h"
-#include "DetailLayoutBuilder.h"
-#include "Classes/EditorStyleSettings.h"
-#include "Editor/PropertyEditor/Public/VariablePrecisionNumericInterface.h"
+#include "DetailLayoutBuilder.h" 
+#include "VariablePrecisionNumericInterface.h"
 
 #include "Templates/SharedPointer.h"
 
@@ -45,10 +44,40 @@ void FLandscapeEditorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	CommandList = LandscapeEdMode->GetUICommandList();
 
 	static const FLinearColor BorderColor = FLinearColor(0.2f, 0.2f, 0.2f, 0.2f);
-	static const FSlateBrush* BorderStyle = FEditorStyle::GetBrush("DetailsView.GroupSection");
+	static const FSlateBrush* BorderStyle = FAppStyle::GetBrush("DetailsView.GroupSection");
 
 	IDetailCategoryBuilder& LandscapeEditorCategory = DetailBuilder.EditCategory("LandscapeEditor", NSLOCTEXT("Contexts", "LandscapeEditor", "Landscape Editor"), ECategoryPriority::TypeSpecific);
 
+	IDetailCategoryBuilder& BrushSettingsCategory = DetailBuilder.EditCategory("Brush Settings");
+
+	// Ensure the categories in the Landscape Editor Details panel is stable. Most importantly that the Brush
+	// and Tool Settings are adjacent to each other. 
+	auto CategorySorter = [](const TMap<FName, IDetailCategoryBuilder*>& Categories)
+	{
+		int32 Order = 0;
+		auto SafeSetOrder = [&Categories, &Order](const FName& CategoryName )
+		{
+			if (IDetailCategoryBuilder* const* Builder = Categories.Find(CategoryName))
+			{
+				(*Builder)->SetSortOrder(Order++);	
+			}
+		};
+		
+		SafeSetOrder(FName("LandscapeEditor"));
+		SafeSetOrder(FName("Import / Export"));
+		SafeSetOrder(FName("Change Component Size"));
+		SafeSetOrder(FName("New Landscape"));
+		
+		SafeSetOrder(FName("Tool Settings"));
+		SafeSetOrder(FName("Brush Settings"));
+		
+		SafeSetOrder(FName("Edit Layers"));
+		SafeSetOrder(FName("Edit Layer Blueprint Brushes"));
+		SafeSetOrder(FName("Target Layers"));
+	};
+	
+	DetailBuilder.SortCategories(CategorySorter);
+	
 	LandscapeEditorCategory.AddCustomRow(FText::GetEmpty())
 	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(&FLandscapeEditorDetails::GetTargetLandscapeSelectorVisibility)))
 	[
@@ -304,7 +333,7 @@ FSlateIcon FLandscapeEditorDetails::GetCurrentToolIcon() const
 		return FLandscapeEditorCommands::Get().NameToCommandMap.FindChecked(*(FString("Tool_") + CurrentToolName))->GetIcon();
 	}
 
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), "Default");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Default");
 }
 
 TSharedRef<SWidget> FLandscapeEditorDetails::GetToolSelector()
@@ -456,7 +485,7 @@ FSlateIcon FLandscapeEditorDetails::GetCurrentBrushIcon() const
 		}
 	}
 
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), "Default");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Default");
 }
 
 TSharedRef<SWidget> FLandscapeEditorDetails::GetBrushSelector()
@@ -556,7 +585,7 @@ FSlateIcon FLandscapeEditorDetails::GetCurrentBrushFalloffIcon() const
 		}
 	}
 
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), "Default");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Default");
 }
 
 void FLandscapeEditorDetails::SetBrushCommand(FName InBrush)

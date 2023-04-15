@@ -2,25 +2,32 @@
 
 #pragma once
 
-#include "SequencerKeyParams.h"
 #include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "MVVM/ViewModelPtr.h"
 #include "Misc/FrameNumber.h"
+#include "SequencerKeyParams.h"
+#include "Templates/SharedPointer.h"
 
 class IKeyArea;
 class ISequencer;
 class ISequencerSection;
-
+class ISequencerTrackEditor;
 class UMovieSceneTrack;
-
-class FSequencerTrackNode;
-class FSequencerDisplayNode;
-class FSequencerSectionKeyAreaNode;
+namespace UE::Sequencer { struct FKeyOperation; }
+struct FFrameNumber;
 
 namespace UE
 {
 namespace Sequencer
 {
 
+class FChannelGroupModel;
+class FViewModel;
+class ITrackExtension;
 
 /**
  * Temporary structure used for consistent add-key behavior for a set of display nodes
@@ -31,15 +38,15 @@ struct SEQUENCER_API FAddKeyOperation
 	/**
 	 * Construct an operation from any set of display nodes. Each node in the set will receive keys for all decendant key areas.
 	 *
-	 * @param InNodes A set of all the nodes to key
+	 * @param InModels A set of all the models to key
 	 */
-	static FAddKeyOperation FromNodes(const TSet<TSharedRef<FSequencerDisplayNode>>& InNodes);
+	static FAddKeyOperation FromNodes(const TSet<TWeakPtr<FViewModel>>& InModels);
 
 
 	/**
 	 * Construct an operation from a single display node. Every key area underneath this node will receive keys.
 	 */
-	static FAddKeyOperation FromNode(TSharedRef<FSequencerDisplayNode> InNode);
+	static FAddKeyOperation FromNode(TWeakPtr<FViewModel> InModel);
 
 
 	/**
@@ -63,16 +70,16 @@ private:
 	 *
 	 * @param InNodes     A set of nodes to add to this operation that contains no child nodes
 	 */
-	void AddPreFilteredNodes(TArrayView<const TSharedRef<FSequencerDisplayNode>> InNodes);
+	void AddPreFilteredNodes(TArrayView<const TWeakPtr<FViewModel>> InNodes);
 
 
 	/**
 	 * Add any keyable areas to the list of potential things to key
 	 *
-	 * @param InTrackNode           The current track node
+	 * @param InTrackEditor         The track editor
 	 * @param InKeyAnythingBeneath  A node to search within for key areas
 	 */
-	bool ConsiderKeyableAreas(FSequencerTrackNode* InTrackNode, FSequencerDisplayNode* InKeyAnythingBeneath);
+	bool ConsiderKeyableAreas(TSharedPtr<ITrackExtension> InTrackModel, FViewModelPtr InKeyAnythingBeneath);
 
 
 	/**
@@ -81,16 +88,7 @@ private:
 	 * @param InTrackNode         The current track node
 	 * @param InKeyAreaNode       The key area node to add key areas from
 	 */
-	bool ProcessKeyAreaNode(FSequencerTrackNode* InTrackNode, const FSequencerSectionKeyAreaNode* InKeyAreaNode);
-
-
-	/**
-	 * Add a key area to this operation
-	 *
-	 * @param InTrackNode         The current track node
-	 * @param InKeyArea           The key area to add
-	 */
-	bool ProcessKeyArea(FSequencerTrackNode* InTrackNode, TSharedPtr<IKeyArea> InKeyArea);
+	bool ProcessKeyArea(TSharedPtr<ITrackExtension> InTrackModel, TViewModelPtr<FChannelGroupModel> InChannelGroupModel);
 
 
 	/**
@@ -115,6 +113,6 @@ private:
 	TMap<ISequencerTrackEditor*, FKeyOperation> OperationsByTrackEditor;
 };
 
-
 } // namespace Sequencer
 } // namespace UE
+

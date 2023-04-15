@@ -3,10 +3,11 @@
 #include "TabFactory/HierarchyTabSummoner.h"
 
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 
 #include "Hierarchy/SHierarchyView.h"
+#include "WidgetBlueprintEditor.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -17,7 +18,7 @@ FHierarchyTabSummoner::FHierarchyTabSummoner(TSharedPtr<class FWidgetBlueprintEd
 		, BlueprintEditor(InBlueprintEditor)
 {
 	TabLabel = LOCTEXT("SlateHierarchyTabLabel", "Hierarchy");
-	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.Palette");
+	TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.Tabs.Palette");
 
 	bIsSingleton = true;
 

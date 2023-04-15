@@ -17,6 +17,7 @@
 #include "TextureBuildFunction.h"
 #include "DerivedDataBuildFunctionFactory.h"
 #include "DerivedDataSharedString.h"
+#include "Misc/Paths.h"
 
 THIRD_PARTY_INCLUDES_START
 	#include "nvtt/nvtt.h"
@@ -317,11 +318,12 @@ static bool CompressImageUsingNVTT(
 	const int32 BlockSizeX = 4;
 	const int32 BlockSizeY = 4;
 	const int32 BlockBytes = (PixelFormat == PF_DXT1 || PixelFormat == PF_BC4) ? 8 : 16;
-	const int32 ImageBlocksX = FMath::Max(SizeX / BlockSizeX, 1);
-	const int32 ImageBlocksY = FMath::Max(SizeY / BlockSizeY, 1);
+	const int32 ImageBlocksX = FMath::Max( FMath::DivideAndRoundUp( SizeX , BlockSizeX), 1);
+	const int32 ImageBlocksY = FMath::Max( FMath::DivideAndRoundUp( SizeY , BlockSizeY), 1);
 	const int32 BlocksPerBatch = FMath::Max<int32>(ImageBlocksX, FMath::RoundUpToPowerOfTwo(CompressionSettings::BlocksPerBatch));
 	const int32 RowsPerBatch = BlocksPerBatch / ImageBlocksX;
 	const int32 NumBatches = ImageBlocksY / RowsPerBatch;
+	// these round down, then if (RowsPerBatch * NumBatches) != ImageBlocksY , will encode without batches
 
 	// nvtt doesn't support 64-bit output sizes.
 	int64 OutDataSize = (int64)ImageBlocksX * ImageBlocksY * BlockBytes;
@@ -421,6 +423,7 @@ static bool CompressImageUsingNVTT(
  */
 class FTextureFormatDXT : public ITextureFormat
 {
+public:
 	virtual bool AllowParallelBuild() const override
 	{
 		return true;
@@ -447,13 +450,8 @@ class FTextureFormatDXT : public ITextureFormat
 			OutFormats.Add(GSupportedTextureFormatNames[i]);
 		}
 	}
-	
-	virtual FTextureFormatCompressorCaps GetFormatCapabilities() const override
-	{
-		return FTextureFormatCompressorCaps(); // Default capabilities.
-	}
-
-	virtual EPixelFormat GetPixelFormatForImage(const struct FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+		
+	virtual EPixelFormat GetEncodedPixelFormat(const FTextureBuildSettings& BuildSettings, bool bImageHasAlphaChannel) const override
 	{
 		if (BuildSettings.TextureFormatName == GTextureFormatNameDXT1)
 		{
@@ -484,12 +482,12 @@ class FTextureFormatDXT : public ITextureFormat
 			return PF_BC4;
 		}
 
-		UE_LOG(LogTextureFormatDXT, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatDXT::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
+		UE_LOG(LogTextureFormatDXT, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatDXT::GetEncodedPixelFormat()"), *BuildSettings.TextureFormatName.ToString());
 		return PF_Unknown;
 	}
 
 	virtual bool CompressImage(
-		const FImage& InImage,
+		FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
@@ -497,11 +495,14 @@ class FTextureFormatDXT : public ITextureFormat
 		) const override
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FTextureFormatDXT::CompressImage);
+		
+		// now we know NVTT will actually be used, Load the DLL :
+		const_cast<FTextureFormatDXT *>(this)->LoadDLL();
 
 		FImage Image;
-		InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+		InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
-		EPixelFormat CompressedPixelFormat = GetPixelFormatForImage(BuildSettings, InImage, bImageHasAlphaChannel);
+		EPixelFormat CompressedPixelFormat = GetEncodedPixelFormat(BuildSettings, bImageHasAlphaChannel);
 		bool bIsNormalMap = BuildSettings.TextureFormatName == GTextureFormatNameDXT5n || BuildSettings.TextureFormatName == GTextureFormatNameBC5;
 
 		bool bCompressionSucceeded = true;
@@ -542,13 +543,71 @@ class FTextureFormatDXT : public ITextureFormat
 
 		if (bCompressionSucceeded)
 		{
-			OutCompressedImage.SizeX = FMath::Max(Image.SizeX, 4);
-			OutCompressedImage.SizeY = FMath::Max(Image.SizeY, 4);
+			// no more image size padding here
+			OutCompressedImage.SizeX = Image.SizeX;
+			OutCompressedImage.SizeY = Image.SizeY;
+			// old behavior :
+			//OutCompressedImage.SizeX = FMath::Max(Image.SizeX, 4);
+			//OutCompressedImage.SizeY = FMath::Max(Image.SizeY, 4);
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
 			OutCompressedImage.PixelFormat = CompressedPixelFormat;
 		}
 		return bCompressionSucceeded;
 	}
+
+	FTextureFormatDXT()
+	{
+		// don't LoadDLL until this format is actually used
+	}
+
+	void LoadDLL()
+	{
+#if PLATFORM_WINDOWS
+		// nvtt_64.dll is set to DelayLoad by nvTextureTools.Build.cs
+		// manually load before any call to it, because it's not put in the binaries search path,
+		// and so we can get the AVX2 variant or not :
+
+		if ( nvTextureToolsHandle != nullptr )
+		{
+			return;
+		}
+
+		// Lock so only one thread does init :
+		FScopeLock HandleLock(&nvTextureToolsHandleLock);
+		
+		// double check inside lock :
+		if ( nvTextureToolsHandle != nullptr )
+		{
+			return;
+		}
+
+		if (FWindowsPlatformMisc::HasAVX2InstructionSupport())
+		{
+			nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win64/AVX2/nvtt_64.dll")));
+		}
+		else
+		{
+			nvTextureToolsHandle = FPlatformProcess::GetDllHandle(*(FPaths::EngineDir() / TEXT("Binaries/ThirdParty/nvTextureTools/Win64/nvtt_64.dll")));
+		}
+#endif	//PLATFORM_WINDOWS
+	}
+
+	~FTextureFormatDXT()
+	{
+#if PLATFORM_WINDOWS
+		if ( nvTextureToolsHandle != nullptr )
+		{
+			FPlatformProcess::FreeDllHandle(nvTextureToolsHandle);
+			nvTextureToolsHandle = nullptr;
+		}
+#endif
+	}
+	
+#if PLATFORM_WINDOWS
+	// Handle to the nvtt dll
+	void* nvTextureToolsHandle = nullptr;
+	FCriticalSection nvTextureToolsHandleLock;
+#endif	//PLATFORM_WINDOWS
 };
 
 /**
@@ -564,6 +623,9 @@ public:
 		delete Singleton;
 		Singleton = NULL;
 	}
+	
+	virtual bool CanCallGetTextureFormats() override { return false; }
+
 	virtual ITextureFormat* GetTextureFormat()
 	{
 		if (!Singleton)
@@ -573,7 +635,18 @@ public:
 		return Singleton;
 	}
 
+	// IModuleInterface implementation.
+	virtual void StartupModule() override
+	{
+	}
+
+	virtual void ShutdownModule() override
+	{
+	}
+
 	static inline UE::DerivedData::TBuildFunctionFactory<FDXTTextureBuildFunction> BuildFunctionFactory;
+
+private:
 };
 
 IMPLEMENT_MODULE(FTextureFormatDXTModule, TextureFormatDXT);

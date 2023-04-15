@@ -39,7 +39,7 @@
 #include "Particles/ParticleEmitter.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/StaticMesh.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/Brush.h"
 #include "Editor.h"
 #include "EditorWorldUtils.h"
@@ -48,17 +48,21 @@
 #include "CollectionManagerModule.h"
 #include "ICollectionManager.h"
 #include "CommandletSourceControlUtils.h"
+#include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
-#include "LevelInstance/LevelInstanceActor.h"
-
+#include "LevelInstance/LevelInstanceInterface.h"
+#include "AssetCompilingManager.h"
 #include "PackageHelperFunctions.h"
 #include "PackageTools.h"
+#include "StaticMeshCompiler.h"
+#include "String/ParseTokens.h"
 #include "UObject/PackageTrailer.h"
+#include "UObject/SavePackage.h"
 
 DEFINE_LOG_CATEGORY(LogContentCommandlet);
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IDirectoryWatcher.h"
 #include "DirectoryWatcherModule.h"
 #include "Particles/Material/ParticleModuleMeshMaterial.h"
@@ -91,6 +95,7 @@ DEFINE_LOG_CATEGORY(LogContentCommandlet);
 #include "UObject/UObjectThreadContext.h"
 #include "Engine/LODActor.h"
 #include "PerQualityLevelProperties.h"
+#include "Misc/RedirectCollector.h"
 
 /**-----------------------------------------------------------------------------
  *	UResavePackages commandlet.
@@ -279,7 +284,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	}
 
 	// ... if not, load in all packages
-	if( !bExplicitPackages )
+	if( !bExplicitPackages || Switches.Contains("SaveAll"))
 	{
 		UE_LOG( LogContentCommandlet, Display, TEXT( "No maps found to save when building HLODs, checking Project Settings for Directory or Asset Path(s)" ) );
 
@@ -340,6 +345,22 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	// This option will filter the package list and only save packages that are redirectors, or that reference redirectors
 	const bool bFixupRedirects = (Switches.Contains(TEXT("FixupRedirects")) || Switches.Contains(TEXT("FixupRedirectors")));
 
+	// ResaveOnDemand is a generic way for systems to specify during load that the commandlet should resave a package
+	ResaveOnDemandSystems = ParseResaveOnDemandSystems();
+	if (!ResaveOnDemandSystems.IsEmpty())
+	{
+		TStringBuilder<64> SystemNames;
+		for (FName SystemName : ResaveOnDemandSystems)
+		{
+			SystemNames << SystemName << TEXT(",");
+		}
+		SystemNames.RemoveSuffix(1); // Remove the trailing ,
+		UE_LOG(LogContentCommandlet, Display, TEXT("ResaveOnDemand=%s. Only saving packages that are reported via UE::SavePackageUtilities::OnAddResaveOnDemandPackage."),
+			*SystemNames);
+		bResaveOnDemand = true;
+		UE::SavePackageUtilities::OnAddResaveOnDemandPackage.BindUObject(this, &UResavePackagesCommandlet::OnAddResaveOnDemandPackage);
+	}
+
 	// This option allows the dependency graph and soft object path redirect map to be populated. This is useful if you want soft object references to redirectors to be followed to the destination asset at save time.
 	const bool bSearchAllAssets = Switches.Contains(TEXT("SearchAllAssets"));
 
@@ -381,7 +402,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		TSet<FString> RedirectPackages;
 		TSet<FString> ReferencerPackages;
 
-		AssetRegistry.GetAssetsByClass(UObjectRedirector::StaticClass()->GetFName(), RedirectAssets);
+		AssetRegistry.GetAssetsByClass(UObjectRedirector::StaticClass()->GetClassPathName(), RedirectAssets);
 
 		for (const FAssetData& AssetData : RedirectAssets)
 		{
@@ -473,9 +494,18 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		{
 			TArray<FString> ClassNames;
 			ClassList.ParseIntoArray(ClassNames, TEXT(","), true);
-			for (const FString& ClassName : ClassNames)
+			for (FString& ClassName : ClassNames)
 			{
-				ResaveClasses.AddUnique(*ClassName);
+				if (FPackageName::IsShortPackageName(ClassName))
+				{
+					UE_LOG(LogContentCommandlet, Warning, TEXT("RESAVECLASS param requires class path names. Short name provided: %s."), *ClassName);
+					FTopLevelAssetPath ClassPathName = UClass::TryConvertShortTypeNameToPathName<UStruct>(ClassName, ELogVerbosity::Warning, TEXT("ResavePackages"));
+					if (!ClassPathName.IsNull())
+					{
+						ClassName = ClassPathName.ToString();
+					}
+				}
+				ResaveClasses.AddUnique(ClassName);
 			}
 
 			break;
@@ -500,7 +530,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		for (int32 ClassIndex = 0; ClassIndex < NumResaveClasses; ++ClassIndex)
 		{
 			// Find the class object and then all derived classes
-			UClass* ResaveClass = FindObject<UClass>(ANY_PACKAGE, *ResaveClasses[ClassIndex].ToString());
+			UClass* ResaveClass = UClass::TryFindTypeSlow<UClass>(ResaveClasses[ClassIndex]);
 			if (ResaveClass)
 			{
 				for (TObjectIterator<UClass> It; It; ++It)
@@ -508,7 +538,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 					UClass* MaybeChildClass = *It;
 					if (MaybeChildClass->IsChildOf(ResaveClass))
 					{
-						ResaveClasses.AddUnique(MaybeChildClass->GetFName());
+						ResaveClasses.AddUnique(MaybeChildClass->GetPathName());
 					}
 				}
 			}
@@ -566,6 +596,43 @@ void UResavePackagesCommandlet::ParseSourceControlOptions(const TArray<FString>&
 		}
 	}
 }
+
+void UResavePackagesCommandlet::OnAddResaveOnDemandPackage(FName SystemName, FName PackageName)
+{
+	FScopeLock ScopeLock(&ResaveOnDemandPackagesLock);
+	if (ResaveOnDemandSystems.Contains(SystemName))
+	{
+		ResaveOnDemandPackages.Add(PackageName);
+	}
+}
+
+
+TSet<FName> UResavePackagesCommandlet::ParseResaveOnDemandSystems()
+{
+	using namespace UE::String;
+	TSet<FName> SystemNames;
+
+	const TCHAR* CommandLineStream = FCommandLine::Get();
+	for (;;)
+	{
+		FString Token = FParse::Token(CommandLineStream, false /* bUseEscape */);
+		if (Token.IsEmpty())
+		{
+			break;
+		}
+		FString TokenSystemNames;
+		if (FParse::Value(*Token, TEXT("-resaveondemand="), TokenSystemNames))
+		{
+			UE::String::ParseTokensMultiple(TokenSystemNames, TConstArrayView<TCHAR>({ '+', ',' }),
+				[&SystemNames](FStringView TokenSystemName)
+				{
+					SystemNames.Add(FName(TokenSystemName));
+				}, EParseTokensOptions::Trim | EParseTokensOptions::SkipEmpty);
+		}
+	}
+	return SystemNames;
+}
+
 
 bool UResavePackagesCommandlet::ShouldSkipPackage(const FString& Filename)
 {
@@ -751,6 +818,16 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 				Package->SetPackageFlags(PKG_FilterEditorOnly);
 			}
 
+			if (bResaveOnDemand && bSavePackage)
+			{
+				// Finish all async loading for the package, in case the systems marking it for load do so only from the async loading
+				FAssetCompilingManager::Get().FinishAllCompilation();
+				FlushAsyncLoading();
+				// Skip saving the package if no systems requested it
+				FScopeLock ScopeLock(&ResaveOnDemandPackagesLock);
+				bSavePackage = ResaveOnDemandPackages.Contains(Package->GetFName());
+			}
+
 			if (bSavePackage == true)
 			{
 				bool bIsEmpty = true;
@@ -890,6 +967,11 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 
 		if (!GarbageCollectionFrequency || Counter++ % GarbageCollectionFrequency == 0)
 		{
+			if (FApp::CanEverRender())
+			{
+				FAssetCompilingManager::Get().FinishAllCompilation();
+			}
+
 			if (GarbageCollectionFrequency > 1)
 			{
 				UE_LOG(LogContentCommandlet, Display, TEXT("GC"));
@@ -1043,6 +1125,8 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bOnlyLicenseed = Switches.Contains(TEXT("OnlyLicenseed"));
 	/** whether we should only save packages containing virtualized bulkdata payloads */
 	bOnlyVirtualized = Switches.Contains(TEXT("OnlyVirtualized"));
+	/** whether we should only save packages containing FPayloadTrailers */
+	bOnlyPayloadTrailers = Switches.Contains(TEXT("OnlyPayloadTrailers"));
 	/** only process packages containing materials */
 	bOnlyMaterials = Switches.Contains(TEXT("onlymaterials"));
 	/** determine if we are building navigation data for the map packages on the pass. **/
@@ -1056,7 +1140,7 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	if (!FilterByCollection.IsEmpty())
 	{
 		ICollectionManager& CollectionManager = FCollectionManagerModule::GetModule().Get();
-		TArray<FName> CollectionAssets;
+		TArray<FSoftObjectPath> CollectionAssets;
 		if (!CollectionManager.GetAssetsInCollection(FName(*FilterByCollection), ECollectionShareType::CST_All, CollectionAssets))
 		{
 			UE_LOG(LogContentCommandlet, Warning, TEXT("Could not get assets in collection '%s'. Skipping filter."), *FilterByCollection);
@@ -1064,9 +1148,9 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		else
 		{
 			//insert all of the collection names into the set for fast filter checks
-			for (const FName &AssetName : CollectionAssets)
+			for (const FSoftObjectPath& AssetPath: CollectionAssets)
 			{
-				CollectionFilter.Add(FName(*FPackageName::ObjectPathToPackageName(AssetName.ToString())));
+				CollectionFilter.Add(AssetPath.GetLongPackageFName());
 			}
 		}
 	}
@@ -1435,7 +1519,18 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 	if (bOnlyVirtualized)
 	{
 		const UE::FPackageTrailer* Trailer = PackageLinker->GetPackageTrailer();
-		if (Trailer == nullptr || Trailer->GetNumPayloads(UE::EPayloadFilter::Virtualized) == 0)
+		if (Trailer == nullptr || Trailer->GetNumPayloads(UE::EPayloadStorageType::Virtualized) == 0)
+		{
+			bSavePackage = false;
+			return;
+		}
+	}
+
+	// Check if the package contains a FPackageTrailer or not
+	if (bOnlyPayloadTrailers)
+	{
+		const UE::FPackageTrailer* Trailer = PackageLinker->GetPackageTrailer();
+		if (Trailer == nullptr)
 		{
 			bSavePackage = false;
 			return;
@@ -1448,8 +1543,8 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 		bSavePackage = false;
 		for (int32 ExportIndex = 0; !bSavePackage && ExportIndex < PackageLinker->ExportMap.Num(); ExportIndex++)
 		{
-			FName ExportClassName = PackageLinker->GetExportClassName(ExportIndex);
-			if (ResaveClasses.Contains(ExportClassName))
+			FTopLevelAssetPath ExportClassPathName(PackageLinker->GetExportClassPackage(ExportIndex), PackageLinker->GetExportClassName(ExportIndex));
+			if (ResaveClasses.Contains(ExportClassPathName.ToString()))
 			{
 				bSavePackage = true;
 				break;
@@ -1603,7 +1698,14 @@ void UResavePackagesCommandlet::CheckoutAndSavePackage(UPackage* Package, TArray
 			if (CheckoutFile(PackageFilename, true, bIgnoreAlreadyCheckedOut))
 			{
 				SublevelFilenames.Add(PackageFilename);
-				SavePackageHelper(Package, PackageFilename);
+				if (!SavePackageHelper(Package, PackageFilename))
+				{
+					UE_LOG(LogContentCommandlet, Error, TEXT("Failed to save existing package %s"), *PackageFilename);
+				}
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("Failed to check out existing package %s"), *PackageFilename);
 			}
 		}
 		else
@@ -1614,6 +1716,14 @@ void UResavePackagesCommandlet::CheckoutAndSavePackage(UPackage* Package, TArray
 				{
 					SublevelFilenames.Add(PackageFilename);
 				}
+				else
+				{
+					UE_LOG(LogContentCommandlet, Error, TEXT("Failed to check out new package %s"), *PackageFilename);
+				}
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("Failed to save new package %s"), *PackageFilename);
 			}
 		}
 	}
@@ -1694,7 +1804,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 	FScopedEditorWorld EditorWorld(World, IVS);
 
 	// Load and Save world partition actor packages
-	if (bResaveWorldPartitionExternalActors)
+	if (bResaveWorldPartitionExternalActors && !bShouldBuildNavigationData)
 	{
 		FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [this, WorldPartition](const FWorldPartitionActorDesc* ActorDesc)
 		{
@@ -1944,6 +2054,9 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 			if (bShouldBuildNavigationData)
 			{
+				// Make sure static meshes have compiled before generating navigation data
+				FStaticMeshCompilingManager::Get().FinishAllCompilation();
+				
 				// Make sure navigation is added and initialized in EditorMode
 				FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
 
@@ -2400,20 +2513,24 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 		FString WrangleContentIniName =	FPaths::SourceConfigDir() + TEXT("WrangleContent.ini");
 
 		// figure out which section to use to get the packages to fully load
-		FString SectionToUse = TEXT("WrangleContent.PackagesToFullyLoad");
-		if( SectionStr.Len() > 0 )
+		FString PackagesToFullyLoadSectionName = TEXT("WrangleContent.PackagesToFullyLoad");
+		FString CollectionsToFullyLoadSectionName = TEXT("WrangleContent.CollectionsToFullyLoad");
+
+		if (SectionStr.Len() > 0)
 		{
-			SectionToUse = FString::Printf( TEXT( "WrangleContent.%sPackagesToFullyLoad" ), *SectionStr );
+			PackagesToFullyLoadSectionName = FString::Printf(TEXT("WrangleContent.%sPackagesToFullyLoad"), *SectionStr);
+			CollectionsToFullyLoadSectionName = FString::Printf(TEXT("WrangleContent.%sCollectionsToFullyLoad"), *SectionStr);
 		}
 
 		// get a list of packages to load
-		const FConfigSection* PackagesToFullyLoadSection = GConfig->GetSectionPrivate( *SectionToUse, 0, 1, *WrangleContentIniName );
-		const FConfigSection* StartupPackages = GConfig->GetSectionPrivate( TEXT("/Script/Engine.StartupPackages"), 0, 1, GEngineIni );
+		const FConfigSection* PackagesToFullyLoadSection = GConfig->GetSectionPrivate(*PackagesToFullyLoadSectionName, 0, 1, *WrangleContentIniName);
+		const FConfigSection* StartupPackages = GConfig->GetSectionPrivate(TEXT("/Script/Engine.StartupPackages"), 0, 1, GEngineIni);
+		const FConfigSection* CollectionsToFullyLoadSection = GConfig->GetSectionPrivate(*CollectionsToFullyLoadSectionName, 0, 1, *WrangleContentIniName);
 
 		// we expect either the .ini to exist, or -allmaps to be specified
-		if (!PackagesToFullyLoadSection && !bShouldLoadAllMaps)
+		if (!PackagesToFullyLoadSection && !bShouldLoadAllMaps && !CollectionsToFullyLoadSection)
 		{
-			UE_LOG(LogContentCommandlet, Error, TEXT("This commandlet needs a WrangleContent.ini in the Config directory with a [WrangleContent.PackagesToFullyLoad] section"));
+			UE_LOG(LogContentCommandlet, Error, TEXT("This commandlet needs a WrangleContent.ini in the Config directory with at least a [WrangleContent.PackagesToFullyLoad] section or a [WragnelContent.CollectionsToFullyLoad] section."));
 			return 1;
 		}
 
@@ -2443,7 +2560,6 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				}
 			}
 		}
-
 
 		// read in the per-map packages to cook
 		TMap<FString, TArray<FString> > PerMapCookPackages;
@@ -2482,6 +2598,30 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 			}
 		}
 
+		if (CollectionsToFullyLoadSection)
+		{
+			ICollectionManager& CollectionManager = FCollectionManagerModule::GetModule().Get();
+			TArray<FSoftObjectPath> CollectionAssets;
+			
+			for (FConfigSectionMap::TConstIterator CollectionIt(*CollectionsToFullyLoadSection); CollectionIt; ++CollectionIt)
+			{
+				CollectionAssets.Reset();
+				FString CollectionName = CollectionIt.Value().GetValue();
+				if (!CollectionManager.GetAssetsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, CollectionAssets))
+				{
+					UE_LOG(LogContentCommandlet, Warning, TEXT("Could not get assets in collection '%s'. Skipping filter."), *CollectionName);
+				}
+				else
+				{
+					//insert all of the collection names into the set for fast filter checks
+					for (const FSoftObjectPath& AssetPath : CollectionAssets)
+					{
+						PackagesToFullyLoad.Add(TEXT("Package"), AssetPath.GetLongPackageName());
+					}
+				}
+			}
+		}
+		
 		// go over all the packages that we want to fully load
 		for (FConfigSectionMap::TIterator PackageIt(PackagesToFullyLoad); PackageIt; ++PackageIt)
 		{
@@ -2519,6 +2659,10 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				// load the package fully
 				UPackage* Package = LoadPackage(nullptr, PackagePath, LOAD_None);
 
+				// Now that we've loaded the package, go ahead and also load any soft paths.
+				// This should help capture more references.
+				GRedirectCollector.ResolveAllSoftObjectPaths(NAME_None);
+				
 				FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_Quiet | LOAD_NoWarn | LOAD_NoVerify);
 
 				UWorld* World = UWorld::FindWorldInPackage(Package);
@@ -2555,8 +2699,8 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 					}
 
 					// Add any levels referenced by Level Instance actors to the list of levels to load
-					ALevelInstance* LevelInstance = Cast<ALevelInstance>(Object);
-					if (LevelInstance && !LevelInstance->IsTemplate())
+					ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(Object);
+					if (LevelInstance && !CastChecked<AActor>(LevelInstance)->IsTemplate())
 					{
 						FString LevelPackageName = LevelInstance->GetWorldAssetPackage();
 						if (!LevelPackageName.IsEmpty() && PackagesToFullyLoad.FindKey(LevelPackageName) == nullptr)
@@ -3148,11 +3292,11 @@ int32 UListMaterialsUsedWithMeshEmittersCommandlet::Main( const FString& Params 
 
 	// Retrieve list of all assets, used to find unreferenced ones.
 	TArray<FAssetData> AssetList;
-	AssetRegistryModule.Get().GetAssetsByClass(UParticleSystem::StaticClass()->GetFName(), AssetList, true);
+	AssetRegistryModule.Get().GetAssetsByClass(UParticleSystem::StaticClass()->GetClassPathName(), AssetList, true);
 
 	for(int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx )
 	{
-		const FString Filename = AssetList[AssetIdx].ObjectPath.ToString();
+		const FString Filename = AssetList[AssetIdx].GetObjectPathString();
 
 		UE_LOG(LogContentCommandlet, Display, TEXT("Processing particle system (%i/%i):  %s "), AssetIdx, AssetList.Num(), *Filename );
 
@@ -3234,11 +3378,11 @@ int32 UListStaticMeshesImportedFromSpeedTreesCommandlet::Main(const FString& Par
 
 	// Retrieve list of all assets, used to find unreferenced ones.
 	TArray<FAssetData> AssetList;
-	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetFName(), AssetList, true);
+	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetClassPathName(), AssetList, true);
 
 	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
 	{
-		const FString Filename = AssetList[AssetIdx].ObjectPath.ToString();
+		const FString Filename = AssetList[AssetIdx].GetObjectPathString();
 
 		UE_LOG(LogContentCommandlet, Display, TEXT("Processing static mesh (%i/%i):  %s "), AssetIdx, AssetList.Num(), *Filename);
 
@@ -3364,7 +3508,7 @@ int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
 
 	// Retrieve list of all assets, used to find unreferenced ones.
 	TArray<FAssetData> AssetList;
-	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetFName(), AssetList, true);
+	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetClassPathName(), AssetList, true);
 	TArray<UPackage*> PackagesToSave;
 
 	// Platform (group) names
@@ -3394,7 +3538,7 @@ int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
 	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
 	{
 		bool SavePackage = false;
-		const FString Filename = AssetList[AssetIdx].ObjectPath.ToString();
+		const FString Filename = AssetList[AssetIdx].GetObjectPathString();
 		UE_LOG(LogContentCommandlet, Display, TEXT("Processing static mesh (%i/%i):  %s "), AssetIdx, AssetList.Num(), *Filename);
 
 		UPackage* Package = LoadPackage(NULL, *Filename, LOAD_Quiet);
@@ -3507,7 +3651,7 @@ int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
 
 			if (bGenerateCollections)
 			{
-				CollectionManager.AddToCollection(Pair.Key, ECollectionShareType::CST_Local, FName(*Info.Paths[i]));
+				CollectionManager.AddToCollection(Pair.Key, ECollectionShareType::CST_Local, FSoftObjectPath(Info.Paths[i]));
 			}
 		}
 

@@ -76,6 +76,15 @@ void FIndexerUtilities::IterateIndexableProperties(const UStruct* InStruct, cons
 			const FText Value = TextProperty->GetPropertyValue(ValuePtr);
 			Text = *FTextInspector::GetSourceString(Value);
 		}
+		else if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+		{
+			if (const UEnum* Enum = ByteProperty->Enum)
+			{
+				const int64 Value = ByteProperty->GetSignedIntPropertyValue(ValuePtr);
+				FText DisplayName = Enum->GetDisplayNameTextByValue(Value);
+				Text = *FTextInspector::GetSourceString(DisplayName);	
+			}
+		}
 		else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
 		{
 			const int64 Value = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
@@ -112,7 +121,15 @@ void FIndexerUtilities::IterateIndexableProperties(const UStruct* InStruct, cons
 			FSoftObjectPtr SoftObject = SoftObjectProperty->GetPropertyValue(ValuePtr);
 			if (!SoftObject.IsNull())
 			{
+				const FSoftObjectPath& SoftObjectPath = SoftObject.ToSoftObjectPath();
 				Text = SoftObject.GetAssetName();
+
+				// If Soft Object Path is reference to AActor instance in the world, GetSubPathString() returns this actor instance path
+				// GetAssetName() would just return name of the level name, which won't provide valuable info for the search
+				if (!SoftObjectPath.GetSubPathString().IsEmpty())
+				{
+					Text.Append(TEXT(".")).Append(SoftObjectPath.GetSubPathString());
+				}	
 			}
 		}
 		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))

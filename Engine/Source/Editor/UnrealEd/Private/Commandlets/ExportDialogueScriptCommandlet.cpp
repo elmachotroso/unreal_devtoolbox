@@ -4,13 +4,13 @@
 #include "UObject/UnrealType.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Sound/SoundWave.h"
 #include "Sound/DialogueWave.h"
 #include "Misc/FileHelper.h"
 #include "Misc/App.h"
 #include "UObject/PropertyPortFlags.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Sound/DialogueVoice.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogExportDialogueScriptCommandlet, Log, All);
@@ -180,7 +180,7 @@ int32 UExportDialogueScriptCommandlet::Main(const FString& Params)
 
 	// We want all the non-localized project specific dialogue waves
 	TArray<FAssetData> AssetDataArrayForDialogueWaves;
-	if (!FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, *RootAssetPath, UDialogueWave::StaticClass()->GetFName(), /*bIncludeLocalizedAssets*/false, AssetDataArrayForDialogueWaves))
+	if (!FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, *RootAssetPath, UDialogueWave::StaticClass()->GetClassPathName(), /*bIncludeLocalizedAssets*/false, AssetDataArrayForDialogueWaves))
 	{
 		UE_LOG(LogExportDialogueScriptCommandlet, Error, TEXT("Unable to get dialogue wave asset data from asset registry."));
 		return -1;
@@ -266,7 +266,7 @@ int32 UExportDialogueScriptCommandlet::Main(const FString& Params)
 			UDialogueWave* LocalizedDialogueWave = nullptr;
 			{
 				const FString LocalizedDialogueWavePackagePath = FPackageName::GetLocalizedPackagePath(AssetData.PackageName.ToString(), CultureName);
-				const FAssetData LocalizedDialogueWaveAssetData = AssetRegistry.GetAssetByObjectPath(*FString::Printf(TEXT("%s.%s"), *LocalizedDialogueWavePackagePath, *AssetData.AssetName.ToString()));
+				const FAssetData LocalizedDialogueWaveAssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(*LocalizedDialogueWavePackagePath, AssetData.AssetName, {}));
 				LocalizedDialogueWave = Cast<UDialogueWave>(LocalizedDialogueWaveAssetData.GetAsset());
 				if (LocalizedDialogueWave == DialogueWave)
 				{
@@ -359,7 +359,7 @@ FString UExportDialogueScriptCommandlet::GenerateCSVRow(const FDialogueScriptEnt
 		}
 
 		FString PropertyValue;
-		PropertyIt->ExportTextItem(PropertyValue, PropertyIt->ContainerPtrToValuePtr<void>(&InDialogueScriptEntry), nullptr, nullptr, PPF_None);
+		PropertyIt->ExportTextItem_InContainer(PropertyValue, &InDialogueScriptEntry, nullptr, nullptr, PPF_None);
 
 		CSVRow += TEXT("\"");
 		CSVRow += PropertyValue.Replace(TEXT("\""), TEXT("\"\""));

@@ -20,8 +20,10 @@
 #include "GeometryCollection/GeometryCollectionActor.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionUtility.h"
+#include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "FractureSelectionTools.h"
 #include "EditorViewportClient.h"
+#include "Misc/ITransaction.h"
 #include "ScopedTransaction.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "EdModeInteractiveToolsContext.h"
@@ -32,6 +34,8 @@
 
 #include "UnrealEdGlobals.h"
 #include "EditorModeManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureEditorMode)
 
 #define LOCTEXT_NAMESPACE "FFractureEditorModeToolkit"
 
@@ -201,7 +205,21 @@ bool UFractureEditorMode::SelectFromClick(HHitProxy* HitProxy, bool bCtrlDown, b
 
 		if (GeometryCollectionProxy->Component)
 		{
-			TArray<int32> BoneIndices({ GeometryCollectionProxy->BoneIndex });
+			int32 BoneIndex = GeometryCollectionProxy->BoneIndex;
+			// Switch BoneIndex to match the view level
+			int32 ViewLevel = -1;
+			if (Toolkit.IsValid())
+			{
+				ViewLevel = ((FFractureEditorModeToolkit*)Toolkit.Get())->GetLevelViewValue();
+				if (ViewLevel > -1)
+				{
+					const FGeometryCollection* GeometryCollection = GeometryCollectionProxy->Component->RestCollection->GetGeometryCollection().Get();
+					BoneIndex = FGeometryCollectionClusteringUtility::GetParentOfBoneAtSpecifiedLevel(
+						GeometryCollection, BoneIndex, ViewLevel, true /*bSkipFiltered*/);
+				}
+			}
+			
+			TArray<int32> BoneIndices({ BoneIndex });
 
 			GeometryCollectionProxy->Component->Modify();
 			FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionProxy->Component, BoneIndices, !(bCtrlDown || bShiftDown), bShiftDown);
@@ -209,7 +227,7 @@ bool UFractureEditorMode::SelectFromClick(HHitProxy* HitProxy, bool bCtrlDown, b
 			if (Toolkit.IsValid())
 			{
 				FFractureEditorModeToolkit* FractureToolkit = (FFractureEditorModeToolkit*)Toolkit.Get();
-				FractureToolkit->SetBoneSelection(GeometryCollectionProxy->Component, GeometryCollectionProxy->Component->GetSelectedBones(), true);
+				FractureToolkit->SetBoneSelection(GeometryCollectionProxy->Component, GeometryCollectionProxy->Component->GetSelectedBones(), true, BoneIndex);
 			}
 
 			return true;
@@ -290,7 +308,7 @@ bool UFractureEditorMode::FrustumSelect(const FConvexVolume& InFrustum, FEditorV
 bool UFractureEditorMode::UpdateSelectionInFrustum(const FConvexVolume& InFrustum, AActor* Actor, bool bStrictDragSelection, bool bAppend, bool bRemove)
 {
 	TArray<UGeometryCollectionComponent*, TInlineAllocator<1>> GeometryComponents;
-	Actor->GetComponents<UGeometryCollectionComponent>(GeometryComponents);
+	Actor->GetComponents(GeometryComponents);
 	if (GeometryComponents.Num() == 0)
 	{
 		return false;
@@ -472,19 +490,25 @@ void UFractureEditorMode::OnActorSelectionChanged(const TArray<UObject*>& NewSel
 		{
 			GeometryCollectionComponent->SetEmbeddedGeometrySelectable(true);
 			
-			// If collection does not already have guids, make them
 			FGeometryCollectionEdit RestCollectionEdit = GeometryCollectionComponent->EditRestCollection(GeometryCollection::EEditUpdate::None);
-			if (!ensureMsgf(RestCollectionEdit.GetRestCollection(), TEXT("UGeometryCollectionComponent had no UGeometryCollection")) ||
-				!ensureMsgf(RestCollectionEdit.GetRestCollection()->GetGeometryCollection(), TEXT("UGeometryCollectionComponent had no FGeometryCollection")))
+			if (!RestCollectionEdit.GetRestCollection())
 			{
-				// guard against the component not having a UGeometryCollection or FGeometryCollection, with ensures because it doesn't seem like this should happen
+				// guard against the component not having a UGeometryCollection, thsi can happen if the asset has been force deleted while the instance was selected
+				continue;
+			}
+
+			if (!ensureMsgf(RestCollectionEdit.GetRestCollection()->GetGeometryCollection(), TEXT("UGeometryCollectionComponent had no FGeometryCollection")))
+			{
+				// guard against the component not having a FGeometryCollection, with ensures because it doesn't seem like this should happen
 				continue;
 			}
 			::GeometryCollection::GenerateTemporaryGuids(RestCollectionEdit.GetRestCollection()->GetGeometryCollection().Get());
 			
-			FScopedColorEdit ShowBoneColorsEdit(GeometryCollectionComponent);
+			constexpr bool bForceUpdate = true; // Force the bone selection and highlight to refresh so bone colors reflect the selection
+			FScopedColorEdit ShowBoneColorsEdit(GeometryCollectionComponent, bForceUpdate);
 			ShowBoneColorsEdit.SetEnableBoneSelection(true);
 			// ShowBoneColorsEdit.SetLevelViewMode(ViewLevel);
+			ShowBoneColorsEdit.Sanitize(); // Clean any stale data (e.g. due to the geometry being edited via a different component)
 
 			NewGeomSelection.Add(GeometryCollectionComponent);
 		}
@@ -637,5 +661,6 @@ FConvexVolume UFractureEditorMode::GetVolumeFromBox(const FBox &InBox)
 }
 
 #undef LOCTEXT_NAMESPACE
+
 
 

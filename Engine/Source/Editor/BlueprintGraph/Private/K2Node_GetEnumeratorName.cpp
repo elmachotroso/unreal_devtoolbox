@@ -2,14 +2,31 @@
 
 
 #include "K2Node_GetEnumeratorName.h"
-#include "Kismet/KismetSystemLibrary.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node_CallFunction.h"
-#include "KismetCompiler.h"
-#include "Kismet/KismetNodeHelperLibrary.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
+
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CallFunction.h"
+#include "Kismet/KismetNodeHelperLibrary.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompiler.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+struct FLinearColor;
 
 FName UK2Node_GetEnumeratorName::EnumeratorPinName(TEXT("Enumerator"));
 
@@ -63,7 +80,7 @@ void UK2Node_GetEnumeratorName::ValidateNodeDuringCompilation(class FCompilerRes
 
 FSlateIcon UK2Node_GetEnumeratorName::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Enum_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Enum_16x");
 	return Icon;
 }
 
@@ -170,7 +187,7 @@ void UK2Node_GetEnumeratorName::ExpandNode(class FKismetCompilerContext& Compile
 	{
 		//MAKE LITERAL BYTE FROM LITERAL ENUM
 		const FString EnumLiteral = IndexPin->GetDefaultAsString();
-		const int32 NumericValue = Enum->GetValueByName(*EnumLiteral);
+		const int32 NumericValue = IntCastChecked<int32, int64>(Enum->GetValueByName(*EnumLiteral));
 		if (NumericValue == INDEX_NONE) 
 		{
 			CompilerContext.MessageLog.Error(*FText::Format(NSLOCTEXT("K2Node", "GetEnumeratorNam_Error_InvalidNameFmt", "@@ has invalid enum value '{0}'"), FText::FromString(EnumLiteral)).ToString(), this);

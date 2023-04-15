@@ -1,10 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintTypePromotion.h"
-#include "Modules/ModuleManager.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_K2.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "UObject/UObjectHash.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Script.h"
 #include "UObject/UObjectGlobals.h"		// For FCoreUObjectDelegates::ReloadCompleteDelegate
+#include "UObject/UObjectHash.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "initializer_list"
+
+class UBlueprintFunctionNodeSpawner;
+class UK2Node;
 
 FTypePromotion* FTypePromotion::Instance = nullptr;
 
@@ -303,7 +322,7 @@ UFunction* FTypePromotion::FindBestMatchingFunc_Internal(FName Operation, const 
 					const bool bClassTypesMatch = ParamType.PinCategory == UEdGraphSchema_K2::PC_Class && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class;
 
 					// Give a point for each function parameter that matches up with a pin to consider
-					if ((!CheckedPins.Contains(Pin) || bIsSinglePin) && (bObjectTypesMatch || bClassTypesMatch || Schema->ArePinTypesEquivalent(ParamType, Pin->PinType)))
+					if ((!CheckedPins.Contains(Pin) || bIsSinglePin) && (bObjectTypesMatch || bClassTypesMatch || Schema->ArePinTypesCompatible(Pin->PinType, ParamType)))
 					{
 						// Are the directions compatible? 
 						// If we are a comparison or only a single pin then we don't care about the direction

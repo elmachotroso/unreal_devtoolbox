@@ -7,6 +7,8 @@
 #include "AudioModulationLogging.h"
 #include "IAudioModulation.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundModulationParameter)
+
 
 TUniquePtr<Audio::IProxyData> USoundModulationParameter::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
 {
@@ -64,6 +66,7 @@ Audio::FModulationParameter USoundModulationParameter::CreateParameter() const
 
 #if WITH_EDITORONLY_DATA
 	Parameter.UnitDisplayName = Settings.UnitDisplayName;
+	Parameter.ClassName = GetClass()->GetFName();
 #endif // WITH_EDITORONLY_DATA
 
 	return Parameter;

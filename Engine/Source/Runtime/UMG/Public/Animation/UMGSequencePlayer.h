@@ -40,10 +40,6 @@ public:
 	/** Reverses a running animation */
 	void Reverse();
 
-	/** Gets the current time position in the player (in seconds). */
-	UE_DEPRECATED(4.20, "Please use GetCurrentTime instead.")
-	double GetTimeCursorPosition() const { return GetCurrentTime().AsSeconds(); }
-
 	void SetCurrentTime(float InTime) { TimeCursorPosition = AnimationResolution.AsFrameTime(InTime); }
 	FQualifiedFrameTime GetCurrentTime() const { return FQualifiedFrameTime(TimeCursorPosition, AnimationResolution); }
 
@@ -68,6 +64,9 @@ public:
 
 	/** Gets the current time position in the player (in seconds). */
 	bool IsPlayingForward() const { return bIsPlayingForward; }
+
+	/** Check whether this player is currently being stopped */
+	bool IsStopping() const { return bIsStopping; }
 
 	/** IMovieScenePlayer interface */
 	virtual FMovieSceneRootEvaluationTemplateInstance& GetEvaluationTemplate() override { return RootTemplateInstance; }
@@ -105,6 +104,8 @@ private:
 	void QueueLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate);
 	void ApplyLatentActions();
 
+	void HandleLatentStop();
+
 	/** Animation being played */
 	UPROPERTY()
 	TObjectPtr<UWidgetAnimation> Animation;
@@ -114,6 +115,8 @@ private:
 
 	UPROPERTY()
 	FMovieSceneRootEvaluationTemplateInstance RootTemplateInstance;
+
+	TSharedPtr<FMovieSceneEntitySystemRunner> SynchronousRunner;
 
 	/** The resolution at which all FFrameNumbers are stored */
 	FFrameRate AnimationResolution;
@@ -129,6 +132,9 @@ private:
 
 	/** Time at which to end the animation after looping */
 	FFrameTime EndTime;
+
+	/** A compensation for delta-time we were not able to evaluate with due to ongoing budgeted evaluation */
+	float BlockedDeltaTimeCompensation;
 
 	/** Status of the player (e.g play, stopped) */
 	EMovieScenePlayerStatus::Type PlayerStatus;
@@ -163,6 +169,12 @@ private:
 
 	/** Set to true while evaluating to prevent reentrancy */
 	bool bIsEvaluating : 1;
+
+	/** Set to true when this player is in the process of being stopped */
+	bool bIsStopping : 1;
+
+	/** Set to true when this player has just started playing, but hasn't finished evaluating yet */
+	bool bIsBeginningPlay : 1;
 
 	/** Set to true if we need to run the finishing logic in post-evaluation */
 	bool bCompleteOnPostEvaluation : 1;

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RemoteControlCommon.h"
 #include "RemoteControlEntity.h"
 #include "RemoteControlFieldPath.h"
 #include "RemoteControlProtocolBinding.h"
@@ -43,6 +44,18 @@ struct REMOTECONTROL_API FRemoteControlField : public FRemoteControlEntity
 	virtual void BindObject(UObject* InObjectToBind) override;
 	virtual bool CanBindObject(const UObject* InObjectToBind) const override;
 	//~ End FRemoteControlEntity interface
+
+	/** Disables the given mask. */
+	virtual void ClearMask(ERCMask InMaskBit);
+	/** Enables the given mask. */
+	virtual void EnableMask(ERCMask InMaskBit);
+	/** Returns true if the given mask is enabled, false otherwise. */
+	virtual bool HasMask(ERCMask InMaskBit) const;
+	/** Returns true if this field supports masking. */
+	virtual bool SupportsMasking() const { return false; }
+
+	/** Retrieves the enabled masks. */
+	ERCMask GetActiveMasks() const { return ActiveMasks; }
 
 	/**	Returns whether the field is only available in editor. */
 	bool IsEditorOnly() const { return bIsEditorOnly; }
@@ -90,6 +103,10 @@ protected:
 	/** Whether the field is only available in editor. */
 	UPROPERTY()
 	bool bIsEditorOnly = false;
+	
+	/** Holds the actively enabled masks. */
+	UPROPERTY()
+	ERCMask ActiveMasks = RC_AllMasks;
 
 protected:
 	FRemoteControlField(URemoteControlPreset* InPreset, EExposedFieldType InType, FName InLabel, FRCFieldPathInfo InFieldPathInfo, const TArray<URemoteControlBinding*> InBindings);
@@ -127,6 +144,10 @@ public:
 	virtual UClass* GetSupportedBindingClass() const override;
 	virtual bool IsBound() const override;
 	//~ End FRemoteControlEntity interface
+	
+	//~ Begin FRemoteControlField interface
+	virtual bool SupportsMasking() const override;
+	//~ End FRemoteControlField interface
 
 	/**
 	 * Check whether given property path is bound to the property 
@@ -156,11 +177,11 @@ public:
 	virtual void PostLoad() {}
 
 	/**
-	 * Should be called when property chanced on bound object
+	 * Should be called when property changed on bound object
 	 * @param InObject Edited object
 	 * @param InEvent  Change Event
 	 */
-	virtual void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent)  {};
+	virtual void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent) {}
 
 	/**
 	 * Get the underlying property.
@@ -202,10 +223,11 @@ private:
 	bool bIsEditableInPackaged = false;
 
 #if WITH_EDITOR
+
 	/** Cached edit condition path used to enable the exposed property's edit condition. */
 	FRCFieldPathInfo CachedEditConditionPath;
-#endif
-	
+
+#endif // WITH_EDITOR
 };
 
 /**
@@ -253,7 +275,7 @@ public:
 	 */
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	mutable UFunction* Function_DEPRECATED = nullptr;
+	mutable TObjectPtr<UFunction> Function_DEPRECATED = nullptr;
 #endif
 
 	/**

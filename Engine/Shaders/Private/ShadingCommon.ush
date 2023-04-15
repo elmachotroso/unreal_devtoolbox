@@ -4,6 +4,18 @@
 
 #include "Common.ush"
 
+#ifndef SHADING_PATH_MOBILE
+#define SHADING_PATH_MOBILE 0
+#endif
+
+#ifndef SHADING_PATH_DEFERRED
+#define SHADING_PATH_DEFERRED 0
+#endif
+
+///////////////////////////////////////////////////////////////////////////////
+// Shading models
+
+
 // SHADINGMODELID_* occupy the 4 low bits of an 8bit channel and SKIP_* occupy the 4 high bits
 #define SHADINGMODELID_UNLIT				0
 #define SHADINGMODELID_DEFAULT_LIT			1
@@ -82,20 +94,27 @@ float3 GetShadingModelColor(uint ShadingModelID)
 }
 
 
-#define SHADINGMODEL_REQUIRES_BACKFACE_LIGHTING (MATERIAL_SHADINGMODEL_TWOSIDED_FOLIAGE || PROJECT_STRATA)
+#define SHADINGMODEL_REQUIRES_BACKFACE_LIGHTING (MATERIAL_SHADINGMODEL_TWOSIDED_FOLIAGE || STRATA_ENABLED)
 
 bool GetShadingModelRequiresBackfaceLighting(uint ShadingModelID)
 {
 	return ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Shading parameterisation
 
 float F0ToDielectricSpecular(float F0)
 {
 	return saturate(F0 / 0.08f);
 }
 
-float DielectricSpecularToF0(float Specular)
+float F0RGBToDielectricSpecular(float3 F0)
+{
+	return F0ToDielectricSpecular(max(F0.r, max(F0.g, F0.b)));
+}
+
+half DielectricSpecularToF0(half Specular)
 {
 	return 0.08f * Specular;
 }
@@ -113,13 +132,17 @@ float DielectricIorToF0(float Ior)
 	return F0;
 }
 
-float ComputeSpecularMicroOcclusion(float F0)
+// Anything with Specular less than 2% is physically impossible and is instead considered to be shadowing.
+float  GetF0MicroOcclusionThreshold() { return 0.02f; }
+float  F0ToMicroOcclusion(float F0)   { return saturate(50.0 * F0); }
+float3 F0ToMicroOcclusion(float3 F0)  { return saturate(50.0 * F0); }
+
+float F0RGBToMicroOcclusion(float3 F0)
 {
-	// Anything with Specular less than 2% is physically impossible and is instead considered to be shadowing.
-	return saturate(50.0 * F0);
+	return F0ToMicroOcclusion(max(F0.r, max(F0.g, F0.b)));
 }
 
-float3 ComputeF0(float Specular, float3 BaseColor, float Metallic)
+half3 ComputeF0(half Specular, half3 BaseColor, half Metallic)
 {
 	return lerp(DielectricSpecularToF0(Specular).xxx, BaseColor, Metallic.xxx);
 }
@@ -127,6 +150,11 @@ float3 ComputeF0(float Specular, float3 BaseColor, float Metallic)
 float3 ComputeF90(float3 F0, float3 EdgeColor, float Metallic)
 {
 	return lerp(1.0, EdgeColor, Metallic.xxx);
+}
+
+float3 ComputeDiffuseAlbedo(float3 BaseColor, float Metallic)
+{
+	return BaseColor - BaseColor * Metallic;
 }
 
 float MakeRoughnessSafe(float Roughness, float MinRoughness=0.001f)
@@ -138,3 +166,56 @@ float ComputeHazyLobeRoughness(float Roughness, float Haziness)
 {
 	return lerp(Roughness, 1.0f, Haziness);
 }
+
+float F0ToMetallic(float F0)
+{
+	// Approximate the metallic input from F0 with a small lerp region
+	const float DiamondF0 = 0.24f;
+	const float CondutorMinF0 = 0.4f;	// roughly the end of semi-conductor
+	// This is compatible with UE shading model mapping allowing F0 to take a value up to 0.08 for dielectric.
+
+	return saturate((F0 - DiamondF0) / (CondutorMinF0 - DiamondF0));
+}
+
+float F0RGBToMetallic(float3 F0)
+{
+	return F0ToMetallic(max(F0.r, max(F0.g, F0.b)));
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Layering, coverage and transmittance
+
+struct FVerticalLayeringInfo
+{
+	float TransmittanceTopAndBottom;	// Ratio of transmittance of both top and bottom surface only
+	float TransmittanceOnlyBottom;		// Ratio of transmittance of bottom surface only 
+	float TransmittanceOnlyTop;			// Ratio of transmittance of top surface only 
+
+	float SurfaceBottom;				// Ratio of bottom surface visible
+	float SurfaceTop;					// Ratio of top surface visible
+
+	float Coverage;						// Ratio of any surface is visible
+	float NoSurface;					// Ratio of no surface is visible
+};
+
+// This function returns surface information after a layering of two slab of matter having difference and uncorelated coverage.
+// See https://www.desmos.com/calculator/qg5yc3nnr4
+FVerticalLayeringInfo GetVerticalLayeringInfo(const float TopCoverage, const float BottomCoverage)
+{
+	FVerticalLayeringInfo Info;
+
+	Info.TransmittanceTopAndBottom	= TopCoverage * BottomCoverage;
+	Info.TransmittanceOnlyBottom	= (1.0f - TopCoverage) * BottomCoverage;
+	Info.TransmittanceOnlyTop		= (1.0f - BottomCoverage) * TopCoverage;
+
+	Info.SurfaceBottom				= Info.TransmittanceOnlyBottom;
+	Info.SurfaceTop					= TopCoverage;								// == Info.TransmittanceOnlyTop + Info.TransmittanceTopAndBottom;
+
+	Info.Coverage					= Info.SurfaceTop + Info.SurfaceBottom;		// == Info.TransmittanceTopAndBottom + Info.TransmittanceOnlyBottom + Info.TransmittanceOnlyTop;// == TopCoverage + Info.TransmittanceOnlyBottom
+	Info.NoSurface					= 1.0f - Info.Coverage;
+
+	return Info;
+}
+
+

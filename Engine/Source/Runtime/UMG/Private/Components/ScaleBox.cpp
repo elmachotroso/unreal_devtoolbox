@@ -4,6 +4,8 @@
 #include "Components/ScaleBoxSlot.h"
 #include "UObject/EditorObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScaleBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -13,7 +15,7 @@ UScaleBox::UScaleBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 
 	StretchDirection = EStretchDirection::Both;
 	Stretch = EStretch::ScaleToFit;
@@ -136,12 +138,13 @@ bool UScaleBox::CanEditChange(const FProperty* InProperty) const
 
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UScaleBox, StretchDirection))
 		{
-			return Stretch != EStretch::None && Stretch != EStretch::ScaleBySafeZone && Stretch != EStretch::UserSpecified;
+			return Stretch != EStretch::None && Stretch != EStretch::ScaleBySafeZone &&
+				Stretch != EStretch::UserSpecified && Stretch != EStretch::UserSpecifiedWithClipping;
 		}
 
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UScaleBox, UserSpecifiedScale))
 		{
-			return Stretch == EStretch::UserSpecified;
+			return Stretch == EStretch::UserSpecified || Stretch == EStretch::UserSpecifiedWithClipping;
 		}
 	}
 
@@ -171,3 +174,4 @@ void UScaleBox::OnDesignerChanged(const FDesignerChangedEventArgs& EventArgs)
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

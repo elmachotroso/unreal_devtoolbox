@@ -22,7 +22,8 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "ClassViewerFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/ITransaction.h"
 #include "ScopedTransaction.h"
 
 #include "GameProjectGenerationModule.h"	// Adding new component classes
@@ -133,7 +134,7 @@ FSubobjectDataHandle USubobjectDataSubsystem::FindOrCreateAttachParentForCompone
 			if (!ParentHandle.IsValid())
 			{
 				// Recursively add the parent handle to the tree if it does not exist yet
-				ParentHandle = FactoryCreateSubobjectDataWithParent(SceneComponent, FindOrCreateAttachParentForComponent(
+				ParentHandle = FactoryCreateSubobjectDataWithParent(SceneComponent->GetAttachParent(), FindOrCreateAttachParentForComponent(
 					SceneComponent->GetAttachParent(),
 					ActorRootHandle,
 					ExistingHandles)
@@ -650,7 +651,7 @@ UClass* USubobjectDataSubsystem::CreateNewBPComponent(TSubclassOf<UActorComponen
 			const FString PackagePath = NewClassPath / NewClassName;
 
 			// Check for an existing object
-			if(UObject* ExistingObject = StaticFindObject(UObject::StaticClass(), ANY_PACKAGE, *PackagePath))
+			if(UObject* ExistingObject = StaticFindObject(UObject::StaticClass(), nullptr, *PackagePath))
 			{
 				UE_LOG(LogSubobjectSubsystem, Warning, TEXT("Failed to Create new BP Component: A class with a name '%s' already exists!"), *PackagePath);
 				return nullptr;
@@ -1071,6 +1072,12 @@ FSubobjectDataHandle USubobjectDataSubsystem::AddNewSubobject(const FAddNewSubob
 				FailReason = LOCTEXT("AddComponentFailed_Inherited", "Cannot add components within an Inherited hierarchy");
 			}
 		}
+	}
+
+	// If the new handle is valid, broadcast to any listeners that a new subobject was added.
+	if (const FSubobjectData* NewData = NewDataHandle.GetData())
+	{
+		OnNewSubobjectAdded_Delegate.Broadcast(*NewData);
 	}
 	
 	return NewDataHandle;
@@ -1861,7 +1868,7 @@ bool USubobjectDataSubsystem::ReparentSubobjects(const FReparentSubobjectParams&
 				AttachSubobject(NewParentData->GetHandle(), DroppedData->GetHandle());
 
 				// Attempt to locate a matching instance of the parent component template in the Actor context that's being edited
-				USceneComponent* ParentSceneComponent = NewParentData ? Cast<USceneComponent>(NewParentData->FindMutableComponentInstanceInActor(Params.ActorPreviewContext)) : nullptr;
+				USceneComponent* ParentSceneComponent = Cast<USceneComponent>(NewParentData->FindMutableComponentInstanceInActor(Params.ActorPreviewContext));
 				if(SceneComponentTemplate && ParentSceneComponent && ParentSceneComponent->IsRegistered())
 				{
 					ConformTransformRelativeToParent(SceneComponentTemplate, ParentSceneComponent);
@@ -2404,6 +2411,13 @@ void USubobjectDataSubsystem::DuplicateSubobjects(const FSubobjectDataHandle& Co
 	NewSubobjectParams.BlueprintContext = BpContext;
 	NewSubobjectParams.ParentHandle = Context;
 	NewSubobjectParams.bConformTransformToParent = false;
+
+	// If we have a valid BP context, defer this step until after the AddNewSubobject() call, because we want
+	// to first fix up the template hierarchy (below) before we re-run construction scripts on any instances.
+	if (BpContext)
+	{
+		NewSubobjectParams.bSkipMarkBlueprintModified = true;
+	}
 	
 	FText FailedAddReason = FText::GetEmpty();
 	
@@ -2485,6 +2499,13 @@ void USubobjectDataSubsystem::DuplicateSubobjects(const FSubobjectDataHandle& Co
 				AttachSubobject(ParentHandle, NewData->GetHandle());
 			}
 		}
+	}
+
+	// Now that the hierarchy has been fixed up, we can go ahead and mark the BP as modified (if valid). This in turn will re-run
+	// construction scripts on any instances of the Blueprint, whose hierarchies will also now include the new (duplicate) subobject.
+	if (BpContext)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BpContext);
 	}
 }
 

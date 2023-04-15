@@ -62,7 +62,7 @@ struct FTableRowBase
 /**
  * Imported spreadsheet table.
  */
-UCLASS(MinimalAPI, BlueprintType, AutoExpandCategories = "DataTable,ImportOptions")
+UCLASS(MinimalAPI, BlueprintType, AutoExpandCategories = "DataTable,ImportOptions", Meta = (LoadBehavior = "LazyOnDemand"))
 class UDataTable
 	: public UObject
 {
@@ -91,6 +91,9 @@ protected:
 
 	/** Called to add rows to the data table */
 	ENGINE_API virtual void AddRowInternal(FName RowName, uint8* RowDataPtr);
+
+	/** Deletes the row memory */
+	ENGINE_API virtual void RemoveRowInternal(FName RowName);
 public:
 
 	virtual const TMap<FName, uint8*>& GetRowMap() const { return RowMap; }
@@ -119,6 +122,7 @@ public:
 	
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const override;
 #endif // WITH_EDITOR
 
 	//~ Begin UObject Interface.
@@ -130,7 +134,9 @@ public:
 	virtual bool NeedsLoadForClient() const override { return bStripFromClientBuilds ? false : Super::NeedsLoadForClient(); }
 	virtual bool NeedsLoadForEditorGame() const override { return bStripFromClientBuilds ? false : Super::NeedsLoadForEditorGame(); }
 #if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use GetRowStructPathName.")
 	ENGINE_API FName GetRowStructName() const;
+	ENGINE_API FTopLevelAssetPath GetRowStructPathName() const;
 	ENGINE_API virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	ENGINE_API virtual void PostInitProperties() override;
 	ENGINE_API virtual void PostLoad() override;
@@ -146,7 +152,11 @@ public:
 
 	/** The name of the RowStruct we were using when we were last saved */
 	UPROPERTY()
-	FName RowStructName;
+	FName RowStructName_DEPRECATED;
+
+	/** The name of the RowStruct we were using when we were last saved */
+	UPROPERTY()
+	FTopLevelAssetPath RowStructPathName;
 
 protected:
 	/** When RowStruct is being modified, row data is stored serialized with tags */
@@ -535,7 +545,7 @@ struct ENGINE_API FDataTableCategoryHandle
 		// check each row to see if the value in the Property element is the one we're looking for (RowContents). If it is, add the row to OutRows
 		uint8* RowContentsAsBinary = (uint8*)FMemory_Alloca(Property->GetSize());
 		Property->InitializeValue(RowContentsAsBinary);
-		if (Property->ImportText(*RowContents.ToString(), RowContentsAsBinary, PPF_None, nullptr) == nullptr)
+		if (Property->ImportText_Direct(*RowContents.ToString(), RowContentsAsBinary, nullptr, PPF_None) == nullptr)
 		{
 			Property->DestroyValue(RowContentsAsBinary);
 			return;

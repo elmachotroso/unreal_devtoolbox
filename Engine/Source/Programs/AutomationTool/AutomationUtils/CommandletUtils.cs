@@ -127,7 +127,12 @@ namespace AutomationTool
 			RunCommandlet(ProjectName, UnrealExe, "ResavePackages", String.Format("-buildtexturestreaming -buildlighting -MapsOnly -ProjectOnly -AllowCommandletRendering -SkipSkinVerify {0} {1}", MapsToRebuildLighting, Parameters));
 		}
 
-        public static void RebuildHLODCommandlet(FileReference ProjectName, string UnrealExe = "UnrealEditor-Cmd.exe", string[] Maps = null, string Parameters = "")
+		public static void RebuildHLODCommandlet(FileReference ProjectName, string UnrealExe = "UnrealEditor-Cmd.exe", string[] Maps = null, string Parameters = "")
+		{
+			RebuildHLODCommandlet(ProjectName, out string LogFile, UnrealExe, Maps, Parameters);
+		}
+
+		public static void RebuildHLODCommandlet(FileReference ProjectName, out string DestLogFile, string UnrealExe = "UnrealEditor-Cmd.exe", string[] Maps = null, string Parameters = "")
         {
             string MapsToRebuildHLODs = "";
             if (!IsNullOrEmpty(Maps))
@@ -135,7 +140,7 @@ namespace AutomationTool
                 MapsToRebuildHLODs = "-Map=" + CombineCommandletParams(Maps).Trim();
             }
 
-            RunCommandlet(ProjectName, UnrealExe, "ResavePackages", String.Format("-BuildHLOD -ProjectOnly -AllowCommandletRendering -SkipSkinVerify {0} {1}", MapsToRebuildHLODs, Parameters));
+            RunCommandlet(ProjectName, UnrealExe, "ResavePackages", String.Format("-BuildHLOD -ProjectOnly -AllowCommandletRendering -SkipSkinVerify {0} {1}", MapsToRebuildHLODs, Parameters), out DestLogFile);
         }
 
         /// <summary>
@@ -250,23 +255,32 @@ namespace AutomationTool
 		/// <param name="ErrorLevel">The minimum exit code, which is treated as an error.</param>
 		public static void RunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, out string DestLogFile, int ErrorLevel = 1)
 		{
-			LogInformation("Running UnrealEditor {0} for project {1}", Commandlet, ProjectName);
-
-            var CWD = Path.GetDirectoryName(UnrealExe);
-
-            string EditorExe = UnrealExe;
-
-            if (String.IsNullOrEmpty(CWD))
-            {
-                EditorExe = HostPlatform.Current.GetUnrealExePath(UnrealExe);
-                CWD = CombinePaths(CmdEnv.LocalRoot, HostPlatform.Current.RelativeBinariesFolder);
-            }
-			
-			PushDir(CWD);
+			string LocalLogFile;
+			IProcessResult RunResult;
 
 			DateTime StartTime = DateTime.UtcNow;
 
-			string LocalLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.EngineSavedFolder, Commandlet));
+			StartRunCommandlet(ProjectName, UnrealExe, Commandlet, Parameters, ERunOptions.Default, out LocalLogFile, out RunResult);
+			FinishRunCommandlet(ProjectName, Commandlet, StartTime, RunResult, LocalLogFile, out DestLogFile);
+		}
+
+		public static void StartRunCommandlet(FileReference ProjectName, string UnrealExe, string Commandlet, string Parameters, ERunOptions RunOptions, out string LocalLogFile, out IProcessResult RunResult, ProcessResult.SpewFilterCallbackType SpewFilterCallback=null)
+		{
+			LogInformation("Running UnrealEditor {0} for project {1}", Commandlet, ProjectName);
+
+			var CWD = Path.GetDirectoryName(UnrealExe);
+
+			string EditorExe = UnrealExe;
+
+			if (String.IsNullOrEmpty(CWD))
+			{
+				EditorExe = HostPlatform.Current.GetUnrealExePath(UnrealExe);
+				CWD = CombinePaths(CmdEnv.LocalRoot, HostPlatform.Current.RelativeBinariesFolder);
+			}
+
+			PushDir(CWD);
+
+			LocalLogFile = LogUtils.GetUniqueLogName(CombinePaths(CmdEnv.EngineSavedFolder, Commandlet));
 			LogInformation("Commandlet log file is {0}", LocalLogFile);
 			string Args = String.Format(
 				"{0} -run={1} {2} -abslog={3} -stdout -CrashForUAT -unattended -NoLogTimes {5}{4}",
@@ -275,17 +289,19 @@ namespace AutomationTool
 				String.IsNullOrEmpty(Parameters) ? "" : Parameters,
 				CommandUtils.MakePathSafeToUseWithCommandLine(LocalLogFile),
 				IsBuildMachine ? "-buildmachine" : "",
-                (GlobalCommandLine.Verbose || GlobalCommandLine.AllowStdOutLogVerbosity) ? "-AllowStdOutLogVerbosity " : ""
+				(GlobalCommandLine.Verbose || GlobalCommandLine.AllowStdOutLogVerbosity) ? "-AllowStdOutLogVerbosity " : ""
 			);
-			ERunOptions Opts = ERunOptions.Default;
 			if (GlobalCommandLine.UTF8Output)
 			{
 				Args += " -UTF8Output";
-				Opts |= ERunOptions.UTF8Output;
+				RunOptions |= ERunOptions.UTF8Output;
 			}
-			IProcessResult RunResult = Run(EditorExe, Args, Options: Opts, Identifier: Commandlet);
+			RunResult = Run(EditorExe, Args, Options: RunOptions, Identifier: Commandlet, SpewFilterCallback: SpewFilterCallback);
 			PopDir();
+		}
 
+		public static void FinishRunCommandlet(FileReference ProjectName, string Commandlet, DateTime StartTime, IProcessResult RunResult, string LocalLogFile, out string DestLogFile, int ErrorLevel = 1)
+		{ 
 			// If we're running on a Windows build machine, copy any crash dumps into the log folder
 			if(HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64 && IsBuildMachine)
 			{

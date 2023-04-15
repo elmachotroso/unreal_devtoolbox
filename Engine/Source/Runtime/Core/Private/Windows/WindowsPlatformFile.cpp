@@ -821,19 +821,20 @@ public:
 
 	virtual void PreloadHint(int64 PreloadOffset = 0, int64 BytesToPreload = MAX_int64) override
 	{
-		// perhaps this could be done with a commit instead
-		int64 Size = GetMappedSize();
-		const uint8* Ptr = GetMappedPtr();
-		int32 FoolTheOptimizer = 0;
-		while (Size > 0)
+		if (PreloadOffset < GetMappedSize())
 		{
-			FoolTheOptimizer += Ptr[0];
-			Size -= 4096;
-			Ptr += 4096;
-		}
-		if (FoolTheOptimizer == 0xbadf00d)
-		{
-			FPlatformProcess::Sleep(0.0f); // this will more or less never happen, but we can't let the optimizer strip these reads
+			SIZE_T PageSize = FWindowsPlatformMemory::GetConstants().PageSize;
+			int64 SizeAfterOffset = GetMappedSize() - PreloadOffset;
+			int64 PreloadSize = FMath::Min(SizeAfterOffset, BytesToPreload);
+
+			for (const uint8* It = GetMappedPtr() + PreloadOffset, *End = It + PreloadSize; It < End; It += PageSize)
+			{
+				volatile uint8 Foo = *It;
+			}
+
+			// Once we drop Win7 support we can try this Win8 API instead
+			// WIN32_MEMORY_RANGE_ENTRY Range = { GetMappedPtr() + PreloadOffset, PreloadSize };
+			// PrefetchVirtualMemory(GetCurrentProcess(), 1, &Range, 0);
 		}
 	}
 };
@@ -882,8 +883,9 @@ public:
 
 		DWORD OpenMappingAccess = FILE_MAP_READ;
 
-		int64 AlignedOffset = AlignDown(Offset, 65536);
-		int64 AlignedSize = Align(BytesToMap + Offset - AlignedOffset, 65536);
+		SIZE_T VirtualMemoryGranularity = FWindowsPlatformMemory::GetConstants().OsAllocationGranularity;
+		int64 AlignedOffset = AlignDown(Offset, VirtualMemoryGranularity);
+		int64 AlignedSize = Align(BytesToMap + Offset - AlignedOffset, VirtualMemoryGranularity);
 
 		ULARGE_INTEGER LI;
 		LI.QuadPart = AlignedOffset;
@@ -934,22 +936,22 @@ class CORE_API FWindowsPlatformFile : public IPhysicalPlatformFile
 		}
 
 		// Remove duplicate slashes
-		const bool bIsUNCPath = Path.ToView().StartsWith(TEXT("//"_SV));
+		const bool bIsUNCPath = Path.ToView().StartsWith(TEXTVIEW("//"));
 		
 		FPathViews::RemoveDuplicateSlashes(Path);
 
 		if (bIsUNCPath)
 		{
 			// Keep // at the beginning.  If There are more than two / at the beginning, replace them with just //.
-			Path.Prepend(TEXT("/"_SV));
+			Path.Prepend(TEXTVIEW("/"));
 		}
 
 		// We now have a canonical, strict-valid, absolute Unreal Path.  Convert it to a Windows Path.
 		for (TCHAR& Char : TArrayView<TCHAR>(Path.GetData(), Path.Len()))
 		{
-			if (Char == '/')
+			if (Char == TEXT('/'))
 			{
-				Char = '\\';
+				Char = TEXT('\\');
 			}
 		}
 
@@ -958,11 +960,11 @@ class CORE_API FWindowsPlatformFile : public IPhysicalPlatformFile
 		{
 			if (bIsUNCPath)
 			{
-				Path.ReplaceAt(0, 1, TEXT("\\\\?\\UNC"_SV));
+				Path.ReplaceAt(0, 1, TEXTVIEW("\\\\?\\UNC"));
 			}
 			else
 			{
-				Path.Prepend(TEXT("\\\\?\\"_SV));
+				Path.Prepend(TEXTVIEW("\\\\?\\"));
 			}
 		}
 	}
@@ -1065,10 +1067,7 @@ public:
 		{
 			TRACE_PLATFORMFILE_END_OPEN(Handle);
 			const FILETIME ModificationFileTime = UEDateTimeToWindowsFileTime(DateTime);
-			if (!SetFileTime(Handle, nullptr, nullptr, &ModificationFileTime))
-			{
-				UE_LOG(LogTemp, Warning, TEXT("SetTimeStamp: Failed to SetFileTime on %s"), Filename);
-			}
+			SetFileTime(Handle, nullptr, nullptr, &ModificationFileTime);
 			TRACE_PLATFORMFILE_BEGIN_CLOSE(Handle);
 #if PLATFORMFILETRACE_ENABLED
 			// MSVC static analysis has a rule that reports the argument to CloseHandle as uninitialized memory after the call to CloseHandle, so we have to save it ahead of time
@@ -1091,7 +1090,6 @@ public:
 		else
 		{
 			TRACE_PLATFORMFILE_FAIL_OPEN(Filename);
-			UE_LOG(LogTemp, Warning, TEXT("SetTimeStamp: Failed to open file %s"), Filename);
 		}
 	}
 
@@ -1337,7 +1335,7 @@ public:
 			return nullptr;
 		}
 		HANDLE MappingHandle = CreateFileMapping(Handle, NULL, PAGE_READONLY, 0, 0, NULL);
-		if (MappingHandle == INVALID_HANDLE_VALUE)
+		if (MappingHandle == NULL)
 		{
 			TRACE_PLATFORMFILE_BEGIN_CLOSE(Handle);
 #if PLATFORMFILETRACE_ENABLED
@@ -1461,7 +1459,7 @@ public:
 	// Outline to reduce stack space usage since IterateDirectoryCommon might be recursive
 	FORCENOINLINE static HANDLE FindFirstFileWithWildcard(const TCHAR* Directory, WIN32_FIND_DATAW& OutData)
 	{
-		return FindFirstFileW(*(FNormalizedFilename(Directory, TEXT("*.*"_SV))), &OutData);
+		return FindFirstFileW(*(FNormalizedFilename(Directory, TEXTVIEW("*.*"))), &OutData);
 	}
 
 	bool IterateDirectoryCommon(const TCHAR* Directory, const TFunctionRef<bool(const WIN32_FIND_DATAW&)>& Visitor)

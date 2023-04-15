@@ -3,12 +3,11 @@
 #include "Algo/Accumulate.h"
 #include "Algo/AllOf.h"
 #include "Algo/Compare.h"
+#include "Algo/Find.h"
 #include "Algo/StableSort.h"
 #include "Algo/Transform.h"
 #include "Async/Async.h"
-#include "Async/TaskGraphInterfaces.h"
 #include "Containers/StaticBitArray.h"
-#include "DerivedDataBackendCorruptionWrapper.h"
 #include "DerivedDataBackendInterface.h"
 #include "DerivedDataCacheInterface.h"
 #include "DerivedDataCacheMaintainer.h"
@@ -16,6 +15,7 @@
 #include "DerivedDataCacheRecord.h"
 #include "DerivedDataCacheUsageStats.h"
 #include "DerivedDataChunk.h"
+#include "DerivedDataRequestOwner.h"
 #include "DerivedDataValue.h"
 #include "Experimental/Async/LazyEvent.h"
 #include "Features/IModularFeatures.h"
@@ -24,10 +24,10 @@
 #include "HAL/Thread.h"
 #include "Hash/xxhash.h"
 #include "HashingArchiveProxy.h"
-#include "Math/NumericLimits.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreMisc.h"
+#include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
@@ -35,6 +35,7 @@
 #include "Misc/PathViews.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/ScopeRWLock.h"
 #include "Misc/StringBuilder.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "ProfilingDebugging/CountersTrace.h"
@@ -43,23 +44,14 @@
 #include "Serialization/CompactBinaryPackage.h"
 #include "Serialization/CompactBinaryValidation.h"
 #include "Serialization/CompactBinaryWriter.h"
+#include "Tasks/Task.h"
 #include "Templates/Greater.h"
 
-#define MAX_BACKEND_KEY_LENGTH (120)
-#define MAX_BACKEND_NUMBERED_SUBFOLDER_LENGTH (9)
-#if PLATFORM_LINUX	// PATH_MAX on Linux is 4096 (getconf PATH_MAX /, also see limits.h), so this value can be larger (note that it is still arbitrary).
-                    // This should not affect sharing the cache between platforms as the absolute paths will be different anyway.
-	#define MAX_CACHE_DIR_LEN (3119)
-#else
-	#define MAX_CACHE_DIR_LEN (119)
-#endif // PLATFORM_LINUX
-#define MAX_CACHE_EXTENTION_LEN (4)
+#include <atomic>
 
 namespace UE::DerivedData
 {
 
-TRACE_DECLARE_INT_COUNTER(FileSystemDDC_Exist, TEXT("FileSystemDDC Exist"));
-TRACE_DECLARE_INT_COUNTER(FileSystemDDC_ExistHit, TEXT("FileSystemDDC Exist Hit"));
 TRACE_DECLARE_INT_COUNTER(FileSystemDDC_Get, TEXT("FileSystemDDC Get"));
 TRACE_DECLARE_INT_COUNTER(FileSystemDDC_GetHit, TEXT("FileSystemDDC Get Hit"));
 TRACE_DECLARE_INT_COUNTER(FileSystemDDC_Put, TEXT("FileSystemDDC Put"));
@@ -69,32 +61,31 @@ TRACE_DECLARE_INT_COUNTER(FileSystemDDC_BytesWritten, TEXT("FileSystemDDC Bytes 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static const TCHAR GBucketsDirectoryName[] = TEXT("Buckets");
-static const TCHAR GContentDirectoryName[] = TEXT("Content");
+#if PLATFORM_LINUX
+// PATH_MAX on Linux is 4096 (getconf PATH_MAX /, also see limits.h), so this value can be larger (note that it is still arbitrary).
+// This should not affect sharing the cache between platforms as the absolute paths will be different anyway.
+static constexpr int32 GMaxCacheRootLen = 3119;
+#else
+static constexpr int32 GMaxCacheRootLen = 119;
+#endif // PLATFORM_LINUX
+
+static constexpr int32 GMaxCacheKeyLen =
+	FCacheBucket::MaxNameLen + // Name
+	sizeof(FIoHash) * 2 +      // Hash
+	4 +                        // Separators /<Name>/<Hash01>/<Hash23>/<Hash4-40>
+	4;                         // Extension (.udd)
+
+static const TCHAR* GBucketsDirectoryName = TEXT("Buckets");
+static const TCHAR* GContentDirectoryName = TEXT("Content");
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void BuildPathForLegacyCache(const TCHAR* const CacheKey, FStringBuilderBase& Path)
-{
-	TStringBuilder<256> Key;
-	Key << CacheKey;
-	for (TCHAR& Char : MakeArrayView(Key))
-	{
-		Char = FChar::ToUpper(Char);
-	}
-	checkf(Algo::AllOf(MakeArrayView(Key),
-		[](TCHAR C) { return FChar::IsAlnum(C) || FChar::IsUnderscore(C) || C == TEXT('$'); }),
-		TEXT("Invalid characters in cache key %s"), CacheKey);
-	const uint32 Hash = FCrc::StrCrc_DEPRECATED(Key.Len(), Key.GetData());
-	Path.Appendf(TEXT("%1d/%1d/%1d/%s.udd"), (Hash / 100) % 10, (Hash / 10) % 10, Hash % 10, *Key);
-}
 
 void BuildPathForCachePackage(const FCacheKey& CacheKey, FStringBuilderBase& Path)
 {
 	const FIoHash::ByteArray& Bytes = CacheKey.Hash.GetBytes();
 	Path.Appendf(TEXT("%s/%hs/%02x/%02x/"), GBucketsDirectoryName, CacheKey.Bucket.ToCString(), Bytes[0], Bytes[1]);
 	UE::String::BytesToHexLower(MakeArrayView(Bytes).RightChop(2), Path);
-	Path << TEXT(".udd"_SV);
+	Path << TEXTVIEW(".udd");
 }
 
 void BuildPathForCacheContent(const FIoHash& RawHash, FStringBuilderBase& Path)
@@ -102,7 +93,7 @@ void BuildPathForCacheContent(const FIoHash& RawHash, FStringBuilderBase& Path)
 	const FIoHash::ByteArray& Bytes = RawHash.GetBytes();
 	Path.Appendf(TEXT("%s/%02x/%02x/"), GContentDirectoryName, Bytes[0], Bytes[1]);
 	UE::String::BytesToHexLower(MakeArrayView(Bytes).RightChop(2), Path);
-	Path << TEXT(".udd"_SV);
+	Path << TEXTVIEW(".udd");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -204,8 +195,8 @@ struct FFileSystemCacheStoreMaintainerParams
 {
 	/** Files older than this will be deleted. */
 	FTimespan MaxFileAge = FTimespan::FromDays(15.0);
-	/** Limits the number of files scanned in one second. */
-	uint32 MaxFileScanRate = MAX_uint32;
+	/** Limits the number of paths scanned in one second. */
+	uint32 MaxScanRate = MAX_uint32;
 	/** Limits the number of directories scanned in each cache bucket or content root. */
 	uint32 MaxDirectoryScanCount = MAX_uint32;
 	/** Minimum duration between the start of consecutive scans. Use MaxValue to scan only once. */
@@ -240,7 +231,11 @@ private:
 
 	void ResetRoots();
 
-	void ProcessFile(const TCHAR* Path, const FFileStatData& Stat);
+	void ProcessDirectory(const TCHAR* Path);
+	void ProcessFile(const TCHAR* Path, const FFileStatData& Stat, bool& bOutDeletedFile);
+	void ProcessWait();
+
+	void DeleteDirectory(const TCHAR* Path);
 
 private:
 	struct FRoot;
@@ -255,12 +250,15 @@ private:
 	bool bExit = false;
 	/** True when maintenance is expected to exit at the end of the scan. */
 	bool bExitAfterScan = false;
-	/** Ignore the file scan rate for one maintenance scan. */
-	bool bIgnoreFileScanRate = false;
+	/** Ignore the scan rate for one maintenance scan. */
+	bool bIgnoreScanRate = false;
 
+	uint32 FileCount = 0;
+	uint32 FolderCount = 0;
 	uint32 ProcessCount = 0;
 	uint32 DeleteCount = 0;
 	uint64 DeleteSize = 0;
+	uint64 ScannedSize = 0;
 
 	double BatchStartTime = 0.0;
 
@@ -338,14 +336,14 @@ FFileSystemCacheStoreMaintainer::~FFileSystemCacheStoreMaintainer()
 
 void FFileSystemCacheStoreMaintainer::BoostPriority()
 {
-	bIgnoreFileScanRate = true;
+	bIgnoreScanRate = true;
 	WaitEvent->Trigger();
 }
 
 void FFileSystemCacheStoreMaintainer::Tick()
 {
 	// Scan once and exit if the priority has been boosted.
-	if (bIgnoreFileScanRate)
+	if (bIgnoreScanRate)
 	{
 		bExitAfterScan = true;
 		Loop();
@@ -361,19 +359,24 @@ void FFileSystemCacheStoreMaintainer::Loop()
 	while (!bExit)
 	{
 		const FDateTime ScanStart = FDateTime::Now();
+		FileCount = 0;
+		FolderCount = 0;
 		DeleteCount = 0;
 		DeleteSize = 0;
+		ScannedSize = 0;
 		IdleEvent.Reset();
 		bIdle = false;
 		Scan();
 		bIdle = true;
 		IdleEvent.Trigger();
-		bIgnoreFileScanRate = false;
+		bIgnoreScanRate = false;
 		const FDateTime ScanEnd = FDateTime::Now();
 
 		UE_LOG(LogDerivedDataCache, Log,
-			TEXT("%s: Maintenance finished in %s and deleted %u file(s) with total size %" UINT64_FMT " MiB."),
-			*CachePath, *(ScanEnd - ScanStart).ToString(), DeleteCount, DeleteSize / 1024 / 1024);
+			TEXT("%s: Maintenance finished in %s and deleted %u files with total size %" UINT64_FMT " MiB. "
+				 "Scanned %u files in %u folders with total size %" UINT64_FMT " MiB."),
+			*CachePath, *(ScanEnd - ScanStart).ToString(), DeleteCount, DeleteSize / 1024 / 1024,
+			FileCount, FolderCount, ScannedSize / 1024 / 1024);
 
 		if (bExit || bExitAfterScan)
 		{
@@ -488,11 +491,7 @@ void FFileSystemCacheStoreMaintainer::ScanHashRoot(const uint32 RootIndex)
 
 	TStringBuilder<256> Path;
 	Path.Appendf(TEXT("%s/%02x/%02x"), *Root.Path, IndexLevel0, IndexLevel1);
-	FileManager.IterateDirectoryStat(*Path, [this](const TCHAR* const Path, const FFileStatData& Stat) -> bool
-	{
-		ProcessFile(Path, Stat);
-		return !bExit;
-	});
+	ProcessDirectory(*Path);
 
 	bScanned = true;
 }
@@ -513,6 +512,10 @@ TStaticBitArray<256> FFileSystemCacheStoreMaintainer::ScanHashDirectory(FStringB
 		}
 		return !bExit;
 	});
+	if (Exists.FindFirstSetBit() == INDEX_NONE)
+	{
+		DeleteDirectory(*BasePath);
+	}
 	return Exists;
 }
 
@@ -528,6 +531,10 @@ TStaticBitArray<10> FFileSystemCacheStoreMaintainer::ScanLegacyDirectory(FString
 		}
 		return !bExit;
 	});
+	if (Exists.FindFirstSetBit() == INDEX_NONE && BasePath.Len() > CachePath.Len())
+	{
+		DeleteDirectory(*BasePath);
+	}
 	return Exists;
 }
 
@@ -592,11 +599,7 @@ void FFileSystemCacheStoreMaintainer::ScanLegacyRoot()
 
 	TStringBuilder<256> Path;
 	FPathViews::Append(Path, CachePath, IndexLevel0, IndexLevel1, IndexLevel2);
-	FileManager.IterateDirectoryStat(*Path, [this](const TCHAR* const Path, const FFileStatData& Stat) -> bool
-	{
-		ProcessFile(Path, Stat);
-		return !bExit;
-	});
+	ProcessDirectory(*Path);
 
 	bScanned = true;
 }
@@ -607,12 +610,39 @@ void FFileSystemCacheStoreMaintainer::ResetRoots()
 	LegacyRoot.Reset();
 }
 
-void FFileSystemCacheStoreMaintainer::ProcessFile(const TCHAR* const Path, const FFileStatData& Stat)
+void FFileSystemCacheStoreMaintainer::ProcessDirectory(const TCHAR* const Path)
 {
+	++FolderCount;
+
+	bool bTryDelete = true;
+
+	FileManager.IterateDirectoryStat(Path, [this, &bTryDelete](const TCHAR* const Path, const FFileStatData& Stat) -> bool
+	{
+		bool bDeletedFile = false;
+		ProcessFile(Path, Stat, bDeletedFile);
+		bTryDelete &= bDeletedFile;
+		return !bExit;
+	});
+
+	if (bTryDelete)
+	{
+		DeleteDirectory(Path);
+	}
+
+	ProcessWait();
+}
+
+void FFileSystemCacheStoreMaintainer::ProcessFile(const TCHAR* const Path, const FFileStatData& Stat, bool& bOutDeletedFile)
+{
+	bOutDeletedFile = false;
+
 	if (Stat.bIsDirectory)
 	{
 		return;
 	}
+
+	++FileCount;
+	ScannedSize += Stat.FileSize > 0 ? uint64(Stat.FileSize) : 0;
 
 	const FDateTime Now = FDateTime::UtcNow();
 	if (Stat.ModificationTime + Params.MaxFileAge < Now && Stat.AccessTime + Params.MaxFileAge < Now)
@@ -621,6 +651,7 @@ void FFileSystemCacheStoreMaintainer::ProcessFile(const TCHAR* const Path, const
 		DeleteSize += Stat.FileSize > 0 ? uint64(Stat.FileSize) : 0;
 		if (FileManager.Delete(Path, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true))
 		{
+			bOutDeletedFile = true;
 			UE_LOG(LogDerivedDataCache, VeryVerbose,
 				TEXT("%s: Maintenance deleted file %s that was last modified at %s."),
 				*CachePath, Path, *Stat.ModificationTime.ToIso8601());
@@ -633,7 +664,12 @@ void FFileSystemCacheStoreMaintainer::ProcessFile(const TCHAR* const Path, const
 		}
 	}
 
-	if (!bExit && !bIgnoreFileScanRate && Params.MaxFileScanRate && ++ProcessCount % Params.MaxFileScanRate == 0)
+	ProcessWait();
+}
+
+void FFileSystemCacheStoreMaintainer::ProcessWait()
+{
+	if (!bExit && !bIgnoreScanRate && Params.MaxScanRate && ++ProcessCount % Params.MaxScanRate == 0)
 	{
 		const double BatchEndTime = FPlatformTime::Seconds();
 		if (const double BatchWaitTime = 1.0 - (BatchEndTime - BatchStartTime); BatchWaitTime > 0.0)
@@ -648,6 +684,14 @@ void FFileSystemCacheStoreMaintainer::ProcessFile(const TCHAR* const Path, const
 	}
 }
 
+void FFileSystemCacheStoreMaintainer::DeleteDirectory(const TCHAR* Path)
+{
+	if (FileManager.DeleteDirectory(Path))
+	{
+		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Maintenance deleted empty directory %s."), *CachePath, Path);
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class FAccessLogWriter
@@ -655,7 +699,6 @@ class FAccessLogWriter
 public:
 	FAccessLogWriter(const TCHAR* FileName, const FString& CachePath);
 
-	void Append(const TCHAR* CacheKey, FStringView Path);
 	void Append(const FIoHash& RawHash, FStringView Path);
 	void Append(const FCacheKey& CacheKey, FStringView Path);
 
@@ -665,7 +708,6 @@ private:
 	TUniquePtr<FArchive> Archive;
 	FString BasePath;
 	FCriticalSection CriticalSection;
-	TSet<FString> CacheKeys;
 	TSet<FIoHash> ContentKeys;
 	TSet<FCacheKey> RecordKeys;
 };
@@ -674,18 +716,6 @@ FAccessLogWriter::FAccessLogWriter(const TCHAR* const FileName, const FString& C
 	: Archive(IFileManager::Get().CreateFileWriter(FileName, FILEWRITE_AllowRead))
 	, BasePath(CachePath / TEXT(""))
 {
-}
-
-void FAccessLogWriter::Append(const TCHAR* const CacheKey, const FStringView Path)
-{
-	FScopeLock Lock(&CriticalSection);
-
-	bool bIsAlreadyInSet = false;
-	CacheKeys.FindOrAdd(FString(CacheKey), &bIsAlreadyInSet);
-	if (!bIsAlreadyInSet)
-	{
-		AppendPath(Path);
-	}
 }
 
 void FAccessLogWriter::Append(const FIoHash& RawHash, const FStringView Path)
@@ -724,35 +754,23 @@ void FAccessLogWriter::AppendPath(const FStringView Path)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class FFileSystemCacheStore final : public FDerivedDataBackendInterface
+class FFileSystemCacheStore final : public ILegacyCacheStore
 {
 public:
-	FFileSystemCacheStore(const TCHAR* CachePath, const TCHAR* Params, const TCHAR* AccessLogPath);
+	FFileSystemCacheStore(
+		const TCHAR* CachePath,
+		const TCHAR* Params,
+		const TCHAR* AccessLogPath,
+		ECacheStoreFlags& OutFlags);
+	~FFileSystemCacheStore();
 
-	inline bool IsUsable() const { return !bDisabled; }
-
-	bool RunSpeedTest(
-		double InSkipTestsIfSeeksExceedMS,
+	static bool RunSpeedTest(
+		FString CachePath,
+		bool bReadOnly,
+		bool bSeekTimeOnly,
 		double& OutSeekTimeMS,
 		double& OutReadSpeedMBs,
-		double& OutWriteSpeedMBs) const;
-
-	// FDerivedDataBackendInterface Interface
-
-	FString GetName() const final { return CachePath; }
-	bool IsWritable() const final { return !bReadOnly && !bDisabled; }
-	ESpeedClass GetSpeedClass() const final { return SpeedClass; }
-
-	bool CachedDataProbablyExists(const TCHAR* CacheKey) final;
-	bool GetCachedData(const TCHAR* CacheKey, TArray<uint8>& Data) final;
-	EPutStatus PutCachedData(const TCHAR* CacheKey, TConstArrayView<uint8> Data, bool bPutEvenIfExists) final;
-	void RemoveCachedData(const TCHAR* CacheKey, bool bTransient) final;
-	TSharedRef<FDerivedDataCacheStatsNode> GatherUsageStats() const final;
-	TBitArray<> TryToPrefetch(TConstArrayView<FString> CacheKeys) final;
-	bool WouldCache(const TCHAR* CacheKey, TConstArrayView<uint8> InData) final;
-	bool ApplyDebugOptions(FBackendDebugOptions& InOptions) final;
-
-	EBackendLegacyMode GetLegacyMode() const final { return LegacyMode; }
+		double& OutWriteSpeedMBs);
 
 	// ICacheStore Interface
 
@@ -776,6 +794,11 @@ public:
 		TConstArrayView<FCacheGetChunkRequest> Requests,
 		IRequestOwner& Owner,
 		FOnCacheGetChunkComplete&& OnComplete) final;
+
+	// ILegacyCacheStore
+
+	void LegacyStats(FDerivedDataCacheStatsNode& OutNode) final;
+	bool LegacyDebugOptions(FBackendDebugOptions& Options) final;
 
 private:
 	[[nodiscard]] bool PutCacheRecord(FStringView Name, const FCacheRecord& Record, const FCacheRecordPolicy& Policy, uint64& OutWriteSize);
@@ -821,31 +844,22 @@ private:
 	[[nodiscard]] bool LoadFileWithHash(FStringBuilderBase& Path, FStringView DebugName, TFunctionRef<void (FArchive&)> ReadFunction) const;
 	[[nodiscard]] bool SaveFile(FStringBuilderBase& Path, FStringView DebugName, TFunctionRef<void (FArchive&)> WriteFunction, bool bReplaceExisting = false) const;
 	[[nodiscard]] bool LoadFile(FStringBuilderBase& Path, FStringView DebugName, TFunctionRef<void (FArchive&)> ReadFunction) const;
-	[[nodiscard]] TUniquePtr<FArchive> OpenFile(FStringBuilderBase& Path, FStringView DebugName) const;
+	[[nodiscard]] TUniquePtr<FArchive> OpenFileWrite(FStringBuilderBase& Path, FStringView DebugName) const;
+	[[nodiscard]] TUniquePtr<FArchive> OpenFileRead(FStringBuilderBase& Path, FStringView DebugName) const;
 
 	[[nodiscard]] bool FileExists(FStringBuilderBase& Path) const;
+	[[nodiscard]] bool IsDeactivatedForPerformance();
 
 private:
-	void BuildCacheLegacyPath(const TCHAR* const CacheKey, FStringBuilderBase& Path) const
-	{
-		Path << CachePath << TEXT('/');
-		BuildPathForLegacyCache(CacheKey, Path);
-	}
-
-	/** Base path we are storing the cache files in. */
-	FString	CachePath;
-	/** How to access the legacy cache. */
-	EBackendLegacyMode LegacyMode = EBackendLegacyMode::ValueWithLegacyFallback;
-	/** Class of this cache */
-	ESpeedClass SpeedClass;
-	/** If true, we failed to write to this directory and it did not contain anything so we should not be used. */
-	bool		bDisabled;
+	/** Base path to store the cache files in. */
+	FString CachePath;
+	/** Speed class of this cache. */
+	EBackendSpeedClass SpeedClass;
 	/** If true, do not attempt to write to this cache. */
 	bool		bReadOnly;
-	/** If true, CachedDataProbablyExists will update the file timestamps. */
+	/** If true, always update file timestamps on access. */
 	bool		bTouch;
-	/** If true, allow transient data to be removed from the cache. */
-	bool		bPurgeTransient;
+
 	/** Age of file when it should be deleted from DDC cache. */
 	double		DaysToDeleteUnusedFiles;
 
@@ -853,17 +867,6 @@ private:
 	uint64		MaxRecordSizeKB = 256;
 	/** Maximum total size of compressed data stored within a value package, or a record package with one attachment. */
 	uint64		MaxValueSizeKB = 1024;
-
-	/** Object used for synchronization via a scoped lock. */
-	FCriticalSection SynchronizationObject;
-
-	// DDCNotification metrics
-
-	/** Map of cache keys to miss times for generating timing deltas. */
-	TMap<FString, double> DDCNotificationCacheTimes;
-
-	/** The total estimated build time accumulated from cache miss/put deltas. */
-	double TotalEstimatedBuildTime;
 
 	/** Access log to write to */
 	TUniquePtr<FAccessLogWriter> AccessLogWriter;
@@ -873,24 +876,46 @@ private:
 
 	FDerivedDataCacheUsageStats UsageStats;
 
+	/** Speed stats */
+	FDerivedDataCacheSpeedStats SpeedStats;
+
 	TUniquePtr<FFileSystemCacheStoreMaintainer> Maintainer;
+
+	TUniquePtr<FFileSystemCacheStoreMaintainerParams> DeactivationDeferredMaintainerParams;
+
+	static inline FRWLock ActiveFileStoresLock;
+	static inline TArray<FFileSystemCacheStore*> ActiveFileStores;
+
+	enum class EPerformanceReEvaluationResult
+	{
+		Invalid = 0,
+		PerformanceActivate,
+		PerformanceDeactivate
+	};
+	FRWLock PerformanceReEvaluationTaskLock;
+	Tasks::TTask<std::atomic<EPerformanceReEvaluationResult>> PerformanceReEvaluationTask;
+	std::atomic<int64> LastPerformanceEvaluationTicks;
+	std::atomic<bool> bDeactivedForPerformance;
+	bool bDeactivationDeferredClean;
+	float DeactivateAtMS;
 };
 
 FFileSystemCacheStore::FFileSystemCacheStore(
 	const TCHAR* const InCachePath,
 	const TCHAR* const InParams,
-	const TCHAR* const InAccessLogPath)
+	const TCHAR* const InAccessLogPath,
+	ECacheStoreFlags& OutFlags)
 	: CachePath(InCachePath)
-	, SpeedClass(ESpeedClass::Unknown)
-	, bDisabled(false)
+	, SpeedClass(EBackendSpeedClass::Unknown)
 	, bReadOnly(false)
 	, bTouch(false)
-	, bPurgeTransient(false)
 	, DaysToDeleteUnusedFiles(15.0)
-	, TotalEstimatedBuildTime(0)
+	, bDeactivedForPerformance(false)
+	, bDeactivationDeferredClean(false)
+	, DeactivateAtMS(-1.f)
 {
 	// If we find a platform that has more stringent limits, this needs to be rethought.
-	checkf(MAX_BACKEND_KEY_LENGTH + MAX_CACHE_DIR_LEN + MAX_BACKEND_NUMBERED_SUBFOLDER_LENGTH + MAX_CACHE_EXTENTION_LEN < FPlatformMisc::GetMaxPathLength(),
+	checkf(GMaxCacheRootLen + GMaxCacheKeyLen <= FPlatformMisc::GetMaxPathLength(),
 		TEXT("Not enough room left for cache keys in max path."));
 
 	check(CachePath.Len());
@@ -899,16 +924,21 @@ FFileSystemCacheStore::FFileSystemCacheStore(
 	// Params that override our instance defaults
 	FParse::Bool(InParams, TEXT("ReadOnly="), bReadOnly);
 	FParse::Bool(InParams, TEXT("Touch="), bTouch);
-	FParse::Bool(InParams, TEXT("PurgeTransient="), bPurgeTransient);
 	FParse::Value(InParams, TEXT("UnusedFileAge="), DaysToDeleteUnusedFiles);
 	FParse::Value(InParams, TEXT("MaxRecordSizeKB="), MaxRecordSizeKB);
 	FParse::Value(InParams, TEXT("MaxValueSizeKB="), MaxValueSizeKB);
 
-	if (FString LegacyModeString; FParse::Value(InParams, TEXT("LegacyMode="), LegacyModeString))
 	{
-		if (!TryLexFromString(LegacyMode, LegacyModeString))
+		FReadScopeLock ReadLock(ActiveFileStoresLock);
+		FFileSystemCacheStore** FoundExitingActiveStore = Algo::FindByPredicate(ActiveFileStores, [this](const FFileSystemCacheStore* ActiveStore)
 		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Ignoring unrecognized legacy mode '%s'"), *CachePath, *LegacyModeString);
+			return ActiveStore && FPaths::IsSamePath(ActiveStore->CachePath, CachePath);
+		});
+		if (FoundExitingActiveStore)
+		{
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Attempted to create multiple cache stores to path %s, ignoring duplicate entry"), *CachePath);
+			OutFlags = ECacheStoreFlags::None;
+			return;
 		}
 	}
 
@@ -916,77 +946,115 @@ FFileSystemCacheStore::FFileSystemCacheStore(
 	bool bFlush = false;
 	if (!bReadOnly && FParse::Bool(InParams, TEXT("Flush="), bFlush) && bFlush)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Flush);
 		IFileManager::Get().DeleteDirectory(*(CachePath / TEXT("")), /*bRequireExists*/ false, /*bTree*/ true);
 	}
 
 	// check latency and speed. Read values should always be valid
-	double ReadSpeedMBs = 0.0;
-	double WriteSpeedMBs = 0.0;
-	double SeekTimeMS = 0.0;
-
+	
 	/* Speeds faster than this are considered local*/
 	const float ConsiderFastAtMS = 10;
 	/* Speeds faster than this are ok. Everything else is slow. This value can be overridden in the ini file */
 	float ConsiderSlowAtMS = 50;
 	FParse::Value(InParams, TEXT("ConsiderSlowAt="), ConsiderSlowAtMS);
+	FParse::Value(InParams, TEXT("DeactivateAt="), DeactivateAtMS);
 
 	// can skip the speed test so everything acts as local (e.g. 4.25 and earlier behavior).
 	bool SkipSpeedTest = !WITH_EDITOR || FParse::Param(FCommandLine::Get(), TEXT("DDCSkipSpeedTest"));
 	if (SkipSpeedTest)
 	{
-		ReadSpeedMBs = 999;
-		WriteSpeedMBs = 999;
-		SeekTimeMS = 0;
+		SpeedStats.ReadSpeedMBs = 999;
+		SpeedStats.WriteSpeedMBs = 999;
+		SpeedStats.LatencyMS = 0;
 		UE_LOG(LogDerivedDataCache, Log, TEXT("Skipping speed test to %s. Assuming local performance"), *CachePath);
 	}
 
-	if (!SkipSpeedTest && !RunSpeedTest(ConsiderSlowAtMS * 2, SeekTimeMS, ReadSpeedMBs, WriteSpeedMBs))
+	if (!SkipSpeedTest &&
+		!RunSpeedTest(CachePath,
+			bReadOnly,
+			false /* bSeekTimeOnly */,
+			SpeedStats.LatencyMS,
+			SpeedStats.ReadSpeedMBs,
+			SpeedStats.WriteSpeedMBs))
 	{
-		bDisabled = true;
+		LastPerformanceEvaluationTicks.store(FDateTime::UtcNow().GetTicks(), std::memory_order_relaxed);
+
+		OutFlags = ECacheStoreFlags::None;
 		UE_LOG(LogDerivedDataCache, Warning, TEXT("No read or write access to %s"), *CachePath);
 	}
 	else
 	{
-		bool bReadTestPassed = ReadSpeedMBs > 0.0;
-		bool bWriteTestPassed = WriteSpeedMBs > 0.0;
+		LastPerformanceEvaluationTicks.store(FDateTime::UtcNow().GetTicks(), std::memory_order_relaxed);
+
+		bool bReadTestPassed = SpeedStats.ReadSpeedMBs > 0.0;
+		bool bWriteTestPassed = SpeedStats.WriteSpeedMBs > 0.0;
 
 		// if we failed writes mark this as read only
 		bReadOnly = bReadOnly || !bWriteTestPassed;
 
+		const bool bLocalDeactivatedForPerformance = (DeactivateAtMS > 0.f) && (SpeedStats.LatencyMS >= DeactivateAtMS);
+		bDeactivedForPerformance.store(bLocalDeactivatedForPerformance, std::memory_order_relaxed);
+
 		// classify and report on these times
-		if (SeekTimeMS < 1)
+		if (SpeedStats.LatencyMS < 1)
 		{
-			SpeedClass = ESpeedClass::Local;
+			SpeedClass = EBackendSpeedClass::Local;
 		}
-		else if (SeekTimeMS <= ConsiderFastAtMS)
+		else if (SpeedStats.LatencyMS <= ConsiderFastAtMS)
 		{
-			SpeedClass = ESpeedClass::Fast;
+			SpeedClass = EBackendSpeedClass::Fast;
 		}
-		else if (SeekTimeMS >= ConsiderSlowAtMS)
+		else if (SpeedStats.LatencyMS >= ConsiderSlowAtMS)
 		{
-			SpeedClass = ESpeedClass::Slow;
+			SpeedClass = EBackendSpeedClass::Slow;
 		}
 		else
 		{
-			SpeedClass = ESpeedClass::Ok;
+			SpeedClass = EBackendSpeedClass::Ok;
 		}
 
 		UE_LOG(LogDerivedDataCache, Display,
-			TEXT("Performance to %s: Latency=%.02fms. RandomReadSpeed=%.02fMBs, RandomWriteSpeed=%.02fMBs. ")
-			TEXT("Assigned SpeedClass '%s'"),
-			*CachePath, SeekTimeMS, ReadSpeedMBs, WriteSpeedMBs, LexToString(SpeedClass));
+			TEXT("Performance to %s: Latency=%.02fms. RandomReadSpeed=%.02fMBs, RandomWriteSpeed=%.02fMBs. "
+				 "Assigned SpeedClass '%s'"),
+			*CachePath,
+			SpeedStats.LatencyMS,
+			SpeedStats.ReadSpeedMBs,
+			SpeedStats.WriteSpeedMBs,
+			LexToString(SpeedClass));
 
-		if (SpeedClass <= FDerivedDataBackendInterface::ESpeedClass::Slow && !bReadOnly)
+		if (bLocalDeactivatedForPerformance)
 		{
 			if (GIsBuildMachine)
 			{
-				UE_LOG(LogDerivedDataCache, Display, TEXT("Access to %s appears to be slow. ")
-					TEXT("'Touch' will be disabled and queries/writes will be limited."), *CachePath);
+				UE_LOG(LogDerivedDataCache, Display,
+					TEXT("%s: Performance does not meet minimum criteria. "
+						 "It will be deactivated until performance measurements improve. "
+						 "If this is consistent, consider disabling this cache store through "
+						 "environment variables or other configuration."),
+					*CachePath);
 			}
 			else
 			{
-				UE_LOG(LogDerivedDataCache, Warning, TEXT("Access to %s appears to be slow. ")
-					TEXT("'Touch' will be disabled and queries/writes will be limited."), *CachePath);
+				UE_LOG(LogDerivedDataCache, Warning,
+					TEXT("%s: Performance does not meet minimum criteria. "
+						 "It will be deactivated until performance measurements improve. "
+						 "If this is consistent, consider disabling this cache store through "
+						 "environment variables or other configuration."),
+					*CachePath);
+			}
+		}
+
+		if (SpeedClass <= EBackendSpeedClass::Slow && !bReadOnly)
+		{
+			if (GIsBuildMachine)
+			{
+				UE_LOG(LogDerivedDataCache, Display, TEXT("Access to %s appears to be slow. "
+					"'Touch' will be disabled and queries/writes will be limited."), *CachePath);
+			}
+			else
+			{
+				UE_LOG(LogDerivedDataCache, Warning, TEXT("Access to %s appears to be slow. "
+					"'Touch' will be disabled and queries/writes will be limited."), *CachePath);
 			}
 			bTouch = false;
 			//bReadOnly = true;
@@ -1013,60 +1081,97 @@ FFileSystemCacheStore::FFileSystemCacheStore(
 			FParse::Bool(InParams, TEXT("DeleteUnused="), bDeleteUnused);
 			bDeleteUnused = bDeleteUnused && !FParse::Param(FCommandLine::Get(), TEXT("NODDCCLEANUP"));
 
+			if (bClean && bLocalDeactivatedForPerformance)
+			{
+				bDeactivationDeferredClean = true;
+			}
+
 			if (bClean || bDeleteUnused)
 			{
-				FFileSystemCacheStoreMaintainerParams MaintainerParams;
-				MaintainerParams.MaxFileAge = FTimespan::FromDays(DaysToDeleteUnusedFiles);
+				FFileSystemCacheStoreMaintainerParams* MaintainerParams;
+				FFileSystemCacheStoreMaintainerParams LocalMaintainerParams;
+				if (bLocalDeactivatedForPerformance)
+				{
+					DeactivationDeferredMaintainerParams = MakeUnique<FFileSystemCacheStoreMaintainerParams>();
+					MaintainerParams = DeactivationDeferredMaintainerParams.Get();
+				}
+				else
+				{
+					MaintainerParams = &LocalMaintainerParams;
+				}
+				MaintainerParams->MaxFileAge = FTimespan::FromDays(DaysToDeleteUnusedFiles);
 				if (bDeleteUnused)
 				{
-					if (!FParse::Value(InParams, TEXT("MaxFileChecksPerSec="), MaintainerParams.MaxFileScanRate))
+					if (!FParse::Value(InParams, TEXT("MaxFileChecksPerSec="), MaintainerParams->MaxScanRate))
 					{
 						int32 MaxFileScanRate;
 						if (GConfig->GetInt(TEXT("DDCCleanup"), TEXT("MaxFileChecksPerSec"), MaxFileScanRate, GEngineIni))
 						{
-							MaintainerParams.MaxFileScanRate = uint32(MaxFileScanRate);
+							MaintainerParams->MaxScanRate = uint32(MaxFileScanRate);
 						}
 					}
-					FParse::Value(InParams, TEXT("FoldersToClean="), MaintainerParams.MaxDirectoryScanCount);
+					FParse::Value(InParams, TEXT("FoldersToClean="), MaintainerParams->MaxDirectoryScanCount);
 				}
 				else
 				{
-					MaintainerParams.ScanFrequency = FTimespan::MaxValue();
+					MaintainerParams->ScanFrequency = FTimespan::MaxValue();
 				}
 				double TimeToWaitAfterInit;
 				if (bClean)
 				{
-					MaintainerParams.TimeToWaitAfterInit = FTimespan::Zero();
+					MaintainerParams->TimeToWaitAfterInit = FTimespan::Zero();
 				}
 				else if (GConfig->GetDouble(TEXT("DDCCleanup"), TEXT("TimeToWaitAfterInit"), TimeToWaitAfterInit, GEngineIni))
 				{
-					MaintainerParams.TimeToWaitAfterInit = FTimespan::FromSeconds(TimeToWaitAfterInit);
+					MaintainerParams->TimeToWaitAfterInit = FTimespan::FromSeconds(TimeToWaitAfterInit);
 				}
 
-				Maintainer = MakeUnique<FFileSystemCacheStoreMaintainer>(MaintainerParams, CachePath);
-
-				if (bClean)
+				if (!bLocalDeactivatedForPerformance)
 				{
-					Maintainer->BoostPriority();
-					Maintainer->WaitForIdle();
+					Maintainer = MakeUnique<FFileSystemCacheStoreMaintainer>(*MaintainerParams, CachePath);
+
+					if (bClean)
+					{
+						Maintainer->BoostPriority();
+						Maintainer->WaitForIdle();
+					}
 				}
 			}
 		}
 
-		if (IsUsable() && InAccessLogPath != nullptr && *InAccessLogPath != 0)
+		if (InAccessLogPath && *InAccessLogPath)
 		{
 			AccessLogWriter.Reset(new FAccessLogWriter(InAccessLogPath, CachePath));
+		}
+
+		ECacheStoreFlags Flags = ECacheStoreFlags::Query;
+		Flags |= bReadOnly ? ECacheStoreFlags::None : ECacheStoreFlags::Store;
+		Flags |= SpeedClass == EBackendSpeedClass::Local ? ECacheStoreFlags::Local : ECacheStoreFlags::Remote;
+		OutFlags = Flags;
+
+		{
+			FWriteScopeLock WriteLock(ActiveFileStoresLock);
+			ActiveFileStores.Add(this);
 		}
 	}
 }
 
+FFileSystemCacheStore::~FFileSystemCacheStore()
+{
+	FWriteScopeLock WriteLock(ActiveFileStoresLock);
+	ActiveFileStores.Remove(this);
+}
+
 bool FFileSystemCacheStore::RunSpeedTest(
-	const double InSkipTestsIfSeeksExceedMS,
+	FString CachePath,
+	bool bReadOnly,
+	bool bSeekTimeOnly,
 	double& OutSeekTimeMS,
 	double& OutReadSpeedMBs,
-	double& OutWriteSpeedMBs) const
+	double& OutWriteSpeedMBs)
 {
 	SCOPED_BOOT_TIMING("RunSpeedTest");
+	UE_SCOPED_ENGINE_ACTIVITY("Running IO speed test");
 
 	//  files of increasing size. Most DDC data falls within this range so we don't want to skew by reading
 	// large amounts of data. Ultimately we care most about latency anyway.
@@ -1085,10 +1190,10 @@ bool FFileSystemCacheStore::RunSpeedTest(
 	int TotalDataWritten = 0;
 
 	const FString AbsoluteCachePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*CachePath);
-	if (AbsoluteCachePath.Len() > MAX_CACHE_DIR_LEN)
+	if (AbsoluteCachePath.Len() >= GMaxCacheRootLen)
 	{
 		const FText ErrorMessage = FText::Format(NSLOCTEXT("DerivedDataCache", "PathTooLong", "Cache path {0} is longer than {1} characters... please adjust [DerivedDataBackendGraph] paths to be shorter (this leaves more room for cache keys)."),
-			FText::FromString(AbsoluteCachePath), FText::AsNumber(MAX_CACHE_DIR_LEN));
+			FText::FromString(AbsoluteCachePath), FText::AsNumber(GMaxCacheRootLen));
 		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage);
 		UE_LOG(LogDerivedDataCache, Fatal, TEXT("%s"), *ErrorMessage.ToString());
 	}
@@ -1136,19 +1241,10 @@ bool FFileSystemCacheStore::RunSpeedTest(
 
 	UE_LOG(LogDerivedDataCache, Verbose, TEXT("Stat tests to %s took %.02f seconds"), *CachePath, TotalSeekTime);
 
-	// if seek times are very slow do a single read/write test just to confirm access
-	/*if (OutSeekTimeMS >= InSkipTestsIfSeeksExceedMS)
+	if (bSeekTimeOnly)
 	{
-		UE_LOG(LogDerivedDataCache, Warning,
-			TEXT("Limiting read/write speed tests due to seek times of %.02f exceeding %.02fms. ")
-			TEXT("Values will be inaccurate."), OutSeekTimeMS, InSkipTestsIfSeeksExceedMS);
-
-		FString Path = TestFileEntries.begin()->Key;
-		int Size = TestFileEntries.begin()->Value;
-
-		TestFileEntries.Reset();
-		TestFileEntries.Add(Path, Size);
-	}*/
+		return true;
+	}
 
 	// create any files that were missing
 	if (!bReadOnly)
@@ -1170,8 +1266,8 @@ bool FFileSystemCacheStore::RunSpeedTest(
 					TCHAR ErrorBuffer[1024];
 					FPlatformMisc::GetSystemErrorMessage(ErrorBuffer, 1024, ErrorCode);
 					UE_LOG(LogDerivedDataCache, Warning,
-						TEXT("Fail to create %s, derived data cache to this directory will be read only. ")
-						TEXT("WriteError: %u (%s)"), *File, ErrorCode, ErrorBuffer);
+						TEXT("Fail to create %s, derived data cache to this directory will be read only. "
+						     "WriteError: %u (%s)"), *File, ErrorCode, ErrorBuffer);
 					bTestDataExists = false;
 					bWriteTestPassed = false;
 					break;
@@ -1259,11 +1355,6 @@ bool FFileSystemCacheStore::RunSpeedTest(
 		AsyncTask(ENamedThreads::AnyThread, [CustomPath]() {
 			IFileManager::Get().DeleteDirectory(*CustomPath, false, true);
 		});
-
-		// check latency and speed. Read values should always be valid
-		const double ReadSpeedMBs = (bReadTestPassed ? (TotalDataRead / TotalReadTime) : 0) / (1024 * 1024);
-		const double WriteSpeedMBs = (bWriteTestPassed ? (TotalDataWritten / TotalWriteTime) : 0) / (1024 * 1024);
-		const double SeekTimeMS = (TotalSeekTime / TestFileEntries.Num()) * 1000;
 	}
 
 	const double TotalTestTime = FPlatformTime::Seconds() - StatStartTime;
@@ -1277,273 +1368,22 @@ bool FFileSystemCacheStore::RunSpeedTest(
 	return bWriteTestPassed || bReadTestPassed;
 }
 
-bool FFileSystemCacheStore::CachedDataProbablyExists(const TCHAR* const CacheKey)
+void FFileSystemCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Exist);
-	TRACE_COUNTER_INCREMENT(FileSystemDDC_Exist);
-	COOK_STAT(auto Timer = UsageStats.TimeProbablyExists());
-
-	if (!IsUsable())
+	EDerivedDataCacheStatus CacheStatus = EDerivedDataCacheStatus::None;
+	FText CacheStatusText;
+	if (IsDeactivatedForPerformance())
 	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped exists check of %s because this cache store is not available"), *CachePath, CacheKey);
-		return false;
+		CacheStatus = EDerivedDataCacheStatus::Deactivation;
+		CacheStatusText = NSLOCTEXT("DerivedDataCache", "DeactivatedForPerformance", "Deactivated for performance");
 	}
-
-	if (DebugOptions.ShouldSimulateGetMiss(CacheKey))
-	{
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for exists check of %s"), *CachePath, CacheKey);
-		return false;
-	}
-
-	TStringBuilder<256> LegacyPath;
-	BuildCacheLegacyPath(CacheKey, LegacyPath);
-	const bool bExists = FileExists(LegacyPath);
-	if (bExists)
-	{
-		if (AccessLogWriter)
-		{
-			AccessLogWriter->Append(CacheKey, LegacyPath);
-		}
-
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_ExistHit);
-		COOK_STAT(Timer.AddHit(0));
-	}
-	// If not using a shared cache, record a (probable) miss
-	else if (!GetDerivedDataCacheRef().GetUsingSharedDDC())
-	{
-		// store a cache miss
-		FScopeLock ScopeLock(&SynchronizationObject);
-		if (!DDCNotificationCacheTimes.Contains(CacheKey))
-		{
-			DDCNotificationCacheTimes.Add(CacheKey, FPlatformTime::Seconds());
-		}
-	}
-
-	UE_LOG(LogDerivedDataCache, Verbose,
-		TEXT("%s: CachedDataProbablyExists=%d for %s"), *CachePath, int32(bExists), CacheKey);
-
-	return bExists;
+	const FString& CacheStatusTextString = CacheStatusText.ToString();
+	OutNode = {TEXT("File System"), *CachePath, SpeedClass == EBackendSpeedClass::Local, CacheStatus, CacheStatusTextString.IsEmpty() ? nullptr : *CacheStatusTextString};
+	OutNode.UsageStats.Add(TEXT(""), UsageStats);
+	OutNode.SpeedStats = SpeedStats;
 }
 
-bool FFileSystemCacheStore::GetCachedData(const TCHAR* const CacheKey, TArray<uint8>& Data)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Get);
-	TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
-	COOK_STAT(auto Timer = UsageStats.TimeGet());
-
-	const double StartTime = FPlatformTime::Seconds();
-
-	if (!IsUsable())
-	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped get of %s because this cache store is not available"), *CachePath, CacheKey);
-		return false;
-	}
-
-	if (DebugOptions.ShouldSimulateGetMiss(CacheKey))
-	{
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s"), *CachePath, CacheKey);
-		return false;
-	}
-
-	const auto ReadData = [this, CacheKey, &Data](FArchive& Ar)
-	{
-		const int64 Size = Ar.TotalSize();
-		if (Size > MAX_int32)
-		{
-			Ar.SetError();
-			return;
-		}
-
-		Data.Reset(int32(Size));
-		Data.AddUninitialized(int32(Size));
-		Ar.Serialize(Data.GetData(), Size);
-
-		if (!FCorruptionWrapper::ReadTrailer(Data, *CachePath, CacheKey))
-		{
-			Ar.SetError();
-		}
-	};
-
-	TStringBuilder<256> LegacyPath;
-	BuildCacheLegacyPath(CacheKey, LegacyPath);
-	if (LoadFile(LegacyPath, CacheKey, ReadData))
-	{
-		if (AccessLogWriter)
-		{
-			AccessLogWriter->Append(CacheKey, LegacyPath);
-		}
-
-		const double ReadDuration = FPlatformTime::Seconds() - StartTime;
-		const double ReadSpeed = ReadDuration > 0.001 ? (Data.Num() / ReadDuration) / (1024.0 * 1024.0) : 0.0;
-		UE_LOG(LogDerivedDataCache, Verbose,
-			TEXT("%s: Cache hit on %s (%d bytes, %.02f secs, %.2fMB/s)"),
-			*CachePath, CacheKey, Data.Num(), ReadDuration, ReadSpeed);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
-		TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, int64(Data.Num()));
-		COOK_STAT(Timer.AddHit(Data.Num()));
-		return true;
-	}
-
-	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache miss on %s"), *CachePath, CacheKey);
-	Data.Empty();
-
-	// If not using a shared cache, record a miss
-	if (!GetDerivedDataCacheRef().GetUsingSharedDDC())
-	{
-		// store a cache miss
-		FScopeLock ScopeLock(&SynchronizationObject);
-		if (!DDCNotificationCacheTimes.Contains(CacheKey))
-		{
-			DDCNotificationCacheTimes.Add(CacheKey, FPlatformTime::Seconds());
-		}
-	}
-
-	return false;
-}
-
-bool FFileSystemCacheStore::WouldCache(const TCHAR* const CacheKey, const TConstArrayView<uint8> InData)
-{
-	return IsWritable() && !CachedDataProbablyExists(CacheKey);
-}
-
-FFileSystemCacheStore::EPutStatus FFileSystemCacheStore::PutCachedData(
-	const TCHAR* const CacheKey,
-	const TConstArrayView<uint8> Data,
-	const bool bPutEvenIfExists)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Put);
-	TRACE_COUNTER_INCREMENT(FileSystemDDC_Put);
-	COOK_STAT(auto Timer = UsageStats.TimePut());
-
-	checkf(Data.Num(), TEXT("%s: Failed to put %s due to empty data"), *CachePath, CacheKey);
-
-	if (!IsUsable())
-	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped put of %s because this cache store is not available"), *CachePath, CacheKey);
-		return EPutStatus::NotCached;
-	}
-
-	if (!IsWritable())
-	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped put of %s because this cache store is read-only"), *CachePath, CacheKey);
-		return EPutStatus::NotCached;
-	}
-
-	if (DebugOptions.ShouldSimulatePutMiss(CacheKey))
-	{
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for put of %s"), *CachePath, CacheKey);
-		return EPutStatus::NotCached;
-	}
-
-	TStringBuilder<256> LegacyPath;
-	BuildCacheLegacyPath(CacheKey, LegacyPath);
-
-	if (AccessLogWriter)
-	{
-		AccessLogWriter->Append(CacheKey, LegacyPath);
-	}
-
-	EPutStatus Status = EPutStatus::NotCached;
-
-	if (bPutEvenIfExists || !FileExists(LegacyPath))
-	{
-		const auto WriteData = [this, CacheKey, &Data](FArchive& Ar)
-		{
-			Ar.Serialize(const_cast<uint8*>(Data.GetData()), Data.Num());
-			FCorruptionWrapper::WriteTrailer(Ar, Data, *CachePath, CacheKey);
-		};
-
-		if (SaveFile(LegacyPath, CacheKey, WriteData))
-		{
-			UE_LOG(LogDerivedDataCache, Verbose,
-				TEXT("%s: Successful cache put of %s to %s"), *CachePath, CacheKey, *LegacyPath);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_PutHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesWritten, int64(Data.Num()));
-			COOK_STAT(Timer.AddHit(Data.Num()));
-			Status = EPutStatus::Cached;
-		}
-	}
-	else
-	{
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Skipping put of %s to existing file"), *CachePath, CacheKey);
-		Status = EPutStatus::Cached;
-	}
-
-	// If not using a shared cache, update estimated build time
-	if (!GetDerivedDataCacheRef().GetUsingSharedDDC())
-	{
-		FScopeLock ScopeLock(&SynchronizationObject);
-
-		if (DDCNotificationCacheTimes.Contains(CacheKey))
-		{
-			// There isn't any way to get exact build times in the DDC code as custom asset processing and async are factors.
-			// So, estimate the asset build time based on the delta between the cache miss and the put
-			TotalEstimatedBuildTime += (FPlatformTime::Seconds() - DDCNotificationCacheTimes[CacheKey]);
-			DDCNotificationCacheTimes.Remove(CacheKey);
-
-			// If more than 20 seconds has been spent building assets, send out a notification
-			if (TotalEstimatedBuildTime > 20.0f)
-			{
-				// Send out a DDC put notification if we have any subscribers
-				FDerivedDataCacheInterface::FOnDDCNotification& DDCNotificationEvent =
-					GetDerivedDataCacheRef().GetDDCNotificationEvent();
-
-				if (DDCNotificationEvent.IsBound())
-				{
-					TotalEstimatedBuildTime = 0.0f;
-
-					DECLARE_CYCLE_STAT(TEXT("FSimpleDelegateGraphTask.PutCachedData"),
-					STAT_FSimpleDelegateGraphTask_DDCNotification, STATGROUP_TaskGraphTasks);
-
-					FSimpleDelegateGraphTask::CreateAndDispatchWhenReady(
-						FSimpleDelegateGraphTask::FDelegate::CreateLambda([DDCNotificationEvent]() {
-						DDCNotificationEvent.Broadcast(FDerivedDataCacheInterface::SharedDDCPerformanceNotification);
-					}),
-						GET_STATID(STAT_FSimpleDelegateGraphTask_DDCNotification),
-						nullptr,
-						ENamedThreads::GameThread);
-				}
-			}
-		}
-	}
-
-	return Status;
-}
-
-void FFileSystemCacheStore::RemoveCachedData(const TCHAR* const CacheKey, const bool bTransient)
-{
-	check(IsUsable());
-	if (IsWritable() && (!bTransient || bPurgeTransient))
-	{
-		TStringBuilder<256> LegacyPath;
-		BuildCacheLegacyPath(CacheKey, LegacyPath);
-		if (bTransient)
-		{
-			UE_LOG(LogDerivedDataCache, Verbose,
-				TEXT("%s: Deleting cached data for %s from %s"), *CachePath, CacheKey, *LegacyPath);
-		}
-		IFileManager::Get().Delete(*LegacyPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
-	}
-}
-
-TSharedRef<FDerivedDataCacheStatsNode> FFileSystemCacheStore::GatherUsageStats() const
-{
-	TSharedRef<FDerivedDataCacheStatsNode> Usage =
-		MakeShared<FDerivedDataCacheStatsNode>(TEXT("File System"), *CachePath, SpeedClass == ESpeedClass::Local);
-	Usage->Stats.Add(TEXT(""), UsageStats);
-	return Usage;
-}
-
-TBitArray<> FFileSystemCacheStore::TryToPrefetch(const TConstArrayView<FString> CacheKeys)
-{
-	return CachedDataProbablyExistsBatch(CacheKeys);
-}
-
-bool FFileSystemCacheStore::ApplyDebugOptions(FBackendDebugOptions& InOptions)
+bool FFileSystemCacheStore::LegacyDebugOptions(FBackendDebugOptions& InOptions)
 {
 	DebugOptions = InOptions;
 	return true;
@@ -1556,24 +1396,27 @@ void FFileSystemCacheStore::Put(
 {
 	for (const FCachePutRequest& Request : Requests)
 	{
-		const FCacheRecord& Record = Request.Record;
-		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Put);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_Put);
-		COOK_STAT(auto Timer = UsageStats.TimePut());
-		uint64 WriteSize = 0;
-		if (PutCacheRecord(Request.Name, Record, Request.Policy, WriteSize))
+		bool bOk;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Record.GetKey()), *Request.Name);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_PutHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesWritten, WriteSize);
-			COOK_STAT(if (WriteSize) { Timer.AddHit(WriteSize); });
-			OnComplete(Request.MakeResponse(EStatus::Ok));
+			const FCacheRecord& Record = Request.Record;
+			TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Put);
+			TRACE_COUNTER_INCREMENT(FileSystemDDC_Put);
+			COOK_STAT(auto Timer = UsageStats.TimePut());
+			uint64 WriteSize = 0;
+			bOk = PutCacheRecord(Request.Name, Record, Request.Policy, WriteSize);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Record.GetKey()), *Request.Name);
+				TRACE_COUNTER_INCREMENT(FileSystemDDC_PutHit);
+				TRACE_COUNTER_ADD(FileSystemDDC_BytesWritten, WriteSize);
+				if (WriteSize)
+				{
+					COOK_STAT(Timer.AddHit(WriteSize));
+				}
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete(Request.MakeResponse(bOk ? EStatus::Ok : EStatus::Error));
 	}
 }
 
@@ -1584,23 +1427,26 @@ void FFileSystemCacheStore::Get(
 {
 	for (const FCacheGetRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Get);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
-		EStatus Status = EStatus::Ok;
-		if (FOptionalCacheRecord Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status))
+		EStatus Status = EStatus::Error;
+		FOptionalCacheRecord Record;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, Private::GetCacheRecordCompressedSize(Record.Get()));
-			COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
-			OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
+			TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Get);
+			TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			if ((Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status)))
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
+				TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, Private::GetCacheRecordCompressedSize(Record.Get()));
+				COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
+			}
+			else
+			{
+				Record = FCacheRecordBuilder(Request.Key).Build();
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(Status));
-		}
+		OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
 	}
 }
 
@@ -1611,23 +1457,26 @@ void FFileSystemCacheStore::PutValue(
 {
 	for (const FCachePutValueRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Put);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_Put);
-		COOK_STAT(auto Timer = UsageStats.TimePut());
-		uint64 WriteSize = 0;
-		if (PutCacheValue(Request.Name, Request.Key, Request.Value, Request.Policy, WriteSize))
+		bool bOk;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_PutHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesWritten, WriteSize);
-			COOK_STAT(if (WriteSize) { Timer.AddHit(WriteSize); });
-			OnComplete(Request.MakeResponse(EStatus::Ok));
+			TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_PutValue);
+			TRACE_COUNTER_INCREMENT(FileSystemDDC_Put);
+			COOK_STAT(auto Timer = UsageStats.TimePut());
+			uint64 WriteSize = 0;
+			bOk = PutCacheValue(Request.Name, Request.Key, Request.Value, Request.Policy, WriteSize);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache put complete for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				TRACE_COUNTER_INCREMENT(FileSystemDDC_PutHit);
+				TRACE_COUNTER_ADD(FileSystemDDC_BytesWritten, WriteSize);
+				if (WriteSize)
+				{
+					COOK_STAT(Timer.AddHit(WriteSize));
+				}
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Ok));
-		}
+		OnComplete(Request.MakeResponse(bOk ? EStatus::Ok : EStatus::Error));
 	}
 }
 
@@ -1638,23 +1487,23 @@ void FFileSystemCacheStore::GetValue(
 {
 	for (const FCacheGetValueRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Get);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
+		bool bOk;
 		FValue Value;
-		if (GetCacheValue(Request.Name, Request.Key, Request.Policy, Value))
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, Value.GetData().GetCompressedSize());
-			COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
-			OnComplete({Request.Name, Request.Key, Value, Request.UserData, EStatus::Ok});
+			TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_GetValue);
+			TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			bOk = GetCacheValue(Request.Name, Request.Key, Request.Policy, Value);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*CachePath, *WriteToString<96>(Request.Key), *Request.Name);
+				TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
+				TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, Value.GetData().GetCompressedSize());
+				COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete({Request.Name, Request.Key, Value, Request.UserData, bOk ? EStatus::Ok : EStatus::Error});
 	}
 }
 
@@ -1675,70 +1524,71 @@ void FFileSystemCacheStore::GetChunks(
 	FOptionalCacheRecord Record;
 	for (const FCacheGetChunkRequest& Request : SortedRequests)
 	{
-		const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
-		TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_Get);
-		TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
-		COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
-		if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
+		EStatus Status = EStatus::Error;
+		FSharedBuffer Buffer;
+		uint64 RawSize = 0;
 		{
-			ValueReader.ResetSource();
-			ValueAr.Reset();
-			ValueKey = {};
-			ValueId.Reset();
-			Value.Reset();
-			bHasValue = false;
-			if (Request.Id.IsValid())
+			TRACE_CPUPROFILER_EVENT_SCOPE(FileSystemDDC_GetChunks);
+			TRACE_COUNTER_INCREMENT(FileSystemDDC_Get);
+			const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
+			COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
+			if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
 			{
-				if (!(Record && Record.Get().GetKey() == Request.Key))
+				ValueReader.ResetSource();
+				ValueAr.Reset();
+				ValueKey = {};
+				ValueId.Reset();
+				Value.Reset();
+				bHasValue = false;
+				if (Request.Id.IsValid())
 				{
-					FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
-					PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
-					Record.Reset();
-					Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
-				}
-				if (Record)
-				{
-					if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+					if (!(Record && Record.Get().GetKey() == Request.Key))
 					{
-						bHasValue = true;
-						Value = ValueWithId;
-						ValueId = Request.Id;
-						ValueKey = Request.Key;
-						GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
+						PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
+						Record.Reset();
+						Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
+					}
+					if (Record)
+					{
+						if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+						{
+							bHasValue = true;
+							Value = ValueWithId;
+							ValueId = Request.Id;
+							ValueKey = Request.Key;
+							GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						}
+					}
+				}
+				else
+				{
+					ValueKey = Request.Key;
+					bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
+					if (bHasValue)
+					{
+						GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
 					}
 				}
 			}
-			else
+			if (bHasValue)
 			{
-				ValueKey = Request.Key;
-				bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
-				if (bHasValue)
+				const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
+				RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
+				TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
+				TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, !bExistsOnly ? RawSize : 0);
+				COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
+				if (!bExistsOnly)
 				{
-					GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
+					Buffer = ValueReader.Decompress(RawOffset, RawSize);
 				}
+				Status = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
 			}
 		}
-		if (bHasValue)
-		{
-			const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
-			const uint64 RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*CachePath, *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
-			TRACE_COUNTER_INCREMENT(FileSystemDDC_GetHit);
-			TRACE_COUNTER_ADD(FileSystemDDC_BytesRead, !bExistsOnly ? RawSize : 0);
-			COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
-			FSharedBuffer Buffer;
-			if (!bExistsOnly)
-			{
-				Buffer = ValueReader.Decompress(RawOffset, RawSize);
-			}
-			const EStatus ChunkStatus = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
-			OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
-				RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, ChunkStatus});
-			continue;
-		}
-
-		OnComplete(Request.MakeResponse(EStatus::Error));
+		UE_CLOG(Status == EStatus::Ok, LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+			*CachePath, *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
+		OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
+			RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, Status});
 	}
 }
 
@@ -1748,11 +1598,16 @@ bool FFileSystemCacheStore::PutCacheRecord(
 	const FCacheRecordPolicy& Policy,
 	uint64& OutWriteSize)
 {
-	if (!IsWritable())
+	const bool bLocalDeactivatedForPerformance = IsDeactivatedForPerformance();
+	if (bLocalDeactivatedForPerformance || bReadOnly)
 	{
 		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped put of %s from '%.*s' because this cache store is read-only"),
-			*CachePath, *WriteToString<96>(Record.GetKey()), Name.Len(), Name.GetData());
+			TEXT("%s: Skipped put of %s from '%.*s' because this cache store is %s"),
+			*CachePath,
+			*WriteToString<96>(Record.GetKey()),
+			Name.Len(),
+			Name.GetData(),
+			bLocalDeactivatedForPerformance ? TEXT("deactivated due to low performance") : TEXT("read-only"));
 		return false;
 	}
 
@@ -1760,7 +1615,7 @@ bool FFileSystemCacheStore::PutCacheRecord(
 	const ECachePolicy RecordPolicy = Policy.GetRecordPolicy();
 
 	// Skip the request if storing to the cache is disabled.
-	const ECachePolicy StoreFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::StoreLocal : ECachePolicy::StoreRemote;
+	const ECachePolicy StoreFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::StoreLocal : ECachePolicy::StoreRemote;
 	if (!EnumHasAnyFlags(RecordPolicy, StoreFlag))
 	{
 		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped put of %s from '%.*s' due to cache policy"),
@@ -1780,7 +1635,7 @@ bool FFileSystemCacheStore::PutCacheRecord(
 
 	// Check if there is an existing record package.
 	FCbPackage ExistingPackage;
-	const ECachePolicy QueryFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
+	const ECachePolicy QueryFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
 	bool bReplaceExisting = !EnumHasAnyFlags(RecordPolicy, QueryFlag);
 	bool bSavePackage = bReplaceExisting;
 	if (const bool bLoadPackage = !bReplaceExisting || !Algo::AllOf(Record.GetValues(), &FValue::HasData))
@@ -1807,9 +1662,9 @@ bool FFileSystemCacheStore::PutCacheRecord(
 					if (!Value.HasData() && !GetCacheContentExists(Key, Value.GetRawHash()))
 					{
 						UE_LOG(LogDerivedDataCache, Log,
-							TEXT("%s: Cache put of non-deterministic record will overwrite existing record due to ")
-							TEXT("missing value %s with hash %s for %s from '%.*s'"),
-							*CachePath, *WriteToString<16>(Value.GetId()), *WriteToString<48>(Value.GetRawHash()),
+							TEXT("%s: Cache put of non-deterministic record will overwrite existing record due to "
+							     "missing value %s with hash %s for %s from '%.*s'"),
+							*CachePath, *WriteToString<32>(Value.GetId()), *WriteToString<48>(Value.GetRawHash()),
 							*WriteToString<96>(Key), Name.Len(), Name.GetData());
 						return false;
 					}
@@ -1914,20 +1769,19 @@ FOptionalCacheRecord FFileSystemCacheStore::GetCacheRecordOnly(
 	const FCacheKey& Key,
 	const FCacheRecordPolicy& Policy)
 {
-	if (!IsUsable())
-	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped get of %s from '%.*s' because this cache store is not available"),
-			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-		return FOptionalCacheRecord();
-	}
-
 	// Skip the request if querying the cache is disabled.
-	const ECachePolicy QueryFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
-	if (!EnumHasAnyFlags(Policy.GetRecordPolicy(), QueryFlag))
+	const ECachePolicy QueryFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
+	const bool bLocalDeactivatedForPerformance = IsDeactivatedForPerformance();
+	if (bLocalDeactivatedForPerformance || !EnumHasAnyFlags(Policy.GetRecordPolicy(), QueryFlag))
 	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped get of %s from '%.*s' due to cache policy"),
-			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped get of %s from '%.*s' %s"),
+			*CachePath,
+			*WriteToString<96>(Key),
+			Name.Len(),
+			Name.GetData(),
+			bLocalDeactivatedForPerformance ?
+				TEXT("because this cache store is deactivated due to low performance") :
+				TEXT("due to cache policy"));
 		return FOptionalCacheRecord();
 	}
 
@@ -2039,16 +1893,23 @@ bool FFileSystemCacheStore::PutCacheValue(
 	const ECachePolicy Policy,
 	uint64& OutWriteSize)
 {
-	if (!IsWritable())
+	const bool bLocalDeactivatedForPerformance = IsDeactivatedForPerformance();
+	if (bLocalDeactivatedForPerformance || bReadOnly)
 	{
 		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped put of %s from '%.*s' because this cache store is read-only"),
-			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+			TEXT("%s: Skipped put of %s from '%.*s' because this cache store is %s"),
+			*CachePath,
+			*WriteToString<96>(Key),
+			Name.Len(),
+			Name.GetData(),
+			bLocalDeactivatedForPerformance ?
+				TEXT("deactivated due to low performance") :
+				TEXT("read-only"));
 		return false;
 	}
 
 	// Skip the request if storing to the cache is disabled.
-	const ECachePolicy StoreFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::StoreLocal : ECachePolicy::StoreRemote;
+	const ECachePolicy StoreFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::StoreLocal : ECachePolicy::StoreRemote;
 	if (!EnumHasAnyFlags(Policy, StoreFlag))
 	{
 		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped put of %s from '%.*s' due to cache policy"),
@@ -2067,7 +1928,7 @@ bool FFileSystemCacheStore::PutCacheValue(
 	FCbPackage ExistingPackage;
 	TStringBuilder<256> Path;
 	BuildCachePackagePath(Key, Path);
-	const ECachePolicy QueryFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
+	const ECachePolicy QueryFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
 	bool bReplaceExisting = !EnumHasAnyFlags(Policy, QueryFlag);
 	bool bSavePackage = bReplaceExisting;
 	if (const bool bLoadPackage = !bReplaceExisting || !Value.HasData())
@@ -2184,20 +2045,19 @@ bool FFileSystemCacheStore::GetCacheValueOnly(
 	const ECachePolicy Policy,
 	FValue& OutValue)
 {
-	if (!IsUsable())
-	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose,
-			TEXT("%s: Skipped get of %s from '%.*s' because this cache store is not available"),
-			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-		return false;
-	}
-
 	// Skip the request if querying the cache is disabled.
-	const ECachePolicy QueryFlag = SpeedClass == ESpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
-	if (!EnumHasAnyFlags(Policy, QueryFlag))
+	const ECachePolicy QueryFlag = SpeedClass == EBackendSpeedClass::Local ? ECachePolicy::QueryLocal : ECachePolicy::QueryRemote;
+	const bool bLocalDeactivatedForPerformance = IsDeactivatedForPerformance();
+	if (bLocalDeactivatedForPerformance || !EnumHasAnyFlags(Policy, QueryFlag))
 	{
-		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped get of %s from '%.*s' due to cache policy"),
-			*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("%s: Skipped get of %s from '%.*s' %s"),
+			*CachePath,
+			*WriteToString<96>(Key),
+			Name.Len(),
+			Name.GetData(),
+			bLocalDeactivatedForPerformance ?
+			TEXT("because this cache store is deactivated due to low performance") :
+			TEXT("due to cache policy"));
 		return false;
 	}
 
@@ -2413,9 +2273,12 @@ void FFileSystemCacheStore::GetCacheContent(
 	}
 	else
 	{
-		OutArchive = OpenFile(Path, Name);
+		OutArchive = OpenFileRead(Path, Name);
 		if (OutArchive)
 		{
+			UE_LOG(LogDerivedDataCache, VeryVerbose,
+				TEXT("%s: Opened %s from '%.*s'"),
+				*CachePath, *Path, Name.Len(), Name.GetData());
 			Reader.SetSource(*OutArchive);
 			if (Reader.GetRawHash() == RawHash)
 			{
@@ -2503,49 +2366,39 @@ bool FFileSystemCacheStore::SaveFile(
 	TStringBuilder<256> TempPath;
 	TempPath << FPathViews::GetPath(Path) << TEXT("/Temp.") << FGuid::NewGuid();
 
-	ON_SCOPE_EXIT
-	{
-		IFileManager::Get().Delete(*TempPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
-	};
-
-	int64 WriteSize = 0;
-	bool bError = false;
-
-	if (TUniquePtr<FArchive> Ar{IFileManager::Get().CreateFileWriter(*TempPath, FILEWRITE_Silent)})
-	{
-		WriteFunction(*Ar);
-		WriteSize = Ar->Tell();
-		bError = !Ar->Close();
-	}
-
-	if (bError || WriteSize == 0)
+	TUniquePtr<FArchive> Ar = OpenFileWrite(TempPath, DebugName);
+	if (!Ar)
 	{
 		UE_LOG(LogDerivedDataCache, Warning,
-			TEXT("%s: Failed to write to temp file %s when saving %s from '%.*s'. Error 0x%08x"),
+			TEXT("%s: Failed to open temp file %s for writing when saving %s from '%.*s'. Error 0x%08x."),
 			*CachePath, *TempPath, *Path, DebugName.Len(), DebugName.GetData(), FPlatformMisc::GetLastError());
 		return false;
 	}
 
-	if (IFileManager::Get().FileSize(*TempPath) != WriteSize)
+	WriteFunction(*Ar);
+	const int64 WriteSize = Ar->Tell();
+
+	if (!Ar->Close() || WriteSize == 0 || WriteSize != IFileManager::Get().FileSize(*TempPath))
 	{
 		UE_LOG(LogDerivedDataCache, Warning,
-			TEXT("%s: Failed to write to temp file %s when saving %s from '%.*s'. ")
-			TEXT("File is %" INT64_FMT " bytes when %" INT64_FMT " bytes are expected."),
-			*CachePath, *TempPath, *Path, DebugName.Len(), DebugName.GetData(),
+			TEXT("%s: Failed to write to temp file %s when saving %s from '%.*s'. Error 0x%08x. "
+			"File is %" INT64_FMT " bytes when %" INT64_FMT " bytes are expected."),
+			*CachePath, *TempPath, *Path, DebugName.Len(), DebugName.GetData(), FPlatformMisc::GetLastError(),
 			IFileManager::Get().FileSize(*TempPath), WriteSize);
+		IFileManager::Get().Delete(*TempPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
 		return false;
 	}
 
-	if (!IFileManager::Get().Move(*Path, *TempPath,
-		bReplaceExisting, /*bEvenIfReadOnly*/ false, /*bAttributes*/ false, /*bDoNotRetryOrError*/ true))
+	if (!IFileManager::Get().Move(*Path, *TempPath, bReplaceExisting, /*bEvenIfReadOnly*/ false, /*bAttributes*/ false, /*bDoNotRetryOrError*/ true))
 	{
 		UE_LOG(LogDerivedDataCache, Log,
 			TEXT("%s: Move collision when writing file %s from '%.*s'."),
 			*CachePath, *Path, DebugName.Len(), DebugName.GetData());
+		IFileManager::Get().Delete(*TempPath, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
 	}
 
 	const double WriteDuration = FPlatformTime::Seconds() - StartTime;
-	const double WriteSpeed = WriteDuration > 0.001 ? (WriteSize / WriteDuration) / (1024.0 * 1024.0) : 0.0;
+	const double WriteSpeed = WriteDuration > 0.001 ? (double(WriteSize) / WriteDuration) / (1024.0 * 1024.0) : 0.0;
 	UE_LOG(LogDerivedDataCache, VeryVerbose,
 		TEXT("%s: Saved %s from '%.*s' (%" INT64_FMT " bytes, %.02f secs, %.2f MiB/s)"),
 		*CachePath, *Path, DebugName.Len(), DebugName.GetData(), WriteSize, WriteDuration, WriteSpeed);
@@ -2558,56 +2411,83 @@ bool FFileSystemCacheStore::LoadFile(
 	const FStringView DebugName,
 	const TFunctionRef<void (FArchive& Ar)> ReadFunction) const
 {
-	check(IsUsable());
 	const double StartTime = FPlatformTime::Seconds();
 
-	int64 ReadSize = 0;
-	bool bError = false;
-
-	if (TUniquePtr<FArchive> Ar = OpenFile(Path, DebugName))
+	TUniquePtr<FArchive> Ar = OpenFileRead(Path, DebugName);
+	if (!Ar)
 	{
-		ReadFunction(*Ar);
-		ReadSize = Ar->Tell();
-		bError = !Ar->Close();
+		return false;
+	}
 
-		if (bError)
+	ReadFunction(*Ar);
+	const int64 ReadSize = Ar->Tell();
+	const bool bError = !Ar->Close();
+
+	if (bError)
+	{
+		UE_LOG(LogDerivedDataCache, Display,
+			TEXT("%s: Failed to load file %s from '%.*s'."),
+			*CachePath, *Path, DebugName.Len(), DebugName.GetData());
+
+		if (!bReadOnly)
 		{
-			UE_LOG(LogDerivedDataCache, Display,
-				TEXT("%s: Failed to load file %s from '%.*s'."),
-				*CachePath, *Path, DebugName.Len(), DebugName.GetData());
+			IFileManager::Get().Delete(*Path, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
 		}
 	}
-
-	const double ReadDuration = FPlatformTime::Seconds() - StartTime;
-	const double ReadSpeed = ReadDuration > 0.001 ? (ReadSize / ReadDuration) / (1024.0 * 1024.0) : 0.0;
-
-	if (!GIsBuildMachine && ReadDuration > 5.0)
+	else
 	{
-		// Slower than 0.5 MiB/s?
-		UE_CLOG(ReadSpeed < 0.5, LogDerivedDataCache, Warning,
-			TEXT("%s: Loading %s from '%.*s' is very slow (%.2f MiB/s); consider disabling this cache backend"),
-			*CachePath, *Path, DebugName.Len(), DebugName.GetData(), ReadSpeed);
-	}
+		const double ReadDuration = FPlatformTime::Seconds() - StartTime;
+		const double ReadSpeed = ReadDuration > 0.001 ? (double(ReadSize) / ReadDuration) / (1024.0 * 1024.0) : 0.0;
 
-	UE_LOG(LogDerivedDataCache, VeryVerbose,
-		TEXT("%s: Loaded %s from '%.*s' (%" INT64_FMT " bytes, %.02f secs, %.2f MiB/s)"),
-		*CachePath, *Path, DebugName.Len(), DebugName.GetData(), ReadSize, ReadDuration, ReadSpeed);
+		UE_LOG(LogDerivedDataCache, VeryVerbose,
+			TEXT("%s: Loaded %s from '%.*s' (%" INT64_FMT " bytes, %.02f secs, %.2f MiB/s)"),
+			*CachePath, *Path, DebugName.Len(), DebugName.GetData(), ReadSize, ReadDuration, ReadSpeed);
 
-	if (bError && !bReadOnly)
-	{
-		IFileManager::Get().Delete(*Path, /*bRequireExists*/ false, /*bEvenReadOnly*/ false, /*bQuiet*/ true);
+		if (!GIsBuildMachine && ReadDuration > 5.0)
+		{
+			// Slower than 0.5 MiB/s?
+			UE_CLOG(ReadSpeed < 0.5, LogDerivedDataCache, Warning,
+				TEXT("%s: Loading %s from '%.*s' is very slow (%.2f MiB/s); consider disabling this cache store."),
+				*CachePath, *Path, DebugName.Len(), DebugName.GetData(), ReadSpeed);
+		}
 	}
 
 	return !bError && ReadSize > 0;
 }
 
-TUniquePtr<FArchive> FFileSystemCacheStore::OpenFile(FStringBuilderBase& Path, const FStringView DebugName) const
+TUniquePtr<FArchive> FFileSystemCacheStore::OpenFileWrite(FStringBuilderBase& Path, const FStringView DebugName) const
 {
-	// Check for existence before reading because it may update the modification time and avoid the
-	// file being deleted by a cache cleanup thread or process.
-	if (!FileExists(Path))
+	// Retry to handle a race where the directory is deleted while the file is being created.
+	constexpr int32 MaxAttemptCount = 3;
+	for (int32 AttemptCount = 0; AttemptCount < MaxAttemptCount; ++AttemptCount)
 	{
-		return nullptr;
+		if (TUniquePtr<FArchive> Ar{IFileManager::Get().CreateFileWriter(*Path, FILEWRITE_Silent)})
+		{
+			return Ar;
+		}
+	}
+	return nullptr;
+}
+
+TUniquePtr<FArchive> FFileSystemCacheStore::OpenFileRead(FStringBuilderBase& Path, const FStringView DebugName) const
+{
+	// Checking for existence may update the modification time to avoid the file being evicted from the cache.
+	// Reduce Game Thread overhead by executing the update on a worker thread if the path implies higher latency.
+	if (IsInGameThread() && FStringView(CachePath).StartsWith(TEXTVIEW("//"), ESearchCase::CaseSensitive))
+	{
+		FRequestOwner AsyncOwner(EPriority::Normal);
+		Private::LaunchTaskInCacheThreadPool(AsyncOwner, [this, Path = WriteToString<256>(Path)]() mutable
+		{
+			(void)FileExists(Path);
+		});
+		AsyncOwner.KeepAlive();
+	}
+	else
+	{
+		if (!FileExists(Path))
+		{
+			return nullptr;
+		}
 	}
 
 	return TUniquePtr<FArchive>(IFileManager::Get().CreateFileReader(*Path, FILEREAD_Silent));
@@ -2627,22 +2507,131 @@ bool FFileSystemCacheStore::FileExists(FStringBuilderBase& Path) const
 	return true;
 }
 
+bool FFileSystemCacheStore::IsDeactivatedForPerformance()
+{
+	if ((DeactivateAtMS <= 0.f) || !bDeactivedForPerformance.load(std::memory_order_relaxed))
+	{
+		return false;
+	}
+
+	// Look for an opportunity to consume the output of an existing completed performance evaluation task
+	{
+		FReadScopeLock ReadLock(PerformanceReEvaluationTaskLock);
+		if (PerformanceReEvaluationTask.IsValid())
+		{
+			if (PerformanceReEvaluationTask.IsCompleted())
+			{
+				EPerformanceReEvaluationResult Result =
+					PerformanceReEvaluationTask.GetResult().exchange(
+						EPerformanceReEvaluationResult::Invalid,
+						std::memory_order_relaxed);
+
+				if (Result != EPerformanceReEvaluationResult::Invalid)
+				{
+					LastPerformanceEvaluationTicks.store(FDateTime::UtcNow().GetTicks(), std::memory_order_relaxed);
+					bool bLocalDeactivatedForPerformance =
+						Result == EPerformanceReEvaluationResult::PerformanceDeactivate;
+
+					if (!bLocalDeactivatedForPerformance)
+					{
+						// We're no longer deactivated for performance.  If maintenance was deferred, do it now.
+						if (FFileSystemCacheStoreMaintainerParams* MaintainerParams = DeactivationDeferredMaintainerParams.Get())
+						{
+							Maintainer = MakeUnique<FFileSystemCacheStoreMaintainer>(*MaintainerParams, CachePath);
+							DeactivationDeferredMaintainerParams.Reset();
+
+							if (bDeactivationDeferredClean)
+							{
+								Maintainer->BoostPriority();
+								Maintainer->WaitForIdle();
+							}
+						}
+
+						UE_LOG(LogDerivedDataCache, Display,
+							TEXT("%s: Performance has improved and meets minimum performance criteria. "
+								"It will be reactivated now."),
+							*CachePath);
+					}
+
+					bDeactivedForPerformance.store(bLocalDeactivatedForPerformance, std::memory_order_relaxed);
+					return bLocalDeactivatedForPerformance;
+				}
+			}
+			else
+			{
+				// Avoid attempting to get a write lock and see if you can spawn a new evaluation task
+				return true;
+			}
+		}
+	}
+
+	// Look for an opportunity to start a new performance evaluation task
+	FTimespan TimespanSinceLastPerfEval =
+		FDateTime::UtcNow() - FDateTime(LastPerformanceEvaluationTicks.load(std::memory_order_relaxed));
+
+	if (TimespanSinceLastPerfEval > FTimespan::FromMinutes(1))
+	{
+		FWriteScopeLock WriteLock(PerformanceReEvaluationTaskLock);
+		// After acquiring the write lock, ensure that the task hasn't been re-launched
+		// (and possibly completed and consumed) by someone else while we were waiting.
+		// This is evaluated by checking that:
+		// 1. Task is invalid or task is valid and has a consumed result
+		// and
+		// 2. Task consumption time is still larger than our re-evaluation interval
+		if (!PerformanceReEvaluationTask.IsValid() ||
+			(PerformanceReEvaluationTask.IsCompleted() &&
+				(PerformanceReEvaluationTask.GetResult().load(std::memory_order_relaxed) ==
+					EPerformanceReEvaluationResult::Invalid)
+			))
+		{
+			TimespanSinceLastPerfEval =
+				FDateTime::UtcNow() - FDateTime(LastPerformanceEvaluationTicks.load(std::memory_order_relaxed));
+
+			if (TimespanSinceLastPerfEval > FTimespan::FromMinutes(1))
+			{
+				PerformanceReEvaluationTask = Tasks::Launch(TEXT("FFileSystemCacheStore::ReEvaluatePerformance"),
+					[CachePath = this->CachePath, DeactivateAtMS = this->DeactivateAtMS]() ->
+						std::atomic<EPerformanceReEvaluationResult>
+					{
+						check(DeactivateAtMS > 0.f);
+
+						FDerivedDataCacheSpeedStats LocalSpeedStats;
+						LocalSpeedStats.ReadSpeedMBs = 999;
+						LocalSpeedStats.WriteSpeedMBs = 999;
+						LocalSpeedStats.LatencyMS = 0;
+
+						RunSpeedTest(CachePath,
+							true /* bReadOnly */,
+							true /* bSeekTimeOnly */,
+							LocalSpeedStats.LatencyMS,
+							LocalSpeedStats.ReadSpeedMBs,
+							LocalSpeedStats.WriteSpeedMBs);
+
+						if (LocalSpeedStats.LatencyMS >= DeactivateAtMS)
+						{
+							return EPerformanceReEvaluationResult::PerformanceDeactivate;
+						}
+						return EPerformanceReEvaluationResult::PerformanceActivate;
+					});
+			}
+		}
+	}
+
+	return true;
+}
+
 ILegacyCacheStore* CreateFileSystemCacheStore(
 	const TCHAR* CachePath,
 	const TCHAR* Params,
 	const TCHAR* AccessLogPath,
 	ECacheStoreFlags& OutFlags)
 {
-	TUniquePtr<FFileSystemCacheStore> Store(new FFileSystemCacheStore(CachePath, Params, AccessLogPath));
-	if (Store->IsUsable())
+	TUniquePtr<FFileSystemCacheStore> Store = MakeUnique<FFileSystemCacheStore>(CachePath, Params, AccessLogPath, OutFlags);
+	if (OutFlags == ECacheStoreFlags::None)
 	{
-		ECacheStoreFlags Flags = ECacheStoreFlags::Query;
-		Flags |= Store->IsWritable() ? ECacheStoreFlags::Store : ECacheStoreFlags::None;
-		Flags |= Store->GetSpeedClass() == EBackendSpeedClass::Local ? ECacheStoreFlags::Local : ECacheStoreFlags::Remote;
-		OutFlags = Flags;
-		return Store.Release();
+		Store.Reset();
 	}
-	return nullptr;
+	return Store.Release();
 }
 
 } // UE::DerivedData

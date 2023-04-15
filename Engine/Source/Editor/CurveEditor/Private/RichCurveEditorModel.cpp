@@ -1,17 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RichCurveEditorModel.h"
-#include "RichCurveKeyProxy.h"
-#include "Math/Vector2D.h"
-#include "HAL/PlatformMath.h"
-#include "Curves/RichCurve.h"
-#include "CurveDrawInfo.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
 #include "CurveDataAbstraction.h"
-#include "CurveEditor.h"
+#include "CurveDrawInfo.h"
 #include "CurveEditorScreenSpace.h"
-#include "CurveEditorSnapMetrics.h"
-#include "EditorStyleSet.h"
+#include "Curves/KeyHandle.h"
+#include "Curves/RealCurve.h"
+#include "Curves/RichCurve.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "IBufferedCurveModel.h"
+#include "Internationalization/Text.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
+#include "RichCurveKeyProxy.h"
+#include "Styling/AppStyle.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+
+class FCurveEditor;
 
 
 void RefineCurvePoints(const FRichCurve& RichCurve, double TimeThreshold, float ValueThreshold, TArray<TTuple<double, double>>& InOutPoints)
@@ -63,8 +81,8 @@ class FRichBufferedCurveModel : public IBufferedCurveModel
 {
 public:
 	FRichBufferedCurveModel(const FRichCurve& InRichCurve, TArray<FKeyPosition>&& InKeyPositions, TArray<FKeyAttributes>&& InKeyAttributes,
-		const FString& InIntentionName, const double InValueMin, const double InValueMax)
-		: IBufferedCurveModel(MoveTemp(InKeyPositions), MoveTemp(InKeyAttributes), InIntentionName, InValueMin, InValueMax)
+		const FString& InLongDisplayName, const double InValueMin, const double InValueMax)
+		: IBufferedCurveModel(MoveTemp(InKeyPositions), MoveTemp(InKeyAttributes), InLongDisplayName, InValueMin, InValueMax)
 		, RichCurve(InRichCurve)
 	{}
 
@@ -260,7 +278,7 @@ void FRichCurveEditorModel::GetKeyDrawInfo(ECurvePointType PointType, const FKey
 {
 	if (PointType == ECurvePointType::ArriveTangent || PointType == ECurvePointType::LeaveTangent)
 	{
-		OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.TangentHandle");
+		OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.TangentHandle");
 		OutDrawInfo.ScreenSize = FVector2D(9, 9);
 	}
 	else
@@ -272,20 +290,16 @@ void FRichCurveEditorModel::GetKeyDrawInfo(ECurvePointType PointType, const FKey
 		switch (KeyType)
 		{
 		case ERichCurveInterpMode::RCIM_Constant:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.ConstantKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.45f, 0.70f);
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.ConstantKey");
 			break;
 		case ERichCurveInterpMode::RCIM_Linear:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.LinearKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.62f, 0.46f);
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.LinearKey");
 			break;
 		case ERichCurveInterpMode::RCIM_Cubic:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.CubicKey");
-			OutDrawInfo.Tint = FLinearColor::White;
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.CubicKey");
 			break;
 		default:
-			OutDrawInfo.Brush = FEditorStyle::GetBrush("GenericCurveEditor.Key");
-			OutDrawInfo.Tint = FLinearColor::White;
+			OutDrawInfo.Brush = FAppStyle::GetBrush("GenericCurveEditor.Key");
 			break;
 		}
 	}
@@ -634,7 +648,7 @@ TUniquePtr<IBufferedCurveModel> FRichCurveEditorModel::CreateBufferedCurveCopy()
 			double ValueMin = 0.f, ValueMax = 1.f;
 			GetValueRange(ValueMin, ValueMax);
 
-			return MakeUnique<FRichBufferedCurveModel>(RichCurve, MoveTemp(KeyPositions), MoveTemp(KeyAttributes), GetIntentionName(), ValueMin, ValueMax);
+			return MakeUnique<FRichBufferedCurveModel>(RichCurve, MoveTemp(KeyPositions), MoveTemp(KeyAttributes), GetLongDisplayName().ToString(), ValueMin, ValueMax);
 		}
 	}
 

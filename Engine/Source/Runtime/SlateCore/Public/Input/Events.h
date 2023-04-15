@@ -8,6 +8,7 @@
 #include "InputCoreTypes.h"
 #include "Types/SlateEnums.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Layout/Geometry.h"
 #include "Events.generated.h"
 
@@ -162,6 +163,7 @@ public:
 		: ModifierKeys(FModifierKeysState())
 		, bIsRepeat(false)
 		, UserIndex(0)
+		, InputDeviceId(INPUTDEVICEID_NONE)
 		, EventPath(nullptr)
 	{ }
 
@@ -175,8 +177,19 @@ public:
 		: ModifierKeys(InModifierKeys)
 		, bIsRepeat(bInIsRepeat)
 		, UserIndex(InUserIndex)
+		, InputDeviceId(FInputDeviceId::CreateFromInternalId(InUserIndex))
 		, EventPath(nullptr)
 	{ }
+
+	FInputEvent(const FModifierKeysState& InModifierKeys, const FInputDeviceId InDeviceId, const bool bInIsRepeat)
+		: ModifierKeys(InModifierKeys)
+		, bIsRepeat(bInIsRepeat)
+		, InputDeviceId(InDeviceId)
+		, EventPath(nullptr)
+	{
+		// Set the User Index to the PlatformUser ID by default for backwards compatibility
+		UserIndex = GetPlatformUserId().GetInternalId();
+	}
 
 	/**
 	 * Virtual destructor.
@@ -317,6 +330,22 @@ public:
 		return UserIndex;
 	}
 
+	/**
+	 * Returns the input device that caused this event.
+	 */
+	FInputDeviceId GetInputDeviceId() const
+	{
+		return InputDeviceId;
+	}
+
+	/**
+	 * Returns the associated platform user that caused this event
+	 */
+	FPlatformUserId GetPlatformUserId() const
+	{
+		return IPlatformInputDeviceMapper::Get().GetUserForInputDevice(InputDeviceId);
+	}
+
 	/** The event path provides additional context for handling */
 	SLATECORE_API FGeometry FindGeometry(const TSharedRef<SWidget>& WidgetToFind) const;
 
@@ -351,6 +380,9 @@ protected:
 
 	// The index of the user that caused the event.
 	uint32 UserIndex;
+	
+	// The ID of the input device that caused this event.
+	FInputDeviceId InputDeviceId;
 
 	// Events are sent along paths. See (GetEventPath).
 	const FWidgetPath* EventPath;
@@ -405,6 +437,25 @@ public:
 		, CharacterCode(InCharacterCode)
 		, KeyCode(InKeyCode)
 	{ }
+	
+	FKeyEvent(const FKey InKey,
+			const FModifierKeysState& InModifierKeys, 
+			const FInputDeviceId InDeviceId,
+			const bool bInIsRepeat,
+			const uint32 InCharacterCode,
+			const uint32 InKeyCode,
+			const TOptional<int32> InOptionalSlateUserIndex = TOptional<int32>()
+	)
+		: FInputEvent(InModifierKeys, InDeviceId, bInIsRepeat)
+		, Key(InKey)
+		, CharacterCode(InCharacterCode)
+		, KeyCode(InKeyCode)
+	{
+		if (InOptionalSlateUserIndex.IsSet())
+		{
+			UserIndex = InOptionalSlateUserIndex.GetValue();
+		}
+	}
 
 	/**
 	 * Returns the name of the key for this event
@@ -500,6 +551,19 @@ public:
 		, AnalogValue(InAnalogValue)
 	{ }
 
+	FAnalogInputEvent(const FKey InKey,
+		const FModifierKeysState& InModifierKeys,
+		const FInputDeviceId InDeviceId,
+		const bool bInIsRepeat,
+		const uint32 InCharacterCode,
+		const uint32 InKeyCode,
+		const float InAnalogValue,
+		const TOptional<int32> InOptionalSlateUserIndex = TOptional<int32>()
+	)
+		: FKeyEvent(InKey, InModifierKeys, InDeviceId, bInIsRepeat, InCharacterCode, InKeyCode, InOptionalSlateUserIndex)
+		, AnalogValue(InAnalogValue)
+	{ }
+
 	/**
 	 * Returns the analog value between 0 and 1.
 	 * 0 being not pressed at all, 1 being fully pressed.
@@ -546,6 +610,11 @@ public:
 
 	FCharacterEvent(const TCHAR InCharacter, const FModifierKeysState& InModifierKeys, const uint32 InUserIndex, const bool bInIsRepeat)
 		: FInputEvent(InModifierKeys, InUserIndex, bInIsRepeat)
+		, Character(InCharacter)
+	{ }
+
+	FCharacterEvent(const TCHAR InCharacter, const FModifierKeysState& InModifierKeys, const FInputDeviceId InDeviceId, const bool bInIsRepeat)
+		: FInputEvent(InModifierKeys, InDeviceId, bInIsRepeat)
 		, Character(InCharacter)
 	{ }
 
@@ -692,6 +761,39 @@ public:
 	{ }
 
 	FPointerEvent(
+		FInputDeviceId InDeviceId,
+		uint32 InPointerIndex,
+		const FVector2D& InScreenSpacePosition,
+		const FVector2D& InLastScreenSpacePosition,
+		const TSet<FKey>& InPressedButtons,
+		FKey InEffectingButton,
+		float InWheelDelta,
+		const FModifierKeysState& InModifierKeys,
+		const TOptional<int32> InOptionalSlateUserIndex = TOptional<int32>()
+	)
+		: FInputEvent(InModifierKeys, InDeviceId, false)
+		, ScreenSpacePosition(InScreenSpacePosition)
+		, LastScreenSpacePosition(InLastScreenSpacePosition)
+		, CursorDelta(InScreenSpacePosition - InLastScreenSpacePosition)
+		, PressedButtons(&InPressedButtons)
+		, EffectingButton(InEffectingButton)
+		, PointerIndex(InPointerIndex)
+		, TouchpadIndex(0)
+		, Force(1.0f)
+		, bIsTouchEvent(false)
+		, GestureType(EGestureEvent::None)
+		, WheelOrGestureDelta(0.0f, InWheelDelta)
+		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
+	{
+		if (InOptionalSlateUserIndex.IsSet())
+		{
+			UserIndex = InOptionalSlateUserIndex.GetValue();
+		}
+	}
+
+	FPointerEvent(
 		uint32 InUserIndex,
 		uint32 InPointerIndex,
 		const FVector2D& InScreenSpacePosition,
@@ -768,6 +870,35 @@ public:
 		uint32 InTouchpadIndex=0
 		)
 	: FInputEvent(InModifierKeys, InUserIndex, false)
+		, ScreenSpacePosition(InScreenSpacePosition)
+		, LastScreenSpacePosition(InLastScreenSpacePosition)
+		, CursorDelta(InScreenSpacePosition - InLastScreenSpacePosition)
+		, PressedButtons(bPressLeftMouseButton ? &FTouchKeySet::StandardSet : &FTouchKeySet::EmptySet)
+		, EffectingButton(EKeys::LeftMouseButton)
+		, PointerIndex(InPointerIndex)
+		, TouchpadIndex(InTouchpadIndex)
+		, Force(InForce)
+		, bIsTouchEvent(true)
+		, GestureType(EGestureEvent::None)
+		, WheelOrGestureDelta(0.0f, 0.0f)
+		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(bInIsForceChanged)
+		, bIsTouchFirstMove(bInIsFirstMove)
+	{ }
+	
+	FPointerEvent(
+		FInputDeviceId InDeviceId,
+		uint32 InPointerIndex,
+		const FVector2D& InScreenSpacePosition,
+		const FVector2D& InLastScreenSpacePosition,
+		float InForce,
+		bool bPressLeftMouseButton,
+		bool bInIsForceChanged = false,
+		bool bInIsFirstMove = false,
+		const FModifierKeysState& InModifierKeys = FModifierKeysState(),
+		uint32 InTouchpadIndex=0
+	)
+	: FInputEvent(InModifierKeys, InDeviceId, false)
 		, ScreenSpacePosition(InScreenSpacePosition)
 		, LastScreenSpacePosition(InLastScreenSpacePosition)
 		, CursorDelta(InScreenSpacePosition - InLastScreenSpacePosition)
@@ -975,6 +1106,20 @@ public:
 		, Acceleration(InAcceleration)
 	{ }
 
+	FMotionEvent(
+		const FInputDeviceId InDeviceId,
+		const FVector& InTilt, 
+		const FVector& InRotationRate, 
+		const FVector& InGravity, 
+		const FVector& InAcceleration
+	)
+		: FInputEvent(FModifierKeysState(), InDeviceId, false)
+		, Tilt(InTilt)
+		, RotationRate(InRotationRate)
+		, Gravity(InGravity)
+		, Acceleration(InAcceleration)
+	{ }
+
 public:
 
 	/** Returns the index of the user that caused the event */
@@ -1038,6 +1183,12 @@ public:
 
 	FNavigationEvent(const FModifierKeysState& InModifierKeys, const int32 InUserIndex, EUINavigation InNavigationType, ENavigationGenesis InNavigationGenesis)
 		: FInputEvent(InModifierKeys, InUserIndex, false)
+		, NavigationType(InNavigationType)
+		, NavigationGenesis(InNavigationGenesis)
+	{ }
+
+	FNavigationEvent(const FModifierKeysState& InModifierKeys, const FInputDeviceId InDeviceId, EUINavigation InNavigationType, ENavigationGenesis InNavigationGenesis)
+		: FInputEvent(InModifierKeys, InDeviceId, false)
 		, NavigationType(InNavigationType)
 		, NavigationGenesis(InNavigationGenesis)
 	{ }

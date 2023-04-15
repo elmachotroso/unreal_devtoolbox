@@ -5,6 +5,8 @@
 #include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/ObjectSaveContext.h"
+#include "CookedMetaData.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "Misc/SecureHash.h"
 #include "UObject/PropertyPortFlags.h"
@@ -84,7 +86,7 @@ void UUserDefinedStruct::Serialize(FStructuredArchive::FRecord Record)
 			uint8* StructData = DefaultStructInstance.GetStructMemory();
 
 			FScopedPlaceholderRawContainerTracker TrackStruct(StructData);
-			SerializeItem(Record.EnterField(SA_FIELD_NAME(TEXT("Data"))), StructData, nullptr);
+			SerializeItem(Record.EnterField(TEXT("Data")), StructData, nullptr);
 
 			// Now that defaults have been loaded we can inspect our properties
 			// and default values and set the StructFlags accordingly:
@@ -161,7 +163,43 @@ void UUserDefinedStruct::PostLoad()
 {
 	Super::PostLoad();
 
+	if (GetPackage()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		if (const UStructCookedMetaData* CookedMetaData = FindCookedMetaData())
+		{
+			CookedMetaData->ApplyMetaData(this);
+			PurgeCookedMetaData();
+		}
+	}
+
 	ValidateGuid();
+}
+
+void UUserDefinedStruct::PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext)
+{
+	Super::PreSaveRoot(ObjectSaveContext);
+
+	if (ObjectSaveContext.IsCooking() && (ObjectSaveContext.GetSaveFlags() & SAVE_Optional))
+	{
+		UStructCookedMetaData* CookedMetaData = NewCookedMetaData();
+		CookedMetaData->CacheMetaData(this);
+
+		if (!CookedMetaData->HasMetaData())
+		{
+			PurgeCookedMetaData();
+		}
+	}
+	else
+	{
+		PurgeCookedMetaData();
+	}
+}
+
+void UUserDefinedStruct::PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext)
+{
+	Super::PostSaveRoot(ObjectSaveContext);
+
+	PurgeCookedMetaData();
 }
 
 void UUserDefinedStruct::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -185,6 +223,11 @@ void UUserDefinedStruct::ValidateGuid()
 		FSHA1::HashBuffer(*HashString, BufferLength, reinterpret_cast<uint8*>(HashBuffer));
 		Guid = FGuid(HashBuffer[1], HashBuffer[2], HashBuffer[3], HashBuffer[4]);
 	}
+}
+
+void UUserDefinedStruct::OnChanged()
+{
+	ChangedEvent.Broadcast(this);
 }
 
 #endif	// WITH_EDITOR
@@ -356,9 +399,16 @@ ENGINE_API FString GetPathPostfix(const UObject* ForObject)
 	return FString::Printf(TEXT("%u"), GetTypeHash(FullAssetName));
 }
 
-FString UUserDefinedStruct::GetStructCPPName() const
+FString UUserDefinedStruct::GetStructCPPName(uint32 CPPExportFlags) const
 {
-	return ::UnicodeToCPPIdentifier(*GetName(), false, GetPrefixCPP()) + GetPathPostfix(this);
+	if (CPPExportFlags & CPPF_BlueprintCppBackend)
+	{
+		return ::UnicodeToCPPIdentifier(*GetName(), false, GetPrefixCPP()) + GetPathPostfix(this);
+	}
+	else
+	{
+		return Super::GetStructCPPName(CPPExportFlags);
+	}
 }
 
 uint32 UUserDefinedStruct::GetUserDefinedStructTypeHash(const void* Src, const UScriptStruct* Type)
@@ -517,3 +567,36 @@ void UUserDefinedStruct::UpdateStructFlags()
 	}
 
 }
+
+#if WITH_EDITORONLY_DATA
+TSubclassOf<UStructCookedMetaData> UUserDefinedStruct::GetCookedMetaDataClass() const
+{
+	return UStructCookedMetaData::StaticClass();
+}
+
+UStructCookedMetaData* UUserDefinedStruct::NewCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::NewCookedMetaData<UStructCookedMetaData>(this, "CookedStructMetaData", GetCookedMetaDataClass());
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+const UStructCookedMetaData* UUserDefinedStruct::FindCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::FindCookedMetaData<UStructCookedMetaData>(this, TEXT("CookedStructMetaData"));
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+void UUserDefinedStruct::PurgeCookedMetaData()
+{
+	if (CachedCookedMetaDataPtr)
+	{
+		CookedMetaDataUtil::PurgeCookedMetaData<UStructCookedMetaData>(CachedCookedMetaDataPtr);
+	}
+}
+#endif // WITH_EDITORONLY_DATA

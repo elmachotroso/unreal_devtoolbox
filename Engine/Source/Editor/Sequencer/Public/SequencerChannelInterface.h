@@ -85,7 +85,7 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 	 * @param Channels              Array of channels and handles that are being shown in the context menu
 	 * @param InSequencer           The currently active sequencer
 	 */
-	virtual void ExtendKeyMenu_Raw(FMenuBuilder& MenuBuilder, TArrayView<const FExtendKeyMenuParams> ChannelsAndHandles, TWeakPtr<ISequencer> InSequencer) const override
+	virtual void ExtendKeyMenu_Raw(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArrayView<const FExtendKeyMenuParams> ChannelsAndHandles, TWeakPtr<ISequencer> InSequencer) const override
 	{
 		using namespace Sequencer;
 		TArray<TExtendKeyMenuParams<ChannelType>> TypedChannels;
@@ -100,7 +100,7 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 			TypedChannels.Add(MoveTemp(TypedChannelAndHandles));
 		}
 
-		ExtendKeyMenu(MenuBuilder, MoveTemp(TypedChannels), InSequencer);
+		ExtendKeyMenu(MenuBuilder, MenuExtender, MoveTemp(TypedChannels), InSequencer);
 	}
 
 	/**
@@ -111,7 +111,7 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 	 * @param Sections              Array of sections being shown on the context menu
 	 * @param InSequencer           The currently active sequencer
 	 */
-	virtual void ExtendSectionMenu_Raw(FMenuBuilder& MenuBuilder, TArrayView<const FMovieSceneChannelHandle> Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer) const override
+	virtual void ExtendSectionMenu_Raw(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArrayView<const FMovieSceneChannelHandle> Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer) const override
 	{
 		using namespace Sequencer;
 		TArray<TMovieSceneChannelHandle<ChannelType>> TypedChannels;
@@ -121,7 +121,7 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 			TypedChannels.Add(RawHandle.Cast<ChannelType>());
 		}
 
-		ExtendSectionMenu(MenuBuilder, MoveTemp(TypedChannels), Sections, InSequencer);
+		ExtendSectionMenu(MenuBuilder, MenuExtender, MoveTemp(TypedChannels), Sections, InSequencer);
 	}
 
 	/**
@@ -145,13 +145,14 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 	 *
 	 * @param InChannel          The channel to draw extra display information for
 	 * @param InOwner            The owning movie scene section for this channel
-	 * @param InKeyGeometry      Allocated geometry to draw in
-	 * @param Painter			 The painter to add the created geometry to
+	 * @param PaintArgs          Paint arguments containing the draw element list, time-to-pixel converter and other structures
+	 * @param LayerId            The slate layer to paint onto
+	 * @return The new slate layer ID for subsequent elements to paint onto
 	 */
-	virtual void DrawExtra_Raw(FMovieSceneChannel* InChannel,const UMovieSceneSection* InOwner, const FGeometry& InKeyGeometry,FSequencerSectionPainter& Painter) const
+	virtual int32 DrawExtra_Raw(FMovieSceneChannel* InChannel, const UMovieSceneSection* InOwner, const FSequencerChannelPaintArgs& PaintArgs, int32 LayerId) const override
 	{
 		using namespace Sequencer;
-		DrawExtra(static_cast<ChannelType*>(InChannel), InOwner, InKeyGeometry, Painter);
+		return DrawExtra(static_cast<ChannelType*>(InChannel), InOwner, PaintArgs, LayerId);
 	}
 
 
@@ -165,6 +166,19 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 	}
 
 	/**
+	 * Whether this channel should draw a curve on its editor UI
+	 *
+	 * @param Channel               The channel to query
+	 * @param InSection             The section that owns the channel
+	 * @return true to show the curve on the UI, false otherwise
+	 */
+	virtual bool ShouldShowCurve_Raw(const FMovieSceneChannel* Channel, UMovieSceneSection* InSection) const override
+	{
+		using namespace Sequencer;
+		return ShouldShowCurve(static_cast<const ChannelType*>(Channel), InSection);
+	}
+
+	/**
 	 * Create a new model for this channel that can be used on the curve editor interface
 	 *
 	 * @return (Optional) A new model to be added to a curve editor
@@ -173,6 +187,33 @@ struct TSequencerChannelInterfaceCommon : ISequencerChannelInterface
 	{
 		using namespace Sequencer;
 		return CreateCurveEditorModel(InChannel.Cast<ChannelType>(), OwningSection, InSequencer);
+	}
+
+	/**
+	 * Create a new channel model for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InChannelName      The identifying name of this channel
+	 * @return (Optional) A new model to be added to a curve editor
+	 */
+	virtual TSharedPtr<UE::Sequencer::FChannelModel> CreateChannelModel_Raw(const FMovieSceneChannelHandle& InChannelHandle, FName InChannelName) const override
+	{
+		using namespace Sequencer;
+		return CreateChannelModel(InChannelHandle.Cast<ChannelType>(), InChannelName);
+	}
+
+	/**
+	 * Create a new channel view for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InWeakModel        The model that is creating the view. Should not be Pinned persistently.
+	 * @param Parameters         View construction parameters
+	 * @return (Optional) A new model to be added to a curve editor
+	 */
+	virtual TSharedPtr<UE::Sequencer::STrackAreaLaneView> CreateChannelView_Raw(const FMovieSceneChannelHandle& InChannelHandle, TWeakPtr<UE::Sequencer::FChannelModel> InWeakModel, const UE::Sequencer::FCreateTrackLaneViewParams& Parameters) const override
+	{
+		using namespace Sequencer;
+		return CreateChannelView(InChannelHandle.Cast<ChannelType>(), InWeakModel, Parameters);
 	}
 
 	/**

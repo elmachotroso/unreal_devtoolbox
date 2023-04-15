@@ -2,39 +2,48 @@
 
 #pragma once
 
+#include "CoreFwd.h"
 #include "CoreTypes.h"
 #include "HAL/PlatformProperties.h"
 #include "Internationalization/TextNamespaceFwd.h"
+#include "Math/MathFwd.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/Build.h"
 #include "Misc/CompressionFlags.h"
 #include "Misc/EngineVersionBase.h"
 #include "Misc/VarArgs.h"
+#include "Serialization/ArchiveCookData.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/EnableIf.h"
 #include "Templates/Function.h"
-#include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
 #include "Templates/IsEnumClass.h"
 #include "Templates/IsSigned.h"
 #include "Templates/IsValidVariadicFunctionArg.h"
+#include "Templates/UnrealTemplate.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 #include "UObject/ObjectVersion.h"
 
 class FArchive;
+class FBulkData;
 class FCustomVersionContainer;
 class FLinker;
 class FName;
+class FProperty;
 class FString;
 class FText;
 class ITargetPlatform;
 class UObject;
-class FProperty;
-struct FUntypedBulkData;
 namespace UE::Serialization{ class FEditorBulkData; }
 struct FArchiveSerializedPropertyChain;
 template<class TEnum> class TEnumAsByte;
+
 typedef TFunction<bool (double RemainingTime)> FExternalReadCallback;
-struct FUObjectSerializeContext;
 class FField;
+struct FUObjectSerializeContext;
+
 enum class EFileRegionType : uint8;
+struct FArchiveCookContext;
 
 // Temporary while we shake out the EDL at boot
 #define USE_EVENT_DRIVEN_ASYNC_LOAD_AT_BOOT_TIME (1)
@@ -235,7 +244,7 @@ public:
 	 * Queries a custom version from the archive.  If the archive is being used to write, the custom version must have already been registered.
 	 *
 	 * @param Key The guid of the custom version to query.
-	 * @return The version number, or 0 if the custom tag isn't stored in the archive.
+	 * @return The version number, or -1 if the custom tag isn't stored in the archive.
 	 */
 	int32 CustomVer(const struct FGuid& Key) const;
 
@@ -582,11 +591,38 @@ public:
 	 * @return true if the archive is used for cooking, false otherwise.
 	 */
 	FORCEINLINE bool IsCooking() const
-	{
-		check(!CookingTargetPlatform || (!IsLoading() && !IsTransacting() && IsSaving()));
-
-		return !!CookingTargetPlatform;
+	{		
+		return CookData != nullptr;
 	}
+
+	/**
+	 * Marks that this archive is "cooking" by providing the cook data bundle.
+	 * Must be set after loading/saving/transacting.
+	 */
+	void SetCookData(FArchiveCookData* InCookData)
+	{
+		checkf(!(InCookData == nullptr && CookData), TEXT("Can't turn off cooking once you turn it on!"));
+
+		if (InCookData)
+		{
+			check(!IsLoading() && !IsTransacting() && IsSaving());
+			CookData = InCookData;
+		}
+		
+	}
+
+	FArchiveCookData* GetCookData()
+	{
+		return CookData;
+	}
+
+	FORCEINLINE FArchiveCookContext* GetCookContext()
+	{
+		return CookData ? &CookData->CookContext : nullptr;
+	}
+
+	UE_DEPRECATED(5.1, "CookingTarget has been moved to FArchiveCookData.")
+	void SetCookingTarget(const ITargetPlatform*) {}
 
 	/**
 	 * Returns the cooking target platform.
@@ -595,17 +631,7 @@ public:
 	 */
 	FORCEINLINE const ITargetPlatform* CookingTarget() const
 	{
-		return CookingTargetPlatform;
-	}
-
-	/**
-	 * Sets the cooking target platform.
-	 *
-	 * @param InCookingTarget The target platform to set.
-	 */
-	FORCEINLINE void SetCookingTarget(const ITargetPlatform* InCookingTarget)
-	{
-		CookingTargetPlatform = InCookingTarget;
+		return CookData ? &CookData->TargetPlatform : nullptr;
 	}
 
 	/**
@@ -970,9 +996,9 @@ public:
 
 // These will be private in FArchive
 protected:
-	/** Holds the cooking target platform. */
-	const ITargetPlatform* CookingTargetPlatform;
-
+	/** Holds data for cooking. Required if cooking, nullptr means not cooking */
+	FArchiveCookData* CookData = nullptr;
+	
 	/** Holds the pointer to the property that is currently being serialized */
 	FProperty* SerializedProperty;
 
@@ -1563,7 +1589,7 @@ public:
 	 * @param Ar The archive to serialize from or to.
 	 * @param Value The value to serialize.
 	 */
-	friend FArchive& operator<<(FArchive& Ar, struct FIntRect& Value);
+	friend FArchive& operator<<(FArchive& Ar, FIntRect& Value);
 
 	/**
 	 * Serializes an FString value from or into an archive.
@@ -1629,7 +1655,7 @@ public:
 	 * @param	Owner		UObject owning the bulk data
 	 * @param	BulkData	Bulk data object to associate
 	 */
-	virtual void AttachBulkData(UObject* Owner, FUntypedBulkData* BulkData) { }
+	virtual void AttachBulkData(UObject* Owner, FBulkData* BulkData) { }
 	virtual void AttachBulkData(UE::Serialization::FEditorBulkData* BulkData) {}
 
 	/**
@@ -1638,7 +1664,7 @@ public:
 	 * @param	BulkData	Bulk data object to detach
 	 * @param	bEnsureBulkDataIsLoaded	Whether to ensure that the bulk data is loaded before detaching
 	 */
-	virtual void DetachBulkData(FUntypedBulkData* BulkData, bool bEnsureBulkDataIsLoaded) { }
+	virtual void DetachBulkData(FBulkData* BulkData, bool bEnsureBulkDataIsLoaded) { }
 	virtual void DetachBulkData(UE::Serialization::FEditorBulkData* BulkData, bool bEnsureBulkDataIsLoaded) {}
 
 	/**
@@ -1800,7 +1826,7 @@ public:
 	template <typename FmtType, typename... Types>
 	void Logf(const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FArchive::Logf");
 
 		LogfImpl(Fmt, Args...);
@@ -1880,7 +1906,9 @@ public:
 	using FArchiveState::IsNetArchive;
 	using FArchiveState::IsCooking;
 	using FArchiveState::CookingTarget;
-	using FArchiveState::SetCookingTarget;
+	using FArchiveState::SetCookData;
+	using FArchiveState::GetCookData;
+	using FArchiveState::GetCookContext;
 	using FArchiveState::UseToResolveEnumerators;
 	using FArchiveState::ShouldSkipProperty;
 	using FArchiveState::SetSerializedProperty;
@@ -2143,9 +2171,6 @@ public:
 	virtual void PopFileRegionType() { }
 
 private:
-	/** Holds the cooking target platform. */
-	using FArchiveState::CookingTargetPlatform;
-
 	/** Holds the pointer to the property that is currently being serialized */
 	using FArchiveState::SerializedProperty;
 

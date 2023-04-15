@@ -21,7 +21,7 @@
 #include "Engine/StaticMesh.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Engine/BlueprintGeneratedClass.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "UObject/SavePackage.h"
 
@@ -39,13 +39,13 @@
 #include "BlueprintEditorModes.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "ComponentAssetBroker.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 
 #include "ScopedTransaction.h"
 #include "ObjectTools.h"
 
 // Automation
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Tests/AutomationTestSettings.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "Tests/AutomationEditorPromotionCommon.h"
@@ -1119,7 +1119,7 @@ namespace BlueprintEditorPromotionTestHelper
 
 				Test->AddInfo(TEXT("Promoted the return pin on the add mesh node to a variable"));
 
-				const FName OldVarName(TEXT("NewVar_0")); // Default variable name
+				const FName OldVarName(TEXT("NewVar")); // Default variable name
 				const FName NewVarName(TEXT("MyMesh"));
 				FBlueprintEditorUtils::RenameMemberVariable(BlueprintObject, OldVarName, NewVarName);
 				Test->TestNotEqual(TEXT("New variable was renamed"), FBlueprintEditorUtils::FindMemberVariableGuidByName(BlueprintObject, OldVarName), FBlueprintEditorUtils::FindMemberVariableGuidByName(BlueprintObject, NewVarName));

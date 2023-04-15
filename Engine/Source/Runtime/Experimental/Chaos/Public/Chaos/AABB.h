@@ -176,7 +176,7 @@ namespace Chaos
 					}
 				}
 				FReal Phi = Normal.SafeNormalize();
-				if (Phi < KINDA_SMALL_NUMBER)
+				if (Phi < UE_KINDA_SMALL_NUMBER)
 				{
 					for (int i = 0; i < d; ++i)
 					{
@@ -280,7 +280,7 @@ namespace Chaos
 			for (int32 Axis = 0; Axis < d; Axis++)
 			{
 				// Select axis of face to compare to, based on normal.
-				if (OriginalNormal[Axis] > KINDA_SMALL_NUMBER)
+				if (OriginalNormal[Axis] > UE_KINDA_SMALL_NUMBER)
 				{
 					const T TraceDotFaceNormal = DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
 					if (TraceDotFaceNormal < BestOpposingDot)
@@ -290,7 +290,7 @@ namespace Chaos
 						BestNormal[Axis] = 1;
 					}
 				}
-				else if (OriginalNormal[Axis] < -KINDA_SMALL_NUMBER)
+				else if (OriginalNormal[Axis] < -UE_KINDA_SMALL_NUMBER)
 				{
 					const T TraceDotFaceNormal = -DenormDir[Axis]; // TraceDirDenormLocal.dot(BoxFaceNormal)
 					if (TraceDotFaceNormal < BestOpposingDot)
@@ -549,6 +549,11 @@ namespace Chaos
 			return HashCombine(UE::Math::GetTypeHash(MMin), UE::Math::GetTypeHash(MMax));
 		}
 
+		FString ToString() const
+		{
+			return FString::Printf(TEXT("AABB: Min: [%s], Max: [%s]"), *MMin.ToString(), *MMax.ToString());
+		}
+
 		FORCEINLINE PMatrix<FReal, d, d> GetInertiaTensor(const FReal Mass) const { return GetInertiaTensor(Mass, Extents()); }
 		FORCEINLINE static PMatrix<FReal, 3, 3> GetInertiaTensor(const FReal Mass, const TVector<FReal, 3>& Dim)
 		{
@@ -692,12 +697,3 @@ namespace Chaos
 
 	using FAABB3 = TAABB<FReal, 3>;
 }
-
-// Support ISPC enable/disable in non-shipping builds
-#if !INTEL_ISPC
-const bool bChaos_AABBTransform_ISPC_Enabled = false;
-#elif UE_BUILD_SHIPPING
-const bool bChaos_AABBTransform_ISPC_Enabled = true;
-#else
-extern bool bChaos_AABBTransform_ISPC_Enabled;
-#endif

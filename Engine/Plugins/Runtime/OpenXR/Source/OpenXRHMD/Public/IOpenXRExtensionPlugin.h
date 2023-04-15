@@ -100,6 +100,15 @@ public:
 	}
 };
 
+// Note: We may refactor to put OpenXRInput into the OpenXRHMD module so we can get rid of this interface.
+class IOpenXRInputModule
+{
+public:
+	virtual ~IOpenXRInputModule() {}
+
+	virtual void OnBeginSession() = 0;
+	virtual void OnDestroySession() = 0;
+};
 
 class IOpenXRExtensionPlugin : public IModularFeature
 {
@@ -115,7 +124,7 @@ public:
 	/**
 	* Register module as an extension on startup.  
 	* It is common to do this in StartupModule of your IModuleInterface class (which may also be the class that implements this interface).
-	* The module's LoadingPhase must be PostInitConfig or earlier because OpenXRHMD will look for these after it is loaded in that phase.
+	* The module's LoadingPhase must be PostConfigInit or earlier because OpenXRHMD will look for these after it is loaded in that phase.
 	*/
 	void RegisterOpenXRExtensionModularFeature()
 	{
@@ -133,9 +142,19 @@ public:
 	}
 
 	/**
-	* Optionally provide a custom loader for the OpenXR plugin.
+	* Optionally use a custom loader (via GetInstanceProcAddr) for the OpenXR plugin.
 	*/
 	virtual bool GetCustomLoader(PFN_xrGetInstanceProcAddr* OutGetProcAddr)
+	{
+		return false;
+	}
+
+	/**
+	* Experimental: Optionally hand off the loader/plugin GetInstanceProcAddr to an extension plugin
+	* to support API layering. Returns true if plugin is wrapping API. Layers can chain by using
+	* received GetProcAddr to hand off API calls.
+	*/
+	virtual bool InsertOpenXRAPILayer(PFN_xrGetInstanceProcAddr& InOutGetProcAddr)
 	{
 		return false;
 	}
@@ -217,10 +236,16 @@ public:
 	}
 
 	/**
-	* Add any actions provided by the plugin to Actions with suggested bindings.
+	* Add any actions provided by the plugin to Actions.
 	* This allows a plugin to 'hard code' an action so that the plugin can use it.
 	*/
+	UE_DEPRECATED(5.1, "Use Enhanced Input through IMotionController::SetPlayerMappableInputConfig instead.")
 	virtual void AddActions(XrInstance Instance, TFunction<XrAction(XrActionType InActionType, const FName& InName, const TArray<XrPath>& InSubactionPaths)> AddAction)
+	{
+	}
+
+	UE_DEPRECATED(5.1, "Functionality moved to AttachActionSets().")
+	virtual void AddActionSets(TArray<XrActiveActionSet>& OutActionSets)
 	{
 	}
 
@@ -228,10 +253,16 @@ public:
 	* Add any action sets provided by the plugin to be attached as active to the session
 	* This allows a plugin to manage a custom actionset that will be active in xrSyncActions
 	*/
-	virtual void AddActionSets(TArray<XrActiveActionSet>& OutActionSets)
+	virtual void AttachActionSets(TSet<XrActionSet>& OutActionSets)
 	{
 	}
 
+	/**
+	* Specify action sets to be included in XrActionsSyncInfo::activeActionSets.
+	*/
+	virtual void GetActiveActionSetsForSync(TArray<XrActiveActionSet>& OutActiveSets)
+	{
+	}
 
 	/**
 	* Use this callback to handle events that the OpenXR plugin doesn't handle itself
@@ -309,6 +340,10 @@ public:
 	virtual const void* OnBeginSession(XrSession InSession, const void* InNext)
 	{
 		return InNext;
+	}
+
+	virtual void OnDestroySession(XrSession InSession)
+	{
 	}
 
 	// OpenXRHMD::OnBeginRendering_GameThread

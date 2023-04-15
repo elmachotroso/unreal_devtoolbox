@@ -346,15 +346,15 @@ namespace OldTaskGraphTests
 	struct FTestRigFIFO
 	{
 		FLockFreePointerFIFOBase<FTestStruct, PLATFORM_CACHE_LINE_SIZE> Test1;
-		FLockFreePointerFIFOBase<FTestStruct, 1> Test2;
-		FLockFreePointerFIFOBase<FTestStruct, 1, 1 << 4> Test3;
+		FLockFreePointerFIFOBase<FTestStruct, 8> Test2;
+		FLockFreePointerFIFOBase<FTestStruct, 8, 1 << 4> Test3;
 	};
 
 	struct FTestRigLIFO
 	{
 		FLockFreePointerListLIFOBase<FTestStruct, PLATFORM_CACHE_LINE_SIZE> Test1;
-		FLockFreePointerListLIFOBase<FTestStruct, 1> Test2;
-		FLockFreePointerListLIFOBase<FTestStruct, 1, 1 << 4> Test3;
+		FLockFreePointerListLIFOBase<FTestStruct, 8> Test2;
+		FLockFreePointerListLIFOBase<FTestStruct, 8, 1 << 4> Test3;
 	};
 
 	static void TestLockFree(int32 OuterIters = 3)
@@ -1028,6 +1028,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			check(Event->IsComplete());
 		}
 
+		{	// check ref count for named thread tasks
+			FGraphEventRef LocalQueueTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, nullptr, ENamedThreads::GameThread_Local);
+			LocalQueueTask->Wait(ENamedThreads::GameThread_Local);
+			check(LocalQueueTask.GetRefCount() == 1);
+		}
+
 		//for (int i = 0; i != 100000; ++i)
 		{	// a particular real-life case that doesn't work in the old TaskGraph if run in single-threaded mode.
 			// the culprit is that when a task is waited for, in single-threaded mode the queue it was pushed to is executed. 
@@ -1037,6 +1043,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			FGraphEventRef LocalQueueTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, AnyTask, ENamedThreads::GameThread_Local);
 			LocalQueueTask->Wait(ENamedThreads::GameThread_Local);
 			check(LocalQueueTask.GetRefCount() == 1);
+		}
+
+		{	// launch a GT task, then an any-thread task that depends on it. wait for the any-thread task. this was a deadlock on the new frontend
+			FGraphEventRef GTTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] { IsInGameThread(); }, TStatId{}, nullptr, ENamedThreads::GameThread);
+			FGraphEventRef AnyThreadTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, GTTask);
+			AnyThreadTask->Wait();
 		}
 
 		return true;
@@ -1422,62 +1434,22 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return true;
 	}
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphBlockingWorkersTest, "System.Core.TaskGraph.BlockingWorkers", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphCreateCompletionHandleTest, "System.Core.Async.TaskGraph.CreateCompletionHandle", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
 
-	template<uint32 Num, bool bBackgroundWorkersToo>
-	void BlockingWorkersByFEvent();
-
-	bool FTaskGraphBlockingWorkersTest::RunTest(const FString& Parameters)
+	bool FTaskGraphCreateCompletionHandleTest::RunTest(const FString& Parameters)
 	{
-		FPlatformProcess::Sleep(1.0f);
-		UE_BENCHMARK(10, BlockingWorkersByFEvent<100, false>);
-		UE_BENCHMARK(10, BlockingWorkersByFEvent<100, true>);
+		FGraphEventRef UnblockTask = FGraphEvent::CreateGraphEvent(); // to block initially the following task
+		FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, UnblockTask); // supposedly long-living task
+		FGraphEventRef CompletionHandle = Task->CreateCompletionHandle();
+		// check that the completion handle is not signalling as the task is blocked
+		FPlatformProcess::Sleep(0.1f);
+		check(!CompletionHandle->IsComplete());
+		// unblock the task
+		UnblockTask->DispatchSubsequents();
+		// wating for the completion handle instead of waiting for the task, should succeed
+		CompletionHandle->Wait();
+
 		return true;
-	}
-
-	template<uint32 Num, bool bBackgroundWorkersToo>
-	void BlockingWorkersByFEvent()
-	{
-		for (int N = 0; N != Num; ++N)
-		{
-			int32 NumWorkers = bBackgroundWorkersToo ? LowLevelTasks::FScheduler::Get().GetNumWorkers() : GNumForegroundWorkers;
-
-			TArray<LowLevelTasks::FTask> WorkerBlockers; // tasks that block worker threads
-			WorkerBlockers.AddDefaulted(NumWorkers);
-
-			FEventRef BlockersBlocker{ EEventMode::ManualReset }; // blocks `WorkerBlockers`, manual reset because multiple threads are waiting for it
-
-			std::atomic<int32> NumWorkersNotBlocked{ NumWorkers };
-			FEventRef AllWorkersBlockedSignal;
-
-			for (int i = 0; i != NumWorkers; ++i)
-			{
-				WorkerBlockers[i].Init(TEXT("BlockingWorkers"), LowLevelTasks::ETaskPriority::High,
-					[i, &BlockersBlocker, &AllWorkersBlockedSignal, &NumWorkersNotBlocked]
-					{
-						verify(LowLevelTasks::FSchedulerTls::GetAffinityIndex() == i);
-						if (--NumWorkersNotBlocked == 0)
-						{
-							AllWorkersBlockedSignal->Trigger();
-						}
-						else
-						{
-							BlockersBlocker->Wait();
-						}
-					});
-
-				verify(LowLevelTasks::TryLaunchAffinity(WorkerBlockers[i], i));
-			}
-
-			verify(AllWorkersBlockedSignal->Wait(FTimespan::FromSeconds(3)));
-
-			BlockersBlocker->Trigger();
-			for (int i = 0; i != NumWorkers; ++i)
-			{
-				while(!WorkerBlockers[i].IsCompleted())
-				{}
-			}
-		}
 	}
 }
 

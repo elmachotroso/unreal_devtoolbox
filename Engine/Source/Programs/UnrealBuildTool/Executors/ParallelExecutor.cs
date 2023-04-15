@@ -1,48 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace UnrealBuildTool
 {
 	/// <summary>
-	/// This executor is similar to LocalExecutor, but uses p/invoke on Windows to ensure that child processes are started at a lower priority and are terminated when the parent process terminates.
+	/// This executor uses async Tasks to process the action graph
 	/// </summary>
 	class ParallelExecutor : ActionExecutor
 	{
-		[DebuggerDisplay("{Inner}")]
-		class BuildAction
-		{
-			public int SortIndex;
-			public LinkedAction Inner;
-
-			public HashSet<BuildAction> Dependencies = new HashSet<BuildAction>();
-			public int MissingDependencyCount;
-
-			public HashSet<BuildAction> Dependants = new HashSet<BuildAction>();
-			public int TotalDependantCount;
-
-			public List<string> LogLines = new List<string>();
-			public int ExitCode = -1;
-
-			public TimeSpan ExecutionTime;
-			public TimeSpan ProcessorTime;
-
-			public BuildAction(LinkedAction Inner)
-			{
-				this.Inner = Inner;
-			}
-		}
-
 		/// <summary>
 		/// Maximum processor count for local execution. 
 		/// </summary>
 		[XmlConfigFile]
-		public static int MaxProcessorCount = int.MaxValue;
+		[Obsolete("ParallelExecutor.MaxProcessorCount is deprecated. Please update xml to use BuildConfiguration.MaxParallelActions")]
+#pragma warning disable 0169
+		private static int MaxProcessorCount;
+#pragma warning restore 0169
 
 		/// <summary>
 		/// Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.
@@ -51,79 +34,91 @@ namespace UnrealBuildTool
 		/// This value is ignored if the CPU does not support hyper-threading.
 		/// </summary>
 		[XmlConfigFile]
-		public static double ProcessorCountMultiplier = 1.0;
+		private static double ProcessorCountMultiplier = 1.0;
 
 		/// <summary>
 		/// Free memory per action in bytes, used to limit the number of parallel actions if the machine is memory starved.
 		/// Set to 0 to disable free memory checking.
 		/// </summary>
 		[XmlConfigFile]
-		static double MemoryPerActionBytes = 1.5 * 1024 * 1024 * 1024;
+		private static double MemoryPerActionBytes = 1.5 * 1024 * 1024 * 1024;
+
+		/// <summary>
+		/// The priority to set for spawned processes.
+		/// Valid Settings: Idle, BelowNormal, Normal, AboveNormal, High
+		/// Default: BelowNormal
+		/// </summary>
+		[XmlConfigFile]
+		private static ProcessPriorityClass ProcessPriority = ProcessPriorityClass.BelowNormal;
 
 		/// <summary>
 		/// When enabled, will stop compiling targets after a compile error occurs.
 		/// </summary>
 		[XmlConfigFile]
-		bool bStopCompilationAfterErrors = false;
+		private static bool bStopCompilationAfterErrors = false;
 
 		/// <summary>
 		/// Whether to show compilation times along with worst offenders or not.
 		/// </summary>
 		[XmlConfigFile]
-		bool bShowCompilationTimes = false;
+		private static bool bShowCompilationTimes = false;
 
 		/// <summary>
 		/// Whether to show compilation times for each executed action
 		/// </summary>
 		[XmlConfigFile]
-		bool bShowPerActionCompilationTimes = false;
+		private static bool bShowPerActionCompilationTimes = false;
 
 		/// <summary>
 		/// Whether to log command lines for actions being executed
 		/// </summary>
 		[XmlConfigFile]
-		bool bLogActionCommandLines = false;
+		private static bool bLogActionCommandLines = false;
 
 		/// <summary>
 		/// Add target names for each action executed
 		/// </summary>
 		[XmlConfigFile]
-		bool bPrintActionTargetNames = false;
+		private static bool bPrintActionTargetNames = false;
+
+		/// <summary>
+		/// Collapse non-error output lines
+		/// </summary>
+		private bool bCompactOutput = false;
 
 		/// <summary>
 		/// How many processes that will be executed in parallel
 		/// </summary>
 		public int NumParallelProcesses { get; private set; }
 
-		public static int GetDefaultNumParallelProcesses()
+		private static readonly char[] LineEndingSplit = new char[] { '\n', '\r' };
+
+		public static int GetDefaultNumParallelProcesses(int MaxLocalActions, bool bAllCores, ILogger Logger)
 		{
 			double MemoryPerActionBytesComputed = Math.Max(MemoryPerActionBytes, MemoryPerActionBytesOverride);
 			if (MemoryPerActionBytesComputed > MemoryPerActionBytes)
 			{
-				Log.TraceInformation($"Overriding MemoryPerAction with target-defined value of {MemoryPerActionBytesComputed / 1024 / 1024 / 1024} bytes");
+				Logger.LogInformation("Overriding MemoryPerAction with target-defined value of {Memory} bytes", MemoryPerActionBytesComputed / 1024 / 1024 / 1024);
 			}
 
-			return Utils.GetMaxActionsToExecuteInParallel(MaxProcessorCount, ProcessorCountMultiplier, Convert.ToInt64(MemoryPerActionBytesComputed));
+			return Utils.GetMaxActionsToExecuteInParallel(MaxLocalActions, ProcessorCountMultiplier, bAllCores, Convert.ToInt64(MemoryPerActionBytesComputed));
 		}
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="MaxLocalActions">How many actions to execute in parallel</param>
-		public ParallelExecutor(int MaxLocalActions)
+		/// <param name="bAllCores">Consider logical cores when determining how many total cpu cores are available</param>
+		/// <param name="bCompactOutput">Should output be written in a compact fashion</param>
+		/// <param name="Logger">Logger for output</param>
+		public ParallelExecutor(int MaxLocalActions, bool bAllCores, bool bCompactOutput, ILogger Logger)
 		{
 			XmlConfig.ApplyTo(this);
 
-			// if specified this caps how many processors we can use
-			if (MaxLocalActions > 0)
-			{
-				NumParallelProcesses = MaxLocalActions;
-			}
-			else
-			{
-				// Figure out how many processors to use
-				NumParallelProcesses = GetDefaultNumParallelProcesses();
-			}
+			// Figure out how many processors to use
+			NumParallelProcesses = GetDefaultNumParallelProcesses(MaxLocalActions, bAllCores, Logger);
+
+			this.bCompactOutput = bCompactOutput;
 		}
 
 		/// <summary>
@@ -135,307 +130,344 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Checks whether the parallel executor can be used
+		/// Checks whether the task executor can be used
 		/// </summary>
-		/// <returns>True if the parallel executor can be used</returns>
+		/// <returns>True if the task executor can be used</returns>
 		public static bool IsAvailable()
 		{
 			return true;
 		}
 
-		Dictionary<TargetDescriptor, string> TargetPrefixes = new Dictionary<TargetDescriptor, string>();
+		protected class ExecuteResults
+		{
+			public List<string> LogLines { get; private set; }
+			public int ExitCode { get; private set; }
+			public TimeSpan ExecutionTime { get; private set; }
+			public TimeSpan ProcessorTime { get; private set; }
+			public string? AdditionalDescription { get; protected set; } = null;
+
+			public ExecuteResults(List<string> LogLines, int ExitCode, TimeSpan ExecutionTime, TimeSpan ProcessorTime)
+			{
+				this.LogLines = LogLines;
+				this.ExitCode = ExitCode;
+				this.ProcessorTime = ProcessorTime;
+				this.ExecutionTime = ExecutionTime;
+			}
+			public ExecuteResults(List<string> LogLines, int ExitCode)
+			{
+				this.LogLines = LogLines;
+				this.ExitCode = ExitCode;
+			}
+		}
 
 		/// <summary>
 		/// Executes the specified actions locally.
 		/// </summary>
 		/// <returns>True if all the tasks successfully executed, or false if any of them failed.</returns>
-		public override bool ExecuteActions(List<LinkedAction> InputActions)
+		public override bool ExecuteActions(List<LinkedAction> InputActions, ILogger Logger)
 		{
-			int ActualNumParallelProcesses = Math.Min(InputActions.Count, NumParallelProcesses);
-			Log.TraceInformation("Building {0} {1} with {2} {3}...", InputActions.Count, (InputActions.Count == 1) ? "action" : "actions", ActualNumParallelProcesses, (ActualNumParallelProcesses == 1) ? "process" : "processes");
+			int NumCompletedActions = 0;
+			int TotalActions = InputActions.Count;
+			int ActualNumParallelProcesses = Math.Min(TotalActions, NumParallelProcesses);
 
-			TargetPrefixes.Clear();
+			using ManagedProcessGroup ProcessGroup = new ManagedProcessGroup();
+			using SemaphoreSlim MaxProcessSemaphore = new SemaphoreSlim(ActualNumParallelProcesses, ActualNumParallelProcesses);
+			using ProgressWriter ProgressWriter = new ProgressWriter("Compiling C++ source code...", false, Logger);
 
-			// Create actions with all our internal metadata
-			List<BuildAction> Actions = new List<BuildAction>();
-			for (int Idx = 0; Idx < InputActions.Count; Idx++)
+			Logger.LogInformation("Building {NumActions} {Actions} with {NumProcesses} {Processes}...", TotalActions, (TotalActions == 1 ? "action" : "actions"), ActualNumParallelProcesses, (ActualNumParallelProcesses == 1 ? "process" : "processes"));
+
+			Dictionary<LinkedAction, Task<ExecuteResults>> ExecuteTasks = new Dictionary<LinkedAction, Task<ExecuteResults>>();
+			List<Task> LogTasks = new List<Task>();
+
+			using LogIndentScope Indent = new LogIndentScope("  ");
+
+			CancellationTokenSource CancellationTokenSource = new CancellationTokenSource();
+			CancellationToken CancellationToken = CancellationTokenSource.Token;
+
+			// Create a task for every action
+			foreach (LinkedAction Action in InputActions)
 			{
-				BuildAction Action = new BuildAction(InputActions[Idx]);
-				Action.SortIndex = Idx;
-
-				if (!Action.Inner.StatusDescription.EndsWith(".ispc"))
+				if (ExecuteTasks.ContainsKey(Action))
 				{
-					Action.SortIndex += 10000;
+					continue;
 				}
 
-				Actions.Add(Action);
+				Task<ExecuteResults> ExecuteTask = CreateExecuteTask(Action, InputActions, ExecuteTasks, ProcessGroup, MaxProcessSemaphore, CancellationToken);
+				Task LogTask = ExecuteTask.ContinueWith(antecedent => LogCompletedAction(Action, antecedent, CancellationTokenSource, ProgressWriter, TotalActions, ref NumCompletedActions, Logger), CancellationToken);
 
-				TargetDescriptor? Target = Action.Inner.Target;
-				if (bPrintActionTargetNames && Target != null && !TargetPrefixes.ContainsKey(Target))
-				{
-					string TargetPrefix = $"{(1 + TargetPrefixes.Count()).ToString()}>";
-					TargetPrefixes.Add(Target, TargetPrefix);
-					Log.TraceInformation($"{TargetPrefix}------ Unreal Build started: {Target.Name} {Target.Configuration} {Target.Platform} {Target.Architecture} ------");
-				}
+				ExecuteTasks.Add(Action, ExecuteTask);
+				LogTasks.Add(LogTask);
 			}
 
-			// Update all the actions with all their dependencies
-			Dictionary<LinkedAction, BuildAction> LinkedActionToBuildAction = Actions.ToDictionary(x => x.Inner, x => x);
-			foreach (BuildAction Action in Actions)
+			Task SummaryTask = Task.Factory.ContinueWhenAll(LogTasks.ToArray(), (AntecedentTasks) => TraceSummary(ExecuteTasks, ProcessGroup, Logger), CancellationToken);
+			SummaryTask.Wait();
+
+			// Return if all tasks succeeded
+			return ExecuteTasks.Values.All(x => x.Result.ExitCode == 0);
+		}
+
+		protected static Task<ExecuteResults> CreateExecuteTask(LinkedAction Action, List<LinkedAction> InputActions, Dictionary<LinkedAction, Task<ExecuteResults>> ExecuteTasks, ManagedProcessGroup ProcessGroup, SemaphoreSlim MaxProcessSemaphore, CancellationToken CancellationToken)
+		{
+			List<LinkedAction> PrerequisiteActions = Action.PrerequisiteActions.Where(x => InputActions.Contains(x)).ToList();
+			if (PrerequisiteActions.Count == 0)
 			{
-				foreach (LinkedAction PrerequisiteAction in Action.Inner.PrerequisiteActions)
-				{
-					BuildAction? Dependency;
-					if (LinkedActionToBuildAction.TryGetValue(PrerequisiteAction, out Dependency))
-					{
-						Action.Dependencies.Add(Dependency);
-						Dependency.Dependants.Add(Action);
-					}
-				}
+				return Task.Factory.StartNew(
+					() => ExecuteAction(new Task<ExecuteResults>[0], Action, ProcessGroup, MaxProcessSemaphore, CancellationToken),
+					CancellationToken,
+					TaskCreationOptions.LongRunning,
+					TaskScheduler.Current
+				).Unwrap();
 			}
 
-			// Figure out the recursive dependency count
-			HashSet<BuildAction> VisitedActions = new HashSet<BuildAction>();
-			foreach (BuildAction Action in Actions)
+			// Create tasks for any preresquite actions if they don't exist already
+			List<Task<ExecuteResults>> PrerequisiteTasks = new List<Task<ExecuteResults>>();
+			foreach (var PrerequisiteAction in PrerequisiteActions)
 			{
-				Action.MissingDependencyCount = Action.Dependencies.Count;
-				RecursiveIncDependents(Action, VisitedActions);
+				if (!ExecuteTasks.ContainsKey(PrerequisiteAction))
+				{
+					ExecuteTasks.Add(PrerequisiteAction, CreateExecuteTask(PrerequisiteAction, InputActions, ExecuteTasks, ProcessGroup, MaxProcessSemaphore, CancellationToken));
+				}
+				PrerequisiteTasks.Add(ExecuteTasks[PrerequisiteAction]);
 			}
 
-			// Create the list of things to process
-			List<BuildAction> QueuedActions = new List<BuildAction>();
-			foreach (BuildAction Action in Actions)
+			return Task.Factory.ContinueWhenAll(
+				PrerequisiteTasks.ToArray(),
+				(AntecedentTasks) => ExecuteAction(AntecedentTasks, Action, ProcessGroup, MaxProcessSemaphore, CancellationToken),
+				CancellationToken,
+				TaskContinuationOptions.LongRunning,
+				TaskScheduler.Current
+			).Unwrap();
+		}
+
+		protected static async Task WaitPrerequsiteActions(LinkedAction Action, Dictionary<LinkedAction, Task<ExecuteResults>> Tasks)
+		{
+			// Wait for all PrerequisiteActions to complete
+			ExecuteResults[] Results = await Task.WhenAll(Action.PrerequisiteActions.Select(x => Tasks[x]));
+
+			// Cancel tasks if any PrerequisiteActions fail, unless a PostBuildStep
+			if (Action.ActionType != ActionType.PostBuildStep && Results.Any(x => x.ExitCode != 0))
 			{
-				if (Action.MissingDependencyCount == 0)
-				{
-					QueuedActions.Add(Action);
-				}
-			}
-
-			List<BuildAction> AllCompletedActions = new List<BuildAction>();
-
-			// Execute the actions
-			using (LogIndentScope Indent = new LogIndentScope("  "))
-			{
-				// Create a job object for all the child processes
-				bool bResult = true;
-				Dictionary<BuildAction, Thread> ExecutingActions = new Dictionary<BuildAction, Thread>();
-				List<BuildAction> CompletedActions = new List<BuildAction>();
-
-				TimeSpan TotalProcessingTime;
-				using (ManagedProcessGroup ProcessGroup = new ManagedProcessGroup())
-				{
-					using (AutoResetEvent CompletedEvent = new AutoResetEvent(false))
-					{
-						int NumCompletedActions = 0;
-						using (ProgressWriter ProgressWriter = new ProgressWriter("Compiling C++ source code...", false))
-						{
-							while (QueuedActions.Count > 0 || ExecutingActions.Count > 0)
-							{
-								// Sort the actions by the number of things dependent on them
-								QueuedActions.Sort((A, B) => (A.TotalDependantCount == B.TotalDependantCount) ? (B.SortIndex - A.SortIndex) : (B.TotalDependantCount - A.TotalDependantCount));
-
-								// Create threads up to the maximum number of actions
-								while (ExecutingActions.Count < ActualNumParallelProcesses && QueuedActions.Count > 0)
-								{
-									BuildAction Action = QueuedActions[QueuedActions.Count - 1];
-									QueuedActions.RemoveAt(QueuedActions.Count - 1);
-
-									Thread ExecutingThread = new Thread(() => { ExecuteAction(ProcessGroup, Action, CompletedActions, CompletedEvent); });
-									string Description = $"{(Action.Inner.CommandDescription != null ? Action.Inner.CommandDescription : Action.Inner.CommandPath.GetFileName())} {Action.Inner.StatusDescription}".Trim();
-									ExecutingThread.Name = String.Format("Build:{0}", Description);
-									ExecutingThread.Start();
-
-									ExecutingActions.Add(Action, ExecutingThread);
-								}
-
-								// Wait for something to finish
-								CompletedEvent.WaitOne();
-
-								// Wait for something to finish and flush it to the log
-								lock (CompletedActions)
-								{
-									foreach (BuildAction CompletedAction in CompletedActions)
-									{
-										// Join the thread
-										Thread CompletedThread = ExecutingActions[CompletedAction];
-										CompletedThread.Join();
-										ExecutingActions.Remove(CompletedAction);
-
-										// Update the progress
-										NumCompletedActions++;
-										ProgressWriter.Write(NumCompletedActions, InputActions.Count);
-
-										string Description = string.Empty;
-
-										string TargetPrefix = "";
-										TargetDescriptor? Target = CompletedAction.Inner.Target;
-										if (bPrintActionTargetNames)
-										{
-											if (Target != null)
-											{
-												TargetPrefix = TargetPrefixes[Target];
-											}
-											else
-											{
-												TargetPrefix = "->";
-											}
-										}
-
-										if (bLogActionCommandLines)
-										{
-											Log.TraceLog($"{TargetPrefix}[{NumCompletedActions}/{InputActions.Count}] Command: {CompletedAction.Inner.CommandPath} {CompletedAction.Inner.CommandArguments}");
-										}
-
-										// Write it to the log
-										if (CompletedAction.Inner.bShouldOutputStatusDescription || CompletedAction.LogLines.Count == 0)
-										{
-											Description = $"{(CompletedAction.Inner.CommandDescription ?? CompletedAction.Inner.CommandPath.GetFileNameWithoutExtension())} {CompletedAction.Inner.StatusDescription}".Trim();
-										}
-										else if (CompletedAction.LogLines.Count > 0)
-										{
-											Description = $"{(CompletedAction.Inner.CommandDescription ?? CompletedAction.Inner.CommandPath.GetFileNameWithoutExtension())} {CompletedAction.LogLines[0]}".Trim();
-										}
-
-										string CompilationTimes = "";
-										if (bShowPerActionCompilationTimes)
-										{
-											CompilationTimes = $" (Wall: {CompletedAction.ExecutionTime.TotalSeconds:0.00}s CPU: {CompletedAction.ProcessorTime.TotalSeconds:0.00}s)";
-										}
-											
-										Log.TraceInformation("{0}[{1}/{2}] {3}{4}", TargetPrefix, NumCompletedActions, InputActions.Count, Description, CompilationTimes);
-										foreach (string Line in CompletedAction.LogLines.Skip(CompletedAction.Inner.bShouldOutputStatusDescription ? 0 : 1))
-										{
-											Log.TraceInformation(Line);
-										}
-
-										AllCompletedActions.Add(CompletedAction);
-
-										// Check the exit code
-										if (CompletedAction.ExitCode == 0)
-										{
-											// Mark all the dependents as done
-											foreach (BuildAction DependantAction in CompletedAction.Dependants)
-											{
-												if (--DependantAction.MissingDependencyCount == 0)
-												{
-													QueuedActions.Add(DependantAction);
-												}
-											}
-										}
-										else
-										{
-											// BEGIN TEMPORARY TO CATCH PVS-STUDIO ISSUES
-											if (CompletedAction.LogLines.Count == 0)
-											{
-												Log.TraceInformation("{0}[{1}/{2}]{3} - Error but no output", TargetPrefix, NumCompletedActions, InputActions.Count, Description);
-												Log.TraceInformation("{0}[{1}/{2}]{3} - {4} {5} {6} {7}", TargetPrefix, NumCompletedActions, InputActions.Count, Description, CompletedAction.ExitCode,
-													CompletedAction.Inner.WorkingDirectory, CompletedAction.Inner.CommandPath, CompletedAction.Inner.CommandArguments);
-											}
-											// END TEMPORARY
-											// Update the exit code if it's not already set
-											if (bResult && CompletedAction.ExitCode != 0)
-											{
-												bResult = false;
-											}
-										}
-									}
-									CompletedActions.Clear();
-								}
-
-								// If we've already got a non-zero exit code, clear out the list of queued actions so nothing else will run
-								if (!bResult && bStopCompilationAfterErrors)
-								{
-									QueuedActions.Clear();
-								}
-							}
-						}
-					}
-
-					TotalProcessingTime = ProcessGroup.TotalProcessorTime;
-				}
-
-				if (bShowCompilationTimes)
-				{
-					Log.TraceInformation("");
-					if (TotalProcessingTime.Ticks > 0)
-					{
-						Log.TraceInformation("Total CPU Time: {0:0.00} s", TotalProcessingTime.TotalSeconds);
-						Log.TraceInformation("");
-					}
-
-					if (AllCompletedActions.Count > 0)
-					{
-						Log.TraceInformation("Compilation Time Top {0}", Math.Min(20, AllCompletedActions.Count));
-						Log.TraceInformation("");
-						foreach (BuildAction Action in AllCompletedActions.OrderByDescending(x => x.ExecutionTime).Take(20))
-						{
-							string Description = $"{(Action.Inner.CommandDescription != null ? Action.Inner.CommandDescription : Action.Inner.CommandPath.GetFileName())} {Action.Inner.StatusDescription}".Trim();
-							if (Action.ProcessorTime.Ticks > 0)
-							{
-								Log.TraceInformation("{0} [ Wall Time {1:0.00} s / CPU Time {2:0.00} s ]", Description, Action.ExecutionTime.TotalSeconds, Action.ProcessorTime.TotalSeconds);
-							}
-							else
-							{
-								Log.TraceInformation("{0} [ Time {1:0.00} s ]", Description, Action.ExecutionTime.TotalSeconds);
-							}
-						}
-						Log.TraceInformation("");
-					}
-				}
-
-				return bResult;
+				throw new OperationCanceledException();
 			}
 		}
 
-		/// <summary>
-		/// Execute an individual action
-		/// </summary>
-		/// <param name="ProcessGroup">The process group</param>
-		/// <param name="Action">The action to execute</param>
-		/// <param name="CompletedActions">On completion, the list to add the completed action to</param>
-		/// <param name="CompletedEvent">Event to set once an event is complete</param>
-		static void ExecuteAction(ManagedProcessGroup ProcessGroup, BuildAction Action, List<BuildAction> CompletedActions, AutoResetEvent CompletedEvent)
+		protected static async Task<ExecuteResults> ExecuteAction(Task<ExecuteResults>[] AntecedentTasks, LinkedAction Action, ManagedProcessGroup ProcessGroup, SemaphoreSlim MaxProcessSemaphore, CancellationToken CancellationToken)
 		{
+			Task? SemaphoreTask = null;
 			try
 			{
-				using (ManagedProcess Process = new ManagedProcess(ProcessGroup, Action.Inner.CommandPath.FullName, Action.Inner.CommandArguments, Action.Inner.WorkingDirectory.FullName, null, null, ProcessPriorityClass.BelowNormal))
+				// Cancel tasks if any PrerequisiteActions fail, unless a PostBuildStep
+				if (Action.ActionType != ActionType.PostBuildStep && AntecedentTasks.Any(x => x.Result.ExitCode != 0))
 				{
-					Action.LogLines.AddRange(Process.ReadAllLines());
-					Action.ExitCode = Process.ExitCode;
-					Action.ProcessorTime = Process.TotalProcessorTime;
-					Action.ExecutionTime = Process.ExitTime - Process.StartTime;
+					throw new OperationCanceledException();
 				}
+
+				// Limit the number of concurrent processes that will run in parallel
+				SemaphoreTask = MaxProcessSemaphore.WaitAsync(CancellationToken);
+				await SemaphoreTask;
+				return await RunAction(Action, ProcessGroup, CancellationToken);
+			}
+			catch (OperationCanceledException)
+			{
+				return new ExecuteResults(new List<string>(), int.MaxValue);
 			}
 			catch (Exception Ex)
 			{
 				Log.WriteException(Ex, null);
-				Action.ExitCode = 1;
+				return new ExecuteResults(new List<string>(), int.MaxValue);
 			}
-
-			lock (CompletedActions)
+			finally
 			{
-				CompletedActions.Add(Action);
+				if (SemaphoreTask?.Status == TaskStatus.RanToCompletion)
+				{
+					MaxProcessSemaphore.Release();
+				}
 			}
-
-			CompletedEvent.Set();
 		}
 
-		/// <summary>
-		/// Increment the number of dependants of an action, recursively
-		/// </summary>
-		/// <param name="Action">The action to update</param>
-		/// <param name="VisitedActions">Set of visited actions</param>
-		private static void RecursiveIncDependents(BuildAction Action, HashSet<BuildAction> VisitedActions)
+		protected static async Task<ExecuteResults> RunAction(LinkedAction Action, ManagedProcessGroup ProcessGroup, CancellationToken CancellationToken)
 		{
-			foreach (BuildAction Dependency in Action.Dependants)
+			CancellationToken.ThrowIfCancellationRequested();
+
+			using ManagedProcess Process = new ManagedProcess(ProcessGroup, Action.CommandPath.FullName, Action.CommandArguments, Action.WorkingDirectory.FullName, null, null, ProcessPriority);
+
+			using MemoryStream StdOutStream = new MemoryStream();
+			await Process.CopyToAsync(StdOutStream, CancellationToken);
+
+			CancellationToken.ThrowIfCancellationRequested();
+
+			Process.WaitForExit();
+
+			List<string> LogLines = Console.OutputEncoding.GetString(StdOutStream.GetBuffer(), 0, Convert.ToInt32(StdOutStream.Length)).Split(LineEndingSplit, StringSplitOptions.RemoveEmptyEntries).ToList();
+			int ExitCode = Process.ExitCode;
+			TimeSpan ProcessorTime = Process.TotalProcessorTime;
+			TimeSpan ExecutionTime = Process.ExitTime - Process.StartTime;
+			return new ExecuteResults(LogLines, ExitCode, ExecutionTime, ProcessorTime);
+		}
+
+		private static int s_previousLineLength = -1;
+
+		protected void LogCompletedAction(LinkedAction Action, Task<ExecuteResults> ExecuteTask, CancellationTokenSource CancellationTokenSource, ProgressWriter ProgressWriter, int TotalActions, ref int NumCompletedActions, ILogger Logger)
+		{
+			List<string> LogLines = new List<string>();
+			int ExitCode = int.MaxValue;
+			TimeSpan ExecutionTime = TimeSpan.Zero;
+			TimeSpan ProcessorTime = TimeSpan.Zero;
+			string? AdditionalDescription = null;
+			if (ExecuteTask.Status == TaskStatus.RanToCompletion)
 			{
-				if (!VisitedActions.Contains(Action))
+				ExecuteResults ExecuteTaskResult = ExecuteTask.Result;
+				LogLines = ExecuteTaskResult.LogLines;
+				ExitCode = ExecuteTaskResult.ExitCode;
+				ExecutionTime = ExecuteTaskResult.ExecutionTime;
+				ProcessorTime = ExecuteTaskResult.ProcessorTime;
+				AdditionalDescription = ExecuteTaskResult.AdditionalDescription;
+			}
+
+			// Write it to the log
+			string Description = string.Empty;
+			if (Action.bShouldOutputStatusDescription || LogLines.Count == 0)
+			{
+				Description = $"{(Action.CommandDescription ?? Action.CommandPath.GetFileNameWithoutExtension())} {Action.StatusDescription}".Trim();
+			}
+			else if (LogLines.Count > 0)
+			{
+				Description = $"{(Action.CommandDescription ?? Action.CommandPath.GetFileNameWithoutExtension())} {LogLines[0]}".Trim();
+			}
+			if (!string.IsNullOrEmpty(AdditionalDescription))
+            {
+				Description = $"{AdditionalDescription} {Description}";
+			}
+
+			lock (ProgressWriter)
+			{
+				int CompletedActions;
+				CompletedActions = Interlocked.Increment(ref NumCompletedActions);
+				ProgressWriter.Write(CompletedActions, TotalActions);
+
+				// Cancelled
+				if (ExitCode == int.MaxValue)
 				{
-					VisitedActions.Add(Action);
-					Dependency.TotalDependantCount++;
-					RecursiveIncDependents(Dependency, VisitedActions);
+					Logger.LogInformation("[{CompletedActions}/{TotalActions}] {Description} cancelled", CompletedActions, TotalActions, Description);
+					return;
 				}
+
+				string TargetDetails = "";
+				TargetDescriptor? Target = Action.Target;
+				if (bPrintActionTargetNames && Target != null)
+				{
+					TargetDetails = $"[{Target.Name} {Target.Platform} {Target.Configuration}]";
+				}
+
+				if (bLogActionCommandLines)
+				{
+					Logger.LogDebug("[{CompletedActions}/{TotalActions}]{TargetDetails} Command: {CommandPath} {CommandArguments}", CompletedActions, TotalActions, TargetDetails, Action.CommandPath, Action.CommandArguments);
+				}
+
+				string CompilationTimes = "";
+
+				if (bShowPerActionCompilationTimes)
+				{
+					if (ProcessorTime.Ticks > 0)
+					{
+						CompilationTimes = $" (Wall: {ExecutionTime.TotalSeconds:0.00}s CPU: {ProcessorTime.TotalSeconds:0.00}s)";
+					}
+					else
+					{
+						CompilationTimes = $" (Wall: {ExecutionTime.TotalSeconds:0.00}s)";
+					}
+				}
+
+				string message = ($"[{CompletedActions}/{TotalActions}]{TargetDetails}{CompilationTimes} {Description}");
+				
+				if (bCompactOutput)
+				{
+					if (s_previousLineLength > 0)
+					{
+						// move the cursor to the far left position, one line back
+						Console.CursorLeft = 0;
+						Console.CursorTop -= 1;
+						// clear the line
+						Console.Write("".PadRight(s_previousLineLength));
+						// move the cursor back to the left, so output is written to the desired location
+						Console.CursorLeft = 0;
+					}
+				}
+
+				s_previousLineLength = message.Length;
+
+				Log.TraceInformation("{0}", message); // Need to send this through registered event parser; using old logger
+				foreach (string Line in LogLines.Skip(Action.bShouldOutputStatusDescription ? 0 : 1))
+				{
+					// suppress library creation messages when writing compact output
+					if (bCompactOutput && Line.StartsWith("   Creating library ") && Line.EndsWith(".exp"))
+					{
+						continue;
+					}
+
+					Log.TraceInformation("{0}", Line);
+
+					// Prevent overwriting of logged lines
+					s_previousLineLength = -1;
+				}
+
+				if (ExitCode != 0)
+				{
+					// BEGIN TEMPORARY TO CATCH PVS-STUDIO ISSUES
+					if (LogLines.Count == 0)
+					{
+						Logger.LogError("{TargetDetails} {Description}: Exited with error code {ExitCode}", TargetDetails, Description, ExitCode);
+						Logger.LogInformation("{TargetDetails} {Description}: WorkingDirectory {WorkingDirectory}", TargetDetails, Description, Action.WorkingDirectory);
+						Logger.LogInformation("{TargetDetails} {Description}: {CommandPath} {CommandArguments}", TargetDetails, Description, Action.CommandPath, Action.CommandArguments);
+					}
+					// END TEMPORARY
+
+					// prevent overrwriting of error text
+					s_previousLineLength = -1;
+
+					// Cancel all other pending tasks
+					if (bStopCompilationAfterErrors)
+					{
+						CancellationTokenSource.Cancel();
+					}
+				}
+			}
+		}
+
+		protected static void TraceSummary(Dictionary<LinkedAction, Task<ExecuteResults>> Tasks, ManagedProcessGroup ProcessGroup, ILogger Logger)
+		{
+			if (!bShowCompilationTimes)
+			{
+				return;
+			}
+
+			Logger.LogInformation("");
+			if (ProcessGroup.TotalProcessorTime.Ticks > 0)
+			{
+				Logger.LogInformation("Total CPU Time: {TotalSeconds} s", ProcessGroup.TotalProcessorTime.TotalSeconds);
+				Logger.LogInformation("");
+			}
+
+			var CompletedTasks = Tasks.Where(x => x.Value.Status == TaskStatus.RanToCompletion).OrderByDescending(x => x.Value.Result.ExecutionTime).Take(20);
+
+			if (CompletedTasks.Any())
+			{
+				Logger.LogInformation("Compilation Time Top {CompletedTaskCount}", CompletedTasks.Count());
+				Logger.LogInformation("");
+				foreach (var Pair in CompletedTasks)
+				{
+					string Description = $"{(Pair.Key.Inner.CommandDescription ?? Pair.Key.Inner.CommandPath.GetFileNameWithoutExtension())} {Pair.Key.Inner.StatusDescription}".Trim();
+					if (Pair.Value.Result.ProcessorTime.Ticks > 0)
+					{
+						Logger.LogInformation("{Description} [ Wall Time {ExecutionTime:0.00} s / CPU Time {ProcessorTime:0.00} s ]", Description, Pair.Value.Result.ExecutionTime.TotalSeconds, Pair.Value.Result.ProcessorTime.TotalSeconds);
+					}
+					else
+					{
+						Logger.LogInformation("{Description} [ Time {ExecutionTime:0.00} s ]", Description, Pair.Value.Result.ExecutionTime.TotalSeconds);
+					}
+
+				}
+				Logger.LogInformation("");
 			}
 		}
 	}
@@ -448,6 +480,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Maximum number of processes that should be used for execution
 		/// </summary>
-		public static int MaxParallelProcesses { get { return ParallelExecutor.GetDefaultNumParallelProcesses(); } }
+		public static int GetMaxParallelProcesses(ILogger Logger) => ParallelExecutor.GetDefaultNumParallelProcesses(0, false, Logger);
+
+		/// <summary>
+		/// Maximum number of processes that should be used for execution
+		/// </summary>
+		public static int GetMaxParallelProcesses(int MaxLocalActions, bool bAllCores, ILogger Logger) => ParallelExecutor.GetDefaultNumParallelProcesses(MaxLocalActions, bAllCores, Logger);
 	}
 }

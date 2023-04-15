@@ -7,6 +7,8 @@
 
 #include "tinysplinecxx.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSplineUnits)
+
 FRigUnit_ControlRigSplineFromPoints_Execute()
 {
 	switch (Context.State)
@@ -48,7 +50,15 @@ FRigUnit_SetSplinePoints_Execute()
 		return;
 	}
 	
-	if (Points.Num() != Spline.SplineData->ControlPoints.Num())
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}	
+#endif
+	
+	if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
 		return;
@@ -77,6 +87,14 @@ FRigUnit_PositionFromControlRigSpline_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif
 	
 	switch (Context.State)
 	{
@@ -100,6 +118,14 @@ FRigUnit_TransformFromControlRigSpline_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 	
 	switch (Context.State)
 	{
@@ -142,6 +168,14 @@ FRigUnit_TangentFromControlRigSpline_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 	
 	switch (Context.State)
 	{
@@ -189,6 +223,14 @@ FRigUnit_DrawControlRigSpline_Execute()
 		return;
 	}
 
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
+
 	int32 Count = FMath::Clamp<int32>(Detail, 4, 64);
 	FControlRigDrawInstruction Instruction(EControlRigDrawSettings::LineStrip, Color, Thickness);
 	Instruction.Positions.SetNumUninitialized(Count);
@@ -212,6 +254,15 @@ FRigUnit_GetLengthControlRigSpline_Execute()
 		Length = 0;
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		Length = 0;
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 	
 	switch (Context.State)
 	{
@@ -252,6 +303,28 @@ FRigUnit_FitChainToSplineCurve_Execute()
 		Context);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_FitChainToSplineCurve::GetUpgradeInfo() const
+{
+	FRigUnit_FitChainToSplineCurveItemArray NewNode;
+	NewNode.Items = Items.GetKeys();
+	NewNode.Spline = Spline;
+	NewNode.Alignment = Alignment;
+	NewNode.Minimum = Minimum;
+	NewNode.Maximum = Maximum;
+	NewNode.SamplingPrecision = SamplingPrecision;
+	NewNode.PrimaryAxis = PrimaryAxis;
+	NewNode.SecondaryAxis = SecondaryAxis;
+	NewNode.PoleVectorPosition = PoleVectorPosition;
+	NewNode.Rotations = Rotations;
+	NewNode.RotationEaseType = RotationEaseType;
+	NewNode.Weight = Weight;
+	NewNode.bPropagateToChildren = bPropagateToChildren;
+	NewNode.DebugSettings = DebugSettings;
+	NewNode.WorkData = WorkData;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
+}
+
 FRigUnit_FitChainToSplineCurveItemArray_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -266,6 +339,14 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 
 	float& ChainLength = WorkData.ChainLength;
 	TArray<FVector>& ItemPositions = WorkData.ItemPositions;
@@ -649,7 +730,7 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 		}
 		Context.DrawInterface->Instructions.Add(Instruction);
 
-		for (auto Point : Spline.SplineData->ControlPoints)
+		for (auto Point : Spline.SplineData->GetControlPoints())
 		{
 			Context.DrawInterface->DrawPoint(DebugSettings.WorldOffset, Point, DebugSettings.Scale * 6, DebugSettings.CurveColor);
 		}
@@ -662,6 +743,15 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 FRigUnit_FitSplineCurveToChain_Execute()
 {
 	FRigUnit_FitSplineCurveToChainItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Spline, ExecuteContext, Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_FitSplineCurveToChain::GetUpgradeInfo() const
+{
+	FRigUnit_FitSplineCurveToChainItemArray NewNode;
+	NewNode.Items = Items.GetKeys();
+	NewNode.Spline = Spline;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
 }
 
 FRigUnit_FitSplineCurveToChainItemArray_Execute()
@@ -678,6 +768,14 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 
 	if (Context.State == EControlRigState::Init)
 	{
@@ -706,7 +804,7 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 	// 2.-  for each control point in the original spline
 	//			figure out its u in the original spline (preprocess)
 	//			query position at u on the new spline
-	const TArray<FVector>& ControlPoints = Spline.SplineData->ControlPoints;
+	const TArray<FVector>& ControlPoints = Spline.SplineData->GetControlPoints();
 	TArray<FVector> NewControlPoints;
 	NewControlPoints.SetNumUninitialized(ControlPoints.Num());
 	for (int32 i = 0; i < ControlPoints.Num(); ++i)
@@ -726,6 +824,14 @@ FRigUnit_ClosestParameterFromControlRigSpline_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 	
 	switch (Context.State)
 	{
@@ -790,6 +896,14 @@ FRigUnit_ParameterAtPercentage_Execute()
 	{
 		return;
 	}
+
+#if !(USE_TINYSPLINE)
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+#endif	
 	
 	switch (Context.State)
 	{
@@ -834,4 +948,5 @@ FRigUnit_ParameterAtPercentage_Execute()
 		}
 	}
 }
+
 

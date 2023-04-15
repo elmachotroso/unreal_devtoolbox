@@ -8,11 +8,17 @@
 #include "UObject/LinkerPlaceholderBase.h"
 #include "UObject/LinkerPlaceholderExportObject.h"
 #include "UObject/LinkerPlaceholderClass.h"
+#include "UObject/PropertyHelper.h"
 
 /*-----------------------------------------------------------------------------
 	FObjectProperty.
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FObjectProperty)
+
+FObjectProperty::FObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParams& Prop)
+	: TFObjectPropertyBase(InOwner, Prop)
+{
+}
 
 FString FObjectProperty::GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const
 {
@@ -62,7 +68,7 @@ EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag,
 		SetPropertyValue_InContainer(Data, PreviousValueObj, Tag.ArrayIndex);
 
 		// Validate the type is proper
-		CheckValidObject(GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex));
+		CheckValidObject(GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex), PreviousValueObj);
 
 		return EConvertFromTypeResult::Converted;
 	}
@@ -78,7 +84,7 @@ EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag,
 		}
 
 		SetPropertyValue_InContainer(Data, ObjectValue, Tag.ArrayIndex);
-		CheckValidObject(GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex));
+		CheckValidObject(GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex), ObjectValue);
 		return EConvertFromTypeResult::Converted;
 	}
 
@@ -92,12 +98,12 @@ void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value
 	if (UnderlyingArchive.IsObjectReferenceCollector())
 	{
 		// Serialize in place
-		UObject** ObjectPtr = GetPropertyValuePtr(Value);
+		TObjectPtr<UObject>* ObjectPtr = GetPropertyValuePtr(Value);
 		Slot << (*ObjectPtr);
 
 		if(!UnderlyingArchive.IsSaving())
 		{
-			CheckValidObject(ObjectPtr);
+			CheckValidObject(ObjectPtr, *ObjectPtr);
 		}
 	}
 	else
@@ -132,21 +138,21 @@ void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value
 			//        to accommodate this (as it depends on finding itself as the set value)
 	#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
-			CheckValidObject(Value);
+			CheckValidObject(Value, CurrentValue);
 		}
 	}
 }
 
-const TCHAR* FObjectProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const
+const TCHAR* FObjectProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const
 {
-	const TCHAR* Result = TFObjectPropertyBase<UObject*>::ImportText_Internal(Buffer, Data, PortFlags, OwnerObject, ErrorText);
+	const TCHAR* Result = TFObjectPropertyBase<TObjectPtr<UObject>>::ImportText_Internal(Buffer, ContainerOrPropertyPtr, PropertyPointerType, OwnerObject, PortFlags, ErrorText);
 	if (Result)
 	{
-		CheckValidObject(Data);
-
-#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+		void* Data = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
 		UObject* ObjectValue = GetObjectPropertyValue(Data);
+		CheckValidObject(Data, ObjectValue);
 
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING		
 		if (ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ObjectValue))
 		{
 			// we use this tracker mechanism to help record the instance that is
@@ -172,12 +178,60 @@ uint32 FObjectProperty::GetValueTypeHashInternal(const void* Src) const
 	return GetTypeHash(GetPropertyValue(Src));
 }
 
-UObject* FObjectProperty::GetObjectPropertyValue(const void* PropertyValueAddress) const
+TObjectPtr<UObject> FObjectProperty::GetObjectPtrPropertyValue(const void* PropertyValueAddress) const
 {
 	return GetPropertyValue(PropertyValueAddress);
 }
 
+UObject* FObjectProperty::GetObjectPropertyValue(const void* PropertyValueAddress) const
+{
+	return GetPropertyValue(PropertyValueAddress).Get();
+}
+
+UObject* FObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
+{
+	// Dummy struct to satisfy GetWrappedObjectPropertyValue_InContainer API requirements (Get() function)
+	struct FWrappedObjectPtr
+	{
+		UObject* Obj = nullptr;
+		UObject* Get() const
+		{
+			return Obj;
+		}
+	};
+	return GetWrappedObjectPropertyValue_InContainer<FWrappedObjectPtr>(ContainerAddress, ArrayIndex);
+}
+
 void FObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
 {
-	SetPropertyValue(PropertyValueAddress, Value);
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetPropertyValue(PropertyValueAddress, Value);
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
+}
+
+void FObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
+{
+	// Dummy struct to satisfy SetWrappedObjectPropertyValue_InContainer API requirements
+	struct FWrappedObjectPtr
+	{
+		FWrappedObjectPtr() = default;
+		FWrappedObjectPtr(UObject* InObj)
+			: Obj(InObj)
+		{
+		}
+		UObject* Obj = nullptr;
+	};
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetWrappedObjectPropertyValue_InContainer<FWrappedObjectPtr>(ContainerAddress, Value, ArrayIndex);
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
 }

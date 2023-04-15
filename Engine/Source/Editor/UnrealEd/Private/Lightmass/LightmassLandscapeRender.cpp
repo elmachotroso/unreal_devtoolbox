@@ -114,8 +114,6 @@ void RenderLandscapeMaterialForLightmass(const FLandscapeStaticLightingMesh* Lan
 	ENQUEUE_RENDER_COMMAND(CanvasFlushSetupCommand)(
 		[RenderTarget, &DynamicMeshBuilder, ViewInitOptions, MaterialProxy](FRHICommandListImmediate& RHICmdList)
 		{
-			FMemMark Mark(FMemStack::Get());
-
 			FMeshBatch Mesh;
 			FMeshBuilderOneFrameResources OneFrameResource;
 			DynamicMeshBuilder.GetMeshElement(FMatrix::Identity, MaterialProxy, SDPG_Foreground, true, false, 0, OneFrameResource, Mesh);
@@ -135,7 +133,7 @@ void RenderLandscapeMaterialForLightmass(const FLandscapeStaticLightingMesh* Lan
 				DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
 
 				//SCOPED_DRAW_EVENT(RHICmdList, RenderLandscapeMaterialToTexture);
-				FCanvasRenderContext RenderContext(GraphBuilder, RenderTarget->GetRenderTargetTexture(GraphBuilder), RTViewRect, FIntRect(0, 0, 0, 0));
+				FCanvasRenderContext RenderContext(GraphBuilder, RenderTarget, RTViewRect, FIntRect(0, 0, 0, 0), false);
 				GetRendererModule().DrawTileMesh(RenderContext, DrawRenderState, View, Mesh, false, FHitProxyId());
 
 				GraphBuilder.Execute();

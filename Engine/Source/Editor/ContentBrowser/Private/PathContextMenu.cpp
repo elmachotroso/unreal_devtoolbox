@@ -1,47 +1,56 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PathContextMenu.h"
-#include "Misc/MessageDialog.h"
-#include "HAL/FileManager.h"
-#include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/ObjectRedirector.h"
-#include "Misc/PackageName.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWindow.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Colors/SColorBlock.h"
-#include "EditorStyleSet.h"
-#include "SourceControlOperations.h"
-#include "ISourceControlModule.h"
-#include "SourceControlHelpers.h"
-#include "AssetData.h"
-#include "Editor.h"
-#include "FileHelpers.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
-#include "IAssetTools.h"
-#include "AssetToolsModule.h"
-#include "ContentBrowserLog.h"
-#include "ContentBrowserSingleton.h"
-#include "ContentBrowserUtils.h"
-#include "SourceControlWindows.h"
-#include "ContentBrowserModule.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Colors/SColorPicker.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
+
+#include "AssetViewUtils.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
 #include "ContentBrowserCommands.h"
-#include "ToolMenus.h"
-#include "ContentBrowserMenuContexts.h"
-#include "IContentBrowserDataModule.h"
+#include "ContentBrowserDataFilter.h"
 #include "ContentBrowserDataSource.h"
 #include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserMenuContexts.h"
+#include "ContentBrowserModule.h"
+#include "ContentBrowserSingleton.h"
+#include "ContentBrowserUtils.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformCrt.h"
+#include "IContentBrowserDataModule.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "SourceControlOperations.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuSection.h"
+#include "ToolMenus.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -63,6 +72,11 @@ void FPathContextMenu::SetOnFolderDeleted(const FOnFolderDeleted& InOnFolderDele
 void FPathContextMenu::SetOnFolderFavoriteToggled(const FOnFolderFavoriteToggled& InOnFolderFavoriteToggled)
 {
 	OnFolderFavoriteToggled = InOnFolderFavoriteToggled;
+}
+
+void FPathContextMenu::SetOnPrivateContentEditToggled(const FOnPrivateContentEditToggled& InOnPrivateContentEditToggled)
+{
+	OnPrivateContentEditToggled = InOnPrivateContentEditToggled;
 }
 
 const TArray<FContentBrowserItem>& FPathContextMenu::GetSelectedFolders() const
@@ -179,8 +193,9 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					);
 			}			
 
+			FString SelectedFolderPath = SelectedFolders[0].GetVirtualPath().ToString();
 			// If this folder is already favorited, show the option to remove from favorites
-			if (ContentBrowserUtils::IsFavoriteFolder(SelectedFolders[0].GetVirtualPath().ToString()))
+			if (ContentBrowserUtils::IsFavoriteFolder(SelectedFolderPath))
 			{
 				// Remove from favorites
 				Section.AddMenuEntry(
@@ -201,6 +216,39 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Star"),
 					FUIAction(FExecuteAction::CreateSP(this, &FPathContextMenu::ExecuteFavorite))
 				);
+			}
+
+			static const auto PublicAssetUIEnabledCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("ContentBrowser.PublicAsset.EnablePublicAssetFeature"));
+			bool bIsPublicAssetUIEnabled = false;
+
+			if (PublicAssetUIEnabledCVar)
+			{
+				bIsPublicAssetUIEnabled = PublicAssetUIEnabledCVar->GetBool();
+			}
+
+			FStringView SelectedFolderPathView(SelectedFolderPath);
+			if (bIsPublicAssetUIEnabled && FContentBrowserSingleton::Get().IsFolderShowPrivateContentToggleable(SelectedFolderPathView))
+			{
+				if (FContentBrowserSingleton::Get().IsShowingPrivateContent(SelectedFolderPathView))
+				{
+					Section.AddMenuEntry(
+						"DisallowPrivateContentEditing",
+						LOCTEXT("DisallowPrivateContentEditing", "Disallow Private Content Editing"),
+						LOCTEXT("DisallowPrivateContentEditingTooltip", "Hides Private Content and prevents editing the Public/Private state of content in this folder"),
+						FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.PrivateContentEdit"),
+						FUIAction(FExecuteAction::CreateSP(this, &FPathContextMenu::ExecutePrivateContentEdit))
+					);
+				}
+				else
+				{
+					Section.AddMenuEntry(
+						"AllowPrivateContentEditing",
+						LOCTEXT("AllowPrivateContentEditing", "Allow Private Content Editing"),
+						LOCTEXT("AllowPrivateContentEditingTooltip", "Reveals Private Content and allows editing the Public/Private state of content in this folder"),
+						FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.PrivateContentEdit"),
+						FUIAction(FExecuteAction::CreateSP(this, &FPathContextMenu::ExecutePrivateContentEdit))
+					);
+				}
 			}
 		}
 
@@ -278,7 +326,7 @@ void FPathContextMenu::MakeSetColorSubMenu(UToolMenu* Menu)
 					.Padding(2, 0, 0, 0)
 					[
 						SNew(SButton)
-						.ButtonStyle( FEditorStyle::Get(), "Menu.Button" )
+						.ButtonStyle( FAppStyle::Get(), "Menu.Button" )
 						.OnClicked( this, &FPathContextMenu::OnColorClicked, Color )
 						[
 							SNew(SColorBlock)
@@ -362,6 +410,17 @@ void FPathContextMenu::ExecuteFavorite()
 	}
 
 	OnFolderFavoriteToggled.ExecuteIfBound(PathsToUpdate);
+}
+
+void FPathContextMenu::ExecutePrivateContentEdit()
+{
+	TArray<FString> PathsToUpdate;
+	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
+	{
+		PathsToUpdate.Add(SelectedItem.GetVirtualPath().ToString());
+	}
+
+	OnPrivateContentEditToggled.ExecuteIfBound(PathsToUpdate);
 }
 
 void FPathContextMenu::NewColorComplete(const TSharedRef<SWindow>& Window)

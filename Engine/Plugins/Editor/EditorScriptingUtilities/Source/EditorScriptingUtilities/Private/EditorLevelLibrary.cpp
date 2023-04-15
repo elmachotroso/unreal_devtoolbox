@@ -5,7 +5,7 @@
 #include "EditorScriptingUtils.h"
 
 #include "ActorEditorUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/MeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
@@ -32,12 +32,14 @@
 #include "LevelEditor.h"
 #include "IAssetViewport.h"
 #include "SLevelViewport.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "ActorFactories/ActorFactory.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "LevelEditorSubsystem.h"
 #include "Subsystems/UnrealEditorSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorLevelLibrary)
 
 #define LOCTEXT_NAMESPACE "EditorLevelLibrary"
 
@@ -312,7 +314,7 @@ UWorld* UEditorLevelLibrary::GetGameWorld()
 {
 	UUnrealEditorSubsystem* UnrealEditorSubsystem = GEditor->GetEditorSubsystem<UUnrealEditorSubsystem>();
 
-	return UnrealEditorSubsystem ? UnrealEditorSubsystem->GetEditorWorld() : nullptr;
+	return UnrealEditorSubsystem ? UnrealEditorSubsystem->GetGameWorld() : nullptr;
 }
 
 TArray<UWorld*> UEditorLevelLibrary::GetPIEWorlds(bool bIncludeDedicatedServer)
@@ -478,3 +480,4 @@ bool UEditorLevelLibrary::CreateProxyMeshActor(const TArray<class AStaticMeshAct
 }
 
 #undef LOCTEXT_NAMESPACE
+

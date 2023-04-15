@@ -19,6 +19,8 @@
 #include "Components/DynamicMeshComponent.h"
 #include "UObject/UObjectGlobals.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ModelingSceneSnappingManager)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "USceneSnappingManager"
@@ -250,9 +252,41 @@ void UModelingSceneSnappingManager::HandleGlobalComponentTransformChangedDelegat
 
 void UModelingSceneSnappingManager::HandleDynamicMeshModifiedDelegate(UDynamicMeshComponent* Component)
 {
-	const bool bDeferRebuild = false;
-	SpatialCache->NotifyGeometryUpdate(Component, bDeferRebuild);
+	if (bQueueModifiedDynamicMeshUpdates)
+	{
+		PendingModifiedDynamicMeshes.Add(Component);
+	}
+	else
+	{
+		const bool bDeferRebuild = false;
+		SpatialCache->NotifyGeometryUpdate(Component, bDeferRebuild);
+	}
 }
+
+
+
+
+
+void UModelingSceneSnappingManager::PauseSceneGeometryUpdates()
+{
+	ensure(bQueueModifiedDynamicMeshUpdates == false);
+	bQueueModifiedDynamicMeshUpdates = true;
+}
+
+
+void UModelingSceneSnappingManager::UnPauseSceneGeometryUpdates(bool bImmediateRebuilds)
+{
+	if (ensure(bQueueModifiedDynamicMeshUpdates))
+	{
+		for (UDynamicMeshComponent* Component : PendingModifiedDynamicMeshes)
+		{
+			SpatialCache->NotifyGeometryUpdate(Component, !bImmediateRebuilds);
+		}
+		PendingModifiedDynamicMeshes.Reset();
+		bQueueModifiedDynamicMeshUpdates = false;
+	}
+}
+
 
 
 void UModelingSceneSnappingManager::BuildSpatialCacheForWorld(

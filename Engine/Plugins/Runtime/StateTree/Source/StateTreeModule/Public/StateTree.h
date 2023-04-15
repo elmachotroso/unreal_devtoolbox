@@ -2,13 +2,73 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "StateTreeTypes.h"
 #include "StateTreeSchema.h"
 #include "InstancedStruct.h"
+#include "InstancedStructArray.h"
 #include "StateTreePropertyBindings.h"
+#include "StateTreeInstanceData.h"
+#include "Misc/ScopeRWLock.h"
 #include "StateTree.generated.h"
+
+
+/** Custom serialization version for StateTree Asset */
+struct STATETREEMODULE_API FStateTreeCustomVersion
+{
+	enum Type
+	{
+		// Before any version changes were made in the plugin
+		BeforeCustomVersionWasAdded = 0,
+		// Separated conditions to shared instance data.
+		SharedInstanceData,
+		// Moved evaluators to be global.
+		GlobalEvaluators,
+		// Moved instance data to arrays.
+		InstanceDataArrays,
+		// Added index types.
+		IndexTypes,
+		// Added events.
+		AddedEvents,
+		// Added events.
+		AddedFoo,
+
+		// -----<new versions can be added above this line>-------------------------------------------------
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	/** The GUID for this custom version number */
+	const static FGuid GUID;
+
+private:
+	FStateTreeCustomVersion() {}
+};
+
+
+#if WITH_EDITOR
+/** Struct containing information about the StateTree runtime memory usage. */
+struct FStateTreeMemoryUsage
+{
+	FStateTreeMemoryUsage() = default;
+	FStateTreeMemoryUsage(const FString InName, const FStateTreeStateHandle InHandle = FStateTreeStateHandle::Invalid)
+		: Name(InName)
+		, Handle(InHandle)
+	{
+	}
+	
+	void AddUsage(FConstStructView View);
+	void AddUsage(const UObject* Object);
+
+	FString Name;
+	FStateTreeStateHandle Handle;
+	int32 NodeCount = 0;
+	int32 EstimatedMemoryUsage = 0;
+	int32 ChildNodeCount = 0;
+	int32 EstimatedChildMemoryUsage = 0;
+};
+#endif
+
 
 /**
  * StateTree asset. Contains the StateTree definition in both editor and runtime (baked) formats.
@@ -20,127 +80,148 @@ class STATETREEMODULE_API UStateTree : public UDataAsset
 
 public:
 
-	UStateTree(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
-	~UStateTree();
-
-	/** @return Script Struct that can be used to instantiate the runtime storage */
-	const UScriptStruct* GetInstanceStorageStruct() const { return InstanceStorageStruct; }
-
-	/** @return Instance of the runtime storage that contains the default values */
-	const FInstancedStruct& GetInstanceStorageDefaultValue() const { return InstanceStorageDefaultValue; }
-
-	/** @return Number of runtime data (Evaluators, Tasks, Conditions) in the runtime storage. */
-	int32 GetNumInstances() const { return Instances.Num(); }
+	/** @return Shared instance data. */
+	TSharedPtr<FStateTreeInstanceData> GetSharedInstanceData() const;
 
 	/** @return Number of data views required for StateTree execution (Evaluators, Tasks, Conditions, External data). */
 	int32 GetNumDataViews() const { return NumDataViews; }
 
-	/** @return Base index in data views for external data. */
-	int32 GetExternalDataBaseIndex() const { return ExternalDataBaseIndex; }
-
 	/** @return List of external data required by the state tree */
 	TConstArrayView<FStateTreeExternalDataDesc> GetExternalDataDescs() const { return ExternalDataDescs; }
 
-	/** @return Schema describing which inputs, evaluators, and tasks a StateTree can contain */
+	/** @return List of context data enforced by the schema that must be provided through the execution context. */
+	TConstArrayView<FStateTreeExternalDataDesc> GetContextDataDescs() const { return ContextDataDescs; }
+
+	/** @return List of default parameters of the state tree. Default parameter values can be overridden at runtime by the execution context. */
+	const FInstancedPropertyBag& GetDefaultParameters() const { return Parameters; }
+
+	/** @return true if the tree asset can be used at runtime. */
+	bool IsReadyToRun() const;
+
+	/** @return schema that was used to compile the StateTree. */
 	const UStateTreeSchema* GetSchema() const { return Schema; }
-	void SetSchema(UStateTreeSchema* InSchema) { Schema = InSchema; }
-
-	/** @return true is the tree asset is considered valid (e.g. at least one state) */
-	bool IsValidStateTree() const;
-
-	void ResolvePropertyPaths();
 
 #if WITH_EDITOR
-	void OnPIEStarted(const bool bIsSimulating);
-	
-	/** Resets the baked data to empty. */
-	void ResetBaked();
+	/** Resets the compiled data to empty. */
+	void ResetCompiled();
+
+	/** Calculates runtime memory usage for different sections of the tree. */
+	TArray<FStateTreeMemoryUsage> CalculateEstimatedMemoryUsage() const;
 #endif
 
 #if WITH_EDITORONLY_DATA
-	// Edit time data for the StateTree, instance of UStateTreeEditorData
+	/** Edit time data for the StateTree, instance of UStateTreeEditorData */
 	UPROPERTY()
 	TObjectPtr<UObject> EditorData;
 
-	// Hash of the editor data from last compile.
+	/** Hash of the editor data from last compile. */
 	UPROPERTY()
 	uint32 LastCompiledEditorDataHash = 0;
 #endif
 
 protected:
-	virtual void BeginDestroy() override;
+	
+	/**
+	 * Resolves references between data in the StateTree.
+	 * @return true if all references to internal and external data are resolved properly, false otherwise.
+	 */
+	[[nodiscard]] bool Link();
+
 	virtual void PostLoad() override;
+	virtual void Serialize(FStructuredArchiveRecord Record) override;
 	
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
 #endif
 
-	/** Initializes the types and default values related to StateTree runtime storage */
-	void InitInstanceStorageType();
-
-	/** Resolved references between data in the StateTree. */
-	void Link();
-
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	
 private:
 
-	// Properties
+	/**
+     * Reset the data generated by Link(), this in turn will cause IsReadyToRun() to return false.
+     * Used during linking, or to invalidate the linked data when data version is old (requires recompile). 
+	 */
+	void ResetLinked();
 
-	UPROPERTY(EditDefaultsOnly, Category = Common, Instanced)
+	// Data created during compilation, source data in EditorData.
+	
+	/** Schema used to compile the StateTree. */
+	UPROPERTY(Instanced)
 	TObjectPtr<UStateTreeSchema> Schema = nullptr;
 
-	/** Evaluators, Tasks, and Condition items */
+	/** Runtime states, root state at index 0 */
 	UPROPERTY()
-	TArray<FInstancedStruct> Items;
+	TArray<FCompactStateTreeState> States;
 
-	/** Evaluators, Tasks, and Conditions runtime data. */
+	/** Runtime transitions. */
 	UPROPERTY()
-	TArray<FInstancedStruct> Instances;
+	TArray<FCompactStateTransition> Transitions;
 
-	/** Blueprint based Evaluators, Tasks, and Conditions runtime data. */
+	/** Evaluators, Tasks, and Condition nodes. */
 	UPROPERTY()
-	TArray<TObjectPtr<UObject>> InstanceObjects;
+	FInstancedStructArray Nodes;
 
-	/** Script Struct that can be used to instantiate the runtime storage */
-	UPROPERTY(Transient)
-	TObjectPtr<UScriptStruct> InstanceStorageStruct;
+	/** Default node instance data (e.g. evaluators, tasks). */
+	UPROPERTY()
+	FStateTreeInstanceData DefaultInstanceData;
 
-	/** Offsets into the runtime type to quickly get a struct view to a specific Task or Evaluator */
-	TArray<FStateTreeInstanceStorageOffset> InstanceStorageOffsets;
+	/** Shared node instance data (e.g. conditions). */
+	UPROPERTY()
+	FStateTreeInstanceData SharedInstanceData;
 
-	/** Instance of the runtime storage that contains the default values. */
-	UPROPERTY(Transient)
-	FInstancedStruct InstanceStorageDefaultValue;
-
-	/** List of external data required by the state tree, creating during linking. */
-	UPROPERTY(Transient)
-	TArray<FStateTreeExternalDataDesc> ExternalDataDescs;
-
-	UPROPERTY(Transient)
-	int32 NumDataViews = 0;
-
-	UPROPERTY(Transient)
-	int32 ExternalDataBaseIndex = 0;
+	mutable FRWLock PerThreadSharedInstanceDataLock;
+	mutable TArray<TSharedPtr<FStateTreeInstanceData>> PerThreadSharedInstanceData;
+	
+	/** List of names external data enforced by the schema, created at compilation. */
+	UPROPERTY()
+	TArray<FStateTreeExternalDataDesc> ContextDataDescs;
 
 	UPROPERTY()
 	FStateTreePropertyBindings PropertyBindings;
 
+	/**
+	 * Parameters that could be used for bindings within the Tree.
+	 * Default values are stored within the asset but StateTreeReference can be used to parameterized the tree.
+	 * @see FStateTreeReference
+	 */
 	UPROPERTY()
-	TArray<FBakedStateTreeState> States;
+	FInstancedPropertyBag Parameters;
 
+	/** Data view index of the tree Parameters */
 	UPROPERTY()
-	TArray<FBakedStateTransition> Transitions;
+	FStateTreeIndex8 ParametersDataViewIndex = FStateTreeIndex8::Invalid;
+
+	/** Index of first evaluator in Nodes. */
+	UPROPERTY()
+	uint16 EvaluatorsBegin = 0;
+
+	/** Number of evaluators. */
+	UPROPERTY()
+	uint16 EvaluatorsNum = 0;
+
+	// Data created during linking.
+	
+	/** List of external data required by the state tree, created during linking. */
+	UPROPERTY(Transient)
+	TArray<FStateTreeExternalDataDesc> ExternalDataDescs;
+
+	/** Base index of external data, created during linking. */
+	UPROPERTY(Transient)
+	int32 ExternalDataBaseIndex = 0;
+
+	/** Total number of data views, created during linking. */
+	UPROPERTY(Transient)
+	int32 NumDataViews = 0;
+
+	/** True if the StateTree was linked successfully. */
+	bool bIsLinked = false;
 
 	friend struct FStateTreeInstance;
 	friend struct FStateTreeExecutionContext;
 #if WITH_EDITORONLY_DATA
-	friend struct FStateTreeBaker;
+	friend struct FStateTreeCompiler;
 #endif
 };
-
-
-
-
-
-
 

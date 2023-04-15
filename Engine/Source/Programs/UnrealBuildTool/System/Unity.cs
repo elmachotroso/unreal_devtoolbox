@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -157,6 +158,7 @@ namespace UnrealBuildTool
 		/// <param name="SourceFileToUnityFile">Receives a mapping of source file to unity file</param>
 		/// <param name="NormalFiles">Receives the files to compile using the normal configuration.</param>
 		/// <param name="AdaptiveFiles">Receives the files to compile using the adaptive unity configuration.</param>
+		/// <param name="NumIncludedBytesPerUnityCPP">An approximate number of bytes of C++ code to target for inclusion in a single unified C++ file.</param>
 		public static void GenerateUnityCPPs(
 			ReadOnlyTargetRules Target,
 			List<FileItem> CPPFiles,
@@ -168,7 +170,8 @@ namespace UnrealBuildTool
 			IActionGraphBuilder Graph,
 			Dictionary<FileItem, FileItem> SourceFileToUnityFile,
 			out List<FileItem> NormalFiles,
-			out List<FileItem> AdaptiveFiles)
+			out List<FileItem> AdaptiveFiles,
+			int NumIncludedBytesPerUnityCPP)
 		{
 			List<FileItem> NewCPPFiles = new List<FileItem>();
 
@@ -179,12 +182,12 @@ namespace UnrealBuildTool
 			// is beneficial when dealing with PCH files. The default PCH creation limit is X unity files so if we generate < X 
 			// this could be fairly slow and we'd rather bump the limit a bit to group them all into the same unity file.
 			// Optimization only makes sense if PCH files are enabled.
-			bool bForceIntoSingleUnityFile = Target.bStressTestUnity || (TotalBytesInCPPFiles < Target.NumIncludedBytesPerUnityCPP * 2 && Target.bUsePCHFiles);
+			bool bForceIntoSingleUnityFile = Target.bStressTestUnity || (TotalBytesInCPPFiles < NumIncludedBytesPerUnityCPP * 2 && Target.bUsePCHFiles);
 
 			// Every single file in the module appears in the working set. Don't bother using adaptive unity for this module.
 			// Otherwise it would make full builds really slow.
 			GetAdaptiveFiles(Target, CPPFiles, HeaderFiles, CompileEnvironment, WorkingSet, BaseName, IntermediateDirectory, Graph, out NormalFiles, out AdaptiveFiles);
-			if (NormalFiles.Count == 0)
+			if (NormalFiles.Where(file => !file.HasExtension(".gen.cpp")).Count() == 0)
 			{
 				NormalFiles = CPPFiles;
 				AdaptiveFiles.RemoveAll(new HashSet<FileItem>(NormalFiles).Contains);
@@ -197,10 +200,25 @@ namespace UnrealBuildTool
 				// Note that we're relying on this not only sorting files within each directory, but also the directories
 				// themselves, so the whole list of file paths is the same across computers.
 				// Case-insensitive file path compare, because you never know what is going on with local file systems.
-				List<FileItem> SortedCPPFiles = CPPFiles.OrderBy(File => File.AbsolutePath, StringComparer.OrdinalIgnoreCase).ToList();
+				List<FileItem> SortedCPPFiles = new List<FileItem>(CPPFiles);
+				SortedCPPFiles.Sort((A, B) =>
+				{
+					// Generated files from UHT need to be first in the list because they implement templated functions that aren't
+					// declared in the header but are required to link. If they are placed later in the list, you will see
+					// compile errors because the templated function is instantiated but is defined later in the same translation unit
+					// which results in 'error C2908: explicit specialization; '*****' has already been instantiated'
+					bool bAIsGenerated = A.AbsolutePath.EndsWith(".gen.cpp");
+					bool bBIsGenerated = B.AbsolutePath.EndsWith(".gen.cpp");
+					if (bAIsGenerated && !bBIsGenerated)
+						return -1;
+					if (!bAIsGenerated && bBIsGenerated)
+						return 1;
+
+					return String.Compare(A.AbsolutePath, B.AbsolutePath, StringComparison.OrdinalIgnoreCase);
+				});
 
 				HashSet<FileItem> AdaptiveFileSet = new HashSet<FileItem>(AdaptiveFiles);
-				UnityFileBuilder CPPUnityFileBuilder = new UnityFileBuilder(bForceIntoSingleUnityFile ? -1 : Target.NumIncludedBytesPerUnityCPP);
+				UnityFileBuilder CPPUnityFileBuilder = new UnityFileBuilder(bForceIntoSingleUnityFile ? -1 : NumIncludedBytesPerUnityCPP);
 				foreach (FileItem CPPFile in SortedCPPFiles)
 				{
 					if (!bForceIntoSingleUnityFile && CPPFile.AbsolutePath.IndexOf(".GeneratedWrapper.", StringComparison.InvariantCultureIgnoreCase) != -1)
@@ -242,7 +260,14 @@ namespace UnrealBuildTool
 				string UnityCPPFileName;
 				if (AllUnityFiles.Count > 1)
 				{
-					UnityCPPFileName = string.Format("{0}{1}.{2}_of_{3}.cpp", ModulePrefix, BaseName, CurrentUnityFileCount, AllUnityFiles.Count);
+					if (Target.bDetailedUnityFiles)
+					{
+						UnityCPPFileName = string.Format("{0}{1}.{2}_of_{3}.cpp", ModulePrefix, BaseName, CurrentUnityFileCount, AllUnityFiles.Count);
+					}
+					else
+					{
+						UnityCPPFileName = string.Format("{0}{1}.{2}.cpp", ModulePrefix, BaseName, CurrentUnityFileCount);
+					}
 				}
 				else
 				{
@@ -250,20 +275,31 @@ namespace UnrealBuildTool
 				}
 				FileReference UnityCPPFilePath = FileReference.Combine(IntermediateDirectory, UnityCPPFileName);
 
+				List<FileItem> InlinedGenCPPFilesInUnity = new();
+
 				// Add source files to the unity file
 				foreach (FileItem CPPFile in UnityFile.Files)
 				{
 					string CPPFileString = CPPFile.AbsolutePath;
 					if (CPPFile.Location.IsUnderDirectory(Unreal.RootDirectory))
 					{
-						CPPFileString = CPPFile.Location.MakeRelativeTo(UnrealBuildTool.EngineSourceDirectory);
+						CPPFileString = CPPFile.Location.MakeRelativeTo(Unreal.EngineSourceDirectory);
 					}
 					OutputUnityCPPWriter.WriteLine("#include \"{0}\"", CPPFileString.Replace('\\', '/'));
+
+					List<FileItem>? InlinedGenCPPFiles;
+					if (CompileEnvironment.FileInlineGenCPPMap.TryGetValue(CPPFile, out InlinedGenCPPFiles))
+					{
+						InlinedGenCPPFilesInUnity.AddRange(InlinedGenCPPFiles);
+					}
 				}
 
 				// Write the unity file to the intermediate folder.
 				FileItem UnityCPPFile = Graph.CreateIntermediateTextFile(UnityCPPFilePath, OutputUnityCPPWriter.ToString());
 				NewCPPFiles.Add(UnityCPPFile);
+
+				// Store all the inlined gen.cpp files
+				CompileEnvironment.FileInlineGenCPPMap[UnityCPPFile] = InlinedGenCPPFilesInUnity;
 
 				// Store the mapping of source files to unity files in the makefile
 				foreach(FileItem SourceFile in UnityFile.Files)
@@ -294,7 +330,7 @@ namespace UnrealBuildTool
 			NormalFiles = new List<FileItem>();
 			AdaptiveFiles = new List<FileItem>();
 
-			if (!Target.bUseAdaptiveUnityBuild)
+			if (!Target.bUseAdaptiveUnityBuild || Target.bStressTestUnity)
 			{
 				NormalFiles = CPPFiles;
 				return;

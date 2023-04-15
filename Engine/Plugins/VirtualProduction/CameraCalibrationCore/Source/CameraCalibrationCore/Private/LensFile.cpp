@@ -14,6 +14,7 @@
 #include "LensDistortionModelHandlerBase.h"
 #include "LensFileRendering.h"
 #include "LensInterpolationUtils.h"
+#include "Curves/CurveEvaluation.h"
 #include "Models/SphericalLensModel.h"
 #include "Tables/BaseLensTable.h"
 #include "Tables/LensTableUtils.h"
@@ -45,19 +46,6 @@ namespace LensFileUtils
 		return NewRenderTarget2D;
 	}
 
-	/** From FRichCurve - Util to find float value on bezier defined by 4 control points */
-	float BezierInterp(float P0, float P1, float P2, float P3, float Alpha)
-	{
-		const float P01 = FMath::Lerp(P0, P1, Alpha);
-		const float P12 = FMath::Lerp(P1, P2, Alpha);
-		const float P23 = FMath::Lerp(P2, P3, Alpha);
-		const float P012 = FMath::Lerp(P01, P12, Alpha);
-		const float P123 = FMath::Lerp(P12, P23, Alpha);
-		const float P0123 = FMath::Lerp(P012, P123, Alpha);
-
-		return P0123;
-	}
-
 	float EvalAtTwoPoints(const float EvalTime, const float Time0, const float Time1, const float Value0, const float Value1, const float Tangent0, const float Tangent1)
 	{
 		if (FMath::IsNearlyEqual(Time0, Time1))
@@ -79,7 +67,7 @@ namespace LensFileUtils
 		const float P3 = Value1;
 		const float P1 = P0 + (CurveTan0 * CurveDiff * OneThird);
 		const float P2 = P3 - (CurveTan1 * CurveDiff * OneThird);
-		return BezierInterp(P0, P1, P2, P3, CurveAlpha);
+		return UE::Curves::BezierInterp(P0, P1, P2, P3, CurveAlpha);
 	}
 
 	void FindWeightsAndInterp(float InEvalTime, TConstArrayView<float> InTimes, TConstArrayView<float> InTangents, TOptional<float> LerpFactor, TConstArrayView<float> Inputs, float& Output)
@@ -723,6 +711,16 @@ bool ULensFile::EvaluateDistortionForSTMaps(float InFocus, float InZoom, FVector
 		return true;
 	}
 
+	if (((LensInfo.SensorDimensions.X + UE_DOUBLE_KINDA_SMALL_NUMBER) < InFilmback.X) || ((LensInfo.SensorDimensions.Y + UE_DOUBLE_KINDA_SMALL_NUMBER) < InFilmback.Y))
+	{
+		UE_LOG(LogCameraCalibrationCore, Verbose
+			, TEXT("Can't evaluate LensFile '%s' - The filmback used to generate the calibrated ST Maps is smaller than" \
+				"the filmback of the camera that distortion is being applied to. There is not enough distortion information available in the ST Maps.")
+			, *GetName());
+		SetupNoDistortionOutput(InLensHandler);
+		return false;
+	}
+
 	FDisplacementMapBlendingParams Params;
 
 	TArray<UTextureRenderTarget2D*, TInlineAllocator<4>> UndistortionMapSource;
@@ -990,20 +988,6 @@ void ULensFile::OnDistortionDerivedDataJobCompleted(const FDerivedDistortionData
 
 bool ULensFile::IsCineCameraCompatible(const UCineCameraComponent* CineCameraComponent) const
 {
-	if (!CineCameraComponent)
-	{ 
-		return false;
-	}
-
-	if (DataMode == ELensDataMode::STMap)
-	{
-		if ((LensInfo.SensorDimensions.X < CineCameraComponent->Filmback.SensorWidth)
-			|| (LensInfo.SensorDimensions.Y < CineCameraComponent->Filmback.SensorHeight))
-		{
-			return false;
-		}
-	}
-
 	return true;
 }
 
@@ -1225,39 +1209,44 @@ void ULensFile::ClearData(ELensDataCategory InDataCategory)
 
 bool ULensFile::HasSamples(ELensDataCategory InDataCategory) const
 {
+	return GetTotalPointNum(InDataCategory) > 0 ? true : false;
+}
+
+int32 ULensFile::GetTotalPointNum(ELensDataCategory InDataCategory) const
+{
 	switch(InDataCategory)
 	{
 		case ELensDataCategory::Distortion:
 		{
-			return DistortionTable.GetFocusPoints().Num() > 0;
+			return DistortionTable.GetTotalPointNum();
 		}
 		case ELensDataCategory::ImageCenter:
 		{
-			return ImageCenterTable.GetFocusPoints().Num() > 0;
+			return ImageCenterTable.GetTotalPointNum();
 		}
 		case ELensDataCategory::Zoom:
 		{
-			return FocalLengthTable.GetFocusPoints().Num() > 0;
+			return FocalLengthTable.GetTotalPointNum();
 		}
 		case ELensDataCategory::STMap:
 		{
-			return STMapTable.GetFocusPoints().Num() > 0;
+			return STMapTable.GetTotalPointNum();
 		}
 		case ELensDataCategory::NodalOffset:
 		{
-			return NodalOffsetTable.GetFocusPoints().Num() > 0;
+			return NodalOffsetTable.GetTotalPointNum();
 		}
 		case ELensDataCategory::Focus:
 		{
-			return EncodersTable.GetNumFocusPoints() > 0;
+			return EncodersTable.GetNumFocusPoints();
 		}
 		case ELensDataCategory::Iris:
 		{
-			return EncodersTable.GetNumIrisPoints() > 0;
+			return EncodersTable.GetNumIrisPoints();
 		}
 		default:
 		{
-			return false;
+			return -1;
 		}
 	}
 }
@@ -1358,10 +1347,17 @@ void ULensFile::UpdateDerivedData()
 			{
 				if (ZoomPoint.DerivedDistortionData.bIsDirty)
 				{
-					//Early exit if source data is invalid
+					//Early exit if source map does not exist
 					if (ZoomPoint.STMapInfo.DistortionMap == nullptr)
 					{
 						ZoomPoint.DerivedDistortionData.bIsDirty = false;
+						continue;
+					}
+
+					//Early exit it the source map is not yet loaded (but leave it marked dirty so it tries again later)
+					if (ZoomPoint.STMapInfo.DistortionMap->GetResource() == nullptr ||
+						ZoomPoint.STMapInfo.DistortionMap->GetResource()->IsProxy())
+					{
 						continue;
 					}
 
@@ -1390,6 +1386,7 @@ void ULensFile::UpdateDerivedData()
 					FDerivedDistortionDataJobArgs JobArgs;
 					JobArgs.Focus = FocusPoint.Focus;
 					JobArgs.Zoom = ZoomPoint.Zoom;
+					JobArgs.Format = ZoomPoint.STMapInfo.MapFormat;
 					JobArgs.SourceDistortionMap = ZoomPoint.STMapInfo.DistortionMap;
 					JobArgs.OutputUndistortionDisplacementMap = ZoomPoint.DerivedDistortionData.UndistortionDisplacementMap;
 					JobArgs.OutputDistortionDisplacementMap = ZoomPoint.DerivedDistortionData.DistortionDisplacementMap;

@@ -28,16 +28,10 @@ class FLightmapRayTracingMeshProcessor : public FRayTracingMeshProcessor
 {
 public:
 	FLightmapRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, FMeshPassProcessorRenderState InPassDrawRenderState)
-		: FRayTracingMeshProcessor(InCommandContext, nullptr, nullptr, InPassDrawRenderState, ERayTracingMeshCommandsMode::PATH_TRACING) // NOTE: RayTracingMeshCommandsMode does not really matter here since Process is overridden
-	{}
-
-	virtual bool Process(
-		const FMeshBatch& RESTRICT MeshBatch,
-		uint64 BatchElementMask,
-		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
-		const FMaterial& RESTRICT MaterialResource,
-		const FUniformLightMapPolicy& RESTRICT LightMapPolicy) override;
+		: FRayTracingMeshProcessor(InCommandContext, nullptr, nullptr, InPassDrawRenderState, ERayTracingMeshCommandsMode::LIGHTMAP_TRACING)
+	{
+		FeatureLevel = GMaxRHIFeatureLevel;
+	}
 };
 
 class FLightmapPathTracingRGS : public FGlobalShader
@@ -47,19 +41,31 @@ class FLightmapPathTracingRGS : public FGlobalShader
 
 	class FUseIrradianceCaching : SHADER_PERMUTATION_BOOL("USE_IRRADIANCE_CACHING");
 	class FUseFirstBounceRayGuiding : SHADER_PERMUTATION_BOOL("USE_FIRST_BOUNCE_RAY_GUIDING");
+	class FUseICBackfaceDetection : SHADER_PERMUTATION_BOOL("IC_BACKFACE_DETECTION");
 
-	using FPermutationDomain = TShaderPermutationDomain<FUseIrradianceCaching, FUseFirstBounceRayGuiding>;
+	using FPermutationDomain = TShaderPermutationDomain<FUseIrradianceCaching, FUseFirstBounceRayGuiding, FUseICBackfaceDetection>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+		// Disallow invalid permutations
+		if (!PermutationVector.Get<FUseIrradianceCaching>())
+		{
+			if (PermutationVector.Get<FUseICBackfaceDetection>()) return false;
+			if (PermutationVector.Get<FUseFirstBounceRayGuiding>()) return false;
+		}
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
 		OutEnvironment.SetDefine(TEXT("LIGHTMAP_PATH_TRACING_MAIN_RG"), 1);
+		OutEnvironment.SetDefine(TEXT("USE_RECT_LIGHT_TEXTURES"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
+		// @todo - Working around DXC compiler crash UE-165154, should be removed after DXC is updated with a fix.
+		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -109,13 +115,18 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
+		OutEnvironment.SetDefine(TEXT("VOLUMETRIC_LIGHTMAP_PATH_TRACING_MAIN_RG"), 1);
+		OutEnvironment.SetDefine(TEXT("USE_RECT_LIGHT_TEXTURES"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
+		// @todo - Working around DXC compiler crash UE-165154, should be removed after DXC is updated with a fix.
+		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -127,14 +138,15 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 		SHADER_PARAMETER(int32, BrickBatchOffset)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_SRV(Buffer<uint4>, BrickRequests)
-		SHADER_PARAMETER_UAV(RWTexture3D<float3>, AmbientVector)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients0R)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients1R)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients0G)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients1G)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients0B)
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, SHCoefficients1B)
-		SHADER_PARAMETER_UAV(RWTexture3D<float>, DirectionalLightShadowing)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float3>, AmbientVector)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients0R)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients1R)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients0G)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients1G)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients0B)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SHCoefficients1B)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, SkyBentNormal)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float>, DirectionalLightShadowing)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPathTracingLight>, SceneLights)
 		SHADER_PARAMETER(uint32, SceneLightCount)
@@ -165,16 +177,18 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_SRV(Buffer<int>, LightTypeArray)
 		SHADER_PARAMETER_SRV(Buffer<int>, ChannelIndexArray)
@@ -201,21 +215,56 @@ class FFirstBounceRayGuidingCDFBuildCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && RHISupportsRayTracingShaders(Parameters.Platform);
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
 		OutEnvironment.CompilerFlags.Add(CFLAG_WaveOperations);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(int, NumRayGuidingTrialSamples)
+		SHADER_PARAMETER(int, RayGuidingEndPassIndex)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGPUTileDescription>, BatchedTiles)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RayGuidingLuminance)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RayGuidingCDFX)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RayGuidingCDFY)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+class FStaticShadowDepthMapTracingRGS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FStaticShadowDepthMapTracingRGS)
+	SHADER_USE_ROOT_PARAMETER_STRUCT(FStaticShadowDepthMapTracingRGS, FGlobalShader)
+
+	class FLightType : SHADER_PERMUTATION_INT("LIGHT_TYPE", 3);
+
+	using FPermutationDomain = TShaderPermutationDomain<FLightType>;
+	
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData) && ShouldCompileRayTracingShadersForProject(Parameters.Platform) && IsPCPlatform(Parameters.Platform);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		OutEnvironment.SetDefine(TEXT("GPreviewLightmapPhysicalTileSize"), GPreviewLightmapPhysicalTileSize);
+		OutEnvironment.CompilerFlags.Add(CFLAG_WarningsAsErrors);
+	}
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER(int32, StaticShadowDepthMapSuperSampleFactor)
+		SHADER_PARAMETER(FIntPoint, ShadowMapSize)
+		SHADER_PARAMETER(FMatrix44f, LightToWorld)
+		SHADER_PARAMETER(FMatrix44f, WorldToLight)
+		SHADER_PARAMETER(FVector3f, LightSpaceImportanceBoundsMin)
+		SHADER_PARAMETER(FVector3f, LightSpaceImportanceBoundsMax)
+		SHADER_PARAMETER(float, MaxPossibleDistance)
+		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<half>, DepthMapTexture)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

@@ -5,9 +5,10 @@
 #if WITH_EDITOR
 #include "Algo/Transform.h"
 #include "Algo/RemoveIf.h"
-#include "Hash/CityHashHelpers.h"
+#include "HAL/FileManager.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
 
@@ -19,25 +20,17 @@ void FHLODActorDesc::Init(const AActor* InActor)
 
 	HLODSubActors.Reserve(HLODActor->GetSubActors().Num());
 	Algo::Transform(HLODActor->GetSubActors(), HLODSubActors, [](const FHLODSubActor& SubActor) { return FHLODSubActorDesc(SubActor.ActorGuid, SubActor.ContainerID); });
-	
-	CellHash = 0;
-	if (const UHLODLayer* SubActorsHLODLayer = HLODActor->GetSubActorsHLODLayer())
-	{
-		uint64 GridIndexX;
-		uint64 GridIndexY;
-		uint64 GridIndexZ;
-		HLODActor->GetGridIndices(GridIndexX, GridIndexY, GridIndexZ);
 
-		FDataLayersID DataLayersID(HLODActor->GetDataLayerObjects());
-
-		CellHash = ComputeCellHash(SubActorsHLODLayer->GetName(), GridIndexX, GridIndexY, GridIndexZ, DataLayersID);
-	}
+	SourceCellName = HLODActor->GetSourceCellName();
+	SourceHLODLayerName = HLODActor->GetSubActorsHLODLayer()->GetFName();
+	HLODStats = HLODActor->GetStats();
 }
 
 void FHLODActorDesc::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
 	FWorldPartitionActorDesc::Serialize(Ar);
 
@@ -57,9 +50,30 @@ void FHLODActorDesc::Serialize(FArchive& Ar)
 		Ar << HLODLayer_Deprecated;
 	}
 
+	const bool bSerializeCellHash = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash &&
+									Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats;
 	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::WorldPartitionHLODActorDescSerializeCellHash)
 	{
-		Ar << CellHash;
+		uint64 CellHash_Deprecated;
+		Ar << CellHash_Deprecated;
+	}
+
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionActorDescSerializeActorIsRuntimeOnly)
+	{
+		bActorIsRuntimeOnly = true;
+	}
+
+	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::WorldPartitionHLODActorDescSerializeStats)
+	{		
+		Ar << SourceCellName;
+		Ar << SourceHLODLayerName;
+		Ar << HLODStats;
+
+		// Update package size stat on load
+		if (Ar.IsLoading())
+		{
+			HLODStats.Add(FWorldPartitionHLODStats::MemoryDiskSizeBytes, GetPackageSize());
+		}
 	}
 }
 
@@ -67,27 +81,31 @@ bool FHLODActorDesc::Equals(const FWorldPartitionActorDesc* Other) const
 {
 	if (FWorldPartitionActorDesc::Equals(Other))
 	{
-		const FHLODActorDesc* HLODActorDesc = (FHLODActorDesc*)Other;
-
-		if (CellHash == HLODActorDesc->CellHash && HLODSubActors.Num() == HLODActorDesc->HLODSubActors.Num())
-		{
-			TArray<FHLODSubActorDesc> SortedSubActors(HLODSubActors);
-			TArray<FHLODSubActorDesc> SortedSubActorsOther(HLODActorDesc->HLODSubActors);
-			SortedSubActors.Sort();
-			SortedSubActorsOther.Sort();
-			return SortedSubActors == SortedSubActorsOther;
-		}
+		const FHLODActorDesc& HLODActorDesc = *(FHLODActorDesc*)Other;
+		return SourceCellName == HLODActorDesc.SourceCellName &&
+			   SourceHLODLayerName == HLODActorDesc.SourceHLODLayerName &&
+			   HLODStats.OrderIndependentCompareEqual(HLODActorDesc.GetStats()) &&
+			   CompareUnsortedArrays(HLODSubActors, HLODActorDesc.HLODSubActors);
 	}
-
 	return false;
 }
 
-uint64 FHLODActorDesc::ComputeCellHash(const FString HLODLayerName, uint64 GridIndexX, uint64 GridIndexY, uint64 GridIndexZ, FDataLayersID DataLayersID)
+static int64 GetPackageSize(const FString& InPackageFileName)
 {
-	uint64 CellHash = FCrc::StrCrc32(*HLODLayerName);
-	CellHash = AppendCityHash(GridIndexX, CellHash);
-	CellHash = AppendCityHash(GridIndexY, CellHash);
-	CellHash = AppendCityHash(GridIndexZ, CellHash);
-	return HashCombine(DataLayersID.GetHash(), CellHash);
+	const int64 PackageSize = IFileManager::Get().FileSize(*InPackageFileName);
+	return PackageSize;
 }
+
+int64 FHLODActorDesc::GetPackageSize() const
+{
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(GetActorPackage().ToString(), FPackageName::GetAssetPackageExtension());
+	return ::GetPackageSize(PackageFileName);
+}
+
+int64 FHLODActorDesc::GetPackageSize(const AWorldPartitionHLOD* InHLODActor)
+{
+	const FString PackageFileName = InHLODActor->GetPackage()->GetLoadedPath().GetLocalFullPath();
+	return ::GetPackageSize(PackageFileName);
+}
+
 #endif

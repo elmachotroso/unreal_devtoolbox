@@ -1,16 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSoundClassActionMenu.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "EdGraph/EdGraph.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBox.h"
-#include "SGraphActionMenu.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "EditorStyleSet.h"
-#include "Styling/CoreStyle.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "SGraphActionMenu.h"
+#include "SlotBase.h"
 #include "SoundClassGraph/SoundClassGraphSchema.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SSoundClassActionMenu"
 
@@ -134,7 +148,7 @@ void SSoundClassActionMenu::Construct( const FArguments& InArgs )
 
 	// Build the widget layout
 	SBorder::Construct( SBorder::FArguments()
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		.Padding(5)
 		[
 			SNew(SBox)

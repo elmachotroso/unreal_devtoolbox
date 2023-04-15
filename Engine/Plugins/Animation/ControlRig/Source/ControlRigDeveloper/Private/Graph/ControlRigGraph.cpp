@@ -9,11 +9,14 @@
 #include "ControlRigObjectVersion.h"
 #include "Units/RigUnit.h"
 #include "EdGraphNode_Comment.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_BeginExecution.h"
+#include "GraphEditAction.h"
+#include "Units/Execution/RigUnit_BeginExecution.h"
 #include "RigVMModel/Nodes/RigVMLibraryNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionEntryNode.h"
 #include "RigVMModel/Nodes/RigVMFunctionReturnNode.h"
 #include "RigVMModel/Nodes/RigVMRerouteNode.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigGraph)
 
 #if WITH_EDITOR
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -34,6 +37,71 @@ UControlRigGraph::UControlRigGraph()
 	bIsFunctionDefinition = false;
 }
 
+FRigVMClient* UControlRigGraph::GetRigVMClient() const
+{
+	if (const IRigVMClientHost* Host = GetImplementingOuter<IRigVMClientHost>())
+	{
+		return (FRigVMClient*)Host->GetRigVMClient();
+	}
+	return nullptr;
+}
+
+FString UControlRigGraph::GetRigVMNodePath() const
+{
+	return ModelNodePath;
+}
+
+void UControlRigGraph::HandleRigVMGraphRenamed(const FString& InOldNodePath, const FString& InNewNodePath)
+{
+	static constexpr TCHAR NodePathPrefixFormat[] = TEXT("%s|");
+	const FString OldPrefix = FString::Printf(NodePathPrefixFormat, *InOldNodePath); 
+	const FString NewPrefix = FString::Printf(NodePathPrefixFormat, *InNewNodePath);
+	
+	if(ModelNodePath == InOldNodePath)
+	{
+		Modify();
+		ModelNodePath = InNewNodePath;
+
+		FString GraphName;
+		if(!ModelNodePath.Split(TEXT("|"), nullptr, &GraphName, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+		{
+			GraphName = ModelNodePath;
+		}
+		GraphName.RemoveFromEnd(TEXT("::"));
+		GraphName.RemoveFromStart(UControlRigBlueprint::RigVMModelPrefix);
+		GraphName.TrimStartAndEndInline();
+
+		if(GraphName.IsEmpty())
+		{
+			GraphName = UControlRigGraphSchema::GraphName_ControlRig.ToString(); 
+		}
+		GraphName = FRigVMClient::GetUniqueName(GetOuter(), *GraphName).ToString();
+
+		Rename(*GraphName, nullptr, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
+	}
+	else if(ModelNodePath.StartsWith(OldPrefix))
+	{
+		Modify();
+		ModelNodePath = NewPrefix + ModelNodePath.RightChop(OldPrefix.Len() - 1);
+	}
+	else
+	{
+		return;
+	}
+
+	for(UEdGraphNode* Node : Nodes)
+	{
+		if(UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(Node))
+		{
+			if(RigNode->ModelNodePath.StartsWith(OldPrefix))
+			{
+				RigNode->Modify();
+				RigNode->ModelNodePath = NewPrefix + RigNode->ModelNodePath.RightChop(OldPrefix.Len() - 1);
+			}
+		}
+	}
+}
+
 void UControlRigGraph::Initialize(UControlRigBlueprint* InBlueprint)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
@@ -52,7 +120,7 @@ void UControlRigGraph::Initialize(UControlRigBlueprint* InBlueprint)
 
 	if(Hierarchy)
 	{
-		CacheNameLists(Hierarchy, &InBlueprint->DrawContainer);
+		CacheNameLists(Hierarchy, &InBlueprint->DrawContainer, InBlueprint->ShapeLibraries);
 	}
 }
 
@@ -70,7 +138,10 @@ void UControlRigGraph::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
-		Schema = UControlRigGraphSchema::StaticClass();
+		if(Schema == nullptr || !Schema->IsChildOf(UControlRigGraphSchema::StaticClass()))
+		{
+			Schema = UControlRigGraphSchema::StaticClass();
+		}
 	}
 }
 #endif
@@ -79,7 +150,7 @@ void UControlRigGraph::Serialize(FArchive& Ar)
 
 TArray<TSharedPtr<FString>> UControlRigGraph::EmptyElementNameList;
 
-void UControlRigGraph::CacheNameLists(URigHierarchy* InHierarchy, const FControlRigDrawContainer* DrawContainer)
+void UControlRigGraph::CacheNameLists(URigHierarchy* InHierarchy, const FControlRigDrawContainer* DrawContainer, TArray<TSoftObjectPtr<UControlRigShapeLibrary>> ShapeLibraries)
 {
 	if (UControlRigGraph* OuterGraph = Cast<UControlRigGraph>(GetOuter()))
 	{
@@ -107,17 +178,54 @@ void UControlRigGraph::CacheNameLists(URigHierarchy* InHierarchy, const FControl
 		TArray<TSharedPtr<FString>>& RigidBodyNameList = ElementNameLists.FindChecked(ERigElementType::RigidBody);
 		TArray<TSharedPtr<FString>>& ReferenceNameList = ElementNameLists.FindChecked(ERigElementType::Reference);
 		
-		CacheNameListForHierarchy<FRigBaseElement>(InHierarchy, AllNameList);
-		CacheNameListForHierarchy<FRigBoneElement>(InHierarchy, BoneNameList);
-		CacheNameListForHierarchy<FRigNullElement>(InHierarchy, NullNameList);
-		CacheNameListForHierarchy<FRigControlElement>(InHierarchy, ControlNameList);
-		CacheNameListForHierarchy<FRigCurveElement>(InHierarchy, CurveNameList);
-		CacheNameListForHierarchy<FRigRigidBodyElement>(InHierarchy, RigidBodyNameList);
-		CacheNameListForHierarchy<FRigReferenceElement>(InHierarchy, ReferenceNameList);
+		CacheNameListForHierarchy<FRigBaseElement>(InHierarchy, AllNameList, false);
+		CacheNameListForHierarchy<FRigBoneElement>(InHierarchy, BoneNameList, false);
+		CacheNameListForHierarchy<FRigNullElement>(InHierarchy, NullNameList, false);
+		CacheNameListForHierarchy<FRigControlElement>(InHierarchy, ControlNameList, false);
+		CacheNameListForHierarchy<FRigControlElement>(InHierarchy, ControlNameListWithoutAnimationChannels, true);
+		CacheNameListForHierarchy<FRigCurveElement>(InHierarchy, CurveNameList, false);
+		CacheNameListForHierarchy<FRigRigidBodyElement>(InHierarchy, RigidBodyNameList, false);
+		CacheNameListForHierarchy<FRigReferenceElement>(InHierarchy, ReferenceNameList, false);
 
 		LastHierarchyTopologyVersion = InHierarchy->GetTopologyVersion();
 	}
 	CacheNameList<FControlRigDrawContainer>(*DrawContainer, DrawingNameList);
+
+	EntryNameList.Reset();
+	EntryNameList.Add(MakeShared<FString>(FName(NAME_None).ToString()));
+
+	if(const UControlRigBlueprint* Blueprint = GetBlueprint())
+	{
+		const TArray<FName> EntryNames = Blueprint->GetRigVMClient()->GetEntryNames();
+		for (const FName& EntryName : EntryNames)
+		{
+			EntryNameList.Add(MakeShared<FString>(EntryName.ToString()));
+		}
+	}
+
+	ShapeNameList.Reset();
+	ShapeNameList.Add(MakeShared<FString>(FName(NAME_None).ToString()));
+
+	for(const TSoftObjectPtr<UControlRigShapeLibrary>& ShapeLibrary : ShapeLibraries)
+	{
+		if(ShapeLibrary.IsNull() || !ShapeLibrary.IsValid())
+		{
+			ShapeLibrary.LoadSynchronous();
+		}
+
+		if(ShapeLibrary.IsNull() || !ShapeLibrary.IsValid())
+		{
+			continue;
+		}
+
+		const bool bUseNameSpace = ShapeLibraries.Num() > 1;
+		const FString NameSpace = bUseNameSpace ? ShapeLibrary->GetName() + TEXT(".") : FString();
+		ShapeNameList.Add(MakeShared<FString>(NameSpace + ShapeLibrary->DefaultShape.ShapeName.ToString()));
+		for (const FControlRigShapeDefinition& Shape : ShapeLibrary->Shapes)
+		{
+			ShapeNameList.Add(MakeShared<FString>(NameSpace + Shape.ShapeName.ToString()));
+		}
+	}
 }
 
 const TArray<TSharedPtr<FString>>* UControlRigGraph::GetElementNameList(ERigElementType InElementType) const
@@ -141,7 +249,13 @@ const TArray<TSharedPtr<FString>>* UControlRigGraph::GetElementNameList(ERigElem
 		}
 
 		UControlRigGraph* MutableThis = (UControlRigGraph*)this;
-		MutableThis->CacheNameLists(Blueprint->Hierarchy, &Blueprint->DrawContainer);
+		URigHierarchy* Hierarchy = Blueprint->Hierarchy;
+		if(UControlRig* ControlRig = Cast<UControlRig>(Blueprint->GetObjectBeingDebugged()))
+		{
+			Hierarchy = ControlRig->GetHierarchy();
+		}	
+			
+		MutableThis->CacheNameLists(Hierarchy, &Blueprint->DrawContainer, Blueprint->ShapeLibraries);
 	}
 	return &ElementNameLists.FindChecked(InElementType);
 }
@@ -204,6 +318,25 @@ const TArray<TSharedPtr<FString>>* UControlRigGraph::GetDrawingNameList(URigVMPi
 	return &DrawingNameList;
 }
 
+const TArray<TSharedPtr<FString>>* UControlRigGraph::GetEntryNameList(URigVMPin* InPin) const
+{
+	if (UControlRigGraph* OuterGraph = Cast<UControlRigGraph>(GetOuter()))
+	{
+		return OuterGraph->GetEntryNameList(InPin);
+	}
+	return &EntryNameList;
+}
+
+const TArray<TSharedPtr<FString>>* UControlRigGraph::GetShapeNameList(URigVMPin* InPin) const
+{
+	if (UControlRigGraph* OuterGraph = Cast<UControlRigGraph>(GetOuter()))
+	{
+		return OuterGraph->GetShapeNameList(InPin);
+	}
+	return &ShapeNameList;
+}
+
+
 void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
@@ -223,6 +356,28 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 	if(UControlRigGraphSchema* ControlRigSchema = (UControlRigGraphSchema*)GetControlRigGraphSchema())
 	{
 		ControlRigSchema->HandleModifiedEvent(InNotifType, InGraph, InSubject);
+	}
+
+	if(TemplateController)
+	{
+		switch(InNotifType)
+		{
+			case ERigVMGraphNotifType::NodeRemoved:
+			case ERigVMGraphNotifType::PinTypeChanged:
+			case ERigVMGraphNotifType::PinDefaultValueChanged:
+			case ERigVMGraphNotifType::PinRemoved:
+			case ERigVMGraphNotifType::PinRenamed:
+			case ERigVMGraphNotifType::VariableRemoved:
+			case ERigVMGraphNotifType::VariableRenamed:
+			case ERigVMGraphNotifType::GraphChanged:
+			{
+				return;
+			}
+			default:
+			{
+				break;
+			}
+		}
 	}
 
 	// increment the node topology version for any interaction
@@ -328,7 +483,7 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 				}
 				else if (URigVMRerouteNode* RerouteModelNode = Cast<URigVMRerouteNode>(ModelNode))
 				{
-					UControlRigGraphNode* NewNode = NewObject<UControlRigGraphNode>(this, ModelNode->GetFName());
+					UControlRigGraphNode* NewNode = NewObject<UControlRigGraphNode>(this, GetControlRigGraphSchema()->GetGraphNodeClass(), ModelNode->GetFName());
 					AddNode(NewNode, false, false);
 
 					NewNode->ModelNodePath = ModelNode->GetNodePath();
@@ -349,7 +504,7 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 				}
 				else // struct, library, parameter + variable
 				{
-					UControlRigGraphNode* NewNode = NewObject<UControlRigGraphNode>(this, ModelNode->GetFName());
+					UControlRigGraphNode* NewNode = NewObject<UControlRigGraphNode>(this, GetControlRigGraphSchema()->GetGraphNodeClass(), ModelNode->GetFName());
 					AddNode(NewNode, false, false);
 
 					NewNode->ModelNodePath = ModelNode->GetNodePath();
@@ -395,14 +550,7 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 				UEdGraphNode* EdNode = FindNodeForModelNodeName(ModelNode->GetFName(), false);
 				if (EdNode)
 				{
-					// Make sure EdGraph is not part of the transaction
-					TGuardValue<ITransaction*> TransactionGuard(GUndo, nullptr);
-					
-					static UObject* NewOuter = GetTransientPackage();
-					EdNode->Rename(nullptr, NewOuter, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);
-					
-					RemoveNode(EdNode, true);
-					NotifyGraphChanged();
+					RemoveNode(EdNode);
 				}
 			}
 			break;
@@ -435,6 +583,19 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 			}
 			break;
 		}
+		case ERigVMGraphNotifType::NodeDescriptionChanged:
+		case ERigVMGraphNotifType::NodeCategoryChanged:
+		{
+			if (URigVMNode* ModelNode = Cast<URigVMNode>(InSubject))
+			{
+				if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(FindNodeForModelNodeName(ModelNode->GetFName())))
+				{
+					RigNode->InvalidateNodeTitle();
+					RigNode->ReconstructNode_Internal(true);
+				}
+			}
+			break;
+		}
 		case ERigVMGraphNotifType::RerouteCompactnessChanged:
 		{
 			if (URigVMRerouteNode* ModelNode = Cast<URigVMRerouteNode>(InSubject))
@@ -450,7 +611,8 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 						{
 							RigNode->Pins[PinIndex]->bHidden = !ModelNode->GetShowsAsFullNode();
 						}
-						NotifyGraphChanged();
+						NotifyGraphChanged(FEdGraphEditAction(EEdGraphActionType::GRAPHACTION_RemoveNode, EdNode->GetGraph(), EdNode, true));
+						NotifyGraphChanged(FEdGraphEditAction(EEdGraphActionType::GRAPHACTION_AddNode, EdNode->GetGraph(), EdNode, true));
 					}
 				}
 			}
@@ -460,7 +622,7 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 		{
 			if (URigVMNode* ModelNode = Cast<URigVMNode>(InSubject))
 			{
-				if (ModelNode->IsA<URigVMLibraryNode>())
+				if (ModelNode->IsA<URigVMLibraryNode>() || ModelNode->IsA<URigVMTemplateNode>())
 				{
 					if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(FindNodeForModelNodeName(ModelNode->GetFName())))
 					{
@@ -549,6 +711,10 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 					UEdGraphPin* RigNodePin = RigNode->FindPin(ModelPin->GetPinPath());
 					if (RigNodePin == nullptr)
 					{
+						if(ModelPin->GetNode()->IsEvent())
+						{
+							RigNode->InvalidateNodeTitle();
+						}
 						break;
 					}
 
@@ -562,17 +728,19 @@ void UControlRigGraph::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URi
 							RigNode->ReconstructNode_Internal(true);
 						}
 					}
-					else if (Cast<URigVMParameterNode>(ModelPin->GetNode()))
-					{
-						if (ModelPin->GetName() == TEXT("Parameter"))
-						{
-							RigNode->InvalidateNodeTitle();
-							RigNode->ReconstructNode_Internal(true);
-						}
-					}
 					else if (Cast<URigVMUnitNode>(ModelPin->GetNode()))
 					{
 						RigNode->InvalidateNodeTitle();
+
+						// if the node contains a rig element key - invalidate the node
+						if(RigNode->GetAllPins().ContainsByPredicate([](UEdGraphPin* Pin) -> bool
+						{
+							return Pin->PinType.PinSubCategoryObject == FRigElementKey::StaticStruct();
+						}))
+						{
+							// we do this to enforce the refresh of the element name widgets
+							RigNode->ReconstructNode_Internal(true);
+						}
 					}
 				}
 				else if (URigVMInjectionInfo* Injection = ModelPin->GetNode()->GetInjectionInfo())
@@ -837,22 +1005,28 @@ UEdGraphNode* UControlRigGraph::FindNodeForModelNodeName(const FName& InModelNod
 		{
 			if (RigNode->ModelNodePath == InModelNodePath)
 			{
-				if (bCacheIfRequired)
+				if (RigNode->GetOuter() == this)
 				{
-					ModelNodePathToEdNode.Add(InModelNodeName, EdNode);
+					if (bCacheIfRequired)
+					{
+						ModelNodePathToEdNode.Add(InModelNodeName, EdNode);
+					}
+					return EdNode;
 				}
-				return EdNode;
 			}
 		}
-		else
+		else if (EdNode)
 		{
 			if (EdNode->GetFName() == InModelNodeName)
 			{
-				if (bCacheIfRequired)
+				if (EdNode->GetOuter() == this)
 				{
-					ModelNodePathToEdNode.Add(InModelNodeName, EdNode);
+					if (bCacheIfRequired)
+					{
+						ModelNodePathToEdNode.Add(InModelNodeName, EdNode);
+					}
+					return EdNode;
 				}
-				return EdNode;
 			}
 		}
 	}
@@ -870,20 +1044,60 @@ UControlRigBlueprint* UControlRigGraph::GetBlueprint() const
 
 URigVMGraph* UControlRigGraph::GetModel() const
 {
-	if (UControlRigBlueprint* Blueprint = GetBlueprint())
+	if(CachedModelGraph.IsValid())
 	{
-		return Blueprint->GetModel(this);
+		return CachedModelGraph.Get();
+	}
+	
+	if (const FRigVMClient* Client = GetRigVMClient())
+	{
+		URigVMGraph* Model = Client->GetModel(this);
+		CachedModelGraph = Model;
+		return Model;
 	}
 	return nullptr;
 }
 
 URigVMController* UControlRigGraph::GetController() const
 {
-	if (UControlRigBlueprint* Blueprint = GetBlueprint())
+	if (FRigVMClient* Client = GetRigVMClient())
 	{
-		return Blueprint->GetOrCreateController(this);
+		return Client->GetOrCreateController(GetModel());
 	}
 	return nullptr;
+}
+
+const UControlRigGraph* UControlRigGraph::GetRootGraph() const
+{
+	if(const UControlRigGraph* ParentGraph = Cast<UControlRigGraph>(GetOuter()))
+	{
+		return ParentGraph->GetRootGraph();
+	}
+	return this;
+}
+
+void UControlRigGraph::RemoveNode(UEdGraphNode* InNode)
+{
+	// Make sure EdGraph is not part of the transaction
+	TGuardValue<ITransaction*> TransactionGuard(GUndo, nullptr);
+					
+	// Rename the soon to be deleted object to a unique name, so that other objects can use
+	// the old name
+	FString DeletedName;
+	{
+		UObject* ExistingObject = nullptr;
+		static int32 DeletedIndex = FMath::Rand();
+		do
+		{
+			DeletedName = FString::Printf(TEXT("%s_Deleted_%d"), *InNode->GetName(), DeletedIndex++); 
+			ExistingObject = StaticFindObject(/*Class=*/ NULL, this, *DeletedName, true);						
+		}
+		while (ExistingObject);
+	}
+	InNode->Rename(*DeletedName, nullptr, REN_ForceNoResetLoaders | REN_DontCreateRedirectors);	
+	Super::RemoveNode(InNode);
+
+	NotifyGraphChanged(FEdGraphEditAction(EEdGraphActionType::GRAPHACTION_RemoveNode, this, InNode, false));
 }
 
 URigVMController* UControlRigGraph::GetTemplateController()
@@ -897,7 +1111,7 @@ URigVMController* UControlRigGraph::GetTemplateController()
 	return TemplateController;
 }
 
-void UControlRigGraph::HandleVMCompiledEvent(UBlueprint* InBlueprint, URigVM* InVM)
+void UControlRigGraph::HandleVMCompiledEvent(UObject* InCompiledObject, URigVM* InVM)
 {
 	CachedInstructionIndices.Reset();
 }
@@ -942,3 +1156,4 @@ FControlRigPublicFunctionData UControlRigGraph::GetPublicFunctionData() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

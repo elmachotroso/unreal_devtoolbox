@@ -10,6 +10,7 @@
 #include "Engine/EngineTypes.h"
 #include "Interfaces/Interface_PostProcessVolume.h"
 #include "WaterBodyManager.h"
+#include "WaterZoneActor.h"
 #include "WaterSubsystem.generated.h"
 
 DECLARE_STATS_GROUP(TEXT("Water"), STATGROUP_Water, STATCAT_Advanced);
@@ -17,7 +18,6 @@ DECLARE_STATS_GROUP(TEXT("Water"), STATGROUP_Water, STATCAT_Advanced);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCameraUnderwaterStateChanged, bool, bIsUnderWater, float, DepthUnderwater);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWaterScalabilityChanged);
 
-class AWaterZone;
 class UWaterBodyComponent;
 class UMaterialParameterCollection;
 class UWaterRuntimeSettings;
@@ -26,6 +26,9 @@ class UTexture2D;
 struct FUnderwaterPostProcessDebugInfo;
 enum class EWaterBodyQueryFlags;
 class ABuoyancyManager;
+class FWaterViewExtension;
+
+namespace UE::WaterInfo { struct FRenderingContext; }
 
 bool IsWaterEnabled(bool bIsRenderThread);
 
@@ -87,6 +90,7 @@ public:
 
 	// USubsystem implementation Begin
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void PostInitialize() override;
 	virtual void Deinitialize() override;
 	// USubsystem implementation End
 
@@ -94,14 +98,19 @@ public:
 	static UWaterSubsystem* GetWaterSubsystem(const UWorld* InWorld);
 
 	/** Static helper function to get a waterbody manager from a world, returns nullptr if world or manager don't exist */
-	static FWaterBodyManager* GetWaterBodyManager(UWorld* InWorld);
+	static FWaterBodyManager* GetWaterBodyManager(const UWorld* InWorld);
 
-	/** Execute a predicate function on each valid water body. Predicate should return false for early exit. */
-	static void ForEachWaterBodyComponent(const UWorld* World, TFunctionRef<bool(UWaterBodyComponent*)> Predicate);
+	/** Static helper function to get a weak ptr to the water scene view extension for a given world. */
+	static TWeakPtr<FWaterViewExtension, ESPMode::ThreadSafe> GetWaterViewExtension(const UWorld* InWorld);
 
+	UE_DEPRECATED(5.1, "Please use FWaterBodyManager::ForEachWaterBodyComponent instead.")
+	static void ForEachWaterBodyComponent(const UWorld* World, TFunctionRef<bool(UWaterBodyComponent*)> Predicate) {}
+
+	UE_DEPRECATED(5.1, "This will become a private member. Prefer calling GetWaterBodyManager instead")
 	FWaterBodyManager WaterBodyManager;
 
-	AWaterZone* GetWaterZoneActor() const;
+	UE_DEPRECATED(5.1, "There may be multiple water zones per level. Prefer calling the GetWaterZone on a per-water body basis or iterating over all zones.")
+	AWaterZone* GetWaterZoneActor(ULevel* InPreferredOuterLevel = nullptr) const { return nullptr; }
 
 	ABuoyancyManager* GetBuoyancyManager() const { return BuoyancyManager; }
 
@@ -165,7 +174,8 @@ public:
 
 	UMaterialParameterCollection* GetMaterialParameterCollection() const {	return MaterialParameterCollection; }
 	
-	void MarkAllWaterMeshesForRebuild();
+	void MarkAllWaterZonesForRebuild(EWaterZoneRebuildFlags RebuildFlags = EWaterZoneRebuildFlags::All);
+	void MarkWaterZonesInRegionForRebuild(const FBox2D& InUpdateRegion, EWaterZoneRebuildFlags InRebuildFlags);
 
 #if WITH_EDITOR
 	/** Little scope object to temporarily change the value of bAllowWaterSubsystemOnPreviewWorld */
@@ -192,9 +202,9 @@ private:
 	void ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneView* SceneView);
 	void SetMPCTime(float Time, float PrevTime);
 	void AdjustUnderwaterWaterInfoQueryFlags(EWaterBodyQueryFlags& InOutFlags);
-	void OnLoadProfileConfig(class UCollisionProfile* CollisionProfile);
-	void AddWaterCollisionProfile();
 	void ApplyRuntimeSettings(const UWaterRuntimeSettings* Settings, EPropertyChangeType::Type ChangeType);
+
+	FWaterBodyManager& GetWaterBodyManagerInternal();
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	void ShowOnScreenDebugInfo(const FVector& InViewLocation, const FUnderwaterPostProcessDebugInfo& InDebugInfo);
@@ -202,7 +212,7 @@ private:
 
 public:
 	UPROPERTY(Transient)
-	ABuoyancyManager* BuoyancyManager;
+	TObjectPtr<ABuoyancyManager> BuoyancyManager;
 
 	DECLARE_EVENT_OneParam(UWaterSubsystem, FOnWaterSubsystemInitialized, UWaterSubsystem*)
 	static FOnWaterSubsystemInitialized OnWaterSubsystemInitialized;
@@ -214,14 +224,12 @@ public:
 	FOnWaterScalabilityChanged OnWaterScalabilityChanged;
 
 	UPROPERTY()
-	UStaticMesh* DefaultRiverMesh;
+	TObjectPtr<UStaticMesh> DefaultRiverMesh;
 
 	UPROPERTY()
-	UStaticMesh* DefaultLakeMesh;
+	TObjectPtr<UStaticMesh> DefaultLakeMesh;
 
 private:
-	UPROPERTY()
-	mutable AWaterZone* WaterZoneActor;
 
 	TWeakObjectPtr<UWaterBodyComponent> OceanBodyComponent;
 
@@ -240,11 +248,16 @@ private:
 
 	/** The parameter collection asset that holds the global parameters that are updated by this actor */
 	UPROPERTY()
-	UMaterialParameterCollection* MaterialParameterCollection;
+	TObjectPtr<UMaterialParameterCollection> MaterialParameterCollection;
 
 	FUnderwaterPostProcessVolume UnderwaterPostProcessVolume;
 
+	TSharedPtr<FWaterViewExtension> WaterViewExtension;
+
 #if WITH_EDITOR
+	FDelegateHandle OnHeightmapStreamedHandle;
+	void OnHeightmapStreamed(const struct FOnHeightmapStreamedContext& InContext);
+
 	/** By default, there is no water subsystem allowed on preview worlds except when explicitly requested : */
 	static bool bAllowWaterSubsystemOnPreviewWorld;
 #endif // WITH_EDITOR

@@ -5,11 +5,11 @@
 #include "IAssetSearchModule.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "WorkspaceMenuStructure.h"
-#include "EditorStyleSet.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+#include "Styling/AppStyle.h"
+#include "WorkspaceMenuStructureModule.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/SSearchBrowser.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetSearchManager.h"
 
 #define LOCTEXT_NAMESPACE "FAssetSearchModule"
@@ -35,7 +35,7 @@ public:
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SearchTabName, FOnSpawnTab::CreateRaw(this, &FAssetSearchModule::HandleSpawnSettingsTab))
 			.SetDisplayName(LOCTEXT("Search", "Search"))
 			.SetTooltipText(LOCTEXT("SearchTab", "Search Tab"))
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Symbols.SearchGlass"))
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Symbols.SearchGlass"))
 			.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
 	}
 

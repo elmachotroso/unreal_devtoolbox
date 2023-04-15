@@ -30,11 +30,14 @@ FString FTaskTrackEvent::GetStartLabel() const
 		return TEXT("Scheduled Time:");
 	case ETaskEventType::Started:
 	case ETaskEventType::PrerequisiteStarted:
+	case ETaskEventType::ParentStarted:
 	case ETaskEventType::NestedStarted:
 	case ETaskEventType::SubsequentStarted:
 		return TEXT("Started Time:");
 	case ETaskEventType::Finished:
 		return TEXT("Finished Time:");
+	case ETaskEventType::Completed:
+		return TEXT("Completed Time:");
 	default:
 		checkf(false, TEXT("Unknown task event type"));
 		break;
@@ -57,11 +60,14 @@ FString FTaskTrackEvent::GetEndLabel() const
 		return TEXT("Started Time:");
 	case ETaskEventType::Started:
 	case ETaskEventType::PrerequisiteStarted:
+	case ETaskEventType::ParentStarted:
 	case ETaskEventType::NestedStarted:
 	case ETaskEventType::SubsequentStarted:
 		return TEXT("Finished Time:");
 	case ETaskEventType::Finished:
 		return TEXT("Completed Time:");
+	case ETaskEventType::Completed:
+		return TEXT("Destroyed Time:");
 	default:
 		checkf(false, TEXT("Unknown task event type"));
 		break;
@@ -86,8 +92,12 @@ FString FTaskTrackEvent::GetEventName() const
 		return TEXT("Executing");
 	case ETaskEventType::Finished:
 		return TEXT("Finished");
+	case ETaskEventType::Completed:
+		return TEXT("Completed");
 	case ETaskEventType::PrerequisiteStarted:
 		return FString::Printf(TEXT("Prerequisite Task %d Executing"), GetTaskId());	
+	case ETaskEventType::ParentStarted:
+		return FString::Printf(TEXT("Parent Task %d Executing"), GetTaskId());
 	case ETaskEventType::NestedStarted:
 		return FString::Printf(TEXT("Nested Task %d Executing"), GetTaskId());
 	case ETaskEventType::SubsequentStarted:

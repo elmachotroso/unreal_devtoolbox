@@ -5,6 +5,7 @@
 #include "Chaos/Core.h"
 #include "Chaos/Matrix.h"
 #include "Chaos/Transform.h"
+#include "Chaos/UniformGrid.h"
 #include "Chaos/Vector.h"
 
 #include "Math/NumericLimits.h"
@@ -44,7 +45,7 @@ namespace Chaos
 		}
 
 		//! Compute the minimum, average, and maximum values of \p Values.
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		void GetMinAvgMax(const TARRAY& Values, T& MinV, double& AvgV, T& MaxV)
 		{
 			MinV = TNumericLimits<T>::Max();
@@ -67,7 +68,7 @@ namespace Chaos
 		}
 
 		//! Compute the average value.
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		T GetAverage(const TARRAY& Values)
 		{
 			double AvgV = 0.0;
@@ -83,7 +84,7 @@ namespace Chaos
 		}
 
 		//! Compute the variance of \p Values, given the average value of \p Avg.
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		T GetVariance(const TARRAY& Values, const T Avg)
 		{
 			double Variance = 0.0;
@@ -100,14 +101,14 @@ namespace Chaos
 		}
 
 		//! Compute the variance of \p Values (computes their average on the fly).
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		T GetVariance(const TARRAY& Values)
 		{
 			return GetVariance(Values, GetAverage(Values));
 		}
 
 		//! Compute the standard deviation of \p Values, given the average value of \p Avg.
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		T GetStandardDeviation(const TARRAY& Values, const T Avg)
 		{
 			const T Variance = GetVariance(Values, Avg);
@@ -115,7 +116,7 @@ namespace Chaos
 		}
 
 		//! Compute the standard deviation of \p Values (computes their average on the fly).
-		template<class T, class TARRAY=TArray<T>>
+		template<class T, class TARRAY = TArray<T>>
 		T GetStandardDeviation(const TARRAY& Values)
 		{
 			const T Variance = GetVariance(Values);
@@ -132,9 +133,9 @@ namespace Chaos
 		inline static FMatrix33 CrossProductMatrix(const FVec3& V)
 		{
 			return FMatrix33(
-			    0, -V.Z, V.Y,
-			    V.Z, 0, -V.X,
-			    -V.Y, V.X, 0);
+				0, -V.Z, V.Y,
+				V.Z, 0, -V.X,
+				-V.Y, V.X, 0);
 		}
 
 		/**
@@ -159,7 +160,7 @@ namespace Chaos
 				L.M[0][2] * R.M[0][0] + L.M[1][2] * R.M[0][1] + L.M[2][2] * R.M[0][2],	// x20
 				L.M[0][2] * R.M[1][0] + L.M[1][2] * R.M[1][1] + L.M[2][2] * R.M[1][2],	// x21
 				L.M[0][2] * R.M[2][0] + L.M[1][2] * R.M[2][1] + L.M[2][2] * R.M[2][2]	// x22
-				);
+			);
 		}
 
 		inline FMatrix44 Multiply(const FMatrix44& L, const FMatrix44& R)
@@ -188,7 +189,7 @@ namespace Chaos
 				L.M[0][3] * R.M[1][0] + L.M[1][3] * R.M[1][1] + L.M[2][3] * R.M[1][2] + L.M[3][3] * R.M[1][3],	// x31
 				L.M[0][3] * R.M[2][0] + L.M[1][3] * R.M[2][1] + L.M[2][3] * R.M[2][2] + L.M[3][3] * R.M[2][3],	// x32
 				L.M[0][3] * R.M[3][0] + L.M[1][3] * R.M[3][1] + L.M[2][3] * R.M[3][2] + L.M[3][3] * R.M[3][3]	// x33
-				);
+			);
 		}
 
 		inline FMatrix33 MultiplyAB(const FMatrix33& LIn, const FMatrix33& RIn)
@@ -210,7 +211,7 @@ namespace Chaos
 				L.M[0][2] * R.M[0][0] + L.M[1][2] * R.M[1][0] + L.M[2][2] * R.M[2][0],	// x20
 				L.M[0][2] * R.M[0][1] + L.M[1][2] * R.M[1][1] + L.M[2][2] * R.M[2][1],	// x21
 				L.M[0][2] * R.M[0][2] + L.M[1][2] * R.M[1][2] + L.M[2][2] * R.M[2][2]	// x22
-				);
+			);
 		}
 
 		inline FMatrix33 MultiplyAtB(const FMatrix33& L, const FMatrix33& R)
@@ -227,7 +228,7 @@ namespace Chaos
 				L.M[2][0] * R.M[0][0] + L.M[2][1] * R.M[0][1] + L.M[2][2] * R.M[0][2],	// x20
 				L.M[2][0] * R.M[1][0] + L.M[2][1] * R.M[1][1] + L.M[2][2] * R.M[1][2],	// x21
 				L.M[2][0] * R.M[2][0] + L.M[2][1] * R.M[2][1] + L.M[2][2] * R.M[2][2]	// x22
-				);
+			);
 
 		}
 
@@ -239,9 +240,9 @@ namespace Chaos
 		{
 			// @todo(chaos): optimize: use simd
 			return FVec3(
-			    L.M[0][0] * R.X + L.M[1][0] * R.Y + L.M[2][0] * R.Z,
-			    L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z,
-			    L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z);
+				L.M[0][0] * R.X + L.M[1][0] * R.Y + L.M[2][0] * R.Z,
+				L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z,
+				L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z);
 		}
 
 		inline TVec3<FRealSingle> Multiply(const TMatrix33<FRealSingle>& L, const TVec3<FRealSingle>& R)
@@ -261,7 +262,7 @@ namespace Chaos
 				L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z + L.M[3][1] * R.W,
 				L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z + L.M[3][2] * R.W,
 				L.M[0][3] * R.X + L.M[1][3] * R.Y + L.M[2][3] * R.Z + L.M[3][3] * R.W
-				);
+			);
 		}
 
 		/**
@@ -297,12 +298,12 @@ namespace Chaos
 			// Vx*M*VxT+Im
 			check(Im > FLT_MIN);
 			return PMatrix<T, 3, 3>(
-			    -V[2] * (-V[2] * M.M[1][1] + V[1] * M.M[2][1]) + V[1] * (-V[2] * M.M[2][1] + V[1] * M.M[2][2]) + Im,
-			    V[2] * (-V[2] * M.M[1][0] + V[1] * M.M[2][0]) - V[0] * (-V[2] * M.M[2][1] + V[1] * M.M[2][2]),
-			    -V[1] * (-V[2] * M.M[1][0] + V[1] * M.M[2][0]) + V[0] * (-V[2] * M.M[1][1] + V[1] * M.M[2][1]),
-			    V[2] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) - V[0] * (V[2] * M.M[2][0] - V[0] * M.M[2][2]) + Im,
-			    -V[1] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) + V[0] * (V[2] * M.M[1][0] - V[0] * M.M[2][1]),
-			    -V[1] * (-V[1] * M.M[0][0] + V[0] * M.M[1][0]) + V[0] * (-V[1] * M.M[1][0] + V[0] * M.M[1][1]) + Im);
+				-V[2] * (-V[2] * M.M[1][1] + V[1] * M.M[2][1]) + V[1] * (-V[2] * M.M[2][1] + V[1] * M.M[2][2]) + Im,
+				V[2] * (-V[2] * M.M[1][0] + V[1] * M.M[2][0]) - V[0] * (-V[2] * M.M[2][1] + V[1] * M.M[2][2]),
+				-V[1] * (-V[2] * M.M[1][0] + V[1] * M.M[2][0]) + V[0] * (-V[2] * M.M[1][1] + V[1] * M.M[2][1]),
+				V[2] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) - V[0] * (V[2] * M.M[2][0] - V[0] * M.M[2][2]) + Im,
+				-V[1] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) + V[0] * (V[2] * M.M[1][0] - V[0] * M.M[2][1]),
+				-V[1] * (-V[1] * M.M[0][0] + V[0] * M.M[1][0]) + V[0] * (-V[1] * M.M[1][0] + V[0] * M.M[1][1]) + Im);
 		}
 		
 		/**
@@ -357,7 +358,7 @@ namespace Chaos
 				// Whole line segment is outside of face - reject it
 				return false;
 			}
-			
+
 			if ((Dist0 > 0.0f) && (Dist1 < 0.0f))
 			{
 				// We must move vert 0 to the plane
@@ -434,7 +435,7 @@ namespace Chaos
 			return false;
 		}
 
-		inline bool NormalizeSafe(FVec3& V, FReal EpsilonSq = SMALL_NUMBER)
+		inline bool NormalizeSafe(FVec3& V, FReal EpsilonSq = UE_SMALL_NUMBER)
 		{
 			FReal VLenSq = V.SizeSquared();
 			if (VLenSq > EpsilonSq)
@@ -443,6 +444,17 @@ namespace Chaos
 				return true;
 			}
 			return false;
+		}
+
+		template <class T>
+		inline T DotProduct(const TArray<T>& X, const TArray<T>& Y)
+		{
+			T Result = T(0);
+			for (int32 i = 0; i < X.Num(); i++)
+			{
+				Result += X[i] * Y[i];
+			}
+			return Result;
 		}
 
 		/**
@@ -485,20 +497,74 @@ namespace Chaos
 		}
 
 		// Compute the box size that would generate the given (diagonal) inertia
-		inline FVec3 BoxSizeFromInertia(const FVec3& Inertia, const FReal Mass)
+		inline bool BoxFromInertia(const FVec3& InInertia, const FReal Mass, FVec3& OutCenter, FVec3& OutSize)
 		{
+			OutSize = FVec3(0);
+			OutCenter = FVec3(0);
+
 			// System of 3 equations in X^2, Y^2, Z^2
-			// Inertia.X = 1/12 M (Size.Y^2 + Size.Z^2)
-			// Inertia.Y = 1/12 M (Size.Z^2 + Size.X^2)
-			// Inertia.Z = 1/12 M (Size.X^2 + Size.Y^2)
+			//		Inertia.X = 1/12 M (Size.Y^2 + Size.Z^2)
+			//		Inertia.Y = 1/12 M (Size.Z^2 + Size.X^2)
+			//		Inertia.Z = 1/12 M (Size.X^2 + Size.Y^2)
+			// Unless the center of mass has been modified, in which case we have
+			//		Inertia.X = 1/12 M (Size.Y^2 + Size.Z^2) + M D.X^2
+			//		Inertia.Y = 1/12 M (Size.Z^2 + Size.X^2) + M D.Y^2
+			//		Inertia.Z = 1/12 M (Size.X^2 + Size.Y^2) + M D.Z^2
+			// Which will not have a unique solution (3 equations in 6 unknowns).
+			// There's no way to know here that the center of mass was modified so we assume it wasn't unless we cannot
+			// solve the equations and then we must make some guesses to recover an equivalent box.
 			if (Mass > 0)
 			{
-				const FVec3 S = Inertia * 12.0f / Mass;
-				const FMatrix33 R = FMatrix33(-0.5f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f, -0.5f);
-				const FVec3 XYZSq = R * S;
-				return FVec3(FMath::Sqrt(XYZSq.X), FMath::Sqrt(XYZSq.Y), FMath::Sqrt(XYZSq.Z));
+				// RInv is the inverse of the coefficient matrix (0,1,1)(1,0,1)(0,1,1)
+				const FMatrix33 RInv = FMatrix33(-0.5f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f, -0.5f);
+				FVec3 Inertia = InInertia / Mass;
+				FVec3 XYZSq = RInv * (Inertia * 12.0f);
+
+				// If we have a shape with a modified center of mass that is outside the equivalent box, we will end up with negative
+				// coefficients here and cannot calculate a box equivalent. To do this properly we need to know what center of mass offset was applied.
+				// But lets try to do something anyway so that debug draw shows something...we'll pretend that the shifted inertia component would be equal to the
+				// smallest component in the absense of the shift. This works "correctly" for a uniform shape (e.g., a box), but will be wrong for everything else!
+				// Also, there's a sign problem since shifting the center of mass in the opposite direction would have altered the inertia the same way.
+				// Net result: I'm not sure how useful this is - see if we can do something better one day (maybe store the ComNudge)
+				if (XYZSq.X < 0)
+				{
+					FReal DXSq = (Inertia.X - FMath::Min(Inertia.Y, Inertia.Z));
+					if (DXSq > 0)
+					{
+						OutCenter.X = FMath::Sqrt(DXSq);
+						Inertia.X -= DXSq;
+						XYZSq = RInv * (Inertia * 12.0f);
+					}
+				}
+				if (XYZSq.Y < 0)
+				{
+					FReal DYSq = (Inertia.Y - FMath::Min(Inertia.X, Inertia.Z));
+					if (DYSq > 0)
+					{
+						OutCenter.Y = FMath::Sqrt(DYSq);
+						Inertia.Y -= DYSq;
+						XYZSq = RInv * (Inertia * 12.0f);
+					}
+				}
+				if (XYZSq.Z < 0)
+				{
+					FReal DZSq = (Inertia.Z - FMath::Min(Inertia.X, Inertia.Y));
+					if (DZSq > 0)
+					{
+						OutCenter.Z = FMath::Sqrt(DZSq);
+						Inertia.Z -= DZSq;
+						XYZSq = RInv * (Inertia * 12.0f);
+					}
+				}
+
+				OutSize = FVec3(
+					FMath::Sqrt(FMath::Max(XYZSq.X, FReal(0))),
+					FMath::Sqrt(FMath::Max(XYZSq.Y, FReal(0))),
+					FMath::Sqrt(FMath::Max(XYZSq.Z, FReal(0))));
+
+				return true;
 			}
-			return FVec3(0);
+			return false;
 		}
 
 		// Replacement for FMath::Wrap that works for integers and returns a value in [Begin, End).
@@ -622,6 +688,227 @@ namespace Chaos
 			}
 		}
 
+		/**
+		 * Approximate Asin(X) to 1st order ~= X + ...
+		 * Returns an approximation for all valid input range [-1, 1] with an error that increases as the input magnitude approaches 1.
+		 */
+		template<typename T>
+		inline T AsinEst1(const T X)
+		{
+			return X /*+...*/;
+		}
+
+
+		/**
+		 * Approximate Asin(X) to 3rd order ~= X + (1/6)X^3 + ...
+		 * Returns an approximation for all valid input range [-1, 1] with an error that increases as the input magnitude approaches 1.
+		 */
+		template<typename T>
+		inline T AsinEst3(const T X)
+		{
+			constexpr T C0 = T(1.0);
+			constexpr T C1 = T(1.0 / 6.0);
+			const T X2 = X * X;
+			return X * (C0 + X2 * (C1 /*+...*/));
+		}
+
+		/**
+		 * Approximate Asin(X) to 5th order ~= X + (1/6)X^3 + (3/40)X^5 + ...
+		 * Returns an approximation for all valid input range [-1, 1] with an error that increases as the input magnitude approaches 1.
+		 */
+		template<typename T>
+		inline T AsinEst5(const T X)
+		{
+			constexpr T C0 = T(1.0);
+			constexpr T C1 = T(1.0 / 6.0);
+			constexpr T C2 = T(3.0 / 40.0);
+			const T X2 = X * X;
+			return X * (C0 + X2 * (C1 + X2 * (C2 /*+...*/)));
+
+		}
+
+		/**
+		 * Approximate Asin(X) to 7th order ~= X + (1/6)X^3 + (3/40)X^5 + (15/336)X^7 + ...
+		 * Returns an approximation for all valid input range [-1, 1] with an error that increases as the input magnitude approaches 1.
+		 */
+		template<typename T>
+		inline T AsinEst7(const T X)
+		{
+			constexpr T C0 = T(1.0);
+			constexpr T C1 = T(1.0 / 6.0);
+			constexpr T C2 = T(3.0 / 40.0);
+			constexpr T C3 = T(15.0 / 336.0);
+			const T X2 = X * X;
+			return X * (C0 + X2 * (C1 + X2 * (C2 + X2 * (C3 /*+...*/))));
+		}
+
+		/**
+		 * Approximate Asin using expansion to the specified Order (must be 1, 3, 5, or 7). Defaults to 5th order.
+		*/
+		template<typename T, int Order = 5>
+		inline T AsinEst(const T X)
+		{
+			static_assert((Order == 1) || (Order == 3) || (Order == 5) || (Order == 7), "AsinEst: Only 1, 3, 5, or 7 is supported for the Order");
+			if (Order == 1)
+			{
+				return AsinEst1(X);
+			}
+			else if (Order == 3)
+			{
+				return AsinEst3(X);
+			}
+			else if (Order == 5)
+			{
+				return AsinEst5(X);
+			}
+			else
+			{
+				return AsinEst7(X);
+			}
+		}
+
+		/**
+		 * Approximate Asin(X). Like AsinApprox but with a crossover to FMath::Asin for larger input magnitudes.
+		 */
+		template<typename T, int Order = 5>
+		inline T AsinEstCrossover(const T X, const T Crossover = T(0.7))
+		{
+			if (FMath::Abs(X) < Crossover)
+			{
+				return AsinEst<T, Order>(X);
+			}
+			else
+			{
+				return FMath::Asin(X);
+			}
+		}
+
+		/**
+		 * @brief Generate a tetrahedral mesh from a Freudenthal lattice defined on a 3 dimensional grid.
+		 */
+		template <class T, class TV, class TV_INT4>
+		void TetMeshFromGrid(const TUniformGrid<T, 3>& Grid, TArray<TV_INT4>& Mesh, TArray<TV>& X)
+		{
+			Mesh.SetNum(20 * Grid.GetNumCells() / 4);
+			int32* MeshPtr = &Mesh[0][0];
+
+			const int32 NumNodes = Grid.GetNumNodes();
+			X.SetNum(NumNodes);
+			for(int32 ii=0; ii < NumNodes; ii++)
+			{
+				X[ii] = Grid.Node(ii);
+			}
+
+			int32 Count = 0;
+			for (int32 i = 0; i < Grid.Counts()[0]; i++) 
+			{
+				for (int32 j = 0; j < Grid.Counts()[1]; j++) 
+				{
+					for (int32 k = 0; k < Grid.Counts()[2]; k++) 
+					{
+						int32 ijk000 = Grid.FlatIndex(TVector<int32, 3>(i, j, k), true);
+						int32 ijk010 = Grid.FlatIndex(TVector<int32, 3>(i, j + 1, k), true);
+						int32 ijk001 = Grid.FlatIndex(TVector<int32, 3>(i, j, k + 1), true);
+						int32 ijk011 = Grid.FlatIndex(TVector<int32, 3>(i, j + 1, k + 1), true);
+						int32 ijk100 = Grid.FlatIndex(TVector<int32, 3>(i + 1, j, k), true);
+						int32 ijk110 = Grid.FlatIndex(TVector<int32, 3>(i + 1, j + 1, k), true);
+						int32 ijk101 = Grid.FlatIndex(TVector<int32, 3>(i + 1, j, k + 1), true);
+						int32 ijk111 = Grid.FlatIndex(TVector<int32, 3>(i + 1, j + 1, k + 1), true);
+						int32 ijk_index = i + j + k;
+						if (ijk_index % 2 == 0) 
+						{
+							MeshPtr[20 * Count] = ijk010;
+							MeshPtr[20 * Count + 1] = ijk000;
+							MeshPtr[20 * Count + 2] = ijk110;
+							MeshPtr[20 * Count + 3] = ijk011;
+
+							MeshPtr[20 * Count + 4] = ijk111;
+							MeshPtr[20 * Count + 5] = ijk110;
+							MeshPtr[20 * Count + 6] = ijk101;
+							MeshPtr[20 * Count + 7] = ijk011;
+
+							MeshPtr[20 * Count + 8] = ijk100;
+							MeshPtr[20 * Count + 9] = ijk101;
+							MeshPtr[20 * Count + 10] = ijk110;
+							MeshPtr[20 * Count + 11] = ijk000;
+
+							MeshPtr[20 * Count + 12] = ijk001;
+							MeshPtr[20 * Count + 13] = ijk000;
+							MeshPtr[20 * Count + 14] = ijk011;
+							MeshPtr[20 * Count + 15] = ijk101;
+
+							MeshPtr[20 * Count + 16] = ijk110;
+							MeshPtr[20 * Count + 17] = ijk011;
+							MeshPtr[20 * Count + 18] = ijk000;
+							MeshPtr[20 * Count + 19] = ijk101;
+						}
+						else 
+						{
+							MeshPtr[20 * Count] = ijk000;
+							MeshPtr[20 * Count + 1] = ijk100;
+							MeshPtr[20 * Count + 2] = ijk010;
+							MeshPtr[20 * Count + 3] = ijk001;
+
+							MeshPtr[20 * Count + 4] = ijk011;
+							MeshPtr[20 * Count + 5] = ijk010;
+							MeshPtr[20 * Count + 6] = ijk111;
+							MeshPtr[20 * Count + 7] = ijk001;
+
+							MeshPtr[20 * Count + 8] = ijk100;
+							MeshPtr[20 * Count + 9] = ijk111;
+							MeshPtr[20 * Count + 10] = ijk010;
+							MeshPtr[20 * Count + 11] = ijk001;
+
+							MeshPtr[20 * Count + 12] = ijk101;
+							MeshPtr[20 * Count + 13] = ijk111;
+							MeshPtr[20 * Count + 14] = ijk100;
+							MeshPtr[20 * Count + 15] = ijk001;
+
+							MeshPtr[20 * Count + 16] = ijk111;
+							MeshPtr[20 * Count + 17] = ijk010;
+							MeshPtr[20 * Count + 18] = ijk110;
+							MeshPtr[20 * Count + 19] = ijk100;
+						}
+						Count++;
+					}
+				}
+			}
+		}
+
+		template <int d>
+		TArray<TArray<int>> ComputeIncidentElements(const TArray<TVector<int32, d>>& Mesh, TArray<TArray<int32>>* LocalIndex=nullptr)
+		{
+			int32 MaxIdx = 0;
+			for(int32 i=0; i < Mesh.Num(); i++)
+			{
+				for (int32 j = 0; j < d; j++)
+				{
+					const int32 NodeIdx = Mesh[i][j];
+					MaxIdx = MaxIdx > NodeIdx ? MaxIdx : NodeIdx;
+				}
+			}
+
+			TArray<TArray<int>> IncidentElements;
+			IncidentElements.SetNum(MaxIdx + 1);
+			if (LocalIndex)
+				LocalIndex->SetNum(MaxIdx + 1);
+
+			for (int32 i = 0; i < Mesh.Num(); i++)
+			{
+				for (int32 j = 0; j < d; j++)
+				{
+					const int32 NodeIdx = Mesh[i][j];
+					if (NodeIdx >= 0)
+					{
+						IncidentElements[NodeIdx].Add(i);
+						if (LocalIndex)
+							(*LocalIndex)[NodeIdx].Add(j);
+					}
+				}
+			}
+
+			return IncidentElements;
+		}
 
 	} // namespace Utilities
 } // namespace Chaos

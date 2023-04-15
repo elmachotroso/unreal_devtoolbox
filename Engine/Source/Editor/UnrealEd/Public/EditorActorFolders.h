@@ -8,10 +8,12 @@
 #include "UObject/GCObject.h"
 #include "Folder.h"
 #include "WorldFolders.h"
+#include "IActorEditorContextClient.h"
 
 class FObjectPostSaveContext;
 class AActor;
 class UActorFolder;
+class FWorldPartitionActorDesc;
 
 /** Multicast delegates for broadcasting various folder events */
 
@@ -27,7 +29,7 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnActorFolderMoved, UWorld&, const FFold
 
 
 /** Class responsible for managing an in-memory representation of actor folders in the editor */
-struct UNREALED_API FActorFolders : public FGCObject
+struct UNREALED_API FActorFolders : public FGCObject, public IActorEditorContextClient
 {
 	FActorFolders();
 	~FActorFolders();
@@ -96,15 +98,25 @@ struct UNREALED_API FActorFolders : public FGCObject
 	bool RenameFolderInWorld(UWorld& World, FName OldPath, FName NewPath);
 
 	//~ End Deprecated
+	static FFolder GetActorDescFolder(UWorld& InWorld, const FWorldPartitionActorDesc* InActorDesc);
 
+	/** Apply an operation to each actor desc in the given list of folders. */
+	static void ForEachActorDescInFolders(UWorld& InWorld, const TSet<FName>& InPaths, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Operation, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
+		
 	/** Apply an operation to each actor in the given list of folders. Will stop when operation returns false. */
-	static void ForEachActorInFolders(UWorld& InWorld, const TArray<FName>& Paths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject = FFolder::GetDefaultRootObject());
+	static void ForEachActorInFolders(UWorld& InWorld, const TArray<FName>& InPaths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
+	static void ForEachActorInFolders(UWorld& InWorld, const TSet<FName>& InPaths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
 
 	/** Get an array of actors from a list of folders */
-	static void GetActorsFromFolders(UWorld& InWorld, const TArray<FName>& Paths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetDefaultRootObject());
+	static void GetActorsFromFolders(UWorld& InWorld, const TArray<FName>& InPaths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
+	static void GetActorsFromFolders(UWorld& InWorld, const TSet<FName>& InPaths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
 
 	/** Get an array of weak actor pointers from a list of folders */
-	static void GetWeakActorsFromFolders(UWorld& InWorld, const TArray<FName>& Paths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetDefaultRootObject());
+	static void GetWeakActorsFromFolders(UWorld& InWorld, const TArray<FName>& InPaths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
+	static void GetWeakActorsFromFolders(UWorld& InWorld, const TSet<FName>& InPaths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject = FFolder::GetInvalidRootObject());
+
+	/** Tests whether a folder container exists for the specified world */
+	bool IsInitializedForWorld(UWorld& InWorld) const;
 
 	/** Get a default folder name under the specified parent path */
 	FFolder GetDefaultFolderName(UWorld& InWorld, const FFolder& InParentFolder);
@@ -116,7 +128,7 @@ struct UNREALED_API FActorFolders : public FGCObject
 	FFolder GetFolderName(UWorld& InWorld, const FFolder& InParentFolder, const FName& InLeafName);
 
 	/** Create a new folder in the specified world, of the specified path */
-	void CreateFolder(UWorld& InWorld, const FFolder& InFolder);
+	bool CreateFolder(UWorld& InWorld, const FFolder& InFolder);
 
 	/** Same as CreateFolder, but moves the current actor selection into the new folder as well */
 	void CreateFolderContainingSelection(UWorld& InWorld, const FFolder& InFolder);
@@ -151,7 +163,19 @@ struct UNREALED_API FActorFolders : public FGCObject
 	/** Get the folder properties for the specified path. Returns nullptr if no properties exist */
 	FActorFolderProps* GetFolderProperties(UWorld& InWorld, const FFolder& InFolder);
 
+	//~ Begin IActorEditorContextClient interface
+	virtual void OnExecuteActorEditorContextAction(UWorld* InWorld, const EActorEditorContextAction& InType, class AActor* InActor = nullptr) override;
+	virtual bool GetActorEditorContextDisplayInfo(UWorld* InWorld, FActorEditorContextClientDisplayInfo& OutDiplayInfo) const override;
+	virtual bool CanResetContext(UWorld* InWorld) const override { return true; };
+	virtual TSharedRef<SWidget> GetActorEditorContextWidget(UWorld* InWorld) const override;
+	virtual FOnActorEditorContextClientChanged& GetOnActorEditorContextClientChanged() override { return ActorEditorContextClientChanged; }
+	//~ End IActorEditorContextClient interface
+	FFolder GetActorEditorContextFolder(UWorld& InWorld, bool bMustMatchCurrentLevel = true) const;
+	void SetActorEditorContextFolder(UWorld& InWorld, const FFolder& InFolder);
+
 private:
+	
+	static FFolder::FRootObject GetWorldFolderRootObject(UWorld& InWorld);
 
 	/** Broadcast when actor folder is created. */
 	void BroadcastOnActorFolderCreated(UWorld& InWorld, const FFolder& InFolder);
@@ -187,6 +211,9 @@ private:
 	/** Called after a world has been saved */
 	void OnWorldSaved(UWorld* World, FObjectPostSaveContext ObjectSaveContext);
 
+	/** Attempt to save the folders state */
+	void SaveWorldFoldersState(UWorld* World);
+
 	/** Remove any references to folder arrays for dead worlds */
 	void Housekeeping();
 
@@ -198,6 +225,12 @@ private:
 
 	/** Transient map of folders, keyed on world pointer */
 	TMap<TWeakObjectPtr<UWorld>, UWorldFolders*> WorldFolders;
+
+	/** Called when ActorEditorContextClient changed. */
+	void BroadcastOnActorEditorContextClientChanged();
+
+	/** Delegate used to notify changes to ActorEditorContextSubsystem */
+	FOnActorEditorContextClientChanged ActorEditorContextClientChanged;
 
 	/** Singleton instance maintained by the editor */
 	static FActorFolders* Singleton;

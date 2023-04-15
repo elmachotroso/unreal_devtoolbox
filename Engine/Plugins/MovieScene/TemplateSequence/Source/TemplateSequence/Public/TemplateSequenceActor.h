@@ -6,7 +6,6 @@
 #include "TemplateSequencePlayer.h"
 #include "IMovieScenePlaybackClient.h"
 #include "MovieSceneBindingOwnerInterface.h"
-#include "MovieSceneSequenceTickManager.h"
 #include "GameFramework/Actor.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
@@ -46,7 +45,6 @@ struct FTemplateSequenceBindingOverrideData
 UCLASS(hideCategories = (Rendering, Physics, LOD, Activation, Input))
 class TEMPLATESEQUENCE_API ATemplateSequenceActor
 	: public AActor
-	, public IMovieSceneSequenceActor
 	, public IMovieScenePlaybackClient
 {
 public:
@@ -63,7 +61,7 @@ public:
 	UPROPERTY(Instanced, Transient, Replicated, BlueprintReadOnly, BlueprintGetter = GetSequencePlayer, Category = "Playback", meta = (ExposeFunctionCategories = "Sequencer|Player"))
 	TObjectPtr<UTemplateSequencePlayer> SequencePlayer;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "General", meta = (AllowedClasses = "TemplateSequence"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "General", meta = (AllowedClasses = "/Script/TemplateSequence.TemplateSequence"))
 	FSoftObjectPath TemplateSequence;
 
 	/** The override for the template sequence's root object binding. See SetBinding. */
@@ -108,10 +106,6 @@ public:
 	void SetBinding(AActor* Actor, bool bOverridesDefault = true);
 
 protected:
-
-	//~ Begin IMovieSceneSequenceActor interface
-	virtual void TickFromSequenceTickManager(float DeltaSeconds) override;
-	//~ End IMovieSceneSequenceActor interface
 
 	//~ Begin IMovieScenePlaybackClient interface
 	virtual bool RetrieveBindingOverrides(const FGuid& InBindingId, FMovieSceneSequenceID InSequenceID, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;

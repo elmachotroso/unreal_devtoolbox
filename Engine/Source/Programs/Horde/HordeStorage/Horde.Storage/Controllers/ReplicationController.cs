@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Horde.Storage.Implementation;
 using Jupiter;
 using Jupiter.Implementation;
@@ -16,18 +17,18 @@ namespace Horde.Storage.Controllers
     [ApiController]
     [FormatFilter]
     [Route("api/v1/g")]
-    [Authorize("Admin")]
+    [Authorize]
+    [InternalApiFilter]
     public class ReplicationController : ControllerBase
     {
         private readonly ReplicationService _replicationService;
-        private readonly IAuthorizationService _authorizationService;
+        private readonly RequestHelper _requestHelper;
 
-        public ReplicationController(ReplicationService replicationService, IAuthorizationService authorizationService)
+        public ReplicationController(ReplicationService replicationService, RequestHelper requestHelper)
         {
             _replicationService = replicationService;
-            _authorizationService = authorizationService;
+            _requestHelper = requestHelper;
         }
-
 
         [HttpGet("{ns}")]
         [ProducesDefaultResponseType]
@@ -35,11 +36,10 @@ namespace Horde.Storage.Controllers
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             IEnumerable<IReplicator>? replicators = _replicationService.GetReplicators(ns);
@@ -61,13 +61,15 @@ namespace Horde.Storage.Controllers
                     Offset = replicator.Info.State.ReplicatorOffset ?? 0,
                     Generation = replicator.Info.State.ReplicatingGeneration ?? Guid.Empty,
 
+                    LastEvent = replicator.Info.State.LastEvent ?? Guid.Empty,
+                    LastBucket = replicator.Info.State.LastBucket ?? "",
+
                     LastReplicationRun = replicator.Info.LastRun,
                     CountOfRunningReplications = replicator.Info.CountOfRunningReplications,
                 })
             });
 
         }
-
 
         [HttpPost("{ns}/{replicatorName}/{offset}")]
         [ProducesDefaultResponseType]
@@ -77,11 +79,10 @@ namespace Horde.Storage.Controllers
             [Required] long offset
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             IEnumerable<IReplicator>? replicators = _replicationService.GetReplicators(ns);
@@ -94,7 +95,7 @@ namespace Horde.Storage.Controllers
                 });
             }
 
-            IReplicator? replicator = replicators.FirstOrDefault(replicator => string.Equals(replicator.Info.ReplicatorName, replicatorName, StringComparison.InvariantCultureIgnoreCase));
+            IReplicator? replicator = replicators.FirstOrDefault(replicator => string.Equals(replicator.Info.ReplicatorName, replicatorName, StringComparison.OrdinalIgnoreCase));
             if (replicator == null)
             {
                 return BadRequest(new ValidationProblemDetails
@@ -116,11 +117,10 @@ namespace Horde.Storage.Controllers
             [Required] [FromBody] NewReplicationState replicationState
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             IEnumerable<IReplicator>? replicators = _replicationService.GetReplicators(ns);
@@ -133,7 +133,7 @@ namespace Horde.Storage.Controllers
                 });
             }
 
-            IReplicator? replicator = replicators.FirstOrDefault(replicator => string.Equals(replicator.Info.ReplicatorName, replicatorName, StringComparison.InvariantCultureIgnoreCase));
+            IReplicator? replicator = replicators.FirstOrDefault(replicator => string.Equals(replicator.Info.ReplicatorName, replicatorName, StringComparison.OrdinalIgnoreCase));
             if (replicator == null)
             {
                 return BadRequest(new ValidationProblemDetails
@@ -154,18 +154,16 @@ namespace Horde.Storage.Controllers
             return Ok();
         }
 
-
         [HttpDelete("{ns}")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Delete(
             [Required] NamespaceId ns
         )
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteTransactionLog });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             List<IReplicator> replicators = _replicationService.GetReplicators(ns).ToList();
@@ -182,7 +180,6 @@ namespace Horde.Storage.Controllers
             {
                 await replicator.DeleteState();
             }
-
 
             return Ok();
 
@@ -203,5 +200,7 @@ namespace Horde.Storage.Controllers
         public Guid? Generation { get; set; }
         public DateTime LastReplicationRun { get; set; }
         public int CountOfRunningReplications { get; set; }
+        public string? LastBucket { get; set; }
+        public Guid LastEvent { get; set; }
     }
 }

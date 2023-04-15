@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
 #include "AudioDefines.h"
 #include "AudioModulation.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "MetasoundDataFactory.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundFacade.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundPrimitives.h"
-#include "MetasoundSourceInterface.h"
 #include "SoundModulatorAsset.h"
 
 #define LOCTEXT_NAMESPACE "AudioModulationNodes"
@@ -19,13 +20,15 @@ namespace AudioModulation
 	public:
 		static const Metasound::FVertexInterface& GetDefaultInterface()
 		{
-			static const Metasound::FVertexInterface DefaultInterface(
-				Metasound::FInputVertexInterface(
-					Metasound::TInputDataVertexModel<FSoundModulatorAsset>("Modulator", LOCTEXT("MetasoundValueNode_InputModulatorName", "Modulator")),
-					Metasound::TInputDataVertexModel<bool>("Normalized", LOCTEXT("MixModulatorsNode_InputNormalizedName", "Normalized"), true)
+			using namespace Metasound;
+
+			static const FVertexInterface DefaultInterface(
+				FInputVertexInterface(
+					TInputDataVertex<FSoundModulatorAsset>("Modulator", FDataVertexMetadata{ LOCTEXT("MetasoundValueNode_InputModulatorName", "Modulator") }),
+					TInputDataVertex<bool>("Normalized", FDataVertexMetadata{LOCTEXT("MixModulatorsNode_InputNormalizedName", "Normalized")}, true )
 				),
-				Metasound::FOutputVertexInterface(
-					Metasound::TOutputDataVertexModel<float>("Out", LOCTEXT("MetasoundValueNode_OutputModulatorValue", "Out"))
+				FOutputVertexInterface(
+					TOutputDataVertex<float>("Out", FDataVertexMetadata{LOCTEXT("MetasoundValueNode_OutputModulatorValue", "Out")})
 				)
 			);
 
@@ -159,3 +162,4 @@ namespace AudioModulation
 } // namespace AudioModulation
 
 #undef LOCTEXT_NAMESPACE
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT

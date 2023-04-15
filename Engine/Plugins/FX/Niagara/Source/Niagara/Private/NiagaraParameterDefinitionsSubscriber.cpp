@@ -9,8 +9,15 @@
 #include "NiagaraParameterDefinitionsBase.h"
 #include "NiagaraScriptSourceBase.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraParameterDefinitionsSubscriber)
+
 
 #if WITH_EDITORONLY_DATA
+
+INiagaraParameterDefinitionsSubscriber::~INiagaraParameterDefinitionsSubscriber()
+{
+	check(OnDeferredSyncAllNameMatchParametersHandle.IsValid() == false);
+}
 
 void INiagaraParameterDefinitionsSubscriber::PostLoadDefinitionsSubscriptions()
 {
@@ -46,6 +53,7 @@ void INiagaraParameterDefinitionsSubscriber::PostLoadDefinitionsSubscriptions()
 	if (bAllParameterDefinitionsDiscovered == false)
 	{
 		SynchronizeWithParameterDefinitions();
+		check(OnDeferredSyncAllNameMatchParametersHandle.IsValid() == false);
 		OnDeferredSyncAllNameMatchParametersHandle = AssetRegistryModule.Get().OnFilesLoaded().AddLambda(SyncAllNameMatchParameters);
 	}
 	// Else the asset registry has discovered all parameter definitions assets;
@@ -62,7 +70,12 @@ void INiagaraParameterDefinitionsSubscriber::CleanupDefinitionsSubscriptions()
 	{
 		if(FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
 		{
-			AssetRegistryModule->Get().OnFilesLoaded().Remove(OnDeferredSyncAllNameMatchParametersHandle);
+			IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+			if (AssetRegistry)
+			{
+				AssetRegistry->OnFilesLoaded().Remove(OnDeferredSyncAllNameMatchParametersHandle);
+				OnDeferredSyncAllNameMatchParametersHandle.Reset();
+			}
 		}
 	}
 }
@@ -166,7 +179,7 @@ void INiagaraParameterDefinitionsSubscriber::SynchronizeWithParameterDefinitions
 	if (AssetRegistryModule.Get().IsLoadingAssets() == false)
 	{
 		TArray<FAssetData> ParameterDefinitionsAssetData;
-		AssetRegistryModule.GetRegistry().GetAssetsByClass(TEXT("NiagaraParameterDefinitions"), ParameterDefinitionsAssetData);
+		AssetRegistryModule.GetRegistry().GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/NiagaraEditor"), TEXT("NiagaraParameterDefinitions")), ParameterDefinitionsAssetData);
 		for (const FAssetData& ParameterDefinitionsAssetDatum : ParameterDefinitionsAssetData)
 		{
 			UNiagaraParameterDefinitionsBase* ParameterDefinitions = Cast<UNiagaraParameterDefinitionsBase>(ParameterDefinitionsAssetDatum.GetAsset());
@@ -288,3 +301,4 @@ void INiagaraParameterDefinitionsSubscriber::MarkParameterDefinitionSubscription
 	}
 }
 #endif
+

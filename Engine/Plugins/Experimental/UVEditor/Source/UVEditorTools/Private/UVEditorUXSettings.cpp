@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UVEditorUXSettings.h"
+#include "Math/Color.h"
 
+#define LOCTEXT_NAMESPACE "UVEditorUXSettings"
+
+const float FUVEditorUXSettings::UVMeshScalingFactor(1000.0);
 const float FUVEditorUXSettings::CameraFarPlaneWorldZ(-10.0);
 const float FUVEditorUXSettings::CameraNearPlaneProportionZ(0.8); // Top layer, equivalent to depth bias 80
 
@@ -61,6 +65,9 @@ const FColor FUVEditorUXSettings::XAxisColor(FColor::Red);
 const FColor FUVEditorUXSettings::YAxisColor(FColor::Green);
 const FColor FUVEditorUXSettings::GridMajorColor(FColor::FromHex("#888888"));
 const FColor FUVEditorUXSettings::GridMinorColor(FColor::FromHex("#777777"));
+const FColor FUVEditorUXSettings::RulerXColor(FColor::FromHex("#888888"));
+const FColor FUVEditorUXSettings::RulerYColor(FColor::FromHex("#888888"));
+const FColor FUVEditorUXSettings::PivotLineColor(FColor::Cyan);
 
 // Thicknesses
 const float FUVEditorUXSettings::LivePreviewHighlightThickness(2.0);
@@ -75,10 +82,23 @@ const float FUVEditorUXSettings::AxisThickness(2.0);
 const float FUVEditorUXSettings::GridMajorThickness(1.0);
 
 const float FUVEditorUXSettings::ToolPointSize(6);
+const float FUVEditorUXSettings::PivotLineThickness(1.5);
 
 // Grid
 const int32 FUVEditorUXSettings::GridSubdivisionsPerLevel(4);
 const int32 FUVEditorUXSettings::GridLevels(3);
+const int32 FUVEditorUXSettings::RulerSubdivisionLevel(1);
+
+// Pivot Visuals
+const int32 FUVEditorUXSettings::PivotCircleNumSides(32);
+const float FUVEditorUXSettings::PivotCircleRadius(10.0);
+
+// CVARs
+
+TAutoConsoleVariable<int32> FUVEditorUXSettings::CVarEnablePrototypeUDIMSupport(
+	TEXT("modeling.UVEditor.UDIMSupport"),
+	1,
+	TEXT("Enable experimental UDIM support in the UVEditor"));
 
 
 FLinearColor FUVEditorUXSettings::GetTriangleColorByTargetIndex(int32 TargetIndex)
@@ -86,7 +106,7 @@ FLinearColor FUVEditorUXSettings::GetTriangleColorByTargetIndex(int32 TargetInde
 	double GoldenAngle = 137.50776405;
 
 	FLinearColor BaseColorHSV = FLinearColor::FromSRGBColor(UnwrapTriangleFillColor).LinearRGBToHSV();
-	BaseColorHSV.R = FMath::Fmod(BaseColorHSV.R + (GoldenAngle / 2.0 * TargetIndex), 360);;
+	BaseColorHSV.R = static_cast<float>(FMath::Fmod(BaseColorHSV.R + (GoldenAngle / 2.0 * TargetIndex), 360));
 
 	return BaseColorHSV.HSVToLinearRGB();
 }
@@ -105,3 +125,50 @@ FLinearColor FUVEditorUXSettings::GetBoundaryColorByTargetIndex(int32 TargetInde
 	BoundaryColorHSV.B = UnwrapBoundaryValue;
 	return BoundaryColorHSV.HSVToLinearRGB();
 }
+
+FVector2f FUVEditorUXSettings::ExternalUVToInternalUV(const FVector2f& UV)
+{
+	return FVector2f(UV.X, 1-UV.Y);
+}
+
+FVector2f FUVEditorUXSettings::InternalUVToExternalUV(const FVector2f& UV)
+{
+	return FVector2f(UV.X, 1-UV.Y);
+}
+
+FVector3d FUVEditorUXSettings::UVToVertPosition(const FVector2f& UV)
+{
+	return FVector3d((1 - UV.Y) * UVMeshScalingFactor, UV.X * UVMeshScalingFactor, 0);
+}
+
+FVector2f FUVEditorUXSettings::VertPositionToUV(const FVector3d& VertPosition)
+{
+	return FVector2f(static_cast<float>(VertPosition.Y) / UVMeshScalingFactor, 1.0f - (static_cast<float>(VertPosition.X) / UVMeshScalingFactor));
+};
+
+float FUVEditorUXSettings::LocationSnapValue(int32 LocationSnapMenuIndex)
+{
+	switch (LocationSnapMenuIndex)
+	{
+	case 0:
+		return 1.0;
+	case 1:
+		return 0.5;
+	case 2:
+		return 0.25;
+	case 3:
+		return 0.125;
+	case 4:
+		return 0.0625;
+	default:
+		ensure(false);
+		return 0;
+	}
+}
+
+int32 FUVEditorUXSettings::MaxLocationSnapValue()
+{
+	return 5;
+}
+
+#undef LOCTEXT_NAMESPACE 

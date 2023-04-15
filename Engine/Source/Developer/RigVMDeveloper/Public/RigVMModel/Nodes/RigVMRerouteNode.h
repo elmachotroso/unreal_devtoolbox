@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "RigVMModel/RigVMNode.h"
+#include "RigVMModel/Nodes/RigVMTemplateNode.h"
 #include "RigVMRerouteNode.generated.h"
 
 /**
@@ -13,7 +13,7 @@
  * displayed as full nodes or as small circles.
  */
 UCLASS(BlueprintType)
-class RIGVMDEVELOPER_API URigVMRerouteNode : public URigVMNode
+class RIGVMDEVELOPER_API URigVMRerouteNode : public URigVMTemplateNode
 {
 	GENERATED_BODY()
 
@@ -32,6 +32,10 @@ public:
 
 	virtual FLinearColor GetNodeColor() const override;
 
+	virtual FName GetNotation() const override;
+	virtual const FRigVMTemplate* GetTemplate() const override;
+	virtual bool IsSingleton() const override { return false; }
+
 private:
 
 	static const FString RerouteName;
@@ -42,5 +46,7 @@ private:
 
 	friend class URigVMController;
 	friend class URigVMCompiler;
+	friend class FRigVMParserAST;
+	friend class FRigVMDeveloperModule;
 };
 

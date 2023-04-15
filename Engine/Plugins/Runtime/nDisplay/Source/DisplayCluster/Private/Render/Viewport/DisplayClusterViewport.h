@@ -122,13 +122,16 @@ public:
 
 	virtual IDisplayClusterViewportManager& GetOwner() const override;
 
+	FDisplayClusterViewportManager& ImplGetOwner() const
+	{
+		return Owner;
+	}
+
 	const FDisplayClusterRenderFrameSettings& GetRenderFrameSettings() const;
 
 	//////////////////////////////////////////////////////
 	/// ~IDisplayClusterViewport
 	//////////////////////////////////////////////////////
-
-	FMatrix ImplCreateProjectionMatrix(float InLeft, float InRight, float InTop, float InBottom, float ZNear, float ZFar) const;
 
 #if WITH_EDITOR
 	FSceneView* ImplCalcScenePreview(class FSceneViewFamilyContext& InOutViewFamily, uint32 ContextNum);
@@ -248,7 +251,7 @@ protected:
 	friend FDisplayClusterViewportRemap;
 
 	// viewport render thread data
-	FDisplayClusterViewportProxy* ViewportProxy = nullptr;
+	TSharedPtr<FDisplayClusterViewportProxy, ESPMode::ThreadSafe> ViewportProxy;
 
 	// Unique viewport name
 	const FString ViewportId;

@@ -6,8 +6,10 @@
 #include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
+#include "ViewModels/NiagaraSystemEditorDocumentsViewModel.h"
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #include "ViewModels/Stack/NiagaraStackFunctionInput.h"
+#include "Toolkits/SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
 #include "NiagaraSystem.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraNodeOutput.h"
@@ -18,6 +20,7 @@
 #include "NiagaraClipboard.h"
 #include "Toolkits/NiagaraSystemToolkit.h"
 #include "NiagaraEditorUtilities.h"
+#include "NiagaraScriptFactoryNew.h"
 
 #include "ScopedTransaction.h"
 #include "Modules/ModuleManager.h"
@@ -28,6 +31,8 @@
 #include "Misc/MessageDialog.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/PlatformApplicationMisc.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScratchPadViewModel)
 
 #define LOCTEXT_NAMESPACE "NiagaraScratchPadViewModel"
 
@@ -55,20 +60,21 @@ void UNiagaraScratchPadViewModel::Finalize()
 	ActiveScriptViewModel.Reset();
 }
 
-void GetOuterAndTargetScripts(TSharedRef<FNiagaraSystemViewModel> SystemViewModel, UObject*& OutOuter, TArray<UNiagaraScript*>*& OutTargetScripts)
+void GetOuterAndTargetScripts(TSharedRef<FNiagaraSystemViewModel> SystemViewModel, UObject*& OutOuter, TArray<TObjectPtr<UNiagaraScript>>*& OutTargetScripts)
 {
 	if (SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
 	{
 		OutOuter = &SystemViewModel->GetSystem();
-		OutTargetScripts = &ToRawPtrTArrayUnsafe(SystemViewModel->GetSystem().ScratchPadScripts);
+		OutTargetScripts = &SystemViewModel->GetSystem().ScratchPadScripts;
 	}
 	else
 	{
 		if (SystemViewModel->GetSystem().GetEmitterHandles().Num() == 1)
 		{
-			UNiagaraEmitter* TargetEmitter = SystemViewModel->GetSystem().GetEmitterHandles()[0].GetInstance();
-			OutOuter = TargetEmitter;
-			OutTargetScripts = &ToRawPtrTArrayUnsafe(TargetEmitter->ScratchPadScripts);
+			FVersionedNiagaraEmitter TargetEmitter = SystemViewModel->GetSystem().GetEmitterHandles()[0].GetInstance();
+			FVersionedNiagaraEmitterData* EmitterData = TargetEmitter.GetEmitterData();
+			OutOuter = EmitterData->ScratchPads;
+			OutTargetScripts = &EmitterData->ScratchPads->Scripts;
 		}
 		else
 		{
@@ -84,7 +90,7 @@ void UpdateChangeId(TSharedRef<FNiagaraSystemViewModel> SystemViewModel)
 	{
 		if (SystemViewModel->GetSystem().GetEmitterHandles().Num() == 1)
 		{
-			UNiagaraEmitter* TargetEmitter = SystemViewModel->GetSystem().GetEmitterHandles()[0].GetInstance();
+			UNiagaraEmitter* TargetEmitter = SystemViewModel->GetSystem().GetEmitterHandles()[0].GetInstance().Emitter;
 			TargetEmitter->NotifyScratchPadScriptsChanged();
 		}
 	}
@@ -92,41 +98,87 @@ void UpdateChangeId(TSharedRef<FNiagaraSystemViewModel> SystemViewModel)
 
 void UNiagaraScratchPadViewModel::RefreshScriptViewModels()
 {
-	TArray<TSharedRef<FNiagaraScratchPadScriptViewModel>> OldScriptViewModels = ScriptViewModels;
+	TArray<TSharedRef<FNiagaraScratchPadScriptViewModel>> OldScriptViewModelsRemaining = ScriptViewModels;
 	ScriptViewModels.Empty();
 	bHasUnappliedChangesCache.Reset();
 
 	bool bViewModelsChanged = false;
 
 	UObject* ScriptOuter;
-	TArray<UNiagaraScript*>* TargetScripts;
+	TArray<TObjectPtr<UNiagaraScript>>* TargetScripts;
 	GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ForceSetActiveDocumentAtEnd;
+
+	TArray<UNiagaraGraph*> GraphsToClose;
+	TArray<UNiagaraGraph*> GraphsToOpen;
 	if (ScriptOuter != nullptr && TargetScripts != nullptr)
 	{
-		for (UNiagaraScript* ScratchPadScript : (*TargetScripts))
+		TSharedPtr<FNiagaraScratchPadScriptViewModel> ActiveScratchViewModel = GetSystemViewModel()->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+		for (int32 i = 0; i < (*TargetScripts).Num(); i++)
 		{
+			UNiagaraScript* ScratchPadScript = (*TargetScripts)[i];
 			TSharedPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModel;
 
-			TSharedRef<FNiagaraScratchPadScriptViewModel>* OldScriptViewModel = OldScriptViewModels.FindByPredicate(
-				[ScratchPadScript](TSharedRef<FNiagaraScratchPadScriptViewModel> ScriptViewModel) { return ScriptViewModel->GetOriginalScript() == ScratchPadScript; });
-			if (OldScriptViewModel != nullptr)
+			if (GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
 			{
-				ScriptViewModel = *OldScriptViewModel;
-				OldScriptViewModels.Remove(ScriptViewModel.ToSharedRef());
+				// System scripts don't ever merge, so we can safely just take the scripts or reuse view models.
+				TSharedRef<FNiagaraScratchPadScriptViewModel>* OldScriptViewModel = OldScriptViewModelsRemaining.FindByPredicate(
+					[ScratchPadScript](TSharedRef<FNiagaraScratchPadScriptViewModel> ScriptViewModel) { return ScriptViewModel->GetOriginalScript() == ScratchPadScript; });
+				if (OldScriptViewModel != nullptr)
+				{
+					ScriptViewModel = *OldScriptViewModel;
+					OldScriptViewModelsRemaining.Remove(ScriptViewModel.ToSharedRef());
+				}
+				else
+				{
+					ScriptViewModel = CreateAndSetupScriptviewModel(ScratchPadScript, nullptr);
+					bViewModelsChanged = true;
+				}
 			}
 			else
 			{
-				ScriptViewModel = CreateAndSetupScriptviewModel(ScratchPadScript);
+				// Emitter scripts may already be opened for edit but not yet applied so mergers can refresh and would wipe out the base scripts. These need to be kept up to date.
+				// Because the merge could wipe out view models, we can't just reuse the old ones, but we can steal their graphs.
+				// We need to match by name as indices are not stable.
+				TSharedRef<FNiagaraScratchPadScriptViewModel>* OldScriptViewModelRef = OldScriptViewModelsRemaining.FindByPredicate(
+					[ScratchPadScript](TSharedRef<FNiagaraScratchPadScriptViewModel> ScriptViewModel) { return ScriptViewModel->GetOriginalScript()->GetFName() == ScratchPadScript->GetFName(); });
+
+
+				if (OldScriptViewModelRef != nullptr)
+				{
+					TSharedPtr<FNiagaraScratchPadScriptViewModel> OldScriptViewModel = (*OldScriptViewModelRef);
+					// Pass the baton of the script to the new generation. Make sure to clear out references in the previous generation.
+					ScriptViewModel = CreateAndSetupScriptviewModel(ScratchPadScript, OldScriptViewModel->GetEditScript().Script);
+					// This will copy over apply state and anything else that would otherwise be lost in the handoff
+					ScriptViewModel->TransferFromOldWhenDoingApply(OldScriptViewModel);
+				
+					// We need to keep track of the active document and reset again after we have the full array built up.
+					if (ActiveScratchViewModel == OldScriptViewModel)
+					{
+						ForceSetActiveDocumentAtEnd = ScriptViewModel;
+					}
+
+					// We now need to make sure that all the UI/UX is transferred to the right objects for event handlers/etc.
+					GetSystemViewModel()->GetDocumentViewModel()->SwapEditableScripts(OldScriptViewModel, ScriptViewModel);
+					// Clear out the old to make sure it isn't touching anything
+					OldScriptViewModel->SetScript(FVersionedNiagaraScript());
+					OldScriptViewModelsRemaining.Remove(OldScriptViewModel.ToSharedRef());
+					OldScriptViewModel.Reset();
+				}
+				else
+				{
+					ScriptViewModel = CreateAndSetupScriptviewModel(ScratchPadScript, nullptr);
+				}
 				bViewModelsChanged = true;
 			}
 			ScriptViewModels.Add(ScriptViewModel.ToSharedRef());
 		}
 	}
 
-	if (OldScriptViewModels.Num() > 0)
+	if (OldScriptViewModelsRemaining.Num() > 0)
 	{
-		for (TSharedRef<FNiagaraScratchPadScriptViewModel> OldScriptViewModel : OldScriptViewModels)
+		for (TSharedRef<FNiagaraScratchPadScriptViewModel> OldScriptViewModel : OldScriptViewModelsRemaining)
 		{
 			TearDownScriptViewModel(OldScriptViewModel);
 		}
@@ -160,10 +212,25 @@ void UNiagaraScratchPadViewModel::RefreshScriptViewModels()
 	{
 		RefreshEditScriptViewModels();
 	}
+
+	{
+		for (int32 i = 0; i < ScriptViewModels.Num(); i++)
+		{
+			TArray<TSharedPtr<FNiagaraScriptViewModel>> ExistingViewModels;
+			TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>::GetAllViewModelsForObject(ScriptViewModels[i]->GetEditScript().Script, ExistingViewModels);
+
+			(ensureMsgf(ExistingViewModels.Num() == 1, TEXT("Missing or duplicate script view models detected.  Can not create script details customization.")));
+		}
+	}
 	
 	if (bViewModelsChanged)
 	{
 		OnScriptViewModelsChangedDelegate.Broadcast();
+	}
+
+	if (ForceSetActiveDocumentAtEnd.IsValid())
+	{
+		FocusScratchPadScriptViewModel(ForceSetActiveDocumentAtEnd.ToSharedRef());
 	}
 }
 
@@ -201,6 +268,18 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::GetVi
 	}
 	return TSharedPtr<FNiagaraScratchPadScriptViewModel>();
 }
+
+TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::GetViewModelForScript(FName InScriptName)
+{
+	TSharedRef<FNiagaraScratchPadScriptViewModel>* ViewModelForScript = ScriptViewModels.FindByPredicate([InScriptName](TSharedRef<FNiagaraScratchPadScriptViewModel>& ScriptViewModel) { return ScriptViewModel->GetOriginalScript()->GetFName().IsEqual(InScriptName, ENameCase::IgnoreCase, false); });
+	if (ViewModelForScript != nullptr)
+	{
+		return *ViewModelForScript;
+	}
+	return TSharedPtr<FNiagaraScratchPadScriptViewModel>();
+}
+
+
 
 TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::GetViewModelForEditScript(UNiagaraScript* InEditScript)
 {
@@ -259,7 +338,7 @@ void UNiagaraScratchPadViewModel::FocusScratchPadScriptViewModel(TSharedRef<FNia
 	if (ensureMsgf(ScriptViewModels.Contains(InScriptViewModel), TEXT("Can only focus a view model from this scratch pad view model.")))
 	{
 		SetActiveScriptViewModel(InScriptViewModel);
-		GetSystemViewModel()->FocusTab(FNiagaraSystemToolkit::ScratchPadTabID);
+		GetSystemViewModel()->GetDocumentViewModel()->OpenChildScript(InScriptViewModel->GetGraphViewModel()->GetGraph());
 	}
 }
 
@@ -310,7 +389,7 @@ void GetScriptsFromClipboard(TArray<const UNiagaraScript*>& OutScripts, const TA
 		if (ClipboardString.IsEmpty() == false && ClipboardString.Len() < NAME_SIZE && AssetRegistry != nullptr)
 		{
 			TArray<FAssetData> Assets;
-			FAssetData AssetFoundByObjectPath = AssetRegistry->GetAssetByObjectPath(*ClipboardString);
+			FAssetData AssetFoundByObjectPath = AssetRegistry->GetAssetByObjectPath(FSoftObjectPath(ClipboardString));
 			if (AssetFoundByObjectPath.IsValid())
 			{
 				Assets.Add(AssetFoundByObjectPath);
@@ -371,8 +450,11 @@ void UNiagaraScratchPadViewModel::DeleteActiveScript()
 			}
 		}
 
+		// Close any open tabs
+		GetSystemViewModel()->GetDocumentViewModel()->CloseChildScript(ActiveScriptViewModel->GetGraphViewModel()->GetGraph());
+
 		UObject* ScriptOuter;
-		TArray<UNiagaraScript*>* TargetScripts;
+		TArray<TObjectPtr<UNiagaraScript>>* TargetScripts;
 		GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
 		ScriptOuter->Modify();
@@ -392,7 +474,7 @@ FName GetUniqueScriptName(UObject* Outer, const FString& CandidateName)
 TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::CreateNewScript(ENiagaraScriptUsage InScriptUsage, ENiagaraScriptUsage InTargetSupportedUsage, FNiagaraTypeDefinition InOutputType)
 {
 	UObject* ScriptOuter;
-	TArray<UNiagaraScript*>* TargetScripts;
+	TArray<TObjectPtr<UNiagaraScript>>* TargetScripts;
 	GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
 	UNiagaraScript* NewScript = nullptr;
@@ -401,7 +483,9 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 	case ENiagaraScriptUsage::DynamicInput:
 	{
 		UNiagaraScript* DefaultDynamicInput = Cast<UNiagaraScript>(GetDefault<UNiagaraEditorSettings>()->DefaultDynamicInputScript.TryLoad());
-		if (DefaultDynamicInput != nullptr)
+		if (DefaultDynamicInput != nullptr &&
+			Cast<UNiagaraScriptSource>(DefaultDynamicInput->GetLatestSource()) != nullptr &&
+			Cast<UNiagaraScriptSource>(DefaultDynamicInput->GetLatestSource())->NodeGraph != nullptr)
 		{
 			NewScript = CastChecked<UNiagaraScript>(StaticDuplicateObject(DefaultDynamicInput, ScriptOuter, GetUniqueScriptName(ScriptOuter, TEXT("ScratchDynamicInput"))));
 			TArray<UNiagaraNodeOutput*> OutputNodes;
@@ -428,7 +512,9 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 	case ENiagaraScriptUsage::Module:
 	{
 		UNiagaraScript* DefaultModule = Cast<UNiagaraScript>(GetDefault<UNiagaraEditorSettings>()->DefaultModuleScript.TryLoad());
-		if (DefaultModule != nullptr)
+		if (DefaultModule != nullptr &&
+			Cast<UNiagaraScriptSource>(DefaultModule->GetLatestSource()) != nullptr &&
+			Cast<UNiagaraScriptSource>(DefaultModule->GetLatestSource())->NodeGraph != nullptr)
 		{
 			NewScript = CastChecked<UNiagaraScript>(StaticDuplicateObject(DefaultModule, ScriptOuter, GetUniqueScriptName(ScriptOuter, TEXT("ScratchModule"))));
 		}
@@ -436,15 +522,19 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 	}
 	}
 
-	if (NewScript != nullptr)
+	if (NewScript == nullptr)
 	{
-		NewScript->ClearFlags(RF_Public | RF_Standalone);
-		ScriptOuter->Modify();
-		TargetScripts->Add(NewScript);
-		NewScript->GetLatestScriptData()->ModuleUsageBitmask |= (1 << (int32)InTargetSupportedUsage);
-		RefreshScriptViewModels();
-		UpdateChangeId(GetSystemViewModel());
+		NewScript = NewObject<UNiagaraScript>(ScriptOuter);
+		NewScript->Usage = InScriptUsage;
+		UNiagaraScriptFactoryNew::InitializeScript(NewScript);
 	}
+
+	NewScript->ClearFlags(RF_Public | RF_Standalone);
+	ScriptOuter->Modify();
+	TargetScripts->Add(NewScript);
+	NewScript->GetLatestScriptData()->ModuleUsageBitmask |= (1 << (int32)InTargetSupportedUsage);
+	RefreshScriptViewModels();
+	UpdateChangeId(GetSystemViewModel());
 
 	return GetViewModelForScript(NewScript);
 }
@@ -452,7 +542,7 @@ TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::Creat
 TSharedPtr<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::CreateNewScriptAsDuplicate(const UNiagaraScript* ScriptToDuplicate)
 {
 	UObject* ScriptOuter;
-	TArray<UNiagaraScript*>* TargetScripts;
+	TArray<TObjectPtr<UNiagaraScript>>* TargetScripts;
 	GetOuterAndTargetScripts(GetSystemViewModel(), ScriptOuter, TargetScripts);
 
 	UNiagaraScript* NewScript = CastChecked<UNiagaraScript>(StaticDuplicateObject(ScriptToDuplicate, ScriptOuter, GetUniqueScriptName(ScriptOuter, *ScriptToDuplicate->GetFName().ToString())));
@@ -496,6 +586,19 @@ void UNiagaraScratchPadViewModel::CreateAssetFromActiveScript()
 		}
 	}
 }
+
+void UNiagaraScratchPadViewModel::OpenEditorForActive()
+{
+	if (ActiveScriptViewModel.IsValid())
+	{
+		UEdGraph* Graph = ActiveScriptViewModel->GetGraphViewModel()->GetGraph();
+		if (Graph)
+		{
+			GetSystemViewModel()->GetDocumentViewModel()->OpenChildScript(Graph);
+		}
+	}
+}
+
 
 bool UNiagaraScratchPadViewModel::CanSelectNextUsageForActiveScript()
 {
@@ -611,12 +714,13 @@ TSharedRef<FNiagaraSystemViewModel> UNiagaraScratchPadViewModel::GetSystemViewMo
 	return SystemViewModel.ToSharedRef();
 }
 
-TSharedRef<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::CreateAndSetupScriptviewModel(UNiagaraScript* ScratchPadScript)
+TSharedRef<FNiagaraScratchPadScriptViewModel> UNiagaraScratchPadViewModel::CreateAndSetupScriptviewModel(UNiagaraScript* ScratchPadScript, UNiagaraScript* ScratchPadEditScript)
 {
 	TSharedRef<FNiagaraScratchPadScriptViewModel> ScriptViewModel = MakeShared<FNiagaraScratchPadScriptViewModel>(GetSystemViewModel()->GetIsForDataProcessingOnly());
-	ScriptViewModel->Initialize(ScratchPadScript);
+	ScriptViewModel->Initialize(ScratchPadScript, ScratchPadEditScript, SystemViewModelWeak);
 	ScriptViewModel->GetGraphViewModel()->GetNodeSelection()->OnSelectedObjectsChanged().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptGraphNodeSelectionChanged, TWeakPtr<FNiagaraScratchPadScriptViewModel>(ScriptViewModel));
-	ScriptViewModel->OnRenamed().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelScriptRenamed);
+	ScriptViewModel->OnRenamed().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelScriptRenamed, TWeakPtr<FNiagaraScratchPadScriptViewModel>(ScriptViewModel));
+	ScriptViewModel->OnGraphSelectionChanged().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelGraphSelectionChanged, TWeakPtr<FNiagaraScratchPadScriptViewModel>(ScriptViewModel));
 	ScriptViewModel->OnPinnedChanged().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelPinnedChanged, TWeakPtr<FNiagaraScratchPadScriptViewModel>(ScriptViewModel));
 	ScriptViewModel->OnHasUnappliedChangesChanged().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelHasUnappliedChangesChanged);
 	ScriptViewModel->OnChangesApplied().AddUObject(this, &UNiagaraScratchPadViewModel::ScriptViewModelChangesApplied);
@@ -629,6 +733,7 @@ void UNiagaraScratchPadViewModel::TearDownScriptViewModel(TSharedRef<FNiagaraScr
 {
 	InScriptViewModel->GetGraphViewModel()->GetNodeSelection()->OnSelectedObjectsChanged().RemoveAll(this);
 	InScriptViewModel->OnRenamed().RemoveAll(this);
+	InScriptViewModel->OnGraphSelectionChanged().RemoveAll(this);
 	InScriptViewModel->OnPinnedChanged().RemoveAll(this);
 	InScriptViewModel->OnHasUnappliedChangesChanged().RemoveAll(this);
 	InScriptViewModel->OnChangesApplied().RemoveAll(this);
@@ -670,10 +775,30 @@ void UNiagaraScratchPadViewModel::ScriptGraphNodeSelectionChanged(TWeakPtr<FNiag
 	}
 }
 
-void UNiagaraScratchPadViewModel::ScriptViewModelScriptRenamed()
+void UNiagaraScratchPadViewModel::ScriptViewModelScriptRenamed(TWeakPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModelWeak)
 {
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModel = ScriptViewModelWeak.Pin();
+	if (ScriptViewModel.IsValid())
+	{
+		GetSystemViewModel()->GetDocumentViewModel()->CloseChildScript(ScriptViewModel->GetGraphViewModel()->GetGraph());
+	}
+
 	UpdateChangeId(GetSystemViewModel());
 	OnScriptRenamed().Broadcast();
+
+	if (ScriptViewModel.IsValid())
+	{
+		GetSystemViewModel()->GetDocumentViewModel()->OpenChildScript(ScriptViewModel->GetGraphViewModel()->GetGraph());
+	}
+}
+
+void UNiagaraScratchPadViewModel::ScriptViewModelGraphSelectionChanged(const UObject* Obj, TWeakPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModelWeak)
+{
+	const UNiagaraScriptVariable* Var = Cast<UNiagaraScriptVariable>(Obj);
+	if (Var)
+	{
+		GetSystemViewModel()->GetParameterPanelViewModel()->SelectParameterItemByName(Var->Variable.GetName(), false);
+	}
 }
 
 void UNiagaraScratchPadViewModel::ScriptViewModelPinnedChanged(TWeakPtr<FNiagaraScratchPadScriptViewModel> ScriptViewModelWeak)
@@ -753,7 +878,7 @@ void UNiagaraScratchPadViewModel::ScriptViewModelRequestDiscardChanges(TWeakPtr<
 		int32 ViewModelIndex = ScriptViewModels.IndexOfByKey(ScriptViewModel.ToSharedRef());
 		if (ensureMsgf(ViewModelIndex != INDEX_NONE, TEXT("Active script view model wasn't in script view model collection!")))
 		{
-			TSharedRef<FNiagaraScratchPadScriptViewModel> NewScriptViewModel = CreateAndSetupScriptviewModel(ScriptViewModel->GetOriginalScript());
+			TSharedRef<FNiagaraScratchPadScriptViewModel> NewScriptViewModel = CreateAndSetupScriptviewModel(ScriptViewModel->GetOriginalScript(), nullptr);
 			ScriptViewModels[ViewModelIndex] = NewScriptViewModel;
 
 			int32 PinnedViewModelIndex = PinnedScriptViewModels.IndexOfByKey(ScriptViewModel.ToSharedRef());

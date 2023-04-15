@@ -9,13 +9,19 @@ FVulkanTransientHeap::FVulkanTransientHeap(const FInitializer& Initializer, FVul
 	, FDeviceChild(InDevice)
 	, VulkanBuffer(VK_NULL_HANDLE)
 {
-	const VkBufferUsageFlags BufferUsageFlags =
+	EBufferUsageFlags UEBufferUsageFlags = BUF_VertexBuffer | BUF_IndexBuffer | BUF_DrawIndirect 
+		| BUF_UnorderedAccess | BUF_StructuredBuffer | BUF_ShaderResource | BUF_KeepCPUAccessible;
+
 #if VULKAN_RHI_RAYTRACING
-		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+	if (InDevice->GetOptionalExtensions().HasRaytracingExtensions())
+	{
+		UEBufferUsageFlags |= BUF_RayTracingScratch;
+		// AccelerationStructure not yet supported as TransientResource see FVulkanTransientResourceAllocator::CreateBuffer
+		//UEBufferUsageFlags |= BUF_AccelerationStructure;
+	}
 #endif
-		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-		VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	const bool bZeroSize = false;
+	VkBufferUsageFlags BufferUsageFlags = FVulkanResourceMultiBuffer::UEToVKBufferUsageFlags(InDevice, UEBufferUsageFlags, bZeroSize);
 
 	// :TODO: VK_KHR_maintenance4...
 	{
@@ -30,7 +36,7 @@ FVulkanTransientHeap::FVulkanTransientHeap(const FInitializer& Initializer, FVul
 		VulkanRHI::vkGetBufferMemoryRequirements(VulkanDevice, VulkanBuffer, &MemoryRequirements);
 
 		// Find the alignment that works for everyone
-		const uint32 MinBufferAlignment = FMemoryManager::CalculateBufferAlignment(*InDevice, BufferCreateInfo.usage);
+		const uint32 MinBufferAlignment = FMemoryManager::CalculateBufferAlignment(*InDevice, UEBufferUsageFlags, bZeroSize);
 		MemoryRequirements.alignment = FMath::Max<VkDeviceSize>(Initializer.Alignment, MemoryRequirements.alignment);
 		MemoryRequirements.alignment = FMath::Max<VkDeviceSize>(MinBufferAlignment, MemoryRequirements.alignment);
 	}
@@ -109,39 +115,32 @@ FVulkanTransientResourceAllocator::FVulkanTransientResourceAllocator(FVulkanTran
 
 FRHITransientTexture* FVulkanTransientResourceAllocator::CreateTexture(const FRHITextureCreateInfo& InCreateInfo, const TCHAR* InDebugName, uint32 InPassIndex)
 {
-	uint32 ReqAlign = 1;
-	uint64 ReqSize = GVulkanRHI->RHICalcTexturePlatformSize(InCreateInfo, ReqAlign);
+	FDynamicRHI::FRHICalcTextureSizeResult MemReq = GVulkanRHI->RHICalcTexturePlatformSize(InCreateInfo, 0);
 
-	return CreateTextureInternal(InCreateInfo, InDebugName, InPassIndex, ReqSize, ReqAlign,
+	return CreateTextureInternal(InCreateInfo, InDebugName, InPassIndex, MemReq.Size, MemReq.Align,
 		[&](const FRHITransientHeap::FResourceInitializer& Initializer)
 	{
-		ERHIAccess InitialState = ERHIAccess::UAVMask;
-		if (EnumHasAnyFlags(InCreateInfo.Flags, TexCreate_RenderTargetable | TexCreate_ResolveTargetable))
-		{
-			InitialState = ERHIAccess::RTV;
-		}
-		else if (EnumHasAnyFlags(InCreateInfo.Flags, TexCreate_DepthStencilTargetable))
-		{
-			InitialState = ERHIAccess::DSVWrite;
-		}
-
-		FRHIResourceCreateInfo ResourceCreateInfo(InDebugName, InCreateInfo.ClearValue);
-		FRHITexture* Texture = GVulkanRHI->CreateTexture(InCreateInfo, ResourceCreateInfo, InitialState, &Initializer.Allocation);
-		return new FRHITransientTexture(Texture, 0/*GpuVirtualAddress*/, Initializer.Hash, ReqSize, ERHITransientAllocationType::Heap, InCreateInfo);
+		FRHITextureCreateDesc CreateDesc(InCreateInfo, ERHIAccess::Discard, InDebugName);
+		FRHITexture* Texture = new FVulkanTexture(*Device, CreateDesc, &Initializer.Allocation);
+		return new FRHITransientTexture(Texture, 0/*GpuVirtualAddress*/, Initializer.Hash, MemReq.Size, ERHITransientAllocationType::Heap, InCreateInfo);
 	});
 }
 
 FRHITransientBuffer* FVulkanTransientResourceAllocator::CreateBuffer(const FRHIBufferCreateInfo& InCreateInfo, const TCHAR* InDebugName, uint32 InPassIndex)
 {
-	const VkBufferUsageFlags VulkanBufferUsage = FVulkanResourceMultiBuffer::UEToVKBufferUsageFlags(Device, InCreateInfo.Usage, (InCreateInfo.Size == 0));
-	const uint32 Alignment = FMemoryManager::CalculateBufferAlignment(*Device, VulkanBufferUsage);
+	checkf(!EnumHasAnyFlags(InCreateInfo.Usage, BUF_AccelerationStructure), TEXT("AccelerationStructure not yet supported as TransientResource."));
+	checkf(!EnumHasAnyFlags(InCreateInfo.Usage, BUF_Volatile), TEXT("The volatile flag is not supported for transient resources."));
+
+	const bool bZeroSize = (InCreateInfo.Size == 0);
+	const uint32 Alignment = FMemoryManager::CalculateBufferAlignment(*Device, InCreateInfo.Usage, bZeroSize);
 	uint64 Size = Align(InCreateInfo.Size, Alignment) * FVulkanResourceMultiBuffer::GetNumBuffersFromUsage(InCreateInfo.Usage);
 
 	return CreateBufferInternal(InCreateInfo, InDebugName, InPassIndex, Size, Alignment,
 		[&](const FRHITransientHeap::FResourceInitializer& Initializer)
 	{
 		FRHIResourceCreateInfo ResourceCreateInfo(InDebugName);
-		FRHIBuffer* Buffer = GVulkanRHI->CreateBuffer(InCreateInfo, ResourceCreateInfo, &Initializer.Allocation);
+		FRHIBuffer* Buffer = new FVulkanResourceMultiBuffer(Device, InCreateInfo.Size, InCreateInfo.Usage, InCreateInfo.Stride, ResourceCreateInfo, nullptr, &Initializer.Allocation);
+		Buffer->SetTrackedAccess_Unsafe(ERHIAccess::Discard);
 		return new FRHITransientBuffer(Buffer, 0/*GpuVirtualAddress*/, Initializer.Hash, Size, ERHITransientAllocationType::Heap, InCreateInfo);
 	});
 }

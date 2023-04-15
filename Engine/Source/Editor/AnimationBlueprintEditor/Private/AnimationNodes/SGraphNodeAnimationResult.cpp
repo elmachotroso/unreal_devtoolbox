@@ -1,9 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationNodes/SGraphNodeAnimationResult.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
+
 #include "AnimGraphNode_Base.h"
+#include "GenericPlatform/ICursor.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
 
 /////////////////////////////////////////////////////
 // SGraphNodeAnimationResult
@@ -22,7 +33,7 @@ void SGraphNodeAnimationResult::Construct(const FArguments& InArgs, UAnimGraphNo
 TSharedRef<SWidget> SGraphNodeAnimationResult::CreateNodeContentArea()
 {
 	return SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+		.BorderImage( FAppStyle::GetBrush("NoBorder") )
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		.Padding( FMargin(0,3) )
@@ -41,7 +52,7 @@ TSharedRef<SWidget> SGraphNodeAnimationResult::CreateNodeContentArea()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Graph.AnimationResultNode.Body") )
+				.Image( FAppStyle::GetBrush("Graph.AnimationResultNode.Body") )
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()

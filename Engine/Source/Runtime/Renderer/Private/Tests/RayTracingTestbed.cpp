@@ -63,6 +63,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 	FShaderResourceViewRHIRef RayBufferView;
 
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		TResourceArray<FBasicRayData> RayData;
 		RayData.SetNumUninitialized(NumRays);
 		RayData[0] = FBasicRayData{ { 0.75f, 0.0f, -1.0f}, 0xFFFFFFFF, {0.0f, 0.0f,  1.0f}, 100000.0f }; // expected to hit
@@ -75,6 +76,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 
 		RayBuffer = RHICreateStructuredBuffer(sizeof(FBasicRayData), RayData.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 		RayBufferView = RHICreateShaderResourceView(RayBuffer);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FBufferRHIRef OcclusionResultBuffer;
@@ -91,7 +93,9 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("IntersectionResultBuffer"));
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		IntersectionResultBuffer = RHICreateVertexBuffer(sizeof(FIntersectionPayload)*NumRays, BUF_Static | BUF_UnorderedAccess, CreateInfo);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		IntersectionResultBufferView = RHICreateUnorderedAccessView(IntersectionResultBuffer, PF_R32_UINT);
 	}
 
@@ -118,6 +122,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 
 	FRayTracingSceneWithGeometryInstances RayTracingScene = CreateRayTracingSceneWithGeometryInstances(
 		Instances,
+		1,
 		RAY_TRACING_NUM_SHADER_SLOTS,
 		1);
 
@@ -138,12 +143,12 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		ScratchBufferCreateInfo);
 
 	FRWBufferStructured InstanceBuffer;
-	InstanceBuffer.Initialize(TEXT("RayTracingTestBedInstanceBuffer"), GRHIRayTracingInstanceDescriptorSize, SceneInitializer.NumNativeInstances);
+	InstanceBuffer.Initialize(TEXT("RayTracingTestBedInstanceBuffer"), GRHIRayTracingInstanceDescriptorSize, SceneInitializer.NumNativeInstancesPerLayer[0]);
 
 	FByteAddressBuffer AccelerationStructureAddressesBuffer;
 	AccelerationStructureAddressesBuffer.Initialize(TEXT("RayTracingTestBedAccelerationStructureAddressesBuffer"), sizeof(FRayTracingAccelerationStructureAddress), BUF_Volatile);
 
-	const uint32 InstanceUploadBufferSize = SceneInitializer.NumNativeInstances * sizeof(FRayTracingInstanceDescriptorInput);
+	const uint32 InstanceUploadBufferSize = SceneInitializer.NumNativeInstancesPerLayer[0] * sizeof(FRayTracingInstanceDescriptorInput);
 	FBufferRHIRef InstanceUploadBuffer;
 	FShaderResourceViewRHIRef InstanceUploadSRV;
 	{
@@ -168,12 +173,13 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		FVector4f* TransformUploadData = (FVector4f*)RHICmdList.LockBuffer(TransformUploadBuffer, 0, TransformUploadBufferSize, RLM_WriteOnly);
 		FillRayTracingInstanceUploadBuffer(
 			RayTracingScene.Scene,
+			FVector::ZeroVector,
 			Instances,
 			RayTracingScene.InstanceGeometryIndices,
 			RayTracingScene.BaseUploadBufferOffsets,
 			RayTracingScene.NumNativeGPUSceneInstances,
 			RayTracingScene.NumNativeCPUInstances,
-			MakeArrayView(InstanceUploadData, SceneInitializer.NumNativeInstances),
+			MakeArrayView(InstanceUploadData, SceneInitializer.NumNativeInstancesPerLayer[0]),
 			MakeArrayView(TransformUploadData, RayTracingScene.NumNativeCPUInstances * 3));
 		RHICmdList.UnlockBuffer(TransformUploadBuffer);
 		RHICmdList.UnlockBuffer(InstanceUploadBuffer);
@@ -198,6 +204,8 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 	BuildRayTracingInstanceBuffer(
 		RHICmdList,
 		nullptr,
+		FVector3f::ZeroVector,
+		FVector3f::ZeroVector,
 		InstanceBuffer.UAV,
 		InstanceUploadSRV,
 		AccelerationStructureAddressesBuffer.SRV,
@@ -224,8 +232,10 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 
 	RHICmdList.Transition(FRHITransitionInfo(RayTracingScene.Scene.GetReference(), ERHIAccess::BVHWrite, ERHIAccess::BVHRead));
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	RHICmdList.RayTraceOcclusion(RayTracingScene.Scene, RayBufferView, OcclusionResultBufferView, NumRays);
 	RHICmdList.RayTraceIntersection(RayTracingScene.Scene, RayBufferView, IntersectionResultBufferView, NumRays);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	const bool bValidateResults = true;
 	bool bOcclusionTestOK = false;
@@ -256,6 +266,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 		// Read back and validate intersection trace results
 
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			auto MappedResults = (const FIntersectionPayload*)RHILockBuffer(IntersectionResultBuffer, 0, sizeof(FIntersectionPayload)*NumRays, RLM_ReadOnly);
 
 			check(MappedResults);
@@ -274,6 +285,7 @@ bool RunRayTracingTestbed_RenderThread(const FString& Parameters)
 			RHIUnlockBuffer(IntersectionResultBuffer);
 
 			bIntersectionTestOK = (MappedResults[0].HitT >= 0) && (MappedResults[1].HitT < 0) && (MappedResults[2].HitT >= 0) && (MappedResults[3].HitT < 0);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 

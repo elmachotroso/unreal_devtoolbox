@@ -8,9 +8,30 @@
 
 struct MeshDrawCommandKeyFuncs;
 class FParallelCommandListBindings;
+class FRDGParallelCommandListSet;
 
 class FNaniteDrawListContext : public FMeshPassDrawListContext
 {
+public:
+	struct FDeferredCommand
+	{
+		FPrimitiveSceneInfo* PrimitiveSceneInfo;
+		FMeshDrawCommand MeshDrawCommand;
+		FNaniteMaterialCommands::FCommandHash CommandHash;
+#if WITH_DEBUG_VIEW_MODES
+		uint32 InstructionCount;
+#endif
+		uint8 SectionIndex;
+		bool bWPOEnabled;
+	};
+
+	struct FDeferredPipelines
+	{
+		FPrimitiveSceneInfo* PrimitiveSceneInfo;
+		TArray<FNaniteRasterPipeline, TInlineAllocator<4>> RasterPipelines;
+		TArray<FNaniteShadingPipeline, TInlineAllocator<4>> ShadingPipelines;
+	};
+
 public:
 	struct FPrimitiveSceneInfoScope
 	{
@@ -54,84 +75,43 @@ public:
 
 	virtual FMeshDrawCommand& AddCommand(FMeshDrawCommand& Initializer, uint32 NumElements) override final;
 
+	virtual void FinalizeCommand(
+		const FMeshBatch& MeshBatch,
+		int32 BatchElementIndex,
+		const FMeshDrawCommandPrimitiveIdInfo& IdInfo,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		FMeshDrawCommandSortKey SortKey,
+		EFVisibleMeshDrawCommandFlags Flags,
+		const FGraphicsMinimalPipelineStateInitializer& PipelineState,
+		const FMeshProcessorShaders* ShadersForDebugging,
+		FMeshDrawCommand& MeshDrawCommand
+	) override final;
+
 	void BeginPrimitiveSceneInfo(FPrimitiveSceneInfo& PrimitiveSceneInfo);
 	void EndPrimitiveSceneInfo();
 
 	void BeginMeshPass(ENaniteMeshPass::Type MeshPass);
 	void EndMeshPass();
 
-protected:
-	void FinalizeCommandCommon(
-		const FMeshBatch& MeshBatch,
-		int32 BatchElementIndex,
-		const FGraphicsMinimalPipelineStateInitializer& PipelineState,
-		const FMeshProcessorShaders* ShadersForDebugging,
-		FMeshDrawCommand& MeshDrawCommand
-	);
-
-	void AddCommandInfo(FPrimitiveSceneInfo& PrimitiveSceneInfo, FNaniteCommandInfo CommandInfo, ENaniteMeshPass::Type MeshPass, uint8 SectionIndex);
-
-	FMeshDrawCommand MeshDrawCommandForStateBucketing;
-	FPrimitiveSceneInfo* CurrPrimitiveSceneInfo = nullptr;	
-	ENaniteMeshPass::Type CurrMeshPass = ENaniteMeshPass::Num;
-};
-
-class FNaniteDrawListContextImmediate : public FNaniteDrawListContext
-{
-public:
-	FNaniteDrawListContextImmediate(FScene& InScene) : Scene(InScene) {}
-
-	virtual void FinalizeCommand(
-		const FMeshBatch& MeshBatch,
-		int32 BatchElementIndex,
-		const FMeshDrawCommandPrimitiveIdInfo& IdInfo,
-		ERasterizerFillMode MeshFillMode,
-		ERasterizerCullMode MeshCullMode,
-		FMeshDrawCommandSortKey SortKey,
-		EFVisibleMeshDrawCommandFlags Flags,
-		const FGraphicsMinimalPipelineStateInitializer& PipelineState,
-		const FMeshProcessorShaders* ShadersForDebugging,
-		FMeshDrawCommand& MeshDrawCommand
-	) override final;
+	void Apply(FScene& Scene);
 
 private:
-	FScene& Scene;
-};
+	void AddShadingCommand(FPrimitiveSceneInfo& PrimitiveSceneInfo, const FNaniteCommandInfo& CommandInfo, ENaniteMeshPass::Type MeshPass, uint8 SectionIndex);
+	void AddRasterBin(FPrimitiveSceneInfo& PrimitiveSceneInfo, const FNaniteRasterBin& PrimaryRasterBin, const FNaniteRasterBin& SecondaryRasterBin, ENaniteMeshPass::Type MeshPass, uint8 SectionIndex);
+	void AddShadingBin(FPrimitiveSceneInfo& PrimitiveSceneInfo, const FNaniteShadingBin& ShadingBin, ENaniteMeshPass::Type MeshPass, uint8 SectionIndex);
 
-class FNaniteDrawListContextDeferred : public FNaniteDrawListContext
-{
+private:
+	FMeshDrawCommand MeshDrawCommandForStateBucketing;
+	FPrimitiveSceneInfo* CurrentPrimitiveSceneInfo = nullptr;
+	ENaniteMeshPass::Type CurrentMeshPass = ENaniteMeshPass::Num;
+
 public:
-	virtual void FinalizeCommand(
-		const FMeshBatch& MeshBatch,
-		int32 BatchElementIndex,
-		const FMeshDrawCommandPrimitiveIdInfo& IdInfo,
-		ERasterizerFillMode MeshFillMode,
-		ERasterizerCullMode MeshCullMode,
-		FMeshDrawCommandSortKey SortKey,
-		EFVisibleMeshDrawCommandFlags Flags,
-		const FGraphicsMinimalPipelineStateInitializer& PipelineState,
-		const FMeshProcessorShaders* ShadersForDebugging,
-		FMeshDrawCommand& MeshDrawCommand
-	) override final;
-	
-	void RegisterDeferredCommands(FScene& Scene);
-
-private:	
-	struct FDeferredCommand
-	{
-		FPrimitiveSceneInfo* PrimitiveSceneInfo;
-		FMeshDrawCommand MeshDrawCommand;
-		FNaniteMaterialCommands::FCommandHash CommandHash;
-	#if WITH_DEBUG_VIEW_MODES
-		uint32 InstructionCount;
-	#endif
-		uint8 SectionIndex;
-	};
-
-	TArray<FDeferredCommand> DeferredCommands[ENaniteMeshPass::Num];	
+	TArray<FDeferredCommand> DeferredCommands[ENaniteMeshPass::Num];
+	TArray<FDeferredPipelines> DeferredPipelines[ENaniteMeshPass::Num];
 };
 
-class FNaniteMeshProcessor : public FMeshPassProcessor
+class FNaniteMeshProcessor : public FSceneRenderingAllocatorObject<FNaniteMeshProcessor>, public FMeshPassProcessor
 {
 public:
 	FNaniteMeshProcessor(
@@ -149,6 +129,14 @@ public:
 		int32 StaticMeshId = -1
 	) override final;
 
+	virtual void CollectPSOInitializers(
+		const FSceneTexturesConfig& SceneTexturesConfig, 
+		const FMaterial& Material, 
+		const FVertexFactoryType* VertexFactoryType, 
+		const FPSOPrecacheParams& PreCacheParams, 
+		TArray<FPSOPrecacheData>& PSOInitializers
+	) override final;
+
 private:
 	bool TryAddMeshBatch(
 		const FMeshBatch& RESTRICT MeshBatch,
@@ -159,27 +147,56 @@ private:
 		const FMaterial& Material
 	);
 
+	void CollectPSOInitializersForSkyLight(
+		const FSceneTexturesConfig& SceneTexturesConfig,
+		const FVertexFactoryType* VertexFactoryType,
+		const FMaterial& RESTRICT Material,
+		const bool bRenderSkylight,
+		TArray<FPSOPrecacheData>& PSOInitializers
+	);
+
 private:
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
 
 FMeshPassProcessor* CreateNaniteMeshProcessor(
+	ERHIFeatureLevel::Type FeatureLevel,
 	const FScene* Scene,
 	const FSceneView* InViewIfDynamicMeshCommand,
 	FMeshPassDrawListContext* InDrawListContext
 );
 
-void DrawNaniteMaterialPasses(
-	const FSceneRenderer& SceneRenderer,
-	const FScene& Scene,
-	const FViewInfo& View,
+enum class ENaniteMaterialPass : uint32
+{
+	// Standard per-material draws that fill the GBuffer
+	EmitGBuffer,
+	// When !IsUsingBasePassVelocity, fills the GBuffer and velocity for materials with programmable deformation
+	EmitGBufferWithVelocity,
+
+	Max
+};
+
+struct FNaniteMaterialPassInfo
+{
+	uint32 CommandOffset = 0;
+	uint32 NumCommands = 0;
+};
+
+void BuildNaniteMaterialPassCommands(
+	const TConstArrayView<FGraphicsPipelineRenderTargetsInfo> RenderTargetsInfo,
+	const FNaniteMaterialCommands& MaterialCommands,
+	const FNaniteVisibilityResults& VisibilityResults,
+	TArray<FNaniteMaterialPassCommand, SceneRenderingAllocator>& OutNaniteMaterialPassCommands,
+	TArrayView<FNaniteMaterialPassInfo> OutMaterialPassInfo);
+
+void DrawNaniteMaterialPass(
+	FRDGParallelCommandListSet* ParallelCommandListSet,
+	FRHICommandList& RHICmdList,
+	const FIntRect ViewRect,
 	const uint32 TileCount,
-	const bool bParallelBuild,
-	const FParallelCommandListBindings& ParallelBindings,
 	TShaderMapRef<FNaniteIndirectMaterialVS> VertexShader,
-	FRHICommandListImmediate& RHICmdListImmediate,
-	FRHIBuffer* MaterialIndirectArgs,
-	TArray<FNaniteMaterialPassCommand, SceneRenderingAllocator>& MaterialPassCommands
+	FRDGBuffer* MaterialIndirectArgs,
+	TArrayView<FNaniteMaterialPassCommand const> MaterialPassCommands
 );
 
 void SubmitNaniteIndirectMaterial(

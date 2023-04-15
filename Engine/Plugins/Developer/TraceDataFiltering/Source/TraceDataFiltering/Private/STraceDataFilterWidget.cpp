@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "STraceDataFilterWidget.h"
-#include "EditorStyleSet.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SScrollBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SComboButton.h"
@@ -318,6 +319,7 @@ void STraceDataFilterWidget::ConstructFilterHandler()
 
 TSharedRef<ITableRow> STraceDataFilterWidget::OnGenerateRow(TSharedPtr<ITraceObject> InItem, const TSharedRef<STableViewBase>& OwnerTable)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
 	return SNew(STraceObjectRowWidget, OwnerTable, InItem)
 		.HighlightText(SearchBoxWidgetFilter.Get(), &TTextFilter<TSharedPtr<ITraceObject>>::GetRawFilterText);
 }
@@ -716,6 +718,8 @@ void STraceDataFilterWidget::RefreshTreeviewData()
 
 void STraceDataFilterWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/TraceDataFiltering"));
+
 	IUnrealInsightsModule& InsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 	TSharedPtr<const TraceServices::IAnalysisSession> AnalysisSession = InsightsModule.GetAnalysisSession();
 

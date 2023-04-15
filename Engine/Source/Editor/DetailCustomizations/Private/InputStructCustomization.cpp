@@ -1,11 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InputStructCustomization.h"
-#include "Widgets/Layout/SBox.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailWidgetRow.h"
 #include "GameFramework/PlayerInput.h"
+#include "HAL/Platform.h"
 #include "IDetailChildrenBuilder.h"
-#include "PropertyCustomizationHelpers.h"
 #include "InputSettingsDetails.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "InputStructCustomization"
 
@@ -73,17 +92,17 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 	[
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.AutoWidth()
 		[
 			SNew( SBox )
-			.WidthOverride( InputConstants::TextBoxWidth )
+			.WidthOverride(InputSettingsDetails::InputConstants::TextBoxWidth)
 			[
 				StructBuilder.GenerateStructValueWidget( KeyHandle.ToSharedRef() )
 			]
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -91,7 +110,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			ShiftHandle->CreatePropertyNameWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -99,7 +118,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			ShiftHandle->CreatePropertyValueWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -107,7 +126,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			CtrlHandle->CreatePropertyNameWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -115,7 +134,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			CtrlHandle->CreatePropertyValueWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -123,7 +142,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			AltHandle->CreatePropertyNameWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -131,7 +150,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			AltHandle->CreatePropertyValueWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -139,7 +158,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			CmdHandle->CreatePropertyNameWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -147,7 +166,7 @@ void FInputActionMappingCustomization::CustomizeChildren( TSharedRef<class IProp
 			CmdHandle->CreatePropertyValueWidget()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -196,17 +215,17 @@ void FInputAxisMappingCustomization::CustomizeChildren( TSharedRef<class IProper
 	[
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.AutoWidth()
 		[
 			SNew( SBox )
-			.WidthOverride( InputConstants::TextBoxWidth )
+			.WidthOverride(InputSettingsDetails::InputConstants::TextBoxWidth)
 			[
 				StructBuilder.GenerateStructValueWidget( KeyHandle.ToSharedRef() )
 			]
 		]
 		+SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
@@ -214,19 +233,19 @@ void FInputAxisMappingCustomization::CustomizeChildren( TSharedRef<class IProper
 			ScaleHandle->CreatePropertyNameWidget()
 		]
 		+SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Left)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
 		[
 			SNew(SBox)
-			.WidthOverride(InputConstants::ScaleBoxWidth)
+			.WidthOverride(InputSettingsDetails::InputConstants::ScaleBoxWidth)
 			[
 				ScaleHandle->CreatePropertyValueWidget()
 			]
 		]
 		+SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()

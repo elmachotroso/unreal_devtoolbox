@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetManagerTypes.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "StreamableManager.h"
-#include "AssetBundleData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetBundleData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
 #include "ContentEncryptionConfig.h"
 #include "AssetManager.generated.h"
@@ -97,10 +97,14 @@ public:
 
 	/** Single path wrapper */
 	virtual int32 ScanPathForPrimaryAssets(FPrimaryAssetType PrimaryAssetType, const FString& Path, UClass* BaseClass, bool bHasBlueprintClasses, bool bIsEditorOnly = false, bool bForceSynchronousScan = true);
-	
+
 	/** Call before many calls to ScanPaths to improve load performance. Match each call with PopBulkScanning(). */
 	void PushBulkScanning();
 	void PopBulkScanning();
+
+	virtual void RemoveScanPathsForPrimaryAssets(FPrimaryAssetType PrimaryAssetType, const TArray<FString>& Paths, UClass* BaseClass, bool bHasBlueprintClasses, bool bIsEditorOnly = false);
+
+	virtual void RemovePrimaryAssetType(FPrimaryAssetType PrimaryAssetType);
 
 protected:
 	/** Should only be called from PushBulkScanning() and override */
@@ -189,6 +193,8 @@ public:
 
 	/** Sees if the passed in object path is a registered primary asset, if so return it. Returns invalid Identifier if not found */
 	virtual FPrimaryAssetId GetPrimaryAssetIdForPath(const FSoftObjectPath& ObjectPath) const;
+
+	UE_DEPRECATED(5.1, "FName asset paths are deprecated, use FSoftObjectPath instead.")
 	virtual FPrimaryAssetId GetPrimaryAssetIdForPath(FName ObjectPath) const;
 
 	/** Sees if the package has a primary asset, useful if only the package name is available */
@@ -382,13 +388,13 @@ public:
 	// GENERAL ASSET UTILITY FUNCTIONS
 
 	/** Parses AssetData to extract the primary type/name from it. This works even if it isn't in the directory */
-	virtual FPrimaryAssetId ExtractPrimaryAssetIdFromData(const FAssetData& AssetData, FPrimaryAssetType SuggestedType = NAME_None) const;
+	virtual FPrimaryAssetId ExtractPrimaryAssetIdFromData(const FAssetData& AssetData, FPrimaryAssetType SuggestedType = FPrimaryAssetType()) const;
 
 	/** Gets the FAssetData at a specific path, handles redirectors and blueprint classes correctly. Returns true if it found a valid data */
 	virtual bool GetAssetDataForPath(const FSoftObjectPath& ObjectPath, FAssetData& AssetData) const;
 
 	/** Checks to see if the given asset data is a blueprint with a base class in the ClassNameSet. This checks the parent asset tag */
-	virtual bool IsAssetDataBlueprintOfClassSet(const FAssetData& AssetData, const TSet<FName>& ClassNameSet) const;
+	virtual bool IsAssetDataBlueprintOfClassSet(const FAssetData& AssetData, const TSet<FTopLevelAssetPath>& ClassNameSet) const;
 
 	/** Turns an FAssetData into FSoftObjectPath, handles adding _C as necessary */
 	virtual FSoftObjectPath GetAssetPathForData(const FAssetData& AssetData) const;
@@ -403,6 +409,7 @@ public:
 	virtual FPrimaryAssetId DeterminePrimaryAssetIdForObject(const UObject* Object) const;
 
 	/** Reads AssetManagerSettings for specifically redirected asset paths. This is useful if you need to convert older saved data */
+	UE_DEPRECATED(5.1, "Asset path FNames are deprecated, use FSoftObjectPath instead.")
 	virtual FName GetRedirectedAssetPath(FName OldPath) const;
 	virtual FSoftObjectPath GetRedirectedAssetPath(const FSoftObjectPath& OldPath) const;
 
@@ -669,8 +676,14 @@ protected:
 	/** When asset is renamed */
 	virtual void OnAssetRenamed(const FAssetData& NewData, const FString& OldPath);
 
+	/** When an asset is removed */
+	virtual void OnAssetRemoved(const FAssetData& Data);
+
 	/** Try to remove an old asset identifier when it has been deleted/renamed */
 	virtual void RemovePrimaryAssetId(const FPrimaryAssetId& PrimaryAssetId);
+
+	/** Scans the respective PackagePath for public assets to include in PackagesToCook */
+	virtual void GatherPublicAssetsForPackage(FName PackagePath, TArray<FName>& PackagesToCook) const;
 
 	/** Called right before PIE starts, will refresh asset directory and can be overriden to preload assets */
 	virtual void PreBeginPIE(bool bStartSimulate);
@@ -686,7 +699,7 @@ protected:
 #endif // WITH_EDITOR
 
 	/** Map from object path to Primary Asset Id */
-	TMap<FName, FPrimaryAssetId> AssetPathMap;
+	TMap<FSoftObjectPath, FPrimaryAssetId> AssetPathMap;
 
 	/** Overridden asset management data for specific types */
 	TMap<FPrimaryAssetId, FPrimaryAssetRulesExplicitOverride> AssetRuleOverrides;
@@ -796,7 +809,7 @@ protected:
 	/** Redirector maps loaded out of AssetMigrations.ini */
 	TMap<FName, FName> PrimaryAssetTypeRedirects;
 	TMap<FString, FString> PrimaryAssetIdRedirects;
-	TMap<FName, FName> AssetPathRedirects;
+	TMap<FSoftObjectPath, FSoftObjectPath> AssetPathRedirects;
 
 	/** Delegate called when initial span finishes */
 	static FSimpleMulticastDelegate OnCompletedInitialScanDelegate;

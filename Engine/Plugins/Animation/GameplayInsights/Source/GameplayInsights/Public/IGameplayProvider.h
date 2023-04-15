@@ -112,7 +112,9 @@ public:
 	virtual void EnumerateObjectPropertyValues(uint64 InObjectId, const FObjectPropertiesMessage& InMessage, TFunctionRef<void(const FObjectPropertyValue&)> Callback) const = 0;
 	virtual void EnumerateObjects(TFunctionRef<void(const FObjectInfo&)> Callback) const = 0;
 	virtual void EnumerateObjects(double StartTime, double EndTime, TFunctionRef<void(const FObjectInfo&)> Callback) const = 0;
+	virtual void EnumerateSubobjects(uint64 ObjectId, TFunctionRef<void(uint64 SubobjectId)> Callback) const = 0;
 	virtual const FClassInfo* FindClassInfo(uint64 InClassId) const = 0;
+	virtual const UClass* FindClass(uint64 InClassId) const = 0;
 	virtual const FClassInfo* FindClassInfo(const TCHAR* InClassPath) const = 0;
 	virtual const FObjectInfo* FindObjectInfo(uint64 InObjectId) const = 0;
 	virtual const FWorldInfo* FindWorldInfo(uint64 InObjectId) const = 0;
@@ -126,5 +128,6 @@ public:
 	virtual const RecordingInfoTimeline* GetRecordingInfo(uint32 RecordingId) const = 0; 
 	virtual void ReadViewTimeline(TFunctionRef<void(const ViewTimeline&)> Callback) const = 0;
 	virtual uint64 FindPossessingController(uint64 Pawn, double Time) const = 0;
+	virtual TRange<double> GetObjectTraceLifetime(uint64 ObjectId) const = 0;
+	virtual TRange<double> GetObjectRecordingLifetime(uint64 ObjectId) const = 0;
 };
-

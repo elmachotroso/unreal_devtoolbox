@@ -11,6 +11,7 @@
 
 class UVCamModifier;
 
+PRAGMA_DISABLE_OPTIMIZATION
 
 // Links a Modifier with a Name for use in a Modifier Stack
 USTRUCT()
@@ -28,7 +29,7 @@ struct FModifierStackEntry
 
 	// The current generated modifier instance
 	UPROPERTY(EditAnywhere, Instanced, Category="Modifier")
-    UVCamModifier* GeneratedModifier = nullptr;
+    TObjectPtr<UVCamModifier> GeneratedModifier = nullptr;
 
 #if WITH_EDITOR
 	// GUID used in the editor to identify specific stack entries during editor operations
@@ -56,6 +57,15 @@ struct FModifierStackEntry
 #endif
 	};
 
+	~FModifierStackEntry()
+	{
+		// It's possible the Generated Modifier may pass IsValid while having already been destroyed so ensure we explicitly check for this case
+		if (IsValid(GeneratedModifier) && !GeneratedModifier->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed))
+		{
+			GeneratedModifier->Deinitialize();
+		}
+	}
+
 	bool operator==(const FModifierStackEntry& Other) const
 	{
 		bool bArePropertiesEqual = this->Name.IsEqual(Other.Name) && this->bEnabled == Other.bEnabled && this->GeneratedModifier == Other.GeneratedModifier;
@@ -72,3 +82,5 @@ struct FModifierStackEntry
 		return !(*this == Other);
 	}
 };
+
+PRAGMA_ENABLE_OPTIMIZATION

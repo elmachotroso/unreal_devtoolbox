@@ -8,8 +8,10 @@
 
 #include "Widgets/SWindow.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionCacheFactory)
 
 #define LOCTEXT_NAMESPACE "GeomCollectionCacheFactory"
 
@@ -53,7 +55,7 @@ bool UGeometryCollectionCacheFactory::ConfigureProperties()
 	
 	// Config for picker list of geometry collections
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(UGeometryCollection::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UGeometryCollection::StaticClass()->GetClassPathName());
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateUObject(this, &UGeometryCollectionCacheFactory::OnConfigSelection);
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 
@@ -65,7 +67,7 @@ bool UGeometryCollectionCacheFactory::ConfigureProperties()
 		.SupportsMaximize(false)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 			]
@@ -84,3 +86,4 @@ void UGeometryCollectionCacheFactory::OnConfigSelection(const FAssetData& InSele
 }
 
 #undef LOCTEXT_NAMESPACE
+

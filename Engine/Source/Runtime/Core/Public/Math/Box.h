@@ -104,34 +104,38 @@ public:
 
 	/**
 	 * Compares two boxes for equality.
+	 * 
+	 * Returns true if both bounding boxes are invalid. Returns false if one of the bounding boxes is invalid.
 	 *
 	 * @return true if the boxes are equal, false otherwise.
 	 */
 	FORCEINLINE bool operator==( const TBox<T>& Other ) const
 	{
-		return (Min == Other.Min) && (Max == Other.Max);
+		return (!IsValid && !Other.IsValid) || ((IsValid && Other.IsValid) && (Min == Other.Min) && (Max == Other.Max));
 	}
 
 	/**
 	 * Compares two boxes for inequality.
-	 *
+	 * 
 	 * @return false if the boxes are equal, true otherwise.
 	 */
 	FORCEINLINE bool operator!=( const TBox<T>& Other) const
 	{
-		return (Min != Other.Min) || (Max != Other.Max);
+		return !(*this == Other);
 	}
 
 	/**
 	 * Check against another box for equality, within specified error limits.
+	 * 
+	 * Returns true if both bounding boxes are invalid. Returns false if one of the bounding boxes is invalid.
 	 *
 	 * @param Other The box to check against.
 	 * @param Tolerance Error tolerance.
 	 * @return true if the boxes are equal within tolerance limits, false otherwise.
 	 */
-	bool Equals(const TBox<T>& Other, T Tolerance=KINDA_SMALL_NUMBER) const
+	bool Equals(const TBox<T>& Other, T Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
-		return Min.Equals(Other.Min, Tolerance) && Max.Equals(Other.Max, Tolerance);
+		return (!IsValid && !Other.IsValid) || ((IsValid && Other.IsValid) && Min.Equals(Other.Min, Tolerance) && Max.Equals(Other.Max, Tolerance));
 	}
 
 	/**
@@ -492,6 +496,13 @@ public:
 	 */
 	FString ToString() const;
 
+	/**
+	 * Get the vertices that make up this box.
+	 * 
+	 * 
+	 */
+	void GetVertices( TVector<T> (&Vertices)[8] ) const;
+
 public:
 
 	/** 
@@ -732,19 +743,23 @@ TBox<T> TBox<T>::TransformBy(const TTransform<T>& M) const
 }
 
 template<typename T>
+void TBox<T>::GetVertices(TVector<T>(&Vertices)[8]) const
+{
+	Vertices[0] = TVector<T>(Min);
+	Vertices[1] = TVector<T>(Min.X, Min.Y, Max.Z);
+	Vertices[2] = TVector<T>(Min.X, Max.Y, Min.Z);
+	Vertices[3] = TVector<T>(Max.X, Min.Y, Min.Z);
+	Vertices[4] = TVector<T>(Max.X, Max.Y, Min.Z);
+	Vertices[5] = TVector<T>(Max.X, Min.Y, Max.Z);
+	Vertices[6] = TVector<T>(Min.X, Max.Y, Max.Z);
+	Vertices[7] = TVector<T>(Max);
+}
+
+template<typename T>
 TBox<T> TBox<T>::InverseTransformBy(const TTransform<T>& M) const
 {
-	TVector<T> Vertices[8] =
-	{
-		TVector<T>(Min),
-		TVector<T>(Min.X, Min.Y, Max.Z),
-		TVector<T>(Min.X, Max.Y, Min.Z),
-		TVector<T>(Max.X, Min.Y, Min.Z),
-		TVector<T>(Max.X, Max.Y, Min.Z),
-		TVector<T>(Max.X, Min.Y, Max.Z),
-		TVector<T>(Min.X, Max.Y, Max.Z),
-		TVector<T>(Max)
-	};
+	TVector<T> Vertices[8];
+	GetVertices(Vertices);
 
 	TBox<T> NewBox(ForceInit);
 
@@ -760,17 +775,8 @@ TBox<T> TBox<T>::InverseTransformBy(const TTransform<T>& M) const
 template<typename T>
 TBox<T> TBox<T>::TransformProjectBy(const TMatrix<T>& ProjM) const
 {
-	TVector<T> Vertices[8] =
-	{
-		TVector<T>(Min),
-		TVector<T>(Min.X, Min.Y, Max.Z),
-		TVector<T>(Min.X, Max.Y, Min.Z),
-		TVector<T>(Max.X, Min.Y, Min.Z),
-		TVector<T>(Max.X, Max.Y, Min.Z),
-		TVector<T>(Max.X, Min.Y, Max.Z),
-		TVector<T>(Min.X, Max.Y, Max.Z),
-		TVector<T>(Max)
-	};
+	TVector<T> Vertices[8];
+	GetVertices(Vertices);
 
 	TBox<T> NewBox(ForceInit);
 

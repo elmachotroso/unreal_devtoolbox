@@ -4,9 +4,13 @@
 #include "Async/Fundamental/Task.h"
 #include "Async/TaskTrace.h"
 #include "Logging/LogMacros.h"
+#include "HAL/RunnableThread.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/CommandLine.h"
 #include "Misc/Fork.h"
 #include "CoreGlobals.h"
+
+extern CORE_API bool GTaskGraphUseDynamicPrioritization;
 
 namespace LowLevelTasks
 {
@@ -90,6 +94,12 @@ namespace LowLevelTasks
 
 	void FScheduler::StartWorkers(uint32 NumForegroundWorkers, uint32 NumBackgroundWorkers, FThread::EForkable IsForkable, EThreadPriority InWorkerPriority,  EThreadPriority InBackgroundPriority, uint64 InWorkerAffinity, uint64 InBackgroundAffinity)
 	{
+		int32 Value = 0;
+		if (FParse::Value(FCommandLine::Get(), TEXT("TaskGraphUseDynamicPrioritization="), Value))
+		{
+			GTaskGraphUseDynamicPrioritization = Value != 0;
+		}
+
 		if (NumForegroundWorkers == 0 && NumBackgroundWorkers == 0)
 		{
 			NumForegroundWorkers = FMath::Max<int32>(1, FMath::Min<int32>(2, FPlatformMisc::NumberOfWorkerThreadsToSpawn() - 1));
@@ -135,10 +145,53 @@ namespace LowLevelTasks
 			{
 				WorkerEvents.Emplace();
 				WorkerLocalQueues.Emplace(QueueRegistry, ELocalQueueType::EBackground, &WorkerEvents.Last());
-				WorkerThreads.Add(CreateWorker(true, IsForkable, &WorkerEvents.Last(), &WorkerLocalQueues.Last(), BackgroundPriority, BackgroundAffinity));
+				WorkerThreads.Add(CreateWorker(true, IsForkable, &WorkerEvents.Last(), &WorkerLocalQueues.Last(), GTaskGraphUseDynamicPrioritization ? WorkerPriority : BackgroundPriority, BackgroundAffinity));
 			}
 			UE::Trace::ThreadGroupEnd();
 		}
+	}
+
+	inline void FScheduler::ExecuteTask(FTask*& InOutTask)
+	{
+		FTask* ParentTask = FTask::ActiveTask;
+		FTask::ActiveTask = InOutTask;
+
+		if (!InOutTask->IsBackgroundTask())
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(ExecuteForegroundTask);
+			InOutTask = InOutTask->ExecuteTask();
+		}
+		else
+		{
+			// Dynamic priority only enables for root task when we're not inside a named thread (i.e. GT, RT)
+			const bool bSkipPriorityChange = ParentTask || !GTaskGraphUseDynamicPrioritization || !FSchedulerTls::IsWorkerThread();
+
+			FRunnableThread* RunnableThread = nullptr;
+			if (!bSkipPriorityChange)
+			{
+				// We assume all threads executing tasks are RunnableThread and this can't be null or it will crash. 
+				// Which is fine since we want to know about it sooner rather than later.
+				RunnableThread = FRunnableThread::GetRunnableThread();
+
+				checkSlow(RunnableThread && RunnableThread->GetThreadPriority() == WorkerPriority);
+
+				TRACE_CPUPROFILER_EVENT_SCOPE(LowerThreadPriority);
+				RunnableThread->SetThreadPriority(BackgroundPriority);
+			}
+
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(ExecuteBackgroundTask);
+				InOutTask = InOutTask->ExecuteTask();
+			}
+
+			if (!bSkipPriorityChange)
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(RaiseThreadPriority);
+				RunnableThread->SetThreadPriority(WorkerPriority);
+			}
+		}
+
+		FTask::ActiveTask = ParentTask;
 	}
 
 	void FScheduler::StopWorkers(bool DrainGlobalQueue)
@@ -163,7 +216,14 @@ namespace LowLevelTasks
 			{
 				for (FTask* Task = QueueRegistry.Dequeue(); Task != nullptr; Task = QueueRegistry.Dequeue())
 				{
-					Task->ExecuteTask();
+					while(Task)
+					{
+						ExecuteTask(Task);
+						if(Task)
+						{
+							verifySlow(Task->TryPrepareLaunch());
+						}
+					}
 				}
 			}
 		}
@@ -213,11 +273,19 @@ namespace LowLevelTasks
 		}
 		else
 		{
-			Task.ExecuteTask();
+			FTask* TaskPtr = &Task;
+			while(TaskPtr)
+			{
+				ExecuteTask(TaskPtr);
+				if(TaskPtr)
+				{
+					verifySlow(TaskPtr->TryPrepareLaunch());
+				}
+			}
 		}
 	}
 
-#if PLATFORM_DESKTOP
+#if PLATFORM_DESKTOP || !IS_MONOLITHIC
 	const FTask* FTask::GetActiveTask()
 	{
 		return ActiveTask;
@@ -246,43 +314,57 @@ namespace LowLevelTasks
 	template<FTask* (FSchedulerTls::FLocalQueueType::*DequeueFunction)(bool, bool), bool bIsBusyWaiting>
 	bool FScheduler::TryExecuteTaskFrom(FSchedulerTls::FLocalQueueType* Queue, FSchedulerTls::FQueueRegistry::FOutOfWork& OutOfWork, bool bPermitBackgroundWork, bool bDisableThrottleStealing)
 	{
-		for(int i = 0; i < 2; i++) // one retry if we pick up a task that cannot used during busy waiting.
+		bool AnyExecuted = false;
+
+		FTask* Task = (Queue->*DequeueFunction)(bPermitBackgroundWork, bDisableThrottleStealing);
+		while (Task)
 		{
-			FTask* Task = (Queue->*DequeueFunction)(bPermitBackgroundWork, bDisableThrottleStealing);
-			if (Task)
-			{	
-				if (bIsBusyWaiting && !Task->AllowBusyWaiting())
+			if constexpr (bIsBusyWaiting)
+			{
+				FTask::FInitData InitData = Task->GetInitData();
+				bool bAllowBusyWaiting = EnumHasAnyFlags(InitData.Flags, ETaskFlags::AllowBusyWaiting);
+				
+				if (!bAllowBusyWaiting || AnyExecuted) 
 				{
-					QueueRegistry.Enqueue(Task, uint32(Task->GetPriority()));
-					continue;
-				}
-				if (OutOfWork.Stop())
-				{
-					//if we are ramping up work again we start waking up workers that might not have been woken while a lot of work might have been queued
-					if (!WakeUpWorker(bPermitBackgroundWork) && !FSchedulerTls::IsBackgroundWorker())
+					//either the task is not allowed during busy waiting or we have a  
+					//symetric switching task that we do not want to execute during BusyWaiting
+					//in either case we requeue and try again or we exit early with success.
+					QueueRegistry.Enqueue(Task, uint32(InitData.Priority));
+
+					if(AnyExecuted)
 					{
-						WakeUpWorker(!bPermitBackgroundWork);
+						return AnyExecuted; 
+					}
+
+					Task = (Queue->*DequeueFunction)(bPermitBackgroundWork, bDisableThrottleStealing);
+					if(Task == nullptr)
+					{
+						return false;
 					}
 				}
-				FTask* OldTask = FTask::ActiveTask;
-				FTask::ActiveTask = Task;
-				{
-#if UE_TASK_TRACE_ENABLED
-					if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(TaskTrace::TaskChannel))
-					{
-						TRACE_CPUPROFILER_EVENT_SCOPE(ExecuteTask);
-					}
-#else
-					TRACE_CPUPROFILER_EVENT_SCOPE(ExecuteTask);
-#endif
-					Task->ExecuteTask();
-				}
-				FTask::ActiveTask = OldTask;
-				return true;
 			}
-			return false;
+			else
+			{
+				checkSlow(FTask::ActiveTask == nullptr);
+			}
+
+			if (OutOfWork.Stop())
+			{
+				//if we are ramping up work again we start waking up workers that might not have been woken while a lot of work might have been queued
+				if (!WakeUpWorker(bPermitBackgroundWork) && !FSchedulerTls::IsBackgroundWorker())
+				{
+					WakeUpWorker(!bPermitBackgroundWork);
+				}
+			}
+			
+			ExecuteTask(Task);
+			if(Task)
+			{
+				verifySlow(Task->TryPrepareLaunch());
+			}
+			AnyExecuted = true;
 		}
-		return false;
+		return AnyExecuted;
 	}
 
 	void FScheduler::WorkerMain(FSleepEvent* WorkerEvent, FSchedulerTls::FLocalQueueType* ExternalWorkerLocalQueue, uint32 WaitCycles, bool bPermitBackgroundWork)

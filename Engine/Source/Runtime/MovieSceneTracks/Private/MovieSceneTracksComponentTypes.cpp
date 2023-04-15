@@ -3,6 +3,7 @@
 #include "MovieSceneTracksComponentTypes.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntityManager.h"
@@ -13,7 +14,7 @@
 #include "Systems/MovieScenePiecewiseByteBlenderSystem.h"
 #include "Systems/MovieScenePiecewiseEnumBlenderSystem.h"
 #include "Systems/MovieScenePiecewiseIntegerBlenderSystem.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
+#include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
 #include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
 #include "EntitySystem/MovieScenePropertyComponentHandler.h"
 #include "EntitySystem/MovieSceneEntityFactoryTemplates.h"
@@ -23,7 +24,11 @@
 #include "Systems/MovieSceneVectorPropertySystem.h"
 #include "MovieSceneObjectBindingID.h"
 #include "GameFramework/Actor.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Misc/App.h"
+#include "PhysicsEngine/BodyInstance.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneTracksComponentTypes)
 
 namespace UE
 {
@@ -227,46 +232,52 @@ void SetSkyLightComponentLightColor(UObject* Object, EColorPropertyType InColorT
 	SkyLightComponent->SetLightColor(InColor.GetLinearColor());
 }
 
-float GetSecondFogDataFogDensity(const UObject* Object, bool bIsDouble)
+float GetMassScale(const UObject* Object)
 {
-	check(!bIsDouble);
+	const UPrimitiveComponent* PrimitiveComponent = CastChecked<const UPrimitiveComponent>(Object);
+	return PrimitiveComponent->GetMassScale();
+}
+
+void SetMassScale(UObject* Object, float InMassScale)
+{
+	UPrimitiveComponent* PrimitiveComponent = CastChecked<UPrimitiveComponent>(Object);
+	PrimitiveComponent->SetMassScale(NAME_None, InMassScale);
+}
+
+float GetSecondFogDataFogDensity(const UObject* Object)
+{
 	const UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<const UExponentialHeightFogComponent>(Object);
 	return ExponentialHeightFogComponent->SecondFogData.FogDensity;
 }
 
-void SetSecondFogDataFogDensity(UObject* Object, bool bIsDouble, float InFogDensity)
+void SetSecondFogDataFogDensity(UObject* Object, float InFogDensity)
 {
-	check(!bIsDouble);
 	UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<UExponentialHeightFogComponent>(Object);
-	ExponentialHeightFogComponent->SecondFogData.FogDensity = InFogDensity;
+	ExponentialHeightFogComponent->SetSecondFogDensity(InFogDensity);
 }
 
-float GetSecondFogDataFogHeightFalloff(const UObject* Object, bool bIsDouble)
+float GetSecondFogDataFogHeightFalloff(const UObject* Object)
 {
-	check(!bIsDouble);
 	const UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<const UExponentialHeightFogComponent>(Object);
 	return ExponentialHeightFogComponent->SecondFogData.FogHeightFalloff;
 }
 
-void SetSecondFogDataFogHeightFalloff(UObject* Object, bool bIsDouble, float InFogHeightFalloff)
+void SetSecondFogDataFogHeightFalloff(UObject* Object, float InFogHeightFalloff)
 {
-	check(!bIsDouble);
 	UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<UExponentialHeightFogComponent>(Object);
-	ExponentialHeightFogComponent->SecondFogData.FogHeightFalloff = InFogHeightFalloff;
+	ExponentialHeightFogComponent->SetSecondFogHeightFalloff(InFogHeightFalloff);
 }
 
-float GetSecondFogDataFogHeightOffset(const UObject* Object, bool bIsDouble)
+float GetSecondFogDataFogHeightOffset(const UObject* Object)
 {
-	check(!bIsDouble);
 	const UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<const UExponentialHeightFogComponent>(Object);
 	return ExponentialHeightFogComponent->SecondFogData.FogHeightOffset;
 }
 
-void SetSecondFogDataFogHeightOffset(UObject* Object, bool bIsDouble, float InFogHeightOffset)
+void SetSecondFogDataFogHeightOffset(UObject* Object, float InFogHeightOffset)
 {
-	check(!bIsDouble);
 	UExponentialHeightFogComponent* ExponentialHeightFogComponent = CastChecked<UExponentialHeightFogComponent>(Object);
-	ExponentialHeightFogComponent->SecondFogData.FogHeightOffset = InFogHeightOffset;
+	ExponentialHeightFogComponent->SetSecondFogHeightOffset(InFogHeightOffset);
 }
 
 void FIntermediate3DTransform::ApplyTo(USceneComponent* SceneComponent) const
@@ -336,8 +347,11 @@ void FComponentAttachParams::ApplyAttach(USceneComponent* ChildComponentToAttach
 {
 	if (ChildComponentToAttach->GetAttachParent() != NewAttachParent || ChildComponentToAttach->GetAttachSocketName() != SocketName)
 	{
-		FAttachmentTransformRules AttachmentRules(AttachmentLocationRule, AttachmentRotationRule, AttachmentScaleRule, false);
+		// Attachment changes may try to mark a package as dirty but this prevents us from restoring the level to the pre-animated
+		// state correctly which causes issues with validation.
+		MovieSceneHelpers::FMovieSceneScopedPackageDirtyGuard DirtyFlagGuard(ChildComponentToAttach);
 
+		FAttachmentTransformRules AttachmentRules(AttachmentLocationRule, AttachmentRotationRule, AttachmentScaleRule, false);
 		ChildComponentToAttach->AttachToComponent(NewAttachParent, AttachmentRules, SocketName);
 	}
 
@@ -354,11 +368,15 @@ void FComponentDetachParams::ApplyDetach(USceneComponent* ChildComponentToAttach
 	// Detach if there was no pre-existing parent
 	if (!NewAttachParent)
 	{
+		MovieSceneHelpers::FMovieSceneScopedPackageDirtyGuard DirtyFlagGuard(ChildComponentToAttach);
+
 		FDetachmentTransformRules DetachmentRules(DetachmentLocationRule, DetachmentRotationRule, DetachmentScaleRule, false);
 		ChildComponentToAttach->DetachFromComponent(DetachmentRules);
 	}
 	else
 	{
+		MovieSceneHelpers::FMovieSceneScopedPackageDirtyGuard DirtyFlagGuard(ChildComponentToAttach);
+
 		ChildComponentToAttach->AttachToComponent(NewAttachParent, FAttachmentTransformRules::KeepRelativeTransform, SocketName);
 	}
 }
@@ -367,34 +385,11 @@ void FComponentDetachParams::ApplyDetach(USceneComponent* ChildComponentToAttach
 static bool GMovieSceneTracksComponentTypesDestroyed = false;
 static TUniquePtr<FMovieSceneTracksComponentTypes> GMovieSceneTracksComponentTypes;
 
-struct FFloatHandler : TPropertyComponentHandler<FFloatPropertyTraits, float>
+struct FFloatHandler : TPropertyComponentHandler<FFloatPropertyTraits, double>
 {
-	virtual void DispatchInitializePropertyMetaDataTasks(const FPropertyDefinition& Definition, FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents, UMovieSceneEntitySystemLinker* Linker) override
-	{
-		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
-		FMovieSceneTracksComponentTypes* TrackComponents = FMovieSceneTracksComponentTypes::Get();
-
-		FEntityTaskBuilder()
-		.Read(BuiltInComponents->BoundObject)
-		.Read(BuiltInComponents->PropertyBinding)
-		.Write(TrackComponents->Float.MetaDataComponents.GetType<0>())
-		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
-		.Iterate_PerEntity(&Linker->EntityManager, [](UObject* Object, const FMovieScenePropertyBinding& Binding, bool& OutIsDouble)
-		{
-			FProperty* BoundProperty = FTrackInstancePropertyBindings::FindProperty(Object, Binding.PropertyPath.ToString());
-			if (ensure(BoundProperty))
-			{
-				OutIsDouble = BoundProperty->IsA<FDoubleProperty>();
-			}
-			else
-			{
-				OutIsDouble = false;
-			}
-		});
-	}
 };
 
-struct FColorHandler : TPropertyComponentHandler<FColorPropertyTraits, float, float, float, float>
+struct FColorHandler : TPropertyComponentHandler<FColorPropertyTraits, double, double, double, double>
 {
 	virtual void DispatchInitializePropertyMetaDataTasks(const FPropertyDefinition& Definition, FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents, UMovieSceneEntitySystemLinker* Linker) override
 	{
@@ -437,7 +432,7 @@ struct FColorHandler : TPropertyComponentHandler<FColorPropertyTraits, float, fl
 };
 
 
-struct FFloatVectorHandler : TPropertyComponentHandler<FFloatVectorPropertyTraits, float, float, float, float>
+struct FFloatVectorHandler : TPropertyComponentHandler<FFloatVectorPropertyTraits, double, double, double, double>
 {
 	virtual void DispatchInitializePropertyMetaDataTasks(const FPropertyDefinition& Definition, FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents, UMovieSceneEntitySystemLinker* Linker) override
 	{
@@ -454,21 +449,18 @@ struct FFloatVectorHandler : TPropertyComponentHandler<FFloatVectorPropertyTrait
 			FStructProperty* BoundProperty = CastField<FStructProperty>(FTrackInstancePropertyBindings::FindProperty(Object, Binding.PropertyPath.ToString()));
 			if (ensure(BoundProperty && BoundProperty->Struct))
 			{
-				if (BoundProperty->Struct == TBaseStructure<FVector2D>::Get() || BoundProperty->Struct == TVariantStructure<FVector2f>::Get()) // LWC_TODO: Fix LWC type FName case
+				if (BoundProperty->Struct == TVariantStructure<FVector2f>::Get())
 				{
 					OutMetaData.NumChannels = 2;
-					OutMetaData.bIsDouble = (BoundProperty->Struct == TBaseStructure<FVector2D>::Get()); // LWC_TODO: Fix LWC type FName case
 				}
-				else if (BoundProperty->Struct == TBaseStructure<FVector>::Get() || BoundProperty->Struct == TVariantStructure<FVector3f>::Get() || BoundProperty->Struct == TVariantStructure<FVector3d>::Get())
+				else if (BoundProperty->Struct == TVariantStructure<FVector3f>::Get())
 				{
 					OutMetaData.NumChannels = 3;
-					OutMetaData.bIsDouble = (BoundProperty->Struct == TBaseStructure<FVector>::Get() || BoundProperty->Struct == TVariantStructure<FVector3d>::Get());
 				}
 				else
 				{
-					ensure(BoundProperty->Struct == TBaseStructure<FVector4>::Get() || BoundProperty->Struct == TVariantStructure<FVector4f>::Get() || BoundProperty->Struct == TVariantStructure<FVector4d>::Get());
+					ensure(BoundProperty->Struct == TVariantStructure<FVector4f>::Get());
 					OutMetaData.NumChannels = 4;
-					OutMetaData.bIsDouble = (BoundProperty->Struct == TBaseStructure<FVector4>::Get() || BoundProperty->Struct == TVariantStructure<FVector4d>::Get());
 				}
 			}
 			else
@@ -501,13 +493,13 @@ struct FDoubleVectorHandler : TPropertyComponentHandler<FDoubleVectorPropertyTra
 				{
 					OutMetaData.NumChannels = 2;
 				}
-				else if (BoundProperty->Struct->GetFName() == NAME_Vector3d || BoundProperty->Struct->GetFName() == NAME_Vector)
+				else if (BoundProperty->Struct == TBaseStructure<FVector>::Get() || BoundProperty->Struct == TVariantStructure<FVector3d>::Get())
 				{
 					OutMetaData.NumChannels = 3;
 				}
 				else
 				{
-					ensure(BoundProperty->Struct == TBaseStructure<FVector4>::Get() || (BoundProperty->Struct->GetFName() == NAME_Vector4d) || (BoundProperty->Struct->GetFName() == NAME_Vector4));
+					ensure(BoundProperty->Struct == TBaseStructure<FVector4>::Get() || BoundProperty->Struct == TVariantStructure<FVector4d>::Get());
 					OutMetaData.NumChannels = 4;
 				}
 			}
@@ -546,7 +538,6 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	ComponentRegistry->NewPropertyType(EulerTransform, TEXT("FEulerTransform"));
 	ComponentRegistry->NewPropertyType(ComponentTransform, TEXT("Component Transform"));
 
-	Float.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Is Double"));
 	Color.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Color Type"));
 	FloatVector.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Num Float Vector Channels"));
 	DoubleVector.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Num Double Vector Channels"));
@@ -555,25 +546,43 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	ComponentRegistry->NewComponentType(&QuaternionRotationChannel[1], TEXT("Quaternion Rotation Channel 1"));
 	ComponentRegistry->NewComponentType(&QuaternionRotationChannel[2], TEXT("Quaternion Rotation Channel 2"));
 
+	ComponentRegistry->NewComponentType(&ConstraintChannel, TEXT("Constraint Channel"));
+
 	ComponentRegistry->NewComponentType(&AttachParent, TEXT("Attach Parent"));
 	ComponentRegistry->NewComponentType(&AttachComponent, TEXT("Attachment Component"));
 	ComponentRegistry->NewComponentType(&AttachParentBinding, TEXT("Attach Parent Binding"));
+	ComponentRegistry->NewComponentType(&FloatPerlinNoiseChannel, TEXT("Float Perlin Noise Channel"));
+	ComponentRegistry->NewComponentType(&DoublePerlinNoiseChannel, TEXT("Double Perlin Noise Channel"));
 
 	ComponentRegistry->NewComponentType(&LevelVisibility, TEXT("Level Visibility"));
 	ComponentRegistry->NewComponentType(&DataLayer, TEXT("Data Layer"));
+
+	ComponentRegistry->NewComponentType(&ComponentMaterialIndex, TEXT("Component Material Index"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&BoundMaterial,          TEXT("Bound Material"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&MPC,                    TEXT("Material Parameter Collection"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+
+	ComponentRegistry->NewComponentType(&BoolParameterName,      TEXT("Bool Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&ScalarParameterName,    TEXT("Scalar Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&Vector2DParameterName,  TEXT("Vector2D Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&VectorParameterName,    TEXT("Vector Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&ColorParameterName,     TEXT("Color Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+	ComponentRegistry->NewComponentType(&TransformParameterName, TEXT("Transform Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+
+	Tags.BoundMaterialChanged = ComponentRegistry->NewTag(TEXT("Bound Material Changed"));
+	FBuiltInComponentTypes::Get()->RequiresInstantiationMask.Set(Tags.BoundMaterialChanged);
 
 	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 
 	// --------------------------------------------------------------------------------------------
 	// Set up bool properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Bool)
+	BuiltInComponents->PropertyRegistry.DefineProperty(Bool, TEXT("Apply bool Properties"))
 	.AddSoleChannel(BuiltInComponents->BoolResult)
 	.SetBlenderSystem<UMovieScenePiecewiseBoolBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Bool)
 	.Commit();
 
 	// Set up FTransform properties
-	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(Transform)
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(Transform, TEXT("Apply FTransform Properties"))
 	.AddComposite(BuiltInComponents->DoubleResult[0], &FIntermediate3DTransform::T_X)
 	.AddComposite(BuiltInComponents->DoubleResult[1], &FIntermediate3DTransform::T_Y)
 	.AddComposite(BuiltInComponents->DoubleResult[2], &FIntermediate3DTransform::T_Z)
@@ -588,7 +597,7 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up byte properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Byte)
+	BuiltInComponents->PropertyRegistry.DefineProperty(Byte, TEXT("Apply Byte Properties"))
 	.AddSoleChannel(BuiltInComponents->ByteResult)
 	.SetBlenderSystem<UMovieScenePiecewiseByteBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Byte)
@@ -596,7 +605,7 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up enum properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Enum)
+	BuiltInComponents->PropertyRegistry.DefineProperty(Enum, TEXT("Apply Enum Properties"))
 	.AddSoleChannel(BuiltInComponents->ByteResult)
 	.SetBlenderSystem<UMovieScenePiecewiseEnumBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Enum)
@@ -604,7 +613,7 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up integer properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Integer)
+	BuiltInComponents->PropertyRegistry.DefineProperty(Integer, TEXT("Apply Integer Properties"))
 	.AddSoleChannel(BuiltInComponents->IntegerResult)
 	.SetBlenderSystem<UMovieScenePiecewiseIntegerBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Integer)
@@ -612,15 +621,15 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up float properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Float)
-	.AddSoleChannel(BuiltInComponents->FloatResult[0])
-	.SetBlenderSystem<UMovieScenePiecewiseFloatBlenderSystem>()
+	BuiltInComponents->PropertyRegistry.DefineProperty(Float, TEXT("Apply float Properties"))
+	.AddSoleChannel(BuiltInComponents->DoubleResult[0])
+	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Float)
 	.Commit(FFloatHandler());
 
 	// --------------------------------------------------------------------------------------------
 	// Set up double properties
-	BuiltInComponents->PropertyRegistry.DefineProperty(Double)
+	BuiltInComponents->PropertyRegistry.DefineProperty(Double, TEXT("Apply Double Properties"))
 	.AddSoleChannel(BuiltInComponents->DoubleResult[0])
 	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Double)
@@ -628,12 +637,12 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up color properties
-	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(Color)
-	.AddComposite(BuiltInComponents->FloatResult[0], &FIntermediateColor::R)
-	.AddComposite(BuiltInComponents->FloatResult[1], &FIntermediateColor::G)
-	.AddComposite(BuiltInComponents->FloatResult[2], &FIntermediateColor::B)
-	.AddComposite(BuiltInComponents->FloatResult[3], &FIntermediateColor::A)
-	.SetBlenderSystem<UMovieScenePiecewiseFloatBlenderSystem>()
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(Color, TEXT("Apply Color Properties"))
+	.AddComposite(BuiltInComponents->DoubleResult[0], &FIntermediateColor::R)
+	.AddComposite(BuiltInComponents->DoubleResult[1], &FIntermediateColor::G)
+	.AddComposite(BuiltInComponents->DoubleResult[2], &FIntermediateColor::B)
+	.AddComposite(BuiltInComponents->DoubleResult[3], &FIntermediateColor::A)
+	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Color)
 	.Commit(FColorHandler());
 
@@ -645,6 +654,11 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 			USkyLightComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USkyLightComponent, LightColor), 
 			GetSkyLightComponentLightColor, SetSkyLightComponentLightColor);
 	
+	const FString MassScalePath = FString::Printf(TEXT("%s.%s"), GET_MEMBER_NAME_STRING_CHECKED(UPrimitiveComponent, BodyInstance), GET_MEMBER_NAME_STRING_CHECKED(FBodyInstance, MassScale));
+	Accessors.Float.Add(
+		UPrimitiveComponent::StaticClass(), *MassScalePath,
+		GetMassScale, SetMassScale);
+
 	const FString SecondFogDataFogDensityPath = FString::Printf(TEXT("%s.%s"), GET_MEMBER_NAME_STRING_CHECKED(UExponentialHeightFogComponent, SecondFogData), GET_MEMBER_NAME_STRING_CHECKED(FExponentialHeightFogData, FogDensity));
 	Accessors.Float.Add(
 			UExponentialHeightFogComponent::StaticClass(), *SecondFogDataFogDensityPath,
@@ -660,16 +674,16 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up vector properties
-	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(FloatVector)
-	.AddComposite(BuiltInComponents->FloatResult[0], &FFloatIntermediateVector::X)
-	.AddComposite(BuiltInComponents->FloatResult[1], &FFloatIntermediateVector::Y)
-	.AddComposite(BuiltInComponents->FloatResult[2], &FFloatIntermediateVector::Z)
-	.AddComposite(BuiltInComponents->FloatResult[3], &FFloatIntermediateVector::W)
-	.SetBlenderSystem<UMovieScenePiecewiseFloatBlenderSystem>()
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(FloatVector, TEXT("Apply FloatVector Properties"))
+	.AddComposite(BuiltInComponents->DoubleResult[0], &FFloatIntermediateVector::X)
+	.AddComposite(BuiltInComponents->DoubleResult[1], &FFloatIntermediateVector::Y)
+	.AddComposite(BuiltInComponents->DoubleResult[2], &FFloatIntermediateVector::Z)
+	.AddComposite(BuiltInComponents->DoubleResult[3], &FFloatIntermediateVector::W)
+	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
 	.SetCustomAccessors(&Accessors.FloatVector)
 	.Commit(FFloatVectorHandler());
 
-	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(DoubleVector)
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(DoubleVector, TEXT("Apply DoubleVector Properties"))
 	.AddComposite(BuiltInComponents->DoubleResult[0], &FDoubleIntermediateVector::X)
 	.AddComposite(BuiltInComponents->DoubleResult[1], &FDoubleIntermediateVector::Y)
 	.AddComposite(BuiltInComponents->DoubleResult[2], &FDoubleIntermediateVector::Z)
@@ -680,7 +694,7 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 
 	// --------------------------------------------------------------------------------------------
 	// Set up FEulerTransform properties
-	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(EulerTransform)
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(EulerTransform, TEXT("Apply FEulerTransform Properties"))
 	.AddComposite(BuiltInComponents->DoubleResult[0], &FIntermediate3DTransform::T_X)
 	.AddComposite(BuiltInComponents->DoubleResult[1], &FIntermediate3DTransform::T_Y)
 	.AddComposite(BuiltInComponents->DoubleResult[2], &FIntermediate3DTransform::T_Z)
@@ -698,7 +712,7 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	{
 		Accessors.ComponentTransform.Add(USceneComponent::StaticClass(), "Transform", &GetComponentTransform, &SetComponentTransformAndVelocity);
 
-		BuiltInComponents->PropertyRegistry.DefineCompositeProperty(ComponentTransform)
+		BuiltInComponents->PropertyRegistry.DefineCompositeProperty(ComponentTransform, TEXT("Call USceneComponent::SetRelativeTransform"))
 		.AddComposite(BuiltInComponents->DoubleResult[0], &FIntermediate3DTransform::T_X)
 		.AddComposite(BuiltInComponents->DoubleResult[1], &FIntermediate3DTransform::T_Y)
 		.AddComposite(BuiltInComponents->DoubleResult[2], &FIntermediate3DTransform::T_Z)
@@ -722,12 +736,22 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(QuaternionRotationChannel[Index], BuiltInComponents->EvalTime);
 	}
 
+	// -------------------------------------------------------------------------------------------
+	// Set up constraint components
+	ComponentRegistry->Factories.DuplicateChildComponent(ConstraintChannel);
+	ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ConstraintChannel, BuiltInComponents->EvalTime);
+
 	// --------------------------------------------------------------------------------------------
 	// Set up attachment components
 	ComponentRegistry->Factories.DefineChildComponent(AttachParentBinding, AttachParent);
 
 	ComponentRegistry->Factories.DuplicateChildComponent(AttachParentBinding);
 	ComponentRegistry->Factories.DuplicateChildComponent(AttachComponent);
+
+	// --------------------------------------------------------------------------------------------
+	// Set up PerlinNoise components
+	ComponentRegistry->Factories.DuplicateChildComponent(FloatPerlinNoiseChannel);
+	ComponentRegistry->Factories.DuplicateChildComponent(DoublePerlinNoiseChannel);
 }
 
 FMovieSceneTracksComponentTypes::~FMovieSceneTracksComponentTypes()
@@ -750,6 +774,25 @@ FMovieSceneTracksComponentTypes* FMovieSceneTracksComponentTypes::Get()
 	return GMovieSceneTracksComponentTypes.Get();
 }
 
-
 } // namespace MovieScene
 } // namespace UE
+
+FPerlinNoiseParams::FPerlinNoiseParams()
+	: Frequency(4.0f)
+	, Amplitude(1.0f)
+	, Offset(0)
+{
+}
+
+FPerlinNoiseParams::FPerlinNoiseParams(float InFrequency, double InAmplitude)
+	: Frequency(InFrequency)
+	, Amplitude(InAmplitude)
+	, Offset(0)
+{
+}
+
+void FPerlinNoiseParams::RandomizeOffset(float InMaxOffset)
+{
+	Offset = FMath::FRand() * InMaxOffset;
+}
+

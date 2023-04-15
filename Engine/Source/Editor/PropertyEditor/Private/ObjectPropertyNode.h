@@ -68,8 +68,9 @@ public:
 
 	/**
 	 * Purges any objects marked pending kill from the object list
+	 * @return True if any objects were purged, or false otherwise
 	 */
-	void PurgeKilledObjects();
+	bool PurgeKilledObjects();
 
 	// Called when the object list is finalized, Finalize() finishes the property window setup.
 	void Finalize();
@@ -140,7 +141,7 @@ public:
 	 */
 	const TSet<FName>& GetHiddenCategories() const { return HiddenCategories; }
 
-	bool IsRootNode() const { return ParentNode == nullptr; }
+	bool IsRootNode() const { return ParentNodeWeakPtr.Pin() == nullptr; }
 
 	/**
 	 * @return True if Struct is one of the sparse data structures used by this object

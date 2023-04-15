@@ -26,7 +26,7 @@
 #include "Framework/MultiBox/SToolBarComboButtonBlock.h"
 
 #include "Framework/Commands/UICommandDragDropOp.h"
-#include "SUniformToolbarPanel.h"
+#include "Framework/MultiBox/SUniformToolbarPanel.h"
 #include "Styling/ToolBarStyle.h"
 
 #define LOCTEXT_NAMESPACE "MultiBox"
@@ -882,6 +882,7 @@ void SMultiBoxWidget::CreateSearchTextWidget()
 	SearchTextWidget = 
 		SNew(SSearchBox)
 		   .HintText(LOCTEXT("SearchHint", "Search"))
+		   .SelectAllTextWhenFocused(false)
 		   .OnTextChanged(this, &SMultiBoxWidget::OnFilterTextChanged);
 
 	TSharedRef< FWidgetBlock > NewWidgetBlock(new FWidgetBlock(SearchTextWidget.ToSharedRef(), FText::GetEmpty(), false));

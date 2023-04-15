@@ -7,6 +7,8 @@
 #include "Components/TextBlock.h"
 #include "CommonTextBlock.generated.h"
 
+class UCommonStyleSheet;
+
 /* 
  * ---- All properties must be EditDefaultsOnly, BlueprintReadOnly !!! -----
  * We return the CDO to blueprints, so we cannot allow any changes (blueprint doesn't support const variables)
@@ -128,6 +130,10 @@ public:
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
 	void ResetScrollState();
+	void StartScrolling();
+	void SuspendScrolling();
+
+	bool IsScrollingEnabled() const { return ActiveState != EActiveState::ESuspend; }
 
 private:
 	void UpdateTickability(const FGeometry& AllottedGeometry);
@@ -143,6 +149,7 @@ private:
 		EStop,
 		EStopWait,
 		EFadeOut,
+		ESuspend,
 	} ActiveState;
 
 	float TimeElapsed;
@@ -176,10 +183,22 @@ public:
 	void SetTextCase(bool bUseAllCaps);
 
 	UFUNCTION(BlueprintCallable, Category = "Common Text")
+	void SetLineHeightPercentage(float InLineHeightPercentage);
+
+	UFUNCTION(BlueprintCallable, Category = "Common Text")
 	void SetStyle(TSubclassOf<UCommonTextStyle> InStyle);
+
+	UFUNCTION(BlueprintCallable, Category = "Common Text")
+	const FMargin& GetMargin();
+
+	UFUNCTION(BlueprintCallable, Category = "Common Text")
+	void SetMargin(const FMargin& InMargin);
 
 	UFUNCTION(BlueprintCallable, Category = "Common Text|Scroll Style")
 	void ResetScrollState();
+
+	UFUNCTION(BlueprintCallable, Category = "Common Text|Scroll Style")
+	void SetScrollingEnabled(bool bInIsScrollingEnabled);
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
@@ -199,6 +218,14 @@ private:
 	/** References the scroll style asset to use, no reference disables scrolling*/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CommonText, meta = (ExposeOnSpawn = true, AllowPrivateAccess = true))
 	TSubclassOf<UCommonTextScrollStyle> ScrollStyle;
+
+	/** Prototype: Do not use! */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = CommonText, meta = (ExposeOnSpawn = true, AllowPrivateAccess = true))
+	TObjectPtr<UCommonStyleSheet> StyleSheet;
+
+	/** If scrolling is enabled/disabled initially, this can be updated in blueprint */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CommonText, meta = (ExposeOnSpawn = true, AllowPrivateAccess = true))
+	bool bIsScrollingEnabled = true;
 
 	/** True to always display text in ALL CAPS */
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "bDisplayAllCaps is deprecated. Please use TextTransformPolicy instead."))
@@ -223,4 +250,6 @@ private:
 	const UCommonTextScrollStyle* GetScrollStyleCDO() const;
 
 	TSharedPtr<class STextScroller> TextScroller;
+
+	void ApplyFontSizeMultiplier() const;
 };

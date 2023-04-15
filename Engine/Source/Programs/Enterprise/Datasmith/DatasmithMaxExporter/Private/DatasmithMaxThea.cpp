@@ -11,12 +11,6 @@ FString FDatasmithMaxMatWriter::DumpBitmapThea(TSharedPtr<IDatasmithCompositeTex
 	return DumpBitmap(CompTex, Texture, Prefix, bForceInvert, bIsGrayscale);
 }
 
-void FDatasmithMaxMatWriter::GetTheaTexmap(TSharedRef< IDatasmithScene > DatasmithScene, BitmapTex* InBitmapTex)
-{
-	BitmapTex* Texture = (BitmapTex*)InBitmapTex->GetReference(0);
-	GetRegularTexmap(DatasmithScene, Texture);
-}
-
 void FDatasmithMaxMatWriter::ExportTheaSubmaterial(TSharedRef< IDatasmithScene > DatasmithScene, TSharedPtr< IDatasmithShaderElement >& MaterialShader, Mtl* Material, EDSMaterialType MaterialType)
 {
 	int NumParamBlocks = Material->NumParamBlocks();

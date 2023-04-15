@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+import { getTheme } from "@fluentui/react";
 import { action, observable } from 'mobx';
 import backend from '.';
-import { UserClaim, DashboardPreference, GetUserResponse } from './Api';
-import { getTheme } from "@fluentui/react";
+import { DashboardPreference, GetDashboardConfigResponse, GetUserResponse, UserClaim } from './Api';
 
 const theme = getTheme();
 
@@ -61,6 +61,21 @@ export class Dashboard {
         this.data.pinnedJobIds = this.data.pinnedJobIds!.filter(j => j !== id);
 
         backend.updateUser({ removePinnedJobIds: [id] });
+
+        this.setUpdated();
+    }
+
+    clearPinnedJobs() {
+
+        if (!this.data.pinnedJobIds?.length) {
+            return;
+        }
+
+        const jobs = this.data.pinnedJobIds;
+
+        this.data.pinnedJobIds = [];
+
+        backend.updateUser({ removePinnedJobIds: jobs });
 
         this.setUpdated();
     }
@@ -123,30 +138,32 @@ export class Dashboard {
 
     }
 
+    get helpEmail(): string | undefined {
+        return this.config?.helpEmailAddress;
+    }
+
+    get helpSlack(): string | undefined {
+        return this.config?.helpSlackChannel;
+    }
+
+    get swarmUrl(): string | undefined {
+        return this.config?.perforceSwarmUrl;
+    }
+
+    get externalIssueService(): { name: string, url: string } | undefined {
+        if (!this.config?.externalIssueServiceUrl) {
+            return undefined;
+        }
+        return { name: this.config.externalIssueServiceName ?? "???", url: this.config.externalIssueServiceUrl };
+    }
+
     get userId(): string {
         return this.data.id;
     }
 
-
     get pinnedJobsIds(): string[] {
 
         return this.data.pinnedJobIds ?? [];
-    }
-
-    get issueNotifications(): boolean {
-
-        return this.data.enableIssueNotifications!;
-    }
-
-    set issueNotifications(value: boolean) {
-
-        backend.updateUser({ enableIssueNotifications: value }).then(() => {
-
-            this.data.enableIssueNotifications = value;
-            this.setUpdated();
-
-        });
-
     }
 
     get experimentalFeatures(): boolean {
@@ -185,48 +202,56 @@ export class Dashboard {
 
         if (!this.available) {
             // avoid intial flash when loading into site before backend is initialized
-            return localStorage?.getItem("horde_darktheme") === "true";
+            return localStorage?.getItem("horde_darktheme") !== "false";
         }
 
         const pref = this.preferences.get(DashboardPreference.Darktheme);
 
         if (pref !== "true" && pref !== "false") {
-            console.log("setting dark theme");            
-            this.setDarkTheme(true, false, true);            
+            console.error("No theme preference set, should be defaulted in getCurrentUser");
+            return localStorage?.getItem("horde_darktheme") !== "false";
         }
 
-        return this.preferences.get(DashboardPreference.Darktheme) === 'true';
+        return this.preferences.get(DashboardPreference.Darktheme) !== 'false';
 
     }
 
-    setDarkTheme(value: boolean | undefined, update: boolean = true, resetColors: boolean = false) {
+    setDarkTheme(value: boolean | undefined) {
 
         this.setPreference(DashboardPreference.Darktheme, value ? "true" : "false");
 
         if (value) {
             localStorage?.setItem("horde_darktheme", "true");
         } else {
-            localStorage?.removeItem("horde_darktheme");
+            localStorage?.setItem("horde_darktheme", "false");
         }
-
-        if (resetColors) {
-            this.resetStatusColors();
-        }
-
-        if (update) {
-            this.setUpdated();
-        }
-
     }
 
     setDisplayUTC(value: boolean | undefined) {
         this.setPreference(DashboardPreference.DisplayUTC, value ? "true" : "false");
     }
 
+    setLeftAlignLog(value: boolean | undefined) {
+        this.setPreference(DashboardPreference.LeftAlignLog, value ? "true" : "false");
+    }
+
+    get leftAlignLog(): boolean {
+        return this.preferences.get(DashboardPreference.LeftAlignLog) === 'true';
+    }
+
+    setCompactViews(value: boolean | undefined) {
+        this.setPreference(DashboardPreference.CompactViews, value ? "true" : "false");
+    }
+
+    get compactViews(): boolean {
+        return this.preferences.get(DashboardPreference.CompactViews) === 'true';
+    }
+
     private hasLoggedLocalCache = false;
 
     get localCache(): boolean {
 
+        /*
         if (this.browser === WebBrowser.Chromium) {
             if (!this.hasLoggedLocalCache) {
                 this.hasLoggedLocalCache = true;
@@ -235,8 +260,16 @@ export class Dashboard {
 
             return true;
         }
+        */
+        
+        const value = this.preferences.get(DashboardPreference.LocalCache) !== 'false';
+        
+        if (value && !this.hasLoggedLocalCache) {
+            this.hasLoggedLocalCache = true;
+            console.log("Local graph and template caching is enabled")
+        }
 
-        return this.preferences.get(DashboardPreference.LocalCache) === 'true';
+        return value;
 
     }
 
@@ -300,7 +333,7 @@ export class Dashboard {
             [StatusColor.Running, dark ? "#146579" : theme.palette.blueLight],
             [StatusColor.Waiting, dark ? "#474542" : "#A19F9D"],
             [StatusColor.Ready, dark ? "#474542" : "#A19F9D"],
-            [StatusColor.Skipped, dark ? "#63625c" : "#F3F2F1"],            
+            [StatusColor.Skipped, dark ? "#63625c" : "#F3F2F1"],
             [StatusColor.Unspecified, "#637087"]
         ]);
 
@@ -367,19 +400,30 @@ export class Dashboard {
 
             if (this.updating) {
                 clearTimeout(this.updateTimeoutId);
-                this.updateTimeoutId = setTimeout(() => { this.update(); }, 4000);
+                this.updateTimeoutId = setTimeout(() => { this.update(); }, this.pollMS);
                 return;
             }
 
             this.updating = true;
 
+            if (!this.config) {
+                try {
+                    this.config = await backend.getDashboardConfig();
+                } catch (reason) {
+                    console.error("Error getting dashboard config, defaults used: " + reason);
+                    this.config = {};
+                }
+            }
+
             if (this.polling || !this.available) {
 
                 const cancelId = this.cancelId++;
 
-                const response = await backend.getCurrentUser();
+                const responses = await Promise.all([backend.getCurrentUser()]);
 
-                // check for canceled during graph request
+                const response = responses[0] as GetUserResponse;
+
+                // check for canceled during request
                 if (!this.canceled.has(cancelId)) {
 
                     this.data = response;
@@ -416,7 +460,7 @@ export class Dashboard {
         } finally {
             this.updating = false;
             clearTimeout(this.updateTimeoutId);
-            this.updateTimeoutId = setTimeout(() => { this.update(); }, 4000);
+            this.updateTimeoutId = setTimeout(() => { this.update(); }, this.pollMS);
         }
     }
 
@@ -436,7 +480,7 @@ export class Dashboard {
             this.preferences.set(pref, value);
         }
 
-        this.postPreferences();
+        this.postPreferences(pref === DashboardPreference.Darktheme);
 
     }
 
@@ -457,8 +501,11 @@ export class Dashboard {
         return this.data.id !== "";
     }
 
+    get user(): GetUserResponse {
+        return this.data;
+    }
 
-    private async postPreferences(): Promise<boolean> {
+    private async postPreferences(reload?: boolean): Promise<boolean> {
 
         // cancel any pending        
         for (let i = 0; i < this.cancelId; i++) {
@@ -477,18 +524,22 @@ export class Dashboard {
         } catch (reason) {
             success = false;
             console.error("Error posting user preferences", reason)
+        } finally {
+            if (reload) {
+                window.location.reload();
+            }
+
         }
 
         return success;
 
     }
 
-
     requestLogout = false;
 
     serverSettingsChanged: boolean = false;
 
-    private data: GetUserResponse = { id: "", name: "", enableIssueNotifications: false, enableExperimentalFeatures: false, claims: [], pinnedJobIds: [], dashboardSettings: { preferences: new Map() } };
+    private data: GetUserResponse = { id: "", name: "", enableExperimentalFeatures: false, claims: [], pinnedJobIds: [], dashboardSettings: { preferences: new Map() } };
 
     private updateTimeoutId: any = undefined;
 
@@ -498,6 +549,10 @@ export class Dashboard {
 
     private canceled = new Set<number>();
     private cancelId = 0;
+
+    private pollMS = 4 * 1000;
+
+    private config?: GetDashboardConfigResponse;
 
 }
 

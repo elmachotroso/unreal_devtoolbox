@@ -4,6 +4,7 @@ using UnrealBuildTool;
 using System;
 using System.IO;
 using System.Collections.Generic;
+using EpicGames.Core;
 
 namespace UnrealBuildTool.Rules
 {
@@ -35,7 +36,6 @@ namespace UnrealBuildTool.Rules
                     "SlateCore",
                     "MainFrame",
                     "InputCore",
-                    "EditorStyle",
                     "MaterialEditor",
                     "Projects"
                 }
@@ -52,9 +52,11 @@ namespace UnrealBuildTool.Rules
 
             if (Target.Platform == UnrealTargetPlatform.Win64)
             {
+				RuntimeModuleNames.Add("dds.dll");
 				RuntimeModuleNames.Add("libmdl_sdk.dll");
+				RuntimeModuleNames.Add("mdl_distiller.dll");
 				RuntimeModuleNames.Add("nv_freeimage.dll");
-                    
+
                 foreach (string RuntimeModuleName in RuntimeModuleNames)
                 {
                     string ModulePath = Path.Combine(BinaryLibraryFolder, RuntimeModuleName);
@@ -68,12 +70,19 @@ namespace UnrealBuildTool.Rules
                     PublicDelayLoadDLLs.Add(RuntimeModuleName);
                     RuntimeDependencies.Add(ModulePath);
                 }
-            }
-            else if (Target.Platform == UnrealTargetPlatform.Mac)
+
+				// MSVC does not allow __LINE__ in template parameters when edit & continue is enabled (see C2975 @ MSDN)
+				if (Target.bSupportEditAndContinue && Target.WindowsPlatform.Compiler.IsMSVC())
+				{
+					PrivateDefinitions.Add("MDL_MSVC_EDITCONTINUE_WORKAROUND=1");
+				}
+			}
+			else if (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.Linux)
             {
-                RuntimeModuleNames.Add("libmdl_sdk.so");
-                RuntimeModuleNames.Add("nv_freeimage.so");
                 RuntimeModuleNames.Add("dds.so");
+                RuntimeModuleNames.Add("libmdl_sdk.so");
+                RuntimeModuleNames.Add("mdl_distiller.so");
+                RuntimeModuleNames.Add("nv_freeimage.so");
 
                 foreach (string RuntimeModuleName in RuntimeModuleNames)
                 {
@@ -93,7 +102,7 @@ namespace UnrealBuildTool.Rules
             if (Directory.Exists(ThirdPartyPath))
             {
                 //third party libraries
-                string[] Libs = { "mdl-sdk-334300.2228"};
+                string[] Libs = { "mdl-sdk-349500.8766a"};
                 foreach (string Lib in Libs)
                 {
                     string IncludePath = Path.Combine(ThirdPartyPath, Lib, "include");

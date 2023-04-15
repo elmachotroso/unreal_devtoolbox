@@ -6,6 +6,12 @@
 #include "DatasmithSceneElementsImpl.h"
 #include "DatasmithVariantElementsImpl.h"
 
+// enable a warning if not all cases values are covered by a switch statement
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning (default: 4062)
+#endif
+
 TSharedPtr< IDatasmithElement > FDatasmithSceneFactory::CreateElement( EDatasmithElementType InType, const TCHAR* InName )
 {
 	constexpr uint64 DefaultSubType = 0;
@@ -34,12 +40,15 @@ TSharedPtr< IDatasmithElement > FDatasmithSceneFactory::CreateElement( EDatasmit
 		case EDatasmithElementAnimationSubType::VisibilityAnimation:
 			return CreateVisibilityAnimation( InName );
 		case EDatasmithElementAnimationSubType::BaseAnimation:
-		default:
 			ensure( false );
 			break;
 		}
 	case EDatasmithElementType::StaticMesh:
 		return CreateMesh( InName );
+	case EDatasmithElementType::Cloth:
+		return CreateCloth( InName );
+	case EDatasmithElementType::ClothActor:
+		return CreateClothActor( InName );
 	case EDatasmithElementType::StaticMeshActor:
 		return CreateMeshActor( InName );
 	case EDatasmithElementType::PointLight:
@@ -60,8 +69,8 @@ TSharedPtr< IDatasmithElement > FDatasmithSceneFactory::CreateElement( EDatasmit
 		return CreateShader( InName );
 	case EDatasmithElementType::Material:
 		return CreateMaterial( InName );
-	case EDatasmithElementType::MasterMaterial:
-		return CreateMasterMaterial( InName );
+	case EDatasmithElementType::MaterialInstance:
+		return CreateMaterialInstance( InName );
 	case EDatasmithElementType::UEPbrMaterial:
 		return CreateUEPbrMaterial( InName );
 	case EDatasmithElementType::MaterialExpression:
@@ -112,13 +121,9 @@ TSharedPtr< IDatasmithElement > FDatasmithSceneFactory::CreateElement( EDatasmit
 		case EDatasmithElementVariantSubType::VariantSet:
 			return CreateVariantSet( InName );
 		case EDatasmithElementVariantSubType::None:
-		default:
 			ensure( false );
 			break;
 		}
-	default:
-		ensure( false );
-		break;
 	}
 
 	return TSharedPtr< IDatasmithElement >();
@@ -199,6 +204,16 @@ TSharedRef< IDatasmithMeshActorElement > FDatasmithSceneFactory::CreateMeshActor
 	return MakeShared< FDatasmithMeshActorElementImpl<> >( InName );
 }
 
+TSharedRef< IDatasmithClothElement > FDatasmithSceneFactory::CreateCloth(const TCHAR* InName)
+{
+	return MakeShared< FDatasmithClothElementImpl >( InName );
+}
+
+TSharedRef< IDatasmithClothActorElement > FDatasmithSceneFactory::CreateClothActor( const TCHAR* InName )
+{
+	return MakeShared< FDatasmithClothActorElementImpl >( InName );
+}
+
 TSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement > FDatasmithSceneFactory::CreateHierarchicalInstanceStaticMeshActor(const TCHAR* InName)
 {
 	return MakeShared< FDatasmithHierarchicalInstancedStaticMeshActorElementImpl >( InName );
@@ -209,9 +224,9 @@ TSharedRef< IDatasmithMaterialElement > FDatasmithSceneFactory::CreateMaterial( 
 	return MakeShared< FDatasmithMaterialElementImpl >( InName );
 }
 
-TSharedRef< IDatasmithMasterMaterialElement > FDatasmithSceneFactory::CreateMasterMaterial( const TCHAR* InName )
+TSharedRef< IDatasmithMaterialInstanceElement > FDatasmithSceneFactory::CreateMaterialInstance( const TCHAR* InName )
 {
-	return MakeShared< FDatasmithMasterMaterialElementImpl >( InName );
+	return MakeShared< FDatasmithMaterialIntanceElementImpl >( InName );
 }
 
 TSharedRef< IDatasmithUEPbrMaterialElement > FDatasmithSceneFactory::CreateUEPbrMaterial( const TCHAR* InName )
@@ -252,7 +267,7 @@ TSharedPtr< IDatasmithMaterialExpression > FDatasmithSceneFactory::CreateMateria
 	case EDatasmithMaterialExpressionType::Custom:
 		Expression = MakeShared<FDatasmithMaterialExpressionCustomImpl>();
 		break;
-	default:
+	case EDatasmithMaterialExpressionType::None:
 		check( false );
 		break;
 	}
@@ -364,3 +379,7 @@ TSharedRef< IDatasmithScene > FDatasmithSceneFactory::DuplicateScene( const TSha
 {
 	return MakeShared< FDatasmithSceneImpl >( StaticCastSharedRef< FDatasmithSceneImpl >( InScene ).Get() );
 }
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

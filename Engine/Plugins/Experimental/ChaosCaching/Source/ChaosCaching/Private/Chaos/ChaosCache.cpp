@@ -7,6 +7,12 @@
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 
+bool bChaosCacheUseInterpolation = true;
+FAutoConsoleVariableRef CVarChaosCacheUseInterpolation(
+	TEXT("p.Chaos.Cache.UseInterpolation"),
+	bChaosCacheUseInterpolation,
+	TEXT("When enabled, cache interpolates between keys.[def: true]"));
+
 UChaosCache::UChaosCache()
 	: CurrentRecordCount(0)
 	, CurrentPlaybackCount(0)
@@ -105,6 +111,30 @@ void UChaosCache::FlushPendingFrames()
 	while(PendingWrites.Dequeue(NewData))
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(QSTAT_CacheFlushSingleFrame);
+
+		{
+			const int32 NumParticles = NewData.PendingChannelsIndices.Num();
+			bWroteParticleData |= NumParticles > 0;
+
+			for(auto& ChannelData : NewData.PendingChannelsData)
+			{
+				// TArray<FRichCurve>& TargetCurve = ChannelsTracks.FindOrAdd(ChannelData.Key).RichCurves;
+				// TargetCurve.SetNum(NumParticles);
+
+				FRichCurves* TargetCurve = ChannelsTracks.Find(ChannelData.Key);
+				if(TargetCurve == nullptr)
+				{
+					TargetCurve = &ChannelsTracks.Add(ChannelData.Key);
+					TargetCurve->RichCurves.SetNum(NumParticles);
+				}
+				int32 ParticleIndex = 0;
+				for(auto& ChannelValue : ChannelData.Value)
+				{
+					TargetCurve->RichCurves[ParticleIndex++].AddKey(NewData.Time, ChannelValue);
+				}
+			}
+		}
+		
 		const int32 ParticleCount = NewData.PendingParticleData.Num();
 
 		bWroteParticleData |= ParticleCount > 0;
@@ -130,7 +160,7 @@ void UChaosCache::FlushPendingFrames()
 				PTrack.BeginOffset = NewData.Time;
 
 				// Particle will hold at end of recording.
-				PTrack.bDeactivateOnEnd = false;
+				PTrack.bDeactivateOnEnd = false; 
 			}
 
 			if (ParticleData.bPendingDeactivate)
@@ -202,6 +232,7 @@ FCacheUserToken UChaosCache::BeginRecord(UPrimitiveComponent* InComponent, FGuid
 			RecordedDuration = 0.0f;
 			NumRecordedFrames = 0;
 			ParticleTracks.Reset();
+			ChannelsTracks.Reset();
 			TrackToParticle.Reset();
 			CurveData.Reset();
 			EventTracks.Reset();
@@ -312,11 +343,12 @@ float UChaosCache::GetDuration() const
 	return RecordedDuration;
 }
 
-FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InContext)
+FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InContext, const TArray<FTransform>* MassToLocalTransforms)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(QSTAT_CacheEval);
 
 	FCacheEvaluationResult Result;
+	static const TMap<FName, float> EmptyMap;
 
 	if(CurrentPlaybackCount.load() == 0)
 	{
@@ -327,7 +359,7 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 
 	Result.EvaluatedTime = InContext.TickRecord.GetTime();
 
-	if(!InContext.bEvaluateTransform && !InContext.bEvaluateCurves && !InContext.bEvaluateEvents)
+	if(!InContext.bEvaluateTransform && !InContext.bEvaluateCurves && !InContext.bEvaluateEvents && !InContext.bEvaluateChannels)
 	{
 		// no evaluation requested
 		return Result;
@@ -339,17 +371,32 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 	{
 		if(InContext.bEvaluateTransform)
 		{
-			Result.Transform.SetNum(NumProvidedIndices);
+			Result.Transform.Init(FTransform::Identity, NumProvidedIndices);
 		}
 
 		if(InContext.bEvaluateCurves)
 		{
-			Result.Curves.SetNum(NumProvidedIndices);
+			Result.Curves.Init(EmptyMap,NumProvidedIndices);
+		}
+
+		if(InContext.bEvaluateChannels)
+		{
+			for(auto& ChannelData : ChannelsTracks)
+			{
+				TArray<float>& ResultData = Result.Channels.FindOrAdd(ChannelData.Key);
+				ResultData.Init(0.0, NumProvidedIndices);
+
+				for(int32 EvalIndex = 0; EvalIndex < NumProvidedIndices; ++EvalIndex)
+				{
+					const int32 CacheIndex = InContext.EvaluationIndices[EvalIndex];
+					ResultData[CacheIndex] = ChannelData.Value.RichCurves[CacheIndex].Eval(InContext.TickRecord.GetTime(),0.0);
+				}
+			}
 		}
 
 		for(int32 EvalIndex = 0; EvalIndex < NumProvidedIndices; ++EvalIndex)
 		{
-			int32 CacheIndex = InContext.EvaluationIndices[EvalIndex];
+			const int32 CacheIndex = InContext.EvaluationIndices[EvalIndex];
 			if(ensure(ParticleTracks.IsValidIndex(CacheIndex)))
 			{
 				FTransform* EvalTransform = nullptr;
@@ -365,16 +412,15 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 					EvalCurves = &Result.Curves[EvalIndex];
 				}
 
+				int32 ParticleIndex = INDEX_NONE;
 				if(TrackToParticle.IsValidIndex(CacheIndex))
 				{
-					Result.ParticleIndices.Add(TrackToParticle[CacheIndex]);
+					ParticleIndex = TrackToParticle[CacheIndex];
 				}
-				else
-				{
-					Result.ParticleIndices.Add(INDEX_NONE);
-				}
+				Result.ParticleIndices.Add(ParticleIndex);
 
-				EvaluateSingle(CacheIndex, InContext.TickRecord, EvalTransform, EvalCurves);
+				const FTransform* MassToLocal = (MassToLocalTransforms && ParticleIndex != INDEX_NONE)? &((*MassToLocalTransforms)[ParticleIndex]): nullptr;
+				EvaluateSingle(CacheIndex, InContext.TickRecord, MassToLocal, EvalTransform, EvalCurves);
 			}
 		}
 	}
@@ -391,7 +437,19 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 		{
 			Result.Curves.Reserve(NumParticles);
 		}
-
+		if(InContext.bEvaluateChannels)
+		{
+			for(auto& ChannelData : ChannelsTracks)
+			{
+				TArray<float>& ResultData = Result.Channels.FindOrAdd(ChannelData.Key);
+				ResultData.Init(0.0, NumParticles);
+				
+				for(int32 EvalIndex = 0; EvalIndex < NumParticles; ++EvalIndex)
+				{
+					ResultData[EvalIndex] = ChannelData.Value.RichCurves[EvalIndex].Eval(InContext.TickRecord.GetTime(),0.0);
+				}
+			}
+		}
 		for(int32 Index = 0; Index < NumParticles; ++Index)
 		{
 			if(ParticleTracks[Index].TransformData.BeginOffset > InContext.TickRecord.GetTime())
@@ -411,26 +469,25 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 
 			if(InContext.bEvaluateTransform)
 			{
-				Result.Transform.AddUninitialized();
+				Result.Transform.Add(FTransform::Identity);
 				EvalTransform = &Result.Transform.Last();
 			}
 
 			if(InContext.bEvaluateCurves)
 			{
-				Result.Curves.AddUninitialized();
+				Result.Curves.Add(EmptyMap);
 				EvalCurves = &Result.Curves.Last();
 			}
 
+			int32 ParticleIndex = INDEX_NONE;
 			if(TrackToParticle.IsValidIndex(Index))
 			{
-				Result.ParticleIndices.Add(TrackToParticle[Index]);
+				ParticleIndex = TrackToParticle[Index];
 			}
-			else
-			{
-				Result.ParticleIndices.Add(INDEX_NONE);
-			}
+			Result.ParticleIndices.Add(ParticleIndex);
 
-			EvaluateSingle(Index, InContext.TickRecord, EvalTransform, EvalCurves);
+			const FTransform* MassToLocal = (MassToLocalTransforms && ParticleIndex != INDEX_NONE)? &((*MassToLocalTransforms)[ParticleIndex]): nullptr;
+			EvaluateSingle(Index, InContext.TickRecord, MassToLocal, EvalTransform, EvalCurves);
 		}
 	}
 
@@ -459,7 +516,7 @@ const FCacheSpawnableTemplate& UChaosCache::GetSpawnableTemplate() const
 	return Spawnable;
 }
 
-void UChaosCache::EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves)
+void UChaosCache::EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, const FTransform* MassToLocal, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves)
 {
 	// check to satisfy SA, external callers check validity in Evaluate
 	checkSlow(ParticleTracks.IsValidIndex(InIndex));
@@ -468,7 +525,7 @@ void UChaosCache::EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecor
 	
 	if(OutOptTransform)
 	{
-		EvaluateTransform(Data, InTickRecord.GetTime(), *OutOptTransform);
+		EvaluateTransform(Data, InTickRecord.GetTime(), MassToLocal, *OutOptTransform);
 		(*OutOptTransform) = (*OutOptTransform) *InTickRecord.SpaceTransform;
 	}
 	
@@ -479,9 +536,9 @@ void UChaosCache::EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecor
 	}
 }
 
-void UChaosCache::EvaluateTransform(const FPerParticleCacheData& InData, float InTime, FTransform& OutTransform)
+void UChaosCache::EvaluateTransform(const FPerParticleCacheData& InData, float InTime, const FTransform* MassToLocal, FTransform& OutTransform)
 {
-	OutTransform = InData.TransformData.Evaluate(InTime);
+	OutTransform = InData.TransformData.Evaluate(InTime, MassToLocal);
 }
 
 void UChaosCache::EvaluateCurves(const FPerParticleCacheData& InData, float InTime, TMap<FName, float>& OutCurves)
@@ -534,63 +591,58 @@ void UChaosCache::EvaluateEvents(FPlaybackTickRecord& InTickRecord, TMap<FName, 
 	}
 }
 
-FTransform FParticleTransformTrack::Evaluate(float InCacheTime) const
+FTransform FParticleTransformTrack::Evaluate(float InCacheTime, const FTransform* MassToLocal) const
 {
 	QUICK_SCOPE_CYCLE_COUNTER(QSTAT_EvalParticleTransformTrack);
 	const int32 NumKeys = GetNumKeys();
 
+	FTransform Result{FTransform::Identity};
 	if(NumKeys > 0)
 	{
-		if(InCacheTime < BeginOffset)
+		const float ClampedTime = FMath::Clamp(InCacheTime, KeyTimestamps[0], KeyTimestamps.Last());  
+		
+		const int32 UpperKeyIndex = GetUpperBoundEvaluationIndex(ClampedTime);
+		const int32 LowerKeyIndex = FMath::Max(0, (UpperKeyIndex-1));;
+		
+		const FTransform LowerTransform = EvaluateAt(LowerKeyIndex);
+		const FTransform UpperTransform = EvaluateAt(UpperKeyIndex);
+		
+		const FTransform TransformA = (MassToLocal)? (*MassToLocal * LowerTransform): LowerTransform;
+		const FTransform TransformB = (MassToLocal)? (*MassToLocal * UpperTransform): UpperTransform;
+		
+		const float Interval = KeyTimestamps[UpperKeyIndex] - KeyTimestamps[LowerKeyIndex];
+		const float Alpha = (Interval > 0)? ((ClampedTime - KeyTimestamps[LowerKeyIndex]) / Interval): 0.0f;
+		ensure(Alpha >= 0.f && Alpha <= 1.f); 
+
+		if (bChaosCacheUseInterpolation)
 		{
-			// Take first key
-			return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
-		}
-		else if(InCacheTime > KeyTimestamps.Last())
-		{
-			// Take last key
-			return FTransform(FQuat(RawTransformTrack.RotKeys.Last()), FVector(RawTransformTrack.PosKeys.Last()));
+			Result.Blend(TransformA, TransformB, Alpha);
 		}
 		else
 		{
-			// Valid in-range, evaluate
-			if(NumKeys == 1)
-			{
-				return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
-			}
-
-			// Find the first key with a timestamp greater than InCacheTIme
-			int32 IndexBeyond = 0;
-			{
-				QUICK_SCOPE_CYCLE_COUNTER(QSTAT_UpperBound);
-				IndexBeyond = Algo::UpperBound(KeyTimestamps, InCacheTime);
-			}
-
-			if(IndexBeyond == INDEX_NONE || IndexBeyond >= KeyTimestamps.Num())
-			{
-				// Must be equal to the last key
-				return FTransform(FQuat(RawTransformTrack.RotKeys.Last()), FVector(RawTransformTrack.PosKeys.Last()));
-			}
-
-			const int32 IndexBefore = IndexBeyond - 1;
-
-			if(IndexBefore == INDEX_NONE)
-			{
-				// Must have been equal to first key
-				return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
-			}
-
-			// Need to interpolate
-			const float Interval = KeyTimestamps[IndexBeyond] - KeyTimestamps[IndexBefore];
-			const float Fraction = (InCacheTime - KeyTimestamps[IndexBefore]) / Interval;
-
-			// Slerp rotation - lerp translation
-			return FTransform(FQuat(FQuat4f::Slerp(RawTransformTrack.RotKeys[IndexBefore], RawTransformTrack.RotKeys[IndexBeyond], Fraction)),
-							  FVector(FMath::Lerp(RawTransformTrack.PosKeys[IndexBefore], RawTransformTrack.PosKeys[IndexBeyond], Fraction)));
+			Result = TransformA;
 		}
 	}
 
-	return FTransform::Identity;
+	return Result;
+}
+
+int32 FParticleTransformTrack::GetUpperBoundEvaluationIndex(float InCacheTime) const
+{
+	if (KeyTimestamps.Num() == 0)
+	{
+		return 0;
+	}
+	return FMath::Clamp(Algo::UpperBound(KeyTimestamps, InCacheTime), 0, KeyTimestamps.Num()-1);
+}
+
+FTransform FParticleTransformTrack::EvaluateAt(int32 Index) const
+{
+	if (KeyTimestamps.Num() == 0)
+	{
+		return FTransform::Identity;
+	}
+	return FTransform{FQuat(RawTransformTrack.RotKeys[Index]), FVector(RawTransformTrack.PosKeys[Index])};
 }
 
 const int32 FParticleTransformTrack::GetNumKeys() const

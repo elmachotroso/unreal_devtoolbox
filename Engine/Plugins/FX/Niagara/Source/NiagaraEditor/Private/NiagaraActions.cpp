@@ -15,11 +15,13 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Layout/WidgetPath.h"
 #include "ScopedTransaction.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/SToolTip.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraActions)
 
 #define LOCTEXT_NAMESPACE "NiagaraActions"
 
@@ -368,7 +370,7 @@ void FNiagaraParameterGraphDragOperation::HoverTargetChanged()
 		}
 		else if (HoveredAction.IsValid())
 		{
-			const FSlateBrush* StatusSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
+			const FSlateBrush* StatusSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
 			TSharedPtr<FNiagaraParameterAction> ParameterAction = StaticCastSharedPtr<FNiagaraParameterAction>(SourceAction);
 			if (ParameterAction.IsValid())
 			{
@@ -459,7 +461,7 @@ FReply FNiagaraParameterGraphDragOperation::DroppedOnPanel(const TSharedRef<SWid
 				ScriptVariable
 			);
 
-			// Take into account current state of modifier keys in case the user changed his mind
+			// Take into account the current state of modifier keys in case the user changed their mind
 			FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 			const bool bModifiedKeysActive = ModifierKeys.IsControlDown() || ModifierKeys.IsAltDown();
 			const bool bAutoCreateGetter = bModifiedKeysActive ? ModifierKeys.IsControlDown() : bControlDrag;
@@ -630,7 +632,7 @@ TSharedPtr<SWidget> FNiagaraParameterDragOperation::GetDefaultDecorator() const
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		[
-			FNiagaraParameterUtilities::GetParameterWidget(StaticCastSharedPtr<FNiagaraParameterAction>(SourceAction)->GetParameter(), false)
+			FNiagaraParameterUtilities::GetParameterWidget(StaticCastSharedPtr<FNiagaraParameterAction>(SourceAction)->GetParameter(), true, false)
 		]
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -657,3 +659,4 @@ EVisibility FNiagaraParameterDragOperation::IsTextVisible() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

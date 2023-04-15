@@ -15,7 +15,7 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionScalarParameter)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionScalarParameter, Meta = (ShowAsInputPin = "Primary"))
 	float DefaultValue;
 
 	UPROPERTY(EditAnywhere, Category=CustomPrimitiveData)
@@ -23,8 +23,6 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 
 	UPROPERTY(EditAnywhere, Category=CustomPrimitiveData, meta=(ClampMin="0"))
 	uint8 PrimitiveDataIndex = 0;
-
-#if WITH_EDITORONLY_DATA
 	/** 
 	 * Sets the lower bound for the slider on this parameter in the material instance editor. 
 	 */
@@ -37,13 +35,11 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 	 */
 	UPROPERTY(EditAnywhere, Category=MaterialExpressionScalarParameter)
 	float SliderMax;
-#endif
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
-	EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
 	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
 	{
 		OutMeta.Value = DefaultValue;

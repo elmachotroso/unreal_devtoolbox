@@ -21,15 +21,14 @@
 #include "DistortionCommon.ush"
 
 // STRATA_TODO enable distortion on mobile.
-#define STRATA_ENABLED (PROJECT_STRATA && MATERIAL_IS_STRATA && !SHADING_PATH_MOBILE)
-
-#if STRATA_ENABLED
-#define STRATA_USE_ENV_BRDF_APPROX 1
-#include "/Engine/Private/Strata/StrataEvaluation.ush"
-
-#include "/Engine/Private/Strata/StrataStatisticalOperators.ush"
+#if STRATA_ENABLED && (!MATERIAL_IS_STRATA || SHADING_PATH_MOBILE)
+#undef STRATA_ENABLED
+#define STRATA_ENABLED 0
 #endif
 
+#if STRATA_ENABLED
+#include "Strata/StrataEvaluation.ush"
+#endif
 
 void ClipOccludedPixel(float PixelZ, float SceneZ)
 {
@@ -88,143 +87,47 @@ void Main(
 
 #if STRATA_ENABLED
 
-
 	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
 
 	FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
 
 	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
-	int l;
-	UNROLL
-	for (l = 0; l < StrataData.LayerCount; ++l)
-	{
-		StrataPixelHeader.BSDFCount += StrataData.Layers[l].BSDFCount;
-	}
+	StrataPixelHeader.StrataTree = MaterialParameters.StrataTree;
+	StrataPixelHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount;
 	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
 
-	const float3 V = MaterialParameters.CameraVector;
-	
-	const float OpaqueBSDFThroughput = 0.0f;
-	const float FullThroughput = 1.0f;
-
-	float3 Color = 0;
-	float OutThroughput = 1.0f;
-
-	// The current way rough refraction are evaluated is
-	//  1- start with the dirac view Lobe
-	//	2- refract/scatter/transmit that Lobe though all BSDF of a layer. Compute the mean of all the resulting Lobes.
-	//  3- Use that new Lobe as input (pointing away from the surface) for the next layer until done.
-	StrataLobeStatistic WiLobe = StrataGetViewDiracLobe(V);
-
-	UNROLL
-	for (l = 0; l < StrataData.LayerCount; ++l)
+	// Retrieve rough refraction variance
+	float Sigma = 0.0f;
+	float3 RefractionWorldNormal = MaterialParameters.CameraVector;
+	FStrataTree StrataTree = StrataPixelHeader.StrataTree;
+	if (StrataTree.BSDFCount > 0)
 	{
-		float3 LayerThroughput = 0.0f;
-		float  LayerCoverage = 0.0f;
+		const float3 V = MaterialParameters.CameraVector;
 
-		const bool bTopLayer = l == 0;
-		const bool bBottomLayer = l == (StrataData.LayerCount - 1);
+		// Update tree (coverage/transmittance/luminace weights)
+		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse /*bRoughDiffuseEnabled*/, Strata.PeelLayersAboveDepth);
+		StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataTree, V, Settings);
 
-		StrataLobeStatistic AccumulatedLayerLobes = StrataGetNullLobe();
-		float AccumulatedLayerLobesWeights = 0.0f;
+		RefractionWorldNormal = StrataTree.Operators[StrataData.OperatorIndex].TopDownRefractionWorldNormal;
 
-		UNROLL
-		for (int i = 0; i < StrataData.Layers[l].BSDFCount; ++i)
-		{
-			FStrataBSDF BSDF = StrataData.Layers[l].BSDFs[i];
+		FStrataLobeStatistic RefractionLobeStat = StrataTree.Operators[StrataData.OperatorIndex].TopDownRefractionLobeStat;
 
-			// Sanitize BSDF before it is used for forward shading
-			StrataSanitizeBSDF(BSDF);
-
-			BRANCH
-			if(BSDF_GETTYPE(BSDF) == STRATA_BSDF_TYPE_SLAB)
-			{
-				// We want simple volumetric only if the DMFP input is pluged in, otherwise we avoid dealing with simple volumetric
-				const bool bIsSimpleVolume = BSDF_GETHASDMFP(BSDF);
-				if (bIsSimpleVolume)
-				{
-					EnableSlabBSDFSimpleVolumetric(BSDF);
-				}
-			}
-
-			const float BSDFCoverage = BSDF.Coverage;
-
-			// Create the BSDF context
-			const float3 FakeL = float3(0, 0, 1);
-			FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, NullStrataAddressing, V, FakeL);
-
-			FStrataEvaluateResult StrataEvaluate = StrataEvaluateBSDF(StrataBSDFContext, true); // Works to call because FakeL is nto used when computing StrataEvaluate.Throughput
-
-			// We only support rough refraction from Slab material type for now.
-			if (BSDF_GETTYPE(BSDF) == STRATA_BSDF_TYPE_SLAB)
-			{
-				// Surface directional albedo
-				const FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(SLAB_ROUGHNESS(BSDF), StrataBSDFContext.SatNoV, SLAB_F0(BSDF), SLAB_F90(BSDF));
-
-				// The top layer we consider a transition air to water. For layers below, we assume they all have similar index of refraction.
-				const float InterfaceEta12 = i == 0 ? 1.0f / 1.33f : 1.0f; // STRATA_TODO Use Refraction.x in IOR mode?
-
-				// Transform input Lobe into local space w.r.t. normal
-				const float3 SavedWorldSpaceWiLobeMu = WiLobe.Mu;
-				WiLobe.Mu = float3(dot(WiLobe.Mu, StrataBSDFContext.X), dot(WiLobe.Mu, StrataBSDFContext.Y), dot(WiLobe.Mu, StrataBSDFContext.N));
-
-				// Compute the refracted Lobe according to roughness . 
-				// STRATA_TODO: take into account scattering and transmittance. Colored transmittance is taken into account already but not scattering influence on variance.
-				StrataLobeStatistic NewLobe = StrataGetRefractedLobe(WiLobe, EnergyTerms.E * OutThroughput * BSDFCoverage, SLAB_ROUGHNESS(BSDF), InterfaceEta12);
-
-				// Transform the new Lobe direction to world space and accumulate
-				NewLobe.Mu = NewLobe.Mu.x * StrataBSDFContext.X + NewLobe.Mu.y * StrataBSDFContext.Y + NewLobe.Mu.z * StrataBSDFContext.N;
-				StrataAccumulateWeightedLobe(AccumulatedLayerLobes, AccumulatedLayerLobesWeights, NewLobe);
-
-				// Restore current layer input Lobe direction to world space
-				WiLobe.Mu = SavedWorldSpaceWiLobeMu;
-			}
-			else
-			{
-				// Full roughness to make it visible as something to fix in case a type is not handled.
-				WiLobe.Sigma = 1000.0;
-			} 
-
-			LayerCoverage	+= BSDFCoverage;
-			LayerThroughput += BSDFCoverage * StrataEvaluate.Throughput;
-		}
-
-		if (AccumulatedLayerLobesWeights > 0.0f)
-		{
-			// Now compute the new input Wi Lobe from the accumulated refracted Lobe of the previous layer
-			WiLobe = StrataNormaliseLobe(AccumulatedLayerLobes, AccumulatedLayerLobesWeights);
-			// And negate the direction to make sure the previously refracted direction is the new incoming
-			WiLobe.Mu = -WiLobe.Mu;
-		}
-
-		// Take into account the non covered part for this layer and update throughput accordingly
-		LayerThroughput += (1.0 - saturate(LayerCoverage)) * FullThroughput;
-
-		// And combine this layer throughtput with he material throughput
-		OutThroughput *= LayerThroughput;
+		Sigma = RefractionLobeStat.Sigma;
 	}
 
-	// Not write out variance (as this is more linear to accumulate than roughness)
-	OutVariance = float4(WiLobe.Sigma, 0.0f, 0.0f, 0.0f);
+	// Write out variance (as this is more linear to accumulate than roughness)
+	OutVariance = float4(Sigma, 0.0f, 0.0f, 0.0f);
 
 	// Only allow clipping if roughness is close to 0.
 	const bool TryToClip = OutVariance.x < 0.01f;
 
-	// Finally, negate the direction to make sure the new incombing Lobe is the refracted Lobe we want to take into account
-	WiLobe.Mu = -WiLobe.Mu;
-
-	// FixUp to reuse the same distortion code we have for now. STRATA_TODO implement a new model?
-	half3 LobeWorldDir = normalize(TransformWorldVectorToView(WiLobe.Mu));
-	Normal = LobeWorldDir;
-
 	// Compute UV distortion
 	float2 BufferUVDistortion = ComputeBufferUVDistortion(
 		MaterialParameters, PixelMaterialInputs, ResolvedView,
-		Normal, DistortionParams, ScreenUV, Refraction, TryToClip, EyeIndex);
+		RefractionWorldNormal, DistortionParams, ScreenUV, Refraction, TryToClip, EyeIndex);
 
 	// Sample depth at distortion offset
 	float2 DistortBufferUV = ScreenUV + BufferUVDistortion;
-
 
 #else // STRATA_ENABLED
 

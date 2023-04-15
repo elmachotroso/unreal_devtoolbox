@@ -50,9 +50,13 @@ FTypedElementHandle FActorElementLevelEditorSelectionCustomization::GetSelection
 {
 	if (AActor* ConsideredActor = ActorElementDataUtil::GetActorFromHandle(InElementSelectionHandle))
 	{
-		while (ConsideredActor->IsChildActor())
+		extern ENGINE_API int32 GExperimentalAllowPerInstanceChildActorProperties;
+		if (!GExperimentalAllowPerInstanceChildActorProperties)
 		{
-			ConsideredActor = ConsideredActor->GetParentActor();
+			while (ConsideredActor->IsChildActor())
+			{
+				ConsideredActor = ConsideredActor->GetParentActor();
+			}
 		}
 		return UEngineElementsLibrary::AcquireEditorActorElementHandle(ConsideredActor);
 	}
@@ -102,7 +106,16 @@ bool FActorElementLevelEditorSelectionCustomization::CanSelectActorElement(const
 		return false;
 	}
 
-	if (!Actor->IsTemplate() && FLevelUtils::IsLevelLocked(Actor->GetLevel()))
+	// When trying to select a particular actor with a 'selection parent' we'll end 
+	// up selecting the actor's selection root instead (see `SelectActorElement()`), 
+	// Because of this, we need to also check how selectable the selection root is as well.
+	// In the case of Level Instances, an actor in that instance does not belong to 
+	// the same level as the instance... so we should be checking the selection root's level
+	// instead of the actor's direct level.
+	AActor* SelectionRoot = Actor->GetRootSelectionParent();
+	ULevel* SelectionLevel = (SelectionRoot != nullptr) ? SelectionRoot->GetLevel() : Actor->GetLevel();
+
+	if (!Actor->IsTemplate() && FLevelUtils::IsLevelLocked(SelectionLevel))
 	{
 		UE_CLOG(InSelectionOptions.WarnIfLocked(), LogActorLevelEditorSelection, Warning, TEXT("SelectActor: %s (%s)"), TEXT("The requested operation could not be completed because the level is locked."), *Actor->GetActorLabel());
 		return false;
@@ -229,6 +242,12 @@ bool FActorElementLevelEditorSelectionCustomization::DeselectActorElement(const 
 
 	bool bSelectionChanged = false;
 
+	// If trying to deselect an actor, use this actors root selection actor instead (if it has one)
+	if (AActor* RootSelection = Actor->GetRootSelectionParent())
+	{
+		Actor = RootSelection;
+	}
+
 	if (UActorGroupingUtils::IsGroupingActive() && InSelectionOptions.AllowGroups())
 	{
 		// If this actor is a group, do a group select
@@ -298,8 +317,6 @@ bool FActorElementLevelEditorSelectionCustomization::SelectActorGroup(AGroupActo
 	if ((bForce || InGroupActor->IsLocked()) && !GroupSelectionHandle.IsElementSelected(InSelectionSet, FTypedElementIsSelectedOptions()) && CanSelectActorElement(GroupSelectionHandle, GroupSelectionOptions))
 	{
 		FTypedElementList::FLegacySyncScopedBatch LegacySyncBatch(*InSelectionSet, InSelectionOptions.AllowLegacyNotifications());
-
-		bSelectionChanged |= SelectActorElement(GroupSelectionHandle, InSelectionSet, GroupSelectionOptions);
 
 		TArray<AActor*> GroupActors;
 		InGroupActor->GetGroupActors(GroupActors);

@@ -3,7 +3,9 @@
 #include "RigUnit_InverseExecution.h"
 #include "Units/RigUnitContext.h"
 
-FName FRigUnit_InverseExecution::EventName = TEXT("Inverse");
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_InverseExecution)
+
+FName FRigUnit_InverseExecution::EventName = TEXT("Backwards Solve");
 
 FRigUnit_InverseExecution_Execute()
 {
@@ -12,3 +14,4 @@ FRigUnit_InverseExecution_Execute()
 	ExecuteContext.Hierarchy = Context.Hierarchy;
 	ExecuteContext.EventName = FRigUnit_InverseExecution::EventName;
 }
+

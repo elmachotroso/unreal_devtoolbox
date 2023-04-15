@@ -1,27 +1,58 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkeletalMeshComponentDetails.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SComboButton.h"
-#include "EditorStyleSet.h"
-#include "Animation/AnimInstance.h"
+
 #include "Animation/AnimBlueprint.h"
-#include "Editor.h"
-#include "EditorCategoryUtils.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
-#include "ClassViewerModule.h"
-#include "ClassViewerFilter.h"
-#include "Engine/Selection.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
-#include "Widgets/Images/SImage.h"
-#include "PhysicsEngine/PhysicsSettings.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimationAsset.h"
+#include "Animation/Skeleton.h"
+#include "ClassViewerFilter.h"
+#include "ClassViewerModule.h"
+#include "Components/PrimitiveComponent.h"
+#include "Containers/Set.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorCategoryUtils.h"
+#include "Engine/SkeletalMesh.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailPropertyRow.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Selection.h"
+#include "SingleAnimationPlayData.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshComponentDetails"
 
@@ -248,7 +279,7 @@ void FSkeletalMeshComponentDetails::UpdateSkeletonNameAndPickerVisibility()
 	if (Skeleton)
 	{
 		bAnimPickerEnabled = true;
-		SelectedSkeletonName = FString::Printf(TEXT("%s'%s'"), *Skeleton->GetClass()->GetName(), *Skeleton->GetPathName());
+		SelectedSkeletonName = FObjectPropertyBase::GetExportPath(Skeleton);
 	}
 	else
 	{
@@ -304,8 +335,8 @@ TSharedRef<SWidget> FSkeletalMeshComponentDetails::GetClassPickerMenuContent()
 
 	return SNew(SBorder)
 		.Padding(3)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
-		.ForegroundColor(FEditorStyle::GetColor("DefaultForeground"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
+		.ForegroundColor(FAppStyle::GetColor("DefaultForeground"))
 		[
 			SNew(SBox)
 			.WidthOverride(280)
@@ -397,7 +428,7 @@ USkeleton* FSkeletalMeshComponentDetails::GetValidSkeletonFromRegisteredMeshes()
 	for (auto ObjectIter = SelectedObjects.CreateConstIterator(); ObjectIter; ++ObjectIter)
 	{
 		USkeletalMeshComponent* const Mesh = Cast<USkeletalMeshComponent>(ObjectIter->Get());
-		if ( !Mesh || !Mesh->SkeletalMesh )
+		if ( !Mesh || !Mesh->GetSkeletalMeshAsset())
 		{
 			continue;
 		}
@@ -405,14 +436,14 @@ USkeleton* FSkeletalMeshComponentDetails::GetValidSkeletonFromRegisteredMeshes()
 		// If we've not come across a valid skeleton yet, store this one.
 		if (!ResultSkeleton)
 		{
-			ResultSkeleton = Mesh->SkeletalMesh->GetSkeleton();
+			ResultSkeleton = Mesh->GetSkeletalMeshAsset()->GetSkeleton();
 			continue;
 		}
 
 		// We've encountered a valid skeleton before.
 		// If this skeleton is not the same one, that means there are multiple
 		// skeletons selected, so we don't want to take any action.
-		if (Mesh->SkeletalMesh->GetSkeleton() != ResultSkeleton)
+		if (Mesh->GetSkeletalMeshAsset()->GetSkeleton() != ResultSkeleton)
 		{
 			return NULL;
 		}

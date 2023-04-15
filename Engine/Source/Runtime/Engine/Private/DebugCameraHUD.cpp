@@ -17,6 +17,8 @@
 #include "Engine/DebugCameraController.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DebugCameraHUD)
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 static TAutoConsoleVariable<int32> CVarDebugCameraTraceComplex(
 	TEXT("g.DebugCameraTraceComplex"),
@@ -190,7 +192,7 @@ void ADebugCameraHUD::PostRender()
 				{
 					DrawDebugLine(GetWorld(), Hit.Location, Hit.Location + Hit.Normal*30.f, FColor::White);
 
-					if (DCC->SelectedActor)
+					if (DCC->SelectedActor.IsValid())
 					{
 						DrawDebugLine(GetWorld(), DCC->SelectedHitPoint.Location, DCC->SelectedHitPoint.Location + DCC->SelectedHitPoint.Normal*30.f, FColor::Red);
 					}
@@ -202,7 +204,7 @@ void ADebugCameraHUD::PostRender()
 				Canvas->DrawText( RenderFont, TEXT("No trace Hit"), X, yl, 1.f, 1.f, FontRenderInfo);
 			}
 
-			if (DCC->bShowSelectedInfo && DCC->SelectedActor != NULL)
+			if (DCC->bShowSelectedInfo && DCC->SelectedActor.IsValid())
 			{
 				if (DCC->bIsOrbitingSelectedActor)
 				{
@@ -270,3 +272,4 @@ void ADebugCameraHUD::PostRender()
 	}
 #endif
 }
+

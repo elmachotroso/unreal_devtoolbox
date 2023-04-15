@@ -7,7 +7,9 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Horde.Storage.Implementation;
+using Jupiter;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,19 +20,21 @@ namespace Horde.Storage.Controllers
 {
     [ApiController]
     [Route("api/v1/admin")]
+    [InternalApiFilter]
+    [Authorize]
     public class AdminController : Controller
     {
         private readonly LastAccessService _lastAccessService;
         private readonly IRefCleanup _refCleanup;
-        private readonly BlobCleanupService _blobCleanupService;
         private readonly IConfiguration _configuration;
+        private readonly RequestHelper _requestHelper;
 
-        public AdminController(LastAccessService lastAccessService, IRefCleanup refCleanup, BlobCleanupService blobCleanupService, IConfiguration configuration)
+        public AdminController(LastAccessService lastAccessService, IRefCleanup refCleanup, IConfiguration configuration, RequestHelper requestHelper)
         {
             _lastAccessService = lastAccessService;
             _refCleanup = refCleanup;
-            _blobCleanupService = blobCleanupService;
             _configuration = configuration;
+            _requestHelper = requestHelper;
         }
 
         /// <summary>
@@ -41,10 +45,15 @@ namespace Horde.Storage.Controllers
         /// </remarks>
         /// <returns></returns>
         [HttpPost("startLastAccessRollup")]
-        [Authorize("Admin")]
         [ProducesResponseType(type: typeof(UpdatedRecordsResponse), 200)]
         public async Task<IActionResult> StartLastAccessRollup()
         {
+            ActionResult? result = await _requestHelper.HasAccessForGlobalOperations(User, new [] { AclAction.AdminAction });
+            if (result != null)
+            {
+                return result;
+            }
+
             Task<List<(RefRecord, DateTime)>>? updateRecordsTask = _lastAccessService.ProcessLastAccessRecords();
             List<(RefRecord, DateTime)>? updatedRecords = null;
             if (updateRecordsTask != null)
@@ -68,35 +77,29 @@ namespace Horde.Storage.Controllers
         [HttpPost("refCleanup/{ns}")]
         public async Task<IActionResult> RefCleanup([FromRoute] [Required] NamespaceId ns)
         {
-            List<OldRecord> records = await _refCleanup.Cleanup(ns, CancellationToken.None);
-            return Ok(new RemovedRefRecordsResponse(
-                records.Select(r => new RemovedRefRecordsResponse.RemovedRecord(r.RefName, r.Bucket))
-            ));
-        }
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.AdminAction });
+            if (result != null)
+            {
+                return result;
+            }
 
-        /// <summary>
-        /// Manually run the blob cleanup
-        /// </summary>
-        /// <remarks>
-        /// Manually triggers a cleanup of unused blobs not referenced in the transaction log. This is done automatically so the only reason to use this endpoint is for debugging purposes.
-        /// </remarks>
-        /// <returns></returns>
-        [HttpPost("blobCleanup/{ns}")]
-        public async Task<IActionResult> BlobCleanup([FromRoute] [Required] NamespaceId ns)
-        {
-            List<RemovedBlobs> records = await _blobCleanupService.Cleanup(_blobCleanupService.State, CancellationToken.None);
-            return Ok(new RemovedBlobRecords(
-                records.Select(r => r.BlobIdentifier)
-            ));
+            int countOfDeletedRecords = await _refCleanup.Cleanup(ns, CancellationToken.None);
+            return Ok(new RemovedRefRecordsResponse(countOfDeletedRecords));
         }
-
+        
         /// <summary>
         /// Dumps all settings currently in use
         /// </summary>
         /// <returns></returns>
         [HttpGet("settings")]
-        public IActionResult Settings()
+        public async Task<IActionResult> Settings()
         {
+            ActionResult? result = await _requestHelper.HasAccessForGlobalOperations(User, new [] { AclAction.AdminAction });
+            if (result != null)
+            {
+                return result;
+            }
+
             Dictionary<string, Dictionary<string, object>> settings = new Dictionary<string, Dictionary<string, object>>();
 
             Dictionary<string, object> ResolveSection(IConfigurationSection section)
@@ -121,7 +124,9 @@ namespace Horde.Storage.Controllers
             {
                 Dictionary<string, object> values = ResolveSection(section);
                 if (values.Count != 0)
+                {
                     settings.Add(section.Key, values);
+                }
             }
 
             return new JsonResult(new
@@ -149,24 +154,12 @@ namespace Horde.Storage.Controllers
 
     public class RemovedRefRecordsResponse
     {
-        public class RemovedRecord
+        public RemovedRefRecordsResponse(int countOfRemovedRecords)
         {
-            public RemovedRecord(KeyId name, BucketId bucket)
-            {
-                Name = name;
-                Bucket = bucket;
-            }
-
-            public KeyId Name { get; }
-            public BucketId Bucket { get; }
+            CountOfRemovedRecords = countOfRemovedRecords;
         }
 
-        public RemovedRefRecordsResponse(IEnumerable<RemovedRecord> removedRecords)
-        {
-            RemovedRecords = removedRecords.ToArray();
-        }
-
-        public RemovedRecord[] RemovedRecords { get; }
+        public int CountOfRemovedRecords { get; }
     }
 
     public class UpdatedRecordsResponse
@@ -176,6 +169,7 @@ namespace Horde.Storage.Controllers
             UpdatedRecords = updatedRecords;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1034:Nested types should not be visible", Justification = "Only used by serialization")]
         public class UpdatedRecord
         {
             public UpdatedRecord(RefRecord record, DateTime time)

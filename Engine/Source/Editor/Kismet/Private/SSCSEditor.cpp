@@ -2,90 +2,142 @@
 
 
 #include "SSCSEditor.h"
-#include "AssetData.h"
-#include "Editor.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+
+#include "ActorEditorUtils.h"
+#include "AddToProjectConfig.h"
+#include "Algo/Find.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetSelection.h"
+#include "BPVariableDragDropAction.h"
+#include "BlueprintEditor.h"
+#include "BlueprintEditorModule.h"
+#include "BlueprintEditorSettings.h"
+#include "ClassIconFinder.h"
+#include "ClassViewerFilter.h"
+#include "ComponentAssetBroker.h"
+#include "ComponentInstanceDataCache.h"
+#include "ComponentVisualizerManager.h"
+#include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
-#include "EngineGlobals.h"
-#include "Misc/FeedbackContext.h"
-#include "Serialization/ObjectWriter.h"
-#include "Serialization/ObjectReader.h"
-#include "Layout/WidgetPath.h"
-#include "SlateOptMacros.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreGlobals.h"
+#include "CreateBlueprintFromActorDialog.h"
+#include "Dialogs/Dialogs.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/InheritableComponentHandler.h"
+#include "Engine/MemberReference.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/World.h"
+#include "FeaturedClasses.inl"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "Editor/UnrealEdEngine.h"
-#include "ThumbnailRendering/ThumbnailManager.h"
-#include "Components/ChildActorComponent.h"
-#include "Kismet2/ComponentEditorUtils.h"
-#include "Kismet2/ChildActorComponentEditorUtils.h"
-#include "Engine/Selection.h"
-#include "UnrealEdGlobals.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "EdGraphSchema_K2.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "GameProjectGenerationModule.h"
 #include "GraphEditorActions.h"
-#include "Toolkits/ToolkitManager.h"
-#include "K2Node_Variable.h"
+#include "IDocumentation.h"
+#include "ISCSEditorUICustomization.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_ComponentBoundEvent.h"
+#include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "ComponentAssetBroker.h"
-#include "ClassViewerFilter.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "PropertyPath.h"
-
-#include "AssetSelection.h"
-#include "ScopedTransaction.h"
-
-#include "Styling/SlateIconFinder.h"
-#include "ClassIconFinder.h"
-#include "DragAndDrop/AssetDragDropOp.h"
-
-#include "ObjectTools.h"
-
-#include "IDocumentation.h"
-#include "Kismet2/Kismet2NameValidators.h"
-#include "TutorialMetaData.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "Framework/Commands/GenericCommands.h"
-
-#include "Engine/InheritableComponentHandler.h"
-
-#include "CreateBlueprintFromActorDialog.h"
-
-#include "BPVariableDragDropAction.h"
-
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-
-#include "AddToProjectConfig.h"
-#include "GameProjectGenerationModule.h"
-#include "FeaturedClasses.inl"
-
-#include "Classes/EditorStyleSettings.h"
-#include "BlueprintEditorSettings.h"
-#include "EditorFontGlyphs.h"
-
-#include "Algo/Find.h"
-#include "ActorEditorUtils.h"
-
-#include "ToolMenus.h"
-#include "SSCSEditorMenuContext.h"
-#include "Kismet2/ComponentEditorContextMenuContex.h"
-#include "K2Node_ComponentBoundEvent.h"
+#include "Kismet2/ChildActorComponentEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "Dialogs/Dialogs.h"
+#include "Kismet2/ComponentEditorUtils.h"
+#include "Kismet2/Kismet2NameValidators.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/MessageLog.h"
+#include "Math/Color.h"
+#include "Math/NumericLimits.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/CString.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/Guid.h"
+#include "ObjectTools.h"
+#include "PropertyPath.h"
+#include "SCSEditorExtensionContext.h"
+#include "SPositiveActionButton.h"
+#include "SSCSEditorMenuContext.h"
+#include "ScopedTransaction.h"
+#include "Selection.h"
+#include "Settings/EditorStyleSettings.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateIconFinder.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Subsystems/PanelExtensionSubsystem.h"
-#include "SCSEditorExtensionContext.h"
-#include "ISCSEditorUICustomization.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/Function.h"
+#include "Textures/SlateIcon.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
+#include "ToolMenu.h"
+#include "ToolMenuContext.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuSection.h"
+#include "ToolMenus.h"
+#include "Toolkits/ToolkitManager.h"
+#include "Trace/Detail/Channel.h"
+#include "TutorialMetaData.h"
+#include "Types/ISlateMetaData.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
+#include "UnrealEdGlobals.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SExpanderArrow.h"
+#include "Widgets/Views/SHeaderRow.h"
 
-#include "Logging/MessageLog.h"
-#include "SPositiveActionButton.h"
+class FClassViewerInitializationOptions;
+class FExtender;
+class ITableRow;
+class IToolkit;
+class SWidget;
+class SWindow;
+class UEdGraphNode;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SSCSEditor"
 
@@ -202,7 +254,7 @@ FReply SSCSEditor::TryHandleAssetDragDropOperation(const FDragDropEvent& DragDro
 						PotentialActorClass = BPClass->GeneratedClass;
 					}
 				}
-				else if (AssetClass->IsChildOf(UClass::StaticClass()))
+				else if (AssetClass && AssetClass->IsChildOf(UClass::StaticClass()))
 				{
 					UClass* AssetAsClass = CastChecked<UClass>(Asset);
 					if (AssetAsClass->IsChildOf(UActorComponent::StaticClass()))
@@ -326,7 +378,7 @@ void FSCSRowDragDropOp::HoverTargetChanged()
 	bool bHoverHandled = false;
 
 	FSlateColor IconTint = FLinearColor::White;
-	const FSlateBrush* ErrorSymbol = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+	const FSlateBrush* ErrorSymbol = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 	if(SourceNodes.Num() > 1)
 	{
@@ -1778,8 +1830,8 @@ void SSCS_RowWidget::Construct( const FArguments& InArgs, TSharedPtr<SSCSEditor>
 	
 	FSuperRowType::FArguments Args = FSuperRowType::FArguments()
 		.Style(bIsSeparator ?
-			&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.NoHoverTableRow") :
-			&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow")) //@todo create editor style for the SCS tree
+			&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.NoHoverTableRow") :
+			&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow")) //@todo create editor style for the SCS tree
 		.Padding(FMargin(0.f, 4.f, 0.f, 4.f))
 		.ShowSelection(!bIsSeparator)
 		.OnDragDetected(this, &SSCS_RowWidget::HandleOnDragDetected)
@@ -1900,16 +1952,16 @@ void SSCS_RowWidget::AddToToolTipInfoBox(const TSharedRef<SVerticalBox>& InfoBox
 {
 	InfoBox->AddSlot()
 		.AutoHeight()
-		.Padding(0, 1)
+		.Padding(0.0f, 1.0f)
 		[
 			SNew(SHorizontalBox)
 
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
-			.Padding(0, 0, 4, 0)
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), bImportant ? "SCSEditor.ComponentTooltip.ImportantLabel" : "SCSEditor.ComponentTooltip.Label")
+				.TextStyle(FAppStyle::Get(), bImportant ? "SCSEditor.ComponentTooltip.ImportantLabel" : "SCSEditor.ComponentTooltip.Label")
 				.Text(FText::Format(LOCTEXT("AssetViewTooltipFormat", "{0}:"), Key))
 			]
 
@@ -1923,7 +1975,7 @@ void SSCS_RowWidget::AddToToolTipInfoBox(const TSharedRef<SVerticalBox>& InfoBox
 			.AutoWidth()
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), bImportant ? "SCSEditor.ComponentTooltip.ImportantValue" : "SCSEditor.ComponentTooltip.Value")
+				.TextStyle(FAppStyle::Get(), bImportant ? "SCSEditor.ComponentTooltip.ImportantValue" : "SCSEditor.ComponentTooltip.Value")
 				.Text(Value)
 			]
 		];
@@ -1950,10 +2002,10 @@ TSharedRef<SToolTip> SSCS_RowWidget::CreateToolTipWidget() const
 				InfoBox->AddSlot()
 					.AutoHeight()
 					.HAlign(HAlign_Center)
-					.Padding(FMargin(0, 2, 0, 4))
+					.Padding(FMargin(0.0f, 2.0f, 0.0f, 4.0f))
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.ClassDescription")
+						.TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.ClassDescription")
 						.Text(ClassTooltip)
 						.WrapTextAt(400.0f)
 					];
@@ -1989,14 +2041,14 @@ TSharedRef<SToolTip> SSCS_RowWidget::CreateToolTipWidget() const
 	}
 
 	TSharedRef<SBorder> TooltipContent = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-		.Padding(0)
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
+		.Padding(0.0f)
 		[
 			SNew(SVerticalBox)
 			
 			+SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 4)
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(SVerticalBox)
 
@@ -2008,10 +2060,10 @@ TSharedRef<SToolTip> SSCS_RowWidget::CreateToolTipWidget() const
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.Padding(2)
+					.Padding(2.0f)
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.Title")
+						.TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.Title")
 						.Text(this, &SSCS_RowWidget::GetTooltipText)
 					]
 				]
@@ -2021,8 +2073,8 @@ TSharedRef<SToolTip> SSCS_RowWidget::CreateToolTipWidget() const
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-				.Padding(2)
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.Padding(2.0f)
 				[
 					InfoBox
 				]
@@ -2041,11 +2093,11 @@ FSlateBrush const* SSCS_RowWidget::GetMobilityIconImage() const
 		{
 			if (SceneComponentTemplate->Mobility == EComponentMobility::Movable)
 			{
-				return FEditorStyle::GetBrush(TEXT("ClassIcon.MovableMobilityIcon"));
+				return FAppStyle::GetBrush(TEXT("ClassIcon.MovableMobilityIcon"));
 			}
 			else if (SceneComponentTemplate->Mobility == EComponentMobility::Stationary)
 			{
-				return FEditorStyle::GetBrush(TEXT("ClassIcon.StationaryMobilityIcon"));
+				return FAppStyle::GetBrush(TEXT("ClassIcon.StationaryMobilityIcon"));
 			}
 
 			// static components don't get an icon (because static is the most common
@@ -2304,7 +2356,7 @@ EVisibility SSCS_RowWidget::GetAssetVisibility() const
 
 const FSlateBrush* SSCS_RowWidget::GetIconBrush() const
 {
-	const FSlateBrush* ComponentIcon = FEditorStyle::GetBrush("SCS.NativeComponent");
+	const FSlateBrush* ComponentIcon = FAppStyle::GetBrush("SCS.NativeComponent");
 	FSCSEditorTreeNodePtrType NodePtr = GetNode();
 	if (NodePtr.IsValid())
 	{
@@ -2734,8 +2786,8 @@ void SSCS_RowWidget::HandleOnDragEnter( const FDragDropEvent& DragDropEvent )
 		}
 
 		const FSlateBrush* StatusSymbol = DragRowOp->PendingDropAction != FSCSRowDragDropOp::DropAction_None
-			? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
-			: FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
+			: FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 		if (Message.IsEmpty())
 		{
@@ -3636,14 +3688,14 @@ TSharedRef<SToolTip> SSCS_RowWidget_ActorRoot::CreateToolTipWidget() const
 	AddToToolTipInfoBox(InfoBox, LOCTEXT("TooltipMobility", "Mobility"), SNullWidget::NullWidget, TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SSCS_RowWidget_ActorRoot::GetActorMobilityText)), false);
 
 	TSharedRef<SBorder> TooltipContent = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-		.Padding(0)
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
+		.Padding(0.0f)
 		[
 			SNew(SVerticalBox)
 
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0, 0, 0, 4)
+			.Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(SVerticalBox)
 
@@ -3655,10 +3707,10 @@ TSharedRef<SToolTip> SSCS_RowWidget_ActorRoot::CreateToolTipWidget() const
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.Padding(4)
+					.Padding(4.0f)
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "SCSEditor.ComponentTooltip.Title")
+						.TextStyle(FAppStyle::Get(), "SCSEditor.ComponentTooltip.Title")
 						.Text(this, &SSCS_RowWidget_ActorRoot::GetActorDisplayText)
 					]
 				]
@@ -3668,8 +3720,8 @@ TSharedRef<SToolTip> SSCS_RowWidget_ActorRoot::CreateToolTipWidget() const
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-				.Padding(4)
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.Padding(4.0f)
 				[
 					InfoBox
 				]
@@ -3839,8 +3891,8 @@ TSharedRef<SWidget> SSCS_RowWidget_Separator::GenerateWidgetForColumn(const FNam
 		.Padding(1.f)
 		[
 			SNew(SBorder)
-			.Padding(FEditorStyle::GetMargin(TEXT("Menu.Separator.Padding")))
-			.BorderImage(FEditorStyle::GetBrush(TEXT("Menu.Separator")))
+			.Padding(FAppStyle::GetMargin(TEXT("Menu.Separator.Padding")))
+			.BorderImage(FAppStyle::GetBrush(TEXT("Menu.Separator")))
 		];*/
 }
 
@@ -3894,7 +3946,7 @@ void SSCSEditor::Construct( const FArguments& InArgs )
 		FUIAction( FExecuteAction::CreateSP( this, &SSCSEditor::OnFindReferences ) )
 	);
 
-	FSlateBrush const* MobilityHeaderBrush = FEditorStyle::GetBrush(TEXT("ClassIcon.ComponentMobilityHeaderIcon"));
+	FSlateBrush const* MobilityHeaderBrush = FAppStyle::GetBrush(TEXT("ClassIcon.ComponentMobilityHeaderIcon"));
 	
 	TSharedPtr<SHeaderRow> HeaderRow = SNew(SHeaderRow)
 		+ SHeaderRow::Column(SCS_ColumnName_ComponentClass)
@@ -3992,7 +4044,7 @@ void SSCSEditor::Construct( const FArguments& InArgs )
 	ButtonBox = SNew(SHorizontalBox)
 	+ SHorizontalBox::Slot()
 	.VAlign(VAlign_Center)
-	.Padding(0,0,4,0)
+	.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 	.AutoWidth()
 	[
 		SNew(SComponentClassCombo)
@@ -4004,7 +4056,7 @@ void SSCSEditor::Construct( const FArguments& InArgs )
 	]
 	+ SHorizontalBox::Slot()
 	.VAlign(VAlign_Center)
-	.Padding(0,0,4,0)
+	.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 	.AutoWidth()
 	[
 		SAssignNew(ExtensionPanel, SExtensionPanel)
@@ -4016,7 +4068,7 @@ void SSCSEditor::Construct( const FArguments& InArgs )
 
 	+ SHorizontalBox::Slot()
 	.VAlign(VAlign_Center)
-	.Padding(0,0,4,0)
+	.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 	.AutoWidth()
 	[
 		SNew(SPositiveActionButton)
@@ -5529,7 +5581,7 @@ UActorComponent* SSCSEditor::AddNewComponent( UClass* NewComponentClass, UObject
 	if (NewComponentClass->ClassWithin && NewComponentClass->ClassWithin != UObject::StaticClass())
 	{
 		FNotificationInfo Info(LOCTEXT("AddComponentFailed", "Cannot add components that have \"Within\" markup"));
-		Info.Image = FEditorStyle::GetBrush(TEXT("Icons.Error"));
+		Info.Image = FAppStyle::GetBrush(TEXT("Icons.Error"));
 		Info.bFireAndForget = true;
 		Info.bUseSuccessFailIcons = false;
 		Info.ExpireDuration = 5.0f;

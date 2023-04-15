@@ -8,14 +8,18 @@
 #include "CompositionOps/CurveSweepOp.h"
 #include "InteractiveToolManager.h"
 #include "Mechanics/ConstructionPlaneMechanic.h"
+#include "SceneManagement.h" // FPrimitiveDrawInterface
 #include "Selection/PolygonSelectionMechanic.h"
 #include "GroupTopology.h"
 #include "ToolBuilderUtil.h"
 #include "Selection/ToolSelectionUtil.h"
+#include "ModelingToolTargetUtil.h"
 #include "ToolSceneQueriesUtil.h"
 #include "ToolSetupUtil.h"
 
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RevolveBoundaryTool)
 
 using namespace UE::Geometry;
 
@@ -45,16 +49,18 @@ TUniquePtr<FDynamicMeshOperator> URevolveBoundaryOperatorFactory::MakeNewOperato
 			const TArray<int32>& VertexIndices = RevolveBoundaryTool->Topology->GetGroupEdgeVertices(EdgeID);
 			FTransform ToWorld = Cast<IPrimitiveComponentBackedTarget>(RevolveBoundaryTool->Target)->GetWorldTransform();
 
-			// Boundary loop includes the last vertex twice, so stop early.
-			CurveSweepOp->ProfileCurve.Reserve(VertexIndices.Num() - 1);
-			for (int32 i = 0; i < VertexIndices.Num()-1; ++i)
+			// If boundary loop includes the last vertex as first, stop early.
+			// (Note: This is generally true unless the mesh has bowties that confuse the boundary walk.)
+			bool bIsLoop = VertexIndices.Num() && VertexIndices.Last() == VertexIndices[0];
+			CurveSweepOp->ProfileCurve.Reserve(VertexIndices.Num() - (int32)bIsLoop);
+			for (int32 i = 0; i < VertexIndices.Num() - (int32)bIsLoop; ++i)
 			{
 				int32 VertIndex = VertexIndices[i];
 
 				FVector3d NewPos = (FVector3d)ToWorld.TransformPosition((FVector)RevolveBoundaryTool->OriginalMesh->GetVertex(VertIndex));
 				CurveSweepOp->ProfileCurve.Add(NewPos);
 			}
-			CurveSweepOp->bProfileCurveIsClosed = true;
+			CurveSweepOp->bProfileCurveIsClosed = bIsLoop;
 		}
 	}
 
@@ -96,6 +102,16 @@ void URevolveBoundaryTool::Setup()
 	MaterialProperties = NewObject<UNewMeshMaterialProperties>(this);
 	AddToolPropertySource(MaterialProperties);
 	MaterialProperties->RestoreProperties(this);
+
+
+	FTransform LocalToWorld = UE::ToolTarget::GetLocalToWorldTransform(Target);
+	// Assume an axis that is > 1000 meters away is typically not desired, and can be snapped closer
+	// This works around bad behavior if the tool is started at LWC
+	constexpr double AxisVeryFarThreshold = 100 * 1000;
+	if (FVector::DistSquared(Settings->AxisOrigin, LocalToWorld.GetTranslation()) > AxisVeryFarThreshold * AxisVeryFarThreshold)
+	{
+		Settings->AxisOrigin = LocalToWorld.GetTranslation();
+	}
 
 	UpdateRevolutionAxis();
 
@@ -282,6 +298,7 @@ void URevolveBoundaryTool::OnShutdown(EToolShutdownType ShutdownType)
 	{
 		if (ShutdownType == EToolShutdownType::Accept)
 		{
+			Preview->PreviewMesh->CalculateTangents();
 			GenerateAsset(Preview->Shutdown());
 		}
 		else
@@ -378,3 +395,4 @@ void URevolveBoundaryTool::OnPropertyModified(UObject* PropertySet, FProperty* P
 }
 
 #undef LOCTEXT_NAMESPACE
+

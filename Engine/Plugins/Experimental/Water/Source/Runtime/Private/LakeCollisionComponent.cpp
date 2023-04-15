@@ -14,6 +14,8 @@
 #include "WaterUtils.h"
 #include "Algo/Transform.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LakeCollisionComponent)
+
 
 // ----------------------------------------------------------------------------------
 
@@ -97,7 +99,7 @@ FPrimitiveSceneProxy* ULakeCollisionComponent::CreateSceneProxy()
 						FColor CollisionColor(157, 149, 223, 255);
 						const bool bPerHullColor = false;
 						const bool bDrawSolid = false;
-						AggregateGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, DrawsVelocity(), ViewIndex, Collector);
+						AggregateGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 	
 					RenderBounds(Collector.GetPDI(ViewIndex), View->Family->EngineShowFlags, GetBounds(), IsSelected());
@@ -118,7 +120,7 @@ FPrimitiveSceneProxy* ULakeCollisionComponent::CreateSceneProxy()
 			return Result;
 		}
 		virtual uint32 GetMemoryFootprint(void) const override { return(sizeof(*this) + GetAllocatedSize()); }
-		uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
+		uint32 GetAllocatedSize(void) const { return FPrimitiveSceneProxy::GetAllocatedSize() + AggregateGeom.GetAllocatedSize(); }
 
 	private:
 		FKAggregateGeom AggregateGeom;
@@ -458,3 +460,4 @@ bool ULakeCollisionComponent::DoCustomNavigableGeometryExport(FNavigableGeometry
 
 	return true;
 }
+

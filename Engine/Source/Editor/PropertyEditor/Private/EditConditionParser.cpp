@@ -1,11 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditConditionParser.h"
-#include "EditConditionContext.h"
 
+#include "Containers/Set.h"
+#include "EditConditionContext.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "Math/BasicMathExpressionEvaluator.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/ExpressionParser.h"
-#include "UObject/Class.h"
+#include "Misc/Optional.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+
+class UObject;
 
 #define LOCTEXT_NAMESPACE "EditConditionParser"
 
@@ -25,9 +36,11 @@ namespace EditConditionParserTokens
 	const TCHAR* const FMultiply::Moniker = TEXT("*");
 	const TCHAR* const FDivide::Moniker = TEXT("/");
 	const TCHAR* const FBitwiseAnd::Moniker = TEXT("&");
+	const TCHAR* const FSubExpressionStart::Moniker = TEXT("(");
+	const TCHAR* const FSubExpressionEnd::Moniker = TEXT(")");
 }
 
-static const TCHAR PropertyBreakingChars[] = { '|', '=', '&', '>', '<', '!', '+', '-', '*', '/', ' ', '\t' };
+static const TCHAR PropertyBreakingChars[] = { '|', '=', '&', '>', '<', '!', '+', '-', '*', '/', ' ', '\t', '(', ')' };
 
 static TOptional<FExpressionError> ConsumeBool(FExpressionTokenConsumer& Consumer)
 {
@@ -59,28 +72,83 @@ static TOptional<FExpressionError> ConsumeNullPtr(FExpressionTokenConsumer& Cons
 
 static TOptional<FExpressionError> ConsumePropertyName(FExpressionTokenConsumer& Consumer)
 {
+	enum class EParsedStringType : uint8
+	{
+		Unknown,
+		Unquoted,
+		Quoted,
+	};
+
 	FString PropertyName;
 	bool bShouldBeEnum = false;
-			
-	TOptional<FStringToken> StringToken = Consumer.GetStream().ParseToken([&PropertyName, &bShouldBeEnum](TCHAR InC)
+	EParsedStringType ParsedStringType = EParsedStringType::Unknown;
+
+	TCHAR OpeningQuoteChar = TEXT('\0');
+	int32 NumConsecutiveSlashes = 0;
+
+	TOptional<FStringToken> StringToken = Consumer.GetStream().ParseToken([&PropertyName, &bShouldBeEnum, &ParsedStringType, &OpeningQuoteChar, &NumConsecutiveSlashes](TCHAR InC)
 	{
-		for (const TCHAR BreakingChar : PropertyBreakingChars)
+		if (ParsedStringType == EParsedStringType::Unknown)
 		{
-			if (InC == BreakingChar)
+			if (InC == '"' || InC == '\'')
 			{
-				return EParseState::StopBefore;
+				ParsedStringType = EParsedStringType::Quoted;
+
+				OpeningQuoteChar = InC;
+				NumConsecutiveSlashes = 0;
+				return EParseState::Continue;
 			}
+			
+			ParsedStringType = EParsedStringType::Unquoted;
 		}
+
+		check(ParsedStringType != EParsedStringType::Unknown);
 
 		if (InC == ':')
 		{
 			bShouldBeEnum = true;
 		}
 
-		PropertyName.AppendChar(InC);
+		if (ParsedStringType == EParsedStringType::Unquoted)
+		{
+			for (const TCHAR BreakingChar : PropertyBreakingChars)
+			{
+				if (InC == BreakingChar)
+				{
+					return EParseState::StopBefore;
+				}
+			}
+
+			PropertyName.AppendChar(InC);
+		}
+		else
+		{
+			check(ParsedStringType == EParsedStringType::Quoted);
+
+			if (InC == OpeningQuoteChar && NumConsecutiveSlashes % 2 == 0)
+			{
+				return EParseState::StopAfter;
+			}
+
+			PropertyName.AppendChar(InC);
+
+			if (InC == '\\')
+			{
+				NumConsecutiveSlashes++;
+			}
+			else
+			{
+				NumConsecutiveSlashes = 0;
+			}
+		}
 
 		return EParseState::Continue;
 	});
+
+	if (ParsedStringType == EParsedStringType::Quoted)
+	{
+		PropertyName.ReplaceEscapedCharWithCharInline();
+	}
 
 	if (StringToken.IsSet())
 	{
@@ -117,20 +185,25 @@ static TOptional<FExpressionError> ConsumePropertyName(FExpressionTokenConsumer&
 }
 
 template <typename ValueType>
-static void LogEditConditionError(const TValueOrError<ValueType, FExpressionError>& Error)
+static void LogEditConditionError(const TValueOrError<ValueType, FExpressionError>& Error, const IEditConditionContext* Context = nullptr)
 {
 	if (!Error.HasError())
 	{
 		return;
 	}
 
-	static TSet<FString> ErrorsAlreadyLogged;
-	
-	const FString& Message = Error.GetError().Text.ToString();
-	if (!ErrorsAlreadyLogged.Find(Message))
+	const FString Message = Error.GetError().Text.ToString();
+	FString Formatted = Message;
+	if (Context != nullptr)
 	{
-		ErrorsAlreadyLogged.Add(Message);
-		UE_LOG(LogEditCondition, Error, TEXT("%s"), *Message);
+		Formatted = FString::Printf(TEXT("%s - %s"), *Context->GetContextName().ToString(), *Message);
+	}
+
+	static TSet<FString> ErrorsAlreadyLogged;
+	if (!ErrorsAlreadyLogged.Find(Formatted))
+	{
+		ErrorsAlreadyLogged.Add(Formatted);
+		UE_LOG(LogEditCondition, Error, TEXT("%s"), *Formatted);
 	}
 }
 
@@ -574,7 +647,6 @@ void CreateNumberOperators(TOperatorJumpTable<IEditConditionContext>& OperatorJu
 static FExpressionResult EnumPropertyEquals(const EditConditionParserTokens::FEnumToken& Enum, const EditConditionParserTokens::FPropertyToken& Property, const IEditConditionContext& Context, bool bNegate)
 {
 	TOptional<FString> TypeName = Context.GetTypeName(Property.PropertyName);
-
 	if (!TypeName.IsSet())
 	{
 		return MakeError(FText::Format(LOCTEXT("InvalidOperand_Type", "EditCondition attempted to use an invalid operand \"{0}\" (type error)."), FText::FromString(Property.PropertyName)));
@@ -586,7 +658,6 @@ static FExpressionResult EnumPropertyEquals(const EditConditionParserTokens::FEn
 	}
 
 	TOptional<FString> ValueProp = Context.GetEnumValue(Property.PropertyName);
-
 	if (!ValueProp.IsSet())
 	{
 		return MakeError(FText::Format(LOCTEXT("InvalidOperand_Value", "EditCondition attempted to use an invalid operand \"{0}\" (value error)."), FText::FromString(Property.PropertyName)));
@@ -652,6 +723,8 @@ FEditConditionParser::FEditConditionParser()
 	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeSymbol<FMultiply>);
 	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeSymbol<FDivide>);
 	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeSymbol<FBitwiseAnd>);
+	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeSymbol<FSubExpressionStart>);
+	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeSymbol<FSubExpressionEnd>);
 	TokenDefinitions.DefineToken(&ExpressionParser::ConsumeNumber);
 	TokenDefinitions.DefineToken(&ConsumeNullPtr);
 	TokenDefinitions.DefineToken(&ConsumeBool);
@@ -671,6 +744,7 @@ FEditConditionParser::FEditConditionParser()
 	ExpressionGrammar.DefineBinaryOperator<FMultiply>(1);
 	ExpressionGrammar.DefineBinaryOperator<FDivide>(1);
 	ExpressionGrammar.DefinePreUnaryOperator<FNot>();
+	ExpressionGrammar.DefineGrouping<FSubExpressionStart, FSubExpressionEnd>();
 
 	// POINTER EQUALITY
 	OperatorJumpTable.MapBinary<FEqual>([](const FPropertyToken& A, const FPropertyToken& B, const IEditConditionContext* Context) -> FExpressionResult
@@ -705,17 +779,17 @@ FEditConditionParser::FEditConditionParser()
 	CreateEnumOperators(OperatorJumpTable);
 }
 
-TOptional<bool> FEditConditionParser::Evaluate(const FEditConditionExpression& Expression, const IEditConditionContext& Context) const
+TValueOrError<bool, FText> FEditConditionParser::Evaluate(const FEditConditionExpression& Expression, const IEditConditionContext& Context) const
 {
 	using namespace EditConditionParserTokens;
 	
 	FExpressionResult Result = ExpressionParser::Evaluate(Expression.Tokens, OperatorJumpTable, &Context);
-	if (Result.IsValid())
+	if (Result.HasValue())
 	{
 		const bool* BoolResult = Result.GetValue().Cast<bool>();
 		if (BoolResult != nullptr)
 		{
-			return *BoolResult;
+			return MakeValue(*BoolResult);
 		}
 
 		const FPropertyToken* PropertyResult = Result.GetValue().Cast<FPropertyToken>();
@@ -724,16 +798,17 @@ TOptional<bool> FEditConditionParser::Evaluate(const FEditConditionExpression& E
 			TOptional<bool> PropertyValue = Context.GetBoolValue(PropertyResult->PropertyName);
 			if (PropertyValue.IsSet())
 			{
-				return PropertyValue.GetValue();
+				return MakeValue(PropertyValue.GetValue());
 			}
 		}
 	}
 	else
 	{
-		LogEditConditionError(Result);
+		LogEditConditionError(Result, &Context);
 	}
 
-	return TOptional<bool>();
+	const FText ErrorText = Result.HasError() ? Result.StealError().Text : FText::GetEmpty();
+	return MakeError(ErrorText);
 }
 
 TSharedPtr<FEditConditionExpression> FEditConditionParser::Parse(const FString& ExpressionString) const

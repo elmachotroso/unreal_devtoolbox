@@ -1,26 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Models;
-using HordeServer.Utilities;
-using System;
-using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
+using Horde.Build.Server;
+using Horde.Build.Utilities;
 
-namespace HordeServerTests.Stubs.Collections
+namespace Horde.Build.Tests.Stubs.Collections
 {
 	class SingletonDocumentStub<T> : ISingletonDocument<T> where T : SingletonBase, new()
 	{
-		T Document = new T();
+		T _document = new T();
 
 		public Task<T> GetAsync()
 		{
-			return Task.FromResult(Document);
+			return Task.FromResult(_document);
 		}
 
-		public Task<bool> TryUpdateAsync(T Value)
+		public Task<bool> TryUpdateAsync(T value)
 		{
-			Document = Value;
+			_document = value;
 			return Task.FromResult(true);
 		}
 	}

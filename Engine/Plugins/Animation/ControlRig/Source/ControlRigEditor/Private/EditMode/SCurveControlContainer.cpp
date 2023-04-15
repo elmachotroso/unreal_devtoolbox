@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "SCurveControlContainer.h"
+#include "EditMode/SCurveControlContainer.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SSpinBox.h"
@@ -9,7 +9,7 @@
 #include "Widgets/Input/STextEntryPopup.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "ControlRigEditor.h"
+#include "Editor/ControlRigEditor.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "ControlRig.h"

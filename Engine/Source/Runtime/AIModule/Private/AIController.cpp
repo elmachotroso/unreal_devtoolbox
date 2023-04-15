@@ -24,6 +24,8 @@
 #include "Tasks/GameplayTask_ClaimResource.h"
 #include "NetworkingDistanceConstants.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AIController)
+
 
 //----------------------------------------------------------------------//
 // AAIController
@@ -163,11 +165,6 @@ void AAIController::GrabDebugSnapshot(FVisualLogEntry* Snapshot) const
 	if (PerceptionComponent != nullptr)
 	{
 		PerceptionComponent->DescribeSelfToVisLog(Snapshot);
-	}
-
-	if (CachedGameplayTasksComponent != nullptr)
-	{
-		CachedGameplayTasksComponent->DescribeSelfToVisLog(Snapshot);
 	}
 }
 #endif // ENABLE_VISUAL_LOG
@@ -507,8 +504,6 @@ void AAIController::OnPossess(APawn* InPawn)
 	if (CachedGameplayTasksComponent && !CachedGameplayTasksComponent->OnClaimedResourcesChange.Contains(this, GET_FUNCTION_NAME_CHECKED(AAIController, OnGameplayTaskResourcesClaimed)))
 	{
 		CachedGameplayTasksComponent->OnClaimedResourcesChange.AddDynamic(this, &AAIController::OnGameplayTaskResourcesClaimed);
-
-		REDIRECT_OBJECT_TO_VLOG(CachedGameplayTasksComponent, this);
 	}
 
 	if (Blackboard && Blackboard->GetBlackboardAsset())
@@ -533,9 +528,9 @@ void AAIController::OnUnPossess()
 		PathFollowingComponent->Cleanup();
 	}
 
-	if (bStopAILogicOnUnposses && BrainComponent)
+	if (bStopAILogicOnUnposses)
 	{
-		BrainComponent->Cleanup();
+		CleanupBrainComponent();
 	}
 
 	if (CachedGameplayTasksComponent && (CachedGameplayTasksComponent->GetOwner() == CurrentPawn))
@@ -940,6 +935,14 @@ bool AAIController::RunBehaviorTree(UBehaviorTree* BTAsset)
 	return bSuccess;
 }
 
+void AAIController::CleanupBrainComponent()
+{
+	if (BrainComponent)
+	{
+		BrainComponent->Cleanup();
+	}
+}
+
 void AAIController::ClaimTaskResource(TSubclassOf<UGameplayTaskResource> ResourceClass)
 {
 	if (CachedGameplayTasksComponent)
@@ -1111,3 +1114,4 @@ void AAIController::SetGenericTeamId(const FGenericTeamId& NewTeamID)
 		// @todo notify perception system that a controller changed team ID
 	}
 }
+

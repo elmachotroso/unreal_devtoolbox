@@ -12,12 +12,14 @@
 struct FGeometry;
 struct FKeyDrawParams;
 struct FKeyHandle;
-struct FMovieSceneClipboardEnvironment;
+struct FSequencerChannelPaintArgs;
 struct FSequencerPasteEnvironment;
+struct FMovieSceneClipboardEnvironment;
 
 class SWidget;
 class ISequencer;
 class FCurveModel;
+class FExtender;
 class FMenuBuilder;
 class FStructOnScope;
 class UMovieSceneSection;
@@ -25,7 +27,13 @@ class ISectionLayoutBuilder;
 class FMovieSceneClipboardBuilder;
 class FMovieSceneClipboardKeyTrack;
 class FTrackInstancePropertyBindings;
-class FSequencerSectionPainter;
+
+namespace UE::Sequencer
+{
+	class FChannelModel;
+	class STrackAreaLaneView;
+	struct FCreateTrackLaneViewParams;
+}
 
 /** Utility struct representing a number of selected keys on a single channel */
 struct FExtendKeyMenuParams
@@ -122,7 +130,7 @@ struct ISequencerChannelInterface
 	 * @param Channels              Array of channels and handles that are being shown in the context menu
 	 * @param InSequencer           The currently active sequencer
 	 */
-	virtual void ExtendKeyMenu_Raw(FMenuBuilder& MenuBuilder, TArrayView<const FExtendKeyMenuParams> Parameters, TWeakPtr<ISequencer> InSequencer) const = 0;
+	virtual void ExtendKeyMenu_Raw(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArrayView<const FExtendKeyMenuParams> Parameters, TWeakPtr<ISequencer> InSequencer) const = 0;
 
 	/**
 	 * Extend the section context menu
@@ -132,7 +140,7 @@ struct ISequencerChannelInterface
 	 * @param Sections              Array of sections being shown on the context menu
 	 * @param InSequencer           The currently active sequencer
 	 */
-	virtual void ExtendSectionMenu_Raw(FMenuBuilder& MenuBuilder, TArrayView<const FMovieSceneChannelHandle> Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer) const = 0;
+	virtual void ExtendSectionMenu_Raw(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArrayView<const FMovieSceneChannelHandle> Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer) const = 0;
 
 	/**
 	 * Gather information on how to draw the specified keys
@@ -143,6 +151,15 @@ struct ISequencerChannelInterface
 	 * @param OutKeyDrawParams      Pre-sized array to receive key draw parameters. Invalid key handles will not be assigned to this array. Must match size of InKeyHandles.
 	 */
 	virtual void DrawKeys_Raw(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InKeyHandles, const UMovieSceneSection* InOwner, TArrayView<FKeyDrawParams> OutKeyDrawParams) const = 0;
+
+	/**
+	 * Whether this channel should draw a curve on its editor UI
+	 *
+	 * @param Channel               The channel to query
+	 * @param InSection             The section that owns the channel
+	 * @return true to show the curve on the UI, false otherwise
+	 */
+	virtual bool ShouldShowCurve_Raw(const FMovieSceneChannel* Channel, UMovieSceneSection* InSection) const = 0;
 
 	/**
 	 * Whether this channel supports curve models
@@ -157,13 +174,33 @@ struct ISequencerChannelInterface
 	virtual TUniquePtr<FCurveModel> CreateCurveEditorModel_Raw(const FMovieSceneChannelHandle& Channel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer) const = 0;
 
 	/**
+	 * Create a new channel model for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InChannelName      The identifying name of this channel
+	 * @return (Optional) A new model to be added to a curve editor
+	 */
+	virtual TSharedPtr<UE::Sequencer::FChannelModel> CreateChannelModel_Raw(const FMovieSceneChannelHandle& InChannelHandle, FName InChannelName) const = 0;
+
+	/**
+	 * Create a new channel view for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InWeakModel        The model that is creating the view. Should not be Pinned persistently.
+	 * @param Parameters         View construction parameters
+	 * @return (Optional) A new model to be added to a curve editor
+	 */
+	virtual TSharedPtr<UE::Sequencer::STrackAreaLaneView> CreateChannelView_Raw(const FMovieSceneChannelHandle& InChannelHandle, TWeakPtr<UE::Sequencer::FChannelModel> InWeakModel, const UE::Sequencer::FCreateTrackLaneViewParams& Parameters) const = 0;
+
+	/**
 	 * Draw additional content in addition to keys for a particular channel
 	 *
 	 * @param InChannel          The channel to draw extra display information for
 	 * @param InOwner            The owning movie scene section for this channel
-	 * @param InKeyGeometry      Allocated geometry to draw in
-	 * @param Painter			 The painter to add the created geometry to
+	 * @param PaintArgs          Paint arguments containing the draw element list, time-to-pixel converter and other structures
+	 * @param LayerId            The slate layer to paint onto
+	 * @return The new slate layer ID for subsequent elements to paint onto
 	 */
-	virtual void DrawExtra_Raw(FMovieSceneChannel* InChannel, const UMovieSceneSection* InOwner, const FGeometry& InKeyGeometry, FSequencerSectionPainter& Painter) const = 0;
+	virtual int32 DrawExtra_Raw(FMovieSceneChannel* InChannel, const UMovieSceneSection* InOwner, const FSequencerChannelPaintArgs& PaintArgs, int32 LayerId) const = 0;
 
 };

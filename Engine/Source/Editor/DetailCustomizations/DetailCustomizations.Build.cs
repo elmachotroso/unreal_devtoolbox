@@ -6,8 +6,6 @@ public class DetailCustomizations : ModuleRules
 {
 	public DetailCustomizations(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Editor/DetailCustomizations/Private");	// For PCH includes (because they don't work with relative paths, yet)
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"AppFramework",
@@ -21,7 +19,6 @@ public class DetailCustomizations : ModuleRules
 				"InputCore",
 				"Slate",
 				"SlateCore",
-				"EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"EditorWidgets",
@@ -76,13 +73,15 @@ public class DetailCustomizations : ModuleRules
 				"Media",
 				"Landscape",
 				"LandscapeEditor",
+				"Layers",
 				"PropertyEditor",
 				"GameProjectGeneration",
 				"ComponentVisualizers",
 				"GraphEditor",
 				"MeshMergeUtilities",
 				"MeshReductionInterface",
-            }
+				"GeometryProcessingInterfaces"
+			}
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
@@ -91,7 +90,8 @@ public class DetailCustomizations : ModuleRules
 				"GameProjectGeneration",
 				"MeshMergeUtilities",
 				"MeshReductionInterface",
-            }
+				"GeometryProcessingInterfaces"
+			}
 		);
 	}
 }

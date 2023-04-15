@@ -24,22 +24,27 @@ void FDMXEntityReferenceCustomization::CustomizeHeader(TSharedRef<IPropertyHandl
 {
 	StructHandle = InPropertyHandle;
 
-	// If we should display any children, leave the standard header. Otherwise, create custom picker
-	TSharedRef<SWidget> ValueContent = !ShouldDisplayLibrary()
-		? CreateEntityPickerWidget(InPropertyHandle)
-		: InPropertyHandle->CreatePropertyValueWidget(false);
+	constexpr TCHAR ShowOnlyInnerPropertiesMetaDataName[] = TEXT("ShowOnlyInnerProperties");
+	bool bShowHeader = !InPropertyHandle->HasMetaData(ShowOnlyInnerPropertiesMetaDataName);
+	if (bShowHeader)
+	{
+		// If we should display any children, leave the standard header. Otherwise, create custom picker
+		TSharedRef<SWidget> ValueContent = !ShouldDisplayLibrary()
+			? CreateEntityPickerWidget(InPropertyHandle)
+			: InPropertyHandle->CreatePropertyValueWidget(false);
 
-	InHeaderRow
-		.NameContent()
-		[
-			InPropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MinDesiredWidth(200.0f)
-		.MaxDesiredWidth(400.0f)
-		[
-			ValueContent
-		];
+		InHeaderRow
+			.NameContent()
+			[
+				InPropertyHandle->CreatePropertyNameWidget()
+			]
+			.ValueContent()
+			.MinDesiredWidth(200.0f)
+			.MaxDesiredWidth(400.0f)
+			[
+				ValueContent
+			];
+	}
 }
 
 void FDMXEntityReferenceCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
@@ -127,7 +132,9 @@ FText FDMXEntityReferenceCustomization::GetPickerPropertyLabel() const
 
 bool FDMXEntityReferenceCustomization::GetPickerEnabled() const
 {
-	return GetEntityType() != nullptr;
+	return  
+		StructHandle->IsEditable() && 
+		GetEntityType() != nullptr;
 }
 
 TWeakObjectPtr<UDMXEntity> FDMXEntityReferenceCustomization::GetCurrentEntity() const
@@ -148,7 +155,7 @@ bool FDMXEntityReferenceCustomization::GetEntityIsMultipleValues() const
 {
 	TArray<void*> RawData;
 	StructHandle->AccessRawData(RawData);
-	if (RawData[0] == nullptr)
+	if (RawData.IsEmpty() || RawData[0] == nullptr)
 	{
 		return true;
 	}

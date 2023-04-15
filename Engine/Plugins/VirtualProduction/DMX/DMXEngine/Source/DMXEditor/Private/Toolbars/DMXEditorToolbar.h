@@ -24,11 +24,8 @@ public:
 	/** Returns the current status icon for the blueprint being edited */
 	FSlateIcon GetStatusImage() const;
 
-	/** Returns the current status as text for the blueprint being edited */
-	FText GetStatusTooltip() const;
-
 private:
-	void FillCompileToolbar(FToolBarBuilder& ToolbarBuilder);
+	void FillDMXLibraryToolbar(FToolBarBuilder& ToolbarBuilder);
 
 protected:
 	/** Pointer back to the blueprint editor tool that owns us */

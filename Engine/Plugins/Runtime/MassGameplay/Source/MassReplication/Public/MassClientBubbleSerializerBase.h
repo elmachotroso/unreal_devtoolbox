@@ -10,7 +10,7 @@
 
 class UWorld;
 class UMassSpawnerSubsystem;
-class UMassEntitySubsystem;
+struct FMassEntityManager;
 class IClientBubbleHandlerInterface;
 
 /**
@@ -35,23 +35,22 @@ public:
 	UWorld* GetWorld() const { return World; }
 	UMassSpawnerSubsystem* GetSpawnerSubsystem() const { return SpawnerSubsystem; }
 	UMassReplicationSubsystem* GetReplicationSubsystem() const { return ReplicationSubsystem; }
-	UMassEntitySubsystem* GetEntitySystem() const { return EntitySystem; }
+	FMassEntityManager& GetEntityManagerChecked() const { check(EntityManager); return *EntityManager.Get(); }
 
 	void SetClientHandler(IClientBubbleHandlerInterface& InClientHandler) { ClientHandler = &InClientHandler; }
 	IClientBubbleHandlerInterface* GetClientHandler() const { return ClientHandler; }
 
 private:
 	UPROPERTY(Transient)
-	UWorld* World = nullptr;
+	TObjectPtr<UWorld> World = nullptr;
 
 	UPROPERTY(Transient)
-	UMassSpawnerSubsystem* SpawnerSubsystem = nullptr;
+	TObjectPtr<UMassSpawnerSubsystem> SpawnerSubsystem = nullptr;
+
+	TSharedPtr<FMassEntityManager> EntityManager;
 
 	UPROPERTY(Transient)
-	UMassEntitySubsystem* EntitySystem = nullptr;
-
-	UPROPERTY(Transient)
-	UMassReplicationSubsystem* ReplicationSubsystem = nullptr;
+	TObjectPtr<UMassReplicationSubsystem> ReplicationSubsystem = nullptr;
 
 	/** Pointer to the IClientBubbleHandlerInterface derived class in the class derived from this one */
 	IClientBubbleHandlerInterface* ClientHandler = nullptr;

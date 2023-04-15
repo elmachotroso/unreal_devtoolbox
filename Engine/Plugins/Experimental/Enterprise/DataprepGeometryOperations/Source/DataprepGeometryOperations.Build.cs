@@ -6,6 +6,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public DataprepGeometryOperations(ReadOnlyTargetRules Target) : base(Target)
 		{
+			ShortName = "DataprepGO";
+
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -35,7 +37,6 @@ namespace UnrealBuildTool.Rules
 			if (bWithProxyLOD)
 			{
 				// For boost:: and TBB:: code
-				bEnableUndefinedIdentifierWarnings = false;
 				bUseRTTI = true;
 
 				PrivateDependencyModuleNames.AddRange(

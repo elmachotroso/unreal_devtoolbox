@@ -2,11 +2,17 @@
 
 #pragma once
 
+#include "Engine/EngineCustomTimeStep.h"
 #include "GenlockedCustomTimeStep.h"
+#include "HAL/Platform.h"
+#include "Misc/FrameRate.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "GenlockedFixedRateCustomTimeStep.generated.h"
 
 class UEngine;
+class UObject;
 
 /**
  * Control the Engine TimeStep via a fixed frame rate.
@@ -46,6 +52,14 @@ public:
 	/** Desired frame rate */
 	UPROPERTY(EditAnywhere, Category = "Timing")
 	FFrameRate FrameRate;
+
+	/** Indicates that this custom time step should block to enforce the specified frame rate. Set to false if this is enforced elsewhere. */
+	UPROPERTY(EditAnywhere, Category = "Timing")
+	bool bShouldBlock;
+
+	/** When true, delta time will always be 1/FrameRate, regardless of how much real time has elapsed */
+	UPROPERTY(EditAnywhere, Category = "Timing")
+	bool bForceSingleFrameDeltaTime;
 
 private:
 	uint32 LastSyncCountDelta;

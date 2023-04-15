@@ -22,8 +22,64 @@ namespace CSVStats
 			return commandLine;
 		}
 
+		private List<string> GetArgList(string inCommandLine)
+		{
+			List<string> args = new List<string>();
+			bool bInQuotes = false;
+			string currentArg = "";
+			for (int i=0; i< inCommandLine.Length; i++)
+			{
+				char c = inCommandLine[i];
+				if (c=='"')
+				{
+					bInQuotes = !bInQuotes;
+				}
+				else
+				{
+					if (bInQuotes)
+					{
+						currentArg += c;
+					}
+					else
+					{ 
+						if (Char.IsWhiteSpace(c))
+						{
+							if (currentArg.Length > 0)
+							{
+								args.Add(currentArg);
+								currentArg = "";
+							}
+						}
+						else
+						{
+							currentArg += c;
+						}
+
+					}
+				}
+			}
+			if (currentArg.Length > 0)
+			{
+				args.Add(currentArg);
+			}
+			return args;
+		}
+
 		public CommandLine(string[] args)
 		{
+			// Read commandline as a response file if specified (must be the only two args)
+			if (args.Length==2 && args[0].ToLower()=="-response")
+			{
+				string [] lines = File.ReadAllLines(args[1]);
+				List<string> argList = new List<string>();
+				foreach (string line in lines)
+				{
+					argList.AddRange(GetArgList(line));
+				}
+				args = argList.ToArray();
+			}
+
+			// Write the commandline as a string for reporting purposes
 			commandLine = "";
 			foreach (string arg in args)
 			{
@@ -36,6 +92,8 @@ namespace CSVStats
 					commandLine += arg + " ";
 				}
 			}
+
+			// Parse the commandline
 			CommandLineArgs = new Dictionary<string, string>();
 			for (int i = 0; i < args.Length; i++)
 			{
@@ -96,6 +154,15 @@ namespace CSVStats
 			return CommandLineArgs.ContainsKey(key.ToLower());
 		}
 
+		public bool? GetOptionalBoolArg(string key)
+		{
+			if ( CommandLineArgs.ContainsKey(key.ToLower()) )
+			{
+				return CommandLineArgs[key.ToLower()] == "1";
+			}
+			return null;
+		}
+
 		public string GetArg(string key, string defaultValue)
 		{
 			string lowerKey = key.ToLower();
@@ -115,11 +182,10 @@ namespace CSVStats
 			{
 				return CommandLineArgs[lowerKey];
 			}
-			else if (mandatory)
+			if (mandatory)
 			{
 				Console.WriteLine("Missing parameter " + key);
 			}
-
 			return "";
 		}
 
@@ -184,6 +250,12 @@ namespace CSVStats
 			return commandLine.GetBoolArg(key);
         }
 
+		protected bool? GetOptionalBoolArg(string key)
+		{
+			return commandLine.GetOptionalBoolArg(key);
+		}
+
+
 		protected string GetArg(string key, string defaultValue)
 		{
 			return commandLine.GetArg(key, defaultValue);
@@ -193,6 +265,20 @@ namespace CSVStats
         {
 			return commandLine.GetArg(key, mandatory);
         }
+
+		protected List<string> GetListArg(string key, char separator=';', bool convertToLowercase=false, bool mandatory=false)
+		{
+			string listStr=commandLine.GetArg(key, mandatory);
+			if (listStr=="")
+			{
+				return new List<string>();
+			}
+			if (convertToLowercase)
+			{
+				listStr = listStr.ToLower();
+			}
+			return listStr.Split(separator).ToList();
+		}
 
 		protected void WriteLine(String message, params object[] args)
         {
@@ -242,5 +328,59 @@ namespace CSVStats
 		{
 			commandLine = new CommandLine(args);
 		}
+	}
+
+
+	public class PerfLog
+	{
+		public PerfLog(bool inLoggingEnabled, string inLogPrefix=null)
+		{
+			stopWatch = Stopwatch.StartNew();
+			previousTime = 0.0;
+			loggingEnabled = inLoggingEnabled;
+			if (inLogPrefix != null)
+			{
+				logPrefix = inLogPrefix + " - ";
+			}
+		}
+
+		public double LogTiming(string description, bool newLine = false)
+		{
+
+			double currentTime = stopWatch.Elapsed.TotalSeconds;
+			double elapsed = currentTime - previousTime;
+
+			if (loggingEnabled)
+			{
+				Console.WriteLine("[PerfLog] " + logPrefix + String.Format("{0,-25} : {1,-10}", description, (elapsed * 1000.0).ToString("0.0") + "ms"), 70);
+				if (newLine)
+				{
+					Console.WriteLine();
+				}
+			}
+			previousTime = currentTime;
+			return elapsed;
+		}
+
+		public double LogTotalTiming(bool seconds=true)
+		{
+			double elapsed = stopWatch.Elapsed.TotalSeconds;
+			if (loggingEnabled)
+			{
+				if (seconds)
+				{
+					Console.WriteLine("[PerfLog] "+logPrefix+"TOTAL: " + elapsed.ToString("0.0") + "s\n");
+				}
+				else
+				{
+					Console.WriteLine("[PerfLog] " + logPrefix + "TOTAL: " + (elapsed*1000.0).ToString("0.0") + "ms\n");
+				}
+			}
+			return elapsed;
+		}
+		Stopwatch stopWatch;
+		double previousTime;
+		bool loggingEnabled;
+		string logPrefix = "";
 	}
 }

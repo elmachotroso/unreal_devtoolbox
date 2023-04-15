@@ -6,7 +6,6 @@
 
 #include "Engine/Texture2D.h"
 
-#include "Serialization/MemoryWriter.h"
 #include "Misc/App.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
@@ -23,7 +22,8 @@
 #include "EngineUtils.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
-#include "DerivedDataCacheInterface.h"
+#include "DerivedDataCache.h"
+#include "DerivedDataRequestOwner.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "Streaming/Texture2DStreamOut_AsyncReallocate.h"
@@ -48,11 +48,13 @@
 #include "VT/VirtualTexturePoolConfig.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "VT/VirtualTextureScalability.h"
-#include "Engine/Public/ImageUtils.h"
+#include "ImageUtils.h"
 #include "TextureCompiler.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/StrongObjectPtr.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Texture2D)
 
 #if WITH_EDITORONLY_DATA
 #include "Misc/TVariant.h"
@@ -69,9 +71,13 @@ UTexture2D::UTexture2D(const FObjectInitializer& ObjectInitializer)
 		[this]()-> FTexturePlatformData* { return GetPlatformData(); },
 		[this](FTexturePlatformData* InPlatformData) { SetPlatformData(InPlatformData); })
 #endif
+	, ResourceMem(nullptr)
 {
 	PendingUpdate = nullptr;
 	SRGB = true;
+
+	// AddressX is default-constructed by Uproperty to enum value 0 which is TA_Wrap
+	check( AddressX == TA_Wrap );
 }
 
 /*-----------------------------------------------------------------------------
@@ -156,29 +162,49 @@ void FTexture2DMipMap::Serialize(FArchive& Ar, UObject* Owner, int32 MipIdx)
 	if (!Ar.IsFilterEditorOnly())
 	{
 		Ar << FileRegionType;
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 		Ar << bPagedToDerivedData;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	}
+
+	// Streaming mips are saved with a size of 0 because they are stored separately.
+	// IsBulkDataLoaded() returns true for this empty bulk data. Remove the empty
+	// bulk data to allow unloaded streaming mips to be detected.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	const bool bLocalPagedToDerivedData = bPagedToDerivedData;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	if (BulkData.GetBulkDataSize() == 0 && bLocalPagedToDerivedData)
+	{
+		BulkData.RemoveBulkData();
 	}
 #endif // #if WITH_EDITORONLY_DATA
 }
 
 #if WITH_EDITORONLY_DATA
-int64 FTexture2DMipMap::StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName, bool bReplaceExistingDDC)
+int64 FTexture2DMipMap::StoreInDerivedDataCache(const FStringView InKey, const FStringView InName, const bool bInReplaceExisting)
 {
-	int64 BulkDataSizeInBytes = BulkData.GetBulkDataSize();
+	using namespace UE;
+	using namespace UE::DerivedData;
+
+	const int64 BulkDataSizeInBytes = BulkData.GetBulkDataSize();
 	check(BulkDataSizeInBytes > 0);
 
-	TArray64<uint8> DerivedData;
-	FMemoryWriter64 Ar(DerivedData, /*bIsPersistent=*/ true);
-	{
-		void* BulkMipData = BulkData.Lock(LOCK_READ_ONLY);
-		Ar.Serialize(BulkMipData, BulkDataSizeInBytes);
-		BulkData.Unlock();
-	}
-	const int64 Result = DerivedData.Num();
-	GetDerivedDataCacheRef().Put(*InDerivedDataKey, DerivedData, TextureName, bReplaceExistingDDC);
+	const FSharedString Name = InName;
+	const FCacheKey Key = ConvertLegacyCacheKey(InKey);
+	FValue Value = FValue::Compress(FSharedBuffer::MakeView(BulkData.Lock(LOCK_READ_ONLY), BulkDataSizeInBytes));
+	BulkData.Unlock();
+
+	FRequestOwner AsyncOwner(EPriority::Normal);
+	const ECachePolicy Policy = bInReplaceExisting ? ECachePolicy::Store : ECachePolicy::Default;
+	GetCache().PutValue({{Name, Key, MoveTemp(Value), Policy}}, AsyncOwner);
+	AsyncOwner.KeepAlive();
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	bPagedToDerivedData = true;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	DerivedData = FDerivedData(Name, Key);
 	BulkData.RemoveBulkData();
-	return Result;
+	return BulkDataSizeInBytes;
 }
 #endif // #if WITH_EDITORONLY_DATA
 
@@ -274,7 +300,7 @@ const FTexturePlatformData* UTexture2D::GetPlatformData() const
 		TRACE_CPUPROFILER_EVENT_SCOPE(UTexture2D::GetPlatformDataStall);
 		UE_LOG(LogTexture, Log, TEXT("Call to GetPlatformData() is forcing a wait on data that is not yet ready."));
 
-		FText Msg = FText::Format(LOCTEXT("WaitOnTextureCompilation", "Waiting on texture compilation (%s) ..."), FText::FromString(GetName()));
+		FText Msg = FText::Format(LOCTEXT("WaitOnTextureCompilation", "Waiting on texture compilation {0} ..."), FText::FromString(GetName()));
 		FScopedSlowTask Progress(1.f, Msg, true);
 		Progress.MakeDialog(true);
 		uint64 StartTime = FPlatformTime::Cycles64();
@@ -424,18 +450,6 @@ void UTexture2D::Serialize(FArchive& Ar)
 	{
 		SerializeCookedPlatformData(Ar);
 	}
-
-#if WITH_EDITOR	
-	if (Ar.IsLoading() && !Ar.IsTransacting() && !bCooked && !GetOutermost()->HasAnyPackageFlags(PKG_ReloadingForCooker))
-	{
-		// The composite texture may not have been loaded yet. We have to defer caching platform
-		// data until post load.
-		if (CompositeTexture == NULL || CompositeTextureMode == CTM_Disabled || CompositeTexture->HasAnyFlags(RF_LoadCompleted))
-		{
-			BeginCachePlatformData();
-		}
-	}
-#endif // #if WITH_EDITOR
 }
 
 int32 UTexture2D::GetNumResidentMips() const
@@ -491,27 +505,6 @@ void UTexture2D::PostEditUndo()
 
 void UTexture2D::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-#if WITH_EDITORONLY_DATA
-	if (!Source.IsPowerOfTwo() && (PowerOfTwoMode == ETexturePowerOfTwoSetting::None))
-	{
-		// Force NPT textures to have no mipmaps.
-		MipGenSettings = TMGS_NoMipmaps;
-		NeverStream = true;
-		if (VirtualTextureStreaming)
-		{
-			UE_LOG(LogTexture, Warning, TEXT("VirtualTextureStreaming not supported for \"%s\", texture size is not a power-of-2"), *GetName());
-			VirtualTextureStreaming = false;
-		}
-	}
-
-	// Make sure settings are correct for LUT textures.
-	if(LODGroup == TEXTUREGROUP_ColorLookupTable)
-	{
-		MipGenSettings = TMGS_NoMipmaps;
-		SRGB = false;
-	}
-#endif // #if WITH_EDITORONLY_DATA
-
 	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UTexture2D, AddressX)
 		|| PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UTexture2D, AddressY))
 	{
@@ -528,6 +521,9 @@ float UTexture2D::GetAverageBrightness(bool bIgnoreTrueBlack, bool bUseGrayscale
 {
 	float AvgBrightness = -1.0f;
 #if WITH_EDITOR
+
+	// @todo Oodle : GetAverageColor is done in a few places ; factor out to an FImage helper?
+
 	TArray64<uint8> RawData;
 	// use the source art if it exists
 	if (Source.IsValid() && Source.GetFormat() == TSF_BGRA8)
@@ -545,8 +541,7 @@ float UTexture2D::GetAverageBrightness(bool bIgnoreTrueBlack, bool bUseGrayscale
 		int32 SizeY = Source.GetSizeY();
 		double PixelSum = 0.0f;
 		int32 Divisor = SizeX * SizeY;
-		FColor* ColorData = (FColor*)RawData.GetData();
-		FLinearColor CurrentColor;
+		const FColor* ColorData = (const FColor*)RawData.GetData();
 		for (int32 Y = 0; Y < SizeY; Y++)
 		{
 			for (int32 X = 0; X < SizeX; X++)
@@ -558,6 +553,7 @@ float UTexture2D::GetAverageBrightness(bool bIgnoreTrueBlack, bool bUseGrayscale
 					continue;
 				}
 
+				FLinearColor CurrentColor;
 				if (SRGB == true)
 				{
 					CurrentColor = bUseLegacyGamma ? FLinearColor::FromPow22Color(*ColorData) : FLinearColor(*ColorData);
@@ -611,11 +607,7 @@ void UTexture2D::PostLoad()
 	{
 		if (FTextureCompilingManager::Get().IsAsyncCompilationAllowed(this))
 		{
-			// Might already have been triggered during serialization
-			if (!PrivatePlatformData)
-			{
-				BeginCachePlatformData();
-			}
+			BeginCachePlatformData();
 		}
 		else
 		{
@@ -1057,6 +1049,7 @@ UTexture2D* UTexture2D::CreateTransient(int32 InSizeX, int32 InSizeY, EPixelForm
 		NewTexture->SetPlatformData(new FTexturePlatformData());
 		NewTexture->GetPlatformData()->SizeX = InSizeX;
 		NewTexture->GetPlatformData()->SizeY = InSizeY;
+		NewTexture->GetPlatformData()->SetNumSlices(1);
 		NewTexture->GetPlatformData()->PixelFormat = InFormat;
 
 		// Allocate first mipmap.
@@ -1066,8 +1059,9 @@ UTexture2D* UTexture2D::CreateTransient(int32 InSizeX, int32 InSizeY, EPixelForm
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
 		Mip->SizeX = InSizeX;
 		Mip->SizeY = InSizeY;
+		Mip->SizeZ = 1;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
-		Mip->BulkData.Realloc(NumBlocksX * NumBlocksY * GPixelFormats[InFormat].BlockBytes);
+		Mip->BulkData.Realloc((int64)NumBlocksX * NumBlocksY * GPixelFormats[InFormat].BlockBytes);
 		Mip->BulkData.Unlock();
 	}
 	else
@@ -1084,6 +1078,9 @@ int32 UTexture2D::Blueprint_GetSizeX() const
 	// In that state, the texture size is 0. Here we compute the resolution once cooked.
 	if (!GetSizeX())
 	{
+		//beware: this is wrong in a variety of ways
+		//	MaxTextureSize, PadForPow2, Downscale, etc. are not applied
+
 		const UTextureLODSettings* LODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
 		const int32 CookedLODBias = LODSettings->CalculateLODBias(Source.SizeX, Source.SizeY, MaxTextureSize, LODGroup, LODBias, 0, MipGenSettings, IsCurrentlyVirtualTextured());
 		return FMath::Max<int32>(Source.SizeX >> CookedLODBias, 1);
@@ -1226,6 +1223,19 @@ bool UTexture2D::IsCurrentlyVirtualTextured() const
 	return false;
 }
 
+FVirtualTexture2DResource::FVirtualTexture2DResource()
+	: AllocatedVT(nullptr)
+	, VTData(nullptr)
+	, TextureOwner(nullptr)
+	, ProducerHandle()
+	, FirstMipToUse(0)
+{
+	//NOTE: Empty constructor for use with media textures (which do not derive from UTexture2D).
+
+	// Initialize this resource FeatureLevel, so it gets re-created on FeatureLevel changes
+	SetFeatureLevel(GMaxRHIFeatureLevel);
+}
+
 FVirtualTexture2DResource::FVirtualTexture2DResource(const UTexture2D* InOwner, FVirtualTextureBuiltData* InVTData, int32 InFirstMipToUse)
 	: AllocatedVT(nullptr)
 	, VTData(InVTData)
@@ -1240,6 +1250,7 @@ FVirtualTexture2DResource::FVirtualTexture2DResource(const UTexture2D* InOwner, 
 	FirstMipToUse = FMath::Min((int32)MaxMip, InFirstMipToUse);
 
 	bSRGB = InOwner->SRGB;
+	bGreyScaleFormat = ( InOwner->CompressionSettings == TC_Grayscale || InOwner->CompressionSettings == TC_Alpha );
 
 	// Initialize this resource FeatureLevel, so it gets re-created on FeatureLevel changes
 	SetFeatureLevel(GMaxRHIFeatureLevel);
@@ -1381,15 +1392,26 @@ void FVirtualTexture2DResource::InitializeEditorResources(IVirtualTexture* InVir
 			}
 		}
 
-		ETextureCreateFlags TexCreateFlags = (TextureOwner->SRGB ? TexCreate_SRGB : TexCreate_None) | (TextureOwner->bNotOfflineProcessed ? TexCreate_None : TexCreate_OfflineProcessed);
+		FString Name = TextureOwner->GetName();
+
+		FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(*Name, MipWidthInTiles * TileSizeInPixels, MipHeightInTiles * TileSizeInPixels, PixelFormat);
+
+		if (TextureOwner->SRGB)
+		{
+			Desc.AddFlags(ETextureCreateFlags::SRGB);
+		}
+		if (!TextureOwner->bNotOfflineProcessed)
+		{
+			Desc.AddFlags(ETextureCreateFlags::OfflineProcessed);
+		}
 		if (TextureOwner->bNoTiling)
 		{
-			TexCreateFlags |= TexCreate_NoTiling;
+			Desc.AddFlags(ETextureCreateFlags::NoTiling);
 		}
 
-		FString Name = TextureOwner->GetName();
-		FRHIResourceCreateInfo CreateInfo(*Name);
-		FTexture2DRHIRef Texture2DRHI = RHICreateTexture2D(MipWidthInTiles * TileSizeInPixels, MipHeightInTiles * TileSizeInPixels, PixelFormat, 1, 1, TexCreateFlags, CreateInfo);
+		FTexture2DRHIRef Texture2DRHI = RHICreateTexture(Desc);
+
 		FRHICommandListImmediate& RHICommandList = FRHICommandListExecutor::GetImmediateCommandList();
 
 		TArray<IVirtualTextureFinalizer*> Finalizers;
@@ -1414,7 +1436,6 @@ void FVirtualTexture2DResource::InitializeEditorResources(IVirtualTexture* InVir
 		}
 
 		{
-			FMemMark Mark(FMemStack::Get());
 			FRDGBuilder GraphBuilder(RHICommandList);
 			for (IVirtualTextureFinalizer* Finalizer : Finalizers)
 			{
@@ -1430,7 +1451,13 @@ void FVirtualTexture2DResource::InitializeEditorResources(IVirtualTexture* InVir
 			check(MipWidth <= MipWidthInTiles * TileSizeInPixels);
 			check(MipHeight <= MipHeightInTiles * TileSizeInPixels);
 
-			FTexture2DRHIRef ResizedTexture2DRHI = RHICreateTexture2D(MipWidth, MipHeight, PixelFormat, 1, 1, TexCreateFlags, ERHIAccess::CopyDest, CreateInfo);
+			const FRHITextureCreateDesc ResizedDesc =
+				FRHITextureCreateDesc::Create2D(*Name, MipWidth, MipHeight, PixelFormat)
+				.SetFlags(Desc.Flags)
+				.SetInitialState(ERHIAccess::CopyDest);
+
+			FTexture2DRHIRef ResizedTexture2DRHI = RHICreateTexture(ResizedDesc);
+
 			FRHICopyTextureInfo CopyInfo;
 			CopyInfo.Size = FIntVector(MipWidth, MipHeight, 1);
 
@@ -1448,7 +1475,7 @@ void FVirtualTexture2DResource::InitializeEditorResources(IVirtualTexture* InVir
 		RHIBindDebugLabelName(TextureRHI, *Name);
 		RHIUpdateTextureReference(TextureOwner->TextureReference.TextureReferenceRHI, TextureRHI);
 
-		bIgnoreGammaConversions = !TextureOwner->SRGB && TextureOwner->CompressionSettings != TC_HDR && TextureOwner->CompressionSettings != TC_HalfFloat;
+		bIgnoreGammaConversions = !TextureOwner->SRGB && !IsHDR(PixelFormat);
 
 		// re factored to ensure this is set earlier...make sure it's correct
 		ensure(bSRGB == TextureOwner->SRGB);
@@ -1593,7 +1620,7 @@ bool UTexture2D::StreamIn(int32 NewMipCount, bool bHighPrio)
 		if (!CustomMipDataProvider && GUseGenericStreamingPath != 1)
 		{
 	#if WITH_EDITORONLY_DATA
-			if (FPlatformProperties::HasEditorOnlyData() && !GetOutermost()->bIsCookedForEditor)
+			if (FPlatformProperties::HasEditorOnlyData() && !GetOutermost()->bIsCookedForEditor && !GetOutermost()->HasAnyPackageFlags(PKG_Cooked))
 			{
 				if (GRHISupportsAsyncTextureCreation)
 				{
@@ -1630,7 +1657,7 @@ bool UTexture2D::StreamIn(int32 NewMipCount, bool bHighPrio)
 			FTextureMipDataProvider* DefaultMipDataProvider = nullptr;
 
 	#if WITH_EDITORONLY_DATA
-			if (FPlatformProperties::HasEditorOnlyData() && !GetOutermost()->bIsCookedForEditor)
+			if (FPlatformProperties::HasEditorOnlyData() && !GetOutermost()->bIsCookedForEditor && !GetOutermost()->HasAnyPackageFlags(PKG_Cooked))
 			{
 				DefaultMipDataProvider = new FTexture2DMipDataProvider_DDC(this);
 			}
@@ -1678,3 +1705,4 @@ bool UTexture2D::StreamOut(int32 NewMipCount)
 }
 
 #undef LOCTEXT_NAMESPACE
+

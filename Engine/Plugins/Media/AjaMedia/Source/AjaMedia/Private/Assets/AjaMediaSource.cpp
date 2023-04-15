@@ -3,14 +3,12 @@
 #include "AjaMediaSource.h"
 
 #include "Aja.h"
+#include "AjaDeviceProvider.h"
 #include "AjaMediaPrivate.h"
-
 #include "MediaIOCorePlayerBase.h"
-#include "UObject/EnterpriseObjectVersion.h"
 
 UAjaMediaSource::UAjaMediaSource()
-	: TimecodeFormat(EMediaIOTimecodeFormat::None)
-	, bCaptureWithAutoCirculating(true)
+	: bCaptureWithAutoCirculating(true)
 	, bCaptureAncillary(false)
 	, MaxNumAncillaryFrameBuffer(8)
 	, bCaptureAudio(false)
@@ -24,6 +22,12 @@ UAjaMediaSource::UAjaMediaSource()
 	, bEncodeTimecodeInTexel(false)
 {
 	MediaConfiguration.bIsInput = true;
+	const FAjaDeviceProvider DeviceProvider;
+	const TArray<FMediaIOConfiguration> Configurations = DeviceProvider.GetConfigurations();
+	if (Configurations.Num())
+	{
+		MediaConfiguration = Configurations[0];
+	}
 }
 
 /*
@@ -101,7 +105,7 @@ int64 UAjaMediaSource::GetMediaOption(const FName& Key, int64 DefaultValue) cons
 	}
 	if (Key == AjaMediaOption::TimecodeFormat)
 	{
-		return (int64)TimecodeFormat;
+		return (int64)AutoDetectableTimecodeFormat;
 	}
 	if (Key == AjaMediaOption::MaxAncillaryFrameBuffer)
 	{
@@ -185,11 +189,23 @@ FString UAjaMediaSource::GetUrl() const
 bool UAjaMediaSource::Validate() const
 {
 	FString FailureReason;
-	if (!MediaConfiguration.IsValid())
+	if (bAutoDetectInput)
 	{
-		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaConfiguration '%s' is invalid."), *GetName());
-		return false;
+		if (!MediaConfiguration.MediaConnection.IsValid())
+		{
+			UE_LOG(LogAjaMedia, Warning, TEXT("The MediaConfiguration '%s' is invalid."), *GetName());
+			return false;
+		}
 	}
+	else
+	{
+		if (!MediaConfiguration.IsValid())
+		{
+			UE_LOG(LogAjaMedia, Warning, TEXT("The MediaConfiguration '%s' is invalid."), *GetName());
+			return false;
+		}
+	}
+	
 
 	if (!FAja::IsInitialized())
 	{
@@ -205,7 +221,9 @@ bool UAjaMediaSource::Validate() const
 
 	TUniquePtr<AJA::AJADeviceScanner> Scanner = MakeUnique<AJA::AJADeviceScanner>();
 	AJA::AJADeviceScanner::DeviceInfo DeviceInfo;
-	if (!Scanner->GetDeviceInfo(MediaConfiguration.MediaConnection.Device.DeviceIdentifier, DeviceInfo))
+	FMediaIODevice Device = MediaConfiguration.MediaConnection.Device;
+
+	if (!Scanner->GetDeviceInfo(Device.DeviceIdentifier, DeviceInfo))
 	{
 		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' use the device '%s' that doesn't exist on this machine."), *GetName(), *MediaConfiguration.MediaConnection.Device.DeviceName.ToString());
 		return false;
@@ -229,9 +247,9 @@ bool UAjaMediaSource::Validate() const
 		return false;
 	}
 
-	if (bUseTimeSynchronization && TimecodeFormat == EMediaIOTimecodeFormat::None)
+	if (bUseTimeSynchronization && AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None)
 	{
-		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' use time synchronization but doesn't enabled the timecode."), *GetName());
+		UE_LOG(LogAjaMedia, Warning, TEXT("The MediaSource '%s' uses time synchronization but hasn't enabled the timecode."), *GetName());
 		return false;
 	}
 
@@ -262,12 +280,12 @@ bool UAjaMediaSource::CanEditChange(const FProperty* InProperty) const
 
 	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UAjaMediaSource, bEncodeTimecodeInTexel))
 	{
-		return TimecodeFormat != EMediaIOTimecodeFormat::None && bCaptureVideo;
+		return AutoDetectableTimecodeFormat != EMediaIOAutoDetectableTimecodeFormat::None && bCaptureVideo;
 	}
 
 	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UTimeSynchronizableMediaSource, bUseTimeSynchronization))
 	{
-		return TimecodeFormat != EMediaIOTimecodeFormat::None;
+		return AutoDetectableTimecodeFormat != EMediaIOAutoDetectableTimecodeFormat::None;
 	}
 
 	return true;
@@ -275,9 +293,9 @@ bool UAjaMediaSource::CanEditChange(const FProperty* InProperty) const
 
 void UAjaMediaSource::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAjaMediaSource, TimecodeFormat))
+	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAjaMediaSource, AutoDetectableTimecodeFormat))
 	{
-		if (TimecodeFormat == EMediaIOTimecodeFormat::None)
+		if (AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None)
 		{
 			bUseTimeSynchronization = false;
 			bEncodeTimecodeInTexel = false;
@@ -287,3 +305,28 @@ void UAjaMediaSource::PostEditChangeChainProperty(struct FPropertyChangedChainEv
 	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 }
 #endif //WITH_EDITOR
+
+void UAjaMediaSource::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (TimecodeFormat_DEPRECATED != EMediaIOTimecodeFormat::None)
+	{
+		switch (TimecodeFormat_DEPRECATED)
+		{
+			case EMediaIOTimecodeFormat::LTC:
+				AutoDetectableTimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::LTC;
+				break;
+			case EMediaIOTimecodeFormat::VITC:
+				AutoDetectableTimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::VITC;
+				break;
+			default:
+				break;
+		}
+		TimecodeFormat_DEPRECATED = EMediaIOTimecodeFormat::None;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
+}

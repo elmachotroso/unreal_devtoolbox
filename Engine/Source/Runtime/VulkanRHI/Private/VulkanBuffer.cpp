@@ -15,6 +15,18 @@
 static TMap<FVulkanResourceMultiBuffer*, VulkanRHI::FPendingBufferLock> GPendingLockIBs;
 static FCriticalSection GPendingLockIBsMutex;
 
+static FORCEINLINE VulkanRHI::FPendingBufferLock GetPendingBufferLock(FVulkanResourceMultiBuffer* Buffer)
+{
+	VulkanRHI::FPendingBufferLock PendingLock;
+
+	// Found only if it was created for Write
+	FScopeLock ScopeLock(&GPendingLockIBsMutex);
+	const bool bFound = GPendingLockIBs.RemoveAndCopyValue(Buffer, PendingLock);
+
+	checkf(bFound, TEXT("Mismatched Buffer Lock/Unlock!"));
+	return PendingLock;
+}
+
 static FORCEINLINE void UpdateVulkanBufferStats(uint64_t Size, VkBufferUsageFlags Usage, bool Allocating)
 {
 	const bool bUniformBuffer = !!(Usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -112,7 +124,7 @@ VkBufferUsageFlags FVulkanResourceMultiBuffer::UEToVKBufferUsageFlags(FVulkanDev
 	return OutVkUsage;
 }
 
-FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, uint32 InSize, EBufferUsageFlags InUEUsage, uint32 InStride, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList, const FRHITransientHeapAllocation* InTransientHeapAllocation)
+FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, uint32 InSize, EBufferUsageFlags InUEUsage, uint32 InStride, FRHIResourceCreateInfo& CreateInfo, FRHICommandListBase* InRHICmdList, const FRHITransientHeapAllocation* InTransientHeapAllocation)
 	: FRHIBuffer(InSize, InUEUsage, InStride)
 	, VulkanRHI::FDeviceChild(InDevice)
 	, BufferUsageFlags(0)
@@ -127,13 +139,15 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 	
 	if (!bZeroSize)
 	{
+		check(InDevice);
+
 		const bool bVolatile = EnumHasAnyFlags(InUEUsage, BUF_Volatile);
 		if (bVolatile)
 		{
-			bool bRenderThread = IsInRenderingThread();
+			check(InRHICmdList);
 
 			// Get a dummy buffer as sometimes the high-level misbehaves and tries to use SRVs off volatile buffers before filling them in...
-			void* Data = Lock(bRenderThread, RLM_WriteOnly, InSize, 0);
+			void* Data = Lock(*InRHICmdList, RLM_WriteOnly, InSize, 0);
 
 			if (CreateInfo.ResourceArray)
 			{
@@ -145,20 +159,18 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 				FMemory::Memzero(Data, InSize);
 			}
 
-			Unlock(bRenderThread);
+			Unlock(*InRHICmdList);
 		}
 		else
 		{
-			VkDevice VulkanDevice = InDevice->GetInstanceHandle();
-
 			NumBuffers = GetNumBuffersFromUsage(InUEUsage);
 			check(NumBuffers <= UE_ARRAY_COUNT(Buffers));
 
 			const bool bUnifiedMem = InDevice->HasUnifiedMemory();
+			const uint32 BufferAlignment = FMemoryManager::CalculateBufferAlignment(*InDevice, InUEUsage, bZeroSize);
 
 			if (InTransientHeapAllocation != nullptr)
 			{
-				const uint32 BufferAlignment = FMemoryManager::CalculateBufferAlignment(*InDevice, BufferUsageFlags);
 				const uint32 AlignedSize = Align(InSize, BufferAlignment);
 
 				Buffers[0] = FVulkanTransientHeap::GetVulkanAllocation(*InTransientHeapAllocation);
@@ -171,6 +183,8 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 					Buffers[Index].Size = InSize;
 					check((Buffers[Index].Offset + InSize) <= InTransientHeapAllocation->Size);
 				}
+				
+				VULKAN_SET_DEBUG_NAME((*InDevice), VK_OBJECT_TYPE_BUFFER, Buffers[0].VulkanHandle, TEXT("%s:(FVulkanResourceMultiBuffer*)0x%p:Buffer[1,2,3]"), CreateInfo.DebugName ? CreateInfo.DebugName : TEXT("?"), this);
 			}
 			else
 			{
@@ -182,10 +196,11 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 
 				for (uint32 Index = 0; Index < NumBuffers; ++Index)
 				{
-					if (!InDevice->GetMemoryManager().AllocateBufferPooled(Buffers[Index], this, InSize, BufferUsageFlags, BufferMemFlags, EVulkanAllocationMetaMultiBuffer, __FILE__, __LINE__))
+					if (!InDevice->GetMemoryManager().AllocateBufferPooled(Buffers[Index], nullptr, InSize, BufferAlignment, BufferUsageFlags, BufferMemFlags, EVulkanAllocationMetaMultiBuffer, __FILE__, __LINE__))
 					{
 						InDevice->GetMemoryManager().HandleOOM();
 					}
+					VULKAN_SET_DEBUG_NAME((*InDevice), VK_OBJECT_TYPE_BUFFER, Buffers[Index].VulkanHandle, TEXT("%s:(FVulkanResourceMultiBuffer*)0x%p:Buffer[%d]"), CreateInfo.DebugName ? CreateInfo.DebugName : TEXT("?"), this, Index);
 				}
 			}
 
@@ -194,14 +209,10 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 			Current.Offset = Current.Alloc.Offset;
 			Current.Size = InSize;
 
-			bool bRenderThread = (InRHICmdList == nullptr);
-			if (bRenderThread)
-			{
-				ensure(IsInRenderingThread());
-			}
-
 			if (CreateInfo.ResourceArray)
 			{
+				check(InRHICmdList);
+
 				uint32 CopyDataSize = FMath::Min(InSize, CreateInfo.ResourceArray->GetResourceDataSize());
 				// We know this buffer is not in use by GPU atm. If we do have a direct access initialize it without extra copies
 				if (bUnifiedMem)
@@ -211,9 +222,9 @@ FVulkanResourceMultiBuffer::FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, 
 				}
 				else
 				{
-					void* Data = Lock(bRenderThread, RLM_WriteOnly, CopyDataSize, 0);
+					void* Data = Lock(*InRHICmdList, RLM_WriteOnly, CopyDataSize, 0);
 					FMemory::Memcpy(Data, CreateInfo.ResourceArray->GetResourceData(), CopyDataSize);
-					Unlock(bRenderThread);
+					Unlock(*InRHICmdList);
 				}
 
 				CreateInfo.ResourceArray->Discard();
@@ -236,15 +247,22 @@ FVulkanResourceMultiBuffer::~FVulkanResourceMultiBuffer()
 	UpdateVulkanBufferStats(TotalSize, BufferUsageFlags, false);
 }
 
-void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockMode LockMode, uint32 LockSize, uint32 Offset)
+void* FVulkanResourceMultiBuffer::Lock(FRHICommandListBase& RHICmdList, EResourceLockMode LockMode, uint32 LockSize, uint32 Offset)
+{
+	// Use the immediate context for write operations, since we are only accessing allocators.
+	FVulkanCommandListContext& Context = FVulkanCommandListContext::GetVulkanContext(LockMode == RLM_WriteOnly ? *RHIGetDefaultContext() : RHICmdList.GetContext());
+
+	return Lock(Context, LockMode, LockSize, Offset);
+}
+
+void* FVulkanResourceMultiBuffer::Lock(FVulkanCommandListContext& Context, EResourceLockMode LockMode, uint32 LockSize, uint32 Offset)
 {
 	void* Data = nullptr;
 	uint32 DataOffset = 0;
 
-	const bool bStatic = EnumHasAnyFlags(GetUsage(), BUF_Static);
 	const bool bDynamic = EnumHasAnyFlags(GetUsage(), BUF_Dynamic);
 	const bool bVolatile = EnumHasAnyFlags(GetUsage(), BUF_Volatile);
-	const bool bCPUReadable = EnumHasAnyFlags(GetUsage(), BUF_KeepCPUAccessible);
+	const bool bStatic = EnumHasAnyFlags(GetUsage(), BUF_Static) || !(bVolatile || bDynamic);
 	const bool bUAV = EnumHasAnyFlags(GetUsage(), BUF_UnorderedAccess);
 	const bool bSR = EnumHasAnyFlags(GetUsage(), BUF_ShaderResource);
 
@@ -259,7 +277,7 @@ void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockM
 		}
 		else
 		{
-			Device->GetImmediateContext().GetTempFrameAllocationBuffer().Alloc(LockSize + Offset, 256, VolatileLockInfo);
+			Context.GetTempFrameAllocationBuffer().Alloc(LockSize + Offset, 256, VolatileLockInfo);
 			Data = VolatileLockInfo.Data;
 			++VolatileLockInfo.LockCounter;
 			check(!VolatileLockInfo.Allocation.HasAllocation());
@@ -275,6 +293,8 @@ void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockM
 
 		if (LockMode == RLM_ReadOnly)
 		{
+			check(IsInRenderingThread() && Context.IsImmediate());
+
 			const bool bUnifiedMem = Device->HasUnifiedMemory();
 			if (bUnifiedMem)
 			{
@@ -285,8 +305,7 @@ void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockM
 			else 
 			{
 				Device->PrepareForCPURead();
-				FVulkanCommandListContext& ImmediateContext = Device->GetImmediateContext();
-				FVulkanCmdBuffer* CmdBuffer = ImmediateContext.GetCommandBufferManager()->GetUploadCmdBuffer();
+				FVulkanCmdBuffer* CmdBuffer = Context.GetCommandBufferManager()->GetUploadCmdBuffer();
 				
 				// Make sure any previous tasks have finished on the source buffer.
 				VkMemoryBarrier BarrierBefore = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT };
@@ -308,7 +327,7 @@ void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockM
 				VulkanRHI::vkCmdPipelineBarrier(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &BarrierAfter, 0, nullptr, 0, nullptr);
 				
 				// Force upload.
-				ImmediateContext.GetCommandBufferManager()->SubmitUploadCmdBuffer();
+				Context.GetCommandBufferManager()->SubmitUploadCmdBuffer();
 				Device->WaitUntilIdle();
 
 				// Flush.
@@ -330,7 +349,7 @@ void* FVulkanResourceMultiBuffer::Lock(bool bFromRenderingThread, EResourceLockM
 					GPendingLockIBs.Add(this, PendingLock);
 				}
 
-				ImmediateContext.GetCommandBufferManager()->PrepareForNewActiveCommandBuffer();
+				Context.GetCommandBufferManager()->PrepareForNewActiveCommandBuffer();
 			}
 		}
 		else
@@ -424,17 +443,17 @@ struct FRHICommandMultiBufferUnlock final : public FRHICommand<FRHICommandMultiB
 	}
 };
 
-
-void FVulkanResourceMultiBuffer::Unlock(bool bFromRenderingThread)
+void FVulkanResourceMultiBuffer::Unlock(FRHICommandListBase* RHICmdList, FVulkanCommandListContext* Context)
 {
-	const bool bStatic = EnumHasAnyFlags(GetUsage(), BUF_Static);
+	check(RHICmdList || Context);
+
 	const bool bDynamic = EnumHasAnyFlags(GetUsage(), BUF_Dynamic);
 	const bool bVolatile = EnumHasAnyFlags(GetUsage(), BUF_Volatile);
-	const bool bCPUReadable = EnumHasAnyFlags(GetUsage(), BUF_KeepCPUAccessible);
+	const bool bStatic = EnumHasAnyFlags(GetUsage(), BUF_Static) || !(bVolatile || bDynamic);
 	const bool bSR = EnumHasAnyFlags(GetUsage(), BUF_ShaderResource);
 
 	check(LockStatus != ELockStatus::Unlocked);
-	
+
 	if (bVolatile || LockStatus == ELockStatus::PersistentMapping)
 	{
 		// Nothing to do here...
@@ -442,35 +461,31 @@ void FVulkanResourceMultiBuffer::Unlock(bool bFromRenderingThread)
 	else
 	{
 		check(bStatic || bDynamic || bSR);
-		
-		VulkanRHI::FPendingBufferLock PendingLock;
-		bool bFound = false;
-		{
-			// Found only if it was created for Write
-			FScopeLock ScopeLock(&GPendingLockIBsMutex);
-			bFound = GPendingLockIBs.RemoveAndCopyValue(this, PendingLock);
-		}
+
+		VulkanRHI::FPendingBufferLock PendingLock = GetPendingBufferLock(this);
 
 		PendingLock.StagingBuffer->FlushMappedMemory();
 
-		checkf(bFound, TEXT("Mismatched lock/unlock IndexBuffer!"));
-		if (PendingLock.LockMode == RLM_WriteOnly)
-		{
-			FRHICommandList& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-			if (!bFromRenderingThread || (RHICmdList.Bypass() || !IsRunningRHIInSeparateThread()))
-			{
-				FVulkanResourceMultiBuffer::InternalUnlock(Device->GetImmediateContext(), PendingLock, this, DynamicBufferIndex);
-			}
-			else
-			{
-				check(IsInRenderingThread());
-				ALLOC_COMMAND_CL(RHICmdList, FRHICommandMultiBufferUnlock)(Device, PendingLock, this, DynamicBufferIndex);
-			}
-		}
-		else if(PendingLock.LockMode == RLM_ReadOnly)
+		if (PendingLock.LockMode == RLM_ReadOnly)
 		{
 			// Just remove the staging buffer here.
 			Device->GetStagingManager().ReleaseBuffer(0, PendingLock.StagingBuffer);
+		}
+		else if (PendingLock.LockMode == RLM_WriteOnly)
+		{
+			if (Context || (RHICmdList && RHICmdList->IsBottomOfPipe()))
+			{
+				if (!Context)
+				{
+					Context = &FVulkanCommandListContext::GetVulkanContext(RHICmdList->GetContext());
+				}
+
+				FVulkanResourceMultiBuffer::InternalUnlock(*Context, PendingLock, this, DynamicBufferIndex);
+			}
+			else
+			{
+				ALLOC_COMMAND_CL(*RHICmdList, FRHICommandMultiBufferUnlock)(Device, PendingLock, this, DynamicBufferIndex);
+			}
 		}
 	}
 
@@ -494,57 +509,30 @@ void FVulkanResourceMultiBuffer::Swap(FVulkanResourceMultiBuffer& Other)
 	::Swap(VolatileLockInfo, Other.VolatileLockInfo);
 }
 
-FBufferRHIRef FVulkanDynamicRHI::RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& ResourceCreateInfo)
+FBufferRHIRef FVulkanDynamicRHI::RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& ResourceCreateInfo)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanBuffers);
 
 	if (ResourceCreateInfo.bWithoutNativeResource)
 	{
-		return new FVulkanResourceMultiBuffer(nullptr, 0, BUF_None, 0, ResourceCreateInfo, nullptr);
+		return new FVulkanResourceMultiBuffer(Device, 0, BUF_None, 0, ResourceCreateInfo, &RHICmdList);
 	}
-	return new FVulkanResourceMultiBuffer(Device, Size, Usage, Stride, ResourceCreateInfo, nullptr);
+	return new FVulkanResourceMultiBuffer(Device, Size, Usage, Stride, ResourceCreateInfo, &RHICmdList);
 }
 
-FRHIBuffer* FVulkanDynamicRHI::CreateBuffer(const FRHIBufferCreateInfo& InCreateInfo, FRHIResourceCreateInfo& InResourceCreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation)
-{
-	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanBuffers);
-
-	if (InTransientHeapAllocation == nullptr)
-	{
-		return this->RHICreateBuffer(InCreateInfo.Size, InCreateInfo.Usage, InCreateInfo.Stride, ERHIAccess::None, InResourceCreateInfo);
-	}
-
-	checkf(!EnumHasAnyFlags(InCreateInfo.Usage, BUF_AccelerationStructure), TEXT("AccelerationStructure not yet supported as TransientResource."));
-	checkf(!InResourceCreateInfo.bWithoutNativeResource, TEXT("WithoutNativeResource not yet supported as TransientResource."));
-
-	return new FVulkanResourceMultiBuffer(Device, InCreateInfo.Size, InCreateInfo.Usage, InCreateInfo.Stride, InResourceCreateInfo, nullptr, InTransientHeapAllocation);
-}
-
-void* FVulkanDynamicRHI::LockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI, uint32 Offset, uint32 Size, EResourceLockMode LockMode)
+void* FVulkanDynamicRHI::LockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI, uint32 Offset, uint32 Size, EResourceLockMode LockMode)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanBuffers);
 	FVulkanResourceMultiBuffer* Buffer = ResourceCast(BufferRHI);
-	return Buffer->Lock(false, LockMode, Size, Offset);
+	return Buffer->Lock(RHICmdList, LockMode, Size, Offset);
 }
 
-void FVulkanDynamicRHI::UnlockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI)
+void FVulkanDynamicRHI::UnlockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanBuffers);
 	FVulkanResourceMultiBuffer* Buffer = ResourceCast(BufferRHI);
-	Buffer->Unlock(false);
+	Buffer->Unlock(RHICmdList);
 }
-
-#if VULKAN_BUFFER_LOCK_THREADSAFE
-void* FVulkanDynamicRHI::LockBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-{
-	return this->RHILockBuffer(BufferRHI, Offset, SizeRHI, LockMode);
-}
-
-void FVulkanDynamicRHI::UnlockBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI)
-{
-	this->RHIUnlockBuffer(BufferRHI);
-}
-#endif
 
 void FVulkanDynamicRHI::RHICopyBuffer(FRHIBuffer* SourceBufferRHI, FRHIBuffer* DestBufferRHI)
 {
@@ -568,13 +556,14 @@ void FVulkanDynamicRHI::RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuff
 	}
 }
 
-void FVulkanResourceMultiBuffer::Evict(FVulkanDevice& InDevice)
+void FVulkanDynamicRHI::RHIUnlockBuffer(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI)
 {
-	checkNoEntry();//Not Implemented, should never be called
-}
-void FVulkanResourceMultiBuffer::Move(FVulkanDevice& InDevice, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation)
-{
-	checkNoEntry();//Not Implemented, should never be called
-}
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockBuffer_RenderThread);
 
-
+	// We might need to queue a copy, make sure we have an active pipeline
+	if (RHICmdList.IsTopOfPipe() && (RHICmdList.GetPipeline() == ERHIPipeline::None))
+	{
+		RHICmdList.SwitchPipeline(ERHIPipeline::Graphics);
+	}
+	FDynamicRHI::RHIUnlockBuffer(RHICmdList, BufferRHI);
+}

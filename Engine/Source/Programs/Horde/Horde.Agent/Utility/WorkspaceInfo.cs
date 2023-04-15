@@ -1,22 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Perforce.Managed;
-using HordeCommon.Rpc.Messages;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using EpicGames.Perforce;
-using System.Linq;
+using EpicGames.Perforce.Managed;
+using HordeCommon.Rpc.Messages;
+using Microsoft.Extensions.Logging;
 
-namespace HordeAgent.Utility
+namespace Horde.Agent.Utility
 {
 	/// <summary>
 	/// Stores information about a managed Perforce workspace
@@ -26,7 +22,7 @@ namespace HordeAgent.Utility
 		/// <summary>
 		/// The perforce connection
 		/// </summary>
-		public PerforceClientConnection PerforceClient
+		public IPerforceConnection PerforceClient
 		{
 			get;
 		}
@@ -34,182 +30,151 @@ namespace HordeAgent.Utility
 		/// <summary>
 		/// The Perforce server and port. This is checked to not be null in the constructor.
 		/// </summary>
-		public string ServerAndPort
-		{
-			get { return PerforceClient.ServerAndPort!; }
-		}
+		public string ServerAndPort => PerforceClient.Settings.ServerAndPort!;
 
 		/// <summary>
 		/// The Perforce client name. This is checked to not be null in the constructor.
 		/// </summary>
-		public string ClientName
-		{
-			get { return PerforceClient.ClientName!; }
-		}
+		public string ClientName => PerforceClient.Settings.ClientName!;
 
 		/// <summary>
 		/// The Perforce user name. This is checked to not be null in the constructor.
 		/// </summary>
-		public string UserName
-		{
-			get { return PerforceClient.UserName!; }
-		}
+		public string UserName => PerforceClient.Settings.UserName!;
 
 		/// <summary>
 		/// The hostname
 		/// </summary>
-		public string HostName
-		{
-			get;
-		}
+		public string HostName { get; }
 
 		/// <summary>
 		/// The current stream
 		/// </summary>
-		public string StreamName
-		{
-			get;
-		}
+		public string StreamName { get; }
+
+		/// <summary>
+		/// View for the stream
+		/// </summary>
+		public PerforceViewMap StreamView { get; }
 
 		/// <summary>
 		/// The directory containing metadata for this workspace
 		/// </summary>
-		public DirectoryReference MetadataDir
-		{
-			get;
-		}
+		public DirectoryReference MetadataDir { get; }
 
 		/// <summary>
 		/// The directory containing workspace data
 		/// </summary>
-		public DirectoryReference WorkspaceDir
-		{
-			get;
-		}
+		public DirectoryReference WorkspaceDir { get; }
 
 		/// <summary>
 		/// The view for files to sync
 		/// </summary>
-		public IReadOnlyList<string> View
-		{
-			get;
-		}			
+		public IReadOnlyList<string> View { get; }
 
 		/// <summary>
 		/// Whether untracked files should be removed from this workspace
 		/// </summary>
-		public bool bRemoveUntrackedFiles
-		{
-			get;
-		}
+		public bool RemoveUntrackedFiles { get; }
 
 		/// <summary>
 		/// The managed repository instance
 		/// </summary>
-		public ManagedWorkspace Repository
-		{
-			get;
-		}
+		public ManagedWorkspace Repository { get; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Perforce">The perforce connection</param>
-		/// <param name="HostName">Name of this host</param>
-		/// <param name="StreamName">Name of the stream to sync</param>
-		/// <param name="MetadataDir">Path to the metadata directory</param>
-		/// <param name="WorkspaceDir">Path to the workspace directory</param>
-		/// <param name="View">View for files to be synced</param>
-		/// <param name="bRemoveUntrackedFiles">Whether to remove untracked files when syncing</param>
-		/// <param name="Repository">The repository instance</param>
-		public WorkspaceInfo(PerforceClientConnection Perforce, string HostName, string StreamName, DirectoryReference MetadataDir, DirectoryReference WorkspaceDir, IList<string>? View, bool bRemoveUntrackedFiles, ManagedWorkspace Repository)
+		/// <param name="perforce">The perforce connection</param>
+		/// <param name="hostName">Name of this host</param>
+		/// <param name="streamName">Name of the stream to sync</param>
+		/// <param name="streamView">Stream view onto the depot</param>
+		/// <param name="metadataDir">Path to the metadata directory</param>
+		/// <param name="workspaceDir">Path to the workspace directory</param>
+		/// <param name="view">View for files to be synced</param>
+		/// <param name="removeUntrackedFiles">Whether to remove untracked files when syncing</param>
+		/// <param name="repository">The repository instance</param>
+		public WorkspaceInfo(IPerforceConnection perforce, string hostName, string streamName, PerforceViewMap streamView, DirectoryReference metadataDir, DirectoryReference workspaceDir, IList<string>? view, bool removeUntrackedFiles, ManagedWorkspace repository)
 		{
-			this.PerforceClient = Perforce;
+			PerforceClient = perforce;
 
-			if (Perforce.ServerAndPort == null)
-			{
-				throw new ArgumentException("Perforce connection does not have valid server and port");
-			}
-			if (Perforce.UserName == null)
-			{
-				throw new ArgumentException("PerforceConnection does not have valid username");
-			}
-			if (Perforce.ClientName == null)
+			if (perforce.Settings.ClientName == null)
 			{
 				throw new ArgumentException("PerforceConnection does not have valid client name");
 			}
 
-			this.HostName = HostName;
-			this.StreamName = StreamName;
-			this.MetadataDir = MetadataDir;
-			this.WorkspaceDir = WorkspaceDir;
-			this.View = (View == null) ? new List<string>() : new List<string>(View);
-			this.bRemoveUntrackedFiles = bRemoveUntrackedFiles;
-			this.Repository = Repository;
+			HostName = hostName;
+			StreamName = streamName;
+			StreamView = streamView;
+			MetadataDir = metadataDir;
+			WorkspaceDir = workspaceDir;
+			View = (view == null) ? new List<string>() : new List<string>(view);
+			RemoveUntrackedFiles = removeUntrackedFiles;
+			Repository = repository;
 		}
 
 		/// <summary>
 		/// Creates a new managed workspace
 		/// </summary>
-		/// <param name="Workspace">The workspace definition</param>
-		/// <param name="RootDir">Root directory for storing the workspace</param>
-		/// <param name="Logger">Logger output</param>
-		/// <param name="CancellationToken">Cancellation token</param>
+		/// <param name="workspace">The workspace definition</param>
+		/// <param name="rootDir">Root directory for storing the workspace</param>
+		/// <param name="logger">Logger output</param>
+		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>New workspace info</returns>
-		public static async Task<WorkspaceInfo> SetupWorkspaceAsync(AgentWorkspace Workspace, DirectoryReference RootDir, ILogger Logger, CancellationToken CancellationToken)
+		public static async Task<WorkspaceInfo> SetupWorkspaceAsync(AgentWorkspace workspace, DirectoryReference rootDir, ILogger logger, CancellationToken cancellationToken)
 		{
 			// Fill in the default credentials iff they are not set
-			string? ServerAndPort = String.IsNullOrEmpty(Workspace.ServerAndPort)? null : Workspace.ServerAndPort;
-			string? UserName = String.IsNullOrEmpty(Workspace.UserName)? null : Workspace.UserName;
-			string? Password = String.IsNullOrEmpty(Workspace.Password)? null : Workspace.Password;
+			string? serverAndPort = String.IsNullOrEmpty(workspace.ServerAndPort)? null : workspace.ServerAndPort;
+			string? userName = String.IsNullOrEmpty(workspace.UserName)? null : workspace.UserName;
+			string? password = String.IsNullOrEmpty(workspace.Password)? null : workspace.Password;
+
+			if (serverAndPort == null)
+			{
+				serverAndPort = PerforceSettings.Default.ServerAndPort;
+				logger.LogInformation("Using locally configured Perforce server: '{ServerAndPort}'", serverAndPort);
+			}
+
+			if (userName == null)
+			{
+				userName = PerforceSettings.Default.UserName;
+				logger.LogInformation("Using locally configured and logged in Perforce user: '{UserName}'", userName);
+			}
 
 			// Create the connection
-			PerforceConnection Perforce = new PerforceConnection(ServerAndPort, UserName, Logger);
-			if (UserName != null)
+			IPerforceConnection perforce = await PerforceConnection.CreateAsync(new PerforceSettings(serverAndPort, userName), logger);
+			if (userName != null)
 			{
-				if (Password != null)
+				if (password != null)
 				{
-					await Perforce.LoginAsync(Password, CancellationToken);
+					await perforce.LoginAsync(password, cancellationToken);
 				}
 				else
 				{
-					Logger.LogInformation($"Using locally logged in session for {UserName}");
+					logger.LogInformation("Using locally logged in session for {UserName}", userName);
 				}
 			}
-			return await SetupWorkspaceAsync(Perforce, Workspace.Stream, Workspace.Identifier, Workspace.View, !Workspace.Incremental, RootDir, Logger, CancellationToken);
+			return await SetupWorkspaceAsync(perforce, workspace.Stream, workspace.Identifier, workspace.View, !workspace.Incremental, rootDir, logger, cancellationToken);
 		}
 
 		/// <summary>
 		/// Creates a new managed workspace
 		/// </summary>
-		/// <param name="Perforce">The perforce connection to use</param>
-		/// <param name="StreamName">The stream being synced</param>
-		/// <param name="Identifier">Identifier to use to share </param>
-		/// <param name="View">View for this workspace</param>
-		/// <param name="bRemoveUntrackedFiles">Whether untracked files should be removed when cleaning this workspace</param>
-		/// <param name="RootDir">Root directory for storing the workspace</param>
-		/// <param name="Logger">Logger output</param>
-		/// <param name="CancellationToken">Cancellation token</param>
+		/// <param name="perforce">The perforce connection to use</param>
+		/// <param name="streamName">The stream being synced</param>
+		/// <param name="identifier">Identifier to use to share </param>
+		/// <param name="view">View for this workspace</param>
+		/// <param name="removeUntrackedFiles">Whether untracked files should be removed when cleaning this workspace</param>
+		/// <param name="rootDir">Root directory for storing the workspace</param>
+		/// <param name="logger">Logger output</param>
+		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>New workspace info</returns>
-		public static async Task<WorkspaceInfo> SetupWorkspaceAsync(PerforceConnection Perforce, string StreamName, string Identifier, IList<string> View, bool bRemoveUntrackedFiles, DirectoryReference RootDir, ILogger Logger, CancellationToken CancellationToken)
+		public static async Task<WorkspaceInfo> SetupWorkspaceAsync(IPerforceConnection perforce, string streamName, string identifier, IList<string> view, bool removeUntrackedFiles, DirectoryReference rootDir, ILogger logger, CancellationToken cancellationToken)
 		{
 			// Get the host name, and fill in any missing metadata about the connection
-			InfoRecord Info = await Perforce.GetInfoAsync(InfoOptions.ShortOutput, CancellationToken);
+			InfoRecord info = await perforce.GetInfoAsync(InfoOptions.ShortOutput, cancellationToken);
 
-			if (Perforce.ServerAndPort == null)
-			{
-				Perforce.ServerAndPort = await Perforce.TryGetSettingAsync("p4port", CancellationToken) ?? "perforce:1666";
-				Logger.LogInformation($"Using locally configured Perforce server: '{Perforce.ServerAndPort}'");
-			}
-
-			if (Perforce.UserName == null)
-			{
-				Perforce.UserName = Info.UserName;
-				Logger.LogInformation("Using locally configured and logged in Perforce user: '{UserName}'", Perforce.UserName);
-			}
-
-			string? HostName = Info.ClientHost;
-			if(HostName == null)
+			string? hostName = info.ClientHost;
+			if(hostName == null)
 			{
 				throw new Exception("Unable to determine Perforce host name");
 			}
@@ -221,175 +186,177 @@ namespace HordeAgent.Utility
 			//			$workspace_identifier .= sprintf("+%02d", $slot_idx) if $slot_idx;
 
 			// if running on an edge server, append the server id to the client name
-			string EdgeSuffix = String.Empty;
-			if(Info.Services != null && Info.ServerID != null)
+			string edgeSuffix = String.Empty;
+			if(info.Services != null && info.ServerId != null)
 			{
-				string[] Services = Info.Services.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-				if (Services.Any(x => x.Equals("edge-server", StringComparison.OrdinalIgnoreCase)))
+				string[] services = info.Services.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+				if (services.Any(x => x.Equals("edge-server", StringComparison.OrdinalIgnoreCase)))
 				{
-					EdgeSuffix = $"+{Info.ServerID}";
+					edgeSuffix = $"+{info.ServerId}";
 				}
 			}
 
 			// get all the workspace settings
-			string ClientName = $"Horde+{GetNormalizedHostName(HostName)}+{Identifier}{EdgeSuffix}";
+			string clientName = $"Horde+{GetNormalizedHostName(hostName)}+{identifier}{edgeSuffix}";
 
 			// Create the client Perforce connection
-			PerforceClientConnection PerforceClient = new PerforceClientConnection(Perforce.ServerAndPort, Perforce.UserName, ClientName, Perforce.Logger);
+			IPerforceConnection perforceClient = await perforce.WithClientAsync(clientName);
+
+			// Get the view for this stream
+			StreamRecord stream = await perforceClient.GetStreamAsync(streamName, true, cancellationToken);
+			PerforceViewMap streamView = PerforceViewMap.Parse(stream.View);
 
 			// get the workspace names
-			DirectoryReference MetadataDir = DirectoryReference.Combine(RootDir, Identifier);
-			DirectoryReference WorkspaceDir = DirectoryReference.Combine(MetadataDir, "Sync");
+			DirectoryReference metadataDir = DirectoryReference.Combine(rootDir, identifier);
+			DirectoryReference workspaceDir = DirectoryReference.Combine(metadataDir, "Sync");
 
 			// Create the repository
-			ManagedWorkspace NewRepository = await ManagedWorkspace.LoadOrCreateAsync(HostName, MetadataDir, true, Logger, CancellationToken);
-			if (bRemoveUntrackedFiles)
+			ManagedWorkspace newRepository = await ManagedWorkspace.LoadOrCreateAsync(hostName, metadataDir, true, logger, cancellationToken);
+			if (removeUntrackedFiles)
 			{
-				await NewRepository.DeleteClientAsync(PerforceClient, CancellationToken);
+				await newRepository.DeleteClientAsync(perforceClient, cancellationToken);
 			}
-			await NewRepository.SetupAsync(PerforceClient, StreamName, CancellationToken);
+			await newRepository.SetupAsync(perforceClient, streamName, cancellationToken);
 
 			// Revert any open files
-			await NewRepository.RevertAsync(PerforceClient, CancellationToken);
+			await newRepository.RevertAsync(perforceClient, cancellationToken);
 
 			// Create the workspace info
-			return new WorkspaceInfo(PerforceClient, HostName, StreamName, MetadataDir, WorkspaceDir, View, bRemoveUntrackedFiles, NewRepository);
+			return new WorkspaceInfo(perforceClient, hostName, streamName, streamView, metadataDir, workspaceDir, view, removeUntrackedFiles, newRepository);
 		}
 
 		/// <summary>
 		/// Gets the latest change in the stream
 		/// </summary>
-		/// <param name="CancellationToken">Cancellation token</param>
+		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>Latest changelist number</returns>
-		public Task<int> GetLatestChangeAsync(CancellationToken CancellationToken)
+		public Task<int> GetLatestChangeAsync(CancellationToken cancellationToken)
 		{
-			return Repository.GetLatestChangeAsync(PerforceClient, StreamName, CancellationToken);
+			return Repository.GetLatestChangeAsync(PerforceClient, StreamName, cancellationToken);
 		}
 
 		/// <summary>
 		/// Revert any open files in the workspace and clean it
 		/// </summary>
-		/// <param name="CancellationToken">Cancellation token</param>
+		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>Async task</returns>
-		public async Task CleanAsync(CancellationToken CancellationToken)
+		public async Task CleanAsync(CancellationToken cancellationToken)
 		{
-			await Repository.RevertAsync(PerforceClient, CancellationToken);
-			await Repository.CleanAsync(bRemoveUntrackedFiles, CancellationToken);
+			await Repository.RevertAsync(PerforceClient, cancellationToken);
+			await Repository.CleanAsync(RemoveUntrackedFiles, cancellationToken);
 		}
 
 		/// <summary>
 		/// Removes the given cache file if it's invalid, and updates the metadata to reflect the version about to be synced
 		/// </summary>
-		/// <param name="CacheFile">Path to the cache file</param>
-		/// <param name="Change">The current change being built</param>
-		/// <param name="PreflightChange">The preflight changelist number</param>
+		/// <param name="cacheFile">Path to the cache file</param>
+		/// <param name="change">The current change being built</param>
+		/// <param name="preflightChange">The preflight changelist number</param>
 		/// <returns>Async task</returns>
-		public async Task UpdateLocalCacheMarker(FileReference CacheFile, int Change, int PreflightChange)
+		public static async Task UpdateLocalCacheMarker(FileReference cacheFile, int change, int preflightChange)
 		{
 			// Create the new cache file descriptor
-			string NewDescriptor;
-			if(PreflightChange <= 0)
+			string newDescriptor;
+			if(preflightChange <= 0)
 			{
-				NewDescriptor = $"CL {Change}";
+				newDescriptor = $"CL {change}";
 			}
 			else
 			{
-				NewDescriptor = $"CL {PreflightChange} with base CL {Change}";
+				newDescriptor = $"CL {preflightChange} with base CL {change}";
 			}
 
 			// Remove the cache file if the current descriptor doesn't match
-			FileReference DescriptorFile = CacheFile.ChangeExtension(".txt");
-			if (FileReference.Exists(CacheFile))
+			FileReference descriptorFile = cacheFile.ChangeExtension(".txt");
+			if (FileReference.Exists(cacheFile))
 			{
-				if (FileReference.Exists(DescriptorFile))
+				if (FileReference.Exists(descriptorFile))
 				{
-					string OldDescriptor = await FileReference.ReadAllTextAsync(DescriptorFile);
-					if (OldDescriptor == NewDescriptor)
+					string oldDescriptor = await FileReference.ReadAllTextAsync(descriptorFile);
+					if (oldDescriptor == newDescriptor)
 					{
 						return;
 					}
 					else
 					{
-						FileReference.Delete(DescriptorFile);
+						FileReference.Delete(descriptorFile);
 					}
 				}
-				FileReference.Delete(CacheFile);
+				FileReference.Delete(cacheFile);
 			}
 
 			// Write the new descriptor file
-			FileReference.WriteAllText(DescriptorFile, NewDescriptor);
+			await FileReference.WriteAllTextAsync(descriptorFile, newDescriptor);
 		}
 
 		/// <summary>
 		/// Sync the workspace to a given changelist, and capture it so we can quickly clean in the future
 		/// </summary>
-		/// <param name="Change">The changelist to sync to</param>
-		/// <param name="PreflightChange">Change to preflight, or 0</param>
-		/// <param name="CacheFile">Path to the cache file to use</param>
-		/// <param name="Logger">The logger for output messages</param>
-		/// <param name="CancellationToken">Cancellation token</param>
+		/// <param name="change">The changelist to sync to</param>
+		/// <param name="preflightChange">Change to preflight, or 0</param>
+		/// <param name="cacheFile">Path to the cache file to use</param>
+		/// <param name="cancellationToken">Cancellation token</param>
 		/// <returns>Async task</returns>
-		public async Task SyncAsync(int Change, int PreflightChange, FileReference? CacheFile, ILogger Logger, CancellationToken CancellationToken)
+		public async Task SyncAsync(int change, int preflightChange, FileReference? cacheFile, CancellationToken cancellationToken)
 		{
-			await Repository.SyncAsync(PerforceClient, StreamName, Change, View, bRemoveUntrackedFiles, false, CacheFile, CancellationToken);
+			await Repository.SyncAsync(PerforceClient, StreamName, change, View, RemoveUntrackedFiles, false, cacheFile, cancellationToken);
 
 			// Purge the cache for incremental workspaces
-			if (!bRemoveUntrackedFiles)
+			if (!RemoveUntrackedFiles)
 			{
-				await Repository.PurgeAsync(0, CancellationToken);
+				await Repository.PurgeAsync(0, cancellationToken);
 			}
 
 			// if we're running a preflight
-			if (PreflightChange > 0)
+			if (preflightChange > 0)
 			{
-				await Repository.UnshelveAsync(PerforceClient, StreamName, PreflightChange, CancellationToken);
+				await Repository.UnshelveAsync(PerforceClient, preflightChange, cancellationToken);
 			}
 		}
-
 
 		/// <summary>
 		/// Strip the domain suffix to get the host name
 		/// </summary>
-		/// <param name="HostName">Hostname with optional domain</param>
+		/// <param name="hostName">Hostname with optional domain</param>
 		/// <returns>Normalized host name</returns>
-		static string GetNormalizedHostName(string HostName)
+		static string GetNormalizedHostName(string hostName)
 		{
-			return Regex.Replace(HostName, @"\..*$", "").ToUpperInvariant();
+			return Regex.Replace(hostName, @"\..*$", "").ToUpperInvariant();
 		}
 
 		/// <summary>
 		/// Revert all files in a workspace
 		/// </summary>
-		public static async Task RevertAllChangesAsync(PerforceConnection Perforce, ILogger Logger, CancellationToken CancellationToken)
+		public static async Task RevertAllChangesAsync(IPerforceConnection perforce, ILogger logger, CancellationToken cancellationToken)
 		{
 			// Make sure the client name is set
-			if(Perforce.ClientName == null)
+			if(perforce.Settings.ClientName == null)
 			{
 				throw new ArgumentException("RevertAllChangesAsync() requires PerforceConnection with client");
 			}
 
 			// check if there are any open files, and revert them
-			List<FStatRecord> Files = await Perforce.GetOpenFilesAsync(OpenedOptions.None, -1, null, null, 1, new[] { "//..." }, CancellationToken);
-			if (Files.Count > 0)
+			List<OpenedRecord> files = await perforce.OpenedAsync(OpenedOptions.None, -1, null, null, 1, new[] { "//..." }, cancellationToken).ToListAsync(cancellationToken);
+			if (files.Count > 0)
 			{
-				await Perforce.RevertAsync(-1, null, RevertOptions.KeepWorkspaceFiles, new[] { "//..." }, CancellationToken);
+				await perforce.RevertAsync(-1, null, RevertOptions.KeepWorkspaceFiles, new[] { "//..." }, cancellationToken);
 			}
 
 			// enumerate all the pending changelists
-			List<ChangesRecord> PendingChanges = await Perforce.GetChangesAsync(ChangesOptions.None, Perforce.ClientName, -1, ChangeStatus.Pending, null, FileSpecList.Empty, CancellationToken);
-			foreach (ChangesRecord PendingChange in PendingChanges)
+			List<ChangesRecord> pendingChanges = await perforce.GetChangesAsync(ChangesOptions.None, perforce.Settings.ClientName, -1, ChangeStatus.Pending, null, FileSpecList.Empty, cancellationToken);
+			foreach (ChangesRecord pendingChange in pendingChanges)
 			{
 				// delete any shelved files if there are any
-				List<DescribeRecord> Records = await Perforce.DescribeAsync(DescribeOptions.Shelved, -1, new int[] { PendingChange.Number }, CancellationToken);
-				if (Records.Count > 0 && Records[0].Files.Count > 0)
+				List<DescribeRecord> records = await perforce.DescribeAsync(DescribeOptions.Shelved, -1, new int[] { pendingChange.Number }, cancellationToken);
+				if (records.Count > 0 && records[0].Files.Count > 0)
 				{
-					Logger.LogInformation($"Deleting shelved files in changelist {PendingChange.Number}");
-					await Perforce.DeleteChangeAsync(DeleteChangeOptions.None, PendingChange.Number, CancellationToken);
+					logger.LogInformation("Deleting shelved files in changelist {Change}", pendingChange.Number);
+					await perforce.DeleteChangeAsync(DeleteChangeOptions.None, pendingChange.Number, cancellationToken);
 				}
 
 				// delete the changelist
-				Logger.LogInformation($"Deleting changelist {PendingChange.Number}");
-				await Perforce.DeleteChangeAsync(DeleteChangeOptions.None, PendingChange.Number, CancellationToken);
+				logger.LogInformation("Deleting changelist {Change}", pendingChange.Number);
+				await perforce.DeleteChangeAsync(DeleteChangeOptions.None, pendingChange.Number, cancellationToken);
 			}
 		}
 	}

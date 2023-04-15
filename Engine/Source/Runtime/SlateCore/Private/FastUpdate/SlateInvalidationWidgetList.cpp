@@ -459,7 +459,7 @@ FSlateInvalidationWidgetIndex FSlateInvalidationWidgetList::Internal_BuildWidget
 
 	const bool bParentOrSelfVolatile = bParentVolatile || Widget.IsVolatile();
 
-	// N.B. The SInvalidationBox needs a valid Proxy to decide if he's a root or not.
+	// N.B. The SInvalidationBox needs a valid Proxy to decide if it's a root or not.
 	//const bool bDoRecursion = ShouldDoRecursion(Widget);
 	const bool bDoRecursion = !bIsInvalidationRoot || bIsEmpty;
 	if (bDoRecursion)
@@ -549,23 +549,24 @@ bool FSlateInvalidationWidgetList::ProcessChildOrderInvalidation(FSlateInvalidat
 	bool bIsInvalidationWidgetStillValid = true;
 	TGuardValue<IProcessChildOrderInvalidationCallback*> TmpGuard(CurrentInvalidationCallback, &Callback);
 
-	const InvalidationWidgetType& InvalidationWidget = (*this)[WidgetIndex];
-	SWidget* WidgetPtr = InvalidationWidget.GetWidget();
-	check(WidgetPtr);
-	{
-		const bool bWidgetIndexMatches = WidgetPtr->GetProxyHandle().GetWidgetIndex() == InvalidationWidget.Index;
-		if (!bWidgetIndexMatches)
-		{
-			ensureMsgf(false, TEXT("The widget index doesn't match the index in the InvalidationWidgetList"));
-			return false;
-		}
-	}
-
+	SWidget* WidgetPtr = nullptr;
 	int32 StartChildIndex = INDEX_NONE;
 	enum class EOperation : uint8 { Remove, Cut, None } CurrentOperation = EOperation::None;
 
 	// Find all the InvalidationWidget children
 	{
+		const InvalidationWidgetType& InvalidationWidget = (*this)[WidgetIndex];
+		WidgetPtr = InvalidationWidget.GetWidget();
+		check(WidgetPtr);
+		{
+			const bool bWidgetIndexMatches = WidgetPtr->GetProxyHandle().GetWidgetIndex() == InvalidationWidget.Index;
+			if (!bWidgetIndexMatches)
+			{
+				ensureMsgf(false, TEXT("The widget index doesn't match the index in the InvalidationWidgetList"));
+				return false;
+			}
+		}
+
 		FIndexRange ChildToRemoveRange;
 
 		// Was added, but it should not be there anymore
@@ -584,7 +585,7 @@ bool FSlateInvalidationWidgetList::ProcessChildOrderInvalidation(FSlateInvalidat
 		{
 			if (InvalidationWidget.Index != InvalidationWidget.LeafMostChildIndex)
 			{
-				// All it's child (but not him)
+				// All its children (but not itself)
 				ChildToRemoveRange = { *this, IncrementIndex(InvalidationWidget.Index), InvalidationWidget.LeafMostChildIndex };
 				CurrentOperation = EOperation::Remove;
 				// Do not add new child
@@ -596,8 +597,7 @@ bool FSlateInvalidationWidgetList::ProcessChildOrderInvalidation(FSlateInvalidat
 		{
 #if UE_SLATE_WITH_WIDGETLIST_UPDATEONLYWHATISNEEDED
 			// Find all it's previous children
-			FMemMark Mark2(FMemStack::Get());
-			TArray<FFindChildrenElement, TMemStackAllocator<>> PreviousChildrenWidget;
+			TArray<FFindChildrenElement, FConcurrentLinearArrayAllocator> PreviousChildrenWidget;
 			Internal_FindChildren(InvalidationWidget.Index, PreviousChildrenWidget);
 
 			FChildren* InvalidatedChildren = WidgetPtr->GetAllChildren();
@@ -645,7 +645,7 @@ bool FSlateInvalidationWidgetList::ProcessChildOrderInvalidation(FSlateInvalidat
 				CurrentOperation = EOperation::Remove;
 			}
 #else
-			// All it's child (but not him)
+			// All its children (but not itself)
 			ChildToRemoveRange = { *this, IncrementIndex(InvalidationWidget.Index), InvalidationWidget.LeafMostChildIndex };
 			StartChildIndex = 0;
 			CurrentOperation = EOperation::Remove;
@@ -675,31 +675,30 @@ bool FSlateInvalidationWidgetList::ProcessChildOrderInvalidation(FSlateInvalidat
 				CutArray(InvalidationWidget.LeafMostChildIndex);
 			}
 		}
+	}
 
-		// Rebuild
-		if (StartChildIndex != INDEX_NONE)
+	// Rebuild
+	if (StartChildIndex != INDEX_NONE)
+	{
+		check(WidgetPtr);
+		FChildren* InvalidatedChildren = WidgetPtr->GetAllChildren();
+		check(InvalidatedChildren);
+		if (InvalidatedChildren->Num() > 0)
 		{
-			FChildren* InvalidatedChildren = WidgetPtr->GetAllChildren();
-			check(InvalidatedChildren);
-			if (InvalidatedChildren->Num() > 0)
-			{
-				SCOPED_NAMED_EVENT(Slate_InvalidationList_ProcessRebuild, FColorList::Blue);
-				FSlateInvalidationWidgetIndex PreviousWidgetIndex = WidgetPtr->GetProxyHandle().GetWidgetIndex();
-				FSlateInvalidationWidgetIndex PreviousLeafMostChildIndex = InvalidationWidget.LeafMostChildIndex;
-				Internal_RebuildWidgetListTree(*WidgetPtr, StartChildIndex);
-				// The WidgetInvalidation is now invalid.
+			SCOPED_NAMED_EVENT(Slate_InvalidationList_ProcessRebuild, FColorList::Blue);
+			Internal_RebuildWidgetListTree(*WidgetPtr, StartChildIndex);
 
 #if UE_SLATE_WITH_INVALIDATIONWIDGETLIST_CHILDORDERCHECK
-				const InvalidationWidgetType& NewInvalidationWidget = (*this)[PreviousWidgetIndex];
-				const FIndexRange BuiltRange = (NewInvalidationWidget.LeafMostChildIndex == PreviousLeafMostChildIndex)
-					? FIndexRange{ *this, PreviousLeafMostChildIndex, NewInvalidationWidget.LeafMostChildIndex }
-					: FIndexRange{ *this, IncrementIndex(PreviousLeafMostChildIndex), NewInvalidationWidget.LeafMostChildIndex };
-				if (BuiltRange.IsValid())
-				{
-					Callback.ProxiesBuilt(BuiltRange);
-				}
-#endif
+			FSlateInvalidationWidgetIndex NewWidgetIndex = WidgetPtr->GetProxyHandle().GetWidgetIndex();
+			const InvalidationWidgetType& NewInvalidationWidget = (*this)[NewWidgetIndex];
+			const FIndexRange BuiltRange = (NewInvalidationWidget.LeafMostChildIndex == NewWidgetIndex)
+				? FIndexRange{ *this, NewWidgetIndex, NewInvalidationWidget.LeafMostChildIndex }
+				: FIndexRange{ *this, IncrementIndex(NewWidgetIndex), NewInvalidationWidget.LeafMostChildIndex };
+			if (BuiltRange.IsValid())
+			{
+				Callback.ProxiesBuilt(BuiltRange);
 			}
+#endif
 		}
 	}
 
@@ -770,7 +769,7 @@ namespace InvalidationList
 }
 
 
-void FSlateInvalidationWidgetList::Internal_FindChildren(FSlateInvalidationWidgetIndex WidgetIndex, TArray<FFindChildrenElement, TMemStackAllocator<>>& Widgets) const
+void FSlateInvalidationWidgetList::Internal_FindChildren(FSlateInvalidationWidgetIndex WidgetIndex, TArray<FFindChildrenElement, FConcurrentLinearArrayAllocator>& Widgets) const
 {
 	Widgets.Reserve(16);
 	const InvalidationWidgetType& InvalidationWidget = (*this)[WidgetIndex];
@@ -1512,8 +1511,7 @@ TArray<TSharedPtr<SWidget>> FSlateInvalidationWidgetList::FindChildren(const SWi
 			return Result;
 		}
 
-		FMemMark Mark(FMemStack::Get());
-		TArray<FFindChildrenElement, TMemStackAllocator<>> PreviousChildrenWidget;
+		TArray<FFindChildrenElement, FConcurrentLinearArrayAllocator> PreviousChildrenWidget;
 		Internal_FindChildren(WidgetIndex, PreviousChildrenWidget);
 
 		Result.Reserve(PreviousChildrenWidget.Num());

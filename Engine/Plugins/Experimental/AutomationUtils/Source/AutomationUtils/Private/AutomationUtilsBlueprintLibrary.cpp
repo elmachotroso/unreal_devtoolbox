@@ -23,6 +23,9 @@
 #include "Containers/Ticker.h"
 #include "Engine/GameEngine.h"
 #include "Stats/Stats.h"
+#include "Materials/MaterialInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AutomationUtilsBlueprintLibrary)
 
 //Private Helper Class Definitions
 class FAutomationUtilsGameplayViewExtension : public FSceneViewExtensionBase
@@ -55,8 +58,8 @@ public:
 
 	void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
-	void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override {}
-	void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override {}
+	void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override {}
+	void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override {}
 
 	/** We always want to go last. */
 	virtual int32 GetPriority() const override { return MIN_int32; }
@@ -347,20 +350,23 @@ void UAutomationUtilsBlueprintLibrary::TakeGameplayAutomationScreenshot(const FS
 {
 	FlushAsyncLoading();
 
-	//Finish Loading Before Screenshot
-	if (!FPlatformProperties::RequiresCookedData())
-	{
-		//Finish Compiling all shaders and other async assets
-		FAssetCompilingManager::Get().FinishAllCompilation();
-	}
-
+	UWorld* CurrentWorld{ nullptr };
 	// Make sure we finish all level streaming
 	if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
 	{
 		if (UWorld* GameWorld = GameEngine->GetGameWorld())
 		{
+			CurrentWorld = GameWorld;
 			GameWorld->FlushLevelStreaming(EFlushLevelStreamingType::Full);
 		}
+	}
+
+	//Finish Loading Before Screenshot
+	if (!FPlatformProperties::RequiresCookedData())
+	{
+		UMaterialInterface::SubmitRemainingJobsForWorld(CurrentWorld);
+		//Finish Compiling all shaders and other async assets
+		FAssetCompilingManager::Get().FinishAllCompilation();
 	}
 
 	//Stream in everything
@@ -378,6 +384,7 @@ void UAutomationUtilsBlueprintLibrary::TakeGameplayAutomationScreenshot(const FS
 	//Actually Take Screenshot
 	FScreenshotRequest::RequestScreenshot(ScreenshotName, false, true);
 }
+
 
 
 

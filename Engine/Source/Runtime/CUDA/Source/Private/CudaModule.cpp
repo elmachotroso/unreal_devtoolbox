@@ -3,8 +3,10 @@
 
 #include "Misc/CoreDelegates.h"
 
+#include "RHI.h"
+
 #if PLATFORM_SUPPORTS_CUDA
-#include "VulkanRHIPrivate.h"
+#include "IVulkanDynamicRHI.h"
 #endif
 
 #if PLATFORM_WINDOWS
@@ -16,7 +18,6 @@
     #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
-#include "RHI.h"
 #include "HAL/UnrealMemory.h"
 
 DEFINE_LOG_CATEGORY(LogCUDA);
@@ -94,18 +95,18 @@ void FCUDAModule::UnloadCuda()
 	FMemory::Memset(&DriverApiPtrs, 0, sizeof(CUDA_DRIVER_API_FUNCTION_LIST));
 }
 
-bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice) {
+bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice)
+{
 #if PLATFORM_SUPPORTS_CUDA
-	FString RHIName = GDynamicRHI->GetName();
+	const ERHIInterfaceType RHIType = RHIGetInterfaceType();
 
     // VULKAN
-    if(RHIName == TEXT("Vulkan"))
+    if (RHIType == ERHIInterfaceType::Vulkan)
     {
 		uint8 deviceUUID[16];
 
 		// We find the device that the RHI has selected for us so that later we can create a CUDA context on this device.
-		FVulkanDynamicRHI *vkDynamicRHI = static_cast<FVulkanDynamicRHI *>(GDynamicRHI);
-		FMemory::Memcpy(deviceUUID, vkDynamicRHI->GetDevice()->GetDeviceIdProperties().deviceUUID, 16);	
+		FMemory::Memcpy(deviceUUID, GetIVulkanDynamicRHI()->RHIGetVulkanDeviceUUID(), 16);	
 
 		// Get the device UUID so we can compare this with what the RHI selected.
 		CUuuid cudaDeviceUUID;
@@ -122,7 +123,7 @@ bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice) {
 	else
 #if PLATFORM_WINDOWS
     // DX11
-    if(RHIName == TEXT("D3D11"))
+    if (RHIType == ERHIInterfaceType::D3D11)
     {
 		char* DeviceLuid = new char[64];
 		unsigned int DeviceNodeMask;
@@ -160,7 +161,7 @@ bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice) {
 					sizeof(AdapterLUID.HighPart)) == 0));
     }
     // DX12
-    else if(RHIName == TEXT("D3D12"))
+    else if (RHIType == ERHIInterfaceType::D3D12)
 	{
 		char* DeviceLuid = new char[64];
 		unsigned int DeviceNodeMask;
@@ -171,8 +172,6 @@ bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice) {
 			return false;
 		}
 
-		//FD3D12DynamicRHI *D3D12DynamicRHI = static_cast<FD3D12DynamicRHI *>(GDynamicRHI);
-		//FD3D12Device* D3D12Device = static_cast<FD3D12Device>(D3D12DynamicRHI->GetDevice();
 		ID3D12Device* NativeD3D12Device = static_cast<ID3D12Device *>(GDynamicRHI->RHIGetNativeDevice());
 
 		LUID AdapterLUID = NativeD3D12Device->GetAdapterLuid();

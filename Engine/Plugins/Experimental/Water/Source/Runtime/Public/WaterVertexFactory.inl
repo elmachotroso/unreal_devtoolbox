@@ -160,6 +160,8 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::ModifyCompilationEnvironme
 		OutEnvironment.SetDefine(TEXT("USE_VERTEXFACTORY_HITPROXY_ID"), TEXT("1"));
 		OutEnvironment.SetDefine(TEXT("WITH_WATER_SELECTION_SUPPORT_VF"), TEXT("1"));
 	}
+
+	OutEnvironment.SetDefine(TEXT("RAY_TRACING_DYNAMIC_MESH_IN_LOCAL_SPACE"), TEXT("1"));
 }
 
 template <bool bWithWaterSelectionSupport>
@@ -173,4 +175,17 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::ValidateCompiledResult(con
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
 #endif
+}
+
+template <bool bWithWaterSelectionSupport>
+void TWaterVertexFactory<bWithWaterSelectionSupport>::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
+{
+	// Add position stream
+	Elements.Add(FVertexElement(0, 0, VET_Float4, 0, 0, false));
+
+	// Add all the additional streams
+	for (int32 StreamIdx = 0; StreamIdx < NumAdditionalVertexStreams; ++StreamIdx)
+	{
+		Elements.Add(FVertexElement(1 + StreamIdx, 0, VET_Float4, 8 + StreamIdx, 0, true));
+	}
 }

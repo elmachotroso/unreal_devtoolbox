@@ -8,6 +8,7 @@
 #include "EntitySystem/MovieSceneComponentRegistry.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieScenePreAnimatedStateSystem.h"
+#include "EntitySystem/MovieSceneEntitySystemRunner.h"
 #include "MovieSceneFwd.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
@@ -19,6 +20,8 @@
 #include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
 #include "ProfilingDebugging/CountersTrace.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneEntitySystemLinker)
 
 DECLARE_CYCLE_STAT(TEXT("Link Relevant Systems"),		MovieSceneEval_LinkRelevantSystems,		STATGROUP_MovieSceneECS);
 
@@ -37,6 +40,102 @@ struct FCustomEventDeleter
 
 static FComponentRegistry GComponentRegistry;
 
+EEntitySystemLinkerRole RegisterCustomEntitySystemLinkerRole()
+{
+	static EEntitySystemLinkerRole NextCustom = EEntitySystemLinkerRole::Custom;
+
+	EEntitySystemLinkerRole Result = NextCustom;
+	NextCustom = (EEntitySystemLinkerRole)((uint32)NextCustom + 1);
+	check((uint32)NextCustom != TNumericLimits<uint32>::Max());
+	return Result;
+}
+
+FSystemFilter::FSystemFilter()
+{
+	CategoriesAllowed = EEntitySystemCategory::All;
+	CategoriesDisallowed = EEntitySystemCategory::None;
+}
+
+bool FSystemFilter::CheckSystem(TSubclassOf<UMovieSceneEntitySystem> InClass) const
+{
+	const UMovieSceneEntitySystem* SystemCDO = InClass.GetDefaultObject();
+	if (SystemCDO)
+	{
+		return CheckSystem(SystemCDO);
+	}
+	// Allow any systems without a CDO.
+	return true;
+}
+
+bool FSystemFilter::CheckSystem(const UMovieSceneEntitySystem* InSystem) const
+{
+	// Specific allow/disallow rules for systems take precedence.
+	const uint16 SystemClassID = InSystem->GetGlobalDependencyGraphID();
+	if (SystemsDisallowed.IsValidIndex(SystemClassID) && SystemsDisallowed[SystemClassID])
+	{
+		return false;
+	}
+	if (SystemsAllowed.IsValidIndex(SystemClassID) && SystemsAllowed[SystemClassID])
+	{
+		return true;
+	}
+
+	// If any given category is disallowed, the entire thing is refused.
+	if (EnumHasAnyFlags(InSystem->GetCategories(), CategoriesDisallowed))
+	{
+		return false;
+	}
+	// If the given categories contain at least one allowed category, it's good.
+	if (EnumHasAnyFlags(InSystem->GetCategories(), CategoriesAllowed))
+	{
+		return true;
+	}
+	// Nothing explicitly disallowed, but nothing allowed either, so we don't want it.
+	return false;
+}
+
+void FSystemFilter::SetAllowedCategories(EEntitySystemCategory InCategory)
+{
+	CategoriesAllowed = InCategory;
+}
+
+void FSystemFilter::AllowCategory(EEntitySystemCategory InCategory)
+{
+	CategoriesAllowed |= InCategory;
+}
+
+void FSystemFilter::SetDisallowedCategories(EEntitySystemCategory InCategory)
+{
+	CategoriesDisallowed = InCategory;
+}
+
+void FSystemFilter::DisallowCategory(EEntitySystemCategory InCategory)
+{
+	CategoriesDisallowed |= InCategory;
+}
+
+void FSystemFilter::AllowSystem(TSubclassOf<UMovieSceneEntitySystem> InClass)
+{
+	const UMovieSceneEntitySystem* SystemCDO = InClass.GetDefaultObject();
+	if (ensure(SystemCDO))
+	{
+		const uint16 SystemClassID = SystemCDO->GetGlobalDependencyGraphID();
+		SystemsAllowed.PadToNum(SystemClassID + 1, false);
+		SystemsAllowed[SystemClassID] = true;
+	}
+}
+
+void FSystemFilter::DisallowSystem(TSubclassOf<UMovieSceneEntitySystem> InClass)
+{
+	const UMovieSceneEntitySystem* SystemCDO = InClass.GetDefaultObject();
+	if (ensure(SystemCDO))
+	{
+		const uint16 SystemClassID = SystemCDO->GetGlobalDependencyGraphID();
+		SystemsDisallowed.PadToNum(SystemClassID + 1, false);
+		SystemsDisallowed[SystemClassID] = true;
+	}
+}
+
 } // namespace MovieScene
 } // namespace UE
 
@@ -46,15 +145,17 @@ UMovieSceneEntitySystemLinker::UMovieSceneEntitySystemLinker(const FObjectInitia
 {
 	using namespace UE::MovieScene;
 
+	Role = EEntitySystemLinkerRole::Unknown;
 	LastSystemLinkVersion = 0;
+	LastSystemUnlinkVersion = 0;
 	LastInstantiationVersion = 0;
 	AutoLinkMode = EAutoLinkRelevantSystems::Enabled;
-	SystemContext = EEntitySystemContext::Runtime;
 
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 		PreAnimatedState.Initialize(this);
 
+		FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddUObject(this, &UMovieSceneEntitySystemLinker::HandlePreGarbageCollection);
 		FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &UMovieSceneEntitySystemLinker::HandlePostGarbageCollection);
 
 		EntityManager.SetDebugName(GetName() + TEXT("[Entity Manager]"));
@@ -92,7 +193,7 @@ void UMovieSceneEntitySystemLinker::Reset()
 	EntityManager.Destroy();
 }
 
-UMovieSceneEntitySystemLinker* UMovieSceneEntitySystemLinker::FindOrCreateLinker(UObject* PreferredOuter, const TCHAR* Name)
+UMovieSceneEntitySystemLinker* UMovieSceneEntitySystemLinker::FindOrCreateLinker(UObject* PreferredOuter, UE::MovieScene::EEntitySystemLinkerRole LinkerRole, const TCHAR* Name)
 {
 	if (!PreferredOuter)
 	{
@@ -103,18 +204,22 @@ UMovieSceneEntitySystemLinker* UMovieSceneEntitySystemLinker::FindOrCreateLinker
 	if (!Existing)
 	{
 		Existing = NewObject<UMovieSceneEntitySystemLinker>(PreferredOuter, Name);
+		Existing->SetLinkerRole(LinkerRole);
 	}
+	ensure(Existing->Role == LinkerRole);
 	return Existing;
 }
 
-UMovieSceneEntitySystemLinker* UMovieSceneEntitySystemLinker::CreateLinker(UObject* PreferredOuter)
+UMovieSceneEntitySystemLinker* UMovieSceneEntitySystemLinker::CreateLinker(UObject* PreferredOuter, UE::MovieScene::EEntitySystemLinkerRole LinkerRole)
 {
 	if (!PreferredOuter)
 	{
 		PreferredOuter = GetTransientPackage();
 	}
 
-	return NewObject<UMovieSceneEntitySystemLinker>(PreferredOuter);
+	UMovieSceneEntitySystemLinker* NewLinker = NewObject<UMovieSceneEntitySystemLinker>(PreferredOuter);
+	NewLinker->Role = LinkerRole;
+	return NewLinker;
 }
 
 UE::MovieScene::FComponentRegistry* UMovieSceneEntitySystemLinker::GetComponents()
@@ -144,6 +249,7 @@ void UMovieSceneEntitySystemLinker::SystemUnlinked(UMovieSceneEntitySystem* InSy
 	check(EntitySystemsByGlobalGraphID[GlobalID] == InSystem);
 	EntitySystemsByGlobalGraphID.RemoveAt(GlobalID);
 
+	Events.PostSpawnEvent.RemoveAll(InSystem);
 	Events.TagGarbage.RemoveAll(InSystem);
 	Events.CleanTaggedGarbage.RemoveAll(InSystem);
 	Events.AddReferencedObjects.RemoveAll(InSystem);
@@ -212,11 +318,13 @@ bool UMovieSceneEntitySystemLinker::HasStructureChangedSinceLastRun() const
 
 bool UMovieSceneEntitySystemLinker::StartEvaluation(FMovieSceneEntitySystemRunner& InRunner)
 {
-	if (ActiveRunners.Num() == 0 || ActiveRunners.Last().bIsReentrancyAllowed)
+
+	if (ActiveRunners.Num() == 0 || ActiveRunnerReentrancyFlags[ActiveRunners.Num()-1])
 	{
 		// Default to re-entrancy being forbidden. The runner will allow re-entrancy at specific spots
 		// in the evaluation loop, via a "re-entrancy window".
-		ActiveRunners.Emplace(FActiveRunnerInfo{ &InRunner, false });
+		ActiveRunners.Emplace(&InRunner);
+		ActiveRunnerReentrancyFlags.Add(false);
 		return true;
 	}
 		
@@ -228,7 +336,7 @@ FMovieSceneEntitySystemRunner* UMovieSceneEntitySystemLinker::GetActiveRunner() 
 {
 	if (ActiveRunners.Num() > 0)
 	{
-		return ActiveRunners.Last().Runner;
+		return ActiveRunners.Last();
 	}
 	return nullptr;
 }
@@ -242,11 +350,19 @@ void UMovieSceneEntitySystemLinker::PostInstantation(FMovieSceneEntitySystemRunn
 
 void UMovieSceneEntitySystemLinker::EndEvaluation(FMovieSceneEntitySystemRunner& InRunner)
 {
-	if (ensureMsgf((ActiveRunners.Num() > 0 && ActiveRunners.Last().Runner == &InRunner),
+	if (ensureMsgf((ActiveRunners.Num() > 0 && ActiveRunners.Last() == &InRunner),
 				TEXT("Trying end the evaluation of a runner that's not the latest one to run.")))
 	{
+		const int32 LastIndex = ActiveRunners.Num()-1;
+		ensureAlways(ActiveRunnerReentrancyFlags[LastIndex] == false);
+
 		ActiveRunners.Pop();
+		ActiveRunnerReentrancyFlags.RemoveAt(LastIndex);
 	}
+}
+
+void UMovieSceneEntitySystemLinker::HandlePreGarbageCollection()
+{
 }
 
 void UMovieSceneEntitySystemLinker::HandlePostGarbageCollection()
@@ -284,7 +400,7 @@ void UMovieSceneEntitySystemLinker::CleanGarbage()
 	// the next time a runner gets flushed
 	LastInstantiationVersion = 0;
 
-	// Allow any other system to tag garbage
+	// Allow any other system to cleanup garbage
 	Events.CleanTaggedGarbage.Broadcast(this);
 
 	auto RouteCleanTaggedGarbage = [](UMovieSceneEntitySystem* System){ System->CleanTaggedGarbage(); };
@@ -310,11 +426,28 @@ void UMovieSceneEntitySystemLinker::CleanGarbage()
 		EntityManager.AddComponent(EntityID, BuiltInComponents->Tags.HasUnresolvedBinding);
 	}
 
+	// Remove NeedsLink off any NeedsUnLink entities - these tags are incompatible. Any such entities should get cleaned up
+	// through a binding to Events.CleanTaggedGarbage rather than through the usual NeedsUnlink methods
+	FRemoveSingleMutation RemoveNeedsLink(BuiltInComponents->Tags.NeedsLink);
+	EntityManager.MutateAll(FEntityComponentFilter().All({ BuiltInComponents->Tags.NeedsLink, NeedsUnlink }), RemoveNeedsLink);
+
 	// Free the entities
 	TSet<FMovieSceneEntityID> FreedEntities;
 	EntityManager.FreeEntities(FEntityComponentFilter().All({ NeedsUnlink }), &FreedEntities);
 
 	InstanceRegistry->CleanupLinkerEntities(FreedEntities);
+
+	// If we have any runners part-way through an evaluation, we need to reset them so that they re-evaluate from the start
+	ResetActiveRunners();
+}
+
+void UMovieSceneEntitySystemLinker::ResetActiveRunners()
+{
+	// If we have any runners part-way through an evaluation, we need to reset them so that they re-evaluate from the start
+	for (int32 Index = ActiveRunners.Num()-1; Index >= 0; --Index)
+	{
+		ActiveRunners[Index]->ResetFlushState();
+	}
 }
 
 void UMovieSceneEntitySystemLinker::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
@@ -363,6 +496,27 @@ UMovieSceneEntitySystem* UMovieSceneEntitySystemLinker::LinkSystem(TSubclassOf<U
 		return Existing;
 	}
 
+	return LinkSystemImpl(InClassType);
+}
+
+UMovieSceneEntitySystem* UMovieSceneEntitySystemLinker::LinkSystemIfAllowed(TSubclassOf<UMovieSceneEntitySystem> InClassType)
+{
+	UMovieSceneEntitySystem* Existing = FindSystem(InClassType);
+	if (Existing)
+	{
+		return Existing;
+	}
+
+	if (!SystemFilter.CheckSystem(InClassType))
+	{
+		return nullptr;
+	}
+
+	return LinkSystemImpl(InClassType);
+}
+
+UMovieSceneEntitySystem* UMovieSceneEntitySystemLinker::LinkSystemImpl(TSubclassOf<UMovieSceneEntitySystem> InClassType)
+{
 	// We always create systems with a fixed name (since there should only ever be one of that name)
 	// This means we can do our own recycling within the scope of this linker, to save on the cost of re-creating
 	// systems when the first instantiation phase kicks in after a period without any sequence playing.
@@ -386,7 +540,7 @@ UMovieSceneEntitySystem* UMovieSceneEntitySystemLinker::LinkSystem(TSubclassOf<U
 	}
 
 	// If a system implements a hard depdency on another (through direct use of LinkSystem<>), we can't break the client code by returning null, but we can still warn that it should have checked whether it can call LinkSystem first
-	ensureMsgf(!EnumHasAnyFlags(NewSystem->GetExclusionContext(), SystemContext), TEXT("Attempting to link a system that should have been excluded - this is probably an explicit call to Link a system that should have been excluded."));
+	ensureMsgf(SystemFilter.CheckSystem(NewSystem), TEXT("Attempting to link a system that should have been excluded - this is probably an explicit call to Link a system that should have been excluded."));
 
 	SystemGraph.AddSystem(NewSystem);
 	NewSystem->Link(this);
@@ -422,6 +576,16 @@ void UMovieSceneEntitySystemLinker::LinkRelevantSystems()
 	}
 }
 
+void UMovieSceneEntitySystemLinker::UnlinkIrrelevantSystems()
+{
+	if (EntityManager.HasStructureChangedSince(LastSystemUnlinkVersion))
+	{
+		SystemGraph.RemoveIrrelevantSystems(this);
+
+		LastSystemUnlinkVersion = EntityManager.GetSystemSerial();
+	}
+}
+
 void UMovieSceneEntitySystemLinker::AutoLinkRelevantSystems()
 {
 	if (AutoLinkMode == UE::MovieScene::EAutoLinkRelevantSystems::Enabled)
@@ -429,18 +593,11 @@ void UMovieSceneEntitySystemLinker::AutoLinkRelevantSystems()
 		LinkRelevantSystems();
 	}
 }
-
-FMovieSceneEntitySystemEvaluationReentrancyWindow::FMovieSceneEntitySystemEvaluationReentrancyWindow(UMovieSceneEntitySystemLinker& InLinker)
-	: Linker(InLinker)
+void UMovieSceneEntitySystemLinker::AutoUnlinkIrrelevantSystems()
 {
-	CurrentLevel = Linker.ActiveRunners.Num() - 1;
-	Linker.ActiveRunners[CurrentLevel].bIsReentrancyAllowed = true;
-}
-
-FMovieSceneEntitySystemEvaluationReentrancyWindow::~FMovieSceneEntitySystemEvaluationReentrancyWindow()
-{
-	if (ensure(Linker.ActiveRunners.IsValidIndex(CurrentLevel)))
+	if (AutoLinkMode == UE::MovieScene::EAutoLinkRelevantSystems::Enabled)
 	{
-		Linker.ActiveRunners[CurrentLevel].bIsReentrancyAllowed = false;
+		UnlinkIrrelevantSystems();
 	}
 }
+

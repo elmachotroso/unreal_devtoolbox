@@ -47,17 +47,18 @@ class FParticleSortKeyGenCS : public FGlobalShader
 
 public:
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return RHISupportsComputeShaders(Parameters.Platform);
-	}
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 		OutEnvironment.SetDefine( TEXT("THREAD_COUNT"), PARTICLE_KEY_GEN_THREAD_COUNT );
 		OutEnvironment.SetDefine( TEXT("TEXTURE_SIZE_X"), GParticleSimulationTextureSizeX );
 		OutEnvironment.SetDefine( TEXT("TEXTURE_SIZE_Y"), GParticleSimulationTextureSizeY );
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		// this shader writes to a 2 component RWBuffer, which is not supported in GLES
+		return !IsMobilePlatform(Parameters.Platform);
 	}
 
 	/** Default constructor. */
@@ -172,7 +173,7 @@ int32 GenerateParticleSortKeys(
 	int32 BatchId
 	)
 {
-	check(FeatureLevel >= ERHIFeatureLevel::SM5 || FeatureLevel == ERHIFeatureLevel::ES3_1);
+	check(FeatureLevel >= ERHIFeatureLevel::SM5);
 
 	FParticleKeyGenParameters KeyGenParameters;
 	FParticleKeyGenUniformBufferRef KeyGenUniformBuffer;
@@ -181,7 +182,7 @@ int32 GenerateParticleSortKeys(
 
 	// Grab the shader, set output.
 	TShaderMapRef<FParticleSortKeyGenCS> KeyGenCS(GetGlobalShaderMap(FeatureLevel));
-	RHICmdList.SetComputeShader(KeyGenCS.GetComputeShader());
+	SetComputePipelineState(RHICmdList, KeyGenCS.GetComputeShader());
 	KeyGenCS->SetOutput(RHICmdList, KeyBufferUAV, SortedVertexBufferUAV);
 	KeyGenCS->SetPositionTextures(RHICmdList, PositionTextureRHI);
 

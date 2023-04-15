@@ -2,6 +2,8 @@
 
 #include "DatasmithMaxLogger.h"
 
+#include "DatasmithMaxDirectLink.h"
+
 #include "DatasmithMaxExporterDefines.h"
 
 #include "HAL/UnrealMemory.h"
@@ -75,6 +77,7 @@ void DatasmithMaxLogger::AddPartialSupportedMap(Texmap* Map)
 
 void DatasmithMaxLogger::AddUnsupportedMap(Texmap* Map)
 {
+
 	for (int i = 0; i < UnsupportedMaps.Num(); i++)
 	{
 		if (Map->ClassID() == UnsupportedMaps[i]->ClassID())
@@ -82,6 +85,10 @@ void DatasmithMaxLogger::AddUnsupportedMap(Texmap* Map)
 			return;
 		}
 	}
+
+	MSTR Classname;
+	Map->GetClassName(Classname);
+	DatasmithMaxDirectLink::LogWarning(FString::Printf(TEXT("Unsupported texmap \"%s\" of type %s (0x%08x-0x%08x)"), Map->GetName().ToBSTR(), Classname.ToBSTR(), Map->ClassID().PartA(), Map->ClassID().PartB()));
 
 	UnsupportedMaps.Add(Map);
 }
@@ -222,6 +229,15 @@ void DatasmithMaxLogger::AddObjectList(TArray< INode* > ObjectList, HWND Handle,
 	}
 }
 
+FString DatasmithMaxLogger::GetLightDescription(INode* LightNode)
+{
+	ObjectState State = LightNode->EvalWorldState(0);
+	LightObject *Light = (LightObject*)State.obj;
+	MSTR Classname;
+	Light->GetClassName(Classname);
+	return FString::Printf(TEXT("\"%s\" of type %s (0x%08x-0x%08x)"), LightNode->GetName(), Classname.ToBSTR(), Light->ClassID().PartA(), Light->ClassID().PartB());
+}
+
 void DatasmithMaxLogger::Show(HWND Handle)
 {
 	ShowMessage = TEXT("");
@@ -343,11 +359,7 @@ void DatasmithMaxLogger::Show(HWND Handle)
 
 		for (int i = 0; i < UnsupportedLight.Num(); i++)
 		{
-			ObjectState State = UnsupportedLight[i]->EvalWorldState(0);
-			LightObject *Light = (LightObject*)State.obj;
-			MSTR Classname;
-			Light->GetClassName(Classname);
-			FString Msg = FString::Printf(TEXT("\"%s\" of type %s (0x%08x-0x%08x)"), UnsupportedLight[i]->GetName(), Classname.ToBSTR(), Light->ClassID().PartA(), Light->ClassID().PartB());
+			FString Msg = GetLightDescription(UnsupportedLight[i]);
 			AddItem(*Msg, Handle, ShowMessage);
 		}
 		AddItem(TEXT("\n\n"), Handle, ShowMessage);

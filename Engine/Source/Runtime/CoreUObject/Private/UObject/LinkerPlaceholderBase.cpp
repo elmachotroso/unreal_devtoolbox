@@ -7,9 +7,6 @@
 #include "UObject/UnrealTypePrivate.h"
 #include "Blueprint/BlueprintSupport.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
 	#define DEFERRED_DEPENDENCY_ENSURE(EnsueExpr) ensure(EnsueExpr)
 #else  // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
@@ -78,10 +75,10 @@ int32 FLinkerPlaceholderObjectImpl::ResolvePlaceholderValues(const TArray<FField
 		if (PropertyIndex == 0)
 		{
 #if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-			check(Property.IsA<FObjectProperty>() || Property.IsA<UObjectProperty>());
+			check(Property.IsA<FObjectPropertyBase>() || Property.IsA<UObjectPropertyBase>());
 #endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
 
-			const FObjectProperty* ReferencingProperty = Property.Get<FObjectProperty>();
+			const FObjectPropertyBase* ReferencingProperty = Property.Get<FObjectPropertyBase>();
 			check(ReferencingProperty);
 
 			UObject* CurrentValue = ReferencingProperty->GetObjectPropertyValue(ValueAddress);
@@ -395,7 +392,7 @@ FLinkerPlaceholderBase::FPlaceholderValuePropertyPath::FPlaceholderValueProperty
 bool FLinkerPlaceholderBase::FPlaceholderValuePropertyPath::IsValid() const
 {
 	return (PropertyChain.Num() > 0) && 
-		(PropertyChain[0].IsA<FObjectProperty>() || PropertyChain[0].IsA<UObjectProperty>()) &&
+		(PropertyChain[0].IsA<FObjectPropertyBase>() || PropertyChain[0].IsA<UObjectPropertyBase>()) &&
 		PropertyChain.Last().GetOwnerClass();
 }
 
@@ -466,13 +463,13 @@ FLinkerPlaceholderBase::~FLinkerPlaceholderBase()
 //------------------------------------------------------------------------------
 bool FLinkerPlaceholderBase::AddReferencingPropertyValue(FFieldVariant ReferencingProperty, void* DataPtr)
 {
-	check(ReferencingProperty.IsA<FObjectProperty>() || ReferencingProperty.IsA<UObjectProperty>())
+	check(ReferencingProperty.IsA<FObjectPropertyBase>() || ReferencingProperty.IsA<UObjectPropertyBase>())
 	FPlaceholderValuePropertyPath PropertyChain(ReferencingProperty);
 	UObject* ReferencingContainer = FLinkerPlaceholderObjectImpl::FindPlaceholderContainer(PropertyChain);
 	if (ReferencingContainer != nullptr)
 	{
 #if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-		check(ReferencingProperty.Get<FObjectProperty>()->GetObjectPropertyValue(DataPtr) == GetPlaceholderAsUObject());
+		check(ReferencingProperty.Get<FObjectPropertyBase>()->GetObjectPropertyValue(DataPtr) == GetPlaceholderAsUObject());
 		check(PropertyChain.IsValid());
 #endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
 
@@ -785,5 +782,3 @@ int32 TLinkerImportPlaceholder<UFunction>::ResolvePropertyReferences(UFunction* 
 }
 
 #undef DEFERRED_DEPENDENCY_ENSURE
-
-#include "UObject/DefineUPropertyMacros.h"

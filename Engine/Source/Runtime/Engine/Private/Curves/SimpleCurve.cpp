@@ -2,6 +2,8 @@
 
 #include "Curves/SimpleCurve.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SimpleCurve)
+
 /* FSimpleCurveKey interface
  *****************************************************************************/
 
@@ -449,7 +451,7 @@ void FSimpleCurve::BakeCurve(float SampleRate, float FirstKeyTime, float LastKey
 	}
 }
 
-void FSimpleCurve::RemoveRedundantKeys(float Tolerance)
+void FSimpleCurve::RemoveRedundantKeys(float Tolerance, FFrameRate SampleRate /*= FFrameRate(0,0)*/ )
 {
 	if (Keys.Num() < 3)
 	{
@@ -459,7 +461,7 @@ void FSimpleCurve::RemoveRedundantKeys(float Tolerance)
 	RemoveRedundantKeysInternal(Tolerance, 0, Keys.Num() - 1);
 }
 
-void FSimpleCurve::RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime)
+void FSimpleCurve::RemoveRedundantKeys(float Tolerance, float FirstKeyTime, float LastKeyTime, FFrameRate SampleRate /*= FFrameRate(0,0)*/ )
 {
 	if (FirstKeyTime >= LastKeyTime)
 	{
@@ -755,3 +757,4 @@ bool FSimpleCurve::operator==(const FSimpleCurve& Curve) const
 
 	return true;
 }
+

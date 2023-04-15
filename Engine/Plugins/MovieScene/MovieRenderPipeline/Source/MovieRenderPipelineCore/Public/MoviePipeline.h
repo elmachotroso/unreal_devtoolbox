@@ -185,6 +185,9 @@ public:
 	EMovieRenderPipelineState GetPipelineState() const { return PipelineState; }
 	FMoviePipelineOutputData GetOutputDataParams();
 
+	void GetSidecarCameraData(UMoviePipelineExecutorShot* InShot, int32 InCameraIndex, FMinimalViewInfo& OutViewInfo, class UCameraComponent** OutCameraComponent) const;
+	bool GetSidecarCameraViewPoints(UMoviePipelineExecutorShot* InShot, TArray<FVector>& OutSidecarViewLocations, TArray<FRotator>& OutSidecarViewRotations) const;
+
 #if WITH_EDITOR
 	const FMovieSceneExportMetadata& GetOutputMetadata() const { return OutputMetadata; }
 #endif
@@ -237,6 +240,12 @@ public:
 	*/
 	void ResolveFilenameFormatArguments(const FString& InFormatString, const TMap<FString, FString>& InFormatOverrides, FString& OutFinalPath, FMoviePipelineFormatArgs& OutFinalFormatArgs, const FMoviePipelineFrameOutputState* InOutputState=nullptr, const int32 InFrameNumberOffset=0) const;
 
+	/**
+	* Allows initialization of some viewport-related arguments that aren't related to the job. Needs to
+	* be called before the Initialize function. Optional.
+	*/
+	void SetViewportInitArgs(const UE::MoviePipeline::FViewportArgs& InArgs) { ViewportInitArgs = InArgs; }
+
 protected:
 	/**
 	* This function should be called by the Executor when execution has finished (this should still be called in the event of an error)
@@ -267,6 +276,11 @@ private:
 	void BeginFinalize();
 	/** Called once when first moving to the Export state. */
 	void BeginExport();
+
+	/** Attempts to start an Unreal Insights capture to a file on disk adjacent to the movie output. */
+	void StartUnrealInsightsCapture();
+	/** Attempts to stop an already started Unreal Insights capture. */
+	void StopUnrealInsightsCapture();
 
 	/** 
 	* Runs the per-tick logic when doing the Finalize state.
@@ -361,32 +375,36 @@ private:
 
 	/** Handles transitioning between states, preventing reentrancy. Normal state flow should be respected, does not handle arbitrary x to y transitions. */
 	void TransitionToState(const EMovieRenderPipelineState InNewState);
+
+	void SetSkeletalMeshClothSubSteps(const int32 InSubdivisionCount);
+	void RestoreSkeletalMeshClothSubSteps();
+
 private:
 	/** Custom TimeStep used to drive the engine while rendering. */
 	UPROPERTY(Transient, Instanced)
-	UMoviePipelineCustomTimeStep* CustomTimeStep;
+	TObjectPtr<UMoviePipelineCustomTimeStep> CustomTimeStep;
 
 	/** Custom Time Controller for the Sequence Player, used to match Custom TimeStep without any floating point accumulation errors. */
 	TSharedPtr<FMoviePipelineTimeController> CustomSequenceTimeController;
 
 	/** Hold a reference to the existing custom time step (if any) so we can restore it after we're done using our custom one. */
 	UPROPERTY(Transient)
-	UEngineCustomTimeStep* CachedPrevCustomTimeStep;
+	TObjectPtr<UEngineCustomTimeStep> CachedPrevCustomTimeStep;
 
 	/** This is our duplicated sequence that we're rendering. This will get modified throughout the rendering process. */
 	UPROPERTY(Transient)
-	ULevelSequence* TargetSequence;
+	TObjectPtr<ULevelSequence> TargetSequence;
 
 	/** The Level Sequence Actor we spawned to play our TargetSequence. */
 	UPROPERTY(Transient)
-	ALevelSequenceActor* LevelSequenceActor;
+	TObjectPtr<ALevelSequenceActor> LevelSequenceActor;
 
 	/** The Debug UI Widget that is spawned and placed on the player UI */
 	UPROPERTY(Transient)
-	UMovieRenderDebugWidget* DebugWidget;
+	TObjectPtr<UMovieRenderDebugWidget> DebugWidget;
 
 	UPROPERTY(Transient)
-	UTexture* PreviewTexture;
+	TObjectPtr<UTexture> PreviewTexture;
 
 	/** A list of all of the shots we are going to render out from this sequence. */
 	TArray<UMoviePipelineExecutorShot*> ActiveShotList;
@@ -399,9 +417,6 @@ private:
 
 	/** The time (in UTC) that Initialize was called. Used to track elapsed time. */
 	FDateTime InitializationTime;
-
-	/** The version number for this render. Detected when job starts to increment to the next version so that image sequences don't think it's a new version for every frame. */
-	int32 InitializationVersion;
 
 	FMoviePipelineFrameOutputState CachedOutputState;
 
@@ -456,13 +471,14 @@ public:
 	IImageWriteQueue* ImageWriteQueue;
 
 	/** Optional widget for feedback during render */
+	UE_DEPRECATED(5.1, "Use SetViewportInitArgs instead.")
 	UPROPERTY(Transient)
 	TSubclassOf<UMovieRenderDebugWidget> DebugWidgetClass;
 
 private:
 	/** Keep track of which job we're working on. This holds our Configuration + which shots we're supposed to render from it. */
 	UPROPERTY(Transient)
-	UMoviePipelineExecutorJob* CurrentJob;
+	TObjectPtr<UMoviePipelineExecutorJob> CurrentJob;
 
 #if WITH_EDITOR
 	/** Keep track of clips we've exported, for building FCPXML and other project files */
@@ -474,7 +490,24 @@ private:
 	/** Files that we've requested be written to disk but have not yet finished writing. */
 	TArray<FMoviePipelineOutputFuture> OutputFutures;
 
+	UE::MoviePipeline::FViewportArgs ViewportInitArgs;
+
 	TSharedPtr<MoviePipeline::FCameraCutSubSectionHierarchyNode> CachedSequenceHierarchyRoot;
+
+	struct FClothSimSettingsCache
+	{
+		int32 NumSubSteps;
+	};
+
+	TMap<TWeakObjectPtr<class UClothingSimulationInteractor>, FClothSimSettingsCache> ClothSimCache;
+
+	struct FRenderTimeStatistics
+	{
+		FDateTime StartTime;
+		FDateTime EndTime;
+	};
+
+	TMap<int32, FRenderTimeStatistics> RenderTimeFrameStatistics;
 
 public:
 	static FString DefaultDebugWidgetAsset;

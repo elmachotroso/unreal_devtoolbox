@@ -10,7 +10,7 @@
 #include "Engine/UserDefinedStruct.h"
 #include "Logging/TokenizedMessage.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/EditorEngine.h"
 #include "Widgets/Layout/SBorder.h"
 #include "HAL/FileManager.h"
@@ -23,16 +23,17 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 #include "SCheckBoxList.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphNode_Comment.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Editor/Transactor.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Settings/BlueprintEditorProjectSettings.h"
 #include "GeneralProjectSettings.h"
@@ -74,14 +75,14 @@
 #include "ScopedTransaction.h"
 #include "Kismet2/KismetDebugUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Editor/KismetCompiler/Public/KismetCompilerModule.h"
+#include "KismetCompilerModule.h"
 #include "EngineUtils.h"
 #include "EdGraphToken.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "EdGraphUtilities.h"
 #include "IMessageLogListing.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
 #include "Logging/MessageLog.h"
+#include "MessageLogModule.h"
 #include "Misc/UObjectToken.h"
 #include "BlueprintEditorCommands.h"
 #include "GraphEditorActions.h"
@@ -103,6 +104,7 @@
 #include "Stats/StatsHierarchical.h"
 #include "BlueprintEditorLibrary.h"
 #include "BlueprintNamespaceHelper.h"
+#include "BlueprintNamespaceUtilities.h"
 
 #include "BlueprintEditorTabs.h"
 
@@ -134,7 +136,7 @@
 #include "ObjectTools.h"
 // End of misc diagnostics
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BlueprintEditorTabFactories.h"
 #include "ClassViewerFilter.h"
 #include "SPinTypeSelector.h"
@@ -176,6 +178,8 @@
 #include "BlendSpaceGraph.h"
 #include "AnimationBlendSpaceSampleGraph.h"
 #include "SSubobjectEditor.h"
+#include "BlueprintActionDatabase.h"
+#include "Editor/EditorEngine.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogBlueprintEditor, Log, All);
 
@@ -195,7 +199,7 @@ FSelectionDetailsSummoner::FSelectionDetailsSummoner(TSharedPtr<class FAssetEdit
 	: FWorkflowTabFactory(FBlueprintEditorTabs::DetailsID, InHostingApp)
 {
 	TabLabel = LOCTEXT("DetailsView_TabTitle", "Details");
-	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details");
+	TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details");
 
 	bIsSingleton = true;
 
@@ -230,23 +234,14 @@ namespace BlueprintEditorImpl
 {
 	static const float InstructionFadeDuration = 0.5f;
 
-	/** Consolidates the class viewer filters for each edited BP asset into a single filter option */
-	class FImportedClassViewerFilter : public IClassViewerFilter, public TSharedFromThis<FImportedClassViewerFilter>
+	/** Class viewer filter proxy for imported namespace type selectors, controlled by a custom filter option */
+	class FImportedClassViewerFilterProxy : public IClassViewerFilter, public TSharedFromThis<FImportedClassViewerFilterProxy>
 	{
 	public:
-		FImportedClassViewerFilter(const TArray<TSharedRef<FBlueprintNamespaceHelper>>& InNamespaceHelpers)
+		FImportedClassViewerFilterProxy(TSharedPtr<IClassViewerFilter> InClassViewerFilter)
+			: ClassViewerFilter(InClassViewerFilter)
+			, bIsFilterEnabled(true)
 		{
-			bIsFilterEnabled = true;
-
-			ClassViewerFilters.Reserve(InNamespaceHelpers.Num());
-			for (const TSharedRef<FBlueprintNamespaceHelper>& NamespaceHelper : InNamespaceHelpers)
-			{
-				TSharedPtr<IClassViewerFilter> Filter = NamespaceHelper->GetClassViewerFilter();
-				if (Filter.IsValid())
-				{
-					ClassViewerFilters.Add(Filter.ToSharedRef());
-				}
-			}
 		}
 
 		// IClassViewerFilter interface
@@ -257,15 +252,9 @@ namespace BlueprintEditorImpl
 				return true;
 			}
 
-			if(bIsFilterEnabled)
+			if (bIsFilterEnabled && ClassViewerFilter.IsValid())
 			{
-				for (const TSharedRef<IClassViewerFilter>& Filter : ClassViewerFilters)
-				{
-					if (!Filter->IsClassAllowed(InInitOptions, InClass, InFilterFuncs))
-					{
-						return false;
-					}
-				}
+				return ClassViewerFilter->IsClassAllowed(InInitOptions, InClass, InFilterFuncs);
 			}
 
 			return true;
@@ -278,15 +267,9 @@ namespace BlueprintEditorImpl
 				return true;
 			}
 
-			if (bIsFilterEnabled)
+			if (bIsFilterEnabled && ClassViewerFilter.IsValid())
 			{
-				for (const TSharedRef<IClassViewerFilter>& Filter : ClassViewerFilters)
-				{
-					if (!Filter->IsUnloadedClassAllowed(InInitOptions, InBlueprint, InFilterFuncs))
-					{
-						return false;
-					}
-				}
+				return ClassViewerFilter->IsUnloadedClassAllowed(InInitOptions, InBlueprint, InFilterFuncs);
 			}
 
 			return true;
@@ -305,7 +288,7 @@ namespace BlueprintEditorImpl
 				ToggleFilterOption->bEnabled = bIsFilterEnabled;
 				ToggleFilterOption->LabelText = LOCTEXT("ClassViewerNamespaceFilterMenuOptionLabel", "Show Only Imported Types");
 				ToggleFilterOption->ToolTipText = LOCTEXT("ClassViewerNamespaceFilterMenuOptionToolTip", "Don't include non-imported class types.");
-				ToggleFilterOption->OnOptionChanged = FOnClassViewerFilterOptionChanged::CreateSP(this, &FImportedClassViewerFilter::OnFilterOptionChanged);
+				ToggleFilterOption->OnOptionChanged = FOnClassViewerFilterOptionChanged::CreateSP(this, &FImportedClassViewerFilterProxy::OnFilterOptionChanged);
 			}
 
 			OutFilterOptions.Add(ToggleFilterOption.ToSharedRef());
@@ -318,8 +301,8 @@ namespace BlueprintEditorImpl
 		}
 
 	private:
-		/** Class viewer filters (one per edited BP asset). */
-		TArray<TSharedRef<IClassViewerFilter>> ClassViewerFilters;
+		/** Imported namespace class viewer filter. */
+		TSharedPtr<IClassViewerFilter> ClassViewerFilter;
 
 		/** Filter option for the class viewer settings menu. */
 		TSharedPtr<FClassViewerFilterOption> ToggleFilterOption;
@@ -328,25 +311,16 @@ namespace BlueprintEditorImpl
 		bool bIsFilterEnabled;
 	};
 
-	/** Consolidates the pin type selector filters for each edited BP asset into a singular construct */
-	class FImportedPinTypeSelectorFilter : public IPinTypeSelectorFilter, public TSharedFromThis<FImportedPinTypeSelectorFilter>
+	/** Pin type filter proxy for imported namespace type selectors, controlled by a custom filter option */
+	class FImportedPinTypeSelectorFilterProxy : public IPinTypeSelectorFilter, public TSharedFromThis<FImportedPinTypeSelectorFilterProxy>
 	{
 		DECLARE_MULTICAST_DELEGATE(FOnFilterChanged);
 	
 	public:
-		FImportedPinTypeSelectorFilter(const TArray<TSharedRef<FBlueprintNamespaceHelper>>& InNamespaceHelpers)
+		FImportedPinTypeSelectorFilterProxy(TSharedPtr<IPinTypeSelectorFilter> InPinTypeSelectorFilter)
+			: PinTypeSelectorFilter(InPinTypeSelectorFilter)
+			, bIsFilterEnabled(true)
 		{
-			bIsFilterEnabled = true;
-
-			PinTypeSelectorFilters.Reserve(InNamespaceHelpers.Num());
-			for (const TSharedRef<FBlueprintNamespaceHelper>& NamespaceHelper : InNamespaceHelpers)
-			{
-				TSharedPtr<IPinTypeSelectorFilter> Filter = NamespaceHelper->GetPinTypeSelectorFilter();
-				if (Filter.IsValid())
-				{
-					PinTypeSelectorFilters.Add(Filter.ToSharedRef());
-				}
-			}
 		}
 
 		// IPinTypeSelectorFilter interface
@@ -357,15 +331,9 @@ namespace BlueprintEditorImpl
 				return true;
 			}
 
-			if (bIsFilterEnabled)
+			if (bIsFilterEnabled && PinTypeSelectorFilter.IsValid())
 			{
-				for (const TSharedRef<IPinTypeSelectorFilter>& Filter : PinTypeSelectorFilters)
-				{
-					if (!Filter->ShouldShowPinTypeTreeItem(InItem))
-					{
-						return false;
-					}
-				}
+				return PinTypeSelectorFilter->ShouldShowPinTypeTreeItem(InItem);
 			}
 
 			return true;
@@ -391,8 +359,8 @@ namespace BlueprintEditorImpl
 			if (!FilterOptionsWidget.IsValid())
 			{
 				SAssignNew(FilterOptionsWidget, SCheckBox)
-					.IsChecked(this, &FImportedPinTypeSelectorFilter::IsFilterToggleChecked)
-					.OnCheckStateChanged(this, &FImportedPinTypeSelectorFilter::OnToggleFilter)
+					.IsChecked(this, &FImportedPinTypeSelectorFilterProxy::IsFilterToggleChecked)
+					.OnCheckStateChanged(this, &FImportedPinTypeSelectorFilterProxy::OnToggleFilter)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("PinTypeNamespaceFilterToggleOptionLabel", "Hide Non-Imported Types"))
@@ -417,8 +385,8 @@ namespace BlueprintEditorImpl
 		}
 
 	private:
-		/** Pin type filters (one per edited BP asset). */
-		TArray<TSharedRef<IPinTypeSelectorFilter>> PinTypeSelectorFilters;
+		/** Imported namespace pin type selector filter. */
+		TSharedPtr<IPinTypeSelectorFilter> PinTypeSelectorFilter;
 
 		/** Cached filter options widget. */
 		TSharedPtr<SWidget> FilterOptionsWidget;
@@ -428,6 +396,59 @@ namespace BlueprintEditorImpl
 
 		/** Whether or not the filter is enabled. */
 		bool bIsFilterEnabled;
+	};
+
+	/** Pin type filter for asset permissions */
+	class FPermissionsPinTypeSelectorFilter : public IPinTypeSelectorFilter, public TSharedFromThis<FPermissionsPinTypeSelectorFilter>
+	{
+	public:
+		FPermissionsPinTypeSelectorFilter(TConstArrayView<UBlueprint*> InBlueprints)
+		{
+			FAssetReferenceFilterContext Context;
+			Context.ReferencingAssets.Reserve(InBlueprints.Num());
+
+			for (UBlueprint* Blueprint : InBlueprints)
+			{
+				Context.ReferencingAssets.Add(FAssetData(Blueprint));
+			}
+
+			AssetReferenceFilter = GEditor->MakeAssetReferenceFilter(Context);
+		}
+
+		// IPinTypeSelectorFilter interface
+		virtual bool ShouldShowPinTypeTreeItem(FPinTypeTreeItem InItem) const override
+		{
+			const FSoftObjectPath& AssetReference = InItem->GetSubCategoryObjectAsset();
+			FTopLevelAssetPath TopLevelAssetPath;
+
+			if (AssetReference.IsAsset())
+			{
+				TopLevelAssetPath = FTopLevelAssetPath(AssetReference.GetLongPackageFName(), *AssetReference.GetAssetName());
+			}
+
+			// First check pin type permissions
+			if (!FBlueprintActionDatabase::IsPinTypeAllowed(InItem->GetPinType(false), TopLevelAssetPath))
+			{
+				return false;
+			}
+
+			// Then asset permissions
+			if(AssetReferenceFilter.IsValid() && AssetReference.IsValid())
+			{
+				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+				FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(AssetReference.GetWithoutSubPath());
+				if (!AssetReferenceFilter->PassesFilter(AssetData))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+	private:
+		/** Filter for asset references */
+		TSharedPtr<IAssetReferenceFilter> AssetReferenceFilter;
 	};
 
 	/**
@@ -647,7 +668,7 @@ bool FBlueprintEditor::IsASubGraph( const UEdGraph* GraphPtr )
 /** Util for finding a glyph for a graph */
 const FSlateBrush* FBlueprintEditor::GetGlyphForGraph(const UEdGraph* Graph, bool bInLargeIcon)
 {
-	const FSlateBrush* ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x") );
+	const FSlateBrush* ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x") );
 
 	check(Graph != nullptr);
 	const UEdGraphSchema* Schema = Graph->GetSchema();
@@ -659,7 +680,7 @@ const FSlateBrush* FBlueprintEditor::GetGlyphForGraph(const UEdGraph* Graph, boo
 		default:
 		case GT_StateMachine:
 			{
-				ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.StateMachine_24x") : TEXT("GraphEditor.StateMachine_16x") );
+				ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.StateMachine_24x") : TEXT("GraphEditor.StateMachine_16x") );
 			}
 			break;
 		case GT_Function:
@@ -669,11 +690,11 @@ const FSlateBrush* FBlueprintEditor::GetGlyphForGraph(const UEdGraph* Graph, boo
 					UObject* GraphOuter = Graph->GetOuter();
 					if ( GraphOuter != nullptr && GraphOuter->IsA(UAnimStateConduitNode::StaticClass()) )
 					{
-						ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Conduit_24x") : TEXT("GraphEditor.Conduit_16x") );
+						ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Conduit_24x") : TEXT("GraphEditor.Conduit_16x") );
 					}
 					else
 					{
-						ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Rule_24x") : TEXT("GraphEditor.Rule_16x") );
+						ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Rule_24x") : TEXT("GraphEditor.Rule_16x") );
 					}
 				}
 				else
@@ -681,49 +702,49 @@ const FSlateBrush* FBlueprintEditor::GetGlyphForGraph(const UEdGraph* Graph, boo
 					//Check for subgraph
 					if( IsASubGraph( Graph ) )
 					{
-						ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.SubGraph_24x") : TEXT("GraphEditor.SubGraph_16x") );
+						ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.SubGraph_24x") : TEXT("GraphEditor.SubGraph_16x") );
 					}
 					else
 					{
-						ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x") );
+						ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x") );
 					}
 				}
 			}
 			break;
 		case GT_Macro:
 			{
-				ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Macro_24x") : TEXT("GraphEditor.Macro_16x") );
+				ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.Macro_24x") : TEXT("GraphEditor.Macro_16x") );
 			}
 			break;
 		case GT_Ubergraph:
 			{
-				ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.EventGraph_24x") : TEXT("GraphEditor.EventGraph_16x") );
+				ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.EventGraph_24x") : TEXT("GraphEditor.EventGraph_16x") );
 			}
 			break;
 		case GT_Animation:
 			{
 				if ( Graph->IsA(UAnimationStateGraph::StaticClass()) )
 				{
-					ReturnValue = FEditorStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.State_24x") : TEXT("GraphEditor.State_16x") );
+					ReturnValue = FAppStyle::GetBrush( bInLargeIcon ? TEXT("GraphEditor.State_24x") : TEXT("GraphEditor.State_16x") );
 				}
 				else if ( Graph->IsA(UBlendSpaceGraph::StaticClass()) )
 				{
-					ReturnValue = FEditorStyle::GetBrush(TEXT("BlendSpace.Graph") );
+					ReturnValue = FAppStyle::GetBrush(TEXT("BlendSpace.Graph") );
 				}
 				else if ( Graph->IsA(UAnimationBlendSpaceSampleGraph::StaticClass()) )
 				{
-					ReturnValue = FEditorStyle::GetBrush(TEXT("BlendSpace.SampleGraph") );
+					ReturnValue = FAppStyle::GetBrush(TEXT("BlendSpace.SampleGraph") );
 				}
 				else
 				{
 					// If it has overriden an interface, show it as a function
 					if ( Graph->InterfaceGuid.IsValid() )
 					{ 
-						ReturnValue = FEditorStyle::GetBrush(bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x"));
+						ReturnValue = FAppStyle::GetBrush(bInLargeIcon ? TEXT("GraphEditor.Function_24x") : TEXT("GraphEditor.Function_16x"));
 					}
 					else
 					{
-						ReturnValue = FEditorStyle::GetBrush(bInLargeIcon ? TEXT("GraphEditor.Animation_24x") : TEXT("GraphEditor.Animation_16x"));	
+						ReturnValue = FAppStyle::GetBrush(bInLargeIcon ? TEXT("GraphEditor.Animation_24x") : TEXT("GraphEditor.Animation_16x"));	
 					}
 				}
 			}
@@ -740,7 +761,7 @@ FSlateBrush const* FBlueprintEditor::GetVarIconAndColor(const UStruct* VarScope,
 		FProperty* Property = FindFProperty<FProperty>(VarScope, VarName);
 		return GetVarIconAndColorFromProperty(Property, IconColorOut, SecondaryBrushOut, SecondaryColorOut);
 	}
-	return FEditorStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	return FAppStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
 }
 
 FSlateBrush const* FBlueprintEditor::GetVarIconAndColorFromProperty(const FProperty* Property, FSlateColor& IconColorOut, FSlateBrush const*& SecondaryBrushOut, FSlateColor& SecondaryColorOut)
@@ -755,7 +776,7 @@ FSlateBrush const* FBlueprintEditor::GetVarIconAndColorFromProperty(const FPrope
 			return GetVarIconAndColorFromPinType(PinType, IconColorOut, SecondaryBrushOut, SecondaryColorOut);
 		}
 	}
-	return FEditorStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	return FAppStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
 }
 
 FSlateBrush const* FBlueprintEditor::GetVarIconAndColorFromPinType(const FEdGraphPinType& PinType,
@@ -896,9 +917,9 @@ UEdGraphNode* FBlueprintEditor::GetSingleSelectedNode() const
 	return (SelectedNodes.Num() == 1) ? Cast<UEdGraphNode>(*SelectedNodes.CreateConstIterator()) : nullptr;
 }
 
-void FBlueprintEditor::AnalyticsTrackNodeEvent( UBlueprint* Blueprint, UEdGraphNode *GraphNode, bool bNodeDelete ) const
+void FBlueprintEditor::AnalyticsTrackNodeEvent(UBlueprint* Blueprint, UEdGraphNode *GraphNode, bool bNodeDelete) const
 {
-	if( Blueprint && GraphNode && FEngineAnalytics::IsAvailable() )
+	if(Blueprint && GraphNode && FEngineAnalytics::IsAvailable())
 	{
 		// we'd like to see if this was happening in normal blueprint editor or persona 
 		const FString EditorName = Cast<UAnimBlueprint>(Blueprint) != nullptr ? TEXT("Persona") : TEXT("BlueprintEditor");
@@ -906,39 +927,39 @@ void FBlueprintEditor::AnalyticsTrackNodeEvent( UBlueprint* Blueprint, UEdGraphN
 		// Build Node Details
 		const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
 		FString ProjectID = ProjectSettings.ProjectID.ToString();
-		TArray< FAnalyticsEventAttribute > NodeAttributes;
-		NodeAttributes.Add( FAnalyticsEventAttribute( TEXT( "ProjectId" ), ProjectID ) );
-		NodeAttributes.Add( FAnalyticsEventAttribute( TEXT( "BlueprintId" ), Blueprint->GetBlueprintGuid().ToString() ) );
-		TArray< TKeyValuePair<FString, FString> > Attributes;
+		TArray<FAnalyticsEventAttribute> NodeAttributes;
+		NodeAttributes.Add(FAnalyticsEventAttribute(TEXT("ProjectId"), ProjectID));
+		NodeAttributes.Add(FAnalyticsEventAttribute(TEXT("BlueprintId"), Blueprint->GetBlueprintGuid().ToString()));
+		TArray<TKeyValuePair<FString, FString>> Attributes;
 
-		if( UK2Node* K2Node = Cast<UK2Node>( GraphNode ))
+		if (UK2Node* K2Node = Cast<UK2Node>(GraphNode))
 		{
-			K2Node->GetNodeAttributes( Attributes );
+			K2Node->GetNodeAttributes(Attributes);
 		}
-		else if( UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>( GraphNode ))
+		else if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(GraphNode))
 		{
-			Attributes.Add( TKeyValuePair<FString, FString>( TEXT( "Type" ), TEXT( "Comment" ) ));
-			Attributes.Add( TKeyValuePair<FString, FString>( TEXT( "Class" ), CommentNode->GetClass()->GetName() ));
-			Attributes.Add( TKeyValuePair<FString, FString>( TEXT( "Name" ), CommentNode->GetName() ));
+			Attributes.Add(TKeyValuePair<FString, FString>(TEXT("Type"), TEXT("Comment")));
+			Attributes.Add(TKeyValuePair<FString, FString>(TEXT("Class"), CommentNode->GetClass()->GetName()));
+			Attributes.Add(TKeyValuePair<FString, FString>(TEXT("Name"), CommentNode->GetName()));
 		}
-		if( Attributes.Num() > 0 )
+		if (Attributes.Num() > 0)
 		{
 			// Build Node Attributes
 			for (const TKeyValuePair<FString, FString>& Attribute : Attributes)
 			{
-				NodeAttributes.Add( FAnalyticsEventAttribute( Attribute.Key, Attribute.Value ));
+				NodeAttributes.Add(FAnalyticsEventAttribute(Attribute.Key, Attribute.Value));
 			}
 			// Send Analytics event 
-			FString EventType = bNodeDelete ?	FString::Printf(TEXT( "Editor.Usage.%s.NodeDeleted" ), *EditorName) :
-												FString::Printf(TEXT( "Editor.Usage.%s.NodeCreated" ), *EditorName);
-			FEngineAnalytics::GetProvider().RecordEvent( EventType, NodeAttributes );
+			FString EventType = bNodeDelete ?	FString::Printf(TEXT("Editor.Usage.%s.NodeDeleted"), *EditorName) :
+												FString::Printf(TEXT("Editor.Usage.%s.NodeCreated"), *EditorName);
+			FEngineAnalytics::GetProvider().RecordEvent(EventType, NodeAttributes);
 		}
 	}
 }
 
-void FBlueprintEditor::AnalyticsTrackCompileEvent( UBlueprint* Blueprint, int32 NumErrors, int32 NumWarnings ) const
+void FBlueprintEditor::AnalyticsTrackCompileEvent(UBlueprint* Blueprint, int32 NumErrors, int32 NumWarnings) const
 {
-	if(Blueprint && FEngineAnalytics::IsAvailable())
+	if (Blueprint && FEngineAnalytics::IsAvailable())
 	{
 		// we'd like to see if this was happening in normal blueprint editor or persona 
 		const FString EditorName = Cast<UAnimBlueprint>(Blueprint) != nullptr ? TEXT("Persona") : TEXT("BlueprintEditor");
@@ -948,16 +969,22 @@ void FBlueprintEditor::AnalyticsTrackCompileEvent( UBlueprint* Blueprint, int32 
 		FString ProjectID = ProjectSettings.ProjectID.ToString();
 
 		const bool bSuccess = NumErrors == 0;
-		TArray< FAnalyticsEventAttribute > Attributes;
+		TArray<FAnalyticsEventAttribute> Attributes;
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("ProjectId"), ProjectID));
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("BlueprintId"), Blueprint->GetBlueprintGuid().ToString()));
-		Attributes.Add(FAnalyticsEventAttribute(TEXT("Success"), bSuccess? TEXT("True") : TEXT("False") ));
+		Attributes.Add(FAnalyticsEventAttribute(TEXT("Success"), bSuccess? TEXT("True") : TEXT("False")));
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("NumErrors"), FString::FromInt(NumErrors)));
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("NumWarnings"), FString::FromInt(NumWarnings)));
 
 		// Send Analytics event 
 		FEngineAnalytics::GetProvider().RecordEvent(FString::Printf(TEXT("Editor.Usage.%s.Compile"), *EditorName), Attributes);
 	}
+}
+
+void FBlueprintEditor::GetPinTypeSelectorFilters(TArray<TSharedPtr<IPinTypeSelectorFilter>>& OutFilters) const
+{ 
+	OutFilters.Add(ImportedPinTypeSelectorFilter);
+	OutFilters.Add(PermissionsPinTypeSelectorFilter);
 }
 
 void FBlueprintEditor::RefreshEditors(ERefreshBlueprintEditorReason::Type Reason)
@@ -1253,6 +1280,38 @@ void FBlueprintEditor::OnComponentDoubleClicked(TSharedPtr<FSubobjectEditorTreeN
 	{
 		GetTabManager()->TryInvokeTab(FBlueprintEditorTabs::SCSViewportID);
 	}
+}
+
+void FBlueprintEditor::OnComponentAddedToBlueprint(const FSubobjectData& NewSubobjectData)
+{
+	// Determine if we've added to a Blueprint instance that we're editing within this context.
+	bool bIsEditingEventTarget = false;
+	if (const UBlueprint* TargetBlueprint = NewSubobjectData.GetBlueprint())
+	{
+		for (UObject* EditorObject : GetEditingObjects())
+		{
+			if (EditorObject == TargetBlueprint)
+			{
+				bIsEditingEventTarget = true;
+				break;
+			}
+		}
+	}
+
+	// Only handle add events if the editor context includes its targeted Blueprint object.
+	if (!bIsEditingEventTarget)
+	{
+		return;
+	}
+
+	const UObject* NewSubobject = NewSubobjectData.GetObject();
+	check(NewSubobject);
+
+	// Get the default namespace set associated with the new subobject's class. Because we
+	// might receive multiple events within a single frame (e.g. dragging multiple component
+	// Blueprint class assets into the components tree will result in multiple notifications),
+	// we'll add these into the deferred list for now and auto-import them all on the next tick.
+	FBlueprintNamespaceUtilities::GetDefaultImportsForObject(NewSubobject->GetClass(), DeferredNamespaceImports);
 }
 
 TSharedRef<SWidget> FBlueprintEditor::CreateGraphTitleBarWidget(TSharedRef<FTabInfo> InTabInfo, UEdGraph* InGraph)
@@ -1860,13 +1919,13 @@ struct FLoadObjectsFromAssetRegistryHelper
 		const double CompileStartTime = FPlatformTime::Seconds();
 
 		TArray<FAssetData> AssetData;
-		AssetRegistryModule.Get().GetAssetsByClass(TObjectType::StaticClass()->GetFName(), AssetData);
+		AssetRegistryModule.Get().GetAssetsByClass(TObjectType::StaticClass()->GetClassPathName(), AssetData);
 
 		for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
 		{
 			if(AssetData[AssetIndex].IsValid())
 			{
-				FString AssetPath = AssetData[AssetIndex].ObjectPath.ToString();
+				FString AssetPath = AssetData[AssetIndex].GetObjectPathString();
 				TObjectType* Object = LoadObject<TObjectType>(nullptr, *AssetPath, nullptr, 0, nullptr);
 				if (Object)
 				{
@@ -1901,15 +1960,19 @@ void FBlueprintEditor::CommonInitialization(const TArray<UBlueprint*>& InitBluep
 		DocumentManager->RegisterDocumentFactory(GraphEditorFactory);
 	}
 
-	// Create imported namespace type filters for value editing.
-	TArray<TSharedRef<FBlueprintNamespaceHelper>> LocalNamespaceHelpersArray;
-	LocalNamespaceHelpersArray.Reserve(InitBlueprints.Num());
+	// Create a namespace helper to keep track of imports for all BPs being edited.
+	ImportedNamespaceHelper = MakeShared<FBlueprintNamespaceHelper>();
+
+	// Add each Blueprint instance to be edited into the namespace helper's context.
 	for (const UBlueprint* BP : InitBlueprints)
 	{
-		LocalNamespaceHelpersArray.Add(GetOrCreateNamespaceHelperForBlueprint(BP));
+		ImportedNamespaceHelper->AddBlueprint(BP);
 	}
-	ImportedClassViewerFilter = MakeShared<BlueprintEditorImpl::FImportedClassViewerFilter>(LocalNamespaceHelpersArray);
-	ImportedPinTypeSelectorFilter = MakeShared<BlueprintEditorImpl::FImportedPinTypeSelectorFilter>(LocalNamespaceHelpersArray);
+
+	// Create imported namespace type filters for value editing.
+	ImportedClassViewerFilter = MakeShared<BlueprintEditorImpl::FImportedClassViewerFilterProxy>(ImportedNamespaceHelper->GetClassViewerFilter());
+	ImportedPinTypeSelectorFilter = MakeShared<BlueprintEditorImpl::FImportedPinTypeSelectorFilterProxy>(ImportedNamespaceHelper->GetPinTypeSelectorFilter());
+	PermissionsPinTypeSelectorFilter = MakeShared<BlueprintEditorImpl::FPermissionsPinTypeSelectorFilter>(InitBlueprints);
 
 	// Make sure we know when tabs become active to update details tab
 	OnActiveTabChangedDelegateHandle = FGlobalTabmanager::Get()->OnActiveTabChanged_Subscribe( FOnActiveTabChanged::FDelegate::CreateRaw(this, &FBlueprintEditor::OnActiveTabChanged) );
@@ -1947,6 +2010,8 @@ void FBlueprintEditor::CommonInitialization(const TArray<UBlueprint*>& InitBluep
 
 void FBlueprintEditor::LoadLibrariesFromAssetRegistry()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintEditor::LoadLibrariesFromAssetRegistry);
+
 	if (EnableAutomaticLibraryAssetLoading == 0)
 	{
 		return;
@@ -1957,8 +2022,6 @@ void FBlueprintEditor::LoadLibrariesFromAssetRegistry()
 		const FString UserDeveloperPath = FPackageName::FilenameToLongPackageName( FPaths::GameUserDeveloperDir());
 		const FString DeveloperPath = FPackageName::FilenameToLongPackageName( FPaths::GameDevelopersDir() );
 
-		TSharedRef<FBlueprintNamespaceHelper> NamespaceHelper = GetOrCreateNamespaceHelperForBlueprint(BP);
-
 		// Interface blueprints don't show a node context menu anywhere so we can skip library loading
 		if (BP->BlueprintType != BPTYPE_Interface)
 		{
@@ -1967,7 +2030,7 @@ void FBlueprintEditor::LoadLibrariesFromAssetRegistry()
 
 			// Collect a full list of assets with the specified class
 			TArray<FAssetData> AssetData;
-			AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetFName(), AssetData);
+			AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AssetData);
 
 			GWarn->BeginSlowTask(LOCTEXT("LoadingBlueprintAssetData", "Loading Blueprint Asset Data"), true);
 
@@ -1998,12 +2061,10 @@ void FBlueprintEditor::LoadLibrariesFromAssetRegistry()
 				// Only check for Blueprint Macros & Functions in the asset data for loading
 				if ((AssetBPType == BPMacroTypeStr) || (AssetBPType == BPFunctionTypeStr))
 				{
-					const FString BlueprintPath = AssetEntry.ObjectPath.ToString();
-
-					bool bAllowLoadBP = true;
+					const FString BlueprintPath = AssetEntry.ToSoftObjectPath().ToString();
 
 					// See if this passes the namespace check
-					bAllowLoadBP = bAllowLoadBP && NamespaceHelper->IsImportedAsset(AssetEntry);
+					bool bAllowLoadBP = !ImportedNamespaceHelper.IsValid() || ImportedNamespaceHelper->IsImportedAsset(AssetEntry);
 					
 					// For blueprints inside developers folder, only allow the ones inside current user's developers folder.
 					if (bAllowLoadBP)
@@ -2063,56 +2124,157 @@ void FBlueprintEditor::LoadLibrariesFromAssetRegistry()
 
 void FBlueprintEditor::ImportNamespace(const FString& InNamespace)
 {
-	// No need to import the global namespace.
-	if (InNamespace.IsEmpty())
+	FImportNamespaceExParameters Params;
+	Params.NamespacesToImport.Add(InNamespace);
+	ImportNamespaceEx(Params);
+}
+
+void FBlueprintEditor::ImportNamespaceEx(const FImportNamespaceExParameters& InParams)
+{
+	// No auto-import actions if features are disabled.
+	const bool bIsAutoImportEnabled = GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceImportingFeatures;
+	if (InParams.bIsAutoImport && !bIsAutoImportEnabled)
 	{
 		return;
 	}
 
-	bool bShouldReloadLibraries = false;
+	// Exit now if no input was given.
+	if (InParams.NamespacesToImport.IsEmpty())
+	{
+		return;
+	}
 
-	// Add the namespace to any cached helper objects.
+	auto AddNamespaceToImportList = [](UBlueprint* InBlueprint, const FString& InNamespace) -> bool
+	{
+		// No need to include the global namespace (empty string) in the import list.
+		if (!InNamespace.IsEmpty() && !InBlueprint->ImportedNamespaces.Contains(InNamespace))
+		{
+			InBlueprint->Modify();
+			InBlueprint->ImportedNamespaces.Add(InNamespace);
+
+			return true;
+		}
+
+		return false;
+	};
+
+	// Update the imported set for all edited objects.
+	bool bWasAddedAsImport = false;
 	const TArray<UObject*>& EditingObjs = GetEditingObjects();
 	for (UObject* EditingObj : EditingObjs)
 	{
 		if (UBlueprint* BlueprintObj = Cast<UBlueprint>(EditingObj))
 		{
-			// Add it into the Blueprint's user-facing import set.
-			if (BlueprintObj->BlueprintNamespace != InNamespace && !BlueprintObj->ImportedNamespaces.Contains(InNamespace))
+			// Add each namespace into the Blueprint's user-facing import set.
+			for (const FString& NamespaceToImport : InParams.NamespacesToImport)
 			{
-				BlueprintObj->Modify();
-				BlueprintObj->ImportedNamespaces.Add(InNamespace);
-			}
-
-			// Add it to the current scope of the Blueprint's editor context.
-			TSharedRef<FBlueprintNamespaceHelper> NamespaceHelper = GetOrCreateNamespaceHelperForBlueprint(BlueprintObj);
-			if (!NamespaceHelper->IsIncludedInNamespaceList(InNamespace))
-			{
-				NamespaceHelper->AddNamespace(InNamespace);
-
-				// Load additional libraries that may now be in scope.
-				bShouldReloadLibraries = true;
+				bWasAddedAsImport |= AddNamespaceToImportList(BlueprintObj, NamespaceToImport);
 			}
 		}
 	}
 
-	if (bShouldReloadLibraries)
+	auto AddNamespaceToEditorContext = [](TSharedPtr<FBlueprintNamespaceHelper> ImportsHelper, const FString& InNamespace) -> bool
 	{
+		// Note: The global namespace (empty string) is implicitly included.
+		if (!InNamespace.IsEmpty() && !ImportsHelper->IsIncludedInNamespaceList(InNamespace))
+		{
+			ImportsHelper->AddNamespace(InNamespace);
+			return true;
+		}
+
+		return false;
+	};
+
+	// Add to the current scope of the Blueprint's editor context. Note that in certain cases, imports may already be associated
+	// with the Blueprint, but not yet associated with the editor context (e.g. - auto-import after setting a Blueprint's namespace;
+	// we won't add it to the Blueprint's import list, but we still want to add to the editor context and do any post-import actions).
+	bool bWasAddedToEditorContext = false;
+	if (ImportedNamespaceHelper.IsValid())
+	{
+		for (const FString& NamespaceToImport : InParams.NamespacesToImport)
+		{
+			bWasAddedToEditorContext |= AddNamespaceToEditorContext(ImportedNamespaceHelper, NamespaceToImport);
+		}
+	}
+
+	if (bWasAddedAsImport || bWasAddedToEditorContext)
+	{
+		// Load additional libraries that may now be in scope.
 		// @todo_namespaces - Make this more targeted - i.e. get/load only those assets tagged w/ the given namespace
 		LoadLibrariesFromAssetRegistry();
+
+		// Refresh class details on an auto-import if visible, since the list of imports has implicitly changed.
+		if (InParams.bIsAutoImport && IsDetailsPanelEditingGlobalOptions())
+		{
+			RefreshInspector();
+		}
+
+		// If bound, execute the post-import callback.
+		InParams.OnPostImportCallback.ExecuteIfBound();
+
+		// Display a notification for auto-import events only if we've added it to the editor context.
+		if (InParams.bIsAutoImport && bWasAddedToEditorContext)
+		{
+			const int32 ImportCount = InParams.NamespacesToImport.Num();
+
+			FText NotificationText;
+			if (ImportCount > 1)
+			{
+				FFormatNamedArguments FormatArgs;
+				FormatArgs.Add(TEXT("ImportCount"), ImportCount);
+				NotificationText = FText::Format(LOCTEXT("AutoImportNotification_Multiple", "Imported {ImportCount} namespaces"), FormatArgs);
+			}
+			else
+			{
+				NotificationText = FText::Format(LOCTEXT("AutoImportNotification_Single", "Imported namespace \"{0}\""), FText::FromString(InParams.NamespacesToImport.Array()[0]));
+			}
+
+			FNotificationInfo Notification(NotificationText);
+			Notification.ExpireDuration = 3.0f;
+			FSlateNotificationManager::Get().AddNotification(Notification);
+		}
 	}
 }
 
-TSharedRef<FBlueprintNamespaceHelper> FBlueprintEditor::GetOrCreateNamespaceHelperForBlueprint(const UBlueprint* InBlueprint)
+void FBlueprintEditor::RemoveNamespace(const FString& InNamespace)
 {
-	TWeakObjectPtr<const UBlueprint> Key = TWeakObjectPtr<const UBlueprint>(InBlueprint);
-	if (TSharedRef<FBlueprintNamespaceHelper>* ValuePtr = CachedNamespaceHelpers.Find(Key))
+	// Cannot remove the global namespace.
+	if (InNamespace.IsEmpty())
 	{
-		return *ValuePtr;
+		return;
 	}
 
-	TSharedPtr<FBlueprintNamespaceHelper> NewValue = MakeShared<FBlueprintNamespaceHelper>(InBlueprint);
-	return GetEditingObjects().Contains(InBlueprint) ? CachedNamespaceHelpers.Add(Key, NewValue.ToSharedRef()) : NewValue.ToSharedRef();
+	// Update the imported set for all edited objects.
+	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	for (UObject* EditingObj : EditingObjs)
+	{
+		if (UBlueprint* BlueprintObj = Cast<UBlueprint>(EditingObj))
+		{
+			if (BlueprintObj->ImportedNamespaces.Contains(InNamespace))
+			{
+				BlueprintObj->Modify();
+				BlueprintObj->ImportedNamespaces.Remove(InNamespace);
+			}
+		}
+	}
+
+	// Remove it from the current scope of the Blueprint's editor context.
+	if (ImportedNamespaceHelper.IsValid())
+	{
+		if (ImportedNamespaceHelper->IsIncludedInNamespaceList(InNamespace))
+		{
+			ImportedNamespaceHelper->RemoveNamespace(InNamespace);
+		}
+	}
+}
+
+void FBlueprintEditor::SelectAndDuplicateNode(UEdGraphNode* InNode)
+{
+	check(InNode != nullptr);
+
+	ClearSelectionStateFor(CurrentUISelection);
+	AddToSelection(InNode);
+	DuplicateNodes();
 }
 
 void FBlueprintEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -2353,7 +2515,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 				SNew(STextBlock)
 				.ShadowOffset(FVector2D::UnitVector)
 				.Text(this, &FBlueprintEditor::GetParentClassNameText)
-				.TextStyle(FEditorStyle::Get(), "Common.InheritedFromBlueprintTextStyle")
+				.TextStyle(FAppStyle::Get(), "Common.InheritedFromBlueprintTextStyle")
 				.ToolTipText(LOCTEXT("ParentClassToolTip", "The class that the current Blueprint is based on. The parent provides the base definition, which the current Blueprint extends."))
 				.Visibility(this, &FBlueprintEditor::GetParentClassNameVisibility)
 			]
@@ -2362,7 +2524,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 			[
 				SNew(SButton)
 				.VAlign(VAlign_Center)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &FBlueprintEditor::OnFindParentClassInContentBrowserClicked)
 				.IsEnabled(this, &FBlueprintEditor::IsParentClassABlueprint)
 				.Visibility(this, &FBlueprintEditor::GetFindParentClassVisibility)
@@ -2371,7 +2533,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 				.ForegroundColor(FSlateColor::UseForeground())
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.Search"))
+					.Image(FAppStyle::GetBrush("Icons.Search"))
 				]
 			]
 			+SHorizontalBox::Slot()
@@ -2379,7 +2541,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 			[
 				SNew(SButton)
 				.VAlign(VAlign_Center)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &FBlueprintEditor::OnEditParentClassClicked)
 				.IsEnabled(this, &FBlueprintEditor::IsParentClassAnEditableBlueprint)
 				.Visibility(this, &FBlueprintEditor::GetEditParentClassVisibility)
@@ -2388,7 +2550,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 				.ForegroundColor(FSlateColor::UseForeground())
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.Edit"))
+					.Image(FAppStyle::GetBrush("Icons.Edit"))
 				]
 			]
 			+ SHorizontalBox::Slot()
@@ -2396,7 +2558,7 @@ void FBlueprintEditor::PostRegenerateMenusAndToolbars()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
+				.Style(FAppStyle::Get(), "Common.GotoNativeCodeHyperlink")
 				.IsEnabled(this, &FBlueprintEditor::IsNativeParentClassCodeLinkEnabled)
 				.Visibility(this, &FBlueprintEditor::GetNativeParentClassButtonsVisibility)
 				.OnNavigate(this, &FBlueprintEditor::OnEditParentClassNativeCodeClicked)
@@ -2557,7 +2719,7 @@ void FBlueprintEditor::PostLayoutBlueprintEditorInitialization()
 			if (FocusedGraphEdPtr.IsValid())
 			{
 				FNotificationInfo Info( NSLOCTEXT("Kismet", "Blueprint Modified", "Blueprint requires updating. Please resave.") );
-				Info.Image = FEditorStyle::GetBrush(TEXT("Icons.Info"));
+				Info.Image = FAppStyle::GetBrush(TEXT("Icons.Info"));
 				Info.bFireAndForget = true;
 				Info.bUseSuccessFailIcons = false;
 				Info.ExpireDuration = 5.0f;
@@ -2633,54 +2795,61 @@ FBlueprintEditor::~FBlueprintEditor()
 	UEditorEngine* Editor = (UEditorEngine*)GEngine;
 	if (Editor)
 	{
-		Editor->UnregisterForUndo( this );
+		Editor->UnregisterForUndo(this);
 	}
 
 	CloseMergeTool();
 
 	if (GetBlueprintObj())
 	{
-		GetBlueprintObj()->OnChanged().RemoveAll( this );
-		GetBlueprintObj()->OnCompiled().RemoveAll( this );
-		GetBlueprintObj()->OnSetObjectBeingDebugged().RemoveAll( this );
+		GetBlueprintObj()->OnChanged().RemoveAll(this);
+		GetBlueprintObj()->OnCompiled().RemoveAll(this);
+		GetBlueprintObj()->OnSetObjectBeingDebugged().RemoveAll(this);
 	}
 
-	FGlobalTabmanager::Get()->OnActiveTabChanged_Unsubscribe( OnActiveTabChangedDelegateHandle );
+	if (USubobjectDataSubsystem* SubobjectDataSubsystem = USubobjectDataSubsystem::Get())
+	{
+		SubobjectDataSubsystem->OnNewSubobjectAdded().RemoveAll(this);
+	}
+
+	FKismetEditorUtilities::OnBlueprintUnloaded.RemoveAll(this);
+
+	FGlobalTabmanager::Get()->OnActiveTabChanged_Unsubscribe(OnActiveTabChangedDelegateHandle);
 
 	if (FEngineAnalytics::IsAvailable())
 	{
 		const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
 		FString ProjectID = ProjectSettings.ProjectID.ToString();
 
-		TArray< FAnalyticsEventAttribute > BPEditorAttribs;
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "GraphActionMenusExecuted.NonContextSensitive" ), AnalyticsStats.GraphActionMenusNonCtxtSensitiveExecCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "GraphActionMenusExecuted.ContextSensitive" ), AnalyticsStats.GraphActionMenusCtxtSensitiveExecCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "GraphActionMenusClosed" ), AnalyticsStats.GraphActionMenusCancelledCount ));
+		TArray<FAnalyticsEventAttribute> BPEditorAttribs;
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("GraphActionMenusExecuted.NonContextSensitive"), AnalyticsStats.GraphActionMenusNonCtxtSensitiveExecCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("GraphActionMenusExecuted.ContextSensitive"), AnalyticsStats.GraphActionMenusCtxtSensitiveExecCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("GraphActionMenusClosed"), AnalyticsStats.GraphActionMenusCancelledCount));
 
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "MyBlueprintDragPlacedNodesCreated" ), AnalyticsStats.MyBlueprintNodeDragPlacementCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "BlueprintPaletteDragPlacedNodesCreated" ), AnalyticsStats.PaletteNodeDragPlacementCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "GraphContextNodesCreated" ), AnalyticsStats.NodeGraphContextCreateCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "GraphPinContextNodesCreated" ), AnalyticsStats.NodePinContextCreateCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "KeymapNodesCreated" ), AnalyticsStats.NodeKeymapCreateCount ));
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "PastedNodesCreated" ), AnalyticsStats.NodePasteCreateCount ));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("MyBlueprintDragPlacedNodesCreated"), AnalyticsStats.MyBlueprintNodeDragPlacementCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("BlueprintPaletteDragPlacedNodesCreated"), AnalyticsStats.PaletteNodeDragPlacementCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("GraphContextNodesCreated" ), AnalyticsStats.NodeGraphContextCreateCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("GraphPinContextNodesCreated" ), AnalyticsStats.NodePinContextCreateCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("KeymapNodesCreated"), AnalyticsStats.NodeKeymapCreateCount));
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("PastedNodesCreated"), AnalyticsStats.NodePasteCreateCount));
 
-		BPEditorAttribs.Add( FAnalyticsEventAttribute( FString( "ProjectId" ), ProjectID ) );
-		FEngineAnalytics::GetProvider().RecordEvent( FString( "Editor.Usage.BlueprintEditorSummary" ), BPEditorAttribs );
+		BPEditorAttribs.Add(FAnalyticsEventAttribute(TEXT("ProjectId"), ProjectID));
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.BlueprintEditorSummary"), BPEditorAttribs);
 
 		for (auto Iter = AnalyticsStats.GraphDisallowedPinConnections.CreateConstIterator(); Iter; ++Iter)
 		{
-			TArray< FAnalyticsEventAttribute > BPEditorPinConnectAttribs;
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "FromPin.Category" ), Iter->PinTypeCategoryA ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "FromPin.IsArray" ), Iter->bPinIsArrayA ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "FromPin.IsReference" ), Iter->bPinIsReferenceA ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "FromPin.IsWeakPointer" ), Iter->bPinIsWeakPointerA ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "ToPin.Category" ), Iter->PinTypeCategoryB ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "ToPin.IsArray" ), Iter->bPinIsArrayB ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "ToPin.IsReference" ), Iter->bPinIsReferenceB ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "ToPin.IsWeakPointer" ), Iter->bPinIsWeakPointerB ));
-			BPEditorPinConnectAttribs.Add( FAnalyticsEventAttribute( FString( "ProjectId" ), ProjectID ) );
+			TArray<FAnalyticsEventAttribute> BPEditorPinConnectAttribs;
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("FromPin.Category"), Iter->PinTypeCategoryA));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("FromPin.IsArray"), Iter->bPinIsArrayA));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("FromPin.IsReference"), Iter->bPinIsReferenceA));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("FromPin.IsWeakPointer"), Iter->bPinIsWeakPointerA));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("ToPin.Category"), Iter->PinTypeCategoryB));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("ToPin.IsArray"), Iter->bPinIsArrayB));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("ToPin.IsReference"), Iter->bPinIsReferenceB));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("ToPin.IsWeakPointer"), Iter->bPinIsWeakPointerB));
+			BPEditorPinConnectAttribs.Add(FAnalyticsEventAttribute(TEXT("ProjectId"), ProjectID));
 
-			FEngineAnalytics::GetProvider().RecordEvent( FString( "Editor.Usage.BPDisallowedPinConnection" ), BPEditorPinConnectAttribs );
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.BPDisallowedPinConnection"), BPEditorPinConnectAttribs);
 		}
 	}
 
@@ -2779,11 +2948,15 @@ void FBlueprintEditor::CreateSubobjectEditors()
 		.AllowEditing(this, &FBlueprintEditor::InEditingMode)
 		.OnSelectionUpdated(this, &FBlueprintEditor::OnSelectionUpdated)
 		.OnItemDoubleClicked(this, &FBlueprintEditor::OnComponentDoubleClicked)
-		.OnImportNamespaceToEditorContext(this, &FBlueprintEditor::ImportNamespace)
 		.SubobjectClassListFilters(ClassFilters);
 	
 	SubobjectViewport = SAssignNew(SubobjectViewport, SSCSEditorViewport)
 		.BlueprintEditor(SharedThis(this));
+
+	if (USubobjectDataSubsystem* SubobjectDataSubsystem = USubobjectDataSubsystem::Get())
+	{
+		SubobjectDataSubsystem->OnNewSubobjectAdded().AddSP(this, &FBlueprintEditor::OnComponentAddedToBlueprint);
+	}
 }
 
 void FBlueprintEditor::OnLogTokenClicked(const TSharedRef<IMessageToken>& Token)
@@ -3148,7 +3321,7 @@ void FBlueprintEditor::OnDumpCachedIndexDataForBlueprint()
 		FArchive* DumpFile = IFileManager::Get().CreateFileWriter(*FullPath);
 		if (DumpFile)
 		{
-			const FName AssetPath = *Blueprint->GetPathName();
+			const FSoftObjectPath AssetPath(Blueprint);
 			FSearchData SearchData = FFindInBlueprintSearchManager::Get().GetSearchDataForAssetPath(AssetPath);
 			if (SearchData.IsValid() && SearchData.ImaginaryBlueprint.IsValid())
 			{
@@ -3263,8 +3436,22 @@ void FBlueprintEditor::ReparentBlueprint_NewParentChosen(UClass* ChosenClass)
 				}
 			}
 
+			// Gather the set of default imports with the old parent class set.
+			TSet<FString> OldDefaultImports;
+			FBlueprintNamespaceUtilities::GetDefaultImportsForObject(BlueprintObj, OldDefaultImports);
+
 			UClass* OldParentClass = BlueprintObj->ParentClass;
 			BlueprintObj->ParentClass = ChosenClass;
+
+			// Gather the set of default imports with the new parent class set.
+			TSet<FString> NewDefaultImports;
+			FBlueprintNamespaceUtilities::GetDefaultImportsForObject(BlueprintObj, NewDefaultImports);
+
+			// Move namespace imports that no longer appear in the default set to the explicit set.
+			FImportNamespaceExParameters Params;
+			Params.bIsAutoImport = false;
+			Params.NamespacesToImport = OldDefaultImports.Difference(NewDefaultImports);
+			ImportNamespaceEx(Params);
 
 			// Ensure that the Blueprint is up-to-date (valid SCS etc.) before compiling
 			EnsureBlueprintIsUpToDate(BlueprintObj);
@@ -3590,7 +3777,7 @@ void FBlueprintEditor::OnGraphEditorFocused(const TSharedRef<SGraphEditor>& InGr
 
 	// Update the inspector as well, to show selection from the focused graph editor
 	FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
-	FocusInspectorOnGraphSelection(SelectedNodes);
+	FocusInspectorOnGraphSelection(SelectedNodes, /*bForceRefresh=*/ true);
 
 	// During undo, garbage graphs can be temporarily brought into focus, ensure that before a refresh of the MyBlueprint window that the graph is owned by a Blueprint
 	if ( FocusedGraphEdPtr.IsValid() && MyBlueprintWidget.IsValid() )
@@ -3951,8 +4138,11 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 
 		TSharedRef<SCustomDialog> CustomDialog = SNew(SCustomDialog)
 			.Title(LOCTEXT("DeleteUnusedVariablesDialog_Title", "Delete Unused Variables"))
-			.IconBrush("NotificationList.DefaultMessage")
-			.DialogContent(DialogContain)
+			.Icon(FAppStyle::Get().GetBrush("NotificationList.DefaultMessage"))
+			.Content()
+			[
+				DialogContain
+			]
 			.Buttons(
 			{
 				SCustomDialog::FButton(LOCTEXT("DeleteUnusedVariablesDialog_ButtonDelete", "Delete")),
@@ -4359,6 +4549,11 @@ bool FBlueprintEditor::CanAccessComponentsMode() const
 	}
 	
 	return bCanAccess;
+}
+
+bool FBlueprintEditor::IsEditorClosing() const
+{
+	return bEditorMarkedAsClosed;
 }
 
 void FBlueprintEditor::RegisterToolbarTab(const TSharedRef<class FTabManager>& InTabManager)
@@ -6012,8 +6207,8 @@ void FBlueprintEditor::MoveNodesToAveragePos(TSet<UEdGraphNode*>& AverageNodes, 
 
 		for (UEdGraphNode* ExpandedNode : AverageNodes)
 		{
-			ExpandedNode->NodePosX = (ExpandedNode->NodePosX - AvgNodePosition.X) + SourcePos.X;
-			ExpandedNode->NodePosY = (ExpandedNode->NodePosY - AvgNodePosition.Y) + SourcePos.Y;
+			ExpandedNode->NodePosX = static_cast<int32>((ExpandedNode->NodePosX - AvgNodePosition.X) + SourcePos.X);
+			ExpandedNode->NodePosY = static_cast<int32>((ExpandedNode->NodePosY - AvgNodePosition.Y) + SourcePos.Y);
 
 			ExpandedNode->SnapToGrid(SNodePanel::GetSnapGridSize());
 
@@ -6177,8 +6372,8 @@ void FBlueprintEditor::ConvertFunctionToEvent(UK2Node_FunctionEntry* SelectedCal
 			check(NewNode != nullptr);
 			NewNode->CreateNewGuid();
 
-			NewNode->NodePosX = SpawnPos.X;
-			NewNode->NodePosY = SpawnPos.Y;
+			NewNode->NodePosX = static_cast<int32>(SpawnPos.X);
+			NewNode->NodePosY = static_cast<int32>(SpawnPos.Y);
 
 			NewNode->SetFlags(RF_Transactional);
 			NewNode->AllocateDefaultPins();
@@ -7068,7 +7263,7 @@ private:
 		return bResult;
 	}
 
-	void InitializeNewNode(UK2Node* NewNode, UK2Node* OldNode, float NodePosX = 0.0f, float NodePosY = 0.0f)
+	void InitializeNewNode(UK2Node* NewNode, UK2Node* OldNode, int32 NodePosX = 0, int32 NodePosY = 0)
 	{	
 		NewNode->NodePosX = OldNode ? OldNode->NodePosX : NodePosX;
 		NewNode->NodePosY = OldNode ? OldNode->NodePosY : NodePosY;
@@ -7101,7 +7296,7 @@ private:
 			check(NewTarget);
 			NewTarget->SetFromProperty(Property, true, Property->GetOwnerClass());
 			AddedTargets.Add(NewTarget);
-			const float AutoNodeOffsetX = 160.0f;
+			const int32 AutoNodeOffsetX = 160;
 			InitializeNewNode(NewTarget, OldTarget, OldCall->NodePosX - AutoNodeOffsetX, OldCall->NodePosY);
 		}
 
@@ -7219,18 +7414,30 @@ void FBlueprintEditor::PasteNodesHere(class UEdGraph* DestinationGraph, const FV
 		AvgNodePosition.X *= InvNumNodes;
 		AvgNodePosition.Y *= InvNumNodes;
 
+		TSet<FString> NamespacesToImport;
+
 		for (TSet<UEdGraphNode*>::TIterator It(PastedNodes); It; ++It)
 		{
 			UEdGraphNode* Node = *It;
 			FocusedGraphEd->SetNodeSelection(Node, true);
 
-			Node->NodePosX = (Node->NodePosX - AvgNodePosition.X) + GraphLocation.X;
-			Node->NodePosY = (Node->NodePosY - AvgNodePosition.Y) + GraphLocation.Y;
+			Node->NodePosX = static_cast<int32>((Node->NodePosX - AvgNodePosition.X) + GraphLocation.X);
+			Node->NodePosY = static_cast<int32>((Node->NodePosY - AvgNodePosition.Y) + GraphLocation.Y);
 
 			Node->SnapToGrid(SNodePanel::GetSnapGridSize());
 
 			// Give new node a different Guid from the old one
 			Node->CreateNewGuid();
+
+			// Collect any required imports from node dependencies
+			TArray<UStruct*> ExternalDependencies;
+			if (Node->HasExternalDependencies(&ExternalDependencies))
+			{
+				for (const UStruct* ExternalDependency : ExternalDependencies)
+				{
+					FBlueprintNamespaceUtilities::GetDefaultImportsForObject(ExternalDependency, DeferredNamespaceImports);
+				}
+			}
 
 			UK2Node* K2Node = Cast<UK2Node>(Node);
 			if ((K2Node != nullptr) && K2Node->NodeCausesStructuralBlueprintChange())
@@ -7690,12 +7897,31 @@ FString FBlueprintEditor::GetDocLinkForSelectedNode()
 	return DocumentationLink;
 }
 
+FString FBlueprintEditor::GetDocLinkBaseUrlForSelectedNode()
+{
+	FString DocumentationLinkBaseUrl;
+
+	if (const UEdGraphNode* SelectedGraphNode = GetSingleSelectedNode())
+	{
+		const FString DocLink = SelectedGraphNode->GetDocumentationLink();
+		const FString DocExcerpt = SelectedGraphNode->GetDocumentationExcerptName();
+
+		if (!DocLink.IsEmpty() && !DocExcerpt.IsEmpty())
+		{
+			DocumentationLinkBaseUrl = FEditorClassUtils::GetDocumentationLinkBaseUrlFromExcerpt(DocLink, DocExcerpt);
+		}
+	}
+
+	return DocumentationLinkBaseUrl;
+}
+
 void FBlueprintEditor::OnGoToDocumentation()
 {
 	const FString DocumentationLink = GetDocLinkForSelectedNode();
+	const FString DocumentationLinkBaseUrl = GetDocLinkBaseUrlForSelectedNode();
 	if (!DocumentationLink.IsEmpty())
 	{
-		IDocumentation::Get()->Open(DocumentationLink, FDocumentationSourceInfo(TEXT("rightclick_bpnode")));
+		IDocumentation::Get()->Open(DocumentationLink, FDocumentationSourceInfo(TEXT("rightclick_bpnode")), DocumentationLinkBaseUrl);
 	}
 }
 
@@ -8022,7 +8248,7 @@ TSharedRef<SWidget> FBlueprintEditor::MakeHideUnrelatedNodesOptionsMenu()
 			[
 				SNew(STextBlock)
 					.Text(LOCTEXT("HideUnrelatedNodesOptions", "Hide Unrelated Nodes Options"))
-					.TextStyle(FEditorStyle::Get(), "Menu.Heading")
+					.TextStyle(FAppStyle::Get(), "Menu.Heading")
 			]
 		];
 
@@ -8031,7 +8257,7 @@ TSharedRef<SWidget> FBlueprintEditor::MakeHideUnrelatedNodesOptionsMenu()
 			SNew(SCheckBox)
 				.IsChecked(bLockNodeFadeState ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
 				.OnCheckStateChanged(this, &FBlueprintEditor::OnLockNodeStateCheckStateChanged)
-				.Style(FEditorStyle::Get(), "Menu.CheckBox")
+				.Style(FAppStyle::Get(), "Menu.CheckBox")
 				.ToolTipText(LOCTEXT("LockNodeStateCheckBoxToolTip", "Lock the current state of all nodes."))
 				.Content()
 				[
@@ -8159,12 +8385,12 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
 	// Keep track of the statistics of the node positions so the new nodes can be located reasonably well
-	float SumNodeX = 0.0f;
-	float SumNodeY = 0.0f;
-	float MinNodeX = 1e9f;
-	float MinNodeY = 1e9f;
-	float MaxNodeX = -1e9f;
-	float MaxNodeY = -1e9f;
+	int32 SumNodeX = 0;
+	int32 SumNodeY = 0;
+	int32 MinNodeX = std::numeric_limits<int32>::max();
+	int32 MinNodeY = std::numeric_limits<int32>::max();
+	int32 MaxNodeX = std::numeric_limits<int32>::min();
+	int32 MaxNodeY = std::numeric_limits<int32>::min();
 
 	UEdGraphNode* InterfaceTemplateNode = nullptr;
 
@@ -8173,7 +8399,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 	bool bDiscardReturnNode = true;
 
 	// For collapsing to functions can use a single event as a template for the function. This event MUST be deleted at the end, and the pins pre-generated. 
-	if(InGatewayNode->GetClass() == UK2Node_CallFunction::StaticClass())
+	if (InGatewayNode->GetClass() == UK2Node_CallFunction::StaticClass())
 	{
 		for (UEdGraphNode* Node : InCollapsableNodes)
 		{
@@ -8208,10 +8434,10 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 		// Update stats
 		SumNodeX += Node->NodePosX;
 		SumNodeY += Node->NodePosY;
-		MinNodeX = FMath::Min<float>(MinNodeX, Node->NodePosX);
-		MinNodeY = FMath::Min<float>(MinNodeY, Node->NodePosY);
-		MaxNodeX = FMath::Max<float>(MaxNodeX, Node->NodePosX);
-		MaxNodeY = FMath::Max<float>(MaxNodeY, Node->NodePosY);
+		MinNodeX = FMath::Min<int32>(MinNodeX, Node->NodePosX);
+		MinNodeY = FMath::Min<int32>(MinNodeY, Node->NodePosY);
+		MaxNodeX = FMath::Max<int32>(MaxNodeX, Node->NodePosX);
+		MaxNodeY = FMath::Max<int32>(MaxNodeY, Node->NodePosY);
 
 		// Move the node over
 		InSourceGraph->Nodes.Remove(Node);
@@ -8219,7 +8445,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 		Node->Rename(/*NewName=*/ nullptr, /*NewOuter=*/ InDestinationGraph);
 
 		// Move the sub-graph to the new graph
-		if(UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
+		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
 		{
 			InSourceGraph->SubGraphs.Remove(Composite->BoundGraph);
 			InDestinationGraph->SubGraphs.Add(Composite->BoundGraph);
@@ -8274,7 +8500,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 				UEdGraphPin* RemotePortPin = nullptr;
 
 				// Function graphs have a single exec path through them, so only one exec pin for input and another for output. In this fashion, they must not be handled by name.
-				if(InGatewayNode->GetClass() == UK2Node_CallFunction::StaticClass() && LocalPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+				if (InGatewayNode->GetClass() == UK2Node_CallFunction::StaticClass() && LocalPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 				{
 					LocalPortPin = LocalPort->Pins[0];
 					RemotePortPin = K2Schema->FindExecutionPin(*InGatewayNode, (LocalPortPin->Direction == EGPD_Input)? EGPD_Output : EGPD_Input);
@@ -8282,7 +8508,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 				else
 				{
 					// If there is a custom event being used as a template, we must check to see if any connected pins have already been built
-					if(InterfaceTemplateNode && LocalPin->Direction == EGPD_Input)
+					if (InterfaceTemplateNode && LocalPin->Direction == EGPD_Input)
 					{
 						// Find the pin on the entry node, we will use that pin's name to find the pin on the remote port
 						UEdGraphPin* EntryNodePin = InEntryNode->FindPin(LocalPin->LinkedTo[0]->PinName);
@@ -8294,11 +8520,11 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 						}
 					}
 
-					if(LocalPin->LinkedTo[0]->GetOwningNode() != InEntryNode)
+					if (LocalPin->LinkedTo[0]->GetOwningNode() != InEntryNode)
 					{
 						const FName UniquePortName = InGatewayNode->CreateUniquePinName(LocalPin->PinName);
 
-						if(!RemotePortPin && !LocalPortPin)
+						if (!RemotePortPin && !LocalPortPin)
 						{
 							if (LocalPin->Direction == EGPD_Output)
 							{
@@ -8311,7 +8537,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 								PinType.bIsWeakPointer = false;
 							}
 							RemotePortPin = InGatewayNode->CreatePin(LocalPin->Direction, PinType, UniquePortName);
-							LocalPortPin = LocalPort->CreateUserDefinedPin(UniquePortName, PinType, (LocalPin->Direction == EGPD_Input)? EGPD_Output : EGPD_Input);
+							LocalPortPin = LocalPort->CreateUserDefinedPin(UniquePortName, PinType, (LocalPin->Direction == EGPD_Input) ? EGPD_Output : EGPD_Input);
 						}
 					}
 				}
@@ -8378,9 +8604,9 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 	const int32 NumNodes = InCollapsableNodes.Num();
 
 	// Remove the template node if one was used for generating the function
-	if(InterfaceTemplateNode)
+	if (InterfaceTemplateNode)
 	{
-		if(NumNodes == 0)
+		if (NumNodes == 0)
 		{
 			SumNodeX = InterfaceTemplateNode->NodePosX;
 			SumNodeY = InterfaceTemplateNode->NodePosY;
@@ -8390,18 +8616,18 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 	}
 
 	// Using the result pin, we will ensure that there is a path through the function by checking if it is connected. If it is not, link it to the entry node.
-	if(UEdGraphPin* ResultExecFunc = K2Schema->FindExecutionPin(*InResultNode, EGPD_Input))
+	if (UEdGraphPin* ResultExecFunc = K2Schema->FindExecutionPin(*InResultNode, EGPD_Input))
 	{
-		if(ResultExecFunc->LinkedTo.Num() == 0)
+		if (ResultExecFunc->LinkedTo.Num() == 0)
 		{
 			K2Schema->FindExecutionPin(*InEntryNode, EGPD_Output)->MakeLinkTo(K2Schema->FindExecutionPin(*InResultNode, EGPD_Input));
 		}
 	}
 
-	const float CenterX = NumNodes == 0? SumNodeX : SumNodeX / NumNodes;
-	const float CenterY = NumNodes == 0? SumNodeY : SumNodeY / NumNodes;
-	const float MinusOffsetX = 160.0f; //@TODO: Random magic numbers
-	const float PlusOffsetX = 300.0f;
+	const int32 CenterX = (NumNodes == 0) ? SumNodeX : SumNodeX / NumNodes;
+	const int32 CenterY = (NumNodes == 0) ? SumNodeY : SumNodeY / NumNodes;
+	const int32 MinusOffsetX = 160; //@TODO: Random magic numbers
+	const int32 PlusOffsetX = 300;
 
 	// Put the gateway node at the center of the empty space in the old graph
 	InGatewayNode->NodePosX = CenterX;
@@ -8410,7 +8636,7 @@ void FBlueprintEditor::CollapseNodesIntoGraph(UEdGraphNode* InGatewayNode, UK2No
 
 	// Put the entry and exit nodes on either side of the nodes in the new graph
 	//@TODO: Should we recenter the whole ensemble?
-	if(NumNodes != 0)
+	if (NumNodes != 0)
 	{
 		InEntryNode->NodePosX = MinNodeX - MinusOffsetX;
 		InEntryNode->NodePosY = CenterY;
@@ -8797,6 +9023,19 @@ void FBlueprintEditor::Tick(float DeltaTime)
 		IAssetEditorInstance* EditorInst = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(GetBlueprintObj(), /*bFocusIfOpen =*/false);
 		check(EditorInst != nullptr);
 		EditorInst->CloseWindow();
+	}
+	else
+	{
+		// Auto-import any namespaces we've collected as a result of compound events that may have occurred within this frame.
+		if (!DeferredNamespaceImports.IsEmpty())
+		{
+			FImportNamespaceExParameters Params;
+			Params.NamespacesToImport = MoveTemp(DeferredNamespaceImports);
+			ImportNamespaceEx(Params);
+
+			// Assert that this was reset by the move above.
+			check(DeferredNamespaceImports.IsEmpty());
+		}
 	}
 }
 TStatId FBlueprintEditor::GetStatId() const
@@ -9567,7 +9806,10 @@ void FBlueprintEditor::RestoreEditedObjectState()
 			Blueprint->LastEditedDocuments.Add(FBlueprintEditorUtils::FindUserConstructionScript(Blueprint));
 		}
 
-		Blueprint->LastEditedDocuments.Add(FBlueprintEditorUtils::FindEventGraph(Blueprint));
+		if (Blueprint->SupportsEventGraphs())
+		{
+			Blueprint->LastEditedDocuments.Add(FBlueprintEditorUtils::FindEventGraph(Blueprint));
+		}
 	}
 
 	for (int32 i = 0; i < Blueprint->LastEditedDocuments.Num(); i++)
@@ -9576,6 +9818,11 @@ void FBlueprintEditor::RestoreEditedObjectState()
 		{
 			if(UEdGraph* Graph = Cast<UEdGraph>(Obj))
 			{
+				if (FBlueprintEditorUtils::IsEventGraph(Graph) && !Blueprint->SupportsEventGraphs())
+				{
+					continue;
+				}
+
 				struct LocalStruct
 				{
 					static TSharedPtr<SDockTab> OpenGraphTree(FBlueprintEditor* InBlueprintEditor, UEdGraph* InGraph)
@@ -10281,23 +10528,22 @@ void FBlueprintEditor::ClearAllGraphEditorQuickJumps()
 
 bool FBlueprintEditor::IsNonImportedObject(const UObject* InObject) const
 {
-	bool bNotImported = false;
-
-	for (const UObject* EditingObj : GetEditingObjects())
+	if (ImportedNamespaceHelper.IsValid() && !ImportedNamespaceHelper->IsImportedObject(InObject))
 	{
-		if (const UBlueprint* BP = Cast<UBlueprint>(EditingObj))
-		{
-			// Casting away the 'const' here currently because this is a non-const method that can modify the internally-cached set.
-			TSharedRef<FBlueprintNamespaceHelper> NamespaceHelper = const_cast<FBlueprintEditor*>(this)->GetOrCreateNamespaceHelperForBlueprint(BP);
-			if (!NamespaceHelper->IsImportedObject(InObject))
-			{
-				bNotImported = true;
-				break;
-			}
-		}
+		return true;
 	}
 
-	return bNotImported;
+	return false;
+}
+
+bool FBlueprintEditor::IsNonImportedObject(const FSoftObjectPath& InObject) const
+{
+	if (ImportedNamespaceHelper.IsValid() && !ImportedNamespaceHelper->IsImportedObject(InObject))
+	{
+		return true;
+	}
+
+	return false;
 }
 
 void FBlueprintEditor::OnBlueprintProjectSettingsChanged(UObject*, struct FPropertyChangedEvent&)
@@ -10308,6 +10554,21 @@ void FBlueprintEditor::OnBlueprintProjectSettingsChanged(UObject*, struct FPrope
 void FBlueprintEditor::OnBlueprintEditorPreferencesChanged(UObject*, struct FPropertyChangedEvent&)
 {
 	ModifyDuringPIEStatus = ESafeToModifyDuringPIEStatus::Unknown;
+}
+
+bool FBlueprintEditor::AreEventGraphsAllowed() const
+{
+	return true;
+}
+
+bool FBlueprintEditor::AreMacrosAllowed() const
+{
+	return true;
+}
+
+bool FBlueprintEditor::AreDelegatesAllowed() const
+{
+	return true;
 }
 
 /////////////////////////////////////////////////////

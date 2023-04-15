@@ -2,14 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "ModuleDescriptor.h"
 #include "CustomBuildSteps.h"
+#include "HAL/Platform.h"
 #include "LocalizationDescriptor.h"
+#include "ModuleDescriptor.h"
 #include "PluginReferenceDescriptor.h"
+#include "Serialization/JsonWriter.h"
+#include "Templates/SharedPointer.h"
+#include "VerseScope.h"
 
 class FJsonObject;
 class FJsonValue;
+class FText;
 
 /**
  * Setting for whether a plugin is enabled by default
@@ -80,6 +88,12 @@ struct PROJECTS_API FPluginDescriptor
 
 	/** List of all localization targets associated with this plugin */
 	TArray<FLocalizationTargetDescriptor> LocalizationTargets;
+
+	/** The Verse path to the root of this plugin's content directory */
+	FString VersePath;
+
+	/** Origin/visibility of Verse code in this plugin's Content/Verse folder */
+	EVerseScope::Type VerseScope = EVerseScope::User;
 
 	/** Whether this plugin should be enabled by default for all projects */
 	EPluginEnabledByDefault EnabledByDefault;

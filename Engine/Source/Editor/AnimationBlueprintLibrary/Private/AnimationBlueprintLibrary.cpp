@@ -1,31 +1,66 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimationBlueprintLibrary.h" 
+#include "AnimationBlueprintLibrary.h"
 
-#include "Animation/AnimSequence.h"
-#include "Animation/AnimationAsset.h"
+#include "Algo/Transform.h"
+#include "AnimGraphNode_AssetPlayerBase.h"
+#include "AnimGraphNode_Base.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
-#include "Animation/AnimMetaData.h"
-#include "Animation/AnimNotifies/AnimNotifyState.h"
-#include "Animation/BuiltInAttributeTypes.h"
-#include "Animation/Skeleton.h"
-#include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimData/AnimDataModel.h"
+#include "Animation/AnimData/AttributeIdentifier.h"
+#include "Animation/AnimData/CurveIdentifier.h"
+#include "Animation/AnimData/IAnimationDataController.h"
+#include "Animation/AnimLinkableElement.h"
+#include "Animation/AnimMetaData.h"
+#include "Animation/AnimMontage.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
+#include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimSequenceHelpers.h"
+#include "Animation/AnimationAsset.h"
 #include "Animation/AnimationSettings.h"
-#include "BonePose.h" 
+#include "Animation/AttributeCurve.h"
+#include "Animation/BuiltInAttributeTypes.h"
+#include "Animation/CustomAttributes.h"
+#include "Animation/Skeleton.h"
+#include "AnimationGraph.h"
 #include "CommonFrameRates.h"
-#include "Algo/Transform.h"
+#include "Containers/UnrealString.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/Blueprint.h"
+#include "Engine/SkeletalMesh.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/FrameRate.h"
 #include "Misc/FrameTime.h"
+#include "Misc/Guid.h"
+#include "Misc/MemStack.h"
 #include "Misc/QualifiedFrameTime.h"
 #include "Misc/Timecode.h"
-#include "Modules/ModuleManager.h"
 #include "Modules/ModuleInterface.h"
-
-#include "AnimationRuntime.h"
-#include "Animation/AnimData/AnimDataModel.h"
-#include "Animation/AnimSequenceHelpers.h"
+#include "Modules/ModuleManager.h"
+#include "ReferenceSkeleton.h"
+#include "Serialization/StructuredArchiveAdapters.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "AnimationBlueprintLibrary"
 
@@ -71,6 +106,23 @@ void UAnimationBlueprintLibrary::GetAnimationTrackNames(const UAnimSequenceBase*
 	{
 		UE_LOG(LogAnimationBlueprintLibrary, Warning, TEXT("Invalid Animation Sequence supplied for GetBoneTrackNames"));
 	}	
+}
+
+void UAnimationBlueprintLibrary::GetMontageSlotNames(const UAnimMontage* AnimationMontage, TArray<FName>& SlotNames)
+{
+	SlotNames.Empty();
+	if (AnimationMontage)
+	{
+		for (int32 SlotIdx = 0; SlotIdx < AnimationMontage->SlotAnimTracks.Num(); SlotIdx++)
+		{
+			const FSlotAnimationTrack& SlotAnimTrack = AnimationMontage->SlotAnimTracks[SlotIdx];
+			SlotNames.Add(SlotAnimTrack.SlotName);
+		}
+	}
+	else
+	{
+		UE_LOG(LogAnimationBlueprintLibrary, Warning, TEXT("Invalid Animation Montage supplied for GetMontageSlotNames"));
+	}
 }
 
 void UAnimationBlueprintLibrary::GetAnimationCurveNames(const UAnimSequence* AnimationSequence, ERawCurveTrackTypes CurveType, TArray<FName>& CurveNames)
@@ -2341,9 +2393,67 @@ bool UAnimationBlueprintLibrary::EvaluateRootBoneTimecodeAttributesAtTime(const 
 		}
 	}
 
+	// Some pipelines may author subframe values that are compatible with the
+	// engine's notion of a subframe, which is a floating point value between
+	// zero and one representing a percentage of a frame. Others may author
+	// subframe as integer values from zero to N instead, incrementing by one
+	// each subframe until the next frame is reached.
+	// Since this data is user-supplied, we don't want to trip over the
+	// checkSlow() in FFrameTime's constructor, so we apply the same clamping
+	// it does to bring the value into range here.
+	// Clients that are interested in the exact subframe value that was
+	// authored should query it using EvaluateRootBoneTimecodeSubframeAttributeAtTime().
+	SubFrame = FMath::Clamp(SubFrame + 0.5f - 0.5f, 0.f, FFrameTime::MaxSubframe);
+
 	OutQualifiedFrameTime = FQualifiedFrameTime(
 		FFrameTime(Timecode.ToFrameNumber(FrameRate), SubFrame),
 		FrameRate);
+
+	return true;
+}
+
+bool UAnimationBlueprintLibrary::EvaluateRootBoneTimecodeSubframeAttributeAtTime(const UAnimSequenceBase* AnimationSequenceBase, const float EvalTime, float& OutSubframe)
+{
+	if (!AnimationSequenceBase)
+	{
+		return false;
+	}
+
+	const UAnimDataModel* AnimDataModel = AnimationSequenceBase->GetDataModel();
+	if (!AnimDataModel)
+	{
+		return false;
+	}
+
+	const int32 RootBoneIndex = 0;
+	const FBoneAnimationTrack* RootBoneTrack = AnimDataModel->FindBoneTrackByIndex(RootBoneIndex);
+	if (!RootBoneTrack)
+	{
+		return false;
+	}
+
+	const FName& RootBoneName = RootBoneTrack->Name;
+
+	FName TCSubframeAttrName(TEXT("TCSubframe"));
+	if (const UAnimationSettings* AnimationSettings = UAnimationSettings::Get())
+	{
+		TCSubframeAttrName = AnimationSettings->BoneTimecodeCustomAttributeNameSettings.SubframeAttributeName;
+	}
+
+	FAnimationAttributeIdentifier SubframeAttributeIdentifier(TCSubframeAttrName, RootBoneIndex, RootBoneName, FFloatAnimationAttribute::StaticStruct());
+	const FAnimatedBoneAttribute* RootBoneSubframeAttribute = AnimDataModel->FindAttribute(SubframeAttributeIdentifier);
+	if (!RootBoneSubframeAttribute)
+	{
+		return false;
+	}
+
+	if (!RootBoneSubframeAttribute->Curve.CanEvaluate())
+	{
+		return false;
+	}
+
+	const FFloatAnimationAttribute EvaluatedAttribute = RootBoneSubframeAttribute->Curve.Evaluate<FFloatAnimationAttribute>(EvalTime);
+	OutSubframe = EvaluatedAttribute.Value;
 
 	return true;
 }
@@ -2442,16 +2552,6 @@ void UAnimationBlueprintLibrary::RemoveAllBoneAnimation(UAnimSequence* Animation
 	}
 }
 
-void UAnimationBlueprintLibrary::FinalizeBoneAnimation(UAnimSequence* AnimationSequence)
-{
-	if (AnimationSequence)
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		AnimationSequence->PostProcessSequence();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-}
-
 static void RecursiveRetrieveAnimationGraphs(UEdGraph* EdGraph, TArray<UAnimationGraph*>& OutAnimationGraphs)
 {
 	if (UAnimationGraph* AnimGraph = Cast<UAnimationGraph>(EdGraph))
@@ -2487,6 +2587,130 @@ void UAnimationBlueprintLibrary::GetNodesOfClass(UAnimBlueprint* AnimationBluepr
 	for (UAnimationGraph* AnimGraph : AnimationGraphs)
 	{
 		AnimGraph->GetGraphNodesOfClass(NodeClass, GraphNodes, bIncludeChildClasses);
+	}
+}
+
+void UAnimationBlueprintLibrary::AddNodeAssetOverride(UAnimBlueprint* AnimBlueprint, const UAnimationAsset* Target, UAnimationAsset* Override, bool bPrintAppliedOverrides /*= false*/)
+{
+	if (AnimBlueprint)
+	{
+		if (Target && Override)
+		{
+			// Target and override animation asset types have to match
+			if (Target->GetClass() == Override->GetClass())			
+			{
+				TArray<UBlueprint*> BlueprintHierarchy;
+				AnimBlueprint->GetBlueprintHierarchyFromClass(AnimBlueprint->GetAnimBlueprintGeneratedClass(), BlueprintHierarchy);
+
+				TArray<const UAnimGraphNode_Base*> OverridableNodes;
+
+				// Search from 1 as 0 is this class and we're looking for it's parents
+				for(int32 BlueprintIndex = 1; BlueprintIndex < BlueprintHierarchy.Num(); ++BlueprintIndex)
+				{
+					const UBlueprint* CurrentBlueprint = BlueprintHierarchy[BlueprintIndex];
+
+					TArray<UEdGraph*> Graphs;
+					CurrentBlueprint->GetAllGraphs(Graphs);
+
+					for(const UEdGraph* Graph : Graphs)
+					{
+						for(const UEdGraphNode* Node : Graph->Nodes)
+						{
+							const UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+							// Find any overridable node with Target set as its current value
+							if(AnimNode && AnimNode->GetAnimationAsset() == Target)
+							{
+								OverridableNodes.Add(AnimNode);
+							}
+						}
+					}
+				}
+
+				// Apply overrides
+				for (const UAnimGraphNode_Base* OverrideNode : OverridableNodes)
+				{
+					const FGuid NodeGUID = OverrideNode->NodeGuid;
+					
+					FAnimParentNodeAssetOverride* OverridePtr = AnimBlueprint->ParentAssetOverrides.FindByPredicate([NodeGUID](const FAnimParentNodeAssetOverride& Other)
+					{
+						return Other.ParentNodeGuid == NodeGUID;
+					});
+						
+					if (OverridePtr == nullptr)
+					{
+						OverridePtr = &AnimBlueprint->ParentAssetOverrides.AddDefaulted_GetRef();
+					}
+
+					check(OverridePtr != nullptr);
+
+					auto GetOverrideNodeTitle = [OverrideNode]() -> FString
+					{
+						if (const UAnimGraphNode_AssetPlayerBase * AssetPlayerBase = Cast<UAnimGraphNode_AssetPlayerBase>(OverrideNode))
+						{
+							return AssetPlayerBase->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+						}
+
+						return OverrideNode->GetName();
+					};
+
+					if (OverridePtr->NewAsset != Override)
+					{
+						// Setup override values
+						OverridePtr->NewAsset = Override;
+						OverridePtr->ParentNodeGuid = NodeGUID;
+					
+						AnimBlueprint->NotifyOverrideChange(*OverridePtr);
+
+						if (bPrintAppliedOverrides)
+						{
+							UE_LOG(LogAnimationBlueprintLibrary, Display, TEXT("Set Animation Blueprint asset override for %s\n\tAnimation Node: %s\n\tAnimation Node Bueprint: %s\n\tOriginal: %s\n\tOverride: %s"),
+								*AnimBlueprint->GetPathName(),
+								*GetOverrideNodeTitle(),
+								*OverrideNode->GetAnimBlueprint()->GetPathName(),
+								*Target->GetPathName(),
+								*Override->GetPathName()							
+							);
+						}
+					}
+					else
+					{
+						
+						UE_LOG(LogAnimationBlueprintLibrary, Warning, TEXT("Found matching pre-existing Animation Blueprint asset override for %s\n\tAnimation Node: %s\n\tAnimation Node Bueprint: %s\n\tOriginal: %s\n\tOverride: %s"),
+								*AnimBlueprint->GetPathName(),
+								*GetOverrideNodeTitle(),
+								*OverrideNode->GetAnimBlueprint()->GetPathName(),
+								*Target->GetPathName(),
+								*Override->GetPathName()							
+							);
+					}
+				}
+
+				if (OverridableNodes.Num())
+				{					
+					FBlueprintEditorUtils::MarkBlueprintAsModified(AnimBlueprint);
+				}
+			}
+			else
+			{
+				UE_LOG(LogAnimationBlueprintLibrary, Error, TEXT("Failed to add override as Target and Override class do not match, expected %s but found %s"), *Target->GetClass()->GetName(), *Override->GetClass()->GetName());
+			}
+		}
+		else
+		{
+			if (Target == nullptr)
+			{
+				UE_LOG(LogAnimationBlueprintLibrary, Error, TEXT("Failed to add override as provided Target asset is invalid"));
+			}
+			
+			if (Override == nullptr)
+			{
+				UE_LOG(LogAnimationBlueprintLibrary, Error, TEXT("Failed to add override as provided Override asset is invalid"));
+			}
+		}
+	}
+	else
+	{
+		UE_LOG(LogAnimationBlueprintLibrary, Error, TEXT("Failed to add override as provided Animation Blueprint is invalid"));
 	}
 }
 

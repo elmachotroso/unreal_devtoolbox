@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "MassSignals/Public/MassSignalProcessorBase.h"
+#include "MassSignalProcessorBase.h"
 #include "MassStateTreeFragments.h"
 #include "MassObserverProcessor.h"
 #include "MassLODTypes.h"
@@ -24,12 +24,12 @@ public:
 protected:
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 
 	UPROPERTY(Transient)
-	UMassSignalSubsystem* SignalSubsystem = nullptr;
+	TObjectPtr<UMassSignalSubsystem> SignalSubsystem = nullptr;
 };
 
 /**
@@ -49,18 +49,10 @@ class MASSAIBEHAVIOR_API UMassStateTreeActivationProcessor : public UMassProcess
 public:
 	UMassStateTreeActivationProcessor();
 protected:
-	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
-
-	UPROPERTY(Transient)
-	UMassSignalSubsystem* SignalSubsystem = nullptr;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 	
 	FMassEntityQuery EntityQuery;
-
-	/** The maximum number of entities to signal activation per LOD for each update, -1 means no limit */
-	UPROPERTY(EditAnywhere, Category = "Mass|LOD", config)
-	int32 MaxActivationsPerLOD[EMassLOD::Max];
 };
 
 /** 
@@ -77,8 +69,5 @@ public:
 protected:
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void SignalEntities(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) override;
-
-	UPROPERTY(Transient)
-	UMassStateTreeSubsystem* MassStateTreeSubsystem;
+	virtual void SignalEntities(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) override;
 };

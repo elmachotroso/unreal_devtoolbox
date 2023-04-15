@@ -5,19 +5,16 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraEditorUtilities.h"
 #include "EdGraphSchema_Niagara.h"
-#include "EdGraph/EdGraph.h"
 #include "NiagaraCommon.h"
-#include "NiagaraDataInterface.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeInput.h"
-#include "NiagaraGraph.h"
-#include "NiagaraNodeParameterMapBase.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraHlslTranslator.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Stats/Stats.h"
 #include "NiagaraEditorModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeEmitter)
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeEmitter"
 
@@ -118,18 +115,6 @@ bool UNiagaraNodeEmitter::GenerateCompileHashForClassMembers(const UClass* InCla
 
 void UNiagaraNodeEmitter::AllocateDefaultPins()
 {
-	UNiagaraEmitter* Emitter = nullptr;
-	if (OwnerSystem)
-	{
-		for (int32 i = 0; i < OwnerSystem->GetNumEmitters(); ++i)
-		{
-			if (OwnerSystem->GetEmitterHandle(i).GetId() == EmitterHandleId)
-			{
-				Emitter = OwnerSystem->GetEmitterHandle(i).GetInstance();
-			}
-		}
-	}
-
 	const UEdGraphSchema_Niagara* NiagaraSchema = Cast<UEdGraphSchema_Niagara>(GetSchema());
 	CreatePin(EGPD_Input, NiagaraSchema->TypeDefinitionToPinType(FNiagaraTypeDefinition::GetParameterMapDef()), TEXT("InputMap"));
 	CreatePin(EGPD_Output, NiagaraSchema->TypeDefinitionToPinType(FNiagaraTypeDefinition::GetParameterMapDef()), TEXT("OutputMap"));
@@ -193,22 +178,23 @@ FString UNiagaraNodeEmitter::GetEmitterUniqueName() const
 UNiagaraScriptSource* UNiagaraNodeEmitter::GetScriptSource() const
 {
 	// First get the emitter that we're referencing..
-	UNiagaraEmitter* Emitter = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
 	if (OwnerSystem)
 	{
 		for (int32 i = 0; i < OwnerSystem->GetNumEmitters(); ++i)
 		{
 			if (OwnerSystem->GetEmitterHandle(i).GetId() == EmitterHandleId)
 			{
-				Emitter = OwnerSystem->GetEmitterHandle(i).GetInstance();
+				VersionedEmitter = OwnerSystem->GetEmitterHandle(i).GetInstance();
 			}
 		}
 	}
 
 	// Now get the graph off that emitter
-	if (Emitter != nullptr && Emitter->GraphSource != nullptr)
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (EmitterData && EmitterData->GraphSource)
 	{
-		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Emitter->GraphSource);
+		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
 		return Source;
 	}
 
@@ -218,22 +204,23 @@ UNiagaraScriptSource* UNiagaraNodeEmitter::GetScriptSource() const
 UNiagaraGraph* UNiagaraNodeEmitter::GetCalledGraph() const
 {
 	// First get the emitter that we're referencing..
-	UNiagaraEmitter* Emitter = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
 	if (OwnerSystem)
 	{
 		for (int32 i = 0; i < OwnerSystem->GetNumEmitters(); ++i)
 		{
 			if (OwnerSystem->GetEmitterHandle(i).GetId() == EmitterHandleId)
 			{
-				Emitter = OwnerSystem->GetEmitterHandle(i).GetInstance();
+				VersionedEmitter = OwnerSystem->GetEmitterHandle(i).GetInstance();
 			}
 		}
 	}
 
 	// Now get the graph off that emitter
-	if (Emitter != nullptr && Emitter->GraphSource != nullptr)
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (EmitterData && EmitterData->GraphSource)
 	{
-		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Emitter->GraphSource);
+		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterData->GraphSource);
 		if (Source)
 		{
 			return Source->NodeGraph;
@@ -408,6 +395,35 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 				OutHistory.Histories[ParamMapIdx].ParameterCollectionVariables.Append(History.ParameterCollectionVariables);
 				OutHistory.Histories[ParamMapIdx].PinToConstantValues.Append(History.PinToConstantValues);
 			}
+
+			// We only want to push out appropriately scoped static variables that should be in the system builder, not in-betweens like "Module.MyInputVar"
+			// or per-particle or others vars. Really only want Emitter or System parameters here.
+			for (int32 StaticVarIdx = 0; StaticVarIdx < ChildBuilder.StaticVariables.Num(); StaticVarIdx++)
+			{
+				const FNiagaraVariable& ChildStaticVar = ChildBuilder.StaticVariables[StaticVarIdx];
+				if (ChildBuilder.StaticVariableExportable[StaticVarIdx])
+				{
+					// Should match logic in FNiagaraParameterMapHistoryBuilder::RegisterConstantVariableWrite
+					FNiagaraVariable ResolvedStaticVar = FNiagaraUtilities::ResolveAliases(ChildStaticVar, ResolveAliasesContext);
+
+					// Index of uses == operator, which only checks name and type. This will allow us to detect instances of the duplicate
+					// data down the line.
+					int32 FoundStaticVarIdx = OutHistory.StaticVariables.Find(ResolvedStaticVar);
+					
+					if (FoundStaticVarIdx == INDEX_NONE) // Didn't find it, so add it.
+					{
+						OutHistory.StaticVariables.Add(ResolvedStaticVar);
+						OutHistory.StaticVariableExportable.Emplace(true);
+					}
+					else if (false == OutHistory.StaticVariables[FoundStaticVarIdx].HoldsSameData(ResolvedStaticVar))
+					{
+						OutHistory.StaticVariables.Add(ResolvedStaticVar);// Add as a duplicate here. We will filter out later
+						OutHistory.StaticVariableExportable.Emplace(true);
+					}
+
+					ensure(OutHistory.StaticVariables.Num() == OutHistory.StaticVariableExportable.Num());
+				}
+			}
 		}
 
 		OutHistory.EndNodeVisitation(ParamMapIdx, NodeIdx);
@@ -435,8 +451,6 @@ void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int
 	GetOutputPins(OutputPins);
 
 	check(Outputs.Num() == 0);
-
-	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
 
 	// First compile fully down the hierarchy for our predecessors..
 	UNiagaraGraph* CalledGraph = GetCalledGraph();
@@ -497,14 +511,14 @@ void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int
 	}
 }
 
-void UNiagaraNodeEmitter::GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const
+void UNiagaraNodeEmitter::GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const
 {
 	UNiagaraGraph* CalledGraph = GetCalledGraph();
 
 	if (CalledGraph && IsNodeEnabled()) // Skip if disabled
 	{
 		CalledGraph->RebuildCachedCompileIds();
-		ENiagaraScriptUsage TargetUsage = InMasterUsage == ENiagaraScriptUsage::SystemSpawnScript ? ENiagaraScriptUsage::EmitterSpawnScript : ENiagaraScriptUsage::EmitterUpdateScript;
+		ENiagaraScriptUsage TargetUsage = InUsage == ENiagaraScriptUsage::SystemSpawnScript ? ENiagaraScriptUsage::EmitterSpawnScript : ENiagaraScriptUsage::EmitterUpdateScript;
 		FNiagaraCompileHash Hash = CalledGraph->GetCompileDataHash(TargetUsage, FGuid(0,0,0,0));
 		InReferencedCompileHashes.AddUnique(Hash);
 		InReferencedObjs.Add(CalledGraph->GetPathName());
@@ -514,3 +528,4 @@ void UNiagaraNodeEmitter::GatherExternalDependencyData(ENiagaraScriptUsage InMas
 
 #undef NIAGARA_SCOPE_CYCLE_COUNTER
 #undef LOCTEXT_NAMESPACE // NiagaraNodeEmitter
+

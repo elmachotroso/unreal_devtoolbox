@@ -237,6 +237,7 @@ public:
 class FNiagaraSystemSimulation : public TSharedFromThis<FNiagaraSystemSimulation, ESPMode::ThreadSafe>, FGCObject
 {
 	friend FNiagaraSystemSimulationTickContext;
+	friend struct FNiagaraSimCacheHelper;
 	friend class FNiagaraDebugHud;
 
 public:
@@ -267,7 +268,8 @@ public:
 	/** Spawn any pending instances */
 	void Spawn_Concurrent(FNiagaraSystemSimulationTickContext& Context);
 
-	/** Promote instances that have ticked during */
+	/** Called after the sim cache has been read. */
+	void SimCachePostTick_Concurrent(float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent);
 
 	/** Wait for system simulation concurrent tick to complete.  If bEnsureComplete is true we will trigger an ensure if it is not complete. */
 	void WaitForConcurrentTickComplete(bool bEnsureComplete = false);

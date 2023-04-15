@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/Nodes/RigVMRerouteNode.h"
+#include "RigVMModel/RigVMGraph.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMRerouteNode)
 
 const FString URigVMRerouteNode::RerouteName = TEXT("Reroute");
 const FString URigVMRerouteNode::ValueName = TEXT("Value");
@@ -62,3 +65,52 @@ FLinearColor URigVMRerouteNode::GetNodeColor() const
 {
 	return FLinearColor::White;
 }
+
+FName URigVMRerouteNode::GetNotation() const
+{
+	static constexpr TCHAR Format[] = TEXT("%s(io %s)");
+	static const FName RerouteNotation = *FString::Printf(Format, *RerouteName, *ValueName);
+	return RerouteNotation;
+}
+
+const FRigVMTemplate* URigVMRerouteNode::GetTemplate() const
+{
+	if(const FRigVMTemplate* SuperTemplate = Super::GetTemplate())
+	{
+		return SuperTemplate;
+	}
+	
+	if(CachedTemplate == nullptr)
+	{
+		static const FRigVMTemplate* RerouteNodeTemplate = nullptr;
+		if(RerouteNodeTemplate)
+		{
+			return RerouteNodeTemplate;
+		}
+
+		static TArray<FRigVMTemplateArgument> Arguments;
+		if(Arguments.IsEmpty())
+		{
+			static const TArray<FRigVMTemplateArgument::ETypeCategory> Categories = {
+				FRigVMTemplateArgument::ETypeCategory_Execute,
+				FRigVMTemplateArgument::ETypeCategory_SingleAnyValue,
+				FRigVMTemplateArgument::ETypeCategory_ArrayAnyValue
+			};
+			Arguments.Emplace(TEXT("Value"), ERigVMPinDirection::IO, Categories);
+		}
+
+		FRigVMTemplateDelegates Delegates;
+		Delegates.NewArgumentTypeDelegate = 
+			FRigVMTemplate_NewArgumentTypeDelegate::CreateLambda([](const FRigVMTemplate*, const FName& InArgumentName, int32 InTypeIndex)
+			{
+				// since a reroute has only one argument this is simple
+				FRigVMTemplateTypeMap Types;
+				Types.Add(InArgumentName, InTypeIndex);
+				return Types;
+			});
+
+		RerouteNodeTemplate = CachedTemplate = FRigVMRegistry::Get().GetOrAddTemplateFromArguments(*RerouteName, Arguments, Delegates);
+	}
+	return CachedTemplate;
+}
+

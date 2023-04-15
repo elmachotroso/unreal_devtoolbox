@@ -28,7 +28,7 @@
 #define D3D12RHI_USE_D3DDISASSEMBLE 1
 #endif
 
-// D3D12RHI PSO file cache doesn't work anymore. Use FPipelineFileCache instead
+// D3D12RHI PSO file cache doesn't work anymore. Use FPipelineFileCacheManager instead
 static TAutoConsoleVariable<int32> CVarPipelineStateDiskCache(
 	TEXT("D3D12.PSO.DiskCache"),
 	0,
@@ -176,12 +176,9 @@ void FD3D12PipelineStateCache::OnPSOCreated(FD3D12PipelineState* PipelineState, 
 	}
 }
 
-void FD3D12PipelineStateCache::RebuildFromDiskCache(ID3D12RootSignature* GraphicsRootSignature, ID3D12RootSignature* ComputeRootSignature)
+void FD3D12PipelineStateCache::RebuildFromDiskCache()
 {
 	FRWScopeLock Lock(DiskCachesCS, SLT_Write);
-
-	UNREFERENCED_PARAMETER(GraphicsRootSignature);
-	UNREFERENCED_PARAMETER(ComputeRootSignature);
 
 	if (IsInErrorState())
 	{
@@ -943,9 +940,9 @@ static void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter
 		TArray<FShaderCodeVendorExtension, TInlineAllocator<2 /* VS + PS */>> MergedExtensions;
 
 	#define MERGE_EXT(Initial) \
-		if (CreationArgs->Desc.##Initial##SExtensions != nullptr) \
+		if (CreationArgs->Desc.Initial##SExtensions != nullptr) \
 		{ \
-			for (const FShaderCodeVendorExtension& Extension : *CreationArgs->Desc.##Initial##SExtensions) \
+			for (const FShaderCodeVendorExtension& Extension : *CreationArgs->Desc.Initial##SExtensions) \
 			{ \
 				MergedExtensions.AddUnique(Extension); \
 			} \

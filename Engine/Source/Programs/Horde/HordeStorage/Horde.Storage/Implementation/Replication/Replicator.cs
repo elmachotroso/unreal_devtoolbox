@@ -5,9 +5,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Datadog.Trace;
+using EpicGames.Horde.Storage;
+using Jupiter;
+using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -23,12 +27,12 @@ namespace Horde.Storage.Implementation
     {
         private readonly ITransactionLogWriter _transactionLogWriter;
 
-        public ReplicatorV1(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IBlobStore blobStore, ITransactionLogWriter transactionLogWriter, IServiceCredentials serviceCredentials) : base(replicatorSettings, replicationSettings, blobStore, CreateRemoteClient(replicatorSettings, serviceCredentials))
+        public ReplicatorV1(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IOptionsMonitor<JupiterSettings> jupiterSettings, IBlobService blobService, ITransactionLogWriter transactionLogWriter, IServiceCredentials serviceCredentials, IHttpClientFactory httpClientFactory) : base(replicatorSettings, replicationSettings, jupiterSettings, blobService, CreateRemoteClient(replicatorSettings, serviceCredentials), serviceCredentials, httpClientFactory)
         {
             _transactionLogWriter = transactionLogWriter;
         }
 
-        internal ReplicatorV1(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IBlobStore blobStore, ITransactionLogWriter transactionLogWriter, IRestClient remoteClient) : base(replicatorSettings, replicationSettings, blobStore, remoteClient)
+        internal ReplicatorV1(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IOptionsMonitor<JupiterSettings> jupiterSettings, IBlobService blobService, ITransactionLogWriter transactionLogWriter, IRestClient remoteClient, IServiceCredentials serviceCredentials, IHttpClientFactory httpClientFactory) : base(replicatorSettings, replicationSettings, jupiterSettings, blobService, remoteClient, serviceCredentials, httpClientFactory)
         {
             _transactionLogWriter = transactionLogWriter;
         }
@@ -36,111 +40,114 @@ namespace Horde.Storage.Implementation
         protected override IAsyncEnumerable<TransactionEvent> GetCallistoOp(long stateReplicatorOffset, Guid? stateReplicatingGeneration, string currentSite,
             OpsEnumerationState enumerationState, CancellationToken replicationToken)
         {
-            CallistoReader remoteCallistoReader = new CallistoReader(_restClient, _replicatorSettings.NamespaceToReplicate);
+            CallistoReader remoteCallistoReader = new CallistoReader(Client, Namespace);
 
-            return remoteCallistoReader.GetOps(stateReplicatorOffset, stateReplicatingGeneration, currentSite, enumerationState: enumerationState, cancellationToken: replicationToken);
+            return remoteCallistoReader.GetOps(stateReplicatorOffset, stateReplicatingGeneration, currentSite, enumerationState: enumerationState, cancellationToken: replicationToken, maxOffsetsAttempted: ReplicatorSettings.MaxOffsetsAttempted);
         }
 
         protected override async Task ReplicateOp(IRestClient remoteClient, TransactionEvent op, CancellationToken replicationToken)
         {
-            using Scope scope = Tracer.Instance.StartActive("replicator.replicate_blobs");
-            NamespaceId ns = _replicatorSettings.NamespaceToReplicate;
+            using IScope scope = Tracer.Instance.StartActive("replicator.replicate_blobs");
+            NamespaceId ns = Namespace;
 
             // now we replicate the blobs
             switch (op)
             {
                 case AddTransactionEvent addEvent:
                     BlobIdentifier[] blobs = addEvent.Blobs;
-                    await ReplicateBlobs(remoteClient, ns, blobs, replicationToken);
+                    await ReplicateBlobs(ns, blobs, replicationToken);
                     break;
                 case RemoveTransactionEvent removeEvent:
                     // TODO: Do we even want to do anything? we can not delete the blob in the store because it may be used by something else
                     // so we wait for the GC to remove it.
                     break;
                 default:
-                    throw new ArgumentOutOfRangeException();
+                    throw new NotImplementedException("Unknown op type {op}");
             }
         }
 
         protected override async Task<long?> ReplicateOpInline(IRestClient remoteClient, TransactionEvent op, CancellationToken replicationToken)
         {
-            using Scope scope = Tracer.Instance.StartActive("replicator.replicate_inline");
+            using IScope scope = Tracer.Instance.StartActive("replicator.replicate_inline");
             //scope.Span.ResourceName = op.transactionId;
 
-            NamespaceId ns = _replicatorSettings.NamespaceToReplicate;
+            NamespaceId ns = Namespace;
 
             // Put a copy of the event in the local callisto store
             // Make sure this is put before the io put request as we want to pin the reference before uploading the content to avoid the gc removing it right away
             long newTransactionId = await _transactionLogWriter.Add(ns, op);
 
-            _logger.Information("{Name} Replicated Op {@Op} to local store as transaction id {@TransactionId}", _name, op, newTransactionId);
+            Logger.Information("{Name} Replicated Op {@Op} to local store as transaction id {@TransactionId}", Name, op, newTransactionId);
 
             // TODO: Add Refstore replication
             //_refStore.Add();
 
             return newTransactionId;
         }
-
     }
 
     public abstract class Replicator<T> : IReplicator
         where T: IReplicationEvent
     {
-        private readonly IBlobStore _blobStore;
-        protected readonly string _name;
+        private readonly IBlobService _blobService;
         private readonly string _currentSite;
-        protected readonly ReplicatorSettings _replicatorSettings;
-        protected readonly ILogger _logger = Log.ForContext<Replicator<T>>();
 
         private readonly FileInfo _stateFile;
         private bool _replicationRunning;
         private readonly AsyncManualResetEvent _replicationFinishedEvent = new AsyncManualResetEvent(true);
         private readonly CancellationTokenSource _replicationTokenSource = new CancellationTokenSource();
-        private readonly IReplicator.ReplicatorInfo _replicatorInfo;
-        protected readonly IRestClient _restClient;
+        private readonly IServiceCredentials _serviceCredentials;
+        private readonly HttpClient _httpClient;
 
+        protected string Name { get; set; }
+        public NamespaceId Namespace { get; set; }
+        protected ReplicatorSettings ReplicatorSettings { get; init; }
 
-        public IReplicator.ReplicatorState State { get; private set; }
-
-        public IReplicator.ReplicatorInfo Info
-        {
-            get { return _replicatorInfo; }
-        }
+        public ReplicatorState State { get; private set; }
+        protected ILogger Logger { get; } = Log.ForContext<Replicator<T>>();
+        public ReplicatorInfo Info { get; }
+        protected IRestClient Client { get; }
 
         protected static IRestClient CreateRemoteClient(ReplicatorSettings replicatorSettings, IServiceCredentials serviceCredentials)
         {
-            var remoteClient = new RestClient(replicatorSettings.ConnectionString).UseSerializer(() => new JsonNetSerializer());
+            IRestClient remoteClient = new RestClient(replicatorSettings.ConnectionString).UseSerializer(() => new JsonNetSerializer());
             remoteClient.Authenticator = serviceCredentials.GetAuthenticator();
             return remoteClient;
         }
 
-        protected Replicator(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IBlobStore blobStore, IRestClient remoteClient)
+        protected Replicator(ReplicatorSettings replicatorSettings, IOptionsMonitor<ReplicationSettings> replicationSettings, IOptionsMonitor<JupiterSettings> jupiterSettings, IBlobService blobService, IRestClient remoteClient, IServiceCredentials serviceCredentials, IHttpClientFactory httpClientFactory)
         {
-            _name = replicatorSettings.ReplicatorName;
-            _blobStore = blobStore;
-            _currentSite = replicationSettings.CurrentValue.CurrentSite;
-            _replicatorSettings = replicatorSettings;
+            Name = replicatorSettings.ReplicatorName;
+            Namespace = new NamespaceId(replicatorSettings.NamespaceToReplicate);
+            _blobService = blobService;
+            _currentSite = jupiterSettings.CurrentValue.CurrentSite;
+            ReplicatorSettings = replicatorSettings;
 
-            string stateFileName = $"{_name}.json";
+            string stateFileName = $"{Name}.json";
             DirectoryInfo stateRoot = new DirectoryInfo(replicationSettings.CurrentValue.StateRoot);
             _stateFile = new FileInfo(Path.Combine(stateRoot.FullName, stateFileName));
 
             if (_stateFile.Exists)
             {
-                State = ReadState(_stateFile) ?? new IReplicator.ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
+                State = ReadState(_stateFile) ?? new ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
             }
             else
             {
-                State = new IReplicator.ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
+                State = new ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
             }
 
-            _replicatorInfo = new IReplicator.ReplicatorInfo(_replicatorSettings.ReplicatorName, _replicatorSettings.NamespaceToReplicate, State);
-            _restClient = remoteClient;
+            Info = new ReplicatorInfo(ReplicatorSettings.ReplicatorName, Namespace, State);
+            Client = remoteClient;
+
+            _serviceCredentials = serviceCredentials;
+
+            _httpClient = httpClientFactory.CreateClient();
+            _httpClient.BaseAddress = new Uri(replicatorSettings.ConnectionString);
         }
 
         ~Replicator()
         {
-            Dispose();
+            Dispose(false);
         }
 
         /// <summary>
@@ -160,8 +167,8 @@ namespace Horde.Storage.Implementation
             long countOfReplicatedEvents = 0L;
             try
             {
-                using Scope scope = Tracer.Instance.StartActive("replicator.run");
-                scope.Span.ResourceName =_name;
+                //using IScope scope = Tracer.Instance.StartActive("replicator.run");
+                //scope.Span.ResourceName =_name;
 
                 _replicationRunning = true;
                 _replicationFinishedEvent.Reset();
@@ -171,27 +178,27 @@ namespace Horde.Storage.Implementation
                 _stateFile.Refresh();
                 if (_stateFile.Exists)
                 {
-                    State = ReadState(_stateFile) ?? new IReplicator.ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
+                    State = ReadState(_stateFile) ?? new ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
                 }
                 else
                 {
-                    State = new IReplicator.ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
+                    State = new ReplicatorState {ReplicatorOffset = null, ReplicatingGeneration = null};
                 }
 
-                LogReplicationHeartbeat(_name, State, 0);
-                _logger.Information("{Name} Looking for new transaction. Previous state: {@State}", _name, State);
+                LogReplicationHeartbeat(Name, State, 0);
+                Logger.Information("{Name} Looking for new transaction. Previous state: {@State}", Name, State);
 
                 SortedList<long, Task> replicationTasks = new();
                 await foreach (T op in GetCallistoOp(State.ReplicatorOffset ?? 0, State.ReplicatingGeneration, _currentSite, enumerationState, replicationToken))
                 {
                     hasRun = true;
-                    _logger.Information("{Name} New transaction to replicate found. New op: {@Op} . Count of running replications: {CurrentReplications}", _name, op, replicationTasks.Count);
+                    Logger.Information("{Name} New transaction to replicate found. New op: {@Op} . Count of running replications: {CurrentReplications}", Name, op, replicationTasks.Count);
 
                     Info.CountOfRunningReplications = replicationTasks.Count;
 
                     if (!op.Identifier.HasValue || !op.NextIdentifier.HasValue)
                     {
-                        _logger.Error("{Name} Missing identifier in {@Op}", _name, op);
+                        Logger.Error("{Name} Missing identifier in {@Op}", Name, op);
                         throw new Exception("Missing identifier in op. Version mismatch?");
                     }
                     
@@ -201,10 +208,10 @@ namespace Horde.Storage.Implementation
                     try
                     {
                         // first replicate the things which are order sensitive like the transaction log
-                        long? _ = await ReplicateOpInline(_restClient, op, replicationToken);
+                        long? _ = await ReplicateOpInline(Client, op, replicationToken);
 
                         // next we replicate the large things that overlap with other replications like blobs
-                        Task currentReplicationTask = ReplicateOp(_restClient, op, replicationToken);
+                        Task currentReplicationTask = ReplicateOp(Client, op, replicationToken);
 
                         Task OnDone(Task task)
                         {
@@ -235,7 +242,7 @@ namespace Horde.Storage.Implementation
                                 Info.LastRun = DateTime.Now;
                                 Info.CountOfRunningReplications = replicationTasks.Count;
 
-                                LogReplicationHeartbeat(_name, State, replicationTasks.Count);
+                                LogReplicationHeartbeat(Name, State, replicationTasks.Count);
 
                                 return task;
                             }
@@ -250,19 +257,19 @@ namespace Horde.Storage.Implementation
 
                         lock (replicationTasks)
                         {
-                            Task<Task> commitStateTask = currentReplicationTask.ContinueWith(OnDone, replicationToken);
+                            Task<Task> commitStateTask = currentReplicationTask.ContinueWith(OnDone, replicationToken, TaskContinuationOptions.None, TaskScheduler.Current);
 
                             replicationTasks.Add(currentOffset, commitStateTask);
                         }
                     }
                     catch (BlobNotFoundException)
                     {
-                        _logger.Warning("{Name} Failed to replicate {@Op} in {Namespace} because blob was not present in remote store. Skipping.", _name, op, Info.NamespaceToReplicate);
+                        Logger.Warning("{Name} Failed to replicate {@Op} in {Namespace} because blob was not present in remote store. Skipping.", Name, op, Info.NamespaceToReplicate);
                     }
 
                     // if we have reached the max amount of parallel replications we wait for one of them to finish before starting a new one
                     // if max replications is set to -1 we do not limit the concurrency
-                    if ( _replicatorSettings.MaxParallelReplications != -1 && replicationTasks.Count >= _replicatorSettings.MaxParallelReplications)
+                    if ( ReplicatorSettings.MaxParallelReplications != -1 && replicationTasks.Count >= ReplicatorSettings.MaxParallelReplications)
                     {
                         Task[] currentReplicationTasks;
                         lock (replicationTasks)
@@ -273,7 +280,7 @@ namespace Horde.Storage.Implementation
                     }
 
                     Info.CountOfRunningReplications = replicationTasks.Count;
-                    LogReplicationHeartbeat(_name, State, replicationTasks.Count);
+                    LogReplicationHeartbeat(Name, State, replicationTasks.Count);
 
                     if (replicationToken.IsCancellationRequested)
                     {
@@ -292,7 +299,7 @@ namespace Horde.Storage.Implementation
             }
 
             DateTime endedReplicationAt = DateTime.Now;
-            _logger.Information("{Name} {Namespace} Replication Finished at {EndTime} and last run was at {LastTime}, replicated {CountOfEvents} events. Thus was {TimeDifference} minutes behind.", _name, Info.NamespaceToReplicate, endedReplicationAt, startedReplicationAt, countOfReplicatedEvents, (endedReplicationAt - startedReplicationAt).TotalMinutes);
+            Logger.Information("{Name} {Namespace} Replication Finished at {EndTime} and last run was at {LastTime}, replicated {CountOfEvents} events. Thus was {TimeDifference} minutes behind.", Name, Info.NamespaceToReplicate, endedReplicationAt, startedReplicationAt, countOfReplicatedEvents, (endedReplicationAt - startedReplicationAt).TotalMinutes);
 
             if (!hasRun)
             {
@@ -307,23 +314,25 @@ namespace Horde.Storage.Implementation
 
         protected abstract IAsyncEnumerable<T> GetCallistoOp(long stateReplicatorOffset, Guid? stateReplicatingGeneration, string currentSite, OpsEnumerationState enumerationState, CancellationToken replicationToken);
         
-        private void LogReplicationHeartbeat(string name, IReplicator.ReplicatorState? state, int countOfCurrentReplications)
+        private void LogReplicationHeartbeat(string name, ReplicatorState? state, int countOfCurrentReplications)
         {
             if (state == null)
+            {
                 return;
+            }
 
             // log message used to generate metric for how many replications are currently running
-            _logger.Information("{Name} replication has run . Count of running replications: {CurrentReplications}", _name, countOfCurrentReplications);
+            Logger.Information("{Name} replication has run . Count of running replications: {CurrentReplications}", Name, countOfCurrentReplications);
 
             // log message used to verify replicators are actually running
-            _logger.Information("{Name} starting replication. Last transaction was {TransactionId} {Generation}", name, state.ReplicatorOffset.GetValueOrDefault(0L), state.ReplicatingGeneration.GetValueOrDefault(Guid.Empty) );
+            Logger.Information("{Name} starting replication. Last transaction was {TransactionId} {Generation}", name, state.ReplicatorOffset.GetValueOrDefault(0L), state.ReplicatingGeneration.GetValueOrDefault(Guid.Empty) );
         }
 
         protected abstract Task<long?> ReplicateOpInline(IRestClient remoteClient, T op, CancellationToken replicationToken);
 
         protected abstract Task ReplicateOp(IRestClient remoteClient, T op, CancellationToken replicationToken);
 
-        protected async Task ReplicateBlobs(IRestClient remoteClient, NamespaceId ns, BlobIdentifier[] blobs, CancellationToken replicationToken)
+        protected async Task ReplicateBlobs(NamespaceId ns, BlobIdentifier[] blobs, CancellationToken replicationToken)
         {
             Task[] blobReplicateTasks = new Task[blobs.Length];
             for (int index = 0; index < blobs.Length; index++)
@@ -332,110 +341,119 @@ namespace Horde.Storage.Implementation
                 blobReplicateTasks[index] = Task.Run(async () =>
                 {
                     // check if this blob exists locally before replicating
-                    if (await _blobStore.Exists(ns, blob))
+                    if (await _blobService.Exists(ns, blob))
+                    {
                         return;
+                    }
 
                     // attempt to replicate for a few tries with some delay in between
                     // this because new transactions are written to callisto first (to establish the GC handle) before content is uploaded to io.
                     // as such its possible (though not very likely) when we replicate the very newest transaction that we find a transaction but no content
                     // and as the content upload can be large it can take a little time for it to exist in io.
-                    byte[]? rawContent = null;
                     BlobIdentifier? calculatedBlob = null;
                     const int MaxAttempts = 3;
                     for (int attempts = 0; attempts < MaxAttempts; attempts++)
                     {
-                        RestRequest remoteIoGet = new RestRequest("api/v1/s/{ns}/{blob}");
-                        remoteIoGet.AddUrlSegment("ns", ns);
-                        remoteIoGet.AddUrlSegment("blob", blob);
-
-                        IRestResponse response = await remoteClient.ExecuteGetAsync(remoteIoGet, replicationToken);
+                        HttpRequestMessage blobRequest = BuildHttpRequest(HttpMethod.Get, $"api/v1/s/{ns}/{blob}");
+                        HttpResponseMessage response = await _httpClient.SendAsync(blobRequest, HttpCompletionOption.ResponseHeadersRead, replicationToken);
 
                         if (response.StatusCode == HttpStatusCode.NotFound)
                         {
-                            _logger.Information("{Blob} was not found in remote blob store. Retry attempt {Attempts}", blob, attempts);
+                            Logger.Information("{Blob} was not found in remote blob store. Retry attempt {Attempts}", blob, attempts);
                             await Task.Delay(TimeSpan.FromSeconds(5), replicationToken);
                             continue;
                         }
 
                         if (response.StatusCode == HttpStatusCode.GatewayTimeout)
                         {
-                            _logger.Information("GatewayTimeout while replicating {Blob}, retrying. Retry attempt {Attempts}", blob, attempts);
+                            Logger.Information("GatewayTimeout while replicating {Blob}, retrying. Retry attempt {Attempts}", blob, attempts);
+                            continue;
+                        }
+
+                        if (response.StatusCode == HttpStatusCode.BadGateway)
+                        {
+                            Logger.Information("BadGateway while replicating {Blob}, retrying. Retry attempt {Attempts}", blob, attempts);
                             continue;
                         }
 
                         if (response.StatusCode == HttpStatusCode.BadRequest || response.StatusCode == HttpStatusCode.NotFound)
                         {
-                            _logger.Warning("Remote blob {Blob} missing, unable to replicate.", blob);
+                            Logger.Warning("Remote blob {Blob} missing, unable to replicate.", blob);
                             return;
                         }
 
-                        if (response.IsSuccessful)
+                        if (response.IsSuccessStatusCode)
                         {
-                            rawContent = response.RawBytes;
+                            long? contentLength = response.Content.Headers.ContentLength;
+                            await using Stream responseStream = await response.Content.ReadAsStreamAsync(replicationToken);
+                            
+                            using IBufferedPayload payload = contentLength is null or > int.MaxValue ? await FilesystemBufferedPayload.Create(responseStream) : await MemoryBufferedPayload.Create(responseStream);
 
-                            calculatedBlob = BlobIdentifier.FromBlob(rawContent);
+                            {
+                                await using Stream s = payload.GetStream();
+                                calculatedBlob = await BlobIdentifier.FromStream(s);
+                            }
                             if (!blob.Equals(calculatedBlob))
                             {
-                                _logger.Warning("Mismatching blob when replicating {Blob}. Determined Hash was {Hash} size was {Size} HttpStatusCode {StatusCode} HttpMessage {HttpMessage} ResponseUri {Url}", blob, calculatedBlob, rawContent.LongLength, response.StatusCode, response.ErrorMessage, response.ResponseUri);
+                                Logger.Warning("Mismatching blob when replicating {Blob}. Determined Hash was {Hash} size was {Size} HttpStatusCode {StatusCode}",
+                                    blob, calculatedBlob, payload.Length, response.StatusCode);
                                 continue; // attempt to replicate again
                             }
-    
-                            // this blob is good and should be added to the blob store
+
+                            await _blobService.PutObject(ns, payload, calculatedBlob);
                             break;
                         }
 
-                        if (response.ErrorException is WebException we)
-                        {
-                            if (we.Status == WebExceptionStatus.Timeout)
-                            {
-                                const string template = "Operation timed out while replicating {Blob}, retrying. Retry attempt {Attempts}";
-                                _logger.Information(we, template, blob, attempts);
-                                continue;
-                            }
-                        }
-
-                        throw new Exception($"Replicator \"{_name}\" failed to replicate blob {blob} due unsuccessful status from remote blob store: {response.StatusCode} . Error message: \"{response.ErrorMessage}\"", response.ErrorException);
+                        throw new Exception($"Replicator \"{Name}\" failed to replicate blob {blob} due unsuccessful status from remote blob store: {response.StatusCode} . Error message: \"{response.ReasonPhrase}\"");
                     }
-
-                    if (rawContent == null || calculatedBlob == null)
-                    {
-                        _logger.Warning("Remote blob {Blob} not present in remote blob store after multiple attempts to replicate. Assuming this blob has been GCed and continuing replication.", blob);
-                        return;
-                    }
-
-                    if (!blob.Equals(calculatedBlob))
-                    {
-                        _logger.Warning("Mismatching blob when replicating {Blob}. Determined Hash was {Hash} size was {Size}. Multiple attempts failed, giving up.", blob, calculatedBlob, rawContent.LongLength);
-                        return; 
-                    }
-
-                    await _blobStore.PutObject(ns, rawContent, calculatedBlob);
                 }, replicationToken);
             }
 
             await Task.WhenAll(blobReplicateTasks);
         }
 
-        private static IReplicator.ReplicatorState? ReadState(FileInfo stateFile)
+        private static ReplicatorState? ReadState(FileInfo stateFile)
         {
             using StreamReader streamReader = stateFile.OpenText();
             using JsonReader reader = new JsonTextReader(streamReader);
             JsonSerializer serializer = new JsonSerializer();
-            return serializer.Deserialize<IReplicator.ReplicatorState>(reader);
+            return serializer.Deserialize<ReplicatorState>(reader);
         }
 
-        private static void SaveState(FileInfo stateFile, IReplicator.ReplicatorState newState)
+        private static void SaveState(FileInfo stateFile, ReplicatorState newState)
         {
             using StreamWriter writer = stateFile.CreateText();
             JsonSerializer serializer = new JsonSerializer();
             serializer.Serialize(writer, newState);
         }
 
+        private HttpRequestMessage BuildHttpRequest(HttpMethod httpMethod, string uri)
+        {
+            string? token = _serviceCredentials.GetToken();
+            HttpRequestMessage request = new HttpRequestMessage(httpMethod, uri);
+            if (!string.IsNullOrEmpty(token))
+            {
+                request.Headers.Add("Authorization", $"{_serviceCredentials.GetAuthenticationScheme()} {token}");
+            }
+
+            return request;
+        }
+
         public void Dispose()
         {
-            SaveState(_stateFile, State);
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
 
-            _replicationTokenSource.Dispose();
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                SaveState(_stateFile, State);
+
+                _replicationTokenSource.Dispose();
+                _httpClient.Dispose();
+            }
         }
 
         public async Task StopReplicating()
@@ -444,7 +462,7 @@ namespace Horde.Storage.Implementation
             await _replicationFinishedEvent.WaitAsync();
         }
 
-        public void SetReplicationOffset(long offset)
+        public void SetReplicationOffset(long? offset)
         {
             State.ReplicatorOffset = offset;
             SaveState(_stateFile, State);
@@ -452,7 +470,7 @@ namespace Horde.Storage.Implementation
 
         public Task DeleteState()
         {
-            State = new IReplicator.ReplicatorState()
+            State = new ReplicatorState()
             {
                 ReplicatingGeneration = null,
                 ReplicatorOffset = 0

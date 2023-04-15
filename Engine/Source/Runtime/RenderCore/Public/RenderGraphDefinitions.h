@@ -46,19 +46,23 @@
 
 /** Whether render graph GPU events are enabled. */
 #if WITH_PROFILEGPU
-	#define RDG_EVENTS RDG_EVENTS_STRING_COPY
+	#if UE_BUILD_TEST || UE_BUILD_SHIPPING
+		#define RDG_EVENTS RDG_EVENTS_STRING_REF
+	#else
+		#define RDG_EVENTS RDG_EVENTS_STRING_COPY
+	#endif
 #elif RHI_WANT_BREADCRUMB_EVENTS
 	#define RDG_EVENTS RDG_EVENTS_STRING_REF
 #else
 	#define RDG_EVENTS RDG_EVENTS_NONE
 #endif
 
-#define RDG_GPU_SCOPES (RDG_EVENTS || HAS_GPU_STATS)
+#define RDG_GPU_DEBUG_SCOPES (RDG_EVENTS || HAS_GPU_STATS)
 
-#if RDG_GPU_SCOPES
-	#define IF_RDG_GPU_SCOPES(Op) Op
+#if RDG_GPU_DEBUG_SCOPES
+	#define IF_RDG_GPU_DEBUG_SCOPES(Op) Op
 #else
-	#define IF_RDG_GPU_SCOPES(Op)
+	#define IF_RDG_GPU_DEBUG_SCOPES(Op)
 #endif
 
 #define RDG_CPU_SCOPES (CSV_PROFILER)
@@ -131,12 +135,21 @@ enum class ERDGBufferFlags : uint8
 	/** Tag the buffer to survive through frame, that is important for multi GPU alternate frame rendering. */
 	MultiFrame = 1 << 0,
 
-	/** The buffer may only be used for read-only access within the graph. This flag is only allowed for registered buffers. */
-	ReadOnly = 1 << 1, 
+	/** The buffer is ignored by RDG tracking and will never be transitioned. Use the flag when registering a buffer with no writable GPU flags.
+	 *  Write access is not allowed for the duration of the graph. This flag is intended as an optimization to cull out tracking of read-only
+	 *  buffers that are used frequently throughout the graph. Note that it's the user's responsibility to ensure the resource is in the correct
+	 *  readable state for use with RDG passes, as RDG does not know the exact state of the resource.
+	 */
+	SkipTracking = 1 << 1,
 
-	/** Force the graph to track this resource even if it can be considered as readonly (no UAV, no RTV, etc.) This allows the graph copying from and to textures, and handling the corresponding transitions, for example.
-	 This flag is only allowed for registered buffers. Mutually exclusive with ReadOnly. */
-	ForceTracking = 1 << 2,
+	/** When set, RDG will perform its first barrier without splitting. Practically, this means the resource is left in its initial state
+	 *  until the first pass it's used within the graph. Without this flag, the resource is split-transitioned at the start of the graph.
+	 */
+	ForceImmediateFirstBarrier = 1 << 2,
+
+	// Deprecated Enums
+	ReadOnly      UE_DEPRECATED(5.1, "ReadOnly is deprecated. Use SkipTracking instead.")                                            = 0,
+	ForceTracking UE_DEPRECATED(5.1, "ForceTracking is deprecated. Resources now opt-out of tracking explicitly with SkipTracking.") = 0
 };
 ENUM_CLASS_FLAGS(ERDGBufferFlags);
 
@@ -148,15 +161,24 @@ enum class ERDGTextureFlags : uint8
 	/** Tag the texture to survive through frame, that is important for multi GPU alternate frame rendering. */
 	MultiFrame = 1 << 0,
 
-	/** The texture may only be used for read-only access within the graph. This flag is only allowed for registered textures. */
-	ReadOnly = 1 << 1,
+	/** The buffer is ignored by RDG tracking and will never be transitioned. Use the flag when registering a buffer with no writable GPU flags.
+	 *  Write access is not allowed for the duration of the graph. This flag is intended as an optimization to cull out tracking of read-only
+	 *  buffers that are used frequently throughout the graph. Note that it's the user's responsibility to ensure the resource is in the correct
+	 *  readable state for use with RDG passes, as RDG does not know the exact state of the resource.
+	 */
+	SkipTracking = 1 << 1,
+	
+	/** When set, RDG will perform its first barrier without splitting. Practically, this means the resource is left in its initial state
+	 *  until the first pass it's used within the graph. Without this flag, the resource is split-transitioned at the start of the graph.
+	 */
+	ForceImmediateFirstBarrier = 1 << 2,
 
 	/** Prevents metadata decompression on this texture. */
-	MaintainCompression = 1 << 2,
+	MaintainCompression = 1 << 3,
 
-	/** Force the graph to track this resource even if it can be considered as readonly (no UAV, no RTV, etc.) This allows the graph copying from and to textures, and handling the corresponding transitions, for example.
-	 This flag is only allowed for registered buffers. Mutually exclusive with ReadOnly. */
-	ForceTracking = 1 << 3,
+	// Deprecated Enums
+	ReadOnly      UE_DEPRECATED(5.1, "ReadOnly is deprecated. Use SkipTracking instead.")                                            = 0,
+	ForceTracking UE_DEPRECATED(5.1, "ForceTracking is deprecated. Resources now opt-out of tracking explicitly with SkipTracking.") = 0
 };
 ENUM_CLASS_FLAGS(ERDGTextureFlags);
 
@@ -171,12 +193,15 @@ enum class ERDGUnorderedAccessViewFlags : uint8
 ENUM_CLASS_FLAGS(ERDGUnorderedAccessViewFlags);
 
 /** The set of concrete parent resource types. */
-enum class ERDGParentResourceType : uint8
+enum class ERDGViewableResourceType : uint8
 {
 	Texture,
 	Buffer,
 	MAX
 };
+
+UE_DEPRECATED(5.1, "ERDGParentResourceType has been renamed to ERDGViewableResourceType.")
+typedef ERDGViewableResourceType ERDGParentResourceType;
 
 /** The set of concrete view types. */
 enum class ERDGViewType : uint8
@@ -187,6 +212,21 @@ enum class ERDGViewType : uint8
 	BufferSRV,
 	MAX
 };
+
+inline ERDGViewableResourceType GetParentType(ERDGViewType ViewType)
+{
+	switch (ViewType)
+	{
+	case ERDGViewType::TextureUAV:
+	case ERDGViewType::TextureSRV:
+		return ERDGViewableResourceType::Texture;
+	case ERDGViewType::BufferUAV:
+	case ERDGViewType::BufferSRV:
+		return ERDGViewableResourceType::Buffer;
+	}
+	checkNoEntry();
+	return ERDGViewableResourceType::MAX;
+}
 
 enum class ERDGResourceExtractionFlags : uint8
 {
@@ -215,21 +255,39 @@ enum class ERDGInitialDataFlags : uint8
 };
 ENUM_CLASS_FLAGS(ERDGInitialDataFlags)
 
+enum class ERDGPooledBufferAlignment : uint8
+{
+	// The buffer size is not aligned.
+	None,
+
+	// The buffer size is aligned up to the next page size.
+	Page,
+
+	// The buffer size is aligned up to the next power of two.
+	PowerOfTwo
+};
+
 /** Returns the equivalent parent resource type for a view type. */
-inline ERDGParentResourceType GetParentResourceType(ERDGViewType ViewType)
+inline ERDGViewableResourceType GetViewableResourceType(ERDGViewType ViewType)
 {
 	switch (ViewType)
 	{
 	case ERDGViewType::TextureUAV:
 	case ERDGViewType::TextureSRV:
-		return ERDGParentResourceType::Texture;
+		return ERDGViewableResourceType::Texture;
 	case ERDGViewType::BufferUAV:
 	case ERDGViewType::BufferSRV:
-		return ERDGParentResourceType::Buffer;
+		return ERDGViewableResourceType::Buffer;
 	default:
 		checkNoEntry();
-		return ERDGParentResourceType::MAX;
+		return ERDGViewableResourceType::MAX;
 	}
+}
+
+UE_DEPRECATED(5.1, "GetParentResourceType has been renamed to GetViewableResourceType.")
+inline ERDGViewableResourceType GetParentResourceType(ERDGViewType ViewType)
+{
+	return GetViewableResourceType(ViewType);
 }
 
 using ERDGTextureMetaDataAccess = ERHITextureMetaDataAccess;
@@ -364,6 +422,17 @@ public:
 	using HandleType = LocalHandleType;
 	using ObjectType = typename HandleType::ObjectType;
 	using IndexType = typename HandleType::IndexType;
+
+	TRDGHandleRegistry() = default;
+	TRDGHandleRegistry(const TRDGHandleRegistry&) = delete;
+	TRDGHandleRegistry(TRDGHandleRegistry&&) = default;
+	TRDGHandleRegistry& operator=(TRDGHandleRegistry&&) = default;
+	TRDGHandleRegistry& operator=(const TRDGHandleRegistry&) = delete;
+
+	~TRDGHandleRegistry()
+	{
+		Clear();
+	}
 
 	void Insert(ObjectType* Object)
 	{
@@ -525,9 +594,108 @@ private:
 template <typename ObjectType, typename IndexType>
 const TRDGHandle<ObjectType, IndexType> TRDGHandle<ObjectType, IndexType>::Null;
 
-/** FORWARD DECLARATIONS */
+struct FRDGTextureDesc : public FRHITextureDesc
+{
+	static FRDGTextureDesc Create2D(
+		FIntPoint           Size
+		, EPixelFormat        Format
+		, FClearValueBinding  ClearValue
+		, ETextureCreateFlags Flags
+		, uint8               NumMips = 1
+		, uint8               NumSamples = 1
+		, uint32              ExtData = 0
+	)
+	{
+		const uint16 Depth = 1;
+		const uint16 ArraySize = 1;
+		return FRDGTextureDesc(ETextureDimension::Texture2D, Flags, Format, ClearValue, { Size.X, Size.Y }, Depth, ArraySize, NumMips, NumSamples, ExtData);
+	}
 
-using FRDGTextureDesc = FRHITextureCreateInfo;
+	static FRDGTextureDesc Create2DArray(
+		FIntPoint           Size
+		, EPixelFormat        Format
+		, FClearValueBinding  ClearValue
+		, ETextureCreateFlags Flags
+		, uint16              ArraySize
+		, uint8               NumMips = 1
+		, uint8               NumSamples = 1
+		, uint32              ExtData = 0
+	)
+	{
+		const uint16 Depth = 1;
+		return FRDGTextureDesc(ETextureDimension::Texture2DArray, Flags, Format, ClearValue, { Size.X, Size.Y }, Depth, ArraySize, NumMips, NumSamples, ExtData);
+	}
+
+	static FRDGTextureDesc Create3D(
+		FIntVector          Size
+		, EPixelFormat        Format
+		, FClearValueBinding  ClearValue
+		, ETextureCreateFlags Flags
+		, uint8               NumMips = 1
+		, uint32              ExtData = 0
+	)
+	{
+		const uint16 ArraySize = 1;
+		const uint8 LocalNumSamples = 1;
+
+		checkf(Size.Z <= TNumericLimits<decltype(FRDGTextureDesc::Depth)>::Max(), TEXT("Depth parameter (Size.Z) exceeds valid range"));
+
+		return FRDGTextureDesc(ETextureDimension::Texture3D, Flags, Format, ClearValue, { Size.X, Size.Y }, (uint16)Size.Z, ArraySize, NumMips, LocalNumSamples, ExtData);
+	}
+
+	static FRDGTextureDesc CreateCube(
+		uint32              Size
+		, EPixelFormat        Format
+		, FClearValueBinding  ClearValue
+		, ETextureCreateFlags Flags
+		, uint8               NumMips = 1
+		, uint8               NumSamples = 1
+		, uint32              ExtData = 0
+	)
+	{
+		checkf(Size <= (uint32)TNumericLimits<int32>::Max(), TEXT("Size parameter exceeds valid range"));
+
+		const uint16 Depth = 1;
+		const uint16 ArraySize = 1;
+		return FRDGTextureDesc(ETextureDimension::TextureCube, Flags, Format, ClearValue, { (int32)Size, (int32)Size }, Depth, ArraySize, NumMips, NumSamples, ExtData);
+	}
+
+	static FRDGTextureDesc CreateCubeArray(
+		uint32              Size
+		, EPixelFormat        Format
+		, FClearValueBinding  ClearValue
+		, ETextureCreateFlags Flags
+		, uint16              ArraySize
+		, uint8               NumMips = 1
+		, uint8               NumSamples = 1
+		, uint32              ExtData = 0
+	)
+	{
+		checkf(Size <= (uint32)TNumericLimits<int32>::Max(), TEXT("Size parameter exceeds valid range"));
+
+		const uint16 Depth = 1;
+		return FRDGTextureDesc(ETextureDimension::TextureCubeArray, Flags, Format, ClearValue, { (int32)Size, (int32)Size }, Depth, ArraySize, NumMips, NumSamples, ExtData);
+	}
+
+	FRDGTextureDesc() = default;
+	FRDGTextureDesc(
+		ETextureDimension   InDimension
+		, ETextureCreateFlags InFlags
+		, EPixelFormat        InFormat
+		, FClearValueBinding  InClearValue
+		, FIntPoint           InExtent
+		, uint16              InDepth
+		, uint16              InArraySize
+		, uint8               InNumMips
+		, uint8               InNumSamples
+		, uint32              InExtData
+	)
+		: FRHITextureDesc(InDimension, InFlags, InFormat, InClearValue, InExtent, InDepth, InArraySize, InNumMips, InNumSamples, InExtData)
+	{
+	}
+};
+
+/** FORWARD DECLARATIONS */
 
 class FRDGBlackboard;
 
@@ -548,8 +716,13 @@ class FRDGUserValidation;
 class FRDGResource;
 using FRDGResourceRef = FRDGResource*;
 
-class FRDGParentResource;
-using FRDGParentResourceRef = FRDGParentResource*;
+class FRDGViewableResource;
+
+UE_DEPRECATED(5.1, "FRDGParentResource has been renamed to FRDGViewableResource.")
+typedef FRDGViewableResource FRDGParentResource;
+
+UE_DEPRECATED(5.1, "FRDGParentResourceRef has been renamed to FRDGViewableResource*.")
+typedef FRDGViewableResource* FRDGParentResourceRef;
 
 class FRDGShaderResourceView;
 using FRDGShaderResourceViewRef = FRDGShaderResourceView*;
@@ -594,6 +767,8 @@ using FRDGTextureHandle = TRDGHandle<FRDGTexture, uint16>;
 using FRDGTextureRegistry = TRDGHandleRegistry<FRDGTextureHandle, ERDGHandleRegistryDestructPolicy::Never>;
 using FRDGTextureBitArray = TRDGHandleBitArray<FRDGTextureHandle>;
 
+struct FRDGBufferDesc;
+
 class FRDGBuffer;
 using FRDGBufferRef = FRDGBuffer*;
 using FRDGBufferHandle = TRDGHandle<FRDGBuffer, uint16>;
@@ -608,13 +783,11 @@ class FRDGTransientRenderTarget;
 template <typename TUniformStruct> class TRDGUniformBuffer;
 template <typename TUniformStruct> using TRDGUniformBufferRef = TRDGUniformBuffer<TUniformStruct>*;
 
-template <typename InElementType, typename InAllocatorType = FDefaultAllocator>
-using TRDGTextureSubresourceArray = TArray<InElementType, TInlineAllocator<1, InAllocatorType>>;
-
 using FRDGPassHandlesByPipeline = TRHIPipelineArray<FRDGPassHandle>;
 using FRDGPassesByPipeline = TRHIPipelineArray<FRDGPass*>;
 
 class FRDGTrace;
+class FRDGResourceDumpContext;
 
 using FRDGBufferNumElementsCallback = TFunction<uint32()>;
 using FRDGBufferInitialDataCallback = TFunction<const void*()>;

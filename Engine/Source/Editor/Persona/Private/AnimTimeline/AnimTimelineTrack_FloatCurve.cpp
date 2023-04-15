@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_FloatCurve.h"
+#include "AnimTimeline/AnimTimelineTrack_FloatCurve.h"
 #include "CurveEditor.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "ScopedTransaction.h"
@@ -18,10 +18,10 @@
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBox.h"
-#include "AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
+#include "AnimTimelineClipboard.h"
 #include "Animation/AnimData/AnimDataModel.h"
-#include "SAnimOutlinerItem.h"
-#include "Animation/AnimData/AnimDataModel.h"
+#include "AnimTimeline/SAnimOutlinerItem.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_FloatCurve"
 
@@ -47,7 +47,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_FloatCurve::MakeTimelineWidgetContainer()
 	{
 		if(GetModel()->IsTrackSelected(AsShared()))
 		{
-			return FEditorStyle::GetSlateColor("SelectionColor").GetSpecifiedColor().CopyWithNewOpacity(0.75f);
+			return FAppStyle::GetSlateColor("SelectionColor").GetSpecifiedColor().CopyWithNewOpacity(0.75f);
 		}
 		else
 		{
@@ -58,7 +58,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_FloatCurve::MakeTimelineWidgetContainer()
 	return
 		SAssignNew(TimelineWidgetContainer, SBorder)
 		.Padding(0.0f)
-		.BorderImage_Lambda([this](){ return FloatCurve->GetCurveTypeFlag(AACF_Metadata) ? FEditorStyle::GetBrush("Sequencer.Section.SelectedSectionOverlay") : FEditorStyle::GetBrush("AnimTimeline.Outliner.DefaultBorder"); })
+		.BorderImage_Lambda([this](){ return FloatCurve->GetCurveTypeFlag(AACF_Metadata) ? FAppStyle::GetBrush("Sequencer.Section.SelectedSectionOverlay") : FAppStyle::GetBrush("AnimTimeline.Outliner.DefaultBorder"); })
 		.BorderBackgroundColor_Lambda(ColorLambda)
 		[
 			CurveWidget
@@ -153,10 +153,6 @@ void FAnimTimelineTrack_FloatCurve::ConvertCurveToMetaData()
 {
 	UAnimSequenceBase* AnimSequenceBase = GetModel()->GetAnimSequenceBase();
 
-	// Stop editing this curve in the external editor window
-	IAnimationEditor::FCurveEditInfo EditInfo(CurveName, ERawCurveTrackTypes::RCT_Float, 0);
-	StaticCastSharedRef<FAnimModel_AnimSequenceBase>(GetModel())->OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ EditInfo }));
-
 	IAnimationDataController& Controller = AnimSequenceBase->GetController();
 	IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("ConvertCurveToMetaData_Bracket", "Converting curve to metadata"));
 	Controller.SetCurveFlag(CurveId, AACF_Metadata, true);
@@ -185,8 +181,7 @@ void FAnimTimelineTrack_FloatCurve::RemoveCurve()
 		{
 			// Stop editing this curve in the external editor window
 			IAnimationEditor::FCurveEditInfo EditInfo(CurveName, ERawCurveTrackTypes::RCT_Float, 0);
-			StaticCastSharedRef<FAnimModel_AnimSequenceBase>(GetModel())->OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ EditInfo }));
-
+			
 			AnimSequenceBase->Modify(true);
 
 			IAnimationDataController& Controller = AnimSequenceBase->GetController();
@@ -207,10 +202,6 @@ void FAnimTimelineTrack_FloatCurve::OnCommitCurveName(const FText& InText, EText
 		FText CurrentCurveName = GetLabel();
 		if (!CurrentCurveName.EqualToCaseIgnored(InText))
 		{
-			// Stop editing this curve in the external editor window
-			IAnimationEditor::FCurveEditInfo EditInfo(CurveName, ERawCurveTrackTypes::RCT_Float, 0);
-			StaticCastSharedRef<FAnimModel_AnimSequenceBase>(GetModel())->OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ EditInfo }));
-
 			// Check that the name doesn't already exist
 			const FName RequestedName = FName(*InText.ToString());
 
@@ -272,6 +263,30 @@ void FAnimTimelineTrack_FloatCurve::OnCommitCurveName(const FText& InText, EText
 FText FAnimTimelineTrack_FloatCurve::GetLabel() const
 {
 	return FAnimTimelineTrack_FloatCurve::GetFloatCurveName(GetModel(), FloatCurve->Name);
+}
+
+void FAnimTimelineTrack_FloatCurve::Copy(UAnimTimelineClipboardContent* InOutClipboard) const
+{
+	check(InOutClipboard != nullptr)
+	
+	UFloatCurveCopyObject * CopyableCurve = UAnimCurveBaseCopyObject::Create<UFloatCurveCopyObject>();
+
+	// Copy raw curve data
+	CopyableCurve->Curve.Name = FloatCurve->Name;
+	CopyableCurve->Curve.SetCurveTypeFlags(FloatCurve->GetCurveTypeFlags());
+	CopyableCurve->Curve.CopyCurve(*FloatCurve);
+
+	// Copy curve identifier data
+	CopyableCurve->DisplayName = CurveName.DisplayName;
+	CopyableCurve->UID = CurveName.UID;
+	CopyableCurve->CurveType = ERawCurveTrackTypes::RCT_Float;
+	CopyableCurve->Channel = CurveId.Channel;
+	CopyableCurve->Axis = CurveId.Axis;
+
+	// Origin data
+	CopyableCurve->OriginName = GetModel()->GetAnimSequenceBase()->GetFName();
+	
+	InOutClipboard->Curves.Add(CopyableCurve);
 }
 
 FText FAnimTimelineTrack_FloatCurve::GetFloatCurveName(const TSharedRef<FAnimModel>& InModel, const FSmartName& InSmartName)
@@ -360,7 +375,7 @@ void FAnimTimelineTrack_FloatCurve::AddCurveTrackButton(TSharedPtr<SHorizontalBo
 		.ToolTipText(LOCTEXT("EditCurveColor", "Edit Curve Color"))
 		.ContentPadding(0.0f)
 		.HasDownArrow(false)
-		.ButtonStyle(FEditorStyle::Get(), "Sequencer.AnimationOutliner.ColorStrip")
+		.ButtonStyle(FAppStyle::Get(), "Sequencer.AnimationOutliner.ColorStrip")
 		.OnGetMenuContent_Lambda(OnGetMenuContent)
 		.CollapseMenuOnParentFocus(true)
 		.VAlign(VAlign_Fill)

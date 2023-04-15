@@ -22,12 +22,12 @@ namespace
 
 		virtual bool IsMultiLineText() const override
 		{
-			return PropertyHandle->IsValidHandle() && PropertyHandle->GetMetaDataProperty()->GetBoolMetaData("MultiLine");
+			return PropertyHandle->IsValidHandle() && PropertyHandle->GetBoolMetaData("MultiLine");
 		}
 
 		virtual bool IsPassword() const override
 		{
-			return PropertyHandle->IsValidHandle() && PropertyHandle->GetMetaDataProperty()->GetBoolMetaData("PasswordField");
+			return PropertyHandle->IsValidHandle() && PropertyHandle->GetBoolMetaData("PasswordField");
 		}
 
 		virtual bool IsReadOnly() const override
@@ -102,14 +102,6 @@ namespace
 		}
 #endif // USE_STABLE_LOCALIZATION_KEYS
 
-		virtual void RequestRefresh() override
-		{
-			if (PropertyUtilities.IsValid())
-			{
-				PropertyUtilities->RequestRefresh();
-			}
-		}
-
 	private:
 		TSharedRef<IPropertyHandle> PropertyHandle;
 		TSharedPtr<IPropertyUtilities> PropertyUtilities;
@@ -131,7 +123,7 @@ void FTextCustomization::CustomizeHeader( TSharedRef<class IPropertyHandle> InPr
 		.MaxDesiredWidth(600.f)
 		[
 			SNew(STextPropertyEditableTextBox, EditableTextProperty)
-				.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+				.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 				.AutoWrapText(true)
 		];
 }

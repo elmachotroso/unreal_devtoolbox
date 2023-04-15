@@ -2,7 +2,7 @@
 
 #include "CADKernel/Geo/Curves/SegmentCurve.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 TSharedPtr<FEntityGeom> FSegmentCurve::ApplyMatrix(const FMatrixH& InMatrix) const
@@ -11,6 +11,12 @@ TSharedPtr<FEntityGeom> FSegmentCurve::ApplyMatrix(const FMatrixH& InMatrix) con
 	FPoint TransformedEndPoint = InMatrix.Multiply(EndPoint);
 
 	return FEntity::MakeShared<FSegmentCurve>(TransformedStartPoint, TransformedEndPoint, Dimension);
+}
+
+void FSegmentCurve::Offset(const FPoint& OffsetDirection)
+{
+	StartPoint += OffsetDirection;
+	EndPoint += OffsetDirection;
 }
 
 #ifdef CADKERNEL_DEV

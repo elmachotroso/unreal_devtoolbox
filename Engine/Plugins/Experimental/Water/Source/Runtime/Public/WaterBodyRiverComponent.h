@@ -19,7 +19,7 @@ class WATER_API UWaterBodyRiverComponent : public UWaterBodyComponent
 public:
 	/** UWaterBodyComponent Interface */
 	virtual EWaterBodyType GetWaterBodyType() const override { return EWaterBodyType::River; }
-	virtual TArray<UPrimitiveComponent*> GetCollisionComponents() const override;
+	virtual TArray<UPrimitiveComponent*> GetCollisionComponents(bool bInOnlyEnabledComponents = true) const override;
 	virtual TArray<UPrimitiveComponent*> GetStandardRenderableComponents() const override;
 	virtual UMaterialInstanceDynamic* GetRiverToLakeTransitionMaterialInstance() override;
 	virtual UMaterialInstanceDynamic* GetRiverToOceanTransitionMaterialInstance() override;
@@ -36,8 +36,13 @@ protected:
 	virtual void Reset() override;
 	virtual void UpdateMaterialInstances() override;
 	virtual void OnUpdateBody(bool bWithExclusionVolumes) override;
+	virtual bool GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3& OutMesh, UE::Geometry::FDynamicMesh3* OutDilatedMesh = nullptr) const override;
+
+	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 #if WITH_EDITOR
-	virtual void OnPostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent, bool& bShapeOrPositionChanged, bool& bWeightmapSettingsChanged) override;
+	virtual void OnPostEditChangeProperty(FOnWaterBodyChangedParams& InOutOnWaterBodyChangedParams) override;
+
+	virtual const TCHAR* GetWaterSpriteTextureName() const override;
 #endif
 
 	void CreateOrUpdateLakeTransitionMID();
@@ -48,19 +53,19 @@ protected:
 
 protected:
 	UPROPERTY(NonPIEDuplicateTransient)
-	TArray<USplineMeshComponent*> SplineMeshComponents;
+	TArray<TObjectPtr<USplineMeshComponent>> SplineMeshComponents;
 
 	/** Material used when a river is overlapping a lake. */
 	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly, meta = (DisplayName = "River to Lake Transition"))
-	UMaterialInterface* LakeTransitionMaterial;
+	TObjectPtr<UMaterialInterface> LakeTransitionMaterial;
 
 	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "LakeTransitionMaterial"))
-	UMaterialInstanceDynamic* LakeTransitionMID;
+	TObjectPtr<UMaterialInstanceDynamic> LakeTransitionMID;
 
 	/** This is the material used when a river is overlapping the ocean. */
 	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly, meta = (DisplayName = "River to Ocean Transition"))
-	UMaterialInterface* OceanTransitionMaterial;
+	TObjectPtr<UMaterialInterface> OceanTransitionMaterial;
 
 	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "OceanTransitionMaterial"))
-	UMaterialInstanceDynamic* OceanTransitionMID;
+	TObjectPtr<UMaterialInstanceDynamic> OceanTransitionMID;
 };

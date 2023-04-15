@@ -64,29 +64,11 @@ static TAutoConsoleVariable<float> CVarCardRepresentationNormalTreshold(
 	TEXT("Normal treshold when surface elements should be clustered together."),
 	ECVF_ReadOnly);
 
-static TAutoConsoleVariable<int32> CVarCardRepresentationMaxSurfelDistanceXY(
-	TEXT("r.MeshCardRepresentation.DistanceTresholdXY"),
-	4,
-	TEXT("Max distance (in surfels) when surface elements should be clustered together along XY."),
-	ECVF_ReadOnly);
-
-static TAutoConsoleVariable<int32> CVarCardRepresentationMaxSurfelDistanceZ(
-	TEXT("r.MeshCardRepresentation.DistanceTresholdZ"),
-	16,
-	TEXT("Max distance (in surfels) when surface elements should be clustered together along Z."),
-	ECVF_ReadOnly);
-
-static TAutoConsoleVariable<int32> CVarCardRepresentationSeedIterations(
-	TEXT("r.MeshCardRepresentation.SeedIterations"),
-	3,
-	TEXT("Max number of clustering iterations."),
-	ECVF_ReadOnly);
-
-static TAutoConsoleVariable<int32> CVarCardRepresentationGrowIterations(
-	TEXT("r.MeshCardRepresentation.GrowIterations"),
-	3,
-	TEXT("Max number of grow iterations."),
-	ECVF_ReadOnly);
+static TAutoConsoleVariable<int32> CVarCardRepresentationDebug(
+	TEXT("r.MeshCardRepresentation.Debug"),
+	0,
+	TEXT("Enable mesh cards debugging. Skips DDCs and appends extra debug data."),
+	ECVF_Cheat);
 
 static TAutoConsoleVariable<int32> CVarCardRepresentationDebugSurfelDirection(
 	TEXT("r.MeshCardRepresentation.Debug.SurfelDirection"),
@@ -104,14 +86,13 @@ float MeshCardRepresentation::GetNormalTreshold()
 	return FMath::Clamp(CVarCardRepresentationNormalTreshold.GetValueOnAnyThread(), 0.0f, 1.0f);
 }
 
-int32 MeshCardRepresentation::GetMaxSurfelDistanceXY()
+bool MeshCardRepresentation::IsDebugMode()
 {
-	return FMath::Max(CVarCardRepresentationMaxSurfelDistanceXY.GetValueOnAnyThread(), 0);
-}
-
-int32 MeshCardRepresentation::GetMaxSurfelDistanceZ()
-{
-	return FMath::Max(CVarCardRepresentationMaxSurfelDistanceZ.GetValueOnAnyThread(), 0);
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+	return CVarCardRepresentationDebug.GetValueOnAnyThread() != 0;
+#else
+	return false;
+#endif
 }
 
 int32 MeshCardRepresentation::GetDebugSurfelDirection()
@@ -119,37 +100,23 @@ int32 MeshCardRepresentation::GetDebugSurfelDirection()
 	return FMath::Clamp(CVarCardRepresentationDebugSurfelDirection.GetValueOnAnyThread(), -1, 5);
 }
 
-int32 MeshCardRepresentation::GetSeedIterations()
-{
-	return FMath::Clamp(CVarCardRepresentationSeedIterations.GetValueOnAnyThread(), 1, 16);
-}
-
-int32 MeshCardRepresentation::GetGrowIterations()
-{
-	return FMath::Clamp(CVarCardRepresentationGrowIterations.GetValueOnAnyThread(), 0, 16);
-}
-
 FCardRepresentationAsyncQueue* GCardRepresentationAsyncQueue = NULL;
 
 #if WITH_EDITOR
 
 // DDC key for card representation data, must be changed when modifying the generation code or data format
-#define CARDREPRESENTATION_DERIVEDDATA_VER TEXT("B7D0E3B0-440D-4C43-82C7-B2117F14A692")
+#define CARDREPRESENTATION_DERIVEDDATA_VER TEXT("18971EB0-9015-4184-8B29-D3C2B8CEF111")
 
 FString BuildCardRepresentationDerivedDataKey(const FString& InMeshKey, int32 MaxLumenMeshCards)
 {
 	const float MinDensity = MeshCardRepresentation::GetMinDensity();
 	const float NormalTreshold = MeshCardRepresentation::GetNormalTreshold();
-	const float MaxSurfelDistanceXY = MeshCardRepresentation::GetMaxSurfelDistanceXY();
-	const float MaxSurfelDistanceZ = MeshCardRepresentation::GetMaxSurfelDistanceZ();
-	const int32 SeedIterations = MeshCardRepresentation::GetSeedIterations();
-	const int32 GrowIterations = MeshCardRepresentation::GetGrowIterations();
-	const int32 DebugSurfelDirection = MeshCardRepresentation::GetDebugSurfelDirection();
+	const bool bDebugMode = MeshCardRepresentation::IsDebugMode();
 
 	return FDerivedDataCacheInterface::BuildCacheKey(
 		TEXT("CARD"),
-		*FString::Printf(TEXT("%s_%s_%.3f_%.3f_%.3f_%d_%d_%d_%d_%d"), *InMeshKey, CARDREPRESENTATION_DERIVEDDATA_VER, 
-			MinDensity, NormalTreshold, MaxSurfelDistanceXY, MaxSurfelDistanceZ, SeedIterations, GrowIterations, MaxLumenMeshCards, DebugSurfelDirection),
+		*FString::Printf(TEXT("%s_%s%s%.3f_%.3f_%d"), *InMeshKey, CARDREPRESENTATION_DERIVEDDATA_VER, bDebugMode ? TEXT("_DEBUG_") : TEXT(""),
+			MinDensity, NormalTreshold, MaxLumenMeshCards),
 		TEXT(""));
 }
 
@@ -188,10 +155,13 @@ void BeginCacheMeshCardRepresentation(const ITargetPlatform* TargetPlatform, USt
 
 void FCardRepresentationData::CacheDerivedData(const FString& InDDCKey, const ITargetPlatform* TargetPlatform, UStaticMesh* Mesh, UStaticMesh* GenerateSource, int32 MaxLumenMeshCards, bool bGenerateDistanceFieldAsIfTwoSided, FSourceMeshDataForDerivedDataTask* OptionalSourceMeshData)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FCardRepresentationData::CacheDerivedData);
+
 	TArray<uint8> DerivedData;
 
 	COOK_STAT(auto Timer = CardRepresentationCookStats::UsageStats.TimeSyncWork());
-	if (GetDerivedDataCacheRef().GetSynchronous(*InDDCKey, DerivedData, Mesh->GetPathName()))
+
+	if (!MeshCardRepresentation::IsDebugMode() && GetDerivedDataCacheRef().GetSynchronous(*InDDCKey, DerivedData, Mesh->GetPathName()))
 	{
 		COOK_STAT(Timer.AddHit(DerivedData.Num()));
 		FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
@@ -199,31 +169,41 @@ void FCardRepresentationData::CacheDerivedData(const FString& InDDCKey, const IT
 	}
 	else
 	{
+		check(Mesh && GenerateSource);
+
 		// We don't actually build the resource until later, so only track the cycles used here.
 		COOK_STAT(Timer.TrackCyclesOnly());
 		FAsyncCardRepresentationTask* NewTask = new FAsyncCardRepresentationTask;
 		NewTask->DDCKey = InDDCKey;
-		check(Mesh && GenerateSource);
 		NewTask->StaticMesh = Mesh;
 		NewTask->GenerateSource = GenerateSource;
 		NewTask->GeneratedCardRepresentation = new FCardRepresentationData();
 		NewTask->MaxLumenMeshCards = MaxLumenMeshCards;
 		NewTask->bGenerateDistanceFieldAsIfTwoSided = bGenerateDistanceFieldAsIfTwoSided;
+		NewTask->MaterialBlendModes.SetNum(Mesh->GetStaticMaterials().Num());
 
-		for (int32 MaterialIndex = 0; MaterialIndex < Mesh->GetStaticMaterials().Num(); MaterialIndex++)
+		const TArray<FStaticMaterial>& StaticMaterials = Mesh->GetStaticMaterials();
+		const FMeshSectionInfoMap& SectionInfoMap = Mesh->GetSectionInfoMap();
+		const uint32 LODIndex = 0;
+
+		for (int32 SectionIndex = 0; SectionIndex < SectionInfoMap.GetSectionNumber(LODIndex); SectionIndex++)
 		{
-			FSignedDistanceFieldBuildMaterialData MaterialData;
-			// Default material blend mode
-			MaterialData.BlendMode = BLEND_Opaque;
-			MaterialData.bTwoSided = false;
+			const FMeshSectionInfo& Section = SectionInfoMap.Get(LODIndex, SectionIndex);
 
-			if (Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface)
+			if (!NewTask->MaterialBlendModes.IsValidIndex(Section.MaterialIndex))
 			{
-				MaterialData.BlendMode = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->GetBlendMode();
-				MaterialData.bTwoSided = Mesh->GetStaticMaterials()[MaterialIndex].MaterialInterface->IsTwoSided();
+				continue;
 			}
 
-			NewTask->MaterialBlendModes.Add(MaterialData);
+			FSignedDistanceFieldBuildMaterialData& MaterialData = NewTask->MaterialBlendModes[Section.MaterialIndex];
+			MaterialData.bAffectDistanceFieldLighting = Section.bAffectDistanceFieldLighting;
+
+			UMaterialInterface* MaterialInterface = StaticMaterials[Section.MaterialIndex].MaterialInterface;
+			if (MaterialInterface)
+			{
+				MaterialData.BlendMode = MaterialInterface->GetBlendMode();
+				MaterialData.bTwoSided = MaterialInterface->IsTwoSided();
+			}
 		}
 
 		// Nanite overrides source static mesh with a coarse representation. Need to load original data before we build the mesh SDF.
@@ -521,7 +501,7 @@ void FCardRepresentationAsyncQueue::RescheduleBackgroundTask(FAsyncCardRepresent
 	}
 }
 
-void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* StaticMesh, bool bWarnIfBlocked)
+void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* InStaticMesh, bool bWarnIfBlocked)
 {
 	// We will track the wait time here, but only the cycles used.
 	// This function is called whether or not an async task is pending, 
@@ -533,7 +513,11 @@ void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* StaticM
 	double StartTime = 0;
 
 #if WITH_EDITOR
-	FStaticMeshCompilingManager::Get().FinishCompilation({ StaticMesh });
+	FStaticMeshCompilingManager::Get().FinishCompilation({ InStaticMesh });
+	if (GDistanceFieldAsyncQueue)
+	{
+		GDistanceFieldAsyncQueue->BlockUntilBuildComplete(InStaticMesh, bWarnIfBlocked);
+	}	
 #endif
 
 	TSet<UStaticMesh*> RequiredFinishCompilation;
@@ -547,8 +531,8 @@ void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* StaticM
 			FScopeLock Lock(&CriticalSection);
 			for (FAsyncCardRepresentationTask* Task : ReferencedTasks)
 			{
-				if (Task->StaticMesh == StaticMesh ||
-					Task->GenerateSource == StaticMesh)
+				if (Task->StaticMesh == InStaticMesh ||
+					Task->GenerateSource == InStaticMesh)
 				{
 					bReferenced = true;
 
@@ -580,6 +564,13 @@ void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* StaticM
 		if (RequiredFinishCompilation.Num())
 		{
 			FStaticMeshCompilingManager::Get().FinishCompilation(RequiredFinishCompilation.Array());
+			if (GDistanceFieldAsyncQueue)
+			{
+				for (UStaticMesh* StaticMesh : RequiredFinishCompilation)
+				{
+					GDistanceFieldAsyncQueue->BlockUntilBuildComplete(StaticMesh, bWarnIfBlocked);
+				}
+			}
 		}
 #endif
 
@@ -605,7 +596,7 @@ void FCardRepresentationAsyncQueue::BlockUntilBuildComplete(UStaticMesh* StaticM
 	{
 		UE_LOG(LogStaticMesh, Display, TEXT("Main thread blocked for %.3fs for async card representation build of %s to complete!  This can happen if the mesh is rebuilt excessively."),
 			(float)(FPlatformTime::Seconds() - StartTime), 
-			*StaticMesh->GetName());
+			*InStaticMesh->GetName());
 	}
 }
 
@@ -616,6 +607,10 @@ void FCardRepresentationAsyncQueue::BlockUntilAllBuildsComplete()
 	{
 #if WITH_EDITOR
 		FStaticMeshCompilingManager::Get().FinishAllCompilation();
+		if (GDistanceFieldAsyncQueue)
+		{
+			GDistanceFieldAsyncQueue->BlockUntilAllBuildsComplete();
+		}
 #endif
 		// Reschedule as highest prio since we're explicitly waiting on them
 		{
@@ -752,6 +747,7 @@ void FCardRepresentationAsyncQueue::ProcessAsyncTasks(bool bLimitExecutionTime)
 				PlatformRenderData = PlatformRenderData->NextCachedRenderData.Get();
 			}
 
+			if (!MeshCardRepresentation::IsDebugMode())
 			{
 				TArray<uint8> DerivedData;
 				// Save built data to DDC

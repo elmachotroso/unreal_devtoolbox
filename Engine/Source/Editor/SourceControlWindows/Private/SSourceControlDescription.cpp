@@ -2,13 +2,35 @@
 
 #include "SSourceControlDescription.h"
 
-#include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Vector2D.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/UnrealNames.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "EditorStyleSet.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SUniformGridPanel.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "SourceControl.Description"
 
@@ -27,7 +49,7 @@ void SSourceControlDescriptionWidget::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
@@ -72,14 +94,14 @@ void SSourceControlDescriptionWidget::Construct(const FArguments& InArgs)
 			.Padding(16)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0,0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text( NSLOCTEXT("SourceControl.Description", "OKButton", "Ok") )
 					.OnClicked(this, &SSourceControlDescriptionWidget::OKClicked)
 				]
@@ -87,7 +109,7 @@ void SSourceControlDescriptionWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.Text( NSLOCTEXT("SourceControl.Description", "CancelButton", "Cancel") )
 					.OnClicked(this, &SSourceControlDescriptionWidget::CancelClicked)
 				]

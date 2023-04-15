@@ -6,12 +6,33 @@
 
 #pragma once
 
-#include "RenderResource.h"
-#include "RenderGraphUtils.h"
 #include "CommonRenderResources.h"
-#include "RHI.h"
-#include "RHIStaticStates.h"
+#include "GlobalShader.h"
+#include "Math/IntPoint.h"
+#include "Math/IntRect.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
 #include "PipelineStateCache.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "RHIStaticStates.h"
+#include "RenderGraphDefinitions.h"
+#include "RenderGraphEvent.h"
+#include "RenderGraphResources.h"
+#include "RenderGraphUtils.h"
+#include "RenderResource.h"
+#include "RenderUtils.h"
+#include "Serialization/MemoryLayout.h"
+#include "Shader.h"
+#include "ShaderParameterMacros.h"
+#include "ShaderParameterStruct.h"
+#include "ShaderPermutation.h"
+#include "Templates/UnrealTemplate.h"
+
+class FPointerTableBase;
+class FRDGBuilder;
 
 
 /** All utils for pixel shaders. */
@@ -150,10 +171,10 @@ struct RENDERCORE_API FPixelShaderUtils
 			if (bSkipRenderPass)
 			{
 				FRHIRenderPassInfo RPInfo;
-				RPInfo.ResolveParameters.DestRect.X1 = 0;
-				RPInfo.ResolveParameters.DestRect.Y1 = 0;
-				RPInfo.ResolveParameters.DestRect.X2 = ViewportSize.X;
-				RPInfo.ResolveParameters.DestRect.Y2 = ViewportSize.Y;
+				RPInfo.ResolveRect.X1 = 0;
+				RPInfo.ResolveRect.Y1 = 0;
+				RPInfo.ResolveRect.X2 = ViewportSize.X;
+				RPInfo.ResolveRect.Y2 = ViewportSize.Y;
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("RasterizeToRects"));
 			}
 

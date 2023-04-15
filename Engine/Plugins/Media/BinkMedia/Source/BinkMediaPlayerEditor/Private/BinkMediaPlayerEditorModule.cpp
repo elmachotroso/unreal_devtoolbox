@@ -2,8 +2,8 @@
 //   Licenced under the Unreal Engine EULA 
 
 
-#include "BinkMediaPlayerEditorPCH.h"
 #include "AssetTypeActions_Base.h"
+#include "BinkMediaPlayerEditorPrivate.h"
 #include "TextureEditor.h"
 #include "Editor/ContentBrowser/Public/ContentBrowserModule.h"
 #include "Modules/ModuleInterface.h"
@@ -69,13 +69,14 @@ struct FBinkMediaTextureActions : FAssetTypeActions_Base
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("MediaTexture_CreateMaterial", "Create Material"),
 			LOCTEXT("MediaTexture_CreateMaterialTooltip", "Creates a new material using this texture."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), "ClassIcon.Material" ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), "ClassIcon.Material" ),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FBinkMediaTextureActions::ExecuteCreateMaterial, Textures),
 				FCanExecuteAction()
 			)
 		);
 	}
+	
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override 
 	{
 		EToolkitMode::Type Mode = EditWithinLevelEditor.IsValid() ? EToolkitMode::WorldCentric : EToolkitMode::Standalone;
@@ -165,11 +166,6 @@ struct FBinkMediaTextureActions : FAssetTypeActions_Base
 	{ 
 		return FColor::Red; 
 	}
-	virtual bool HasActions( const TArray<UObject*>& InObjects ) const override 
-	{ 
-		return true; 
-	}
-
 };
 
 struct FBinkMediaPlayerActions : FAssetTypeActions_Base 
@@ -187,7 +183,7 @@ struct FBinkMediaPlayerActions : FAssetTypeActions_Base
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("MediaPlayer_PlayMovie", "Play Movie"),
 			LOCTEXT("MediaPlayer_PlayMovieToolTip", "Starts playback of the media."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), "MediaAsset.AssetActions.Play" ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), "MediaAsset.AssetActions.Play" ),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FBinkMediaPlayerActions::HandlePlayMovieActionExecute, MediaPlayers),
 				FCanExecuteAction()
@@ -197,7 +193,7 @@ struct FBinkMediaPlayerActions : FAssetTypeActions_Base
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("MediaPlayer_PauseMovie", "Pause Movie"),
 			LOCTEXT("MediaPlayer_PauseMovieToolTip", "Pauses playback of the media."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), "MediaAsset.AssetActions.Pause" ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), "MediaAsset.AssetActions.Pause" ),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FBinkMediaPlayerActions::HandlePauseMovieActionExecute, MediaPlayers),
 				FCanExecuteAction()
@@ -209,7 +205,7 @@ struct FBinkMediaPlayerActions : FAssetTypeActions_Base
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("MediaPlayer_CreateMediaTexture", "Create Media Texture"),
 			LOCTEXT("MediaPlayer_CreateMediaTextureTooltip", "Creates a new MediaTexture using this BinkMediaPlayer asset."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), "ClassIcon.MediaTexture" ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), "ClassIcon.MediaTexture" ),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FBinkMediaPlayerActions::ExecuteCreateMediaTexture, MediaPlayers),
 				FCanExecuteAction()
@@ -315,7 +311,6 @@ struct FBinkMediaPlayerActions : FAssetTypeActions_Base
 	virtual FText GetName() const override { return FText::FromString(TEXT("Bink Media Player")); }
 	virtual UClass* GetSupportedClass() const override { return UBinkMediaPlayer::StaticClass(); }
 	virtual FColor GetTypeColor() const override { return FColor::Red; }
-	virtual bool HasActions( const TArray<UObject*>& InObjects ) const override { return  true; }
 
 	TSharedRef<ISlateStyle> Style;
 };

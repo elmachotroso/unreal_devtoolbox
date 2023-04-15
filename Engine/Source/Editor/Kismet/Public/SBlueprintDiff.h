@@ -1,26 +1,53 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWindow.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Textures/SlateIcon.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/SListView.h"
-#include "GraphEditor.h"
-#include "DiffUtils.h"
+#include "Delegates/Delegate.h"
 #include "DiffResults.h"
+#include "DiffUtils.h"
+#include "GraphEditor.h"
+#include "HAL/Platform.h"
+#include "IAssetTypeActions.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "SKismetInspector.h"
-#include "Developer/AssetTools/Public/IAssetTypeActions.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
+class FBlueprintDifferenceTreeEntry;
 class FSpawnTabArgs;
 class FTabManager;
+class FText;
+class FUICommandList;
 class IDiffControl;
+class SBox;
 class SMyBlueprint;
+class SOverlay;
+class SSplitter;
+class SWidget;
+class SWindow;
+class UBlueprint;
 class UEdGraph;
+class UEdGraphNode;
+class UEdGraphPin;
+class UObject;
 struct FGraphToDiff;
+template <typename ItemType> class SListView;
+
 enum class EAssetEditorCloseReason : uint8;
 
 /** Individual Diff item shown in the list of diffs */
@@ -51,8 +78,11 @@ struct KISMET_API FDiffPanel
 	/** Initializes the panel, can be moved into constructor if diff and merge clients are made more uniform: */
 	void InitializeDiffPanel();
 
-	/** Generate this panel based on the specified graph */
-	void GeneratePanel(UEdGraph* Graph, UEdGraph* GraphToDiff);
+	/** Generate a panel for NewGraph diffed against OldGraph */
+	void GeneratePanel(UEdGraph* NewGraph, UEdGraph* OldGraph);
+	
+	/** Generate a panel that displays the Graph and reflects the items in the DiffResults */
+	void GeneratePanel(UEdGraph* Graph, TSharedPtr<TArray<FDiffSingleResult>> DiffResults, TAttribute<int32> FocusedDiffResult);
 
 	/** Generate the 'MyBlueprint' widget, which is private to this module */
 	TSharedRef<class SWidget> GenerateMyBlueprintWidget();
@@ -90,9 +120,6 @@ struct KISMET_API FDiffPanel
 
 	/** True if we should show a name identifying which asset this panel is displaying */
 	bool							bShowAssetName;
-
-	/** The panel stores the last pin that was focused on by the user, so that it can clear the visual style when selection changes */
-	UEdGraphPin*					LastFocusedPin;
 
 	/** The widget that contains the revision info in graph mode */
 	TSharedPtr<SWidget>				OverlayGraphRevisionInfo;
@@ -248,7 +275,7 @@ protected:
 	TSharedPtr<FTabManager> TabManager;
 
 	/** Tree of differences collected across all panels: */
-	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > MasterDifferencesList;
+	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > PrimaryDifferencesList;
 
 	/** List of all differences, cached so that we can iterate only the differences and not labels, etc: */
 	TArray< TSharedPtr<class FBlueprintDifferenceTreeEntry> > RealDifferences;

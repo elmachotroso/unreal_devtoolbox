@@ -12,6 +12,8 @@
 #include "PrimitiveViewRelevance.h"
 #include "StaticMeshResources.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LineSetComponent)
+
 struct FLineMeshBatchData
 {
 	FLineMeshBatchData()
@@ -155,7 +157,7 @@ public:
 					Mesh.MaterialRenderProxy = MeshBatchData.MaterialProxy;
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), GetLocalToWorld(), GetBounds(), GetLocalBounds(), false, false, DrawsVelocity(), false);
+					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), GetLocalToWorld(), GetBounds(), GetLocalBounds(), false, false, AlwaysHasVelocity());
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 					BatchElement.FirstIndex = MeshBatchData.StartIndex;
@@ -401,3 +403,4 @@ void ULineSetComponent::AddLines(
 		MarkRenderStateDirty();
 	}
 }
+

@@ -20,8 +20,23 @@
 
 FLinuxConsoleOutputDevice::FLinuxConsoleOutputDevice()
 	: bOverrideColorSet(false),
-	  bOutputtingToTerminal(isatty(STDOUT_FILENO))
+	  bOutputtingToTerminal(isatty(STDOUT_FILENO)),
+	  bIsWindowShown(true),
+	  bIsStdoutSet(false)
 {
+	FString CommandLine = FCommandLine::Get();
+
+	// If -nostdout is specified and not -stdout, default to not spewing log messages.
+	// This is useful on apps like UnrealLightmass so we don't overwhelm console output
+	//  with duplicate entries and all the UE_LOG messages.
+	if (FParse::Param(*CommandLine, TEXT("nostdout")) &&
+		!FParse::Param(*CommandLine, TEXT("stdout")))
+	{
+		bIsWindowShown = false;
+	}
+
+	// If -stdout is getting set we are doing a printf in LaunchEngineLoop.cpp, so lets avoid double printing here
+	bIsStdoutSet = FParse::Param(*CommandLine, TEXT("stdout"));
 }
 
 FLinuxConsoleOutputDevice::~FLinuxConsoleOutputDevice()
@@ -30,15 +45,19 @@ FLinuxConsoleOutputDevice::~FLinuxConsoleOutputDevice()
 
 void FLinuxConsoleOutputDevice::Show(bool bShowWindow)
 {
+	bIsWindowShown = bShowWindow;
 }
 
 bool FLinuxConsoleOutputDevice::IsShown()
 {
-	return true;
+	return bIsWindowShown;
 }
 
 void FLinuxConsoleOutputDevice::Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category)
 {
+	if (!bIsWindowShown || bIsStdoutSet)
+		return;
+
 	static bool bEntry=false;
 	if (!GIsCriticalError || bEntry)
 	{
@@ -48,28 +67,24 @@ void FLinuxConsoleOutputDevice::Serialize(const TCHAR* Data, ELogVerbosity::Type
 		}
 		else
 		{
-			bool bNeedToResetColor = false;
+			const ANSICHAR *ConsoleColorStr = "";
 
 			if (bOutputtingToTerminal && !bOverrideColorSet)
 			{
 				if (Verbosity == ELogVerbosity::Error)
 				{
-					printf(CONSOLE_RED);
-					bNeedToResetColor = true;
+					ConsoleColorStr = CONSOLE_RED;
 				}
 				else if (Verbosity == ELogVerbosity::Warning)
 				{
-					printf(CONSOLE_YELLOW);
-					bNeedToResetColor = true;
+					ConsoleColorStr = CONSOLE_YELLOW;
 				}
 			}
 
-			printf("%s\n", TCHAR_TO_UTF8(*FOutputDeviceHelper::FormatLogLine(Verbosity, Category, Data, GPrintLogTimes)));
-
-			if (bNeedToResetColor)
-			{
-				printf(CONSOLE_NONE);
-			}
+			printf("%s%s%s\n",
+				ConsoleColorStr,
+				TCHAR_TO_UTF8(*FOutputDeviceHelper::FormatLogLine(Verbosity, Category, Data, GPrintLogTimes)),
+				ConsoleColorStr[0] ? CONSOLE_NONE : "");
 		}
 	}
 	else
@@ -89,4 +104,14 @@ void FLinuxConsoleOutputDevice::Serialize(const TCHAR* Data, ELogVerbosity::Type
 #endif // !PLATFORM_EXCEPTIONS_DISABLED
 		bEntry = false;
 	}
+}
+
+bool FLinuxConsoleOutputDevice::CanBeUsedOnAnyThread() const
+{
+	return true;
+}
+
+bool FLinuxConsoleOutputDevice::CanBeUsedOnPanicThread() const
+{
+	return true;
 }

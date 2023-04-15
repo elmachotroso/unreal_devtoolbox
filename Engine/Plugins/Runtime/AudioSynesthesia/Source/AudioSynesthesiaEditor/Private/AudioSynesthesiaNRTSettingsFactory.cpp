@@ -2,11 +2,14 @@
 
 #include "AudioSynesthesiaNRTSettingsFactory.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "Modules/ModuleManager.h"
 #include "AudioSynesthesiaClassFilter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioSynesthesiaNRTSettingsFactory)
 
 UAudioSynesthesiaNRTSettingsFactory::UAudioSynesthesiaNRTSettingsFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -54,8 +57,10 @@ UObject* UAudioSynesthesiaNRTSettingsFactory::FactoryCreateNew(UClass* InClass, 
 	if (AudioSynesthesiaNRTSettingsClass != nullptr)
 	{
 		NewAudioSynesthesiaNRTSettings = NewObject<UAudioSynesthesiaNRTSettings>(InParent, AudioSynesthesiaNRTSettingsClass, InName, Flags);
+		Audio::Analytics::RecordEvent_Usage(TEXT("AudioSynesthesia.NRTSettingsCreated"));
 	}
 	return NewAudioSynesthesiaNRTSettings;
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -169,7 +169,6 @@ TGlobalResource<FParticleCurveInjectionVertexDeclaration> GParticleCurveInjectio
 static void InjectCurves(
 	FRHICommandListImmediate& RHICmdList,
 	FRHITexture2D* CurveTextureRHI,
-	FRHITexture2D* CurveTextureTargetRHI,
 	TArray<FCurveSamples>& InPendingCurves)
 {
 	static bool bFirstCall = true;
@@ -178,7 +177,7 @@ static void InjectCurves(
 
 	SCOPED_DRAW_EVENT(RHICmdList, InjectParticleCurves);
 
-	RHICmdList.BeginUpdateMultiFrameResource(CurveTextureTargetRHI);
+	RHICmdList.BeginUpdateMultiFrameResource(CurveTextureRHI);
 
 	ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::ELoad;
 
@@ -188,8 +187,8 @@ static void InjectCurves(
 		bFirstCall = false;
 	}
 
-	FRHIRenderPassInfo RPInfo(CurveTextureTargetRHI, MakeRenderTargetActions(LoadAction, ERenderTargetStoreAction::EStore));
-	TransitionRenderPassTargets(RHICmdList, RPInfo);
+	FRHIRenderPassInfo RPInfo(CurveTextureRHI, MakeRenderTargetActions(LoadAction, ERenderTargetStoreAction::EStore));
+	RHICmdList.Transition(FRHITransitionInfo(CurveTextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV));
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("InjectCurves"));
 	{
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -282,8 +281,8 @@ static void InjectCurves(
 		}
 	}
 	RHICmdList.EndRenderPass();
-	RHICmdList.CopyToResolveTarget(CurveTextureTargetRHI, CurveTextureRHI, FResolveParams());
-	RHICmdList.EndUpdateMultiFrameResource(CurveTextureTargetRHI);
+	RHICmdList.Transition(FRHITransitionInfo(CurveTextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask));
+	RHICmdList.EndUpdateMultiFrameResource(CurveTextureRHI);
 }
 
 /*------------------------------------------------------------------------------
@@ -515,20 +514,15 @@ FParticleCurveTexture::FParticleCurveTexture()
 void FParticleCurveTexture::InitRHI()
 {
 	// 8-bit per channel RGBA texture for curves.
-	FRHIResourceCreateInfo CreateInfo(TEXT("ParticleCurveTexture"), FClearValueBinding(FLinearColor::Blue));
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("ParticleCurveTexture"))
+		.SetExtent(GParticleCurveTextureSizeX, GParticleCurveTextureSizeY)
+		.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource | ETextureCreateFlags::NoFastClear)
+		.SetFormat(PF_B8G8R8A8)
+		.SetClearValue(FClearValueBinding(FLinearColor::Blue))
+		.SetInitialState(ERHIAccess::SRVMask);
 
-	RHICreateTargetableShaderResource2D(
-		GParticleCurveTextureSizeX,
-		GParticleCurveTextureSizeY,
-		PF_B8G8R8A8,
-		/*NumMips=*/ 1,
-		TexCreate_None,
-		TexCreate_RenderTargetable | TexCreate_NoFastClear,
-		/*bForceSeparateTargetAndShaderResource=*/ false,
-		CreateInfo,
-		CurveTextureTargetRHI,
-		CurveTextureRHI
-	);
+	CurveTextureRHI = RHICreateTexture(Desc);
 }
 
 /**
@@ -536,7 +530,6 @@ void FParticleCurveTexture::InitRHI()
 */
 void FParticleCurveTexture::ReleaseRHI()
 {
-	CurveTextureTargetRHI.SafeRelease();
 	CurveTextureRHI.SafeRelease();
 }
 
@@ -618,7 +611,6 @@ void FParticleCurveTexture::SubmitPendingCurves()
 				InjectCurves(
 					RHICmdList,
 					ParticleCurveTexture->CurveTextureRHI,
-					ParticleCurveTexture->CurveTextureTargetRHI,
 					PendingCurves
 				);
 			});

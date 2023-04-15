@@ -4,9 +4,14 @@
 	LightFunctionCommon.usf: Utility functions for light functions.
 =============================================================================*/
 
+#include "/Engine/Private/Strata/Strata.ush" 
+
+// This ifdef is to allow shaders(notably the ratracing miss shader implementing light functions) to override where these parameters come from.
+#ifndef LightFunctionParameters
 /** Tan of spotlight cone outer angle in x, ShadowFadeFraction in y, IsSpotLight in z, IsPointLight in w. */
 float4 LightFunctionParameters;
 float4x4 LightFunctionTranslatedWorldToLight;
+#endif
 
 /** 
  * Calculates the light function color with the given light vector. 
@@ -46,13 +51,26 @@ float3 GetLightFunctionColor(float3 LightVector, float3 TranslatedWorldSpace)
 	MaterialParameters.ReflectionVector = LightVector.xyz;
 	MaterialParameters.LightVector = LightVector.xyz;
 	MaterialParameters.AbsoluteWorldPosition = LWCSubtract(TranslatedWorldSpace, PrimaryView.PreViewTranslation);
+	MaterialParameters.ScreenPosition = mul(float4(TranslatedWorldSpace, 1.0f), PrimaryView.TranslatedWorldToClip);
 
 	FPixelMaterialInputs PixelMaterialInputs;
 	CalcPixelMaterialInputs(MaterialParameters, PixelMaterialInputs);
 
-#if COMPUTESHADER
+#if STRATA_ENABLED
+
+  #if COMPUTESHADER
+	return StrataGetBSDFEmissive(MaterialParameters.StrataTree.BSDFs[0]); // Unused code path?
+  #else
+	return StrataGetBSDFEmissive(PixelMaterialInputs.FrontMaterial.InlinedBSDF);
+  #endif
+
+#else // STRATA_ENABLED
+
+   #if COMPUTESHADER
 	return GetMaterialEmissiveForCS(MaterialParameters);
-#else
+   #else
 	return GetMaterialEmissive(PixelMaterialInputs);
-#endif
+   #endif
+
+#endif // STRATA_ENABLED
 }

@@ -7,7 +7,7 @@
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/UserDefinedStruct.h"
 #include "Misc/StringUtility.h"
 #include "ScopedTransaction.h"
@@ -17,7 +17,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Input/SComboBox.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "DetailWidgetRow.h"
 #include "Editor.h"
 
@@ -785,7 +785,7 @@ void FDataTableEditorUtils::CacheDataForEditing(const UScriptStruct* RowStruct, 
 	}
 
 	TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-	const FTextBlockStyle& CellTextStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("DataTableEditor.CellText");
+	const FTextBlockStyle& CellTextStyle = FAppStyle::GetWidgetStyle<FTextBlockStyle>("DataTableEditor.CellText");
 	static const float CellPadding = 10.0f;
 
 	// Populate the column data
@@ -903,7 +903,7 @@ void FDataTableEditorUtils::GetPossibleStructAssetData(TArray<FAssetData>& Struc
 	// Now get unloaded ones
 	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FAssetData> AssetData;
-	AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetFName(), AssetData);
+	AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetClassPathName(), AssetData);
 
 	for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
 	{

@@ -5,7 +5,7 @@
 #include "PostProcess/PostProcessMitchellNetravali.h"
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
-#include "PostProcessing.h"
+#include "PostProcess/PostProcessing.h"
 #include "SceneTextureParameters.h"
 #include "PixelShaderUtils.h"
 #include "ScenePrivate.h"
@@ -53,12 +53,6 @@ TAutoConsoleVariable<float> CVarTemporalAAHistorySP(
 	TEXT("r.TemporalAA.HistoryScreenPercentage"),
 	100.0f,
 	TEXT("Size of temporal AA's history."),
-	ECVF_RenderThreadSafe);
-
-TAutoConsoleVariable<int32> CVarTemporalAAAllowDownsampling(
-	TEXT("r.TemporalAA.AllowDownsampling"),
-	1,
-	TEXT("Allows half-resolution color buffer to be produced during TAA. Only possible when motion blur is off and when using compute shaders for post processing."),
 	ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarUseTemporalAAUpscaler(
@@ -149,6 +143,7 @@ class FTemporalAACS : public FGlobalShader
 		SHADER_PARAMETER_SAMPLER(SamplerState, SceneDepthTextureSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, GBufferVelocityTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, GBufferVelocityTextureSampler)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, GBufferVelocityTextureSRV)
 
 		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, StencilTexture)
 
@@ -348,6 +343,7 @@ const TCHAR* const kTAAOutputNames[] = {
 	TEXT("LightShaft.TemporalAA"),
 	TEXT("DOF.TemporalAA"),
 	TEXT("DOF.TemporalAA"),
+	TEXT("Hair.TemporalAA"),
 };
 
 const TCHAR* const kTAAPassNames[] = {
@@ -358,6 +354,7 @@ const TCHAR* const kTAAPassNames[] = {
 	TEXT("LightShaft"),
 	TEXT("DOF"),
 	TEXT("DOFUpsampling"),
+	TEXT("Hair"),
 };
 
 const TCHAR* const kTAAQualityNames[] = {
@@ -371,27 +368,48 @@ static_assert(UE_ARRAY_COUNT(kTAAPassNames) == int32(ETAAPassConfig::MAX), "Miss
 static_assert(UE_ARRAY_COUNT(kTAAQualityNames) == int32(ETAAQuality::MAX), "Missing TAA quality name.");
 } //! namespace
 
-bool IsTemporalAASceneDownsampleAllowed(const FViewInfo& View)
+FVector3f ComputePixelFormatQuantizationError(EPixelFormat PixelFormat)
 {
-	return CVarTemporalAAAllowDownsampling.GetValueOnRenderThread() != 0;
-}
-
-FVector ComputePixelFormatQuantizationError(EPixelFormat PixelFormat)
-{
-	FVector Error;
-	if (PixelFormat == PF_FloatRGBA || PixelFormat == PF_FloatR11G11B10)
+	FIntVector ColorMantissaBits = FIntVector(1, 1, 1);
+	switch (PixelFormat)
 	{
-		FIntVector HistoryColorMantissaBits = PixelFormat == PF_FloatR11G11B10 ? FIntVector(6, 6, 5) : FIntVector(10, 10, 10);
+	case PF_FloatR11G11B10:
+		ColorMantissaBits = FIntVector(6, 6, 5);
+		break;
 
-		Error.X = FMath::Pow(0.5f, HistoryColorMantissaBits.X);
-		Error.Y = FMath::Pow(0.5f, HistoryColorMantissaBits.Y);
-		Error.Z = FMath::Pow(0.5f, HistoryColorMantissaBits.Z);
-	}
-	else
-	{
-		check(0);
+	case PF_FloatRGBA:
+		ColorMantissaBits = FIntVector(10, 10, 10);
+		break;
+
+	case PF_A32B32G32R32F:
+		ColorMantissaBits = FIntVector(23, 23, 23);
+		break;
+
+	case PF_R5G6B5_UNORM:
+		ColorMantissaBits = FIntVector(5, 6, 5);
+		break;
+
+	case PF_B8G8R8A8:
+	case PF_R8G8B8A8:
+		ColorMantissaBits = FIntVector(8, 8, 8);
+		break;
+
+	case PF_A2B10G10R10:
+		ColorMantissaBits = FIntVector(10, 10, 10);
+		break;
+
+	case PF_A16B16G16R16:
+		ColorMantissaBits = FIntVector(16, 16, 16);
+		break;
+
+	default:
+		unimplemented();
 	}
 
+	FVector3f Error;
+	Error.X = FMath::Pow(0.5f, ColorMantissaBits.X);
+	Error.Y = FMath::Pow(0.5f, ColorMantissaBits.Y);
+	Error.Z = FMath::Pow(0.5f, ColorMantissaBits.Z);
 	return Error;
 }
 
@@ -711,6 +729,8 @@ FTAAOutputs AddTemporalAAPass(
 				ResDivisorInv * InputViewRect.Min.Y * InvSizeY);
 		}
 
+		PassParameters->GBufferVelocityTextureSRV = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::Create(PassParameters->GBufferVelocityTexture));
+
 		if (View.GetFeatureLevel() <= ERHIFeatureLevel::ES3_1)
 		{
 			PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View), PF_A32B32G32R32F);
@@ -869,7 +889,7 @@ static void AddGen4MainTemporalAAPasses(
 
 	TAAParameters.DownsampleOverrideFormat = PassInputs.DownsampleOverrideFormat;
 
-	TAAParameters.bDownsample = PassInputs.bAllowDownsampleSceneColor && TAAParameters.Quality != ETAAQuality::High;
+	TAAParameters.bDownsample = (PassInputs.bGenerateSceneColorHalfRes || PassInputs.bGenerateSceneColorQuarterRes) && TAAParameters.Quality != ETAAQuality::High;
 
 	TAAParameters.SceneDepthTexture = PassInputs.SceneDepthTexture;
 	TAAParameters.SceneVelocityTexture = PassInputs.SceneVelocityTexture;
@@ -963,6 +983,12 @@ public:
 	{
 		return ISceneViewFamilyScreenPercentage::kMaxTAAUpsampleResolutionFraction;
 	}
+
+	virtual ITemporalUpscaler* Fork_GameThread(const class FSceneViewFamily& ViewFamily) const override
+	{
+		return nullptr;
+	}
+
 };
 
 // static

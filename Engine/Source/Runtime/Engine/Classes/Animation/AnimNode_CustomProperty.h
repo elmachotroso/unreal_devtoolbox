@@ -29,6 +29,7 @@ struct ENGINE_API FAnimNode_CustomProperty : public FAnimNode_Base
 public:
 
 	FAnimNode_CustomProperty();
+	~FAnimNode_CustomProperty();
 
 	/* Set Target Instance */
 	void SetTargetInstance(UObject* InInstance);
@@ -45,13 +46,21 @@ public:
 		return nullptr;
 	}
 
+	// We only subscribe to the OnInitializeAnimInstance path because we need to cache our source object, so we only
+	// override these methods in editor at the moment
+#if WITH_EDITOR	
+	// FAnimNode_Base interface
+	virtual void OnInitializeAnimInstance(const FAnimInstanceProxy* InProxy, const UAnimInstance* InAnimInstance) override;
+	virtual bool NeedsOnInitializeAnimInstance() const override { return true; }
+#endif
+	
 protected:
 	/** List of source properties to use, 1-1 with Dest names below, built by the compiler */
-	UPROPERTY()
+	UPROPERTY(meta=(BlueprintCompilerGeneratedDefaults))
 	TArray<FName> SourcePropertyNames;
 
 	/** List of destination properties to use, 1-1 with Source names above, built by the compiler */
-	UPROPERTY()
+	UPROPERTY(meta=(BlueprintCompilerGeneratedDefaults))
 	TArray<FName> DestPropertyNames;
 
 	/** This is the actual instance allocated at runtime that will run. Set by child class. */
@@ -63,22 +72,7 @@ protected:
 
 	/** List of properties on the TargetInstance to push to, built from name list when initialised */
 	TArray<FProperty*> DestProperties;
-
-#if WITH_EDITOR
-	bool bReinitializeProperties;
-#endif // WITH_EDITOR
-
-	virtual bool HasPreUpdate() const override
-	{
-#if WITH_EDITOR
-		return true;
-#else
-		return false;
-#endif
-	}
-
-	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
-
+	
 	/* Initialize property links from the source instance, in this case AnimInstance 
 	 * Compiler creates those properties during compile time */
 	virtual void InitializeProperties(const UObject* InSourceInstance, UClass* InTargetClass);
@@ -89,6 +83,27 @@ protected:
 	/** Get Target Class */
 	virtual UClass* GetTargetClass() const PURE_VIRTUAL(FAnimNode_CustomProperty::GetTargetClass, return nullptr;);
 
+#if WITH_EDITOR
+	/**
+	 * Handle object reinstancing override point.
+	 * When objects are replaced in editor, the FCoreUObjectDelegates::OnObjectsReplaced is called before reference
+	 * replacement, so we cannot handle replacement until later. This call is made on the first PreUpdate after object
+	 * replacement.
+	 */
+	virtual void HandleObjectsReinstanced_Impl(UObject* InSourceObject, UObject* InTargetObject, const TMap<UObject*, UObject*>& OldToNewInstanceMap);
+	
+private:
+	// Handle object reinstancing in editor
+	void HandleObjectsReinstanced(const TMap<UObject*, UObject*>& OldToNewInstanceMap);
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+protected:
+	/** This is the source instance, cached to help with re-instancing */
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> SourceInstance;
+#endif
+	
 	friend class UAnimGraphNode_CustomProperty;
 };
 

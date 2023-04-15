@@ -13,6 +13,22 @@
 #include "LumenRadianceCacheCommon.ush"
 #include "LumenRadianceCacheMarkCommon.ush"
 #include "LumenTranslucencyVolumeLightingShared.ush"
+#include "LumenScreenProbeCommon.ush"
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 1
+#endif
+
+void LumenFrontLayerTranslucencyClearGBufferPS(
+	  in  float4 SvPosition		: SV_Position
+	, out float4 OutColor		: SV_Target0
+	, out float  OutDepth		: SV_DEPTH)
+{
+	const uint2 PixelCoord = uint2(SvPosition.xy);
+
+	OutColor = 0;
+	OutDepth = SceneTexturesStruct.SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
+}
 
 [numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, THREADGROUP_SIZE)]
 void MarkRadianceProbesUsedByTranslucencyVolumeCS(
@@ -60,6 +76,7 @@ void TranslucencyVolumeTraceVoxelsCS(
 		if (IsFroxelVisible(GridCoordinate))
 		{
 			float3 WorldPosition = ComputeCellWorldPosition(GridCoordinate, FrameJitterOffset.xyz);
+			float3 TranslatedWorldPosition = ComputeCellTranslatedWorldPosition(GridCoordinate, FrameJitterOffset.xyz);
 
 			float2 ProbeUV;
 			float ConeHalfAngle;
@@ -82,8 +99,7 @@ void TranslucencyVolumeTraceVoxelsCS(
 			float VoxelTraceStartDistance = CalculateVoxelTraceStartDistance(0, MaxTraceDistance, MaxMeshSDFTraceDistance, false) * VoxelTraceStartDistanceScale;
 
 			FConeTraceInput TraceInput;
-			TraceInput.Setup(WorldPosition, WorldConeDirection, ConeHalfAngle, 0, 0, TraceDistance, StepFactor);
-			TraceInput.VoxelStepFactor = VoxelStepFactor;
+			TraceInput.Setup(WorldPosition, TranslatedWorldPosition, WorldConeDirection, ConeHalfAngle, 0, 0, TraceDistance, StepFactor);
 			TraceInput.VoxelTraceStartDistance = VoxelTraceStartDistance;
 			TraceInput.SDFStepFactor = 1;
 
@@ -91,7 +107,7 @@ void TranslucencyVolumeTraceVoxelsCS(
 			TraceResult.Transparency = 1;
 
 #if TRACE_FROM_VOLUME
-			ConeTraceVoxels(TraceInput, TraceResult);
+			RayTraceGlobalDistanceField(TraceInput, TraceResult);
 #endif
 
 			if (TraceResult.Transparency <= .5f)
@@ -107,7 +123,7 @@ void TranslucencyVolumeTraceVoxelsCS(
 			else
 #endif
 			{
-				EvaluateSkyRadianceForCone(WorldConeDirection, TraceInput.TanConeAngle, TraceResult);
+				ApplySkylightToTraceResult(WorldConeDirection, TraceResult);
 			}
 
 			TraceRadiance = TraceResult.Lighting;
@@ -161,7 +177,7 @@ void TranslucencyVolumeSpatialFilterCS(
 		{
 			uint3 NeighborGridCoordinate = GridCoordinate + Offsets[OffsetIndex];
 
-			if (all(NeighborGridCoordinate >= 0 && NeighborGridCoordinate < TranslucencyGIGridSize))
+			if (all(and(NeighborGridCoordinate >= 0, NeighborGridCoordinate < TranslucencyGIGridSize)))
 			{
 				float3 NeighborRadiance = VolumeTraceRadiance[uint3(NeighborGridCoordinate.xy * TranslucencyVolumeTracingOctahedronResolution + TraceTexelCoord, NeighborGridCoordinate.z)];
 				float Weight = 1.0f;
@@ -253,7 +269,7 @@ void TranslucencyVolumeIntegrateCS(
 					float2 ProbeUV = (float2(X, Y) + ProbeTexelCenter) * InvTracingOctahedronResolution;
 					float3 WorldConeDirection = OctahedronToUnitVector(ProbeUV * 2.0 - 1.0);
 
-					float SolidAngle = OctahedralSolidAngle(ProbeUV, InvTracingOctahedronResolution);
+					float SolidAngle = OctahedralSolidAngleLUT(ProbeUV, TranslucencyVolumeTracingOctahedronResolution);
 					Lighting = AddSH(Lighting, MulSH(SHBasisFunction(WorldConeDirection), TraceRadiance * SolidAngle));
 					TotalWeight += SolidAngle;
 				}

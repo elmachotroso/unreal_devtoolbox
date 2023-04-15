@@ -5,6 +5,7 @@
 #include "Algo/Transform.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/ARFilter.h"
+#include "Controller/RCController.h"
 #include "GameFramework/Actor.h"
 #include "RemoteControlActor.h"
 #include "RemoteControlField.h"
@@ -116,7 +117,14 @@ struct FRCPropertyDescription
 
 		Name = Property->GetName();
 
+#if WITH_EDITORONLY_DATA
+		DisplayName = Property->GetDisplayNameText();
+#else
+		DisplayName = FText::FromString(Name);
+#endif
+
 		const FProperty* ValueProperty = Property;
+		
 		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 		{
 			ContainerType = Property->GetCPPType();
@@ -140,6 +148,15 @@ struct FRCPropertyDescription
 
 		//Write the type name
 		Type = ValueProperty->GetCPPType();
+
+		if (const FObjectProperty* ObjectProperty = CastField<FObjectPtrProperty>(ValueProperty))
+		{
+			if (UClass* Class = ObjectProperty->PropertyClass)
+			{
+				Type = FString::Printf(TEXT("%s%s"), Class->GetPrefixCPP(), *Class->GetName());
+				TypePath = *Class->GetPathName();
+			}
+		}
 
 #if WITH_EDITOR
 		Metadata = Property->GetMetaDataMap() ? RemoteControlModels::SanitizeMetadata(*Property->GetMetaDataMap()) : TMap<FName, FString>();
@@ -188,6 +205,10 @@ struct FRCPropertyDescription
 	/** Name of the exposed property */
 	UPROPERTY()
 	FString Name;
+
+	/** Display name of the exposed property */
+	UPROPERTY()
+	FText DisplayName;
 	
 	/** Description of the exposed property */
 	UPROPERTY()
@@ -196,6 +217,10 @@ struct FRCPropertyDescription
 	/** Type of the property value (If an array, this will be the content of the array) */
 	UPROPERTY()
 	FString Type;
+
+	/** Type of the property value (If an array, this will be the content of the array) */
+	UPROPERTY()
+	FName TypePath;
 
 	/** Type of the container (TMap, TArray, CArray, TSet) or empty if none */
 	UPROPERTY()
@@ -347,6 +372,93 @@ struct FRCExposedActorDescription
 };
 
 USTRUCT()
+struct FRCControllerDescription
+{
+	GENERATED_BODY()
+
+	FRCControllerDescription() = default;
+
+	FRCControllerDescription(const URCVirtualPropertyBase* InController)
+	{
+		if (!InController || !InController->GetProperty())
+		{
+			return;
+		}
+
+		DisplayName = InController->DisplayName;
+		ID = InController->Id.ToString();
+		Path = InController->GetPathName();
+		Type = InController->GetProperty()->GetCPPType();
+		Metadata = InController->Metadata;
+	}
+	
+	/** The label displayed in the remote control panel for this controller. */
+	UPROPERTY()
+	FName DisplayName;
+	
+	/** Unique identifier for the controller. */
+	UPROPERTY()
+	FString ID;
+
+	/** Type of the Controller */
+	UPROPERTY()
+	FString Type;
+
+	/** Path of the Controller */
+	UPROPERTY()
+	FString Path;
+
+	/** Metadata of the Controller. Initially Empty. */
+	UPROPERTY()
+	TMap<FName, FString> Metadata;
+};
+
+USTRUCT()
+struct FRCControllerModifiedDescription
+{
+	GENERATED_BODY()
+
+	FRCControllerModifiedDescription () = default;
+
+	FRCControllerModifiedDescription(const URemoteControlPreset* InPreset, const TArray<FGuid>& InModifiedControllers)
+	{
+		if (!InPreset)
+		{
+			return;
+		}
+
+		for (const FGuid& ControllerId : InModifiedControllers)
+		{
+			AddModifiedController(InPreset, ControllerId);
+		}
+		
+	}
+
+public:
+	/** The list of modified RC controllers. */
+	UPROPERTY()
+	TArray<FRCControllerDescription> Controllers;
+
+	UPROPERTY()
+	TArray<FString> ChangedValues;
+	
+private:
+	void AddModifiedController(const URemoteControlPreset* InPreset, const FGuid& InControllerId)
+	{
+		if (!InPreset)
+		{
+			return;
+		}
+
+		if (URCVirtualPropertyBase* Controller = InPreset->GetController(InControllerId))
+		{
+			Controllers.Emplace(Controller);
+			ChangedValues.Emplace(Controller->GetDisplayValueAsString());
+		}
+	}
+};
+
+USTRUCT()
 struct FRCPresetLayoutGroupDescription
 {
 	GENERATED_BODY()
@@ -487,11 +599,12 @@ struct FRCPresetDescription
 	{
 		checkSlow(Preset)
 
-		Name = Preset->GetName();
+		Name = Preset->GetPresetName().ToString();
 		Path = Preset->GetPathName();
 		ID = Preset->GetPresetId().ToString();
 
 		Algo::Transform(Preset->Layout.GetGroups(), Groups, [Preset](const FRemoteControlPresetGroup& Group) { return FRCPresetLayoutGroupDescription{ Preset, Group }; });
+		Algo::Transform(Preset->GetControllers(), Controllers, [Preset](const URCVirtualPropertyBase* Controller){ return FRCControllerDescription{ Controller };});
 	}
 
 	/**
@@ -517,6 +630,12 @@ struct FRCPresetDescription
 	 */
 	UPROPERTY()
 	TArray<FRCPresetLayoutGroupDescription> Groups;
+
+	/**
+	 * The controllers held by the Preset (no groups)
+	 */
+	UPROPERTY()
+	TArray<FRCControllerDescription> Controllers;
 };
 
 USTRUCT()
@@ -541,14 +660,24 @@ struct FRCShortPresetDescription
 		}
 
 		ID = PresetId.ToString();
-		Path = PresetAsset.ObjectPath;
+		Path = *PresetAsset.GetObjectPathString();
 	}
 
 	FRCShortPresetDescription(const URemoteControlPreset* InPreset)
 	{
 		if (InPreset)
 		{
-			Name = InPreset->GetFName();
+			Name = InPreset->GetPresetName();
+			ID = InPreset->GetPresetId().ToString();
+			Path = *InPreset->GetPathName();
+		}
+	}
+
+	FRCShortPresetDescription(const TWeakObjectPtr<URemoteControlPreset> InPreset)
+	{
+		if (InPreset.IsValid())
+		{
+			Name = InPreset->GetPresetName();
 			ID = InPreset->GetPresetId().ToString();
 			Path = *InPreset->GetPathName();
 		}
@@ -581,8 +710,8 @@ struct FRCAssetDescription
 	FRCAssetDescription() = default;
 	FRCAssetDescription(const FAssetData& InAsset)
 		: Name(InAsset.AssetName)
-		, Class(InAsset.AssetClass)
-		, Path(InAsset.ObjectPath)
+		, Class(*InAsset.AssetClassPath.ToString())
+		, Path(*InAsset.GetObjectPathString())
 	{
 		Metadata = RemoteControlModels::SanitizeAssetMetadata(InAsset.TagsAndValues.CopyMap());
 	}
@@ -629,16 +758,21 @@ struct FRCAssetFilter
 
 	FARFilter ToARFilter() const
 	{
+		auto ToAssetPath = [](FName InClassName) { return FTopLevelAssetPath(InClassName.ToString()); };
+
 		FARFilter Filter;
 		Filter.PackageNames = PackageNames;
-		Filter.ClassNames = ClassNames;
-		Filter.RecursiveClassesExclusionSet = RecursiveClassesExclusionSet;
+
+		Filter.ClassPaths.Reserve(ClassNames.Num());
+		Algo::Transform(ClassNames, Filter.ClassPaths, ToAssetPath);
+
+		Algo::Transform(RecursiveClassesExclusionSet, Filter.RecursiveClassPathsExclusionSet, ToAssetPath);
 		Filter.bRecursiveClasses = RecursiveClasses;
 		Filter.PackagePaths = PackagePaths;
 
 		// Default to a recursive search at root if no filter is specified.
 		if (Filter.PackageNames.Num() == 0
-			&& Filter.ClassNames.Num() == 0
+			&& Filter.ClassPaths.Num() == 0
 			&& Filter.PackagePaths.Num() == 0)
 		{
 			Filter.PackagePaths = { FName("/Game") };
@@ -686,3 +820,32 @@ struct FRCAssetFilter
 	bool EnableBlueprintNativeClassFiltering = false;
 };
 
+/**
+ * A description of an actor that can both uniquely identify it and provide a user-friendly name.
+ */
+USTRUCT()
+struct FRCActorDescription
+{
+	GENERATED_BODY()
+
+	FRCActorDescription() = default;
+
+	FRCActorDescription(const AActor* InActor)
+		: Name(InActor->GetActorNameOrLabel())
+		, Path(InActor->GetPathName())
+	{
+	}
+
+	inline bool operator==(const FRCActorDescription& Other) const
+	{
+		return Path == Other.Path && Name == Other.Name;
+	}
+
+	/** A user-friendly name for the actor. */
+	UPROPERTY()
+	FString Name;
+
+	/** The path to the actor. */
+	UPROPERTY()
+	FString Path;
+};

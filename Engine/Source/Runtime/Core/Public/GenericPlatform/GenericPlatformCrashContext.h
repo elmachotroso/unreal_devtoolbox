@@ -2,12 +2,27 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Delegates/DelegateCombinations.h"
+#include "GenericPlatform/GenericPlatformStackWalk.h"
 #include "HAL/PlatformMemory.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformStackWalk.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Optional.h"
-#include "Containers/UnrealString.h"
+#include "Misc/Timespan.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+
+struct FDateTime;
+struct FGuid;
+struct FScopedAdditionalCrashContextProvider;
 
 #ifndef WITH_ADDITIONAL_CRASH_CONTEXTS
 #define WITH_ADDITIONAL_CRASH_CONTEXTS 1
@@ -140,7 +155,7 @@ struct FSessionContext
 	int32 					NumberOfCoresIncludingHyperthreads;
 	int32 					SecondsSinceStart;
 	int32 					CrashDumpMode;
-	int32					CrashType;
+	int32					CrashTrigger;
 	int32					OOMAllocationAlignment;
 	uint64					OOMAllocationSize;
 	TCHAR 					GameName[CR_MAX_GENERIC_FIELD_CHARS];
@@ -225,6 +240,25 @@ struct FSharedCrashContext
 	void*					ExceptionProgramCounter;
 };
 
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+
+/**
+ * Interface for callbacks to add context to the crash report.
+ */
+struct FCrashContextExtendedWriter
+{
+	/** Adds a named buffer to the report. Intended for larger payloads. */
+	CORE_API virtual void AddBuffer(const TCHAR* Identifier, const uint8* Data, uint32 DataSize) = 0;
+
+	/** Add a named buffer containing a string to the report. */
+	CORE_API virtual void AddString(const TCHAR* Identifier, const TCHAR* DataStr) = 0;
+};
+
+/** Simple Delegate for additional crash context. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FAdditionalCrashContextDelegate, FCrashContextExtendedWriter&);
+
+#endif //WITH_ADDITIONAL_CRASH_CONTEXTS
+
 /**
  *	Contains a runtime crash's properties that are common for all platforms.
  *	This may change in the future.
@@ -260,6 +294,7 @@ public:
 	static const TCHAR* const CrashTypeGPU;
 	static const TCHAR* const CrashTypeHang;
 	static const TCHAR* const CrashTypeAbnormalShutdown;
+	static const TCHAR* const CrashTypeOutOfMemory;
 
 	static const TCHAR* const EngineModeExUnknown;
 	static const TCHAR* const EngineModeExDirty;
@@ -373,7 +408,10 @@ public:
 	}
 
 	/** Escapes and appends specified text to XML string */
-	static void AppendEscapedXMLString( FString& OutBuffer, const TCHAR* Text );
+	static void AppendEscapedXMLString(FString& OutBuffer, FStringView Text );
+	static void AppendEscapedXMLString(FStringBuilderBase& OutBuffer, FStringView Text);
+
+	static void AppendPortableCallstack(FString& OutBuffer, TConstArrayView<FCrashStackFrame> StackFrames);
 
 	/** Unescapes a specified XML string, naive implementation. */
 	static FString UnescapeXMLString( const FString& Text );
@@ -428,21 +466,42 @@ public:
 	/** Notify the crash context exit has been requested. */
 	static void SetEngineExit(bool bIsRequestExit);
 
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+	/** Delegate for additional crash context. */
+	static FAdditionalCrashContextDelegate& OnAdditionalCrashContextDelegate()
+	{
+		return AdditionalCrashContextDelegate;
+	}
+#endif //WITH_ADDITIONAL_CRASH_CONTEXTS
+
 	/** Sets the process id to that has crashed. On supported platforms this will analyze the given process rather than current. Default is current process. */
-	void SetCrashedProcess(const FProcHandle& Process) { ProcessHandle = Process; }
+	void SetCrashedProcess(const FProcHandle& Process)
+	{
+		ProcessHandle = Process;
+	}
 
 	/** Stores crashing thread id. */
-	void SetCrashedThreadId(uint32 InId) { CrashedThreadId = InId; }
+	void SetCrashedThreadId(uint32 InId)
+	{
+		CrashedThreadId = InId;
+	}
 
 	/** Sets the number of stack frames to ignore when symbolicating from a minidump */
 	void SetNumMinidumpFramesToIgnore(int32 InNumMinidumpFramesToIgnore);
 
 	/**
-	 * Generate raw call stack for crash report (image base + offset)
+	 * Generate raw call stack for crash report (image base + offset) for the calling thread
 	 * @param ErrorProgramCounter The program counter of where the occur occurred in the callstack being captured
 	 * @param Context Optional thread context information
 	 */
 	void CapturePortableCallStack(void* ErrorProgramCounter, void* Context);
+
+	/**
+	 * Generate raw call stack for crash report (image base + offset) for a different thread
+	 * @param InThreadId The thread id of the thread to capture the callstack for
+	 * @param Context Optional thread context information
+	 */
+	void CaptureThreadPortableCallStack(const uint64 ThreadId, void* Context);
 
 	UE_DEPRECATED(5.0, "")
 	void CapturePortableCallStack(int32 NumStackFramesToIgnore, void* Context);
@@ -453,6 +512,12 @@ public:
 	/** Gets the portable callstack to a specified stack and puts it into OutCallStack */
 	virtual void GetPortableCallStack(const uint64* StackFrames, int32 NumStackFrames, TArray<FCrashStackFrame>& OutCallStack) const;
 
+	/** Store info about loaded modules */
+	virtual void CaptureModules();
+
+	/** Gets info about loaded modules and stores it in the given array */
+	virtual void GetModules(TArray<FStackWalkModuleInfo>& OutModules) const;
+	
 	/** Adds a portable callstack for a thread */
 	virtual void AddPortableThreadCallStack(uint32 ThreadId, const TCHAR* ThreadName, const uint64* StackFrames, int32 NumStackFrames);
 
@@ -507,6 +572,7 @@ protected:
 	int NumMinidumpFramesToIgnore;
 	TArray<FCrashStackFrame> CallStack;
 	TArray<FThreadStackFrames> ThreadCallStacks;
+	TArray<FStackWalkModuleInfo> ModulesInfo;
 
 	/** Allow platform implementations to provide a callstack property. Primarily used when non-native code triggers a crash. */
 	virtual const TCHAR* GetCallstackProperty() const;
@@ -526,13 +592,13 @@ private:
 	static void SerializeUserSettings(FString& Buffer);
 
 	/** Writes a common property to the buffer. */
-	static void AddCrashPropertyInternal(FString& Buffer, const TCHAR* PropertyName, const TCHAR* PropertyValue);
+	static void AddCrashPropertyInternal(FString& Buffer, FStringView PropertyName, FStringView PropertyValue);
 
 	/** Writes a common property to the buffer. */
 	template <typename Type>
-	static void AddCrashPropertyInternal(FString& Buffer, const TCHAR* PropertyName, const Type& Value)
+	static void AddCrashPropertyInternal(FString& Buffer, FStringView PropertyName, const Type& Value)
 	{
-		AddCrashPropertyInternal(Buffer, PropertyName, *TTypeToString<Type>::ToString(Value));
+		AddCrashPropertyInternal(Buffer, PropertyName, FStringView(TTypeToString<Type>::ToString(Value)));
 	}
 
 	/** Serializes platform specific properties to the buffer. */
@@ -543,6 +609,9 @@ private:
 
 	/** Produces a hash based on the offsets of the portable callstack and adds it to the xml */
 	void AddPortableCallStackHash() const;
+
+	/** Add module/pdb information to the crash report xml */
+	void AddModules() const;
 
 	/** Writes header information to the buffer. */
 	static void AddHeader(FString& Buffer);
@@ -571,6 +640,11 @@ private:
 	/**	Static counter records how many crash contexts have been constructed */
 	static int32 StaticCrashContextIndex;
 
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+	/** Delegate for additional crash context. */
+	static FAdditionalCrashContextDelegate AdditionalCrashContextDelegate;
+#endif //WITH_ADDITIONAL_CRASH_CONTEXTS
+
 	/** The buffer used to store the crash's properties. */
 	mutable FString CommonBuffer;
 
@@ -598,18 +672,6 @@ namespace RecoveryService
 }
 
 #if WITH_ADDITIONAL_CRASH_CONTEXTS
-
-/**
- * Interface for callbacks to add context to the crash report.
- */
-struct FCrashContextExtendedWriter
-{
-	/** Adds a named buffer to the report. Intended for larger payloads. */
-	CORE_API virtual void AddBuffer(const TCHAR* Identifier, const uint8* Data, uint32 DataSize) = 0;
-		
-	/** Add a named buffer containing a string to the report. */
-	CORE_API virtual void AddString(const TCHAR* Identifier, const TCHAR* DataStr) = 0;
-};
 
 /**
  * A thread local stack of callbacks that can be issued at time of the crash.

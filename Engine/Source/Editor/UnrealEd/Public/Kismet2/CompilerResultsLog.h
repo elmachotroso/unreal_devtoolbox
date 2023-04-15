@@ -2,20 +2,43 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "UObject/Object.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformTime.h"
+#include "Internationalization/Text.h"
+#include "Misc/CString.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #if WITH_EDITOR
+#include "EdGraphToken.h"
 #include "Logging/TokenizedMessage.h"
 #include "Misc/CompilationResult.h"
-#include "EdGraphToken.h"
 #endif
 
+class FDelegateHandle;
 class FTokenizedMessage;
 class IMessageLogListing;
+class UBlueprint;
+class UEdGraphNode;
+class UEdGraphPin;
+class UObject;
+struct FObjectKey;
 
 #if WITH_EDITOR
 
@@ -245,7 +268,6 @@ public:
 		switch (InMessage->GetSeverity())
 		{
 		case EMessageSeverity::Error:
-		case EMessageSeverity::CriticalError:
 			++NumErrors;
 			break;
 		case EMessageSeverity::Warning:

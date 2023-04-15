@@ -211,6 +211,15 @@ FRemesher::EProcessResult FRemesher::ProcessEdge(int edgeID)
 			}
 		}
 
+		if (bPreventTinyTriangles)
+		{
+			if (CheckIfCollapseCreatesTinyTriangle(a, b, vNewPos, t0, t1) || CheckIfCollapseCreatesTinyTriangle(b, a, vNewPos, t0, t1))
+			{
+				goto abort_collapse;
+			}
+		}
+
+
 		// lots of cases where we cannot collapse, but we should just let
 		// mesh sort that out, right?
 		SaveEdgeBeforeModify(edgeID);
@@ -281,6 +290,11 @@ abort_collapse:
 		}
 
 		if (bTryFlip && bPreventNormalFlips && CheckIfFlipInvertsNormals(a, b, c, d, t0))
+		{
+			bTryFlip = false;
+		}
+
+		if (bTryFlip && bPreventTinyTriangles && CheckIfFlipCreatesTinyTriangle(a, b, c, d, t0))
 		{
 			bTryFlip = false;
 		}
@@ -563,7 +577,7 @@ void FRemesher::ApplyVertexBuffer(bool bParallel)
 	{
 		// TODO: verify that this batching is still necessary, now that timestamps/locking situation has been improved
 		const int BatchSize = 1000;
-		const int NumBatches = FMath::CeilToInt(Mesh->MaxVertexID() / static_cast<float>(BatchSize));
+		const int NumBatches = FMath::CeilToInt32(static_cast<float>(Mesh->MaxVertexID()) / static_cast<float>(BatchSize));
 		ParallelFor(NumBatches, [this, BatchSize](int32 BatchID)
 		{
 			for (int VertexID = BatchID * BatchSize; VertexID < (BatchID + 1) * BatchSize; ++VertexID)

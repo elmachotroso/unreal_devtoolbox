@@ -699,10 +699,17 @@ static const unsigned char ecdsaSecp384r1Asn1Header[] =
             // the chain starts with the server's cert itself, so walk backwards to optimize for roots first
             TArray<TArray<uint8, TFixedAllocator<ISslCertificateManager::PUBLIC_KEY_DIGEST_SIZE>>> CertDigests;
             
-            CFIndex NumCerts = SecTrustGetCertificateCount(RemoteTrust);
-            for (int i = static_cast<int>(NumCerts) - 1; i >= 0; i--)
+            CFArrayRef Certificates = SecTrustCopyCertificateChain(RemoteTrust);
+            if (Certificates == nil)
             {
-                SecCertificateRef Cert = SecTrustGetCertificateAtIndex(RemoteTrust, i);
+                UE_LOG(LogHttp, Error, TEXT("No certificate could be copied in the certificate chain used to evaluate trust."));
+                return;
+            }
+            
+            CFIndex CertificateCount = CFArrayGetCount(Certificates);
+            for (int i = 0; i < CertificateCount; ++i)
+            {
+                SecCertificateRef Cert = (SecCertificateRef)CFArrayGetValueAtIndex(Certificates, i);
                 
                 // this is not great, but the only way to extract a public key from a SecCertificateRef
                 // is to create an individual SecTrustRef for each cert that only contains itself and then
@@ -713,19 +720,7 @@ static const unsigned char ecdsaSecp384r1Asn1Header[] =
                 SecTrustEvaluateWithError(CertTrust, nil);
                 TCFRef<SecKeyRef> CertPubKey;
 
-				if (@available(macOS 11, *))
-				{
-					CertPubKey = SecTrustCopyKey(CertTrust);
-				}
-				else
-				{
-					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					// warning: 'SecTrustCopyPublicKey' is deprecated: first deprecated in iOS 14.0 [-Wdeprecated-declarations]
-
-					CertPubKey = SecTrustCopyPublicKey(CertTrust);
-
-					PRAGMA_ENABLE_DEPRECATION_WARNINGS
-				}
+				CertPubKey = SecTrustCopyKey(CertTrust);
 
 				TCFRef<CFDataRef> CertPubKeyData = SecKeyCopyExternalRepresentation(CertPubKey, NULL);
                 if (!CertPubKeyData)

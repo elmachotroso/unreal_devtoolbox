@@ -19,9 +19,10 @@
 #include "GameFramework/WorldSettings.h"
 #include "Channels/MovieSceneAudioTriggerChannel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneAudioTemplate)
+
 
 DECLARE_CYCLE_STAT(TEXT("Audio Track Evaluate"), MovieSceneEval_AudioTrack_Evaluate, STATGROUP_MovieSceneEval);
-DECLARE_CYCLE_STAT(TEXT("Audio Track Tear Down"), MovieSceneEval_AudioTrack_TearDown, STATGROUP_MovieSceneEval);
 DECLARE_CYCLE_STAT(TEXT("Audio Track Token Execute"), MovieSceneEval_AudioTrack_TokenExecute, STATGROUP_MovieSceneEval);
 
 static float MaxSequenceAudioDesyncToleranceCVar = 0.5f;
@@ -247,17 +248,6 @@ struct FCachedAudioTrackData : IPersistentEvaluationData
 			}
 		}
 	}
-
-	void StopSoundsOnSection(FObjectKey ObjectKey)
-	{
-		for (TPair<FObjectKey, TMap<FObjectKey, TWeakObjectPtr<UAudioComponent>>>& Pair : AudioComponentsByActorKey)
-		{
-			if (UAudioComponent* AudioComponent = Pair.Value.FindRef(ObjectKey).Get())
-			{
-				AudioComponent->Stop();
-			}
-		}
-	}
 };
 
 
@@ -433,6 +423,8 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 			AudioComponent.SetPitchMultiplier(PitchMultiplier);
 		}
 
+		AudioComponent.bSuppressSubtitles = AudioSection->GetSuppressSubtitles();			
+
 		// Evaluate inputs and apply the params.
 		EvaluateAllAndSetParameters<FMovieSceneFloatChannel, float>(AudioComponent, Context.GetTime());
 		EvaluateAllAndSetParameters<FMovieSceneBoolChannel, bool> (AudioComponent, Context.GetTime());
@@ -465,25 +457,28 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 		bool bSoundNeedsStateChange = !AudioComponent.IsPlaying() || AudioComponent.Sound != Sound;
 		bool bSoundNeedsTimeSync = false;
 
+		UObject* PlaybackContext = Player.GetPlaybackContext();
+		UWorld* World = PlaybackContext ? PlaybackContext->GetWorld() : nullptr;
+
 		// Sync only if there is no time dilation because otherwise the system will constantly resync because audio 
 		// playback is not dilated and will never match the expected playback time.
 		const bool bDoTimeSync = 
-			Player.GetPlaybackContext()->GetWorld() && 
-			(FMath::IsNearlyEqual(Player.GetPlaybackContext()->GetWorld()->GetWorldSettings()->GetEffectiveTimeDilation(), 1.f) ||
+			World && World->GetWorldSettings() &&
+			(FMath::IsNearlyEqual(World->GetWorldSettings()->GetEffectiveTimeDilation(), 1.f) ||
 			 !bIgnoreAudioSyncDuringWorldTimeDilationCVar);
 
 		if (bDoTimeSync)
 		{
 			float CurrentGameTime = 0.0f;
 
-			FAudioDevice* AudioDevice = Player.GetPlaybackContext()->GetWorld()->GetAudioDeviceRaw();
+			FAudioDevice* AudioDevice = World ? World->GetAudioDeviceRaw() : nullptr;
 			if (UseAudioClockForSequencerDesyncCVar && AudioDevice)
 			{
 				CurrentGameTime = AudioDevice->GetAudioClock();
 			}
 			else
 			{
-				CurrentGameTime = Player.GetPlaybackContext()->GetWorld()->GetAudioTimeSeconds();
+				CurrentGameTime = World ? World->GetAudioTimeSeconds() : 0.f;
 			}
 
 			// This tells us how much time has passed in the game world (and thus, reasonably, the audio playback)
@@ -526,8 +521,6 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 				AudioComponent.SetSound(Sound);
 			}
 #if WITH_EDITOR
-			UObject* PlaybackContext = Player.GetPlaybackContext();
-			UWorld* World = PlaybackContext ? PlaybackContext->GetWorld() : nullptr;
 			if (GIsEditor && World != nullptr && !World->IsPlayInEditor())
 			{
 				AudioComponent.bIsUISound = true;
@@ -545,21 +538,21 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 				AudioComponent.Play(AudioTime);
 
 				// Keep track of when we asked this audio clip to play (in game time) so that we can figure out if there's a significant desync in the future.
-				if (Player.GetPlaybackContext()->GetWorld())
+				if (World)
 				{
 					if (!TrackData.SoundLastPlayedAtTime.Contains(&AudioComponent))
 					{
 						TrackData.SoundLastPlayedAtTime.Add(&AudioComponent);
 					}
 
-					FAudioDevice* AudioDevice = Player.GetPlaybackContext()->GetWorld()->GetAudioDeviceRaw();
+					FAudioDevice* AudioDevice = World->GetAudioDeviceRaw();
 					if (UseAudioClockForSequencerDesyncCVar && AudioDevice)
 					{
 						TrackData.SoundLastPlayedAtTime[&AudioComponent] = AudioDevice->GetAudioClock() - AudioTime;
 					}
 					else
 					{
-						TrackData.SoundLastPlayedAtTime[&AudioComponent] = Player.GetPlaybackContext()->GetWorld()->GetAudioTimeSeconds() - AudioTime;
+						TrackData.SoundLastPlayedAtTime[&AudioComponent] = World->GetAudioTimeSeconds() - AudioTime;
 					}
 					
 				}
@@ -613,17 +606,5 @@ void FMovieSceneAudioSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 	if (GEngine && GEngine->UseSound() && Context.GetStatus() != EMovieScenePlayerStatus::Jumping)
 	{
 		ExecutionTokens.Add(FAudioSectionExecutionToken(AudioSection));
-	}
-}
-
-void FMovieSceneAudioSectionTemplate::TearDown(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
-{
-	MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_AudioTrack_TearDown)
-
-	if (GEngine && GEngine->UseSound())
-	{
-		FCachedAudioTrackData& TrackData = PersistentData.GetOrAddTrackData<FCachedAudioTrackData>();
-
-		TrackData.StopSoundsOnSection(AudioSection);
 	}
 }

@@ -17,6 +17,8 @@
 #endif
 #include "Interfaces/ITargetPlatform.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundNodeQualityLevel)
+
 #if WITH_EDITOR
 
 void USoundNodeQualityLevel::ReconcileNode(bool bReconstructNode)
@@ -151,7 +153,7 @@ void USoundNodeQualityLevel::Serialize(FArchive& Ar)
 				TArray<TObjectPtr<class USoundNode>> ChildNodesBackup;
 				ChildNodesBackup = MoveTemp(ChildNodes);
 				check(ChildNodes.Num() == 0);
-
+			
 				// Put *just* the node we care about in our child array to be serialized by the Super
 				if (ChildNodesBackup.IsValidIndex(CookedQualityLevelIndex))
 				{
@@ -213,3 +215,4 @@ void USoundNodeQualityLevel::ForCurrentQualityLevel(TFunction<void(USoundNode*)>
 		Lambda(ChildNodes[QualityLevel]);
 	}
 }
+

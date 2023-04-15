@@ -175,9 +175,9 @@ bool FAnimPreviewInstanceProxy::Evaluate(FPoseContext& Output)
 		if(bForceRetargetBasePose)
 		{
 			USkeletalMeshComponent* MeshComponent = Output.AnimInstanceProxy->GetSkelMeshComponent();
-			if(MeshComponent && MeshComponent->SkeletalMesh)
+			if(MeshComponent && MeshComponent->GetSkeletalMeshAsset())
 			{
-				FAnimationRuntime::FillWithRetargetBaseRefPose(Output.Pose, GetSkelMeshComponent()->SkeletalMesh);
+				FAnimationRuntime::FillWithRetargetBaseRefPose(Output.Pose, GetSkelMeshComponent()->GetSkeletalMeshAsset());
 			}
 			else
 			{
@@ -369,7 +369,7 @@ void FAnimPreviewInstanceProxy::SetKeyImplementation(const FCompactPose& PreCont
 	UDebugSkelMeshComponent* Component = Cast<UDebugSkelMeshComponent> (GetSkelMeshComponent());
 
 	USkeleton* PreviewSkeleton = (CurrentSequence) ? CurrentSequence->GetSkeleton() : nullptr;
-	if(CurrentSequence && PreviewSkeleton && Component && Component->SkeletalMesh)
+	if(CurrentSequence && PreviewSkeleton && Component && Component->GetSkeletalMeshAsset())
 	{
 		FScopedTransaction ScopedTransaction(LOCTEXT("SetKey", "Set Key"));
 		CurrentSequence->Modify(true);
@@ -574,6 +574,7 @@ void UAnimPreviewInstance::RestartMontage(UAnimMontage* Montage, FName FromSecti
 		// just hard stop here
 		Montage_Stop(0.0f, Montage);
 		Montage_Play(Montage, Proxy.GetPlayRate());
+		MontagePreview_RemoveBlendOut();
 		if (FromSection != NAME_None)
 		{
 			Montage_JumpToSection(FromSection);

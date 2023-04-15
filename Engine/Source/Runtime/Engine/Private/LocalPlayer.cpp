@@ -36,6 +36,8 @@
 
 #include "GameDelegates.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LocalPlayer)
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #include "Engine/DebugCameraController.h"
 #endif
@@ -237,33 +239,18 @@ ULocalPlayer::ULocalPlayer(const FObjectInitializer& ObjectInitializer)
 	PendingLevelPlayerControllerClass = APlayerController::StaticClass();
 }
 
-void ULocalPlayer::PostInitProperties()
-{
-	Super::PostInitProperties();
-	if ( !IsTemplate() )
-	{
-		int32 NumViews = 1;
-		if (GEngine->StereoRenderingDevice.IsValid())
-		{
-			NumViews = GEngine->StereoRenderingDevice->GetDesiredNumberOfViews(true);
-			check(NumViews > 0);			
-		}
-
-		const UWorld* CurrentWorld = GetWorld();
-		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
-
-		ViewStates.SetNum(NumViews);
-		for (auto& State : ViewStates)
-		{
-			State.Allocate(FeatureLevel);
-		}		
-	}
-}
-
 void ULocalPlayer::PlayerAdded(UGameViewportClient* InViewportClient, int32 InControllerID)
 {
 	ViewportClient = InViewportClient;
 	SetControllerId(InControllerID);
+
+	SubsystemCollection.Initialize(this);
+}
+
+void ULocalPlayer::PlayerAdded(UGameViewportClient* InViewportClient, FPlatformUserId InUserId)
+{
+	ViewportClient = InViewportClient;
+	SetPlatformUserId(InUserId);
 
 	SubsystemCollection.Initialize(this);
 }
@@ -707,7 +694,7 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo) const
 	{
 		if (PlayerController->PlayerCameraManager != NULL)
 		{
-			OutViewInfo = PlayerController->PlayerCameraManager->GetCameraCachePOV();
+			OutViewInfo = PlayerController->PlayerCameraManager->GetCameraCacheView();
 			OutViewInfo.FOV = PlayerController->PlayerCameraManager->GetFOVAngle();
 			PlayerController->GetPlayerViewPoint(/*out*/ OutViewInfo.Location, /*out*/ OutViewInfo.Rotation);
 		}
@@ -719,7 +706,9 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo) const
 
 	if (ViewportClient != nullptr)
 	{
-		for (auto& ViewExt : GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(ViewportClient->Viewport)))
+		FSceneViewExtensionContext SceneViewExtensionContext(ViewportClient->Viewport);
+		SceneViewExtensionContext.bStereoEnabled = true;
+		for (const FSceneViewExtensionRef& ViewExt : GEngine->ViewExtensions->GatherActiveExtensions(SceneViewExtensionContext))
 		{
 			ViewExt->SetupViewPoint(PlayerController, OutViewInfo);
 		};
@@ -1041,7 +1030,7 @@ bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData,
 	// grab the point in screen space
 	FVector4 ScreenPoint = ViewProjectionMatrix.TransformFVector4(FVector4(InPoint, 1.0f));
 
-	ScreenPoint.W = (ScreenPoint.W == 0) ? KINDA_SMALL_NUMBER : ScreenPoint.W;
+	ScreenPoint.W = (ScreenPoint.W == 0) ? UE_KINDA_SMALL_NUMBER : ScreenPoint.W;
 
 	float InvW = 1.0f / ScreenPoint.W;
 	OutPoint = FVector2D(ViewRect.Min.X + (0.5f + ScreenPoint.X * 0.5f * InvW) * ViewRect.Width(),
@@ -1249,7 +1238,7 @@ bool ULocalPlayer::HandleListSkelMeshesCommand( const TCHAR* Cmd, FOutputDevice&
 	for( TObjectIterator<USkeletalMeshComponent> It; It; ++It )
 	{
 		USkeletalMeshComponent* SkeletalMeshComponent = *It;
-		USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+		USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 
 		if( !SkeletalMeshComponent->IsTemplate() )
 		{
@@ -1458,7 +1447,6 @@ bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 
 		return true;
 	}
-#if WITH_PHYSX
 	// This will list all awake rigid bodies
 	else if( FParse::Command(&Cmd,TEXT("LISTAWAKEBODIES")) )
 	{
@@ -1469,7 +1457,6 @@ bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 	{
 		return HandleListSimBodiesCommand( Cmd, Ar );
 	}
-#endif
 	else if( FParse::Command(&Cmd, TEXT("MOVECOMPTIMES")) )
 	{
 		return HandleMoveComponentTimesCommand( Cmd, Ar );
@@ -1564,14 +1551,21 @@ void ULocalPlayer::SetControllerId( int32 NewControllerId )
 	}
 }
 
-void ULocalPlayer::SetPlatformUserId(FPlatformUserId InPlatformUserId)
+void ULocalPlayer::SetPlatformUserId(FPlatformUserId NewPlatformUserId)
 {
-	if (InPlatformUserId != PlatformUserId)
+	if (NewPlatformUserId != PlatformUserId)
 	{
 		const FPlatformUserId CurrentPlatformUserId = PlatformUserId;
 
-		PlatformUserId = InPlatformUserId;
-		OnPlatformUserIdChanged().Broadcast(InPlatformUserId, CurrentPlatformUserId);
+		// set this player's CurrentPlatformUserId to PLATFORMUSERID_NONE so that if we need to swap
+		// platform users with another player we don't re-enter the function for this player.
+		PlatformUserId = PLATFORMUSERID_NONE;
+
+		// see if another player is already using this PlatformUserID; if so, swap PlatformUserIDs with them
+		GEngine->SwapPlatformUserId(this, CurrentPlatformUserId, NewPlatformUserId);
+		PlatformUserId = NewPlatformUserId;
+		
+		OnPlatformUserIdChanged().Broadcast(NewPlatformUserId, CurrentPlatformUserId);
 
 		if (GEngine->IsControllerIdUsingPlatformUserId())
 		{
@@ -1716,17 +1710,14 @@ void ULocalPlayer::AddReferencedObjects(UObject* InThis, FReferenceCollector& Co
 		}
 	}
 
+	This->SubsystemCollection.AddReferencedObjects(This, Collector);
+
 	UPlayer::AddReferencedObjects(This, Collector);
 }
 
 bool ULocalPlayer::IsPrimaryPlayer() const
 {
-	if (UWorld* World = GetWorld())
-	{
-		ULocalPlayer* const PrimaryPlayer = GetOuterUEngine()->GetFirstGamePlayer(World);
-		return (this == PrimaryPlayer);
-	}
-	return false;
+	return GetLocalPlayerIndex() == 0;
 }
 
 void ULocalPlayer::CleanupViewState()
@@ -1740,4 +1731,5 @@ void ULocalPlayer::CleanupViewState()
 		}
 	}
 }
+
 

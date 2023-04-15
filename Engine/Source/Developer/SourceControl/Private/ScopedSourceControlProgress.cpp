@@ -18,8 +18,8 @@
 #include "Widgets/Images/SImage.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Application/SlateApplication.h"
-
-#include "EditorStyleSet.h"
+#include "RHI.h"
+#include "RenderingThread.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlProgress"
 
@@ -50,7 +50,7 @@ public:
 		TimeStamp = FPlatformTime::Seconds();
 
 		SBorder::Construct( SBorder::FArguments()
-		.BorderImage( FEditorStyle::GetBrush("ChildWindow.Background") )
+		.BorderImage( FAppStyle::Get().GetBrush("ChildWindow.Background") )
 		.Padding(16.0f)
 		.VAlign(VAlign_Center)
 		[
@@ -77,7 +77,7 @@ public:
 					.HAlign(HAlign_Center)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("SourceControl.ProgressWindow.Warning"))
+						.Image(FAppStyle::Get().GetBrush("SourceControl.ProgressWindow.Warning"))
 					]
 					+SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
@@ -106,9 +106,9 @@ public:
 					[
 						// buttons
 						SNew(SUniformGridPanel)
-						.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-						.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-						.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+						.SlotPadding(FAppStyle::Get().GetMargin("StandardDialog.SlotPadding"))
+						.MinDesiredSlotWidth(FAppStyle::Get().GetFloat("StandardDialog.MinDesiredSlotWidth"))
+						.MinDesiredSlotHeight(FAppStyle::Get().GetFloat("StandardDialog.MinDesiredSlotHeight"))
 						+SUniformGridPanel::Slot(0, 0)
 						[
 							SNew(SButton)
@@ -210,7 +210,7 @@ FScopedSourceControlProgress::FScopedSourceControlProgress(const FText& InText, 
 		TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
 		FSlateApplication::Get().AddModalWindow(Window, RootWindow, true);
 
-		Window->ShowWindow();	
+		Window->ShowWindow();
 	
 		Tick();
 	}
@@ -228,10 +228,22 @@ void FScopedSourceControlProgress::Tick()
 {
 	if (!(FApp::IsUnattended() || IsRunningCommandlet()) && WindowPtr.IsValid() && FSlateApplication::Get().CanDisplayWindows())
 	{
+		// Mark begin frame
+		if (GIsRHIInitialized)
+		{
+			ENQUEUE_RENDER_COMMAND(BeginFrameCmd)([](FRHICommandListImmediate& RHICmdList) { RHICmdList.BeginFrame(); });
+		}
+
 		// Tick Slate application
 		FSlateApplication::Get().Tick();
 
-		// Sync the game thread and the render thread
+		// End frame so frame fence number gets incremented
+		if (GIsRHIInitialized)
+		{
+			ENQUEUE_RENDER_COMMAND(EndFrameCmd)([](FRHICommandListImmediate& RHICmdList) { RHICmdList.EndFrame(); });
+		}
+
+		// Sync the game thread and the render thread. This is needed if many StatusUpdate are called.
 		FSlateApplication::Get().GetRenderer()->Sync();
 	}
 }

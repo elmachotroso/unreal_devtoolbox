@@ -13,6 +13,7 @@
 #include "Misc/App.h"
 #include "Misc/MonitoredProcess.h"
 #include "Logging/MessageLog.h"
+#include "AnalyticsEventAttribute.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -31,12 +32,16 @@ FIOSTargetPlatform::FIOSTargetPlatform(bool bInIsTVOS, bool bIsClientOnly)
 	// override the ini name up in the base classes, which will go into the FTargetPlatformInfo
 	: TNonDesktopTargetPlatformBase(bIsClientOnly, nullptr, bInIsTVOS ? TEXT("TVOS") : nullptr)
 	, bIsTVOS(bInIsTVOS)
+	, MobileShadingPath(0)
 	, bDistanceField(false)
+	, bMobileForwardEnableClusteredReflections(false)
 {
 #if WITH_ENGINE
 	TextureLODSettings = nullptr; // TextureLODSettings are registered by the device profile.
 	StaticMeshLODSettings.Initialize(this);
 	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField, GEngineIni);
+	GetConfigSystem()->GetInt(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.ShadingPath"), MobileShadingPath, GEngineIni);
+	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.Forward.EnableClusteredReflections"), bMobileForwardEnableClusteredReflections, GEngineIni);
 #endif // #if WITH_ENGINE
 
 	// initialize the connected device detector
@@ -449,13 +454,6 @@ static bool SupportsA8Devices()
     return bSupportAppleA8;
 }
 
-static bool SupportsLandscapeMeshLODStreaming()
-{
-	bool bStreamLandscapeMeshLODs = false;
-	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bStreamLandscapeMeshLODs"), bStreamLandscapeMeshLODs, GEngineIni);
-	return bStreamLandscapeMeshLODs;
-}
-
 bool FIOSTargetPlatform::CanSupportRemoteShaderCompile() const
 {
 	// for 4.22 we are disabling support for XGE Shader compile on IOS
@@ -483,12 +481,9 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 		case ETargetPlatformFeatures::VirtualTextureStreaming:
 			return UsesVirtualTextures();
 
-		case ETargetPlatformFeatures::LandscapeMeshLODStreaming:
-			return SupportsLandscapeMeshLODStreaming() && SupportsMetal();
-
 		case ETargetPlatformFeatures::DistanceFieldAO:
 			return UsesDistanceFields();
-
+		
 		default:
 			break;
 	}
@@ -537,15 +532,22 @@ void FIOSTargetPlatform::GetAllTargetedShaderFormats( TArray<FName>& OutFormats 
 	GetAllPossibleShaderFormats(OutFormats);
 }
 
+void FIOSTargetPlatform::GetPlatformSpecificProjectAnalytics( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray ) const
+{
+	TNonDesktopTargetPlatformBase<FIOSPlatformProperties>::GetPlatformSpecificProjectAnalytics( AnalyticsParamArray );
+
+	AppendAnalyticsEventAttributeArray(AnalyticsParamArray,
+		TEXT("SupportsMetalMRT"), SupportsMetalMRT()
+	);
+}
 
 #if WITH_ENGINE
 
 void FIOSTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const
 {
-	static auto* MobileShadingPathCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ShadingPath"));
-	const bool bMobileDeferredShading = (MobileShadingPathCvar->GetValueOnAnyThread() == 1);
+	const bool bMobileDeferredShading = (MobileShadingPath == 1);
 
-	if (SupportsMetalMRT() || bMobileDeferredShading)
+	if (SupportsMetalMRT() || bMobileDeferredShading || bMobileForwardEnableClusteredReflections)
 	{
 		OutFormats.Add(FName(TEXT("FullHDR")));
 	}
@@ -553,9 +555,10 @@ void FIOSTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats 
 	OutFormats.Add(FName(TEXT("EncodedHDR")));
 }
 
+static const FName NameASTC_RGB_HDR(TEXT("ASTC_RGB_HDR"));
 
 // we remap some of the defaults
-static FName FormatRemap[] =
+static const FName FormatRemap[] =
 {
 	// original				ASTC
 	FName(TEXT("AutoDXT")),	FName(TEXT("ASTC_RGBAuto")),
@@ -563,12 +566,12 @@ static FName FormatRemap[] =
 	FName(TEXT("DXT5")),	FName(TEXT("ASTC_RGBA")),
 	FName(TEXT("DXT5n")),	FName(TEXT("ASTC_NormalAG")),
 	FName(TEXT("BC5")),		FName(TEXT("ASTC_NormalRG")),
-	FName(TEXT("BC4")),		FName(TEXT("G8")),
-	FName(TEXT("BC6H")),	FName(TEXT("ASTC_RGB")), 
-	FName(TEXT("BC7")),		FName(TEXT("ASTC_RGBAuto"))
+	FName(TEXT("BC4")),		FName(TEXT("ETC2_R11")),
+	FName(TEXT("BC6H")),	NameASTC_RGB_HDR,
+	FName(TEXT("BC7")),		FName(TEXT("ASTC_RGBA_HQ"))
 };
-static FName NameBGRA8(TEXT("BGRA8"));
-static FName NameG8 = FName(TEXT("G8"));
+static const FName NameG8(TEXT("G8"));
+static const FName NameRGBA16F(TEXT("RGBA16F"));
 
 void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
 {
@@ -579,10 +582,12 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 	TArray<FName>& TextureFormatNames = OutFormats.AddDefaulted_GetRef();
 	TextureFormatNames.Reserve(NumLayers);
 
-	// forward rendering only needs one channel for shadow maps
-	if (Texture->LODGroup == TEXTUREGROUP_Shadowmap && !SupportsMetalMRT())
+	// optionaly compress landscape weightmaps for a mobile rendering
+	static const auto CompressLandscapeWeightMapsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.CompressLandscapeWeightMaps"));
+	static const bool bCompressLandscapeWeightMaps = (CompressLandscapeWeightMapsVar && CompressLandscapeWeightMapsVar->GetValueOnAnyThread() != 0);
+	if (Texture->LODGroup == TEXTUREGROUP_Terrain_Weightmap && bCompressLandscapeWeightMaps)
 	{
-		TextureFormatNames.Init(NameG8, NumLayers);
+		TextureFormatNames.Init(FName(TEXT("AutoDXT")), NumLayers);
 	}
 
 	// if we didn't assign anything specially, then use the defaults
@@ -592,18 +597,13 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 		// Compressed volume textures require MTLGPUFamilyApple3 or later
 		// min spec for TVOS is AppleTV HD which is MTLGPUFamilyApple2 (A8)
 		bool bSupportCompressedVolumeTexture = !bIsTVOS && !SupportsA8Devices();
-		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, true, bSupportCompressedVolumeTexture, BlockSize);
+		bool bSupportFilteredFloat32Textures = false;
+		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, bSupportCompressedVolumeTexture, BlockSize, bSupportFilteredFloat32Textures);
 	}
 
 	// include the formats we want
 	for (FName& TextureFormatName : TextureFormatNames)
 	{
-		if (TextureFormatName == NameBGRA8 || 
-			TextureFormatName == NameG8)
-		{
-			continue;
-		}
-
 		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
 		{
 			if (TextureFormatName == FormatRemap[RemapIndex])
@@ -613,7 +613,20 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 			}
 		}
 	}
-		
+	
+	bool bSupportASTCHDR = UsesASTCHDR();
+
+	if ( ! bSupportASTCHDR )
+	{
+		for (FName& TextureFormatName : TextureFormatNames)
+		{
+			if ( TextureFormatName == NameASTC_RGB_HDR )
+			{
+				TextureFormatName = NameRGBA16F;
+			}
+		}
+	}
+
 	for (FName& TextureFormatName : OutFormats.Last())
 	{
 		if (Texture->IsA(UTextureCube::StaticClass()))
@@ -636,7 +649,7 @@ void FIOSTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 {
 	bool bFoundRemap = false;
 
-	GetAllDefaultTextureFormats(this, OutFormats, false);
+	GetAllDefaultTextureFormats(this, OutFormats);
 
 	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
 	{
@@ -653,6 +666,14 @@ void FIOSTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 FName FIOSTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 {
 #if WITH_EDITOR
+
+	// VirtualTexture Format was already run through the ordinary texture remaps to change AutoDXT to ASTC or ETC
+	// this then runs again
+	// currently it forces all ASTC to ETC
+	// this is needed because the runtime virtual texture encoder only supports ETC
+	
+	// code dupe with AndroidTargetPlatform
+
 	const static FName NameETC2_RGB(TEXT("ETC2_RGB"));
 	const static FName NameETC2_RGBA(TEXT("ETC2_RGBA"));
 	const static FName NameAutoETC2(TEXT("AutoETC2"));
@@ -663,6 +684,8 @@ FName FIOSTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 		{ { FName(TEXT("ASTC_RGB")) },			{ NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_RGBA")) },			{ NameETC2_RGBA } },
 		{ { FName(TEXT("ASTC_RGBAuto")) },		{ NameAutoETC2 } },
+		{ { FName(TEXT("ASTC_RGBA_HQ")) },		{ NameETC2_RGBA } },
+//		{ { FName(TEXT("ASTC_RGB_HDR")) },		{ NameRGBA16F } }, // ?
 		{ { FName(TEXT("ASTC_NormalAG")) },		{ NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_NormalRG")) },		{ NameETC2_RGB } },
 	};
@@ -681,23 +704,6 @@ FName FIOSTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 const UTextureLODSettings& FIOSTargetPlatform::GetTextureLODSettings() const
 {
 	return *TextureLODSettings;
-}
-
-FName FIOSTargetPlatform::GetWaveFormat( const USoundWave* Wave ) const
-{
-	FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
-	if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
-	{
-			FormatName = Audio::NAME_ADPCM;
-	}
-	return FormatName;
-}
-
-void FIOSTargetPlatform::GetAllWaveFormats(TArray<FName>& OutFormat) const
-{
-	OutFormat.Add(Audio::NAME_ADPCM);
-	OutFormat.Add(Audio::NAME_PCM);
-	OutFormat.Add(Audio::NAME_BINKA);
 }
 
 #endif // WITH_ENGINE

@@ -1,32 +1,60 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UDNParser.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Styling/CoreStyle.h"
-#include "Misc/Paths.h"
-#include "HAL/FileManager.h"
-#include "Misc/FileHelper.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "Editor/EditorPerProjectUserSettings.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
-#include "Logging/MessageLog.h"
-#include "Editor/Documentation/Private/DocumentationLink.h"
-#include "ISourceCodeAccessor.h"
-#include "ISourceCodeAccessModule.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
 
-#include "DesktopPlatformModule.h"
+#include "Application/SlateApplicationBase.h"
+#include "Brushes/SlateDynamicImageBrush.h"
+#include "Containers/Map.h"
+#include "Containers/SparseArray.h"
+#include "ContentBrowserModule.h"
+#include "Delegates/Delegate.h"
+#include "DocumentationLink.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/EditorPerProjectUserSettings.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Input/SHyperlink.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
+#include "IContentBrowserSingleton.h"
+#include "IDocumentationPage.h"
+#include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Logging/MessageLog.h"
+#include "Math/IntPoint.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "MessageLogModule.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Char.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "Rendering/SlateRenderer.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SHyperlink.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "IntroTutorials"
 
@@ -36,7 +64,6 @@ namespace LinkPrefixes
 {
 
 static const FString DocLinkSpecifier( TEXT( "DOCLINK:" ) );
-static const FString TutorialLinkSpecifier( TEXT( "TUTORIALLINK:" ) );
 static const FString HttpLinkSpecifier( TEXT( "http://" ) );
 static const FString HttpsLinkSpecifier( TEXT( "https://" ) );
 
@@ -102,6 +129,7 @@ void FUDNParser::Initialize()
 	TokenLibrary.Add(FTokenPair(TEXT("Title:"), EUDNToken::MetadataTitle));
 	TokenLibrary.Add(FTokenPair(TEXT("Crumbs:"), EUDNToken::MetadataCrumbs));
 	TokenLibrary.Add(FTokenPair(TEXT("Description:"), EUDNToken::MetadataDescription));
+	TokenLibrary.Add(FTokenPair(TEXT("BaseUrl:"), EUDNToken::MetadataBaseUrl));
 	TokenLibrary.Add(FTokenPair(TEXT("%"), EUDNToken::Percentage));
 	TokenLibrary.Add(FTokenPair(TEXT("*"), EUDNToken::Asterisk));
 
@@ -212,6 +240,10 @@ void FUDNParser::Initialize()
 	LineLibrary.Add(FTokenConfiguration(TokenArray, FUDNLine::MetadataDescription, true));
 
 	TokenArray.Empty();
+	TokenArray.Add(EUDNToken::MetadataBaseUrl);
+	LineLibrary.Add(FTokenConfiguration(TokenArray, FUDNLine::MetadataBaseUrl, true));
+
+	TokenArray.Empty();
 	TokenArray.Add(EUDNToken::OpenBracket);
 	TokenArray.Add(EUDNToken::Variable);
 	TokenArray.Add(EUDNToken::Colon);
@@ -251,16 +283,14 @@ FUDNParser::~FUDNParser()
 bool FUDNParser::LoadLink( const FString& Link, TArray<FString>& ContentLines )
 {
 	FMessageLog UDNParserLog(UDNParseErrorLog);
-
-	const FString SourcePath = FDocumentationLink::ToSourcePath( Link );
 	
-	if (!FPaths::FileExists(SourcePath))
+	if (!FPaths::FileExists(Link))
 	{
 		return false;
 	}
 
 	TArray<uint8> Buffer;
-	bool bLoadSuccess = FFileHelper::LoadFileToArray(Buffer, *SourcePath);
+	bool bLoadSuccess = FFileHelper::LoadFileToArray(Buffer, *Link);
 	if ( bLoadSuccess )
 	{
 		FString Result;
@@ -307,7 +337,7 @@ bool FUDNParser::LoadLink( const FString& Link, TArray<FString>& ContentLines )
 	}
 	else
 	{
-		UDNParserLog.Error(FText::Format(LOCTEXT("LoadingError", "Loading document '{0}' failed."), FText::FromString(SourcePath)));
+		UDNParserLog.Error(FText::Format(LOCTEXT("LoadingError", "Loading document '{0}' failed."), FText::FromString(Link)));
 	}
 
 	if ( !bLoadSuccess && GetDefault<UEditorPerProjectUserSettings>()->bDisplayDocumentationLink )
@@ -322,41 +352,49 @@ bool FUDNParser::Parse(const FString& Link, TArray<FExcerpt>& OutExcerpts, FUDNP
 {
 	FMessageLog UDNParserLog(UDNParseErrorLog);
 
-	TArray<FString> ContentLines;
-	if ( LoadLink( Link, ContentLines ) )
+	// Call LoadLink for all content folders, and amalgamate the excerpts from all matching UDN files into a single list.
+	const TArray<FString> SourcePaths = IDocumentation::Get()->GetSourcePaths();
+	for (const FString& SourcePath : SourcePaths)
 	{
-		TArray<FExcerpt> TempExcerpts;
-		const FString SourcePath = FDocumentationLink::ToSourcePath( Link );
-		bool bParseSuccess = ParseSymbols( Link, ContentLines, FPaths::GetPath( SourcePath ), TempExcerpts, OutMetadata );
+		FString DocFilePath = FDocumentationLink::ToSourcePath(Link, SourcePath);
+		TArray<FString> ContentLines;
+		if (LoadLink(DocFilePath, ContentLines))
+		{
+			TArray<FExcerpt> TempExcerpts;
+			bool bParseSuccess = ParseSymbols(DocFilePath, ContentLines, FPaths::GetPath(DocFilePath), TempExcerpts, OutMetadata);
 
-		if (bParseSuccess)
-		{
-			OutExcerpts = TempExcerpts;
-			return true;
-		}
-		else
-		{
-			if ( GetDefault<UEditorPerProjectUserSettings>()->bDisplayDocumentationLink )
+			if (bParseSuccess)
 			{
-				UDNParserLog.Open();
+				OutExcerpts.Append(TempExcerpts);
 			}
+			else
+			{
+				if (GetDefault<UEditorPerProjectUserSettings>()->bDisplayDocumentationLink)
+				{
+					UDNParserLog.Open();
+				}
 
-			UDNParserLog.Error(FText::Format(LOCTEXT("GeneralParsingError", "Parsing document '{0}' failed."), FText::FromString(SourcePath)));
+				UDNParserLog.Error(FText::Format(LOCTEXT("GeneralParsingError", "Parsing document '{0}' failed."), FText::FromString(DocFilePath)));
+			}
 		}
 	}
-
-	return false;
+	return true;
 }
 
 bool FUDNParser::GetExcerptContent( const FString& Link, FExcerpt& Excerpt )
 {
 	FMessageLog UDNParserLog(UDNParseErrorLog);
 
+	FString SourcePath = FDocumentationLink::ToSourcePath(Link);
+	if (!Excerpt.SourcePath.IsEmpty())
+	{
+		SourcePath = Excerpt.SourcePath;
+	}
 	TArray<FString> ContentLines;
 
-	if ( LoadLink( Link, ContentLines ) )
+	if ( LoadLink(SourcePath, ContentLines ) )
 	{
-		Excerpt.Content = GenerateExcerptContent( Link, Excerpt, ContentLines, Excerpt.LineNumber );
+		Excerpt.Content = GenerateExcerptContent(SourcePath, Excerpt, ContentLines, Excerpt.LineNumber );
 		return true;
 	}
 	else
@@ -366,7 +404,7 @@ bool FUDNParser::GetExcerptContent( const FString& Link, FExcerpt& Excerpt )
 			UDNParserLog.Open();
 		}
 
-		UDNParserLog.Error(FText::Format(LOCTEXT("GeneralExcerptError", "Generating a Widget for document '{0}' Excerpt '{1}' failed."), FText::FromString( FDocumentationLink::ToSourcePath( Link ) ), FText::FromString(Excerpt.Name) ));
+		UDNParserLog.Error(FText::Format(LOCTEXT("GeneralExcerptError", "Generating a Widget for document '{0}' Excerpt '{1}' failed."), FText::FromString(SourcePath), FText::FromString(Excerpt.Name) ));
 	}
 
 	return false;
@@ -738,7 +776,7 @@ void FUDNParser::AddContentToExcerpt(TSharedPtr<SVerticalBox> Box, const FString
 		AppendExcerpt(Box,
 			SNew(STextBlock)
 			.Text(FText::FromString(ContentSource))
-			.TextStyle(FEditorStyle::Get(), Style.ContentStyleName)
+			.TextStyle(FAppStyle::Get(), Style.ContentStyleName)
 			.WrapTextAt(WrapAt)
 		);
 
@@ -751,8 +789,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 {
 	FMessageLog UDNParserLog(UDNParseErrorLog);
 
-	const FString SourcePath = FDocumentationLink::ToSourcePath( InLink );
-	const FString FullPath = FPaths::GetPath( SourcePath );
+	const FString FullPath = FPaths::GetPath(InLink);
 
 	FSlateFontInfo Header1Font = FCoreStyle::GetDefaultFontStyle("Regular", 18);
 	FSlateFontInfo Header2Font = FCoreStyle::GetDefaultFontStyle("Regular", 14);
@@ -875,7 +912,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 				AppendExcerpt(Box,
 					SNew(STextBlock)
 					.Text(FText::FromString(Line.AdditionalContent[0]))
-					.TextStyle(FEditorStyle::Get(), Style.BoldContentStyleName)
+					.TextStyle(FAppStyle::Get(), Style.BoldContentStyleName)
 					);
 
 				AddLineSeperator(Excerpt);
@@ -901,7 +938,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 						.Padding(FMargin(0,0,0,10))
 						[
 							SNew(SSeparator)
-							.SeparatorImage(FEditorStyle::GetBrush(Style.SeparatorStyleName))
+							.SeparatorImage(FAppStyle::GetBrush(Style.SeparatorStyleName))
 						]
 					];
 
@@ -914,7 +951,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 				AppendExcerpt(Box,
 					SNew(STextBlock)
 					.Text(FText::FromString(Line.AdditionalContent[0]))
-					.TextStyle(FEditorStyle::Get(), Style.Header1StyleName)
+					.TextStyle(FAppStyle::Get(), Style.Header1StyleName)
 					);
 
 				AddLineSeperator(Excerpt);
@@ -927,7 +964,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 				AppendExcerpt(Box,
 					SNew(STextBlock)
 					.Text(FText::FromString(Line.AdditionalContent[0]))
-					.TextStyle(FEditorStyle::Get(), Style.Header2StyleName)
+					.TextStyle(FAppStyle::Get(), Style.Header2StyleName)
 					);
 
 				AddLineSeperator(Excerpt);
@@ -940,8 +977,8 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 				AppendExcerpt(Box,
 					SNew(SHyperlink)
 					.Text(FText::FromString(Line.AdditionalContent[0]))
-					.TextStyle(FEditorStyle::Get(), Style.HyperlinkTextStyleName)
-					.UnderlineStyle(FEditorStyle::Get(), Style.HyperlinkButtonStyleName)
+					.TextStyle(FAppStyle::Get(), Style.HyperlinkTextStyleName)
+					.UnderlineStyle(FAppStyle::Get(), Style.HyperlinkButtonStyleName)
 					.OnNavigate( this, &FUDNParser::HandleHyperlinkNavigate, Line.AdditionalContent[1])
 					);
 
@@ -961,11 +998,6 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 				{
 					const FString Link = Line.AdditionalContent[1].RightChop(LinkPrefixes::CodeLinkSpecifier.Len());
 					Excerpt.RichText += FString::Printf(TEXT("<a id=\"code\" href=\"%s\" style=\"%s\">%s</>"), *Link, *Style.HyperlinkStyleName.ToString(), *Line.AdditionalContent[0]);
-				}
-				else if(Line.AdditionalContent[1].Contains(LinkPrefixes::TutorialLinkSpecifier))
-				{
-					const FString Link = Line.AdditionalContent[1].RightChop(LinkPrefixes::TutorialLinkSpecifier.Len());
-					Excerpt.RichText += FString::Printf(TEXT("<a id=\"tutorial\" href=\"%s\" style=\"%s\">%s</>"), *Link, *Style.HyperlinkStyleName.ToString(), *Line.AdditionalContent[0]);
 				}
 				else
 				{
@@ -1003,7 +1035,7 @@ TSharedRef< SWidget > FUDNParser::GenerateExcerptContent( const FString& InLink,
 					AppendExcerpt(Box,
 						SNew(SButton)
 						.ContentPadding(0)
-						.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+						.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 						.OnClicked( FOnClicked::CreateSP( this, &FUDNParser::OnImageLinkClicked, Line.AdditionalContent[2] ) )
 						[
 							SNew( SImage )
@@ -1093,7 +1125,11 @@ bool FUDNParser::ParseSymbols(const FString& Link, const TArray<FString>& Conten
 			
 			if (ExcerptStack.Num() == 0)
 			{
-				OutExcerpts.Add(FExcerpt(ExcerptName, NULL, Variables, ExcerptStartingLineNumber));
+				if (!OutMetadata.BaseUrl.IsEmpty() && !Variables.Contains("BaseUrl"))
+				{
+					Variables.Add("BaseUrl", OutMetadata.BaseUrl);
+				}
+				OutExcerpts.Add(FExcerpt(ExcerptName, NULL, Variables, ExcerptStartingLineNumber, Link));
 				OutMetadata.ExcerptNames.Add( ExcerptName );
 				Variables.Empty();
 				ExcerptStartingLineNumber = 0;
@@ -1129,7 +1165,7 @@ bool FUDNParser::ParseSymbols(const FString& Link, const TArray<FString>& Conten
 				break;
 			}
 
-			Variables.Add( VariableName, VariableValue );
+			Variables.Add( VariableName, VariableValue.TrimStartAndEnd());
 
 			VariableName.Empty();
 			VariableValue.Empty();
@@ -1155,7 +1191,7 @@ bool FUDNParser::ParseSymbols(const FString& Link, const TArray<FString>& Conten
 				break;
 			}
 
-			Variables.Add( VariableName, VariableValue );
+			Variables.Add( VariableName, VariableValue.TrimStartAndEnd());
 
 			VariableName.Empty();
 			VariableValue.Empty();
@@ -1169,6 +1205,7 @@ bool FUDNParser::ParseSymbols(const FString& Link, const TArray<FString>& Conten
 			case FUDNLine::MetadataTitle: OutMetadata.Title = FText::FromString(Line.AdditionalContent[0]); break;
 			case FUDNLine::MetadataCrumbs: OutMetadata.Crumbs = FText::FromString(Line.AdditionalContent[0]); break;
 			case FUDNLine::MetadataDescription: OutMetadata.Description = FText::FromString(Line.AdditionalContent[0]); break;
+			case FUDNLine::MetadataBaseUrl: OutMetadata.BaseUrl = Line.AdditionalContent[0]; break;
 			}
 		}
 		else
@@ -1185,10 +1222,24 @@ bool FUDNParser::ParseSymbols(const FString& Link, const TArray<FString>& Conten
 				{
 					if ( !VariableName.IsEmpty() )
 					{
+						if (!VariableValue.IsEmpty())
+						{
+							VariableValue += '\n';
+						}
 						VariableValue += Line.AdditionalContent[0];
 					}
 				}
 				break;
+			case FUDNLine::Whitespace:
+				{
+					if (!VariableName.IsEmpty())
+					{
+						if (!VariableValue.IsEmpty())
+						{
+							VariableValue += '\n';
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1225,7 +1276,6 @@ void FUDNParser::HandleHyperlinkNavigate( FString AdditionalContent )
 void FUDNParser::NavigateToLink( FString AdditionalContent )
 {
 	static const FString DocLinkSpecifier( TEXT( "DOCLINK:" ) );
-	static const FString TutorialLinkSpecifier( TEXT( "TUTORIALLINK:" ) );
 	static const FString HttpLinkSPecifier( TEXT( "http://" ) );
 	static const FString HttpsLinkSPecifier( TEXT( "https://" ) );
 
@@ -1237,12 +1287,6 @@ void FUDNParser::NavigateToLink( FString AdditionalContent )
 		// external link to documentation
 		FString DocLink = AdditionalContent.RightChop(DocLinkSpecifier.Len());
 		IDocumentation::Get()->Open(DocLink, FDocumentationSourceInfo(TEXT("udn_parser")));
-	}
-	else if ( AdditionalContent.StartsWith( TutorialLinkSpecifier ) )
-	{
-		// internal link
-		FString InternalLink = AdditionalContent.RightChop( TutorialLinkSpecifier.Len() );
-		Configuration->OnNavigate.ExecuteIfBound( InternalLink );
 	}
 	else if ( AdditionalContent.StartsWith( HttpLinkSPecifier ) || AdditionalContent.StartsWith( HttpsLinkSPecifier ) )
 	{
@@ -1332,7 +1376,7 @@ bool FUDNParser::ParseAssetLink(FString &InternalLink)
 		FString Action = Token[0];
 		FString AssetName = Token[1];
 
-		UObject* RequiredObject = FindObject<UObject>(ANY_PACKAGE, *AssetName);
+		UObject* RequiredObject = FindFirstObject<UObject>(*AssetName, EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
 		if (RequiredObject != nullptr)
 		{
 			if (Action == TEXT("EDIT"))

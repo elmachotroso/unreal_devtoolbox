@@ -28,10 +28,14 @@ void SControlRigGraphPinNameList::Construct(const FArguments& InArgs, UEdGraphPi
 {
 	this->ModelPin = InArgs._ModelPin;
 	this->OnGetNameListContent = InArgs._OnGetNameListContent;
+	this->OnGetNameListContentForValidation = InArgs._OnGetNameListContentForValidation;
 	this->OnGetNameFromSelection = InArgs._OnGetNameFromSelection;
 	this->bMarkupInvalidItems = InArgs._MarkupInvalidItems;
+	this->EnableNameListCache = InArgs._EnableNameListCache;
+	this->SearchHintText = InArgs._SearchHintText;
+	this->AllowUserProvidedText = InArgs._AllowUserProvidedText;
 
-	CurrentList = GetNameList();
+	UpdateNameLists();
 	SGraphPin::Construct(SGraphPin::FArguments(), InGraphPinObj);
 }
 
@@ -60,12 +64,14 @@ TSharedRef<SWidget>	SControlRigGraphPinNameList::GetDefaultValueWidget()
 					.OnSelectionChanged(this, &SControlRigGraphPinNameList::OnNameListChanged)
 					.OnComboBoxOpening(this, &SControlRigGraphPinNameList::OnNameListComboBox)
 					.InitiallySelectedItem(InitialSelected)
+					.SearchHintText(SearchHintText)
+					.AllowUserProvidedText(AllowUserProvidedText)
 					.Content()
 					[
 						SNew(STextBlock)
 						.Text(this, &SControlRigGraphPinNameList::GetNameListText)
 						.ColorAndOpacity(this, &SControlRigGraphPinNameList::GetNameColor)
-						.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+						.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 					]
 			]
 		
@@ -76,15 +82,16 @@ TSharedRef<SWidget>	SControlRigGraphPinNameList::GetDefaultValueWidget()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 				.ButtonColorAndOpacity( this, &SControlRigGraphPinNameList::OnGetWidgetBackground )
 				.OnClicked(this, &SControlRigGraphPinNameList::OnGetSelectedClicked)
 				.ContentPadding(1.f)
 				.ToolTipText(NSLOCTEXT("ControlRigElementDetails", "ObjectGraphPin_Use_Tooltip", "Use item selected"))
+				.Visibility(OnGetNameFromSelection.IsBound() ? EVisibility::Visible : EVisibility::Collapsed)
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SControlRigGraphPinNameList::OnGetWidgetForeground )
-					.Image(FEditorStyle::GetBrush("Icons.CircleArrowLeft"))
+					.Image(FAppStyle::GetBrush("Icons.CircleArrowLeft"))
 				]
 			]
 
@@ -95,24 +102,40 @@ TSharedRef<SWidget>	SControlRigGraphPinNameList::GetDefaultValueWidget()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 				.ButtonColorAndOpacity( this, &SControlRigGraphPinNameList::OnGetWidgetBackground )
 				.OnClicked(this, &SControlRigGraphPinNameList::OnBrowseClicked)
 				.ContentPadding(0)
 				.ToolTipText(NSLOCTEXT("SControlRigGraphPinNameList", "ObjectGraphPin_Browse_Tooltip", "Browse"))
+				.Visibility(OnGetNameFromSelection.IsBound() ? EVisibility::Visible : EVisibility::Collapsed)
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SControlRigGraphPinNameList::OnGetWidgetForeground )
-					.Image(FEditorStyle::GetBrush("Icons.Search"))
+					.Image(FAppStyle::GetBrush("Icons.Search"))
 				]
 			]
 				
 		];
 }
 
-const TArray<TSharedPtr<FString>>* SControlRigGraphPinNameList::GetNameList() const
+const TArray<TSharedPtr<FString>>* SControlRigGraphPinNameList::GetNameList(bool bForContent) const
 {
 	const TArray<TSharedPtr<FString>>* Result = nullptr;
+	
+	// if we are looking for the validation name list, try to get it from the
+	// dedicated delegate first - but fall back on the content list nevertheless
+	if(!bForContent)
+	{
+		if (OnGetNameListContentForValidation.IsBound())
+		{
+			Result = OnGetNameListContentForValidation.Execute(ModelPin);
+			if(Result)
+			{
+				return Result;
+			}
+		}
+	}
+
 	if (OnGetNameListContent.IsBound())
 	{
 		Result = OnGetNameListContent.Execute(ModelPin);
@@ -141,14 +164,31 @@ void SControlRigGraphPinNameList::SetNameListText(const FText& NewTypeInValue, E
 	}
 }
 
+void SControlRigGraphPinNameList::UpdateNameLists(bool bUpdateCurrent, bool bUpdateValidation)
+{
+	if(CurrentList == nullptr || bUpdateCurrent)
+	{
+		CurrentList = GetNameList(true);
+	}
+	if(ValidationList == nullptr || bUpdateValidation)
+	{
+		ValidationList = GetNameList(false);
+	}
+}
+
 FSlateColor SControlRigGraphPinNameList::GetNameColor() const
 {
 	if(bMarkupInvalidItems)
 	{
 		FString CurrentItem = GetNameListText().ToString();
-		
+
+		if(!EnableNameListCache)
+		{
+			((SControlRigGraphPinNameList*)this)->UpdateNameLists(false, true);
+		}
+
 		bool bFound = false;
-		for (TSharedPtr<FString> Item : (*CurrentList))
+		for (TSharedPtr<FString> Item : (*ValidationList))
 		{
 			if (Item->Equals(CurrentItem))
 			{
@@ -167,7 +207,7 @@ FSlateColor SControlRigGraphPinNameList::GetNameColor() const
 
 TSharedRef<SWidget> SControlRigGraphPinNameList::MakeNameListItemWidget(TSharedPtr<FString> InItem)
 {
-	return 	SNew(STextBlock).Text(FText::FromString(*InItem)).Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
+	return 	SNew(STextBlock).Text(FText::FromString(*InItem)).Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
 }
 
 void SControlRigGraphPinNameList::OnNameListChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo)
@@ -185,7 +225,8 @@ void SControlRigGraphPinNameList::OnNameListChanged(TSharedPtr<FString> NewSelec
 
 void SControlRigGraphPinNameList::OnNameListComboBox()
 {
-	CurrentList = GetNameList();
+	UpdateNameLists();
+
 	TSharedPtr<FString> CurrentlySelected;
 	for (TSharedPtr<FString> Item : (*CurrentList))
 	{
@@ -196,7 +237,10 @@ void SControlRigGraphPinNameList::OnNameListComboBox()
 		}
 	}
 	NameListComboBox->SetOptionsSource(CurrentList);
-	NameListComboBox->SetSelectedItem(CurrentlySelected);
+	if(CurrentlySelected.IsValid())
+	{
+		NameListComboBox->SetSelectedItem(CurrentlySelected);
+	}
 }
 
 FSlateColor SControlRigGraphPinNameList::OnGetWidgetForeground() const
@@ -229,7 +273,7 @@ FReply SControlRigGraphPinNameList::OnGetSelectedClicked()
 						if (URigVMPin* ParentPin = ModelPin->GetParentPin())
 						{
 							Graph->GetController()->SetPinDefaultValue(ParentPin->GetPinPath(), DefaultValue, true, true, false, true);
-							CurrentList = GetNameList();
+							UpdateNameLists();
 						}
 					}
 
@@ -241,7 +285,7 @@ FReply SControlRigGraphPinNameList::OnGetSelectedClicked()
 						if (Element->GetType() == ERigElementType::Bone)
 						{
 							Graph->GetController()->SetPinDefaultValue(ModelPin->GetPinPath(), Keys[0].Name.ToString(), true, true, false, true);
-							CurrentList = GetNameList();
+							UpdateNameLists();
 						}
 					}
 					
@@ -266,7 +310,7 @@ FReply SControlRigGraphPinNameList::OnGetSelectedClicked()
 									if(Key.Type == ElementType)
 									{
 										Graph->GetController()->SetPinDefaultValue(ModelPin->GetPinPath(), Key.Name.ToString(), true, true, false, true);
-										CurrentList = GetNameList();
+										UpdateNameLists();
 									}
 								}
 								break;

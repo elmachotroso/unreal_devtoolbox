@@ -14,7 +14,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelEditorViewport.h"
 #include "MovieSceneToolHelpers.h"
 #include "FCPXML/FCPXMLMovieSceneTranslator.h"
@@ -78,7 +78,7 @@ void FCinematicShotTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddCinematicShotTrack", "Shot Track"),
 		LOCTEXT("AddCinematicShotTooltip", "Adds a shot track."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.CinematicShot"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.CinematicShot"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FCinematicShotTrackEditor::HandleAddCinematicShotTrackMenuEntryExecute),
 			FCanExecuteAction::CreateRaw(this, &FCinematicShotTrackEditor::HandleAddCinematicShotTrackMenuEntryCanExecute)
@@ -114,12 +114,12 @@ TSharedPtr<SWidget> FCinematicShotTrackEditor::BuildOutlinerEditWidget(const FGu
 		.IsChecked(this, &FCinematicShotTrackEditor::AreShotsLocked)
 		.OnCheckStateChanged(this, &FCinematicShotTrackEditor::OnLockShotsClicked)
 		.ToolTipText(this, &FCinematicShotTrackEditor::GetLockShotsToolTip)
-		.CheckedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
-		.CheckedHoveredImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
-		.CheckedPressedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
-		.UncheckedImage(FEditorStyle::GetBrush("Sequencer.UnlockCamera"))
-		.UncheckedHoveredImage(FEditorStyle::GetBrush("Sequencer.UnlockCamera"))
-		.UncheckedPressedImage(FEditorStyle::GetBrush("Sequencer.UnlockCamera"))
+		.CheckedImage(FAppStyle::GetBrush("Sequencer.LockCamera"))
+		.CheckedHoveredImage(FAppStyle::GetBrush("Sequencer.LockCamera"))
+		.CheckedPressedImage(FAppStyle::GetBrush("Sequencer.LockCamera"))
+		.UncheckedImage(FAppStyle::GetBrush("Sequencer.UnlockCamera"))
+		.UncheckedHoveredImage(FAppStyle::GetBrush("Sequencer.UnlockCamera"))
+		.UncheckedPressedImage(FAppStyle::GetBrush("Sequencer.UnlockCamera"))
 	];
 }
 
@@ -256,7 +256,7 @@ void FCinematicShotTrackEditor::BuildTrackContextMenu( FMenuBuilder& MenuBuilder
 
 const FSlateBrush* FCinematicShotTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.CinematicShot");
+	return FAppStyle::GetBrush("Sequencer.Tracks.CinematicShot");
 }
 
 bool FCinematicShotTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams)
@@ -273,13 +273,30 @@ bool FCinematicShotTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent,
 		return false;
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return false;
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return false;
+	}
+
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
 
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		if (UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset()))
 		{
-			FFrameRate TickResolution = GetSequencer()->GetFocusedTickResolution();
+			FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
 
 			const FQualifiedFrameTime InnerDuration = FQualifiedFrameTime(
 				UE::MovieScene::DiscreteSize(Sequence->GetMovieScene()->GetPlaybackRange()),
@@ -309,6 +326,18 @@ FReply FCinematicShotTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, co
 		return FReply::Unhandled();
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return FReply::Unhandled();
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return FReply::Unhandled();
+	}
+
 	const FScopedTransaction Transaction(LOCTEXT("DropAssets", "Drop Assets"));
 
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
@@ -318,6 +347,11 @@ FReply FCinematicShotTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, co
 	bool bAnyDropped = false;
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset());
 
 		if (Sequence)
@@ -333,61 +367,6 @@ FReply FCinematicShotTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, co
 	return bAnyDropped ? FReply::Handled() : FReply::Unhandled();
 }
 
-UMovieSceneSubSection* FCinematicShotTrackEditor::CreateShotInternal(FString& NewShotName, FFrameNumber NewShotStartTime, UMovieSceneCinematicShotSection* ShotToDuplicate)
-{
-	FString NewShotPath;
-	
-	if (ShotToDuplicate != nullptr)
-	{
-		// If duplicating a shot, use that shot's path
-		NewShotPath = FPaths::GetPath(ShotToDuplicate->GetSequence()->GetPathName());
-	}
-	else
-	{
-		NewShotPath = MovieSceneToolHelpers::GenerateNewShotPath(GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene(), NewShotName);
-	}
-
-	// Create a new level sequence asset with the appropriate name
-	IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
-
-	UObject* NewAsset = nullptr;
-	for (TObjectIterator<UClass> It ; It ; ++It)
-	{
-		UClass* CurrentClass = *It;
-		if (CurrentClass->IsChildOf(UFactory::StaticClass()) && !(CurrentClass->HasAnyClassFlags(CLASS_Abstract)))
-		{
-			UFactory* Factory = Cast<UFactory>(CurrentClass->GetDefaultObject());
-			if (Factory->CanCreateNew() && Factory->ImportPriority >= 0 && Factory->SupportedClass == ULevelSequence::StaticClass())
-			{
-				if (ShotToDuplicate != nullptr)
-				{
-					NewAsset = AssetTools.DuplicateAssetWithDialog(NewShotName, NewShotPath, ShotToDuplicate->GetSequence());
-				}
-				else
-				{
-					NewAsset = AssetTools.CreateAssetWithDialog(NewShotName, NewShotPath, ULevelSequence::StaticClass(), Factory);
-				}
-				break;
-			}
-		}
-	}
-
-	if (NewAsset == nullptr)
-	{
-		return nullptr;
-	}
-
-	UMovieSceneSequence* NewSequence = Cast<UMovieSceneSequence>(NewAsset);
-
-	int32 Duration = UE::MovieScene::DiscreteSize(ShotToDuplicate ? ShotToDuplicate->GetRange() : NewSequence->GetMovieScene()->GetPlaybackRange());
-
-	UMovieSceneCinematicShotTrack* CinematicShotTrack = FindOrCreateCinematicShotTrack();
-
-	// Create a cinematic shot section. 
-	UMovieSceneSubSection* NewSection = CinematicShotTrack->AddSequence(NewSequence, NewShotStartTime, Duration);
-	return NewSection;
-}
-
 void FCinematicShotTrackEditor::InsertShot()
 {
 	const FScopedTransaction Transaction(LOCTEXT("InsertShot_Transaction", "Insert Shot"));
@@ -396,8 +375,9 @@ void FCinematicShotTrackEditor::InsertShot()
 
 	UMovieSceneCinematicShotTrack* CinematicShotTrack = FindOrCreateCinematicShotTrack();
 	FString NewShotName = MovieSceneToolHelpers::GenerateNewShotName(CinematicShotTrack->GetAllSections(), NewShotStartTime.FrameNumber);
+	FString NewSequencePath = MovieSceneToolHelpers::GenerateNewShotPath(GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene(), NewShotName);
 
-	UMovieSceneSubSection* NewShot = CreateShotInternal(NewShotName, NewShotStartTime.FrameNumber);
+	UMovieSceneSubSection* NewShot = MovieSceneToolHelpers::CreateSubSequence(NewShotName, NewSequencePath, NewShotStartTime.FrameNumber, CinematicShotTrack);
 	if (NewShot)
 	{
 		NewShot->SetRowIndex(MovieSceneToolHelpers::FindAvailableRowIndex(CinematicShotTrack, NewShot));
@@ -445,9 +425,10 @@ void FCinematicShotTrackEditor::DuplicateShot(UMovieSceneCinematicShotSection* S
 
 	FFrameNumber StartTime = Section->HasStartFrame() ? Section->GetInclusiveStartFrame() : 0;
 	FString NewShotName = MovieSceneToolHelpers::GenerateNewShotName(CinematicShotTrack->GetAllSections(), StartTime);
+	FString NewSequencePath = FPaths::GetPath(Section->GetSequence()->GetPathName());
 
 	// Duplicate the shot and put it on the next available row
-	UMovieSceneSubSection* NewShot = CreateShotInternal(NewShotName, StartTime, Section);
+	UMovieSceneSubSection* NewShot = MovieSceneToolHelpers::CreateSubSequence(NewShotName, NewSequencePath, StartTime, CinematicShotTrack, Section);
 	if (NewShot)
 	{
 		NewShot->SetRange(Section->GetRange());
@@ -483,7 +464,9 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 	FString ShotPrefix;
 	uint32 ShotNumber = INDEX_NONE;
 	uint32 TakeNumber = INDEX_NONE;
-	if (MovieSceneToolHelpers::ParseShotName(Section->GetShotDisplayName(), ShotPrefix, ShotNumber, TakeNumber))
+	uint32 ShotNumberDigits = 0;
+	uint32 TakeNumberDigits = 0;
+	if (MovieSceneToolHelpers::ParseShotName(Section->GetShotDisplayName(), ShotPrefix, ShotNumber, TakeNumber, ShotNumberDigits, TakeNumberDigits))
 	{
 		TArray<FAssetData> AssetData;
 		uint32 CurrentTakeNumber = INDEX_NONE;
@@ -502,7 +485,7 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 			}
 		}
 
-		FString NewShotName = MovieSceneToolHelpers::ComposeShotName(ShotPrefix, ShotNumber, NewTakeNumber);
+		FString NewShotName = MovieSceneToolHelpers::ComposeShotName(ShotPrefix, ShotNumber, NewTakeNumber, ShotNumberDigits, TakeNumberDigits);
 
 		TRange<FFrameNumber> NewShotRange         = Section->GetRange();
 		FFrameNumber         NewShotStartOffset   = Section->Parameters.StartFrameOffset;
@@ -511,11 +494,13 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 		int32                NewRowIndex          = Section->GetRowIndex();
 		FFrameNumber         NewShotStartTime     = NewShotRange.GetLowerBound().IsClosed() ? UE::MovieScene::DiscreteInclusiveLower(NewShotRange) : 0;
 
-		UMovieSceneSubSection* NewShot = CreateShotInternal(NewShotName, NewShotStartTime, Section);
+		UMovieSceneCinematicShotTrack* CinematicShotTrack = FindOrCreateCinematicShotTrack();
+		FString NewSequencePath = FPaths::GetPath(Section->GetSequence()->GetPathName());
+
+		UMovieSceneSubSection* NewShot = MovieSceneToolHelpers::CreateSubSequence(NewShotName, NewSequencePath, NewShotStartTime, CinematicShotTrack, Section);
 
 		if (NewShot)
 		{
-			UMovieSceneCinematicShotTrack* CinematicShotTrack = FindOrCreateCinematicShotTrack();
 			CinematicShotTrack->RemoveSection(*Section);
 
 			NewShot->SetRange(NewShotRange);
@@ -634,14 +619,17 @@ TSharedRef<SWidget> FCinematicShotTrackEditor::HandleAddCinematicShotComboButton
 			FUIAction(FExecuteAction::CreateSP(this, &FCinematicShotTrackEditor::InsertFiller))
 	);
 
+	UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 	FAssetPickerConfig AssetPickerConfig;
 	{
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw( this, &FCinematicShotTrackEditor::HandleAddCinematicShotComboButtonMenuEntryExecute);
 		AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw( this, &FCinematicShotTrackEditor::HandleAddCinematicShotComboButtonMenuEntryEnterPressed);
 		AssetPickerConfig.bAllowNullSelection = false;
-		AssetPickerConfig.InitialAssetViewType = EAssetViewType::Tile;
-		AssetPickerConfig.Filter.ClassNames.Add(TEXT("LevelSequence"));
+		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+		AssetPickerConfig.Filter.ClassPaths.Add(FTopLevelAssetPath(TEXT("/Script/LevelSequence"), TEXT("LevelSequence")));
 		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+		AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));

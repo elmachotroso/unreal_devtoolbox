@@ -21,6 +21,8 @@
 #include "Engine/AssetManager.h"
 #include "Engine/Level.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldComposition)
+
 DEFINE_LOG_CATEGORY_STATIC(LogWorldComposition, Log, All);
 
 #if WITH_EDITOR
@@ -37,7 +39,7 @@ UWorldComposition::UWorldComposition(const FObjectInitializer& ObjectInitializer
 	, TilesStreamingTimeThreshold(1.0)
 	, bLoadAllTilesDuringCinematic(false)
 	, bRebaseOriginIn3DSpace(false)
-	, RebaseOriginDistance(HALF_WORLD_MAX1*0.5f)
+	, RebaseOriginDistance(UE_OLD_HALF_WORLD_MAX1*0.5f)
 {
 }
 
@@ -182,7 +184,7 @@ struct FWorldTilesGatherer
 		for (const FString& FullPath : MapFilesToConsider)
 		{
 			FString TilePackageName = FPackageName::FilenameToLongPackageName(FullPath);
-			const FName TilePackagePath = *(TilePackageName + TEXT(".") + FPackageName::GetLongPackageAssetName(TilePackageName));
+			const FSoftObjectPath TilePackagePath(FName(*TilePackageName), FName(*FPackageName::GetLongPackageAssetName(TilePackageName)), FString{});
 
 			const FAssetData MapAssetData = AssetRegistry.GetAssetByObjectPath(TilePackagePath);
 
@@ -926,7 +928,7 @@ void UWorldComposition::OnLevelRemovedFromWorld(ULevel* InLevel)
 	}
 #endif
 	
-	// Move level to his local origin
+	// Move level to its local origin
 	FIntVector LevelOffset = GetLevelOffset(InLevel);
 	InLevel->ApplyWorldOffset(-FVector(LevelOffset), false);
 }
@@ -1008,3 +1010,4 @@ FBox UWorldComposition::GetLevelBounds(ULevel* InLevel) const
 	
 	return LevelBBox;
 }
+

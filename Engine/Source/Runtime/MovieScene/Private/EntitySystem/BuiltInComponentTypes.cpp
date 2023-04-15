@@ -9,6 +9,8 @@
 #include "EntitySystem/MovieScenePropertyBinding.h"
 #include "EntitySystem/MovieSceneEntityFactoryTemplates.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BuiltInComponentTypes)
+
 namespace UE
 {
 namespace MovieScene
@@ -36,6 +38,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&SceneComponentBinding,   TEXT("USceneComponent Binding ID"));
 	ComponentRegistry->NewComponentType(&SpawnableBinding,        TEXT("Spawnable Binding"));
 	ComponentRegistry->NewComponentType(&TrackInstance,           TEXT("Track Instance"));
+	ComponentRegistry->NewComponentType(&BoolChannel,             TEXT("Bool Channel"));
 	ComponentRegistry->NewComponentType(&ByteChannel,             TEXT("Byte Channel"));
 	ComponentRegistry->NewComponentType(&IntegerChannel,          TEXT("Integer Channel"));
 	ComponentRegistry->NewComponentType(&FloatChannel[0],         TEXT("Float Channel 0"));
@@ -57,6 +60,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&DoubleChannel[7],        TEXT("Double Channel 7"));
 	ComponentRegistry->NewComponentType(&DoubleChannel[8],        TEXT("Double Channel 8"));
 	ComponentRegistry->NewComponentType(&WeightChannel,           TEXT("Weight Channel"));
+	ComponentRegistry->NewComponentType(&ObjectPathChannel,       TEXT("Object Path Channel"));
 
 	ComponentRegistry->NewComponentType(&FloatChannelFlags[0],    TEXT("Float Channel 0 Flags"));
 	ComponentRegistry->NewComponentType(&FloatChannelFlags[1],    TEXT("Float Channel 1 Flags"));
@@ -94,15 +98,6 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&BoolResult,            TEXT("Bool Result"));
 	ComponentRegistry->NewComponentType(&ByteResult,            TEXT("Byte Result"));
 	ComponentRegistry->NewComponentType(&IntegerResult,         TEXT("Integer Result"));
-	ComponentRegistry->NewComponentType(&FloatResult[0],        TEXT("Float Result 0"));
-	ComponentRegistry->NewComponentType(&FloatResult[1],        TEXT("Float Result 1"));
-	ComponentRegistry->NewComponentType(&FloatResult[2],        TEXT("Float Result 2"));
-	ComponentRegistry->NewComponentType(&FloatResult[3],        TEXT("Float Result 3"));
-	ComponentRegistry->NewComponentType(&FloatResult[4],        TEXT("Float Result 4"));
-	ComponentRegistry->NewComponentType(&FloatResult[5],        TEXT("Float Result 5"));
-	ComponentRegistry->NewComponentType(&FloatResult[6],        TEXT("Float Result 6"));
-	ComponentRegistry->NewComponentType(&FloatResult[7],        TEXT("Float Result 7"));
-	ComponentRegistry->NewComponentType(&FloatResult[8],        TEXT("Float Result 8"));
 	ComponentRegistry->NewComponentType(&DoubleResult[0],       TEXT("Double Result 0"));
 	ComponentRegistry->NewComponentType(&DoubleResult[1],       TEXT("Double Result 1"));
 	ComponentRegistry->NewComponentType(&DoubleResult[2],       TEXT("Double Result 2"));
@@ -112,17 +107,9 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->NewComponentType(&DoubleResult[6],       TEXT("Double Result 6"));
 	ComponentRegistry->NewComponentType(&DoubleResult[7],       TEXT("Double Result 7"));
 	ComponentRegistry->NewComponentType(&DoubleResult[8],       TEXT("Double Result 8"));
+	ComponentRegistry->NewComponentType(&ObjectResult,          TEXT("Object Result"));
 
 	ComponentRegistry->NewComponentType(&BaseInteger,			TEXT("Base Integer"));
-	ComponentRegistry->NewComponentType(&BaseFloat[0],          TEXT("Base Float 0"));
-	ComponentRegistry->NewComponentType(&BaseFloat[1],          TEXT("Base Float 1"));
-	ComponentRegistry->NewComponentType(&BaseFloat[2],          TEXT("Base Float 2"));
-	ComponentRegistry->NewComponentType(&BaseFloat[3],          TEXT("Base Float 3"));
-	ComponentRegistry->NewComponentType(&BaseFloat[4],          TEXT("Base Float 4"));
-	ComponentRegistry->NewComponentType(&BaseFloat[5],          TEXT("Base Float 5"));
-	ComponentRegistry->NewComponentType(&BaseFloat[6],          TEXT("Base Float 6"));
-	ComponentRegistry->NewComponentType(&BaseFloat[7],          TEXT("Base Float 7"));
-	ComponentRegistry->NewComponentType(&BaseFloat[8],          TEXT("Base Float 8"));
 	ComponentRegistry->NewComponentType(&BaseDouble[0],         TEXT("Base Double 0"));
 	ComponentRegistry->NewComponentType(&BaseDouble[1],         TEXT("Base Double 1"));
 	ComponentRegistry->NewComponentType(&BaseDouble[2],         TEXT("Base Double 2"));
@@ -192,40 +179,23 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	ComponentRegistry->Factories.DuplicateChildComponent(PropertyBinding);
 	ComponentRegistry->Factories.DuplicateChildComponent(HierarchicalBias);
 
-	// Children always need a Parent
+	// Children always need a Parent - these are initialized by the tasks that create them
 	{
-		struct FParentEntityInitializer : TChildEntityInitializer<FMovieSceneEntityID, FMovieSceneEntityID>
-		{
-			explicit FParentEntityInitializer(TComponentTypeID<FMovieSceneEntityID> ParentEntity)
-				: TChildEntityInitializer(TComponentTypeID<FMovieSceneEntityID>(), ParentEntity)
-			{}
-
-			virtual void Run(const FEntityRange& ChildRange, const FEntityAllocation* ParentAllocation, TArrayView<const int32> ParentAllocationOffsets) override
-			{
-				TArrayView<const FMovieSceneEntityID> ParentIDs       = ParentAllocation->GetEntityIDs();
-				TComponentWriter<FMovieSceneEntityID> ChildComponents = GetChildComponents(ChildRange.Allocation);
-
-				for (int32 Index = 0; Index < ChildRange.Num; ++Index)
-				{
-					const int32 ParentIndex = ParentAllocationOffsets[Index];
-					const int32 ChildIndex  = ChildRange.ComponentStartOffset + Index;
-
-					ChildComponents[ChildIndex] = ParentIDs[ParentIndex];
-				}
-			}
-		};
-		ComponentRegistry->Factories.DefineChildComponent(FParentEntityInitializer(ParentEntity));
+		ComponentRegistry->Factories.DefineChildComponent(FComponentTypeID::Invalid(), ParentEntity);
 	}
 	
 	// Bool channel relationships
 	{
+		ComponentRegistry->Factories.DuplicateChildComponent(BoolChannel);
 		ComponentRegistry->Factories.DuplicateChildComponent(BoolResult);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(BoolChannel, BoolResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(BoolResult, EvalTime);
 	}
 
 	// Byte channel relationships
 	{
 		ComponentRegistry->Factories.DuplicateChildComponent(ByteChannel);
+		ComponentRegistry->Factories.DuplicateChildComponent(ByteResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ByteChannel, ByteResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ByteChannel, EvalTime);
 	}
@@ -233,6 +203,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	// Integer channel relationships
 	{
 		ComponentRegistry->Factories.DuplicateChildComponent(IntegerChannel);
+		ComponentRegistry->Factories.DuplicateChildComponent(IntegerResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(IntegerChannel, IntegerResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(IntegerChannel, EvalTime);
 
@@ -244,7 +215,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	// Float channel relationships
 	{
 		static_assert(
-				UE_ARRAY_COUNT(FloatChannel) == UE_ARRAY_COUNT(BaseFloat), 
+				UE_ARRAY_COUNT(FloatChannel) == UE_ARRAY_COUNT(BaseDouble), 
 				"Base floats and float results should have the same size.");
 		static_assert(
 				UE_ARRAY_COUNT(FloatChannel) == UE_ARRAY_COUNT(FloatChannelFlags),
@@ -254,17 +225,17 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(FloatChannel); ++Index)
 		{
 			ComponentRegistry->Factories.DuplicateChildComponent(FloatChannel[Index]);
-			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(FloatChannel[Index], FloatResult[Index]);
+			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(FloatChannel[Index], DoubleResult[Index]);
 			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(FloatChannel[Index], EvalTime);
 			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(FloatChannel[Index], FloatChannelFlags[Index]);
 		}
 
 		// Create base float components for float channels that are meant to be additive from base.
-		for (int32 Index = 0; Index < UE_ARRAY_COUNT(BaseFloat); ++Index)
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(BaseDouble); ++Index)
 		{
 			ComponentRegistry->Factories.DefineComplexInclusiveComponents(
 					FComplexInclusivityFilter::All({ FloatChannel[Index], BaseValueEvalTime, Tags.AdditiveFromBaseBlend }),
-					BaseFloat[Index]);
+					BaseDouble[Index]);
 		}
 	}
 
@@ -281,6 +252,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 		for (int32 Index = 0; Index < UE_ARRAY_COUNT(DoubleChannel); ++Index)
 		{
 			ComponentRegistry->Factories.DuplicateChildComponent(DoubleChannel[Index]);
+			ComponentRegistry->Factories.DuplicateChildComponent(DoubleResult[Index]);
 			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(DoubleChannel[Index], DoubleResult[Index]);
 			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(DoubleChannel[Index], EvalTime);
 			ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(DoubleChannel[Index], DoubleChannelFlags[Index]);
@@ -292,6 +264,13 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 			ComponentRegistry->Factories.DefineComplexInclusiveComponents(
 					FComplexInclusivityFilter::All({ DoubleChannel[Index], BaseValueEvalTime, Tags.AdditiveFromBaseBlend }),
 					BaseDouble[Index]);
+		}
+	}
+
+	{
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(DoubleResult); ++Index)
+		{
+			ResultToBase.Add(DoubleResult[Index], BaseDouble[Index]);
 		}
 	}
 
@@ -310,6 +289,7 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 	{
 		// Weight channel components should be duplicated to children
 		ComponentRegistry->Factories.DuplicateChildComponent(WeightChannel);
+		ComponentRegistry->Factories.DuplicateChildComponent(WeightResult);
 
 		// Weight channel components need a time and result to evaluate
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(WeightChannel, EvalTime);
@@ -322,6 +302,17 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(Easing, WeightAndEasingResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(HierarchicalEasingChannel, WeightAndEasingResult);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(WeightResult, WeightAndEasingResult);
+	}
+
+	// Object path channel relationships
+	{
+		// Object channel components should be duplicated to children
+		ComponentRegistry->Factories.DuplicateChildComponent(ObjectPathChannel);
+		ComponentRegistry->Factories.DuplicateChildComponent(ObjectResult);
+
+		// Object channel components need a time and result to evaluate
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ObjectPathChannel, EvalTime);
+		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(ObjectPathChannel, ObjectResult);
 	}
 
 	// Track instances always produce inputs
@@ -338,6 +329,8 @@ FBuiltInComponentTypes::FBuiltInComponentTypes()
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(EvaluationHook, EvalTime);
 		ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(EvaluationHook, EvaluationHookFlags);
 	}
+
+	RequiresInstantiationMask.Set(Tags.NeedsLink);
 }
 
 FBuiltInComponentTypes::~FBuiltInComponentTypes()
@@ -360,6 +353,15 @@ FBuiltInComponentTypes* FBuiltInComponentTypes::Get()
 	return GMovieSceneBuiltInComponentTypes.Get();
 }
 
+FComponentTypeID FBuiltInComponentTypes::GetBaseValueComponentType(const FComponentTypeID& InResultComponentType)
+{
+	if (FComponentTypeID* BaseComponentType = ResultToBase.Find(InResultComponentType))
+	{
+		return *BaseComponentType;
+	}
+	return FComponentTypeID::Invalid();
+}
 
 } // namespace MovieScene
 } // namespace UE
+

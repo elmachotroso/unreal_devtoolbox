@@ -3,23 +3,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Factories/Factory.h"
+#include "VCamObjectWithInputFactory.h"
 
 #include "VCamModifierFactory.generated.h"
 
-UCLASS(hidecategories = Object)
-class UVCamModifierFactory : public UFactory
+UCLASS()
+class VCAMCOREEDITOR_API UVCamModifierFactory : public UVCamObjectWithInputFactory
 {
 	GENERATED_BODY()
 public:
 	UVCamModifierFactory();
 	
-	// The parent class of the created blueprint
-    UPROPERTY(EditAnywhere, Category="BlueprintVirtualSubjectFactory", meta=(AllowAbstract = "", BlueprintBaseOnly = ""))
-    TSubclassOf<UObject> ParentClass;
-	
 	//~ Begin UFactory Interface
 	virtual FText GetDisplayName() const override;
+	virtual FText GetToolTip() const override;
 	virtual UObject* FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn) override;
 	virtual uint32 GetMenuCategories() const override;
 	//~ Begin UFactory Interface

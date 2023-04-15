@@ -3,7 +3,7 @@
 #include "SImageCenterToolPanel.h"
 
 #include "CameraCalibrationSubsystem.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 #include "EditorFontGlyphs.h"
 #include "ImageCenterTool.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
@@ -176,7 +176,7 @@ TSharedRef<SWidget> SImageCenterToolPanel::BuildImageCenterAlgoPickerWidget()
 			.ToolTipText(LOCTEXT("ShowHelp_Tip", "Help about this algo"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				if (!ImageCenterTool.IsValid())
@@ -194,7 +194,10 @@ TSharedRef<SWidget> SImageCenterToolPanel::BuildImageCenterAlgoPickerWidget()
 				TSharedRef<SCustomDialog> AlgoHelpWindow =
 					SNew(SCustomDialog)
 					.Title(FText::FromName(ImageCenterTool->FriendlyName()))
-					.DialogContent(Algo->BuildHelpWidget())
+					.Content()
+					[
+						Algo->BuildHelpWidget()
+					]
 					.Buttons({ SCustomDialog::FButton(LOCTEXT("Ok", "Ok")) });
 
 				AlgoHelpWindow->Show();
@@ -203,7 +206,7 @@ TSharedRef<SWidget> SImageCenterToolPanel::BuildImageCenterAlgoPickerWidget()
 			})
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.12"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
 				.Text(FEditorFontGlyphs::Info_Circle)
 				.ColorAndOpacity(FLinearColor::White)
 			]

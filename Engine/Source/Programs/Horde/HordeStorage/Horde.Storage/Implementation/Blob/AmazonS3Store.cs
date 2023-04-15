@@ -7,24 +7,31 @@ using System.Net;
 using System.Threading.Tasks;
 using Amazon.S3;
 using Amazon.S3.Model;
+using EpicGames.Horde.Storage;
+using Horde.Storage.Implementation.Blob;
+using Jupiter;
+using Jupiter.Common;
 using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
-using Serilog;
+using KeyNotFoundException = System.Collections.Generic.KeyNotFoundException;
 
 namespace Horde.Storage.Implementation
 {
     public class AmazonS3Store : IBlobStore
     {
-        private readonly ILogger _logger = Log.ForContext<AmazonS3Store>();
         private readonly IAmazonS3 _amazonS3;
+        private readonly IBlobIndex _blobIndex;
+        private readonly INamespacePolicyResolver _namespacePolicyResolver;
         private readonly S3Settings _settings;
         private readonly HashSet<string> _bucketAccessPolicyApplied = new HashSet<string>();
         private readonly HashSet<string> _bucketExistenceChecked = new HashSet<string>();
 
-        public AmazonS3Store(IAmazonS3 amazonS3, IOptionsMonitor<S3Settings> settings)
+        public AmazonS3Store(IAmazonS3 amazonS3, IOptionsMonitor<S3Settings> settings, IBlobIndex blobIndex, INamespacePolicyResolver namespacePolicyResolver)
         {
             _amazonS3 = amazonS3;
+            _blobIndex = blobIndex;
+            _namespacePolicyResolver = namespacePolicyResolver;
             _settings = settings.CurrentValue;
         }
 
@@ -45,7 +52,7 @@ namespace Horde.Storage.Implementation
                     bool bucketExist = await _amazonS3.DoesS3BucketExistAsync(bucketName);
                     if (!bucketExist)
                     {
-                        var putBucketRequest = new PutBucketRequest
+                        PutBucketRequest putBucketRequest = new PutBucketRequest
                         {
                             BucketName = bucketName,
                             UseClientRegion = true
@@ -103,6 +110,12 @@ namespace Horde.Storage.Implementation
                 {
                     return objectName;
                 }
+
+                if (e.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    throw new ResourceHasToManyRequestsException(e);
+                }
+
                 throw;
             }
 
@@ -117,11 +130,19 @@ namespace Horde.Storage.Implementation
 
         private string GetBucketName(NamespaceId ns)
         {
-            return $"{_settings.BucketName}";
+            try
+            {
+                string storagePool = _namespacePolicyResolver.GetPoliciesForNs(ns).StoragePool;
+                string storagePoolSuffix = string.IsNullOrEmpty(storagePool) ? "" : $"-{storagePool}";
+                return $"{_settings.BucketName}{storagePoolSuffix}";
+            }
+            catch (KeyNotFoundException)
+            {
+                throw new NamespaceNotFoundException(ns);
+            }
         }
 
-
-        public async Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blob)
+        public async Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blob, LastAccessTrackingFlags flags = LastAccessTrackingFlags.DoTracking)
         {
             string bucketName = GetBucketName(ns);
             GetObjectResponse response;
@@ -145,8 +166,14 @@ namespace Horde.Storage.Implementation
             return new BlobContents(new InstrumentedStream(response.ResponseStream, "s3-get"), response.ContentLength);
         }
 
-        public async Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier)
+        public async Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier, bool forceCheck)
         {
+            NamespacePolicy policies = _namespacePolicyResolver.GetPoliciesForNs(ns);
+            if (_settings.UseBlobIndexForExistsCheck && policies.UseBlobIndexForSlowExists && !forceCheck)
+            {
+                return await _blobIndex.BlobExistsInRegion(ns, blobIdentifier);
+            }
+
             string bucketName = GetBucketName(ns);
             try
             {
@@ -186,7 +213,7 @@ namespace Horde.Storage.Implementation
             }
         }
 
-        public async IAsyncEnumerable<BlobIdentifier> ListOldObjects(NamespaceId ns, DateTime cutoff)
+        public async IAsyncEnumerable<(BlobIdentifier, DateTime)> ListObjects(NamespaceId ns)
         {
             ListObjectsV2Request request = new ListObjectsV2Request
             {
@@ -202,13 +229,7 @@ namespace Horde.Storage.Implementation
                     string key = obj.Key;
                     string identifierString = key.Substring(key.LastIndexOf("/", StringComparison.Ordinal)+1);
 
-                    // if the object was updated after the cutoff time we do not consider it old
-                    if (obj.LastModified > cutoff)
-                    {
-                        continue;
-                    }
-
-                    yield return new BlobIdentifier(identifierString);
+                    yield return (new BlobIdentifier(identifierString), obj.LastModified);
                 }
 
                 request.ContinuationToken = response.NextContinuationToken;

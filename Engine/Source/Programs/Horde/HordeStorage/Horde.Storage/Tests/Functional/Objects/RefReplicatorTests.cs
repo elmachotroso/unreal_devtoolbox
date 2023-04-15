@@ -7,7 +7,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 using Cassandra;
 using Horde.Storage.Controllers;
@@ -25,6 +24,7 @@ using Moq.Contrib.HttpClient;
 using Newtonsoft.Json;
 using Serilog;
 using Logger = Serilog.Core.Logger;
+using EpicGames.Horde.Storage;
 
 namespace Horde.Storage.FunctionalTests.Replication
 {
@@ -33,14 +33,11 @@ namespace Horde.Storage.FunctionalTests.Replication
     public class RefReplicatorTests
     {
         private static TestServer? _server;
-        private static HttpClient? _httpClient;
-        protected IBlobStore _blobStore = null!;
-        protected IReferencesStore _referencesStore = null!;
-        private IReplicationLog _replicationLog = null!;
+        private IBlobService BlobStore { get; set; } = null!;
 
-        protected readonly NamespaceId TestNamespace = new NamespaceId("test-namespace");
-        protected readonly NamespaceId SnapshotNamespace = new NamespaceId("snapshot-namespace");
-        protected readonly BucketId TestBucket = new BucketId("test");
+        private NamespaceId TestNamespace { get; } = new NamespaceId("test-namespace");
+        private NamespaceId SnapshotNamespace { get; } = new NamespaceId("snapshot-namespace");
+        private BucketId TestBucket { get; } = new BucketId("test");
 
         [TestInitialize]
         public async Task Setup()
@@ -62,27 +59,23 @@ namespace Horde.Storage.FunctionalTests.Replication
                 .UseSerilog(logger)
                 .UseStartup<HordeStorageStartup>()
             );
-            _httpClient = server.CreateClient();
+            server.CreateClient();
             _server = server;
 
-            _blobStore = _server.Services.GetService<IBlobStore>()!;
-            _referencesStore = _server.Services.GetService<IReferencesStore>()!;
-            _replicationLog = _server.Services.GetService<IReplicationLog>()!;
+            BlobStore = _server.Services.GetService<IBlobService>()!;
 
             await Task.CompletedTask;
         }
 
-        private IEnumerable<KeyValuePair<string, string>> GetSettings()
+        private static IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
             return new[]
             {
-                new KeyValuePair<string, string>("Horde.Storage:ReferencesDbImplementation", HordeStorageSettings.ReferencesDbImplementations.Scylla.ToString()),
-                new KeyValuePair<string, string>("Horde.Storage:ReplicationLogWriterImplementation", HordeStorageSettings.ReplicationLogWriterImplementations.Scylla.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:ReferencesDbImplementation", HordeStorageSettings.ReferencesDbImplementations.Scylla.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:ReplicationLogWriterImplementation", HordeStorageSettings.ReplicationLogWriterImplementations.Scylla.ToString()),
             };
         }
-
-
-        private async Task TeardownDb(IServiceProvider provider)
+        private static async Task TeardownDb(IServiceProvider provider)
         {
             IScyllaSessionManager scyllaSessionManager = provider.GetService<IScyllaSessionManager>()!;
             ISession session = scyllaSessionManager.GetSessionForLocalKeyspace();
@@ -94,12 +87,13 @@ namespace Horde.Storage.FunctionalTests.Replication
             await session.ExecuteAsync(new SimpleStatement("DROP TABLE IF EXISTS replication_snapshot;"));
         }
 
-
         [TestCleanup]
         public async Task Teardown()
         {
-            if (_server != null) 
+            if (_server != null)
+            {
                 await TeardownDb(_server.Services);
+            }
         }
         
         [TestMethod]
@@ -109,7 +103,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             {
                 ConnectionString = "http://localhost",
                 MaxParallelReplications = 16,
-                NamespaceToReplicate = TestNamespace,
+                NamespaceToReplicate = TestNamespace.ToString(),
                 ReplicatorName = "test-replicator",
                 Version = ReplicatorVersion.Refs
             };
@@ -123,7 +117,7 @@ namespace Horde.Storage.FunctionalTests.Replication
                 byte[] blobContents = Encoding.UTF8.GetBytes($"random content {i}");
                 BlobIdentifier blob = BlobIdentifier.FromBlob(blobContents);
                 blobs.Add(blob, blobContents);
-                replicationEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, new KeyId($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
+                replicationEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, IoHashKey.FromName($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
             }
             string lastBucket = "refs-000";
             Guid lastEvent = Guid.NewGuid();
@@ -145,7 +139,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             }
 
             IHttpClientFactory httpClientFactory = handler.CreateClientFactory();
-            RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
+            using RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
             replicator.SetRefState(lastBucket, lastEvent);
 
             bool didRun = await replicator.TriggerNewReplications();
@@ -155,7 +149,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             handler.Verify();
 
             // Verify that the objects are present
-            BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
+            BlobIdentifier[] missingBlobs = await BlobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
             Assert.IsFalse(missingBlobs.Any());
         }
 
@@ -166,7 +160,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             {
                 ConnectionString = "http://localhost",
                 MaxParallelReplications = 16,
-                NamespaceToReplicate = TestNamespace,
+                NamespaceToReplicate = TestNamespace.ToString(),
                 ReplicatorName = "test-replicator",
                 Version = ReplicatorVersion.Refs
             };
@@ -180,11 +174,11 @@ namespace Horde.Storage.FunctionalTests.Replication
                 byte[] blobContents = Encoding.UTF8.GetBytes($"random content {i}");
                 BlobIdentifier blob = BlobIdentifier.FromBlob(blobContents);
                 blobs.Add(blob, blobContents);
-                replicationEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, new KeyId($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
+                replicationEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, IoHashKey.FromName($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
             }
 
             // Build snapshot
-            ReplicationLogSnapshot snapshot = new ReplicationLogSnapshot(TestNamespace);
+            ReplicationLogSnapshot snapshot = ReplicationLogFactory.CreateEmptySnapshot(TestNamespace);
             foreach (ReplicationLogEvent logEvent in replicationEvents)
             {
                 snapshot.ProcessEvent(logEvent);
@@ -193,20 +187,20 @@ namespace Horde.Storage.FunctionalTests.Replication
             byte[] snapshotContent;
             {
                 await using MemoryStream ms = new MemoryStream();
-                await snapshot.Serialize(ms);
+                snapshot.Serialize(ms);
                 snapshotContent = ms.ToArray();
             }
 
             BlobIdentifier snapshotBlob = BlobIdentifier.FromBlob(snapshotContent);
 
             Mock<HttpMessageHandler> handler = new Mock<HttpMessageHandler>();
-            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob)}));
+            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob, DateTime.Now)}));
             handler.SetupRequest($"http://localhost/api/v1/replication-log/snapshots/{TestNamespace}").ReturnsResponse(s, "application/json");
 
             // after processing a snapshot it will attempt to incrementally replicate from there, which should be empty
             handler.SetupRequest($"http://localhost/api/v1/replication-log/incremental/{TestNamespace}?lastBucket={replicationEvents.Last().TimeBucket}&lastEvent={replicationEvents.Last().EventId}").ReturnsResponse(JsonConvert.SerializeObject(new ReplicationLogEvents(new List<ReplicationLogEvent>())), "application/json");
 
-            handler.SetupRequest($"http://localhost/api/v1/blobs/{TestNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
+            handler.SetupRequest($"http://localhost/api/v1/blobs/{SnapshotNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
 
             foreach (BlobIdentifier blob in blobs.Keys)
             {
@@ -219,7 +213,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             }
 
             IHttpClientFactory httpClientFactory = handler.CreateClientFactory();
-            RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
+            using RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
             // no previous state, will download it from a snapshot
             replicator.SetRefState(null, null);
 
@@ -230,10 +224,9 @@ namespace Horde.Storage.FunctionalTests.Replication
             handler.Verify();
 
             // Verify that the objects are present
-            BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
+            BlobIdentifier[] missingBlobs = await BlobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
             Assert.IsFalse(missingBlobs.Any());
         }
-
 
         [TestMethod]
         public async Task ReplicationStateBoth()
@@ -242,7 +235,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             {
                 ConnectionString = "http://localhost",
                 MaxParallelReplications = 16,
-                NamespaceToReplicate = TestNamespace,
+                NamespaceToReplicate = TestNamespace.ToString(),
                 ReplicatorName = "test-replicator",
                 Version = ReplicatorVersion.Refs
             };
@@ -251,25 +244,25 @@ namespace Horde.Storage.FunctionalTests.Replication
             List<ReplicationLogEvent> incrementalEvents = new();
             Dictionary<BlobIdentifier, byte[]> blobs = new();
 
-            const int countOfTestEvents = 100;
-            for (int i = 0; i < countOfTestEvents; i++)
+            const int CountOfTestEvents = 100;
+            for (int i = 0; i < CountOfTestEvents; i++)
             {
                 byte[] blobContents = Encoding.UTF8.GetBytes($"random content in snapshot {i}");
                 BlobIdentifier blob = BlobIdentifier.FromBlob(blobContents);
                 blobs.Add(blob, blobContents);
-                snapshotEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, new KeyId($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
+                snapshotEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket,IoHashKey.FromName($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
             }
 
-            for (int i = 0; i < countOfTestEvents; i++)
+            for (int i = 0; i < CountOfTestEvents; i++)
             {
                 byte[] blobContents = Encoding.UTF8.GetBytes($"random content {i}");
                 BlobIdentifier blob = BlobIdentifier.FromBlob(blobContents);
                 blobs.Add(blob, blobContents);
-                incrementalEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, new KeyId($"incremental-event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
+                incrementalEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, IoHashKey.FromName($"incremental-event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
             }
             
             // Build snapshot
-            ReplicationLogSnapshot snapshot = new ReplicationLogSnapshot(TestNamespace);
+            ReplicationLogSnapshot snapshot = ReplicationLogFactory.CreateEmptySnapshot(TestNamespace);
             foreach (ReplicationLogEvent logEvent in snapshotEvents)
             {
                 snapshot.ProcessEvent(logEvent);
@@ -278,14 +271,14 @@ namespace Horde.Storage.FunctionalTests.Replication
             byte[] snapshotContent;
             {
                 await using MemoryStream ms = new MemoryStream();
-                await snapshot.Serialize(ms);
+                snapshot.Serialize(ms);
                 snapshotContent = ms.ToArray();
             }
 
             BlobIdentifier snapshotBlob = BlobIdentifier.FromBlob(snapshotContent);
 
             Mock<HttpMessageHandler> handler = new Mock<HttpMessageHandler>();
-            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob)}));
+            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob, DateTime.Now)}));
             handler.SetupRequest($"http://localhost/api/v1/replication-log/snapshots/{TestNamespace}").ReturnsResponse(s, "application/json");
 
             // when the snapshot has been processed we have a set of incremental events as well
@@ -294,7 +287,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             // after processing the incremental events there is nothing more to find
             handler.SetupRequest($"http://localhost/api/v1/replication-log/incremental/{TestNamespace}?lastBucket={incrementalEvents.Last().TimeBucket}&lastEvent={incrementalEvents.Last().EventId}").ReturnsResponse(JsonConvert.SerializeObject(new ReplicationLogEvents(new List<ReplicationLogEvent>())), "application/json");
 
-            handler.SetupRequest($"http://localhost/api/v1/blobs/{TestNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
+            handler.SetupRequest($"http://localhost/api/v1/blobs/{SnapshotNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
 
             foreach (BlobIdentifier blob in blobs.Keys)
             {
@@ -307,7 +300,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             }
 
             IHttpClientFactory httpClientFactory = handler.CreateClientFactory();
-            RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
+            using RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
             // no previous state, will download it from a snapshot
             replicator.SetRefState(null, null);
 
@@ -318,11 +311,9 @@ namespace Horde.Storage.FunctionalTests.Replication
             handler.Verify();
 
             // Verify that the objects are present
-            BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
+            BlobIdentifier[] missingBlobs = await BlobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
             Assert.IsFalse(missingBlobs.Any());
         }
-
-
         
         [TestMethod]
         public async Task ReplicationStateSnapshotFallback()
@@ -331,7 +322,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             {
                 ConnectionString = "http://localhost",
                 MaxParallelReplications = 16,
-                NamespaceToReplicate = TestNamespace,
+                NamespaceToReplicate = TestNamespace.ToString(),
                 ReplicatorName = "test-replicator",
                 Version = ReplicatorVersion.Refs
             };
@@ -339,17 +330,17 @@ namespace Horde.Storage.FunctionalTests.Replication
             List<ReplicationLogEvent> snapshotEvents = new();
             Dictionary<BlobIdentifier, byte[]> blobs = new();
 
-            const int countOfTestEvents = 100;
-            for (int i = 0; i < countOfTestEvents; i++)
+            const int CountOfTestEvents = 100;
+            for (int i = 0; i < CountOfTestEvents; i++)
             {
                 byte[] blobContents = Encoding.UTF8.GetBytes($"random content in snapshot {i}");
                 BlobIdentifier blob = BlobIdentifier.FromBlob(blobContents);
                 blobs.Add(blob, blobContents);
-                snapshotEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, new KeyId($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
+                snapshotEvents.Add(new ReplicationLogEvent(TestNamespace, TestBucket, IoHashKey.FromName($"event-{i}"), blob, Guid.NewGuid(), "refs-000", DateTime.Now, ReplicationLogEvent.OpType.Added));
             }
 
             // Build snapshot
-            ReplicationLogSnapshot snapshot = new ReplicationLogSnapshot(TestNamespace);
+            ReplicationLogSnapshot snapshot = ReplicationLogFactory.CreateEmptySnapshot(TestNamespace);
             foreach (ReplicationLogEvent logEvent in snapshotEvents)
             {
                 snapshot.ProcessEvent(logEvent);
@@ -358,7 +349,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             byte[] snapshotContent;
             {
                 await using MemoryStream ms = new MemoryStream();
-                await snapshot.Serialize(ms);
+                snapshot.Serialize(ms);
                 snapshotContent = ms.ToArray();
             }
 
@@ -368,7 +359,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             Guid missingId = Guid.NewGuid();
 
             Mock<HttpMessageHandler> handler = new Mock<HttpMessageHandler>();
-            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob)}));
+            string s = JsonConvert.SerializeObject(new ReplicationLogSnapshots(new List<SnapshotInfo>{new SnapshotInfo(TestNamespace, SnapshotNamespace, snapshotBlob, DateTime.Now)}));
             handler.SetupRequest($"http://localhost/api/v1/replication-log/snapshots/{TestNamespace}").ReturnsResponse(s, "application/json");
 
             // mock a error being generated due to the lastBucket/event being to old
@@ -379,11 +370,10 @@ namespace Horde.Storage.FunctionalTests.Replication
                 Extensions = { { "SnapshotId", snapshotBlob } }
             }), "application/json");
 
-
             // after processing the snapshot we do not replicate anything more
             handler.SetupRequest($"http://localhost/api/v1/replication-log/incremental/{TestNamespace}?lastBucket={snapshotEvents.Last().TimeBucket}&lastEvent={snapshotEvents.Last().EventId}").ReturnsResponse(JsonConvert.SerializeObject(new ReplicationLogEvents(new List<ReplicationLogEvent>())), "application/json");
 
-            handler.SetupRequest($"http://localhost/api/v1/blobs/{TestNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
+            handler.SetupRequest($"http://localhost/api/v1/blobs/{SnapshotNamespace}/{snapshotBlob}").ReturnsResponse(snapshotContent, "application/octet-stream").Verifiable();
 
             foreach (BlobIdentifier blob in blobs.Keys)
             {
@@ -396,7 +386,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             }
 
             IHttpClientFactory httpClientFactory = handler.CreateClientFactory();
-            RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
+            using RefsReplicator replicator = ActivatorUtilities.CreateInstance<RefsReplicator>(_server!.Services, replicatorSettings, httpClientFactory);
             // specify a bucket that does not exist, we should fallback to replicating a snapshot
             replicator.SetRefState(missingBucket, missingId);
 
@@ -407,7 +397,7 @@ namespace Horde.Storage.FunctionalTests.Replication
             handler.Verify();
 
             // Verify that the objects are present
-            BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
+            BlobIdentifier[] missingBlobs = await BlobStore.FilterOutKnownBlobs(TestNamespace, blobs.Keys.ToArray());
             Assert.IsFalse(missingBlobs.Any());
         }
     }

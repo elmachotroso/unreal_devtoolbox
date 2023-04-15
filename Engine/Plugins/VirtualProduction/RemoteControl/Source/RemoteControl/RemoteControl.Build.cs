@@ -12,6 +12,7 @@ public class RemoteControl : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"RemoteControlCommon",
+				"StructUtils"
 			}
 		);
 
@@ -20,7 +21,7 @@ public class RemoteControl : ModuleRules
 				"Cbor",
 				"Engine",
 				"RemoteControlInterception",
-				"Serialization",
+				"Serialization"
 			}
 		);
 

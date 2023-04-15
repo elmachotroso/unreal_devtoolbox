@@ -10,8 +10,10 @@ using System.Threading.Tasks;
 using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
+using EpicGames.BuildGraph;
+using AutomationTool.Tasks;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	/// <summary>
 	/// Parameters for a spawn task
@@ -64,12 +66,12 @@ namespace BuildGraph.Tasks
 	/// <summary>
 	/// Base class for tasks that run an external tool
 	/// </summary>
-	public abstract class SpawnTaskBase : CustomTask
+	public abstract class SpawnTaskBase : BgTaskImpl
 	{
 		/// <summary>
 		/// Execute a command
 		/// </summary>
-		protected static IProcessResult Execute(string Exe, string Arguments, string WorkingDir = null, Dictionary<string, string> EnvVars = null, bool LogOutput = true, int ErrorLevel = 1, string Input = null)
+		protected static Task<IProcessResult> ExecuteAsync(string Exe, string Arguments, string WorkingDir = null, Dictionary<string, string> EnvVars = null, bool LogOutput = true, int ErrorLevel = 1, string Input = null, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null)
 		{
 			if (WorkingDir != null)
 			{
@@ -82,13 +84,13 @@ namespace BuildGraph.Tasks
 				Options &= ~CommandUtils.ERunOptions.AllowSpew;
 			}
 
-			IProcessResult Result = CommandUtils.Run(Exe, Arguments, Env: EnvVars, WorkingDir: WorkingDir, Options: Options, Input: Input);
+			IProcessResult Result = CommandUtils.Run(Exe, Arguments, Env: EnvVars, WorkingDir: WorkingDir, Options: Options, Input: Input, SpewFilterCallback: SpewFilterCallback);
 			if (Result.ExitCode < 0 || Result.ExitCode >= ErrorLevel)
 			{
 				throw new AutomationException("{0} terminated with an exit code indicating an error ({1})", Path.GetFileName(Exe), Result.ExitCode);
 			}
 
-			return Result;
+			return Task.FromResult(Result);
 		}
 
 		/// <summary>
@@ -168,9 +170,9 @@ namespace BuildGraph.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
-			Execute(Parameters.Exe, Parameters.Arguments, Parameters.WorkingDir, EnvVars: ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile), LogOutput: Parameters.LogOutput, ErrorLevel: Parameters.ErrorLevel);
+			await ExecuteAsync(Parameters.Exe, Parameters.Arguments, Parameters.WorkingDir, EnvVars: ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile), LogOutput: Parameters.LogOutput, ErrorLevel: Parameters.ErrorLevel);
 		}
 
 		/// <summary>
@@ -197,6 +199,33 @@ namespace BuildGraph.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			yield break;
+		}
+	}
+
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Execute an external program
+		/// </summary>
+		/// <param name="Exe">Executable to spawn.</param>
+		/// <param name="Arguments">Arguments for the newly created process.</param>
+		/// <param name="WorkingDir">Working directory for spawning the new task.</param>
+		/// <param name="Environment">Environment variables to set.</param>
+		/// <param name="EnvironmentFile">File to read environment from.</param>
+		/// <param name="LogOutput">Write output to the log.</param>
+		/// <param name="ErrorLevel">The minimum exit code which is treated as an error.</param>
+		public static async Task SpawnAsync(string Exe, string Arguments = null, string WorkingDir = null, string Environment = null, string EnvironmentFile = null, bool? LogOutput = null, int? ErrorLevel = null)
+		{
+			SpawnTaskParameters Parameters = new SpawnTaskParameters();
+			Parameters.Exe = Exe;
+			Parameters.Arguments = Arguments;
+			Parameters.WorkingDir = WorkingDir;
+			Parameters.Environment = Environment;
+			Parameters.EnvironmentFile = EnvironmentFile;
+			Parameters.LogOutput = LogOutput ?? Parameters.LogOutput;
+			Parameters.ErrorLevel = ErrorLevel ?? Parameters.ErrorLevel;
+
+			await ExecuteAsync(new SpawnTask(Parameters));
 		}
 	}
 }

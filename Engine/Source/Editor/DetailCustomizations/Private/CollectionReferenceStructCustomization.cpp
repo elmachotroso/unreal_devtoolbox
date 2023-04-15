@@ -1,18 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CollectionReferenceStructCustomization.h"
-#include "Misc/PackageName.h"
-#include "Misc/MessageDialog.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "DetailWidgetRow.h"
-#include "IContentBrowserSingleton.h"
+
+#include "CollectionManagerTypes.h"
+#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
+#include "Delegates/Delegate.h"
+#include "DetailWidgetRow.h"
+#include "Framework/Application/IMenu.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/PlatformCrt.h"
+#include "IContentBrowserSingleton.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
 
 #define LOCTEXT_NAMESPACE "CollectionReferenceStructCustomization"
 
@@ -44,7 +61,7 @@ void FCollectionReferenceStructCustomization::CustomizeHeader( TSharedRef<IPrope
 			.VAlign(VAlign_Center)
 			[
 				SAssignNew(PickerButton, SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ToolTipText(LOCTEXT("ComboToolTipText", "Choose a collection"))
 				.OnClicked(FOnClicked::CreateSP(this, &FCollectionReferenceStructCustomization::OnPickContent, CollectionNameProperty.ToSharedRef()))
 				.ContentPadding(2.0f)
@@ -52,7 +69,7 @@ void FCollectionReferenceStructCustomization::CustomizeHeader( TSharedRef<IPrope
 				.IsFocusable(false)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+					.Image(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]

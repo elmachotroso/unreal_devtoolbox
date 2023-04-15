@@ -21,10 +21,6 @@ TRACE_DECLARE_FLOAT_COUNTER(StallTimeSeconds, TEXT("StallDetector/TimeSeconds"))
 // use the heart beat clock to account for process suspend
 #define STALL_DETECTOR_HEART_BEAT_CLOCK 1
 
-#if STALL_DETECTOR_DEBUG && _MSC_VER
-#pragma optimize( "", off )
-#endif // STALL_DETECTOR_DEBUG && _MSC_VER
-
 #if STALL_DETECTOR_HEART_BEAT_CLOCK
  #include "HAL/ThreadHeartBeat.h"
 #endif // STALL_DETECTOR_HEART_BEAT_CLOCK
@@ -122,7 +118,7 @@ uint32 UE::FStallDetectorRunnable::Run()
 		}
 
 		// Sleep an interval, the resolution at which we want to detect an overage
-		FPlatformProcess::SleepNoStats(0.005);
+		FPlatformProcess::SleepNoStats(0.005f);
 	}
 
 	return 0;
@@ -188,7 +184,7 @@ void UE::FStallDetectorStats::TabulateStats(TArray<TabulatedResult>& TabulatedRe
 			FScopeLock Lock(&InStats->StatsSection);
 			if (InStats->TriggerCount.Get() && InStats->BudgetSeconds > 0.0)
 			{
-				OverageRatio = (InStats->OverageSeconds.Get() / InStats->TriggerCount.Get()) / InStats->BudgetSeconds;
+				OverageRatio = (InStats->OverageSeconds.Get() / (double)InStats->TriggerCount.Get()) / InStats->BudgetSeconds;
 			}
 		}
 
@@ -590,7 +586,7 @@ void UE::FStallDetector::Startup()
 	{
 		UE_LOG(LogStall, Log, TEXT("Startup..."));
 
-		check(FPlatformTime::GetSecondsPerCycle());
+		check(FPlatformTime::GetSecondsPerCycle() > 0.0);
 
 		// Cannot be a global due to clock member
 		Runnable = new FStallDetectorRunnable();

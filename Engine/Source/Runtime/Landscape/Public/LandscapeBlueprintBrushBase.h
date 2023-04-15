@@ -21,6 +21,9 @@ protected:
 	TObjectPtr<class ALandscape> OwningLandscape;
 
 	UPROPERTY(Category = "Settings", EditAnywhere, BlueprintReadWrite)
+	bool UpdateOnPropertyChange;
+
+	UPROPERTY(Category = "Settings", EditAnywhere, BlueprintReadWrite)
 	bool AffectHeightmap;
 
 	UPROPERTY(Category = "Settings", EditAnywhere, BlueprintReadWrite)
@@ -48,7 +51,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Landscape")
 	void RequestLandscapeUpdate();
 
-	UFUNCTION(BlueprintImplementableEvent)
+	UFUNCTION(BlueprintImplementableEvent, CallInEditor)
 	void GetBlueprintRenderDependencies(TArray<UObject*>& OutStreamableAssets);
 
 #if WITH_EDITOR
@@ -61,7 +64,7 @@ public:
 
 	bool IsAffectingHeightmap() const { return AffectHeightmap; }
 	bool IsAffectingWeightmap() const { return AffectWeightmap; }
-	bool IsAffectingWeightmapLayer(const FName& InLayerName) const;
+	virtual bool IsAffectingWeightmapLayer(const FName& InLayerName) const;
 	bool IsVisible() const { return bIsVisible; }
 	bool IsLayerUpdatePending() const;
 

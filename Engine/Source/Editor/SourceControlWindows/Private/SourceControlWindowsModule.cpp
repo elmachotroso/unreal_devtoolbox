@@ -8,7 +8,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelEditor.h"
 
 #include "WorkspaceMenuStructure.h"
@@ -37,6 +37,10 @@ public:
 
 	virtual void ShowChangelistsTab() override;
 	virtual bool CanShowChangelistsTab() const override;
+	virtual void SelectFiles(const TArray<FString>& Filenames);
+
+	DECLARE_DERIVED_EVENT(FSourceControlWindowsModule, ISourceControlWindowsModule::FChangelistFileDoubleClickedEvent, FChangelistFileDoubleClickedEvent);
+	virtual FChangelistFileDoubleClickedEvent& OnChangelistFileDoubleClicked() override { return ChangelistFileDoubleClickedEvent; }
 
 private:
 	TSharedRef<SDockTab> CreateChangelistsTab(const FSpawnTabArgs& Args);
@@ -45,6 +49,8 @@ private:
 private:
 	TWeakPtr<SDockTab> ChangelistsTab;
 	TWeakPtr<SSourceControlChangelistsWidget> ChangelistsWidget;
+
+	FChangelistFileDoubleClickedEvent ChangelistFileDoubleClickedEvent;
 };
 
 IMPLEMENT_MODULE(FSourceControlWindowsModule, SourceControlWindows);
@@ -55,17 +61,15 @@ void FSourceControlWindowsModule::StartupModule()
 {
 	ISourceControlWindowsModule::StartupModule();
 
-	// We're going to call a static function in the editor style module, so we need to make sure the module has actually been loaded
-	FModuleManager::Get().LoadModuleChecked("EditorStyle");
-
 	// Create a Source Control group under the Tools category
-	const FSlateIcon SourceControlIcon(FEditorStyle::GetStyleSetName(), "SourceControl.ChangelistsTab");
+	const FSlateIcon SourceControlIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.ChangelistsTab");
 
 	// Register the changelist tab spawner
-	FGlobalTabmanager::Get()->RegisterTabSpawner(SourceControlChangelistsTabName, FOnSpawnTab::CreateRaw(this, &FSourceControlWindowsModule::CreateChangelistsTab))
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SourceControlChangelistsTabName, FOnSpawnTab::CreateRaw(this, &FSourceControlWindowsModule::CreateChangelistsTab))
 		.SetDisplayName(LOCTEXT("ChangelistsTabTitle", "View Changelists"))
 		.SetTooltipText(LOCTEXT("ChangelistsTabTooltip", "Opens a dialog displaying current changelists."))
-		.SetIcon(SourceControlIcon);
+		.SetIcon(SourceControlIcon)
+		.SetMenuType(ETabSpawnerMenuType::Hidden);	
 
 #if WITH_RELOAD
 	// This code attempts to relaunch the GameplayCueEditor tab when you reload this module
@@ -80,7 +84,7 @@ void FSourceControlWindowsModule::ShutdownModule()
 {
 	if (FSlateApplication::IsInitialized())
 	{
-		FGlobalTabmanager::Get()->UnregisterTabSpawner(SourceControlChangelistsTabName);
+		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SourceControlChangelistsTabName);
 
 		if (ChangelistsTab.IsValid())
 		{
@@ -119,7 +123,19 @@ bool FSourceControlWindowsModule::CanShowChangelistsTab() const
 {
 	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
 
-	return (SourceControlModule.IsEnabled() && SourceControlModule.GetProvider().IsAvailable()) || FUncontrolledChangelistsModule::Get().IsEnabled();
+	return (SourceControlModule.IsEnabled() && SourceControlModule.GetProvider().IsAvailable() && SourceControlModule.GetProvider().UsesChangelists()) || FUncontrolledChangelistsModule::Get().IsEnabled();
+}
+
+void FSourceControlWindowsModule::SelectFiles(const TArray<FString>& Filenames)
+{
+	if (Filenames.Num() > 0 && CanShowChangelistsTab())
+	{
+		ShowChangelistsTab();
+		if (TSharedPtr<SSourceControlChangelistsWidget> ChangelistsWidgetPtr = ChangelistsWidget.Pin())
+		{
+			ChangelistsWidgetPtr->SetSelectedFiles(Filenames);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -6,10 +6,13 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
+#include "Containers/Array.h"
 #include "Containers/UnrealString.h"
-#include "GenericPlatform/GenericPlatformProcess.h"
+#include "CoreTypes.h"
+#include "GenericPlatform/GenericPlatformProcess.h" // IWYU pragma: export
+#include "HAL/PlatformMisc.h"
+#include "Misc/AssertionMacros.h"
+#include "Unix/UnixSystemIncludes.h" // IWYU pragma: export
 
 class Error;
 
@@ -297,6 +300,10 @@ struct CORE_API FUnixPlatformProcess : public FGenericPlatformProcess
 	static void ExploreFolder( const TCHAR* FilePath );
 	static bool LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open, bool bPromptToOpenOnFailure = true);
 	static bool IsFirstInstance();
+	static void OnChildEndFramePostFork();
+	static int32 TranslateThreadPriority(EThreadPriority Priority);
+	static void SetThreadNiceValue( uint32_t ThreadId, int32 NiceValue );
+	static void SetThreadPriority( EThreadPriority NewPriority );
 
 	/**
 	 * @brief Releases locks that we held for IsFirstInstance check

@@ -5,8 +5,7 @@
 #include "Misc/ScopeLock.h"
 #include "OnlineSessionSettings.h"
 #include "Interfaces/OnlineSessionInterface.h"
-#include "OnlineSubsystemEOSPackage.h"
-#include "LANBeacon.h"
+#include "Online/LANBeacon.h"
 #include "OnlineSubsystemEOSTypes.h"
 
 class FOnlineSubsystemEOS;
@@ -15,8 +14,10 @@ class FOnlineSubsystemEOS;
 	#include "eos_sessions_types.h"
 	#include "eos_lobby_types.h"
 
-
-typedef TEOSCallback<EOS_Sessions_OnUpdateSessionCallback, EOS_Sessions_UpdateSessionCallbackInfo> FUpdateSessionCallback;
+static FName EOS_SESSION_ID = TEXT("EOS_SESSION_ID");
+static FName EOS_LOBBY_ID = TEXT("EOS_LOBBY_ID");
+TEMP_UNIQUENETIDSTRING_SUBCLASS(FUniqueNetIdEOSSession, EOS_SESSION_ID);
+TEMP_UNIQUENETIDSTRING_SUBCLASS(FUniqueNetIdEOSLobby, EOS_LOBBY_ID);
 
 struct FSessionSearchEOS
 {
@@ -33,11 +34,27 @@ struct FSessionSearchEOS
 	}
 };
 
+struct FLobbyDetailsEOS : FNoncopyable
+{
+	EOS_HLobbyDetails LobbyDetailsHandle;
+
+	FLobbyDetailsEOS(EOS_HLobbyDetails InLobbyDetailsHandle)
+		: LobbyDetailsHandle(InLobbyDetailsHandle)
+	{
+	}
+
+	virtual ~FLobbyDetailsEOS()
+	{
+		EOS_LobbyDetails_Release(LobbyDetailsHandle);
+	}
+};
+
 /**
  * Interface for interacting with EOS sessions
  */
-class FOnlineSessionEOS :
-	public IOnlineSession
+class FOnlineSessionEOS
+	: public IOnlineSession
+	, public TSharedFromThis<FOnlineSessionEOS, ESPMode::ThreadSafe>
 {
 public:
 	FOnlineSessionEOS() = delete;
@@ -138,7 +155,6 @@ public:
 	virtual void DumpSessionState() override;
 // ~IOnlineSession Interface
 
-PACKAGE_SCOPE:
 	/** Critical sections for thread safe operation of session lists */
 	mutable FCriticalSection SessionLock;
 
@@ -178,6 +194,10 @@ PACKAGE_SCOPE:
 
 	void CheckPendingSessionInvite();
 
+	void UpdateOrAddLobbyMember(const FUniqueNetIdEOSLobbyRef& LobbyNetId, const FUniqueNetIdEOSRef& PlayerId);
+	bool AddOnlineSessionMember(FName SessionName, const FUniqueNetIdRef& PlayerId);
+	bool RemoveOnlineSessionMember(FName SessionName, const FUniqueNetIdRef& PlayerId);
+
 	void RegisterLocalPlayers(class FNamedOnlineSession* Session);
 
 	void Init(const FString& InBucketId);
@@ -186,7 +206,8 @@ private:
 	// EOS Lobbies
 
 	EOS_HLobby LobbyHandle;
-	TMap<FString, TSharedRef<EOS_HLobbyDetails>> LobbySearchResultsCache;
+	TArray<TSharedRef<FLobbyDetailsEOS>> PendingLobbySearchResults;
+	TMap<FString, TSharedRef<FLobbyDetailsEOS>> LobbySearchResultsCache;
 
 	// Lobby session callbacks and methods
 	FCallbackBase* LobbyCreatedCallback;
@@ -224,27 +245,32 @@ private:
 	void OnLobbyInviteAccepted(const char* InviteId, const EOS_ProductUserId& LocalUserId, const EOS_ProductUserId& TargetUserId);
 	void OnJoinLobbyAccepted(const EOS_ProductUserId& LocalUserId, const EOS_UI_EventId& UiEventId);
 
-	// Lobby Update
+	// Methods to update an API Lobby from an OSS Lobby
 	void SetLobbyPermissionLevel(EOS_HLobbyModification LobbyModificationHandle, FNamedOnlineSession* Session);
 	void SetLobbyMaxMembers(EOS_HLobbyModification LobbyModificationHandle, FNamedOnlineSession* Session);
 	void SetLobbyAttributes(EOS_HLobbyModification LobbyModificationHandle, FNamedOnlineSession* Session);
 	void AddLobbyAttribute(EOS_HLobbyModification LobbyModificationHandle, const EOS_Lobby_AttributeData* Attribute);
 	void AddLobbyMemberAttribute(EOS_HLobbyModification LobbyModificationHandle, const EOS_Lobby_AttributeData* Attribute);
-	void AddLobbyMember(const FUniqueNetIdEOSRef LobbyNetId, const EOS_ProductUserId& TargetUserId);
+	void AddLobbyMember(const FUniqueNetIdStringRef LobbyNetId, const EOS_ProductUserId& TargetUserId);
+
+	// Methods to update an OSS Lobby from an API Lobby
+	typedef TFunction<void(bool bWasSuccessful)> FOnCopyLobbyDataCompleteCallback;
+	void CopyLobbyData(const TSharedRef<FLobbyDetailsEOS>& LobbyDetails, EOS_LobbyDetails_Info* LobbyDetailsInfo, FOnlineSession& OutSession, const FOnCopyLobbyDataCompleteCallback& Callback);
+	void CopyLobbyAttributes(const TSharedRef<FLobbyDetailsEOS>& LobbyDetails, FOnlineSession& OutSession);
+	void CopyLobbyMemberAttributes(const FLobbyDetailsEOS& LobbyDetails, const EOS_ProductUserId& TargetUserId, FSessionSettings& OutSessionSettings);
 
 	// Lobby search
 	void AddLobbySearchAttribute(EOS_HLobbySearch LobbySearchHandle, const EOS_Lobby_AttributeData* Attribute, EOS_EOnlineComparisonOp ComparisonOp);
-	void AddLobbySearchResult(EOS_HLobbyDetails LobbyDetailsHandle, const TSharedRef<FOnlineSessionSearch>& SearchSettings);
-	void CopyLobbyData(EOS_HLobbyDetails LobbyDetailsHandle, EOS_LobbyDetails_Info* LobbyDetailsInfo, FOnlineSession& OutSession);
-	void CopyLobbyAttributes(EOS_HLobbyDetails LobbyDetailsHandle, FOnlineSession& OutSession);
-	void CopyLobbyMemberAttributes(EOS_HLobbyDetails LobbyDetailsHandle, const EOS_ProductUserId& TargetUserId, FSessionSettings& OutSessionSettings);
+	void AddLobbySearchResult(const TSharedRef<FLobbyDetailsEOS>& LobbyDetails, const TSharedRef<FOnlineSessionSearch>& SearchSettings, const FOnCopyLobbyDataCompleteCallback& Callback);
 
 	// Helper methods
 	typedef TFunction<void(const EOS_ProductUserId& ProductUserId, EOS_EpicAccountId& EpicAccountId)> GetEpicAccountIdAsyncCallback;
 
 	void GetEpicAccountIdAsync(const EOS_ProductUserId& ProductUserId, const GetEpicAccountIdAsyncCallback& Callback);
 	void RegisterLobbyNotifications();
-	FNamedOnlineSession* GetNamedSessionFromLobbyId(const FUniqueNetIdEOS& LobbyId);
+	FNamedOnlineSession* GetNamedSessionFromLobbyId(const FUniqueNetIdEOSLobby& LobbyId);
+	FOnlineSessionSearchResult* GetSearchResultFromLobbyId(const FUniqueNetIdEOSLobby& LobbyId);
+	FOnlineSession* GetOnlineSessionFromLobbyId(const FUniqueNetIdEOSLobby& LobbyId);
 	bool GetEpicAccountIdFromProductUserId(const EOS_ProductUserId& ProductUserId, EOS_EpicAccountId& EpicAccountId);
 	EOS_ELobbyPermissionLevel GetLobbyPermissionLevelFromSessionSettings(const FOnlineSessionSettings& SessionSettings);
 	uint32_t GetLobbyMaxMembersFromSessionSettings(const FOnlineSessionSettings& SessionSettings);
@@ -271,9 +297,12 @@ private:
 	void CopyAttributes(EOS_HSessionDetails SessionHandle, FOnlineSession& OutSession);
 
 	void SetPermissionLevel(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session);
+	void SetMaxPlayers(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session);
+	void SetInvitesAllowed(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session);
 	void SetJoinInProgress(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session);
 	void AddAttribute(EOS_HSessionModification SessionModHandle, const EOS_Sessions_AttributeData* Attribute);
 	void SetAttributes(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session);
+	typedef TEOSCallback<EOS_Sessions_OnUpdateSessionCallback, EOS_Sessions_UpdateSessionCallbackInfo, FOnlineSessionEOS> FUpdateSessionCallback;
 	uint32 SharedSessionUpdate(EOS_HSessionModification SessionModHandle, FNamedOnlineSession* Session, FUpdateSessionCallback* Callback);
 
 	void TickLanTasks(float DeltaTime);
@@ -310,5 +339,6 @@ private:
 };
 
 typedef TSharedPtr<FOnlineSessionEOS, ESPMode::ThreadSafe> FOnlineSessionEOSPtr;
+typedef TWeakPtr<FOnlineSessionEOS, ESPMode::ThreadSafe> FOnlineSessionEOSWeakPtr;
 
 #endif

@@ -66,7 +66,7 @@ void SControlRigGraphPinVariableName::SetVariableNameText(const FText& NewTypeIn
 
 TSharedRef<SWidget> SControlRigGraphPinVariableName::MakeVariableNameItemWidget(TSharedPtr<FString> InItem)
 {
-	return 	SNew(STextBlock).Text(FText::FromString(*InItem));// .Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
+	return 	SNew(STextBlock).Text(FText::FromString(*InItem));// .Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")));
 }
 
 void SControlRigGraphPinVariableName::OnVariableNameChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo)
@@ -111,6 +111,25 @@ TArray<TSharedPtr<FString>>& SControlRigGraphPinVariableName::GetVariableNames()
 				if (VariableDescription.CPPType == MyDescription.CPPType)
 				{
 					VariableNames.Add(MakeShared<FString>(VariableDescription.Name.ToString()));
+				}
+			}
+
+			if (UControlRigBlueprint* Blueprint = Cast<UControlRigBlueprint>(ModelNode->GetGraph()->GetOuter()))
+			{
+				for (FBPVariableDescription& BPVariable : Blueprint->NewVariables)
+				{
+					FRigVMGraphVariableDescription* Found = VariableDescriptions.FindByPredicate([&BPVariable](const FRigVMGraphVariableDescription& Description) {
+						if (Description.Name == BPVariable.VarName)
+						{
+							return true;
+						}
+						return false;
+					});
+
+					if (!Found)
+					{
+						VariableNames.Add(MakeShared<FString>(BPVariable.VarName.ToString()));
+					}
 				}
 			}
 		}

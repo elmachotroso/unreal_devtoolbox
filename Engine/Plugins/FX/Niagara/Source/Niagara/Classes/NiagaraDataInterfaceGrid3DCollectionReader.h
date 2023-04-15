@@ -20,8 +20,6 @@ class NIAGARA_API UNiagaraDataInterfaceGrid3DCollectionReader : public UNiagaraD
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	// Name of the emitter to read from
 	UPROPERTY(EditAnywhere, Category = "Reader")
 	FString EmitterName;
@@ -32,7 +30,7 @@ public:
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
-	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const override;
+	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const override;
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual bool PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) override;
 

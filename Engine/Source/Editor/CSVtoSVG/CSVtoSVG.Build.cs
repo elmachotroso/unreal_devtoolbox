@@ -17,6 +17,7 @@ public class CSVtoSVG : ModuleRules
 				"AssetRegistry",
                 "AssetTools",
 				"EditorWidgets",
+				"WorkspaceMenuStructure",
 			}
 		);
 
@@ -28,7 +29,6 @@ public class CSVtoSVG : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"ContentBrowserData",

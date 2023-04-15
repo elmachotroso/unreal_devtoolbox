@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/PBDSuspensionConstraints.h"
-#include "Chaos/Evolution/SolverDatas.h"
+#include "Chaos/Island/IslandManager.h"
 #include "Chaos/DebugDrawQueue.h"
 
 // Private includes
@@ -21,6 +21,15 @@ FAutoConsoleVariableRef CVarChaosSuspensionMaxPushoutVelocity(TEXT("p.Chaos.Susp
 
 float Chaos_Suspension_MaxPushout = 5.f;
 FAutoConsoleVariableRef CVarChaosSuspensionMaxPushout(TEXT("p.Chaos.Suspension.MaxPushout"), Chaos_Suspension_MaxPushout, TEXT("Chaos Suspension Max Pushout Value"));
+
+float Chaos_Suspension_SlopeThreshold = 0.707f;	// = Cos(SlopeAngle)
+FAutoConsoleVariableRef CVarChaosSuspensionSlopeThreshold(TEXT("p.Chaos.Suspension.SlopeThreshold"), Chaos_Suspension_SlopeThreshold, TEXT("Slope threshold below which the anti-slide on slope mechanism is employed, value = Cos(AlopeAngle), i.e. for 50 degree slope = 0.6428, 30 degree slope = 0.866"));
+
+float Chaos_Suspension_SlopeSpeedThreshold = 1.0f; // MPH
+FAutoConsoleVariableRef CVarChaosSuspensionSlopeSpeedThreshold(TEXT("p.Chaos.Suspension.SlopeSpeedThreshold"), Chaos_Suspension_SlopeSpeedThreshold, TEXT("Speed below which the anti-slide on slope mechanism is fully employed"));
+
+float Chaos_Suspension_SlopeSpeedBlendThreshold = 10.0f; // MPH
+FAutoConsoleVariableRef CVarChaosSuspensionSlopeSpeedBlendThreshold(TEXT("p.Chaos.Suspension.SlopeSpeedBlendThreshold"), Chaos_Suspension_SlopeSpeedBlendThreshold, TEXT("Speed below which the anti-slide on slope blend mechanism starts"));
 
 #if CHAOS_DEBUG_DRAW
 bool bChaos_Suspension_DebugDraw_Hardstop = false;
@@ -49,19 +58,9 @@ namespace Chaos
 		ConcreteContainer()->SetSettings(ConstraintIndex, Settings);
 	}
 
-	TVec2<FGeometryParticleHandle*> FPBDSuspensionConstraintHandle::GetConstrainedParticles() const
+	FParticlePair FPBDSuspensionConstraintHandle::GetConstrainedParticles() const
 	{
 		return ConcreteContainer()->GetConstrainedParticles(ConstraintIndex);
-	}
-
-	void FPBDSuspensionConstraintHandle::PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData)
-	{
-		ConcreteContainer()->PreGatherInput(Dt, ConstraintIndex, SolverData);
-	}
-
-	void FPBDSuspensionConstraintHandle::GatherInput(const FReal Dt, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData)
-	{
-		ConcreteContainer()->GatherInput(Dt, ConstraintIndex, Particle0Level, Particle1Level, SolverData);
 	}
 
 	Chaos::FPBDSuspensionConstraints::FConstraintContainerHandle* FPBDSuspensionConstraints::AddConstraint(TGeometryParticleHandle<FReal, 3>* Particle, const FVec3& InSuspensionLocalOffset, const FPBDSuspensionSettings& InConstraintSettings)
@@ -116,19 +115,99 @@ namespace Chaos
 			SetConstraintIndex(Handles[ConstraintIndex], ConstraintIndex);
 		}
 	}
-	
-	void FPBDSuspensionConstraints::SetNumIslandConstraints(const int32 NumIslandConstraints, FPBDIslandSolverData& SolverData)
+
+	void FPBDSuspensionConstraints::AddConstraintsToGraph(FPBDIslandManager& IslandManager)
 	{
-		SolverData.GetConstraintIndices(ContainerId).Reset(NumIslandConstraints);
+		IslandManager.AddContainerConstraints(*this);
 	}
 
-	// @todo: This does per body work so can't be safely parallelized
-	void FPBDSuspensionConstraints::PreGatherInput(const FReal Dt, const int32 ConstraintIndex, FPBDIslandSolverData& SolverData)
+	void FPBDSuspensionConstraints::AddBodies(FSolverBodyContainer& SolverBodyContainer)
 	{
-		SolverData.GetConstraintIndices(ContainerId).Add(ConstraintIndex);
+		for (int32 ConstraintIndex = 0; ConstraintIndex < NumConstraints(); ++ConstraintIndex)
+		{
+			AddBodies(ConstraintIndex, SolverBodyContainer);
+		}
+	}
 
-		ConstraintSolverBodies[ConstraintIndex] = SolverData.GetBodyContainer().FindOrAdd(ConstrainedParticles[ConstraintIndex]);
+	void FPBDSuspensionConstraints::GatherInput(const FReal Dt)
+	{
+		for (int32 ConstraintIndex = 0; ConstraintIndex < NumConstraints(); ++ConstraintIndex)
+		{
+			GatherInput(ConstraintIndex, Dt);
+		}
+	}
 
+	void FPBDSuspensionConstraints::ScatterOutput(const FReal Dt)
+	{
+		for (int32 ConstraintIndex = 0; ConstraintIndex < NumConstraints(); ++ConstraintIndex)
+		{
+			ScatterOutput(ConstraintIndex, Dt);
+		}
+	}
+
+	void FPBDSuspensionConstraints::ApplyPositionConstraints(const FReal Dt, const int32 It, const int32 NumIts)
+	{
+		for (int32 ConstraintIndex = 0; ConstraintIndex < NumConstraints(); ++ConstraintIndex)
+		{
+			ApplyPositionConstraint(ConstraintIndex, Dt, It, NumIts);
+		}
+	}
+
+	void FPBDSuspensionConstraints::ApplyVelocityConstraints(const FReal Dt, const int32 It, const int32 NumIts)
+	{
+		for (int32 ConstraintIndex = 0; ConstraintIndex < NumConstraints(); ++ConstraintIndex)
+		{
+			ApplyVelocityConstraint(ConstraintIndex, Dt, It, NumIts);
+		}
+	}
+
+	void FPBDSuspensionConstraints::AddBodies(const TArrayView<int32>& ConstraintIndices, FSolverBodyContainer& SolverBodyContainer)
+	{
+		for (int32 ConstraintIndex : ConstraintIndices)
+		{
+			AddBodies(ConstraintIndex, SolverBodyContainer);
+		}
+	}
+
+	void FPBDSuspensionConstraints::GatherInput(const TArrayView<int32>& ConstraintIndices, const FReal Dt)
+	{
+		for (int32 ConstraintIndex : ConstraintIndices)
+		{
+			GatherInput(ConstraintIndex, Dt);
+		}
+	}
+
+	void FPBDSuspensionConstraints::ScatterOutput(const TArrayView<int32>& ConstraintIndices, const FReal Dt)
+	{
+		for (int32 ConstraintIndex : ConstraintIndices)
+		{
+			ScatterOutput(ConstraintIndex, Dt);
+		}
+	}
+
+	void FPBDSuspensionConstraints::ApplyPositionConstraints(const TArrayView<int32>& ConstraintIndices, const FReal Dt, const int32 It, const int32 NumIts)
+	{
+		for (int32 ConstraintIndex : ConstraintIndices)
+		{
+			ApplyPositionConstraint(ConstraintIndex, Dt, It, NumIts);
+		}
+	}
+
+	void FPBDSuspensionConstraints::ApplyVelocityConstraints(const TArrayView<int32>& ConstraintIndices, const FReal Dt, const int32 It, const int32 NumIts)
+	{
+		for (int32 ConstraintIndex : ConstraintIndices)
+		{
+			ApplyVelocityConstraint(ConstraintIndex, Dt, It, NumIts);
+		}
+	}
+
+	void FPBDSuspensionConstraints::AddBodies(const int32 ConstraintIndex, FSolverBodyContainer& SolverBodyContainer)
+	{
+		ConstraintSolverBodies[ConstraintIndex] = SolverBodyContainer.FindOrAdd(ConstrainedParticles[ConstraintIndex]);
+	}
+
+	void FPBDSuspensionConstraints::GatherInput(const int32 ConstraintIndex, const FReal Dt)
+	{
 		ConstraintResults[ConstraintIndex].Reset();
 
 		// Hard-stop Collision Manifold Generation
@@ -175,7 +254,7 @@ namespace Chaos
 				Body1->SetX(PosBody1);
 				check(Body1->InvM() == 0);
 
-				Solver->SetSolverBodies(Body0, Body1);
+				Solver->SetSolverBodies(*Body0, *Body1);
 				Solver->SetNumManifoldPoints(1);
 				Solver->SetFriction(0, 0, 0);
 
@@ -213,43 +292,33 @@ namespace Chaos
 
 	}
 
-	void FPBDSuspensionConstraints::GatherInput(const FReal Dt, const int32 ConstraintIndex, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData)
+	void FPBDSuspensionConstraints::ScatterOutput(const int32 ConstraintIndex, FReal Dt)
 	{
-	}
-
-	void FPBDSuspensionConstraints::ScatterOutput(FReal Dt, FPBDIslandSolverData& SolverData)
-	{
-		for (int32 ConstraintIndex : SolverData.GetConstraintIndices(ContainerId))
+		if ((CollisionSolvers.Num() > 0) && (CollisionSolvers[ConstraintIndex] != nullptr) && (CollisionSolvers[ConstraintIndex]->NumManifoldPoints() > 0))
 		{
-			if ((CollisionSolvers.Num() > 0) && (CollisionSolvers[ConstraintIndex] != nullptr) && (CollisionSolvers[ConstraintIndex]->NumManifoldPoints() > 0))
-			{
-				const FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
-				const FPBDCollisionSolverManifoldPoint& ManifoldPoint = CollisionSolver->GetManifoldPoint(0);
-				ConstraintResults[ConstraintIndex].HardStopNetPushOut = ManifoldPoint.NetPushOutNormal * ManifoldPoint.WorldContactNormal;
-				ConstraintResults[ConstraintIndex].HardStopNetImpulse = ManifoldPoint.NetImpulseNormal * ManifoldPoint.WorldContactNormal;
-			}
-
-			ConstraintSolverBodies[ConstraintIndex] = nullptr;
-			CollisionSolvers[ConstraintIndex]->SetSolverBodies(nullptr, nullptr);
+			const FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
+			const FPBDCollisionSolverManifoldPoint& ManifoldPoint = CollisionSolver->GetManifoldPoint(0);
+			ConstraintResults[ConstraintIndex].HardStopNetPushOut = ManifoldPoint.NetPushOutNormal * ManifoldPoint.WorldContactNormal;
+			ConstraintResults[ConstraintIndex].HardStopNetImpulse = ManifoldPoint.NetImpulseNormal * ManifoldPoint.WorldContactNormal;
 		}
+
+		ConstraintSolverBodies[ConstraintIndex] = nullptr;
+		CollisionSolvers[ConstraintIndex]->ResetSolverBodies();
 	}
 
-	bool FPBDSuspensionConstraints::ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData)
+	void FPBDSuspensionConstraints::ApplyPositionConstraint(const int32 ConstraintIndex, const FReal Dt, const int32 It, const int32 NumIts)
 	{
 		if (bChaos_Suspension_Hardstop_Enabled)
 		{
 			// Suspension Hardstop
-			for (int32 ConstraintIndex : SolverData.GetConstraintIndices(ContainerId))
+			const FPBDSuspensionSettings& Setting = ConstraintSettings[ConstraintIndex];
+			if (Setting.Enabled)
 			{
-				const FPBDSuspensionSettings& Setting = ConstraintSettings[ConstraintIndex];
-				if (Setting.Enabled)
+				FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
+				if ((CollisionSolver != nullptr) && (CollisionSolver->NumManifoldPoints() > 0))
 				{
-					FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
-					if ((CollisionSolver != nullptr) && (CollisionSolver->NumManifoldPoints() > 0))
-					{
-						FReal MaxPushoutValue = FMath::Min(Chaos_Suspension_MaxPushout, Chaos_Suspension_MaxPushoutVelocity * Dt);
-						CollisionSolver->SolvePositionNoFriction(FSolverReal(Dt), FSolverReal(MaxPushoutValue));
-					}
+					FReal MaxPushoutValue = FMath::Min(Chaos_Suspension_MaxPushout, Chaos_Suspension_MaxPushoutVelocity * Dt);
+					CollisionSolver->SolvePositionNoFriction(FSolverReal(Dt), FSolverReal(MaxPushoutValue));
 				}
 			}
 		}
@@ -257,39 +326,28 @@ namespace Chaos
 		if (bChaos_Suspension_Spring_Enabled)
 		{
 			// Suspension Spring
-			for (int32 ConstraintIndex : SolverData.GetConstraintIndices(ContainerId))
-			{
-				ApplySingle(Dt, ConstraintIndex);
-			}
+			ApplySingle(ConstraintIndex, Dt);
 		}
-
-		// @todo(chaos): early iteration termination in FPBDSuspensionConstraints
-		return true;
 	}
 
-	bool FPBDSuspensionConstraints::ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData)
+	void FPBDSuspensionConstraints::ApplyVelocityConstraint(const int32 ConstraintIndex, const FReal Dt, const int32 It, const int32 NumIts)
 	{
 		if (bChaos_Suspension_Hardstop_Enabled && bChaos_Suspension_VelocitySolve)
 		{
 			// Suspension Hardstop
-			for (int32 ConstraintIndex : SolverData.GetConstraintIndices(ContainerId))
+			const FPBDSuspensionSettings& Setting = ConstraintSettings[ConstraintIndex];
+			if (Setting.Enabled)
 			{
-				const FPBDSuspensionSettings& Setting = ConstraintSettings[ConstraintIndex];
-				if (Setting.Enabled)
+				FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
+				if ((CollisionSolver != nullptr) && (CollisionSolver->NumManifoldPoints() > 0))
 				{
-					FPBDCollisionSolver* CollisionSolver = CollisionSolvers[ConstraintIndex];
-					if ((CollisionSolver != nullptr) && (CollisionSolver->NumManifoldPoints() > 0))
-					{
-						CollisionSolver->SolveVelocity(FSolverReal(Dt), false);
-					}
+					CollisionSolver->SolveVelocity(FSolverReal(Dt), false);
 				}
 			}
 		}
-
-		return true;
 	}
 
-	void FPBDSuspensionConstraints::ApplySingle(const FReal Dt, int32 ConstraintIndex)
+	void FPBDSuspensionConstraints::ApplySingle(int32 ConstraintIndex, const FReal Dt)
 	{
 		check(ConstraintSolverBodies[ConstraintIndex] != nullptr);
 		FSolverBody& Body = *ConstraintSolverBodies[ConstraintIndex];
@@ -314,28 +372,28 @@ namespace Chaos
 
 			FVec3 AxisWorld = BodyQ.RotateVector(SuspensionCoMAxis);
 
-			const FVec3& SurfaceNormal = Setting.Normal;
+			FVec3 SurfaceNormal = Setting.Normal;
 
 			const float MPHToCmS = 100000.f / 2236.94185f;
-			const float SpeedThreshold = 10.0f * MPHToCmS;
-			const float FortyFiveDegreesThreshold = 0.707f;
+			const float SpeedThreshold = Chaos_Suspension_SlopeSpeedThreshold * MPHToCmS;
+			const float SpeedBlendThreshold = Chaos_Suspension_SlopeSpeedBlendThreshold * MPHToCmS;
 
-			// @todo(chaos): do we need this?
-			//if (AxisWorld.Z > FortyFiveDegreesThreshold)
-			//{
-			//	if (Body.V().SquaredLength() < 1.0f)
-			//	{
-			//		AxisWorld = FVec3(0.f, 0.f, 1.f);
-			//	}
-			//	else
-			//	{
-			//		const FReal Speed = FMath::Abs(Body.V().Length());
-			//		if (Speed < SpeedThreshold)
-			//		{
-			//			AxisWorld = FMath::Lerp(FVec3(0.f, 0.f, 1.f), AxisWorld, Speed / SpeedThreshold);
-			//		}
-			//	}
-			//}
+			// Ingeniously blends the surface normal at low speeds to stop vehicles sliding slowly down steep slopes
+			if (SurfaceNormal.Z > Chaos_Suspension_SlopeThreshold)
+			{
+				if (Body.V().SquaredLength() < (SpeedThreshold * SpeedThreshold))
+				{
+					SurfaceNormal = FVec3(0.f, 0.f, 1.f);
+				}
+				else
+				{
+					const FReal Speed = FMath::Abs(Body.V().Length());
+					if (Speed < SpeedBlendThreshold)
+					{
+						SurfaceNormal = FMath::Lerp(FVec3(0.f, 0.f, 1.f), SurfaceNormal, Speed / SpeedBlendThreshold);
+					}
+				}
+			}
 
 			FReal Distance = FVec3::DotProduct(WorldSpaceX - T, AxisWorld);
 			if (Distance >= Setting.MaxLength)

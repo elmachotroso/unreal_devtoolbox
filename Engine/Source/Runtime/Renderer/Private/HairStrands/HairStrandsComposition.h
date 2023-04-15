@@ -7,16 +7,18 @@
 #pragma once
 
 #include "RenderGraph.h"
-#include "Renderer/Private/SceneRendering.h"
+#include "SceneRendering.h"
 
 void RenderHairComposition(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	FRDGTextureRef SceneColorTexture,
-	FRDGTextureRef SceneDepthTexture);
+	FRDGTextureRef SceneDepthTexture, 
+	FRDGTextureRef VelocityTexture);
 
 void RenderHairComposition(
 	FRDGBuilder& GraphBuilder, 
 	const TArray<FViewInfo>& Views,
 	FRDGTextureRef SceneColorTexture,
-	FRDGTextureRef SceneDepthTexture);
+	FRDGTextureRef SceneDepthTexture,
+	FRDGTextureRef VelocityTexture);

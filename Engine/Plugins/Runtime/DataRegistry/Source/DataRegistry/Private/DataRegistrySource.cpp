@@ -6,6 +6,8 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Engine/AssetManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistrySource)
+
 const UDataRegistry* UDataRegistrySource::GetRegistry() const
 {
 	return CastChecked<UDataRegistry>(GetOuter());
@@ -98,7 +100,7 @@ bool UDataRegistrySource::IsTransientSource() const
 
 UDataRegistrySource* UDataRegistrySource::GetOriginalSource()
 {
-	return ParentSource ? ParentSource : this;
+	return ParentSource ? ToRawPtr(ParentSource) : this;
 }
 
 bool UDataRegistrySource::IsSpecificAssetRegistered(const FSoftObjectPath& AssetPath) const
@@ -197,7 +199,7 @@ void UMetaDataRegistrySource::DetermineRuntimeNames(TArray<FName>& OutRuntimeNam
 			TempRules.bSkipVirtualPathExpansion = true;
 		}
 
-		AssetManager.SearchAssetRegistryPaths(AssetDataList, SearchRules);
+		AssetManager.SearchAssetRegistryPaths(AssetDataList, TempRules);
 
 		if (bExpandedVirtual)
 		{
@@ -221,7 +223,7 @@ void UMetaDataRegistrySource::DetermineRuntimeNames(TArray<FName>& OutRuntimeNam
 	{
 		if (DoesAssetPassFilter(AssetData, false))
 		{
-			OutRuntimeNames.Add(AssetData.ObjectPath);
+			OutRuntimeNames.Add(FName(*AssetData.GetObjectPathString()));
 		}
 	}
 }
@@ -243,7 +245,7 @@ void UMetaDataRegistrySource::RefreshRuntimeSources()
 
 	for (FName SourceName : RuntimeNames)
 	{
-		UDataRegistrySource** FoundSource = RuntimeChildren.Find(SourceName);
+		TObjectPtr<UDataRegistrySource>* FoundSource = RuntimeChildren.Find(SourceName);
 		if (FoundSource && *FoundSource)
 		{
 			SetDataForChild(SourceName, *FoundSource);
@@ -253,6 +255,10 @@ void UMetaDataRegistrySource::RefreshRuntimeSources()
 			UDataRegistrySource* NewSource = CreateTransientSource(GetChildSourceClass());
 			SetDataForChild(SourceName, NewSource);
 			RuntimeChildren.Add(SourceName, NewSource);
+			if (GUObjectArray.IsDisregardForGC(this))
+			{
+				NewSource->AddToRoot();
+			}
 
 			NewSource->Initialize();
 		}
@@ -266,6 +272,10 @@ void UMetaDataRegistrySource::RefreshRuntimeSources()
 			if (MapIt.Value())
 			{
 				MapIt.Value()->Deinitialize();
+				if (GUObjectArray.IsDisregardForGC(this))
+				{
+					MapIt.Value()->RemoveFromRoot();
+				}
 			}
 			MapIt.RemoveCurrent();
 		}
@@ -278,7 +288,7 @@ void UMetaDataRegistrySource::AddRuntimeSources(TArray<UDataRegistrySource*>& Ou
 	{
 		for (FName SourceName : RuntimeNames)
 		{
-			UDataRegistrySource** FoundSource = RuntimeChildren.Find(SourceName);
+			TObjectPtr<UDataRegistrySource>* FoundSource = RuntimeChildren.Find(SourceName);
 			if (FoundSource && *FoundSource)
 			{
 				OutRuntimeSources.Add(*FoundSource);
@@ -388,3 +398,4 @@ void UMetaDataRegistrySource::SortRegisteredAssets()
 		return A.Value > B.Value;
 	});
 }
+

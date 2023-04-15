@@ -16,8 +16,7 @@
 #include "PipelineStateCache.h"
 
 IMPLEMENT_SHADER_TYPE(,FCubemapTexturePropertiesVS,TEXT("/Engine/Private/SimpleElementVertexShader.usf"),TEXT("Main"),SF_Vertex);
-IMPLEMENT_SHADER_TYPE(template<>,FCubemapTexturePropertiesPS<false>,TEXT("/Engine/Private/SimpleElementPixelShader.usf"),TEXT("CubemapTextureProperties"),SF_Pixel);
-IMPLEMENT_SHADER_TYPE(template<>,FCubemapTexturePropertiesPS<true>,TEXT("/Engine/Private/SimpleElementPixelShader.usf"),TEXT("CubemapTextureProperties"),SF_Pixel);
+IMPLEMENT_SHADER_TYPE(,FCubemapTexturePropertiesPS,TEXT("/Engine/Private/SimpleElementPixelShader.usf"),TEXT("CubemapTextureProperties"),SF_Pixel);
 IMPLEMENT_SHADER_TYPE(,FIESLightProfilePS,TEXT("/Engine/Private/SimpleElementPixelShader.usf"),TEXT("IESLightProfileMain"),SF_Pixel);
 
 namespace CubemapHelpers
@@ -37,7 +36,7 @@ namespace CubemapHelpers
 	bool GenerateLongLatUnwrap(const FTextureResource* TextureResource, const uint32 AxisDimenion, const EPixelFormat SourcePixelFormat, TArray64<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT)
 	{
 		TRefCountPtr<FBatchedElementParameters> BatchedElementParameters;
-		BatchedElementParameters = new FMipLevelBatchedElementParameters((float)0, true);
+		BatchedElementParameters = new FMipLevelBatchedElementParameters((float)0, (float)-1, false, FMatrix44f::Identity, true, true);
 		const FIntPoint LongLatDimensions(AxisDimenion * 2, AxisDimenion);
 
 		// If the source format is 8 bit per channel or less then select a LDR target format.
@@ -120,37 +119,69 @@ void FCubemapTexturePropertiesVS::SetParameters( FRHICommandList& RHICmdList, co
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), Transform, (FMatrix44f)TransformValue);
 }
 
-template<bool bHDROutput>
-void FCubemapTexturePropertiesPS<bHDROutput>::SetParameters( FRHICommandList& RHICmdList, const FTexture* Texture, const FMatrix& ColorWeightsValue, float MipLevel, float GammaValue )
+FCubemapTexturePropertiesPS::FCubemapTexturePropertiesPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+	: FGlobalShader(Initializer)
 {
-	SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(),CubeTexture,CubeTextureSampler,Texture);
-
-	FVector4f PackedProperties0Value(MipLevel, 0, 0, 0);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), PackedProperties0, PackedProperties0Value);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorWeights, (FMatrix44f)ColorWeightsValue);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), Gamma, GammaValue);
+	CubeTexture.Bind(Initializer.ParameterMap, TEXT("CubeTexture"));
+	CubeTextureSampler.Bind(Initializer.ParameterMap, TEXT("CubeTextureSampler"));
+	ColorWeights.Bind(Initializer.ParameterMap, TEXT("ColorWeights"));
+	PackedProperties0.Bind(Initializer.ParameterMap, TEXT("PackedProperties0"));
+	Gamma.Bind(Initializer.ParameterMap, TEXT("Gamma"));
+	NumSlices.Bind(Initializer.ParameterMap, TEXT("NumSlices"));
+	SliceIndex.Bind(Initializer.ParameterMap, TEXT("SliceIndex"));
+	ViewMatrix.Bind(Initializer.ParameterMap, TEXT("ViewMatrix"));
 }
 
-void FMipLevelBatchedElementParameters::BindShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, ERHIFeatureLevel::Type InFeatureLevel, const FMatrix& InTransform, const float InGamma, const FMatrix& ColorWeights, const FTexture* Texture)
+bool FCubemapTexturePropertiesPS::ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 {
-	if(bHDROutput)
+	if (!IsPCPlatform(Parameters.Platform))
 	{
-		BindShaders<FCubemapTexturePropertiesPS<true> >(RHICmdList, GraphicsPSOInit, InFeatureLevel, InTransform, InGamma, ColorWeights, Texture);
+		return false;
 	}
-	else
+
+	FPermutationDomain PermutationVector(Parameters.PermutationId);
+	if (PermutationVector.Get<FCubeArray>() && !IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5))
 	{
-		BindShaders<FCubemapTexturePropertiesPS<false> >(RHICmdList, GraphicsPSOInit, InFeatureLevel, InTransform, InGamma, ColorWeights, Texture);
+		return false;
+	}
+	return true;
+}
+
+void FCubemapTexturePropertiesPS::SetParameters(FRHICommandList& RHICmdList, const FTexture* InTexture, const FMatrix& InColorWeightsValue, float InMipLevel, float InSliceIndex, bool bInIsTextureCubeArray, const FMatrix44f& InViewMatrix, bool bInShowLongLatUnwrap, float InGammaValue)
+{
+	FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
+
+	SetTextureParameter(RHICmdList, ShaderRHI, CubeTexture, CubeTextureSampler, InTexture);
+
+	FVector4f PackedProperties0Value(InMipLevel, bInShowLongLatUnwrap ? 1.0f : -1.0f, 0, 0);
+	SetShaderValue(RHICmdList, ShaderRHI, PackedProperties0, PackedProperties0Value);
+	SetShaderValue(RHICmdList, ShaderRHI, ColorWeights, (FMatrix44f)InColorWeightsValue);
+	SetShaderValue(RHICmdList, ShaderRHI, Gamma, InGammaValue);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ViewMatrix, InViewMatrix);
+
+	// store slice count and selected slice index for the texture cube array
+	if (bInIsTextureCubeArray)
+	{
+		// GetSizeZ() returns the total number of slices stored in the platform data
+		// for a TextureCube array this value is equal to the size of the array multiplied by 6
+		const float NumSlicesData = (float)(InTexture ? FMath::Max((int32)InTexture->GetSizeZ() / 6, 1) : 1);
+		SetShaderValue(RHICmdList, ShaderRHI, NumSlices, NumSlicesData);
+		SetShaderValue(RHICmdList, ShaderRHI, SliceIndex, InSliceIndex);
 	}
 }
 
-template<typename TPixelShader>
 void FMipLevelBatchedElementParameters::BindShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, ERHIFeatureLevel::Type InFeatureLevel, const FMatrix& InTransform, const float InGamma, const FMatrix& ColorWeights, const FTexture* Texture)
 {
 	GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
 
 	TShaderMapRef<FCubemapTexturePropertiesVS> VertexShader(GetGlobalShaderMap(InFeatureLevel));
-	TShaderMapRef<TPixelShader> PixelShader(GetGlobalShaderMap(InFeatureLevel));
-	
+
+	typename FCubemapTexturePropertiesPS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FCubemapTexturePropertiesPS::FHDROutput>(bHDROutput);
+	PermutationVector.Set<FCubemapTexturePropertiesPS::FCubeArray>(bIsTextureCubeArray);
+
+	TShaderMapRef<FCubemapTexturePropertiesPS> PixelShader(GetGlobalShaderMap(InFeatureLevel), PermutationVector);
+
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GSimpleElementVertexDeclaration.VertexDeclarationRHI;
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
@@ -160,7 +191,7 @@ void FMipLevelBatchedElementParameters::BindShaders(FRHICommandList& RHICmdList,
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	VertexShader->SetParameters(RHICmdList, InTransform);
-	PixelShader->SetParameters(RHICmdList, Texture, ColorWeights, MipLevel, InGamma);
+	PixelShader->SetParameters(RHICmdList, Texture, ColorWeights, MipLevel, SliceIndex, bIsTextureCubeArray, ViewMatrix, bShowLongLatUnwrap, InGamma);
 }
 
 void FIESLightProfilePS::SetParameters( FRHICommandList& RHICmdList, const FTexture* Texture, float InBrightnessInLumens )

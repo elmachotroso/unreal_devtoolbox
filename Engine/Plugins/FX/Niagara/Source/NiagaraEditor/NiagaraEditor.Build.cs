@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 public class NiagaraEditor : ModuleRules
@@ -12,7 +13,11 @@ public class NiagaraEditor : ModuleRules
 			"NiagaraEditor/Private/Widgets",
 			"NiagaraEditor/Private/Sequencer/NiagaraSequence",
 			"NiagaraEditor/Private/ViewModels",
-			"NiagaraEditor/Private/TypeEditorUtilities"
+			"NiagaraEditor/Private/TypeEditorUtilities",
+			Path.Combine(GetModuleDirectory("GraphEditor"), "Private"),
+			Path.Combine(GetModuleDirectory("Niagara"), "Private"),
+			Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
+			Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 		});
 
 		PrivateDependencyModuleNames.AddRange(
@@ -54,9 +59,10 @@ public class NiagaraEditor : ModuleRules
 				"EditorWidgets",
 				"Renderer",
 				"DeveloperSettings",
-				"PythonScriptPlugin"
+				"PythonScriptPlugin",
+				"ImageWrapper",
 			}
-        );
+		);
 
 		if (Target.bBuildTargetDeveloperTools)
 		{
@@ -71,12 +77,14 @@ public class NiagaraEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Engine",
+				"MessageLog",
 				"Messaging",
-				"LevelEditor",
 				"AssetTools",
 				"ContentBrowser",
                 "DerivedDataCache",
-            }
+                "LevelEditor",
+				"WorkspaceMenuStructure"
+			}
         );
 
 		PublicDependencyModuleNames.AddRange(
@@ -91,7 +99,7 @@ public class NiagaraEditor : ModuleRules
             }
         );
 
-        PublicIncludePathModuleNames.AddRange(
+		PublicIncludePathModuleNames.AddRange(
             new string[] {
 				"Engine",
 				"Niagara"

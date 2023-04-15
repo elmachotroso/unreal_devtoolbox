@@ -2,17 +2,30 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "ISourceControlOperation.h"
-#include "ISourceControlChangelist.h"
-#include "ISourceControlState.h"
-#include "ISourceControlChangelistState.h"
+#include "Delegates/Delegate.h"
 #include "Features/IModularFeature.h"
+#include "HAL/Platform.h"
+#include "ISourceControlChangelist.h"
+#include "ISourceControlChangelistState.h"
+#include "ISourceControlOperation.h"
+#include "ISourceControlState.h"
+#include "Internationalization/Text.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
+
+class FName;
+class UPackage;
+template <typename FuncType> class TFunctionRef;
 
 #ifndef SOURCE_CONTROL_WITH_SLATE
 	#error "SOURCE_CONTROL_WITH_SLATE must be defined. Did you forget a dependency on the 'SourceControl' module?"
 #endif
 
+class FSourceControlInitSettings;
 class ISourceControlLabel;
 
 /**
@@ -260,7 +273,12 @@ public:
 	 */
 	virtual TArray< TSharedRef<class ISourceControlLabel> > GetLabels( const FString& InMatchingSpec ) const = 0;
 
-	virtual TArray<FSourceControlChangelistRef> GetChangelists( EStateCacheUsage::Type InStateCacheUsage ) = 0;
+	/**
+	 * Returns the list of available changelists if the underlying source control supports the 'changelist' concept.
+	 *
+	 * @param InStateCacheUsage True to retrieve the list from a local cache, false to request it from the server (if any).
+	 */
+	virtual TArray<FSourceControlChangelistRef> GetChangelists(EStateCacheUsage::Type InStateCacheUsage) = 0;
 
 	/**
 	 * Executes the FDownloadFile operation, but unlike the ::Execute method this can be called from a background thread, this
@@ -316,6 +334,27 @@ public:
 	virtual bool UsesCheckout() const = 0;
 
 	/**
+	 * Whether the provider uses individual file revisions
+	 */
+	virtual bool UsesFileRevisions() const = 0;
+
+	/**
+	 * Whether the current source control client is at the latest version 
+	 * @note This concept is currently only implemented for the Skein source control provider.
+	 * 
+	 * @return The result of the operation if supported by the provider
+	 */
+	virtual TOptional<bool> IsAtLatestRevision() const = 0;
+
+	/**
+	 * Returns the number of changes in the local workspace
+	 * NOTE: This concept is currently only implemented for the Skein source control provider.
+	 *
+	 * @return The result of the operation if supported by the provider
+	 */
+	virtual TOptional<int> GetNumLocalChanges() const = 0;
+
+	/**
 	 * Called every update.
 	 */
 	virtual void Tick() = 0;
@@ -327,6 +366,23 @@ public:
 	 */
 	virtual TSharedRef<class SWidget> MakeSettingsWidget() const = 0;
 #endif // SOURCE_CONTROL_WITH_SLATE
+
+protected:
+
+	/* 
+	 * The ::Create method is an easy way for us to create new providers, but we really don't 
+	 * want anything except FSourceControlModule calling it. For now we achieve this by having
+	 * ::Create protected and making FSourceControlModule a friend. 
+	 * TODO Move the create to a factory system via IModularFeatures and remove the friend declaration.
+	 */
+	friend class FSourceControlModule;
+
+	/** 
+	 * Creates a new instance of the source control provider type. Derived providers
+	 * should implement this if they can more than one provider of the same type existing. 
+	 * @see ISourceControlModule::CreateProvider
+	 */
+	virtual TUniquePtr<ISourceControlProvider> Create(const FStringView& OwnerName, const FSourceControlInitSettings& InitialSettings) const { return TUniquePtr<ISourceControlProvider>(); }
 };
 
 

@@ -8,6 +8,9 @@
 #include "ProfilingDebugging/ScopedTimers.h"
 
 #include "Intersection/IntersectionQueries2.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RectangleMarqueeMechanic)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "URectangleMarqueeMechanic"
@@ -224,7 +227,14 @@ TPair<FInputCapturePriority, FInputCapturePriority> URectangleMarqueeMechanic::G
 void URectangleMarqueeMechanic::Render(IToolsContextRenderAPI* RenderAPI)
 {
 	// Cache the camera state
-	GetParentTool()->GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(CameraRectangle.CameraState);
+	if (bUseExternalUpdateCameraState && ensureMsgf(UpdateCameraStateFunc, TEXT("bUseExternalUpdateCameraState is requested, but no update function has been provided.")))
+	{
+		CameraRectangle.CameraState = UpdateCameraStateFunc();
+	}
+	else
+	{
+		GetParentTool()->GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(CameraRectangle.CameraState);
+	}
 }
 
 FInputRayHit URectangleMarqueeMechanic::CanBeginClickDragSequence(const FInputDeviceRay& PressPos)
@@ -311,3 +321,4 @@ void URectangleMarqueeMechanic::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI*
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -3,86 +3,603 @@
 #include "SRCPanelExposedEntitiesList.h"
 
 #include "Algo/ForEach.h"
+#include "Commands/RemoteControlCommands.h"
 #include "Editor.h"
+#include "EditorFontGlyphs.h"
 #include "ISettingsModule.h"
 #include "RCPanelWidgetRegistry.h"
 #include "GameFramework/Actor.h"
 #include "Input/DragAndDrop.h"
+#include "IRemoteControlProtocolModule.h"
+#include "IRemoteControlProtocolWidgetsModule.h"
 #include "Engine/Selection.h"
 #include "Editor/EditorEngine.h"
 #include "Misc/Attribute.h"
 #include "Misc/Guid.h"
+#include "Misc/MessageDialog.h"
 #include "RemoteControlPanelStyle.h"
 #include "RemoteControlPreset.h"
 #include "RemoteControlUIModule.h"
 #include "ScopedTransaction.h"
+#include "SRCModeSwitcher.h"
 #include "SRCPanelFieldGroup.h"
 #include "SRCPanelExposedField.h"
+#include "Styling/RemoteControlStyles.h"
+#include "UI/Panels/SRCDockPanel.h"
 #include "UObject/Object.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanelEntitiesList"
 
+TSet<FName> SRCPanelExposedEntitiesList::DefaultProtocolColumns = {
+//	RemoteControlPresetColumns::LinkIdentifier,
+	RemoteControlPresetColumns::Mask,
+	RemoteControlPresetColumns::Status,
+	RemoteControlPresetColumns::BindingStatus,
+};
+
+/**
+ * A custom row to describe each entity in the list.
+ */
+class SEntityRow : public SMultiColumnTableRow<TSharedPtr<SRCPanelTreeNode>>
+{
+public:
+
+	SLATE_BEGIN_ARGS(SEntityRow)
+	{}
+	
+		SLATE_ATTRIBUTE(FName, ActiveProtocol)
+		SLATE_ARGUMENT(TSharedPtr<SRCPanelTreeNode>, Entity)
+
+		SLATE_ATTRIBUTE(FMargin, Padding)
+		SLATE_STYLE_ARGUMENT(FTableRowStyle, Style)
+
+		// Low level DragAndDrop
+		SLATE_EVENT(FOnDragDetected, OnDragDetected)
+		SLATE_EVENT(FOnTableRowDragEnter, OnDragEnter)
+		SLATE_EVENT(FOnTableRowDragLeave, OnDragLeave)
+		SLATE_EVENT(FOnTableRowDrop, OnDrop)
+
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTableView)
+	{
+		ActiveProtocol = InArgs._ActiveProtocol;
+		Entity = InArgs._Entity;
+
+		FSuperRowType::FArguments SuperArgs = FSuperRowType::FArguments();
+
+		SuperArgs.OnDragDetected(InArgs._OnDragDetected);
+		SuperArgs.OnDragEnter(InArgs._OnDragEnter);
+		SuperArgs.OnDragLeave(InArgs._OnDragLeave);
+		SuperArgs.OnDrop(InArgs._OnDrop);
+
+		SuperArgs.ExpanderStyleSet(&FCoreStyle::Get());
+		SuperArgs.Padding(InArgs._Padding);
+		SuperArgs.ShowWires(false);
+		SuperArgs.Style(InArgs._Style);
+
+		FSuperRowType::Construct(SuperArgs, OwnerTableView);
+	}
+
+	TSharedRef<SWidget> GenerateWidgetForColumn(const FName& InColumnName) override
+	{
+		const FName& ActiveProtocolName = ActiveProtocol.Get(NAME_None);
+
+		if (Entity.IsValid())
+		{
+			if (Entity->HasChildren() && InColumnName == RemoteControlPresetColumns::Description)
+			{
+				// -- Row is for TreeView --
+				SHorizontalBox::FSlot* InnerContentSlotNativePtr = nullptr;
+
+				TSharedRef<SWidget> TreeNode = SNew(SHorizontalBox)
+					.Clipping(EWidgetClipping::OnDemand)
+					
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.HAlign(HAlign_Right)
+					.VAlign(VAlign_Fill)
+					[
+						SAssignNew(ExpanderArrowWidget, SExpanderArrow, SharedThis(this))
+						.StyleSet(ExpanderStyleSet)
+						.ShouldDrawWires(false)
+					]
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1)
+					.Expose(InnerContentSlotNativePtr)
+					.Padding(8.f, 2.f)
+					[
+						Entity->GetWidget(InColumnName, ActiveProtocolName)
+					];
+
+				InnerContentSlot = InnerContentSlotNativePtr;
+
+				return TreeNode;
+
+			}
+			else
+			{
+				const bool bAlignCenter = InColumnName == RemoteControlPresetColumns::Status || InColumnName == RemoteControlPresetColumns::BindingStatus;
+				
+				const bool bAlignLeft = InColumnName == RemoteControlPresetColumns::Mask;
+
+				return SNew(SBox)
+					.Padding(FMargin(4.f, 2.f))
+					.HAlign(bAlignCenter ? HAlign_Center : bAlignLeft ? HAlign_Left : HAlign_Fill)
+					.VAlign(VAlign_Center)
+					[
+						Entity->GetWidget(InColumnName, ActiveProtocolName)
+					];
+			}
+		}
+
+		return SNullWidget::NullWidget;
+	}
+
+private:
+
+	//~ SWidget Interface
+	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override
+	{
+		if (Entity.IsValid())
+		{
+			Entity->EnterRenameMode();
+		}
+
+		return FSuperRowType::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
+	}
+
+private:
+
+	/** Holds the active protocol. */
+	TAttribute<FName> ActiveProtocol;
+
+	/** Cached reference of Entity */
+	TSharedPtr<SRCPanelTreeNode> Entity;
+};
+
 void SRCPanelExposedEntitiesList::Construct(const FArguments& InArgs, URemoteControlPreset* InPreset, TWeakPtr<FRCPanelWidgetRegistry> InWidgetRegistry)
 {
-	bIsInEditMode = InArgs._EditMode;
+	bIsInLiveMode = InArgs._LiveMode;
+	bIsInProtocolsMode = InArgs._ProtocolsMode;
 	Preset = TStrongObjectPtr<URemoteControlPreset>(InPreset);
 	OnEntityListUpdatedDelegate = InArgs._OnEntityListUpdated;
 	WidgetRegistry = MoveTemp(InWidgetRegistry);
+
+	WidgetRegistry.Pin()->OnObjectRefreshed().AddSP(this, &SRCPanelExposedEntitiesList::OnWidgetRegistryRefreshed);
 
 	ColumnSizeData.LeftColumnWidth = TAttribute<float>(this, &SRCPanelExposedEntitiesList::OnGetLeftColumnWidth);
 	ColumnSizeData.RightColumnWidth = TAttribute<float>(this, &SRCPanelExposedEntitiesList::OnGetRightColumnWidth);
 	ColumnSizeData.OnWidthChanged = SSplitter::FOnSlotResized::CreateSP(this, &SRCPanelExposedEntitiesList::OnSetColumnWidth);
 
+	bFilterApplicationRequested = false;
+	bSearchRequested = false;
+	SearchedText = MakeShared<FText>();
+
+	RCPanelStyle = &FRemoteControlPanelStyle::Get()->GetWidgetStyle<FRCPanelStyle>("RemoteControlPanel.MinorPanel");
+	ActiveListMode = EEntitiesListMode::Default;
+
+	// The Default group will be selected by default.
+	if (Preset.IsValid())
+	{
+		const FRemoteControlPresetGroup& DefaultGroup = Preset->Layout.GetDefaultGroup();
+
+		CurrentlySelectedGroup = DefaultGroup.Id;
+	}
+
+	// Major Panel
+	TSharedPtr<SRCMajorPanel> ExposePanel = SNew(SRCMajorPanel)
+		.HeaderLabel(LOCTEXT("ExposePanelHeader", "EXPOSE"))
+		.EnableFooter(false);
+
+	// Groups List
+	SAssignNew(GroupsListView, SListView<TSharedPtr<SRCPanelTreeNode>>)
+		.ItemHeight(24.f)
+		.OnGenerateRow(this, &SRCPanelExposedEntitiesList::OnGenerateRow)
+		.OnSelectionChanged(this, &SRCPanelExposedEntitiesList::OnSelectionChanged)
+		.SelectionMode(ESelectionMode::Single)
+		.ListItemsSource(reinterpret_cast<TArray<TSharedPtr<SRCPanelTreeNode>>*>(&FieldGroups))
+		.OnContextMenuOpening(this, &SRCPanelExposedEntitiesList::OnContextMenuOpening, SRCPanelTreeNode::Group)
+		.ListViewStyle(&RCPanelStyle->TableViewStyle)
+		.ClearSelectionOnClick(true);
+
+	// Group Dock Panel
+	TSharedPtr<SRCMinorPanel> GroupDockPanel = SNew(SRCMinorPanel)
+		.HeaderLabel(LOCTEXT("GroupLabel", "Group"))
+		.EnableFooter(false)
+		[
+			GroupsListView.ToSharedRef()
+		];
+
+	// Add New Group Button
+	TSharedPtr<SWidget> NewGroupButton = SNew(SButton)
+		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Add Group")))
+		.IsEnabled_Lambda([this]() { return !bIsInLiveMode.Get(); })
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.ForegroundColor(FSlateColor::UseForeground())
+		.ButtonStyle(&RCPanelStyle->FlatButtonStyle)
+		.ToolTipText(LOCTEXT("NewGroupToolTip", "Create new group."))
+		.OnClicked(this, &SRCPanelExposedEntitiesList::OnCreateGroup)
+		[
+			SNew(SBox)
+			.WidthOverride(RCPanelStyle->IconSize.X)
+			.HeightOverride(RCPanelStyle->IconSize.Y)
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
+			]
+		];
+
+	// Delete All Groups Button
+	TSharedPtr<SWidget> DeleteAllGroupsButton = SNew(SButton)
+		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Delete All Groups")))
+		.IsEnabled_Lambda([this]() { return !bIsInLiveMode.Get() && FieldGroups.Num() > 0; })
+		.Visibility_Lambda([this]() { return (!bIsInLiveMode.Get() && FieldGroups.Num() > 0) ? EVisibility::Visible : EVisibility::Collapsed; })
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.ForegroundColor(FSlateColor::UseForeground())
+		.ButtonStyle(&RCPanelStyle->FlatButtonStyle)
+		.ToolTipText(LOCTEXT("DeleteAllGroupsToolTip", "Delete all groups."))
+		.OnClicked(this, &SRCPanelExposedEntitiesList::RequestDeleteAllGroups)
+		[
+			SNew(SBox)
+			.WidthOverride(RCPanelStyle->IconSize.X)
+			.HeightOverride(RCPanelStyle->IconSize.Y)
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::GetBrush("Icons.Delete"))
+			]
+		];
+
+	GroupDockPanel->AddHeaderToolbarItem(EToolbar::Left, NewGroupButton.ToSharedRef());
+	GroupDockPanel->AddHeaderToolbarItem(EToolbar::Right, DeleteAllGroupsButton.ToSharedRef());
+
+	ExposePanel->AddPanel(GroupDockPanel.ToSharedRef(), 0.25f);
+
+	// Fields List
+	SAssignNew(FieldsListView, STreeView<TSharedPtr<SRCPanelTreeNode>>)
+		.ItemHeight(24.f)
+		.OnGenerateRow(this, &SRCPanelExposedEntitiesList::OnGenerateRow)
+		.OnSelectionChanged(this, &SRCPanelExposedEntitiesList::OnSelectionChanged)
+		.SelectionMode(ESelectionMode::Single)
+		.TreeItemsSource(&FieldEntities)
+		.OnContextMenuOpening(this, &SRCPanelExposedEntitiesList::OnContextMenuOpening, SRCPanelTreeNode::Field)
+		.ClearSelectionOnClick(true)
+		.TreeViewStyle(&RCPanelStyle->TableViewStyle)
+		.OnGetChildren(this, &SRCPanelExposedEntitiesList::OnGetNodeChildren)
+		.HeaderRow(
+			SAssignNew(FieldsHeaderRow, SHeaderRow)
+			.Style(&RCPanelStyle->HeaderRowStyle)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::DragDropHandle)
+			.DefaultLabel(LOCTEXT("RCPresetDragDropHandleColumnHeader", ""))
+			.FixedWidth(25.f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::Description)
+			.DefaultLabel(LOCTEXT("RCPresetDescColumnHeader", "Description"))
+			.HAlignHeader(HAlign_Center)
+			.FillWidth(0.5f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::Value)
+			.DefaultLabel(LOCTEXT("RCPresetValueColumnHeader", "Value"))
+			.HAlignHeader(HAlign_Center)
+			.FillWidth(0.5f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+
+			+ SHeaderRow::Column(RemoteControlPresetColumns::Reset)
+			.DefaultLabel(LOCTEXT("RCPresetResetButtonColumnHeader", ""))
+			.FixedWidth(48.f)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding)
+		);
+
+	// Exposed Entities Dock Panel
+	TSharedPtr<SRCMinorPanel> ExposeDockPanel = SNew(SRCMinorPanel)
+		.HeaderLabel(this, &SRCPanelExposedEntitiesList::HandleEntityListHeaderLabel)
+		.Visibility_Lambda([this]() {return bIsInLiveMode.Get() ? EVisibility::Collapsed : EVisibility::Visible; })
+		.EnableFooter(true)
+		[
+			FieldsListView.ToSharedRef()
+		];
+
+	// Placeholder Box
+	TSharedPtr<SWidget> PlaceholderBox = SNew(SBox)
+		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Placeholder")))
+		.WidthOverride(30.f)
+		.HeightOverride(30.f)
+		[
+			SNullWidget::NullWidget
+		];
+
+	// Delete All Entities Button
+	TSharedPtr<SWidget> DeleteAllEntitiesButton = SNew(SButton)
+		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Delete All Entities")))
+		.IsEnabled_Lambda([this]() { return !bIsInLiveMode.Get() && FieldWidgetMap.Num() > 0; })
+		.Visibility_Lambda([this]() { return (!bIsInLiveMode.Get() && FieldWidgetMap.Num() > 0) ? EVisibility::Visible : EVisibility::Collapsed; })
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.ForegroundColor(FSlateColor::UseForeground())
+		.ButtonStyle(&RCPanelStyle->FlatButtonStyle)
+		.ToolTipText(LOCTEXT("DeleteAllEntitiesToolTip", "Delete all entities."))
+		.OnClicked(this, &SRCPanelExposedEntitiesList::RequestDeleteAllEntities)
+		[
+			SNew(SBox)
+			.WidthOverride(RCPanelStyle->IconSize.X)
+			.HeightOverride(RCPanelStyle->IconSize.Y)
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::GetBrush("Icons.Delete"))
+			]
+		];
+
+	// Mode Switcher
+	TSharedPtr<SRCModeSwitcher> ModeSwitcher = SNew(SRCModeSwitcher)
+		.OnModeSwitched_Lambda([this](const SRCModeSwitcher::FRCMode& NewMode)
+			{
+				if (ActiveProtocol != NewMode.ModeId)
+				{
+					ActiveListMode = EEntitiesListMode::Default; // Hack to trigger mode change via mode switcher.
+
+					ActiveProtocol = NewMode.ModeId;
+
+					IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
+
+					RCProtocolWidgetsModule.OnActiveProtocolChanged().Broadcast(ActiveProtocol);
+
+					if (bIsInProtocolsMode.Get())
+					{
+						RebuildListWithColumns(EEntitiesListMode::Protocols);
+					}
+				}
+			}
+		)
+		.Visibility_Lambda([this]()
+			{
+				return bIsInProtocolsMode.Get() && !ActiveProtocol.IsNone() ? EVisibility::Visible : EVisibility::Collapsed;
+			}
+		);
+
+	{ // Add dynamic entries based on the available protocols.
+		IRemoteControlProtocolModule& RCProtocolModule = IRemoteControlProtocolModule::Get();
+
+		TArray<FName> Protocols = RCProtocolModule.GetProtocolNames();
+
+		// To avoid random orientations, sort them in alphabetical order.
+		Algo::Sort(Protocols, [&](const FName& ThisProtocol, const FName& OtherProtocol) { return ThisProtocol.LexicalLess(OtherProtocol); });
+
+		for (int32 ProtocolIndex = 0; ProtocolIndex < Protocols.Num(); ProtocolIndex++)
+		{
+			const FName& ProtocolName = Protocols[ProtocolIndex];
+
+			const bool bIsDefault = ProtocolIndex == 0;
+
+			if (bIsDefault)
+			{
+				ActiveProtocol = ProtocolName;
+	
+				IRemoteControlProtocolWidgetsModule& RCProtocolWidgetsModule = IRemoteControlProtocolWidgetsModule::Get();
+
+				RCProtocolWidgetsModule.OnActiveProtocolChanged().Broadcast(ActiveProtocol);
+			}
+
+			SRCModeSwitcher::FRCMode::FArguments NewMode = SRCModeSwitcher::Mode(ProtocolName)
+				.DefaultLabel(FText::FromName(ProtocolName))
+				.DefaultTooltip(FText::FromName(ProtocolName))
+				.HAlignCell(HAlign_Fill)
+				.IsDefault(bIsDefault)
+				.VAlignCell(VAlign_Fill)
+				.FixedWidth(48.f);
+
+			ModeSwitcher->AddMode(NewMode);
+		}
+	}
+
+	// Expose Button
+	ExposeDockPanel->AddHeaderToolbarItem(EToolbar::Left, PlaceholderBox.ToSharedRef());
+	ExposeDockPanel->AddHeaderToolbarItem(EToolbar::Right, ModeSwitcher.ToSharedRef());
+	ExposeDockPanel->AddFooterToolbarItem(EToolbar::Left, InArgs._ExposeActorsComboButton.Get().ToSharedRef());
+	ExposeDockPanel->AddFooterToolbarItem(EToolbar::Left, InArgs._ExposeFunctionsComboButton.Get().ToSharedRef());
+	ExposeDockPanel->AddFooterToolbarItem(EToolbar::Right, DeleteAllEntitiesButton.ToSharedRef());
+
+	ExposePanel->AddPanel(ExposeDockPanel.ToSharedRef(), 0.75f);
+
 	ChildSlot
-	[
-		SAssignNew(TreeView, STreeView<TSharedPtr<SRCPanelTreeNode>>)
-			.TreeItemsSource(reinterpret_cast<TArray<TSharedPtr<SRCPanelTreeNode>>*>(&FieldGroups))
-			.ItemHeight(24.0f)
-			.OnGenerateRow(this, &SRCPanelExposedEntitiesList::OnGenerateRow)
-			.OnGetChildren(this, &SRCPanelExposedEntitiesList::OnGetNodeChildren)
-			.OnSelectionChanged(this, &SRCPanelExposedEntitiesList::OnSelectionChanged)
-			.OnContextMenuOpening(this, &SRCPanelExposedEntitiesList::OnContextMenuOpening)
-			.ClearSelectionOnClick(true)
-	];
+		.Padding(RCPanelStyle->PanelPadding)
+		[
+			SNew(SSplitter)
+			.Orientation(Orient_Horizontal)
+
+			+ SSplitter::Slot()
+			.Value(1.f)
+			[
+				ExposePanel.ToSharedRef()
+			]
+		];
 
 	RegisterEvents();
 	RegisterPresetDelegates();
 	Refresh();
 }
+
 SRCPanelExposedEntitiesList::~SRCPanelExposedEntitiesList()
 {
+	if (TSharedPtr<FRCPanelWidgetRegistry> Registry = WidgetRegistry.Pin())
+	{
+		Registry->OnObjectRefreshed().RemoveAll(this);
+	}
+
 	UnregisterPresetDelegates();
 	UnregisterEvents();
 }
 
-TSharedPtr<SRCPanelTreeNode> SRCPanelExposedEntitiesList::GetSelection() const
+void SRCPanelExposedEntitiesList::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	if (bSearchRequested)
+	{
+		TryRefreshingSearch(*SearchedText);
+
+		bSearchRequested = false;
+	}
+	
+	if (bFilterApplicationRequested)
+	{
+		ApplyFilters();
+
+		bFilterApplicationRequested = false;
+	}
+}
+
+TSharedPtr<SRCPanelTreeNode> SRCPanelExposedEntitiesList::GetSelectedGroup() const
 {
 	TArray<TSharedPtr<SRCPanelTreeNode>> SelectedNodes;
-	TreeView->GetSelectedItems(SelectedNodes);
+
+	GroupsListView->GetSelectedItems(SelectedNodes);
+
 	if (SelectedNodes.Num())
 	{
 		return SelectedNodes[0];
 	}
+
 	return nullptr;
 }
 
-void SRCPanelExposedEntitiesList::SetSelection(const TSharedPtr<SRCPanelTreeNode>& Node)
+TSharedPtr<SRCPanelTreeNode> SRCPanelExposedEntitiesList::GetSelectedEntity() const
+{
+	TArray<TSharedPtr<SRCPanelTreeNode>> SelectedNodes;
+
+	FieldsListView->GetSelectedItems(SelectedNodes);
+
+	if (SelectedNodes.Num())
+	{
+		return SelectedNodes[0];
+	}
+
+	return nullptr;
+}
+
+void SRCPanelExposedEntitiesList::SetSelection(const TSharedPtr<SRCPanelTreeNode>& Node, const bool bForceMouseClick)
 {
 	if (Node)
 	{
+		const ESelectInfo::Type SelectInfo = bForceMouseClick ? ESelectInfo::OnMouseClick : ESelectInfo::Direct;
+
 		if (TSharedPtr<SRCPanelTreeNode>* FoundTreeNode = FieldWidgetMap.Find(Node->GetRCId()))
 		{
-			TreeView->SetSelection(*FoundTreeNode);
+			FieldsListView->SetSelection(*FoundTreeNode, SelectInfo);
 			return;
 		}
 
 		if (TSharedPtr<SRCPanelGroup> SRCGroup = FindGroupById(Node->GetRCId()))
 		{
-			TreeView->SetSelection(SRCGroup);
+			GroupsListView->SetSelection(SRCGroup, SelectInfo);
 		}	
 	}
+}
+
+void SRCPanelExposedEntitiesList::SetBackendFilter(const FRCFilter& InBackendFilter)
+{
+	BackendFilter = InBackendFilter;
+
+	bFilterApplicationRequested = true;
+}
+
+void SRCPanelExposedEntitiesList::RebuildListWithColumns(EEntitiesListMode InListMode)
+{
+	// Only activate when the active mode changes to different one.
+	// Drop multiple calls to same mode change except for Protocols Mode.
+	if (ActiveListMode != InListMode && !ActiveProtocol.IsNone())
+	{
+		ActiveListMode = InListMode;
+
+		TSet<FName> ExisitingColumns;
+
+		if (FieldsListView.IsValid() && FieldsHeaderRow.IsValid())
+		{
+			const TIndirectArray<SHeaderRow::FColumn>& Columns = FieldsHeaderRow->GetColumns();
+
+			if (!Columns.IsEmpty())
+			{
+				Algo::TransformIf(Columns, ExisitingColumns
+					, [](const SHeaderRow::FColumn& InColumn) { return !InColumn.ColumnId.IsNone() && !SRCPanelTreeNode::DefaultColumns.Contains(InColumn.ColumnId); }
+					, [](const SHeaderRow::FColumn& InColumn) { return InColumn.ColumnId; }
+				);
+			}
+		}
+
+		const bool bShouldRemoveColumns = !ExisitingColumns.IsEmpty();
+
+		TSet<FName> ColumnsToBeRemoved = ExisitingColumns;
+
+		const bool bShouldAddColumns = InListMode == EEntitiesListMode::Protocols;
+
+		TSet<FName> ColumnsToBeAdded;
+
+		IRemoteControlProtocolModule& RCProtocolModule = IRemoteControlProtocolModule::Get();
+
+		TSet<FName> ActiveProtocolColumns;
+
+		TSet<FName> OtherProtocolColumns;
+
+		for (const FName& ProtocolName : RCProtocolModule.GetProtocolNames())
+		{
+			if (TSharedPtr<IRemoteControlProtocol> RCProtocol = RCProtocolModule.GetProtocolByName(ProtocolName))
+			{
+				if (ActiveProtocol == ProtocolName)
+				{
+					RCProtocol->GetRegisteredColumns(ActiveProtocolColumns);
+				}
+				else
+				{
+					RCProtocol->GetRegisteredColumns(OtherProtocolColumns);
+				}
+			}
+		}
+
+		if (bShouldRemoveColumns)
+		{
+			ColumnsToBeRemoved.Append(ActiveProtocolColumns.Intersect(OtherProtocolColumns));
+		
+			for (const FName& ColumnToBeRemoved : ColumnsToBeRemoved)
+			{
+				RemoveColumn(ColumnToBeRemoved);
+			}
+		}
+
+		if (bShouldAddColumns)
+		{
+			ColumnsToBeAdded = DefaultProtocolColumns.Union(ActiveProtocolColumns);
+		
+			for (const FName& ColumnToBeAdded : ColumnsToBeAdded)
+			{
+				InsertColumn(ColumnToBeAdded);
+			}
+		}
+	}
+}
+
+FText SRCPanelExposedEntitiesList::HandleEntityListHeaderLabel() const
+{
+	const FRemoteControlCommands& Commands = FRemoteControlCommands::Get();
+
+	if (bIsInProtocolsMode.Get() && Commands.ToggleProtocolMappings.IsValid())
+	{
+		return Commands.ToggleProtocolMappings->GetLabel();
+	}
+
+	return LOCTEXT("PropertiesLabel", "Properties");
 }
 
 void SRCPanelExposedEntitiesList::OnObjectPropertyChange(UObject* InObject, FPropertyChangedEvent& InChangeEvent)
@@ -132,23 +649,82 @@ void SRCPanelExposedEntitiesList::OnObjectPropertyChange(UObject* InObject, FPro
 		}
 	}
 
-	TreeView->RequestListRefresh();
+	GroupsListView->RequestListRefresh();
+	FieldsListView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::Refresh()
 {
 	GenerateListWidgets();
+
 	RefreshGroups();
 
-	for (const TSharedPtr<SRCPanelGroup>& Group : FieldGroups)
+	if (Preset.IsValid())
 	{
-		TreeView->SetItemExpansion(Group, true);
+		constexpr bool bForceMouseClick = true;
+
+		if (const FRemoteControlPresetGroup* SelectedGroup = Preset->Layout.GetGroup(CurrentlySelectedGroup))
+		{
+			GenerateListWidgets(*SelectedGroup);
+			SetSelection(FindGroupById(SelectedGroup->Id), bForceMouseClick);
+		}
+		else
+		{
+			const FRemoteControlPresetGroup& DefaultGroup = Preset->Layout.GetDefaultGroup();
+			GenerateListWidgets(DefaultGroup);
+			SetSelection(FindGroupById(DefaultGroup.Id), bForceMouseClick);
+		}
+	}
+}
+
+void SRCPanelExposedEntitiesList::TryRefreshingSearch(const FText& InSearchText, bool bApplyFilter)
+{
+	FieldEntities.Reset();
+
+	if (FieldWidgetMap.IsEmpty() || !Preset.IsValid())
+	{
+		FieldsListView->RequestListRefresh();
+
+		*SearchedText = FText::GetEmpty();
+
+		return;
 	}
 
-	for (const TTuple<FGuid, TSharedPtr<SRCPanelTreeNode>>& FieldTuple : FieldWidgetMap)
+	*SearchedText = InSearchText;
+
+	for (TWeakPtr<FRemoteControlEntity> WeakEntity : Preset->GetExposedEntities())
 	{
-		TreeView->SetItemExpansion(FieldTuple.Value, false);
+		if (const TSharedPtr<FRemoteControlEntity> Entity = WeakEntity.Pin())
+		{
+			if (TSharedPtr<SRCPanelTreeNode> SelectedGroup = GetSelectedGroup())
+			{
+				if (FRemoteControlPresetGroup* EntityGroup = Preset->Layout.FindGroupFromField(Entity->GetId()))
+				{
+					const FString& EntityLabel = Entity->GetLabel().ToString();
+
+					if (EntityLabel.Contains(*InSearchText.ToString()) &&
+						(SelectedGroup->GetRCId() == EntityGroup->Id ||
+							Preset->Layout.IsDefaultGroup(SelectedGroup->GetRCId())))
+					{
+						if (TSharedPtr<SRCPanelTreeNode>* FoundNode = FieldWidgetMap.Find(Entity->GetId()))
+						{
+							(*FoundNode)->SetHighlightText(InSearchText);
+
+							FieldEntities.Add(*FoundNode);
+						}
+					}
+				}
+			}
+		}
 	}
+
+	// Only apply filter if it is requested otherwise skip this.
+	if (BackendFilter.HasAnyActiveFilters() && bApplyFilter)
+	{
+		bFilterApplicationRequested = true;
+	}
+
+	FieldsListView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::GenerateListWidgets()
@@ -164,11 +740,34 @@ void SRCPanelExposedEntitiesList::GenerateListWidgets()
 			Args.Preset = Preset.Get();
 			Args.WidgetRegistry = WidgetRegistry;
 			Args.ColumnSizeData = ColumnSizeData;
-			Args.bIsInEditMode = bIsInEditMode;
+			Args.bIsInLiveMode = bIsInLiveMode;
 
 			FieldWidgetMap.Add(Entity->GetId(), FRemoteControlUIModule::Get().GenerateEntityWidget(Args));
 		}
 	}
+}
+
+void SRCPanelExposedEntitiesList::GenerateListWidgets(const FRemoteControlPresetGroup& FromGroup)
+{
+	FieldEntities.Reset();
+
+	if (FieldWidgetMap.IsEmpty())
+	{
+		FieldsListView->RequestListRefresh();
+
+		return;
+	}
+
+	if (Preset->Layout.IsDefaultGroup(FromGroup.Id))
+	{
+		FieldWidgetMap.GenerateValueArray(FieldEntities);
+	}
+	else if (TSharedPtr<SRCPanelGroup> SRCGroup = FindGroupById(FromGroup.Id))
+	{
+		SRCGroup->GetNodeChildren(FieldEntities);
+	}
+
+	FieldsListView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::RefreshGroups()
@@ -180,10 +779,10 @@ void SRCPanelExposedEntitiesList::RefreshGroups()
 		TSharedRef<SRCPanelGroup> FieldGroup = SNew(SRCPanelGroup, Preset.Get(), ColumnSizeData)
 			.Id(RCGroup.Id)
 			.Name(RCGroup.Name)
-			.OnFieldDropEvent_Raw(this, &SRCPanelExposedEntitiesList::OnDropOnGroup)
-			.OnGetGroupId_Raw(this, &SRCPanelExposedEntitiesList::GetGroupId)
-			.OnDeleteGroup_Raw(this, &SRCPanelExposedEntitiesList::OnDeleteGroup)
-			.EditMode(bIsInEditMode);
+			.OnFieldDropEvent(this, &SRCPanelExposedEntitiesList::OnDropOnGroup)
+			.OnGetGroupId(this, &SRCPanelExposedEntitiesList::GetGroupId)
+			.OnDeleteGroup(this, &SRCPanelExposedEntitiesList::OnDeleteGroup)
+			.LiveMode(bIsInLiveMode);
 		
 		FieldGroups.Add(FieldGroup);
 		FieldGroup->GetNodes().Reserve(RCGroup.GetFields().Num());
@@ -197,7 +796,7 @@ void SRCPanelExposedEntitiesList::RefreshGroups()
 		}
 	}
 
-	TreeView->RequestListRefresh();
+	GroupsListView->RequestListRefresh();
 }
 
 TSharedRef<ITableRow> SRCPanelExposedEntitiesList::OnGenerateRow(TSharedPtr<SRCPanelTreeNode> Node, const TSharedRef<STableViewBase>& OwnerTable)
@@ -228,8 +827,8 @@ TSharedRef<ITableRow> SRCPanelExposedEntitiesList::OnGenerateRow(TSharedPtr<SRCP
 	if (Node->GetRCType() == SRCPanelTreeNode::Group)
 	{
 		return SNew(STableRow<TSharedPtr<SWidget>>, OwnerTable)
-			.Padding(FMargin(0.5f, 0.5f, 0.5f, 0.5f))
-			.Style(&FRemoteControlPanelStyle::Get()->GetWidgetStyle<FTableRowStyle>("RemoteControlPanel.GroupRow"))
+			.Padding(1.f)
+			.Style(&RCPanelStyle->TableRowStyle)
 			[
 				NodeWidget
 			];
@@ -237,15 +836,15 @@ TSharedRef<ITableRow> SRCPanelExposedEntitiesList::OnGenerateRow(TSharedPtr<SRCP
 	else
 	{
 		constexpr float LeftPadding = 3.f;
-		const FMargin Margin = Node->GetRCType() == SRCPanelTreeNode::FieldChild ? FMargin(LeftPadding + 10.f, 0.f, 0.f, 0.f) : FMargin(LeftPadding, 0.f, 0.f, 0.f);
-		return SNew(STableRow<TSharedPtr<FGuid>>, OwnerTable)
+		const FMargin Margin = Node->GetRCType() == SRCPanelTreeNode::FieldChild ? FMargin(LeftPadding + 10.f, 1.f, 1.f, 1.f) : FMargin(LeftPadding, 1.f, 1.f, 1.f);
+		return SNew(SEntityRow, OwnerTable)
 			.OnDragEnter_Lambda([Node](const FDragDropEvent& Event) { if (Node && Node->GetRCType() == SRCPanelTreeNode::Field) StaticCastSharedPtr<SRCPanelExposedField>(Node)->SetIsHovered(true); })
 			.OnDragLeave_Lambda([Node](const FDragDropEvent& Event) { if (Node && Node->GetRCType() == SRCPanelTreeNode::Field) StaticCastSharedPtr<SRCPanelExposedField>(Node)->SetIsHovered(false); })
 			.OnDrop_Lambda(OnDropLambda)
 			.Padding(Margin)
-			[
-				NodeWidget
-			];
+			.Style(&RCPanelStyle->TableRowStyle)
+			.ActiveProtocol_Lambda([this]() { return ActiveProtocol; })
+			.Entity(Node);
 	}
 }
 
@@ -261,28 +860,51 @@ void SRCPanelExposedEntitiesList::OnSelectionChanged(TSharedPtr<SRCPanelTreeNode
 {
 	if (!Node || SelectInfo != ESelectInfo::OnMouseClick)
 	{
+		FieldsListView->ClearSelection();
+
+		OnSelectionChangeDelegate.Broadcast(nullptr);
+
 		return;
 	}
 
-	// todo call handler on node itself
-	if (TSharedPtr<FRemoteControlField> RCField = Preset->GetExposedEntity<FRemoteControlField>(Node->GetRCId()).Pin())
+	if (Node->GetRCType() == SRCPanelTreeNode::Group)
 	{
-		TSet<UObject*> Objects = TSet<UObject*>{ RCField->GetBoundObjects() };
-
-		TArray<UObject*> OwnerActors;
-		for (UObject* Object : Objects)
+		if (FRemoteControlPresetGroup* RCGroup = Preset->Layout.GetGroup(Node->GetRCId()))
 		{
-			if (Object->IsA<AActor>())
+			CurrentlySelectedGroup = RCGroup->Id;
+
+			GenerateListWidgets(*RCGroup);
+			
+			if (BackendFilter.HasAnyActiveFilters())
 			{
-				OwnerActors.Add(Object);
-			}
-			else
-			{
-				OwnerActors.Add(Object->GetTypedOuter<AActor>());
+				bFilterApplicationRequested = true;
 			}
 		}
+	
+		FieldsListView->ClearSelection();
+	}
+	else
+	{
+		// todo call handler on node itself
+		if (TSharedPtr<FRemoteControlField> RCField = Preset->GetExposedEntity<FRemoteControlField>(Node->GetRCId()).Pin())
+		{
+			TSet<UObject*> Objects = TSet<UObject*>{ RCField->GetBoundObjects() };
 
-		SelectActorsInlevel(OwnerActors);
+			TArray<UObject*> OwnerActors;
+			for (UObject* Object : Objects)
+			{
+				if (Object->IsA<AActor>())
+				{
+					OwnerActors.Add(Object);
+				}
+				else
+				{
+					OwnerActors.Add(Object->GetTypedOuter<AActor>());
+				}
+			}
+
+			SelectActorsInlevel(OwnerActors);
+		}
 	}
 
 	OnSelectionChangeDelegate.Broadcast(Node);
@@ -294,6 +916,12 @@ FReply SRCPanelExposedEntitiesList::OnDropOnGroup(const TSharedPtr<FDragDropOper
 
 	if (DragDropOperation->IsOfType<FExposedEntityDragDrop>())
 	{
+		if (Preset->Layout.IsDefaultGroup(DragTargetGroup->GetRCId()))
+		{
+			// We do not add fields to the default group.
+			return FReply::Unhandled();
+		}
+
 		if (TSharedPtr<FExposedEntityDragDrop> DragDropOp = StaticCastSharedPtr<FExposedEntityDragDrop>(DragDropOperation))
 		{
 			FGuid DragOriginGroupId = GetGroupId(DragDropOp->GetId());
@@ -323,6 +951,8 @@ FReply SRCPanelExposedEntitiesList::OnDropOnGroup(const TSharedPtr<FDragDropOper
 			FScopedTransaction Transaction(LOCTEXT("MoveField", "Move exposed field"));
 			Preset->Modify();
 			Preset->Layout.SwapFields(Args);
+			constexpr bool bForceMouseClick = true;
+			SetSelection(FindGroupById(Args.TargetGroupId), bForceMouseClick);
 			return FReply::Handled();
 		}
 	}
@@ -358,6 +988,14 @@ FGuid SRCPanelExposedEntitiesList::GetGroupId(const FGuid& EntityId)
 	}
 
 	return GroupId;
+}
+
+FReply SRCPanelExposedEntitiesList::OnCreateGroup()
+{
+	FScopedTransaction Transaction(LOCTEXT("CreateGroup", "Create Group"));
+	Preset->Modify();
+	Preset->Layout.CreateGroup();
+	return FReply::Handled();
 }
 
 void SRCPanelExposedEntitiesList::OnDeleteGroup(const FGuid& GroupId)
@@ -397,11 +1035,15 @@ void SRCPanelExposedEntitiesList::SelectActorsInlevel(const TArray<UObject*>& Ob
 void SRCPanelExposedEntitiesList::RegisterEvents()
 {
 	OnPropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SRCPanelExposedEntitiesList::OnObjectPropertyChange);
+
+	OnProtocolBindingAddedOrRemovedHandle = IRemoteControlProtocolWidgetsModule::Get().OnProtocolBindingAddedOrRemoved().AddSP(this, &SRCPanelExposedEntitiesList::OnProtocolBindingAddedOrRemoved);
 }
 
 void SRCPanelExposedEntitiesList::UnregisterEvents()
 {
 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(OnPropertyChangedHandle);
+
+	IRemoteControlProtocolWidgetsModule::Get().OnProtocolBindingAddedOrRemoved().Remove(OnProtocolBindingAddedOrRemovedHandle);
 }
 
 TSharedPtr<SRCPanelGroup> SRCPanelExposedEntitiesList::FindGroupById(const FGuid& Id)
@@ -414,9 +1056,9 @@ TSharedPtr<SRCPanelGroup> SRCPanelExposedEntitiesList::FindGroupById(const FGuid
 	return TargetGroup;
 }
 
-TSharedPtr<SWidget> SRCPanelExposedEntitiesList::OnContextMenuOpening()
+TSharedPtr<SWidget> SRCPanelExposedEntitiesList::OnContextMenuOpening(SRCPanelTreeNode::ENodeType InType)
 {
-	if (TSharedPtr<SRCPanelTreeNode> SelectedNode = SRCPanelExposedEntitiesList::GetSelection())
+	if (TSharedPtr<SRCPanelTreeNode> SelectedNode = InType == SRCPanelTreeNode::Group ? SRCPanelExposedEntitiesList::GetSelectedGroup() : SRCPanelExposedEntitiesList::GetSelectedEntity())
 	{
 		return SelectedNode->GetContextMenu();
 	}
@@ -430,7 +1072,7 @@ void SRCPanelExposedEntitiesList::RegisterPresetDelegates()
 	Layout.OnGroupAdded().AddSP(this, &SRCPanelExposedEntitiesList::OnGroupAdded);
 	Layout.OnGroupDeleted().AddSP(this, &SRCPanelExposedEntitiesList::OnGroupDeleted);
 	Layout.OnGroupOrderChanged().AddSP(this, &SRCPanelExposedEntitiesList::OnGroupOrderChanged);
-	Layout.OnGroupRenamed().AddRaw(this, &SRCPanelExposedEntitiesList::OnGroupRenamed);
+	Layout.OnGroupRenamed().AddSP(this, &SRCPanelExposedEntitiesList::OnGroupRenamed);
 	Layout.OnFieldAdded().AddSP(this, &SRCPanelExposedEntitiesList::OnFieldAdded);
 	Layout.OnFieldDeleted().AddSP(this, &SRCPanelExposedEntitiesList::OnFieldDeleted);
 	Layout.OnFieldOrderChanged().AddSP(this, &SRCPanelExposedEntitiesList::OnFieldOrderChanged);
@@ -464,7 +1106,8 @@ void SRCPanelExposedEntitiesList::OnEntityAdded(const FGuid& InEntityId)
 			if (TSharedPtr<SRCPanelGroup> SRCGroup = FindGroupById(GetGroupId(InEntityId)))
 			{
 				SRCGroup->GetNodes().Add(MoveTemp(Node));
-				TreeView->SetItemExpansion(SRCGroup, true);
+
+				GenerateListWidgets(*Preset->Layout.GetGroup(GetGroupId(InEntityId)));
 			}
 		}
 	};
@@ -473,12 +1116,10 @@ void SRCPanelExposedEntitiesList::OnEntityAdded(const FGuid& InEntityId)
 	Args.Preset = Preset.Get();
 	Args.WidgetRegistry = WidgetRegistry;
 	Args.ColumnSizeData = ColumnSizeData;
-	Args.bIsInEditMode = bIsInEditMode;
+	Args.bIsInLiveMode = bIsInLiveMode;
 	Args.Entity = Preset->GetExposedEntity(InEntityId).Pin();
 
 	ExposeEntity(FRemoteControlUIModule::Get().GenerateEntityWidget(Args));
-	
-	TreeView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::OnEntityRemoved(const FGuid& InGroupId, const FGuid& InEntityId)
@@ -492,7 +1133,7 @@ void SRCPanelExposedEntitiesList::OnEntityRemoved(const FGuid& InGroupId, const 
 		}
 	}
 
-	if (const TSharedPtr<SRCPanelTreeNode> Node = GetSelection())
+	if (const TSharedPtr<SRCPanelTreeNode> Node = GetSelectedEntity())
 	{
 		if (Node->GetRCId() == InEntityId)
 		{
@@ -501,7 +1142,8 @@ void SRCPanelExposedEntitiesList::OnEntityRemoved(const FGuid& InGroupId, const 
 	}
 
 	FieldWidgetMap.Remove(InEntityId);
-	TreeView->RequestListRefresh();
+	
+	GenerateListWidgets(*Preset->Layout.GetGroup(InGroupId));
 }
 
 void SRCPanelExposedEntitiesList::OnGroupAdded(const FRemoteControlPresetGroup& Group)
@@ -509,10 +1151,10 @@ void SRCPanelExposedEntitiesList::OnGroupAdded(const FRemoteControlPresetGroup& 
 	TSharedRef<SRCPanelGroup> FieldGroup = SNew(SRCPanelGroup, Preset.Get(), ColumnSizeData)
 		.Id(Group.Id)
 		.Name(Group.Name)
-		.OnFieldDropEvent_Raw(this, &SRCPanelExposedEntitiesList::OnDropOnGroup)
-		.OnGetGroupId_Raw(this, &SRCPanelExposedEntitiesList::GetGroupId)
-		.OnDeleteGroup_Raw(this, &SRCPanelExposedEntitiesList::OnDeleteGroup)
-		.EditMode(bIsInEditMode);
+		.OnFieldDropEvent(this, &SRCPanelExposedEntitiesList::OnDropOnGroup)
+		.OnGetGroupId(this, &SRCPanelExposedEntitiesList::GetGroupId)
+		.OnDeleteGroup(this, &SRCPanelExposedEntitiesList::OnDeleteGroup)
+		.LiveMode(bIsInLiveMode);
 	
 	FieldGroups.Add(FieldGroup);
 	
@@ -527,16 +1169,18 @@ void SRCPanelExposedEntitiesList::OnGroupAdded(const FRemoteControlPresetGroup& 
 	}
 
 	FieldGroup->EnterRenameMode();
-	TreeView->SetSelection(FieldGroup);
-	TreeView->ScrollToBottom();
-	TreeView->RequestListRefresh();
+	GroupsListView->SetSelection(FieldGroup, ESelectInfo::OnMouseClick);
+	GroupsListView->ScrollToBottom();
+	GroupsListView->RequestListRefresh();
+
+	RequestSearchOrFilter();
 }
 
 void SRCPanelExposedEntitiesList::OnGroupDeleted(FRemoteControlPresetGroup DeletedGroup)
 {
 	int32 Index = FieldGroups.IndexOfByPredicate([&DeletedGroup](const TSharedPtr<SRCPanelGroup>& Group) { return Group->GetRCId() == DeletedGroup.Id; });
 
-	if (TSharedPtr<SRCPanelTreeNode> Node = GetSelection())
+	if (TSharedPtr<SRCPanelTreeNode> Node = GetSelectedEntity())
 	{
 		if (DeletedGroup.GetFields().Contains(Node->GetRCId()))
 		{
@@ -547,8 +1191,10 @@ void SRCPanelExposedEntitiesList::OnGroupDeleted(FRemoteControlPresetGroup Delet
 	if (Index != INDEX_NONE)
 	{
 		FieldGroups.RemoveAt(Index);
-		TreeView->RequestListRefresh();
+		GroupsListView->RequestListRefresh();
 	}
+
+	RequestSearchOrFilter();
 }
 
 void SRCPanelExposedEntitiesList::OnGroupOrderChanged(const TArray<FGuid>& GroupIds)
@@ -567,7 +1213,7 @@ void SRCPanelExposedEntitiesList::OnGroupOrderChanged(const TArray<FGuid>& Group
 	};
 
 	FieldGroups.Sort(SortFunc);
-	TreeView->RequestListRefresh();
+	GroupsListView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::OnGroupRenamed(const FGuid& GroupId, FName NewName)
@@ -581,11 +1227,15 @@ void SRCPanelExposedEntitiesList::OnGroupRenamed(const FGuid& GroupId, FName New
 void SRCPanelExposedEntitiesList::OnFieldAdded(const FGuid& GroupId, const FGuid& FieldId, int32 FieldPosition)
 {
 	OnEntityAdded(FieldId);
+
+	RequestSearchOrFilter();
 }
 
 void SRCPanelExposedEntitiesList::OnFieldDeleted(const FGuid& GroupId, const FGuid& FieldId, int32 FieldPosition)
 {
 	OnEntityRemoved(GroupId, FieldId);
+
+	RequestSearchOrFilter();
 }
 
 void SRCPanelExposedEntitiesList::OnFieldOrderChanged(const FGuid& GroupId, const TArray<FGuid>& Fields)
@@ -611,7 +1261,8 @@ void SRCPanelExposedEntitiesList::OnFieldOrderChanged(const FGuid& GroupId, cons
 		}
 	}
 
-	TreeView->RequestListRefresh();
+	GroupsListView->RequestListRefresh();
+	FieldsListView->RequestListRefresh();
 }
 
 void SRCPanelExposedEntitiesList::OnEntitiesUpdated(URemoteControlPreset*, const TSet<FGuid>& UpdatedEntities)
@@ -625,21 +1276,337 @@ void SRCPanelExposedEntitiesList::OnEntitiesUpdated(URemoteControlPreset*, const
 		}
 	}
 	
-
 	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([WeakListPtr = TWeakPtr<SRCPanelExposedEntitiesList>(StaticCastSharedRef<SRCPanelExposedEntitiesList>(AsShared()))]()
 	{
 		if (TSharedPtr<SRCPanelExposedEntitiesList> ListPtr = WeakListPtr.Pin())
 		{
-			ListPtr->TreeView->RequestListRefresh();
+			ListPtr->GroupsListView->RebuildList();
+			ListPtr->FieldsListView->RebuildList();
 		}
 	}));
 
 	OnEntityListUpdatedDelegate.ExecuteIfBound();
+
+	RequestSearchOrFilter();
+}
+
+void SRCPanelExposedEntitiesList::ApplyFilters()
+{
+	if (BackendFilter.HasAnyActiveFilters())
+	{
+		// If we are not actively searching anything then include all the entities.
+		if (SearchedText.IsValid() && SearchedText->IsEmpty())
+		{
+			for (TWeakPtr<FRemoteControlEntity> WeakEntity : Preset->GetExposedEntities())
+			{
+				if (const TSharedPtr<FRemoteControlEntity> Entity = WeakEntity.Pin())
+				{
+					if (TSharedPtr<SRCPanelTreeNode> SelectedGroup = GetSelectedGroup())
+					{
+						if (FRemoteControlPresetGroup* EntityGroup = Preset->Layout.FindGroupFromField(Entity->GetId()))
+						{
+							if (SelectedGroup->GetRCId() == EntityGroup->Id ||
+								Preset->Layout.IsDefaultGroup(SelectedGroup->GetRCId()))
+							{
+								if (TSharedPtr<SRCPanelTreeNode>* FoundNode = FieldWidgetMap.Find(Entity->GetId()))
+								{
+									if (BackendFilter.DoesPassFilters(FoundNode->ToSharedRef()))
+									{
+										FieldEntities.AddUnique(*FoundNode);
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			// Caution : Avoid filter during this phase of search as it would cause an endless loop between search and filters.
+			constexpr bool bApplyFilter = false;
+
+			TryRefreshingSearch(*SearchedText, bApplyFilter);
+		}
+	
+		// Apply the filter (always operate on the active list of entities).
+		FieldEntities.RemoveAll([&](TSharedPtr<const SRCPanelTreeNode> InEntity) { return !BackendFilter.DoesPassFilters(InEntity.ToSharedRef()); });
+
+		FieldsListView->RequestListRefresh();
+	}
+	else // Do a one time refresh in case all filters are cleared.
+	{
+		Refresh();
+	}
+}
+
+void SRCPanelExposedEntitiesList::RequestSearchOrFilter()
+{
+	bSearchRequested = SearchedText.IsValid() && !SearchedText->IsEmpty();
+
+	bFilterApplicationRequested = BackendFilter.HasAnyActiveFilters();
+}
+
+FReply SRCPanelExposedEntitiesList::RequestDeleteAllEntities()
+{
+	if (!FieldsListView.IsValid() || !Preset.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	const FText WarningMessage = FText::Format(LOCTEXT("DeleteAllEntitiesWarning", "You are about to delete '{0}' entities. This action might not be undone.\nAre you sure you want to proceed?"), FieldWidgetMap.Num());
+
+	EAppReturnType::Type UserResponse = FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage);
+
+	if (UserResponse == EAppReturnType::Yes)
+	{
+		FScopedTransaction Transaction(LOCTEXT("UnexposeAll", "Unexpose all remote control entities"));
+		Preset->Modify();
+
+		for (TMap<FGuid, TSharedPtr<SRCPanelTreeNode>>::TConstIterator EntityItr = FieldWidgetMap.CreateConstIterator(); EntityItr; ++EntityItr)
+		{
+			Preset->Unexpose(EntityItr->Key);
+		}
+	}
+
+	return FReply::Handled();
+}
+
+FReply SRCPanelExposedEntitiesList::RequestDeleteAllGroups()
+{
+	if (!GroupsListView.IsValid() || !Preset.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	const FText WarningMessage = FText::Format(LOCTEXT("DeleteAllGroupsWarning", "You are about to delete '{0}' groups. This action might not be undone.\nAre you sure you want to proceed?"), FieldGroups.Num() - 1);
+
+	EAppReturnType::Type UserResponse = FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage);
+
+	if (UserResponse == EAppReturnType::Yes)
+	{
+		FScopedTransaction Transaction(LOCTEXT("DeleteAllGroups", "Delete all remote control groups"));
+		Preset->Modify();
+
+		const TArray<FRemoteControlPresetGroup>& RCGroups = Preset->Layout.GetGroups();
+
+		// Perform deletion in reverse to avoid "Ensure condition failed: Lhs.CurrentNum == Lhs.InitialNum"
+		for (int32 GroupIndex = RCGroups.Num() - 1; GroupIndex >= 0; GroupIndex--)
+		{
+			const FRemoteControlPresetGroup& RCGroup = RCGroups[GroupIndex];
+
+			if (Preset->Layout.IsDefaultGroup(RCGroup.Id))
+			{
+				continue;
+			}
+		
+			Preset->Layout.DeleteGroup(RCGroup.Id);
+		}
+
+		Refresh();
+	}
+
+	return FReply::Handled();
+}
+
+SHeaderRow::FColumn::FArguments SRCPanelExposedEntitiesList::CreateColumn(const FName ForColumnName)
+{
+	const FText DefaultColumnLabel = GetColumnLabel(ForColumnName);
+
+	if (ForColumnName == RemoteControlPresetColumns::Status || ForColumnName == RemoteControlPresetColumns::BindingStatus) // Exception for Status & BindingStatus columns as they are fixed ones.
+	{
+		const SHeaderRow::FColumn::FArguments ColumnArgs = SHeaderRow::Column(ForColumnName)
+			.DefaultLabel(DefaultColumnLabel)
+			.FixedWidth(33.f)
+			.HAlignHeader(HAlign_Center)
+			.HeaderContentPadding(RCPanelStyle->HeaderRowPadding);
+
+		return ColumnArgs;
+	}
+
+	const SHeaderRow::FColumn::FArguments ColumnArgs = SHeaderRow::Column(ForColumnName)
+		.DefaultLabel(DefaultColumnLabel)
+		.FillWidth(this, &SRCPanelExposedEntitiesList::GetColumnSize, ForColumnName)
+		.HAlignHeader(HAlign_Center)
+		.HeaderContentPadding(RCPanelStyle->HeaderRowPadding);
+
+	return ColumnArgs;
+}
+
+int32 SRCPanelExposedEntitiesList::GetColumnIndex(const FName& ForColumn) const
+{
+	if (ForColumn == RemoteControlPresetColumns::LinkIdentifier)
+	{
+		return GetColumnIndex_Internal(ForColumn, RemoteControlPresetColumns::DragDropHandle, ERCColumn::ERC_After);
+	}
+	else if (ForColumn == RemoteControlPresetColumns::Mask)
+	{
+		return GetColumnIndex_Internal(ForColumn, RemoteControlPresetColumns::Description, ERCColumn::ERC_After);
+	}
+	else if (ForColumn == RemoteControlPresetColumns::Status)
+	{
+		return GetColumnIndex_Internal(ForColumn, RemoteControlPresetColumns::Value, ERCColumn::ERC_After);
+	}
+	else
+	{
+		return GetColumnIndex_Internal(ForColumn, RemoteControlPresetColumns::Value, ERCColumn::ERC_After);
+	}
+
+	return INDEX_NONE;
+}
+
+int32 SRCPanelExposedEntitiesList::GetColumnIndex_Internal(const FName& ForColumn, const FName& ExistingColumnName, ERCColumn::Position InPosition) const
+{
+	int32 InsertIndex = INDEX_NONE;
+
+	if (FieldsListView.IsValid() && FieldsHeaderRow.IsValid())
+	{
+		const TIndirectArray<SHeaderRow::FColumn>& ExistingColumns = FieldsHeaderRow->GetColumns();
+		
+		if (ExistingColumns.IsEmpty())
+		{
+			return InsertIndex;
+		}
+
+		auto ColumnItr = ExistingColumns.CreateConstIterator();
+		
+		while (ColumnItr)
+		{
+			// If the given column already exists then we need not to insert it again.
+			if (ColumnItr->ColumnId == ForColumn)
+			{
+				InsertIndex = INDEX_NONE;
+
+				break;
+			}
+
+			switch (InPosition)
+			{
+				case ERCColumn::ERC_After:
+					if (ColumnItr->ColumnId == ExistingColumnName)
+					{
+						InsertIndex = ColumnItr.GetIndex() + 1;
+
+						break;
+					}
+					break;
+				case ERCColumn::ERC_Before:
+					if (ColumnItr->ColumnId == ExistingColumnName)
+					{
+						InsertIndex = ColumnItr.GetIndex() - 1;
+
+						break;
+					}
+					break;
+			}
+
+			++ColumnItr;
+		}
+	}
+
+	return InsertIndex;
+}
+
+FText SRCPanelExposedEntitiesList::GetColumnLabel(const FName& ForColumn) const
+{
+	if (ForColumn == RemoteControlPresetColumns::BindingStatus)
+	{
+		return LOCTEXT("RCPresetBindingStatusColumnHeader", "REC");
+	}
+	else if (ForColumn == RemoteControlPresetColumns::LinkIdentifier)
+	{
+		return LOCTEXT("RCPresetLinkIDColumnHeader", "Link ID");
+	}
+	else if (ForColumn == RemoteControlPresetColumns::Mask)
+	{
+		return LOCTEXT("RCPresetMaskColumnHeader", "Mask");
+	}
+	else if (ForColumn == RemoteControlPresetColumns::Status)
+	{
+		return LOCTEXT("RCPresetStatusColumnHeader", "");
+	}
+	else
+	{
+		IRemoteControlProtocolModule& RCProtocolModule = IRemoteControlProtocolModule::Get();
+
+		if (TSharedPtr<IRemoteControlProtocol> RCProtocol = RCProtocolModule.GetProtocolByName(ActiveProtocol))
+		{
+			if (const FProtocolColumnPtr& ProtocolColumn = RCProtocol->GetRegisteredColumn(ForColumn))
+			{
+				return ProtocolColumn->DisplayText;
+			}
+		}
+	}
+
+	return FText::GetEmpty();
+}
+
+float SRCPanelExposedEntitiesList::GetColumnSize(const FName ForColumn) const
+{
+	float ColumnSize = ProtocolColumnConstants::ColumnSizeNormal;
+
+	if (ForColumn == RemoteControlPresetColumns::LinkIdentifier)
+	{
+		ColumnSize = ProtocolColumnConstants::ColumnSizeMini;
+	}
+	else
+	{
+		IRemoteControlProtocolModule& RCProtocolModule = IRemoteControlProtocolModule::Get();
+
+		if (TSharedPtr<IRemoteControlProtocol> RCProtocol = RCProtocolModule.GetProtocolByName(ActiveProtocol))
+		{
+			if (const FProtocolColumnPtr& ProtocolColumn = RCProtocol->GetRegisteredColumn(ForColumn))
+			{
+				ColumnSize = ProtocolColumn->ColumnSize;
+			}
+		}
+	}
+
+	return ColumnSize;
+}
+
+void SRCPanelExposedEntitiesList::InsertColumn(const FName& InColumnName)
+{
+	if (FieldsListView.IsValid() && FieldsHeaderRow.IsValid())
+	{
+		int32 InsertIndex = GetColumnIndex(InColumnName);
+
+		if (InsertIndex != INDEX_NONE)
+		{
+			const SHeaderRow::FColumn::FArguments NewColumn = CreateColumn(InColumnName);
+
+			FieldsHeaderRow->InsertColumn(NewColumn, InsertIndex);
+		}
+	}
+}
+
+void SRCPanelExposedEntitiesList::RemoveColumn(const FName& InColumnName)
+{
+	if (FieldsListView.IsValid() && FieldsHeaderRow.IsValid())
+	{
+		FieldsHeaderRow->RemoveColumn(InColumnName);
+	}
+}
+
+void SRCPanelExposedEntitiesList::OnProtocolBindingAddedOrRemoved(ERCProtocolBinding::Op BindingOperation)
+{
+	ActiveListMode = EEntitiesListMode::Default; // Hack to trigger mode change via mode switcher.
+
+	if (bIsInProtocolsMode.Get())
+	{
+		RebuildListWithColumns(EEntitiesListMode::Protocols);
+	}
+}
+
+void SRCPanelExposedEntitiesList::OnWidgetRegistryRefreshed(const TArray<UObject*>& Objects)
+{
+	Refresh();
 }
 
 bool FGroupDragEvent::IsDraggedFromSameGroup() const
 {
 	return DragOriginGroup->GetId() == DragTargetGroup->GetId();
 }
+
 
 #undef LOCTEXT_NAMESPACE /* RemoteControlPanelFieldList */

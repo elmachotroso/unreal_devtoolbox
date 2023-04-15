@@ -82,11 +82,11 @@ void FAsyncWriter::FlushArchiveAndResetTimer()
 /** [WRITER THREAD] Serialize the contents of the ring buffer to disk */
 void FAsyncWriter::SerializeBufferToArchive()
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAsyncWriter_SerializeBufferToArchive);
-	// Unix and PS4 use FPlatformMallocCrash during a crash, which means this function is not allowed to perform any allocations
-	// or else it will deadlock when flushing logs during crash handling. Ideally scoped named events would be disabled while crashing.
-	// GIsCriticalError is not always true when crashing (i.e. the case of a GPF) so there is no way to know to skip this behavior only when crashing
+	// Some platforms use FPlatformMallocCrash during a crash, which means this function is not allowed to perform any allocations
+	// or else it will deadlock when flushing logs during crash handling. Ideally scoped counters and events would be disabled while crashing.
+	// GIsCriticalError is not always true when crashing (i.e. the case of a GPF) so there is no way to know to skip this behavior only when crashing.
 #if PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAsyncWriter_SerializeBufferToArchive);
 	SCOPED_NAMED_EVENT(FAsyncWriter_SerializeBufferToArchive, FColor::Cyan);
 #endif
 	while (SerializeRequestCounter.GetValue() > 0)
@@ -95,7 +95,7 @@ void FAsyncWriter::SerializeBufferToArchive()
 		// We won't be modifying it anyway and will later serialize new data in the next iteration.
 		// Here we only serialize what we know exists at the beginning of this function.
 		int32 ThisThreadStartPos = BufferStartPos.Load(EMemoryOrder::Relaxed);
-		int32 ThisThreadEndPos   = BufferEndPos  .Load(EMemoryOrder::Relaxed);
+		int32 ThisThreadEndPos   = BufferEndPos.Load(EMemoryOrder::SequentiallyConsistent);
 
 		if (ThisThreadEndPos >= ThisThreadStartPos)
 		{
@@ -109,7 +109,7 @@ void FAsyncWriter::SerializeBufferToArchive()
 		}
 
 		// Modify the start pos. Only the worker thread modifies this value so it's ok to not guard it with a critical section.
-		BufferStartPos = ThisThreadEndPos;
+		BufferStartPos.Store(ThisThreadEndPos, EMemoryOrder::Relaxed);
 
 		// Decrement the request counter, we now know we serialized at least one request.
 		// We might have serialized more requests but it's irrelevant, the counter will go down to 0 eventually
@@ -254,7 +254,7 @@ void FAsyncWriter::Serialize(void* InData, int64 Length)
 	}
 
 	// Update the end position and let the async thread know we need to write to disk
-	BufferEndPos = (ThisThreadEndPos + Length) % Buffer.Num();
+	BufferEndPos.Store((ThisThreadEndPos + Length) % Buffer.Num(), EMemoryOrder::SequentiallyConsistent);
 	SerializeRequestCounter.Increment();
 
 	// No async thread? Serialize now.
@@ -349,7 +349,7 @@ FOutputDeviceFile::FOutputDeviceFile( const TCHAR* InFilename, bool bInDisableBa
 	}
 	else
 	{
-		Filename[0]	= 0;
+		Filename[0]	= TCHAR('\0');
 	}
 
 #if ALLOW_LOG_FILE && !NO_LOGGING
@@ -396,7 +396,7 @@ void FOutputDeviceFile::TearDown()
 	delete WriterArchive;
 	WriterArchive = nullptr;
 
-	Filename[0] = 0;
+	Filename[0] = TCHAR('\0');
 }
 
 /**

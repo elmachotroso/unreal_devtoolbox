@@ -11,6 +11,20 @@
 #include "Engine/DemoNetDriver.h"
 #include "ReplaySubsystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionReplay)
+
+static int32 GUseReplayStreamingSources = 1;
+static FAutoConsoleVariableRef CVarUseReplayStreamingSources(
+	TEXT("wp.Runtime.UseReplayStreamingSources"),
+	GUseReplayStreamingSources,
+	TEXT("Set to 1 to use the recorded streaming sources when playing replay."));
+
+static int32 GRecordReplayStreamingSources = 1;
+static FAutoConsoleVariableRef CVarRecordReplayStreamingSources(
+	TEXT("wp.Runtime.RecordReplayStreamingSources"),
+	GRecordReplayStreamingSources,
+	TEXT("Set to 1 to record streaming sources when recording replay."));
+
 FArchive& operator<<(FArchive& Ar, FWorldPartitionReplayStreamingSource& StreamingSource)
 {
 	Ar << StreamingSource.Location;
@@ -52,9 +66,14 @@ FArchive& operator<<(FArchive& Ar, FWorldPartitionReplaySample& ReplaySample)
 		for (int32 i = 0; i < ReplaySample.StreamingSources.Num(); ++i)
 		{
 			int32 NameIndex = ReplaySample.StreamingSourceNameIndices[i];
-			if (ensure(ReplaySample.Replay->StreamingSourceNames.IsValidIndex(NameIndex)))
+			// @todo_ow: It sometimes happens at start of replay that StreamingSourceNames haven't been replicated yet. need to investigate.
+			if (ReplaySample.Replay->StreamingSourceNames.IsValidIndex(NameIndex))
 			{
 				ReplaySample.StreamingSources[i].Name = ReplaySample.Replay->StreamingSourceNames[NameIndex];
+			}
+			else
+			{
+				ReplaySample.StreamingSources[i].Name = FName(FString::Printf(TEXT("Source {%i}"), NameIndex));
 			}
 		}
 	}
@@ -82,7 +101,6 @@ void AWorldPartitionReplay::RewindForReplay()
 
 void AWorldPartitionReplay::Initialize(UWorld* World)
 {
-#if !UE_BUILD_SHIPPING
 	if (World->IsGameWorld())
 	{
 		UWorldPartition* WorldPartition = World->GetWorldPartition();
@@ -92,39 +110,39 @@ void AWorldPartitionReplay::Initialize(UWorld* World)
 		SpawnParams.Name = AWorldPartitionReplay::StaticClass()->GetFName();
 		WorldPartition->Replay = World->SpawnActor<AWorldPartitionReplay>(SpawnParams);
 	}
-#endif
 }
 
-bool AWorldPartitionReplay::IsEnabled(UWorld* World)
+bool AWorldPartitionReplay::IsPlaybackEnabled(UWorld* World)
 {
-#if !UE_BUILD_SHIPPING
-	check(World->IsGameWorld());
-	check(World->IsPartitionedWorld());
-	UWorldPartition* WorldPartition = World->GetWorldPartition();
-	return WorldPartition->Replay && WorldPartition->Replay->IsEnabled();
-#else
+	if (GUseReplayStreamingSources && World->IsPlayingReplay())
+	{
+		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
+		{
+			return !!WorldPartition->Replay;
+		}
+	}
+	
 	return false;
-#endif
 }
 
-void AWorldPartitionReplay::BeginPlay()
+bool AWorldPartitionReplay::IsRecordingEnabled(UWorld* World)
 {
-	Super::BeginPlay();
-	
-	UWorld* World = GetWorld();
-	check(World->IsGameWorld());
-	check(World->IsPartitionedWorld());
-	ENetMode NetMode = World->GetNetMode();
-	
-	// Recording will happen only in NM_Standalone/NM_Client. Replay can happen on any net mode.
-	bEnabled = (NetMode == NM_Standalone || NetMode == NM_Client || World->IsPlayingReplay());
+	if (GRecordReplayStreamingSources && World->IsRecordingReplay())
+	{
+		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
+		{
+			return !!WorldPartition->Replay;
+		}
+	}
+		
+	return false;
 }
 
 void AWorldPartitionReplay::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(AWorldPartitionReplay, StreamingSourceNames);
+	DOREPLIFETIME_CONDITION(AWorldPartitionReplay, StreamingSourceNames, COND_ReplayOnly);
 }
 
 void AWorldPartitionReplay::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
@@ -152,6 +170,8 @@ void AWorldPartitionReplay::PreReplication(IRepChangedPropertyTracker& ChangedPr
 bool AWorldPartitionReplay::GetReplayStreamingSources(TArray<FWorldPartitionStreamingSource>& OutStreamingSources)
 {
 	UWorld* World = GetWorld();
+	verify(IsPlaybackEnabled(World));
+
 	UDemoNetDriver* DemoNetDriver = World->GetDemoNetDriver();
 	if (DemoNetDriver && DemoNetDriver->IsPlaying())
 	{
@@ -197,17 +217,17 @@ bool AWorldPartitionReplay::GetReplayStreamingSources(TArray<FWorldPartitionStre
 					int32 SourceIndex2 = ReplaySample2.StreamingSources.IndexOfByPredicate([&](const FWorldPartitionStreamingSource& StreamingSource) { return StreamingSource.Name == ReplaySample1.StreamingSources[SourceIndex].Name; });
 					if (SourceIndex2 != INDEX_NONE)
 					{
-						const FWorldPartitionStreamingSource& Source1 = ReplaySample1.StreamingSources[SourceIndex];
-						const FWorldPartitionStreamingSource& Source2 = ReplaySample2.StreamingSources[SourceIndex2];
+						const FWorldPartitionReplayStreamingSource& Source1 = ReplaySample1.StreamingSources[SourceIndex];
+						const FWorldPartitionReplayStreamingSource& Source2 = ReplaySample2.StreamingSources[SourceIndex2];
 						
-						const float EPSILON = SMALL_NUMBER;
+						const float EPSILON = UE_SMALL_NUMBER;
 						const float Delta = ReplaySample2.TimeSeconds - ReplaySample1.TimeSeconds;
 						const float LerpPercent = Delta > EPSILON ? FMath::Clamp<float>((float)(CurrentTime - ReplaySample1.TimeSeconds) / Delta, 0.0f, 1.0f) : 1.0f;
 
 						const FVector Location = FMath::Lerp(Source1.Location, Source2.Location, LerpPercent);
 						const FQuat Rotation = FQuat::FastLerp(FQuat(Source1.Rotation), FQuat(Source2.Rotation), LerpPercent).GetNormalized();
 						const float Velocity = FMath::Lerp(Source1.Velocity, Source2.Velocity, LerpPercent);
-						OutStreamingSources.Add(FWorldPartitionStreamingSource(Source1.Name, Location, Rotation.Rotator(), Source1.TargetState, Source1.bBlockOnSlowLoading, Source1.Priority, Velocity));
+						OutStreamingSources.Add(FWorldPartitionReplayStreamingSource(Source1.Name, Location, Rotation.Rotator(), Source1.TargetState, Source1.bBlockOnSlowLoading, Source1.Priority, Velocity));
 					}
 					else
 					{
@@ -231,3 +251,4 @@ TArray<FWorldPartitionStreamingSource> AWorldPartitionReplay::GetRecordingStream
 	check(GetWorld()->GetWorldPartition());
 	return GetWorld()->GetWorldPartition()->GetStreamingSources();
 }
+

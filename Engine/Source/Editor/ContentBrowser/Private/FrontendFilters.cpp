@@ -1,31 +1,68 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FrontendFilters.h"
+
+#include "AssetCompilingManager.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetToolsModule.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "CollectionManagerModule.h"
+#include "CollectionManagerTypes.h"
+#include "ContentBrowserDataFilter.h"
+#include "ContentBrowserDataSource.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "ContentBrowserModule.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Engine/World.h"
 #include "Framework/Commands/UIAction.h"
-#include "Textures/SlateIcon.h"
-#include "Misc/ConfigCacheIni.h"
+#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SEditableTextBox.h"
+#include "GameFramework/Actor.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "IAssetTools.h"
+#include "ICollectionManager.h"
+#include "IContentBrowserDataModule.h"
 #include "ISourceControlModule.h"
-#include "SourceControlHelpers.h"
+#include "ISourceControlState.h"
+#include "MRUFavoritesList.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "ObjectTools.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Settings/ContentBrowserSettings.h"
 #include "SourceControlOperations.h"
 #include "SourceControlWindows.h"
-#include "Editor.h"
-#include "AssetToolsModule.h"
-#include "ICollectionManager.h"
-#include "CollectionManagerModule.h"
-#include "ObjectTools.h"
-#include "AssetRegistryModule.h"
-#include "SAssetView.h"
-#include "Modules/ModuleManager.h"
-#include "ContentBrowserModule.h"
-#include "ContentBrowserDataFilter.h"
-#include "MRUFavoritesList.h"
-#include "Settings/ContentBrowserSettings.h"
-#include "HAL/FileManager.h"
+#include "Templates/RemoveReference.h"
+#include "Templates/UnrealTemplate.h"
 #include "TextFilterKeyValueHandlers.h"
 #include "TextFilterValueHandlers.h"
-#include "AssetCompilingManager.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/Package.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectMarks.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SEditableTextBox.h"
+
+class SWidget;
 
 /** Helper functions for frontend filters */
 namespace FrontendFilterHelper
@@ -269,7 +306,7 @@ public:
 
 		if (CollectionManager)
 		{
-			FName ItemCollectionId;
+			FSoftObjectPath ItemCollectionId;
 			if (AssetPtr->TryGetCollectionId(ItemCollectionId))
 			{
 				CollectionManager->GetCollectionsContainingObject(ItemCollectionId, ECollectionShareType::CST_All, AssetCollectionNames, ECollectionRecursionFlags::SelfAndChildren);
@@ -812,7 +849,16 @@ void FFrontendFilter_NotSourceControlled::RequestStatus()
 		// Request the state of files at filter construction time to make sure files have the correct state for the filter
 		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
 
-		TArray<FString> Filenames = FSourceControlWindows::GetSourceControlLocations(/*bContentOnly*/true);
+		TArray<FString> Filenames;
+		if (ISourceControlModule::Get().UsesCustomProjectDir())
+		{
+			FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
+			Filenames.Add(SourceControlProjectDir);
+		}
+		else
+		{
+			Filenames = FSourceControlWindows::GetSourceControlLocations(/*bContentOnly*/true);
+		}
 		UpdateStatusOperation->SetCheckingAllFiles(false);
 		SourceControlProvider.Execute(UpdateStatusOperation, Filenames, EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateSP(this, &FFrontendFilter_NotSourceControlled::SourceControlOperationComplete));
 	}
@@ -1063,8 +1109,10 @@ void FFrontendFilter_ShowOtherDevelopers::SetCurrentFilter(TArrayView<const FNam
 {
 	if ( InSourcePaths.Num() == 1 )
 	{
-		const FString PackagePath = InSourcePaths[0].ToString() + TEXT("/");
-		
+		FString PackagePath;
+		IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath(InSourcePaths[0].ToString(), PackagePath);
+		PackagePath += TEXT("/");
+
 		// If the path starts with the base developer path, and is not the path itself then only one developer path is selected
 		bIsOnlyOneDeveloperPathSelected = PackagePath.StartsWith(BaseDeveloperPath) && PackagePath.Len() != BaseDeveloperPath.Len();
 	}
@@ -1085,12 +1133,12 @@ bool FFrontendFilter_ShowOtherDevelopers::PassesFilter(FAssetFilterType InItem) 
 		{
 			// TODO: Have attribute flags for this so you can tell from the item whether it's a developer folder, and also whether it's yours
 			// If selecting multiple folders, the Developers folder/parent folder, or "All Assets", hide assets which are found in the development folder unless they are in the current user's folder
-			bool bPackageInDeveloperFolder = !TextFilterUtils::NameStrincmp(InItem.GetVirtualPath(), BaseDeveloperPath, BaseDeveloperPathAnsi, BaseDeveloperPath.Len());
+			bool bPackageInDeveloperFolder = !TextFilterUtils::NameStrincmp(InItem.GetInternalPath(), BaseDeveloperPath, BaseDeveloperPathAnsi, BaseDeveloperPath.Len());
 			if ( bPackageInDeveloperFolder )
 			{
 				// Test again using only the path part to avoid filtering files directly in the Developers folder
 				// This happens after the above check to avoid string manipulation when not required
-				FString PackagePath = FPaths::GetPath(InItem.GetVirtualPath().ToString());
+				FString PackagePath = FPaths::GetPath(InItem.GetInternalPath().ToString());
 				bPackageInDeveloperFolder = PackagePath.StartsWith(BaseDeveloperPath);
 				if ( bPackageInDeveloperFolder )
 				{
@@ -1131,7 +1179,7 @@ FFrontendFilter_ShowRedirectors::FFrontendFilter_ShowRedirectors(TSharedPtr<FFro
 	: FFrontendFilter(InCategory)
 {
 	bAreRedirectorsInBaseFilter = false;
-	RedirectorClassName = UObjectRedirector::StaticClass()->GetFName();
+	RedirectorClassName = UObjectRedirector::StaticClass()->GetPathName();
 }
 
 void FFrontendFilter_ShowRedirectors::SetCurrentFilter(TArrayView<const FName> InSourcePaths, const FContentBrowserDataFilter& InBaseFilter)
@@ -1146,7 +1194,7 @@ bool FFrontendFilter_ShowRedirectors::PassesFilter(FAssetFilterType InItem) cons
 	if ( !bAreRedirectorsInBaseFilter )
 	{
 		const FContentBrowserItemDataAttributeValue ClassValue = InItem.GetItemAttribute(NAME_Class);
-		return !ClassValue.IsValid() || ClassValue.GetValue<FName>() != RedirectorClassName;
+		return !ClassValue.IsValid() || ClassValue.GetValue<FString>() != RedirectorClassName;
 	}
 
 	return true;
@@ -1338,8 +1386,8 @@ void FFrontendFilter_UsedInAnyLevel::ActiveStateChanged(bool bActive)
 	{
 		// Find all the levels & external actors
 		FARFilter Filter;
-		Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
-		Filter.ClassNames.Add(AActor::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(AActor::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 		FrontendFilterHelper::GetDependencies(Filter, *AssetRegistry, LevelsDependencies);
 	}
@@ -1382,8 +1430,8 @@ void FFrontendFilter_NotUsedInAnyLevel::ActiveStateChanged(bool bActive)
 	{
 		// Find all the levels & external actors
 		FARFilter Filter;
-		Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
-		Filter.ClassNames.Add(AActor::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(AActor::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 		FrontendFilterHelper::GetDependencies(Filter, *AssetRegistry, LevelsDependencies);
 	}
@@ -1486,4 +1534,26 @@ bool FFrontendFilter_Writable::PassesFilter(FAssetFilterType InItem) const
 	ItemDiskPath = FPaths::ConvertRelativePathToFull(MoveTemp(ItemDiskPath));
 
 	return !IFileManager::Get().IsReadOnly(*ItemDiskPath);
+}
+
+/////////////////////////////////////////
+// FFrontendFilter_VirtualizedData
+/////////////////////////////////////////
+
+FFrontendFilter_VirtualizedData::FFrontendFilter_VirtualizedData(TSharedPtr<FFrontendFilterCategory> InCategory)
+	: FFrontendFilter(InCategory)
+{
+}
+
+bool FFrontendFilter_VirtualizedData::PassesFilter(FAssetFilterType InItem) const
+{
+	const FContentBrowserItemDataAttributeValue AttributeValue = InItem.GetItemAttribute(ContentBrowserItemAttributes::VirtualizedData);
+	if (AttributeValue.IsValid())
+	{
+		return AttributeValue.GetValue<FString>() == TEXT("True");
+	}
+	else
+	{
+		return false;
+	}
 }

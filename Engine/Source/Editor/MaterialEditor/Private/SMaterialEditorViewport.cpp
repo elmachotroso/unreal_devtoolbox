@@ -8,7 +8,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Components/MeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Editor/UnrealEdEngine.h"
@@ -48,8 +48,8 @@ public:
 	FMaterialEditorViewportClient(TWeakPtr<IMaterialEditor> InMaterialEditor, FAdvancedPreviewScene& InPreviewScene, const TSharedRef<SMaterialEditor3DPreviewViewport>& InMaterialEditorViewport);
 
 	// FEditorViewportClient interface
-	virtual bool InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad = false) override;
-	virtual bool InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples/* =1 */, bool bGamepad/* =false */) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
+	virtual bool InputAxis(FViewport* InViewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples/* =1 */, bool bGamepad/* =false */) override;
 	virtual FLinearColor GetBackgroundColor() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Draw(FViewport* Viewport,FCanvas* Canvas) override;
@@ -84,7 +84,7 @@ FMaterialEditorViewportClient::FMaterialEditorViewportClient(TWeakPtr<IMaterialE
 	DrawHelper.GridColorAxis = FColor(80,80,80);
 	DrawHelper.GridColorMajor = FColor(72,72,72);
 	DrawHelper.GridColorMinor = FColor(64,64,64);
-	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+	DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 	
 	SetViewMode(VMI_Lit);
 	
@@ -128,32 +128,32 @@ bool FMaterialEditorViewportClient::ShouldOrbitCamera() const
 	return true;
 }
 
-bool FMaterialEditorViewportClient::InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool FMaterialEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
-	bool bHandled = FEditorViewportClient::InputKey(InViewport, ControllerId, Key, Event, AmountDepressed, false);
+	bool bHandled = FEditorViewportClient::InputKey(EventArgs);
 
 	// Handle viewport screenshot.
-	bHandled |= InputTakeScreenshot(InViewport, Key, Event);
+	bHandled |= InputTakeScreenshot(EventArgs.Viewport, EventArgs.Key, EventArgs.Event);
 
-	bHandled |= AdvancedPreviewScene->HandleInputKey(InViewport, ControllerId, Key, Event, AmountDepressed, bGamepad);
+	bHandled |= AdvancedPreviewScene->HandleInputKey(EventArgs);
 
 	return bHandled;
 }
 
-bool FMaterialEditorViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples/* =1 */, bool bGamepad/* =false */)
+bool FMaterialEditorViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples/* =1 */, bool bGamepad/* =false */)
 {
 	bool bResult = true;
 
 	if (!bDisableInput)
 	{
-		bResult = AdvancedPreviewScene->HandleViewportInput(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+		bResult = AdvancedPreviewScene->HandleViewportInput(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
 		if (bResult)
 		{
 			Invalidate();
 		}
 		else
 		{
-			bResult = FEditorViewportClient::InputAxis(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+			bResult = FEditorViewportClient::InputAxis(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
 		}
 	}
 
@@ -1259,7 +1259,7 @@ void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMat
 			SNew( SBorder )
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Top)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
@@ -1348,7 +1348,7 @@ void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMat
 						SNew( SComboButton )
 						.ContentPadding(0)
 						.ForegroundColor( FSlateColor::UseForeground() )
-						.ButtonStyle( FEditorStyle::Get(), "ToggleButton" )
+						.ButtonStyle( FAppStyle::Get(), "ToggleButton" )
 						.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ViewOptions")))
 						.MenuContent()
 						[
@@ -1357,7 +1357,7 @@ void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMat
 						.ButtonContent()
 						[
 							SNew(SImage)
-							.Image( FEditorStyle::GetBrush("GenericViewButton") )
+							.Image( FAppStyle::GetBrush("GenericViewButton") )
 						]
 					]
 				]
@@ -1370,7 +1370,7 @@ void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMat
 			.HAlign( HAlign_Center )
 			.VAlign( VAlign_Center )
 			.OnMouseButtonUp(this, &SMaterialEditorUIPreviewViewport::OnViewportClicked)
-			.BorderImage( FEditorStyle::GetBrush("BlackBrush") )
+			.BorderImage( FAppStyle::GetBrush("BlackBrush") )
 			.Clipping(EWidgetClipping::ClipToBounds)
 			[
 				SAssignNew( PreviewZoomer, SMaterialEditorUIPreviewZoomer, PreviewMaterial )

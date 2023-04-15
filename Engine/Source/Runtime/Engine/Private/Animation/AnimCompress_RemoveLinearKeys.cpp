@@ -9,6 +9,8 @@
 #include "AnimEncoding.h"
 #include "Misc/FeedbackContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCompress_RemoveLinearKeys)
+
 // Define to 1 to enable timing of the meat of linear key removal done in DoReduction
 // The times are non-trivial, but the extra log spam isn't useful if one isn't optimizing DoReduction runtime
 #define TIME_LINEAR_KEY_REMOVAL 0
@@ -1104,9 +1106,9 @@ bool UAnimCompress_RemoveLinearKeys::DoReduction(const FCompressibleAnimData& Co
 	return true;
 }
 
-void UAnimCompress_RemoveLinearKeys::PopulateDDCKey(FArchive& Ar)
+void UAnimCompress_RemoveLinearKeys::PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar)
 {
-	Super::PopulateDDCKey(Ar);
+	Super::PopulateDDCKey(KeyArgs, Ar);
 	Ar << MaxPosDiff;
 	Ar << MaxAngleDiff;
 	Ar << MaxScaleDiff;
@@ -1120,3 +1122,4 @@ void UAnimCompress_RemoveLinearKeys::PopulateDDCKey(FArchive& Ar)
 }
 
 #endif // WITH_EDITOR
+

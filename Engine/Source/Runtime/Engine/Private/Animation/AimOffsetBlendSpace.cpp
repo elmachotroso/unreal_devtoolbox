@@ -6,10 +6,11 @@
 
 #include "Animation/AimOffsetBlendSpace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AimOffsetBlendSpace)
+
 UAimOffsetBlendSpace::UAimOffsetBlendSpace(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bRotationBlendInMeshSpace = true;
 }
 
 bool UAimOffsetBlendSpace::IsValidAdditiveType(EAdditiveAnimationType AdditiveType) const
@@ -21,3 +22,4 @@ bool UAimOffsetBlendSpace::IsValidAdditive() const
 {
 	return ContainsMatchingSamples(AAT_RotationOffsetMeshSpace);
 }
+

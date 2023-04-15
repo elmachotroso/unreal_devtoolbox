@@ -5,7 +5,12 @@
 #include "AnimationRuntime.h"
 #include "Animation/AnimNodeMessages.h"
 #include "Animation/AnimNode_SaveCachedPose.h"
+#include "Animation/BlendProfile.h"
+#include "Algo/MaxElement.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_Inertialization)
 
 LLM_DEFINE_TAG(Animation_Inertialization);
 
@@ -37,9 +42,9 @@ public:
 
 private:
 	// IInertializationRequester interface
-	virtual void RequestInertialization(float InRequestedDuration) override
+	virtual void RequestInertialization(float InRequestedDuration, const UBlendProfile* InBlendProfile) override
 	{ 
-		Node.RequestInertialization(InRequestedDuration); 
+		Node.RequestInertialization(InRequestedDuration, InBlendProfile); 
 	}
 
 	virtual void AddDebugRecord(const FAnimInstanceProxy& InSourceProxy, int32 InSourceNodeId)
@@ -60,27 +65,39 @@ private:
 	FAnimInstanceProxy& Proxy;
 };
 
+
+static int32 GetNumSkeletonBones(const FBoneContainer& BoneContainer)
+{
+	const USkeleton* SkeletonAsset = BoneContainer.GetSkeletonAsset();
+	check(SkeletonAsset);
+
+	const FReferenceSkeleton& RefSkeleton = SkeletonAsset->GetReferenceSkeleton();
+	return RefSkeleton.GetNum();
+}
+
 }}	// namespace UE::Anim
+
 
 FAnimNode_Inertialization::FAnimNode_Inertialization()
 	: DeltaTime(0.0f)
-	, RequestedDuration(-1.0f)
 	, TeleportType(ETeleportType::None)
 	, InertializationState(EInertializationState::Inactive)
 	, InertializationElapsedTime(0.0f)
 	, InertializationDuration(0.0f)
+	, InertializationMaxDuration(0.0f)
 	, InertializationDeficit(0.0f)
 {
 }
 
 
-void FAnimNode_Inertialization::RequestInertialization(float Duration)
+void FAnimNode_Inertialization::RequestInertialization(float Duration, const UBlendProfile* BlendProfile)
 {
-	if (RequestedDuration < 0.0f || Duration < RequestedDuration)
+	if (Duration >= 0.0f)
 	{
-		RequestedDuration = Duration;
+		RequestQueue.AddUnique(FInertializationRequest(Duration, BlendProfile));
 	}
 }
+
 
 /*static*/ void FAnimNode_Inertialization::LogRequestError(const FAnimationUpdateContext& Context, const FPoseLinkBase& RequesterPoseLink)
 {
@@ -103,7 +120,12 @@ void FAnimNode_Inertialization::Initialize_AnyThread(const FAnimationInitializeC
 	FAnimNode_Base::Initialize_AnyThread(Context);
 	Source.Initialize(Context);
 
+
+	const int32 NumSkeletonBones = UE::Anim::GetNumSkeletonBones(Context.AnimInstanceProxy->GetRequiredBones());
+
 	PoseSnapshots.Empty(INERTIALIZATION_MAX_POSE_SNAPSHOTS);
+	RequestQueue.Reserve(8);
+	InertializationDurationPerBone.Reserve(NumSkeletonBones);
 
 	DeltaTime = 0.0f;
 
@@ -153,16 +175,21 @@ void FAnimNode_Inertialization::Update_AnyThread(const FAnimationUpdateContext& 
 	{
 		// If we have a pending request forward the request to other Inertialization nodes
 		// that were skipped due to pose caching.
-		if(RequestedDuration >= 0.0f)
+		if(RequestQueue.Num() > 0)
 		{
 			// Cached poses have their Update function called once even though there may be multiple UseCachedPose nodes for the same pose.
 			// Because of this, there may be Inertialization ancestors of the UseCachedPose nodes that missed out on requests.
 			// So here we forward 'this' node's requests to the ancestors of those skipped UseCachedPose nodes.
+			// Note that in some cases, we may be forwarding the requests back to this same node.  Those duplicate requests will ultimately
+			// be ignored by the 'AddUnique' in the body of FAnimNode_Inertialization::RequestInertialization.
 			for (const UE::Anim::FMessageStack& Stack : InSkippedUpdates)
 			{
 				Stack.ForEachMessage<UE::Anim::IInertializationRequester>([this, NodeId, &Proxy](UE::Anim::IInertializationRequester& InMessage)
 				{
-					InMessage.RequestInertialization(RequestedDuration);
+					for (const FInertializationRequest& Request : RequestQueue)
+					{
+						InMessage.RequestInertialization(Request.Duration, Request.BlendProfile);
+					}
  					InMessage.AddDebugRecord(Proxy, NodeId);
 
 					return UE::Anim::FMessageStack::EEnumerate::Stop;
@@ -177,7 +204,6 @@ void FAnimNode_Inertialization::Update_AnyThread(const FAnimationUpdateContext& 
 	DeltaTime += Context.GetDeltaTime();
 }
 
-
 void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/Inertialization"));
@@ -185,12 +211,13 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 
 	Source.Evaluate(Output);
 
-	// Extract any pending inertialization request
-	const float Duration = ConsumeInertializationRequest(Output);
-
 	// Disable inertialization if requested (for testing / debugging)
 	if (!CVarAnimInertializationEnable.GetValueOnAnyThread())
 	{
+		// Clear any pending inertialization requests
+		RequestQueue.Reset();
+
+		// Clear the inertialization state
 		Deactivate();
 
 		// Clear the pose history
@@ -204,22 +231,80 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 	}
 
 	// Update the inertialization state if a new inertialization request is pending
-	if (Duration > SMALL_NUMBER && PoseSnapshots.Num() > 0)
+	const int32 NumRequests = RequestQueue.Num();
+	if (NumRequests > 0 && PoseSnapshots.Num() > 0)
 	{
 		float AppliedDeficit = 0.0f;
 		if (InertializationState == EInertializationState::Active)
 		{
 			// An active inertialization is being interrupted. Keep track of the lost inertialization time
-			// and reduce future durations if interruptions continue. Without this mitigation, 
+			// and reduce future durations if interruptions continue. Without this mitigation,
 			// repeated interruptions will lead to a degenerate pose because the pose target is unstable.
 			bool bApplyDeficit = InertializationDeficit > 0.0f && !CVarAnimInertializationIgnoreDeficit.GetValueOnAnyThread();
 			InertializationDeficit = InertializationDuration - InertializationElapsedTime;
-			AppliedDeficit = bApplyDeficit ? FMath::Min(Duration, InertializationDeficit) : 0.0f;
+			AppliedDeficit = bApplyDeficit ? InertializationDeficit : 0.0f;
 		}
+
 		InertializationState = EInertializationState::Pending;
 		InertializationElapsedTime = 0.0f;
-		InertializationDuration = Duration - AppliedDeficit;
+		
+		const int32 NumSkeletonBones = UE::Anim::GetNumSkeletonBones(Output.AnimInstanceProxy->GetRequiredBones());
+
+		auto FillSkeletonBoneDurationsArray = [this, NumSkeletonBones](auto& DurationPerBone, float Duration, const UBlendProfile* BlendProfile) {
+			if (BlendProfile == nullptr)
+			{
+				BlendProfile = DefaultBlendProfile;
+			}
+
+			if (BlendProfile != nullptr)
+			{
+				DurationPerBone.SetNum(NumSkeletonBones);
+				BlendProfile->FillSkeletonBoneDurationsArray(DurationPerBone, Duration);
+			}
+			else
+			{
+				DurationPerBone.Init(Duration, NumSkeletonBones);
+			}
+		};
+
+		// Handle the first inertialization request in the queue
+		InertializationDuration = FMath::Max(RequestQueue[0].Duration - AppliedDeficit, 0.0f);
+		FillSkeletonBoneDurationsArray(InertializationDurationPerBone, InertializationDuration, RequestQueue[0].BlendProfile);
+
+		// Handle all subsequent inertialization requests (often there will be only a single request)
+		if (NumRequests > 1)
+		{
+			UE::Anim::TTypedIndexArray<FSkeletonPoseBoneIndex, float, FAnimStackAllocator> RequestDurationPerBone;
+			for (int32 RequestIndex = 1; RequestIndex < NumRequests; ++RequestIndex)
+			{
+				const FInertializationRequest& Request = RequestQueue[RequestIndex];
+				const float RequestDuration = FMath::Max(Request.Duration - AppliedDeficit, 0.0f);
+
+				// Merge this request in with the previous requests (using the minimum requested time per bone)
+				InertializationDuration = FMath::Min(InertializationDuration, RequestDuration);
+				if (Request.BlendProfile != nullptr)
+				{
+					FillSkeletonBoneDurationsArray(RequestDurationPerBone, RequestDuration, Request.BlendProfile);
+					for (int32 SkeletonBoneIndex = 0; SkeletonBoneIndex < NumSkeletonBones; ++SkeletonBoneIndex)
+					{
+						InertializationDurationPerBone[SkeletonBoneIndex] = FMath::Min(InertializationDurationPerBone[SkeletonBoneIndex], RequestDurationPerBone[SkeletonBoneIndex]);
+					}
+				}
+				else
+				{
+					for (int32 SkeletonBoneIndex = 0; SkeletonBoneIndex < NumSkeletonBones; ++SkeletonBoneIndex)
+					{
+						InertializationDurationPerBone[SkeletonBoneIndex] = FMath::Min(InertializationDurationPerBone[SkeletonBoneIndex], RequestDuration);
+					}
+				}
+			}
+		}
+
+		// Cache the maximum duration across all bones (so we know when to deactivate the inertialization request)
+		InertializationMaxDuration = FMath::Max(InertializationDuration, *Algo::MaxElement(InertializationDurationPerBone));
 	}
+
+	RequestQueue.Reset();
 
 	// Update the inertialization timer
 	if (InertializationState != EInertializationState::Inactive)
@@ -227,12 +312,18 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 		InertializationElapsedTime += DeltaTime;
 		if (InertializationElapsedTime >= InertializationDuration)
 		{
-			Deactivate();
+			// Reset the deficit accumulator
+			InertializationDeficit = 0.0f;
 		}
 		else
 		{
 			// Pay down the accumulated deficit caused by interruptions
 			InertializationDeficit -= FMath::Min(InertializationDeficit, DeltaTime);
+		}
+
+		if (InertializationElapsedTime >= InertializationMaxDuration)
+		{
+			Deactivate();
 		}
 	}
 
@@ -283,12 +374,17 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 			PoseSnapshots[PoseSnapshots.Num() - 1],
 			PoseSnapshots[FMath::Max(PoseSnapshots.Num() - 2, 0)],
 			InertializationDuration,
+			InertializationDurationPerBone,
 			InertializationPoseDiff);
 		InertializationState = EInertializationState::Active;
 	}
 	if (InertializationState == EInertializationState::Active)
 	{
-		ApplyInertialization(Output, InertializationPoseDiff, InertializationElapsedTime, InertializationDuration);
+		ApplyInertialization(Output,
+			InertializationPoseDiff,
+			InertializationElapsedTime,
+			InertializationDuration,
+			InertializationDurationPerBone);
 	}
 
 	// Get the parent actor attachment information (to detect and counteract discontinuities when changing parents)
@@ -330,10 +426,11 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 	DeltaTime = 0.0f;
 	TeleportType = ETeleportType::None;
 
-	TRACE_ANIM_NODE_VALUE(Output, TEXT("State"), *UEnum::GetValueAsString(InertializationState));
-	TRACE_ANIM_NODE_VALUE(Output, TEXT("Elapsed Time"), InertializationElapsedTime);
-	TRACE_ANIM_NODE_VALUE(Output, TEXT("Duration"), InertializationDuration);
-	TRACE_ANIM_NODE_VALUE(Output, TEXT("Normalized Time"), InertializationDuration > KINDA_SMALL_NUMBER ? (InertializationElapsedTime / InertializationDuration) : 0.0f);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("State"), *UEnum::GetValueAsString(InertializationState));
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Elapsed Time"), InertializationElapsedTime);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Duration"), InertializationDuration);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Max Duration"), InertializationMaxDuration);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Normalized Time"), InertializationDuration > UE_KINDA_SMALL_NUMBER ? (InertializationElapsedTime / InertializationDuration) : 0.0f);
 }
 
 
@@ -343,7 +440,7 @@ void FAnimNode_Inertialization::GatherDebugData(FNodeDebugData& DebugData)
 
 	FString DebugLine = DebugData.GetNodeName(this);
 
-	if (InertializationDuration > KINDA_SMALL_NUMBER)
+	if (InertializationDuration > UE_KINDA_SMALL_NUMBER)
 	{
 		DebugLine += FString::Printf(TEXT("('%s' Time: %.3f / %.3f (%.0f%%) [%.3f])"),
 			*UEnum::GetValueAsString(InertializationState),
@@ -381,15 +478,7 @@ void FAnimNode_Inertialization::ResetDynamics(ETeleportType InTeleportType)
 }
 
 
-float FAnimNode_Inertialization::ConsumeInertializationRequest(FPoseContext& Context)
-{
-	const float Duration = RequestedDuration;
-	RequestedDuration = -1.0f;
-	return Duration;
-}
-
-
-void FAnimNode_Inertialization::StartInertialization(FPoseContext& Context, FInertializationPose& PreviousPose1, FInertializationPose& PreviousPose2, float Duration, /*OUT*/ FInertializationPoseDiff& OutPoseDiff)
+void FAnimNode_Inertialization::StartInertialization(FPoseContext& Context, FInertializationPose& PreviousPose1, FInertializationPose& PreviousPose2, float Duration, TArrayView<const float> DurationPerBone, /*OUT*/ FInertializationPoseDiff& OutPoseDiff)
 {
 	// Determine if this skeletal mesh's actor is attached to another actor
 	FName AttachParentName = NAME_None;
@@ -405,16 +494,19 @@ void FAnimNode_Inertialization::StartInertialization(FPoseContext& Context, FIne
 }
 
 
-void FAnimNode_Inertialization::ApplyInertialization(FPoseContext& Context, const FInertializationPoseDiff& PoseDiff, float ElapsedTime, float Duration)
+void FAnimNode_Inertialization::ApplyInertialization(FPoseContext& Context, const FInertializationPoseDiff& PoseDiff, float ElapsedTime, float Duration, TArrayView<const float> DurationPerBone)
 {
-	PoseDiff.ApplyTo(Context.Pose, Context.Curve, ElapsedTime, Duration);
+	PoseDiff.ApplyTo(Context.Pose, Context.Curve, ElapsedTime, Duration, DurationPerBone);
 }
+
 
 void FAnimNode_Inertialization::Deactivate()
 {
 	InertializationState = EInertializationState::Inactive;
 	InertializationElapsedTime = 0.0f;
 	InertializationDuration = 0.0f;
+	InertializationDurationPerBone.Reset();
+	InertializationMaxDuration = 0.0f;
 	InertializationDeficit = 0.0f;
 }
 
@@ -423,7 +515,7 @@ void FInertializationPose::InitFrom(const FCompactPose& Pose, const FBlendedCurv
 {
 	const FBoneContainer& BoneContainer = Pose.GetBoneContainer();
 
-	const int32 NumSkeletonBones = BoneContainer.GetSkeletonAsset()->GetReferenceSkeleton().GetNum();
+	const int32 NumSkeletonBones = UE::Anim::GetNumSkeletonBones(BoneContainer);
 	BoneTransforms.Reset(NumSkeletonBones);
 	BoneTransforms.AddZeroed(NumSkeletonBones);
 	BoneStates.Reset(NumSkeletonBones);
@@ -479,8 +571,7 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 	}
 
 	// Compute the inertialization differences for each bone
-	const FReferenceSkeleton& RefSkeleton = BoneContainer.GetSkeletonAsset()->GetReferenceSkeleton();
-	const int32 NumSkeletonBones = RefSkeleton.GetNum();
+	const int32 NumSkeletonBones = UE::Anim::GetNumSkeletonBones(BoneContainer);
 	BoneDiffs.Empty(NumSkeletonBones);
 	BoneDiffs.AddZeroed(NumSkeletonBones);
 	for (FCompactPoseBoneIndex BoneIndex : Pose.ForEachBoneIndex())
@@ -551,12 +642,12 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 
 				const FVector T = Prev1Transform.GetTranslation() - PoseTransform.GetTranslation();
 				TranslationMagnitude = T.Size();
-				if (TranslationMagnitude > KINDA_SMALL_NUMBER)
+				if (TranslationMagnitude > UE_KINDA_SMALL_NUMBER)
 				{
 					TranslationDirection = T / TranslationMagnitude;
 				}
 
-				if (Prev2IsValid && Prev1.DeltaTime > KINDA_SMALL_NUMBER && TranslationMagnitude > KINDA_SMALL_NUMBER)
+				if (Prev2IsValid && Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER && TranslationMagnitude > UE_KINDA_SMALL_NUMBER)
 				{
 					const FVector PrevT = Prev2Transform.GetTranslation() - PoseTransform.GetTranslation();
 					const float PrevMagnitude = FVector::DotProduct(PrevT, TranslationDirection);
@@ -583,7 +674,7 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 					RotationAngle = -RotationAngle;
 				}
 
-				if (Prev2IsValid && Prev1.DeltaTime > KINDA_SMALL_NUMBER && RotationAngle > KINDA_SMALL_NUMBER)
+				if (Prev2IsValid && Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER && RotationAngle > UE_KINDA_SMALL_NUMBER)
 				{
 					const FQuat PrevQ = Prev2Transform.GetRotation() * PoseTransform.GetRotation().Inverse();
 					const float PrevAngle = PrevQ.GetTwistAngle(RotationAxis);
@@ -603,12 +694,12 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 
 				const FVector S = Prev1Transform.GetScale3D() - PoseTransform.GetScale3D();
 				ScaleMagnitude = S.Size();
-				if (ScaleMagnitude > KINDA_SMALL_NUMBER)
+				if (ScaleMagnitude > UE_KINDA_SMALL_NUMBER)
 				{
 					ScaleAxis = S / ScaleMagnitude;
 				}
 
-				if (Prev2IsValid && Prev1.DeltaTime > KINDA_SMALL_NUMBER && ScaleMagnitude > KINDA_SMALL_NUMBER)
+				if (Prev2IsValid && Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER && ScaleMagnitude > UE_KINDA_SMALL_NUMBER)
 				{
 					const FVector PrevS = Prev2Transform.GetScale3D() - PoseTransform.GetScale3D();
 					const float PrevMagnitude = FVector::DotProduct(PrevS, ScaleAxis);
@@ -651,7 +742,7 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 		CurveDiff.Delta = Prev1Weight - CurrWeight;
 
 		const int32 Prev2Idx = Prev2.Curves.BlendedCurve.GetArrayIndexByUID(CurveUID);
-		if (Prev2Idx != INDEX_NONE && Prev1.DeltaTime > KINDA_SMALL_NUMBER)
+		if (Prev2Idx != INDEX_NONE && Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER)
 		{
 			const float Prev2Weight = Prev2.Curves.BlendedCurve.CurveWeights[Prev2Idx];
 			CurveDiff.Derivative = (Prev1Weight - Prev2Weight) / Prev1.DeltaTime;
@@ -662,7 +753,7 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 
 // Apply this difference to a pose and a set of curves, decaying over time as InertializationElapsedTime approaches InertializationDuration
 //
-void FInertializationPoseDiff::ApplyTo(FCompactPose& Pose, FBlendedCurve& Curves, float InertializationElapsedTime, float InertializationDuration) const
+void FInertializationPoseDiff::ApplyTo(FCompactPose& Pose, FBlendedCurve& Curves, float InertializationElapsedTime, float InertializationDuration, TArrayView<const float> InertializationDurationPerBone) const
 {
 	const FBoneContainer& BoneContainer = Pose.GetBoneContainer();
 
@@ -674,20 +765,21 @@ void FInertializationPoseDiff::ApplyTo(FCompactPose& Pose, FBlendedCurve& Curves
 		if (SkeletonPoseBoneIndex != INDEX_NONE)
 		{
 			const FInertializationBoneDiff& BoneDiff = BoneDiffs[SkeletonPoseBoneIndex];
+			const float Duration = InertializationDurationPerBone[SkeletonPoseBoneIndex];
 
 			// Apply the bone translation difference
 			const FVector T = BoneDiff.TranslationDirection *
-				CalcInertialFloat(BoneDiff.TranslationMagnitude, BoneDiff.TranslationSpeed, InertializationElapsedTime, InertializationDuration);
+				CalcInertialFloat(BoneDiff.TranslationMagnitude, BoneDiff.TranslationSpeed, InertializationElapsedTime, Duration);
 			Pose[BoneIndex].AddToTranslation(T);
 
 			// Apply the bone rotation difference
 			const FQuat Q = FQuat(BoneDiff.RotationAxis,
-				CalcInertialFloat(BoneDiff.RotationAngle, BoneDiff.RotationSpeed, InertializationElapsedTime, InertializationDuration));
+				CalcInertialFloat(BoneDiff.RotationAngle, BoneDiff.RotationSpeed, InertializationElapsedTime, Duration));
 			Pose[BoneIndex].SetRotation(Q * Pose[BoneIndex].GetRotation());
 
 			// Apply the bone scale difference
 			const FVector S = BoneDiff.ScaleAxis *
-				CalcInertialFloat(BoneDiff.ScaleMagnitude, BoneDiff.ScaleSpeed, InertializationElapsedTime, InertializationDuration);
+				CalcInertialFloat(BoneDiff.ScaleMagnitude, BoneDiff.ScaleSpeed, InertializationElapsedTime, Duration);
 			Pose[BoneIndex].SetScale3D(S + Pose[BoneIndex].GetScale3D());
 		}
 	}
@@ -786,7 +878,7 @@ float FInertializationPoseDiff::CalcInertialFloat(float x0, float v0, float t, f
 	//		eq2 := (x/.t->t1)==0
 	//		Solve[{eq1 && eq2}, {q,t1}]
 	//
-	if (v0 < -KINDA_SMALL_NUMBER)
+	if (v0 < -UE_KINDA_SMALL_NUMBER)
 	{
 		t1 = FMath::Min(t1, -5.0f * x0 / v0);
 	}

@@ -17,6 +17,7 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Misc/MessageDialog.h"
+#include "Animation/AnimSequenceHelpers.h"
 
 #define LOCTEXT_NAMESPACE "AnimSequenceHelpers"
 
@@ -207,12 +208,12 @@ void BuildPoseFromModel(const UAnimDataModel* Model, FCompactPose& OutPose, cons
 
 	bool bShouldInterpolate = true;
 
-	if (Alpha < KINDA_SMALL_NUMBER)
+	if (Alpha < UE_KINDA_SMALL_NUMBER)
 	{
 		Alpha = 0.f;
 		bShouldInterpolate = false;
 	}
-	else if (Alpha > 1.f - KINDA_SMALL_NUMBER)
+	else if (Alpha > 1.f - UE_KINDA_SMALL_NUMBER)
 	{
 		bShouldInterpolate = false;
 		KeyIndex1 = KeyIndex2;
@@ -518,7 +519,7 @@ bool CopyNotifies(const UAnimSequenceBase* SourceAnimSeq, UAnimSequenceBase* Des
 		}
 
 		// Copy notify timing
-		NotifyEvent.LinkSequence(DestAnimSeq, SrcNotifyEvent.GetTriggerTime());
+		NotifyEvent.Link(DestAnimSeq, SrcNotifyEvent.GetTriggerTime());
 		NotifyEvent.TriggerTimeOffset = GetTriggerTimeOffsetForType(DestAnimSeq->CalculateOffsetForNotify(NotifyEvent.GetTriggerTime()));
 
 		// Make sure editor knows we've changed something.
@@ -793,7 +794,7 @@ bool AnimationData::AddLoopingInterpolation(UAnimSequence* InSequence)
 	return false;
 }
 
-bool AnimationData::Trim(UAnimSequence* InSequence, float TrimStart, float TrimEnd)
+bool AnimationData::Trim(UAnimSequence* InSequence, float TrimStart, float TrimEnd, bool bInclusiveEnd /*=false*/ )
 {
 	const UAnimDataModel* DataModel = InSequence->GetDataModel();
 	IAnimationDataController& Controller = InSequence->GetController();
@@ -804,9 +805,6 @@ bool AnimationData::Trim(UAnimSequence* InSequence, float TrimStart, float TrimE
 	if (NumTracks > 0 && NumKeys > 0)
 	{
 		const FFrameRate& FrameRate = DataModel->GetFrameRate();
-				
-		// Save Total Number of Keys before trimming
-		int32 TotalNumOfKeys = NumKeys;
 
 		// if there is only one key, there is nothing to trim away
 		if (NumKeys <= 1)
@@ -818,7 +816,17 @@ bool AnimationData::Trim(UAnimSequence* InSequence, float TrimStart, float TrimE
 		const FFrameNumber EndFrameTrim = FrameRate.AsFrameTime(TrimEnd).RoundToFrame();
 
 		const int32 StartTrimKeyIndex = StartFrameTrim.Value;
-		const int32 NumTrimmedFrames = EndFrameTrim.Value - StartFrameTrim.Value;
+		const int32 NumTrimmedFrames = (EndFrameTrim.Value - StartFrameTrim.Value) + (bInclusiveEnd ? 1 : 0);
+
+		if (StartTrimKeyIndex == 0 && NumTrimmedFrames == NumKeys)
+		{
+			return false;
+		}
+
+		if (NumTrimmedFrames == 0)
+		{
+			return false;
+		}
 		
 		IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("TrimRawAnimation_Bracket", "Trimming Animation Track Data"));
 		RemoveKeys(InSequence, StartTrimKeyIndex, NumTrimmedFrames);
@@ -925,7 +933,7 @@ void AnimationData::RemoveKeys(UAnimSequence* InSequence, int32 StartKeyIndex, i
 			Controller.SetBoneTrackKeys(AnimationTrack.Name, TrackData.PosKeys, TrackData.RotKeys, TrackData.ScaleKeys);
 		}
 
-		const int32 NewNumberOfFrames = FMath::Max(NewNumberOfKeys - 1, 0);
+		const int32 NewNumberOfFrames = FMath::Max(NewNumberOfKeys - 1, 1);
 		const float NewSequenceLength = FrameRate.AsSeconds(NewNumberOfFrames);
 
 		const float StartFrameTime = FrameRate.AsSeconds(FMath::Max(StartKeyIndex, 0));

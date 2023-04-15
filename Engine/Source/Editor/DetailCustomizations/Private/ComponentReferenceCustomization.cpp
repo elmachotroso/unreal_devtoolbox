@@ -2,23 +2,53 @@
 
 #include "ComponentReferenceCustomization.h"
 
+#include "ActorPickerMode.h"
+#include "Brushes/SlateNoResource.h"
+#include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "EditorStyleSet.h"
+#include "Engine/EngineTypes.h"
 #include "Engine/LevelScriptActor.h"
+#include "Fonts/SlateFontInfo.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h"
-#include "IPropertyTypeCustomization.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/ComponentEditorUtils.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 #include "Styling/SlateIconFinder.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
-#include "Widgets/SBoxPanel.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 
 static const FName NAME_AllowAnyActor = "AllowAnyActor";
@@ -147,7 +177,7 @@ void FComponentReferenceCustomization::BuildClassFilters()
 
 			for (const FString& ClassName : ClassFilterNames)
 			{
-				UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+				UClass* Class = UClass::TryFindTypeSlow<UClass>(ClassName);
 				if (!Class)
 				{
 					Class = LoadObject<UClass>(nullptr, *ClassName);
@@ -281,8 +311,8 @@ void FComponentReferenceCustomization::BuildComboBox()
 
 	ComponentComboButton = SNew(SComboButton)
 		.ToolTipText(TooltipAttribute)
-		.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
-		.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
+		.ButtonStyle(FAppStyle::Get(), "PropertyEditor.AssetComboStyle")
+		.ForegroundColor(FAppStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
 		.OnGetMenuContent(this, &FComponentReferenceCustomization::OnGetMenuContent)
 		.OnMenuOpenChanged(this, &FComponentReferenceCustomization::OnMenuOpenChanged)
 		.IsEnabled(IsEnabledAttribute)
@@ -392,7 +422,7 @@ FPropertyAccess::Result FComponentReferenceCustomization::GetValue(FComponentRef
 
 bool FComponentReferenceCustomization::IsComponentReferenceValid(const FComponentReference& Value) const
 {
-	if (!bAllowAnyActor && Value.OtherActor)
+	if (!bAllowAnyActor && Value.OtherActor.IsValid())
 	{
 		return false;
 	}
@@ -547,7 +577,7 @@ const FSlateBrush* FComponentReferenceCustomization::GetStatusIcon() const
 
 	if (CachedPropertyAccess == FPropertyAccess::Fail)
 	{
-		return FEditorStyle::GetBrush("Icons.Error");
+		return FAppStyle::GetBrush("Icons.Error");
 	}
 	return &EmptyBrush;
 }

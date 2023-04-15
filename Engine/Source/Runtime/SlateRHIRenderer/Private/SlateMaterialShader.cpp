@@ -11,7 +11,6 @@ FSlateMaterialShaderVS::FSlateMaterialShaderVS(const FMaterialShaderType::Compil
 	: FMaterialShader(Initializer)
 {
 	ViewProjection.Bind(Initializer.ParameterMap, TEXT("ViewProjection"));
-	SwitchVerticalAxisMultiplier.Bind( Initializer.ParameterMap, TEXT("SwitchVerticalAxisMultiplier"));
 }
 
 
@@ -21,7 +20,6 @@ void FSlateMaterialShaderVS::ModifyCompilationEnvironment(const FMaterialShaderP
 	OutEnvironment.SetDefine( TEXT("USE_MATERIALS"), 1 );
 	OutEnvironment.SetDefine( TEXT("NUM_CUSTOMIZED_UVS"), Parameters.MaterialParameters.NumCustomizedUVs );
 	OutEnvironment.SetDefine(TEXT("HAS_SCREEN_POSITION"), (bool)Parameters.MaterialParameters.bHasVertexPositionOffsetConnected);
-	OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
 
 	FMaterialShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 }
@@ -43,11 +41,6 @@ void FSlateMaterialShaderVS::SetMaterialShaderParameters(FRHICommandList& RHICmd
 	FMaterialShader::SetParameters<FRHIVertexShader>(RHICmdList, ShaderRHI, MaterialRenderProxy, *Material, View);
 }
 
-void FSlateMaterialShaderVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier )
-{
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
-}
-
 bool FSlateMaterialShaderPS::ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 {
 	return Parameters.MaterialParameters.MaterialDomain == MD_UI;
@@ -59,7 +52,6 @@ void FSlateMaterialShaderPS::ModifyCompilationEnvironment(const FMaterialShaderP
 	// Set defines based on what this shader will be used for
 	OutEnvironment.SetDefine( TEXT("USE_MATERIALS"), 1 );
 	OutEnvironment.SetDefine( TEXT("NUM_CUSTOMIZED_UVS"), Parameters.MaterialParameters.NumCustomizedUVs);
-	OutEnvironment.SetDefine( TEXT("SCENE_TEXTURES_DISABLED"), 1);
 
 	FMaterialShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 }
@@ -136,7 +128,7 @@ void FSlateMaterialShaderPS::SetDisplayGammaAndContrast(FRHICommandList& RHICmdL
 
 void FSlateMaterialShaderPS::SetDrawFlags(FRHICommandList& RHICmdList, bool bDrawDisabledEffect)
 {
-	FVector4f InDrawFlags(bDrawDisabledEffect ? 1 : 0, 0, 0, 0);
+	FVector4f InDrawFlags((bDrawDisabledEffect ? 1.f : 0.f), 0.f, 0.f, 0.f);
 
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), DrawFlags, InDrawFlags);
 }

@@ -2,45 +2,16 @@
 
 #pragma once
 
-//#include "DatasmithImporter.h"
-
-//#include "DatasmithActorImporter.h"
-//#include "DatasmithAdditionalData.h"
-//#include "DatasmithAssetImportData.h"
-//#include "DatasmithAssetUserData.h"
-//#include "DatasmithCameraImporter.h"
-//#include "DatasmithImportContext.h"
-//#include "DatasmithLevelSequenceImporter.h"
-//#include "DatasmithLevelVariantSetsImporter.h"
-//#include "DatasmithLightImporter.h"
-//#include "DatasmithMaterialImporter.h"
-//#include "DatasmithPayload.h"
-//#include "DatasmithPostProcessImporter.h"
-//#include "DatasmithScene.h"
-//#include "DatasmithSceneActor.h"
-//#include "DatasmithSceneFactory.h"
-//#include "DatasmithStaticMeshImporter.h"
-//#include "DatasmithTranslator.h"
-//#include "DatasmithTextureImporter.h"
-//#include "IDatasmithSceneElements.h"
-//#include "DatasmithAnimationElements.h"
-//#include "LevelVariantSets.h"
-//#include "ObjectTemplates/DatasmithObjectTemplate.h"
-//#include "Utility/DatasmithImporterUtils.h"
-//#include "Utility/DatasmithTextureResize.h"
-
 #include "CoreMinimal.h"
 
-#include "Serialization/ObjectReader.h"
-#include "Serialization/ObjectWriter.h"
 #include "UObject/StrongObjectPtr.h"
 
 class AActor;
 class FFeedbackContext;
+class FMaterialUpdateContext;
 class IDatasmithBaseMaterialElement;
 class UActorComponent;
 class UDatasmithObjectTemplate;
-class FMaterialUpdateContext;
 class UMaterial;
 class UMaterialInterface;
 class USceneComponent;
@@ -54,8 +25,6 @@ class FDatasmithImporterImpl
 {
 public:
 	static void ReportProgress(FScopedSlowTask* SlowTask, const float ExpectedWorkThisFrame, const FText& Text);
-
-	static void ReportProgress(FScopedSlowTask* SlowTask, const float ExpectedWorkThisFrame, FText&& Text);
 
 	static bool HasUserCancelledTask(FFeedbackContext* FeedbackContext);
 

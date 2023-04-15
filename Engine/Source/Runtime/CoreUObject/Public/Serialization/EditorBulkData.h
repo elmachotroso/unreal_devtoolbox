@@ -4,15 +4,26 @@
 
 #include "Async/Future.h"
 #include "Compression/CompressedBuffer.h"
+#include "Containers/Array.h"
+#include "CoreTypes.h"
 #include "HAL/Platform.h"
 #include "IO/IoHash.h"
+#include "Internationalization/Text.h"
 #include "Memory/SharedBuffer.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/Guid.h"
 #include "Misc/PackagePath.h"
 #include "Misc/PackageSegment.h"
+#include "Serialization/CustomVersion.h"
+#include "Serialization/StructuredArchive.h"
 
 class FArchive;
+class FBulkData;
+class FLinkerSave;
 class UObject;
+struct FPackageFileVersion;
+
+namespace UE::BulkDataRegistry { enum class ERegisterResult : uint8; }
 
 // When enabled it will be possible for specific editor bulkdata objects to opt out of being virtualized
 // This is a development feature and not expected to be used!
@@ -109,13 +120,13 @@ public:
 	~FEditorBulkData();
 
 	/** 
-	 * Convenience method to make it easier to convert from FUntypedBulkData to FEditorBulkData and sets the Guid 
+	 * Convenience method to make it easier to convert from FBulkData to FEditorBulkData and sets the Guid 
 	 *
 	 * @param BulkData	The bulkdata object to create from.
 	 * @param Guid		A guid associated with the bulkdata object which will be used to identify the payload.
 	 *					This MUST remain the same between sessions so that the payloads key remains consistent!
 	 */
-	void CreateFromBulkData(FUntypedBulkData& BulkData, const FGuid& Guid, UObject* Owner);
+	void CreateFromBulkData(FBulkData& BulkData, const FGuid& Guid, UObject* Owner);
 	/** Fix legacy content that created the Id from non-unique Guids. */
 	void CreateLegacyUniqueIdentifier(UObject* Owner);
 
@@ -200,8 +211,9 @@ public:
 	 * to the bulkdata object.
 	 *
 	 * @param InPayload	The payload that this bulkdata object should reference. @see FSharedBuffer
+	 * @param Owner The object that owns the bulkdata, or null to not associate with a UObject.
 	 */
-	void UpdatePayload(FSharedBuffer InPayload);
+	void UpdatePayload(FSharedBuffer InPayload, UObject* Owner = nullptr);
 
 	/**
 	 * Utility struct used to compute the Payload ID before calling UpdatePayload
@@ -237,9 +249,10 @@ public:
 	 * 
 	 * Use this override if you want compute PayloadId before updating the bulkdata
 	 *
-	 * @param InPayload				The payload to update the bulkdata with
+	 * @param InPayload	The payload to update the bulkdata with
+	 * @param Owner The object that owns the bulkdata, or null to not associate with a UObject.
 	 */
-	void UpdatePayload(FSharedBufferWithID InPayload);
+	void UpdatePayload(FSharedBufferWithID InPayload, UObject* Owner = nullptr);
 
 	/** 
 	 * Sets the compression options to be applied to the payload during serialization.
@@ -262,15 +275,16 @@ public:
 	 */
 	void SetCompressionOptions(ECompressedBufferCompressor Compressor, ECompressedBufferCompressionLevel CompressionLevel);
 
-	/**
-	* Get the CustomVersions used in the file containing the payload. Currently this is assumed
-	* to always be the versions in the InlineArchive
-	* 
-	* @param InlineArchive The archive that was used to load this object
-	* 
-	* @return The CustomVersions that apply to the interpretation of the payload.
-	*/
+	UE_DEPRECATED(5.1, "Call GetBulkDataVersions instead.")
 	FCustomVersionContainer GetCustomVersions(FArchive& InlineArchive);
+
+	/**
+	 * Get the versions used in the file containing the payload.
+	 *
+	 * @param InlineArchive The archive that was used to load this object
+	 */
+	void GetBulkDataVersions(FArchive& InlineArchive, FPackageFileVersion& OutUEVersion, int32& OutLicenseeUEVersion,
+		FCustomVersionContainer& OutCustomVersions) const;
 
 	/**
 	 * Set this BulkData into Torn-Off mode. It will no longer register with the BulkDataRegistry, even if
@@ -297,14 +311,15 @@ public:
 	bool IsMemoryOnlyPayload() const;
 	/** Load the payload and set the correct payload id, if the bulkdata has a PlaceholderPayloadId. */
 	void UpdatePayloadId();
+	/** Return whether *this has the same source for the bulkdata (e.g. identical file locations if from file) as Other */
+	bool LocationMatches(const FEditorBulkData& Other) const;
 
 	/**
-	 * Register this BulkData with the BulkData registry, if it is valid for registration.
-	 * This function is called automatically when necessary by EditorBulkData internals, 
-	 * but external callers can call it to provide information about the owner if it was previously
-	 * registered anonymously by UpdatePayload.
+	 * Update the Owner of this BulkData in the BulkDataRegistry to include the Owner information.
+	 * Has no effect if the BulkData is not valid for registration.
+	 * The Owner information is lost and this function must be called again if the BulkData's payload information is modified.
 	 */
-	void Register(UObject* Owner);
+	void UpdateRegistrationOwner(UObject* Owner);
 
 #if UE_ENABLE_VIRTUALIZATION_TOGGLE
 	UE_DEPRECATED(5.0, "SetVirtualizationOptOut is an internal feature for development and will be removed without warning!")
@@ -336,19 +351,24 @@ private:
 		DisablePayloadCompression	= 1 << 4,
 		/** The legacy file being referenced derived its key from guid and it should be replaced with a key-from-hash when saved */
 		LegacyKeyWasGuidDerived		= 1 << 5,
-		/** The Guid has been registered with the BulkDataRegistry */
+		/** (Transient) The Guid has been registered with the BulkDataRegistry */
 		HasRegistered				= 1 << 6,
-		/** The BulkData object is a copy used only to represent the id and payload; it does not communicate with the BulkDataRegistry, and will point DDC jobs toward the original BulkData */
+		/** (Transient) The BulkData object is a copy used only to represent the id and payload; it does not communicate with the BulkDataRegistry, and will point DDC jobs toward the original BulkData */
 		IsTornOff					= 1 << 7,
 		/** The bulkdata object references a payload stored in a WorkspaceDomain file  */
 		ReferencesWorkspaceDomain	= 1 << 8,
 		/** The payload is stored in a package trailer, so the bulkdata object will have to poll the trailer to find the payload offset */
 		StoredInPackageTrailer		= 1 << 9,
-
-		TransientFlags				= HasRegistered | IsTornOff,
+		/** The bulkdata object was cooked. */
+		IsCooked					= 1 << 10,
+		/** (Transient) The package owning the bulkdata has been detached from disk and we can no longer load from it */
+		WasDetached					= 1 << 11
 	};
 
 	FRIEND_ENUM_CLASS_FLAGS(EFlags);
+
+	/** A common grouping of EFlags */
+	static constexpr EFlags TransientFlags = EFlags((uint32)EFlags::HasRegistered | (uint32)EFlags::IsTornOff | (uint32)EFlags::WasDetached);
 
 	/** Used to control what level of error reporting we return from some methods */
 	enum ErrorVerbosity
@@ -364,7 +384,7 @@ private:
 	/** The new path that saves payloads to the FPackageTrailer which is then appended to the end of the package file */
 	void SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner);
 
-	void UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID);
+	void UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID, UObject* Owner);
 
 	FCompressedBuffer GetDataInternal() const;
 
@@ -380,6 +400,7 @@ private:
 	FCompressedBuffer PullData() const;
 
 	bool CanUnloadData() const;
+	bool CanLoadDataFromDisk() const;
 
 	void UpdateKeyIfNeeded();
 
@@ -437,7 +458,27 @@ private:
 		return EnumHasAnyFlags(InFlags, EFlags::StoredInPackageTrailer);
 	}
 
+	/** 
+	 * Returns true when the bulkdata has an attachment to it's package file on disk, if the bulkdata later becomes detached
+	 * then EFlag::WasDetached will be set.
+	 */
+	bool HasAttachedArchive() const
+	{
+		return AttachedAr != nullptr;
+	}
+
+	void Register(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
+	/** Used when we need to clear the registration for our bulkdataId because its ownership is transferring elsewhere. */
 	void Unregister();
+	/**
+	 * Used when we want to keep registration of our BulkDataId tied to our Payload location, but this BulkData is exiting memory
+	 * and the registry needs to know so it can drop its copy of the payload and allow us to reregister later if reloaded.
+	 */
+	void OnExitMemory();
+	/** Check whether we should be registered, and register/unregister/update as necessary to match. */
+	void UpdateRegistrationData(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
+	void LogRegisterError(UE::BulkDataRegistry::ERegisterResult Value, UObject* Owner, const FGuid& FailedBulkDataId,
+		const TCHAR* CallerName, bool bHandledbyCreateUniqueGuid) const;
 
 	/**
 	 * Checks to make sure that the payload we are saving is what we expect it to be. If not then we need to log an error to the
@@ -454,6 +495,20 @@ private:
 	 * @return			The formatted error message.
 	 */
 	FText GetCorruptedPayloadErrorMsgForSave(FLinkerSave* Linker) const;
+
+	/**
+	 * A utility for validating that a package trailer builder was created correctly. If a problem is encountered we will assert
+	 * to prevent a corrupted package from being saved.
+	 * The main thing we check is that the payload was added to the correct list for the correct payload storage type based on
+	 * the flags we have for the payload.
+	 * Note that it is not expected that we will ever encounter these problems (so asserting is acceptable) and the checks could
+	 * be considered a little over cautious. We should consider just removing this check in 5.2 onwards.
+	 * 
+	 * @param LinkerSave	The linker containing the package trailer builder
+	 * @param Id			The hash of the payload we want to verify
+	 * @param PayloadFlags	The flags for the payload.
+	 */
+	static void ValidatePackageTrailerBuilder(const FLinkerSave* LinkerSave, const FIoHash& Id, EFlags PayloadFlags);
 
 	/** Returns true if we should use legacy serialization instead of the FPackageTrailer system. This can be removed when UE_ENABLE_VIRTUALIZATION_TOGGLE is removed. */
 	bool ShouldUseLegacySerialization(const FLinkerSave* LinkerSave) const;
@@ -480,9 +535,6 @@ private:
 
 	/** PackagePath containing the payload (this will be empty if the payload does not come from PackageResourceManager)*/
 	FPackagePath PackagePath;
-
-	/** PackageSegment to load with the packagepath (unused if the payload does not come from PackageResourceManager) */
-	EPackageSegment PackageSegment= EPackageSegment::Header;
 
 	/** A 32bit bitfield of flags */
 	EFlags Flags = EFlags::None;

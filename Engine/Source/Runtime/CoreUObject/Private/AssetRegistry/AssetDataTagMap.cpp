@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetRegistry/AssetDataTagMap.h"
+
+#include "Algo/Sort.h"
 #include "AssetRegistry/AssetDataTagMapSerializationDetails.h"
 #include "Misc/PackageName.h"
+#include "Misc/Optional.h"
 #include "Misc/ScopeLock.h"
 #include "Serialization/ArrayWriter.h"
 #include "Serialization/MemoryReader.h"
@@ -23,7 +26,7 @@ FAssetRegistryExportPath ParseExportPath(T ExportPath)
 	{
 		T ClassName;
 		verify(FPackageName::ParseExportTextPath(ExportPath, &ClassName, &ObjectPath));
-		Out.Class = FName(ClassName);
+		Out.ClassPath = FTopLevelAssetPath(ClassName);
 	}
 	else
 	{
@@ -58,7 +61,7 @@ FString FAssetRegistryExportPath::ToString() const
 
 FName FAssetRegistryExportPath::ToName() const
 {
-	if (Class.IsNone() && Object.IsNone())
+	if (ClassPath.IsNull() && Object.IsNone())
 	{
 		return Package;
 	}
@@ -70,18 +73,34 @@ FName FAssetRegistryExportPath::ToName() const
 
 void FAssetRegistryExportPath::ToString(FStringBuilderBase& Out) const
 {
-	if (!Class.IsNone())
+	if (!ClassPath.IsNull())
 	{
-		Out << Class << '\'';
+		Out << ClassPath << '\'';
 	}
 	Out << Package;
 	if (!Object.IsNone())
 	{
 		Out << '.' << Object;
 	}
-	if (!Class.IsNone())
+	if (!ClassPath.IsNull())
 	{
 		Out << '\'';
+	}
+}
+
+FString FAssetRegistryExportPath::ToPath() const
+{
+	TStringBuilder<256> Path;
+	ToPath(Path);
+	return FString(Path);
+}
+
+void FAssetRegistryExportPath::ToPath(FStringBuilderBase& Out) const
+{
+	Out << Package;
+	if (!Object.IsNone())
+	{
+		Out << '.' << Object;
 	}
 }
 
@@ -101,17 +120,17 @@ static FAssetRegistryExportPath MakeNumberedPath(FName Name)
 
 static FArchive& operator<<(FArchive& Ar, FAssetRegistryExportPath& Path)
 {
-	return Ar << Path.Class << Path.Object << Path.Package;
+	return Ar << Path.ClassPath << Path.Object << Path.Package;
 }
 
 bool operator==(const FAssetRegistryExportPath& A, const FAssetRegistryExportPath& B)
 {
-	return A.Class == B.Class & A.Package == B.Package & A.Object == B.Object;
+	return A.ClassPath == B.ClassPath & A.Package == B.Package & A.Object == B.Object;
 }
 
 uint32 GetTypeHash(const FAssetRegistryExportPath& Path)
 {
-	return FixedTagPrivate::HashCombineQuick(GetTypeHash(Path.Class), GetTypeHash(Path.Package), GetTypeHash(Path.Object));
+	return FixedTagPrivate::HashCombineQuick(GetTypeHash(Path.ClassPath), GetTypeHash(Path.Package), GetTypeHash(Path.Object));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -146,6 +165,43 @@ static FString LocalizeIfComplexString(const FString& Value)
 
 namespace FixedTagPrivate
 {
+	FMarshalledText::FMarshalledText(const FString& InComplexString)
+		: String(InComplexString)
+	{
+	}
+	FMarshalledText::FMarshalledText(FString&& InComplexString)
+		: String(MoveTemp(InComplexString))
+	{
+	}
+	FMarshalledText::FMarshalledText(const FText& InText)
+		: String(ToComplexString(InText))
+	{
+	}
+	FMarshalledText::FMarshalledText(FText&& InText)
+		: String(ToComplexString(InText))
+	{
+	}
+
+	const FString& FMarshalledText::GetAsComplexString() const
+	{
+		return String;
+	}
+
+	FText FMarshalledText::GetAsText() const
+	{
+		return FTextStringHelper::CreateFromBuffer(*String);
+	}
+
+	int32 FMarshalledText::CompareToCaseIgnored(const FMarshalledText& Other) const
+	{
+		return String.Compare(Other.String);
+	}
+
+	FArchive& operator<<(FArchive& Ar, FLegacyAssetRegistryExportPath& Path)
+	{
+		return Ar << Path.Class << Path.Object << Path.Package;
+	}
+
 	uint32 HashCaseSensitive(const TCHAR* Str, int32 Len)		
 	{
 		return CityHash64(reinterpret_cast<const char*>(Str), sizeof(TCHAR) * Len);
@@ -181,7 +237,7 @@ namespace FixedTagPrivate
 		return FPlatformString::Stricmp(A, B) == 0;
 	}
 
-	static bool EqualsInsensitive(const FText& A, const FText& B)
+	static bool EqualsInsensitive(const FMarshalledText& A, const FMarshalledText& B)
 	{
 		return A.CompareToCaseIgnored(B) == 0;
 	}
@@ -198,7 +254,8 @@ namespace FixedTagPrivate
 	
 	static bool EqualsInsensitive(const FNumberlessExportPath& A, const FNumberlessExportPath& B)
 	{
-		return	EqualsInsensitive(A.Class, B.Class) &		//-V792
+		return	EqualsInsensitive(A.ClassPackage, B.ClassPackage) &		//-V792
+				EqualsInsensitive(A.ClassObject, B.ClassObject) &		//-V792
 				EqualsInsensitive(A.Package, B.Package) &	//-V792
 				EqualsInsensitive(A.Object, B.Object);		//-V792
 	}
@@ -217,6 +274,16 @@ namespace FixedTagPrivate
 	{
 		return FName::CreateFromDisplayId(EntryId, NAME_NO_NUMBER_INTERNAL);
 	}
+
+	static FName MakeNumberedName(FDisplayNameEntryId EntryId)
+	{
+		return EntryId.ToName(NAME_NO_NUMBER_INTERNAL);
+	}
+
+	static bool EqualsInsensitive(FDisplayNameEntryId A, FDisplayNameEntryId B)
+	{
+		return MakeNumberedName(A) == MakeNumberedName(B);
+	}
 	
 	static FNameEntryId MakeNumberlessDisplayName(FName Name)
 	{
@@ -226,27 +293,37 @@ namespace FixedTagPrivate
 
 	static bool IsNumberless(FAssetRegistryExportPath Path)
 	{
-		return IsNumberless(Path.Class) & IsNumberless(Path.Object) & IsNumberless(Path.Package); //-V792
+		return IsNumberless(Path.ClassPath.GetAssetName()) & IsNumberless(Path.Object) & IsNumberless(Path.Package); //-V792
 	}
 
 	static FAssetRegistryExportPath MakeNumberedPath(const FNumberlessExportPath& Path)
 	{
 		FAssetRegistryExportPath Out;
-		Out.Class	= MakeNumberedName(Path.Class);
-		Out.Object	= MakeNumberedName(Path.Object);
-		Out.Package	= MakeNumberedName(Path.Package);
+		Out.ClassPath = FTopLevelAssetPath(MakeNumberedName(Path.ClassPackage), MakeNumberedName(Path.ClassObject));
+		Out.Object	  = MakeNumberedName(Path.Object);
+		Out.Package	  = MakeNumberedName(Path.Package);
 		return Out;
 	}
 	
 	static FNumberlessExportPath MakeNumberlessPath(const FAssetRegistryExportPath& Path)
 	{
 		FNumberlessExportPath Out;
-		Out.Class	= MakeNumberlessDisplayName(Path.Class);
-		Out.Object	= MakeNumberlessDisplayName(Path.Object);
-		Out.Package	= MakeNumberlessDisplayName(Path.Package);
+		Out.ClassPackage = MakeNumberlessDisplayName(Path.ClassPath.GetPackageName());
+		Out.ClassObject  = MakeNumberlessDisplayName(Path.ClassPath.GetAssetName());
+		Out.Object	     = MakeNumberlessDisplayName(Path.Object);
+		Out.Package	     = MakeNumberlessDisplayName(Path.Package);
 		return Out;
 	}
 	
+	static FAssetRegistryExportPath ConvertLegacyPath(const FLegacyAssetRegistryExportPath& Path)
+	{
+		FAssetRegistryExportPath Out;
+		Out.ClassPath = FAssetData::TryConvertShortClassNameToPathName(Path.Class, ELogVerbosity::NoLogging);
+		Out.Object = Path.Object;
+		Out.Package = Path.Package;
+		return Out;
+	}
+
 	FString FNumberlessExportPath::ToString() const
 	{
 		return MakeNumberedPath(*this).ToString();
@@ -333,6 +410,7 @@ namespace FixedTagPrivate
 
 	//////////////////////////////////////////////////////////////////////////
 
+	template <bool bForStorage>
 	FString	FValueHandle::AsString() const
 	{
 		FStore& Store = GStores[StoreIndex];
@@ -342,15 +420,27 @@ namespace FixedTagPrivate
 		{
 		case EValueType::AnsiString:			return FString(Store.GetAnsiString(Index));
 		case EValueType::WideString:			return FString(Store.GetWideString(Index));
-		case EValueType::NumberlessName:		return FName::GetEntry(Store.NumberlessNames[Index])->GetPlainNameString();
+		case EValueType::NumberlessName:		return MakeNumberedName(Store.NumberlessNames[Index]).GetPlainNameString();
 		case EValueType::Name:					return Store.Names[Index].ToString();
 		case EValueType::NumberlessExportPath:	return Store.NumberlessExportPaths[Index].ToString();
 		case EValueType::ExportPath:			return Store.ExportPaths[Index].ToString();
-		case EValueType::LocalizedText:			return Store.Texts[Index].ToString();
+		case EValueType::LocalizedText:
+			return bForStorage ? Store.Texts[Index].GetAsComplexString()
+				: Store.Texts[Index].GetAsText().ToString();
 		}
 
 		check(false);
 		return FString();
+	}
+
+	FString	FValueHandle::AsDisplayString() const
+	{
+		return AsString<false /* bForStorage */>();
+	}
+
+	FString	FValueHandle::AsStorageString() const
+	{
+		return AsString<true /* bForStorage */>();
 	}
 
 	FName FValueHandle::AsName() const
@@ -368,7 +458,7 @@ namespace FixedTagPrivate
 		case EValueType::Name:					return Store.Names[Index];
 		case EValueType::NumberlessExportPath:	return Store.NumberlessExportPaths[Index].ToName();
 		case EValueType::ExportPath:			return Store.ExportPaths[Index].ToName();
-		case EValueType::LocalizedText:			return FName(Store.Texts[Index].ToString());
+		case EValueType::LocalizedText:			return FName(Store.Texts[Index].GetAsText().ToString());
 		}
 
 		check(false);
@@ -386,11 +476,11 @@ namespace FixedTagPrivate
 		{
 		case EValueType::AnsiString:			return FAssetRegistryExportPath(Store.GetAnsiString(Index));
 		case EValueType::WideString:			return FAssetRegistryExportPath(Store.GetWideString(Index));
-		case EValueType::NumberlessName:		return MakeNumberedPath(*FName::GetEntry(Store.NumberlessNames[Index]));
+		case EValueType::NumberlessName:		return MakeNumberedPath(MakeNumberedName(Store.NumberlessNames[Index]));
 		case EValueType::Name:					return MakeNumberedPath(Store.Names[Index]);
 		case EValueType::NumberlessExportPath:	return MakeNumberedPath(Store.NumberlessExportPaths[Index]);
 		case EValueType::ExportPath:			return Store.ExportPaths[Index];
-		case EValueType::LocalizedText:			return FAssetRegistryExportPath(Store.Texts[Index].ToString());
+		case EValueType::LocalizedText:			return FAssetRegistryExportPath(Store.Texts[Index].GetAsText().ToString());
 		}
 
 		check(false);
@@ -401,17 +491,21 @@ namespace FixedTagPrivate
 	{
 		if (Id.Type == EValueType::LocalizedText)
 		{
-			Out = GStores[StoreIndex].Texts[Id.Index];
+			Out = GStores[StoreIndex].Texts[Id.Index].GetAsText();
 			return true;
 		}
 
 		return false;
 	}
 
-	static FString FixedToLoose(FValueHandle Fixed)
+	bool FValueHandle::AsMarshalledText(FMarshalledText& Out) const
 	{
-		return Fixed.Id.Type == EValueType::LocalizedText
-			? ToComplexString(GStores[Fixed.StoreIndex].Texts[Fixed.Id.Index]) : Fixed.AsString();
+		if (Id.Type == EValueType::LocalizedText)
+		{
+			Out = GStores[StoreIndex].Texts[Id.Index];
+			return true;
+		}
+		return false;
 	}
 
 	static bool EqualsInsensitive(const FStringView& Str, const FAssetRegistryExportPath& Path)
@@ -425,7 +519,7 @@ namespace FixedTagPrivate
 	{
 		TCHAR Buffer[FName::StringBufferSize];
 		uint32 Len = B.ToString(Buffer);
-		return Len == A.Len() && FPlatformString::Strnicmp(A.GetData(), Buffer, Len);
+		return Len == A.Len() && FPlatformString::Strnicmp(A.GetData(), Buffer, Len) == 0;
 	}
 
 	static bool EqualsInsensitive(const FStringView& Str, const FNumberlessExportPath& Path)
@@ -446,7 +540,7 @@ namespace FixedTagPrivate
 		case EValueType::Name:					return EqualsInsensitive(Str, Store.Names[Index]);
 		case EValueType::NumberlessExportPath:	return EqualsInsensitive(Str, Store.NumberlessExportPaths[Index]);
 		case EValueType::ExportPath:			return EqualsInsensitive(Str, Store.ExportPaths[Index]);
-		case EValueType::LocalizedText:			return EqualsInsensitive(Str, *Store.Texts[Index].ToString());
+		case EValueType::LocalizedText:			return EqualsInsensitive(Str, *Store.Texts[Index].GetAsComplexString());
 		}
 
 		check(false);
@@ -515,7 +609,7 @@ namespace FixedTagPrivate
 		{
 			for (const FNumberlessPair& Pair : GetNumberlessView())
 			{
-				if (Key.GetComparisonIndex() == Pair.Key)
+				if (Key.GetComparisonIndex() == MakeNumberedName(Pair.Key).GetComparisonIndex())
 				{
 					return &Pair.Value;
 				}
@@ -533,7 +627,7 @@ namespace FixedTagPrivate
 	static FNumberlessPair MakeNumberlessPair(FNumberedPair Pair)
 	{
 		check(Pair.Key.GetNumber() == NAME_NO_NUMBER_INTERNAL);
-		return {Pair.Key.GetComparisonIndex(), Pair.Value};
+		return {FDisplayNameEntryId(Pair.Key), Pair.Value};
 	}
 
 	FNumberedPair FMapHandle::At(uint32 Index) const
@@ -578,7 +672,6 @@ namespace FixedTagPrivate
 
 		if ((A.Num == B.Num) & (A.HasNumberlessKeys == B.HasNumberlessKeys))
 		{
-			check(A.StoreIndex != B.StoreIndex);
 			const FStore& StoreA = GStores[A.StoreIndex];
 			const FStore& StoreB = GStores[B.StoreIndex];
 
@@ -644,7 +737,14 @@ namespace FixedTagPrivate
 		Out.Num = static_cast<uint16>(Map.Num());
 		Out.PairBegin = Pairs.Num();
 
+		TArray<TPair<FName, FAssetTagValueRef>> SortedMap;
+		SortedMap.Reserve(Map.Num());
 		for (TPair<FName, FAssetTagValueRef> Pair : Map)
+		{
+			SortedMap.Add(Pair);
+		}
+		Algo::Sort(SortedMap, [](TPair<FName, FAssetTagValueRef>& A, TPair<FName, FAssetTagValueRef>& B) { return A.Key.LexicalLess(B.Key); });
+		for (TPair<FName, FAssetTagValueRef> Pair : SortedMap)
 		{
 			FValueId Value = IndexValue(Pair.Key, Pair.Value);
 			Pairs.Add({Pair.Key, Value});
@@ -702,19 +802,6 @@ namespace FixedTagPrivate
 		return Out;
 	}
 
-	template<class MapType>
-	static TArray<FText> FlattenAsText(const MapType& Index)
-	{
-		TArray<FText> Out;
-		Out.SetNum(Index.Num());
-		for (const TPair<FString, uint32>& Pair : Index)
-		{
-			verify(FTextStringHelper::ReadFromBuffer(*Pair.Key, Out[Pair.Value]));
-		}
-
-		return Out;
-	}
-
 	static TArray<FNumberlessPair> MakeNumberlessPairs(const TArray<FNumberedPair>& In)
 	{
 		TArray<FNumberlessPair> Out;
@@ -740,7 +827,7 @@ namespace FixedTagPrivate
 		Out.Names = Flatten(NameIndices);
 		Out.NumberlessExportPaths = Flatten(NumberlessExportPathIndices);
 		Out.ExportPaths = Flatten(ExportPathIndices);
-		Out.Texts = FlattenAsText(TextIndices);
+		Out.Texts = Flatten(TextIndices);
 		Out.AnsiStrings = AnsiStrings.FlattenAsAnsi();
 		Out.WideStrings = WideStrings.FlattenAsWide();
 
@@ -776,16 +863,16 @@ namespace FixedTagPrivate
 
 	FValueId FStoreBuilder::IndexValue(FName Key, FAssetTagValueRef Value)
 	{
-		FText Text; 
-		if (Value.TryGetAsText(Text))
+		FMarshalledText MarshalledText; 
+		if (Value.TryGetAsMarshalledText(MarshalledText))
 		{
-			return FValueId{EValueType::LocalizedText,			Index(TextIndices, ToComplexString(Text))};
+			return FValueId{EValueType::LocalizedText,			Index(TextIndices, MoveTemp(MarshalledText))};
 		}
 		else if (Options.StoreAsName.Contains(Key))
 		{
 			FName Name = Value.AsName();
 			return IsNumberless(Name)
-				? FValueId{EValueType::NumberlessName,			Index(NumberlessNameIndices, MakeNumberlessDisplayName(Name))}
+				? FValueId{EValueType::NumberlessName,			Index(NumberlessNameIndices, FDisplayNameEntryId(Name))}
 				: FValueId{EValueType::Name,					Index(NameIndices, Name)};
 		}
 		else if (Options.StoreAsPath.Contains(Key))
@@ -894,7 +981,8 @@ namespace FixedTagPrivate
 		View = MakeArrayView(reinterpret_cast<T*>(Data), View.Num());
 	}
 
-	class FSerializer
+	template <FAssetRegistryVersion::Type Version>
+	class TSerializer
 	{
 		template<class T>
 		void SaveItem(T Item)
@@ -910,19 +998,33 @@ namespace FixedTagPrivate
 			return Item;
 		}
 		
-		void SaveItem(FNameEntryId NameId)
+		void SaveItem(FDisplayNameEntryId NameId)
 		{
 			SaveItem(MakeNumberedName(NameId));
 		}
 
-		template<> FNameEntryId LoadItem<FNameEntryId>()
+		template<> FDisplayNameEntryId LoadItem<FDisplayNameEntryId>()
 		{
-			return MakeNumberlessDisplayName(LoadItem<FName>());
+			return FDisplayNameEntryId(LoadItem<FName>());
 		}
 		
 		void SaveItem(FNumberlessExportPath Path)
 		{
 			SaveItem(MakeNumberedPath(Path));
+		}
+
+		template<> FAssetRegistryExportPath LoadItem()
+		{
+			if (Version >= FAssetRegistryVersion::ClassPaths)
+			{
+				FAssetRegistryExportPath ExportPath;
+				Ar << ExportPath;
+				return ExportPath;
+			}
+			else
+			{
+				return ConvertLegacyPath(LoadItem<FLegacyAssetRegistryExportPath>());
+			}
 		}
 
 		template<> FNumberlessExportPath LoadItem()
@@ -964,21 +1066,16 @@ namespace FixedTagPrivate
 			return { LoadItem<decltype(FNumberedPair::Key)>(), LoadItem<decltype(FNumberedPair::Value)>() };
 		}
 		
-		void SaveItem(const FText& Text)
+		void SaveItem(const FMarshalledText& Text)
 		{
-			Scratch.Reset();
-			FTextStringHelper::WriteToBuffer(Scratch, Text);
-			Ar << Scratch;
+			Ar << const_cast<FString&>(Text.GetAsComplexString());
 		}
 
-		template<> FText LoadItem()
+		template<> FMarshalledText LoadItem()
 		{
-			Scratch.Reset();
-			Ar << Scratch;
-			
-			FText Out;
-			FTextStringHelper::ReadFromBuffer(*Scratch, Out);
-			return Out;
+			FString ComplexString;
+			Ar << ComplexString;
+			return FMarshalledText(MoveTemp(ComplexString));
 		}
 		
 		template<typename T>
@@ -987,6 +1084,17 @@ namespace FixedTagPrivate
 			for (T& Item : Items)
 			{
 				SaveItem(Item);
+			}
+		}
+
+		template<class T>
+		void MemZeroViewDataIfNeeded(TArrayView<T> Items)
+		{
+			// Handle LoadViewData() assignment and early destruction in case of archive error
+			// for non-trivial types like FText
+			if (!std::is_trivially_move_assignable_v<T> || !std::is_trivially_destructible_v<T>)
+			{
+				FMemory::Memzero(Items.GetData(), Items.Num() * sizeof(T));
 			}
 		}
 
@@ -1022,12 +1130,15 @@ namespace FixedTagPrivate
 		static constexpr uint32 EndMagic		= 0x87654321;
 		static constexpr uint32 MaxViewAlignment = 16;
 	public:
-		FSerializer(FArchive& InAr) : Ar(InAr) {}
+		TSerializer(FArchive& InAr)
+			: Ar(InAr)
+		{
+		}
 
-		void SaveTextData(TArrayView<const FText> Texts)
+		void SaveTextData(TArrayView<const FMarshalledText> Texts)
 		{
 			FArrayWriter Data;
-			FSerializer(Data).SaveViewData(Texts);
+			TSerializer<Version>(Data).SaveViewData(Texts);
 			SaveItem(Data.Num());
 			Ar.Serialize(Data.GetData(), Data.Num());
 		}
@@ -1066,7 +1177,7 @@ namespace FixedTagPrivate
 			// Load view sizes
 			VisitViews(Store, [&] (auto& View) { SetNum(View, LoadItem<int32>()); });
 
-			// Calculate total size, allocate and zero data
+			// Calculate total size and allocate data
 			uint64 Bytes = 0;
 			VisitViews(Store, [&] (auto& View) 
 				{
@@ -1075,7 +1186,6 @@ namespace FixedTagPrivate
 				});
 
 			uint8* Ptr = reinterpret_cast<uint8*>(FMemory::Malloc(Bytes, MaxViewAlignment));
-			FMemory::Memzero(Ptr, Bytes);
 			Store.Data = Ptr;
 
 			// Set view data pointers
@@ -1085,8 +1195,10 @@ namespace FixedTagPrivate
 					SetUntypedDataPtr(View, Ptr);
 					Ptr += GetBytes(View);
 				});
-
 			check(Ptr - Bytes == Store.Data);
+
+			// Zero out required data
+			VisitViews(Store, [&](auto& View) { MemZeroViewDataIfNeeded(View); });
 
 			return Order;
 		}
@@ -1150,10 +1262,10 @@ namespace FixedTagPrivate
 
 	void SaveStore(const FStoreData& Store, FArchive& Ar)
 	{
-		FSerializer(Ar).Save(Store);
+		TSerializer<FAssetRegistryVersion::LatestVersion>(Ar).Save(Store);
 	}
 
-	TRefCountPtr<const FStore> LoadStore(FArchive& Ar)
+	TRefCountPtr<const FStore> LoadStore(FArchive& Ar, FAssetRegistryVersion::Type Version /*= FAssetRegistryVersion::LatestVersion*/)
 	{
 		if (Ar.IsError())
 		{
@@ -1161,7 +1273,22 @@ namespace FixedTagPrivate
 		}
 
 		FStore* Store = GStores.CreateAndRegister();
-		FSerializer(Ar).Load(*Store);
+
+		// Versioning support inside of TSerializer was added with FAssetRegistryVersion::ClassPaths so everything before can just be
+		// serialized with FAssetRegistryVersion::ClassPaths - 1 = FAssetRegistryVersion::AddedChunkHashes.
+		// The main purpose of hardcoding version value and passing it as template argument is to eliminate
+		// branches in performance critical serialization code.
+		// Note that we branch in this function only because it's the only fucntion used to load legacy 
+		// asset registries in DiffAssetRegistries commandlet hence it's editor only code too
+		if (Version < FAssetRegistryVersion::ClassPaths)
+		{
+			TSerializer<FAssetRegistryVersion::AddedChunkHashes>(Ar).Load(*Store);
+		}
+		else // Add more branches should serialization format change
+		{			
+			TSerializer<FAssetRegistryVersion::LatestVersion>(Ar).Load(*Store);
+		}
+		
 		return TRefCountPtr<const FStore>(Store);
 	}
 
@@ -1171,18 +1298,18 @@ namespace FixedTagPrivate
 
 	TFuture<void> FAsyncStoreLoader::ReadInitialDataAndKickLoad(FArchive& Ar, uint32 MaxWorkerTasks)
 	{
-		Order = FSerializer(Ar).LoadHeader(*Store);
+		Order = TSerializer<FAssetRegistryVersion::LatestVersion>(Ar).LoadHeader(*Store);
 
 		if (Order == ELoadOrder::TextFirst)
 		{
-			TArray<uint8> TextData = FSerializer(Ar).ReadTextData();
+			TArray<uint8> TextData = TSerializer<FAssetRegistryVersion::LatestVersion>(Ar).ReadTextData();
 
 			if (TextData.Num())
 			{
 				return Async(EAsyncExecution::TaskGraph, [Data = MoveTemp(TextData), OutStore = Store]()
 				{
 					FMemoryReader Reader(Data);
-					FSerializer(Reader).LoadTextData(*OutStore);
+					TSerializer<FAssetRegistryVersion::LatestVersion>(Reader).LoadTextData(*OutStore);
 				});
 			}
 		}
@@ -1194,7 +1321,7 @@ namespace FixedTagPrivate
 	{
 		if (Order.IsSet())
 		{
-			FSerializer(Ar).LoadFinalData(/* Out */ *Store, Order.GetValue());
+			TSerializer<FAssetRegistryVersion::LatestVersion>(Ar).LoadFinalData(/* Out */ *Store, Order.GetValue());
 
 			return TRefCountPtr<const FStore>(Store);
 		}
@@ -1221,7 +1348,7 @@ const FString& FAssetTagValueRef::AsLoose() const
 
 FString FAssetTagValueRef::AsString() const
 {
-	return IsFixed() ? AsFixed().AsString() : LocalizeIfComplexString(AsLoose());
+	return IsFixed() ? AsFixed().AsDisplayString() : LocalizeIfComplexString(AsLoose());
 }
 
 FName FAssetTagValueRef::AsName() const
@@ -1242,12 +1369,30 @@ bool FAssetTagValueRef::TryGetAsText(FText& Out) const
 FText FAssetTagValueRef::AsText() const
 {
 	FText Tmp;
-	return TryGetAsText(Tmp) ? Tmp : FText::FromString(IsFixed() ? AsFixed().AsString() : AsLoose());
+	return TryGetAsText(Tmp) ? Tmp : FText::FromString(IsFixed() ? AsFixed().AsStorageString() : AsLoose());
 }
 
 FString FAssetTagValueRef::ToLoose() const
 {
-	return IsFixed() ? FixedToLoose(AsFixed()) : AsLoose();
+	return IsFixed() ? AsFixed().AsStorageString() : AsLoose();
+}
+
+bool FAssetTagValueRef::TryGetAsMarshalledText(FixedTagPrivate::FMarshalledText& Out) const
+{
+	if (IsFixed())
+	{
+		return AsFixed().AsMarshalledText(Out);
+	}
+	else
+	{
+		const FString& String = AsLoose();
+		if (FTextStringHelper::IsComplexText(*String))
+		{
+			Out = FixedTagPrivate::FMarshalledText(String);
+			return true;
+		}
+		return false;
+	}
 }
 
 bool FAssetTagValueRef::Equals(FStringView Str) const
@@ -1331,7 +1476,7 @@ FAssetDataTagMap FAssetDataTagMapSharedView::CopyMap() const
 	{
 		FAssetDataTagMap Out;
 		Out.Reserve(Num());
-		ForEach([&](TPair<FName, FAssetTagValueRef> Pair){ Out.Add(Pair.Key, FixedToLoose(Pair.Value.AsFixed())); });
+		ForEach([&](TPair<FName, FAssetTagValueRef> Pair){ Out.Add(Pair.Key, Pair.Value.AsFixed().AsStorageString()); });
 		return Out;
 	}
 	else
@@ -1348,6 +1493,39 @@ void FAssetDataTagMapSharedView::Shrink()
 	}
 }
 
+namespace FixedTagPrivate
+{
+	static bool MapEqualsHelper(FixedTagPrivate::FMapHandle Fixed, const FAssetDataTagMap* Loose)
+	{
+		checkSlow(Fixed.Num == Loose->Num());
+		// Since Num is the same and the maps are unique, test only whether all keys in Fixed exist with equal value
+		// in Loose. Once we've done that, we don't have to test whether any keys in Loose are missing from Fixed.
+		if (Fixed.HasNumberlessKeys != 0)
+		{
+			for (FNumberlessPair Pair : Fixed.GetNumberlessView())
+			{
+				const FString* LooseValue = Loose->Find(MakeNumberedName(Pair.Key));
+				if (!LooseValue || FAssetTagValueRef(Fixed.StoreIndex, Pair.Value) != *LooseValue)
+				{
+					return false;
+				}
+			}
+		}
+		else
+		{
+			for (FNumberedPair Pair : Fixed.GetNumberedView())
+			{
+				const FString* LooseValue = Loose->Find(Pair.Key);
+				if (!LooseValue || FAssetTagValueRef(Fixed.StoreIndex, Pair.Value) != *LooseValue)
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+}
+
 bool operator==(const FAssetDataTagMapSharedView& A, const FAssetDataTagMap& B)
 {
 	if (A.Num() != B.Num())
@@ -1356,10 +1534,9 @@ bool operator==(const FAssetDataTagMapSharedView& A, const FAssetDataTagMap& B)
 	}
 	else if (A.IsFixed())
 	{
-		// This is very wasteful but currently only used by unit tests
-		return A.CopyMap() == B;
+		return FixedTagPrivate::MapEqualsHelper(A.Fixed, &B);
 	}
-		
+
 	return A.Num() == 0 || *A.Loose == B;
 }
 
@@ -1375,8 +1552,8 @@ bool operator==(const FAssetDataTagMapSharedView& A, const FAssetDataTagMapShare
 	}
 	else if (A.IsFixed() != B.IsFixed())
 	{
-		// This is very wasteful but currently only used by unit tests
-		return A.IsFixed() ? *B.Loose == A.CopyMap() : *A.Loose == B.CopyMap();
+		return A.IsFixed() ? FixedTagPrivate::MapEqualsHelper(A.Fixed, B.Loose) :
+			FixedTagPrivate::MapEqualsHelper(B.Fixed, A.Loose);
 	}
 	else if (A.IsFixed())
 	{
@@ -1434,13 +1611,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssetRegistryExportPathTest, "Engine.AssetRegi
 
 bool FAssetRegistryExportPathTest::RunTest(const FString& Parameters)
 {
-	TestEqual("Full numbered path",	FAssetRegistryExportPath("C_1\'P_2.O_3\'").ToString(),	"C_1\'P_2.O_3\'");
-	TestEqual("Full path",			FAssetRegistryExportPath("C\'P.O\'").ToString(),		"C\'P.O\'");
-	TestEqual("Package path",		FAssetRegistryExportPath("P.O").ToString(),				"P.O");
-	TestEqual("Object only path",	FAssetRegistryExportPath("O").ToString(),				"O");
-	TestEqual("Class parse",		FAssetRegistryExportPath("C\'P.O\'").Class,		FName("C"));
-	TestEqual("Package parse",		FAssetRegistryExportPath("C\'P.O\'").Package,	FName("P"));
-	TestEqual("Object parse",		FAssetRegistryExportPath("C\'P.O\'").Object,	FName("O"));
+	TestEqual("Full numbered path",	FAssetRegistryExportPath("/S/P.C_1\'P_2.O_3\'").ToString(),	"/S/P.C_1\'P_2.O_3\'");
+	TestEqual("Full path",			FAssetRegistryExportPath("/S/P.C\'P.O\'").ToString(),		"/S/P.C\'P.O\'");
+	TestEqual("Package path",		FAssetRegistryExportPath("P.O").ToString(),					"P.O");
+	TestEqual("Object only path",	FAssetRegistryExportPath("O").ToString(),					"O");
+	TestEqual("Class parse",		FAssetRegistryExportPath("/S/P.C\'P.O\'").ClassPath.ToString(),	"/S/P.C");
+	TestEqual("Package parse",		FAssetRegistryExportPath("/S/P.C\'P.O\'").Package,			FName("P"));
+	TestEqual("Object parse",		FAssetRegistryExportPath("/S/P.C\'P.O\'").Object,			FName("O"));
 
 	return true;
 }
@@ -1452,7 +1629,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCompactExportPathTest, "Engine.AssetRegistry.F
 
 bool FCompactExportPathTest::RunTest(const FString& Parameters)
 {
-	const FAssetRegistryExportPath FullPath = FAssetRegistryExportPath("C\'P.O\'");
+	const FAssetRegistryExportPath FullPath = FAssetRegistryExportPath("/S/P.C\'P.O\'");
 
 	TestTrue("Roundtrip",	FullPath == MakeNumberedPath(MakeNumberlessPath(FullPath)));
 
@@ -1534,16 +1711,16 @@ bool FStoreTest::RunTest(const FString& Parameters)
 								{"Key_0",		"StringValue_0"}}));
 	LooseMaps.Add(MakeLooseMap({{"Name",		"NameValue"}, 
 								{"Name_0",		"NameValue_0"}}));
-	LooseMaps.Add(MakeLooseMap({{"FullPath",	"C\'P.O\'"}, 
+	LooseMaps.Add(MakeLooseMap({{"FullPath",	"/S/P.C\'P.O\'"}, 
 								{"PkgPath",		"P.O"},
 								{"ObjPath",		"O"}}));
-	LooseMaps.Add(MakeLooseMap({{"NumPath_0",	"C\'P.O_0\'"}, 
-								{"NumPath_1",	"C\'P_0.O\'"},
-								{"NumPath_2",	"C_0\'P.O\'"},
-								{"NumPath_3",	"C\'P_0.O_0\'"},
-								{"NumPath_4",	"C_0\'P_0.O\'"},
-								{"NumPath_5",	"C_0\'P.O_0\'"},
-								{"NumPath_6",	"C_0\'P_0.O_0\'"}}));
+	LooseMaps.Add(MakeLooseMap({{"NumPath_0",	"/S/P.C\'P.O_0\'"}, 
+								{"NumPath_1",	"/S/P.C\'P_0.O\'"},
+								{"NumPath_2",	"/S/P.C_0\'P.O\'"},
+								{"NumPath_3",	"/S/P.C\'P_0.O_0\'"},
+								{"NumPath_4",	"/S/P.C_0\'P_0.O\'"},
+								{"NumPath_5",	"/S/P.C_0\'P.O_0\'"},
+								{"NumPath_6",	"/S/P.C_0\'P_0.O_0\'"}}));
 	LooseMaps.Add(MakeLooseMap({{"SameSame",	"SameSame"}, 
 								{"AlsoSame",	"SameSame"}}));
 	LooseMaps.Add(MakeLooseMap({{"FilterKey1",	"FilterValue1"}, 
@@ -1595,7 +1772,7 @@ bool FStoreTest::RunTest(const FString& Parameters)
 		TestEqual("String values excludes",		CountOccurences(Data.AnsiStrings, "NameValue"), 0);
 		TestEqual("String value deduplication",	CountOccurences(Data.AnsiStrings, "SameSame"), 1);
 		TestEqual("Wide characters",			FStringView(Data.WideStrings.GetData(), Data.WideStrings.Num() - 1), FStringView(TEXT("Wide\x00DF")));
-		TestEqual("Numberless name values",		Data.NumberlessNames, {MakeNumberlessDisplayName("NameValue")});
+		TestEqual("Numberless name values",		Data.NumberlessNames, {FDisplayNameEntryId("NameValue")});
 		TestEqual("Numbered name values",		Data.Names, {FName("NameValue_0")});
 		TestEqual("Numberless path values",		Data.NumberlessExportPaths.Num(), 3); // C\'P.O\', P.O, O  
 		TestEqual("Numbered path values",		Data.ExportPaths.Num(), 7); // NumPath[0-7] values

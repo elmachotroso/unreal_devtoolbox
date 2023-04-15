@@ -55,7 +55,7 @@ namespace D3D12RHI
 	const TCHAR* GetD3D12TextureFormatString(DXGI_FORMAT TextureFormat);
 
 	/** Checks if given GPU virtual address corresponds to any known resource allocations and logs results */
-	void LogPageFaultData(FD3D12Adapter* InAdapter, D3D12_GPU_VIRTUAL_ADDRESS InPageFaultAddress);
+	void LogPageFaultData(FD3D12Adapter* InAdapter, FD3D12Device* InDevice, D3D12_GPU_VIRTUAL_ADDRESS InPageFaultAddress);
 	
 } // namespace D3D12RHI
 
@@ -112,7 +112,7 @@ struct FD3D12QuantizedBoundShaderState
 
 	friend uint32 GetTypeHash(const FD3D12QuantizedBoundShaderState& Key);
 
-	static void InitShaderRegisterCounts(const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier, const FShaderCodePackedResourceCounts& Counts, FShaderRegisterCounts& Shader, bool bAllowUAVs = false);
+	static void InitShaderRegisterCounts(D3D12_RESOURCE_BINDING_TIER ResourceBindingTier, const FShaderCodePackedResourceCounts& Counts, FShaderRegisterCounts& Shader, bool bAllowUAVs = false);
 };
 
 /**
@@ -120,25 +120,14 @@ struct FD3D12QuantizedBoundShaderState
 */
 
 class FD3D12BoundShaderState;
-extern void QuantizeBoundShaderState(
-	const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier,
-	const FD3D12BoundShaderState* const BSS,
-	FD3D12QuantizedBoundShaderState &OutQBSS);
-
 class FD3D12ComputeShader;
-extern void QuantizeBoundShaderState(
-	const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier,
-	const FD3D12ComputeShader* const ComputeShader,
-	FD3D12QuantizedBoundShaderState &OutQBSS);
+
+extern FD3D12QuantizedBoundShaderState QuantizeBoundGraphicsShaderState(FD3D12Adapter& Adapter, const FD3D12BoundShaderState* BSS);
+extern FD3D12QuantizedBoundShaderState QuantizeBoundComputeShaderState(FD3D12Adapter& Adapter, const FD3D12ComputeShader* ComputeShader);
 
 #if D3D12_RHI_RAYTRACING
 class FD3D12RayTracingShader;
-FD3D12QuantizedBoundShaderState GetRayTracingGlobalRootSignatureDesc();
-extern void QuantizeBoundShaderState(
-	EShaderFrequency ShaderFrequency,
-	const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier,
-	const FD3D12RayTracingShader* const Shader,
-	FD3D12QuantizedBoundShaderState &OutQBSS);
+extern FD3D12QuantizedBoundShaderState QuantizeBoundRayTracingShaderState(FD3D12Adapter& Adapter, EShaderFrequency ShaderFrequency, const FD3D12RayTracingShader* Shader);
 #endif
 
 /**
@@ -257,9 +246,7 @@ private:
 
 void LogExecuteCommandLists(uint32 NumCommandLists, ID3D12CommandList *const *ppCommandLists);
 FString ConvertToResourceStateString(uint32 ResourceState);
-void LogResourceBarriers(uint32 NumBarriers, D3D12_RESOURCE_BARRIER *pBarriers, ID3D12CommandList *const pCommandList);
-
-void StallRHIThreadAndForceFlush(FD3D12Device* InDevice);
+void LogResourceBarriers(TConstArrayView<D3D12_RESOURCE_BARRIER> Barriers, ID3D12CommandList *const pCommandList);
 
 // Custom resource states
 // To Be Determined (TBD) means we need to fill out a resource barrier before the command list is executed.
@@ -295,8 +282,28 @@ public:
 	void SetResourceState(D3D12_RESOURCE_STATES State);
 	void SetSubresourceState(uint32 SubresourceIndex, D3D12_RESOURCE_STATES State);
 
-	D3D12_RESOURCE_STATES GetUAVHiddenResourceState() const { return UAVHiddenResourceState; }
-	void SetUAVHiddenResourceState(D3D12_RESOURCE_STATES InUAVHiddenResourceState) { UAVHiddenResourceState = InUAVHiddenResourceState; }
+	D3D12_RESOURCE_STATES GetUAVHiddenResourceState() const
+	{
+		return static_cast<D3D12_RESOURCE_STATES>(UAVHiddenResourceState);
+	}
+
+	void SetUAVHiddenResourceState(D3D12_RESOURCE_STATES InUAVHiddenResourceState)
+	{
+		// The hidden state can never include UAV
+		check(InUAVHiddenResourceState == D3D12_RESOURCE_STATE_TBD || !EnumHasAnyFlags(InUAVHiddenResourceState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		check((InUAVHiddenResourceState & (1 << 31)) == 0);
+
+		UAVHiddenResourceState = (uint32)InUAVHiddenResourceState;
+	}
+
+	void SetHasInternalTransition()
+	{
+		bHasInternalTransition = 1;
+	}
+	bool HasInternalTransition() const
+	{
+		return bHasInternalTransition != 0;
+	}
 
 private:
 	// Only used if m_AllSubresourcesSame is 1.
@@ -309,7 +316,10 @@ private:
 
 	// Special resource state to track previous state before resource transitioned to UAV when the resource
 	// has a UAV aliasing resource so correct previous state can be found (only single state allowed)
-	D3D12_RESOURCE_STATES UAVHiddenResourceState;
+	uint32 UAVHiddenResourceState : 31;
+
+	// Was the resource used for another transition than the pending transition
+	uint32 bHasInternalTransition : 1;
 
 	// Only used if m_AllSubresourcesSame is 0.
 	// The state of each subresources.  Bits are from D3D12_RESOURCE_STATES.
@@ -382,8 +392,8 @@ public:
 		return false;
 	}
 
-	template <typename CompareFunc>
-	bool BatchDequeue(TQueue<Type>* Result, const CompareFunc& Func, uint32 MaxItems)
+	template <typename ResultType, typename CompareFunc>
+	bool BatchDequeue(TArray<ResultType>& Result, const CompareFunc& Func, uint32 MaxItems)
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
 
@@ -395,7 +405,7 @@ public:
 			{
 				Items.Dequeue(Item);
 				Size--;
-				Result->Enqueue(Item);
+				Result.Emplace(Item);
 
 				i++;
 			}
@@ -462,39 +472,6 @@ inline D3D12_RESOURCE_STATES DetermineInitialResourceState(D3D12_HEAP_TYPE HeapT
 		return D3D12_RESOURCE_STATE_COPY_DEST;
 	}
 }
-
-class FD3D12Fence;
-class FD3D12SyncPoint
-{
-public:
-	explicit FD3D12SyncPoint()
-		: Fence(nullptr)
-		, Value(0)
-	{
-	}
-
-	explicit FD3D12SyncPoint(FD3D12Fence* InFence, uint64 InValue)
-		: Fence(InFence)
-		, Value(InValue)
-	{
-	}
-
-	bool IsValid() const;
-	bool IsComplete() const;
-	void WaitForCompletion() const;
-	void GPUWait(ED3D12CommandQueueType InCommandQueueType) const;
-
-	void Merge(const FD3D12SyncPoint& InOther)
-	{
-		check(Fence == nullptr || Fence == InOther.Fence);
-		Fence = InOther.Fence;
-		Value = FMath::Max(Value, InOther.Value);
-	}
-
-private:
-	FD3D12Fence* Fence;
-	uint64 Value;
-};
 
 static bool IsBlockCompressFormat(DXGI_FORMAT Format)
 {

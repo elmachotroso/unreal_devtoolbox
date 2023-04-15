@@ -22,8 +22,8 @@
 #include "EditorModes.h"
 #include "FileHelpers.h"
 #include "UnrealEdGlobals.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Tests/AutomationCommon.h"
 #include "IAssetViewport.h"
 
@@ -51,12 +51,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogAutomationEditorCommon, Log, All);
 
 UWorld* FAutomationEditorCommonUtils::CreateNewMap()
 {
-	// Change out of Matinee when opening new map, so we avoid editing data in the old one.
-	if ( GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit) )
-	{
-		GLevelEditorModeTools().DeactivateMode(FBuiltinEditorModes::EM_InterpEdit);
-	}
-
 	// Also change out of Landscape mode to ensure all references are cleared.
 	if ( GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_Landscape) )
 	{
@@ -243,7 +237,7 @@ void FAutomationEditorCommonUtils::ApplyCustomFactorySetting(UObject* InObject, 
 	{
 		if (PropertyChain.Num() == 0)
 		{
-			TargetProperty->ImportText(*Value, TargetProperty->ContainerPtrToValuePtr<uint8>(InObject), 0, InObject);
+			TargetProperty->ImportText_InContainer(*Value, InObject, InObject, 0);
 		}
 		else
 		{
@@ -533,6 +527,8 @@ FString FAutomationEditorCommonUtils::ConvertPackagePathToAssetPath(const FStrin
 	const FString Filename = FPaths::ConvertRelativePathToFull(PackagePath);
 	FString EngineFileName = Filename;
 	FString GameFileName = Filename;
+	FString ProjectPluginFileName = Filename;
+	FString EnginePluginFileName = Filename;
 	if (FPaths::MakePathRelativeTo(EngineFileName, *FPaths::EngineContentDir()) && !EngineFileName.Contains(TEXT("../")))
 	{
 		const FString ShortName = FPaths::GetBaseFilename(EngineFileName);
@@ -545,6 +541,22 @@ FString FAutomationEditorCommonUtils::ConvertPackagePathToAssetPath(const FStrin
 		const FString ShortName = FPaths::GetBaseFilename(GameFileName);
 		const FString PathName = FPaths::GetPath(GameFileName);
 		const FString AssetName = FString::Printf(TEXT("/Game/%s/%s.%s"), *PathName, *ShortName, *ShortName);
+		return AssetName;
+	}
+	else if (FPaths::MakePathRelativeTo(ProjectPluginFileName, *FPaths::ProjectPluginsDir()) && !ProjectPluginFileName.Contains(TEXT("../")))
+	{
+		const FString ShortName = FPaths::GetBaseFilename(ProjectPluginFileName);
+		const FString FullPathName = FPaths::GetPath(ProjectPluginFileName);
+		const FString CleanedPathName = FullPathName.Replace(TEXT("Content/"), TEXT(""));
+		const FString AssetName = FString::Printf(TEXT("/%s/%s.%s"), *CleanedPathName, *ShortName, *ShortName);
+		return AssetName;
+	}
+	else if (FPaths::MakePathRelativeTo(EnginePluginFileName, *FPaths::EnginePluginsDir()) && !EnginePluginFileName.Contains(TEXT("../")))
+	{
+		const FString ShortName = FPaths::GetBaseFilename(EnginePluginFileName);
+		const FString FullPathName = FPaths::GetPath(EnginePluginFileName);
+		const FString CleanedPathName = FullPathName.Replace(TEXT("Content/"), TEXT(""));
+		const FString AssetName = FString::Printf(TEXT("/%s/%s.%s"), *CleanedPathName, *ShortName, *ShortName);
 		return AssetName;
 	}
 	else
@@ -565,7 +577,7 @@ FAssetData FAutomationEditorCommonUtils::GetAssetDataFromPackagePath(const FStri
 	if (AssetPath.Len() > 0)
 	{
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		return AssetRegistry.GetAssetByObjectPath(*AssetPath);
+		return AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 	}
 
 	return FAssetData();
@@ -582,7 +594,7 @@ void FAutomationEditorCommonUtils::CollectTestsByClass(UClass * Class, TArray<FS
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FAssetData> ObjectList;
-	AssetRegistryModule.Get().GetAssetsByClass(Class->GetFName(), ObjectList);
+	AssetRegistryModule.Get().GetAssetsByClass(Class->GetClassPathName(), ObjectList);
 
 	for (TObjectIterator<UClass> AllClassesIt; AllClassesIt; ++AllClassesIt)
 	{
@@ -593,14 +605,14 @@ void FAutomationEditorCommonUtils::CollectTestsByClass(UClass * Class, TArray<FS
 	for (auto ObjIter = ObjectList.CreateConstIterator(); ObjIter; ++ObjIter)
 	{
 		const FAssetData& Asset = *ObjIter;
-		FString Filename = Asset.ObjectPath.ToString();
+		FString Filename = Asset.GetObjectPathString();
 		//convert to full paths
 		Filename = FPackageName::LongPackageNameToFilename(Filename);
 		if (FAutomationTestFramework::Get().ShouldTestContent(Filename))
 		{
 			FString BeautifiedFilename = Asset.AssetName.ToString();
 			OutBeautifiedNames.Add(BeautifiedFilename);
-			OutTestCommands.Add(Asset.ObjectPath.ToString());
+			OutTestCommands.Add(Asset.GetObjectPathString());
 		}
 	}
 }
@@ -620,7 +632,7 @@ void FAutomationEditorCommonUtils::CollectGameContentTestsByClass(UClass * Class
 
 	//Generating the list of assets.
 	//This list is being filtered by the game folder and class type.  The results are placed into the ObjectList variable.
-	AssetFilter.ClassNames.Add(Class->GetFName());
+	AssetFilter.ClassPaths.Add(Class->GetClassPathName());
 
 	//removed path as a filter as it causes two large lists to be sorted.  Filtering on "game" directory on iteration
 	//AssetFilter.PackagePaths.Add("/Game");
@@ -632,7 +644,7 @@ void FAutomationEditorCommonUtils::CollectGameContentTestsByClass(UClass * Class
 	for (auto ObjIter = ObjectList.CreateConstIterator(); ObjIter; ++ObjIter)
 	{
 		const FAssetData& Asset = *ObjIter;
-		FString Filename = Asset.ObjectPath.ToString();
+		FString Filename = Asset.GetObjectPathString();
 
 		if (Filename.StartsWith("/Game"))
 		{
@@ -642,7 +654,7 @@ void FAutomationEditorCommonUtils::CollectGameContentTestsByClass(UClass * Class
 			{
 				FString BeautifiedFilename = Asset.AssetName.ToString();
 				OutBeautifiedNames.Add(BeautifiedFilename);
-				OutTestCommands.Add(Asset.ObjectPath.ToString());
+				OutTestCommands.Add(Asset.GetObjectPathString());
 			}
 		}
 	}
@@ -698,11 +710,11 @@ void FAutomationEditorCommonUtils::CollectGameContentTests(TArray<FString>& OutB
 		if (Asset.GetClass() == nullptr)
 		{
 			// a nullptr class is bad !
-			UE_LOG(LogAutomationEditorCommon, Warning, TEXT("GetClass for %s (%s) returned nullptr. Asset ignored"), *Asset.AssetName.ToString(), *Asset.ObjectPath.ToString());
+			UE_LOG(LogAutomationEditorCommon, Warning, TEXT("GetClass for %s (%s) returned nullptr. Asset ignored"), *Asset.AssetName.ToString(), *Asset.GetObjectPathString());
 		}
 		else 
 		{
-			FString Filename = Asset.ObjectPath.ToString();
+			FString Filename = Asset.GetObjectPathString();
 
 			if (Filename.StartsWith("/Game"))
 			{
@@ -710,9 +722,9 @@ void FAutomationEditorCommonUtils::CollectGameContentTests(TArray<FString>& OutB
 				Filename = FPackageName::LongPackageNameToFilename(Filename);
 				if (FAutomationTestFramework::Get().ShouldTestContent(Filename))
 				{
-					FString BeautifiedFilename = FString::Printf(TEXT("%s.%s"), *Asset.GetClass()->GetFName().ToString(), *Asset.AssetName.ToString());
+					FString BeautifiedFilename = FString::Printf(TEXT("%s.%s"), *Asset.AssetClassPath.ToString(), *Asset.AssetName.ToString());
 					OutBeautifiedNames.Add(BeautifiedFilename);
-					OutTestCommands.Add(Asset.ObjectPath.ToString());
+					OutTestCommands.Add(Asset.GetObjectPathString());
 				}
 			}
 		}
@@ -1154,6 +1166,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProjectMapsPIETest, "Project.Maps.PIE", EAutom
 
 	const TCHAR* ParsedCmdLine = FCommandLine::Get();
 	FString ParsedMapName;
+	bool FirstMapAlreadyLoaded = false;
 
 	// If there is an explicit list of maps on the command line via -map or -maps the use those.
 	if (FParse::Value(FCommandLine::Get(), TEXT("-maps="), ParsedMapName) || FParse::Value(FCommandLine::Get(), TEXT("-map="), ParsedMapName))
@@ -1173,6 +1186,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProjectMapsPIETest, "Project.Maps.PIE", EAutom
 			FPaths::GetExtension(InitialMapName, /*bIncludeDot=*/true) == FPackageName::GetMapPackageExtension())
 		{
 			PIEMaps.Add(InitialMapName);
+			FirstMapAlreadyLoaded = true;
 			UE_LOG(LogEditorAutomationTests, Display, TEXT("Found Map %s on command line. PIE Test will be restricted to this map"), *InitialMapName);
 		}
 	}
@@ -1221,29 +1235,42 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FProjectMapsPIETest, "Project.Maps.PIE", EAutom
 	
 	for (const FString& Map : PIEMaps)
 	{
-		FString MapPackageName = FPackageName::ObjectPathToPackageName(Map);
+		// Accept any of...
+		// - MyMap
+		// - /Game/MyMap
+		// - /Game/MyMap.MyMap
+		FString MapPackageName = Map;
 
-		if (!FPackageName::IsValidObjectPath(MapPackageName))
+		if (FPackageName::IsValidObjectPath(Map))
 		{
-			if (!FPackageName::SearchForPackageOnDisk(MapPackageName, NULL, &MapPackageName))
-			{
-				UE_LOG(LogEditorAutomationTests, Error, TEXT("Couldn't resolve map for PIE test from %s to valid package name!"), *MapPackageName);
-				continue;
-			}
-		}		
+			MapPackageName = FPackageName::ObjectPathToPackageName(Map);
+		}
+
+		if (!FPackageName::SearchForPackageOnDisk(Map, NULL, &MapPackageName))
+		{
+			UE_LOG(LogEditorAutomationTests, Error, TEXT("Couldn't resolve map for PIE test from %s to valid package name!"), *MapPackageName);
+			continue;
+		}
+
+		UE_LOG(LogEditorAutomationTests, Display, TEXT("Queueing Map %s for PIE Automation"), *MapPackageName);
 		
 		AddCommand(new FEditorAutomationLogCommand(FString::Printf(TEXT("LoadMap-Begin: %s"), *MapPackageName)));
-		AddCommand(new FEditorLoadMap(MapPackageName));
+		if (!FirstMapAlreadyLoaded)
+		{
+			AddCommand(new FEditorLoadMap(MapPackageName));
+		}
 		AddCommand(new FWaitLatentCommand(1.0f));
 		AddCommand(new FEditorAutomationLogCommand(FString::Printf(TEXT("LoadMap-End: %s"), *MapPackageName)));
 		AddCommand(new FEditorAutomationLogCommand(FString::Printf(TEXT("PIE-Begin: %s"), *MapPackageName)));
 		AddCommand(new FStartPIECommand(false));
 		AddCommand(new FWaitForSpecifiedMapToLoadCommand(MapPackageName));  // need at least some frames before starting & ending PIE
-		AddCommand(new FWaitForAverageFrameRate(5.0f));	// wait until the editor reaches something vaguely usable
+		AddCommand(new FWaitForInteractiveFrameRate());	// wait until the editor reaches something vaguely usable
 		AddCommand(new FWaitLatentCommand(AutomationTestSettings->PIETestDuration));
 		AddCommand(new FEndPlayMapCommand());
 		AddCommand(new FWaitForSpecifiedPIEMapToEndCommand(MapPackageName));  // need at least some frames before starting & ending PIE
-		AddCommand(new FEditorAutomationLogCommand(FString::Printf(TEXT("PIE-End: %s"), *Map)));
+		AddCommand(new FEditorAutomationLogCommand(FString::Printf(TEXT("PIE-End: %s"), *MapPackageName)));
+
+		FirstMapAlreadyLoaded = false;
 	}
 
 	return true;

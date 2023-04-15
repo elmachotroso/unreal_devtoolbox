@@ -1,13 +1,51 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintMemberReferenceCustomization.h"
-#include "IPropertyAccessEditor.h"
-#include "SMyBlueprint.h"
-#include "Engine/MemberReference.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "K2Node_FunctionEntry.h"
+
+#include "BlueprintEditor.h"
+#include "BlueprintEditorModule.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "DetailWidgetRow.h"
+#include "EdGraph/EdGraph.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "Features/IModularFeatures.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IPropertyAccessEditor.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "K2Node.h"
+#include "K2Node_EditablePinBase.h"
+#include "K2Node_FunctionEntry.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SMyBlueprint.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBox.h"
+
+class UObject;
 
 #define LOCTEXT_NAMESPACE "BlueprintMemberReferenceCustomization"
 
@@ -237,8 +275,8 @@ void FBlueprintMemberReferenceDetails::CustomizeHeader(TSharedRef<IPropertyHandl
 		Args.OnNewFunctionBindingCreated = FOnNewFunctionBindingCreated::CreateLambda(OnNewFunctionBindingCreated);
 		Args.CurrentBindingText = MakeAttributeLambda(CurrentBindingText);
 		Args.CurrentBindingToolTipText = MakeAttributeLambda(CurrentBindingToolTipText);
-		Args.CurrentBindingImage = FEditorStyle::GetBrush("GraphEditor.Function_16x");
-		Args.CurrentBindingColor = FEditorStyle::GetSlateColor("Colors.Foreground").GetSpecifiedColor();
+		Args.CurrentBindingImage = FAppStyle::GetBrush("GraphEditor.Function_16x");
+		Args.CurrentBindingColor = FAppStyle::GetSlateColor("Colors.Foreground").GetSpecifiedColor();
 		Args.bGeneratePureBindings = false;
 		Args.bAllowFunctionBindings = bFunctionReference;
 		Args.bAllowFunctionLibraryBindings = bAllowFunctionLibraryReferences;

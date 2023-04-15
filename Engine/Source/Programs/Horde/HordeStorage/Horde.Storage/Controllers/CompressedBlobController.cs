@@ -4,65 +4,76 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Mime;
 using System.Threading.Tasks;
-using Datadog.Trace;
+using EpicGames.AspNet;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Implementation;
 using Jupiter;
+using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Primitives;
 using Serilog;
+using ContentId = Jupiter.Implementation.ContentId;
+using CustomMediaTypeNames = Jupiter.CustomMediaTypeNames;
 
 namespace Horde.Storage.Controllers
 {
+    using BlobNotFoundException = Horde.Storage.Implementation.BlobNotFoundException;
+
     [ApiController]
+    [Authorize]
     [Route("api/v1/compressed-blobs")]
     public class CompressedBlobController : ControllerBase
     {
-        private readonly IBlobStore _storage;
+        private readonly IBlobService _storage;
         private readonly IContentIdStore _contentIdStore;
         private readonly IDiagnosticContext _diagnosticContext;
-        private readonly IAuthorizationService _authorizationService;
+        private readonly RequestHelper _requestHelper;
         private readonly CompressedBufferUtils _compressedBufferUtils;
+        private readonly BufferedPayloadFactory _bufferedPayloadFactory;
 
-        private readonly ILogger _logger = Log.ForContext<CompressedBlobController>();
-
-        public CompressedBlobController(IBlobStore storage, IContentIdStore contentIdStore, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService, CompressedBufferUtils compressedBufferUtils)
+        public CompressedBlobController(IBlobService storage, IContentIdStore contentIdStore, IDiagnosticContext diagnosticContext, RequestHelper requestHelper, CompressedBufferUtils compressedBufferUtils, BufferedPayloadFactory bufferedPayloadFactory)
         {
             _storage = storage;
             _contentIdStore = contentIdStore;
             _diagnosticContext = diagnosticContext;
-            _authorizationService = authorizationService;
+            _requestHelper = requestHelper;
             _compressedBufferUtils = compressedBufferUtils;
+            _bufferedPayloadFactory = bufferedPayloadFactory;
         }
 
-
         [HttpGet("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesResponseType(type: typeof(byte[]), 200)]
         [ProducesResponseType(type: typeof(ValidationProblemDetails), 400)]
-        [Produces(MediaTypeNames.Application.Json, CustomMediaTypeNames.UnrealCompactBinary, CustomMediaTypeNames.UnrealCompressedBuffer)]
+        [Produces(CustomMediaTypeNames.UnrealCompressedBuffer, MediaTypeNames.Application.Octet)]
 
         public async Task<IActionResult> Get(
             [Required] NamespaceId ns,
-            [Required] BlobIdentifier id)
+            [Required] ContentId id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
             {
-                BlobContents blobContents = await GetImpl(ns, id);
+                (BlobContents blobContents, string mediaType) = await _storage.GetCompressedObject(ns, id, _contentIdStore);
 
-                return File(blobContents.Stream, CustomMediaTypeNames.UnrealCompressedBuffer, enableRangeProcessing: true);
+                StringValues acceptHeader = Request.Headers["Accept"];
+                if (!acceptHeader.Contains("*/*") && acceptHeader.Count != 0 && !acceptHeader.Contains(mediaType))
+                {
+                    return new UnsupportedMediaTypeResult();
+                }
+
+                return File(blobContents.Stream, mediaType, enableRangeProcessing: true);
             }
             catch (BlobNotFoundException e)
             {
@@ -75,28 +86,27 @@ namespace Horde.Storage.Controllers
         }
         
         [HttpHead("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Head(
             [Required] NamespaceId ns,
-            [Required] BlobIdentifier id)
+            [Required] ContentId id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
-            BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, id);
-            if (chunks == null)
+
+            BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, id, mustBeContentId: false);
+            if (chunks == null || chunks.Length == 0)
             {
-                return NotFound(new ValidationProblemDetails { Title = $"Content-id {id} not found"});
+                return NotFound();
             }
 
             Task<bool>[] tasks = new Task<bool>[chunks.Length];
             for (int i = 0; i < chunks.Length; i++)
             {
-                tasks[i] = _storage.Exists(ns, id);
+                tasks[i] = _storage.Exists(ns, chunks[i]);
             }
 
             await Task.WhenAll(tasks);
@@ -105,32 +115,30 @@ namespace Horde.Storage.Controllers
 
             if (!exists)
             {
-                return NotFound(new ValidationProblemDetails { Title = $"Object {id} not found"});
+                return NotFound();
             }
 
             return Ok();
         }
 
         [HttpPost("{ns}/exists")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> ExistsMultiple(
             [Required] NamespaceId ns,
-            [Required] [FromQuery] List<BlobIdentifier> id)
+            [Required] [FromQuery] List<ContentId> id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
-            ConcurrentBag<BlobIdentifier> missingBlobs = new ConcurrentBag<BlobIdentifier>();
-            ConcurrentBag<BlobIdentifier> invalidContentIds = new ConcurrentBag<BlobIdentifier>();
+            ConcurrentBag<ContentId> partialContentIds = new ConcurrentBag<ContentId>();
+            ConcurrentBag<ContentId> invalidContentIds = new ConcurrentBag<ContentId>();
 
             IEnumerable<Task> tasks = id.Select(async blob =>
             {
-                BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, blob);
+                BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, blob, mustBeContentId: false);
 
                 if (chunks == null)
                 {
@@ -142,128 +150,146 @@ namespace Horde.Storage.Controllers
                 {
                     if (!await _storage.Exists(ns, chunk))
                     {
-                        missingBlobs.Add(blob);
+                        partialContentIds.Add(blob);
+                        break;
                     }
                 }
             });
             await Task.WhenAll(tasks);
 
-            if (invalidContentIds.Count != 0)
-                return NotFound(new ValidationProblemDetails { Title = $"Missing content ids {string.Join(" ,", invalidContentIds)}"});
-
-            return Ok(new HeadMultipleResponse { Needs = missingBlobs.ToArray()});
+            List<ContentId> needs = new List<ContentId>(invalidContentIds);
+            needs.AddRange(partialContentIds);
+             
+            return Ok(new ExistCheckMultipleContentIdResponse { Needs = needs.ToArray()});
         }
 
-        private async Task<BlobContents> GetImpl(NamespaceId ns, BlobIdentifier contentId)
+        [HttpPost("{ns}/exist")]
+        [ProducesDefaultResponseType]
+        public async Task<IActionResult> ExistsBody(
+            [Required] NamespaceId ns,
+            [FromBody] ContentId[] bodyIds)
         {
-            BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, contentId);
-            if (chunks == null)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                throw new ContentIdResolveException(contentId);
+                return result;
             }
 
-            using Scope _ = Tracer.Instance.StartActive("blob.combine");
-            Task<BlobContents>[] tasks = new Task<BlobContents>[chunks.Length];
-            for (int i = 0; i < chunks.Length; i++)
+            ConcurrentBag<ContentId> partialContentIds = new ConcurrentBag<ContentId>();
+            ConcurrentBag<ContentId> invalidContentIds = new ConcurrentBag<ContentId>();
+
+            IEnumerable<Task> tasks = bodyIds.Select(async blob =>
             {
-                tasks[i] = _storage.GetObject(ns, chunks[i]);
-            }
+                BlobIdentifier[]? chunks = await _contentIdStore.Resolve(ns, blob, mustBeContentId: false);
 
-            MemoryStream ms = new MemoryStream();
-            foreach (Task<BlobContents> task in tasks)
-            {
-                BlobContents blob = await task;
-                await using Stream s = blob.Stream;
-                await s.CopyToAsync(ms);
-            }
+                if (chunks == null)
+                {
+                    invalidContentIds.Add(blob);
+                    return;
+                }
 
-            ms.Seek(0, SeekOrigin.Begin);
+                foreach (BlobIdentifier chunk in chunks)
+                {
+                    if (!await _storage.Exists(ns, chunk))
+                    {
+                        partialContentIds.Add(blob);
+                        break;
+                    }
+                }
+            });
+            await Task.WhenAll(tasks);
 
-            return new BlobContents(ms, ms.Length);
+            List<ContentId> needs = new List<ContentId>(invalidContentIds);
+            needs.AddRange(partialContentIds);
+             
+            return Ok(new ExistCheckMultipleContentIdResponse { Needs = needs.ToArray()});
         }
 
         [HttpPut("{ns}/{id}")]
-        [Authorize("Storage.write")]
         [DisableRequestSizeLimit]
         [RequiredContentType(CustomMediaTypeNames.UnrealCompressedBuffer)]
         public async Task<IActionResult> Put(
             [Required] NamespaceId ns,
-            [Required] BlobIdentifier id)
+            [Required] ContentId id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
-            byte[] blob;
-            try
-            {
-                blob = await RequestUtil.ReadRawBody(Request);
-            }
-            catch (BadHttpRequestException e)
-            {
-                const string msg = "Partial content transfer when reading request body.";
-                _logger.Warning(e, msg);
-                return BadRequest(msg);
-            }
             _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
 
-            BlobIdentifier identifier = await PutImpl(ns, id, blob);
-            return Ok(new
+            try
             {
-                Identifier = identifier.ToString()
-            });
+                using IBufferedPayload payload = await _bufferedPayloadFactory.CreateFromRequest(Request);
+
+                ContentId identifier =
+                    await _storage.PutCompressedObject(ns, payload, id, _contentIdStore, _compressedBufferUtils);
+
+                return Ok(new { Identifier = identifier.ToString() });
+            }
+            catch (HashMismatchException e)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title =
+                        $"Incorrect hash, got hash \"{e.SuppliedHash}\" but hash of content was determined to be \"{e.ContentHash}\""
+                });
+            }
+            catch (ClientSendSlowException e)
+            {
+                return Problem(e.Message, null, (int)HttpStatusCode.RequestTimeout);
+            }
         }
 
-        private async Task<BlobIdentifier> PutImpl(NamespaceId ns, BlobIdentifier? id, byte[] content)
+        [HttpPost("{ns}")]
+        [DisableRequestSizeLimit]
+        [RequiredContentType(CustomMediaTypeNames.UnrealCompressedBuffer)]
+        public async Task<IActionResult> Post(
+            [Required] NamespaceId ns)
         {
-            BlobIdentifier identifier;
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                using Scope _ = Tracer.Instance.StartActive("web.hash");
-                identifier = BlobIdentifier.FromBlob(content);
-            }
-            // decompress the content and generate a identifier from it to verify the identifier we got
-            byte[] decompressedContent = _compressedBufferUtils.DecompressContent(content);
-
-            BlobIdentifier identifierDecompressedPayload;
-            {
-                using Scope _ = Tracer.Instance.StartActive("web.hash");
-                identifierDecompressedPayload = BlobIdentifier.FromBlob(decompressedContent);
+                return result;
             }
 
-            if (id != null && !id.Equals(identifierDecompressedPayload))
+            _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
+
+            try
             {
-                _logger.Debug("ID {@Id} was not the same as identifier {@Identifier} {Content}", id, identifierDecompressedPayload,
-                    content);
+                using IBufferedPayload payload = await _bufferedPayloadFactory.CreateFromRequest(Request);
 
-                throw new ArgumentException("ID was not a hash of the content uploaded.", paramName: nameof(id));
+                ContentId identifier = await _storage.PutCompressedObject(ns, payload, null, _contentIdStore, _compressedBufferUtils);
+
+                return Ok(new
+                {
+                    Identifier = identifier.ToString()
+                });
             }
-
-            // commit the mapping from the decompressed hash to the compressed hash, we run this in parallel with the blob store submit
-            // TODO: let users specify weight of the blob compared to previously submitted content ids
-            Task contentIdStoreTask = _contentIdStore.Put(ns, identifierDecompressedPayload, identifier, content.Length);
-
-            // we still commit the compressed buffer to the object store
-            await _storage.PutObject(ns, content, identifier);
-
-            await contentIdStoreTask;
-
-            return identifierDecompressedPayload;
+            catch (HashMismatchException e)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = $"Incorrect hash, got hash \"{e.SuppliedHash}\" but hash of content was determined to be \"{e.ContentHash}\""
+                });
+            }
+            catch (ClientSendSlowException e)
+            {
+                return Problem(e.Message, null, (int)HttpStatusCode.RequestTimeout);
+            }
         }
 
         /*[HttpDelete("{ns}/{id}")]
-        [Authorize("Storage.delete")]
         public async Task<IActionResult> Delete(
             [Required] string ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns);
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             await DeleteImpl(ns, id);
@@ -273,15 +299,13 @@ namespace Horde.Storage.Controllers
 
         
         [HttpDelete("{ns}")]
-        [Authorize("Admin")]
         public async Task<IActionResult> DeleteNamespace(
             [Required] string ns)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns);
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             int deletedCount = await  _storage.DeleteNamespace(ns);
@@ -294,5 +318,11 @@ namespace Horde.Storage.Controllers
         {
             await _storage.DeleteObject(ns, id);
         }*/
+    }
+
+    public class ExistCheckMultipleContentIdResponse
+    {
+        [CbField("needs")]
+        public ContentId[] Needs { get; set; } = null!;
     }
 }

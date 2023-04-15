@@ -16,6 +16,8 @@
 #include "GenericPlatform/GenericPlatformDriver.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DeviceProfileMatching)
+
 // Platform independent source types
 static FName SRC_Chipset(TEXT("SRC_Chipset"));
 static FName SRC_MakeAndModel(TEXT("SRC_MakeAndModel"));
@@ -540,6 +542,37 @@ static TArray<FSelectedFragmentProperties> FragmentStringToFragmentProperties(co
 	return FragmentPropertiesList;
 }
 
+const FString UDeviceProfileManager::FragmentPropertyArrayToFragmentString(const TArray<FSelectedFragmentProperties>& FragmentProperties, bool bEnabledOnly, bool bIncludeTags,bool bAlphaSort)
+{
+	FString MatchedFragmentString;
+	if(!FragmentProperties.IsEmpty())
+	{
+		TArray<FString> FragmentNames;
+		for (const FSelectedFragmentProperties& FragmentProperty : FragmentProperties)
+		{
+			if (bEnabledOnly == false || FragmentProperty.bEnabled)
+			{
+				FString FragmentName;
+				if (bIncludeTags && FragmentProperty.Tag != NAME_None)
+				{
+					FragmentName = TEXT("[") + FragmentProperty.Tag.ToString() + TEXT("]");
+				}
+				FragmentNames.Add(FragmentProperty.Fragment);
+			}
+		}
+		if (bAlphaSort)
+		{
+			FragmentNames.Sort();
+		}
+
+		for (FString& Name : FragmentNames)
+		{
+			MatchedFragmentString += MatchedFragmentString.IsEmpty() ? Name : TEXT(",") + Name;
+		}
+	}
+	return MatchedFragmentString;
+}
+
 class FDeviceProfileMatchingErrorContext: public FOutputDevice
 {
 public:
@@ -595,7 +628,7 @@ static FString LoadAndProcessMatchingRulesFromConfig(const FString& ParentDP, ID
 	UE_CLOG(DPMatchingErrorOutput.NumErrors > 0, LogInit, Fatal, TEXT("DeviceProfileMatching: %d Error(s) encountered while processing MatchedRules for %s"), DPMatchingErrorOutput.NumErrors, *ParentDP);
 #endif
 
-	FGenericCrashContext::SetEngineData(TEXT("MatchingDPStatus_")+ParentDP, DPMatchingErrorOutput.NumErrors > 0 ? TEXT("Error") : TEXT("No errors"));
+	FGenericCrashContext::SetEngineData(TEXT("MatchingDPStatus"), ParentDP + (DPMatchingErrorOutput.NumErrors > 0 ? TEXT("Error") : TEXT("No errors")));
 
 	return SelectedFragments;
 }
@@ -627,21 +660,20 @@ TArray<FSelectedFragmentProperties> UDeviceProfileManager::FindMatchingFragments
 	else
 #endif
 	{
-		bool bIsPreview = false;
-#if ALLOW_OTHER_PLATFORM_CONFIG
-		bIsPreview = ConfigSystem != GConfig;
+		IDeviceProfileSelectorModule* PreviewDPSelector = nullptr;
+#if ALLOW_OTHER_PLATFORM_CONFIG && WITH_EDITOR
+		if (ConfigSystem != GConfig)
+		{
+			PreviewDPSelector = GetPreviewDeviceProfileSelectorModule(ConfigSystem);
+			// previewing a DP with matching rules will run if conditions with the host device's data sources. It will likely not match the preview device's behavior.
+			UE_CLOG(!PreviewDPSelector && DPHasMatchingRules(ParentDP, ConfigSystem), LogInit, Warning, TEXT("Preview DP %s contains fragment matching rules, but no preview profile selector was found. The selected fragments for %s will likely not match the behavior of the intended preview device."), *ParentDP, *ParentDP);
+		}
 #endif
-		IDeviceProfileSelectorModule* DPSelector = bIsPreview ? GetPreviewDeviceProfileSelectorModule(ConfigSystem) : GetDeviceProfileSelectorModule();
+		IDeviceProfileSelectorModule* DPSelector = PreviewDPSelector ? PreviewDPSelector : GetDeviceProfileSelectorModule();
 		SelectedFragments = LoadAndProcessMatchingRulesFromConfig(ParentDP, DPSelector, ConfigSystem);
 		
-		// previewing a DP with matching rules will run if conditions with the host device's data sources. It will likely not match the preview device's behavior.
-		UE_CLOG(bIsPreview && !DPSelector && DPHasMatchingRules(ParentDP, ConfigSystem), LogInit, Warning, TEXT("Preview DP %s contains fragment matching rules, but no preview profile selector was found. The selected fragments for %s will likely not match the behavior of the intended preview device."), *ParentDP, *ParentDP);
 	}
 	SelectedFragments = RemoveAllWhiteSpace(SelectedFragments);
-	if(!SelectedFragments.IsEmpty())
-	{
-		FGenericCrashContext::SetEngineData(TEXT("DeviceProfile.MatchedFragments"), SelectedFragments);
-	}
 
 	UE_CLOG(!SelectedFragments.IsEmpty(), LogInit, Log, TEXT("MatchesRules:Fragment string %s"), *SelectedFragments);
 	TArray<FSelectedFragmentProperties> MatchedFragments = FragmentStringToFragmentProperties(SelectedFragments);
@@ -655,3 +687,4 @@ TArray<FSelectedFragmentProperties> UDeviceProfileManager::FindMatchingFragments
 
 	return MatchedFragments;
 }
+

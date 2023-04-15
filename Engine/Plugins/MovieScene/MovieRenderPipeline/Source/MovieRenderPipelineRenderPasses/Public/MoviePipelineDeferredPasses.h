@@ -52,9 +52,10 @@ protected:
 	virtual int32 GetOutputFileSortingOrder() const override { return 0; }
 	virtual bool IsAlphaInTonemapperRequiredImpl() const override { return bAccumulatorIncludesAlpha; }
 	virtual FSceneViewStateInterface* GetSceneViewStateInterface(IViewCalcPayload* OptPayload = nullptr) override;
-	virtual UTextureRenderTarget2D* GetViewRenderTarget(IViewCalcPayload* OptPayload = nullptr) const override;
 	virtual void AddViewExtensions(FSceneViewFamilyContext& InContext, FMoviePipelineRenderPassMetrics& InOutSampleState) override;
 	virtual bool IsAutoExposureAllowed(const FMoviePipelineRenderPassMetrics& InSampleState) const override;
+	virtual void BlendPostProcessSettings(FSceneView* InView, FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload = nullptr);
+	virtual UE::MoviePipeline::FImagePassCameraViewData GetCameraInfo(FMoviePipelineRenderPassMetrics& InOutSampleState, IViewCalcPayload* OptPayload = nullptr) const;
 	// ~UMoviePipelineRenderPass
 
 	// FGCObject Interface
@@ -62,7 +63,24 @@ protected:
 	// ~FGCObject Interface
 
 	TFunction<void(TUniquePtr<FImagePixelData>&&)> MakeForwardingEndpoint(const FMoviePipelinePassIdentifier InPassIdentifier, const FMoviePipelineRenderPassMetrics& InSampleState);
-	void PostRendererSubmission(const FMoviePipelineRenderPassMetrics& InSampleState, const FMoviePipelinePassIdentifier InPassIdentifier, const int32 InSortingOrder, FCanvas& InCanvas);
+	virtual void PostRendererSubmission(const FMoviePipelineRenderPassMetrics& InSampleState, const FMoviePipelinePassIdentifier InPassIdentifier, const int32 InSortingOrder, FCanvas& InCanvas);
+
+	virtual int32 GetNumCamerasToRender() const;
+	virtual FString GetCameraName(const int32 InCameraIndex) const;
+	virtual FString GetCameraNameOverride(const int32 InCameraIndex) const;
+
+	virtual FMoviePipelineRenderPassMetrics GetRenderPassMetricsForCamera(const int32 InCameraIndex, const FMoviePipelineRenderPassMetrics& InSampleState) const;
+	virtual FIntPoint GetEffectiveOutputResolutionForCamera(const int32 InCameraIndex) const;
+
+	bool IsUsingDataLayers() const;
+	int32 GetNumStencilLayers() const;
+	TArray<FString> GetStencilLayerNames() const;
+	bool IsActorInLayer(AActor* InActor, int32 InLayerIndex) const;
+	bool IsActorInAnyStencilLayer(AActor* InActor) const;
+	FSoftObjectPath GetValidDataLayerByIndex(const int32 InIndex) const;
+
+	bool CheckIfPathTracerIsSupported() const;
+	void PathTracerValidationImpl();
 
 public:
 	/**
@@ -97,6 +115,12 @@ public:
 	TArray<FMoviePipelinePostProcessPass> AdditionalPostProcessMaterials;
 
 	/**
+	* This can be turned off if you're only doing a stencil-layer based render and don't need the main non-stencil approach.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stencil Clip Layers")
+	bool bRenderMainPass;
+
+	/**
 	* If true, an additional stencil layer will be rendered which contains all objects which do not belong to layers
 	* specified in the Stencil Layers. This is useful for wanting to isolate one or two layers but still have everything
 	* else to composite them over without having to remember to add all objects to a default layer.
@@ -111,36 +135,49 @@ public:
 	* base layer. Only works with materials that can write to custom depth.
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stencil Clip Layers")
+	TArray<FActorLayer> ActorLayers;
+	
+	UE_DEPRECATED(5.1, "Use ActorLayers property instead.")
 	TArray<FActorLayer> StencilLayers;
+	
+	/**
+	* If the map you are working with is a World Partition map, you can specify Data layers instead of Actor Layers. If any
+	* Data Layers are specified, this will take precedence over any ActorLayers in this config. Does not affect whether or
+	* not the Data Layers are actually loaded, you must ensure layers are loaded for rendering.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (AllowedClasses = "/Script/Engine.DataLayerAsset"), Category = "Stencil Clip Layers")
+	TArray<FSoftObjectPath> DataLayers;
 
 protected:
 	/** While rendering, store an array of the non-null valid materials loaded from AdditionalPostProcessMaterials. Cleared on teardown. */
 	UPROPERTY(Transient, DuplicateTransient)
-	TArray<UMaterialInterface*> ActivePostProcessMaterials;
+	TArray<TObjectPtr<UMaterialInterface>> ActivePostProcessMaterials;
 
 	UPROPERTY(Transient, DuplicateTransient)
-	UMaterialInterface* StencilLayerMaterial;
+	TObjectPtr<UMaterialInterface> StencilLayerMaterial;
 
-	UPROPERTY(Transient, DuplicateTransient)
-	TArray<UTextureRenderTarget2D*> TileRenderTargets;
+	struct FMultiCameraViewStateData
+	{
+		struct FPerTile
+		{
+			TArray<FSceneViewStateReference> SceneViewStates;
+		};
 
+		TMap<FIntPoint, FPerTile> TileData;
+	};
 
-	TSharedPtr<FAccumulatorPool, ESPMode::ThreadSafe> AccumulatorPool;
-
-	int32 CurrentLayerIndex;
-	TArray<FSceneViewStateReference> StencilLayerViewStates;
-
-	/** The lifetime of this SceneViewExtension is only during the rendering process. It is destroyed as part of TearDown. */
-	TSharedPtr<FOpenColorIODisplayExtension, ESPMode::ThreadSafe> OCIOSceneViewExtension;
+	TArray<FMultiCameraViewStateData> CameraViewStateData;
 
 	// Cache the custom stencil value. Only has meaning if they have stencil layers.
 	TOptional<int32> PreviousCustomDepthValue;
-	
 	/** Cache the previous dump frames as HDR value. Only used if using 32-bit post processing. */
 	TOptional<int32> PreviousDumpFramesValue;
 	/** Cache the previous color format value. Only used if using 32-bit post processing. */
 	TOptional<int32> PreviousColorFormatValue;
 
+	TSharedPtr<FAccumulatorPool, ESPMode::ThreadSafe> AccumulatorPool;
+	/** The lifetime of this SceneViewExtension is only during the rendering process. It is destroyed as part of TearDown. */
+	TSharedPtr<FOpenColorIODisplayExtension, ESPMode::ThreadSafe> OCIOSceneViewExtension;
 public:
 	static FString StencilLayerMaterialAsset;
 	static FString DefaultDepthAsset;
@@ -258,9 +295,19 @@ public:
 	{
 		OutShowFlag = FEngineShowFlags(EShowFlagInitMode::ESFIM_Game);
 		OutShowFlag.SetPathTracing(true);
+		OutShowFlag.SetMotionBlur(!bReferenceMotionBlur);
 		OutViewModeIndex = EViewModeIndex::VMI_PathTracing;
 	}
 	virtual int32 GetOutputFileSortingOrder() const override { return 2; }
 
 	virtual bool IsAntiAliasingSupported() const { return false; }
+	virtual void ValidateStateImpl() override;
+	virtual void SetupImpl(const MoviePipeline::FMoviePipelineRenderPassInitSettings& InPassInitSettings) override;
+
+	/** When enabled, the path tracer will blend all spatial and temporal samples prior to the denoising and will disable post-processed motion blur.
+	 *  In this mode it is possible to use higher temporal sample counts to improve the motion blur quality.
+	 *  When this option is disabled, the path tracer will accumulate spatial samples, but denoise them prior to accumulation of temporal samples.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reference Motion Blur")
+	bool bReferenceMotionBlur;
 };

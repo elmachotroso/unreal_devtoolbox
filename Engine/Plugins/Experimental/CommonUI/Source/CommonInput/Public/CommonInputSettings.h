@@ -9,6 +9,7 @@
 #include "InputCoreTypes.h"
 #include "Engine/StreamableManager.h"
 #include "Templates/SharedPointer.h"
+#include "CommonInputActionDomain.h"
 #include "CommonInputSubsystem.h"
 #include "CommonInputBaseTypes.h"
 
@@ -47,6 +48,10 @@ public:
 
 	bool GetAllowOutOfFocusDeviceInput() const { return bAllowOutOfFocusDeviceInput; }
 
+	bool GetEnableDefaultInputConfig() const { return bEnableDefaultInputConfig; }
+
+	TObjectPtr<UCommonInputActionDomainTable> GetActionDomainTable() const { return ActionDomainTablePtr; }
+
 private:
 	virtual void PostInitProperties() override;
 
@@ -75,11 +80,27 @@ private:
 	UPROPERTY(config, EditAnywhere, Category = "Input")
 	bool bAllowOutOfFocusDeviceInput = false;
 
+	/**
+	* Controls whether a default Input Config will be set when the active CommonActivatableWidgets do not specify a desired one.
+	* Disable this if you want to control the Input Mode via alternative means.
+	*/
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	bool bEnableDefaultInputConfig = true;
+
+	/** Create a derived asset from UCommonInputActionDomainTable to store ordered ActionDomain data for your game */
+	UPROPERTY(config, EditAnywhere, Category = "Action Domain")
+	TSoftObjectPtr<UCommonInputActionDomainTable> ActionDomainTable;
+
 private:
 	void LoadInputData();
+	void LoadActionDomainTable();
 
 	bool bInputDataLoaded;
+	bool bActionDomainTableLoaded;
 
 	UPROPERTY(Transient)
 	TSubclassOf<UCommonUIInputData> InputDataClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCommonInputActionDomainTable> ActionDomainTablePtr;
 };

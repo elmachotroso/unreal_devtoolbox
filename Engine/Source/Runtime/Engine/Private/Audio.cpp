@@ -17,15 +17,19 @@
 #include "DrawDebugHelpers.h"
 #include "EngineAnalytics.h"
 #include "Interfaces/IAnalyticsProvider.h"
+#include "Misc/FrameRate.h"
 #include "Misc/Paths.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundSubmix.h"
 #include "Sound/SoundNodeWavePlayer.h"
 #include "Sound/SoundWave.h"
+#include "Sound/SoundWaveTimecodeInfo.h"
 #include "Sound/QuartzQuantizationUtilities.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+#include "XmlFile.h"
+#include "XmlNode.h"
 
 DEFINE_LOG_CATEGORY(LogAudio);
 
@@ -534,6 +538,9 @@ FSpatializationParams FSoundSource::GetSpatializationParams()
 	{
 		FVector EmitterPosition = AudioDevice->GetListenerTransformedDirection(WaveInstance->Location, &Params.Distance);
 
+		// Independently retrieve the attenuation used for distance in case it was overridden
+		Params.AttenuationDistance = AudioDevice->GetDistanceToNearestListener(WaveInstance->Location);
+		
 		// If we are using the OmniRadius feature
 		if (WaveInstance->OmniRadius > 0.0f)
 		{
@@ -867,7 +874,7 @@ bool FWaveInstance::IsPlaying() const
 	}
 
 	const float WaveInstanceVolume = Volume * VolumeMultiplier * GetDistanceAndOcclusionAttenuation() * GetDynamicVolume();
-	if (WaveInstanceVolume > KINDA_SMALL_NUMBER)
+	if (WaveInstanceVolume > UE_KINDA_SMALL_NUMBER)
 	{
 		return true;
 	}
@@ -969,7 +976,7 @@ float FWaveInstance::GetActualVolume() const
 		if (!ActiveSound->bIsPreviewSound)
 		{
 			check(ActiveSound->AudioDevice);
-			ActualVolume *= ActiveSound->AudioDevice->GetMasterVolume();
+			ActualVolume *= ActiveSound->AudioDevice->GetPrimaryVolume();
 		}
 	}
 
@@ -1204,6 +1211,38 @@ struct FRiffLabeledTextChunk
 	uint16 CodePage;		// Unused
 };
 
+// Specification of the Broadcast Wave Format(BWF)
+// https://tech.ebu.ch/docs/tech/tech3285.pdf
+struct FRiffBroadcastAudioExtension 
+{
+	uint32 ChunkID;					// 'bext'
+	uint32 ChunkDataSize;			// Depends on contained text
+	uint8 Description[256];			// ASCII : «Description of the sound sequence» 
+	uint8 Originator[32];			// ASCII : «Name of the originator» 
+	uint8 OriginatorReference[32];	// ASCII : «Reference of the originator» 
+	uint8 OriginationDate[10];		// ASCII : «yyyy:mm:dd» 
+	uint8 OriginationTime[8];		// ASCII : «hh:mm:ss» 
+	uint32 TimeReferenceLow;		// First sample count since midnight, low word 
+	uint32 TimeReferenceHigh;		// First sample count since midnight, high word	
+
+	uint16 Version;					// Version of the BWF; unsigned binary number 
+	uint8 UMID[64];					// Binary SMPTE UMID 
+	uint16 LoudnessValue;			// WORD : «Integrated Loudness Value of the filein LUFS (multiplied by 100) » 
+	uint16 LoudnessRange;			// WORD : «Loudness Range of the file in LU (multiplied by 100) » 
+	uint16 MaxTruePeakLevel;		// WORD : «Maximum True Peak Level of the file expressed as dBTP (multiplied by 100) » 
+	uint16 MaxMomentaryLoudness;	// WORD : «Highest value of the Momentary Loudness Level of the file in LUFS (multiplied by 100) » 
+	uint16 MaxShortTermLoudness;	// WORD : «Highest value of the Short-TermLoudness Level of the file in LUFS (multiplied by 100) » 
+	uint16 Reserved[180];			// 180 bytes, reserved for future use, set to “NULL” 
+	uint8 CodingHistory[1];			// ASCII : « History coding » (truncated here are don't care about it) 
+};
+
+struct FRiffIXmlChunk
+{
+	uint32 ChunkID;					// 'iXML'
+	uint32 ChunkDataSize;			// Depends on contained text
+	uint8 XmlText[1];				// Raw XML blob. (truncated as the size is based on the chunk size).
+};	
+
 // FExtendedFormatChunk subformat GUID.
 struct FSubformatGUID
 {
@@ -1262,6 +1301,8 @@ bool IsKnownChunkId(uint32 ChunkId)
 		UE_mmioFOURCC('s', 'm', 'p', 'l'),
 		UE_mmioFOURCC('i', 'n', 's', 't'),
 		UE_mmioFOURCC('a', 'c', 'i', 'd'),
+		UE_mmioFOURCC('b', 'e', 'x', 't'),
+		UE_mmioFOURCC('i', 'X', 'M', 'L'),
 	};
 
 	return Algo::Find(KnownIds, ChunkId) != nullptr;
@@ -1522,7 +1563,8 @@ bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FStr
 
 	if (*pFormatTag != 0x0001 // WAVE_FORMAT_PCM
 		&& *pFormatTag != 0x0002 // WAVE_FORMAT_ADPCM
-		&& *pFormatTag != 0x0011) // WAVE_FORMAT_DVI_ADPCM
+		&& *pFormatTag != 0x0011 // WAVE_FORMAT_DVI_ADPCM
+		&& *pFormatTag != 0x0003) // WAVE_FORMAT_IEEE_FLOAT
 	{
 		ReportImportFailure();
 		if (ErrorReason) *ErrorReason = TEXT("Unsupported wave file format.  Only PCM, ADPCM, and DVI ADPCM can be imported.");
@@ -1647,6 +1689,85 @@ bool FWaveModInfo::ReadWaveInfo( const uint8* WaveData, int32 WaveDataSize, FStr
 		}
 	}
 
+	// Look for the cue chunks
+	RiffChunk = FindRiffChunk(RiffChunkStart, WaveDataEnd, UE_mmioFOURCC('b', 'e', 'x', 't'));
+
+	if (RiffChunk != nullptr)
+	{
+		const FRiffBroadcastAudioExtension* BextChunk = (const FRiffBroadcastAudioExtension*)((uint8*)RiffChunk);
+		uint64 NumSamplesSinceMidnight = ((uint64) BextChunk->TimeReferenceHigh << 32) | (uint64) BextChunk->TimeReferenceLow;
+
+		// Only record info if there's a valid non-zero time-code.
+		if(NumSamplesSinceMidnight > 0 && FmtChunk && FmtChunk->nSamplesPerSec)
+		{
+			TimecodeInfo = MakePimpl<FSoundWaveTimecodeInfo, EPimplPtrMode::DeepCopy>();
+				
+			TimecodeInfo->NumSamplesSinceMidnight   = NumSamplesSinceMidnight;
+			TimecodeInfo->NumSamplesPerSecond		= FmtChunk->nSamplesPerSec;
+			TimecodeInfo->Description				= StringCast<TCHAR>((ANSICHAR*)BextChunk->Description).Get();
+			TimecodeInfo->OriginatorDescription		= StringCast<TCHAR>((ANSICHAR*)BextChunk->Originator).Get();
+			TimecodeInfo->OriginatorDate			= StringCast<TCHAR>((ANSICHAR*)BextChunk->OriginationDate).Get();
+			TimecodeInfo->OriginatorReference		= StringCast<TCHAR>((ANSICHAR*)BextChunk->OriginatorReference).Get();
+			TimecodeInfo->OriginatorTime			= StringCast<TCHAR>((ANSICHAR*)BextChunk->OriginationTime).Get();
+
+			// Use the sample rate as the timecode rate for now. We'll replace
+			// it with a more accurate rate if possible below.
+			TimecodeInfo->TimecodeRate = FFrameRate(TimecodeInfo->NumSamplesPerSecond, 1u);
+		}
+	}
+
+	// Look for the cue chunks
+	RiffChunk = FindRiffChunk(RiffChunkStart, WaveDataEnd, UE_mmioFOURCC('i', 'X', 'M', 'L'));
+
+	// If we got timecode info above, extend it with the timecode rate and drop
+	// frame flag if they are present in the XML.
+	if (TimecodeInfo.IsValid() && RiffChunk != nullptr)
+	{
+		const FRiffIXmlChunk* IXmlChunk = (const FRiffIXmlChunk*)((uint8*)RiffChunk);
+		const FString XmlString = StringCast<TCHAR>((ANSICHAR*)IXmlChunk->XmlText).Get();
+
+		// Detail on the iXML specification here: http://www.gallery.co.uk/ixml/
+		const FXmlFile RiffXml(XmlString, EConstructMethod::ConstructFromBuffer);
+		if (RiffXml.IsValid())
+		{
+			const FString SpeedTag(TEXT("SPEED"));
+			const FString TimecodeRateTag(TEXT("TIMECODE_RATE"));
+			const FString TimecodeRateDelimiter(TEXT("/"));
+			const FString TimecodeFlagTag(TEXT("TIMECODE_FLAG"));
+			const FString DropFrameFlag(TEXT("DF"));
+
+			const FXmlNode* RootNode = RiffXml.GetRootNode();
+			const FXmlNode* SpeedNode = RootNode->FindChildNode(SpeedTag);
+			const FXmlNode* TimecodeRateNode = SpeedNode ? SpeedNode->FindChildNode(TimecodeRateTag) : nullptr;
+			if (TimecodeRateNode)
+			{
+				const FString TimecodeRateContent = TimecodeRateNode->GetContent();
+				TArray<FString> TimecodeRateParts;
+				TimecodeRateContent.ParseIntoArray(TimecodeRateParts, *TimecodeRateDelimiter);
+				if (TimecodeRateParts.Num() == 2)
+				{
+					uint32 TimecodeRateNumerator = 0u;
+					uint32 TimecodeRateDenominator = 0u;
+					LexFromString(TimecodeRateNumerator, *TimecodeRateParts[0]);
+					LexFromString(TimecodeRateDenominator, *TimecodeRateParts[1]);
+					if (TimecodeRateNumerator != 0u && TimecodeRateDenominator != 0u)
+					{
+						TimecodeInfo->TimecodeRate = FFrameRate(TimecodeRateNumerator, TimecodeRateDenominator);
+					}
+				}
+			}
+
+			const FXmlNode* TimecodeFlagNode = SpeedNode ? SpeedNode->FindChildNode(TimecodeFlagTag) : nullptr;
+			if (TimecodeFlagNode)
+			{
+				const FString TimecodeFlagContent = TimecodeFlagNode->GetContent();
+				if (TimecodeFlagContent == DropFrameFlag)
+				{
+					TimecodeInfo->bTimecodeIsDropFrame = true;
+				}
+			}
+		}
+	}
 
 	return true;
 }

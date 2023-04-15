@@ -2,12 +2,13 @@
 
 #include "UncontrolledChangelistsModule.h"
 
+#include "CoreGlobals.h"
 #include "Algo/AnyOf.h"
 #include "Algo/Copy.h"
 #include "Algo/Find.h"
 #include "Algo/ForEach.h"
 #include "Algo/Transform.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonObject.h"
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
@@ -16,26 +17,53 @@
 #include "ISourceControlProvider.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Misc/CoreDelegates.h"
 #include "PackagesDialog.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
+#include "SourceControlPreferences.h"
 #include "Styling/SlateTypes.h"
 #include "UObject/ObjectSaveContext.h"
 
 #define LOCTEXT_NAMESPACE "UncontrolledChangelists"
 
-static TAutoConsoleVariable<bool> CVarUncontrolledChangelistsEnable(
-	TEXT("UncontrolledChangelists.Enable"),
-	false,
-	TEXT("Enables Uncontrolled Changelists (experimental).")
-);
+void FUncontrolledChangelistsModule::FStartupTask::DoWork()
+{
+	double StartTime = FPlatformTime::Seconds();
+	UE_LOG(LogSourceControl, Log, TEXT("Uncontrolled asset enumeration started..."));
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> Assets;
+	const bool bIncludeOnlyOnDiskAssets = true;
+	AssetRegistry.GetAllAssets(Assets, bIncludeOnlyOnDiskAssets);
+	for(const FAssetData& AssetData : Assets) 
+	{ 
+		if (IsEngineExitRequested())
+		{
+			break;
+		}
+		Owner->OnAssetAddedInternal(AssetData, AddedAssetsCache, true);
+	}
+	
+	UE_LOG(LogSourceControl, Log, TEXT("Uncontrolled asset enumeration finished in %s seconds (Found %d uncontrolled assets)"), *FString::SanitizeFloat(FPlatformTime::Seconds() - StartTime), AddedAssetsCache.Num());
+}
 
 void FUncontrolledChangelistsModule::StartupModule()
 {
+	bIsEnabled = USourceControlPreferences::AreUncontrolledChangelistsEnabled();
+	
+	if (!IsEnabled())
+	{
+		return;
+	}
+
 	// Adds Default Uncontrolled Changelist if it is not already present.
-	FUncontrolledChangelist DefaultUncontrolledChangelist(FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_GUID, FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_NAME.ToString());
-	UncontrolledChangelistsStateCache.FindOrAdd(MoveTemp(DefaultUncontrolledChangelist), MakeShareable(new FUncontrolledChangelistState(DefaultUncontrolledChangelist)));
+	GetDefaultUncontrolledChangelistState();
 
 	LoadState();
 
@@ -43,15 +71,26 @@ void FUncontrolledChangelistsModule::StartupModule()
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	OnAssetAddedDelegateHandle = AssetRegistry.OnAssetAdded().AddLambda([](const struct FAssetData& AssetData) { Get().OnAssetAdded(AssetData); });
 	OnObjectPreSavedDelegateHandle = FCoreUObjectDelegates::OnObjectPreSave.AddLambda([](UObject* InAsset, const FObjectPreSaveContext& InPreSaveContext) { Get().OnObjectPreSaved(InAsset, InPreSaveContext); });
+	OnEndFrameDelegateHandle = FCoreDelegates::OnEndFrame.AddLambda([]() { Get().OnEndFrame(); });
 
-	TArray<FAssetData> AssetData;
-
-	AssetRegistry.GetAllAssets(AssetData);
-	Algo::ForEach(AssetData, [this](const struct FAssetData& AssetData) { OnAssetAdded(AssetData); });
+	StartupTask = MakeUnique<FAsyncTask<FStartupTask>>(this);		
+	StartupTask->StartBackgroundTask();
 }
 
 void FUncontrolledChangelistsModule::ShutdownModule()
 {
+	if (StartupTask)
+	{
+		StartupTask->EnsureCompletion();
+		StartupTask = nullptr;
+	}
+
+	if (bIsStateDirty)
+	{
+		SaveState();
+		bIsStateDirty = false;
+	}
+
 	FAssetRegistryModule* AssetRegistryModulePtr = static_cast<FAssetRegistryModule*>(FModuleManager::Get().GetModule(TEXT("AssetRegistry")));
 
 	// Check in case AssetRegistry has already been shutdown.
@@ -61,11 +100,12 @@ void FUncontrolledChangelistsModule::ShutdownModule()
 	}
 
 	FCoreUObjectDelegates::OnObjectPreSave.Remove(OnObjectPreSavedDelegateHandle);
+	FCoreDelegates::OnEndFrame.Remove(OnEndFrameDelegateHandle);
 }
 
 bool FUncontrolledChangelistsModule::IsEnabled() const
 {
-	return CVarUncontrolledChangelistsEnable.GetValueOnGameThread();
+	return bIsEnabled;
 }
 
 TArray<FUncontrolledChangelistStateRef> FUncontrolledChangelistsModule::GetChangelistStates() const
@@ -82,24 +122,50 @@ TArray<FUncontrolledChangelistStateRef> FUncontrolledChangelistsModule::GetChang
 
 bool FUncontrolledChangelistsModule::OnMakeWritable(const FString& InFilename)
 {
-	bool bHasStateChanged = false;
-
 	if (!IsEnabled())
 	{
 		return false;
 	}
 
-	FUncontrolledChangelist DefaultUncontrolledChangelist(FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_GUID, FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_NAME.ToString());
-	FUncontrolledChangelistsStateCache::ValueType& UncontrolledChangelistState = UncontrolledChangelistsStateCache.FindOrAdd(MoveTemp(DefaultUncontrolledChangelist), MakeShareable(new FUncontrolledChangelistState(DefaultUncontrolledChangelist)));
+	AddedAssetsCache.Add(FPaths::ConvertRelativePathToFull(InFilename));
+	return true;
+}
 
-	bHasStateChanged = UncontrolledChangelistState->AddFiles({ InFilename }, FUncontrolledChangelistState::ECheckFlags::NotCheckedOut);
+bool FUncontrolledChangelistsModule::OnNewFilesAdded(const TArray<FString>& InFilenames)
+{
+	return AddToUncontrolledChangelist(InFilenames);
+}
 
-	if (bHasStateChanged)
+bool FUncontrolledChangelistsModule::OnSaveWritable(const FString& InFilename)
+{
+	return AddToUncontrolledChangelist({ InFilename });
+}
+
+bool FUncontrolledChangelistsModule::OnDeleteWritable(const FString& InFilename)
+{
+	return AddToUncontrolledChangelist({ InFilename });
+}
+
+bool FUncontrolledChangelistsModule::AddToUncontrolledChangelist(const TArray<FString>& InFilenames)
+{
+	if (!IsEnabled())
 	{
-		OnStateChanged();
+		return false;
 	}
 
-	return bHasStateChanged;
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUncontrolledChangelistsModule::AddToUncontrolledChangelist);
+
+	TArray<FString> FullPaths;
+	FullPaths.Reserve(InFilenames.Num());
+	Algo::Transform(InFilenames, FullPaths, [](const FString& Filename) { return FPaths::ConvertRelativePathToFull(Filename); });
+
+	// Remove from reconcile cache
+	for (const FString& FullPath : FullPaths)
+	{
+		AddedAssetsCache.Remove(FullPath);
+	}
+
+	return AddFilesToDefaultUncontrolledChangelist(FullPaths, FUncontrolledChangelistState::ECheckFlags::NotCheckedOut);
 }
 
 void FUncontrolledChangelistsModule::UpdateStatus()
@@ -125,15 +191,38 @@ void FUncontrolledChangelistsModule::UpdateStatus()
 
 FText FUncontrolledChangelistsModule::GetReconcileStatus() const
 {
+	if (StartupTask && !StartupTask->IsDone())
+	{
+		return LOCTEXT("ProcessingAssetsStatus", "Processing assets...");
+	}
+
 	return FText::Format(LOCTEXT("ReconcileStatus", "Assets to check for reconcile: {0}"), FText::AsNumber(AddedAssetsCache.Num()));
 }
 
 bool FUncontrolledChangelistsModule::OnReconcileAssets()
 {
+	FScopedSlowTask Scope(0, LOCTEXT("ProcessingAssetsProgress", "Processing assets"));
+	const bool bShowCancelButton = false;
+	const bool bAllowInPIE = false;
+	Scope.MakeDialogDelayed(1.0f, bShowCancelButton, bAllowInPIE);
+
+	if (StartupTask)
+	{
+		while (!StartupTask->WaitCompletionWithTimeout(0.016))
+		{
+			Scope.EnterProgressFrame(0.f);
+		}
+				
+		AddedAssetsCache.Append(StartupTask->GetTask().GetAddedAssetsCache());
+		StartupTask = nullptr;
+	}
+
 	if ((!IsEnabled()) || AddedAssetsCache.IsEmpty())
 	{
 		return false;
 	}
+
+	Scope.EnterProgressFrame(0.f, LOCTEXT("ReconcileAssetsProgress", "Reconciling assets"));
 
 	CleanAssetsCaches();
 	bool bHasStateChanged = AddFilesToDefaultUncontrolledChangelist(AddedAssetsCache.Array(), FUncontrolledChangelistState::ECheckFlags::All);
@@ -143,23 +232,41 @@ bool FUncontrolledChangelistsModule::OnReconcileAssets()
 	return bHasStateChanged;
 }
 
-void FUncontrolledChangelistsModule::OnAssetAdded(const struct FAssetData& AssetData)
+void FUncontrolledChangelistsModule::OnAssetAdded(const FAssetData& AssetData)
 {
 	if (!IsEnabled())
 	{
 		return;
 	}
 
-	FPackagePath PackagePath;
+	OnAssetAddedInternal(AssetData, AddedAssetsCache, false);
+}
 
+void FUncontrolledChangelistsModule::OnAssetAddedInternal(const FAssetData& AssetData, TSet<FString>& InAddedAssetsCache, bool bInStartupTask)
+{
+	if (AssetData.HasAnyPackageFlags(PKG_Cooked))
+	{
+		return;
+	}
+
+	FPackagePath PackagePath;
 	if (!FPackagePath::TryFromPackageName(AssetData.PackageName, PackagePath))
 	{
 		return;
 	}
-	
-	if (!FPackageName::DoesPackageExist(PackagePath, &PackagePath))
+
+	// No need to check for existence when running startup task
+	if (!bInStartupTask)
 	{
-		return; // If the package does not exist on disk there is nothing more to do
+		if (FPackageName::IsTempPackage(PackagePath.GetPackageName()))
+		{
+			return; // Ignore temp packages
+		}
+
+		if(!FPackageName::DoesPackageExist(PackagePath, &PackagePath))
+		{
+			return; // If the package does not exist on disk there is nothing more to do
+		}
 	}
 
 	const FString LocalFullPath(PackagePath.GetLocalFullPath());
@@ -178,13 +285,109 @@ void FUncontrolledChangelistsModule::OnAssetAdded(const struct FAssetData& Asset
 
 	if (!IFileManager::Get().IsReadOnly(*Fullpath))
 	{
-		AddedAssetsCache.Add(MoveTemp(Fullpath));
+		InAddedAssetsCache.Add(MoveTemp(Fullpath));
 	}
 }
 
-void FUncontrolledChangelistsModule::OnObjectPreSaved(UObject* InAsset, const FObjectPreSaveContext& InPreSaveContext)
+static bool ExecuteRevertOperation(const TArray<FString>& InFilenames)
+{
+	ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
+	ISourceControlProvider& SourceControlProvider = SourceControlModule.GetProvider();
+	TArray<FSourceControlStateRef> UpdatedFilestates;
+
+	auto BuildFileString = [](const TArray<FString>& Files) -> FString
+	{
+		TStringBuilder<2048> Builder;
+		Builder.Join(Files, TEXT(", "));
+		return Builder.ToString();
+	};
+
+	if (SourceControlProvider.GetState(InFilenames, UpdatedFilestates, EStateCacheUsage::ForceUpdate) != ECommandResult::Succeeded)
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Failed to update the source control files states for %s."), *BuildFileString(InFilenames));
+		return false;
+	}
+
+	TArray<FString> FilesToDelete;
+	TArray<FString> FilesToRevert;
+
+	for (const FSourceControlStateRef& Filestate : UpdatedFilestates)
+	{
+		if (Filestate->IsSourceControlled())
+		{
+			FilesToRevert.Add(Filestate->GetFilename());
+		}
+		else
+		{
+			FilesToDelete.Add(Filestate->GetFilename());
+		}
+	}
+
+	if (!FilesToRevert.IsEmpty())
+	{
+		TSharedRef<FSync> ForceSyncOperation = ISourceControlOperation::Create<FSync>();
+		ForceSyncOperation->SetForce(true);
+		ForceSyncOperation->SetLastSyncedFlag(true);
+
+		if (SourceControlProvider.Execute(ForceSyncOperation, FilesToRevert) != ECommandResult::Succeeded)
+		{
+			UE_LOG(LogSourceControl, Error, TEXT("Failed to sync the following files to a previous version: %s."), *BuildFileString(FilesToRevert));
+			return false;
+		}
+	}
+
+	IFileManager& FileManager = IFileManager::Get();
+	bool bSuccess = true;
+
+	for (const FString& FileToDelete : FilesToDelete)
+	{
+		const bool bRequireExists = true;
+		const bool bEvenReadOnly = false;
+		const bool bQuiet = false;
+
+		if (!FileManager.Delete(*FileToDelete, bRequireExists, bEvenReadOnly, bQuiet))
+		{
+			UE_LOG(LogSourceControl, Error, TEXT("Failed to delete %s."), *FileToDelete);
+			bSuccess = false;
+		}
+	}
+
+	SourceControlModule.GetOnFilesDeleted().Broadcast(FilesToDelete);
+
+	return bSuccess;
+}
+
+bool FUncontrolledChangelistsModule::OnRevert(const TArray<FString>& InFilenames)
+{
+	bool bSuccess = false;
+
+	if (!IsEnabled() || InFilenames.IsEmpty())
+	{
+		return true;
+	}
+
+	bSuccess = SourceControlHelpers::ApplyOperationAndReloadPackages(InFilenames, ExecuteRevertOperation);
+
+	UpdateStatus();
+
+	return bSuccess;
+}
+
+void FUncontrolledChangelistsModule::OnObjectPreSaved(UObject* InObject, const FObjectPreSaveContext& InPreSaveContext)
 {
 	if (!IsEnabled())
+	{
+		return;
+	}
+
+	// Make sure we are catching the top level asset object to avoid processing same package multiple times
+	if (!InObject || !InObject->IsAsset())
+	{
+		return;
+	}
+
+	// Ignore procedural save and autosaves
+	if (InPreSaveContext.IsProceduralSave() || ((InPreSaveContext.GetSaveFlags() & SAVE_FromAutosave) != 0))
 	{
 		return;
 	}
@@ -243,7 +446,7 @@ void FUncontrolledChangelistsModule::MoveFilesToUncontrolledChangelist(const TAr
 	}
 }
 
-void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArray<FSourceControlStateRef>& InUncontrolledFileStates, const FSourceControlChangelistPtr& InChangelist)
+void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArray<FSourceControlStateRef>& InUncontrolledFileStates, const FSourceControlChangelistPtr& InChangelist, TFunctionRef<bool(const TArray<FSourceControlStateRef>&)> InOpenConflictDialog)
 {
 	if (!IsEnabled())
 	{
@@ -253,10 +456,10 @@ void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArra
 	TArray<FString> UncontrolledFilenames;
 	
 	Algo::Transform(InUncontrolledFileStates, UncontrolledFilenames, [](const FSourceControlStateRef& State) { return State->GetFilename(); });
-	MoveFilesToControlledChangelist(UncontrolledFilenames, InChangelist);
+	MoveFilesToControlledChangelist(UncontrolledFilenames, InChangelist, InOpenConflictDialog);
 }
 
-void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArray<FString>& InUncontrolledFiles, const FSourceControlChangelistPtr& InChangelist)
+void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArray<FString>& InUncontrolledFiles, const FSourceControlChangelistPtr& InChangelist, TFunctionRef<bool(const TArray<FSourceControlStateRef>&)> InOpenConflictDialog)
 {
 	if (!IsEnabled())
 	{
@@ -269,7 +472,7 @@ void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArra
 	// Get updated filestates to check Checkout capabilities.
 	SourceControlProvider.GetState(InUncontrolledFiles, UpdatedFilestates, EStateCacheUsage::ForceUpdate);
 
-	TArray<UPackage*> PackageConflicts;
+	TArray<FSourceControlStateRef> FilesConflicts;
 	TArray<FString> FilesToAdd;
 	TArray<FString> FilesToCheckout;
 	TArray<FString> FilesToDelete;
@@ -277,26 +480,33 @@ void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArra
 	// Check if we can Checkout files or mark for add
 	for (const FSourceControlStateRef& Filestate : UpdatedFilestates)
 	{
+		const FString& Filename = Filestate->GetFilename();
+
 		if (!Filestate->IsSourceControlled())
 		{
-			FilesToAdd.Add(Filestate->GetFilename());
+			FilesToAdd.Add(Filename);
 		}
-		else if (!IFileManager::Get().FileExists(*Filestate->GetFilename()))
+		else if (!IFileManager::Get().FileExists(*Filename))
 		{
-			FilesToDelete.Add(Filestate->GetFilename());
+			FilesToDelete.Add(Filename);
 		}
 		else if (Filestate->CanCheckout())
 		{
-			FilesToCheckout.Add(Filestate->GetFilename());
+			FilesToCheckout.Add(Filename);
+		}
+		else
+		{
+			FilesConflicts.Add(Filestate);
+			FilesToCheckout.Add(Filename);
 		}
 	}
 
 	bool bCanProceed = true;
 
 	// If we detected conflict, asking user if we should proceed.
-	if (!PackageConflicts.IsEmpty())
+	if (!FilesConflicts.IsEmpty())
 	{
-		bCanProceed = ShowConflictDialog(PackageConflicts);
+		bCanProceed = InOpenConflictDialog(FilesConflicts);
 	}
 
 	if (bCanProceed)
@@ -321,33 +531,96 @@ void FUncontrolledChangelistsModule::MoveFilesToControlledChangelist(const TArra
 	}
 }
 
-bool FUncontrolledChangelistsModule::ShowConflictDialog(TArray<UPackage*> InPackageConflicts)
+TOptional<FUncontrolledChangelist> FUncontrolledChangelistsModule::CreateUncontrolledChangelist(const FText& InDescription)
 {
-	FPackagesDialogModule& CheckoutPackagesDialogModule = FModuleManager::LoadModuleChecked<FPackagesDialogModule>(TEXT("PackagesDialog"));
-
-	CheckoutPackagesDialogModule.CreatePackagesDialog(LOCTEXT("CheckoutPackagesDialogTitle", "Check Out Assets"),
-													  LOCTEXT("CheckoutPackagesDialogMessage", "Conflict detected in the following assets:"),
-													  true);
-
-	CheckoutPackagesDialogModule.AddButton(DRT_CheckOut, LOCTEXT("Dlg_CheckOutButton", "Check Out"), LOCTEXT("Dlg_CheckOutTooltip", "Attempt to Check Out Assets"));
-	CheckoutPackagesDialogModule.AddButton(DRT_Cancel, LOCTEXT("Dlg_Cancel", "Cancel"), LOCTEXT("Dlg_CancelTooltip", "Cancel Request"));
-
-	CheckoutPackagesDialogModule.SetWarning(LOCTEXT("CheckoutPackagesWarnMessage", "Warning: These assets are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."));
-
-	for (UPackage* Conflict : InPackageConflicts)
+	if (!IsEnabled())
 	{
-		CheckoutPackagesDialogModule.AddPackageItem(Conflict, ECheckBoxState::Undetermined);
+		return TOptional<FUncontrolledChangelist>();
 	}
 
-	EDialogReturnType UserResponse = CheckoutPackagesDialogModule.ShowPackagesDialog();
+	// Default constructor will generate a new GUID.
+	FUncontrolledChangelist NewUncontrolledChangelist;
+	UncontrolledChangelistsStateCache.Emplace(NewUncontrolledChangelist, MakeShared<FUncontrolledChangelistState>(NewUncontrolledChangelist, InDescription));
 
-	return UserResponse == DRT_CheckOut;
+	OnStateChanged();
+
+	return NewUncontrolledChangelist;
+}
+
+void FUncontrolledChangelistsModule::EditUncontrolledChangelist(const FUncontrolledChangelist& InUncontrolledChangelist, const FText& InNewDescription)
+{
+	if (!IsEnabled())
+	{
+		return;
+	}
+
+	if (InUncontrolledChangelist.IsDefault())
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot edit Default Uncontrolled Changelist."));
+		return;
+	}
+
+	FUncontrolledChangelistStateRef* UncontrolledChangelistState = UncontrolledChangelistsStateCache.Find(InUncontrolledChangelist);
+
+	if (UncontrolledChangelistState == nullptr)
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot find Uncontrolled Changelist %s in cache."), *InUncontrolledChangelist.ToString());
+		return;
+	}
+
+	(*UncontrolledChangelistState)->SetDescription(InNewDescription);
+
+	OnStateChanged();
+}
+
+void FUncontrolledChangelistsModule::DeleteUncontrolledChangelist(const FUncontrolledChangelist& InUncontrolledChangelist)
+{
+	if (!IsEnabled())
+	{
+		return;
+	}
+
+	if (InUncontrolledChangelist.IsDefault())
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot delete Default Uncontrolled Changelist."));
+		return;
+	}
+
+	FUncontrolledChangelistStateRef* UncontrolledChangelistState = UncontrolledChangelistsStateCache.Find(InUncontrolledChangelist);
+
+	if (UncontrolledChangelistState == nullptr)
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot find Uncontrolled Changelist %s in cache."), *InUncontrolledChangelist.ToString());
+		return;
+	}
+
+	if ((*UncontrolledChangelistState)->ContainsFiles())
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot delete Uncontrolled Changelist %s while it contains files."), *InUncontrolledChangelist.ToString());
+		return;
+	}
+
+	// Get Deleted Offline files and move them to the Default UCL so that we don't lose them
+	GetDefaultUncontrolledChangelistState()->AddFiles((*UncontrolledChangelistState)->GetDeletedOfflineFiles().Array(), FUncontrolledChangelistState::ECheckFlags::None);
+
+	UncontrolledChangelistsStateCache.Remove(InUncontrolledChangelist);
+
+	OnStateChanged();
 }
 
 void FUncontrolledChangelistsModule::OnStateChanged()
 {
-	OnUncontrolledChangelistModuleChanged.Broadcast();
-	SaveState();
+	bIsStateDirty = true;
+}
+
+void FUncontrolledChangelistsModule::OnEndFrame()
+{
+	if (bIsStateDirty)
+	{
+		OnUncontrolledChangelistModuleChanged.Broadcast();
+		SaveState();
+		bIsStateDirty = false;
+	}
 }
 
 void FUncontrolledChangelistsModule::CleanAssetsCaches()
@@ -364,8 +637,7 @@ bool FUncontrolledChangelistsModule::AddFilesToDefaultUncontrolledChangelist(con
 {
 	bool bHasStateChanged = false;
 
-	FUncontrolledChangelist DefaultUncontrolledChangelist(FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_GUID, FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_NAME.ToString());
-	FUncontrolledChangelistsStateCache::ValueType& UncontrolledChangelistState = UncontrolledChangelistsStateCache.FindOrAdd(MoveTemp(DefaultUncontrolledChangelist), MakeShareable(new FUncontrolledChangelistState(DefaultUncontrolledChangelist)));
+	FUncontrolledChangelistStateRef UncontrolledChangelistState = GetDefaultUncontrolledChangelistState();
 
 	// Try to add files, they will be added only if they pass the required checks
 	bHasStateChanged = UncontrolledChangelistState->AddFiles(InFilenames, InCheckFlags);
@@ -376,6 +648,19 @@ bool FUncontrolledChangelistsModule::AddFilesToDefaultUncontrolledChangelist(con
 	}
 
 	return bHasStateChanged;
+}
+
+FUncontrolledChangelistStateRef FUncontrolledChangelistsModule::GetDefaultUncontrolledChangelistState()
+{
+	FUncontrolledChangelist DefaultUncontrolledChangelist(FUncontrolledChangelist::DEFAULT_UNCONTROLLED_CHANGELIST_GUID);
+	FUncontrolledChangelistStateRef* DefaultUncontrolledChangelistState = UncontrolledChangelistsStateCache.Find(DefaultUncontrolledChangelist);
+
+	if (DefaultUncontrolledChangelistState != nullptr)
+	{
+		return *DefaultUncontrolledChangelistState;
+	}
+
+	return UncontrolledChangelistsStateCache.Emplace(MoveTemp(DefaultUncontrolledChangelist), MakeShared<FUncontrolledChangelistState>(DefaultUncontrolledChangelist, FUncontrolledChangelistState::DEFAULT_UNCONTROLLED_CHANGELIST_DESCRIPTION));
 }
 
 void FUncontrolledChangelistsModule::SaveState() const
@@ -435,7 +720,7 @@ void FUncontrolledChangelistsModule::LoadState()
 		return;
 	}
 
-	if (VersionNumber != VERSION_NUMBER)
+	if (VersionNumber > VERSION_NUMBER)
 	{
 		UE_LOG(LogSourceControl, Error, TEXT("Version number is invalid (file: %u, current: %u)."), VersionNumber, VERSION_NUMBER);
 		return;
@@ -458,7 +743,7 @@ void FUncontrolledChangelistsModule::LoadState()
 			continue;
 		}
 
-		FUncontrolledChangelistsStateCache::ValueType& UncontrolledChangelistState = UncontrolledChangelistsStateCache.FindOrAdd(MoveTemp(TempKey), MakeShareable(new FUncontrolledChangelistState(TempKey)));
+		FUncontrolledChangelistsStateCache::ValueType& UncontrolledChangelistState = UncontrolledChangelistsStateCache.FindOrAdd(MoveTemp(TempKey), MakeShared<FUncontrolledChangelistState>(TempKey));
 
 		UncontrolledChangelistState->Deserialize(JsonObject);
 	}

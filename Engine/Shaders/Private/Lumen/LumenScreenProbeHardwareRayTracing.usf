@@ -9,6 +9,7 @@
 #define RADIANCE_CACHE_DEPTH_TEST_SPHERE_PARALLAX 1
 #include "LumenRadianceCacheCommon.ush"
 #include "LumenScreenProbeCommon.ush"
+#include "LumenScreenProbeTracingCommon.ush"
 #include "LumenHardwareRayTracingPipelineCommon.ush"
 
 #ifndef THREADGROUP_SIZE_2D
@@ -36,19 +37,14 @@ void FConvertRayAllocatorCS()
 
 Buffer<uint> RayAllocator;
 RWBuffer<uint> RWHardwareRayTracingIndirectArgs;
+uint2 OutputThreadGroupSize;
 
 [numthreads(1, 1, 1)]
 void FLumenScreenProbeHardwareRayTracingIndirectArgsCS()
 {
-	RWHardwareRayTracingIndirectArgs[0] = RayAllocator[0];
+	RWHardwareRayTracingIndirectArgs[0] = (RayAllocator[0] + OutputThreadGroupSize.x - 1) / OutputThreadGroupSize.x;
 	RWHardwareRayTracingIndirectArgs[1] = 1;
 	RWHardwareRayTracingIndirectArgs[2] = 1;
-
-#if DIM_INLINE_RAYTRACING
-	// For RayTraceDispatchIndirect we dispatch in threads but for DispatchIndirectComputeShader we dispatch in thread groups.
-	// We need to adjust it to get the same number of threads running.
-	RWHardwareRayTracingIndirectArgs[0] = (RWHardwareRayTracingIndirectArgs[0] + INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X - 1) / INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X;
-#endif
 }
 
 
@@ -60,6 +56,11 @@ float3 FarFieldReferencePos;
 
 RaytracingAccelerationStructure TLAS;
 
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
 uint ThreadCount;
 uint GroupCount;
 int NearFieldLightingMode;
@@ -69,19 +70,17 @@ float FarFieldMaxTraceDistance;
 float PullbackBias;
 float NormalBias;
 float AvoidSelfIntersectionTraceDistance;
+float SkipFirstTwoSidedHitDistance;
 int MaxTranslucentSkipCount;
 uint MaxTraversalIterations;
 int ApplySkyLight;
 
 RWStructuredBuffer<FTraceDataPacked> RWRetraceDataPackedBuffer;
 
-#if LUMEN_HARDWARE_INLINE_RAYTRACING
-StructuredBuffer<FHitGroupRootConstants> HitGroupData;
-#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
-
-FRayTracedLightingResult EpsilonTrace(RayDesc Ray, inout FRayTracedLightingContext Context)
+FRayTracedLightingResult EpsilonTrace(FRayDesc Ray, inout FRayTracedLightingContext Context, out float RemainingTraceTMin)
 {
 	FRayTracedLightingResult Result = CreateRayTracedLightingResult();
+	RemainingTraceTMin = AvoidSelfIntersectionTraceDistance;
 
 #if ENABLE_NEAR_FIELD_TRACING
 	uint OriginalCullingMode = Context.CullingMode;
@@ -101,6 +100,16 @@ FRayTracedLightingResult EpsilonTrace(RayDesc Ray, inout FRayTracedLightingConte
 		}
 #endif // DIM_LIGHTING_MODE
 	}
+
+	// RAY_FLAG_CULL_BACK_FACING_TRIANGLES doesn't work on two sided geometry, but we still need to avoid self-intersections with the Nanite fallback mesh
+	// Skip the first two sided material we hit within a short distance
+	if (Result.bHitTwoSided && Result.TraceHitDistance < SkipFirstTwoSidedHitDistance)
+	{
+		float Epsilon = 0.01;
+		RemainingTraceTMin = Result.TraceHitDistance + Epsilon;
+		Result.bIsHit = false;
+	}
+
 	Context.CullingMode = OriginalCullingMode;
 #endif // ENABLE_NEAR_FIELD_TRACING
 
@@ -148,22 +157,23 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenScreenProbeGatherHardwareRayTracing)
 		uint2 ScreenProbeTraceCoord = GetTraceBufferCoord(ScreenProbeAtlasCoord, TraceTexelCoord);
 
 		float SceneDepth = GetScreenProbeDepth(ScreenProbeAtlasCoord);
-		float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
-		float3 WorldNormal = GetScreenProbeNormal(ScreenProbeAtlasCoord);
+		float3 TranslatedWorldPosition = GetTranslatedWorldPositionFromScreenUV(ScreenUV, SceneDepth);
 
 		float2 ProbeUV;
 		float ConeHalfAngle;
-		GetProbeTracingUV(ScreenProbeAtlasCoord, TraceTexelCoord, GetProbeTexelCenter(ScreenTileCoord), 1, ProbeUV, ConeHalfAngle);
+		GetProbeTracingUV(ScreenProbeTraceCoord, TraceTexelCoord, GetProbeTexelCenter(ScreenTileCoord), 1, ProbeUV, ConeHalfAngle);
 
-		RayDesc Ray;
-		Ray.Origin = WorldPosition;
+		FRayDesc Ray;
+		Ray.Origin = TranslatedWorldPosition;
 		Ray.Direction = OctahedronToUnitVector(ProbeUV * 2.0 - 1.0);
 		Ray.TMin = max(TraceHitDistance - PullbackBias, 0.0);
 #if ENABLE_FAR_FIELD_TRACING
 		Ray.TMin = max(Ray.TMin, FarFieldBias);
 #endif
+		bool bBackfaceRay;
+		float3 ProbeWorldNormalForBiasing = GetScreenProbeNormalForBiasing(ScreenProbeAtlasCoord, Ray.Direction, bBackfaceRay);
+		Ray.Origin += NormalBias * ProbeWorldNormalForBiasing;
 
-		ApplyPositionBias(Ray.Origin, Ray.Direction, WorldNormal, NormalBias);
 		FRayCone RayCone = (FRayCone)0;
 		RayCone = PropagateRayCone(RayCone, ConeHalfAngle, 0.0);
 
@@ -180,18 +190,21 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenScreenProbeGatherHardwareRayTracing)
 
 #if LUMEN_HARDWARE_INLINE_RAYTRACING
 		Context.HitGroupData = HitGroupData;
+		Context.RayTracingSceneMetadata = RayTracingSceneMetadata;
 #endif // LUMEN_HARDWARE_INLINE_RAYTRACING
 
 		// Initialize by testing against a small epsilon
-		FRayTracedLightingResult Result = EpsilonTrace(Ray, Context);
+		float RemainingTraceTMin;
+		FRayTracedLightingResult Result = EpsilonTrace(Ray, Context, RemainingTraceTMin);
+
 		if (!Result.bIsHit)
 		{
-			Ray.TMin = max(Ray.TMin, AvoidSelfIntersectionTraceDistance);
+			Ray.TMin = max(Ray.TMin, RemainingTraceTMin);
 			Ray.TMax = Ray.TMin;
 			// Cull TMax by the bounding sphere of the near-field
-			if (length(Ray.Origin - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) < MaxTraceDistance)
+			if (length(Ray.Origin - PrimaryView.TranslatedWorldCameraOrigin) < MaxTraceDistance)
 			{
-				float2 Hit = RayIntersectSphere(Ray.Origin, Ray.Direction, float4(LWCHackToFloat(PrimaryView.WorldCameraOrigin), MaxTraceDistance));
+				float2 Hit = RayIntersectSphere(Ray.Origin, Ray.Direction, float4(PrimaryView.TranslatedWorldCameraOrigin, MaxTraceDistance));
 				Ray.TMax = (Hit.x > 0) ? Hit.x : ((Hit.y > 0) ? Hit.y : Ray.TMin);
 			}
 
@@ -199,7 +212,8 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenScreenProbeGatherHardwareRayTracing)
 #if DIM_RADIANCE_CACHE
 			{
 				float ClipmapDitherRandom = InterleavedGradientNoise(ScreenTileCoord, View.StateFrameIndexMod8);
-				FRadianceCacheCoverage Coverage = GetRadianceCacheCoverage(Ray.Origin, Ray.Direction, ClipmapDitherRandom);
+				float3 RayOriginWorldPos = Ray.Origin - LWCHackToFloat(PrimaryView.PreViewTranslation);
+				FRadianceCacheCoverage Coverage = GetRadianceCacheCoverage(RayOriginWorldPos, Ray.Direction, ClipmapDitherRandom); // LUMEN_LWC_TODO
 				if (Coverage.bValid)
 				{
 					Ray.TMax = min(Ray.TMax, Coverage.MinTraceDistanceBeforeInterpolation);
@@ -236,9 +250,11 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenScreenProbeGatherHardwareRayTracing)
 		bool bMoving = false;
 		if (Result.bIsHit)
 		{
-			float3 HitWorldPosition = Ray.Origin + Ray.Direction * Result.TraceHitDistance;
-			bMoving = IsTraceMoving(WorldPosition, SceneDepth, ScreenProbeAtlasCoord, HitWorldPosition, Result.WorldVelocity);
+			float3 HitTranslatedWorldPosition = Ray.Origin + Ray.Direction * Result.TraceHitDistance;
+			bMoving = IsTraceMoving(TranslatedWorldPosition, SceneDepth, ScreenProbeAtlasCoord, HitTranslatedWorldPosition, Result.WorldVelocity);
 		}
+
+		Result.Radiance += GetSkylightLeaking(Ray.Direction, TraceHitDistance);
 
 		RWTraceRadiance[ScreenProbeTraceCoord] = Result.Radiance * View.PreExposure;
 		RWTraceHit[ScreenProbeTraceCoord] = EncodeProbeRayDistance(min(Result.TraceHitDistance, MaxTraceDistance), Result.bIsHit, bMoving);

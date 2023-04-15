@@ -15,9 +15,9 @@
 #include "InstancedFoliageActor.h"
 #include "AI/NavigationSystemBase.h"
 #include "Landscape.h"
+#include "LandscapeEditorPrivate.h"
 #include "Logging/LogMacros.h"
-
-DECLARE_LOG_CATEGORY_EXTERN(LogLandscapeTools, Log, All);
+#include "VisualLogger/VisualLogger.h"
 
 
 //
@@ -25,9 +25,9 @@ DECLARE_LOG_CATEGORY_EXTERN(LogLandscapeTools, Log, All);
 //
 struct FNoiseParameter
 {
-	float	Base,
-		NoiseScale,
-		NoiseAmount;
+	float Base;
+	float NoiseScale;
+	float NoiseAmount;
 
 	// Constructors.
 
@@ -288,15 +288,16 @@ public:
 
 	TLandscapeEditCache(const FLandscapeToolTarget& InTarget)
 		: DataAccess(InTarget)
-		, Valid(false)
+		, LandscapeInfo(InTarget.LandscapeInfo)
 	{
+		check(LandscapeInfo != nullptr);
 	}
 
 	// X2/Y2 Coordinates are "inclusive" max values
 	// Note that this should maybe be called "ExtendDataCache" because the region here will be combined with the existing cached region, not loaded independently, giving a cached region that is the bounding box of previous and new
 	void CacheData(int32 X1, int32 Y1, int32 X2, int32 Y2, bool bCacheOriginalData = false)
 	{
-		if (!Valid)
+		if (!bIsValid)
 		{
 			if (Accessor::bUseInterp)
 			{
@@ -308,7 +309,7 @@ public:
 				DataAccess.GetData(ValidX1, ValidY1, ValidX2, ValidY2, CachedData);
 				if (!ensureMsgf(ValidX1 <= ValidX2 && ValidY1 <= ValidY2, TEXT("Invalid cache area: X(%d-%d), Y(%d-%d) from region X(%d-%d), Y(%d-%d)"), ValidX1, ValidX2, ValidY1, ValidY2, X1, X2, Y1, Y2))
 				{
-					Valid = false;
+					bIsValid = false;
 					return;
 				}
 			}
@@ -322,14 +323,19 @@ public:
 				DataAccess.GetDataFast(CachedX1, CachedY1, CachedX2, CachedY2, CachedData);
 			}
 
+			// Drop a visual log to indicate the area covered by this cache region extension :
+			VisualizeLandscapeRegion(CachedX1, CachedY1, CachedX2, CachedY2, FColor::Red, TEXT("Cache Data"));
+
 			if (bCacheOriginalData)
 			{
 				OriginalData = CachedData;
 			}
-			Valid = true;
+			bIsValid = true;
 		}
 		else
 		{
+			bool bCacheExtended = false;
+
 			// Extend the cache area if needed
 			if (X1 < CachedX1)
 			{
@@ -353,6 +359,8 @@ public:
 					CacheOriginalData(X1, CachedY1, CachedX1 - 1, CachedY2);
 				}
 				CachedX1 = X1;
+
+				bCacheExtended = true;
 			}
 
 			if (X2 > CachedX2)
@@ -376,6 +384,8 @@ public:
 					CacheOriginalData(CachedX2 + 1, CachedY1, X2, CachedY2);
 				}
 				CachedX2 = X2;
+
+				bCacheExtended = true;
 			}
 
 			if (Y1 < CachedY1)
@@ -399,6 +409,8 @@ public:
 					CacheOriginalData(CachedX1, Y1, CachedX2, CachedY1 - 1);
 				}
 				CachedY1 = Y1;
+
+				bCacheExtended = true;
 			}
 
 			if (Y2 > CachedY2)
@@ -422,6 +434,14 @@ public:
 					CacheOriginalData(CachedX1, CachedY2 + 1, CachedX2, Y2);
 				}
 				CachedY2 = Y2;
+
+				bCacheExtended = true;
+			}
+
+			if (bCacheExtended)
+			{
+				// Drop a visual log to indicate the area covered by this cache region extension :
+				VisualizeLandscapeRegion(CachedX1, CachedY1, CachedX2, CachedY2, FColor::Red, TEXT("Cache Data"));
 			}
 		}
 	}
@@ -502,19 +522,22 @@ public:
 
 	bool HasCachedData(int32 X1, int32 Y1, int32 X2, int32 Y2) const
 	{
-		return (Valid && X1 >= CachedX1 && Y1 >= CachedY1 && X2 <= CachedX2 && Y2 <= CachedY2);
+		return (bIsValid && X1 >= CachedX1 && Y1 >= CachedY1 && X2 <= CachedX2 && Y2 <= CachedY2);
 	}
 	
 	using FPrepareRegionForCachingFunction = TFunction<FIntRect(const FIntRect& NewCacheBounds)>;
 	bool GetDataAndCache(int32 X1, int32 Y1, int32 X2, int32 Y2, TArray<AccessorType>& OutData, FPrepareRegionForCachingFunction PrepareRegionForCaching)
 	{
+		// Drop a visual log to indicate the area requested by this data access :
+		VisualizeLandscapeRegion(X1, Y1, X2, Y2, FColor::Blue, TEXT("CacheDataRequest"));
+
 		if (!HasCachedData(X1, Y1, X2, Y2))
 		{
 			// The cache needs to be expanded, compute the new bounds : 
 			// The bounds we calculate here need to be what would be the result of calling CacheData with this region, meaning that they should include the previous bounds. This will let us pass the correct region of interest to PrepareRegionForCaching
-			FIntRect NewCacheBounds(Valid ? FMath::Min(X1, CachedX1) : X1, Valid ? FMath::Min(Y1, CachedY1) : Y1, Valid ? FMath::Max(X2, CachedX2) : X2, Valid ? FMath::Max(Y2, CachedY2) : Y2);
+			FIntRect NewCacheBounds(bIsValid ? FMath::Min(X1, CachedX1) : X1, bIsValid ? FMath::Min(Y1, CachedY1) : Y1, bIsValid ? FMath::Max(X2, CachedX2) : X2, bIsValid ? FMath::Max(Y2, CachedY2) : Y2);
 
-			// The caller might request a cache region that is actually larger than the data he wants to sample for this particular read (e.g. to avoid re-caching when doing expensive samples like layer-collapsing ones) : 
+			// The caller might request a cache region that is actually larger than the data they want to sample for this particular read (e.g. to avoid re-caching when doing expensive samples like layer-collapsing ones) : 
 			NewCacheBounds = PrepareRegionForCaching(NewCacheBounds);
 			check((NewCacheBounds.Min.X <= X1) && (NewCacheBounds.Min.Y <= Y1) && (NewCacheBounds.Max.X >= X2) && (NewCacheBounds.Max.Y >= Y2));
 
@@ -625,10 +648,21 @@ private:
 		}
 	}
 
+	void VisualizeLandscapeRegion(int32 InX1, int32 InY1, int32 InX2, int32 InY2, const FColor& InColor, const FString& InDescription)
+	{
+		check(LandscapeInfo != nullptr);
+		const FTransform& LandscapeTransform = LandscapeInfo->LandscapeActor->GetTransform();
+		FVector Min = LandscapeTransform.TransformPosition(FVector(InX1, InY1, 0));
+		FVector Max = LandscapeTransform.TransformPosition(FVector(InX2, InY2, 0));
+		UE_VLOG_BOX(LandscapeInfo->LandscapeActor.Get(), LogLandscapeTools, Log, FBox(Min, Max), InColor, TEXT("%s"), *InDescription);
+	}
+
 	TMap<FIntPoint, AccessorType> CachedData;
 	TMap<FIntPoint, AccessorType> OriginalData;
+	// Keep the landscape info for visual logging purposes :
+	TWeakObjectPtr<ULandscapeInfo> LandscapeInfo;
 
-	bool Valid = false;
+	bool bIsValid = false;
 
 	int32 CachedX1 = INDEX_NONE;
 	int32 CachedY1 = INDEX_NONE;
@@ -1345,9 +1379,9 @@ public:
 	}
 
 protected:
-	FEdModeLandscape* EdMode;
+	FEdModeLandscape* EdMode = nullptr;
 	const FLandscapeToolTarget& Target;
-	ULandscapeInfo* LandscapeInfo;
+	ULandscapeInfo* LandscapeInfo = nullptr;
 };
 
 
@@ -1369,7 +1403,10 @@ public:
 	{
 	}
 
-	virtual bool ShouldUpdateEditingLayer() const { return EdMode->CanHaveLandscapeLayersContent(); }
+	virtual bool ShouldUpdateEditingLayer() const 
+	{ 
+		return AffectsEditLayers() && EdMode->CanHaveLandscapeLayersContent();
+	}
 
 	virtual ELandscapeLayerUpdateMode GetBeginToolContentUpdateFlag() const
 	{
@@ -1488,7 +1525,7 @@ public:
 			if (EdMode->LandscapeMouseTrace(ViewportClient, x, y, HitLocation))
 			{
 				// If we are moving the mouse to adjust the brush size, don't move the brush
-				if (EdMode->CurrentBrush && !EdMode->IsAdjustingBrush(Viewport))
+				if (EdMode->CurrentBrush && !EdMode->IsAdjustingBrush(ViewportClient))
 				{
 					// Inform the brush of the current location, to update the cursor
 					EdMode->CurrentBrush->MouseMove(HitLocation.X, HitLocation.Y);

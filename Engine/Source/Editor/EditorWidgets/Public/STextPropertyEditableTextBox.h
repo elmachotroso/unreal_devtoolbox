@@ -2,26 +2,50 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
+#include "Delegates/Delegate.h"
 #include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Internationalization/TextNamespaceFwd.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Misc/TextFilter.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/SlateWidgetStyleAsset.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
 #include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Views/SListView.h"
-#include "Misc/TextFilter.h"
-
-class SEditableTextBox;
-class SMultiLineEditableTextBox;
 
 class SComboButton;
+class SEditableTextBox;
+class SMultiLineEditableTextBox;
 class SSearchBox;
+class SWidget;
+class UObject;
+class UPackage;
+struct FFocusEvent;
+struct FGeometry;
+struct FSlateBrush;
 
 /** Interface to allow STextPropertyEditableTextBox to be used to edit both properties and Blueprint pins */
 class IEditableTextProperty
@@ -67,9 +91,6 @@ public:
 	/** Get the stable text ID for the given index (check against GetNumTexts) */
 	virtual void GetStableTextId(const int32 InIndex, const ETextPropertyEditAction InEditAction, const FString& InTextSource, const FString& InProposedNamespace, const FString& InProposedKey, FString& OutStableNamespace, FString& OutStableKey) const = 0;
 #endif // USE_STABLE_LOCALIZATION_KEYS
-
-	/** Request a refresh of the property UI (eg, due to a size change) */
-	virtual void RequestRefresh() = 0;
 
 protected:
 #if USE_STABLE_LOCALIZATION_KEYS
@@ -184,7 +205,6 @@ public:
 	void Construct(const FArguments& Arguments, const TSharedRef<IEditableTextProperty>& InEditableTextProperty);
 	virtual bool SupportsKeyboardFocus() const override;
 	virtual FReply OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent) override;
-	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 private:
 	void GetDesiredWidth(float& OutMinDesiredWidth, float& OutMaxDesiredWidth);
@@ -233,9 +253,7 @@ private:
 
 	TSharedPtr<SEditableTextBox> KeyEditableTextBox;
 
-	TOptional<float> PreviousHeight;
-
-	bool bIsMultiLine;
+	bool bIsMultiLine = false;
 
 	static FText MultipleValuesText;
 };

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "DatasmithCloth.h"
 #include "MeshDescription.h"
 
 
@@ -10,12 +11,23 @@ struct FDatasmithPayload
 	TArray<class UDatasmithAdditionalData*> AdditionalData;
 };
 
+
 struct FDatasmithMeshElementPayload : public FDatasmithPayload
 {
 	TArray<FMeshDescription> LodMeshes;
 	FMeshDescription CollisionMesh;
-	TArray<FVector> CollisionPointCloud; // compatibility, favor the CollisionMesh member
+	TArray<FVector3f> CollisionPointCloud; // compatibility, favor the CollisionMesh member
 };
+
+
+/**
+ * Describes a Cloth element payload, which is the actual data to be imported.
+ */
+struct FDatasmithClothElementPayload : public FDatasmithPayload
+{
+	FDatasmithCloth Cloth;
+};
+
 
 struct FDatasmithLevelSequencePayload : public FDatasmithPayload
 {

@@ -30,27 +30,27 @@ public:
 
 	// --- construct video encoder input based on expected input frame format
 
-	bool SetupForDummy(uint32 InWidth, uint32 InHeight);
+	bool SetupForDummy();
 	bool SetupForYUV420P(uint32 InWidth, uint32 InHeight);
 
 	// set up for an encoder that encodes a D3D11 texture (nvenc)
-	bool SetupForD3D11(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight);
+	bool SetupForD3D11(void* InApplicationD3DDevice);
 	
 	// set up for an encoder that encodes a D3D11 texture within a feature level 11.1 D3D11 device (amf)
-	bool SetupForD3D11Shared(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight);
+	bool SetupForD3D11Shared(void* InApplicationD3DDevice);
 	
 	// set up for an encoder that encodes a D3D12 texture (amf)
-	bool SetupForD3D12(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight);
+	bool SetupForD3D12(void* InApplicationD3DDevice);
 
 	// set up for an encoder that encodes a D3D12 texture in the context of a D3D11 device (i.e. nvenc)
-	bool SetupForD3D12Shared(void* InApplicationD3DDevice, uint32 InWidth, uint32 InHeight);
+	bool SetupForD3D12Shared(void* InApplicationD3DDevice);
 
 	// set up an encoder that encodes a CUArray in a CUDA context
-	bool SetupForCUDA(void* InApplicationContext, uint32 InWidth, uint32 InHeight);
+	bool SetupForCUDA(void* InApplicationContext);
 	
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
 	// set up an encoder that encodes a VkImage in the context of a VkDevice
-	bool SetupForVulkan(VkInstance InApplicationVulkanInstance, VkPhysicalDevice InApplicationVulkanPhysicalDevice, VkDevice InApplicationVulkanDevice, uint32 InWidth, uint32 InHeight);
+	bool SetupForVulkan(VkInstance InApplicationVulkanInstance, VkPhysicalDevice InApplicationVulkanPhysicalDevice, VkDevice InApplicationVulkanDevice);
 #endif
 
 	// --- available encoders
@@ -68,7 +68,7 @@ public:
 	// --- encoder input frames - managed by this object
 
 	// obtain a video frame that can be used as a buffer for input to a video encoder
-	FVideoEncoderInputFrame* ObtainInputFrame() override;
+	TSharedPtr<FVideoEncoderInputFrame> ObtainInputFrame() override;
 
 	// release (free) an input frame and make it available for future use
 	void ReleaseInputFrame(FVideoEncoderInputFrame* InFrame) override;
@@ -136,8 +136,8 @@ private:
 #endif
 
 	mutable FCriticalSection				ProtectFrames;
-	TQueue<FVideoEncoderInputFrameImpl*>	AvailableFrames;
-	TArray<FVideoEncoderInputFrameImpl*>	ActiveFrames;
+	TQueue<TSharedPtr<FVideoEncoderInputFrameImpl>>	AvailableFrames;
+	TArray<TSharedPtr<FVideoEncoderInputFrameImpl>>	ActiveFrames;
 	using UserManagedFrame = TPair<FVideoEncoderInputFrameImpl*, OnFrameReleasedCallback>;
 	TArray<UserManagedFrame>				UserManagedFrames;
 };

@@ -5,6 +5,7 @@
 #include "NiagaraDataInterfaceRW.h"
 #include "ClearQuad.h"
 #include "NiagaraComponent.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "Niagara/Private/NiagaraStats.h"
 
 #include "NiagaraDataInterfaceGrid2DCollection.generated.h"
@@ -13,31 +14,7 @@ class FNiagaraSystemInstance;
 class UTextureRenderTarget;
 class UTextureRenderTarget2DArray;
 
-class FGrid2DBuffer
-{
-public:
-	FGrid2DBuffer(int NumX, int NumY, int NumAttributes, EPixelFormat PixelFormat)
-	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("FGrid2DBuffer"));
-		GridTexture = RHICreateTexture2DArray(NumX, NumY, NumAttributes, PixelFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
-		FRHITextureSRVCreateInfo SRVCreateInfo;
-		GridSRV = RHICreateShaderResourceView(GridTexture, SRVCreateInfo);
-		GridUAV = RHICreateUnorderedAccessView(GridTexture);
-
-		INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, RHIComputeMemorySize(GridTexture));
-	}
-	~FGrid2DBuffer()
-	{
-		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, RHIComputeMemorySize(GridTexture));
-		GridTexture.SafeRelease();
-		GridSRV.SafeRelease();
-		GridUAV.SafeRelease();
-	}
-
-	FTexture2DArrayRHIRef GridTexture;
-	FShaderResourceViewRHIRef GridSRV;
-	FUnorderedAccessViewRHIRef GridUAV;
-};
+using FGrid2DBuffer = FNiagaraPooledRWTexture;
 
 struct FGrid2DCollectionRWInstanceData_GameThread
 {
@@ -79,7 +56,7 @@ struct FGrid2DCollectionRWInstanceData_RenderThread
 	FVector2D WorldBBoxSize = FVector2D::ZeroVector;
 	EPixelFormat PixelFormat = EPixelFormat::PF_R32_FLOAT;
 
-	TArray<TUniquePtr<FGrid2DBuffer>> Buffers;
+	TArray<TUniquePtr<FGrid2DBuffer>, TInlineAllocator<2>> Buffers;
 	FGrid2DBuffer* CurrentData = nullptr;
 	FGrid2DBuffer* DestinationData = nullptr;
 
@@ -99,19 +76,18 @@ struct FGrid2DCollectionRWInstanceData_RenderThread
 	// overrides the render thread data, which in this case is for a grid reader
 	FNiagaraDataInterfaceProxy* OtherProxy = nullptr;
 
-	void BeginSimulate(FRHICommandList& RHICmdList);
-	void EndSimulate(FRHICommandList& RHICmdList);
+	void BeginSimulate(FRDGBuilder& GraphBuilder);
+	void EndSimulate();
 };
 
 struct FNiagaraDataInterfaceProxyGrid2DCollectionProxy : public FNiagaraDataInterfaceProxyRW
 {
 	FNiagaraDataInterfaceProxyGrid2DCollectionProxy() {}
 	
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-	virtual void PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
-
-	virtual void ResetData(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
+	virtual void ResetData(const FNDIGpuComputeResetContext& Context) override;
+	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override;
+	virtual void PostStage(const FNDIGpuComputePostStageContext& Context) override;
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
 
 	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override;
 
@@ -125,24 +101,7 @@ struct FNiagaraDataInterfaceParametersCS_Grid2DCollection : public FNiagaraDataI
 {
 	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Grid2DCollection, NonVirtual);
 
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap);
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
-	void Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
-
-private:
-	LAYOUT_FIELD(FShaderParameter, NumAttributesParam);
-	LAYOUT_FIELD(FShaderParameter, UnitToUVParam);
-	LAYOUT_FIELD(FShaderParameter, NumCellsParam);
-	LAYOUT_FIELD(FShaderParameter, CellSizeParam);
-	LAYOUT_FIELD(FShaderParameter, WorldBBoxSizeParam);
-
-	LAYOUT_FIELD(FShaderResourceParameter, GridParam);
-	LAYOUT_FIELD(FRWShaderParameter, OutputGridParam);
-	LAYOUT_FIELD(FShaderParameter, AttributeIndicesParam);
-
-	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
-	LAYOUT_FIELD(TMemoryImageArray<FName>, AttributeNames);
+	LAYOUT_FIELD(TMemoryImageArray<FMemoryImageName>, AttributeNames);
 	LAYOUT_FIELD(TMemoryImageArray<uint32>, AttributeChannelCount);
 };
 
@@ -152,8 +111,6 @@ class NIAGARA_API UNiagaraDataInterfaceGrid2DCollection : public UNiagaraDataInt
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	/** Reference to a user parameter if we're reading one. */
 	UPROPERTY(EditAnywhere, Category = "Grid")
 	FNiagaraUserParameterBinding RenderTargetUserParameter;
@@ -197,6 +154,11 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 #endif
+	virtual bool UseLegacyShaderBindings() const  override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
+	virtual FNiagaraDataInterfaceParametersCS* CreateShaderStorage(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const FShaderParameterMap& ParameterMap) const override;
+	virtual const FTypeLayoutDesc* GetShaderStorageType() const override;
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override {}
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -238,11 +200,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	virtual void GetTextureSize(const UNiagaraComponent *Component, int &SizeX, int &SizeY);
 
-	void GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
-	void GetCellSize(FVectorVMExternalFunctionContext& Context);
-	void GetNumCells(FVectorVMExternalFunctionContext& Context);
-	void SetNumCells(FVectorVMExternalFunctionContext& Context);
-	void GetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels);
+	void VMGetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
+	void VMGetCellSize(FVectorVMExternalFunctionContext& Context);
+	void VMGetNumCells(FVectorVMExternalFunctionContext& Context);
+	void VMSetNumCells(FVectorVMExternalFunctionContext& Context);
+	void VMGetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels);
 
 	static const FString GridName;
 	static const FString OutputGridName;

@@ -9,6 +9,8 @@
 #include "MetasoundDataTypeRegistrationMacro.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundFrontendGraph.h"
+#include "MetasoundFrontendNodeRegistryPrivate.h"
+#include "MetasoundFrontendNodeTemplateRegistry.h"
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundFrontendRegistryTransaction.h"
 #include "MetasoundJsonBackend.h"
@@ -17,9 +19,12 @@
 #include "MetasoundRouter.h"
 #include "MetasoundVertex.h"
 #include "Modules/ModuleManager.h"
+#include "NodeTemplates/MetasoundFrontendNodeTemplateReroute.h"
 #include "StructDeserializer.h"
 #include "StructSerializer.h"
 #include "Serialization/MemoryReader.h"
+#include "Templates/UniquePtr.h"
+
 
 namespace Metasound
 {
@@ -31,7 +36,9 @@ namespace Metasound
 
 			ClassDescription.Metadata = FMetasoundFrontendClassMetadata::GenerateClassMetadata(InNodeMetadata, ClassType);
 			ClassDescription.Interface = FMetasoundFrontendClassInterface::GenerateClassInterface(InNodeMetadata.DefaultInterface);
+#if WITH_EDITORONLY_DATA
 			ClassDescription.Style = FMetasoundFrontendClassStyle::GenerateClassStyle(InNodeMetadata.DisplayStyle);
+#endif // WITH_EDITORONLY_DATA
 
 			return ClassDescription;
 		}
@@ -86,11 +93,23 @@ class FMetasoundFrontendModule : public IModuleInterface
 {
 	virtual void StartupModule() override
 	{
+		using namespace Metasound::Frontend;
+
+		TUniquePtr<INodeTemplate> RerouteTemplate = MakeUnique<FRerouteNodeTemplate>();
+		RegisterNodeTemplate(MoveTemp(RerouteTemplate));
+
 		FMetasoundFrontendRegistryContainer* Registry = FMetasoundFrontendRegistryContainer::Get();
 		if (ensure(nullptr != Registry))
 		{
 			Registry->RegisterPendingNodes();
 		}
+	}
+
+	virtual void ShutdownModule() override
+	{
+		using namespace Metasound::Frontend;
+
+		UnregisterNodeTemplate(FRerouteNodeTemplate::Version);
 	}
 };
 

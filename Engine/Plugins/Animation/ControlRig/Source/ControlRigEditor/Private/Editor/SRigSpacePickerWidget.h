@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "ControlRig.h"
 #include "Rigs/RigHierarchy.h"
-#include "SRigHierarchy.h"
+#include "Editor/SRigHierarchy.h"
 #include "Widgets/Layout/SBox.h"
 #include "Rigs/RigSpaceHierarchy.h"
 #include "IStructureDetailsView.h"
@@ -37,7 +37,7 @@ public:
 		, _AllowAdd(false)
 		, _ShowBakeButton(false)
 		, _Title()
-		, _BackgroundBrush(FEditorStyle::GetBrush("Menu.Background"))
+		, _BackgroundBrush(FAppStyle::GetBrush("Menu.Background"))
 		{}
 		SLATE_ARGUMENT(URigHierarchy*, Hierarchy)
 		SLATE_ARGUMENT(TArray<FRigElementKey>, Controls)
@@ -71,8 +71,16 @@ public:
 	virtual bool SupportsKeyboardFocus() const override;
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
-	URigHierarchy* GetHierarchy() const { return Hierarchy; }
-	const URigHierarchy* GetHierarchyConst() const { return Hierarchy; }
+	URigHierarchy* GetHierarchy() const
+	{
+		if (Hierarchy.IsValid())
+		{
+			return Hierarchy.Get();
+		}
+		return nullptr;
+	}
+	const URigHierarchy* GetHierarchyConst() const { return GetHierarchy(); }
+	
 	const TArray<FRigElementKey>& GetControls() const { return ControlKeys; }
 	const TArray<FRigElementKey>& GetActiveSpaces() const;
 	TArray<FRigElementKey> GetDefaultSpaces() const;
@@ -135,7 +143,7 @@ private:
 	FRigSpacePickerActiveSpaceChanged ActiveSpaceChangedEvent;
 	FRigSpacePickerSpaceListChanged SpaceListChangedEvent;
 
-	URigHierarchy* Hierarchy;
+	TWeakObjectPtr<URigHierarchy> Hierarchy;
 	TArray<FRigElementKey> ControlKeys;
 	TArray<FRigElementKey> CurrentSpaceKeys;
 	TArray<FRigElementKey> ActiveSpaceKeys;

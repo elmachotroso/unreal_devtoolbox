@@ -7,10 +7,35 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/UObjectArray.h"
+#include "CoreTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/FastReferenceCollectorOptions.h"
+#include "UObject/ScriptDelegates.h"
+#include "UObject/UObjectArray.h"
 
 #include <type_traits>
+
+class FArchive;
+class UObject;
+template <typename T> struct TIsPODType;
+template <typename T> struct TIsWeakPointerType;
+template <typename T> struct TIsZeroConstructType;
+
+/** Invalid FWeakObjectPtr ObjectIndex values must be 0 to support zeroed initialization (this used to be INDEX_NONE, leading to subtle bugs). */
+#ifndef UE_WEAKOBJECTPTR_ZEROINIT_FIX
+	#define UE_WEAKOBJECTPTR_ZEROINIT_FIX 1
+#endif
+
+namespace UE::Core::Private
+{
+	/** Specifies the ObjectIndex used for invalid object pointers. */
+#if UE_WEAKOBJECTPTR_ZEROINIT_FIX
+	static constexpr int32 InvalidWeakObjectIndex = 0;
+#else
+	static constexpr int32 InvalidWeakObjectIndex = INDEX_NONE;
+#endif
+}
 
 /**
  * FWeakObjectPtr is a weak pointer to a UObject. 
@@ -24,10 +49,16 @@ struct FWeakObjectPtr
 {
 public:
 
-	template <typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, EFastReferenceCollectorOptions Options>
-	friend class TFastReferenceCollector;
 	friend struct FFieldPath;
 
+#if UE_WEAKOBJECTPTR_ZEROINIT_FIX
+	FWeakObjectPtr() = default;
+
+	FORCEINLINE FWeakObjectPtr(TYPE_OF_NULLPTR)
+		: FWeakObjectPtr()
+	{
+	}
+#else
 	/** Null constructor **/
 	FORCEINLINE FWeakObjectPtr()
 	{
@@ -42,6 +73,7 @@ public:
 	{
 		(*this) = nullptr;
 	}
+#endif
 
 	/**  
 	 * Construct from an object pointer or something that can be implicitly converted to an object pointer
@@ -67,7 +99,9 @@ public:
 	 */
 	FORCEINLINE void Reset()
 	{
-		ObjectIndex = INDEX_NONE;
+		using namespace UE::Core::Private;
+
+		ObjectIndex = InvalidWeakObjectIndex;
 		ObjectSerialNumber = 0;
 	}
 
@@ -160,7 +194,13 @@ public:
 	 */
 	FORCEINLINE bool IsExplicitlyNull() const
 	{
-		return ObjectIndex == INDEX_NONE;
+		using namespace UE::Core::Private;
+
+#if UE_WEAKOBJECTPTR_ZEROINIT_FIX
+		return ObjectIndex == InvalidWeakObjectIndex && ObjectSerialNumber == 0;
+#else
+		return ObjectIndex == InvalidWeakObjectIndex;
+#endif
 	}
 
 	/** Hash function. */
@@ -178,8 +218,14 @@ public:
 	COREUOBJECT_API void Serialize(FArchive& Ar);
 
 protected:
-
+	UE_DEPRECATED(5.1, "GetObjectIndex is now deprecated, and will be removed.")
 	FORCEINLINE int32 GetObjectIndex() const
+	{
+		return ObjectIndex;
+	}
+
+private:
+	FORCEINLINE int32 GetObjectIndex_Private() const
 	{
 		return ObjectIndex;
 	}
@@ -209,11 +255,19 @@ private:
 
 	FORCEINLINE FUObjectItem* Internal_GetObjectItem() const
 	{
+		using namespace UE::Core::Private;
+
 		if (ObjectSerialNumber == 0)
 		{
+#if UE_WEAKOBJECTPTR_ZEROINIT_FIX
+			checkSlow(ObjectIndex == InvalidWeakObjectIndex); // otherwise this is a corrupted weak pointer
+#else
 			checkSlow(ObjectIndex == 0 || ObjectIndex == -1); // otherwise this is a corrupted weak pointer
+#endif
+
 			return nullptr;
 		}
+
 		if (ObjectIndex < 0)
 		{
 			return nullptr;
@@ -251,8 +305,13 @@ private:
 		return ((ObjectItem != nullptr) && GUObjectArray.IsValid(ObjectItem, bEvenIfPendingKill)) ? (UObject*)ObjectItem->Object : nullptr;
 	}
 
+#if UE_WEAKOBJECTPTR_ZEROINIT_FIX
+	int32		ObjectIndex = UE::Core::Private::InvalidWeakObjectIndex;
+	int32		ObjectSerialNumber = 0;
+#else
 	int32		ObjectIndex;
 	int32		ObjectSerialNumber;
+#endif
 };
 
 template<> struct TIsPODType<FWeakObjectPtr> { enum { Value = true }; };

@@ -260,13 +260,11 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FRayIntersectionBookmark>, BookmarkBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
-		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ColorOutput)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ReflectionDenoiserData)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
-		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRaytracingLightDataPacked, LightDataPacked)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, Forward)
 	END_SHADER_PARAMETER_STRUCT()
@@ -470,8 +468,8 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	if (bSpatialResolve && (ResolutionFraction != 1.0f || CVarRayTracingReflectionsHorizontalResolutionScale.GetValueOnAnyThread() != 1.0))
 	{
 		float ResolutionFractionX = FMath::Clamp(CVarRayTracingReflectionsHorizontalResolutionScale.GetValueOnAnyThread(), 0.25f, 4.0f);
-		FVector2D ResolutionFloat = FMath::Max(FVector2D(4.0f), FVector2D(RayTracingResolution) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
-		FVector2D BufferSizeFloat = FMath::Max(FVector2D(4.0f), FVector2D(RayTracingBufferSize) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
+		FVector2D ResolutionFloat = FVector2D::Max(FVector2D(4.0f), FVector2D(RayTracingResolution) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
+		FVector2D BufferSizeFloat = FVector2D::Max(FVector2D(4.0f), FVector2D(RayTracingBufferSize) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
 
 		RayTracingResolution.X = (int32)FMath::CeilToFloat(ResolutionFloat.X);
 		RayTracingResolution.Y = (int32)FMath::CeilToFloat(ResolutionFloat.Y);
@@ -530,12 +528,10 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	CommonParameters.DenoisingOutputFormat               = bSpatialResolve ? 1 : 0;
 
-	CommonParameters.TLAS                    = View.GetRayTracingSceneViewChecked();
+	CommonParameters.TLAS                    = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	CommonParameters.SceneTextures           = SceneTextures;
 	CommonParameters.ViewUniformBuffer       = View.ViewUniformBuffer;
-	CommonParameters.LightDataPacked         = View.RayTracingLightData.UniformBuffer;
-	CommonParameters.LightDataBuffer         = View.RayTracingLightData.LightBufferSRV;
-	CommonParameters.SSProfilesTexture       = View.RayTracingSubSurfaceProfileTexture;
+	CommonParameters.LightDataPacked         = View.RayTracingLightDataUniformBuffer;
 	CommonParameters.ReflectionStruct        = CreateReflectionUniformBuffer(View, EUniformBufferUsage::UniformBuffer_SingleFrame);
 	CommonParameters.ReflectionCapture       = View.ReflectionCaptureUniformBuffer;
 	CommonParameters.Forward                 = View.ForwardLightingResources.ForwardLightUniformBuffer;

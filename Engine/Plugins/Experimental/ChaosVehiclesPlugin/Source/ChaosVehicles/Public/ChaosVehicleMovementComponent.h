@@ -16,6 +16,7 @@
 #include "SnapshotData.h"
 #include "DeferredForces.h"
 #include "ChaosVehicleManagerAsyncCallback.h"
+#include "CollisionQueryParams.h"
 
 #include "ChaosVehicleMovementComponent.generated.h"
 
@@ -29,7 +30,7 @@ struct FChaosVehicleAsyncInput;
 struct FChaosVehicleManagerAsyncOutput;
 
 
-struct FControlInputs
+struct CHAOSVEHICLES_API FControlInputs
 {
 	FControlInputs()
 		: SteeringInput(0.f)
@@ -78,7 +79,7 @@ struct FControlInputs
 };
 
 
-struct FVehicleDebugParams
+struct CHAOSVEHICLES_API FVehicleDebugParams
 {
 	bool ShowCOM = false;
 	bool ShowModelOrigin = false;
@@ -163,12 +164,19 @@ struct CHAOSVEHICLES_API FVehicleReplicatedState
 
 };
 
-struct FChaosVehicleDefaultAsyncInput : public FChaosVehicleAsyncInput
+struct CHAOSVEHICLES_API FWheelTraceParams
+{
+	ESweepType SweepType;
+	ESweepShape SweepShape;
+};
+
+struct CHAOSVEHICLES_API FChaosVehicleDefaultAsyncInput : public FChaosVehicleAsyncInput
 {
 	float GravityZ;
 	FControlInputs ControlInputs;
 	mutable FCollisionQueryParams TraceParams;
 	mutable FCollisionResponseContainer TraceCollisionResponse;
+	mutable TArray<FWheelTraceParams> WheelTraceParams;
 
 	FChaosVehicleDefaultAsyncInput();
 
@@ -180,7 +188,7 @@ struct FChaosVehicleDefaultAsyncInput : public FChaosVehicleAsyncInput
 
 
 USTRUCT()
-struct FVehicleTorqueControlConfig
+struct CHAOSVEHICLES_API FVehicleTorqueControlConfig
 {
 public:
 	GENERATED_USTRUCT_BODY()
@@ -255,7 +263,7 @@ private:
 };
 
 USTRUCT()
-struct FVehicleTargetRotationControlConfig
+struct CHAOSVEHICLES_API FVehicleTargetRotationControlConfig
 {
 public:
 	GENERATED_USTRUCT_BODY()
@@ -352,7 +360,7 @@ private:
 };
 
 USTRUCT()
-struct FVehicleStabilizeControlConfig
+struct CHAOSVEHICLES_API FVehicleStabilizeControlConfig
 {
 public:
 	GENERATED_USTRUCT_BODY()
@@ -399,7 +407,7 @@ private:
 };
 
 /** Commonly used state - evaluated once used wherever required */
-struct FVehicleState
+struct CHAOSVEHICLES_API FVehicleState
 {
 	FVehicleState()
 		: VehicleWorldTransform(FTransform::Identity)
@@ -648,7 +656,7 @@ private:
 };
 
 USTRUCT()
-struct FVehicleThrustConfig
+struct CHAOSVEHICLES_API FVehicleThrustConfig
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -715,7 +723,7 @@ private:
 
 };
 
-class UChaosVehicleSimulation
+class CHAOSVEHICLES_API UChaosVehicleSimulation
 {
 public:
 	virtual ~UChaosVehicleSimulation()
@@ -1340,9 +1348,8 @@ protected:
 
 	TUniquePtr<UChaosVehicleSimulation> VehicleSimulationPT;	/* simulation code running on the physics thread async callback */
 
-private:
 	UPROPERTY(transient, Replicated)
-	AController* OverrideController;
+	TObjectPtr<AController> OverrideController;
 
 	const Chaos::FSimpleAerodynamicsConfig& GetAerodynamicsConfig()
 	{

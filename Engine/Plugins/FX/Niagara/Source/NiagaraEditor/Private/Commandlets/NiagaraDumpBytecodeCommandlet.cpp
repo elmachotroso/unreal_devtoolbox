@@ -2,9 +2,9 @@
 
 #include "Commandlets/NiagaraDumpBytecodeCommandlet.h"
 
-#include "ARFilter.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CollectionManagerModule.h"
 #include "CollectionManagerTypes.h"
 #include "HAL/FileManager.h"
@@ -14,6 +14,8 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraSystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDumpBytecodeCommandlet)
 
 DEFINE_LOG_CATEGORY_STATIC(LogNiagaraDumpBytecodeCommandlet, Log, All);
 
@@ -88,11 +90,11 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 	Filter.PackagePaths = PackagePaths;
 	Filter.bRecursivePaths = true;
 
-	Filter.ClassNames.Add(UNiagaraSystem::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UNiagaraSystem::StaticClass()->GetClassPathName());
 	if (!FilterCollection.IsEmpty())
 	{
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-		CollectionManagerModule.Get().GetObjectsInCollection(FName(*FilterCollection), ECollectionShareType::CST_All, Filter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren);
+		CollectionManagerModule.Get().GetObjectsInCollection(FName(*FilterCollection), ECollectionShareType::CST_All, Filter.SoftObjectPaths, ECollectionRecursionFlags::SelfAndChildren);
 	}
 
 	TArray<FAssetData> AssetList;
@@ -105,11 +107,10 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 	//  Iterate over all scripts
 	const FString DevelopersFolder = FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir().LeftChop(1));
 	FString LastPackageName = TEXT("");
-	int32 PackageSwitches = 0;
 	UPackage* CurrentPackage = nullptr;
 	for (const FAssetData& AssetIt : AssetList)
 	{
-		const FString SystemName = AssetIt.ObjectPath.ToString();
+		const FString SystemName = AssetIt.GetObjectPathString();
 		const FString PackageName = AssetIt.PackageName.ToString();
 
 		if (PackageName.StartsWith(DevelopersFolder))
@@ -164,9 +165,12 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 			UE_LOG(LogNiagaraDumpBytecodeCommandlet, Warning, TEXT("Loaded system was Invalid! %s"), *SystemName);
 		}
 
-		IFileManager::Get().MakeDirectory(*(AuditOutputFolder / ShorterSystemName));
-		DumpByteCode(NiagaraSystem->GetSystemSpawnScript(), ShorterSystemName / TEXT("SystemSpawnScript.bin"));
-		DumpByteCode(NiagaraSystem->GetSystemUpdateScript(), ShorterSystemName / TEXT("SystemUpdateScript.bin"));
+		const FString SystemPathName = NiagaraSystem->GetPathName();
+		const FString HashedPathName = FString::Printf(TEXT("%08x"), GetTypeHash(SystemPathName));
+
+		IFileManager::Get().MakeDirectory(*(AuditOutputFolder / HashedPathName));
+		DumpByteCode(NiagaraSystem->GetSystemSpawnScript(), SystemPathName, HashedPathName, TEXT("SystemSpawnScript.txt"));
+		DumpByteCode(NiagaraSystem->GetSystemUpdateScript(), SystemPathName, HashedPathName, TEXT("SystemUpdateScript.txt"));
 		
 		for (const auto& EmitterHandle : NiagaraSystem->GetEmitterHandles())
 		{
@@ -175,18 +179,21 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 				continue;
 			}
 
-			if (UNiagaraEmitter* Emitter = EmitterHandle.GetInstance())
+			if (FVersionedNiagaraEmitterData* Emitter = EmitterHandle.GetEmitterData())
 			{
-				const FString EmitterName = EmitterHandle.GetUniqueInstanceName();
-
-				TArray<UNiagaraScript*> EmitterScripts;
-				Emitter->GetScripts(EmitterScripts);
-
-				IFileManager::Get().MakeDirectory(*(ShorterSystemName / EmitterName));
-
-				for (const auto* EmitterScript : EmitterScripts)
+				if (Emitter->SimTarget == ENiagaraSimTarget::CPUSim)
 				{
-					DumpByteCode(EmitterScript, ShorterSystemName / EmitterName / UsageEnum->GetNameStringByValue((int64)EmitterScript->GetUsage()) + TEXT(".bin"));
+					const FString EmitterName = EmitterHandle.GetUniqueInstanceName();
+
+					TArray<UNiagaraScript*> EmitterScripts;
+					Emitter->GetScripts(EmitterScripts);
+
+					IFileManager::Get().MakeDirectory(*(HashedPathName / EmitterName));
+
+					for (const auto* EmitterScript : EmitterScripts)
+					{
+						DumpByteCode(EmitterScript, SystemPathName, HashedPathName, EmitterName / UsageEnum->GetNameStringByValue(static_cast<int64>(EmitterScript->GetUsage())) + TEXT(".txt"));
+					}
 				}
 			}
 		}
@@ -209,11 +216,12 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 		for (const auto& MetaData : ScriptMetaData)
 		{
 			OutputStream->Log(TEXT("\t<Script>"));
+			OutputStream->Logf(TEXT("\t\t<Hash>%s</Hash>"), *MetaData.SystemHash);
 			OutputStream->Logf(TEXT("\t\t<Name>%s</Name>"), *MetaData.FullName);
-			OutputStream->Logf(TEXT("\t<OpCount>%d</OpCount>"), MetaData.OpCount);
-			OutputStream->Logf(TEXT("\t<RegisterCount>%d</RegisterCount>"), MetaData.RegisterCount);
-			OutputStream->Logf(TEXT("\t<ConstantCount>%d</ConstantCount>"), MetaData.ConstantCount);
-			OutputStream->Logf(TEXT("\t<AttributeCount>%d</AttributeCount>"), MetaData.AttributeCount);
+			OutputStream->Logf(TEXT("\t\t<OpCount>%d</OpCount>"), MetaData.OpCount);
+			OutputStream->Logf(TEXT("\t\t<RegisterCount>%d</RegisterCount>"), MetaData.RegisterCount);
+			OutputStream->Logf(TEXT("\t\t<ConstantCount>%d</ConstantCount>"), MetaData.ConstantCount);
+			OutputStream->Logf(TEXT("\t\t<AttributeCount>%d</AttributeCount>"), MetaData.AttributeCount);
 			OutputStream->Log(TEXT("\t</Script>"));
 		}
 		OutputStream->Log(TEXT("</Scripts>"));
@@ -225,10 +233,11 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 		TUniquePtr<FArchive> FileArchive(IFileManager::Get().CreateDebugFileWriter(*MetaDataFileName));
 		TUniquePtr<FOutputDeviceArchiveWrapper> OutputStream(new FOutputDeviceArchiveWrapper(FileArchive.Get()));
 
-		OutputStream->Log(TEXT("Name, OpCount, RegisteredCount, ConstantCount, AttributeCount"));
+		OutputStream->Log(TEXT("Hash, Name, OpCount, RegisteredCount, ConstantCount, AttributeCount"));
 		for (const auto& MetaData : ScriptMetaData)
 		{
-			OutputStream->Logf(TEXT("%s, %d, %d, %d, %d"),
+			OutputStream->Logf(TEXT("%s, %s, %d, %d, %d, %d"),
+				*MetaData.SystemHash,
 				*MetaData.FullName,
 				MetaData.OpCount,
 				MetaData.RegisterCount,
@@ -245,7 +254,7 @@ void UNiagaraDumpByteCodeCommandlet::ProcessNiagaraScripts()
 	UE_LOG(LogNiagaraDumpBytecodeCommandlet, Log, TEXT("Took %5.3f seconds to process referenced Niagara systems..."), ProcessNiagaraSystemsTime);
 }
 
-void UNiagaraDumpByteCodeCommandlet::DumpByteCode(const UNiagaraScript* Script, const FString& FilePath)
+void UNiagaraDumpByteCodeCommandlet::DumpByteCode(const UNiagaraScript* Script, const FString& PathName, const FString& HashName, const FString& FilePath)
 {
 	if (!Script)
 	{
@@ -255,7 +264,8 @@ void UNiagaraDumpByteCodeCommandlet::DumpByteCode(const UNiagaraScript* Script, 
 	const auto& ExecData = Script->GetVMExecutableData();
 
 	FScriptMetaData& MetaData = ScriptMetaData.AddZeroed_GetRef();
-	MetaData.FullName = FilePath;
+	MetaData.SystemHash = HashName;
+	MetaData.FullName = PathName / FilePath;
 	MetaData.RegisterCount = ExecData.NumTempRegisters;
 	MetaData.OpCount = ExecData.LastOpCount;
 	MetaData.ConstantCount = ExecData.InternalParameters.GetTableSize() / 4;
@@ -266,11 +276,11 @@ void UNiagaraDumpByteCodeCommandlet::DumpByteCode(const UNiagaraScript* Script, 
 		MetaData.AttributeCount += Var.GetType().GetSize() / 4;
 	}
 
-	const static UEnum* VmOpEnum = StaticEnum<EVectorVMOp>();
+	//const static UEnum* VmOpEnum = StaticEnum<EVectorVMOp>();
 
 	if (Script)
 	{
-		const FString FullFilePath = AuditOutputFolder / FilePath;
+		const FString FullFilePath = AuditOutputFolder / HashName / FilePath;
 
 		TUniquePtr<FArchive> FileArchive(IFileManager::Get().CreateDebugFileWriter(*FullFilePath));
 		if (!FileArchive)
@@ -306,7 +316,8 @@ void UNiagaraDumpByteCodeCommandlet::DumpByteCode(const UNiagaraScript* Script, 
 					FString LinePrefix = CurrentLine.Left(OpStartIndex);
 					FString LineSuffix = CurrentLine.RightChop(OpEndIndex);
 
-					CurrentLine = LinePrefix + TEXT(":") + *VmOpEnum->GetNameStringByValue(OpIndexValue) + LineSuffix;
+					
+					CurrentLine = LinePrefix + TEXT(":") + VectorVM::GetOpName((EVectorVMOp)OpIndexValue) + LineSuffix;
 				}
 			}
 			OutputStream->Log(CurrentLine);

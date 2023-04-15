@@ -56,6 +56,10 @@ ENGINE_API void DrawCircle(const UWorld* InWorld, const FVector& Base, const FVe
 ENGINE_API void DrawDebugCapsule(const UWorld* InWorld, FVector const& Center, float HalfHeight, float Radius, const FQuat& Rotation, FColor const& Color, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0);
 /** Draw a debug camera shape.  FOV is full angle in degrees. */
 ENGINE_API void DrawDebugCamera(const UWorld* InWorld, FVector const& Location, FRotator const& Rotation, float FOVDeg, float Scale=1.f, FColor const& Color=FColor::White, bool bPersistentLines=false, float LifeTime=-1.f, uint8 DepthPriority = 0);
+/** Draw a centripetal catmull rom spline. Alpha values between 0 and 1 */
+ENGINE_API void DrawCentripetalCatmullRomSpline(const UWorld* InWorld, TConstArrayView<FVector> Points, FColor const& Color, float Alpha = 0.5f, int32 NumSamplesPerSegment = 8, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0.f);
+ENGINE_API void DrawCentripetalCatmullRomSpline(const UWorld* InWorld, TConstArrayView<FVector> Points, TConstArrayView<FColor> Colors, float Alpha = 0.5f, int32 NumSamplesPerSegment = 8, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0.f);
+
 ENGINE_API void FlushDebugStrings(const UWorld* InWorld);
 
 /** Draw a solid box.  Various API's provided for convenience, including ones that use FBox as well as ones that prefer (Center, Extent). **/
@@ -116,6 +120,19 @@ ENGINE_API void DrawDebugCanvasLine(UCanvas* Canvas, const FVector& Start, const
 ENGINE_API void DrawDebugCanvasCircle(UCanvas* Canvas, const FVector& Base, const FVector& X, const FVector& Y, FColor Color, float Radius, int32 NumSides);
 
 /**
+ * Draws a half circle using lines.
+ *
+ * @param	Canvas			The Canvas to draw on.
+ * @param	Base			Center of the circle.
+ * @param	X				X alignment axis to draw along.
+ * @param	Y				Y alignment axis to draw along.
+ * @param	Color			Color of the circle.
+ * @param	Radius			Radius of the circle.
+ * @param	NumSides		Numbers of sides that the circle has.
+ */
+ENGINE_API void DrawDebugCanvasHalfCircle(UCanvas* Canvas, const FVector& Base, const FVector& X, const FVector& Y, FColor Color, float Radius, int32 NumSides);
+
+/**
  * Draws a sphere using circles.
  *
  * @param	Canvas		The Canvas to draw on.
@@ -137,6 +154,27 @@ ENGINE_API void DrawDebugCanvasWireSphere(UCanvas* Canvas, const FVector& Base, 
  * @param	Color			Color of the cone.
  */
 ENGINE_API void DrawDebugCanvasWireCone(UCanvas* Canvas, const FTransform& Transform, float ConeRadius, float ConeAngle, int32 ConeSides, FColor Color);
+
+/**
+ * Draws a box using lines.
+ *
+ * @param	Canvas			The Canvas to draw on.
+ * @param	Transform		Transform to apply to the capsule.
+ * @param	Box				The box to be drawn.
+ * @param	Color			Color of the capsule.
+ */
+ENGINE_API void DrawDebugCanvasWireBox(UCanvas* Canvas, const FMatrix& Transform, const FBox& Box, FColor Color);
+
+/**
+ * Draws a capsule using lines.
+ *
+ * @param	Canvas			The Canvas to draw on.
+ * @param	Transform		Transform to apply to the capsule.
+ * @param	HalfLength		Distance from the center of the capsule to the tip (including the cap)
+ * @param	Radius			Radius of the capsule.
+ * @param	Color			Color of the capsule.
+ */
+ENGINE_API void DrawDebugCanvasCapsule(UCanvas* Canvas, const FMatrix& Transform, float HalfLength, float Radius, const FColor& LineColor);
 
 #elif !defined(SHIPPING_DRAW_DEBUG_ERROR) || !SHIPPING_DRAW_DEBUG_ERROR
 
@@ -163,6 +201,8 @@ FORCEINLINE void DrawDebugFrustum(const UWorld* InWorld, const FMatrix& FrustumT
 FORCEINLINE void DrawCircle(const UWorld* InWorld, const FVector& Base, const FVector& X, const FVector& Y, const FColor& Color, float Radius, int32 NumSides, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0) {}
 FORCEINLINE void DrawDebugCapsule(const UWorld* InWorld, FVector const& Center, float HalfHeight, float Radius, const FQuat& Rotation, FColor const& Color, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0) {}
 FORCEINLINE void DrawDebugCamera(const UWorld* InWorld, FVector const& Location, FRotator const& Rotation, float FOVDeg, float Scale = 1.f, FColor const& Color = FColor::White, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0) {}
+FORCEINLINE void DrawCentripetalCatmullRomSpline(const UWorld* InWorld, TConstArrayView<FVector> Points, FColor const& Color, float Alpha = 0.5f, int32 NumSamplesPerSegment = 8, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0.f) {}
+FORCEINLINE void DrawCentripetalCatmullRomSpline(const UWorld* InWorld, TConstArrayView<FVector> Points, TConstArrayView<FColor> Colors, float Alpha = 0.5f, int32 NumSamplesPerSegment = 8, bool bPersistentLines = false, float LifeTime = -1.f, uint8 DepthPriority = 0, float Thickness = 0.f) {}
 FORCEINLINE void FlushDebugStrings(const UWorld* InWorld) {}
 FORCEINLINE void DrawDebugSolidBox(const UWorld* InWorld, FBox const& Box, FColor const& Color, const FTransform& Transform = FTransform::Identity, bool bPersistent = false, float LifeTime = -1.f, uint8 DepthPriority = 0) {}
 FORCEINLINE void DrawDebugSolidBox(const UWorld* InWorld, FVector const& Center, FVector const& Extent, FColor const& Color, bool bPersistent = false, float LifeTime = -1.f, uint8 DepthPriority = 0) {}
@@ -178,8 +218,11 @@ FORCEINLINE void DrawDebugCanvas2DCircle(UCanvas* Canvas, const FVector2D& Cente
 FORCEINLINE void DrawDebugCanvas2DBox(UCanvas* Canvas, const FBox2D& Box, const FLinearColor& LineColor, const float& LineThickness = 1.f) {}
 FORCEINLINE void DrawDebugCanvasLine(UCanvas* Canvas, const FVector& Start, const FVector& End, const FLinearColor& LineColor) {}
 FORCEINLINE void DrawDebugCanvasCircle(UCanvas* Canvas, const FVector& Base, const FVector& X, const FVector& Y, FColor Color, float Radius, int32 NumSides) {}
+FORCEINLINE void DrawDebugCanvasHalfCircle(UCanvas* Canvas, const FVector& Base, const FVector& X, const FVector& Y, FColor Color, float Radius, int32 NumSides) {}
 FORCEINLINE void DrawDebugCanvasWireSphere(UCanvas* Canvas, const FVector& Base, FColor Color, float Radius, int32 NumSides) {}
 FORCEINLINE void DrawDebugCanvasWireCone(UCanvas* Canvas, const FTransform& Transform, float ConeRadius, float ConeAngle, int32 ConeSides, FColor Color) {}
+FORCEINLINE void DrawDebugCanvasWireBox(UCanvas* Canvas, const FMatrix& Transform, const FBox& Box, FColor Color) {}
+FORCEINLINE void DrawDebugCanvasCapsule(UCanvas* Canvas, const FMatrix& Transform, float HalfLength, float Radius, const FColor& LineColor) {}
 
 #else
 

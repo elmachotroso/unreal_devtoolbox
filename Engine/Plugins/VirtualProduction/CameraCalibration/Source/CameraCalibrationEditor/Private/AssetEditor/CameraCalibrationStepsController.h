@@ -4,10 +4,11 @@
 
 #include "CoreMinimal.h"
 
+#include "Containers/Ticker.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
+#include "LensFile.h"
 #include "UObject/StrongObjectPtr.h"
-#include "Containers/Ticker.h"
 
 
 class ACameraActor;
@@ -18,12 +19,11 @@ class UMediaPlayer;
 class UMediaTexture;
 class UCameraCalibrationStep;
 class UCompositingElementMaterialPass;
+class ULensComponent;
 class ULensDistortionModelHandlerBase;
 class ULensFile;
-class ULiveLinkCameraController;
 
 struct FGeometry;
-struct FLensFileEvalData;
 struct FPointerEvent;
 
 /** Enumeration of overlay passes used to indicate which overlay pass to interact with */
@@ -89,16 +89,16 @@ public:
 	void Pause();
 
 	/** Returns the latest data used when evaluating the lens */
-	const FLensFileEvalData* GetLensFileEvalData() const;
+	FLensFileEvaluationInputs GetLensFileEvaluationInputs() const;
 
 	/** Returns the LensFile that this tool is using */
 	ULensFile* GetLensFile() const;
 
+	/** Returns the first LensComponent attached to the CG camera whose LensFile matches the open asset */
+	ULensComponent* FindLensComponent() const;
+
 	/** Returns the distortion handler used to distort the CG being displayed in the simulcam viewport */
 	const ULensDistortionModelHandlerBase* GetDistortionHandler() const;
-
-	/** Finds the LiveLinkCameraController used in the given CameraActor that is also using the given LensFile */
-	ULiveLinkCameraController* FindLiveLinkCameraController() const;
 
 	/** Sets the media source url to be played. Returns true if the url is a valid media source */
 	bool SetMediaSourceUrl(const FString& InMediaSourceUrl);
@@ -108,9 +108,6 @@ public:
 
 	/** Gets the current media source url being played. Empty if None */
 	FString GetMediaSourceUrl() const;
-
-	/** Gets the lens eval data for this frame that was cached in Tick */
-	const FLensFileEvalData* GetLensFileEvalData();
 
 	/** Returns the calibration steps */
 	const TConstArrayView<TStrongObjectPtr<UCameraCalibrationStep>> GetCalibrationSteps() const;
@@ -147,10 +144,52 @@ public:
 	/** Called by the UI when the Simulcam Viewport receives keyboard input */
 	bool OnSimulcamViewportInputKey(const FKey& InKey, const EInputEvent& InEvent);
 
+	/** Called by the UI when the rewind button is clicked */
+	FReply OnRewindButtonClicked();
+
+	/** Called by the UI when the reverse button is clicked */
+	FReply OnReverseButtonClicked();
+
+	/** Called by the UI when the step back button is clicked */
+	FReply OnStepBackButtonClicked();
+
+	/** Called by the UI when the play button is clicked */
+	FReply OnPlayButtonClicked();
+
+	/** Called by the UI when the pause button is clicked */
+	FReply OnPauseButtonClicked();
+
+	/** Called by the UI when the step forward button is clicked */
+	FReply OnStepForwardButtonClicked();
+
+	/** Called by the UI when the forward button is clicked */
+	FReply OnForwardButtonClicked();
+
+	/** Returns true if the media player supports seeking */
+	bool DoesMediaSupportSeeking() const;
+
+	/** Returns true if the media player supports a reverse rate that is faster than its current rate */
+	bool DoesMediaSupportNextReverseRate() const;
+
+	/** Returns true if the media player supports a forward rate that is faster than its current rate */
+	bool DoesMediaSupportNextForwardRate() const;
+
+	/** Computes the reverse playback rate */
+	float GetFasterReverseRate() const;
+
+	/** Computes the fast forward playback rate */
+	float GetFasterForwardRate() const;
+
+	/** Toggle the setting that controls whether the media playback buttons will be visible in the UI */
+	void ToggleShowMediaPlaybackControls();
+
+	/** Returns true if the media playback buttons are visible in the UI  */
+	bool AreMediaPlaybackControlsVisible() const;
+
 private:
 
-	/** Finds the LiveLinkCameraController used in the given CameraActor that is also using the given LensFile */
-	ULiveLinkCameraController* FindLiveLinkCameraControllerWithLens(const ACameraActor* CameraActor, const ULensFile* InLensFile) const;
+	/** Returns the first lens component with a matching LensFile found on the input camera, or nullptr if none exists */
+	ULensComponent* FindLensComponentOnCamera(ACameraActor* CineCamera) const;
 
 	/** Returns a namespaced version of the given name. Useful to generate names unique to this lens file */
 	FString NamespacedName(const FString&& Name) const;
@@ -176,7 +215,7 @@ private:
 	/** Finds and creates the available calibration steps */
 	void CreateSteps();
 
-	/** Create a new material transform pass to represent an overlay and add it to the master comp */
+	/** Create a new material transform pass to represent an overlay and add it to the comp */
 	void CreateOverlayPass(FName PassName, TWeakObjectPtr<UCompositingElementMaterialPass>& OverlayPass, TWeakObjectPtr<UTextureRenderTarget2D>& OverlayRenderTarget);
 
 	/** Returns the overlay material pass associated with the input overlay pass type */
@@ -250,7 +289,9 @@ private:
 	/** The delegate for the core ticker callback */
 	FTSTicker::FDelegateHandle TickerHandle;
 
-	/** Pointer to the LensFileEvalData used in the current frame. Only valid during the current frame. */
-	const FLensFileEvalData* LensFileEvalData;
+	/** Evaluation Data supplied by the Lens Component for the current frame. Only valid during the current frame. */
+	FLensFileEvaluationInputs LensFileEvaluationInputs;
 
+	/** Setting to control whether the media playback buttons are visible */
+	bool bShowMediaPlaybackButtons = true;
 };

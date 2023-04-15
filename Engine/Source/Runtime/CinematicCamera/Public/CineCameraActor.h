@@ -2,13 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Camera/CameraActor.h"
+#include "CoreMinimal.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "CineCameraActor.generated.h"
 
+class AActor;
 class UCineCameraComponent;
+class UObject;
+struct FFrame;
 
 /** Settings to control the camera's lookat feature */
 USTRUCT(BlueprintType)
@@ -35,7 +43,7 @@ struct FCameraLookatTrackingSettings
 	uint8 bDrawDebugLookAtTrackingPosition : 1;
 
 	/** Controls degree of smoothing. 0.f for no smoothing, higher numbers for faster/tighter tracking. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LookAt")
+	UPROPERTY(Interp, EditAnywhere, BlueprintReadWrite, Category = "LookAt")
 	float LookAtTrackingInterpSpeed;
 
 	/** Last known lookat tracking rotation (used during interpolation) */

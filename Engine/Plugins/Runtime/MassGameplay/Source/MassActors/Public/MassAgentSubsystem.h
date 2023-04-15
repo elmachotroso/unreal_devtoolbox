@@ -9,7 +9,7 @@
 #include "MassAgentSubsystem.generated.h"
 
 class AActor;
-class UMassEntitySubsystem;
+struct FMassEntityManager;
 class UMassSpawnerSubsystem;
 class UMassAgentComponent;
 class UMassSimulationSubsystem;
@@ -29,7 +29,7 @@ struct MASSACTORS_API FMassAgentInitializationQueue
 	GENERATED_BODY()
 
 	UPROPERTY()
-	TArray<UMassAgentComponent*> AgentComponents;
+	TArray<TObjectPtr<UMassAgentComponent>> AgentComponents;
 };
 
 /**
@@ -39,12 +39,14 @@ UCLASS()
 class MASSACTORS_API UMassAgentSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
-public:
 
+protected:
 	// USubsystem BEGIN
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
 	// USubsystem END
 
+public:
 	/** Registers given AgentComp with the Mass Simulation, including creation of a FMassEntityHandle using 
 	 *  UMassAgentComponent.LWComponentList to determine the Archetype to use. */
 	FMassEntityTemplateID RegisterAgentComponent(UMassAgentComponent& AgentComp);
@@ -121,14 +123,13 @@ protected:
 	void OnMassAgentRemovedFromReplication(FMassNetworkID NetID, FMassEntityHandle Entity);
 
 protected:
-	UPROPERTY()
-	UMassEntitySubsystem* EntitySystem;
+	TSharedPtr<FMassEntityManager> EntityManager;
 
 	UPROPERTY()
-	UMassSpawnerSubsystem* SpawnerSystem;
+	TObjectPtr<UMassSpawnerSubsystem> SpawnerSystem;
 
 	UPROPERTY()
-	UMassSimulationSubsystem* SimulationSystem;
+	TObjectPtr<UMassSimulationSubsystem> SimulationSystem;
 
 	UPROPERTY()
 	TMap<FMassEntityTemplateID, FMassAgentInitializationQueue> PendingAgentEntities;
@@ -137,10 +138,10 @@ protected:
 	TMap<FMassEntityTemplateID, FMassAgentInitializationQueue> PendingPuppets;
 
 	UPROPERTY()
-	UMassReplicationSubsystem* ReplicationSubsystem;
+	TObjectPtr<UMassReplicationSubsystem> ReplicationSubsystem;
 
 	UPROPERTY()
-	TMap<FMassNetworkID, UMassAgentComponent*> ReplicatedAgentComponents;
+	TMap<FMassNetworkID, TObjectPtr<UMassAgentComponent>> ReplicatedAgentComponents;
 
 	UE::MassActor::FMassAgentComponentDelegate OnMassAgentComponentEntityAssociated;
 	UE::MassActor::FMassAgentComponentDelegate OnMassAgentComponentEntityDetaching;

@@ -11,6 +11,7 @@
 #include "NiagaraScriptInputCollectionViewModel.h"
 #include "NiagaraScriptOutputCollectionViewModel.h"
 #include "NiagaraScriptSource.h"
+#include "NiagaraScriptVariable.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 
 template<> TMap<UNiagaraScript*, TArray<FNiagaraScriptViewModel*>> TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>::ObjectsToViewModels{};
@@ -123,6 +124,13 @@ FNiagaraScriptViewModel::~FNiagaraScriptViewModel()
 
 }
 
+INiagaraParameterDefinitionsSubscriber* FNiagaraScriptViewModel::GetParameterDefinitionsSubscriber()
+{
+	checkf(bIsForDataProcessingOnly, TEXT("Tried to get parameter definitions subscriber for scriptviewmodel not being used strictly for data processing! When not for data processing, this must be a standalone or scratch scriptviewmodel!"));
+	checkf(Scripts.Num() == 1, TEXT("Tried to get parameter definitions subscriber for scriptviewmodel but there was more than one script!"));
+	return &Scripts[0];
+}
+
 FText FNiagaraScriptViewModel::GetDisplayName() const
 {
 	return GraphViewModel->GetDisplayName();
@@ -231,9 +239,10 @@ void FNiagaraScriptViewModel::SetScripts(UNiagaraScriptSource* InScriptSource, T
 	}
 }
 
-void FNiagaraScriptViewModel::SetScripts(UNiagaraEmitter* InEmitter)
+void FNiagaraScriptViewModel::SetScripts(FVersionedNiagaraEmitter InEmitter)
 {
-	if (InEmitter == nullptr)
+	FVersionedNiagaraEmitterData* EmitterData = InEmitter.GetEmitterData();
+	if (EmitterData == nullptr)
 	{
 		TArray<FVersionedNiagaraScript> EmptyScripts;
 		SetScripts(nullptr, EmptyScripts);
@@ -241,7 +250,7 @@ void FNiagaraScriptViewModel::SetScripts(UNiagaraEmitter* InEmitter)
 	else
 	{
 		TArray<UNiagaraScript*> InScripts;
-		InEmitter->GetScripts(InScripts);
+		EmitterData->GetScripts(InScripts);
 
 		TArray<FVersionedNiagaraScript> EmitterScripts;
 		for (UNiagaraScript* Script : InScripts)
@@ -249,7 +258,7 @@ void FNiagaraScriptViewModel::SetScripts(UNiagaraEmitter* InEmitter)
 			EmitterScripts.AddDefaulted_GetRef().Script = Script;
 		}
 		
-		SetScripts(Cast<UNiagaraScriptSource>(InEmitter->GraphSource), EmitterScripts);
+		SetScripts(Cast<UNiagaraScriptSource>(EmitterData->GraphSource), EmitterScripts);
 	}
 }
 
@@ -309,6 +318,23 @@ FVersionedNiagaraScript FNiagaraScriptViewModel::GetStandaloneScript()
 		}
 	}
 	return FVersionedNiagaraScript();
+}
+
+bool FNiagaraScriptViewModel::RenameParameter(const FNiagaraVariable TargetParameter, const FName NewName)
+{
+	GetStandaloneScript().Script->Modify();
+	UNiagaraGraph* Graph = GetGraphViewModel()->GetGraph();
+	
+	Graph->Modify();
+	if (Graph->RenameParameter(TargetParameter, NewName))
+	{
+		UNiagaraScriptVariable* RenamedScriptVar = Graph->GetScriptVariable(NewName);
+
+		// Check if the rename will give the same name and type as an existing parameter definition, and if so, link to the definition automatically.
+		FNiagaraParameterDefinitionsUtilities::TrySubscribeScriptVarToDefinitionByName(RenamedScriptVar, this);
+	}
+
+	return true;
 }
 
 void FNiagaraScriptViewModel::UpdateCompileStatus(ENiagaraScriptCompileStatus InAggregateCompileStatus, const FString& InAggregateCompileErrorString,

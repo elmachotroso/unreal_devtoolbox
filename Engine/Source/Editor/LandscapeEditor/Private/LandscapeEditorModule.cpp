@@ -6,7 +6,7 @@
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorModeRegistry.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
@@ -19,6 +19,7 @@
 #include "LandscapeFileFormatPng.h"
 #include "LandscapeFileFormatRaw.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "LandscapeEditorServices.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "PropertyEditorModule.h"
@@ -27,8 +28,10 @@
 #include "LandscapeEditorDetailCustomization_CopyPaste.h"
 #include "LandscapeEditorDetailCustomization_ImportLayers.h"
 #include "LandscapeSplineDetails.h"
+#include "LandscapeModule.h"
 
 #include "LevelEditor.h"
+#include "Filters/CustomClassFilterData.h"
 #include "ToolMenus.h"
 #include "Editor/EditorEngine.h"
 #include "LandscapeSubsystem.h"
@@ -71,7 +74,7 @@ public:
 		FEditorModeRegistry::Get().RegisterMode<FEdModeLandscape>(
 			FBuiltinEditorModes::EM_Landscape,
 			NSLOCTEXT("EditorModes", "LandscapeMode", "Landscape"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.LandscapeMode", "LevelEditor.LandscapeMode.Small"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.LandscapeMode", "LevelEditor.LandscapeMode.Small"),
 			true,
 			300
 			);
@@ -101,6 +104,13 @@ public:
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(ViewportMenuExtender);
 
+		// Add Level Editor Outliner Filter
+		if (TSharedPtr<FFilterCategory> EnvironmentFilterCategory = LevelEditorModule.GetOutlinerFilterCategory(FLevelEditorOutlinerBuiltInCategories::Environment()))
+		{
+			TSharedRef<FCustomClassFilterData> LandscapeActorClassData = MakeShared<FCustomClassFilterData>(ALandscape::StaticClass(), EnvironmentFilterCategory, FLinearColor::White);
+			LevelEditorModule.AddCustomClassFilterToOutliner(LandscapeActorClassData);
+		}
+		
 		// add actor factories
 		UActorFactoryLandscape* LandscapeActorFactory = NewObject<UActorFactoryLandscape>();
 		LandscapeActorFactory->NewActorClass = ALandscape::StaticClass();
@@ -130,8 +140,22 @@ public:
 
 			FUIAction ActionBuildPhysicalMaterial(FExecuteAction::CreateStatic(&BuildPhysicalMaterial), FCanExecuteAction());
 			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildPhysicalMaterialOnly", "Build Physical Material Only"), LOCTEXT("BuildLandscapePhysicalMaterial", "Build landscape physical material"), TAttribute<FSlateIcon>(), ActionBuildPhysicalMaterial, EUserInterfaceActionType::Button);
-		}
+		
+			FUIAction ActionBuildNanite(FExecuteAction::CreateStatic(&BuildNanite), FCanExecuteAction());
+			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildNaniteOnly", "Build Nanite Only"), LOCTEXT("BuildLandscapeNanite", "Build Nanite representation"), TAttribute<FSlateIcon>(), ActionBuildNanite, EUserInterfaceActionType::Button);
 
+			if (ULandscapeSubsystem::IsDirtyOnlyInModeEnabled())
+			{
+				FUIAction ActionSaveModifiedLandscapes(FExecuteAction::CreateStatic(&SaveModifiedLandscapes), FCanExecuteAction::CreateStatic(&HasModifiedLandscapes));
+				Section.AddMenuEntry(NAME_None,
+					LOCTEXT("SaveModifiedLandscapes", "Save Modified Landscapes"), LOCTEXT("SaveModifiedLandscapesToolTip", "Save landscapes that were modified outside of the editor mode"),
+					TAttribute<FSlateIcon>(), ActionSaveModifiedLandscapes, EUserInterfaceActionType::Button);
+			}
+		}
+		
+		ILandscapeModule& LandscapeModule = FModuleManager::GetModuleChecked<ILandscapeModule>("Landscape");
+		LandscapeEditorServices.Reset(new FLandscapeEditorServices);
+		LandscapeModule.SetLandscapeEditorServices(LandscapeEditorServices.Get());
 	}
 
 	/**
@@ -162,6 +186,13 @@ public:
 		// remove actor factories
 		// TODO - this crashes on shutdown
 		// GEditor->ActorFactories.RemoveAll([](const UActorFactory* ActorFactory) { return ActorFactory->IsA<UActorFactoryLandscape>(); });
+
+		ILandscapeModule& LandscapeModule = FModuleManager::GetModuleChecked<ILandscapeModule>("Landscape");
+		if (LandscapeModule.GetLandscapeEditorServices() == LandscapeEditorServices.Get())
+		{
+			LandscapeModule.SetLandscapeEditorServices(nullptr);
+		}
+		LandscapeEditorServices.Reset();
 	}
 
 	static void ConstructLandscapeViewportMenu(FMenuBuilder& MenuBuilder)
@@ -236,9 +267,52 @@ public:
 		}
 	}
 
+	static void BuildNanite()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->BuildNanite();
+			}
+		}
+	}
+
+	static bool HasModifiedLandscapes()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				return LandscapeSubsystem->HasModifiedLandscapes();
+			}
+		}
+
+		return false;
+	}
+
+	static void SaveModifiedLandscapes()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->SaveModifiedLandscapes();
+			}
+		}
+	}
+
 	static void ChangeLandscapeViewMode(ELandscapeViewMode::Type ViewMode)
 	{
-		GLandscapeViewMode = ViewMode;
+		if (ViewMode != GLandscapeViewMode)
+		{
+			GLandscapeViewMode = ViewMode;
+
+			if (GEditor)
+			{
+				GEditor->RedrawAllViewports(/*bInvalidateHitProxies =*/false);
+			}
+		}
 	}
 
 	static bool IsLandscapeViewModeSelected(ELandscapeViewMode::Type ViewMode)
@@ -300,7 +374,7 @@ public:
 	virtual const ILandscapeWeightmapFileFormat* GetWeightmapFormatByExtension(const TCHAR* Extension) const override;
 
 	virtual TSharedPtr<FUICommandList> GetLandscapeLevelViewportCommandList() const override;
-		
+
 protected:
 	TSharedPtr<FExtender> ViewportMenuExtender;
 	TSharedPtr<FUICommandList> GlobalUICommandList;
@@ -310,6 +384,7 @@ protected:
 	mutable FString WeightmapImportDialogTypeString;
 	mutable FString HeightmapExportDialogTypeString;
 	mutable FString WeightmapExportDialogTypeString;
+	TUniquePtr<ILandscapeEditorServices> LandscapeEditorServices;
 };
 
 IMPLEMENT_MODULE(FLandscapeEditorModule, LandscapeEditor);

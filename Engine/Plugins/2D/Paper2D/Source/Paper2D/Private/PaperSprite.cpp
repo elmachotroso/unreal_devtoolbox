@@ -19,6 +19,8 @@
 #include "Paper2DModule.h"
 #include "Paper2DPrivate.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PaperSprite)
+
 #if WITH_EDITOR
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
@@ -2210,7 +2212,7 @@ void FSpriteGeometryCollisionBuilderBase::AddPolygonCollisionShapesToBodySetup(c
 		Point = ConvertTextureSpaceToPivotSpace(Point) * UnrealUnitsPerPixel;
 	}
 
-	//@TODO: Use this guy instead: DecomposeMeshToHulls
+	//@TODO: Use this instead: DecomposeMeshToHulls
 	//@TODO: Merge triangles that are convex together!
 
 	// Bake it to the runtime structure
@@ -2294,3 +2296,4 @@ FVector2D FSpriteGeometryCollisionBuilderBase::ConvertTextureSpaceToPivotSpaceNo
 {
 	return Input;
 }
+

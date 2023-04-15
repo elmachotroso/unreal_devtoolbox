@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -38,7 +39,7 @@ namespace P4VUtils.Commands
 			}
 
 			string? ClientName = Environment.GetEnvironmentVariable("P4CLIENT");
-			PerforceConnection Perforce = new PerforceConnection(null, null, ClientName, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, ClientName, Logger);
 
 			ClientRecord Client = await Perforce.GetClientAsync(ClientName, CancellationToken.None);
 			if(Client.Stream == null)
@@ -48,7 +49,7 @@ namespace P4VUtils.Commands
 			}
 
 			// Create the copy of the CL IFF it has files opened
-			List<FStatRecord> OpenedRecords = await Perforce.GetOpenFilesAsync(OpenedOptions.None, Change, null, null, -1, FileSpecList.Empty, CancellationToken.None);
+			List<OpenedRecord> OpenedRecords = await Perforce.OpenedAsync(OpenedOptions.None, Change, null, null, -1, FileSpecList.Any, CancellationToken.None).ToListAsync();
 
 			if (OpenedRecords.Count > 0)
 			{
@@ -63,15 +64,15 @@ namespace P4VUtils.Commands
 				NewChangeRecord.Description = $"{PreflightCommand.StripReviewFyiHashTags(ExistingChangeRecord.Description.TrimEnd())}\n[snapshot CL{Change} - {DateNow}]";
 				NewChangeRecord = await Perforce.CreateChangeAsync(NewChangeRecord, CancellationToken.None);
 
-				Logger.LogInformation("Created pending changelist {0}", NewChangeRecord.Number);
+				Logger.LogInformation("Created pending changelist {Change}", NewChangeRecord.Number);
 
 				// Move the files to the new CL
-				foreach (FStatRecord OpenedRecord in OpenedRecords)
+				foreach (OpenedRecord OpenedRecord in OpenedRecords)
 				{
 					if (OpenedRecord.ClientFile != null)
 					{
 						await Perforce.ReopenAsync(NewChangeRecord.Number, OpenedRecord.Type, OpenedRecord.ClientFile!, CancellationToken.None);
-						Logger.LogInformation("moving opened {file} to CL {CL}", OpenedRecord.ClientFile.ToString(), NewChangeRecord.Number);
+						Logger.LogInformation("moving opened {File} to CL {CL}", OpenedRecord.ClientFile.ToString(), NewChangeRecord.Number);
 					}
 				}
 
@@ -79,12 +80,12 @@ namespace P4VUtils.Commands
 				await Perforce.ShelveAsync(NewChangeRecord.Number, ShelveOptions.Overwrite, new[] { "//..." }, CancellationToken.None);
 
 				// Move the files BACK to the old CL
-				foreach (FStatRecord OpenedRecord in OpenedRecords)
+				foreach (OpenedRecord OpenedRecord in OpenedRecords)
 				{
 					if (OpenedRecord.ClientFile != null)
 					{
 						await Perforce.ReopenAsync(Change, OpenedRecord.Type, OpenedRecord.ClientFile!, CancellationToken.None);
-						Logger.LogInformation("moving opened {file} to CL {CL}", OpenedRecord.ClientFile.ToString(), Change);
+						Logger.LogInformation("moving opened {File} to CL {CL}", OpenedRecord.ClientFile.ToString(), Change);
 					}
 				}
 			}

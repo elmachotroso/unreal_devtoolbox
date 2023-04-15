@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "AudioModulation.h"
 
 #include "AudioModulationLogging.h"
@@ -6,9 +7,8 @@
 #include "AudioModulationSystem.h"
 #include "CanvasTypes.h"
 #include "Features/IModularFeatures.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "IAudioModulation.h"
-#include "MetasoundDataTypeRegistrationMacro.h"
-#include "MetasoundFrontendRegistries.h"
 #include "Modules/ModuleManager.h"
 #include "SoundControlBusMix.h"
 #include "SoundModulationParameter.h"
@@ -16,9 +16,13 @@
 #include "SoundModulatorAsset.h"
 #include "UObject/NoExportTypes.h"
 
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
+#include "MetasoundDataTypeRegistrationMacro.h"
+#include "MetasoundFrontendRegistries.h"
 
 REGISTER_METASOUND_DATATYPE(AudioModulation::FSoundModulatorAsset, "Modulator", Metasound::ELiteralType::UObjectProxy, USoundModulatorBase);
 REGISTER_METASOUND_DATATYPE(AudioModulation::FSoundModulationParameterAsset, "ModulationParameter", Metasound::ELiteralType::UObjectProxy, USoundModulationParameter);
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT
 
 namespace AudioModulation
 {
@@ -253,6 +257,7 @@ TAudioModulationPtr FAudioModulationPluginFactory::CreateNewModulationPlugin(FAu
 
 void FAudioModulationModule::StartupModule()
 {
+	LLM_SCOPE(ELLMTag::AudioMixerPlugins);
 	IModularFeatures::Get().RegisterModularFeature(FAudioModulationPluginFactory::GetModularFeatureName(), &ModulationPluginFactory);
 
 	if (const UAudioModulationSettings* ModulationSettings = GetDefault<UAudioModulationSettings>())
@@ -260,14 +265,22 @@ void FAudioModulationModule::StartupModule()
 		ModulationSettings->RegisterParameters();
 	}
 
-	// flush node registration queue to guarantee AudioModulation DataTypes/Nodes are ready prior to assets loading
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
+	UE_LOG(LogAudioModulation, Log, TEXT("Registering Modulation MetaSound Nodes..."));
+
+	// All MetaSound interfaces are required to be loaded prior to registering & loading MetaSound assets,
+	// so check that the MetaSoundEngine is loaded prior to pending Modulation defined classes
+	FModuleManager::Get().LoadModuleChecked("MetasoundEngine");
+
 	FMetasoundFrontendRegistryContainer::Get()->RegisterPendingNodes();
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT
 
 	UE_LOG(LogAudioModulation, Log, TEXT("Audio Modulation Initialized"));
 }
 
 void FAudioModulationModule::ShutdownModule()
 {
+	LLM_SCOPE(ELLMTag::AudioMixerPlugins);
 	IModularFeatures::Get().UnregisterModularFeature(FAudioModulationPluginFactory::GetModularFeatureName(), &ModulationPluginFactory);
 	UE_LOG(LogAudioModulation, Log, TEXT("Audio Modulation Shutdown"));
 }

@@ -115,9 +115,9 @@ class FInMemoryNetworkReplayStreamer : public INetworkReplayStreamer, public FTi
 {
 public:
 	FInMemoryNetworkReplayStreamer(FInMemoryNetworkReplayStreamingFactory* InFactory) :
-		OwningFactory( InFactory ),
-		StreamerState( EStreamerState::Idle ),
-		TimeBufferHintSeconds( -1.0f )
+		OwningFactory(InFactory),
+		StreamerState(EReplayStreamerState::Idle),
+		TimeBufferHintSeconds(-1.0f)
 	{
 		check(OwningFactory != nullptr);
 	}
@@ -143,7 +143,6 @@ public:
 	virtual void DeleteFinishedStream( const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate ) override;
 	virtual void EnumerateStreams( const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate ) override;
 	virtual void EnumerateRecentStreams( const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate ) override;
-	virtual ENetworkReplayError::Type GetLastError() const override { return ENetworkReplayError::None; }
 	virtual void AddUserToReplay(const FString& UserString) override;
 	virtual void AddEvent(const uint32 TimeInMS, const FString& Group, const FString& Meta, const TArray<uint8>& Data) override;
 	virtual void AddOrUpdateEvent( const FString& Name, const uint32 TimeInMS, const FString& Group, const FString& Meta, const TArray<uint8>& Data ) override {}
@@ -164,6 +163,7 @@ public:
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const FRenameReplayCallback& Delegate) override;
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const int32 UserIndex, const FRenameReplayCallback& Delegate) override;
 	virtual FString	GetReplayID() const override { return CurrentStreamName; }
+	virtual EReplayStreamerState GetReplayStreamerState() const override { return StreamerState; }
 	virtual void SetTimeBufferHintSeconds(const float InTimeBufferHintSeconds) override { TimeBufferHintSeconds = InTimeBufferHintSeconds; }
 	virtual void RefreshHeader() override {};
 	virtual void DownloadHeader(const FDownloadHeaderCallback& Delegate) override
@@ -242,16 +242,8 @@ private:
 	 */
 	FInMemoryReplay::FCheckpoint CheckpointCurrentlyBeingSaved;
 
-	/** EStreamerState - Overall state of the streamer */
-	enum class EStreamerState
-	{
-		Idle,					// The streamer is idle. Either we haven't started streaming yet, or we are done
-		Recording,				// We are in the process of recording a replay to disk
-		Playback,				// We are in the process of playing a replay from disk
-	};
-
 	/** Overall state of the streamer */
-	EStreamerState StreamerState;
+	EReplayStreamerState StreamerState;
 
 	/** Remember the name of the current stream, if any. */
 	FString CurrentStreamName;

@@ -6,6 +6,8 @@
 #include "WaterSubsystem.h"
 #include "Misc/UObjectToken.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyCustomComponent)
+
 #if WITH_EDITOR
 #include "WaterIconHelper.h"
 #endif
@@ -25,10 +27,10 @@ UWaterBodyCustomComponent::UWaterBodyCustomComponent(const FObjectInitializer& O
 	check(!IsHeightOffsetSupported());
 }
 
-TArray<UPrimitiveComponent*> UWaterBodyCustomComponent::GetCollisionComponents() const
+TArray<UPrimitiveComponent*> UWaterBodyCustomComponent::GetCollisionComponents(bool bInOnlyEnabledComponents) const
 {
 	TArray<UPrimitiveComponent*> Result;
-	if ((MeshComp != nullptr) && (MeshComp->GetCollisionEnabled() != ECollisionEnabled::NoCollision))
+	if ((MeshComp != nullptr) && (!bInOnlyEnabledComponents || (MeshComp->GetCollisionEnabled() != ECollisionEnabled::NoCollision)))
 	{
 		Result.Add(MeshComp);
 	}
@@ -70,36 +72,52 @@ void UWaterBodyCustomComponent::OnUpdateBody(bool bWithExclusionVolumes)
 		MeshComp = NewObject<UStaticMeshComponent>(OwnerActor, TEXT("CustomMeshComponent"), RF_Transactional);
 		MeshComp->SetNetAddressable(); // it's deterministically named so it's addressable over network (needed for collision)
 		MeshComp->SetupAttachment(this);
-		MeshComp->SetCollisionProfileName(GetCollisionProfileName());
-		// In the case of custom meshes, the static mesh component acts as both collision and visual component so we simply disable collision on it: 
-		MeshComp->SetGenerateOverlapEvents(bGenerateCollisions);
-		if (!bGenerateCollisions)
+
+		if(IsRegistered())
 		{
-			MeshComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			MeshComp->RegisterComponent();
 		}
-		MeshComp->RegisterComponent();
 	}
 
 	TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
 	OwnerActor->GetComponents(PrimitiveComponents);
 
-	// Make no assumptions for custom meshes.  Add all components with collision to the list of collision components
+	// Make no assumptions for custom water bodies: all (non-visualization) primitive components will be included in navigation
 	for (UPrimitiveComponent* Comp : PrimitiveComponents)
 	{
-		if (bGenerateCollisions && (Comp->GetCollisionEnabled() != ECollisionEnabled::NoCollision))
+#if WITH_EDITORONLY_DATA
+		if (Comp->IsVisualizationComponent())
 		{
-			// Use value of bFillCollisionUnderWaterBodiesForNavmesh for all components with collisions.
-			Comp->bFillCollisionUnderneathForNavmesh = bFillCollisionUnderWaterBodiesForNavmesh;
+			continue;
 		}
+#endif // WITH_EDITORONLY_DATA
+
+		CopySharedNavigationSettingsToComponent(Comp);
 
 		Comp->SetMobility(Mobility);
 	}
 
 	CreateOrUpdateWaterMID();
 	MeshComp->SetStaticMesh(GetWaterMeshOverride());
-	MeshComp->SetMaterial(0, WaterMID);
 	MeshComp->SetCastShadow(false);
+	CopySharedCollisionSettingsToComponent(MeshComp);
+	CopySharedNavigationSettingsToComponent(MeshComp);
 	MeshComp->MarkRenderStateDirty();
+}
+
+void UWaterBodyCustomComponent::CreateOrUpdateWaterMID()
+{
+	Super::CreateOrUpdateWaterMID();
+	if (MeshComp != nullptr)
+	{
+		MeshComp->SetMaterial(0, WaterMID);
+	}
+}
+
+FPrimitiveSceneProxy* UWaterBodyCustomComponent::CreateSceneProxy()
+{
+	// Don't create a scene proxy for custom water body components since they don't render into the water info texture (yet)
+	return nullptr;
 }
 
 void UWaterBodyCustomComponent::BeginUpdateWaterBody()
@@ -134,6 +152,17 @@ TArray<TSharedRef<FTokenizedMessage>> UWaterBodyCustomComponent::CheckWaterBodyS
 
 	return StatusMessages;
 }
+
+const TCHAR* UWaterBodyCustomComponent::GetWaterSpriteTextureName() const
+{
+	return TEXT("/Water/Icons/WaterBodyCustomSprite");
+}
+
+bool UWaterBodyCustomComponent::IsIconVisible() const
+{
+	return (GetWaterMeshOverride() == nullptr);
+}
 #endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE
+

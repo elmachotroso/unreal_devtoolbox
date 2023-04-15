@@ -38,7 +38,7 @@ inline TInlineMemoryWriter<BufferSize>::TInlineMemoryWriter()
 template <int BufferSize>
 inline void TInlineMemoryWriter<BufferSize>::Serialize(void* Data, int64 Num)
 {
-	Buffer.Append((const uint8*)Data, Num);
+	Buffer.Append((const uint8*)Data, IntCastChecked<int32>(Num));
 }
 
 
@@ -135,9 +135,13 @@ class FResponse
 {
 public:
 	EStatusCode		GetStatusCode() const;
-	int64			GetInteger(const char* Key, int64 Default) const;
+	int64			GetInt64Checked(const char* Key, int64 Default) const;
+	uint64			GetUint64Checked(const char* Key, uint64 Default) const;
+	int32			GetInt32Checked(const char* Key, int32 Default) const;
+	uint32			GetUint32Checked(const char* Key, uint32 Default) const;
+	int64			GetInteger(const char* Key, int64 Default) const { return GetInt64Checked(Key, Default); }
 	template <int N>
-	FAnsiStringView	GetString(const char* Key, const char (&Default)[N]) const;
+	FUtf8StringView	GetString(const char* Key, const char (&Default)[N]) const;
 	const uint8*	GetData() const;
 	uint32			GetSize() const;
 	uint8*			Reserve(uint32 Size);
@@ -151,7 +155,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 inline EStatusCode FResponse::GetStatusCode() const
 {
-	int32 Code = GetInteger("$status", 0);
+	int32 Code = GetInt32Checked("$status", 0);
 	return Code ? EStatusCode(Code) : EStatusCode::Unknown;
 }
 
@@ -195,8 +199,8 @@ inline Type FResponse::GetValue(const char* Key, Type Default, LambdaType&& Lamb
 			return Default;
 		}
 
-		uint32 Length = Context.AsLength();
-		uint32 Offset = uint32(MemoryReader.Tell());
+		uint32 Length = static_cast<uint32>(Context.AsLength());
+		uint32 Offset = static_cast<uint32>(MemoryReader.Tell());
 		auto* String = (const char*)(Buffer.GetData() + Offset - Length);
 		bool bIsTarget = (FCStringAnsi::Strncmp(Key, String, Length) == 0);
 
@@ -208,13 +212,13 @@ inline Type FResponse::GetValue(const char* Key, Type Default, LambdaType&& Lamb
 
 		if (bIsTarget)
 		{
-			return Lambda(Context, uint32(MemoryReader.Tell()));
+			return Lambda(Context, static_cast<uint32>(MemoryReader.Tell()));
 		}
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-inline int64 FResponse::GetInteger(const char* Key, int64 Default) const
+inline int64 FResponse::GetInt64Checked(const char* Key, int64 Default) const
 {
 	return GetValue(
 		Key,
@@ -227,10 +231,53 @@ inline int64 FResponse::GetInteger(const char* Key, int64 Default) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-template <int N>
-inline FAnsiStringView FResponse::GetString(const char* Key, const char (&Default)[N]) const
+inline uint64 FResponse::GetUint64Checked(const char* Key, uint64 Default) const
 {
-	FAnsiStringView DefaultView(Default, N - 1);
+	return GetValue(
+		Key,
+		Default,
+		[this](const FCborContext& Context, uint64)
+		{
+			return Context.AsUInt();
+		}
+	);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+inline int32 FResponse::GetInt32Checked(const char* Key, int32 Default) const
+{
+	return GetValue(
+		Key,
+		Default,
+		[this](const FCborContext& Context, int32)
+		{
+			int64 Value = Context.AsInt();
+			check(Value >= INT_MIN && Value <= INT_MAX);
+			return static_cast<int32>(Value);
+		}
+	);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+inline uint32 FResponse::GetUint32Checked(const char* Key, uint32 Default) const
+{
+	return GetValue(
+		Key,
+		Default,
+		[this](const FCborContext& Context, uint32)
+		{
+			uint64 Value = Context.AsUInt();
+			check(Value <= UINT_MAX);
+			return static_cast<uint32>(Value);
+		}
+	);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+template <int N>
+inline FUtf8StringView FResponse::GetString(const char* Key, const char (&Default)[N]) const
+{
+	FUtf8StringView DefaultView(Default, N - 1);
 	return GetValue(
 		Key,
 		DefaultView,
@@ -238,9 +285,9 @@ inline FAnsiStringView FResponse::GetString(const char* Key, const char (&Defaul
 		{
 			if (Context.IsString())
 			{
-				int32 Length = Context.AsLength();
+				uint32 Length = static_cast<uint32>(Context.AsLength());
 				const char* Data = (const char*)(Buffer.GetData() + Offset - Length);
-				return FAnsiStringView(Data, Length);
+				return FUtf8StringView(Data, Length);
 			}
 
 			return DefaultView;

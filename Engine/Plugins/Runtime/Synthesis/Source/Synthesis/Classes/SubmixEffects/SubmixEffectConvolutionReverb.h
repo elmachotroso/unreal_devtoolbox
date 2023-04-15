@@ -3,72 +3,10 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
-#include "ConvolutionReverb.h"
 #include "DSP/Dsp.h"
-#include "DSP/ConvolutionAlgorithm.h"
+#include "EffectConvolutionReverb.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "SubmixEffectConvolutionReverb.generated.h"
-
-/** Block size of convolution reverb algorithm. */
-UENUM()
-enum class ESubmixEffectConvolutionReverbBlockSize : uint8
-{
-	/** 256 audio frames per a block. */
-	BlockSize256,
-
-	/** 512 audio frames per a block. */
-	BlockSize512,
-
-	/** 1024 audio frames per a block. */
-	BlockSize1024
-};
-
-#if WITH_EDITORONLY_DATA
-DECLARE_MULTICAST_DELEGATE_OneParam(FAudioImpulseResponsePropertyChange, FPropertyChangedEvent&);
-#endif
-
-// ========================================================================
-// UAudioImpulseResponse
-// UAsset used to represent Imported Impulse Responses
-// ========================================================================
-UCLASS(BlueprintType)
-class SYNTHESIS_API UAudioImpulseResponse : public UObject
-{
-	GENERATED_BODY()
-
-public:
-	UAudioImpulseResponse();
-	/** The interleaved audio samples used in convolution. */
-	UPROPERTY()
-	TArray<float> ImpulseResponse;
-
-	/** The number of channels in impulse response. */
-	UPROPERTY()
-	int32 NumChannels;
-
-	/** The original sample rate of the impulse response. */
-	UPROPERTY()
-	int32 SampleRate;
-
-	/* Used to account for energy added by convolution with "loud" Impulse Responses. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SubmixEffectPreset, meta = (ClamMin = "-60.0", ClampMax = "15.0"))
-	float NormalizationVolumeDb;
-
-	/* If true, impulse response channels are interpreted as true stereo which allows channel crosstalk. If false, impulse response channels are interpreted as independent channel impulses. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SubmixEffectPreset, meta = (EditCondition = "(NumChannels > 0) && (NumChannels % 2 == 0)"))
-	bool bTrueStereo;
-
-	UPROPERTY(meta = ( DeprecatedProperty ) )
-	TArray<float> IRData_DEPRECATED;
-
-#if WITH_EDITORONLY_DATA
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-
-	// This delegate is called whenever PostEditChangeProperty called.
-	FAudioImpulseResponsePropertyChange OnObjectPropertyChanged;
-#endif
-};
-
 
 USTRUCT(BlueprintType)
 struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
@@ -77,12 +15,19 @@ struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
 
 	FSubmixEffectConvolutionReverbSettings();
 
-
 	/* Used to account for energy added by convolution with "loud" Impulse Responses. 
 	 * This value is not directly editable in the editor because it is copied from the 
 	 * associated UAudioImpulseResponse. */
 	UPROPERTY();
 	float NormalizationVolumeDb;
+
+	// Controls how much of the wet signal is mixed into the output, in Decibels
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixEffectPreset, meta = (ClampMin = "-96.0", ClampMax = "0.0"));
+	float WetVolumeDb;
+
+	// Controls how much of the dry signal is mixed into the output, in Decibels
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixEffectPreset, meta = (ClampMin = "-96.0", ClampMax = "0.0"));
+	float DryVolumeDb;
 
 	/* If true, input audio is directly routed to output audio with applying any effect. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixEffectPreset)
@@ -103,7 +48,7 @@ struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
 	bool bMixReverbOutputToOutputChannelFormat;
 
 	/* Amout of audio to be sent to rear channels in quad/surround configurations */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SubmixEffectPreset|Surround", meta = (EditCondition = "bMixReverbOutputToOutputChannelFormat && !bBypass", ClampMin = "-60.0", UIMin = "-60.0", ClampMax = "15.0", UIMax = "15.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SubmixEffectPreset|Surround", meta = (DisplayName = "Surround Rear Channel Bleed (dB)", EditCondition = "bMixReverbOutputToOutputChannelFormat && !bBypass", ClampMin = "-60.0", UIMin = "-60.0", ClampMax = "15.0", UIMax = "15.0"))
 	float SurroundRearChannelBleedDb;
 
 	/* If true, rear channel bleed sends will have their phase inverted. */
@@ -122,7 +67,6 @@ struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
 
 	UPROPERTY(meta = ( DeprecatedProperty ) )
 	bool AllowHardwareAcceleration_DEPRECATED;
-
 };
 
 
@@ -130,18 +74,6 @@ struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
 class SYNTHESIS_API FSubmixEffectConvolutionReverb : public FSoundEffectSubmix
 {
 public:
-
-	typedef int32 FConvolutionReverbID;
-
-	// Data used to track versions of current running convolution.
-	struct FVersionData
-	{
-		FConvolutionReverbID ConvolutionID;
-
-		FVersionData();
-		bool operator==(const FVersionData& Other) const;
-	};
-
 	
 	FSubmixEffectConvolutionReverb() = delete;
 	// Construct a convolution object with an existing preset. 
@@ -160,16 +92,12 @@ public:
 
 	// Call on the game thread in order to update the impulse response and hardware acceleration
 	// used in this submix effect.
-	FVersionData UpdateConvolutionReverb(const USubmixEffectConvolutionReverbPreset* InPreset);
+	AudioConvReverbIntrinsics::FVersionData UpdateConvolutionReverb(const USubmixEffectConvolutionReverbPreset* InPreset);
 
-	// Sets the convolution algorithm object used if the version data matches the most up-to-date
-	// version data tracked within this object. This method must be called on the audio render thread.
-	void SetConvolutionReverbIfCurrent(TUniquePtr<Audio::FConvolutionReverb> InReverb, const FVersionData& InVersionData);
+	void RebuildConvolutionReverb();
 
-	// Returns the data needed to build a convolution reverb
-	Audio::FConvolutionReverbInitData CreateConvolutionReverbInitData();
-
-	Audio::FConvolutionReverbSettings GetParameters() const;
+	float WetVolume = 1.f;
+	float DryVolume = 1.f;
 
 private:
 	// Sets current runtime settings for convolution reverb which do *not* trigger
@@ -177,35 +105,8 @@ private:
 	// at the next call to UpdateParameters()
 	void SetConvolutionReverbParameters(const FSubmixEffectConvolutionReverbSettings& InSettings);
 
-	// Increments the internal verion number and returns a copy of the
-	// latest version information.
-	FVersionData UpdateVersion();
-
-	// Updates parameters on the render thread.
-	void UpdateParameters();
-
-	// Params object for copying between audio render thread and outside threads.
-	Audio::TParams<Audio::FConvolutionReverbSettings> Params;
-
-	// ConvolutionReverb performs majority of DSP operations
-	TUniquePtr<Audio::FConvolutionReverb> ConvolutionReverb;
-
-	// Audio sample rate
-	float SampleRate;
-
-	// Number of input and output channels. These are TAtomic
-	// since they can be accessed on multiple threads.
-	TAtomic<int32> NumInputChannels;
-	TAtomic<int32> NumOutputChannels;
-
-	TAtomic<bool> bBypass;
-
-	mutable FCriticalSection VersionDataCriticalSection;
-	FVersionData VersionData;
-
-	mutable FCriticalSection ConvReverbInitDataCriticalSection;
-	// Internal copy of data needed to create FConvolutionReverb
-	Audio::FConvolutionReverbInitData ConvReverbInitData;
+	// Reverb performs majority of DSP operations
+	TSharedRef<Audio::FEffectConvolutionReverb> Reverb;
 };
 
 UCLASS()

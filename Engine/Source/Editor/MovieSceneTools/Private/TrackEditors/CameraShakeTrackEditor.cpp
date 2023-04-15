@@ -1,29 +1,64 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/CameraShakeTrackEditor.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "GameFramework/Actor.h"
-#include "Engine/Blueprint.h"
-#include "AssetData.h"
-#include "ReferenceSkeleton.h"
-#include "Modules/ModuleManager.h"
+
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "Camera/CameraComponent.h"
-#include "CameraShakeTrackEditorBase.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
-#include "SequencerSectionPainter.h"
-#include "MovieSceneCommonHelpers.h"
-#include "Sections/MovieSceneCameraShakeSection.h"
-#include "Tracks/MovieSceneCameraShakeTrack.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
-#include "IContentBrowserSingleton.h"
+#include "Camera/CameraShakeBase.h"
+#include "TrackEditors/CameraShakeTrackEditorBase.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
-#include "SequencerUtilities.h"
+#include "Delegates/Delegate.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/SlateDelegates.h"
+#include "GameFramework/Actor.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IContentBrowserSingleton.h"
+#include "ISequencer.h"
+#include "ISequencerTrackEditor.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
+#include "MovieSceneCommonHelpers.h"
+#include "MovieSceneSection.h"
+#include "MovieSceneSequence.h"
+#include "MovieSceneTrack.h"
+#include "ScopedTransaction.h"
+#include "Sections/MovieSceneCameraShakeSection.h"
+#include "SequencerUtilities.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Tracks/MovieSceneCameraShakeTrack.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+
+class ISequencerSection;
+class SWidget;
+class USkeleton;
 
 #define LOCTEXT_NAMESPACE "FCameraShakeTrackEditor"
 
@@ -124,30 +159,31 @@ TSharedRef<SWidget> FCameraShakeTrackEditor::BuildCameraShakeSubMenu(FGuid Objec
 
 void FCameraShakeTrackEditor::AddCameraShakeSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings)
 {
+	UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 	FAssetPickerConfig AssetPickerConfig;
 	{
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(this, &FCameraShakeTrackEditor::OnCameraShakeAssetSelected, ObjectBindings);
 		AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw(this, &FCameraShakeTrackEditor::OnCameraShakeAssetEnterPressed, ObjectBindings);
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-		AssetPickerConfig.Filter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+		AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 
 		IAssetRegistry & AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-		TArray<FName> ClassNames;
-		TSet<FName> DerivedClassNames;
-		ClassNames.Add(UCameraShakeBase::StaticClass()->GetFName());
-		AssetRegistry.GetDerivedClassNames(ClassNames, TSet<FName>(), DerivedClassNames);
+		TArray<FTopLevelAssetPath> ClassNames;
+		TSet<FTopLevelAssetPath> DerivedClassNames;
+		ClassNames.Add(UCameraShakeBase::StaticClass()->GetClassPathName());
+		AssetRegistry.GetDerivedClassNames(ClassNames, TSet<FTopLevelAssetPath>(), DerivedClassNames);
 						
 		AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([DerivedClassNames](const FAssetData& AssetData)
 		{
 			const FString ParentClassFromData = AssetData.GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
 			if (!ParentClassFromData.IsEmpty())
 			{
-				const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath(ParentClassFromData);
-				const FName ClassName = FName(*FPackageName::ObjectPathToObjectName(ClassObjectPath));
-
-				if (DerivedClassNames.Contains(ClassName))
+				const FTopLevelAssetPath ClassObjectPath(FPackageName::ExportTextPathToObjectPath(ParentClassFromData));
+				if (DerivedClassNames.Contains(ClassObjectPath))
 				{
 					return false;
 				}

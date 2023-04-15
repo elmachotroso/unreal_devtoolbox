@@ -170,6 +170,18 @@ struct FNiagaraCustomVersion
 
 		StaticSwitchFunctionPinsUsePersistentGuids, // Update static switch pins to use the PersistentId from their script variable so that when they're renamed their values aren't lost when reallocating pins. 
 
+		VisibilityCullingImprovements, // Extended visibility culling options and moved properties into their own struct.
+
+		AddBakerCameraBookmarks,
+
+		PopulateFunctionCallNodePinNameBindings, // Function call node refresh from external changes has been refactored so that they don't need to populate their name bindings every load.
+
+		ComponentRendererSpawnProperty, // Changed the default value for the component renderer's OnlyCreateComponentsOnParticleSpawn property
+
+		RepopulateFunctionCallNodePinNameBindings, // Previous repopulate didn't handle module attributes like Particles.Module.Name so they need to be repopulated for renaming to work correctly.
+
+		EventSpawnsUpdateInitialAttributeValues, // Event spawns now optionally update Initial. attribute values. New default is true but old data is kept false to maintain existing behavior.
+
 		// DO NOT ADD A NEW VERSION UNLESS YOU HAVE TALKED TO THE NIAGARA LEAD. Mismanagement of these versions can lead to data loss if it is adjusted in multiple streams simultaneously.
 		// -----<new versions can be added above this line>  -------------------------------------------------
 		VersionPlusOne,
@@ -180,7 +192,7 @@ struct FNiagaraCustomVersion
 	 meant to capture the state of the translator/VM compiler structure and force a flush of any files in the DDC. Since it is 
 	 a GUID, we don't need to worry about multiple people editing the translator having conflicting files in the shared DDC as 
 	 there should never be any collisions.*/
-	NIAGARACORE_API const static FGuid LatestScriptCompileVersion;
+	NIAGARACORE_API static FGuid GetLatestScriptCompileVersion();
 
 	// The GUID for this custom version number
 	NIAGARACORE_API const static FGuid GUID;

@@ -3,7 +3,6 @@
 #include "NiagaraSystemRenderData.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraCrashReporterHandler.h"
-#include "NiagaraScalabilityManager.h"
 
 void FNiagaraSystemRenderData::ExecuteDynamicDataCommands_RenderThread(const FSetDynamicDataCommandList& Commands)
 {
@@ -105,9 +104,19 @@ FPrimitiveViewRelevance FNiagaraSystemRenderData::GetViewRelevance(const FSceneV
 uint32 FNiagaraSystemRenderData::GetDynamicDataSize() const
 {
 	// only the render thread should use the RT data, the game thread and other parallel running tasks use the GT data
-	const TArray<FNiagaraRenderer*>& Emitter_Renderers = IsInParallelRenderingThread() ? EmitterRenderers_RT :EmitterRenderers_GT;
+	const TArray<FNiagaraRenderer*>* LocalEmitterRenderers;
+	if ( IsInParallelGameThread() || IsInGameThread() )
+	{
+		LocalEmitterRenderers = &EmitterRenderers_GT;
+	}
+	else
+	{
+		check(IsInParallelRenderingThread());
+		LocalEmitterRenderers = &EmitterRenderers_RT;
+	}
+
 	uint32 Size = 0;
-	for (const auto Renderer : Emitter_Renderers)
+	for (const auto Renderer : *LocalEmitterRenderers)
 	{
 		if (Renderer)
 		{
@@ -155,19 +164,19 @@ void FNiagaraSystemRenderData::GenerateSetDynamicDataCommands(FSetDynamicDataCom
 	for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
 	{
 		FNiagaraEmitterInstance* EmitterInst = &SystemInstance->GetEmitters()[i].Get();
-		UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter();
+		FVersionedNiagaraEmitterData* EmitterData = EmitterInst->GetCachedEmitterData();
 
-		if (Emitter == nullptr)
+		if (EmitterData == nullptr)
 		{
 			continue;
 		}
 
 #if STATS
-		TStatId EmitterStatID = Emitter->GetStatID(true, true);
+		TStatId EmitterStatID = EmitterInst->GetCachedEmitter().Emitter->GetStatID(true, true);
 		FScopeCycleCounter EmitterStatCounter(EmitterStatID);
 #endif
 
-		Emitter->ForEachEnabledRenderer(
+		EmitterData->ForEachEnabledRenderer(
 			[&](UNiagaraRendererProperties* Properties)
 			{
 				FNiagaraRenderer* Renderer = EmitterRenderers_GT[RendererIndex];
@@ -259,9 +268,9 @@ void FNiagaraSystemRenderData::RecacheRenderers(const FNiagaraSystemInstance& Sy
 	bAnyMotionBlurEnabled = false;
 	for (TSharedRef<const FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInst : SystemInstance.GetEmitters())
 	{
-		if (UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter())
+		if (FVersionedNiagaraEmitterData* EmitterData = EmitterInst->GetCachedEmitterData())
 		{
-			Emitter->ForEachEnabledRenderer(
+			EmitterData->ForEachEnabledRenderer(
 				[&](UNiagaraRendererProperties* Properties)
 			{
 				//We can skip creation of the renderer if the current quality level doesn't support it. If the quality level changes all systems are fully reinitialized.
@@ -309,11 +318,11 @@ void FNiagaraSystemRenderData::PostTickRenderers(const FNiagaraSystemInstance& S
 				const FNiagaraEmitterInstance& EmitterInst = SystemInstance.GetEmitters()[ExecIdx.EmitterIndex].Get();
 				if ( !EmitterInst.IsComplete() )
 				{
-					const UNiagaraEmitter* Emitter = EmitterInst.GetCachedEmitter();
+					FVersionedNiagaraEmitterData* EmitterData = EmitterInst.GetCachedEmitterData();
 					FNiagaraRenderer* EmitterRenderer = EmitterRenderers_GT[ExecIdx.SystemRendererIndex];
-					if (Emitter && EmitterRenderer)
+					if (EmitterData && EmitterRenderer)
 					{
-						const UNiagaraRendererProperties* RendererProperties = Emitter->GetRenderers()[ExecIdx.EmitterRendererIndex];
+						const UNiagaraRendererProperties* RendererProperties = EmitterData->GetRenderers()[ExecIdx.EmitterRendererIndex];
 						EmitterRenderer->PostSystemTick_GameThread(RendererProperties, &EmitterInst);
 					}
 				}
@@ -324,22 +333,29 @@ void FNiagaraSystemRenderData::PostTickRenderers(const FNiagaraSystemInstance& S
 
 void FNiagaraSystemRenderData::OnSystemComplete(const FNiagaraSystemInstance& SystemInstance)
 {
-	// Give renderers a chance to handle completion
-	if (EmitterRenderers_GT.Num() > 0)
+	if (EmitterRenderers_GT.Num() == 0)
 	{
-		const UNiagaraSystem* System = SystemInstance.GetSystem();
-		for (const FNiagaraRendererExecutionIndex& ExecIdx : System->GetRendererCompletionOrder())
+		return;
+	}
+
+	const UNiagaraSystem* System = SystemInstance.GetSystem();
+	const TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>>& EmitterInstances = SystemInstance.GetEmitters();
+	if (EmitterInstances.Num() == 0)
+	{
+		return;
+	}
+
+	for (const FNiagaraRendererExecutionIndex& ExecIdx : System->GetRendererCompletionOrder())
+	{
+		if (EmitterRenderers_GT.IsValidIndex(ExecIdx.SystemRendererIndex) && ensure(EmitterInstances.IsValidIndex(ExecIdx.EmitterIndex)) )
 		{
-			if (EmitterRenderers_GT.IsValidIndex(ExecIdx.SystemRendererIndex))
+			const FNiagaraEmitterInstance& EmitterInstance = EmitterInstances[ExecIdx.EmitterIndex].Get();
+			FVersionedNiagaraEmitterData* EmitterData = EmitterInstance.GetCachedEmitterData();
+			FNiagaraRenderer* EmitterRenderer = EmitterRenderers_GT[ExecIdx.SystemRendererIndex];
+			if (EmitterData && EmitterRenderer)
 			{
-				const FNiagaraEmitterInstance& EmitterInst = SystemInstance.GetEmitters()[ExecIdx.EmitterIndex].Get();
-				const UNiagaraEmitter* Emitter = EmitterInst.GetCachedEmitter();
-				FNiagaraRenderer* EmitterRenderer = EmitterRenderers_GT[ExecIdx.SystemRendererIndex];
-				if (Emitter && EmitterRenderer)
-				{
-					const UNiagaraRendererProperties* RendererProperties = Emitter->GetRenderers()[ExecIdx.EmitterRendererIndex];
-					EmitterRenderer->OnSystemComplete_GameThread(RendererProperties, &EmitterInst);
-				}
+				const UNiagaraRendererProperties* RendererProperties = EmitterData->GetRenderers()[ExecIdx.EmitterRendererIndex];
+				EmitterRenderer->OnSystemComplete_GameThread(RendererProperties, &EmitterInstance);
 			}
 		}
 	}

@@ -26,21 +26,17 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Types/SlateConstants.h"
+#include "RenderGraphResources.h"
+#include "SceneRenderTargetParameters.h"
 
 extern void UpdateNoiseTextureParameters(FViewUniformShaderParameters& ViewUniformShaderParameters);
 
 DECLARE_CYCLE_STAT(TEXT("Update Buffers RT"), STAT_SlateUpdateBufferRTTime, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("Update Buffers RT"), STAT_SlateUpdateBufferRTTimeLambda, STATGROUP_Slate);
 
-
 DECLARE_DWORD_COUNTER_STAT(TEXT("Num Layers"), STAT_SlateNumLayers, STATGROUP_Slate);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Num Batches"), STAT_SlateNumBatches, STATGROUP_Slate);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Num Vertices"), STAT_SlateVertexCount, STATGROUP_Slate);
-
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Texture Draw Call"), STAT_SlateRTTextureDrawCall, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Material Draw Call"), STAT_SlateRTMaterialDrawCall, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Scissor Draw Call"), STAT_SlateRTStencilDrawCall, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Custom Draw"), STAT_SlateRTCustomDraw, STATGROUP_Slate);
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("Clips (Scissor)"), STAT_SlateScissorClips, STATGROUP_Slate);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Clips (Stencil)"), STAT_SlateStencilClips, STATGROUP_Slate);
@@ -108,16 +104,16 @@ void FSlateRHIRenderingPolicy::InitResources()
 
 	UE_LOG(LogSlate, Verbose, TEXT("Allocating space for %d vertices"), NumVertices);
 
-	MasterVertexBuffer.Init(NumVertices);
-	MasterIndexBuffer.Init(NumVertices);
+	SourceVertexBuffer.Init(NumVertices);
+	SourceIndexBuffer.Init(NumVertices);
 
 	BeginInitResource(&StencilVertexBuffer);
 }
 
 void FSlateRHIRenderingPolicy::ReleaseResources()
 {
-	MasterVertexBuffer.Destroy();
-	MasterIndexBuffer.Destroy();
+	SourceVertexBuffer.Destroy();
+	SourceIndexBuffer.Destroy();
 
 	BeginReleaseResource(&StencilVertexBuffer);
 }
@@ -153,12 +149,12 @@ void FSlateRHIRenderingPolicy::BuildRenderingBuffers(FRHICommandListImmediate& R
 		bool bShouldShrinkResources = false;
 		bool bAbsoluteIndices = CVarSlateAbsoluteIndices.GetValueOnRenderThread() != 0;
 
-		MasterVertexBuffer.PreFillBuffer(NumVertices, bShouldShrinkResources);
-		MasterIndexBuffer.PreFillBuffer(NumIndices, bShouldShrinkResources);
+		SourceVertexBuffer.PreFillBuffer(NumVertices, bShouldShrinkResources);
+		SourceIndexBuffer.PreFillBuffer(NumIndices, bShouldShrinkResources);
 
 		RHICmdList.EnqueueLambda([
-			VertexBuffer = MasterVertexBuffer.VertexBufferRHI.GetReference(),
-			IndexBuffer = MasterIndexBuffer.IndexBufferRHI.GetReference(),
+			VertexBuffer = SourceVertexBuffer.VertexBufferRHI.GetReference(),
+			IndexBuffer = SourceIndexBuffer.IndexBufferRHI.GetReference(),
 			&InBatchData,
 			bAbsoluteIndices
 		](FRHICommandListImmediate& InRHICmdList)
@@ -188,8 +184,8 @@ void FSlateRHIRenderingPolicy::BuildRenderingBuffers(FRHICommandListImmediate& R
 		RHICmdList.RHIThreadFence(true);
 	}
 
-	checkSlow(MasterVertexBuffer.GetBufferUsageSize() <= MasterVertexBuffer.GetBufferSize());
-	checkSlow(MasterIndexBuffer.GetBufferUsageSize() <= MasterIndexBuffer.GetBufferSize());
+	checkSlow(SourceVertexBuffer.GetBufferUsageSize() <= SourceVertexBuffer.GetBufferSize());
+	checkSlow(SourceIndexBuffer.GetBufferUsageSize() <= SourceIndexBuffer.GetBufferSize());
 
 	SET_DWORD_STAT(STAT_SlateNumLayers, InBatchData.GetNumLayers());
 	SET_DWORD_STAT(STAT_SlateNumBatches, InBatchData.GetNumFinalBatches());
@@ -238,6 +234,8 @@ static FSceneView* CreateSceneView( FSceneViewFamilyContext* ViewFamilyContext, 
 	// TODO LWC
 	ViewUniformShaderParameters.RelativeWorldViewOrigin = (FVector3f)View->ViewMatrices.GetViewOrigin();
 	
+	// Slate materials need this scale to be positive, otherwise it can fail in querying scene textures (e.g., custom stencil)
+	ViewUniformShaderParameters.BufferToSceneTextureScale = FVector2f(1.0f, 1.0f);
 
 	ERHIFeatureLevel::Type RHIFeatureLevel = View->GetFeatureLevel();
 
@@ -268,11 +266,10 @@ static bool UpdateScissorRect(
 	uint32& MaskingID,
 	FSlateBackBuffer& BackBuffer,
 	const FSlateRenderBatch& RenderBatch, 
-	FTexture2DRHIRef& ColorTarget,
+	FRHIRenderPassInfo& RPInfo,
 	FTexture2DRHIRef& DepthStencilTarget,
 	const FSlateClippingState*& LastClippingState,
-	const FVector2D& ViewTranslation2D, 
-	bool bSwitchVerticalAxis,
+	const FVector2f ViewTranslation2D, 
 	FGraphicsPipelineStateInitializer& InGraphicsPSOInit,
 	FSlateStencilClipVertexBuffer& StencilVertexBuffer,
 	const FMatrix& ViewProjection, 
@@ -301,7 +298,6 @@ static bool UpdateScissorRect(
 					bDidRestartRenderpass = true;
 					ERenderTargetActions StencilAction = IsMemorylessTexture(DepthStencilTarget) ? ERenderTargetActions::DontLoad_DontStore : ERenderTargetActions::Load_Store;
 
-					FRHIRenderPassInfo RPInfo(ColorTarget, ERenderTargetActions::Load_Store);
 					RPInfo.DepthStencilRenderTarget.Action = MakeDepthStencilTargetActions(ERenderTargetActions::DontLoad_DontStore, StencilAction);
 					RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DepthStencilTarget;
 					RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthNop_StencilWrite;
@@ -312,22 +308,13 @@ static bool UpdateScissorRect(
 				const FSlateClippingZone& ScissorRect = ClipState.ScissorRect.GetValue();
 
 				const FIntPoint SizeXY = BackBuffer.GetSizeXY();
-				const FVector2D ViewSize((float) SizeXY.X, (float) SizeXY.Y);
+				const FVector2f ViewSize((float) SizeXY.X, (float) SizeXY.Y);
 
 				// Clamp scissor rect to BackBuffer size
-				const FVector2D TopLeft     = FMath::Min(FMath::Max(FVector2D(ScissorRect.TopLeft)     + ViewTranslation2D, FVector2D(0.0f, 0.0f)), ViewSize);
-				const FVector2D BottomRight = FMath::Min(FMath::Max(FVector2D(ScissorRect.BottomRight) + ViewTranslation2D, FVector2D(0.0f, 0.0f)), ViewSize);
+				const FVector2f TopLeft     = FVector2f::Min(FVector2f::Max(ScissorRect.TopLeft     + ViewTranslation2D, FVector2f(0.0f, 0.0f)), ViewSize);
+				const FVector2f BottomRight = FVector2f::Min(FVector2f::Max(ScissorRect.BottomRight + ViewTranslation2D, FVector2f(0.0f, 0.0f)), ViewSize);
 				
-				if (bSwitchVerticalAxis)
-				{
-					const int32 MinY = (ViewSize.Y - BottomRight.Y);
-					const int32 MaxY = (ViewSize.Y - TopLeft.Y);
-					RHICmdList.SetScissorRect(true, TopLeft.X, MinY, BottomRight.X, MaxY);
-				}
-				else
-				{
-					RHICmdList.SetScissorRect(true, TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y);
-				}
+				RHICmdList.SetScissorRect(true, TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y);
 
 				// Disable depth/stencil testing by default
 				InGraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
@@ -372,7 +359,7 @@ static bool UpdateScissorRect(
 					const FSlateClippingZone& MaskQuad = StencilQuads.Last();
 					const FSlateRect LastStencilBoundingBox = MaskQuad.GetBoundingBox().Round();
 
-					FSlateRect ScissorRect = LastStencilBoundingBox.OffsetBy(ViewTranslation2D);
+					FSlateRect ScissorRect = LastStencilBoundingBox.OffsetBy(FVector2D(ViewTranslation2D));
 
 					// Chosen stencil quad might have some coordinates outside the viewport.
 					// After turning it into a bounding box, this box must be clamped to the current viewport,
@@ -383,17 +370,7 @@ static bool UpdateScissorRect(
 					ScissorRect.Right = FMath::Clamp(ScissorRect.Right, ScissorRect.Left, static_cast<float>(BackBufferSize.X));
 					ScissorRect.Bottom = FMath::Clamp(ScissorRect.Bottom, ScissorRect.Top, static_cast<float>(BackBufferSize.Y));
 
-					if (bSwitchVerticalAxis)
-					{
-						const FIntPoint ViewSize = BackBuffer.GetSizeXY();
-						const int32 MinY = (ViewSize.Y - ScissorRect.Bottom);
-						const int32 MaxY = (ViewSize.Y - ScissorRect.Top);
-						RHICmdList.SetScissorRect(true, ScissorRect.Left, MinY, ScissorRect.Right, MaxY);
-					}
-					else
-					{
-						RHICmdList.SetScissorRect(true, ScissorRect.Left, ScissorRect.Top, ScissorRect.Right, ScissorRect.Bottom);
-					}
+					RHICmdList.SetScissorRect(true, ScissorRect.Left, ScissorRect.Top, ScissorRect.Right, ScissorRect.Bottom);
 				}
 
 				// Don't bother setting the render targets unless we actually need to clear them.
@@ -412,7 +389,6 @@ static bool UpdateScissorRect(
 						StencilAction = bClearStencil ? ERenderTargetActions::Clear_DontStore : ERenderTargetActions::DontLoad_DontStore;
 					}
 
-					FRHIRenderPassInfo RPInfo(ColorTarget, ERenderTargetActions::Load_Store);
 					RPInfo.DepthStencilRenderTarget.Action = MakeDepthStencilTargetActions(ERenderTargetActions::DontLoad_DontStore, StencilAction);
 					RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DepthStencilTarget;
 					RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthNop_StencilWrite;
@@ -420,7 +396,7 @@ static bool UpdateScissorRect(
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateUpdateScissorRect_ClearStencil"));
 				}
 
-				FGlobalShaderMap* MaxFeatureLevelShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+				FGlobalShaderMap* MaxFeatureLevelShaderMap = GetGlobalShaderMap(GMaxRHIShaderPlatform);
 
 				// Set the new shaders
 				TShaderMapRef<FSlateMaskingVS> VertexShader(MaxFeatureLevelShaderMap);
@@ -430,7 +406,7 @@ static bool UpdateScissorRect(
 				{
 					FGraphicsPipelineStateInitializer WriteMaskPSOInit;
 					RHICmdList.ApplyCachedRenderTargets(WriteMaskPSOInit);
-					WriteMaskPSOInit.BlendState = TStaticBlendStateWriteMask<CW_NONE>::GetRHI();
+					WriteMaskPSOInit.BlendState = TStaticBlendStateWriteMask<CW_NONE, CW_NONE, CW_NONE, CW_NONE, CW_NONE, CW_NONE, CW_NONE, CW_NONE>::GetRHI();
 					WriteMaskPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 					WriteMaskPSOInit.DepthStencilState =
 						TStaticDepthStencilState<
@@ -457,15 +433,12 @@ static bool UpdateScissorRect(
 					SetGraphicsPipelineState(RHICmdList, WriteMaskPSOInit, MaskingID + 1);
 
 					VertexShader->SetViewProjection(RHICmdList, FMatrix44f(ViewProjection));
-					VertexShader->SetVerticalAxisMultiplier(RHICmdList, bSwitchVerticalAxis ? -1.0f : 1.0f);
 
 					// Draw the first stencil using SO_Replace, so that we stomp any pixel with a MaskingID + 1.
 					{
 						const FSlateClippingZone& MaskQuad = StencilQuads[0];
 
-						SCOPE_CYCLE_COUNTER(STAT_SlateRTStencilDrawCall);
-
-						VertexShader->SetMaskRect(RHICmdList, FVector2D(MaskQuad.TopLeft), FVector2D(MaskQuad.TopRight), FVector2D(MaskQuad.BottomLeft), FVector2D(MaskQuad.BottomRight));
+						VertexShader->SetMaskRect(RHICmdList, MaskQuad.TopLeft, MaskQuad.TopRight, MaskQuad.BottomLeft, MaskQuad.BottomRight);
 
 						RHICmdList.SetStreamSource(0, StencilVertexBuffer.VertexBufferRHI, 0);
 						RHICmdList.DrawPrimitive(0, 2, 1);
@@ -497,7 +470,6 @@ static bool UpdateScissorRect(
 						SetGraphicsPipelineState(RHICmdList, WriteMaskPSOInit, 0);
 
 						VertexShader->SetViewProjection(RHICmdList, FMatrix44f(ViewProjection));
-						VertexShader->SetVerticalAxisMultiplier(RHICmdList, bSwitchVerticalAxis ? -1.0f : 1.0f);
 					}
 				}
 
@@ -508,9 +480,7 @@ static bool UpdateScissorRect(
 				{
 					const FSlateClippingZone& MaskQuad = StencilQuads[MaskIndex];
 
-					SCOPE_CYCLE_COUNTER(STAT_SlateRTStencilDrawCall);
-					
-					VertexShader->SetMaskRect(RHICmdList, FVector2D(MaskQuad.TopLeft), FVector2D(MaskQuad.TopRight), FVector2D(MaskQuad.BottomLeft), FVector2D(MaskQuad.BottomRight));
+					VertexShader->SetMaskRect(RHICmdList, MaskQuad.TopLeft, MaskQuad.TopRight, MaskQuad.BottomLeft, MaskQuad.BottomRight);
 
 					RHICmdList.SetStreamSource(0, StencilVertexBuffer.VertexBufferRHI, 0);
 					RHICmdList.DrawPrimitive(0, 2, 1);
@@ -564,6 +534,45 @@ static bool UpdateScissorRect(
 	return bDidRestartRenderpass;
 }
 
+static bool UpdateScissorRect(
+	FRHICommandList& RHICmdList,
+#if STATS
+	int32& ScissorClips,
+	int32& StencilClips,
+#endif
+	uint32& StencilRef,
+	uint32& MaskingID,
+	FSlateBackBuffer& BackBuffer,
+	const FSlateRenderBatch& RenderBatch,
+	FTexture2DRHIRef& ColorTarget,
+	FTexture2DRHIRef& DepthStencilTarget,
+	const FSlateClippingState*& LastClippingState,
+	const FVector2f ViewTranslation2D,
+	FGraphicsPipelineStateInitializer& InGraphicsPSOInit,
+	FSlateStencilClipVertexBuffer& StencilVertexBuffer,
+	const FMatrix& ViewProjection,
+	bool bForceStateChange)
+{
+	FRHIRenderPassInfo RPInfo(ColorTarget, ERenderTargetActions::Load_Store);
+	return UpdateScissorRect(RHICmdList,
+#if STATS
+		ScissorClips,
+		StencilClips,
+#endif
+		StencilRef,
+		MaskingID,
+		BackBuffer,
+		RenderBatch,
+		RPInfo,
+		DepthStencilTarget,
+		LastClippingState,
+		ViewTranslation2D,
+		InGraphicsPSOInit,
+		StencilVertexBuffer,
+		ViewProjection,
+		bForceStateChange);
+}
+
 void FSlateRHIRenderingPolicy::DrawElements(
 	FRHICommandListImmediate& RHICmdList,
 	FSlateBackBuffer& BackBuffer,
@@ -601,7 +610,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 	// and re-gammatization of the resulting blending operation in the 8/10 bit RGBA path.
 	// For Editor running in HDR then the gamma needs to be 2.2 and have a float back buffer format.
 
-	const float EngineGamma = (!GIsEditor && (BackBuffer.GetRenderTargetTexture()->GetFormat() == PF_FloatRGBA) && (Params.bIsHDR==false)) ? 1.0 : GEngine ? GEngine->GetDisplayGamma() : 2.2f;
+	const float EngineGamma = (!GIsEditor && (BackBuffer.GetRenderTargetTexture()->GetFormat() == PF_FloatRGBA) && (Params.bIsHDR==false)) ? 1.0f : GEngine ? GEngine->GetDisplayGamma() : 2.2f;
 	const float DisplayGamma = bGammaCorrect ? EngineGamma : 1.0f;
 	const float DisplayContrast = GSlateContrast;
 
@@ -652,12 +661,12 @@ void FSlateRHIRenderingPolicy::DrawElements(
 		SceneViews[NumScenes - 1] = CreateSceneView(SceneViewFamilyContexts[NumScenes - 1], BackBuffer, FMatrix(Params.ViewProjectionMatrix));
 	}
 
-	TShaderMapRef<FSlateElementVS> GlobalVertexShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FSlateElementVS> GlobalVertexShader(GetGlobalShaderMap(GMaxRHIShaderPlatform));
 
 	FSamplerStateRHIRef BilinearClamp = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-	TSlateElementVertexBuffer<FSlateVertex>* VertexBufferPtr = &MasterVertexBuffer;
-	FSlateElementIndexBuffer* IndexBufferPtr = &MasterIndexBuffer;
+	TSlateElementVertexBuffer<FSlateVertex>* VertexBufferPtr = &SourceVertexBuffer;
+	FSlateElementIndexBuffer* IndexBufferPtr = &SourceIndexBuffer;
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -665,14 +674,13 @@ void FSlateRHIRenderingPolicy::DrawElements(
 	const FSlateRenderDataHandle* LastHandle = nullptr;
 
 	const ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
-	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIShaderPlatform);
 
 #if WITH_SLATE_VISUALIZERS
 	FRandomStream BatchColors(1337);
 #endif
 
 	const bool bAbsoluteIndices = CVarSlateAbsoluteIndices.GetValueOnRenderThread() != 0;
-	const bool bSwitchVerticalAxis = Params.bAllowSwitchVerticalAxis && RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]);
 
 	// This variable tracks the last clipping state, so that if multiple batches have the same clipping state, we don't have to do any work.
 	const FSlateClippingState* LastClippingState;
@@ -687,7 +695,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 	// Disable depth/stencil testing by default
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
-	FVector2D ViewTranslation2D = Params.ViewOffset;
+	FVector2f ViewTranslation2D = Params.ViewOffset;
 
 	// Draw each element
 #if WITH_SLATE_DEBUGGING
@@ -703,8 +711,8 @@ void FSlateRHIRenderingPolicy::DrawElements(
 	*/
 	while (NextRenderBatchIndex != INDEX_NONE)
 	{
-		VertexBufferPtr = &MasterVertexBuffer;
-		IndexBufferPtr = &MasterIndexBuffer;
+		VertexBufferPtr = &SourceVertexBuffer;
+		IndexBufferPtr = &SourceIndexBuffer;
 
 		if (!RHICmdList.IsInsideRenderPass())
 		{
@@ -725,7 +733,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("RestartingSlateDrawElements"));
 
 			// Something may have messed with the viewport size so set it back to the full target.
-			RHICmdList.SetViewport(0, 0, 0, BackBuffer.GetSizeXY().X, BackBuffer.GetSizeXY().Y, 0.0f);
+			RHICmdList.SetViewport(0.f, 0.f, 0.f, (float)BackBuffer.GetSizeXY().X, (float)BackBuffer.GetSizeXY().Y, 0.0f);
 
 			// Re-apply render target states to the PSO initializer, since we've changed the depth/stencil target.
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -779,7 +787,6 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				DepthStencilTarget,
 				LastClippingState,
 				ViewTranslation2D,
-				bSwitchVerticalAxis,
 				GraphicsPSOInit,
 				StencilVertexBuffer,
 				ViewProjection,
@@ -999,10 +1006,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				}
 
 				{
-					QUICK_SCOPE_CYCLE_COUNTER(Slate_SetTextureShaderParams);
-
 					GlobalVertexShader->SetViewProjection(RHICmdList, FMatrix44f(ViewProjection));
-					GlobalVertexShader->SetVerticalAxisMultiplier(RHICmdList, bSwitchVerticalAxis ? -1.0f : 1.0f);
 
 					if (bIsVirtualTexture && (TextureResource != nullptr))
 					{
@@ -1020,8 +1024,6 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				}
 
 				{
-					SCOPE_CYCLE_COUNTER(STAT_SlateRTTextureDrawCall);
-
 					// for RHIs that can't handle VertexOffset, we need to offset the stream source each time
 					RHICmdList.SetStreamSource(0, VertexBufferPtr->VertexBufferRHI, RenderBatch.VertexOffset * sizeof(FSlateVertex));
 					RHICmdList.DrawIndexedPrimitive(IndexBufferPtr->IndexBufferRHI, 0, 0, RenderBatch.NumVertices, RenderBatch.IndexOffset, PrimitiveCount, RenderBatch.InstanceCount);
@@ -1142,9 +1144,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, StencilRef);
 
 							{
-								QUICK_SCOPE_CYCLE_COUNTER(Slate_SetMaterialShaderParams);
 								VertexShader->SetViewProjection(RHICmdList, FMatrix44f(ViewProjection));
-								VertexShader->SetVerticalAxisMultiplier(RHICmdList, bSwitchVerticalAxis ? -1.0f : 1.0f);
 								VertexShader->SetMaterialShaderParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, EffectiveMaterial);
 
 								PixelShader->SetParameters(RHICmdList, ActiveSceneView, MaterialRenderProxy, EffectiveMaterial, ShaderParams);
@@ -1165,7 +1165,6 @@ void FSlateRHIRenderingPolicy::DrawElements(
 						}
 
 						{
-							SCOPE_CYCLE_COUNTER(STAT_SlateRTMaterialDrawCall);
 							if (bUseInstancing)
 							{
 								uint32 InstanceCount = RenderBatch.InstanceCount;
@@ -1198,28 +1197,29 @@ void FSlateRHIRenderingPolicy::DrawElements(
 				const FVector4f QuadPositionData = ShaderParams.PixelParams;
 
 				FPostProcessRectParams RectParams;
-				RectParams.SourceTexture = PostProcessTexture->GetTexture2D();
-				RectParams.SourceRect = FSlateRect(0, 0, PostProcessTexture->GetSizeX(), PostProcessTexture->GetSizeY());
+				RectParams.SourceTexture = PostProcessTexture;
+				RectParams.SourceRect = FSlateRect(0.f, 0.f, (float)PostProcessTexture->GetSizeX(), (float)PostProcessTexture->GetSizeY());
 				RectParams.DestRect = FSlateRect(QuadPositionData.X, QuadPositionData.Y, QuadPositionData.Z, QuadPositionData.W);
 				RectParams.SourceTextureSize = PostProcessTexture->GetSizeXY();
-				RectParams.CornerRadius = (FVector4)ShaderParams.PixelParams3;
+				RectParams.CornerRadius = ShaderParams.PixelParams3;
+				RectParams.UITarget = Params.UITarget;
+				RectParams.HDRDisplayColorGamut = Params.HDRDisplayColorGamut;
 
-				RectParams.RestoreStateFunc = [&](FRHICommandListImmediate&InRHICmdList, FGraphicsPipelineStateInitializer& InGraphicsPSOInit) {
+				RectParams.RestoreStateFunc = [&](FRHICommandListImmediate&InRHICmdList, FGraphicsPipelineStateInitializer& InGraphicsPSOInit, FRHIRenderPassInfo& RPInfo) {
 					return UpdateScissorRect(
 						InRHICmdList,
 #if STATS
 						ScissorClips,
 						StencilClips,
 #endif
-						StencilRef,
+						RectParams.StencilRef,
 						MaskingID,
 						BackBuffer,
 						RenderBatch,
-						ColorTarget,
+						RPInfo,
 						DepthStencilTarget,
 						LastClippingState,
 						ViewTranslation2D,
-						bSwitchVerticalAxis,
 						InGraphicsPSOInit,
 						StencilVertexBuffer,
 						FMatrix(Params.ViewProjectionMatrix),
@@ -1277,6 +1277,7 @@ void FSlateRHIRenderingPolicy::DrawElements(
 		RectParams.SourceRect = FSlateRect(0, 0, BackBuffer.GetSizeXY().X, BackBuffer.GetSizeXY().Y);
 		RectParams.DestRect = FSlateRect(0, 0, BackBuffer.GetSizeXY().X, BackBuffer.GetSizeXY().Y);
 		RectParams.SourceTextureSize = BackBuffer.GetSizeXY();
+		RectParams.CornerRadius = FVector4f(0.f, 0.f, 0.f, 0.f);
 
 		PostProcessor->ColorDeficiency(RHICmdList, RendererModule, RectParams);
 
@@ -1343,7 +1344,6 @@ ETextureSamplerFilter FSlateRHIRenderingPolicy::GetSamplerFilter(const UTexture*
 TShaderRef<FSlateElementPS> FSlateRHIRenderingPolicy::GetTexturePixelShader( FGlobalShaderMap* ShaderMap, ESlateShader ShaderType, ESlateDrawEffect DrawEffects, bool bIsVirtualTexture )
 {
 	TShaderRef<FSlateElementPS> PixelShader;
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_Slate_GetTexturePixelShader);
 
 #if WITH_SLATE_VISUALIZERS
 	if ( CVarShowSlateOverdraw.GetValueOnRenderThread() != 0 )

@@ -10,7 +10,9 @@
 
 const FQuat HandRootFixupRotation = FQuat(-0.5f, -0.5f, 0.5f, 0.5f);
 
-UOculusHandComponent::UOculusHandComponent(const FObjectInitializer& ObjectInitializer)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+UDEPRECATED_UOculusHandComponent::UDEPRECATED_UOculusHandComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -28,12 +30,12 @@ UOculusHandComponent::UOculusHandComponent(const FObjectInitializer& ObjectIniti
 	}
 }
 
-void UOculusHandComponent::BeginPlay()
+void UDEPRECATED_UOculusHandComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
 	// Use custom mesh if a skeletal mesh is already set, else try to load the runtime mesh
-	if (SkeletalMesh)
+	if (GetSkinnedAsset())
 	{
 		bCustomHandMesh = true;
 		bSkeletalMeshInitialized = true;
@@ -45,13 +47,13 @@ void UOculusHandComponent::BeginPlay()
 	}
 }
 
-void UOculusHandComponent::InitializeSkeletalMesh()
+void UDEPRECATED_UOculusHandComponent::InitializeSkeletalMesh()
 {
 	if (RuntimeSkeletalMesh)
 	{
-		if (UOculusInputFunctionLibrary::GetHandSkeletalMesh(RuntimeSkeletalMesh, SkeletonType, MeshType))
+		if (UDEPRECATED_UOculusInputFunctionLibrary::GetHandSkeletalMesh(RuntimeSkeletalMesh, SkeletonType, MeshType))
 		{
-			SetSkeletalMesh(RuntimeSkeletalMesh);
+			SetSkinnedAssetAndUpdate(RuntimeSkeletalMesh, true);
 			if (MaterialOverride)
 			{
 				SetMaterial(0, MaterialOverride);
@@ -62,13 +64,13 @@ void UOculusHandComponent::InitializeSkeletalMesh()
 			// Initialize physics capsules on the runtime mesh
 			if (bInitializePhysics)
 			{
-				CollisionCapsules = UOculusInputFunctionLibrary::InitializeHandPhysics(SkeletonType, this);
+				CollisionCapsules = UDEPRECATED_UOculusInputFunctionLibrary::InitializeHandPhysics(SkeletonType, this);
 			}
 		}
 	}
 }
 
-void UOculusHandComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+void UDEPRECATED_UOculusHandComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
@@ -89,24 +91,24 @@ void UOculusHandComponent::TickComponent(float DeltaTime, enum ELevelTick TickTy
 	if (bHasAuthority)
 	{
 		bool bHidden = false;
-		if (UOculusInputFunctionLibrary::IsHandTrackingEnabled())
+		if (UDEPRECATED_UOculusInputFunctionLibrary::IsHandTrackingEnabled())
 		{
 			// Update Visibility based on Confidence
 			if (ConfidenceBehavior == EConfidenceBehavior::HideActor)
 			{
-				ETrackingConfidence TrackingConfidence = UOculusInputFunctionLibrary::GetTrackingConfidence(SkeletonType);
+				ETrackingConfidence TrackingConfidence = UDEPRECATED_UOculusInputFunctionLibrary::GetTrackingConfidence(SkeletonType);
 				bHidden |= TrackingConfidence != ETrackingConfidence::High;
 			}
 
 			// Update Hand Scale
 			if (bUpdateHandScale)
 			{
-				float NewScale = UOculusInputFunctionLibrary::GetHandScale(SkeletonType);
+				float NewScale = UDEPRECATED_UOculusInputFunctionLibrary::GetHandScale(SkeletonType);
 				SetRelativeScale3D(FVector(NewScale));
 			}
 
 			// Update Bone Pose Rotations
-			if (SkeletalMesh)
+			if (GetSkinnedAsset())
 			{
 				UpdateBonePose();
 			}
@@ -145,7 +147,7 @@ void UOculusHandComponent::TickComponent(float DeltaTime, enum ELevelTick TickTy
 	}
 }
 
-void UOculusHandComponent::UpdateBonePose()
+void UDEPRECATED_UOculusHandComponent::UpdateBonePose()
 {
 	if (bCustomHandMesh)
 	{
@@ -154,7 +156,7 @@ void UOculusHandComponent::UpdateBonePose()
 			// Set Root Bone Rotaiton
 			if (BoneElem.Key == EBone::Wrist_Root)
 			{
-				FQuat RootBoneRotation = UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, EBone::Wrist_Root);
+				FQuat RootBoneRotation = UDEPRECATED_UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, EBone::Wrist_Root);
 				RootBoneRotation *= HandRootFixupRotation;
 				RootBoneRotation.Normalize();
 				BoneSpaceTransforms[0].SetRotation(RootBoneRotation);
@@ -163,10 +165,10 @@ void UOculusHandComponent::UpdateBonePose()
 			else
 			{
 				// Set Remaing Bone Rotations
-				int32 BoneIndex = SkeletalMesh->GetRefSkeleton().FindBoneIndex(BoneElem.Value);
+				int32 BoneIndex = GetSkinnedAsset()->GetRefSkeleton().FindBoneIndex(BoneElem.Value);
 				if (BoneIndex >= 0)
 				{
-					FQuat BoneRotation = UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, (EBone)BoneElem.Key);
+					FQuat BoneRotation = UDEPRECATED_UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, (EBone)BoneElem.Key);
 					BoneSpaceTransforms[BoneIndex].SetRotation(BoneRotation);
 				}
 			}
@@ -175,22 +177,22 @@ void UOculusHandComponent::UpdateBonePose()
 	else
 	{
 		// Set Root Bone Rotation
-		FQuat RootBoneRotation = UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, EBone::Wrist_Root);
+		FQuat RootBoneRotation = UDEPRECATED_UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, EBone::Wrist_Root);
 		RootBoneRotation *= HandRootFixupRotation;
 		RootBoneRotation.Normalize();
 		BoneSpaceTransforms[0].SetRotation(RootBoneRotation);
 
 		// Set Remaining Bone Rotations
-		for (uint32 BoneIndex = 1; BoneIndex < (uint32)SkeletalMesh->GetRefSkeleton().GetNum(); BoneIndex++)
+		for (uint32 BoneIndex = 1; BoneIndex < (uint32)GetSkinnedAsset()->GetRefSkeleton().GetNum(); BoneIndex++)
 		{
-			FQuat BoneRotation = UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, (EBone)BoneIndex);
+			FQuat BoneRotation = UDEPRECATED_UOculusInputFunctionLibrary::GetBoneRotation(SkeletonType, (EBone)BoneIndex);
 			BoneSpaceTransforms[BoneIndex].SetRotation(BoneRotation);
 		}
 	}
 	MarkRefreshTransformDirty();
 }
 
-void UOculusHandComponent::SystemGesturePressed()
+void UDEPRECATED_UOculusHandComponent::SystemGesturePressed()
 {
 	if (SystemGestureBehavior == ESystemGestureBehavior::SwapMaterial)
 	{
@@ -205,7 +207,7 @@ void UOculusHandComponent::SystemGesturePressed()
 	}
 }
 
-void UOculusHandComponent::SystemGestureReleased()
+void UDEPRECATED_UOculusHandComponent::SystemGestureReleased()
 {
 	if (SystemGestureBehavior == ESystemGestureBehavior::SwapMaterial)
 	{
@@ -219,3 +221,5 @@ void UOculusHandComponent::SystemGestureReleased()
 		}
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

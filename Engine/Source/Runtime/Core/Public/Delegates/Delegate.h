@@ -7,8 +7,9 @@
 #include "UObject/NameTypes.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/WeakObjectPtrTemplates.h"
-#include "Delegates/MulticastDelegateBase.h"
-#include "Delegates/IntegerSequence.h"
+#include "Delegates/MulticastDelegateBase.h" // IWYU pragma: export
+#include "Delegates/TSMulticastDelegateBase.h"
+#include "Delegates/IntegerSequence.h" // IWYU pragma: export
 
 /**
  *  C++ DELEGATES
@@ -210,6 +211,10 @@
 #define FUNC_DECLARE_MULTICAST_DELEGATE( MulticastDelegateName, ReturnType, ... ) \
 	typedef TMulticastDelegate<ReturnType(__VA_ARGS__)> MulticastDelegateName;
 
+  /** Declares a broadcast thread-safe delegate that can bind to multiple native functions simultaneously */
+#define FUNC_DECLARE_TS_MULTICAST_DELEGATE( MulticastDelegateName, ReturnType, ... ) \
+	typedef TMulticastDelegate<ReturnType(__VA_ARGS__), FDefaultTSDelegateUserPolicy> MulticastDelegateName;
+
 /**
  * Declares a multicast delegate that is meant to only be activated from OwningType
  *
@@ -406,7 +411,7 @@ class DynamicMulticastDelegateClassName : public TBaseDynamicMulticastDelegate<T
 
 #else
 
-	#define STATIC_FUNCTION_FNAME(str) UE4Delegates_Private::GetTrimmedMemberFunctionName(str)
+	#define STATIC_FUNCTION_FNAME(str) UE::Delegates::Private::GetTrimmedMemberFunctionName(str)
 
 #endif
 
@@ -452,7 +457,7 @@ class DynamicMulticastDelegateClassName : public TBaseDynamicMulticastDelegate<T
 #define IsAlreadyBound( UserObject, FuncName ) __Internal_IsAlreadyBound( UserObject, FuncName, STATIC_FUNCTION_FNAME( TEXT( #FuncName ) ) )
 
 
-namespace UE4Delegates_Private
+namespace UE::Delegates::Private
 {
 	/**
 	 * Returns the root function name from a string representing a member function pointer.
@@ -494,6 +499,7 @@ namespace UE4Delegates_Private
 // Simple delegate used by various utilities such as timers
 DECLARE_DELEGATE( FSimpleDelegate );
 DECLARE_MULTICAST_DELEGATE( FSimpleMulticastDelegate );
+DECLARE_TS_MULTICAST_DELEGATE( FTSSimpleMulticastDelegate );
 
 // Legacy typedefs
 template <typename RetType, typename... ArgTypes>

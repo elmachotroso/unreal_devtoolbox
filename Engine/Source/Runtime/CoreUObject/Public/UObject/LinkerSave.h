@@ -2,18 +2,37 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Compression/CompressedBuffer.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "IO/IoHash.h"
+#include "Serialization/Archive.h"
 #include "Serialization/ArchiveUObject.h"
 #include "Serialization/FileRegions.h"
+#include "Templates/Function.h"
 #include "Templates/RefCounting.h"
+#include "Templates/UniquePtr.h"
 #include "UObject/Linker.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectResource.h"
 #include "UObject/PackageTrailer.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/UObjectThreadContext.h"
 
+class FBulkData;
 class FObjectPostSaveContext;
-struct FUntypedBulkData;
+class FOutputDevice;
+class FPackagePath;
+class UObject;
+class UPackage;
+namespace UE { class FDerivedData; }
+namespace UE { class FPackageTrailerBuilder; }
+struct FLazyObjectPtr;
+struct FUObjectSerializeContext;
 
 /*----------------------------------------------------------------------------
 	FLinkerSave.
@@ -46,8 +65,14 @@ public:
 	/** List of Searchable Names, by object containing them. This gets turned into package indices later */
 	TMap<const UObject *, TArray<FName> > SearchableNamesObjectMap;
 
-	/** Index array - location of the name in the NameMap array for each FName is stored in the NameIndices array using the FName's Index */
+	/* Map from FName to the index of the name in the name array written into the package header. */
 	TMap<FNameEntryId, int32> NameIndices;
+
+	/* Map from FSoftObjectPath to the index of the path in the soft object path array written into the package header. */
+	TMap<FSoftObjectPath, int32> SoftObjectPathIndices;
+
+	/** Flag that indicate if we are currently serializing the package header. Used to disable mapping while serializing the header itself. */
+	bool bIsWritingHeader = false;
 
 	/** Save context associated with this linker */
 	TRefCountPtr<FUObjectSerializeContext> SaveContext;
@@ -66,7 +91,7 @@ public:
 		/** The file region type to apply to this bulk data */
 		EFileRegionType BulkDataFileRegionType;
 		/** The bulkdata */
-		FUntypedBulkData* BulkData;
+		FBulkData* BulkData;
 	};
 	TArray<FBulkDataStorageInfo> BulkDataToAppend;
 	TArray<FFileRegion> FileRegions;
@@ -103,6 +128,9 @@ public:
 	 * This is used e.g. to decide whether to update the in-memory file offsets for BulkData.
 	 */
 	bool bUpdatingLoadedPath = false;
+
+	/** When set to true, payloads that are currently virtualized should be downloaded and stored locally with the package */
+	bool bRehydratePayloads = false;
 	
 	struct FSidecarStorageInfo
 	{
@@ -135,8 +163,11 @@ public:
 	/** Constructor for custom savers. The linker assumes ownership of the custom saver. */
 	FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteSwapping, bool bInSaveUnversioned = false);
 
-	/** Returns the appropriate name index for the source name, or 0 if not found in NameIndices */
+	/** Returns the appropriate name index for the source name, or INDEX_NONE if not found in NameIndices */
 	int32 MapName( FNameEntryId Name) const;
+
+	/** Returns the appropriate soft object path index for the source soft object path, or INDEX_NONE if not found. */
+	int32 MapSoftObjectPath(const FSoftObjectPath& SoftObjectPath) const;
 
 	/** Returns the appropriate package index for the source object, or default value if not found in ObjectIndicesMap */
 	FPackageIndex MapObject(const UObject* Object) const;
@@ -145,6 +176,7 @@ public:
 	using FArchiveUObject::operator<<; // For visibility of the overloads we don't override
 	FArchive& operator<<( FName& InName );
 	FArchive& operator<<( UObject*& Obj );
+	FArchive& operator<<(FSoftObjectPath& SoftObjectPath);
 	FArchive& operator<<( FLazyObjectPtr& LazyObjectPtr );
 	virtual void SetSerializeContext(FUObjectSerializeContext* InLoadContext) override;
 	FUObjectSerializeContext* GetSerializeContext() override;
@@ -154,6 +186,11 @@ public:
 	 * This sets it on itself, the summary, the actual Saver Archive if any and set the proper associated flag on the LinkerRoot
 	 */
 	virtual void SetUseUnversionedPropertySerialization(bool bInUseUnversioned) override;
+	/**
+	 * Sets whether we should be filtering editor only.
+	 * This sets it on itself, the summary, the actual Saver Archive if any and set the proper associated flag on the LinkerRoot
+	 */
+	virtual void SetFilterEditorOnly(bool bInFilterEditorOnly) override;
 
 
 #if WITH_EDITOR
@@ -207,6 +244,16 @@ public:
 	{
 		return LogOutput;
 	}
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Adds the derived data to the package. This is only supported when saving a cooked package.
+	 *
+	 * @return A reference that can be used to load the derived data from the cooked package.
+	 */
+	UE::FDerivedData AddDerivedData(const UE::FDerivedData& Data);
+#endif // WITH_EDITORONLY_DATA
+
 protected:
 	/** Set the filename being saved to */
 	void SetFilename(FStringView InFilename);
@@ -214,4 +261,9 @@ protected:
 private:
 	/** Optional log output to bubble errors back up. */
 	FOutputDevice* LogOutput = nullptr;
+
+#if WITH_EDITORONLY_DATA
+	/** The index of the last derived data chunk added to the package. */
+	int32 LastDerivedDataIndex = -1;
+#endif
 };

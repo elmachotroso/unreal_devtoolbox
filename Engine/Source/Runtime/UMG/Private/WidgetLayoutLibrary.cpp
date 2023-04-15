@@ -23,13 +23,15 @@
 #include "Engine/UserInterfaceSettings.h"
 #include "Slate/SlateBrushAsset.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
-#include "Runtime/Engine/Classes/Engine/UserInterfaceSettings.h"
-#include "Runtime/Engine/Classes/Engine/RendererSettings.h"
+#include "Engine/UserInterfaceSettings.h"
+#include "Engine/RendererSettings.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "Slate/SceneViewport.h"
 #include "Slate/SGameLayerManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/FrameValue.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WidgetLayoutLibrary)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -79,7 +81,7 @@ bool UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPositionWithDistance(APla
 	return false;
 }
 
-float UWidgetLayoutLibrary::GetViewportScale(UObject* WorldContextObject)
+float UWidgetLayoutLibrary::GetViewportScale(const UObject* WorldContextObject)
 {
 	static TFrameValue<float> ViewportScaleCache;
 
@@ -104,7 +106,7 @@ float UWidgetLayoutLibrary::GetViewportScale(UObject* WorldContextObject)
 	return ViewportScaleCache.GetValue();
 }
 
-float UWidgetLayoutLibrary::GetViewportScale(UGameViewportClient* ViewportClient)
+float UWidgetLayoutLibrary::GetViewportScale(const UGameViewportClient* ViewportClient)
 {
 	FVector2D ViewportSize;
 	ViewportClient->GetViewportSize(ViewportSize);
@@ -369,3 +371,4 @@ void UWidgetLayoutLibrary::RemoveAllWidgets(UObject* WorldContextObject)
 }
 
 #undef LOCTEXT_NAMESPACE
+

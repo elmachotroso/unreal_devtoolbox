@@ -1,23 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkPredictionInsightsModule.h"
-#include "Features/IModularFeatures.h"
-#include "Insights/ITimingViewExtender.h"
+
 #include "Containers/Ticker.h"
-#include "Modules/ModuleManager.h"
+#include "Features/IModularFeatures.h"
 #include "Framework/Docking/LayoutExtender.h"
-#include "Insights/IUnrealInsightsModule.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "WorkspaceMenuStructure.h"
-#include "WorkspaceMenuStructureModule.h"
+#include "Insights/ITimingViewExtender.h"
+#include "Insights/IUnrealInsightsModule.h"
+#include "Misc/CommandLine.h"
+#include "Modules/ModuleManager.h"
+#include "Stats/Stats.h"
+#include "String/ParseTokens.h"
+#include "Styling/AppStyle.h"
+#include "Trace/StoreClient.h"
 #include "TraceServices/ITraceServicesModule.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Trace/StoreClient.h"
-#include "Stats/Stats.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
-#include "UI/SNPWindow.h"
 #include "UI/NetworkPredictionInsightsManager.h"
-#include "EditorStyleSet.h"
+#include "UI/SNPWindow.h"
 
 #if WITH_ENGINE
 #include "Engine/Engine.h"
@@ -33,10 +37,23 @@ const FName FNetworkPredictionInsightsModule::InsightsTabName("NetworkPrediction
 
 void FNetworkPredictionInsightsModule::StartupModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/NetworkPredictionInsights"));
+
 	IModularFeatures::Get().RegisterModularFeature(TraceServices::ModuleFeatureName, &NetworkPredictionTraceModule);
 
 	FNetworkPredictionInsightsManager::Initialize();
 	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+
+	bool bShouldStartNetworkTrace = false;
+
+	FString EnabledChannels;
+	FParse::Value(FCommandLine::Get(), TEXT("-trace="), EnabledChannels, false);
+	UE::String::ParseTokens(EnabledChannels, TEXT(","), [&bShouldStartNetworkTrace](FStringView Token) {
+		if (Token.Compare(TEXT("NetworkPrediction"), ESearchCase::IgnoreCase) == 0 || Token.Compare(TEXT("NP"), ESearchCase::IgnoreCase) == 0)
+		{
+			bShouldStartNetworkTrace = true;
+		}
+		});
 
 	// Auto spawn the Network Prediction Insights tab if we detect NP data
 	// Only do this in Standalone UnrealInsights.exe. In Editor the user will select the NPI window manually.
@@ -73,8 +90,15 @@ void FNetworkPredictionInsightsModule::StartupModule()
 
 	// Actually register our tab spawner
 	FTabSpawnerEntry& TabSpawnerEntry = FGlobalTabmanager::Get()->RegisterNomadTabSpawner(FNetworkPredictionInsightsModule::InsightsTabName,
-		FOnSpawnTab::CreateLambda([](const FSpawnTabArgs& Args)
+		FOnSpawnTab::CreateLambda([bShouldStartNetworkTrace](const FSpawnTabArgs& Args)
 	{
+		LLM_SCOPE_BYNAME(TEXT("Insights/NetworkPredictionInsights"));
+
+		if (bShouldStartNetworkTrace)
+		{
+			StartNetworkTrace();
+		}
+
 		const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 			.TabRole(ETabRole::NomadTab);
 
@@ -84,7 +108,7 @@ void FNetworkPredictionInsightsModule::StartupModule()
 	}))
 		.SetDisplayName(NSLOCTEXT("FNetworkPredictionInsightsModule", "NetworkPredictionTabTitle", "Network Prediction Insights"))
 		.SetTooltipText(NSLOCTEXT("FNetworkPredictionInsightsModule", "FilteringTabTooltip", "Opens the Network Prediction Insights tab."))
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ProfilerCommand.StatsProfiler.Small"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ProfilerCommand.StatsProfiler.Small"));
 
 	//TabSpawnerEntry.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsProfilingCategory());
 	TabSpawnerEntry.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory());
@@ -92,13 +116,15 @@ void FNetworkPredictionInsightsModule::StartupModule()
 	// -------------------------------------------------------------
 
 #if WITH_EDITOR
-	if (!IsRunningCommandlet())
+	if (!IsRunningCommandlet() && bShouldStartNetworkTrace)
 	{
 		// Conditionally create local store service after engine init (if someone doesn't beat us to it).
 		// This is temp until a more formal local server is done by the insights system.
 		StoreServiceHandle = FCoreDelegates::OnFEngineLoopInitComplete.AddLambda([this]
 		{
+			LLM_SCOPE_BYNAME(TEXT("Insights/NetworkPredictionInsights"));
 			IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+
 			if (!UnrealInsightsModule.GetStoreClient())
 			{
 #if WITH_TRACE_STORE
@@ -121,22 +147,19 @@ void FNetworkPredictionInsightsModule::StartupModule()
 #else
 				UE_LOG(LogCore, Display, TEXT("NetworkPredictionInsights module auto-connecting to local trace server..."));
 				UnrealInsightsModule.ConnectToStore(TEXT("127.0.0.1"));
-				const bool bConnected = FTraceAuxiliary::Start(
-					FTraceAuxiliary::EConnectionType::Network,
-					TEXT("127.0.0.1"),
-					nullptr);
 #endif // WITH_TRACE_STORE
 
 				UnrealInsightsModule.CreateSessionViewer(false);
-				UnrealInsightsModule.StartAnalysisForLastLiveSession();
 			}
 		});
 	}
-#endif
+#endif // WITH_EDITOR
 }
 
 void FNetworkPredictionInsightsModule::ShutdownModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/NetworkPredictionInsights"));
+
 	if (StoreServiceHandle.IsValid())
 	{
 		FCoreDelegates::OnFEngineLoopInitComplete.Remove(StoreServiceHandle);
@@ -145,6 +168,21 @@ void FNetworkPredictionInsightsModule::ShutdownModule()
 	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 
 	IModularFeatures::Get().UnregisterModularFeature(TraceServices::ModuleFeatureName, &NetworkPredictionTraceModule);
+}
+
+void FNetworkPredictionInsightsModule::StartNetworkTrace()
+{
+#if WITH_EDITOR
+	UE::Trace::ToggleChannel(TEXT("NetworkPredictionChannel"), true);
+
+	const bool bConnected = FTraceAuxiliary::Start(
+		FTraceAuxiliary::EConnectionType::Network,
+		TEXT("127.0.0.1"),
+		nullptr);
+
+	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+	UnrealInsightsModule.StartAnalysisForLastLiveSession();
+#endif
 }
 
 IMPLEMENT_MODULE(FNetworkPredictionInsightsModule, NetworkPredictionInsights);

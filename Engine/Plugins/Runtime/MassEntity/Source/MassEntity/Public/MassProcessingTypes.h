@@ -6,11 +6,14 @@
 #include "InstancedStruct.h"
 #include "MassProcessingTypes.generated.h"
 
+#ifndef MASS_DO_PARALLEL
+#define MASS_DO_PARALLEL !UE_SERVER
+#endif // MASS_DO_PARALLEL
+
 #define WITH_MASSENTITY_DEBUG (!(UE_BUILD_SHIPPING || UE_BUILD_SHIPPING_WITH_EDITOR || UE_BUILD_TEST) && WITH_STRUCTUTILS_DEBUG && 1)
 
-class UMassEntitySubsystem;
+struct FMassEntityManager;
 class UMassProcessor;
-class UMassSchematic;
 class UMassCompositeProcessor;
 struct FMassCommandBuffer;
 
@@ -36,8 +39,7 @@ struct MASSENTITY_API FMassProcessingContext
 {
 	GENERATED_BODY()
 
-	UPROPERTY()
-	UMassEntitySubsystem* EntitySubsystem = nullptr;
+	TSharedPtr<FMassEntityManager> EntityManager;
 	
 	UPROPERTY()
 	float DeltaSeconds = 0.f;
@@ -55,12 +57,13 @@ struct MASSENTITY_API FMassProcessingContext
 	TSharedPtr<FMassCommandBuffer> CommandBuffer;
 	
 	FMassProcessingContext() = default;
-	FMassProcessingContext(UMassEntitySubsystem& InEntitySubsystem, const float InDeltaSeconds);
+	FMassProcessingContext(FMassEntityManager& InEntityManager, const float InDeltaSeconds);
+	FMassProcessingContext(TSharedPtr<FMassEntityManager>& InEntityManager, const float InDeltaSeconds);
 	~FMassProcessingContext();
 };
 
 /** 
- *  A helper type that converts a set of UMassSchematics into a runtime-usable array of MassProcessor copies
+ *  Runtime-usable array of MassProcessor copies
  */
 USTRUCT()
 struct MASSENTITY_API FMassRuntimePipeline
@@ -68,16 +71,13 @@ struct MASSENTITY_API FMassRuntimePipeline
 	GENERATED_BODY()
 
 	UPROPERTY()
-	TArray<UMassProcessor*> Processors;
+	TArray<TObjectPtr<UMassProcessor>> Processors;
 
 	void Reset();
 	void Initialize(UObject& Owner);
 	
 	/** Creates runtime copies of the given UMassProcessors collection. */
 	void SetProcessors(TArray<UMassProcessor*>&& InProcessors);
-
-	/** Creates runtime copies of UMassProcessors declared in Schematics using InOwner as new UMassProcessors' outer. */
-	void InitializeFromSchematics(TConstArrayView<TSoftObjectPtr<UMassSchematic>> Schematics, UObject& InOwner);
 
 	/** Creates runtime copies of UMassProcessors given in InProcessors input parameter, using InOwner as new UMassProcessors' outer. */
 	void CreateFromArray(TConstArrayView<const UMassProcessor*> InProcessors, UObject& InOwner);
@@ -107,8 +107,6 @@ struct MASSENTITY_API FMassRuntimePipeline
 
 	/** goes through Processor looking for a UMassCompositeProcessor instance which GroupName matches the one given as the parameter */
 	UMassCompositeProcessor* FindTopLevelGroupByName(const FName GroupName);
-
-	void DebugOutputDescription(FOutputDevice& Ar) const;
 
 	bool HasProcessorOfExactClass(TSubclassOf<UMassProcessor> InClass) const;
 	bool IsEmpty() const { return Processors.IsEmpty();}

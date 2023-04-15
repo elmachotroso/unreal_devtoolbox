@@ -3,23 +3,13 @@
 #include "Customizations/NiagaraEventScriptPropertiesCustomization.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateTypes.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "DetailWidgetRow.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
-#include "DetailWidgetRow.h"
 #include "NiagaraEmitter.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
 #include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "NiagaraSystem.h"
-#include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
 #include "ScopedTransaction.h"
 #include "SGraphActionMenu.h"
@@ -27,16 +17,17 @@
 #include "Editor.h"
 #include "IDetailChildrenBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEventScriptPropertiesCustomization)
+
 #define LOCTEXT_NAMESPACE "FNiagaraEventScriptPropertiesCustomization"
 
-TSharedRef<IPropertyTypeCustomization> FNiagaraEventScriptPropertiesCustomization::MakeInstance(TWeakObjectPtr<UNiagaraSystem> InSystem,
-TWeakObjectPtr<UNiagaraEmitter> InEmitter)
+TSharedRef<IPropertyTypeCustomization> FNiagaraEventScriptPropertiesCustomization::MakeInstance(TWeakObjectPtr<UNiagaraSystem> InSystem, FVersionedNiagaraEmitterWeakPtr InEmitter)
 {
 	return MakeShareable(new FNiagaraEventScriptPropertiesCustomization(InSystem, InEmitter));
 }
 
 FNiagaraEventScriptPropertiesCustomization::FNiagaraEventScriptPropertiesCustomization(TWeakObjectPtr<UNiagaraSystem> InSystem,
-	TWeakObjectPtr<UNiagaraEmitter> InEmitter) : System(InSystem), Emitter(InEmitter)
+	FVersionedNiagaraEmitterWeakPtr InEmitter) : System(InSystem), Emitter(InEmitter)
 {
 	GEditor->RegisterForUndo(this);
 }
@@ -67,6 +58,7 @@ void FNiagaraEventScriptPropertiesCustomization::CustomizeChildren(TSharedRef<IP
 	HandleMaxEvents = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraEventScriptProperties, MaxEventsPerFrame));
 	HandleUseRandomSpawnNumber = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraEventScriptProperties, bRandomSpawnNumber));
 	HandleMinSpawnNumber = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraEventScriptProperties, MinSpawnNumber));
+	HandleUpdateInitialValues = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraEventScriptProperties, UpdateAttributeInitialValues));
 
 	ResolveEmitterName();
 
@@ -191,6 +183,27 @@ void FNiagaraEventScriptPropertiesCustomization::CustomizeChildren(TSharedRef<IP
 				SpawnRow.ValueWidget.Widget = SpawnValueWidget
 			];
 	}
+
+	// Add bool saying if event spawn scripts should update the initial value of particle attributes.
+	{
+		FText SrcTxt = LOCTEXT("UpdateAttributeInitialValues", "Update Initial Values");
+		FDetailWidgetRow& InitialValuseRow = ChildBuilder.AddCustomRow(SrcTxt);
+		TSharedRef<SWidget> InitialValuseWidget = HandleUpdateInitialValues->CreatePropertyValueWidget();
+		TAttribute<bool> EnabledAttribute(this, &FNiagaraEventScriptPropertiesCustomization::GetUpdateInitialValuesEnabled);
+		InitialValuseRow.IsEnabled(EnabledAttribute);
+
+		FSimpleDelegate OnUpdateInitialValuesChangedDelegate = FSimpleDelegate::CreateSP(this, &FNiagaraEventScriptPropertiesCustomization::OnUpdateInitialValuesChanged);
+		HandleUpdateInitialValues->SetOnPropertyValueChanged(OnUpdateInitialValuesChangedDelegate);
+
+		InitialValuseRow.NameWidget
+			[
+				HandleUpdateInitialValues->CreatePropertyNameWidget()
+			];
+		InitialValuseRow.ValueWidget
+			[
+				InitialValuseRow.ValueWidget.Widget = InitialValuseWidget
+			];
+	}
 }
 
 void FNiagaraEventScriptPropertiesCustomization::PostUndo(bool bSuccess)
@@ -231,7 +244,7 @@ void FNiagaraEventScriptPropertiesCustomization::ComputeErrorVisibility()
 				bIsMatch = true;
 			}
 
-			if (Emitter == Handle.GetInstance())
+			if (Emitter.ResolveWeakPtr() == Handle.GetInstance())
 			{
 				HandleGuid.Invalidate();
 			}
@@ -294,6 +307,21 @@ EVisibility FNiagaraEventScriptPropertiesCustomization::GetMinSpawnNumberVisible
 	return GetUseRandomSpawnNumber() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
+bool FNiagaraEventScriptPropertiesCustomization::GetUpdateInitialValuesEnabled() const
+{
+	uint8 Value = 255;
+	if (HandleExecutionMode->GetValue(Value) && Value == (uint8)EScriptExecutionMode::SpawnedParticles)
+	{
+		return true;
+	}
+	return false;
+}
+
+void FNiagaraEventScriptPropertiesCustomization::OnUpdateInitialValuesChanged()
+{
+	UNiagaraSystem::RequestCompileForEmitter(Emitter.ResolveWeakPtr());
+}
+
 void FNiagaraEventScriptPropertiesCustomization::ResolveEmitterName()
 {
 	FString EventSrcIdStr;
@@ -314,7 +342,7 @@ void FNiagaraEventScriptPropertiesCustomization::ResolveEmitterName()
 			}
 
 			// Set our handle to zeroes if we are looking at this emitter.
-			if (Emitter == Handle.GetInstance())
+			if (Emitter.ResolveWeakPtr() == Handle.GetInstance())
 			{
 				HandleGuid.Invalidate();
 			}
@@ -333,7 +361,7 @@ TSharedRef<SWidget> FNiagaraEventScriptPropertiesCustomization::OnGetMenuContent
 	FGraphActionMenuBuilder MenuBuilder;
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
@@ -348,11 +376,11 @@ TSharedRef<SWidget> FNiagaraEventScriptPropertiesCustomization::OnGetMenuContent
 		];
 }
 
-TArray<FName> FNiagaraEventScriptPropertiesCustomization::GetEventNames(UNiagaraEmitter* InEmitter) const
+TArray<FName> FNiagaraEventScriptPropertiesCustomization::GetEventNames(const FVersionedNiagaraEmitter& InEmitter) const
 {
 	TArray<FName> EventNames;
 	TArray<UNiagaraScript*> Scripts;
-	InEmitter->GetScripts(Scripts);
+	InEmitter.GetEmitterData()->GetScripts(Scripts);
 
 	for (UNiagaraScript* Script : Scripts)
 	{
@@ -380,7 +408,7 @@ void FNiagaraEventScriptPropertiesCustomization::CollectAllActions(FGraphActionL
 		FName EmitterName = Handle.GetName();
 
 		// Set our handle to zeroes if we are looking at this emitter.
-		if (Emitter == Handle.GetInstance())
+		if (Emitter.ResolveWeakPtr() == Handle.GetInstance())
 		{
 			HandleGuid.Invalidate();
 		}
@@ -465,3 +493,4 @@ FText FNiagaraEventScriptPropertiesCustomization::GetProviderText(const FName& I
 }
 
 #undef LOCTEXT_NAMESPACE
+

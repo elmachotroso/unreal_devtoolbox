@@ -9,7 +9,7 @@
 #include "Misc/FileHelper.h"
 #include "RHIDefinitions.h"
 #include "RHIShaderFormatDefinitions.inl"
-#include "ShaderCookerStatsPage.h"
+#include "StatsPages/ShaderCookerStatsPage.h"
 #include "CoreGlobals.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/App.h"
@@ -125,7 +125,7 @@ void FShaderCookerStats::Initialize(uint32 Index)
 		const EShaderPlatform Platform = static_cast<EShaderPlatform>(PlatformIndex);
 
 		const FName ShaderFormatName = FDataDrivenShaderPlatformInfo::IsValid(Platform)
-			? ShaderPlatformToShaderFormatName(Platform) : NAME_None;
+			? FDataDrivenShaderPlatformInfo::GetShaderFormat(Platform) : NAME_None;
 
 		if (ShaderFormatName != NAME_None)
 		{

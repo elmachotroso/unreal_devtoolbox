@@ -13,6 +13,7 @@
 
 #include "HAL/CriticalSection.h"
 #include "MediaIOCoreSampleContainer.h"
+#include "MediaIOCoreTextureSampleBase.h"
 #include "Misc/CoreMisc.h"
 
 #include "Misc/FrameRate.h"
@@ -22,6 +23,12 @@ class IMediaEventSink;
 
 enum class EMediaTextureSampleFormat;
 
+enum class EMediaIOCoreColorFormat : uint8
+{
+	YUV8,
+	YUV10
+};
+
 struct MEDIAIOCORE_API FMediaIOCoreMediaOption
 {
 	static const FName FrameRateNumerator;
@@ -30,6 +37,11 @@ struct MEDIAIOCORE_API FMediaIOCoreMediaOption
 	static const FName ResolutionHeight;
 	static const FName VideoModeName;
 };
+
+namespace UE::GPUTextureTransfer
+{
+	using TextureTransferPtr = TSharedPtr<class ITextureTransfer>;
+}
 
 /**
  * Implements a base player for hardware IO cards. 
@@ -49,7 +61,11 @@ class MEDIAIOCORE_API FMediaIOCorePlayerBase
 	, protected IMediaTracks
 	, protected IMediaView
 	, public ITimedDataInput
+	, public TSharedFromThis<FMediaIOCorePlayerBase>
 {
+public:
+	static TAutoConsoleVariable<int32> CVarFlipInterlaceFields;
+	static TAutoConsoleVariable<int32> CVarExperimentalFieldFlipFix;
 public:
 
 	/**
@@ -131,7 +147,8 @@ public:
 	virtual FFrameRate GetFrameRate() const override;
 	virtual bool IsDataBufferSizeControlledByInput() const override;
 	virtual void AddChannel(ITimedDataInputChannel* Channel) override;
-	virtual void RemoveChannel(ITimedDataInputChannel * Channel) override; 
+	virtual void RemoveChannel(ITimedDataInputChannel * Channel) override;
+	virtual bool SupportsSubFrames() const override;
 
 protected:
 	/** Is the IO hardware/device ready to be used. */
@@ -154,6 +171,33 @@ protected:
 	 * PlayerBase will setup the common settings
 	 */
 	virtual void SetupSampleChannels() = 0;
+
+	/**
+	 * Get the number of video frames to buffer.
+	 */
+	virtual uint32 GetNumVideoFrameBuffers() const
+	{ 
+		return 1;
+	}
+
+	virtual EMediaIOCoreColorFormat GetColorFormat() const 
+	{ 
+		return EMediaIOCoreColorFormat::YUV8;
+	}
+
+	virtual void AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample)
+	{
+	}
+
+	virtual bool CanUseGPUTextureTransfer();
+
+	void OnSampleDestroyed(TRefCountPtr<FRHITexture> InTexture);
+	void RegisterSampleBuffer(const TSharedPtr<FMediaIOCoreTextureSampleBase>& InSample);
+	void UnregisterSampleBuffers();
+	void CreateAndRegisterTextures(const IMediaOptions* Options);
+	void UnregisterTextures();
+	void PreGPUTransfer(const TSharedPtr<FMediaIOCoreTextureSampleBase>& InSample);
+	void ExecuteGPUTransfer(const TSharedPtr<FMediaIOCoreTextureSampleBase>& InSample);
 
 protected:
 	/** Critical section for synchronizing access to receiver and sinks. */
@@ -189,6 +233,9 @@ protected:
 	/** Warn when the video frame rate is not the same as the engine's frame rate. */
 	bool bWarnedIncompatibleFrameRate;
 
+	/** Whether we are using autodetection. */
+	bool bAutoDetect;
+
 	/** When using Time Synchronization (TC synchronization), how many frame back of a delay would you like. */
 	int32 FrameDelay;
 
@@ -203,6 +250,18 @@ protected:
 	
 	/** Base set of settings to start from when setuping channels */
 	FMediaIOSamplingSettings BaseSettings;
+
+	FCriticalSection TexturesCriticalSection;
+
+	/** Pool of textures registerd with GPU Texture transfer. */
+	TArray<TRefCountPtr<FRHITexture>> Textures;
+
+private:
+	/** GPU Texture transfer object */
+	UE::GPUTextureTransfer::TextureTransferPtr GPUTextureTransfer;
+	/** Buffers Registered with GPU Texture Transfer */
+	TSet<void*> RegisteredBuffers;
+	/** Pool of textures registerd with GPU Texture transfer. */
+	TSet<TRefCountPtr<FRHITexture>> RegisteredTextures;
+
 };
-
-

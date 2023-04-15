@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperFlipbookActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "PaperFlipbookActor.h"
 #include "PaperFlipbook.h"
 #include "PaperFlipbookComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PaperFlipbookActorFactory)
 
 //////////////////////////////////////////////////////////////////////////
 // UPaperFlipbookActorFactory
@@ -48,7 +50,7 @@ void UPaperFlipbookActorFactory::PostCreateBlueprint(UObject* Asset, AActor* CDO
 
 bool UPaperFlipbookActorFactory::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (AssetData.IsValid() && AssetData.GetClass()->IsChildOf(UPaperFlipbook::StaticClass()))
+	if (AssetData.IsValid() && AssetData.IsInstanceOf(UPaperFlipbook::StaticClass()))
 	{
 		return true;
 	}
@@ -58,3 +60,4 @@ bool UPaperFlipbookActorFactory::CanCreateActorFrom(const FAssetData& AssetData,
 		return false;
 	}
 }
+

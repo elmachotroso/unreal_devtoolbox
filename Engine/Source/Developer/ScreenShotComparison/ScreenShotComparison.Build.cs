@@ -15,7 +15,7 @@ public class ScreenShotComparison : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"AutomationController",
-				"EditorStyle",
+				"ToolWidgets",
 				"InputCore",
 				"ScreenShotComparisonTools",
 				"Slate",
@@ -34,14 +34,6 @@ public class ScreenShotComparison : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"SessionServices",
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Developer/ScreenShotComparison/Private",
-				"Developer/ScreenShotComparison/Private/Widgets",
-				"Developer/ScreenShotComparison/Private/Models",
 			}
 		);
 	}

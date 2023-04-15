@@ -21,6 +21,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FParticleBeamTrailUniformParameters, ENGIN
 	SHADER_PARAMETER( FVector4f, CameraRight )
 	SHADER_PARAMETER( FVector4f, CameraUp )
 	SHADER_PARAMETER( FVector4f, ScreenAlignment )
+	SHADER_PARAMETER( uint32, bUseLocalSpace)
+	SHADER_PARAMETER( FVector3f, LWCTile)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FParticleBeamTrailUniformParameters> FParticleBeamTrailUniformBufferRef;
 
@@ -59,6 +61,11 @@ public:
 	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
 	 */
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	/**
+	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
+	 */
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 
 	// FRenderResource interface.
 	virtual void InitRHI() override;

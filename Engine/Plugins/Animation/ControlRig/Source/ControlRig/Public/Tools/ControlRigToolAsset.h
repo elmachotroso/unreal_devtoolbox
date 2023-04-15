@@ -5,8 +5,8 @@
 #include "UObject/Object.h"
 #include "ControlRig.h"
 #include "Tools/ControlRigPoseProjectSettings.h"
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "ControlRigObjectBinding.h"
@@ -38,7 +38,9 @@ public:
 
 			// Generate a unique control asset name for this take if there are already assets of the same name
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-			while (AssetRegistry.GetAssetByObjectPath(*InPackageName).IsValid())
+			TArray<FAssetData> OutAssetData;
+			AssetRegistry.GetAssetsByPackageName(*InPackageName, OutAssetData);
+			while (OutAssetData.Num() > 0)
 			{
 				int32 TrimCount = InPackageName.Len() - BasePackageLength;
 				if (TrimCount > 0)
@@ -47,6 +49,8 @@ public:
 				}
 
 				InPackageName += FString::Printf(TEXT("_%04d"), UniqueIndex++);
+				OutAssetData.Empty();
+				AssetRegistry.GetAssetsByPackageName(*InPackageName, OutAssetData);
 			}
 
 			// Create the asset to record into
@@ -59,7 +63,7 @@ public:
 			USkeletalMesh* SkelMesh = nullptr;
 			if (USkeletalMeshComponent* RigMeshComp = Cast<USkeletalMeshComponent>(InControlRig->GetObjectBinding()->GetBoundObject()))
 			{
-				SkelMesh = RigMeshComp->SkeletalMesh;
+				SkelMesh = RigMeshComp->GetSkeletalMeshAsset();
 			}
 
 			Asset->SavePose(InControlRig, bUseAllControls);

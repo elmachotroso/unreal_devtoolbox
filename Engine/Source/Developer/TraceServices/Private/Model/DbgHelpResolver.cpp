@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "DbgHelpResolver.h"
+
 #if PLATFORM_WINDOWS
 
-#include "DbgHelpResolver.h"
 #include "Algo/Sort.h"
 #include "Algo/ForEach.h"
 #include "Containers/Queue.h"
@@ -11,6 +12,7 @@
 #include "HAL/RunnableThread.h"
 #include "Logging/LogMacros.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "Misc/Guid.h"
 #include "Misc/PathViews.h"
 #include "Misc/ScopeLock.h"
@@ -33,10 +35,11 @@ static const TCHAR* GUnknownModuleTextDbgHelp = TEXT("Unknown");
 
 
 /////////////////////////////////////////////////////////////////////
-FDbgHelpResolver::FDbgHelpResolver(IAnalysisSession& InSession)
+FDbgHelpResolver::FDbgHelpResolver(IAnalysisSession& InSession, IResolvedSymbolFilter& InSymbolFilter)
 	: bRunWorkerThread(false)
 	, bDrainThenStop(false)
 	, Session(InSession)
+	, SymbolFilter(InSymbolFilter)
 {
 	// Setup search paths. The SearchPaths array is a priority stack, which
 	// means paths are searched in reversed order.
@@ -47,11 +50,12 @@ FDbgHelpResolver::FDbgHelpResolver(IAnalysisSession& InSession)
 
 	// Paths from configuration
 	FString SettingsIni;
-	if (FConfigCacheIni::LoadGlobalIniFile(SettingsIni, TEXT("UnrealInsightsSettings")))
+
+	if (FConfigContext::ReadIntoGConfig().Load(TEXT("UnrealInsightsSettings"), SettingsIni))
 	{
 		GConfig->GetArray(TEXT("Insights.MemoryProfiler"), TEXT("SymbolSearchPaths"), SymbolSearchPaths, SettingsIni);
 	}
-	
+
 	// Paths from environment
 	FString SymbolPathEnvVar =  FPlatformMisc::GetEnvironmentVariable(TEXT("UE_INSIGHTS_SYMBOL_PATH"));
 	UE_LOG(LogDbgHelp, Log, TEXT("UE_INSIGHTS_SYMBOL_PATH: '%s'"), *SymbolPathEnvVar);
@@ -60,7 +64,7 @@ FDbgHelpResolver::FDbgHelpResolver(IAnalysisSession& InSession)
 	{
 		SymbolSearchPaths.Emplace(SymbolPathPart);
 	}
-	
+
 	Start();
 }
 
@@ -78,9 +82,9 @@ FDbgHelpResolver::~FDbgHelpResolver()
 void FDbgHelpResolver::QueueModuleLoad(const uint8* ImageId, uint32 ImageIdSize, FModule* Module)
 {
 	check(Module != nullptr);
-	
+
 	FScopeLock _(&ModulesCs);
-	
+
 	const FStringView ModuleName = FPathViews::GetCleanFilename(Module->FullName);
 
 	// Add module and sort list according to base address
@@ -109,21 +113,21 @@ void FDbgHelpResolver::QueueModuleReload(const FModule* Module, const TCHAR* InP
 		Entry->Module->Status.store(EModuleStatus::Pending);
 		LoadSymbolsQueue.Enqueue(FQueuedModule{Module, Session.StoreString(InPath), TArrayView<const uint8>(Entry->ImageId)});
 	}
-	
+
 	SymbolArray SymbolsToResolve;
 	ResolveOnSuccess(SymbolsToResolve);
 	for(TTuple<uint64, FResolvedSymbol*> Pair : SymbolsToResolve)
 	{
 		QueueSymbolResolve(Pair.Get<0>(), Pair.Get<1>());
 	}
-	
+
 	if (!bRunWorkerThread && Thread)
 	{
 		// Restart the worker thread if it has stopped.
 		Start();
 	}
 }
-	
+
 /////////////////////////////////////////////////////////////////////
 void FDbgHelpResolver::QueueSymbolResolve(uint64 Address, FResolvedSymbol* Symbol)
 {
@@ -152,7 +156,7 @@ void FDbgHelpResolver::EnumerateSymbolSearchPaths(TFunctionRef<void(FStringView 
 	FScopeLock _(&SymbolSearchPathsLock);
 	Algo::ForEach(SymbolSearchPaths, Callback);
 }
-	
+
 /////////////////////////////////////////////////////////////////////
 void FDbgHelpResolver::OnAnalysisComplete()
 {
@@ -163,7 +167,7 @@ void FDbgHelpResolver::OnAnalysisComplete()
 
 
 /////////////////////////////////////////////////////////////////////
-bool FDbgHelpResolver::SetupSyms() 
+bool FDbgHelpResolver::SetupSyms()
 {
 	// Create a unique handle
 	static UPTRINT BaseHandle = 0x493;
@@ -179,7 +183,7 @@ bool FDbgHelpResolver::SetupSyms()
 	SymOpts |= SYMOPT_UNDNAME;
 
 	SymSetOptions(SymOpts);
-	
+
 	return SymInitialize((HANDLE)Handle, NULL, FALSE);
 }
 
@@ -196,7 +200,7 @@ void FDbgHelpResolver::FreeSyms() const
 uint32 FDbgHelpResolver::Run()
 {
 	const bool bInitialized = SetupSyms();
-	
+
 	while (bInitialized && bRunWorkerThread)
 	{
 		// Prioritize queued module loads
@@ -215,7 +219,7 @@ uint32 FDbgHelpResolver::Run()
 			FQueuedAddress Item;
 			if (ResolveQueue.Dequeue(Item))
 			{
-				ResolveSymbol(Item.Address, Item.Target);
+				ResolveSymbol(Item.Address, *Item.Target);
 			}
 		}
 
@@ -223,14 +227,14 @@ uint32 FDbgHelpResolver::Run()
 		{
 			bRunWorkerThread = false;
 		}
-		
+
 		// ...and breathe...
 		FPlatformProcess::Sleep(0.2f);
 	}
 
 	// We don't need the syms library anymore
 	FreeSyms();
-	
+
 	return 0;
 }
 
@@ -241,41 +245,44 @@ void FDbgHelpResolver::Start()
 	bRunWorkerThread = true;
 	Thread = FRunnableThread::Create(this, TEXT("DbgHelpWorker"), 0, TPri_Normal);
 }
-	
+
 /////////////////////////////////////////////////////////////////////
 void FDbgHelpResolver::Stop()
 {
-	bRunWorkerThread = false; 
+	bRunWorkerThread = false;
 }
 
 /////////////////////////////////////////////////////////////////////
-void FDbgHelpResolver::UpdateResolvedSymbol(FResolvedSymbol* Symbol, ESymbolQueryResult Result, const TCHAR* Module, const TCHAR* Name, const TCHAR* File, uint16 Line)
+void FDbgHelpResolver::UpdateResolvedSymbol(FResolvedSymbol& Symbol, ESymbolQueryResult Result, const TCHAR* Module, const TCHAR* Name, const TCHAR* File, uint16 Line)
 {
-	Symbol->Module = Module;
-	Symbol->Name = Name;
-	Symbol->File = File;
-	Symbol->Line = Line;
-	Symbol->Result.store(Result, std::memory_order_release);
+	Symbol.Module = Module;
+	Symbol.Name = Name;
+	Symbol.File = File;
+	Symbol.Line = Line;
+	Symbol.Result.store(Result, std::memory_order_release);
 }
 
 /////////////////////////////////////////////////////////////////////
-void FDbgHelpResolver::ResolveSymbol(uint64 Address, FResolvedSymbol* Target)
+void FDbgHelpResolver::ResolveSymbol(uint64 Address, FResolvedSymbol& Target)
 {
-	check(Target);
-
-	if (Target->Result.load() == ESymbolQueryResult::OK)
+	if (Target.Result.load() == ESymbolQueryResult::OK)
 	{
 		return;
 	}
-	
+
 	const FModuleEntry* Entry = GetModuleForAddress(Address);
 	if (!Entry)
 	{
-		UpdateResolvedSymbol(Target, ESymbolQueryResult::NotFound, GUnknownModuleTextDbgHelp,
-		                     GUnknownModuleTextDbgHelp, GUnknownModuleTextDbgHelp, 0);
+		UpdateResolvedSymbol(Target,
+			ESymbolQueryResult::NotFound,
+			GUnknownModuleTextDbgHelp,
+			GUnknownModuleTextDbgHelp,
+			GUnknownModuleTextDbgHelp,
+			0);
+		SymbolFilter.Update(Target);
 		return;
 	}
-	
+
 	const EModuleStatus ModuleStatus = Entry->Module->Status.load();
 	if (ModuleStatus != EModuleStatus::Loaded)
 	{
@@ -283,13 +290,18 @@ void FDbgHelpResolver::ResolveSymbol(uint64 Address, FResolvedSymbol* Target)
 			                                  ? ESymbolQueryResult::Mismatch
 			                                  : ESymbolQueryResult::NotLoaded;
 		++Entry->Module->Stats.Failed;
-		UpdateResolvedSymbol(Target, Result, GUnknownModuleTextDbgHelp,
-		                     GUnknownModuleTextDbgHelp, GUnknownModuleTextDbgHelp, 0);
+		UpdateResolvedSymbol(Target,
+			Result,
+			GUnknownModuleTextDbgHelp,
+			GUnknownModuleTextDbgHelp,
+			GUnknownModuleTextDbgHelp,
+			0);
+		SymbolFilter.Update(Target);
 		return;
 	}
 
 	++Entry->Module->Stats.Discovered;
-	
+
 	uint8 InfoBuffer[sizeof(SYMBOL_INFO) + (MaxNameLen * sizeof(char) + 1)];
 	SYMBOL_INFO* Info = (SYMBOL_INFO*)InfoBuffer;
 	Info->SizeOfStruct = sizeof(SYMBOL_INFO);
@@ -299,13 +311,18 @@ void FDbgHelpResolver::ResolveSymbol(uint64 Address, FResolvedSymbol* Target)
 	if (!SymFromAddr((HANDLE)Handle, Address, NULL, Info))
 	{
 		++Entry->Module->Stats.Failed;
-		UpdateResolvedSymbol(Target, ESymbolQueryResult::NotFound, Entry->Name, GUnknownModuleTextDbgHelp,
-		                     GUnknownModuleTextDbgHelp, 0);
+		UpdateResolvedSymbol(Target,
+			ESymbolQueryResult::NotFound,
+			Entry->Name,
+			GUnknownModuleTextDbgHelp,
+			GUnknownModuleTextDbgHelp,
+			0);
+		SymbolFilter.Update(Target);
 		return;
 	}
 
 	const TCHAR* SymbolNameStr = Session.StoreString(ANSI_TO_TCHAR(Info->Name));
-	
+
 	// Find the source file and line
 	DWORD  dwDisplacement;
 	IMAGEHLP_LINE Line;
@@ -314,16 +331,28 @@ void FDbgHelpResolver::ResolveSymbol(uint64 Address, FResolvedSymbol* Target)
 	if (!SymGetLineFromAddr((HANDLE)Handle, Address, &dwDisplacement, &Line))
 	{
 		++Entry->Module->Stats.Failed;
-		UpdateResolvedSymbol(Target, ESymbolQueryResult::OK, Entry->Name, SymbolNameStr, GUnknownModuleTextDbgHelp, 0);
+		UpdateResolvedSymbol(Target,
+			ESymbolQueryResult::OK,
+			Entry->Name,
+			SymbolNameStr,
+			GUnknownModuleTextDbgHelp,
+			0);
+		SymbolFilter.Update(Target);
 		return;
 	}
-	
+
 	const TCHAR* SymbolFileStr = Session.StoreString(ANSI_TO_TCHAR(Line.FileName));
-	
+
 	++Entry->Module->Stats.Resolved;
-	UpdateResolvedSymbol(Target, ESymbolQueryResult::OK, Entry->Name, SymbolNameStr, SymbolFileStr, Line.LineNumber);
+	UpdateResolvedSymbol(Target,
+		ESymbolQueryResult::OK,
+		Entry->Name,
+		SymbolNameStr,
+		SymbolFileStr,
+		static_cast<uint16>(Line.LineNumber));
+	SymbolFilter.Update(Target);
 }
-	
+
 /////////////////////////////////////////////////////////////////////
 void FDbgHelpResolver::LoadModuleSymbols(const FModule* Module, const TCHAR* Path, const TArrayView<const uint8> ImageId)
 {
@@ -346,7 +375,7 @@ void FDbgHelpResolver::LoadModuleSymbols(const FModule* Module, const TCHAR* Pat
 		SymGetSearchPathW((HANDLE) Handle, OutPath, 1024);
 		UE_LOG(LogDbgHelp, Display, TEXT("Search path: %s"), OutPath);
 	}
-	
+
 	// Attempt to load symbols
 	const DWORD64 LoadedBaseAddress = SymLoadModuleEx((HANDLE)Handle, NULL, TCHAR_TO_ANSI(Module->Name), NULL, Base, Size, NULL, 0);
 	const bool bModuleLoaded = Base == LoadedBaseAddress;

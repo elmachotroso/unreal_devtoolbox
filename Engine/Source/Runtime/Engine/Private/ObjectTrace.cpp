@@ -2,6 +2,8 @@
 
 #include "ObjectTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ObjectTrace)
+
 #if OBJECT_TRACE_ENABLED
 
 #include "CoreMinimal.h"
@@ -38,13 +40,15 @@ UE_TRACE_EVENT_BEGIN(Object, Object)
 	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Path)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeBegin)
+UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeBegin2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeEnd)
+UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeEnd2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
 UE_TRACE_EVENT_END()
 
@@ -346,6 +350,9 @@ void FObjectTrace::OutputView(const UObject* InPlayer, const FSceneView* InView)
 	const FIntRect& ViewRect = InView->CameraConstrainedViewRect;
 	float AspectRatio = (float)ViewRect.Width()/(float)ViewRect.Height();
 
+	FMatrix ProjMatrix = InView->ViewMatrices.GetProjectionMatrix();
+	float Fov = atan(1.0 / ProjMatrix.M[0][0]) * 2.0 * 180.0 / UE_DOUBLE_PI;
+
 	UE_TRACE_LOG(Object, View, ObjectChannel)
 		<< View.Cycle(FPlatformTime::Cycles64())
 		<< View.PlayerId(GetObjectId(InPlayer))
@@ -355,7 +362,7 @@ void FObjectTrace::OutputView(const UObject* InPlayer, const FSceneView* InView)
 		<< View.Pitch(InView->ViewRotation.Pitch)
 		<< View.Yaw(InView->ViewRotation.Yaw)
 		<< View.Roll(InView->ViewRotation.Roll)
-		<< View.Fov(InView->FOV)
+		<< View.Fov(Fov)
 		<< View.AspectRatio(AspectRatio);
 }
 
@@ -450,9 +457,10 @@ void FObjectTrace::OutputObjectLifetimeBegin(const UObject* InObject)
 
 	TRACE_OBJECT(InObject);
 
-	UE_TRACE_LOG(Object, ObjectLifetimeBegin, ObjectChannel)
-		<< ObjectLifetimeBegin.Cycle(FPlatformTime::Cycles64())
-		<< ObjectLifetimeBegin.Id(GetObjectId(InObject));
+	UE_TRACE_LOG(Object, ObjectLifetimeBegin2, ObjectChannel)
+		<< ObjectLifetimeBegin2.Cycle(FPlatformTime::Cycles64())
+		<< ObjectLifetimeBegin2.RecordingTime(FObjectTrace::GetWorldElapsedTime(InObject->GetWorld()))
+		<< ObjectLifetimeBegin2.Id(GetObjectId(InObject));
 }
 
 void FObjectTrace::OutputObjectLifetimeEnd(const UObject* InObject)
@@ -475,9 +483,10 @@ void FObjectTrace::OutputObjectLifetimeEnd(const UObject* InObject)
 
 	TRACE_OBJECT(InObject);
 
-	UE_TRACE_LOG(Object, ObjectLifetimeEnd, ObjectChannel)
-		<< ObjectLifetimeEnd.Cycle(FPlatformTime::Cycles64())
-		<< ObjectLifetimeEnd.Id(GetObjectId(InObject));
+	UE_TRACE_LOG(Object, ObjectLifetimeEnd2, ObjectChannel)
+		<< ObjectLifetimeEnd2.Cycle(FPlatformTime::Cycles64())
+		<< ObjectLifetimeEnd2.RecordingTime(FObjectTrace::GetWorldElapsedTime(InObject->GetWorld()))
+		<< ObjectLifetimeEnd2.Id(GetObjectId(InObject));
 }
 
 void FObjectTrace::OutputPawnPossess(const UObject* InController, const UObject* InPawn)
@@ -531,3 +540,4 @@ void FObjectTrace::OutputWorld(const UWorld* InWorld)
 }
 
 #endif
+

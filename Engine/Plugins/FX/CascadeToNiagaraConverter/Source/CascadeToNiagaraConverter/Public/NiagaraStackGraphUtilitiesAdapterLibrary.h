@@ -2,34 +2,37 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "AssetRegistry/AssetData.h"
 #include "CascadeToNiagaraConverterModule.h"
+#include "CoreMinimal.h"
+#include "Curves/RichCurve.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "NiagaraEditor/Public/ViewModels/Stack/NiagaraStackGraphUtilities.h"
-#include "AssetData.h"
-#include "Particles/ParticleEmitter.h"
-#include "Particles/SubUVAnimation.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraMessages.h"
 #include "Particles/Acceleration/ParticleModuleAccelerationDragScaleOverLife.h"
 #include "Particles/Acceleration/ParticleModuleAccelerationOverLifetime.h"
 #include "Particles/Attractor/ParticleModuleAttractorParticle.h"
 #include "Particles/Camera/ParticleModuleCameraOffset.h"
-#include "Particles/Parameter/ParticleModuleParameterDynamic.h"
-#include "Particles/ParticleSpriteEmitter.h"
-#include "Particles/ParticleModuleRequired.h"
-#include "Particles/Orbit/ParticleModuleOrbit.h"
 #include "Particles/Collision/ParticleModuleCollisionBase.h"
+#include "Particles/Location/ParticleModuleLocationBoneSocket.h"
+#include "Particles/Location/ParticleModuleLocationPrimitiveCylinder.h"
+#include "Particles/Orbit/ParticleModuleOrbit.h"
+#include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
+#include "Particles/Parameter/ParticleModuleParameterDynamic.h"
+#include "Particles/ParticleEmitter.h"
+#include "Particles/ParticleModuleRequired.h"
+#include "Particles/ParticleSpriteEmitter.h"
+#include "Particles/SubUVAnimation.h"
 #include "Particles/Trail/ParticleModuleTrailSource.h"
 #include "Particles/TypeData/ParticleModuleTypeDataGpu.h"
 #include "Particles/TypeData/ParticleModuleTypeDataMesh.h"
 #include "Particles/TypeData/ParticleModuleTypeDataRibbon.h"
-#include "Curves/RichCurve.h"
-#include "NiagaraEmitter.h"
-#include "Particles/Location/ParticleModuleLocationPrimitiveCylinder.h"
-#include "Particles/Location/ParticleModuleLocationBoneSocket.h"
-#include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
 #include "Particles/Velocity/ParticleModuleVelocityInheritParent.h"
+#include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraStackGraphUtilitiesAdapterLibrary.generated.h"
 
+class UNiagaraScriptConversionContextInput;
+class UNiagaraScriptConversionContext;
 class UNiagaraSystem;
 class UNiagaraEmitter;
 class UNiagaraRendererProperties;
@@ -438,11 +441,11 @@ struct FStackEntryAddAction
 
 	// If Mode is Module, represents the pending module script to create a stack entry for. Otherwise this value is ignored.
 	UPROPERTY()
-	UNiagaraScriptConversionContext* ScriptConversionContext = nullptr;
+	TObjectPtr<UNiagaraScriptConversionContext> ScriptConversionContext = nullptr;
 
 	// If mode is SetParameter, represents the pending parameter to set directly and create a stack entry for. Otherwise this value is ignored.
 	UPROPERTY()
-	UNiagaraClipboardFunction* ClipboardFunction = nullptr;
+	TObjectPtr<UNiagaraClipboardFunction> ClipboardFunction = nullptr;
 
 	// Info to find the category of the stack to add the stack entry to.
 	UPROPERTY()
@@ -483,7 +486,6 @@ public:
 
 	FCreateScriptContextArgs(FAssetData InScriptAsset)
 		: ScriptAsset(InScriptAsset)
-		, bScriptVersionSet(false)
 		, ScriptVersion()
 	{};
 
@@ -497,7 +499,7 @@ public:
 	FAssetData ScriptAsset;
 
 	UPROPERTY()
-	bool bScriptVersionSet;
+	bool bScriptVersionSet = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
 	FNiagaraScriptVersion ScriptVersion;
@@ -673,7 +675,13 @@ public:
 	void Finalize();
 
 	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
-	UNiagaraEmitter* GetEmitter() {return Emitter;};
+	UNiagaraEmitter* GetEmitter() {return Emitter.Emitter;}
+
+	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
+	void SetSimTarget(ENiagaraSimTarget InTarget) { if (GetEmitter() && GetEmitter()->GetLatestEmitterData()) { GetEmitter()->GetLatestEmitterData()->SimTarget = InTarget; } }
+
+	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
+	void SetLocalSpace(bool bLocalSpace) {if (GetEmitter() && GetEmitter()->GetLatestEmitterData()) { GetEmitter()->GetLatestEmitterData()->bLocalSpace = bLocalSpace; }}
 
 	void InternalFinalizeEvents(UNiagaraSystemConversionContext* OwningSystemConversionContext);
 
@@ -684,7 +692,7 @@ public:
 	 * @param InEmitter						The Emitter to convert.
 	 * @param InEmitterHandleViewModelGuid	A Guid key to the FNiagaraEmitterHandleViewModel pointing at the InEmitter.
 	 */
-	void Init(UNiagaraEmitter* InEmitter, const TSharedPtr<FNiagaraEmitterHandleViewModel>& InEmitterHandleViewModel)
+	void Init(FVersionedNiagaraEmitter InEmitter, const TSharedPtr<FNiagaraEmitterHandleViewModel>& InEmitterHandleViewModel)
 	{
 		Emitter = InEmitter;
 		EmitterHandleViewModel = InEmitterHandleViewModel;
@@ -709,7 +717,7 @@ public:
 	void RemoveModuleScriptsForAssets(TArray<FAssetData> ScriptsToRemove);
 
 private:
-	UNiagaraEmitter* Emitter;
+	FVersionedNiagaraEmitter Emitter;
 
 	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel;
 
@@ -818,7 +826,7 @@ public:
 	void Init(UNiagaraClipboardFunctionInput* InClipboardFunctionInput, const ENiagaraScriptInputType InInputType, const FNiagaraTypeDefinition& InTypeDefinition);
 
 	UPROPERTY()
-	UNiagaraClipboardFunctionInput* ClipboardFunctionInput;
+	TObjectPtr<UNiagaraClipboardFunctionInput> ClipboardFunctionInput;
 
 	UPROPERTY(BlueprintReadOnly, Category = StaticValue)
 	ENiagaraScriptInputType InputType;
@@ -875,6 +883,10 @@ public:
 	// Niagara Script and Script Input Helpers
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod), Category = "FXConverterUtilities")
 	static UNiagaraScriptConversionContext* CreateScriptContext(const FCreateScriptContextArgs& Args);
+
+
+	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
+	static FAssetData CreateAssetData(FString InPath);
 
 	UFUNCTION(BlueprintCallable, Category = "FXConverterUtilities")
 	static UNiagaraScriptConversionContextInput* CreateScriptInputLinkedParameter(FString ParameterNameString, ENiagaraScriptInputType InputType);

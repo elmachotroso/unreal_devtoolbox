@@ -3,7 +3,6 @@
 #include "Tools/DefaultEdMode.h"
 
 #include "EditorModes.h"
-#include "EditorStyleSet.h"
 #include "Textures/SlateIcon.h"
 #include "LevelEditorViewport.h"
 #include "Elements/Framework/TypedElementList.h"
@@ -26,8 +25,8 @@ UEdModeDefault::UEdModeDefault()
 {
 	Info = FEditorModeInfo(
 		FBuiltinEditorModes::EM_Default,
-		NSLOCTEXT("DefaultMode", "DisplayName", "Select"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.SelectMode", "LevelEditor.SelectMode.Small"),
+		NSLOCTEXT("DefaultMode", "DisplayName", "Selection"),
+		FSlateIcon("EditorStyle", "LevelEditor.SelectMode", "LevelEditor.SelectMode.Small"),
 		true, 0);
 }
 

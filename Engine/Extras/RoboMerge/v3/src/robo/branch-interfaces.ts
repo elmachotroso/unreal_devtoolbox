@@ -4,7 +4,7 @@ import { BranchSpec, ConflictedResolveNFile, RoboWorkspace } from '../common/per
 // TODO: Remove Circular Dependency on bot-interfaces
 import { NodeBotInterface } from './bot-interfaces';
 import { FailureKind } from './status-types';
-import { BotConfig, BranchBase, EdgeOptions, NodeOptions, IntegrationWindowPane } from './branchdefs';
+import { BotConfig, BranchBase, ApprovalOptions, EdgeOptions, NodeOptions, IntegrationWindowPane } from './branchdefs';
 import { BlockageNodeOpUrls } from './roboserver';
 
 export type BranchArg = Branch | string
@@ -74,7 +74,7 @@ export interface BranchGraphInterface {
 	getBranchNames(): string[]
 }
 
-export interface EditableBranch extends BranchBase {
+export type EditableBranch = BranchBase & {
 	bot?: NodeBotInterface
 	parent: BranchGraphInterface
 	workspace: RoboWorkspace
@@ -144,9 +144,13 @@ export interface ChangeInfo extends TargetInfo {
 
 	propagatingNullMerge: boolean
 	forceCreateAShelf: boolean
+	edgeServerToHostShelf?: {
+		id: string
+		address: string
+	}
+	targetWorkspaceOverride?: string
 	overriddenCommand: string
 	macros: string[]
-	hasOkForGithubTag: boolean
 }
 
 export interface PendingChange {
@@ -167,7 +171,10 @@ export interface Blockage {
 	failure: Failure
 	owner: string
 	ownerEmail: Promise<string | null>
-
+	approval?: {
+		settings: ApprovalOptions
+		shelfCl: number
+	}
 	time: Date
 }
 export type NodeOpUrlGenerator = (blockage: Blockage | null) => BlockageNodeOpUrls | null

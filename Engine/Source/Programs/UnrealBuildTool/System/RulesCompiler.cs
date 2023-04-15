@@ -8,6 +8,7 @@ using System.Reflection;
 using EpicGames.Core;
 using OpenTracing.Util;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -71,8 +72,9 @@ namespace UnrealBuildTool
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine</param>
 		/// <param name="bSkipCompile">Whether to skip compilation for this assembly</param>
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>New rules assembly</returns>
-		public static RulesAssembly CreateEngineRulesAssembly(bool bUsePrecompiled, bool bSkipCompile, bool bForceCompile)
+		public static RulesAssembly CreateEngineRulesAssembly(bool bUsePrecompiled, bool bSkipCompile, bool bForceCompile, ILogger Logger)
 		{
 			if (EngineRulesAssembly == null)
 			{
@@ -81,22 +83,22 @@ namespace UnrealBuildTool
 
 				DirectoryReference MarketplaceDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Plugins", "Marketplace");
 				foreach (PluginInfo PluginInfo in Plugins.ReadEnginePlugins(Unreal.EngineDirectory))
-		{
+				{
 					if (PluginInfo.File.IsUnderDirectory(MarketplaceDirectory))
-			{
+					{
 						MarketplacePlugins.Add(PluginInfo);
 					}
 					else
-				{
+					{
 						EnginePlugins.Add(PluginInfo);
 					}
 				}
 
-				EngineRulesAssembly = CreateEngineRulesAssemblyInternal(Unreal.GetExtensionDirs(Unreal.EngineDirectory), ProjectFileGenerator.EngineProjectFileNameBase, EnginePlugins, Unreal.IsEngineInstalled() || bUsePrecompiled, bSkipCompile, bForceCompile, null);
+				EngineRulesAssembly = CreateEngineRulesAssemblyInternal(Unreal.GetExtensionDirs(Unreal.EngineDirectory), ProjectFileGenerator.EngineProjectFileNameBase, EnginePlugins, Unreal.IsEngineInstalled() || bUsePrecompiled, bSkipCompile, bForceCompile, null, Logger);
 
 				if (MarketplacePlugins.Count > 0)
 				{
-					EngineRulesAssembly = CreateMarketplaceRulesAssembly(MarketplacePlugins, bSkipCompile, bForceCompile, EngineRulesAssembly);
+					EngineRulesAssembly = CreateMarketplaceRulesAssembly(MarketplacePlugins, Unreal.IsEngineInstalled() || bUsePrecompiled, bSkipCompile, bForceCompile, EngineRulesAssembly, Logger);
 				}
 			}
 			return EngineRulesAssembly;
@@ -112,8 +114,9 @@ namespace UnrealBuildTool
 		/// <param name="bSkipCompile">Whether to skip compilation for this assembly</param>
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
 		/// <param name="Parent">The parent rules assembly</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>New rules assembly</returns>
-		private static RulesAssembly CreateEngineRulesAssemblyInternal(List<DirectoryReference> RootDirectories, string AssemblyPrefix, IReadOnlyList<PluginInfo> Plugins, bool bReadOnly, bool bSkipCompile, bool bForceCompile, RulesAssembly? Parent)
+		private static RulesAssembly CreateEngineRulesAssemblyInternal(List<DirectoryReference> RootDirectories, string AssemblyPrefix, IReadOnlyList<PluginInfo> Plugins, bool bReadOnly, bool bSkipCompile, bool bForceCompile, RulesAssembly? Parent, ILogger Logger)
 		{
 			// Scope hierarchy
 			RulesScope Scope= new RulesScope("Engine", null);
@@ -147,7 +150,7 @@ namespace UnrealBuildTool
 			// Create the assembly
 			DirectoryReference AssemblyDir = RootDirectories[0];
 			FileReference EngineAssemblyFileName = FileReference.Combine(AssemblyDir, "Intermediate", "Build", "BuildRules", AssemblyPrefix + "Rules" + FrameworkAssemblyExtension);
-			RulesAssembly EngineAssembly = new RulesAssembly(Scope, RootDirectories, Plugins, ModuleFileToContext, new List<FileReference>(), EngineAssemblyFileName, bContainsEngineModules: true, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: bReadOnly, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent);
+			RulesAssembly EngineAssembly = new RulesAssembly(Scope, RootDirectories, Plugins, ModuleFileToContext, new List<FileReference>(), EngineAssemblyFileName, bContainsEngineModules: true, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: bReadOnly, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent, Logger: Logger);
 
 			List<FileReference> ProgramTargetFiles = new List<FileReference>();
 			Dictionary<FileReference, ModuleRulesContext> ProgramModuleFiles = new Dictionary<FileReference, ModuleRulesContext>();
@@ -174,7 +177,7 @@ namespace UnrealBuildTool
 
 			// Create a path to the assembly that we'll either load or compile
 			FileReference ProgramAssemblyFileName = FileReference.Combine(AssemblyDir, "Intermediate", "Build", "BuildRules", AssemblyPrefix + "ProgramRules" + FrameworkAssemblyExtension);
-			RulesAssembly ProgramAssembly = new RulesAssembly(ProgramsScope, RootDirectories, new List<PluginInfo>().AsReadOnly(), ProgramModuleFiles, ProgramTargetFiles, ProgramAssemblyFileName, bContainsEngineModules: false, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: bReadOnly, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: EngineAssembly);
+			RulesAssembly ProgramAssembly = new RulesAssembly(ProgramsScope, RootDirectories, new List<PluginInfo>().AsReadOnly(), ProgramModuleFiles, ProgramTargetFiles, ProgramAssemblyFileName, bContainsEngineModules: false, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: bReadOnly, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: EngineAssembly, Logger: Logger);
 
 			// Return the combined assembly
 			return ProgramAssembly;
@@ -184,11 +187,13 @@ namespace UnrealBuildTool
 		/// Creates a rules assembly
 		/// </summary>
 		/// <param name="Plugins">List of plugins to include in this assembly</param>
+		/// <param name="bReadOnly">Whether the assembly should be marked as installed</param>
 		/// <param name="bSkipCompile">Whether to skip compilation for this assembly</param>
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
 		/// <param name="Parent">The parent rules assembly</param>
+		/// <param name="Logger"></param>
 		/// <returns>New rules assembly</returns>
-		private static RulesAssembly CreateMarketplaceRulesAssembly(IReadOnlyList<PluginInfo> Plugins, bool bSkipCompile, bool bForceCompile, RulesAssembly Parent)
+		private static RulesAssembly CreateMarketplaceRulesAssembly(IReadOnlyList<PluginInfo> Plugins, bool bReadOnly, bool bSkipCompile, bool bForceCompile, RulesAssembly Parent, ILogger Logger)
 		{
 			RulesScope MarketplaceScope = new RulesScope("Marketplace", Parent.Scope);
 
@@ -205,7 +210,7 @@ namespace UnrealBuildTool
 			if (ModuleFileToContext.Count > 0)
 			{
 				FileReference AssemblyFileName = FileReference.Combine(UnrealBuildTool.WritableEngineDirectory, "Intermediate", "Build", "BuildRules", "MarketplaceRules.dll");
-				Result = new RulesAssembly(MarketplaceScope, new List<DirectoryReference> { DirectoryReference.Combine(Unreal.EngineDirectory, "Plugins", "Marketplace") }, Plugins, ModuleFileToContext, new List<FileReference>(), AssemblyFileName, bContainsEngineModules: true, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: true, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent);
+				Result = new RulesAssembly(MarketplaceScope, new List<DirectoryReference> { DirectoryReference.Combine(Unreal.EngineDirectory, "Plugins", "Marketplace") }, Plugins, ModuleFileToContext, new List<FileReference>(), AssemblyFileName, bContainsEngineModules: true, DefaultBuildSettings: BuildSettingsVersion.Latest, bReadOnly: bReadOnly, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent, Logger: Logger);
 			}
 			return Result;
 		}
@@ -217,17 +222,20 @@ namespace UnrealBuildTool
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine</param>
 		/// <param name="bSkipCompile">Whether to skip compilation for this assembly</param>
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>New rules assembly</returns>
-		public static RulesAssembly CreateProjectRulesAssembly(FileReference ProjectFileName, bool bUsePrecompiled, bool bSkipCompile, bool bForceCompile)
+		public static RulesAssembly CreateProjectRulesAssembly(FileReference ProjectFileName, bool bUsePrecompiled, bool bSkipCompile, bool bForceCompile, ILogger Logger)
 		{
 			// Check if there's an existing assembly for this project
 			RulesAssembly? ProjectRulesAssembly;
 			if (!LoadedAssemblyMap.TryGetValue(ProjectFileName, out ProjectRulesAssembly))
 			{
+				Logger.LogTrace("Creating project rules assembly for {Project}...", ProjectFileName);
+
 				ProjectDescriptor Project = ProjectDescriptor.FromFile(ProjectFileName);
 
 				// Create the parent assembly
-				RulesAssembly Parent = CreateEngineRulesAssembly(bUsePrecompiled, bSkipCompile, bForceCompile);
+				RulesAssembly Parent = CreateEngineRulesAssembly(bUsePrecompiled, bSkipCompile, bForceCompile, Logger);
 
 				DirectoryReference MainProjectDirectory = ProjectFileName.Directory;
 				//DirectoryReference MainProjectSourceDirectory = DirectoryReference.Combine(MainProjectDirectory, "Source");
@@ -271,12 +279,21 @@ namespace UnrealBuildTool
 				{
 					foreach (DirectoryReference AdditionalPluginDirectory in Project.AdditionalPluginDirectories)
 					{
-						ProjectPlugins.AddRange(Plugins.ReadAdditionalPlugins(AdditionalPluginDirectory));
+						ProjectPlugins.AddRange(Plugins.ReadAdditionalPlugins(AdditionalPluginDirectory, Logger));
 					}
 				}
 
+				Logger.LogTrace(" Found {Count} Plugins:", ProjectPlugins.Count);
+				ProjectPlugins.ForEach(x => { Logger.LogTrace("  {Plugin}", x.File); });
+
 				// Find all the plugin module rules
 				FindModuleRulesForPlugins(ProjectPlugins, DefaultModuleContext, ModuleFiles);
+
+				Logger.LogTrace(" Found {Count} Modules:", ModuleFiles.Count);
+				foreach (var Item in ModuleFiles)
+				{
+					Logger.LogTrace("  {Module}", Item.Key);
+				}
 
 				// Add the games project's intermediate source folder
 				DirectoryReference ProjectIntermediateSourceDirectory = DirectoryReference.Combine(MainProjectDirectory, "Intermediate", "Source");
@@ -288,13 +305,13 @@ namespace UnrealBuildTool
 
 				// Compile the assembly. If there are no module or target files, just use the parent assembly.
 				FileReference AssemblyFileName = FileReference.Combine(MainProjectDirectory, "Intermediate", "Build", "BuildRules", ProjectFileName.GetFileNameWithoutExtension() + "ModuleRules" + FrameworkAssemblyExtension);
-				if(ModuleFiles.Count == 0 && TargetFiles.Count == 0)
+				if(ModuleFiles.Count == 0 && TargetFiles.Count == 0 && ProjectPlugins.Count == 0)  
 				{
-					ProjectRulesAssembly = Parent;
+					ProjectRulesAssembly = Parent; 
 				}
 				else
 				{
-					ProjectRulesAssembly = new RulesAssembly(Scope, new List<DirectoryReference> { MainProjectDirectory }, ProjectPlugins, ModuleFiles, TargetFiles, AssemblyFileName, bContainsEngineModules: false, DefaultBuildSettings: null, bReadOnly: UnrealBuildTool.IsProjectInstalled(), bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent);
+					ProjectRulesAssembly = new RulesAssembly(Scope, new List<DirectoryReference> { MainProjectDirectory }, ProjectPlugins, ModuleFiles, TargetFiles, AssemblyFileName, bContainsEngineModules: false, DefaultBuildSettings: null, bReadOnly: UnrealBuildTool.IsProjectInstalled(), bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent, Logger: Logger);
 				}
 				LoadedAssemblyMap.Add(ProjectFileName, ProjectRulesAssembly);
 			}
@@ -309,13 +326,16 @@ namespace UnrealBuildTool
 		/// <param name="bForceCompile">Whether to always compile this assembly</param>
 		/// <param name="Parent">The parent rules assembly</param>
         /// <param name="bContainsEngineModules">Whether the plugin contains engine modules. Used to initialize the default value for ModuleRules.bTreatAsEngineModule.</param>
+		/// <param name="Logger">Logger for ouptut</param>
 		/// <returns>The new rules assembly</returns>
-        public static RulesAssembly CreatePluginRulesAssembly(FileReference PluginFileName, bool bSkipCompile, bool bForceCompile, RulesAssembly Parent, bool bContainsEngineModules)
+        public static RulesAssembly CreatePluginRulesAssembly(FileReference PluginFileName, bool bSkipCompile, bool bForceCompile, RulesAssembly Parent, bool bContainsEngineModules, ILogger Logger)
 		{
 			// Check if there's an existing assembly for this project
 			RulesAssembly? PluginRulesAssembly;
 			if (!LoadedAssemblyMap.TryGetValue(PluginFileName, out PluginRulesAssembly))
 			{
+				Logger.LogTrace("Creating plugin rules assembly for {Plugin}...", PluginFileName);
+
 				// Find all the rules source files
 				Dictionary<FileReference, ModuleRulesContext> ModuleFiles = new Dictionary<FileReference, ModuleRulesContext>();
 				List<FileReference> TargetFiles = new List<FileReference>();
@@ -323,7 +343,7 @@ namespace UnrealBuildTool
 				// Create a list of plugins for this assembly. We need to override the parent plugin, if it exists, due to overriding the
 				// setting for bClassifyAsGameModuleForUHT below.
 				List<PluginInfo> ForeignPlugins = new List<PluginInfo>();
-				if (!Parent.EnumeratePlugins().Any(x => x.File == PluginFileName && x.Type == PluginType.Engine))
+				if (!Parent.EnumeratePlugins().Any(x => x.ChoiceVersion != null && x.ChoiceVersion.File == PluginFileName && x.ChoiceVersion.Type == PluginType.Engine))
 				{
 					PluginInfo ForeignPluginInfo = new PluginInfo(PluginFileName, PluginType.External)
 					{
@@ -331,6 +351,9 @@ namespace UnrealBuildTool
 					};
 					ForeignPlugins.Add(ForeignPluginInfo);
 				}
+
+				Logger.LogTrace(" Found {Count} ForeignPlugins:", ForeignPlugins.Count);
+				ForeignPlugins.ForEach(x => { Logger.LogTrace("  {ForeignPlugin}", x.File); });
 
 				// Create a new scope for the plugin. It should not reference anything else.
 				RulesScope Scope = new RulesScope("Plugin", Parent.Scope);
@@ -340,9 +363,15 @@ namespace UnrealBuildTool
 				PluginModuleContext.bClassifyAsGameModuleForUHT = !bContainsEngineModules;
 				FindModuleRulesForPlugins(ForeignPlugins, PluginModuleContext, ModuleFiles);
 
+				Logger.LogTrace(" Found {Count} Modules:", ModuleFiles.Count);
+				foreach (var Item in ModuleFiles)
+				{
+					Logger.LogTrace("  {Module}", Item.Key);
+				}
+
 				// Compile the assembly
 				FileReference AssemblyFileName = FileReference.Combine(PluginFileName.Directory, "Intermediate", "Build", "BuildRules", Path.GetFileNameWithoutExtension(PluginFileName.FullName) + "ModuleRules" + FrameworkAssemblyExtension);
-				PluginRulesAssembly = new RulesAssembly(Scope, new List<DirectoryReference> { PluginFileName.Directory }, ForeignPlugins, ModuleFiles, TargetFiles, AssemblyFileName, bContainsEngineModules, DefaultBuildSettings: null, bReadOnly: false, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent);
+				PluginRulesAssembly = new RulesAssembly(Scope, new List<DirectoryReference> { PluginFileName.Directory }, ForeignPlugins, ModuleFiles, TargetFiles, AssemblyFileName, bContainsEngineModules, DefaultBuildSettings: null, bReadOnly: false, bSkipCompile: bSkipCompile, bForceCompile: bForceCompile, Parent: Parent, Logger: Logger);
 				LoadedAssemblyMap.Add(PluginFileName, PluginRulesAssembly);
 			}
 			return PluginRulesAssembly;
@@ -357,21 +386,22 @@ namespace UnrealBuildTool
 		/// <param name="bForceRulesCompile">Whether to always compile all rules assemblies</param>
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine build</param>
 		/// <param name="ForeignPlugin">Foreign plugin to be compiled</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>The compiled rules assembly</returns>
-		public static RulesAssembly CreateTargetRulesAssembly(FileReference? ProjectFile, string TargetName, bool bSkipRulesCompile, bool bForceRulesCompile, bool bUsePrecompiled, FileReference? ForeignPlugin)
+		public static RulesAssembly CreateTargetRulesAssembly(FileReference? ProjectFile, string TargetName, bool bSkipRulesCompile, bool bForceRulesCompile, bool bUsePrecompiled, FileReference? ForeignPlugin, ILogger Logger)
 		{
 			RulesAssembly RulesAssembly;
 			if (ProjectFile != null)
 			{
-				RulesAssembly = CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile);
+				RulesAssembly = CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, Logger);
 			}
 			else
 			{
-				RulesAssembly = CreateEngineRulesAssembly(bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile);
+				RulesAssembly = CreateEngineRulesAssembly(bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, Logger);
 			}
 			if (ForeignPlugin != null)
 			{
-				RulesAssembly = CreatePluginRulesAssembly(ForeignPlugin, bSkipRulesCompile, bForceRulesCompile, RulesAssembly, true);
+				RulesAssembly = CreatePluginRulesAssembly(ForeignPlugin, bSkipRulesCompile, bForceRulesCompile, RulesAssembly, true, Logger);
 			}
 			return RulesAssembly;
 		}

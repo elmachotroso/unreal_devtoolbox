@@ -20,6 +20,8 @@
 #include "Templates/Casts.h"
 #include "BlueprintActionDatabase.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PyWrapperObject)
+
 #if WITH_PYTHON
 
 void InitializePyWrapperObject(PyGenUtil::FNativePythonModule& ModuleInfo)
@@ -604,6 +606,27 @@ PyTypeObject InitializePyWrapperObjectType()
 			return PyConversion::Pythonize(InSelf->ObjectInstance->GetOutermost());
 		}
 
+		static PyObject* IsPackageExternal(FPyWrapperObject* InSelf)
+		{
+			if (!FPyWrapperObject::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+
+			const bool bIsPackageExternal = InSelf->ObjectInstance->IsPackageExternal();
+			return PyConversion::Pythonize(bIsPackageExternal);
+		}
+
+		static PyObject* GetPackage(FPyWrapperObject* InSelf)
+		{
+			if (!FPyWrapperObject::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+
+			return PyConversion::Pythonize(InSelf->ObjectInstance->GetPackage());
+		}
+
 		static PyObject* GetName(FPyWrapperObject* InSelf)
 		{
 			if (!FPyWrapperObject::ValidateInternalState(InSelf))
@@ -803,7 +826,7 @@ PyTypeObject InitializePyWrapperObjectType()
 				return nullptr;
 			}
 
-			static const UEnum* PropertyAccessChangeNotifyModeEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EPropertyAccessChangeNotifyMode"));
+			static const UEnum* PropertyAccessChangeNotifyModeEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/CoreUObject.EPropertyAccessChangeNotifyMode"));
 
 			EPropertyAccessChangeNotifyMode NotifyMode = EPropertyAccessChangeNotifyMode::Default;
 			if (PyNotifyModeObj && !PyConversion::NativizeEnumEntry(PyNotifyModeObj, PropertyAccessChangeNotifyModeEnum, NotifyMode))
@@ -971,26 +994,29 @@ PyTypeObject InitializePyWrapperObjectType()
 		}
 	};
 
+	// NOTE: _T = typing.TypeVar('_T') and Any/Type/Union/Mapping/Optional are defines by the Python typing module.
 	static PyMethodDef PyMethods[] = {
-		{ PyGenUtil::PostInitFuncName, PyCFunctionCast(&FMethods::PostInit), METH_NOARGS, "x._post_init() -> None -- called during Unreal object initialization (equivalent to PostInitProperties in C++)" },
-		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "X.cast(object) -> Object -- cast the given object to this Unreal object type" },
-		{ "get_default_object", PyCFunctionCast(&FMethods::GetDefaultObject), METH_NOARGS | METH_CLASS, "X.get_default_object() -> Object -- get the Unreal class default object (CDO) of this type" },
-		{ "static_class", PyCFunctionCast(&FMethods::StaticClass), METH_NOARGS | METH_CLASS, "X.static_class() -> Class -- get the Unreal class of this type" },
-		{ "get_class", PyCFunctionCast(&FMethods::GetClass), METH_NOARGS, "x.get_class() -> Class -- get the Unreal class of this instance" },
-		{ "get_outer", PyCFunctionCast(&FMethods::GetOuter), METH_NOARGS, "x.get_outer() -> Object -- get the outer object from this instance (if any)" },
-		{ "get_typed_outer", PyCFunctionCast(&FMethods::GetTypedOuter), METH_VARARGS, "x.get_typed_outer(type) -> type() -- get the first outer object of the given type from this instance (if any)" },
-		{ "get_outermost", PyCFunctionCast(&FMethods::GetOutermost), METH_NOARGS, "x.get_outermost() -> Package -- get the outermost object (the package) from this instance" },
-		{ "get_name", PyCFunctionCast(&FMethods::GetName), METH_NOARGS, "x.get_name() -> str -- get the name of this instance" },
-		{ "get_fname", PyCFunctionCast(&FMethods::GetFName), METH_NOARGS, "x.get_fname() -> FName -- get the name of this instance" },
-		{ "get_full_name", PyCFunctionCast(&FMethods::GetFullName), METH_NOARGS, "x.get_full_name() -> str -- get the full name (class name + full path) of this instance" },
-		{ "get_path_name", PyCFunctionCast(&FMethods::GetPathName), METH_NOARGS, "x.get_path_name() -> str -- get the path name of this instance" },
-		{ "get_world", PyCFunctionCast(&FMethods::GetWorld), METH_NOARGS, "x.get_world() -> World -- get the world associated with this instance (if any)" },
-		{ "modify", PyCFunctionCast(&FMethods::Modify), METH_VARARGS, "x.modify(bool) -> bool -- inform that this instance is about to be modified (tracks changes for undo/redo if transactional)" },
-		{ "rename", PyCFunctionCast(&FMethods::Rename), METH_VARARGS | METH_KEYWORDS, "x.rename(name=None, outer=None) -> bool -- rename this instance" },
-		{ "get_editor_property", PyCFunctionCast(&FMethods::GetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.get_editor_property(name) -> object -- get the value of any property visible to the editor" },
-		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.set_editor_property(name, value, notify_mode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
-		{ "set_editor_properties", PyCFunctionCast(&FMethods::SetEditorProperties), METH_VARARGS, "x.set_editor_properties(property_info) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called" },
-		{ "call_method", PyCFunctionCast(&FMethods::CallMethod), METH_VARARGS | METH_KEYWORDS, "x.call_method(name, args=tuple(), kwargs=dict()) -> object -- call a method on this object via Unreal reflection using the given ordered (tuple) or named (dict) argument data - allows calling methods that don't have Python glue" },
+		{ PyGenUtil::PostInitFuncName, PyCFunctionCast(&FMethods::PostInit), METH_NOARGS, "_post_init(self) -> None -- called during Unreal object initialization (equivalent to PostInitProperties in C++)" },
+		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal object type or raise an exception if the cast is not possible" },
+		{ "get_default_object", PyCFunctionCast(&FMethods::GetDefaultObject), METH_NOARGS | METH_CLASS, "get_default_object(cls: Type[_T]) -> _T -- get the Unreal class default object (CDO) of this type" },
+		{ "static_class", PyCFunctionCast(&FMethods::StaticClass), METH_NOARGS | METH_CLASS, "static_class(cls) -> Class -- get the Unreal class of this type" },
+		{ "get_class", PyCFunctionCast(&FMethods::GetClass), METH_NOARGS, "get_class(self) -> Class -- get the Unreal class of this instance" },
+		{ "get_outer", PyCFunctionCast(&FMethods::GetOuter), METH_NOARGS, "get_outer(self) -> Any -- get the outer object from this instance (if any)" },
+		{ "get_typed_outer", PyCFunctionCast(&FMethods::GetTypedOuter), METH_VARARGS, "get_typed_outer(self, type: Union[Class, type]) -> Any -- get the first outer object of the given type from this instance (if any)" },
+		{ "get_outermost", PyCFunctionCast(&FMethods::GetOutermost), METH_NOARGS, "get_outermost(self) -> Package -- get the outermost object (the package) from this instance" },
+		{ "is_package_external", PyCFunctionCast(&FMethods::IsPackageExternal), METH_NOARGS, "is_package_external(self) -> bool -- returns true if this instance has a different package than its outer's package" },
+		{ "get_package", PyCFunctionCast(&FMethods::GetPackage), METH_NOARGS, "get_package(self) -> Package -- get the package directly associated with this instance" },
+		{ "get_name", PyCFunctionCast(&FMethods::GetName), METH_NOARGS, "get_name(self) -> str -- get the name of this instance" },
+		{ "get_fname", PyCFunctionCast(&FMethods::GetFName), METH_NOARGS, "get_fname(self) -> Name -- get the name of this instance" },
+		{ "get_full_name", PyCFunctionCast(&FMethods::GetFullName), METH_NOARGS, "get_full_name(self) -> str -- get the full name (class name + full path) of this instance" },
+		{ "get_path_name", PyCFunctionCast(&FMethods::GetPathName), METH_NOARGS, "get_path_name(self) -> str -- get the path name of this instance" },
+		{ "get_world", PyCFunctionCast(&FMethods::GetWorld), METH_NOARGS, "get_world(self) -> Optional[World] -- get the world associated with this instance (if any)" },
+		{ "modify", PyCFunctionCast(&FMethods::Modify), METH_VARARGS, "modify(self, always_mark_dirty: bool = True) -> bool -- inform that this instance is about to be modified (tracks changes for undo/redo if transactional)" },
+		{ "rename", PyCFunctionCast(&FMethods::Rename), METH_VARARGS | METH_KEYWORDS, "rename(self, name: Union[Name, str]=\"None\", outer: Optional[Object]=None) -> bool -- rename this instance and/or change its outer" },
+		{ "get_editor_property", PyCFunctionCast(&FMethods::GetEditorProperty), METH_VARARGS | METH_KEYWORDS, "get_editor_property(self, name: str) -> object -- get the value of any property visible to the editor" },
+		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "set_editor_property(self, name: str, value: object, notify_mode: PropertyAccessChangeNotifyMode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
+		{ "set_editor_properties", PyCFunctionCast(&FMethods::SetEditorProperties), METH_VARARGS, "set_editor_properties(self, properties: Mapping[str, object]) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called" },
+		{ "call_method", PyCFunctionCast(&FMethods::CallMethod), METH_VARARGS | METH_KEYWORDS, "call_method(self, name: str, *args: Any, **kwargs: Mapping[str, object]) -> Any -- call a method on this object via Unreal reflection using the given ordered (tuple) or named (dict) argument data - allows calling methods that don't have Python glue" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -1271,12 +1297,15 @@ public:
 		{
 			PrepareOldClassForReinstancing();
 		}
+
+		Py_BEGIN_ALLOW_THREADS
 		NewClass->Rename(*ClassName, nullptr, REN_DontCreateRedirectors);
 
 		// Finalize the class
 		NewClass->Bind();
 		NewClass->StaticLink(true);
 		NewClass->AssembleReferenceTokenStream();
+		Py_END_ALLOW_THREADS
 
 		// Add the object meta-data to the type
 		NewClass->PyMetaData.Class = NewClass;
@@ -1287,7 +1316,9 @@ public:
 		FPyWrapperTypeRegistry::Get().RegisterWrappedClassType(NewClass->GetFName() , PyType);
 
 		// Ensure the CDO exists
+		Py_BEGIN_ALLOW_THREADS
 		NewClass->GetDefaultObject();
+		Py_END_ALLOW_THREADS
 
 		// Re-instance the old class and re-parent any derived classes to this new type
 		if (OldClass)
@@ -1298,6 +1329,7 @@ public:
 
 		if (FBlueprintActionDatabase* ActionDB = FBlueprintActionDatabase::TryGet())
 		{
+			Py_BEGIN_ALLOW_THREADS
 			// Notify Blueprints that there is a new class to add to the action list
 			ActionDB->RefreshClassActions(NewClass);
 
@@ -1305,6 +1337,7 @@ public:
 			{
 				ActionDB->RefreshClassActions(OldClass);
 			}
+			Py_END_ALLOW_THREADS
 		}
 
 		// Null the NewClass pointer so the destructor doesn't kill it
@@ -1821,9 +1854,9 @@ void UPythonGeneratedClass::PostRename(UObject* OldOuter, const FName OldName)
 	}
 }
 
-void UPythonGeneratedClass::PostInitInstance(UObject* InObj)
+void UPythonGeneratedClass::PostInitInstance(UObject* InObj, FObjectInstancingGraph* InstanceGraph)
 {
-	Super::PostInitInstance(InObj);
+	Super::PostInitInstance(InObj, InstanceGraph);
 
 	// Execute Python code within this block
 	{
@@ -2052,3 +2085,4 @@ DEFINE_FUNCTION(UPythonGeneratedClass::CallPythonFunction)
 }
 
 #endif	// WITH_PYTHON
+

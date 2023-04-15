@@ -7,7 +7,10 @@
 #include "EngineStats.h"
 #include "Components/ShapeComponent.h"
 #include "AI/Navigation/NavAreaBase.h"
+#include "GameFramework/WorldSettings.h"
+#include "WorldPartition/DataLayer/DataLayerAsset.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavigationTypes)
 
 DEFINE_STAT(STAT_Navigation_MetaAreaTranslation);
 
@@ -20,6 +23,56 @@ namespace FNavigationSystem
 	// and only those values will be used
 	const float FallbackAgentRadius = 35.f;
 	const float FallbackAgentHeight = 144.f;
+
+	bool IsLevelVisibilityChanging(const UObject* Object)
+	{
+		const UActorComponent* ObjectAsComponent = Cast<UActorComponent>(Object);
+		if (ObjectAsComponent)
+		{
+			if (const ULevel* Level = ObjectAsComponent->GetComponentLevel())
+			{
+				return Level->HasVisibilityChangeRequestPending();
+			}
+		}
+		else if (const AActor* Actor = Cast<AActor>(Object))
+		{
+			if (const ULevel* Level = Actor->GetLevel())
+			{
+				return Level->HasVisibilityChangeRequestPending();
+			}
+		}
+
+		return false;
+	}
+	
+	bool IsInBaseNavmesh(const UObject* Object)
+	{
+		const UActorComponent* ObjectAsComponent = Cast<UActorComponent>(Object);
+		if (const AActor* Actor = ObjectAsComponent ? ObjectAsComponent->GetOwner() : Cast<AActor>(Object))
+		{
+			if (!Actor->HasDataLayers())
+			{
+				return true;
+			}
+		
+			if (const UWorld* World = Object->GetWorld())
+			{
+				if (const AWorldSettings* WorldSettings = World->GetWorldSettings())
+				{
+					const TArray<TObjectPtr<UDataLayerAsset>>& BaseNavmeshLayers = WorldSettings->BaseNavmeshDataLayers;
+					for (const TObjectPtr<UDataLayerAsset>& DataLayer : BaseNavmeshLayers)
+					{
+						if (Actor->ContainsDataLayer(DataLayer))
+						{
+							return true;
+						}
+					}
+				}
+			}
+		}
+
+		return false;
+	}	
 }
 
 //----------------------------------------------------------------------//
@@ -92,6 +145,10 @@ bool FNavigationRelevantData::HasPerInstanceTransforms() const
 
 bool FNavigationRelevantData::IsMatchingFilter(const FNavigationRelevantDataFilter& Filter) const
 {
+	if (Filter.bExcludeLoadedData && bLoadedData)
+	{
+		return false;
+	}
 	return (Filter.bIncludeGeometry && HasGeometry()) ||
 		(Filter.bIncludeOffmeshLinks && (Modifiers.HasPotentialLinks() || Modifiers.HasLinks())) ||
 		(Filter.bIncludeAreas && Modifiers.HasAreas()) ||
@@ -238,9 +295,11 @@ bool FNavAgentSelector::Serialize(FArchive& Ar)
 //----------------------------------------------------------------------//
 FNavHeightfieldSamples::FNavHeightfieldSamples()
 {
-#if WITH_PHYSX
-	//static_assert(sizeof(physx::PxI16) == sizeof(Heights.GetTypeSize()), "FNavHeightfieldSamples::Heights' type needs to be kept in sync with physx::PxI16");
-#endif // WITH_PHYSX
+}
+
+void FNavHeightfieldSamples::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(sizeof(*this) + Heights.GetAllocatedSize() + Holes.GetAllocatedSize());
 }
 
 //----------------------------------------------------------------------//
@@ -291,3 +350,4 @@ TSubclassOf<UNavAreaBase> UNavAreaBase::PickAreaClassForAgent(const AActor& Acto
 
 	return GetClass();
 }
+

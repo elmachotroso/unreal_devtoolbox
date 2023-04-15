@@ -146,15 +146,20 @@ public:
 
 	virtual bool Tick(float DeltaTime) override;
 
+#if WITH_CEF3
+	/** Return true if this URL will support adding an Authorization header to it */
+	bool URLRequestAllowsCredentials(const FString& URL);
+#endif
 private:
 
 	TSharedPtr<IWebBrowserCookieManager> DefaultCookieManager;
 
 #if WITH_CEF3
-	/** When new render processes are created, send all permanent variable bindings to them. */
-	void HandleRenderProcessCreated(CefRefPtr<CefListValue> ExtraInfo);
 	/** Helper function to generate the CEF build unique name for the cache_path */
 	FString GenerateWebCacheFolderName(const FString &InputPath);
+	/** Helper function that blocks until the CEF task queue has processed a posted task, flushing the queue */
+	void WaitForTaskQueueFlush();
+
 	/** Pointer to the CEF App implementation */
 	CefRefPtr<FCEFBrowserApp>			CEFBrowserApp;
 
@@ -168,7 +173,7 @@ private:
 	/** List of currently existing browser windows */
 #if WITH_CEF3
 	TArray<TWeakPtr<FCEFWebBrowserWindow>>	WindowInterfaces;
-#elif PLATFORM_IOS || PLATFORM_PS4 || (PLATFORM_ANDROID && USE_ANDROID_JNI)
+#elif PLATFORM_IOS || PLATFORM_SPECIFIC_WEB_BROWSER || (PLATFORM_ANDROID && USE_ANDROID_JNI)
 	TArray<TWeakPtr<IWebBrowserWindow>>	WindowInterfaces;
 #endif
 
@@ -180,6 +185,13 @@ private:
 	bool bDevToolsShortcutEnabled;
 
 	bool bJSBindingsToLoweringEnabled;
+
+	bool bAppIsFocused;
+
+#if WITH_CEF3
+	/** Did CEF successfully initialize itself */
+	bool bCEFInitialized;
+#endif
 
 	/** Reference to UWebBrowser's default material*/
 	UMaterialInterface* DefaultMaterial;

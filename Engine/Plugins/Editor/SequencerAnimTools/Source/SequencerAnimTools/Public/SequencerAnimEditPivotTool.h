@@ -13,14 +13,14 @@
 #include "Framework/Commands/UICommandInfo.h"
 #include "BaseGizmos/TransformProxy.h"
 #include "BaseSequencerAnimTool.h"
-#include "EditorStyleSet.h"
+#include "ControlRig.h"
+#include "Styling/AppStyle.h"
 #include "SequencerAnimEditPivotTool.generated.h"
 
 class USingleClickInputBehavior;
 class UClickDragInputBehavior;
 class UCombinedTransformGizmo;
 class ULevelSequence;
-class UControlRig;
 struct FRigControlElement;
 class ISequencer;
 class FUICommandList;
@@ -108,7 +108,7 @@ public:
 			"SequencerEditPivotTool",
 			NSLOCTEXT("SequencerEditPivotTool", "SequencerEditPivotTool", "Edit Pivot Commands"),
 			NAME_None,
-			FEditorStyle::GetStyleSetName()
+			FAppStyle::GetAppStyleSetName()
 			)
 	{}
 
@@ -181,7 +181,7 @@ protected:
 	bool bShiftPressedWhenStarted = false;
 	bool bCtrlPressedWhenStarted = false;
 	UWorld* TargetWorld = nullptr;		// target World we will raycast into
-	UInteractiveGizmoManager* GizmoManager = nullptr; //gizmo man
+	UInteractiveGizmoManager* GizmoManager = nullptr;
 
 	FTransform StartDragTransform;
 	bool bGizmoBeingDragged = false;
@@ -189,6 +189,7 @@ protected:
 	int32 TransactionIndex = -1;
 	TArray<FControlRigSelectionDuringDrag> ControlRigDrags;
 	TArray<FActorSelectonDuringDrag> ActorDrags;
+	TArray<TSharedPtr<FControlRigInteractionScope>> InteractionScopes;
 
 	//since we are selection based we can cache this
 	ULevelSequence* LevelSequence;

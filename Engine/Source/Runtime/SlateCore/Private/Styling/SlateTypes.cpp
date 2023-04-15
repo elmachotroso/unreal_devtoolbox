@@ -1,10 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Styling/SlateTypes.h"
+#include "Brushes/SlateColorBrush.h"
 #include "Brushes/SlateNoResource.h"
 #include "Styling/StyleDefaults.h"
+#include "Styling/StyleColors.h"
 #include "Widgets/InvalidateWidgetReason.h"
 #include "Widgets/SWidget.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SlateTypes)
 
 FCheckBoxStyle::FCheckBoxStyle()
 : CheckBoxType(ESlateCheckBoxType::CheckBox)
@@ -249,15 +253,18 @@ FEditableTextBoxStyle::FEditableTextBoxStyle()
 	, BackgroundImageFocused()
 	, BackgroundImageReadOnly()
 	, Padding(FMargin(4.0f, 2.0f))
-	, Font(FStyleDefaults::GetFontInfo(9))
+#if WITH_EDITORONLY_DATA
+	, Font_DEPRECATED(FStyleDefaults::GetFontInfo(9))
+#endif
+	, TextStyle(FTextBlockStyle().SetFont(FStyleDefaults::GetFontInfo(9))
+				.SetColorAndOpacity(FSlateColor::UseForeground())
+				.SetSelectedBackgroundColor(FStyleColors::Highlight)
+				.SetHighlightColor(FStyleColors::Black)
+				.SetHighlightShape(FSlateColorBrush(FStyleColors::AccentGreen)))
 	, ForegroundColor(FSlateColor::UseForeground())
 	, BackgroundColor(FLinearColor::White)
 	, ReadOnlyForegroundColor(FSlateColor::UseForeground())
 	, FocusedForegroundColor(FSlateColor::UseForeground())
-{
-}
-
-FEditableTextBoxStyle::~FEditableTextBoxStyle()
 {
 }
 
@@ -377,7 +384,9 @@ const FExpandableAreaStyle& FExpandableAreaStyle::GetDefault()
 
 
 FSearchBoxStyle::FSearchBoxStyle()
-	: bLeftAlignButtons(false)
+	: bLeftAlignButtons_DEPRECATED(false)
+	, bLeftAlignSearchResultButtons(false)
+	, bLeftAlignGlassImageAndClearButton(false)
 {
 }
 
@@ -386,7 +395,7 @@ FSearchBoxStyle& FSearchBoxStyle::SetTextBoxStyle( const FEditableTextBoxStyle& 
 	TextBoxStyle = InTextBoxStyle;
 	if (!ActiveFontInfo.HasValidFont())
 	{
-		ActiveFontInfo = TextBoxStyle.Font;
+		ActiveFontInfo = TextBoxStyle.TextStyle.Font;
 	}
 	return *this;
 }
@@ -406,6 +415,16 @@ const FSearchBoxStyle& FSearchBoxStyle::GetDefault()
 {
 	static FSearchBoxStyle Default;
 	return Default;
+}
+
+FSearchBoxStyle& FSearchBoxStyle::SetLeftAlignButtons(bool bInLeftAlignButtons)
+{
+	bLeftAlignButtons_DEPRECATED = bInLeftAlignButtons;
+	
+	bLeftAlignSearchResultButtons = bInLeftAlignButtons;
+	bLeftAlignGlassImageAndClearButton= bInLeftAlignButtons;
+
+	return *this;
 }
 
 FSliderStyle::FSliderStyle()

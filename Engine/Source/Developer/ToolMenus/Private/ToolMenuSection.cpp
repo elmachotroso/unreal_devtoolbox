@@ -10,6 +10,8 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Internationalization/Internationalization.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ToolMenuSection)
+
 FToolMenuSection::FToolMenuSection() :
 	ToolMenuSectionDynamic(nullptr),
 	bIsRegistering(false),
@@ -93,7 +95,7 @@ FToolMenuEntry& FToolMenuSection::AddMenuEntry(const FName InNameOverride, const
 	return AddEntry(FToolMenuEntry::InitMenuEntry(InCommand, InLabelOverride, InToolTipOverride, InIconOverride, InTutorialHighlightName, InNameOverride));
 }
 
-FToolMenuEntry& FToolMenuSection::AddMenuEntryWithCommandList(const TSharedPtr< const FUICommandInfo >& InCommand, const TSharedPtr< const FUICommandList >& InCommandList, const TAttribute<FText>& InLabelOverride, const TAttribute<FText>& InToolTipOverride, const TAttribute<FSlateIcon>& InIconOverride, const FName InTutorialHighlightName, const FName InNameOverride)
+FToolMenuEntry& FToolMenuSection::AddMenuEntryWithCommandList(const TSharedPtr< const FUICommandInfo >& InCommand, const TSharedPtr< const FUICommandList >& InCommandList, const TAttribute<FText>& InLabelOverride, const TAttribute<FText>& InToolTipOverride, const TAttribute<FSlateIcon>& InIconOverride, const FName InTutorialHighlightName, const TOptional<FName> InNameOverride)
 {
 	return AddEntry(FToolMenuEntry::InitMenuEntryWithCommandList(InCommand, InCommandList, InLabelOverride, InToolTipOverride, InIconOverride, InTutorialHighlightName, InNameOverride));
 }
@@ -239,3 +241,4 @@ int32 FToolMenuSection::FindBlockInsertIndex(const FToolMenuEntry& InBlock) cons
 
 	return Blocks.Num();
 }
+

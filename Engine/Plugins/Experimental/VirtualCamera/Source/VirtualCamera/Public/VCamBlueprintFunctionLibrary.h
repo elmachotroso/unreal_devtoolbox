@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "AssetData.h"
+#include "CineCameraComponent.h"
+#include "AssetRegistry/AssetData.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Misc/FrameRate.h"
 #include "Misc/Timecode.h"
 #include "MovieSceneObjectBindingID.h"
 #include "VCamBlueprintFunctionLibrary.generated.h"
 
+class ACineCameraActor;
 class UCineCameraComponent;
 class ULevelSequence;
 class USceneCaptureComponent2D;
@@ -141,6 +143,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "VirtualCamera")
 	static FString GetNextUndoDescription();
 
+	/** Copies all properties from a CineCameraComponent to a CineCameraActor and ensure the root actor transform is updated so the CameraComponents end up in the same World Space position */
+	UFUNCTION(BlueprintCallable, Category = "VirtualCamera")
+	static bool CopyToCineCameraActor(UCineCameraComponent* SourceCameraComponent, ACineCameraActor* TargetCameraActor);
+
+	UFUNCTION(BlueprintCallable, Category = "VirtualCamera")
+	static void SetActorLabel(AActor* Actor, const FString& NewActorLabel);
+
+	UFUNCTION(BlueprintPure, Category = "VirtualCamera")
+	static bool IsTakeRecorderPanelOpen();
+
+	UFUNCTION(BlueprintCallable, Category = "VirtualCamera")
+	static bool TryOpenTakeRecorderPanel();
 private:
 
 	static bool DeprojectScreenToWorld(const FVector2D& InScreenPosition, FVector& OutWorldPosition, FVector& OutWorldDirection);

@@ -21,15 +21,16 @@
 #include "MaterialUtilities.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IMeshReductionInterfaces.h"
 #include "IMeshMergeUtilities.h"
 #include "MeshMergeModule.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "ObjectTools.h"
 #include "Algo/ForEach.h"
+#include "Algo/Transform.h"
 
 #include "IGeometryProcessingInterfacesModule.h"
 #include "GeometryProcessingInterfaces/ApproximateActors.h"
@@ -89,7 +90,7 @@ FString FMeshApproximationTool::GetDefaultPackageName() const
 		if (Actor)
 		{
 			TInlineComponentArray<UStaticMeshComponent*> SMComponets;
-			Actor->GetComponents<UStaticMeshComponent>(SMComponets);
+			Actor->GetComponents(SMComponets);
 			for (UStaticMeshComponent* Component : SMComponets)
 			{
 				if (Component->GetStaticMesh())
@@ -169,53 +170,6 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 		return false;
 	}
 
-    // Gather bounds of the input components
-	auto GetActorsBounds = [&]() -> FBoxSphereBounds
-	{
-		FBoxSphereBounds Bounds;
-		bool bFirst = true;
-
-		for (auto& Component : SelectedComponents)
-		{
-			if (!Component.IsValid() || !Component.Get()->bShouldIncorporate)
-			{
-				continue;
-			}
-
-			if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component.Get()->PrimComponent))
-			{
-				// Append bounds of visible components only
-				FBoxSphereBounds ComponentBounds = PrimitiveComponent->Bounds;
-				Bounds = bFirst ? ComponentBounds : Bounds + ComponentBounds;
-				bFirst = false;
-			}
-		}
-
-		return Bounds;
-	};
-	
-
-	// Compute texel density if needed, depending on the TextureSizingType setting
-	ETextureSizingType TextureSizingType = SettingsObject->Settings.MaterialSettings.TextureSizingType;
-	float TexelDensityPerMeter = 0.0f;
-
-	IGeometryProcessing_ApproximateActors::ETextureSizePolicy TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TextureSize;
-	if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromTexelDensity)
-	{
-		TexelDensityPerMeter = SettingsObject->Settings.MaterialSettings.TargetTexelDensityPerMeter;
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
-	}
-	else if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromMeshScreenSize)
-	{
-		TexelDensityPerMeter = FMaterialUtilities::ComputeRequiredTexelDensityFromScreenSize(SettingsObject->Settings.MaterialSettings.MeshMaxScreenSizePercent, GetActorsBounds().SphereRadius);
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
-	}
-	else if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromMeshDrawDistance)
-	{
-		TexelDensityPerMeter = FMaterialUtilities::ComputeRequiredTexelDensityFromDrawDistance(SettingsObject->Settings.MaterialSettings.MeshMinDrawDistance, GetActorsBounds().SphereRadius);
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
-	}
-
 	const FMeshApproximationSettings& UseSettings = SettingsObject->Settings;
 
 	IGeometryProcessingInterfacesModule& GeomProcInterfaces = FModuleManager::Get().LoadModuleChecked<IGeometryProcessingInterfacesModule>("GeometryProcessingInterfaces");
@@ -226,8 +180,17 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 	//
 
 	IGeometryProcessing_ApproximateActors::FOptions Options = ApproxActorsAPI->ConstructOptions(UseSettings);
-	Options.TextureSizePolicy = TextureSizePolicy;
-	Options.MeshTexelDensity = TexelDensityPerMeter;
+
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	auto IsValidPrimitiveComponent = [](const TSharedPtr<FMergeComponentData>& Component) { return Component.IsValid() && !Component.Get()->bShouldIncorporate; };
+	auto GetPrimitiveComponent = [](const TSharedPtr<FMergeComponentData>& Component) { return Component.Get()->PrimComponent.Get(); };
+	Algo::TransformIf(SelectedComponents, PrimitiveComponents, IsValidPrimitiveComponent, GetPrimitiveComponent);
+
+	// Compute texel density if needed, depending on the TextureSizingType setting
+	if (UseSettings.MaterialSettings.ResolveTexelDensity(PrimitiveComponents, Options.MeshTexelDensity))
+	{
+		Options.TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
+	}
 
 	// Use temp packages - Needed to allow proper replacement of existing assets (performed below)
 	const FString NewAssetNamePrefix(TEXT("NEWASSET_"));
@@ -278,6 +241,28 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 		FAssetRegistryModule::AssetCreated(NewAsset);
 	};
 
+	if (Results.ResultCode != IGeometryProcessing_ApproximateActors::EResultCode::Success)
+	{
+		FText Message;
+		FText Title = LOCTEXT("ApproximateActorsFailed_Title", "Failed to merge actors");
+
+		switch (Results.ResultCode)
+		{
+		case IGeometryProcessing_ApproximateActors::EResultCode::MeshGenerationFailed:
+			Message = LOCTEXT("ApproximateActors_MeshGeneratedFailed", "Mesh generation failed. Please review the merge settings and look for additional errors in the console log.");
+			break;
+		case IGeometryProcessing_ApproximateActors::EResultCode::MaterialGenerationFailed:
+			Message = LOCTEXT("ApproximateActors_MaterialGenerationFailed", "Material generation failed. Please review the merge settings and look for additional errors in the console log.");
+			break;
+		case IGeometryProcessing_ApproximateActors::EResultCode::UnknownError:
+			Message = LOCTEXT("ApproximateActors_UnknownError", "Unknown merge error. Please review the merge settings and look for additional errors in the console log.");
+			break;
+		}		
+		
+		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		return false;
+	}
+
 	Algo::ForEach(Results.NewMeshAssets, ProcessNewAsset);
 	Algo::ForEach(Results.NewMaterials, ProcessNewAsset);
 	Algo::ForEach(Results.NewTextures, ProcessNewAsset);
@@ -291,7 +276,7 @@ bool FMeshApproximationTool::RunMerge(const FString& PackageName, const TArray<T
 			ReplaceSourceActorsByApproximationMeshes(NewAssetsToSync, UniqueLevels[0], Actors);
 		}
 	}
-
+	
 	return true;
 }
 

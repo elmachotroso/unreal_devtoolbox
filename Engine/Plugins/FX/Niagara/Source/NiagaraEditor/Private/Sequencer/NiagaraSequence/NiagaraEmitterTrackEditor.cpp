@@ -13,7 +13,7 @@
 #include "NiagaraEditorStyle.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorUtilities.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
@@ -44,7 +44,7 @@ public:
 			[
 				SNew(SImage)
 				.Visibility(this, &SEmitterTrackWidget::GetTrackErrorIconVisibility)
-				.Image(FEditorStyle::GetBrush("Icons.Info"))
+				.Image(FAppStyle::GetBrush("Icons.Info"))
 				.ToolTipText(this, &SEmitterTrackWidget::GetTrackErrorIconToolTip)
 			]
 			// Stack issues icon
@@ -64,7 +64,7 @@ public:
 			.Padding(3, 0, 0, 0)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.HAlign(HAlign_Center)
 				.ContentPadding(1)
 				.ToolTipText(this, &SEmitterTrackWidget::GetToggleIsolateToolTip)
@@ -90,7 +90,7 @@ public:
 		// We refresh the renderer widgets when renderers changed.
 		// The OnRenderersChanged delegate will cause the renderer items to be created that are used for widget creation,
 		// Due to delegate bind order, the item creation happens after the refresh. To solve this, we just wait a frame. 
-		UNiagaraEmitter* NiagaraEmitter = EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter();
+		UNiagaraEmitter* NiagaraEmitter = EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter().Emitter;
 		WeakNiagaraEmitter = NiagaraEmitter;
 		NiagaraEmitter->OnRenderersChanged().AddSP(this, &SEmitterTrackWidget::RefreshRenderers);
 
@@ -151,7 +151,7 @@ private:
 						.Padding(3, 0, 0, 0)
 						[
 							SNew(SButton)
-							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+							.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 							.IsFocusable(false)
 							.ToolTipText(FText::Format(LOCTEXT("RenderButtonToolTip", "{0} - Press to select."), FText::FromString(FName::NameToDisplayString(Renderer->GetName(), false))))
 							.OnClicked(this, &SEmitterTrackWidget::OnRenderButtonClicked, RendererEntry)
@@ -227,7 +227,7 @@ private:
 	FSlateColor GetToggleIsolateImageColor() const
 	{
 		return EmitterTrack.IsValid() && EmitterTrack->GetEmitterHandleViewModel()->GetIsIsolated()
-			? FEditorStyle::GetSlateColor("SelectionColor")
+			? FAppStyle::GetSlateColor("SelectionColor")
 			: FLinearColor::Gray;
 	}
 
@@ -297,7 +297,7 @@ bool FNiagaraEmitterTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid& T
 	UNiagaraSequence* NiagaraSequence = Cast<UNiagaraSequence>(GetSequencer()->GetRootMovieSceneSequence());
 	if (EmitterAsset != nullptr && NiagaraSequence != nullptr && NiagaraSequence->GetSystemViewModel().GetCanModifyEmittersFromTimeline())
 	{
-		NiagaraSequence->GetSystemViewModel().AddEmitter(*EmitterAsset);
+		NiagaraSequence->GetSystemViewModel().AddEmitter(*EmitterAsset, EmitterAsset->GetExposedVersion().VersionGuid);
 	}
 	return false;
 }

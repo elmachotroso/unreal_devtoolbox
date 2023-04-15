@@ -8,6 +8,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Commandlets/Commandlet.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "UObject/MetaData.h"
 #include "UObject/SavePackage.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -68,6 +69,16 @@ bool UWorldPartitionResaveActorsBuilder::PreRun(UWorld* World, FPackageSourceCon
 			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorClassName"));
 			return false;
 		}
+		else if (!ActorTags.IsEmpty())
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorTags"));
+			return false;
+		}
+		else if (!ActorProperties.IsEmpty())
+		{
+			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ActorProperties"));
+			return false;
+		}
 		else if (bResaveDirtyActorDescsOnly)
 		{
 			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("SwitchActorPackagingSchemeToReduced is not compatible with ResaveDirtyActorDescsOnly"));
@@ -89,18 +100,11 @@ bool UWorldPartitionResaveActorsBuilder::PreRun(UWorld* World, FPackageSourceCon
 
 bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellInfo& InCellInfo, FPackageSourceControlHelper& PackageHelper)
 {
-	FPackageSourceControlHelper SCCHelper;
-
 	UPackage* WorldPackage = World->GetPackage();
-
-	int32 LoadCount = 0;
-	int32 SaveCount = 0;
-	int32 FailCount = 0;
 
 	// Actor Class Filter
 	UClass* ActorClass = AActor::StaticClass();
 
-	// @todo_ow: support BP Classes when the ActorDesc have that information
 	if (!ActorClassName.IsEmpty())
 	{
 		if (bSwitchActorPackagingSchemeToReduced)
@@ -109,11 +113,28 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 			return false;
 		}
 
-		ActorClass = FindObject<UClass>(ANY_PACKAGE, *ActorClassName);
+		// Look for native classes
+		ActorClass = UClass::TryFindTypeSlow<UClass>(ActorClassName);
+
 		if (!ActorClass)
 		{
-			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to find Actor Class: %s."), *ActorClassName);
-			return false;
+			// Look for a fully qualified BP class
+			ActorClass = LoadClass<AActor>(nullptr, *ActorClassName, nullptr, LOAD_None, nullptr);
+
+			if (!ActorClass)
+			{
+				// Look for a package BP
+				if (FPackageName::DoesPackageExist(ActorClassName))
+				{
+					ActorClass = LoadClass<AActor>(nullptr, *FString::Printf(TEXT("%s.%s_C"), *ActorClassName, *FPackageName::GetLongPackageAssetName(ActorClassName)), nullptr, LOAD_None, nullptr);
+				}
+
+				if (!ActorClass)
+				{
+					UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to find Actor Class: %s."), *ActorClassName);
+					return false;
+				}
+			}
 		}
 	}
 
@@ -149,89 +170,31 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 
 	TArray<FString> PackagesToDelete;
 
-	auto AddAndSavePackage = [&SaveCount, &FailCount, &SCCHelper](UPackage* InPackage, const FString& InPackageType)
-	{
-		// Save the new package and add to source control if needed
-		FString NewPackageFileName = SourceControlHelpers::PackageFilename(InPackage);
-		FSavePackageArgs SaveArgs;
-		SaveArgs.TopLevelFlags = RF_Standalone;
-		if (!UPackage::SavePackage(InPackage, nullptr, *NewPackageFileName, SaveArgs))
-		{
-			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Error saving %s package %s."), *InPackageType, *InPackage->GetName());
-			++FailCount;
-			return true;
-		}
-
-		if (!SCCHelper.AddToSourceControl(InPackage))
-		{
-			UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Error adding %s package to source control %s."), *InPackageType, *InPackage->GetName());
-			++FailCount;
-			return true;
-		}
-
-		UE_LOG(LogWorldPartitionResaveActorsBuilder, Display, TEXT("Saved %s package %s."), *InPackageType, *InPackage->GetName());
-		++SaveCount;
-		return true;
-	};
-
-	auto CheckOutAndSavePackage = [&SaveCount, &FailCount, &SCCHelper](UPackage* InPackage, const FString& InPackageType, bool bErrorAtFailCheckout)
-	{
-		if (SCCHelper.Checkout(InPackage))
-		{
-			// Save package
-			FString PackageFileName = SourceControlHelpers::PackageFilename(InPackage);
-			FSavePackageArgs SaveArgs;
-			SaveArgs.TopLevelFlags = RF_Standalone;
-			if (!UPackage::SavePackage(InPackage, nullptr, *PackageFileName, SaveArgs))
-			{
-				UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Error saving %s package %s."), *InPackageType, *InPackage->GetName());
-				++FailCount;
-				return true;
-			}
-
-			UE_LOG(LogWorldPartitionResaveActorsBuilder, Display, TEXT("Saved %s package %s."), *InPackageType, *InPackage->GetName());
-			++SaveCount;
-			return true;
-		}
-		else
-		{
-			if (bErrorAtFailCheckout)
-			{
-				UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Error checking out %s package %s."), *InPackageType, *InPackage->GetName());
-			}
-			else
-			{
-				UE_LOG(LogWorldPartitionResaveActorsBuilder, Warning, TEXT("Error checking out %s package %s."), *InPackageType, *InPackage->GetName());
-			}
-
-			++FailCount;
-			return true;
-		}
-	};
-
 	if (bSwitchActorPackagingSchemeToReduced)
 	{
 		World->PersistentLevel->ActorPackagingScheme = EActorPackagingScheme::Reduced;
 
 		// Build clusters
 		TArray<TPair<FGuid, TArray<FGuid>>> ActorsWithRefs;
-		for (FActorDescList::TIterator<> ActorDescIterator(WorldPartition); ActorDescIterator; ++ActorDescIterator)
+		for (FActorDescContainerCollection::TIterator<> ActorDescIterator(WorldPartition); ActorDescIterator; ++ActorDescIterator)
 		{
 			ActorsWithRefs.Emplace(ActorDescIterator->GetGuid(), ActorDescIterator->GetReferences());
 		}
 
 		TArray<TArray<FGuid>> Clusters = GenerateObjectsClusters(ActorsWithRefs);
 
+		TSet<FWorldPartitionReference> LoadedReferences;
+		TArray<UPackage*> PackagesToSave;
 		for (const TArray<FGuid>& Cluster : Clusters)
 		{
-			TArray<UPackage*> PackagesToSave;
-
 			// Load actor clusters
 			TArray<FWorldPartitionReference> ActorReferences;
+			ActorReferences.Reserve(Cluster.Num());
 			for (const FGuid& ActorGuid : Cluster)
 			{
 				ActorReferences.Emplace(WorldPartition, ActorGuid);
 			}
+			LoadedReferences.Append(ActorReferences);
 
 			// Change packaging of all actors in the current cluster
 			for (FWorldPartitionReference& ActorReference : ActorReferences)
@@ -242,100 +205,130 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 				if (!Actor)
 				{
 					PackagesToDelete.Add(ActorDesc->GetActorPackage().ToString());
-					++FailCount;
 					continue;
 				}
 				else
 				{
-					++LoadCount;
-
 					UPackage* Package = Actor->GetExternalPackage();
 					check(Package);
 
 					if (!bReportOnly)
 					{
-						if (SCCHelper.Checkout(Package))
+						// Always mark this package for deletion, as it will contain a temporary redirector to fixup references
+						PackagesToDelete.Add(ActorDesc->GetActorPackage().ToString());
+
+						// Move actor back into world's package
+						Actor->SetPackageExternal(false);
+
+						// Gather dependant objects that also needs to be moved along with the actor
+						TArray<UObject*> DependantObjects;
+						ForEachObjectWithPackage(Package, [&DependantObjects](UObject* Object)
 						{
-							// Always mark this package for deletion, as it will contain a temporary redirector to fixup references
-							PackagesToDelete.Add(ActorDesc->GetActorPackage().ToString());
-
-							// Move actor back into world's package
-							Actor->SetPackageExternal(false);
-
-							// Gather dependant objects that also needs to be moved along with the actor
-							TArray<UObject*> DependantObjects;
-							ForEachObjectWithPackage(Package, [&DependantObjects](UObject* Object)
+							if (!Cast<UMetaData>(Object))
 							{
-								if (!Cast<UMetaData>(Object))
-								{
-									DependantObjects.Add(Object);
-								}
-								return true;
-							}, false);
-
-							// Move dependant objects into the new world package temporarily
-							for (UObject* DependantObject : DependantObjects)
-							{
-								DependantObject->Rename(nullptr, WorldPackage, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+								DependantObjects.Add(Object);
 							}
+							return true;
+						}, false);
 
-							// Move actor in its new package
-							Actor->SetPackageExternal(true);
-
-							// Also move dependant objects into the new package
-							UPackage* NewActorPackage = Actor->GetExternalPackage();
-							for (UObject* DependantObject : DependantObjects)
-							{
-								DependantObject->Rename(nullptr, NewActorPackage, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
-							}
-
-							PackagesToSave.Add(NewActorPackage);
-						}
-						else
+						// Move dependant objects into the new world package temporarily
+						for (UObject* DependantObject : DependantObjects)
 						{
-							// It is possible the resave can't checkout everything. Continue processing.
-							UE_LOG(LogWorldPartitionResaveActorsBuilder, Warning, TEXT("Error checking out package %s."), *Package->GetName());
-							++FailCount;
-							continue;
+							DependantObject->Rename(nullptr, WorldPackage, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 						}
+
+						// Move actor in its new package
+						Actor->SetPackageExternal(true);
+
+						// Also move dependant objects into the new package
+						UPackage* NewActorPackage = Actor->GetExternalPackage();
+						for (UObject* DependantObject : DependantObjects)
+						{
+							DependantObject->Rename(nullptr, NewActorPackage, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+						}
+
+						PackagesToSave.Add(NewActorPackage);
 					}
 				}
 			}
 
-			// Save modified actors
-			for (UPackage* PackageToSave : PackagesToSave)
+			if (FWorldPartitionHelpers::HasExceededMaxMemory())
 			{
-				AddAndSavePackage(PackageToSave, TEXT("Actor"));
+				if (!UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper))
+				{
+					return false;
+				}
+
+				PackagesToSave.Empty();
+				LoadedReferences.Empty();
+				FWorldPartitionHelpers::DoCollectGarbage();
 			}
 		}
+
+		// Save last batch
+		if (!UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper))
+		{
+			return false;
+		}
+		PackagesToSave.Empty();
+		LoadedReferences.Empty();
+		FWorldPartitionHelpers::DoCollectGarbage();
 	}
 	else
 	{
-		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, ActorClass, [this, &LoadCount, &SaveCount, &FailCount, &SCCHelper, &PackagesToDelete, &CheckOutAndSavePackage](const FWorldPartitionActorDesc* ActorDesc)
-		{
-			ON_SCOPE_EXIT
-			{
-				UE_LOG(LogWorldPartitionResaveActorsBuilder, Display, TEXT("Processed %d packages (%d Saved / %d Failed)"), LoadCount, SaveCount, FailCount);
-			};
+		TArray<UPackage*> PackagesToSave;
 
+		FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorWithLoadingParams;
+
+		ForEachActorWithLoadingParams.ActorClasses = { ActorClass };
+
+		ForEachActorWithLoadingParams.FilterActorDesc = [this](const FWorldPartitionActorDesc* ActorDesc) -> bool
+		{
+			for (const FName& ActorTag : ActorDesc->GetTags())
+			{
+				if (ActorTags.Contains(ActorTag))
+				{
+					return true;
+				}
+			}
+			
+			for (auto [PropertyName, PropertyValue] : ActorProperties)
+			{
+				FName Value;
+				if (ActorDesc->GetProperty(PropertyName, &Value))
+				{
+					if (Value == PropertyValue)
+					{
+						return true;
+					}
+				}
+			}
+
+			return ActorTags.IsEmpty() && ActorProperties.IsEmpty();
+		};
+
+		ForEachActorWithLoadingParams.OnPreGarbageCollect = [&PackagesToSave, &PackageHelper]()
+		{
+			UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper, true);
+			PackagesToSave.Empty();
+		};
+
+		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, &PackagesToDelete, &PackagesToSave](const FWorldPartitionActorDesc* ActorDesc)
+		{
 			AActor* Actor = ActorDesc->GetActor();
 
 			if (!Actor)
 			{
 				PackagesToDelete.Add(ActorDesc->GetActorPackage().ToString());
-				++FailCount;
 				return true;
 			}
 			else
 			{
-				++LoadCount;
-
 				if (bEnableActorFolders)
 				{
 					if (!Actor->CreateOrUpdateActorFolder())
 					{
 						UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to create actor folder for actor %s."), *Actor->GetName());
-						++FailCount;
 						return true;
 					}
 				}
@@ -345,11 +338,14 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 
 				if (bResaveDirtyActorDescsOnly)
 				{
-					TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = Actor->CreateActorDesc();
-
-					if (ActorDesc->Equals(NewActorDesc.Get()))
+					if (!ActorDesc->IsResaveNeeded())
 					{
-						return true;
+						TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = Actor->CreateActorDesc();
+
+						if (ActorDesc->Equals(NewActorDesc.Get()))
+						{
+							return true;
+						}
 					}
 
 					UE_LOG(LogWorldPartitionResaveActorsBuilder, Log, TEXT("Package %s needs to be resaved."), *Package->GetName());
@@ -357,32 +353,43 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 
 				if (!bReportOnly)
 				{
-					return CheckOutAndSavePackage(Package, TEXT("Actor"), /*bErrorAtFailCheckout*/ false);
+					PackagesToSave.Add(Package);
+					return true;
 				}
 			}
 
 			return true;
-		});
+		}, ForEachActorWithLoadingParams);
 	}
 
 	if (!bReportOnly)
 	{
-		SCCHelper.Delete(PackagesToDelete);
+		if (!UWorldPartitionBuilder::DeletePackages(PackagesToDelete, PackageHelper, !bSwitchActorPackagingSchemeToReduced) && bSwitchActorPackagingSchemeToReduced)
+		{
+			return false;
+		}
 
 		if (bEnableActorFolders)
 		{
-			World->PersistentLevel->ForEachActorFolder([&AddAndSavePackage](UActorFolder* ActorFolder)
+			TArray<UPackage*> FolderPackages;
+			World->PersistentLevel->ForEachActorFolder([&FolderPackages](UActorFolder* ActorFolder)
 			{
 				UPackage* NewActorFolderPackage = ActorFolder->GetExternalPackage();
 				check(NewActorFolderPackage);
-				return AddAndSavePackage(NewActorFolderPackage, TEXT("Actor Folder"));
+				FolderPackages.Add(NewActorFolderPackage);
+				return true;
 			});
+
+			if (!UWorldPartitionBuilder::SavePackages(FolderPackages, PackageHelper))
+			{
+				return false;
+			}
 		}
 
 		const bool bNeedWorldResave = bSwitchActorPackagingSchemeToReduced || bEnableActorFolders;
 		if (bNeedWorldResave)
 		{
-			return CheckOutAndSavePackage(WorldPackage, TEXT("World"), /*bErrorAtFailCheckout*/ true);
+			return UWorldPartitionBuilder::SavePackages({ WorldPackage }, PackageHelper);
 		}
 	}
 

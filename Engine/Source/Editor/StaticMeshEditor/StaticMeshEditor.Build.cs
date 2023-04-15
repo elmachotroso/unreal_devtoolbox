@@ -7,6 +7,12 @@ public class StaticMeshEditor : ModuleRules
 {
 	public StaticMeshEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("UnrealEd"), "Private"),
+			}
+		);
+
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
@@ -27,7 +33,6 @@ public class StaticMeshEditor : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"RenderCore",
 				"RHI",
 				"EditorFramework",

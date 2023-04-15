@@ -1,14 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SResetToDefaultMenu.h"
-#include "Textures/SlateIcon.h"
+
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
 #include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
-#include "ScopedTransaction.h"
+
+class SWidget;
+struct FGeometry;
 
 void SResetToDefaultMenu::AddProperty( TSharedRef<IPropertyHandle> InProperty )
 {
@@ -31,14 +40,14 @@ void SResetToDefaultMenu::Construct( const FArguments& InArgs )
 		SNew(SComboButton)
 		.ToolTipText(NSLOCTEXT( "PropertyEditor", "ResetToDefault", "Reset to Default" ))
 		.HasDownArrow(false)
-		.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+		.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 		.ContentPadding(0) 
 		.Visibility( this, &SResetToDefaultMenu::GetResetToDefaultVisibility )
 		.OnGetMenuContent( this, &SResetToDefaultMenu::OnGenerateResetToDefaultMenuContent )
 		.ButtonContent()
 		[
 			SNew(SImage)
-			.Image( FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
+			.Image( FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
 		]
 	];
 }
@@ -50,7 +59,7 @@ void SResetToDefaultMenu::Tick( const FGeometry& AllottedGeometry, const double 
 	for ( int32 PropIndex = 0; PropIndex < Properties.Num(); ++PropIndex )
 	{
 		TSharedRef<IPropertyHandle> Property = Properties[PropIndex];
-		if( Property->DiffersFromDefault() && !Property->IsEditConst() )
+		if( Property->DiffersFromDefault() )
 		{
 			bShouldBeVisible = true;
 			// If one property should show reset to default, the menu must be visible

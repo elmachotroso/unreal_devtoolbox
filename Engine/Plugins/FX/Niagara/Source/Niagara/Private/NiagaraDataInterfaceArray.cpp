@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceArray.h"
+#include "NiagaraShaderParametersBuilder.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceArray)
 
 #define LOCTEXT_NAMESPACE "UNiagaraDataInterfaceArray"
 
@@ -66,4 +69,28 @@ bool UNiagaraDataInterfaceArray::Equals(const UNiagaraDataInterface* Other) cons
 	return GetProxyAs<INDIArrayProxyBase>()->Equals(OtherTyped->GetProxyAs<INDIArrayProxyBase>());
 }
 
+#if WITH_EDITORONLY_DATA
+bool UNiagaraDataInterfaceArray::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	bool bSuccess = Super::AppendCompileHash(InVisitor);
+	bSuccess &= InVisitor->UpdateShaderParameters<INDIArrayProxyBase::FShaderParameters>();
+	bSuccess &= GetProxyAs<INDIArrayProxyBase>()->AppendCompileHash(InVisitor);
+	return bSuccess;
+}
+#endif
+
+void UNiagaraDataInterfaceArray::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<INDIArrayProxyBase::FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceArray::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	INDIArrayProxyBase& ArrayProxy = Context.GetProxy<INDIArrayProxyBase>();
+	INDIArrayProxyBase::FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<INDIArrayProxyBase::FShaderParameters>();
+
+	ArrayProxy.SetShaderParameters(ShaderParameters, Context.GetSystemInstanceID());
+}
+
 #undef LOCTEXT_NAMESPACE
+

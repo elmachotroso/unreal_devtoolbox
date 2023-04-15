@@ -6,17 +6,18 @@ public class ImageWrapper : ModuleRules
 {
 	public ImageWrapper(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Runtime/ImageWrapper/Private",
-				"Runtime/ImageWrapper/Private/Formats",
-			});
+		PublicIncludePathModuleNames.AddRange(new string[] {
+			"ImageCore"
+			}
+		);
 
 		PublicDefinitions.Add("WITH_UNREALPNG=1");
 		PublicDefinitions.Add("WITH_UNREALJPEG=1");
 
 		PrivateDependencyModuleNames.Add("Core");
+
 		PublicDependencyModuleNames.Add("LibTiff");
+		PublicDependencyModuleNames.Add("ImageCore");
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
 			"zlib",
@@ -29,7 +30,7 @@ public class ImageWrapper : ModuleRules
 		// Note that currently this module is included at runtime, so consider the increase in exe size before
 		// enabling for any of the console/phone platforms!
 
-		if (Target.Platform == UnrealTargetPlatform.Win64
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows)
 			|| Target.Platform == UnrealTargetPlatform.Mac
 			|| Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
@@ -43,7 +44,7 @@ public class ImageWrapper : ModuleRules
 		}
 
 		// Add openEXR lib for windows builds.
-		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
+		if ((Target.Platform.IsInGroup(UnrealPlatformGroup.Windows)) ||
 			(Target.Platform == UnrealTargetPlatform.Mac) ||
 			(Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture.StartsWith("x86_64")))
 		{
@@ -58,9 +59,5 @@ public class ImageWrapper : ModuleRules
 
 		// Enable exceptions to allow error handling
 		bEnableExceptions = true;
-
-		// Disable shared PCHs to handle warning C4652
-		PCHUsage = ModuleRules.PCHUsageMode.NoSharedPCHs;
-		PrivatePCHHeaderFile = "Private/ImageWrapperPrivate.h";
 	}
 }

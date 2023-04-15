@@ -36,6 +36,7 @@
 #include "Templates/UniquePtr.h"
 #include "WeightedRandomSampler.h"
 #include "PerPlatformProperties.h"
+#include "RayTracingInstance.h"
 
 class FDistanceFieldVolumeData;
 class UBodySetup;
@@ -196,6 +197,8 @@ struct FStaticMeshSection
 	bool bCastShadow;
 	/** If true, this section will be visible in ray tracing effects. */
 	bool bVisibleInRayTracing;
+	/** If true, this section will affect lighting methods that use Distance Fields. */
+	bool bAffectDistanceFieldLighting;
 	/** If true, this section will be considered opaque in ray tracing effects. */
 	bool bForceOpaque;
 #if WITH_EDITORONLY_DATA
@@ -216,6 +219,7 @@ struct FStaticMeshSection
 		, bEnableCollision(false)
 		, bCastShadow(true)
 		, bVisibleInRayTracing(true)
+		, bAffectDistanceFieldLighting(true)
 		, bForceOpaque(false)
 	{
 #if WITH_EDITORONLY_DATA
@@ -225,7 +229,7 @@ struct FStaticMeshSection
 	}
 
 	/** Serializer. */
-	friend FArchive& operator<<(FArchive& Ar,FStaticMeshSection& Section);
+	ENGINE_API friend FArchive& operator<<(FArchive& Ar,FStaticMeshSection& Section);
 };
 
 
@@ -273,6 +277,7 @@ public:
 	ENGINE_API virtual void ReleaseRHI() override;
 	virtual FString GetFriendlyName() const override { return TEXT("FStaticMeshSectionAreaWeightedTriangleSamplerBuffer"); }
 
+	ENGINE_API const FBufferRHIRef& GetBufferRHI() const { return BufferSectionTriangleRHI; }
 	ENGINE_API const FShaderResourceViewRHIRef& GetBufferSRV() const { return BufferSectionTriangleSRV; }
 
 private:
@@ -280,8 +285,6 @@ private:
 	{
 		float  Prob;
 		uint32 Alias;
-		uint32 pad0;
-		uint32 pad1;
 	};
 
 	FBufferRHIRef BufferSectionTriangleRHI = nullptr;
@@ -466,6 +469,7 @@ public:
 
 #if RHI_RAYTRACING
 	void SetupRayTracingGeometryInitializer(FRayTracingGeometryInitializer& Initializer, const FName& DebugName);
+	static void SetupRayTracingProceduralGeometryInitializer(FRayTracingGeometryInitializer& Initializer, const FName& DebugName);
 #endif // RHI_RAYTRACING
 
 	/** Get the estimated memory overhead of buffers marked as NeedsCPUAccess. */
@@ -880,7 +884,7 @@ public:
 	virtual bool IsUsingDistanceCullFade() const override;
 	virtual void GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const override;
 	virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
-	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const override;
+	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
 	virtual bool HasDistanceFieldRepresentation() const override;
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
@@ -927,11 +931,11 @@ protected:
 		{
 			/** Default constructor. */
 			FSectionInfo()
-				: Material(NULL)
-#if WITH_EDITOR
+				: Material(nullptr)
+			#if WITH_EDITOR
 				, bSelected(false)
-				, HitProxy(NULL)
-#endif
+				, HitProxy(nullptr)
+			#endif
 				, FirstPreCulledIndex(0)
 				, NumPreCulledTriangles(-1)
 			{}
@@ -939,18 +943,18 @@ protected:
 			/** The material with which to render this section. */
 			UMaterialInterface* Material;
 
-#if WITH_EDITOR
+		#if WITH_EDITOR
 			/** True if this section should be rendered as selected (editor only). */
 			bool bSelected;
 
 			/** The editor needs to be able to individual sub-mesh hit detection, so we store a hit proxy on each mesh. */
 			HHitProxy* HitProxy;
-#endif
+		#endif
 
-#if WITH_EDITORONLY_DATA
+		#if WITH_EDITORONLY_DATA
 			// The material index from the component. Used by the texture streaming accuracy viewmodes.
 			int32 MaterialIndex;
-#endif
+		#endif
 
 			int32 FirstPreCulledIndex;
 			int32 NumPreCulledTriangles;
@@ -988,11 +992,17 @@ protected:
 	const FDistanceFieldVolumeData* DistanceFieldData;	
 	const FCardRepresentationData* CardRepresentationData;	
 
+	UMaterialInterface* OverlayMaterial;
+	float OverlayMaterialMaxDrawDistance;
+
 #if RHI_RAYTRACING
 	bool bSupportRayTracing;
 	bool bDynamicRayTracingGeometry;
 	TArray<FRayTracingGeometry, TInlineAllocator<MAX_MESH_LOD_COUNT>> DynamicRayTracingGeometries;
 	TArray<FRWBuffer, TInlineAllocator<MAX_MESH_LOD_COUNT>> DynamicRayTracingGeometryVertexBuffers;
+	TArray<FMeshBatch> CachedRayTracingMaterials;
+	int16 CachedRayTracingMaterialsLODIndex = INDEX_NONE;
+	FRayTracingMaskAndFlags CachedRayTracingInstanceMaskAndFlags;
 #endif
 	/**
 	 * The forcedLOD set in the static mesh editor, copied from the mesh component
@@ -1257,7 +1267,7 @@ public:
 			SetInstanceTransformInternal<float>(InstanceIndex, InstanceTransform);
 		}
 
-		SetInstanceLightMapDataInternal(InstanceIndex, FVector4f(LightmapUVBias.X, LightmapUVBias.Y, ShadowmapUVBias.X, ShadowmapUVBias.Y));
+		SetInstanceLightMapDataInternal(InstanceIndex, FVector4f((float)LightmapUVBias.X, (float)LightmapUVBias.Y, (float)ShadowmapUVBias.X, (float)ShadowmapUVBias.Y));
 
 		for (int32 i = 0; i < NumCustomDataFloats; ++i)
 		{
@@ -1274,37 +1284,23 @@ public:
 
 	FORCEINLINE void SetInstance(int32 InstanceIndex, const FMatrix44f& Transform, const FVector2D& LightmapUVBias, const FVector2D& ShadowmapUVBias)
 	{
-		FVector4f OldOrigin;
-		GetInstanceOriginInternal(InstanceIndex, OldOrigin);
+		float RandomInstanceID;
+		GetInstanceRandomID(InstanceIndex, RandomInstanceID);
+		SetInstance(InstanceIndex, Transform, RandomInstanceID, LightmapUVBias, ShadowmapUVBias);
+	}
 
-		FVector4f NewOrigin(Transform.M[3][0], Transform.M[3][1], Transform.M[3][2], OldOrigin.Component(3));
-		SetInstanceOriginInternal(InstanceIndex, NewOrigin);
-
-		FVector4f InstanceTransform[3];
-		InstanceTransform[0] = FVector4f(Transform.M[0][0], Transform.M[0][1], Transform.M[0][2], 0.0f);
-		InstanceTransform[1] = FVector4f(Transform.M[1][0], Transform.M[1][1], Transform.M[1][2], 0.0f);
-		InstanceTransform[2] = FVector4f(Transform.M[2][0], Transform.M[2][1], Transform.M[2][2], 0.0f);
-
-		if (bUseHalfFloat)
-		{
-			SetInstanceTransformInternal<FFloat16>(InstanceIndex, InstanceTransform);
-		}
-		else
-		{
-			SetInstanceTransformInternal<float>(InstanceIndex, InstanceTransform);
-		}
-
-		SetInstanceLightMapDataInternal(InstanceIndex, FVector4f(LightmapUVBias.X, LightmapUVBias.Y, ShadowmapUVBias.X, ShadowmapUVBias.Y));
-
-		for (int32 i = 0; i < NumCustomDataFloats; ++i)
-		{
-			SetInstanceCustomDataInternal(InstanceIndex, i, 0);
-		}
+	FORCEINLINE_DEBUGGABLE void SetInstance(int32 InstanceIndex, const FMatrix44f& Transform)
+	{
+		const FVector2D& LightmapUVBias = FVector2D::ZeroVector;
+		const FVector2D& ShadowmapUVBias = FVector2D::ZeroVector;
+		float RandomInstanceID;
+		GetInstanceRandomID(InstanceIndex, RandomInstanceID);
+		SetInstance(InstanceIndex, Transform, RandomInstanceID, LightmapUVBias, ShadowmapUVBias);
 	}
 
 	FORCEINLINE void SetInstanceLightMapData(int32 InstanceIndex, const FVector2D& LightmapUVBias, const FVector2D& ShadowmapUVBias)
 	{
-		SetInstanceLightMapDataInternal(InstanceIndex, FVector4f(LightmapUVBias.X, LightmapUVBias.Y, ShadowmapUVBias.X, ShadowmapUVBias.Y));
+		SetInstanceLightMapDataInternal(InstanceIndex, FVector4f((float)LightmapUVBias.X, (float)LightmapUVBias.Y, (float)ShadowmapUVBias.X, (float)ShadowmapUVBias.Y));
 	}
 	
 	FORCEINLINE void SetInstanceCustomData(int32 InstanceIndex, int32 Index, float CustomData)

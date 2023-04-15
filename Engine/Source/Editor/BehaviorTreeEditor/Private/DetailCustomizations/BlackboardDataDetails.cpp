@@ -1,15 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomizations/BlackboardDataDetails.h"
-#include "SBehaviorTreeBlackboardEditor.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SEditableTextBox.h"
+
+#include "BehaviorTree/BlackboardData.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
-#include "BehaviorTree/BlackboardData.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyHandle.h"
+#include "SBehaviorTreeBlackboardEditor.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
 
 #define LOCTEXT_NAMESPACE "BlackboardDataDetails"
 
@@ -80,7 +99,7 @@ void FBlackboardDataDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayou
 				.ButtonContent()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+					.BorderImage(FAppStyle::GetBrush("NoBorder"))
 					.Padding(FMargin(0, 0, 5, 0))
 					[
 						SNew(SEditableTextBox)

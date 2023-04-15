@@ -10,7 +10,7 @@
 #include "ShaderParameterStruct.h"
 #include "SceneTextureParameters.h"
 #include "RenderGraphUtils.h"
-#include "PostProcessing.h"
+#include "PostProcess/PostProcessing.h"
 #include "MeshPassProcessor.inl"
 #include "ScenePrivate.h"
 #include "ShaderPrintParameters.h"
@@ -121,6 +121,7 @@ class FHairStrandsTileGenerationPassCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER(FIntPoint, BufferResolution)
 		SHADER_PARAMETER(uint32, bUintTexture)
+		SHADER_PARAMETER(uint32, bForceOutputAllTiles)
 		SHADER_PARAMETER(float, TransmittanceThreshold)
 		SHADER_PARAMETER(uint32, IntCoverageThreshold)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, InputFloatTexture)
@@ -147,17 +148,21 @@ class FHairStrandsTileGenerationPassCS : public FGlobalShader
 IMPLEMENT_GLOBAL_SHADER(FHairStrandsTileGenerationPassCS, "/Engine/Private/HairStrands/HairStrandsVisibilityTile.usf", "TileMainCS", SF_Compute);
 
 float GetHairStrandsFullCoverageThreshold();
+uint32 GetHairStrandsIntCoverageThreshold();
 
-FHairStrandsTiles AddHairStrandsGenerateTilesPass(
+static FHairStrandsTiles AddHairStrandsGenerateTilesPass_Internal(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
+	const FIntPoint& InputResolution,
 	const FRDGTextureRef& InputTexture)
 {
+	const bool bHasValidInput = InputTexture != nullptr;
+	const bool bUintTexture   = InputTexture && InputTexture->Desc.Format == PF_R32_UINT;
+
 	FHairStrandsTiles Out;
 
 	check(FHairStrandsTiles::TilePerThread_GroupSize == 64); // If this value change, we need to update the shaders using 
 	check(FHairStrandsTiles::TileSize == 8); // only size supported for now
-	const FIntPoint InputResolution = InputTexture->Desc.Extent;
 	Out.TileCountXY = FIntPoint(FMath::CeilToInt(InputResolution.X / float(FHairStrandsTiles::TileSize)), FMath::CeilToInt(InputResolution.Y / float(FHairStrandsTiles::TileSize)));
 	Out.TileCount = Out.TileCountXY.X * Out.TileCountXY.Y;
 	Out.BufferResolution = InputResolution;
@@ -175,15 +180,23 @@ FHairStrandsTiles AddHairStrandsGenerateTilesPass(
 	FRDGBufferUAVRef TileCountUAV = GraphBuilder.CreateUAV(Out.TileCountBuffer, PF_R32_UINT);
 	AddClearUAVPass(GraphBuilder, TileCountUAV, 0u);
 
-	const bool bUintTexture = InputTexture->Desc.Format == PF_R32_UINT;
 	TShaderMapRef<FHairStrandsTileGenerationPassCS> ComputeShader(View.ShaderMap);
 	FHairStrandsTileGenerationPassCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHairStrandsTileGenerationPassCS::FParameters>();
-	PassParameters->BufferResolution		= InputResolution;//View.ViewRect.Size();
+	PassParameters->BufferResolution		= View.ViewRect.Size();
+	PassParameters->bForceOutputAllTiles	= bHasValidInput ? 0 : 1;
 	PassParameters->bUintTexture			= bUintTexture ? 1u : 0u;
-	PassParameters->TransmittanceThreshold	= 1.f - GetHairStrandsFullCoverageThreshold();
-	PassParameters->IntCoverageThreshold	= 1000u; // Arbitrary
-	PassParameters->InputFloatTexture = bUintTexture ? GSystemTextures.GetBlackDummy(GraphBuilder) : InputTexture;
-	PassParameters->InputUintTexture  = bUintTexture ? InputTexture : GSystemTextures.GetZeroUIntDummy(GraphBuilder);
+	PassParameters->TransmittanceThreshold	= 1.f - GetHairStrandsFullCoverageThreshold();	
+	PassParameters->IntCoverageThreshold 	= GetHairStrandsIntCoverageThreshold();
+	PassParameters->InputFloatTexture		= GSystemTextures.GetBlackDummy(GraphBuilder);
+	PassParameters->InputUintTexture		= GSystemTextures.GetZeroUIntDummy(GraphBuilder);
+	if (bHasValidInput && bUintTexture)
+	{
+		PassParameters->InputUintTexture	= InputTexture;
+	}
+	else if (bHasValidInput && !bUintTexture)
+	{
+		PassParameters->InputFloatTexture	= InputTexture;
+	}
 	PassParameters->TileHairAllBuffer		= GraphBuilder.CreateUAV(Out.TileDataBuffer[ToIndex(FHairStrandsTiles::ETileType::HairAll)], PF_R16G16_UINT);
 	PassParameters->TileHairFullBuffer		= GraphBuilder.CreateUAV(Out.TileDataBuffer[ToIndex(FHairStrandsTiles::ETileType::HairFull)], PF_R16G16_UINT);
 	PassParameters->TileHairPartialBuffer	= GraphBuilder.CreateUAV(Out.TileDataBuffer[ToIndex(FHairStrandsTiles::ETileType::HairPartial)], PF_R16G16_UINT);
@@ -210,6 +223,16 @@ FHairStrandsTiles AddHairStrandsGenerateTilesPass(
 	AddHairStrandsCopyArgsTilesPass(GraphBuilder, View, Out);
 
 	return Out;
+}
+
+FHairStrandsTiles AddHairStrandsGenerateTilesPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FRDGTextureRef& InputTexture)
+{
+	return AddHairStrandsGenerateTilesPass_Internal(GraphBuilder, View, InputTexture->Desc.Extent, InputTexture);
+}
+
+FHairStrandsTiles AddHairStrandsGenerateTilesPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FIntPoint& Resolution)
+{
+	return AddHairStrandsGenerateTilesPass_Internal(GraphBuilder, View, Resolution, nullptr);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -249,9 +272,9 @@ class FHairStrandsTileDebugPrintPassCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
 	END_SHADER_PARAMETER_STRUCT()
 
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return GetMaxSupportedFeatureLevel(Parameters.Platform) >= ERHIFeatureLevel::SM5; //TODO
+		return IsHairStrandsSupported(EHairStrandsShaderType::Strands, Parameters.Platform) && ShaderPrint::IsSupported(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -354,7 +377,7 @@ void AddHairStrandsDebugTilePass(
 	DrawDebugTile(FHairStrandsTiles::ETileType::HairPartial);
 	DrawDebugTile(FHairStrandsTiles::ETileType::Other);
 
-	if (View.HairStrandsViewData.UniformBuffer || ShaderPrint::IsEnabled(View))
+	if (View.HairStrandsViewData.UniformBuffer || ShaderPrint::IsEnabled(View.ShaderPrintData))
 	{
 		static FHairStrandsTiles::ETileType TileType = FHairStrandsTiles::ETileType::HairAll;
 
@@ -367,7 +390,7 @@ void AddHairStrandsDebugTilePass(
 		Parameters->TileCountXY = TileData.TileCountXY;
 		Parameters->bRectPrimitive = TileData.bRectPrimitive ? 1u : 0u;
 		Parameters->HairStrands = View.HairStrandsViewData.UniformBuffer;
-		ShaderPrint::SetParameters(GraphBuilder, View, Parameters->ShaderPrintUniformBuffer);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, Parameters->ShaderPrintUniformBuffer);
 
 		TShaderMapRef<FHairStrandsTileDebugPrintPassCS> ComputeShader(View.ShaderMap);
 		ClearUnusedGraphResources(ComputeShader, Parameters);

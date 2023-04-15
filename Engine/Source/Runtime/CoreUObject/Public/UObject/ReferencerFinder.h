@@ -2,13 +2,20 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/EnumClassFlags.h"
 #include "Serialization/ArchiveUObject.h"
+
+class UObject;
 
 enum class EReferencerFinderFlags : uint8
 {
 	None = 0,
-	SkipInnerReferences = 1, // Do not add inner objects to the referencers of an outer.
+	SkipInnerReferences = 1 << 0, // Do not add inner objects to the referencers of an outer.
+	SkipWeakReferences  = 1 << 1, // Do not add weak references to the referencers
 };
 
 ENUM_CLASS_FLAGS(EReferencerFinderFlags);

@@ -316,6 +316,12 @@ struct FUnversionedStructSchema
 		FUnversionedStructSchema* Schema = reinterpret_cast<FUnversionedStructSchema*>(FMemory::Malloc(Bytes, alignof(FUnversionedPropertySerializer)));
 		
 #if WITH_EDITORONLY_DATA
+		const UClass* StructAsClass = Cast<const UClass>(Struct);
+		if (StructAsClass)
+		{
+			FAppendToClassSchemaContext Context(&HashBuilder);
+			StructAsClass->CallAppendToClassSchema(Context);
+		}
 		Schema->SchemaHash = HashBuilder.Finalize();
 #endif
 		Schema->Num = Serializers.Num();
@@ -846,7 +852,7 @@ void SerializeUnversionedProperties(const UStruct* Struct, FStructuredArchive::F
 		check(CanUseUnversionedPropertySerialization());
 
 		FUnversionedHeader Header;
-		Header.Load(StructRecord.EnterStream(SA_FIELD_NAME(TEXT("Header"))));
+		Header.Load(StructRecord.EnterStream(TEXT("Header")));
 
 		if (Header.HasValues())
 		{
@@ -856,11 +862,14 @@ void SerializeUnversionedProperties(const UStruct* Struct, FStructuredArchive::F
 			{
 				FDefaultStruct Defaults(DefaultsData, DefaultsStruct);
 
-				FStructuredArchive::FStream ValueStream = StructRecord.EnterStream(SA_FIELD_NAME(TEXT("Values")));
+				FStructuredArchive::FStream ValueStream = StructRecord.EnterStream(TEXT("Values"));
 				for (FUnversionedHeader::FIterator It(Header, Schema); It; It.Next())
 				{
 					if (It.IsNonZero())
 					{
+#if WITH_EDITOR // Skip this scope to save time in the runtime; it is only needed for reference collection in editor
+						FSerializedPropertyScope SerializedProperty(UnderlyingArchive, It.GetSerializer().GetProperty());
+#endif
 						It.GetSerializer().Serialize(ValueStream.EnterElement(), Data, Defaults);
 					}
 					else
@@ -907,10 +916,10 @@ void SerializeUnversionedProperties(const UStruct* Struct, FStructuredArchive::F
 		Header.Finalize();
 
 		// Save header and non-zero values 
-		Header.Save(StructRecord.EnterStream(SA_FIELD_NAME(TEXT("Header"))));
+		Header.Save(StructRecord.EnterStream(TEXT("Header")));
 		if (Header.HasNonZeroValues())
 		{
-			FStructuredArchive::FStream ValueStream = StructRecord.EnterStream(SA_FIELD_NAME(TEXT("Values")));
+			FStructuredArchive::FStream ValueStream = StructRecord.EnterStream(TEXT("Values"));
 			for (FUnversionedHeader::FIterator It(Header, Schema); It; It.Next())
 			{
 				if (It.IsNonZero())
@@ -969,4 +978,11 @@ COREUOBJECT_API void DumpClassSchemas(const TCHAR* Str, FOutputDevice& Ar)
 	}
 #endif
 }
+
+void FAppendToClassSchemaContext::Update(const void* Data, uint64 Size)
+{
+	FBlake3& Blake3Hasher = *(reinterpret_cast<FBlake3*>(Hasher));
+	Blake3Hasher.Update(Data, Size);
+}
+
 #endif

@@ -4,17 +4,9 @@
 PathTracingRayGenShader.usf: Reference path tracing
 ===============================================================================================*/
 
-#define SIMPLIFIED_MATERIAL_SHADER 1
+#define SIMPLIFIED_MATERIAL_SHADER 1 
 #define RANDSEQ_UNROLL_SOBOL 0
 #define USE_PATH_TRACING_LIGHT_GRID 1
-
-// Needs to be defined before the uniform buffer struct header is included, very unfortunately
-struct FIrradianceCacheRecord
-{
-	float4 WorldPosition;
-	float4 WorldNormal;
-	uint4 Irradiance;
-};
 
 #include "/Engine/Private/Common.ush"
 #include "/Engine/Private/PostProcessCommon.ush"
@@ -23,8 +15,7 @@ struct FIrradianceCacheRecord
 #include "/Engine/Private/RayTracing/RayTracingDirectionalLight.ush"
 #include "/Engine/Private/RayTracing/RayTracingRectLight.ush"
 #include "/Engine/Private/RayTracing/RayTracingSphereLight.ush"
-#include "/Engine/Private/RayTracing/RayTracingSpotLight.ush"
-#include "/Engine/Private/RayTracing/RayTracingPointLight.ush"
+#include "/Engine/Private/RayTracing/RayTracingCapsuleLight.ush"
 
 #include "/Engine/Private/PathTracing/PathTracingCommon.ush"
 #include "/Engine/Private/PathTracing/Light/PathTracingLightGrid.ush"
@@ -38,12 +29,12 @@ RWTexture2D<uint> RayGuidingLuminance;
 Texture2D<float> RayGuidingCDFX;
 Texture2D<float> RayGuidingCDFY;
 
+#include "IrradianceCachingCommon.ush"
+
 #include "/Engine/Private/ShadingModels.ush"
 #include "/Engine/Private/PathTracing/Utilities/PathTracingRandomSequence.ush"
 #include "/Engine/Private/PathTracing/Light/PathTracingLightSampling.ush"
 #include "/Engine/Private/PathTracing/Material/PathTracingMaterialSampling.ush"
-
-#include "IrradianceCachingCommon.ush"
 
 #include "LightmapEncoding.ush"
 
@@ -60,7 +51,7 @@ RWTexture2D<float4> SHCorrectionAndStationarySkyLightBentNormal;
 RWTexture2D<float4> OutputTileAtlas;
 
 void GenerateCosineNormalRay(
-	float3 WorldPosition,
+	float3 TranslatedWorldPosition,
 	float3 WorldNormal,
 	inout RandomSequence RandSequence,
 	out float3 RayOrigin,
@@ -80,7 +71,7 @@ void GenerateCosineNormalRay(
 	TangentDirection = Direction_Tangent.xyz;
 	float3 Direction_World = TangentToWorld(Direction_Tangent.xyz, WorldNormal);
 
-	RayOrigin = WorldPosition;
+	RayOrigin = TranslatedWorldPosition;
 	RayDirection = Direction_World;
 	RayTMin = 0.01;
 	RayTMax = 1e20;
@@ -142,6 +133,24 @@ static const float MaxNormalBias = 0.1;
 RaytracingAccelerationStructure TLAS;
 uint SceneVisibleLightCount;
 
+void ApplyRayBias(inout FRayDesc Ray, float HitT, float3 Normal, bool ShadowTerminatorFix = false)
+{
+#if 1
+	// Take maximum of position or hit distance to determine "radius" of hit avoidance
+	const float RefValue = max(max(abs(Ray.Origin.x), abs(Ray.Origin.y)), max(abs(Ray.Origin.z), HitT));
+	const uint UlpRadius = 16; // number of floating point ulps to skip around an intersection
+	const float RelativeOffset = asfloat(asuint(RefValue) + UlpRadius) - RefValue;
+	const float ShadowOffset = 0.1; // 1mm
+	const float BaseOffset = 0.001; // 0.01mm (avoid precision issues very close to the origin where ulps become tiny)
+	// for shadow rays, push out the point a bit more so we can reduce shadow terminator issues from poor tesselations
+	// other rays are less likely to arrive at grazing angles, so don't need the extra offset
+	Ray.Origin += max(ShadowTerminatorFix ? ShadowOffset : BaseOffset, RelativeOffset * 100) * Normal;
+	Ray.TMax -= length(max(ShadowTerminatorFix ? ShadowOffset : BaseOffset, RelativeOffset * 100) * Normal);
+#else
+	ApplyPositionBias(Ray.Origin, Ray.Direction, Normal, MaxNormalBias);
+#endif
+}
+
 void AccumulateRadiance(inout float3 TotalRadiance, float3 PathRadiance)
 {
 	float MaxPathIntensity = 0;
@@ -158,7 +167,7 @@ void AccumulateRadiance(inout float3 TotalRadiance, float3 PathRadiance)
 	}
 }
 
-FPathTracingPayload TraceTransparentRay(RayDesc Ray, FRayCone RayCone, bool IsCameraRay, bool LastBounce, bool IncludeEmission, uint2 LaunchIndex, uint NumLights, inout RandomSequence RandSequence, inout float3 PathThroughput, inout float3 Radiance)
+FPathTracingPayload TraceTransparentRay(FRayDesc Ray, bool IsCameraRay, bool LastBounce, bool IncludeEmission, uint2 LaunchIndex, uint NumLights, inout RandomSequence RandSequence, inout float3 PathThroughput, inout float3 Radiance)
 {
 	const uint RayFlags = IsCameraRay && EnableCameraBackfaceCulling ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : 0;
 	const uint MissShaderIndex = 0;
@@ -177,7 +186,7 @@ FPathTracingPayload TraceTransparentRay(RayDesc Ray, FRayCone RayCone, bool IsCa
 		// also avoid noise from hot spots (they can be properly
 		// importance sampled if a capturing skylight is added)
 		const bool bIgnoreSky = !IsCameraRay;
-		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(RayCone, LaunchIndex, bIgnoreSky);
+		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(LaunchIndex, bIgnoreSky);
 		// Trace the ray
 		TraceRay(
 			TLAS,
@@ -186,16 +195,15 @@ FPathTracingPayload TraceTransparentRay(RayDesc Ray, FRayCone RayCone, bool IsCa
 			RAY_TRACING_SHADER_SLOT_MATERIAL,
 			RAY_TRACING_NUM_SHADER_SLOTS,
 			MissShaderIndex,
-			Ray,
+			Ray.GetNativeDesc(),
 			PackedPayload);
 
 		// Loop over lights to capture their contribution
 		// #dxr_todo: if we have lots of lights, having some hierarchical structure would be better ....
 		for (uint LightId = 0; LightId < NumLights; ++LightId)
 		{
-			RayDesc LightRay = Ray;
+			FRayDesc LightRay = Ray;
 			LightRay.TMax = PackedPayload.IsMiss() ? Ray.TMax : PackedPayload.HitT;
-			LightRay.Origin += LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
 			float3 LightRadiance = TraceLight(LightRay, LightId).Radiance;
 			AccumulateRadiance(Radiance, PathThroughput * LightRadiance);
 		}
@@ -281,7 +289,7 @@ FPathTracingPayload TraceTransparentRay(RayDesc Ray, FRayCone RayCone, bool IsCa
 	return Payload;
 }
 
-float3 TraceTransparentVisibilityRay(RayDesc Ray, uint2 PixelCoord, float PathRoughness)
+float3 TraceTransparentVisibilityRay(FRayDesc Ray, uint2 PixelCoord, float PathRoughness)
 {
 	const uint RayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
 	const uint InstanceInclusionMask = RAY_TRACING_MASK_SHADOW;
@@ -299,7 +307,7 @@ float3 TraceTransparentVisibilityRay(RayDesc Ray, uint2 PixelCoord, float PathRo
 		RayContributionToHitGroupIndex,
 		MultiplierForGeometryContributionToShaderIndex,
 		MissShaderIndex,
-		Ray,
+		Ray.GetNativeDesc(),
 		PackedPayload);
 
 	if (PackedPayload.IsMiss())
@@ -314,15 +322,21 @@ float3 TraceTransparentVisibilityRay(RayDesc Ray, uint2 PixelCoord, float PathRo
 
 void PathTracingKernel(
 	in uint RenderPassIndex,
-	float3 WorldPosition,
+	float3 TranslatedWorldPosition,
 	float3 ShadingNormal,
 	inout RandomSequence RandSequence,
 	inout uint SampleIndex,
 	inout bool bIsValidSample,
 	inout float3 RadianceValue,
 	inout float3 RadianceDirection,
-	inout float3 DirectLightingNEERadianceValue,
-	inout float3 DirectLightingNEERadianceDirection,
+	inout float3 DirectLightingIrradiance,
+#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
+	inout FL2SHAndCorrection DirectLightingSH,
+#else
+	inout FThreeBandSHVectorRGBFloat DirectLightingSH,
+#endif
+	inout float LuminanceForFirstBounceRayGuiding,
+	inout float3 SkyLightBentNormal,
 	inout float4 PrimaryRandSample)
 {
 	uint2 LaunchIndex = uint2(0, 0);
@@ -330,7 +344,7 @@ void PathTracingKernel(
 #if USE_IRRADIANCE_CACHING
 	bool bShouldEmitGeometryHitPoint = false;
 	
-	FIrradianceCacheRecord IrradianceCachePrimaryGIHitPoint = (FIrradianceCacheRecord)0;	
+	FFinalGatherHitPoint IrradianceCacheFinalGatherHitPoint = (FFinalGatherHitPoint)0;	
 	float RadianceProbe_Pdf = 1.0f / (2 * PI);
 	
 	uint NewEntrySize = 32;
@@ -340,8 +354,8 @@ void PathTracingKernel(
 	float3 Radiance = 0;
 	
 	// GPULightmass's SampleEmitter(): generate a fake camera ray hitting the texel
-	RayDesc Ray;
-	Ray.Origin = WorldPosition + ShadingNormal;
+	FRayDesc Ray;
+	Ray.Origin = TranslatedWorldPosition + ShadingNormal;
 	Ray.Direction = -ShadingNormal;
 	Ray.TMin = -0.01f;
 	Ray.TMax = 1.01f;
@@ -351,9 +365,6 @@ void PathTracingKernel(
 	float LightPickingCdf[RAY_TRACING_LIGHT_COUNT_MAXIMUM];
 	
 	Ray.Direction = normalize(Ray.Direction);
-
-	FRayCone RayCone = (FRayCone)0;
-	RayCone.SpreadAngle = View.EyeToPixelSpreadAngle;
 	
 	// path state variables (these cary information between bounces)
 	float3 PathThroughput = 1.0;
@@ -373,9 +384,10 @@ void PathTracingKernel(
 		if (bIsCameraRay)
 		{
 			// GPULightmass fakes a 'camera' ray that hits the lightmap texel perpendicularly
-			Payload.RayCone = (FRayCone)0;
-			Payload.WorldPos = WorldPosition;
+			Payload.TranslatedWorldPos = TranslatedWorldPosition;
 			Payload.WorldNormal = ShadingNormal;
+			Payload.WorldGeoNormal = ShadingNormal;
+			Payload.WorldSmoothNormal = ShadingNormal;
 			Payload.Radiance = float3(0, 0, 0);
 			Payload.BaseColor = float3(1, 1, 1);
 			Payload.DiffuseColor = float3(1, 1, 1);
@@ -394,7 +406,7 @@ void PathTracingKernel(
 		}
 		else
 		{
-			Payload = TraceTransparentRay(Ray, RayCone, false , bIsLastBounce, bIncludeEmissive, LaunchIndex, NumVisibleLights, RandSequence, PathThroughput, Radiance);
+			Payload = TraceTransparentRay(Ray, false , bIsLastBounce, bIncludeEmissive, LaunchIndex, NumVisibleLights, RandSequence, PathThroughput, Radiance);
 		}
 		
 		if (Payload.IsMiss())
@@ -403,54 +415,98 @@ void PathTracingKernel(
 			break;
 		}
 		
-		if (!Payload.IsFrontFace() && !Payload.IsMaterialTransmissive())
+		if (Payload.Opacity < 0)
 		{
 			bIsValidSample = false;
 			break;
 		}
 
 	#if USE_IRRADIANCE_CACHING
-		uint CoarseLevelSpacing = IrradianceCachingParameters.Spacing;
-		uint DetailLevelSpacing = IrradianceCachingParameters.Spacing;
+		float3 TexelPosition = TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation);
+		float3 HitPosition = Payload.TranslatedWorldPos - LWCHackToFloat(PrimaryView.PreViewTranslation);
+		float DistanceFromTexelToHit = length(HitPosition - TexelPosition);
+		bool bRejectedByCornerRejection = RenderPassIndex >= GetIrradianceCachingQuality() && DistanceFromTexelToHit < IrradianceCachingParameters.Spacing * IrradianceCachingParameters.CornerRejection;
 		
-		if (NearestCacheEntryID == -1 && Bounce >= 1 && Payload.HitT >= DetailLevelSpacing * IrradianceCachingParameters.CornerRejection)
+		// Compute an overestimated upper bound for the number of samples we need for this texel by assuming
+		// all the rays from all IC building passes are sent from this single texel
+		float CellArea = IrradianceCachingParameters.Spacing * IrradianceCachingParameters.Spacing;
+		float TotalSamplesOverAllICPasses = GPreviewLightmapPhysicalTileSize * GPreviewLightmapPhysicalTileSize * GetIrradianceCachingQuality();
+		float DistanceFraction = CellArea / (2 * PI * DistanceFromTexelToHit * DistanceFromTexelToHit);
+
+		// Cache entries too far away have a very low chance of being reused
+		// Don't bother placing or looking them up
+		bool bRejectedByMaxLookupDistace = false;
+		if (TotalSamplesOverAllICPasses * DistanceFraction < 1)
+		{
+			bRejectedByMaxLookupDistace = true;
+		}
+		
+		if (NearestCacheEntryID == -1 && Bounce >= 1 && !bRejectedByCornerRejection && !bRejectedByMaxLookupDistace)
 		{
 			bool bIrradianceQuerySuccessful = false;
 			bool bGeometryQuerySuccessful = false;
 			
 			uint NearestRecordIndex = 0;
 			float3 RecordIrradiance;
-			float3 RecordWorldNormal;
-			
-			uint3 Key = EncodeVoxelKey(floor(Payload.WorldPos / (Payload.HitT >= CoarseLevelSpacing ? CoarseLevelSpacing : DetailLevelSpacing)));
-			uint NormalDirectionBits = EncodeNormalBits(Payload.WorldNormal);			
-			uint HashKey = 0;
-			HashKey = MurmurAdd( HashKey, Key.x );
-			HashKey = MurmurAdd( HashKey, Key.y );
-			HashKey = MurmurAdd( HashKey, Key.z );
-			HashKey = MurmurAdd( HashKey, NormalDirectionBits );
-			HashKey = MurmurAdd( HashKey, Payload.HitT >= CoarseLevelSpacing ? CoarseLevelSpacing : DetailLevelSpacing );
+
 			uint Index;
-			if (ICHashTableFind(HashKey, Index))
+			if (ICHashTableFind(EncodeICHashKey(HitPosition, Payload.WorldNormal, IrradianceCachingParameters.Spacing), Index))
 			{
 				uint RecordIndex = IrradianceCachingParameters.RWHashToIndex[Index];
-				FIrradianceCacheRecord Record = IrradianceCachingParameters.IrradianceCacheRecords[RecordIndex];
-				if (Record.Irradiance.w > IrradianceCachingParameters.Quality)
+
+				uint4 RecordIrradianceAndSampleCount = IrradianceCachingParameters.IrradianceCacheRecords[RecordIndex];
+				uint BackfaceHitsCount = IrradianceCachingParameters.IrradianceCacheRecordBackfaceHits[RecordIndex].a;
+			
+				// We accept a cache entry, if:
+				// 1) The entry has been built by other lightmap tiles and contains more samples than we will ever need.
+				// 2) We're outside of IC building passes. An entry with low sample count means we just need that much - still, we're going to require a minimum of 4 samples to remove outliers from potential cache thrashing
+
+				bool bShouldAcceptCacheEntry = false;
+
+				uint SampleCountThreshold;
+
+				if (RenderPassIndex < GetIrradianceCachingQuality())
+				{
+					SampleCountThreshold = TotalSamplesOverAllICPasses * DistanceFraction;
+				}
+				else
+				{
+					SampleCountThreshold = 4;
+				}
+
+				bShouldAcceptCacheEntry = RecordIrradianceAndSampleCount.w >= SampleCountThreshold;
+				
+			#if IC_BACKFACE_DETECTION
+				// Reject the entry if it can see back faces
+				if (RenderPassIndex >= GetIrradianceCachingQuality() && BackfaceHitsCount > RecordIrradianceAndSampleCount.w * BackfaceThresholdRejection)
+				{
+					bShouldAcceptCacheEntry = false;
+				}
+
+				// Terminate the path if the entry contains too many back face hits which means it is very likely to be fully inside geometry
+				if (RenderPassIndex >= GetIrradianceCachingQuality() && BackfaceHitsCount > RecordIrradianceAndSampleCount.w * BackfaceThresholdInsideGeometry)
+				{
+					bIsValidSample = false;
+					break;
+				}
+			#endif
+			
+				if (bShouldAcceptCacheEntry)
 				{
 					bIrradianceQuerySuccessful = true;
-					
-					RecordIrradiance = asfloat(Record.Irradiance.xyz) / Record.Irradiance.w;
+		
+					RecordIrradiance = asfloat(RecordIrradianceAndSampleCount.xyz) / RecordIrradianceAndSampleCount.w;
 				}
 				
 				bGeometryQuerySuccessful = true;
-				RecordWorldNormal = Record.WorldNormal.xyz;
 				NearestRecordIndex = RecordIndex;
 			}
 	
 			if (bIrradianceQuerySuccessful)
 			{
-				// Successful query. Terminate path immediately. Can happen when accumulating for IC entries.
+				// Successful query. Terminate path immediately.
 				Radiance += RecordIrradiance * PathThroughput;
+				LuminanceForFirstBounceRayGuiding += Luminance(RecordIrradiance * PathThroughput);
 				break;
 			}
 			else
@@ -458,16 +514,27 @@ void PathTracingKernel(
 				// Failed query.
 				if (Bounce == 1)
 				{
-					if (!bGeometryQuerySuccessful)
+					// Prevent modification to the cache outside IC building passes
+					if (RenderPassIndex < GetIrradianceCachingQuality())
 					{
-						bShouldEmitGeometryHitPoint = true;
-						IrradianceCachePrimaryGIHitPoint.WorldPosition.xyz = Payload.WorldPos;
-						IrradianceCachePrimaryGIHitPoint.WorldNormal.xyz = Payload.WorldNormal;
-						NewEntrySize = Payload.HitT >= CoarseLevelSpacing ? CoarseLevelSpacing : DetailLevelSpacing;
-					}
-					else
-					{
-						NearestCacheEntryID = NearestRecordIndex;
+						if (!bGeometryQuerySuccessful)
+						{
+							// Only use the very first few passes to place new entries to reduce cache thrashing
+							bool bShouldPlaceNewEntry = RenderPassIndex < 16;
+
+							if (bShouldPlaceNewEntry)
+							{
+								bShouldEmitGeometryHitPoint = true;
+								IrradianceCacheFinalGatherHitPoint.WorldPosition = HitPosition;
+								IrradianceCacheFinalGatherHitPoint.WorldNormal = Payload.WorldNormal;
+								NewEntrySize = IrradianceCachingParameters.Spacing;
+								break;
+							}
+						}
+						else
+						{
+							NearestCacheEntryID = NearestRecordIndex;
+						}
 					}
 				}
 			}
@@ -486,7 +553,7 @@ void PathTracingKernel(
 			AdjustMaterialRoughness(Payload, PathRoughness);
 		}
 		
-		FLightLoopCount LightLoopCount = LightGridLookup(Payload.WorldPos + LWCHackToFloat(PrimaryView.PreViewTranslation)); // RT_LWC_TODO
+		FLightLoopCount LightLoopCount = LightGridLookup(Payload.TranslatedWorldPos);
 
 		// Choose a random number for both Light sampling and BxDF sampling
 		float4 RandSample = RandomSequence_GenerateSample4D(RandSequence);
@@ -502,8 +569,7 @@ void PathTracingKernel(
 		if (MISMode != 0 && bIsNeeValid && SceneLightCount > 0 && bDoLightLoop)
 		{
 			// Choose a light and sample it
-			float3 WorldPos = Payload.WorldPos; // RT_LWC_TODO
-			float3 TranslatedWorldPos = Payload.WorldPos + LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
+			float3 TranslatedWorldPos = Payload.TranslatedWorldPos;
 			float3 WorldNormal = Payload.WorldNormal;
 			uint PrimitiveLightingChannelMask = Payload.PrimitiveLightingChannelMask;
 
@@ -534,21 +600,24 @@ void PathTracingKernel(
 				LightSample.Pdf *= LightPickPdf;
 				if (LightSample.Pdf > 0)
 				{
+					float3 Visibility = float3(1, 1, 1);
+					
 					if (CastsShadow(LightId))
 					{
 						// for transmissive materials, bias the position to the other side of the surface if the light is coming from behind
 						const float SignedPositionBias = IsTransmissiveMaterial ? sign(dot(Payload.WorldNormal, LightSample.Direction)) : 1.0;
 
-						RayDesc LightRay;
-						LightRay.Origin = WorldPos;
+						FRayDesc LightRay;
+						LightRay.Origin = TranslatedWorldPos;
 						LightRay.TMin = 0;
 						LightRay.Direction = LightSample.Direction;
 						LightRay.TMax = LightSample.Distance;
-						ApplyPositionBias(LightRay, SignedPositionBias * Payload.WorldNormal, MaxNormalBias);
-
+						ApplyRayBias(LightRay, Payload.HitT, SignedPositionBias * Payload.WorldGeoNormal);
+					
 						float AvgRoughness = ApproximateCaustics ? GetAverageRoughness(Payload) : 0.0;
 
-						LightSample.RadianceOverPdf *= TraceTransparentVisibilityRay(LightRay, LaunchIndex, AvgRoughness);
+						Visibility = TraceTransparentVisibilityRay(LightRay, LaunchIndex, AvgRoughness);
+						LightSample.RadianceOverPdf *= Visibility;
 					}
 
 					// #dxr_todo: Is it cheaper to fire the ray first? Or eval the material first?
@@ -558,24 +627,45 @@ void PathTracingKernel(
 						FMaterialEval MaterialEval = EvalMaterial(Ray.Direction, LightSample.Direction, Payload, Bounce == 0);
 
 						// Record the contribution
-						float3 LightContrib = PathThroughput * LightSample.RadianceOverPdf * MaterialEval.Weight * MaterialEval.Pdf;
+						float3 LightContrib = PathThroughput * LightSample.RadianceOverPdf * MaterialEval.Weight * MaterialEval.Pdf;						
+						float3 BentNormalVector = LightSample.Direction / LightSample.Pdf / PI * Visibility;
 						if (MISMode == 2)
 						{
 							LightContrib *= MISWeightRobust(LightSample.Pdf, MaterialEval.Pdf);
+							BentNormalVector *= MISWeightRobust(LightSample.Pdf, MaterialEval.Pdf);
 						}
 
 						// Record the contribution
 						if (Bounce > 0)
 						{
 							AccumulateRadiance(Radiance, LightContrib);
+							LuminanceForFirstBounceRayGuiding += Luminance(LightContrib);
 						}
 						else
 						{
-							// GPULightmass records contribution of direct lighting separately, and only for static lights
+							// GPU Lightmass records contribution of direct lighting separately, and only for static lights
 							if (!IsStationary(LightId))
 							{
-								DirectLightingNEERadianceValue += LightContrib;
-								DirectLightingNEERadianceDirection = LightSample.Direction;
+							#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
+								float TangentZ = saturate(dot(LightSample.Direction, Payload.WorldNormal));
+								DirectLightingSH.AddIncomingRadiance(Luminance(LightContrib), LightSample.Direction, TangentZ);
+								DirectLightingIrradiance += LightContrib * TangentZ;
+							#else								
+								DirectLightingSH.R.V0 = SHBasisFunction3Float(LightSample.Direction).V0 * LightContrib.r;
+								DirectLightingSH.R.V1 = SHBasisFunction3Float(LightSample.Direction).V1 * LightContrib.r;
+								DirectLightingSH.R.V2 = SHBasisFunction3Float(LightSample.Direction).V2 * LightContrib.r;
+								DirectLightingSH.G.V0 = SHBasisFunction3Float(LightSample.Direction).V0 * LightContrib.g;
+								DirectLightingSH.G.V1 = SHBasisFunction3Float(LightSample.Direction).V1 * LightContrib.g;
+								DirectLightingSH.G.V2 = SHBasisFunction3Float(LightSample.Direction).V2 * LightContrib.g;
+								DirectLightingSH.B.V0 = SHBasisFunction3Float(LightSample.Direction).V0 * LightContrib.b;
+								DirectLightingSH.B.V1 = SHBasisFunction3Float(LightSample.Direction).V1 * LightContrib.b;
+								DirectLightingSH.B.V2 = SHBasisFunction3Float(LightSample.Direction).V2 * LightContrib.b;
+							#endif
+							}
+
+							if (IsStationary(LightId) && IsEnvironmentLight(LightId) && CastsShadow(LightId))
+							{
+								SkyLightBentNormal += BentNormalVector;
 							}
 						}
 					}
@@ -633,11 +723,11 @@ void PathTracingKernel(
 		}
 
 		// Update ray according to material sample
-		Ray.Origin = Payload.WorldPos;
+		Ray.Origin = Payload.TranslatedWorldPos;
 		Ray.Direction = MaterialSample.Direction;
 		Ray.TMin = 0;
 		Ray.TMax = POSITIVE_INFINITY;
-		ApplyPositionBias(Ray, MaterialSample.PositionBiasSign * Payload.WorldNormal, MaxNormalBias);
+		ApplyRayBias(Ray, Payload.HitT, MaterialSample.PositionBiasSign * Payload.WorldGeoNormal);
 
 		if (ApproximateCaustics)
 		{
@@ -670,9 +760,7 @@ void PathTracingKernel(
 					continue;
 				}
 
-				RayDesc TranslatedRay = Ray;
-				TranslatedRay.Origin += LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
-				FLightHit LightResult = TraceLight(TranslatedRay, LightId);
+				FLightHit LightResult = TraceLight(Ray, LightId);
 
 				if (LightResult.IsMiss())
 				{
@@ -680,6 +768,8 @@ void PathTracingKernel(
 				}
 
 				float3 LightContrib = PathThroughput * LightResult.Radiance;
+				float3 BentNormalVector = PathThroughput * MaterialSample.Direction / PI;
+				
 				if (bUseMIS)
 				{
 					float PreviousCdfValue = 0.0;
@@ -690,18 +780,57 @@ void PathTracingKernel(
 					float LightPickPdf = (LightPickingCdf[Index] - PreviousCdfValue) / LightPickingCdfSum;
 
 					LightContrib *= MISWeightRobust(MaterialSample.Pdf, LightResult.Pdf * LightPickPdf);
+
+					// Separate direct lighting (bounce 0) for GPU Lightmass
+					BentNormalVector *= MISWeightRobust(MaterialSample.Pdf, LightResult.Pdf * LightPickPdf);
 				}
 
 				if (any(LightContrib > 0))
 				{
 					if (CastsShadow(LightId))
 					{
-						RayDesc LightRay = Ray;
+						FRayDesc LightRay = Ray;
 						LightRay.TMax = LightResult.HitT;
-						LightContrib *= TraceTransparentVisibilityRay(LightRay, LaunchIndex, PathRoughness);
+						float3 Visibility = TraceTransparentVisibilityRay(LightRay, LaunchIndex, PathRoughness);
+						LightContrib *= Visibility;
+						
+						// Separate direct lighting (bounce 0) for GPU Lightmass
+						BentNormalVector *= Visibility;
 					}
-					// the light made some contribution, and there was nothing along the shadow ray
-					AccumulateRadiance(Radiance, LightContrib);
+
+					if (Bounce > 0)
+					{
+						// the light made some contribution, and there was nothing along the shadow ray
+						AccumulateRadiance(Radiance, LightContrib);
+					}
+					else // Bounce == 0
+					{
+						if (!IsStationary(LightId))
+						{
+						#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
+							float TangentZ = saturate(dot(MaterialSample.Direction, Payload.WorldNormal));
+							DirectLightingSH.AddIncomingRadiance(Luminance(LightContrib), MaterialSample.Direction, TangentZ);
+							DirectLightingIrradiance += LightContrib * TangentZ;
+						#else								
+							DirectLightingSH.R.V0 = SHBasisFunction3Float(MaterialSample.Direction).V0 * LightContrib.r;
+							DirectLightingSH.R.V1 = SHBasisFunction3Float(MaterialSample.Direction).V1 * LightContrib.r;
+							DirectLightingSH.R.V2 = SHBasisFunction3Float(MaterialSample.Direction).V2 * LightContrib.r;
+							DirectLightingSH.G.V0 = SHBasisFunction3Float(MaterialSample.Direction).V0 * LightContrib.g;
+							DirectLightingSH.G.V1 = SHBasisFunction3Float(MaterialSample.Direction).V1 * LightContrib.g;
+							DirectLightingSH.G.V2 = SHBasisFunction3Float(MaterialSample.Direction).V2 * LightContrib.g;
+							DirectLightingSH.B.V0 = SHBasisFunction3Float(MaterialSample.Direction).V0 * LightContrib.b;
+							DirectLightingSH.B.V1 = SHBasisFunction3Float(MaterialSample.Direction).V1 * LightContrib.b;
+							DirectLightingSH.B.V2 = SHBasisFunction3Float(MaterialSample.Direction).V2 * LightContrib.b;
+						#endif
+						}
+
+						if (IsStationary(LightId) && IsEnvironmentLight(LightId) && CastsShadow(LightId))
+						{
+							SkyLightBentNormal += BentNormalVector;
+						}
+					}
+					
+					LuminanceForFirstBounceRayGuiding += Luminance(LightContrib);
 				}
 			}
 			
@@ -710,9 +839,6 @@ void PathTracingKernel(
 		// from this point on, we don't need to include lights in the trace call
 		// because NEE handled it for us
 		NumVisibleLights = 0;
-		
-		// update ray cone for the next bounce
-		RayCone = Payload.RayCone;
 	}
 	
 #if USE_IRRADIANCE_CACHING
@@ -720,17 +846,26 @@ void PathTracingKernel(
 	{
 		if(bShouldEmitGeometryHitPoint)
 		{
-			EmitGeometryHitPoint(IrradianceCachePrimaryGIHitPoint, NewEntrySize);
+			EmitGeometryHitPoint(IrradianceCacheFinalGatherHitPoint, NewEntrySize);
 		}
 		
 		if(NearestCacheEntryID != -1)
 		{
 			float3 IrradianceToAccumulate = Radiance * RadianceProbe_Pdf; // Revert the radiance probe pdf as we're caching the first bounce outgoing radiance
-			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].Irradiance.r, IrradianceToAccumulate.r);
-			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].Irradiance.g, IrradianceToAccumulate.g);
-			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].Irradiance.b, IrradianceToAccumulate.b);
-			InterlockedAdd(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].Irradiance.a, 1);
+			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].r, IrradianceToAccumulate.r);
+			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].g, IrradianceToAccumulate.g);
+			ATOMIC_ADD_FLOAT(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].b, IrradianceToAccumulate.b);
+			InterlockedAdd(IrradianceCachingParameters.IrradianceCacheRecords[NearestCacheEntryID].a, 1);
 		}
+	}
+	else
+	{
+	#if IC_BACKFACE_DETECTION
+		if(NearestCacheEntryID != -1)
+		{
+			InterlockedAdd(IrradianceCachingParameters.IrradianceCacheRecordBackfaceHits[NearestCacheEntryID].a, 1);
+		}
+	#endif
 	}
 #endif
 	
@@ -747,17 +882,47 @@ void LightmapPathTracingMainRG()
 	uint2 TexelIndexInPool = LaunchIndex + BatchedTiles[TileIndex].WorkingSetPosition;
 	uint2 TexelIndexInScratch = LaunchIndex + BatchedTiles[TileIndex].ScratchPosition;
 
-	float3 WorldPosition = GBufferWorldPosition[TexelIndexInScratch].xyz / WorldPositionScalar;
 	float3 WorldNormal = GBufferWorldNormal[TexelIndexInScratch].xyz;
 	float3 ShadingNormal = GBufferShadingNormal[TexelIndexInScratch].xyz;
+	bool bMaterialTwoSided = GBufferShadingNormal[TexelIndexInScratch].w;
 
-	bool bIsValidSample = true;
+	float4 EncodedGBufferWorldPosition = GBufferWorldPosition[TexelIndexInScratch];
+
+	bool bGBufferSampleValid = true;
+	if (EncodedGBufferWorldPosition.w == 0.0f)
+	{
+		bGBufferSampleValid = false;
+	}
+
+	float3 TranslatedWorldPosition = EncodedGBufferWorldPosition.xyz / WorldPositionScalar + LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
 	
-	if (GBufferWorldPosition[TexelIndexInScratch].w == 0.0f) bIsValidSample = false;
+	int EffectiveRenderPassIndex = BatchedTiles[TileIndex].RenderPassIndex;
+#if USE_IRRADIANCE_CACHING
+	if (EffectiveRenderPassIndex >= GetIrradianceCachingQuality())
+	{
+		EffectiveRenderPassIndex -= GetIrradianceCachingQuality();
+
+	#if USE_FIRST_BOUNCE_RAY_GUIDING
+		if (EffectiveRenderPassIndex >= NumRayGuidingTrialSamples)
+		{
+			EffectiveRenderPassIndex -= NumRayGuidingTrialSamples;
+		}
+	#endif
+	}
+#endif
+					
+	if (EffectiveRenderPassIndex == 0) 
+	{
+		IrradianceAndSampleCount[TexelIndexInPool]= float4(0, 0, 0, 0);
+		SHDirectionality[TexelIndexInPool] = float4(0, 0, 0, 0);
+		SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool] = float4(0, 0, 0, 0);
+	}
 	
 	if (NumTotalSamples <= 0 || (NumTotalSamples > 0 && BatchedTiles[TileIndex].RenderPassIndex < NumTotalSamples - 1))
 	{
-		if (bIsValidSample)
+		bool bAnyHemispherePathSampleValid = false;
+	
+		if (bGBufferSampleValid)
 		{			
 			// Needs a seed that is only related to position in virtual space to avoid seams due to per-tile calculation
 			uint2 VirtualTextureSpacePosition = BatchedTiles[TileIndex].VirtualTilePosition + LaunchIndex - uint2(2, 2);
@@ -765,89 +930,101 @@ void LightmapPathTracingMainRG()
 					
 			float4 PrimaryRandSample = float4(-1, -1, -1, -1);
 			
+			// Evaluate both hemispheres for two sided materials and add the lighting up naively
+			UNROLL_N(2)
+			for (int HemisphereIndex = 0; HemisphereIndex < (bMaterialTwoSided ? 2 : 1); HemisphereIndex++)
 			{
 				RandomSequence RandSequence;
-				RandomSequence_Initialize(RandSequence, Seed, 
-				#if USE_FIRST_BOUNCE_RAY_GUIDING
-					BatchedTiles[TileIndex].RenderPassIndex >= NumRayGuidingTrialSamples ? 
-						(BatchedTiles[TileIndex].RenderPassIndex - NumRayGuidingTrialSamples) : 
-				#endif
-						(BatchedTiles[TileIndex].RenderPassIndex)
-				);
+				RandomSequence_Initialize(RandSequence, Seed, EffectiveRenderPassIndex);
 				
 				uint SampleIndex = 2;
 
 				float3 RadianceValue = 0;
 				float3 RadianceDirection = 0;				
-				float3 DirectLightingNEERadianceValue = 0;
-				float3 DirectLightingNEERadianceDirection = 0;
+				float3 DirectLightingIrradiance = 0;
+			#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
+				FL2SHAndCorrection DirectLightingSH = (FL2SHAndCorrection)0;
+			#else
+				FThreeBandSHVectorRGBFloat DirectLightingSH = (FThreeBandSHVectorRGBFloat)0;
+			#endif
+				float LuminanceForFirstBounceRayGuiding = 0;
+				float3 SkyLightBentNormal = 0;
+
+				float3 EffectiveShadingNormal = HemisphereIndex == 0 ? ShadingNormal : -ShadingNormal;
+
+				bool bPathSampleValid = true;
 				
-				if (bIsValidSample)
-				{
-					PathTracingKernel(
-						BatchedTiles[TileIndex].RenderPassIndex,
-						WorldPosition,
-						WorldNormal,
-						RandSequence,
-						SampleIndex,
-						bIsValidSample,
-						RadianceValue,
-						RadianceDirection,
-						DirectLightingNEERadianceValue,
-						DirectLightingNEERadianceDirection,
-						PrimaryRandSample
-					);
-				}
+				PathTracingKernel(
+					BatchedTiles[TileIndex].RenderPassIndex,
+					TranslatedWorldPosition,
+					EffectiveShadingNormal,
+					RandSequence,
+					SampleIndex,
+					bPathSampleValid,
+					RadianceValue,
+					RadianceDirection,
+					DirectLightingIrradiance,
+					DirectLightingSH,
+					LuminanceForFirstBounceRayGuiding,
+					SkyLightBentNormal,
+					PrimaryRandSample
+				);
 				
 				if (any(isnan(RadianceValue)) || any(RadianceValue < 0) || any(isinf(RadianceValue)))
 				{
-					bIsValidSample = false;
+					bPathSampleValid = false;
 				}
 				
-				if (bIsValidSample)
+				if (bPathSampleValid)
 				{
-					#if USE_FIRST_BOUNCE_RAY_GUIDING						
-						if (BatchedTiles[TileIndex].RenderPassIndex < NumRayGuidingTrialSamples)
+				#if USE_FIRST_BOUNCE_RAY_GUIDING
+					int MinRenderPassIndex = 0;
+					int MaxRenderPassIndex = NumRayGuidingTrialSamples;
+				
+				#if USE_IRRADIANCE_CACHING
+					MinRenderPassIndex += GetIrradianceCachingQuality();
+					MaxRenderPassIndex += GetIrradianceCachingQuality();
+				#endif
+					
+					if (BatchedTiles[TileIndex].RenderPassIndex >= MinRenderPassIndex && BatchedTiles[TileIndex].RenderPassIndex < MaxRenderPassIndex)
+					{
+						float2 Point = PrimaryRandSample.yx;						
+						int2 ClusterPosition = clamp((int2)LaunchIndex - int2(2, 2), int2(0, 0), int2(63, 63)) / TEXEL_CLUSTER_SIZE;
+						float2 JitteredBin = Point * DIRECTIONAL_BINS_ONE_DIM;// - float2(0.5f, 0.5f) + PrimaryRandSample.xy;
+						int2 PositionInBin = clamp(JitteredBin, float2(0, 0), float2(DIRECTIONAL_BINS_ONE_DIM - 1, DIRECTIONAL_BINS_ONE_DIM - 1));
+						int2 FinalPosition = ClusterPosition * DIRECTIONAL_BINS_ONE_DIM + PositionInBin;
+
 						{
-							int2 ClusterPosition = clamp((int2)LaunchIndex - int2(2, 2), int2(0, 0), int2(63, 63)) / TEXEL_CLUSTER_SIZE;
-							float2 JitteredBin = PrimaryRandSample * DIRECTIONAL_BINS_ONE_DIM;// - float2(0.5f, 0.5f) + PrimaryRandSample.zw;
-							int2 PositionInBin = clamp(JitteredBin, float2(0, 0), float2(DIRECTIONAL_BINS_ONE_DIM - 1, DIRECTIONAL_BINS_ONE_DIM - 1));
-							int2 FinalPosition = ClusterPosition * DIRECTIONAL_BINS_ONE_DIM + PositionInBin;
-							float Illuminance = Luminance(RadianceValue) * saturate(dot(RadianceDirection, ShadingNormal));
+							float Illuminance = LuminanceForFirstBounceRayGuiding * saturate(dot(RadianceDirection, EffectiveShadingNormal));
 							// For positive floats we can cast them to uint and use atomic max directly
 							InterlockedMax(RayGuidingLuminance[BatchedTiles[TileIndex].WorkingSetPosition / GPreviewLightmapPhysicalTileSize * CDF_TILE_SIZE + FinalPosition], asuint(max(Illuminance, 0)));
 						}
-					
-						if (BatchedTiles[TileIndex].RenderPassIndex == NumRayGuidingTrialSamples) 
-						{
-							IrradianceAndSampleCount[TexelIndexInPool]= float4(0, 0, 0, 0);
-							SHDirectionality[TexelIndexInPool] = float4(0, 0, 0, 0);
-							SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool].x = 0;
-						}
-					#endif
+					}
+				#endif
 					
 					{
 						FL2SHAndCorrection SH = (FL2SHAndCorrection)0;
 						
-						float TangentZ = saturate(dot(RadianceDirection, ShadingNormal));
+						float TangentZ = saturate(dot(RadianceDirection, EffectiveShadingNormal));
 						SH.AddIncomingRadiance(Luminance(RadianceValue), RadianceDirection, TangentZ);
 						
 						IrradianceAndSampleCount[TexelIndexInPool].rgb += float3(RadianceValue * TangentZ / PI);
 						SHDirectionality[TexelIndexInPool] += SH.L2SHCoefficients;					
 						SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool].x += SH.Correction;
 					}
-					
+
+					#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
 					{
-						FL2SHAndCorrection SH = (FL2SHAndCorrection)0;
-						
-						float TangentZ = saturate(dot(DirectLightingNEERadianceDirection, ShadingNormal));
-						SH.AddIncomingRadiance(Luminance(DirectLightingNEERadianceValue), DirectLightingNEERadianceDirection, TangentZ);
-						
-						IrradianceAndSampleCount[TexelIndexInPool].rgb += float3(DirectLightingNEERadianceValue * TangentZ / PI);
-						SHDirectionality[TexelIndexInPool] += SH.L2SHCoefficients;					
-						SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool].x += SH.Correction;
+						IrradianceAndSampleCount[TexelIndexInPool].rgb += DirectLightingIrradiance / PI;
+						SHDirectionality[TexelIndexInPool] += DirectLightingSH.L2SHCoefficients;					
+						SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool].x += DirectLightingSH.Correction;
 					}
+					#endif
+
+					SHCorrectionAndStationarySkyLightBentNormal[TexelIndexInPool].yzw += SkyLightBentNormal;
 				}
+
+				bAnyHemispherePathSampleValid = bAnyHemispherePathSampleValid || bPathSampleValid;
 			}
 		}
 
@@ -867,7 +1044,7 @@ void LightmapPathTracingMainRG()
 		}
 #endif
 		
-		if (bIsValidSample)
+		if (bAnyHemispherePathSampleValid)
 			SampleCount++;
 		
 		IrradianceAndSampleCount[TexelIndexInPool].a = asfloat(SampleCount);
@@ -921,6 +1098,7 @@ RWTexture3D<float4> SHCoefficients0G;
 RWTexture3D<float4> SHCoefficients1G;
 RWTexture3D<float4> SHCoefficients0B;
 RWTexture3D<float4> SHCoefficients1B;
+RWTexture3D<float4> SkyBentNormal;
 RWTexture3D<UNORM float> DirectionalLightShadowing;
 
 uint MortonEncode3(uint3 Pixel)
@@ -932,7 +1110,7 @@ uint MortonEncode3(uint3 Pixel)
 // Must match C++
 struct FLightShaderConstants
 {
-	float3 WorldPosition;
+	float3 RelativeWorldPosition;
 	float  InvRadius;
 	float3 Color;
 	float  FalloffExponent;
@@ -940,17 +1118,18 @@ struct FLightShaderConstants
 	float  SpecularScale;
 	float3 Tangent;
 	float  SourceRadius;
+	float3 TilePosition;
+	float  SourceLength;
 	float2 SpotAngles;
 	float  SoftSourceRadius;
-	float  SourceLength;
 	float  RectLightBarnCosAngle;
 	float  RectLightBarnLength;
 	
 	void FillLightShaderParameters(inout FLightShaderParameters LightShaderParameters)
 	{
-		LightShaderParameters.Position = WorldPosition;
-		LightShaderParameters.TranslatedWorldPosition = LWCHackToFloat(PrimaryView.PreViewTranslation) + WorldPosition;
+		const FLWCVector3 WorldPosition = MakeLWCVector3(TilePosition, RelativeWorldPosition);
 
+		LightShaderParameters.TranslatedWorldPosition = LWCToFloat(LWCAdd(WorldPosition, PrimaryView.PreViewTranslation));
 		LightShaderParameters.InvRadius = InvRadius;
 		LightShaderParameters.Color = Color;
 		LightShaderParameters.FalloffExponent = FalloffExponent;
@@ -975,7 +1154,7 @@ struct FLightShaderConstants
 bool GenerateOcclusionRay(
 	int LightType,
 	FLightShaderParameters LightParameters,
-	float3 WorldPosition,
+	float3 TranslatedWorldPosition,
 	float3 WorldNormal,
 	float2 RandSample,
 	inout float3 RayOrigin,
@@ -988,32 +1167,32 @@ bool GenerateOcclusionRay(
 	{
 		GenerateDirectionalLightOcclusionRay(
 			LightParameters,
-			WorldPosition, WorldNormal,
+			TranslatedWorldPosition, WorldNormal,
 			RandSample,
 			/* out */ RayOrigin,
 			/* out */ RayDirection,
 			/* out */ RayTMin,
 			/* out */ RayTMax);
 	}
-	else if (LightType == LIGHT_TYPE_POINT)
+	else if (LightType == LIGHT_TYPE_POINT || LightType == LIGHT_TYPE_SPOT)
 	{
-		if (LightParameters.SourceRadius == 0)
+		if (LightType == LIGHT_TYPE_SPOT)
 		{
-			return GeneratePointLightOcclusionRay(
-				LightParameters,
-				WorldPosition, WorldNormal,
-				RandSample,
-				/* out */ RayOrigin,
-				/* out */ RayDirection,
-				/* out */ RayTMin,
-				/* out */ RayTMax);
+			// before generating a shadow ray, make sure we are inside the cone of the light
+			float3 LightDirection = normalize(LightParameters.TranslatedWorldPosition - TranslatedWorldPosition);
+			float CosAngle = LightParameters.SpotAngles.x;
+			if (!(dot(LightDirection, LightParameters.Direction) >= CosAngle))
+			{
+				// outside the cone of the light, skip all work
+				return false;
+			}
 		}
-		else
+		float RayPdf;
+		if (LightParameters.SourceLength > 0.0)
 		{
-			float RayPdf;
-			return GenerateSphereLightOcclusionRayWithSolidAngleSampling(
+			return GenerateCapsuleLightOcclusionRayWithSolidAngleSampling(
 				LightParameters,
-				WorldPosition, WorldNormal,
+				TranslatedWorldPosition, WorldNormal,
 				RandSample,
 				/* out */ RayOrigin,
 				/* out */ RayDirection,
@@ -1021,24 +1200,22 @@ bool GenerateOcclusionRay(
 				/* out */ RayTMax,
 				/* out */ RayPdf);
 		}
-	}
-	else if (LightType == LIGHT_TYPE_SPOT)
-	{
-		return GenerateSpotLightOcclusionRay(
+		return GenerateSphereLightOcclusionRayWithSolidAngleSampling(
 			LightParameters,
-			WorldPosition, WorldNormal,
+			TranslatedWorldPosition, WorldNormal,
 			RandSample,
 			/* out */ RayOrigin,
 			/* out */ RayDirection,
 			/* out */ RayTMin,
-			/* out */ RayTMax);
+			/* out */ RayTMax,
+			/* out */ RayPdf);
 	}
 	else if (LightType == LIGHT_TYPE_RECT)
 	{
 		float RayPdf = 0.0;
 		return GenerateRectLightOcclusionRay(
 			LightParameters,
-			WorldPosition, WorldNormal,
+			TranslatedWorldPosition, WorldNormal,
 			RandSample,
 			/* out */ RayOrigin,
 			/* out */ RayDirection,
@@ -1055,73 +1232,25 @@ StructuredBuffer<FLightShaderConstants> LightShaderParametersArray;
 [shader("raygeneration")]
 void VolumetricLightmapPathTracingMainRG()
 {
-	uint BrickVolumeSize = 5 * 5 * 5;
+	uint BrickVolumeSize = 4 * 4 * 4;
 	uint BrickIndex = DispatchRaysIndex().x / BrickVolumeSize + BrickBatchOffset;
 	if (BrickIndex >= NumTotalBricks) return;
 	uint CellIndex = DispatchRaysIndex().x % BrickVolumeSize;
-	uint3 CellPosInBrick = ComputeBrickLayoutPosition(CellIndex, uint3(5, 5, 5));
+	uint3 CellPosInBrick = ComputeBrickLayoutPosition(CellIndex, uint3(4, 4, 4));
+	uint PaddedBrickSize = 4 + 1;
+	uint3 VoxelPos = ComputeBrickLayoutPosition(DispatchRaysIndex().x / BrickVolumeSize, uint3(256, 256, 256)) * PaddedBrickSize + CellPosInBrick;
 	
 	bool bIsValidSample = true;	
 	
-	int3 CellPosInVLM = (BrickRequests[BrickIndex].xyz * 4 + CellPosInBrick) * BrickRequests[BrickIndex].w;	
-	uint Seed = ComputeBrickLinearAddress(CellPosInVLM, IndirectionTextureDim * 4);
-	
-	#if 0
-		float3 Jitter = RandomSequence_GenerateSample3D(RandSequence);
-	#else
-		float3 RandSample = float3(
-			Halton(MortonEncode3(CellPosInVLM) + FrameNumber / 2, 2), 
-			Halton(MortonEncode3(CellPosInVLM) + FrameNumber / 2, 3),
-			Halton(MortonEncode3(CellPosInVLM) + FrameNumber / 2, 5)
-		);
-		float3 Jitter = RandSample;
-	#endif		
-	
-	float3 JitteredCellPosInVLM = (BrickRequests[BrickIndex].xyz * 4 + CellPosInBrick + Jitter - float3(0.5, 0.5, 0.5)) * BrickRequests[BrickIndex].w;	
-	float DetailCellSize = VolumeSize.xyz / IndirectionTextureDim / 4;
-	float3 WorldPosition = VolumeMin + DetailCellSize * JitteredCellPosInVLM;
-	float3 ShadingNormal = float3(0, 0, (FrameNumber % 2 == 0) ? 1 : -1);
-
-	float3 RadianceValue = 0;
-	float3 RadianceDirection = 0;				
-	float3 DirectLightingNEERadianceValue = 0;
-	float3 DirectLightingNEERadianceDirection = 0;
-	float4 PrimaryRandSample;
-
-	if (bIsValidSample)
+	int EffectiveRenderPassIndex = FrameNumber;
+#if USE_IRRADIANCE_CACHING
+	if (EffectiveRenderPassIndex >= GetIrradianceCachingQuality())
 	{
-		RandomSequence RandSequence;
-		RandomSequence_Initialize(RandSequence, Seed, FrameNumber / 2);	
-		uint SampleIndex = 4;
-		
-		PathTracingKernel(
-			FrameNumber,
-			WorldPosition,
-			ShadingNormal,
-			RandSequence,
-			SampleIndex,
-			bIsValidSample,
-			RadianceValue,
-			RadianceDirection,
-			DirectLightingNEERadianceValue,
-			DirectLightingNEERadianceDirection,
-			PrimaryRandSample);
+		EffectiveRenderPassIndex -= GetIrradianceCachingQuality();
 	}
+#endif
 	
-	// Every even sample is upper hemisphere, odd sample is lower hemisphere
-	// SampleCount stored is twice as the actual full sphere sample count
-	RadianceValue *= 2;
-	DirectLightingNEERadianceValue *= 2;
-
-	if (any(isnan(RadianceValue)) || any(RadianceValue < 0))
-	{
-		bIsValidSample = false;
-	}
-
-	uint PaddedBrickSize = 4 + 1;
-	uint3 VoxelPos = ComputeBrickLayoutPosition(BrickIndex, uint3(256, 256, 256)) * PaddedBrickSize + CellPosInBrick;
-
-	if (FrameNumber == 0)
+	if (EffectiveRenderPassIndex == 0) 
 	{
 		AmbientVector[VoxelPos] = float4(0, 0, 0, 0);
 		
@@ -1133,13 +1262,75 @@ void VolumetricLightmapPathTracingMainRG()
 		
 		SHCoefficients0B[VoxelPos] = float4(0, 0, 0, 0);
 		SHCoefficients1B[VoxelPos] = float4(0, 0, 0, 0);
+
+		SkyBentNormal[VoxelPos] = float4(0, 0, 0, 0);
 	}
 	
-	if (bIsValidSample)
+	int3 CellPosInVLM = (BrickRequests[BrickIndex].xyz * 4 + CellPosInBrick) * BrickRequests[BrickIndex].w;	
+	uint Seed = ComputeBrickLinearAddress(CellPosInVLM, IndirectionTextureDim * 4);
+	
+	float3 RandSample = float3(
+		Halton(MortonEncode3(CellPosInVLM) + EffectiveRenderPassIndex, 2), 
+		Halton(MortonEncode3(CellPosInVLM) + EffectiveRenderPassIndex, 3),
+		Halton(MortonEncode3(CellPosInVLM) + EffectiveRenderPassIndex, 5)
+	);
+	float3 Jitter = RandSample;
+	
+	float3 JitteredCellPosInVLM = (BrickRequests[BrickIndex].xyz * 4 + CellPosInBrick + Jitter - float3(0.5, 0.5, 0.5)) * BrickRequests[BrickIndex].w;	
+	float3 DetailCellSize = VolumeSize.xyz / IndirectionTextureDim / 4;
+	float3 WorldPosition = VolumeMin.xyz + DetailCellSize * JitteredCellPosInVLM; // RT_LWC_TODO
+	float3 TranslatedWorldPosition = WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
+
+	int NumValidHalfSamples = 0;
+	
+	UNROLL_N(2)
+	for (int HalfSampleIndex = 0; HalfSampleIndex < 2; HalfSampleIndex++)
 	{
-		uint SampleCount = asuint(AmbientVector[VoxelPos].w);
-		
+		float3 ShadingNormal = float3(0, 0, (HalfSampleIndex == 0) ? 1 : -1);
+
+		float3 RadianceValue = 0;
+		float3 RadianceDirection = 0;				
+		float3 DirectLightingIrradiance = 0;
+#ifdef LIGHTMAP_PATH_TRACING_MAIN_RG
+		FL2SHAndCorrection DirectLightingSH = (FL2SHAndCorrection)0;
+#else
+		FThreeBandSHVectorRGBFloat DirectLightingSH = (FThreeBandSHVectorRGBFloat)0;
+#endif
+		float LuminanceForFirstBounceRayGuiding = 0;
+		float3 SkyLightBentNormal = 0;
+		float4 PrimaryRandSample;
+
+		if (bIsValidSample)
 		{
+			RandomSequence RandSequence;
+			RandomSequence_Initialize(RandSequence, Seed, EffectiveRenderPassIndex);	
+			uint SampleIndex = 4;
+		
+			PathTracingKernel(
+				FrameNumber,
+				TranslatedWorldPosition,
+				ShadingNormal,
+				RandSequence,
+				SampleIndex,
+				bIsValidSample,
+				RadianceValue,
+				RadianceDirection,
+				DirectLightingIrradiance,
+				DirectLightingSH,
+				LuminanceForFirstBounceRayGuiding,
+				SkyLightBentNormal,
+				PrimaryRandSample);
+		}
+
+		if (any(isnan(RadianceValue)) || any(RadianceValue < 0))
+		{
+			bIsValidSample = false;
+		}
+
+		if (bIsValidSample)
+		{
+			NumValidHalfSamples++;
+
 			FThreeBandSHVectorRGBFloat SH;
 			SH.R.V0 = SHBasisFunction3Float(RadianceDirection).V0 * RadianceValue.r;
 			SH.R.V1 = SHBasisFunction3Float(RadianceDirection).V1 * RadianceValue.r;
@@ -1150,7 +1341,7 @@ void VolumetricLightmapPathTracingMainRG()
 			SH.B.V0 = SHBasisFunction3Float(RadianceDirection).V0 * RadianceValue.b;
 			SH.B.V1 = SHBasisFunction3Float(RadianceDirection).V1 * RadianceValue.b;
 			SH.B.V2 = SHBasisFunction3Float(RadianceDirection).V2 * RadianceValue.b;
-			
+
 			AmbientVector[VoxelPos].x += SH.R.V0.x;
 			AmbientVector[VoxelPos].y += SH.G.V0.x;
 			AmbientVector[VoxelPos].z += SH.B.V0.x;
@@ -1163,40 +1354,43 @@ void VolumetricLightmapPathTracingMainRG()
 			
 			SHCoefficients0B[VoxelPos] += float4(SH.B.V0.yzw, SH.B.V1.x);
 			SHCoefficients1B[VoxelPos] += float4(SH.B.V1.yzw, SH.B.V2);
-		}
+				
+			if (HalfSampleIndex == 0)
+			{
+				SkyBentNormal[VoxelPos].rgb = SkyLightBentNormal;
+			}
 		
-		{
-			FThreeBandSHVectorRGBFloat SH;
-			SH.R.V0 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V0 * DirectLightingNEERadianceValue.r;
-			SH.R.V1 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V1 * DirectLightingNEERadianceValue.r;
-			SH.R.V2 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V2 * DirectLightingNEERadianceValue.r;
-			SH.G.V0 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V0 * DirectLightingNEERadianceValue.g;
-			SH.G.V1 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V1 * DirectLightingNEERadianceValue.g;
-			SH.G.V2 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V2 * DirectLightingNEERadianceValue.g;
-			SH.B.V0 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V0 * DirectLightingNEERadianceValue.b;
-			SH.B.V1 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V1 * DirectLightingNEERadianceValue.b;
-			SH.B.V2 = SHBasisFunction3Float(DirectLightingNEERadianceDirection).V2 * DirectLightingNEERadianceValue.b;
-			
-			AmbientVector[VoxelPos].x += SH.R.V0.x;
-			AmbientVector[VoxelPos].y += SH.G.V0.x;
-			AmbientVector[VoxelPos].z += SH.B.V0.x;
-			
-			SHCoefficients0R[VoxelPos] += float4(SH.R.V0.yzw, SH.R.V1.x);
-			SHCoefficients1R[VoxelPos] += float4(SH.R.V1.yzw, SH.R.V2);
-			
-			SHCoefficients0G[VoxelPos] += float4(SH.G.V0.yzw, SH.G.V1.x);
-			SHCoefficients1G[VoxelPos] += float4(SH.G.V1.yzw, SH.G.V2);		
-			
-			SHCoefficients0B[VoxelPos] += float4(SH.B.V0.yzw, SH.B.V1.x);
-			SHCoefficients1B[VoxelPos] += float4(SH.B.V1.yzw, SH.B.V2);
+		#ifndef LIGHTMAP_PATH_TRACING_MAIN_RG
+			AmbientVector[VoxelPos].x += DirectLightingSH.R.V0.x;
+			AmbientVector[VoxelPos].y += DirectLightingSH.G.V0.x;
+			AmbientVector[VoxelPos].z += DirectLightingSH.B.V0.x;
+				
+			SHCoefficients0R[VoxelPos] += float4(DirectLightingSH.R.V0.yzw, DirectLightingSH.R.V1.x);
+			SHCoefficients1R[VoxelPos] += float4(DirectLightingSH.R.V1.yzw, DirectLightingSH.R.V2);
+				
+			SHCoefficients0G[VoxelPos] += float4(DirectLightingSH.G.V0.yzw, DirectLightingSH.G.V1.x);
+			SHCoefficients1G[VoxelPos] += float4(DirectLightingSH.G.V1.yzw, DirectLightingSH.G.V2);		
+				
+			SHCoefficients0B[VoxelPos] += float4(DirectLightingSH.B.V0.yzw, DirectLightingSH.B.V1.x);
+			SHCoefficients1B[VoxelPos] += float4(DirectLightingSH.B.V1.yzw, DirectLightingSH.B.V2);
+		#endif
 		}
-		
+	}
+
+	if (NumValidHalfSamples > 0)
+	{
+		uint SampleCount = asuint(AmbientVector[VoxelPos].w);
 		AmbientVector[VoxelPos].w = asfloat(SampleCount + 1);
 	}
 	
 	// 32 samples for single sample stationary directional light shadowing
 	if (FrameNumber < 32 && length(LightShaderParametersArray[0].Direction) > 0)
 	{
+		if (FrameNumber == 0)
+		{
+			DirectionalLightShadowing[VoxelPos] = 0;
+		}
+		
 		FLightShaderParameters LightParameters;
 		LightShaderParametersArray[0].FillLightShaderParameters(LightParameters);
 
@@ -1205,18 +1399,16 @@ void VolumetricLightmapPathTracingMainRG()
 			Halton(StrongIntegerHash(Seed) + FrameNumber, 7)
 		);
 		
-		RayDesc Ray;
+		FRayDesc Ray;
 		bool bIsValidRay = GenerateOcclusionRay(
 			LIGHT_TYPE_DIRECTIONAL,
 			LightParameters,
-			WorldPosition, ShadingNormal,
+			TranslatedWorldPosition, float3(0, 0, 1),
 			RandSample,
 			/* out */ Ray.Origin,
 			/* out */ Ray.Direction,
 			/* out */ Ray.TMin,
 			/* out */ Ray.TMax);
-			
-		Ray.Origin += Ray.Direction * 0.01f;
 			
 		if (bIsValidRay)
 		{
@@ -1252,18 +1444,22 @@ void StationaryLightShadowTracingMainRG()
 
 	int ChannelIndex = ChannelIndexArray[TileIndex];
 
-	bool bIsValidSample = true;
+	bool bGBufferSampleValid = true;
+
+	float4 EncodedGBufferWorldPosition = GBufferWorldPosition[TexelIndexInScratch];
 	
-	float3 WorldPosition = GBufferWorldPosition[TexelIndexInScratch].xyz / WorldPositionScalar;	
-	if (GBufferWorldPosition[TexelIndexInScratch].w == 0.0f)
+	if (EncodedGBufferWorldPosition.w == 0.0f)
 	{
-		bIsValidSample = false;
+		bGBufferSampleValid = false;
 	}
+
+	float3 TranslatedWorldPosition = EncodedGBufferWorldPosition.xyz / WorldPositionScalar + LWCHackToFloat(PrimaryView.PreViewTranslation); // RT_LWC_TODO
 	
-	if (bIsValidSample)
+	if (bGBufferSampleValid)
 	{
 		float3 WorldNormal = GBufferWorldNormal[TexelIndexInScratch].xyz;
 		float3 ShadingNormal = GBufferShadingNormal[TexelIndexInScratch].xyz;
+		bool bMaterialTwoSided = GBufferShadingNormal[TexelIndexInScratch].w;
 		
 		// Needs a seed that is only related to position in virtual space to avoid seams due to per-tile calculation
 		uint2 VirtualTextureSpacePosition = BatchedTiles[TileIndex].VirtualTilePosition + LaunchIndex - uint2(2, 2);
@@ -1272,27 +1468,36 @@ void StationaryLightShadowTracingMainRG()
 		int LightType = LightTypeArray[TileIndex];
 		FLightShaderParameters LightParameters;
 		LightShaderParametersArray[TileIndex].FillLightShaderParameters(LightParameters);
+
+		bool bAnyHemisphereRaySampleValid = false;
+		uint Visibility = 0;
 		
+		UNROLL_N(2)
+		for (int HemisphereIndex = 0; HemisphereIndex < (bMaterialTwoSided ? 2 : 1); HemisphereIndex++)
 		{
 			float2 RandSample = float2(
 				Halton(StrongIntegerHash(Seed) + LightSampleIndexArray[TileIndex], 5), 
 				Halton(StrongIntegerHash(Seed) + LightSampleIndexArray[TileIndex], 7)
 			);
+
+			float3 EffectiveWorldNormal = HemisphereIndex == 0 ? WorldNormal : -WorldNormal;
+
+			bool bRaySampleValid = true;
 			
-			RayDesc Ray;
-			bIsValidSample &= GenerateOcclusionRay(
+			FRayDesc Ray;
+			bRaySampleValid &= GenerateOcclusionRay(
 				LightType,
 				LightParameters,
-				WorldPosition, WorldNormal,
+				TranslatedWorldPosition, EffectiveWorldNormal,
 				RandSample,
 				/* out */ Ray.Origin,
 				/* out */ Ray.Direction,
 				/* out */ Ray.TMin,
 				/* out */ Ray.TMax);
 				
-			Ray.Origin += Ray.Direction * 0.01f;
-				
-			if (bIsValidSample)
+			ApplyRayBias(Ray, LightType == LIGHT_TYPE_DIRECTIONAL ? 1.0f : max(Ray.TMax - Ray.TMin, 0.0f), EffectiveWorldNormal);
+			
+			if (bRaySampleValid)
 			{
 				uint RayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
@@ -1303,13 +1508,18 @@ void StationaryLightShadowTracingMainRG()
 					uint2(0, 0),
 					Ray);
 				
-				uint Visibility = asuint(ShadowMask[TexelIndexInPool][ChannelIndex]);
-				uint SampleCount = asuint(ShadowMaskSampleCount[TexelIndexInPool][ChannelIndex]);
-				Visibility += MinimalPayload.IsMiss() ? 1 : 0;
-				SampleCount++;
-				ShadowMask[TexelIndexInPool][ChannelIndex] = asfloat(Visibility);
-				ShadowMaskSampleCount[TexelIndexInPool][ChannelIndex] = asfloat(SampleCount);
+				Visibility = max(Visibility, MinimalPayload.IsMiss() ? 1 : 0);
 			}
+
+			bAnyHemisphereRaySampleValid = bAnyHemisphereRaySampleValid || bRaySampleValid;
+		}
+
+		if (bAnyHemisphereRaySampleValid)
+		{
+			ShadowMask[TexelIndexInPool][ChannelIndex] = asfloat(asuint(ShadowMask[TexelIndexInPool][ChannelIndex]) + Visibility);
+			uint SampleCount = asuint(ShadowMaskSampleCount[TexelIndexInPool][ChannelIndex]);
+			SampleCount++;
+			ShadowMaskSampleCount[TexelIndexInPool][ChannelIndex] = asfloat(SampleCount);
 		}
 	}
 }

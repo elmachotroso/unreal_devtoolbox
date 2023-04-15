@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
         public Voronoi(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add("Runtime/Experimental/Voronoi/Private");
-            PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -16,6 +13,12 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject"
                 }
                 );
+
+			UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+
+			// Disable all static analysis checkers for this module ( third party code ) 
+			StaticAnalyzerDisabledCheckers.Add("all");
+
 		}
 	}
 }

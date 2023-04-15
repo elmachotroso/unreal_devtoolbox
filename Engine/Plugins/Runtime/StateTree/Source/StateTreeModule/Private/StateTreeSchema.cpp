@@ -1,12 +1,12 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeSchema.h"
-#include "CoreMinimal.h"
-#include "Blueprint/StateTreeEvaluatorBlueprintBase.h"
-#include "Blueprint/StateTreeTaskBlueprintBase.h"
-#include "Blueprint/StateTreeConditionBlueprintBase.h"
+#include "Blueprint/StateTreeNodeBlueprintBase.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeSchema)
 
 bool UStateTreeSchema::IsChildOfBlueprintBase(const UClass* InClass) const
 {
-	return InClass->IsChildOf<UStateTreeItemBlueprintBase>();
+	return InClass->IsChildOf<UStateTreeNodeBlueprintBase>();
 }
+

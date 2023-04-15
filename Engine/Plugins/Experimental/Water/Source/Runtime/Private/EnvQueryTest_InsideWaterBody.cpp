@@ -8,6 +8,8 @@
 #include "WaterBodyManager.h"
 #include "WaterSubsystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EnvQueryTest_InsideWaterBody)
+
 UEnvQueryTest_InsideWaterBody::UEnvQueryTest_InsideWaterBody(const FObjectInitializer& ObjectInitializer) 
 	: Super(ObjectInitializer)
 {
@@ -26,7 +28,7 @@ void UEnvQueryTest_InsideWaterBody::RunTest(FEnvQueryInstance& QueryInstance) co
 		const FVector ItemLocation = GetItemLocation(QueryInstance, It.GetIndex());
 
 		bool bInside = false;
-		UWaterSubsystem::ForEachWaterBodyComponent(GetWorld(), [this, ItemLocation, &bInside](UWaterBodyComponent* WaterBodyComponent)
+		FWaterBodyManager::ForEachWaterBodyComponent(GetWorld(), [this, ItemLocation, &bInside](UWaterBodyComponent* WaterBodyComponent)
 		{
 			EWaterBodyQueryFlags QueryFlags = EWaterBodyQueryFlags::ComputeImmersionDepth;
 			if (bIncludeWaves)
@@ -62,3 +64,4 @@ FText UEnvQueryTest_InsideWaterBody::GetDescriptionDetails() const
 {
 	return DescribeBoolTestParams("inside water body");
 }
+

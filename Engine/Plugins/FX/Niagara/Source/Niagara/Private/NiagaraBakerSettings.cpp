@@ -1,109 +1,95 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraBakerSettings.h"
+#include "NiagaraBakerOutputTexture2D.h"
+#include "NiagaraCustomVersion.h"
+#include "NiagaraSystem.h"
 
-#include "CoreMinimal.h"
 #include "Engine/Texture2D.h"
+#include "Misc/PathViews.h"
 
-bool FNiagaraBakerTextureSettings::Equals(const FNiagaraBakerTextureSettings& Other) const
-{
-	return
-		SourceBinding.SourceName == Other.SourceBinding.SourceName &&
-		bUseFrameSize == Other.bUseFrameSize &&
-		FrameSize == Other.FrameSize &&
-		TextureSize == Other.TextureSize;
-}
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraBakerSettings)
 
 UNiagaraBakerSettings::UNiagaraBakerSettings(const FObjectInitializer& Init)
 	: Super(Init)
 {
+	bPreviewLooping = true;
 	bRenderComponentOnly = true;
-	OutputTextures.AddDefaulted();
+	Outputs.Add(Init.CreateDefaultSubobject<UNiagaraBakerOutputTexture2D>(this, "DefaultOutput"));
 
+	// Fill in default camera settings
+	CameraSettings.AddDefaulted(int(ENiagaraBakerViewMode::Num));
+	for (int i=0; i < int(ENiagaraBakerViewMode::Num); ++i)
+	{
+		CameraSettings[i].ViewMode = ENiagaraBakerViewMode(i);
+		CameraSettings[i].ResetToDefault();
+	}
+
+	// Deprecate properties
 	for ( int i=0; i < (int)ENiagaraBakerViewMode::Num; ++i )
 	{
-		CameraViewportLocation[i] = FVector::ZeroVector;
-		CameraViewportRotation[i] = FRotator::ZeroRotator;
+		CameraViewportLocation_DEPRECATED[i] = FVector::ZeroVector;
+		CameraViewportRotation_DEPRECATED[i] = FRotator::ZeroRotator;
 	}
-	CameraViewportLocation[(int)ENiagaraBakerViewMode::Perspective] = FVector(0.0f, -200.0f, 0.0f);
-	CameraViewportRotation[(int)ENiagaraBakerViewMode::Perspective] = FRotator(180.0f, 0.0f, 90.0f);
+	CameraViewportLocation_DEPRECATED[(int)ENiagaraBakerViewMode::Perspective] = FVector(0.0f, -200.0f, 0.0f);
+	CameraViewportRotation_DEPRECATED[(int)ENiagaraBakerViewMode::Perspective] = FRotator(180.0f, 0.0f, 90.0f);
 }
 
 bool UNiagaraBakerSettings::Equals(const UNiagaraBakerSettings& Other) const
 {
-	if (OutputTextures.Num() != Other.OutputTextures.Num())
-	{
-		return false;
-	}
-
-	for ( int i=0; i < OutputTextures.Num(); ++i )
-	{
-		if ( !OutputTextures[i].Equals(Other.OutputTextures[i]) )
+	auto OutputsEquals =
+		[&]() -> bool
 		{
-			return false;
-		}
-	}
+			if (Outputs.Num() != Other.Outputs.Num())
+			{
+				return false;
+			}
 
-	for ( int i=0; i < (int)ENiagaraBakerViewMode::Num; ++i )
-	{
-		if ( !CameraViewportLocation[i].Equals(Other.CameraViewportLocation[i]) ||
-			 !CameraViewportRotation[i].Equals(Other.CameraViewportRotation[i]) )
-		{
-			return false;
-		}
-	}
+			for (int i = 0; i < Outputs.Num(); ++i)
+			{
+				if ((Outputs[i]->GetClass() != Other.Outputs[i]->GetClass()) ||
+					(Outputs[i]->Equals(*Other.Outputs[i]) == false) )
+				{
+					return false;
+				}
+			}
+			return true;
+		};
 
 	return
+		CameraSettings == Other.CameraSettings &&
+		CurrentCameraIndex == Other.CurrentCameraIndex &&
+		OutputsEquals() &&
 		FMath::IsNearlyEqual(StartSeconds, Other.StartSeconds) &&
 		FMath::IsNearlyEqual(DurationSeconds, Other.DurationSeconds) &&
 		FramesPerSecond == Other.FramesPerSecond &&
-		bPreviewLooping == Other.bPreviewLooping &&
 		FramesPerDimension == Other.FramesPerDimension &&
-		CameraViewportMode == Other.CameraViewportMode &&
-		FMath::IsNearlyEqual(CameraOrbitDistance, Other.CameraOrbitDistance) &&
-		FMath::IsNearlyEqual(CameraFOV, Other.CameraFOV) &&
-		FMath::IsNearlyEqual(CameraOrthoWidth, Other.CameraOrthoWidth) &&
-		bUseCameraAspectRatio == Other.bUseCameraAspectRatio &&
-		FMath::IsNearlyEqual(CameraAspectRatio, Other.CameraAspectRatio) &&
+		bPreviewLooping == Other.bPreviewLooping &&
 		bRenderComponentOnly == Other.bRenderComponentOnly;
-}
-
-float UNiagaraBakerSettings::GetAspectRatio(int32 iOutputTextureIndex) const
-{
-	if (OutputTextures.IsValidIndex(iOutputTextureIndex))
-	{
-		const float TextureAspectRatio = float(OutputTextures[iOutputTextureIndex].FrameSize.Y) / float(OutputTextures[iOutputTextureIndex].FrameSize.X);
-		return bUseCameraAspectRatio ? CameraAspectRatio : TextureAspectRatio;
-	}
-	return 1.0f;
-}
-
-FVector2D UNiagaraBakerSettings::GetOrthoSize(int32 iOutputTextureIndex) const
-{
-	return FVector2D(CameraOrthoWidth, CameraOrthoWidth * GetAspectRatio(iOutputTextureIndex));
 }
 
 FVector UNiagaraBakerSettings::GetCameraLocation() const
 {
-	if (IsPerspective())
+	const FNiagaraBakerCameraSettings& CurrentCamera = GetCurrentCamera();
+	if (CurrentCamera.IsPerspective())
 	{
-		const FVector OrbitOffset = CameraViewportRotation[(int)CameraViewportMode].RotateVector(FVector(0.0f, 0.0f, CameraOrbitDistance));
-		return CameraViewportLocation[(int)CameraViewportMode] - OrbitOffset;
+		const FVector OrbitOffset = CurrentCamera.ViewportRotation.RotateVector(FVector(0.0f, 0.0f, CurrentCamera.OrbitDistance));
+		return CurrentCamera.ViewportLocation - OrbitOffset;
 	}
 	else
 	{
-		return CameraViewportLocation[(int)CameraViewportMode];
+		return CurrentCamera.ViewportLocation;
 	}
 }
 
 FRotator UNiagaraBakerSettings::GetCameraRotation() const
 {
-	return CameraViewportRotation[(int)CameraViewportMode];
+	return GetCurrentCamera().ViewportRotation;
 }
 
 FMatrix UNiagaraBakerSettings::GetViewportMatrix() const
 {
-	switch (CameraViewportMode)
+	switch (GetCurrentCamera().ViewMode)
 	{
 		case ENiagaraBakerViewMode::OrthoFront:		return FMatrix(-FVector::ZAxisVector, -FVector::XAxisVector,  FVector::YAxisVector, FVector::ZeroVector);
 		case ENiagaraBakerViewMode::OrthoBack:		return FMatrix( FVector::ZAxisVector,  FVector::XAxisVector,  FVector::YAxisVector, FVector::ZeroVector);
@@ -121,92 +107,132 @@ FMatrix UNiagaraBakerSettings::GetViewMatrix() const
 	return FInverseRotationMatrix(GetCameraRotation()) * GetViewportMatrix();
 }
 
-FMatrix UNiagaraBakerSettings::GetProjectionMatrixForTexture(int32 iOutputTextureIndex) const
+FMatrix UNiagaraBakerSettings::GetProjectionMatrix() const
 {
-	if (CameraViewportMode == ENiagaraBakerViewMode::Perspective)
+	const FNiagaraBakerCameraSettings& CurrentCamera = GetCurrentCamera();
+	const float AspectRatioY = CurrentCamera.bUseAspectRatio ? CurrentCamera.AspectRatio : 1.0f;
+	if (CurrentCamera.ViewMode == ENiagaraBakerViewMode::Perspective)
 	{
-		const float AspectRatio = GetAspectRatio(iOutputTextureIndex);
-		const float HalfXFOV = FMath::DegreesToRadians(CameraFOV) * 0.5f;
-		const float HalfYFOV = FMath::Atan(FMath::Tan(HalfXFOV) / AspectRatio);
+		const float HalfXFOV = FMath::DegreesToRadians(CurrentCamera.FOV) * 0.5f;
+		const float HalfYFOV = FMath::Atan(FMath::Tan(HalfXFOV) / AspectRatioY);
 		return FReversedZPerspectiveMatrix(HalfXFOV, HalfYFOV, 1.0f, 1.0, GNearClippingPlane, GNearClippingPlane);
 	}
 	else
 	{
-		const float ZRange = WORLD_MAX;
-		const FVector2D OrthoSize = GetOrthoSize(iOutputTextureIndex);
-		return FReversedZOrthoMatrix(OrthoSize.X / 2.0f, OrthoSize.Y / 2.0f, 0.5f / ZRange, ZRange);
+		const FMatrix::FReal ZRange = UE_OLD_WORLD_MAX;
+		return FReversedZOrthoMatrix(CurrentCamera.OrthoWidth / 2.0f, CurrentCamera.OrthoWidth * AspectRatioY / 2.0f, 0.5f / ZRange, ZRange);
 	}
 }
 
-UNiagaraBakerSettings::FDisplayInfo UNiagaraBakerSettings::GetDisplayInfo(float Time, bool bLooping) const
+int UNiagaraBakerSettings::GetOutputNumFrames(UNiagaraBakerOutput* BakerOutput) const
 {
-	FDisplayInfo DisplayInfo;
-	DisplayInfo.NormalizedTime = FMath::Max(Time / DurationSeconds, 0.0f);
-	DisplayInfo.NormalizedTime = bLooping ? FMath::Fractional(DisplayInfo.NormalizedTime) : FMath::Min(DisplayInfo.NormalizedTime, 0.9999f);
+	return FramesPerDimension.X * FramesPerDimension.Y;
+}
 
-	const int NumFrames = GetNumFrames();
-	const float FrameTime = DisplayInfo.NormalizedTime * float(NumFrames);
+FNiagaraBakerOutputFrameIndices UNiagaraBakerSettings::GetOutputFrameIndices(UNiagaraBakerOutput* BakerOutput, float RelativeTime) const
+{
+	FNiagaraBakerOutputFrameIndices DisplayInfo;
+	DisplayInfo.NumFrames = GetOutputNumFrames(BakerOutput);
+	DisplayInfo.NormalizedTime = FMath::Max(RelativeTime / DurationSeconds, 0.0f);
+	DisplayInfo.NormalizedTime = bPreviewLooping ? FMath::Fractional(DisplayInfo.NormalizedTime) : FMath::Min(DisplayInfo.NormalizedTime, 0.9999f);
+
+	const float FrameTime = DisplayInfo.NormalizedTime * float(DisplayInfo.NumFrames);
 	DisplayInfo.FrameIndexA = FMath::FloorToInt(FrameTime);
-	DisplayInfo.FrameIndexB = bLooping ? (DisplayInfo.FrameIndexA + 1) % NumFrames : FMath::Min(DisplayInfo.FrameIndexA + 1, NumFrames - 1);
+	DisplayInfo.FrameIndexB = bPreviewLooping ? (DisplayInfo.FrameIndexA + 1) % DisplayInfo.NumFrames : FMath::Min(DisplayInfo.FrameIndexA + 1, DisplayInfo.NumFrames - 1);
 	DisplayInfo.Interp = FrameTime - float(DisplayInfo.FrameIndexA);
 
 	return DisplayInfo;
+}
+
+int UNiagaraBakerSettings::GetOutputNumFrames(int OutputIndex) const
+{
+	return Outputs.IsValidIndex(OutputIndex) ? GetOutputNumFrames(Outputs[OutputIndex]) : 0;
+}
+
+FNiagaraBakerOutputFrameIndices UNiagaraBakerSettings::GetOutputFrameIndices(int OutputIndex, float RelativeTime) const
+{
+	return Outputs.IsValidIndex(OutputIndex) ? GetOutputFrameIndices(Outputs[OutputIndex], RelativeTime) : FNiagaraBakerOutputFrameIndices();
 }
 
 void UNiagaraBakerSettings::PostLoad()
 {
 	Super::PostLoad();
 
-	for (FNiagaraBakerTextureSettings& Texture : OutputTextures)
+	const int32 NiagaraVersion = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+
+	if ( OutputTextures_DEPRECATED.Num() > 0 )
 	{
-		if ( Texture.GeneratedTexture )
+		Outputs.Empty();
+		for (FNiagaraBakerTextureSettings& Texture : OutputTextures_DEPRECATED)
 		{
-			Texture.GeneratedTexture->PostLoad();
+			UNiagaraBakerOutputTexture2D* NewOutput = NewObject<UNiagaraBakerOutputTexture2D>(this);
+			NewOutput->SourceBinding		= Texture.SourceBinding;
+
+			if ( Texture.bUseFrameSize )
+			{
+				NewOutput->FrameSize		= Texture.FrameSize;
+				NewOutput->AtlasTextureSize	= FIntPoint(Texture.FrameSize.X * FramesPerDimension.X, Texture.FrameSize.Y * FramesPerDimension.Y);
+			}
+			else
+			{
+				NewOutput->FrameSize		= FIntPoint(Texture.TextureSize.X / FramesPerDimension.X, Texture.TextureSize.Y / FramesPerDimension.Y);
+				NewOutput->AtlasTextureSize	= Texture.TextureSize;
+			}
+
+			if (!Texture.OutputName.IsNone())
+			{
+				const FString OutputName = Texture.OutputName.ToString();
+				if (OutputName.Len() > 0)
+				{
+					NewOutput->OutputName = OutputName;
+				}
+			}
+
+			if ( Texture.GeneratedTexture )
+			{
+				NewOutput->AtlasAssetPathFormat = Texture.GeneratedTexture->GetPackage()->GetPathName();
+			}
+
+			Outputs.Add(NewOutput);
 		}
+
+		OutputTextures_DEPRECATED.Empty();
+	}
+
+
+	if (NiagaraVersion < FNiagaraCustomVersion::AddBakerCameraBookmarks)
+	{
+		for ( int32 i=0; i < int(ENiagaraBakerViewMode::Num); ++i )
+		{
+			CameraSettings[i].ViewMode = ENiagaraBakerViewMode(i);
+			CameraSettings[i].ViewportLocation = CameraViewportLocation_DEPRECATED[i];
+			CameraSettings[i].ViewportRotation = CameraViewportRotation_DEPRECATED[i];
+			CameraSettings[i].OrbitDistance = CameraOrbitDistance_DEPRECATED;
+			CameraSettings[i].FOV = CameraFOV_DEPRECATED;
+			CameraSettings[i].OrthoWidth = CameraOrthoWidth_DEPRECATED;
+			CameraSettings[i].bUseAspectRatio = bUseCameraAspectRatio_DEPRECATED;
+			CameraSettings[i].AspectRatio = CameraAspectRatio_DEPRECATED;
+		}
+		CurrentCameraIndex = int(CameraViewportMode_DEPRECATED);
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void UNiagaraBakerSettings::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraBakerOutputTexture2D::StaticClass()));
+}
+#endif
 
 #if WITH_EDITORONLY_DATA
 void UNiagaraBakerSettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-
-	bool bComputeOutputTextureSizes = false;
-	if ( PropertyChangedEvent.MemberProperty != nullptr )
+	for ( UNiagaraBakerOutput* Output : Outputs )
 	{
-		//if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FNiagaraBakerTextureSettings))
-		if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UNiagaraBakerSettings, OutputTextures))
-		{
-			bComputeOutputTextureSizes = true;
-		}
-		else if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UNiagaraBakerSettings, FramesPerDimension))
-		{
-			FramesPerDimension.X = FMath::Max(FramesPerDimension.X, 1);
-			FramesPerDimension.Y = FMath::Max(FramesPerDimension.Y, 1);
-			bComputeOutputTextureSizes = true;
-		}
-	}
-
-	// Recompute output texture sizes as something was modified which could impact it
-	if (bComputeOutputTextureSizes)
-	{
-		for (FNiagaraBakerTextureSettings& OutputTexture : OutputTextures)
-		{
-			if (OutputTexture.bUseFrameSize)
-			{
-				OutputTexture.FrameSize.X = FMath::Max(OutputTexture.FrameSize.X, 1);
-				OutputTexture.FrameSize.Y = FMath::Max(OutputTexture.FrameSize.Y, 1);
-				OutputTexture.TextureSize.X = OutputTexture.FrameSize.X * FramesPerDimension.X;
-				OutputTexture.TextureSize.Y = OutputTexture.FrameSize.Y * FramesPerDimension.Y;
-			}
-			else
-			{
-				OutputTexture.TextureSize.X = FMath::Max(OutputTexture.TextureSize.X, 1);
-				OutputTexture.TextureSize.Y = FMath::Max(OutputTexture.TextureSize.Y, 1);
-				OutputTexture.FrameSize.X = FMath::DivideAndRoundDown(OutputTexture.TextureSize.X, FramesPerDimension.X);
-				OutputTexture.FrameSize.Y = FMath::DivideAndRoundDown(OutputTexture.TextureSize.Y, FramesPerDimension.Y);
-			}
-		}
+		Output->PostEditChangeProperty(PropertyChangedEvent);
 	}
 }
 #endif
+

@@ -81,7 +81,6 @@ namespace Gauntlet
 			using (FileStream ProcessLog = File.Open(ProcessLogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
 			{
 				StreamReader LogReader = new StreamReader(ProcessLog);
-
 				// Read until the process has exited
 				do
 				{
@@ -98,6 +97,10 @@ namespace Gauntlet
 					}
 				}
 				while (!HasExited);
+
+				LogReader.Close();
+				ProcessLog.Close();
+				ProcessLog.Dispose();
 			}
 		}
 
@@ -327,12 +330,13 @@ namespace Gauntlet
 				{
 					if (File.Exists(ProcessLogFile))
 					{
-						File.Delete(ProcessLogFile);
+						EpicGames.Core.FileUtils.ForceDeleteFile(ProcessLogFile);
 					}
 				}
 				catch (Exception Ex)
 				{
-					throw new AutomationException("Unable to delete existing log file {0} {1}", ProcessLogFile, Ex.Message);
+					//throw new AutomationException("Unable to delete existing log file {0} {1}", ProcessLogFile, Ex.Message);
+					Log.Warning("Unable to delete existing log file {0}. {1}", ProcessLogFile, Ex.Message);
 				}
 
 				Log.Verbose("\t{0}", CmdLine);

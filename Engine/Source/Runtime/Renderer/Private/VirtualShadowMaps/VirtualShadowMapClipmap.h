@@ -19,7 +19,6 @@ class FVirtualShadowMapClipmap : FRefCountedObject
 public:	
 	FVirtualShadowMapClipmap(
 		FVirtualShadowMapArray& VirtualShadowMapArray,
-		FVirtualShadowMapArrayCacheManager* VirtualShadowMapArrayCacheManager,
 		const FLightSceneInfo& InLightSceneInfo,
 		const FMatrix& WorldToLightRotationMatrix,
 		const FViewMatrices& CameraViewMatrices,
@@ -98,6 +97,8 @@ public:
 	TConstArrayView<uint32> GetRevealedPrimitivesMask() const { return RevealedPrimitivesMask.IsEmpty() ? MakeArrayView<uint32>(nullptr, 0) : MakeArrayView(RevealedPrimitivesMask.GetData(), FBitSet::CalculateNumWords(RevealedPrimitivesMask.Num())); }
 	int32 GetNumRevealedPrimitives() const { return RevealedPrimitivesMask.Num(); }
 
+	TSharedPtr<FVirtualShadowMapPerLightCacheEntry>& GetCacheEntry() { return PerLightCacheEntry; }
+
 private:
 	void ComputeBoundingVolumes(const FViewMatrices& CameraViewMatrices);
 
@@ -127,7 +128,10 @@ private:
 		FVirtualShadowMap* VirtualShadowMap;
 		FMatrix ViewToClip;
 		FVector WorldCenter;
-		FIntPoint CornerOffset;
+		//Offset from (0,0) to clipmap corner, in level radii
+		FInt64Point CornerOffset;
+		//Offset from LastLevel-snapped WorldCenter to clipmap corner, in level radii
+		FIntPoint RelativeCornerOffset;
 	};
 	TArray< FLevelData, TInlineAllocator<32> > LevelData;
 

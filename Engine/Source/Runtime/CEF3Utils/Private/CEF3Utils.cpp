@@ -6,12 +6,18 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/FileManager.h"
+#include "Misc/OutputDeviceFile.h"
 #include "CEF3UtilsLog.h"
 #if WITH_CEF3
 #	if PLATFORM_MAC
 #		include "include/wrapper/cef_library_loader.h"
 #		define CEF3_BIN_DIR TEXT("Binaries/ThirdParty/CEF3")
-#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework.framework")
+#     if PLATFORM_MAC_ARM64
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework arm64.framework")
+#     else
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework x86.framework")
+#     endif
 #		define CEF3_FRAMEWORK_EXE CEF3_FRAMEWORK_DIR TEXT("/Chromium Embedded Framework")
 #	endif
 #endif
@@ -103,10 +109,10 @@ namespace CEF3Utils
 		}
 		return bLoaderInitialized;
 #elif PLATFORM_LINUX
-		// we runtime link the libcef.so and don't need to manually load here
 		return true;
 #else
-		return false; // Unsupported libcef platform 
+		// unsupported platform for libcef
+		return false;
 #endif
 	}
 
@@ -127,6 +133,31 @@ namespace CEF3Utils
 		delete CEFLibraryLoader;
 		CEFLibraryLoader = nullptr;
 #endif
+	}
+
+#if PLATFORM_WINDOWS
+	CEF3UTILS_API void* GetCEF3ModuleHandle()
+	{
+		return CEF3DLLHandle;
+	}
+#endif
+
+	void BackupCEF3Logfile(const FString& LogFilePath)
+	{
+		const FString Cef3LogFile = FPaths::Combine(*LogFilePath,TEXT("cef3.log"));
+		IFileManager& FileManager = IFileManager::Get();
+		if (FileManager.FileSize(*Cef3LogFile) > 0) // file exists and is not empty
+		{
+			FString Name, Extension;
+			FString(Cef3LogFile).Split(TEXT("."), &Name, &Extension, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+			FDateTime OriginalTime = FileManager.GetTimeStamp(*Cef3LogFile);
+			FString BackupFilename = FString::Printf(TEXT("%s%s%s.%s"), *Name, BACKUP_LOG_FILENAME_POSTFIX, *OriginalTime.ToString(), *Extension);
+			// do not retry resulting in an error if log still in use
+			if (!FileManager.Move(*BackupFilename, *Cef3LogFile, false, false, false, true))
+			{
+				UE_LOG(LogCEF3Utils, Warning, TEXT("Failed to backup cef3.log"));
+			}
+		}
 	}
 };
 #endif //WITH_CEF3

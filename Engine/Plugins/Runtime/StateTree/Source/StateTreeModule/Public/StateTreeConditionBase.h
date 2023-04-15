@@ -15,17 +15,21 @@ struct IStateTreeBindingLookup;
 struct FStateTreeEditorPropertyPath;
 #endif
 
+enum class EStateTreeCompare : uint8
+{
+	Default,
+	Invert,
+};
+
 /**
  * Base struct for all conditions.
  */
-USTRUCT()
+USTRUCT(meta = (Hidden))
 struct STATETREEMODULE_API FStateTreeConditionBase : public FStateTreeNodeBase
 {
 	GENERATED_BODY()
 
 #if WITH_EDITOR
-	/** @return Rich text description of the condition. */
-	virtual FText GetDescription(const FGuid& ID, FStateTreeDataView InstanceData, const IStateTreeBindingLookup& BindingLookup) const { return FText::GetEmpty(); }
 	/**
 	 * Called when binding of any of the properties in the condition changes.
 	 * @param ID ID of the item, can be used make property paths to this item.
@@ -39,8 +43,13 @@ struct STATETREEMODULE_API FStateTreeConditionBase : public FStateTreeNodeBase
 	
 	/** @return True if the condition passes. */
 	virtual bool TestCondition(FStateTreeExecutionContext& Context) const { return false; }
-};
 
+	UPROPERTY()
+	EStateTreeConditionOperand Operand = EStateTreeConditionOperand::And;
+
+	UPROPERTY()
+	int8 DeltaIndent = 0;
+};
 
 /**
  * Base class (namespace) for all common Conditions that are generally applicable.
@@ -52,3 +61,15 @@ struct STATETREEMODULE_API FStateTreeConditionCommonBase : public FStateTreeCond
 	GENERATED_BODY()
 };
 
+/** Helper macro to define instance data as simple constructible. */
+#define STATETREE_POD_INSTANCEDATA(Type) \
+template <> struct TIsPODType<Type> { enum { Value = true }; }; \
+template<> \
+struct TStructOpsTypeTraits<Type> : public TStructOpsTypeTraitsBase2<Type> \
+{ \
+	enum \
+	{ \
+		WithZeroConstructor = true, \
+		WithNoDestructor = true, \
+	}; \
+};

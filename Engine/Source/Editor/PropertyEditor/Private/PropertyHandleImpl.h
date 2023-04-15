@@ -6,7 +6,7 @@
 #include "UObject/UnrealType.h"
 #include "Widgets/SWidget.h"
 #include "PropertyHandle.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "PropertyNode.h"
 
 class FNotifyHook;
@@ -139,12 +139,12 @@ public:
 	 * Sets a delegate to call when the property value changes
 	 */
 	void SetOnPropertyValueChanged( const FSimpleDelegate& InOnPropertyValueChanged );
-	
+	void SetOnPropertyValueChangedWithData(const TDelegate<void(const FPropertyChangedEvent&)>& InOnPropertyValueChanged);
 	/**
 	 * Sets a delegate to call when the propery value of a child changes
 	 */
 	void SetOnChildPropertyValueChanged( const FSimpleDelegate& InOnChildPropertyValueChanged );
-
+	void SetOnChildPropertyValueChangedWithData(const TDelegate<void(const FPropertyChangedEvent&)>& InOnChildPropertyValueChanged);
 	/**
 	 * Sets a delegate to call when the property value is about to change
 	 */
@@ -413,14 +413,17 @@ public:
 	virtual bool IsCustomized() const override;
 	virtual bool IsResetToDefaultCustomized() const override;
 	virtual FString GeneratePathToProperty() const override;
-	virtual TSharedRef<SWidget> CreatePropertyNameWidget( const FText& NameOverride = FText::GetEmpty(), const FText& ToolTipOverride = FText::GetEmpty(), bool bDisplayResetToDefault = false, bool bDisplayText = true, bool bDisplayThumbnail = true ) const override;
+	virtual TSharedRef<SWidget> CreatePropertyNameWidget( const FText& NameOverride, const FText& ToolTipOverride, bool bDisplayResetToDefault, bool bDisplayText, bool bDisplayThumbnail ) const override;
+	virtual TSharedRef<SWidget> CreatePropertyNameWidget(const FText& NameOverride, const FText& ToolTipOverride) const override;
 	virtual TSharedRef<SWidget> CreatePropertyValueWidget( bool bDisplayDefaultPropertyButtons = true ) const override;
 	virtual TSharedRef<SWidget> CreateDefaultPropertyButtonWidgets() const override;
 	virtual void CreateDefaultPropertyCopyPasteActions(FUIAction& OutCopyAction, FUIAction& OutPasteAction) const override;
 	virtual bool IsEditConst() const override;
 	virtual bool IsEditable() const override;
 	virtual void SetOnPropertyValueChanged( const FSimpleDelegate& InOnPropertyValueChanged ) override;
+	virtual void SetOnPropertyValueChangedWithData(const TDelegate<void(const FPropertyChangedEvent&)>& InOnPropertyValueChanged) override;
 	virtual void SetOnChildPropertyValueChanged( const FSimpleDelegate& InOnPropertyValueChanged ) override;
+	virtual void SetOnChildPropertyValueChangedWithData( const TDelegate<void(const FPropertyChangedEvent&)>& InOnChildPropertyValueChanged ) override;
 	virtual void SetOnPropertyValuePreChange(const FSimpleDelegate& InOnPropertyValuePreChange) override;
 	virtual void SetOnChildPropertyValuePreChange(const FSimpleDelegate& InOnPropertyValuePreChange) override;
 	virtual void SetOnPropertyResetToDefault(const FSimpleDelegate& InOnPropertyResetToDefault) override;
@@ -649,6 +652,14 @@ private:
 	TSharedPtr<FPropertyHandleMixed> YawValue;
 };
 
+class FPropertyHandleColor : public FPropertyHandleBase
+{
+public:
+	FPropertyHandleColor( TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities );
+	static bool Supports( TSharedRef<FPropertyNode> PropertyNode );
+
+	virtual FPropertyAccess::Result SetValueFromFormattedString(const FString& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags) override;
+};
 
 class FPropertyHandleArray : public FPropertyHandleBase, public IPropertyHandleArray
 {
@@ -695,6 +706,8 @@ public:
 	virtual FPropertyAccess::Result Empty() override;
 	virtual FPropertyAccess::Result DeleteItem(int32 Index) override;
 	virtual FPropertyAccess::Result GetNumElements(uint32& OutNumElements) override;
+	virtual TSharedRef<IPropertyHandle> GetElement(int32 Index) const override;
+
 	virtual void SetOnNumElementsChanged(FSimpleDelegate& InOnNumElementsChanged) override;
 	virtual bool HasDocumentation() override { return true; }
 	virtual FString GetDocumentationLink() override { return FString("Engine/UI/LevelEditor/Details/Properties/Set/"); }

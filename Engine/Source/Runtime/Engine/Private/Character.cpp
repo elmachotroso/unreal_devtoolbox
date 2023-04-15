@@ -17,6 +17,9 @@
 #include "DisplayDebugHelpers.h"
 #include "Engine/Canvas.h"
 #include "Animation/AnimInstance.h"
+#include "Engine/DamageEvents.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Character)
 
 DEFINE_LOG_CATEGORY_STATIC(LogCharacter, Log, All);
 
@@ -78,6 +81,7 @@ ACharacter::ACharacter(const FObjectInitializer& ObjectInitializer)
 		ArrowComponent->SpriteInfo.DisplayName = ConstructorStatics.NAME_Characters;
 		ArrowComponent->SetupAttachment(CapsuleComponent);
 		ArrowComponent->bIsScreenSizeScaled = true;
+		ArrowComponent->SetSimulatePhysics(false);
 	}
 #endif // WITH_EDITORONLY_DATA
 
@@ -141,6 +145,18 @@ void ACharacter::PostInitializeComponents()
 			}
 		}
 	}
+}
+
+void ACharacter::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	if (ArrowComponent)
+	{
+		ArrowComponent->SetSimulatePhysics(false);
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 void ACharacter::BeginPlay()
@@ -474,7 +490,7 @@ void ACharacter::ApplyDamageMomentum(float DamageTaken, FDamageEvent const& Dama
 		// limit Z momentum added if already going up faster than jump (to avoid blowing character way up into the sky)
 		{
 			FVector MassScaledImpulse = Impulse;
-			if(!bMassIndependentImpulse && CharacterMovement->Mass > SMALL_NUMBER)
+			if(!bMassIndependentImpulse && CharacterMovement->Mass > UE_SMALL_NUMBER)
 			{
 				MassScaledImpulse = MassScaledImpulse / CharacterMovement->Mass;
 			}
@@ -674,6 +690,24 @@ namespace MovementBaseUtility
 		OutQuat = FQuat::Identity;
 		return false;
 	}
+
+	bool GetLocalMovementBaseLocationInWorldSpace(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& LocalLocation, FVector& OutLocationWorldSpace)
+	{
+		FVector OutLocation;
+		FQuat OutQuat;
+		const bool bResult = GetMovementBaseTransform(MovementBase, BoneName, OutLocation, OutQuat);
+		OutLocationWorldSpace = FTransform(OutQuat, OutLocation).TransformPositionNoScale(LocalLocation);
+		return bResult;
+	}
+
+	bool GetLocalMovementBaseLocation(const UPrimitiveComponent* MovementBase, const FName BoneName, const FVector& WorldSpaceLocation, FVector& OutLocalLocation)
+	{
+		FVector OutLocation;
+		FQuat OutQuat;
+		const bool bResult = GetMovementBaseTransform(MovementBase, BoneName, OutLocation, OutQuat);
+		OutLocalLocation = FTransform(OutQuat, OutLocation).InverseTransformPositionNoScale(WorldSpaceLocation);
+		return bResult;
+	}
 }
 
 
@@ -760,7 +794,7 @@ void ACharacter::SetBase( UPrimitiveComponent* NewBaseComponent, const FName InB
 
 		}
 
-		// Notify this actor of his new floor.
+		// Notify this actor of its new floor.
 		if ( bNotifyPawn )
 		{
 			BaseChange();
@@ -995,7 +1029,7 @@ void ACharacter::OnMovementModeChanged(EMovementMode PrevMovementMode, uint8 Pre
 
 /** Don't process landed notification if updating client position by replaying moves. 
  * Allow event to be called if Pawn was initially falling (before starting to replay moves), 
- * and this is going to cause him to land. . */
+ * and this is going to cause it to land. . */
 bool ACharacter::ShouldNotifyLanded(const FHitResult& Hit)
 {
 	if (bClientUpdating && !bClientWasFalling)
@@ -1133,7 +1167,8 @@ void ACharacter::OnRep_ReplicatedBasedMovement()
 		const FVector OldLocation = GetActorLocation();
 		const FQuat OldRotation = GetActorQuat();
 		MovementBaseUtility::GetMovementBaseTransform(ReplicatedBasedMovement.MovementBase, ReplicatedBasedMovement.BoneName, CharacterMovement->OldBaseLocation, CharacterMovement->OldBaseQuat);
-		const FVector NewLocation = CharacterMovement->OldBaseLocation + ReplicatedBasedMovement.Location;
+		const FTransform BaseTransform(CharacterMovement->OldBaseQuat, CharacterMovement->OldBaseLocation);
+		const FVector NewLocation = BaseTransform.TransformPositionNoScale(ReplicatedBasedMovement.Location);
 		FRotator NewRotation;
 
 		if (ReplicatedBasedMovement.HasRelativeRotation())
@@ -1163,11 +1198,6 @@ void ACharacter::OnRep_ReplicatedBasedMovement()
 
 void ACharacter::OnRep_ReplicatedMovement()
 {
-	if (CharacterMovement && (CharacterMovement->NetworkSmoothingMode == ENetworkSmoothingMode::Replay))
-	{
-		return;
-	}
-
 	// Skip standard position correction if we are playing root motion, OnRep_RootMotion will handle it.
 	if (!IsPlayingNetworkedRootMotionMontage()) // animation root motion
 	{
@@ -1191,11 +1221,6 @@ FAnimMontageInstance * ACharacter::GetRootMotionAnimMontageInstance() const
 
 void ACharacter::OnRep_RootMotion()
 {
-	if (CharacterMovement && (CharacterMovement->NetworkSmoothingMode == ENetworkSmoothingMode::Replay))
-	{
-		return;
-	}
-
 	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
 
@@ -1241,7 +1266,7 @@ void ACharacter::SimulatedRootMotionPositionFixup(float DeltaSeconds)
 				const float ServerPosition = RootMotionRepMove.RootMotion.Position;
 				const float ClientPosition = ClientMontageInstance->GetPosition();
 				const float DeltaPosition = (ClientPosition - ServerPosition);
-				if( FMath::Abs(DeltaPosition) > KINDA_SMALL_NUMBER )
+				if( FMath::Abs(DeltaPosition) > UE_KINDA_SMALL_NUMBER )
 				{
 					// Find Root Motion delta move to get back to where we were on the client.
 					const FTransform LocalRootMotionTransform = ClientMontageInstance->Montage->ExtractRootMotionFromTrackRange(ServerPosition, ClientPosition);
@@ -1343,8 +1368,9 @@ bool ACharacter::RestoreReplicatedMove(const FSimulatedRootMotionReplicatedMove&
 			FVector BaseLocation;
 			FQuat BaseRotation;
 			MovementBaseUtility::GetMovementBaseTransform(ServerBase, ServerBaseBoneName, BaseLocation, BaseRotation);
-
-			const FVector ServerLocation = BaseLocation + RootMotionRepMove.RootMotion.Location;
+			const FTransform BaseTransform(BaseRotation, BaseLocation);
+			
+			const FVector ServerLocation = BaseTransform.TransformPositionNoScale(RootMotionRepMove.RootMotion.Location);
 			FRotator ServerRotation;
 			if (RootMotionRepMove.RootMotion.bRelativeRotation)
 			{
@@ -1453,13 +1479,13 @@ void ACharacter::PreReplication( IRepChangedPropertyTracker & ChangedPropertyTra
 		RepRootMotion.Acceleration = CharacterMovement->GetCurrentAcceleration();
 		RepRootMotion.LinearVelocity = CharacterMovement->Velocity;
 
-		DOREPLIFETIME_ACTIVE_OVERRIDE( ACharacter, RepRootMotion, true );
+		DOREPLIFETIME_ACTIVE_OVERRIDE_FAST( ACharacter, RepRootMotion, true );
 	}
 	else
 	{
 		RepRootMotion.Clear();
 
-		DOREPLIFETIME_ACTIVE_OVERRIDE( ACharacter, RepRootMotion, false );
+		DOREPLIFETIME_ACTIVE_OVERRIDE_FAST( ACharacter, RepRootMotion, false );
 	}
 
 	bProxyIsJumpForceApplied = (JumpForceTimeRemaining > 0.0f);
@@ -1488,6 +1514,13 @@ void ACharacter::PreReplication( IRepChangedPropertyTracker & ChangedPropertyTra
 	{
 		ReplicatedServerLastTransformUpdateTimeStamp = 0.f;
 	}
+}
+
+void ACharacter::GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const
+{
+	Super::GetReplicatedCustomConditionState(OutActiveState);
+
+	DOREPCUSTOMCONDITION_ACTIVE_FAST(ACharacter, RepRootMotion, CharacterMovement->CurrentRootMotion.HasActiveRootMotionSources() || IsPlayingNetworkedRootMotionMontage());
 }
 
 void ACharacter::PreReplicationForReplay(IRepChangedPropertyTracker& ChangedPropertyTracker)
@@ -1806,3 +1839,4 @@ void ACharacter::ApplyAsyncOutput(const FCharacterAsyncOutput& Output)
 		bPressedJump = false;
 	}
 }
+

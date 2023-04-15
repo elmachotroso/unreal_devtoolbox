@@ -12,6 +12,7 @@
 #include "TakesCoreBlueprintLibrary.h"
 #include "TakesCoreLog.h"
 #include "TakeMetaData.h"
+#include "TakeRecorderSourceHelpers.h"
 #include "TakeRecorderActorSource.h"
 #include "TakeRecorderSources.h"
 #include "TakeRecorderSourcesCommands.h"
@@ -62,66 +63,6 @@ namespace TakeRecorderSources
 	FAutoConsoleVariableRef CVarAllowMenuExtensions(TEXT("TakeRecorder.AllowMenuExtensions"), AllowMenuExtensions, TEXT(""), ECVF_Cheat);
 #endif // WITH_EDITOR
 }
-
-static void AddActorSources(UTakeRecorderSources* Sources, TArrayView<AActor* const> InActors)
-{
-	if (InActors.Num() > 0)
-	{
-		FScopedTransaction Transaction(FText::Format(LOCTEXT("AddSources", "Add Recording {0}|plural(one=Source, other=Sources)"), InActors.Num()));
-		Sources->Modify();
-
-		for (AActor* Actor : InActors)
-		{
-			if (Actor->IsA<ALevelSequenceActor>())
-			{
-				ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(Actor);
-
-				UTakeRecorderLevelSequenceSource* LevelSequenceSource = nullptr;
-
-				for (UTakeRecorderSource* Source : Sources->GetSources())
-				{
-					if (Source->IsA<UTakeRecorderLevelSequenceSource>())
-					{
-						LevelSequenceSource = Cast<UTakeRecorderLevelSequenceSource>(Source);
-						break;
-					}
-				}
-
-				if (!LevelSequenceSource)
-				{
-					LevelSequenceSource = Sources->AddSource<UTakeRecorderLevelSequenceSource>();
-				}
-
-				ULevelSequence* Sequence = LevelSequenceActor->GetSequence();
-				if (Sequence)
-				{
-					if (!LevelSequenceSource->LevelSequencesToTrigger.Contains(Sequence))
-					{
-						LevelSequenceSource->LevelSequencesToTrigger.Add(Sequence);
-					}
-				}
-			}
-			else
-			{
-				UTakeRecorderActorSource* NewSource = Sources->AddSource<UTakeRecorderActorSource>();
-
-				if (AActor* EditorActor = EditorUtilities::GetEditorWorldCounterpartActor(Actor))
-				{
-					NewSource->Target = EditorActor;
-				}
-				else
-				{
-					NewSource->Target = Actor;
-				}
-
-				// Send a PropertyChangedEvent so the class catches the callback and rebuilds the property map.
-				FPropertyChangedEvent PropertyChangedEvent(UTakeRecorderActorSource::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UTakeRecorderActorSource, Target)), EPropertyChangeType::ValueSet);
-				NewSource->PostEditChangeProperty(PropertyChangedEvent);
-			}
-		}
-	}
-}
-
 
 namespace
 {
@@ -193,7 +134,7 @@ struct FActorTakeRecorderDropHandler : ITakeRecorderDropHandler
 	virtual void HandleOperation(TSharedPtr<FDragDropOperation> InOperation, UTakeRecorderSources* Sources) override
 	{
 		TArray<AActor*> ActorsToAdd = GetValidDropActors(InOperation, Sources);
-		AddActorSources(Sources, ActorsToAdd);
+		TakeRecorderSourceHelpers::AddActorSources(Sources, ActorsToAdd);
 	}
 
 	virtual bool CanHandleOperation(TSharedPtr<FDragDropOperation> InOperation, UTakeRecorderSources* Sources) override
@@ -410,7 +351,7 @@ public:
 	void RegisterMenuExtensions()
 	{
 #if WITH_EDITOR
-		if (GEditor && TakeRecorderSources::AllowMenuExtensions)
+		if (GEditor)
 		{
 			// Register level editor menu extender
 			LevelEditorMenuExtenderDelegate = FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors::CreateRaw(this, &FTakeRecorderSourcesModule::ExtendLevelViewportContextMenu);
@@ -447,6 +388,12 @@ public:
 	{
 		TSharedRef<FExtender> Extender(new FExtender());
 
+#if WITH_EDITOR
+		if (!TakeRecorderSources::AllowMenuExtensions)
+		{
+			return Extender;
+		}
+#endif
 		if (SelectedActors.Num() > 0)
 		{
 			Extender->AddMenuExtension("ActorUETools", EExtensionHook::After, CommandList, FMenuExtensionDelegate::CreateLambda(
@@ -534,7 +481,7 @@ public:
 				FText(),
 				ActorIcon,
 				FExecuteAction::CreateLambda([Sources, SelectedActors]{
-					AddActorSources(Sources, SelectedActors);
+					TakeRecorderSourceHelpers::AddActorSources(Sources, SelectedActors);
 				})
 			);
 		}
@@ -569,7 +516,7 @@ public:
 						FOnActorPicked::CreateLambda([Sources](AActor* Actor){
 							// Create a new binding for this actor
 							FSlateApplication::Get().DismissAllMenus();
-							AddActorSources(Sources, MakeArrayView(&Actor, 1));
+							TakeRecorderSourceHelpers::AddActorSources(Sources, MakeArrayView(&Actor, 1));
 						})
 					)
 				];
@@ -640,7 +587,7 @@ public:
 					}
 					else
 					{
-						UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *Split);
+						UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(Split);
 						if (FoundClass != nullptr)
 						{
 							FindActorsOfClass(FoundClass, InWorld, ActorsToRecord);

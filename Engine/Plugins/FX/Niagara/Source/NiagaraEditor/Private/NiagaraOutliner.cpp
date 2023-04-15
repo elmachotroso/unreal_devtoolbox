@@ -2,6 +2,12 @@
 
 #include "NiagaraOutliner.h"
 #include "NiagaraDebugger.h"
+#include "NiagaraEditorCommon.h"
+#include "NiagaraSimCache.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraOutliner)
+
 
 UNiagaraOutliner::UNiagaraOutliner(const FObjectInitializer& Initializer)
 {
@@ -39,6 +45,34 @@ void UNiagaraOutliner::UpdateData(const FNiagaraOutlinerData& NewData)
 	//Possibly keep them in the UI optionally but colour/mark them as dead until the user opts to remove them or on some timed interval.
 }
 
+void UNiagaraOutliner::UpdateSystemSimCache(const FNiagaraSystemSimCacheCaptureReply& Reply)
+{
+	if (Reply.SimCacheData.Num() > 0)
+	{
+		TObjectPtr<UNiagaraSimCache>& SimCache = SystemSimCaches.FindOrAdd(Reply.ComponentName);
+		
+		SimCache = NewObject<UNiagaraSimCache>(this);
+
+		FMemoryReader ArReader(Reply.SimCacheData);
+		FObjectAndNameAsStringProxyArchive ProxyArReader(ArReader, false);
+		SimCache->Serialize(ProxyArReader);
+	}
+	else
+	{
+		UE_LOG(LogNiagaraEditor, Warning, TEXT("Niagara Outliner recieved empty sim cache data."));
+	}
+	OnChanged();
+}
+
+UNiagaraSimCache* UNiagaraOutliner::FindSimCache(FName ComponentName)
+{
+	if (TObjectPtr<UNiagaraSimCache>* SimCachePtr = SystemSimCaches.Find(ComponentName))
+	{
+		return SimCachePtr->Get();
+	}
+	return nullptr;
+}
+
 const FNiagaraOutlinerWorldData* UNiagaraOutliner::FindWorldData(const FString& WorldName)
 {
 	return Data.WorldData.Find(WorldName);
@@ -70,3 +104,4 @@ const FNiagaraOutlinerEmitterInstanceData* UNiagaraOutliner::FindEmitterData(con
 	}
 	return nullptr;
 }
+

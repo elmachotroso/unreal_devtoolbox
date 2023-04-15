@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -20,24 +23,32 @@ namespace UnrealGameSync.Forms
 		{
 			public AutomatedSyncWindow.WorkspaceInfo SelectedWorkspaceInfo;
 			public string ProjectPath;
-			public bool bSync;
+			public bool Sync;
 			public string ExecCommand;
+
+			public BuildInfo(AutomatedSyncWindow.WorkspaceInfo selectedWorkspaceInfo, string projectPath, bool sync, string execCommand)
+			{
+				this.SelectedWorkspaceInfo = selectedWorkspaceInfo;
+				this.ProjectPath = projectPath;
+				this.Sync = sync;
+				this.ExecCommand = execCommand;
+			}
 		}
 
-		string StreamName;
-		TextWriter Log;
+		string _streamName;
+		IServiceProvider _serviceProvider;
 
-		string ServerAndPortOverride;
-		string UserNameOverride;
-		PerforceConnection DefaultConnection;
+		string? _serverAndPortOverride;
+		string? _userNameOverride;
+		IPerforceSettings _defaultPerforceSettings;
 
-		BuildInfo Result;
+		BuildInfo? _result;
 
-		private AutomatedBuildWindow(string StreamName, int Changelist, string Command, PerforceConnection DefaultConnection, string DefaultWorkspaceName, string DefaultProjectPath, TextWriter Log)
+		private AutomatedBuildWindow(string streamName, int changelist, string command, IPerforceSettings defaultPerforceSettings, string? defaultWorkspaceName, string? defaultProjectPath, IServiceProvider serviceProvider)
 		{
-			this.StreamName = StreamName;
-			this.DefaultConnection = DefaultConnection;
-			this.Log = Log;
+			this._streamName = streamName;
+			this._defaultPerforceSettings = defaultPerforceSettings;
+			this._serviceProvider = serviceProvider;
 
 			InitializeComponent();
 
@@ -46,18 +57,18 @@ namespace UnrealGameSync.Forms
 			MinimumSize = Size;
 			MaximumSize = new Size(32768, Size.Height);
 
-			SyncToChangeCheckBox.Text = String.Format("Sync to changelist {0}", Changelist);
-			ExecCommandTextBox.Text = Command;
+			SyncToChangeCheckBox.Text = String.Format("Sync to changelist {0}", changelist);
+			ExecCommandTextBox.Text = command;
 
-			if (DefaultWorkspaceName != null)
+			if (defaultWorkspaceName != null)
 			{
-				WorkspaceNameTextBox.Text = DefaultWorkspaceName;
+				WorkspaceNameTextBox.Text = defaultWorkspaceName;
 				WorkspaceNameTextBox.Select(WorkspaceNameTextBox.Text.Length, 0);
 			}
 
-			if (DefaultProjectPath != null)
+			if (defaultProjectPath != null)
 			{
-				WorkspacePathTextBox.Text = DefaultProjectPath;
+				WorkspacePathTextBox.Text = defaultProjectPath;
 				WorkspacePathTextBox.Select(WorkspacePathTextBox.Text.Length, 0);
 			}
 
@@ -66,49 +77,49 @@ namespace UnrealGameSync.Forms
 			UpdateWorkspacePathBrowseButton();
 		}
 
-		private PerforceConnection Perforce
+		private IPerforceSettings Perforce
 		{
-			get { return Utility.OverridePerforceSettings(DefaultConnection, ServerAndPortOverride, UserNameOverride); }
+			get => Utility.OverridePerforceSettings(_defaultPerforceSettings, _serverAndPortOverride, _userNameOverride);
 		}
 
-		public static bool ShowModal(IWin32Window Owner, PerforceConnection DefaultConnection, string StreamName, string ProjectPath, int Changelist, string Command, UserSettings Settings, TextWriter Log, out BuildInfo BuildInfo)
+		public static bool ShowModal(IWin32Window owner, IPerforceSettings defaultPerforceSettings, string streamName, string projectPath, int changelist, string command, UserSettings settings, IServiceProvider loggerFactory, [NotNullWhen(true)] out BuildInfo? buildInfo)
 		{
-			string DefaultWorkspaceName = AutomatedSyncWindow.FindDefaultWorkspace(Owner, DefaultConnection, StreamName, Log);
+			string? defaultWorkspaceName = AutomatedSyncWindow.FindDefaultWorkspace(owner, defaultPerforceSettings, streamName, loggerFactory);
 
-			string DefaultProjectPath = null;
-			if(!String.IsNullOrEmpty(ProjectPath))
+			string? defaultProjectPath = null;
+			if(!String.IsNullOrEmpty(projectPath))
 			{
-				DefaultProjectPath = ProjectPath;
+				defaultProjectPath = projectPath;
 			}
-			else if(DefaultWorkspaceName != null)
+			else if(defaultWorkspaceName != null)
 			{
-				string ClientPrefix = String.Format("//{0}/", DefaultWorkspaceName);
-				foreach (UserSelectedProjectSettings ProjectSettings in Settings.RecentProjects)
+				string clientPrefix = String.Format("//{0}/", defaultWorkspaceName);
+				foreach (UserSelectedProjectSettings projectSettings in settings.RecentProjects)
 				{
-					if (ProjectSettings.ClientPath.StartsWith(ClientPrefix, StringComparison.OrdinalIgnoreCase))
+					if (projectSettings.ClientPath != null && projectSettings.ClientPath.StartsWith(clientPrefix, StringComparison.OrdinalIgnoreCase))
 					{
-						DefaultProjectPath = ProjectSettings.ClientPath.Substring(ClientPrefix.Length - 1);
+						defaultProjectPath = projectSettings.ClientPath.Substring(clientPrefix.Length - 1);
 						break;
 					}
 				}
 			}
 
-			AutomatedBuildWindow Window = new AutomatedBuildWindow(StreamName, Changelist, Command, DefaultConnection, DefaultWorkspaceName, DefaultProjectPath, Log);
-			if (Window.ShowDialog() == DialogResult.OK)
+			AutomatedBuildWindow window = new AutomatedBuildWindow(streamName, changelist, command, defaultPerforceSettings, defaultWorkspaceName, defaultProjectPath, loggerFactory);
+			if (window.ShowDialog() == DialogResult.OK)
 			{
-				BuildInfo = Window.Result;
+				buildInfo = window._result!;
 				return true;
 			}
 			else
 			{
-				BuildInfo = null;
+				buildInfo = null;
 				return false;
 			}
 		}
 
 		private void ChangeLink_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
 		{
-			if (ConnectWindow.ShowModal(this, DefaultConnection, ref ServerAndPortOverride, ref UserNameOverride, Log))
+			if (ConnectWindow.ShowModal(this, _defaultPerforceSettings, ref _serverAndPortOverride, ref _userNameOverride, _serviceProvider))
 			{
 				UpdateServerLabel();
 			}
@@ -116,25 +127,25 @@ namespace UnrealGameSync.Forms
 
 		private void UpdateServerLabel()
 		{
-			ServerLabel.Text = OpenProjectWindow.GetServerLabelText(DefaultConnection, ServerAndPortOverride, UserNameOverride);
+			ServerLabel.Text = OpenProjectWindow.GetServerLabelText(_defaultPerforceSettings, _serverAndPortOverride, _userNameOverride);
 		}
 
 		private void WorkspaceNameNewBtn_Click(object sender, EventArgs e)
 		{
-			string WorkspaceName;
-			if (NewWorkspaceWindow.ShowModal(this, Perforce, StreamName, WorkspaceNameTextBox.Text, Log, out WorkspaceName))
+			string? workspaceName;
+			if (NewWorkspaceWindow.ShowModal(this, Perforce, _streamName, WorkspaceNameTextBox.Text, _serviceProvider, out workspaceName))
 			{
-				WorkspaceNameTextBox.Text = WorkspaceName;
+				WorkspaceNameTextBox.Text = workspaceName;
 				UpdateOkButton();
 			}
 		}
 
 		private void WorkspaceNameBrowseBtn_Click(object sender, EventArgs e)
 		{
-			string WorkspaceName = WorkspaceNameTextBox.Text;
-			if (SelectWorkspaceWindow.ShowModal(this, Perforce, WorkspaceName, Log, out WorkspaceName))
+			string? workspaceName = WorkspaceNameTextBox.Text;
+			if (SelectWorkspaceWindow.ShowModal(this, Perforce, workspaceName, _serviceProvider, out workspaceName))
 			{
-				WorkspaceNameTextBox.Text = WorkspaceName;
+				WorkspaceNameTextBox.Text = workspaceName;
 				UpdateOkButton();
 			}
 		}
@@ -146,15 +157,10 @@ namespace UnrealGameSync.Forms
 
 		private void OkBtn_Click(object sender, EventArgs e)
 		{
-			AutomatedSyncWindow.WorkspaceInfo SelectedWorkspaceInfo;
-			if (AutomatedSyncWindow.ValidateWorkspace(this, Perforce, WorkspaceNameTextBox.Text, StreamName, Log, out SelectedWorkspaceInfo))
+			AutomatedSyncWindow.WorkspaceInfo? selectedWorkspaceInfo;
+			if (AutomatedSyncWindow.ValidateWorkspace(this, Perforce, WorkspaceNameTextBox.Text, _streamName, _serviceProvider, out selectedWorkspaceInfo))
 			{
-				Result = new BuildInfo();
-				Result.SelectedWorkspaceInfo = SelectedWorkspaceInfo;
-				Result.ProjectPath = WorkspacePathTextBox.Text;
-				Result.bSync = SyncToChangeCheckBox.Checked;
-				Result.ExecCommand = ExecCommandTextBox.Text;
-
+				_result = new BuildInfo(selectedWorkspaceInfo, WorkspacePathTextBox.Text, SyncToChangeCheckBox.Checked, ExecCommandTextBox.Text);
 				DialogResult = DialogResult.OK;
 				Close();
 			}
@@ -167,34 +173,34 @@ namespace UnrealGameSync.Forms
 
 		private void UpdateWorkspacePathBrowseButton()
 		{
-			string WorkspaceName;
-			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out WorkspaceName);
+			string? workspaceName;
+			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out workspaceName);
 		}
 
 		private void WorkspacePathBrowseBtn_Click(object sender, EventArgs e)
 		{
-			string WorkspaceName;
-			if (TryGetWorkspaceName(out WorkspaceName))
+			string? workspaceName;
+			if (TryGetWorkspaceName(out workspaceName))
 			{
-				string WorkspacePath = WorkspacePathTextBox.Text.Trim();
-				if (SelectProjectFromWorkspaceWindow.ShowModal(this, Perforce, WorkspaceName, WorkspacePath, Log, out WorkspacePath))
+				string? workspacePath = WorkspacePathTextBox.Text.Trim();
+				if (SelectProjectFromWorkspaceWindow.ShowModal(this, Perforce, workspaceName, workspacePath, _serviceProvider, out workspacePath))
 				{
-					WorkspacePathTextBox.Text = WorkspacePath;
+					WorkspacePathTextBox.Text = workspacePath;
 					UpdateOkButton();
 				}
 			}
 		}
 
-		private bool TryGetWorkspaceName(out string WorkspaceName)
+		private bool TryGetWorkspaceName([NotNullWhen(true)] out string? workspaceName)
 		{
-			string Text = WorkspaceNameTextBox.Text.Trim();
-			if (Text.Length == 0)
+			string text = WorkspaceNameTextBox.Text.Trim();
+			if (text.Length == 0)
 			{
-				WorkspaceName = null;
+				workspaceName = null;
 				return false;
 			}
 
-			WorkspaceName = Text;
+			workspaceName = text;
 			return true;
 		}
 

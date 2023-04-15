@@ -13,6 +13,9 @@
 #include "Misc/NetworkVersion.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineSubsystemUtils.h"
+#include "Containers/StringFwd.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineBeaconClient)
 
 #define BEACON_RPC_TIMEOUT 15.0f
 
@@ -127,6 +130,18 @@ bool AOnlineBeaconClient::InitClient(FURL& URL)
 							// Send the player unique Id at login
 							BeaconConnection->PlayerId = LocalPlayer->GetPreferredUniqueNetId();
 						}
+						else
+						{
+							// Fall back to querying the identity interface.
+							if (IOnlineIdentityPtr IdentityPtr = Online::GetIdentityInterface(World))
+							{
+								TArray<TSharedPtr<FUserOnlineAccount> > UserAccounts = IdentityPtr->GetAllUserAccounts();
+								if (!UserAccounts.IsEmpty())
+								{
+									BeaconConnection->PlayerId = UserAccounts[0]->GetUserId();
+								}
+							}
+						}
 					}
 
 #if NETCONNECTION_HAS_SETENCRYPTIONKEY
@@ -236,21 +251,51 @@ void AOnlineBeaconClient::SetEncryptionData(const FEncryptionData& InEncryptionD
 
 void AOnlineBeaconClient::SendInitialJoin()
 {
-	if (ensure(NetDriver != nullptr && NetDriver->ServerConnection != nullptr))
+	UNetConnection* ServerConn = NetDriver != nullptr ? NetDriver->ServerConnection : nullptr;
+
+	if (ensure(ServerConn != nullptr))
 	{
 		uint8 IsLittleEndian = uint8(PLATFORM_LITTLE_ENDIAN);
 		check(IsLittleEndian == !!IsLittleEndian); // should only be one or zero
 
+		const int32 AllowEncryption = CVarNetAllowEncryption.GetValueOnGameThread();
 		uint32 LocalNetworkVersion = FNetworkVersion::GetLocalNetworkVersion();
 
-		if (CVarNetAllowEncryption.GetValueOnGameThread() == 0)
+		if (AllowEncryption == 0)
 		{
 			EncryptionData.Identifier.Empty();
 		}
 
-		FNetControlMessage<NMT_Hello>::Send(NetDriver->ServerConnection, IsLittleEndian, LocalNetworkVersion, EncryptionData.Identifier);
+		bool bEncryptionRequirementsFailure = false;
 
-		NetDriver->ServerConnection->FlushNet();
+		if (EncryptionData.Identifier.IsEmpty())
+		{
+			EEncryptionFailureAction FailureResult = EEncryptionFailureAction::Default;
+
+			if (FNetDelegates::OnReceivedNetworkEncryptionFailure.IsBound())
+			{
+				FailureResult = FNetDelegates::OnReceivedNetworkEncryptionFailure.Execute(ServerConn);
+			}
+
+			const bool bGameplayDisableEncryptionCheck = FailureResult == EEncryptionFailureAction::AllowConnection;
+
+			bEncryptionRequirementsFailure = NetDriver->IsEncryptionRequired() && !bGameplayDisableEncryptionCheck;
+		}
+
+		if (!bEncryptionRequirementsFailure)
+		{
+			EEngineNetworkRuntimeFeatures LocalNetworkFeatures = NetDriver->GetNetworkRuntimeFeatures();
+			FNetControlMessage<NMT_Hello>::Send(NetDriver->ServerConnection, IsLittleEndian, LocalNetworkVersion, EncryptionData.Identifier, LocalNetworkFeatures);
+
+			ServerConn->FlushNet();
+		}
+		else if (GetConnectionState() == EBeaconConnectionState::Pending)
+		{
+			UE_LOG(LogNet, Error, TEXT("AOnlineBeaconClient::SendInitialJoin: EncryptionToken is empty when 'net.AllowEncryption' requires it."));
+
+			SetConnectionState(EBeaconConnectionState::Invalid);
+			OnFailure();
+		}
 	}
 }
 
@@ -305,7 +350,9 @@ void AOnlineBeaconClient::DestroyBeacon()
 
 void AOnlineBeaconClient::OnNetCleanup(UNetConnection* Connection)
 {
-	ensure(Connection == BeaconConnection);
+	// During the garbage collection of UNetConnection OnNetCleanup may be triggered.
+	// When this happens BeaconConnection will have already been set to nullptr by GC.
+	ensure(NetDriver == nullptr || Connection == BeaconConnection);
 	SetConnectionState(EBeaconConnectionState::Closed);
 
 	AOnlineBeaconHostObject* BeaconHostObject = GetBeaconOwner();
@@ -332,16 +379,27 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 		{
 		case NMT_EncryptionAck:
 			{
-				if (FNetDelegates::OnReceivedNetworkEncryptionAck.IsBound())
+				// Enable encryption using the beacons encryption data when set.
+				if (!EncryptionData.Identifier.IsEmpty())
 				{
-					TWeakObjectPtr<UNetConnection> WeakConnection = Connection;
-					FNetDelegates::OnReceivedNetworkEncryptionAck.Execute(FOnEncryptionKeyResponse::CreateUObject(this, &ThisClass::FinalizeEncryptedConnection, WeakConnection));
+					FEncryptionKeyResponse Response;
+					Response.Response = EEncryptionResponse::Success;
+					Response.EncryptionData = EncryptionData;
+					FinalizeEncryptedConnection(Response, Connection);
 				}
 				else
 				{
-					// Force close the session
-					UE_LOG(LogBeacon, Warning, TEXT("%s: No delegate available to handle encryption ack, disconnecting."), *Connection->GetName());
-					OnFailure();
+					if (FNetDelegates::OnReceivedNetworkEncryptionAck.IsBound())
+					{
+						TWeakObjectPtr<UNetConnection> WeakConnection = Connection;
+						FNetDelegates::OnReceivedNetworkEncryptionAck.Execute(FOnEncryptionKeyResponse::CreateUObject(this, &ThisClass::FinalizeEncryptedConnection, WeakConnection));
+					}
+					else
+					{
+						// Force close the session
+						UE_LOG(LogBeacon, Warning, TEXT("%s: No delegate available to handle encryption ack, disconnecting."), *Connection->GetName());
+						OnFailure();
+					}
 				}
 				break;
 			}
@@ -441,9 +499,21 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 			{
 				// Report mismatch.
 				uint32 RemoteNetworkVersion;
+				EEngineNetworkRuntimeFeatures RemoteNetworkFeatures = EEngineNetworkRuntimeFeatures::None;
 
-				if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion))
+				if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion, RemoteNetworkFeatures))
 				{
+					TStringBuilder<128> RemoteFeaturesDescription;
+					FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(RemoteNetworkFeatures, RemoteFeaturesDescription);
+
+					TStringBuilder<128> LocalFeaturesDescription;
+					FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(NetDriver->GetNetworkRuntimeFeatures(), LocalFeaturesDescription);
+
+					UE_LOG(LogBeacon, Error, TEXT("Beacon is incompatible with the local version of the game: RemoteNetworkVersion=%u, RemoteNetworkFeatures=%s vs LocalNetworkVersion=%u, LocalNetworkFeatures=%s"), 
+						RemoteNetworkVersion, RemoteFeaturesDescription.ToString(),
+						FNetworkVersion::GetLocalNetworkVersion(), LocalFeaturesDescription.ToString()
+					);
+				
 					// Upgrade
 					const FString ConnectionError = NSLOCTEXT("Engine", "ClientOutdated",
 						"The match you are trying to join is running an incompatible version of the game.  Please try upgrading your game version.").ToString();
@@ -514,3 +584,4 @@ void AOnlineBeaconClient::FinalizeEncryptedConnection(const FEncryptionKeyRespon
 		OnFailure();
 	}
 }
+

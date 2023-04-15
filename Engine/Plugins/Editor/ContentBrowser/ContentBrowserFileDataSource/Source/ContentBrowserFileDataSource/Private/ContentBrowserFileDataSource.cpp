@@ -19,7 +19,11 @@
 #include "AssetTypeCategories.h"
 #include "AssetTypeActions_Base.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserFileDataSource)
+
 #define LOCTEXT_NAMESPACE "ContentBrowserFileDataSource"
+
+DEFINE_LOG_CATEGORY_STATIC(LogContentBrowserFileDataSource, Warning, Warning);
 
 namespace ContentBrowserFileDataSource
 {
@@ -56,12 +60,14 @@ public:
 	virtual UClass* GetSupportedClass() const override;
 	virtual FColor GetTypeColor() const override;
 	virtual FName GetFilterName() const override;
+	virtual FTopLevelAssetPath GetClassPathName() const override;
 	// End IAssetTypeActions interface
 
 	FName FilterName;
 	FText Name;
 	FText Description;
 	FColor TypeColor;
+	FTopLevelAssetPath ClassPathName;
 };
 
 FText FAssetTypeActions_FileDataSource::GetAssetDescription(const struct FAssetData& AssetData) const
@@ -87,6 +93,11 @@ FColor FAssetTypeActions_FileDataSource::GetTypeColor() const
 FName FAssetTypeActions_FileDataSource::GetFilterName() const
 {
 	return FilterName;
+}
+
+FTopLevelAssetPath FAssetTypeActions_FileDataSource::GetClassPathName() const
+{
+	return ClassPathName;
 }
 
 class FContentBrowserFileDataDiscovery : public FRunnable
@@ -349,10 +360,19 @@ void UContentBrowserFileDataSource::Initialize(const ContentBrowserFileData::FFi
 	Super::Initialize(InAutoRegister);
 
 	Config = InConfig;
-	BackgroundDiscovery = MakeShared<FContentBrowserFileDataDiscovery>(&Config);
+
+	if (FPlatformProcess::SupportsMultithreading())
+	{
+		BackgroundDiscovery = MakeShared<FContentBrowserFileDataDiscovery>(&Config);
+	}
+	else
+	{
+		UE_LOG(LogContentBrowserFileDataSource, Error, TEXT("UContentBrowserFileDataSource '%s': Unable to start data source, support for threads is required."), *GetFullName());
+	}
 
 	// Bind the asset specific menu extensions
 	{
+		FToolMenuOwnerScoped MenuOwnerScoped(GetFName());
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AddNewContextMenu"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserFileDataSource>(this)](UToolMenu* InMenu)
@@ -373,7 +393,8 @@ void UContentBrowserFileDataSource::Initialize(const ContentBrowserFileData::FFi
 		AssetTypeAction->Name = InFileActions->TypeShortDescription;
 		AssetTypeAction->Description = InFileActions->TypeFullDescription;
 		AssetTypeAction->TypeColor = InFileActions->TypeColor.ToFColor(true);
-		AssetTypeAction->FilterName = *(ContentBrowserFileDataSource::GetFilterNamePrefix() + InFileActions->TypeName.ToString());
+		AssetTypeAction->FilterName = *(ContentBrowserFileDataSource::GetFilterNamePrefix() + InFileActions->TypeName.GetAssetName().ToString());
+		AssetTypeAction->ClassPathName = InFileActions->TypeName;
 		AssetTools.RegisterAssetTypeActions(AssetTypeAction);
 		RegisteredAssetTypeActions.Add(AssetTypeAction);
 		return true;
@@ -390,6 +411,8 @@ void UContentBrowserFileDataSource::Shutdown()
 			AssetToolsModule->Get().UnregisterAssetTypeActions(Action);
 		}
 	}
+
+	UToolMenus::UnregisterOwner(GetFName());
 
 	if (BackgroundDiscovery)
 	{
@@ -569,15 +592,14 @@ void UContentBrowserFileDataSource::CompileFilter(const FName InPath, const FCon
 	{
 		if (ClassFilter->ClassNamesToInclude.Num() > 0)
 		{
-			TArray<FName, TInlineAllocator<2>> ClassNamesToLookFor;
+			TArray<FString, TInlineAllocator<2>> ClassNamesToLookFor;
 			TArray<FString, TInlineAllocator<2>> ClassFileExtensions;
 
 			Config.EnumerateFileActions([&ClassNamesToLookFor, &ClassFileExtensions](TSharedRef<const ContentBrowserFileData::FFileActions> InFileActions)
 			{
 				TStringBuilder<64> ClassNameToLookFor;
 				ClassNameToLookFor.Append(ContentBrowserFileDataSource::GetFilterNamePrefix());
-				FNameBuilder TypeNameBuilder(InFileActions->TypeName);
-				ClassNameToLookFor.Append(TypeNameBuilder);
+				ClassNameToLookFor.Append(InFileActions->TypeName.ToString());
 				ClassNamesToLookFor.Add(ClassNameToLookFor.ToString());
 
 				ClassFileExtensions.Add(InFileActions->TypeExtension);
@@ -585,7 +607,7 @@ void UContentBrowserFileDataSource::CompileFilter(const FName InPath, const FCon
 			});
 
 			// Determine if any are one of this instance's file data source
-			for (const FName ClassName : ClassFilter->ClassNamesToInclude)
+			for (const FString& ClassName : ClassFilter->ClassNamesToInclude)
 			{
 				int32 FoundIndex = INDEX_NONE;
 				if (ClassNamesToLookFor.Find(ClassName, FoundIndex))
@@ -1546,9 +1568,11 @@ bool UContentBrowserFileDataSource::IsKnownFileMount(const FName InMountPath, FS
 			if (OutDiskPath)
 			{
 				*OutDiskPath = MountPathStrView;
-				OutDiskPath->ReplaceInline(*FileMountMountRootStr, *RegisteredFileMount.Value.DiskPath);
-			}
+				OutDiskPath->RightChopInline(FileMountMountRootStr.Len());
 
+				FString Path = FPaths::ConvertRelativePathToFull(*FileMountMountRootStr, *RegisteredFileMount.Value.DiskPath);
+				*OutDiskPath = Path.Append(*OutDiskPath); 
+			}
 			return true;
 		}
 	}
@@ -1894,7 +1918,7 @@ void UContentBrowserFileDataSource::PopulateAddNewContextMenu(UToolMenu* InMenu)
 			{
 				if (!InFileActions->CanCreate.IsBound() || InFileActions->CanCreate.Execute(FirstSelectedPath, FirstSelectedDiskPath, nullptr))
 				{
-					const FName MenuItemName = *FString::Printf(TEXT("CreateFile_%s"), *InFileActions->TypeName.ToString());
+					const FName MenuItemName = *FString::Printf(TEXT("CreateFile_%s"), *InFileActions->TypeName.GetAssetName().ToString());
 					const FText MenuItemTitle = InFileActions->TypeShortDescription.IsEmpty()
 						? FText::Format(LOCTEXT("CreateFileWithName", "Create {0} file"), InFileActions->TypeDisplayName)
 						: FText::Format(LOCTEXT("CreateFileWithDesc", "Create {0}"), InFileActions->TypeShortDescription);
@@ -1936,7 +1960,7 @@ void UContentBrowserFileDataSource::OnNewFileRequested(const FName InDestFolderP
 
 	if (SuggestedFilename.IsEmpty())
 	{
-		SuggestedFilename = InFileActions->DefaultNewFileName.IsEmpty() ? FString::Printf(TEXT("New%sFile"), *InFileActions->TypeName.ToString()) : InFileActions->DefaultNewFileName;
+		SuggestedFilename = InFileActions->DefaultNewFileName.IsEmpty() ? FString::Printf(TEXT("New%sFile"), *InFileActions->TypeName.GetAssetName().ToString()) : InFileActions->DefaultNewFileName;
 	}
 	SuggestedFilename += TEXT(".");
 	SuggestedFilename += InFileActions->TypeExtension;
@@ -2067,3 +2091,4 @@ FContentBrowserItemData UContentBrowserFileDataSource::OnFinalizeDuplicateFile(c
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -48,10 +48,15 @@ POSSIBILITY OF SUCH DAMAGE.
 
 static const FName SteamVREditorTabName("SteamVREditor");
 
+LLM_DEFINE_TAG(SteamVR_SteamVREditor);
 #define LOCTEXT_NAMESPACE "FSteamVREditorModule"
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 void FSteamVREditorModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(SteamVR_SteamVREditor);
+
 	RegisterSettings();
 
 	FSteamVREditorStyle::Initialize();
@@ -124,7 +129,7 @@ bool FSteamVREditorModule::ShowSteamVRInputToolbarDropdown()
 	if (GEngine && GEngine->XRSystem.IsValid() && (GEngine->XRSystem->GetSystemName() == SystemName))
 	{
 		// Only show the toolbar button if enabled by the user for this project.  Setting is under Project Settings > PLugins > SteamVR now instead.
-		USteamVREditorSettings* SteamVREditorSettings = GetMutableDefault<USteamVREditorSettings>();
+		UDEPRECATED_USteamVREditorSettings* SteamVREditorSettings = GetMutableDefault<UDEPRECATED_USteamVREditorSettings>();
 		if (SteamVREditorSettings->bShowSteamVrInputToolbarButton)
 		{
 			return true;
@@ -136,6 +141,8 @@ bool FSteamVREditorModule::ShowSteamVRInputToolbarDropdown()
 
 void FSteamVREditorModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(SteamVR_SteamVREditor);
+
 	FSteamVREditorStyle::Shutdown();
 
 	FSteamVREditorCommands::Unregister();
@@ -148,22 +155,22 @@ void FSteamVREditorModule::PluginButtonClicked()
 
 void FSteamVREditorModule::JsonRegenerateActionManifest()
 {
-	USteamVRInputDeviceFunctionLibrary::RegenActionManifest();
+	UDEPRECATED_USteamVRInputDeviceFunctionLibrary::RegenActionManifest();
 }
 
 void FSteamVREditorModule::JsonRegenerateControllerBindings()
 {
-	USteamVRInputDeviceFunctionLibrary::RegenControllerBindings();
+	UDEPRECATED_USteamVRInputDeviceFunctionLibrary::RegenControllerBindings();
 }
 
 void FSteamVREditorModule::ReloadActionManifest()
 {
-	USteamVRInputDeviceFunctionLibrary::ReloadActionManifest();
+	UDEPRECATED_USteamVRInputDeviceFunctionLibrary::ReloadActionManifest();
 }
 
 void FSteamVREditorModule::LaunchBindingsURL()
 {
-	USteamVRInputDeviceFunctionLibrary::LaunchBindingsURL();
+	UDEPRECATED_USteamVRInputDeviceFunctionLibrary::LaunchBindingsURL();
 }
 
 void FSteamVREditorModule::AddSampleInputs()
@@ -358,11 +365,11 @@ void FSteamVREditorModule::RegisterSettings()
 		SettingsModule->RegisterSettings("Project", "Plugins", "SteamVR",
 			LOCTEXT("SteamVREditorSettingsName", "SteamVR"),
 			LOCTEXT("SteamVREditorSettingsDescription", "Configure the SteamVR plugin"),
-			GetMutableDefault<USteamVREditorSettings>()
+			GetMutableDefault<UDEPRECATED_USteamVREditorSettings>()
 		);
 
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		PropertyModule.RegisterCustomClassLayout(USteamVREditorSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FSteamVRSettingsDetailsCustomization::MakeInstance));
+		PropertyModule.RegisterCustomClassLayout(UDEPRECATED_USteamVREditorSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FSteamVRSettingsDetailsCustomization::MakeInstance));
 	}
 }
 
@@ -467,5 +474,7 @@ FReply FSteamVRSettingsDetailsCustomization::LaunchBindingsURL()
 	SteamVREditorModule.LaunchBindingsURL();
 	return FReply::Handled();
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef LOCTEXT_NAMESPACE

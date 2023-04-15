@@ -3,7 +3,7 @@
 #pragma once
 
 #include "Widgets/SCompoundWidget.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Styling/SlateTypes.h"
 #include "Framework/SlateDelegates.h"
@@ -106,6 +106,8 @@ private:
 class NIAGARAEDITOR_API SNiagaraParameterNameTextBlock : public SCompoundWidget
 {
 public:
+	DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnDragDetectedHandler, const FGeometry&, const FPointerEvent&);
+	
 	SLATE_BEGIN_ARGS(SNiagaraParameterNameTextBlock)
 		: _EditableTextStyle(&FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
 		, _ReadOnlyTextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
@@ -122,11 +124,11 @@ public:
 		SLATE_ATTRIBUTE(FText, HighlightText)
 		SLATE_EVENT(FOnVerifyTextChanged, OnVerifyTextChanged)
 		SLATE_EVENT(FOnTextCommitted, OnTextCommitted)
+		SLATE_EVENT(FOnDragDetectedHandler, OnDragDetected)
 		SLATE_EVENT(FIsSelected, IsSelected)
 		SLATE_ARGUMENT(EHorizontalAlignment, DecoratorHAlign)
 		SLATE_ARGUMENT(FMargin, DecoratorPadding)
 		SLATE_NAMED_SLOT(FArguments, Decorator)
-		
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -142,21 +144,25 @@ private:
 
 	void NameChanged(FName InNewName);
 
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+
 private:
 	TAttribute<FText> ParameterText;
 	FOnVerifyTextChanged OnVerifyNameTextChangedDelegate;
 	FOnTextCommitted OnNameTextCommittedDelegate;
-
+	FOnDragDetectedHandler OnDragDetectedHandlerDelegate;
+	
 	mutable FText DisplayedParameterTextCache;
 	mutable FName ParameterNameCache;
 	TSharedPtr<SNiagaraParameterName> ParameterName;
 };
 
-class NIAGARAEDITOR_API SNiagaraParameterNamePinLabel : public SNiagaraParameterNameTextBlock
+class NIAGARAEDITOR_API SNiagaraParameterNamePinLabel : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SNiagaraParameterNamePinLabel)
-		: _EditableTextStyle(&FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
+		: _EditableTextStyle(&FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
 		, _IsReadOnly(false)
 		, _DecoratorHAlign(HAlign_Left)
 		, _DecoratorPadding(5.0f, 0.0f, 0.0f, 0.0f)
@@ -179,6 +185,10 @@ public:
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
+	virtual FSlateColor GetForegroundColor() const override;
+
+	void EnterEditingMode();
 private:
 	UEdGraphPin* TargetPin;
+	TSharedPtr<SNiagaraParameterNameTextBlock> ParameterNameTextBlock;
 };

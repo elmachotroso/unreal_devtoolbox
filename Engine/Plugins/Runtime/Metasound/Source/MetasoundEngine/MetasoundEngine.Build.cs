@@ -9,6 +9,14 @@ namespace UnrealBuildTool.Rules
 	{
 		public MetasoundEngine(ReadOnlyTargetRules Target) : base(Target)
 		{
+			PrivateIncludePathModuleNames.AddRange
+			(
+				new string[]
+				{
+					"AVEncoder",
+				}
+			);
+
 			PrivateDependencyModuleNames.AddRange
 			(
 				new string[]
@@ -34,6 +42,7 @@ namespace UnrealBuildTool.Rules
 					"AudioCodecEngine",
 					"Serialization",
 					"AudioPlatformConfiguration",
+					"WaveTable"
 				}
 			);
 		}

@@ -12,6 +12,8 @@
 
 #include "MeshPaintHelpers.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImportVertexColorOptions)
+
 #define LOCTEXT_NAMESPACE "VertexColorImportOptions"
 
 void SImportVertexColorOptionsWindow::Construct(const FArguments& InArgs)
@@ -49,14 +51,14 @@ void SImportVertexColorOptionsWindow::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(FMargin(3))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.LabelFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.LabelFont"))
 					.Text(LOCTEXT("Import_CurrentFileTitle", "Current File: "))
 				]
 				+ SHorizontalBox::Slot()
@@ -65,7 +67,7 @@ void SImportVertexColorOptionsWindow::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.InfoFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.InfoFont"))
 					.Text(InArgs._FullPath)
 				]
 			]
@@ -105,4 +107,5 @@ void SImportVertexColorOptionsWindow::Construct(const FArguments& InArgs)
 }
 
 #undef LOCTEXT_NAMESPACE // "VertexColorImportOptions"
+
 

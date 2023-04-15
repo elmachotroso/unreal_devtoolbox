@@ -8,6 +8,7 @@
 #include "ISceneOutliner.h"
 #include "SceneOutlinerPublicTypes.h"
 #include "ISceneOutlinerColumn.h"
+#include "SSourceControlWidget.h"
 
 template<typename ItemType> class STableRow;
 

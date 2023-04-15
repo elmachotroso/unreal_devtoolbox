@@ -6,94 +6,20 @@
 #include "LevelSnapshotsSettings.h"
 #include "LevelSnapshotsLog.h"
 #include "Params/PropertyComparisonParams.h"
-#include "Restorability/CollisionRestoration.h"
-#include "Restorability/GridPlacementRestoration.h"
 
 #include "Algo/AllOf.h"
 #include "Components/ActorComponent.h"
 #include "EngineUtils.h"
-#include "Algo/Transform.h"
-#include "Engine/Brush.h"
 #include "GameFramework/Actor.h"
-#include "Materials/MaterialInstance.h"
 #include "Modules/ModuleManager.h"
+#include "Restorability/EngineTypesRestorationFence.h"
 #if WITH_EDITOR
 #include "ISettingsModule.h"
 #endif
 
 namespace UE::LevelSnapshots::Private::Internal
 {
-	static void AddSoftObjectPathSupport(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-		// FSnapshotRestorability::IsRestorableProperty requires properties to have the CPF_Edit specifier
-		// FSoftObjectPath does not have this so we need to explicitly allow its properties
-
-		UStruct* SoftObjectClassPath = FindObject<UStruct>(nullptr, TEXT("/Script/CoreUObject.SoftObjectPath"));
-		if (!ensureMsgf(SoftObjectClassPath, TEXT("Investigate why this class could not be found")))
-		{
-			return;
-		}
-
-		TSet<const FProperty*> SoftObjectPathProperties;
-		Algo::Transform(TFieldRange<const FProperty>(SoftObjectClassPath), SoftObjectPathProperties, [](const FProperty* Prop) { return Prop;} );
-		Module.AddExplicitilySupportedProperties(SoftObjectPathProperties);
-	}
-
-	static void AddAttachParentSupport(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-		// These properties are not visible by default because they're not CPF_Edit
-		const FProperty* AttachParent = USceneComponent::StaticClass()->FindPropertyByName(FName("AttachParent"));
-		const FProperty* AttachSocketName = USceneComponent::StaticClass()->FindPropertyByName(FName("AttachSocketName"));
-		// RootComponent is usually set automatically but sometimes not... for example spawning AActor with instanced components only
-		const FProperty* RootComponent = AActor::StaticClass()->FindPropertyByName(FName("RootComponent"));
-		if (ensure(AttachParent && AttachSocketName))
-		{
-			Module.AddExplicitilySupportedProperties({ AttachParent, AttachSocketName, RootComponent });
-		}
-	}
-
-	static void DisableIrrelevantBrushSubobjects(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-#if WITH_EDITORONLY_DATA
-		// ABrush::BrushBuilder is CPF_Edit but no user ever cares about it. We don't want it to make volumes to show up as changed.
-		const FProperty* BrushBuilder = ABrush::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ABrush, BrushBuilder));
-		if (ensure(BrushBuilder))
-		{
-			Module.AddExplicitlyUnsupportedProperties({ BrushBuilder });
-		}
-#endif
-	}
-
-	static void DisableIrrelevantWorldSettings(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-		// AWorldSettings::NavigationSystemConfig is CPF_Edit but no user ever cares about it.
-		const FProperty* NavigationSystemConfig = AWorldSettings::StaticClass()->FindPropertyByName(FName("NavigationSystemConfig"));
-		if (ensure(NavigationSystemConfig))
-		{
-			Module.AddExplicitlyUnsupportedProperties({ NavigationSystemConfig });
-		}
-	}
-
-	static void DisableIrrelevantMaterialInstanceProperties(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-		// This property causes diffs sometimes for unexplained reasons when creating in construction script... does not seem to be important
-		const FProperty* BasePropertyOverrides = UMaterialInstance::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UMaterialInstance, BasePropertyOverrides));
-		if (ensure(BasePropertyOverrides))
-		{
-			Module.AddExplicitlyUnsupportedProperties({ BasePropertyOverrides });
-		}
-	}
-
-	static void DisableIrrelevantActorProperties(UE::LevelSnapshots::Private::FLevelSnapshotsModule& Module)
-	{
-#if WITH_EDITORONLY_DATA
-		const FProperty* ActorGuid = AActor::StaticClass()->FindPropertyByName(FName("ActorGuid"));
-		if (ensure(ActorGuid))
-		{
-			Module.AddExplicitlyUnsupportedProperties({ ActorGuid });
-		}
-#endif
-	}
+	
 }
 
 UE::LevelSnapshots::Private::FLevelSnapshotsModule& UE::LevelSnapshots::Private::FLevelSnapshotsModule::GetInternalModuleInstance()
@@ -117,18 +43,9 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::StartupModule()
 		})
 	);
 	RegisterRestorabilityOverrider(ClassSkipper);
-
-	// Enable / disable troublesome properties
-	UE::LevelSnapshots::Private::Internal::AddSoftObjectPathSupport(*this);
-	UE::LevelSnapshots::Private::Internal::AddAttachParentSupport(*this);
-	UE::LevelSnapshots::Private::Internal::DisableIrrelevantBrushSubobjects(*this);
-	UE::LevelSnapshots::Private::Internal::DisableIrrelevantWorldSettings(*this);
-	UE::LevelSnapshots::Private::Internal::DisableIrrelevantMaterialInstanceProperties(*this);
-	UE::LevelSnapshots::Private::Internal::DisableIrrelevantActorProperties(*this);
-
-	// Interact with special engine features
-	FCollisionRestoration::Register(*this);
-	GridPlacementRestoration::Register(*this);
+	
+	// Add support for engine features that require specialized case handling
+	EngineTypesRestorationFence::RegisterSpecialEngineTypeSupport(*this);
 
 #if WITH_EDITOR
 	ISettingsModule& SettingsModule = FModuleManager::LoadModuleChecked<ISettingsModule>("Settings");
@@ -162,7 +79,7 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterRestorabilityOv
 	Overrides.AddUnique(Overrider);
 }
 
-void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterRestorabilityOverrider(TSharedRef<ISnapshotRestorabilityOverrider> Overrider)
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterRestorabilityOverrider(const TSharedRef<ISnapshotRestorabilityOverrider>& Overrider)
 {
 	Overrides.RemoveSwap(Overrider);
 }
@@ -197,7 +114,7 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterPropertyCompare
 	PropertyComparers.FindOrAdd(Class).AddUnique(Comparer);
 }
 
-void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterPropertyComparer(UClass* Class, TSharedRef<IPropertyComparer> Comparer)
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterPropertyComparer(UClass* Class, const TSharedRef<IPropertyComparer>& Comparer)
 {
 	TArray<TSharedRef<IPropertyComparer>>* Comparers = PropertyComparers.Find(Class);
 	if (!Comparers)
@@ -239,12 +156,22 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterCustomObjectS
 	CustomSerializers.Remove(Class);
 }
 
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterGlobalActorFilter(TSharedRef<IActorSnapshotFilter> Filter)
+{
+	GlobalFilters.AddUnique(Filter);
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterGlobalActorFilter(const TSharedRef<IActorSnapshotFilter>& Filter)
+{
+	GlobalFilters.RemoveSingle(Filter);
+}
+
 void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterSnapshotLoader(TSharedRef<ISnapshotLoader> Loader)
 {
 	SnapshotLoaders.AddUnique(Loader);
 }
 
-void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterSnapshotLoader(TSharedRef<ISnapshotLoader> Loader)
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterSnapshotLoader(const TSharedRef<ISnapshotLoader>& Loader)
 {
 	SnapshotLoaders.RemoveSingle(Loader);
 }
@@ -254,9 +181,19 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterRestorationList
 	RestorationListeners.AddUnique(Listener);
 }
 
-void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterRestorationListener(TSharedRef<IRestorationListener> Listener)
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterRestorationListener(const TSharedRef<IRestorationListener>& Listener)
 {
 	RestorationListeners.RemoveSingle(Listener);
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::RegisterSnapshotFilterExtender(TSharedRef<ISnapshotFilterExtender> Extender)
+{
+	FilterExtenders.AddUnique(Extender);
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::UnregisterSnapshotFilterExtender(const TSharedRef<ISnapshotFilterExtender>& Listener)
+{
+	FilterExtenders.RemoveSingle(Listener);
 }
 
 void UE::LevelSnapshots::Private::FLevelSnapshotsModule::AddExplicitilySupportedProperties(const TSet<const FProperty*>& Properties)
@@ -390,6 +327,42 @@ TSharedPtr<UE::LevelSnapshots::ICustomObjectSnapshotSerializer> UE::LevelSnapsho
 	return nullptr;
 }
 
+bool UE::LevelSnapshots::Private::FLevelSnapshotsModule::CanRecreateActor(const FCanRecreateActorParams& Params) const
+{
+	for (const TSharedRef<IActorSnapshotFilter>& Filter : GlobalFilters)
+	{
+		const IActorSnapshotFilter::EFilterResult Result = Filter->CanRecreateActor(Params);
+		switch (Result)
+		{
+		case IActorSnapshotFilter::EFilterResult::Allow: return true;
+		case IActorSnapshotFilter::EFilterResult::DoNotCare: continue;
+		case IActorSnapshotFilter::EFilterResult::Disallow: return false;
+		default:
+			checkNoEntry();
+		}
+	};
+
+	return true;
+}
+
+bool UE::LevelSnapshots::Private::FLevelSnapshotsModule::CanDeleteActor(const AActor* EditorActor) const
+{
+	for (const TSharedRef<IActorSnapshotFilter>& Filter : GlobalFilters)
+	{
+		const IActorSnapshotFilter::EFilterResult Result = Filter->CanDeleteActor(EditorActor);
+		switch (Result)
+		{
+		case IActorSnapshotFilter::EFilterResult::Allow: return true;
+		case IActorSnapshotFilter::EFilterResult::DoNotCare: continue;
+		case IActorSnapshotFilter::EFilterResult::Disallow: return false;
+		default:
+			checkNoEntry();
+		}
+	};
+
+	return true;
+}
+
 void UE::LevelSnapshots::Private::FLevelSnapshotsModule::AddCanTakeSnapshotDelegate(FName DelegateName, FCanTakeSnapshot Delegate)
 {
 	CanTakeSnapshotDelegates.FindOrAdd(DelegateName) = Delegate;
@@ -420,6 +393,26 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPostLoadSnapshotObjec
 	for (const TSharedRef<ISnapshotLoader>& Loader : SnapshotLoaders)
 	{
 		Loader->PostLoadSnapshotObject(Params);
+	}
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPreApplySnapshot(const FApplySnapshotParams& Params)
+{
+	SCOPED_SNAPSHOT_CORE_TRACE(RestorationListeners);
+	
+	for (const TSharedRef<IRestorationListener>& Listener : RestorationListeners)
+	{
+		Listener->PreApplySnapshot(Params);
+	}
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPostApplySnapshot(const FApplySnapshotParams& Params)
+{
+	SCOPED_SNAPSHOT_CORE_TRACE(RestorationListeners);
+	
+	for (const TSharedRef<IRestorationListener>& Listener : RestorationListeners)
+	{
+		Listener->PostApplySnapshot(Params);
 	}
 }
 
@@ -483,13 +476,26 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPostRecreateActor(AAc
 	}
 }
 
-void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPreRemoveActor(AActor* Actor)
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPreRemoveActor(const FPreRemoveActorParams& Params)
 {
 	SCOPED_SNAPSHOT_CORE_TRACE(RestorationListeners);
 	
 	for (const TSharedRef<IRestorationListener>& Listener : RestorationListeners)
 	{
-		Listener->PreRemoveActor(Actor);
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Listener->PreRemoveActor(Params.ActorToRemove);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Listener->PreRemoveActor(Params);
+	}
+}
+
+void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPostRemoveActors(const FPostRemoveActorsParams& Params)
+{
+	SCOPED_SNAPSHOT_CORE_TRACE(RestorationListeners);
+	
+	for (const TSharedRef<IRestorationListener>& Listener : RestorationListeners)
+	{
+		Listener->PostRemoveActors(Params);
 	}
 }
 
@@ -531,6 +537,16 @@ void UE::LevelSnapshots::Private::FLevelSnapshotsModule::OnPostRemoveComponent(c
 	{
 		Listener->PostRemoveComponent(Params);
 	}
+}
+
+UE::LevelSnapshots::FPostApplyFiltersResult UE::LevelSnapshots::Private::FLevelSnapshotsModule::PostApplyFilters(const FPostApplyFiltersParams& Params)
+{
+	FPostApplyFiltersResult Result;
+	for (const TSharedRef<ISnapshotFilterExtender>& Extender : FilterExtenders)
+	{
+		Result.Combine(Extender->PostApplyFilters(Params));
+	}
+	return Result;
 }
 
 IMPLEMENT_MODULE(UE::LevelSnapshots::Private::FLevelSnapshotsModule, LevelSnapshots)

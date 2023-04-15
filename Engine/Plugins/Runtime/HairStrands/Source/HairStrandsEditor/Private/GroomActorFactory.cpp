@@ -5,6 +5,8 @@
 #include "GroomActor.h"
 #include "GroomComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GroomActorFactory)
+
 #define LOCTEXT_NAMESPACE "GroomActorFactory"
 
 UGroomActorFactory::UGroomActorFactory(const FObjectInitializer& ObjectInitializer)
@@ -18,7 +20,7 @@ UGroomActorFactory::UGroomActorFactory(const FObjectInitializer& ObjectInitializ
 
 bool UGroomActorFactory::CanCreateActorFrom( const FAssetData& AssetData, FText& OutErrorMsg )
 {
-	if ( !AssetData.IsValid() || !AssetData.GetClass()->IsChildOf( UGroomAsset::StaticClass() ) )
+	if ( !AssetData.IsValid() || !AssetData.IsInstanceOf( UGroomAsset::StaticClass() ) )
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoGroomAsset", "A valid groom asset must be specified.");
 		return false;

@@ -2,9 +2,15 @@
 
 #include "PropertyAccess.h"
 #include "Misc/MemStack.h"
-#include "UObject/ScriptCastingUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PropertyAccess)
 
 #define LOCTEXT_NAMESPACE "PropertyAccess"
+
+namespace PropertyAccess
+{
+	static FCriticalSection CriticalSection;
+}
 
 struct FPropertyAccessSystem
 {
@@ -216,6 +222,9 @@ struct FPropertyAccessSystem
 
 	static void PatchPropertyOffsets(FPropertyAccessLibrary& InLibrary)
 	{
+		// Need to perform a lock as copying can race with PatchPropertyOffsets in async loading thread-enabled builds
+		FScopeLock Lock(&PropertyAccess::CriticalSection);
+
 		InLibrary.Indirections.Reset();
 
 		const int32 SrcCount = InLibrary.SrcPaths.Num();
@@ -377,7 +386,7 @@ struct FPropertyAccessSystem
 			checkSlow(InDestProperty->IsA<FArrayProperty>());
 			const FArrayProperty* SrcArrayProperty = ExactCastField<const FArrayProperty>(InSrcProperty);
 			const FArrayProperty* DestArrayProperty = ExactCastField<const FArrayProperty>(InDestProperty);
-			CopyAndCastArray<float, double>(SrcArrayProperty, InSrcAddr, DestArrayProperty, InDestAddr);
+			CopyAndCastFloatingPointArray<float, double>(SrcArrayProperty, InSrcAddr, DestArrayProperty, InDestAddr);
 			break;
 		}
 		case EPropertyAccessCopyType::DemoteArrayDoubleToFloat:
@@ -386,9 +395,27 @@ struct FPropertyAccessSystem
 			checkSlow(InDestProperty->IsA<FArrayProperty>());
 			const FArrayProperty* SrcArrayProperty = ExactCastField<const FArrayProperty>(InSrcProperty);
 			const FArrayProperty* DestArrayProperty = ExactCastField<const FArrayProperty>(InDestProperty);
-			CopyAndCastArray<double, float>(SrcArrayProperty, InSrcAddr, DestArrayProperty, InDestAddr);
+			CopyAndCastFloatingPointArray<double, float>(SrcArrayProperty, InSrcAddr, DestArrayProperty, InDestAddr);
 			break;
 		}
+		case EPropertyAccessCopyType::PromoteMapValueFloatToDouble:
+			{
+				checkSlow(InSrcProperty->IsA<FMapProperty>());
+				checkSlow(InDestProperty->IsA<FMapProperty>());
+				const FMapProperty* SrcMapProperty = ExactCastField<const FMapProperty>(InSrcProperty);
+				const FMapProperty* DestMapProperty = ExactCastField<const FMapProperty>(InDestProperty);
+				CopyAndCastFloatingPointMapValues<float, double>(SrcMapProperty, InSrcAddr, DestMapProperty, InDestAddr);
+				break;
+			}
+		case EPropertyAccessCopyType::DemoteMapValueDoubleToFloat:
+			{
+				checkSlow(InSrcProperty->IsA<FMapProperty>());
+				checkSlow(InDestProperty->IsA<FMapProperty>());
+				const FMapProperty* SrcMapProperty = ExactCastField<const FMapProperty>(InSrcProperty);
+				const FMapProperty* DestMapProperty = ExactCastField<const FMapProperty>(InDestProperty);
+				CopyAndCastFloatingPointMapValues<double, float>(SrcMapProperty, InSrcAddr, DestMapProperty, InDestAddr);
+				break;
+			}	
 		default:
 			check(false);
 			break;
@@ -598,7 +625,72 @@ struct FPropertyAccessSystem
 			}
 		}
 	}
+
+	template <typename SourceType, typename DestinationType>
+	static void CopyAndCastFloatingPointArray(const FArrayProperty* SourceArrayProperty,
+											  const void* SourceAddress,
+											  const FArrayProperty* DestinationArrayProperty,
+											  void* DestinationAddress)
+	{
+		checkSlow(SourceArrayProperty);
+		checkSlow(SourceAddress);
+		checkSlow(DestinationArrayProperty);
+		checkSlow(DestinationAddress);
+
+		FScriptArrayHelper SourceArrayHelper(SourceArrayProperty, SourceAddress);
+		FScriptArrayHelper DestinationArrayHelper(DestinationArrayProperty, DestinationAddress);
+
+		DestinationArrayHelper.Resize(SourceArrayHelper.Num());
+		for (int32 i = 0; i < SourceArrayHelper.Num(); ++i)
+		{
+			const SourceType* SourceData = reinterpret_cast<const SourceType*>(SourceArrayHelper.GetRawPtr(i));
+			DestinationType* DestinationData = reinterpret_cast<DestinationType*>(DestinationArrayHelper.GetRawPtr(i));
+
+			*DestinationData = static_cast<DestinationType>(*SourceData);
+		}
+	}
+
+	template <typename SourceType, typename DestinationType>
+	static void CopyAndCastFloatingPointMapValues(const FMapProperty* SourceMapProperty,
+												  const void* SourceAddress,
+												  const FMapProperty* DestinationMapProperty,
+												  void* DestinationAddress)
+	{
+		checkSlow(SourceMapProperty);
+		checkSlow(SourceAddress);
+		checkSlow(DestinationMapProperty);
+		checkSlow(DestinationAddress);
+
+		FScriptMapHelper SourceMapHelper(SourceMapProperty, SourceAddress);
+		FScriptMapHelper DestinationMapHelper(DestinationMapProperty, DestinationAddress);
+
+		DestinationMapHelper.EmptyValues();
+		for (int32 i = 0; i < SourceMapHelper.Num(); ++i)
+		{
+			const void* KeyData = SourceMapHelper.GetKeyPtr(i);
+			const SourceType* SourceValueData = reinterpret_cast<const SourceType*>(SourceMapHelper.GetValuePtr(i));
+			DestinationType CastedType = static_cast<DestinationType>(*SourceValueData);
+			DestinationMapHelper.AddPair(KeyData, &CastedType);
+		}
+	}	
 };
+
+const FPropertyAccessLibrary& FPropertyAccessLibrary::operator =(const FPropertyAccessLibrary& Other)
+{
+	// Need to perform a lock as copying can race with PatchPropertyOffsets in async loading thread-enabled builds
+	FScopeLock Lock(&PropertyAccess::CriticalSection);
+
+	PathSegments = Other.PathSegments;
+	SrcPaths = Other.SrcPaths;
+	DestPaths = Other.DestPaths;
+	CopyBatchArray = Other.CopyBatchArray;
+	SrcAccesses = Other.SrcAccesses;
+	DestAccesses = Other.DestAccesses;
+	Indirections = Other.Indirections;
+	bHasBeenPostLoaded = Other.bHasBeenPostLoaded;
+	
+	return *this;
+}
 
 namespace PropertyAccess
 {
@@ -619,8 +711,6 @@ namespace PropertyAccess
 
 	void ProcessCopies(UObject* InObject, const FPropertyAccessLibrary& InLibrary, const FCopyBatchId& InBatchId)
 	{
-		QUICK_SCOPE_CYCLE_COUNTER(PropertyAccess_ProcessCopies);
-
 		::FPropertyAccessSystem::ProcessCopies(InObject->GetClass(), InObject, InLibrary, InBatchId.Id);
 	}
 

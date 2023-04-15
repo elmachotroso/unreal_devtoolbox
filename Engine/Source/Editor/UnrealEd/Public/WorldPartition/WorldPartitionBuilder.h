@@ -3,36 +3,35 @@
 #pragma once
 
 #include "PackageSourceControlHelper.h"
+#include "Engine/World.h"
 #include "WorldPartitionBuilder.generated.h"
+
+typedef UE::Math::TIntVector3<int64> FWorldBuilderCellCoord;
 
 /**
  * Structure containing information about a World Partition Builder cell
  */
-USTRUCT()
 struct FCellInfo
 {
-	GENERATED_BODY()
-
 	FCellInfo();
 
 	/**
 	 * Location of the cell, expressed inside World Partition Builder space
 	 * (floor(Coordinate) / IterativeCellSize)
 	 */
-	UPROPERTY(VisibleAnywhere, Category = WorldPartitionBuilder)
-	FIntVector Location;
+	FWorldBuilderCellCoord Location;
 
 	/** Bounds of the cell */
-	UPROPERTY(VisibleAnywhere, Category = WorldPartitionBuilder)
 	FBox Bounds;
 
 	/** Whole space */
-	UPROPERTY(VisibleAnywhere, Category = WorldPartitionBuilder)
 	FBox EditorBounds;
 
 	/** The size of a cell used by the World Partition Builder */
-	UPROPERTY(VisibleAnywhere, Category = WorldPartitionBuilder)
 	int32 IterativeCellSize;
+
+	static UNREALED_API FWorldBuilderCellCoord GetCellCoord(const FVector& InPos, const int32 InCellSize);
+	static UNREALED_API FWorldBuilderCellCoord GetCellCount(const FBox& InBounds, const int32 InCellSize);
 };
 
 UCLASS(Abstract, Config=Engine)
@@ -58,6 +57,10 @@ public:
 
 	virtual bool PreWorldInitialization(FPackageSourceControlHelper& PackageHelper) { return true; }
 
+	static bool SavePackages(const TArray<UPackage*>& Packages, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings = false);
+	static bool DeletePackages(const TArray<UPackage*>& Packages, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings = false);
+	static bool DeletePackages(const TArray<FString>& PackageNames, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings = false);
+
 protected:
 	/**
 	 * Overridable method for derived classes to perform operations when world builder process starts.
@@ -78,12 +81,25 @@ protected:
 	 */
 	virtual bool PostWorldTeardown(FPackageSourceControlHelper& PackageHelper) { return true; }
 
+	/**
+	 * When using EloadingMode::IterativeCells/IterativeCells2D return true to skip processing of cell.
+	 */
+	virtual bool ShouldSkipCell(const FWorldBuilderCellCoord& CellCoord) const { return false; }
+
+	bool AutoSubmitFiles(const TArray<FString>& InModifiedFiles, const FString& InChangelistDescription) const;
+	bool AutoSubmitPackages(const TArray<UPackage*>& InModifiedPackages, const FString& InChangelistDescription) const;
+
+	virtual UWorld::InitializationValues GetWorldInitializationValues() const;
+
 	int32 IterativeCellSize = 102400;
 	int32 IterativeCellOverlapSize = 0;
-	TSet<FName> DataLayerLabels;
-	TSet<FName> ExcludedDataLayerLabels;
+	FBox  IterativeWorldBounds;
+
+	TSet<FName> DataLayerShortNames;
+	TSet<FName> ExcludedDataLayerShortNames;
 	bool bLoadNonDynamicDataLayers = true;
 	bool bLoadInitiallyActiveDataLayers = true;
 
-	bool bSubmit = true;
+	bool bAutoSubmit = false;
+	FString AutoSubmitTags;
 };

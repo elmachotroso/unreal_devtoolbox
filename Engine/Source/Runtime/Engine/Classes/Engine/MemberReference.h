@@ -11,6 +11,7 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
+#include "EngineLogs.h"
 #include "MemberReference.generated.h"
 
 /** Helper struct to allow us to redirect properties and functions through renames and additionally between classes if necessary */
@@ -70,27 +71,27 @@ protected:
 	 * if it is a native delegate signature function (declared globally). Should 
 	 * be NULL if bSelfContext is true.  
 	 */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable TObjectPtr<UObject> MemberParent;
 
 	/**  */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable FString MemberScope;
 
 	/** Name of variable */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable FName MemberName;
 
 	/** The Guid of the variable */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable FGuid MemberGuid;
 
 	/** Whether or not this should be a "self" context */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable bool bSelfContext;
 
 	/** Whether or not this property has been deprecated */
-	UPROPERTY()
+	UPROPERTY(SaveGame)
 	mutable bool bWasDeprecated;
 	
 public:
@@ -131,13 +132,13 @@ public:
 		{
 			MemberParent = ParentAsClass->GetAuthoritativeClass();
 		}
+#endif
 
 		MemberGuid.Invalidate();
 		if (OwnerClass != nullptr)
 		{
 			UBlueprint::GetGuidFromClassByFieldName<TFieldType>(OwnerClass, InField->GetFName(), MemberGuid);
 		}
-#endif
 	}
 
 #if WITH_EDITOR
@@ -321,7 +322,7 @@ public:
 	}
 
 	/** Compares with another MemberReference to see if they are identical */
-	bool IsSameReference(FMemberReference& InReference)
+	bool IsSameReference(const FMemberReference& InReference) const
 	{
 		return 
 			bSelfContext == InReference.bSelfContext &&
@@ -352,14 +353,12 @@ public:
 	/** 
 	 *	Returns the member FProperty/UFunction this reference is pointing to, or NULL if it no longer exists 
 	 *	Derives 'self' scope from supplied Blueprint node if required
-	 *	Will check for redirects and fix itself up if one is found.
+	 *	Will check for redirects and fix itself up if one is found (when WITH_EDITOR, or when bAlwaysFollowRedirects is true).
 	 */
 	template<class TFieldType>
-	TFieldType* ResolveMember(UClass* SelfScope = nullptr) const
+	TFieldType* ResolveMember(UClass* SelfScope = nullptr, const bool bAlwaysFollowRedirects = false) const
 	{
 		TFieldType* ReturnField = nullptr;
-
-		bool bUseUpToDateClass = SelfScope && SelfScope->GetAuthoritativeClass() != SelfScope;
 
 		if(bSelfContext && SelfScope == nullptr)
 		{
@@ -372,7 +371,7 @@ public:
 			UStruct* MemberScopeStruct = FindUField<UStruct>(SelfScope, *MemberScope);
 
 			// Find in target scope
-			ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
+			ReturnField = FindUFieldOrFProperty<TFieldType>(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll);
 
 #if WITH_EDITOR
 			if(ReturnField == nullptr)
@@ -381,17 +380,22 @@ public:
 				const FName RenamedMemberName = RefreshLocalVariableName(SelfScope);
 				if (RenamedMemberName != NAME_None)
 				{
-					ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
+					ReturnField = FindUFieldOrFProperty<TFieldType>(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll);
 				}
 			}
 #endif
 		}
 		else
 		{
+#if WITH_EDITOR
+			const bool bCanFollowRedirects = !GIsSavingPackage;
+#else
+			const bool bCanFollowRedirects = bAlwaysFollowRedirects;
+#endif
+
 			// Look for remapped member
 			UClass* TargetScope = GetScope(SelfScope);
-#if WITH_EDITOR
-			if( TargetScope != nullptr &&  !GIsSavingPackage )
+			if (bCanFollowRedirects && TargetScope)
 			{
 				ReturnField = FindRemappedField<TFieldType>(TargetScope, MemberName, true);
 			}
@@ -407,57 +411,69 @@ public:
 
 				if (UClass* ParentAsClass = GetMemberParentClass())
 				{
+#if WITH_EDITOR
 					ParentAsClass = ParentAsClass->GetAuthoritativeClass();
+#endif
 					MemberParent  = ParentAsClass;
 
 					// Re-evaluate self-ness against the redirect if we were given a valid SelfScope
 					// For functions and multicast delegates we don't want to go from not-self to self as the target pin type should remain consistent
 					if (SelfScope != nullptr && (bSelfContext || (!CompareClassesHelper(TFieldType::StaticClass(), UFunction::StaticClass()) && !CompareClassesHelper(TFieldType::StaticClass(), FMulticastDelegateProperty::StaticClass()))))
 					{
-						SetGivenSelfScope(MemberName, MemberGuid, ParentAsClass, SelfScope);
+#if WITH_EDITOR
+						bSelfContext = SelfScope->IsChildOf(ParentAsClass) || SelfScope->ClassGeneratedBy == ParentAsClass->ClassGeneratedBy;
+#else
+						bSelfContext = SelfScope->IsChildOf(ParentAsClass);
+#endif
+
+						if (bSelfContext)
+						{
+							MemberParent = nullptr;
+						}
 					}
 				}	
 			}
-			else
-#endif
-			if (TargetScope != nullptr)
+			else if (TargetScope != nullptr)
 			{
 #if WITH_EDITOR
+				bool bUseUpToDateClass = SelfScope && SelfScope->GetAuthoritativeClass() != SelfScope;
 				TargetScope = GetClassToUse(TargetScope, bUseUpToDateClass);
 				if (TargetScope)
 #endif
 				{
 					// Find in target scope or in the sparse class data
-					UScriptStruct* SparseClassDataStruct = TargetScope->GetSparseClassDataStruct();
-					if (SparseClassDataStruct)
+					ReturnField = FindUFieldOrFProperty<TFieldType>(TargetScope, MemberName, EFieldIterationFlags::IncludeAll);
+					if (!ReturnField)
 					{
-						ReturnField = FindUFieldOrFProperty(SparseClassDataStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
-					}
-					if (ReturnField == nullptr)
-					{
-						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
+						if (UScriptStruct* SparseClassDataStruct = TargetScope->GetSparseClassDataStruct())
+						{
+							ReturnField = FindUFieldOrFProperty<TFieldType>(SparseClassDataStruct, MemberName, EFieldIterationFlags::IncludeAll);
+						}
 					}
 				}
 
-#if WITH_EDITOR
 
-				// If the reference variable is valid we need to make sure that our GUID matches
-				if (ReturnField != nullptr)
-				{
-					UBlueprint::GetGuidFromClassByFieldName<TFieldType>(TargetScope, MemberName, MemberGuid);
-				}
-				// If we have a GUID find the reference variable and make sure the name is up to date and find the field again
-				// For now only variable references will have valid GUIDs.  Will have to deal with finding other names subsequently
-				else if (MemberGuid.IsValid())
-				{
-					const FName RenamedMemberName = UBlueprint::GetFieldNameFromClassByGuid<TFieldType>(TargetScope, MemberGuid);
-					if (RenamedMemberName != NAME_None)
-					{
-						MemberName = RenamedMemberName;
-						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
-					}
-				}
+#if !WITH_EDITOR
+				if (bAlwaysFollowRedirects)
 #endif
+				{
+					// If the reference variable is valid we need to make sure that our GUID matches
+					if (ReturnField != nullptr)
+					{
+						UBlueprint::GetGuidFromClassByFieldName<TFieldType>(TargetScope, MemberName, MemberGuid);
+					}
+					// If we have a GUID find the reference variable and make sure the name is up to date and find the field again
+					// For now only variable references will have valid GUIDs.  Will have to deal with finding other names subsequently
+					else if (MemberGuid.IsValid())
+					{
+						const FName RenamedMemberName = UBlueprint::GetFieldNameFromClassByGuid<TFieldType>(TargetScope, MemberGuid);
+						if (RenamedMemberName != NAME_None)
+						{
+							MemberName = RenamedMemberName;
+							ReturnField = FindUFieldOrFProperty<TFieldType>(TargetScope, MemberName, EFieldIterationFlags::IncludeAll);
+						}
+					}
+				}
 			}
 			else if (UPackage* TargetPackage = GetMemberParentPackage())
 			{
@@ -494,7 +510,6 @@ public:
 		return ResolveMember<TFieldType>(SelfScope->SkeletonGeneratedClass);
 	}
 
-#if WITH_EDITOR
 	/**
 	 * Searches the field redirect map for the specified named field in the scope, and returns the remapped field if found
 	 *
@@ -514,6 +529,7 @@ public:
 		return FFieldVariant(FindRemappedField(TFieldType::StaticClass(), InitialScope, InitialName, bInitialScopeMustBeOwnerOfField)).Get<TFieldType>();
 	}
 
+#if WITH_EDITOR
 	/** Init the field redirect map (if not already done) from .ini file entries */
 	ENGINE_API static void InitFieldRedirectMap();
 

@@ -290,6 +290,14 @@ class ENGINE_API UInstancedStaticMeshComponent : public UStaticMeshComponent, pu
 	virtual void OnRegister() override;
 	virtual bool SupportsRemoveSwap() const { return false; }
 
+#if WITH_EDITOR
+	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
+	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
+
+	virtual bool IsInstanceTouchingSelectionBox(int32 InstanceIndex, const FBox& InBox, const bool bMustEncompassEntireInstance) const;
+	virtual bool IsInstanceTouchingSelectionFrustum(int32 InstanceIndex, const FConvexVolume& InFrustum, const bool bMustEncompassEntireInstance) const;
+#endif
+
 public:
 	/** Render data will be initialized on PostLoad or on demand. Released on the rendering thread. */
 	TSharedPtr<FPerInstanceRenderData, ESPMode::ThreadSafe> PerInstanceRenderData;
@@ -307,6 +315,19 @@ public:
 
 	/** Indicates that the user has purposedly chosen to show the instance list in the details panel, despite the performance warning. */
 	bool bForceShowAllInstancesDetails = false;
+
+	/** The reason why a deletion operation is currently happening. */
+	enum class EInstanceDeletionReason : uint8
+	{
+		NotDeleting, /** There is currently no deletion in progress. */
+		EntryAlreadyRemoved, /** The instance has been deleted externally. Data synchronization in progress. */
+		EntryRemoval, /** The instance is being removed. */
+		Clearing /** All instances are being removed. */
+	};
+	/** This will be set to the appropriate state when one or more instances are in the process of being
+	 *  deleted. This is primarily used for functions that round trip to this class, such as callbacks
+	 *  for deselecting instances. */
+	EInstanceDeletionReason DeletionState = EInstanceDeletionReason::NotDeleting;
 #endif
 	/** Physics representation of the instance bodies. */
 	TArray<FBodyInstance*> InstanceBodies;
@@ -379,6 +400,9 @@ public:
 
 	/** Transfers ownership of instance render data to a render thread. Instance render data will be released in scene proxy destructor or on render thread task. */
 	void ReleasePerInstanceRenderData();
+
+	/** Precache all PSOs which can be used by the component */
+	virtual void PrecachePSOs() override;
 	
 	// Number of instances in the render-side instance buffer
 	virtual int32 GetNumRenderInstances() const { return PerInstanceSMData.Num(); }

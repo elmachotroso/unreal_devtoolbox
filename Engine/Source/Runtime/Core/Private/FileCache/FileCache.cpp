@@ -28,8 +28,8 @@ static int32 GFileCacheBlockSizeKB = 64;
 static FAutoConsoleVariableRef CVarFileCacheBlockSize(
 	TEXT("fc.BlockSize"),
 	GFileCacheBlockSizeKB,
-	TEXT("Size of each block in KB in the global file cache object\n")
-	TEXT("Should match packaging compression block size for optimal reading from packege"),
+	TEXT("Size of each block in KB in the global file cache object\n"
+	     "Should match packaging compression block size for optimal reading from packege"),
 	ECVF_ReadOnly
 );
 
@@ -513,8 +513,7 @@ FFileCacheHandle::FFileCacheHandle(IAsyncReadFileHandle* InHandle, int64 InBaseO
 		this->FileSize = Request->GetSizeResults();
 		check(this->FileSize > 0);
 
-		TArray<FBaseGraphTask*> NewTasks;
-		CompletionEvent->DispatchSubsequents(NewTasks);
+		CompletionEvent->DispatchSubsequents();
 		GetCache().PushCompletedRequest(Request);
 	};
 
@@ -589,8 +588,7 @@ IMemoryReadStreamRef FFileCacheHandle::ReadDataUncached(FGraphEventArray& OutCom
 
 	FAsyncFileCallBack ReadCallbackFunction = [CompletionEvent](bool bWasCancelled, IAsyncReadRequest* Request)
 	{
-		TArray<FBaseGraphTask*> NewTasks;
-		CompletionEvent->DispatchSubsequents(NewTasks);
+		CompletionEvent->DispatchSubsequents();
 	};
 
 	OutCompletionEvents.Add(CompletionEvent);
@@ -609,7 +607,7 @@ public:
 		const int64 BlockSize = CacheSlotID::GetSize();
 		const int32 SlotIndex = (int32)FMath::DivideAndRoundDown(Offset, BlockSize);
 		const int32 OffsetInSlot = (int32)(Offset - SlotIndex * BlockSize);
-		checkSlow(SlotIndex >= 0 && SlotIndex < NumCacheSlots);
+		check(SlotIndex >= 0 && SlotIndex < NumCacheSlots);
 		const void* SlotMemory = Cache.GetSlotMemory(CacheSlots[SlotIndex]);
 
 		OutSize = FMath::Min(InSize, BlockSize - OffsetInSlot);
@@ -668,8 +666,7 @@ void FFileCacheHandle::ReadLine(FFileCache& Cache, CacheSlotID SlotID, CacheLine
 	// callback triggered when async read operation is complete, used to signal task graph event
 	FAsyncFileCallBack ReadCallbackFunction = [CompletionEvent](bool bWasCancelled, IAsyncReadRequest* Request)
 	{
-		TArray<FBaseGraphTask*> NewTasks;
-		CompletionEvent->DispatchSubsequents(NewTasks);
+		CompletionEvent->DispatchSubsequents();
 		GetCache().PushCompletedRequest(Request);
 	};
 

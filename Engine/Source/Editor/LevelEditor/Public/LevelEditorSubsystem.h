@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "EditorSubsystem.h"
+#include "IActorEditorContextClient.h"
+#include "Engine/EngineTypes.h"
 
 #include "LevelEditorSubsystem.generated.h"
 
@@ -16,7 +18,7 @@ class FEditorModeTools;
 * Subsystem for exposing Level Editor related functionality to scripts
 */
 UCLASS()
-class LEVELEDITOR_API ULevelEditorSubsystem : public UEditorSubsystem
+class LEVELEDITOR_API ULevelEditorSubsystem : public UEditorSubsystem, public IActorEditorContextClient
 {
 	GENERATED_BODY()
 
@@ -31,6 +33,9 @@ public:
 	void PilotLevelActor(const FToolMenuContext& InContext);
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Utility", meta = (DevelopmentOnly))
 	void EjectPilotLevelActor(FName ViewportConfigKey = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Utility", meta=(DevelopmentOnly))
+	AActor* GetPilotLevelActor(FName ViewportConfigKey = NAME_None);
 
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Utility", meta = (DevelopmentOnly))
 	void EditorPlaySimulate();
@@ -128,8 +133,36 @@ public:
 	UTypedElementSelectionSet* GetSelectionSet();
 
 	/**
+	 * Build Light Maps and optionally the reflection captures.
+	 * @param	Quality	One of the enum LightingBuildQuality value. Default is Quality_Production.
+	 * @param	bWithReflectionCaptures	Build the related reflection captures after building the light maps.
+	 * @return	True if build was successful.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Utility")
+	bool BuildLightMaps(ELightingBuildQuality Quality = ELightingBuildQuality::Quality_Production, bool bWithReflectionCaptures = false);
+
+	/**
 	 * Gets the global level editor mode manager, if we have one.
 	 * The mode manager is not created in commandlet environments, because modes inherently imply user interactions.
 	 */
 	FEditorModeTools* GetLevelEditorModeManager();
+
+	//~ Begin IActorEditorContextClient interface
+	virtual void OnExecuteActorEditorContextAction(UWorld* InWorld, const EActorEditorContextAction& InType, class AActor* InActor = nullptr) {}
+	virtual bool GetActorEditorContextDisplayInfo(UWorld* InWorld, FActorEditorContextClientDisplayInfo& OutDiplayInfo) const override;
+	virtual bool CanResetContext(UWorld* InWorld) const override { return false; };
+	virtual TSharedRef<SWidget> GetActorEditorContextWidget(UWorld* InWorld) const override;
+	virtual FOnActorEditorContextClientChanged& GetOnActorEditorContextClientChanged() override { return ActorEditorContextClientChanged; }
+	//~ End IActorEditorContextClient interface
+
+private:
+
+	/** Called when a Level is added to a world or remove from a world */
+	void OnLevelAddedOrRemoved(ULevel* InLevel, UWorld* InWorld);
+
+	/** Called when the current level changes on a world */
+	void OnCurrentLevelChanged(ULevel* InNewLevel, ULevel* InOldLevel, UWorld* InWorld);
+
+	/** Delegate used to notify changes to ActorEditorContextSubsystem */
+	FOnActorEditorContextClientChanged ActorEditorContextClientChanged;
 };

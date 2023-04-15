@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonHardwareVisibilityBorder.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonUISubsystemBase.h"
 
 #include "CommonInputBaseTypes.h"
@@ -10,12 +10,14 @@
 #include "CommonUISettings.h"
 #include "ICommonUIModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonHardwareVisibilityBorder)
+
 UCommonHardwareVisibilityBorder::UCommonHardwareVisibilityBorder(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, VisibleType(ESlateVisibility::SelfHitTestInvisible)
 	, HiddenType(ESlateVisibility::Collapsed)
 {
-	Padding = FMargin(0,0,0,0);
+	SetPadding(FMargin(0.f,0.f,0.f,0.f));
 }
 
 void UCommonHardwareVisibilityBorder::OnWidgetRebuilt()
@@ -70,3 +72,4 @@ void UCommonHardwareVisibilityBorder::HandleInputMethodChanged(UCommonUIVisibili
 {
 	UpdateVisibility(VisSystem);
 }
+

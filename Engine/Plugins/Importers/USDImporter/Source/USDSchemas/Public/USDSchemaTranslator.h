@@ -6,6 +6,7 @@
 
 #include "UnrealUSDWrapper.h"
 #include "USDAssetCache.h"
+#include "USDInfoCache.h"
 #include "USDMemory.h"
 #include "USDSkeletalDataConversion.h"
 
@@ -15,6 +16,7 @@
 #include "UsdWrappers/UsdTyped.h"
 
 #include "Async/Future.h"
+#include "GroomAssetInterpolation.h"
 #include "HAL/ThreadSafeBool.h"
 #include "Misc/Optional.h"
 #include "Templates/SubclassOf.h"
@@ -126,6 +128,9 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 {
 	explicit FUsdSchemaTranslationContext( const UE::FUsdStage& InStage, UUsdAssetCache& InAssetCache );
 
+	/** True if we're a context created by the USDStageImporter to fully import to persistent assets and actors */
+	bool bIsImporting = false;
+
 	/** pxr::UsdStage we're translating from */
 	UE::FUsdStage Stage;
 
@@ -147,12 +152,20 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 	/** The render context to use when translating materials */
 	FName RenderContext;
 
+	/** The material purpose to use when translating material bindings */
+	FName MaterialPurpose;
+
+	/** Describes what to add to the root bone animation within generated AnimSequences, if anything */
+	EUsdRootMotionHandling RootMotionHandling = EUsdRootMotionHandling::NoAdditionalRootMotion;
+
 	/** If a generated UStaticMesh has at least this many triangles we will attempt to enable Nanite */
 	int32 NaniteTriangleThreshold;
 
 	/** Where the translated assets will be stored */
 	TStrongObjectPtr< UUsdAssetCache > AssetCache;
 
+	/** Caches various information about prims that are expensive to query */
+	TSharedPtr<FUsdInfoCache> InfoCache;
 
 	/** Where we place imported blend shapes, if available */
 	UsdUtils::FBlendShapeMap* BlendShapesByPath = nullptr;
@@ -164,10 +177,32 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 	TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = nullptr;
 
 	/**
+	 * Sometimes we must upgrade a material from non-VT to VT, and so upgrade all of its textures to VT (and then
+	 * upgrade all materials that use them to VT, etc.).
+	 * This member lets us cache which generated materials use which generated textures in order to help with that.
+	 * Material parsing is synchronous. If we ever upgrade it to paralllel/async-task-based, we'll need a mutex around
+	 * this member.
+	 */
+	TMap<UTexture*, TSet<UMaterialInterface*>> TextureToUserMaterials;
+
+	/**
 	 * Whether to try to combine individual assets and components of the same type on a kind-per-kind basis,
 	 * like multiple Mesh prims into a single Static Mesh
 	 */
 	EUsdDefaultKind KindsToCollapse = EUsdDefaultKind::Component | EUsdDefaultKind::Subcomponent;
+
+	/**
+	 * If enabled, when multiple mesh prims are collapsed into a single static mesh, identical material slots are merged into one slot.
+	 * Otherwise, material slots are simply appended to the list.
+	 */
+	bool bMergeIdenticalMaterialSlots = true;
+
+	/**
+	 * If true, will cause us to collapse any point instancer prim into a single static mesh and static mesh component.
+	 * If false, will cause us to use HierarchicalInstancedStaticMeshComponents to replicate the instancing behavior.
+	 * Point instancers inside other point instancer prototypes are *always* collapsed into the prototype's static mesh.
+	 */
+	bool bCollapseTopLevelPointInstancers = false;
 
 	/**
 	 * If true, prims with a "LOD" variant set, and "LOD0", "LOD1", etc. variants containing each
@@ -177,6 +212,20 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 
 	/** If true, we will also try creating UAnimSequence skeletal animation assets when parsing SkelRoot prims */
 	bool bAllowParsingSkeletalAnimations = true;
+
+	/** Groom group interpolation settings */
+	TArray<FHairGroupsInterpolation> GroomInterpolationSettings;
+
+	/**
+	 * True if the Sequencer is currently opened and animating the stage level sequence.
+	 * Its relevant to know this because some translator ::UpdateComponents overloads may try to animate their components
+	 * by themselves, which could be wasteful and glitchy in case the sequencer is opened: It will likely also have an
+	 * animation track for that component and on next editor tick would override the animation with what is sampled from
+	 * the track.
+	 * In the future we'll likely get rid of the "Time" track on the generated LevelSequence, at which point we can
+	 * remove this
+	 */
+	bool bSequencerIsAnimating = false;
 
 	bool IsValid() const
 	{
@@ -225,12 +274,6 @@ public:
 
 	virtual USceneComponent* CreateComponents() { return nullptr; }
 	virtual void UpdateComponents( USceneComponent* SceneComponent ) {}
-
-	enum class ECollapsingType
-	{
-		Assets,
-		Components
-	};
 
 	virtual bool CollapsesChildren( ECollapsingType CollapsingType ) const { return false; }
 

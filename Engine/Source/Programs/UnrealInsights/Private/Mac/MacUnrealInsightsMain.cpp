@@ -1,92 +1,63 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnrealInsightsMain.h"
-#include "HAL/ExceptionHandling.h"
+#include "Mac/MacProgramDelegate.h"
 #include "LaunchEngineLoop.h"
-#include "Misc/CommandLine.h"
-#include "Mac/CocoaThread.h"
 
-
-static FString GSavedCommandLine;
-
-
-@interface UE5AppDelegate : NSObject<NSApplicationDelegate, NSFileManagerDelegate>
+@interface InsightsAppDelegate : MacProgramDelegate
 {
+	bool bHasFinishedLaunching;
 }
 
 @end
 
 
-@implementation UE5AppDelegate
+@implementation InsightsAppDelegate
 
-//handler for the quit apple event used by the Dock menu
-- (void)handleQuitEvent:(NSAppleEventDescriptor*)Event withReplyEvent:(NSAppleEventDescriptor*)ReplyEvent
+- (void)awakeFromNib
 {
-	[self requestQuit:self];
+	bHasFinishedLaunching = false;
 }
 
-- (IBAction)requestQuit:(id)Sender
+- (BOOL)application : (NSApplication*)theApplication openFile : (NSString*)filename
 {
-	RequestEngineExit(TEXT("requestQuit"));
-}
-
-- (void) runGameThread:(id)Arg
-{
-	FPlatformMisc::SetGracefulTerminationHandler();
-	FPlatformMisc::SetCrashHandler(nullptr);
-	
-#if !UE_BUILD_SHIPPING
-	if (FParse::Param(*GSavedCommandLine,TEXT("crashreports")))
+	FString StringFilename(filename);
+	if(!StringFilename.EndsWith(TEXT(".utrace")))
 	{
-		GAlwaysReportCrash = true;
+		return NO;
 	}
-#endif
-	
-#if UE_BUILD_DEBUG
-	if (!GAlwaysReportCrash)
-#else
-		if (FPlatformMisc::IsDebuggerPresent() && !GAlwaysReportCrash)
-#endif
-		{
-			UnrealInsightsMain(*GSavedCommandLine);
-		}
-		else
-		{
-			GIsGuarded = 1;
-			UnrealInsightsMain(*GSavedCommandLine);
-			GIsGuarded = 0;
-		}
-	
-	FEngineLoop::AppExit();
-
-	[NSApp terminate: self];
-}
-
-- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)Sender;
-{
-	if(!IsEngineExitRequested() || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
+	if (!bHasFinishedLaunching)
 	{
-		[self requestQuit:self];
-		return NSTerminateLater;
+		if ([[NSFileManager defaultManager]fileExistsAtPath:filename] )
+		{
+			SavedCommandLine = SavedCommandLine + TEXT(" ") + StringFilename;
+			return YES;
+		}
+		return NO;
+	}
+	else if ([[NSFileManager defaultManager]fileExistsAtPath:filename] )
+	{
+		NSURL* BundleURL = [[NSRunningApplication currentApplication]bundleURL];
+
+		NSDictionary* Configuration = [NSDictionary dictionaryWithObject : [NSArray arrayWithObject : filename] forKey : NSWorkspaceLaunchConfigurationArguments];
+
+		NSError* Error = nil;
+
+		NSRunningApplication* NewInstance = [[NSWorkspace sharedWorkspace]launchApplicationAtURL:BundleURL options : (NSWorkspaceLaunchOptions)(NSWorkspaceLaunchAsync | NSWorkspaceLaunchNewInstance) configuration : Configuration error : &Error];
+
+		return (NewInstance != nil);
 	}
 	else
 	{
-		return NSTerminateNow;
+		return NO;
 	}
-}
-
-- (void) applicationWillTerminate:(NSNotification*)notification
-{
-	FTaskTagScope::SetTagStaticInit();
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)Notification
 {
-	//install the custom quit event handler
-	NSAppleEventManager* appleEventManager = [NSAppleEventManager sharedAppleEventManager];
-	[appleEventManager setEventHandler:self andSelector:@selector(handleQuitEvent:withReplyEvent:) forEventClass:kCoreEventClass andEventID:kAEQuitApplication];
-
-	RunGameThread(self, @selector(runGameThread:));
+	bHasFinishedLaunching = true;
+	
+	[super applicationDidFinishLaunching:Notification];
 }
 
 @end
@@ -94,32 +65,8 @@ static FString GSavedCommandLine;
 
 int main(int argc, char *argv[])
 {
-	FTaskTagScope::SetTagNone();
-
-	for (int32 Option = 1; Option < argc; Option++)
-	{
-		GSavedCommandLine += TEXT(" ");
-		FString Argument(ANSI_TO_TCHAR(argv[Option]));
-		if (Argument.Contains(TEXT(" ")))
-		{
-			if (Argument.Contains(TEXT("=")))
-			{
-				FString ArgName;
-				FString ArgValue;
-				Argument.Split( TEXT("="), &ArgName, &ArgValue );
-				Argument = FString::Printf( TEXT("%s=\"%s\""), *ArgName, *ArgValue );
-			}
-			else
-			{
-				Argument = FString::Printf(TEXT("\"%s\""), *Argument);
-			}
-		}
-		GSavedCommandLine += Argument;
-	}
-
-	SCOPED_AUTORELEASE_POOL;
-	[NSApplication sharedApplication];
-	[NSApp setDelegate:[UE5AppDelegate new]];
-	[NSApp run];
-	return 0;
+	// make custom delegate
+	InsightsAppDelegate* Delegate = [[InsightsAppDelegate alloc] initWithProgramMain:UnrealInsightsMain programExit:FEngineLoop::AppExit];
+	// run with it
+	return [MacProgramDelegate mainWithArgc:argc argv:argv existingDelegate:Delegate];
 }

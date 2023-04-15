@@ -17,11 +17,12 @@
 #include "EditorUndoClient.h"
 #include "Toolkits/IToolkitHost.h"
 #include "IPhysicsAssetEditor.h"
-#include "Editor/PhysicsAssetEditor/Private/PhysicsAssetEditorSharedData.h"
+#include "PhysicsAssetEditorSharedData.h"
 #include "BodySetupEnums.h"
 #include "Containers/ArrayView.h"
 #include "GraphEditor.h"
 
+class IDetailLayoutBuilder;
 struct FAssetData;
 class FPhysicsAssetEditorTreeInfo;
 class IDetailsView;
@@ -105,6 +106,7 @@ public:
 
 	/** IHasPersonaToolkit interface */
 	virtual TSharedRef<IPersonaToolkit> GetPersonaToolkit() const override { return PersonaToolkit.ToSharedRef(); }
+	virtual void OnClose() override;
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
@@ -213,6 +215,10 @@ private:
 	bool CanCopyBodies() const;
 	void OnPasteBodies();
 	bool CanPasteBodies() const;
+	void OnCopyShapes();
+	bool CanCopyShapes() const;
+	void OnPasteShapes();
+	bool CanPasteShapes() const;
 	void OnCopyProperties();
 	bool IsCopyProperties() const;
 	bool CanCopyProperties() const;
@@ -223,14 +229,16 @@ private:
 	void OnToggleSimulation(bool bInSelected);
 	void OnToggleSimulationNoGravity();
 	bool IsNoGravitySimulationEnabled() const;
+	void OnToggleSimulationFloorCollision();
+	bool IsSimulationFloorCollisionEnabled() const;
 	void SetupSelectedSimulation();
 	bool IsFullSimulation() const;
 	bool IsSelectedSimulation() const;
 	bool IsToggleSimulation() const;
-	void OnMeshRenderingMode(EPhysicsAssetEditorRenderMode Mode, bool bSimulation);
-	bool IsMeshRenderingMode(EPhysicsAssetEditorRenderMode Mode, bool bSimulation) const;
-	void OnCollisionRenderingMode(EPhysicsAssetEditorRenderMode Mode, bool bSimulation);
-	bool IsCollisionRenderingMode(EPhysicsAssetEditorRenderMode Mode, bool bSimulation) const;
+	void OnMeshRenderingMode(EPhysicsAssetEditorMeshViewMode Mode, bool bSimulation);
+	bool IsMeshRenderingMode(EPhysicsAssetEditorMeshViewMode Mode, bool bSimulation) const;
+	void OnCollisionRenderingMode(EPhysicsAssetEditorCollisionViewMode Mode, bool bSimulation);
+	bool IsCollisionRenderingMode(EPhysicsAssetEditorCollisionViewMode Mode, bool bSimulation) const;
 	void OnConstraintRenderingMode(EPhysicsAssetEditorConstraintViewMode Mode, bool bSimulation);
 	bool IsConstraintRenderingMode(EPhysicsAssetEditorConstraintViewMode Mode, bool bSimulation) const;
 	void ToggleDrawConstraintsAsPoints();
@@ -267,7 +275,7 @@ private:
 	bool CanDuplicatePrimitive() const;
 	void OnResetConstraint();
 	void OnConstrainChildBodiesToParentBody();
-	void OnSnapConstraint();
+	void OnSnapConstraint(const EConstraintTransformComponentFlags ComponentFlags);
 	void OnConvertToBallAndSocket();
 	void OnConvertToHinge();
 	void OnConvertToPrismatic();
@@ -295,6 +303,7 @@ private:
 	void OnSelectKinematicBodies();
 	void OnSelectSimulatedBodies();
 	void OnSelectBodies(EPhysicsType PhysicsType = EPhysicsType::PhysType_Simulated);
+	void OnSelectShapes(const ECollisionEnabled::Type CollisionEnabled);
 	void OnSelectAllConstraints();
 	void OnToggleSelectionType(bool bIgnoreUserConstraints);
 	void OnToggleShowSelected();
@@ -312,6 +321,9 @@ private:
 
 	/** Handle initial preview scene setup */
 	void HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene);
+
+	/** Handle customization of Preview Scene Settings details */
+	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder) const;
 
 	/** Build context menu for tree items */
 	void HandleExtendContextMenu(FMenuBuilder& InMenuBuilder);

@@ -8,8 +8,8 @@
 #include "Editor.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
+#include "Settings/EditorStyleSettings.h"
 #include "EditorReimportHandler.h"
 #include "FileHelpers.h"
 #include "Toolkits/SStandaloneAssetEditorToolkitHost.h"
@@ -33,6 +33,8 @@
 #include "AssetEditorModeManager.h"
 #include "Misc/Attribute.h"
 #include "Textures/SlateIcon.h"
+#include "WidgetDrawerConfig.h"
+#include "Interfaces/Interface_AsyncCompilation.h"
 
 #define LOCTEXT_NAMESPACE "AssetEditorToolkit"
 
@@ -193,6 +195,20 @@ void FAssetEditorToolkit::InitAssetEditor( const EToolkitMode::Type Mode, const 
 		NewMajorTab->SetContent
 		( 
 			SAssignNew( NewStandaloneHost, SStandaloneAssetEditorToolkitHost, NewTabManager, AppIdentifier )
+			.IsEnabled_Lambda([ObjectsToEdit]()
+				{
+					for (const UObject* Object : ObjectsToEdit)
+					{
+						if (const IInterface_AsyncCompilation* AsyncAsset = Cast<IInterface_AsyncCompilation>(Object))
+						{
+							if (AsyncAsset->IsCompiling())
+							{
+								return false;
+							}
+						}
+					}
+					return true;
+				})
 			.OnRequestClose(this, &FAssetEditorToolkit::OnRequestClose)
 			.OnClose(this, &FAssetEditorToolkit::OnClose)
 		);
@@ -397,7 +413,7 @@ FText FAssetEditorToolkit::GetToolTipTextForObject(const UObject* InObject)
 
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
 
-		const FString CollectionNames = CollectionManagerModule.Get().GetCollectionsStringForObject(*InObject->GetPathName(), ECollectionShareType::CST_All);
+		const FString CollectionNames = CollectionManagerModule.Get().GetCollectionsStringForObject(FSoftObjectPath(InObject), ECollectionShareType::CST_All);
 		if (!CollectionNames.IsEmpty())
 		{
 			ToolTipString += TEXT("\n");
@@ -671,7 +687,7 @@ const FSlateBrush* FAssetEditorToolkit::GetDefaultTabIcon() const
 
 	if (!IconBrush)
 	{
-		IconBrush = FEditorStyle::GetBrush(TEXT("ClassIcon.Default"));;
+		IconBrush = FAppStyle::GetBrush(TEXT("ClassIcon.Default"));;
 	}
 
 	return IconBrush;
@@ -919,10 +935,10 @@ void FAssetEditorToolkit::FillDefaultFileMenuCommands(FToolMenuSection& InSectio
 {
 	const FToolMenuInsert InsertPosition(NAME_None, EToolMenuInsertType::First);
 
-	InSection.AddMenuEntry(FAssetEditorCommonCommands::Get().SaveAsset, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetEditor.SaveAsset")).InsertPosition = InsertPosition;
+	InSection.AddMenuEntry(FAssetEditorCommonCommands::Get().SaveAsset, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveAsset")).InsertPosition = InsertPosition;
 	if( IsActuallyAnAsset() )
 	{
-		InSection.AddMenuEntry(FAssetEditorCommonCommands::Get().SaveAssetAs, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetEditor.SaveAssetAs")).InsertPosition = InsertPosition;
+		InSection.AddMenuEntry(FAssetEditorCommonCommands::Get().SaveAssetAs, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveAssetAs")).InsertPosition = InsertPosition;
 	}
 	InSection.AddSeparator("DefaultFileMenuCommandsSeparator").InsertPosition = InsertPosition;;
 
@@ -973,7 +989,7 @@ void FAssetEditorToolkit::FillDefaultAssetMenuCommands(FToolMenuSection& InSecti
 					FUIAction UIAction;
 					UIAction.ExecuteAction.BindRaw( this, &FAssetEditorToolkit::Reimport_Execute, EditingObject );
 					ReimportEntryName.SetNumber(MenuEntryCount++);
-					InSection.AddMenuEntry( ReimportEntryName, LabelText, ToolTipText, FSlateIcon(FEditorStyle::GetStyleSetName(), IconName), UIAction );
+					InSection.AddMenuEntry( ReimportEntryName, LabelText, ToolTipText, FSlateIcon(FAppStyle::GetAppStyleSetName(), IconName), UIAction );
 				}
 			}
 		}		
@@ -1028,20 +1044,34 @@ void FAssetEditorToolkit::RegisterDefaultToolBar()
 	if (!ToolMenus->IsMenuRegistered(DefaultAssetEditorToolBarName))
 	{
 		UToolMenu* ToolbarBuilder = ToolMenus->RegisterMenu(DefaultAssetEditorToolBarName, NAME_None, EMultiBoxType::SlimHorizontalToolBar);
-#if 0
-		ToolbarBuilder->StyleName = "AssetEditorToolbar";
-#endif
-		{
-			FToolMenuSection& Section = ToolbarBuilder->AddSection("Asset");
-			Section.AddEntry(FToolMenuEntry::InitToolBarButton(FAssetEditorCommonCommands::Get().SaveAsset));
-			Section.AddEntry(FToolMenuEntry::InitToolBarButton(FGlobalEditorCommonCommands::Get().FindInContentBrowser, LOCTEXT("FindInContentBrowserButton", "Browse")));
-		}
+		FToolMenuSection& Section = ToolbarBuilder->AddSection("Asset");
 	}
 }
 
 void FAssetEditorToolkit::InitToolMenuContext(FToolMenuContext& MenuContext)
 {
 
+}
+
+UToolMenu* FAssetEditorToolkit::GenerateCommonActionsToolbar(FToolMenuContext& MenuContext)
+{
+	UToolMenus* ToolMenus = UToolMenus::Get();
+	FName ToolBarName = "AssetEditorToolbar.CommonActions";
+
+	UToolMenu* FoundMenu = ToolMenus->FindMenu(ToolBarName);
+
+	if (!FoundMenu || !FoundMenu->IsRegistered())
+	{
+		FoundMenu = ToolMenus->RegisterMenu(ToolBarName, NAME_None, EMultiBoxType::SlimHorizontalToolBar);
+		FoundMenu->StyleName = "AssetEditorToolbar";
+
+		FToolMenuSection& Section = FoundMenu->AddSection("CommonActions");
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FAssetEditorCommonCommands::Get().SaveAsset));
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FGlobalEditorCommonCommands::Get().FindInContentBrowser, LOCTEXT("FindInContentBrowserButton", "Browse")));
+		Section.AddSeparator(NAME_None);
+	}
+
+	return ToolMenus->GenerateMenu(ToolBarName, MenuContext);;
 }
 
 void FAssetEditorToolkit::GenerateToolbar()
@@ -1072,6 +1102,9 @@ void FAssetEditorToolkit::GenerateToolbar()
 	GeneratedToolbar->bToolBarForceSmallIcons = bIsToolbarUsingSmallIcons;
 	TSharedRef< class SWidget > ToolBarWidget = ToolMenus->GenerateWidget(GeneratedToolbar);
 
+	UToolMenu* CommonActionsToolbar = GenerateCommonActionsToolbar(MenuContext);
+	TSharedRef< class SWidget > CommonActionsToolbarWidget = ToolMenus->GenerateWidget(CommonActionsToolbar);
+
 	TSharedRef<SWidget> MiscWidgets = SNullWidget::NullWidget;
 
 	if(ToolbarWidgets.Num() > 0)
@@ -1094,8 +1127,19 @@ void FAssetEditorToolkit::GenerateToolbar()
 	Toolbar = 
 		SNew(SHorizontalBox)
 		+SHorizontalBox::Slot()
+		.AutoWidth()
 		[
-			ToolBarWidget
+			CommonActionsToolbarWidget
+		]
+		+SHorizontalBox::Slot()
+		[
+			SNew(SBorder)
+			.VAlign(VAlign_Center)
+			.BorderImage(FAppStyle::Get().GetBrush("AssetEditorToolbar.Background"))
+			.Padding(FMargin(0.0f))
+			[
+				ToolBarWidget
+			]
 		]
 		+SHorizontalBox::Slot()
 		.HAlign(HAlign_Right)
@@ -1103,7 +1147,7 @@ void FAssetEditorToolkit::GenerateToolbar()
 		[
 			SNew(SBorder)
 			.VAlign(VAlign_Center)
-			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
+			.BorderImage(FAppStyle::Get().GetBrush("AssetEditorToolbar.Background"))
 			.Padding(FMargin(0.0f))
 			[
 				MiscWidgets
@@ -1137,7 +1181,7 @@ void FAssetEditorToolkit::RegenerateMenusAndToolbars()
 }
 
 
-void FAssetEditorToolkit::RegisterDrawer(FStatusBarDrawer&& Drawer, int32 SlotIndex)
+void FAssetEditorToolkit::RegisterDrawer(FWidgetDrawerConfig&& Drawer, int32 SlotIndex)
 {
 	TSharedPtr< class SStandaloneAssetEditorToolkitHost > HostWidget = StandaloneHost.Pin();
 	if (HostWidget.IsValid())
@@ -1262,6 +1306,23 @@ TSharedPtr<FExtender> FExtensibilityManager::GetAllExtenders(const TSharedRef<FU
 		}
 	}
 	return FExtender::Combine(OutExtenders);
+}
+
+TArray<UObject*> UAssetEditorToolkitMenuContext::GetEditingObjects() const
+{
+	TArray<UObject*> Result;
+	if (TSharedPtr<FAssetEditorToolkit> Pinned = Toolkit.Pin())
+	{
+		for (UObject* Object : Pinned->GetEditingObjects())
+		{
+			if (Object)
+			{
+				Result.Add(Object);
+			}
+		}
+	}
+
+	return Result;
 }
 	
 #undef LOCTEXT_NAMESPACE

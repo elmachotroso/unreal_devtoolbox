@@ -16,7 +16,7 @@
  * FConstStructView is passed by value.
  * FConstStructView is similar to FStructOnScope, but FConstStructView is a view only (FStructOnScope can either own the memory or be a view)
  */
-struct STRUCTUTILS_API FConstStructView
+struct FConstStructView
 {
 public:
 
@@ -50,7 +50,7 @@ public:
 	static FConstStructView Make(const T& Struct)
 	{
 		UE::StructUtils::CheckStructType<T>();
-		return FConstStructView(T::StaticStruct(), reinterpret_cast<const uint8*>(&Struct));
+		return FConstStructView(TBaseStructure<T>::Get(), reinterpret_cast<const uint8*>(&Struct));
 	}
 
 	/** Returns struct type. */
@@ -79,7 +79,7 @@ public:
 		const UScriptStruct* Struct = GetScriptStruct();
 		check(Memory != nullptr);
 		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
+		check(Struct->IsChildOf(TBaseStructure<T>::Get()));
 		return *((T*)Memory);
 	}
 
@@ -89,7 +89,7 @@ public:
 	{
 		const uint8* Memory = GetMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
-		if (Memory != nullptr && Struct && Struct->IsChildOf(T::StaticStruct()))
+		if (Memory != nullptr && Struct && Struct->IsChildOf(TBaseStructure<T>::Get()))
 		{
 			return ((T*)Memory);
 		}
@@ -147,7 +147,7 @@ protected:
  * FStructView is passed by value.
  * FStructView is similar to FStructOnScope, but FStructView is a view only (FStructOnScope can either own the memory or be a view)
  */
-struct STRUCTUTILS_API FStructView : public FConstStructView
+struct FStructView : public FConstStructView
 {
 public:
 
@@ -181,7 +181,7 @@ public:
 	static FStructView Make(T& InStruct)
 	{
 		UE::StructUtils::CheckStructType<T>();
-		return FStructView(T::StaticStruct(), reinterpret_cast<uint8*>(&InStruct));
+		return FStructView(TBaseStructure<T>::Get(), reinterpret_cast<uint8*>(&InStruct));
 	}
 
 	/** Returns a mutable pointer to struct memory. This const_cast here is safe as a ClassName can only be setup from mutable non const memory. */
@@ -199,7 +199,7 @@ public:
 		const UScriptStruct* Struct = GetScriptStruct();
 		check(Memory != nullptr);
 		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
+		check(Struct->IsChildOf(TBaseStructure<T>::Get()));
 		return *((T*)Memory);
 	}
 
@@ -209,7 +209,7 @@ public:
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
-		if (Memory != nullptr && Struct && Struct->IsChildOf(T::StaticStruct()))
+		if (Memory != nullptr && Struct && Struct->IsChildOf(TBaseStructure<T>::Get()))
 		{
 			return ((T*)Memory);
 		}

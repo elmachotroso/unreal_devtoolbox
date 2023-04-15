@@ -8,6 +8,7 @@
 #include "UObject/Package.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
+#include "ActorTransactionAnnotation.h"
 #include "Engine/World.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/ChildActorComponent.h"
@@ -18,6 +19,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "FileHelpers.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -35,6 +37,7 @@
 #include "Engine/NetDriver.h"
 #include "Engine/ActorChannel.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Engine/ScopedMovementUpdate.h"
 
 // Enabling this will validate cached dependent Blueprints against the full set of loaded Blueprints when updating bytecode references.
 // Note: Enabling this may potentially increase editor/Blueprint load time and/or decrease performance related to Blueprint compilation.
@@ -52,6 +55,15 @@ DECLARE_CYCLE_STAT(TEXT("Replace Classes Without Reinstancing"), EKismetReinstan
 DECLARE_CYCLE_STAT(TEXT("Reinstance Objects"), EKismetCompilerStats_ReinstanceObjects, STATGROUP_KismetCompiler);
 DECLARE_CYCLE_STAT(TEXT("Refresh Dependent Blueprints In Reinstancer"), EKismetCompilerStats_RefreshDependentBlueprintsInReinstancer, STATGROUP_KismetCompiler);
 DECLARE_CYCLE_STAT(TEXT("Recreate UberGraphPersistentFrame"), EKismetCompilerStats_RecreateUberGraphPersistentFrame, STATGROUP_KismetCompiler);
+
+bool GUseLegacyAnimInstanceReinstancingBehavior = false;
+static FAutoConsoleVariableRef CVarUseLegacyAnimInstanceReinstancingBehavior(
+	TEXT("bp.UseLegacyAnimInstanceReinstancingBehavior"),
+	GUseLegacyAnimInstanceReinstancingBehavior,
+	TEXT("Use the legacy re-instancing behavior for anim instances where the instance is destroyed and re-created.")
+);
+
+extern ENGINE_API UObject* GLogReinstancerReferenceReplacementObj;
 
 struct FReplaceReferenceHelper
 {
@@ -90,6 +102,19 @@ struct FReplaceReferenceHelper
 			return;
 		}
 
+		if (GLogReinstancerReferenceReplacementObj)
+		{
+			FString Classes;
+			for (UObject* Obj : SourceObjects)
+			{
+				Classes.Append(Obj->GetClass()->GetName() + " ");
+			}
+			UE_LOG(LogBlueprint, Warning, TEXT("%s %s Replacing References to: %s"), 
+				*(GLogReinstancerReferenceReplacementObj->GetName()), 
+				*(GLogReinstancerReferenceReplacementObj->GetClass()->GetName()), 
+				*Classes);
+		}
+
 		// Remember what values were in UActorChannel::Actor so we can restore them later (this should only affect reinstancing during PIE)
 		// We need the old actor channel to tear down cleanly without affecting the new actor
 		TMap<UActorChannel*, AActor*> ActorChannelActorRestorationMap;
@@ -109,11 +134,17 @@ struct FReplaceReferenceHelper
 			Targets = FReferencerFinder::GetAllReferencers(SourceObjects, ObjectsThatShouldUseOldStuff);
 		}
 
+		if (Targets.Num())
 		{
 			BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_ReplaceReferences);
 
+			FScopedSlowTask SlowTask(Targets.Num(), NSLOCTEXT("Kismet", "PerformingReplaceReferences", "Performing replace references..."));
+			SlowTask.MakeDialogDelayed(1.0f);
+
 			for (UObject* Obj : Targets)
 			{
+				SlowTask.EnterProgressFrame(1);
+
 				// Make sure we don't update properties in old objects, as they
 				// may take ownership of objects referenced in new objects (e.g.
 				// delete components owned by new actors)
@@ -1175,7 +1206,7 @@ struct FActorReplacementHelper
 		, TargetWorldTransform(FTransform::Identity)
 		, AttachmentData( MoveTemp(InAttachmentData) )
 	{
-		CachedActorData = StaticCastSharedPtr<AActor::FActorTransactionAnnotation>(OldActor->FindOrCreateTransactionAnnotation());
+		CachedActorData = StaticCastSharedPtr<FActorTransactionAnnotation>(OldActor->FindOrCreateTransactionAnnotation());
 		TArray<AActor*> AttachedActors;
 		OldActor->GetAttachedActors(AttachedActors);
 
@@ -1240,7 +1271,7 @@ private:
 	FActorAttachmentData AttachmentData;
 
 	/** Holds actor component data, etc. that we use to apply */
-	TSharedPtr<AActor::FActorTransactionAnnotation> CachedActorData;
+	TSharedPtr<FActorTransactionAnnotation> CachedActorData;
 
 	TMap<FName, UActorComponent*> OldActorComponentNameMap;
 };
@@ -1682,7 +1713,7 @@ void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* OwnerClass,
 		if (OldCDO)
 		{
 			OwnerClass->ClassDefaultObject = nullptr;
-			OldCDO->Rename(nullptr, ReinstClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			OldCDO->Rename(nullptr, ReinstClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 			ReinstClass->ClassDefaultObject = OldCDO;
 			OldCDO->SetClass(ReinstClass);
 		}
@@ -1847,6 +1878,8 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 
 	FName OldName(OldObject->GetFName());
 
+	UEngine::FCopyPropertiesForUnrelatedObjectsParams Options;
+
 	// If the old object is in this table, we've already renamed it away in a previous iteration. Don't rename it again!
 	if (!OldToNewNameMap.Contains(OldObject))
 	{
@@ -1868,6 +1901,7 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 		}
 		else
 		{
+			Options.SourceObjectArchetype = OldObject->GetArchetype(); // Cache the old object's archetype before renaming
 			OldObject->Rename(nullptr, OldObject->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 		}
 	}
@@ -1882,12 +1916,7 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 		}
 
 		FMakeClassSpawnableOnScope TemporarilySpawnable(NewClass);
-		// Since we have previously ensured that instances are processed in such order
-		// that each instance's outer is processed _before_ itself, we can safely
-		// look up the outer object in OldToNewInstanceMap to determine if a new version exists 
-		UObject* OldOuter = OldObject->GetOuter();
-		UObject* const* NewOuter = OldToNewInstanceMap.Find(OldOuter);
-		NewUObject = NewObject<UObject>(NewOuter ? *NewOuter : OldOuter, NewClass, NewName, RF_NoFlags, NewArchetype);
+		NewUObject = NewObject<UObject>(OldObject->GetOuter(), NewClass, NewName, RF_NoFlags, NewArchetype);
 	}
 
 	check(NewUObject != nullptr);
@@ -1897,9 +1926,8 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 	InstancedPropertyUtils::FInstancedPropertyMap InstancedPropertyMap;
 	InstancedPropertyUtils::FArchiveInstancedSubObjCollector  InstancedSubObjCollector(OldObject, InstancedPropertyMap);
 	// Copy property values
-	UEngine::FCopyPropertiesForUnrelatedObjectsParams Options;
 	Options.bNotifyObjectReplacement = true;
-	Options.bDontClearReferenceIfNewerClassExists = true;
+	Options.bSkipCompilerGeneratedDefaults = true;
 	UEditorEngine::CopyPropertiesForUnrelatedObjects(OldObject, NewUObject, Options);
 	// Generate new subobjects
 	InstancedPropertyUtils::FArchiveInsertInstancedSubObjects InstancedSubObjSpawner(NewUObject, InstancedPropertyMap);
@@ -2076,7 +2104,10 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 
 	UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
 	Params.bPreserveRootComponent = bPreserveRootComponent;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Leaving this enabled for now for the purposes of the aggressive replacement auditing
 	Params.bAggressiveDefaultSubobjectReplacement = true;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	Params.bNotifyObjectReplacement = true;
 	UEngine::CopyPropertiesForUnrelatedObjects(OldActor, NewActor, Params);
 
@@ -2196,6 +2227,8 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 	};
 
 	{
+		TArray<UObject*> ObjectsToReplace;
+
 		BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_ReplaceInstancesOfClass);
 		if(GEditor && GEditor->GetSelectedActors())
 		{
@@ -2204,108 +2237,13 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 			SelectedActors->Modify();
 		}
 
-		struct FClassInstances
-		{
-			TPair<UClass*, UClass*> OldToNewClass;
-			TArray<UObject*> OldInstances;
-		};
-
-		// Build array of instances to replace, sorted in order of subobject hierarchy
-		TArray<FClassInstances> ClassInstancesWithOldOuter;
-		TArray<FClassInstances> AllClassInstances;
-		ClassInstancesWithOldOuter.Reserve(InOldToNewClassMap.Num());
-		AllClassInstances.Reserve(InOldToNewClassMap.Num());
-		for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap)
-		{
-			// We depend on the proper states of this flag in the algorithm that follows.  Reload system will
-			// have old == new if a code change has been detected, but no structural changes were made. 
-			if (OldToNewClass.Key != OldToNewClass.Value)
-			{
-				OldToNewClass.Key->ClassFlags |= CLASS_NewerVersionExists; // This flag should be set at this point so make sure it is
-				ensure(!OldToNewClass.Value->HasAnyClassFlags(CLASS_NewerVersionExists));
-			}
-
-			// Cache all instances of each class being reinstanced
-			FClassInstances ClassInstances;
-			ClassInstances.OldToNewClass = OldToNewClass;
-			const bool bIncludeDerivedClasses = false;
-			GetObjectsOfClass(OldToNewClass.Key, ClassInstances.OldInstances, bIncludeDerivedClasses);
-
-			// Put in one of two lists depending on if any instances have an outdated outer
-			bool bHasOldOuter = false;
-			for (UObject* OldInstance : ClassInstances.OldInstances)
-			{
-				if (OldInstance->GetOuter()->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists))
-				{
-					bHasOldOuter = true;
-					break;
-				}
-			}
-			if (bHasOldOuter)
-			{
-				ClassInstancesWithOldOuter.Add(MoveTemp(ClassInstances));
-			}
-			else
-			{
-				AllClassInstances.Add(MoveTemp(ClassInstances));
-			}
-		}
-
-		// Make sure all subobjects follow behind their outer
-		// If we find any subobject occurring before its outer, swap it with its outer and repeat
-		// This algorithm has quadratic complexity, though the number of elements in this array is usually very small
-		// and for Blueprint reinstancing at this time of writing this array is always empty
-		// It might be possible to topologically sort this with better time complexity but
-		// this would also significantly complicate the algorithm which is at this point not worth it
-		for (int32 ClassIndex1 = 0; ClassIndex1 < ClassInstancesWithOldOuter.Num(); ++ClassIndex1)
-		{
-		StartOver:
-			FClassInstances& ClassInstances1 = ClassInstancesWithOldOuter[ClassIndex1];
-			for (int32 ClassIndex2 = ClassIndex1 + 1; ClassIndex2 < ClassInstancesWithOldOuter.Num(); ++ClassIndex2)
-			{
-				FClassInstances& ClassInstances2 = ClassInstancesWithOldOuter[ClassIndex2];
-				bool bSwap = false;
-				bool bDontSwap = false;
-				for (UObject* Obj1 : ClassInstances1.OldInstances)
-				{
-					UObject* Outer1 = Obj1->GetOuter();
-					for (UObject* Obj2 : ClassInstances2.OldInstances)
-					{
-						UObject* Outer2 = Obj2->GetOuter();
-						bSwap |= (Outer1 == Obj2);
-						bDontSwap |= (Outer2 == Obj1);
-					}
-				}
-				if (bSwap)
-				{
-					// Found at least one instance of class 1 that is a subobject of an instance of class 2
-					// Therefore, let's swap their order so the owner gets reinstanced before its subobjects
-					ClassInstancesWithOldOuter.Swap(ClassIndex1, ClassIndex2);
-					if (!bDontSwap)
-					{
-						goto StartOver;
-					}
-					// If we get here for a legitimate reason, we should consider refactoring this code to operate
-					// not on a list of classes with instances but on a flat list of instances instead
-					// which would allow us to resolve this circular dependency
-					UE_LOG(LogBlueprint, Error, TEXT("Found an instance of class %s contained in an instance of class %s and also vice versa. Reinstancing will be faulty."), *ClassInstances1.OldToNewClass.Value->GetName(), *ClassInstances2.OldToNewClass.Value->GetName());
-					ensureAlways(false);
-				}
-			}
-		}
-
-		// After sorting, append ClassInstancesWithOuter to AllClassInstances,
-		// The prior elements of AllClassInstances might contain outers of ClassInstancesWithOldOuter
-		// and must therefore be processed before the elements of ClassInstancesWithOldOuter 
-		AllClassInstances.Append(MoveTemp(ClassInstancesWithOldOuter));
-
 		// WARNING: for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap) duplicated below 
 		// to handle reconstructing actors which need to be reinstanced after their owned components 
 		// have been updated:
-		for (FClassInstances& ClassInstances : AllClassInstances)
+		for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap)
 		{
-			UClass* OldClass = ClassInstances.OldToNewClass.Key;
-			UClass* NewClass = ClassInstances.OldToNewClass.Value;
+			UClass* OldClass = OldToNewClass.Key;
+			UClass* NewClass = OldToNewClass.Value;
 			check(OldClass && NewClass);
 			check(OldClass != NewClass || IsReloadActive());
 			{
@@ -2333,10 +2271,13 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 					bFixupSCS = (NewClass->IsChildOf<USceneComponent>() != OldClass->IsChildOf<USceneComponent>());
 				}
 
+				const bool bIncludeDerivedClasses = false;
+				ObjectsToReplace.Reset();
+				GetObjectsOfClass(OldClass, ObjectsToReplace, bIncludeDerivedClasses);
 				// Then fix 'real' (non archetype) instances of the class
-				for (int32 OldObjIndex = 0; OldObjIndex < ClassInstances.OldInstances.Num(); ++OldObjIndex)
+				for (int32 OldObjIndex = 0; OldObjIndex < ObjectsToReplace.Num(); ++OldObjIndex)
 				{
-					UObject* OldObject = ClassInstances.OldInstances[OldObjIndex];
+					UObject* OldObject = ObjectsToReplace[OldObjIndex];
 					
 					AActor* OldActor = Cast<AActor>(OldObject);
 
@@ -2353,7 +2294,7 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 					if (OldActor == nullptr)
 					{
 						UObject* NewUObject = nullptr;
-						ReplaceObjectHelper(OldObject, OldClass, NewUObject, NewClass, OldToNewInstanceMap, OldToNewNameMap, OldObjIndex, ClassInstances.OldInstances, PotentialEditorsForRefreshing, OwnersToRerunConstructionScript, &FDirectAttachChildrenAccessor::Get, bIsComponent, bArchetypesAreUpToDate);
+						ReplaceObjectHelper(OldObject, OldClass, NewUObject, NewClass, OldToNewInstanceMap, OldToNewNameMap, OldObjIndex, ObjectsToReplace, PotentialEditorsForRefreshing, OwnersToRerunConstructionScript, &FDirectAttachChildrenAccessor::Get, bIsComponent, bArchetypesAreUpToDate);
 						UpdateObjectBeingDebugged(OldObject, NewUObject);
 						ObjectsReplaced.Add(OldObject);
 
@@ -2379,18 +2320,22 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 		// WARNING: for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap) duplicated above 
 		// this loop only handles actors - which need to be reconstructed *after* their owned components 
 		// have been reinstanced:
-		for (FClassInstances& ClassInstances : AllClassInstances)
+		for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap)
 		{
-			UClass* OldClass = ClassInstances.OldToNewClass.Key;
-			UClass* NewClass = ClassInstances.OldToNewClass.Value;
+			UClass* OldClass = OldToNewClass.Key;
+			UClass* NewClass = OldToNewClass.Value;
 			check(OldClass && NewClass);
 
 			{
+				const bool bIncludeDerivedClasses = false;
+				ObjectsToReplace.Reset();
+				GetObjectsOfClass(OldClass, ObjectsToReplace, bIncludeDerivedClasses);
+
 				// store old attachment data before we mess with components, etc:
 				TMap<UObject*, FActorAttachmentData> ActorAttachmentData;
-				for (int32 OldObjIndex = 0; OldObjIndex < ClassInstances.OldInstances.Num(); ++OldObjIndex)
+				for (int32 OldObjIndex = 0; OldObjIndex < ObjectsToReplace.Num(); ++OldObjIndex)
 				{
-					UObject* OldObject = ClassInstances.OldInstances[OldObjIndex];
+					UObject* OldObject = ObjectsToReplace[OldObjIndex];
 					if(!IsValid(OldObject) || 
 						(InstancesThatShouldUseOldClass && InstancesThatShouldUseOldClass->Contains(OldObject)))
 					{
@@ -2404,9 +2349,9 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 				}
 
 				// Then fix 'real' (non archetype) instances of the class
-				for (int32 OldObjIndex = 0; OldObjIndex < ClassInstances.OldInstances.Num(); ++OldObjIndex)
+				for (int32 OldObjIndex = 0; OldObjIndex < ObjectsToReplace.Num(); ++OldObjIndex)
 				{
-					UObject* OldObject = ClassInstances.OldInstances[OldObjIndex];
+					UObject* OldObject = ObjectsToReplace[OldObjIndex];
 					AActor* OldActor = Cast<AActor>(OldObject);
 
 					// Skip archetype instances, EXCEPT for child actor templates
@@ -2430,7 +2375,7 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 						else
 						{
 							// Actors that are not in a level cannot be reconstructed, sequencer team decided to reinstance these as normal objects:
-							ReplaceObjectHelper(OldObject, OldClass, NewUObject, NewClass, OldToNewInstanceMap, OldToNewNameMap, OldObjIndex, ClassInstances.OldInstances, PotentialEditorsForRefreshing, OwnersToRerunConstructionScript, &FDirectAttachChildrenAccessor::Get, false, bArchetypesAreUpToDate);
+							ReplaceObjectHelper(OldObject, OldClass, NewUObject, NewClass, OldToNewInstanceMap, OldToNewNameMap, OldObjIndex, ObjectsToReplace, PotentialEditorsForRefreshing, OwnersToRerunConstructionScript, &FDirectAttachChildrenAccessor::Get, false, bArchetypesAreUpToDate);
 						}
 						UpdateObjectBeingDebugged(OldObject, NewUObject);
 						ObjectsReplaced.Add(OldObject);
@@ -2545,20 +2490,25 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(TMap<UClass*, U
 
 			if (UAnimInstance* AnimTree = Cast<UAnimInstance>(*NewObject))
 			{
-				// Initialising the anim instance isn't enough to correctly set up the skeletal mesh again in a
-				// paused world, need to initialise the skeletal mesh component that contains the anim instance.
 				if (USkeletalMeshComponent* SkelComponent = Cast<USkeletalMeshComponent>(AnimTree->GetOuter()))
 				{
-					SkelComponent->ClearAnimScriptInstance();
-					SkelComponent->InitAnim(true);
-					// compile change ignores motion vector, so ignore this. 
-					SkelComponent->ClearMotionVector();
+					if(GUseLegacyAnimInstanceReinstancingBehavior)
+					{
+						// Legacy behavior - destroy and re-create the anim instance
+						SkelComponent->ClearAnimScriptInstance();
+						SkelComponent->InitAnim(true);
+
+						// compile change ignores motion vector, so ignore this. 
+						SkelComponent->ClearMotionVector();
+					}
 				}
 			}
 		}
 	}
 
-
+	// Inform listeners of object reinstancing
+	FCoreUObjectDelegates::OnObjectsReinstanced.Broadcast(OldToNewInstanceMap);
+	
 	if(SelectedActors)
 	{
 		SelectedActors->EndBatchSelectOperation();
@@ -2714,7 +2664,6 @@ void FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects(UObject* Ol
 	InstancedPropertyUtils::FArchiveInstancedSubObjCollector  InstancedSubObjCollector(OldObject, InstancedPropertyMap);
 
 	UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
-	Params.bAggressiveDefaultSubobjectReplacement = false;
 	// During a blueprint reparent, delta serialization must be enabled to correctly copy all properties
 	Params.bDoDelta = bForceDeltaSerialization || !OldObject->HasAnyFlags(RF_ClassDefaultObject);
 	Params.bCopyDeprecatedProperties = true;

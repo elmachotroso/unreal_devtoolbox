@@ -15,6 +15,7 @@
 class AActor;
 struct FAssetData;
 class FMenuBuilder;
+class UMovieSceneSubTrack;
 
 /**
  * Tools for animatable property types such as floats ands vectors
@@ -59,8 +60,8 @@ public:
 	/** Switch the selected sub section's take */
 	void SwitchTake(UObject* TakeObject);
 
-protected:
-
+public:
+	
 	/**
 	 * Check whether the given sequence can be added as a sub-sequence.
 	 *
@@ -71,6 +72,22 @@ protected:
 	 * @return true if the sequence can be added as a sub-sequence, false otherwise.
 	 */
 	bool CanAddSubSequence(const UMovieSceneSequence& Sequence) const;
+
+protected:
+	/**
+	 * Create a new UMovieSceneSubTrack.
+	 * 
+	 * @param MovieScene the MovieScene object to create a track.
+	 * @return the created MovieSceneSubTrack
+	 */
+	virtual UMovieSceneSubTrack* CreateNewTrack(UMovieScene* MovieScene) const;
+
+	/**
+	 * Return the list of supported sequence class paths.
+	 * 
+	 * @param OutClassPaths the list of supported sequence class paths.
+	 */
+	virtual void GetSupportedSequenceClassPaths(TArray<FTopLevelAssetPath>& OutClassPaths) const;
 
 private:
 
@@ -85,6 +102,8 @@ private:
 
 	/** Callback for executing a menu entry in the "Add Sequence" combo button when enter pressed. */
 	void HandleAddSubSequenceComboButtonMenuEntryEnterPressed(const TArray<FAssetData>& AssetData, UMovieSceneTrack* InTrack);
+
+	void InsertSequence(UMovieSceneTrack* Track);
 
 	/** Delegate for AnimatablePropertyChanged in AddKey */
 	FKeyPropertyResult AddKeyInternal(FFrameNumber KeyTime, UMovieSceneSequence* InMovieSceneSequence, UMovieSceneTrack* InTrack, int32 RowIndex);

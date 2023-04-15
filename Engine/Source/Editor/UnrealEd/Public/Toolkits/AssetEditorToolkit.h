@@ -180,7 +180,7 @@ public:
 	/**
 	 * Registers a drawer for the asset editor status bar
 	 */
-	void RegisterDrawer(struct FStatusBarDrawer&& Drawer, int32 SlotIndex = INDEX_NONE);
+	void RegisterDrawer(struct FWidgetDrawerConfig&& Drawer, int32 SlotIndex = INDEX_NONE);
 
 	/** Applies the passed in layout (or the saved user-modified version if available).  Must be called after InitAssetEditor. */
 	void RestoreFromLayout(const TSharedRef<FTabManager::FLayout>& NewLayout);
@@ -273,6 +273,8 @@ public:
 	virtual void AddGraphEditorPinActionsToContextMenu(FToolMenuSection& InSection) const {};
 
 protected:
+	friend class UAssetEditorToolkitMenuContext;
+
 	/**
 	 * Perform any initialization that should happen after the basic toolkit needs are created for the asset editor.
 	 * For example, if you would like to activate a mode that is not the default from a mode manager, do that here.
@@ -287,6 +289,9 @@ protected:
 
 	/**	Returns an array of all the objects currently being edited. Asserts if editing no objects */
 	const TArray< UObject* >& GetEditingObjects() const;
+
+	/** Generate the toolbar for common asset actions like Save*/
+	UToolMenu* GenerateCommonActionsToolbar(FToolMenuContext& MenuContext);
 
 	/** Get the collection of edited objects that can be saved. */
 	virtual void GetSaveableObjects(TArray<UObject*>& OutObjects) const;

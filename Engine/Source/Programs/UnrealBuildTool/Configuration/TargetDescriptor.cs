@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -16,12 +17,24 @@ namespace UnrealBuildTool
 	/// </summary>
 	class TargetDescriptor
 	{
+		public static string TEST_TARGETS_SUFFIX = "Tests";
+
 		public FileReference? ProjectFile;
 		public string Name;
 		public UnrealTargetPlatform Platform;
 		public UnrealTargetConfiguration Configuration;
 		public string Architecture;
 		public CommandLineArguments AdditionalArguments;
+		public bool IsTestsTarget = false;
+
+		public static string GetTestedTargetName(string Name)
+		{
+			if (Name.EndsWith(TEST_TARGETS_SUFFIX))
+			{
+				return Name.Substring(0, Name.Length - TEST_TARGETS_SUFFIX.Length);
+			}
+			return Name;
+		}
 
 		/// <summary>
 		/// Foreign plugin to compile against this target
@@ -47,6 +60,12 @@ namespace UnrealBuildTool
 		[CommandLine("-File=")]
 		[CommandLine("-SingleFile=")]
 		public List<FileReference> SpecificFilesToCompile = new List<FileReference>();
+
+		/// <summary>
+		/// Individual files to compile which may or may not be part of the target. This file set is built from a header scan, and may include files
+		/// not part of the target by design.
+		/// </summary>
+		public List<FileReference> OptionalFilesToCompile = new List<FileReference>();
 
 		/// <summary>
 		/// Whether to perform hot reload for this target
@@ -123,7 +142,7 @@ namespace UnrealBuildTool
 					{
 						if (!String.IsNullOrWhiteSpace(File))
 						{
-							SpecificFilesToCompile.Add(new FileReference(File));
+							SpecificFilesToCompile.Add(FileReference.Combine(Unreal.RootDirectory, File));
 						}
 					}
 				}
@@ -160,6 +179,11 @@ namespace UnrealBuildTool
 			this.AdditionalArguments = new CommandLineArguments(AdditionalArguments.ToArray());
 		}
 
+		public TargetDescriptor Copy()
+		{
+			return (TargetDescriptor)this.MemberwiseClone();
+		}
+
 		public static TargetDescriptor FromTargetInfo(TargetInfo Info)
 		{
 			return new TargetDescriptor(Info.ProjectFile, Info.Name, Info.Platform, Info.Configuration, Info.Architecture, Info.Arguments);
@@ -172,11 +196,12 @@ namespace UnrealBuildTool
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine distribution</param>
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
 		/// <param name="bForceRulesCompile">Whether to always compile all rules assemblies</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>List of target descriptors</returns>
-		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile)
+		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, ILogger Logger)
 		{
 			List<TargetDescriptor> TargetDescriptors = new List<TargetDescriptor>();
-			ParseCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
+			ParseCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
 			return TargetDescriptors;
 		}
 
@@ -188,7 +213,8 @@ namespace UnrealBuildTool
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
 		/// <param name="bForceRulesCompile">Whether to always compile rules assemblies</param>
 		/// <param name="TargetDescriptors">Receives the list of parsed target descriptors</param>
-		public static void ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors)
+		/// <param name="Logger">Logger for output</param>
+		public static void ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
 		{
 			List<string> TargetLists;
 			Arguments = Arguments.Remove("-TargetList=", out TargetLists);
@@ -208,7 +234,7 @@ namespace UnrealBuildTool
 						if(TrimLine.Length > 0 && TrimLine[0] != ';')
 						{
 							CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(TrimLine));
-							ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
+							ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
 						}
 					}
 				}
@@ -216,13 +242,13 @@ namespace UnrealBuildTool
 				foreach(string Target in Targets)
 				{
 					CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(Target));
-					ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
+					ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
 				}
 			}
 			else
 			{
 				// Otherwise just process the whole command line together
-				ParseSingleCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
+				ParseSingleCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors, Logger);
 			}
 		}
 
@@ -234,7 +260,8 @@ namespace UnrealBuildTool
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
 		/// <param name="bForceRulesCompile">Whether to always compile all rules assemblies</param>
 		/// <param name="TargetDescriptors">List of target descriptors</param>
-		public static void ParseSingleCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors)
+		/// <param name="Logger">Logger for output</param>
+		public static void ParseSingleCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
 		{
 			List<UnrealTargetPlatform> Platforms = new List<UnrealTargetPlatform>();
 			List<UnrealTargetConfiguration> Configurations = new List<UnrealTargetConfiguration>();
@@ -367,11 +394,11 @@ namespace UnrealBuildTool
 
 							if (ProjectFile == null)
 							{
-								TargetNames.Add(RulesCompiler.CreateEngineRulesAssembly(bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, null));
+								TargetNames.Add(RulesCompiler.CreateEngineRulesAssembly(bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, Logger).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, null, Logger));
 							}
 							else
 							{
-								TargetNames.Add(RulesCompiler.CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, ProjectFile));
+								TargetNames.Add(RulesCompiler.CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, Logger).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, ProjectFile, Logger));
 							}
 						}
 
@@ -385,9 +412,9 @@ namespace UnrealBuildTool
 						foreach(string TargetName in TargetNames)
 						{
 							// If a project file was not specified see if we can find one
-							if (ProjectFile == null && NativeProjects.TryGetProjectForTarget(TargetName, out ProjectFile))
+							if (ProjectFile == null && NativeProjects.TryGetProjectForTarget(TargetName, Logger, out ProjectFile))
 							{
-								Log.TraceVerbose("Found project file for {0} - {1}", TargetName, ProjectFile);
+								Logger.LogDebug("Found project file for {TargetName} - {ProjectFile}", TargetName, ProjectFile);
 							}
 
 							// Create the target descriptor
@@ -458,11 +485,13 @@ namespace UnrealBuildTool
 
 		public override int GetHashCode()
 		{
+#pragma warning disable RS1024
 			return String.GetHashCode(ProjectFile?.FullName) + 
 				Name.GetHashCode() + 
 				Platform.GetHashCode() + 
 				Configuration.GetHashCode() + 
 				Architecture.GetHashCode();
+#pragma warning restore RE1024
 		}
 
 		public override bool Equals(object? Obj) 

@@ -6,17 +6,20 @@
 #include "ToolSetupUtil.h"
 #include "ModelingToolTargetUtil.h"
 #include "Drawing/PreviewGeometryActor.h"
+#include "Util/ColorConstants.h"
 
 #include "Physics/PhysicsDataCollection.h"
 #include "Physics/CollisionGeometryVisualization.h"
 
 // physics data
-#include "Engine/Classes/PhysicsEngine/BodySetup.h"
-#include "Engine/Classes/PhysicsEngine/AggregateGeom.h"
+#include "PhysicsEngine/AggregateGeom.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "TargetInterfaces/PhysicsDataSource.h"
 #include "ToolTargetManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsInspectorTool)
 
 using namespace UE::Geometry;
 
@@ -48,6 +51,7 @@ void UPhysicsInspectorTool::Setup()
 	AddToolPropertySource(VizSettings);
 	VizSettings->WatchProperty(VizSettings->LineThickness, [this](float NewValue) { bVisualizationDirty = true; });
 	VizSettings->WatchProperty(VizSettings->Color, [this](FColor NewValue) { bVisualizationDirty = true; });
+	VizSettings->WatchProperty(VizSettings->bRandomColors, [this](bool bNewValue) { bVisualizationDirty = true; });
 	VizSettings->WatchProperty(VizSettings->bShowHidden, [this](bool bNewValue) { bVisualizationDirty = true; });
 
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
@@ -113,12 +117,13 @@ void UPhysicsInspectorTool::UpdateVisualization()
 	FColor UseColor = VizSettings->Color;
 	LineMaterial = ToolSetupUtil::GetDefaultLineComponentMaterial(GetToolManager(), !VizSettings->bShowHidden);
 
+	int32 ColorIdx = 0;
 	for (UPreviewGeometry* Preview : PreviewElements)
 	{
 		Preview->UpdateAllLineSets([&](ULineSetComponent* LineSet)
 		{
 			LineSet->SetAllLinesThickness(UseThickness);
-			LineSet->SetAllLinesColor(UseColor);
+			LineSet->SetAllLinesColor(VizSettings->bRandomColors ? LinearColors::SelectFColor(ColorIdx++) : UseColor);
 		});
 		Preview->SetAllLineSetsMaterial(LineMaterial);
 	}
@@ -136,7 +141,7 @@ void UPhysicsInspectorTool::InitializeObjectProperties(const FPhysicsDataCollect
 void UPhysicsInspectorTool::InitializeGeometry(const FPhysicsDataCollection& PhysicsData, UPreviewGeometry* PreviewGeom)
 {
 	UE::PhysicsTools::InitializePreviewGeometryLines(PhysicsData, PreviewGeom,
-		VizSettings->Color, VizSettings->LineThickness, 0.0f, 16);
+		VizSettings->Color, VizSettings->LineThickness, 0.0f, 16, VizSettings->bRandomColors);
 }
 
 

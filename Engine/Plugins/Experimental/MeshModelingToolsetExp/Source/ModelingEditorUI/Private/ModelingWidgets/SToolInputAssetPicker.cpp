@@ -12,7 +12,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "FrontendFilters.h"
 #include "SAssetSearchBox.h"
 #include "SAssetView.h"
@@ -98,8 +98,8 @@ void SToolInputAssetPicker::Construct( const FArguments& InArgs )
 				.AutoHeight()
 				[
 					SNew(SButton)
-						.ButtonStyle( FEditorStyle::Get(), "ContentBrowser.NoneButton" )
-						.TextStyle( FEditorStyle::Get(), "ContentBrowser.NoneButtonText" )
+						.ButtonStyle( FAppStyle::Get(), "ContentBrowser.NoneButton" )
+						.TextStyle( FAppStyle::Get(), "ContentBrowser.NoneButtonText" )
 						.Text( LOCTEXT("NoneButtonText", "( None )") )
 						.ToolTipText( LOCTEXT("NoneButtonTooltip", "Clears the asset selection.") )
 						.HAlign(HAlign_Center)
@@ -195,7 +195,6 @@ void SToolInputAssetPicker::Construct( const FArguments& InArgs )
 		.CanShowDevelopersFolder( InArgs._AssetPickerConfig.bCanShowDevelopersFolder )
 		.ForceShowEngineContent( InArgs._AssetPickerConfig.bForceShowEngineContent )
 		.ForceShowPluginContent( InArgs._AssetPickerConfig.bForceShowPluginContent )
-		.PreloadAssetsForContextMenu( InArgs._AssetPickerConfig.bPreloadAssetsForContextMenu )
 		.HighlightedText( HighlightText )
 		.ThumbnailLabel( ThumbnailLabel )
 		.AssetShowWarningText( InArgs._AssetPickerConfig.AssetShowWarningText)
@@ -211,7 +210,7 @@ void SToolInputAssetPicker::Construct( const FArguments& InArgs )
 	if (AssetViewPtr.IsValid() && !InArgs._AssetPickerConfig.bAutohideSearchBar)
 	{
 		TextFilter = MakeShareable(new FFrontendFilter_Text());
-		bool bClassNamesProvided = (InArgs._AssetPickerConfig.Filter.ClassNames.Num() != 1);
+		bool bClassNamesProvided = (InArgs._AssetPickerConfig.Filter.ClassPaths.Num() != 1);
 		TextFilter->SetIncludeClassName(bClassNamesProvided || AssetViewPtr->IsIncludingClassNames());
 		TextFilter->SetIncludeAssetPath(AssetViewPtr->IsIncludingAssetPaths());
 		TextFilter->SetIncludeCollectionNames(AssetViewPtr->IsIncludingCollectionNames());

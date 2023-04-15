@@ -133,7 +133,6 @@ public:
 	void CollapseToHeaders();
 	
 	void UndismissAllIssues();
-
 	bool HasDismissedStackIssues();
 
 	const TArray<TSharedRef<FTopLevelViewModel>>& GetTopLevelViewModels() const;
@@ -141,10 +140,14 @@ public:
 	TSharedPtr<FTopLevelViewModel> GetTopLevelViewModelForEntry(UNiagaraStackEntry& InEntry) const;
 
 	void Reset();
-
 	bool HasIssues() const;
-
 	void Refresh() { bRefreshPending = true; }
+	void RequestValidationUpdate() { bValidatorUpdatePending = true; }
+
+	bool ShouldHideDisabledModules() const;
+
+	void InvalidateCachedParameterUsage();
+
 private:
 	/** Recursively Expands all groups and collapses all items in the stack. */
 	void CollapseToHeadersRecursive(TArray<UNiagaraStackEntry*> Entries);
@@ -177,6 +180,7 @@ private:
 	void GeneratePathForEntry(UNiagaraStackEntry* Root, UNiagaraStackEntry* Entry, TArray<UNiagaraStackEntry*> CurrentPath, TArray<UNiagaraStackEntry*>& EntryPath) const;
 
 	void InvalidateSearchResults();
+	void UpdateStackWithValidationResults();
 
 private:
 	TWeakPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel;
@@ -206,6 +210,7 @@ private:
 	static const double MaxSearchTime;
 	bool bRestartSearch;
 	bool bRefreshPending;
+	bool bValidatorUpdatePending;
 	bool bHasIssues;
 	int32 CurrentIssueCycleIndex;
 	TWeakPtr<FTopLevelViewModel> CyclingIssuesForTopLevel;

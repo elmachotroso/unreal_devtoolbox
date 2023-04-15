@@ -5,6 +5,8 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimNode_SequencePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SequencePlayerLibrary)
+
 DEFINE_LOG_CATEGORY_STATIC(LogSequencePlayerLibrary, Verbose, All);
 
 FSequencePlayerReference USequencePlayerLibrary::ConvertToSequencePlayer(const FAnimNodeReference& Node, EAnimNodeReferenceConversionResult& Result)
@@ -178,4 +180,22 @@ bool USequencePlayerLibrary::GetLoopAnimation(const FSequencePlayerReference& Se
 		});
 
 	return bLoopAnimation;
+}
+
+float USequencePlayerLibrary::ComputePlayRateFromDuration(const FSequencePlayerReference& SequencePlayer, float Duration /* = 1.0f */)
+{
+	float PlayRate = 1.f;
+	if (Duration > 0.f)
+	{
+	SequencePlayer.CallAnimNodeFunction<FAnimNode_SequencePlayer>(
+		TEXT("GetPlayRate"),
+		[&PlayRate, Duration](const FAnimNode_SequencePlayer& InSequencePlayer)
+		{
+			if (const UAnimSequenceBase* Sequence = InSequencePlayer.GetSequence())
+			{
+				PlayRate = Sequence->GetPlayLength() / Duration;
+			}
+		});
+	}
+	return PlayRate;
 }

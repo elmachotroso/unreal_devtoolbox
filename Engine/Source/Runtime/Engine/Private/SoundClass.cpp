@@ -14,6 +14,8 @@
 #include "AudioDeviceManager.h"
 #include "AudioDevice.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundClass)
+
 #if WITH_EDITOR
 #include "SoundClassGraph/SoundClassGraph.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -283,6 +285,13 @@ void USoundClass::Serialize( FArchive& Ar )
 		TMap<USoundClass*, FSoundClassEditorData>	EditorData_DEPRECATED;
 		Ar << EditorData_DEPRECATED;
 	}
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading())
+	{
+		Properties.ModulationSettings.VersionModulators();
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 void USoundClass::BeginDestroy()
@@ -378,3 +387,4 @@ TSharedPtr<ISoundClassAudioEditor> USoundClass::GetSoundClassAudioEditor()
 
 
 #endif
+

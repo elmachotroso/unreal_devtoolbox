@@ -9,10 +9,10 @@ public class DisplayCluster : ModuleRules
 	{
 		PublicDefinitions.Add("WITH_OCIO=0");
 
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"../../../../Source/Runtime/Renderer/Private",
-			});
+		// [temporary] We need this to be able to use some private data types. This should
+		// be removed once we move the nD rendering pipeline to RDG.
+		string EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
+		PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source", "Runtime", "Renderer", "Private"));
 
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
@@ -20,25 +20,29 @@ public class DisplayCluster : ModuleRules
 				"Core",
 				"CoreUObject",
 				"DisplayClusterConfiguration",
+				"DisplayClusterLightCardExtender",
 				"Engine"
 			});
 
 		PrivateDependencyModuleNames.AddRange(
-		new string[] {
-			"HeadMountedDisplay",
-			"InputCore",
-			"Json",
-			"JsonUtilities",
-			"Networking",
-			"OpenColorIO",
-			"Renderer",
-			"RenderCore",
-			"RHI",
-			"Slate",
-			"SlateCore",
-			"Sockets",
-			"ProceduralMeshComponent",
-		});
+			new string[] {
+				"HeadMountedDisplay",
+				"InputCore",
+				"Json",
+				"JsonUtilities",
+				"Networking",
+				"OpenColorIO",
+				"OpenCV",
+				"OpenCVHelper",
+				"ProceduralMeshComponent",
+				"Renderer",
+				"RenderCore",
+				"RHI",
+				"Slate",
+				"SlateCore",
+				"Sockets",
+				"UMG"
+			});
 
 		if (Target.bBuildEditor == true)
 		{
@@ -65,11 +69,7 @@ public class DisplayCluster : ModuleRules
 					"D3D12RHI",
 			});
 
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
 		}
 	}

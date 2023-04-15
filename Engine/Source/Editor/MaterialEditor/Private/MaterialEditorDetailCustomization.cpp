@@ -299,7 +299,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 							[
 								SNew(STextBlock)
 								.Text(FText::FromName(TextureParameter->ParameterName))
-								.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+								.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 							]
 						];
 
@@ -326,7 +326,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(FText::FromName(Red))
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 								]
 								+ SHorizontalBox::Slot()
 								.HAlign(HAlign_Left)
@@ -334,7 +334,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(TextureParameter->ChannelNames.R)
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 								]
 							];
 					}
@@ -349,7 +349,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(FText::FromName(Green))
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 								]
 								+ SHorizontalBox::Slot()
 								.HAlign(HAlign_Left)
@@ -357,7 +357,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(TextureParameter->ChannelNames.G)
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 								]
 							];
 					}
@@ -372,7 +372,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(FText::FromName(Blue))
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 								]
 								+ SHorizontalBox::Slot()
 								.HAlign(HAlign_Left)
@@ -380,7 +380,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(TextureParameter->ChannelNames.B)
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 								]
 							];
 					}
@@ -395,7 +395,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(FText::FromName(Alpha))
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.BoldFont")))
 								]
 								+ SHorizontalBox::Slot()
 								.HAlign(HAlign_Left)
@@ -403,7 +403,7 @@ void FMaterialExpressionParameterDetails::CustomizeDetails( IDetailLayoutBuilder
 								[
 									SNew(STextBlock)
 									.Text(TextureParameter->ChannelNames.A)
-									.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+									.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 								]
 							];
 					}
@@ -832,6 +832,41 @@ void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& Detai
 				{
 					DetailLayout.HideProperty(PropertyHandle);
 				}
+			}
+		}
+	}
+}
+
+TSharedRef<class IDetailCustomization> FMaterialFunctionDetailCustomization::MakeInstance()
+{
+	return MakeShareable(new FMaterialFunctionDetailCustomization);
+}
+
+void FMaterialFunctionDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
+{
+	static const auto CVarMaterialEnableControlFlow = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableControlFlow"));
+	static const auto CVarMaterialEnableNewHLSLGenerator = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableNewHLSLGenerator"));
+
+	// MaterialFunction category
+	{
+		IDetailCategoryBuilder& MaterialCategory = DetailLayout.EditCategory(TEXT("MaterialFunction"));
+
+		TArray<TSharedRef<IPropertyHandle>> AllProperties;
+		MaterialCategory.GetDefaultProperties(AllProperties);
+
+		for (TSharedRef<IPropertyHandle>& PropertyHandle : AllProperties)
+		{
+			FProperty* Property = PropertyHandle->GetProperty();
+			FName PropertyName = Property->GetFName();
+
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterialFunction, bEnableExecWire) && !CVarMaterialEnableControlFlow->GetValueOnAnyThread())
+			{
+				DetailLayout.HideProperty(PropertyHandle);
+			}
+
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterialFunction, bEnableNewHLSLGenerator) && !CVarMaterialEnableNewHLSLGenerator->GetValueOnAnyThread())
+			{
+				DetailLayout.HideProperty(PropertyHandle);
 			}
 		}
 	}

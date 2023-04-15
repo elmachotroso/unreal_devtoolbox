@@ -15,7 +15,7 @@ class FSkyLightImportanceSamplingData;
 
 struct FLightShaderConstants
 {
-	FVector3f	WorldPosition;
+	FVector3f	RelativeWorldPosition;
 	float		InvRadius;
 	FVector3f	Color;
 	float		FalloffExponent;
@@ -23,9 +23,10 @@ struct FLightShaderConstants
 	float		SpecularScale;
 	FVector3f	Tangent;
 	float		SourceRadius;
+	FVector3f	TilePosition;
+	float		SourceLength;
 	FVector2f	SpotAngles;
 	float		SoftSourceRadius;
-	float		SourceLength;
 	float		RectLightBarnCosAngle;
 	float		RectLightBarnLength;
 
@@ -33,7 +34,9 @@ struct FLightShaderConstants
 
 	FLightShaderConstants(const FLightRenderParameters& LightShaderParameters)
 	{
-		WorldPosition = FVector3f(LightShaderParameters.WorldPosition); // LWC_TODO
+		const FLargeWorldRenderPosition AbsoluteWorldPosition(LightShaderParameters.WorldPosition);
+
+		RelativeWorldPosition = AbsoluteWorldPosition.GetOffset();
 		InvRadius = LightShaderParameters.InvRadius;
 		Color = FVector3f(LightShaderParameters.Color);
 		FalloffExponent = LightShaderParameters.FalloffExponent;
@@ -41,9 +44,10 @@ struct FLightShaderConstants
 		SpecularScale = LightShaderParameters.SpecularScale;
 		Tangent = LightShaderParameters.Tangent;
 		SourceRadius = LightShaderParameters.SourceRadius;
+		TilePosition = AbsoluteWorldPosition.GetTile();
+		SourceLength = LightShaderParameters.SourceLength;
 		SpotAngles = LightShaderParameters.SpotAngles;
 		SoftSourceRadius = LightShaderParameters.SoftSourceRadius;
-		SourceLength = LightShaderParameters.SourceLength;
 		RectLightBarnCosAngle = LightShaderParameters.RectLightBarnCosAngle;
 		RectLightBarnLength = LightShaderParameters.RectLightBarnLength;
 	}
@@ -61,27 +65,39 @@ struct FLightSceneRenderState;
 
 struct FLocalLightBuildInfo
 {
-	FLocalLightBuildInfo() = default;
+	FLocalLightBuildInfo(ULightComponent* LightComponent);
 	virtual ~FLocalLightBuildInfo() {}
 	FLocalLightBuildInfo(FLocalLightBuildInfo&& In) = default; // Default move constructor is killed by the custom destructor
 
 	bool bStationary = false;
+	bool bCastShadow = true;
 	int ShadowMapChannel = INDEX_NONE;
 
-	TUniquePtr<FLightComponentMapBuildData> LightComponentMapBuildData;
+	// This will also be held by FLocalLightRenderState to extend its lifetime until RenderThread has finished with it
+	TSharedPtr<FLightComponentMapBuildData, ESPMode::ThreadSafe> LightComponentMapBuildData;
 
 	virtual bool AffectsBounds(const FBoxSphereBounds& InBounds) const = 0;
 	virtual ULightComponent* GetComponentUObject() const = 0;
+	bool CastsStationaryShadow() { return bStationary && bCastShadow; }
+
+	void AllocateMapBuildData(ULevel* StorageLevel);
 };
 
 struct FLocalLightRenderState
 {
+	FLocalLightRenderState(ULightComponent* LightComponent);
+	virtual void RenderThreadInit()  {}
+	virtual void RenderThreadFinalize()  {}
 	virtual ~FLocalLightRenderState() {}
 
 	bool bStationary = false;
+	bool bCastShadow = true;
 	int ShadowMapChannel = INDEX_NONE;
+	
+	TSharedPtr<FLightComponentMapBuildData, ESPMode::ThreadSafe> LightComponentMapBuildData;
 
 	virtual FLightRenderParameters GetLightShaderParameters() const = 0;
+	virtual void RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, class FSceneRenderState& RenderState) {}
 };
 
 class FLightArrayBase;
@@ -206,6 +222,7 @@ struct FDirectionalLightRenderState : public FLocalLightRenderState
 	float LightSourceSoftAngle;
 
 	virtual FLightRenderParameters GetLightShaderParameters() const override;
+	virtual void RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& RenderState) override;
 };
 
 using FDirectionalLightRenderStateRef = TEntityArray<FDirectionalLightRenderState>::EntityRefType;
@@ -227,6 +244,7 @@ struct FPointLightRenderState : public FLocalLightRenderState
 	FTexture* IESTexture;
 
 	virtual FLightRenderParameters GetLightShaderParameters() const override;
+	virtual void RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& RenderState) override;
 };
 
 using FPointLightRenderStateRef = TEntityArray<FPointLightRenderState>::EntityRefType;
@@ -248,8 +266,8 @@ struct FSpotLightRenderState : public FLocalLightRenderState
 	bool IsInverseSquared;
 	FTexture* IESTexture;
 
-
 	virtual FLightRenderParameters GetLightShaderParameters() const override;
+	virtual void RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& RenderState) override;
 };
 
 using FSpotLightRenderStateRef = TEntityArray<FSpotLightRenderState>::EntityRefType;
@@ -257,7 +275,9 @@ using FSpotLightRenderStateRef = TEntityArray<FSpotLightRenderState>::EntityRefT
 struct FRectLightRenderState : public FLocalLightRenderState
 {
 	FRectLightRenderState(URectLightComponent* ComponentUObject);
-
+	virtual void RenderThreadInit() override;
+	virtual void RenderThreadFinalize() override;
+	
 	FLinearColor Color;
 	float AttenuationRadius;
 	FVector Position;
@@ -268,8 +288,14 @@ struct FRectLightRenderState : public FLocalLightRenderState
 	float BarnDoorAngle;
 	float BarnDoorLength;
 	FTexture* IESTexture;
+	UTexture* SourceTexture;
+	uint32 AtlasSlotIndex;
+	FVector2f RectLightAtlasUVOffset;
+	FVector2f RectLightAtlasUVScale;
+	float RectLightAtlasMaxLevel;
 
 	virtual FLightRenderParameters GetLightShaderParameters() const override;
+	virtual void RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& RenderState) override;
 };
 
 using FRectLightRenderStateRef = TEntityArray<FRectLightRenderState>::EntityRefType;
@@ -277,6 +303,9 @@ using FRectLightRenderStateRef = TEntityArray<FRectLightRenderState>::EntityRefT
 struct FSkyLightRenderState
 {
 	bool bStationary = false;
+	bool bCastShadow = true;	
+	bool CastsStationaryShadow() { return bStationary && bCastShadow; }
+	
 	FLinearColor Color;
 	FTextureRHIRef ProcessedTexture;
 	FSamplerStateRHIRef ProcessedTextureSampler;
@@ -285,7 +314,7 @@ struct FSkyLightRenderState
 	FRWBufferStructured SkyIrradianceEnvironmentMap;
 
 	// New sky dome
-	void PrepareSkyTexture(FRHICommandListImmediate& RHICmdList);
+	void PrepareSkyTexture(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel);
 	float SkylightInvResolution;
 	int32 SkylightMipCount;
 	TRefCountPtr<IPooledRenderTarget> PathTracingSkylightTexture;
@@ -295,6 +324,10 @@ struct FSkyLightRenderState
 struct FSkyLightBuildInfo
 {
 	USkyLightComponent* ComponentUObject = nullptr;
+
+	bool bStationary = false;
+	bool bCastShadow = true;	
+	bool CastsStationaryShadow() { return bStationary && bCastShadow; }
 };
 
 class FLightArrayBase

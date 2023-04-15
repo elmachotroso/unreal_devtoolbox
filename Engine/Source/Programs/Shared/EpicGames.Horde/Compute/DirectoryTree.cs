@@ -2,9 +2,7 @@
 
 using EpicGames.Core;
 using EpicGames.Serialization;
-using System;
 using System.Collections.Generic;
-using System.Text;
 
 namespace EpicGames.Horde.Compute
 {
@@ -17,13 +15,13 @@ namespace EpicGames.Horde.Compute
 		/// List of files within the directory, sorted by name
 		/// </summary>
 		[CbField("f")]
-		public List<FileNode> Files { get; set; } = new List<FileNode>();
+		public List<FileNode> Files { get; } = new List<FileNode>();
 
 		/// <summary>
 		/// Sub-directories within this directory, sorted by name
 		/// </summary>
 		[CbField("d")]
-		public List<DirectoryNode> Directories { get; set; } = new List<DirectoryNode>();
+		public List<DirectoryNode> Directories { get; } = new List<DirectoryNode>();
 	}
 
 	/// <summary>
@@ -54,6 +52,12 @@ namespace EpicGames.Horde.Compute
 		/// </summary>
 		[CbField("a")]
 		public int Attributes { get; set; }
+		
+		/// <summary>
+		/// Whether the file is compressed or not.
+		/// </summary>
+		[CbField("c")]
+		public bool IsCompressed { get; set; }
 
 		/// <summary>
 		/// Private constructor for serialization
@@ -65,12 +69,13 @@ namespace EpicGames.Horde.Compute
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public FileNode(Utf8String Name, CbBinaryAttachment Hash, long Size, int Attributes)
+		public FileNode(Utf8String name, CbBinaryAttachment hash, long size, int attributes, bool isCompressed)
 		{
-			this.Name = Name;
-			this.Hash = Hash;
-			this.Size = Size;
-			this.Attributes = Attributes;
+			Name = name;
+			Hash = hash;
+			Size = size;
+			Attributes = attributes;
+			IsCompressed = isCompressed;
 		}
 	}
 
@@ -101,10 +106,10 @@ namespace EpicGames.Horde.Compute
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public DirectoryNode(Utf8String Name, CbObjectAttachment Hash)
+		public DirectoryNode(Utf8String name, CbObjectAttachment hash)
 		{
-			this.Name = Name;
-			this.Hash = Hash;
+			Name = name;
+			Hash = hash;
 		}
 	}
 }

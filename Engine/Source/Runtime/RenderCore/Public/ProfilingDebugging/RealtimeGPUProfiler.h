@@ -10,11 +10,25 @@
 // Each event type will be displayed using the defined color
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StaticArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "RHI.h"
-#include "ProfilingDebugging/CsvProfiler.h"
+#include "CoreTypes.h"
 #include "GpuProfilerTrace.h"
+#include "HAL/CriticalSection.h"
+#include "MultiGPU.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "ProfilingDebugging/CsvProfilerConfig.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "UObject/NameTypes.h"
+
+class IRHIComputeContext;
+struct FColor;
 
 // Note:  WITH_PROFILEGPU should be 0 for final builds
 #define WANTS_DRAW_MESH_EVENTS (RHI_COMMAND_LIST_DEBUG_TRACES || (WITH_PROFILEGPU && PLATFORM_SUPPORTS_DRAW_MESH_EVENTS))
@@ -396,8 +410,8 @@ public:
 	void PopEventOverride();
 
 	/** Push/pop stats which do additional draw call tracking on top of events. */
-	void PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
-	void PopStat(FRHICommandListImmediate& RHICmdList, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
+	void PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr InNumDrawCallsPtr);
+	void PopStat(FRHICommandListImmediate& RHICmdList, FRHIDrawCallsStatPtr InNumDrawCallsPtr);
 
 #if GPUPROFILERTRACE_ENABLED
 	RENDERCORE_API void FetchPerfByDescription(TArray<FRealtimeGPUProfilerDescriptionResult> & OutResults) const;
@@ -433,10 +447,13 @@ private:
 class FScopedGPUStatEvent
 {
 	/** Cmdlist to push onto. */
-	FRHICommandListImmediate* RHICmdList;
+	FRHICommandListBase* RHICmdList;
 
-	int32 (*NumDrawCallsPtr)[MAX_NUM_GPUS];
+	FRHIDrawCallsStatPtr NumDrawCallsPtr;
 public:
+
+	UE_NONCOPYABLE(FScopedGPUStatEvent)
+
 	/** Default constructor, initializing all member variables. */
 	FORCEINLINE FScopedGPUStatEvent()
 		: RHICmdList(nullptr)
@@ -457,7 +474,7 @@ public:
 	/**
 	* Start/Stop functions for timer stats
 	*/
-	RENDERCORE_API void Begin(FRHICommandList& InRHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
+	RENDERCORE_API void Begin(FRHICommandListBase& InRHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr InNumDrawCallsPtr);
 	RENDERCORE_API void End();
 };
 #endif // HAS_GPU_STATS

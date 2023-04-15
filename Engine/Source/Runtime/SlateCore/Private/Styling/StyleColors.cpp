@@ -7,6 +7,9 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "HAL/PlatformFileManager.h"
+#include "Misc/App.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StyleColors)
 
 // Note this value is not mutable by the user
 const FSlateColor FStyleColors::Transparent = FSlateColor(FLinearColor::Transparent);
@@ -146,7 +149,7 @@ void USlateThemeManager::LoadThemes()
 	LoadThemesFromDirectory(GetProjectThemeDir());
 
 	// User specific themes
-	LoadThemesFromDirectory(FPaths::EngineVersionAgnosticUserDir());
+	LoadThemesFromDirectory(GetUserThemeDir());
 
 	EnsureValidCurrentTheme();
 
@@ -158,6 +161,7 @@ void USlateThemeManager::SaveCurrentThemeAs(const FString& Filename)
 {
 	FStyleTheme& CurrentTheme = GetMutableCurrentTheme();
 	CurrentTheme.Filename = Filename;
+	FString NewPath = CurrentTheme.Filename;
 	{
 		FString Output;
 		TSharedRef<TJsonWriter<>> WriterRef = TJsonWriterFactory<>::Create(&Output);
@@ -166,7 +170,7 @@ void USlateThemeManager::SaveCurrentThemeAs(const FString& Filename)
 		Writer.WriteValue(TEXT("Version"), 1);
 		Writer.WriteValue(TEXT("Id"), CurrentTheme.Id.ToString());
 		Writer.WriteValue(TEXT("DisplayName"), CurrentTheme.DisplayName.ToString());
-
+		
 		{
 			Writer.WriteObjectStart(TEXT("Colors"));
 			UEnum* Enum = StaticEnum<EStyleColor>();
@@ -184,8 +188,16 @@ void USlateThemeManager::SaveCurrentThemeAs(const FString& Filename)
 		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*Filename))
 		{
 			FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*Filename, false);
+			// create a new path if the filename has been changed. 
+			NewPath = USlateThemeManager::Get().GetUserThemeDir() / CurrentTheme.DisplayName.ToString() + TEXT(".json");
+
+			if (!NewPath.Equals(CurrentTheme.Filename))
+			{
+				// rename the current .json file with the new name. 
+				IFileManager::Get().Move(*NewPath, *Filename);
+			}
 		}
-		FFileHelper::SaveStringToFile(Output, *Filename);
+		FFileHelper::SaveStringToFile(Output, *NewPath);
 	}
 	
 }
@@ -203,7 +215,7 @@ void USlateThemeManager::ApplyTheme(FGuid ThemeId)
 				// Unload existing colors
 				CurrentTheme->LoadedDefaultColors.Empty();
 			}
-
+			
 			FStyleTheme* Theme = Themes.FindByKey(ThemeId);
 			if (Theme)
 			{
@@ -221,6 +233,44 @@ void USlateThemeManager::ApplyTheme(FGuid ThemeId)
 		// Apply the new colors. Note that if the incoming theme is the same as the current theme we still apply the colors as they may have been overwritten by defaults
 		FMemory::Memcpy(ActiveColors.StyleColors, CurrentTheme->LoadedDefaultColors.GetData(), sizeof(FLinearColor)*CurrentTheme->LoadedDefaultColors.Num());
 	}
+	OnThemeChanged().Broadcast(CurrentThemeId); 
+}
+
+void USlateThemeManager::ApplyDefaultTheme()
+{
+	ApplyTheme(DefaultDarkTheme.Id); 
+}
+
+bool USlateThemeManager::IsEngineTheme() const
+{
+	// users cannot edit/delete engine-specific themes: 
+	const FString EnginePath = GetEngineThemeDir() / GetCurrentTheme().DisplayName.ToString() + TEXT(".json");
+
+	IPlatformFile& FileManager = FPlatformFileManager::Get().GetPlatformFile();
+	// todo: move default theme check to a standalone function in 5.2
+	if (GetCurrentTheme() == DefaultDarkTheme)
+	{
+		return true;
+	}
+	else if (FileManager.FileExists(*EnginePath))
+	{
+		return true;
+	}
+	return false;
+}
+
+bool USlateThemeManager::IsProjectTheme() const
+{
+	// users cannot edit/delete project-specific themes: 
+	const FString ProjectPath = GetProjectThemeDir() / GetCurrentTheme().DisplayName.ToString() + TEXT(".json");
+
+	IPlatformFile& FileManager = FPlatformFileManager::Get().GetPlatformFile(); 
+
+	if (FileManager.FileExists(*ProjectPath))
+	{
+		return true; 
+	}
+	return false; 
 }
 
 void USlateThemeManager::RemoveTheme(FGuid ThemeId)
@@ -277,7 +327,7 @@ FString USlateThemeManager::GetProjectThemeDir() const
 
 FString USlateThemeManager::GetUserThemeDir() const
 {
-	return FPaths::EngineVersionAgnosticUserDir() / ThemesSubDir;
+	return FPaths::Combine(FPlatformProcess::UserSettingsDir(), *FApp::GetEpicProductIdentifier()) / ThemesSubDir;
 }
 
 void USlateThemeManager::LoadThemesFromDirectory(const FString& Directory)
@@ -360,7 +410,6 @@ bool USlateThemeManager::ReadTheme(const FString& ThemeData, FStyleTheme& Theme)
 
 void USlateThemeManager::EnsureValidCurrentTheme()
 {
-	FStyleTheme DefaultDarkTheme;
 	DefaultDarkTheme.DisplayName = NSLOCTEXT("StyleColors", "DefaultDarkTheme", "Dark");
 	// If you change this you invalidate the default dark theme forcing the default theme to be reset and the existing dark theme to become a user theme
 	// In general you should not do this. You should instead update the default "dark.json" file 
@@ -381,7 +430,10 @@ void USlateThemeManager::LoadThemeColors(FStyleTheme& Theme)
 	FString ThemeData;
 
 	// Start with the hard coded default colors. They are a fallback if the theme is incomplete 
-	Theme.LoadedDefaultColors = MakeArrayView<FLinearColor>(DefaultColors, (int32)EStyleColor::MAX);
+	if (Theme.LoadedDefaultColors.IsEmpty()) 
+	{ 
+		Theme.LoadedDefaultColors = MakeArrayView<FLinearColor>(DefaultColors, (int32)EStyleColor::MAX);
+	}
 
 	if (FFileHelper::LoadFileToString(ThemeData, *Theme.Filename))
 	{
@@ -410,6 +462,18 @@ void USlateThemeManager::LoadThemeColors(FStyleTheme& Theme)
 			}
 		}
 	}
+}
+
+bool USlateThemeManager::DoesThemeExist(const FGuid& ThemeID) const
+{
+	for (const FStyleTheme& Theme : Themes)
+	{
+		if (Theme.Id == ThemeID)
+		{
+			return true; 
+		}
+	}
+	return false; 
 }
 
 /*

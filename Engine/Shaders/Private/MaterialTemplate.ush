@@ -4,6 +4,10 @@
  * MaterialTemplate.usf: Filled in by FHLSLMaterialTranslator::GetMaterialShaderCode for each material being compiled.
  */
 
+#ifndef ENABLE_NEW_HLSL_GENERATOR
+#define ENABLE_NEW_HLSL_GENERATOR 0
+#endif
+
 #include "/Engine/Private/SceneTexturesCommon.ush"
 #include "/Engine/Private/EyeAdaptationCommon.ush"
 #include "/Engine/Private/Random.ush"
@@ -12,18 +16,22 @@
 #include "/Engine/Generated/UniformBuffers/Material.ush"
 #include "/Engine/Private/DepthOfFieldCommon.ush"
 #include "/Engine/Private/CircleDOFCommon.ush"
-#include "/Engine/Private/GlobalDistanceFieldShared.ush"
+#include "/Engine/Private/DistanceField/GlobalDistanceFieldShared.ush"
 #include "/Engine/Private/PhysicsFieldSampler.ush"
 #include "/Engine/Private/SceneData.ush"
 #include "/Engine/Private/HairShadingCommon.ush"
 #include "/Engine/Private/HairStrands/HairCardsAttributeCommon.ush"
 #include "/Engine/Private/HairStrands/HairStrandsAttributeCommon.ush"
 #include "/Engine/Private/DeferredShadingCommon.ush"
-#include "/Engine/Private/DBufferDecalShared.ush"
+
+// Reduce latency of Nanite material base pass pixel shaders caused by register pressure due to the calculation of WPO
+#if USES_WORLD_POSITION_OFFSET && PIXELSHADER && IS_NANITE_SHADING_PASS && IS_BASE_PASS
+	COMPILER_FORCE_WAVE32_MODE
+#endif
 
 // Update this GUID to force all material shaders to recompile
 // Merge conflicts on this line should be resolved by generating a new GUID
-// GUID = 5F290441-5611-4232-B26D-613F5E421262
+// GUID = 5F290441-5611-4232-B26D-613F5E421262_A
 
 #if USES_SPEEDTREE
 	#include "/Engine/Private/SpeedTreeCommon.ush"
@@ -78,6 +86,8 @@
 	#include "/Engine/Private/VirtualTextureCommon.ush"
 #endif
 
+#include "/Engine/Private/MaterialTexture.ush"
+
 #ifdef MIN_MATERIAL_TEXCOORDS 
 	#include "/Engine/Private/MinMaterialTexCoords.ush"
 #endif
@@ -86,7 +96,9 @@
 	#include "/Engine/Private/SkyAtmosphereCommon.ush"
 #endif
 
-#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER || POST_PROCESS_MATERIAL // For WaterSampleSceneDepthWithoutWater()
+// This is currently included for post processing materials even if the SceneDepthWithoutWater texture is not sampled.
+// It might be worth it to add a switch to only include it if the texture is actually required by the material.
 	#include "/Engine/Private/SingleLayerWaterCommon.ush"
 #endif
 
@@ -97,20 +109,6 @@
 	#define USE_INSTANCE_CULLING 0
 #endif
 
-#ifndef USE_DITHERED_LOD_TRANSITION
-	#if USE_INSTANCING || USE_INSTANCE_CULLING
-		#ifndef USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED
-			#error "USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED should have been defined"
-		#endif
-		#define USE_DITHERED_LOD_TRANSITION USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED
-	#else
-		#ifndef USE_DITHERED_LOD_TRANSITION_FROM_MATERIAL
-			#error "USE_DITHERED_LOD_TRANSITION_FROM_MATERIAL should have been defined"
-		#endif
-		#define USE_DITHERED_LOD_TRANSITION USE_DITHERED_LOD_TRANSITION_FROM_MATERIAL
-	#endif
-#endif
-
 #ifndef USE_STENCIL_LOD_DITHER
 	#define USE_STENCIL_LOD_DITHER	USE_STENCIL_LOD_DITHER_DEFAULT
 #endif
@@ -118,35 +116,50 @@
 //Materials also have to opt in to these features.
 #define USE_EDITOR_COMPOSITING (USE_EDITOR_SHADERS && EDITOR_PRIMITIVE_MATERIAL)
 
-#define MATERIALBLENDING_ANY_TRANSLUCENT (MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE)
-
+#define MATERIALBLENDING_ANY_TRANSLUCENT (MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE || STRATA_BLENDING_TRANSLUCENT_GREYTRANSMITTANCE || STRATA_BLENDING_TRANSLUCENT_COLOREDTRANSMITTANCE || STRATA_BLENDING_COLOREDTRANSMITTANCEONLY)
+ 
 #define IS_MATERIAL_TRANSLUCENT_AND_LIT  (MATERIALBLENDING_TRANSLUCENT)
 
 #define IS_MESHPARTICLE_FACTORY (PARTICLE_MESH_FACTORY || NIAGARA_MESH_FACTORY)
 
-#define HAS_INSTANCE_LOCAL_TO_WORLD_PS	(NEEDS_INSTANCE_LOCAL_TO_WORLD_PS && (USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY))
-#define HAS_INSTANCE_WORLD_TO_LOCAL_PS	(NEEDS_INSTANCE_WORLD_TO_LOCAL_PS && (USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY))
+#define HAS_INSTANCE_LOCAL_TO_WORLD_PS	(NEEDS_INSTANCE_LOCAL_TO_WORLD_PS && (USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY || IS_NANITE_PASS))
+#define HAS_INSTANCE_WORLD_TO_LOCAL_PS	(NEEDS_INSTANCE_WORLD_TO_LOCAL_PS && (USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY || IS_NANITE_PASS))
 
 #define IS_HAIR_FACTORY (HAIR_STRAND_MESH_FACTORY || HAIR_CARD_MESH_FACTORY)
 
 #if IS_NANITE_PASS
 	#define ALLOW_CLIP 0
 	#define CLIP(x)
+	#if COMPUTESHADER
+		#define clip(x)
+		#define ddx(x) 0
+		#define ddy(x) 0
+		#define fwidth(x) 0
+	#endif
 #else
 	#define ALLOW_CLIP 1
 	#define CLIP(x) clip(x)
 #endif
 
-#define TEMPLATE_USES_STRATA			(PROJECT_STRATA && MATERIAL_IS_STRATA)
-#define STRATA_OPAQUE_MATERIAL			(TEMPLATE_USES_STRATA && MATERIALBLENDING_ANY_TRANSLUCENT<=0)
-#define STRATA_TRANSLUCENT_MATERIAL		(TEMPLATE_USES_STRATA && MATERIALBLENDING_ANY_TRANSLUCENT>0)
+#define TEMPLATE_USES_STRATA			(STRATA_ENABLED && MATERIAL_IS_STRATA)
+#define STRATA_OPAQUE_MATERIAL			(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT<=0) || STRATA_MATERIAL_EXPORT_FROM_OPAQUE))
+#define STRATA_TRANSLUCENT_MATERIAL		(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT>0 ) || STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT))
 #define STRATA_OPAQUE_DEFERRED			(STRATA_OPAQUE_MATERIAL && !FORWARD_SHADING)
 #define STRATA_TRANSLUCENT_FORWARD		(STRATA_TRANSLUCENT_MATERIAL && !FORWARD_SHADING)
 #define STRATA_FORWARD_SHADING			(FORWARD_SHADING && (STRATA_OPAQUE_MATERIAL || STRATA_TRANSLUCENT_MATERIAL))
+#define STRATA_OUTPUT_ROUGH_REFRACTION	(STRATA_ENABLED && STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED && STRATA_MATERIAL_OUTPUT_OPAQUE_ROUGH_REFRACTIONS)
 
-#if PROJECT_STRATA
+#if TEMPLATE_USES_STRATA
+#define STRATA_INLINE_SHADING 1
+#endif
+
+#if STRATA_TRANSLUCENT_FORWARD && !STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT && !defined(STRATA_DEFERRED_SHADING)
+// This is for translucent surface to be able to fetch opaque material data such as normal, albedo and more from SceneTextures (See SceneTextureLookup).
+#define STRATA_DEFERRED_SHADING 1
+#endif
+
+#if STRATA_ENABLED
 #include "/Engine/Private/Strata/Strata.ush"
-#include "/Engine/Private/Strata/StrataLegacyConversion.ush"
 #else
 struct FStrataData
 {
@@ -154,6 +167,13 @@ struct FStrataData
 };
 FStrataData GetInitialisedStrataData() { return (FStrataData)0; }
 #endif
+
+#if TEMPLATE_USES_STRATA
+#include "/Engine/Private/Strata/StrataTree.ush"
+#include "/Engine/Private/Strata/StrataLegacyConversion.ush"	// This can only included here due to interaction between STRATA_MATERIAL_EXPORT_EXECUTED and STRATA_LEGACY_MATERIAL_APPLIES_FINAL_WEIGHT
+#endif
+
+#include "/Engine/Private/DBufferDecalShared.ush"
 
 /**
  * Parameters used by vertex and pixel shaders to access particle properties.
@@ -239,10 +259,8 @@ float4 GetDynamicParameter(FMaterialParticleParameters Parameters, float4 Defaul
 
 }
 
-struct FMaterialAttributes
-{
+/** Material declarations */
 %s
-};
 
 /** FMaterialAttributes utilities */
 %s
@@ -278,7 +296,7 @@ struct FMaterialPixelParameters
 	half3 ReflectionVector;
 
 	/** Normalized world space camera vector, which is the vector from the point being shaded to the camera position. */
-	half3 CameraVector;
+	float3 CameraVector;
 
 	/** World space light vector, only valid when rendering a light function. */
 	half3 LightVector;
@@ -365,8 +383,12 @@ struct FMaterialPixelParameters
 	float2	LightmapUVs_DDY;
 #endif
 
+#if USES_PER_INSTANCE_RANDOM && VF_USE_PRIMITIVE_SCENE_DATA
+	half PerInstanceRandom;
+#endif
+
 #if USE_INSTANCING || USE_INSTANCE_CULLING || IS_NANITE_PASS
-	half4 PerInstanceParams;
+	float4 PerInstanceParams;
 #endif
 
 	// Index into View.PrimitiveSceneData
@@ -376,7 +398,7 @@ struct FMaterialPixelParameters
 	uint InstanceId;
 #endif
 
-#if IS_NANITE_PASS && USES_PER_INSTANCE_CUSTOM_DATA
+#if USES_PER_INSTANCE_CUSTOM_DATA && VF_USE_PRIMITIVE_SCENE_DATA
 	uint CustomDataOffset;
 	uint CustomDataCount;
 #endif
@@ -403,7 +425,7 @@ struct FMaterialPixelParameters
 	/** Per-particle properties. Only valid for particle vertex factories. */
 	FMaterialParticleParameters Particle;
 
-#if ES3_1_PROFILE
+#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
 	float4 LayerWeights;
 #endif
 
@@ -412,7 +434,7 @@ struct FMaterialPixelParameters
 	FTexCoordScalesParams TexCoordScalesParams;
 #endif
 
-#if POST_PROCESS_MATERIAL && (FEATURE_LEVEL <= FEATURE_LEVEL_ES3_1)
+#if POST_PROCESS_MATERIAL && FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
 	/** Used in mobile custom pp material to preserve original SceneColor Alpha */
 	half BackupSceneColorAlpha;
 #endif
@@ -436,13 +458,20 @@ struct FMaterialPixelParameters
 	float CloudSampleAltitude;
 	float CloudSampleAltitudeInLayer;
 	float CloudSampleNormAltitudeInLayer;
-	float3 VolumeSampleConservativeDensity;
+	float4 VolumeSampleConservativeDensity;
 	float ShadowSampleDistance;
+
+	float3 CloudEmptySpaceSkippingSphereCenterWorldPosition;
+	float  CloudEmptySpaceSkippingSphereRadius;
 #endif
 
 #if TEMPLATE_USES_STRATA
 	FSharedLocalBases SharedLocalBases;
+	FStrataTree StrataTree;
+	FStrataPixelFootprint StrataPixelFootprint;
 #endif
+
+	FMaterialAttributes MaterialAttributes;
 };
 
 /**
@@ -480,16 +509,21 @@ struct FMaterialVertexParameters
 	// TangentToWorld[2] is WorldVertexNormal
 	half3x3 TangentToWorld;
 
-#if USES_PER_INSTANCE_CUSTOM_DATA
+#if USES_PER_INSTANCE_CUSTOM_DATA && VF_USE_PRIMITIVE_SCENE_DATA
 	uint CustomDataOffset;
 	uint CustomDataCount;
 #endif
+
+#if USES_PER_INSTANCE_RANDOM && VF_USE_PRIMITIVE_SCENE_DATA
+	float PerInstanceRandom;
+#endif
+
 	
-#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
+#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY || IS_NANITE_PASS
 	FLWCMatrix InstanceLocalToWorld;
 	FLWCInverseMatrix InstanceWorldToLocal;
 #endif
-#if USE_INSTANCING || USE_INSTANCE_CULLING
+#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_NANITE_PASS
 	/** Per-instance properties. */
 	float3 InstanceLocalPosition;
 	float4 PerInstanceParams;
@@ -508,9 +542,14 @@ struct FMaterialVertexParameters
 	half4 VertexColor;
 #if NUM_MATERIAL_TEXCOORDS_VERTEX
 	float2 TexCoords[NUM_MATERIAL_TEXCOORDS_VERTEX];
-	#if ES3_1_PROFILE
+	#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
 	float2 TexCoordOffset; // Offset for UV localization for large UV values
 	#endif
+#endif
+
+#if NUM_CUSTOM_VERTEX_INTERPOLATORS
+	// Used by new HLSL translator
+	float2 CustomInterpolators[NUM_CUSTOM_VERTEX_INTERPOLATORS];
 #endif
 
 	/** Per-particle properties. Only valid for particle vertex factories. */
@@ -520,7 +559,7 @@ struct FMaterialVertexParameters
 	uint WaterWaveParamIndex;
 #endif
 
-	FMaterialAttributes MaterialVertexAttributes;
+	FMaterialAttributes MaterialAttributes;
 
 	/** Cached primitive and instance data */
 	FSceneDataIntermediates SceneData;
@@ -528,8 +567,32 @@ struct FMaterialVertexParameters
 	// FIXME: just for compatibility with assets that use custom HLSL expressions, will be removed once we fix up all these assets
 	// Index into View.PrimitiveSceneData
 	uint PrimitiveId;
+
+#if IS_NANITE_PASS
+	bool bEvaluateWorldPositionOffset;
+#endif
 };
 
+float MaterialReadInterpolatorComponent(FMaterialPixelParameters Parameters, int InterpolatorIndex)
+{
+#if NUM_TEX_COORD_INTERPOLATORS
+	return Parameters.TexCoords[NUM_MATERIAL_TEXCOORDS + InterpolatorIndex / 2][InterpolatorIndex & 1];
+#else
+	return 0.0f;
+#endif
+}
+
+void MaterialPackInterpolatorComponent(in out FMaterialVertexParameters Parameters, int InterpolatorIndex, float Value)
+{
+#if NUM_CUSTOM_VERTEX_INTERPOLATORS
+	Parameters.CustomInterpolators[InterpolatorIndex / 2][InterpolatorIndex & 1] = Value;
+#endif
+}
+
+#if GET_PRIMITIVE_DATA_OVERRIDE
+	FPrimitiveSceneData GetPrimitiveData(FMaterialVertexParameters Parameters);
+	FPrimitiveSceneData GetPrimitiveData(FMaterialPixelParameters Parameters);
+#else
 FPrimitiveSceneData GetPrimitiveData(FMaterialVertexParameters Parameters)
 {
 	return Parameters.SceneData.Primitive;
@@ -539,18 +602,56 @@ FPrimitiveSceneData GetPrimitiveData(FMaterialPixelParameters Parameters)
 {
 	return GetPrimitiveData(Parameters.PrimitiveId);
 }
+#endif 
+
+bool UnpackUniform_bool(uint Packed, uint BitOffset)
+{
+	return (bool)((Packed >> BitOffset) & 0x1);
+}
+
+bool2 UnpackUniform_bool2(uint Packed, uint BitOffset)
+{
+	return bool2(UnpackUniform_bool(Packed, BitOffset), UnpackUniform_bool(Packed, BitOffset + 1));
+}
+
+bool3 UnpackUniform_bool3(uint Packed, uint BitOffset)
+{
+	return bool3(UnpackUniform_bool(Packed, BitOffset), UnpackUniform_bool(Packed, BitOffset + 1), UnpackUniform_bool(Packed, BitOffset + 2));
+}
+
+bool4 UnpackUniform_bool4(uint Packed, uint BitOffset)
+{
+	return bool4(UnpackUniform_bool(Packed, BitOffset), UnpackUniform_bool(Packed, BitOffset + 1), UnpackUniform_bool(Packed, BitOffset + 2), UnpackUniform_bool(Packed, BitOffset + 3));
+}
 
 /**
  * Returns the upper 3x3 portion of the LocalToWorld matrix.
  */
 MaterialFloat3x3 GetLocalToWorld3x3(FMaterialVertexParameters Parameters)
 {
+#if DECAL_PRIMITIVE
+	return (float3x3)DecalToWorld;
+#else
 	return LWCToFloat3x3(GetPrimitiveData(Parameters).LocalToWorld);
+#endif
+}
+
+MaterialFloat3x3 GetPreviousLocalToWorld3x3(FMaterialVertexParameters Parameters)
+{
+#if DECAL_PRIMITIVE
+	return (float3x3)DecalToWorld;
+#else
+	return LWCToFloat3x3(GetPrimitiveData(Parameters).LocalToWorld);
+#endif
 }
 
 MaterialFloat3x3 GetLocalToWorld3x3(FMaterialPixelParameters Parameters)
 {
+#if DECAL_PRIMITIVE
+	return (float3x3)DecalToWorld;
+#else
 	return LWCToFloat3x3(GetPrimitiveData(Parameters).LocalToWorld);
+#endif
 }
 
 MaterialFloat3x3 GetLocalToWorld3x3()
@@ -560,7 +661,7 @@ MaterialFloat3x3 GetLocalToWorld3x3()
 
 FLWCInverseMatrix GetWorldToInstance(FMaterialVertexParameters Parameters)
 {
-	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
+	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY || IS_NANITE_PASS
 		return Parameters.InstanceWorldToLocal;
 	#else
 		return GetPrimitiveData(Parameters).WorldToLocal;
@@ -578,7 +679,7 @@ FLWCInverseMatrix GetWorldToInstance(FMaterialPixelParameters Parameters)
 
 FLWCMatrix GetInstanceToWorld(FMaterialVertexParameters Parameters)
 {
-	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
+	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY || IS_NANITE_PASS
 		return Parameters.InstanceLocalToWorld;
 	#else
 		return GetPrimitiveData(Parameters).LocalToWorld;
@@ -946,7 +1047,7 @@ MaterialFloat2 GetDefaultSceneTextureUV(FMaterialPixelParameters Parameters, con
 	FLWCVector3 GetActorWorldPosition(FMaterialVertexParameters Parameters)
 	{
 	#if DECAL_PRIMITIVE
-		return MakeLWCVector3(DecalTilePosition, DecalToWorld[3].xyz);
+		return MakeLWCVector3(DecalTilePosition.xyz, DecalToWorld[3].xyz);
 	#else
 		return GetPrimitiveData(Parameters).ActorWorldPosition;
 	#endif
@@ -955,7 +1056,7 @@ MaterialFloat2 GetDefaultSceneTextureUV(FMaterialPixelParameters Parameters, con
 	FLWCVector3 GetActorWorldPosition(FMaterialPixelParameters Parameters)
 	{
 	#if DECAL_PRIMITIVE
-		return MakeLWCVector3(DecalTilePosition, DecalToWorld[3].xyz);
+		return MakeLWCVector3(DecalTilePosition.xyz, DecalToWorld[3].xyz);
 	#else
 		return GetPrimitiveData(Parameters).ActorWorldPosition;
 	#endif
@@ -994,7 +1095,7 @@ MaterialFloat2 GetDefaultSceneTextureUV(FMaterialPixelParameters Parameters, con
 /** Per Instance Custom Data Getter (Pixel Shader Variant - Visibility Buffer) */
 float GetPerInstanceCustomData(FMaterialPixelParameters Parameters, int Index, float DefaultValue)
 {
-#if IS_NANITE_PASS && USES_PER_INSTANCE_CUSTOM_DATA
+#if VF_USE_PRIMITIVE_SCENE_DATA && USES_PER_INSTANCE_CUSTOM_DATA
 	const uint FloatIndex = uint(Index);
 	BRANCH
 	if (FloatIndex < Parameters.CustomDataCount)
@@ -1003,8 +1104,16 @@ float GetPerInstanceCustomData(FMaterialPixelParameters Parameters, int Index, f
 		const float4 Float4Packed = LoadInstancePayloadDataElement(Float4Offset);
 		return Float4Packed[FloatIndex & 0x3u];
 	}
+#elif USE_INSTANCING && USES_PER_INSTANCE_CUSTOM_DATA
+	const uint FloatIndex = uint(Index);
+	BRANCH
+	if (FloatIndex < InstanceVF.NumCustomDataFloats)
+	{
+		const uint InstanceDataIndex = asuint(Parameters.PerInstanceParams.w);
+		const uint BufferStartIndex = InstanceDataIndex * InstanceVF.NumCustomDataFloats;
+		return InstanceVF.InstanceCustomDataBuffer[BufferStartIndex + FloatIndex];
+	}
 #endif
-
 	return DefaultValue;
 }
 
@@ -1039,12 +1148,23 @@ float GetPerInstanceCustomData(FMaterialVertexParameters Parameters, int Index, 
 /** Get the per-instance custom data when instancing */
 MaterialFloat3 GetPerInstanceCustomData3Vector(FMaterialPixelParameters Parameters, int Index, MaterialFloat3 DefaultValue)
 {
-#if IS_NANITE_PASS && USES_PER_INSTANCE_CUSTOM_DATA
+#if VF_USE_PRIMITIVE_SCENE_DATA && USES_PER_INSTANCE_CUSTOM_DATA
 	return float3(GetPerInstanceCustomData(Parameters, Index + 0, DefaultValue.x),
-				  GetPerInstanceCustomData(Parameters, Index + 1, DefaultValue.y),
-				  GetPerInstanceCustomData(Parameters, Index + 2, DefaultValue.z));
-#endif
+		GetPerInstanceCustomData(Parameters, Index + 1, DefaultValue.y),
+		GetPerInstanceCustomData(Parameters, Index + 2, DefaultValue.z));
 
+#elif USE_INSTANCING && USES_PER_INSTANCE_CUSTOM_DATA
+	const uint FloatIndex = uint(Index);
+	BRANCH
+	if (FloatIndex + 2 < InstanceVF.NumCustomDataFloats)
+	{
+		const uint InstanceDataIndex = asuint(Parameters.PerInstanceParams.w);
+		const uint BufferStartIndex = InstanceDataIndex * InstanceVF.NumCustomDataFloats;
+		return float3(InstanceVF.InstanceCustomDataBuffer[BufferStartIndex + FloatIndex],
+			InstanceVF.InstanceCustomDataBuffer[BufferStartIndex + FloatIndex + 1],
+			InstanceVF.InstanceCustomDataBuffer[BufferStartIndex + FloatIndex + 2]);
+	}
+#endif
 	return DefaultValue;
 }
 
@@ -1080,6 +1200,37 @@ MaterialFloat3 TransformTangentVectorToView(FMaterialPixelParameters Parameters,
 	return mul(mul(InTangentVector, Parameters.TangentToWorld), (MaterialFloat3x3)ResolvedView.TranslatedWorldToView);
 }
 
+FLWCMatrix GetLocalToWorld(FMaterialVertexParameters Parameters)
+{
+#if DECAL_PRIMITIVE
+	return MakeLWCMatrix(DecalTilePosition.xyz, DecalToWorld);
+#elif USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
+	return Parameters.InstanceLocalToWorld;
+#else
+	return GetPrimitiveData(Parameters).LocalToWorld;
+#endif
+}
+
+FLWCMatrix GetLocalToWorld(FMaterialPixelParameters Parameters)
+{
+#if DECAL_PRIMITIVE
+	return MakeLWCMatrix(DecalTilePosition.xyz, DecalToWorld);
+#else
+	return GetPrimitiveData(Parameters).LocalToWorld;
+#endif
+}
+
+FLWCMatrix GetPrevLocalToWorld(FMaterialVertexParameters Parameters)
+{
+	return Parameters.PrevFrameLocalToWorld;
+}
+
+/** Transforms a vector from local space to world space (PS version) */
+MaterialFloat3 TransformLocalVectorToWorld(FMaterialPixelParameters Parameters, MaterialFloat3 InLocalVector)
+{
+	return mul(InLocalVector, GetLocalToWorld3x3(Parameters));
+}
+
 /** Transforms a vector from local space to world space (VS version) */
 MaterialFloat3 TransformLocalVectorToWorld(FMaterialVertexParameters Parameters,MaterialFloat3 InLocalVector)
 {
@@ -1090,69 +1241,61 @@ MaterialFloat3 TransformLocalVectorToWorld(FMaterialVertexParameters Parameters,
 	#endif
 }
 
-/** Transforms a vector from local space to world space (PS version) */
-MaterialFloat3 TransformLocalVectorToWorld(FMaterialPixelParameters Parameters,MaterialFloat3 InLocalVector)
-{
-	return mul(InLocalVector, GetLocalToWorld3x3(Parameters));
-}
-
 /** Transforms a vector from local space to previous frame world space (VS version) */
-MaterialFloat3 TransformLocalVectorToPrevWorld(FMaterialVertexParameters Parameters,MaterialFloat3 InLocalVector)
+MaterialFloat3 TransformLocalVectorToPrevWorld(FMaterialVertexParameters Parameters, MaterialFloat3 InLocalVector)
 {
+#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
 	return LWCMultiplyVector(InLocalVector, Parameters.PrevFrameLocalToWorld);
+#else
+	return mul(InLocalVector, GetPreviousLocalToWorld3x3(Parameters));
+#endif
 }
-
-#if HAS_PRIMITIVE_UNIFORM_BUFFER
 
 /** Transforms a position from local space to absolute world space */
 FLWCVector3 TransformLocalPositionToWorld(FMaterialPixelParameters Parameters,float3 InLocalPosition)
 {
-	return LWCMultiply(InLocalPosition, GetPrimitiveData(Parameters).LocalToWorld);
+	return LWCMultiply(InLocalPosition, GetLocalToWorld(Parameters));
 }
 
 /** Transforms a position from local space to absolute world space */
 FLWCVector3 TransformLocalPositionToWorld(FMaterialVertexParameters Parameters,float3 InLocalPosition)
 {
-	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
-		return LWCMultiply(InLocalPosition, Parameters.InstanceLocalToWorld);
-	#else
-		return LWCMultiply(InLocalPosition, GetPrimitiveData(Parameters).LocalToWorld);
-	#endif
+	return LWCMultiply(InLocalPosition, GetLocalToWorld(Parameters));
 }
 
 /** Transforms a position from local space to previous frame absolute world space */
 FLWCVector3 TransformLocalPositionToPrevWorld(FMaterialVertexParameters Parameters,float3 InLocalPosition)
 {
-	return LWCMultiply(InLocalPosition, Parameters.PrevFrameLocalToWorld);
+	return LWCMultiply(InLocalPosition, GetLocalToWorld(Parameters));
 }
-
-#endif
-
-#if HAS_PRIMITIVE_UNIFORM_BUFFER
 
 /** Return the object's position in world space */
 FLWCVector3 GetObjectWorldPosition(FMaterialPixelParameters Parameters)
 {
+#if DECAL_PRIMITIVE
+	return MakeLWCVector3(DecalTilePosition.xyz, DecalToWorld[3].xyz);
+#else
 	return GetPrimitiveData(Parameters).ObjectWorldPosition;
+#endif
 }
 
 /** Return the object's position in world space. For instanced meshes, this returns the instance position. */
 FLWCVector3 GetObjectWorldPosition(FMaterialVertexParameters Parameters)
 {
-	#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
-		return LWCGetOrigin(Parameters.InstanceLocalToWorld);
-	#else
-		return GetPrimitiveData(Parameters).ObjectWorldPosition;
-	#endif
-}
-
+#if DECAL_PRIMITIVE
+	return MakeLWCVector3(DecalTilePosition.xyz, DecalToWorld[3].xyz);
+#elif USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
+	return LWCGetOrigin(Parameters.InstanceLocalToWorld);
+#else
+	return GetPrimitiveData(Parameters).ObjectWorldPosition;
 #endif
+}
 
 /** Get the per-instance random value when instancing */
 float GetPerInstanceRandom(FMaterialVertexParameters Parameters)
 {
-#if USE_INSTANCING || USE_INSTANCE_CULLING
-	return Parameters.PerInstanceParams.x;
+#if USES_PER_INSTANCE_RANDOM && VF_USE_PRIMITIVE_SCENE_DATA
+	return Parameters.PerInstanceRandom;
 #else
 	return 0.0;
 #endif
@@ -1161,8 +1304,8 @@ float GetPerInstanceRandom(FMaterialVertexParameters Parameters)
 /** Get the per-instance random value when instancing */
 float GetPerInstanceRandom(FMaterialPixelParameters Parameters)
 {
-#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_NANITE_PASS
-	return Parameters.PerInstanceParams.x;
+#if USES_PER_INSTANCE_RANDOM && VF_USE_PRIMITIVE_SCENE_DATA
+	return Parameters.PerInstanceRandom;
 #else
 	return 0.0;
 #endif
@@ -1172,7 +1315,7 @@ float GetPerInstanceRandom(FMaterialPixelParameters Parameters)
 float GetPerInstanceFadeAmount(FMaterialPixelParameters Parameters)
 {
 #if USE_INSTANCING || USE_INSTANCE_CULLING
-	return float(Parameters.PerInstanceParams.y);
+	return float(Parameters.PerInstanceParams.x);
 #else
 	return float(1.0);
 #endif
@@ -1182,7 +1325,7 @@ float GetPerInstanceFadeAmount(FMaterialPixelParameters Parameters)
 float GetPerInstanceFadeAmount(FMaterialVertexParameters Parameters)
 {
 #if USE_INSTANCING || USE_INSTANCE_CULLING
-	return float(Parameters.PerInstanceParams.y);
+	return float(Parameters.PerInstanceParams.x);
 #else
 	return float(1.0);
 #endif
@@ -1190,7 +1333,7 @@ float GetPerInstanceFadeAmount(FMaterialVertexParameters Parameters)
  
 MaterialFloat GetDistanceCullFade()
 {
-#if PIXELSHADER
+#if PIXELSHADER && !IS_NANITE_PASS // Nanite doesn't bind this UB
 	return saturate(ResolvedView.RealTime * PrimitiveFade.FadeTimeScaleBias.x + PrimitiveFade.FadeTimeScaleBias.y);
 #else
     return 1.0f;
@@ -1433,10 +1576,9 @@ float3 MaterialExpressionGetHairColorFromMelanin(float Melanin, float Redness, f
 	return GetHairColorFromMelanin(Melanin, Redness, DyeColor);
 }
 
-float3 MaterialExpressionAtmosphericLightVector(FMaterialPixelParameters Parameters)
-{
-	return ResolvedView.AtmosphereLightDirection[0].xyz;
-}
+#define DEFINE_ATMOSPHERELIGHTVECTOR(MaterialParamType) float3 MaterialExpressionAtmosphericLightVector(MaterialParamType Parameters) {return ResolvedView.AtmosphereLightDirection[0].xyz;}
+DEFINE_ATMOSPHERELIGHTVECTOR(FMaterialPixelParameters)
+DEFINE_ATMOSPHERELIGHTVECTOR(FMaterialVertexParameters)
 
 float3 MaterialExpressionAtmosphericLightColor(FMaterialPixelParameters Parameters)
 {
@@ -1467,7 +1609,7 @@ float3 MaterialExpressionSkyAtmosphereLightIlluminance(FMaterialPixelParameters 
 DEFINE_SKYATMLIGHTDIRECTION(FMaterialPixelParameters)
 DEFINE_SKYATMLIGHTDIRECTION(FMaterialVertexParameters)
 
-float3 MaterialExpressionSkyAtmosphereLightDiskLuminance(FMaterialPixelParameters Parameters, uint LightIndex)
+float3 MaterialExpressionSkyAtmosphereLightDiskLuminance(FMaterialPixelParameters Parameters, uint LightIndex, float OverrideAtmosphereLightDiscCosHalfApexAngle)
 {
 	float3 LightDiskLuminance = float3(0.0f, 0.0f, 0.0f);
 #if MATERIAL_SKY_ATMOSPHERE && PROJECT_SUPPORT_SKY_ATMOSPHERE
@@ -1479,7 +1621,9 @@ float3 MaterialExpressionSkyAtmosphereLightDiskLuminance(FMaterialPixelParameter
 		// GetLightDiskLuminance does a test against the virtual planet but SkyCameraTranslatedWorldOrigin is always put safely setup above it (to never have the camera into the virtual planet with a black screen)
 		LightDiskLuminance =  GetLightDiskLuminance(PlanetCenterToCameraTranslatedWorld, ViewDir, ResolvedView.SkyAtmosphereBottomRadiusKm, ResolvedView.SkyAtmosphereTopRadiusKm,
 			View.TransmittanceLutTexture, View.TransmittanceLutTextureSampler,
-			ResolvedView.AtmosphereLightDirection[LightIndex].xyz, ResolvedView.AtmosphereLightDiscCosHalfApexAngle[LightIndex].x, ResolvedView.AtmosphereLightDiscLuminance[LightIndex].xyz);
+			ResolvedView.AtmosphereLightDirection[LightIndex].xyz, 
+			OverrideAtmosphereLightDiscCosHalfApexAngle >= 0.0f ? OverrideAtmosphereLightDiscCosHalfApexAngle : ResolvedView.AtmosphereLightDiscCosHalfApexAngle_PPTrans[LightIndex].x,
+			ResolvedView.AtmosphereLightDiscLuminance[LightIndex].xyz);
 	}
 #endif
 	return LightDiskLuminance;
@@ -1525,7 +1669,7 @@ float4 MaterialExpressionSkyAtmosphereAerialPerspective(FMaterialPixelParameters
 
 	float4 AerialPerspective = GetAerialPerspectiveLuminanceTransmittance(
 		ResolvedView.RealTimeReflectionCapture, ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
-		NDCPosition, TranslatedWorldPosition, SkyCameraTranslatedWorldOrigin,
+		NDCPosition, TranslatedWorldPosition - SkyCameraTranslatedWorldOrigin,
 		View.CameraAerialPerspectiveVolume, View.CameraAerialPerspectiveVolumeSampler,
 		ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolutionInv,
 		ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolution,
@@ -1549,17 +1693,44 @@ float3 MaterialExpressionSkyAtmosphereDistantLightScatteredLuminance(FMaterialPi
 #endif
 }
 
-/** 
-	Get the scene depth from the scene below the single layer water surface. This is only valid in the single layer water rendering pass.
+#if POST_PROCESS_MATERIAL
+uint bSceneDepthWithoutWaterTextureAvailable;
+Texture2D SceneDepthWithoutSingleLayerWaterTexture;
+SamplerState SceneDepthWithoutSingleLayerWaterSampler;
+float4 SceneWithoutSingleLayerWaterMinMaxUV;
+float2 SceneWithoutSingleLayerWaterTextureSize;
+float2 SceneWithoutSingleLayerWaterInvTextureSize;
+#endif
+
+/**
+	Get the scene depth from the scene below the single layer water surface. This is only valid in the single layer water rendering pass or during post processing.
 	Returns the chosen fallback depth if the material doesn't support reading back the correct depth.
 */
 float MaterialExpressionSceneDepthWithoutWater(float2 ViewportUV, float FallbackDepth)
 {
-#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER && !SCENE_TEXTURES_DISABLED && (!SIMPLE_SINGLE_LAYER_WATER || SINGLE_LAYER_WATER_SIMPLE_FORWARD)
-
-	const float2 ClampedViewportUV = clamp(ViewportUV, OpaqueBasePass.SceneWithoutSingleLayerWaterMinMaxUV.xy, OpaqueBasePass.SceneWithoutSingleLayerWaterMinMaxUV.zw);
-
-	return OpaqueBasePass.SceneDepthWithoutSingleLayerWaterTexture.SampleLevel(SingleLayerWaterSceneDepthSampler, ClampedViewportUV, 0).x * SINGLE_LAYER_WATER_DEPTH_SCALE;
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER && !SCENE_TEXTURES_DISABLED && (SINGLE_LAYER_WATER_SHADING_QUALITY != SINGLE_LAYER_WATER_SHADING_QUALITY_MOBILE_WITH_DEPTH_BUFFER)
+	const float2 ClampedViewportUV = clamp(ViewportUV, SingleLayerWater.SceneWithoutSingleLayerWaterMinMaxUV.xy, SingleLayerWater.SceneWithoutSingleLayerWaterMinMaxUV.zw);
+	float WaterDeviceZ = WaterSampleSceneDepthWithoutWater(SingleLayerWater.SceneDepthWithoutSingleLayerWaterTexture, SingleLayerWaterSceneDepthSampler, ClampedViewportUV, 
+		SingleLayerWater.SceneWithoutSingleLayerWaterTextureSize, SingleLayerWater.SceneWithoutSingleLayerWaterInvTextureSize);
+	return ConvertFromDeviceZ(WaterDeviceZ);
+#elif POST_PROCESS_MATERIAL
+	if (bSceneDepthWithoutWaterTextureAvailable)
+	{
+		const float2 ClampedViewportUV = clamp(ViewportUV, SceneWithoutSingleLayerWaterMinMaxUV.xy, SceneWithoutSingleLayerWaterMinMaxUV.zw);
+		float WaterDeviceZ = WaterSampleSceneDepthWithoutWater(SceneDepthWithoutSingleLayerWaterTexture, SceneDepthWithoutSingleLayerWaterSampler, ClampedViewportUV,
+			SceneWithoutSingleLayerWaterTextureSize, SceneWithoutSingleLayerWaterInvTextureSize);
+		return ConvertFromDeviceZ(WaterDeviceZ);
+	}
+	else
+	{
+#if SHADING_PATH_DEFERRED
+		return CalcSceneDepth(uint2(ViewportUV * View.BufferSizeAndInvSize.xy));
+#elif SHADING_PATH_MOBILE
+		return CalcSceneDepth(ViewportUV);
+#else
+		return FallbackDepth;
+#endif
+	}
 #else
 	return FallbackDepth;
 #endif
@@ -1592,12 +1763,12 @@ float MaterialExpressionCloudSampleNormAltitudeInLayer(FMaterialPixelParameters 
 #endif
 }
 
-float3 MaterialExpressionVolumeSampleConservativeDensity(FMaterialPixelParameters Parameters)
+float4 MaterialExpressionVolumeSampleConservativeDensity(FMaterialPixelParameters Parameters)
 {
 #if CLOUD_LAYER_PIXEL_SHADER
 	return Parameters.VolumeSampleConservativeDensity;
 #else
-	return float3(0.0f, 0.0f, 0.0f);
+	return float4(0.0f, 0.0f, 0.0f, 0.0f);
 #endif
 }
 
@@ -1605,6 +1776,24 @@ float MaterialExpressionVolumeSampleShadowSampleDistance(FMaterialPixelParameter
 {
 #if CLOUD_LAYER_PIXEL_SHADER
 	return Parameters.ShadowSampleDistance;
+#else
+	return 0.0f;
+#endif
+}
+
+float3 MaterialExpressionCloudEmptySpaceSkippingSphereCenterWorldPosition(FMaterialPixelParameters Parameters)
+{
+#if CLOUD_LAYER_PIXEL_SHADER
+	return Parameters.CloudEmptySpaceSkippingSphereCenterWorldPosition;
+#else
+	return 0.0f;
+#endif
+}
+
+float MaterialExpressionCloudEmptySpaceSkippingSphereRadius(FMaterialPixelParameters Parameters)
+{
+#if CLOUD_LAYER_PIXEL_SHADER
+	return Parameters.CloudEmptySpaceSkippingSphereRadius;
 #else
 	return 0.0f;
 #endif
@@ -1672,73 +1861,6 @@ MaterialFloat2 UnMirrorUV( MaterialFloat2 UV, FMaterialPixelParameters Parameter
 MaterialFloat2 GetParticleMacroUV(FMaterialPixelParameters Parameters)
 {
 	return (Parameters.ScreenPosition.xy / Parameters.ScreenPosition.w - Parameters.Particle.MacroUV.xy) * Parameters.Particle.MacroUV.zw + MaterialFloat2(.5, .5);
-}
-
-MaterialFloat4 ProcessMaterialColorTextureLookup(MaterialFloat4 TextureValue)
-{
-	return TextureValue;
-}
-
-MaterialFloat4 ProcessMaterialVirtualColorTextureLookup(MaterialFloat4 TextureValue)
-{
-	TextureValue = ProcessMaterialColorTextureLookup(TextureValue);
-#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
-	// on mobile all VT physical spaces use linear color formats, do sRGB to Linear conversion in the shader
-	TextureValue = MaterialFloat4(TextureValue.rgb*TextureValue.rgb, TextureValue.a);
-#endif
-	return TextureValue;
-}
-
-MaterialFloat4 ProcessMaterialExternalTextureLookup(MaterialFloat4 TextureValue)
-{
-#if COMPILER_GLSL_ES3_1
-	return MaterialFloat4(pow(TextureValue.rgb, 2.2f), TextureValue.a);
-#else
-	return ProcessMaterialColorTextureLookup(TextureValue);
-#endif
-}
-
-MaterialFloat4 ProcessMaterialLinearColorTextureLookup(MaterialFloat4 TextureValue)
-{
-	return TextureValue;
-}
-
-MaterialFloat4 ProcessMaterialGreyscaleTextureLookup(MaterialFloat4 TextureValue)
-{
-	// Sampling a greyscale texture in D3D9 gives: (G,G,G)
-	// Sampling a greyscale texture in D3D11 gives: (G,0,0)
-	// This replication reproduces the D3D9 behavior in all cases.
-	MaterialFloat GrayValue = TextureValue.r;
-#if (COMPILER_GLSL_ES3_1 || VULKAN_PROFILE) // OpenGLES3.1, Vulkan3.1 do not support sRGB sampling from R8
-	#if MOBILE_EMULATION
-	if( ResolvedView.MobilePreviewMode > 0.5f )
-	{
-		// undo HW srgb->lin
-		GrayValue = pow(GrayValue, 1.0f/2.2f); // TODO: replace with a more accurate lin -> sRGB conversion.
-	}
-	#endif
-	// sRGB read approximation (in highp if possible)
-	float LinValue = GrayValue;
-	LinValue *= LinValue;
-	return MaterialFloat4(LinValue.rrrr);
-#endif 
-	return GrayValue.rrrr;
-}
-
-MaterialFloat4 ProcessMaterialLinearGreyscaleTextureLookup(MaterialFloat4 TextureValue)
-{
-	// Sampling a greyscale texture in D3D9 gives: (G,G,G)
-	// Sampling a greyscale texture in D3D11 gives: (G,0,0)
-	// This replication reproduces the D3D9 behavior in all cases.
-	return TextureValue.rrrr;
-}
-
-MaterialFloat4 ProcessMaterialAlphaTextureLookup(MaterialFloat4 TextureValue)
-{
-	// Sampling a single channel texture in D3D9 gives: (G,G,G)
-	// Sampling a single channel texture in D3D11 gives: (G,0,0)
-	// This replication reproduces the D3D9 behavior in all cases.
-	return TextureValue.rrrr;
 }
 
 /** Accesses a shared material sampler or falls back if independent samplers are not supported. */
@@ -1899,12 +2021,12 @@ float3 GetSpeedTreeVertexOffsetInner(FMaterialVertexParameters Parameters, int G
 		return float4(0,0,0);
 	#endif
 
-	#if USE_INSTANCING
+	#if USE_INSTANCING || USE_INSTANCE_CULLING
 		float3x3 LocalToWorld = LWCToFloat3x3(Parameters.InstanceLocalToWorld);
 		float3 LocalPosition = Parameters.InstanceLocalPosition;
 
 		// skip if this instance is hidden
-		if (Parameters.PerInstanceParams.z < 1.f)
+		if (Parameters.PerInstanceParams.y < 1.f)
 		{
 			return float3(0,0,0);
 		}
@@ -2125,6 +2247,18 @@ MaterialFloat4 MobileSceneTextureLookup(inout FMaterialPixelParameters Parameter
 		return 0.0f;
 	}
 #else
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+	if (SceneTextureId == PPI_CustomDepth)
+	{
+		MaterialFloat Depth = ConvertFromDeviceZ(Texture2DSample(MobileSceneTextures.CustomDepthTexture, MobileSceneTextures.CustomDepthTextureSampler, UV).r);
+		return MaterialFloat4(Depth.rrr, 0.f);
+	}
+	else if (SceneTextureId == PPI_CustomStencil)
+	{
+		MaterialFloat Stencil = MobileSceneTextures.CustomStencilTexture.Load(int3(Parameters.SvPosition.xy, 0)) STENCIL_COMPONENT_SWIZZLE;
+		return MaterialFloat4(Stencil, Stencil, Stencil, 0.f);
+	}
+#else // MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	if (SceneTextureId == PPI_SceneDepth)
 	{
 		MaterialFloat Depth = CalcSceneDepth(UV);
@@ -2156,11 +2290,11 @@ MaterialFloat4 MobileSceneTextureLookup(inout FMaterialPixelParameters Parameter
 	}
 	else if (SceneTextureId == PPI_CustomStencil)
 	{
-		MaterialFloat Stencil = Texture2DSample(MobileSceneTextures.MobileCustomStencilTexture, MobileSceneTextures.MobileCustomStencilTextureSampler, UV).r*255.0;
-		Stencil = floor(Stencil + 0.5);
-		return MaterialFloat4(Stencil.rrr, 0.f);
+		MaterialFloat Stencil = MobileSceneTextures.CustomStencilTexture.Load(int3(Parameters.SvPosition.xy, 0)) STENCIL_COMPONENT_SWIZZLE;
+		return MaterialFloat4(Stencil, Stencil, Stencil, 0.f);
 	}
-#endif// SCENE_TEXTURES_DISABLED
+#endif // MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#endif // SCENE_TEXTURES_DISABLED
 
 	return MaterialFloat4(0.0f, 0.0f, 0.0f, 0.0f);
 }
@@ -2211,7 +2345,88 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 	}
 
 #else // !SCENE_TEXTURES_DISABLED
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+	if (SceneTextureIndex == PPI_CustomDepth)
+	{
+		MaterialFloat Depth = ConvertFromDeviceZ(Texture2DSample(SingleLayerWater.CustomDepthTexture, SingleLayerWater.CustomDepthSampler, UV).r);
+		return MaterialFloat4(Depth.rrr, 0.f);
+	}
+	else if (SceneTextureIndex == PPI_CustomStencil)
+	{
+		MaterialFloat Stencil = SingleLayerWater.CustomStencilTexture.Load(int3(UV * View.BufferSizeAndInvSize.xy, 0)) STENCIL_COMPONENT_SWIZZLE;
+		return MaterialFloat4(Stencil, Stencil, Stencil, 0.f);
+	}
 
+	return float4(0, 0, 0, 0);
+#else // MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#if STRATA_ENABLED
+
+	const uint2 PixelPos = uint2(UV * View.BufferSizeAndInvSize.xy);
+
+	// 1. Post-process inputs which are independent on material data
+	switch (SceneTextureIndex)
+	{
+	case PPI_SceneColor:			return float4(CalcSceneColor(UV), 0);
+	case PPI_SceneDepth:			return CalcSceneDepth(UV);
+	case PPI_SeparateTranslucency:	return float4(1, 1, 1, 1);	// todo
+	case PPI_Opacity:				return 1.f; // Opacity has different meaning depending on the legacy shading model.
+	case PPI_CustomDepth:			return CalcSceneCustomDepth(UV);
+#if POST_PROCESS_MATERIAL
+	case PPI_PostProcessInput0:		return Texture2DSample(PostProcessInput_0_Texture, bFiltered ? PostProcessInput_BilinearSampler : PostProcessInput_0_SharedSampler, UV);
+	case PPI_PostProcessInput1:		return Texture2DSample(PostProcessInput_1_Texture, bFiltered ? PostProcessInput_BilinearSampler : PostProcessInput_1_SharedSampler, UV);
+	case PPI_PostProcessInput2:		return Texture2DSample(PostProcessInput_2_Texture, bFiltered ? PostProcessInput_BilinearSampler : PostProcessInput_2_SharedSampler, UV);
+	case PPI_PostProcessInput3:		return Texture2DSample(PostProcessInput_3_Texture, bFiltered ? PostProcessInput_BilinearSampler : PostProcessInput_3_SharedSampler, UV);
+	case PPI_PostProcessInput4:		return Texture2DSample(PostProcessInput_4_Texture, bFiltered ? PostProcessInput_BilinearSampler : PostProcessInput_4_SharedSampler, UV);
+#endif // __POST_PROCESS_COMMON__
+	case PPI_DecalMask:				return 0;  // material compiler will return an error
+	case PPI_AmbientOcclusion:		return CalcSceneAO(UV);
+	case PPI_CustomStencil:			return CalcSceneCustomStencil(PixelPos);
+#if POST_PROCESS_MATERIAL
+	case PPI_Velocity:				return float4(PostProcessVelocityLookup(ConvertToDeviceZ(CalcSceneDepth(UV)), UV), 0, 0);
+#endif
+	}
+
+	// 2. Post-process inputs which are dependent on material data
+	//    Note: For PostProcess material we always return the first layer dataCalcSceneCustomStencil
+#ifdef StrataStruct
+	FStrataAddressing StrataAddressing   = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), StrataStruct.MaxBytesPerPixel);
+	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(StrataStruct.MaterialTextureArray, StrataAddressing, StrataStruct.TopLayerTexture);
+	BRANCH
+	if (StrataPixelHeader.BSDFCount > 0)
+	{
+		const FStrataBSDF BSDF = UnpackStrataBSDFIn(StrataStruct.MaterialTextureArray, StrataAddressing, StrataPixelHeader);
+#else
+	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+	BRANCH
+	if (StrataPixelHeader.BSDFCount > 0)
+	{
+		const FStrataBSDF BSDF = UnpackStrataBSDFIn(Strata.MaterialTextureArray, StrataAddressing, StrataPixelHeader);
+#endif
+		switch (SceneTextureIndex)
+		{
+			// order needs to match to ESceneTextureId
+			case PPI_DiffuseColor:			return float4(StrataGetBSDFDiffuseColor(BSDF), 0);
+			case PPI_SpecularColor:			return float4(StrataGetBSDFSpecularColor(BSDF), 0);
+			case PPI_SubsurfaceColor:		return float4(StrataGetBSDFSubSurfaceColor(BSDF), 0);
+			case PPI_BaseColor:				return float4(StrataGetBSDFBaseColor(BSDF), 0);
+			case PPI_Specular:				return StrataGetBSDFSpecular(BSDF);
+			case PPI_Metallic:				return StrataGetBSDFMetallic(BSDF);
+			case PPI_WorldNormal:			return float4(StrataGetWorldNormal(StrataPixelHeader, BSDF, StrataAddressing), 0);
+			case PPI_Roughness:				return StrataGetBSDFRoughness(BSDF);
+			case PPI_MaterialAO:			return StrataGetAO(StrataPixelHeader);
+			case PPI_ShadingModelColor:		return float4(GetShadingModelColor(StrataGetLegacyShadingModels(BSDF)), 1);
+			case PPI_ShadingModelID:		return float4(StrataGetLegacyShadingModels(BSDF), 0, 0, 0);
+			case PPI_StoredBaseColor:		return float4(StrataGetBSDFBaseColor(BSDF), 0);
+			case PPI_StoredSpecular:		return float4(StrataGetBSDFSpecular(BSDF).rrr, 0);
+			case PPI_WorldTangent:			return float4(StrataGetWorldTangent(StrataPixelHeader, BSDF, StrataAddressing), 0);
+			case PPI_Anisotropy:			return StrataGetBSDFAnisotropy(BSDF);
+		}
+	}
+
+	return float4(0, 0, 0, 0);
+
+#else // STRATA_ENABLED
 	FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(UV, false);
 	switch(SceneTextureIndex)
 	{
@@ -2234,7 +2449,12 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 		case PPI_Metallic:
 			return ScreenSpaceData.GBuffer.Metallic;
 		case PPI_WorldNormal:
+#if IS_DBUFFER_DECAL
+			// DBuffer uses depth buffer gradients or reprojection of last frame normal.
+			return GetDBufferReprojectedWorldNormal(UV);
+#else
 			return float4(ScreenSpaceData.GBuffer.WorldNormal, 0);
+#endif
 		case PPI_SeparateTranslucency:
 			return float4(1, 1, 1, 1);	// todo
 		case PPI_Opacity:
@@ -2282,6 +2502,8 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 		default:
 			return float4(0, 0, 0, 0);
 	}
+#endif // STRATA_ENABLED
+#endif // MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 #endif // SCENE_TEXTURES_DISABLED
 }
 
@@ -2315,6 +2537,16 @@ float4 MaterialExpressionDBufferTextureLookup(float2 BufferUV, int DBufferTextur
 	uint2 PixelPos = uint2(BufferUV * View.BufferSizeAndInvSize.xy);
 	uint ValidDBufferTargetMask = GetDBufferTargetMask(PixelPos) & (1u << DBufferTextureIndex);
 
+#if STRATA_ENABLED
+	const FStrataDBuffer DBufferData = GetDBufferData(BufferUV, DBufferTextureIndex);
+	switch (DBufferTextureIndex)
+	{
+	// All data (BaseColor, WorldNormal, Roughness) are pre-multiplied by their coverage
+	case 0:	return float4(DBufferData.BaseColor,	DBufferData.OneMinusCoverage_BaseColor);
+	case 1:	return float4(DBufferData.WorldNormal,	DBufferData.OneMinusCoverage_WorldNormal);
+	case 2:	return float4(DBufferData.Roughness,	DBufferData.Metallic, DBufferData.Specular, DBufferData.OneMinusCoverage_Roughness);
+	}
+#else
 	FDBufferData DBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
 	switch (DBufferTextureIndex)
 	{
@@ -2322,6 +2554,7 @@ float4 MaterialExpressionDBufferTextureLookup(float2 BufferUV, int DBufferTextur
 	case 1:	return float4(DBufferData.PreMulWorldNormal, DBufferData.NormalOpacity);
 	case 2:	return float4(DBufferData.PreMulRoughness, DBufferData.PreMulMetallic, DBufferData.PreMulSpecular, DBufferData.RoughnessOpacity);
 	}
+#endif
 
 	return float4(0, 0, 0, 1);
 }
@@ -2623,37 +2856,57 @@ half GetMaterialMaskedOpacity(FPixelMaterialInputs PixelMaterialInputs)
 }
 #endif
 
-// UE-102725: Workaround for precision issue that only occurs with world position offsets in DXBC shaders.
-#if IR_LANGUAGE_DXBC
-#define WPO_PRECISE(T) precise T
-#else
-#define WPO_PRECISE(T) T
+float3 GetMaterialWorldPositionOffset(FMaterialVertexParameters Parameters)
+{
+#if IS_NANITE_PASS
+	BRANCH
+		if (!Parameters.bEvaluateWorldPositionOffset)
+		{
+			return float3(0, 0, 0);
+		}
 #endif
 
-WPO_PRECISE(float3) GetMaterialWorldPositionOffset(FMaterialVertexParameters Parameters)
-{
-	#if USE_INSTANCING || USE_INSTANCE_CULLING
-		// skip if this instance is hidden
-		if (Parameters.PerInstanceParams.z < 1.f)
-		{
-			return float3(0,0,0);
-		}
-	#endif
+#if USE_INSTANCING || USE_INSTANCE_CULLING
+	// skip if this instance is hidden
+	if (Parameters.PerInstanceParams.y < 1.f)
+	{
+		return float3(0, 0, 0);
+	}
+#endif
+
+	if ((GetPrimitiveData(Parameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) == 0)
+	{
+		return float3(0, 0, 0);
+	}
+
 %s;
 }
 
-WPO_PRECISE(float3) GetMaterialPreviousWorldPositionOffset(FMaterialVertexParameters Parameters)
+float3 GetMaterialPreviousWorldPositionOffset(FMaterialVertexParameters Parameters)
 {
-	#if USE_INSTANCING || USE_INSTANCE_CULLING
-		// skip if this instance is hidden
-		if (Parameters.PerInstanceParams.z < 1.f)
+#if IS_NANITE_PASS
+	BRANCH
+		if (!Parameters.bEvaluateWorldPositionOffset)
 		{
-			return float3(0,0,0);
+			return float3(0, 0, 0);
 		}
-	#endif
+#endif
+
+#if USE_INSTANCING || USE_INSTANCE_CULLING
+	// skip if this instance is hidden
+	if (Parameters.PerInstanceParams.y < 1.f)
+	{
+		return float3(0, 0, 0);
+	}
+#endif
+
+	if ((GetPrimitiveData(Parameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) == 0)
+	{
+		return float3(0, 0, 0);
+	}
+
 %s;
 }
-
 
 // .rgb:SubsurfaceColor, .a:SSProfileId in 0..1 range
 half4 GetMaterialSubsurfaceDataRaw(FPixelMaterialInputs PixelMaterialInputs)
@@ -2748,10 +3001,6 @@ float3 CalculateAnisotropyTangent(in out FMaterialPixelParameters Parameters, FP
 	float3 Tangent = GetMaterialTangent(PixelMaterialInputs);
 
 #if MATERIAL_TANGENTSPACENORMAL
-	#if SIMPLE_FORWARD_SHADING
-		Tangent = float3(1, 0, 0);
-	#endif
-
 	Tangent = TransformTangentNormalToWorld(Parameters.TangentToWorld, Tangent);
 #endif
 
@@ -2761,28 +3010,8 @@ float3 CalculateAnisotropyTangent(in out FMaterialPixelParameters Parameters, FP
 	return Tangent;
 }
 
-FMaterialAttributes FMaterialAttributes_GetDefault()
-{
-	FMaterialAttributes Result;
+// EvaluateMaterialAttributes
 %s
-	return Result;
-}
-
-FMaterialAttributes EvaluateVertexMaterialAttributes(FMaterialVertexParameters Parameters)
-{
-	FMaterialAttributes DefaultMaterialAttributes = FMaterialAttributes_GetDefault();
-%s
-	// Return the default, this may be skipped if the above code returns different attributes
-	return DefaultMaterialAttributes;
-}
-
-FMaterialAttributes EvaluatePixelMaterialAttributes(in out FMaterialPixelParameters Parameters)
-{
-	FMaterialAttributes DefaultMaterialAttributes = FMaterialAttributes_GetDefault();
-%s
-	// Return the default, this may be skipped if the above code returns different attributes
-	return DefaultMaterialAttributes;
-}
 
 // Be very, very careful about changing CalcPixelMaterialInputs() or CalcPixelMaterialInputsAnalyticDerivatives(). They apply the same basic calculation,
 // but CalcPixelMaterialInputs() uses finite difference derivates from hardware whereas CalcPixelMaterialInputsAnalyticDerivatives() uses analytic
@@ -2795,16 +3024,15 @@ void CalcPixelMaterialInputs(in out FMaterialPixelParameters Parameters, in out 
 %s
 
 #if TEMPLATE_USES_STRATA
+	Parameters.StrataPixelFootprint = StrataGetPixelFootprint(Parameters.WorldPosition_CamRelative);
 	Parameters.SharedLocalBases = StrataInitialiseSharedLocalBases();
+	Parameters.StrataTree = GetInitialisedStrataTree();
 #endif
 
 	// Note that here MaterialNormal can be in world space or tangent space
 	float3 MaterialNormal = GetMaterialNormal(Parameters, PixelMaterialInputs);
 
 #if MATERIAL_TANGENTSPACENORMAL
-#if SIMPLE_FORWARD_SHADING
-	Parameters.WorldNormal = float3(0, 0, 1);
-#endif
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	// Mobile will rely on only the final normalize for performance
@@ -2854,16 +3082,15 @@ void CalcPixelMaterialInputsAnalyticDerivatives(in out FMaterialPixelParameters 
 %s
 
 #if TEMPLATE_USES_STRATA
+	Parameters.StrataPixelFootprint = StrataGetPixelFootprint(Parameters.WorldPosition_CamRelative);
 	Parameters.SharedLocalBases = StrataInitialiseSharedLocalBases();
+	Parameters.StrataTree = GetInitialisedStrataTree();
 #endif
 
 	// Note that here MaterialNormal can be in world space or tangent space
 	float3 MaterialNormal = GetMaterialNormal(Parameters, PixelMaterialInputs);
 
 #if MATERIAL_TANGENTSPACENORMAL
-#if SIMPLE_FORWARD_SHADING
-	Parameters.WorldNormal = float3(0, 0, 1);
-#endif
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	// Mobile will rely on only the final normalize for performance
@@ -2936,7 +3163,7 @@ void ClipLODTransition(FMaterialPixelParameters Parameters, float DitherFactor)
 #if (USE_INSTANCING  || USE_INSTANCE_CULLING) && USE_DITHERED_LOD_TRANSITION
 void ClipLODTransition(FMaterialPixelParameters Parameters)
 {
-	ClipLODTransition(Parameters, Parameters.PerInstanceParams.w);
+	ClipLODTransition(Parameters, Parameters.PerInstanceParams.z);
 }
 #elif USE_DITHERED_LOD_TRANSITION && !USE_STENCIL_LOD_DITHER
 void ClipLODTransition(FMaterialPixelParameters Parameters)
@@ -2974,20 +3201,6 @@ void GetMaterialClippingShadowDepth(FMaterialPixelParameters Parameters, FPixelM
 	#endif
 }
 
-// The material blending mode alone is not enough information. We also need to know if the material is ThinTranslucent because in this case we should never clip.
-// Indeed, ThinTranslucent surfaces always have a coverage of 1 and opacity represent the coverage of the opaque lit material sitting on top of the translucent one.
-void GetMaterialClippingVelocity(FMaterialPixelParameters Parameters, FPixelMaterialInputs PixelMaterialInputs, bool bIsThinTranslucent)
-{
-	ClipLODTransition(Parameters);
-	#if MATERIALBLENDING_MASKED && MATERIAL_DITHER_OPACITY_MASK
-		CLIP(GetMaterialMaskInputRaw(PixelMaterialInputs) - 1.0f / 255.0f);
-	#elif MATERIALBLENDING_MASKED
-		CLIP(GetMaterialMask(PixelMaterialInputs)); 
-	#elif MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE
-		CLIP(bIsThinTranslucent ? 1.0f : GetMaterialOpacity(PixelMaterialInputs) - 1.0 / 255.0 - GetMaterialOpacityMaskClipValue());
-	#endif
-}
-
 #if MATERIAL_DITHER_OPACITY_MASK
 float DitheredOpacityMaskToOpacity(float Mask)
 {
@@ -3006,7 +3219,7 @@ void GetMaterialCoverageAndClipping(FMaterialPixelParameters Parameters, FPixelM
 {
 	ClipLODTransition(Parameters);
 
-#if MATERIALBLENDING_MASKED
+#if MATERIALBLENDING_MASKED && !SINGLE_LAYER_WATER_NO_DISCARD
 	#if MATERIAL_DITHER_OPACITY_MASK
 		/*
 		5 value dither. Every value present in +
@@ -3030,6 +3243,18 @@ void GetMaterialCoverageAndClipping(FMaterialPixelParameters Parameters, FPixelM
 	#else
 		CLIP(GetMaterialMask(PixelMaterialInputs));
 	#endif
+#endif
+}
+
+// The material blending mode alone is not enough information. We also need to know if the material is ThinTranslucent because in this case we should never clip.
+// Indeed, ThinTranslucent surfaces always have a coverage of 1 and opacity represent the coverage of the opaque lit material sitting on top of the translucent one.
+void GetMaterialClippingVelocity(FMaterialPixelParameters Parameters, FPixelMaterialInputs PixelMaterialInputs, bool bIsThinTranslucent)
+{
+#if MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE
+	ClipLODTransition(Parameters);
+	CLIP(bIsThinTranslucent ? 1.0f : GetMaterialOpacity(PixelMaterialInputs) - 1.0 / 255.0 - GetMaterialOpacityMaskClipValue());
+#else
+	GetMaterialCoverageAndClipping(Parameters, PixelMaterialInputs);
 #endif
 }
 
@@ -3137,20 +3362,29 @@ void CalcMaterialParametersEx(
 
 	Parameters.LightVector = 0;
 
+#if IS_NANITE_PASS
+	// Nanite does not support OPTIONAL_IsFrontFace, so Nanite sets the following to 1.0f or -1.0f in
+	// GetMaterialPixelParameters - here we pull it out into our own front facing bool.
+	const bool bNaniteIsFrontFace = Parameters.TwoSidedSign < 0.0f;
+#endif
+
 	Parameters.TwoSidedSign = 1.0f;
 
 #if MATERIAL_TWOSIDED && HAS_PRIMITIVE_UNIFORM_BUFFER
-    // #dxr: DirectX Raytracing's HitKind() intrinsic already accounts for negative scaling
-    #if PIXELSHADER
-	    Parameters.TwoSidedSign *= ResolvedView.CullingSign * GetPrimitive_DeterminantSign(Parameters.PrimitiveId);
-    #endif
-
+	// #dxr: DirectX Raytracing's HitKind() intrinsic already accounts for negative scaling
+	#if PIXELSHADER
+		Parameters.TwoSidedSign *= ResolvedView.CullingSign * GetPrimitive_DeterminantSign(Parameters.PrimitiveId);
+	#endif
 #endif
 
 #if (MATERIAL_TWOSIDED && !MATERIAL_TWOSIDED_SEPARATE_PASS) || RAYHITGROUPSHADER
 	// Either we have a two-sided material that needs a sign flip, or we have a ray tracing material
 	// that needs to consider rays arriving from either side
-	Parameters.TwoSidedSign *= GetFloatFacingSign(bIsFrontFace);
+	#if IS_NANITE_PASS
+		Parameters.TwoSidedSign *= GetFloatFacingSign(bNaniteIsFrontFace);
+	#else
+		Parameters.TwoSidedSign *= GetFloatFacingSign(bIsFrontFace);
+	#endif
 #endif
 
 #if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
@@ -3273,4 +3507,50 @@ float ApplyPixelDepthOffsetToMaterialParameters(inout FMaterialPixelParameters M
 	OutDepth = INVARIANT(DeviceDepth);
 
 	return PixelDepthOffset;
+}
+
+float3 GetWorldBentNormalZero(in FMaterialPixelParameters MaterialParameters)
+{
+#if NUM_MATERIAL_OUTPUTS_GETBENTNORMAL > 0
+	#if MATERIAL_TANGENTSPACENORMAL
+		return normalize(TransformTangentVectorToWorld(MaterialParameters.TangentToWorld, GetBentNormal0(MaterialParameters)));
+	#else
+		return GetBentNormal0(MaterialParameters);
+	#endif
+#else
+	return MaterialParameters.WorldNormal;
+#endif
+}
+
+// Return the Iris & Iris plane normal, used for eye shading model
+void GetEyeNormals(
+	float IrisMask,
+	float IrisDistance,
+	in float3 InNormal,
+	in float3 InClearCoatNormal,
+	in float3 InCustomTangent,
+	inout float3 OutIrisNormal,
+	inout float3 OutIrisPlaneNormal)
+{
+#if IRIS_NORMAL
+  #if NUM_MATERIAL_OUTPUTS_CLEARCOATBOTTOMNORMAL > 0
+	OutIrisNormal = normalize(InClearCoatNormal);
+  #else
+	OutIrisNormal = InNormal;
+  #endif
+
+  #if NUM_MATERIAL_OUTPUTS_GETTANGENTOUTPUT > 0
+	OutIrisPlaneNormal = normalize(InCustomTangent);
+  #else
+	OutIrisPlaneNormal = OutIrisNormal;
+  #endif
+#else
+  #if NUM_MATERIAL_OUTPUTS_GETTANGENTOUTPUT > 0
+	OutIrisNormal = normalize(InCustomTangent);
+	OutIrisPlaneNormal = OutIrisNormal;
+  #else
+	OutIrisNormal = InNormal;
+	OutIrisPlaneNormal = InNormal;
+  #endif
+#endif
 }

@@ -24,6 +24,9 @@
 #include "EngineAnalytics.h"
 
 #include "Sampling/MeshCurvatureMapEvaluator.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BakeMeshAttributeMapsToolBase)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UBakeMeshAttributeMapsToolBase"
@@ -41,9 +44,7 @@ void UBakeMeshAttributeMapsToolBase::Setup()
 	if (Material != nullptr)
 	{
 		PreviewMaterial = UMaterialInstanceDynamic::Create(Material, GetToolManager());
-		PreviewMaterial->SetTextureParameterValue(TEXT("NormalMap"), EmptyNormalMap);
-		PreviewMaterial->SetTextureParameterValue(TEXT("OcclusionMap"), EmptyColorMapWhite);
-		PreviewMaterial->SetTextureParameterValue(TEXT("ColorMap"), EmptyColorMapWhite);
+		ResetPreview();
 	}
 	UMaterial* BentNormalMaterial = LoadObject<UMaterial>(nullptr, TEXT("/MeshModelingToolsetExp/Materials/BakeBentNormalPreviewMaterial"));
 	check(BentNormalMaterial);
@@ -104,14 +105,23 @@ void UBakeMeshAttributeMapsToolBase::OnTick(float DeltaTime)
 	{
 		Compute->Tick(DeltaTime);
 
-		const float ElapsedComputeTime = Compute->GetElapsedComputeTime();
-		if (!CanAccept() && ElapsedComputeTime > SecondsBeforeWorkingMaterial)
+		if (static_cast<bool>(OpState & EBakeOpState::Invalid))
 		{
-			UMaterialInstanceDynamic* ProgressMaterial =
-				static_cast<bool>(OpState & EBakeOpState::Invalid) ? ErrorPreviewMaterial : WorkingPreviewMaterial;
-			PreviewMesh->SetOverrideRenderMaterial(ProgressMaterial);
+			PreviewMesh->SetOverrideRenderMaterial(ErrorPreviewMaterial);
+		}
+		else
+		{
+			const float ElapsedComputeTime = Compute->GetElapsedComputeTime();
+			if (!CanAccept() && ElapsedComputeTime > SecondsBeforeWorkingMaterial)
+			{
+				PreviewMesh->SetOverrideRenderMaterial(WorkingPreviewMaterial);
+			}
 		}
 	}
+	else if (static_cast<bool>(OpState & EBakeOpState::Invalid))
+	{
+		PreviewMesh->SetOverrideRenderMaterial(ErrorPreviewMaterial);
+	} 
 }
 
 
@@ -138,6 +148,29 @@ TUniquePtr<UE::Geometry::TGenericDataOperator<FMeshMapBaker>> UBakeMeshAttribute
 
 void UBakeMeshAttributeMapsToolBase::UpdateResult()
 {
+}
+
+
+EBakeOpState UBakeMeshAttributeMapsToolBase::UpdateResult_SampleFilterMask(UTexture2D* SampleFilterMask)
+{
+	EBakeOpState ResultState = EBakeOpState::Clean;
+	if (SampleFilterMask)
+	{
+		CachedSampleFilterMask = MakeShared<UE::Geometry::TImageBuilder<FVector4f>, ESPMode::ThreadSafe>();
+		if (!UE::AssetUtils::ReadTexture(SampleFilterMask, *CachedSampleFilterMask, bPreferPlatformData))
+		{
+			GetToolManager()->DisplayMessage(LOCTEXT("CannotReadTextureWarning", "Cannot read from the sample filter mask"), EToolMessageLevel::UserWarning);
+			return EBakeOpState::Invalid;
+		}
+		ResultState = EBakeOpState::Evaluate;
+	}
+	else if (CachedSampleFilterMask)
+	{
+		// Clear CachedSampleFilterMask if SampleFilterMask is null and re-evaluate.
+		CachedSampleFilterMask.Reset();
+		ResultState = EBakeOpState::Evaluate;
+	}
+	return ResultState;
 }
 
 
@@ -260,6 +293,14 @@ void UBakeMeshAttributeMapsToolBase::UpdatePreview(const EBakeMapType PreviewMap
 }
 
 
+void UBakeMeshAttributeMapsToolBase::ResetPreview()
+{
+	PreviewMaterial->SetTextureParameterValue(TEXT("NormalMap"), EmptyNormalMap);
+	PreviewMaterial->SetTextureParameterValue(TEXT("OcclusionMap"), EmptyColorMapWhite);
+	PreviewMaterial->SetTextureParameterValue(TEXT("ColorMap"), EmptyColorMapWhite);
+}
+
+
 void UBakeMeshAttributeMapsToolBase::UpdatePreviewNames(
 	const EBakeMapType MapTypes,
 	FString& MapPreview,
@@ -302,6 +343,8 @@ void UBakeMeshAttributeMapsToolBase::OnMapTypesUpdated(
 	TArray<FString>& MapPreviewNamesList,
 	TMap<FString, FString>& MapPreviewNamesMap)
 {
+	ResetPreview();
+	
 	// Use the processed bitfield which may contain additional targets
 	// (ex. AO if BentNormal was requested) to preallocate cached map storage.
 	EBakeMapType CachedMapTypes = GetMapTypes(static_cast<int32>(ResultMapTypes));
@@ -709,3 +752,4 @@ void UBakeMeshAttributeMapsToolBase::RecordAnalytics(const FBakeAnalytics& Data,
 
 
 #undef LOCTEXT_NAMESPACE
+

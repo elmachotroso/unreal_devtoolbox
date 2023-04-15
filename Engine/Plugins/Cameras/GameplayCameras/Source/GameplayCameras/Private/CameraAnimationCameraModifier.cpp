@@ -16,6 +16,8 @@
 #include "ProfilingDebugging/CountersTrace.h"
 #include "UObject/UObjectGlobals.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraAnimationCameraModifier)
+
 DECLARE_CYCLE_STAT(TEXT("Camera Animation Eval"), CameraAnimationEval_Total, STATGROUP_CameraAnimation);
 
 FCameraAnimationHandle FCameraAnimationHandle::Invalid(MAX_int16, 0);
@@ -77,9 +79,8 @@ float UCameraAnimationCameraModifier::EvaluateEasing(ECameraAnimationEasingType 
 
 UCameraAnimationCameraModifier::UCameraAnimationCameraModifier(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, NextInstanceSerialNumber(1)
 {
-	// Make sure we have our custom accessors registered for our stand-in class.
-	UCameraAnimationSequenceCameraStandIn::RegisterCameraStandIn();
 }
 
 FCameraAnimationHandle UCameraAnimationCameraModifier::PlayCameraAnimation(UCameraAnimationSequence* Sequence, FCameraAnimationParams Params)
@@ -94,7 +95,7 @@ FCameraAnimationHandle UCameraAnimationCameraModifier::PlayCameraAnimation(UCame
 	int32 NewIndex = FindInactiveCameraAnimation();
 	check(NewIndex < MAX_uint16);
 
-	const uint16 InstanceSerial = InstanceSerialNumber++;
+	const uint16 InstanceSerial = NextInstanceSerialNumber++;
 	FCameraAnimationHandle InstanceHandle { (uint16)NewIndex, InstanceSerial };
 
 	FActiveCameraAnimationInfo& NewCameraAnimation = ActiveAnimations[NewIndex];
@@ -145,7 +146,7 @@ void UCameraAnimationCameraModifier::StopCameraAnimation(const FCameraAnimationH
 		if (bImmediate || CameraAnimation->Params.EaseOutDuration == 0.f)
 		{
 			CameraAnimation->Player->Stop();
-			ActiveAnimations.RemoveAt(CameraAnimation->Handle.InstanceID);
+			ActiveAnimations[CameraAnimation->Handle.InstanceID] = FActiveCameraAnimationInfo();
 		}
 		else if (!CameraAnimation->bIsEasingOut)
 		{
@@ -439,6 +440,33 @@ void UCameraAnimationCameraModifier::TickAnimation(FActiveCameraAnimationInfo& C
 	if (CameraOwner != nullptr && CameraStandIn->PostProcessBlendWeight > 0.f)
 	{
 		CameraOwner->AddCachedPPBlend(CameraStandIn->PostProcessSettings, CameraStandIn->PostProcessBlendWeight);
+	}
+}
+
+UCameraAnimationCameraModifier* UGameplayCamerasFunctionLibrary::Conv_CameraAnimationCameraModifier(APlayerCameraManager* PlayerCameraManager)
+{
+	return Cast<UCameraAnimationCameraModifier>(PlayerCameraManager->FindCameraModifierByClass(UCameraAnimationCameraModifier::StaticClass()));
+}
+
+ECameraShakePlaySpace UGameplayCamerasFunctionLibrary::Conv_CameraShakePlaySpace(ECameraAnimationPlaySpace CameraAnimationPlaySpace)
+{
+	switch (CameraAnimationPlaySpace)
+	{
+	case ECameraAnimationPlaySpace::CameraLocal: return ECameraShakePlaySpace::CameraLocal;
+	case ECameraAnimationPlaySpace::World: return ECameraShakePlaySpace::World;
+	case ECameraAnimationPlaySpace::UserDefined: return ECameraShakePlaySpace::UserDefined;
+	default: checkf(false, TEXT("Unsupported ECameraAnimationPlaySpace value")); return (ECameraShakePlaySpace)CameraAnimationPlaySpace;
+	}
+}
+
+ECameraAnimationPlaySpace UGameplayCamerasFunctionLibrary::Conv_CameraAnimationPlaySpace(ECameraShakePlaySpace CameraShakePlaySpace)
+{
+	switch (CameraShakePlaySpace)
+	{
+	case ECameraShakePlaySpace::CameraLocal: return ECameraAnimationPlaySpace::CameraLocal;
+	case ECameraShakePlaySpace::World: return ECameraAnimationPlaySpace::World;
+	case ECameraShakePlaySpace::UserDefined: return ECameraAnimationPlaySpace::UserDefined;
+	default: checkf(false, TEXT("Unsupported ECameraShakePlaySpace value")); return (ECameraAnimationPlaySpace)CameraShakePlaySpace;
 	}
 }
 

@@ -12,12 +12,34 @@
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterShape.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "Math/IntVector.h"
+#include "UObject/SavePackage.h"
+#include "Algo/Transform.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionBuilder, Log, All);
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "SourceControlOperations.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionBuilder, All, All);
+
+namespace FWorldPartitionBuilderLog
+{
+	void Error(bool bErrorsAsWarnings, const FString& Msg)
+	{
+		if (bErrorsAsWarnings)
+		{
+			UE_LOG(LogWorldPartitionBuilder, Warning, TEXT("%s"), *Msg);
+		}
+		else
+		{
+			UE_LOG(LogWorldPartitionBuilder, Error, TEXT("%s"), *Msg);
+		}
+	}
+}
 
 FCellInfo::FCellInfo()
 	: Location(ForceInitToZero)
@@ -30,7 +52,24 @@ FCellInfo::FCellInfo()
 UWorldPartitionBuilder::UWorldPartitionBuilder(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bSubmit = FParse::Param(FCommandLine::Get(), TEXT("Submit"));
+	bAutoSubmit = FParse::Param(FCommandLine::Get(), TEXT("AutoSubmit"));
+	if (bAutoSubmit)
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("AutoSubmitTags="), AutoSubmitTags);
+	}
+}
+
+UWorld::InitializationValues UWorldPartitionBuilder::GetWorldInitializationValues() const
+{
+	UWorld::InitializationValues IVS;
+	IVS.RequiresHitProxies(false);
+	IVS.ShouldSimulatePhysics(false);
+	IVS.EnableTraceCollision(false);
+	IVS.CreateNavigation(false);
+	IVS.CreateAISystem(false);
+	IVS.AllowAudioPlayback(false);
+	IVS.CreatePhysicsScene(true);
+	return IVS;
 }
 
 bool UWorldPartitionBuilder::RunBuilder(UWorld* World)
@@ -61,18 +100,19 @@ bool UWorldPartitionBuilder::RunBuilder(UWorld* World)
 	bool bResult = true;
 	// Setup the world
 	{
-		UWorld::InitializationValues IVS;
-		IVS.RequiresHitProxies(false);
-		IVS.ShouldSimulatePhysics(false);
-		IVS.EnableTraceCollision(false);
-		IVS.CreateNavigation(false);
-		IVS.CreateAISystem(false);
-		IVS.AllowAudioPlayback(false);
-		IVS.CreatePhysicsScene(true);
-		FScopedEditorWorld EditorWorld(World, IVS);
+		TUniquePtr<FScopedEditorWorld> EditorWorld;
+		if (World->bIsWorldInitialized)
+		{
+			// Skip initialization, but ensure we're dealing with an editor world.
+			check(World->WorldType == EWorldType::Editor);
+		}
+		else
+		{
+			EditorWorld = MakeUnique<FScopedEditorWorld>(World, GetWorldInitializationValues());
+		}
 
 		// Make sure the world is partitioned
-		if (World->HasSubsystem<UWorldPartitionSubsystem>())
+		if (UWorld::IsPartitionedWorld(World))
 		{
 			// Ensure the world has a valid world partition.
 			UWorldPartition* WorldPartition = World->GetWorldPartition();
@@ -115,19 +155,19 @@ bool UWorldPartitionBuilder::RunBuilder(UWorld* World)
 	return bResult;
 }
 
-static FIntVector GetCellCoord(const FVector& InPos, const int32 InCellSize)
+FWorldBuilderCellCoord FCellInfo::GetCellCoord(const FVector& InPos, const int32 InCellSize)
 {
-	return FIntVector(
+	return FWorldBuilderCellCoord(
 		FMath::FloorToInt(InPos.X / InCellSize),
 		FMath::FloorToInt(InPos.Y / InCellSize),
 		FMath::FloorToInt(InPos.Z / InCellSize)
 	);
 }
 
-static FIntVector GetCellCount(const FBox& InBounds, const int32 InCellSize)
+FWorldBuilderCellCoord FCellInfo::GetCellCount(const FBox& InBounds, const int32 InCellSize)
 {
-	const FIntVector MinCellCoords = GetCellCoord(InBounds.Min, InCellSize);
-	const FIntVector MaxCellCoords = FIntVector(FMath::CeilToInt(InBounds.Max.X / InCellSize),
+	const FWorldBuilderCellCoord MinCellCoords = GetCellCoord(InBounds.Min, InCellSize);
+	const FWorldBuilderCellCoord MaxCellCoords = FWorldBuilderCellCoord(FMath::CeilToInt(InBounds.Max.X / InCellSize),
 												FMath::CeilToInt(InBounds.Max.Y / InCellSize),
 												FMath::CeilToInt(InBounds.Max.Z / InCellSize));
 	return MaxCellCoords - MinCellCoords;
@@ -141,55 +181,54 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 	UWorldPartition* WorldPartition = World->GetWorldPartition();
 
 	// Properly Setup DataLayers for Builder
-	if (const AWorldDataLayers* WorldDataLayers = World->GetWorldDataLayers())
+	UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World);
+	
+	// Load Data Layers
+	bool bUpdateEditorCells = false;
+	DataLayerSubsystem->ForEachDataLayer([&bUpdateEditorCells, this](UDataLayerInstance* DataLayer)
 	{
-		// Load Data Layers
-		bool bUpdateEditorCells = false;
-		WorldDataLayers->ForEachDataLayer([&bUpdateEditorCells, this](UDataLayer* DataLayer)
-		{
-			const FName DataLayerLabel = DataLayer->GetDataLayerLabel();
+		const FName DataLayerShortName(DataLayer->GetDataLayerShortName());
 
-			// Load all Non Excluded Data Layers + Non DynamicallyLoaded Data Layers + Initially Active Data Layers + Data Layers provided by builder
-			const bool bLoadedInEditor = !ExcludedDataLayerLabels.Contains(DataLayerLabel) && ((bLoadNonDynamicDataLayers && !DataLayer->IsRuntime()) ||
-										 (bLoadInitiallyActiveDataLayers && DataLayer->GetInitialRuntimeState() == EDataLayerRuntimeState::Activated) ||
-										 DataLayerLabels.Contains(DataLayerLabel));
-			if (DataLayer->IsLoadedInEditor() != bLoadedInEditor)
+		// Load all Non Excluded Data Layers + Non DynamicallyLoaded Data Layers + Initially Active Data Layers + Data Layers provided by builder
+		const bool bLoadedInEditor = !ExcludedDataLayerShortNames.Contains(DataLayerShortName) && ((bLoadNonDynamicDataLayers && !DataLayer->IsRuntime()) ||
+										(bLoadInitiallyActiveDataLayers && DataLayer->GetInitialRuntimeState() == EDataLayerRuntimeState::Activated) ||
+									DataLayerShortNames.Contains(DataLayerShortName));
+		if (DataLayer->IsLoadedInEditor() != bLoadedInEditor)
+		{
+			bUpdateEditorCells = true;
+			DataLayer->SetIsLoadedInEditor(bLoadedInEditor, /*bFromUserChange*/false);
+			if (RequiresCommandletRendering() && bLoadedInEditor)
 			{
-				bUpdateEditorCells = true;
-				DataLayer->SetIsLoadedInEditor(bLoadedInEditor, /*bFromUserChange*/false);
-				if (RequiresCommandletRendering() && bLoadedInEditor)
-				{
-					DataLayer->SetIsInitiallyVisible(true);
-				}
+				DataLayer->SetIsInitiallyVisible(true);
 			}
-			
-			UE_LOG(LogWorldPartitionBuilder, Display, TEXT("DataLayer '%s' Loaded: %d"), *UDataLayer::GetDataLayerText(DataLayer).ToString(), bLoadedInEditor ? 1 : 0);
-			
-			return true;
-		});
-
-		if (bUpdateEditorCells)
-		{
-			UE_LOG(LogWorldPartitionBuilder, Display, TEXT("DataLayer load state changed refreshing editor cells"));
-			WorldPartition->RefreshLoadedEditorCells(false);
 		}
+			
+		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("DataLayer '%s' Loaded: %d"), *UDataLayerInstance::GetDataLayerText(DataLayer).ToString(), bLoadedInEditor ? 1 : 0);
+			
+		return true;
+	});
+	
+	if (bUpdateEditorCells)
+	{
+		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("DataLayer load state changed refreshing editor cells"));
+		FDataLayersEditorBroadcast::StaticOnActorDataLayersEditorLoadingStateChanged(false);
 	}
 
 	const ELoadingMode LoadingMode = GetLoadingMode();
 	FCellInfo CellInfo;
 
-	CellInfo.EditorBounds = WorldPartition->GetEditorWorldBounds();
+	CellInfo.EditorBounds = IterativeWorldBounds.IsValid ? IterativeWorldBounds : WorldPartition->GetEditorWorldBounds();
 	CellInfo.IterativeCellSize = IterativeCellSize;
 
 	if ((LoadingMode == ELoadingMode::IterativeCells) || (LoadingMode == ELoadingMode::IterativeCells2D))
 	{
 		// do partial loading loop that calls RunInternal
-		const FIntVector MinCellCoords = GetCellCoord(CellInfo.EditorBounds.Min, IterativeCellSize);
-		const FIntVector NumCellsIterations = GetCellCount(CellInfo.EditorBounds, IterativeCellSize);
-		const FIntVector BeginCellCoords = MinCellCoords;
-		const FIntVector EndCellCoords = BeginCellCoords + NumCellsIterations;
+		const FWorldBuilderCellCoord MinCellCoords = FCellInfo::GetCellCoord(CellInfo.EditorBounds.Min, IterativeCellSize);
+		const FWorldBuilderCellCoord NumCellsIterations = FCellInfo::GetCellCount(CellInfo.EditorBounds, IterativeCellSize);
+		const FWorldBuilderCellCoord BeginCellCoords = MinCellCoords;
+		const FWorldBuilderCellCoord EndCellCoords = BeginCellCoords + NumCellsIterations;
 
-		auto CanIterateZ = [&BeginCellCoords, &EndCellCoords, LoadingMode](const bool bInResult, const int32 InZ) -> bool
+		auto CanIterateZ = [&BeginCellCoords, &EndCellCoords, LoadingMode](const bool bInResult, const int64 InZ) -> bool
 		{
 			if (LoadingMode == ELoadingMode::IterativeCells2D)
 			{
@@ -199,7 +238,7 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 			return bInResult && (InZ < EndCellCoords.Z);
 		};
 
-		const int32 IterationCount = ((LoadingMode == ELoadingMode::IterativeCells2D) ? 1 : NumCellsIterations.Z) * NumCellsIterations.Y * NumCellsIterations.X;
+		const int64 IterationCount = ((LoadingMode == ELoadingMode::IterativeCells2D) ? 1 : NumCellsIterations.Z) * NumCellsIterations.Y * NumCellsIterations.X;
 		int32 IterationIndex = 0;
 
 		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Iterative Cell Mode"));
@@ -208,15 +247,22 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("WorldBounds: Min %s, Max %s"), *CellInfo.EditorBounds.Min.ToString(), *CellInfo.EditorBounds.Max.ToString());
 		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Iteration Count: %d"), IterationCount);
 		
-		FBox LoadedBounds(ForceInit);
+		TArray<TUniquePtr<IWorldPartitionActorLoaderInterface::ILoaderAdapter>> LoaderAdapters;
 
-		for (int32 z = BeginCellCoords.Z; CanIterateZ(bResult, z); z++)
+		for (int64 z = BeginCellCoords.Z; CanIterateZ(bResult, z); z++)
 		{
-			for (int32 y = BeginCellCoords.Y; bResult && (y < EndCellCoords.Y); y++)
+			for (int64 y = BeginCellCoords.Y; bResult && (y < EndCellCoords.Y); y++)
 			{
-				for (int32 x = BeginCellCoords.X; bResult && (x < EndCellCoords.X); x++)
+				for (int64 x = BeginCellCoords.X; bResult && (x < EndCellCoords.X); x++)
 				{
 					IterationIndex++;
+					
+					if (ShouldSkipCell(FWorldBuilderCellCoord(x, y, z)))
+					{
+						UE_LOG(LogWorldPartitionBuilder, Display, TEXT("[%d / %d] Processing cells... (skipped)"), IterationIndex, IterationCount);
+						continue;
+					}
+					
 					UE_LOG(LogWorldPartitionBuilder, Display, TEXT("[%d / %d] Processing cells..."), IterationIndex, IterationCount);
 
 					FVector Min(x * IterativeCellSize, y * IterativeCellSize, z * IterativeCellSize);
@@ -231,33 +277,22 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 					FBox BoundsToLoad(Min, Max);
 					BoundsToLoad = BoundsToLoad.ExpandBy(IterativeCellOverlapSize);
 
-					CellInfo.Location = FIntVector(x, y, z);
+					CellInfo.Location = FWorldBuilderCellCoord(x, y, z);
 					CellInfo.Bounds = BoundsToLoad;
 
 					UE_LOG(LogWorldPartitionBuilder, Verbose, TEXT("Loading Bounds: Min %s, Max %s"), *BoundsToLoad.Min.ToString(), *BoundsToLoad.Max.ToString());
-					WorldPartition->LoadEditorCells(BoundsToLoad, false);
-					LoadedBounds += BoundsToLoad;
+
+					LoaderAdapters.Emplace_GetRef(MakeUnique<FLoaderAdapterShape>(World, BoundsToLoad, TEXT("Loaded Region")))->Load();
+
+					// Simulate an engine tick
+					FWorldPartitionHelpers::FakeEngineTick(World);
 
 					bResult = RunInternal(World, CellInfo, PackageHelper);
 
 					if (FWorldPartitionHelpers::HasExceededMaxMemory())
 					{
-						WorldPartition->UnloadEditorCells(LoadedBounds, false);
-						// Reset Loaded Bounds
-						LoadedBounds.Init();
-
+						LoaderAdapters.Empty();
 						FWorldPartitionHelpers::DoCollectGarbage();
-					}
-
-					// When running with -AllowCommandletRendering we want to simulate an engine tick
-					if (IsAllowCommandletRendering())
-					{
-						FWorldPartitionHelpers::FakeEngineTick(World);
-
-						ENQUEUE_RENDER_COMMAND(VirtualTextureScalability_Release)([](FRHICommandList& RHICmdList)
-						{
-							GetRendererModule().ReleaseVirtualTexturePendingResources();
-						});
 					}
 				}
 			}
@@ -265,17 +300,154 @@ bool UWorldPartitionBuilder::Run(UWorld* World, FPackageSourceControlHelper& Pac
 	}
 	else
 	{
-		FBox BoundsToLoad(ForceInit);
+		TUniquePtr<FLoaderAdapterShape> LoaderAdapterShape;
+		
 		if (LoadingMode == ELoadingMode::EntireWorld)
 		{
-			BoundsToLoad += FBox(FVector(-WORLDPARTITION_MAX, -WORLDPARTITION_MAX, -WORLDPARTITION_MAX), FVector(WORLDPARTITION_MAX, WORLDPARTITION_MAX, WORLDPARTITION_MAX));
-			WorldPartition->LoadEditorCells(BoundsToLoad, false);
+			CellInfo.Bounds = FBox(FVector(-HALF_WORLD_MAX, -HALF_WORLD_MAX, -HALF_WORLD_MAX), FVector(HALF_WORLD_MAX, HALF_WORLD_MAX, HALF_WORLD_MAX));
+			LoaderAdapterShape = MakeUnique<FLoaderAdapterShape>(World, CellInfo.Bounds, TEXT("Loaded Region"));
+			LoaderAdapterShape->Load();
+		}
+		else
+		{
+			CellInfo.Bounds.Init();
 		}
 
-		CellInfo.Bounds = BoundsToLoad;
-
 		bResult = RunInternal(World, CellInfo, PackageHelper);
+
+		if (LoaderAdapterShape)
+		{
+			LoaderAdapterShape.Reset();
+		}
 	}
 
 	return PostRun(World, PackageHelper, bResult);
+}
+
+bool UWorldPartitionBuilder::SavePackages(const TArray<UPackage*>& Packages, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings)
+{
+	if (Packages.IsEmpty())
+	{
+		return true;
+	}
+	UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Saving %d packages..."), Packages.Num());
+
+	const TArray<FString> PackageFilenames = SourceControlHelpers::PackageFilenames(Packages);
+	
+	TArray<FString> PackagesToCheckout;
+	TArray<FString> PackagesToAdd;
+	TArray<FString> PackageNames;
+
+	PackageNames.Reserve(Packages.Num());
+	Algo::Transform(Packages, PackageNames, [](UPackage* InPackage) { return InPackage->GetName(); });
+	bool bSuccess = PackageHelper.GetDesiredStatesForModification(PackageNames, PackagesToCheckout, PackagesToAdd, bErrorsAsWarnings);
+	if (!bSuccess && !bErrorsAsWarnings)
+	{
+		return false;
+	}
+		
+	if (PackagesToCheckout.Num())
+	{
+		if (!PackageHelper.Checkout(PackagesToCheckout, bErrorsAsWarnings))
+		{
+			bSuccess = false;
+			if (!bErrorsAsWarnings)
+			{
+				return false;
+			}
+		}
+	}
+
+	for (int PackageIndex = 0; PackageIndex < Packages.Num(); ++PackageIndex)
+	{
+		const FString& PackageFilename = PackageFilenames[PackageIndex];
+		// Check readonly flag in case some checkouts failed
+		if (!IPlatformFile::GetPlatformPhysical().IsReadOnly(*PackageFilename))
+		{
+			// Save package
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Standalone;
+			if (!UPackage::SavePackage(Packages[PackageIndex], nullptr, *PackageFilenames[PackageIndex], SaveArgs))
+			{
+				bSuccess = false;
+				FWorldPartitionBuilderLog::Error(bErrorsAsWarnings, FString::Printf(TEXT("Error saving package %s."), *Packages[PackageIndex]->GetName()));
+				if(!bErrorsAsWarnings)
+				{
+					return false;
+				}
+			}
+		}
+		else
+		{
+			check(bErrorsAsWarnings);
+		}
+	}
+
+	if (PackagesToAdd.Num())
+	{
+		if (!PackageHelper.AddToSourceControl(PackagesToAdd, bErrorsAsWarnings))
+		{
+			return false;
+		}
+	}
+
+	return bSuccess;
+}
+
+bool UWorldPartitionBuilder::DeletePackages(const TArray<UPackage*>& Packages, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings)
+{
+	TArray<FString> PackagesNames;
+	Algo::Transform(Packages, PackagesNames, [](UPackage* InPackage) { return InPackage->GetName(); });
+	return DeletePackages(PackagesNames, PackageHelper, bErrorsAsWarnings);
+}
+
+bool UWorldPartitionBuilder::DeletePackages(const TArray<FString>& PackageNames, FPackageSourceControlHelper& PackageHelper, bool bErrorsAsWarnings)
+{
+	if (PackageNames.Num() > 0)
+	{
+		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Deleting %d packages..."), PackageNames.Num());
+		return PackageHelper.Delete(PackageNames, bErrorsAsWarnings);
+	}
+
+	return true;
+}
+
+bool UWorldPartitionBuilder::AutoSubmitPackages(const TArray<UPackage*>& InModifiedPackages, const FString& InChangelistDescription) const
+{
+	TArray<FString> ModifiedFiles;
+	Algo::Transform(InModifiedPackages, ModifiedFiles, [](const UPackage* InPackage) { return USourceControlHelpers::PackageFilename(InPackage); });
+	return AutoSubmitFiles(ModifiedFiles, InChangelistDescription);
+}
+
+bool UWorldPartitionBuilder::AutoSubmitFiles(const TArray<FString>& InModifiedFiles, const FString& InChangelistDescription) const
+{
+	bool bSucceeded = true;
+
+	if (bAutoSubmit)
+	{
+		UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitting changes to source control..."));
+
+		if (!InModifiedFiles.IsEmpty())
+		{
+			FText ChangelistDescription = FText::FromString(FString::Printf(TEXT("%s\nBased on CL %d\n%s"), *InChangelistDescription, FEngineVersion::Current().GetChangelist(), *AutoSubmitTags));
+
+			TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
+			CheckInOperation->SetDescription(ChangelistDescription);
+			if (ISourceControlModule::Get().GetProvider().Execute(CheckInOperation, InModifiedFiles) != ECommandResult::Succeeded)
+			{
+				UE_LOG(LogWorldPartitionBuilder, Error, TEXT("Failed to submit changes to source control."));
+				bSucceeded = false;
+			}
+			else
+			{
+				UE_LOG(LogWorldPartitionBuilder, Display, TEXT("Submitted changes to source control"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogWorldPartitionBuilder, Display, TEXT("No files to submit!"));
+		}
+	}
+
+	return bSucceeded;
 }

@@ -10,6 +10,7 @@
 #include "UObject/Package.h"
 #include "Templates/Casts.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/UnrealType.h"
 
 /*-----------------------------------------------------------------------------
 	UObjectRedirector
@@ -61,9 +62,9 @@ bool UObjectRedirector::NeedsLoadForEditorGame() const
 void UObjectRedirector::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 {
 	FString DestVal;
-	if ( DestinationObject != NULL )
+	if ( DestinationObject != nullptr )
 	{
-		DestVal = FString::Printf(TEXT("%s'%s'"), *DestinationObject->GetClass()->GetName(), *DestinationObject->GetPathName());
+		DestVal = FObjectPropertyBase::GetExportPath(DestinationObject);
 	}
 	else
 	{

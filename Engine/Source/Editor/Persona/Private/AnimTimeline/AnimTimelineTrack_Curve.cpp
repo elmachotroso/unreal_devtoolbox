@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_Curve.h"
+#include "AnimTimeline/AnimTimelineTrack_Curve.h"
 #include "CurveEditor.h"
 #include "SCurveViewerPanel.h"
 #include "RichCurveEditorModel.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "ScopedTransaction.h"
@@ -15,12 +15,14 @@
 #include "Animation/AnimMontage.h"
 #include "Fonts/FontMeasure.h"
 #include "Animation/AnimSequence.h"
-#include "AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
 #include "Preferences/PersonaOptions.h"
 #include "IPersonaPreviewScene.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimPreviewInstance.h"
+#include "AnimTimelineClipboard.h"
 #include "SAnimSequenceCurveEditor.h"
+#include "Framework/Commands/GenericCommands.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_Curve"
 
@@ -235,8 +237,8 @@ TSharedRef<SWidget> FAnimTimelineTrack_Curve::MakeTimelineWidgetContainer()
 	return 
 		SAssignNew(TimelineWidgetContainer, SBorder)
 		.Padding(0.0f)
-		.BorderImage(FEditorStyle::GetBrush("AnimTimeline.Outliner.DefaultBorder"))
-		.BorderBackgroundColor_Lambda([this](){ return GetModel()->IsTrackSelected(AsShared()) ? FEditorStyle::GetSlateColor("SelectionColor").GetSpecifiedColor().CopyWithNewOpacity(0.75f) : BackgroundColor.Desaturate(0.75f); })
+		.BorderImage(FAppStyle::GetBrush("AnimTimeline.Outliner.DefaultBorder"))
+		.BorderBackgroundColor_Lambda([this](){ return GetModel()->IsTrackSelected(AsShared()) ? FAppStyle::GetSlateColor("SelectionColor").GetSpecifiedColor().CopyWithNewOpacity(0.75f) : BackgroundColor.Desaturate(0.75f); })
 		[
 			CurveWidget
 		];
@@ -320,14 +322,57 @@ void FAnimTimelineTrack_Curve::AddToContextMenu(FMenuBuilder& InMenuBuilder, TSe
 {
 	if(!InOutExistingMenuTypes.Contains(FAnimTimelineTrack_Curve::GetTypeName()))
 	{
-		InMenuBuilder.BeginSection("Curve", LOCTEXT("CurveMenuSection", "Curve"));
+		InMenuBuilder.BeginSection("EditCurve", LOCTEXT("CurveEditMenuSection", "Curve Edit"));
 		{
-			InMenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().EditSelectedCurves);
-			InMenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().RemoveSelectedCurves);
+			InMenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().PasteDataIntoCurve);
 		}
 		InMenuBuilder.EndSection();
+		
+		InMenuBuilder.BeginSection("EditSelection", LOCTEXT("CurveSelectionEditMenuSection", "Selection Edit"));
+		{
+			InMenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
+			InMenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
+			InMenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
+			InMenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
 
+			InMenuBuilder.AddSeparator();
+			
+			InMenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().EditSelectedCurves);
+			InMenuBuilder.AddMenuEntry(FAnimSequenceTimelineCommands::Get().CopySelectedCurveNames);
+		}
+		InMenuBuilder.EndSection();
+		
 		InOutExistingMenuTypes.Add(FAnimTimelineTrack_Curve::GetTypeName());
+	}
+}
+
+void FAnimTimelineTrack_Curve::Copy(UAnimTimelineClipboardContent* InOutClipboard) const
+{
+	check(InOutClipboard != nullptr)
+	
+	if (Curves.Num() == 1)
+	{
+		UFloatCurveCopyObject * CopyableCurve = UAnimCurveBaseCopyObject::Create<UFloatCurveCopyObject>();
+		const FRichCurve* InCurve = Curves[0];
+
+		// Copy raw curve data
+		CopyableCurve->Curve.Name = { FName(FullCurveName.ToString()), SmartName::MaxUID };
+		CopyableCurve->Curve.FloatCurve = *InCurve;
+		CopyableCurve->Curve.SetCurveTypeFlags(AACF_Editable);
+
+		// Copy curve identifier data
+		CopyableCurve->DisplayName = CopyableCurve->Curve.Name.DisplayName;
+		CopyableCurve->UID = CopyableCurve->Curve.Name.UID;
+		CopyableCurve->CurveType = ERawCurveTrackTypes::RCT_Float;
+
+		// Origin data
+		CopyableCurve->OriginName = GetModel()->GetAnimSequenceBase()->GetFName();
+			
+		InOutClipboard->Curves.Add(CopyableCurve);
+	}
+	else
+	{
+		UE_LOG(LogAnimation, Warning, TEXT("Copying multiple curves from a FAnimTimelineTrack_Curve not supported. Curve: %s"), *FullCurveName.ToString())
 	}
 }
 

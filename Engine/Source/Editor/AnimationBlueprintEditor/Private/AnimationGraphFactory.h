@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "EdGraphUtilities.h"
-#include "SGraphNode.h"
+#include "HAL/Platform.h"
+#include "Templates/SharedPointer.h"
 
 struct ANIMATIONBLUEPRINTEDITOR_API FAnimationGraphNodeFactory : public FGraphPanelNodeFactory
 {

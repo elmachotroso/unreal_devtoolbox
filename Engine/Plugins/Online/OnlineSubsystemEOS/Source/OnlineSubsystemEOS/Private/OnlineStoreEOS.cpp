@@ -5,6 +5,7 @@
 #if WITH_EOS_SDK
 
 #include "OnlineSubsystemEOS.h"
+#include "OnlineSubsystemEOSPrivate.h"
 #include "UserManagerEOS.h"
 #include "eos_ecom.h"
 
@@ -37,7 +38,7 @@ void FOnlineStoreEOS::QueryOffersById(const FUniqueNetId& UserId, const TArray<F
 	QueryOffers(UserId, Delegate);
 }
 
-typedef TEOSCallback<EOS_Ecom_OnQueryOffersCallback, EOS_Ecom_QueryOffersCallbackInfo> FQueryOffersCallback;
+typedef TEOSCallback<EOS_Ecom_OnQueryOffersCallback, EOS_Ecom_QueryOffersCallbackInfo, FOnlineStoreEOS> FQueryOffersCallback;
 
 void FOnlineStoreEOS::QueryOffers(const FUniqueNetId& UserId, const FOnQueryOnlineStoreOffersComplete& Delegate)
 {
@@ -46,7 +47,8 @@ void FOnlineStoreEOS::QueryOffers(const FUniqueNetId& UserId, const FOnQueryOnli
 		Delegate.ExecuteIfBound(true, CachedOfferIds, TEXT("Returning cached offers"));
 		return;
 	}
-	EOS_EpicAccountId AccountId = EOSSubsystem->UserManager->GetEpicAccountId(UserId);
+	const FUniqueNetIdEOS& UserEOSId = FUniqueNetIdEOS::Cast(UserId);
+	const EOS_EpicAccountId AccountId = UserEOSId.GetEpicAccountId();
 	if (AccountId == nullptr)
 	{
 		Delegate.ExecuteIfBound(false, TArray<FUniqueOfferId>(), TEXT("Can't query offers for a null user"));
@@ -60,7 +62,7 @@ void FOnlineStoreEOS::QueryOffers(const FUniqueNetId& UserId, const FOnQueryOnli
 	Options.ApiVersion = EOS_ECOM_QUERYOFFERS_API_LATEST;
 	Options.LocalUserId = AccountId;
 
-	FQueryOffersCallback* CallbackObj = new FQueryOffersCallback();
+	FQueryOffersCallback* CallbackObj = new FQueryOffersCallback(FOnlineStoreEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, OnComplete = FOnQueryOnlineStoreOffersComplete(Delegate)](const EOS_Ecom_QueryOffersCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;
@@ -107,8 +109,11 @@ void FOnlineStoreEOS::QueryOffers(const FUniqueNetId& UserId, const FOnQueryOnli
 				OfferRef->RegularPrice = Offer->OriginalPrice;
 				OfferRef->NumericPrice = Offer->CurrentPrice;
 #endif
-				OfferRef->DiscountType = Offer->DiscountPercentage == 0 ? EOnlineStoreOfferDiscountType::NotOnSale : EOnlineStoreOfferDiscountType::DiscountAmount;
+				OfferRef->DiscountType = Offer->DiscountPercentage == 100 ? EOnlineStoreOfferDiscountType::NotOnSale : EOnlineStoreOfferDiscountType::DiscountAmount;
 			}
+
+			OfferRef->RegularPriceText = FText::AsCurrencyBase(OfferRef->RegularPrice, OfferRef->CurrencyCode, NULL, Offer->DecimalPoint);
+			OfferRef->PriceText = FText::AsCurrencyBase(OfferRef->NumericPrice, OfferRef->CurrencyCode, NULL, Offer->DecimalPoint);
 
 			CachedOffers.Add(OfferRef);
 			CachedOfferIds.Add(OfferRef->OfferId);
@@ -138,11 +143,12 @@ TSharedPtr<FOnlineStoreOffer> FOnlineStoreEOS::GetOffer(const FUniqueOfferId& Of
 	return nullptr;
 }
 
-typedef TEOSCallback<EOS_Ecom_OnCheckoutCallback, EOS_Ecom_CheckoutCallbackInfo> FCheckoutCallback;
+typedef TEOSCallback<EOS_Ecom_OnCheckoutCallback, EOS_Ecom_CheckoutCallbackInfo, FOnlineStoreEOS> FCheckoutCallback;
 
 void FOnlineStoreEOS::Checkout(const FUniqueNetId& UserId, const FPurchaseCheckoutRequest& CheckoutRequest, const FOnPurchaseCheckoutComplete& Delegate)
 {
-	EOS_EpicAccountId AccountId = EOSSubsystem->UserManager->GetEpicAccountId(UserId);
+	const FUniqueNetIdEOS& UserEOSId = FUniqueNetIdEOS::Cast(UserId);
+	const EOS_EpicAccountId AccountId = UserEOSId.GetEpicAccountId();
 	if (AccountId == nullptr)
 	{
 		UE_LOG_ONLINE(Error, TEXT("Checkout: failed due to invalid user"));
@@ -181,14 +187,21 @@ void FOnlineStoreEOS::Checkout(const FUniqueNetId& UserId, const FPurchaseChecko
 	Options.EntryCount = NumItems;
 	Options.Entries = (const EOS_Ecom_CheckoutEntry*)Entries.GetData();
 
-	FCheckoutCallback* CallbackObj = new FCheckoutCallback();
+	FCheckoutCallback* CallbackObj = new FCheckoutCallback(FOnlineStoreEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, OnComplete = FOnPurchaseCheckoutComplete(Delegate)](const EOS_Ecom_CheckoutCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;
 		if (Result != EOS_EResult::EOS_Success)
 		{
 			UE_LOG_ONLINE(Error, TEXT("EOS_Ecom_Checkout: failed with error (%s)"), ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
-			OnComplete.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::Unknown), MakeShared<FPurchaseReceipt>());
+			if (Result == EOS_EResult::EOS_Canceled)
+			{
+				OnComplete.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::Canceled), MakeShared<FPurchaseReceipt>());
+			}
+			else
+			{
+				OnComplete.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::Unknown), MakeShared<FPurchaseReceipt>());
+			}
 			return;
 		}
 
@@ -218,7 +231,12 @@ void FOnlineStoreEOS::Checkout(const FUniqueNetId& UserId, const FPurchaseChecko
 
 	};
 	EOS_Ecom_Checkout(EOSSubsystem->EcomHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
+}
 
+void FOnlineStoreEOS::Checkout(const FUniqueNetId& UserId, const FPurchaseCheckoutRequest& CheckoutRequest, const FOnPurchaseReceiptlessCheckoutComplete& Delegate)
+{
+	// Checkout with no receipt query Delegate is not implemented, please use the other Checkout method
+	Delegate.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::NotImplemented));
 }
 
 void FOnlineStoreEOS::FinalizePurchase(const FUniqueNetId& UserId, const FString& ReceiptId)
@@ -232,11 +250,12 @@ void FOnlineStoreEOS::RedeemCode(const FUniqueNetId& UserId, const FRedeemCodeRe
 	Delegate.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::NotImplemented), BlankReceipt);
 }
 
-typedef TEOSCallback<EOS_Ecom_OnQueryEntitlementsCallback, EOS_Ecom_QueryEntitlementsCallbackInfo> FQueryReceiptsCallback;
+typedef TEOSCallback<EOS_Ecom_OnQueryEntitlementsCallback, EOS_Ecom_QueryEntitlementsCallbackInfo, FOnlineStoreEOS> FQueryReceiptsCallback;
 
 void FOnlineStoreEOS::QueryReceipts(const FUniqueNetId& UserId, bool bRestoreReceipts, const FOnQueryReceiptsComplete& Delegate)
 {
-	EOS_EpicAccountId AccountId = EOSSubsystem->UserManager->GetEpicAccountId(UserId);
+	const FUniqueNetIdEOS& UserEOSId = FUniqueNetIdEOS::Cast(UserId);
+	const EOS_EpicAccountId AccountId = UserEOSId.GetEpicAccountId();
 	if (AccountId == nullptr)
 	{
 		UE_LOG_ONLINE(Error, TEXT("QueryReceipts: failed due to invalid user"));
@@ -251,7 +270,7 @@ void FOnlineStoreEOS::QueryReceipts(const FUniqueNetId& UserId, bool bRestoreRec
 	Options.LocalUserId = AccountId;
 	Options.bIncludeRedeemed = bRestoreReceipts ? EOS_TRUE : EOS_FALSE;
 
-	FQueryReceiptsCallback* CallbackObj = new FQueryReceiptsCallback();
+	FQueryReceiptsCallback* CallbackObj = new FQueryReceiptsCallback(FOnlineStoreEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, OnComplete = FOnQueryReceiptsComplete(Delegate)](const EOS_Ecom_QueryEntitlementsCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;
@@ -307,11 +326,12 @@ void FOnlineStoreEOS::GetReceipts(const FUniqueNetId& UserId, TArray<FPurchaseRe
 	OutReceipts = CachedReceipts;
 }
 
-typedef TEOSCallback<EOS_Ecom_OnRedeemEntitlementsCallback, EOS_Ecom_RedeemEntitlementsCallbackInfo> FRedeemReceiptCallback;
+typedef TEOSCallback<EOS_Ecom_OnRedeemEntitlementsCallback, EOS_Ecom_RedeemEntitlementsCallbackInfo, FOnlineStoreEOS> FRedeemReceiptCallback;
 
 void FOnlineStoreEOS::FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, FString& InReceiptValidationInfo, const FOnFinalizeReceiptValidationInfoComplete& Delegate)
 {
-	EOS_EpicAccountId AccountId = EOSSubsystem->UserManager->GetEpicAccountId(UserId);
+	const FUniqueNetIdEOS& UserEOSId = FUniqueNetIdEOS::Cast(UserId);
+	const EOS_EpicAccountId AccountId = UserEOSId.GetEpicAccountId();
 	if (AccountId == nullptr)
 	{
 		Delegate.ExecuteIfBound(ONLINE_ERROR(EOnlineErrorResult::InvalidUser), InReceiptValidationInfo);
@@ -333,7 +353,7 @@ void FOnlineStoreEOS::FinalizeReceiptValidationInfo(const FUniqueNetId& UserId, 
 	Options.EntitlementIdCount = 1;
 	Options.EntitlementIds = Ids;
 
-	FRedeemReceiptCallback* CallbackObj = new FRedeemReceiptCallback();
+	FRedeemReceiptCallback* CallbackObj = new FRedeemReceiptCallback(FOnlineStoreEOSWeakPtr(AsShared()));
 	CallbackObj->CallbackLambda = [this, Info = FString(InReceiptValidationInfo), OnComplete = FOnFinalizeReceiptValidationInfoComplete(Delegate)](const EOS_Ecom_RedeemEntitlementsCallbackInfo* Data)
 	{
 		EOS_EResult Result = Data->ResultCode;

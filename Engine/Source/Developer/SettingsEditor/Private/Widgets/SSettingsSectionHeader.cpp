@@ -10,15 +10,21 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISourceControlModule.h"
 #include "SSettingsEditorCheckoutNotice.h"
 #include "DesktopPlatformModule.h"
 #include "IDetailsView.h"
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Views/STableRow.h"
+#include "HAL/IConsoleManager.h"
 
 #define LOCTEXT_NAMESPACE "SSettingsEditor"
+
+// Workaround to hide Set As Default button until there's a better way to determine if config file is cooked
+// Currently the only way to know is to check if MakeDefaultConfigFileWritable returns false, but that can't happen before the button is clicked
+bool bHideSetAsDefaultButton = false;
+FAutoConsoleVariableRef CVarHideSetAsDefaultButton(TEXT("SettingsEditor.HideSetAsDefaultButton"), bHideSetAsDefaultButton, TEXT("Hide the Settings Editor button to save to default config."));
 
 void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView, const TSharedPtr<ITableRow>& InTableRow)
 {
@@ -64,7 +70,7 @@ void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* 
 					+ SHorizontalBox::Slot()// category title
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::GetFontStyle("SettingsEditor.CatgoryAndSectionFont"))
+						.Font(FAppStyle::GetFontStyle("SettingsEditor.CatgoryAndSectionFont"))
 						.Text(GetSettingsBoxTitleText())
 					]
 				]
@@ -320,7 +326,7 @@ bool SSettingsSectionHeader::HandleResetToDefaultsButtonEnabled() const
 
 EVisibility SSettingsSectionHeader::HandleSetAsDefaultButtonVisibility() const
 {
-	return (SettingsSection.IsValid() && SettingsSection->CanSaveDefaults()) ? EVisibility::Visible : EVisibility::Collapsed;
+	return (!bHideSetAsDefaultButton && (SettingsSection.IsValid() && SettingsSection->CanSaveDefaults())) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SSettingsSectionHeader::HandleSetAsDefaultButtonClicked()

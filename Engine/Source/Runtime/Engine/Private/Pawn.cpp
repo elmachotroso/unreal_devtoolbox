@@ -30,6 +30,10 @@
 #include "Components/PawnNoiseEmitterComponent.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "GameFramework/InputSettings.h"
+#include "Engine/DemoNetDriver.h"
+#include "Misc/NetworkVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Pawn)
 
 DEFINE_LOG_CATEGORY(LogDamage);
 DEFINE_LOG_CATEGORY_STATIC(LogPawn, Warning, All);
@@ -55,9 +59,9 @@ APawn::APawn(const FObjectInitializer& ObjectInitializer)
 #endif
 
 		FString AIControllerClassName = GetDefault<UEngine>()->AIControllerClassName.ToString();
-
+		check(FPackageName::IsValidObjectPath(AIControllerClassName));
 		// resolve the name to a UClass
-		AIControllerClass = FindObject<UClass>(ANY_PACKAGE, *AIControllerClassName);
+		AIControllerClass = FindObject<UClass>(nullptr, *AIControllerClassName);
 
 		// if we failed to resolve, and plugins are expected to be loaded, proceed with loading it
 		if (AIControllerClass == nullptr && bLoadPluginClass)
@@ -272,8 +276,7 @@ float APawn::GetDefaultHalfHeight() const
 void APawn::SetRemoteViewPitch(float NewRemoteViewPitch)
 {
 	// Compress pitch to 1 byte
-	NewRemoteViewPitch = FRotator::ClampAxis(NewRemoteViewPitch);
-	RemoteViewPitch = (uint8)(NewRemoteViewPitch * 255.f/360.f);
+	RemoteViewPitch = FRotator::CompressAxisToByte(NewRemoteViewPitch);
 }
 
 
@@ -612,6 +615,11 @@ void APawn::PossessedBy(AController* NewController)
 	Controller = NewController;
 	ForceNetUpdate();
 
+#if UE_WITH_IRIS
+	// The owning connection depends on the Controller having the new value.
+	UpdateOwningNetConnection();
+#endif
+
 	if (Controller->PlayerState != nullptr)
 	{
 		SetPlayerState(Controller->PlayerState);
@@ -648,6 +656,11 @@ void APawn::UnPossessed()
 	SetPlayerState(nullptr);
 	SetOwner(nullptr);
 	Controller = nullptr;
+
+#if UE_WITH_IRIS
+	// The owning connection depends on the Controller having the new value.
+	UpdateOwningNetConnection();
+#endif
 
 	// Unregister input component if we created one
 	DestroyPlayerInputComponent();
@@ -709,7 +722,8 @@ class UPlayer* APawn::GetNetOwningPlayer()
 UInputComponent* APawn::CreatePlayerInputComponent()
 {
 	static const FName InputComponentName(TEXT("PawnInputComponent0"));
-	return NewObject<UInputComponent>(this, UInputSettings::GetDefaultInputComponentClass(), InputComponentName);
+	const UClass* OverrideClass = OverrideInputComponentClass.Get();
+	return NewObject<UInputComponent>(this, OverrideClass ? OverrideClass : UInputSettings::GetDefaultInputComponentClass(), InputComponentName);
 }
 
 void APawn::DestroyPlayerInputComponent()
@@ -727,6 +741,10 @@ bool APawn::IsMoveInputIgnored() const
 	return Controller != nullptr && Controller->IsMoveInputIgnored();
 }
 
+TSubclassOf<UInputComponent> APawn::GetOverrideInputComponentClass() const
+{
+	return OverrideInputComponentClass;	
+}
 
 void APawn::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce /*=false*/)
 {
@@ -944,8 +962,18 @@ FRotator APawn::GetBaseAimRotation() const
 		else
 		{
 			// Else use the RemoteViewPitch
-			POVRot.Pitch = RemoteViewPitch;
-			POVRot.Pitch = POVRot.Pitch * 360.0f / 255.0f;
+			const UWorld* World = GetWorld();
+			const UDemoNetDriver* DemoNetDriver = World ? World->GetDemoNetDriver() : nullptr;
+
+			if (DemoNetDriver && DemoNetDriver->IsPlaying() && (DemoNetDriver->GetPlaybackEngineNetworkProtocolVersion() < EEngineNetworkVersionHistory::HISTORY_PAWN_REMOTEVIEWPITCH))
+			{
+				POVRot.Pitch = RemoteViewPitch;
+				POVRot.Pitch = POVRot.Pitch * 360.0f / 255.0f;
+			}
+			else
+			{
+				POVRot.Pitch = FRotator::DecompressAxisFromByte(RemoteViewPitch);
+			}
 		}
 	}
 
@@ -1246,3 +1274,4 @@ const FNavAgentProperties& APawn::GetNavAgentPropertiesRef() const
 	UPawnMovementComponent* MovementComponent = GetMovementComponent();
 	return MovementComponent ? MovementComponent->GetNavAgentPropertiesRef() : FNavAgentProperties::DefaultProperties;
 }
+

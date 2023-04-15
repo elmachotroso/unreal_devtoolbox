@@ -34,8 +34,6 @@ void ReloadProcessObject(UClass* Object, const TCHAR* RenamePrefix);
 void ReloadProcessObject(UPackage* Object, const TCHAR* RenamePrefix);
 #endif
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-
 template <typename T>
 class TDeferredRegistry
 {
@@ -43,6 +41,13 @@ public:
 	using TInfo = T;
 	using TType = typename T::TType;
 	using TVersion = typename T::TVersion;
+
+	enum class AddResult
+	{
+		New,
+		ExistingNoChange,
+		ExistingChanged,
+	};
 
 private:
 
@@ -62,7 +67,6 @@ public:
 #if WITH_RELOAD
 		TType* OldSingleton;
 #endif
-		FFieldCompiledInInfo* DeprecatedFieldInfo;
 
 #if WITH_RELOAD
 		bool bHasChanged;
@@ -80,8 +84,7 @@ public:
 	/// <param name="InName">Name of the object</param>
 	/// <param name="InInfo">Persistent information about the object</param>
 	/// <param name="InVersion">Version information for this incarnation of the object</param>
-	/// <param name="DeprevatedFieldInfo">Deprecated factory object for the inner register for UClass.  Either InInnerRegister or this value must be specified for UClass</param>
-	bool AddRegistration(TType* (*InOuterRegister)(), TType* (*InInnerRegister)(), const TCHAR* InPackageName, const TCHAR* InName, TInfo& InInfo, const TVersion& InVersion, FFieldCompiledInInfo* DeprecatedFieldInfo)
+	AddResult AddRegistration(TType* (*InOuterRegister)(), TType* (*InInnerRegister)(), const TCHAR* InPackageName, const TCHAR* InName, TInfo& InInfo, const TVersion& InVersion)
 	{
 #if WITH_RELOAD
 		const FPackageAndNameKey Key = FPackageAndNameKey{ InPackageName, InName };
@@ -115,12 +118,12 @@ public:
 		}
 		if (bAdd)
 		{
-			Registrations.Add(FRegistrant{ InOuterRegister, InInnerRegister, InPackageName, &InInfo, OldSingleton, DeprecatedFieldInfo, bHasChanged });
+			Registrations.Add(FRegistrant{ InOuterRegister, InInnerRegister, InPackageName, &InInfo, OldSingleton, bHasChanged });
 		}
-		return ExistingInfo != nullptr;
+		return ExistingInfo == nullptr ? AddResult::New : (bHasChanged ? AddResult::ExistingChanged : AddResult::ExistingNoChange);
 #else
-		Registrations.Add(FRegistrant{ InOuterRegister, InInnerRegister, InPackageName, &InInfo, DeprecatedFieldInfo });
-		return false;
+		Registrations.Add(FRegistrant{ InOuterRegister, InInnerRegister, InPackageName, &InInfo });
+		return AddResult::New;
 #endif
 	}
 
@@ -215,7 +218,7 @@ public:
 		for (int32 Index = ProcessedRegistrations; Index < Num; ++Index)
 		{
 			TType* Object = OuterRegister(Registrations[Index]);
-			InOnRegistration(*Object);
+			InOnRegistration(Registrations[Index].PackageName, *Object);
 		}
 		if (UpdateCounter)
 		{
@@ -253,7 +256,7 @@ public:
 			{
 				if (Registrant.bHasChanged && Registrant.OldSingleton != nullptr)
 				{
-					UE_LOG(LogClass, Log, TEXT("%s Reload."), *Registrant.OldSingleton->GetName());
+					UE_LOG(LogClass, Log, TEXT("%s %s Reload."), GetRegistryName(), *Registrant.OldSingleton->GetName());
 
 					// Reset the cached class construct info.
 					Registrant.Info->InnerSingleton = nullptr;
@@ -307,20 +310,6 @@ public:
 	}
 
 	/**
-	* For the given package and name, return a registration information structure that can be
-	* used for compatibility with older API.  Will be removed after deprecated API removed.
-	*/
-	TInfo& MakeDeprecatedInfo(const TCHAR* InPackageName, const TCHAR* InName)
-	{
-		TUniquePtr<TInfo>& Info = CompatInfoMap.FindOrAdd(FPackageAndNameKey{ InPackageName, InName });
-		if (!Info.IsValid())
-		{
-			Info.Reset(new TInfo);
-		}
-		return *Info.Get();
-	}
-
-	/**
 	* Return the registry singleton
 	*/
 	static TDeferredRegistry& Get()
@@ -329,9 +318,12 @@ public:
 		return Registry;
 	}
 
+#if WITH_RELOAD
+	const TCHAR* GetRegistryName();
+#endif
+
 private:
 	TArray<FRegistrant> Registrations;
-	TMap<FPackageAndNameKey, TUniquePtr<TInfo>> CompatInfoMap; // Can be removed after deprecated API removed
 	int32 ProcessedRegistrations = 0;
 
 #if WITH_RELOAD
@@ -343,10 +335,6 @@ private:
 template <>
 inline typename TDeferredRegistry<FClassRegistrationInfo>::TType* TDeferredRegistry<FClassRegistrationInfo>::InnerRegister(const TDeferredRegistry<FClassRegistrationInfo>::FRegistrant& Registrant)
 {
-	if (Registrant.DeprecatedFieldInfo)
-	{
-		return Registrant.DeprecatedFieldInfo->Register();
-	}
 	LLM_SCOPE(ELLMTag::UObject);
 	return Registrant.InnerRegisterFn();
 }
@@ -360,9 +348,14 @@ inline void TDeferredRegistry<FClassRegistrationInfo>::UpdateSingletons(FClassRe
 	NewInfo.OuterSingleton = nullptr;
 }
 
+#if WITH_RELOAD
+template <> inline const TCHAR* TDeferredRegistry<FClassRegistrationInfo>::GetRegistryName() { return TEXT("UClass"); }
+template <> inline const TCHAR* TDeferredRegistry<FEnumRegistrationInfo>::GetRegistryName() { return TEXT("UEnum"); }
+template <> inline const TCHAR* TDeferredRegistry<FStructRegistrationInfo>::GetRegistryName() { return TEXT("UScriptStruct"); }
+template <> inline const TCHAR* TDeferredRegistry<FPackageRegistrationInfo>::GetRegistryName() { return TEXT("UPackage"); }
+#endif
+
 using FClassDeferredRegistry = TDeferredRegistry<FClassRegistrationInfo>;
 using FEnumDeferredRegistry = TDeferredRegistry<FEnumRegistrationInfo>;
 using FStructDeferredRegistry = TDeferredRegistry<FStructRegistrationInfo>;
 using FPackageDeferredRegistry = TDeferredRegistry<FPackageRegistrationInfo>;
-
-PRAGMA_ENABLE_DEPRECATION_WARNINGS

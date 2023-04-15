@@ -43,7 +43,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Viewports/InViewportUIDragOperation.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Styling/StyleColors.h"
@@ -230,6 +230,7 @@ void FActorMappings::SelectActors()
 	if (Actor.IsValid())
 	{
 		GEditor->SelectActor(Actor.Get(), true, true);
+		GEditor->NoteSelectionChange();
 	}
 }
 
@@ -289,6 +290,8 @@ void USequencerPivotTool::Setup()
 
 	GetControlRigsAndSequencer(ControlRigs, SequencerPtr, &LevelSequence);
 
+	UpdateTransformAndSelectionOnEntering();
+
 	TArray<AActor*> SelectedActors;
 	GEditor->GetSelectedActors()->GetSelectedObjects(SelectedActors);
 	Actors.SetNum(0);
@@ -297,7 +300,6 @@ void USequencerPivotTool::Setup()
 		Actors.Add(Actor);
 	}
 
-	UpdateTransformAndSelectionOnEntering();
 	UpdateGizmoTransform();
 	UpdateGizmoVisibility();
 	//we get delegates last since we may select something above
@@ -699,6 +701,33 @@ void USequencerPivotTool::GizmoTransformStarted(UTransformProxy* Proxy)
 	bGizmoBeingDragged = true;
 	bManipulatorMadeChange = false;
 	GizmoTransform = StartDragTransform;
+
+	InteractionScopes.Reset();
+	if(bInPivotMode)
+	{
+		TMap<UControlRig*, int32> RigToScopeIndex;
+		for(int32 IndexA = 0; IndexA < ControlRigDrags.Num(); IndexA++)
+		{
+			const FControlRigSelectionDuringDrag& ControlRigDrag = ControlRigDrags[IndexA];
+
+			// if we are hitting this for the first time
+			const int32 ScopeIndex = RigToScopeIndex.FindOrAdd(ControlRigDrag.ControlRig, InteractionScopes.Num());
+			if(!InteractionScopes.IsValidIndex(ScopeIndex))
+			{
+				// get all keys on the same control rig
+				TArray<FRigElementKey> Keys = {FRigElementKey(ControlRigDrag.ControlName, ERigElementType::Control)};
+				for(int32 IndexB = IndexA + 1; IndexB < ControlRigDrags.Num(); IndexB++)
+				{
+					if(ControlRigDrags[IndexB].ControlRig != ControlRigDrag.ControlRig)
+					{
+						continue;
+					}
+					Keys.Add(FRigElementKey(ControlRigDrags[IndexB].ControlName, ERigElementType::Control));
+				}
+				InteractionScopes.Emplace(MakeShareable(new FControlRigInteractionScope(ControlRigDrag.ControlRig, Keys)));
+			}
+		}
+	}
 }
 
 
@@ -879,6 +908,7 @@ void USequencerPivotTool::GizmoTransformEnded(UTransformProxy* Proxy)
 	}
 	bGizmoBeingDragged = false;
 	bManipulatorMadeChange = false;
+	InteractionScopes.Reset();
 	UpdateGizmoTransform();
 	SavePivotTransforms();
 }
@@ -975,6 +1005,8 @@ void USequencerPivotTool::OnPropertyModified(UObject* PropertySet, FProperty* Pr
 }
 
 #include "HitProxies.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SequencerAnimEditPivotTool)
 
 
 void USequencerPivotTool::Render(IToolsContextRenderAPI* RenderAPI)
@@ -1262,3 +1294,4 @@ void USequencerPivotTool::UpdatePivotOverlayLocation(const FVector2D InLocation,
 
 
 #undef LOCTEXT_NAMESPACE
+

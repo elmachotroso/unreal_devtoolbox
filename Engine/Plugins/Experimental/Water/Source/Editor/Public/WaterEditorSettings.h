@@ -19,6 +19,7 @@ class UStaticMesh;
 class UWaterBodyComponent;
 class UWaterWavesBase;
 class AWaterLandscapeBrush;
+class AWaterZone;
 
 USTRUCT()
 struct WATEREDITOR_API FWaterBrushActorDefaults
@@ -48,6 +49,10 @@ struct WATEREDITOR_API FWaterZoneActorDefaults
 
 	UPROPERTY(EditAnywhere, config, Category = Mesh)
 	float FarDistanceMeshExtent = 4000000.0f;
+
+	UPROPERTY(EditAnywhere, config, Category = Mesh)
+	float NewWaterZoneScale = 1.0f;
+
 protected:
 	UPROPERTY(EditAnywhere, Config, Category = Mesh)
 	TSoftObjectPtr<UMaterialInterface> FarDistanceMaterial;
@@ -68,12 +73,18 @@ public:
 	UMaterialInterface* GetWaterMaterial() const;
 	FSoftObjectPath GetWaterMaterialPath() const { return WaterMaterial.ToSoftObjectPath(); }
 
+	UMaterialInterface* GetWaterHLODMaterial() const;
+	FSoftObjectPath GetWaterHLODMaterialPath() const { return WaterHLODMaterial.ToSoftObjectPath(); }
+
 	UMaterialInterface* GetUnderwaterPostProcessMaterial() const;
 	FSoftObjectPath GetUnderwaterPostProcessMaterialPath() const { return UnderwaterPostProcessMaterial.ToSoftObjectPath(); }
 
 protected:
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
 	TSoftObjectPtr<UMaterialInterface> WaterMaterial;
+
+	UPROPERTY(EditAnywhere, config, Category = Rendering)
+	TSoftObjectPtr<UMaterialInterface> WaterHLODMaterial;
 
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
 	TSoftObjectPtr<UMaterialInterface> UnderwaterPostProcessMaterial;
@@ -115,7 +126,7 @@ struct WATEREDITOR_API FWaterBodyLakeDefaults : public FWaterBodyDefaults
 	FWaterBrushActorDefaults BrushDefaults;
 
 	UPROPERTY(EditAnywhere, Instanced, Category = Wave)
-	UWaterWavesBase* WaterWaves = nullptr;
+	TObjectPtr<UWaterWavesBase> WaterWaves = nullptr;
 };
 
 
@@ -130,7 +141,7 @@ struct WATEREDITOR_API FWaterBodyOceanDefaults : public FWaterBodyDefaults
 	FWaterBrushActorDefaults BrushDefaults;
 
 	UPROPERTY(EditAnywhere, Instanced, Category = Wave)
-	UWaterWavesBase* WaterWaves = nullptr;
+	TObjectPtr<UWaterWavesBase> WaterWaves = nullptr;
 };
 
 
@@ -175,6 +186,9 @@ public:
 
 	virtual FName GetCategoryName() const override { return FName(TEXT("Plugins")); }
 
+	TSubclassOf<AWaterZone> GetWaterZoneClass() const;
+	FSoftClassPath GetWaterZoneClassPath() const { return WaterZoneClassPath; }
+
 	TSubclassOf<AWaterLandscapeBrush> GetWaterManagerClass() const;
 	FSoftClassPath GetWaterManagerClassPath() const { return WaterManagerClassPath; }
 
@@ -196,8 +210,10 @@ public:
 	UMaterialInterface* GetDefaultCompositeWaterBodyTextureMaterial() const;
 	FSoftObjectPath GetDefaultCompositeWaterBodyTextureMaterialPath() const { return DefaultCompositeWaterBodyTextureMaterial.ToSoftObjectPath(); }
 
-	UMaterialInterface* GetDefaultFinalizeVelocityHeightMaterial() const;
-	FSoftObjectPath GetDefaultFinalizeVelocityHeightMaterialPath() const { return DefaultFinalizeVelocityHeightMaterial.ToSoftObjectPath(); }
+	UE_DEPRECATED(5.1, "This material is not needed anymore : the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)")
+	UMaterialInterface* GetDefaultFinalizeVelocityHeightMaterial() const { return nullptr; }
+	UE_DEPRECATED(5.1, "This material is not needed anymore : the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)")
+	FSoftObjectPath GetDefaultFinalizeVelocityHeightMaterialPath() const { return FSoftObjectPath(); }
 
 	UMaterialInterface* GetDefaultJumpFloodStepMaterial() const;
 	FSoftObjectPath GetDefaultJumpFloodStepMaterialPath() const { return DefaultJumpFloodStepMaterial.ToSoftObjectPath(); }
@@ -214,6 +230,9 @@ public:
 	UMaterialInterface* GetDefaultRenderRiverSplineDepthsMaterial() const;
 	FSoftObjectPath GetDefaultRenderRiverSplineDepthsMaterialPath() const { return DefaultRenderRiverSplineDepthsMaterial.ToSoftObjectPath(); }
 
+	bool GetUpdateLandscapeDuringInteractiveChanges() const { return bUpdateLandscapeDuringInteractiveChanges; }
+	bool GetUpdateWaterMeshDuringInteractiveChanges() const { return bUpdateWaterMeshDuringInteractiveChanges; }
+
 public:
 	/** The texture group to use for generated textures such as the combined veloctiy and height texture */
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
@@ -228,7 +247,7 @@ public:
 	float VisualizeWaterVelocityScale = 20.0f;
 
 	/** Material Parameter Collection for everything landscape-related */
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialParameterCollection> LandscapeMaterialParameterCollection;
 
 	/** Default values for base WaterMesh actor*/
@@ -255,43 +274,52 @@ public:
 	FWaterBodyIslandDefaults WaterBodyIslandDefaults;
 
 private:
+	/** For landscape-affecting water bodies, allows the landscape to be updated when the water body's shape is modified interactively (e.g. when dragging a spline point). Set to false if the performance when editing a water body gets too bad (the landscape will be properly updated when the dragging operation is done). */
+	UPROPERTY(EditAnywhere, config, Category = Brush)
+	bool bUpdateLandscapeDuringInteractiveChanges = false;
+
+	/** Allows the water mesh to be updated when the water body's shape is modified interactively (e.g. when dragging a spline point). Set to false if the performance when editing a water body gets too bad (the water mesh will be properly updated when the dragging operation is done). */
+	UPROPERTY(EditAnywhere, config, Category = Brush)
+	bool bUpdateWaterMeshDuringInteractiveChanges = false;
+
+	/** Class of the water zone to be used*/
+	UPROPERTY(EditAnywhere, config, Category = Water, meta = (MetaClass = "/Script/Water.WaterZone"))
+	FSoftClassPath WaterZoneClassPath;
+
 	/** Class of the water brush to be used in landscape */
-	UPROPERTY(EditAnywhere, config, Category = Brush, meta = (MetaClass = "WaterLandscapeBrush"))
+	UPROPERTY(EditAnywhere, config, Category = Brush, meta = (MetaClass = "/Script/WaterEditor.WaterLandscapeBrush"), AdvancedDisplay)
 	FSoftClassPath WaterManagerClassPath;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultBrushAngleFalloffMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultBrushIslandFalloffMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultBrushWidthFalloffMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultBrushWeightmapMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultCacheDistanceFieldCacheMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultCompositeWaterBodyTextureMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
-	TSoftObjectPtr<UMaterialInterface> DefaultFinalizeVelocityHeightMaterial;
-
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultJumpFloodStepMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultBlurEdgesMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultFindEdgesMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultDrawCanvasMaterial;
 
-	UPROPERTY(EditAnywhere, config, Category = Brush)
+	UPROPERTY(EditAnywhere, config, Category = Brush, AdvancedDisplay)
 	TSoftObjectPtr<UMaterialInterface> DefaultRenderRiverSplineDepthsMaterial;
 };

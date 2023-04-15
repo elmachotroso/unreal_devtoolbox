@@ -1,19 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Chaos/Island/SolverIsland.h"
-#include "Chaos/PBDConstraintRule.h"
+#include "Chaos/PBDConstraintContainer.h"
+#include "Chaos/PBDRigidsSOAs.h"
 
 namespace Chaos
 {
 	
-FPBDIslandSolver::FPBDIslandSolver(const FPBDIslandManager* IslandManagerIn, const int32 IslandIndexIn) : FPBDIslandSolverData(IslandIndexIn),
-	IslandManager(IslandManagerIn), bIsSleeping(false), bNeedsResim(false), bIsPersistent(true), SleepCounter(0),
-	IslandParticles(), IslandConstraints()
-{}
-
-void FPBDIslandSolver::UpdateParticles()
+	FPBDIsland::FPBDIsland(const int32 MaxConstraintContainers)
+	: IslandIndex(INDEX_NONE)
+	, bIsSleeping(false)
+	, bNeedsResim(false)
+	, bIsPersistent(true)
+	, SleepCounter(0)
+	, IslandParticles()
+	, IslandConstraintsByType()
+	, NumConstraints(0)
 {
-	for (FGenericParticleHandle ParticleHandle : IslandParticles)
+	IslandConstraintsByType.SetNum(MaxConstraintContainers);
+}
+
+void FPBDIsland::Reuse()
+{
+	check(GetNumParticles() == 0);
+	check(GetNumConstraints() == 0);
+
+	SetSleepCounter(0);
+	SetIsSleepingChanged(false);
+}
+
+void FPBDIsland::UpdateParticles()
+{
+	for (FPBDIslandParticle& IslandParticle : IslandParticles)
 	{
+		FGenericParticleHandle ParticleHandle = IslandParticle.GetParticle();
 		if (ParticleHandle.IsValid() && ParticleHandle->IsDynamic())
 		{
 			ParticleHandle->SetIslandIndex(IslandIndex);
@@ -21,12 +40,12 @@ void FPBDIslandSolver::UpdateParticles()
 	}
 }
 	
-void FPBDIslandSolver::ClearParticles()
+void FPBDIsland::ClearParticles()
 {
 	IslandParticles.Reset();
 }
 
-void FPBDIslandSolver::AddParticle(FGenericParticleHandle ParticleHandle)
+void FPBDIsland::AddParticle(FGenericParticleHandle ParticleHandle)
 {
 	if (ParticleHandle.IsValid())
 	{
@@ -38,113 +57,112 @@ void FPBDIslandSolver::AddParticle(FGenericParticleHandle ParticleHandle)
 	}
 }
 
-void FPBDIslandSolver::RemoveParticle(FGenericParticleHandle ParticleHandle)
-{
-	if (ParticleHandle.IsValid())
-	{
-		if (ParticleHandle->IsDynamic())
-		{
-			ParticleHandle->SetIslandIndex(INDEX_NONE);
-		}
-		IslandParticles.Remove(ParticleHandle->Handle());
-	}
-}
-
-void FPBDIslandSolver::ReserveParticles(const int32 NumParticles)
+void FPBDIsland::ReserveParticles(const int32 NumParticles)
 {
 	ClearParticles();
 	IslandParticles.Reserve(NumParticles);
 }
 
-void FPBDIslandSolver::AddConstraint(FConstraintHandle* ConstraintHandle)
+void FPBDIsland::AddConstraint(FConstraintHandle* ConstraintHandle, const int32 Level, const int32 Color, const uint32 SubSortKey)
 {
 	if (ConstraintHandle)
 	{
-		IslandConstraints.Add(ConstraintHandle);
-
 		const int32 ContainerId = ConstraintHandle->GetContainerId();
-		if(ConstraintCounts.IsValidIndex(ContainerId))
+
+		// Array should already be appropriately sized for all containers
+		IslandConstraintsByType[ContainerId].Emplace(ConstraintHandle, Level, Color, SubSortKey);
+
+		++NumConstraints;
+	}
+}
+
+void FPBDIsland::ClearConstraints()
+{
+	for (TArray<FPBDIslandConstraint>& Constraints : IslandConstraintsByType)
+	{
+		Constraints.Reset();
+	}
+	NumConstraints = 0;
+}
+
+void FPBDIsland::SortConstraints()
+{
+	for (TArray<FPBDIslandConstraint>& IslandConstraints : IslandConstraintsByType)
+	{
+		if (IslandConstraints.Num() > 1)
 		{
-			ConstraintCounts[ContainerId]++;
+			Algo::Sort(IslandConstraints,
+				[](const FPBDIslandConstraint& L, const FPBDIslandConstraint& R) -> bool
+				{
+					return L.GetSortKey() < R.GetSortKey();
+				});
 		}
 	}
 }
 
-void FPBDIslandSolver::RemoveConstraint(FConstraintHandle* ConstraintHandle)
+void FPBDIsland::PropagateSleepState(FPBDRigidsSOAs& ParticleSOAs)
 {
-	// @todo(chaos): store the Island Constraint Index as a cookie on the constraint
-	if (ConstraintHandle)
+	bool bNeedRebuild = false;
+	for (FPBDIslandParticle& IslandParticle : IslandParticles)
 	{
-		IslandConstraints.Remove(ConstraintHandle);
-	}
-}
-
-void FPBDIslandSolver::ReserveConstraints(const int32 NumConstraints)
-{
-	ClearConstraints();
-	IslandConstraints.Reserve(NumConstraints);
-}
-
-void FPBDIslandSolver::ResetIndices()
-{
-	for(FConstraintHandleHolder& ConstraintHandle : IslandConstraints)
-	{
-		ConstraintHandle->SetConstraintGraphIndex(INDEX_NONE);
-	}
-}
-
-void FPBDIslandSolver::ClearConstraints()
-{
-	IslandConstraints.Reset();
-}
-
-// we should remove the one in constraint allocator once this one will be used
-inline bool ConstraintSortPredicate(const FConstraintHandle& L, const FConstraintHandle& R)
-{
-	const FPBDCollisionConstraint* CollisionConstraintL = L.As<FPBDCollisionConstraint>();
-	const FPBDCollisionConstraint* CollisionConstraintR = R.As<FPBDCollisionConstraint>();
-
-	if(CollisionConstraintL && CollisionConstraintR)
-	{
-		//sort constraints by the smallest particle idx in them first
-		//if the smallest particle idx is the same for both, use the other idx
-
-		if (CollisionConstraintL->GetCCDType() != CollisionConstraintR->GetCCDType())
+		FGeometryParticleHandle* Particle = IslandParticle.GetParticle();
+		if (Particle->CastToRigidParticle() && !Particle->CastToRigidParticle()->Disabled())
 		{
-			return CollisionConstraintL->GetCCDType() < CollisionConstraintR->GetCCDType();
+			// If not sleeping we activate the sleeping particles
+			if (!bIsSleeping && Particle->Sleeping())
+			{
+				ParticleSOAs.ActivateParticle(Particle, true);
+
+				// When we wake particles, we have skipped their integrate step which causes some issues:
+				//	- we have zero velocity (no gravity or external forces applied)
+				//	- the world transforms cached in the ShapesArray will be at the last post-integrate positions
+				//	  which doesn't match what the velocity is telling us
+				// This causes problems for the solver - essentially we have an "initial overlap" situation.
+				// @todo(chaos): We could just run (partial) integrate here for this particle, but we don't know about the Evolution - fix this
+				for (const TUniquePtr<FPerShapeData>& Shape : Particle->ShapesArray())
+				{
+					Shape->UpdateLeafWorldTransform(Particle);
+				}
+
+				bNeedRebuild = true;
+			}
+			// If sleeping we deactivate the dynamic particles
+			else if (bIsSleeping && !Particle->Sleeping())
+			{
+				ParticleSOAs.DeactivateParticle(Particle, true);
+				bNeedRebuild = true;
+			}
 		}
-
-		const FParticleID ParticleIdxsL[] = { CollisionConstraintL->GetParticle0()->ParticleID(), CollisionConstraintL->GetParticle1()->ParticleID() };
-		const FParticleID ParticleIdxsR[] = { CollisionConstraintR->GetParticle0()->ParticleID(), CollisionConstraintL->GetParticle1()->ParticleID() };
-
-		const int32 MinIdxL = ParticleIdxsL[0] < ParticleIdxsL[1] ? 0 : 1;
-		const int32 MinIdxR = ParticleIdxsR[0] < ParticleIdxsR[1] ? 0 : 1;
-
-		if(ParticleIdxsL[MinIdxL] < ParticleIdxsR[MinIdxR])
-		{
-			return true;
-		} 
-		else if(ParticleIdxsL[MinIdxL] == ParticleIdxsR[MinIdxR])
-		{
-			return ParticleIdxsL[!MinIdxL] < ParticleIdxsR[!MinIdxR];
-		}
-
-		return false;
 	}
-	return false;
-}
 
-inline bool ConstraintHolderSortPredicate(const FConstraintHandleHolder& L, const FConstraintHandleHolder& R)
-{
-	return ConstraintSortPredicate(*L.Get(), *R.Get());
-}
-
-
-void FPBDIslandSolver::SortConstraints()
-{
-	if(!IsSleeping())
+	if (bNeedRebuild)
 	{
-		IslandConstraints.Sort(ConstraintHolderSortPredicate);
+		ParticleSOAs.RebuildViews();
+	}
+
+	// Island constraints are updating their sleeping flag + awaken one 
+	for (TArray<FPBDIslandConstraint>& TypedIslandConstraints : IslandConstraintsByType)
+	{
+		for (FPBDIslandConstraint& IslandConstraint : TypedIslandConstraints)
+		{
+			IslandConstraint.GetConstraint()->SetIsSleeping(bIsSleeping);
+		}
+	}
+}
+
+void FPBDIsland::UpdateSyncState(FPBDRigidsSOAs& Particles)
+{
+	bNeedsResim = false;
+	for (FPBDIslandParticle& IslandParticle : IslandParticles)
+	{
+		// If even one particle is soft/hard desync we must resim the entire island (when resim is used)
+		// seems cheap enough so just always do it, if slow pass resim template in here
+		FGeometryParticleHandle* Particle = IslandParticle.GetParticle();
+		if (Particle->SyncState() != ESyncState::InSync)
+		{
+			bNeedsResim = true;
+			break;
+		}
 	}
 }
 

@@ -111,7 +111,19 @@
 			"Enabled": true
 		},
 		{
+			"Name": "ConsoleVariables",
+			"Enabled": true
+		},
+		{
 			"Name": "VirtualProductionUtilities",
+			"Enabled": true
+		},
+		{
+			"Name": "EpicStageApp",
+			"Enabled": true
+		},
+		{
+			"Name": "RivermaxMedia",
 			"Enabled": true
 		}
 	]

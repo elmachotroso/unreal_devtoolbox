@@ -21,6 +21,8 @@
 
 #include "Navigation/CrowdFollowingComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CrowdManager)
+
 DECLARE_STATS_GROUP(TEXT("Crowd"), STATGROUP_AICrowd, STATCAT_Advanced);
 
 DECLARE_CYCLE_STAT(TEXT("Nav Tick: crowd simulation"), STAT_AI_Crowd_Tick, STATGROUP_AICrowd);
@@ -921,8 +923,8 @@ void UCrowdManager::CreateCrowdManager()
 			if (Info.Angles.Num() > 0 && Info.Angles.Num() == Info.Radii.Num())
 			{
 				// LWC_TODO_AI: Info.Angles and Info.Radii should be FReal. Probably not until after 5.0!
-				const TArray<FVector::FReal> Angles = LWC::ConvertArrayType<FVector::FReal>(Info.Angles);
-				const TArray<FVector::FReal> Radii = LWC::ConvertArrayType<FVector::FReal>(Info.Radii);
+				const TArray<FVector::FReal> Angles = UE::LWC::ConvertArrayType<FVector::FReal>(Info.Angles);
+				const TArray<FVector::FReal> Radii = UE::LWC::ConvertArrayType<FVector::FReal>(Info.Radii);
 
 				DetourCrowd->setObstacleAvoidancePattern(Idx, Angles.GetData(), Radii.GetData(), Angles.Num());
 			}
@@ -1486,3 +1488,4 @@ UCrowdManager* UCrowdManager::GetCurrent(UWorld* World)
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 	return NavSys ? Cast<UCrowdManager>(NavSys->GetCrowdManager()) : NULL;
 }
+

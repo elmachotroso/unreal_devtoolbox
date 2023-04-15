@@ -5,6 +5,7 @@
 #include "Math/Vector.h"
 #include "Chaos/Box.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
+#include "Chaos/Evolution/ConstraintGroupSolver.h"
 #include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/PBDRigidParticles.h"
 #include "Chaos/PBDCollisionConstraints.h"
@@ -17,7 +18,6 @@
 #include "Chaos/Utilities.h"
 #include "Chaos/Vector.h"
 #include "Chaos/PBDRigidsSOAs.h"
-#include "Chaos/Evolution/SolverDatas.h"
 
 namespace Chaos
 {	
@@ -38,28 +38,32 @@ public:
 	FPBDCollisionConstraintAccessor()
 		: EmptyParticles(UniqueIndices)
 		, SpatialAcceleration(EmptyParticles.GetNonDisabledView())
-		, CollisionConstraints(EmptyParticles, EmptyCollided, EmptyPhysicsMaterials, EmptyUniquePhysicsMaterials, nullptr, 1, 1)
-		, NarrowPhase((FReal)1, (FReal)0, CollisionConstraints.GetConstraintAllocator())
+		, CollisionConstraints(EmptyParticles, EmptyCollided, EmptyPhysicsMaterials, EmptyUniquePhysicsMaterials, nullptr)
 		, BroadPhase(EmptyParticles)
-		, CollisionDetector(BroadPhase, NarrowPhase, CollisionConstraints)
+		, CollisionDetector(BroadPhase, CollisionConstraints)
+		, ConstraintSolver()
 	{
-		CollisionConstraints.SetSolverType(EConstraintSolverType::QuasiPbd);
 		CollisionConstraints.SetContainerId(0);
-		SolverData.AddConstraintDatas<FCollisionConstraints>(CollisionConstraints.GetContainerId());
+
+		CollisionDetector.SetBoundsExpansion(FReal(1));
+
+		ConstraintSolver.SetConstraintSolver(CollisionConstraints.GetContainerId(), CollisionConstraints.CreateSceneSolver(0));
 	}
 
 	FPBDCollisionConstraintAccessor(const FPBDRigidsSOAs& InParticles, TArrayCollectionArray<bool>& Collided, const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& PerParticleMaterials, const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticleUniqueMaterials,
 		const int32 PushOutIterations, const int32 PushOutPairIterations) 
 		: EmptyParticles(UniqueIndices)
 		, SpatialAcceleration(InParticles.GetNonDisabledView())
-		, CollisionConstraints(InParticles, Collided, PerParticleMaterials, PerParticleUniqueMaterials, nullptr, 1, 1)
-		, NarrowPhase((FReal)1, (FReal)0, CollisionConstraints.GetConstraintAllocator())
+		, CollisionConstraints(InParticles, Collided, PerParticleMaterials, PerParticleUniqueMaterials, nullptr)
 		, BroadPhase(InParticles)
-		, CollisionDetector(BroadPhase, NarrowPhase, CollisionConstraints)
+		, CollisionDetector(BroadPhase, CollisionConstraints)
+		, ConstraintSolver()
 	{
-		CollisionConstraints.SetSolverType(EConstraintSolverType::QuasiPbd);
 		CollisionConstraints.SetContainerId(0);
-		SolverData.AddConstraintDatas<FCollisionConstraints>(CollisionConstraints.GetContainerId());
+
+		CollisionDetector.SetBoundsExpansion(FReal(1));
+
+		ConstraintSolver.SetConstraintSolver(CollisionConstraints.GetContainerId(), CollisionConstraints.CreateSceneSolver(0));
 	}
 
 	virtual ~FPBDCollisionConstraintAccessor() {}
@@ -67,16 +71,21 @@ public:
 	void ComputeConstraints(FReal Dt)
 	{
 		CollisionDetector.GetBroadPhase().SetSpatialAcceleration(&SpatialAcceleration);
-		CollisionDetector.GetNarrowPhase().GetContext().bFilteringEnabled = true;
-		CollisionDetector.GetNarrowPhase().GetContext().bDeferUpdate = false;
-		CollisionDetector.GetNarrowPhase().GetContext().bAllowManifolds = true;
+
+		FCollisionDetectorSettings DetectorSettings = CollisionDetector.GetSettings();
+		DetectorSettings.bFilteringEnabled = true;
+		DetectorSettings.bDeferNarrowPhase = false;
+		DetectorSettings.bAllowManifolds = true;
+		CollisionDetector.SetSettings(DetectorSettings);
+		
 		CollisionDetector.DetectCollisions(Dt, nullptr);
+		
 		CollisionDetector.GetCollisionContainer().GetConstraintAllocator().SortConstraintsHandles();
 	}
 
 	void Update(FPBDCollisionConstraint& Constraint)
 	{
-		if (Constraint.GetCCDType() == ECollisionCCDType::Disabled)
+		if (!Constraint.GetCCDEnabled())
 		{
 			// Dt is not important for the tests that use this function
 			const FReal Dt = FReal(1) / FReal(30);
@@ -127,38 +136,28 @@ public:
 		return CollisionConstraints.GetConstraintHandles()[ConstraintIndex];
 	}
 
-	void Apply(const FReal Dt, const int32 It, const int32 NumIts)
+	void Apply(const FReal Dt, const int32 NumIts)
 	{
-		CollisionConstraints.ApplyPhase1(Dt, It, NumIts, SolverData);
+		ConstraintSolver.ApplyPositionConstraints(Dt, NumIts);
 	}
 
-	bool ApplyPushOut(const FReal Dt, int32 Iteration, int32 NumIterations)
+	void ApplyPushOut(const FReal Dt, int32 NumIts)
 	{
-		return CollisionConstraints.ApplyPhase2(Dt, Iteration, NumIterations, SolverData);
+		ConstraintSolver.ApplyVelocityConstraints(Dt, NumIts);
 	}
 
 	void GatherInput(FReal Dt)
 	{
-		SolverData.GetBodyContainer().Reset(1000);
-		CollisionConstraints.SetNumIslandConstraints(CollisionConstraints.NumConstraints(), SolverData);
-
-		for (auto Handle : CollisionConstraints.GetConstraintHandles())
-		{
-			Handle->PreGatherInput(Dt, SolverData);
-			Handle->GatherInput(Dt, INDEX_NONE, INDEX_NONE, SolverData);
-		}
+		ConstraintSolver.Reset();
+		ConstraintSolver.AddConstraintsAndBodies();
+		ConstraintSolver.GatherBodies(Dt);
+		ConstraintSolver.GatherConstraints(Dt);
 	}
 
 	void ScatterOutput(FReal Dt)
 	{
-		CollisionConstraints.ScatterOutput(Dt, SolverData);
-		SolverData.GetBodyContainer().ScatterOutput();
-		SolverData.GetBodyContainer().Reset(0);;
-	}
-
-	void SetImplicitVelocities(FReal Dt)
-	{
-		SolverData.GetBodyContainer().SetImplicitVelocities(Dt);
+		ConstraintSolver.ScatterConstraints(Dt);
+		ConstraintSolver.ScatterBodies(Dt);
 	}
 
 	FPBDCollisionConstraint EmptyConstraint;
@@ -170,9 +169,8 @@ public:
 
 	FAccelerationStructure SpatialAcceleration;
 	FCollisionConstraints CollisionConstraints;
-	FNarrowPhase NarrowPhase;
 	FSpatialAccelerationBroadPhase BroadPhase;
 	FCollisionDetector CollisionDetector;
-	FPBDIslandSolverData SolverData;
+	FPBDSceneConstraintGroupSolver ConstraintSolver;
 };
 }

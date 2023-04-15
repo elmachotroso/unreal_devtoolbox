@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PostProcess/PostProcessFFTBloom.h"
-#include "PostProcess/PostProcessBloomSetup.h"
 #include "PostProcess/PostProcessTonemap.h"
+#include "PostProcess/PostProcessLocalExposure.h"
 #include "PostProcess/PostProcessDownsample.h"
 #include "GPUFastFourierTransform.h"
 #include "RendererModule.h"
@@ -334,9 +334,9 @@ void InitDomainAndGetKernel(
 		}
 	}
 
-	// Re-transform the kernel if needed.
+	// Re-transform the kernel if needed -- needs to run on all GPUs in case view's GPU assignment changes later.
 	RDG_EVENT_SCOPE(GraphBuilder, "InitBloomKernel");
-
+	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
 	FRDGTextureRef SpatialKernelTexture = RegisterExternalTexture(GraphBuilder, PhysicalSpaceKernelTextureRef, TEXT("Bloom.FFT.OriginalKernel"));
 
@@ -631,7 +631,15 @@ void InitDomainAndGetKernel(
 	*OutKernelConstantsBuffer = KernelConstantsBuffer;
 }
 
-FFFTBloomOutput AddFFTBloomPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FScreenPassTexture& InputSceneColor, float InputResolutionFraction)
+FFFTBloomOutput AddFFTBloomPass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	const FScreenPassTexture& InputSceneColor,
+	float InputResolutionFraction,
+	const FEyeAdaptationParameters& EyeAdaptationParameters,
+	FRDGTextureRef EyeAdaptationTexture,
+	FRDGTextureRef LocalExposureTexture,
+	FRDGTextureRef BlurredLogLuminanceTexture)
 {
 	check(InputSceneColor.IsValid());
 
@@ -729,6 +737,18 @@ FFFTBloomOutput AddFFTBloomPass(FRDGBuilder& GraphBuilder, const FViewInfo& View
 	else
 	{
 		FFTInputSceneColor = InputSceneColor;
+	}
+
+	if (LocalExposureTexture != nullptr)
+	{
+		FScreenPassTexture Temp = FFTInputSceneColor;
+
+		FRDGTextureDesc Desc = Temp.Texture->Desc;
+		Desc.Flags = TexCreate_ShaderResource | TexCreate_UAV;
+
+		FFTInputSceneColor.Texture = GraphBuilder.CreateTexture(Desc, TEXT("Bloom.FFT.Input"));
+
+		AddApplyLocalExposurePass(GraphBuilder, View, EyeAdaptationParameters, EyeAdaptationTexture, LocalExposureTexture, BlurredLogLuminanceTexture, Temp, FFTInputSceneColor, Intermediates.ComputePassFlags);
 	}
 
 	// Init the domain data update the cached kernel if needed.

@@ -13,11 +13,12 @@
 #include "NiagaraParameters.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraScriptExecutionParameterStore.h"
-#include "NiagaraScriptHighlight.h"
 #include "NiagaraStackSection.h"
 #include "NiagaraParameterDefinitionsSubscriber.h"
+#include "NiagaraValidationRule.h"
+#include "NiagaraVersionedObject.h"
 #include "HAL/CriticalSection.h"
-#include "HAL/PlatformAtomics.h"
+#include "VectorVM.h"
 
 #include "NiagaraScript.generated.h"
 
@@ -89,6 +90,22 @@ enum class ENiagaraScriptTemplateSpecification : uint8
 	Behavior UMETA(DisplayName = "Behavior Example")
 };
 
+/** Defines different usages for a niagara script's module dependecies. */
+UENUM()
+enum class ENiagaraModuleDependencyUsage : uint8
+{
+	/** Default entry to catch invalid usages */
+	None UMETA(Hidden),
+	/** Evaluate when the script is called during the spawn phase. */
+	Spawn,
+	/** Evaluate when the script is called during the update phase. */
+	Update,
+	/** Evaluate when the script is called in an event context. */
+	Event,
+	/** Evaluate when the script is called in a simulation stage. */
+	SimulationStage
+};
+
 USTRUCT()
 struct FNiagaraModuleDependency
 {
@@ -105,6 +122,18 @@ public:
 	/** Specifies constraints related to the source script a modules provides as dependency. */
 	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
 	ENiagaraModuleDependencyScriptConstraint ScriptConstraint;
+
+	// Specifies the version constraint that module providing the dependency must fulfill.
+	// Example usages:
+	// '1.2' requires the exact version 1.2 of the source script
+	// '1.2+' requires at least version 1.2, but any higher version is also ok
+	// '1.2-2.0' requires any version between 1.2 and 2.0
+	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
+	FString RequiredVersion;
+
+	/** This property can limit where the dependency is evaluated. By default, the dependency is enforced in all script usages */
+	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script, meta = (Bitmask, BitmaskEnum = "/Script/Niagara.ENiagaraModuleDependencyUsage"))
+	int32 OnlyEvaluateInScriptUsage;
 	
 	/** Detailed description of the dependency */
 	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script, meta = (MultiLine = true))
@@ -114,7 +143,30 @@ public:
 	{
 		Type = ENiagaraModuleDependencyType::PreDependency;
 		ScriptConstraint = ENiagaraModuleDependencyScriptConstraint::SameScript;
+		OnlyEvaluateInScriptUsage = 1 << static_cast<int32>(ENiagaraModuleDependencyUsage::Spawn) |
+									1 << static_cast<int32>(ENiagaraModuleDependencyUsage::Update) |
+									1 << static_cast<int32>(ENiagaraModuleDependencyUsage::Event) |
+									1 << static_cast<int32>(ENiagaraModuleDependencyUsage::SimulationStage);
 	}
+
+#if WITH_EDITOR
+	bool HasValidVersionDependency() const;
+	NIAGARA_API bool IsVersionAllowed(const FNiagaraAssetVersion& Version) const;
+	
+	void CheckVersionCache() const;
+#endif
+private:
+	
+	struct FResolvedVersions
+	{
+		bool bValid = false;
+		FString SourceProperty;
+		int32 MinMajorVersion = 0;
+		int32 MinMinorVersion = 0;
+		int32 MaxMajorVersion = 0;
+		int32 MaxMinorVersion = 0;
+	};
+	mutable FResolvedVersions VersionDependencyCache;
 };
 
 USTRUCT()
@@ -452,7 +504,7 @@ public:
 #endif
 
 	UPROPERTY()
-	TArray<FNiagaraDataInterfaceGPUParamInfo> DIParamInfo; //TODO: GPU Param info should not be in the "VM executable data"
+	FNiagaraShaderScriptParametersMetadata ShaderScriptParametersMetadata; //TODO: GPU Param info should not be in the "VM executable data"
 
 #if WITH_EDITORONLY_DATA
 	/** The parameter collections used by this script. */
@@ -491,6 +543,9 @@ public:
 #endif
 
 	UPROPERTY()
+	TArray<uint8> ExperimentalContextData;
+
+	UPROPERTY()
 	uint32 bReadsSignificanceIndex : 1;
 
 	UPROPERTY()
@@ -507,6 +562,24 @@ public:
 #if WITH_EDITORONLY_DATA
 	void BakeScriptLiterals(TArray<uint8>& OutLiterals) const;
 #endif
+
+	bool HasByteCode() const;
+
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
+	bool SupportsExperimentalVM() const;
+	FVectorVMOptimizeContext BuildExperimentalContext() const;
+#endif //VECTORVM_SUPPORTS_EXPERIMENTAL
+
+	void PostSerialize(const FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FNiagaraVMExecutableData> : public TStructOpsTypeTraitsBase2<FNiagaraVMExecutableData>
+{
+	enum
+	{
+		WithPostSerialize = true,
+	};
 };
 
 struct NIAGARA_API FNiagaraGraphCachedDataBase
@@ -533,7 +606,7 @@ public:
 	FText VersionChangeDescription;
 
 	/** When used as a module, what are the appropriate script types for referencing this module?*/
-	UPROPERTY(EditAnywhere, Category = Script, meta = (Bitmask, BitmaskEnum = ENiagaraScriptUsage))
+	UPROPERTY(EditAnywhere, Category = Script, meta = (Bitmask, BitmaskEnum = "/Script/Niagara.ENiagaraScriptUsage"))
 	int32 ModuleUsageBitmask;
 
 	/** Used to break up scripts of the same Usage type in UI display.*/
@@ -553,15 +626,15 @@ public:
 	TArray<FNiagaraModuleDependency> RequiredDependencies;
 	
 	/* If this script is no longer meant to be used, this option should be set.*/
-	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
-	uint32 bDeprecated : 1;
+	UPROPERTY()
+	bool bDeprecated;
 	
 	/* Message to display when the script is deprecated. */
-	UPROPERTY(EditAnywhere, Category = Script, meta = (EditCondition = "bDeprecated", MultiLine = true))
+	UPROPERTY()
 	FText DeprecationMessage;
 
 	/* Which script to use if this is deprecated.*/
-	UPROPERTY(EditAnywhere, Category = Script, meta = (EditCondition = "bDeprecated"))
+	UPROPERTY(EditAnywhere, Category = Script)
 	TObjectPtr<UNiagaraScript> DeprecationRecommendation;
 
 	/* Custom logic to convert the contents of an existing script assignment to this script.*/
@@ -610,7 +683,7 @@ public:
 	
 	UPROPERTY(EditAnywhere, Category = Script)
 	TArray<FNiagaraStackSection> InputSections;
-	
+
 	/** Adjusted every time ComputeVMCompilationId is called.*/
 	UPROPERTY()
 	mutable FNiagaraVMExecutableDataId LastGeneratedVMId;
@@ -643,16 +716,15 @@ private:
 
 /** Runtime script for a Niagara system */
 UCLASS(MinimalAPI)
-class UNiagaraScript : public UNiagaraScriptBase
+class UNiagaraScript : public UNiagaraScriptBase, public FNiagaraVersionedObject
 {
 	GENERATED_UCLASS_BODY()
 public:
 	UNiagaraScript();
-	~UNiagaraScript();
 
 #if WITH_EDITORONLY_DATA
 	/** If true then this script asset uses active version control to track changes. */
-	NIAGARA_API bool IsVersioningEnabled() const { return bVersioningEnabled; }
+	NIAGARA_API virtual bool IsVersioningEnabled() const override { return bVersioningEnabled; }
 
 	/** Returns the script data for latest exposed version. */
 	NIAGARA_API FVersionedNiagaraScriptData* GetLatestScriptData();
@@ -663,35 +735,44 @@ public:
 	NIAGARA_API const FVersionedNiagaraScriptData* GetScriptData(const FGuid& VersionGuid) const;
 
 	/** Returns all available versions for this script. */
-	NIAGARA_API TArray<FNiagaraAssetVersion> GetAllAvailableVersions() const;
+	NIAGARA_API virtual TArray<FNiagaraAssetVersion> GetAllAvailableVersions() const override;
 
 	/** Returns the version of the exposed version data (i.e. the version used when adding a module to the stack) */
-	NIAGARA_API FNiagaraAssetVersion GetExposedVersion() const;
+	NIAGARA_API virtual FNiagaraAssetVersion GetExposedVersion() const override;
 
 	/** Returns the version data for the given guid, if it exists. Otherwise returns nullptr. */
-	NIAGARA_API FNiagaraAssetVersion const* FindVersionData(const FGuid& VersionGuid) const;
+	NIAGARA_API virtual FNiagaraAssetVersion const* FindVersionData(const FGuid& VersionGuid) const override;
 	
 	/** Creates a new data entry for the given version number. The version must be > 1.0 and must not collide with an already existing version. The data will be a copy of the previous minor version. */
-	NIAGARA_API FGuid AddNewVersion(int32 MajorVersion, int32 MinorVersion);
+	NIAGARA_API virtual FGuid AddNewVersion(int32 MajorVersion, int32 MinorVersion) override;
 
 	/** Deletes the version data for an existing version. The exposed version cannot be deleted and will result in an error. Does nothing if the guid does not exist in the script's version data. */
-	NIAGARA_API void DeleteVersion(const FGuid& VersionGuid);
+	NIAGARA_API virtual void DeleteVersion(const FGuid& VersionGuid) override;
 
 	/** Changes the exposed version. Does nothing if the guid does not exist in the script's version data. */
-	NIAGARA_API void ExposeVersion(const FGuid& VersionGuid);
+	NIAGARA_API virtual void ExposeVersion(const FGuid& VersionGuid) override;
 
 	/** Enables versioning for this script asset. */
-	NIAGARA_API void EnableVersioning();
+	NIAGARA_API virtual void EnableVersioning() override;
 
 	/** Disables versioning and keeps only the data from the given version guid. Note that this breaks ALL references from existing assets and should only be used when creating a copy of a script, as the effect is very destructive.  */
-	NIAGARA_API void DisableVersioning(const FGuid& VersionGuidToUse);
+	NIAGARA_API virtual void DisableVersioning(const FGuid& VersionGuidToUse) override;
+
+	NIAGARA_API virtual TSharedPtr<FNiagaraVersionDataAccessor> GetVersionDataAccessor(const FGuid& Version) override; 
 
 	/** Makes sure that the default version data is available and fixes old script assets. */
 	NIAGARA_API void CheckVersionDataAvailable();
 
 	/** Creates a shallow transient copy of this script for compilation purposes. */
 	NIAGARA_API UNiagaraScript* CreateCompilationCopy();
+
+	/** A set of rules to apply when this script is used in the stack. To create your own rules, write a custom class that extends UNiagaraValidationRule. */
+	UPROPERTY(EditAnywhere, Category = "Validation", Instanced)
+	TArray<TObjectPtr<UNiagaraValidationRule>> ValidationRules;
 #endif
+
+	/** Workaround for emitter versioning because we used a lot of Script->GetOuter() previously. */
+	NIAGARA_API FVersionedNiagaraEmitter GetOuterEmitter() const;
 
 	// how this script is to be used. cannot be private due to use of GET_MEMBER_NAME_CHECKED
 	UPROPERTY(AssetRegistrySearchable)
@@ -731,6 +812,9 @@ public:
 	FNiagaraParameterStore RapidIterationParameters;
 	
 #if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FNiagaraParameterStore RapidIterationParametersCookedEditorCache;
+
 	/** This is used as a transient value to open a specific version in the graph editor */
 	UPROPERTY(Transient)
 	FGuid VersionToOpenInEditor;
@@ -974,7 +1058,7 @@ public:
 	{
 		for (const FNiagaraCompilerTag& Tag : CachedScriptVM.CompileTags)
 		{
-			if (Tag.Variable == InVar)
+			if (static_cast<const FNiagaraVariableBase&>(Tag.Variable) == InVar)
 			{
 				if (Tag.Variable.IsDataAllocated())
 				{
@@ -1048,10 +1132,10 @@ public:
 	/** External call used to identify the values for a successful VM script compilation. OnVMScriptCompiled will be issued in this case.*/
 	void SetVMCompilationResults(const FNiagaraVMExecutableDataId& InCompileId, FNiagaraVMExecutableData& InScriptVM, FString EmitterUniqueName, const TMap<FName, UNiagaraDataInterface*>& ObjectNameMap);
 
-	/** In the event where we "merge" we duplicate the changes of the master copy onto the newly cloned copy. This function will synchronize the compiled script 
+	/** In the event where we "merge" we duplicate the changes of the source script onto the newly cloned copy. This function will synchronize the compiled script 
 		results assuming that the scripts themselves are bound to the same key. This saves looking things up in the DDC. It returns true if successfully synchronized and 
 		false if not.*/
-	NIAGARA_API bool SynchronizeExecutablesWithMaster(const UNiagaraScript* Script, const TMap<FString, FString>& RenameMap);
+	NIAGARA_API bool SynchronizeExecutablesWithCompilation(const UNiagaraScript* Script, const TMap<FString, FString>& RenameMap);
 
 	NIAGARA_API FString GetFriendlyName() const;
 
@@ -1065,6 +1149,8 @@ public:
 	NIAGARA_API FORCEINLINE FNiagaraVMExecutableData& GetVMExecutableData() { return CachedScriptVM; }
 	NIAGARA_API FORCEINLINE const FNiagaraVMExecutableData& GetVMExecutableData() const { return CachedScriptVM; }
 	NIAGARA_API FORCEINLINE const FNiagaraVMExecutableDataId& GetVMExecutableDataCompilationId() const { return CachedScriptVMId; }
+
+	NIAGARA_API TConstArrayView<FNiagaraDataInterfaceGPUParamInfo> GetDataInterfaceGPUParamInfos() const { return CachedScriptVM.ShaderScriptParametersMetadata.DataInterfaceParamInfo; }
 
 	NIAGARA_API TArray<UNiagaraParameterCollection*>& GetCachedParameterCollectionReferences();
 	TArray<FNiagaraScriptDataInterfaceInfo>& GetCachedDefaultDataInterfaces() { return CachedDefaultDataInterfaces; }
@@ -1182,8 +1268,8 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> ActiveCompileRoots;
 
-	/* Flag set on load based on whether the serialized data includes editor only data */
-	bool IsCooked;
+	/* Flag set on load based on whether we're loading from a cooked package. */
+	bool IsCooked = false;
 #endif
 
 	/** Compiled VM bytecode and data necessary to run this script.*/
@@ -1204,7 +1290,7 @@ private:
 	private :
 
 #if WITH_EDITORONLY_DATA
-		void ComputeVMCompilationId_EmitterShared(FNiagaraVMExecutableDataId& Id, UNiagaraEmitter* Emitter, UNiagaraSystem* EmitterOwner, ENiagaraRendererSourceDataMode InSourceMode) const;
+		void ComputeVMCompilationId_EmitterShared(FNiagaraVMExecutableDataId& Id, const FVersionedNiagaraEmitter& Emitter, ENiagaraRendererSourceDataMode InSourceMode) const;
 #endif
 };
 

@@ -2,6 +2,8 @@
 
 #include "ISMPartition/ISMComponentDescriptor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ISMComponentDescriptor)
+
 #if WITH_EDITOR
 
 #include "Serialization/ArchiveCrc32.h"
@@ -67,6 +69,8 @@ void FISMComponentDescriptor::InitFrom(const UStaticMeshComponent* Template, boo
 	bVisible = Template->GetVisibleFlag();
 	bVisibleInRayTracing = Template->bVisibleInRayTracing;
 	bConsiderForActorPlacementWhenHidden = Template->bConsiderForActorPlacementWhenHidden;
+	bEvaluateWorldPositionOffset = Template->bEvaluateWorldPositionOffset;
+	bIsLocalToWorldDeterminantNegative = Template->GetRenderMatrix().Determinant() < 0;
 
 	if (const UInstancedStaticMeshComponent* ISMTemplate = Cast<UInstancedStaticMeshComponent>(Template))
 	{
@@ -131,6 +135,8 @@ bool FISMComponentDescriptor::operator==(const FISMComponentDescriptor& Other) c
 	bVisible == Other.bVisible &&
 	bVisibleInRayTracing == Other.bVisibleInRayTracing &&
 	bConsiderForActorPlacementWhenHidden == Other.bConsiderForActorPlacementWhenHidden &&
+	bEvaluateWorldPositionOffset == Other.bEvaluateWorldPositionOffset &&
+	bIsLocalToWorldDeterminantNegative == Other.bIsLocalToWorldDeterminantNegative &&
 	BodyInstance.GetCollisionEnabled() == Other.BodyInstance.GetCollisionEnabled() && 
 	BodyInstance.GetCollisionResponse() == Other.BodyInstance.GetCollisionResponse() &&
 	BodyInstance.DoesUseCollisionProfile() == Other.BodyInstance.DoesUseCollisionProfile() &&
@@ -208,6 +214,8 @@ void FISMComponentDescriptor::InitComponent(UInstancedStaticMeshComponent* ISMCo
 	ISMComponent->SetVisibleFlag(bVisible);
 	ISMComponent->bVisibleInRayTracing = bVisibleInRayTracing;
 	ISMComponent->bConsiderForActorPlacementWhenHidden = bConsiderForActorPlacementWhenHidden;
+	ISMComponent->bEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
+	ISMComponent->bReverseCulling = bIsLocalToWorldDeterminantNegative;
 
 	// HISM Specific
 	if (UHierarchicalInstancedStaticMeshComponent* HISMComponent = Cast<UHierarchicalInstancedStaticMeshComponent>(ISMComponent))
@@ -217,3 +225,4 @@ void FISMComponentDescriptor::InitComponent(UInstancedStaticMeshComponent* ISMCo
 }
 
 #endif
+

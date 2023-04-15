@@ -1,33 +1,76 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphNode.h"
+
+#include "BlueprintEditorSettings.h"
+#include "BoneDragDropOp.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "DragAndDrop/ActorDragDropGraphEdOp.h"
+#include "DragAndDrop/ActorDragDropOp.h"
+#include "DragAndDrop/AssetDragDropOp.h"
 #include "EdGraph/EdGraph.h"
-#include "Widgets/SBoxPanel.h"
-#include "SlateOptMacros.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSpacer.h"
+#include "Framework/Text/TextLayout.h"
+#include "GameFramework/Actor.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/ICursor.h"
+#include "GraphEditorDragDropAction.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "IDocumentation.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_Literal.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/ArrangedChildren.h"
+#include "Layout/ArrangedWidget.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Logging/TokenizedMessage.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "NodeFactory.h"
+#include "SCommentBubble.h"
+#include "SGraphPanel.h"
+#include "SGraphPin.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/TypeHash.h"
+#include "Textures/SlateIcon.h"
+#include "TutorialMetaData.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "GraphEditorSettings.h"
-#include "SCommentBubble.h"
-#include "SGraphPin.h"
-#include "GraphEditorDragDropAction.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node_Literal.h"
-#include "NodeFactory.h"
-#include "Logging/TokenizedMessage.h"
-#include "DragAndDrop/ActorDragDropGraphEdOp.h"
-#include "DragAndDrop/AssetDragDropOp.h"
-#include "Editor/Persona/Public/BoneDragDropOp.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "SLevelOfDetailBranchNode.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/SToolTip.h"
-#include "IDocumentation.h"
-#include "TutorialMetaData.h"
-#include "SGraphPanel.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "BlueprintEditorSettings.h"
+#include "Widgets/Text/STextBlock.h"
+
+class UBlueprint;
+struct FSlateBrush;
 
 /////////////////////////////////////////////////////
 // SNodeTitle
@@ -37,6 +80,8 @@ void SNodeTitle::Construct(const FArguments& InArgs, UEdGraphNode* InNode)
 	GraphNode = InNode;
 
 	ExtraLineStyle = InArgs._ExtraLineStyle;
+
+	StyleSet = InArgs._StyleSet;
 
 	CachedSize = FVector2D::ZeroVector;
 
@@ -141,7 +186,7 @@ void SNodeTitle::RebuildWidget()
 		.AutoHeight()
 		[
 			SNew(STextBlock)
-			.TextStyle( FEditorStyle::Get(), ExtraLineStyle )
+			.TextStyle( StyleSet, ExtraLineStyle )
 			.Text(FText::FromString(Lines[Index]))
 		];
 	}
@@ -302,7 +347,7 @@ FReply SGraphNode::OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent
 			}
 			bool bReadOnly = OwnerGraphPanelPtr.IsValid() ? !OwnerGraphPanelPtr.Pin()->IsGraphEditable() : false;
 			bOkIcon = bReadOnly ? false : bOkIcon;
-			const FSlateBrush* TooltipIcon = bOkIcon ? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));;
+			const FSlateBrush* TooltipIcon = bOkIcon ? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));;
 			AssetOp->SetToolTip(FText::FromString(TooltipText), TooltipIcon);
 		}
 		return FReply::Handled();
@@ -595,7 +640,7 @@ FSlateColor SGraphNode::GetNodeBodyColor() const
 
 const FSlateBrush *  SGraphNode::GetNodeBodyBrush() const
 {
-	return FEditorStyle::GetBrush("Graph.Node.Body");
+	return FAppStyle::GetBrush("Graph.Node.Body");
 }
 
 FSlateColor SGraphNode::GetNodeTitleIconColor() const
@@ -697,23 +742,23 @@ void SGraphNode::UpdateErrorInfo()
 		if (GraphNode->ErrorType <= EMessageSeverity::Error)
 		{
 			ErrorMsg = FString( TEXT("ERROR!") );
-			ErrorColor = FEditorStyle::GetColor("ErrorReporting.BackgroundColor");
+			ErrorColor = FAppStyle::GetColor("ErrorReporting.BackgroundColor");
 		}
 		else if (GraphNode->ErrorType <= EMessageSeverity::Warning)
 		{
 			ErrorMsg = FString( TEXT("WARNING!") );
-			ErrorColor = FEditorStyle::GetColor("ErrorReporting.WarningBackgroundColor");
+			ErrorColor = FAppStyle::GetColor("ErrorReporting.WarningBackgroundColor");
 		}
 		else
 		{
 			ErrorMsg = FString( TEXT("NOTE") );
-			ErrorColor = FEditorStyle::GetColor("InfoReporting.BackgroundColor");
+			ErrorColor = FAppStyle::GetColor("InfoReporting.BackgroundColor");
 		}
 	}
 	else if (!GraphNode->NodeUpgradeMessage.IsEmpty())
 	{
 		ErrorMsg = FString(TEXT("UPGRADE NOTE"));
-		ErrorColor = FEditorStyle::GetColor("InfoReporting.BackgroundColor");
+		ErrorColor = FAppStyle::GetColor("InfoReporting.BackgroundColor");
 	}
 	else 
 	{
@@ -801,7 +846,7 @@ void SGraphNode::UpdateGraphNode()
 		+SOverlay::Slot()
 		[
 			SNew(SImage)
-			.Image( FEditorStyle::GetBrush("Graph.Node.TitleGloss") )
+			.Image( FAppStyle::GetBrush("Graph.Node.TitleGloss") )
 			.ColorAndOpacity( this, &SGraphNode::GetNodeTitleIconColor )
 		]
 		+SOverlay::Slot()
@@ -813,7 +858,7 @@ void SGraphNode::UpdateGraphNode()
 			.HAlign(HAlign_Fill)
 			[
 				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("Graph.Node.ColorSpill") )
+				.BorderImage( FAppStyle::GetBrush("Graph.Node.ColorSpill") )
 				// The extra margin on the right
 				// is for making the color spill stretch well past the node title
 				.Padding( FMargin(10,5,30,3) )
@@ -859,7 +904,7 @@ void SGraphNode::UpdateGraphNode()
 		[
 			SNew(SBorder)
 			.Visibility(EVisibility::HitTestInvisible)			
-			.BorderImage( FEditorStyle::GetBrush( "Graph.Node.TitleHighlight" ) )
+			.BorderImage( FAppStyle::GetBrush( "Graph.Node.TitleHighlight" ) )
 			.BorderBackgroundColor( this, &SGraphNode::GetNodeTitleIconColor )
 			[
 				SNew(SSpacer)
@@ -875,7 +920,7 @@ void SGraphNode::UpdateGraphNode()
 		.LowDetail()
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Graph.Node.ColorSpill") )
+			.BorderImage( FAppStyle::GetBrush("Graph.Node.ColorSpill") )
 			.Padding( FMargin(75.0f, 22.0f) ) // Saving enough space for a 'typical' title so the transition isn't quite so abrupt
 			.BorderBackgroundColor( this, &SGraphNode::GetNodeTitleColor )
 		]
@@ -1018,7 +1063,7 @@ TSharedPtr<SWidget> SGraphNode::GetEnabledStateWidget()
 			NSLOCTEXT("SGraphNode", "DisabledNodeTooltip", "This node is currently disabled and will not be executed");
 
 		return SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush(bDevelopmentOnly ? "Graph.Node.DevelopmentBanner" : "Graph.Node.DisabledBanner"))
+			.BorderImage(FAppStyle::GetBrush(bDevelopmentOnly ? "Graph.Node.DevelopmentBanner" : "Graph.Node.DisabledBanner"))
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			[
@@ -1039,7 +1084,7 @@ TSharedRef<SWidget> SGraphNode::CreateNodeContentArea()
 {
 	// NODE CONTENT AREA
 	return SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+		.BorderImage( FAppStyle::GetBrush("NoBorder") )
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		.Padding( FMargin(0,3) )
@@ -1087,7 +1132,7 @@ ECheckBoxState SGraphNode::IsAdvancedViewChecked() const
 const FSlateBrush* SGraphNode::GetAdvancedViewArrow() const
 {
 	const bool bAdvancedPinsHidden = GraphNode && (ENodeAdvancedPins::Hidden == GraphNode->AdvancedPinDisplay);
-	return FEditorStyle::GetBrush(bAdvancedPinsHidden ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
+	return FAppStyle::GetBrush(bAdvancedPinsHidden ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
 }
 
 /** Create widget to show/hide advanced pins */
@@ -1108,7 +1153,7 @@ void SGraphNode::CreateAdvancedViewArrow(TSharedPtr<SVerticalBox> MainBox)
 			.OnCheckStateChanged( this, &SGraphNode::OnAdvancedViewChanged )
 			.IsChecked( this, &SGraphNode::IsAdvancedViewChecked )
 			.Cursor(EMouseCursor::Default)
-			.Style(FEditorStyle::Get(), "Graph.Node.AdvancedView")
+			.Style(FAppStyle::Get(), "Graph.Node.AdvancedView")
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -1529,7 +1574,7 @@ TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTool
 		. Padding( 7,0,0,0 )
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
+			.Image(FAppStyle::GetBrush(TEXT("Icons.PlusCircle")))
 		];
 	}
 	else
@@ -1541,7 +1586,7 @@ TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTool
 		. Padding( 0,0,7,0 )
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
+			.Image(FAppStyle::GetBrush(TEXT("Icons.PlusCircle")))
 		]
 		+SHorizontalBox::Slot()
 		.AutoWidth()
@@ -1566,7 +1611,7 @@ TSharedRef<SWidget> SGraphNode::AddPinButtonContent(FText PinText, FText PinTool
 
 	TSharedRef<SButton> AddPinButton = SNew(SButton)
 	.ContentPadding(0.0f)
-	.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+	.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 	.OnClicked( this, &SGraphNode::OnAddPin )
 	.IsEnabled( this, &SGraphNode::IsNodeEditable )
 	.ToolTipText(PinTooltipText)
@@ -1596,19 +1641,23 @@ EVisibility SGraphNode::IsAddPinButtonVisible() const
 
 void SGraphNode::PopulateMetaTag(FGraphNodeMetaData* TagMeta) const
 {
-	if (GraphNode != nullptr)
+	if (GraphNode && TagMeta)
 	{
 		// We want the name of the blueprint as our name - we can find the node from the GUID
 		UObject* Package = GraphNode->GetOutermost();
 		UObject* LastOuter = GraphNode->GetOuter();
-		while (LastOuter->GetOuter() != Package)
+		while (LastOuter && (LastOuter->GetOuter() != Package))
 		{
 			LastOuter = LastOuter->GetOuter();
 		}
-		TagMeta->Tag = FName(*FString::Printf(TEXT("GraphNode_%s_%s"), *LastOuter->GetFullName(), *GraphNode->NodeGuid.ToString()));
-		TagMeta->OuterName = LastOuter->GetFullName();
-		TagMeta->GUID = GraphNode->NodeGuid;
-		TagMeta->FriendlyName = FString::Printf(TEXT("%s in %s"), *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), *TagMeta->OuterName);		
+
+		if(LastOuter)
+		{
+			TagMeta->Tag = FName(*FString::Printf(TEXT("GraphNode_%s_%s"), *LastOuter->GetFullName(), *GraphNode->NodeGuid.ToString()));
+			TagMeta->OuterName = LastOuter->GetFullName();
+			TagMeta->GUID = GraphNode->NodeGuid;
+			TagMeta->FriendlyName = FString::Printf(TEXT("%s in %s"), *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), *TagMeta->OuterName);	
+		}	
 	}
 }
 

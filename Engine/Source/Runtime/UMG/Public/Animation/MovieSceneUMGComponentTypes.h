@@ -9,26 +9,48 @@
 #include "EntitySystem/MovieScenePropertyTraits.h"
 #include "EntitySystem/MovieScenePropertyMetaDataTraits.h"
 
+#include "Containers/ArrayView.h"
+
 
 namespace UE
 {
 namespace MovieScene
 {
 
+struct FWidgetMaterialPath
+{
+	FWidgetMaterialPath() = default;
+	FWidgetMaterialPath(TArrayView<const FName> Names)
+		: Path(Names.GetData(), Names.Num())
+	{}
+
+	TArray<FName, TInlineAllocator<2>> Path;
+};
+
 struct FIntermediateWidgetTransform
 {
-	float TranslationX;
-	float TranslationY;
-	float Rotation;
-	float ScaleX;
-	float ScaleY;
-	float ShearX;
-	float ShearY;
+	double TranslationX;
+	double TranslationY;
+	double Rotation;
+	double ScaleX;
+	double ScaleY;
+	double ShearX;
+	double ShearY;
 };
 UMG_API void ConvertOperationalProperty(const FIntermediateWidgetTransform& In, FWidgetTransform& Out);
 UMG_API void ConvertOperationalProperty(const FWidgetTransform& In, FIntermediateWidgetTransform& Out);
 
-using FMarginTraits = TDirectPropertyTraits<FMargin>;
+struct FIntermediateMargin
+{
+	double Left;
+	double Top;
+	double Right;
+	double Bottom;
+};
+UMG_API void ConvertOperationalProperty(const FIntermediateMargin& In, FMargin& Out);
+UMG_API void ConvertOperationalProperty(const FMargin& In, FIntermediateMargin& Out);
+
+using FMarginTraits = TIndirectPropertyTraits<FMargin, FIntermediateMargin>;
 using FWidgetTransformPropertyTraits = TIndirectPropertyTraits<FWidgetTransform, FIntermediateWidgetTransform>;
 
 struct UMG_API FMovieSceneUMGComponentTypes
@@ -37,6 +59,8 @@ struct UMG_API FMovieSceneUMGComponentTypes
 
 	TPropertyComponents<FMarginTraits> Margin;
 	TPropertyComponents<FWidgetTransformPropertyTraits> WidgetTransform;
+
+	TComponentTypeID<FWidgetMaterialPath> WidgetMaterialPath;
 
 	TCustomPropertyRegistration<FWidgetTransformPropertyTraits, 1> CustomWidgetTransformAccessors;
 

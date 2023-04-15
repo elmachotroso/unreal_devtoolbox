@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace HordeServer.Utilities
+namespace Horde.Build.Utilities
 {
 	/// <summary>
 	/// Extension method to wrap a semaphore in a using statement
@@ -16,13 +14,13 @@ namespace HordeServer.Utilities
 		/// <summary>
 		/// Returns a disposable semaphore
 		/// </summary>
-		/// <param name="Semaphore">the semaphore to wrap</param>
-		/// <param name="CancelToken">optional cancellation token</param>
+		/// <param name="semaphore">the semaphore to wrap</param>
+		/// <param name="cancelToken">optional cancellation token</param>
 		/// <returns></returns>
-		public static async Task<IDisposable> UseWaitAsync(this SemaphoreSlim Semaphore, CancellationToken CancelToken = default(CancellationToken))
+		public static async Task<IDisposable> UseWaitAsync(this SemaphoreSlim semaphore, CancellationToken cancelToken = default)
 		{
-			await Semaphore.WaitAsync(CancelToken).ConfigureAwait(false);
-			return new ReleaseWrapper(Semaphore);
+			await semaphore.WaitAsync(cancelToken).ConfigureAwait(false);
+			return new ReleaseWrapper(semaphore);
 		}
 
 		/// <summary>
@@ -33,20 +31,20 @@ namespace HordeServer.Utilities
 			/// <summary>
 			/// The semaphore to wrap
 			/// </summary>
-			private readonly SemaphoreSlim Semaphore;
+			private readonly SemaphoreSlim _semaphore;
 
 			/// <summary>
 			/// Whether this has been disposed
 			/// </summary>
-			private bool bIsDisposed;
+			private bool _bIsDisposed;
 
 			/// <summary>
 			/// Constructor
 			/// </summary>
-			/// <param name="Semaphore">The semaphore to wrap</param>
-			public ReleaseWrapper(SemaphoreSlim Semaphore)
+			/// <param name="semaphore">The semaphore to wrap</param>
+			public ReleaseWrapper(SemaphoreSlim semaphore)
 			{
-				this.Semaphore = Semaphore;
+				_semaphore = semaphore;
 			}
 
 			/// <summary>
@@ -54,13 +52,13 @@ namespace HordeServer.Utilities
 			/// </summary>
 			public void Dispose()
 			{
-				if (bIsDisposed)
+				if (_bIsDisposed)
 				{
 					return;
 				}
 
-				Semaphore.Release();
-				bIsDisposed = true;
+				_semaphore.Release();
+				_bIsDisposed = true;
 			}
 		}
 	}

@@ -2,8 +2,17 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/SparseArray.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MeshAttributeArray.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 
 
 /**
@@ -130,10 +139,10 @@ public:
 	FORCEINLINE const FAttributesSetBase& GetAttributes() const { return Attributes; }
 
 	/** Compacts elements and returns a remapping table */
-	void Compact(TSparseArray<int32>& OutIndexRemap);
+	MESHDESCRIPTION_API void Compact(TSparseArray<int32>& OutIndexRemap);
 
 	/** Remaps elements according to the passed remapping table */
-	void Remap(const TSparseArray<int32>& IndexRemap);
+	MESHDESCRIPTION_API void Remap(const TSparseArray<int32>& IndexRemap);
 
 	/** Serializer */
 	friend FArchive& operator<<(FArchive& Ar, FMeshElementContainer& Container)

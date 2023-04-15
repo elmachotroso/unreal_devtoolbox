@@ -4,10 +4,11 @@
 
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/ScopeLock.h"
-#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Model/Log.h"
 
 // Insights
 #include "Insights/Common/TimeUtils.h"
+#include "Insights/Log.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FLogMessageRecord
@@ -126,6 +127,7 @@ FLogMessageRecord& FLogMessageCache::Get(uint64 Index)
 		const TraceServices::ILogProvider& LogProvider = TraceServices::ReadLogProvider(*Session.Get());
 		LogProvider.ReadMessage(Index, [this, Index](const TraceServices::FLogMessageInfo& Message)
 		{
+			LLM_SCOPE_BYTAG(Insights);
 			FScopeLock Lock(&CriticalSection);
 			FLogMessageRecord Entry(Message);
 			Map.Add(Index, MoveTemp(Entry));

@@ -5,7 +5,7 @@
 #include "UObject/Class.h"
 #include "LevelSequence.h"
 #include "Factories/Factory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetToolsModule.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
@@ -87,7 +87,7 @@ public:
 			}
 		};
 
-		FBlueprintAssetHandler::Get().RegisterHandler<FLevelSequenceAssetBlueprintHandler>(ULevelSequence::StaticClass()->GetFName());
+		FBlueprintAssetHandler::Get().RegisterHandler<FLevelSequenceAssetBlueprintHandler>(ULevelSequence::StaticClass()->GetClassPathName());
 	}
 	
 	virtual void ShutdownModule() override
@@ -122,7 +122,8 @@ protected:
 	void RegisterAssetTools()
 	{
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		LevelSequenceTypeActions = MakeShared<FLevelSequenceActions>(FLevelSequenceEditorStyle::Get());
+		EAssetTypeCategories::Type CinematicAssetCategoryBit = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("Cinematics")), LOCTEXT("CinematicsAssetCategory", "Cinematics"));
+		LevelSequenceTypeActions = MakeShared<FLevelSequenceActions>(FLevelSequenceEditorStyle::Get(), CinematicAssetCategoryBit);
 		AssetTools.RegisterAssetTypeActions(LevelSequenceTypeActions.ToSharedRef());
 	}
 

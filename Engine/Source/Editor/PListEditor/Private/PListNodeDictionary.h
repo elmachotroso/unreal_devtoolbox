@@ -2,10 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Layout/Visibility.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "PListNode.h"
+#include "HAL/Platform.h"
 #include "Input/Reply.h"
-#include "Editor/PListEditor/Private/PListNode.h"
+#include "Layout/Visibility.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
 class ITableRow;
 class SButton;

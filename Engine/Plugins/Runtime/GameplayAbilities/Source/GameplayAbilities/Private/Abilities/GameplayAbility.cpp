@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Abilities/GameplayAbility.h"
+#include "AbilitySystemLog.h"
 #include "TimerManager.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Engine.h"
@@ -9,15 +10,33 @@
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/Tasks/AbilityTask.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameplayCue_Types.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Character.h"
+
+#if UE_WITH_IRIS
+#include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
+#endif // UE_WITH_IRIS
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayAbility)
+
+#define ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(FunctionName, ReturnValue)																				\
+{																																						\
+	if (!ensure(IsInstantiated()))																														\
+	{																																					\
+		ABILITY_LOG(Error, TEXT("%s: " #FunctionName " cannot be called on a non-instanced ability. Check the instancing policy."), *GetPathName());	\
+		return ReturnValue;																																\
+	}																																					\
+}
 
 namespace FAbilitySystemTweaks
 {
 	int ClearAbilityTimers = 1;
 	FAutoConsoleVariableRef CVarClearAbilityTimers(TEXT("AbilitySystem.ClearAbilityTimers"), FAbilitySystemTweaks::ClearAbilityTimers, TEXT("Whether to call ClearAllTimersForObject as part of EndAbility call"), ECVF_Default);
 }
+
+int32 FScopedCanActivateAbilityLogEnabler::LogEnablerCounter = 0;
 
 
 UGameplayAbility::UGameplayAbility(const FObjectInitializer& ObjectInitializer)
@@ -53,18 +72,6 @@ UGameplayAbility::UGameplayAbility(const FObjectInitializer& ObjectInitializer)
 		UFunction* ActivateFunction = GetClass()->FindFunctionByName(FuncName);
 		bHasBlueprintActivateFromEvent = ImplementedInBlueprint(ActivateFunction);
 	}
-	
-#if WITH_EDITOR
-	/** Autoregister abilities with the blueprint debugger in the editor.*/
-	if (!HasAnyFlags(RF_ClassDefaultObject))
-	{
-		UBlueprint* BP = Cast<UBlueprint>(GetClass()->ClassGeneratedBy);
-		if (BP && (BP->GetWorldBeingDebugged() == nullptr || BP->GetWorldBeingDebugged() == GetWorld()))
-		{
-			BP->SetObjectBeingDebugged(this);
-		}
-	}
-#endif
 
 	bServerRespectsRemoteAbilityCancellation = true;
 	bReplicateInputDirectly = false;
@@ -304,7 +311,7 @@ bool UGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handl
 
 	FGameplayTagContainer& OutTags = OptionalRelevantTags ? *OptionalRelevantTags : DummyContainer;
 
-	// make sure theability system component is valid, if not bail out.
+	// make sure the ability system component is valid, if not bail out.
 	UAbilitySystemComponent* const AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get();
 	if (!AbilitySystemComponent)
 	{
@@ -315,7 +322,7 @@ bool UGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handl
 	{
 		/**
 		 *	Input is inhibited (UI is pulled up, another ability may be blocking all other input, etc).
-		 *	When we get into triggered abilities, we may need to better differentiate between CanActviate and CanUserActivate or something.
+		 *	When we get into triggered abilities, we may need to better differentiate between CanActivate and CanUserActivate or something.
 		 *	E.g., we would want LMB/RMB to be inhibited while the user is in the menu UI, but we wouldn't want to prevent a 'buff when I am low health'
 		 *	ability to not trigger.
 		 *	
@@ -329,29 +336,45 @@ bool UGameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handl
 
 	if (!AbilitySystemGlobals.ShouldIgnoreCooldowns() && !CheckCooldown(Handle, ActorInfo, OptionalRelevantTags))
 	{
+		if (FScopedCanActivateAbilityLogEnabler::IsLoggingEnabled())
+		{
+			ABILITY_VLOG(ActorInfo->OwnerActor.Get(), Verbose, TEXT("Ability could not be activated due to Cooldown: %s"), *GetName());
+		}
 		return false;
 	}
 
 	if (!AbilitySystemGlobals.ShouldIgnoreCosts() && !CheckCost(Handle, ActorInfo, OptionalRelevantTags))
 	{
+		if (FScopedCanActivateAbilityLogEnabler::IsLoggingEnabled())
+		{
+			ABILITY_VLOG(ActorInfo->OwnerActor.Get(), Verbose, TEXT("Ability could not be activated due to Cost: %s"), *GetName());
+		}
 		return false;
 	}
 
 	if (!DoesAbilitySatisfyTagRequirements(*AbilitySystemComponent, SourceTags, TargetTags, OptionalRelevantTags))
 	{	// If the ability's tags are blocked, or if it has a "Blocking" tag or is missing a "Required" tag, then it can't activate.
+		if (FScopedCanActivateAbilityLogEnabler::IsLoggingEnabled())
+		{
+			ABILITY_VLOG(ActorInfo->OwnerActor.Get(), Verbose, TEXT("Ability could not be activated due to Blocking Tags or Missing Required Tags: %s"), *GetName());
+		}
 		return false;
 	}
 
 	FGameplayAbilitySpec* Spec = AbilitySystemComponent->FindAbilitySpecFromHandle(Handle);
 	if (!Spec)
 	{
-		ABILITY_LOG(Warning, TEXT("CanActivateAbility called with invalid Handle"));
+		ABILITY_LOG(Warning, TEXT("CanActivateAbility %s failed, called with invalid Handle"), *GetName());
 		return false;
 	}
 
 	// Check if this ability's input binding is currently blocked
 	if (AbilitySystemComponent->IsAbilityInputBlocked(Spec->InputID))
 	{
+		if (FScopedCanActivateAbilityLogEnabler::IsLoggingEnabled())
+		{
+			ABILITY_VLOG(ActorInfo->OwnerActor.Get(), Verbose, TEXT("Ability could not be activated due to blocked input ID %i: %s"), Spec->InputID, *GetName());
+		}
 		return false;
 	}
 
@@ -442,7 +465,7 @@ bool UGameplayAbility::CommitCheck(const FGameplayAbilitySpecHandle Handle, cons
 	/**
 	 *	Checks if we can (still) commit this ability. There are some subtleties here.
 	 *		-An ability can start activating, play an animation, wait for a user confirmation/target data, and then actually commit
-	 *		-Commit = spend resources/cooldowns. Its possible the source has changed state since he started activation, so a commit may fail.
+	 *		-Commit = spend resources/cooldowns. It's possible the source has changed state since it started activation, so a commit may fail.
 	 *		-We don't want to just call CanActivateAbility() since right now that also checks things like input inhibition.
 	 *			-E.g., its possible the act of starting your ability makes it no longer activatable (CanaCtivateAbility() may be false if called here).
 	 */
@@ -595,17 +618,17 @@ void UGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle, const
 {
 	if (IsEndAbilityValid(Handle, ActorInfo))
 	{
-		if (GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
-		{
-			bIsAbilityEnding = true;
-		}
-
 		if (ScopeLockCount > 0)
 		{
 			UE_LOG(LogAbilitySystem, Verbose, TEXT("Attempting to end Ability %s but ScopeLockCount was greater than 0, adding end to the WaitingToExecute Array"), *GetName());
 			WaitingToExecute.Add(FPostLockDelegate::CreateUObject(this, &UGameplayAbility::EndAbility, Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled));
 			return;
 		}
+        
+        if (GetInstancingPolicy() != EGameplayAbilityInstancingPolicy::NonInstanced)
+        {
+            bIsAbilityEnding = true;
+        }
 
 		// Give blueprint a chance to react
 		K2_OnEndAbility(bWasCancelled);
@@ -781,6 +804,24 @@ void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, cons
 	Comp->NotifyAbilityActivated(Handle, this);
 
 	Comp->ApplyAbilityBlockAndCancelTags(AbilityTags, this, true, BlockAbilitiesWithTag, true, CancelAbilitiesWithTag);
+
+	// Spec's active count must be incremented after applying blockor cancel tags, otherwise the ability runs the risk of cancelling itself inadvertantly before it completely activates.
+	FGameplayAbilitySpec* Spec = Comp->FindAbilitySpecFromHandle(Handle);
+	if (!Spec)
+	{
+		ABILITY_LOG(Warning, TEXT("PreActivate called with a valid handle but no matching ability spec was found. Handle: %s ASC: %s. AvatarActor: %s"), *Handle.ToString(), *(Comp->GetPathName()), *GetNameSafe(Comp->GetAvatarActor_Direct()));
+		return;
+	}
+
+	// make sure we do not incur a roll over if we go over the uint8 max, this will need to be updated if the var size changes
+	if (LIKELY(Spec->ActiveCount < UINT8_MAX))
+	{
+		Spec->ActiveCount++;
+	}
+	else
+	{
+		ABILITY_LOG(Warning, TEXT("PreActivate %s called when the Spec->ActiveCount (%d) >= UINT8_MAX"), *GetName(), (int32)Spec->ActiveCount)
+	}
 }
 
 void UGameplayAbility::CallActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate, const FGameplayEventData* TriggerEventData)
@@ -1031,6 +1072,24 @@ UAbilitySystemComponent* UGameplayAbility::GetAbilitySystemComponentFromActorInf
 	ensure(AbilitySystemComponent);
 
 	return AbilitySystemComponent;
+}
+
+const FGameplayAbilityActorInfo* UGameplayAbility::GetCurrentActorInfo() const
+{
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActorInfo, nullptr);
+	return CurrentActorInfo;
+}
+
+FGameplayAbilityActivationInfo UGameplayAbility::GetCurrentActivationInfo() const
+{
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActivationInfo, FGameplayAbilityActivationInfo());
+	return CurrentActivationInfo;
+}
+
+FGameplayAbilitySpecHandle UGameplayAbility::GetCurrentAbilitySpecHandle() const
+{
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentAbilitySpecHandle, FGameplayAbilitySpecHandle());
+	return CurrentSpecHandle;
 }
 
 FGameplayEffectSpecHandle UGameplayAbility::MakeOutgoingGameplayEffectSpec(TSubclassOf<UGameplayEffect> GameplayEffectClass, float Level) const
@@ -1553,7 +1612,7 @@ UObject* UGameplayAbility::GetSourceObject(FGameplayAbilitySpecHandle Handle, co
 			FGameplayAbilitySpec* AbilitySpec = AbilitySystemComponent->FindAbilitySpecFromHandle(Handle);
 			if (AbilitySpec)
 			{
-				return AbilitySpec->SourceObject;
+				return AbilitySpec->SourceObject.Get();
 			}
 		}
 	}
@@ -1570,7 +1629,7 @@ UObject* UGameplayAbility::GetCurrentSourceObject() const
 	FGameplayAbilitySpec* AbilitySpec = GetCurrentAbilitySpec();
 	if (AbilitySpec)
 	{
-		return AbilitySpec->SourceObject;
+		return AbilitySpec->SourceObject.Get();
 	}
 	return nullptr;
 }
@@ -1588,7 +1647,7 @@ FGameplayEffectContextHandle UGameplayAbility::MakeEffectContext(const FGameplay
 	// Pass along the source object to the effect
 	if (FGameplayAbilitySpec* AbilitySpec = ActorInfo->AbilitySystemComponent->FindAbilitySpecFromHandle(Handle))
 	{
-		Context.AddSourceObject(AbilitySpec->SourceObject);
+		Context.AddSourceObject(AbilitySpec->SourceObject.Get());
 	}
 
 	return Context;
@@ -1915,7 +1974,7 @@ void UGameplayAbility::SetRemoteInstanceHasEnded()
 	{
 		if (IsValid(Task) && Task->IsWaitingOnRemotePlayerdata())
 		{
-			// We have a task that is waiting for player input, but the remote player has ended the ability, so he will not send it.
+			// We have a task that is waiting for player input, but the remote player has ended the ability, so it will not send the input.
 			// Kill the ability to avoid getting stuck active.
 			
 			ABILITY_LOG(Log, TEXT("Ability %s is force cancelling because Task %s is waiting on remote player input and the  remote player has just ended the ability."), *GetName(), *Task->GetDebugString());
@@ -1976,3 +2035,13 @@ void UGameplayAbility::NotifyAbilityTaskWaitingOnAvatar(class UAbilityTask* Abil
 		AbilitySystemComponent->ForceCancelAbilityDueToReplication(this);
 	}
 }
+
+#if UE_WITH_IRIS
+void UGameplayAbility::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
+	Super::RegisterReplicationFragments(Context, RegistrationFlags);
+
+	// Build descriptors and allocate PropertyReplicationFragments for this object
+	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
+}
+#endif // UE_WITH_IRIS

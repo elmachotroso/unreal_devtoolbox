@@ -25,7 +25,6 @@ public class LocalizationDashboard : ModuleRules
 				"InputCore",
 				"EditorFramework",
                 "UnrealEd",
-                "EditorStyle",
 				"DesktopPlatform",
                 "TranslationEditor",
                 "MainFrame",
@@ -37,20 +36,6 @@ public class LocalizationDashboard : ModuleRules
 				"InternationalizationSettings",
 				"ToolMenus",
 				"WorkspaceMenuStructure",
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				"Editor/LocalizationDashboard/Private",
-			}
-		);
-
-        PublicIncludePaths.AddRange(
-			new string[]
-			{
-				"Editor/LocalizationDashboard/Public",
 			}
 		);
 

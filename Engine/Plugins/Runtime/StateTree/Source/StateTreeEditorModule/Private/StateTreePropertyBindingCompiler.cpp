@@ -4,6 +4,9 @@
 #include "PropertyPathHelpers.h"
 #include "StateTreeTypes.h"
 #include "StateTreePropertyBindings.h"
+#include "StateTreeCompiler.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreePropertyBindingCompiler)
 
 bool FStateTreePropertyBindingCompiler::Init(FStateTreePropertyBindings& InPropertyBindings, FStateTreeCompilerLog& InLog)
 {
@@ -21,8 +24,11 @@ bool FStateTreePropertyBindingCompiler::CompileBatch(const FStateTreeBindableStr
 	OutBatchIndex = INDEX_NONE;
 
 	StoreSourceStructs();
+
+	TArray<FStateTreePropertySegment> SourceSegments;
+	TArray<FStateTreePropertySegment> TargetSegments;
 	
-	int32 BindingsBegin = PropertyBindings->PropertyBindings.Num();
+	const int32 BindingsBegin = PropertyBindings->PropertyBindings.Num();
 
 	for (const FStateTreeEditorPropertyBinding& EditorBinding : EditorPropertyBindings)
 	{
@@ -46,9 +52,13 @@ bool FStateTreePropertyBindingCompiler::CompileBatch(const FStateTreeBindableStr
 
 		FStateTreePropertyBinding& NewBinding = PropertyBindings->PropertyBindings.AddDefaulted_GetRef();
 
+		SourceSegments.Reset();
+		TargetSegments.Reset();
+
 		// Resolve paths
-		FResolvedPathResult SourceResult;
-		if (!ResolvePropertyPath(TargetStruct, SourceStruct, EditorBinding.SourcePath, SourceResult))
+		const FProperty* SourceLeafProperty = nullptr;
+		int32 SourceLeafArrayIndex = INDEX_NONE;
+		if (!ResolvePropertyPath(SourceStruct, EditorBinding.SourcePath, SourceSegments, SourceLeafProperty, SourceLeafArrayIndex, Log, &TargetStruct))
 		{
 			Log->Reportf(EMessageSeverity::Error, TargetStruct,
 				TEXT("Could not resolve path to '%s:%s'."),
@@ -57,8 +67,9 @@ bool FStateTreePropertyBindingCompiler::CompileBatch(const FStateTreeBindableStr
 		}
 
 		// Destination container is set to 0, it is assumed to be passed in when doing the batch copy.
-		FResolvedPathResult TargetResult;
-		if (!ResolvePropertyPath(TargetStruct, TargetStruct, EditorBinding.TargetPath, TargetResult))
+		const FProperty* TargetLeafProperty = nullptr;
+		int32 TargetLeafArrayIndex = INDEX_NONE;
+		if (!ResolvePropertyPath(TargetStruct, EditorBinding.TargetPath, TargetSegments, TargetLeafProperty, TargetLeafArrayIndex, Log, &TargetStruct))
 		{
 			Log->Reportf(EMessageSeverity::Error, TargetStruct,
 				TEXT("Could not resolve path to '%s:%s'."),
@@ -66,10 +77,59 @@ bool FStateTreePropertyBindingCompiler::CompileBatch(const FStateTreeBindableStr
 			return false;
 		}
 
-		NewBinding.SourcePathIndex = SourceResult.PathIndex;
-		NewBinding.TargetPathIndex = TargetResult.PathIndex;
-		NewBinding.SourceStructIndex = SourceStructIdx;
-		NewBinding.CopyType = GetCopyType(SourceResult.LeafProperty, SourceResult.LeafArrayIndex, TargetResult.LeafProperty, TargetResult.LeafArrayIndex);
+		auto StorePropertyPath = [this, &TargetStruct](FStateTreePropertySegment& FirstPathSegment, TArray<FStateTreePropertySegment>& Segments) -> bool
+		{
+			// The path is empty when directly bound to the target struct.
+			if (Segments.IsEmpty())
+			{
+				return true;
+			}
+			
+			FirstPathSegment = Segments[0];
+			FStateTreePropertySegment* PrevSegment = &FirstPathSegment; 
+			for (int32 Index = 1; Index < Segments.Num(); Index++)
+			{
+				const int32 SegmentIndex = PropertyBindings->PropertySegments.Num();
+				FStateTreePropertySegment& NewSegment = PropertyBindings->PropertySegments.Add_GetRef(Segments[Index]);
+
+				if (const auto Validation = UE::StateTree::Compiler::IsValidIndex16(SegmentIndex); Validation.DidFail())
+				{
+					Validation.Log(*Log, TEXT("SegmentIndex"), TargetStruct);
+					return false;
+				}
+				PrevSegment->NextIndex = FStateTreeIndex16(SegmentIndex);
+				PrevSegment = &NewSegment;
+			}
+			return true;
+		};
+
+		if (!StorePropertyPath(NewBinding.SourcePath, SourceSegments))
+		{
+			return false;
+		}
+		if (!StorePropertyPath(NewBinding.TargetPath, TargetSegments))
+		{
+			return false;
+		}
+
+		if (const auto Validation = UE::StateTree::Compiler::IsValidIndex16(SourceStructIdx); Validation.DidFail())
+		{
+			Validation.Log(*Log, TEXT("SourceStructIdx"), TargetStruct);
+			return false;
+		}
+		NewBinding.SourceStructIndex = FStateTreeIndex16(SourceStructIdx);
+		
+		NewBinding.CopyType = GetCopyType(SourceStruct.Struct, SourceLeafProperty, SourceLeafArrayIndex,
+			TargetStruct.Struct, TargetLeafProperty, TargetLeafArrayIndex);
+
+		if (NewBinding.CopyType == EStateTreePropertyCopyType::None)
+		{
+			Log->Reportf(EMessageSeverity::Error, TargetStruct,
+				TEXT("Could not resolve copy type for properties '%s:%s' and '%s:%s'."),
+				*SourceStruct.Name.ToString(), *EditorBinding.SourcePath.ToString(),
+				*TargetStruct.Name.ToString(), *EditorBinding.TargetPath.ToString());
+			return false;
+		}
 	}
 
 	const int32 BindingsEnd = PropertyBindings->PropertyBindings.Num();
@@ -101,8 +161,30 @@ int32 FStateTreePropertyBindingCompiler::GetSourceStructIndexByID(const FGuid& I
 	return SourceStructs.IndexOfByPredicate([ID](const FStateTreeBindableStructDesc& Structs) { return (Structs.ID == ID); });
 }
 
-EStateTreePropertyCopyType FStateTreePropertyBindingCompiler::GetCopyType(const FProperty* SourceProperty, const int32 SourceArrayIndex, const FProperty* TargetProperty, const int32 TargetArrayIndex)
+EStateTreePropertyCopyType FStateTreePropertyBindingCompiler::GetCopyType(const UStruct* SourceStruct, const FProperty* SourceProperty, const int32 SourceArrayIndex,
+																		  const UStruct* TargetStruct, const FProperty* TargetProperty, const int32 TargetArrayIndex) const
 {
+	if (SourceProperty == nullptr)
+	{
+		// Copy directly from the source struct, target must be.
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(TargetProperty))
+		{
+			if (StructProperty->Struct == SourceStruct)
+			{
+				return EStateTreePropertyCopyType::CopyStruct;
+			}
+		}
+		else if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(TargetProperty))
+		{
+			if (SourceStruct->IsChildOf(ObjectProperty->PropertyClass))
+			{
+				return EStateTreePropertyCopyType::CopyObject;
+			}
+		}
+		
+		return EStateTreePropertyCopyType::None;
+	}
+	
 	if (const FArrayProperty* SourceArrayProperty = CastField<FArrayProperty>(SourceProperty))
 	{
 		// use the array's inner property if we are not trying to copy the whole array
@@ -118,6 +200,22 @@ EStateTreePropertyCopyType FStateTreePropertyBindingCompiler::GetCopyType(const 
 		if (TargetArrayIndex != INDEX_NONE)
 		{
 			TargetProperty = TargetArrayProperty->Inner;
+		}
+	}
+
+	// Handle FStateTreeStructRef
+	if (const FStructProperty* TargetStructProperty = CastField<const FStructProperty>(TargetProperty))
+	{
+		if (TargetStructProperty->Struct == TBaseStructure<FStateTreeStructRef>::Get())
+		{
+			if (const FStructProperty* SourceStructProperty = CastField<const FStructProperty>(SourceProperty))
+			{
+				// FStateTreeStructRef to FStateTreeStructRef is copied as usual.
+				if (SourceStructProperty->Struct != TBaseStructure<FStateTreeStructRef>::Get())
+				{
+					return EStateTreePropertyCopyType::StructReference;
+				}
+			}
 		}
 	}
 
@@ -233,20 +331,6 @@ EStateTreePropertyCopyType FStateTreePropertyBindingCompiler::GetCopyType(const 
 				return EStateTreePropertyCopyType::PromoteInt32ToDouble;
 			}
 		}
-		else if (SourceProperty->IsA<FFloatProperty>())
-		{
-			if (TargetProperty->IsA<FDoubleProperty>())
-			{
-				return EStateTreePropertyCopyType::PromoteFloatToDouble;
-			}
-		}
-		else if (SourceProperty->IsA<FDoubleProperty>())
-		{
-			if (TargetProperty->IsA<FFloatProperty>())
-			{
-				return EStateTreePropertyCopyType::DemoteDoubleToFloat;
-			}
-		}
 		else if (SourceProperty->IsA<FUInt32Property>())
 		{
 			if (TargetProperty->IsA<FInt64Property>())
@@ -257,26 +341,46 @@ EStateTreePropertyCopyType FStateTreePropertyBindingCompiler::GetCopyType(const 
 			{
 				return EStateTreePropertyCopyType::PromoteUInt32ToFloat;
 			}
+			else if (TargetProperty->IsA<FDoubleProperty>())
+			{
+				return EStateTreePropertyCopyType::PromoteUInt32ToDouble;
+			}
+		}
+		else if (SourceProperty->IsA<FFloatProperty>())
+		{
+			if (TargetProperty->IsA<FIntProperty>())
+			{
+				return EStateTreePropertyCopyType::PromoteFloatToInt32;
+			}
+			else if (TargetProperty->IsA<FInt64Property>())
+			{
+				return EStateTreePropertyCopyType::PromoteFloatToInt64;
+			}
+			else if (TargetProperty->IsA<FDoubleProperty>())
+			{
+				return EStateTreePropertyCopyType::PromoteFloatToDouble;
+			}
+		}
+		else if (SourceProperty->IsA<FDoubleProperty>())
+		{
+			if (TargetProperty->IsA<FIntProperty>())
+			{
+				return EStateTreePropertyCopyType::DemoteDoubleToInt32;
+			}
+			else if (TargetProperty->IsA<FInt64Property>())
+			{
+				return EStateTreePropertyCopyType::DemoteDoubleToInt64;
+			}
+			else if (TargetProperty->IsA<FFloatProperty>())
+			{
+				return EStateTreePropertyCopyType::DemoteDoubleToFloat;
+			}
 		}
 	}
-
+	
 	ensureMsgf(false, TEXT("Couldnt determine property copy type (%s -> %s)"), *SourceProperty->GetNameCPP(), *TargetProperty->GetNameCPP());
 
 	return EStateTreePropertyCopyType::None;
-}
-
-bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBindableStructDesc& InOwnerStructDesc, const FStateTreeBindableStructDesc& InStructDesc, const FStateTreeEditorPropertyPath& InPath, FResolvedPathResult& OutResult)
-{
-	const int32 PathIndex = PropertyBindings->PropertyPaths.Num();
-	FStateTreePropertyPath& Path = PropertyBindings->PropertyPaths.AddDefaulted_GetRef();
-	Path.SegmentsBegin = PropertyBindings->PropertySegments.Num();
-
-	const bool bResult = ResolvePropertyPath(InStructDesc, InPath, PropertyBindings->PropertySegments, OutResult.LeafProperty, OutResult.LeafArrayIndex, Log, &InOwnerStructDesc);
-
-	Path.SegmentsEnd = PropertyBindings->PropertySegments.Num();
-	OutResult.PathIndex = PathIndex;
-
-	return bResult;
 }
 
 bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBindableStructDesc& InStructDesc, const FStateTreeEditorPropertyPath& InPath,
@@ -294,10 +398,18 @@ bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBind
 		return false;
 	}
 
+	// If the path is empty, we're pointing directly at the source struct.
+	if (InPath.Path.Num() == 0)
+	{
+		OutLeafProperty = nullptr;
+		OutLeafArrayIndex = INDEX_NONE;
+		return true;
+	}
+
 	const UStruct* CurrentStruct = InStructDesc.Struct;
 	const FProperty* LeafProperty = nullptr;
 	int32 LeafArrayIndex = INDEX_NONE;
-	bool bResult = InPath.Path.Num() > 0;
+	bool bResult = true;
 
 	for (int32 SegmentIndex = 0; SegmentIndex < InPath.Path.Num(); SegmentIndex++)
 	{
@@ -339,9 +451,18 @@ bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBind
 			break;
 		}
 
+		if (const auto Validation = UE::StateTree::Compiler::IsValidIndex16(ArrayIndex); Validation.DidFail())
+		{
+			if (InLog != nullptr)
+			{
+				Validation.Log(*InLog, TEXT("ArrayIndex"), InStructDesc);
+			}
+			return false;
+		}
+
 		FStateTreePropertySegment& Segment = OutSegments.AddDefaulted_GetRef();
 		Segment.Name = PropertyName;
-		Segment.ArrayIndex = ArrayIndex;
+		Segment.ArrayIndex = FStateTreeIndex16(ArrayIndex);
 
 		// Check to see if it is an array access first
 		const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
@@ -363,7 +484,7 @@ bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBind
 				{
 					// Object arrays need an object dereference adding if non-leaf
 					FStateTreePropertySegment& ExtraSegment = OutSegments.AddDefaulted_GetRef();
-					ExtraSegment.ArrayIndex = 0;
+					ExtraSegment.ArrayIndex = FStateTreeIndex16(0);
 					ExtraSegment.Type = EStateTreePropertyAccessType::Object;
 					const FProperty* InnerProperty = ArrayProperty->Inner;
 					if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InnerProperty))
@@ -383,7 +504,7 @@ bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBind
 			else
 			{
 				Segment.Type = EStateTreePropertyAccessType::IndexArray;
-				Segment.ArrayIndex = ArrayIndex;
+				Segment.ArrayIndex = FStateTreeIndex16(ArrayIndex);
 				CurrentStruct = nullptr;
 			}
 		}
@@ -448,66 +569,100 @@ bool FStateTreePropertyBindingCompiler::ResolvePropertyPath(const FStateTreeBind
 	return true;
 }
 
-EPropertyAccessCompatibility FStateTreePropertyBindingCompiler::GetPropertyCompatibility(const FProperty* InPropertyA, const FProperty* InPropertyB)
+EPropertyAccessCompatibility FStateTreePropertyBindingCompiler::GetPropertyCompatibility(const FProperty* FromProperty, const FProperty* ToProperty)
 {
-	if (InPropertyA == InPropertyB)
+	if (FromProperty == ToProperty)
 	{
 		return EPropertyAccessCompatibility::Compatible;
 	}
 
-	if (InPropertyA == nullptr || InPropertyB == nullptr)
+	if (FromProperty == nullptr || ToProperty == nullptr)
 	{
 		return EPropertyAccessCompatibility::Incompatible;
 	}
 
-	// Special case for object properties
-	if (InPropertyA->IsA<FObjectPropertyBase>() && InPropertyB->IsA<FObjectPropertyBase>())
+	// Special case for object properties since InPropertyA->SameType(InPropertyB) requires both properties to be of the exact same class.
+	// In our case we want to be able to bind a source property if its class is a child of the target property class.
+	if (FromProperty->IsA<FObjectPropertyBase>() && ToProperty->IsA<FObjectPropertyBase>())
 	{
-		return EPropertyAccessCompatibility::Compatible;
+		const FObjectPropertyBase* SourceProperty = CastField<FObjectPropertyBase>(FromProperty);
+		const FObjectPropertyBase* TargetProperty = CastField<FObjectPropertyBase>(ToProperty);
+		return (SourceProperty->PropertyClass->IsChildOf(TargetProperty->PropertyClass)) ? EPropertyAccessCompatibility::Compatible : EPropertyAccessCompatibility::Incompatible;
 	}
 
 	// Extract underlying types for enums
-	if (const FEnumProperty* EnumPropertyA = CastField<const FEnumProperty>(InPropertyA))
+	if (const FEnumProperty* EnumPropertyA = CastField<const FEnumProperty>(FromProperty))
 	{
-		InPropertyA = EnumPropertyA->GetUnderlyingProperty();
+		FromProperty = EnumPropertyA->GetUnderlyingProperty();
 	}
 
-	if (const FEnumProperty* EnumPropertyB = CastField<const FEnumProperty>(InPropertyB))
+	if (const FEnumProperty* EnumPropertyB = CastField<const FEnumProperty>(ToProperty))
 	{
-		InPropertyB = EnumPropertyB->GetUnderlyingProperty();
+		ToProperty = EnumPropertyB->GetUnderlyingProperty();
 	}
 
-	if (InPropertyA->SameType(InPropertyB))
+	if (FromProperty->SameType(ToProperty))
 	{
 		return EPropertyAccessCompatibility::Compatible;
 	}
 	else
 	{
 		// Not directly compatible, check for promotions
-		if (InPropertyA->IsA<FBoolProperty>())
+		if (FromProperty->IsA<FBoolProperty>())
 		{
-			if (InPropertyB->IsA<FByteProperty>() || InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FUInt32Property>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+			if (ToProperty->IsA<FByteProperty>()
+				|| ToProperty->IsA<FIntProperty>()
+				|| ToProperty->IsA<FUInt32Property>()
+				|| ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FFloatProperty>()
+				|| ToProperty->IsA<FDoubleProperty>())
 			{
 				return EPropertyAccessCompatibility::Promotable;
 			}
 		}
-		else if (InPropertyA->IsA<FByteProperty>())
+		else if (FromProperty->IsA<FByteProperty>())
 		{
-			if (InPropertyB->IsA<FIntProperty>() || InPropertyB->IsA<FUInt32Property>() || InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+			if (ToProperty->IsA<FIntProperty>()
+				|| ToProperty->IsA<FUInt32Property>()
+				|| ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FFloatProperty>()
+				|| ToProperty->IsA<FDoubleProperty>())
 			{
 				return EPropertyAccessCompatibility::Promotable;
 			}
 		}
-		else if (InPropertyA->IsA<FIntProperty>())
+		else if (FromProperty->IsA<FIntProperty>())
 		{
-			if (InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+			if (ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FFloatProperty>()
+				|| ToProperty->IsA<FDoubleProperty>())
 			{
 				return EPropertyAccessCompatibility::Promotable;
 			}
 		}
-		else if (InPropertyA->IsA<FUInt32Property>())
+		else if (FromProperty->IsA<FUInt32Property>())
 		{
-			if (InPropertyB->IsA<FInt64Property>() || InPropertyB->IsA<FFloatProperty>())
+			if (ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FFloatProperty>()
+				|| ToProperty->IsA<FDoubleProperty>())
+			{
+				return EPropertyAccessCompatibility::Promotable;
+			}
+		}
+		else if (FromProperty->IsA<FFloatProperty>())
+		{
+			if (ToProperty->IsA<FIntProperty>()
+				|| ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FDoubleProperty>())
+			{
+				return EPropertyAccessCompatibility::Promotable;
+			}
+		}
+		else if (FromProperty->IsA<FDoubleProperty>())
+		{
+			if (ToProperty->IsA<FIntProperty>()
+				|| ToProperty->IsA<FInt64Property>()
+				|| ToProperty->IsA<FFloatProperty>())
 			{
 				return EPropertyAccessCompatibility::Promotable;
 			}
@@ -535,3 +690,4 @@ void FStateTreePropertyBindingCompiler::StoreSourceStructs()
 		}
 	}
 }
+

@@ -16,6 +16,8 @@
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraSimulationStageBase.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeOutput)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeOutput"
 
 UNiagaraNodeOutput::UNiagaraNodeOutput(const FObjectInitializer& ObjectInitializer)
@@ -62,17 +64,18 @@ FText UNiagaraNodeOutput::GetPinNameText(UEdGraphPin* Pin) const
 
 TArray<FName> UNiagaraNodeOutput::GetAllStackContextOverrides() const
 {
-	UNiagaraEmitter* Emitter = GetTypedOuter<UNiagaraEmitter>();
+	FVersionedNiagaraEmitter Outer = GetNiagaraGraph()->GetOwningEmitter();
 	TArray<FName> Overrides;
-	if (Emitter)
+	if (Outer.Emitter)
 	{
 		TArray<UNiagaraScript*> Scripts;
-		Emitter->GetScripts(Scripts, false);
+		FVersionedNiagaraEmitterData* EmitterData = Outer.GetEmitterData();
+		EmitterData->GetScripts(Scripts, false);
 		for (UNiagaraScript* Script : Scripts)
 		{
 			if (Script && Script->GetUsage() == ENiagaraScriptUsage::ParticleSimulationStageScript)
 			{
-				UNiagaraSimulationStageBase* Base = Emitter->GetSimulationStageById(Script->GetUsageId());
+				UNiagaraSimulationStageBase* Base = EmitterData->GetSimulationStageById(Script->GetUsageId());
 				if (Base)
 				{
 					FName StackContextAlias = Base->GetStackContextReplacementName();
@@ -89,10 +92,10 @@ TOptional<FName> UNiagaraNodeOutput::GetStackContextOverride() const
 {
 	
 	{
-		UNiagaraEmitter* Emitter = GetTypedOuter<UNiagaraEmitter>();
-		if (Emitter && GetUsage() == ENiagaraScriptUsage::ParticleSimulationStageScript)
+		FVersionedNiagaraEmitter Outer = GetNiagaraGraph()->GetOwningEmitter();
+		if (Outer.Emitter && GetUsage() == ENiagaraScriptUsage::ParticleSimulationStageScript)
 		{
-			UNiagaraSimulationStageBase* Base = Emitter->GetSimulationStageById(GetUsageId());
+			UNiagaraSimulationStageBase* Base = Outer.GetEmitterData()->GetSimulationStageById(GetUsageId());
 			if (Base)
 			{
 				FName StackContextAlias = Base->GetStackContextReplacementName();
@@ -349,3 +352,4 @@ void UNiagaraNodeOutput::PostLoad()
 }
 
 #undef LOCTEXT_NAMESPACE
+

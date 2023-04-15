@@ -3,10 +3,6 @@
 /*=============================================================================
 	ShadowProjectionPixelShader.usf: Pixel shader for projecting a shadow depth buffer onto the scene.
 =============================================================================*/
-#ifndef FORCE_FLOATS
-// TODO: remove this requirement: Iphone6/Metal needs full float for the depth comparison.
-#define FORCE_FLOATS (COMPILER_METAL)
-#endif
 
 #ifndef USE_FADE_PLANE
 	#define USE_FADE_PLANE 0
@@ -89,10 +85,7 @@ float3 ModulatedShadowBlendOp(float3 Source)
 float2 ShadowNearAndFarDepth;
 #endif
 
-#if STRATA_ENABLED
-#define STRATA_INLINE_SHADING 0
-#include "/Engine/Private/Strata/Strata.ush"
-#endif
+#include "Strata/Strata.ush"
 
 /**
 * Entry point for uniform manual PCF that supports lights using normal shadows.
@@ -118,7 +111,7 @@ void Main(
 	const uint3 PixelCoord = uint3(floor(SVPos.xy), 0);
 #if SUBPIXEL_SHADOW
 	const bool bUseFadePlane = bCascadeUseFadePlane > 0;
-	SceneW = ConvertFromDeviceZ(HairStrands.HairOnlyDepthTexture.Load(PixelCoord));
+	SceneW = ConvertFromDeviceZ(HairStrands.HairOnlyDepthTexture.Load(PixelCoord).x);
 	bIsSubsurfaceCompatible = false;
 #endif
 
@@ -259,7 +252,7 @@ void Main(
 		FStrataPixelHeader StrataHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
 		if (IsStrataMaterial(StrataHeader))
 		{
-			bIsEyeOrHair				= StrataHasShadingModel(StrataHeader, STRATA_BSDF_TYPE_HAIR);
+			bIsEyeOrHair				= StrataGetBSDFType(StrataHeader) == STRATA_BSDF_TYPE_HAIR || StrataGetBSDFType(StrataHeader) == STRATA_BSDF_TYPE_EYE;
 			bHasSubsurface				= HasSubsurface(StrataHeader) || bIsEyeOrHair;
 			bHasSubsurfaceTransmission	= HasSubsurface(StrataHeader);
 		}
@@ -276,17 +269,19 @@ void Main(
 		if (bIsSubsurfaceCompatible && bHasSubsurface)
 		{
 			#if STRATA_ENABLED
-			const FStrataSubsurfaceData SSSData = StrataUnpackSSSData(Strata.SSSTexture.Load(uint3(SVPos.xy, 0)));
+			const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, SVPos.xy);
+			const uint SSSType = StrataSubSurfaceHeaderGetSSSType(SSSHeader);
 			#endif
 
 			float Density = 1;
 			if (!bIsEyeOrHair)
 			{
 			#if STRATA_ENABLED
-				if (SSSData.bIsValid)
+				if (SSSType != SSS_TYPE_INVALID)
 				{
-					float Opacity = SSSData.bIsProfile ? SSSData.ProfileRadiusScale : 1.0f;
-					Density = SubsurfaceDensityFromOpacity(Opacity);
+					// Disble accurate SSS transmission if SSS type is no using Diffusion or Diffusion Profile
+					bHasSubsurfaceTransmission = bHasSubsurfaceTransmission && (SSSType >= SSS_TYPE_DIFFUSION);
+					Density = SubsurfaceDensityFromOpacity(StrataSubSurfaceHeaderGetOpacity(SSSHeader));
 				}
 			#else // STRATA_ENABLED
 				Density = SubsurfaceDensityFromOpacity(GBufferData.CustomData.a);
@@ -314,13 +309,13 @@ void Main(
 
 				// For non-profile version, use default transmission parameters (only NormalScale & ExtinctionScale are used)
 				FTransmissionProfileParams TransmissionParams = InitTransmissionProfileParams();
-				if (SSSData.bIsProfile)
+				if (SSSType == SSS_TYPE_DIFFUSION_PROFILE)
 				{
-					TransmissionParams = GetTransmissionProfileParams(SSSData.ProfileId);
+					TransmissionParams = GetTransmissionProfileParams(StrataSubSurfaceHeaderGetProfileId(SSSHeader));
 				}
 			#else // STRATA_ENABLED
 				float3 WorldNormal = GBufferData.WorldNormal;
-				FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(GBufferData);
+				FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(ExtractSubsurfaceProfileInt(GBufferData));
 			#endif // STRATA_ENABLED
 				SSSTransmission = CalcTransmissionThickness(ScreenPosition.xyz, LightPositionAndInvRadius.xyz, WorldNormal, TransmissionParams, Settings);
 			}
@@ -344,7 +339,7 @@ void Main(
 	// RETURN_COLOR not needed unless writing to SceneColor;
 	float FadedShadow = lerp(1.0f, Square(Shadow), ShadowFadeFraction * PerObjectDistanceFadeFraction);
 
-#if FORWARD_SHADING
+#if FORWARD_SHADING || SHADING_PATH_MOBILE 
 	float LightInfluenceMask = GetLightInfluenceMask(TranslateWorldPosition);
 	// Constrain shadowing from this light to pixels inside the light's influence, since other non-overlapping lights are packed into the same channel
 	FadedShadow = lerp(1, FadedShadow, LightInfluenceMask);
@@ -390,7 +385,7 @@ void MainOnePassPointLightPS(
 
 #if SUBPIXEL_SHADOW
 	const uint3 PixelCoord = uint3(floor(SVPos.xy), 0);
-	const float HairSampleDepth = HairStrands.HairOnlyDepthTexture.Load(PixelCoord);
+	const float HairSampleDepth = HairStrands.HairOnlyDepthTexture.Load(PixelCoord).x;
 	if (HairSampleDepth > 0)
 	{
 		SceneW = ConvertFromDeviceZ(HairSampleDepth);
@@ -461,11 +456,12 @@ void MainOnePassPointLightPS(
 #if STRATA_ENABLED
 
 	const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(SVPos.xy, 0)));
-	const FStrataSubsurfaceData SSSData = StrataUnpackSSSData(Strata.SSSTexture.Load(uint3(SVPos.xy, 0)));
 
-	const bool IsSubsurfaceProfile = SSSData.bIsValid;
+	const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, SVPos.xy);
+
+	const bool IsSubsurfaceProfile = StrataSubSurfaceHeaderGetUseDiffusion(SSSHeader);
 	const float3 WorldNormal = TopLayerData.WorldNormal;
-	const FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(SSSData.ProfileId);
+	const FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(StrataSubSurfaceHeaderGetProfileId(SSSHeader));
 
 #else // STRATA_ENABLED
 
@@ -474,7 +470,7 @@ void MainOnePassPointLightPS(
 
 	bool IsSubsurfaceProfile = GBufferData.ShadingModelID == SHADINGMODELID_SUBSURFACE_PROFILE;
 	float3 WorldNormal = GBufferData.WorldNormal;
-	FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(GBufferData);
+	FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(ExtractSubsurfaceProfileInt(GBufferData));
 
 #endif // STRATA_ENABLED
 

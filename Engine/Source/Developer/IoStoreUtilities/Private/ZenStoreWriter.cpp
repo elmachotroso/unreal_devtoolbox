@@ -18,6 +18,7 @@
 #include "HAL/PlatformFileManager.h"
 #include "IO/IoDispatcher.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/StringBuilder.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -57,6 +58,12 @@ FMD5Hash IoHashToMD5(const FIoHash& IoHash)
 	return Hash;
 }
 
+struct FZenStoreWriter::FZenCommitInfo
+{
+	IPackageWriter::FCommitPackageInfo CommitInfo;
+	TUniquePtr<FPendingPackageState> PackageState;
+};
+
 class FZenStoreWriter::FCommitQueue
 {
 public:
@@ -64,18 +71,18 @@ public:
 		: NewCommitEvent(EEventMode::AutoReset)
 		, QueueEmptyEvent(EEventMode::ManualReset) {}
 	
-	void Enqueue(const FCommitPackageInfo& Commit)
+	void Enqueue(FZenCommitInfo&& Commit)
 	{
 		{
 			FScopeLock _(&QueueCriticalSection);
-			Queue.Enqueue(Commit);
+			Queue.Enqueue(MoveTemp(Commit));
 			QueueNum++;
 		}
 
 		NewCommitEvent->Trigger();
 	}
 
-	bool BlockAndDequeue(FCommitPackageInfo& OutCommit)
+	bool BlockAndDequeue(FZenCommitInfo& OutCommit)
 	{
 		for (;;)
 		{
@@ -131,7 +138,7 @@ private:
 	FEventRef					NewCommitEvent;
 	FEventRef					QueueEmptyEvent;
 	FCriticalSection			QueueCriticalSection;
-	TQueue<FCommitPackageInfo>	Queue;
+	TQueue<FZenCommitInfo>		Queue;
 	int32						QueueNum = 0;
 	TAtomic<bool>				bCompleteAdding{false};
 };
@@ -158,6 +165,7 @@ FZenStoreWriter::FZenStoreWriter(
 	const ITargetPlatform* InTargetPlatform
 )
 	: TargetPlatform(*InTargetPlatform)
+	, TargetPlatformFName(*InTargetPlatform->PlatformName())
 	, OutputPath(InOutputPath)
 	, MetadataDirectoryPath(InMetadataDirectoryPath)
 	, PackageStoreManifest(InOutputPath)
@@ -167,23 +175,34 @@ FZenStoreWriter::FZenStoreWriter(
 {
 	StaticInit();
 
-	FString ProjectId = FZenStoreHttpClient::GenerateDefaultProjectId();
-	FString OplogId = InTargetPlatform->PlatformName();
-
+	ProjectId = FApp::GetZenStoreProjectId();
+	
+	if (FParse::Value(FCommandLine::Get(), TEXT("-ZenStorePlatform="), OplogId) == false)
+	{
+		OplogId = InTargetPlatform->PlatformName();
+	}
+	
 	HttpClient = MakeUnique<UE::FZenStoreHttpClient>();
+
+#if UE_WITH_ZEN
+	IsLocalConnection = HttpClient->GetZenServiceInstance().IsServiceRunningLocally();
+#endif
 
 	FString RootDir = FPaths::RootDir();
 	FString EngineDir = FPaths::EngineDir();
 	FPaths::NormalizeDirectoryName(EngineDir);
 	FString ProjectDir = FPaths::ProjectDir();
 	FPaths::NormalizeDirectoryName(ProjectDir);
+	FString ProjectPath = FPaths::GetProjectFilePath();
+	FPaths::NormalizeFilename(ProjectPath);
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	FString AbsServerRoot = PlatformFile.ConvertToAbsolutePathForExternalAppForRead(*RootDir);
 	FString AbsEngineDir = PlatformFile.ConvertToAbsolutePathForExternalAppForRead(*EngineDir);
 	FString AbsProjectDir = PlatformFile.ConvertToAbsolutePathForExternalAppForRead(*ProjectDir);
+	FString ProjectFilePath = PlatformFile.ConvertToAbsolutePathForExternalAppForRead(*ProjectPath);
 
-	HttpClient->TryCreateProject(ProjectId, OplogId, AbsServerRoot, AbsEngineDir, AbsProjectDir);
+	HttpClient->TryCreateProject(ProjectId, OplogId, AbsServerRoot, AbsEngineDir, AbsProjectDir, IsLocalConnection ? ProjectFilePath : FStringView());
 
 	PackageStoreOptimizer->Initialize();
 
@@ -224,7 +243,7 @@ void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWri
 
 	FIoBuffer CookedHeaderBuffer = FIoBuffer(PackageData.Data(), Info.HeaderSize, PackageData);
 	FIoBuffer CookedExportsBuffer = FIoBuffer(PackageData.Data() + Info.HeaderSize, PackageData.DataSize() - Info.HeaderSize, PackageData);
-	TUniquePtr<FPackageStorePackage> Package{PackageStoreOptimizer->CreatePackageFromCookedHeader(Info.OutputPackageName, CookedHeaderBuffer)};
+	TUniquePtr<FPackageStorePackage> Package{PackageStoreOptimizer->CreatePackageFromCookedHeader(Info.PackageName, CookedHeaderBuffer)};
 	PackageStoreOptimizer->FinalizePackage(Package.Get());
 	TArray<FFileRegion> FileRegionsCopy(FileRegions);
 	for (FFileRegion& Region : FileRegionsCopy)
@@ -233,8 +252,7 @@ void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWri
 		Region.Offset -= Info.HeaderSize;
 	}
 	FIoBuffer PackageBuffer = PackageStoreOptimizer->CreatePackageBuffer(Package.Get(), CookedExportsBuffer, &FileRegionsCopy);
-	FIoChunkId ChunkId = CreateIoChunkId(Package->GetId().Value(), 0, EIoChunkType::ExportBundleData);
-	PackageStoreManifest.AddPackageData(Info.InputPackageName, Info.OutputPackageName, Info.LooseFilePath, Info.ChunkId);
+	PackageStoreManifest.AddPackageData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
 	for (FFileRegion& Region : FileRegionsCopy)
 	{
 		// Adjust regions once more so they are relative to the exports bundle buffer
@@ -246,7 +264,7 @@ void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWri
 
 	FCbObjectId ChunkOid = ToObjectId(Info.ChunkId);
 
-	FPendingPackageState& ExistingState = GetPendingPackage(Info.InputPackageName);
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
 
 	FPackageDataEntry& Entry = ExistingState.PackageData;
 
@@ -257,8 +275,18 @@ void FZenStoreWriter::WritePackageData(const FPackageInfo& Info, FLargeMemoryWri
 
 	Entry.Info				= Info;
 	Entry.ChunkId			= ChunkOid;
-	Entry.PackageStoreEntry = PackageStoreOptimizer->CreatePackageStoreEntry(Package.Get());
+	Entry.PackageStoreEntry = PackageStoreOptimizer->CreatePackageStoreEntry(Package.Get(), nullptr); // TODO: Can we separate out the optional segment package store entry and do this when we commit instead?
 	Entry.IsValid			= true;
+
+	if (EntryCreatedEvent.IsBound())
+	{
+		IPackageStoreWriter::FEntryCreatedEventArgs EntryCreatedEventArgs
+		{
+			TargetPlatformFName,
+			Entry.PackageStoreEntry
+		};
+		EntryCreatedEvent.Broadcast(EntryCreatedEventArgs);
+	}
 }
 
 void FZenStoreWriter::WriteIoStorePackageData(const FPackageInfo& Info, const FIoBuffer& PackageData, const FPackageStoreEntryResource& PackageStoreEntry, const TArray<FFileRegion>& FileRegions)
@@ -267,12 +295,12 @@ void FZenStoreWriter::WriteIoStorePackageData(const FPackageInfo& Info, const FI
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(WriteIoStorePackageData);
 
-	PackageStoreManifest.AddPackageData(Info.InputPackageName, Info.OutputPackageName, Info.LooseFilePath, Info.ChunkId);
+	PackageStoreManifest.AddPackageData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
 	//WriteFileRegions(*FPaths::ChangeExtension(Info.LooseFilePath, FString(".uexp") + FFileRegion::RegionsFileExtension), FileRegionsCopy);
 
 	FCbObjectId ChunkOid = ToObjectId(Info.ChunkId);
 
-	FPendingPackageState& ExistingState = GetPendingPackage(Info.InputPackageName);
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
 
 	FPackageDataEntry& Entry = ExistingState.PackageData;
 
@@ -295,7 +323,7 @@ void FZenStoreWriter::WriteBulkData(const FBulkDataInfo& Info, const FIoBuffer& 
 
 	FCbObjectId ChunkOid = ToObjectId(Info.ChunkId);
 
-	FPendingPackageState& ExistingState = GetPendingPackage(Info.InputPackageName);
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
 
 	FBulkDataEntry& BulkEntry = ExistingState.BulkData.AddDefaulted_GetRef(); 
 
@@ -310,7 +338,7 @@ void FZenStoreWriter::WriteBulkData(const FBulkDataInfo& Info, const FIoBuffer& 
 	BulkEntry.ChunkId	= ChunkOid;
 	BulkEntry.IsValid	= true;
 
-	PackageStoreManifest.AddBulkData(Info.InputPackageName, Info.OutputPackageName, Info.LooseFilePath, Info.ChunkId);
+	PackageStoreManifest.AddBulkData(Info.PackageName, Info.LooseFilePath, Info.ChunkId);
 
 	//	WriteFileRegions(*(Info.LooseFilePath + FFileRegion::RegionsFileExtension), FileRegions);
 }
@@ -319,7 +347,7 @@ void FZenStoreWriter::WriteAdditionalFile(const FAdditionalFileInfo& Info, const
 {
 	const FZenFileSystemManifest::FManifestEntry& ManifestEntry = ZenFileSystemManifest->CreateManifestEntry(Info.Filename);
 	
-	FPendingPackageState& ExistingState = GetPendingPackage(Info.InputPackageName);
+	FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
 
 	FFileDataEntry& FileEntry = ExistingState.FileData.AddDefaulted_GetRef();
 	
@@ -348,7 +376,7 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 
 	if (!bInitialized)
 	{
-		if (Info.bFullBuild)
+		if (Info.bFullBuild && !Info.bWorkerOnSharedSandbox)
 		{
 			UE_LOG(LogZenStoreWriter, Display, TEXT("Deleting %s..."), *OutputPath);
 			const bool bRequireExists = false;
@@ -356,8 +384,6 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 			IFileManager::Get().DeleteDirectory(*OutputPath, bRequireExists, bTree);
 		}
 
-		FString ProjectId = FZenStoreHttpClient::GenerateDefaultProjectId();
-		FString OplogId = TargetPlatform.PlatformName();
 		bool bOplogEstablished = HttpClient->TryCreateOplog(ProjectId, OplogId, Info.bFullBuild);
 		UE_CLOG(!bOplogEstablished, LogZenStoreWriter, Fatal, TEXT("Failed to establish oplog on the ZenServer"));
 
@@ -444,7 +470,7 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 					ZenFileSystemManifest->AddManifestEntry(FileChunkId, MoveTemp(ServerPath), MoveTemp(ClientPath));
 				}
 
-				UE_LOG(LogZenStoreWriter, Display, TEXT("Fetched '%d' files(s) from oplog '%s/%s'"), ZenFileSystemManifest->NumEntries(), *ProjectId, *OplogId);
+				UE_LOG(LogZenStoreWriter, Display, TEXT("Fetched '%d' file(s) from oplog '%s/%s'"), ZenFileSystemManifest->NumEntries(), *ProjectId, *OplogId);
 			}
 			else
 			{
@@ -474,6 +500,7 @@ void FZenStoreWriter::Initialize(const FCookInfo& Info)
 void FZenStoreWriter::BeginCook()
 {
 	PackageStoreManifest.Load(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
+	AllPackageHashes.Empty();
 
 	if (CookMode == ICookedPackageWriter::FCookInfo::CookOnTheFlyMode)
 	{
@@ -503,7 +530,7 @@ void FZenStoreWriter::BeginCook()
 			for(;;)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(FZenStoreWriter::WaitingOnCooker);
-				FCommitPackageInfo Commit;
+				FZenCommitInfo Commit;
 				if (!CommitQueue->BlockAndDequeue(Commit))
 				{
 					break;
@@ -516,7 +543,8 @@ void FZenStoreWriter::BeginCook()
 
 void FZenStoreWriter::EndCook()
 {
-	Flush();
+	UE_LOG(LogZenStoreWriter, Display, TEXT("Flushing..."));
+	CommitQueue->WaitUntilEmpty();
 	
 	CommitQueue->CompleteAdding();
 	
@@ -566,47 +594,69 @@ bool FZenStoreWriter::IsReservedOplogKey(FUtf8StringView Key)
 		FUtf8StringView(ReservedOplogKeys[Index]).Equals(Key, ESearchCase::IgnoreCase);
 }
 
-TFuture<FMD5Hash> FZenStoreWriter::CommitPackage(FCommitPackageInfo&& Info)
+void FZenStoreWriter::CommitPackage(FCommitPackageInfo&& Info)
 {
-	TFuture<FMD5Hash> PkgHash;
-
-	if (EnumHasAnyFlags(Info.WriteOptions, EWriteOptions::ComputeHash))
+	if (Info.Status == ECommitStatus::Canceled)
 	{
-		FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
-		PkgHash = ExistingState.HashPromise.GetFuture();
+		RemovePendingPackage(Info.PackageName);
+		return;
 	}
 
 	UE::SavePackageUtilities::IncrementOutstandingAsyncWrites();
 
+	// If we are computing hashes, we need to allocate where the hashes will go.
+	// Access to this is protected by the above IncrementOutstandingAsyncWrites.
+	if (EnumHasAnyFlags(Info.WriteOptions, EWriteOptions::ComputeHash))
+	{
+		FPendingPackageState& ExistingState = GetPendingPackage(Info.PackageName);
+		ExistingState.PackageHashes = new FPackageHashes();
+
+		if (Info.Status == ECommitStatus::Success)
+		{
+			// Only record hashes for successful saves. A single package can be saved unsuccessfully multiple times
+			// during a cook if its rejected for being only referenced by editor-only references and we keep finding
+			// new references to it.
+			TRefCountPtr<FPackageHashes>& ExistingPackageHashes = AllPackageHashes.FindOrAdd(Info.PackageName);
+			// This looks weird but we've found the _TRefCountPtr_, not the FPackageHashes. When newly assigned
+			// it will be an empty pointer, which is what we want.
+			if (ExistingPackageHashes.IsValid())
+			{
+				UE_LOG(LogZenStoreWriter, Error, TEXT("FZenStoreWriter commiting the same package twice during a cook! (%s)"), *Info.PackageName.ToString());
+			}
+			ExistingPackageHashes = ExistingState.PackageHashes;
+		}
+	}
+
+	TUniquePtr<FPendingPackageState> PackageState = RemovePendingPackage(Info.PackageName);
+	FZenCommitInfo ZenCommitInfo{ Forward<FCommitPackageInfo>(Info), MoveTemp(PackageState) };
 	if (FPlatformProcess::SupportsMultithreading())
 	{
-		CommitQueue->Enqueue(Info);
+		CommitQueue->Enqueue(MoveTemp(ZenCommitInfo));
 	}
 	else
 	{
-		CommitPackageInternal(Forward<FCommitPackageInfo>(Info));
+		CommitPackageInternal(MoveTemp(ZenCommitInfo));
 	}
-	
-	return PkgHash;
 }
 
-void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
+void FZenStoreWriter::CommitPackageInternal(FZenCommitInfo&& ZenCommitInfo)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FZenStoreWriter::CommitPackage);
+	FCommitPackageInfo& CommitInfo = ZenCommitInfo.CommitInfo;
 	
-	TUniquePtr<FPendingPackageState> PackageState = RemovePendingPackage(CommitInfo.PackageName);
+	TUniquePtr<FPendingPackageState> PackageState = MoveTemp(ZenCommitInfo.PackageState);
 	checkf(PackageState.IsValid(), TEXT("Trying to commit non-pending package '%s'"), *CommitInfo.PackageName.ToString());
 
 	IPackageStoreWriter::FCommitEventArgs CommitEventArgs;
 
-	CommitEventArgs.PlatformName	= FName(*TargetPlatform.PlatformName());
+	CommitEventArgs.PlatformName	= TargetPlatformFName;
 	CommitEventArgs.PackageName		= CommitInfo.PackageName;
 	CommitEventArgs.EntryIndex		= INDEX_NONE;
 	
 	const bool bComputeHash			= EnumHasAnyFlags(CommitInfo.WriteOptions, EWriteOptions::ComputeHash);
 	const bool bWritePackage		= EnumHasAnyFlags(CommitInfo.WriteOptions, EWriteOptions::Write);
 
-	if (CommitInfo.bSucceeded && bWritePackage)
+	if (CommitInfo.Status == ECommitStatus::Success && bWritePackage)
 	{
 		FPackageDataEntry& PkgData = PackageState->PackageData;
 		checkf(PkgData.IsValid, TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"))
@@ -628,6 +678,11 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 		FMD5 PkgHashGen;
 		FCbPackage OplogEntry;
 		
+		if (bComputeHash)
+		{
+			PackageState->PackageHashes->ChunkHashes.Add(PkgData.Info.ChunkId, PkgData.CompressedPayload.Get().GetRawHash());
+		}
+
 		FCbAttachment PkgDataAttachment = FCbAttachment(PkgData.CompressedPayload.Get());
 		PkgHashGen.Update(PkgDataAttachment.GetHash().GetBytes(), sizeof(FIoHash::ByteArray));
 		OplogEntry.AddAttachment(PkgDataAttachment);
@@ -704,6 +759,11 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 
 			for (FBulkDataEntry& Bulk : PackageState->BulkData)
 			{
+				if (bComputeHash)
+				{
+					PackageState->PackageHashes->ChunkHashes.Add(Bulk.Info.ChunkId, Bulk.CompressedPayload.Get().GetRawHash());
+				}
+
 				FCbAttachment BulkAttachment(Bulk.CompressedPayload.Get());
 				PkgHashGen.Update(BulkAttachment.GetHash().GetBytes(), sizeof(FIoHash::ByteArray));
 				OplogEntry.AddAttachment(BulkAttachment);
@@ -724,6 +784,11 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 
 			for (FFileDataEntry& File : PackageState->FileData)
 			{
+				if (bComputeHash)
+				{
+					PackageState->PackageHashes->ChunkHashes.Add(File.Info.ChunkId, File.CompressedPayload.Get().GetRawHash());
+				}
+
 				FCbAttachment FileDataAttachment(File.CompressedPayload.Get());
 				PkgHashGen.Update(FileDataAttachment.GetHash().GetBytes(), sizeof(FIoHash::ByteArray));
 				OplogEntry.AddAttachment(FileDataAttachment);
@@ -738,7 +803,6 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 				CommitEventArgs.AdditionalFiles.Add(FAdditionalFileInfo
 				{ 
 					CommitInfo.PackageName,
-					CommitInfo.PackageName,
 					File.ZenManifestClientPath,
 					File.Info.ChunkId
 				});
@@ -747,9 +811,10 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 			OplogEntryDesc.EndArray();
 		}
 
-		FMD5Hash PkgHash;
-		PkgHash.Set(PkgHashGen);
-		PackageState->HashPromise.SetValue(PkgHash);
+		if (bComputeHash)
+		{
+			PackageState->PackageHashes->PackageHash.Set(PkgHashGen);
+		}
 
 		for (int32 Index = 0; Index < NumAttachments; ++Index)
 		{
@@ -764,7 +829,7 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 		TIoStatusOr<uint64> Status = HttpClient->AppendOp(MoveTemp(OplogEntry));
 		UE_CLOG(!Status.IsOk(), LogZenStoreWriter, Error, TEXT("Failed to commit oplog entry '%s' to Zen"), *CommitInfo.PackageName.ToString());
 	}
-	else if (CommitInfo.bSucceeded && bComputeHash)
+	else if (CommitInfo.Status == ECommitStatus::Success && bComputeHash)
 	{
 		FPackageDataEntry& PkgData = PackageState->PackageData;
 		checkf(PkgData.IsValid, TEXT("CommitPackage called with bSucceeded but without first calling WritePackageData"));
@@ -774,6 +839,7 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 		{
 			FCompressedBuffer Payload = PkgData.CompressedPayload.Get();
 			FIoHash IoHash = Payload.GetRawHash();
+			PackageState->PackageHashes->ChunkHashes.Add(PkgData.Info.ChunkId, IoHash);
 			PkgHashGen.Update(IoHash.GetBytes(), sizeof(FIoHash::ByteArray));
 		}
 		
@@ -781,6 +847,7 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 		{
 			FCompressedBuffer Payload = Bulk.CompressedPayload.Get();
 			FIoHash IoHash = Payload.GetRawHash();
+			PackageState->PackageHashes->ChunkHashes.Add(Bulk.Info.ChunkId, IoHash);
 			PkgHashGen.Update(IoHash.GetBytes(), sizeof(FIoHash::ByteArray));
 		}
 		
@@ -788,16 +855,11 @@ void FZenStoreWriter::CommitPackageInternal(FCommitPackageInfo&& CommitInfo)
 		{
 			FCompressedBuffer Payload = File.CompressedPayload.Get();
 			FIoHash IoHash = Payload.GetRawHash();
+			PackageState->PackageHashes->ChunkHashes.Add(File.Info.ChunkId, IoHash);
 			PkgHashGen.Update(IoHash.GetBytes(), sizeof(FIoHash::ByteArray));
 		}
 		
-		FMD5Hash PkgHash;
-		PkgHash.Set(PkgHashGen);
-		PackageState->HashPromise.SetValue(PkgHash);
-	}
-	else
-	{
-		PackageState->HashPromise.SetValue(FMD5Hash());
+		PackageState->PackageHashes->PackageHash.Set(PkgHashGen);
 	}
 
 	if (bWritePackage)
@@ -812,14 +874,6 @@ void FZenStoreWriter::GetEntries(TFunction<void(TArrayView<const FPackageStoreEn
 {
 	FReadScopeLock _(EntriesLock);
 	Callback(PackageStoreEntries, CookedPackagesInfo);
-}
-
-void FZenStoreWriter::Flush()
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(FZenStoreWriter::Flush);
-
-	UE_LOG(LogZenStoreWriter, Display, TEXT("Flushing..."));
-	CommitQueue->WaitUntilEmpty();
 }
 
 TUniquePtr<FAssetRegistryState> FZenStoreWriter::LoadPreviousAssetRegistry() 
@@ -1016,12 +1070,34 @@ void FZenStoreWriter::CreateProjectMetaData(FCbPackage& Pkg, FCbWriter& PackageO
 			{
 				FCbObjectId FileOid = ToObjectId(NewEntry.FileChunkId);
 
-				PackageObj.BeginObject();
-				PackageObj << "id" << FileOid;
-				PackageObj << "data" << FIoHash::Zero;
-				PackageObj << "serverpath" << NewEntry.ServerPath;
-				PackageObj << "clientpath" << NewEntry.ClientPath;
-				PackageObj.EndObject();
+				if (IsLocalConnection)
+				{
+					PackageObj.BeginObject();
+					PackageObj << "id" << FileOid;
+					PackageObj << "data" << FIoHash::Zero;
+					PackageObj << "serverpath" << NewEntry.ServerPath;
+					PackageObj << "clientpath" << NewEntry.ClientPath;
+					PackageObj.EndObject();
+				}
+				else
+				{
+					const FString AbsPath = ZenFileSystemManifest->ServerRootPath() / NewEntry.ServerPath;
+					TArray<uint8> FileBuffer;
+					FFileHelper::LoadFileToArray(FileBuffer, *AbsPath);
+					if (FileBuffer.Num())
+					{
+						FCbAttachment FileAttachment = CreateAttachment(FIoBuffer(FIoBuffer::Clone, FileBuffer.GetData(), FileBuffer.Num()));
+
+						PackageObj.BeginObject();
+						PackageObj << "id" << FileOid;
+						PackageObj << "data" << FileAttachment;
+						PackageObj << "serverpath" << NewEntry.ServerPath;
+						PackageObj << "clientpath" << NewEntry.ClientPath;
+						PackageObj.EndObject();
+
+						Pkg.AddAttachment(FileAttachment);
+					}
+				}
 			}
 
 			PackageObj.EndArray();
@@ -1096,7 +1172,7 @@ void FZenStoreWriter::BroadcastMarkUpToDate(IPackageStoreWriter::FMarkUpToDateEv
 	if (MarkUpToDateEvent.IsBound())
 	{
 		FReadScopeLock _(EntriesLock);
-		EventArgs.PlatformName = FName(*TargetPlatform.PlatformName());
+		EventArgs.PlatformName = TargetPlatformFName;
 		EventArgs.Entries = PackageStoreEntries;
 		EventArgs.CookInfos = CookedPackagesInfo;
 		MarkUpToDateEvent.Broadcast(EventArgs);

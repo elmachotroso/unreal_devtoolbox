@@ -23,9 +23,6 @@ namespace Chaos
 	{
 		extern int32 Chaos_Collision_UseShockPropagation;
 
-		bool bChaos_PBDCollisionSolver_VectorRegister = false;
-		FAutoConsoleVariableRef CVarChaos_PBDCollisionSolver_VectorRegister(TEXT("p.Chaos.PBDCollisionSolver.VectorRegister"), bChaos_PBDCollisionSolver_VectorRegister, TEXT(""));
-
 		bool bChaos_PBDCollisionSolver_Position_SolveEnabled = true;
 		float Chaos_PBDCollisionSolver_Position_MinInvMassScale = 0.77f;
 		float Chaos_PBDCollisionSolver_Position_StaticFrictionStiffness = 0.5f;
@@ -93,17 +90,17 @@ namespace Chaos
 			bool bInvMassUpdated = false;
 			if (Body0.Level() < Body1.Level())
 			{
-				if (Body0.InvMScale() != InvMassScale)
+				if (Body0.ShockPropagationScale() != InvMassScale)
 				{
-					Body0.SetInvMScale(InvMassScale);
+					Body0.SetShockPropagationScale(InvMassScale);
 					bInvMassUpdated = true;
 				}
 			}
 			else
 			{
-				if (Body1.InvMScale() != InvMassScale)
+				if (Body1.ShockPropagationScale() != InvMassScale)
 				{
-					Body1.SetInvMScale(InvMassScale);
+					Body1.SetShockPropagationScale(InvMassScale);
 					bInvMassUpdated = true;
 				}
 			}
@@ -183,7 +180,7 @@ namespace Chaos
 				WorldContactNormalAngular1 = Body1.InvI() * R1xN;
 				ContactMassInvNormal += FSolverVec3::DotProduct(R1xN, WorldContactNormalAngular1) + Body1.InvM();
 			}
-			AverageManifoldPoint.ContactMassNormal = (ContactMassInvNormal > FSolverReal(SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0);
+			AverageManifoldPoint.ContactMassNormal = (ContactMassInvNormal > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0);
 			AverageManifoldPoint.WorldContactNormalAngular0 = WorldContactNormalAngular0;
 			AverageManifoldPoint.WorldContactNormalAngular1 = WorldContactNormalAngular1;
 

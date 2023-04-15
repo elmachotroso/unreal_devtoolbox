@@ -6,12 +6,6 @@ public class UMG : ModuleRules
 {
 	public UMG(ReadOnlyTargetRules Target) : base(Target)
 	{
-        PrivateIncludePaths.AddRange(
-            new string[] {
-                "Runtime/UMG/Private" // For PCH includes (because they don't work with relative paths, yet)
-            })
-		;
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -22,6 +16,7 @@ public class UMG : ModuleRules
 				"SlateCore",
 				"RenderCore",
 				"RHI",
+				"ApplicationCore"
 			}
 		);
 
@@ -37,19 +32,14 @@ public class UMG : ModuleRules
 
         PrivateIncludePathModuleNames.AddRange(
             new string[] {
+				"SlateRHIRenderer",
 				"ImageWrapper",
-                 "TargetPlatform",
-            }
+                "TargetPlatform",
+			}
         );
 
 		if (Target.Type != TargetType.Server)
 		{
-			PrivateIncludePathModuleNames.AddRange(
-				new string[] {
-					"SlateRHIRenderer",
-				}
-			);
-
             DynamicallyLoadedModuleNames.AddRange(
                 new string[] {
 				    "ImageWrapper",

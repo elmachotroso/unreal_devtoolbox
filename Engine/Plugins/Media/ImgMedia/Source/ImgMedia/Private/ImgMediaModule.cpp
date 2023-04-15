@@ -5,15 +5,21 @@
 #include "IMediaClock.h"
 #include "IMediaModule.h"
 #include "Misc/QueuedThreadPool.h"
-#include "Modules/ModuleManager.h"
 
 #include "ImgMediaGlobalCache.h"
 #include "ImgMediaPlayer.h"
+#include "ImgMediaSceneViewExtension.h"
 #include "ImgMediaScheduler.h"
+#include "ImgMediaSource.h"
 #include "IImgMediaModule.h"
 
-
+CSV_DEFINE_CATEGORY_MODULE(IMGMEDIA_API, ImgMedia, false);
 DEFINE_LOG_CATEGORY(LogImgMedia);
+
+FLazyName IImgMediaModule::CustomFormatAttributeName(TEXT("EpicGamesCustomFormat"));
+FLazyName IImgMediaModule::CustomFormatTileWidthAttributeName(TEXT("EpicGamesTileWidth"));
+FLazyName IImgMediaModule::CustomFormatTileHeightAttributeName(TEXT("EpicGamesTileHeight"));
+FLazyName IImgMediaModule::CustomFormatTileBorderAttributeName(TEXT("EpicGamesTileBorder"));
 
 TSharedPtr<FImgMediaGlobalCache, ESPMode::ThreadSafe> IImgMediaModule::GlobalCache;
 
@@ -110,7 +116,15 @@ public:
 			InitGlobalCache();
 		}
 
-		return MakeShared<FImgMediaPlayer, ESPMode::ThreadSafe>(EventSink, Scheduler.ToSharedRef(), GlobalCache.ToSharedRef());
+		TSharedPtr<FImgMediaPlayer, ESPMode::ThreadSafe> Player = MakeShared<FImgMediaPlayer, ESPMode::ThreadSafe>(EventSink, Scheduler.ToSharedRef(), GlobalCache.ToSharedRef());
+		OnImgMediaPlayerCreated.Broadcast(Player);
+
+		return Player;
+	}
+
+	const TSharedPtr<FImgMediaSceneViewExtension, ESPMode::ThreadSafe>& GetSceneViewExtension() const override
+	{
+		return SceneViewExtension;
 	}
 
 public:
@@ -119,13 +133,31 @@ public:
 
 	virtual void StartupModule() override
 	{
+		// Register media source spawners.
+		FMediaSourceSpawnDelegate SpawnDelegate =
+			FMediaSourceSpawnDelegate::CreateStatic(&FImgMediaModule::SpawnMediaSourceForString);
+		for (const FString& Ext : FileExtensions)
+		{
+			UMediaSource::RegisterSpawnFromFileExtension(Ext, SpawnDelegate);
+		}
 
+		FCoreDelegates::OnPostEngineInit.AddRaw(this, &FImgMediaModule::OnPostEngineInit);
+		FCoreDelegates::OnEnginePreExit.AddRaw(this, &FImgMediaModule::OnEnginePreExit);
 	}
 
 	virtual void ShutdownModule() override
 	{
+		// Unregister media source spawners.
+		for (const FString& Ext : FileExtensions)
+		{
+			UMediaSource::UnregisterSpawnFromFileExtension(Ext);
+		}
+
 		Scheduler.Reset();
 		GlobalCache.Reset();
+
+		FCoreDelegates::OnEnginePreExit.RemoveAll(this);
+		FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 
 #if USE_IMGMEDIA_DEALLOC_POOL
 		ImgMediaThreadPool.Reset();
@@ -133,6 +165,16 @@ public:
 	}
 
 private:
+
+	void OnPostEngineInit()
+	{
+		SceneViewExtension = FSceneViewExtensions::NewExtension<FImgMediaSceneViewExtension>();
+	}
+
+	void OnEnginePreExit()
+	{
+		SceneViewExtension.Reset();
+	}
 
 	void InitScheduler()
 	{
@@ -155,7 +197,35 @@ private:
 		GlobalCache->Initialize();
 	}
 
+	/**
+	 * Creates a media source for MediaPath.
+	 *
+	 * @param	MediaPath		File path to the media.
+	 * @param	Outer			Outer to use for this object.
+	 */
+	static UMediaSource* SpawnMediaSourceForString(const FString& MediaPath, UObject* Outer)
+	{
+		TObjectPtr<UImgMediaSource> MediaSource = 
+			NewObject<UImgMediaSource>(Outer, NAME_None, RF_Transactional);
+		MediaSource->SetSequencePath(MediaPath);
+
+		return MediaSource;
+	}
+
 	TSharedPtr<FImgMediaScheduler, ESPMode::ThreadSafe> Scheduler;
+
+	/** Scene view extension used to track view/camera info. */
+	TSharedPtr<FImgMediaSceneViewExtension, ESPMode::ThreadSafe> SceneViewExtension;
+
+	/** List of file extensions that we support. */
+	const TArray<FString> FileExtensions =
+	{
+		TEXT("bmp"),
+		TEXT("exr"),
+		TEXT("jpg"),
+		TEXT("jpeg"),
+		TEXT("png"),
+	};
 };
 
 

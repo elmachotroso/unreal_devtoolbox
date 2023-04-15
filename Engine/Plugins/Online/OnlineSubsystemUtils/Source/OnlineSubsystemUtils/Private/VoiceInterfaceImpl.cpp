@@ -117,14 +117,14 @@ void FOnlineVoiceImpl::Tick(float DeltaTime)
 {
 	if (!OnlineSubsystem->IsDedicated())
 	{
-		SCOPE_CYCLE_COUNTER(STAT_Voice_Interface);
-
 		// If we aren't in a networked match, no need to update networked voice
 		if (SessionInt && SessionInt->GetNumSessions() > 0)
 		{
 			// Processing voice data only valid with a voice engine to capture/play
 			if (VoiceEngine.IsValid())
 			{
+				QUICK_SCOPE_CYCLE_COUNTER(STAT_FOnlineVoiceImpl_Tick);
+
 				VoiceEngine->Tick(DeltaTime);
 
 				// Queue local packets for sending via the network
@@ -550,15 +550,8 @@ void FOnlineVoiceImpl::ProcessMuteChangeNotification()
 			// For each local user with voice
 			for (int32 Index = 0; Index < MaxLocalTalkers; Index++)
 			{
-				// Find the very first ULocalPlayer for this ControllerId. 
-				// This is imperfect and means we cannot support voice chat properly for
-				// multiple UWorlds (but thats ok for the time being).
-				ULocalPlayer* LP = GEngine->FindFirstLocalPlayerFromControllerId(Index);
-				if (LP && LP->PlayerController)
-				{
-					// Use the common method of checking muting
-					UpdateMuteListForLocalTalker(Index, LP->PlayerController);
-				}
+				// Use the common method of checking muting
+				UpdateMuteListForLocalTalker(Index);
 			}
 		}
 	}
@@ -569,29 +562,37 @@ IVoiceEnginePtr FOnlineVoiceImpl::CreateVoiceEngine()
 	return MakeShareable(new FVoiceEngineImpl(OnlineSubsystem));
 }
 
-void FOnlineVoiceImpl::UpdateMuteListForLocalTalker(int32 TalkerIndex, APlayerController* PlayerController)
+void FOnlineVoiceImpl::UpdateMuteListForLocalTalker(int32 TalkerIndex)
 {
-	// For each registered remote talker
-	for (int32 RemoteIndex = 0; RemoteIndex < RemoteTalkers.Num(); RemoteIndex++)
+	// Find the very first ULocalPlayer for this ControllerId. 
+	// This is imperfect and means we cannot support voice chat properly for
+	// multiple UWorlds (but thats ok for the time being).
+	ULocalPlayer* LP = GEngine->FindFirstLocalPlayerFromControllerId(TalkerIndex);
+	APlayerController* PC = LP ? LP->PlayerController : nullptr;
+	if (PC)
 	{
-		const FRemoteTalker& Talker = RemoteTalkers[RemoteIndex];
-
-		FUniqueNetIdRepl UniqueIdRepl(Talker.TalkerId);
-
-		// Is the remote talker on this local player's mute list?
-		if (SystemMuteList.Find(FUniqueNetIdWrapper(Talker.TalkerId->AsShared())) == INDEX_NONE)
+		// For each registered remote talker
+		for (int32 RemoteIndex = 0; RemoteIndex < RemoteTalkers.Num(); RemoteIndex++)
 		{
-			// Unmute on the server
-			PlayerController->ServerUnmutePlayer(UniqueIdRepl);
-		}
-		else
-		{
-			// Mute on the server
-			PlayerController->ServerMutePlayer(UniqueIdRepl);
-		}
+			const FRemoteTalker& Talker = RemoteTalkers[RemoteIndex];
 
-		// The ServerUn/MutePlayer() functions will perform the muting based
-		// upon gameplay settings and other player's mute list
+			FUniqueNetIdRepl UniqueIdRepl(Talker.TalkerId);
+
+			// Is the remote talker on this local player's mute list?
+			if (SystemMuteList.Find(FUniqueNetIdWrapper(Talker.TalkerId->AsShared())) == INDEX_NONE)
+			{
+				// Unmute on the server
+				PC->ServerUnmutePlayer(UniqueIdRepl);
+			}
+			else
+			{
+				// Mute on the server
+				PC->ServerMutePlayer(UniqueIdRepl);
+			}
+
+			// The ServerUn/MutePlayer() functions will perform the muting based
+			// upon gameplay settings and other player's mute list
+		}
 	}
 }
 
@@ -733,11 +734,13 @@ void FOnlineVoiceImpl::ProcessLocalVoicePackets()
 						uint32 Result = VoiceEngine->ReadLocalVoiceData(Index, BufferStart, &SpaceAvail, &SampleCount);
 
 						// Convert to Q15:
-						const float Amplitude = VoiceEngine->GetMicrophoneAmplitude(Index);
-						ensureAlways(Amplitude >= 0.0f && Amplitude <= 1.0f);
-
+						float Amplitude = VoiceEngine->GetMicrophoneAmplitude(Index);
+						if (!ensure(Amplitude >= 0.0f && Amplitude <= 1.0f))
+						{
+							// GetMicrophoneAmplitude returns -1 if not implemented which would mess up the MicrophoneAmplitude value so we set it to a sane value
+							Amplitude = 1.0f;
+						}
 						VoiceData.LocalPackets[Index].MicrophoneAmplitude = (int16)(Amplitude * 32767.0f);
-
 
 						if (Result == ONLINE_SUCCESS)
 						{

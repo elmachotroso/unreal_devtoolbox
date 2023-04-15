@@ -17,6 +17,11 @@
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserDataUtils.h"
 #include "ContentBrowserItemPath.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserClassDataSource)
 
 #define LOCTEXT_NAMESPACE "ContentBrowserClassDataSource"
 
@@ -88,7 +93,7 @@ void UContentBrowserClassDataSource::CompileFilter(const FName InPath, const FCo
 	const FContentBrowserDataClassFilter* ClassFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataClassFilter>();
 	const FContentBrowserDataCollectionFilter* CollectionFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataCollectionFilter>();
 
-	const FNamePermissionList* ClassPermissionList = ClassFilter && ClassFilter->ClassPermissionList && ClassFilter->ClassPermissionList->HasFiltering() ? ClassFilter->ClassPermissionList.Get() : nullptr;
+	const FPathPermissionList* ClassPermissionList = ClassFilter && ClassFilter->ClassPermissionList && ClassFilter->ClassPermissionList->HasFiltering() ? ClassFilter->ClassPermissionList.Get() : nullptr;
 
 	const bool bIncludeFolders = EnumHasAnyFlags(InFilter.ItemTypeFilter, EContentBrowserItemTypeFilter::IncludeFolders);
 	const bool bIncludeFiles = EnumHasAnyFlags(InFilter.ItemTypeFilter, EContentBrowserItemTypeFilter::IncludeFiles);
@@ -266,9 +271,9 @@ void UContentBrowserClassDataSource::CompileFilter(const FName InPath, const FCo
 	}
 
 	// If we are filtering all classes, then we can bail now as we won't return any file items
-	if ((ClassFilter && (ClassFilter->ClassNamesToInclude.Num() > 0 && !ClassFilter->ClassNamesToInclude.Contains(NAME_Class))) ||
-		(ClassFilter && (ClassFilter->ClassNamesToExclude.Num() > 0 &&  ClassFilter->ClassNamesToExclude.Contains(NAME_Class))) ||
-		(ClassPermissionList && (ClassPermissionList->IsDenyListAll() || !ClassPermissionList->PassesFilter(NAME_Class)))
+	if ((ClassFilter && (ClassFilter->ClassNamesToInclude.Num() > 0 && !ClassFilter->ClassNamesToInclude.Contains(TEXT("/Script/CoreUObject.Class")))) ||
+		(ClassFilter && (ClassFilter->ClassNamesToExclude.Num() > 0 &&  ClassFilter->ClassNamesToExclude.Contains(TEXT("/Script/CoreUObject.Class")))) ||
+		(ClassPermissionList && (ClassPermissionList->IsDenyListAll() || !ClassPermissionList->PassesFilter(TEXT("/Script/CoreUObject.Class"))))
 		)
 	{
 		return;
@@ -282,10 +287,10 @@ void UContentBrowserClassDataSource::CompileFilter(const FName InPath, const FCo
 
 		if (ChildClassObjects.Num() > 0)
 		{
-			TSet<FName> ClassPathsToInclude;
+			TSet<FTopLevelAssetPath> ClassPathsToInclude;
 			if (CollectionFilter)
 			{
-				TArray<FName> ClassPathsForCollections;
+				TArray<FTopLevelAssetPath> ClassPathsForCollections;
 				if (GetClassPathsForCollections(CollectionFilter->SelectedCollections, CollectionFilter->bIncludeChildCollections, ClassPathsForCollections) && ClassPathsForCollections.Num() == 0)
 				{
 					// If we had collections but they contained no classes then we can bail as nothing will pass the filter
@@ -297,8 +302,8 @@ void UContentBrowserClassDataSource::CompileFilter(const FName InPath, const FCo
 
 			for (UClass* ChildClassObject : ChildClassObjects)
 			{
-				const bool bPassesInclusiveFilter = ClassPathsToInclude.Num() == 0 || ClassPathsToInclude.Contains(*ChildClassObject->GetPathName());
-				const bool bPassesPermissionCheck = !ClassPermissionList || ClassPermissionList->PassesFilter(ChildClassObject->GetFName());
+				const bool bPassesInclusiveFilter = ClassPathsToInclude.Num() == 0 || ClassPathsToInclude.Contains(FTopLevelAssetPath(ChildClassObject));
+				const bool bPassesPermissionCheck = !ClassPermissionList || ClassPermissionList->PassesFilter(ChildClassObject->GetClassPathName().ToString());
 
 				if (bPassesInclusiveFilter && bPassesPermissionCheck)
 				{
@@ -509,11 +514,11 @@ bool UContentBrowserClassDataSource::UpdateThumbnail(const FContentBrowserItemDa
 	return ContentBrowserClassData::UpdateItemThumbnail(this, InItem, InThumbnail);
 }
 
-bool UContentBrowserClassDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId)
+bool UContentBrowserClassDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId)
 {
 	if (TSharedPtr<const FContentBrowserClassFileItemDataPayload> ClassPayload = GetClassFileItemPayload(InItem))
 	{
-		OutCollectionId = ClassPayload->GetAssetData().ObjectPath;
+		OutCollectionId = FSoftObjectPath(ClassPayload->GetAssetData().GetSoftObjectPath());
 		return true;
 	}
 	return false;
@@ -547,8 +552,10 @@ bool UContentBrowserClassDataSource::Legacy_TryConvertPackagePathToVirtualPath(c
 
 bool UContentBrowserClassDataSource::Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath)
 {
-	return InAssetData.AssetClass == NAME_Class // Ignore non-class class items
+	return (InAssetData.AssetClassPath == FTopLevelAssetPath(TEXT("/Script/CoreUObject"), TEXT("Class"))) // Ignore non-class class items
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		&& TryConvertInternalPathToVirtual(InUseFolderPaths ? InAssetData.PackagePath : InAssetData.ObjectPath, OutPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UContentBrowserClassDataSource::IsKnownClassPath(const FName InPackagePath) const
@@ -557,7 +564,7 @@ bool UContentBrowserClassDataSource::IsKnownClassPath(const FName InPackagePath)
 	return FStringView(PackagePathStr).StartsWith(TEXT("/Classes_"));
 }
 
-bool UContentBrowserClassDataSource::GetClassPathsForCollections(TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FName>& OutClassPaths)
+bool UContentBrowserClassDataSource::GetClassPathsForCollections(TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FTopLevelAssetPath>& OutClassPaths)
 {
 	if (InCollections.Num() > 0)
 	{
@@ -612,6 +619,11 @@ TSharedPtr<const FContentBrowserClassFileItemDataPayload> UContentBrowserClassDa
 
 void UContentBrowserClassDataSource::PopulateAddNewContextMenu(UToolMenu* InMenu)
 {
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
+		return;
+	}
+
 	const UContentBrowserDataMenuContext_AddNewMenu* ContextObject = InMenu->FindContext<UContentBrowserDataMenuContext_AddNewMenu>();
 	checkf(ContextObject, TEXT("Required context UContentBrowserDataMenuContext_AddNewMenu was missing!"));
 
@@ -675,3 +687,4 @@ void UContentBrowserClassDataSource::ClassHierarchyUpdated()
 }
 
 #undef LOCTEXT_NAMESPACE
+

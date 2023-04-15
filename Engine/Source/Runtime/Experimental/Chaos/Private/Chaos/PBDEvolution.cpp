@@ -2,6 +2,7 @@
 #include "Chaos/PBDEvolution.h"
 
 #include "Chaos/Framework/Parallel.h"
+#include "Chaos/PBDTriangleMeshIntersections.h"
 #include "Chaos/PerParticleDampVelocity.h"
 #include "Chaos/PerParticleGravity.h"
 #include "Chaos/PerParticlePBDCCDCollisionConstraint.h"
@@ -22,6 +23,8 @@ DECLARE_CYCLE_STAT(TEXT("Chaos PBD Integrate"), STAT_ChaosClothSolverIntegrate, 
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Iteration Loop"), STAT_ChaosPBDIterationLoop, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Post Iteration Updates"), STAT_ChaosPBDPostIterationUpdates, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Constraint Rules"), STAT_ChaosPBDConstraintRule, STATGROUP_Chaos);
+DECLARE_CYCLE_STAT(TEXT("Chaos PBD Post Collision Constraint Rules"), STAT_ChaosPBDPostCollisionConstraintRule, STATGROUP_Chaos);
+DECLARE_CYCLE_STAT(TEXT("Chaos PBD Constraint Postprocessings"), STAT_ChaosPBDConstraintPostprocessings, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Self Collision"), STAT_ChaosPBDSelfCollisionRule, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Collision Rule"), STAT_ChaosPBDCollisionRule, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Collider Friction"), STAT_ChaosPBDCollisionRuleFriction, STATGROUP_Chaos);
@@ -56,7 +59,6 @@ void FPBDEvolution::AddGroups(int32 NumGroups)
 	{
 		MGroupGravityAccelerations[GroupId] = MGravity;
 		MGroupCollisionThicknesses[GroupId] = MCollisionThickness;
-		MGroupSelfCollisionThicknesses[GroupId] = MSelfCollisionThickness;
 		MGroupCoefficientOfFrictions[GroupId] = MCoefficientOfFriction;
 		MGroupDampings[GroupId] = MDamping;
 		MGroupLocalDampings[GroupId] = MLocalDamping;
@@ -85,22 +87,21 @@ FPBDEvolution::FPBDEvolution(
 	, MCollisionParticlesActiveView(MCollisionParticles)
 	, MConstraintInitsActiveView(MConstraintInits)
 	, MConstraintRulesActiveView(MConstraintRules)
+	, MPostCollisionConstraintRulesActiveView(MPostCollisionConstraintRules)
+	, MConstraintPostprocessingsActiveView(MConstraintPostprocessings)
 	, MNumIterations(NumIterations)
 	, MGravity(FSolverVec3((FSolverReal)0., (FSolverReal)0., (FSolverReal)-980.665))
 	, MCollisionThickness(CollisionThickness)
-	, MSelfCollisionThickness(SelfCollisionThickness)
 	, MCoefficientOfFriction(CoefficientOfFriction)
 	, MDamping(Damping)
 	, MLocalDamping(LocalDamping)
 	, MTime(0)
-	, MSmoothDt(1.f / 30.f)  // Initialize filtered timestep at 30fps
 {
 	// Add group arrays
 	TArrayCollection::AddArray(&MGroupGravityAccelerations);
-	TArrayCollection::AddArray(&MGroupVelocityFields);
+	TArrayCollection::AddArray(&MGroupVelocityAndPressureFields);
 	TArrayCollection::AddArray(&MGroupForceRules);
 	TArrayCollection::AddArray(&MGroupCollisionThicknesses);
-	TArrayCollection::AddArray(&MGroupSelfCollisionThicknesses);
 	TArrayCollection::AddArray(&MGroupCoefficientOfFrictions);
 	TArrayCollection::AddArray(&MGroupDampings);
 	TArrayCollection::AddArray(&MGroupLocalDampings);
@@ -199,6 +200,24 @@ int32 FPBDEvolution::AddConstraintRuleRange(int32 NumConstraints, bool bActivate
 	return MConstraintRulesActiveView.AddRange(NumConstraints, bActivate);
 }
 
+int32 FPBDEvolution::AddPostCollisionConstraintRuleRange(int32 NumConstraints, bool bActivate)
+{
+	// Add new constraint rule functions
+	MPostCollisionConstraintRules.AddDefaulted(NumConstraints);
+
+	// Add range
+	return MPostCollisionConstraintRulesActiveView.AddRange(NumConstraints, bActivate);
+}
+
+int32 FPBDEvolution::AddConstraintPostprocessingsRange(int32 NumConstraints, bool bActivate)
+{
+	// Add new constraint rule functions
+	MConstraintPostprocessings.AddDefaulted(NumConstraints);
+
+	// Add range
+	return MConstraintPostprocessingsActiveView.AddRange(NumConstraints, bActivate);
+}
+
 template<bool bForceRule, bool bVelocityField, bool bDampVelocityRule>
 void FPBDEvolution::PreIterationUpdate(
 	const FSolverReal Dt,
@@ -209,13 +228,13 @@ void FPBDEvolution::PreIterationUpdate(
 	const uint32 ParticleGroupId = MParticleGroupIds[Offset];
 	const TFunction<void(FSolverParticles&, const FSolverReal, const int32)>& ForceRule = MGroupForceRules[ParticleGroupId];
 	const FSolverVec3& Gravity = MGroupGravityAccelerations[ParticleGroupId];
-	FVelocityField& VelocityField = MGroupVelocityFields[ParticleGroupId];
+	FVelocityAndPressureField& VelocityAndPressureField = MGroupVelocityAndPressureFields[ParticleGroupId];
 
 	if (bVelocityField)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(ChaosPBDVelocityFieldUpdateForces);
 		SCOPE_CYCLE_COUNTER(STAT_ChaosPBDVelocityFieldUpdateForces);
-		VelocityField.UpdateForces(MParticles, Dt);  // Update force per surface element
+		VelocityAndPressureField.UpdateForces(MParticles, Dt);  // Update force per surface element
 	}
 
 	FPerParticleDampVelocity DampVelocityRule(MGroupLocalDampings[ParticleGroupId]);
@@ -234,11 +253,11 @@ void FPBDEvolution::PreIterationUpdate(
 		const FSolverReal Damping = FMath::Clamp(MGroupDampings[ParticleGroupId], (FSolverReal)0., (FSolverReal)1.);
 		FSolverReal DampingPowDt;
 		FSolverReal DampingIntegrated;
-		if (Damping > (FSolverReal)1. - (FSolverReal)KINDA_SMALL_NUMBER)
+		if (Damping > (FSolverReal)1. - (FSolverReal)UE_KINDA_SMALL_NUMBER)
 		{
 			DampingIntegrated = DampingPowDt = (FSolverReal)0.;
 		}
-		else if (Damping > (FSolverReal)SMALL_NUMBER)
+		else if (Damping > (FSolverReal)UE_SMALL_NUMBER)
 		{
 			const FSolverReal LogValueByFrequency = FMath::Loge((FSolverReal)1. - Damping) * DampingFrequency;
 
@@ -253,7 +272,7 @@ void FPBDEvolution::PreIterationUpdate(
 
 		const int32 RangeSize = Range - Offset;
 		PhysicsParallelFor(RangeSize,
-			[this, &Offset, &ForceRule, &Gravity, &VelocityField, &DampVelocityRule, DampingPowDt, DampingIntegrated, Dt](int32 i)
+			[this, &Offset, &ForceRule, &Gravity, &VelocityAndPressureField, &DampVelocityRule, DampingPowDt, DampingIntegrated, Dt](int32 i)
 			{
 				const int32 Index = Offset + i;
 				if (MParticles.InvM(Index) != (FSolverReal)0.)  // Process dynamic particles
@@ -270,11 +289,11 @@ void FPBDEvolution::PreIterationUpdate(
 					// Velocity Field
 					if (bVelocityField)
 					{
-						VelocityField.Apply(MParticles, Dt, Index);
+						VelocityAndPressureField.Apply(MParticles, Dt, Index);
 					}
 
 					// Euler Step Velocity
-					MParticles.V(Index) += MParticles.Acceleration(Index) * MSmoothDt;
+					MParticles.V(Index) += MParticles.Acceleration(Index) * Dt;
 
 					// Damp Velocity Rule
 					if (bDampVelocityRule)
@@ -295,24 +314,13 @@ void FPBDEvolution::PreIterationUpdate(
 	}
 }
 
-void FPBDEvolution::AdvanceOneTimeStep(const FSolverReal Dt, const bool bSmoothDt)
+void FPBDEvolution::AdvanceOneTimeStep(const FSolverReal Dt)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPBDEvolution_AdvanceOneTimeStep);
 	SCOPE_CYCLE_COUNTER(STAT_ChaosPBDVAdvanceTime);
 
 	// Advance time
 	MTime += Dt;
-
-	// Filter delta time to smoothen time variations and prevent unwanted vibrations, works best on Forces
-	if (bSmoothDt && CVarChaosPBDEvolutionUseSmoothTimeStep.GetValueOnAnyThread())
-	{
-		constexpr FSolverReal DeltaTimeDecay = (FSolverReal)0.1;
-		MSmoothDt += (Dt - MSmoothDt) * DeltaTimeDecay;
-	}
-	else
-	{
-		MSmoothDt = Dt;
-	}
 
 	// Don't bother with threaded execution if we don't have enough work to make it worth while.
 	const bool bUseSingleThreadedRange = !CVarChaosPBDEvolutionUseNestedParallelFor.GetValueOnAnyThread();
@@ -330,7 +338,7 @@ void FPBDEvolution::AdvanceOneTimeStep(const FSolverReal Dt, const bool bSmoothD
 			{
 				const uint32 ParticleGroupId = MParticleGroupIds[Offset];
 
-				if (MGroupVelocityFields[ParticleGroupId].IsActive())
+				if (MGroupVelocityAndPressureFields[ParticleGroupId].IsActive())
 				{
 					if (MGroupLocalDampings[ParticleGroupId] > (FSolverReal)0.)
 					{
@@ -480,6 +488,31 @@ void FPBDEvolution::AdvanceOneTimeStep(const FSolverReal Dt, const bool bSmoothD
 						}
 					}, bUseSingleThreadedRange);
 			}
+			MPostCollisionConstraintRulesActiveView.RangeFor(
+				[this, Dt](TArray<TFunction<void(FSolverParticles&, const FSolverReal)>>& ConstraintRules, int32 Offset, int32 Range)
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(ChaosPBDPostCollisionConstraintRule);
+					SCOPE_CYCLE_COUNTER(STAT_ChaosPBDPostCollisionConstraintRule);
+					for (int32 ConstraintIndex = Offset; ConstraintIndex < Range; ++ConstraintIndex)
+					{
+						ConstraintRules[ConstraintIndex](MParticles, Dt); // P +/-= ...
+					}
+				}, bUseSingleThreadedRange);
+		}
+
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(ChaosPBDConstraintPostprocessings);
+			SCOPE_CYCLE_COUNTER(STAT_ChaosPBDConstraintPostprocessings);
+			MConstraintPostprocessingsActiveView.RangeFor(
+				[this, Dt](TArray<TFunction<void(FSolverParticles&, const FSolverReal)>>& ConstraintPostprocessings, int32 Offset, int32 Range)
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(ChaosPBDConstraintPostprocessings);
+					SCOPE_CYCLE_COUNTER(STAT_ChaosPBDConstraintPostprocessings);
+					for (int32 ConstraintIndex = Offset; ConstraintIndex < Range; ++ConstraintIndex)
+					{
+						ConstraintPostprocessings[ConstraintIndex](MParticles, Dt); // P +/-= ...
+					}
+				}, bUseSingleThreadedRange);
 		}
 
 		{

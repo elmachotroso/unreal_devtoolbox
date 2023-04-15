@@ -550,6 +550,7 @@ void SDockTab::Construct( const FArguments& InArgs )
 	this->TabRole = InArgs._TabRole;
 	this->OnTabClosed = InArgs._OnTabClosed;
 	this->OnCanCloseTab = InArgs._OnCanCloseTab;
+	this->bCanEverClose = InArgs._CanEverClose;
 	this->OnPersistVisualState = InArgs._OnPersistVisualState;
 	this->OnExtendContextMenu = InArgs._OnExtendContextMenu;
 	this->TabLabel = InArgs._Label;
@@ -935,7 +936,7 @@ FText SDockTab::GetCloseButtonToolTipText() const
 
 EVisibility SDockTab::HandleIsCloseButtonVisible() const
 {
-	return ((IsHovered() || IsForeground()) && MyTabManager.Pin()->IsTabCloseable(SharedThis(this))) ? EVisibility::Visible : EVisibility::Hidden;
+	return bCanEverClose && ((IsHovered() || IsForeground()) && MyTabManager.Pin()->IsTabCloseable(SharedThis(this))) ? EVisibility::Visible : EVisibility::Hidden;
 }
 
 TOptional<FVector2D> SDockTab::GetTabIconSize() const
@@ -956,19 +957,21 @@ bool SDockTab::RequestCloseTab()
 	// The tab can be closed if the delegate is not bound or if the delegate call indicates we cannot close it
 	const bool bCanCloseTabNow = CanCloseTab();
 
-	if(bCanCloseTabNow)
+	if (bCanCloseTabNow)
 	{
-		bool bRemovedFromSidebar = false;
-		if (GetParentDockTabStack() && GetParentDockTabStack()->GetDockArea())
+		if (GetParentDockTabStack() &&
+			GetParentDockTabStack()->GetDockArea() &&
+			GetParentDockTabStack()->GetDockArea()->IsTabInSidebar(SharedThis(this)))
 		{
-			bRemovedFromSidebar = GetParentDockTabStack()->GetDockArea()->RemoveTabFromSidebar(SharedThis(this));
+			OnTabClosed.ExecuteIfBound(SharedThis(this));
+			GetParentDockTabStack()->GetDockArea()->RemoveTabFromSidebar(SharedThis(this));
 		}
-
-		if (bCanCloseTabNow && !bRemovedFromSidebar)
+		else
 		{
 			RemoveTabFromParent();
 		}
 	}
+
 	return bCanCloseTabNow;
 }
 
@@ -987,5 +990,8 @@ FVector2D SDockTab::GetAnimatedScale() const
 
 void SDockTab::UpdateActivationTime()
 {
-	LastActivationTime = FSlateApplication::Get().GetCurrentTime();
+	if (FSlateApplication::IsInitialized())
+	{
+		LastActivationTime = FSlateApplication::Get().GetCurrentTime();
+	}
 }

@@ -3,6 +3,9 @@
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEffectApplied.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemLog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitGameplayEffectApplied)
 
 UAbilityTask_WaitGameplayEffectApplied::UAbilityTask_WaitGameplayEffectApplied(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -97,5 +100,6 @@ UAbilitySystemComponent* UAbilityTask_WaitGameplayEffectApplied::GetASC()
 	{
 		return ExternalOwner;
 	}
-	return AbilitySystemComponent;
+	return AbilitySystemComponent.Get();
 }
+

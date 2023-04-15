@@ -108,7 +108,14 @@ void FBatchedElements::AddPoint(const FVector& Position,float Size,const FLinear
 	Point->HitProxyId = HitProxyId;
 }
 
-int32 FBatchedElements::AddVertex(const FVector4& InPosition,const FVector2D& InTextureCoordinate,const FLinearColor& InColor,FHitProxyId HitProxyId)
+int32 FBatchedElements::AddVertex(const FVector4& InPosition, const FVector2D& InTextureCoordinate, const FLinearColor& InColor, FHitProxyId HitProxyId)
+{
+	int32 VertexIndex = MeshVertices.Num();
+	new(MeshVertices) FSimpleElementVertex(InPosition, InTextureCoordinate, InColor, HitProxyId);
+	return VertexIndex;
+}
+
+int32 FBatchedElements::AddVertexf(const FVector4f& InPosition,const FVector2f& InTextureCoordinate,const FLinearColor& InColor,FHitProxyId HitProxyId)
 {
 	int32 VertexIndex = MeshVertices.Num();
 	new(MeshVertices) FSimpleElementVertex(InPosition,InTextureCoordinate,InColor,HitProxyId);
@@ -455,7 +462,6 @@ void FBatchedElements::PrepareShaders(
 	ERHIFeatureLevel::Type FeatureLevel,
 	ESimpleElementBlendMode BlendMode,
 	const FRelativeViewMatrices& ViewMatrices,
-	bool bSwitchVerticalAxis,
 	FBatchedElementParameters* BatchedElementParameters,
 	const FTexture* Texture,
 	bool bHitTesting,
@@ -640,7 +646,7 @@ void FBatchedElements::PrepareShaders(
 			{
 				SetBlendState(RHICmdList, GraphicsPSOInit, BlendMode);
 
-				if (FMath::Abs(Gamma - 1.0f) < KINDA_SMALL_NUMBER)
+				if (FMath::Abs(Gamma - 1.0f) < UE_KINDA_SMALL_NUMBER)
 				{
 					auto AlphaOnlyPixelShader = GetPixelShader<FSimpleElementAlphaOnlyPS>(BlendMode, FeatureLevel);
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = AlphaOnlyPixelShader.GetPixelShader();
@@ -674,7 +680,7 @@ void FBatchedElements::PrepareShaders(
 			{
 				SetBlendState(RHICmdList, GraphicsPSOInit, BlendMode);
 	
-				if (FMath::Abs(Gamma - 1.0f) < KINDA_SMALL_NUMBER)
+				if (FMath::Abs(Gamma - 1.0f) < UE_KINDA_SMALL_NUMBER)
 				{
 					TShaderMapRef<FSimpleElementPS> PixelShader(GetGlobalShaderMap(FeatureLevel));
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
@@ -708,8 +714,7 @@ void FBatchedElements::PrepareShaders(
 		}
 
 		// Set the simple element vertex shader parameters
-		const bool bIsPerspectiveProjection = View ? View->IsPerspectiveProjection() : true;
-		VertexShader->SetParameters(RHICmdList, ViewMatrices, bIsPerspectiveProjection, bSwitchVerticalAxis);
+		VertexShader->SetParameters(RHICmdList, ViewMatrices);
 	}
 }
 
@@ -724,8 +729,8 @@ void FBatchedElements::DrawPointElements(FRHICommandList& RHICmdList, const FMat
 		const int32 NumVertices = NumTris * 3;
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FBatchedElements_Points"));
-		FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FSimpleElementVertex) * NumVertices, BUF_Volatile, CreateInfo);
-		void* VerticesPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * NumVertices, RLM_WriteOnly);
+		FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * NumVertices, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		void* VerticesPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * NumVertices, RLM_WriteOnly);
 
 		FSimpleElementVertex* PointVertices = (FSimpleElementVertex*)VerticesPtr;
 
@@ -751,7 +756,7 @@ void FBatchedElements::DrawPointElements(FRHICommandList& RHICmdList, const FMat
 			VertIdx += 6;
 		}
 
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 		RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 		RHICmdList.DrawPrimitive(0, NumTris, 1);
 	}
@@ -768,7 +773,7 @@ FSceneView FBatchedElements::CreateProxySceneView(const FMatrix& ProjectionMatri
 	return FSceneView(ProxyViewInitOptions);
 }
 
-bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, ERHIFeatureLevel::Type FeatureLevel, bool bNeedToSwitchVerticalAxis, const FSceneView& View, bool bHitTesting, float Gamma /* = 1.0f */, EBlendModeFilter::Type Filter /* = EBlendModeFilter::All */) const
+bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, ERHIFeatureLevel::Type FeatureLevel, const FSceneView& View, bool bHitTesting, float Gamma /* = 1.0f */, EBlendModeFilter::Type Filter /* = EBlendModeFilter::All */) const
 {
 	const FRelativeViewMatrices RelativeMatrices = FRelativeViewMatrices::Create(View.ViewMatrices);
 	const FMatrix& WorldToClip = View.ViewMatrices.GetViewProjectionMatrix();
@@ -809,14 +814,14 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 				GraphicsPSOInit.PrimitiveType = PT_LineList;
 
 				// Set the appropriate pixel shader parameters & shader state for the non-textured elements.
-				PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, bNeedToSwitchVerticalAxis, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
+				PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
 
 				FRHIResourceCreateInfo CreateInfo(TEXT("Lines"));
-				FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FSimpleElementVertex) * LineVertices.Num(), BUF_Volatile, CreateInfo);
-				void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * LineVertices.Num(), RLM_WriteOnly);
+				FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * LineVertices.Num(), BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+				void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * LineVertices.Num(), RLM_WriteOnly);
 
 				FMemory::Memcpy(VoidPtr, LineVertices.GetData(), sizeof(FSimpleElementVertex) * LineVertices.Num());
-				RHIUnlockBuffer(VertexBufferRHI);
+				RHICmdList.UnlockBuffer(VertexBufferRHI);
 
 				RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 
@@ -841,7 +846,7 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 			// Set the appropriate pixel shader parameters & shader state for the non-textured elements.
-			PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, bNeedToSwitchVerticalAxis, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
+			PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
 
 			// Draw points
 			DrawPointElements(RHICmdList, WorldToClip, ViewportSizeX, ViewportSizeY, CameraX, CameraY);
@@ -875,14 +880,14 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 
 					const bool bEnableMSAA = true;
 					const bool bEnableLineAA = false;
-					FRasterizerStateInitializerRHI Initializer = { FM_Solid, CM_None, 0, DepthBiasThisBatch, bEnableMSAA, bEnableLineAA };
+					FRasterizerStateInitializerRHI Initializer(FM_Solid, CM_None, 0, DepthBiasThisBatch, ERasterizerDepthClipMode::DepthClip, bEnableMSAA, bEnableLineAA);
 					auto RasterState = RHICreateRasterizerState(Initializer);
 					GraphicsPSOInit.RasterizerState = RasterState.GetReference();
-					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_AlphaBlend, RelativeMatrices, bNeedToSwitchVerticalAxis, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
+					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_AlphaBlend, RelativeMatrices, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
 
 					FRHIResourceCreateInfo CreateInfo(TEXT("ThickLines"));
-					FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FSimpleElementVertex) * 8 * 3 * NumLinesThisBatch, BUF_Volatile, CreateInfo);
-					void* ThickVertexData = RHILockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * 8 * 3 * NumLinesThisBatch, RLM_WriteOnly);
+					FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * 8 * 3 * NumLinesThisBatch, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+					void* ThickVertexData = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * 8 * 3 * NumLinesThisBatch, RLM_WriteOnly);
 					FSimpleElementVertex* ThickVertices = (FSimpleElementVertex*)ThickVertexData;
 					check(ThickVertices);
 
@@ -898,12 +903,12 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 						const float ScalingStart	= Line.bScreenSpace ? StartW / ViewportSizeX : 1.0f;
 						const float ScalingEnd		= Line.bScreenSpace ? EndW   / ViewportSizeX : 1.0f;
 
-						OrthoZoomFactor = Line.bScreenSpace ? OrthoZoomFactor : 1.0f;
+						const float CurrentOrthoZoomFactor = Line.bScreenSpace ? OrthoZoomFactor : 1.0f;
 
 						const float ScreenSpaceScaling = Line.bScreenSpace ? 2.0f : 1.0f;
 
-						const float StartThickness	= Thickness * ScreenSpaceScaling * OrthoZoomFactor * ScalingStart;
-						const float EndThickness	= Thickness * ScreenSpaceScaling * OrthoZoomFactor * ScalingEnd;
+						const float StartThickness	= Thickness * ScreenSpaceScaling * CurrentOrthoZoomFactor * ScalingStart;
+						const float EndThickness	= Thickness * ScreenSpaceScaling * CurrentOrthoZoomFactor * ScalingEnd;
 
 						const FVector WorldPointXS	= CameraX * StartThickness * 0.5f;
 						const FVector WorldPointYS	= CameraY * StartThickness * 0.5f;
@@ -954,7 +959,7 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 						ThickVertices += 24;
 					}
 
-					RHIUnlockBuffer(VertexBufferRHI);
+					RHICmdList.UnlockBuffer(VertexBufferRHI);
 					RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 					RHICmdList.DrawPrimitive(0, 8 * NumLinesThisBatch, 1);
 				}
@@ -967,13 +972,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 				check(WireTriVerts.Num() == WireTris.Num() * 3);
 
 				FRHIResourceCreateInfo CreateInfo(TEXT("WireTris"), &WireTriVerts);
-				FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(WireTriVerts.GetResourceDataSize(), BUF_Volatile, CreateInfo);
+				FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(WireTriVerts.GetResourceDataSize(), BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 				RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 
 				const bool bEnableMSAA = true;
 				const bool bEnableLineAA = false;
-				FRasterizerStateInitializerRHI Initializer = { FM_Wireframe, CM_None, 0, 0, bEnableMSAA, bEnableLineAA };
+				FRasterizerStateInitializerRHI Initializer(FM_Wireframe, CM_None, bEnableMSAA, bEnableLineAA);
 
 				int32 MaxVerticesAllowed = ((GDrawUPVertexCheckCount / sizeof(FSimpleElementVertex)) / 3) * 3;
 				/*
@@ -1001,7 +1006,7 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 					Initializer.DepthBias = DepthBias;
 					auto RasterState = RHICreateRasterizerState(Initializer);
 					GraphicsPSOInit.RasterizerState = RasterState.GetReference();
-					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, bNeedToSwitchVerticalAxis, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
+					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, SE_BLEND_Opaque, RelativeMatrices, BatchedElementParameters, GWhiteTexture, bHitTesting, Gamma, NULL, &View);
 
 					int32 NumTris = MaxTri - MinTri;
 					RHICmdList.DrawPrimitive(MinTri * 3, NumTris, 1);
@@ -1038,13 +1043,15 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 				EBlendModeFilter::Type ValidBlendFilter;
 			};
 
-			Sprites.Sort(FCompareSprite(Filter));
+			TArray<FBatchedSprite> SortedSprites = Sprites;
+
+			SortedSprites.Sort(FCompareSprite(Filter));
 
 			// count the number of sprites that have valid blend modes
 			// (they have been sorted to the front of the list)
 			int32 ValidSpriteCount = 0;
-			while (ValidSpriteCount < Sprites.Num() &&
-				(Filter & GetBlendModeFilter((ESimpleElementBlendMode)Sprites[ValidSpriteCount].BlendMode)))
+			while (ValidSpriteCount < SortedSprites.Num() &&
+				(Filter & GetBlendModeFilter((ESimpleElementBlendMode)SortedSprites[ValidSpriteCount].BlendMode)))
 			{
 				++ValidSpriteCount;
 			}
@@ -1052,13 +1059,13 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 			if (ValidSpriteCount > 0)
 			{
 				FRHIResourceCreateInfo CreateInfo(TEXT("Sprites"));
-				FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, BUF_Volatile, CreateInfo);
-				void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, RLM_WriteOnly);
+				FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+				void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * ValidSpriteCount * 6, RLM_WriteOnly);
 				FSimpleElementVertex* SpriteList = reinterpret_cast<FSimpleElementVertex*>(VoidPtr);
 
 				for (int32 SpriteIndex = 0; SpriteIndex < ValidSpriteCount; SpriteIndex++)
 				{
-					const FBatchedSprite& Sprite = Sprites[SpriteIndex];
+					const FBatchedSprite& Sprite = SortedSprites[SpriteIndex];
 					FSimpleElementVertex* Vertex = &SpriteList[SpriteIndex * 6];
 
 					// Compute the sprite vertices.
@@ -1078,27 +1085,27 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 					Vertex[4] = FSimpleElementVertex(Sprite.Position - WorldSpriteX - WorldSpriteY, FVector2D(UStart, VStart), Sprite.Color, Sprite.HitProxyId);
 					Vertex[5] = FSimpleElementVertex(Sprite.Position - WorldSpriteX + WorldSpriteY, FVector2D(UStart, VEnd), Sprite.Color, Sprite.HitProxyId);
 				}
-				RHIUnlockBuffer(VertexBufferRHI);
+				RHICmdList.UnlockBuffer(VertexBufferRHI);
 
 				//First time init
-				const FTexture* CurrentTexture = Sprites[0].Texture;
-				ESimpleElementBlendMode CurrentBlendMode = (ESimpleElementBlendMode)Sprites[0].BlendMode;
+				const FTexture* CurrentTexture = SortedSprites[0].Texture;
+				ESimpleElementBlendMode CurrentBlendMode = (ESimpleElementBlendMode)SortedSprites[0].BlendMode;
 				int32 BatchStartIndex = 0;
-				float CurrentOpacityMask = Sprites[0].OpacityMaskRefVal;
+				float CurrentOpacityMask = SortedSprites[0].OpacityMaskRefVal;
 
 				// Start loop at 1, since we've already started the first batch with the first sprite in the list
 				for (int32 SpriteIndex = 1; SpriteIndex < ValidSpriteCount + 1; SpriteIndex++)
 				{
 					// Need to flush the current batch once we hit the end of the list, or if state of this sprite doesn't match current batch
 					if (SpriteIndex == ValidSpriteCount ||
-						CurrentTexture != Sprites[SpriteIndex].Texture ||
-						CurrentBlendMode != Sprites[SpriteIndex].BlendMode ||
-						CurrentOpacityMask != Sprites[SpriteIndex].OpacityMaskRefVal)
+						CurrentTexture != SortedSprites[SpriteIndex].Texture ||
+						CurrentBlendMode != SortedSprites[SpriteIndex].BlendMode ||
+						CurrentOpacityMask != SortedSprites[SpriteIndex].OpacityMaskRefVal)
 					{
 						const int32 SpriteNum = SpriteIndex - BatchStartIndex;
 						const int32 BaseVertex = BatchStartIndex * 6;
 						const int32 PrimCount = SpriteNum * 2;
-						PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, CurrentBlendMode, RelativeMatrices, bNeedToSwitchVerticalAxis, BatchedElementParameters, CurrentTexture, bHitTesting, Gamma, NULL, &View, CurrentOpacityMask);
+						PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, CurrentBlendMode, RelativeMatrices, BatchedElementParameters, CurrentTexture, bHitTesting, Gamma, NULL, &View, CurrentOpacityMask);
 						RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 						RHICmdList.DrawPrimitive(BaseVertex, PrimCount, 1);
 
@@ -1106,9 +1113,9 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 						if (SpriteIndex < ValidSpriteCount)
 						{
 							BatchStartIndex = SpriteIndex;
-							CurrentTexture = Sprites[SpriteIndex].Texture;
-							CurrentBlendMode = (ESimpleElementBlendMode)Sprites[SpriteIndex].BlendMode;
-							CurrentOpacityMask = Sprites[SpriteIndex].OpacityMaskRefVal;
+							CurrentTexture = SortedSprites[SpriteIndex].Texture;
+							CurrentBlendMode = (ESimpleElementBlendMode)SortedSprites[SpriteIndex].BlendMode;
+							CurrentOpacityMask = SortedSprites[SpriteIndex].OpacityMaskRefVal;
 						}
 					}
 				}
@@ -1119,10 +1126,10 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 		if( MeshElements.Num() > 0)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("MeshElements"));
-			FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FSimpleElementVertex) * MeshVertices.Num(), BUF_Volatile, CreateInfo);
-			void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * MeshVertices.Num(), RLM_WriteOnly);
+			FBufferRHIRef VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FSimpleElementVertex) * MeshVertices.Num(), BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+			void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FSimpleElementVertex) * MeshVertices.Num(), RLM_WriteOnly);
 			FPlatformMemory::Memcpy(VoidPtr, MeshVertices.GetData(), sizeof(FSimpleElementVertex) * MeshVertices.Num());
-			RHIUnlockBuffer(VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBufferRHI);
 
 			// Draw the mesh elements.
 			for(int32 MeshIndex = 0;MeshIndex < MeshElements.Num();MeshIndex++)
@@ -1142,12 +1149,12 @@ bool FBatchedElements::Draw(FRHICommandList& RHICmdList, const FMeshPassProcesso
 						MeshElement.Texture ? *MeshElement.Texture->GetFriendlyName() : TEXT(""));
 
 					// Set the appropriate pixel shader for the mesh.
-					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, MeshElement.BlendMode, RelativeMatrices, bNeedToSwitchVerticalAxis, MeshElement.BatchedElementParameters, MeshElement.Texture, bHitTesting, Gamma, &MeshElement.GlowInfo, &View);
+					PrepareShaders(RHICmdList, GraphicsPSOInit, StencilRef, FeatureLevel, MeshElement.BlendMode, RelativeMatrices, MeshElement.BatchedElementParameters, MeshElement.Texture, bHitTesting, Gamma, &MeshElement.GlowInfo, &View);
 
-					FBufferRHIRef IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * MeshElement.Indices.Num(), BUF_Volatile, CreateInfo);
-					void* VoidPtr2 = RHILockBuffer(IndexBufferRHI, 0, sizeof(uint16) * MeshElement.Indices.Num(), RLM_WriteOnly);
+					FBufferRHIRef IndexBufferRHI = RHICmdList.CreateBuffer(sizeof(uint16) * MeshElement.Indices.Num(), BUF_IndexBuffer | BUF_Volatile, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+					void* VoidPtr2 = RHICmdList.LockBuffer(IndexBufferRHI, 0, sizeof(uint16) * MeshElement.Indices.Num(), RLM_WriteOnly);
 					FPlatformMemory::Memcpy(VoidPtr2, MeshElement.Indices.GetData(), sizeof(uint16) * MeshElement.Indices.Num());
-					RHIUnlockBuffer(IndexBufferRHI);
+					RHICmdList.UnlockBuffer(IndexBufferRHI);
 
 					// Draw the mesh.
 					RHICmdList.SetStreamSource(0, VertexBufferRHI, MeshElement.MinVertex * sizeof(FSimpleElementVertex));

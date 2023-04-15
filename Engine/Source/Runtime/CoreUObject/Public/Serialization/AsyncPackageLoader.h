@@ -2,11 +2,24 @@
 
 #pragma once
 
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "Misc/PackagePath.h"
-#include "UObject/Object.h"
-#include "UObject/UObjectArray.h"
 #include "Stats/Stats2.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectArray.h"
+#include "UObject/UObjectGlobals.h"
+
+class FLinkerInstancingContext;
+class FPackagePath;
+class FThreadSafeCounter;
+class UPackage;
+struct FGuid;
+template <typename FuncType> class TFunctionRef;
 
 DECLARE_STATS_GROUP_VERBOSE(TEXT("Async Load"), STATGROUP_AsyncLoad, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("Async Loading Time"),STAT_AsyncLoadingTime,STATGROUP_AsyncLoad);
@@ -16,6 +29,7 @@ DECLARE_STATS_GROUP(TEXT("Async Load Game Thread"), STATGROUP_AsyncLoadGameThrea
 DECLARE_CYCLE_STAT(TEXT("PostLoadObjects GT"), STAT_FAsyncPackage_PostLoadObjectsGameThread, STATGROUP_AsyncLoadGameThread);
 DECLARE_CYCLE_STAT(TEXT("TickAsyncLoading GT"), STAT_FAsyncPackage_TickAsyncLoadingGameThread, STATGROUP_AsyncLoadGameThread);
 DECLARE_CYCLE_STAT(TEXT("Flush Async Loading GT"), STAT_FAsyncPackage_FlushAsyncLoadingGameThread, STATGROUP_AsyncLoadGameThread);
+DECLARE_CYCLE_STAT_WITH_FLAGS(TEXT("PostLoadInstances GT"), STAT_FAsyncPackage_PostLoadInstancesGameThread, STATGROUP_AsyncLoadGameThread, EStatFlags::Verbose);
 DECLARE_CYCLE_STAT_WITH_FLAGS(TEXT("CreateClusters GT"), STAT_FAsyncPackage_CreateClustersGameThread, STATGROUP_AsyncLoadGameThread, EStatFlags::Verbose);
 
 enum class ENotifyRegistrationType;
@@ -25,8 +39,6 @@ extern const FName PrestreamPackageClassNameLoad;
 
 /** Returns true if we're inside a FGCScopeLock */
 extern bool IsGarbageCollectionLocked();
-
-bool IsFullyLoadedObj(UObject* Obj);
 
 bool IsNativeCodePackage(UPackage* Package);
 
@@ -50,20 +62,9 @@ void ClearFlagsAndDissolveClustersFromLoadedObjects(T& LoadedObjects)
 	}
 }
 
-class IAsyncPackageLoader;
 class FPackageIndex;
+class IAsyncPackageLoader;
 class LinkerInstancingContext;
-
-class IEDLBootNotificationManager
-{
-public:
-	virtual ~IEDLBootNotificationManager() = default;
-
-	virtual bool AddWaitingPackage(void* Pkg, FName PackageName, FName ObjectName, FPackageIndex Import, bool bIgnoreMissingPackage) = 0;
-	virtual bool ConstructWaitingBootObjects() = 0;
-	virtual bool FireCompletedCompiledInImports(bool bFinalRun = false) = 0;
-	virtual bool IsWaitingForSomething() = 0;
-};
 
 /** Structure that holds the async loading thread ini settings */
 struct FAsyncLoadingThreadSettings
@@ -169,10 +170,10 @@ public:
 	virtual void ResumeLoading() = 0;
 
 	/**
-	* Flush pending loading request(s).
-	*
-	* Note: Called from Game Thread.
-	*/
+	 * Flush pending loading request(s).
+	 *
+	 * Note: Called from Game Thread.
+	 */
 	virtual void FlushLoading(int32 PackageId) = 0;
 
 	/**
@@ -220,7 +221,9 @@ public:
 
 	virtual void NotifyUnreachableObjects(const TArrayView<FUObjectItem*>& UnreachableObjects) = 0;
 
-	virtual void FireCompletedCompiledInImport(void* AsyncPackage, FPackageIndex Import) = 0;
+	virtual void NotifyRegistrationEvent(const TCHAR* PackageName, const TCHAR* Name, ENotifyRegistrationType NotifyRegistrationType, ENotifyRegistrationPhase NotifyRegistrationPhase, UObject* (*InRegister)(), bool InbDynamic, UObject* FinishedObject) = 0;
+
+	virtual void NotifyRegistrationComplete() = 0;
 
 protected:
 	static int32 GetNextRequestId();

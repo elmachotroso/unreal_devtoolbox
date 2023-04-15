@@ -3,37 +3,32 @@
 #include "ViewModels/Stack/NiagaraStackSummaryViewInputCollection.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraClipboard.h"
-#include "NiagaraDataInterface.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeOutput.h"
-#include "NiagaraNodeParameterMapSet.h"
 #include "NiagaraSimulationStageBase.h"
-#include "ScopedTransaction.h"
-#include "EdGraph/EdGraphPin.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
 #include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "ViewModels/Stack/NiagaraStackFunctionInput.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
-#include "ViewModels/Stack/NiagaraStackInputCategory.h"
-#include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #include "ViewModels/Stack/NiagaraStackFunctionInputCollection.h"
 #include "ViewModels/Stack/NiagaraStackSimulationStageGroup.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackSummaryViewInputCollection)
 
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackSummaryViewObject"
 
 
 UNiagaraStackSummaryViewObject::UNiagaraStackSummaryViewObject()
-	: Emitter(nullptr)
 {
 }
 
-void UNiagaraStackSummaryViewObject::Initialize(FRequiredEntryData InRequiredEntryData, UNiagaraEmitter* InEmitter, FString InOwningStackItemEditorDataKey)
+void UNiagaraStackSummaryViewObject::Initialize(FRequiredEntryData InRequiredEntryData, FVersionedNiagaraEmitterWeakPtr InEmitter, FString InOwningStackItemEditorDataKey)
 {
-	checkf(Emitter == nullptr, TEXT("Can only initialize once."));
+	checkf(Emitter.Emitter == nullptr, TEXT("Can only initialize once."));
 	FString ObjectStackEditorDataKey = FString::Printf(TEXT("%s-FilteredView"), *InOwningStackItemEditorDataKey);
 	Super::Initialize(InRequiredEntryData, InOwningStackItemEditorDataKey, ObjectStackEditorDataKey);
 
@@ -43,7 +38,10 @@ void UNiagaraStackSummaryViewObject::Initialize(FRequiredEntryData InRequiredEnt
 
 void UNiagaraStackSummaryViewObject::FinalizeInternal()
 {
-	GetEmitterViewModel()->GetOrCreateEditorData().OnSummaryViewStateChanged().RemoveAll(this);
+	if (GetEmitterViewModel() && GetEmitterViewModel()->GetEmitter().GetEmitterData())
+	{
+		GetEmitterViewModel()->GetOrCreateEditorData().OnSummaryViewStateChanged().RemoveAll(this);
+	}
 	Super::FinalizeInternal();
 }
 
@@ -72,12 +70,12 @@ void UNiagaraStackSummaryViewObject::RefreshChildrenInternal(const TArray<UNiaga
 	AppendEmitterCategory(State, ScriptViewModelPinned, ENiagaraScriptUsage::ParticleSpawnScript, FGuid(), NewIssues);
 	AppendEmitterCategory(State, ScriptViewModelPinned, ENiagaraScriptUsage::ParticleUpdateScript, FGuid(), NewIssues);
 
-	for (const FNiagaraEventScriptProperties& EventScriptProperties : ViewModel->GetEmitter()->GetEventHandlers())
+	for (const FNiagaraEventScriptProperties& EventScriptProperties : ViewModel->GetEmitter().GetEmitterData()->GetEventHandlers())
 	{
 		AppendEmitterCategory(State, ScriptViewModelPinned, ENiagaraScriptUsage::ParticleEventScript, EventScriptProperties.Script->GetUsageId(), NewIssues);
 	}
 	
-	for (UNiagaraSimulationStageBase* SimulationStage : GetEmitterViewModel()->GetEmitter()->GetSimulationStages())
+	for (UNiagaraSimulationStageBase* SimulationStage : GetEmitterViewModel()->GetEmitter().GetEmitterData()->GetSimulationStages())
 	{
 		AppendEmitterCategory(State, ScriptViewModelPinned, ENiagaraScriptUsage::ParticleSimulationStageScript, SimulationStage->Script->GetUsageId(), NewIssues);
 	}	
@@ -115,7 +113,7 @@ void UNiagaraStackSummaryViewObject::AppendEmitterCategory(FFunctionCallNodesSta
 		bool bIsFirst = true;
 		for (UNiagaraNodeFunctionCall* ModuleNode : ModuleNodes)
 		{
-			if (ModuleNode && ModuleNode->ScriptIsValid())
+			if (ModuleNode && (ModuleNode->HasValidScriptAndGraph() || ModuleNode->Signature.IsValid()))
 			{
 				AppendInputsForFunctionCall(State, ModuleNode, ModuleNode, NewIssues, true);
 			}

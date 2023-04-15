@@ -87,6 +87,7 @@ TArray<FString> FHeaderParser::PropertyCPPTypesRequiringUIRanges = { TEXT("float
 TArray<FString> FHeaderParser::ReservedTypeNames = { TEXT("none") };
 
 // Busy wait support for holes in the include graph issues
+extern bool bGoWide;
 extern std::atomic<bool> GSourcesConcurrent;
 extern std::atomic<int> GSourcesToParse;
 extern std::atomic<int> GSourcesParsing;
@@ -533,6 +534,11 @@ namespace
 					}
 				}
 				break;
+				case EFunctionSpecifier::FieldNotify:
+				{
+					FuncInfo.bFieldNotify = true;
+				}
+				break;
 			}
 		}
 
@@ -708,7 +714,7 @@ namespace
 		}
 
 		// If we aren't doing concurrent processing, then there isn't any reason to continue, we will never make any progress.
-		if (!GSourcesConcurrent)
+		if (!bGoWide)
 		{
 			return false;
 		}
@@ -781,6 +787,8 @@ FUHTConfig::FUHTConfig()
 	const FName GeneratedCodeVersionKey(TEXT("GeneratedCodeVersion"));
 	const FName EngineNativePointerMemberBehaviorKey(TEXT("EngineNativePointerMemberBehavior"));
 	const FName EngineObjectPtrMemberBehaviorKey(TEXT("EngineObjectPtrMemberBehavior"));
+	const FName EnginePluginNativePointerMemberBehaviorKey(TEXT("EnginePluginNativePointerMemberBehavior"));
+	const FName EnginePluginObjectPtrMemberBehaviorKey(TEXT("EnginePluginObjectPtrMemberBehavior"));
 	const FName NonEngineNativePointerMemberBehaviorKey(TEXT("NonEngineNativePointerMemberBehavior"));
 	const FName NonEngineObjectPtrMemberBehaviorKey(TEXT("NonEngineObjectPtrMemberBehavior"));
 
@@ -822,6 +830,14 @@ FUHTConfig::FUHTConfig()
 			else if (It.Key() == EngineObjectPtrMemberBehaviorKey)
 			{
 				EngineObjectPtrMemberBehavior = ToPointerMemberBehavior(It.Value().GetValue());
+			}
+			else if (It.Key() == EnginePluginNativePointerMemberBehaviorKey)
+			{
+				EnginePluginNativePointerMemberBehavior = ToPointerMemberBehavior(It.Value().GetValue());
+			}
+			else if (It.Key() == EnginePluginObjectPtrMemberBehaviorKey)
+			{
+				EnginePluginObjectPtrMemberBehavior = ToPointerMemberBehavior(It.Value().GetValue());
 			}
 			else if (It.Key() == NonEngineNativePointerMemberBehaviorKey)
 			{
@@ -1114,6 +1130,22 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 			Throwf(TEXT("ICE: Mismatch of underlying enum type between pre-parser and parser"));
 		}
 	}
+	else if (CppForm == UEnum::ECppForm::Regular)
+	{
+		if (MatchSymbol(TEXT(':')))
+		{
+			FToken BaseToken;
+			if (!GetIdentifier(BaseToken))
+			{
+				Throwf(TEXT("Missing enum base"));
+			}
+
+			if (!BaseToken.IsValue(TEXT("int"), ESearchCase::CaseSensitive))
+			{
+				LogError(TEXT("Regular enums only support 'int' as the value size"));
+			}
+		}
+	}
 	else
 	{
 		if (EnumHasAnyFlags(Flags, EEnumFlags::Flags))
@@ -1149,6 +1181,20 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 
 			EnumDef.SetCppType(FString::Printf(TEXT("%s::%s"), *EnumIdentifier, *InnerEnumToken.GetTokenValue()));
 
+			if (MatchSymbol(TEXT(':')))
+			{
+				FToken BaseToken;
+				if (!GetIdentifier(BaseToken))
+				{
+					Throwf(TEXT("Missing enum base"));
+				}
+
+				if (!BaseToken.IsValue(TEXT("int"), ESearchCase::CaseSensitive))
+				{
+					LogError(TEXT("Namespace enums only support 'int' as the value size"));
+				}
+			}
+
 			RequireSymbol( TEXT('{'), TEXT("'Enum'") );
 		}
 		break;
@@ -1179,6 +1225,8 @@ FUnrealEnumDefinitionInfo& FHeaderParser::CompileEnum()
 	{
 		FTokenValue TagIdentifier = TagToken.GetTokenValue();
 		AddFormattedPrevCommentAsTooltipMetaData(TagMetaData);
+
+		SkipDeprecatedMacroIfNecessary(*this);
 
 		// Try to read an optional explicit enum value specification
 		if (MatchSymbol(TEXT('=')))
@@ -1545,7 +1593,7 @@ FString FHeaderParser::FormatCommentForToolTip(const FString& Input)
 			int32 TemporaryMaxWhitespace = MaxNumWhitespaceToRemove;
 
 			// Allow eating an extra tab on subsequent lines if it's present
-			if ((Index > 0) && (Line.Len() > 0) && (Line[0] == '\t'))
+			if ((Index > FirstIndex) && (Line.Len() > 0) && (Line[0] == '\t'))
 			{
 				TemporaryMaxWhitespace++;
 			}
@@ -1562,7 +1610,7 @@ FString FHeaderParser::FormatCommentForToolTip(const FString& Input)
 				Line.RightChopInline(Pos, false);
 			}
 
-			if (Index > 0)
+			if (Index > FirstIndex)
 			{
 				Result += TEXT("\n");
 			}
@@ -1790,6 +1838,9 @@ FUnrealScriptStructDefinitionInfo& FHeaderParser::CompileStructDeclaration()
 		}
 	}
 
+	// Skip optional final keyword
+	MatchIdentifier(TEXT("final"), ESearchCase::CaseSensitive);
+
 	// Parse the inheritance list
 	ParseInheritance(TEXT("struct"), [](const TCHAR* StructName, bool bIsSuperClass) {}); // Eat the results, already been parsed
 
@@ -1907,6 +1958,7 @@ FUnrealScriptStructDefinitionInfo& FHeaderParser::CompileStructDeclaration()
 	{
 		ClearComment();
 		GetToken( Token );
+		int StartingLine = InputLine;
 
 		if (EAccessSpecifier AccessSpecifier = ParseAccessProtectionSpecifier(Token))
 		{
@@ -1959,6 +2011,16 @@ FUnrealScriptStructDefinitionInfo& FHeaderParser::CompileStructDeclaration()
 		{
 			PopCompilerDirective();
 			// Do nothing and hope that the if code below worked out OK earlier
+
+			// skip it and skip over the text, it is not recorded or processed
+			if (StartingLine == InputLine)
+			{
+				TCHAR c;
+				while (!IsEOL(c = GetChar()))
+				{
+				}
+				ClearComment();
+			}
 		}
 		else if ( Token.IsSymbol(TEXT('#')) && MatchIdentifier(TEXT("if"), ESearchCase::CaseSensitive) )
 		{
@@ -2061,6 +2123,21 @@ FUnrealScriptStructDefinitionInfo& FHeaderParser::CompileStructDeclaration()
 		// Roll the line number back to the start of the struct body and error out
 		InputLine = SavedLineNumber;
 		Throwf(TEXT("Expected a GENERATED_BODY() at the start of struct"));
+	}
+
+	// check if the struct is marked as deprecated and does not implement the upgrade path
+	if(StructDef.HasMetaData(TEXT("Deprecated")))
+	{
+		const FRigVMStructInfo& StructRigVMInfo = StructDef.GetRigVMInfo();
+		if(!StructRigVMInfo.bHasGetUpgradeInfoMethod && !StructRigVMInfo.Methods.IsEmpty())
+		{
+			LogError(TEXT(
+				"RigVMStruct '%s' is marked as deprecated but is missing GetUpgradeInfo method.\n"
+				"Please implement a method like below:\n\n"
+				"RIGVM_METHOD()\n"
+				"virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;"),
+				*StructDef.GetNameCPP());
+		}
 	}
 
 	// Validate sparse class data
@@ -2576,6 +2653,195 @@ void FHeaderParser::VerifyRepNotifyCallback(FUnrealPropertyDefinitionInfo& Prope
 		LogError(TEXT("Replication notification function %s not found"), *PropertyDef.GetRepNotifyFunc().ToString() );
 	}
 }
+
+void FHeaderParser::VerifyGetterSetterAccessorProperties(const FUnrealClassDefinitionInfo& TargetClassDef, FUnrealPropertyDefinitionInfo& PropertyDef)
+{
+	FPropertyBase& PropertyToken = PropertyDef.GetPropertyBase();
+	if (!PropertyToken.SetterName.IsEmpty())
+	{
+		if (PropertyToken.SetterName != TEXT("None") && !PropertyToken.bSetterFunctionFound)
+		{
+			// The function can be a UFunction (not parsed the same way as the other accessors)
+			const TSharedRef<FUnrealFunctionDefinitionInfo>* FoundFunction = TargetClassDef.GetFunctions().FindByPredicate([&PropertyToken](const TSharedRef<FUnrealFunctionDefinitionInfo>& Other) { return Other->GetName() == PropertyToken.SetterName; });
+			if (FoundFunction)
+			{
+				const FUnrealFunctionDefinitionInfo& Function = FoundFunction->Get();
+				if (!Function.HasAllFunctionFlags(FUNC_Native))
+				{
+					LogError(TEXT("Property %s setter function %s has to be native."), *PropertyDef.GetName(), *PropertyToken.SetterName);
+				}
+				if (Function.HasAnyFunctionFlags(FUNC_Net | FUNC_Event))
+				{
+					LogError(TEXT("Property %s setter function %s cannot be a net or an event"), *PropertyDef.GetName(), *PropertyToken.SetterName);
+				}
+				else if (Function.HasAllFunctionFlags(FUNC_EditorOnly) != PropertyDef.HasAllPropertyFlags(CPF_EditorOnly))
+				{
+					LogError(TEXT("Property %s setter function %s must both be EditorOnly or both not EditorOnly"), *PropertyDef.GetName(), *PropertyToken.SetterName);
+				}
+				else if (Function.GetProperties().Num() != 1)
+				{
+					LogError(TEXT("Property %s setter function %s must have a single argument"), *PropertyDef.GetName(), *PropertyToken.SetterName);
+				}
+				else
+				{
+					TSharedPtr<FUnrealPropertyDefinitionInfo> FoundArgument;
+					for (const TSharedRef<FUnrealPropertyDefinitionInfo>& Arguments : Function.GetProperties())
+					{
+						if (Arguments->HasAllPropertyFlags(CPF_Parm) && !Arguments->HasAnyPropertyFlags(CPF_ReturnParm))
+						{
+							FoundArgument = Arguments;
+							break;
+						}
+					}
+					if (!FoundArgument.IsValid())
+					{
+						LogError(TEXT("Property %s setter function %s does not have a valid argument."), *PropertyDef.GetName(), *PropertyToken.SetterName);
+					}
+					else if (!FoundArgument->SameType(PropertyDef))
+					{
+						LogError(TEXT("Property %s setter function %s argument is not the same type."), *PropertyDef.GetName(), *PropertyToken.SetterName);
+					}
+					else
+					{
+						PropertyToken.bSetterFunctionFound = true;
+					}
+				}
+			}
+			if (!PropertyToken.bSetterFunctionFound)
+			{
+				LogError(TEXT("Property %s setter function %s not found"), *PropertyDef.GetName(), *PropertyToken.SetterName);
+			}
+		}
+	}
+	if (!PropertyToken.GetterName.IsEmpty())
+	{
+		if (PropertyToken.GetterName != TEXT("None") && !PropertyToken.bGetterFunctionFound)
+		{
+			// The function can be a UFunction (not parsed the same way as the other accessors)
+			const TSharedRef<FUnrealFunctionDefinitionInfo>* FoundFunction = TargetClassDef.GetFunctions().FindByPredicate([&PropertyToken](const TSharedRef<FUnrealFunctionDefinitionInfo>& Other) { return Other->GetName() == PropertyToken.GetterName; });
+			if (FoundFunction)
+			{
+				const FUnrealFunctionDefinitionInfo& Function = FoundFunction->Get();
+				if (!Function.HasAllFunctionFlags(FUNC_Native))
+				{
+					LogError(TEXT("Property %s getter function %s has to be native."), *PropertyDef.GetName(), *PropertyToken.GetterName);
+				}
+				if (!Function.HasAllFunctionFlags(FUNC_Const))
+				{
+					LogError(TEXT("Property %s getter function %s has to be const."), *PropertyDef.GetName(), *PropertyToken.GetterName);
+				}
+				if (Function.HasAnyFunctionFlags(FUNC_Net | FUNC_Event))
+				{
+					LogError(TEXT("Property %s getter function %s cannot be a net or an event"), *PropertyDef.GetName(), *PropertyToken.GetterName);
+				}
+				else if (Function.HasAllFunctionFlags(FUNC_EditorOnly) != PropertyDef.HasAllPropertyFlags(CPF_EditorOnly))
+				{
+					LogError(TEXT("Property %s getter function %s must both be EditorOnly or both not EditorOnly"), *PropertyDef.GetName(), *PropertyToken.GetterName);
+				}
+				else if (Function.GetProperties().Num() != 1)
+				{
+					LogError(TEXT("Property %s getter function %s must have a single return value"), *PropertyDef.GetName(), *PropertyToken.GetterName);
+				}
+				else
+				{
+					TSharedPtr<FUnrealPropertyDefinitionInfo> FoundArgument;
+					for (const TSharedRef<FUnrealPropertyDefinitionInfo>& Arguments : Function.GetProperties())
+					{
+						if (Arguments->HasAllPropertyFlags(CPF_Parm) && Arguments->HasAnyPropertyFlags(CPF_ReturnParm))
+						{
+							FoundArgument = Arguments;
+							break;
+						}
+					}
+					if (!FoundArgument.IsValid())
+					{
+						LogError(TEXT("Property %s getter function %s does not have a return value."), *PropertyDef.GetName(), *PropertyToken.GetterName);
+					}
+					else if (!FoundArgument->SameType(PropertyDef))
+					{
+						LogError(TEXT("Property %s getter function %s return value is not the same type."), *PropertyDef.GetName(), *PropertyToken.GetterName);
+					}
+					else
+					{
+						PropertyToken.bGetterFunctionFound = true;
+					}
+				}
+			}
+
+			if (!PropertyToken.bGetterFunctionFound)
+			{
+				LogError(TEXT("Property %s getter function %s not found"), *PropertyDef.GetName(), *PropertyToken.GetterName);
+			}
+		}
+	}
+}
+
+void FHeaderParser::VerifyNotifyValueChangedProperties(FUnrealPropertyDefinitionInfo& PropertyDef)
+{
+	FUnrealTypeDefinitionInfo* Info = PropertyDef.GetOuter();
+	if (Info == nullptr)
+	{
+		LogError(TEXT("FieldNofity property %s does not have a outer."), *PropertyDef.GetName());
+		return;
+	}
+	
+	FUnrealClassDefinitionInfo* ClassInfo = Info->AsClass();
+	if (ClassInfo == nullptr)
+	{
+		LogError(TEXT("FieldNofity property are only valid as UClass member variable."));
+		return;
+	}
+	if (ClassInfo->IsInterface())
+	{
+		LogError(TEXT("FieldNofity are not valid on UInterface."));
+		return;
+	}
+
+	ClassInfo->MarkHasFieldNotify();
+}
+
+void FHeaderParser::VerifyNotifyValueChangedFunction(const FUnrealFunctionDefinitionInfo& TargetFuncDef)
+{
+	FUnrealTypeDefinitionInfo* Info = TargetFuncDef.GetOuter();
+	if (Info == nullptr)
+	{
+		LogError(TEXT("FieldNofity function %s does not have a outer."), *TargetFuncDef.GetName());
+		return;
+	}
+
+	FUnrealClassDefinitionInfo* ClassInfo = Info->AsClass();
+	if (ClassInfo == nullptr)
+	{
+		LogError(TEXT("FieldNofity function %s are only valid as UClass member function."), *TargetFuncDef.GetName());
+		return;
+	}
+
+	const TArray<TSharedRef<FUnrealPropertyDefinitionInfo>>& Properties = TargetFuncDef.GetProperties();
+	FUnrealPropertyDefinitionInfo* ReturnPropDef = TargetFuncDef.GetReturn();
+	if (Properties.Num() > 1 || (Properties.Num() == 1 && ReturnPropDef == nullptr))
+	{
+		LogError(TEXT("FieldNotify function %s must not have parameters."), *TargetFuncDef.GetName());
+		return;
+	}
+	if (ReturnPropDef == nullptr)
+	{
+		LogError(TEXT("FieldNotify function %s must return a value."), *TargetFuncDef.GetName());
+		return;
+	}
+	if (TargetFuncDef.HasAnyFunctionFlags(FUNC_Event))
+	{
+		LogError(TEXT("FieldNotify function %s cannot be a blueprint event."), *TargetFuncDef.GetName());
+		return;
+	}
+	if (!TargetFuncDef.HasAnyFunctionFlags(FUNC_BlueprintPure))
+	{
+		LogError(TEXT("FieldNotify function %s must be pure."), *TargetFuncDef.GetName());
+		return;
+	}
+
+	ClassInfo->MarkHasFieldNotify();
+}
+
 void FHeaderParser::VerifyPropertyMarkups(FUnrealClassDefinitionInfo& TargetClassDef)
 {
 	// Iterate over all properties, looking for those flagged as CPF_RepNotify
@@ -2597,8 +2863,6 @@ void FHeaderParser::VerifyPropertyMarkups(FUnrealClassDefinitionInfo& TargetClas
 			}
 			return nullptr;
 		};
-
-		FPropertyBase& PropertyToken = PropertyDef->GetPropertyBase();
 
 		TGuardValue<int32> GuardedInputPos(InputPos, PropertyDef->GetParsePosition());
 		TGuardValue<int32> GuardedInputLine(InputLine, PropertyDef->GetLineNumber());
@@ -2640,6 +2904,25 @@ void FHeaderParser::VerifyPropertyMarkups(FUnrealClassDefinitionInfo& TargetClas
 					}
 				}
 			}
+		}
+
+		// Verify if native property setter and getter functions could actually be found while parsing class header
+		VerifyGetterSetterAccessorProperties(TargetClassDef, *PropertyDef);
+
+		if (PropertyDef->GetPropertyBase().bFieldNotify)
+		{
+			VerifyNotifyValueChangedProperties(*PropertyDef);
+		}
+	}
+}
+
+void FHeaderParser::VerifyFunctionsMarkups(FUnrealClassDefinitionInfo& TargetClassDef)
+{
+	for (TSharedRef<FUnrealFunctionDefinitionInfo> FunctionDef : TargetClassDef.GetFunctions())
+	{
+		if (FunctionDef->GetFunctionData().bFieldNotify)
+		{
+			VerifyNotifyValueChangedFunction(*FunctionDef);
 		}
 	}
 }
@@ -2781,6 +3064,9 @@ void FHeaderParser::CompileDirective()
 		{
 			UngetChar();
 		}
+
+		// Remove any comments parsed to prevent any trailing comments from being picked up
+		ClearComment();
 	}
 }
 
@@ -2805,6 +3091,11 @@ void FHeaderParser::GetVarType(
 	FUnrealScriptStructDefinitionInfo* OwnerScriptStructDef = UHTCast<FUnrealScriptStructDefinitionInfo>(OwnerStructDef);
 	FUnrealClassDefinitionInfo* OwnerClassDef = UHTCast<FUnrealClassDefinitionInfo>(OwnerStructDef);
 	FName RepCallbackName = FName(NAME_None);
+	FString SetterName;
+	FString GetterName;
+	bool bHasSetterTag = false;
+	bool bHasGetterTag = false;
+	bool bFieldNotify = false;
 
 	// Get flags.
 	EPropertyFlags Flags        = CPF_None;
@@ -2871,15 +3162,6 @@ void FHeaderParser::GetVarType(
 		if (VariableCategory == EVariableCategory::Member && !bIsEditorModule)
 		{
 			LogError(TEXT("UProperties should not be wrapped by WITH_EDITOR, use WITH_EDITORONLY_DATA instead."));
-		}
-	}
-
-	// Validate if we are using editor only data in a class or struct definition
-	if ((Flags & CPF_EditorOnly) != 0)
-	{
-		if (OwnerClassDef && OwnerClassDef->HasAnyClassFlags(CLASS_Optional))
-		{
-			LogError(TEXT("Cannot specify an editor only property inside an optional class."));
 		}
 	}
 
@@ -3226,6 +3508,41 @@ void FHeaderParser::GetVarType(
 				case EVariableSpecifier::SkipSerialization:
 				{
 					Flags |= CPF_SkipSerialization;
+				}
+				break;
+
+				case EVariableSpecifier::Setter:
+				{
+					bHasSetterTag = true;
+					if (Specifier.Values.Num() == 1)
+					{
+						SetterName = Specifier.Values[0];
+					}
+					else if (Specifier.Values.Num() > 1)
+					{
+						Throwf(TEXT("The specifier '%s' must be given exactly one value"), *Specifier.Key);
+					}
+					
+				}
+				break;
+
+				case EVariableSpecifier::Getter:
+				{
+					bHasGetterTag = true;
+					if (Specifier.Values.Num() == 1)
+					{
+						GetterName = Specifier.Values[0];
+					}
+					else if (Specifier.Values.Num() > 1)
+					{
+						Throwf(TEXT("The specifier '%s' must be given exactly one value"), *Specifier.Key);
+					}
+				}
+				break;
+				
+				case EVariableSpecifier::FieldNotify:
+				{
+					bFieldNotify = true;
 				}
 				break;
 
@@ -4144,8 +4461,20 @@ void FHeaderParser::GetVarType(
 						// Optionally emit messages about native pointer members and swallow trailing 'const' after pointer properties
 						if (VariableCategory == EVariableCategory::Member)
 						{
-							// TODO: Remove exclusion for plugins under engine when all plugins have had their raw pointers converted.
-							ConditionalLogPointerUsage(bIsCurrentModulePartOfEngine && !PackageDef.GetModule().BaseDirectory.Contains(TEXT("/Plugins/")) ? UHTConfig.EngineNativePointerMemberBehavior : UHTConfig.NonEngineNativePointerMemberBehavior,
+							EPointerMemberBehavior PointerMemberBehavior = UHTConfig.NonEngineNativePointerMemberBehavior;
+							if (bIsCurrentModulePartOfEngine)
+							{
+								if (PackageDef.GetModule().BaseDirectory.Contains(TEXT("/Plugins/")))
+								{
+									PointerMemberBehavior = UHTConfig.EnginePluginNativePointerMemberBehavior;
+								}
+								else
+								{
+									PointerMemberBehavior = UHTConfig.EngineNativePointerMemberBehavior;
+								}
+							}
+
+							ConditionalLogPointerUsage(PointerMemberBehavior,
 								TEXT("Native pointer"), FString(InputPos - VarStartPos, Input + VarStartPos).TrimStartAndEnd().ReplaceCharWithEscapedChar(), TEXT("TObjectPtr"));
 
 							MatchIdentifier(TEXT("const"), ESearchCase::CaseSensitive);
@@ -4155,8 +4484,20 @@ void FHeaderParser::GetVarType(
 					}
 					else if ((PropertyType == CPT_ObjectPtrReference) && (VariableCategory == EVariableCategory::Member))
 					{
-						// TODO: Remove exclusion for plugins under engine when all plugins have had their raw pointers converted.
-						ConditionalLogPointerUsage(bIsCurrentModulePartOfEngine && !PackageDef.GetModule().BaseDirectory.Contains(TEXT("/Plugins/")) ? UHTConfig.EngineObjectPtrMemberBehavior : UHTConfig.NonEngineObjectPtrMemberBehavior,
+						EPointerMemberBehavior PointerMemberBehavior = UHTConfig.NonEngineObjectPtrMemberBehavior;
+						if (bIsCurrentModulePartOfEngine)
+						{
+							if (PackageDef.GetModule().BaseDirectory.Contains(TEXT("/Plugins/")))
+							{
+								PointerMemberBehavior = UHTConfig.EnginePluginObjectPtrMemberBehavior;
+							}
+							else
+							{
+								PointerMemberBehavior = UHTConfig.EngineObjectPtrMemberBehavior;
+							}
+						}
+
+						ConditionalLogPointerUsage(PointerMemberBehavior,
 							TEXT("ObjectPtr"), FString(InputPos - VarStartPos, Input + VarStartPos).TrimStartAndEnd().ReplaceCharWithEscapedChar(), nullptr);
 					}
 
@@ -4318,6 +4659,13 @@ void FHeaderParser::GetVarType(
 		}
 	}
 
+	VarProperty.bSetterTagFound = bHasSetterTag;
+	VarProperty.SetterName = SetterName;
+	VarProperty.bGetterTagFound = bHasGetterTag;
+	VarProperty.GetterName = GetterName;
+
+	VarProperty.bFieldNotify = bFieldNotify;
+
 	// Perform some more specific validation on the property flags
 	if (VarProperty.PropertyFlags & CPF_PersistentInstance)
 	{
@@ -4394,6 +4742,49 @@ void FHeaderParser::GetVarType(
 	if (ParsedVarIndexRange)
 	{
 		ParsedVarIndexRange->Count = InputPos - ParsedVarIndexRange->StartIndex;
+	}
+
+	// Setup additional property as well as script struct def flags
+	// for structs / properties being used for the RigVM.
+	// The Input / Output / Constant metadata tokens can be used to mark
+	// up an input / output pin of a RigVMNode. To allow authoring of those
+	// nodes we'll mark up the property as accessible in Blueprint / Python
+	// as well as make the struct a blueprint type.
+	if(OwnerScriptStructDef)
+	{
+		const EPropertyFlags OriginalFlags = VarProperty.PropertyFlags; 
+		if(VarProperty.MetaData.Contains(NAME_ConstantText))
+		{
+			VarProperty.PropertyFlags |= CPF_Edit | CPF_EditConst | CPF_BlueprintVisible;
+		}
+		if(VarProperty.MetaData.Contains(NAME_InputText) ||
+			VarProperty.MetaData.Contains(NAME_VisibleText))
+		{
+			VarProperty.PropertyFlags |= CPF_Edit | CPF_BlueprintVisible;
+		}
+		if(VarProperty.MetaData.Contains(NAME_OutputText))
+		{
+			if((VarProperty.PropertyFlags & CPF_BlueprintVisible) == 0)
+			{
+				VarProperty.PropertyFlags |= CPF_BlueprintVisible | CPF_BlueprintReadOnly;
+			}
+		}
+		
+		if(OriginalFlags != VarProperty.PropertyFlags &&
+			(((VarProperty.PropertyFlags & CPF_BlueprintVisible) != 0) ||
+			((VarProperty.PropertyFlags & CPF_BlueprintReadOnly) != 0)))
+		{
+			if(!OwnerScriptStructDef->GetBoolMetaDataHierarchical(FHeaderParserNames::NAME_BlueprintType))
+			{
+				OwnerScriptStructDef->SetMetaData(FHeaderParserNames::NAME_BlueprintType, TEXT("true"));
+			}
+			
+			if(!VarProperty.MetaData.Contains(NAME_Category))
+			{
+				static constexpr TCHAR PinsCategory[] = TEXT("Pins");
+				VarProperty.MetaData.Add(NAME_Category, PinsCategory);
+			}
+		}
 	}
 }
 
@@ -4483,40 +4874,43 @@ FUnrealPropertyDefinitionInfo& FHeaderParser::GetVarNameAndDim
 
 	// Make sure it doesn't conflict.
 	FString VarName(Identifier);
-	int32 OuterContextCount = 0;
-	FUnrealFunctionDefinitionInfo* ExistingFunctionDef = FindFunction(ParentStruct, *VarName, true, nullptr);
-	FUnrealPropertyDefinitionInfo* ExistingPropertyDef = FindProperty(ParentStruct, *VarName, true);
-
-	if (ExistingFunctionDef != nullptr || ExistingPropertyDef != nullptr)
+	FUnrealFunctionDefinitionInfo* ParentFunction = UHTCast<FUnrealFunctionDefinitionInfo>(&ParentStruct);
+	if (VariableCategory == EVariableCategory::Member || (ParentFunction != nullptr && ParentFunction->GetFunctionType() == EFunctionType::Function))
 	{
-		bool bErrorDueToShadowing = true;
+		FUnrealFunctionDefinitionInfo* ExistingFunctionDef = FindFunction(ParentStruct, *VarName, true, nullptr);
+		FUnrealPropertyDefinitionInfo* ExistingPropertyDef = FindProperty(ParentStruct, *VarName, true);
 
-		if (ExistingFunctionDef && (VariableCategory != EVariableCategory::Member))
+		if (ExistingFunctionDef != nullptr || ExistingPropertyDef != nullptr)
 		{
-			// A function parameter with the same name as a method is allowed
-			bErrorDueToShadowing = false;
-		}
+			bool bErrorDueToShadowing = true;
 
-		//@TODO: This exception does not seem sound either, but there is enough existing code that it will need to be
-		// fixed up first before the exception it is removed.
-		if (ExistingPropertyDef)
- 		{
- 			const bool bExistingPropDeprecated = ExistingPropertyDef->HasAnyPropertyFlags(CPF_Deprecated);
- 			const bool bNewPropDeprecated = (VariableCategory == EVariableCategory::Member) && ((VarProperty.PropertyFlags & CPF_Deprecated) != 0);
- 			if (bNewPropDeprecated || bExistingPropDeprecated)
- 			{
- 				// if this is a property and one of them is deprecated, ignore it since it will be removed soon
- 				bErrorDueToShadowing = false;
- 			}
- 		}
+			if (ExistingFunctionDef && (VariableCategory != EVariableCategory::Member))
+			{
+				// A function parameter with the same name as a method is allowed
+				bErrorDueToShadowing = false;
+			}
 
-		if (bErrorDueToShadowing)
-		{
-			Throwf(TEXT("%s: '%s' cannot be defined in '%s' as it is already defined in scope '%s' (shadowing is not allowed)"),
-				HintText,
-				*FString(Identifier),
-				*ParentStruct.GetName(),
-				ExistingFunctionDef ? *ExistingFunctionDef->GetOuter()->GetName() : *ExistingPropertyDef->GetFullName());
+			//@TODO: This exception does not seem sound either, but there is enough existing code that it will need to be
+			// fixed up first before the exception it is removed.
+			if (ExistingPropertyDef)
+			{
+				const bool bExistingPropDeprecated = ExistingPropertyDef->HasAnyPropertyFlags(CPF_Deprecated);
+				const bool bNewPropDeprecated = (VariableCategory == EVariableCategory::Member) && ((VarProperty.PropertyFlags & CPF_Deprecated) != 0);
+				if (bNewPropDeprecated || bExistingPropDeprecated)
+				{
+					// if this is a property and one of them is deprecated, ignore it since it will be removed soon
+					bErrorDueToShadowing = false;
+				}
+			}
+
+			if (bErrorDueToShadowing)
+			{
+				Throwf(TEXT("%s: '%s' cannot be defined in '%s' as it is already defined in scope '%s' (shadowing is not allowed)"),
+					HintText,
+					*FString(Identifier),
+					*ParentStruct.GetName(),
+					ExistingFunctionDef ? *ExistingFunctionDef->GetOuter()->GetName() : *ExistingPropertyDef->GetFullName());
+			}
 		}
 	}
 
@@ -4823,7 +5217,8 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 		bEncounteredNewStyleClass_UnmatchedBrackets = false;
 
 		// Pop nesting here to allow other non UClass declarations in the header file.
-		if (CurrentClassDef.HasAllClassFlags(CLASS_Interface))
+		// Make sure we treat UInterface as a class and not an interface
+		if (CurrentClassDef.HasAllClassFlags(CLASS_Interface) && &CurrentClassDef != GUInterfaceDef)
 		{
 			checkf(TopNest->NestType == ENestType::Interface || TopNest->NestType == ENestType::NativeInterface, TEXT("Unexpected end of interface block."));
 			PopNest(TopNest->NestType, TEXT("'Interface'"));
@@ -4843,7 +5238,14 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 		}
 		else
 		{
-			PopNest(ENestType::Class, TEXT("'Class'"));
+			if (&CurrentClassDef == GUInterfaceDef && TopNest->NestType == ENestType::NativeInterface)
+			{
+				PopNest(TopNest->NestType, TEXT("'Interface'"));
+			}
+			else
+			{
+				PopNest(ENestType::Class, TEXT("'Class'"));
+			}
 			PostPopNestClass(CurrentClassDef);
 
 			// Ensure classes have a GENERATED_BODY declaration
@@ -4889,9 +5291,18 @@ bool FHeaderParser::CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& D
 		if (CheckForConstructor(StructDef, Declaration))
 		{
 		}
+		else if (CheckForDestructor(StructDef, Declaration))
+		{
+		}
 		else if (TopNest->NestType == ENestType::Class)
 		{
 			if (CheckForSerialize(StructDef, Declaration))
+			{
+			}
+			else if (CheckForPropertySetterFunction(StructDef, Declaration))
+			{
+			}
+			else if (CheckForPropertyGetterFunction(StructDef, Declaration))
 			{
 			}
 		}
@@ -5036,6 +5447,45 @@ bool FHeaderParser::CheckForConstructor(FUnrealStructDefinitionInfo& StructDef, 
 	return false;
 }
 
+bool FHeaderParser::CheckForDestructor(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration)
+{
+	FUnrealClassDefinitionInfo& ClassDef = StructDef.AsClassChecked();
+
+	if (ClassDef.IsDestructorDeclared())
+	{
+		return false;
+	}
+
+	FTokenReplay Tokens(Declaration.Tokens);
+
+	FToken Token;
+	if (!Tokens.GetToken(Token))
+	{
+		return false;
+	}
+
+	while (Token.IsIdentifier(TEXT("virtual"), ESearchCase::CaseSensitive) || Token.Value.EndsWith(TEXT("_API"), ESearchCase::CaseSensitive))
+	{
+		Tokens.GetToken(Token);
+	}
+
+	if (!Token.IsSymbol('~'))
+	{
+		return false;
+	}
+
+	Tokens.GetToken(Token);
+
+	if (!Token.IsIdentifier(*ClassDef.GetAlternateNameCPP(), ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+
+	ClassDef.MarkDestructorDeclared();
+
+	return false;
+}
+
 bool FHeaderParser::CheckForSerialize(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration)
 {
 	FTokenReplay Tokens(Declaration.Tokens);
@@ -5150,6 +5600,389 @@ bool FHeaderParser::CheckForSerialize(FUnrealStructDefinitionInfo& StructDef, co
 	
 	return false;
 }
+static const TArray<FStringView> GSkipDeclarationWarningStrings =
+{
+	TEXT("GENERATED_BODY"),
+	TEXT("GENERATED_IINTERFACE_BODY"),
+	TEXT("GENERATED_UCLASS_BODY"),
+	TEXT("GENERATED_UINTERFACE_BODY"),
+	TEXT("GENERATED_USTRUCT_BODY"),
+	// Leaving these disabled ATM since they can exist in the code without causing compile issues
+	//TEXT("RIGVM_METHOD"),
+	//TEXT("UCLASS"),
+	//TEXT("UDELEGATE"),
+	//TEXT("UENUM"),
+	//TEXT("UFUNCTION"),
+	//TEXT("UINTERFACE"),
+	//TEXT("UPROPERTY"),
+	//TEXT("USTRUCT"),
+};
+
+static bool ParseAccessorType(FString& OutAccessorType, FTokenReplay& Tokens)
+{
+	FToken Token;
+	Tokens.GetToken(Token);
+	if (!Token.IsIdentifier())
+	{
+		return false;
+	}
+	if (Token.IsIdentifier(TEXT("const"), ESearchCase::CaseSensitive))
+	{
+		// skip const. We allow const in paramater and return values even if the property is not const
+		Tokens.GetToken(Token);
+		if (!Token.IsIdentifier())
+		{
+			return false;
+		}
+	}
+
+	OutAccessorType = Token.Value;
+
+	// parse enum type declared as a namespace
+	Tokens.GetToken(Token);
+	while (Token.IsSymbol(TEXT("::"), ESearchCase::CaseSensitive))
+	{
+		OutAccessorType += Token.Value;
+		Tokens.GetToken(Token);
+		if (!Token.IsIdentifier())
+		{
+			return false;
+		}
+		OutAccessorType += Token.Value;
+		Tokens.GetToken(Token);
+	}
+
+	if (Token.IsSymbol(TEXT("<"), ESearchCase::CaseSensitive))
+	{
+		// template type - add everything until the matching '>' into the type string
+		OutAccessorType += Token.Value;
+		int32 TemplateNestCount = 1;
+		while (TemplateNestCount > 0)
+		{
+			Tokens.GetToken(Token);
+			if (Token.TokenType == ETokenType::None)
+			{
+				return false;
+			}
+
+			OutAccessorType += Token.Value;
+			if (Token.IsSymbol(TEXT("<"), ESearchCase::CaseSensitive))
+			{
+				TemplateNestCount++;
+			}
+			else if (Token.IsSymbol(TEXT(">"), ESearchCase::CaseSensitive))
+			{
+				TemplateNestCount--;
+			}
+		}
+		Tokens.GetToken(Token);
+	}
+	// Skip '&', 'const' and retain '*'
+	do
+	{
+		if (Token.TokenType == ETokenType::None)
+		{
+			return false;
+		}
+
+		if (Token.IsIdentifier())
+		{
+			if (!Token.IsIdentifier(TEXT("const"), ESearchCase::CaseSensitive))
+			{
+				break;
+			}
+			// else skip const
+		}
+		// Support for passing values by ref for setters
+		else if (!Token.IsSymbol(TEXT("&"), ESearchCase::CaseSensitive))
+		{
+			OutAccessorType += Token.Value;
+		}
+	} while (Tokens.GetToken(Token));
+
+	// Return the last token since it's either ')' in case of setters or the getter name which will be parsed by the caller
+	Tokens.UngetToken(Token);
+
+	return true;
+}
+
+bool FHeaderParser::CheckForPropertySetterFunction(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration)
+{
+	FTokenReplay Tokens(Declaration.Tokens);
+	FUnrealClassDefinitionInfo& ClassDef = StructDef.AsClassChecked();
+
+	FToken Token;
+	if (!Tokens.GetToken(Token))
+	{
+		return false;
+	}
+
+	// Skip virtual keyword or any API macros
+	while (Token.IsIdentifier(TEXT("virtual"), ESearchCase::CaseSensitive) || Token.Value.EndsWith(TEXT("_API"), ESearchCase::CaseSensitive))
+	{
+		Tokens.GetToken(Token);
+	}
+
+	// Setters can only return void
+	if (!Token.IsIdentifier(TEXT("void"), ESearchCase::CaseSensitive))
+	{
+		return false;
+	}
+
+	FToken SetterNameToken;
+	Tokens.GetToken(SetterNameToken);
+	if (!SetterNameToken.IsIdentifier())
+	{
+		return false;
+	}
+
+	FUnrealPropertyDefinitionInfo* PropertyWithSetter = nullptr;
+	FString SetterFunctionName;
+	TArray<TSharedRef<FUnrealPropertyDefinitionInfo>>& Properties = ClassDef.GetProperties();
+	bool bExplicitSetter = false;
+
+	// First check if there are any properties that already specify this function name as a setter
+	for (TSharedRef<FUnrealPropertyDefinitionInfo>& Prop : Properties)
+	{
+		FPropertyBase& BaseProp = Prop->GetPropertyBase();
+		if (!BaseProp.bSetterFunctionFound && !BaseProp.SetterName.IsEmpty() && BaseProp.SetterName != TEXT("None"))
+		{
+			if (SetterNameToken.Value.Compare(Prop->GetPropertyBase().SetterName, ESearchCase::CaseSensitive) == 0)
+			{
+				SetterFunctionName = Prop->GetPropertyBase().SetterName;
+				PropertyWithSetter = &Prop.Get();
+				bExplicitSetter = true;
+				break;
+			}
+		}
+	}
+
+	if (!PropertyWithSetter)
+	{
+		return false;
+	}
+
+	Tokens.GetToken(Token);
+	if (!Token.IsSymbol(TEXT('(')))
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Expected '(' when parsing property %s setter function %s"), *PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	FString ParameterType;
+	if (!ParseAccessorType(ParameterType, Tokens))
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Error when parsing parameter type for property %s setter function %s"), *PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	// Skip parameter name
+	Tokens.GetToken(Token);
+	if (!Token.IsIdentifier())
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Expected parameter name when parsing property %s setter function %s"), *PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	// Setter has only one parameter
+	Tokens.GetToken(Token);
+	if (!Token.IsSymbol(TEXT(')')))
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Expected ')' when parsing property %s setter function %s"), *PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	// Parameter type and property type must match
+	FString ExtendedPropertyType;
+	FString PropertyType = PropertyWithSetter->GetCPPType(&ExtendedPropertyType, CPPF_Implementation | CPPF_ArgumentOrReturnValue | CPPF_NoRef);
+	ExtendedPropertyType.RemoveSpacesInline();
+	PropertyType += ExtendedPropertyType;
+	if (PropertyWithSetter->GetArrayDimensions())
+	{
+		PropertyType += TEXT("*");
+	}
+	if (ParameterType.Compare(PropertyType, ESearchCase::CaseSensitive) != 0)
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Paramater type %s unsupported for property %s setter function %s (expected: %s)"),
+				*ParameterType, *PropertyWithSetter->GetName(), *SetterFunctionName, *PropertyType);
+		}
+		return false;
+	}
+
+	if ((GetCurrentCompilerDirective() & ECompilerDirective::WithEditor) != 0)
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Property %s setter function %s cannot be declared within WITH_EDITOR block. Use WITH_EDITORONLY_DATA instead."),
+				*PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	if ((GetCurrentCompilerDirective() & ECompilerDirective::WithEditorOnlyData) != 0 && (PropertyWithSetter->GetPropertyFlags() & CPF_EditorOnly) == 0)
+	{
+		if (bExplicitSetter)
+		{
+			LogError(TEXT("Property %s is not editor-only but its setter function %s is."),
+				*PropertyWithSetter->GetName(), *SetterFunctionName);
+		}
+		return false;
+	}
+
+	PropertyWithSetter->GetPropertyBase().SetterName = *SetterFunctionName;
+	PropertyWithSetter->GetPropertyBase().bSetterFunctionFound = true;
+
+	return true;
+}
+
+bool FHeaderParser::CheckForPropertyGetterFunction(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration)
+{
+	FTokenReplay Tokens(Declaration.Tokens);
+	FUnrealClassDefinitionInfo& ClassDef = StructDef.AsClassChecked();
+
+	FToken Token;
+	if (!Tokens.GetToken(Token))
+	{
+		return false;
+	}
+
+	// Skip virtual keyword and any API macros
+	while (Token.IsIdentifier(TEXT("virtual"), ESearchCase::CaseSensitive) || Token.Value.EndsWith(TEXT("_API"), ESearchCase::CaseSensitive))
+	{
+		Tokens.GetToken(Token);
+	}
+
+	Tokens.UngetToken(Token);
+	FString GetterType;
+	if (!ParseAccessorType(GetterType, Tokens))
+	{
+		// Unable to print a meaningful error before parsing the Getter name
+		return false;
+	}
+
+	FToken GetterNameToken;
+	Tokens.GetToken(GetterNameToken);
+	if (!GetterNameToken.IsIdentifier())
+	{
+		// Unable to print a meaningful error before parsing the Getter name
+		return false;
+	}
+
+	FUnrealPropertyDefinitionInfo* PropertyWithGetter = nullptr;
+	TArray<TSharedRef<FUnrealPropertyDefinitionInfo>>& Properties = ClassDef.GetProperties();
+	FString GetterFunctionName;
+	bool bExplicitGetter = false;
+
+	// First check if there are any properties that already specify this function name as a getter
+	for (TSharedRef<FUnrealPropertyDefinitionInfo>& Prop : Properties)
+	{
+		FPropertyBase& BaseProp = Prop->GetPropertyBase();
+		if (!BaseProp.bGetterFunctionFound && !BaseProp.GetterName.IsEmpty() && BaseProp.GetterName != TEXT("None"))
+		{
+			if (GetterNameToken.Value.Compare(Prop->GetPropertyBase().GetterName, ESearchCase::CaseSensitive) == 0)
+			{
+				GetterFunctionName = Prop->GetPropertyBase().GetterName;
+				PropertyWithGetter = &Prop.Get();
+				bExplicitGetter = true;
+				break;
+			}
+		}
+	}
+
+	if (!PropertyWithGetter)
+	{
+		return false;
+	}
+
+	FString ExtendedPropertyType;
+	FString PropertyType = PropertyWithGetter->GetCPPType(&ExtendedPropertyType, CPPF_Implementation | CPPF_ArgumentOrReturnValue);
+	PropertyType += ExtendedPropertyType;
+	if (PropertyWithGetter->GetArrayDimensions())
+	{
+		PropertyType += TEXT("*");
+	}
+	if (GetterType.Compare(PropertyType, ESearchCase::CaseSensitive) != 0)
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Paramater type %s unsupported for property %s getter function %s (expected: %s)"),
+				*GetterType, *PropertyWithGetter->GetName(), *GetterFunctionName, *PropertyType);
+		}
+		return false;
+	}
+
+	// Getter is a function that takes no arguments
+	Tokens.GetToken(Token);
+	if (!Token.IsSymbol(TEXT('(')))
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Expected '(' when parsing property %s getter function %s"), *PropertyWithGetter->GetName(), *GetterFunctionName);
+		}
+		return false;
+	}
+
+	Tokens.GetToken(Token);
+	if (!Token.IsSymbol(TEXT(')')))
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Expected ')' when parsing property %s getter function %s"), *PropertyWithGetter->GetName(), *GetterFunctionName);
+		}
+		return false;
+	}
+
+	// Getters should be const functions
+	Tokens.GetToken(Token);
+	if (!Token.IsIdentifier(TEXT("const"), ESearchCase::CaseSensitive))
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Property %s getter function %s must be const"), *PropertyWithGetter->GetName(), *GetterFunctionName);
+		}
+		return false;
+	}
+
+	if ((GetCurrentCompilerDirective() & ECompilerDirective::WithEditor) != 0)
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Property %s setter function %s cannot be declared within WITH_EDITOR block. Use WITH_EDITORONLY_DATA instead."),
+				*PropertyWithGetter->GetName(), *GetterFunctionName);
+		}
+		return false;
+	}
+
+	if ((GetCurrentCompilerDirective() & ECompilerDirective::WithEditorOnlyData) != 0 && (PropertyWithGetter->GetPropertyFlags() & CPF_EditorOnly) == 0)
+	{
+		if (bExplicitGetter)
+		{
+			LogError(TEXT("Property %s is not editor-only but its getter function %s is."),
+				*PropertyWithGetter->GetName(), *GetterFunctionName);
+		}
+		return false;
+	}
+
+	PropertyWithGetter->GetPropertyBase().GetterName = GetterFunctionName;
+	PropertyWithGetter->GetPropertyBase().bGetterFunctionFound = true;
+
+	return true;
+}
+
 
 bool FHeaderParser::SkipDeclaration(FToken& Token)
 {
@@ -5181,6 +6014,19 @@ bool FHeaderParser::SkipDeclaration(FToken& Token)
 		{
 			bEndOfDeclarationFound = true;
 			break;
+		}
+
+		if (Token.IsIdentifier())
+		{
+			// Use a trivial prefilter to avoid doing the search on things that aren't UE keywords we care about
+			if (Token.Value[0] == 'G' || Token.Value[0] == 'R' || Token.Value[0] == 'U')
+			{
+				if (Algo::BinarySearch(GSkipDeclarationWarningStrings, Token.Value, 
+					[](const FStringView& Lhs, const FStringView& Rhs) { return Lhs.Compare(Rhs, ESearchCase::CaseSensitive) < 0; }) >= 0)
+				{
+					LogWarning(FString::Printf(TEXT("The identifier \'%s\' was detected in a block being skipped. Was this intentional?"), *FString(Token.Value)));
+				}
+			}
 		}
 
 		if (!bMacroDeclaration && Token.IsIdentifier(TEXT("PURE_VIRTUAL"), ESearchCase::CaseSensitive) && NestedScopes == 0)
@@ -5296,6 +6142,7 @@ FUnrealClassDefinitionInfo& FHeaderParser::ParseClassNameDeclaration(FString& De
 	FUnrealClassDefinitionInfo* ClassDef = FUnrealClassDefinitionInfo::FindClass(*GetClassNameWithPrefixRemoved(*DeclaredClassName));
 	check(ClassDef);
 	ClassDef->SetClassCastFlags(ClassCastFlagMap::Get().GetCastFlag(DeclaredClassName));
+	ClassDef->SetClassCastFlags(ClassCastFlagMap::Get().GetCastFlag(FString(TEXT("F")) + DeclaredClassName.RightChop(1))); // For properties, check alternate name
 
 	// Skip optional final keyword
 	MatchIdentifier(TEXT("final"), ESearchCase::CaseSensitive);
@@ -5527,6 +6374,7 @@ bool FHeaderParser::TryParseIInterfaceClass()
 	// Push the interface class nesting again.
 	PushNest(ENestType::NativeInterface, FoundClassDef);
 
+	CurrentAccessSpecifier = ACCESS_Private;
 	return true;
 }
 
@@ -5538,6 +6386,8 @@ void FHeaderParser::CompileInterfaceDeclaration()
 	// Start of an interface block. Since Interfaces and Classes are always at the same nesting level,
 	// whereever a class declaration is allowed, an interface declaration is also allowed.
 	CheckAllow( TEXT("'interface'"), ENestAllowFlags::Class );
+
+	CurrentAccessSpecifier = ACCESS_Private;
 
 	FString DeclaredInterfaceName;
 	FString RequiredAPIMacroIfPresent;
@@ -5702,7 +6552,26 @@ void FHeaderParser::CompileRigVMMethodDeclaration(FUnrealStructDefinitionInfo& S
 	FRigVMMethodInfo MethodInfo;
 	MethodInfo.ReturnType = FString(ReturnTypeToken.Value);
 	MethodInfo.Name = FString(NameToken.Value);
-	
+
+	// look out for the upgrade info method
+	static const FString GetUpgradeInfoString = TEXT("GetUpgradeInfo");
+	static const FString RigVMStructUpgradeInfoString = TEXT("FRigVMStructUpgradeInfo");
+	if(MethodInfo.ReturnType == RigVMStructUpgradeInfoString && MethodInfo.Name == GetUpgradeInfoString)
+	{
+		FRigVMStructInfo& StructRigVMInfo = StructDef.GetRigVMInfo();
+		StructRigVMInfo.bHasGetUpgradeInfoMethod = true;
+		return;
+	}
+
+	// look out for the next aggregate name method
+	static const FString GetNextAggregateNameString = TEXT("GetNextAggregateName");
+	if(MethodInfo.Name == GetNextAggregateNameString)
+	{
+		FRigVMStructInfo& StructRigVMInfo = StructDef.GetRigVMInfo();
+		StructRigVMInfo.bHasGetNextAggregateNameMethod = true;
+		return;
+	}
+
 	FString ParamString = FString::Join(ParamsContent, TEXT(" "));
 	if (!ParamString.IsEmpty())
 	{
@@ -5762,33 +6631,17 @@ const FName FHeaderParser::NAME_OutputText(TEXT("Output"));
 const FName FHeaderParser::NAME_ConstantText(TEXT("Constant"));
 const FName FHeaderParser::NAME_VisibleText(TEXT("Visible"));
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-const FName FHeaderParser::NAME_ArraySizeText(TEXT("ArraySize"));
-
-#endif
-
 const FName FHeaderParser::NAME_SingletonText(TEXT("Singleton"));
 
 const TCHAR* FHeaderParser::TArrayText = TEXT("TArray");
 const TCHAR* FHeaderParser::TEnumAsByteText = TEXT("TEnumAsByte");
 const TCHAR* FHeaderParser::GetRefText = TEXT("GetRef");
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-const TCHAR* FHeaderParser::FFixedArrayText = TEXT("FRigVMFixedArray");
-const TCHAR* FHeaderParser::FDynamicArrayText = TEXT("FRigVMDynamicArray");
-const TCHAR* FHeaderParser::GetFixedArrayText = TEXT("GetFixedArray");
-const TCHAR* FHeaderParser::GetDynamicArrayText = TEXT("GetDynamicArray");
-
-#else
-
 const TCHAR* FHeaderParser::FTArrayText = TEXT("TArray");
 const TCHAR* FHeaderParser::FTArrayViewText = TEXT("TArrayView");
 const TCHAR* FHeaderParser::GetArrayText = TEXT("GetArray");
 const TCHAR* FHeaderParser::GetArrayViewText = TEXT("GetArrayView");
-
-#endif
+const TCHAR* FHeaderParser::FTScriptInterfaceText = TEXT("TScriptInterface");
 
 void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& StructDef)
 {
@@ -5816,9 +6669,6 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 		Parameter.bConstant = PropertyDef->HasMetaData(NAME_ConstantText);
 		Parameter.bInput = PropertyDef->HasMetaData(NAME_InputText);
 		Parameter.bOutput = PropertyDef->HasMetaData(NAME_OutputText);
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-		Parameter.ArraySize = PropertyDef->GetMetaData(NAME_ArraySizeText);
-#endif
 		Parameter.Getter = GetRefText;
 		Parameter.bEditorOnly = PropertyDef->IsEditorOnlyProperty();
 		Parameter.bSingleton = PropertyDef->HasMetaData(NAME_SingletonText);
@@ -5836,10 +6686,23 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 			LogError(TEXT("RigVM Struct '%s' - Member '%s' is editor only - WITH_EDITORONLY_DATA not allowed on structs with RIGVM_METHOD."), *StructDef.GetName(), *Parameter.Name, *MemberCPPType);
 		}
 
+#if !UE_RIGVM_UOBJECT_PROPERTIES_ENABLED
+		if(PropertyDef->GetPropertyBase().IsObject())
+		{
+			LogError(TEXT("RigVM Struct '%s' - Member '%s' is a UObject - object types are not allowed on structs with RIGVM_METHOD."), *StructDef.GetName(), *Parameter.Name);
+		}
+#endif
+#if !UE_RIGVM_UINTERFACE_PROPERTIES_ENABLED
+		if (PropertyDef->GetPropertyBase().IsInterface())
+		{
+			LogError(TEXT("RigVM Struct '%s' - Member '%s' is a UInterface - interface types are not allowed on structs with RIGVM_METHOD."), *StructDef.GetName(), *Parameter.Name);
+		}
+#endif
+
 		if (!ExtendedCPPType.IsEmpty())
 		{
-			// we only support arrays - no maps or similar data structures
-			if (MemberCPPType != TArrayText && MemberCPPType != TEnumAsByteText)
+			// we only support arrays & script interfaces - no maps or similar data structures
+			if (MemberCPPType != TArrayText && MemberCPPType != TEnumAsByteText && MemberCPPType != FTScriptInterfaceText)
 			{
 				LogError(TEXT("RigVM Struct '%s' - Member '%s' type '%s' not supported by RigVM."), *StructDef.GetName(), *Parameter.Name, *MemberCPPType);
 				continue;
@@ -5850,31 +6713,12 @@ void FHeaderParser::ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& Stru
 		{
 			ExtendedCPPType = FString::Printf(TEXT("<%s>"), *ExtendedCPPType.LeftChop(1).RightChop(1));
 			
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-			Parameter.CastName = FString::Printf(TEXT("%s_%d_Array"), *Parameter.Name, StructRigVMInfo.Members.Num());
-
-			if (Parameter.IsConst() || !Parameter.ArraySize.IsEmpty())
-			{
-				Parameter.CastType = FString::Printf(TEXT("%s%s"), FFixedArrayText, *ExtendedCPPType);
-				Parameter.Getter = GetFixedArrayText;
-			}
-			else
-			{
-				Parameter.CastType = FString::Printf(TEXT("%s%s"), FDynamicArrayText, *ExtendedCPPType);
-				Parameter.Getter = GetDynamicArrayText;
-			}				
-
-#else
-
 			if(Parameter.IsConst())
 			{
 				ExtendedCPPType = FString::Printf(TEXT("<const %s>"), *ExtendedCPPType.LeftChop(1).RightChop(1));
 				Parameter.CastName = FString::Printf(TEXT("%s_%d_Array"), *Parameter.Name, StructRigVMInfo.Members.Num());
 				Parameter.CastType = FString::Printf(TEXT("%s%s"), FTArrayViewText, *ExtendedCPPType);
 			}
-
-#endif
 		}
 
 		StructRigVMInfo.Members.Add(MoveTemp(Parameter));
@@ -7148,6 +7992,16 @@ void FHeaderParser::CompileVariableDeclaration(FUnrealStructDefinitionInfo& Stru
 			}
 		}
 
+		// If the accessor tag was found but need to be autogenerated.
+		if (NewPropDef.GetPropertyBase().bSetterTagFound && NewPropDef.GetPropertyBase().SetterName.IsEmpty())
+		{
+			NewPropDef.GetPropertyBase().SetterName = FString::Printf(TEXT("Set%s"), *NewPropDef.GetName());
+		}
+		if (NewPropDef.GetPropertyBase().bGetterTagFound && NewPropDef.GetPropertyBase().GetterName.IsEmpty())
+		{
+			NewPropDef.GetPropertyBase().GetterName = FString::Printf(TEXT("Get%s"), *NewPropDef.GetName());
+		}
+
 		NewProperties.Add(&NewPropDef);
 
 		// we'll need any metadata tags we parsed later on when we call ConvertEOLCommentToTooltip() so the tags aren't clobbered
@@ -7462,7 +8316,7 @@ void FHeaderParser::ParseHeader()
 		FUnrealClassDefinitionInfo& ClassDef = UHTCastChecked<FUnrealClassDefinitionInfo>(TypeDef);
 		PostParsingClassSetup(ClassDef);
 
-		bNoExportClassesOnly = bNoExportClassesOnly && ClassDef.HasAnyClassFlags(CLASS_NoExport);
+		bNoExportClassesOnly = bNoExportClassesOnly && ClassDef.IsNoExport();
 	}
 
 	if (!bSpottedAutogeneratedHeaderInclude && !bEmptyFile && !bNoExportClassesOnly)
@@ -7966,24 +8820,21 @@ void FHeaderParser::SimplifiedClassParse(FUnrealSourceFile& SourceFile, const TC
 			// Handle #include directives as if they were 'dependson' keywords.
 			const FString& DependsOnHeaderName = Str;
 
-			if (DependsOnHeaderName != TEXT("\"UObject/DefineUPropertyMacros.h\"") && DependsOnHeaderName != TEXT("\"UObject/UndefineUPropertyMacros.h\""))
+			if (bFoundGeneratedInclude)
 			{
-				if (bFoundGeneratedInclude)
-				{
-					FUHTMessage(SourceFile, CurrentLine).Throwf(TEXT("#include found after .generated.h file - the .generated.h file should always be the last #include in a header"));
-				}
+				FUHTMessage(SourceFile, CurrentLine).Throwf(TEXT("#include found after .generated.h file - the .generated.h file should always be the last #include in a header"));
+			}
 
-				bFoundGeneratedInclude = DependsOnHeaderName.Contains(TEXT(".generated.h"));
-				if (!bFoundGeneratedInclude && DependsOnHeaderName.Len())
-				{
-					bool  bIsQuotedInclude = DependsOnHeaderName[0] == '\"';
-					int32 HeaderFilenameEnd = DependsOnHeaderName.Find(bIsQuotedInclude ? TEXT("\"") : TEXT(">"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 1);
+			bFoundGeneratedInclude = DependsOnHeaderName.Contains(TEXT(".generated.h"));
+			if (!bFoundGeneratedInclude && DependsOnHeaderName.Len())
+			{
+				bool  bIsQuotedInclude = DependsOnHeaderName[0] == '\"';
+				int32 HeaderFilenameEnd = DependsOnHeaderName.Find(bIsQuotedInclude ? TEXT("\"") : TEXT(">"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 1);
 
-					if (HeaderFilenameEnd != INDEX_NONE)
-					{
-						// Include the extension in the name so that we later know where this entry came from.
-						SourceFile.GetIncludes().AddUnique(FHeaderProvider(EHeaderProviderSourceType::FileName, FPaths::GetCleanFilename(DependsOnHeaderName.Mid(1, HeaderFilenameEnd - 1))));
-					}
+				if (HeaderFilenameEnd != INDEX_NONE)
+				{
+					// Include the extension in the name so that we later know where this entry came from.
+					SourceFile.GetIncludes().AddUnique(FHeaderProvider(EHeaderProviderSourceType::FileName, FPaths::GetCleanFilename(DependsOnHeaderName.Mid(1, HeaderFilenameEnd - 1))));
 				}
 			}
 		}
@@ -8108,7 +8959,7 @@ void FHeaderParser::SimplifiedClassParse(FUnrealSourceFile& SourceFile, const TC
 					}
 
 					TSharedRef<FUnrealTypeDefinitionInfo> ClassDecl = Parser.ParseClassDeclaration(StartOfLine + (UInterfaceMacroDecl - Str), CurrentLine, true, TEXT("UINTERFACE"));
-					bGeneratedIncludeRequired |= !ClassDecl->AsClassChecked().HasAnyClassFlags(CLASS_NoExport);
+					bGeneratedIncludeRequired |= !ClassDecl->AsClassChecked().IsNoExport();
 					SourceFile.AddDefinedClass(MoveTemp(ClassDecl));
 				}
 			}
@@ -8123,7 +8974,7 @@ void FHeaderParser::SimplifiedClassParse(FUnrealSourceFile& SourceFile, const TC
 					}
 
 					TSharedRef<FUnrealTypeDefinitionInfo> ClassDecl = Parser.ParseClassDeclaration(StartOfLine + (UClassMacroDecl - Str), CurrentLine, false, TEXT("UCLASS"));
-					bGeneratedIncludeRequired |= !ClassDecl->AsClassChecked().HasAnyClassFlags(CLASS_NoExport);
+					bGeneratedIncludeRequired |= !ClassDecl->AsClassChecked().IsNoExport();
 					SourceFile.AddDefinedClass(MoveTemp(ClassDecl));
 				}
 			}
@@ -8209,7 +9060,7 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseClassDeclaration(co
 
 	if (ClassNameWithoutPrefixStr.IsEmpty())
 	{
-		Throwf(TEXT("When compiling class definition for '%s', attempting to strip prefix results in an empty name. Did you leave off a prefix?"), *ClassNameWithoutPrefixStr);
+		Throwf(TEXT("When compiling class definition for '%s', attempting to strip prefix results in an empty name. Did you leave off a prefix?"), *ClassName);
 	}
 
 	// Skip optional final keyword
@@ -8359,6 +9210,8 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 		Throwf(TEXT("When compiling struct definition for '%s', attempting to strip prefix results in an empty name. Did you leave off a prefix?"), *StructNameInScript);
 	}
 
+	// Skip optional final keyword
+	MatchIdentifier(TEXT("final"), ESearchCase::CaseSensitive);
 
 	// Create the structure definition
 	TSharedRef<FUnrealScriptStructDefinitionInfo> StructDef = MakeShareable(new FUnrealScriptStructDefinitionInfo(SourceFile, InLineNumber, *StructNameInScript, FName(StructNameStripped, FNAME_Add)));
@@ -8418,6 +9271,34 @@ TSharedRef<FUnrealTypeDefinitionInfo> FHeaderPreParser::ParseStructDeclaration(c
 			StructDef->SetStructFlags(STRUCT_Atomic);
 		}
 		break;
+
+		case EStructSpecifier::HasDefaults:
+			if (!SourceFile.IsNoExportTypes())
+			{
+				LogError(TEXT("The 'HasDefaults' struct specifier is only valid in the NoExportTypes.h file"));
+			}
+			break;
+
+		case EStructSpecifier::HasNoOpConstructor:
+			if (!SourceFile.IsNoExportTypes())
+			{
+				LogError(TEXT("The 'HasNoOpConstructor' struct specifier is only valid in the NoExportTypes.h file"));
+			}
+			break;
+
+		case EStructSpecifier::IsAlwaysAccessible:
+			if (!SourceFile.IsNoExportTypes())
+			{
+				LogError(TEXT("The 'IsAlwaysAccessible' struct specifier is only valid in the NoExportTypes.h file"));
+			}
+			break;
+
+		case EStructSpecifier::IsCoreType:
+			if (!SourceFile.IsNoExportTypes())
+			{
+				LogError(TEXT("The 'IsCoreType' struct specifier is only valid in the NoExportTypes.h file"));
+			}
+			break;
 		}
 	}
 
@@ -8600,6 +9481,8 @@ void FHeaderParser::ResetClassData()
 {
 	FUnrealClassDefinitionInfo& CurrentClassDef = GetCurrentClassDef();
 
+	check(CurrentClassDef.GetClassWithin() == nullptr);
+
 	// Set class flags and within.
 	CurrentClassDef.ClearClassFlags(CLASS_RecompilerClear);
 
@@ -8609,10 +9492,7 @@ void FHeaderParser::ResetClassData()
 		CurrentClassDef.SetClassConfigName(SuperClassDef->GetClassConfigName());
 
 		check(SuperClassDef->GetClassWithin());
-		if (CurrentClassDef.GetClassWithin() == nullptr)
-		{
-			CurrentClassDef.SetClassWithin(SuperClassDef->GetClassWithin());
-		}
+		CurrentClassDef.SetClassWithin(SuperClassDef->GetClassWithin());
 
 		// Copy special categories from parent
 		if (SuperClassDef->HasMetaData(FHeaderParserNames::NAME_HideCategories))
@@ -8644,6 +9524,10 @@ void FHeaderParser::ResetClassData()
 			CurrentClassDef.SetMetaData(FHeaderParserNames::NAME_PrioritizeCategories, *SuperClassDef->GetMetaData(FHeaderParserNames::NAME_PrioritizeCategories));
 		}
 	}
+	else
+	{
+		CurrentClassDef.SetClassWithin(GUObjectDef);
+	}
 
 	check(CurrentClassDef.GetClassWithin());
 }
@@ -8652,6 +9536,8 @@ void FHeaderParser::PostPopNestClass(FUnrealClassDefinitionInfo& CurrentClassDef
 {
 	// Validate all the rep notify events here, to make sure they're implemented
 	VerifyPropertyMarkups(CurrentClassDef);
+
+	VerifyFunctionsMarkups(CurrentClassDef);
 
 	// Iterate over all the interfaces we claim to implement
 	for (const FUnrealStructDefinitionInfo::FBaseStructInfo& BaseClassInfo : CurrentClassDef.GetBaseStructInfos())
@@ -8676,6 +9562,10 @@ void FHeaderParser::PostPopNestClass(FUnrealClassDefinitionInfo& CurrentClassDef
 			{
 				continue;
 			}
+
+			const bool bCanImplementInBlueprints = InterfaceDef->GetBoolMetaData(NAME_IsBlueprintBase);
+			const bool bCannotImplementInBlueprints = (!bCanImplementInBlueprints && InterfaceDef->HasMetaData(NAME_IsBlueprintBase))
+				|| InterfaceDef->HasMetaData(NAME_CannotImplementInterfaceInBlueprint);
 
 			// So iterate over all functions this interface declares
 			for (FUnrealFunctionDefinitionInfo* InterfaceFunctionDef : TUHTFieldRange<FUnrealFunctionDefinitionInfo>(*InterfaceDef, EFieldIteratorFlags::ExcludeSuper))
@@ -8733,10 +9623,11 @@ void FHeaderParser::PostPopNestClass(FUnrealClassDefinitionInfo& CurrentClassDef
 				}
 
 				// Verify that if this has blueprint-callable functions that are not implementable events, we've implemented them as a UFunction in the target class
+				// This is only relevant for bp-implementable interfaces, for native interfaces the interface-defined function is sufficient
 				if (!bImplemented
 					&& InterfaceFunctionDef->HasAnyFunctionFlags(FUNC_BlueprintCallable)
 					&& !InterfaceFunctionDef->HasAnyFunctionFlags(FUNC_BlueprintEvent)
-					&& !InterfaceDef->HasMetaData(NAME_CannotImplementInterfaceInBlueprint))  // FBlueprintMetadata::MD_CannotImplementInterfaceInBlueprint
+					&& !bCannotImplementInBlueprints)
 				{
 					Throwf(TEXT("Missing UFunction implementation of function '%s' from interface '%s'.  This function needs a UFUNCTION() declaration."), *InterfaceFunctionDef->GetName(), *InterfaceDef->GetName());
 				}

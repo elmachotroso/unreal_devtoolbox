@@ -28,14 +28,12 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	UPROPERTY(EditAnywhere, Category=MaterialExpressionTextureSampleParameter)
 	FName Group;
 
-#if WITH_EDITORONLY_DATA
 	/** Controls where the this parameter is displayed in a material instance parameter list.  The lower the number the higher up in the parameter list. */
 	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSampleParameter)
 	int32 SortPriority = 32;
 
 	UPROPERTY(EditAnywhere, Category = ParameterCustomization)
 	FParameterChannelNames ChannelNames;
-#endif
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
@@ -50,7 +48,7 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	virtual FName GetParameterName() const override { return ParameterName; }
 	virtual void SetParameterName(const FName& Name) override { ParameterName = Name; }
 	virtual void ValidateParameterName(const bool bAllowDuplicateName) override;
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
 	{
 		OutMeta.Value = Texture;
@@ -58,6 +56,7 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 		OutMeta.ExpressionGuid = ExpressionGUID;
 		OutMeta.Group = Group;
 		OutMeta.SortPriority = SortPriority;
+		OutMeta.AssetPath = GetAssetPathName();
 		OutMeta.ChannelNames = ChannelNames;
 		return true;
 	}

@@ -44,12 +44,10 @@ struct FAudioPlayerInterface_InstanceData
 	FNiagaraLWCConverter LWCConverter;
 	int32 MaxPlaysPerTick = 0;
 	bool bStopWhenComponentIsDestroyed = true;
+	bool bValidOneShotSound = false;
 #if WITH_EDITORONLY_DATA
 	bool bOnlyActiveDuringGameplay = false;
 #endif
-	
-	// we track if at least one particle played a sound to prevent problems where sounds keep on playing when scalability culls an emitter (which the DI does not notice otherwise)
-	bool bHadPersistentAudioUpdateThisTick = false;
 };
 
 /** This Data Interface can be used to play one-shot audio effects driven by particle data. */
@@ -87,6 +85,10 @@ public:
 	/** If false then it the audio component keeps playing after the niagara component was destroyed. Looping sounds are always stopped when the component is destroyed. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Audio")
 	bool bStopWhenComponentIsDestroyed = true;
+
+	/** Playing looping sounds as persistent audio is not a problem, as the sound is stopped when a particle dies, but one-shot audio outlives the niagara system and can never be stopped. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Audio")
+	bool bAllowLoopingOneShotSounds = false;
 
 #if WITH_EDITORONLY_DATA
 	/** If true then this data interface only processes sounds during active gameplay. This is useful when you are working in the preview window and the sounds annoy you. */

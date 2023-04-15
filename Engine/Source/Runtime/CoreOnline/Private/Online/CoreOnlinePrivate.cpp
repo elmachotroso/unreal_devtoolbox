@@ -4,13 +4,13 @@
 
 namespace UE::Online {
 
-FString FOnlineForeignAccountIdRegistry::ToLogString(const FOnlineAccountIdHandle& Handle) const
+FString FOnlineForeignAccountIdRegistry::ToLogString(const FAccountId& AccountId) const
 {
 	FString Result;
-	if (Handle.IsValid())
+	if (AccountId.IsValid())
 	{
-		const EOnlineServices HandleType = Handle.GetOnlineServicesType();
-		const uint32 HandleIndex = Handle.GetHandle() - 1;
+		const EOnlineServices HandleType = AccountId.GetOnlineServicesType();
+		const uint32 HandleIndex = AccountId.GetHandle() - 1;
 		if (const FRepData* RepDataForServices = OnlineServicesToRepData.Find(HandleType))
 		{
 			const TArray<TArray<uint8>>& RepDataArray = RepDataForServices->RepDataArray;
@@ -27,14 +27,14 @@ FString FOnlineForeignAccountIdRegistry::ToLogString(const FOnlineAccountIdHandl
 	return Result;
 }
 
-TArray<uint8> FOnlineForeignAccountIdRegistry::ToReplicationData(const FOnlineAccountIdHandle& Handle) const
+TArray<uint8> FOnlineForeignAccountIdRegistry::ToReplicationData(const FAccountId& AccountId) const
 {
 	TArray<uint8> RepData;
-	if (Handle.IsValid())
+	if (AccountId.IsValid())
 	{
-		const EOnlineServices HandleType = Handle.GetOnlineServicesType();
-		const uint32 HandleIndex = Handle.GetHandle() - 1;
-		if (const FRepData* RepDataForServices = OnlineServicesToRepData.Find(Handle.GetOnlineServicesType()))
+		const EOnlineServices HandleType = AccountId.GetOnlineServicesType();
+		const uint32 HandleIndex = AccountId.GetHandle() - 1;
+		if (const FRepData* RepDataForServices = OnlineServicesToRepData.Find(AccountId.GetOnlineServicesType()))
 		{
 			const TArray<TArray<uint8>>& RepDataArray = RepDataForServices->RepDataArray;
 			if (ensure(RepDataArray.IsValidIndex(HandleIndex)))
@@ -46,24 +46,24 @@ TArray<uint8> FOnlineForeignAccountIdRegistry::ToReplicationData(const FOnlineAc
 	return RepData;
 }
 
-FOnlineAccountIdHandle FOnlineForeignAccountIdRegistry::FromReplicationData(EOnlineServices Services, const TArray<uint8>& RepData)
+FAccountId FOnlineForeignAccountIdRegistry::FromReplicationData(EOnlineServices Services, const TArray<uint8>& RepData)
 {
-	FOnlineAccountIdHandle Handle;
+	FAccountId AccountId;
 	if (RepData.Num())
 	{
 		FRepData& RepDataForServices = OnlineServicesToRepData.FindOrAdd(Services);
-		if (FOnlineAccountIdHandle* Found = RepDataForServices.RepDataToHandle.Find(RepData))
+		if (FAccountId* Found = RepDataForServices.RepDataToHandle.Find(RepData))
 		{
-			Handle = *Found;
+			AccountId = *Found;
 		}
 		else
 		{
 			RepDataForServices.RepDataArray.Add(RepData);
-			Handle = FOnlineAccountIdHandle(Services, RepDataForServices.RepDataArray.Num());
-			RepDataForServices.RepDataToHandle.Emplace(RepData, Handle);
+			AccountId = FAccountId(Services, RepDataForServices.RepDataArray.Num());
+			RepDataForServices.RepDataToHandle.Emplace(RepData, AccountId);
 		}
 	}
-	return Handle;
+	return AccountId;
 }
 
 }

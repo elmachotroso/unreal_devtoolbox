@@ -7,8 +7,9 @@
 #include "ProfilingDebugging/ScopedTimers.h"
 
 #include "WorldPartition/WorldPartitionRuntimeSpatialHash.h"
-#include "WorldPartition/WorldPartitionActorCluster.h"
+#include "WorldPartition/WorldPartitionStreamingGenerationContext.h"
 #include "WorldPartition/DataLayer/DataLayersID.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 
 extern ENGINE_API bool GRuntimeSpatialHashUseAlignedGridLevels;
 extern ENGINE_API bool GRuntimeSpatialHashSnapNonAlignedGridLevelsToLowerLevels;
@@ -21,10 +22,10 @@ struct FSquare2DGridHelper
 	struct FGrid2D
 	{
 		FVector2D Origin;
-		int32 CellSize;
-		int32 GridSize;
+		int64 CellSize;
+		int64 GridSize;
 
-		inline FGrid2D(const FVector2D& InOrigin, int32 InCellSize, int32 InGridSize)
+		inline FGrid2D(const FVector2D& InOrigin, int64 InCellSize, int64 InGridSize)
 			: Origin(InOrigin)
 			, CellSize(InCellSize)
 			, GridSize(InGridSize)
@@ -35,9 +36,17 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the specified coordinates are valid
 		 */
-		inline bool IsValidCoords(const FIntVector2& InCoords) const
+		inline bool IsValidCoords(const FGridCellCoord2& InCoords) const
 		{
-			return (InCoords.X >= 0) && (InCoords.X < GridSize) && (InCoords.Y >= 0) && (InCoords.Y < GridSize);
+			if ((InCoords.X >= 0) && (InCoords.X < GridSize) && (InCoords.Y >= 0) && (InCoords.Y < GridSize))
+			{
+				int64 Index = (InCoords.Y * GridSize) + InCoords.X;
+				if (ensureMsgf(Index >= 0, TEXT("World Partition reached the current limit of large world coordinates.")))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 
 		/**
@@ -45,11 +54,11 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the specified index was valid
 		 */
-		inline bool GetCellBounds(int32 InIndex, FBox2D& OutBounds) const
+		inline bool GetCellBounds(int64 InIndex, FBox2D& OutBounds) const
 		{
 			if (InIndex >= 0 && InIndex <= (GridSize * GridSize))
 			{
-				const FIntVector2 Coords(InIndex % GridSize, InIndex / GridSize);
+				const FGridCellCoord2 Coords(InIndex % GridSize, InIndex / GridSize);
 				return GetCellBounds(Coords, OutBounds);
 			}
 
@@ -61,11 +70,11 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the specified coord was valid
 		 */
-		inline bool GetCellBounds(const FIntVector2& InCoords, FBox2D& OutBounds) const
+		inline bool GetCellBounds(const FGridCellCoord2& InCoords, FBox2D& OutBounds) const
 		{
 			if (IsValidCoords(InCoords))
 			{
-				const FVector2D Min = (FVector2D(Origin) - FVector2D(GridSize * CellSize * 0.5f, GridSize * CellSize * 0.5f)) + FVector2D(InCoords.X * CellSize, InCoords.Y * CellSize);
+				const FVector2D Min = (FVector2D(Origin) - FVector2D(GridSize * CellSize * 0.5, GridSize * CellSize * 0.5)) + FVector2D(InCoords.X * CellSize, InCoords.Y * CellSize);
 				const FVector2D Max = Min + FVector2D(CellSize, CellSize);
 				OutBounds = FBox2D(Min, Max);
 				return true;
@@ -79,11 +88,11 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the position was inside the grid
 		 */
-		inline bool GetCellCoords(const FVector2D& InPos, FIntVector2& OutCoords) const
+		inline bool GetCellCoords(const FVector2D& InPos, FGridCellCoord2& OutCoords) const
 		{
-			OutCoords = FIntVector2(
-				FMath::FloorToInt(((InPos.X - Origin.X) / CellSize) + GridSize * 0.5f),
-				FMath::FloorToInt(((InPos.Y - Origin.Y) / CellSize) + GridSize * 0.5f)
+			OutCoords = FGridCellCoord2(
+				FMath::FloorToInt(((InPos.X - Origin.X) / CellSize) + GridSize * 0.5),
+				FMath::FloorToInt(((InPos.Y - Origin.Y) / CellSize) + GridSize * 0.5)
 			);
 
 			return IsValidCoords(OutCoords);
@@ -94,7 +103,7 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the bounds was intersecting with the grid
 		 */
-		inline bool GetCellCoords(const FBox2D& InBounds2D, FIntVector2& OutMinCellCoords, FIntVector2& OutMaxCellCoords) const
+		inline bool GetCellCoords(const FBox2D& InBounds2D, FGridCellCoord2& OutMinCellCoords, FGridCellCoord2& OutMaxCellCoords) const
 		{
 			GetCellCoords(InBounds2D.Min, OutMinCellCoords);
 			if ((OutMinCellCoords.X >= GridSize) || (OutMinCellCoords.Y >= GridSize))
@@ -108,11 +117,10 @@ struct FSquare2DGridHelper
 				return false;
 			}
 
-			OutMinCellCoords.X = FMath::Clamp(OutMinCellCoords.X, 0, GridSize - 1);
-			OutMinCellCoords.Y = FMath::Clamp(OutMinCellCoords.Y, 0, GridSize - 1);
-			OutMaxCellCoords.X = FMath::Clamp(OutMaxCellCoords.X, 0, GridSize - 1);
-			OutMaxCellCoords.Y = FMath::Clamp(OutMaxCellCoords.Y, 0, GridSize - 1);
-
+			OutMinCellCoords.X = FMath::Clamp(OutMinCellCoords.X, 0LL, GridSize - 1);
+			OutMinCellCoords.Y = FMath::Clamp(OutMinCellCoords.Y, 0LL, GridSize - 1);
+			OutMaxCellCoords.X = FMath::Clamp(OutMaxCellCoords.X, 0LL, GridSize - 1);
+			OutMaxCellCoords.Y = FMath::Clamp(OutMaxCellCoords.Y, 0LL, GridSize - 1);
 			return true;
 		}
 
@@ -121,14 +129,13 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the coords was inside the grid
 		 */
-		inline bool GetCellIndex(const FIntVector2& InCoords, uint32& OutIndex) const
+		inline bool GetCellIndex(const FGridCellCoord2& InCoords, uint64& OutIndex) const
 		{
 			if (IsValidCoords(InCoords))
 			{
 				OutIndex = (InCoords.Y * GridSize) + InCoords.X;
 				return true;
 			}
-
 			return false;
 		}
 
@@ -137,11 +144,11 @@ struct FSquare2DGridHelper
 		 *
 		 * @return true if the position was inside the grid
 		 */
-		inline bool GetCellIndex(const FVector& InPos, uint32& OutIndex) const
+		inline bool GetCellIndex(const FVector& InPos, uint64& OutIndex) const
 		{
-			FIntVector2 Coords = FIntVector2(
-				FMath::FloorToInt(((InPos.X - Origin.X) / CellSize) + GridSize * 0.5f),
-				FMath::FloorToInt(((InPos.Y - Origin.Y) / CellSize) + GridSize * 0.5f)
+			FGridCellCoord2 Coords = FGridCellCoord2(
+				FMath::FloorToInt(((InPos.X - Origin.X) / CellSize) + GridSize * 0.5),
+				FMath::FloorToInt(((InPos.Y - Origin.Y) / CellSize) + GridSize * 0.5)
 			);
 
 			return GetCellIndex(Coords, OutIndex);
@@ -154,8 +161,8 @@ struct FSquare2DGridHelper
 		 */
 		int32 GetNumIntersectingCells(const FBox& InBox) const
 		{
-			FIntVector2 MinCellCoords;
-			FIntVector2 MaxCellCoords;
+			FGridCellCoord2 MinCellCoords;
+			FGridCellCoord2 MaxCellCoords;
 			const FBox2D Bounds2D(FVector2D(InBox.Min), FVector2D(InBox.Max));
 
 			if (GetCellCoords(Bounds2D, MinCellCoords, MaxCellCoords))
@@ -166,42 +173,35 @@ struct FSquare2DGridHelper
 			return 0;
 		}
 
-		// Runs a function on all cells
-		void ForEachCells(TFunctionRef<void(const FIntVector2&)> InOperation) const
-		{
-			for (int32 y = 0; y < GridSize; y++)
-			{
-				for (int32 x = 0; x < GridSize; x++)
-				{
-					InOperation(FIntVector2(x, y));
-				}
-			}
-		}
-
 		/**
 		 * Runs a function on all intersecting cells for the provided box
 		 *
 		 * @return the number of intersecting cells
 		 */
-		int32 ForEachIntersectingCellsBreakable(const FBox& InBox, TFunctionRef<bool(const FIntVector2&)> InOperation) const
+		int32 ForEachIntersectingCellsBreakable(const FBox& InBox, TFunctionRef<bool(const FGridCellCoord2&)> InOperation) const
 		{
 			int32 NumCells = 0;
 
-			FIntVector2 MinCellCoords;
-			FIntVector2 MaxCellCoords;
+			FGridCellCoord2 MinCellCoords;
+			FGridCellCoord2 MaxCellCoords;
 			const FBox2D Bounds2D(FVector2D(InBox.Min), FVector2D(InBox.Max));
 
 			if (GetCellCoords(Bounds2D, MinCellCoords, MaxCellCoords))
 			{
-				for (int32 y = MinCellCoords.Y; y <= MaxCellCoords.Y; y++)
+				for (int64 y = MinCellCoords.Y; y <= MaxCellCoords.Y; y++)
 				{
-					for (int32 x = MinCellCoords.X; x <= MaxCellCoords.X; x++)
+					for (int64 x = MinCellCoords.X; x <= MaxCellCoords.X; x++)
 					{
-						if (!InOperation(FIntVector2(x, y)))
+						const FGridCellCoord2 Coord(x, y);
+						// Validate that generated coordinate is valid (in case we reached the 64-bit limit of cell index)
+						if (IsValidCoords(Coord))
 						{
-							return NumCells;
+							if (!InOperation(FGridCellCoord2(x, y)))
+							{
+								return NumCells;
+							}
+							++NumCells;
 						}
-						++NumCells;
 					}
 				}
 			}
@@ -209,9 +209,9 @@ struct FSquare2DGridHelper
 			return NumCells;
 		}
 
-		int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FIntVector2&)> InOperation) const
+		int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FGridCellCoord2&)> InOperation) const
 		{
-			return ForEachIntersectingCellsBreakable(InBox, [InOperation](const FIntVector2& Vector) { InOperation(Vector); return true; });
+			return ForEachIntersectingCellsBreakable(InBox, [InOperation](const FGridCellCoord2& Vector) { InOperation(Vector); return true; });
 		}
 
 		/**
@@ -219,16 +219,16 @@ struct FSquare2DGridHelper
 		 *
 		 * @return the number of intersecting cells
 		 */
-		int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FIntVector2&)> InOperation) const
+		int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FGridCellCoord2&)> InOperation) const
 		{
 			int32 NumCells = 0;
 
 			// @todo_ow: rasterize circle instead?
 			const FBox Box(InSphere.Center - FVector(InSphere.W), InSphere.Center + FVector(InSphere.W));
 
-			ForEachIntersectingCells(Box, [this, &InSphere, &InOperation, &NumCells](const FIntVector2& Coords)
+			ForEachIntersectingCells(Box, [this, &InSphere, &InOperation, &NumCells](const FGridCellCoord2& Coords)
 			{
-				const int32 CellIndex = Coords.Y * GridSize + Coords.X;
+				const int64 CellIndex = Coords.Y * GridSize + Coords.X;
 
 				FBox2D CellBounds;
 				GetCellBounds(CellIndex, CellBounds);
@@ -249,11 +249,11 @@ struct FSquare2DGridHelper
 		 *
 		 * @return the number of intersecting cells
 		 */
-		int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FIntVector2&)> InOperation) const;
+		int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FGridCellCoord2&)> InOperation) const;
 
 	private:
 
-		bool DoesCircleSectorIntersectsCell(const FIntVector2& Coords, const FVector2D& SectorCenter, float SectorRadiusSquared, const FVector2D& SectorStartVector, const FVector2D& SectorEndVector, float SectorAngle) const;
+		bool DoesCircleSectorIntersectsCell(const FGridCellCoord2& Coords, const FVector2D& SectorCenter, float SectorRadiusSquared, const FVector2D& SectorStartVector, const FVector2D& SectorEndVector, float SectorAngle) const;
 	};
 
 	struct FGridLevel : public FGrid2D
@@ -261,47 +261,46 @@ struct FSquare2DGridHelper
 #if WITH_EDITOR
 		struct FGridCellDataChunk
 		{
-			FGridCellDataChunk(const TArray<const UDataLayer*>& InDataLayers)
+			FGridCellDataChunk(const TArray<const UDataLayerInstance*>& InDataLayers, const FGuid& InContentBundleID)
 			{
-				Algo::TransformIf(InDataLayers, DataLayers, [](const UDataLayer* DataLayer) { return DataLayer->IsRuntime(); }, [](const UDataLayer* DataLayer) { return DataLayer; });
+				Algo::TransformIf(InDataLayers, DataLayers, [](const UDataLayerInstance* DataLayer) { return DataLayer->IsRuntime(); }, [](const UDataLayerInstance* DataLayer) { return DataLayer; });
 				DataLayersID = FDataLayersID(DataLayers);
+				ContentBundleID = InContentBundleID;
 			}
 
-			void AddActor(FActorInstance ActorInstance) { Actors.Add(MoveTemp(ActorInstance)); }
-			const TSet<FActorInstance>& GetActors() const { return Actors; }
+			void AddActorSetInstance(const IStreamingGenerationContext::FActorSetInstance* ActorSetInstance) { ActorSetInstances.Add(ActorSetInstance); }
+			const TArray<const IStreamingGenerationContext::FActorSetInstance*>& GetActorSetInstances() const { return ActorSetInstances; }
 			bool HasDataLayers() const { return !DataLayers.IsEmpty(); }
-			const TArray<const UDataLayer*>& GetDataLayers() const { return DataLayers; }
+			const TArray<const UDataLayerInstance*>& GetDataLayers() const { return DataLayers; }
 			const FDataLayersID& GetDataLayersID() const { return DataLayersID; }
+			FGuid GetContentBundleID() const { return ContentBundleID; }
+			bool operator==(const FGridCellDataChunk& InGridCellDataChunk) const { return DataLayersID == InGridCellDataChunk.DataLayersID;}
+			friend uint32 GetTypeHash(const FGridCellDataChunk& InGridCellDataChunk) { return GetTypeHash(InGridCellDataChunk.DataLayersID);}
 
 		private:
-			TSet<FActorInstance> Actors;
-			TArray<const UDataLayer*> DataLayers;
+			TArray<const IStreamingGenerationContext::FActorSetInstance*> ActorSetInstances;
+			TArray<const UDataLayerInstance*> DataLayers;
 			FDataLayersID DataLayersID;
+			FGuid ContentBundleID;
 		};
 
 		struct FGridCell
 		{
-			FGridCell(const FIntVector& InCoords)
+			FGridCell(const FGridCellCoord& InCoords)
 				: Coords(InCoords)
 			{}
 
-			void AddActors(const TSet<FGuid>& InActors, const FActorContainerInstance* ContainerInstance, const TArray<const UDataLayer*>& InDataLayers)
+			void AddActorSetInstance(const IStreamingGenerationContext::FActorSetInstance* ActorSetInstance)
 			{
-				for (const FGuid& Actor : InActors)
-				{
-					FActorInstance ActorInstance(Actor, ContainerInstance);
-
-					FDataLayersID DataLayersID = FDataLayersID(InDataLayers);
-					FGridCellDataChunk* ActorDataChunk = Algo::FindByPredicate(DataChunks, [&](FGridCellDataChunk& InDataChunk) { return InDataChunk.GetDataLayersID() == DataLayersID; });
-					if (!ActorDataChunk)
-					{
-						ActorDataChunk = &DataChunks.Emplace_GetRef(InDataLayers);
-					}
-					ActorDataChunk->AddActor(MoveTemp(ActorInstance));
-				}
+				const FDataLayersID DataLayersID = FDataLayersID(ActorSetInstance->DataLayers);
+				FGridCellDataChunk& ActorDataChunk = DataChunks.FindOrAddByHash(DataLayersID.GetHash(), FGridCellDataChunk(ActorSetInstance->DataLayers, ActorSetInstance->ContentBundleID));
+				ActorDataChunk.AddActorSetInstance(ActorSetInstance);
 			}
 
-			const TArray<FGridCellDataChunk>& GetDataChunks() const { return DataChunks; }
+			const TSet<FGridCellDataChunk>& GetDataChunks() const
+			{
+				return DataChunks;
+			}
 
 			const FGridCellDataChunk* GetNoDataLayersDataChunk() const
 			{
@@ -315,18 +314,18 @@ struct FSquare2DGridHelper
 				return nullptr;
 			}
 
-			FIntVector GetCoords() const
+			FGridCellCoord GetCoords() const
 			{
 				return Coords;
 			}
 
 		private:
-			FIntVector Coords;
-			TArray<FGridCellDataChunk> DataChunks;
+			FGridCellCoord Coords;
+			TSet<FGridCellDataChunk> DataChunks;
 		};
 #endif
 
-		inline FGridLevel(const FVector2D& InOrigin, int32 InCellSize, int32 InGridSize, int32 InLevel)
+		inline FGridLevel(const FVector2D& InOrigin, int64 InCellSize, int64 InGridSize, int32 InLevel)
 			: FGrid2D(InOrigin, InCellSize, InGridSize)
 #if WITH_EDITOR
 			, Level(InLevel)
@@ -339,22 +338,22 @@ struct FSquare2DGridHelper
 		 *
 		 * @return the cell at the specified grid coordinate
 		 */
-		inline FGridCell& GetCell(const FIntVector2& InCoords)
+		inline FGridCell& GetCell(const FGridCellCoord2& InCoords)
 		{
 			check(IsValidCoords(InCoords));
 
-			uint32 CellIndex;
-			GetCellIndex(InCoords, CellIndex);
+			uint64 CellIndex;
+			verify(GetCellIndex(InCoords, CellIndex));
 
-			int32 CellIndexMapping;
-			int32* CellIndexMappingPtr = CellsMapping.Find(CellIndex);
+			int64 CellIndexMapping;
+			int64* CellIndexMappingPtr = CellsMapping.Find(CellIndex);
 			if (CellIndexMappingPtr)
 			{
 				CellIndexMapping = *CellIndexMappingPtr;
 			}
 			else
 			{
-				CellIndexMapping = Cells.Emplace(FIntVector(InCoords.X, InCoords.Y, Level));
+				CellIndexMapping = Cells.Emplace(FGridCellCoord(InCoords.X, InCoords.Y, Level));
 				CellsMapping.Add(CellIndex, CellIndexMapping);
 			}
 
@@ -366,40 +365,40 @@ struct FSquare2DGridHelper
 		 *
 		 * @return the cell at the specified grid coordinate
 		 */
-		inline const FGridCell& GetCell(const FIntVector2& InCoords) const
+		inline const FGridCell& GetCell(const FGridCellCoord2& InCoords) const
 		{
 			check(IsValidCoords(InCoords));
 
-			uint32 CellIndex;
-			GetCellIndex(InCoords, CellIndex);
+			uint64 CellIndex;
+			verify(GetCellIndex(InCoords, CellIndex));
 
-			int32 CellIndexMapping = CellsMapping.FindChecked(CellIndex);
+			int64 CellIndexMapping = CellsMapping.FindChecked(CellIndex);
 
 			const FGridCell& Cell = Cells[CellIndexMapping];
-			check(Cell.GetCoords() == FIntVector(InCoords.X, InCoords.Y, Level));
+			check(Cell.GetCoords() == FGridCellCoord(InCoords.X, InCoords.Y, Level));
 			return Cell;
 		}
 
 		int32 Level;
 		TArray<FGridCell> Cells;
-		TMap<int32, int32> CellsMapping;
+		TMap<int64, int64> CellsMapping;
 #endif
 	};
 
-	FSquare2DGridHelper(const FBox& InWorldBounds, const FVector& InOrigin, int32 InCellSize);
+	FSquare2DGridHelper(const FBox& InWorldBounds, const FVector& InOrigin, int64 InCellSize);
 
 #if WITH_EDITOR
 	// Returns the lowest grid level
 	inline FGridLevel& GetLowestLevel() { return Levels[0]; }
 
 	// Returns the always loaded (top level) cell
-	inline FGridLevel::FGridCell& GetAlwaysLoadedCell() { return Levels.Last().GetCell(FIntVector2(0,0)); }
+	inline FGridLevel::FGridCell& GetAlwaysLoadedCell() { return Levels.Last().GetCell(FGridCellCoord2(0,0)); }
 
 	// Returns the always loaded (top level) cell
-	inline const FGridLevel::FGridCell& GetAlwaysLoadedCell() const { return Levels.Last().GetCell(FIntVector2(0,0)); }
+	inline const FGridLevel::FGridCell& GetAlwaysLoadedCell() const { return Levels.Last().GetCell(FGridCellCoord2(0,0)); }
 
 	// Returns the cell at the given coord
-	inline const FGridLevel::FGridCell& GetCell(const FIntVector& InCoords) const { return Levels[InCoords.Z].GetCell(FIntVector2(InCoords.X, InCoords.Y)); }
+	inline const FGridLevel::FGridCell& GetCell(const FGridCellCoord& InCoords) const { return Levels[InCoords.Z].GetCell(FGridCellCoord2(InCoords.X, InCoords.Y)); }
 #endif
 
 	/**
@@ -407,11 +406,11 @@ struct FSquare2DGridHelper
 	 *
 	 * @return true if the specified coord was valid
 	 */
-	inline bool GetCellBounds(const FIntVector& InCoords, FBox2D& OutBounds) const
+	inline bool GetCellBounds(const FGridCellCoord& InCoords, FBox2D& OutBounds) const
 	{
 		if (Levels.IsValidIndex(InCoords.Z))
 		{
-			return Levels[InCoords.Z].GetCellBounds(FIntVector2(InCoords.X, InCoords.Y), OutBounds);
+			return Levels[InCoords.Z].GetCellBounds(FGridCellCoord2(InCoords.X, InCoords.Y), OutBounds);
 		}
 		return false;
 	}
@@ -421,14 +420,14 @@ struct FSquare2DGridHelper
 	 *
 	 * @return true if the specified coord was valid
 	 */
-	inline bool GetCellGlobalCoords(const FIntVector& InCoords, FIntVector& OutGlobalCoords) const
+	inline bool GetCellGlobalCoords(const FGridCellCoord& InCoords, FGridCellCoord& OutGlobalCoords) const
 	{
 		if (Levels.IsValidIndex(InCoords.Z))
 		{
 			const FGridLevel& GridLevel = Levels[InCoords.Z];
-			if (GridLevel.IsValidCoords(FIntVector2(InCoords.X, InCoords.Y)))
+			if (GridLevel.IsValidCoords(FGridCellCoord2(InCoords.X, InCoords.Y)))
 			{
-				int32 CoordOffset = Levels[InCoords.Z].GridSize >> 1;
+				int64 CoordOffset = Levels[InCoords.Z].GridSize >> 1;
 				OutGlobalCoords = InCoords;
 				OutGlobalCoords.X -= CoordOffset;
 				OutGlobalCoords.Y -= CoordOffset;
@@ -448,35 +447,30 @@ struct FSquare2DGridHelper
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FIntVector&)> InOperation, int32 InStartLevel = 0) const;
+	int32 ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 	/**
 	 * Runs a function on all intersecting cells for the provided sphere
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FIntVector&)> InOperation, int32 InStartLevel = 0) const;
+	int32 ForEachIntersectingCells(const FSphere& InSphere, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 	/**
 	 * Runs a function on all intersecting cells for the provided spherical sector
 	 *
 	 * @return the number of intersecting cells
 	 */
-	int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FIntVector&)> InOperation, int32 InStartLevel = 0) const;
-
-#if WITH_EDITOR
-	// Validates that actor is not referenced by multiple cells
-	void ValidateSingleActorReferer();
-#endif
+	int32 ForEachIntersectingCells(const FSphericalSector& InShape, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel = 0) const;
 
 public:
 	FBox WorldBounds;
 	FVector Origin;
-	int32 CellSize;
+	int64 CellSize;
 	TArray<FGridLevel> Levels;
 };
 
 #if WITH_EDITOR
-FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, int32 GridCellSize);
-FSquare2DGridHelper GetPartitionedActors(const UWorldPartition* WorldPartition, const FBox& WorldBounds, const FSpatialHashRuntimeGrid& Grid, const TArray<const FActorClusterInstance*>& GridActors);
+FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, int64 GridCellSize);
+FSquare2DGridHelper GetPartitionedActors(const FBox& WorldBounds, const FSpatialHashRuntimeGrid& Grid, const TArray<const IStreamingGenerationContext::FActorSetInstance*>& ActorSetInstances);
 #endif // #if WITH_EDITOR

@@ -22,6 +22,8 @@
 #include "Math/UnitConversion.h"
 #include "Widgets/Input/NumericTypeInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraComponent)
+
 #define LOCTEXT_NAMESPACE "CameraComponent"
 
 //////////////////////////////////////////////////////////////////////////
@@ -45,13 +47,18 @@ UCameraComponent::UCameraComponent(const FObjectInitializer& ObjectInitializer)
 	AspectRatio = 1.777778f;
 	OrthoWidth = 512.0f;
 	OrthoNearClipPlane = 0.0f;
-	OrthoFarClipPlane = WORLD_MAX;
+	OrthoFarClipPlane = UE_OLD_WORLD_MAX;
 	bConstrainAspectRatio = false;
 	bUseFieldOfViewForLOD = true;
 	PostProcessBlendWeight = 1.0f;
 	bUsePawnControlRotation = false;
 	bAutoActivate = true;
 	bLockToHmd = true;
+
+#if WITH_EDITORONLY_DATA
+	bTickInEditor = true;
+	PrimaryComponentTick.bCanEverTick = true;
+#endif
 }
 
 void UCameraComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport)
@@ -144,6 +151,15 @@ void UCameraComponent::OnRegister()
 	Super::OnRegister();
 }
 
+#if WITH_EDITOR
+void UCameraComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	UpdateDrawFrustum();
+
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+}
+#endif
+
 #if WITH_EDITORONLY_DATA
 
 void UCameraComponent::PostLoad()
@@ -179,27 +195,53 @@ void UCameraComponent::ResetProxyMeshTransform()
 	}
 }
 
-
-void UCameraComponent::RefreshVisualRepresentation()
+void UCameraComponent::UpdateDrawFrustum()
 {
 	if (DrawFrustum != nullptr)
 	{
+		bool bAnythingChanged = false;
 		const float FrustumDrawDistance = 1000.0f;
 		if (ProjectionMode == ECameraProjectionMode::Perspective)
 		{
-			DrawFrustum->FrustumAngle = FieldOfView;
-			DrawFrustum->FrustumStartDist = 10.f;
-			DrawFrustum->FrustumEndDist = DrawFrustum->FrustumStartDist + FrustumDrawDistance;
+			if (DrawFrustum->FrustumAngle != FieldOfView ||
+				DrawFrustum->FrustumStartDist != 10.f ||
+				DrawFrustum->FrustumEndDist != DrawFrustum->FrustumStartDist + FrustumDrawDistance)
+			{
+				DrawFrustum->FrustumAngle = FieldOfView;
+				DrawFrustum->FrustumStartDist = 10.f;
+				DrawFrustum->FrustumEndDist = DrawFrustum->FrustumStartDist + FrustumDrawDistance;
+				bAnythingChanged = true;
+			}
 		}
 		else
 		{
-			DrawFrustum->FrustumAngle = -OrthoWidth;
-			DrawFrustum->FrustumStartDist = OrthoNearClipPlane;
-			DrawFrustum->FrustumEndDist = FMath::Min(OrthoFarClipPlane - OrthoNearClipPlane, FrustumDrawDistance);
+			if (DrawFrustum->FrustumAngle != -OrthoWidth ||
+				DrawFrustum->FrustumStartDist != OrthoNearClipPlane ||
+				DrawFrustum->FrustumEndDist != FMath::Min(OrthoFarClipPlane - OrthoNearClipPlane, FrustumDrawDistance))
+			{
+				DrawFrustum->FrustumAngle = -OrthoWidth;
+				DrawFrustum->FrustumStartDist = OrthoNearClipPlane;
+				DrawFrustum->FrustumEndDist = FMath::Min(OrthoFarClipPlane - OrthoNearClipPlane, FrustumDrawDistance);
+				bAnythingChanged = true;
+			}
 		}
-		DrawFrustum->FrustumAspectRatio = AspectRatio;
-		DrawFrustum->MarkRenderStateDirty();
+
+		if (DrawFrustum->FrustumAspectRatio != AspectRatio)
+		{
+			DrawFrustum->FrustumAspectRatio = AspectRatio;
+			bAnythingChanged = true;
+		}	
+		
+		if (bAnythingChanged)
+		{
+			DrawFrustum->MarkRenderStateDirty();
+		}
 	}
+}
+
+void UCameraComponent::RefreshVisualRepresentation()
+{
+	UpdateDrawFrustum();
 
 	// Update the proxy camera mesh if necessary
 	if (ProxyMeshComponent && ProxyMeshComponent->GetStaticMesh() != CameraMesh)
@@ -266,9 +308,9 @@ void UCameraComponent::OnCameraMeshHiddenChanged()
 #endif
 }
 
-void UCameraComponent::GetCameraView(float DeltaTime, FMinimalViewInfo& DesiredView)
+bool UCameraComponent::IsXRHeadTrackedCamera() const
 {
-	if (GEngine && GEngine->XRSystem.IsValid() && GetWorld() && GetWorld()->WorldType != EWorldType::Editor )
+	if (GEngine && GEngine->XRSystem.IsValid() && GetWorld() && GetWorld()->WorldType != EWorldType::Editor)
 	{
 		IXRTrackingSystem* XRSystem = GEngine->XRSystem.Get();
 		auto XRCamera = XRSystem->GetXRCamera();
@@ -277,27 +319,44 @@ void UCameraComponent::GetCameraView(float DeltaTime, FMinimalViewInfo& DesiredV
 		{
 			if (XRSystem->IsHeadTrackingAllowedForWorld(*GetWorld()))
 			{
-				const FTransform ParentWorld = CalcNewComponentToWorld(FTransform());
-
-				XRCamera->SetupLateUpdate(ParentWorld, this, bLockToHmd == 0);
-
-				if (bLockToHmd)
-				{
-					FQuat Orientation;
-					FVector Position;
-					if (XRCamera->UpdatePlayerCamera(Orientation, Position))
-					{
-						SetRelativeTransform(FTransform(Orientation, Position));
-					}
-					else
-					{
-						ResetRelativeTransform();
-					}
-				}
-
-				XRCamera->OverrideFOV(this->FieldOfView);
+				return true;
 			}
 		}
+	}
+
+	return false;
+}
+
+void UCameraComponent::HandleXRCamera()
+{
+	IXRTrackingSystem* XRSystem = GEngine->XRSystem.Get();
+	auto XRCamera = XRSystem->GetXRCamera();
+	const FTransform ParentWorld = CalcNewComponentToWorld(FTransform());
+
+	XRCamera->SetupLateUpdate(ParentWorld, this, bLockToHmd == 0);
+
+	if (bLockToHmd)
+	{
+		FQuat Orientation;
+		FVector Position;
+		if (XRCamera->UpdatePlayerCamera(Orientation, Position))
+		{
+			SetRelativeTransform(FTransform(Orientation, Position));
+		}
+		else
+		{
+			ResetRelativeTransform();
+		}
+	}
+
+	XRCamera->OverrideFOV(this->FieldOfView);
+}
+
+void UCameraComponent::GetCameraView(float DeltaTime, FMinimalViewInfo& DesiredView)
+{
+	if (IsXRHeadTrackedCamera())
+	{
+		HandleXRCamera();
 	}
 
 	if (bUsePawnControlRotation)
@@ -435,4 +494,5 @@ void UCameraComponent::GetExtraPostProcessBlends(TArray<FPostProcessSettings>& O
 
 
 #undef LOCTEXT_NAMESPACE
+
 

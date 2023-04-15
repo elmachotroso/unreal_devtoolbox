@@ -2,18 +2,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Engine/Classes/Engine/Texture2D.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "InteractiveToolManager.h"
 #include "AssetUtils/Texture2DBuilder.h"
-#include "DynamicMesh/DynamicMesh3.h"
-#include "Image/ImageDimensions.h"
-#include "Sampling/MeshMapBaker.h"
-#include "ModelingOperators.h"
-#include "MeshOpPreviewHelpers.h"
-#include "PreviewMesh.h"
 #include "BakeMeshAttributeTool.h"
+#include "CoreMinimal.h"
+#include "DynamicMesh/DynamicMesh3.h"
+#include "Engine/Texture2D.h"
+#include "Image/ImageDimensions.h"
+#include "InteractiveToolManager.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "MeshOpPreviewHelpers.h"
+#include "ModelingOperators.h"
+#include "PreviewMesh.h"
+#include "Sampling/MeshMapBaker.h"
 #include "BakeMeshAttributeMapsToolBase.generated.h"
 
 /**
@@ -176,6 +176,9 @@ protected:
 	};
 	FBakeSettings CachedBakeSettings;
 
+	EBakeOpState UpdateResult_SampleFilterMask(UTexture2D* SampleFilterMask);
+	TSharedPtr<UE::Geometry::TImageBuilder<FVector4f>, ESPMode::ThreadSafe> CachedSampleFilterMask;
+
 	TSharedPtr<TArray<int32>, ESPMode::ThreadSafe> TargetMeshUVCharts;
 
 	/**
@@ -198,7 +201,15 @@ protected:
 	//
 	TUniquePtr<TGenericDataBackgroundCompute<UE::Geometry::FMeshMapBaker>> Compute = nullptr;
 
-	/** Internal cache of bake texture results. */
+	/**
+	 * Internal cache of bake texture results.
+	 * The tool can inject additional bake types that were not requested by the user. This
+	 * can occur in cases where a particular bake type might need another bake type to preview
+	 * such as BentNormal requiring AmbientOcclusion to preview. To avoid writing out assets
+	 * that the user did not request, we introduce CachedMaps as a temporary texture cache
+	 * for the tool preview. The Result array is then updated from CachedMaps to only hold
+	 * user requested textures that are written out on Shutdown.
+	 */
 	UPROPERTY()
 	TMap<EBakeMapType, TObjectPtr<UTexture2D>> CachedMaps;
 
@@ -226,6 +237,12 @@ protected:
 	 * @param PreviewMapType EBakeMapType to preview
 	 */
 	void UpdatePreview(EBakeMapType PreviewMapType);
+
+
+	/**
+	 * Resets the preview material parameters to their default state.
+	 */
+	void ResetPreview();
 	
 
 	/**

@@ -13,7 +13,7 @@ namespace TraceServices
 {
 	FTasksProvider::FTasksProvider(IAnalysisSession& InSession)
 		: Session(InSession)
-		, CounterProvider(EditCounterProvider(Session))
+		, EditableCounterProvider(EditCounterProvider(Session))
 	{
 #if 0
 		////////////////////////////////
@@ -61,32 +61,32 @@ namespace TraceServices
 		check(bCountersCreated == false);
 		FAnalysisSessionEditScope _(Session);
 
-		WaitingForPrerequisitesTasksCounter = CounterProvider.CreateCounter();
+		WaitingForPrerequisitesTasksCounter = EditableCounterProvider.CreateEditableCounter();
 		WaitingForPrerequisitesTasksCounter->SetName(TEXT("Tasks::WaitingForPrerequisitesTasks"));
 		WaitingForPrerequisitesTasksCounter->SetDescription(TEXT("Tasks: the number of tasks waiting for prerequisites (blocked by dependency)"));
 		WaitingForPrerequisitesTasksCounter->SetIsFloatingPoint(false);
 
-		TaskLatencyCounter = CounterProvider.CreateCounter();
+		TaskLatencyCounter = EditableCounterProvider.CreateEditableCounter();
 		TaskLatencyCounter->SetName(TEXT("Tasks::TaskLatency"));
 		TaskLatencyCounter->SetDescription(TEXT("Tasks: tasks latency - the time from scheduling to execution start"));
 		TaskLatencyCounter->SetIsFloatingPoint(true);
 
-		ScheduledTasksCounter = CounterProvider.CreateCounter();
+		ScheduledTasksCounter = EditableCounterProvider.CreateEditableCounter();
 		ScheduledTasksCounter->SetName(TEXT("Tasks::ScheduledTasks"));
 		ScheduledTasksCounter->SetDescription(TEXT("Tasks: number of scheduled tasks excluding named threads (the size of the queue)"));
 		ScheduledTasksCounter->SetIsFloatingPoint(false);
 
-		NamedThreadsScheduledTasksCounter = CounterProvider.CreateCounter();
+		NamedThreadsScheduledTasksCounter = EditableCounterProvider.CreateEditableCounter();
 		NamedThreadsScheduledTasksCounter->SetName(TEXT("Tasks::NamedThreadsScheduledTasks"));
 		NamedThreadsScheduledTasksCounter->SetDescription(TEXT("Tasks: number of scheduled tasks for named threads"));
 		NamedThreadsScheduledTasksCounter->SetIsFloatingPoint(false);
 
-		RunningTasksCounter = CounterProvider.CreateCounter();
+		RunningTasksCounter = EditableCounterProvider.CreateEditableCounter();
 		RunningTasksCounter->SetName(TEXT("Tasks::RunningTasks"));
 		RunningTasksCounter->SetDescription(TEXT("Tasks: level of parallelism - the number of tasks being executed"));
 		RunningTasksCounter->SetIsFloatingPoint(false);
 
-		ExecutionTimeCounter = CounterProvider.CreateCounter();
+		ExecutionTimeCounter = EditableCounterProvider.CreateEditableCounter();
 		ExecutionTimeCounter->SetName(TEXT("Tasks::ExecutionTime"));
 		ExecutionTimeCounter->SetDescription(TEXT("Tasks: execution time"));
 		ExecutionTimeCounter->SetIsFloatingPoint(true);
@@ -117,9 +117,6 @@ namespace TraceServices
 			return;
 		}
 
-		checkf(Task->CreatedTimestamp == FTaskInfo::InvalidTimestamp, TEXT("%d"), TaskId);
-
-		Task->Id = TaskId;
 		Task->CreatedTimestamp = Timestamp;
 		Task->CreatedThreadId = ThreadId;
 	}
@@ -139,9 +136,8 @@ namespace TraceServices
 
 		checkf(Task->LaunchedTimestamp == FTaskInfo::InvalidTimestamp, TEXT("%d"), TaskId);
 			
-		if (Task->Id == TaskTrace::InvalidId) // created and launched in one go
+		if (Task->CreatedTimestamp == FTaskInfo::InvalidTimestamp) // created and launched in one go
 		{
-			Task->Id = TaskId;
 			Task->CreatedTimestamp = Timestamp;
 			Task->CreatedThreadId = ThreadId;
 		}
@@ -164,7 +160,19 @@ namespace TraceServices
 	{
 		InitTaskIdToIndexConversion(TaskId);
 
-		if (!TryRegisterEvent(TEXT("TaskScheduled"), TaskId, &FTaskInfo::ScheduledTimestamp, Timestamp, &FTaskInfo::ScheduledThreadId, ThreadId))
+		FTaskInfo* Task = TryGetOrCreateTask(TaskId);
+		if (Task == nullptr)
+		{
+			UE_LOG(LogTraceServices, Log, TEXT("TaskScheduled(TaskId %d, Timestamp %.6f) skipped"), TaskId, Timestamp);
+			return;
+		}
+
+		TaskScheduled(*Task, Timestamp, ThreadId);
+	}
+
+	void FTasksProvider::TaskScheduled(FTaskInfo& Task, double Timestamp, uint32 ThreadId)
+	{
+		if (!TryRegisterEvent(TEXT("TaskScheduled"), Task, &FTaskInfo::ScheduledTimestamp, Timestamp, &FTaskInfo::ScheduledThreadId, ThreadId))
 		{
 			return;
 		}
@@ -175,7 +183,7 @@ namespace TraceServices
 		}
 
 		WaitingForPrerequisitesTasksCounter->SetValue(Timestamp, --WaitingForPrerequisitesTasksNum);
-		if (IsNamedThread(TryGetTask(TaskId)->ThreadToExecuteOn))
+		if (IsNamedThread(Task.ThreadToExecuteOn))
 		{
 			NamedThreadsScheduledTasksCounter->SetValue(Timestamp, ++ScheduledTasksNum);
 		}
@@ -194,31 +202,56 @@ namespace TraceServices
 		FTaskInfo* Task = TryGetOrCreateTask(TaskId);
 		if (Task == nullptr)
 		{
-			UE_LOG(LogTraceServices, Log, TEXT("SubsequentAdded(TaskId %d, SubsequentId %d, Timestamp %.6f) skipped"), TaskId, SubsequentId, Timestamp);
+			UE_LOG(LogTraceServices, Log, TEXT("SubsequentAdded(TaskId %d, SubsequentId %d, Timestamp %.6f) skipped, task %d doesn't exists"), TaskId, SubsequentId, Timestamp, TaskId);
 			return;
 		}
 
-		Task->Id = TaskId;
+		FTaskInfo* SubsequentTask = TryGetOrCreateTask(SubsequentId);
+		if (SubsequentTask == nullptr)
+		{
+			UE_LOG(LogTraceServices, Log, TEXT("SubsequentAdded(TaskId %d, SubsequentId %d, Timestamp %.6f) skipped, subsequent task %d doesn't exists"), TaskId, SubsequentId, Timestamp, SubsequentId);
+			return;
+		}
 
-		AddRelative(TEXT("Subsequent"), TaskId, &FTaskInfo::Subsequents, SubsequentId, Timestamp, ThreadId);
-
-		// make a backward link from the subsequent task to this task (prerequisite)
-		AddRelative(TEXT("Prerequisite"), SubsequentId, &FTaskInfo::Prerequisites, TaskId, Timestamp, ThreadId);
+		// if a subsequent is added before this task execution started, it's a subsequent that have this task as a (execution) prerequisite.
+		// otherwise, it's a subsequent that have this task as a nested task (a completion prerequisite)
+		if (SubsequentTask->StartedTimestamp == FTaskInfo::InvalidTimestamp || SubsequentTask->StartedTimestamp >= Timestamp)
+		{
+			AddRelative(TEXT("Subsequent"), TaskId, &FTaskInfo::Subsequents, SubsequentId, Timestamp, ThreadId);
+			// make a backward link from the subsequent task to this task (prerequisite)
+			AddRelative(TEXT("Prerequisite"), SubsequentId, &FTaskInfo::Prerequisites, TaskId, Timestamp, ThreadId);
+		}
+		else
+		{
+			AddRelative(TEXT("Parent"), TaskId, &FTaskInfo::ParentTasks, SubsequentId, Timestamp, ThreadId);
+			// make a backward link from the parent task to this nested task
+			AddRelative(TEXT("Nested"), SubsequentId, &FTaskInfo::NestedTasks, TaskId, Timestamp, ThreadId);
+		}
 	}
 
 	void FTasksProvider::TaskStarted(TaskTrace::FId TaskId, double Timestamp, uint32 ThreadId)
 	{
 		InitTaskIdToIndexConversion(TaskId);
 
-		if (!TryRegisterEvent(TEXT("TaskStarted"), TaskId, &FTaskInfo::StartedTimestamp, Timestamp, &FTaskInfo::StartedThreadId, ThreadId))
+		FTaskInfo* Task = TryGetOrCreateTask(TaskId);
+		if (Task == nullptr)
+		{
+			UE_LOG(LogTraceServices, Log, TEXT("TaskStarted(TaskId %d, Timestamp %.6f) skipped"), TaskId, Timestamp);
+			return;
+		}
+
+		if (Task->ScheduledTimestamp == FTaskInfo::InvalidTimestamp)
+		{
+			// optimisation for tasks that can't have dependencies, and so are scheduled immediately after launching. in this case "scheduled" trace is not sent
+			TaskScheduled(*Task, Task->LaunchedTimestamp, Task->LaunchedThreadId);
+		}
+
+		if (!TryRegisterEvent(TEXT("TaskStarted"), *Task, &FTaskInfo::StartedTimestamp, Timestamp, &FTaskInfo::StartedThreadId, ThreadId))
 		{
 			return;
 		}
 
 		ExecutionThreads.FindOrAdd(ThreadId).Add(TaskId);
-
-		FTaskInfo* Task = TryGetTask(TaskId);
-		check(Task != nullptr);
 
 		if (!bCountersCreated)
 		{
@@ -238,24 +271,23 @@ namespace TraceServices
 		TaskLatencyCounter->SetValue(Timestamp, Task->StartedTimestamp - Task->ScheduledTimestamp);
 	}
 
-	void FTasksProvider::NestedAdded(TaskTrace::FId TaskId, TaskTrace::FId NestedId, double Timestamp, uint32 ThreadId)
-	{
-		InitTaskIdToIndexConversion(TaskId);
-
-		AddRelative(TEXT("Nested"), TaskId, &FTaskInfo::NestedTasks, NestedId, Timestamp, ThreadId);
-
-		FTaskInfo* Task = TryGetTask(NestedId);
-		if (Task != nullptr)
-		{
-			Task->ParentOfNestedTask = MakeUnique<FTaskInfo::FRelationInfo>(TaskId, Timestamp, ThreadId);
-		}
-	}
-
 	void FTasksProvider::TaskFinished(TaskTrace::FId TaskId, double Timestamp)
 	{
 		InitTaskIdToIndexConversion(TaskId);
 
-		if (!TryRegisterEvent(TEXT("TaskFinished"), TaskId, &FTaskInfo::FinishedTimestamp, Timestamp))
+		FTaskInfo* Task = TryGetTask(TaskId);
+		if (Task == nullptr)
+		{
+			UE_LOG(LogTraceServices, Log, TEXT("TaskFinished(TaskId %d, Timestamp %.6f) skipped"), TaskId, Timestamp);
+			return;
+		}
+
+		TaskFinished(*Task, Timestamp);
+	}
+
+	void FTasksProvider::TaskFinished(FTaskInfo& Task, double Timestamp)
+	{
+		if (!TryRegisterEvent(TEXT("TaskFinished"), Task, &FTaskInfo::FinishedTimestamp, Timestamp))
 		{
 			return;
 		}
@@ -266,10 +298,7 @@ namespace TraceServices
 		}
 
 		RunningTasksCounter->SetValue(Timestamp, --RunningTasksNum);
-	
-		FTaskInfo* Task = TryGetTask(TaskId);
-		check(Task != nullptr);
-		ExecutionTimeCounter->SetValue(Timestamp, Task->FinishedTimestamp - Task->StartedTimestamp);
+		ExecutionTimeCounter->SetValue(Timestamp, Task.FinishedTimestamp - Task.StartedTimestamp);
 	}
 
 	void FTasksProvider::TaskCompleted(TaskTrace::FId TaskId, double Timestamp, uint32 ThreadId)
@@ -287,7 +316,31 @@ namespace TraceServices
 
 		Task->Id = TaskId;
 
-		TryRegisterEvent(TEXT("TaskCompleted"), TaskId, &FTaskInfo::CompletedTimestamp, Timestamp, &FTaskInfo::CompletedThreadId, ThreadId);
+		if (Task->ScheduledTimestamp == FTaskInfo::InvalidTimestamp) // task events are never scheduled or executed
+		{
+			// pretend scheduling and execution happened at the moment of completion
+			Task->LaunchedTimestamp = Timestamp;
+			Task->LaunchedThreadId = ThreadId;
+			Task->ScheduledTimestamp = Timestamp;
+			Task->ScheduledThreadId = ThreadId;
+			Task->StartedTimestamp = Timestamp;
+			Task->StartedThreadId = ThreadId;
+			Task->FinishedTimestamp = Timestamp;
+		}
+		else if (Task->FinishedTimestamp == FTaskInfo::InvalidTimestamp)
+		{
+			// optimisation for ParalellFor tasks that are finished and completed in one go, so no need to send separate trace messages
+			TaskFinished(*Task, Timestamp);
+		}
+
+		TryRegisterEvent(TEXT("TaskCompleted"), *Task, &FTaskInfo::CompletedTimestamp, Timestamp, &FTaskInfo::CompletedThreadId, ThreadId);
+	}
+
+	void FTasksProvider::TaskDestroyed(TaskTrace::FId TaskId, double Timestamp, uint32 ThreadId)
+	{
+		InitTaskIdToIndexConversion(TaskId);
+
+		TryRegisterEvent(TEXT("TaskDestroyed"), TaskId, &FTaskInfo::DestroyedTimestamp, Timestamp, &FTaskInfo::DestroyedThreadId, ThreadId);
 	}
 
 	void FTasksProvider::WaitingStarted(TArray<TaskTrace::FId> InTasks, double Timestamp, uint32 ThreadId)
@@ -351,6 +404,7 @@ namespace TraceServices
 		if (TaskIndex >= Tasks.Num())
 		{
 			Tasks.AddDefaulted(TaskIndex - Tasks.Num() + 1);
+			Tasks[TaskIndex].Id = TaskId;
 		}
 
 		return &Tasks[TaskIndex];
@@ -363,8 +417,6 @@ namespace TraceServices
 
 	bool FTasksProvider::TryRegisterEvent(const TCHAR* EventName, TaskTrace::FId TaskId, double FTaskInfo::* TimestampPtr, double TimestampValue, uint32 FTaskInfo::* ThreadIdPtr/* = nullptr*/, uint32 ThreadIdValue/* = 0*/)
 	{
-		UE_LOG(LogTraceServices, Verbose, TEXT("%s(TaskId: %d, Timestamp %.6f)"), EventName, TaskId, TimestampValue);
-
 		FTaskInfo* Task = TryGetTask(TaskId);
 		if (Task == nullptr)
 		{
@@ -372,11 +424,18 @@ namespace TraceServices
 			return false;
 		}
 
-		checkf(Task->*TimestampPtr == FTaskInfo::InvalidTimestamp, TEXT("%s: TaskId %d, old TS %.6f, new TS %.6f"), EventName, TaskId, Task->*TimestampPtr, TimestampValue);
-		Task->*TimestampPtr = TimestampValue;
+		return TryRegisterEvent(EventName, *Task, TimestampPtr, TimestampValue, ThreadIdPtr, ThreadIdValue);
+	}
+
+	bool FTasksProvider::TryRegisterEvent(const TCHAR* EventName, FTaskInfo& Task, double FTaskInfo::* TimestampPtr, double TimestampValue, uint32 FTaskInfo::* ThreadIdPtr/* = nullptr*/, uint32 ThreadIdValue/* = 0*/)
+	{
+		UE_LOG(LogTraceServices, Verbose, TEXT("%s(TaskId: %d, Timestamp %.6f)"), EventName, Task.Id, TimestampValue);
+
+		checkf(Task.*TimestampPtr == FTaskInfo::InvalidTimestamp, TEXT("%s: TaskId %d, old TS %.6f, new TS %.6f"), EventName, Task.Id, Task.*TimestampPtr, TimestampValue);
+		Task.*TimestampPtr = TimestampValue;
 		if (ThreadIdPtr != nullptr)
 		{
-			Task->*ThreadIdPtr = ThreadIdValue;
+			Task.*ThreadIdPtr = ThreadIdValue;
 		}
 
 		return true;
@@ -457,6 +516,29 @@ namespace TraceServices
 
 		const FWaitingForTasks& Waiting = (*Thread)[NextWaitingIndex - 1];
 		return Waiting.FinishedTimestamp > Timestamp || Waiting.FinishedTimestamp == FTaskInfo::InvalidTimestamp ? &Waiting : nullptr;
+	}
+
+	TArray<TaskTrace::FId> FTasksProvider::TryGetParallelForTasks(const TCHAR* TimerName, uint32 ThreadId, double StartTime, double EndTime) const
+	{
+		TArray<TaskTrace::FId> Result;
+
+		if (FCString::Strcmp(TimerName, TEXT("ParallelFor")) != 0)
+		{
+			return Result;
+		}
+
+		EnumerateTasks(StartTime, EndTime, 
+			[ThreadId, StartTime, EndTime, &Result] (const FTaskInfo& Task)
+			{
+				if (Task.LaunchedThreadId == ThreadId && Task.LaunchedTimestamp > StartTime && Task.FinishedTimestamp < EndTime)
+				{
+					Result.Add(Task.Id);
+				}
+				return ETaskEnumerationResult::Continue;
+			}
+		);
+
+		return Result;
 	}
 
 	int64 FTasksProvider::GetNumTasks() const

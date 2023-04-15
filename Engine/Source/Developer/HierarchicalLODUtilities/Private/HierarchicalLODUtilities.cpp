@@ -27,7 +27,7 @@
 #include "BSPOps.h"
 #include "Builders/CubeBuilder.h"
 
-#include "AssetRegistryModule.h" 
+#include "AssetRegistry/AssetRegistryModule.h" 
 #include "Engine/LevelStreaming.h"
 
 #if WITH_EDITOR
@@ -37,14 +37,21 @@
 #include "Settings/EditorExperimentalSettings.h"
 #endif // WITH_EDITOR
 
+#include "MaterialUtilities.h"
+#include "IGeometryProcessingInterfacesModule.h"
+#include "GeometryProcessingInterfaces/ApproximateActors.h"
+
 #include "HierarchicalLODProxyProcessor.h"
 #include "IMeshReductionManagerModule.h"
 #include "MeshMergeModule.h"
+#include "Algo/ForEach.h"
 #include "Algo/Transform.h"
+#include "ObjectTools.h"
 #include "Engine/HLODProxy.h"
 #include "HierarchicalLOD.h"
 #include "LevelUtils.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHierarchicalLODUtilities, Verbose, All);
 
@@ -409,6 +416,250 @@ static UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, 
 	return ImposterStaticMesh;
 }
 
+
+struct FHLODBuildParams
+{
+	ALODActor*								LODActor;
+	UHLODProxy*								Proxy;
+	const TArray<UPrimitiveComponent*>&		Components;
+	FHierarchicalSimplification				LODSetup;
+	UMaterialInterface*						BaseMaterial;
+	UPackage*								AssetsOuter;
+	FString									PackageName;
+
+	FHLODBuildParams(const TArray<UPrimitiveComponent*>& InComponents, const FHierarchicalSimplification& InLODSetup)
+		: Components(InComponents)
+		, LODSetup(InLODSetup)
+	{
+		FMaterialProxySettings* MaterialProxySettings = LODSetup.GetSimplificationMethodMaterialSettings();
+		if (MaterialProxySettings)
+		{
+			MaterialProxySettings->ResolveTexelDensity(InComponents);
+		}
+		else
+		{
+			UE_LOG(LogHierarchicalLODUtilities, Error, TEXT("Unsupported simplification method provided"));
+		}
+	}
+};
+
+struct FHLODBuildResults
+{
+	bool			bDeferredResults = false;
+	UStaticMesh*	HLODMesh = nullptr;
+	FVector			HLODLocation = FVector::ZeroVector;
+};
+
+FHLODBuildResults GenerateHLODMesh_Simplify(const FHLODBuildParams& InBuildParams)
+{
+	FHLODBuildResults HLODBuildResults;
+
+	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+
+	// Generate proxy mesh and proxy material assets
+	IMeshReductionManagerModule& MeshReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface");
+	const bool bHasMeshReductionCapableModule = (MeshReductionModule.GetMeshMergingInterface() != nullptr);
+
+	if (!bHasMeshReductionCapableModule)
+	{
+		return HLODBuildResults;
+	}
+
+	FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
+	FHierarchicalLODProxyProcessor* Processor = Module.GetProxyProcessor();
+
+	FHierarchicalSimplification OverrideLODSetup = InBuildParams.LODSetup;
+
+	FMeshProxySettings ProxySettings = InBuildParams.LODSetup.ProxySetting;
+	if (InBuildParams.LODActor->bOverrideMaterialMergeSettings)
+	{
+		ProxySettings.MaterialSettings = InBuildParams.LODActor->MaterialSettings;
+	}
+
+	if (InBuildParams.LODActor->bOverrideScreenSize)
+	{
+		ProxySettings.ScreenSize = InBuildParams.LODActor->ScreenSize;
+	}
+
+	if (InBuildParams.LODActor->bOverrideTransitionScreenSize)
+	{
+		OverrideLODSetup.TransitionScreenSize = InBuildParams.LODActor->TransitionScreenSize;
+	}
+
+	FGuid JobID = Processor->AddProxyJob(InBuildParams.LODActor, InBuildParams.Proxy, OverrideLODSetup);
+
+	TArray<UStaticMeshComponent*> StaticMeshComponents;
+	Algo::Transform(InBuildParams.Components, StaticMeshComponents, [](UPrimitiveComponent* InPrimitiveComponent) { return Cast<UStaticMeshComponent>(InPrimitiveComponent); });
+
+	MeshMergeUtilities.CreateProxyMesh(StaticMeshComponents, ProxySettings, InBuildParams.BaseMaterial, InBuildParams.AssetsOuter, InBuildParams.PackageName, JobID, Processor->GetCallbackDelegate(), true, OverrideLODSetup.TransitionScreenSize);
+
+	
+	HLODBuildResults.bDeferredResults = true;
+	
+	return HLODBuildResults;
+}
+
+FHLODBuildResults GenerateHLODMesh_Merge(const FHLODBuildParams& InBuildParams)
+{
+	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+
+	FMeshMergingSettings MergeSettings = InBuildParams.LODSetup.MergeSetting;
+	if (InBuildParams.LODActor->bOverrideMaterialMergeSettings)
+	{
+		MergeSettings.MaterialSettings = InBuildParams.LODActor->MaterialSettings;
+	}
+
+	// update LOD parents before rebuild to ensure they are valid when mesh merge extensions are called.
+	InBuildParams.LODActor->UpdateSubActorLODParents();
+
+	FHLODBuildResults HLODBuildResults;
+
+	TArray<UObject*> OutAssets;
+	MeshMergeUtilities.MergeComponentsToStaticMesh(InBuildParams.Components, InBuildParams.LODActor->GetWorld(), MergeSettings, InBuildParams.BaseMaterial, InBuildParams.AssetsOuter, InBuildParams.PackageName, OutAssets, HLODBuildResults.HLODLocation, InBuildParams.LODSetup.TransitionScreenSize, true);
+
+	// set staticmesh
+	for (UObject* Asset : OutAssets)
+	{
+		if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
+		{
+			HLODBuildResults.HLODMesh = StaticMesh;
+			break;
+		}
+	}
+
+	return HLODBuildResults;
+}
+
+FHLODBuildResults GenerateHLODMesh_Approximate(const FHLODBuildParams& InBuildParams)
+{
+	FHLODBuildResults HLODBuildResults;
+
+	IGeometryProcessingInterfacesModule* GeomProcInterfaces = FModuleManager::Get().LoadModulePtr<IGeometryProcessingInterfacesModule>("GeometryProcessingInterfaces");
+	IGeometryProcessing_ApproximateActors* ApproxActorsAPI = GeomProcInterfaces ? GeomProcInterfaces->GetApproximateActorsImplementation() : nullptr;
+	const bool bHasApproximateActorsModule = ApproxActorsAPI != nullptr;
+
+	if (!ApproxActorsAPI)
+	{
+		return HLODBuildResults;
+	}
+
+	const FMeshApproximationSettings& UseSettings = InBuildParams.LODSetup.ApproximateSettings;
+	UMaterialInterface* HLODMaterial = InBuildParams.BaseMaterial;
+
+	IGeometryProcessing_ApproximateActors::FOptions Options = ApproxActorsAPI->ConstructOptions(UseSettings);
+	Options.bGenerateLightmapUVs = false;
+	Options.bCreatePhysicsBody = false;
+
+	// Material baking settings
+	Options.BakeMaterial = HLODMaterial;
+	if (!FMaterialUtilities::IsValidFlattenMaterial(Options.BakeMaterial))
+	{
+		Options.BakeMaterial = GEngine->DefaultFlattenMaterial;
+	}
+	Options.BaseColorTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Diffuse, Options.BakeMaterial));
+	Options.NormalTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Normal, Options.BakeMaterial));
+	Options.MetallicTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Metallic, Options.BakeMaterial));
+	Options.RoughnessTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Roughness, Options.BakeMaterial));
+	Options.SpecularTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Specular, Options.BakeMaterial));
+	Options.EmissiveTexParamName = FName(FMaterialUtilities::GetFlattenMaterialTextureName(EFlattenMaterialProperties::Emissive, Options.BakeMaterial));
+	Options.bUsePackedMRS = true;
+	Options.PackedMRSTexParamName = FName("PackedTexture");
+
+	// Use temp packages - otherwise Approximate Actors will create it's mesh using the same name as the HLOD Proxy object.
+	const FString NewAssetNamePrefix(TEXT("NEWASSET_"));
+	FString PackageName = InBuildParams.AssetsOuter->GetPackage()->GetName();
+	FString PackagePath = FPackageName::GetLongPackagePath(PackageName);
+	FString AssetName = FPackageName::GetLongPackageAssetName(PackageName);
+	Options.BasePackagePath = PackagePath / NewAssetNamePrefix + AssetName;
+
+	// run actor approximation computation
+	TSet<AActor*> Actors;
+	Algo::Transform(InBuildParams.Components, Actors, [](UPrimitiveComponent* PrimitiveComponent) { return PrimitiveComponent->GetOwner(); });
+
+	IGeometryProcessing_ApproximateActors::FResults Results;
+	ApproxActorsAPI->ApproximateActors(Actors.Array(), Options, Results);
+
+	auto RenameNewAsset = [&PackagePath, &NewAssetNamePrefix, &InBuildParams](UObject* NewAsset)
+	{
+		FString AssetName = NewAsset->GetName();
+		AssetName.RemoveFromStart(NewAssetNamePrefix);
+			
+		// Add a prefix to the generated static mesh, otherwise it would share the same name as the HLOD Proxy object.
+		if (NewAsset->IsA<UStaticMesh>())
+		{
+			AssetName += TEXT("_Mesh");
+		}
+
+		// Remplace existing asset
+		UObject* AssetToReplace = StaticFindObjectFast(UObject::StaticClass(), InBuildParams.AssetsOuter, *AssetName);
+		if (AssetToReplace)
+		{
+			// Replace references
+			TArray<UObject*> ObjectsToReplace(&AssetToReplace, 1);
+			ObjectTools::ForceReplaceReferences(NewAsset, ObjectsToReplace);
+
+			// Move the previous asset to the transient package
+			AssetToReplace->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoResetLoaders);
+		}
+			
+		NewAsset->Rename(*AssetName, InBuildParams.AssetsOuter, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+	};
+
+	Algo::ForEach(Results.NewMeshAssets, RenameNewAsset);
+	Algo::ForEach(Results.NewMaterials, RenameNewAsset);
+	Algo::ForEach(Results.NewTextures, RenameNewAsset);
+	
+	if (Results.ResultCode == IGeometryProcessing_ApproximateActors::EResultCode::Success)
+	{
+		// Retrieve staticmesh
+		if (ensure(Results.NewMeshAssets.Num() == 1))
+		{
+			HLODBuildResults.HLODMesh = Results.NewMeshAssets[0];
+		}
+
+		// Setup material switches
+		for (UMaterialInterface* Material : Results.NewMaterials)
+		{
+			UMaterialInstance* MaterialInst = CastChecked<UMaterialInstance>(Material);
+
+			FStaticParameterSet StaticParameterSet;
+
+			auto SetStaticSwitch = [&StaticParameterSet](FName ParamName, bool bSet)
+			{
+				if (bSet)
+				{
+					FStaticSwitchParameter SwitchParameter;
+					SwitchParameter.ParameterInfo.Name = ParamName;
+					SwitchParameter.Value = true;
+					SwitchParameter.bOverride = true;
+					StaticParameterSet.EditorOnly.StaticSwitchParameters.Add(SwitchParameter);
+				}
+			};
+
+			// Set proper switches needed by our base flatten material
+			SetStaticSwitch("UseBaseColor", Options.bBakeBaseColor);
+			SetStaticSwitch("UseDiffuse", Options.bBakeBaseColor);
+			SetStaticSwitch("UseRoughness", Options.bBakeRoughness);
+			SetStaticSwitch("UseMetallic", Options.bBakeMetallic);
+			SetStaticSwitch("UseSpecular", Options.bBakeSpecular);
+			SetStaticSwitch("UseEmissive", Options.bBakeEmissive);
+			SetStaticSwitch("UseEmissiveHDR", Options.bBakeEmissive);
+			SetStaticSwitch("UseNormal", Options.bBakeNormalMap);
+			SetStaticSwitch("PackMetallic", Options.bUsePackedMRS);
+			SetStaticSwitch("PackSpecular", Options.bUsePackedMRS);
+			SetStaticSwitch("PackRoughness", Options.bUsePackedMRS);
+
+			// Force initializing the static permutations according to the switches we have set
+			MaterialInst->UpdateStaticPermutation(StaticParameterSet);
+			MaterialInst->InitStaticPermutation();
+			MaterialInst->PostEditChange();
+		}
+	}
+
+	return HLODBuildResults;
+}
+
+
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UHLODProxy* Proxy, const FHierarchicalSimplification& LODSetup, UMaterialInterface* InBaseMaterial)
 {
 	if (!Proxy || !LODActor)
@@ -457,16 +708,12 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 
 	if (AllComponents.Num() > 0)
 	{
-		TArray<UObject*> OutAssets;
-		FVector OutProxyLocation = FVector::ZeroVector;
-		UStaticMesh* MainMesh = nullptr;
+		FHLODBuildParams HLODBuildParams(AllComponents, LODSetup);
+		HLODBuildParams.LODActor = LODActor;
+		HLODBuildParams.Proxy = Proxy;
+		HLODBuildParams.BaseMaterial = InBaseMaterial;
+		HLODBuildParams.AssetsOuter = AssetsOuter;
 
-		// Generate proxy mesh and proxy material assets
-		IMeshReductionManagerModule& MeshReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface");
-		const bool bHasMeshReductionCapableModule = (MeshReductionModule.GetMeshMergingInterface() != NULL);
-
-		const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-		
 		// Should give a unique name, so use the LODActor tag, or if empty, the first actor name
 		FString LODActorTag = LODActor->GetLODActorTag();
 		if (LODActorTag.IsEmpty())
@@ -474,66 +721,35 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			const AActor* FirstActor = UHLODProxy::FindFirstActor(LODActor);
 			LODActorTag = *FirstActor->GetName();
 		}
-		const FString PackageName = FString::Printf(TEXT("LOD_%s_%i_%s"), *(AssetsOuter->GetName()), LODActor->LODLevel - 1, *LODActorTag);
+		HLODBuildParams.PackageName = FString::Printf(TEXT("%s_%i_%s"), *(AssetsOuter->GetName()), LODActor->LODLevel - 1, *LODActorTag);
 
-		if (bHasMeshReductionCapableModule && LODSetup.bSimplifyMesh)
+		FHLODBuildResults HLODBuildResults;
+		switch (LODSetup.SimplificationMethod)
 		{
-			FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
-			FHierarchicalLODProxyProcessor* Processor = Module.GetProxyProcessor();
+		case EHierarchicalSimplificationMethod::Merge:
+			HLODBuildResults = GenerateHLODMesh_Merge(HLODBuildParams);
+			break;
+		case EHierarchicalSimplificationMethod::Simplify:
+			HLODBuildResults = GenerateHLODMesh_Simplify(HLODBuildParams);
+			break;
+		case EHierarchicalSimplificationMethod::Approximate:
+			HLODBuildResults = GenerateHLODMesh_Approximate(HLODBuildParams);
+			break;
 
-			FHierarchicalSimplification OverrideLODSetup = LODSetup;
-
-			FMeshProxySettings ProxySettings = LODSetup.ProxySetting;
-			if (LODActor->bOverrideMaterialMergeSettings)
-			{
-				ProxySettings.MaterialSettings = LODActor->MaterialSettings;
-			}
-
-			if (LODActor->bOverrideScreenSize)
-			{
-				ProxySettings.ScreenSize = LODActor->ScreenSize;
-			}
-
-			if (LODActor->bOverrideTransitionScreenSize)
-			{
-				OverrideLODSetup.TransitionScreenSize = LODActor->TransitionScreenSize;
-			}
-
-			FGuid JobID = Processor->AddProxyJob(LODActor, Proxy, OverrideLODSetup);
-
-			TArray<UStaticMeshComponent*> StaticMeshComponents;
-			Algo::Transform(AllComponents, StaticMeshComponents, [](UPrimitiveComponent* InPrimitiveComponent) { return Cast<UStaticMeshComponent>(InPrimitiveComponent); });
-
-			MeshMergeUtilities.CreateProxyMesh(StaticMeshComponents, ProxySettings, InBaseMaterial, AssetsOuter, PackageName, JobID, Processor->GetCallbackDelegate(), true, OverrideLODSetup.TransitionScreenSize);
+		default:
+			UE_LOG(LogHierarchicalLODUtilities, Error, TEXT("Unsupported simplification method provided"));
+			return false;
 		}
-		else
+		
+		if (!HLODBuildResults.bDeferredResults)
 		{
-			FMeshMergingSettings MergeSettings = LODSetup.MergeSetting;
-			if (LODActor->bOverrideMaterialMergeSettings)
+			if (!HLODBuildResults.HLODMesh)
 			{
-				MergeSettings.MaterialSettings = LODActor->MaterialSettings;
-			}
-
-			// update LOD parents before rebuild to ensure they are valid when mesh merge extensions are called.
-			LODActor->UpdateSubActorLODParents();
-
-			MeshMergeUtilities.MergeComponentsToStaticMesh(AllComponents, LODActor->GetWorld(), MergeSettings, InBaseMaterial, AssetsOuter, PackageName, OutAssets, OutProxyLocation, LODSetup.TransitionScreenSize, true);
-
-			// set staticmesh
-			for (UObject* Asset : OutAssets)
-			{
-				UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset);
-
-				if (StaticMesh)
-				{
-					MainMesh = StaticMesh;
-				}
-			}
-
-			if (!MainMesh)
-			{
+				UE_LOG(LogHierarchicalLODUtilities, Warning, TEXT("No HLOD mesh generated"));
 				return false;
 			}
+
+			UStaticMesh* MainMesh = HLODBuildResults.HLODMesh;
 
 			// make sure the mesh won't affect navmesh generation
 			MainMesh->MarkAsNotHavingNavigationData();
@@ -542,8 +758,8 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			UStaticMesh* PreviousStaticMesh = LODActor->GetStaticMeshComponent()->GetStaticMesh();
 			bDirtyPackage |= (MainMesh != PreviousStaticMesh);
 			LODActor->SetStaticMesh(MainMesh);
-			bDirtyPackage |= (LODActor->GetActorLocation() != OutProxyLocation);
-			LODActor->SetActorLocation(OutProxyLocation);
+			bDirtyPackage |= (LODActor->GetActorLocation() != HLODBuildResults.HLODLocation);
+			LODActor->SetActorLocation(HLODBuildResults.HLODLocation);
 
 			// Check resulting mesh and give a warning if it exceeds the vertex / triangle cap for certain platforms
 			FProjectStatus ProjectStatus;
@@ -695,7 +911,7 @@ EClusterGenerationError FHierarchicalLODUtilities::ShouldGenerateCluster(AActor*
 
 	// for now only consider staticmesh - I don't think skel mesh would work with simplygon merge right now @fixme
 	TArray<UStaticMeshComponent*> Components;
-	Actor->GetComponents<UStaticMeshComponent>(Components);
+	Actor->GetComponents(Components);
 
 	int32 ValidComponentCount = 0;
 	// now make sure you check parent primitive, so that we don't build for the actor that already has built. 
@@ -738,7 +954,7 @@ ALODActor* FHierarchicalLODUtilities::GetParentLODActor(const AActor* InActor)
 	if (InActor)
 	{
 		TArray<UStaticMeshComponent*> ComponentArray;
-		InActor->GetComponents<UStaticMeshComponent>(ComponentArray);
+		InActor->GetComponents(ComponentArray);
 		for (auto Component : ComponentArray)
 		{
 			UPrimitiveComponent* ParentComponent = Component->GetLODParentPrimitive();

@@ -5,6 +5,8 @@
 #include "Net/Core/Misc/NetCoreLog.h"
 #include "HAL/IConsoleManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetConnectionFaultRecoveryBase)
+
 
 // CVars
 #if !UE_BUILD_SHIPPING
@@ -28,7 +30,7 @@ const TCHAR* FNetFaultState::GetConfigSection()
 
 UClass* FNetFaultState::GetBaseConfigClass()
 {
-	return FindObject<UClass>(ANY_PACKAGE, TEXT("NetFaultConfig"));
+	return FindObject<UClass>(nullptr, TEXT("/Script/Engine.NetFaultConfig"));
 }
 
 
@@ -275,3 +277,4 @@ void FNetConnectionFaultRecoveryBase::RegisterCounterCategory(ENetFaultCounterCa
 
 }
 }
+

@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetValidator_AssetReferenceRestrictions.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UnrealEdGlobals.h"
 #include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
 #include "AssetReferencingPolicySubsystem.h"
 #include "AssetReferencingDomains.h"
 #include "AssetReferencingPolicySettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AssetValidator_AssetReferenceRestrictions)
 
 #define LOCTEXT_NAMESPACE "AssetReferencingPolicy"
 
@@ -24,7 +26,7 @@ bool UAssetValidator_AssetReferenceRestrictions::CanValidateAsset_Implementation
 		const FAssetData AssetData(InAsset);
 		TSharedPtr<FDomainData> DomainData = GEditor->GetEditorSubsystem<UAssetReferencingPolicySubsystem>()->GetDomainDB()->FindDomainFromAssetData(AssetData);
 
-		const bool bIsInUnrestrictedFolder = DomainData->IsValid() && DomainData->bCanSeeEverything;
+		const bool bIsInUnrestrictedFolder = DomainData && DomainData->IsValid() && DomainData->bCanSeeEverything;
 		if (!bIsInUnrestrictedFolder)
 		{
 			return true;

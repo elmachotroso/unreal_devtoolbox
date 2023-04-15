@@ -53,6 +53,13 @@ public:
 	UPROPERTY(EditAnywhere, Category=Animation)
 	float RateScale;
 	
+	/** 
+	 * The default looping behavior of this animation.
+	 * Asset players can override this
+	 */
+	UPROPERTY(EditAnywhere, Category=Animation)
+	bool bLoop;
+
 	/**
 	 * Raw uncompressed float curve data 
 	 */
@@ -70,6 +77,9 @@ public:
 	virtual void PostLoad() override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	//~ End UObject Interface
 
 	/** Returns the total play length of the montage, if played back with a speed of 1.0. */
@@ -80,6 +90,9 @@ public:
 
 	/** Remove the notifies specified */
 	bool RemoveNotifies(const TArray<FName>& NotifiesToRemove);
+	
+	/** Remove all notifies */
+	void RemoveNotifies();
 
 	/** 
 	 * Retrieves AnimNotifies given a StartTime and a DeltaTime.
@@ -168,11 +181,6 @@ public:
 	// update cache data (notify tracks, sync markers)
 	virtual void RefreshCacheData();
 
-#if WITH_EDITOR
-	UE_DEPRECATED(5.0, "Updating of any relevent Curve data is now handled through the UAnimDataModel notifies")
-	void RefreshCurveData() {}
-#endif // WITH_EDITOR
-
 	//~ Begin UAnimationAsset Interface
 #if WITH_EDITOR
 	virtual void RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces) override;
@@ -250,22 +258,6 @@ public:
 	virtual bool IsValidToPlay() const { return true; }
 	// ideally this would be animsequcnebase, but we might have some issue with that. For now, just allow AnimSequence
 	virtual class UAnimSequence* GetAdditiveBasePose() const { return nullptr; }
-
-	typedef FSimpleMulticastDelegate::FDelegate FOnAnimCurvesChanged;
-	/** Registers a delegate to be called after anim curves have changed*/
-	UE_DEPRECATED(5.0, "Functionality has been deprecated, register to UAnimDataModel::GetModifiedEvent instead")
-	void RegisterOnAnimCurvesChanged(const FOnAnimCurvesChanged& Delegate) {}
-
-	UE_DEPRECATED(5.0, "Functionality has been deprecated, register to UAnimDataModel::GetModifiedEvent instead")
-	void UnregisterOnAnimCurvesChanged(void* Unregister) {}
-
-	typedef FSimpleMulticastDelegate::FDelegate FOnAnimTrackCurvesChanged;
-	/** Registers a delegate to be called after anim track curves have changed*/
-	UE_DEPRECATED(5.0, "Functionality has been deprecated, register to UAnimDataModel::GetModifiedEvent instead")
-	void RegisterOnAnimTrackCurvesChanged(const FOnAnimTrackCurvesChanged& Delegate) {}
-
-	UE_DEPRECATED(5.0, "Functionality has been deprecated, register to UAnimDataModel::GetModifiedEvent instead")
-	void UnregisterOnAnimTrackCurvesChanged(void* Unregister) {}
 #endif
 
 	// return true if anim notify is available 

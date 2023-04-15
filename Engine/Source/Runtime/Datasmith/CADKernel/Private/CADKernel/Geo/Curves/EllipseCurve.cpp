@@ -1,13 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "CADKernel/Geo/Curves/EllipseCurve.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 TSharedPtr<FEntityGeom> FEllipseCurve::ApplyMatrix(const FMatrixH& InMatrix) const
 {
 	FMatrixH NewMatrix = InMatrix * Matrix;
 	return FEntity::MakeShared<FEllipseCurve>(NewMatrix, RadiusU, RadiusV, Boundary);
+}
+
+void FEllipseCurve::Offset(const FPoint& OffsetDirection)
+{
+	FMatrixH Offset = FMatrixH::MakeTranslationMatrix(OffsetDirection);
+	Matrix *= Offset;
 }
 
 #ifdef CADKERNEL_DEV

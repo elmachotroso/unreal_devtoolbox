@@ -12,10 +12,24 @@
 #include "PBDRigidsSolver.h"
 #include "WaterSubsystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BuoyancyComponent)
+
 TAutoConsoleVariable<int32> CVarWaterDebugBuoyancy(
 	TEXT("r.Water.DebugBuoyancy"),
 	0,
 	TEXT("Enable debug drawing for water interactions."),
+	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarWaterBuoyancyDebugPoints(
+	TEXT("r.Water.BuoyancyDebugPoints"),
+	10,
+	TEXT("Number of points in one dimension for buoyancy debug."),
+	ECVF_Default);
+
+TAutoConsoleVariable<int32> CVarWaterBuoyancyDebugSize(
+	TEXT("r.Water.BuoyancyDebugSize"),
+	1000,
+	TEXT("Side length of square for buoyancy debug."),
 	ECVF_Default);
 
 TAutoConsoleVariable<int32> CVarWaterUseSplineKeyOptimization(
@@ -59,7 +73,7 @@ void UBuoyancyComponent::BeginPlay()
 	{
 		for (FSphericalPontoon& Pontoon : BuoyancyData.Pontoons)
 		{
-			if (Pontoon.CenterSocket != NAME_None)
+			if (Pontoon.CenterSocket != NAME_None && SimulatingComponent->DoesSocketExist(Pontoon.CenterSocket))
 			{
 				Pontoon.bUseCenterSocket = true;
 				Pontoon.SocketTransform = SimulatingComponent->GetSocketTransform(Pontoon.CenterSocket, RTS_Actor);
@@ -149,7 +163,6 @@ void UBuoyancyComponent::Update(float DeltaTime)
 		}
 	}
 
-#if WITH_CHAOS
 	if (CurAsyncInput)
 	{
 		if (const FBodyInstance* BodyInstance = SimulatingComponent->GetBodyInstance())
@@ -179,7 +192,6 @@ void UBuoyancyComponent::Update(float DeltaTime)
 			BuoyancyInputState->SmoothedWorldTimeSeconds = GetWorld()->GetTimeSeconds();
 		}
 	}
-#endif
 
 	if (!IsUsingAsyncPath())
 	{
@@ -235,6 +247,15 @@ void UBuoyancyComponent::TickComponent(float DeltaTime, enum ELevelTick TickType
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	Update(DeltaTime);
+}
+
+void UBuoyancyComponent::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	// Account for all non-editor data properties :
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(sizeof(CurAsyncInput) + sizeof(CurAsyncOutput) + sizeof(NextAsyncOutput) + sizeof(CurAsyncType) + sizeof(OutputInterpAlpha) + OutputsWaitingOn.GetAllocatedSize()
+		+ sizeof(PontoonConfiguration) + ConfiguredPontoonCoefficients.GetAllocatedSize() + sizeof(VelocityPontoonIndex));
 }
 
 void UBuoyancyComponent::SetupWaterBodyOverlaps()
@@ -358,33 +379,44 @@ void UBuoyancyComponent::ComputePontoonCoefficients()
 	TArray<float>& PontoonCoefficients = ConfiguredPontoonCoefficients.FindOrAdd(PontoonConfiguration);
 	if (PontoonCoefficients.Num() == 0)
 	{
-		TArray<FVector> LocalPontoonLocations;
-		if (!SimulatingComponent)
-		{
-			return;
-		}
-		for (int32 PontoonIndex = 0; PontoonIndex < BuoyancyData.Pontoons.Num(); ++PontoonIndex)
-		{
-			const FSphericalPontoon& Pontoon = BuoyancyData.Pontoons[PontoonIndex];
-			if (PontoonConfiguration & (1 << PontoonIndex))
-			{
-				if (Pontoon.bUseCenterSocket)
-				{
-					const FVector LocalPosition = SimulatingComponent->GetSocketTransform(Pontoon.CenterSocket, ERelativeTransformSpace::RTS_ParentBoneSpace).GetLocation();
-					LocalPontoonLocations.Add(LocalPosition);
-				}
-				else
-				{
-					LocalPontoonLocations.Add(Pontoon.RelativeLocation);
-				}
-			}
-		}
-		PontoonCoefficients.AddZeroed(LocalPontoonLocations.Num());
 		if (FBodyInstance* BodyInstance = SimulatingComponent->GetBodyInstance())
 		{
+			TArray<FVector> LocalPontoonLocations;
 			const FVector& LocalCOM = BodyInstance->GetMassSpaceLocal().GetLocation();
+
+			if (!SimulatingComponent)
+			{
+				return;
+			}
+
+			for (int32 PontoonIndex = 0; PontoonIndex < BuoyancyData.Pontoons.Num(); ++PontoonIndex)
+			{
+				const FSphericalPontoon& Pontoon = BuoyancyData.Pontoons[PontoonIndex];
+				if (PontoonConfiguration & (1 << PontoonIndex))
+				{
+					if (Pontoon.bUseCenterSocket)
+					{
+						const FVector LocalPosition = SimulatingComponent->GetSocketTransform(Pontoon.CenterSocket, ERelativeTransformSpace::RTS_ParentBoneSpace).GetLocation();
+						LocalPontoonLocations.Add(LocalPosition);
+					}
+					else
+					{
+						// If using the relative location for the pontoon and the buoyancydata indicates
+						// that we should center on COM, then shift the relative location to be centered.
+						const FVector PontoonRelativeLocation
+							= BuoyancyData.bCenterPontoonsOnCOM
+							? Pontoon.RelativeLocation - LocalCOM
+							: Pontoon.RelativeLocation;
+						LocalPontoonLocations.Add(PontoonRelativeLocation);
+					}
+				}
+			}
+
+			PontoonCoefficients.AddZeroed(LocalPontoonLocations.Num());
 			//Distribute a mass of 1 to each pontoon so that we get a scaling factor based on position relative to CoM
-			FSimpleSuspensionHelpers::ComputeSprungMasses(LocalPontoonLocations, LocalCOM, 1.f, PontoonCoefficients);
+			FString ErrMsg;
+			bool ComputeSuccess = FSimpleSuspensionHelpers::ComputeSprungMasses(LocalPontoonLocations, LocalCOM, 1.f, PontoonCoefficients, &ErrMsg);
+			ensureMsgf(ComputeSuccess, TEXT("Failed to compute %d sprung masses for: %s\nErrMsg: \"%s\""), LocalPontoonLocations.Num(), *GetOwner()->GetName(), *ErrMsg);
 		}
 	}
 
@@ -423,8 +455,10 @@ int32 UBuoyancyComponent::UpdatePontoons(float DeltaTime, float ForwardSpeed, fl
 				}
 				GetWaterSplineKey(Pontoon.CenterLocation, Pontoon.SplineInputKeys, Pontoon.SplineSegments);
 				const FVector PontoonBottom = Pontoon.CenterLocation - FVector(0, 0, Pontoon.Radius);
+				UWaterBodyComponent* TempWaterBodyComponent = Pontoon.CurrentWaterBodyComponent;
 				/*Pass in large negative default value so we don't accidentally assume we're in water when we're not.*/
-				Pontoon.WaterHeight = GetWaterHeight(PontoonBottom - FVector::UpVector * 100.f, Pontoon.SplineInputKeys, -100000.f, Pontoon.CurrentWaterBodyComponent, Pontoon.WaterDepth, Pontoon.WaterPlaneLocation, Pontoon.WaterPlaneNormal, Pontoon.WaterSurfacePosition, Pontoon.WaterVelocity, Pontoon.WaterBodyIndex);
+				Pontoon.WaterHeight = GetWaterHeight(PontoonBottom - FVector::UpVector * 100.f, Pontoon.SplineInputKeys, -100000.f, TempWaterBodyComponent, Pontoon.WaterDepth, Pontoon.WaterPlaneLocation, Pontoon.WaterPlaneNormal, Pontoon.WaterSurfacePosition, Pontoon.WaterVelocity, Pontoon.WaterBodyIndex);
+				Pontoon.CurrentWaterBodyComponent = TempWaterBodyComponent;
 
 				const bool bPrevIsInWater = Pontoon.bIsInWater;
 				const float ImmersionDepth = Pontoon.WaterHeight - PontoonBottom.Z;
@@ -467,13 +501,17 @@ int32 UBuoyancyComponent::UpdatePontoons(float DeltaTime, float ForwardSpeed, fl
 #if ENABLE_DRAW_DEBUG
 		if (CVarWaterDebugBuoyancy.GetValueOnAnyThread())
 		{
+			const float NumPoints = CVarWaterBuoyancyDebugPoints.GetValueOnAnyThread();
+			const float Size = CVarWaterBuoyancyDebugSize.GetValueOnAnyThread();
+			const float StartOffset = NumPoints * 0.5f;
+			const float Scale = Size / NumPoints;
 			TMap<const UWaterBodyComponent*, float> DebugSplineKeyMap;
 			TMap<const UWaterBodyComponent*, float> DebugSplineSegmentsMap;
-			for (int i = 0; i < 10; ++i)
+			for (int i = 0; i < NumPoints; ++i)
 			{
-				for (int j = 0; j < 10; ++j)
+				for (int j = 0; j < NumPoints; ++j)
 				{
-					FVector Location = PrimitiveComponent->GetComponentLocation() + (FVector::RightVector * (i - 5) * 90) + (FVector::ForwardVector * (j - 5) * 90);
+					FVector Location = PrimitiveComponent->GetComponentLocation() + (FVector::RightVector * (i - StartOffset) * Scale) + (FVector::ForwardVector * (j - StartOffset) * Scale);
 					GetWaterSplineKey(Location, DebugSplineKeyMap, DebugSplineSegmentsMap);
 					FVector Point(Location.X, Location.Y, GetWaterHeight(Location - FVector::UpVector * 200.f, DebugSplineKeyMap, GetOwner()->GetActorLocation().Z));
 					DrawDebugPoint(GetWorld(), Point, 5.f, IsOverlappingWaterBody() ? FColor::Green : FColor::Red, false, -1.f, 0);
@@ -889,7 +927,6 @@ void UBuoyancyComponent::GameThread_ProcessIntermediateAsyncOutput(const FBuoyan
 
 bool UBuoyancyComponent::IsUsingAsyncPath() const
 {
-#if WITH_CHAOS
 	bool bAsyncSolver = false;
 	if (UWorld* World = GetWorld())
 	{
@@ -902,8 +939,6 @@ bool UBuoyancyComponent::IsUsingAsyncPath() const
 		}
 	}
 	return bAsyncSolver && bUseAsyncPath && (CVarWaterBuoyancyUseAsyncPath.GetValueOnAnyThread() > 0);
-#endif
-	return false;
 }
 
 TUniquePtr<FBuoyancyComponentAsyncAux> UBuoyancyComponent::CreateAsyncAux() const
@@ -912,3 +947,4 @@ TUniquePtr<FBuoyancyComponentAsyncAux> UBuoyancyComponent::CreateAsyncAux() cons
 	Aux->BuoyancyData = BuoyancyData;
 	return Aux;
 }
+

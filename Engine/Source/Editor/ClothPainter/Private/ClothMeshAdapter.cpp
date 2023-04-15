@@ -2,20 +2,39 @@
 
 #include "ClothMeshAdapter.h"
 
-#include "ClothingAssetBase.h"
-#include "ClothingAsset.h"
-
-#include "MeshPaintTypes.h"
 #include "Animation/DebugSkelMeshComponent.h"
-#include "ClothingSimulation.h"
+#include "ClothLODData.h"
+#include "ClothPhysicalMeshData.h"
+#include "ClothingAsset.h"
+#include "ClothingAssetBase.h"
+#include "Components/MeshComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Containers/Set.h"
+#include "Engine/HitResult.h"
+#include "Engine/NetSerialization.h"
+#include "Engine/SkeletalMesh.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Color.h"
+#include "Math/Plane.h"
+#include "Math/Transform.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Serialization/StructuredArchiveAdapters.h"
+#include "Templates/Casts.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-#include "ComponentReregisterContext.h"
+class IMeshPaintGeometryAdapter;
+class UTexture;
 
 TSharedPtr<IMeshPaintGeometryAdapter> FClothMeshPaintAdapterFactory::Construct(UMeshComponent* InComponent, int32 InPaintingMeshLODIndex) const
 {
 	if (USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(InComponent))
 	{
-		if (Component->SkeletalMesh != nullptr)
+		if (Component->GetSkeletalMeshAsset() != nullptr)
 		{
 			TSharedRef<FClothMeshPaintAdapter> Result = MakeShareable(new FClothMeshPaintAdapter());
 			if (Result->Construct(InComponent, InPaintingMeshLODIndex))
@@ -33,9 +52,9 @@ bool FClothMeshPaintAdapter::Construct(UMeshComponent* InComponent, int32 InPain
 	SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InComponent);
 	if (SkeletalMeshComponent != nullptr)
 	{
-		if (SkeletalMeshComponent->SkeletalMesh != nullptr)
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() != nullptr)
 		{
-			ReferencedSkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+			ReferencedSkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 			PaintingClothLODIndex = InPaintingClothLODIndex;
 			PaintingClothMaskIndex = INDEX_NONE;
 
@@ -49,7 +68,7 @@ bool FClothMeshPaintAdapter::Construct(UMeshComponent* InComponent, int32 InPain
 
 bool FClothMeshPaintAdapter::Initialize()
 {
-	check(ReferencedSkeletalMesh == SkeletalMeshComponent->SkeletalMesh);
+	check(ReferencedSkeletalMesh == SkeletalMeshComponent->GetSkeletalMeshAsset());
 
 	bool bHaveAsset = false;
 	bool bBaseInit = false;

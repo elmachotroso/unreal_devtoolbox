@@ -12,11 +12,13 @@
 #include "MovieSceneFolder.h"
 #include "MovieScene/MovieSceneLiveLinkTrack.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "TakeMetaData.h"
 #include "Features/IModularFeatures.h"
 #include "ILiveLinkClient.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderLiveLinkSource)
 
 UTakeRecorderLiveLinkSource::UTakeRecorderLiveLinkSource(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -129,3 +131,4 @@ FString UTakeRecorderLiveLinkSource::GetSubsceneAssetName(ULevelSequence* InSequ
 
 	return TEXT("LiveLink");
 }
+

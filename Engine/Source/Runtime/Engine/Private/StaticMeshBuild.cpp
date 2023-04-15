@@ -61,15 +61,15 @@ static bool HasBadNTB(UStaticMesh* Mesh, bool &bZeroNormals, bool &bZeroTangents
 				const FVector3f TangentY = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(VertIndex);
 				const FVector3f TangentZ = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertIndex);
 				
-				if (TangentX.IsNearlyZero(KINDA_SMALL_NUMBER))
+				if (TangentX.IsNearlyZero(UE_KINDA_SMALL_NUMBER))
 				{
 					bZeroTangents = true;
 				}
-				if (TangentY.IsNearlyZero(KINDA_SMALL_NUMBER))
+				if (TangentY.IsNearlyZero(UE_KINDA_SMALL_NUMBER))
 				{
 					bZeroBinormals = true;
 				}
-				if (TangentZ.IsNearlyZero(KINDA_SMALL_NUMBER))
+				if (TangentZ.IsNearlyZero(UE_KINDA_SMALL_NUMBER))
 				{
 					bZeroNormals = true;
 				}
@@ -113,24 +113,24 @@ static TAutoConsoleVariable<int32> CVarStaticMeshDisableThreadedBuild(
 
 #endif // #if WITH_EDITOR
 
-void UStaticMesh::Build(bool bInSilent, TArray<FText>* OutErrors)
+void UStaticMesh::Build(const FBuildParameters& BuildParameters)
 {
 #if WITH_EDITOR
 	FFormatNamedArguments Args;
-	Args.Add( TEXT("Path"), FText::FromString( GetPathName() ) );
-	const FText StatusUpdate = FText::Format( LOCTEXT("BeginStaticMeshBuildingTask", "({Path}) Building"), Args );
+	Args.Add(TEXT("Path"), FText::FromString(GetPathName()));
+	const FText StatusUpdate = FText::Format(LOCTEXT("BeginStaticMeshBuildingTask", "({Path}) Building"), Args);
 	FScopedSlowTask StaticMeshBuildingSlowTask(1, StatusUpdate);
-	if (!bInSilent)
+	if (!BuildParameters.bInSilent)
 	{
 		StaticMeshBuildingSlowTask.MakeDialogDelayed(1.0f);
 	}
 	StaticMeshBuildingSlowTask.EnterProgressFrame(1);
 #endif // #if WITH_EDITOR
 
-	BatchBuild({ this }, bInSilent, nullptr, OutErrors);
+	BatchBuild({ this }, BuildParameters, nullptr);
 }
 
-void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bInSilent, TFunction<bool(UStaticMesh*)> InProgressCallback, TArray<FText>* OutErrors)
+void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, const FBuildParameters& BuildParameters, TFunction<bool(UStaticMesh*)> InProgressCallback)
 {
 #if WITH_EDITOR
 	check(IsInGameThread());
@@ -181,7 +181,7 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 		{
 			GCardRepresentationAsyncQueue->CancelBuilds(StaticMeshesToProcess);
 		}
-		
+
 		TMap<UStaticMesh*, TArray<UStaticMeshComponent*>> StaticMeshComponents;
 		StaticMeshComponents.Reserve(InStaticMeshes.Num());
 
@@ -233,12 +233,12 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 			};
 
 		auto LaunchAsyncBuild =
-			[OutErrors](UStaticMesh* StaticMesh)
+			[BuildParameters](UStaticMesh* StaticMesh)
 			{
 				// Only launch async compile if errors are not required
-				if (OutErrors == nullptr && FStaticMeshCompilingManager::Get().IsAsyncCompilationAllowed(StaticMesh))
+				if (BuildParameters.OutErrors == nullptr && FStaticMeshCompilingManager::Get().IsAsyncCompilationAllowed(StaticMesh))
 				{
-					TUniquePtr<FStaticMeshBuildContext> Context = MakeUnique<FStaticMeshBuildContext>();
+					TUniquePtr<FStaticMeshBuildContext> Context = MakeUnique<FStaticMeshBuildContext>(BuildParameters);
 					StaticMesh->BeginBuildInternal(Context.Get());
 
 					FQueuedThreadPool* StaticMeshThreadPool = FStaticMeshCompilingManager::Get().GetThreadPool();
@@ -286,7 +286,7 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 						StaticMesh,
 						Async(
 							EAsyncExecution::LargeThreadPool,
-							[StaticMesh, bInSilent, OutErrors, &OutErrorsLock, &bCancelled]()
+							[StaticMesh, BuildParameters, &OutErrorsLock, &bCancelled]()
 							{
 								if (bCancelled.load(std::memory_order_relaxed))
 								{
@@ -294,11 +294,11 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 								}
 
 								TArray<FText> Errors;
-								const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(bInSilent, &Errors);
-								if (OutErrors)
+								const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(BuildParameters);
+								if (BuildParameters.OutErrors)
 								{
 									FScopeLock ScopeLock(&OutErrorsLock);
-									OutErrors->Append(Errors);
+									BuildParameters.OutErrors->Append(Errors);
 								}
 
 								return bHasRenderDataChanged;
@@ -334,10 +334,10 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 					{
 						break;
 					}
-				
+
 					StaticMesh->BeginBuildInternal();
 
-					const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(bInSilent, OutErrors);
+					const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(BuildParameters);
 
 					StaticMesh->FinishBuildInternal(StaticMeshComponents.FindChecked(StaticMesh), bHasRenderDataChanged);
 					FinalizeStaticMesh(StaticMesh);
@@ -353,6 +353,22 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 #else
 	UE_LOG(LogStaticMesh, Fatal, TEXT("UStaticMesh::Build should not be called on non-editor builds."));
 #endif
+}
+
+void UStaticMesh::Build(bool bInSilent, TArray<FText>* OutErrors)
+{
+	FBuildParameters BuildParameters;
+	BuildParameters.bInSilent = bInSilent;
+	BuildParameters.OutErrors = OutErrors;
+	Build(BuildParameters);
+}
+
+void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bInSilent, TFunction<bool(UStaticMesh*)> InProgressCallback, TArray<FText>* OutErrors)
+{
+	FBuildParameters BuildParameters;
+	BuildParameters.bInSilent = bInSilent;
+	BuildParameters.OutErrors = OutErrors;
+	BatchBuild(InStaticMeshes, BuildParameters, InProgressCallback);
 }
 
 #if WITH_EDITOR
@@ -414,7 +430,7 @@ void UStaticMesh::BeginBuildInternal(FStaticMeshBuildContext* Context)
 	}
 }
 
-bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
+bool UStaticMesh::ExecuteBuildInternal(const FBuildParameters& BuildParameters)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::ExecuteBuildInternal);
 
@@ -437,6 +453,16 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 	// Free existing render data and recache.
 	CacheDerivedData();
 	PrepareDerivedDataForActiveTargetPlatforms();
+
+	if (BuildParameters.bInEnforceLightmapRestrictions)
+	{
+		EnforceLightmapRestrictions();
+	}
+
+	if (BuildParameters.bInRebuildUVChannelData)
+	{
+		UpdateUVChannelData(true);
+	}
 
 	// InitResources will send commands to other threads that will
 	// use our RenderData, we must mark it as ready to be used since
@@ -485,9 +511,9 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 					UE_LOG(LogStaticMesh, Warning, TEXT("%s"), *WarningMsg.ToString());
 				}
 
-				if (!bInSilent && OutErrors)
+				if (!BuildParameters.bInSilent && BuildParameters.OutErrors)
 				{
-					OutErrors->Add(WarningMsg);
+					BuildParameters.OutErrors->Add(WarningMsg);
 				}
 			}
 		}
@@ -508,9 +534,9 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 			{
 				UE_LOG(LogStaticMesh, Warning, TEXT("%s"), *WarningMsg.ToString());
 			}
-			if (!bInSilent && OutErrors)
+			if (!BuildParameters.bInSilent && BuildParameters.OutErrors)
 			{
-				OutErrors->Add(WarningMsg);
+				BuildParameters.OutErrors->Add(WarningMsg);
 			}
 		}
 
@@ -530,9 +556,9 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 				UE_LOG(LogStaticMesh, Warning, TEXT("%s"), *WarningMsg.ToString());
 			}
 
-			if (!bInSilent && OutErrors)
+			if (!BuildParameters.bInSilent && BuildParameters.OutErrors)
 			{
-				OutErrors->Add(WarningMsg);
+				BuildParameters.OutErrors->Add(WarningMsg);
 			}
 		}
 
@@ -552,9 +578,9 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 				UE_LOG(LogStaticMesh, Warning, TEXT("%s"), *WarningMsg.ToString());
 			}
 
-			if (!bInSilent && OutErrors)
+			if (!BuildParameters.bInSilent && BuildParameters.OutErrors)
 			{
-				OutErrors->Add(WarningMsg);
+				BuildParameters.OutErrors->Add(WarningMsg);
 			}
 		}
 
@@ -565,7 +591,7 @@ bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
 	return bHasRenderDataChanged;
 }
 
-void UStaticMesh::FinishBuildInternal(const TArray<UStaticMeshComponent*> & InAffectedComponents, bool bHasRenderDataChanged, bool bShouldComputeExtendedBounds)
+void UStaticMesh::FinishBuildInternal(const TArray<UStaticMeshComponent*>& InAffectedComponents, bool bHasRenderDataChanged, bool bShouldComputeExtendedBounds)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::PostBuildInternal);
 
@@ -614,8 +640,8 @@ void UStaticMesh::FinishBuildInternal(const TArray<UStaticMeshComponent*> & InAf
 		const FBoxSphereBounds RenderBounds = GetRenderData()->Bounds;
 		const FBoxSphereBounds CachedBounds = CachedMeshDescriptionBounds.GetValue();
 
-		const float SizeDifferencePercent   = 100.f * 2.0f * FMath::Abs(CachedBounds.BoxExtent.Size() - RenderBounds.BoxExtent.Size()) / (FMath::Abs(CachedBounds.BoxExtent.Size() + RenderBounds.BoxExtent.Size()) + KINDA_SMALL_NUMBER);
-		const float OriginDifferencePercent = 100.f * 2.0f * FVector::Dist(CachedBounds.Origin, RenderBounds.Origin) / ((CachedBounds.Origin + RenderBounds.Origin).Size() + KINDA_SMALL_NUMBER);
+		const float SizeDifferencePercent   = 100.f * 2.0f * FMath::Abs(CachedBounds.BoxExtent.Size() - RenderBounds.BoxExtent.Size()) / (FMath::Abs(CachedBounds.BoxExtent.Size() + RenderBounds.BoxExtent.Size()) + UE_KINDA_SMALL_NUMBER);
+		const float OriginDifferencePercent = 100.f * 2.0f * FVector::Dist(CachedBounds.Origin, RenderBounds.Origin) / ((CachedBounds.Origin + RenderBounds.Origin).Size() + UE_KINDA_SMALL_NUMBER);
 		// Anything more than 5% is probably worth investigating
 		if (SizeDifferencePercent > 5.0f || OriginDifferencePercent > 5.0f)
 		{	
@@ -745,7 +771,7 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 	// the color of the old vertex to the new position if possible.
 	OutOverrideColors.Empty(NewPositions.GetNumVertices());
 	TArray<FPaintedVertex> PointsToConsider;
-	const float DistanceOverNormalThreshold = OptionalVertexBuffer ? KINDA_SMALL_NUMBER : 0.0f;
+	const float DistanceOverNormalThreshold = OptionalVertexBuffer ? UE_KINDA_SMALL_NUMBER : 0.0f;
 	for ( uint32 NewVertIndex = 0; NewVertIndex < NewPositions.GetNumVertices(); ++NewVertIndex )
 	{
 		PointsToConsider.Reset();
@@ -820,64 +846,6 @@ struct FStaticMeshTriangle
 
 	uint32		bOverrideTangentBasis;
 	uint32		bExplicitNormals;
-};
-
-struct FStaticMeshTriangleBulkData : public FUntypedBulkData
-{
-	virtual int32 GetElementSize() const
-	{
-		return sizeof(FStaticMeshTriangle);
-	}
-
-	virtual void SerializeElement( FArchive& Ar, void* Data, int64 ElementIndex )
-	{
-		FStaticMeshTriangle& StaticMeshTriangle = *((FStaticMeshTriangle*)Data + ElementIndex);
-		Ar << StaticMeshTriangle.Vertices[0];
-		Ar << StaticMeshTriangle.Vertices[1];
-		Ar << StaticMeshTriangle.Vertices[2];
-		for( int32 VertexIndex=0; VertexIndex<3; VertexIndex++ )
-		{
-			for( int32 UVIndex=0; UVIndex<8; UVIndex++ )
-			{
-				Ar << StaticMeshTriangle.UVs[VertexIndex][UVIndex];
-			}
-        }
-		Ar << StaticMeshTriangle.Colors[0];
-		Ar << StaticMeshTriangle.Colors[1];
-		Ar << StaticMeshTriangle.Colors[2];
-		Ar << StaticMeshTriangle.MaterialIndex;
-		Ar << StaticMeshTriangle.FragmentIndex;
-		Ar << StaticMeshTriangle.SmoothingMask;
-		Ar << StaticMeshTriangle.NumUVs;
-		Ar << StaticMeshTriangle.TangentX[0];
-		Ar << StaticMeshTriangle.TangentX[1];
-		Ar << StaticMeshTriangle.TangentX[2];
-		Ar << StaticMeshTriangle.TangentY[0];
-		Ar << StaticMeshTriangle.TangentY[1];
-		Ar << StaticMeshTriangle.TangentY[2];
-		Ar << StaticMeshTriangle.TangentZ[0];
-		Ar << StaticMeshTriangle.TangentZ[1];
-		Ar << StaticMeshTriangle.TangentZ[2];
-		Ar << StaticMeshTriangle.bOverrideTangentBasis;
-		Ar << StaticMeshTriangle.bExplicitNormals;
-	}
-
-	virtual bool RequiresSingleElementSerialization( FArchive& Ar )
-	{
-		return false;
-	}
-};
-
-struct FFragmentRange
-{
-	int32 BaseIndex;
-	int32 NumPrimitives;
-
-	friend FArchive& operator<<(FArchive& Ar,FFragmentRange& FragmentRange)
-	{
-		Ar << FragmentRange.BaseIndex << FragmentRange.NumPrimitives;
-		return Ar;
-	}
 };
 
 void UStaticMesh::FixupZeroTriangleSections()

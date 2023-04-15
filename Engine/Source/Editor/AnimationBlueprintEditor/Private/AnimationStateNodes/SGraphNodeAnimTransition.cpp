@@ -2,25 +2,53 @@
 
 
 #include "AnimationStateNodes/SGraphNodeAnimTransition.h"
-#include "AnimStateTransitionNode.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SToolTip.h"
-#include "Animation/AnimInstance.h"
-#include "Animation/AnimBlueprint.h"
-#include "SGraphPanel.h"
-#include "EdGraphSchema_K2.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "SKismetLinearExpression.h"
 
-#include "ConnectionDrawingPolicy.h"
-#include "IDocumentation.h"
-
-#include "AnimationTransitionGraph.h"
-#include "AnimGraphNode_TransitionResult.h"
-#include "Animation/AnimNode_StateMachine.h"
+#include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_StateMachineBase.h"
+#include "AnimGraphNode_TransitionResult.h"
+#include "AnimStateNodeBase.h"
+#include "AnimStateTransitionNode.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimNode_StateMachine.h"
+#include "Animation/AnimStateMachineTypes.h"
 #include "AnimationStateMachineGraph.h"
+#include "AnimationTransitionGraph.h"
+#include "ConnectionDrawingPolicy.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "HAL/PlatformCrt.h"
+#include "IDocumentation.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/Geometry.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SGraphPanel.h"
+#include "SKismetLinearExpression.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+class UEdGraphPin;
+class UObject;
+struct FPointerEvent;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "TransitionNodes"
 
@@ -124,7 +152,7 @@ TSharedRef<SWidget> SGraphNodeAnimTransition::GenerateRichTooltip()
 		.Padding( 2.0f )
 		[
 			SNew(STextBlock)
-			.TextStyle( FEditorStyle::Get(), TEXT("Graph.TransitionNode.TooltipName") )
+			.TextStyle( FAppStyle::Get(), TEXT("Graph.TransitionNode.TooltipName") )
 			.Text(TooltipDesc)
 		];
 
@@ -135,7 +163,7 @@ TSharedRef<SWidget> SGraphNodeAnimTransition::GenerateRichTooltip()
 			.Padding( 2.0f )
 			[
 				SNew(STextBlock)
-				.TextStyle( FEditorStyle::Get(), TEXT("Graph.TransitionNode.TooltipRule") )
+				.TextStyle( FAppStyle::Get(), TEXT("Graph.TransitionNode.TooltipRule") )
 				.Text(LOCTEXT("AnimGraphNodeAutomaticRule_ToolTip", "Automatic Rule"))
 			];
 	}
@@ -146,7 +174,7 @@ TSharedRef<SWidget> SGraphNodeAnimTransition::GenerateRichTooltip()
 		.Padding( 2.0f )
 		[
 			SNew(STextBlock)
-			.TextStyle( FEditorStyle::Get(), TEXT("Graph.TransitionNode.TooltipRule") )
+			.TextStyle( FAppStyle::Get(), TEXT("Graph.TransitionNode.TooltipRule") )
 			.Text(LOCTEXT("AnimGraphNodeTransitionRule_ToolTip", "Transition Rule (in words)"))
 		];
 
@@ -194,7 +222,7 @@ void SGraphNodeAnimTransition::UpdateGraphNode()
 			+SOverlay::Slot()
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Graph.TransitionNode.ColorSpill") )
+				.Image( FAppStyle::GetBrush("Graph.TransitionNode.ColorSpill") )
 				.ColorAndOpacity( this, &SGraphNodeAnimTransition::GetTransitionColor )
 			]
 			+SOverlay::Slot()
@@ -339,8 +367,8 @@ const FSlateBrush* SGraphNodeAnimTransition::GetTransitionIconImage() const
 {
 	UAnimStateTransitionNode* TransNode = CastChecked<UAnimStateTransitionNode>(GraphNode);
 	return (TransNode->LogicType == ETransitionLogicType::TLT_Inertialization)
-		? FEditorStyle::GetBrush("Graph.TransitionNode.Icon_Inertialization")
-		: FEditorStyle::GetBrush("Graph.TransitionNode.Icon");
+		? FAppStyle::GetBrush("Graph.TransitionNode.Icon_Inertialization")
+		: FAppStyle::GetBrush("Graph.TransitionNode.Icon");
 }
 
 FString SGraphNodeAnimTransition::GetCurrentDuration() const

@@ -1,25 +1,73 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/SlateBrushCustomization.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Materials/MaterialInterface.h"
-#include "Materials/Material.h"
+
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
 #include "Engine/Texture2D.h"
+#include "Fonts/SlateFontInfo.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailChildrenBuilder.h"
+#include "Input/CursorReply.h"
+#include "Input/Events.h"
+#include "Input/Reply.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "MaterialShared.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "PropertyCustomizationHelpers.h"
-#include "Widgets/Input/SHyperlink.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "ScopedTransaction.h"
+#include "Serialization/Archive.h"
 #include "Slate/SlateTextureAtlasInterface.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SHyperlink.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Layout/SUniformGridPanel.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 /**
  * Slate Brush Preview widget
@@ -97,7 +145,7 @@ public:
 
 		SBorder::Construct(
 			SBorder::FArguments()
-			.BorderImage( FEditorStyle::GetBrush( "PropertyEditor.SlateBrushPreview" ) )
+			.BorderImage( FAppStyle::GetBrush( "PropertyEditor.SlateBrushPreview" ) )
 			.Padding( FMargin( 4.0f, 4.0f, 4.0f, 14.0f ) )
 			[
 				SNew( SBox )
@@ -108,7 +156,7 @@ public:
 					+SOverlay::Slot()
 					[
 						SNew( SImage )
-						.Image( FEditorStyle::GetBrush( "Checkerboard" ) )
+						.Image( FAppStyle::GetBrush( "Checkerboard" ) )
 					]
 
 					+SOverlay::Slot()
@@ -133,7 +181,7 @@ public:
 						+SHorizontalBox::Slot()
 						[
 							SNew( SImage )
-							.Image( FEditorStyle::GetBrush( "PropertyEditor.VerticalDottedLine" ) )
+							.Image( FAppStyle::GetBrush( "PropertyEditor.VerticalDottedLine" ) )
 							.Visibility( this, &SSlateBrushPreview::GetMarginLineVisibility )
 						]
 					]
@@ -152,7 +200,7 @@ public:
 						+SHorizontalBox::Slot()
 						[
 							SNew( SImage )
-							.Image( FEditorStyle::GetBrush( "PropertyEditor.VerticalDottedLine" ) )
+							.Image( FAppStyle::GetBrush( "PropertyEditor.VerticalDottedLine" ) )
 							.Visibility( this, &SSlateBrushPreview::GetMarginLineVisibility )
 						]
 					]
@@ -171,7 +219,7 @@ public:
 						+SVerticalBox::Slot()
 						[
 							SNew( SImage )
-							.Image( FEditorStyle::GetBrush( "PropertyEditor.HorizontalDottedLine" ) )
+							.Image( FAppStyle::GetBrush( "PropertyEditor.HorizontalDottedLine" ) )
 							.Visibility( this, &SSlateBrushPreview::GetMarginLineVisibility )
 						]
 					]
@@ -190,7 +238,7 @@ public:
 						+SVerticalBox::Slot()
 						[
 							SNew( SImage )
-							.Image( FEditorStyle::GetBrush( "PropertyEditor.HorizontalDottedLine" ) )
+							.Image( FAppStyle::GetBrush( "PropertyEditor.HorizontalDottedLine" ) )
 							.Visibility( this, &SSlateBrushPreview::GetMarginLineVisibility )
 						]
 					]
@@ -221,7 +269,7 @@ public:
 
 		return
 			SNew( SUniformGridPanel )
-			.SlotPadding( FEditorStyle::GetMargin( "StandardDialog.SlotPadding" ) )
+			.SlotPadding( FAppStyle::GetMargin( "StandardDialog.SlotPadding" ) )
 			+SUniformGridPanel::Slot( 0, 0 )
 			.HAlign( HAlign_Right )
 			.VAlign( VAlign_Center )
@@ -1405,7 +1453,7 @@ void FSlateBrushStructCustomization::CustomizeChildren( TSharedRef<IPropertyHand
 				.HeaderRow()
 				.NameContent()
 				[
-					StructPropertyHandle->CreatePropertyNameWidget(NSLOCTEXT("UnrealEd", "Preview", "Preview"), FText::GetEmpty(), false)
+					StructPropertyHandle->CreatePropertyNameWidget(NSLOCTEXT("UnrealEd", "Preview", "Preview"))
 				]
 			.ValueContent()
 				.MinDesiredWidth(1)

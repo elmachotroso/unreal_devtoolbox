@@ -4,6 +4,7 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraCommon.h"
 #include "NiagaraDataInterfaceRW.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "ClearQuad.h"
 #include "Niagara/Private/NiagaraStats.h"
 
@@ -18,35 +19,26 @@ class FNiagaraSystemInstance;
 class NeighborGrid3DRWInstanceData
 {
 public:
+	void ResizeBuffers(FRDGBuilder& GraphBuilder);
 
-	~NeighborGrid3DRWInstanceData()
-	{
-#if STATS
-		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GPUMemory);
-#endif
-	}
+	FIntVector	NumCells = FIntVector::ZeroValue;
+	float		CellSize = 0.0f;
+	bool		SetGridFromCellSize = false;
+	uint32		MaxNeighborsPerCell = 0;
+	FVector		WorldBBoxSize = FVector::ZeroVector;
 
-	void ResizeBuffers();
+	bool		NeedsRealloc_GT = false;
+	bool		NeedsRealloc_RT = false;
 
-	FIntVector NumCells;
-	float CellSize;
-	bool SetGridFromCellSize;
-	uint32 MaxNeighborsPerCell;	
-	FVector WorldBBoxSize;
-
-	bool NeedsRealloc = false;
-
-	FRWBuffer NeighborhoodBuffer;
-	FRWBuffer NeighborhoodCountBuffer;
-
-#if STATS
-	int32 GPUMemory = 0;
-#endif
+	FNiagaraPooledRWBuffer NeighborhoodBuffer;
+	FNiagaraPooledRWBuffer NeighborhoodCountBuffer;
 };
 
 struct FNiagaraDataInterfaceProxyNeighborGrid3D : public FNiagaraDataInterfaceProxyRW
 {	
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
+	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override;
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
+
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override {}
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(NeighborGrid3DRWInstanceData); }	
 
@@ -62,14 +54,22 @@ class NIAGARA_API UNiagaraDataInterfaceNeighborGrid3D : public UNiagaraDataInter
 {
 	GENERATED_UCLASS_BODY()
 
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(FIntVector,		NumCells)
+		SHADER_PARAMETER(FVector3f,			UnitToUV)
+		SHADER_PARAMETER(FVector3f,			CellSize)
+		SHADER_PARAMETER(FVector3f,			WorldBBoxSize)
+
+		SHADER_PARAMETER(int32,							MaxNeighborsPerCellValue)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<int>,	ParticleNeighbors)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<int>,	ParticleNeighborCount)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<int>,	OutputParticleNeighbors)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<int>,	OutputParticleNeighborCount)
+	END_SHADER_PARAMETER_STRUCT()
+
 public:	
-
 	UPROPERTY(EditAnywhere, Category = "Grid")
-		uint32 MaxNeighborsPerCell;
-
-public:
-
-	DECLARE_NIAGARA_DI_PARAMETER();
+	uint32 MaxNeighborsPerCell;
 
 	virtual void PostInitProperties() override
 	{
@@ -92,9 +92,13 @@ public:
 
 	// GPU sim functionality
 #if WITH_EDITORONLY_DATA
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 #if WITH_EDITOR
 	virtual bool ShouldCompile(EShaderPlatform ShaderPlatform) const override;
 #endif

@@ -1,10 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RealCurveModel.h"
-#include "CurveDrawInfo.h"
 
+#include "CurveDataAbstraction.h"
+#include "CurveDrawInfo.h"
+#include "CurveEditorScreenSpace.h"
+#include "Curves/KeyHandle.h"
 #include "Curves/RealCurve.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Vector2D.h"
+#include "Misc/Optional.h"
 #include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/WeakObjectPtr.h"
+
+class FCurveEditor;
 
 FRealCurveModel::FRealCurveModel(FRealCurve* InRealCurve, UObject* InOwner)
 	: WeakOwner(InOwner)
@@ -35,10 +48,37 @@ void FRealCurveModel::DrawCurve(const FCurveEditor& CurveEditor, const FCurveEdi
 
 	if (IsValid())
 	{
+
+		FKeyHandle LastKeyHandle = RealCurve->GetFirstKeyHandle();
+		double LastKeyTime =  double(ScreenSpace.GetInputMin());
+		double LastKeyValue =  double(RealCurve->GetKeyValue(LastKeyHandle));
+		double LastInterpMode = RealCurve->GetKeyInterpMode(LastKeyHandle);
+
+		if (LastInterpMode == (double)RCIM_Constant)
+		{
+			InterpolatingPoints.Add(MakeTuple( LastKeyTime, LastKeyValue));
+		}
+
 		for (auto It = RealCurve->GetKeyHandleIterator(); It; ++It)
 		{
 			auto KeyPair = RealCurve->GetKeyTimeValuePair(*It);
+
+			// if  constant , add another point to mark the end of the previous' key reign
+			if (LastInterpMode == (double)RCIM_Constant)
+			{
+				InterpolatingPoints.Add(MakeTuple( double(KeyPair.Key), LastKeyValue));
+			}
+
 			InterpolatingPoints.Add(MakeTuple( double(KeyPair.Key), double(KeyPair.Value)));
+
+			LastKeyHandle = RealCurve->GetNextKey(LastKeyHandle);
+			LastKeyValue = KeyPair.Value;
+			LastInterpMode = RealCurve->GetKeyInterpMode(LastKeyHandle);
+		}
+
+		if (LastInterpMode == (double)RCIM_Constant)
+		{
+			InterpolatingPoints.Add(MakeTuple( double(ScreenSpace.GetInputMax()), LastKeyValue));
 		}
 	}
 }
@@ -125,19 +165,15 @@ void FRealCurveModel::GetKeyDrawInfo(ECurvePointType PointType, const FKeyHandle
 		{
 		case ERichCurveInterpMode::RCIM_Constant:
 			OutDrawInfo.Brush = FAppStyle::Get().GetBrush("GenericCurveEditor.ConstantKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.45f, 0.70f);
 			break;
 		case ERichCurveInterpMode::RCIM_Linear:
 			OutDrawInfo.Brush = FAppStyle::Get().GetBrush("GenericCurveEditor.LinearKey");
-			OutDrawInfo.Tint = FLinearColor(0, 0.62f, 0.46f);
 			break;
 		case ERichCurveInterpMode::RCIM_Cubic:
 			OutDrawInfo.Brush = FAppStyle::Get().GetBrush("GenericCurveEditor.CubicKey");
-			OutDrawInfo.Tint = FLinearColor::White;
 			break;
 		default:
 			OutDrawInfo.Brush = FAppStyle::Get().GetBrush("GenericCurveEditor.Key");
-			OutDrawInfo.Tint = FLinearColor::White;
 			break;
 		}
 	}

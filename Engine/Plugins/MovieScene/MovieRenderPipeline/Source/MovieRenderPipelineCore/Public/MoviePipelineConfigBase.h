@@ -135,7 +135,7 @@ public:
 			}
 			else
 			{
-				FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Setting %d is not compatible with this Config Type and was not added."), *InClass->GetName()), ELogVerbosity::Error);
+				FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Setting %s is not compatible with this Config Type and was not added."), *InClass->GetName()), ELogVerbosity::Error);
 				return nullptr;
 			}
 		}
@@ -158,7 +158,7 @@ public:
 protected:
 	/** Array of settings classes that affect various parts of the output pipeline. */
 	UPROPERTY(VisibleAnywhere, Instanced, Category = "Movie Pipeline")
-	TArray<UMoviePipelineSetting*> Settings;
+	TArray<TObjectPtr<UMoviePipelineSetting>> Settings;
 
 private:
 	int32 SettingsSerialNumber;

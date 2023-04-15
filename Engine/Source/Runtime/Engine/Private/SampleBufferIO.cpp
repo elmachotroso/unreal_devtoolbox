@@ -4,7 +4,7 @@
 #include "AudioMixer.h"
 #include "HAL/PlatformFileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Sound/SoundWave.h"
 #include "AudioDevice.h"
 #include "Async/Async.h"
@@ -205,7 +205,7 @@ namespace Audio
 		{
 			CurrentBuffer.MixBufferToChannels(2);
 		}
-
+	
 		CurrentOperation.Reset(new FAsyncSoundWavePCMWriterTask(this, ESoundWavePCMWriteTaskType::GenerateAndWriteSoundWave, OnSuccess));
 		CurrentOperation->StartBackgroundTask();
 
@@ -362,10 +362,16 @@ namespace Audio
 
 	bool FSoundWavePCMWriter::IsDone()
 	{
-		return (CurrentState == ESoundWavePCMWriterState::Suceeded
+		bool bCurrentOperationDone = true;
+		if (CurrentOperation.IsValid())
+		{
+			bCurrentOperationDone = CurrentOperation->IsDone();
+		}
+
+		return ((CurrentState == ESoundWavePCMWriterState::Suceeded
 			|| CurrentState == ESoundWavePCMWriterState::Failed
 			|| CurrentState == ESoundWavePCMWriterState::Cancelled
-			|| CurrentState == ESoundWavePCMWriterState::Idle);
+			|| CurrentState == ESoundWavePCMWriterState::Idle) && bCurrentOperationDone);
 	}
 
 	void FSoundWavePCMWriter::Reset()
@@ -447,12 +453,14 @@ namespace Audio
 
 	void FSoundWavePCMWriter::ApplyBufferToSoundWave()
 	{
-		CurrentSoundWave->InvalidateCompressedData();
+		// Since we just want to replace the PCM data to save it to disk. We don't need to compute anything platformdata related.
+		CurrentSoundWave->InvalidateCompressedData(false /* bFreeResources */, false /* bRebuildStreamingChunk */);
 
 		CurrentSoundWave->SetSampleRate(CurrentBuffer.GetSampleRate());
 		CurrentSoundWave->NumChannels = CurrentBuffer.GetNumChannels();
 		CurrentSoundWave->RawPCMDataSize = CurrentBuffer.GetNumSamples() * sizeof(int16);
 		CurrentSoundWave->Duration = (float) CurrentBuffer.GetNumFrames() / CurrentBuffer.GetSampleRate();
+		CurrentSoundWave->TotalSamples = CurrentBuffer.GetNumSamples();
 
 		if (CurrentSoundWave->RawPCMData != nullptr)
 		{
@@ -483,10 +491,13 @@ namespace Audio
 		// TODO: Check to see if we need to call USoundWave::FreeResources here.
 
 		// Emplace wav data in the RawData component of the sound wave.
-		CurrentSoundWave->RawData.Lock(LOCK_READ_WRITE);
-		void* LockedData = CurrentSoundWave->RawData.Realloc(SerializedWavData.Num());
-		FMemory::Memcpy(LockedData, SerializedWavData.GetData(), SerializedWavData.Num());
-		CurrentSoundWave->RawData.Unlock();
+		FSharedBuffer Buffer = FSharedBuffer::Clone(SerializedWavData.GetData(), SerializedWavData.Num());
+
+#if WITH_EDITORONLY_DATA
+		CurrentSoundWave->RawData.UpdatePayload(Buffer);
+#else //WITH_EDITORONLY_DATA
+		checkNoEntry();
+#endif //WITH_EDITORONLY_DATA
 
 		USoundWave* SavedSoundWave = CurrentSoundWave;
 
@@ -679,5 +690,4 @@ namespace Audio
 	}
 
 }
-
 

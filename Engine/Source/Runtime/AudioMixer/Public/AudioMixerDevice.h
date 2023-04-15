@@ -6,6 +6,7 @@
 #include "AudioMixer.h"
 #include "AudioDevice.h"
 #include "Sound/SoundSubmix.h"
+#include "Sound/SoundGenerator.h"
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/MultithreadedPatching.h"
 #include "Quartz/AudioMixerClockManager.h"
@@ -16,6 +17,7 @@
 class FOnSubmixEnvelopeBP;
 class IAudioMixerPlatformInterface;
 class USoundModulatorBase;
+class IAudioLinkFactory;
 
 namespace Audio
 {
@@ -23,6 +25,7 @@ namespace Audio
 	class FMixerSourceManager;
 	class FMixerSourceVoice;
 	class FMixerSubmix;
+	class FAudioFormatSettings;
 
 	typedef TSharedPtr<FMixerSubmix, ESPMode::ThreadSafe> FMixerSubmixPtr;
 	typedef TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> FMixerSubmixWeakPtr;
@@ -142,7 +145,7 @@ namespace Audio
 		virtual void SetSubmixAutoDisableTime(USoundSubmix* InSoundSubmix, float InDisableTime) override;
 
 		// Submix Modulation Settings
-		virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation) override;
+		virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, const TSet<TObjectPtr<USoundModulatorBase>>& InOutputModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InWetLevelModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InDryLevelModulation) override;
 		virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase) override;
 
 		// Submix effect chain override settings
@@ -216,12 +219,17 @@ namespace Audio
 		void ReleaseMixerSourceVoice(FMixerSourceVoice* InSourceVoice);
 		int32 GetNumSources() const;
 
+		// AudioLink
+		IAudioLinkFactory* GetAudioLinkFactory() const;
+
 		const FAudioPlatformDeviceInfo& GetPlatformDeviceInfo() const { return PlatformInfo; };
 
 		FORCEINLINE int32 GetNumDeviceChannels() const { return PlatformInfo.NumChannels; }
 
 		int32 GetNumOutputFrames() const { return PlatformSettings.CallbackBufferFrameSize; }
-		
+
+		int32 GetNumOutputBuffers() const { return PlatformSettings.NumBuffers; }
+
 		// Retrieve a pointer to the currently active platform. Only use this if you know what you are doing. The returned IAudioMixerPlatformInterface will only be alive as long as this FMixerDevice is alive.
 		IAudioMixerPlatformInterface* GetAudioMixerPlatform() const { return AudioMixerPlatform; }
 
@@ -287,19 +295,29 @@ namespace Audio
 		static bool IsEndpointSubmix(const USoundSubmixBase* InSubmix);
 
 		// Audio bus API
-		void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic);
-		void StopAudioBus(uint32 InAudioBusId);
-		bool IsAudioBusActive(uint32 InAudioBusId) const;
+		virtual void StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic) override;
+		virtual void StopAudioBus(uint32 InAudioBusId) override;
+		virtual bool IsAudioBusActive(uint32 InAudioBusId) const override;
 
-		FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f);
-		FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f);
+		virtual FPatchOutputStrongPtr AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain = 1.0f) override;
+		virtual FPatchOutputStrongPtr AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain = 1.0f) override;
 
 		// Clock Manager for quantized event handling on Audio Render Thread
 		FQuartzClockManager QuantizedEventClockManager;
 
+		// Keep a reference alive to UQuartzSubsystem state that needs to persist across level transitions (UWorld destruction
+		TSharedPtr<FPersistentQuartzSubsystemData, ESPMode::ThreadSafe> QuartzSubsystemData { nullptr };
+
+		// Technically, in editor, multiple UQuartz(World)Subsystem's will reference the same FMixerDevice object.
+		// We need to protect around mutation/access of the "shared" state.
+		// (in practice this should be low/zero contention)
+		FCriticalSection QuartzPersistentStateCritSec;
+
 		// Pushes the command to a audio render thread command queue to be executed on render thread
 		void AudioRenderThreadCommand(TFunction<void()> Command);
 
+		// Pushes the command to a MPSC queue to be executed on the game thread
+		void GameThreadMPSCCommand(TFunction<void()> InCommand);
 
 	protected:
 
@@ -333,7 +351,7 @@ namespace Audio
 
 		void UnloadSoundSubmix(const USoundSubmixBase& SoundSubmix);
 
-	private:
+		ICompressedAudioInfo* CreateAudioInfo(FName InFormat) const;
 
 		bool IsMasterSubmixType(const USoundSubmixBase* InSubmix) const;
 		FMixerSubmixPtr GetMasterSubmixInstance(uint32 InSubmixId);
@@ -341,7 +359,8 @@ namespace Audio
 		
 		// Pumps the audio render thread command queue
 		void PumpCommandQueue();
-
+		void PumpGameThreadCommandQueue();
+		
 		TArray<USoundSubmix*> MasterSubmixes;
 		TArray<FMixerSubmixPtr> MasterSubmixInstances;
 
@@ -384,7 +403,7 @@ namespace Audio
 		double AudioClockDelta;
 
 		/** What the previous master volume was. */
-		float PreviousMasterVolume;
+		float PreviousPrimaryVolume;
 
 		/** Timing data for audio thread. */
 		FAudioThreadTimingData AudioThreadTimingData;
@@ -426,11 +445,30 @@ namespace Audio
 		/** Command queue to send commands to audio render thread from game thread or audio thread. */
 		TQueue<TFunction<void()>> CommandQueue;
 
+		/** MPSC command queue to send commands to the game thread */
+		TMpscQueue<TFunction<void()>> GameThreadCommandQueue;
+
+		IAudioLinkFactory* AudioLinkFactory = nullptr;
+		
 		/** Whether or not we generate output audio to test multi-platform mixer. */
 		bool bDebugOutputEnabled;
 
 		/** Whether or not initialization of the submix system is underway and submixes can be registered */
 		bool bSubmixRegistrationDisabled;
+
+	public:
+
+		// Creates a queue for audio decode requests with a specific Id. Tasks
+		// created with this Id will not be started immediately upon creation,
+		// but will instead be queued up to await a start "kick" later.
+		static void CreateSynchronizedAudioTaskQueue(AudioTaskQueueId QueueId);
+
+		// Destroys an audio decode task queue. Tasks currently queued up are 
+		// optionally started.
+		static void DestroySynchronizedAudioTaskQueue(AudioTaskQueueId QueueId, bool RunCurrentQueue = false);
+
+		// "Kicks" all of the audio decode tasks currentlyt in the queue.
+		static int KickQueuedTasks(AudioTaskQueueId QueueId);
 	};
 }
 

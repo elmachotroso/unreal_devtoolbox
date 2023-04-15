@@ -1,9 +1,21 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 #include "WorldPartition/SWorldPartitionBuildNavigationDialog.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Input/SButton.h"
+
+#include "DetailsViewArgs.h"
+#include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
 #include "WorldPartition/WorldPartitionBuildNavigationOptions.h"
 
 #define LOCTEXT_NAMESPACE "WorldPartitionBuildNavigationDialog"
@@ -30,7 +42,7 @@ void SWorldPartitionBuildNavigationDialog::Construct(const FArguments& InArgs)
 	this->ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -54,7 +66,7 @@ void SWorldPartitionBuildNavigationDialog::Construct(const FArguments& InArgs)
 						SNew(SButton)
 						.HAlign(HAlign_Center)
 						.IsEnabled(this, &SWorldPartitionBuildNavigationDialog::IsOkEnabled)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SWorldPartitionBuildNavigationDialog::OnOkClicked)
 						.Text(LOCTEXT("OkButton", "Ok"))
 					]
@@ -64,7 +76,7 @@ void SWorldPartitionBuildNavigationDialog::Construct(const FArguments& InArgs)
 					[
 						SNew(SButton)
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SWorldPartitionBuildNavigationDialog::OnCancelClicked)
 						.Text(LOCTEXT("CancelButton", "Cancel"))
 					]

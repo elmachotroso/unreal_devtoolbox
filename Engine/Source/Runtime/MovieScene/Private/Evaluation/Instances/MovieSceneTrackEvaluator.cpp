@@ -108,10 +108,7 @@ void FMovieSceneTrackEvaluator::Evaluate(FMovieSceneContext Context, IMovieScene
 		return;
 	}
 
-#if STATS || ENABLE_STATNAMEDEVENTS
-	const bool bShouldTrackObject = Stats::IsThreadCollectingData();
-	FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? OverrideRootSequence : nullptr);
-#endif
+	SCOPE_CYCLE_UOBJECT(ContextScope, OverrideRootSequence);
 
 	const FMovieSceneEvaluationGroup* GroupToEvaluate = SetupFrame(OverrideRootSequence, InOverrideRootID, Context);
 	if (!GroupToEvaluate)
@@ -179,7 +176,7 @@ const FMovieSceneEvaluationGroup* FMovieSceneTrackEvaluator::SetupFrame(UMovieSc
 	RootOverridePath.Reset(InOverrideRootID, RootHierarchy);
 
 	const FMovieSceneEvaluationField* OverrideRootField = nullptr;
-	FFrameTime RootTime = Context.GetTime();
+	FFrameTime RootTime = Context.GetEvaluationFieldTime();
 
 	if (InOverrideRootID == MovieSceneSequenceID::Root)
 	{

@@ -1,10 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SEnumCombo.h"
-#include "EditorStyleSet.h"
-#include "Types/SlateEnums.h"
-#include "Widgets/SToolTip.h"
+
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "EditorWidgets"
 
@@ -162,7 +175,7 @@ FText SEnumComboBox::GetCurrentValueTooltip() const
 TSharedRef<SWidget> SEnumComboBox::OnGetMenuContent()
 {
 	const bool bCloseAfterSelection = !bIsBitflagsEnum;
-	FMenuBuilder MenuBuilder(bCloseAfterSelection, nullptr);
+	FMenuBuilder MenuBuilder(bCloseAfterSelection, nullptr, nullptr, true);
 
 	for (const FEnumInfo& FlagInfo : VisibleEnums)
 	{

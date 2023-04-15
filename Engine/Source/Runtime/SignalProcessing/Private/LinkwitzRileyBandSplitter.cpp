@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DSP/LinkwitzRileyBandSplitter.h"
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 
 #ifndef TWO_PI
 #define TWO_PI (6.28318530718)
@@ -178,7 +178,8 @@ namespace Audio
 			constexpr int32 IsOddBitMask = 0x00000001;
 			if ((static_cast<int32>(FilterOrder) & IsOddBitMask) && (BandId & IsOddBitMask))
 			{
-				MultiplyBufferByConstantInPlace(BandBufferPtr, NumSamples, -1.f);
+				TArrayView<float> BandBufferView(BandBufferPtr, NumSamples);
+				ArrayMultiplyByConstantInPlace(BandBufferView, -1.f);
 			}
 
 			CopyToBuffer(OutBuffer[BandId], BandBufferPtr, NumSamples);

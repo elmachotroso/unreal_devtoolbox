@@ -27,10 +27,12 @@ public:
 	static void WriteBool(FArchive& Archive, int32 Indent, const TCHAR* Prefix, bool bValue);
 	static void WriteRGB(FArchive& Archive, int32 Indent, const TCHAR* Prefix, FLinearColor Color);
 	static void WriteValue(FArchive& Archive, int32 Indent, const TCHAR* Prefix, float Value, bool bForceWriteAlways = false, FString Desc = FString());
+	static void WriteValue(FArchive& Archive, int32 Indent, const TCHAR* Prefix, double Value, bool bForceWriteAlways, FString Desc = FString()) = delete;
 	static void AppendXMLChild(FString& XmlString, int32 Indent, const TCHAR* Tag, const TCHAR* AttributeName, const TCHAR* AttributeValue);
 
 	static void WriteTexture(FArchive& Archive, int32 Indent, const TCHAR* Prefix, const TCHAR* Name, FDatasmithTextureSampler UV);
 	static void WriteMeshElement(const TSharedPtr< IDatasmithMeshElement >& MeshElement, FArchive& Archive, int32 Indent);
+	static void WriteClothElement(const TSharedPtr< IDatasmithClothElement >& ClothElement, FArchive& Archive, int32 Indent);
 	static void WriteLevelSequenceElement( const TSharedRef< IDatasmithLevelSequenceElement>& SequenceElement, FArchive& Archive, int32 Indent );
 
 	static void WriteLevelVariantSetsElement( const TSharedRef< IDatasmithLevelVariantSetsElement >& LevelVariantSetsElement, FArchive& Archive, int32 Indent );
@@ -45,6 +47,7 @@ public:
 	static void WriteActorTags(const TSharedPtr< IDatasmithActorElement >& ActorElement, FArchive& Archive, int32 Indent);
 	static void WriteActorChildren(const TSharedPtr< IDatasmithActorElement >& ActorElement, FArchive& Archive, int32 Indent);
 	static void WriteMeshActorElement(const TSharedPtr< IDatasmithMeshActorElement >& MeshActorElement, FArchive& Archive, int32 Indent);
+	static void WriteClothActorElement(const TSharedPtr< IDatasmithClothActorElement >& ClothActorElement, FArchive& Archive, int32 Indent);
 
 	// Write the start of the actor element (Open the xml element and add the essential child elements for the mesh actor)
 	static void WriteBeginOfMeshActorElement(const TSharedPtr<IDatasmithMeshActorElement>& MeshActorElement, const FString& ElementTypeString, FArchive& Archive, int32 Indent);
@@ -71,7 +74,7 @@ public:
 	static void WriteTextureElement(const TSharedPtr< IDatasmithTextureElement >& TextureElement, FArchive& Archive, int32 Indent);
 
 	static void WriteMaterialElement( TSharedPtr< IDatasmithMaterialElement >& MaterialElement, FArchive& Archive, int32 Indent);
-	static void WriteMasterMaterialElement(TSharedPtr< IDatasmithMasterMaterialElement >& MasterMaterialElement, FArchive& Archive, int32 Indent);
+	static void WriteMaterialInstanceElement(TSharedPtr< IDatasmithMaterialInstanceElement >& MaterialInstanceElement, FArchive& Archive, int32 Indent);
 	static void WriteDecalMaterialElement(TSharedPtr< IDatasmithDecalMaterialElement >& DecalMaterialElement, FArchive& Archive, int32 Indent);
 
 	static void WriteUEPbrMaterialElement( const TSharedRef< IDatasmithUEPbrMaterialElement >& MaterialElement, FArchive& Archive, int32 Indent );
@@ -124,7 +127,12 @@ FString FDatasmithSceneXmlWriterImpl::GetLabelAndLayer(const TSharedPtr<IDatasmi
 
 	if (!ActorElement->GetVisibility())
 	{
-		LabelAndLayer += TEXT(" visible=\"0\"");
+		LabelAndLayer += TEXT(" visible=\"false\"");
+	}
+
+	if (!ActorElement->GetCastShadow())
+	{
+		LabelAndLayer += TEXT(" castshadow=\"false\"");
 	}
 
 	if (ActorElement->IsAComponent())
@@ -299,13 +307,8 @@ void FDatasmithSceneXmlWriterImpl::WriteTransform(const FTransform& Transform, F
 
 FString FDatasmithSceneXmlWriterImpl::QuatToHexString(FQuat Value)
 {
-	float Floats[4];
-	Floats[0] = Value.X;
-	Floats[1] = Value.Y;
-	Floats[2] = Value.Z;
-	Floats[3] = Value.W;
-
-	FString Result = TEXT("qhex=\"") + FString::FromHexBlob((uint8*)Floats, sizeof(Floats)) + TEXT("\"");
+	double Tmp[4] = {Value.X, Value.Y, Value.Z, Value.W};
+	FString Result = TEXT("qhex64=\"") + FString::FromHexBlob((uint8*)Tmp, sizeof(Tmp)) + TEXT("\"");
 	return Result;
 }
 
@@ -316,11 +319,9 @@ void FDatasmithSceneXmlWriterImpl::WriteMeshElement(const TSharedPtr< IDatasmith
 	FString XmlString = TEXT("<") + FString(DATASMITH_STATICMESHNAME) + TEXT(" name=\"") + SanitizeXMLText( MeshElement->GetName() ) + TEXT("\"");
 	XmlString += TEXT(" label=\"") + SanitizeXMLText( MeshElement->GetLabel() ) + TEXT("\"");
 	XmlString += FString( TEXT(">") ) + LINE_TERMINATOR;
-
 	SerializeToArchive(Archive, XmlString);
 
 	WriteIndent(Archive, Indent + 1);
-
 	XmlString = TEXT("<file path=\"") + SanitizeXMLText(MeshElement->GetFile()) + TEXT("\"/>") + LINE_TERMINATOR;
 	SerializeToArchive(Archive, XmlString);
 
@@ -336,32 +337,44 @@ void FDatasmithSceneXmlWriterImpl::WriteMeshElement(const TSharedPtr< IDatasmith
 	}
 
 	WriteIndent(Archive, Indent + 1);
-
 	XmlString = TEXT("<") + FString(DATASMITH_LIGHTMAPCOORDINATEINDEX) + TEXT(" value=\"") + FString::FromInt(MeshElement->GetLightmapCoordinateIndex()) + TEXT("\"/>") + LINE_TERMINATOR;
 	SerializeToArchive(Archive, XmlString);
 
 	WriteIndent(Archive, Indent + 1);
-
 	XmlString = TEXT("<") + FString(DATASMITH_LIGHTMAPUVSOURCE) + TEXT(" value=\"") + FString::FromInt( MeshElement->GetLightmapSourceUV() ) + TEXT("\"/>") + LINE_TERMINATOR;
 	SerializeToArchive(Archive, XmlString);
 
 	WriteIndent(Archive, Indent + 1);
-
 	XmlString = TEXT("<") + FString(DATASMITH_HASH) + TEXT(" value=\"") + LexToString(MeshElement->GetFileHash()) + TEXT("\"/>") + LINE_TERMINATOR;
 	SerializeToArchive(Archive, XmlString);
 
 	for (int i = 0; i < MeshElement->GetMaterialSlotCount(); ++i)
 	{
 		WriteIndent(Archive, Indent + 1);
-
 		XmlString = TEXT("<") + FString(DATASMITH_MATERIAL) + FString::Printf(TEXT(" id=\"%d\" name=\""), MeshElement->GetMaterialSlotAt(i)->GetId()) + SanitizeXMLText(FDatasmithUtils::SanitizeFileName(MeshElement->GetMaterialSlotAt(i)->GetName())) + TEXT("\"/>") + LINE_TERMINATOR;
 		SerializeToArchive(Archive, XmlString);
 	}
 
 	WriteIndent(Archive, Indent);
-
 	XmlString = TEXT("</") + FString(DATASMITH_STATICMESHNAME) + TEXT(">") + LINE_TERMINATOR;
 	SerializeToArchive(Archive, XmlString);
+}
+
+void FDatasmithSceneXmlWriterImpl::WriteClothElement(const TSharedPtr<IDatasmithClothElement>& Element, FArchive& Archive, int32 Indent)
+{
+	// #ue_ds_cloth_note: FDatasmithSceneXmlWriterImpl::WriteClothElement
+	WriteIndent(Archive, Indent);
+	FString XmlString = TEXT("<") DATASMITH_CLOTH;
+	XmlString += TEXT(" name=\"") + SanitizeXMLText( Element->GetName() ) + TEXT("\"");
+	XmlString += TEXT(" label=\"") + SanitizeXMLText( Element->GetLabel() ) + TEXT("\"");
+	XmlString += TEXT(">") LINE_TERMINATOR;
+	SerializeToArchive(Archive, XmlString);
+
+	WriteIndent(Archive, Indent + 1);
+	SerializeToArchive(Archive, TEXT("<file path=\"") + SanitizeXMLText(Element->GetFile()) + TEXT("\"/>") LINE_TERMINATOR);
+
+	WriteIndent(Archive, Indent);
+	SerializeToArchive(Archive, TEXT("</") DATASMITH_CLOTH TEXT(">") LINE_TERMINATOR);
 }
 
 void FDatasmithSceneXmlWriterImpl::WriteLevelSequenceElement(const TSharedRef< IDatasmithLevelSequenceElement>& SequenceElement, FArchive& Archive, int32 Indent)
@@ -558,6 +571,10 @@ void FDatasmithSceneXmlWriterImpl::WriteActorElement(const TSharedPtr< IDatasmit
 	{
 		WriteMeshActorElement(StaticCastSharedPtr< IDatasmithMeshActorElement >(ActorElement), Archive, Indent);
 	}
+	else if ( ActorElement->IsA( EDatasmithElementType::ClothActor ) )
+	{
+		WriteClothActorElement(StaticCastSharedPtr< IDatasmithClothActorElement >(ActorElement), Archive, Indent);
+	}
 	else if ( ActorElement->IsA( EDatasmithElementType::Camera ) )
 	{
 		WriteCameraActorElement(StaticCastSharedPtr< IDatasmithCameraActorElement >(ActorElement), Archive, Indent);
@@ -663,6 +680,19 @@ void FDatasmithSceneXmlWriterImpl::WriteMeshActorElement(const TSharedPtr< IData
 	WriteBeginOfMeshActorElement(MeshActorElement, ElementTypeString, Archive, Indent);
 	WriteActorChildren(MeshActorElement, Archive, Indent);
 	WriteEndOfMeshActorElement(ElementTypeString, Archive, Indent);
+}
+
+void FDatasmithSceneXmlWriterImpl::WriteClothActorElement(const TSharedPtr< IDatasmithClothActorElement >& Element, FArchive& Archive, int32 Indent)
+{
+	WriteIndent(Archive, Indent);
+	SerializeToArchive(Archive, FString(TEXT("<") DATASMITH_CLOTHACTORNAME TEXT(" name=\"")) + SanitizeXMLText(Element->GetName()) + TEXT("\""));
+	SerializeToArchive(Archive, GetLabelAndLayer(Element) + TEXT(">") LINE_TERMINATOR);
+
+	WriteIndent(Archive, Indent + 1);
+	SerializeToArchive(Archive, TEXT("<Cloth name=\"") + SanitizeXMLText(Element->GetCloth()) + TEXT("\"/>") LINE_TERMINATOR);
+
+	WriteIndent(Archive, Indent);
+	SerializeToArchive(Archive, TEXT("</") DATASMITH_CLOTHACTORNAME TEXT(">") LINE_TERMINATOR);
 }
 
 void FDatasmithSceneXmlWriterImpl::WriteBeginOfMeshActorElement(const TSharedPtr<IDatasmithMeshActorElement>& MeshActorElement, const FString& ElementTypeString, FArchive& Archive, int32 Indent)
@@ -890,9 +920,18 @@ void FDatasmithSceneXmlWriterImpl::WriteLightActorElement(const TSharedPtr< IDat
 
 	if ( LightActorElement->GetIesRotation() != FQuat::Identity )
 	{
-		WriteIndent(Archive, Indent + 1);
+		auto QuatToHexStringFloat = [](const FQuat& Value) -> FString
+		{
+			float Tmp[4] = {(float)Value.X, (float)Value.Y, (float)Value.Z, (float)Value.W};
+			FString Result = TEXT(" qhex=\"") + FString::FromHexBlob((uint8*)Tmp, sizeof(Tmp)) + TEXT("\"");
+			return Result;
+		};
 
-		XmlString = TEXT("<") + FString(DATASMITH_LIGHTIESROTATION) + TEXT(" ") + QuatToHexString( LightActorElement->GetIesRotation() ) + TEXT("/>") + LINE_TERMINATOR;
+		WriteIndent(Archive, Indent + 1);
+		XmlString = TEXT("<") DATASMITH_LIGHTIESROTATION TEXT(" ")
+			+ QuatToHexString( LightActorElement->GetIesRotation() )
+			+ QuatToHexStringFloat( LightActorElement->GetIesRotation() ) // required for 5.1 -> 5.0.0 flow, as 5.0.0 cannot parse a qhex64 attribute. Should be fixed for 5.0.1.
+			+ TEXT("/>") + LINE_TERMINATOR;
 		SerializeToArchive( Archive, XmlString );
 	}
 
@@ -937,17 +976,17 @@ void FDatasmithSceneXmlWriterImpl::WriteLightActorElement(const TSharedPtr< IDat
 
 void FDatasmithSceneXmlWriterImpl::WritePointLightElement(const TSharedRef< IDatasmithPointLightElement >& PointLightElement, FArchive& Archive, int32 Indent)
 {
-	if ( PointLightElement->GetSourceRadius() > 0.0f )
+	if (PointLightElement->GetSourceRadius() >= 0.f)
 	{
 		WriteValue( Archive, Indent + 1, DATASMITH_LIGHTSOURCESIZENAME, PointLightElement->GetSourceRadius() );
 	}
 
-	if ( PointLightElement->GetSourceLength() > 0.0f )
+	if (PointLightElement->GetSourceLength() >= 0.f)
 	{
 		WriteValue( Archive, Indent + 1, DATASMITH_LIGHTSOURCELENGTHNAME, PointLightElement->GetSourceLength() );
 	}
 
-	if ( PointLightElement->GetAttenuationRadius() > 20.0f && PointLightElement->GetAttenuationRadius() < 2000.0f ) // 20 cm min 20m max
+	if (PointLightElement->GetAttenuationRadius() >= 0.f)
 	{
 		WriteValue( Archive, Indent + 1, DATASMITH_LIGHTATTENUATIONRADIUSNAME, PointLightElement->GetAttenuationRadius() );
 	}
@@ -1009,7 +1048,7 @@ void FDatasmithSceneXmlWriterImpl::WritePostProcessElement(const TSharedPtr< IDa
 
 	WriteIndent(Archive, Indent);
 
-	FString XmlString = TEXT("<") + FString(DATASMITH_POSTPRODUCTIONNAME) + TEXT(">") + LINE_TERMINATOR;
+	FString XmlString = TEXT("<") DATASMITH_POSTPRODUCTIONNAME TEXT(">") LINE_TERMINATOR;
 	SerializeToArchive( Archive, XmlString );
 
 	if (PostProcessElement->GetTemperature() != 6500.0f)
@@ -1084,7 +1123,7 @@ void FDatasmithSceneXmlWriterImpl::WriteCameraActorElement(const TSharedPtr< IDa
 {
 	WriteIndent(Archive, Indent);
 
-	FString XmlString = TEXT("<") + FString(DATASMITH_CAMERANAME) + TEXT(" name=\"") + SanitizeXMLText( CameraElement->GetName() ) + ("\"");
+	FString XmlString = TEXT("<") + FString(DATASMITH_CAMERANAME) + TEXT(" name=\"") + SanitizeXMLText( CameraElement->GetName() ) + TEXT("\"");
 
 	XmlString += GetLabelAndLayer(CameraElement) + TEXT(">") + LINE_TERMINATOR;
 
@@ -1339,28 +1378,28 @@ void FDatasmithSceneXmlWriterImpl::WriteMaterialElement( TSharedPtr< IDatasmithM
 	SerializeToArchive( Archive, XmlString );
 }
 
-void FDatasmithSceneXmlWriterImpl::WriteMasterMaterialElement(TSharedPtr< IDatasmithMasterMaterialElement >& MasterMaterialElement, FArchive& Archive, int32 Indent)
+void FDatasmithSceneXmlWriterImpl::WriteMaterialInstanceElement(TSharedPtr< IDatasmithMaterialInstanceElement >& MaterialInstanceElement, FArchive& Archive, int32 Indent)
 {
 	WriteIndent(Archive, Indent);
 
 	FString XmlString = TEXT("<");
-	XmlString += FString(DATASMITH_MASTERMATERIALNAME) + TEXT(" name=\"") + SanitizeXMLText(FDatasmithUtils::SanitizeFileName(MasterMaterialElement->GetName())) + TEXT("\" ");
-	XmlString += TEXT(" label=\"") + SanitizeXMLText(MasterMaterialElement->GetLabel()) + TEXT("\" ");
-	XmlString += FString(DATASMITH_MASTERMATERIALTYPE) + TEXT("=\"") + FString::FromInt( (int32)MasterMaterialElement->GetMaterialType() ) + TEXT("\" ");
-	XmlString += FString(DATASMITH_MASTERMATERIALQUALITY) + TEXT("=\"") + FString::FromInt( (int32)MasterMaterialElement->GetQuality() ) + TEXT("\" ");
+	XmlString += FString(DATASMITH_MATERIALINSTANCENAME) + TEXT(" name=\"") + SanitizeXMLText(FDatasmithUtils::SanitizeFileName(MaterialInstanceElement->GetName())) + TEXT("\" ");
+	XmlString += TEXT(" label=\"") + SanitizeXMLText(MaterialInstanceElement->GetLabel()) + TEXT("\" ");
+	XmlString += FString(DATASMITH_MATERIALINSTANCETYPE) + TEXT("=\"") + FString::FromInt( (int32)MaterialInstanceElement->GetMaterialType() ) + TEXT("\" ");
+	XmlString += FString(DATASMITH_MATERIALINSTANCEQUALITY) + TEXT("=\"") + FString::FromInt( (int32)MaterialInstanceElement->GetQuality() ) + TEXT("\" ");
 
-	if ( MasterMaterialElement->GetMaterialType() == EDatasmithMasterMaterialType::Custom )
+	if ( MaterialInstanceElement->GetMaterialType() == EDatasmithReferenceMaterialType::Custom )
 	{
-		XmlString += FString(DATASMITH_MASTERMATERIALPATHNAME) + TEXT("=\"") + SanitizeXMLText( MasterMaterialElement->GetCustomMaterialPathName() ) + TEXT("\" ");
+		XmlString += FString(DATASMITH_MATERIALINSTANCEPATHNAME) + TEXT("=\"") + SanitizeXMLText( MaterialInstanceElement->GetCustomMaterialPathName() ) + TEXT("\" ");
 	}
 
 	XmlString += FString(TEXT(">")) + LINE_TERMINATOR;
 	SerializeToArchive( Archive, XmlString );
 
-	WriteKeyValueProperties( *MasterMaterialElement, Archive, Indent );
+	WriteKeyValueProperties( *MaterialInstanceElement, Archive, Indent );
 
 	WriteIndent(Archive, Indent);
-	XmlString = TEXT("</") + FString(DATASMITH_MASTERMATERIALNAME) + TEXT(">") + LINE_TERMINATOR;
+	XmlString = TEXT("</") + FString(DATASMITH_MATERIALINSTANCENAME) + TEXT(">") + LINE_TERMINATOR;
 	SerializeToArchive( Archive, XmlString );
 }
 
@@ -1421,6 +1460,7 @@ void FDatasmithSceneXmlWriterImpl::WriteUEPbrMaterialElement( const TSharedRef< 
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetAmbientOcclusion(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetClearCoat(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetClearCoatRoughness(), Archive, Indent + 1 );
+	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetWorldPositionOffset(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetMaterialAttributes(), Archive, Indent + 1 );
 
 	if ( MaterialElement->GetUseMaterialAttributes() )
@@ -1862,7 +1902,7 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 
 	XmlString = FString::Printf( TEXT("<%s>%s</%s>"), DATASMITH_EXPORTERVERSION, *FDatasmithUtils::GetDatasmithFormatVersionAsString(), DATASMITH_EXPORTERVERSION ) + LINE_TERMINATOR;
 	FDatasmithSceneXmlWriterImpl::AppendIndent( XmlString, 1 );
-	XmlString += FString::Printf( TEXT("<%s>%s</%s>"), DATASMITH_EXPORTERSDKVERSION, *FDatasmithUtils::GetEnterpriseVersionAsString(), DATASMITH_EXPORTERSDKVERSION ) + LINE_TERMINATOR;
+	XmlString += FString::Printf( TEXT("<%s>%s</%s>"), DATASMITH_EXPORTERSDKVERSION, *FDatasmithUtils::GetEnterpriseVersionAsString(true), DATASMITH_EXPORTERSDKVERSION ) + LINE_TERMINATOR;
 	FDatasmithSceneXmlWriterImpl::SerializeToArchive( Archive, XmlString );
 
 	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);
@@ -1924,6 +1964,12 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 		FDatasmithSceneXmlWriterImpl::WriteMeshElement( Mesh, Archive, 1 );
 	}
 
+	for ( int32 Index = 0; Index < DatasmithScene->GetClothesCount(); ++Index )
+	{
+		const TSharedPtr< IDatasmithClothElement >& Cloth = DatasmithScene->GetCloth( Index );
+		FDatasmithSceneXmlWriterImpl::WriteClothElement( Cloth, Archive, 1 );
+	}
+
 	for ( int32 ActorIndex = 0; ActorIndex < DatasmithScene->GetActorsCount(); ++ActorIndex )
 	{
 		TSharedPtr< IDatasmithActorElement > Actor = DatasmithScene->GetActor( ActorIndex );
@@ -1945,10 +1991,10 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 			TSharedPtr< IDatasmithMaterialElement > MaterialElement = StaticCastSharedPtr< IDatasmithMaterialElement >( BaseMaterialElement );
 			FDatasmithSceneXmlWriterImpl::WriteMaterialElement( MaterialElement, Archive, 1 );
 		}
-		else if ( BaseMaterialElement->IsA( EDatasmithElementType::MasterMaterial ) )
+		else if ( BaseMaterialElement->IsA( EDatasmithElementType::MaterialInstance ) )
 		{
-			TSharedPtr< IDatasmithMasterMaterialElement > MasterMaterialElement = StaticCastSharedPtr< IDatasmithMasterMaterialElement >( BaseMaterialElement );
-			FDatasmithSceneXmlWriterImpl::WriteMasterMaterialElement( MasterMaterialElement, Archive, 1 );
+			TSharedPtr< IDatasmithMaterialInstanceElement > MaterialInstanceElement = StaticCastSharedPtr< IDatasmithMaterialInstanceElement >( BaseMaterialElement );
+			FDatasmithSceneXmlWriterImpl::WriteMaterialInstanceElement( MaterialInstanceElement, Archive, 1 );
 		}
 		else if ( BaseMaterialElement->IsA( EDatasmithElementType::DecalMaterial ) )
 		{
@@ -1984,16 +2030,6 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 	{
 		TSharedPtr< IDatasmithMetaDataElement > MetaDataElement = DatasmithScene->GetMetaData( MetaDataIndex );
 		FDatasmithSceneXmlWriterImpl::WriteMetaDataElement(MetaDataElement, Archive, 1);
-	}
-
-
-	for ( int32 LODScreenSizeIndex = 0; LODScreenSizeIndex < DatasmithScene->GetLODScreenSizesCount(); ++LODScreenSizeIndex )
-	{
-		float LODScreenSize = DatasmithScene->GetLODScreenSize( LODScreenSizeIndex );
-
-		FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);
-		XmlString = TEXT("<") + FString(DATASMITH_LODSCREENSIZE) + TEXT(" value=\"") + FString::SanitizeFloat( LODScreenSize ) + "\"/>" + LINE_TERMINATOR;
-		FDatasmithSceneXmlWriterImpl::SerializeToArchive( Archive, XmlString );
 	}
 
 	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);

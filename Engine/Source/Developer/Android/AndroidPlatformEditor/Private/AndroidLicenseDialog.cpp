@@ -19,7 +19,7 @@
 #include "Widgets/Input/SHyperlink.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Misc/SecureHash.h"
 #include "HAL/PlatformFileManager.h"
 #include "Interfaces/IAndroidDeviceDetectionModule.h"
@@ -104,7 +104,7 @@ void SAndroidLicenseDialog::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot()
 		[
 			SAssignNew(ScrollBox, SScrollBox)
-			.Style(FEditorStyle::Get(), "ScrollBox")
+			.Style(FAppStyle::Get(), "ScrollBox")
 
 			+ SScrollBox::Slot()
 			[
@@ -115,7 +115,7 @@ void SAndroidLicenseDialog::Construct(const FArguments& InArgs)
 				[
 					SNew(SRichTextBlock)
 					.Text(FText::FromString(LicenseText))
-					.DecoratorStyleSet(&FEditorStyle::Get())
+					.DecoratorStyleSet(&FAppStyle::Get())
 					.AutoWrapText(true)
 					.Justification(ETextJustify::Left)
 				]
@@ -267,9 +267,6 @@ FReply SAndroidLicenseDialog::OnAgree()
 
 FReply SAndroidLicenseDialog::OnCancel()
 {
-	// turn off Gradle checkbox
-	//GetMutableDefault<UAndroidRuntimeSettings>()->bEnableGradle = false;
-
 	TSharedRef<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared()).ToSharedRef();
 	FSlateApplication::Get().RequestDestroyWindow(ParentWindow);
 	return FReply::Handled();

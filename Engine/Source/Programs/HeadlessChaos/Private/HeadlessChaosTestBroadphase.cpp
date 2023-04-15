@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+
 #include "HeadlessChaosTestBroadphase.h"
 
 #include "HeadlessChaos.h"
@@ -73,11 +74,6 @@ namespace ChaosTest
 				{
 					return false;
 				}
-				if (Instances.Num() >= BlockAfterN)
-				{
-					//blocking so adjust Length
-					CurData.SetLength(NewLength);
-				}
 			}
 			
 			return true;
@@ -112,6 +108,11 @@ namespace ChaosTest
 		virtual bool Sweep(const TSpatialVisitorData<int32>& Instance, FQueryFastData& CurData) override
 		{
 			return VisitSweep(Instance, CurData);
+		}
+
+		virtual bool HasBlockingHit() const override
+		{ 
+			return Instances.Num() >= BlockAfterN; 
 		}
 
 		TArray<int32> Instances;
@@ -441,6 +442,41 @@ namespace ChaosTest
 		SpatialTestHelper(Spatial, Boxes.Get(), Box);
 	}
 
+	void GridBPEarlyExitTest()
+	{
+		TUniquePtr<TBox<FReal, 3>> Box;
+		auto Boxes = BuildBoxes(Box);
+		TBoundingVolume<int32> Spatial(MakeParticleView(Boxes.Get()));
+		// SpatialTestHelper(Spatial, Boxes.Get(), Box);
+
+		//gather along ray
+		{
+			FVisitor Visitor(FVec3(10, 0, 0), FVec3(0, 1, 0), 0, *Boxes);
+			Spatial.Raycast(Visitor.Start, Visitor.Dir, 1000, Visitor);
+			EXPECT_EQ(Visitor.Instances.Num(), 10);
+			EXPECT_EQ(Visitor.Instances[0], 0);
+			EXPECT_EQ(Visitor.Instances[9], 90);
+		}
+
+		// Stop after first hits in the first cell
+		{
+			FVisitor Visitor(FVec3(10, 0, 0), FVec3(0, 1, 0), 0, *Boxes);
+			Visitor.BlockAfterN = 1;
+			Spatial.Raycast(Visitor.Start, Visitor.Dir, 1000, Visitor);
+			EXPECT_EQ(Visitor.Instances.Num(), 1);
+			EXPECT_EQ(Visitor.Instances[0], 0);
+		}
+
+		// Stop after first hits in the first cell, going backward
+		{
+			FVisitor Visitor(FVec3(10, 1000, 0), FVec3(0, -1, 0), 0, *Boxes);
+			Visitor.BlockAfterN = 1;
+			Spatial.Raycast(Visitor.Start, Visitor.Dir, 1000, Visitor);
+			EXPECT_EQ(Visitor.Instances.Num(), 1);
+			EXPECT_EQ(Visitor.Instances[0], 90);
+		}
+	}
+
 	void GridBPTest2()
 	{
 		TUniquePtr<TBox<FReal, 3>> Box = MakeUnique<TBox<FReal, 3>>(FVec3(0, 0, 0), FVec3(100, 100, 100));
@@ -567,6 +603,28 @@ namespace ChaosTest
 			EXPECT_EQ(Spatial.NumDirtyElements(), 0);
 		}
 		
+	}
+
+	void AABBTreeDirtyTreeTest()
+	{
+		using TreeType = TAABBTree<int32, TAABBTreeLeafArray<int32>, true>;
+
+		// Do the standard tests
+		{
+			TUniquePtr<TBox<FReal, 3>> Box;
+			auto Boxes = BuildBoxes(Box);
+
+			TArray<TSOAView<FGeometryParticles>> EmptyArray;
+			TreeType Spatial{ MakeParticleView(MoveTemp(EmptyArray)),5, 5, 10000.0f, 1000, false, true};
+
+			int32 Idx;
+			for (Idx = 0; Idx < (int32)Boxes->Size(); ++Idx)
+			{
+				Spatial.UpdateElement(Idx, Boxes->WorldSpaceInflatedBounds(Idx), true);
+			}		
+
+			SpatialTestHelper(Spatial, Boxes.Get(), Box);
+		}
 	}
 
 	void AABBTreeDirtyGridTest()
@@ -852,6 +910,50 @@ namespace ChaosTest
 		}
 	}
 
+	// specific  sweep query seems to generate infinite loop
+	// the values are outside of the function to avoid optimizing away the values
+	// (the issue would only appear when optimization is enable)
+	namespace EdgeCase
+	{
+		FVec3 QueryHalfExtents{ 5.51277924f, 4.77557945f, 4.96569443f };
+		FVec3 StartPoint{ -40.7950134f, -4.77560043f, -11.2947388f };
+		FVec3 Dir{ 0, 0, -1 };
+		FReal CurrentLength = 146.779785f;
+	}
+
+	namespace LargeSweep
+	{
+		const FVec3 QueryHalfExtents{34, 34, 90};
+		const FVec3 StartPoint{5000000000270, 11630, 187.15000295639038};
+		const FVec3 Dir{-1.0000000172032004, 0, 0.00000000000040509186487903264};
+		const FReal CurrentLength = 4999999913984;
+	};
+	
+	void AABBTreeDirtyGridFunctionsWithEdgeCase()
+	{
+		constexpr FReal DirtyElementGridCellSize = 1000.0;
+		constexpr FReal DirtyElementGridCellSizeInv = 1.0 / DirtyElementGridCellSize;
+		constexpr int32 DirtyElementMaxGridCellQueryCount = 340;
+
+		TArray<TVec2<FReal>> VisitedCells;
+		// this should report only be as much as 4 hits as teh grid is 2D and the ray downward vertical and the halfextends are smaller than a cell size
+		{
+			DoForSweepIntersectCells(EdgeCase::QueryHalfExtents, EdgeCase::StartPoint, EdgeCase::Dir, EdgeCase::CurrentLength, DirtyElementGridCellSize, DirtyElementGridCellSizeInv,
+				[&VisitedCells](FReal X, FReal Y)
+				{
+					VisitedCells.Add({ X,Y });
+					EXPECT_TRUE(VisitedCells.Num() <= 4 );
+				});
+			EXPECT_TRUE(VisitedCells.Num() <= 4);
+		}
+
+		// 50 trillions unit long sweep test reporting that there's not too many cells
+		{
+			const bool bTooManyCell = TooManySweepQueryCells(LargeSweep::QueryHalfExtents, LargeSweep::StartPoint, LargeSweep::Dir, LargeSweep::CurrentLength, DirtyElementGridCellSizeInv, DirtyElementMaxGridCellQueryCount);
+			EXPECT_TRUE(bTooManyCell);
+		}
+	}
+	
 	void BroadphaseCollectionTest()
 	{
 		using TreeType = TAABBTree<int32, TAABBTreeLeafArray<int32>>;

@@ -74,14 +74,14 @@ void FAppEntry::Suspend(bool bIsInterrupt)
 						{
 							if (GEngine && GEngine->GetMainAudioDevice())
 							{
-								GEngine->GetMainAudioDevice()->SetTransientMasterVolume(0.0f);
+								GEngine->GetMainAudioDevice()->SetTransientPrimaryVolume(0.0f);
 							}
 						}, TStatId());
 					}, TStatId(), NULL, ENamedThreads::GameThread);
 				}
 				else
 				{
-					AudioDevice->SetTransientMasterVolume(0.0f);
+					AudioDevice->SetTransientPrimaryVolume(0.0f);
 				}
 			}
 			else
@@ -169,14 +169,14 @@ void FAppEntry::Resume(bool bIsInterrupt)
 						{
 							if (GEngine && GEngine->GetMainAudioDevice())
 							{
-								GEngine->GetMainAudioDevice()->SetTransientMasterVolume(1.0f);
+								GEngine->GetMainAudioDevice()->SetTransientPrimaryVolume(1.0f);
 							}
 						}, TStatId());
 					}, TStatId(), NULL, ENamedThreads::GameThread);
 				}
 				else
 				{
-					AudioDevice->SetTransientMasterVolume(1.0f);
+					AudioDevice->SetTransientPrimaryVolume(1.0f);
 				}
 			}
 			else
@@ -355,7 +355,7 @@ static void MainThreadInit()
 	[AppDelegate.RootView addSubview:AppDelegate.IOSView];
 
 	// initialize the backbuffer of the view (so the RHI can use it)
-	[AppDelegate.IOSView CreateFramebuffer:YES];
+	[AppDelegate.IOSView CreateFramebuffer];
 #endif
 }
 
@@ -386,9 +386,6 @@ void FAppEntry::PlatformInit()
 		FPlatformProcess::Sleep(0.005f);
 	}
 
-	// set the GL context to this thread
-	[AppDelegate.IOSView MakeCurrent];
-
 	// Set GSystemResolution now that we have the size.
 	FDisplayMetrics DisplayMetrics;
 	FDisplayMetrics::RebuildDisplayMetrics(DisplayMetrics);
@@ -414,7 +411,7 @@ void FAppEntry::Init()
 	NSLog(@"%s", "Initializing ULD Communications in game mode\n");
 	GCommandSystem.Init();
 
-	GLog->SetCurrentThreadAsMasterThread();
+	GLog->SetCurrentThreadAsPrimaryThread();
 	
 	// Send the launch local notification to the local notification service now that the engine module system has been initialized
 	if(gAppLaunchedWithLocalNotification)

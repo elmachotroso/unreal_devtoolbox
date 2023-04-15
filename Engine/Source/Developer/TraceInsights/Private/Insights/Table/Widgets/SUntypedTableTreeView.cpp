@@ -2,7 +2,8 @@
 
 #include "SUntypedTableTreeView.h"
 
-#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Containers/Tables.h"
+#include "TraceServices/Model/Threads.h"
 
 // Insights
 #include "Insights/Common/Stopwatch.h"
@@ -30,6 +31,7 @@ SUntypedTableTreeView::~SUntypedTableTreeView()
 
 void SUntypedTableTreeView::Construct(const FArguments& InArgs, TSharedPtr<Insights::FUntypedTable> InTablePtr)
 {
+	bRunInAsyncMode = InArgs._RunInAsyncMode;
 	ConstructWidget(InTablePtr);
 }
 
@@ -81,7 +83,7 @@ void SUntypedTableTreeView::RebuildTree(bool bResync)
 
 	if (Session.IsValid() && SourceTable.IsValid() && TableReader.IsValid())
 	{
-		const int32 TotalRowCount = SourceTable->GetRowCount();
+		const int32 TotalRowCount = static_cast<int32>(SourceTable->GetRowCount());
 		if (TotalRowCount != TableTreeNodes.Num())
 		{
 			TableTreeNodes.Empty(TotalRowCount);
@@ -135,6 +137,56 @@ void SUntypedTableTreeView::RebuildTree(bool bResync)
 		UE_LOG(TraceInsights, Log, TEXT("[Table] Tree view rebuilt in %.4fs (sync: %.4fs + update: %.4fs) --> %d rows (%d added)"),
 			TotalTime, SyncTime, TotalTime - SyncTime, TableTreeNodes.Num(), TableTreeNodes.Num() - PreviousNodeCount);
 	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool SUntypedTableTreeView::IsRunning() const
+{
+	return !CurrentOperationNameOverride.IsEmpty() || STableTreeView::IsRunning();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+double SUntypedTableTreeView::GetAllOperationsDuration()
+{
+	if (!CurrentOperationNameOverride.IsEmpty())
+	{
+		CurrentOperationStopwatch.Update();
+		return CurrentOperationStopwatch.GetAccumulatedTime();
+	}
+	
+	return STableTreeView::GetAllOperationsDuration();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SUntypedTableTreeView::GetCurrentOperationName() const
+{
+	if (!CurrentOperationNameOverride.IsEmpty())
+	{
+		return CurrentOperationNameOverride;
+	}
+
+	return STableTreeView::GetCurrentOperationName();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SUntypedTableTreeView::SetCurrentOperationNameOverride(const FText& InOperationName)
+{
+	CurrentOperationStopwatch.Start();
+	CurrentOperationNameOverride = InOperationName;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SUntypedTableTreeView::ClearCurrentOperationNameOverride()
+{
+	CurrentOperationStopwatch.Stop();
+	CurrentOperationStopwatch.Reset();
+
+	CurrentOperationNameOverride = FText::GetEmpty();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

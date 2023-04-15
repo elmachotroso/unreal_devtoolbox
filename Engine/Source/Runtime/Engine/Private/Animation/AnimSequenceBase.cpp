@@ -5,6 +5,7 @@
 #include "AnimationRuntime.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Animation/AnimNotifyEndDataContext.h"
 #include "Animation/AnimInstance.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -15,6 +16,7 @@
 #include "Animation/MirrorDataTable.h"
 #include "Animation/AnimData/AnimDataModel.h"
 #include "Modules/ModuleManager.h"
+#include "MathUtil.h"
 
 #if WITH_EDITOR
 #include "IAnimationDataControllerModule.h"
@@ -32,6 +34,7 @@ CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Animation);
 UAnimSequenceBase::UAnimSequenceBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, RateScale(1.0f)
+	, bLoop(false)
 #if WITH_EDITORONLY_DATA
 	, DataModel(nullptr)
 	, bPopulatingDataModel(false)
@@ -64,6 +67,29 @@ bool UAnimSequenceBase::IsPostLoadThreadSafe() const
 {
 	return false;	// PostLoad is not thread safe because of the call to VerifyCurveNames() (calling USkeleton::VerifySmartName) that can mutate a shared map in the skeleton.
 }
+
+#if WITH_EDITORONLY_DATA
+void UAnimSequenceBase::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/Engine.AnimDataModel")));
+
+	// We need to declare all types that can be returned from UE::Anim::DataModel::IAnimationDataModels::FindClassForAnimationAsset(UAnimSequenceBase*);
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/AnimationData.AnimationSequencerDataModel")));
+
+	// We can call Controller->CreateModel, which can add objects, so add every ControllerClass as something we can construct.
+	// THe caller will add on all recursively constructable classes
+	UClass* AnimationControllerClass = UAnimationDataController::StaticClass();
+	for (TObjectIterator<UClass> Iter; Iter; ++Iter)
+	{
+		if ((*Iter)->ImplementsInterface(AnimationControllerClass))
+		{
+			OutConstructClasses.Add(FTopLevelAssetPath(*Iter));
+		}
+	}
+}
+#endif
 
 void UAnimSequenceBase::PostLoad()
 {
@@ -271,6 +297,18 @@ bool UAnimSequenceBase::RemoveNotifies(const TArray<FName>& NotifiesToRemove)
 	return bSequenceModified;
 }
 
+void UAnimSequenceBase::RemoveNotifies()
+{
+	if (Notifies.Num() == 0)
+	{
+		return;
+	}
+	Modify();
+	Notifies.Reset();
+	MarkPackageDirty();
+	RefreshCacheData();
+}
+
 bool UAnimSequenceBase::IsNotifyAvailable() const
 {
 	return (Notifies.Num() != 0) && (GetPlayLength() > 0.f);
@@ -402,6 +440,12 @@ void UAnimSequenceBase::GetAnimNotifiesFromDeltaPositions(const float& PreviousP
 				{
 					NotifyContext.ActiveNotifies.Emplace(&AnimNotifyEvent, this, nullptr);
 				}
+
+				const bool bHasFinished = CurrentPosition <= FMathf::Max(NotifyStartTime, 0.f);
+				if (bHasFinished)
+				{
+					NotifyContext.ActiveNotifies.Top().AddContextData<UE::Anim::FAnimNotifyEndDataContext>(true);
+				}
 			}
 		}
 	}
@@ -425,6 +469,11 @@ void UAnimSequenceBase::GetAnimNotifiesFromDeltaPositions(const float& PreviousP
 					NotifyContext.ActiveNotifies.Emplace(&AnimNotifyEvent, this, nullptr);
 				}
 
+				const bool bHasFinished = CurrentPosition >= NotifyEndTime;
+				if (bHasFinished)
+				{
+					NotifyContext.ActiveNotifies.Top().AddContextData<UE::Anim::FAnimNotifyEndDataContext>(true);
+				}
 			}
 		}
 	}
@@ -443,6 +492,12 @@ void UAnimSequenceBase::RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bC
 void UAnimSequenceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQueue& NotifyQueue, FAnimAssetTickContext& Context) const
 {
 	float CurrentTime = *(Instance.TimeAccumulator);
+	if (Context.ShouldResyncToSyncGroup() && !Instance.BlendSpace.bIsEvaluator)	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
+	{
+		// Synchronize the asset player time to the other sync group members when (re)joining the group
+		CurrentTime = Context.GetAnimationPositionRatio() * GetPlayLength();
+	}
+
 	float PreviousTime = CurrentTime;
 	float DeltaTime = 0.f;
 
@@ -829,28 +884,6 @@ void UAnimSequenceBase::RefreshParentAssetData()
 
 	UAnimSequenceBase* ParentSeqBase = CastChecked<UAnimSequenceBase>(ParentAsset);
 
-	// should do deep copy because notify contains outer
-	Notifies = ParentSeqBase->Notifies;
-
-	// update notify
-	for (int32 NotifyIdx = 0; NotifyIdx < Notifies.Num(); ++NotifyIdx)
-	{
-		FAnimNotifyEvent& NotifyEvent = Notifies[NotifyIdx];
-		if (NotifyEvent.Notify)
-		{
-			class UAnimNotify* NewNotifyClass = DuplicateObject(NotifyEvent.Notify, this);
-			NotifyEvent.Notify = NewNotifyClass;
-		}
-		if (NotifyEvent.NotifyStateClass)
-		{
-			class UAnimNotifyState* NewNotifyStateClass = DuplicateObject(NotifyEvent.NotifyStateClass, this);
-			NotifyEvent.NotifyStateClass = (NewNotifyStateClass);
-		}
-
-		NotifyEvent.Link(this, NotifyEvent.GetTime(), NotifyEvent.GetSlotIndex());
-		NotifyEvent.EndLink.Link(this, NotifyEvent.GetTime() + NotifyEvent.Duration, NotifyEvent.GetSlotIndex());
-	}
-
 	RateScale = ParentSeqBase->RateScale;
 
 	ValidateModel();
@@ -886,6 +919,26 @@ void UAnimSequenceBase::RefreshParentAssetData()
 	}
 	Controller->CloseBracket();
 
+	// should do deep copy because notify contains outer
+	Notifies = ParentSeqBase->Notifies;
+	// update notify
+	for (int32 NotifyIdx = 0; NotifyIdx < Notifies.Num(); ++NotifyIdx)
+	{
+		FAnimNotifyEvent& NotifyEvent = Notifies[NotifyIdx];
+		if (NotifyEvent.Notify)
+		{
+			class UAnimNotify* NewNotifyClass = DuplicateObject(NotifyEvent.Notify, this);
+			NotifyEvent.Notify = NewNotifyClass;
+		}
+		if (NotifyEvent.NotifyStateClass)
+		{
+			class UAnimNotifyState* NewNotifyStateClass = DuplicateObject(NotifyEvent.NotifyStateClass, this);
+			NotifyEvent.NotifyStateClass = (NewNotifyStateClass);
+		}
+
+		NotifyEvent.Link(this, NotifyEvent.GetTime(), NotifyEvent.GetSlotIndex());
+		NotifyEvent.EndLink.Link(this, NotifyEvent.GetTime() + NotifyEvent.Duration, NotifyEvent.GetSlotIndex());
+	}
 #if WITH_EDITORONLY_DATA
 	// if you change Notifies array, this will need to be rebuilt
 	AnimNotifyTracks = ParentSeqBase->AnimNotifyTracks;
@@ -959,6 +1012,12 @@ void UAnimSequenceBase::Serialize(FArchive& Ar)
 
 	Super::Serialize(Ar);
 
+	if (GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AnimationDataModelInterface_BackedOut &&
+		GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::BackoutAnimationDataModelInterface)
+	{
+		UE_LOG(LogAnimation, Fatal, TEXT("This package (%s) was saved with a version that had to be backed out and is no longer able to be loaded."), *GetPathNameSafe(this));
+	}
+
 	// fix up version issue and so on
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	RawCurveData.PostSerialize(Ar);
@@ -1007,6 +1066,12 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 			const float InsertTime = T0;
 			for (FAnimNotifyEvent& Notify : Notifies)
 			{
+				// Proportional notifies don't need to be adjusted
+				if (Notify.GetLinkMethod() == EAnimLinkMethod::Proportional)
+				{
+					continue;
+				}
+
 				float CurrentTime = Notify.GetTime();
 				float NewDuration = 0.f;
 
@@ -1034,8 +1099,7 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 				// Clamps against the sequence length, ensuring that the notify does not end up outside of the playback bounds
 				const float ClampedCurrentTime = FMath::Clamp(CurrentTime, 0.f, NewLength);
 
-				Notify.LinkSequence(this, ClampedCurrentTime);
-
+				Notify.Link(this, ClampedCurrentTime);
 				Notify.SetDuration(NewDuration);
 
 				if (ClampedCurrentTime == 0.f)
@@ -1053,6 +1117,12 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 			// re-locate notifies
 			for (FAnimNotifyEvent& Notify : Notifies)
 			{
+				// Proportional notifies don't need to be adjusted
+				if (Notify.GetLinkMethod() == EAnimLinkMethod::Proportional)
+				{
+					continue;
+				}
+
 				float CurrentTime = Notify.GetTime();
 				float NewDuration = 0.f;
 				
@@ -1089,7 +1159,7 @@ void UAnimSequenceBase::OnModelModified(const EAnimDataModelNotifyType& NotifyTy
 
 				const float ClampedCurrentTime = FMath::Clamp(CurrentTime, 0.f, NewLength);
 
-				Notify.LinkSequence(this, ClampedCurrentTime);
+				Notify.Link(this, ClampedCurrentTime);
 				Notify.SetDuration(NewDuration);
 
 				if (ClampedCurrentTime == 0.f)

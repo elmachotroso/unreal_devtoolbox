@@ -2,6 +2,8 @@
 
 #include "Binding/Int32Binding.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Int32Binding)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 UInt32Binding::UInt32Binding()
@@ -31,7 +33,8 @@ int32 UInt32Binding::GetValue() const
 		}
 	}
 
-	return false;
+	return 0;
 }
 
 #undef LOCTEXT_NAMESPACE
+

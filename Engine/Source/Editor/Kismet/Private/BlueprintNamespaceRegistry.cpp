@@ -1,17 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNamespaceRegistry.h"
+
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "BlueprintNamespacePathTree.h"
 #include "BlueprintNamespaceUtilities.h"
-#include "UObject/UObjectIterator.h"
-#include "HAL/IConsoleManager.h"
-#include "AssetRegistryModule.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/UserDefinedEnum.h"
 #include "Engine/UserDefinedStruct.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "EdGraphSchema_K2.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/StringBuilder.h"
+#include "Modules/ModuleManager.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectIterator.h"
+
+class UObject;
 
 DEFINE_LOG_CATEGORY_STATIC(LogNamespace, Log, All);
 
@@ -59,6 +82,7 @@ void FBlueprintNamespaceRegistry::Initialize()
 
 		FindAndRegisterAllNamespaces();
 
+		OnReloadCompleteDelegateHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw(this, &FBlueprintNamespaceRegistry::OnReloadComplete);
 		OnDefaultNamespaceTypeChangedDelegateHandle = FBlueprintNamespaceUtilities::OnDefaultBlueprintNamespaceTypeChanged().AddRaw(this, &FBlueprintNamespaceRegistry::OnDefaultNamespaceTypeChanged);
 	}
 
@@ -72,14 +96,18 @@ void FBlueprintNamespaceRegistry::Shutdown()
 		return;
 	}
 
+	FCoreUObjectDelegates::ReloadCompleteDelegate.Remove(OnReloadCompleteDelegateHandle);
 	FBlueprintNamespaceUtilities::OnDefaultBlueprintNamespaceTypeChanged().Remove(OnDefaultNamespaceTypeChangedDelegateHandle);
 
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 	{
-		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		AssetRegistry.OnAssetAdded().Remove(OnAssetAddedDelegateHandle);
-		AssetRegistry.OnAssetRemoved().Remove(OnAssetRemovedDelegateHandle);
-		AssetRegistry.OnAssetRenamed().Remove(OnAssetRenamedDelegateHandle);
+		IAssetRegistry* AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().Remove(OnAssetAddedDelegateHandle);
+			AssetRegistry->OnAssetRemoved().Remove(OnAssetRemovedDelegateHandle);
+			AssetRegistry->OnAssetRenamed().Remove(OnAssetRenamedDelegateHandle);
+		}
 	}
 
 	bIsInitialized = false;
@@ -102,16 +130,61 @@ void FBlueprintNamespaceRegistry::OnAssetAdded(const FAssetData& AssetData)
 
 void FBlueprintNamespaceRegistry::OnAssetRemoved(const FAssetData& AssetData)
 {
-	// @todo_namespaces - Handle Blueprint asset removal.
+	// Remove the asset's current namespace if it's non-empty and was previously registered.
+	FString AssetNamespace = FBlueprintNamespaceUtilities::GetAssetNamespace(AssetData);
+	if (!AssetNamespace.IsEmpty() && IsRegisteredPath(AssetNamespace))
+	{
+		PathTree->RemovePath(AssetNamespace);
+
+		// Add the removed asset to the exclusion set so we don't re-register it.
+		FSoftObjectPath RemovedObjectPath = AssetData.ToSoftObjectPath();
+		ExcludedObjectPaths.Add(RemovedObjectPath);
+
+		// Refresh the registry in case the same namespace is in use by another asset.
+		FindAndRegisterAllNamespaces();
+		
+		// Clear the removed asset from the exclusion set.
+		ExcludedObjectPaths.Remove(RemovedObjectPath);
+	}
 }
 
-void FBlueprintNamespaceRegistry::OnAssetRenamed(const FAssetData& AssetData, const FString& InOldName)
+void FBlueprintNamespaceRegistry::OnAssetRenamed(const FAssetData& AssetData, const FString& InOldPath)
 {
-	// @todo_namespaces - Handle Blueprint asset rename/relocation.
+	FString OldDefaultNamespacePath;
+	FBlueprintNamespaceUtilities::ConvertPackagePathToNamespacePath(InOldPath, OldDefaultNamespacePath);
+
+	// Remove the old path if it was explicitly registered as the default namespace.
+	if (IsRegisteredPath(OldDefaultNamespacePath))
+	{
+		PathTree->RemovePath(OldDefaultNamespacePath);
+	}
+
+	// Register the asset's new package path if we are using it as the default namespace.
+	if (FBlueprintNamespaceUtilities::GetDefaultBlueprintNamespaceType() == EDefaultBlueprintNamespaceType::UsePackagePathAsDefaultNamespace)
+	{
+		FString NewDefaultNamespacePath;
+		FBlueprintNamespaceUtilities::ConvertPackagePathToNamespacePath(AssetData.PackageName.ToString(), NewDefaultNamespacePath);
+
+		PathTree->AddPath(NewDefaultNamespacePath);
+	}
+}
+
+void FBlueprintNamespaceRegistry::OnReloadComplete(EReloadCompleteReason InReason)
+{
+	// Rebuild the registry to reflect the appropriate default namespace identifiers for any reloaded types.
+	Rebuild();
+}
+
+bool FBlueprintNamespaceRegistry::IsInclusivePath(const FString& InPath) const
+{
+	// A path is considered inclusive if it represents any valid subpath in the tree.
+	TSharedPtr<FBlueprintNamespacePathTree::FNode> Node = PathTree->FindPathNode(InPath);
+	return Node.IsValid();
 }
 
 bool FBlueprintNamespaceRegistry::IsRegisteredPath(const FString& InPath) const
 {
+	// A path is considered to be registered only if it was explicitly added to the tree.
 	TSharedPtr<FBlueprintNamespacePathTree::FNode> Node = PathTree->FindPathNode(InPath);
 	return Node.IsValid() && Node->bIsAddedPath;
 }
@@ -130,7 +203,7 @@ void FBlueprintNamespaceRegistry::GetNamesUnderPath(const FString& InPath, TArra
 
 void FBlueprintNamespaceRegistry::GetAllRegisteredPaths(TArray<FString>& OutPaths) const
 {
-	PathTree->ForeachNode([&OutPaths](const TArray<FName>& CurrentPath, TSharedRef<FBlueprintNamespacePathTree::FNode> Node)
+	PathTree->ForeachNode([&OutPaths](const TArray<FName>& CurrentPath, TSharedRef<const FBlueprintNamespacePathTree::FNode> Node)
 	{
 		if (Node->bIsAddedPath)
 		{
@@ -140,7 +213,7 @@ void FBlueprintNamespaceRegistry::GetAllRegisteredPaths(TArray<FString>& OutPath
 			{
 				if (PathBuilder.Len() > 0)
 				{
-					PathBuilder += TEXT(".");
+					PathBuilder += FBlueprintNamespacePathTree::PathSeparator;
 				}
 				PathBuilder += PathSegment.ToString();
 			}
@@ -153,13 +226,42 @@ void FBlueprintNamespaceRegistry::GetAllRegisteredPaths(TArray<FString>& OutPath
 
 void FBlueprintNamespaceRegistry::FindAndRegisterAllNamespaces()
 {
+	// Resolve the subset of excluded objects that are loaded.
+	TSet<const UObject*> ExcludedObjects;
+	for (const FSoftObjectPath& ExcludedObjectPath : ExcludedObjectPaths)
+	{
+		if (const UObject* ExcludedObject = ExcludedObjectPath.ResolveObject())
+		{
+			ExcludedObjects.Add(ExcludedObject);
+		}
+	}
+
 	// Register loaded class type namespace identifiers.
 	for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
 	{
 		const UClass* ClassObject = *ClassIt;
-		if (UEdGraphSchema_K2::IsAllowableBlueprintVariableType(ClassObject))
+
+		// Include native function library class objects as well.
+		const bool bShouldRegisterClassObject =
+			UEdGraphSchema_K2::IsAllowableBlueprintVariableType(ClassObject)
+			|| ClassObject->IsChildOf<UBlueprintFunctionLibrary>();
+
+		const UBlueprint* BlueprintObject = UBlueprint::GetBlueprintFromClass(ClassObject);
+
+		if (bShouldRegisterClassObject && !ExcludedObjects.Contains(ClassObject) && (!BlueprintObject || !ExcludedObjects.Contains(BlueprintObject)))
 		{
 			RegisterNamespace(ClassObject);
+		}
+	}
+
+	// Register loaded macro asset namespace identifiers.
+	for (TObjectIterator<UBlueprint> BlueprintIt; BlueprintIt; ++BlueprintIt)
+	{
+		const UBlueprint* BlueprintObject = *BlueprintIt;
+
+		if (BlueprintObject->BlueprintType == BPTYPE_MacroLibrary && !ExcludedObjects.Contains(BlueprintObject))
+		{
+			RegisterNamespace(BlueprintObject);
 		}
 	}
 
@@ -167,7 +269,7 @@ void FBlueprintNamespaceRegistry::FindAndRegisterAllNamespaces()
 	for (TObjectIterator<UScriptStruct> StructIt; StructIt; ++StructIt)
 	{
 		const UScriptStruct* StructObject = *StructIt;
-		if (UEdGraphSchema_K2::IsAllowableBlueprintVariableType(StructObject))
+		if (UEdGraphSchema_K2::IsAllowableBlueprintVariableType(StructObject) && !ExcludedObjects.Contains(StructObject))
 		{
 			RegisterNamespace(StructObject);
 		}
@@ -177,28 +279,18 @@ void FBlueprintNamespaceRegistry::FindAndRegisterAllNamespaces()
 	for (TObjectIterator<UEnum> EnumIt; EnumIt; ++EnumIt)
 	{
 		const UEnum* EnumObject = *EnumIt;
-		if (UEdGraphSchema_K2::IsAllowableBlueprintVariableType(EnumObject))
+		if (UEdGraphSchema_K2::IsAllowableBlueprintVariableType(EnumObject) && !ExcludedObjects.Contains(EnumObject))
 		{
 			RegisterNamespace(EnumObject);
 		}
 	}
 
-	// Register loaded function library namespace identifiers.
-	for (TObjectIterator<UBlueprintFunctionLibrary> LibraryIt; LibraryIt; ++LibraryIt)
-	{
-		const UBlueprintFunctionLibrary* LibraryObject = *LibraryIt;
-		if (LibraryObject)
-		{
-			RegisterNamespace(LibraryObject);
-		}
-	}
-
 	FARFilter ClassFilter;
-	ClassFilter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
-	ClassFilter.ClassNames.Add(UBlueprintGeneratedClass::StaticClass()->GetFName());
-	ClassFilter.ClassNames.Add(UUserDefinedStruct::StaticClass()->GetFName());
-	ClassFilter.ClassNames.Add(UUserDefinedEnum::StaticClass()->GetFName());
-	ClassFilter.ClassNames.Add(UBlueprintFunctionLibrary::StaticClass()->GetFName());
+	ClassFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	ClassFilter.ClassPaths.Add(UBlueprintGeneratedClass::StaticClass()->GetClassPathName());
+	ClassFilter.ClassPaths.Add(UUserDefinedStruct::StaticClass()->GetClassPathName());
+	ClassFilter.ClassPaths.Add(UUserDefinedEnum::StaticClass()->GetClassPathName());
+	ClassFilter.ClassPaths.Add(UBlueprintFunctionLibrary::StaticClass()->GetClassPathName());
 	ClassFilter.bRecursiveClasses = true;
 
 	// Register unloaded type namespace identifiers.
@@ -207,7 +299,7 @@ void FBlueprintNamespaceRegistry::FindAndRegisterAllNamespaces()
 	AssetRegistry.GetAssets(ClassFilter, BlueprintAssets);
 	for (const FAssetData& BlueprintAsset : BlueprintAssets)
 	{
-		if (!BlueprintAsset.IsAssetLoaded())
+		if (!BlueprintAsset.IsAssetLoaded() && !ExcludedObjectPaths.Contains(BlueprintAsset.ToSoftObjectPath()))
 		{
 			RegisterNamespace(BlueprintAsset);
 		}
@@ -270,6 +362,11 @@ void FBlueprintNamespaceRegistry::DumpAllRegisteredPaths()
 void FBlueprintNamespaceRegistry::OnDefaultNamespaceTypeChanged()
 {
 	// Rebuild the registry to reflect the appropriate default namespace identifiers for all known types.
+	Rebuild();
+}
+
+void FBlueprintNamespaceRegistry::Rebuild()
+{
 	PathTree = MakeUnique<FBlueprintNamespacePathTree>();
 	FindAndRegisterAllNamespaces();
 }

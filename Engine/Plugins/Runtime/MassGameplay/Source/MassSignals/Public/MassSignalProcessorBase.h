@@ -3,9 +3,10 @@
 #pragma once
 
 #include "MassProcessor.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassSignalTypes.h"
 #include "Containers/StaticArray.h"
+#include "Misc/SpinLock.h"
 #include "MassSignalProcessorBase.generated.h"
 
 class UMassSignalSubsystem;
@@ -19,13 +20,10 @@ class MASSSIGNALS_API UMassSignalProcessorBase : public UMassProcessor
 {
 	GENERATED_BODY()
 
-protected:
-	/**
-	 * Initialize the processor
-	 * @param Owner of the Processor
-	 */
-	virtual void Initialize(UObject& Owner) override;
+public:
+	UMassSignalProcessorBase(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+protected:
 	virtual void BeginDestroy() override;
 
 	/** Configure the owned FMassEntityQuery instances to express processor queries requirements */
@@ -37,7 +35,7 @@ protected:
 	 * @param Context is the execution context to be passed when executing the lambdas
 	 * @param EntitySignals Look up to retrieve for each entities their raised signal via GetSignalsForEntity
 	 */
-	 virtual void SignalEntities(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) PURE_VIRTUAL(UMassSignalProcessorBase::SignalEntities, );
+	 virtual void SignalEntities(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) PURE_VIRTUAL(UMassSignalProcessorBase::SignalEntities, );
 
 	/**
 	 * Callback that is being called when new signal is raised
@@ -51,17 +49,13 @@ protected:
 	 * @param EntitySubsystem is the system to execute the lambdas on each entity chunk
 	 * @param Context is the execution context to be passed when executing the lambdas
 	 */
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	/**
 	 * To receive notification about a particular signal, you need to subscribe to it.
 	 * @param SignalName is the name of the signal to receive notification about
 	 */
-	void SubscribeToSignal(const FName SignalName);
-
-	
-	UPROPERTY(Transient)
-	UMassSignalSubsystem* SignalSubsystem = nullptr;
+	void SubscribeToSignal(UMassSignalSubsystem& SignalSubsystem, const FName SignalName);
 
 	FMassEntityQuery EntityQuery;
 
@@ -96,5 +90,8 @@ private:
 
 	/** List of all the registered signal names*/
 	TArray<FName> RegisteredSignals;
+
+	UE_MT_DECLARE_RW_ACCESS_DETECTOR(ReceivedSignalAccessDetector);
+	UE::FSpinLock ReceivedSignalLock;
 };
 

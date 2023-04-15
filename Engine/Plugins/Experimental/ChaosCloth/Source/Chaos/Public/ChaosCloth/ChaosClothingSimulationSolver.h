@@ -5,6 +5,7 @@
 #include "Chaos/PBDSoftsEvolutionFwd.h"
 #include "Chaos/ArrayCollectionArray.h"
 #include "Chaos/Transform.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
 #include "Chaos/ImplicitObject.h"
 #include "PhysicsProxy/PerSolverFieldSystem.h"
 
@@ -20,17 +21,20 @@ namespace Chaos
 	class FClothingSimulationMesh;
 
 	// Solver simulation node
-	class FClothingSimulationSolver final
+	class CHAOSCLOTH_API FClothingSimulationSolver final : public FPhysicsSolverEvents
 	{
 	public:
 		FClothingSimulationSolver();
 		~FClothingSimulationSolver();
+		
 
 		// ---- Animatable property setters ----
 		void SetLocalSpaceLocation(const FVec3& InLocalSpaceLocation, bool bReset = false);
 		const FVec3& GetLocalSpaceLocation() const { return LocalSpaceLocation; }
 		void SetLocalSpaceRotation(const FQuat& InLocalSpaceRotation) { LocalSpaceRotation = InLocalSpaceRotation; }
 		const FRotation3& GetLocalSpaceRotation() const { return LocalSpaceRotation; }
+		void SetVelocityScale(FReal InVelocityScale) { VelocityScale = InVelocityScale; }
+		FReal GetVelocityScale() const { return VelocityScale; }
 
 		// Disables all Cloths gravity override mechanism
 		void EnableClothGravityOverride(bool bInIsClothGravityOverrideEnabled) { bIsClothGravityOverrideEnabled = bInIsClothGravityOverrideEnabled; }
@@ -41,15 +45,14 @@ namespace Chaos
 		void SetWindVelocity(const TVec3<FRealSingle>& InWindVelocity, FRealSingle InLegacyWindAdaption = (FRealSingle)0.);
 		const TVec3<FRealSingle>& GetWindVelocity() const { return WindVelocity; }
 
-		UE_DEPRECATED(4.27, "Use SetWindProperties instead.")
-		void SetWindFluidDensity(FRealSingle /*WindFluidDensity*/) {}
-
 		void SetNumIterations(int32 InNumIterations) { NumIterations = InNumIterations; }
 		int32 GetNumIterations() const { return NumIterations; }
 		void SetMaxNumIterations(int32 InMaxNumIterations) { MaxNumIterations = InMaxNumIterations; }
 		int32 GetMaxNumIterations() const { return MaxNumIterations; }
 		void SetNumSubsteps(int32 InNumSubsteps) { NumSubsteps = InNumSubsteps; }
 		int32 GetNumSubsteps() const { return NumSubsteps; }
+		void SetEnableSolver(bool InbEnableSolver) { bEnableSolver = InbEnableSolver; }
+		bool GetEnableSolver() const { return bEnableSolver; }
 		// ---- End of the animatable property setters ----
 
 		// ---- Object management functions ----
@@ -63,8 +66,14 @@ namespace Chaos
 
 		TConstArrayView<const FClothingSimulationCloth*> GetCloths() const { return Cloths; }
 
-		// Update solver properties before simulation.
+		/** Advance the simulation. */
 		void Update(FSolverReal InDeltaTime);
+
+		/** Return the last delta time used for advancing the simulation. */
+		FSolverReal GetDeltaTime() const { return DeltaTime; }
+
+		/** Set the cached positions onto the particles */
+		void UpdateFromCache(const TArray<FVector>& CachedPositions, const TArray<FVector>& CachedVelocities);
 
 		// Return the actual of number of iterations used by the Evolution solver after the update (different from the number of iterations, depends on frame rate)
 		int32 GetNumUsedIterations() const;
@@ -109,14 +118,28 @@ namespace Chaos
 		// Set per group wind velocity, used to override solver's wind velocity. Must be called during cloth update.
 		void SetWindVelocity(uint32 GroupId, const TVec3<FRealSingle>& InWindVelocity);
 
-		// Set the geometry affected by the wind.
-		void SetWindGeometry(uint32 GroupId, const FTriangleMesh& TriangleMesh, const TConstArrayView<FRealSingle>& DragMultipliers, const TConstArrayView<FRealSingle>& LiftMultipliers);
+		// Set the geometry affected by the wind and pressure
+		void SetWindAndPressureGeometry(uint32 GroupId, const FTriangleMesh& TriangleMesh, const TConstArrayView<FRealSingle>& DragMultipliers, const TConstArrayView<FRealSingle>& LiftMultipliers, const TConstArrayView<FRealSingle>& PressureMultipliers);
+		UE_DEPRECATED(5.1, "Chaos::Softs::FVelocityField has been renamed FVelocityAndPressureField to match its new behavior.")
+		void SetWindGeometry(uint32 GroupId, const FTriangleMesh& TriangleMesh, const TConstArrayView<FRealSingle>& DragMultipliers, const TConstArrayView<FRealSingle>& LiftMultipliers)
+		{
+			SetWindAndPressureGeometry(GroupId, TriangleMesh, DragMultipliers, LiftMultipliers, TConstArrayView<FRealSingle>());
+		}
 
-		// Set the wind properties.
-		void SetWindProperties(uint32 GroupId, const TVec2<FRealSingle>& Drag, const TVec2<FRealSingle>& Lift, FRealSingle AirDensity = 1.225e-6f);
+		// Set the wind and pressure properties.
+		void SetWindAndPressureProperties(uint32 GroupId, const TVec2<FRealSingle>& Drag, const TVec2<FRealSingle>& Lift, FRealSingle AirDensity = 1.225e-6f, const TVec2<FRealSingle>& Pressure = TVec2<FRealSingle>::ZeroVector);
+		UE_DEPRECATED(5.1, "Chaos::Softs::FVelocityField has been renamed FVelocityAndPressureField to match its new behavior.")
+		void SetWindProperties(uint32 GroupId, const TVec2<FRealSingle>& Drag, const TVec2<FRealSingle>& Lift, FRealSingle AirDensity = 1.225e-6f)
+		{
+			SetWindAndPressureProperties(GroupId, Drag, Lift, AirDensity);
+		}
 
-		// Return the wind velocity field associated with a given group id.
-		const Softs::FVelocityField& GetWindVelocityField(uint32 GroupId);
+		// Return the wind velocity and pressure field associated with a given group id.
+		const Softs::FVelocityAndPressureField& GetWindVelocityAndPressureField(uint32 GroupId);
+		UE_DEPRECATED(5.1, "Chaos::Softs::FVelocityField has been renamed FVelocityAndPressureField to match its new behavior.")
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		const Softs::FVelocityField& GetWindVelocityField(uint32 GroupId) { return GetWindVelocityAndPressureField(GroupId); }
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		// Add external forces to the particles
 		void AddExternalForces(uint32 GroupId, bool bUseLegacyWind);
@@ -138,6 +161,7 @@ namespace Chaos
 		const Softs::FSolverReal* GetParticleInvMasses(int32 Offset) const;
 		const FClothConstraints& GetClothConstraints(int32 Offset) const { return *ClothsConstraints.FindChecked(Offset); }
 		FClothConstraints& GetClothConstraints(int32 Offset) { return *ClothsConstraints.FindChecked(Offset); }
+		uint32 GetNumParticles() const;
 		// ---- End of the Cloth interface ----
 
 		// ---- Collider interface ----
@@ -176,7 +200,7 @@ namespace Chaos
 		void ApplyPreSimulationTransforms();
 		Softs::FSolverReal SetParticleMassPerArea(int32 Offset, int32 Size, const FTriangleMesh& Mesh);
 		void ParticleMassUpdateDensity(const FTriangleMesh& Mesh, Softs::FSolverReal Density);
-		void ParticleMassClampAndEnslave(int32 Offset, int32 Size, Softs::FSolverReal MinPerParticleMass, const TFunctionRef<bool(int32)>& KinematicPredicate);
+		void ParticleMassClampAndKinematicStateUpdate(int32 Offset, int32 Size, Softs::FSolverReal MinPerParticleMass, const TFunctionRef<bool(int32)>& KinematicPredicate);
 
 		// Update the solver field forces/velocities at the particles location
 		void UpdateSolverField();
@@ -210,6 +234,7 @@ namespace Chaos
 		FVec3 OldLocalSpaceLocation;  // This is used to translate between world space and simulation space,
 		FVec3 LocalSpaceLocation;     // add this to simulation space coordinates to get world space coordinates, must keep FReal as underlying type for LWC
 		FRotation3 LocalSpaceRotation;
+		FReal VelocityScale;
 
 		// Time stepping
 		FSolverReal Time;
@@ -230,18 +255,25 @@ namespace Chaos
 
 		// Field system unique to the cloth solver
 		FPerSolverFieldSystem PerSolverField;
+
+		// Boolean to enable/disable solver in case caching is used
+		bool bEnableSolver;
 	};
 
 } // namespace Chaos
 
-// Support ISPC enable/disable in non-shipping builds
-constexpr bool bChaos_CalculateBounds_ISPC_Enable = true;
-#if !INTEL_ISPC
-const bool bChaos_PreSimulationTransforms_ISPC_Enabled = false;
-const bool bChaos_CalculateBounds_ISPC_Enabled = false;
-#elif UE_BUILD_SHIPPING
-const bool bChaos_PreSimulationTransforms_ISPC_Enabled = true;
-const bool bChaos_CalculateBounds_ISPC_Enabled = bChaos_CalculateBounds_ISPC_Enable;
+#if !defined(CHAOS_CALCULATE_BOUNDS_ISPC_ENABLED_DEFAULT)
+#define CHAOS_CALCULATE_BOUNDS_ISPC_ENABLED_DEFAULT 1
+#endif
+
+#if !defined(CHAOS_PRE_SIMULATION_TRANSFORMS_ISPC_ENABLED_DEFAULT)
+#define CHAOS_PRE_SIMULATION_TRANSFORMS_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bChaos_CalculateBounds_ISPC_Enabled = INTEL_ISPC && CHAOS_CALCULATE_BOUNDS_ISPC_ENABLED_DEFAULT;
+static constexpr bool bChaos_PreSimulationTransforms_ISPC_Enabled = INTEL_ISPC && CHAOS_PRE_SIMULATION_TRANSFORMS_ISPC_ENABLED_DEFAULT;
 #else
 extern bool bChaos_PreSimulationTransforms_ISPC_Enabled;
 extern bool bChaos_CalculateBounds_ISPC_Enabled;

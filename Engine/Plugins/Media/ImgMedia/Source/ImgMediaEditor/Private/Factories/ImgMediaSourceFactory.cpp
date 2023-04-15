@@ -4,6 +4,8 @@
 #include "Misc/Paths.h"
 #include "ImgMediaSource.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImgMediaSourceFactory)
+
 
 /* UExrFileMediaSourceFactory structors
  *****************************************************************************/
@@ -11,10 +13,15 @@
 UImgMediaSourceFactory::UImgMediaSourceFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Formats.Add(TEXT("exr;EXR Image Sequence"));
+	// note: conflicts with .exr image import by TextureFactory in the import dialog
+	// if you filter for *.exr it chooses the first extension alphabetically
+	Formats.Add(TEXT("exr;EXR ImgMedia Image Sequence"));
 
 	SupportedClass = UImgMediaSource::StaticClass();
 	bEditorImport = true;
+	
+	// Required to allow texture factory to take priority when importing new image files
+	ImportPriority = DefaultImportPriority - 1;
 }
 
 
@@ -28,3 +35,4 @@ UObject* UImgMediaSourceFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 
 	return MediaSource;
 }
+

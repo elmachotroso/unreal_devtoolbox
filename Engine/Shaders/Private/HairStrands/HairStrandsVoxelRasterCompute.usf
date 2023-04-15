@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "../Common.ush"
+#define HAIR_STRANDS_PARAMETERS 1
 
+#include "../Common.ush"
 #include "HairStrandsClusterCommon.ush"
 #include "HairStrandsVertexFactoryCommon.ush"
 #include "HairStrandsVoxelPageCommon.ush" 
@@ -12,28 +13,9 @@ uint			DispatchCountX;
 uint			MaxRasterCount;
 uint			FrameIdMod8;
 uint			MacroGroupId;
-uint			HairStrandsVF_bIsCullingEnable;
-uint			HairStrandsVF_bHasRaytracedGeometry;
-float			HairStrandsVF_Radius;
-float			HairStrandsVF_RootScale;
-float			HairStrandsVF_TipScale;
-float			HairStrandsVF_Density;
-float3			HairStrandsVF_PositionOffset;
-uint			HairStrandsVF_VertexCount;
-float4x4		HairStrandsVF_LocalToTranslatedWorldPrimitiveTransform;
-Buffer<uint4>	HairStrandsVF_PositionBuffer;
-Buffer<float4>	HairStrandsVF_PositionOffsetBuffer;
-
-#if PERMUTATION_CULLING == 1
-Buffer<uint>	HairStrandsVF_CullingIndirectBuffer;
-Buffer<uint>	HairStrandsVF_CullingIndexBuffer;
-Buffer<float>	HairStrandsVF_CullingRadiusScaleBuffer;
-Buffer<uint>	IndirectBufferArgs;
-#endif
 
 uint			VirtualVoxelParams_PageIndexCount;
 uint			VirtualVoxelParams_PageResolution;
-float			VirtualVoxelParams_VoxelWorldSize;
 uint3			VirtualVoxelParams_PageCountResolution;
 uint3			VirtualVoxelParams_PageTextureResolution;
 
@@ -41,6 +23,10 @@ Buffer<uint>	VirtualVoxelParams_PageIndexBuffer;
 StructuredBuffer<FPackedVirtualVoxelNodeDesc> VirtualVoxelParams_NodeDescBuffer;
 
 RWTexture3D<uint> OutPageTexture;
+
+uint			VertexCount;
+uint			VertexStart;
+float SampleWeight;
 
 ///////////////////////////////////////////////////////////////////////////
 // Define
@@ -73,11 +59,10 @@ void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
 #if PERMUTATION_CULLING == 1
 	uint VertexIndex0 = GetHairStrandsVertexFetchIndex_Culled(DispatchThreadID, GROUP_SIZE);
 #else
-	uint VertexIndex0 = GetHairStrandsVertexFetchIndex(DispatchThreadID, GROUP_SIZE, DispatchCountX);
+	uint VertexIndex0 = VertexStart + GetHairStrandsVertexFetchIndex(DispatchThreadID, GROUP_SIZE, DispatchCountX);
 #endif
-
-	uint VertexIndex1 = min(VertexIndex0 + 1, HairStrandsVF_VertexCount - 1);
-	if (VertexIndex0 >= HairStrandsVF_VertexCount)
+	uint VertexIndex1 = min(VertexIndex0 + 1, VertexStart + VertexCount - 1);
+	if (VertexIndex0 >= VertexStart + VertexCount)
 		return;
 
 	float LodRadiusScale0 = 1;
@@ -126,30 +111,33 @@ void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
 		HairStrandsVF_RootScale,
 		HairStrandsVF_TipScale);
 
+	const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(VirtualVoxelParams_NodeDescBuffer[MacroGroupId], VirtualVoxelParams_PageResolution);
+
 	const float DiameterToRadius = 0.5f;
 	const float3 TranslatedWP0 = mul(float4(CP0.Position, 1), HairStrandsVF_LocalToTranslatedWorldPrimitiveTransform).xyz;
-	const float HairCoverage0 = CP0.WorldRadius / max(CP0.WorldRadius, DiameterToRadius * VirtualVoxelParams_VoxelWorldSize);
+	const float HairCoverage0 = CP0.WorldRadius / max(CP0.WorldRadius, DiameterToRadius * NodeDesc.VoxelWorldSize);
 
 	const float3 TranslatedWP1 = mul(float4(CP1.Position, 1), HairStrandsVF_LocalToTranslatedWorldPrimitiveTransform).xyz;
-	const float HairCoverage1 = CP1.WorldRadius / max(CP1.WorldRadius, DiameterToRadius * VirtualVoxelParams_VoxelWorldSize);
+	const float HairCoverage1 = CP1.WorldRadius / max(CP1.WorldRadius, DiameterToRadius * NodeDesc.VoxelWorldSize);
 
-	const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(VirtualVoxelParams_NodeDescBuffer[MacroGroupId], VirtualVoxelParams_PageResolution);
 
 	// In order to reduce aliasing, we increase the number of steps. This makes the result more comparable to the raster pass.
 	const float LineStepMultiplier = 1.5f;
 
+	const float ScaledVoxelWorldSize = NodeDesc.VoxelWorldSize / LineStepMultiplier;
+
 	FVirtualVoxelCommonDesc CommonDesc;
 	CommonDesc.PageCountResolution		= VirtualVoxelParams_PageCountResolution;
-	CommonDesc.VoxelWorldSize			= VirtualVoxelParams_VoxelWorldSize / LineStepMultiplier;
 	CommonDesc.PageTextureResolution	= VirtualVoxelParams_PageTextureResolution;
 	CommonDesc.PageResolution			= VirtualVoxelParams_PageResolution;
+	CommonDesc.PageResolutionLog2		= VirtualVoxel.PageResolutionLog2;
 
 	// Count the number of fibers which are within a cylinder defined by the voxel size, 
 	// and the distance between the origin and the extent of the volume
 	// This assumes that the voxel volume is cubic (i.e. equal dimensions on all sides)
 	const float3 LineSegment = TranslatedWP1 - TranslatedWP0;
 	const float LineLength = length(LineSegment);
-	const float3 StepD = normalize(LineSegment) * CommonDesc.VoxelWorldSize;
+	const float3 StepD = normalize(LineSegment) * ScaledVoxelWorldSize;
 
 	// Step according to voxel size
 	int3 CurrentPageIndexCoord = -1;
@@ -165,7 +153,7 @@ void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
 	const float3 Jitter = 0;
 	#endif
 
-	const float fMaxStep = LineLength / CommonDesc.VoxelWorldSize;
+	const float fMaxStep = LineLength / ScaledVoxelWorldSize;
 	const float MaxStep = float(min(ceil(fMaxStep), MaxRasterCount));
 
 	int3 PreviousCoord = -1;
@@ -179,9 +167,8 @@ void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
 		const int3 PageIndexCoord = VolumeCoord / CommonDesc.PageResolution;
 
 		// Update page index only when needed
-		if (PageIndexCoord.x != CurrentPageIndexCoord.x ||
-			PageIndexCoord.y != CurrentPageIndexCoord.y ||
-			PageIndexCoord.z != CurrentPageIndexCoord.z)
+		const bool bHasPageIndexChanged = any(PageIndexCoord != CurrentPageIndexCoord);
+		if (bHasPageIndexChanged)
 		{
 			CurrentPageIndexCoord = PageIndexCoord;
 			const uint LinearPageIndexCoord = CoordToIndex(PageIndexCoord, NodeDesc.PageIndexResolution, NodeDesc.PageIndexOffset);
@@ -208,7 +195,7 @@ void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
 				const float VoxelFixPointScale = GetVoxelDensityFixPointScale();
 				
 				const float HairCoverage = lerp(HairCoverage0, HairCoverage1, U);
-				uint RawData = HairCoverage * VoxelFixPointScale * HairStrandsVF_Density;
+				uint RawData = HairCoverage * VoxelFixPointScale * HairStrandsVF_Density * SampleWeight;
 				InterlockedAdd(OutPageTexture[VoxelPageCoord], RawData);
 
 				// Groom having raytraced geometry will cast-shadow on opaque geomtry with their RT-geometry, not with their 

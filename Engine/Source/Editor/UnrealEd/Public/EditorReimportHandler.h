@@ -9,6 +9,13 @@
 
 class FReimportHandler;
 
+namespace UE::Interchange
+{
+	class FImportResult;
+	using FAssetImportResultRef = TSharedRef< FImportResult, ESPMode::ThreadSafe >;
+}
+
+
 /** Reimport manager for package resources with associated source files on disk. */
 class FReimportManager : FGCObject
 {
@@ -57,6 +64,21 @@ public:
 	 * @return	true if the object was handled by one of the reimport handlers; false otherwise
 	 */
 	UNREALED_API virtual bool Reimport( UObject* Obj, bool bAskForNewFileIfMissing = false, bool bShowNotification = true, FString PreferredReimportFile = TEXT(""), FReimportHandler* SpecifiedReimportHandler = nullptr, int32 SourceFileIndex = INDEX_NONE, bool bForceNewFile = false, bool bAutomated = false);
+
+	/**
+	 * Attempt to reimport the specified object from its source by giving registered reimport
+	 * handlers a chance to try to reimport the object
+	 *
+	 * @param	Obj	Object to try reimporting
+	 * @param	bAskForNewFileIfMissing If the file is missing, open a dialog to ask for a new one
+	 * @param	bShowNotification True to show a notification when complete, false otherwise
+	 * @param	PreferredReimportFile if not empty, will be use in case the original file is missing and bAskForNewFileIfMissing is set to false
+	 * @param	SourceFileIndex		which source file index you want to reimport default is INDEX_NONE(the factory will choose)
+	 * @param	bAutomated		True to skip dialog prompts
+	 *
+	 * @return	FAssetImportResultRef
+	 */
+	UNREALED_API virtual UE::Interchange::FAssetImportResultRef ReimportAsync(UObject* Obj, bool bAskForNewFileIfMissing = false, bool bShowNotification = true, FString PreferredReimportFile = TEXT(""), FReimportHandler* SpecifiedReimportHandler = nullptr, int32 SourceFileIndex = INDEX_NONE, bool bForceNewFile = false, bool bAutomated = false);
 
 	/**
 	 * Attemp to reimport all specified objects. This function will verify that all source file exist and ask the user
@@ -136,6 +158,8 @@ private:
 	/** Sort Reimport handlers by priority if they are unsorted */
 	void SortHandlersIfNeeded();
 
+	void OnInterchangePostReimported(UObject* ReimportAsset) const;
+
 	/** Reimport handlers registered with this manager */
 	TArray<FReimportHandler*> Handlers;
 
@@ -147,6 +171,8 @@ private:
 
 	/** Delegate to call after the asset is reimported */
 	FPostReimportNotification PostReimport;
+
+	FDelegateHandle InterchangePostReimportedDelegateHandle;
 
 	/** Constructor */
 	FReimportManager();
@@ -218,6 +244,16 @@ public:
 	}
 
 	/**
+	* If we want to import a specific source index and there is some settings to update in the asset import data before starting the re-import.
+	*
+	* @param	Obj - Object for which to change re-import settings.
+	* @param	SourceIndex - the index of the SourceFile that will be re-imported
+	*/
+	virtual void SetReimportSourceIndex(UObject* Obj, const int32 SourceIndex)
+	{
+	}
+
+	/**
 	 * Attempt to reimport the specified object from its source
 	 *
 	 * @param	Obj	Object to attempt to reimport
@@ -270,6 +306,11 @@ public:
 	virtual bool IsAutomatedReimport() const
 	{
 		return bAutomatedReimport;
+	}
+
+	virtual bool IsInterchangeFactory() const
+	{
+		return false;
 	}
 
 protected:

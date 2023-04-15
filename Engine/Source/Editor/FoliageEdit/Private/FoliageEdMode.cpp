@@ -1,65 +1,124 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FoliageEdMode.h"
-#include "SceneView.h"
-#include "EditorViewportClient.h"
-#include "Editor.h"
+
+#include "ActorPartition/ActorPartitionSubsystem.h"
+#include "ActorPartition/PartitionActor.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/ActorComponent.h"
+#include "Components/BrushComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/ModelComponent.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorModeManager.h"
+#include "EditorViewportClient.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Brush.h"
+#include "Engine/CollisionProfile.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/HitResult.h"
+#include "Engine/Level.h"
+#include "Engine/NetSerialization.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/World.h"
+#include "EngineDefines.h"
+#include "EngineUtils.h"
+#include "FoliageEdModeToolkit.h"
+#include "FoliageEditActions.h"
+#include "FoliageEditUtility.h"
+#include "FoliageHelper.h"
+#include "FoliageInstanceBase.h"
+#include "FoliageInstancedStaticMeshComponent.h"
 #include "FoliageType.h"
 #include "FoliageType_Actor.h"
 #include "FoliageType_InstancedStaticMesh.h"
-#include "Components/InstancedStaticMeshComponent.h"
-#include "StaticMeshResources.h"
-#include "FoliageInstancedStaticMeshComponent.h"
-#include "InstancedFoliageActor.h"
-#include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "Engine/CollisionProfile.h"
-#include "Engine/StaticMeshActor.h"
-#include "Components/ModelComponent.h"
-#include "Misc/ConfigCacheIni.h"
-#include "EngineUtils.h"
-#include "EditorModeManager.h"
-#include "FileHelpers.h"
-#include "ScopedTransaction.h"
-#include "Engine/Selection.h"
-
-#include "FoliageEdModeToolkit.h"
-#include "LevelEditor.h"
-#include "Toolkits/ToolkitManager.h"
-#include "FoliageEditActions.h"
-#include "FoliageHelper.h"
-#include "ISceneOutliner.h"
-#include "AssetData.h"
-
-#include "AssetRegistryModule.h"
-#include "Misc/ScopeExit.h"
-
-#include "ActorPartition/ActorPartitionSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
-
+#include "Framework/Notifications/NotificationManager.h"
+#include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
+#include "HitProxies.h"
 //Slate dependencies
 #include "IAssetViewport.h"
-#include "Dialogs/DlgPickAssetPath.h"
-
-// Classes
-#include "LandscapeInfo.h"
+#include "ILevelEditor.h"
+#include "ISceneOutliner.h"
+#include "InstancedFoliageActor.h"
+#include "Instances/InstancedPlacementHash.h"
+#include "Internationalization/Internationalization.h"
 #include "LandscapeComponent.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
-#include "Components/SplineMeshComponent.h"
-#include "Components/BrushComponent.h"
-
+// Classes
+#include "LandscapeInfo.h"
+#include "LevelEditor.h"
 #include "LevelUtils.h"
+#include "Logging/LogMacros.h"
+#include "MaterialShared.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Math/Interval.h"
+#include "Math/Quat.h"
+#include "Math/Transform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Guid.h"
+#include "Misc/ScopeExit.h"
+#include "Model.h"
+#include "Modules/ModuleManager.h"
+#include "RawIndexBuffer.h"
+#include "Rendering/ColorVertexBuffer.h"
+#include "Rendering/PositionVertexBuffer.h"
+#include "Rendering/StaticMeshVertexBuffer.h"
+#include "SceneView.h"
+#include "ScopedTransaction.h"
+#include "Selection.h"
+#include "Serialization/Archive.h"
+#include "Settings/LevelEditorViewportSettings.h"
+#include "StaticMeshResources.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Casts.h"
+#include "Templates/Function.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/Tuple.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UniqueObj.h"
+#include "Templates/UnrealTemplate.h"
+#include "Toolkits/BaseToolkit.h"
+#include "Toolkits/ToolkitManager.h"
+#include "UObject/LazyObjectPtr.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnrealClient.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Framework/Notifications/NotificationManager.h"
-
-#include "FoliageEditUtility.h"
-
 #include "WorldPartition/WorldPartitionSubsystem.h"
+
+class UClass;
 
 #define LOCTEXT_NAMESPACE "FoliageEdMode"
 #define FOLIAGE_SNAP_TRACE (10000.f)
@@ -232,7 +291,6 @@ FEdModeFoliage::FEdModeFoliage()
 	: FEdMode()
 	, bToolActive(false)
 	, bCanAltDrag(false)
-	, bAdjustBrushRadius(false)
 	, FoliageMeshListSortMode(EColumnSortMode::Ascending)
 	, UpdateSelectionCounter(0)
 	, bHasDeferredSelectionNotification(false)
@@ -394,11 +452,6 @@ void FEdModeFoliage::Enter()
 	// Load UI settings from config file
 	UISettings.Load();
 
-	// For now, Only Foliage sets DataLayerSubsystem's DataLayerEditorContext, validate it's empty before updating it
-	const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>();
-	check(!DataLayerSubsystem || !DataLayerSubsystem->HasDataLayerEditorContext());
-	SetDataLayerEditorContext(UISettings.GetDataLayer());
-
 	// Bind to editor callbacks
 	FEditorDelegates::NewCurrentLevel.AddSP(this, &FEdModeFoliage::NotifyNewCurrentLevel);
 	FWorldDelegates::LevelAddedToWorld.AddSP(this, &FEdModeFoliage::NotifyLevelAddedToWorld);
@@ -451,11 +504,6 @@ void FEdModeFoliage::Enter()
 /** FEdMode: Called when the mode is exited */
 void FEdModeFoliage::Exit()
 {
-	DataLayerEditorContext.Reset();
-	// For now, Only Foliage sets DataLayerSubsystem's DataLayerEditorContext, validate it's back to be empty
-	const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>();
-	check(!DataLayerSubsystem || !DataLayerSubsystem->HasDataLayerEditorContext());
-
 	if (bToolActive)
 	{
 		EndFoliageBrushTrace();
@@ -478,8 +526,11 @@ void FEdModeFoliage::Exit()
 
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+		}
 	}
 
 	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
@@ -516,15 +567,6 @@ void FEdModeFoliage::Exit()
 
 	// Call base Exit method to ensure proper cleanup
 	FEdMode::Exit();
-}
-
-void FEdModeFoliage::SetDataLayerEditorContext(const FActorDataLayer& DataLayer)
-{
-	// Update Data Layer and update DataLayerSubsystem's DataLayerEditorContext with it
-	UISettings.SetDataLayer(DataLayer);
-	// Since this is a scope, first call Reset on TUniquePtr to delete old context before assigning the new one
-	DataLayerEditorContext.Reset();
-	DataLayerEditorContext.Reset(new FScopeChangeDataLayerEditorContext(GetWorld(), UISettings.GetDataLayer()));
 }
 
 EFoliageEditingState FEdModeFoliage::GetEditingState() const
@@ -867,12 +909,9 @@ void FEdModeFoliage::FoliageBrushTrace(FEditorViewportClient* ViewportClient, co
 				UPrimitiveComponent* PrimComp = Hit.Component.Get();
 				if (PrimComp != nullptr && CanPaint(PrimComp->GetComponentLevel()))
 				{
-					if (!bAdjustBrushRadius)
-					{
-						// Adjust the brush location
-						BrushLocation = Hit.Location;
-						BrushNormal = Hit.Normal;
-					}
+					// Adjust the brush location
+					BrushLocation = Hit.Location;
+					BrushNormal = Hit.Normal;
 
 					// Still want to draw the brush when resizing
 					bBrushTraceValid = true;
@@ -1688,10 +1727,14 @@ void RefreshSceneOutliner()
 	TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 	if (LevelEditor.IsValid())
 	{
-		TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
-		if (SceneOutlinerPtr)
+		TArray<TWeakPtr<class ISceneOutliner>> SceneOutlinerPtrs = LevelEditor.Pin()->GetAllSceneOutliners();
+
+		for (TWeakPtr<class ISceneOutliner> SceneOutlinerPtr : SceneOutlinerPtrs)
 		{
-			SceneOutlinerPtr->FullRefresh();
+			if (TSharedPtr<class ISceneOutliner> SceneOutlinerPin = SceneOutlinerPtr.Pin())
+			{
+				SceneOutlinerPin->FullRefresh();
+			}
 		}
 	}
 }
@@ -1864,50 +1907,7 @@ void FEdModeFoliage::ApplySelection(UWorld* InWorld, bool bApply)
 void FEdModeFoliage::UpdateInstancePartitioning(UWorld* InWorld)
 {
 	check(!bMoving);
-	UActorPartitionSubsystem* ActorPartitionSubsystem = InWorld->GetSubsystem<UActorPartitionSubsystem>();
-	for (TActorIterator<AInstancedFoliageActor> It(InWorld); It; ++It)
-	{
-		AInstancedFoliageActor* IFA = *It;
-		IFA->ForEachFoliageInfo([InWorld, IFA, ActorPartitionSubsystem](UFoliageType* FoliageType, FFoliageInfo& FoliageInfo)
-		{
-			if (FoliageInfo.Type == EFoliageImplType::Actor && 
-				ActorPartitionSubsystem->IsLevelPartition())
-			{
-				return true; // Actors are handled through the Partitioning code
-			}
-
-			AInstancedFoliageActor* TargetIFA = nullptr;
-			bool bMovedInstances = false;
-			// Loop here because SelectedIndices will change on MoveInstancesToLevel so we need to process the modified remaining SelectedIndices
-			do
-			{
-				TargetIFA = nullptr;
-				bMovedInstances = false;
-				TSet<int32> InstancesToMove;
-
-				for (int32 SelectedInstanceIdx : FoliageInfo.SelectedIndices)
-				{
-					FFoliageInstance& Instance = FoliageInfo.Instances[SelectedInstanceIdx];
-					AInstancedFoliageActor* NewIFA = AInstancedFoliageActor::Get(InWorld, true, IFA->GetLevel(), Instance.Location);
-					if ((TargetIFA == nullptr || TargetIFA == NewIFA) && NewIFA != IFA)
-					{
-						TargetIFA = NewIFA;
-						InstancesToMove.Add(SelectedInstanceIdx);
-					}
-				}
-
-				if (InstancesToMove.Num())
-				{
-					// TargetIFA can be null (if target is unloaded cell). Meaning instances will be deleted.
-					FoliageInfo.MoveInstances(TargetIFA, InstancesToMove, true);
-					bMovedInstances = true;
-				}
-
-			} while (bMovedInstances && FoliageInfo.SelectedIndices.Num() > 0);
-
-			return true; // continue iteration
-		});
-	}
+	AInstancedFoliageActor::UpdateInstancePartitioning(InWorld);
 }
 
 void FEdModeFoliage::PostTransformSelectedInstances(UWorld* InWorld)
@@ -3672,16 +3672,15 @@ bool FEdModeFoliage::InputKey(FEditorViewportClient* ViewportClient, FViewport* 
 		if (IsCtrlDown(Viewport))
 		{
 			// Control + scroll adjusts the brush radius
-			static const float RadiusAdjustmentAmount = 25.f;
 			if (Key == EKeys::MouseScrollUp)
 			{
-				AdjustBrushRadius(RadiusAdjustmentAmount);
+				AdjustBrushRadius(1);
 
 				bHandled = true;
 			}
 			else if (Key == EKeys::MouseScrollDown)
 			{
-				AdjustBrushRadius(-RadiusAdjustmentAmount);
+				AdjustBrushRadius(-1);
 
 				bHandled = true;
 			}
@@ -3848,15 +3847,12 @@ FVector FEdModeFoliage::GetWidgetLocation() const
 	return FEdMode::GetWidgetLocation();
 }
 
+
 /** FEdMode: Called when a mouse button is pressed */
 bool FEdModeFoliage::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
 	bTracking = true;
-	if (IsCtrlDown(InViewport) && InViewport->KeyState(EKeys::MiddleMouseButton) && (UISettings.GetPaintToolSelected() || UISettings.GetReapplyToolSelected() || UISettings.GetLassoSelectToolSelected()))
-	{
-		bAdjustBrushRadius = true;
-	}
-	else if (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected())
+	if (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected())
 	{
 		// Update pivot
 		UpdateWidgetLocationToInstanceSelection();
@@ -3878,12 +3874,7 @@ bool FEdModeFoliage::EndTracking()
 {
 	bTracking = false;
 
-	if (bAdjustBrushRadius)
-	{
-		bAdjustBrushRadius = false;
-		return true;
-	}
-	else if (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected())
+	if (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected())
 	{
 		PostTransformSelectedInstances(GetWorld());
 		GEditor->EndTransaction();
@@ -3907,29 +3898,16 @@ bool FEdModeFoliage::EndTracking(FEditorViewportClient* InViewportClient, FViewp
 /** FEdMode: Called when mouse drag input it applied */
 bool FEdModeFoliage::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag, FRotator& InRot, FVector& InScale)
 {
-	if (bAdjustBrushRadius)
+	if (InViewportClient->GetCurrentWidgetAxis() != EAxisList::None && (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected()))
 	{
-		if (UISettings.GetPaintToolSelected() || UISettings.GetReapplyToolSelected() || UISettings.GetLassoSelectToolSelected())
-		{
-			static const float RadiusAdjustmentFactor = 10.f;
-			AdjustBrushRadius(RadiusAdjustmentFactor * InDrag.Y);
+		const bool bDuplicateInstances = (bCanAltDrag && IsAltDown(InViewport) && (InViewportClient->GetCurrentWidgetAxis() & EAxisList::XYZ));
 
-			return true;
-		}
-	}
-	else
-	{
-		if (InViewportClient->GetCurrentWidgetAxis() != EAxisList::None && (UISettings.GetSelectToolSelected() || UISettings.GetLassoSelectToolSelected()))
-		{
-			const bool bDuplicateInstances = (bCanAltDrag && IsAltDown(InViewport) && (InViewportClient->GetCurrentWidgetAxis() & EAxisList::XYZ));
+		TransformSelectedInstances(GetWorld(), InDrag, InRot, InScale, bDuplicateInstances);
 
-			TransformSelectedInstances(GetWorld(), InDrag, InRot, InScale, bDuplicateInstances);
+		// Only allow alt-drag on first InputDelta
+		bCanAltDrag = false;
 
-			// Only allow alt-drag on first InputDelta
-			bCanAltDrag = false;
-
-			return true;
-		}
+		return true;
 	}
 
 	return FEdMode::InputDelta(InViewportClient, InViewport, InDrag, InRot, InScale);

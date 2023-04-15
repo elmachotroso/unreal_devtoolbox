@@ -6,8 +6,6 @@ public class SourceControl : ModuleRules
 {
 	public SourceControl(ReadOnlyTargetRules Target) : base(Target)
 	{
-        PrivateIncludePaths.Add("Developer/SourceControl/Private");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -24,7 +22,8 @@ public class SourceControl : ModuleRules
 			new string[] {
 				"AssetRegistry",
 				"Slate",
-				"EditorStyle",
+				"RenderCore",
+				"RHI",
 			}
 		);
 

@@ -1,30 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeEditor.h"
+#include "Customizations/StateTreeBindingExtension.h"
+#include "IDetailsView.h"
+#include "IMessageLogListing.h"
+#include "MessageLogInitializationOptions.h"
+#include "MessageLogModule.h"
+#include "Misc/UObjectToken.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
-#include "SStateTreeView.h"
 #include "PropertyEditorModule.h"
-#include "StateTreeEditorModule.h"
+#include "SStateTreeView.h"
 #include "StateTree.h"
-#include "StateTreeEditorData.h"
+#include "StateTreeCompiler.h"
 #include "StateTreeDelegates.h"
+#include "StateTreeEditorCommands.h"
+#include "StateTreeEditorData.h"
+#include "StateTreeEditorModule.h"
+#include "StateTreeObjectHash.h"
 #include "StateTreeState.h"
 #include "StateTreeTaskBase.h"
-#include "StateTreeBaker.h"
+#include "StateTreeToolMenuContext.h"
 #include "StateTreeTypes.h"
-#include "IDetailsView.h"
+#include "Styling/AppStyle.h"
+#include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
-#include "Customizations/StateTreeBindingExtension.h"
-#include "Misc/UObjectToken.h"
-#include "StateTreeEditorCommands.h"
-#include "ToolMenus.h"
-#include "StateTreeObjectHash.h"
-
-#include "Developer/MessageLog/Public/IMessageLogListing.h"
-#include "Developer/MessageLog/Public/MessageLogInitializationOptions.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -62,27 +62,25 @@ void FStateTreeEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& 
 	InTabManager->RegisterTabSpawner(SelectionDetailsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_SelectionDetails) )
 		.SetDisplayName( NSLOCTEXT("StateTreeEditor", "SelectionDetailsTab", "Details" ) )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(AssetDetailsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_AssetDetails))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "AssetDetailsTab", "Asset Details"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(StateTreeViewTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_StateTreeView))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "StateTreeViewTab", "StateTree"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Outliner"));
-
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
 	InTabManager->RegisterTabSpawner(StateTreeStatisticsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_StateTreeStatistics))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "StatisticsTab", "StateTree Statistics"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Outliner"));
-
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
 	InTabManager->RegisterTabSpawner(CompilerResultsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_CompilerResults))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "CompilerResultsTab", "Compiler Results"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Outliner"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
 }
 
 
@@ -106,9 +104,13 @@ void FStateTreeEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedP
 	if (EditorData == NULL)
 	{
 		EditorData = NewObject<UStateTreeEditorData>(StateTree, FName(), RF_Transactional);
+		EditorData->AddRootState();
 		StateTree->EditorData = EditorData;
+		Compile();
 	}
 
+	EditorDataHash = UE::StateTree::Editor::CalcAssetHash(*StateTree);
+	
 	// @todo: Temporary fix
 	// Make sure all states are transactional
 	for (UStateTreeState* SubTree : EditorData->SubTrees)
@@ -216,6 +218,8 @@ void FStateTreeEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedP
 
 	UE::StateTree::Delegates::OnIdentifierChanged.AddSP(this, &FStateTreeEditor::OnIdentifierChanged);
 	UE::StateTree::Delegates::OnSchemaChanged.AddSP(this, &FStateTreeEditor::OnSchemaChanged);
+	UE::StateTree::Delegates::OnParametersChanged.AddSP(this, &FStateTreeEditor::OnParametersChanged);
+	UE::StateTree::Delegates::OnStateParametersChanged.AddSP(this, &FStateTreeEditor::OnStateParametersChanged);
 }
 
 FName FStateTreeEditor::GetToolkitFName() const
@@ -236,6 +240,13 @@ FString FStateTreeEditor::GetWorldCentricTabPrefix() const
 FLinearColor FStateTreeEditor::GetWorldCentricTabColorScale() const
 {
 	return FLinearColor( 0.0f, 0.0f, 0.2f, 0.5f );
+}
+
+void FStateTreeEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
+{
+	UStateTreeToolMenuContext* Context = NewObject<UStateTreeToolMenuContext>();
+	Context->StateTreeEditor = SharedThis(this);
+	MenuContext.AddObject(Context);
 }
 
 void FStateTreeEditor::HandleMessageTokenClicked(const TSharedRef<IMessageToken>& InMessageToken)
@@ -296,8 +307,10 @@ TSharedRef<SDockTab> FStateTreeEditor::SpawnTab_AssetDetails(const FSpawnTabArgs
 	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 
 	AssetDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
-	AssetDetailsView->SetObject(StateTree);
+	AssetDetailsView->SetObject(StateTree ? StateTree->EditorData : nullptr);
 	AssetDetailsView->OnFinishedChangingProperties().AddSP(this, &FStateTreeEditor::OnAssetFinishedChangingProperties);
+
+	AssetDetailsView->SetExtensionHandler(MakeShared<FStateTreeBindingExtension>());
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
 		.Label(NSLOCTEXT("StateTreeEditor", "AssetDetailsTabLabel", "StateTree"))
@@ -316,7 +329,7 @@ TSharedRef<SDockTab> FStateTreeEditor::SpawnTab_StateTreeStatistics(const FSpawn
 		[
 			SNew(SMultiLineEditableTextBox)
 			.Padding(10.0f)
-			.Style(FEditorStyle::Get(), "Log.TextBox")
+			.Style(FAppStyle::Get(), "Log.TextBox")
 			.Font(FCoreStyle::GetDefaultFontStyle("Mono", 9))
 			.ForegroundColor(FLinearColor::Gray)
 			.IsReadOnly(true)
@@ -346,15 +359,23 @@ FText FStateTreeEditor::GetStatisticsText() const
 		return FText::GetEmpty();
 	}
 
-	if (const UScriptStruct* StorageStruct = StateTree->GetInstanceStorageStruct())
-	{
-		const FText SizeText = FText::AsMemory((uint64)StorageStruct->GetStructureSize());
-		const FText NumNodesText = FText::AsNumber(StateTree->GetNumInstances());
 
-		return FText::Format(LOCTEXT("RuntimeSize", "Runtime size: {0}, {1} nodes"), SizeText, NumNodesText);
+	TArray<FStateTreeMemoryUsage> MemoryUsages = StateTree->CalculateEstimatedMemoryUsage();
+	if (MemoryUsages.IsEmpty())
+	{
+		return FText::GetEmpty();
 	}
-	
-	return FText::GetEmpty();
+
+	TArray<FText> Rows;
+
+	for (const FStateTreeMemoryUsage& Usage : MemoryUsages)
+	{
+		const FText SizeText = FText::AsMemory(Usage.EstimatedMemoryUsage);
+		const FText NumNodesText = FText::AsNumber(Usage.NodeCount);
+		Rows.Add(FText::Format(LOCTEXT("UsageRow", "{0}: {1}, {2} nodes"), FText::FromString(Usage.Name), SizeText, NumNodesText));
+	}
+
+	return FText::Join(FText::FromString(TEXT("\n")), Rows);
 }
 
 void FStateTreeEditor::HandleModelAssetChanged()
@@ -362,14 +383,17 @@ void FStateTreeEditor::HandleModelAssetChanged()
 	UpdateAsset();
 }
 
-void FStateTreeEditor::HandleModelSelectionChanged(const TArray<UStateTreeState*>& SelectedStates)
+void FStateTreeEditor::HandleModelSelectionChanged(const TArray<TWeakObjectPtr<UStateTreeState>>& SelectedStates)
 {
 	if (SelectionDetailsView)
 	{
 		TArray<UObject*> Selected;
-		for (UStateTreeState* State : SelectedStates)
+		for (const TWeakObjectPtr<UStateTreeState>& WeakState : SelectedStates)
 		{
-			Selected.Add(State);
+			if (UStateTreeState* State = WeakState.Get())
+			{
+				Selected.Add(State);
+			}
 		}
 		SelectionDetailsView->SetObjects(Selected);
 	}
@@ -377,7 +401,7 @@ void FStateTreeEditor::HandleModelSelectionChanged(const TArray<UStateTreeState*
 
 void FStateTreeEditor::SaveAsset_Execute()
 {
-	// Remember the treview expnasion state
+	// Remember the treeview expansion state
 	if (StateTreeView)
 	{
 		StateTreeView->SavePersistentExpandedStates();
@@ -408,6 +432,44 @@ void FStateTreeEditor::OnSchemaChanged(const UStateTree& InStateTree)
 			StateTreeViewModel->NotifyAssetChangedExternally();
 		}
 
+		if (SelectionDetailsView.IsValid())
+		{
+			SelectionDetailsView->ForceRefresh();
+		}
+	}
+}
+
+void FStateTreeEditor::OnParametersChanged(const UStateTree& InStateTree)
+{
+	if (StateTree == &InStateTree)
+	{
+		// Accessible structs might be different after modifying parameters so forcing refresh
+		// so the FStateTreeBindingExtension can rebuild the list of bindable structs
+		if (SelectionDetailsView.IsValid())
+		{
+			SelectionDetailsView->ForceRefresh();
+		}
+	}
+}
+
+void FStateTreeEditor::OnStateParametersChanged(const UStateTree& InStateTree, const FGuid ChangedStateID)
+{
+	if (StateTree == &InStateTree)
+	{
+		if (const UStateTreeEditorData* TreeData = Cast<UStateTreeEditorData>(StateTree->EditorData))
+		{
+			TreeData->VisitHierarchy([&ChangedStateID](UStateTreeState& State, UStateTreeState* /*ParentState*/)
+			{
+				if (State.Type == EStateTreeStateType::Linked && State.LinkedSubtree.ID == ChangedStateID)
+				{
+					State.UpdateParametersFromLinkedSubtree();
+				}
+				return EStateTreeVisitor::Continue;
+			});
+		}
+
+		// Accessible structs might be different after modifying parameters so forcing refresh
+		// so the FStateTreeBindingExtension can rebuild the list of bindable structs
 		if (SelectionDetailsView.IsValid())
 		{
 			SelectionDetailsView->ForceRefresh();
@@ -483,55 +545,28 @@ namespace UE::StateTree::Editor::Internal
 
 		// Create ID to state name map.
 		TMap<FGuid, FName> IDToName;
-		TArray<UStateTreeState*> Stack;
 
-		for (UStateTreeState* SubTree : TreeData->SubTrees)
+		TreeData->VisitHierarchy([&IDToName](const UStateTreeState& State, UStateTreeState* /*ParentState*/)
 		{
-			if (SubTree)
-			{
-				Stack.Reset();
-				Stack.Add(SubTree);
-				while (Stack.Num() > 0)
-				{
-					UStateTreeState* CurState = Stack.Pop();
-					IDToName.Add(CurState->ID, CurState->Name);
-					for (UStateTreeState* ChildState : CurState->Children)
-					{
-						if (ChildState)
-						{
-							Stack.Append(CurState->Children);
-						}
-					}
-				}
-			}
-		}
-
+			IDToName.Add(State.ID, State.Name);
+			return EStateTreeVisitor::Continue;
+		});
+		
 		// Fix changed names.
-		for (UStateTreeState* SubTree : TreeData->SubTrees)
+		TreeData->VisitHierarchy([&IDToName](UStateTreeState& State, UStateTreeState* /*ParentState*/)
 		{
-			if (SubTree)
+			if (State.Type == EStateTreeStateType::Linked)
 			{
-				Stack.Reset();
-				Stack.Add(SubTree);
-				while (Stack.Num() > 0)
-				{
-					UStateTreeState* CurState = Stack.Pop();
-
-					for (FStateTreeTransition& Transition : CurState->Transitions)
-					{
-						FixChangedStateLinkName(Transition.State, IDToName);
-					}
-
-					for (UStateTreeState* ChildState : CurState->Children)
-					{
-						if (ChildState)
-						{
-							Stack.Append(CurState->Children);
-						}
-					}
-				}
+				FixChangedStateLinkName(State.LinkedSubtree, IDToName);
 			}
-		}
+					
+			for (FStateTreeTransition& Transition : State.Transitions)
+			{
+				FixChangedStateLinkName(Transition.State, IDToName);
+			}
+
+			return EStateTreeVisitor::Continue;
+		});
 	}
 
 	void UpdateParents(UStateTree& StateTree)
@@ -542,29 +577,11 @@ namespace UE::StateTree::Editor::Internal
 			return;
 		}
 
-		TArray<UStateTreeState*> Stack;
-
-		for (UStateTreeState* SubTree : TreeData->SubTrees)
+		TreeData->VisitHierarchy([](UStateTreeState& State, UStateTreeState* ParentState)
 		{
-			if (SubTree)
-			{
-				SubTree->Parent = nullptr;
-				Stack.Reset();
-				Stack.Add(SubTree);
-				while (Stack.Num() > 0)
-				{
-					UStateTreeState* CurState = Stack.Pop();
-					for (UStateTreeState* ChildState : CurState->Children)
-					{
-						if (ChildState)
-						{
-							ChildState->Parent = CurState;
-							Stack.Append(CurState->Children);
-						}
-					}
-				}
-			}
-		}
+			State.Parent = ParentState;
+			return EStateTreeVisitor::Continue;
+		});
 	}
 
 	void ApplySchema(UStateTree& StateTree)
@@ -575,73 +592,55 @@ namespace UE::StateTree::Editor::Internal
 			return;
 		}
 		
-		const UStateTreeSchema* Schema = StateTree.GetSchema();
+		const UStateTreeSchema* Schema = TreeData->Schema;
 		if (!Schema)
 		{
 			return;
 		}
 
-		TArray<UStateTreeState*> Stack;
-
-		for (UStateTreeState* SubTree : TreeData->SubTrees)
+		// Clear evaluators if not allowed.
+		if (Schema->AllowEvaluators() == false && TreeData->Evaluators.Num() > 0)
 		{
-			if (SubTree)
-			{
-				Stack.Reset();
-				Stack.Add(SubTree);
-				while (Stack.Num() > 0)
-				{
-					UStateTreeState* CurState = Stack.Pop();
-
-					// Clear enter conditions if not allowed.
-					if (Schema->AllowEnterConditions() == false && CurState->EnterConditions.Num() > 0)
-					{
-						UE_LOG(LogStateTree, Warning, TEXT("%s: Resetting Enter Conditions in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(CurState));
-						CurState->EnterConditions.Reset();
-					}
-
-					// Clear evaluators if not allowed.
-					if (Schema->AllowEvaluators() == false && CurState->Evaluators.Num() > 0)
-					{
-						UE_LOG(LogStateTree, Warning, TEXT("%s: Resetting Evaluators in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(CurState));
-						CurState->Evaluators.Reset();
-					}
-
-					// Keep single and many tasks based on what is allowed.
-					if (Schema->AllowMultipleTasks() == false)
-					{
-						if (CurState->Tasks.Num() > 0)
-						{
-							CurState->Tasks.Reset();
-							UE_LOG(LogStateTree, Warning, TEXT("%s: Resetting Tasks in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(CurState));
-						}
-						
-						// Task name is the same as state name.
-						if (FStateTreeTaskBase* Task = CurState->SingleTask.Node.GetMutablePtr<FStateTreeTaskBase>())
-						{
-							Task->Name = CurState->Name;
-						}
-					}
-					else
-					{
-						if (CurState->SingleTask.Node.IsValid())
-						{
-							CurState->SingleTask.Reset();
-							UE_LOG(LogStateTree, Warning, TEXT("%s: Resetting Single Task in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(CurState));
-						}
-					}
-					
-					for (UStateTreeState* ChildState : CurState->Children)
-					{
-						if (ChildState)
-						{
-							Stack.Append(CurState->Children);
-						}
-					}
-				}
-			}
+			UE_LOG(LogStateTreeEditor, Warning, TEXT("%s: Resetting Evaluators due to current schema restrictions."), *GetNameSafe(&StateTree));
+			TreeData->Evaluators.Reset();
 		}
 
+
+		TreeData->VisitHierarchy([&StateTree, Schema](UStateTreeState& State, UStateTreeState* /*ParentState*/)
+		{
+			// Clear enter conditions if not allowed.
+			if (Schema->AllowEnterConditions() == false && State.EnterConditions.Num() > 0)
+			{
+				UE_LOG(LogStateTreeEditor, Warning, TEXT("%s: Resetting Enter Conditions in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(&State));
+				State.EnterConditions.Reset();
+			}
+
+			// Keep single and many tasks based on what is allowed.
+			if (Schema->AllowMultipleTasks() == false)
+			{
+				if (State.Tasks.Num() > 0)
+				{
+					State.Tasks.Reset();
+					UE_LOG(LogStateTreeEditor, Warning, TEXT("%s: Resetting Tasks in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(&State));
+				}
+				
+				// Task name is the same as state name.
+				if (FStateTreeTaskBase* Task = State.SingleTask.Node.GetMutablePtr<FStateTreeTaskBase>())
+				{
+					Task->Name = State.Name;
+				}
+			}
+			else
+			{
+				if (State.SingleTask.Node.IsValid())
+				{
+					State.SingleTask.Reset();
+					UE_LOG(LogStateTreeEditor, Warning, TEXT("%s: Resetting Single Task in state %s due to current schema restrictions."), *GetNameSafe(&StateTree), *GetNameSafe(&State));
+				}
+			}
+			
+			return EStateTreeVisitor::Continue;
+		});
 	}
 
 	void RemoveUnusedBindings(UStateTree& StateTree)
@@ -657,7 +656,50 @@ namespace UE::StateTree::Editor::Internal
 		TreeData->GetPropertyEditorBindings()->RemoveUnusedBindings(AllStructIDs);
 	}
 
+	void UpdateLinkedStateParameters(UStateTree& StateTree)
+	{
+		UStateTreeEditorData* TreeData = Cast<UStateTreeEditorData>(StateTree.EditorData);
+		if (!TreeData)
+		{
+			return;
+		}
+
+		TreeData->VisitHierarchy([](UStateTreeState& State, UStateTreeState* /*ParentState*/)
+		{
+			if (State.Type == EStateTreeStateType::Linked)
+			{
+				State.UpdateParametersFromLinkedSubtree();
+			}
+			return EStateTreeVisitor::Continue;
+		});
+	}
+
 }
+
+namespace UE::StateTree::Editor
+{
+	void ValidateAsset(UStateTree& StateTree)
+	{
+		UE::StateTree::Editor::Internal::UpdateParents(StateTree);
+		UE::StateTree::Editor::Internal::ApplySchema(StateTree);
+		UE::StateTree::Editor::Internal::RemoveUnusedBindings(StateTree);
+		UE::StateTree::Editor::Internal::ValidateLinkedStates(StateTree);
+		UE::StateTree::Editor::Internal::UpdateLinkedStateParameters(StateTree);
+	}
+
+	uint32 CalcAssetHash(const UStateTree& StateTree)
+	{
+		uint32 EditorDataHash = 0;
+		if (StateTree.EditorData != nullptr)
+		{
+			FStateTreeObjectCRC32 Archive;
+			EditorDataHash = Archive.Crc32(StateTree.EditorData, 0);
+		}
+
+		return EditorDataHash;
+	}
+
+};
 
 void FStateTreeEditor::BindCommands()
 {
@@ -684,16 +726,31 @@ void FStateTreeEditor::RegisterToolbar()
 		ToolBar = UToolMenus::Get()->RegisterMenu(MenuName, ParentName, EMultiBoxType::ToolBar);
 	}
 
-	const FStateTreeEditorCommands& Commands = FStateTreeEditorCommands::Get();
-	FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
+	const FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
+
+	FToolMenuSection& Section = ToolBar->AddSection("Compile", TAttribute<FText>(), InsertAfterAssetSection);
+
+	Section.AddDynamicEntry("CompileCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
-		FToolMenuSection& Section = ToolBar->AddSection("Compile", TAttribute<FText>(), InsertAfterAssetSection);
-		Section.AddEntry(FToolMenuEntry::InitToolBarButton(
-			Commands.Compile,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			TAttribute<FSlateIcon>(this, &FStateTreeEditor::GetCompileStatusImage)));
-	}
+		const UStateTreeToolMenuContext* Context = InSection.FindContext<UStateTreeToolMenuContext>();
+		if (Context && Context->StateTreeEditor.IsValid())
+		{
+			TSharedPtr<FStateTreeEditor> StateTreeEditor = Context->StateTreeEditor.Pin();
+			if (StateTreeEditor.IsValid())
+			{
+				const FStateTreeEditorCommands& Commands = FStateTreeEditorCommands::Get();
+
+				FToolMenuEntry CompileButton = FToolMenuEntry::InitToolBarButton(
+					Commands.Compile,
+					TAttribute<FText>(),
+					TAttribute<FText>(),
+					TAttribute<FSlateIcon>(StateTreeEditor.ToSharedRef(), &FStateTreeEditor::GetCompileStatusImage)
+					);
+
+				InSection.AddEntry(CompileButton);
+			}
+		}
+	}));
 }
 
 void FStateTreeEditor::Compile()
@@ -703,6 +760,8 @@ void FStateTreeEditor::Compile()
 		return;
 	}
 
+	// Note: If the compilation process changes, also update UStateTreeCompileAllCommandlet and UStateTreeFactory::FactoryCreateNew.
+	
 	UpdateAsset();
 	
 	if (CompilerResultsListing.IsValid())
@@ -711,24 +770,26 @@ void FStateTreeEditor::Compile()
 	}
 
 	FStateTreeCompilerLog Log;
-	FStateTreeBaker Baker(Log);
+	FStateTreeCompiler Compiler(Log);
 
-	const bool bSuccess = Baker.Bake(*StateTree);
+	bLastCompileSucceeded = Compiler.Compile(*StateTree);
 
 	if (CompilerResultsListing.IsValid())
 	{
 		Log.AppendToLog(CompilerResultsListing.Get());
 	}
 
-	if (bSuccess)
+	if (bLastCompileSucceeded)
 	{
 		// Success
 		StateTree->LastCompiledEditorDataHash = EditorDataHash;
+
+		UE::StateTree::Delegates::OnPostCompile.Broadcast(*StateTree);
 	}
 	else
 	{
-		// Make sure not to leave stale data on failed bake.
-		StateTree->ResetBaked();
+		// Make sure not to leave stale data on failed compile.
+		StateTree->ResetCompiled();
 		StateTree->LastCompiledEditorDataHash = 0;
 
 		// Show log
@@ -762,20 +823,22 @@ FSlateIcon FStateTreeEditor::GetCompileStatusImage() const
 
 	if (StateTree == nullptr)
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
 	}
 	
-	if (!StateTree->IsValidStateTree())
+	const bool bCompiledDataResetDuringLoad = StateTree->LastCompiledEditorDataHash == EditorDataHash && !StateTree->IsReadyToRun();
+
+	if (!bLastCompileSucceeded || bCompiledDataResetDuringLoad)
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusError);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusError);
 	}
 	
 	if (StateTree->LastCompiledEditorDataHash != EditorDataHash)
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
 	}
 	
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusGood);
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusGood);
 }
 
 void FStateTreeEditor::UpdateAsset()
@@ -785,17 +848,8 @@ void FStateTreeEditor::UpdateAsset()
 		return;
 	}
 
-	UE::StateTree::Editor::Internal::UpdateParents(*StateTree);
-	UE::StateTree::Editor::Internal::ApplySchema(*StateTree);
-	UE::StateTree::Editor::Internal::RemoveUnusedBindings(*StateTree);
-	UE::StateTree::Editor::Internal::ValidateLinkedStates(*StateTree);
-
-	EditorDataHash = 0;
-	if (StateTree->EditorData != nullptr)
-	{
-		FStateTreeObjectCRC32 Archive;
-		EditorDataHash = Archive.Crc32(StateTree->EditorData, 0);
-	}
+	UE::StateTree::Editor::ValidateAsset(*StateTree);
+	EditorDataHash = UE::StateTree::Editor::CalcAssetHash(*StateTree);
 }
 
 

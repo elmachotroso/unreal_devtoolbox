@@ -44,11 +44,11 @@ enum EDistanceFieldPrimitiveType
 };
 
 // Must match equivalent shader defines
-static const int32 GDistanceFieldObjectDataStride = 9;
-static const int32 GDistanceFieldObjectBoundsStride = 2;
+static const int32 GDistanceFieldObjectDataStride = 10;
+static const int32 GDistanceFieldObjectBoundsStride = 3;
 
-static const int32 GHeightFieldObjectDataStride = 6;
-static const int32 GHeightFieldObjectBoundsStride = 2;
+static const int32 GHeightFieldObjectDataStride = 7;
+static const int32 GHeightFieldObjectBoundsStride = 3;
 
 template <EDistanceFieldPrimitiveType PrimitiveType>
 class TDistanceFieldObjectBuffers
@@ -58,8 +58,8 @@ public:
 	static int32 ObjectDataStride;
 	static int32 ObjectBoundsStride;
 
-	FRWBufferStructured Bounds;
-	FRWBufferStructured Data;
+	TRefCountPtr<FRDGPooledBuffer> Bounds;
+	TRefCountPtr<FRDGPooledBuffer> Data;
 
 	TDistanceFieldObjectBuffers()
 	{
@@ -69,13 +69,13 @@ public:
 
 	void Release()
 	{
-		Bounds.Release();
-		Data.Release();
+		Bounds = nullptr;
+		Data = nullptr;
 	}
 
 	size_t GetSizeBytes() const
 	{
-		return Bounds.NumBytes + Data.NumBytes;
+		return TryGetSize(Bounds) + TryGetSize(Data);
 	}
 };
 
@@ -83,20 +83,20 @@ class FDistanceFieldObjectBuffers : public TDistanceFieldObjectBuffers<DFPT_Sign
 class FHeightFieldObjectBuffers : public TDistanceFieldObjectBuffers<DFPT_HeightField> {};
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDistanceFieldObjectBufferParameters, )
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SceneObjectBounds)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SceneObjectData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneObjectBounds)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneObjectData)
 	SHADER_PARAMETER(uint32, NumSceneObjects)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SceneHeightfieldObjectBounds)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SceneHeightfieldObjectData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneHeightfieldObjectBounds)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneHeightfieldObjectData)
 	SHADER_PARAMETER(uint32, NumSceneHeightfieldObjects)
 END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDistanceFieldAtlasParameters, )
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SceneDistanceFieldAssetData)
-	SHADER_PARAMETER_SRV(StructuredBuffer<uint>, DistanceFieldIndirectionTable)
-	SHADER_PARAMETER_SRV(Buffer<float4>, DistanceFieldIndirection2Table)
-	SHADER_PARAMETER_TEXTURE(Texture3D<float4>, DistanceFieldIndirectionAtlas)
-	SHADER_PARAMETER_TEXTURE(Texture3D, DistanceFieldBrickTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, SceneDistanceFieldAssetData)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, DistanceFieldIndirectionTable)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, DistanceFieldIndirection2Table)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float4>, DistanceFieldIndirectionAtlas)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, DistanceFieldBrickTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, DistanceFieldSampler)
 	SHADER_PARAMETER(FVector3f, DistanceFieldBrickSize)
 	SHADER_PARAMETER(FVector3f, DistanceFieldUniqueDataBrickSize)
@@ -110,24 +110,16 @@ BEGIN_SHADER_PARAMETER_STRUCT(FDistanceFieldAtlasParameters, )
 END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FHeightFieldAtlasParameters, )
-	SHADER_PARAMETER_TEXTURE(Texture2D, HeightFieldTexture)
-	SHADER_PARAMETER_TEXTURE(Texture2D, HFVisibilityTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HeightFieldTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HFVisibilityTexture)
 END_SHADER_PARAMETER_STRUCT()
 
 namespace DistanceField
 {
 	constexpr uint32 MinPrimitiveModifiedBoundsAllocation = 16 * 1024;
 
-	// Bounds indicating where distance field object updates should be tracked
-	struct FUpdateTrackingBounds
-	{
-		FBox GlobalDistanceFieldBounds;
-		FBox LumenBounds;
-	};
-
-	FDistanceFieldObjectBufferParameters SetupObjectBufferParameters(const FDistanceFieldSceneData& DistanceFieldSceneData);
-	FDistanceFieldAtlasParameters SetupAtlasParameters(const FDistanceFieldSceneData& DistanceFieldSceneData);
-	void BuildUpdateTrackingBounds(const TArray<FViewInfo>& Views, DistanceField::FUpdateTrackingBounds& UpdateTrackingBounds);
+	RENDERER_API FDistanceFieldObjectBufferParameters SetupObjectBufferParameters(FRDGBuilder& GraphBuilder, const FDistanceFieldSceneData& DistanceFieldSceneData);
+	RENDERER_API FDistanceFieldAtlasParameters SetupAtlasParameters(FRDGBuilder& GraphBuilder, const FDistanceFieldSceneData& DistanceFieldSceneData);
 };
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDistanceFieldCulledObjectBufferParameters, )
@@ -213,8 +205,9 @@ extern void CullDistanceFieldObjectsForLight(
 	EDistanceFieldPrimitiveType PrimitiveType,
 	const FMatrix& WorldToShadowValue, 
 	int32 NumPlanes, 
-	const FPlane* PlaneData, 
-	const FVector4& ShadowBoundingSphereValue,
+	const FPlane* PlaneData,
+	const FVector& PrePlaneTranslation,
+	const FVector4f& ShadowBoundingSphere,
 	float ShadowBoundingRadius,
 	bool bCullingForDirectShadowing,
 	const FDistanceFieldObjectBufferParameters& ObjectBufferParameters,

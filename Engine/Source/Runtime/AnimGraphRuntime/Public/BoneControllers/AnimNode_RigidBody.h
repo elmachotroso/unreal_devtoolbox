@@ -28,6 +28,17 @@ enum class ESimulationSpace : uint8
 	BaseBoneSpace,
 };
 
+/** Determines behaviour regarding deferral of simulation tasks. */
+UENUM()
+enum class ESimulationTiming : uint8
+{
+	/** Use the default project setting as defined by p.RigidBodyNode.DeferredSimulationDefault. */
+	Default,
+	/** Always run the simulation to completion during animation evaluation. */
+	Synchronous,
+	/** Always run the simulation in the background and retrieve the result on the next animation evaluation. */
+	Deferred
+};
 
 /**
  * Settings for the system which passes motion of the simulation's space into the simulation. This allows the simulation to pass a 
@@ -41,11 +52,23 @@ struct ANIMGRAPHRUNTIME_API FSimSpaceSettings
 
 	FSimSpaceSettings();
 
-	// Global multipler on the effects of simulation space movement. Must be in range [0, 1]. If MasterAlpha = 0.0, the system is disabled and the simulation will
-	// be fully local (i.e., world-space actor movement and rotation does not affect the simulation). When MasterAlpha = 1.0 the simulation effectively acts as a 
+	// Disable deprecation errors by providing defaults wrapped with pragma disable
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	~FSimSpaceSettings() = default;
+	FSimSpaceSettings(FSimSpaceSettings const&) = default;
+	FSimSpaceSettings& operator=(const FSimSpaceSettings &) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	// Global multipler on the effects of simulation space movement. Must be in range [0, 1]. If WorldAlpha = 0.0, the system is disabled and the simulation will
+	// be fully local (i.e., world-space actor movement and rotation does not affect the simulation). When WorldAlpha = 1.0 the simulation effectively acts as a 
 	// world-space sim, but with the ability to apply limits using the other parameters.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float MasterAlpha;
+	float WorldAlpha;
+
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "This property has been deprecated. Please, use WorldAlpha.")
+	float MasterAlpha = 0.f;
+#endif // WITH_EDITORONLY_DATA
 
 	// Multiplier on the Z-component of velocity and acceleration that is passed to the simulation. Usually from 0.0 to 1.0 to 
 	// reduce the effects of jumping and crouching on the simulation, but it can be higher than 1.0 if you need to exaggerate this motion for some reason.
@@ -126,6 +149,7 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_RigidBody : public FAnimNode_SkeletalContr
 
 	// FAnimNode_Base interface
 	virtual void GatherDebugData(FNodeDebugData& DebugData) override;
+	virtual void Initialize_AnyThread(const FAnimationInitializeContext& Context) override;
 	// End of FAnimNode_Base interface
 
 	// FAnimNode_SkeletalControlBase interface
@@ -147,6 +171,8 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_RigidBody : public FAnimNode_SkeletalContr
 
 	// TEMP: Exposed for use in PhAt as a quick way to get drag handles working with Chaos
 	virtual ImmediatePhysics::FSimulation* GetSimulation() { return PhysicsSimulation; }
+
+	UPhysicsAsset* GetPhysicsAsset() const { return UsePhysicsAsset; }
 
 public:
 	/** Physics asset to use. If empty use the skeletal mesh's default physics asset */
@@ -218,6 +244,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = Settings)
 	bool bForceDisableCollisionBetweenConstraintBodies;
 
+	/** If true, kinematic objects will be added to the simulation at runtime to represent any cloth colliders defined for the parent object. */
+	UPROPERTY(EditAnywhere, Category = Settings)
+	bool bUseExternalClothCollision;
 
 private:
 	ETeleportType ResetSimulatedTeleportType;
@@ -306,6 +335,15 @@ private:
 		FVector& SpaceLinearAcc,
 		FVector& SpaceAngularAcc);
 
+	// Gather cloth collision sources from the supplied Skeltal Mesh and add a kinematic actor representing each one of them to the sim.
+	void CollectClothColliderObjects(const USkeletalMeshComponent* SkeletalMeshComp);
+	
+	// Remove all cloth collider objects from the sim.
+	void RemoveClothColliderObjects();
+
+	// Update the sim-space transforms of all cloth collider objects.
+	void UpdateClothColliderObjects(const FTransform& SpaceTransform);
+
 	// Gather nearby world objects and add them to the sim
 	void CollectWorldObjects();
 
@@ -326,6 +364,12 @@ private:
 
 	// Destroy the simulation and free related structures
 	void DestroyPhysicsSimulation();
+
+public:
+
+	/* Whether the physics simulation runs synchronously with the node's evaluation or is run in the background until the next frame. */
+	UPROPERTY(EditAnywhere, Category=Settings, AdvancedDisplay)
+	ESimulationTiming SimulationTiming;
 
 private:
 
@@ -408,6 +452,23 @@ private:
 
 	FPerSolverFieldSystem PerSolverField;
 
+	// Information required to identify and update a kinematic object representing a cloth collision source in the sim.
+	struct FClothCollider
+	{
+		FClothCollider(ImmediatePhysics::FActorHandle* const InActorHandle, const USkeletalMeshComponent* const InSkeletalMeshComponent, const uint32 InBoneIndex)
+			: ActorHandle(InActorHandle)
+			, SkeletalMeshComponent(InSkeletalMeshComponent)
+			, BoneIndex(InBoneIndex)
+		{}
+
+		ImmediatePhysics::FActorHandle* ActorHandle; // Identifies the physics actor in the sim.
+		const USkeletalMeshComponent* SkeletalMeshComponent; // Parent skeleton.
+		uint32 BoneIndex; // Bone within parent skeleton that drives physics actors transform.
+	};
+
+	// List of actors in the sim that represent objects collected from other parts of this character.
+	TArray<FClothCollider> ClothColliders; 
+	
 	TMap<const UPrimitiveComponent*, FWorldObject> ComponentsInSim;
 	int32 ComponentsInSimTick;
 

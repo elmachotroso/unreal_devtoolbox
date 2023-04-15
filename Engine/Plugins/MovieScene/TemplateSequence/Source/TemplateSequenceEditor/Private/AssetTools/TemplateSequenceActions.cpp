@@ -8,13 +8,14 @@
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
-FTemplateSequenceActions::FTemplateSequenceActions(const TSharedRef<ISlateStyle>& InStyle)
+FTemplateSequenceActions::FTemplateSequenceActions(const TSharedRef<ISlateStyle>& InStyle, const EAssetTypeCategories::Type InAssetCategory)
 	: Style(InStyle)
+	, AssetCategory(InAssetCategory)
 { }
 
 uint32 FTemplateSequenceActions::GetCategories()
 {
-	return EAssetTypeCategories::Animation;
+	return AssetCategory;
 }
 
 FText FTemplateSequenceActions::GetName() const

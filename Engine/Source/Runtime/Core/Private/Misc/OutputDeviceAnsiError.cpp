@@ -76,15 +76,15 @@ void FOutputDeviceAnsiError::HandleError()
 	GIsRunning			= 0;
 	GIsCriticalError	= 1;
 	GLogConsole			= NULL;
-	GErrorHist[UE_ARRAY_COUNT(GErrorHist)-1]=0;
+	GErrorHist[UE_ARRAY_COUNT(GErrorHist)-1] = TCHAR('\0');
 
 	if (GLog)
 	{
 		// print to log and flush it
-		UE_LOG( LogHAL, Log, TEXT( "=== Critical error: ===" ) LINE_TERMINATOR LINE_TERMINATOR TEXT( "%s" ) LINE_TERMINATOR, GErrorExceptionDescription );
+		UE_LOG( LogHAL, Log, TEXT( "=== Critical error: ===" LINE_TERMINATOR_ANSI LINE_TERMINATOR_ANSI "%s" LINE_TERMINATOR_ANSI), GErrorExceptionDescription );
 		UE_LOG(LogHAL, Log, TEXT("%s"), GErrorHist);
 
-		GLog->Flush();
+		GLog->Panic();
 	}
 	else
 	{

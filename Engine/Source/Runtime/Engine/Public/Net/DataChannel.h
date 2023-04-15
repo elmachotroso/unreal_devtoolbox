@@ -13,6 +13,10 @@
 #include "Net/DataBunch.h"
 #include "Engine/ChildConnection.h"
 
+// Forward declarations
+enum class ENetPingControlMessage : uint8;
+
+
 /*-----------------------------------------------------------------------------
 	UControlChannel base class.
 -----------------------------------------------------------------------------*/
@@ -146,9 +150,9 @@ public: \
 #define IMPLEMENT_CONTROL_CHANNEL_MESSAGE(Name) static uint8 Dummy##_FNetControlMessage_##Name = FNetControlMessage<NMT_##Name>::Initialize();
 
 // message type definitions
-DEFINE_CONTROL_CHANNEL_MESSAGE(Hello, 0, uint8, uint32, FString); // initial client connection message
+DEFINE_CONTROL_CHANNEL_MESSAGE(Hello, 0, uint8, uint32, FString, uint16); // initial client connection message
 DEFINE_CONTROL_CHANNEL_MESSAGE(Welcome, 1, FString, FString, FString); // server tells client they're ok'ed to load the server's level
-DEFINE_CONTROL_CHANNEL_MESSAGE(Upgrade, 2, uint32); // server tells client their version is incompatible
+DEFINE_CONTROL_CHANNEL_MESSAGE(Upgrade, 2, uint32, uint16); // server tells client their version is incompatible
 DEFINE_CONTROL_CHANNEL_MESSAGE(Challenge, 3, FString); // server sends client challenge string to verify integrity
 DEFINE_CONTROL_CHANNEL_MESSAGE(Netspeed, 4, int32); // client sends requested transfer rate
 DEFINE_CONTROL_CHANNEL_MESSAGE(Login, 5, FString, FString, FUniqueNetIdRepl, FString); // client requests to be admitted to the game
@@ -166,6 +170,7 @@ DEFINE_CONTROL_CHANNEL_MESSAGE(GameSpecific, 20, uint8, FString); // custom game
 DEFINE_CONTROL_CHANNEL_MESSAGE(EncryptionAck, 21);
 DEFINE_CONTROL_CHANNEL_MESSAGE(DestructionInfo, 22);
 DEFINE_CONTROL_CHANNEL_MESSAGE(CloseReason, 23, FString); // Reason for client NetConnection Close, for analytics/logging
+DEFINE_CONTROL_CHANNEL_MESSAGE(NetPing, 24, ENetPingControlMessage /* MessageType */, FString /* MessageStr */);
 
 // 			Beacon control channel flow
 // Client												Server

@@ -7,13 +7,16 @@
 #include "UObject/UnrealTypePrivate.h"
 #include "UObject/LinkerPlaceholderClass.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 /*-----------------------------------------------------------------------------
 	FSoftClassProperty.
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FSoftClassProperty)
+
+FSoftClassProperty::FSoftClassProperty(FFieldVariant InOwner, const UECodeGen_Private::FSoftClassPropertyParams& Prop)
+	: Super(InOwner, (const UECodeGen_Private::FObjectPropertyParamsWithoutClass&)Prop, UClass::StaticClass())
+{
+	this->MetaClass = Prop.MetaClassFunc ? Prop.MetaClassFunc() : nullptr;
+}
 
 #if WITH_EDITORONLY_DATA
 FSoftClassProperty::FSoftClassProperty(UField* InField)
@@ -119,5 +122,3 @@ bool FSoftClassProperty::SameType(const FProperty* Other) const
 {
 	return Super::SameType(Other) && (MetaClass == ((FSoftClassProperty*)Other)->MetaClass);
 }
-
-#include "UObject/DefineUPropertyMacros.h"

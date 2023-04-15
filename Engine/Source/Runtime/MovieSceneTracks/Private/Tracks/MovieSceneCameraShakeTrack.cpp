@@ -3,12 +3,14 @@
 #include "Tracks/MovieSceneCameraShakeTrack.h"
 #include "Sections/MovieSceneCameraShakeSection.h"
 #include "Evaluation/PersistentEvaluationData.h"
-#include "Evaluation/MovieSceneCameraAnimTemplate.h"
+#include "Evaluation/MovieSceneCameraShakeTemplate.h"
 #include "Evaluation/MovieSceneEvaluationTrack.h"
 #include "Evaluation/MovieSceneEvaluationTemplate.h"
 #include "Compilation/MovieSceneSegmentCompiler.h"
 #include "Compilation/MovieSceneCompilerRules.h"
 #include "MovieScene.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCameraShakeTrack)
 
 #define LOCTEXT_NAMESPACE "MovieSceneCameraShakeTrack"
 
@@ -105,3 +107,4 @@ bool UMovieSceneCameraShakeTrack::IsEmpty() const
 
 
 #undef LOCTEXT_NAMESPACE
+

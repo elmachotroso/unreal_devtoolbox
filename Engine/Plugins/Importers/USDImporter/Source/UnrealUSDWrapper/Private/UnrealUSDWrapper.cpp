@@ -52,13 +52,15 @@
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usd/stageCacheContext.h"
 #include "pxr/usd/usd/usdFileFormat.h"
+#include "pxr/usd/usd/usdaFileFormat.h"
+#include "pxr/usd/usd/usdcFileFormat.h"
+#include "pxr/usd/usd/usdzFileFormat.h"
 #include "pxr/usd/usd/variantSets.h"
 #include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/metrics.h"
 #include "pxr/usd/usdGeom/modelAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xformCommonAPI.h"
-#include "pxr/usd/usdLux/light.h"
 #include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdShade/tokens.h"
 #include "pxr/usd/usdUtils/stageCache.h"
@@ -70,17 +72,6 @@ using std::vector;
 using std::string;
 
 using namespace pxr;
-
-#ifdef PLATFORM_WINDOWS
-	#define USDWRAPPER_USE_XFORMACHE	1
-#else
-	#define USDWRAPPER_USE_XFORMACHE	0
-#endif
-
-
-#if USDWRAPPER_USE_XFORMACHE
-static TUsdStore< UsdGeomXformCache > XFormCache;
-#endif // USDWRAPPER_USE_XFORMACHE
 
 namespace UnrealIdentifiers
 {
@@ -96,7 +87,6 @@ namespace UnrealIdentifiers
 	 */
 	const TfToken LOD("LOD");
 
-	const TfToken MaterialAssignments = TfToken("unrealMaterials"); // DEPRECATED in favor of MaterialAssignment
 	const TfToken MaterialAssignment = TfToken("unrealMaterial");
 	const TfToken Unreal = TfToken("unreal");
 
@@ -104,6 +94,15 @@ namespace UnrealIdentifiers
 	const TfToken UnrealNaniteOverrideEnable = TfToken("enable");
 	const TfToken UnrealNaniteOverrideDisable = TfToken("disable");
 
+	const TfToken LiveLinkAPI = TfToken("LiveLinkAPI");
+	const TfToken ControlRigAPI = TfToken("ControlRigAPI");
+	const TfToken UnrealAnimBlueprintPath = TfToken("unreal:liveLink:animBlueprintPath");
+	const TfToken UnrealLiveLinkSubjectName = TfToken("unreal:liveLink:subjectName");
+	const TfToken UnrealLiveLinkEnabled = TfToken("unreal:liveLink:enabled");
+	const TfToken UnrealControlRigPath = TfToken("unreal:controlRig:controlRigPath");
+	const TfToken UnrealUseFKControlRig = TfToken("unreal:controlRig:useFKControlRig");
+	const TfToken UnrealControlRigReduceKeys = TfToken("unreal:controlRig:reduceKeys");
+	const TfToken UnrealControlRigReductionTolerance = TfToken("unreal:controlRig:reductionTolerance");
 	const TfToken DiffuseColor = TfToken("diffuseColor");
 	const TfToken EmissiveColor = TfToken("emissiveColor");
 	const TfToken Metallic = TfToken("metallic");
@@ -114,7 +113,7 @@ namespace UnrealIdentifiers
 	const TfToken Anisotropy = TfToken("anisotropy");
 	const TfToken Tangent = TfToken("tangent");
 	const TfToken SubsurfaceColor = TfToken("subsurfaceColor");
-	const TfToken AmbientOcclusion = TfToken("ambientOcclusion");
+	const TfToken Occlusion = TfToken("occlusion");
 	const TfToken Refraction = TfToken("ior");
 
 	const TfToken Surface = TfToken("surface");
@@ -122,6 +121,11 @@ namespace UnrealIdentifiers
 	const TfToken Varname = TfToken("varname");
 	const TfToken Result = TfToken("result");
 	const TfToken File = TfToken("file");
+	const TfToken WrapT = TfToken( "wrapT" );
+	const TfToken WrapS = TfToken( "wrapS" );
+	const TfToken Repeat = TfToken( "repeat" );
+	const TfToken Mirror = TfToken( "mirror" );
+	const TfToken Clamp = TfToken( "clamp" );
 	const TfToken Fallback = TfToken("fallback");
 	const TfToken R = TfToken("r");
 	const TfToken RGB = TfToken("rgb");
@@ -132,6 +136,16 @@ namespace UnrealIdentifiers
 	const TfToken UsdUVTexture = TfToken( "UsdUVTexture" );
 
 	const TfToken WorldSpaceNormals = TfToken( "worldSpaceNormals" );
+
+	const TfToken GroomAPI = TfToken( "GroomAPI" );
+	const TfToken GroomBindingAPI = TfToken( "GroomBindingAPI" );
+	const TfToken UnrealGroomToBind = TfToken( "unreal:groomBinding:groom" );
+	const TfToken UnrealGroomReferenceMesh = TfToken( "unreal:groomBinding:referenceMesh" );
+
+	const TfToken UnrealContentPath = TfToken( "unreal:contentPath" );
+	const TfToken UnrealAssetType = TfToken( "unreal:assetType" );
+	const TfToken UnrealExportTime = TfToken( "unreal:exportTime" );
+	const TfToken UnrealEngineVersion = TfToken( "unreal:engineVersion" );
 }
 
 std::string FUsdAttribute::GetUnrealPropertyPath( const pxr::UsdAttribute& Attribute )
@@ -175,17 +189,6 @@ template<typename T>
 bool IsHolding(const VtValue& Value)
 {
 	return Value.IsHolding<T>() || Value.IsHolding<VtArray<T>>();
-}
-
-// Only used to make sure we link against UsdLux so that it's available to Python on Linux
-float GetLightIntensity(const pxr::UsdPrim& Prim)
-{
-	pxr::UsdLuxLight UsdLuxLight( Prim );
-
-	float Value;
-	UsdLuxLight.GetIntensityAttr().Get( &Value );
-
-	return Value;
 }
 
 bool FUsdAttribute::AsInt(int64_t& OutVal, const pxr::UsdAttribute& Attribute, int ArrayIndex, double Time)
@@ -732,6 +735,8 @@ EUsdGeomOrientation IUsdPrim::GetGeometryOrientation(const pxr::UsdGeomMesh& Mes
 }
 #endif // USE_USD_SDK
 
+const TCHAR* UnrealIdentifiers::LayerSavedComment = TEXT("unreal:layerSaved");
+
 const TCHAR* UnrealIdentifiers::Invisible = TEXT("invisible");
 const TCHAR* UnrealIdentifiers::Inherited = TEXT("inherited");
 const TCHAR* UnrealIdentifiers::IdentifierPrefix = TEXT("@identifier:");
@@ -756,6 +761,17 @@ FName UnrealIdentifiers::SourceRadiusPropertyName = GET_MEMBER_NAME_CHECKED( UPo
 FName UnrealIdentifiers::OuterConeAnglePropertyName = GET_MEMBER_NAME_CHECKED( USpotLightComponent, OuterConeAngle );
 FName UnrealIdentifiers::InnerConeAnglePropertyName = GET_MEMBER_NAME_CHECKED( USpotLightComponent, InnerConeAngle );
 FName UnrealIdentifiers::LightSourceAnglePropertyName = GET_MEMBER_NAME_CHECKED( UDirectionalLightComponent, LightSourceAngle );
+
+FString UnrealIdentifiers::MaterialAllPurposeText = TEXT( "allPurpose" );
+#if USE_USD_SDK
+FString UnrealIdentifiers::MaterialAllPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->allPurpose.GetString().c_str() );
+FString UnrealIdentifiers::MaterialPreviewPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->preview.GetString().c_str() );
+FString UnrealIdentifiers::MaterialFullPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->full.GetString().c_str() );
+#else
+FString UnrealIdentifiers::MaterialAllPurpose = TEXT( "" );
+FString UnrealIdentifiers::MaterialPreviewPurpose = TEXT( "preview" );
+FString UnrealIdentifiers::MaterialFullPurpose = TEXT( "full" );
+#endif // USE_USD_SDK
 
 FUsdDelegates::FUsdImportDelegate FUsdDelegates::OnPreUsdImport;
 FUsdDelegates::FUsdImportDelegate FUsdDelegates::OnPostUsdImport;
@@ -848,60 +864,249 @@ TArray<FString> UnrealUSDWrapper::GetAllSupportedFileFormats()
 	return Result;
 }
 
-UE::FUsdStage UnrealUSDWrapper::OpenStage( const TCHAR* Identifier, EUsdInitialLoadSet InitialLoadSet, bool bUseStageCache )
+TArray<FString> UnrealUSDWrapper::GetNativeFileFormats()
 {
-	if ( !Identifier || FCString::Strlen( Identifier ) == 0 )
-	{
-		return UE::FUsdStage();
-	}
+	TArray<FString> Result;
 
 #if USE_USD_SDK
-	FScopedUsdAllocs UsdAllocs;
+	FScopedUsdAllocs Allocs;
 
-	pxr::SdfLayerHandleSet LoadedLayers = pxr::SdfLayer::GetLoadedLayers();
-	pxr::UsdStageRefPtr Stage;
+	const pxr::TfTokenVector NativeFormatIds{
+		pxr::UsdUsdFileFormatTokens->Id,
+		pxr::UsdUsdaFileFormatTokens->Id,
+		pxr::UsdUsdcFileFormatTokens->Id,
+		pxr::UsdUsdzFileFormatTokens->Id
+	};
 
-	TOptional<pxr::UsdStageCacheContext> StageCacheContext;
-	if ( bUseStageCache )
-	{
-		StageCacheContext.Emplace( pxr::UsdUtilsStageCache::Get() );
-	}
+	std::set<std::string> FileExtensions;
 
-	FString IdentifierStr = FString(Identifier);
-	if ( FPaths::FileExists( IdentifierStr ) )
+	for ( const pxr::TfToken& FormatId : NativeFormatIds )
 	{
-		Stage = pxr::UsdStage::Open( TCHAR_TO_ANSI( Identifier ), pxr::UsdStage::InitialLoadSet( InitialLoadSet ) );
-	}
-	else if ( IdentifierStr.RemoveFromStart( UnrealIdentifiers::IdentifierPrefix ) )
-	{
-		pxr::SdfLayerRefPtr RootLayer = pxr::SdfLayer::Find( TCHAR_TO_ANSI( *IdentifierStr ) );
-		if ( RootLayer )
+		const pxr::SdfFileFormatConstPtr Format = pxr::SdfFileFormat::FindById( FormatId );
+		if ( !Format )
 		{
-			Stage = pxr::UsdStage::Open( RootLayer, pxr::UsdStage::InitialLoadSet( InitialLoadSet ) );
+			continue;
+		}
+
+		for ( const std::string& FileExtension : Format->GetFileExtensions() )
+		{
+			FileExtensions.insert( FileExtension );
 		}
 	}
 
-	if ( !bUseStageCache && Stage )
+	for ( const std::string& FileExtension : FileExtensions )
 	{
-		// Layers are cached in the layer registry independently of the stage cache. If the layer is already in the registry by the time
-		// we try to open a stage, even if we're not using a stage cache at all the layer will be reused and the file will *not* be re-read.
-		// Here we keep track of these loaded layers and manually reload the ones that were reused, because if we're passing false for
-		// bUseStageCache we really expect the files to be fully re-read
-		pxr::SdfLayerHandleVector StageLayers = Stage->GetLayerStack();
-		for ( pxr::SdfLayerHandle StageLayer : StageLayers )
+		Result.Emplace( ANSI_TO_TCHAR( FileExtension.c_str() ) );
+	}
+#endif // #if USE_USD_SDK
+
+	return Result;
+}
+
+namespace UE::UnrealUSDWrapper::Private
+{
+	UE::FUsdStage OpenStageImpl(
+		const TCHAR* RootIdentifier,
+		const TCHAR* SessionIdentifier,
+		EUsdInitialLoadSet InitialLoadSet,
+		bool bUseStageCache,
+		const TArray<FString>* PopulationMask,
+		bool bForceReloadLayersFromDisk
+	)
+	{
+		if ( !RootIdentifier || FCString::Strlen( RootIdentifier ) == 0 )
 		{
-			if ( LoadedLayers.count( StageLayer ) > 0 )
+			return UE::FUsdStage();
+		}
+
+#if USE_USD_SDK
+		FScopedUsdAllocs UsdAllocs;
+
+		pxr::SdfLayerHandleSet LoadedLayers = pxr::SdfLayer::GetLoadedLayers();
+		pxr::UsdStageRefPtr Stage;
+
+		TOptional<pxr::UsdStageCacheContext> StageCacheContext;
+		if ( bUseStageCache )
+		{
+			StageCacheContext.Emplace( pxr::UsdUtilsStageCache::Get() );
+		}
+
+		pxr::UsdStagePopulationMask Mask;
+		if( PopulationMask )
+		{
+			// The USD OpenMasked functions don't actually consult or populate the stage cache
+			ensure( bUseStageCache == false );
+
+			for ( const FString& AllowedPrimPath : *PopulationMask )
 			{
-				StageLayer->Reload();
+				Mask.Add( pxr::SdfPath{ TCHAR_TO_ANSI( *AllowedPrimPath ) } );
 			}
 		}
+
+		static_assert( ( int ) pxr::UsdStage::InitialLoadSet::LoadAll == ( int ) EUsdInitialLoadSet::LoadAll );
+		static_assert( ( int ) pxr::UsdStage::InitialLoadSet::LoadNone == ( int ) EUsdInitialLoadSet::LoadNone );
+		pxr::UsdStage::InitialLoadSet LoadSet = static_cast< pxr::UsdStage::InitialLoadSet >( InitialLoadSet );
+
+		FString IdentifierStr = FString( RootIdentifier );
+		if ( FPaths::FileExists( IdentifierStr ) )
+		{
+			if( PopulationMask )
+			{
+				Stage = pxr::UsdStage::OpenMasked( TCHAR_TO_ANSI( *IdentifierStr ), Mask, LoadSet );
+			}
+			else
+			{
+				Stage = pxr::UsdStage::Open( TCHAR_TO_ANSI( *IdentifierStr ), LoadSet );
+			}
+		}
+		else
+		{
+			FString SessionIdentifierStr = FString{ SessionIdentifier };
+
+			IdentifierStr.RemoveFromStart( UnrealIdentifiers::IdentifierPrefix );
+			SessionIdentifierStr.RemoveFromStart( UnrealIdentifiers::IdentifierPrefix );
+
+			pxr::SdfLayerRefPtr RootLayer = pxr::SdfLayer::Find( TCHAR_TO_ANSI( *IdentifierStr ) );
+			pxr::SdfLayerRefPtr SessionLayer = pxr::SdfLayer::Find( TCHAR_TO_ANSI( *SessionIdentifierStr ) );
+			if ( RootLayer )
+			{
+				if ( PopulationMask )
+				{
+					// We use this additional check so we don't have to replicate USD's "_CreateAnonymousSessionLayer"
+					// Basically we can't pass an invalid session layer pointer here the stage will actually end up
+					// with no session layer at all
+					if ( SessionLayer )
+					{
+						Stage = pxr::UsdStage::OpenMasked( RootLayer, SessionLayer, Mask, LoadSet );
+					}
+					else
+					{
+						Stage = pxr::UsdStage::OpenMasked( RootLayer, Mask, LoadSet );
+					}
+				}
+				else
+				{
+					if( SessionLayer )
+					{
+						Stage = pxr::UsdStage::Open( RootLayer, SessionLayer, LoadSet );
+					}
+					else
+					{
+						Stage = pxr::UsdStage::Open( RootLayer, LoadSet );
+					}
+				}
+			}
+		}
+
+		if ( bForceReloadLayersFromDisk && Stage )
+		{
+			// Layers are cached in the layer registry independently of the stage cache. If the layer is already in
+			// the registry by the time we try to open a stage, even if we're not using a stage cache at all the
+			// layer will be reused and the file will *not* be re-read, so here we manually reload them.
+			pxr::SdfLayerHandleVector StageLayers = Stage->GetLayerStack();
+			for ( pxr::SdfLayerHandle StageLayer : StageLayers )
+			{
+				if ( LoadedLayers.count( StageLayer ) > 0 )
+				{
+					StageLayer->Reload();
+				}
+			}
+		}
+
+		return UE::FUsdStage( Stage );
+#else
+		UsdWrapperUtils::CheckIfForceDisabled();
+		return UE::FUsdStage();
+#endif // #if USE_USD_SDK
+	}
+}
+
+UE::FUsdStage UnrealUSDWrapper::OpenStage(
+	const TCHAR* Identifier,
+	EUsdInitialLoadSet InitialLoadSet,
+	bool bUseStageCache,
+	bool bForceReloadLayersFromDisk
+)
+{
+	const TArray<FString>* PopulationMask = nullptr;
+	const TCHAR* SessionIdentifier = nullptr;
+	return UE::UnrealUSDWrapper::Private::OpenStageImpl(
+		Identifier,
+		SessionIdentifier,
+		InitialLoadSet,
+		bUseStageCache,
+		nullptr,
+		bForceReloadLayersFromDisk
+	);
+}
+
+ UE::FUsdStage UnrealUSDWrapper::OpenStage(
+	 UE::FSdfLayer RootLayer,
+	 UE::FSdfLayer SessionLayer,
+	 EUsdInitialLoadSet InitialLoadSet,
+	 bool bUseStageCache,
+	 bool bForceReloadLayersFromDisk
+ )
+{
+	 if( !RootLayer )
+	 {
+		 return {};
+	 }
+
+	 const TArray<FString>* PopulationMask = nullptr;
+	 const TCHAR* SessionIdentifier = nullptr;
+	 return UE::UnrealUSDWrapper::Private::OpenStageImpl(
+		 *RootLayer.GetIdentifier(),
+		 SessionLayer ? *SessionLayer.GetIdentifier() : nullptr,
+		 InitialLoadSet,
+		 bUseStageCache,
+		 nullptr,
+		 bForceReloadLayersFromDisk
+	 );
+}
+
+UE::FUsdStage UnrealUSDWrapper::OpenMaskedStage(
+	const TCHAR* Identifier,
+	EUsdInitialLoadSet InitialLoadSet,
+	const TArray<FString>& PopulationMask,
+	bool bForceReloadLayersFromDisk
+)
+{
+	const bool bUseStageCache = false;
+	const TCHAR* SessionIdentifier = nullptr;
+	return UE::UnrealUSDWrapper::Private::OpenStageImpl(
+		Identifier,
+		SessionIdentifier,
+		InitialLoadSet,
+		bUseStageCache,
+		&PopulationMask,
+		bForceReloadLayersFromDisk
+	);
+}
+
+UE::FUsdStage UnrealUSDWrapper::OpenMaskedStage(
+	UE::FSdfLayer RootLayer,
+	UE::FSdfLayer SessionLayer,
+	EUsdInitialLoadSet InitialLoadSet,
+	const TArray<FString>& PopulationMask,
+	bool bForceReloadLayersFromDisk
+)
+{
+	if ( !RootLayer )
+	{
+		return {};
 	}
 
-	return UE::FUsdStage( Stage );
-#else
-	UsdWrapperUtils::CheckIfForceDisabled();
-	return UE::FUsdStage();
-#endif // #if USE_USD_SDK
+	const bool bUseStageCache = false;
+	const TCHAR* SessionIdentifier = nullptr;
+	return UE::UnrealUSDWrapper::Private::OpenStageImpl(
+		*RootLayer.GetIdentifier(),
+		SessionLayer ? *SessionLayer.GetIdentifier() : nullptr,
+		InitialLoadSet,
+		bUseStageCache,
+		&PopulationMask,
+		bForceReloadLayersFromDisk
+	);
 }
 
 UE::FUsdStage UnrealUSDWrapper::NewStage( const TCHAR* FilePath )
@@ -938,6 +1143,26 @@ UE::FUsdStage UnrealUSDWrapper::NewStage()
 	UsdWrapperUtils::CheckIfForceDisabled();
 	return UE::FUsdStage();
 #endif // #if USE_USD_SDK
+}
+
+UE::FUsdStage UnrealUSDWrapper::GetClipboardStage()
+{
+	static UE::FUsdStage ClipboardStage;
+
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	if ( !ClipboardStage )
+	{
+		// Use this specific name so that we can check for it on our automated tests
+		pxr::UsdStageCacheContext StageCacheContext{ pxr::UsdUtilsStageCache::Get() };
+		ClipboardStage = UE::FUsdStage{ pxr::UsdStage::CreateInMemory( TCHAR_TO_ANSI( TEXT( "unreal_clipboard_layer" ) ) ) };
+
+		pxr::UsdGeomSetStageUpAxis( ClipboardStage, pxr::UsdGeomTokens->z );
+	}
+#endif // #if USE_USD_SDK
+
+	return ClipboardStage;
 }
 
 TArray< UE::FUsdStage > UnrealUSDWrapper::GetAllStagesFromCache()
@@ -999,6 +1224,7 @@ public:
 	virtual void StartupModule() override
 	{
 #if USE_USD_SDK
+		LLM_SCOPE_BYTAG(Usd);
 
 		// Path to USD base plugins
 		FString UsdPluginsPath = FPaths::Combine( TEXT( ".." ), TEXT( "ThirdParty" ), TEXT( "USD" ), TEXT( "UsdResources" ) );
@@ -1009,7 +1235,7 @@ public:
 		UsdPluginsPath /= FPaths::Combine( TEXT( "Linux" ), TEXT( "plugins" ) );
 #elif PLATFORM_MAC
 		UsdPluginsPath /= FPaths::Combine( TEXT( "Mac" ), TEXT( "plugins" ) );
-#endif
+#endif // PLATFORM_WINDOWS
 
 #ifdef USE_LIBRARIES_FROM_PLUGIN_FOLDER
 		// e.g. "../../../Engine/Plugins/Importers/USDImporter/Source/ThirdParty"
@@ -1025,7 +1251,15 @@ public:
 
 #else
 		FString TargetDllFolder = FPlatformProcess::BaseDir();
-#endif // USD_DLL_LOCATION_OVERRIDE
+#endif // USE_LIBRARIES_FROM_PLUGIN_FOLDER
+
+		// Path to the MaterialX standard data libraries.
+		FString MaterialXStdDataLibsPath = FPaths::Combine( FPaths::EngineDir(), TEXT( "Binaries" ), TEXT("ThirdParty"), TEXT("MaterialX"), TEXT("libraries"));
+		MaterialXStdDataLibsPath = FPaths::ConvertRelativePathToFull( MaterialXStdDataLibsPath );
+		if (FPaths::DirectoryExists(MaterialXStdDataLibsPath))
+		{
+			FPlatformMisc::SetEnvironmentVar(TEXT("PXR_MTLX_STDLIB_SEARCH_PATHS"), *MaterialXStdDataLibsPath);
+		}
 
 		// Have to do this in USDClasses as we need the Json module, which is RTTI == false
 		IUsdClassesModule::UpdatePlugInfoFiles(UsdPluginsPath, TargetDllFolder);

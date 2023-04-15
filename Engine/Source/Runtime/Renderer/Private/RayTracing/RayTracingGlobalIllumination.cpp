@@ -6,7 +6,7 @@
 
 #include "RayTracingSkyLight.h"
 #include "ScenePrivate.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RenderGraphBuilder.h"
 #include "RenderTargetPool.h"
 #include "RHIResources.h"
@@ -288,6 +288,8 @@ static void SetupLightParameters(
 		FLightRenderParameters LightShaderParameters;
 		Light.LightSceneInfo->Proxy->GetLightShaderParameters(LightShaderParameters);
 
+		LightShaderParameters.Color *= LightShaderParameters.GetLightExposureScale(View.GetLastEyeAdaptationExposure());
+
 		uint32 Transmission = Light.LightSceneInfo->Proxy->Transmission();
 		uint8 LightingChannelMask = Light.LightSceneInfo->Proxy->GetLightingChannelMask();
 		DestLight.Flags  = Transmission ? PATHTRACER_FLAG_TRANSMISSION_MASK : 0;
@@ -319,7 +321,7 @@ static void SetupLightParameters(
 			DestLight.dPdu = FVector3f::CrossProduct(LightShaderParameters.Direction, LightShaderParameters.Tangent);
 			DestLight.dPdv = LightShaderParameters.Tangent;
 			DestLight.Color = FVector3f(LightShaderParameters.Color);
-			DestLight.Dimensions = FVector3f(2.0f * LightShaderParameters.SourceRadius, 2.0f * LightShaderParameters.SourceLength, 0.0f);
+			DestLight.Dimensions = FVector2f(2.0f * LightShaderParameters.SourceRadius, 2.0f * LightShaderParameters.SourceLength);
 			DestLight.Shaping = FVector2f(LightShaderParameters.RectLightBarnCosAngle, LightShaderParameters.RectLightBarnLength);
 			DestLight.Flags |= PATHTRACING_LIGHT_RECT;
 			break;
@@ -333,7 +335,7 @@ static void SetupLightParameters(
 			// #dxr_todo: UE-72556 define these differences from Lit..
 			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			float SourceRadius = 0.0; // LightShaderParameters.SourceRadius causes too much noise for little pay off at this time
-			DestLight.Dimensions = FVector3f(SourceRadius, 0.0, 0.0);
+			DestLight.Dimensions = FVector2f(SourceRadius, 0.0);
 			DestLight.Flags |= PATHTRACING_LIGHT_POINT;
 			break;
 		}
@@ -346,7 +348,7 @@ static void SetupLightParameters(
 			// #dxr_todo: UE-72556 define these differences from Lit..
 			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			float SourceRadius = 0.0; // LightShaderParameters.SourceRadius causes too much noise for little pay off at this time
-			DestLight.Dimensions = FVector3f(SourceRadius, 0.0, 0.0);
+			DestLight.Dimensions = FVector2f(SourceRadius, 0.0);
 			DestLight.Shaping = LightShaderParameters.SpotAngles;
 			DestLight.Flags |= PATHTRACING_LIGHT_SPOT;
 			break;
@@ -938,7 +940,7 @@ void FDeferredShadingSceneRenderer::RayTracingGlobalIlluminationCreateGatherPoin
 	PassParameters->RenderTileOffsetY = 0;
 
 	// Global
-	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 
 	// Light data
@@ -1156,7 +1158,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationFinalGathe
 	PassParameters->GatherPointData = CreateUniformBufferImmediate(GatherPointData, EUniformBufferUsage::UniformBuffer_SingleDraw);
 
 	// Scene data
-	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 
 	// Shading data
@@ -1243,7 +1245,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationBruteForce
 	PassParameters->UseFireflySuppression = CVarRayTracingGlobalIlluminationFireflySuppression.GetValueOnRenderThread() != 0;
 	PassParameters->DiffuseThreshold = GRayTracingGlobalIlluminationDiffuseThreshold;
 	PassParameters->NextEventEstimationSamples = GRayTracingGlobalIlluminationNextEventEstimationSamples;
-	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	SetupLightParameters(Scene, View, GraphBuilder, &PassParameters->SceneLights, &PassParameters->SceneLightCount, &PassParameters->SkylightParameters);
 	PassParameters->SceneTextures = SceneTextures;

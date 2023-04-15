@@ -307,8 +307,8 @@ namespace GeometryCollectionTest
 
 			if (Frame == 2)
 			{
-				TMap<FGeometryParticleHandle*, FReal> ExternalStrains = { {ParticleHandles[0], 50.0f} };
-				Clustering.BreakingModel(&ExternalStrains);
+				ParticleHandles[0]->SetExternalStrain(50.0f);
+				Clustering.BreakingModel();
 			}
 
 			DisabledFlags.Reset();
@@ -607,8 +607,8 @@ namespace GeometryCollectionTest
 		Params.ClusterGroupIndex = 0;
 		FGeometryCollectionWrapper* Collection1 = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection1 = Collection1->DynamicCollection;
-		DynamicCollection1->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
-		DynamicCollection1->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[0] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		DynamicCollection1->ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		DynamicCollection1->ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[0] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
 
 		UnitTest.AddSimulationObject(Collection1);
 
@@ -855,7 +855,7 @@ namespace GeometryCollectionTest
 		Params.MaxClusterLevel = 1;
 		FGeometryCollectionWrapper* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 
-		Collection->DynamicCollection->template GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		Collection->DynamicCollection->template ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
 
 		UnitTest.AddSimulationObject(Collection);
 		UnitTest.Initialize();
@@ -1154,7 +1154,7 @@ namespace GeometryCollectionTest
 		Params.MaxClusterLevel = 1;
 		FGeometryCollectionWrapper* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 
-		Collection->DynamicCollection->template GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Static;
+		Collection->DynamicCollection->template ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Static;
 
 		UnitTest.AddSimulationObject(Collection);
 		UnitTest.Initialize();
@@ -1877,7 +1877,7 @@ namespace GeometryCollectionTest
 
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection1 = Collection1->DynamicCollection;
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection2 = Collection2->DynamicCollection;
-		DynamicCollection1->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		DynamicCollection1->ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
 
 		UnitTest.Initialize();
 
@@ -1968,7 +1968,7 @@ namespace GeometryCollectionTest
 		Params.ClusterGroupIndex = 0;		
 		FGeometryCollectionWrapper* Collection1 = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection1 = Collection1->DynamicCollection;
-		DynamicCollection1->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		DynamicCollection1->ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
 
 		UnitTest.AddSimulationObject(Collection1);
 
@@ -2036,7 +2036,7 @@ namespace GeometryCollectionTest
 		FGeometryCollectionWrapper* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
 
 		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = Collection->DynamicCollection;
-		DynamicCollection->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
+		DynamicCollection->ModifyAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
 
 		UnitTest.AddSimulationObject(Collection);
 		UnitTest.Initialize();
@@ -2086,7 +2086,7 @@ namespace GeometryCollectionTest
 
 			if (Frame == 5)
 			{
-				UnitTest.Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticles(ParticleHandles[4]->CastToClustered(), nullptr, true);
+				UnitTest.Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticles(ParticleHandles[4]->CastToClustered(), true);
 			}
 			
 			if (Frame < 5)
@@ -2108,86 +2108,6 @@ namespace GeometryCollectionTest
 				EXPECT_TRUE(ClusterMapContains(ClusterMap, ParticleHandles[2], { ParticleHandles[0], ParticleHandles[1] }));
 			}				
 		}
-	}
-
-	
-	GTEST_TEST(AllTraits, DISABLED_GeometryCollection_RigidBodies_ClusterTest_RemoveOnFracture)
-	{
-		// Disabled as remove on fracture currently unimplemented for geometry collections. Potentially this should be deleted entirely.
-
-		FFramework UnitTest;
-
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform(FQuat::MakeFromEuler(FVector(0, 0, 0.)), FVector(0, -10, 10)), FVector(1.0));
-		RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FQuat::MakeFromEuler(FVector(0, 0, 0.)), FVector(0, 10, 10)), FVector(1.0)));
-		EXPECT_EQ(RestCollection->Transform.Num(), 2);
-
-		// this transform should have a zero scale after the simulation has run to the point of fracture
-		RestCollection->SetFlags(1, FGeometryCollection::FS_RemoveOnFracture);
-
-		FGeometryCollectionClusteringUtility::ClusterAllBonesUnderNewRoot(RestCollection.Get());
-		EXPECT_EQ(RestCollection->Transform.Num(), 3);
-		RestCollection->Transform[2] = FTransform(FQuat::MakeFromEuler(FVector(90.f, 0, 0.)), FVector(0, 0, 40));
-
-		CreationParameters Params;
-		Params.RestCollection = RestCollection;
-		Params.DynamicState = EObjectStateTypeEnum::Chaos_Object_Dynamic;
-		Params.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Box;
-		Params.CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
-		Params.Simulating = true;
-		Params.EnableClustering = true;
-		Params.DamageThreshold = { 0.1f };		
-		Params.RemoveOnFractureEnabled = true;
-		FGeometryCollectionWrapper* Collection = TNewSimulationObject<GeometryType::GeometryCollectionWithSuppliedRestCollection>::Init(Params)->template As<FGeometryCollectionWrapper>();
-
-		FRadialFalloff * FalloffField = new FRadialFalloff();
-		FalloffField->Magnitude = 10.5;
-		FalloffField->Radius = 100.0;
-		FalloffField->Position = FVector(0.0, 0.0, 0.0);
-		FalloffField->Falloff = EFieldFalloffType::Field_FallOff_None;
-
-		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = Collection->DynamicCollection;
-		DynamicCollection->GetAttribute<int32>("DynamicState", FGeometryCollection::TransformGroup)[1] = (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic;
-
-		UnitTest.AddSimulationObject(Collection);
-		UnitTest.Initialize();
-
-		auto& Clustering = UnitTest.Solver->GetEvolution()->GetRigidClustering();
-		const auto& ClusterMap = Clustering.GetChildrenMap();
-
-		TManagedArray<FTransform>& Transform = Collection->DynamicCollection->Transform;
-		FReal StartingRigidDistance = (Transform[1].GetTranslation() - Transform[0].GetTranslation()).Size(), CurrentRigidDistance = 0.f;
-		
-		// #todo: is this even used?
-		/*
-		Chaos::TArrayCollectionArray<FReal>& InternalStrain = Clustering.GetStrainArray();
-		*/
-
-		FName TargetName = GetFieldPhysicsName(EFieldPhysicsType::Field_ExternalClusterStrain);
-		FFieldSystemCommand Command(TargetName, FalloffField->NewCopy());
-		FFieldSystemMetaDataProcessingResolution* ResolutionData = new FFieldSystemMetaDataProcessingResolution(EFieldResolutionType::Field_Resolution_Maximum);
-		Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution, TUniquePtr< FFieldSystemMetaDataProcessingResolution >(ResolutionData));
-		UnitTest.Solver->GetPerSolverField().AddTransientCommand(Command);
-
-		FVector Scale = Transform[1].GetScale3D();
-
-		EXPECT_NEAR(Scale.X, 1.0f, SMALL_NUMBER);
-		EXPECT_NEAR(Scale.Y, 1.0f, SMALL_NUMBER);
-		EXPECT_NEAR(Scale.Z, 1.0f, SMALL_NUMBER);
-		
-		UnitTest.Advance();		
-
-		UnitTest.Solver->GetPerSolverField().AddTransientCommand({ TargetName, FalloffField->NewCopy() });
-
-		UnitTest.Advance();		
-
-		FVector Scale2 = Transform[1].GetScale3D();
-		// geometry hidden by 0 scaling on transform
-		EXPECT_NEAR(Scale2.X, 0.0f, SMALL_NUMBER);
-		EXPECT_NEAR(Scale2.Y, 0.0f, SMALL_NUMBER);
-		EXPECT_NEAR(Scale2.Z, 0.0f, SMALL_NUMBER);
-		
-		delete FalloffField;
-	
 	}
 
 	GTEST_TEST(AllTraits, DISABLED_GeometryCollection_RigidBodiess_ClusterTest_MaxClusterLevel_1)

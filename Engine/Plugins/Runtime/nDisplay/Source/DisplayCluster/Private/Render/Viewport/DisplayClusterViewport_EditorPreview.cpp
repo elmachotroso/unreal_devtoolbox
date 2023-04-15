@@ -86,7 +86,6 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 			FPlane(0, 1, 0, 0),
 			FPlane(0, 0, 0, 1));
 
-		float StereoIPD = 0.f;
 		FIntRect ViewRect = Contexts[InContextNum].RenderTargetRect;
 
 		FSceneViewInitOptions ViewInitOptions;
@@ -112,8 +111,6 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 			ViewInitOptions.WorldToMetersScale = InOutViewFamily.Scene->GetWorld()->GetWorldSettings()->WorldToMeters;
 		}
 
-		ViewInitOptions.StereoIPD = StereoIPD * (ViewInitOptions.WorldToMetersScale / 100.0f);
-
 		ViewInitOptions.BackgroundColor = FLinearColor::Black;
 
 		if (Owner.GetRenderFrameSettings().bPreviewEnablePostProcess == false)
@@ -121,15 +118,11 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 			ViewInitOptions.OverlayColor = FLinearColor::Black;
 		}
 
+		ViewInitOptions.bIsSceneCapture = true;
+		ViewInitOptions.bSceneCaptureUsesRayTracing = false;
+		ViewInitOptions.bIsPlanarReflection = false;
+
 		FSceneView* View = new FSceneView(ViewInitOptions);
-
-		View->bIsSceneCapture = true;
-		View->bSceneCaptureUsesRayTracing = false;
-		View->bIsPlanarReflection = false;
-
-		// Note: this has to be set before EndFinalPostprocessSettings
-		// Needs to be reconfigured now that bIsPlanarReflection has changed.
-		View->SetupAntiAliasingMethod();
 
 		InOutViewFamily.Views.Add(View);
 
@@ -237,7 +230,7 @@ bool FDisplayClusterViewport::ImplPreview_CalculateStereoViewOffset(const uint32
 	// Get the actual camera settings
 	const float CfgEyeDist  = ViewCamera ? ViewCamera->GetInterpupillaryDistance() : 6.4f;
 	const bool  bCfgEyeSwap = ViewCamera ? ViewCamera->GetSwapEyes() : false;
-	const float CfgNCP = 1.f;
+	const float CfgNCP = GNearClippingPlane;
 
 	const EDisplayClusterEyeStereoOffset CfgEyeOffset = ViewCamera ? ViewCamera->GetStereoOffset() : EDisplayClusterEyeStereoOffset::None;
 

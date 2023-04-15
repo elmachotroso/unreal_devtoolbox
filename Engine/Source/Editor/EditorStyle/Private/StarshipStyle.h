@@ -9,11 +9,10 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateTypes.h"
 #include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "ISettingsModule.h"
 
 #if WITH_EDITOR
-#include "EditorStyleSettingsCustomization.h"
 #include "PropertyEditorModule.h"
 #endif
 
@@ -36,10 +35,13 @@ public:
 		FStarshipEditorStyle::StyleInstance->SyncSettings();
 	}
 
+	static const FName& GetStyleSetName();
+
 	class FStyle : public FSlateStyleSet
 	{
 	public:
 		FStyle(const TWeakObjectPtr< UEditorStyleSettings >& InSettings);
+		~FStyle();
 
 		void Initialize();
 		void SetupGeneralStyles();
@@ -66,6 +68,7 @@ public:
 		void SetupContentBrowserStyle();
 		void SetupLandscapeEditorStyle();
 		void SetupToolkitStyles();
+		void SetupUnsavedAssetsStyles();
 		void SetupSourceControlStyles();
 		void SetupAutomationStyles();
 		void SetupUMGEditorStyles();
@@ -74,7 +77,7 @@ public:
 		void SetupColorPickerStyle();
 		void SetupDerivedDataStyle();
 
-		void SettingsChanged(UObject* ChangedObject, FPropertyChangedEvent& PropertyChangedEvent);
+		void SettingsChanged(FName PropertyName);
 		void SyncSettings();
 		void SyncParentStyles();
 
@@ -120,11 +123,7 @@ public:
 		const FSlateColor HighlightColor;
 		const FSlateColor WindowHighlightColor;
 
-		const FSlateColor LogColor_SelectionBackground;
-		const FSlateColor LogColor_Normal;
-		const FSlateColor LogColor_Command;
-
-		// These are common colors used thruout the editor in mutliple style elements
+		// These are common colors used throughout the editor in multiple style elements
 		const FSlateColor InheritedFromBlueprintTextColor;
 
 		// Styles inherited from the parent style
@@ -136,9 +135,12 @@ public:
 		FButtonStyle NoBorder;
 		FScrollBarStyle ScrollBar;
 		FSlateFontInfo NormalFont;
-		FSlateBrush EditorWindowHighlightBrush;
+
+		FSlateBrush* WindowTitleOverride;
 
 		TWeakObjectPtr< UEditorStyleSettings > Settings;
+
+		FDelegateHandle SettingChangedHandler;
 	};
 
 	static TSharedRef<class FStarshipEditorStyle::FStyle> Create(const TWeakObjectPtr< UEditorStyleSettings >& InCustomization)
@@ -146,13 +148,10 @@ public:
 		TSharedRef<class FStarshipEditorStyle::FStyle> NewStyle = MakeShareable(new FStarshipEditorStyle::FStyle(InCustomization));
 		NewStyle->Initialize();
 
-#if WITH_EDITOR
-		FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(NewStyle, &FStarshipEditorStyle::FStyle::SettingsChanged);
-#endif
-
 		return NewStyle;
 	}
 
 	static TSharedPtr<FStarshipEditorStyle::FStyle> StyleInstance;
 	static TWeakObjectPtr<UEditorStyleSettings> Settings;
+	static FName StyleSetName;
 };

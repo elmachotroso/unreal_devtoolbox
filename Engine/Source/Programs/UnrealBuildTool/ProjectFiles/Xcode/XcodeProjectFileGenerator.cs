@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -6,6 +6,7 @@ using System.Text;
 using System.IO;
 using EpicGames.Core;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -14,6 +15,8 @@ namespace UnrealBuildTool
 	/// </summary>
 	class XcodeProjectFileGenerator : ProjectFileGenerator
 	{
+		public DirectoryReference? XCWorkspace;
+
 		// always seed the random number the same, so multiple runs of the generator will generate the same project
 		static Random Rand = new Random(0);
 
@@ -78,7 +81,7 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// </summary>
-		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesPath)
+		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesPath, ILogger Logger)
 		{
 			DirectoryReference PrimaryProjDeleteFilename = DirectoryReference.Combine(InPrimaryProjectDirectory, InPrimaryProjectName + ".xcworkspace");
 			if (DirectoryReference.Exists(PrimaryProjDeleteFilename))
@@ -95,8 +98,8 @@ namespace UnrealBuildTool
 				}
 				catch (Exception Ex)
 				{
-					Log.TraceInformation("Error while trying to clean project files path {0}. Ignored.", InIntermediateProjectFilesPath);
-					Log.TraceInformation("\t" + Ex.Message);
+					Logger.LogInformation("Error while trying to clean project files path {InIntermediateProjectFilesPath}. Ignored.", InIntermediateProjectFilesPath);
+					Logger.LogInformation("\t{Ex}", Ex.Message);
 				}
 			}
 		}
@@ -109,19 +112,24 @@ namespace UnrealBuildTool
 		/// <returns>The newly allocated project file object</returns>
 		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath, DirectoryReference BaseDir)
 		{
-			return new XcodeProjectFile(InitFilePath, BaseDir, bForDistribution, BundleIdentifier, AppName);
+			// this may internally (later) make a Legacy project object if the unreal project wants old behavior
+			// unfortunately, we can't read the project configs now because we don't have enough information to 
+			// find the .uproject file for that would make this project (we could change the high level to pass it 
+			// down but it would touch all project generators - not worth it if we end up removing the legacy)
+			return new XcodeProjectXcconfig.XcodeProjectFile(InitFilePath, BaseDir, bForDistribution, BundleIdentifier, AppName);
 		}
 
-		private bool WriteWorkspaceSettingsFile(string Path)
+		private bool WriteWorkspaceSettingsFile(string Path, ILogger Logger)
 		{
 			StringBuilder WorkspaceSettingsContent = new StringBuilder();
 			WorkspaceSettingsContent.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<plist version=\"1.0\">" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<dict>" + ProjectFileGenerator.NewLine);
+			// @todo when we move to xcode 14, we remove these next 4 keys
 			WorkspaceSettingsContent.Append("\t<key>BuildSystemType</key>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("\t<string>Original</string>" + ProjectFileGenerator.NewLine);
-            WorkspaceSettingsContent.Append("\t<key>BuildLocationStyle</key>" + ProjectFileGenerator.NewLine);
+			WorkspaceSettingsContent.Append("\t<key>BuildLocationStyle</key>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("\t<string>UseTargetSettings</string>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("\t<key>CustomBuildLocationType</key>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("\t<string>RelativeToDerivedData</string>" + ProjectFileGenerator.NewLine);
@@ -137,26 +145,29 @@ namespace UnrealBuildTool
 			WorkspaceSettingsContent.Append("\t<string>Default</string>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("</dict>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("</plist>" + ProjectFileGenerator.NewLine);
-			return WriteFileIfChanged(Path, WorkspaceSettingsContent.ToString(), new UTF8Encoding());
+			return WriteFileIfChanged(Path, WorkspaceSettingsContent.ToString(), Logger, new UTF8Encoding());
 		}
 
-		private bool WriteWorkspaceSharedSettingsFile(string Path)
+		private bool WriteWorkspaceSharedSettingsFile(string Path, ILogger Logger)
 		{
 			StringBuilder WorkspaceSettingsContent = new StringBuilder();
 			WorkspaceSettingsContent.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<plist version=\"1.0\">" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("<dict>" + ProjectFileGenerator.NewLine);
+			// @todo when we move to xcode 14, we remove these next 2 keys
 			WorkspaceSettingsContent.Append("\t<key>DisableBuildSystemDeprecationWarning</key>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("\t<true/>" + ProjectFileGenerator.NewLine);
-            WorkspaceSettingsContent.Append("\t<key>DisableBuildSystemDeprecationDiagnostic</key>" + ProjectFileGenerator.NewLine);
-            WorkspaceSettingsContent.Append("\t<true/>" + ProjectFileGenerator.NewLine);
+			WorkspaceSettingsContent.Append("\t<key>DisableBuildSystemDeprecationDiagnostic</key>" + ProjectFileGenerator.NewLine);
+			WorkspaceSettingsContent.Append("\t<true/>" + ProjectFileGenerator.NewLine);
+			WorkspaceSettingsContent.Append("\t<key>IDEWorkspaceSharedSettings_AutocreateContextsIfNeeded</key>" + ProjectFileGenerator.NewLine);
+			WorkspaceSettingsContent.Append("\t<false/>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("</dict>" + ProjectFileGenerator.NewLine);
 			WorkspaceSettingsContent.Append("</plist>" + ProjectFileGenerator.NewLine);
-			return WriteFileIfChanged(Path, WorkspaceSettingsContent.ToString(), new UTF8Encoding());
+			return WriteFileIfChanged(Path, WorkspaceSettingsContent.ToString(), Logger, new UTF8Encoding());
 		}
 
-		private bool WriteXcodeWorkspace()
+		private bool WriteXcodeWorkspace(ILogger Logger)
 		{
 			bool bSuccess = true;
 
@@ -166,7 +177,7 @@ namespace UnrealBuildTool
 			WorkspaceDataContent.Append("<Workspace" + ProjectFileGenerator.NewLine);
 			WorkspaceDataContent.Append("   version = \"1.0\">" + ProjectFileGenerator.NewLine);
 
-			List<XcodeProjectFile> BuildableProjects = new List<XcodeProjectFile>();
+			List<ProjectFile> BuildableProjects = new List<ProjectFile>();
 
 			System.Action< List<PrimaryProjectFolder> /* Folders */, string /* Ident */ >? AddProjectsFunction = null;
 			AddProjectsFunction = (FolderList, Ident) =>
@@ -179,12 +190,12 @@ namespace UnrealBuildTool
 						AddProjectsFunction!(CurFolder.SubFolders, Ident + "   ");
 				
 						// Filter out anything that isn't an XC project, and that shouldn't be in the workspace
-						IEnumerable<XcodeProjectFile> SupportedProjects =
-								CurFolder.ChildProjects.OfType<XcodeProjectFile>()
-									.Where(P => P.ShouldIncludeProjectInWorkspace())
+						IEnumerable<ProjectFile> SupportedProjects =
+								CurFolder.ChildProjects.Where(P => P.GetType() == typeof(XcodeProjectXcconfig.XcodeProjectFile) || P.GetType() == typeof(XcodeProjectLegacy.XcodeProjectFile))
+									.Where(P => XcodeProjectXcconfig.UnrealData.ShouldIncludeProjectInWorkspace(P, Logger))
 									.OrderBy(P => P.ProjectFilePath.GetFileName());
 
-						foreach (XcodeProjectFile XcodeProject in SupportedProjects)
+						foreach (ProjectFile XcodeProject in SupportedProjects)
 						{
 							WorkspaceDataContent.Append(Ident + "      <FileRef" + ProjectFileGenerator.NewLine);
 							WorkspaceDataContent.Append(Ident + "         location = \"group:" + XcodeProject.ProjectFilePath.MakeRelativeTo(ProjectFileGenerator.PrimaryProjectPath) + "\">" + ProjectFileGenerator.NewLine);
@@ -219,7 +230,7 @@ namespace UnrealBuildTool
 				return TargetA.Name.CompareTo(TargetB.Name);
 			});
 
-			foreach (XcodeProjectFile XcodeProject in BuildableProjects)
+			foreach (ProjectFile XcodeProject in BuildableProjects)
 			{
 				FileReference SchemeManagementFile = XcodeProject.ProjectFilePath + "/xcuserdata/" + Environment.UserName + ".xcuserdatad/xcschemes/xcschememanagement.plist";
 				if (FileReference.Exists(SchemeManagementFile))
@@ -237,22 +248,25 @@ namespace UnrealBuildTool
 				ProjectName += ProjectFilePlatform == XcodeProjectFilePlatform.Mac ? "_Mac" : (ProjectFilePlatform == XcodeProjectFilePlatform.iOS ? "_IOS" : "_TVOS");
 			}
 			string WorkspaceDataFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/contents.xcworkspacedata";
-			bSuccess = WriteFileIfChanged(WorkspaceDataFilePath, WorkspaceDataContent.ToString(), new UTF8Encoding());
+			bSuccess = WriteFileIfChanged(WorkspaceDataFilePath, WorkspaceDataContent.ToString(), Logger, new UTF8Encoding());
 			if (bSuccess)
 			{
 				string WorkspaceSettingsFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/xcuserdata/" + Environment.UserName + ".xcuserdatad/WorkspaceSettings.xcsettings";
-				bSuccess = WriteWorkspaceSettingsFile(WorkspaceSettingsFilePath);
+				bSuccess = WriteWorkspaceSettingsFile(WorkspaceSettingsFilePath, Logger);
 				string WorkspaceSharedSettingsFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/xcshareddata/WorkspaceSettings.xcsettings";
-				bSuccess = WriteWorkspaceSharedSettingsFile(WorkspaceSharedSettingsFilePath);
+				bSuccess = WriteWorkspaceSharedSettingsFile(WorkspaceSharedSettingsFilePath, Logger);
+
+				// cache the location of the workspace, for users of this to know where the final workspace is
+				XCWorkspace = new FileReference(WorkspaceDataFilePath).Directory;
 			}
 
 
 			return bSuccess;
 		}
 
-		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
-			return WriteXcodeWorkspace();
+			return WriteXcodeWorkspace(Logger);
 		}
 
 		[Flags]
@@ -273,15 +287,11 @@ namespace UnrealBuildTool
 		/// Should we generate a special project to use for tvOS signing instead of a normal one
 		static public bool bGeneratingRunTVOSProject = false;
 
-		/// <summary>
-		/// Configures project generator based on command-line options
-		/// </summary>
-		/// <param name="Arguments">Arguments passed into the program</param>
-		/// <param name="IncludeAllPlatforms">True if all platforms should be included</param>
-		protected override void ConfigureProjectFileGeneration(string[] Arguments, ref bool IncludeAllPlatforms)
+		/// <inheritdoc/>
+		protected override void ConfigureProjectFileGeneration(string[] Arguments, ref bool IncludeAllPlatforms, ILogger Logger)
 		{
 			// Call parent implementation first
-			base.ConfigureProjectFileGeneration(Arguments, ref IncludeAllPlatforms);
+			base.ConfigureProjectFileGeneration(Arguments, ref IncludeAllPlatforms, Logger);
 			ProjectFilePlatform = IncludeAllPlatforms ? XcodeProjectFilePlatform.All : XcodeProjectFilePlatform.Mac;
 
 			foreach (string CurArgument in Arguments)
@@ -299,15 +309,25 @@ namespace UnrealBuildTool
 				}
 			}
 
-			if (bGeneratingGameProjectFiles)
+			if (bGeneratingRunIOSProject || bGeneratingRunTVOSProject)
 			{
-				if (bGeneratingRunIOSProject || bGeneratingRunTVOSProject || UnrealBuildBase.Unreal.IsEngineInstalled())
+				bIncludeEnginePrograms = false;
+				//bIncludeEngineSource = false;
+				bIncludeTemplateFiles = false;
+				bIncludeConfigFiles = false;
+				bIncludeDocumentation = false;
+				bIncludeShaderSource = false;
+
+				// generate just the engine project
+				if (OnlyGameProject == null)
 				{
-					// an Engine target is required in order to be able to get Xcode to sign blueprint projects
-					// always include the engine target for installed builds.
-					bIncludeEnginePrograms = true;
+					bIncludeEngineSource = true;
 				}
-				bIncludeEngineSource = true;
+				// generate just the game project
+				else
+				{
+					bGeneratingGameProjectFiles = true;
+				}
 			}
 		}
 	}

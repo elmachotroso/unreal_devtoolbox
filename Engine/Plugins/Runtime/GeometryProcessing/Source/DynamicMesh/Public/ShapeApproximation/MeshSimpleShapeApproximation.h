@@ -68,7 +68,19 @@ public:
 	/** simplification tolerance when simplifying 2D convex hulls, eg for swept/projected hulls */
 	double HullSimplifyTolerance = 1.0;
 
+	/** How many convex pieces to target per mesh when creating convex decompositions.  If ErrorTolerance is set, can create fewer pieces. */
+	int32 ConvexDecompositionMaxPieces = 20;
+	/** How much additional decomposition decomposition + merging to do, as a fraction of max pieces.  Larger values can help better-cover small features, while smaller values create a cleaner decomposition with less overlap between hulls. */
+	float ConvexDecompositionSearchFactor = .5;
+	/** Error tolerance to guide convex decomposition (in cm); we stop adding new parts if the volume error is below the threshold.  For volumetric errors, value will be cubed. */
+	double ConvexDecompositionErrorTolerance = 0;
+	/** Minimum part thickness for convex decomposition (in cm); hulls thinner than this will be merged into adjacent hulls, if possible. */
+	double ConvexDecompositionMinPartThickness = .1;
+
 	bool bUseExactComputationForBox = false;
+
+	/** Level Set Grid resolution along longest axis */
+	int32 LevelSetGridResolution = 10;
 
 	//
 	// setup/initialization
@@ -115,6 +127,12 @@ public:
 	 */
 	void Generate_ConvexHulls(FSimpleShapeSet3d& ShapeSetOut, FProgressCancel* Progress = nullptr);
 
+	/**
+	 * Calculate multiple 3D Convex Hulls for each input mesh and store in ShapeSetOut.
+	 * Each convex hull is stored as a triangle mesh, and optionally simplified if bSimplifyHulls=true
+	 */
+	void Generate_ConvexHullDecompositions(FSimpleShapeSet3d& ShapeSetOut, FProgressCancel* Progress = nullptr);
+
 
 	/** Type/Mode for deciding 3D axis to use in Generate_ProjectedHulls() */
 	enum class EProjectedHullAxisMode
@@ -140,6 +158,8 @@ public:
 	 */
 	void Generate_ProjectedHulls(FSimpleShapeSet3d& ShapeSetOut, EProjectedHullAxisMode AxisMode);
 
+	void Generate_LevelSets(FSimpleShapeSet3d& ShapeSetOut, FProgressCancel* Progress = nullptr);
+	
 
 	/**
 	 * Fit containing axis-aligned box, oriented box, capsule, and sphere to each input mesh, and

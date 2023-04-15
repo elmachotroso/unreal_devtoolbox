@@ -144,7 +144,7 @@ void ReconstructVolumetricRenderTargetPS(
 
 		// Sample participating media "front depth" for a better reprojection
 		float TracingVolumetricSampleDepthKm = SafeLoadTracingVolumetricDepthTexture(int2(SVPos.xy) / DownSampleFactor).x;
-		float TracingVolumetricSampleDepth = TracingVolumetricSampleDepthKm * 100000.0f; // Kilometers to centimeters
+		float TracingVolumetricSampleDepth = TracingVolumetricSampleDepthKm * KILOMETER_TO_CENTIMETER;
 		float DeviceZ = ConvertToDeviceZ(TracingVolumetricSampleDepth); // Approximation. Should try real DeviceZ
 
 		float4 CurrClip = float4(ScreenPosition, DeviceZ, 1); // Inverted Far Depth = 0.0f
@@ -209,7 +209,7 @@ void ReconstructVolumetricRenderTargetPS(
 
 				const float ReconstructDepthZ = HalfResDepthTexture.Load(int3(SVPos.xy + ViewViewRectMin, 0)).r;
 				const float3 WorldPosition = LWCHackToFloat(SvPositionToWorld(float4(CenterSample, ReconstructDepthZ, 1.0)));
-				const float PixelDistanceFromViewKm = length(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) * (1.0f / 100000.0f); // centimeter to kilometer
+				const float PixelDistanceFromViewKm = length(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) * CENTIMETER_TO_KILOMETER;
 
 				RGBA = HistoryRGBA;
 				Depths = HistoryDepths;
@@ -316,6 +316,7 @@ float4 VolumetricTextureValidUvRect;
 
 #if PERMUTATION_RENDER_UNDERWATER_BUFFER || PERMUTATION_RENDER_CAMERA_UNDERWATER
 Texture2D WaterLinearDepthTexture;
+SamplerState WaterLinearDepthSampler;
 float4 SceneWithoutSingleLayerWaterViewRect;
 float2 FullResolutionToWaterBufferScale;
 #endif
@@ -324,21 +325,53 @@ float2 FullResolutionToWaterBufferScale;
 Texture2DMS<float, MSAA_SAMPLE_COUNT> MSAADepthTexture;
 #endif
 
+#if INSTANCED_STEREO
+// When rendering instanced stereo side by side, we may use first view's texture for both views. This wraps the coords so the second view can use first view's texture.
+// (Do we need a new shader permutation here? Also, should really use ViewRect for wrapping)
+uint2 WrapCoordsForInstancedViews(uint2 Coord, uint4 ValidRect)
+{
+	return uint2(
+		(Coord.x > ValidRect.z) ? (Coord.x - ValidRect.z) : Coord.x,
+		Coord.y
+		);
+}
+float2 WrapUVsForInstancedViews(float2 UV, float4 ValidRect)
+{
+	return float2(
+		(UV.x > ValidRect.z) ? (UV.x - ValidRect.z) : UV.x,
+		UV.y
+		);
+}
+#else
+uint2 WrapCoordsForInstancedViews(uint2 Coord, uint4 ValidRect)
+{
+	return Coord;
+}
+float2 WrapUVsForInstancedViews(float2 UV, float4 ValidRect)
+{
+	return UV;
+}
+#endif
+
 float4 SafeLoadVolumetricTexture(uint2 Coord)
 {
-	return VolumetricTexture.Load(uint3(clamp(Coord, VolumetricTextureValidCoordRect.xy, VolumetricTextureValidCoordRect.zw), 0));
+	const uint2 WrappedCoords = WrapCoordsForInstancedViews(Coord, VolumetricTextureValidCoordRect);
+	return VolumetricTexture.Load(uint3(clamp(WrappedCoords, VolumetricTextureValidCoordRect.xy, VolumetricTextureValidCoordRect.zw), 0));
 }
 float4 SafeSampleVolumetricTexture(float2 UV)
 {
-	return VolumetricTexture.SampleLevel(LinearTextureSampler, clamp(UV, VolumetricTextureValidUvRect.xy, VolumetricTextureValidUvRect.zw), 0);
+	const float2 WrappedUV = WrapUVsForInstancedViews(UV, VolumetricTextureValidUvRect);
+	return VolumetricTexture.SampleLevel(LinearTextureSampler, clamp(WrappedUV, VolumetricTextureValidUvRect.xy, VolumetricTextureValidUvRect.zw), 0);
 }
 float2 SafeLoadVolumetricDepthTexture(uint2 Coord)
 {
-	return VolumetricDepthTexture.Load(uint3(clamp(Coord, VolumetricTextureValidCoordRect.xy, VolumetricTextureValidCoordRect.zw), 0)).rg;
+	const uint2 WrappedCoords = WrapCoordsForInstancedViews(Coord, VolumetricTextureValidCoordRect);
+	return VolumetricDepthTexture.Load(uint3(clamp(WrappedCoords, VolumetricTextureValidCoordRect.xy, VolumetricTextureValidCoordRect.zw), 0)).rg;
 }
 float2 SafeSampleVolumetricDepthTexture(float2 UV)
 {
-	return VolumetricDepthTexture.SampleLevel(LinearTextureSampler, clamp(UV, VolumetricTextureValidUvRect.xy, VolumetricTextureValidUvRect.zw), 0).rg;
+	const float2 WrappedUV = WrapUVsForInstancedViews(UV, VolumetricTextureValidUvRect);
+	return VolumetricDepthTexture.SampleLevel(LinearTextureSampler, clamp(WrappedUV, VolumetricTextureValidUvRect.xy, VolumetricTextureValidUvRect.zw), 0).rg;
 }
 
 float4 VolumetricTextureSizeAndInvSize;
@@ -403,14 +436,13 @@ void ComposeVolumetricRTOverScenePS(
 
 #elif (PERMUTATION_UPSAMPLINGMODE==4 || PERMUTATION_UPSAMPLINGMODE==3 || PERMUTATION_UPSAMPLINGMODE==2)
 
-	const float UseWaterLinearDepthTexture = 100.0f;	// This must match SINGLE_LAYER_WATER_DEPTH_SCALE from SingleLayerWaterCommon.ush and SingleLayerWaterComposite.usf
 #if PERMUTATION_RENDER_UNDERWATER_BUFFER
 	// Adapt the UV to the relative water buffer size
 	float2 WaterVolumeUV = VolumeUV * FullResolutionToWaterBufferScale.y;
 	// Offset the uv to the view buffer region and take into account dynamic resolution scaling.
 	float2 WaterDepthScreenUV = SceneWithoutSingleLayerWaterViewRect.xy + WaterVolumeUV * (View.ViewSizeAndInvSize.xy * View.BufferSizeAndInvSize.zw);
 
-	float PixelLinearDepth = WaterLinearDepthTexture.SampleLevel(LinearTextureSampler, WaterDepthScreenUV, 0).r * UseWaterLinearDepthTexture;
+	float PixelLinearDepth = ConvertFromDeviceZ(WaterLinearDepthTexture.SampleLevel(WaterLinearDepthSampler, WaterDepthScreenUV, 0).r);
 
 	float3 WorldPosition = LWCHackToFloat(SvPositionToWorld(float4(SVPos.xy, 0.5, 1.0)));
 	WorldPosition = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin)) * PixelLinearDepth + LWCHackToFloat(PrimaryView.WorldCameraOrigin);
@@ -432,14 +464,14 @@ void ComposeVolumetricRTOverScenePS(
 #endif 
 
 	float PixelDistanceFromView   = length(PrimaryView.TranslatedWorldCameraOrigin - ScreenTranslatedWorldPosition);
-	float PixelDistanceFromViewKm = PixelDistanceFromView * (1.0f / 100000.0f); // centimeter to kilometer
+	float PixelDistanceFromViewKm = PixelDistanceFromView * CENTIMETER_TO_KILOMETER;
 
 
 
 #if PERMUTATION_RENDER_CAMERA_UNDERWATER
 	// Now check that we are compositing a pixel that is not "water" to avoid applying clouds twice (they are already composited with the behind water layer scene).
 	// We also lack depth information behind the water surface now so the composition would be wrong anyway.
-	float WaterTestPixelLinearDepth = WaterLinearDepthTexture.SampleLevel(LinearTextureSampler, ScreenUV, 0).r * UseWaterLinearDepthTexture;
+	float WaterTestPixelLinearDepth = ConvertFromDeviceZ(WaterLinearDepthTexture.SampleLevel(WaterLinearDepthSampler, ScreenUV, 0).r);
 	if (WaterTestPixelLinearDepth > PixelDistanceFromView)
 	{
 		// This pixel contains water, so skip it because clouds have already been composited in the "behind water scene color".
@@ -545,15 +577,11 @@ void ComposeVolumetricRTOverScenePS(
 		float4 DataAcc = 0.0f;
 		const float CloudFrontDepthTinyOffset = 0.001;
 
-		// When this pixel is at a distance further than what the water depth buffer can represent, trivially accept all neighboorinjg pixels containing clouds.
-		// This makes sure that clouds around the distant horizon are also composited and not skip by "depth buffer is further than the cloud front depth" test.
-		const bool ISWaterFarDepthBuffer = PixelDistanceFromViewKm >= UseWaterLinearDepthTexture * Max10BitsFloat;
-
 		// We are testing if the depth buffer is further than the cloud front depth and that the cloud front depth is actually in front of traced depth.
-		if (PixelDistanceFromViewKm > (VolumeFrontDepth0.x - CloudFrontDepthTinyOffset || ISWaterFarDepthBuffer) && VolumeFrontDepth0.x < (VolumeFrontDepth0.y)) { DataAcc += VolumeRGBT0; ValidSampleCount += 1.0f; }
-		if (PixelDistanceFromViewKm > (VolumeFrontDepth1.x - CloudFrontDepthTinyOffset || ISWaterFarDepthBuffer) && VolumeFrontDepth1.x < (VolumeFrontDepth1.y)) { DataAcc += VolumeRGBT1; ValidSampleCount += 1.0f; }
-		if (PixelDistanceFromViewKm > (VolumeFrontDepth2.x - CloudFrontDepthTinyOffset || ISWaterFarDepthBuffer) && VolumeFrontDepth2.x < (VolumeFrontDepth2.y)) { DataAcc += VolumeRGBT2; ValidSampleCount += 1.0f; }
-		if (PixelDistanceFromViewKm > (VolumeFrontDepth3.x - CloudFrontDepthTinyOffset || ISWaterFarDepthBuffer) && VolumeFrontDepth3.x < (VolumeFrontDepth3.y)) { DataAcc += VolumeRGBT3; ValidSampleCount += 1.0f; }
+		if (PixelDistanceFromViewKm > (VolumeFrontDepth0.x - CloudFrontDepthTinyOffset) && VolumeFrontDepth0.x < (VolumeFrontDepth0.y)) { DataAcc += VolumeRGBT0; ValidSampleCount += 1.0f; }
+		if (PixelDistanceFromViewKm > (VolumeFrontDepth1.x - CloudFrontDepthTinyOffset) && VolumeFrontDepth1.x < (VolumeFrontDepth1.y)) { DataAcc += VolumeRGBT1; ValidSampleCount += 1.0f; }
+		if (PixelDistanceFromViewKm > (VolumeFrontDepth2.x - CloudFrontDepthTinyOffset) && VolumeFrontDepth2.x < (VolumeFrontDepth2.y)) { DataAcc += VolumeRGBT2; ValidSampleCount += 1.0f; }
+		if (PixelDistanceFromViewKm > (VolumeFrontDepth3.x - CloudFrontDepthTinyOffset) && VolumeFrontDepth3.x < (VolumeFrontDepth3.y)) { DataAcc += VolumeRGBT3; ValidSampleCount += 1.0f; }
 		if (ValidSampleCount > 0.0f)
 		{
 			OutputRt0 = DataAcc / ValidSampleCount;

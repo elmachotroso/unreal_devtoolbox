@@ -81,7 +81,7 @@ void FDefaultSourceControlProvider::CancelOperation( const FSourceControlOperati
 
 bool FDefaultSourceControlProvider::UsesLocalReadOnlyState() const
 {
-	return false;
+	return true;
 }
 
 bool FDefaultSourceControlProvider::UsesChangelists() const
@@ -92,6 +92,21 @@ bool FDefaultSourceControlProvider::UsesChangelists() const
 bool FDefaultSourceControlProvider::UsesCheckout() const
 {
 	return false;
+}
+
+bool FDefaultSourceControlProvider::UsesFileRevisions() const
+{
+	return true;
+}
+
+TOptional<bool> FDefaultSourceControlProvider::IsAtLatestRevision() const
+{
+	return TOptional<bool>();
+}
+
+TOptional<int> FDefaultSourceControlProvider::GetNumLocalChanges() const
+{
+	return TOptional<int>();
 }
 
 void FDefaultSourceControlProvider::Tick()

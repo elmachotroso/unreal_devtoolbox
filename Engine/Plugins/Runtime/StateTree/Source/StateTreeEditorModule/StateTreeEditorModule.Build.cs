@@ -25,11 +25,13 @@ namespace UnrealBuildTool.Rules
 				"EditorStyle",
 				"PropertyEditor",
 				"StateTreeModule",
+				"SourceControl",
 				"Projects",
 				"BlueprintGraph",
 				"PropertyAccessEditor",
 				"StructUtils",
 				"StructUtilsEditor",
+				"GameplayTags",
 			}
 			);
 
@@ -41,9 +43,18 @@ namespace UnrealBuildTool.Rules
 				"PropertyPath",
 				"PropertyEditor",
 				"ToolMenus",
+				"ToolWidgets",
+				"ApplicationCore",
 			}
 			);
-		}
 
+			PrivateIncludePathModuleNames.AddRange(new string[] {
+				"MessageLog",
+			});
+
+			PrivateIncludePaths.AddRange(new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
+			});
+		}
 	}
 }

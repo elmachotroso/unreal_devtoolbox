@@ -56,6 +56,7 @@ public class HairModelingToolset : ModuleRules
 				"PhysicsCore",
 				"RenderCore",
 				"RHI",
+				"Niagara",
 
 				"ApplicationCore",
 				"Slate",
@@ -65,7 +66,6 @@ public class HairModelingToolset : ModuleRules
 				"ContentBrowser",
 				"LevelEditor",
 				"StatusBar",
-				"EditorStyle",
 				"Projects"
 
 				// ... add private dependencies that you statically link with here ...

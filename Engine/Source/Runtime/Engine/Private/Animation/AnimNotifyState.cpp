@@ -3,8 +3,11 @@
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimTypes.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
+#include "Animation/AnimNotifyEndDataContext.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Animation/AnimSequenceBase.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNotifyState)
 
 /////////////////////////////////////////////////////
 // UAnimNotifyState
@@ -71,7 +74,12 @@ void UAnimNotifyState::BranchingPointNotifyTick(FBranchingPointNotifyPayload& Br
 
 void UAnimNotifyState::BranchingPointNotifyEnd(FBranchingPointNotifyPayload& BranchingPointPayload)
 {
-	const FAnimNotifyEventReference EventReference;
+	FAnimNotifyEventReference EventReference;
+	if (BranchingPointPayload.bReachedEnd)
+	{
+		EventReference.AddContextData<UE::Anim::FAnimNotifyEndDataContext>(true);
+	}
+
 	NotifyEnd(BranchingPointPayload.SkelMeshComponent, BranchingPointPayload.SequenceAsset, EventReference);
 }
 
@@ -135,3 +143,4 @@ UObject* UAnimNotifyState::GetContainingAsset() const
 	}
 	return ContainingAsset;
 }
+

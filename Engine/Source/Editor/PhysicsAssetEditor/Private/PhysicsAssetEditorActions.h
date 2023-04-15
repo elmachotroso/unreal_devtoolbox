@@ -2,9 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EditorStyleSet.h"
 #include "Framework/Commands/Commands.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /*-----------------------------------------------------------------------------
    FPhysicsAssetEditorCommands
@@ -15,7 +20,7 @@ class FPhysicsAssetEditorCommands : public TCommands<FPhysicsAssetEditorCommands
 public:
 	/** Constructor */
 	FPhysicsAssetEditorCommands() 
-		: TCommands<FPhysicsAssetEditorCommands>("PhysicsAssetEditor", NSLOCTEXT("Contexts", "PhysicsAssetEditor", "PhysicsAssetEditor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FPhysicsAssetEditorCommands>("PhysicsAssetEditor", NSLOCTEXT("Contexts", "PhysicsAssetEditor", "PhysicsAssetEditor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 	
@@ -27,10 +32,13 @@ public:
 	TSharedPtr<FUICommandInfo> Snap;
 	TSharedPtr<FUICommandInfo> CopyBodies;
 	TSharedPtr<FUICommandInfo> PasteBodies;
+	TSharedPtr<FUICommandInfo> CopyShapes;
+	TSharedPtr<FUICommandInfo> PasteShapes;
 	TSharedPtr<FUICommandInfo> CopyProperties;
 	TSharedPtr<FUICommandInfo> PasteProperties;
 	TSharedPtr<FUICommandInfo> RepeatLastSimulation;
 	TSharedPtr<FUICommandInfo> SimulationNoGravity;
+	TSharedPtr<FUICommandInfo> SimulationFloorCollision;
 	TSharedPtr<FUICommandInfo> SelectedSimulation;
 	TSharedPtr<FUICommandInfo> SimulationAll;
 	TSharedPtr<FUICommandInfo> MeshRenderingMode_Solid;
@@ -38,6 +46,7 @@ public:
 	TSharedPtr<FUICommandInfo> MeshRenderingMode_None;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Solid;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Wireframe;
+	TSharedPtr<FUICommandInfo> CollisionRenderingMode_SolidWireframe;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_None;
 	TSharedPtr<FUICommandInfo> ConstraintRenderingMode_None;
 	TSharedPtr<FUICommandInfo> ConstraintRenderingMode_AllPositions;
@@ -47,6 +56,7 @@ public:
 	TSharedPtr<FUICommandInfo> MeshRenderingMode_Simulation_None;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Simulation_Solid;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Simulation_Wireframe;
+	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Simulation_SolidWireframe;
 	TSharedPtr<FUICommandInfo> CollisionRenderingMode_Simulation_None;
 	TSharedPtr<FUICommandInfo> ConstraintRenderingMode_Simulation_None;
 	TSharedPtr<FUICommandInfo> ConstraintRenderingMode_Simulation_AllPositions;
@@ -62,8 +72,10 @@ public:
 	TSharedPtr<FUICommandInfo> EnableCollision;
 	TSharedPtr<FUICommandInfo> EnableCollisionAll;
 	TSharedPtr<FUICommandInfo> PrimitiveQueryAndPhysics;
+	TSharedPtr<FUICommandInfo> PrimitiveQueryAndProbe;
 	TSharedPtr<FUICommandInfo> PrimitiveQueryOnly;
 	TSharedPtr<FUICommandInfo> PrimitivePhysicsOnly;
+	TSharedPtr<FUICommandInfo> PrimitiveProbeOnly;
 	TSharedPtr<FUICommandInfo> PrimitiveNoCollision;
 	TSharedPtr<FUICommandInfo> PrimitiveContributeToMass;
 	TSharedPtr<FUICommandInfo> WeldToBody;
@@ -76,6 +88,10 @@ public:
 	TSharedPtr<FUICommandInfo> ConstrainChildBodiesToParentBody;
 	TSharedPtr<FUICommandInfo> ResetConstraint;
 	TSharedPtr<FUICommandInfo> SnapConstraint;
+	TSharedPtr<FUICommandInfo> SnapConstraintChildPosition;
+	TSharedPtr<FUICommandInfo> SnapConstraintChildOrientation;
+	TSharedPtr<FUICommandInfo> SnapConstraintParentPosition;
+	TSharedPtr<FUICommandInfo> SnapConstraintParentOrientation;
 	TSharedPtr<FUICommandInfo> ConvertToBallAndSocket;
 	TSharedPtr<FUICommandInfo> ConvertToHinge;
 	TSharedPtr<FUICommandInfo> ConvertToPrismatic;
@@ -93,6 +109,11 @@ public:
 	TSharedPtr<FUICommandInfo> SelectAllBodies;
 	TSharedPtr<FUICommandInfo> SelectSimulatedBodies;
 	TSharedPtr<FUICommandInfo> SelectKinematicBodies;
+	TSharedPtr<FUICommandInfo> SelectShapesQueryOnly;
+	TSharedPtr<FUICommandInfo> SelectShapesQueryAndPhysics;
+	TSharedPtr<FUICommandInfo> SelectShapesPhysicsOnly;
+	TSharedPtr<FUICommandInfo> SelectShapesQueryAndProbe;
+	TSharedPtr<FUICommandInfo> SelectShapesProbeOnly;
 	TSharedPtr<FUICommandInfo> SelectAllConstraints;
 	TSharedPtr<FUICommandInfo> ToggleSelectionType;
 	TSharedPtr<FUICommandInfo> ToggleSelectionTypeWithUserConstraints;
@@ -111,11 +132,13 @@ public:
 	TSharedPtr<FUICommandInfo> DeleteCurrentPhysicalAnimationProfile;
 	TSharedPtr<FUICommandInfo> AddBodyToPhysicalAnimationProfile;
 	TSharedPtr<FUICommandInfo> RemoveBodyFromPhysicalAnimationProfile;
+	TSharedPtr<FUICommandInfo> SelectAllBodiesInCurrentPhysicalAnimationProfile;
 	TSharedPtr<FUICommandInfo> NewConstraintProfile;
 	TSharedPtr<FUICommandInfo> DuplicateConstraintProfile;
 	TSharedPtr<FUICommandInfo> DeleteCurrentConstraintProfile;
 	TSharedPtr<FUICommandInfo> AddConstraintToCurrentConstraintProfile;
 	TSharedPtr<FUICommandInfo> RemoveConstraintFromCurrentConstraintProfile;
+	TSharedPtr<FUICommandInfo> SelectAllBodiesInCurrentConstraintProfile;
 	TSharedPtr<FUICommandInfo> ShowBodies;
 	TSharedPtr<FUICommandInfo> ShowSimulatedBodies;
 	TSharedPtr<FUICommandInfo> ShowKinematicBodies;

@@ -17,10 +17,10 @@ SET CMAKE_VERSION=%3
 SET NDK_VERSION=%4
 
 rem hardcoded versions for compatibility with non-Turnkey manual running
-if "%PLATFORMS_VERSION%" == "" SET PLATFORMS_VERSION=android-30
+if "%PLATFORMS_VERSION%" == "" SET PLATFORMS_VERSION=android-32
 if "%BUILDTOOLS_VERSION%" == "" SET BUILDTOOLS_VERSION=30.0.3
 if "%CMAKE_VERSION%" == "" SET CMAKE_VERSION=3.10.2.4988404
-if "%NDK_VERSION%" == "" SET NDK_VERSION=21.4.7075529
+if "%NDK_VERSION%" == "" SET NDK_VERSION=25.1.8937393
 
 
 FOR /F "tokens=2*" %%A IN ('REG.exe query "%KEY_NAME%" /v "%VALUE_NAME%"') DO (set STUDIO_PATH=%%B)
@@ -59,6 +59,10 @@ if DEFINED ANDROID_HOME (set a=1) ELSE (
 	set ANDROID_HOME=%STUDIO_SDK_PATH%
 	setx ANDROID_HOME "%STUDIO_SDK_PATH%"
 )
+if DEFINED ANDROID_SDK_HOME (set a=1) ELSE (
+	set ANDROID_SDK_HOME=%STUDIO_SDK_PATH%
+	setx ANDROID_SDK_HOME "%STUDIO_SDK_PATH%"
+)
 if DEFINED JAVA_HOME (set a=1) ELSE (
 	set JAVA_HOME=%STUDIO_PATH%\jre
 	setx JAVA_HOME "%STUDIO_PATH%\jre"
@@ -74,16 +78,16 @@ FOR /F "tokens=2*" %%A IN ('REG.exe query "%KEY_NAME%" /v "%VALUE_NAME%"') DO (s
 
 where.exe /Q adb.exe
 IF /I "%ERRORLEVEL%" NEQ "0" (
-	echo Current user path: %USERPATH%
+	echo Current user path: "%USERPATH%"
 	setx PATH "%USERPATH%;%PLATFORMTOOLS%"
 	echo Added %PLATFORMTOOLS% to path
 )
 
-set SDKMANAGER=%STUDIO_SDK_PATH%\tools\bin\sdkmanager.bat
+set SDKMANAGER=%STUDIO_SDK_PATH%\cmdline-tools\latest\bin\sdkmanager.bat
 IF EXIST "%SDKMANAGER%" (
 	echo Using sdkmanager: %SDKMANAGER%
 ) ELSE (
-	set SDKMANAGER=%STUDIO_SDK_PATH%\cmdline-tools\latest\bin\sdkmanager.bat
+	set SDKMANAGER=%STUDIO_SDK_PATH%\tools\bin\sdkmanager.bat
 	IF EXIST "!SDKMANAGER!" (
 		echo Using sdkmanager: !SDKMANAGER!
 	) ELSE (

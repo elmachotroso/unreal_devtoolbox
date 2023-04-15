@@ -6,6 +6,8 @@
 #include "Core/PBIKDebug.h"
 #include "PBIK.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PBIKSolver)
+
 namespace PBIK
 {
 	FEffector::FEffector(FBone* InBone)
@@ -412,6 +414,8 @@ void FPBIKSolver::UpdateBonesFromBodies()
 
 bool FPBIKSolver::Initialize()
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/FBIK"));
+	
 	if (bReadyToSimulate)
 	{
 		return true;
@@ -683,6 +687,8 @@ PBIK::FDebugDraw* FPBIKSolver::GetDebugDraw()
 
 void FPBIKSolver::Reset()
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/FBIK"));
+	
 	bReadyToSimulate = false;
 	SolverRoot = nullptr;
 	RootPin = nullptr;
@@ -746,7 +752,9 @@ PBIK::FBoneSettings* FPBIKSolver::GetBoneSettings(const int32 Index)
 
 	if (!Bones[Index].Body)
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: trying to apply Bone Settings to bone, %s, that is not simulated (not between root and effector)."), *Bones[Index].Name.ToString());
+		// Bone is not part of the simulation. This happens if the bone is not located between an effector and the
+		// root of the solver. Not necessarily an error, as some systems dynamically disable effectors which can leave
+		// orphaned Bone Settings, so we simply ignore them.
 		return nullptr;
 	}
 
@@ -776,3 +784,4 @@ void FPBIKSolver::SetEffectorGoal(
 	check(Index >= 0 && Index < Effectors.Num());
 	Effectors[Index].SetGoal(InPosition, InRotation, InSettings);
 }
+

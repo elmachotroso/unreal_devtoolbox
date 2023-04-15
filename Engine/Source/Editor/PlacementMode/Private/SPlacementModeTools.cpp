@@ -8,7 +8,7 @@
 #include "Widgets/Layout/SScrollBar.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "AssetThumbnail.h"
@@ -158,7 +158,7 @@ void SPlacementAssetEntry::Construct(const FArguments& InArgs, const TSharedPtr<
 		AssetEntryToolTip = FSlateApplicationBase::Get().MakeToolTip(
 			FText::Format(LOCTEXT("ItemInternalsTooltip", "Native Name: {0}\nAsset Path: {1}\nFactory Class: {2}"), 
 			FText::FromString(Item->NativeName), 
-			FText::FromName(Item->AssetData.ObjectPath),
+			FText::FromString(Item->AssetData.GetObjectPathString()),
 			FText::FromString(Item->Factory ? Item->Factory->GetClass()->GetName() : TEXT("None"))));
 	}
 
@@ -177,7 +177,7 @@ void SPlacementAssetEntry::Construct(const FArguments& InArgs, const TSharedPtr<
 		AssetEntryToolTip = FSlateApplicationBase::Get().MakeToolTip(Item->DisplayName);
 	}
 
-	const FButtonStyle& ButtonStyle = FEditorStyle::GetWidgetStyle<FButtonStyle>( "PlacementBrowser.Asset" );
+	const FButtonStyle& ButtonStyle = FAppStyle::GetWidgetStyle<FButtonStyle>( "PlacementBrowser.Asset" );
 
 	NormalImage = &ButtonStyle.Normal;
 	HoverImage = &ButtonStyle.Hovered;
@@ -239,7 +239,7 @@ void SPlacementAssetEntry::Construct(const FArguments& InArgs, const TSharedPtr<
 						.VAlign(VAlign_Center)
 						[
 							SNew( STextBlock )
-							.TextStyle( FEditorStyle::Get(), "PlacementBrowser.Asset.Name" )
+							.TextStyle( FAppStyle::Get(), "PlacementBrowser.Asset.Name" )
 							.Text( Item->DisplayName )
 							.HighlightText(InArgs._HighlightText)
 						]
@@ -477,15 +477,18 @@ FReply SPlacementAssetMenuEntry::OnMouseButtonUp(const FGeometry& MyGeometry, co
 		bIsPressed = false;
 
 		AActor* NewActor = nullptr;
-		FTransform TempTransform;
 		UActorFactory* Factory = Item->Factory;
 		if (!Item->Factory)
 		{
 			// If no actor factory was found or failed, add the actor from the uclass
-			UObject* ClassObject = Item->AssetData.GetClass()->GetDefaultObject();
-			FActorFactoryAssetProxy::GetFactoryForAssetObject(ClassObject);
+			UClass* AssetClass = Item->AssetData.GetClass();
+			if (AssetClass)
+			{
+				UObject* ClassObject = AssetClass->GetDefaultObject();
+				FActorFactoryAssetProxy::GetFactoryForAssetObject(ClassObject);
+			}
 		}
-		NewActor = FLevelEditorActionCallbacks::AddActor(Factory, Item->AssetData, &TempTransform);
+		NewActor = FLevelEditorActionCallbacks::AddActor(Factory, Item->AssetData, nullptr);
 		if (NewActor && GCurrentLevelEditingViewportClient)
 		{
   			GEditor->MoveActorInFrontOfCamera(*NewActor, 
@@ -593,7 +596,7 @@ void SPlacementModeTools::Construct( const FArguments& InArgs, TSharedRef<SDockT
 
 	SAssignNew(CategoryFilterPtr, SUniformWrapPanel)
 	.HAlign(HAlign_Center)
-	.SlotPadding(FMargin(2.0f, 0.0f));
+	.SlotPadding(FMargin(2.0f, 1.0f));
 
 	UpdatePlacementCategories();
 
@@ -608,7 +611,7 @@ void SPlacementModeTools::Construct( const FArguments& InArgs, TSharedRef<SDockT
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(8)
 			[
 				SAssignNew( SearchBoxPtr, SSearchBox )
@@ -623,7 +626,7 @@ void SPlacementModeTools::Construct( const FArguments& InArgs, TSharedRef<SDockT
 		.HAlign(HAlign_Fill)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(FMargin(8.f, 6.f, 8.f, 8.f))
 			.HAlign(HAlign_Fill)
 			.Visibility(this, &SPlacementModeTools::GetTabsVisibility)
@@ -637,7 +640,7 @@ void SPlacementModeTools::Construct( const FArguments& InArgs, TSharedRef<SDockT
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(FMargin(8.f, 6.f, 8.f, 8.f))
 			.HAlign(HAlign_Center)
 			.Visibility(this, &SPlacementModeTools::GetTabsVisibility)

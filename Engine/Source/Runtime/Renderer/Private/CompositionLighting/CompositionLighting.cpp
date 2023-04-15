@@ -75,7 +75,7 @@ static bool IsReflectionEnvironmentActive(const FSceneView& View)
 	bool HasReflectionCaptures = (Scene->ReflectionSceneData.RegisteredReflectionCaptures.Num() > 0);
 	bool HasSSR = View.Family->EngineShowFlags.ScreenSpaceReflections;
 
-	return (Scene->GetFeatureLevel() == ERHIFeatureLevel::SM5 && IsReflectingEnvironment && (HasReflectionCaptures || HasSSR) && !IsAnyForwardShadingEnabled(View.GetShaderPlatform()));
+	return (Scene->GetFeatureLevel() == ERHIFeatureLevel::SM5 && IsReflectingEnvironment && (HasReflectionCaptures || HasSSR) && !IsForwardShadingEnabled(View.GetShaderPlatform()));
 }
 
 static bool IsSkylightActive(const FViewInfo& View)
@@ -86,7 +86,7 @@ static bool IsSkylightActive(const FViewInfo& View)
 		&& View.Family->EngineShowFlags.SkyLighting;
 }
 
-bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View)
+bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View, bool bLumenWantsSSAO)
 {
 	bool bEnabled = true;
 
@@ -94,8 +94,7 @@ bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View)
 		&& View.Family->EngineShowFlags.Lighting
 		&& View.FinalPostProcessSettings.AmbientOcclusionRadius >= 0.1f
 		&& !View.Family->UseDebugViewPS()
-		&& (FSSAOHelper::IsBasePassAmbientOcclusionRequired(View) || IsAmbientCubemapPassRequired(View) || IsReflectionEnvironmentActive(View) || IsSkylightActive(View) || View.Family->EngineShowFlags.VisualizeBuffer)
-		&& !IsSimpleForwardShadingEnabled(View.GetShaderPlatform());
+		&& (FSSAOHelper::IsBasePassAmbientOcclusionRequired(View) || IsAmbientCubemapPassRequired(View) || IsReflectionEnvironmentActive(View) || IsSkylightActive(View) || View.Family->EngineShowFlags.VisualizeBuffer || bLumenWantsSSAO);
 #if RHI_RAYTRACING
 	bEnabled &= !ShouldRenderRayTracingAmbientOcclusion(View);
 #endif
@@ -471,12 +470,21 @@ static FScreenPassTexture AddPostProcessingAmbientOcclusion(
 				CommonParameters.HZBInput);
 	}
 
+	FScreenPassTexture SetupTexture = CommonParameters.GBufferA;
+	if (Strata::IsStrataEnabled())
+	{
+		// For Strata, we invalidate the setup texture for the final pass:
+		//	- We do not need GBufferA, the Strata TopLayer texture will fill in for that.
+		//	- Setting it to nullptr will make the AddAmbientOcclusionPass use a valid viewport from SceneTextures.
+		SetupTexture.Texture = nullptr;
+	}
+
 	FScreenPassTexture FinalOutput =
 		AddAmbientOcclusionFinalPass(
 			GraphBuilder,
 			View,
 			CommonParameters,
-			CommonParameters.GBufferA,
+			SetupTexture,
 			AmbientOcclusionInMip1,
 			AmbientOcclusionPassMip1,
 			CommonParameters.HZBInput,
@@ -590,7 +598,7 @@ void FCompositionLighting::ProcessBeforeBasePass(FRDGBuilder& GraphBuilder, FDBu
 	}
 }
 
-void FCompositionLighting::ProcessAfterBasePass(FRDGBuilder& GraphBuilder)
+void FCompositionLighting::ProcessAfterBasePass(FRDGBuilder& GraphBuilder, EProcessAfterBasePassMode Mode)
 {
 	if (HasRayTracedOverlay(ViewFamily))
 	{
@@ -614,21 +622,21 @@ void FCompositionLighting::ProcessAfterBasePass(FRDGBuilder& GraphBuilder)
 
 		FDeferredDecalPassTextures DecalPassTextures = GetDeferredDecalPassTextures(GraphBuilder, View, SceneTextures, nullptr);
 
-		if (bEnableDecals && !bEnableDBuffer && IsUsingGBuffers(SceneTextures.Config.ShaderPlatform))
+		if (bEnableDecals && !bEnableDBuffer && IsUsingGBuffers(SceneTextures.Config.ShaderPlatform) && Mode != EProcessAfterBasePassMode::SkipBeforeLightingDecals)
 		{
 			// We can disable this pass if using DBuffer decals
 			// Decals are before AmbientOcclusion so the decal can output a normal that AO is affected by
 			AddDeferredDecalPass(GraphBuilder, View, DecalPassTextures, EDecalRenderStage::BeforeLighting);
 		}
 
-		if (bEnableDecals && !IsSimpleForwardShadingEnabled(View.GetShaderPlatform()))
+		if (bEnableDecals && Mode != EProcessAfterBasePassMode::OnlyBeforeLightingDecals)
 		{
 			// DBuffer decals with emissive component
 			AddDeferredDecalPass(GraphBuilder, View, DecalPassTextures, EDecalRenderStage::Emissive);
 		}
 
 		// Forward shading SSAO is applied before the base pass using only the depth buffer.
-		if (!IsForwardShadingEnabled(View.GetShaderPlatform()))
+		if (!IsForwardShadingEnabled(View.GetShaderPlatform()) && Mode != EProcessAfterBasePassMode::OnlyBeforeLightingDecals)
 		{
 			if (ViewConfig.Levels > 0)
 			{

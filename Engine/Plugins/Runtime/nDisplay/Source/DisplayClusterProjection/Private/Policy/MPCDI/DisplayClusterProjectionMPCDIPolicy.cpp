@@ -7,6 +7,7 @@
 #include "DisplayClusterProjectionStrings.h"
 
 #include "IDisplayCluster.h"
+#include "IDisplayClusterCallbacks.h"
 #include "Config/IDisplayClusterConfigManager.h"
 #include "Game/IDisplayClusterGameManager.h"
 
@@ -31,7 +32,8 @@
 #include "Blueprints/MPCDIGeometryData.h"
 #include "DisplayClusterRootActor.h"
 
-FDisplayClusterProjectionMPCDIPolicy::FDisplayClusterProjectionMPCDIPolicy(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
+
+FDisplayClusterProjectionMPCDIPolicy::FDisplayClusterProjectionMPCDIPolicy(const FString& ProjectionPolicyId, const FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
 	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
 {
 }
@@ -67,6 +69,12 @@ void FDisplayClusterProjectionMPCDIPolicy::UpdateProxyData(IDisplayClusterViewpo
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProjectionPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
+const FString& FDisplayClusterProjectionMPCDIPolicy::GetType() const
+{
+	static const FString Type(DisplayClusterProjectionStrings::projection::MPCDI);
+	return Type;
+}
+
 bool FDisplayClusterProjectionMPCDIPolicy::HandleStartScene(IDisplayClusterViewport* InViewport)
 {
 	if (bInvalidConfiguration)
@@ -242,7 +250,8 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 	}
 
 	// Get output resources with rects
-	if (!InViewportProxy->GetResourcesWithRects_RenderThread(InViewportProxy->GetOutputResourceType_RenderThread(), OutputTextures, OutputRects))
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT 
+	if (!InViewportProxy->GetResourcesWithRects_RenderThread(EDisplayClusterViewportResourceType::AdditionalTargetableResource, OutputTextures, OutputRects))
 	{
 		return;
 	}
@@ -309,6 +318,15 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 					}
 				}
 
+				TSharedPtr<IDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> LightCardManager = RefViewportManagerProxy.GetLightCardManager_RenderThread();
+				if (LightCardManager.IsValid())
+				{
+					ShaderICVFX.UVLightCardMap = LightCardManager->GetUVLightCardMap_RenderThread();
+				}
+
+				// cleanup camera list for render
+				ShaderICVFX.CleanupCamerasForRender();
+
 				// Initialize shader input data
 				FDisplayClusterShaderParameters_WarpBlend WarpBlendParameters;
 
@@ -320,6 +338,11 @@ void FDisplayClusterProjectionMPCDIPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 
 				WarpBlendParameters.bRenderAlphaChannel = InViewportProxy->GetRenderSettings_RenderThread().bWarpBlendRenderAlphaChannel;
 
+				// Before starting the whole ICVFX shaders pipeline, we need to provide ability to modify any ICVFX shader parameters.
+				// One of use cases is the latency queue that needs to substitute shader parameters.
+				IDisplayCluster::Get().GetCallbacks().OnDisplayClusterPreProcessIcvfx_RenderThread().Broadcast(RHICmdList, InViewportProxy, WarpBlendParameters, ShaderICVFX);
+
+				// Start ICVFX pipeline
 				if (!ShadersAPI.RenderWarpBlend_ICVFX(RHICmdList, WarpBlendParameters, ShaderICVFX))
 				{
 					if (!IsEditorOperationMode_RenderThread(InViewportProxy))
@@ -422,6 +445,9 @@ UMeshComponent* FDisplayClusterProjectionMPCDIPolicy::GetOrCreatePreviewMeshComp
 			MeshComp->AttachToComponent(OriginComp, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 			MeshComp->CreateMeshSection(0, MeshData.Vertices, MeshData.Triangles, MeshData.Normal, MeshData.UV, TArray<FColor>(), TArray<FProcMeshTangent>(), false);
 			MeshComp->SetIsVisualizationComponent(true);
+
+			// Because of "nDisplay.render.show.visualizationcomponents" we need extra flag to exclude this geometry from render
+			MeshComp->SetHiddenInGame(true);
 
 			// Store reference to mesh component
 			PreviewMeshComponentRef.SetSceneComponent(MeshComp);

@@ -17,6 +17,8 @@
 #include "GlobalShader.h"
 #include "ShaderParameterUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RectLightComponent)
+
 extern int32 GAllowPointLightCubemapShadows;
 
 float GetRectLightBarnDoorMaxAngle()
@@ -117,7 +119,7 @@ float URectLightComponent::ComputeLightBrightness() const
 	}
 	else if (IntensityUnits == ELightUnits::Lumens)
 	{
-		LightBrightness *= (100.f * 100.f / PI); // Conversion from cm2 to m2 and PI from the cosine distribution
+		LightBrightness *= (100.f * 100.f / UE_PI); // Conversion from cm2 to m2 and PI from the cosine distribution
 	}
 	else
 	{
@@ -136,7 +138,7 @@ void URectLightComponent::SetLightBrightness(float InBrightness)
 	}
 	else if (IntensityUnits == ELightUnits::Lumens)
 	{
-		Super::SetLightBrightness(InBrightness / (100.f * 100.f / PI)); // Conversion from cm2 to m2 and PI from the cosine distribution
+		Super::SetLightBrightness(InBrightness / (100.f * 100.f / UE_PI)); // Conversion from cm2 to m2 and PI from the cosine distribution
 	}
 	else
 	{
@@ -204,6 +206,7 @@ FRectLightSceneProxy::FRectLightSceneProxy(const URectLightComponent* Component)
 	, RayTracingData(Component->RayTracingData)
 	, SourceTexture(Component->SourceTexture)
 {
+	AtlasSlotIndex = ~0u;
 }
 
 FRectLightSceneProxy::~FRectLightSceneProxy() {}
@@ -235,9 +238,18 @@ void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& Ligh
 	LightParameters.SourceRadius = SourceWidth * 0.5f;
 	LightParameters.SoftSourceRadius = 0.0f;
 	LightParameters.SourceLength = SourceHeight * 0.5f;
-	LightParameters.SourceTexture = SourceTexture ? SourceTexture->GetResource()->TextureRHI : GWhiteTexture->TextureRHI;
 	LightParameters.RectLightBarnCosAngle = FMath::Cos(FMath::DegreesToRadians(BarnDoorAngle));
 	LightParameters.RectLightBarnLength = BarnDoorLength;
+	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
+
+	LightParameters.InverseExposureBlend = InverseExposureBlend;
+
+	if (AtlasSlotIndex != ~0u)
+	{
+		GetSceneInterface()->GetRectLightAtlasSlot(this, &LightParameters);
+	}
 }
 
 /**
@@ -265,3 +277,4 @@ bool FRectLightSceneProxy::GetWholeSceneProjectedShadowInitializer(const FSceneV
 
 	return false;
 }
+

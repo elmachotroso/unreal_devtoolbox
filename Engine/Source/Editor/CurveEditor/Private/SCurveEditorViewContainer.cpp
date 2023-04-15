@@ -1,18 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCurveEditorViewContainer.h"
-#include "SCurveEditorPanel.h"
-#include "SCurveEditorView.h"
-#include "Views/SInteractiveCurveEditorView.h"
 
-#include "DragOperations/CurveEditorDragOperation_Tangent.h"
-#include "DragOperations/CurveEditorDragOperation_MoveKeys.h"
+#include "CurveEditor.h"
+#include "CurveEditorSelection.h"
+#include "Delegates/Delegate.h"
+#include "DragOperations/CurveEditorDragOperation_Marquee.h"
 #include "DragOperations/CurveEditorDragOperation_Pan.h"
 #include "DragOperations/CurveEditorDragOperation_Zoom.h"
-#include "DragOperations/CurveEditorDragOperation_Marquee.h"
-
-#include "EditorStyleSet.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/PlatformCrt.h"
+#include "ICurveEditorBounds.h"
+#include "ICurveEditorToolExtension.h"
+#include "ITimeSlider.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Layout/Children.h"
+#include "Layout/Clipping.h"
+#include "Layout/Geometry.h"
+#include "Layout/Visibility.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "SCurveEditorPanel.h"
+#include "SCurveEditorView.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Templates/UniquePtr.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
+#include "Views/SInteractiveCurveEditorView.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SWidget.h"
+
+class FPaintArgs;
+class FSlateRect;
+class FWidgetStyle;
 
 #define LOCTEXT_NAMESPACE "SCurveEditorViewContainer"
 
@@ -86,7 +112,7 @@ int32 SCurveEditorViewContainer::OnPaint(const FPaintArgs& Args, const FGeometry
 	const ESlateDrawEffect DrawEffects = ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 	
 	static const FName BackgroundBrushName("Brushes.Panel");
-	const FSlateBrush* Background = FEditorStyle::GetBrush(BackgroundBrushName);
+	const FSlateBrush* Background = FAppStyle::GetBrush(BackgroundBrushName);
 	FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Background, DrawEffects, Background->GetTint(InWidgetStyle));
 
 	SVerticalBox::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
@@ -109,8 +135,8 @@ int32 SCurveEditorViewContainer::OnPaint(const FPaintArgs& Args, const FGeometry
 		PaintArgs.bDisplayScrubPosition = true;
 		PaintArgs.bDisplayMarkedFrames = false;
 		PaintArgs.PlaybackRangeArgs = FPaintPlaybackRangeArgs(
-			FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_L"),
-			FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_R"),
+			FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_L"),
+			FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_R"),
 			6.f);
 
 		TimeSliderController->OnPaintViewArea(AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + CurveViewConstants::ELayerOffset::GridOverlays, bParentEnabled, PaintArgs);

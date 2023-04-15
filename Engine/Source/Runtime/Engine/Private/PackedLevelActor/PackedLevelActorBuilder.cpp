@@ -117,7 +117,6 @@ UBlueprint* FPackedLevelActorBuilder::CreatePackedLevelActorBlueprint(TSoftObjec
 		if (UBlueprint* NewBP = Cast<UBlueprint>(AssetTools.CreateAsset(InBlueprintAsset.GetAssetName(), PackageDir, UBlueprint::StaticClass(), BlueprintFactory, FName("Create LevelInstance Blueprint"))))
 		{
 			APackedLevelActor* CDO = CastChecked<APackedLevelActor>(NewBP->GeneratedClass->GetDefaultObject());
-			CDO->BlueprintAsset = NewBP;
 			CDO->SetWorldAsset(InWorldAsset);
 
 			if (bInCompile)
@@ -142,7 +141,7 @@ TSharedPtr<FPackedLevelActorBuilder> FPackedLevelActorBuilder::CreateDefaultBuil
 	// Components or Actor classes in this set will not generate warnings
 	Builder->ClassDiscards.Add(ALevelBounds::StaticClass());
 	// Avoid dependency (find class)
-	UClass* ChaosDebugClass = FindObject<UClass>(ANY_PACKAGE, TEXT("ChaosDebugDrawComponent"));
+	UClass* ChaosDebugClass = FindObject<UClass>(nullptr, TEXT("/Script/ChaosSolverEngine.ChaosDebugDrawComponent"));
 	if (ChaosDebugClass)
 	{
 		Builder->ClassDiscards.Add(ChaosDebugClass);
@@ -383,8 +382,7 @@ bool FPackedLevelActorBuilder::CreateOrUpdateBlueprintFromUnpacked(ALevelInstanc
 		return false;
 	}
 
-	PackedLevelActor->BlueprintAsset = InBlueprintAsset;
-	bResult &= CreateOrUpdateBlueprintFromPacked(PackedLevelActor, PackedLevelActor->BlueprintAsset, bCheckoutAndSave, bPromptForSave);
+	bResult &= CreateOrUpdateBlueprintFromPacked(PackedLevelActor, InBlueprintAsset, bCheckoutAndSave, bPromptForSave);
 
 	return bResult;
 }

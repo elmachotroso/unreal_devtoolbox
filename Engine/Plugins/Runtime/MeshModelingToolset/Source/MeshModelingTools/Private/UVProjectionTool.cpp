@@ -20,6 +20,8 @@
 #include "Operations/MeshConvexHull.h"
 #include "MinVolumeBox3.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVProjectionTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UUVProjectionTool"
@@ -143,7 +145,7 @@ void UUVProjectionTool::Setup()
 
 	SetToolDisplayName(LOCTEXT("ToolName", "UV Projection"));
 	GetToolManager()->DisplayMessage(
-		LOCTEXT("UVProjectionToolDescription", "Generate UVs for a Mesh by projecting onto simple geometric shapes. Ctrl+click to reposition shape. Face selections can be made in the PolyEdit and TriEdit Tools."),
+		LOCTEXT("UVProjectionToolDescription", "Generate UVs for a Mesh by projecting onto simple geometric shapes. Ctrl+click to reposition shape. Shift+Ctrl+click to reposition shape without reorienting. Face selections can be made in the PolyEdit and TriEdit Tools. "),
 		EToolMessageLevel::UserNotification);
 }
 
@@ -597,3 +599,4 @@ void UUVProjectionTool::ApplyAction_Reset()
 
 
 #undef LOCTEXT_NAMESPACE
+

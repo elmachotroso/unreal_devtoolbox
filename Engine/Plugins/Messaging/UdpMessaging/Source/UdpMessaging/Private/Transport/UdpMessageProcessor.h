@@ -13,6 +13,7 @@
 #include "IMessageContext.h"
 #include "IMessageTransport.h"
 
+#include "INetworkMessagingExtension.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
@@ -36,8 +37,6 @@ class FUdpSerializedMessage;
 class FUdpSocketSender;
 class IMessageAttachment;
 enum class EUdpMessageFormat : uint8;
-
-constexpr const uint16 MessageProcessorWorkQueueSize{1024};
 
 /**
  * Running statistics as known by the UdpMessageProcessor. This will be per endpoint.
@@ -107,7 +106,19 @@ struct FSentSegmentInfo
 	}
 };
 
-DECLARE_DELEGATE_OneParam(FOnSegmenterUpdated, FUdpSegmenterStats)
+namespace UE::Private::MessageProcessor
+{
+/**
+ * Global delegate for handling segmenter (aka sent data) updates.
+ */
+FOnOutboundTransferDataUpdated &OnSegmenterUpdated();
+
+/*
+ * Global delegate for handling reassembler (aka received data) updates.
+ */
+FOnInboundTransferDataUpdated &OnReassemblerUpdated();
+
+}
 
 /**
  * Implements a message processor for UDP messages.
@@ -138,7 +149,13 @@ class FUdpMessageProcessor
 		TMap<int32, TSharedPtr<FUdpMessageSegmenter>> Segmenters;
 
 		/** Holds of queue of MessageIds to send. They are processed in round-robin fashion. */
-		TUdpCircularQueue<int32> WorkQueue{MessageProcessorWorkQueueSize};
+		TUdpCircularQueue<int32> WorkQueue;
+
+		/** Last time we issued a warning about work queues. */
+		FDateTime LastWorkQueueFullMessage;
+
+		/** The number of seconds we have been in a send full state. */
+		double SecondsInFullQueueState = 0;
 
 		/** A map from sequence id to information about what was sent. The size of this map is the size of our sending window. */
 		TMap<uint64, FSentData> InflightSegments;
@@ -153,15 +170,36 @@ class FUdpMessageProcessor
 		uint64 WindowSize = 64;
 
 		/** Various transport statistics for this endpoint */
-		FUdpMessageTransportStatistics Statistics;
+		FMessageTransportStatistics Statistics;
 
 		/** Default constructor. */
-		FNodeInfo()
-			: LastSegmentReceivedTime(FDateTime::MinValue())
-			, NodeId()
-			, ProtocolVersion(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION)
+		FNodeInfo();
+
+		/**
+		 * Check the work queue buffer and note a warning if we are overcommitted.
+		 */
+		bool CanCommitToWorkQueue(const FDateTime& InCurrentTime)
 		{
-			ComputeWindowSize(0,0);
+			const bool bWorkQueueFull = WorkQueue.IsFull();
+			if (bWorkQueueFull)
+			{
+				const double ReportingIntervalInSeconds = 1;
+				double Seconds = (InCurrentTime - LastWorkQueueFullMessage).GetTotalSeconds();
+				if (Seconds > ReportingIntervalInSeconds)
+				{
+					SecondsInFullQueueState += Seconds;
+					UE_LOG(LogUdpMessaging, Warning,
+						   TEXT("Work queue for node %s is full. Send queue has been congested for %.3f seconds."),
+						   *Endpoint.ToString(), SecondsInFullQueueState);
+					LastWorkQueueFullMessage = InCurrentTime;
+				}
+			}
+			else
+			{
+				LastWorkQueueFullMessage = InCurrentTime;
+				SecondsInFullQueueState = 0;
+			}
+			return !bWorkQueueFull;
 		}
 
 		/**
@@ -259,7 +297,7 @@ class FUdpMessageProcessor
 				// In the case of segment loss half our window size to a minimum value.
 				WindowSize = FGenericPlatformMath::Max<uint64>(WindowSize/2, MinimumWindowSize);
 			}
-			Statistics.AcksReceived += NumAcks;
+			Statistics.PacketsAcked += NumAcks;
 			Statistics.WindowSize = WindowSize;
 		}
 
@@ -349,7 +387,9 @@ class FUdpMessageProcessor
 				}
 				return bIsLost;
 			});
-			Statistics.SegmentsLost += SegmentsLost;
+
+			Statistics.TotalBytesLost += SegmentsLost * UDP_MESSAGING_SEGMENT_SIZE;
+			Statistics.PacketsLost += SegmentsLost;
 			return SegmentsLost;
 		}
 
@@ -523,7 +563,7 @@ public:
 	/**
 	 * Get the current running network statistics for the given node.
 	 */
-	FUdpMessageTransportStatistics GetStats(FGuid Node) const;
+	FMessageTransportStatistics GetStats(FGuid Node) const;
 
 public:
 
@@ -577,13 +617,31 @@ public:
 		return ErrorDelegate;
 	}
 
-	/**
-	 * Delegate is invoked whenever a segmenter is added/removed or updated.
+	/** 
+	 * Returns a delegate that is executed when a socket fails to communicate
+	 * upon sending to a target endpoint.
+	 * @return The delegate
+	 * @note this delegate is broadcasted from the processor thread.
 	 */
-	FOnSegmenterUpdated& OnSegmenterUpdated()
+	DECLARE_DELEGATE_TwoParams(FOnErrorSendingToEndpoint, const FGuid& /*NodeId*/, const FIPv4Endpoint& /*SendersIpAddress*/)
+	FOnErrorSendingToEndpoint& OnErrorSendingToEndpoint_UdpMessageProcessorThread()
 	{
-		return SegmenterUpdatedDelegate;
+		return ErrorSendingToEndpointDelegate;
 	}
+
+	/**
+	 * Returns a delegate that is executed when a socket fails to communicate
+	 * upon sending to a target endpoint.
+	 * @return The delegate
+	 * @note this delegate is broadcasted from the processor thread.
+	 */
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FCanAcceptEndpoint, const FGuid& /*NodeId*/, const FIPv4Endpoint& /*SendersIpAddress*/)
+	FCanAcceptEndpoint& OnCanAcceptEndpoint_UdpMessageProcessorThread()
+	{
+		return CanAcceptEndpointDelegate;
+	}
+
+	TArray<FIPv4Endpoint> GetKnownEndpoints() const;
 
 public:
 
@@ -627,7 +685,7 @@ protected:
 	 * @param Sender The segment sender.
 	 * @return true if the segment passed the filter, false otherwise.
 	 */
-	bool FilterSegment(const FUdpMessageSegment::FHeader& Header);
+	bool FilterSegment(const FUdpMessageSegment::FHeader& Header, const FIPv4Endpoint& Sender);
 
 	/**
 	 * Processes an Abort segment.
@@ -764,6 +822,9 @@ protected:
 
 private:
 
+	/** Handles a communication error to a particular endpoint.*/
+	void HandleSocketError(const FNodeInfo& NodeInfo) const;
+
 	/** Checks all known nodes to see if any segmenters have NeedSending set to true. */
 	bool MoreToSend();
 
@@ -792,7 +853,7 @@ private:
 	mutable FCriticalSection StatisticsCS;
 
 	/** Map that holds latest statistics for network transmission */
-	TMap<FGuid, FUdpMessageTransportStatistics> NodeStats;
+	TMap<FGuid, FMessageTransportStatistics> NodeStats;
 
 	/** Mutex protecting access to the NodeVersions map. */
 	mutable FCriticalSection NodeVersionCS;
@@ -842,8 +903,11 @@ private:
 	/** Holds a delegate to be invoked when a socket error happen. */
 	FOnError ErrorDelegate;
 
-	/** Holds the segmenter updated delegate */
-	FOnSegmenterUpdated SegmenterUpdatedDelegate;
+	/** Holds a delegate to be invoked when a socket error occurs sending to a given endpoint. */
+	FOnErrorSendingToEndpoint ErrorSendingToEndpointDelegate;
+
+	/** Holds a delegate to be invoked when checking the validity of a given endpoint address. */
+	FCanAcceptEndpoint CanAcceptEndpointDelegate;
 
 	/** The configured message format (from UUdpMessagingSettings). */
 	EUdpMessageFormat MessageFormat;

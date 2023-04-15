@@ -22,6 +22,8 @@
 #include "Containers/UnrealString.h"
 #include "UObject/Stack.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EngineElementsLibrary)
+
 
 // The editor requires ref-counting for object replacement to function correctly
 static_assert(!WITH_EDITOR || UE_TYPED_ELEMENT_HAS_REFCOUNTING, "The editor requires that ref-counting is enabled for typed elements!");
@@ -571,6 +573,21 @@ FTypedElementHandle UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle
 	return FTypedElementHandle();
 }
 
+FTypedElementHandle UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle(const FSMInstanceElementId& SMInstanceElementId)
+{
+	if (GIsEditor)
+	{
+		TTypedElementOwnerScopedAccess<FSMInstanceElementData> SMInstanceElement = GSMInstanceElementOwnerStore.FindElementOwner(SMInstanceElementId);
+
+		if (SMInstanceElement)
+		{
+			return SMInstanceElement->AcquireHandle();
+		}
+	}
+
+	return FTypedElementHandle();
+}
+
 void UEngineElementsLibrary::ReplaceEditorSMInstanceElementHandles(const TMap<FSMInstanceId, FSMInstanceId>& ReplacementSMInstanceIds)
 {
 	TMap<FSMInstanceElementId, FSMInstanceElementId> PotentialSMInstanceReplacements;
@@ -595,3 +612,4 @@ void UEngineElementsLibrary::ReplaceEditorSMInstanceElementHandles(const TMap<FS
 	}
 }
 #endif
+

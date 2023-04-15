@@ -25,6 +25,7 @@
 #include "HAL/Runnable.h"
 #include "Misc/EngineVersion.h"
 #include "Stats/Stats.h"
+#include "Stats/Stats2.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/Compression.h"
 #include "Misc/ConfigCacheIni.h"
@@ -166,6 +167,107 @@ static FString GCsvFileName = FString();
 static bool GCsvExitOnCompletion = false;
 
 static thread_local bool GCsvThreadLocalWaitsEnabled = false;
+
+
+// A unique ID for a CSV stat, either ansi or FName
+union FCsvUniqueStatID
+{
+public:
+	FCsvUniqueStatID(const FCsvUniqueStatID& Src)
+	{
+		Hash = Src.Hash;
+	}
+	FCsvUniqueStatID(uint64 InStatIDRaw, int32 InCategoryIndex, bool bInIsFName, bool bInIsCountStat = false)
+	{
+		check(InCategoryIndex < CSV_MAX_CATEGORY_COUNT);
+		Fields.IsFName = bInIsFName ? 1 : 0;
+		Fields.FNameOrIndex = InStatIDRaw;
+		Fields.CategoryIndex = InCategoryIndex;
+		Fields.IsCountStat = bInIsCountStat ? 1 : 0;
+	}
+	FCsvUniqueStatID(const FName& Name, int32 InCategoryIndex)
+	{
+		check(InCategoryIndex < CSV_MAX_CATEGORY_COUNT);
+		Fields.FNameOrIndex = Name.ToUnstableInt();
+		Fields.CategoryIndex = InCategoryIndex;
+		Fields.IsFName = 1;
+		Fields.IsCountStat = 0;
+	}
+	struct
+	{
+		uint64 IsFName : 1;
+		uint64 IsCountStat : 1;
+		uint64 CategoryIndex : 11;
+		uint64 FNameOrIndex : 51;
+	} Fields;
+	uint64 Hash;
+};
+
+
+// Persistent custom stats
+struct FCsvPersistentCustomStats
+{
+	void RecordStats()
+	{
+		FScopeLock Lock(&Cs);
+		for (FCsvPersistentCustomStatBase* BaseStat : Stats)
+		{
+			switch(BaseStat->GetStatType())
+			{
+				case ECsvPersistentCustomStatType::Float:
+				{
+					RecordStat<float>(BaseStat);
+					break;
+				}
+				case ECsvPersistentCustomStatType::Int:
+				{
+					RecordStat<int32>(BaseStat);
+					break;
+				}
+			}
+		}
+	}
+
+
+	template<class T>
+	TCsvPersistentCustomStat<T>* GetOrCreatePersistentCustomStat(FName Name, int32 CategoryIndex, bool bResetEachFrame)
+	{
+		LLM_SCOPE(ELLMTag::CsvProfiler);
+		FScopeLock Lock(&Cs);
+		FCsvUniqueStatID Id(Name, CategoryIndex);
+		FCsvPersistentCustomStatBase** FindStat = StatLookup.Find(Id.Hash);
+		if (FindStat)
+		{
+			if (TCsvPersistentCustomStat<T>::GetClassStatType() == (*FindStat)->GetStatType())
+			{
+				return static_cast<TCsvPersistentCustomStat<T>*>(*FindStat);
+			}
+			UE_LOG(LogCsvProfiler, Fatal, TEXT("Error: Custom stat %s was already registered with a different type"), *Name.ToString());
+		}
+		// This will leak, and that's ok. These stats are intended to persist for the lifetime of the program
+		TCsvPersistentCustomStat<T>* NewStat = new TCsvPersistentCustomStat<T>(Name, CategoryIndex, bResetEachFrame);
+		StatLookup.Add(Id.Hash, NewStat);
+		Stats.Add(NewStat);
+		return NewStat;
+	}
+
+	template <class T>
+	void RecordStat(FCsvPersistentCustomStatBase* BaseStat)
+	{
+		TCsvPersistentCustomStat<T>* Stat = static_cast<TCsvPersistentCustomStat<T>*>(BaseStat);
+		FCsvProfiler::RecordCustomStat(Stat->Name, Stat->CategoryIndex, Stat->GetValue(), ECsvCustomStatOp::Set);
+		if (Stat->bResetEachFrame)
+		{
+			Stat->Set(0);
+		}
+	}
+
+	FCriticalSection Cs;
+	TMap<uint64, FCsvPersistentCustomStatBase*> StatLookup;
+	TArray<FCsvPersistentCustomStatBase*> Stats;
+};
+static FCsvPersistentCustomStats GCsvPersistentCustomStats;
+
 
 
 #if CSV_PROFILER_SUPPORT_NAMED_EVENTS
@@ -1040,12 +1142,7 @@ public:
 		check(IsInCsvProcessingThread());
 
 		// Make a compound key
-		FUniqueID UniqueID;
-		check(InCategoryIndex < CSV_MAX_CATEGORY_COUNT);
-		UniqueID.Fields.IsFName = bInIsFName ? 1 : 0;
-		UniqueID.Fields.FNameOrIndex = InStatIDRaw;
-		UniqueID.Fields.CategoryIndex = InCategoryIndex;
-		UniqueID.Fields.IsCountStat = bInIsCountStat ? 1 : 0;
+		FCsvUniqueStatID UniqueID(InStatIDRaw, InCategoryIndex, bInIsFName, bInIsCountStat);
 
 		uint64 Hash = UniqueID.Hash;
 		int32 *IndexPtr = StatIDToIndex.Find(Hash);
@@ -1068,8 +1165,7 @@ public:
 				// With non-fname stats, the same string can appear with different pointers.
 				// We need to look up the stat in the ansi stat register to see if it's actually unique
 				uint32 AnsiNameIndex = FAnsiStringRegister::GetUniqueStringIndex((ANSICHAR*)InStatIDRaw);
-				FUniqueID AnsiUniqueID;
-				AnsiUniqueID.Hash = UniqueID.Hash;
+				FCsvUniqueStatID AnsiUniqueID(UniqueID);
 				AnsiUniqueID.Fields.FNameOrIndex = AnsiNameIndex;
 				int32 *AnsiIndexPtr = AnsiStringStatIDToIndex.Find(AnsiUniqueID.Hash);
 				if (AnsiIndexPtr)
@@ -1139,18 +1235,6 @@ protected:
 	TArray<FString> StatNames;
 	TArray<int32> StatCategoryIndices;
 	TArray<uint8> StatFlags;
-
-	union FUniqueID
-	{
-		struct
-		{
-			uint64 IsFName : 1;
-			uint64 IsCountStat : 1;
-			uint64 CategoryIndex : 11;
-			uint64 FNameOrIndex : 51;
-		} Fields;
-		uint64 Hash;
-	};
 };
 
 //-----------------------------------------------------------------------------
@@ -1774,7 +1858,7 @@ public:
 
 private:
 	static CSV_PROFILER_INLINE uint64 GetStatID(const char* StatName) { return uint64(StatName); }
-	static CSV_PROFILER_INLINE uint64 GetStatID(const FName& StatId) { return StatId.GetComparisonIndex().ToUnstableInt(); }
+	static CSV_PROFILER_INLINE uint64 GetStatID(const FName& StatId) { return StatId.ToUnstableInt(); }
 
 	static FCriticalSection TlsCS;
 	static TArray<FWeakPtr> TlsInstances;
@@ -2082,6 +2166,11 @@ public:
 	void Process(FCsvProcessThreadDataStats& OutStats, int32& OutMinFrameNumberProcessed);
 
 private:
+	/** Temporary storage of data collected with every Process() call. */
+	TArray<FCsvTimingMarker> ThreadMarkers;
+	TArray<FCsvCustomStat> CustomStats;
+	TArray<FCsvEvent> Events;
+
 	FCsvStatSeries* FindOrCreateStatSeries(const FCsvStatBase& Stat, FCsvStatSeries::EType SeriesType, bool bIsCountStat)
 	{
 		check(IsInCsvProcessingThread());
@@ -2409,9 +2498,9 @@ void FCsvProfilerThreadDataProcessor::Process(FCsvProcessThreadDataStats& OutSta
 	check(IsInCsvProcessingThread());
 
 	// Read the raw CSV data
-	TArray<FCsvTimingMarker> ThreadMarkers;
-	TArray<FCsvCustomStat> CustomStats;
-	TArray<FCsvEvent> Events;
+	ThreadMarkers.Reset(0);
+	CustomStats.Reset(0);
+	Events.Reset(0);
 	ThreadData->FlushResults(ThreadMarkers, CustomStats, Events);
 
 	OutStats.TimestampCount += ThreadMarkers.Num();
@@ -2624,6 +2713,7 @@ FCsvProfiler* FCsvProfiler::Get()
 FCsvProfiler::FCsvProfiler()
 	: NumFramesToCapture(-1)
 	, CaptureFrameNumber(0)
+	, CaptureFrameNumberRT(0)
 	, CaptureOnEventFrameCount(-1)
 	, bInsertEndFrameAtFrameStart(false)
 	, LastEndFrameTimestamp(0)
@@ -2665,6 +2755,7 @@ FCsvProfiler::FCsvProfiler()
 	SetMetadataInternal(TEXT("CPU"), *FPlatformMisc::GetDeviceMakeAndModel());
 	SetMetadataInternal(TEXT("PGOEnabled"), FPlatformMisc::IsPGOEnabled() ? TEXT("1") : TEXT("0"));
 	SetMetadataInternal(TEXT("LoginID"), *FPlatformMisc::GetLoginId());
+	SetMetadataInternal(TEXT("ASan"), USING_ADDRESS_SANITISER ? TEXT("1") : TEXT("0"));
 
 	// Set the device ID if the platform supports it
 	FString DeviceID = FPlatformMisc::GetDeviceId();
@@ -2780,6 +2871,7 @@ void FCsvProfiler::BeginFrame()
 					NumFramesToCapture = CurrentCommand.Value;
 					GCsvRepeatFrameCount = NumFramesToCapture;
 					CaptureFrameNumber = 0;
+					CaptureFrameNumberRT = 0;
 					LastEndFrameTimestamp = FPlatformTime::Cycles64();
 					CurrentFlags = CurrentCommand.Flags;
 
@@ -2815,7 +2907,7 @@ void FCsvProfiler::BeginFrame()
 					}
 					SetMetadataInternal(TEXT("TargetFramerate"), *FString::FromInt(TargetFPS));
 					SetMetadataInternal(TEXT("StartTimestamp"), *FString::Printf(TEXT("%lld"), FDateTime::UtcNow().ToUnixTimestamp()));
-					SetMetadataInternal(TEXT("NamedEvents"), (GCycleStatsShouldEmitNamedEvents > 0) ? TEXT("1") : TEXT("0"));
+					SetMetadataInternal(TEXT("NamedEvents"), GCycleStatsShouldEmitNamedEvents ? TEXT("1") : TEXT("0"));
 
 					GCsvStatCounts = !!CVarCsvStatCounts.GetValueOnGameThread();
 
@@ -2830,6 +2922,11 @@ void FCsvProfiler::BeginFrame()
 		if (GCsvProfilerIsCapturing)
 		{
 			GFrameBoundaries.AddBeginFrameTimestamp(ECsvTimeline::Gamethread);
+
+			if (CaptureFrameNumber == 0)
+			{
+				OnCSVProfileFirstFrameDelegate.Broadcast();
+			}
 		}
 	}
 
@@ -2852,6 +2949,8 @@ void FCsvProfiler::EndFrame()
 	check(IsInGameThread());
 	if (GCsvProfilerIsCapturing)
 	{
+		GCsvPersistentCustomStats.RecordStats();
+
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FCsvProfiler_EndFrame_Capturing);
 		if (NumFramesToCapture >= 0)
 		{
@@ -2890,6 +2989,8 @@ void FCsvProfiler::EndFrame()
 		CSV_CUSTOM_STAT_GLOBAL(ExtendedUsedMB, UsedExtendedMB, ECsvCustomStatOp::Set);
 		CSV_CUSTOM_STAT_GLOBAL(SystemMaxMB, TotalSystemMB, ECsvCustomStatOp::Set);
 
+		MemoryStats.SetEndFrameCsvStats();
+
 		// If we're single-threaded, process the stat data here
 		if (ProcessingThread == nullptr)
 		{
@@ -2920,6 +3021,8 @@ void FCsvProfiler::EndFrame()
 			}
 			else
 			{
+				UE_LOG(LogCsvProfiler, Display, TEXT("Capture Stop requested"));
+
 				// signal external profiler that we are done
 				OnCSVProfileEndDelegate.Broadcast();
 
@@ -3043,6 +3146,10 @@ void FCsvProfiler::EndFrameRT()
 {
 	LLM_SCOPE(ELLMTag::CsvProfiler);
 	check(IsInRenderingThread());
+	if (GCsvProfilerIsCapturing)
+	{
+		CaptureFrameNumberRT++;
+	}
 }
 
 void FCsvProfiler::BeginCapture(int InNumFramesToCapture, 
@@ -3062,12 +3169,14 @@ TSharedFuture<FString> FCsvProfiler::EndCapture(FGraphEventRef EventToSignal)
 
 	check(IsInGameThread());
 
+	// Fire before we copy the metadata so it gives other systems a chance to write any final information.
+	OnCSVProfileEndRequestedDelegate.Broadcast();
+
 	TPromise<FString>* Completion = new TPromise<FString>([EventToSignal]()
 	{
 		if (EventToSignal)
 		{
-			TArray<FBaseGraphTask*> Subsequents;
-			EventToSignal->DispatchSubsequents(Subsequents);
+			EventToSignal->DispatchSubsequents();
 		}
 	});
 
@@ -3220,6 +3329,12 @@ void FCsvProfiler::BeginSetWaitStat(const char * StatName)
 #if RECORD_TIMESTAMPS
 	if (GCsvProfilerIsCapturing && GCsvCategoriesEnabled[CSV_CATEGORY_INDEX(Exclusive)])
 	{
+#if CSV_PROFILER_SUPPORT_NAMED_EVENTS
+		if (UNLIKELY(GCsvProfilerNamedEventsExclusive))
+		{
+			FPlatformMisc::BeginNamedEvent(FColor::Yellow, *FString::Printf(TEXT("CsvWaitStat_%s"), StringCast<TCHAR>(StatName).Get()));
+		}
+#endif
 		FCsvProfilerThreadData::Get().PushWaitStatName(StatName == nullptr ? GIgnoreWaitStatName : StatName);
 	}
 #endif
@@ -3230,6 +3345,12 @@ void FCsvProfiler::EndSetWaitStat()
 #if RECORD_TIMESTAMPS
 	if (GCsvProfilerIsCapturing && GCsvCategoriesEnabled[CSV_CATEGORY_INDEX(Exclusive)])
 	{
+#if CSV_PROFILER_SUPPORT_NAMED_EVENTS
+		if (UNLIKELY(GCsvProfilerNamedEventsExclusive))
+		{
+			FPlatformMisc::EndNamedEvent();
+		}
+#endif
 		FCsvProfilerThreadData::Get().PopWaitStatName();
 	}
 #endif
@@ -3246,7 +3367,14 @@ void FCsvProfiler::BeginWait()
 #if CSV_PROFILER_SUPPORT_NAMED_EVENTS
 			if (UNLIKELY(GCsvProfilerNamedEventsExclusive))
 			{
-				CSV_PROFILER_BeginNamedEvent(FColor(255, 128, 128), "CsvEventWait");
+				if ( FThreadIdleStats::Get().IsCriticalPath() )
+				{
+					CSV_PROFILER_BeginNamedEvent(FColor(192, 96, 96), "CsvEventWait");
+				}
+				else
+				{
+					CSV_PROFILER_BeginNamedEvent(FColor(255, 128, 128), "CsvEventWait (Non-CP)");
+				}
 			}
 #endif
 			FCsvProfilerThreadData::Get().AddTimestampExclusiveBegin(WaitStatName);
@@ -3610,6 +3738,12 @@ int32 FCsvProfiler::GetCaptureFrameNumber()
 	return CaptureFrameNumber;
 }
 
+int32 FCsvProfiler::GetCaptureFrameNumberRT()
+{
+	return CaptureFrameNumberRT;
+}
+
+
 //Get the total frame to capture when we are capturing on event. 
 //Example:  -csvStartOnEvent="My Event"
 //			-csvCaptureOnEventFrameCount=2500
@@ -3672,11 +3806,29 @@ float FCsvProfiler::ProcessStatData()
 	return ElapsedMS;
 }
 
+TCsvPersistentCustomStat<int32>* FCsvProfiler::GetOrCreatePersistentCustomStatInt(FName Name, int32 CategoryIndex, bool bResetEachFrame)
+{
+	return GCsvPersistentCustomStats.GetOrCreatePersistentCustomStat<int32>(Name, CategoryIndex, bResetEachFrame);
+}
+
+TCsvPersistentCustomStat<float>* FCsvProfiler::GetOrCreatePersistentCustomStatFloat(FName Name, int32 CategoryIndex, bool bResetEachFrame)
+{
+	return GCsvPersistentCustomStats.GetOrCreatePersistentCustomStat<float>(Name, CategoryIndex, bResetEachFrame);
+}
+
 #if CSV_PROFILER_ALLOW_DEBUG_FEATURES
 
 // Simple benchmarking and debugging tests for the csv profiler. Enable with -csvtest, e.g -csvtest -csvcaptureframes=400
 void CSVTest()
 {
+	TCsvPersistentCustomStat<float>* PersistentStatFloat = FCsvProfiler::Get()->GetOrCreatePersistentCustomStatFloat(TEXT("PersistentStatFloat"));
+	PersistentStatFloat->Add(0.15f);
+	PersistentStatFloat->Sub(0.1f);
+
+	TCsvPersistentCustomStat<int>* PersistentStatInt = FCsvProfiler::Get()->GetOrCreatePersistentCustomStatInt(TEXT("PersistentStatInt"), CSV_CATEGORY_INDEX(CsvTest));
+	PersistentStatInt->Add(15);
+	PersistentStatInt->Sub(1);
+
 	uint32 FrameNumber = FCsvProfiler::Get()->GetCaptureFrameNumber();
 	CSV_SCOPED_TIMING_STAT(CsvTest, CsvTestStat);
 	CSV_CUSTOM_STAT(CsvTest, CaptureFrameNumber, int32(FrameNumber), ECsvCustomStatOp::Set);

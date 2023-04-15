@@ -9,8 +9,6 @@
 #include "CADKernelSurfaceExtension.h"
 #include "CADModelConverter.h"
 #include "CADOptions.h"
-#include "CoreTechSurfaceExtension.h"
-#include "CoreTechSurfaceHelper.h"
 #include "DatasmithImportOptions.h"
 #include "DatasmithMaterialElements.h"
 #include "DatasmithMaterialsUtils.h"
@@ -20,7 +18,6 @@
 #include "DatasmithUtils.h"
 #include "OpenNurbsBRepConverter.h"
 #include "OpenNurbsBRepToCADKernelConverter.h"
-#include "OpenNurbsBRepToCoretechConverter.h" // requires CoreTech as public dependency
 #include "OpenNurbsBRepToTechSoftConverter.h" // requires Techsoft as public dependency
 #include "Utility/DatasmithMeshHelper.h"
 
@@ -245,26 +242,26 @@ namespace DatasmithOpenNurbsTranslatorUtils
 		{ }
 
 		FNode(float x, float y, float z)
-			: Vertex(FVector(x, y, z))
+			: Vertex(x, y, z)
 		{ }
 
 		void SetVertex(float x, float y, float z)
 		{
-			Vertex = FVector(x, y, z);
+			Vertex = FVector3f(x, y, z);
 		}
 
 		void SetNormal(float x, float y, float z)
 		{
-			Normal = FVector(x, y, z);
+			Normal = FVector3f(x, y, z);
 		}
 
 		void SetNormal(const ON_3fVector& InNormal)
 		{
-			Normal = FVector(InNormal[0], InNormal[1], InNormal[2]);
+			Normal = FVector3f(InNormal[0], InNormal[1], InNormal[2]);
 		}
 
-		FVector Vertex;
-		FVector Normal;
+		FVector3f Vertex;
+		FVector3f Normal;
 	};
 
 	struct FFace
@@ -284,7 +281,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 		}
 
 		const FNode* Nodes[3];
-		FVector2D UVCoords[3];
+		FVector2f UVCoords[3];
 	};
 
 	bool TranslateMesh(const ON_Mesh** Meshes, int MeshCount, FMeshDescription& MeshDescription, bool& bHasNormal, double ScalingFactor, const ON_3dVector& Offset, bool bHasFaceMaterialChannel, int32* FaceMaterialChannel)
@@ -419,7 +416,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 					FFace& Face = Faces[Index];
 					for (int iTriangleNode = 0; iTriangleNode < 3; ++iTriangleNode)
 					{
-						Face.UVCoords[iTriangleNode] = FVector2D(UvCoords[iTriangleNode + 3 * Index][0], UvCoords[iTriangleNode + 3 * Index][1]);
+						Face.UVCoords[iTriangleNode] = FVector2f(UvCoords[iTriangleNode + 3 * Index][0], UvCoords[iTriangleNode + 3 * Index][1]);
 					}
 				}
 			}
@@ -453,7 +450,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 			for (int Index = 0; Index < VertexCount; ++Index)
 			{
 				const FNode& Node = Nodes[Index];
-				const FVector& Pos = Node.Vertex;
+				const FVector3f& Pos = Node.Vertex;
 				NodeToIndex.Add(&Node, VertexIndexBase + Index);
 
 				// Fill the vertex array
@@ -498,7 +495,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 					const FNode& FaceNode = *Face.Nodes[CornerIndex];
 
 					// Set the normal
-					FVector UENormal = FDatasmithUtils::ConvertVector(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy, FaceNode.Normal);
+					FVector3f UENormal = FDatasmithUtils::ConvertVector(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy, FaceNode.Normal);
 					UENormal = UENormal.GetSafeNormal();
 
 					// Check to see if normal is correct. If not replace by face's normal
@@ -514,7 +511,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 					// Set the UV
 					if (bHasUVData)
 					{
-						const FVector2D& UVValues = Face.UVCoords[CornerIndex];
+						const FVector2f& UVValues = Face.UVCoords[CornerIndex];
 						if (!UVValues.ContainsNaN())
 						{
 							// Convert UVs - bottom-left Rhino's texture origin to Unreal's top-left
@@ -647,24 +644,13 @@ public:
 			TranslationCache = MakeShared<FTranslationCache>();
 		}
 
-		const double IPMetricUnit = 0.001; // CAD Tools works in mm
-		const double IPScaleFactor = 1.; // Default scale set to 1 because BRep are created in mm and modeler unit is assumed to be mm
-		CADLibrary::FImportParameters ImportParameters(IPMetricUnit, IPScaleFactor, FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy);
+		CADLibrary::FImportParameters ImportParameters(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy);
 
 		if (CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
 		{
-			if (CADLibrary::FImportParameters::GCADLibrary == TEXT("TechSoft"))
-			{
-				TSharedRef<FOpenNurbsBRepToTechSoftConverter> OpenNurbsBRepToCoretechConverter = MakeShared<FOpenNurbsBRepToTechSoftConverter>(ImportParameters);
-				CADModelConverter = OpenNurbsBRepToCoretechConverter;
-				OpenNurbsBRepConverter = OpenNurbsBRepToCoretechConverter;
-			}
-			else if (CADLibrary::FImportParameters::GCADLibrary == TEXT("KernelIO"))
-			{
-				TSharedRef<FOpenNurbsBRepToCoretechConverter> OpenNurbsBRepToCoretechConverter = MakeShared<FOpenNurbsBRepToCoretechConverter>(TEXT("Al2CTSharedSession"), ImportParameters);
-				CADModelConverter = OpenNurbsBRepToCoretechConverter;
-				OpenNurbsBRepConverter = OpenNurbsBRepToCoretechConverter;
-			}
+			TSharedRef<FOpenNurbsBRepToTechSoftConverter> OpenNurbsBRepToTechSoftConverter = MakeShared<FOpenNurbsBRepToTechSoftConverter>(ImportParameters);
+			CADModelConverter = OpenNurbsBRepToTechSoftConverter;
+			OpenNurbsBRepConverter = OpenNurbsBRepToTechSoftConverter;
 		}
 		else
 		{
@@ -2079,7 +2065,8 @@ TSharedPtr<IDatasmithMeshActorElement> FOpenNurbsTranslatorImpl::GetMeshActorEle
 	if (ComputeObjectGeometryCenter(Object, GeometryCenter))
 	{
 		MeshElementToGeometryCenter.Add(MeshElement.ToSharedRef(), GeometryCenter);
-		FVector ActorOffset = GetScaleFactor() * FDatasmithUtils::ConvertVector(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy, GeometryCenter);
+		FVector ActorOffset(GeometryCenter.x, GeometryCenter.y, GeometryCenter.z);
+		ActorOffset = FDatasmithUtils::ConvertVector(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy, ActorOffset) * GetScaleFactor();
 		ActorElement->SetTranslation(ActorOffset);
 	}
 
@@ -2994,7 +2981,7 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 		// Ref. visitBRep
 		CADModelConverter->SetImportParameters(OpenNurbsOptions.ChordTolerance, OpenNurbsOptions.MaxEdgeLength, OpenNurbsOptions.NormalTolerance, (CADLibrary::EStitchingTechnique)OpenNurbsOptions.StitchingTechnique);
 
-		CADModelConverter->InitializeProcess(CADModelConverter->GetMetricUnit());
+		CADModelConverter->InitializeProcess();
 
 		OpenNurbsBRepConverter->AddBRep(*Brep, Offset);
 		CADModelConverter->RepairTopology();
@@ -3273,6 +3260,26 @@ bool FDatasmithOpenNurbsTranslator::LoadScene(TSharedRef<IDatasmithScene> OutSce
 		return false;
 	}
 
+	{
+		FString TesselationLibrary;
+		if (OpenNurbsOptions.Geometry == EDatasmithOpenNurbsBrepTessellatedSource::UseRenderMeshes)
+		{
+			TesselationLibrary = TEXT("Rhino");
+		}
+		else if (CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
+		{
+			TesselationLibrary = TEXT("TechSoft");
+		}
+		else
+		{
+			TesselationLibrary = TEXT("CADKernel");
+		}
+
+		UE_LOG(LogDatasmithOpenNurbsTranslator, Display, TEXT("CAD translation [%s]."), *Filename);
+		UE_LOG(LogDatasmithOpenNurbsTranslator, Display, TEXT(" - Parsing Library:      %s"), TEXT("OpenNurbs"));
+		UE_LOG(LogDatasmithOpenNurbsTranslator, Display, TEXT(" - Tessellation Library: %s"), *TesselationLibrary);
+	}
+
 	Translator = MakeShared<FOpenNurbsTranslatorImpl>(GetSource().GetSceneName(), OutScene, FPaths::GetPath(Filename), nullptr);
 	if (!Translator)
 	{
@@ -3323,15 +3330,15 @@ bool FOpenNurbsTranslatorImpl::LoadStaticMesh(const TSharedRef<IDatasmithMeshEle
 	return OutMeshPayload.LodMeshes.Num() > 0;
 }
 
-void FDatasmithOpenNurbsTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithOpenNurbsTranslator::SetSceneImportOptions(const TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	for (const TStrongObjectPtr<UDatasmithOptionsBase>& Option : Options)
+	for (const TObjectPtr<UDatasmithOptionsBase>& Option : Options)
 	{
-		if (UDatasmithImportOptions* DatasmithOptions = Cast<UDatasmithImportOptions>(Option.Get()))
+		if (UDatasmithImportOptions* DatasmithOptions = Cast<UDatasmithImportOptions>(Option))
 		{
 			BaseOptions = DatasmithOptions->BaseOptions;
 		}
-		else if (UDatasmithOpenNurbsImportOptions* OpenNurbsOptionsObj = Cast<UDatasmithOpenNurbsImportOptions>(Option.Get()))
+		else if (UDatasmithOpenNurbsImportOptions* OpenNurbsOptionsObj = Cast<UDatasmithOpenNurbsImportOptions>(Option))
 		{
 			OpenNurbsOptions = OpenNurbsOptionsObj->Options;
 		}
@@ -3344,9 +3351,9 @@ void FDatasmithOpenNurbsTranslator::SetSceneImportOptions(TArray<TStrongObjectPt
 	}
 }
 
-void FDatasmithOpenNurbsTranslator::GetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithOpenNurbsTranslator::GetSceneImportOptions(TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	TStrongObjectPtr<UDatasmithOpenNurbsImportOptions> OpenNurbsOptionsPtr = Datasmith::MakeOptions<UDatasmithOpenNurbsImportOptions>();
+	TObjectPtr<UDatasmithOpenNurbsImportOptions> OpenNurbsOptionsPtr = Datasmith::MakeOptionsObjectPtr<UDatasmithOpenNurbsImportOptions>();
 	if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Available)
 	{
 		OpenNurbsOptionsPtr->Options.Geometry = EDatasmithOpenNurbsBrepTessellatedSource::UseUnrealNurbsTessellation;

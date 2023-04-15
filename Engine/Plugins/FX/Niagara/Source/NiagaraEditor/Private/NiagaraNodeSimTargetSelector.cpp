@@ -4,6 +4,8 @@
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraHlslTranslator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeSimTargetSelector)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeSimTargetSelector"
 
 UNiagaraNodeSimTargetSelector::UNiagaraNodeSimTargetSelector(const FObjectInitializer& ObjectInitializer)
@@ -87,7 +89,7 @@ void UNiagaraNodeSimTargetSelector::Compile(class FHlslNiagaraTranslator* Transl
 	Outputs[OutputPins.Num() - 1] = INDEX_NONE;
 }
 
-UEdGraphPin* UNiagaraNodeSimTargetSelector::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage MasterUsage) const 
+UEdGraphPin* UNiagaraNodeSimTargetSelector::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage InUsage) const
 {
 	return nullptr;
 }
@@ -108,3 +110,4 @@ FText UNiagaraNodeSimTargetSelector::GetNodeTitle(ENodeTitleType::Type TitleType
 }
 
 #undef LOCTEXT_NAMESPACE
+

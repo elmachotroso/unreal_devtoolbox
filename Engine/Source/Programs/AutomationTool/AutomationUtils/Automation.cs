@@ -10,6 +10,7 @@ using UnrealBuildTool;
 using EpicGames.Core;
 using OpenTracing.Util;
 using UnrealBuildBase;
+using System.Threading.Tasks;
 
 namespace AutomationTool
 {
@@ -46,7 +47,7 @@ namespace AutomationTool
 		/// Main method.
 		/// </summary>
 		/// <param name="Arguments">Command line</param>
-		public static ExitCode Process(ParsedCommandLine AutomationToolCommandLine, StartupTraceListener StartupListener, HashSet<FileReference> ScriptModuleAssemblies)
+		public static async Task<ExitCode> ProcessAsync(ParsedCommandLine AutomationToolCommandLine, StartupTraceListener StartupListener, HashSet<FileReference> ScriptModuleAssemblies)
 		{
 			GlobalCommandLine.Initialize(AutomationToolCommandLine);
 
@@ -70,6 +71,13 @@ namespace AutomationTool
 
 				Log.TraceVerbose("IsBuildMachine={0}", IsBuildMachine);
 				Environment.SetEnvironmentVariable("IsBuildMachine", IsBuildMachine ? "1" : "0");
+
+				// Register all the log event matchers
+				Assembly AutomationUtilsAssembly = Assembly.GetExecutingAssembly();
+				Log.EventParser.AddMatchersFromAssembly(AutomationUtilsAssembly);
+
+				Assembly UnrealBuildToolAssembly = typeof(UnrealBuildTool.BuildVersion).Assembly;
+				Log.EventParser.AddMatchersFromAssembly(UnrealBuildToolAssembly);
 
 				// Get the path to the telemetry file, if present
 				string TelemetryFile = GlobalCommandLine.TelemetryPath;
@@ -96,19 +104,14 @@ namespace AutomationTool
 				CommandUtils.InitCommandEnvironment();
 
 				// Create the log file, and flush the startup listener to it
-				TraceListener LogTraceListener = LogUtils.AddLogFileListener(CommandUtils.CmdEnv.LogFolder,
-					CommandUtils.CmdEnv.FinalLogFolder);
-				StartupListener.CopyTo(LogTraceListener);
-				Trace.Listeners.Remove(StartupListener);
-				
-				Log.TraceInformation($"Log location: {LogUtils.LogFileName}");
-				if (!String.Equals(LogUtils.FinalLogFileName, LogUtils.LogFileName))
+				LogUtils.AddLogFileListener(new DirectoryReference(CommandUtils.CmdEnv.LogFolder), new DirectoryReference(CommandUtils.CmdEnv.FinalLogFolder));
+				if (LogUtils.FinalLogFileName != LogUtils.LogFileName)
 				{
 					Log.TraceInformation($"Final log location: {LogUtils.FinalLogFileName}");	
 				}
 				
 				// Initialize UBT
-				if (!UnrealBuildTool.PlatformExports.Initialize())
+				if (!UnrealBuildTool.PlatformExports.Initialize(Log.Logger))
 				{
 					Log.TraceInformation("Failed to initialize UBT");
 					return ExitCode.Error_Unknown;
@@ -150,7 +153,7 @@ namespace AutomationTool
 				try
 				{
 					// Find and execute commands.
-					ExitCode Result = Execute(AutomationToolCommandLine.CommandsToExecute, ScriptManager.Commands);
+					ExitCode Result = await ExecuteAsync(AutomationToolCommandLine.CommandsToExecute, ScriptManager.Commands);
 					if (TelemetryFile != null)
 					{
 						Directory.CreateDirectory(Path.GetDirectoryName(TelemetryFile));
@@ -234,8 +237,9 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="CommandsToExecute"></param>
 		/// <param name="Commands"></param>
-		public static ExitCode Execute(List<CommandInfo> CommandsToExecute, Dictionary<string, Type> Commands)
+		public static async Task<ExitCode> ExecuteAsync(List<CommandInfo> CommandsToExecute, Dictionary<string, Type> Commands)
 		{
+			CommandUtils.LogInformation("Executing commands...");
 			for (int CommandIndex = 0; CommandIndex < CommandsToExecute.Count; ++CommandIndex)
 			{
 				var CommandInfo = CommandsToExecute[CommandIndex];
@@ -250,7 +254,7 @@ namespace AutomationTool
 				Command.Params = CommandInfo.Arguments.ToArray();
 				try
 				{
-					ExitCode Result = Command.Execute();
+					ExitCode Result = await Command.ExecuteAsync();
 					if(Result != ExitCode.Success)
 					{
 						return Result;
@@ -304,7 +308,7 @@ namespace AutomationTool
 @"Executes scripted commands
 
 AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 ...] Command1 [-Arg0 -Arg1 ...] Command2 [-Arg0 ...] Commandn ... [EnvVar0=MyValue0 ... EnvVarn=MyValuen]",
-				ParamDict.ToList(), HelpUtils.WindowWidth, Log.Logger);
+				ParamDict.ToList());
 			CommandUtils.LogHelp(typeof(Automation));
 		}
 

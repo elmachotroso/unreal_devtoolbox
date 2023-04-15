@@ -3,36 +3,63 @@
 #include "EditorDomain/EditorDomain.h"
 
 #include "AssetRegistry/AssetData.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
-#include "Async/AsyncFileHandleNull.h"
+#include "Async/AsyncFileHandle.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
 #include "DerivedDataCache.h"
+#include "DerivedDataCachePolicy.h"
 #include "DerivedDataCacheRecord.h"
+#include "DerivedDataRequestOwner.h"
+#include "DerivedDataRequestTypes.h"
+#include "DerivedDataSharedString.h"
 #include "EditorDomain/EditorDomainArchive.h"
 #include "EditorDomain/EditorDomainSave.h"
 #include "EditorDomain/EditorDomainUtils.h"
 #include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
 #include "Interfaces/IPluginManager.h"
+#include "Logging/LogCategory.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Optional.h"
+#include "Misc/PackageName.h"
 #include "Misc/PackagePath.h"
 #include "Misc/PackageSegment.h"
+#include "Misc/Parse.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/StringBuilder.h"
+#include "ModuleDescriptor.h"
+#include "ProfilingDebugging/CookStats.h"
 #include "Serialization/Archive.h"
 #include "Serialization/CompactBinary.h"
 #include "TargetDomain/TargetDomainUtils.h"
 #include "Templates/RefCounting.h"
+#include "Templates/RemoveReference.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/Package.h"
 #include "UObject/PackageResourceManagerFile.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 
+class IMappedFileHandle;
+
 DEFINE_LOG_CATEGORY(LogEditorDomain);
 
-/** Add a hook to the PackageResourceManager's startup delegate to use the EditorDomain as the IPackageResourceManager */
+/**
+ * A pre-Main global registration struct that decides whether to create the EditorDomain, and initializes EditorDomainUtils
+ * for usage by any system that needs PackageDigests, with or without FEditorDomain.
+ * If the EditorDomain is enabled, also sets PackageResourceManager to use the EditorDomain as the IPackageResourceManager
+ */
 class FEditorDomainRegisterAsPackageResourceManager
 {
 public:
@@ -43,27 +70,31 @@ public:
 
 	static IPackageResourceManager* SetPackageResourceManager()
 	{
+		using namespace UE::EditorDomain;
+
 		bool bEditorDomainEnabled = IsEditorDomainEnabled();
 		if (GIsEditor)
 		{
 			UE_LOG(LogEditorDomain, Display, TEXT("EditorDomain is %s"), bEditorDomainEnabled ? TEXT("Enabled") : TEXT("Disabled"));
 		}
+		UtilsInitialize();
 		if (bEditorDomainEnabled)
 		{
-			UE::EditorDomain::UtilsInitialize();
 			UE::TargetDomain::UtilsInitialize(bEditorDomainEnabled);
-			if (bEditorDomainEnabled)
-			{
-				// Set values for config settings EditorDomain depends on
-				GAllowUnversionedContentInEditor = 1;
+			// Set values for config settings EditorDomain depends on
+			GAllowUnversionedContentInEditor = 1;
 
-				// Create the editor domain and return it as the package resource manager
-				check(FEditorDomain::RegisteredEditorDomain == nullptr);
-				FEditorDomain::RegisteredEditorDomain = new FEditorDomain();
-				return FEditorDomain::RegisteredEditorDomain;
-			}
+			// Create the editor domain, register it as the IPackageDigestCache, and return it as the package resource manager
+			check(FEditorDomain::RegisteredEditorDomain == nullptr);
+			FEditorDomain::RegisteredEditorDomain = new FEditorDomain();
+			IPackageDigestCache::Set(FEditorDomain::RegisteredEditorDomain);
+			return FEditorDomain::RegisteredEditorDomain;
 		}
-		return nullptr;
+		else
+		{
+			IPackageDigestCache::SetDefault();
+			return nullptr;
+		}
 	}
 } GRegisterAsPackageResourceManager;
 
@@ -125,6 +156,10 @@ FEditorDomain::~FEditorDomain()
 	{
 		RegisteredEditorDomain = nullptr;
 	}
+	if (UE::EditorDomain::IPackageDigestCache::Get() == this)
+	{
+		UE::EditorDomain::IPackageDigestCache::Set(nullptr);
+	}
 }
 
 FEditorDomain* FEditorDomain::Get()
@@ -154,14 +189,32 @@ FEditorDomain::FLocks::FLocks(FEditorDomain& InOwner)
 {
 }
 
-bool FEditorDomain::TryFindOrAddPackageSource(FName PackageName,
+bool FEditorDomain::TryFindOrAddPackageSource(FScopeLock& ScopeLock, bool& bOutReenteredLock, FName PackageName,
 	TRefCountPtr<FPackageSource>& OutSource, UE::EditorDomain::FPackageDigest* OutErrorDigest)
 {
-	// Called within Locks.Lock
+	// Called within &Locks->Lock, ScopeLock is locked on that Lock
 	using namespace UE::EditorDomain;
 
 	// EDITOR_DOMAIN_TODO: Need to delete entries from PackageSources when the assetregistry reports the package is
 	// resaved on disk.
+	TRefCountPtr<FPackageSource>* PackageSourcePtr = PackageSources.Find(PackageName);
+	if (PackageSourcePtr && *PackageSourcePtr)
+	{
+		bOutReenteredLock = false;
+		OutSource = *PackageSourcePtr;
+		return true;
+	}
+
+	// CalculatepackageDigest calls arbitrary code because of class loads and can reenter EditorDomain functions
+	// We have to drop the lock around our call to it
+	FPackageDigest PackageDigest;
+	{
+		Locks->Lock.Unlock();
+		ON_SCOPE_EXIT{ Locks->Lock.Lock(); };
+		PackageDigest = CalculatePackageDigest(*AssetRegistry, PackageName);
+	}
+
+	bOutReenteredLock = true;
 	TRefCountPtr<FPackageSource>& PackageSource = PackageSources.FindOrAdd(PackageName);
 	if (PackageSource)
 	{
@@ -169,8 +222,6 @@ bool FEditorDomain::TryFindOrAddPackageSource(FName PackageName,
 		return true;
 	}
 
-	FString ErrorMessage;
-	FPackageDigest PackageDigest = CalculatePackageDigest(*AssetRegistry, PackageName);
 	switch (PackageDigest.Status)
 	{
 	case FPackageDigest::EStatus::Successful:
@@ -194,10 +245,11 @@ bool FEditorDomain::TryFindOrAddPackageSource(FName PackageName,
 		return false;
 	default:
 		UE_LOG(LogEditorDomain, Warning,
-			TEXT("Could not load package from EditorDomain; it will be loaded from the WorkspaceDomain: %s."),
-			*ErrorMessage)
+			TEXT("Could not load package %s from EditorDomain; it will be loaded from the WorkspaceDomain: %s"),
+			*WriteToString<256>(PackageName), *PackageDigest.GetStatusString());
 		PackageSource = new FPackageSource();
 		PackageSource->Source = EPackageSource::Workspace;
+		PackageSource->Digest = MoveTemp(PackageDigest);
 		OutSource = PackageSource;
 		return true;
 	}
@@ -206,17 +258,18 @@ bool FEditorDomain::TryFindOrAddPackageSource(FName PackageName,
 UE::EditorDomain::FPackageDigest FEditorDomain::GetPackageDigest(FName PackageName)
 {
 	FScopeLock ScopeLock(&Locks->Lock);
-	return GetPackageDigest_WithinLock(PackageName);
+	bool bReenteredLock;
+	return GetPackageDigest_WithinLock(ScopeLock, bReenteredLock, PackageName);
 }
 
-UE::EditorDomain::FPackageDigest FEditorDomain::GetPackageDigest_WithinLock(FName PackageName)
+UE::EditorDomain::FPackageDigest FEditorDomain::GetPackageDigest_WithinLock(FScopeLock& ScopeLock, bool& bOutReenteredLock, FName PackageName)
 {
-	// Called within &Locks->Lock
+	// Called within &Locks->Lock, ScopeLock is locked on that Lock
 	using namespace UE::EditorDomain;
 
 	TRefCountPtr<FPackageSource> PackageSource;
 	FPackageDigest ErrorDigest;
-	if (!TryFindOrAddPackageSource(PackageName, PackageSource, &ErrorDigest))
+	if (!TryFindOrAddPackageSource(ScopeLock, bOutReenteredLock, PackageName, PackageSource, &ErrorDigest))
 	{
 		return ErrorDigest;
 	}
@@ -229,7 +282,18 @@ void FEditorDomain::PrecachePackageDigest(FName PackageName)
 	TOptional<FAssetPackageData> PackageData = AssetRegistry->GetAssetPackageDataCopy(PackageName);
 	if (PackageData)
 	{
-		UE::EditorDomain::PrecacheClassDigests(PackageData->ImportedClasses);
+		TArray<FTopLevelAssetPath> ImportedClassPaths;
+		ImportedClassPaths.Reserve(PackageData->ImportedClasses.Num());
+		for (FName ClassPathName : PackageData->ImportedClasses)
+		{
+			FTopLevelAssetPath ClassPath(WriteToString<256>(ClassPathName).ToView());
+			if (ClassPath.IsValid())
+			{
+				ImportedClassPaths.Add(ClassPath);
+			}
+		}
+
+		UE::EditorDomain::PrecacheClassDigests(ImportedClassPaths);
 	}
 }
 
@@ -251,15 +315,35 @@ TRefCountPtr<FEditorDomain::FPackageSource> FEditorDomain::FindPackageSource(con
 	return TRefCountPtr<FPackageSource>();
 }
 
-void FEditorDomain::MarkNeedsLoadFromWorkspace(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource)
+void FEditorDomain::MarkLoadedFromWorkspaceDomain(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource,
+	bool bHasRecordInEditorDomain)
 {
+	if (PackageSource->Source == FEditorDomain::EPackageSource::Workspace)
+	{
+		return;
+	}
+
 	PackageSource->Source = FEditorDomain::EPackageSource::Workspace;
+	PackageSource->bHasRecordInEditorDomain |= bHasRecordInEditorDomain;
 	if (bExternalSave)
 	{
-		SaveClient->RequestSave(PackagePath);
+		if (PackageSource->NeedsEditorDomainSave(*this))
+		{
+			SaveClient->RequestSave(PackagePath);
+		}
 	}
-	// Otherwise, we will note the need for save in OnEndLoadPackage
+	// Otherwise, we will check whether it needs to save in OnEndLoadPackage
+}
 
+void FEditorDomain::MarkLoadedFromEditorDomain(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource)
+{
+	if (PackageSource->Source == FEditorDomain::EPackageSource::Editor)
+	{
+		return;
+	}
+
+	PackageSource->Source = FEditorDomain::EPackageSource::Editor;
+	PackageSource->bHasRecordInEditorDomain = true;
 }
 
 int64 FEditorDomain::FileSize(const FPackagePath& PackagePath, EPackageSegment PackageSegment,
@@ -284,7 +368,8 @@ int64 FEditorDomain::FileSize(const FPackagePath& PackagePath, EPackageSegment P
 			return Workspace->FileSize(PackagePath, PackageSegment, OutUpdatedPath);
 		}
 
-		if (!TryFindOrAddPackageSource(PackageName, PackageSource) || PackageSource->Source == EPackageSource::Workspace)
+		bool bReenteredLock;
+		if (!TryFindOrAddPackageSource(ScopeLock, bReenteredLock, PackageName, PackageSource) || PackageSource->Source == EPackageSource::Workspace)
 		{
 			return Workspace->FileSize(PackagePath, PackageSegment, OutUpdatedPath);
 		}
@@ -294,31 +379,48 @@ int64 FEditorDomain::FileSize(const FPackagePath& PackagePath, EPackageSegment P
 			[&FileSize, &PackageSource, &PackagePath, PackageSegment, Locks=this->Locks, OutUpdatedPath]
 			(UE::DerivedData::FCacheGetResponse&& Response)
 		{
-			FScopeLock ScopeLock(&Locks->Lock);
-			if ((PackageSource->Source == FEditorDomain::EPackageSource::Undecided || PackageSource->Source == FEditorDomain::EPackageSource::Editor) &&
-				Response.Status == UE::DerivedData::EStatus::Ok)
+			bool bLoadFromWorkspace = false;
+			bool bHasRecordInEditorDomain = false;
+			if (Response.Status != UE::DerivedData::EStatus::Ok)
 			{
-				const FCbObject& MetaData = Response.Record.GetMeta();
-				FileSize = MetaData["FileSize"].AsInt64();
-				PackageSource->Source = EPackageSource::Editor;
+				if (PackageSource->Source == FEditorDomain::EPackageSource::Editor)
+				{
+					UE_LOG(LogEditorDomain, Error, TEXT("%s was previously loaded from the EditorDomain but now is unavailable. This may cause failures during serialization due to changed FileSize and Format."),
+						*PackagePath.GetDebugName());
+				}
+				bLoadFromWorkspace = true;
 			}
 			else
 			{
-				checkf(PackageSource->Source == EPackageSource::Undecided || PackageSource->Source == EPackageSource::Workspace,
-					TEXT("%s was previously loaded from the EditorDomain but now is unavailable."),
-					*PackagePath.GetDebugName());
-				if (Locks->Owner)
+				bHasRecordInEditorDomain = true;
+				const FCbObject& MetaData = Response.Record.GetMeta();
+				bool bStorageValid = MetaData["Valid"].AsBool(false);
+				if (!bStorageValid)
 				{
-					FEditorDomain& EditorDomain = *Locks->Owner;
-					EditorDomain.MarkNeedsLoadFromWorkspace(PackagePath, PackageSource);
-					FileSize = EditorDomain.Workspace->FileSize(PackagePath, PackageSegment, OutUpdatedPath);
+					bLoadFromWorkspace = true;
 				}
 				else
 				{
-					UE_LOG(LogEditorDomain, Warning, TEXT("%s size read after EditorDomain shutdown. Returning -1."),
-						*PackagePath.GetDebugName());
-					FileSize = -1;
+					FileSize = MetaData["FileSize"].AsInt64();
 				}
+			}
+
+			FScopeLock ScopeLock(&Locks->Lock);
+			FEditorDomain* EditorDomain = Locks->Owner;
+			if (!EditorDomain)
+			{
+				UE_LOG(LogEditorDomain, Warning, TEXT("%s size read after EditorDomain shutdown. Returning -1."),
+					*PackagePath.GetDebugName());
+				FileSize = -1;
+			}
+			else if (PackageSource->Source == FEditorDomain::EPackageSource::Workspace || bLoadFromWorkspace)
+			{
+				EditorDomain->MarkLoadedFromWorkspaceDomain(PackagePath, PackageSource, bHasRecordInEditorDomain);
+				FileSize = EditorDomain->Workspace->FileSize(PackagePath, PackageSegment, OutUpdatedPath);
+			}
+			else
+			{
+				EditorDomain->MarkLoadedFromEditorDomain(PackagePath, PackageSource);
 			}
 		};
 		// Fetch meta-data only
@@ -327,6 +429,8 @@ int64 FEditorDomain::FileSize(const FPackagePath& PackagePath, EPackageSegment P
 		RequestEditorDomainPackage(PackagePath, PackageSource->Digest.Hash, SkipFlags,
 			*Owner, MoveTemp(MetaDataGetComplete));
 	}
+	COOK_STAT(auto Timer = UE::EditorDomain::CookStats::Usage.TimeAsyncWait());
+	COOK_STAT(Timer.TrackCyclesOnly());
 	Owner->Wait();
 	return FileSize;
 }
@@ -348,7 +452,8 @@ FOpenPackageResult FEditorDomain::OpenReadPackage(const FPackagePath& PackagePat
 		return Workspace->OpenReadPackage(PackagePath, PackageSegment, OutUpdatedPath);
 	}
 	TRefCountPtr<FPackageSource> PackageSource;
-	if (!TryFindOrAddPackageSource(PackageName, PackageSource) || (PackageSource->Source == EPackageSource::Workspace))
+	bool bReenteredLock;
+	if (!TryFindOrAddPackageSource(ScopeLock, bReenteredLock, PackageName, PackageSource) || (PackageSource->Source == EPackageSource::Workspace))
 	{
 		return Workspace->OpenReadPackage(PackagePath, PackageSegment, OutUpdatedPath);
 	}
@@ -405,7 +510,8 @@ FOpenAsyncPackageResult FEditorDomain::OpenAsyncReadPackage(const FPackagePath& 
 		return Workspace->OpenAsyncReadPackage(PackagePath, PackageSegment);
 	}
 	TRefCountPtr<FPackageSource> PackageSource;
-	if (!TryFindOrAddPackageSource(PackageName, PackageSource) ||
+	bool bReenteredLock;
+	if (!TryFindOrAddPackageSource(ScopeLock, bReenteredLock, PackageName, PackageSource) ||
 		(PackageSource->Source == EPackageSource::Workspace))
 	{
 		return Workspace->OpenAsyncReadPackage(PackagePath, PackageSegment);
@@ -501,7 +607,7 @@ void FEditorDomain::Tick(float DeltaTime)
 	}
 }
 
-void FEditorDomain::OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPackages)
+void FEditorDomain::OnEndLoadPackage(const FEndLoadPackageContext& Context)
 {
 	if (bExternalSave)
 	{
@@ -514,8 +620,8 @@ void FEditorDomain::OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPackages)
 		{
 			return;
 		}
-		PackagesToSave.Reserve(LoadedPackages.Num());
-		for (UPackage* Package : LoadedPackages)
+		PackagesToSave.Reserve(Context.LoadedPackages.Num());
+		for (UPackage* Package : Context.LoadedPackages)
 		{
 			PackagesToSave.Add(Package);
 		}
@@ -591,7 +697,7 @@ void FEditorDomain::FilterKeepPackagesToSave(TArray<UPackage*>& InOutPackagesToS
 
 bool FEditorDomain::FPackageSource::NeedsEditorDomainSave(FEditorDomain& EditorDomain) const
 {
-	return !bHasSaved && Source == EPackageSource::Workspace &&
+	return !bHasSaved && !bHasRecordInEditorDomain &&
 		(!EditorDomain.bSkipSavesUntilCatalogLoaded || bLoadedAfterCatalogLoaded);
 }
 
@@ -621,7 +727,8 @@ void FEditorDomain::BatchDownload(TArrayView<FName> PackageNames)
 	ECachePolicy CachePolicy = ECachePolicy::Default | ECachePolicy::SkipData;
 	for (FName PackageName : PackageNames)
 	{
-		FPackageDigest PackageDigest = GetPackageDigest_WithinLock(PackageName);
+		bool bReenteredLock;
+		FPackageDigest PackageDigest = GetPackageDigest_WithinLock(ScopeLock, bReenteredLock, PackageName);
 		if (PackageDigest.IsSuccessful() && EnumHasAnyFlags(PackageDigest.DomainUse, EDomainUse::LoadEnabled))
 		{
 			CacheRequests.Add({ { WriteToString<256>(PackageName) }, GetEditorDomainPackageKey(PackageDigest.Hash),
@@ -636,9 +743,9 @@ void FEditorDomain::BatchDownload(TArrayView<FName> PackageNames)
 			{
 				FScopeLock ScopeLock(&Locks->Lock);
 				TRefCountPtr<FPackageSource> PackageSource;
-				FPackageDigest ErrorDigest;
 				FName PackageName = FName(*Response.Name);
-				if (TryFindOrAddPackageSource(PackageName, PackageSource, &ErrorDigest))
+				bool bReenteredLock;
+				if (TryFindOrAddPackageSource(ScopeLock, bReenteredLock, PackageName, PackageSource))
 				{
 					PackageSource->bHasQueriedCatalog = true;
 				}

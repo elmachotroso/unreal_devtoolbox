@@ -80,17 +80,20 @@ class UFbxSceneImportOptionsSkeletalMesh : public UObject
 	/** Use this option to specify a sample rate for the imported animation, a value of 0 use the best matching sample rate. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation, meta = (EditCondition = "!bUseDefaultSampleRate", ToolTip = "Sample fbx animation data at the specified sample rate, 0 find automaticaly the best sample rate"))
 	int32 CustomSampleRate;
+	
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation, meta = (ToolTip = "If enabled, snaps the animation to the closest frame boundary using the import sampling rate"))
+	bool bSnapToClosestFrameBoundary;
 
-	/** Import if custom attribute as a curve within the animation **/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation)
+	/** If true, import node attributes as either Animation Curves or Animation Attributes */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation, meta = (DisplayName = "Import Attributes as Curves or Animation Attributes"))
 	bool bImportCustomAttribute;
 
-	/** If true, all previous custom attribute curves will be deleted when doing a re-import. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation)
+	/** If true, all previous node attributes imported as Animation Curves will be deleted when doing a re-import. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation, meta = (DisplayName = "Delete existing Animation Curves"))
 	bool bDeleteExistingCustomAttributeCurves;
 
-	/** If true, all previous non-curve custom attributes will be deleted when doing a re-import. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = ImportSettings)
+	/** If true, all previous node attributes imported as Animation Attributes will be deleted when doing a re-import. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Animation, meta = (DisplayName = "Delete existing Animation Attributes"))
 	bool bDeleteExistingNonCurveCustomAttributes;
 
 	/** Type of asset to import from the FBX file */

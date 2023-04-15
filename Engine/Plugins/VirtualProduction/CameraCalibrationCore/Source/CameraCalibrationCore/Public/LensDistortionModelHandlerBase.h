@@ -134,6 +134,10 @@ protected:
 	/** Convert the generic distortion parameter array into the specific structure of parameters used by the supported lens model */
 	virtual void InterpretDistortionParameters() PURE_VIRTUAL(ULensDistortionModelHandlerBase::InterpretDistortionParameters);
 
+private:
+	/** Tests whether the input material's shaders have been compiled, indicating the material can be used for drawing */
+	bool IsDisplacementMapMaterialReady(UMaterialInstanceDynamic* MID);
+
 protected:
 	/** Lens Model describing how to interpret the distortion parameters */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Distortion")
@@ -141,7 +145,7 @@ protected:
 
 	/** Dynamically created post-process material instance for the currently specified lens model */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Distortion")
-	UMaterialInstanceDynamic* DistortionPostProcessMID = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> DistortionPostProcessMID = nullptr;
 
 	/** Current state as set by the most recent call to Update() */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Distortion", meta = (ShowOnlyInnerProperties))
@@ -157,19 +161,19 @@ protected:
 
 	/** MID used to draw the undistortion displacement map */
 	UPROPERTY(Transient)
-	UMaterialInstanceDynamic* UndistortionDisplacementMapMID = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> UndistortionDisplacementMapMID = nullptr;
 
 	/** MID used to draw the distortion displacement map */
 	UPROPERTY(Transient)
-	UMaterialInstanceDynamic* DistortionDisplacementMapMID = nullptr;
+	TObjectPtr<UMaterialInstanceDynamic> DistortionDisplacementMapMID = nullptr;
 
 	/** UV displacement map used to undistort a distorted image */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* UndistortionDisplacementMapRT = nullptr;
+	TObjectPtr<UTextureRenderTarget2D> UndistortionDisplacementMapRT = nullptr;
 
 	/** UV displacement map used to distort an undistorted image */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* DistortionDisplacementMapRT = nullptr;
+	TObjectPtr<UTextureRenderTarget2D> DistortionDisplacementMapRT = nullptr;
 
 	/** UObject that is producing the distortion state for this handler */
 	UPROPERTY()

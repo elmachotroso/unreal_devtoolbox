@@ -16,9 +16,17 @@
 #include "ComponentTreeItem.h"
 #include "ActorDescTreeItem.h"
 #include "WorldTreeItem.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
+#include "LevelEditor.h"
+#include "Modules/ModuleManager.h"
+
+static int32 GSceneOutlinerAutoRepresentingWorldNetMode = NM_Client;
+static FAutoConsoleVariableRef CVarAutoRepresentingWorldNetMode(
+	TEXT("SceneOutliner.AutoRepresentingWorldNetMode"),
+	GSceneOutlinerAutoRepresentingWorldNetMode,
+	TEXT("The preferred NetMode of the world shown in the scene outliner when the 'Auto' option is chosen: 0=Standalone, 1=DedicatedServer, 2=ListenServer, 3=Client"));
 
 #define LOCTEXT_NAMESPACE "SceneOutliner_ActorMode"
 
@@ -85,6 +93,7 @@ FActorMode::FActorMode(const FActorModeParams& Params)
 	, bHideActorWithNoComponent(Params.bHideActorWithNoComponent)
 	, bHideLevelInstanceHierarchy(Params.bHideLevelInstanceHierarchy)
 	, bHideUnloadedActors(Params.bHideUnloadedActors)
+	, bHideEmptyFolders(Params.bHideEmptyFolders)
 {
 	SceneOutliner->AddFilter(MakeShared<FActorFilter>(FActorTreeItem::FFilterPredicate::CreateLambda([this](const AActor* Actor)
 	{
@@ -93,11 +102,7 @@ FActorMode::FActorMode(const FActorModeParams& Params)
 
 	auto FolderPassesFilter = [this](const FFolder& InFolder, bool bInCheckHideLevelInstanceFlag)
 	{
-		if (!InFolder.HasRootObject())
-		{
-			return true;
-		}
-		if (ALevelInstance* LevelInstance = Cast<ALevelInstance>(InFolder.GetRootObjectPtr()))
+		if (ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(InFolder.GetRootObjectPtr()))
 		{
 			if (LevelInstance->IsEditing())
 			{
@@ -137,6 +142,7 @@ TUniquePtr<ISceneOutlinerHierarchy> FActorMode::CreateHierarchy()
 	ActorHierarchy->SetShowingOnlyActorWithValidComponents(!bHideComponents && bHideActorWithNoComponent);
 	ActorHierarchy->SetShowingLevelInstances(!bHideLevelInstanceHierarchy);
 	ActorHierarchy->SetShowingUnloadedActors(!bHideUnloadedActors);
+	ActorHierarchy->SetShowingEmptyFolders(!bHideEmptyFolders);
 
 	return ActorHierarchy;
 }
@@ -177,8 +183,8 @@ void FActorMode::ChooseRepresentingWorld()
 	// If the user did not manually select a world, try to pick the most suitable world context
 	if (!RepresentingWorld.IsValid())
 	{
-		// ideally we want a PIE world that is standalone or the first client
-		int32 LowestClientInstanceSeen = MAX_int32;
+		// Ideally we want a PIE world that is standalone or the first client, unless the preferred NetMode is overridden by CVar
+		int32 LowestPIEInstanceSeen = MAX_int32;
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
 		{
 			UWorld* World = Context.World();
@@ -189,10 +195,10 @@ void FActorMode::ChooseRepresentingWorld()
 					RepresentingWorld = World;
 					break;
 				}
-				else if ((World->GetNetMode() == NM_Client) && (Context.PIEInstance < LowestClientInstanceSeen))
+				else if ((World->GetNetMode() == ENetMode(GSceneOutlinerAutoRepresentingWorldNetMode)) && (Context.PIEInstance < LowestPIEInstanceSeen))
 				{
 					RepresentingWorld = World;
-					LowestClientInstanceSeen = Context.PIEInstance;
+					LowestPIEInstanceSeen = Context.PIEInstance;
 				}
 			}
 		}
@@ -316,22 +322,39 @@ bool FActorMode::IsActorDisplayable(const AActor* Actor) const
 	return FActorMode::IsActorDisplayable(SceneOutliner, Actor);
 }
 
+FFolder::FRootObject FActorMode::GetRootObject() const
+{
+	return FFolder::GetWorldRootFolder(RepresentingWorld.Get()).GetRootObject();
+}
+
+FFolder::FRootObject FActorMode::GetPasteTargetRootObject() const
+{
+	if (UWorld* World = RepresentingWorld.Get())
+	{
+		return FFolder::GetOptionalFolderRootObject(World->GetCurrentLevel()).Get(FFolder::GetWorldRootFolder(World).GetRootObject());
+	}
+	return FFolder::GetInvalidRootObject();
+}
+
 bool FActorMode::IsActorDisplayable(const SSceneOutliner* SceneOutliner, const AActor* Actor)
 {
-	static const FName SequencerActorTag(TEXT("SequencerActor"));
-
 	return Actor &&
 		!SceneOutliner->GetSharedData().bOnlyShowFolders && 									// Don't show actors if we're only showing folders
 		Actor->IsEditable() &&																	// Only show actors that are allowed to be selected and drawn in editor
 		Actor->IsListedInSceneOutliner() &&
 		(((Actor->GetWorld() && Actor->GetWorld()->IsPlayInEditor()) || !Actor->HasAnyFlags(RF_Transient)) ||
-		(SceneOutliner->GetSharedData().bShowTransient && Actor->HasAnyFlags(RF_Transient)) ||	// Don't show transient actors in non-play worlds
-		(Actor->ActorHasTag(SequencerActorTag))) &&
+		(SceneOutliner->GetSharedData().bShowTransient && Actor->HasAnyFlags(RF_Transient))) &&	// Don't show transient actors in non-play worlds
 		!Actor->IsTemplate() &&																	// Should never happen, but we never want CDOs displayed
 		!FActorEditorUtils::IsABuilderBrush(Actor) &&											// Don't show the builder brush
 		!Actor->IsA(AWorldSettings::StaticClass()) &&											// Don't show the WorldSettings actor, even though it is technically editable
 		IsValidChecked(Actor) &&																// We don't want to show actors that are about to go away
 		FLevelUtils::IsLevelVisible(Actor->GetLevel());											// Only show Actors whose level is visible
+}
+
+bool FActorMode::IsActorLevelDisplayable(ULevel* InLevel)
+{
+	// Don't show level tree item for the persistent level
+	return (InLevel && !InLevel->IsPersistentLevel());
 }
 
 void FActorMode::OnFilterTextChanged(const FText& InFilterText)
@@ -359,6 +382,18 @@ void FActorMode::OnFilterTextChanged(const FText& InFilterText)
 
 		// In any other case (i.e., if the object passes the current filter), re-add it
 		SceneOutliner->ScrollItemIntoView(TreeItem);
+
+		SetAsMostRecentOutliner();
+	}
+}
+
+void FActorMode::SetAsMostRecentOutliner() const
+{
+	TWeakPtr<ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+
+	if(TSharedPtr<ILevelEditor> LevelEditorPin = LevelEditor.Pin())
+	{
+		LevelEditorPin->SetMostRecentlyUsedSceneOutliner(SceneOutliner->GetOutlinerIdentifier());
 	}
 }
 

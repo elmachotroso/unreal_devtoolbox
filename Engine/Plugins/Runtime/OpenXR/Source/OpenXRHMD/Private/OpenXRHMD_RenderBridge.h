@@ -25,7 +25,7 @@ public:
 	virtual uint64 GetGraphicsAdapterLuid() { return AdapterLuid; }
 
 	virtual void* GetGraphicsBinding() = 0;
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) = 0;
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) = 0;
 
 	FXRSwapChainPtr CreateSwapchain(XrSession InSession, FRHITexture2D* Template, ETextureCreateFlags CreateFlags)
 	{
@@ -34,8 +34,10 @@ public:
 			return nullptr;
 		}
 
+		uint8 UnusedOutFormat = 0;
 		return CreateSwapchain(InSession,
 			Template->GetFormat(),
+			UnusedOutFormat,
 			Template->GetSizeX(),
 			Template->GetSizeY(),
 			1,
@@ -48,11 +50,34 @@ public:
 	/** FRHICustomPresent */
 	virtual bool Present(int32& InOutSyncInterval) override;
 
+	// Called from RenderThread
+	virtual bool NeedsNativePresent() override
+	{
+		return bNativePresent_RenderThread;
+	}
+
+	virtual bool Support10BitSwapchain() const { return false; }
+
+	virtual bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported) { return false; }
+
+	virtual void ShouldNativePresent_RenderThread(bool bPresent)
+	{
+		bNativePresent_RenderThread = bPresent;
+	}
+
+	virtual void ShouldNativePresent_RHIThread(bool bPresent)
+	{
+		bNativePresent_RHIThread = bPresent;
+	}
+
 protected:
 	uint64 AdapterLuid;
+	bool bNativePresent_RenderThread = true;
+	bool bNativePresent_RHIThread = true;
+	
+	FOpenXRHMD* OpenXRHMD;
 
 private:
-	FOpenXRHMD* OpenXRHMD;
 };
 
 #ifdef XR_USE_GRAPHICS_API_D3D11

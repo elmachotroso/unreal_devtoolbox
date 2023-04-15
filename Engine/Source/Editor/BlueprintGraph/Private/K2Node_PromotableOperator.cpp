@@ -1,17 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_PromotableOperator.h"
+
+#include "BlueprintEditorSettings.h"
 #include "BlueprintTypePromotion.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
-#include "EdGraphUtilities.h"
-#include "K2Node_CommutativeAssociativeBinaryOperator.h"
-#include "KismetCompiler.h"
-#include "ScopedTransaction.h"
-#include "ToolMenus.h"
+#include "Engine/MemberReference.h"
+#include "EngineLogs.h"
 #include "Framework/Commands/UIAction.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Kismet2/WildcardNodeUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/WildcardNodeUtils.h"
+#include "KismetCompiler.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "ScopedTransaction.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuSection.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "EdGraphSchema_K2_Actions.h"
 
 #define LOCTEXT_NAMESPACE "PromotableOperatorNode"
 
@@ -989,9 +1018,11 @@ bool UK2Node_PromotableOperator::CreateIntermediateCast(UK2Node_CallFunction* So
 		TemplateNode->AllocateDefaultPins();
 		CompilerContext.MessageLog.NotifyIntermediateObjectCreation(TemplateNode, this);
 	}
-	else
+	else if (Schema->FindSpecializedConversionNode(InputPin, OutputPin, true, /*out*/ TemplateConversionNode))
 	{
-		Schema->FindSpecializedConversionNode(InputPin, OutputPin, true, /*out*/ TemplateConversionNode);
+		FVector2D AverageLocation = UEdGraphSchema_K2::CalculateAveragePositionBetweenNodes(InputPin, OutputPin);		
+		TemplateConversionNode = FEdGraphSchemaAction_K2NewNode::SpawnNodeFromTemplate<UK2Node>(SourceGraph, TemplateConversionNode, AverageLocation);		
+		CompilerContext.MessageLog.NotifyIntermediateObjectCreation(TemplateConversionNode, this);
 	}
 
 	bool bInputSuccessful = false;
@@ -1000,16 +1031,24 @@ bool UK2Node_PromotableOperator::CreateIntermediateCast(UK2Node_CallFunction* So
 	if (TemplateConversionNode)
 	{
 		UEdGraphPin* ConversionInput = nullptr;
+		UEdGraphPin* ConversionOutput = TemplateConversionNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
 
 		for (UEdGraphPin* ConvPin : TemplateConversionNode->Pins)
 		{
-			if (ConvPin && ConvPin->Direction == EGPD_Input && ConvPin->PinName != UEdGraphSchema_K2::PSC_Self)
+			if (ConvPin)
 			{
-				ConversionInput = ConvPin;
-				break;
+				if (!ConversionInput && ConvPin->Direction == EGPD_Input && ConvPin->PinName != UEdGraphSchema_K2::PSC_Self)
+				{
+					ConversionInput = ConvPin;
+				}
+				else if (!ConversionOutput && ConvPin->Direction == EGPD_Output)
+				{
+					ConversionOutput = ConvPin;
+				}
 			}
 		}
-		UEdGraphPin* ConversionOutput = TemplateConversionNode->FindPin(UEdGraphSchema_K2::PN_ReturnValue, EGPD_Output);
+
+		ensure(ConversionInput && ConversionOutput);
 
 		// Connect my input to the conversion node directly if we have links, otherwise we need to move the intermediate version of it
 		if (InputPin->LinkedTo.Num() > 0)

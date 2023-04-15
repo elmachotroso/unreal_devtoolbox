@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "MediaThumbnailSection.h"
+#include "Sequencer/MediaThumbnailSection.h"
 
-#include "EditorStyleSet.h"
+#include "Fonts/FontMeasure.h"
+#include "Styling/AppStyle.h"
 #include "IMediaCache.h"
 #include "IMediaTracks.h"
 #include "ISequencer.h"
@@ -20,6 +21,7 @@
 #include "CommonMovieSceneTools.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "TimeToPixel.h"
 
 #include "MovieSceneMediaData.h"
 
@@ -32,10 +34,7 @@
 
 FMediaThumbnailSection::FMediaThumbnailSection(UMovieSceneMediaSection& InSection, TSharedPtr<FTrackEditorThumbnailPool> InThumbnailPool, TSharedPtr<ISequencer> InSequencer)
 	: FThumbnailSection(InSequencer, InThumbnailPool, this, InSection)
-//	, MediaPlayer(nullptr)
-//	, MediaTexture(nullptr)
 	, SectionPtr(&InSection)
-	, SequencerPtr(InSequencer)
 {
 	TimeSpace = ETimeSpace::Local;
 }
@@ -43,10 +42,6 @@ FMediaThumbnailSection::FMediaThumbnailSection(UMovieSceneMediaSection& InSectio
 
 FMediaThumbnailSection::~FMediaThumbnailSection()
 {
-//	if (MediaPlayer != nullptr)
-//	{
-//		MediaPlayer->Close();
-//	}
 }
 
 
@@ -55,8 +50,6 @@ FMediaThumbnailSection::~FMediaThumbnailSection()
 
 void FMediaThumbnailSection::AddReferencedObjects(FReferenceCollector& Collector)
 {
-//	Collector.AddReferencedObject(MediaPlayer);
-//	Collector.AddReferencedObject(MediaTexture);
 }
 
 
@@ -146,6 +139,8 @@ int32 FMediaThumbnailSection::OnPaintSection(FSequencerSectionPainter& InPainter
 		DrawSampleStates(InPainter, MediaDuration, SectionSize, CacheRangeSet, FLinearColor(0.07059, 0.32941, 0.07059));
 
 		DrawLoopIndicators(InPainter, MediaDuration, SectionSize);
+
+		DrawMediaInfo(InPainter, MediaPlayer, SectionSize);
 	}
 	InPainter.DrawElements.PopClip();
 
@@ -247,81 +242,12 @@ void FMediaThumbnailSection::SlipSection(FFrameNumber SlipTime)
  *****************************************************************************/
 
 void FMediaThumbnailSection::Draw(FTrackEditorThumbnail& TrackEditorThumbnail)
-{/*
-	check(MediaPlayer != nullptr);
-
-	if (MediaPlayer->IsPreparing())
-	{
-		RedrawThumbnails();
-
-		return;
-	}
-
-	check(MediaTexture != nullptr);
-	check(MediaTexture->Resource != nullptr);
-	check(MediaTexture->Resource->TextureRHI.IsValid());
-
-	// get target texture resource
-	FTexture2DRHIRef Texture2DRHI = MediaTexture->Resource->TextureRHI->GetTexture2D();
-
-	if (!Texture2DRHI.IsValid())
-	{
-		return;
-	}
-
-	// seek media player to thumbnail position
-	const float EvalPosition = FMath::Max(0.0f, TrackEditorThumbnail.GetEvalPosition());
-	const FTimespan EvalTime = int64(EvalPosition * ETimespan::TicksPerSecond);
-	const FTimespan MediaTime = EvalTime % MediaPlayer->GetDuration();
-
-	if (!MediaPlayer->Seek(FTimespan(MediaTime)))
-	{
-		return;
-	}
-
-	// resolve media player texture to track editor thumbnail
-	TrackEditorThumbnail.CopyTextureIn(Texture2DRHI);
-
-	TSharedPtr<ISequencer> Sequencer = SequencerPtr.Pin();
-
-	if (Sequencer.IsValid())
-	{
-		TrackEditorThumbnail.SetupFade(Sequencer->GetSequencerWidget());
-	}*/
+{
 }
 
 
 void FMediaThumbnailSection::Setup()
-{/*
-	UMovieSceneMediaSection* MediaSection = CastChecked<UMovieSceneMediaSection>(Section);
-	UMediaSource* MediaSource = MediaSection->GetMediaSource();
-
-	if (MediaSource == nullptr)
-	{
-		return;
-	}
-
-	// create internal player
-	if (MediaPlayer == nullptr)
-	{
-		MediaPlayer = NewObject<UMediaPlayer>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UMediaPlayer::StaticClass()));
-	}
-
-	// create target texture
-	if (MediaTexture == nullptr)
-	{
-		MediaTexture = NewObject<UMediaTexture>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UMediaTexture::StaticClass()));
-		MediaTexture->SetMediaPlayer(MediaPlayer);
-		MediaTexture->UpdateResource();
-	}
-
-	// open latest media source
-	if (MediaPlayer->GetUrl() != MediaSource->GetUrl())
-	{
-		MediaPlayer->OpenSource(MediaSource);
-	}
-
-	MediaPlayer->Pause();*/
+{
 }
 
 
@@ -330,7 +256,7 @@ void FMediaThumbnailSection::Setup()
 
 void FMediaThumbnailSection::DrawFilmBorder(FSequencerSectionPainter& InPainter, FVector2D SectionSize) const
 {
-	static const FSlateBrush* FilmBorder = FEditorStyle::GetBrush("Sequencer.Section.FilmBorder");
+	static const FSlateBrush* FilmBorder = FAppStyle::GetBrush("Sequencer.Section.FilmBorder");
 
 	// draw top film border
 	FSlateDrawElement::MakeBox(
@@ -354,28 +280,8 @@ void FMediaThumbnailSection::DrawFilmBorder(FSequencerSectionPainter& InPainter,
 
 void FMediaThumbnailSection::DrawLoopIndicators(FSequencerSectionPainter& InPainter, FTimespan MediaDuration, FVector2D SectionSize) const
 {
-	/*
-	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+	using namespace UE::Sequencer;
 
-	FFrameRate TickResolution = Section->GetTypedOuter<UMovieScene>()->GetTickResolution();
-	double SectionDuration = FFrameTime(UE::MovieScene::DiscreteSize(Section->GetRange())) / TickResolution;
-	const float MediaSizeX = MediaDuration.GetTotalSeconds() * SectionSize.X / SectionDuration;
-	float DrawOffset = 0.0f;
-
-	while (DrawOffset < SectionSize.X)
-	{
-		FSlateDrawElement::MakeBox(
-			InPainter.DrawElements,
-			InPainter.LayerId++,
-			InPainter.SectionGeometry.ToPaintGeometry(FVector2D(DrawOffset, 0.0f), FVector2D(1.0f, SectionSize.Y)),
-			GenericBrush,
-			ESlateDrawEffect::None,
-			FLinearColor::Gray
-		);
-
-		DrawOffset += MediaSizeX;
-	}
-	*/
 	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
 
 	UMovieSceneMediaSection* MediaSection = Cast<UMovieSceneMediaSection>(Section);
@@ -385,7 +291,8 @@ void FMediaThumbnailSection::DrawLoopIndicators(FSequencerSectionPainter& InPain
 	FFrameRate TickResolution = Section->GetTypedOuter<UMovieScene>()->GetTickResolution();
 	double SectionDuration = FFrameTime(UE::MovieScene::DiscreteSize(Section->GetRange())) / TickResolution;
 	const float MediaSizeX = MediaDuration.GetTotalSeconds() * SectionSize.X / SectionDuration;
-	float DrawOffset = MediaSizeX - TimeToPixelConverter.SecondsToPixel(TickResolution.AsSeconds(MediaSection->StartFrameOffset));
+	const FFrameNumber SectionOffset = MediaSection->GetRange().HasLowerBound() ? MediaSection->GetRange().GetLowerBoundValue() : 0;
+	float DrawOffset = MediaSizeX - TimeToPixelConverter.SecondsToPixel(TickResolution.AsSeconds(SectionOffset + MediaSection->StartFrameOffset));
 
 	while (DrawOffset < SectionSize.X)
 	{
@@ -405,6 +312,8 @@ void FMediaThumbnailSection::DrawLoopIndicators(FSequencerSectionPainter& InPain
 
 void FMediaThumbnailSection::DrawSampleStates(FSequencerSectionPainter& InPainter, FTimespan MediaDuration, FVector2D SectionSize, const TRangeSet<FTimespan>& RangeSet, const FLinearColor& Color) const
 {
+	using namespace UE::Sequencer;
+
 	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
 
 	UMovieSceneMediaSection* MediaSection = Cast<UMovieSceneMediaSection>(Section);
@@ -437,6 +346,76 @@ void FMediaThumbnailSection::DrawSampleStates(FSequencerSectionPainter& InPainte
 	}
 }
 
+
+void FMediaThumbnailSection::DrawMediaInfo(FSequencerSectionPainter& InPainter, 
+	UMediaPlayer* MediaPlayer,FVector2D SectionSize) const
+{
+	// Get tile info.
+	FString TileString;
+	FIntPoint TileNum(EForceInit::ForceInitToZero);
+	MediaPlayer->GetMediaInfo<FIntPoint>(TileNum, UMediaPlayer::MediaInfoNameSourceNumTiles.Resolve());
+	int32 TileTotalNum = TileNum.X * TileNum.Y;
+	if (TileTotalNum > 1)
+	{
+		TileString = FText::Format(LOCTEXT("TileNum", "Tiles: {0}"), TileTotalNum).ToString();
+	}
+
+	// Get mip info.
+	FString MipString;
+	int32 MipNum = 0;
+	MediaPlayer->GetMediaInfo<int32>(MipNum, UMediaPlayer::MediaInfoNameSourceNumMips.Resolve());
+	if (MipNum > 1)
+	{
+		MipString = FText::Format(LOCTEXT("Mips", "Mips: {0}"), MipNum).ToString();
+	}
+
+	const ESlateDrawEffect DrawEffects = InPainter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+	const FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Bold", 10);
+	const TSharedRef< FSlateFontMeasure > FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+	
+	FVector2D TextSize(EForceInit::ForceInitToZero);
+	FMargin ContentPadding = GetContentPadding();
+	FVector2D TextOffset(EForceInit::ForceInitToZero);
+	float BaseYOffset = 0.0f;
+
+	// Add tile string.
+	if (TileString.Len() > 0)
+	{
+		TextSize = FontMeasureService->Measure(TileString, SmallLayoutFont);
+		TextOffset.Set(ContentPadding.Left + 4,
+			InPainter.SectionGeometry.Size.Y - (TextSize.Y + ContentPadding.Bottom));
+		TextOffset.Y += BaseYOffset;
+		FSlateDrawElement::MakeText(
+			InPainter.DrawElements,
+			InPainter.LayerId++,
+			InPainter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+			TileString,
+			SmallLayoutFont,
+			DrawEffects,
+			FColor(192, 192, 192, static_cast<uint8>(InPainter.GhostAlpha * 255))
+		);
+		BaseYOffset -= TextSize.Y + 2.0f;
+	}
+
+	// Add mips string.
+	if (MipString.Len() > 0)
+	{
+		TextSize = FontMeasureService->Measure(MipString, SmallLayoutFont);
+		TextOffset.Set(ContentPadding.Left + 4,
+			InPainter.SectionGeometry.Size.Y - (TextSize.Y + ContentPadding.Bottom));
+		TextOffset.Y += BaseYOffset;
+		FSlateDrawElement::MakeText(
+			InPainter.DrawElements,
+			InPainter.LayerId++,
+			InPainter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+			MipString,
+			SmallLayoutFont,
+			DrawEffects,
+			FColor(192, 192, 192, static_cast<uint8>(InPainter.GhostAlpha * 255))
+		);
+		BaseYOffset -= TextSize.Y + 2.0f;
+	}
+}
 
 UMediaPlayer* FMediaThumbnailSection::GetTemplateMediaPlayer() const
 {

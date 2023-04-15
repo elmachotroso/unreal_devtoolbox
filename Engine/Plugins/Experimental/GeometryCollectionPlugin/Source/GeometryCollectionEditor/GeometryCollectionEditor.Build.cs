@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
         public GeometryCollectionEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add("GeometryCollectionEditor/Private");
-            PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -34,6 +31,10 @@ namespace UnrealBuildTool.Rules
 					"StaticMeshDescription",
 					"LevelEditor",
 					"InputCore",
+					"GraphEditor",
+					"DataflowCore",
+					"DataflowEngine",
+					"DataflowEditor",
 				}
 			);
 

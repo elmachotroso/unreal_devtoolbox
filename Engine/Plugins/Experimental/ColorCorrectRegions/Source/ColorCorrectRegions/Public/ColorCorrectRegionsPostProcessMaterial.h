@@ -14,6 +14,7 @@
 #include "Runtime/RenderCore/Public/RenderGraphResources.h"
 #include "Runtime/RenderCore/Public/RenderGraphResources.h"
 #include "ColorCorrectRegion.h"
+#include "ColorCorrectWindow.h"
 
 // FScreenPassTextureViewportParameters and FScreenPassTextureInput
 #include "Runtime/Renderer/Private/ScreenPass.h"
@@ -27,12 +28,13 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FCCRRegionDataInputParameter, )
 	SHADER_PARAMETER(FVector3f, Scale)
 
 	SHADER_PARAMETER(float, WhiteTemp)
+	SHADER_PARAMETER(float, Tint)
 	SHADER_PARAMETER(float, Inner)
 	SHADER_PARAMETER(float, Outer)
 	SHADER_PARAMETER(float, Falloff)
 	SHADER_PARAMETER(float, Intensity)
 	SHADER_PARAMETER(float, FakeLight)
-	SHADER_PARAMETER(float, ExcludeStencil)
+	SHADER_PARAMETER(uint32, ExcludeStencil)
 	SHADER_PARAMETER(float, Invert)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -76,8 +78,10 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 
 BEGIN_SHADER_PARAMETER_STRUCT(FCCRShaderInputParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, MergedStencilTexture)
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters, SceneTextures)
+	SHADER_PARAMETER_STRUCT_REF(FWorkingColorSpaceShaderParameters, WorkingColorSpace)
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
 	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PostProcessInput, [1])
 	RENDER_TARGET_BINDING_SLOTS()
@@ -119,7 +123,7 @@ public:
 	
 };
 
-class FColorCorrectRegionMaterialPS : public FColorCorrectRegionsPostProcessMaterialShader
+class FColorCorrectGenericPS : public FColorCorrectRegionsPostProcessMaterialShader
 {
 public:
 	UENUM(BlueprintType)
@@ -131,24 +135,13 @@ public:
 		Disabled,
 		MAX
 	};
-	DECLARE_GLOBAL_SHADER(FColorCorrectRegionMaterialPS);
 
-	class FShaderType : SHADER_PERMUTATION_ENUM_CLASS("SHAPE_TYPE", EColorCorrectRegionsType);
 	class FTemperatureType : SHADER_PERMUTATION_ENUM_CLASS("TEMPERATURE_TYPE", ETemperatureType);
 	class FAdvancedShader : SHADER_PERMUTATION_BOOL("ADVANCED_CC");
-	class FDisplayBoundingRect : SHADER_PERMUTATION_BOOL("CCR_SHADER_DISPLAY_BOUNDING_RECT");
-	class FClipPixelsOutsideAABB : SHADER_PERMUTATION_BOOL("CLIP_PIXELS_OUTSIDE_AABB");
+	class FStencilEnabled : SHADER_PERMUTATION_BOOL("STENCIL_ENABLED");
 
-	/** 
-	* On lower scalability settings Scene texture has only 3 channels.
-	* Which means we cannot sample it for opacity and need to get it from a different source.
-	*/
-	class FSampleOpacityFromGbuffer : SHADER_PERMUTATION_BOOL("SAMPLE_OPACITY_FROM_GBUFFER");
-
-	using FPermutationDomain = TShaderPermutationDomain<FShaderType, FTemperatureType, FAdvancedShader, FDisplayBoundingRect, FClipPixelsOutsideAABB, FSampleOpacityFromGbuffer>;
-
-	FColorCorrectRegionMaterialPS() = default;
-	FColorCorrectRegionMaterialPS(const ShaderMetaType::CompiledShaderInitializerType & Initializer)
+	FColorCorrectGenericPS() = default;
+	FColorCorrectGenericPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FColorCorrectRegionsPostProcessMaterialShader(Initializer)
 	{}
 
@@ -157,10 +150,44 @@ public:
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundPixelShader(), View.ViewUniformBuffer);
 	}
 
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment & OutEnvironment)
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FColorCorrectRegionsPostProcessMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
+
+};
+
+class FColorCorrectRegionMaterialPS : public FColorCorrectGenericPS
+{
+public:
+
+	DECLARE_GLOBAL_SHADER(FColorCorrectRegionMaterialPS);
+
+	class FShaderType : SHADER_PERMUTATION_ENUM_CLASS("SHAPE_TYPE", EColorCorrectRegionsType);
+
+	using FPermutationDomain = TShaderPermutationDomain<FShaderType, FTemperatureType, FAdvancedShader, FStencilEnabled>;
+
+	FColorCorrectRegionMaterialPS() = default;
+	FColorCorrectRegionMaterialPS(const ShaderMetaType::CompiledShaderInitializerType & Initializer)
+		: FColorCorrectGenericPS(Initializer)
+	{}
+};
+
+
+class FColorCorrectWindowMaterialPS : public FColorCorrectGenericPS
+{
+public:
+
+	DECLARE_GLOBAL_SHADER(FColorCorrectWindowMaterialPS);
+
+	class FShaderType : SHADER_PERMUTATION_ENUM_CLASS("WINDOW_TYPE", EColorCorrectWindowType);
+
+	using FPermutationDomain = TShaderPermutationDomain<FShaderType, FTemperatureType, FAdvancedShader, FStencilEnabled>;
+
+	FColorCorrectWindowMaterialPS() = default;
+	FColorCorrectWindowMaterialPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FColorCorrectGenericPS(Initializer)
+	{}
 };
 
 // The vertex shader used by DrawScreenPass to draw a rectangle.
@@ -198,6 +225,45 @@ class FClearRectPS : public FGlobalShader
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+
+/** Vertex shader to rasterize obstructive CCR Plane. */
+class FCCRStencilMergerVS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FCCRStencilMergerVS);
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters&)
+	{
+		return true;
+	}
+
+	FCCRStencilMergerVS() = default;
+	FCCRStencilMergerVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{}
+};
+
+/** Pixel shader to rasterize obstructive CCR Plane. */
+class FCCRStencilMergerPS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FCCRStencilMergerPS);
+	SHADER_USE_PARAMETER_STRUCT(FCCRStencilMergerPS, FGlobalShader);
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return true;
+	}
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, StencilIds)
+		SHADER_PARAMETER(uint32, StencilIdCount)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters, SceneTextures)
+		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };

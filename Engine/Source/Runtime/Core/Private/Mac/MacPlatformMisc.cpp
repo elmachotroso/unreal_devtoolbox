@@ -8,7 +8,7 @@
 #include "Misc/App.h"
 #include "HAL/ExceptionHandling.h"
 #include "Misc/SecureHash.h"
-#include "VarargsHelper.h"
+#include "Misc/VarargsHelper.h"
 #include "Mac/CocoaThread.h"
 #include "Misc/EngineVersion.h"
 #include "Mac/MacMallocZone.h"
@@ -708,9 +708,7 @@ void FMacPlatformMisc::RequestExit( bool Force )
 		// Make sure the log is flushed.
 		if (GLog)
 		{
-			// This may be called from other thread, so set this thread as the master.
-			GLog->SetCurrentThreadAsMasterThread();
-			GLog->TearDown();
+			GLog->Flush();
 		}
 
 
@@ -1916,8 +1914,7 @@ static void DefaultCrashHandler(FMacCrashContext const& Context)
 	Context.ReportCrash();
 	if (GLog)
 	{
-		GLog->SetCurrentThreadAsMasterThread();
-		GLog->Flush();
+		GLog->Panic();
 	}
 	if (GWarn)
 	{
@@ -2021,7 +2018,7 @@ static void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Cont
 	// make sure as much data is written to disk as possible
 	if (GLog)
 	{
-		GLog->Flush();
+		GLog->Panic();
 	}
 	if (GWarn)
 	{
@@ -2379,7 +2376,7 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		posix_spawnattr_init(&SpawnAttr);
 
 		{
-			uint32 SpawnFlags = POSIX_SPAWN_SETPGROUP;
+			uint16 SpawnFlags = POSIX_SPAWN_SETPGROUP;
 			posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
 		}
 
@@ -2804,7 +2801,7 @@ T GetMacGPUStat(TMap<FString, float> const& Stats, FString StatName)
 	T Result = (T)0;
 	if(Stats.Contains(StatName))
 	{
-		Result = Stats.FindRef(StatName);
+		Result = (T)Stats.FindRef(StatName);
 	}
 	return Result;
 }

@@ -21,6 +21,7 @@
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UObjectHash.h"
 #include "Engine/NetDriver.h"
+#include "Engine/ActorChannel.h"
 #include "Net/UnrealNetwork.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -33,6 +34,7 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
 #include "Async/ParallelFor.h"
 
 #if WITH_EDITOR
@@ -41,6 +43,13 @@
 #include "StaticMeshCompiler.h"
 #endif
 #include "ObjectTrace.h"
+
+#if UE_WITH_IRIS
+#include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
+#include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
+#endif // UE_WITH_IRIS
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorComponent)
 
 #define LOCTEXT_NAMESPACE "ActorComponent"
 
@@ -78,7 +87,12 @@ FAutoConsoleVariableRef GTickComponentLatentActionsWithTheComponentCVar(
 /** Static var indicating activity of reregister context */
 int32 FGlobalComponentReregisterContext::ActiveGlobalReregisterContextCount = 0;
 
-#if WITH_CHAOS
+bool GDefaultUseSubObjectReplicationList = false;
+static FAutoConsoleVariableRef CVarDefaultUseSubObjectReplicationList(
+	TEXT("net.SubObjects.DefaultUseSubObjectReplicationList"),
+	GDefaultUseSubObjectReplicationList,
+	TEXT("Do actors and actorcomponents replicate subobjects using the registration method by default."));
+
 // Allows for CreatePhysicsState to be deferred, to batch work and parallelize.
 int32 GEnableDeferredPhysicsCreation = 0;
 FAutoConsoleVariableRef CVarEnableDeferredPhysicsCreation(
@@ -86,9 +100,6 @@ FAutoConsoleVariableRef CVarEnableDeferredPhysicsCreation(
 	GEnableDeferredPhysicsCreation,
 	TEXT("Enables/Disables deferred physics creation.")
 );
-#else
-int32 GEnableDeferredPhysicsCreation = 0;
-#endif
 
 void FRegisterComponentContext::Process()
 {
@@ -299,6 +310,8 @@ FActorComponentGlobalDestroyPhysicsSignature UActorComponent::GlobalDestroyPhysi
 UActorComponent::FOnMarkRenderStateDirty UActorComponent::MarkRenderStateDirtyEvent;
 
 const FString UActorComponent::ComponentTemplateNameSuffix(TEXT("_GEN_VARIABLE"));
+TMap<UActorComponent*, TArray<FSimpleMemberReference>> UActorComponent::AllUCSModifiedProperties;
+FRWLock UActorComponent::AllUCSModifiedPropertiesLock;
 
 UActorComponent::UActorComponent(const FObjectInitializer& ObjectInitializer /*= FObjectInitializer::Get()*/)
 	: Super(ObjectInitializer)
@@ -327,6 +340,9 @@ UActorComponent::UActorComponent(const FObjectInitializer& ObjectInitializer /*=
 	bNavigationRelevant = false;
 
 	bMarkedForPreEndOfFrameSync = false;
+	bAsyncPhysicsTickEnabled = false;
+
+	bReplicateUsingRegisteredSubObjectList = GDefaultUseSubObjectReplicationList;
 }
 
 void UActorComponent::PostInitProperties()
@@ -340,7 +356,7 @@ void UActorComponent::PostInitProperties()
 	// Instance components will be added during the owner's initialization
 	if (OwnerPrivate && CreationMethod != EComponentCreationMethod::Instance)
 	{
-		if (!FPlatformProperties::RequiresCookedData() && CreationMethod == EComponentCreationMethod::Native && HasAllFlags(RF_NeedLoad|RF_DefaultSubObject))
+		if (!FPlatformProperties::RequiresCookedData() && !OwnerPrivate->GetClass()->bCooked && CreationMethod == EComponentCreationMethod::Native && HasAllFlags(RF_NeedLoad|RF_DefaultSubObject))
 		{
 			UObject* MyArchetype = GetArchetype();
 			if (IsValid(MyArchetype) && MyArchetype != GetClass()->ClassDefaultObject)
@@ -369,14 +385,6 @@ void UActorComponent::PostInitProperties()
 		else
 		{
 			OwnerPrivate->AddOwnedComponent(this);
-		}
-	}
-
-	for (UAssetUserData* Datum : AssetUserData)
-	{
-		if (Datum != nullptr)
-		{
-			Datum->PostEditChangeOwner();
 		}
 	}
 }
@@ -430,13 +438,23 @@ void UActorComponent::PostLoad()
 		{
 			DetermineUCSModifiedProperties();
 		}
+#if WITH_EDITORONLY_DATA
+		else if (GetLinkerCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::ActorComponentUCSModifiedPropertiesSparseStorage)
+		{
+			if (UCSModifiedProperties_DEPRECATED.Num())
+			{
+				FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_Write);
+				AllUCSModifiedProperties.Add(this, MoveTemp(UCSModifiedProperties_DEPRECATED));
+			}
+		}
+#endif
 	}
 	else
 	{
-		// For a brief period of time we were inadvertently storing these for all components, need to clear it out
-		UCSModifiedProperties.Empty();
-
 #if WITH_EDITORONLY_DATA
+		// For a brief period of time we were inadvertently storing these for all components, need to clear it out
+		UCSModifiedProperties_DEPRECATED.Empty();
+
 		if (CreationMethod == EComponentCreationMethod::UserConstructionScript)
 		{
 			if (GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::StoringUCSSerializationIndex)
@@ -700,6 +718,8 @@ void UActorComponent::BeginDestroy()
 		UninitializeComponent();
 	}
 
+	bIsReadyForReplication = false;
+
 	ExecuteUnregisterEvents();
 
 	// Ensure that we call OnComponentDestroyed before we destroy this component
@@ -719,6 +739,8 @@ void UActorComponent::BeginDestroy()
 #if WITH_EDITOR
 	UEngineElementsLibrary::DestroyEditorComponentElement(this);
 #endif	// WITH_EDITOR
+
+	ClearUCSModifiedProperties();
 
 	Super::BeginDestroy();
 }
@@ -793,9 +815,13 @@ bool UActorComponent::Modify( bool bAlwaysMarkDirty/*=true*/ )
 
 	// If this is a construction script component we don't store them in the transaction buffer.  Instead, mark
 	// the Actor as modified so that we store of the transaction annotation that has the component properties stashed
-	if (MyOwner && IsCreatedByConstructionScript())
+	if (MyOwner)
 	{
-		return MyOwner->Modify(bAlwaysMarkDirty);
+		extern int32 GExperimentalAllowPerInstanceChildActorProperties;
+		if (IsCreatedByConstructionScript() || (GExperimentalAllowPerInstanceChildActorProperties && MyOwner->IsChildActor()))
+		{
+			return MyOwner->Modify(bAlwaysMarkDirty);
+		}
 	}
 
 	return Super::Modify(bAlwaysMarkDirty);
@@ -960,6 +986,14 @@ void UActorComponent::ConsolidatedPostEditChange(const FPropertyChangedEvent& Pr
 		ExecuteUnregisterEvents();
 		WorldPrivate = nullptr;
 	}
+
+	for (UAssetUserData* Datum : AssetUserData)
+	{
+		if (Datum != nullptr)
+		{
+			Datum->PostEditChangeOwner();
+		}
+	}
 }
 
 void UActorComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -1028,6 +1062,11 @@ void UActorComponent::UninitializeComponent()
 	bHasBeenInitialized = false;
 }
 
+void UActorComponent::ReadyForReplication()
+{
+	bIsReadyForReplication = true;
+}
+
 void UActorComponent::BeginPlay()
 {
 	TRACE_OBJECT_LIFETIME_BEGIN(this);
@@ -1056,6 +1095,7 @@ void UActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		ReceiveEndPlay(EndPlayReason);
 	}
 
+	bIsReadyForReplication = false;
 	bHasBegunPlay = false;
 }
 
@@ -1190,7 +1230,38 @@ void UActorComponent::RegisterAllComponentTickFunctions(bool bRegister)
 			checkf(GTestRegisterComponentTickFunctions == this, TEXT("Failed to route component RegisterTickFunctions (%s)"), *GetFullName());
 			GTestRegisterComponentTickFunctions = NULL;
 		}
+
+		if (bAsyncPhysicsTickEnabled)
+		{
+			RegisterAsyncPhysicsTickEnabled(bRegister);
+		}
 	}
+}
+
+void UActorComponent::RegisterAsyncPhysicsTickEnabled(bool bRegister)
+{
+	if (FPhysScene_Chaos* Scene = static_cast<FPhysScene_Chaos*>(WorldPrivate->GetPhysicsScene()))
+	{
+		if (bRegister)
+		{
+			Scene->RegisterAsyncPhysicsTickComponent(this);
+		}
+		else
+		{
+			Scene->UnregisterAsyncPhysicsTickComponent(this);
+		}
+	}
+}
+
+void UActorComponent::SetAsyncPhysicsTickEnabled(bool bEnable)
+{
+	// Components don't have async physics functions until they are registered with the world
+	if(bRegistered)
+	{
+		RegisterAsyncPhysicsTickEnabled(bEnable);
+	}
+	
+	bAsyncPhysicsTickEnabled = bEnable;
 }
 
 void UActorComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
@@ -1295,20 +1366,7 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld, FRegisterCompo
 	}
 	else
 	{
-		if (!bHasBeenInitialized && bWantsInitializeComponent && MyOwner->IsActorInitialized())
-		{
-			InitializeComponent();
-		}
-
-		if (MyOwner->HasActorBegunPlay() || MyOwner->IsActorBeginningPlay())
-		{
-			RegisterAllComponentTickFunctions(true);
-			if (!bHasBegunPlay)
-			{
-				BeginPlay();
-				ensureMsgf(bHasBegunPlay, TEXT("Failed to route BeginPlay (%s)"), *GetFullName());
-			}
-		}
+		MyOwner->HandleRegisterComponentWithWorld(this);
 	}
 
 	// If this is a blueprint created component and it has component children they can miss getting registered in some scenarios
@@ -1385,6 +1443,8 @@ void UActorComponent::DestroyComponent(bool bPromoteChildren/*= false*/)
 	{
 		UninitializeComponent();
 	}
+
+	bIsReadyForReplication = false;
 
 	// Unregister if registered
 	if(IsRegistered())
@@ -1534,11 +1594,7 @@ void UActorComponent::OnDestroyPhysicsState()
 
 void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 {
-#if WITH_CHAOS
 	LLM_SCOPE(ELLMTag::Chaos);
-#else
-	LLM_SCOPE(ELLMTag::PhysX);
-#endif
 
 	SCOPE_CYCLE_COUNTER(STAT_ComponentCreatePhysicsState);
 
@@ -1567,11 +1623,7 @@ void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 
 		if (ShouldDefer)
 		{
-#if WITH_CHAOS
 			WorldPrivate->GetPhysicsScene()->DeferPhysicsStateCreation(Primitive);
-#else
-			check(false);
-#endif
 		}
 		else
 		{
@@ -1606,16 +1658,12 @@ void UActorComponent::DestroyPhysicsState()
 	}
 	else if(GEnableDeferredPhysicsCreation)
 	{
-#if WITH_CHAOS
 		UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(this);
 		if (PrimitiveComponent && PrimitiveComponent->DeferredCreatePhysicsStateScene != nullptr)
 		{
 			// We had to cache this scene because World ptr is null as we have unregistered already.
 			PrimitiveComponent->DeferredCreatePhysicsStateScene->RemoveDeferredPhysicsStateCreation(PrimitiveComponent);
 		}
-#else
-		check(false);
-#endif
 	}
 }
 
@@ -2061,8 +2109,35 @@ void UActorComponent::SetIsReplicated(bool bShouldReplicate)
 	}
 }
 
-bool UActorComponent::ReplicateSubobjects(class UActorChannel *Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags)
+void UActorComponent::AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition)
 {
+	if (AActor* MyOwner=GetOwner())
+	{
+		MyOwner->AddActorComponentReplicatedSubObject(this, SubObject, NetCondition);
+	}
+}
+
+void UActorComponent::RemoveReplicatedSubObject(UObject* SubObject)
+{
+	if (AActor* MyOwner=GetOwner())
+	{
+		MyOwner->RemoveActorComponentReplicatedSubObject(this, SubObject);
+	}
+}
+
+bool UActorComponent::IsReplicatedSubObjectRegistered(const UObject* SubObject) const
+{
+	if (AActor* MyOwner=GetOwner())
+	{
+		return MyOwner->IsActorComponentReplicatedSubObjectRegistered(this, SubObject);
+	}
+
+	return false;
+}
+
+bool UActorComponent::ReplicateSubobjects(UActorChannel* Channel, FOutBunch* Bunch, FReplicationFlags* RepFlags)
+{
+	UActorChannel::SetCurrentSubObjectOwner(this);
 	return false;
 }
 
@@ -2130,6 +2205,26 @@ bool UActorComponent::CanEditChange(const FProperty* InProperty) const
 }
 #endif
 
+#if UE_WITH_IRIS
+void UActorComponent::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
+{
+	Super::RegisterReplicationFragments(Context, RegistrationFlags);
+
+	// Build descriptors and allocate PropertyReplicationFragments for this object
+	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
+}
+
+void UActorComponent::BeginReplication()
+{
+	UE::Net::FReplicationSystemUtil::BeginReplicationForActorComponent(GetOwner(), this);
+}
+
+void UActorComponent::EndReplication()
+{
+	UE::Net::FReplicationSystemUtil::EndReplicationForActorComponent(this);
+}
+#endif // UE_WITH_IRIS
+
 bool UActorComponent::IsEditableWhenInherited() const
 {
 	bool bCanEdit = bEditableWhenInherited;
@@ -2152,10 +2247,10 @@ bool UActorComponent::IsEditableWhenInherited() const
 
 void UActorComponent::DetermineUCSModifiedProperties()
 {
-	UCSModifiedProperties.Empty();
-
 	if (CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
 	{
+		TArray<FSimpleMemberReference> UCSModifiedProperties;
+
 		class FComponentPropertySkipper : public FArchive
 		{
 		public:
@@ -2202,24 +2297,60 @@ void UActorComponent::DetermineUCSModifiedProperties()
 				}
 			}
 		}
+
+		FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_Write);
+		if (UCSModifiedProperties.Num() > 0)
+		{
+			AllUCSModifiedProperties.Add(this, MoveTemp(UCSModifiedProperties));
+		}
+		else
+		{
+			AllUCSModifiedProperties.Remove(this);
+		}
 	}
 }
 
 void UActorComponent::GetUCSModifiedProperties(TSet<const FProperty*>& ModifiedProperties) const
 {
-	for (const FSimpleMemberReference& MemberReference : UCSModifiedProperties)
+	FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_ReadOnly);
+	if (TArray<FSimpleMemberReference>* UCSModifiedProperties = AllUCSModifiedProperties.Find(this))
 	{
-		ModifiedProperties.Add(FMemberReference::ResolveSimpleMemberReference<FProperty>(MemberReference));
+		for (const FSimpleMemberReference& MemberReference : *UCSModifiedProperties)
+		{
+			ModifiedProperties.Add(FMemberReference::ResolveSimpleMemberReference<FProperty>(MemberReference));
+		}
 	}
 }
 
 void UActorComponent::RemoveUCSModifiedProperties(const TArray<FProperty*>& Properties)
 {
-	for (FProperty* Property : Properties)
+	FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_Write);
+	if (TArray<FSimpleMemberReference>* UCSModifiedProperties = AllUCSModifiedProperties.Find(this))
 	{
-		FSimpleMemberReference MemberReference;
-		FMemberReference::FillSimpleMemberReference<FProperty>(Property, MemberReference);
-		UCSModifiedProperties.RemoveSwap(MemberReference);
+		for (FProperty* Property : Properties)
+		{
+			FSimpleMemberReference MemberReference;
+			FMemberReference::FillSimpleMemberReference<FProperty>(Property, MemberReference);
+			UCSModifiedProperties->RemoveSwap(MemberReference);
+		}
+	}
+}
+
+void UActorComponent::ClearUCSModifiedProperties()
+{
+	FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_Write);
+	AllUCSModifiedProperties.Remove(this);
+}
+
+void UActorComponent::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_ReadOnly);
+	if (TArray<FSimpleMemberReference>* UCSModifiedProperties = AllUCSModifiedProperties.Find(CastChecked<UActorComponent>(InThis)))
+	{
+		for (FSimpleMemberReference& MemberReference : *UCSModifiedProperties)
+		{
+			Collector.AddReferencedObject(MemberReference.MemberParent);
+		}
 	}
 }
 
@@ -2255,10 +2386,43 @@ void UActorComponent::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
 
 	if (Ar.IsLoading() && (Ar.HasAnyPortFlags(PPF_DuplicateForPIE)||!Ar.HasAnyPortFlags(PPF_Duplicate)) && !IsTemplate())
 	{
 		bHasBeenCreated = true;
+	}
+
+	if (Ar.CustomVer(FFortniteReleaseBranchCustomObjectVersion::GUID) >= FFortniteReleaseBranchCustomObjectVersion::ActorComponentUCSModifiedPropertiesSparseStorage)
+	{
+		if (Ar.IsLoading())
+		{
+			TArray<FSimpleMemberReference> UCSModifiedProperties;
+			Ar << UCSModifiedProperties;
+
+			FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_Write);
+			if (UCSModifiedProperties.Num() > 0)
+			{
+				AllUCSModifiedProperties.Add(this, MoveTemp(UCSModifiedProperties));
+			}
+			else
+			{
+				AllUCSModifiedProperties.Remove(this);
+			}
+		}
+		else
+		{
+			FRWScopeLock Lock(AllUCSModifiedPropertiesLock, SLT_ReadOnly);
+			if (TArray<FSimpleMemberReference>* UCSModifiedProperties = AllUCSModifiedProperties.Find(this))
+			{
+				Ar << *UCSModifiedProperties;
+			}
+			else
+			{
+				TArray<FSimpleMemberReference> EmptyUCSModifiedProperties;
+				Ar << EmptyUCSModifiedProperties;
+			}
+		}
 	}
 }
 
@@ -2314,3 +2478,4 @@ TFunction<bool(const UActorComponent*)> GIsComponentSelectedInEditor;
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

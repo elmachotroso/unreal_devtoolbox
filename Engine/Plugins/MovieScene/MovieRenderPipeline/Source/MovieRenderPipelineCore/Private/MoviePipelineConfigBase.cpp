@@ -4,6 +4,8 @@
 #include "MoviePipelineSetting.h"
 #include "MovieRenderPipelineCoreModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineConfigBase)
+
 #define LOCTEXT_NAMESPACE "MoviePipelineConfigBase"
 
 void UMoviePipelineConfigBase::RemoveSetting(UMoviePipelineSetting* InSetting)
@@ -17,6 +19,13 @@ void UMoviePipelineConfigBase::RemoveSetting(UMoviePipelineSetting* InSetting)
 
 void UMoviePipelineConfigBase::CopyFrom(UMoviePipelineConfigBase* InConfig)
 {
+	// Don't allow copying ourself to ourself as we first wipe out our settings array
+	// and then copy from the other config's settings array which will now be empty.
+	if (InConfig == this)
+	{
+		return;
+	}
+
 #if WITH_EDITOR
 	Modify();
 #endif

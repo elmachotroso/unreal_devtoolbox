@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Attribute.h"
+#include "ToolMenuContext.h"
 #include "ISequencer.h"
 #include "Modules/ModuleInterface.h"
 #include "AnimatedPropertyKey.h"
@@ -22,6 +23,8 @@ class ISequencerEditorObjectBinding;
 class IToolkitHost;
 class UMovieSceneSequence;
 struct FSequencerInitParams;
+
+namespace UE { namespace Sequencer { class FTrackModel; } }
 
 enum class ECurveEditorTreeFilterType : uint32;
 
@@ -49,8 +52,17 @@ DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerTrackEditor>, FOnCreateTra
 /** A delegate which will create an object binding handler. */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerEditorObjectBinding>, FOnCreateEditorObjectBinding, TSharedRef<ISequencer>);
 
+/** A delegate which will create a track model. */
+DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<UE::Sequencer::FTrackModel>, FOnCreateTrackModel, UMovieSceneTrack*);
+
+/** A delegate that is executed when adding menu content. */
+DECLARE_DELEGATE_OneParam(FOnGetContextMenuContent, FMenuBuilder& /*MenuBuilder*/);
+
 /** A delegate that is executed when adding menu content. */
 DECLARE_DELEGATE_TwoParams(FOnGetAddMenuContent, FMenuBuilder& /*MenuBuilder*/, TSharedRef<ISequencer>);
+
+/** A delegate that is executed when initializing tool menu context. */
+DECLARE_DELEGATE_OneParam(FOnInitToolMenuContext, FToolMenuContext&);
 
 /** A delegate that is executed when menu object is clicked. Unlike FExtender delegates we pass in the FGuid which exists even for deleted objects. */
 DECLARE_DELEGATE_TwoParams(FOnBuildCustomContextMenuForGuid, FMenuBuilder&, FGuid);
@@ -66,12 +78,17 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPreSequencerInit, TSharedRef<ISequence
  */
 struct FSequencerViewParams
 {
+	/** Called when building the add track menu */
 	FOnGetAddMenuContent OnGetAddMenuContent;
 
+	/** Called when building a context menu for an object binding */
 	FOnBuildCustomContextMenuForGuid OnBuildCustomContextMenuForGuid;
 
 	/** Called when this sequencer has received user focus */
 	FSimpleDelegate OnReceivedFocus;
+
+	/** Called when this sequencer is initializing the tool menu context */
+	FOnInitToolMenuContext OnInitToolMenuContext;
 
 	/** The playback speed options available */
 	ISequencer::FOnGetPlaybackSpeeds OnGetPlaybackSpeeds;
@@ -88,6 +105,9 @@ struct FSequencerViewParams
 	/** Whether the sequencer is read-only */
 	bool bReadOnly;
 
+	/** Whether the playback range spin box should be visible in TimeRange widget */
+	bool bShowPlaybackRangeInTimeSlider;
+
 	/** Style of scrubber to use */
 	ESequencerScrubberStyle ScrubberStyle;
 
@@ -95,6 +115,7 @@ struct FSequencerViewParams
 		: OnGetPlaybackSpeeds(ISequencer::FOnGetPlaybackSpeeds::CreateLambda([]() { return TArray<float>{ 0.1f, 0.25f, 0.5f, 1.f, 2.f, 5.f, 10.f }; }))
 		, UniqueName(MoveTemp(InName))
 		, bReadOnly(false)
+		, bShowPlaybackRangeInTimeSlider(false)
 		, ScrubberStyle(ESequencerScrubberStyle::Vanilla)
 	{ }
 };
@@ -198,6 +219,21 @@ public:
 	 * @param InHandle	Handle to the delegate to unregister
 	 */
 	virtual void UnRegisterTrackEditor(FDelegateHandle InHandle) = 0;
+
+	/**
+	 * Registers a delegate that will create a track view model for a given track
+	 *
+	 * @param InCreator Delegate to register
+	 * @return A handle to the newly-added delegate
+	 */
+	virtual FDelegateHandle RegisterTrackModel(FOnCreateTrackModel InCreator) = 0;
+
+	/**
+	 * Unregisters a previously registered delegate for creating track view models
+	 *
+	 * @param InHandle Handle to the delegate to unregister
+	 */
+	virtual void UnregisterTrackModel(FDelegateHandle InHandle) = 0;
 
 	/** 
 	 * Registers a delegate that will be called when a sequencer is created

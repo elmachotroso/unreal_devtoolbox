@@ -2,16 +2,52 @@
 
 #pragma once
 
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "IMediaOptions.h"
+#include "IMediaOptions.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Variant.h"
-#include "UObject/ObjectMacros.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 #include "UObject/Object.h"
-#include "IMediaOptions.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/ScriptMacros.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "MediaSource.generated.h"
 
+class FVariant;
+class UMediaSource;
+struct FFrame;
+
+/** Delegate for creating a media source from a string. */
+DECLARE_DELEGATE_RetVal_TwoParams(UMediaSource*, FMediaSourceSpawnDelegate, const FString&, UObject*);
+
+/** Cache settings to pass to the player. */
+USTRUCT(BlueprintType)
+struct FMediaSourceCacheSettings
+{
+	GENERATED_USTRUCT_BODY()
+
+	/**
+	 * Override the default cache settings.
+	 * Currently only the ImgMedia player supports these settings.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Media Cache")
+	bool bOverride = false;
+
+	/**
+	 * The cache will fill up with frames that are up to this time from the current time.
+	 * E.g. if this is 0.2, and we are at time index 5 seconds,
+	 * then we will fill the cache with frames between 5 seconds and 5.2 seconds.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Media Cache")
+	float TimeToLookAhead = 0.2f;
+};
 
 /**
  * Abstract base class for media sources.
@@ -47,6 +83,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Media|MediaSource")
 	virtual bool Validate() const PURE_VIRTUAL(UMediaSource::Validate, return false;);
+
+	/**
+	 * Call this to set cache settings to pass to the player.
+	 */
+	void SetCacheSettings(const FMediaSourceCacheSettings& Settings);
+
+	/**
+	 * Call this to register a callback when someone calls SpawnMediaSourceForString.
+	 * This lets you spawn a media source if the file extension matches what you want.
+	 * 
+	 * @param Extension		File extension to match. This is case insensitive.
+	 * @param InDelegate	This will get called if the Url passed into GetMediaSourceForUrl
+	 *						matches Extension.
+	 */
+	static void RegisterSpawnFromFileExtension(const FString& Extension, FMediaSourceSpawnDelegate InDelegate);
+	
+	/**
+	 * Call this to unregister a callback set with RegisterSpawnFromFileExtension.
+	 *
+	 * @param Extension		File extension that the callack was registered with.
+	 */
+	static void UnregisterSpawnFromFileExtension(const FString& Extension);
+
+	/**
+	 * Call this to try and create a media source appropriate for the media.
+	 *
+	 * @param MediaPath		Can be a file location or a Url.
+	 * @param Outer			Outer to use for this object.
+	 * @return				Media source or nullptr if none are appropriate.
+	 */
+	static UMediaSource* SpawnMediaSourceForString(const FString& MediaPath, UObject* Outer);
 
 public:
 
@@ -90,4 +157,9 @@ private:
 	 * Sets the media option specified by Key to the supplied Variant.
 	 */
 	void SetMediaOption(const FName& Key, FVariant& Value);
+
+	/**
+	 * Get a mapping of file extensions to spawn delegates.
+	 */
+	static TMap<FString, FMediaSourceSpawnDelegate>& GetSpawnFromFileExtensionDelegates();
 };

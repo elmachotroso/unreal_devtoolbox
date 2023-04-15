@@ -33,8 +33,9 @@ enum class EClusterConnectionTypeEnum : uint8
 {
 	Chaos_PointImplicit = Chaos::FClusterCreationParameters::PointImplicit ,
 	Chaos_DelaunayTriangulation = Chaos::FClusterCreationParameters::DelaunayTriangulation UMETA(Hidden),
-	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters::MinimalSpanningSubsetDelaunayTriangulation ,
-	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters::PointImplicitAugmentedWithMinimalDelaunay ,
+	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters::MinimalSpanningSubsetDelaunayTriangulation,
+	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters::PointImplicitAugmentedWithMinimalDelaunay,
+	Chaos_BoundsOverlapFilteredDelaunayTriangulation = Chaos::FClusterCreationParameters::BoundsOverlapFilteredDelaunayTriangulation,
 	Chaos_None = Chaos::FClusterCreationParameters::None UMETA(Hidden),
 	//
 	Chaos_EClsuterCreationParameters_Max UMETA(Hidden)
@@ -107,8 +108,6 @@ public:
 	FSolverTrailingFilterSettings TrailingFilterSettings_DEPRECATED;
 	UPROPERTY()
 	float MassScale_DEPRECATED;
-	UPROPERTY()
-	bool bGenerateContactGraph_DEPRECATED;
 	/** End deprecated properties */
 	
 	UPROPERTY(EditAnywhere, Category = Settings)
@@ -170,5 +169,5 @@ private:
 	TObjectPtr<UChaosGameplayEventDispatcher> GameplayEventDispatcherComponent;
 
 	/** If floor is enabled - this will point to the solver particle for it */
-	FSingleParticlePhysicsProxy* Proxy;
+	Chaos::FSingleParticlePhysicsProxy* Proxy;
 };

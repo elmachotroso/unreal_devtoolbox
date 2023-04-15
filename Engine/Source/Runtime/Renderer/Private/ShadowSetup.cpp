@@ -32,6 +32,8 @@
 #include "VirtualShadowMaps/VirtualShadowMapCacheManager.h"
 #include "VirtualShadowMaps/VirtualShadowMapClipmap.h"
 #include "InstanceCulling/InstanceCullingManager.h"
+#include "Shadows/ShadowSceneRenderer.h"
+#include "Lumen/Lumen.h"
 
 /** Number of cube map shadow depth surfaces that will be created and used for rendering one pass point light shadows. */
 static const int32 NumCubeShadowDepthSurfaces = 5;
@@ -279,8 +281,9 @@ static TAutoConsoleVariable<int32> CVarVsmUseFarShadowRules(
 
 static TAutoConsoleVariable<int32> CVarClipmapUseConservativeCulling(
 	TEXT("r.Shadow.Virtual.Clipmap.UseConservativeCulling"),
-	1,
-	TEXT(""),
+	0,
+	TEXT("Conservative culling removes the frustum-clipped culling volume for the non-nanite geometry for VSM rendering. This means a lot more geometry is submitted, and also marked as rendered.\n")
+	TEXT("Useful to diagnose if there are culling artifacts in virtual shadow map clip maps due to errors in the tracking code."),
 	ECVF_RenderThreadSafe
 );
 
@@ -707,7 +710,8 @@ FProjectedShadowInfo::FProjectedShadowInfo()
 	, bNaniteGeometry(true)
 	, bIncludeInScreenSpaceShadowMask(true)
 	, bContainsNaniteSubjects(false)
-	, PerObjectShadowFadeStart(WORLD_MAX)
+	, bShouldRenderVSM(true)
+	, PerObjectShadowFadeStart(UE_OLD_WORLD_MAX)		// LWC_TODO: Upgrade to double? Should have been HALF_WORLD_MAX to match precision.
 	, InvPerObjectShadowFadeLength(0.0f)
 	, OverlappedUVOnCachedShadowMap(-1.0f, -1.0f, -1.0f, -1.0f)
 	, OverlappedUVOnCurrentShadowMap(-1.0f, -1.0f, -1.0f, -1.0f)
@@ -717,7 +721,6 @@ FProjectedShadowInfo::FProjectedShadowInfo()
 	, NumSubjectMeshCommandBuildRequestElements(0)
 	, ShaderDepthBias(0.0f)
 	, ShaderSlopeDepthBias(0.0f)
-	, RayTracedShadowsTexture(nullptr)
 {
 }
 
@@ -990,7 +993,7 @@ void FProjectedShadowInfo::SetupWholeSceneProjection(
 	GetViewFrustumBounds(CasterOuterFrustum, FMatrix(TranslatedWorldToClipOuterMatrix), true);
 	GetViewFrustumBounds(ReceiverInnerFrustum, ReceiverInnerMatrix, true);
 	
-	InvReceiverInnerMatrix = FMatrix44f(ReceiverInnerMatrix.InverseFast());
+	InvReceiverInnerMatrix = FMatrix44f(ReceiverInnerMatrix.Inverse());
 
 	UpdateShaderDepthBias();
 
@@ -1577,11 +1580,11 @@ bool FProjectedShadowInfo::ShouldDrawStaticMeshes_AnyThread(
 	return bDrawingStaticMeshes;
 }
 
-void FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bShouldRecordShadowSubjectsForMobileShading)
+bool FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bShouldRecordShadowSubjectsForMobileShading)
 {
 	// Ray traced shadows use the GPU managed distance field object buffers, no CPU culling should be used
 	check(!bRayTracedDistanceField);
-
+	bool bWasAdded = false;
 	if (!ReceiverPrimitives.Contains(PrimitiveSceneInfo)
 		// Far cascade only casts from primitives marked for it
 		&& TestPrimitiveFarCascadeConditions(PrimitiveSceneInfo->Proxy->CastsFarShadow(), PrimitiveSceneInfo->Proxy->GetBounds()))
@@ -1696,10 +1699,10 @@ void FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSce
 			{
 				for (FViewInfo& CurrentView : Views)
 				{
-					const float DistanceSquared = ( Bounds.Origin - CurrentView.ShadowViewMatrices.GetViewOrigin() ).SizeSquared();
-
-					if (bWholeSceneShadow && CacheMode != SDCM_StaticPrimitivesOnly)
+					// Note: skip small-mesh culling for VSM since it needs it drawn for GPU-side caching.
+					if (bWholeSceneShadow && CacheMode != SDCM_StaticPrimitivesOnly && MeshPassTargetType != EMeshPass::VSMShadowDepth)
 					{
+						const float DistanceSquared = ( Bounds.Origin - CurrentView.ShadowViewMatrices.GetViewOrigin() ).SizeSquared();
 						const float LODScaleSquared = FMath::Square(CurrentView.LODDistanceFactor);
 						const bool bDrawShadowDepth = FMath::Square(Bounds.SphereRadius) > FMath::Square(GMinScreenRadiusForShadowCaster) * DistanceSquared * LODScaleSquared;
 						if( !bDrawShadowDepth )
@@ -1723,6 +1726,7 @@ void FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSce
 				{
 					DependentView->VisibleLightInfos[GetLightSceneInfo().Id].MobileCSMSubjectPrimitives.AddSubjectPrimitive(PrimitiveSceneInfo, PrimitiveId);
 				}
+				bWasAdded = true;
 			}
 			// EShadowMeshSelection::All is intentional because ProxySupportsGPUScene being false may indicate that some VFs (e.g., some LODs) support GPUScene while others don't
 			// thus we have to leave the final decision until the mesh batches are produced.
@@ -1735,6 +1739,7 @@ void FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSce
 				{
 					DependentView->VisibleLightInfos[GetLightSceneInfo().Id].MobileCSMSubjectPrimitives.AddSubjectPrimitive(PrimitiveSceneInfo, PrimitiveId);
 				}
+				bWasAdded = true;
 			}
 		}
 
@@ -1742,8 +1747,10 @@ void FProjectedShadowInfo::AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSce
 		if (bTranslucentShadow && bTranslucentRelevance && bShadowRelevance)
 		{
 			SubjectTranslucentPrimitives.Add(PrimitiveSceneInfo);
+			bWasAdded = true;
 		}
 	}
+	return bWasAdded;
 }
 
 bool FProjectedShadowInfo::TestPrimitiveFarCascadeConditions(bool bPrimitiveCastsFarShadow, const FBoxSphereBounds& Bounds) const
@@ -2004,7 +2011,10 @@ void FProjectedShadowInfo::FinalizeAddSubjectPrimitive(
 
 	if (Result.bAddOnRenderThread)
 	{
-		AddSubjectPrimitive(PrimitiveSceneInfo, ViewArray, Result.bShouldRecordShadowSubjectsForMobile);
+		if (AddSubjectPrimitive(PrimitiveSceneInfo, ViewArray, Result.bShouldRecordShadowSubjectsForMobile) && VirtualShadowMapClipmap.IsValid())
+		{
+			VirtualShadowMapClipmap->OnPrimitiveRendered(PrimitiveSceneInfo);
+		}
 		return;
 	}
 
@@ -2111,8 +2121,9 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_SetupMeshDrawCommandsForShadowDepth);
 
-	FShadowDepthPassMeshProcessor* MeshPassProcessor = new(FMemStack::Get()) FShadowDepthPassMeshProcessor(
+	FShadowDepthPassMeshProcessor* MeshPassProcessor = new FShadowDepthPassMeshProcessor(
 		Renderer.Scene,
+		Renderer.Scene->GetFeatureLevel(),
 		ShadowDepthView,
 		GetShadowDepthType(),
 		nullptr,
@@ -2136,7 +2147,7 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 			// Setup packed view
 			TArray<Nanite::FPackedView, SceneRenderingAllocator> PackedViews;
 			{
-				Nanite::FPackedViewParams Params;
+				Nanite::FPackedViewParams Params{};
 				Params.ViewMatrices = GetShadowDepthRenderingViewMatrices(CubemapFaceIndex);
 				// TODO: Real prev frame matrices
 				Params.PrevViewMatrices = Params.ViewMatrices;	
@@ -2149,7 +2160,7 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 	else if (VirtualShadowMapClipmap.IsValid())
 	{
 		// TODO: Register view per clip level such that they are culled early (?)
-		Nanite::FPackedViewParams Params;
+		Nanite::FPackedViewParams Params{};
 		// Note: To ensure conservative culling, we get the coarsest clip-level view since it covers the finer ones.
 		Params.ViewMatrices = VirtualShadowMapClipmap->GetViewMatrices(VirtualShadowMapClipmap->GetLevelCount() - 1);
 		// TODO: Real prev frame matrices
@@ -2160,12 +2171,16 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForShadowDepth(FSceneRenderer& R
 	}
 	else
 	{
-		Nanite::FPackedViewParams Params;
+		Nanite::FPackedViewParams Params{};
 		Params.ViewMatrices = GetShadowDepthRenderingViewMatrices();
 		// TODO: Real prev frame matrices
 		Params.PrevViewMatrices = Params.ViewMatrices;
 		Params.ViewRect = GetInnerViewRect();
 		Params.RasterContextSize = FIntPoint(ResolutionX, ResolutionY);
+		if (IsWholeSceneDirectionalShadow())
+		{
+			Params.Flags &= ~NANITE_VIEW_FLAG_NEAR_CLIP;
+		}
 		ViewIds.Add(InstanceCullingManager.RegisterView(Params));
 	}
 	// GPUCULL_TODO: Pass along any custom culling planes or whatever here (e.g., cacade bounds):
@@ -2248,7 +2263,9 @@ void FProjectedShadowInfo::SetupMeshDrawCommandsForProjectionStenciling(FSceneRe
 				}
 
 				FDepthPassMeshProcessor DepthPassMeshProcessor(
+					EMeshPass::DepthPass,
 					Renderer.Scene,
+					Renderer.Scene->GetFeatureLevel(),
 					&View,
 					DrawRenderState,
 					false,
@@ -2370,8 +2387,8 @@ void FProjectedShadowInfo::GatherDynamicMeshElements(FSceneRenderer& Renderer, F
 		Renderer.MeshCollector.ProcessTasks();
 	}
 
-	SetupMeshDrawCommandsForShadowDepth(Renderer, InstanceCullingManager);
 	SetupMeshDrawCommandsForProjectionStenciling(Renderer, InstanceCullingManager);
+	SetupMeshDrawCommandsForShadowDepth(Renderer, InstanceCullingManager);
 }
 
 void FProjectedShadowInfo::GatherDynamicMeshElementsArray(
@@ -2896,7 +2913,7 @@ void FSceneRenderer::CreatePerObjectProjectedShadow(
 			if (bOpaque && bCreateOpaqueObjectShadow && (bOpaqueShadowIsVisibleThisFrame || bShadowIsPotentiallyVisibleNextFrame))
 			{
 				// Create a projected shadow for this interaction's shadow.
-				FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
+				FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 				ProjectedShadowInfo->bPerObjectOpaqueShadow = true;
 				ProjectedShadowInfo->SubjectPrimitiveComponentIndex = PrimitiveSceneInfo->PrimitiveComponentId.PrimIDValue;
 
@@ -2918,7 +2935,6 @@ void FSceneRenderer::CreatePerObjectProjectedShadow(
 					false))					// no translucent shadow
 				{
 					ProjectedShadowInfo->FadeAlphas = ResolutionFadeAlphas;
-					MemStackProjectedShadows.Add(ProjectedShadowInfo);
 
 					if (bOpaqueShadowIsVisibleThisFrame)
 					{
@@ -2937,13 +2953,13 @@ void FSceneRenderer::CreatePerObjectProjectedShadow(
 				}
 			}
 
-			if (bTranslucentRelevance
-				&& Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM5
+			if (AllowTranslucencyPerObjectShadows(Scene->GetShaderPlatform())
+				&& bTranslucentRelevance
 				&& bCreateTranslucentObjectShadow 
 				&& (bTranslucentShadowIsVisibleThisFrame || bShadowIsPotentiallyVisibleNextFrame))
 			{
 				// Create a projected shadow for this interaction's shadow.
-				FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
+				FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 
 				const FIntPoint TranslucentShadowTextureResolution = GetTranslucentShadowDepthTextureResolution();
 
@@ -2959,8 +2975,7 @@ void FSceneRenderer::CreatePerObjectProjectedShadow(
 					MaxScreenPercent,
 					true))					// translucent shadow
 				{
-					ProjectedShadowInfo->FadeAlphas = ResolutionFadeAlphas,
-					MemStackProjectedShadows.Add(ProjectedShadowInfo);
+					ProjectedShadowInfo->FadeAlphas = ResolutionFadeAlphas;
 
 					if (bTranslucentShadowIsVisibleThisFrame)
 					{
@@ -3529,7 +3544,9 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 		const uint32 ShadowFadeResolution = FMath::Max<int32>(0, CVarShadowFadeResolution.GetValueOnRenderThread());
 				
 		// Compute the maximum resolution required for the shadow by any view. Also keep track of the unclamped resolution for fading.
-		float MaxDesiredResolution = 0;
+		float MaxDesiredResolution = 0.0f;
+		float MaxScreenRadius = 0.0f;
+
 		TArray<float, TInlineAllocator<2> > FadeAlphas;
 		float MaxFadeAlpha = 0;
 		bool bStaticSceneOnly = false;
@@ -3539,7 +3556,8 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 		{
 			const FViewInfo& View = Views[ViewIndex];
 
-			const float ScreenRadius = LightSceneInfo->Proxy->GetEffectiveScreenRadius(View.ShadowViewMatrices);
+			const float ScreenRadius = LightSceneInfo->Proxy->GetEffectiveScreenRadius(View.ShadowViewMatrices, View.ViewRect.Size());
+			MaxScreenRadius = FMath::Max(MaxScreenRadius, ScreenRadius);
 
 			// Determine the amount of shadow buffer resolution needed for this view.
 			float UnclampedResolution = 1.0f;
@@ -3651,28 +3669,12 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 					SizeY = ShadowMapSize.Y - ShadowBorder * 2;
 				}
 
-				// Build light-view convex hulls for shadow caster culling if someone is going to need it
-				FLightViewFrustumConvexHulls LightViewFrustumConvexHulls;
-				// Actually we probably want to have fallback even for these? Another performance regresion however (since we'd be adding culling & draw calls for DF lights).
-				if (!ProjectedShadowInitializer.bRayTracedDistanceField)
-				{
-					for (int32 CacheModeIndex = 0; CacheModeIndex < NumShadowMaps; CacheModeIndex++)
-					{
-						if (CacheMode[CacheModeIndex] != SDCM_StaticPrimitivesOnly || bNeedsVirtualShadowMap)
-						{
-							FVector const& LightOrigin = LightSceneInfo->Proxy->GetOrigin();
-							BuildLightViewFrustumConvexHulls(LightOrigin, Views, LightViewFrustumConvexHulls);
-							break;
-						}
-					}
-				}
-
 				// Consolidate repeated operation into a single site.
-				auto AddInteractingPrimitives = [bStaticSceneOnly, &Views = this->Views, FeatureLevel = this->FeatureLevel, &LightViewFrustumConvexHulls]
+				auto AddInteractingPrimitives = [bStaticSceneOnly, &Views = this->Views, FeatureLevel = this->FeatureLevel]
 				(FLightPrimitiveInteraction* InteractionList, 
 					FProjectedShadowInfo* ProjectedShadowInfo, 
 					bool& bContainsNaniteSubjectsOut, 
-					bool bTestConvexHull,
+					const FLightViewFrustumConvexHulls& LightViewFrustumConvexHulls,
 					const TSharedPtr<FVirtualShadowMapPerLightCacheEntry> &VirtualSmCacheEntry
 				)
 				{
@@ -3694,10 +3696,10 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 							{
 								const FPrimitiveSceneInfo* PrimitiveSceneInfo = Interaction->GetPrimitiveSceneInfo();
 								FBoxSphereBounds const& Bounds = PrimitiveSceneInfo->Proxy->GetBounds();
-								if (!bTestConvexHull || IntersectsConvexHulls(LightViewFrustumConvexHulls, Bounds))
+								if (IntersectsConvexHulls(LightViewFrustumConvexHulls, Bounds))
 								{
-									ProjectedShadowInfo->AddSubjectPrimitive(Interaction->GetPrimitiveSceneInfo(), Views, false);
-									if (VirtualSmCacheEntry.IsValid())
+									if (ProjectedShadowInfo->AddSubjectPrimitive(Interaction->GetPrimitiveSceneInfo(), Views, false) 
+										&& VirtualSmCacheEntry.IsValid())
 									{
 										VirtualSmCacheEntry->OnPrimitiveRendered(PrimitiveSceneInfo);
 									}
@@ -3710,9 +3712,7 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 				if (bNeedsVirtualShadowMap)
 				{
 					// Create the projected shadow info.
-					FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
-					// Add to remember-to-call-dtor list
-					MemStackProjectedShadows.Add(ProjectedShadowInfo);
+					FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 
 					// Rescale size to fit whole virtual SM but keeping aspect ratio
 					int32 VirtualSizeX = SizeX >= SizeY ? FVirtualShadowMap::VirtualMaxResolutionXY : (FVirtualShadowMap::VirtualMaxResolutionXY * SizeX) / SizeY;
@@ -3729,41 +3729,33 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 						VirtualSizeY,
 						0 // no border
 					);
-					
-					TSharedPtr<FVirtualShadowMapPerLightCacheEntry> VirtualSmPerLightCacheEntry;
-					if (Scene->VirtualShadowMapArrayCacheManager && Scene->VirtualShadowMapArrayCacheManager->IsValid())
-					{
-						VirtualSmPerLightCacheEntry = Scene->VirtualShadowMapArrayCacheManager->FindCreateLightCacheEntry(LightSceneInfo->Id);
-					}
 
-					int32 NumMaps = ProjectedShadowInitializer.bOnePassPointLightShadow ? 6 : 1;
-					for( int32 i = 0; i < NumMaps; i++ )
-					{
-						FVirtualShadowMap* VirtualShadowMap = VirtualShadowMapArray.Allocate();
-						ProjectedShadowInfo->VirtualShadowMaps.Add( VirtualShadowMap );
+					TSharedPtr<FVirtualShadowMapPerLightCacheEntry> VirtualSmPerLightCacheEntry = ShadowSceneRenderer->AddLocalLightShadow(ProjectedShadowInitializer, ProjectedShadowInfo, LightSceneInfo, MaxScreenRadius);
 
-						if (VirtualSmPerLightCacheEntry.IsValid())
-						{
-							TSharedPtr<FVirtualShadowMapCacheEntry> VirtualSmCacheEntry = VirtualSmPerLightCacheEntry->FindCreateShadowMapEntry(i);
-							// Note: the caching for spot lights only handles static lights and does not need the border, this also means pages can cache at all levels.
-							if(VirtualSmCacheEntry.IsValid())
-							{
-								VirtualSmCacheEntry->UpdateLocal(VirtualShadowMap->ID, ProjectedShadowInitializer);
-								VirtualShadowMap->VirtualShadowMapCacheEntry = VirtualSmCacheEntry;
-							}
-						}
+					if (VirtualSmPerLightCacheEntry)
+					{
+						ProjectedShadowInfo->VirtualShadowMapPerLightCacheEntry = VirtualSmPerLightCacheEntry;
+						ProjectedShadowInfo->bShouldRenderVSM = !VirtualSmPerLightCacheEntry->IsFullyCached();
 					}
 
 					ProjectedShadowInfo->MeshPassTargetType = EMeshPass::VSMShadowDepth;
 					ProjectedShadowInfo->MeshSelectionMask = EShadowMeshSelection::VSM;
 
 					bool bContainsNaniteSubjects = false;
-					// Skip convex hull tests for VSM since this causes artifacts due to caching (potentially check if caching is enabled but may lead to race condition).
-					// The interaction setup has already tested the light bounds (by calling FLightSceneProxy::AffectsBounds)
-					AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionOftenMovingPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, false, VirtualSmPerLightCacheEntry);
-					AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionStaticPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, false, VirtualSmPerLightCacheEntry);
-					ProjectedShadowInfo->bContainsNaniteSubjects = bContainsNaniteSubjects;
-
+					
+					// TODO: Perform no rendering work (command setup etc) if if fully cached, this optimiztion would be nice to get back, however, right now this is tricky
+					//       as the logic to select those that get to re-render must happen when the full set of rendered local lights is known.
+					//       At that point we would need to re-do this logic, which is currently rather tied to this part of the code. 
+					//       After new/persistent shadow setup is done, this should be far easier.
+					//if (!bHasFullyCachedVSM)
+					{
+						// Skip convex hull tests for VSM since this causes artifacts due to caching (potentially check if caching is enabled but may lead to race condition).
+						// The interaction setup has already tested the light bounds (by calling FLightSceneProxy::AffectsBounds)
+						FLightViewFrustumConvexHulls EmptyHull{};
+						AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionOftenMovingPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, EmptyHull, VirtualSmPerLightCacheEntry);
+						AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionStaticPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, EmptyHull, VirtualSmPerLightCacheEntry);
+						ProjectedShadowInfo->bContainsNaniteSubjects = bContainsNaniteSubjects;
+					}
 					VisibleLightInfo.VirtualShadowMapId = ProjectedShadowInfo->VirtualShadowMaps[0]->ID;
 					VisibleLightInfo.AllProjectedShadows.Add(ProjectedShadowInfo);
 				}
@@ -3774,7 +3766,7 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 					for (int32 CacheModeIndex = 0; CacheModeIndex < NumShadowMaps; CacheModeIndex++)
 					{
 						// Create the projected shadow info.
-						FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
+						FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 
 						ProjectedShadowInfo->SetupWholeSceneProjection(
 							LightSceneInfo,
@@ -3790,8 +3782,6 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 						ProjectedShadowInfo->CacheMode = CacheMode[CacheModeIndex];
 						ProjectedShadowInfo->FadeAlphas = FadeAlphas;
 
-						MemStackProjectedShadows.Add(ProjectedShadowInfo);
-
 						// If we have a virtual shadow map, disable nanite rendering into the regular shadow map or else we'd get double-shadowing
 						// and also filter out any VSM-supporting meshes
 						if (bNeedsVirtualShadowMap)
@@ -3804,19 +3794,28 @@ void FSceneRenderer::CreateWholeSceneProjectedShadow(
 						bool bContainsNaniteSubjects = false;
 
 						// Ray traced shadows use the GPU managed distance field object buffers, no CPU culling should be used
+						// Actually we probably want to have fallback even for these? Another performance regresion however (since we'd be adding culling & draw calls for DF lights).
 						if (!ProjectedShadowInfo->bRayTracedDistanceField)
 						{
+							// Build light-view convex hulls for shadow caster culling
+							FLightViewFrustumConvexHulls LightViewFrustumConvexHulls{};
+							if (CacheMode[CacheModeIndex] != SDCM_StaticPrimitivesOnly)
+							{
+								FVector const& LightOrigin = LightSceneInfo->Proxy->GetOrigin();
+								BuildLightViewFrustumConvexHulls(LightOrigin, Views, LightViewFrustumConvexHulls);
+							}
+
 							bool bCastCachedShadowFromMovablePrimitives = GCachedShadowsCastFromMovablePrimitives || LightSceneInfo->Proxy->GetForceCachedShadowsForMovablePrimitives();
 							if (CacheMode[CacheModeIndex] != SDCM_StaticPrimitivesOnly 
 								&& (CacheMode[CacheModeIndex] != SDCM_MovablePrimitivesOnly || bCastCachedShadowFromMovablePrimitives))
 							{
 								// Add all the shadow casting primitives affected by the light to the shadow's subject primitive list.
-								AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionOftenMovingPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, true, nullptr);
+								AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionOftenMovingPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, LightViewFrustumConvexHulls, nullptr);
 							}
 						
 							if (CacheMode[CacheModeIndex] != SDCM_MovablePrimitivesOnly)
 							{
-								AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionStaticPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, true, nullptr);
+								AddInteractingPrimitives(LightSceneInfo->GetDynamicInteractionStaticPrimitiveList(), ProjectedShadowInfo, bContainsNaniteSubjects, LightViewFrustumConvexHulls, nullptr);
 							}
 						}
 						ProjectedShadowInfo->bContainsNaniteSubjects = bContainsNaniteSubjects;
@@ -3913,7 +3912,8 @@ void FSceneRenderer::InitProjectedShadowVisibility()
 
 					bool bShadowIsOccluded = false;
 
-					if (!View.bIgnoreExistingQueries && View.State)
+					// Skip occlusion result if using VSM - can result in incorrectly cached pages otherwise.
+					if (!View.bIgnoreExistingQueries && View.State && !ProjectedShadowInfo.HasVirtualShadowMap())
 					{
 						// Check if the shadow is occluded.
 						bShadowIsOccluded =
@@ -3984,7 +3984,7 @@ void FSceneRenderer::InitProjectedShadowVisibility()
 			// Register visible lights for allowing hair strands to cast shadow (directional light)
 			if (bHairStrands && LightIt->LightType == ELightComponentType::LightType_Directional)
 			{
-				HairStrands::AddVisibleShadowCastingLight(*Scene, Views, ProjectedShadowInfo.ShadowBounds);
+				HairStrands::AddVisibleShadowCastingLight(*Scene, Views, LightIt->LightSceneInfo);
 			}
 		}
 	}
@@ -4095,8 +4095,11 @@ void FSceneRenderer::GatherShadowDynamicMeshElements(FGlobalDynamicIndexBuffer& 
 		// GPUCULL_TODO: Replace with new shadow culling processor thing
 		for (FProjectedShadowInfo* ProjectedShadowInfo : SortedShadowsForShadowDepthPass.VirtualShadowMapShadows)
 		{
-			FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[ProjectedShadowInfo->GetLightSceneInfo().Id];
-			ProjectedShadowInfo->GatherDynamicMeshElements(*this, VisibleLightInfo, ReusedViewsArray, DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer, InstanceCullingManager);
+			if (ProjectedShadowInfo->bShouldRenderVSM)
+			{
+				FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[ProjectedShadowInfo->GetLightSceneInfo().Id];
+				ProjectedShadowInfo->GatherDynamicMeshElements(*this, VisibleLightInfo, ReusedViewsArray, DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer, InstanceCullingManager);
+			}
 		}
 	}
 }
@@ -4117,7 +4120,7 @@ typedef TArray<FAddSubjectPrimitiveOp> FShadowSubjectPrimitives;
 typedef TArray<FAddSubjectPrimitiveStats> FPerShadowGatherStats;
 
 // Common setup and working data for all GatherShadowPrimitives Tasks
-struct FDynamicShadowsTaskData
+struct FDynamicShadowsTaskData : public FSceneRenderingAllocatorObject<FDynamicShadowsTaskData>
 {
 	// Common data read from all points
 	const FScene* Scene;
@@ -4133,7 +4136,7 @@ struct FDynamicShadowsTaskData
 	TArray<FProjectedShadowInfo*, SceneRenderingAllocator> ViewDependentWholeSceneShadows;
 
 	// Written from task
-	TArray<struct FGatherShadowPrimitivesPacket*> Packets;
+	TArray<struct FGatherShadowPrimitivesPacket*, SceneRenderingAllocator> Packets;
 	FPerShadowGatherStats GatherStats;
 
 	// Used by RenderThread
@@ -4527,14 +4530,7 @@ struct FGatherShadowPrimitivesPrepareTask
 
 	void AddSubTask(FScenePrimitiveOctree::FNodeIndex NodeIndex, int32 StartPrimitiveIndex, int32 NumPrimitives)
 	{
-		if (TaskData.bMultithreaded)
-		{
-			TaskData.Packets.Add(new FGatherShadowPrimitivesPacket(NodeIndex, StartPrimitiveIndex, NumPrimitives));
-		}
-		else
-		{
-			TaskData.Packets.Add(new(FMemStack::Get()) FGatherShadowPrimitivesPacket(NodeIndex, StartPrimitiveIndex, NumPrimitives));
-		}
+		TaskData.Packets.Add(new FGatherShadowPrimitivesPacket(NodeIndex, StartPrimitiveIndex, NumPrimitives));
 	}
 
 	void AnyThreadTask()
@@ -4659,15 +4655,7 @@ void FSceneRenderer::FinishGatherShadowPrimitives(FDynamicShadowsTaskData* TaskD
 		for (FGatherShadowPrimitivesPacket* Packet : TaskData->Packets)
 		{
 			Packet->RenderThreadFinalize(*TaskData);
-			if (TaskData->bMultithreaded)
-			{
-				delete Packet;
-			}
-			else
-			{
-				// Class was allocated on the memstack which does not call destructors
-				Packet->~FGatherShadowPrimitivesPacket();
-			}
+			delete Packet;
 		}
 
 		delete TaskData;
@@ -4782,7 +4770,7 @@ void FSceneRenderer::AddViewDependentWholeSceneShadowsForView(
 						for (int32 CacheModeIndex = 0; CacheModeIndex < NumShadowMaps; CacheModeIndex++)
 						{
 							// Create the projected shadow info.
-							FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
+							FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 							ProjectedShadowInfo->SetupWholeSceneProjection(
 								&LightSceneInfo,
 								&View,
@@ -4797,7 +4785,6 @@ void FSceneRenderer::AddViewDependentWholeSceneShadowsForView(
 							ProjectedShadowInfo->ProjectionIndex = Index;
 							ProjectedShadowInfo->CacheMode = CacheMode[CacheModeIndex];
 
-							MemStackProjectedShadows.Add(ProjectedShadowInfo);
 							VisibleLightInfo.AllProjectedShadows.Add(ProjectedShadowInfo);
 							ShadowInfos.Add(ProjectedShadowInfo);
 
@@ -4907,7 +4894,6 @@ void FSceneRenderer::AddViewDependentWholeSceneShadowsForView(
 
 				TSharedPtr<FVirtualShadowMapClipmap> VirtualShadowMapClipmap = TSharedPtr<FVirtualShadowMapClipmap>(new FVirtualShadowMapClipmap(
 					VirtualShadowMapArray,
-					Scene->VirtualShadowMapArrayCacheManager,
 					LightSceneInfo,
 					WorldToLight,
 					View.ViewMatrices,
@@ -4922,9 +4908,7 @@ void FSceneRenderer::AddViewDependentWholeSceneShadowsForView(
 				if (GEnableNonNaniteVSM != 0)
 				{
 					// Create the projected shadow info to make sure that culling happens.
-					FProjectedShadowInfo* ProjectedShadowInfo = new(FMemStack::Get()) FProjectedShadowInfo;
-					// Add to remember-to-call-dtor list
-					MemStackProjectedShadows.Add(ProjectedShadowInfo);
+					FProjectedShadowInfo* ProjectedShadowInfo = Allocator.Create<FProjectedShadowInfo>();
 					ProjectedShadowInfo->SetupClipmapProjection(&LightSceneInfo, &View, VirtualShadowMapClipmap, CVarVsmUseFarShadowRules.GetValueOnRenderThread() != 0 ? MaxNonFarCascadeDistance : -1.0f);
 					VisibleLightInfo.AllProjectedShadows.Add(ProjectedShadowInfo);
 					ShadowInfosThatNeedCulling.Add(ProjectedShadowInfo);
@@ -5005,8 +4989,12 @@ void FSceneRenderer::AllocateShadowDepthTargets(FRHICommandListImmediate& RHICmd
 				bShadowIsVisible |= bHasViewRelevance && VisibleLightViewInfo.ProjectedShadowVisibilityMap[ShadowIndex];
 			}
 
+			// Fully cached VSM should not be skipped, since they need to be queued for projection.
+			if (!ProjectedShadowInfo->bShouldRenderVSM)
+			{
+			}
 			// Skip the shadow rendering if there is no primitive in the cached shadow map and the current shadow map either
-			if ((ProjectedShadowInfo->CacheMode == SDCM_StaticPrimitivesOnly || (ProjectedShadowInfo->CacheMode == SDCM_MovablePrimitivesOnly && !ProjectedShadowInfo->IsWholeSceneDirectionalShadow())) && !ProjectedShadowInfo->HasSubjectPrims())
+			else if ((ProjectedShadowInfo->CacheMode == SDCM_StaticPrimitivesOnly || (ProjectedShadowInfo->CacheMode == SDCM_MovablePrimitivesOnly && !ProjectedShadowInfo->IsWholeSceneDirectionalShadow())) && !ProjectedShadowInfo->HasSubjectPrims())
 			{
 				const FCachedShadowMapData& CachedShadowMapData = Scene->GetCachedShadowMapDataRef(ProjectedShadowInfo->GetLightSceneInfo().Id, FMath::Max(ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex, 0));
 
@@ -5174,11 +5162,11 @@ void FSceneRenderer::AllocateShadowDepthTargets(FRHICommandListImmediate& RHICmd
 		MobileDynamicSpotlightShadows.Sort(FCompareFProjectedShadowInfoByResolution());
 
 		//Limit the number of spotlights shadow for performance reason
-		static const auto MobileMaxVisibleMovableSpotLightsShadowCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.MaxVisibleMovableSpotLightsShadow"));
-		if (MobileMaxVisibleMovableSpotLightsShadowCVar)
+		static const auto MobileMaxVisibleMovableSpotLightShadowsCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.MaxVisibleMovableSpotLightShadows"));
+		if (MobileMaxVisibleMovableSpotLightShadowsCVar)
 		{
-			int32 MobileMaxVisibleMovableSpotLightsShadow = MobileMaxVisibleMovableSpotLightsShadowCVar->GetValueOnRenderThread();
-			MobileDynamicSpotlightShadows.RemoveAt(MobileMaxVisibleMovableSpotLightsShadow, FMath::Max(MobileDynamicSpotlightShadows.Num() - MobileMaxVisibleMovableSpotLightsShadow, 0), false);
+			int32 MobileMaxVisibleMovableSpotLightShadows = MobileMaxVisibleMovableSpotLightShadowsCVar->GetValueOnRenderThread();
+			MobileDynamicSpotlightShadows.RemoveAt(MobileMaxVisibleMovableSpotLightShadows, FMath::Max(MobileDynamicSpotlightShadows.Num() - MobileMaxVisibleMovableSpotLightShadows, 0), false);
 		}
 
 		MobileWholeSceneDirectionalShadows.Append(MobileDynamicSpotlightShadows);
@@ -5379,6 +5367,38 @@ void FSceneRenderer::AllocateAtlasedShadowDepthTargets(
 	}
 }
 
+/**
+* Helper class to get the name of an indexed rendertarget, keeping the pointers around (this is required by the rendertarget pool)
+*/
+class RenderTargetNameSet
+{
+private:
+	FString Prefix;
+	TArray<FString> Names;
+
+public:
+	RenderTargetNameSet(const TCHAR* Prefix)
+		: Prefix(Prefix), Names()
+	{ }
+
+	const TCHAR* Get(const int32 Index)
+	{
+		const int32 Count = Index + 1;
+		while (Names.Num() < Count)
+		{
+			if (Index == 0)
+			{
+				Names.Add(Prefix);
+			}
+			else
+			{
+				Names.Emplace(FString::Printf(TEXT("%s%d"), *Prefix, Names.Num()));
+			}
+		}
+		return *Names[Index];
+	}
+};
+
 void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& RHICmdList, TArray<FProjectedShadowInfo*, SceneRenderingAllocator>& CachedShadows)
 {
 	for (int32 ShadowIndex = 0; ShadowIndex < CachedShadows.Num(); ShadowIndex++)
@@ -5392,7 +5412,9 @@ void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& 
 
 		FIntPoint ShadowResolution(ProjectedShadowInfo->ResolutionX + ProjectedShadowInfo->BorderSize * 2, ProjectedShadowInfo->ResolutionY + ProjectedShadowInfo->BorderSize * 2);
 		FPooledRenderTargetDesc ShadowMapDesc2D = FPooledRenderTargetDesc::Create2DDesc(ShadowResolution, PF_ShadowDepth, FClearValueBinding::DepthOne, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false, 1, false);
-		GRenderTargetPool.FindFreeElement(RHICmdList, ShadowMapDesc2D, ShadowMap.RenderTargets.DepthTarget, bIsWholeSceneDirectionalShadow ? *FString::Printf(TEXT("CachedShadowDepthMap_Split%d"), ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex) : TEXT("CachedShadowDepthMap"));
+		static RenderTargetNameSet CachedSplitDepthRTNames(TEXT("CachedShadowDepthMap_Split"));
+		const TCHAR* RTDebugName = bIsWholeSceneDirectionalShadow ? CachedSplitDepthRTNames.Get(ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex) : TEXT("CachedShadowDepthMap");
+		GRenderTargetPool.FindFreeElement(RHICmdList, ShadowMapDesc2D, ShadowMap.RenderTargets.DepthTarget, RTDebugName);
 
 		check(ProjectedShadowInfo->CacheMode == SDCM_StaticPrimitivesOnly);
 		FCachedShadowMapData& CachedShadowMapData = Scene->GetCachedShadowMapDataRef(ProjectedShadowInfo->GetLightSceneInfo().Id, FMath::Max(ProjectedShadowInfo->CascadeSettings.ShadowSplitIndex, 0));
@@ -5405,28 +5427,6 @@ void FSceneRenderer::AllocateCachedShadowDepthTargets(FRHICommandListImmediate& 
 		ProjectedShadowInfo->SetupShadowDepthView(this);
 		ShadowMap.Shadows.Add(ProjectedShadowInfo);
 	}
-}
-
-/**
-* Helper function to get the name of a CSM rendertarget, keeping the pointers around (this is required by the rendertarget pool)
-* @param ShadowMapIndex - the index of the shadow map cascade
-*/
-const TCHAR* GetCSMRenderTargetName(int32 ShadowMapIndex)
-{
-	// Render target names require string pointers not to be released, so we cache them in a static array and grow as necessary
-	static TArray<FString*> ShadowmapNames;
-	while (ShadowmapNames.Num() < ShadowMapIndex + 1)
-	{
-		if (ShadowMapIndex == 0)
-		{
-			ShadowmapNames.Add(new FString(TEXT("WholeSceneShadowmap")));
-		}
-		else
-		{
-			ShadowmapNames.Add(new FString(FString::Printf(TEXT("WholeSceneShadowmap%d"), ShadowmapNames.Num())));
-		}
-	}
-	return **ShadowmapNames[ShadowMapIndex];
 }
 
 void FSceneRenderer::AllocateCSMDepthTargets(
@@ -5477,7 +5477,8 @@ void FSceneRenderer::AllocateCSMDepthTargets(
 			FIntPoint WholeSceneAtlasSize(CurrentLayout.TextureLayout.GetSizeX(), CurrentLayout.TextureLayout.GetSizeY());
 			FPooledRenderTargetDesc WholeSceneShadowMapDesc2D(FPooledRenderTargetDesc::Create2DDesc(WholeSceneAtlasSize, PF_ShadowDepth, FClearValueBinding::DepthOne, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false));
 			WholeSceneShadowMapDesc2D.Flags |= GFastVRamConfig.ShadowCSM;
-			GRenderTargetPool.FindFreeElement(RHICmdList, WholeSceneShadowMapDesc2D, ShadowMapAtlas.RenderTargets.DepthTarget, GetCSMRenderTargetName(LayoutIndex));
+			static RenderTargetNameSet CsmRtNames(TEXT("WholeSceneShadowmap"));
+			GRenderTargetPool.FindFreeElement(RHICmdList, WholeSceneShadowMapDesc2D, ShadowMapAtlas.RenderTargets.DepthTarget, CsmRtNames.Get(LayoutIndex));
 
 			for (FProjectedShadowInfo* ProjectedShadowInfo : CurrentLayout.Shadows)
 			{
@@ -5630,7 +5631,8 @@ FDynamicShadowsTaskData* FSceneRenderer::BeginInitDynamicShadows(bool bRunningEa
 
 	const bool bProjectEnablePointLightShadows = Scene->ReadOnlyCVARCache.bEnablePointLightShadows && !bMobile; // Point light shadow is unsupported on mobile for now.
 	const bool bProjectEnableMovableDirectionLightShadows = !bMobile || Scene->ReadOnlyCVARCache.bMobileAllowMovableDirectionalLights;
-	const bool bProjectEnableMovableSpotLightShadows = !bMobile || Scene->ReadOnlyCVARCache.bMobileEnableMovableSpotlightsShadow;
+	const bool bProjectEnableMovableSpotLightShadows = !bMobile || IsMobileMovableSpotlightShadowsEnabled(ShaderPlatform);
+	const bool bUseLumenDirectLighting = ShouldRenderLumenDirectLighting(Scene, Views[0]);
 
 	uint32 NumPointShadowCachesUpdatedThisFrame = 0;
 	uint32 NumSpotShadowCachesUpdatedThisFrame = 0;
@@ -5658,6 +5660,14 @@ FDynamicShadowsTaskData* FSceneRenderer::BeginInitDynamicShadows(bool bRunningEa
 				const FLightOcclusionType OcclusionType = GetLightOcclusionType(LightSceneInfoCompact);
 				if (OcclusionType != FLightOcclusionType::Shadowmap)
 					continue;
+
+				const bool bHandledByLumenDirectLighting = bUseLumenDirectLighting &&
+					LightSceneInfoCompact.LightType != LightType_Directional;
+
+				if (bHandledByLumenDirectLighting)
+				{
+					continue;
+				}
 
 				// Only consider lights that may have shadows.
 				if (LightSceneInfoCompact.bCastStaticShadow || LightSceneInfoCompact.bCastDynamicShadow)
@@ -5820,6 +5830,11 @@ void FSceneRenderer::FinishInitDynamicShadows(FRHICommandListImmediate& RHICmdLi
 
 	FinishGatherShadowPrimitives(TaskData);
 
+	// TODO: Move this to the deferred scene renderer
+	if (ShadowSceneRenderer)
+	{
+		ShadowSceneRenderer->PostInitDynamicShadowsSetup();
+	}
 	AllocateShadowDepthTargets(RHICmdList);
 
 	// Generate mesh element arrays from shadow primitive arrays
@@ -5872,10 +5887,6 @@ void FSceneRenderer::AllocateMobileCSMAndSpotLightShadowDepthTargets(FRHICommand
 				WholeSceneAtlasSize.Y = 1 << FMath::CeilLogTwo(WholeSceneAtlasSize.Y);
 			}
 
-			bool bResolutionChanged = Scene->MobileWholeSceneShadowAtlasSize != WholeSceneAtlasSize;
-
-			Scene->MobileWholeSceneShadowAtlasSize = WholeSceneAtlasSize;
-
 			FPooledRenderTargetDesc WholeSceneShadowMapDesc2D(FPooledRenderTargetDesc::Create2DDesc(WholeSceneAtlasSize, PF_ShadowDepth, FClearValueBinding::DepthOne, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false));
 			WholeSceneShadowMapDesc2D.Flags |= GFastVRamConfig.ShadowCSM;
 			GRenderTargetPool.FindFreeElement(RHICmdList, WholeSceneShadowMapDesc2D, ShadowMapAtlas.RenderTargets.DepthTarget, TEXT("MobileCSMAndSpotLightShadowmap"));
@@ -5889,12 +5900,6 @@ void FSceneRenderer::AllocateMobileCSMAndSpotLightShadowDepthTargets(FRHICommand
 					ProjectedShadowInfo->RenderTargets.CopyReferencesFromRenderTargets(ShadowMapAtlas.RenderTargets);
 					ProjectedShadowInfo->SetupShadowDepthView(this);
 					ShadowMapAtlas.Shadows.Add(ProjectedShadowInfo);
-
-					if (bResolutionChanged)
-					{
-						FLightSceneInfo* LightSceneInfo = (FLightSceneInfo*)(&ProjectedShadowInfo->GetLightSceneInfo());
-						LightSceneInfo->Proxy->SetMobileMovablePointLightUniformBufferNeedsUpdate(true);
-					}
 				}
 			}
 		}

@@ -7,8 +7,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
+#include "HAL/PlatformTime.h"
+#include "Logging/LogMacros.h"
+#include "Math/Matrix.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Math/Vector4.h"
 #include "RHIDefinitions.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogRendererCore, Log, All);
 
@@ -144,10 +151,7 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Proxy Total" ), STAT_GameToRendererMal
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Primitive memory"),STAT_PrimitiveInfoMemory,STATGROUP_SceneMemory, RENDERCORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Scene memory"),STAT_RenderingSceneMemory,STATGROUP_SceneMemory, RENDERCORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("ViewState memory"),STAT_ViewStateMemory,STATGROUP_SceneMemory, RENDERCORE_API);
-DECLARE_MEMORY_STAT_EXTERN(TEXT("Rendering mem stack memory"),STAT_RenderingMemStackMemory,STATGROUP_SceneMemory, RENDERCORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Light interaction memory"),STAT_LightInteractionMemory,STATGROUP_SceneMemory, RENDERCORE_API);
-
-DECLARE_MEMORY_STAT_EXTERN(TEXT("Cached Ray Tracing Instances"), STAT_CachedRayTracingInstancesMemory, STATGROUP_SceneMemory, RENDERCORE_API);
 
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Num reflective shadow map lights"),STAT_NumReflectiveShadowMapLights,STATGROUP_LightRendering, RENDERCORE_API);
 
@@ -263,21 +267,6 @@ struct FInputLatencyTimer
 	float	UpdateFrequency;
 };
 
-namespace ERenderThreadIdleTypes
-{
-	enum Type
-	{
-		WaitingForAllOtherSleep, 
-		WaitingForGPUQuery, 
-		WaitingForGPUPresent, 
-		Num
-	};
-}
-
-/** Accumulates how many cycles the renderthread has been idle. It's defined in RenderingThread.cpp. */
-extern RENDERCORE_API uint32 GRenderThreadIdle[ERenderThreadIdleTypes::Num];
-/** Accumulates how times renderthread was idle. It's defined in RenderingThread.cpp. */
-extern RENDERCORE_API uint32 GRenderThreadNumIdle[ERenderThreadIdleTypes::Num];
 /** Global input latency timer. Defined in UnrealClient.cpp */
 extern RENDERCORE_API FInputLatencyTimer GInputLatencyTimer;
 /** How many cycles the renderthread used (excluding idle time). It's set once per frame in FViewport::Draw. */
@@ -288,6 +277,8 @@ extern RENDERCORE_API uint32 GRHIThreadTime;
 extern RENDERCORE_API uint32 GGameThreadTime;
 /** How many cycles it took to swap buffers to present the frame. */
 extern RENDERCORE_API uint32 GSwapBufferTime;
+/** How many cycles the renderthread used, including dependent wait time. */
+extern RENDERCORE_API uint32 GRenderThreadTimeCriticalPath;
 
 // shared by renderer and engine, compiles down to a constant in final release
 RENDERCORE_API int32 GetCVarForceLOD();

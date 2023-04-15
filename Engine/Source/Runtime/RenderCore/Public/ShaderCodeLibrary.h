@@ -6,19 +6,41 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
 #include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Logging/LogMacros.h"
+#include "Misc/Crc.h"
+#include "Misc/SecureHash.h"
 #include "RHI.h"
+#include "RHIDefinitions.h"
+#include "Serialization/Archive.h"
+#include "Templates/RefCounting.h"
+#include "UObject/NameTypes.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogShaderLibrary, Log, All);
 
-class FShaderPipeline;
 class FShaderMapResource;
 class FShaderMapResourceCode;
+class FShaderPipeline;
+
 using FShaderMapAssetPaths = TSet<FName>;
-class FIoChunkId;
 class FIoBuffer;
+class FIoChunkId;
+class UObject;
+
+#if WITH_EDITOR
+class FCbFieldView;
+class FCbWriter;
+#endif
 
 struct RENDERCORE_API FShaderCodeLibraryPipeline
 {
@@ -77,6 +99,7 @@ struct RENDERCORE_API FCompactFullName
 	}
 
 	FString ToString() const;
+	FString ToStringPathOnly() const;
 	void AppendString(FStringBuilderBase& Out) const;
 	void AppendString(FAnsiStringBuilderBase& Out) const;
 	void ParseFromString(const FStringView& Src);
@@ -143,8 +166,14 @@ struct RENDERCORE_API FStableShaderKeyAndValue
 	{
 		return Key.KeyHash;
 	}
-
 };
+#if WITH_EDITOR
+RENDERCORE_API void WriteToCompactBinary(FCbWriter& Writer, const FStableShaderKeyAndValue& Key, 
+	const TMap<FSHAHash, int32>& HashToIndex);
+RENDERCORE_API bool LoadFromCompactBinary(FCbFieldView Field, FStableShaderKeyAndValue& Key,
+	const TArray<FSHAHash>& IndexToHash);
+#endif
+
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FSharedShaderCodeRequest, const FSHAHash&, FArchive*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FSharedShaderCodeRelease, const FSHAHash&);
@@ -194,6 +223,7 @@ struct RENDERCORE_API FShaderCodeLibrary
 	static TRefCountPtr<FShaderMapResource> LoadResource(const FSHAHash& Hash, FArchive* Ar);
 
 	static bool PreloadShader(const FSHAHash& Hash, FArchive* Ar);
+	static bool ReleasePreloadedShader(const FSHAHash& Hash);
 
 	static FVertexShaderRHIRef CreateVertexShader(EShaderPlatform Platform, const FSHAHash& Hash);
 	static FPixelShaderRHIRef CreatePixelShader(EShaderPlatform Platform, const FSHAHash& Hash);
@@ -263,6 +293,14 @@ struct RENDERCORE_API FShaderLibraryCooker
 	// At cook time, add shader code to collection
 	static bool AddShaderCode(EShaderPlatform ShaderPlatform, const FShaderMapResourceCode* Code, const FShaderMapAssetPaths& AssociatedAssets);
 
+#if WITH_EDITOR
+	/** Called from a CookWorker to send all contents of the ShaderLibrary to the CookDirector */
+	static void CopyToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData);
+
+	/** Called On the CookDirector to receive ShaderLibrary contents from a CookWorker */
+	static bool AppendFromCompactBinary(FCbFieldView Field);
+#endif
+
 	// We check this early in the callstack to avoid creating a bunch of FName and keys and things we will never save anyway. 
 	// Pass the shader platform to check or EShaderPlatform::SP_NumPlatforms to check if any of the registered types require
 	// stable keys.
@@ -270,6 +308,10 @@ struct RENDERCORE_API FShaderLibraryCooker
 
 	// At cook time, add the human readable key value information
 	static void AddShaderStableKeyValue(EShaderPlatform ShaderPlatform, FStableShaderKeyAndValue& StableKeyValue);
+
+	/** Finishes collection of data that should be in the named code library. This includes loading data from a previous iterative cook. */
+	static void FinishPopulateShaderLibrary(const ITargetPlatform* TargetPlatform, FString const& Name, FString const& SandboxDestinationPath,
+		FString const& SandboxMetadataPath);
 
 	/**
 	 * Saves collected shader code to a single file per shader platform
@@ -281,9 +323,11 @@ struct RENDERCORE_API FShaderLibraryCooker
 	 * @param SandboxMetadataPath path for the metadata (not a part of the build itself, but produced together with the build)
 	 * @param PlatformSCLCSVPaths path where to put the information about the shader hashes
 	 * @param OutErrorMessage used to return the details of the failure (if failed)
+	 * @param bOutHasData Reports whether any files were written to PlatformSCLCSVPaths
 	 * @return true if successful
 	 */
-	static bool SaveShaderLibraryWithoutChunking(const ITargetPlatform* TargetPlatform, FString const& Name, FString const& SandboxDestinationPath, FString const& SandboxMetadataPath, TArray<FString>& PlatformSCLCSVPaths, FString& OutErrorMessage);
+	static bool SaveShaderLibraryWithoutChunking(const ITargetPlatform* TargetPlatform, FString const& Name, FString const& SandboxDestinationPath,
+		FString const& SandboxMetadataPath, TArray<FString>& PlatformSCLCSVPaths, FString& OutErrorMessage, bool& bOutHasData);
 
 	/** 
 	 * Saves a single chunk of the collected shader code (per shader platform). Does not save SCL.CSV info.
@@ -295,9 +339,11 @@ struct RENDERCORE_API FShaderLibraryCooker
 	 * @param TargetPlatform target platform
 	 * @param SandboxDestinationPath where to put the .ushaderbytecode file(s)
 	 * @param OutChunkFilenames array where the function will append the full paths of the written files
+	 * @param bOutHasData Reports whether any files were written to OutChunkFilenames
 	 * @return true if successful
 	 */
-	static bool SaveShaderLibraryChunk(int32 ChunkId, const TSet<FName>& InPackagesInChunk, const ITargetPlatform* TargetPlatform, const FString& SandboxDestinationPath, const FString& SandboxMetadataPath, TArray<FString>& OutChunkFilenames);
+	static bool SaveShaderLibraryChunk(int32 ChunkId, const TSet<FName>& InPackagesInChunk, const ITargetPlatform* TargetPlatform,
+		const FString& SandboxDestinationPath, const FString& SandboxMetadataPath, TArray<FString>& OutChunkFilenames, bool& bOutHasData);
 
 	// Dump collected stats for each shader platform
 	static void DumpShaderCodeStats();

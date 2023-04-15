@@ -7,6 +7,7 @@ using Serilog;
 using Microsoft.Extensions.Options;
 using RestSharp;
 using RestSharp.Serializers.NewtonsoftJson;
+using EpicGames.Horde.Storage;
 
 namespace Horde.Storage.Implementation
 {
@@ -20,7 +21,6 @@ namespace Horde.Storage.Implementation
             _client = new RestClient(settings.CurrentValue.ConnectionString).UseSerializer(() => new JsonNetSerializer());
             _client.Authenticator = serviceCredentials.GetAuthenticator();
         }
-
 
         public async Task<long> Add(NamespaceId ns, TransactionEvent @event)
         {
@@ -37,7 +37,7 @@ namespace Horde.Storage.Implementation
                 if (!response.IsSuccessful)
                 {
                     // if callisto is down we wait a while and try again
-                    if (response.StatusCode == 0 && response.ErrorMessage.StartsWith("Connection refused"))
+                    if (response.StatusCode == 0 && response.ErrorMessage.StartsWith("Connection refused", StringComparison.OrdinalIgnoreCase))
                     {
                         await Task.Delay(1000);
                         continue; // retry
@@ -55,8 +55,8 @@ namespace Horde.Storage.Implementation
 
         public async Task<long> Delete(NamespaceId ns, BucketId bucket, KeyId key)
         {
-            RestRequest request = new RestRequest("api/v1/t/{ns}");
-            var record = new CallistoRequest("Delete", key, bucket);
+            RestRequest request = new("api/v1/t/{ns}");
+            CallistoRequest record = new("Delete", key, bucket);
             request.AddUrlSegment("ns", ns);
             request.AddJsonBody(record);
             
@@ -65,7 +65,10 @@ namespace Horde.Storage.Implementation
             CallistoResponse response = await _client.PostAsync<CallistoResponse>(request);
 
             if (response == null)
+            {
                 throw new Exception("Failed to put delete record in Callisto.");
+            }
+
             return response.Offset;
         }
     }

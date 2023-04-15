@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using EpicGames.Core;
 
 namespace EpicGames.Perforce
 {
@@ -16,76 +14,192 @@ namespace EpicGames.Perforce
 	public static class PerforceUtils
 	{
 		/// <summary>
+		/// Set of extensions to treat as code
+		/// </summary>
+		public static readonly HashSet<string> CodeExtensions = new HashSet<string>
+		{
+			".c",
+			".cc",
+			".cpp",
+			".inl",
+			".m",
+			".mm",
+			".rc",
+			".cs",
+			".csproj",
+			".h",
+			".hpp",
+			".inl",
+			".usf",
+			".ush",
+			".uproject",
+			".uplugin",
+			".sln"
+		};
+
+		/// <summary>
 		/// Escape a path to Perforce syntax
 		/// </summary>
-		static public string EscapePath(string Path)
+		public static string EscapePath(string path)
 		{
-			string NewPath = Path;
-			NewPath = NewPath.Replace("%", "%25");
-			NewPath = NewPath.Replace("*", "%2A");
-			NewPath = NewPath.Replace("#", "%23");
-			NewPath = NewPath.Replace("@", "%40");
-			return NewPath;
+			string newPath = path;
+			newPath = newPath.Replace("%", "%25", StringComparison.Ordinal);
+			newPath = newPath.Replace("*", "%2A", StringComparison.Ordinal);
+			newPath = newPath.Replace("#", "%23", StringComparison.Ordinal);
+			newPath = newPath.Replace("@", "%40", StringComparison.Ordinal);
+			return newPath;
 		}
 
 		/// <summary>
 		/// Remove escape characters from a path
 		/// </summary>
-		static public string UnescapePath(string Path)
+		public static string UnescapePath(string path)
 		{
-			string NewPath = Path;
-			NewPath = NewPath.Replace("%40", "@");
-			NewPath = NewPath.Replace("%23", "#");
-			NewPath = NewPath.Replace("%2A", "*");
-			NewPath = NewPath.Replace("%2a", "*");
-			NewPath = NewPath.Replace("%25", "%");
-			return NewPath;
+			string newPath = path;
+			newPath = newPath.Replace("%40", "@", StringComparison.Ordinal);
+			newPath = newPath.Replace("%23", "#", StringComparison.Ordinal);
+			newPath = newPath.Replace("%2A", "*", StringComparison.Ordinal);
+			newPath = newPath.Replace("%2a", "*", StringComparison.Ordinal);
+			newPath = newPath.Replace("%25", "%", StringComparison.Ordinal);
+			return newPath;
 		}
 
 		/// <summary>
 		/// Remove escape characters from a UTF8 path
 		/// </summary>
-		static public Utf8String UnescapePath(Utf8String Path)
+		public static Utf8String UnescapePath(Utf8String path)
 		{
-			ReadOnlySpan<byte> PathSpan = Path.Span;
-			for (int InputIdx = 0; InputIdx < PathSpan.Length - 2; InputIdx++)
+			ReadOnlySpan<byte> pathSpan = path.Span;
+			for (int inputIdx = 0; inputIdx < pathSpan.Length - 2; inputIdx++)
 			{
-				if(PathSpan[InputIdx] == '%')
+				if (pathSpan[inputIdx] == '%')
 				{
 					// Allocate the output buffer
-					byte[] Buffer = new byte[Path.Length];
-					PathSpan.Slice(0, InputIdx).CopyTo(Buffer.AsSpan());
+					byte[] buffer = new byte[path.Length];
+					pathSpan.Slice(0, inputIdx).CopyTo(buffer.AsSpan());
 
 					// Copy the data to the output buffer
-					int OutputIdx = InputIdx;
-					while (InputIdx < PathSpan.Length)
+					int outputIdx = inputIdx;
+					while (inputIdx < pathSpan.Length)
 					{
 						// Parse the character code
-						int Value = StringUtils.ParseHexByte(PathSpan, InputIdx + 1);
-						if (Value == -1)
+						int value = StringUtils.ParseHexByte(pathSpan, inputIdx + 1);
+						if (value == -1)
 						{
-							Buffer[OutputIdx++] = (byte)'%';
-							InputIdx++;
+							buffer[outputIdx++] = (byte)'%';
+							inputIdx++;
 						}
 						else
 						{
-							Buffer[OutputIdx++] = (byte)Value;
-							InputIdx += 3;
+							buffer[outputIdx++] = (byte)value;
+							inputIdx += 3;
 						}
 
 						// Keep copying until we get to another percent character
-						while (InputIdx < PathSpan.Length && (PathSpan[InputIdx] != '%' || InputIdx + 2 >= PathSpan.Length))
+						while (inputIdx < pathSpan.Length && (pathSpan[inputIdx] != '%' || inputIdx + 2 >= pathSpan.Length))
 						{
-							Buffer[OutputIdx++] = PathSpan[InputIdx++];
+							buffer[outputIdx++] = pathSpan[inputIdx++];
 						}
 					}
 
 					// Copy the last chunk of data to the output buffer
-					Path = new Utf8String(Buffer.AsMemory(0, OutputIdx));
+					path = new Utf8String(buffer.AsMemory(0, outputIdx));
 					break;
 				}
 			}
-			return Path;
+			return path;
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="depotPath"></param>
+		/// <param name="depotName"></param>
+		/// <returns></returns>
+		public static bool TryGetDepotName(string depotPath, [NotNullWhen(true)] out string? depotName)
+		{
+			return TryGetClientName(depotPath, out depotName);
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="clientPath"></param>
+		/// <param name="clientName"></param>
+		/// <returns></returns>
+		public static bool TryGetClientName(string clientPath, [NotNullWhen(true)] out string? clientName)
+		{
+			if (!clientPath.StartsWith("//", StringComparison.Ordinal))
+			{
+				clientName = null;
+				return false;
+			}
+
+			int slashIdx = clientPath.IndexOf('/', 2);
+			if (slashIdx == -1)
+			{
+				clientName = null;
+				return false;
+			}
+
+			clientName = clientPath.Substring(2, slashIdx - 2);
+			return true;
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="clientFile"></param>
+		/// <returns></returns>
+		public static string GetClientOrDepotDirectoryName(string clientFile)
+		{
+			int index = clientFile.LastIndexOf('/');
+			if (index == -1)
+			{
+				return "";
+			}
+			else
+			{
+				return clientFile.Substring(0, index);
+			}
+		}
+
+		/// <summary>
+		/// Get the relative path of a client file (eg. //ClientName/Foo/Bar.txt -> Foo/Bar.txt)
+		/// </summary>
+		/// <param name="clientFile">Path to the client file</param>
+		/// <returns></returns>
+		/// <exception cref="ArgumentException"></exception>
+		public static string GetClientRelativePath(string clientFile)
+		{
+			if (!clientFile.StartsWith("//", StringComparison.Ordinal))
+			{
+				throw new ArgumentException("Invalid client path", nameof(clientFile));
+			}
+
+			int idx = clientFile.IndexOf('/', 2);
+			if (idx == -1)
+			{
+				throw new ArgumentException("Invalid client path", nameof(clientFile));
+			}
+
+			return clientFile.Substring(idx + 1);
+		}
+
+		/// <summary>
+		/// Get the relative path within a client from a filename
+		/// </summary>
+		/// <param name="workspaceRoot">Dierctory containing the file</param>
+		/// <param name="workspaceFile">File to get the path for</param>
+		/// <returns></returns>
+		public static string GetClientRelativePath(DirectoryReference workspaceRoot, FileReference workspaceFile)
+		{
+			if (!workspaceFile.IsUnderDirectory(workspaceRoot))
+			{
+				throw new ArgumentException("File is not under workspace root", nameof(workspaceFile));
+			}
+
+			return workspaceFile.MakeRelativeTo(workspaceRoot).Replace(Path.DirectorySeparatorChar, '/');
 		}
 	}
 }

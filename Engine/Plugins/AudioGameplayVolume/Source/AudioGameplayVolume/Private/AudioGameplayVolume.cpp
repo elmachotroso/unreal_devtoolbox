@@ -9,6 +9,8 @@
 #include "Engine/CollisionProfile.h"
 #include "Net/UnrealNetwork.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioGameplayVolume)
+
 AAudioGameplayVolume::AAudioGameplayVolume(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -19,7 +21,7 @@ AAudioGameplayVolume::AAudioGameplayVolume(const FObjectInitializer& ObjectIniti
 		BrushComp->bAlwaysCreatePhysicsState = true;
 	}
 
-	AGVComponent = CreateDefaultSubobject<UAudioGameplayVolumeProxyComponent>(TEXT("AGVComponent"));
+	AGVComponent = CreateDefaultSubobject<UAudioGameplayVolumeComponent>(TEXT("AGVComponent"));
 
 #if WITH_EDITOR
 	bColored = true;
@@ -41,6 +43,16 @@ void AAudioGameplayVolume::SetEnabled(bool bEnable)
 			RemoveProxy();
 		}
 	}
+}
+
+void AAudioGameplayVolume::OnListenerEnter_Implementation()
+{
+	OnListenerEnterEvent.Broadcast();
+}
+
+void AAudioGameplayVolume::OnListenerExit_Implementation()
+{
+	OnListenerExitEvent.Broadcast();
 }
 
 #if WITH_EDITOR
@@ -89,8 +101,12 @@ void AAudioGameplayVolume::PostRegisterAllComponents()
 
 	if (AGVComponent)
 	{
-		UAGVPrimitiveComponentProxy* PrimitiveComponentProxy = NewObject<UAGVPrimitiveComponentProxy>(AGVComponent);
-		AGVComponent->SetProxy(PrimitiveComponentProxy);
+		UAGVPrimitiveComponentProxy* PrimitiveComponentProxy = Cast<UAGVPrimitiveComponentProxy>(AGVComponent->GetProxy());
+		if (!PrimitiveComponentProxy)
+		{
+			AGVComponent->SetProxy(NewObject<UAGVPrimitiveComponentProxy>(AGVComponent));
+		}
+
 		AGVComponent->bAutoActivate = false;
 	}
 }

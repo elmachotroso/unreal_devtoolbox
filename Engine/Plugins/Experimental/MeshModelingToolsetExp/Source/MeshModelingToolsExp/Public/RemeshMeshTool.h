@@ -52,7 +52,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = Remeshing)
 	ERemeshSmoothingType SmoothingType;
 
-	/** If true, UVs and Normals are discarded  */
+	/** If true, UVs and existing normals are discarded, allowing the remesher to ignore any UV and normal seams. New per-vertex normals are computed. */
 	UPROPERTY(EditAnywhere, Category = Remeshing)
 	bool bDiscardAttributes;
 
@@ -87,6 +87,15 @@ public:
 	/** Enable projection back to input mesh */
 	UPROPERTY(EditAnywhere, Category = Remeshing, AdvancedDisplay)
 	bool bReproject;
+
+	/** Project constrained vertices back to original constraint curves */
+	UPROPERTY(EditAnywhere, Category = Remeshing, AdvancedDisplay)
+	bool bReprojectConstraints;
+
+	/** Angle threshold in degrees for classifying a boundary vertex as a corner. Corners will be fixed if Reproject Constraints is active. */
+	UPROPERTY(EditAnywhere, Category = Remeshing, AdvancedDisplay, meta = (EditCondition = "bReprojectConstraints", UIMin = "0", UIMax = "180", ClampMin = "0", ClampMax = "180"))
+	float BoundaryCornerAngleThreshold;
+
 };
 
 
@@ -138,6 +147,5 @@ protected:
 	TSharedPtr<UE::Geometry::FDynamicMeshAABBTree3, ESPMode::ThreadSafe> OriginalMeshSpatial;
 	double InitialMeshArea;
 
-	double CalculateTargetEdgeLength(int TargetTriCount);
 	void UpdateVisualization();
 };

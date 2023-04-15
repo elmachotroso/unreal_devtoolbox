@@ -2,14 +2,14 @@
 
 #pragma once
 
-#include "Units/Simulation/RigUnit_SimBase.h"
+#include "RigUnit_SimBase.h"
 #include "RigUnit_Kalman.generated.h"
 
 /**
  * Averages a value over time.
  * This uses a Kalman Filter internally.
  */
-USTRUCT(meta=(DisplayName="Average Over Time (Float)", Category = "Simulation|Time", PrototypeName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
+USTRUCT(meta=(DisplayName="Average Over Time (Float)", Category = "Simulation|Time", TemplateName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
 struct CONTROLRIG_API FRigUnit_KalmanFloat : public FRigUnit_SimBase
 {
 	GENERATED_BODY()
@@ -44,7 +44,7 @@ struct CONTROLRIG_API FRigUnit_KalmanFloat : public FRigUnit_SimBase
  * Averages a value over time.
  * This uses a Kalman Filter internally.
  */
-USTRUCT(meta=(DisplayName="Average Over Time (Vector)", Category = "Simulation|Time", PrototypeName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
+USTRUCT(meta=(DisplayName="Average Over Time (Vector)", Category = "Simulation|Time", TemplateName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
 struct CONTROLRIG_API FRigUnit_KalmanVector : public FRigUnit_SimBase
 {
 	GENERATED_BODY()
@@ -79,7 +79,7 @@ struct CONTROLRIG_API FRigUnit_KalmanVector : public FRigUnit_SimBase
  * Averages a transform over time.
  * This uses a Kalman Filter internally.
  */
-USTRUCT(meta=(DisplayName="Average Over Time (Transform)", Category = "Simulation|Time", PrototypeName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
+USTRUCT(meta=(DisplayName="Average Over Time (Transform)", Category = "Simulation|Time", TemplateName="KalmanFilter", Keywords="Average,Smooth,KalmanFilter"))
 struct CONTROLRIG_API FRigUnit_KalmanTransform : public FRigUnit_SimBase
 {
 	GENERATED_BODY()

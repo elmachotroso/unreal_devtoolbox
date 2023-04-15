@@ -9,8 +9,7 @@
 //-------------------------------------------------------------------------------------------------
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11
-#include "D3D11RHIPrivate.h"
-#include "D3D11Util.h"
+#include "ID3D11DynamicRHI.h"
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11
 
 
@@ -19,8 +18,7 @@
 //-------------------------------------------------------------------------------------------------
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
-#include "D3D12RHIPrivate.h"
-#include "D3D12Util.h"
+#include "ID3D12DynamicRHI.h"
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
 
 
@@ -29,8 +27,7 @@
 //-------------------------------------------------------------------------------------------------
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_OPENGL
-#include "OpenGLDrvPrivate.h"
-#include "OpenGLResources.h"
+#include "IOpenGLDynamicRHI.h"
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS_OPENGL
 
 
@@ -39,8 +36,7 @@
 //-------------------------------------------------------------------------------------------------
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN
-#include "VulkanRHIPrivate.h"
-#include "VulkanResources.h"
+#include "IVulkanDynamicRHI.h"
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN
 
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS

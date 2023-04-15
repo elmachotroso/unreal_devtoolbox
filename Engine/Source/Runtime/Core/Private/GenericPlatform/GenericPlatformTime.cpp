@@ -112,7 +112,7 @@ TCHAR* FGenericPlatformTime::StrTime( TCHAR* Dest, SIZE_T DestSize )
 const TCHAR* FGenericPlatformTime::StrTimestamp()
 {
 	static TCHAR Result[1024];
-	*Result = 0;
+	*Result = TEXT('\0');
 	StrDate( Result, UE_ARRAY_COUNT(Result) );
 	FCString::Strcat( Result, TEXT(" ") );
 	StrTime( Result + FCString::Strlen(Result), UE_ARRAY_COUNT(Result) - FCString::Strlen(Result) );
@@ -257,8 +257,8 @@ protected:
 static FAutoConsoleCommand CPUTimeDumpCommand
 (
 	TEXT("CPUTime.Dump"),
-	TEXT("Usage -Delay=[NumSeconds=30]\n")
-	TEXT("If Delay==0, disables printing the CPU usage to the log\n")
-	TEXT("If Delay>0, starts printing the average CPU usage from the last n frames, clamps between 10 and 300"),
+	TEXT("Usage -Delay=[NumSeconds=30]\n"
+	     "If Delay==0, disables printing the CPU usage to the log\n"
+	     "If Delay>0, starts printing the average CPU usage from the last n frames, clamps between 10 and 300"),
 	FConsoleCommandWithArgsDelegate::CreateRaw( &FCPUTimeDump::Get(), &FCPUTimeDump::ExecuteCommand )
 );

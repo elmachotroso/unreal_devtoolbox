@@ -2,21 +2,40 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "CoreTypes.h"
+#include "Evaluation/MovieSceneCompletionMode.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Guid.h"
+#include "MovieSceneFwd.h"
+#include "MovieSceneObjectBindingID.h" // only for FMovieSceneObjectBindingID in .gen.cpp
+#include "MovieSceneSection.h" // only for FMovieSceneTimecodeSource in .gen.cpp
+#include "MovieSceneSequenceID.h"
 #include "MovieSceneSignedObject.h"
 #include "MovieSceneTrack.h"
-#include "MovieSceneSequenceID.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "MovieSceneSequence.generated.h"
 
+class FArchive;
+class FObjectPreSaveContext;
+class IMovieScenePlayer;
 class ITargetPlatform;
 class UMovieScene;
 class UMovieSceneCompiledData;
 class UMovieSceneEntitySystemLinker;
-
-struct FMovieScenePossessable;
+class UMovieSceneTrack;
+class UObject;
+struct FFrame;
 struct FMovieSceneObjectCache;
+struct FMovieScenePossessable;
 struct FMovieSceneTimecodeSource;
 
 enum class ETrackSupport
@@ -331,6 +350,6 @@ public:
 	/*
 	 * Sequences can determine whether they support a particular track type
 	 */
-	virtual ETrackSupport IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const { return ETrackSupport::Default; }
+	virtual ETrackSupport IsTrackSupported(TSubclassOf<UMovieSceneTrack> InTrackClass) const { return ETrackSupport::Default; }
 #endif
 };

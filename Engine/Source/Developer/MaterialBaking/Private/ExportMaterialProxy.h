@@ -225,13 +225,14 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 class FExportMaterialProxy : public FMaterial, public FMaterialRenderProxy
 {
 public:
-	FExportMaterialProxy(UMaterialInterface* InMaterialInterface, EMaterialProperty InPropertyToCompile, const FString& InCustomOutputToCompile = TEXT(""), bool bInSynchronousCompilation = true)
+	FExportMaterialProxy(UMaterialInterface* InMaterialInterface, EMaterialProperty InPropertyToCompile, const FString& InCustomOutputToCompile = TEXT(""), bool bInSynchronousCompilation = true, bool bTangentSpaceNormal = false)
 		: FMaterial()
 		, FMaterialRenderProxy(GetPathNameSafe(InMaterialInterface->GetMaterial()))
 		, MaterialInterface(InMaterialInterface)
 		, PropertyToCompile(InPropertyToCompile)
 		, CustomOutputToCompile(InCustomOutputToCompile)
 		, bSynchronousCompilation(bInSynchronousCompilation)
+		, bTangentSpaceNormal(bTangentSpaceNormal)
 	{
 		SetQualityLevelProperties(GMaxRHIFeatureLevel);
 		Material = InMaterialInterface->GetMaterial();
@@ -241,11 +242,6 @@ public:
 
 		FMaterialShaderMapId ResourceId;
 		Resource->GetShaderMapId(GMaxRHIShaderPlatform, nullptr, ResourceId);
-
-		// Our Id must be the same as BaseMaterialId for the shader compiler
-		// to be able to set back GameThreadShaderMap after async compilation.
-		Id = ResourceId.BaseMaterialId;
-
 
 		{
 			TArray<FShaderType*> ShaderTypes;
@@ -283,6 +279,9 @@ public:
 			ensureMsgf(false, TEXT("ExportMaterial has no usage for property %i.  Will likely reuse the normal rendering shader and crash later with a parameter mismatch"), (int32)InPropertyToCompile);
 			break;
 		};
+
+		Usage = ResourceId.Usage;
+		ResourceId.BaseMaterialId = Material->StateId;
 
 		CacheShaders(ResourceId, GMaxRHIShaderPlatform);
 	}
@@ -396,7 +395,7 @@ public:
 				{
 					return CompileNormalEncoding(
 						Compiler,
-						MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate));
+						CompileNormalTransform(&ProxyCompiler, MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate)));
 				}
 				break;
 			case MP_ShadingModel:
@@ -435,6 +434,12 @@ public:
 			return Compiler->Constant(1.0f);
 		}
 	}
+
+	/**
+	 * Gets the shader map usage of the material, which will be included in the DDC key.
+	 * This mechanism allows derived material classes to create different DDC keys with the same base material.
+	 */
+	virtual EMaterialShaderMapUsage::Type GetShaderMapUsage() const override { return Usage; }
 
 	virtual FString GetMaterialUsageDescription() const override
 	{
@@ -499,6 +504,7 @@ public:
 	}
 	virtual bool IsMasked() const override { return false; }
 	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Opaque; }
+	virtual enum EStrataBlendMode GetStrataBlendMode() const override { return EStrataBlendMode::SBM_Opaque; }
 	virtual FMaterialShadingModelField GetShadingModels() const override { return MSM_DefaultLit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override { return false; }
 	virtual float GetOpacityMaskClipValue() const override { return 0.5f; }
@@ -508,7 +514,14 @@ public:
 	* Should shaders compiled for this material be saved to disk?
 	*/
 	virtual bool IsPersistent() const override { return true; }
-	virtual FGuid GetMaterialId() const override { return Id; }
+
+	virtual FGuid GetMaterialId() const override
+	{
+		// Reuse the base material's Id
+		// Normally this would cause a bug as the shader map would try to be shared by both, 
+		// But FExportMaterialProxy::GetShaderMapUsage() allows this to work
+		return Material->StateId;
+	}
 
 	virtual UMaterialInterface* GetMaterialInterface() const override
 	{
@@ -554,7 +567,7 @@ private:
 
 		if (CustomOutputToCompile == TEXT("ClearCoatBottomNormal"))
 		{
-			Result = CompileNormalEncoding(Compiler, Result);
+			Result = CompileNormalEncoding(Compiler, CompileNormalTransform(Compiler, Result));
 		}
 
 		if (ForceCastFlags & MFCF_ForceCast)
@@ -567,7 +580,7 @@ private:
 
 	UMaterialExpressionCustomOutput* GetCustomOutputExpressionToCompile() const
 	{
-		for (UMaterialExpression* Expression : Material->Expressions)
+		for (UMaterialExpression* Expression : Material->GetExpressions())
 		{
 			UMaterialExpressionCustomOutput* CustomOutputExpression = Cast<UMaterialExpressionCustomOutput>(Expression);
 			if (CustomOutputExpression && CustomOutputExpression->GetDisplayName() == CustomOutputToCompile)
@@ -577,6 +590,12 @@ private:
 		}
 
 		return nullptr;
+	}
+
+	int32 CompileNormalTransform(FMaterialCompiler* Compiler, int32 NormalInput) const
+	{
+		return bTangentSpaceNormal && !Material->bTangentSpaceNormal
+			? Compiler->TransformVector(MCB_World, MCB_Tangent, NormalInput) : NormalInput;
 	}
 
 	static int32 CompileNormalEncoding(FMaterialCompiler* Compiler, int32 NormalInput)
@@ -593,8 +612,13 @@ private:
 	TArray<TObjectPtr<UObject>> ReferencedTextures;
 	/** The property to compile for rendering the sample */
 	EMaterialProperty PropertyToCompile;
+	/** Stores which exported attribute this proxy is compiling for. */
+	EMaterialShaderMapUsage::Type Usage;
 	/** The name of the specific custom output to compile for rendering the sample. Only used if PropertyToCompile is MP_CustomOutput */
 	FString CustomOutputToCompile;
-	FGuid Id;
 	bool bSynchronousCompilation;
+
+public:
+	/** Whether to transform normals from world-space to tangent-space (does nothing if material already uses tangent-space normals) */
+	bool bTangentSpaceNormal;
 };

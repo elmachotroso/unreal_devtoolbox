@@ -5,122 +5,147 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
-#include "IInputDeviceModule.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/RefCounting.h"
 #include "PixelStreamingPlayerId.h"
 #include "IPixelStreamingAudioSink.h"
-#include "Templates/SharedPointer.h"
+#include "IPixelStreamingInputHandler.h"
+#include "PixelStreamingWebRTCIncludes.h"
+#include "IPixelStreamingStreamer.h"
+#include "IInputDeviceModule.h"
+#include "PixelStreamingCodec.h"
+#include "PixelStreamingProtocol.h"
 
-#include "IInputDevice.h"
-
-class UTexture2D;
 class UPixelStreamingInput;
 
 /**
-* The public interface to this module
-*/
+ * The public interface of the Pixel Streaming module.
+ */
 class PIXELSTREAMING_API IPixelStreamingModule : public IInputDeviceModule
 {
 public:
 	/**
-	* Singleton-like access to this module's interface.
-	* Beware of calling this during the shutdown phase, though.  Your module might have been unloaded already.
-	*
-	* @return Returns singleton instance, loading the module on demand if needed
-	*/
+	 * Singleton-like access to this module's interface.
+	 * Beware of calling this during the shutdown phase, though.  Your module might have been unloaded already.
+	 *
+	 * @return Returns singleton instance, loading the module on demand if needed
+	 */
 	static inline IPixelStreamingModule& Get()
 	{
 		return FModuleManager::LoadModuleChecked<IPixelStreamingModule>("PixelStreaming");
 	}
 
 	/**
-	* Checks to see if this module is loaded.  
-	*
-	* @return True if the module is loaded.
-	*/
+	 * Checks to see if this module is loaded.
+	 *
+	 * @return True if the module is loaded.
+	 */
 	static inline bool IsAvailable()
 	{
 		return FModuleManager::Get().IsModuleLoaded("PixelStreaming");
 	}
 
-	/*
-	* Event fired when internal streamer is initialized and the methods on this module are ready for use.
-	*/
-	DECLARE_EVENT_OneParam(IPixelStreamingModule, FReadyEvent, IPixelStreamingModule&)
+	/**
+	 * Sets the encoder codec for the whole Pixel Streaming module. Should be called before any streaming starts.
+	 * @param Codec A valid EPixelStreamingCodec value.
+	 */
+	virtual void SetCodec(EPixelStreamingCodec Codec) = 0;
+
+	/**
+	 * Gets the currently selected encoder codec for all of Pixel Streaming.
+	 * @return A valid EPixelStreamingCodec value.
+	 */
+	virtual EPixelStreamingCodec GetCodec() const = 0;
 
 	/*
-	* A getter for the OnReady event. Intent is for users to call IPixelStreamingModule::Get().OnReady().AddXXX.
-	* @return The bindable OnReady event.
-	*/
+	 * Event fired when internal streamer is initialized and the methods on this module are ready for use.
+	 */
+	DECLARE_EVENT_OneParam(IPixelStreamingModule, FReadyEvent, IPixelStreamingModule&);
+
+	/**
+	 * A getter for the OnReady event. Intent is for users to call IPixelStreamingModule::Get().OnReady().AddXXX.
+	 * @return The bindable OnReady event.
+	 */
 	virtual FReadyEvent& OnReady() = 0;
 
-	/*
-	* Is the PixelStreaming module actually ready to use? Is the streamer created.
-	* @return True if Pixel Streaming module methods are ready for use.
-	*/
+	/**
+	 * Is the PixelStreaming module actually ready to use? Is the streamer created.
+	 * @return True if Pixel Streaming module methods are ready for use.
+	 */
 	virtual bool IsReady() = 0;
 
 	/**
-	 * Returns a reference to the input device. The lifetime of this reference
-	 * is that of the underlying shared pointer.
-	 * @return A reference to the input device.
+	 * Starts streaming on all streamers.
 	 */
-	virtual IInputDevice& GetInputDevice() = 0;
+	virtual bool StartStreaming() = 0;
 
 	/**
-	 * Add any player config JSON to the given object which relates to
-	 * configuring the input system for the pixel streaming on the browser.
-	 * @param JsonObject - The JSON object to add fields to.
+	 * Stops all streamers from streaming.
 	 */
-	virtual void AddPlayerConfig(TSharedRef<class FJsonObject>& JsonObject) = 0;
+	virtual void StopStreaming() = 0;
 
 	/**
-	 * Send a data response back to the browser where we are sending video. This
-	 * could be used as a response to a UI interaction, for example.
-	 * @param Descriptor - A generic descriptor string.
+	 * Creates a new streamer.
+	 * @param StreamerId - The ID of the Streamer to be created.
 	 */
-	virtual void SendResponse(const FString& Descriptor) = 0;
+	virtual TSharedPtr<IPixelStreamingStreamer> CreateStreamer(const FString& StreamerId) = 0;
 
 	/**
-	 * Send a data command back to the browser where we are sending video. This
-	 * is different to a response as a command is low-level and coming from UE4
-	 * rather than the pixel streamed application.
-	 * @param Descriptor - A generic descriptor string.
+	 * Returns a TArray containing the keys to the currently held streamers.
+	 * @return TArray containing the keys to the currently held streamers.
 	 */
-	virtual void SendCommand(const FString& Descriptor) = 0;
+	virtual TArray<FString> GetStreamerIds() = 0;
 
 	/**
-	 * Freeze Pixel Streaming.
-	 * @param Texture - The freeze frame to display. If null then the back buffer is captured.
+	 * Get a streamer by an ID.
+	 * @return A pointer to the interface for a streamer. nullptr if the streamer isn't found
 	 */
-	virtual void FreezeFrame(UTexture2D* Texture) = 0;
+	virtual TSharedPtr<IPixelStreamingStreamer> GetStreamer(const FString& StreamerId) = 0;
 
 	/**
-	 * Unfreeze Pixel Streaming.
+	 * Remove a streamer by an ID
+	 * @param StreamerId	-	The ID of the streamer to be removed.
+	 * @return The removed streamer. nullptr if the streamer wasn't found.
 	 */
-	virtual void UnfreezeFrame() = 0;
+	virtual TSharedPtr<IPixelStreamingStreamer> DeleteStreamer(const FString& StreamerId) = 0;
 
 	/**
-	 * Send a file to the browser where we are sending video.
-	 * @param FilePath - The freeze frame to display. If null then the back buffer is captured.
+	 * Get the protocol currently used by each peer. 
 	 */
-	virtual void SendFileData(TArray<uint8>& ByteData, FString& MimeType, FString& FileExtension) = 0;
+	virtual const Protocol::FPixelStreamingProtocol& GetProtocol() = 0;
 
 	/**
-	 * Kick a player by player id.
-	 * @param PlayerId - The ID of the player to kick
+	 * Register a new message type that peers can send and pixel streaming can receive
+	 * @param MessageDirection The direction the message will travel. eg Streamer->Player or Player->Streamer
+	 * @param MessageType The human readable identifier (eg "TouchStarted")
+	 * @param Message The object used to define the structure of the message
+	 * @param Handler The handler for this message type. This function will be executed whenever the corresponding message type is received 
 	 */
-	virtual void KickPlayer(FPixelStreamingPlayerId PlayerId) = 0;
+	virtual void RegisterMessage(Protocol::EPixelStreamingMessageDirection MessageDirection, const FString& MessageType, Protocol::FPixelStreamingInputMessage Message, const TFunction<void(FMemoryReader)>& Handler) = 0;
 
 	/**
-	 * Get the audio sink associated with a specific peer/player.
+	 * @brief Find the function to be called whenever the specified message type is received.
+	 * 
+	 * @param MessageType The human readable identifier for the message
+	 * @return TFunction<void(FMemoryReader)> The function called when this message type is received.
 	 */
-	virtual IPixelStreamingAudioSink* GetPeerAudioSink(FPixelStreamingPlayerId PlayerId) = 0;
+	virtual TFunction<void(FMemoryReader)> FindMessageHandler(const FString& MessageType) = 0;
 
 	/**
-	 * Get an audio sink that has no peers/players listening to it.
+	 * Sets the target FPS for Externally Consumed video Tracks
+	 * @param InFPS new FPS for the ExternalVideoSource to output at. 
 	 */
-	virtual IPixelStreamingAudioSink* GetUnlistenedAudioSink() = 0;
+	virtual void SetExternalVideoSourceFPS(uint32 InFPS) = 0;
+
+	/**
+	 * Allows the creation of Video Tracks that are fed the backbuffer
+	 */
+	virtual rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> CreateExternalVideoSource() = 0;
+
+	/**
+	 * Used to clean up sources no longer needed
+	 */
+	virtual void ReleaseExternalVideoSource(const webrtc::VideoTrackSourceInterface* InVideoSource) = 0;
 
 	/**
 	 * Tell the input device about a new pixel streaming input component.
@@ -128,15 +153,43 @@ public:
 	 */
 	virtual void AddInputComponent(UPixelStreamingInput* InInputComponent) = 0;
 
-	/*
-	 * Tell the input device that a pixel streaming input component is no longer
-	 * relevant.
+	/**
+	 * Tell the input device that a pixel streaming input component is no longer relevant.
 	 * @param InInputComponent - The pixel streaming input component which is no longer relevant.
 	 */
 	virtual void RemoveInputComponent(UPixelStreamingInput* InInputComponent) = 0;
 
-	/*
+	/**
 	 * Get the input components currently attached to Pixel Streaming.
+	 * @return An array of input components.
 	 */
 	virtual const TArray<UPixelStreamingInput*> GetInputComponents() = 0;
+
+	/**
+	 * Create a webrtc::VideoEncoderFactory pointer.
+	 * @return A WebRTC video encoder factory with its encoders populated by Pixel Streaming.
+	 */
+	virtual TUniquePtr<webrtc::VideoEncoderFactory> CreateVideoEncoderFactory() = 0;
+
+	/**
+	 * Get the Default Streamer ID
+	 * @return FString The default streamer ID
+	 */
+	virtual FString GetDefaultStreamerID() = 0;
+
+	/**
+	 * Get the Default Signaling URL ("ws://127.0.0.1:8888")
+	 * @return FString The default signaling url ("ws://127.0.0.1:8888")
+	 */
+	virtual FString GetDefaultSignallingURL() = 0;
+
+	/**
+	 * @brief A method for iterating through all of the streamers on the module
+	 * 
+	 * @param Func The lambda to execute with each streamer
+	 */
+	virtual void ForEachStreamer(const TFunction<void(TSharedPtr<IPixelStreamingStreamer>)>& Func) = 0;
+
+	DECLARE_MULTICAST_DELEGATE(FOnProtocolUpdated);
+	FOnProtocolUpdated OnProtocolUpdated;
 };

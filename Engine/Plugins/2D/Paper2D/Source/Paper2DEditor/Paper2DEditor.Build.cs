@@ -6,8 +6,6 @@ public class Paper2DEditor : ModuleRules
 {
 	public Paper2DEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Paper2DEditor/Private");
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -25,14 +23,12 @@ public class Paper2DEditor : ModuleRules
 				"RenderCore",
 				"Paper2D",
 				"ContentBrowser",
-				"WorkspaceMenuStructure",
-				"EditorStyle",
+				"WorkspaceMenuStructure",	
 				"MeshPaint",
 				"EditorWidgets",
 				"Projects",
 				"NavigationSystem",
 				"ToolMenus",
-                "IntroTutorials"
             });
 
 		PublicDependencyModuleNames.AddRange(

@@ -55,10 +55,14 @@ public:
 #if WITH_EDITOR
 	// Event fired when the instance we are running has changed
 	FSimpleMulticastDelegate& OnInstanceChanged() { return OnInstanceChangedEvent; }
+	virtual void HandleObjectsReinstanced_Impl(UObject* InSourceObject, UObject* InTargetObject, const TMap<UObject*, UObject*>& OldToNewInstanceMap) override;
 #endif
 
 protected:
 	void InitializeSelfLayer(const UAnimInstance* SelfAnimInstance);
+
+	// Initialize the source properties to copy from
+	void InitializeSourceProperties(const UAnimInstance* InAnimInstance);
 
 #if WITH_EDITOR
 	// Event fired when the instance we are running has changed

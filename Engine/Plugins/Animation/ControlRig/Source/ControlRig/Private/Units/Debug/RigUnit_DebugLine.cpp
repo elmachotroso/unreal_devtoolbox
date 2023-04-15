@@ -3,6 +3,8 @@
 #include "Units/Debug/RigUnit_DebugLine.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DebugLine)
+
 FRigUnit_DebugLine_Execute()
 {
 	FRigUnit_DebugLineItemSpace::StaticExecute(
@@ -16,6 +18,22 @@ FRigUnit_DebugLine_Execute()
 		bEnabled,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DebugLine::GetUpgradeInfo() const
+{
+	FRigUnit_DebugLineItemSpace NewNode;
+	NewNode.A = A;
+	NewNode.B = B;
+	NewNode.Color = Color;
+	NewNode.Thickness = Thickness;
+	NewNode.Space = FRigElementKey(Space, ERigElementType::Bone);
+	NewNode.WorldOffset = WorldOffset;
+	NewNode.bEnabled = bEnabled;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Space"), TEXT("Space.Name"));
+	return Info;
 }
 
 FRigUnit_DebugLineItemSpace_Execute()

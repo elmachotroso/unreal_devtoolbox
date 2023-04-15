@@ -40,6 +40,8 @@ struct FExistingStaticMeshData
 {
 	TArray<FStaticMaterial> 	ExistingMaterials;
 
+	FExistingLODMeshData		HiResSourceData;
+
 	FMeshSectionInfoMap			ExistingSectionInfoMap;
 	TArray<FExistingLODMeshData>	ExistingLODData;
 
@@ -81,6 +83,16 @@ struct FExistingStaticMeshData
 	FVector3f					ExistingPositiveBoundsExtension;
 	FVector3f					ExistingNegativeBoundsExtension;
 
+	bool						ExistingSupportPhysicalMaterialMasks;
+	bool						ExistingSupportGpuUniformlyDistributedSampling;
+	bool						ExistingSupportRayTracing;
+	int32						ExistingLODForOccluderMesh;
+	bool						ExistingForceMiplevelsToBeResident;
+	bool						ExistingNeverStream;
+	int32						ExistingNumCinematicMipLevels;
+
+	FMeshNaniteSettings			ExistingNaniteSettings;
+
 	UStaticMesh::FOnMeshChanged	ExistingOnMeshChanged;
 	UStaticMesh* ExistingComplexCollisionMesh = nullptr;
 
@@ -119,6 +131,8 @@ namespace StaticMeshImportUtils
 
 	/** Utility for adding one convex hull from the given verts */
 	UNREALED_API bool AddConvexGeomFromVertices(const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
+
+	UNREALED_API TSharedPtr<FExistingStaticMeshData> SaveExistingStaticMeshData(UStaticMesh* ExistingMesh, bool bImportMaterials, int32 LodIndex);
 
 	UNREALED_API TSharedPtr<FExistingStaticMeshData> SaveExistingStaticMeshData(UStaticMesh* ExistingMesh, UnFbx::FBXImportOptions* ImportOptions, int32 LodIndex);
 

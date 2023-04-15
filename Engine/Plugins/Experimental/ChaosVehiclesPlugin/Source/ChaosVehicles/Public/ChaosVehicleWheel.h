@@ -13,7 +13,10 @@
 #include "EngineDefines.h"
 #include "SimpleVehicle.h"
 #include "VehicleUtility.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/EngineTypes.h"
+#endif
+#include "Engine/HitResult.h"
 #include "Curves/CurveFloat.h"
 
 #include "ChaosVehicleWheel.generated.h"
@@ -52,6 +55,17 @@ class UChaosWheeledVehicleMovementComponent;
 		Rear
 	};
 
+	UENUM()
+	enum class ETorqueCombineMethod : uint8
+	{
+		/** External torque value has no effect - default **/
+		None = 0,
+		/** completely replace existing torques, can set and forget will apply same torque every frame until zeroed */
+		Override,
+		/** Combine external torque with existing torques, must set external torque every frame */
+		Additive
+	};
+
 	UCLASS(BlueprintType, Blueprintable)
 		class CHAOSVEHICLES_API UChaosVehicleWheel : public UObject
 	{
@@ -62,7 +76,7 @@ class UChaosWheeledVehicleMovementComponent;
 			* (if empty, sphere will be added as wheel shape, check bDontCreateShape flag)
 			*/
 		UPROPERTY(EditDefaultsOnly, Category = Shape)
-		class UStaticMesh* CollisionMesh;
+		TObjectPtr<class UStaticMesh> CollisionMesh;
 
 		/** If left undefined then the bAffectedByEngine value is used, if defined then bAffectedByEngine is ignored and the differential setup on the vehicle defines which wheels get power from the engine */
 		UPROPERTY(EditAnywhere, Category = Wheel)
@@ -130,6 +144,10 @@ class UChaosWheeledVehicleMovementComponent;
 		/** Straight Line Traction Control Enabled */
 		UPROPERTY(EditAnywhere, Category = Wheel)
 		bool bTractionControlEnabled;
+
+		/** Determines how the SetDriveTorque/SetBrakeTorque inputs are combined with the internal torques */
+		UPROPERTY(EditAnywhere, Category = Wheel)
+		ETorqueCombineMethod ExternalTorqueCombineMethod;
 
 		UPROPERTY(EditAnywhere, Category = Setup)
 		FRuntimeFloatCurve LateralSlipGraph;
@@ -200,7 +218,7 @@ class UChaosWheeledVehicleMovementComponent;
 
 		/** The vehicle that owns us */
 		UPROPERTY(transient)
-		class UChaosWheeledVehicleMovementComponent* VehicleComponent;
+		TObjectPtr<class UChaosWheeledVehicleMovementComponent> VehicleComponent;
 
 		// Our index in the vehicle's (and setup's) wheels array
 		UPROPERTY(transient)
@@ -262,6 +280,9 @@ class UChaosWheeledVehicleMovementComponent;
 
 		UFUNCTION(BlueprintCallable, Category = "Game|Components|WheeledVehicleMovement")
 		float GetWheelAngularVelocity() const;
+
+		UFUNCTION(BlueprintCallable, Category = "Game|Components|WheeledVehicleMovement")
+		FVector GetSuspensionAxis() const;
 
 		UFUNCTION(BlueprintCallable, Category = "Game|Components|WheeledVehicleMovement")
 		bool IsInAir() const;
@@ -333,6 +354,7 @@ class UChaosWheeledVehicleMovementComponent;
 			PWheelConfig.SideSlipModifier = this->SideSlipModifier;
 			PWheelConfig.SlipThreshold = this->SlipThreshold;
 			PWheelConfig.SkidThreshold = this->SkidThreshold;
+			PWheelConfig.ExternalTorqueCombineMethod = static_cast<Chaos::FSimpleWheelConfig::EExternalTorqueCombineMethod>(this->ExternalTorqueCombineMethod);
 
 			PWheelConfig.LateralSlipGraph.Empty();
 			float NumSamples = 20;
@@ -390,9 +412,6 @@ class UChaosWheeledVehicleMovementComponent;
 
 		/** Get contact surface material */
 		UPhysicalMaterial* GetContactSurfaceMaterial();
-
-		/** suspension raycast results */
-		FHitResult HitResult;
 
 	};
 

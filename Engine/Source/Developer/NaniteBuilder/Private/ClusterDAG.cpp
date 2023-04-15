@@ -14,8 +14,10 @@ static const uint32 MaxGroupSize = 32;
 
 static void DAGReduce( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, TAtomic< uint32 >& NumClusters, TArrayView< uint32 > Children, int32 GroupIndex, uint32 MeshIndex );
 
-void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, uint32 ClusterRangeStart, uint32 ClusterRangeNum, uint32 MeshIndex, FBounds& MeshBounds )
+void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, uint32 ClusterRangeStart, uint32 ClusterRangeNum, uint32 MeshIndex, FBounds3f& MeshBounds )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Nanite.BuildDAG);
+
 	uint32 LevelOffset	= ClusterRangeStart;
 	
 	TAtomic< uint32 > NumClusters( Clusters.Num() );
@@ -26,8 +28,6 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 	{
 		TArrayView< FCluster > LevelClusters( &Clusters[LevelOffset], bFirstLevel ? ClusterRangeNum : (Clusters.Num() - LevelOffset) );
 		bFirstLevel = false;
-
-		bool bSingleThreaded = LevelClusters.Num() <= 32;
 
 		uint32 NumExternalEdges = 0;
 
@@ -46,7 +46,7 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 		}
 		AvgError /= LevelClusters.Num();
 
-		UE_LOG( LogStaticMesh, Log, TEXT("Num clusters %i. Error %.4f, %.4f, %.4f"), LevelClusters.Num(), MinError, AvgError, MaxError );
+		UE_LOG( LogStaticMesh, Verbose, TEXT("Num clusters %i. Error %.4f, %.4f, %.4f"), LevelClusters.Num(), MinError, AvgError, MaxError );
 
 		if( LevelClusters.Num() < 2 )
 			break;
@@ -88,7 +88,7 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 		ExternalEdgeHash.Clear( 1 << FMath::FloorLog2( NumExternalEdges ), NumExternalEdges );
 
 		// Add edges to hash table
-		ParallelFor( LevelClusters.Num(),
+		ParallelFor( TEXT("Nanite.BuildDAG.PF"), LevelClusters.Num(), 32,
 			[&]( uint32 ClusterIndex )
 			{
 				FCluster& Cluster = LevelClusters[ ClusterIndex ];
@@ -112,15 +112,14 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 						ExternalEdgeHash.Add_Concurrent( Hash, ExternalEdgeIndex );
 					}
 				}
-			},
-			bSingleThreaded );
+			});
 
 		check( ExternalEdgeOffset == ExternalEdges.Num() );
 
 		TAtomic< uint32 > NumAdjacency(0);
 
 		// Find matching edge in other clusters
-		ParallelFor( LevelClusters.Num(),
+		ParallelFor( TEXT("Nanite.BuildDAG.PF"), LevelClusters.Num(), 32,
 			[&]( uint32 ClusterIndex )
 			{
 				FCluster& Cluster = LevelClusters[ ClusterIndex ];
@@ -174,8 +173,7 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 					{
 						return LevelClusters[A].GUID < LevelClusters[B].GUID;
 					} );
-			},
-			bSingleThreaded );
+			});
 
 		FDisjointSet DisjointSet( LevelClusters.Num() );
 
@@ -206,10 +204,10 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 
 		auto GetCenter = [&]( uint32 Index )
 		{
-			FBounds& Bounds = LevelClusters[ Index ].Bounds;
+			FBounds3f& Bounds = LevelClusters[ Index ].Bounds;
 			return 0.5f * ( Bounds.Min + Bounds.Max );
 		};
-		Partitioner.BuildLocalityLinks( DisjointSet, MeshBounds, GetCenter );
+		Partitioner.BuildLocalityLinks( DisjointSet, MeshBounds, TArrayView< const int32 >(), GetCenter );
 
 		auto* RESTRICT Graph = Partitioner.NewGraph( NumAdjacency );
 
@@ -239,6 +237,8 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 		LOG_CRC( Graph->Adjacency );
 		LOG_CRC( Graph->AdjacencyCost );
 		LOG_CRC( Graph->AdjacencyOffset );
+		
+		bool bSingleThreaded = LevelClusters.Num() <= 32;
 
 		Partitioner.PartitionStrict( Graph, MinGroupSize, MaxGroupSize, !bSingleThreaded );
 
@@ -263,7 +263,7 @@ void BuildDAG( TArray< FClusterGroup >& Groups, TArray< FCluster >& Clusters, ui
 		Clusters.AddDefaulted( MaxParents );
 		Groups.AddDefaulted( Partitioner.Ranges.Num() );
 
-		ParallelFor( Partitioner.Ranges.Num(),
+		ParallelFor( TEXT("Nanite.BuildDAG.PF"), Partitioner.Ranges.Num(), 1,
 			[&]( int32 PartitionIndex )
 			{
 				auto& Range = Partitioner.Ranges[ PartitionIndex ];
@@ -436,7 +436,8 @@ FBinaryHeap< float > FindDAGCut(
 	const TArray< FCluster >& Clusters,
 	uint32 TargetNumTris,
 	float  TargetError,
-	uint32 TargetOvershoot )
+	uint32 TargetOvershoot,
+	TBitArray<>* SelectedGroupsMask )
 {
 	const FClusterGroup&	RootGroup = Groups.Last();
 	const FCluster&			RootCluster = Clusters[ RootGroup.Children[0] ];
@@ -445,6 +446,12 @@ FBinaryHeap< float > FindDAGCut(
 
 	float MinError = RootCluster.LODError;
 
+	if( SelectedGroupsMask )
+	{
+		SelectedGroupsMask->Init( false, Groups.Num() );
+		(*SelectedGroupsMask)[ Groups.Num() - 1 ] = true;
+	}
+	
 	FBinaryHeap< float > Heap;
 	Heap.Add( -RootCluster.LODError, RootGroup.Children[0] );
 
@@ -477,6 +484,11 @@ FBinaryHeap< float > FindDAGCut(
 
 		check( Cluster.LODError <= MinError );
 		MinError = Cluster.LODError;
+
+		if( SelectedGroupsMask )
+		{
+			(*SelectedGroupsMask)[ Cluster.GeneratingGroupIndex ] = true;
+		}
 
 		for( uint32 Child : Groups[ Cluster.GeneratingGroupIndex ].Children )
 		{

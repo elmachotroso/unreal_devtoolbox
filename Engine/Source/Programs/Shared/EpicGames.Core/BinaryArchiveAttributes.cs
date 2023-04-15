@@ -10,6 +10,9 @@ namespace EpicGames.Core
 	[AttributeUsage(AttributeTargets.Property)]
 	public class BinaryIgnoreAttribute : Attribute
 	{
+		/// <summary>
+		/// Constructor
+		/// </summary>
 		public BinaryIgnoreAttribute()
 		{
 		}
@@ -21,6 +24,9 @@ namespace EpicGames.Core
 	[AttributeUsage(AttributeTargets.Class)]
 	public class BinarySerializableAttribute : Attribute
 	{
+		/// <summary>
+		/// Constructor
+		/// </summary>
 		public BinarySerializableAttribute()
 		{
 		}
@@ -40,10 +46,10 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Type">The serializer type</param>
-		public BinaryConverterAttribute(Type Type)
+		/// <param name="type">The serializer type</param>
+		public BinaryConverterAttribute(Type type)
 		{
-			this.Type = Type;
+			Type = type;
 		}
 	}
 }

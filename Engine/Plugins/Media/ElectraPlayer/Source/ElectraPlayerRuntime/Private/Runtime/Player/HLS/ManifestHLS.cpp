@@ -30,32 +30,33 @@ public:
 	FPlayPeriodHLS(IPlayerSessionServices* SessionServices, IPlaylistReaderHLS* PlaylistReader, TSharedPtrTS<FManifestHLSInternal> Manifest);
 	virtual ~FPlayPeriodHLS();
 
-	virtual void SetStreamPreferences(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
+	void SetStreamPreferences(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
 
-	virtual EReadyState GetReadyState() override;
-	virtual void Load() override;
-	virtual void PrepareForPlay() override;
-	virtual int64 GetDefaultStartingBitrate() const override;
+	EReadyState GetReadyState() override;
+	void Load() override;
+	void PrepareForPlay() override;
+	int64 GetDefaultStartingBitrate() const override;
 
-	virtual TSharedPtrTS<FBufferSourceInfo> GetSelectedStreamBufferSourceInfo(EStreamType StreamType) override;
-	virtual FString GetSelectedAdaptationSetID(EStreamType StreamType) override;
-	virtual ETrackChangeResult ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
+	TSharedPtrTS<FBufferSourceInfo> GetSelectedStreamBufferSourceInfo(EStreamType StreamType) override;
+	FString GetSelectedAdaptationSetID(EStreamType StreamType) override;
+	ETrackChangeResult ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
 
 	// TODO: need to provide metadata (duration, streams, languages, etc.)
 
-	virtual IManifest::FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
-	virtual IManifest::FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerSequenceState& SequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
-	virtual IManifest::FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment) override;
-	virtual IManifest::FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, bool bReplaceWithFillerData) override;
-	virtual IManifest::FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& SequenceState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
-	virtual void IncreaseSegmentFetchDelay(const FTimeValue& IncreaseAmount) override;
+	IManifest::FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
+	IManifest::FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerSequenceState& SequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
+	IManifest::FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FPlayStartOptions& Options) override;
+	IManifest::FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FPlayStartOptions& Options, bool bReplaceWithFillerData) override;
+	IManifest::FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& SequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
+	void IncreaseSegmentFetchDelay(const FTimeValue& IncreaseAmount) override;
 
 	// Obtains information on the stream segmentation of a particular stream starting at a given current reference segment (optional, if not given returns suitable default values).
-	virtual void GetSegmentInformation(TArray<FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const FString& AdaptationSetID, const FString& RepresentationID) override;
+	void GetSegmentInformation(TArray<FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const FString& AdaptationSetID, const FString& RepresentationID) override;
 
-	virtual TSharedPtrTS<ITimelineMediaAsset> GetMediaAsset() const override;
+	TSharedPtrTS<ITimelineMediaAsset> GetMediaAsset() const override;
 
-	virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) override;
+	void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) override;
+	void TriggerInitSegmentPreload(const TArray<FInitSegmentPreload>& InitSegmentsToPreload) override;
 
 private:
 	struct FSegSearchParam
@@ -84,11 +85,11 @@ private:
 
 	IManifest::FResult GetMediaStreamForID(TSharedPtrTS<FManifestHLSInternal::FPlaylistBase>& OutPlaylist, TSharedPtrTS<FManifestHLSInternal::FMediaStream>& OutMediaStream, uint32 UniqueID) const;
 
-	IManifest::FResult GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, bool bRetry);
+	IManifest::FResult GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FPlayStartOptions& Options, bool bRetry);
 
 	IManifest::FResult FindSegment(TSharedPtrTS<FStreamSegmentRequestHLSfmp4>& OutRequest, TSharedPtrTS<FManifestHLSInternal::FPlaylistBase> InPlaylist, TSharedPtrTS<FManifestHLSInternal::FMediaStream> InStream, uint32 StreamUniqueID, EStreamType StreamType, const FSegSearchParam& SearchParam, IManifest::ESearchType SearchType);
 
-	void RefreshBlacklistState();
+	void RefreshDenylistState();
 
 	TSharedPtrTS<FManifestHLSInternal>			InternalManifest;
 	IPlayerSessionServices* 					SessionServices;
@@ -126,6 +127,10 @@ IManifest::EType FManifestHLS::GetPresentationType() const
 	return InternalManifest->MasterPlaylistVars.PresentationType;
 }
 
+TSharedPtrTS<const FLowLatencyDescriptor> FManifestHLS::GetLowLatencyDescriptor() const
+{
+	return nullptr; 
+}
 
 FTimeValue FManifestHLS::GetAnchorTime() const
 {
@@ -222,6 +227,26 @@ FTimeValue FManifestHLS::GetMinBufferTime() const
 	return FTimeValue().SetFromSeconds(2.0);
 }
 
+FTimeValue FManifestHLS::GetDesiredLiveLatency() const
+{
+	FTimeValue ll;
+	if (InternalManifest.IsValid() && InternalManifest->CurrentMediaAsset.IsValid() && InternalManifest->MasterPlaylistVars.PresentationType == IManifest::EType::Live)
+	{
+		FTimeRange Full, Seekable;
+		FScopeLock lock(&InternalManifest->CurrentMediaAsset->UpdateLock);
+		Full = InternalManifest->CurrentMediaAsset->TimeRange;
+		Seekable = InternalManifest->CurrentMediaAsset->SeekableTimeRange;
+		ll = Full.End - Seekable.End;
+	}
+	return ll;
+}
+
+
+TSharedPtrTS<IProducerReferenceTimeInfo> FManifestHLS::GetProducerReferenceTimeInfo(int64 ID) const
+{
+	return nullptr;
+}
+
 
 
 
@@ -250,7 +275,15 @@ IManifest::FResult FManifestHLS::FindNextPlayPeriod(TSharedPtrTS<IPlayPeriod>& O
 	return IManifest::FResult(IManifest::FResult::EType::PastEOS);
 }
 
+void FManifestHLS::TriggerClockSync(IManifest::EClockSyncType InClockSyncType)
+{
+	// No-op.
+}
 
+void FManifestHLS::TriggerPlaylistRefresh()
+{
+	// No-op.
+}
 
 /**
  * Creates a stream reader for the media segments.
@@ -421,12 +454,20 @@ void FPlayPeriodHLS::PrepareForPlay()
 
 	// Set up source buffer information for video and audio.
 	// These are currently dummies since we do not support track switching yet.
-	CurrentSourceBufferInfoVideo = MakeSharedTS<FBufferSourceInfo>();
-	CurrentSourceBufferInfoAudio = MakeSharedTS<FBufferSourceInfo>();
-	CurrentSourceBufferInfoVideo->PeriodAdaptationSetID = TEXT("video.0");
-	CurrentSourceBufferInfoVideo->HardIndex = 0;
-	CurrentSourceBufferInfoAudio->PeriodAdaptationSetID = TEXT("audio.0");
-	CurrentSourceBufferInfoAudio->HardIndex = 0;
+	if (ActiveVideoUniqueID)
+	{
+		CurrentSourceBufferInfoVideo = MakeSharedTS<FBufferSourceInfo>();
+		CurrentSourceBufferInfoVideo->PeriodID = InternalManifest->CurrentMediaAsset->GetAssetIdentifier();
+		CurrentSourceBufferInfoVideo->PeriodAdaptationSetID = TEXT("video.0");
+		CurrentSourceBufferInfoVideo->HardIndex = 0;
+	}
+	if (ActiveAudioUniqueID)
+	{
+		CurrentSourceBufferInfoAudio = MakeSharedTS<FBufferSourceInfo>();
+		CurrentSourceBufferInfoAudio->PeriodID = InternalManifest->CurrentMediaAsset->GetAssetIdentifier();
+		CurrentSourceBufferInfoAudio->PeriodAdaptationSetID = TEXT("audio.0");
+		CurrentSourceBufferInfoAudio->HardIndex = 0;
+	}
 
 	CurrentReadyState = IManifest::IPlayPeriod::EReadyState::IsReady;
 }
@@ -460,10 +501,10 @@ IManifest::FResult FPlayPeriodHLS::GetMediaStreamForID(TSharedPtrTS<FManifestHLS
 				{
 					OutPlaylist = Playlist;
 
-					// Playlist currently blacklisted?
-					if (Playlist->Internal.Blacklisted.IsValid())
+					// Playlist currently denylisted?
+					if (Playlist->Internal.Denylisted.IsValid())
 					{
-						// Return and assume a non-blacklisted stream will be selected.
+						// Return and assume a allowlist stream will be selected.
 						return IManifest::FResult().RetryAfterMilliseconds(50);
 					}
 					// Check the load state
@@ -738,6 +779,7 @@ IManifest::FResult FPlayPeriodHLS::FindSegment(TSharedPtrTS<FStreamSegmentReques
 			// If there is a playback range and we have reached it we are at EOS, regardless of whether this is a Live stream or not.
 			if (SearchParam.LastPTS.IsValid() && SegmentList[SelectedSegmentIndex].AbsoluteDateTime >= SearchParam.LastPTS)
 			{
+				Req->AbsoluteDateTime = SegmentList[SelectedSegmentIndex].AbsoluteDateTime;
 				Req->bIsEOSSegment = true;
 				OutRequest = Req;
 				return IManifest::FResult(IManifest::FResult::EType::PastEOS);
@@ -775,6 +817,7 @@ IManifest::FResult FPlayPeriodHLS::FindSegment(TSharedPtrTS<FStreamSegmentReques
 			// Unless this is a VOD list or it has as ENDLIST tag we have to try this later, assuming that an updated playlist has added additional segments.
 			if (InStream->PlaylistType == FManifestHLSInternal::FMediaStream::EPlaylistType::VOD || InStream->bHasListEnd)
 			{
+				Req->AbsoluteDateTime = SearchParam.Time;
 				Req->bIsEOSSegment = true;
 				OutRequest = Req;
 				return IManifest::FResult(IManifest::FResult::EType::PastEOS);
@@ -789,6 +832,7 @@ IManifest::FResult FPlayPeriodHLS::FindSegment(TSharedPtrTS<FStreamSegmentReques
 	else
 	{
 		// No segments is not really expected. If this occurs we assume the presentation has ended.
+		Req->AbsoluteDateTime = SearchParam.Time;
 		Req->bIsEOSSegment = true;
 		OutRequest = Req;
 		return IManifest::FResult(IManifest::FResult::EType::PastEOS);
@@ -801,7 +845,7 @@ IManifest::FResult FPlayPeriodHLS::GetStartingSegment(TSharedPtrTS<IStreamSegmen
 {
 	FManifestHLSInternal::ScopedLockPlaylists lock(InternalManifest);
 
-	RefreshBlacklistState();
+	RefreshDenylistState();
 
 	TSharedPtrTS<FManifestHLSInternal::FPlaylistBase>	VideoPlaylist;
 	TSharedPtrTS<FManifestHLSInternal::FPlaylistBase>	AudioPlaylist;
@@ -818,16 +862,15 @@ IManifest::FResult FPlayPeriodHLS::GetStartingSegment(TSharedPtrTS<IStreamSegmen
 		FSegSearchParam								SearchParam;
 
 		// Frame accurate seek required?
-		bool bFrameAccurateSearch = SessionServices->GetOptions().GetValue(OptionKeyFrameAccurateSeek).SafeGetBool(false);
+		bool bFrameAccurateSearch = StartPosition.Options.bFrameAccuracy;
 		if (bFrameAccurateSearch)
 		{
 			// Get the segment that starts on or before the search time.
 			SearchType = IManifest::ESearchType::Before;
 		}
 
-		// Get the end of the playback end, if any.
-		FTimeValue PlayRangeEnd = SessionServices->GetOptions().GetValue(OptionPlayRangeEnd).SafeGetTimeValue(FTimeValue::GetPositiveInfinity());
-
+		FTimeValue PlayRangeEnd = StartPosition.Options.PlaybackRange.End;
+		check(PlayRangeEnd.IsValid());
 
 		SearchParam.Time = StartPosition.Time;
 		SearchParam.LastPTS = PlayRangeEnd;
@@ -1005,23 +1048,14 @@ void FPlayPeriodHLS::IncreaseSegmentFetchDelay(const FTimeValue& IncreaseAmount)
 }
 
 
-IManifest::FResult FPlayPeriodHLS::GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& SequenceState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType)
+IManifest::FResult FPlayPeriodHLS::GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& SequenceState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType)
 {
-	if (InFinishedSegments.Num())
-	{
-		IManifest::FResult res = GetStartingSegment(OutSegment, SequenceState, StartPosition, SearchType);
-		if (res.GetType() == IManifest::FResult::EType::Found)
-		{
-			return res;
-		}
-	}
-	// Return past EOS when we can't loop to indicate we're really done now.
-	return IManifest::FResult(IManifest::FResult::EType::PastEOS);
+	return GetStartingSegment(OutSegment, SequenceState, StartPosition, SearchType);
 }
 
 
 
-IManifest::FResult FPlayPeriodHLS::GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, bool bRetry)
+IManifest::FResult FPlayPeriodHLS::GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, const FPlayStartOptions& Options, bool bRetry)
 {
 	// Need to have a current segment to find the next one.
 	if (!InCurrentSegment.IsValid())
@@ -1063,7 +1097,7 @@ IManifest::FResult FPlayPeriodHLS::GetNextOrRetrySegment(TSharedPtrTS<IStreamSeg
 		return IManifest::FResult(IManifest::FResult::EType::NotFound).SetErrorDetail(FErrorDetail().SetMessage(FString::Printf(TEXT("Cannot get next segment stream type \"%s\" since no stream is actively selected!"), GetStreamTypeName(CurrentRequest->GetType()))));
 	}
 
-	RefreshBlacklistState();
+	RefreshDenylistState();
 
 	TSharedPtrTS<FManifestHLSInternal::FMediaStream>	Stream;
 	TSharedPtrTS<FManifestHLSInternal::FPlaylistBase> Playlist;
@@ -1074,9 +1108,9 @@ IManifest::FResult FPlayPeriodHLS::GetNextOrRetrySegment(TSharedPtrTS<IStreamSeg
 		FSegSearchParam								SearchParam;
 
 		// Frame accurate seek required?
-		bool bFrameAccurateSearch = SessionServices->GetOptions().GetValue(OptionKeyFrameAccurateSeek).SafeGetBool(false);
-		// Get the end of the playback end, if any.
-		FTimeValue PlayRangeEnd = SessionServices->GetOptions().GetValue(OptionPlayRangeEnd).SafeGetTimeValue(FTimeValue::GetPositiveInfinity());
+		bool bFrameAccurateSearch = Options.bFrameAccuracy;
+		FTimeValue PlayRangeEnd = Options.PlaybackRange.End;
+		check(PlayRangeEnd.IsValid());
 		SearchParam.LastPTS = PlayRangeEnd;
 		SearchParam.bFrameAccurateSearch = bFrameAccurateSearch;
 
@@ -1146,16 +1180,17 @@ IManifest::FResult FPlayPeriodHLS::GetNextOrRetrySegment(TSharedPtrTS<IStreamSeg
  *
  * @param OutSegment
  * @param InCurrentSegment
+ * @param Options
  *
  * @return
  */
-IManifest::FResult FPlayPeriodHLS::GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment)
+IManifest::FResult FPlayPeriodHLS::GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, const FPlayStartOptions& Options)
 {
-	return GetNextOrRetrySegment(OutSegment, InCurrentSegment, false);
+	return GetNextOrRetrySegment(OutSegment, InCurrentSegment, Options, false);
 }
 
 
-IManifest::FResult FPlayPeriodHLS::GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, bool bReplaceWithFillerData)
+IManifest::FResult FPlayPeriodHLS::GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, const FPlayStartOptions& Options, bool bReplaceWithFillerData)
 {
 	// To insert filler data we can use the current request over again.
 	if (bReplaceWithFillerData)
@@ -1169,14 +1204,14 @@ IManifest::FResult FPlayPeriodHLS::GetRetrySegment(TSharedPtrTS<IStreamSegment>&
 		OutSegment = NewRequest;
 		return IManifest::FResult(IManifest::FResult::EType::Found);
 	}
-	return GetNextOrRetrySegment(OutSegment, InCurrentSegment, true);
+	return GetNextOrRetrySegment(OutSegment, InCurrentSegment, Options, true);
 }
 
 
 /**
- * Checks if any potentially blacklisted stream can be used again.
+ * Checks if any potentially denylisted stream can be used again.
  */
-void FPlayPeriodHLS::RefreshBlacklistState()
+void FPlayPeriodHLS::RefreshDenylistState()
 {
 	FTimeValue Now = SessionServices->GetSynchronizedUTCTime()->GetTime();
 
@@ -1186,9 +1221,9 @@ void FPlayPeriodHLS::RefreshBlacklistState()
 		TSharedPtrTS<FManifestHLSInternal::FRendition::FPlaylistBase> Stream = It.Value().Pin();
 		if (Stream.IsValid())
 		{
-			if (Stream->Internal.Blacklisted.IsValid())
+			if (Stream->Internal.Denylisted.IsValid())
 			{
-				if (Now >= Stream->Internal.Blacklisted->BecomesAvailableAgainAtUTC)
+				if (Now >= Stream->Internal.Denylisted->BecomesAvailableAgainAtUTC)
 				{
 					Stream->Internal.LoadState  	  = FManifestHLSInternal::FPlaylistBase::FInternal::ELoadState::NotLoaded;
 					Stream->Internal.bReloadTriggered = false;
@@ -1197,10 +1232,10 @@ void FPlayPeriodHLS::RefreshBlacklistState()
 
 					// Tell the stream selector that this stream is available again.
 					TSharedPtrTS<IAdaptiveStreamSelector> StreamSelector(SessionServices->GetStreamSelector());
-					StreamSelector->MarkStreamAsAvailable(Stream->Internal.Blacklisted->AssetIDs);
+					StreamSelector->MarkStreamAsAvailable(Stream->Internal.Denylisted->AssetIDs);
 
-					Stream->Internal.Blacklisted.Reset();
-					LogMessage(IInfoLog::ELevel::Info, FString::Printf(TEXT("Lifting blacklist of playlist \"%s\""), *Stream->Internal.PlaylistLoadRequest.URL));
+					Stream->Internal.Denylisted.Reset();
+					LogMessage(IInfoLog::ELevel::Info, FString::Printf(TEXT("Lifting denylist of playlist \"%s\""), *Stream->Internal.PlaylistLoadRequest.URL));
 				}
 			}
 		}
@@ -1366,7 +1401,7 @@ TSharedPtrTS<ITimelineMediaAsset> FPlayPeriodHLS::GetMediaAsset() const
 
 void FPlayPeriodHLS::SelectStream(const FString& AdaptationSetID, const FString& RepresentationID)
 {
-	RefreshBlacklistState();
+	RefreshDenylistState();
 
 	// The representation ID is the unique ID of the stream as a string. Convert it back
 	uint32 UniqueID;
@@ -1403,7 +1438,10 @@ void FPlayPeriodHLS::SelectStream(const FString& AdaptationSetID, const FString&
 	}
 }
 
+void FPlayPeriodHLS::TriggerInitSegmentPreload(const TArray<FInitSegmentPreload>& InitSegmentsToPreload)
+{
+	// No-op
+}
+
 
 } // namespace Electra
-
-

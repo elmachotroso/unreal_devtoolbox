@@ -97,6 +97,9 @@ typedef GLfloat GLdouble;
 #ifndef GL_MAX_TEXTURE_BUFFER_SIZE
 #define GL_MAX_TEXTURE_BUFFER_SIZE 0x8C2B
 #endif
+#ifndef GL_DEPTH_CLAMP
+#define GL_DEPTH_CLAMP 0x864F
+#endif
 
 /** For the shader stage bits that don't exist just use 0 */
 #define GL_GEOMETRY_SHADER_BIT				0x00000000
@@ -217,6 +220,7 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE bool SupportsRGB10A2() { return bSupportsRGB10A2; }
 	static FORCEINLINE bool SupportsDrawIndirect() { return true; }
 	static FORCEINLINE bool SupportsBufferStorage() { return bSupportsBufferStorage; }
+	static FORCEINLINE bool SupportsDepthClamp() { return bSupportsDepthClamp; }
 	
 
 	static FORCEINLINE bool HasBinaryProgramRetrievalFailed() { return bBinaryProgramRetrievalFailed; }
@@ -377,6 +381,12 @@ struct FOpenGLES : public FOpenGLBase
 	{
 		glTexStorage2DMultisample(Target, Samples, InternalFormat, Width, Height, FixedSampleLocations);
 		return true;
+	}
+
+	static FORCEINLINE void RenderbufferStorageMultisample(GLenum Target, GLsizei Samples, GLint InternalFormat, GLsizei Width, GLsizei Height)
+	{
+		check(glRenderbufferStorageMultisampleEXT);
+		glRenderbufferStorageMultisampleEXT(Target, Samples, InternalFormat, Width, Height);
 	}
 
 	static FORCEINLINE void ClearBufferfv(GLenum Buffer, GLint DrawBufferIndex, const GLfloat* Value)
@@ -653,6 +663,24 @@ struct FOpenGLES : public FOpenGLBase
 		VERIFY_GL(FramebufferTexture_2D);
 	}
 
+	static FORCEINLINE void FramebufferTexture2DMultisample(GLenum Target, GLenum Attachment, GLenum TexTarget, GLuint Texture, GLint Level, GLint NumSamples)
+	{
+		check(glFramebufferTexture2DMultisampleEXT != nullptr);
+		glFramebufferTexture2DMultisampleEXT(Target, Attachment, TexTarget, Texture, Level, NumSamples);
+	}
+
+	static FORCEINLINE void FramebufferTextureMultiviewOVR(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLint BaseViewIndex, GLsizei NumViews)
+	{
+		check(glFramebufferTextureMultiviewOVR);
+		glFramebufferTextureMultiviewOVR(Target, Attachment, Texture, Level, BaseViewIndex, NumViews);
+	}
+	
+	static FORCEINLINE void FramebufferTextureMultisampleMultiviewOVR(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLsizei NumSamples, GLint BaseViewIndex, GLsizei NumViews)
+	{
+		check(glFramebufferTextureMultisampleMultiviewOVR);
+		glFramebufferTextureMultisampleMultiviewOVR(Target, Attachment, Texture, Level, NumSamples, BaseViewIndex, NumViews);
+	}
+
 	static FORCEINLINE void BlitFramebuffer(GLint SrcX0, GLint SrcY0, GLint SrcX1, GLint SrcY1, GLint DstX0, GLint DstY0, GLint DstX1, GLint DstY1, GLbitfield Mask, GLenum Filter)
 	{
 		glBlitFramebuffer(SrcX0, SrcY0, SrcX1, SrcY1, DstX0, DstY0, DstX1, DstY1, Mask, Filter);
@@ -835,6 +863,9 @@ public:
 	/** GL_EXT_buffer_storage */
 	static bool bSupportsBufferStorage;
 
+	/** GL_EXT_depth_clamp */
+	static bool bSupportsDepthClamp;
+
 	enum class EFeatureLevelSupport : uint8
 	{
 		Invalid,	// no feature level has yet been determined
@@ -852,7 +883,6 @@ public:
 	/** Whether device supports mobile multi-view */
 	static bool bSupportsMobileMultiView;
 
-	static GLint MaxComputeTextureImageUnits;
 	static GLint MaxComputeUniformComponents;
 
 	static GLint MaxCombinedUAVUnits;

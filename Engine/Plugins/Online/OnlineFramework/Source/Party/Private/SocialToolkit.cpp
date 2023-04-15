@@ -13,6 +13,8 @@
 #include "OnlineSubsystemUtils.h"
 #include "Engine/LocalPlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SocialToolkit)
+
 #if WITH_EDITOR
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnStartRandomizeUserPresence, uint8 /*NumRandomUser*/, float /*TickerTimer*/);
 static FOnStartRandomizeUserPresence Debug_OnStartRandomizeUserPresenceEvent;
@@ -93,11 +95,8 @@ public:
 		{
 			// The external mappings will always be checked on the primary OSS, so we use the passed-in OSS as the target we want to map to
 			IOnlineSubsystem* OSS = GetOSS();
-			auto FindPlatformDescriptionByOssName = [OSS](const FSocialPlatformDescription& TestPlatformDescription)
-			{
-				return TestPlatformDescription.OnlineSubsystem == OSS->GetSubsystemName();
-			};
-			const FSocialPlatformDescription* PlatformDescription = OSS ? USocialSettings::GetSocialPlatformDescriptions().FindByPredicate(FindPlatformDescriptionByOssName) : nullptr;
+			check(OSS);
+			const FSocialPlatformDescription* PlatformDescription = OSS ? USocialSettings::GetSocialPlatformDescriptionForOnlineSubsystem(OSS->GetSubsystemName()) : nullptr;
 			IOnlineUserPtr PrimaryUserInterface = Toolkit->GetSocialOss(ESocialSubsystem::Primary)->GetUserInterface();
 			if (ensure(PlatformDescription && PrimaryUserInterface))
 			{
@@ -123,7 +122,7 @@ public:
 
 	void HandleQueryExternalIdMappingsComplete(bool bWasSuccessful, const FUniqueNetId&, const FExternalIdQueryOptions& QueryOptions, const TArray<FString>& ExternalIds, const FString& ErrorStr)
 	{
-		UE_LOG(LogParty, Log, TEXT("FSocialQuery_MapExternalIds completed query for [%d] users on subsystem [%s] with error [%s]"), ExternalIds.Num(), ToString(SubsystemType), *ErrorStr);
+		UE_LOG(LogParty, Log, TEXT("FSocialQuery_MapExternalIds completed query for [%d] users Subsystem=[%s] bWasSuccessful=[%s] Error=[%s]"), ExternalIds.Num(), ToString(SubsystemType), *LexToString(bWasSuccessful), *ErrorStr);
 
 		if (bWasSuccessful)
 		{
@@ -324,8 +323,8 @@ USocialManager& USocialToolkit::GetSocialManager() const
 
 ULocalPlayer& USocialToolkit::GetOwningLocalPlayer() const
 {
-	check(LocalPlayerOwner);
-	return *LocalPlayerOwner;
+	check(LocalPlayerOwner.IsValid());
+	return *LocalPlayerOwner.Get();
 }
 
 USocialUser* USocialToolkit::FindUser(const FUniqueNetIdRepl& UserId) const
@@ -342,6 +341,10 @@ void USocialToolkit::TrySendFriendInvite(const FString& DisplayNameOrEmail) cons
 	{
 		IOnlineUser::FOnQueryUserMappingComplete QueryCompleteDelegate = IOnlineUser::FOnQueryUserMappingComplete::CreateUObject(const_cast<USocialToolkit*>(this), &USocialToolkit::HandleQueryPrimaryUserIdMappingComplete);
 		UserInterface->QueryUserIdMapping(*GetLocalUserNetId(ESocialSubsystem::Primary), DisplayNameOrEmail, QueryCompleteDelegate);
+	}
+	else
+	{
+		UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] failed to execute TrySendFriendInvite."), GetLocalUserNum());
 	}
 }
 
@@ -425,11 +428,8 @@ void USocialToolkit::QueueUserDependentActionInternal(const FUniqueNetIdRepl& Su
 			IOnlineUserPtr UserInterface = Online::GetUserInterfaceChecked(GetWorld(), USocialManager::GetSocialOssName(ESocialSubsystem::Primary));
 
 			IOnlineSubsystem* OSS = GetSocialOss(SubsystemType);
-			auto FindPlatformDescriptionByOssName = [OSS](const FSocialPlatformDescription& TestPlatformDescription)
-			{
-				return TestPlatformDescription.OnlineSubsystem == OSS->GetSubsystemName();
-			};
-			const FSocialPlatformDescription* PlatformDescription = OSS ? USocialSettings::GetSocialPlatformDescriptions().FindByPredicate(FindPlatformDescriptionByOssName) : nullptr;
+			check(OSS);
+			const FSocialPlatformDescription* PlatformDescription = OSS ? USocialSettings::GetSocialPlatformDescriptionForOnlineSubsystem(OSS->GetSubsystemName()) : nullptr;
 			
 			FExternalIdQueryOptions QueryOptions;
 			QueryOptions.AuthType = PlatformDescription ? PlatformDescription->ExternalAccountType : FString();
@@ -516,31 +516,67 @@ bool USocialToolkit::TrySendFriendInvite(USocialUser& SocialUser, ESocialSubsyst
 		OnFriendInviteSent().Broadcast(SocialUser, SubsystemType);
 		return true;
 	}
-	else if (!SocialUser.IsFriend(SubsystemType))
+	else if (!SocialUser.IsFriend(SubsystemType) && !IsFriendshipRestricted(SocialUser, SubsystemType))
 	{
-		IOnlineFriendsPtr FriendsInterface = Online::GetFriendsInterface(GetWorld(), USocialManager::GetSocialOssName(SubsystemType));
-		const FUniqueNetIdRepl SubsystemId = SocialUser.GetUserId(SubsystemType);
-
-		const bool bIsFriendshipRestricted = IsFriendshipRestricted(SocialUser, SubsystemType);
-
-		if (FriendsInterface && SubsystemId.IsValid() && !bIsFriendshipRestricted)
-		{
-			return FriendsInterface->SendInvite(GetLocalUserNum(), *SubsystemId, FriendListToQuery, FOnSendInviteComplete::CreateUObject(const_cast<USocialToolkit*>(this), &USocialToolkit::HandleFriendInviteSent, SubsystemType, SocialUser.GetDisplayName()));
-		}
+		return SendFriendInviteInternal(SocialUser, SubsystemType);
 	}
-	return false;
+	else
+	{
+		return false;
+	}
 }
+
+
+bool USocialToolkit::SendFriendInviteInternal(USocialUser& SocialUser, ESocialSubsystem SubsystemType) const
+{
+	IOnlineFriendsPtr FriendsInterface = Online::GetFriendsInterface(GetWorld(), USocialManager::GetSocialOssName(SubsystemType));
+	const FUniqueNetIdRepl SocialUserSubsystemId = SocialUser.GetUserId(SubsystemType);
+	if (FriendsInterface && SocialUserSubsystemId.IsValid())
+	{
+		return FriendsInterface->SendInvite(
+			GetLocalUserNum(), 
+			*SocialUserSubsystemId, 
+			FriendListToQuery, 
+			FOnSendInviteComplete::CreateUObject(
+				const_cast<USocialToolkit*>(this), 
+				&USocialToolkit::HandleSendFriendInviteComplete, 
+				SubsystemType, 
+				SocialUser.GetDisplayName()
+			)
+		);
+	}
+	else
+	{
+		return false;
+	}
+}
+
 
 bool USocialToolkit::AcceptFriendInvite(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const
 {
 	if (SocialUser.GetFriendInviteStatus(SubsystemType) == EInviteStatus::PendingInbound)
 	{
-		IOnlineFriendsPtr FriendsInterface = GetSocialOss(SubsystemType)->GetFriendsInterface();
-		check(FriendsInterface.IsValid());
-
-		return FriendsInterface->AcceptInvite(GetLocalUserNum(), *SocialUser.GetUserId(SubsystemType), EFriendsLists::ToString(EFriendsLists::Default), FOnAcceptInviteComplete::CreateUObject(const_cast<USocialToolkit*>(this), &USocialToolkit::HandleAcceptFriendInviteComplete));
+		return AcceptFriendInviteInternal(SocialUser, SubsystemType);
 	}
-	return false;
+	else
+	{
+		return false;
+	}
+}
+
+bool USocialToolkit::AcceptFriendInviteInternal(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const
+{
+	IOnlineFriendsPtr FriendsInterface = GetSocialOss(SubsystemType)->GetFriendsInterface();
+	check(FriendsInterface.IsValid());
+	return FriendsInterface->AcceptInvite(
+		GetLocalUserNum(),
+		*SocialUser.GetUserId(SubsystemType),
+		EFriendsLists::ToString(EFriendsLists::Default),
+		FOnAcceptInviteComplete::CreateUObject(
+			const_cast<USocialToolkit*>(this),
+			&USocialToolkit::HandleAcceptFriendInviteComplete
+		)
+	);
 }
 
 bool USocialToolkit::IsFriendshipRestricted(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const
@@ -764,7 +800,7 @@ void USocialToolkit::HandlePlayerLoginStatusChanged(int32 LocalUserNum, ELoginSt
 
 void USocialToolkit::HandleReadFriendsListComplete(int32 LocalUserNum, bool bWasSuccessful, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType)
 {
-	UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying friends list [%s] on subsystem [%s] with error [%s]."), GetLocalUserNum(), *ListName, ToString(SubsystemType), *ErrorStr);
+	UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying friends list ListName=[%s] Subsystem=[%s] bWasSuccessful=[%s] Error=[%s]."), GetLocalUserNum(), *ListName, ToString(SubsystemType), *LexToString(bWasSuccessful), *ErrorStr);
 	if (bWasSuccessful)
 	{
 		TArray<TSharedRef<FOnlineFriend>> FriendsList;
@@ -790,7 +826,7 @@ void USocialToolkit::HandleQueryBlockedPlayersComplete(const FUniqueNetId& UserI
 {
 	if (UserId == *GetLocalUserNetId(SubsystemType))
 	{
-		UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying blocked players on subsystem [%s] with error [%s]."), GetLocalUserNum(), ToString(SubsystemType), *ErrorStr);
+		UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying blocked players Subsystem=[%s] bWasSuccessful=[%s] Error=[%s]."), GetLocalUserNum(), ToString(SubsystemType), *LexToString(bWasSuccessful), *ErrorStr);
 
 		if (bWasSuccessful)
 		{
@@ -815,7 +851,7 @@ void USocialToolkit::HandleQueryRecentPlayersComplete(const FUniqueNetId& UserId
 {
 	if (UserId == *GetLocalUserNetId(SubsystemType))
 	{
-		UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying recent player list [%s] on subsystem [%s] with error [%s]."), GetLocalUserNum(), *Namespace, ToString(SubsystemType), *ErrorStr);
+		UE_LOG(LogParty, Log, TEXT("SocialToolkit [%d] finished querying recent player list Namespace=[%s] Subsystem=[%s] bWasSuccessful=[%s] Error=[%s]."), GetLocalUserNum(), *Namespace, ToString(SubsystemType), *LexToString(bWasSuccessful), *ErrorStr);
 
 		if (bWasSuccessful)
 		{
@@ -976,7 +1012,7 @@ void USocialToolkit::HandleFriendInviteRejected(const FUniqueNetId& LocalUserId,
 	}
 }
 
-void USocialToolkit::HandleFriendInviteSent(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InvitedUserId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType, FString DisplayName)
+void USocialToolkit::HandleSendFriendInviteComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InvitedUserId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType, FString DisplayName)
 {
 	if (bWasSuccessful)
 	{
@@ -1028,6 +1064,11 @@ void USocialToolkit::HandleAcceptFriendInviteComplete(int32 LocalUserNum, bool b
 	OnAcceptFriendInviteComplete(InviterUserId, bWasSuccessful, ErrorStr);
 }
 
+const bool USocialToolkit::IsInviteAllowedFromUser(const USocialUser& User, const TSharedRef<const IOnlinePartyJoinInfo>& InvitePtr) const
+{
+  return User.IsFriend(ESocialSubsystem::Primary);
+}
+
 void USocialToolkit::HandlePartyInviteReceived(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& Invite)
 {
 	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
@@ -1038,7 +1079,7 @@ void USocialToolkit::HandlePartyInviteReceived(const FUniqueNetId& LocalUserId, 
 		QueueUserDependentActionInternal(Invite.GetSourceUserId(), ESocialSubsystem::Primary,
 			[this, Invite = Invite.AsShared()] (USocialUser& User)
 			{
-				if (User.IsFriend(ESocialSubsystem::Primary))
+				if (IsInviteAllowedFromUser(User, Invite))
 				{
 #if PARTY_PLATFORM_INVITE_PERMISSIONS
 					CanReceiveInviteFrom(User, Invite, [this, Invite, UserId = User.GetUserId(ESocialSubsystem::Primary)](const bool bResult)
@@ -1166,29 +1207,6 @@ void USocialToolkit::HandleExistingPartyInvites(ESocialSubsystem SubsystemType)
 	}
 }
 
-void USocialToolkit::RequestToJoinParty(USocialUser& SocialUser)
-{
-	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-	PartyInterface->RequestToJoinParty(*GetLocalUserNetId(ESocialSubsystem::Primary), IOnlinePartySystem::GetPrimaryPartyTypeId(), *SocialUser.GetUserId(ESocialSubsystem::Primary), FOnRequestToJoinPartyComplete::CreateUObject(this, &USocialToolkit::HandlePartyRequestToJoinSent));
-}
-
-void USocialToolkit::HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result)
-{
-	UE_LOG(LogParty, VeryVerbose, TEXT("%s - User [%s] sent a join request to [%s] with result[%s]"), ANSI_TO_TCHAR(__FUNCTION__), *LocalUserId.ToDebugString(), *PartyLeaderId.ToDebugString(), ToString(Result));
-
-	if (Result == ERequestToJoinPartyCompletionResult::Succeeded)
-	{
-		QueueUserDependentActionInternal(PartyLeaderId.AsShared(), ESocialSubsystem::Primary,
-			[this, ExpiresAt](USocialUser& SocialUser)
-			{
-				SocialUser.HandleRequestToJoinSent(ExpiresAt);
-				OnPartyRequestToJoinSent().Broadcast(SocialUser);
-			});
-	}
-
-	OnRequestToJoinPartyComplete(PartyLeaderId, Result);
-}
-
 void USocialToolkit::HandlePartyRequestToJoinReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request)
 {
 	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
@@ -1196,8 +1214,17 @@ void USocialToolkit::HandlePartyRequestToJoinReceived(const FUniqueNetId& LocalU
 		QueueUserDependentActionInternal(RequesterId.AsShared(), ESocialSubsystem::Primary,
 			[this, RequestRef = Request.AsShared()](USocialUser& User)
 			{
-				User.HandleRequestToJoinReceived(*RequestRef);
-				OnPartyRequestToJoinReceived().Broadcast(User, RequestRef);
+				// The requesting user won't know they're blocked, so we can't prevent their request from being sent.
+				// Instead, ignore the request at the receiving end.
+				if (!User.IsBlocked())
+				{
+					User.HandleRequestToJoinReceived(*RequestRef);
+					OnPartyRequestToJoinReceived().Broadcast(User, RequestRef);
+				}
+				else
+				{
+					UE_LOG(LogParty, VeryVerbose, TEXT("%s - Join request from blocked user [%s] ignored"), ANSI_TO_TCHAR(__FUNCTION__), *User.GetUserId(ESocialSubsystem::Primary).ToDebugString());
+				}
 			});
 	}
 }

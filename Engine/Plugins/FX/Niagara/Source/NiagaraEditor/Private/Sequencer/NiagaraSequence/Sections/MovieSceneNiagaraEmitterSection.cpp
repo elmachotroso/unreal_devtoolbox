@@ -13,6 +13,8 @@
 
 #include "Channels/MovieSceneChannelProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraEmitterSection)
+
 #define LOCTEXT_NAMESPACE "MovieSceneNiagaraEmitterTimedSection"
 
 FName TimelineModeKey("TimelineMode");
@@ -157,7 +159,7 @@ bool UMovieSceneNiagaraEmitterSection::TryAddTimeRangeModule(UNiagaraNodeFunctio
 	}
 
 	SectionTimingModule = &InModule;
-	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetInstance()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
+	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetEmitterData()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
 	UNiagaraScript* SystemUpdateScript = GetSystemViewModel().GetSystem().GetSystemUpdateScript();
 	TArray<UNiagaraScript*> BinderDependentScripts;
 	BinderDependentScripts.Add(SystemUpdateScript);
@@ -241,7 +243,7 @@ bool UMovieSceneNiagaraEmitterSection::TryAddKeyModule(UNiagaraNodeFunctionCall&
 
 bool UMovieSceneNiagaraEmitterSection::TrySetupModuleAndBinders(UNiagaraNodeFunctionCall& InModule, FModuleAndBinders& InOutModuleAndBinders, FText& OutErrorMessage)
 {
-	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetInstance()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
+	UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetEmitterData()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
 	UNiagaraScript* SystemUpdateScript = GetSystemViewModel().GetSystem().GetSystemUpdateScript();
 	TArray<UNiagaraScript*> BinderDependentScripts;
 	BinderDependentScripts.Add(SystemUpdateScript);
@@ -458,7 +460,7 @@ void UMovieSceneNiagaraEmitterSection::UpdateKeyModulesFromSection(FChannelAndMo
 	// Create new modules for new keys.
 	if (NewKeysIndices.Num() > 0)
 	{
-		UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetInstance()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
+		UNiagaraScript* EmitterUpdateScript = GetEmitterHandleViewModel()->GetEmitterHandle()->GetEmitterData()->GetScript(ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
 		UNiagaraScript* SystemUpdateScript = GetSystemViewModel().GetSystem().GetSystemUpdateScript();
 		TArray<UNiagaraScript*> BinderDependentScripts;
 		BinderDependentScripts.Add(SystemUpdateScript);

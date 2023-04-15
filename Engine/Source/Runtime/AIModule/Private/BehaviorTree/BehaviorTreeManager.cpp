@@ -15,6 +15,9 @@
 #include "BehaviorTree/BTCompositeNode.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BehaviorTreeManager)
+
 #if WITH_EDITOR
 #include "Kismet2/KismetEditorUtilities.h"
 #endif // WITH_EDITOR
@@ -97,8 +100,8 @@ static void MergeDecoratorOpsHelper(TArray<FBTDecoratorLogic>& LinkOps, const TA
 	if (NumOriginalDecorators > 0)
 	{
 		// and operator for two groups of composites: original and new one
-		FBTDecoratorLogic MasterAndOp(EBTDecoratorLogic::And, LinkOps.Num() ? 2 : (NumOriginalDecorators + 1));
-		LinkOps.Insert(MasterAndOp, 0);
+		FBTDecoratorLogic MainAndOp(EBTDecoratorLogic::And, LinkOps.Num() ? 2 : (NumOriginalDecorators + 1));
+		LinkOps.Insert(MainAndOp, 0);
 
 		if (NumOriginalOps == 0)
 		{
@@ -526,3 +529,4 @@ UBehaviorTreeManager* UBehaviorTreeManager::GetCurrent(UObject* WorldContextObje
 	UAISystem* AISys = UAISystem::GetCurrentSafe(World);
 	return AISys ? AISys->GetBehaviorTreeManager() : nullptr;
 }
+

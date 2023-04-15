@@ -12,6 +12,8 @@
 
 #include "RigVMModel/Nodes/RigVMEnumNode.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigEnumNodeSpawner)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -55,6 +57,7 @@ UEdGraphNode* UControlRigEnumNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 	UControlRigGraphNode* NewNode = nullptr;
 
 	bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
+	bool const bIsUserFacingNode = !bIsTemplateNode;
 
 	if (bIsTemplateNode)
 	{
@@ -73,8 +76,6 @@ UEdGraphNode* UControlRigEnumNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 
 		return NewNode;
 	}
-
-	bool const bUndo = !bIsTemplateNode;
 
 	// First create a backing member for our node
 	UControlRigGraph* RigGraph = Cast<UControlRigGraph>(ParentGraph);
@@ -98,24 +99,28 @@ UEdGraphNode* UControlRigEnumNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 		Controller->OpenUndoBracket(FString::Printf(TEXT("Add '%s' Node"), *Name.ToString()));
 	}
 
-	if (URigVMEnumNode* ModelNode = Controller->AddEnumNode(*Enum->GetPathName(), Location, Name.ToString(), bUndo, !bIsTemplateNode))
+	if (URigVMEnumNode* ModelNode = Controller->AddEnumNode(*Enum->GetPathName(), Location, Name.ToString(), bIsUserFacingNode, !bIsTemplateNode))
 	{
 		NewNode = Cast<UControlRigGraphNode>(RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()));
 
-		if (NewNode && bUndo)
+		if (NewNode && bIsUserFacingNode)
 		{
 			Controller->ClearNodeSelection(true);
 			Controller->SelectNode(ModelNode, true, true);
 		}
 
-		if (bUndo)
+		if (bIsUserFacingNode)
 		{
 			Controller->CloseUndoBracket();
+		}
+		else
+		{
+			Controller->RemoveNode(ModelNode, false);
 		}
 	}
 	else
 	{
-		if (bUndo)
+		if (bIsUserFacingNode)
 		{
 			Controller->CancelUndoBracket();
 		}
@@ -126,3 +131,4 @@ UEdGraphNode* UControlRigEnumNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -6,6 +6,8 @@
 #include "VCamComponent.h"
 #include "UObject/UObjectBaseUtility.h"
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "UI/VCamWidget.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -59,12 +61,12 @@ void UVCamOutputProviderBase::Initialize()
 
 void UVCamOutputProviderBase::Deinitialize()
 {
-	if (IsOuterComponentEnabled() && bIsActive)
+	if (bInitialized)
 	{
 		Deactivate();
+		bInitialized = false;
 	}
 	
-	bInitialized = false;
 }
 
 void UVCamOutputProviderBase::Activate()
@@ -213,13 +215,28 @@ void UVCamOutputProviderBase::NotifyWidgetOfComponentChange() const
 	if (UMGWidget && UMGWidget->IsDisplayed())
 	{
 		UUserWidget* DisplayedWidget = UMGWidget->GetWidget();
-		if (DisplayedWidget && DisplayedWidget->Implements<UVCamModifierInterface>())
+		if (IsValid(DisplayedWidget))
 		{
-			if (UVCamComponent* OwningComponent = Cast<UVCamComponent>(this->GetOuter()))
+			if (UVCamComponent* OwningComponent = GetTypedOuter<UVCamComponent>())
 			{
-				UVCamComponent* CameraComponent = bIsActive ? OwningComponent : nullptr;
+				UVCamComponent* VCamComponent = bIsActive ? OwningComponent : nullptr;
 
-				IVCamModifierInterface::Execute_OnVCamComponentChanged(DisplayedWidget, CameraComponent);
+				if (DisplayedWidget->Implements<UVCamModifierInterface>())
+				{
+					IVCamModifierInterface::Execute_OnVCamComponentChanged(DisplayedWidget, VCamComponent);
+				}
+
+				// Find all VCam Widgets inside the displayed widget and Initialize them with the owning VCam Component
+				if (IsValid(DisplayedWidget->WidgetTree))
+				{
+					DisplayedWidget->WidgetTree->ForEachWidget([VCamComponent](UWidget* Widget)
+					{
+						if (UVCamWidget* VCamWidget = Cast<UVCamWidget>(Widget))
+						{
+							VCamWidget->InitializeConnections(VCamComponent);
+						}
+					});
+				}
 			}
 		}
 
@@ -298,9 +315,10 @@ TSharedPtr<SLevelViewport> UVCamOutputProviderBase::GetTargetLevelViewport() con
 
 void UVCamOutputProviderBase::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	FProperty* Property = PropertyChangedEvent.MemberProperty;
-
-	if (Property && PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	const FProperty* Property = PropertyChangedEvent.MemberProperty;
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject)
+		&& Property
+		&& PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		static FName NAME_IsActive = GET_MEMBER_NAME_CHECKED(UVCamOutputProviderBase, bIsActive);
 		static FName NAME_UMGClass = GET_MEMBER_NAME_CHECKED(UVCamOutputProviderBase, UMGClass);

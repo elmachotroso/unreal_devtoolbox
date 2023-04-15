@@ -6,6 +6,7 @@
 #include "NetworkReplayStreaming.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Tickable.h"
+#include "HttpNetworkReplayStreaming.generated.h"
 
 class FHttpNetworkReplayStreamer;
 
@@ -197,11 +198,30 @@ public:
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
+UENUM()
+enum class EHttpReplayResult : uint32
+{
+	Success,
+	FailedJsonParse,
+	DataUnavailable,
+	InvalidHttpResponse,
+	CompressionFailed,
+	DecompressionFailed,
+	InvalidPayload,
+	Unknown,
+};
+
+DECLARE_NETRESULT_ENUM(EHttpReplayResult);
+
+HTTPNETWORKREPLAYSTREAMING_API const TCHAR* LexToString(EHttpReplayResult Enum);
+
 /**
  * Http network replay streaming manager
  */
 class HTTPNETWORKREPLAYSTREAMING_API FHttpNetworkReplayStreamer : public INetworkReplayStreamer
 {
+	using FHttpReplayResult = UE::Net::TNetResult<EHttpReplayResult>;
+
 public:
 	FHttpNetworkReplayStreamer();
 
@@ -244,8 +264,8 @@ public:
 	virtual void		RenameReplay(const FString& ReplayName, const FString& NewName, const FRenameReplayCallback& Delegate) override;
 	virtual void		RenameReplay(const FString& ReplayName, const FString& NewName, const int32 UserIndex, const FRenameReplayCallback& Delegate) override;
 
-	virtual ENetworkReplayError::Type GetLastError() const override;
 	virtual FString		GetReplayID() const override { return SessionName; }
+	virtual EReplayStreamerState GetReplayStreamerState() const override { return StreamerState; }
 	virtual void		SetTimeBufferHintSeconds(const float InTimeBufferHintSeconds) override {}
 	virtual void		RefreshHeader() override;
 	virtual void		DownloadHeader(const FDownloadHeaderCallback& Delegate);
@@ -273,7 +293,11 @@ public:
 	void ConditionallyDownloadNextChunk();
 	void RefreshViewer( const bool bFinal );
 	void ConditionallyRefreshViewer();
-	void SetLastError( const ENetworkReplayError::Type InLastError );
+	
+	UE_DEPRECATED(5.1, "No longer used")
+	void SetLastError(const ENetworkReplayError::Type InLastError) { SetLastError(EHttpReplayResult::Unknown); }
+	void SetLastError(FHttpReplayResult&& Result);
+
 	virtual void CancelStreamingRequests();
 	void FlushCheckpointInternal( uint32 TimeInMS );
 	virtual void AddEvent( const uint32 TimeInMS, const FString& Group, const FString& Meta, const TArray<uint8>& Data ) override;
@@ -298,16 +322,8 @@ public:
 	void InternalGotoTimeInMS(const uint32 TimeInMS, const FGotoCallback& Delegate, bool bDelta);
 	void InternalGotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate, const FHttpRequestCompleteDelegate& RequestDelegate);
 
-	/** EStreamerState - Overall state of the streamer */
-	enum class EStreamerState
-	{
-		Idle,						// The streamer is idle. Either we haven't started streaming yet, or we are done
-		StreamingUp,				// We are in the process of streaming a replay to the http server
-		StreamingDown				// We are in the process of streaming a replay from the http server
-	};
-
 	/** Delegates */
-	void RequestFinished( EStreamerState ExpectedStreamerState, EQueuedHttpRequestType::Type ExpectedType, FHttpRequestPtr HttpRequest );
+	void RequestFinished(EReplayStreamerState ExpectedStreamerState, EQueuedHttpRequestType::Type ExpectedType, FHttpRequestPtr HttpRequest );
 
 	void HttpStartDownloadingFinished( FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded );
 	void HttpDownloadHeaderFinished( FHttpRequestPtr HttpRequest, FHttpResponsePtr HttpResponse, bool bSucceeded, FDownloadHeaderCallback Delegate);
@@ -347,7 +363,7 @@ public:
 	double					LastChunkTime;			// The last time we uploaded/downloaded a chunk
 	double					LastRefreshViewerTime;	// The last time we refreshed ourselves as an active viewer
 	double					LastRefreshCheckpointTime;
-	EStreamerState			StreamerState;			// Overall state of the streamer
+	EReplayStreamerState	StreamerState;			// Overall state of the streamer
 	bool					bStopStreamingCalled;
 	bool					bStreamIsLive;			// If true, we are viewing a live stream
 	FString					StreamMetadata;
@@ -358,8 +374,6 @@ public:
 	uint32					StreamTimeRangeEnd;
 	FString					ViewerName;
 	uint32					HighPriorityEndTime;
-
-	ENetworkReplayError::Type		StreamerLastError;
 
 	FStartStreamingCallback			StartStreamingDelegate;		// Delegate passed in to StartStreaming
 	FGotoCallback					GotoCheckpointDelegate;

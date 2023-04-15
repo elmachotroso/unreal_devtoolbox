@@ -17,11 +17,11 @@ class FShaderFormatD3D : public IShaderFormat
 {
 	enum
 	{
-		UE_SHADER_PCD3D_SHARED_VER = 2,
+		UE_SHADER_PCD3D_SHARED_VER = 4,
 
 		/** Version for shader format, this becomes part of the DDC key. */
-		UE_SHADER_PCD3D_SM6_VER = UE_SHADER_PCD3D_SHARED_VER + 2,
-		UE_SHADER_PCD3D_SM5_VER = UE_SHADER_PCD3D_SHARED_VER + 9,
+		UE_SHADER_PCD3D_SM6_VER = UE_SHADER_PCD3D_SHARED_VER + 6,
+		UE_SHADER_PCD3D_SM5_VER = UE_SHADER_PCD3D_SHARED_VER + 11,
 		UE_SHADER_PCD3D_ES3_1_VER = UE_SHADER_PCD3D_SHARED_VER + 8,
 		UE_SHADER_D3D_ES3_1_HOLOLENS_VER = UE_SHADER_PCD3D_ES3_1_VER,
 	};
@@ -116,12 +116,13 @@ public:
 	void ModifyShaderCompilerInput(FShaderCompilerInput& Input) const final
 	{
 		CheckFormat(Input.ShaderFormat);
-		if (Input.ShaderFormat == NAME_PCD3D_SM6)
+		if (Input.ShaderFormat == NAME_PCD3D_SM6 || Input.IsRayTracingShader())
 		{
 			Input.Environment.SetDefine(TEXT("SM6_PROFILE"), 1);
 			Input.Environment.SetDefine(TEXT("COMPILER_DXC"), 1);
+			Input.Environment.SetDefine(TEXT("PLATFORM_SUPPORTS_UB_STRUCT"), 1);
 
-			if (USE_SHADER_MODEL_6_6 && !Input.IsRayTracingShader())
+			if (USE_SHADER_MODEL_6_6)
 			{
 				AddShaderTargetDefines(Input, 6, 6);
 			}
@@ -134,14 +135,13 @@ public:
 		{
 			Input.Environment.SetDefine(TEXT("SM5_PROFILE"), 1);
 			const bool bUseDXC =
-				Input.IsRayTracingShader()
-				|| Input.Environment.CompilerFlags.Contains(CFLAG_WaveOperations)
+				Input.Environment.CompilerFlags.Contains(CFLAG_WaveOperations)
 				|| Input.Environment.CompilerFlags.Contains(CFLAG_ForceDXC);
 			Input.Environment.SetDefine(TEXT("COMPILER_DXC"), bUseDXC);
 
 			if (bUseDXC)
 			{
-				AddShaderTargetDefines(Input, 6, Input.IsRayTracingShader() ? 3 : 0);
+				AddShaderTargetDefines(Input, 6, 0);
 			}
 			else
 			{

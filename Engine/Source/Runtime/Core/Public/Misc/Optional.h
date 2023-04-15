@@ -8,6 +8,12 @@
 #include "Templates/UnrealTemplate.h"
 #include "Serialization/Archive.h"
 
+struct FNullOpt
+{
+	explicit constexpr FNullOpt(int) {}
+};
+constexpr FNullOpt NullOpt{0};
+
 /**
  * When we have an optional value IsSet() returns true, and GetValue() is meaningful.
  * Otherwise GetValue() is not meaningful.
@@ -18,7 +24,7 @@ struct TOptional
 public:
 	using ElementType = OptionalType;
 	
-	/** Construct an OptionaType with a valid value. */
+	/** Construct an OptionalType with a valid value. */
 	TOptional(const OptionalType& InValue)
 	{
 		new(&Value) OptionalType(InValue);
@@ -34,6 +40,12 @@ public:
 	{
 		new(&Value) OptionalType(Forward<ArgTypes>(Args)...);
 		bIsSet = true;
+	}
+	
+	/** Construct an OptionalType with an invalid value. */
+	TOptional(FNullOpt)
+		: bIsSet(false)
+	{
 	}
 
 	/** Construct an OptionalType with no value; i.e. unset */
@@ -199,6 +211,10 @@ public:
 
 	/** @return The optional value when set; DefaultValue otherwise. */
 	const OptionalType& Get(const OptionalType& DefaultValue) const { return IsSet() ? *(OptionalType*)&Value : DefaultValue; }
+
+	/** @return A pointer to the optional value when set, nullptr otherwise. */
+	OptionalType* GetPtrOrNull() { return IsSet() ? (OptionalType*)&Value : nullptr; }
+	const OptionalType* GetPtrOrNull() const { return IsSet() ? (const OptionalType*)&Value : nullptr; }
 
 private:
 	TTypeCompatibleBytes<OptionalType> Value;

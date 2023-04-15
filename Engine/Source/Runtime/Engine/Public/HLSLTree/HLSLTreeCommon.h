@@ -1,40 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#if WITH_EDITOR
+
 #include "HLSLTree/HLSLTree.h"
+#include "RHIDefinitions.h"
 
-enum class EMaterialParameterType : uint8;
-
-namespace UE
-{
-namespace HLSLTree
+namespace UE::HLSLTree
 {
 
-enum class EBinaryOp : uint8
+class FExpressionError : public FExpression
 {
-	None,
-	Add,
-	Sub,
-	Mul,
-	Div,
-	Less,
-};
-
-struct FBinaryOpDescription
-{
-	FBinaryOpDescription()
-		: Name(nullptr), Operator(nullptr)
+public:
+	explicit FExpressionError(FStringView InErrorMessage)
+		: ErrorMessage(InErrorMessage)
 	{}
 
-	FBinaryOpDescription(const TCHAR* InName, const TCHAR* InOperator)
-		: Name(InName), Operator(InOperator)
-	{}
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
 
-	const TCHAR* Name;
-	const TCHAR* Operator;
+	FStringView ErrorMessage;
 };
 
-FBinaryOpDescription GetBinaryOpDesription(EBinaryOp Op);
+/**
+ * Forwards all calls to the owned expression
+ * Intended to be used as a baseclass, where derived classes may hook certain method overrides
+ */
+class FExpressionForward : public FExpression
+{
+public:
+	explicit FExpressionForward(const FExpression* InExpression) : Expression(InExpression) {}
+
+	const FExpression* Expression;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
+};
 
 class FExpressionConstant : public FExpression
 {
@@ -45,367 +48,303 @@ public:
 
 	Shader::FValue Value;
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-class FExpressionMaterialParameter : public FExpression
+/** Forwards to another expression, but will fallback to the 'DefaultValue' constant if the forwarded expression fails */
+class FExpressionDefaultValue : public FExpressionForward
 {
 public:
-	explicit FExpressionMaterialParameter(EMaterialParameterType InType, const FName& InName, const Shader::FValue& InDefaultValue)
-		: ParameterName(InName), DefaultValue(InDefaultValue), ParameterType(InType)
+	explicit FExpressionDefaultValue(const FExpression* InExpression, const Shader::FValue& InDefaultValue)
+		: FExpressionForward(InExpression)
+		, DefaultValue(InDefaultValue)
 	{}
 
-	FName ParameterName;
 	Shader::FValue DefaultValue;
-	EMaterialParameterType ParameterType;
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-enum class EExternalInputType
-{
-	TexCoord0,
-	TexCoord1,
-	TexCoord2,
-	TexCoord3,
-	TexCoord4,
-	TexCoord5,
-	TexCoord6,
-	TexCoord7,
-};
-inline Shader::EValueType GetInputExpressionType(EExternalInputType Type)
-{
-	return Shader::EValueType::Float2;
-}
-inline EExternalInputType MakeInputTexCoord(int32 Index)
-{
-	check(Index >= 0 && Index < 8);
-	return (EExternalInputType)((int32)EExternalInputType::TexCoord0 + Index);
-}
-
-class FExpressionExternalInput : public FExpression
+class FExpressionGetStructField : public FExpression
 {
 public:
-	FExpressionExternalInput(EExternalInputType InInputType) : InputType(InInputType) {}
-
-	EExternalInputType InputType;
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
-};
-
-class FExpressionTextureSample : public FExpression
-{
-public:
-	FExpressionTextureSample(FTextureParameterDeclaration* InDeclaration, FExpression* InTexCoordExpression)
-		: Declaration(InDeclaration)
-		, TexCoordExpression(InTexCoordExpression)
-		, SamplerSource(SSM_FromTextureAsset)
-		, MipValueMode(TMVM_None)
-	{}
-
-	FTextureParameterDeclaration* Declaration;
-	FExpression* TexCoordExpression;
-	ESamplerSourceMode SamplerSource;
-	ETextureMipValueMode MipValueMode;
-
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
+	FExpressionGetStructField(const Shader::FStructType* InStructType, const Shader::FStructField* InField, const FExpression* InStructExpression)
+		: StructType(InStructType)
+		, Field(InField)
+		, StructExpression(InStructExpression)
 	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Declaration);
-			Visitor.VisitNode(TexCoordExpression);
-		}
-		return Result;
 	}
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	const Shader::FStructType* StructType;
+	const Shader::FStructField* Field;
+	const FExpression* StructExpression;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-class FExpressionDefaultMaterialAttributes : public FExpression
+class FExpressionSetStructField : public FExpression
 {
 public:
-	FExpressionDefaultMaterialAttributes() {}
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
-};
-
-class FExpressionSetMaterialAttribute : public FExpression
-{
-public:
-	FExpressionSetMaterialAttribute() {}
-
-	FGuid AttributeID;
-	FExpression* AttributesExpression;
-	FExpression* ValueExpression;
-
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
+	FExpressionSetStructField(const Shader::FStructType* InStructType, const Shader::FStructField* InField, const FExpression* InStructExpression, const FExpression* InFieldExpression)
+		: StructType(InStructType)
+		, Field(InField)
+		, StructExpression(InStructExpression)
+		, FieldExpression(InFieldExpression)
 	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(AttributesExpression);
-			Visitor.VisitNode(ValueExpression);
-		}
-		return Result;
+		check(InStructType);
+		check(InField);
 	}
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	const Shader::FStructType* StructType;
+	const Shader::FStructField* Field;
+	const FExpression* StructExpression;
+	const FExpression* FieldExpression;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
 class FExpressionSelect : public FExpression
 {
 public:
-	FExpressionSelect(FExpression* InCondition, FExpression* InTrue, FExpression* InFalse)
+	FExpressionSelect(const FExpression* InCondition, const FExpression* InTrue, const FExpression* InFalse)
 		: ConditionExpression(InCondition)
 		, TrueExpression(InTrue)
 		, FalseExpression(InFalse)
-	{}
-
-	FExpression* ConditionExpression;
-	FExpression* TrueExpression;
-	FExpression* FalseExpression;
-
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
 	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(ConditionExpression);
-			Visitor.VisitNode(TrueExpression);
-			Visitor.VisitNode(FalseExpression);
-		}
-		return Result;
+		check(ConditionExpression);
 	}
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	const FExpression* ConditionExpression;
+	const FExpression* TrueExpression;
+	const FExpression* FalseExpression;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-class FExpressionBinaryOp : public FExpression
+class FExpressionDerivative : public FExpression
 {
 public:
-	FExpressionBinaryOp(EBinaryOp InOp, FExpression* InLhs, FExpression* InRhs)
-		: Op(InOp)
-		, Lhs(InLhs)
-		, Rhs(InRhs)
-	{}
+	FExpressionDerivative(EDerivativeCoordinate InCoord, const FExpression* InInput) : Input(InInput), Coord(InCoord) {}
 
-	EBinaryOp Op;
-	FExpression* Lhs;
-	FExpression* Rhs;
+	const FExpression* Input;
+	EDerivativeCoordinate Coord;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Lhs);
-			Visitor.VisitNode(Rhs);
-		}
-		return Result;
-	}
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-struct FSwizzleParameters
-{
-	FSwizzleParameters() : NumComponents(0) { ComponentIndex[0] = ComponentIndex[1] = ComponentIndex[2] = ComponentIndex[3] = INDEX_NONE; }
-	FSwizzleParameters(int8 IndexR, int8 IndexG, int8 IndexB, int8 IndexA);
-
-	int8 ComponentIndex[4];
-	int32 NumComponents;
-};
 FSwizzleParameters MakeSwizzleMask(bool bInR, bool bInG, bool bInB, bool bInA);
 
 class FExpressionSwizzle : public FExpression
 {
 public:
-	FExpressionSwizzle(const FSwizzleParameters& InParams, FExpression* InInput)
+	FExpressionSwizzle(const FSwizzleParameters& InParams, const FExpression* InInput)
 		: Parameters(InParams)
 		, Input(InInput)
 	{}
 
 	FSwizzleParameters Parameters;
-	FExpression* Input;
+	const FExpression* Input;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Input);
-		}
-		return Result;
-	}
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
+};
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+/**
+ * Similar to FExpressionSwizzle, except swizzle parameters are extracted from a 'Mask' expression, which is expected to generate a 'bool4' component mask (which is then used to initialize a FSwizzleParameters)
+ * The 'Mask' input is required to be constant (otherwise an error is generated)
+ * This is used to support material StaticParameterMask expressions, in most cases FExpressionSwizzle is a better choice
+ */
+class FExpressionComponentMask : public FExpression
+{
+public:
+	FExpressionComponentMask(const FExpression* InInput, const FExpression* InMask)
+		: Input(InInput)
+		, Mask(InMask)
+	{}
+
+	const FExpression* Input;
+	const FExpression* Mask;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
 class FExpressionAppend : public FExpression
 {
 public:
-	FExpressionAppend(FExpression* InLhs, FExpression* InRhs)
+	FExpressionAppend(const FExpression* InLhs, const FExpression* InRhs)
 		: Lhs(InLhs)
 		, Rhs(InRhs)
 	{}
 
-	FExpression* Lhs;
-	FExpression* Rhs;
+	const FExpression* Lhs;
+	const FExpression* Rhs;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Lhs);
-			Visitor.VisitNode(Rhs);
-		}
-		return Result;
-	}
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
 };
 
-class FExpressionCast : public FExpression
+class FExpressionSwitchBase : public FExpression
 {
 public:
-	FExpressionCast(Shader::EValueType InType, FExpression* InInput, ECastFlags InFlags = ECastFlags::None)
-		: Type(InType)
-		, Input(InInput)
-		, Flags(InFlags)
+	static constexpr int8 MaxInputs = 8;
+
+	FExpressionSwitchBase(TConstArrayView<const FExpression*> InInputs) : NumInputs(static_cast<int8>(InInputs.Num()))
+	{
+		check(InInputs.Num() <= MaxInputs);
+		for (int32 i = 0; i < InInputs.Num(); ++i)
+		{
+			Input[i] = InInputs[i];
+		}
+	}
+
+	const FExpression* Input[MaxInputs] = { nullptr };
+	int8 NumInputs = 0;
+
+	virtual const FExpression* NewSwitch(FTree& Tree, TConstArrayView<const FExpression*> InInputs) const = 0;
+	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const = 0;
+
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
+	virtual const FExpression* ComputePreviousFrame(FTree& Tree, const FRequestedType& RequestedType) const override;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
+};
+
+class FExpressionFeatureLevelSwitch : public FExpressionSwitchBase
+{
+public:
+	static_assert(MaxInputs >= (int32)ERHIFeatureLevel::Num, "FExpressionSwitchBase is too small for FExpressionFeatureLevelSwitch");
+	FExpressionFeatureLevelSwitch(TConstArrayView<const FExpression*> InInputs) : FExpressionSwitchBase(InInputs)
+	{
+		check(InInputs.Num() == (int32)ERHIFeatureLevel::Num);
+	}
+
+	virtual const FExpression* NewSwitch(FTree& Tree, TConstArrayView<const FExpression*> InInputs) const override { return Tree.NewExpression<FExpressionFeatureLevelSwitch>(InInputs); }
+	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const override;
+};
+
+class FExpressionShadingPathSwitch : public FExpressionSwitchBase
+{
+public:
+	static_assert(MaxInputs >= (int32)ERHIShadingPath::Num, "FExpressionSwitchBase is too small for FExpressionShadingPathSwitch");
+	FExpressionShadingPathSwitch(TConstArrayView<const FExpression*> InInputs) : FExpressionSwitchBase(InInputs)
+	{
+		check(InInputs.Num() == (int32)ERHIShadingPath::Num);
+	}
+
+	virtual const FExpression* NewSwitch(FTree& Tree, TConstArrayView<const FExpression*> InInputs) const override { return Tree.NewExpression<FExpressionShadingPathSwitch>(InInputs); }
+	virtual bool IsInputActive(const FEmitContext& Context, int32 Index) const override;
+};
+
+/** Can be used to emit HLSL chunks with no inputs, where it's not worth the trouble of defining a new expression type */
+class FExpressionInlineCustomHLSL : public FExpression
+{
+public:
+	FExpressionInlineCustomHLSL(Shader::EValueType InType, FStringView InCode) : Code(InCode), ResultType(InType) {}
+
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
+
+	FStringView Code;
+	Shader::EValueType ResultType;
+};
+
+class FExpressionCustomHLSL : public FExpression
+{
+public:
+	FExpressionCustomHLSL(FStringView InDeclarationCode, FStringView InFunctionCode, TArrayView<FCustomHLSLInput> InInputs, const Shader::FStructType* InOutputStructType)
+		: DeclarationCode(InDeclarationCode)
+		, FunctionCode(InFunctionCode)
+		, Inputs(InInputs)
+		, OutputStructType(InOutputStructType)
 	{}
 
-	Shader::EValueType Type;
-	FExpression* Input;
-	ECastFlags Flags;
+	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
+	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Input);
-		}
-		return Result;
-	}
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	FStringView DeclarationCode;
+	FStringView FunctionCode;
+	TArray<FCustomHLSLInput, TInlineAllocator<8>> Inputs;
+	const Shader::FStructType* OutputStructType = nullptr;
 };
 
-class FExpressionReflectionVector : public FExpression
+class FStatementError : public FStatement
 {
 public:
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
-};
-
-class FExpressionFunctionInput : public FExpression
-{
-public:
-	FExpressionFunctionInput(const FName& InName, Shader::EValueType InType, int32 InIndex)
-		: Name(InName), Type(InType), InputIndex(InIndex)
+	explicit FStatementError(FStringView InErrorMessage)
+		: ErrorMessage(InErrorMessage)
 	{}
 
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
+	virtual bool Prepare(FEmitContext& Context, FEmitScope& Scope) const override;
 
-	FName Name;
-	Shader::EValueType Type;
-	int32 InputIndex;
-};
-
-class FExpressionFunctionOutput : public FExpression
-{
-public:
-	FExpressionFunctionOutput(FFunctionCall* InFunctionCall, int32 InIndex)
-		: FunctionCall(InFunctionCall)
-		, OutputIndex(InIndex)
-	{
-		check(InIndex >= 0 && InIndex < InFunctionCall->NumOutputs);
-	}
-
-	FFunctionCall* FunctionCall;
-	int32 OutputIndex;
-
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FExpression::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(FunctionCall);
-		}
-		return Result;
-	}
-
-	virtual bool EmitCode(FEmitContext& Context, FExpressionEmitResult& OutResult) const override;
-};
-
-class FStatementReturn : public FStatement
-{
-public:
-	FExpression* Expression;
-
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FStatement::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(Expression);
-		}
-		return Result;
-	}
-
-	virtual bool EmitHLSL(FEmitContext& Context) const override;
+	FStringView ErrorMessage;
 };
 
 class FStatementBreak : public FStatement
 {
 public:
-	virtual bool EmitHLSL(FEmitContext& Context) const override;
+	virtual bool Prepare(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitShader(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitPreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, TArrayView<const FEmitPreshaderScope> Scopes, Shader::FPreshaderData& OutPreshader) const override;
 };
 
 class FStatementIf : public FStatement
 {
 public:
-	FExpression* ConditionExpression;
+	const FExpression* ConditionExpression;
 	FScope* ThenScope;
 	FScope* ElseScope;
 	FScope* NextScope;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FStatement::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(ConditionExpression);
-			Visitor.VisitNode(ThenScope);
-			Visitor.VisitNode(ElseScope);
-			Visitor.VisitNode(NextScope);
-		}
-		return Result;
-	}
-
-	virtual bool EmitHLSL(FEmitContext& Context) const override;
+	virtual bool Prepare(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitShader(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitPreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, TArrayView<const FEmitPreshaderScope> Scopes, Shader::FPreshaderData& OutPreshader) const override;
 };
 
 class FStatementLoop : public FStatement
 {
 public:
+	FStatement* BreakStatement;
 	FScope* LoopScope;
 	FScope* NextScope;
 
-	virtual ENodeVisitResult Visit(FNodeVisitor& Visitor) override
-	{
-		const ENodeVisitResult Result = FStatement::Visit(Visitor);
-		if (ShouldVisitDependentNodes(Result))
-		{
-			Visitor.VisitNode(LoopScope);
-			Visitor.VisitNode(NextScope);
-		}
-		return Result;
-	}
-
-	virtual bool EmitHLSL(FEmitContext& Context) const override;
+	virtual bool IsLoop() const override { return true; }
+	virtual bool Prepare(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitShader(FEmitContext& Context, FEmitScope& Scope) const override;
+	virtual void EmitPreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, TArrayView<const FEmitPreshaderScope> Scopes, Shader::FPreshaderData& OutPreshader) const override;
 };
 
-}
-}
+} // namespace UE::HLSLTree
+
+#endif // WITH_EDITOR

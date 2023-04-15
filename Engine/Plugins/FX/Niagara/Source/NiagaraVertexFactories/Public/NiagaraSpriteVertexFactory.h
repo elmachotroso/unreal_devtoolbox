@@ -86,7 +86,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FNiagaraSpriteUniformParameters, NIAGARAVE
 	SHADER_PARAMETER(FVector4f, DefaultDynamicMaterialParameter3)
 	SHADER_PARAMETER(int, PixelCoverageEnabled)
 	SHADER_PARAMETER(FVector4f, PixelCoverageColorBlend)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
+	SHADER_PARAMETER(int, AccurateMotionVectors)
+	END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 typedef TUniformBufferRef<FNiagaraSpriteUniformParameters> FNiagaraSpriteUniformBufferRef;
 
@@ -100,7 +101,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraSpriteVFLooseParameters, NIAGARAVER
 	SHADER_PARAMETER_SRV(Buffer<float2>, CutoutGeometry)
 	SHADER_PARAMETER_SRV(Buffer<float>, NiagaraParticleDataFloat)
 	SHADER_PARAMETER_SRV(Buffer<float>, NiagaraParticleDataHalf)
-	SHADER_PARAMETER_SRV(Buffer<int>, SortedIndices)
+	SHADER_PARAMETER_SRV(Buffer<uint>, SortedIndices)
 	SHADER_PARAMETER_SRV(Buffer<uint>, IndirectArgsBuffer)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -152,7 +153,12 @@ public:
 	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
 	 */
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-	
+
+	/**
+	* Get vertex elements used when during PSO precaching materials using this vertex factory type
+	*/
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+
 	void SetTexCoordBuffer(const FVertexBuffer* InTexCoordBuffer);
 	
 	/**
@@ -240,26 +246,4 @@ private:
 
 	FShaderResourceViewRHIRef SortedIndicesSRV;
 	uint32 SortedIndicesOffset;
-};
-
-class NIAGARAVERTEXFACTORIES_API FNiagaraSpriteVertexFactoryEx : public FNiagaraSpriteVertexFactory
-{
-	DECLARE_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactoryEx);
-
-public:
-
-	FNiagaraSpriteVertexFactoryEx(ENiagaraVertexFactoryType InType, ERHIFeatureLevel::Type InFeatureLevel )
-		: FNiagaraSpriteVertexFactory(InType, InFeatureLevel)
-	{}
-
-	FNiagaraSpriteVertexFactoryEx()
-		: FNiagaraSpriteVertexFactory(NVFT_MAX, ERHIFeatureLevel::Num)
-	{}
-
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FNiagaraSpriteVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-
-		OutEnvironment.SetDefine(TEXT("ENABLE_PRECISE_MOTION_VECTORS"), TEXT("1"));
-	}
 };

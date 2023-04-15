@@ -5,6 +5,8 @@
 #include "Engine/Engine.h"
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_SpawnActor)
+
 
 UAbilityTask_SpawnActor::UAbilityTask_SpawnActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -66,7 +68,10 @@ void UAbilityTask_SpawnActor::FinishSpawningActor(UGameplayAbility* OwningAbilit
 			}
 		if (!bTransformSet)
 		{
-			SpawnTransform = AbilitySystemComponent->GetOwner()->GetTransform();
+			if (UAbilitySystemComponent* ASC = AbilitySystemComponent.Get())
+			{
+				SpawnTransform = ASC->GetOwner()->GetTransform();
+			}
 		}
 
 		SpawnedActor->FinishSpawning(SpawnTransform);
@@ -81,4 +86,5 @@ void UAbilityTask_SpawnActor::FinishSpawningActor(UGameplayAbility* OwningAbilit
 }
 
 // ---------------------------------------------------------------------------------------
+
 

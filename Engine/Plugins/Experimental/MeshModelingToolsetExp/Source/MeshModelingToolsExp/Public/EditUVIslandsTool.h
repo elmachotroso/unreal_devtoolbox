@@ -2,18 +2,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "BaseTools/MeshSurfacePointMeshEditingTool.h"
-#include "Properties/MeshMaterialProperties.h"
-#include "Components/DynamicMeshComponent.h"
-#include "DynamicMesh/DynamicMeshAABBTree3.h"
-#include "ToolDataVisualizer.h"
 #include "Changes/MeshVertexChange.h"
+#include "Components/DynamicMeshComponent.h"
+#include "CoreMinimal.h"
+#include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "GroupTopology.h"
+#include "ModelingTaskTypes.h"
+#include "Properties/MeshMaterialProperties.h"
 #include "Selection/GroupTopologySelector.h"
-#include "ModelingOperators/Public/ModelingTaskTypes.h"
-#include "Transforms/MultiTransformer.h"
 #include "Selection/PolygonSelectionMechanic.h"
+#include "ToolDataVisualizer.h"
+#include "Transforms/MultiTransformer.h"
 #include "EditUVIslandsTool.generated.h"
 
 class FMeshVertexChangeBuilder;
@@ -66,11 +66,6 @@ public:
 
 	virtual void RegisterActions(FInteractiveToolActionSet& ActionSet) override;
 
-	virtual void SetWorld(UWorld* World)
-	{
-		TargetWorld = World;
-	}
-
 	virtual void Setup() override;
 	virtual void Shutdown(EToolShutdownType ShutdownType) override;
 
@@ -100,9 +95,6 @@ public:
 	TObjectPtr<UMaterialInstanceDynamic> CheckerMaterial = nullptr;
 
 protected:
-
-	UPROPERTY()
-	TObjectPtr<UWorld> TargetWorld = nullptr;
 
 	UPROPERTY()
 	TObjectPtr<AInternalToolFrameworkActor> PreviewMeshActor = nullptr;

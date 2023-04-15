@@ -170,18 +170,17 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 		if (Formats[Index].colorSpace != RequestedColorSpace)
 		{
 			static const auto CVarHDROutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
-			int32 OutputDevice = CVarHDROutputDevice ? CVarHDROutputDevice->GetValueOnAnyThread() : 0;
-			// The possible values are documented in PostProcessTonemap.cpp, where the cvar is defined. They match the ETonemapperOutputDevice enum, which is defined in a header we cannot include.
+			EDisplayOutputFormat OutputDevice = CVarHDROutputDevice ? (EDisplayOutputFormat)CVarHDROutputDevice->GetValueOnAnyThread() : EDisplayOutputFormat::SDR_sRGB;
 			switch (OutputDevice)
 			{
-			case 0:
+			case EDisplayOutputFormat::SDR_sRGB:
 				RequestedColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 				break;
-			case 1:
+			case EDisplayOutputFormat::SDR_Rec709:
 				RequestedColorSpace = VK_COLOR_SPACE_BT709_NONLINEAR_EXT;
 				break;
-			case 3:
-			case 4:
+			case EDisplayOutputFormat::HDR_ACES_1000nit_ST2084:
+			case EDisplayOutputFormat::HDR_ACES_2000nit_ST2084:
 				RequestedColorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
 				break;
 			default:
@@ -255,7 +254,7 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 					{
 						InOutPixelFormat = (EPixelFormat)PFIndex;
 						CurrFormat = Formats[Index];
-						UE_LOG(LogVulkanRHI, Verbose, TEXT("No swapchain format requested, picking up VulkanFormat %d"), (uint32)CurrFormat.format);
+						UE_LOG(LogVulkanRHI, Verbose, TEXT("No swapchain format requested, picking up VulkanFormat %s"), VK_TYPE_TO_STRING(VkFormat, CurrFormat.format));
 						break;
 					}
 				}
@@ -420,12 +419,12 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 			}
 			else
 			{
-				UE_LOG(LogVulkanRHI, Warning, TEXT("Couldn't find desired PresentMode! Using %d"), static_cast<int32>(FoundPresentModes[0]));
+				UE_LOG(LogVulkanRHI, Warning, TEXT("Couldn't find desired PresentMode! Using %s"), VK_TYPE_TO_STRING(VkPresentModeKHR, FoundPresentModes[0]));
 				PresentMode = FoundPresentModes[0];
 			}
 		}
 
-		UE_CLOG(bFirstTimeLog, LogVulkanRHI, Display, TEXT("Selected VkPresentModeKHR mode %d"), PresentMode);
+		UE_CLOG(bFirstTimeLog, LogVulkanRHI, Display, TEXT("Selected VkPresentModeKHR mode %s"), VK_TYPE_TO_STRING(VkPresentModeKHR, PresentMode));
 		bFirstTimeLog = false;
 	}
 
@@ -512,8 +511,9 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 	static bool bPrintSwapchainCreationInfo = true;
 	if (bPrintSwapchainCreationInfo)
 	{
-		UE_LOG(LogVulkanRHI, Log, TEXT("Creating new VK swapchain with present mode %d, format %d, color space %d, num images %d"), 
-			static_cast<uint32>(SwapChainInfo.presentMode), static_cast<uint32>(SwapChainInfo.imageFormat), static_cast<uint32>(SwapChainInfo.imageColorSpace), static_cast<uint32>(SwapChainInfo.minImageCount));
+		UE_LOG(LogVulkanRHI, Log, TEXT("Creating new VK swapchain with %s, %s, %s, num images %d"), 
+			VK_TYPE_TO_STRING(VkPresentModeKHR, SwapChainInfo.presentMode), VK_TYPE_TO_STRING(VkFormat, SwapChainInfo.imageFormat), 
+			VK_TYPE_TO_STRING(VkColorSpaceKHR, SwapChainInfo.imageColorSpace), static_cast<uint32>(SwapChainInfo.minImageCount));
 #if WITH_EDITOR
 		bPrintSwapchainCreationInfo = false;
 #endif
@@ -903,24 +903,32 @@ FVulkanSwapChain::EStatus FVulkanSwapChain::Present(FVulkanQueue* GfxQueue, FVul
 	return EStatus::Healthy;
 }
 
-void FVulkanSwapChain::CreateQCOMDepthStencil(const FVulkanSurface& InSurface) const
+void FVulkanSwapChain::CreateQCOMDepthStencil(const FVulkanTexture& InSurface) const
 {
 	check(!QCOMDepthStencilSurface);
 	check(!QCOMDepthStencilView);
 	check(!QCOMDepthView);
 
-	ETextureCreateFlags UEFlags = InSurface.UEFlags;
+	const FRHITextureDesc& Desc = InSurface.GetDesc();
+	const ETextureCreateFlags UEFlags = Desc.Flags;
 	check(UEFlags & TexCreate_DepthStencilTargetable);
 
-	QCOMDepthStencilSurface = new FVulkanSurface(*InSurface.Device, nullptr, InSurface.GetViewType(), InSurface.PixelFormat, InSurface.Height, InSurface.Width,
-													InSurface.Depth, 1, InSurface.GetNumMips(), InSurface.GetNumSamples(), UEFlags, ERHIAccess::Unknown, FRHIResourceCreateInfo(TEXT("FVulkanSwapChain")));
+	const FRHITextureCreateDesc CreateDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("FVulkanSwapChainQCOM"), Desc.Extent.Y, Desc.Extent.X, Desc.Format) // Desc.Extent.X and Desc.Extent.Y are intentionally swapped.
+		.SetClearValue(FClearValueBinding::None)
+		.SetFlags(UEFlags)
+		.SetNumMips(Desc.NumMips)
+		.SetNumSamples(Desc.NumSamples)
+		.DetermineInititialState();
+
+	QCOMDepthStencilSurface = new FVulkanTexture(Device, CreateDesc, nullptr);
 
 	check(QCOMDepthStencilSurface->GetViewType() == VK_IMAGE_VIEW_TYPE_2D);
 	check(QCOMDepthStencilSurface->Image != VK_NULL_HANDLE);
 
 	QCOMDepthStencilView = new FVulkanTextureView;
 	QCOMDepthStencilView->Create(*QCOMDepthStencilSurface->Device, QCOMDepthStencilSurface->Image, QCOMDepthStencilSurface->GetViewType(), QCOMDepthStencilSurface->GetFullAspectMask(),
-								QCOMDepthStencilSurface->PixelFormat, QCOMDepthStencilSurface->ViewFormat, 0, FMath::Max(QCOMDepthStencilSurface->GetNumMips(), 1u), 0, 1u);
+								QCOMDepthStencilSurface->GetDesc().Format, QCOMDepthStencilSurface->ViewFormat, 0, FMath::Max(QCOMDepthStencilSurface->GetNumMips(), 1u), 0, 1u, false);
 
 	if (QCOMDepthStencilSurface->GetFullAspectMask() == QCOMDepthStencilSurface->GetPartialAspectMask())
 	{
@@ -930,11 +938,11 @@ void FVulkanSwapChain::CreateQCOMDepthStencil(const FVulkanSurface& InSurface) c
 	{
 		QCOMDepthView = new FVulkanTextureView;
 		QCOMDepthView->Create(*QCOMDepthStencilSurface->Device, QCOMDepthStencilSurface->Image, QCOMDepthStencilSurface->GetViewType(), QCOMDepthStencilSurface->GetPartialAspectMask(),
-			QCOMDepthStencilSurface->PixelFormat, QCOMDepthStencilSurface->ViewFormat, 0, FMath::Max(QCOMDepthStencilSurface->GetNumMips(), 1u), 0, 1u);
+			QCOMDepthStencilSurface->GetDesc().Format, QCOMDepthStencilSurface->ViewFormat, 0, FMath::Max(QCOMDepthStencilSurface->GetNumMips(), 1u), 0, 1u, false);
 	}
 }
 
-const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthStencilView(const FVulkanSurface& InSurface) const
+const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthStencilView(const FVulkanTexture& InSurface) const
 {
 	if (QCOMDepthStencilView)
 	{
@@ -946,7 +954,7 @@ const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthStencilView(cons
 	return QCOMDepthStencilView;
 }
 
-const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthView(const FVulkanSurface& InSurface) const
+const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthView(const FVulkanTexture& InSurface) const
 {
 	if (QCOMDepthView)
 	{
@@ -958,7 +966,7 @@ const FVulkanTextureView* FVulkanSwapChain::GetOrCreateQCOMDepthView(const FVulk
 	return QCOMDepthView;
 }
 
-const FVulkanSurface* FVulkanSwapChain::GetQCOMDepthStencilSurface() const
+const FVulkanTexture* FVulkanSwapChain::GetQCOMDepthStencilSurface() const
 {
 	return QCOMDepthStencilSurface;
 }

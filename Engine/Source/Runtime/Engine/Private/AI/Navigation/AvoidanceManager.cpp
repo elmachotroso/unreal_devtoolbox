@@ -9,6 +9,8 @@
 #include "AI/RVOAvoidanceInterface.h"
 #include "AI/Navigation/NavEdgeProviderInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AvoidanceManager)
+
 DEFINE_STAT(STAT_AI_ObstacleAvoidance);
 
 FNavAvoidanceData::FNavAvoidanceData(UAvoidanceManager* Manager, IRVOAvoidanceInterface* AvoidanceComp)
@@ -332,7 +334,7 @@ static bool AvoidsNavEdges(const FVector& OrgLocation, const FVector& TestVeloci
 		const FVector2D OrgToNewPos(TestVelocity);
 		const FVector2D OrgToSeg0(NavEdges[Idx].P0 - OrgLocation);
 		const float CrossD = FVector2D::CrossProduct(Seg0ToSeg1, OrgToNewPos);
-		if (FMath::Abs(CrossD) < KINDA_SMALL_NUMBER)
+		if (FMath::Abs(CrossD) < UE_KINDA_SMALL_NUMBER)
 		{
 			continue;
 		}
@@ -667,3 +669,4 @@ void UAvoidanceManager::SetNavEdgeProvider(INavEdgeProviderInterface* InEdgeProv
 	EdgeProviderInterface = InEdgeProvider;
 	EdgeProviderOb = Cast<UObject>(InEdgeProvider);
 }
+

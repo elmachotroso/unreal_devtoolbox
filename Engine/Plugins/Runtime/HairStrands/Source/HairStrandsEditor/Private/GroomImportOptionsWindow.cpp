@@ -2,7 +2,7 @@
 
 #include "GroomImportOptionsWindow.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GroomCacheImportOptions.h"
 #include "GroomImportOptions.h"
@@ -94,6 +94,28 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 		ValidationText = LOCTEXT("GroomOptionsWindow_ValidationText3", "Unknown");
 	}
 
+	const FSlateFontInfo AttributeFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
+	const FSlateFontInfo AttributeResultFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
+	const FLinearColor AttributeColor(0.80f, 0.80f, 0.80f);
+	const FText TrueText  = LOCTEXT("GroomOptionsWindow_AttributeTrue", "True");
+	const FText FalseText = LOCTEXT("GroomOptionsWindow_AttributeFalse", "False");
+
+	FText HasRootUVText = FalseText;
+	FText HasColorAttributeText = FalseText;
+	FText HasRoughnessAttributeText = FalseText;
+	FText HasGuideWeightsText = FalseText;
+
+	if (GroupsPreview)
+	{
+		for (const FGroomHairGroupPreview& Group : GroupsPreview->Groups)
+		{
+			if (Group.bHasRootUV)				{ HasRootUVText = TrueText; }
+			if (Group.bHasColorAttributes)		{ HasColorAttributeText = TrueText; }
+			if (Group.bHasRoughnessAttributes)	{ HasRoughnessAttributeText = TrueText; }
+			if (Group.bHasPrecomputedWeights)	{ HasGuideWeightsText = TrueText; }
+		}
+	}
+
 	this->ChildSlot
 	[
 		SNew(SVerticalBox)
@@ -104,14 +126,14 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(FMargin(3))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.LabelFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.LabelFont"))
 					.Text(LOCTEXT("CurrentFile", "Current File: "))
 				]
 				+ SHorizontalBox::Slot()
@@ -120,7 +142,7 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.InfoFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.InfoFont"))
 					.Text(InArgs._FullPath)
 				]
 			]
@@ -132,14 +154,14 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(FMargin(3))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.LabelFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.LabelFont"))
 					.Text(LOCTEXT("GroomOptionsWindow_StatusFile", "Status File: "))
 				]
 				+ SHorizontalBox::Slot()
@@ -148,9 +170,130 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.InfoFont"))
+					.Font(FAppStyle::GetFontStyle("CurveEd.InfoFont"))
 					.Text(ValidationText)
 					.ColorAndOpacity(ValidationColor)
+				]
+			]
+		]
+
+		// Root UV
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2)
+		[
+			SNew(SBorder)
+			.Padding(FMargin(3))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Font(AttributeFont)
+					.Text(LOCTEXT("GroomOptionsWindow_HasRootUV", "Has Root UV: "))
+				]
+				+ SHorizontalBox::Slot()
+				.Padding(5, 0, 0, 0)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(AttributeResultFont)
+					.Text(HasRootUVText)
+					.ColorAndOpacity(AttributeColor)
+				]
+			]
+		]
+
+
+		// Color attributes
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2)
+		[
+			SNew(SBorder)
+			.Padding(FMargin(3))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Font(AttributeFont)
+					.Text(LOCTEXT("GroomOptionsWindow_HasColor", "Has Color Attributes: "))
+				]
+				+ SHorizontalBox::Slot()
+				.Padding(5, 0, 0, 0)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(AttributeResultFont)
+					.Text(HasColorAttributeText)
+					.ColorAndOpacity(AttributeColor)
+				]
+			]
+		]
+
+		// Roughness attributes
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2)
+		[
+			SNew(SBorder)
+			.Padding(FMargin(3))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Font(AttributeFont)
+					.Text(LOCTEXT("GroomOptionsWindow_HasRoughness", "Has Roughness Attributes: "))
+				]
+				+ SHorizontalBox::Slot()
+				.Padding(5, 0, 0, 0)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(AttributeResultFont)
+					.Text(HasRoughnessAttributeText)
+					.ColorAndOpacity(AttributeColor)
+				]
+			]
+		]
+
+		// Guide weights
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2)
+		[
+			SNew(SBorder)
+			.Padding(FMargin(3))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Font(AttributeFont)
+					.Text(LOCTEXT("GroomOptionsWindow_HasGuideWeights", "Has Pre-Computed Guides Weights: "))
+				]
+				+ SHorizontalBox::Slot()
+				.Padding(5, 0, 0, 0)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(AttributeResultFont)
+					.Text(HasGuideWeightsText)
+					.ColorAndOpacity(AttributeColor)
 				]
 			]
 		]

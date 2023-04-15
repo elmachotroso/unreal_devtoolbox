@@ -242,6 +242,12 @@ struct FMeshProxySettings
 
 	UPROPERTY()
 	uint8 bBakeVertexData_DEPRECATED:1;
+
+	UPROPERTY()
+	uint8 bGenerateNaniteEnabledMesh_DEPRECATED : 1;
+	
+	UPROPERTY()
+	float NaniteProxyTrianglePercent_DEPRECATED;
 #endif
 
 	/** Distance at which meshes should be merged together, this can close gaps like doors and windows in distant geometry */
@@ -300,6 +306,10 @@ struct FMeshProxySettings
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = LandscapeCulling)
 	uint8 bUseLandscapeCulling:1;
 
+	/** Whether ray tracing will be supported on this mesh. Disable this to save memory if the generated mesh will only be rendered in the distance. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ProxySettings)
+	uint8 bSupportRayTracing : 1;
+
 	/** Whether to allow distance field to be computed for this mesh. Disable this to save memory if the merged mesh will only be rendered in the distance. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ProxySettings)
 	uint8 bAllowDistanceField:1;
@@ -324,13 +334,9 @@ struct FMeshProxySettings
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ProxySettings)
 	uint8 bGenerateLightmapUVs:1;
 
-	/** Whether to generate a nanite-enabled mesh */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
-	uint8 bGenerateNaniteEnabledMesh : 1;
-
-	/** Percentage of triangles to reduce down to for generating a coarse proxy mesh from the Nanite mesh */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = NaniteSettings, meta = (EditConditionHides, EditCondition = "bGenerateNaniteEnabledMesh", ClampMin = 0, ClampMax = 100))
-	float NaniteProxyTrianglePercent;
+	/** Settings related to building Nanite data. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NaniteSettings)
+	FMeshNaniteSettings NaniteSettings;
 
 	/** Default settings. */
 	FMeshProxySettings()
@@ -344,6 +350,8 @@ struct FMeshProxySettings
 		, bExportRoughnessMap_DEPRECATED(false)
 		, bExportSpecularMap_DEPRECATED(false)
 		, bBakeVertexData_DEPRECATED(false)
+		, bGenerateNaniteEnabledMesh_DEPRECATED(false)
+		, NaniteProxyTrianglePercent_DEPRECATED(100)
 #endif
 		, MergeDistance(0)
 		, UnresolvedGeometryColor(FColor::Black)
@@ -359,14 +367,13 @@ struct FMeshProxySettings
 		, bComputeLightMapResolution(false)
 		, bRecalculateNormals(true)
 		, bUseLandscapeCulling(false)
+		, bSupportRayTracing(true)
 		, bAllowDistanceField(false)
 		, bReuseMeshLightmapUVs(true)
 		, bGroupIdenticalMeshesForBaking(false)
 		, bCreateCollision(true)
 		, bAllowVertexColors(false)
 		, bGenerateLightmapUVs(false)
-		, bGenerateNaniteEnabledMesh(false)
-		, NaniteProxyTrianglePercent(100)
 	{
 		MaterialSettings.MaterialMergeType = EMaterialMergeType::MaterialMergeType_Simplygon;
 	}
@@ -391,14 +398,14 @@ struct FMeshProxySettings
 			&& bComputeLightMapResolution == Other.bComputeLightMapResolution
 			&& bRecalculateNormals == Other.bRecalculateNormals
 			&& bUseLandscapeCulling == Other.bUseLandscapeCulling
+			&& bSupportRayTracing == Other.bSupportRayTracing
 			&& bAllowDistanceField == Other.bAllowDistanceField
 			&& bReuseMeshLightmapUVs == Other.bReuseMeshLightmapUVs
 			&& bGroupIdenticalMeshesForBaking == Other.bGroupIdenticalMeshesForBaking
 			&& bCreateCollision == Other.bCreateCollision
 			&& bAllowVertexColors == Other.bAllowVertexColors
 			&& bGenerateLightmapUVs == Other.bGenerateLightmapUVs
-			&& bGenerateNaniteEnabledMesh == Other.bGenerateNaniteEnabledMesh
-			&& NaniteProxyTrianglePercent == Other.NaniteProxyTrianglePercent;
+			&& NaniteSettings == Other.NaniteSettings;
 	}
 
 	/** Inequality. */
@@ -409,7 +416,18 @@ struct FMeshProxySettings
 
 #if WITH_EDITORONLY_DATA
 	/** Handles deprecated properties */
-	void PostLoadDeprecated();
+	void PostSerialize(const FArchive& Ar);
+#endif
+};
+
+template<>
+struct TStructOpsTypeTraits<FMeshProxySettings> : public TStructOpsTypeTraitsBase2<FMeshProxySettings>
+{
+#if WITH_EDITORONLY_DATA
+	enum
+	{
+		WithPostSerialize = true,
+	};
 #endif
 };
 
@@ -466,13 +484,13 @@ struct FMeshMergingSettings
 	UPROPERTY(EditAnywhere, Category = MaterialSettings, meta=(DisplayAfter="MaterialSettings"))
 	int32 GutterSize;
 
-	// A given LOD level to export from the source meshes
-	UPROPERTY(EditAnywhere, Category = MeshSettings, BlueprintReadWrite, meta = (DisplayAfter="LODSelectionType", ClampMin = "0", ClampMax = "7", UIMin = "0", UIMax = "7", EnumCondition = 1))
-	int32 SpecificLOD;
-
 	/** Which selection mode should be used when generating the merged static mesh */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings, meta = (DisplayAfter="bBakeVertexDataToMesh"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings, meta = (DisplayAfter="bBakeVertexDataToMesh", DisplayName = "LOD Selection Type"))
 	EMeshLODSelectionType LODSelectionType;
+
+	/** A given LOD level to export from the source meshes, used if LOD Selection Type is set to SpecificLOD */
+	UPROPERTY(EditAnywhere, Category = MeshSettings, BlueprintReadWrite, meta = (DisplayAfter="LODSelectionType", EditCondition = "LODSelectionType == EMeshLODSelectionType::SpecificLOD", ClampMin = "0", ClampMax = "7", UIMin = "0", UIMax = "7", EnumCondition = 1))
+	int32 SpecificLOD;
 
 	/** Whether to generate lightmap UVs for a merged mesh*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = MeshSettings, meta=(DisplayName="Generate Lightmap UV"))
@@ -490,12 +508,12 @@ struct FMeshMergingSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
 	uint8 bMergePhysicsData:1;
 
-	/** Whether to merge source materials into one flat material, ONLY available when merging a single LOD level, see LODSelectionType */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings)
+	/** Whether to merge source materials into one flat material, ONLY available when LOD Selection Type is set to LowestDetailLOD */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD"))
 	uint8 bMergeMaterials:1;
 
 	/** Create a flat material from all source materials, along with a new set of UVs. This material won't be applied to any section by default. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD"))
 	uint8 bCreateMergedMaterial : 1;
 
 	/** Whether or not vertex data such as vertex colours should be baked into the resulting mesh */
@@ -506,7 +524,7 @@ struct FMeshMergingSettings
 	UPROPERTY(EditAnywhere, Category = MaterialSettings, BlueprintReadWrite, meta = (EditCondition = "bMergeMaterials"))
 	uint8 bUseVertexDataForBakingMaterial:1;
 
-	// Whether or not to calculate varying output texture sizes according to their importance in the final atlas texture
+	/** Whether or not to calculate varying output texture sizes according to their importance in the final atlas texture */
 	UPROPERTY(Category = MaterialSettings, EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "bMergeMaterials"))
 	uint8 bUseTextureBinning:1;
 
@@ -526,41 +544,48 @@ struct FMeshMergingSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
 	uint8 bIncludeImposters:1;
 
+	/** Whether ray tracing will be supported on this mesh. Disable this to save memory if the generated mesh will only be rendered in the distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
+	uint8 bSupportRayTracing : 1;
+
 	/** Whether to allow distance field to be computed for this mesh. Disable this to save memory if the merged mesh will only be rendered in the distance. */
 	UPROPERTY(EditAnywhere, Category = MeshSettings)
 	uint8 bAllowDistanceField:1;
 
-	/** Whether to generate a nanite-enabled mesh */
+	/** Settings related to building Nanite data. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NaniteSettings)
-	uint8 bGenerateNaniteEnabledMesh : 1;
-
-	/** Percentage of triangles to reduce down to for generating a coarse fallback mesh from the Nanite mesh */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = NaniteSettings, meta = (EditConditionHides, EditCondition = "bGenerateNaniteEnabledMesh", ClampMin = 0, ClampMax = 100))
-	float NaniteFallbackTrianglePercent;
+	FMeshNaniteSettings NaniteSettings;
 
 #if WITH_EDITORONLY_DATA
-	/** Whether we should import vertex colors into merged mesh */
 	UPROPERTY()
 	uint8 bImportVertexColors_DEPRECATED:1;
+
 	UPROPERTY()
 	uint8 bCalculateCorrectLODModel_DEPRECATED:1;
-	/** Whether to export normal maps for material merging */
+
 	UPROPERTY()
 	uint8 bExportNormalMap_DEPRECATED:1;
-	/** Whether to export metallic maps for material merging */
+
 	UPROPERTY()
 	uint8 bExportMetallicMap_DEPRECATED:1;
-	/** Whether to export roughness maps for material merging */
+
 	UPROPERTY()
 	uint8 bExportRoughnessMap_DEPRECATED:1;
-	/** Whether to export specular maps for material merging */
+
 	UPROPERTY()
 	uint8 bExportSpecularMap_DEPRECATED:1;
-	/** Merged material texture atlas resolution */
+
 	UPROPERTY()
 	int32 MergedMaterialAtlasResolution_DEPRECATED;
+
 	UPROPERTY()
 	int32 ExportSpecificLOD_DEPRECATED;
+
+	UPROPERTY()
+	uint8 bGenerateNaniteEnabledMesh_DEPRECATED : 1;
+
+	UPROPERTY()
+	float NaniteFallbackTrianglePercent_DEPRECATED;
 #endif
 
 	EMeshMergeType MergeType;
@@ -569,8 +594,8 @@ struct FMeshMergingSettings
 	FMeshMergingSettings()
 		: TargetLightMapResolution(256)
 		, GutterSize(2)
-		, SpecificLOD(0)
 		, LODSelectionType(EMeshLODSelectionType::CalculateLOD)
+		, SpecificLOD(0)
 		, bGenerateLightMapUV(true)
 		, bComputedLightMapResolution(false)
 		, bPivotPointAtZero(false)
@@ -584,9 +609,8 @@ struct FMeshMergingSettings
 		, bMergeEquivalentMaterials(true)
 		, bUseLandscapeCulling(false)
 		, bIncludeImposters(true)
+		, bSupportRayTracing(true)
 		, bAllowDistanceField(false)
-		, bGenerateNaniteEnabledMesh(false)
-		, NaniteFallbackTrianglePercent(100)
 #if WITH_EDITORONLY_DATA
 		, bImportVertexColors_DEPRECATED(false)
 		, bCalculateCorrectLODModel_DEPRECATED(false)
@@ -596,6 +620,8 @@ struct FMeshMergingSettings
 		, bExportSpecularMap_DEPRECATED(false)
 		, MergedMaterialAtlasResolution_DEPRECATED(1024)
 		, ExportSpecificLOD_DEPRECATED(0)
+		, bGenerateNaniteEnabledMesh_DEPRECATED(false)
+		, NaniteFallbackTrianglePercent_DEPRECATED(100)
 #endif
 		, MergeType(EMeshMergeType::MeshMergeType_Default)
 	{
@@ -607,7 +633,18 @@ struct FMeshMergingSettings
 
 #if WITH_EDITORONLY_DATA
 	/** Handles deprecated properties */
-	void PostLoadDeprecated();
+	void PostSerialize(const FArchive& Ar);
+#endif
+};
+
+template<>
+struct TStructOpsTypeTraits<FMeshMergingSettings> : public TStructOpsTypeTraitsBase2<FMeshMergingSettings>
+{
+#if WITH_EDITORONLY_DATA
+	enum
+	{
+		WithPostSerialize = true,
+	};
 #endif
 };
 
@@ -670,7 +707,7 @@ struct ENGINE_API FMeshInstancingSettings
 	/**
 	 * Whether to use the Instanced Static Mesh Compoment or the Hierarchical Instanced Static Mesh Compoment
 	 */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Instancing", meta = (DisplayName = "Select the type of Instanced Component", DisallowedClasses = "FoliageInstancedStaticMeshComponent"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Instancing", meta = (DisplayName = "Select the type of Instanced Component", DisallowedClasses = "/Script/Foliage.FoliageInstancedStaticMeshComponent"))
 	TSubclassOf<UInstancedStaticMeshComponent> ISMComponentToUse;
 };
 
@@ -965,9 +1002,4 @@ struct FMeshApproximationSettings
 	{
 		return !(*this == Other);
 	}
-
-#if WITH_EDITORONLY_DATA
-	/** Handles deprecated properties */
-	void PostLoadDeprecated() {}		// none currently
-#endif
 };

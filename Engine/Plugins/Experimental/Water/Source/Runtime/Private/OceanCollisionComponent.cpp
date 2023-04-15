@@ -14,6 +14,8 @@
 #include "Chaos/Particles.h"
 #include "Chaos/Convex.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OceanCollisionComponent)
+
 UOceanCollisionComponent::UOceanCollisionComponent(const FObjectInitializer& ObjectInitializer)
 	: UPrimitiveComponent(ObjectInitializer)
 {
@@ -84,7 +86,6 @@ void UOceanCollisionComponent::UpdateBodySetup(const TArray<FKConvexElem>& Conve
 
 	CachedBodySetup->CreatePhysicsMeshes();
 
-#if WITH_CHAOS
 	//
 	// GROSS HACK to work around the issue above that CreatePhysicsMeshes() doesn't currently work at Runtime.
 	// The "cook" for a FKConvexElem just creates and caches a Chaos::FConvex instance, and the restore from cooked
@@ -105,7 +106,6 @@ void UOceanCollisionComponent::UpdateBodySetup(const TArray<FKConvexElem>& Conve
 
 		Elem.SetChaosConvexMesh(MoveTemp(ChaosConvex));
 	}
-#endif
 
 	RecreatePhysicsState();
 
@@ -164,7 +164,7 @@ FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 						FColor CollisionColor(157, 149, 223, 255);
 						const bool bPerHullColor = false;
 						const bool bDrawSolid = false;
-						AggregateGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, DrawsVelocity(), ViewIndex, Collector);
+						AggregateGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 
 					RenderBounds(Collector.GetPDI(ViewIndex), View->Family->EngineShowFlags, GetBounds(), IsSelected());
@@ -185,7 +185,7 @@ FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 			return Result;
 		}
 		virtual uint32 GetMemoryFootprint(void) const override { return(sizeof(*this) + GetAllocatedSize()); }
-		uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
+		uint32 GetAllocatedSize(void) const { return FPrimitiveSceneProxy::GetAllocatedSize() + AggregateGeom.GetAllocatedSize(); }
 
 	private:
 		FKAggregateGeom AggregateGeom;

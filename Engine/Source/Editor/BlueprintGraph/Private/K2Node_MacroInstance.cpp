@@ -1,16 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_MacroInstance.h"
+
+#include "BlueprintActionFilter.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorCategoryUtils.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Commands/UIAction.h"
-#include "ToolMenus.h"
-#include "EdGraphSchema_K2.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_EditablePinBase.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "EditorStyleSet.h"
-#include "Editor.h"
-#include "EditorCategoryUtils.h"
-#include "BlueprintActionFilter.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_MacroInstance"
 
@@ -208,7 +227,7 @@ void UK2Node_MacroInstance::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNod
 				"MacroInstanceFindInContentBrowser",
 				NSLOCTEXT("K2Node", "MacroInstanceFindInContentBrowser", "Find in Content Browser"),
 				NSLOCTEXT("K2Node", "MacroInstanceFindInContentBrowserTooltip", "Finds the Blueprint Macro Library that contains this Macro in the Content Browser"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.Search"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Search"),
 				FUIAction( FExecuteAction::CreateStatic( &UK2Node_MacroInstance::FindInContentBrowser, MakeWeakObjectPtr(const_cast<UK2Node_MacroInstance*>(this)) ) )
 				);
 		}
@@ -401,7 +420,7 @@ FSlateIcon UK2Node_MacroInstance::GetIconAndTint(FLinearColor& OutColor) const
 		}
 	}
 
-	return FSlateIcon("EditorStyle", IconName);
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), IconName);
 }
 
 FText UK2Node_MacroInstance::GetCompactNodeTitle() const
@@ -430,7 +449,8 @@ bool UK2Node_MacroInstance::CanPasteHere(const UEdGraph* TargetGraph) const
 	{
 		// Only allow "local" macro instances or instances from a macro library blueprint with the same parent class
 		check(MacroBlueprint->ParentClass != nullptr && TargetBlueprint->ParentClass != nullptr);
-		bCanPaste = (MacroBlueprint == TargetBlueprint) || (MacroBlueprint->BlueprintType == BPTYPE_MacroLibrary && TargetBlueprint->ParentClass->IsChildOf(MacroBlueprint->ParentClass));
+		bCanPaste = (MacroBlueprint == TargetBlueprint) || (MacroBlueprint->BlueprintType == BPTYPE_MacroLibrary
+			&& TargetBlueprint->ParentClass && TargetBlueprint->ParentClass->IsChildOf(MacroBlueprint->ParentClass));
 	}
 
 	// Macro Instances are not allowed in it's own graph

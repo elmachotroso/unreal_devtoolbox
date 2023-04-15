@@ -14,9 +14,16 @@ static_assert(sizeof(ispc::FTransform) == sizeof(FTransform), "sizeof(ispc::FTra
 static_assert(sizeof(ispc::BoneTrackPair) == sizeof(BoneTrackPair), "sizeof(ispc::BoneTrackPair) != sizeof(BoneTrackPair)");
 #endif
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
-bool bAnim_VariableKeyLerp_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarAnimVariableKeyLerpISPCEnabled(TEXT("a.VariableKeyLerp.ISPC"), bAnim_VariableKeyLerp_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in variable key anim encoding"));
+#if !defined(ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT)
+#define ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bAnim_VariableKeyLerp_ISPC_Enabled = INTEL_ISPC && ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT;
+#else
+static bool bAnim_VariableKeyLerp_ISPC_Enabled = ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarAnimVariableKeyLerpISPCEnabled(TEXT("a.VariableKeyLerp.ISPC"), bAnim_VariableKeyLerp_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in variable key anim encoding"));
 #endif
 
 /**
@@ -244,7 +251,7 @@ void AEFVariableKeyLerp<FORMAT>::GetPoseRotations(
 			AnimData.CompressedTrackOffsets.GetData(),
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.RelativePos,
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			FORMAT,
 			PairCount);
@@ -296,7 +303,7 @@ void AEFVariableKeyLerp<FORMAT>::GetPoseTranslations(
 			AnimData.CompressedTrackOffsets.GetData(),
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.RelativePos,
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			FORMAT,
 			PairCount);
@@ -352,7 +359,7 @@ void AEFVariableKeyLerp<FORMAT>::GetPoseScales(
 			StripSize,
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.RelativePos,
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			FORMAT,
 			PairCount);

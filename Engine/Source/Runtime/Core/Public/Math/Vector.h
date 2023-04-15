@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Math/MathFwd.h"
 #include "Math/NumericLimits.h"
 #include "Misc/Crc.h"
 #include "Math/UnrealMathUtility.h"
@@ -39,8 +40,6 @@ namespace UE
 {
 namespace Math
 {
-
-template<typename T> struct TPlane;
 
 /**
  * A vector in 3-D space composed of components (X, Y, Z) with floating point precision.
@@ -190,14 +189,16 @@ public:
      *
      * @param InVector FIntVector to copy from.
      */
-    explicit TVector(FIntVector InVector);
+	template <typename IntType>
+    explicit TVector(TIntVector3<IntType> InVector);
 
     /**
      * Constructs a vector from an FIntPoint.
      *
      * @param A Int Point used to set X and Y coordinates, Z is set to zero.
      */
-    explicit TVector(FIntPoint A);
+	template <typename IntType>
+    explicit TVector(TIntPoint<IntType> A);
 
     /**
      * Constructor which initializes all components to zero.
@@ -205,16 +206,6 @@ public:
      * @param EForceInit Force init enum
      */
     explicit FORCEINLINE TVector(EForceInit);
-
-#ifdef IMPLEMENT_ASSIGNMENT_OPERATOR_MANUALLY
-    /**
-    * Copy another TVector<T> into this one
-    *
-    * @param Other The other vector.
-    * @return Reference to vector after copy.
-    */
-    FORCEINLINE TVector<T>& operator=(const TVector<T>& Other);
-#endif
 
     /**
      * Calculate cross product between this and another vector.
@@ -372,7 +363,7 @@ public:
      * @param Tolerance Error tolerance.
      * @return true if the vectors are equal within tolerance limits, false otherwise.
      */
-    bool Equals(const TVector<T>& V, T Tolerance=KINDA_SMALL_NUMBER) const;
+    bool Equals(const TVector<T>& V, T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
     /**
      * Checks whether all components of this vector are the same, within a tolerance.
@@ -380,7 +371,7 @@ public:
      * @param Tolerance Error tolerance.
      * @return true if the vectors are equal within tolerance limits, false otherwise.
      */
-    bool AllComponentsEqual(T Tolerance=KINDA_SMALL_NUMBER) const;
+    bool AllComponentsEqual(T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
     /**
      * Get a negated copy of the vector.
@@ -594,7 +585,7 @@ public:
      * @param Tolerance Error tolerance.
      * @return true if the vector is near to zero, false otherwise.
      */
-    bool IsNearlyZero(T Tolerance=KINDA_SMALL_NUMBER) const;
+    bool IsNearlyZero(T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
     /**
      * Checks whether all components of the vector are exactly zero.
@@ -609,7 +600,7 @@ public:
      * @param LengthSquaredTolerance Tolerance against squared length.
      * @return true if the vector is a unit vector within the specified tolerance.
      */
-    FORCEINLINE bool IsUnit(T LengthSquaredTolerance = KINDA_SMALL_NUMBER) const;
+    FORCEINLINE bool IsUnit(T LengthSquaredTolerance = UE_KINDA_SMALL_NUMBER) const;
 
     /**
      * Checks whether vector is normalized.
@@ -624,7 +615,7 @@ public:
      * @param Tolerance Minimum squared length of vector for normalization.
      * @return true if the vector was normalized correctly, false otherwise.
      */
-    bool Normalize(T Tolerance=SMALL_NUMBER);
+    bool Normalize(T Tolerance=UE_SMALL_NUMBER);
 
     /**
      * Calculates normalized version of vector without checking for zero length.
@@ -641,7 +632,7 @@ public:
      * @param Tolerance Minimum squared vector length.
      * @return A normalized copy if safe, ResultIfZero otherwise.
      */
-    TVector<T> GetSafeNormal(T Tolerance=SMALL_NUMBER, const TVector<T>& ResultIfZero = ZeroVector) const;
+    TVector<T> GetSafeNormal(T Tolerance=UE_SMALL_NUMBER, const TVector<T>& ResultIfZero = ZeroVector) const;
 
     /**
      * Gets a normalized copy of the 2D components of the vector, checking it is safe to do so. Z is set to zero. 
@@ -650,7 +641,7 @@ public:
      * @param Tolerance Minimum squared vector length.
      * @return Normalized copy if safe, otherwise returns ResultIfZero.
      */
-    TVector<T> GetSafeNormal2D(T Tolerance=SMALL_NUMBER, const TVector<T>& ResultIfZero = ZeroVector) const;
+    TVector<T> GetSafeNormal2D(T Tolerance=UE_SMALL_NUMBER, const TVector<T>& ResultIfZero = ZeroVector) const;
 
     /**
      * Util to convert this vector into a unit direction vector and its original length.
@@ -702,7 +693,7 @@ public:
     TVector<T> BoundToCube(T Radius) const;
 
     /** Get a copy of this vector, clamped inside of a cube. */
-    TVector<T> BoundToBox(const TVector<T>& Min, const TVector<T> Max) const;
+    TVector<T> BoundToBox(const TVector<T>& Min, const TVector<T>& Max) const;
 
     /** Create a copy of this vector, with its magnitude clamped between Min and Max. */
     TVector<T> GetClampedToSize(T Min, T Max) const;
@@ -738,7 +729,7 @@ public:
      * @param Tolerance Specified Tolerance.
      * @return true if X == Y == Z within the specified tolerance.
      */
-    bool IsUniform(T Tolerance=KINDA_SMALL_NUMBER) const;
+    bool IsUniform(T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
     /**
      * Mirror a vector about a normal vector.
@@ -759,11 +750,20 @@ public:
     /**
      * Rotates around Axis (assumes Axis.Size() == 1).
      *
-     * @param Angle Angle to rotate (in degrees).
+     * @param AngleDeg Angle to rotate (in degrees).
      * @param Axis Axis to rotate around.
      * @return Rotated Vector.
      */
     TVector<T> RotateAngleAxis(const T AngleDeg, const TVector<T>& Axis) const;
+    
+    /**
+     * Rotates around Axis (assumes Axis.Size() == 1).
+     *
+     * @param AngleRad Angle to rotate (in radians).
+     * @param Axis Axis to rotate around.
+     * @return Rotated Vector.
+     */
+    TVector<T> RotateAngleAxisRad(const T AngleRad, const TVector<T>& Axis) const;
 
     /**
      * Returns the cosine of the angle between this vector and another projected onto the XY plane (no Z).
@@ -1038,7 +1038,7 @@ public:
      * @param  ParallelCosineThreshold Normals are parallel if absolute value of dot product (cosine of angle between them) is greater than or equal to this. For example: cos(1.0 degrees).
      * @return true if vectors are nearly parallel, false otherwise.
      */
-    static bool Parallel(const TVector<T>& Normal1, const TVector<T>& Normal2, T ParallelCosineThreshold = THRESH_NORMALS_ARE_PARALLEL);
+    static bool Parallel(const TVector<T>& Normal1, const TVector<T>& Normal2, T ParallelCosineThreshold = UE_THRESH_NORMALS_ARE_PARALLEL);
 
     /**
      * See if two normal vectors are coincident (nearly parallel and point in the same direction).
@@ -1048,7 +1048,7 @@ public:
      * @param  ParallelCosineThreshold Normals are coincident if dot product (cosine of angle between them) is greater than or equal to this. For example: cos(1.0 degrees).
      * @return true if vectors are coincident (nearly parallel and point in the same direction), false otherwise.
      */
-    static bool Coincident(const TVector<T>& Normal1, const TVector<T>& Normal2, T ParallelCosineThreshold = THRESH_NORMALS_ARE_PARALLEL);
+    static bool Coincident(const TVector<T>& Normal1, const TVector<T>& Normal2, T ParallelCosineThreshold = UE_THRESH_NORMALS_ARE_PARALLEL);
 
     /**
      * See if two normal vectors are nearly orthogonal (perpendicular), meaning the angle between them is close to 90 degrees.
@@ -1058,7 +1058,7 @@ public:
      * @param  OrthogonalCosineThreshold Normals are orthogonal if absolute value of dot product (cosine of angle between them) is less than or equal to this. For example: cos(89.0 degrees).
      * @return true if vectors are orthogonal (perpendicular), false otherwise.
      */
-    static bool Orthogonal(const TVector<T>& Normal1, const TVector<T>& Normal2, T OrthogonalCosineThreshold = THRESH_NORMALS_ARE_ORTHOGONAL);
+    static bool Orthogonal(const TVector<T>& Normal1, const TVector<T>& Normal2, T OrthogonalCosineThreshold = UE_THRESH_NORMALS_ARE_ORTHOGONAL);
 
     /**
      * See if two planes are coplanar. They are coplanar if the normals are nearly parallel and the planes include the same set of points.
@@ -1070,7 +1070,7 @@ public:
      * @param ParallelCosineThreshold Normals are parallel if absolute value of dot product is greater than or equal to this.
      * @return true if the planes are coplanar, false otherwise.
      */
-    static bool Coplanar(const TVector<T>& Base1, const TVector<T>& Normal1, const TVector<T>& Base2, const TVector<T>& Normal2, T ParallelCosineThreshold = THRESH_NORMALS_ARE_PARALLEL);
+    static bool Coplanar(const TVector<T>& Base1, const TVector<T>& Normal1, const TVector<T>& Base2, const TVector<T>& Normal2, T ParallelCosineThreshold = UE_THRESH_NORMALS_ARE_PARALLEL);
 
     /**
      * Triple product of three vectors: X dot (Y cross Z).
@@ -1136,7 +1136,7 @@ public:
      */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 	{
-		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES)
+		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 		{
 			Ar << X << Y << Z;
 		}
@@ -1223,8 +1223,14 @@ FORCEINLINE TVector<T>::TVector(const TVector2<T> V, T InZ)
 template<typename T>
 inline TVector<T> TVector<T>::RotateAngleAxis(const T AngleDeg, const TVector<T>& Axis) const
 {
+	return RotateAngleAxisRad(FMath::DegreesToRadians(AngleDeg), Axis);
+}
+
+template<typename T>
+inline TVector<T> TVector<T>::RotateAngleAxisRad(const T AngleRad, const TVector<T>& Axis) const
+{
     T S, C;
-    FMath::SinCos(&S, &C, FMath::DegreesToRadians(AngleDeg));
+    FMath::SinCos(&S, &C, AngleRad);
 
     const T XX	= Axis.X * Axis.X;
     const T YY	= Axis.Y * Axis.Y;
@@ -1252,13 +1258,13 @@ inline bool TVector<T>::PointsAreSame(const TVector<T>& P, const TVector<T>& Q)
 {
     T Temp;
     Temp=P.X-Q.X;
-    if((Temp > -THRESH_POINTS_ARE_SAME) && (Temp < THRESH_POINTS_ARE_SAME))
+    if((Temp > -UE_THRESH_POINTS_ARE_SAME) && (Temp < UE_THRESH_POINTS_ARE_SAME))
     {
         Temp=P.Y-Q.Y;
-        if((Temp > -THRESH_POINTS_ARE_SAME) && (Temp < THRESH_POINTS_ARE_SAME))
+        if((Temp > -UE_THRESH_POINTS_ARE_SAME) && (Temp < UE_THRESH_POINTS_ARE_SAME))
         {
             Temp=P.Z-Q.Z;
-            if((Temp > -THRESH_POINTS_ARE_SAME) && (Temp < THRESH_POINTS_ARE_SAME))
+            if((Temp > -UE_THRESH_POINTS_ARE_SAME) && (Temp < UE_THRESH_POINTS_ARE_SAME))
             {
                 return true;
             }
@@ -1328,7 +1334,7 @@ template<typename T>
 inline bool TVector<T>::Coplanar(const TVector<T>& Base1, const TVector<T>& Normal1, const TVector<T>& Base2, const TVector<T>& Normal2, T ParallelCosineThreshold)
 {
     if      (!TVector<T>::Parallel(Normal1,Normal2,ParallelCosineThreshold)) return false;
-    else if (FMath::Abs(TVector<T>::PointPlaneDist (Base2,Base1,Normal1)) > THRESH_POINT_ON_PLANE) return false;
+    else if (FMath::Abs(TVector<T>::PointPlaneDist (Base2,Base1,Normal1)) > UE_THRESH_POINT_ON_PLANE) return false;
     else return true;
 }
 
@@ -1344,13 +1350,13 @@ inline T TVector<T>::Triple(const TVector<T>& X, const TVector<T>& Y, const TVec
 template<typename T>
 inline TVector<T> TVector<T>::RadiansToDegrees(const TVector<T>& RadVector)
 {
-    return RadVector * (180.f / PI);
+    return RadVector * (180.f / UE_PI);
 }
 
 template<typename T>
 inline TVector<T> TVector<T>::DegreesToRadians(const TVector<T>& DegVector)
 {
-    return DegVector * (PI / 180.f);
+    return DegVector * (UE_PI / 180.f);
 }
 
 template<typename T>
@@ -1379,14 +1385,16 @@ FORCEINLINE TVector<T>::TVector(const FLinearColor& InColor)
 }
 
 template<typename T>
-FORCEINLINE TVector<T>::TVector(FIntVector InVector)
+template <typename IntType>
+FORCEINLINE TVector<T>::TVector(TIntVector3<IntType> InVector)
     : X((T)InVector.X), Y((T)InVector.Y), Z((T)InVector.Z)
 {
     DiagnosticCheckNaN();
 }
 
 template<typename T>
-FORCEINLINE TVector<T>::TVector(FIntPoint A)
+template <typename IntType>
+FORCEINLINE TVector<T>::TVector(TIntPoint<IntType> A)
     : X((T)A.X), Y((T)A.Y), Z(0.f)
 {
     DiagnosticCheckNaN();
@@ -1398,20 +1406,6 @@ FORCEINLINE TVector<T>::TVector(EForceInit)
 {
     DiagnosticCheckNaN();
 }
-
-#ifdef IMPLEMENT_ASSIGNMENT_OPERATOR_MANUALLY
-template<typename T>
-FORCEINLINE TVector<T>& TVector<T>::operator=(const TVector<T>& Other)
-{
-    this->X = Other.X;
-    this->Y = Other.Y;
-    this->Z = Other.Z;
-
-    DiagnosticCheckNaN();
-
-    return *this;
-}
-#endif
 
 template<typename T>
 FORCEINLINE TVector<T> TVector<T>::operator^(const TVector<T>& V) const
@@ -1684,14 +1678,14 @@ FORCEINLINE bool TVector<T>::IsUnit(T LengthSquaredTolerance) const
 template<typename T>
 FORCEINLINE bool TVector<T>::IsNormalized() const
 {
-    return (FMath::Abs(1.f - SizeSquared()) < THRESH_VECTOR_NORMALIZED);
+    return (FMath::Abs(1.f - SizeSquared()) < UE_THRESH_VECTOR_NORMALIZED);
 }
 
 template<typename T>
 FORCEINLINE void TVector<T>::ToDirectionAndLength(TVector<T>& OutDir, double& OutLength) const
 {
 	OutLength = Size();
-	if (OutLength > SMALL_NUMBER)
+	if (OutLength > UE_SMALL_NUMBER)
 	{
 		T OneOverLength = T(1.0 / OutLength);
 		OutDir = TVector<T>(X * OneOverLength, Y * OneOverLength, Z * OneOverLength);
@@ -1706,7 +1700,7 @@ template<typename T>
 FORCEINLINE void TVector<T>::ToDirectionAndLength(TVector<T>& OutDir, float& OutLength) const
 {
 	OutLength = (float)Size();
-	if (OutLength > SMALL_NUMBER)
+	if (OutLength > UE_SMALL_NUMBER)
 	{
 		float OneOverLength = 1.0f / OutLength;
 		OutDir = TVector<T>(X * OneOverLength, Y * OneOverLength, Z * OneOverLength);
@@ -1768,7 +1762,7 @@ FORCEINLINE TVector<T> TVector<T>::BoundToCube(T Radius) const
 }
 
 template<typename T>
-FORCEINLINE TVector<T> TVector<T>::BoundToBox(const TVector<T>& Min, const TVector<T> Max) const
+FORCEINLINE TVector<T> TVector<T>::BoundToBox(const TVector<T>& Min, const TVector<T>& Max) const
 {
     return TVector<T>
     (
@@ -1783,7 +1777,7 @@ template<typename T>
 FORCEINLINE TVector<T> TVector<T>::GetClampedToSize(T Min, T Max) const
 {
     T VecSize = Size();
-    const TVector<T> VecDir = (VecSize > SMALL_NUMBER) ? (*this/VecSize) : ZeroVector;
+    const TVector<T> VecDir = (VecSize > UE_SMALL_NUMBER) ? (*this/VecSize) : ZeroVector;
 
     VecSize = FMath::Clamp(VecSize, Min, Max);
 
@@ -1794,7 +1788,7 @@ template<typename T>
 FORCEINLINE TVector<T> TVector<T>::GetClampedToSize2D(T Min, T Max) const
 {
     T VecSize2D = Size2D();
-    const TVector<T> VecDir = (VecSize2D > SMALL_NUMBER) ? (*this/VecSize2D) : ZeroVector;
+    const TVector<T> VecDir = (VecSize2D > UE_SMALL_NUMBER) ? (*this/VecSize2D) : ZeroVector;
 
     VecSize2D = FMath::Clamp(VecSize2D, Min, Max);
 
@@ -1804,7 +1798,7 @@ FORCEINLINE TVector<T> TVector<T>::GetClampedToSize2D(T Min, T Max) const
 template<typename T>
 FORCEINLINE TVector<T> TVector<T>::GetClampedToMaxSize(T MaxSize) const
 {
-    if (MaxSize < KINDA_SMALL_NUMBER)
+    if (MaxSize < UE_KINDA_SMALL_NUMBER)
     {
         return ZeroVector;
     }
@@ -1824,7 +1818,7 @@ FORCEINLINE TVector<T> TVector<T>::GetClampedToMaxSize(T MaxSize) const
 template<typename T>
 FORCEINLINE TVector<T> TVector<T>::GetClampedToMaxSize2D(T MaxSize) const
 {
-    if (MaxSize < KINDA_SMALL_NUMBER)
+    if (MaxSize < UE_KINDA_SMALL_NUMBER)
     {
         return TVector<T>(0.f, 0.f, Z);
     }
@@ -1906,7 +1900,7 @@ FORCEINLINE TVector<T> TVector<T>::Reciprocal() const
     }
     else 
     {
-        RecVector.X = BIG_NUMBER;
+        RecVector.X = UE_BIG_NUMBER;
     }
     if (Y!=0.f)
     {
@@ -1914,7 +1908,7 @@ FORCEINLINE TVector<T> TVector<T>::Reciprocal() const
     }
     else 
     {
-        RecVector.Y = BIG_NUMBER;
+        RecVector.Y = UE_BIG_NUMBER;
     }
     if (Z!=0.f)
     {
@@ -1922,7 +1916,7 @@ FORCEINLINE TVector<T> TVector<T>::Reciprocal() const
     }
     else 
     {
-        RecVector.Z = BIG_NUMBER;
+        RecVector.Z = UE_BIG_NUMBER;
     }
 
     return RecVector;
@@ -2040,7 +2034,7 @@ void TVector<T>::GenerateClusterCenters(TArray<TVector<T>>& Clusters, const TArr
 
 			// Iterate over all clusters to find closes one
 			int32 NearestClusterIndex = INDEX_NONE;
-			T NearestClusterDistSqr = BIG_NUMBER;
+			T NearestClusterDistSqr = UE_BIG_NUMBER;
 			for (int32 j = 0; j < Clusters.Num(); j++)
 			{
 				const T DistSqr = (Pos - Clusters[j]).SizeSquared();
@@ -2138,13 +2132,13 @@ void TVector<T>::CreateOrthonormalBasis(TVector<T>& XAxis, TVector<T>& YAxis, TV
 	YAxis -= (YAxis | ZAxis) / (ZAxis | ZAxis) * ZAxis;
 
 	// If the X axis was parallel to the Z axis, choose a vector which is orthogonal to the Y and Z axes.
-	if (XAxis.SizeSquared() < DELTA * DELTA)
+	if (XAxis.SizeSquared() < UE_DELTA * UE_DELTA)
 	{
 		XAxis = YAxis ^ ZAxis;
 	}
 
 	// If the Y axis was parallel to the Z axis, choose a vector which is orthogonal to the X and Z axes.
-	if (YAxis.SizeSquared() < DELTA * DELTA)
+	if (YAxis.SizeSquared() < UE_DELTA * UE_DELTA)
 	{
 		YAxis = XAxis ^ ZAxis;
 	}
@@ -2475,8 +2469,6 @@ FORCEINLINE uint32 GetTypeHash(const TVector<T>& Vector)
 } // namespace UE::Math
 } // namespace UE
 
-UE_DECLARE_LWC_TYPE(Vector, 3);
-
 template<> struct TCanBulkSerialize<FVector3f> { enum { Value = true }; };
 template<> struct TIsPODType<FVector3f> { enum { Value = true }; };
 template<> struct TIsUECoreVariant<FVector3f> { enum { Value = true }; };
@@ -2607,17 +2599,9 @@ inline FVector FMath::VRand()
         Result.Z = FRand() * 2.f - 1.f;
         L = Result.SizeSquared();
     }
-    while(L > 1.0f || L < KINDA_SMALL_NUMBER);
+    while(L > 1.0f || L < UE_KINDA_SMALL_NUMBER);
 
     return Result * (1.0f / Sqrt(L));
-}
-
-
-FORCEINLINE FIntVector::FIntVector(FVector InVector)
-	: X(FMath::TruncToInt32(InVector.X))
-	, Y(FMath::TruncToInt32(InVector.Y))
-	, Z(FMath::TruncToInt32(InVector.Z))
-{
 }
 
 template<>
@@ -2639,6 +2623,21 @@ inline bool FVector3d::SerializeFromMismatchedTag(FName StructTag, FStructuredAr
 namespace UE {
 namespace Math {
 
+template <>
+FORCEINLINE TIntVector3<int32>::TIntVector3(FVector InVector)
+	: X(FMath::TruncToInt32(InVector.X))
+	, Y(FMath::TruncToInt32(InVector.Y))
+	, Z(FMath::TruncToInt32(InVector.Z))
+{
+}
+
+template <>
+FORCEINLINE TIntVector3<uint32>::TIntVector3(FVector InVector)
+	: X(IntCastChecked<uint32, int64>(FMath::TruncToInt64(InVector.X)))
+	, Y(IntCastChecked<uint32, int64>(FMath::TruncToInt64(InVector.Y)))
+	, Z(IntCastChecked<uint32, int64>(FMath::TruncToInt64(InVector.Z)))
+{
+}
 
 template<typename T>
 FORCEINLINE TVector2<T>::TVector2( const TVector<T>& V )
@@ -2655,6 +2654,21 @@ inline TVector<T> TVector2<T>::SphericalToUnitCartesian() const
 }
 
 } // namespace UE::Math
+	
+namespace LWC
+{
+// Validated narrowing cast for world positions. FVector -> FVector3f
+FORCEINLINE FVector3f NarrowWorldPositionChecked(const FVector& WorldPosition)
+{
+	FVector3f Narrowed;
+	constexpr FVector::FReal Precision = 1/16.0;
+	Narrowed.X = FloatCastChecked<float>(WorldPosition.X, Precision);
+	Narrowed.Y = FloatCastChecked<float>(WorldPosition.Y, Precision);
+	Narrowed.Z = FloatCastChecked<float>(WorldPosition.Z, Precision);
+	return Narrowed;
+}
+} // namespace UE::LWC
+
 } // namespace UE
 
 #if PLATFORM_ENABLE_VECTORINTRINSICS

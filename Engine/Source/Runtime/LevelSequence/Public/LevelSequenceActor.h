@@ -7,13 +7,20 @@
 #include "UObject/Object.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Actor.h"
-#include "LevelSequencePlayer.h"
+#include "IMovieScenePlaybackClient.h"
+#include "MovieSceneSequencePlaybackSettings.h"
 #include "MovieSceneBindingOwnerInterface.h"
 #include "MovieSceneBindingOverrides.h"
-#include "MovieSceneSequenceTickManager.h"
+#include "LevelSequenceCameraSettings.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+	#include "LevelSequencePlayer.h"
+#endif
+
 #include "LevelSequenceActor.generated.h"
 
 class ULevelSequenceBurnIn;
+class ULevelSequencePlayer;
 class UMovieSceneSequenceTickManager;
 
 UCLASS(Blueprintable, DefaultToInstanced)
@@ -42,7 +49,7 @@ public:
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="General")
 	bool bUseBurnIn;
 
-	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="General", meta=(EditCondition=bUseBurnIn, MetaClass="LevelSequenceBurnIn"))
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="General", meta=(EditCondition=bUseBurnIn, MetaClass="/Script/LevelSequence.LevelSequenceBurnIn"))
 	FSoftClassPath BurnInClass;
 
 	UPROPERTY(Instanced, EditAnywhere, BlueprintReadWrite, Category="General", meta=(EditCondition=bUseBurnIn))
@@ -61,7 +68,6 @@ protected:
 UCLASS(hideCategories=(Rendering, Physics, HLOD, Activation, Input))
 class LEVELSEQUENCE_API ALevelSequenceActor
 	: public AActor
-	, public IMovieSceneSequenceActor
 	, public IMovieScenePlaybackClient
 	, public IMovieSceneBindingOwnerInterface
 {
@@ -76,13 +82,13 @@ public:
 
 public:
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Playback", meta=(ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Playback", meta=(ShowOnlyInnerProperties, ExposeOnSpawn))
 	FMovieSceneSequencePlaybackSettings PlaybackSettings;
 
 	UPROPERTY(Instanced, transient, replicated, BlueprintReadOnly, BlueprintGetter=GetSequencePlayer, Category="Playback", meta=(ExposeFunctionCategories="Sequencer|Player"))
 	TObjectPtr<ULevelSequencePlayer> SequencePlayer;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="General", meta=(AllowedClasses="LevelSequence"))
+	UPROPERTY(EditAnywhere, replicated, BlueprintReadOnly, Category="General", meta=(AllowedClasses="/Script/LevelSequence.LevelSequence", ExposeOnSpawn))
 	TObjectPtr<ULevelSequence> LevelSequenceAsset;
 
 #if WITH_EDITORONLY_DATA
@@ -90,7 +96,7 @@ public:
 	FSoftObjectPath LevelSequence_DEPRECATED;
 #endif
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cameras", meta=(ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Cameras", meta=(ShowOnlyInnerProperties, ExposeOnSpawn))
 	FLevelSequenceCameraSettings CameraSettings;
 
 	UPROPERTY(Instanced, BlueprintReadOnly, Category="General")
@@ -108,7 +114,7 @@ public:
 	uint8 bOverrideInstanceData : 1;
 
 	/** If true, playback of this level sequence on the server will be synchronized across other clients */
-	UPROPERTY(EditAnywhere, DisplayName="Replicate Playback", BlueprintReadWrite, BlueprintSetter=SetReplicatePlayback, Category=Replication)
+	UPROPERTY(EditAnywhere, DisplayName="Replicate Playback", BlueprintReadWrite, BlueprintSetter=SetReplicatePlayback, Category=Replication, meta=(ExposeOnSpawn))
 	uint8 bReplicatePlayback:1;
 
 	/** Instance data that can be used to dynamically control sequence evaluation at runtime */
@@ -259,10 +265,6 @@ public:
 
 protected:
 
-	//~ Begin IMovieSceneSequenceActor interface
-	virtual void TickFromSequenceTickManager(float DeltaSeconds) override;
-	//~ End IMovieSceneSequenceActor interface
-
 	//~ Begin IMovieScenePlaybackClient interface
 	virtual bool RetrieveBindingOverrides(const FGuid& InBindingId, FMovieSceneSequenceID InSequenceID, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
 	virtual UObject* GetInstanceData() const override;
@@ -274,6 +276,12 @@ protected:
 	virtual bool ReplicateSubobjects(UActorChannel* Channel, FOutBunch* Bunch, FReplicationFlags *RepFlags) override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
+public:
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+protected:
+
 	//~ End UObject interface
 
 	//~ Begin AActor interface
@@ -281,6 +289,7 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void RewindForReplay() override;
+	virtual void PostNetReceive() override;
 #if WITH_EDITOR
 	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
 #endif
@@ -302,10 +311,7 @@ public:
 #if WITH_EDITOR
 	virtual TSharedPtr<FStructOnScope> GetObjectPickerProxy(TSharedPtr<IPropertyHandle> PropertyHandle) override;
 	virtual void UpdateObjectFromProxy(FStructOnScope& Proxy, IPropertyHandle& ObjectPropertyHandle) override;
-	virtual UMovieSceneSequence* RetrieveOwnedSequence() const override
-	{
-		return GetSequence();
-	}
+	virtual UMovieSceneSequence* RetrieveOwnedSequence() const override;
 #endif
 
 private:
@@ -318,7 +324,7 @@ private:
 };
 
 USTRUCT()
-struct FBoundActorProxy
+struct LEVELSEQUENCE_API FBoundActorProxy
 {
 	GENERATED_BODY()
 
@@ -335,4 +341,18 @@ struct FBoundActorProxy
 	TSharedPtr<IPropertyHandle> ReflectedProperty;
 
 #endif
+};
+
+/**
+ * A level sequence actor that is set to always be relevant for networking purposes
+ */
+UCLASS()
+class LEVELSEQUENCE_API AReplicatedLevelSequenceActor
+	: public ALevelSequenceActor
+{
+	GENERATED_BODY()
+
+public:
+	/** Create and initialize a new instance. */
+	AReplicatedLevelSequenceActor(const FObjectInitializer& Init);
 };

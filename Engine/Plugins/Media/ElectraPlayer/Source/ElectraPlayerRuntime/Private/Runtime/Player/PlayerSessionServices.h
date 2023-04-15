@@ -84,7 +84,7 @@ namespace Electra
 		 *
 		 * @return Pointer to the HTTP manager.
 		 */
-		virtual IElectraHttpManager* GetHTTPManager() = 0;
+		virtual TSharedPtrTS<IElectraHttpManager> GetHTTPManager() = 0;
 
 		/**
 		 * Returns the ABR stream selector instance.
@@ -92,11 +92,6 @@ namespace Electra
 		 * @return Pointer to the ABR stream selector.
 		 */
 		virtual TSharedPtrTS<IAdaptiveStreamSelector> GetStreamSelector() = 0;
-
-		/**
-		 * Returns the current stream access unit buffer stats.
-		 */
-		virtual void GetStreamBufferStats(FAccessUnitBufferInfo& OutBufferStats, EStreamType ForStream) = 0;
 
 		/**
 		 * Returns the stream filter interface used by playlist readers to determine whether or not a stream
@@ -141,6 +136,19 @@ namespace Electra
 		  * Returns the DRM manager, if any.
 		  */
 		virtual TSharedPtrTS<FDRMManager> GetDRMManager() = 0;
+
+		enum class EPlayEndReason
+		{
+			EndAll,
+			NextItem,
+			ErrorCondition
+		};
+		class IPlayEndReason
+		{
+		public:
+			virtual ~IPlayEndReason() = default;
+		};
+		virtual void SetPlaybackEnd(const FTimeValue& InEndAtTime, EPlayEndReason InEndingReason, TSharedPtrTS<IPlayEndReason> InCustomManifestObject) = 0;
 	};
 
 

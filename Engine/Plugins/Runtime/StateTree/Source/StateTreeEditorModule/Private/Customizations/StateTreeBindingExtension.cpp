@@ -1,19 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeBindingExtension.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailChildrenBuilder.h"
-#include "EdGraphSchema_K2.h"
-#include "IPropertyAccessEditor.h"
-#include "Features/IModularFeatures.h"
-#include "StateTreeEvaluatorBase.h"
-#include "StateTree.h"
 #include "Algo/Accumulate.h"
-#include "StateTreePropertyHelpers.h"
+#include "Blueprint/StateTreeNodeBlueprintBase.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "EdGraphSchema_K2.h"
+#include "Features/IModularFeatures.h"
+#include "IDetailChildrenBuilder.h"
+#include "IPropertyAccessEditor.h"
+#include "PropertyNode.h"
 #include "StateTreeAnyEnum.h"
+#include "StateTreeCompiler.h"
+#include "StateTreeEvaluatorBase.h"
 #include "StateTreePropertyBindingCompiler.h"
-#include "PropertyEditor/Private/PropertyNode.h"
+#include "StateTreePropertyHelpers.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -21,7 +22,7 @@ namespace UE::StateTree::PropertyBinding
 {
 	
 const FName StateTreeNodeIDName(TEXT("StateTreeNodeID"));
-	
+const FName AllowAnyBindingName(TEXT("AllowAnyBinding"));
 
 UObject* FindEditorBindingsOwner(UObject* InObject)
 {
@@ -67,27 +68,23 @@ void GetStructPropertyPath(TSharedPtr<IPropertyHandle> InPropertyHandle, FStateT
 	}
 }
 
-	
-EStateTreePropertyUsage ParsePropertyUsage(TSharedPtr<const IPropertyHandle> InPropertyHandle)
+FText GetSectionNameFromDataSource(const EStateTreeBindableStructSource Source)
 {
-	static const FName CategoryName(TEXT("Category"));
-	
-	const FString Category = InPropertyHandle->GetMetaData(CategoryName);
-
-	if (Category == TEXT("Input"))
+	switch (Source)
 	{
-		return EStateTreePropertyUsage::Input;
+	case EStateTreeBindableStructSource::Context:
+		return LOCTEXT("Context", "Context");
+	case EStateTreeBindableStructSource::Parameter:
+		return LOCTEXT("Parameters", "Parameters");
+	case EStateTreeBindableStructSource::Evaluator:
+		return LOCTEXT("Evaluators", "Evaluators");
+	case EStateTreeBindableStructSource::State:
+		return LOCTEXT("StateParameters", "State");
+	case EStateTreeBindableStructSource::Task:
+		return LOCTEXT("Tasks", "Tasks");
+	default:
+		return FText::GetEmpty();
 	}
-	if (Category == TEXT("Output"))
-	{
-		return EStateTreePropertyUsage::Output;
-	}
-	if (Category == TEXT("Parameter"))
-	{
-		return EStateTreePropertyUsage::Parameter;
-	}
-	
-	return EStateTreePropertyUsage::Invalid;
 }
 
 
@@ -104,8 +101,8 @@ bool FStateTreeBindingExtension::IsPropertyExtendable(const UClass* InObjectClas
 	}
 
 	// Only inputs and parameters are bindable.
-	const EStateTreePropertyUsage Usage = UE::StateTree::PropertyBinding::ParsePropertyUsage(PropertyHandle.AsShared());
-	return Usage == EStateTreePropertyUsage::Input || Usage == EStateTreePropertyUsage::Parameter;
+	const EStateTreePropertyUsage Usage = UE::StateTree::Compiler::GetUsageFromMetaData(PropertyHandle.GetProperty());
+	return Usage == EStateTreePropertyUsage::Input || Usage == EStateTreePropertyUsage::Context || Usage == EStateTreePropertyUsage::Parameter;
 }
 
 
@@ -145,23 +142,36 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 			for (FStateTreeBindableStructDesc& StructDesc : AccessibleStructs)
 			{
 				const UStruct* Struct = StructDesc.Struct;
-				Context.Emplace(const_cast<UStruct*>(Struct), nullptr, FText::FromString(StructDesc.Name.ToString()));
+
+				FBindingContextStruct& ContextStruct = Context.AddDefaulted_GetRef();
+				ContextStruct.DisplayText = FText::FromString(StructDesc.Name.ToString());
+				ContextStruct.Struct = const_cast<UStruct*>(Struct);
+				ContextStruct.Section = UE::StateTree::PropertyBinding::GetSectionNameFromDataSource(StructDesc.DataSource);
 			}
 		}
 	}
 
 	FProperty* Property = InPropertyHandle->GetProperty();
 
+	bool bIsDataRef = false;
 	bool bIsAnyEnum = false;
 	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 	{
 		bIsAnyEnum = StructProperty->Struct == FStateTreeAnyEnum::StaticStruct();
+		bIsDataRef = StructProperty->Struct == FStateTreeStructRef::StaticStruct();
+	}
+
+	const UScriptStruct* DataRefBaseStruct = nullptr;
+	if (bIsDataRef)
+	{
+		FString BaseStructName;
+		DataRefBaseStruct = UE::StateTree::Compiler::GetBaseStructFromMetaData(Property, BaseStructName);
 	}
 	
 	FPropertyBindingWidgetArgs Args;
 	Args.Property = InPropertyHandle->GetProperty();
 
-	Args.OnCanBindProperty = FOnCanBindProperty::CreateLambda([EditorBindings, OwnerObject, InPropertyHandle, bIsAnyEnum](FProperty* InProperty)
+	Args.OnCanBindProperty = FOnCanBindProperty::CreateLambda([EditorBindings, OwnerObject, InPropertyHandle, bIsAnyEnum, bIsDataRef, DataRefBaseStruct](FProperty* InProperty)
 		{
 			if (!EditorBindings || !OwnerObject)
 			{
@@ -182,6 +192,9 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 			// Note: AnyEnums will need special handling before they can be used for binding.
 			if (bIsAnyEnum)
 			{
+				// If the AnyEnum has AllowAnyBinding, allow to bind to any enum.
+				const bool bAllowAnyBinding = InPropertyHandle->HasMetaData(UE::StateTree::PropertyBinding::AllowAnyBindingName);
+
 				FStateTreeAnyEnum AnyEnum;
 				UE::StateTree::PropertyHelpers::GetStructValue(InPropertyHandle, AnyEnum);
 
@@ -190,12 +203,28 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 				{
 					if (UEnum* Enum = ByteProperty->GetIntPropertyEnum())
 					{
-						bCanBind = !AnyEnum.Enum || AnyEnum.Enum == Enum;
+						bCanBind = bAllowAnyBinding || AnyEnum.Enum == Enum;
 					}
 				}
 				else if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(InProperty))
 				{
-					bCanBind = !AnyEnum.Enum || AnyEnum.Enum == EnumProperty->GetEnum();
+					bCanBind = bAllowAnyBinding || AnyEnum.Enum == EnumProperty->GetEnum();
+				}
+			}
+			else if (bIsDataRef && DataRefBaseStruct != nullptr)
+			{
+				if (const FStructProperty* SourceStructProperty = CastField<FStructProperty>(InProperty))
+				{
+					if (SourceStructProperty->Struct == TBaseStructure<FStateTreeStructRef>::Get())
+					{
+						FString SourceBaseStructName;
+						const UScriptStruct* SourceDataRefBaseStruct = UE::StateTree::Compiler::GetBaseStructFromMetaData(SourceStructProperty, SourceBaseStructName);
+						bCanBind = SourceDataRefBaseStruct && SourceDataRefBaseStruct->IsChildOf(DataRefBaseStruct);
+					}
+					else
+					{
+						bCanBind = SourceStructProperty->Struct && SourceStructProperty->Struct->IsChildOf(DataRefBaseStruct);
+					}
 				}
 			}
 			else
@@ -205,6 +234,29 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 			}
 
 			return bCanBind;
+		});
+
+	Args.OnCanBindToContextStruct = FOnCanBindToContextStruct::CreateLambda([InPropertyHandle](const UStruct* InStruct)
+		{
+			// Do not allow to bind directly StateTree nodes
+			if (InStruct != nullptr)
+			{
+				if (InStruct->IsChildOf(UStateTreeNodeBlueprintBase::StaticClass())
+					|| InStruct->IsChildOf(FStateTreeNodeBase::StaticStruct()))
+				{
+					return false;
+				}
+			}
+		
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(InPropertyHandle->GetProperty()))
+			{
+				return StructProperty->Struct == InStruct;
+			}
+			if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InPropertyHandle->GetProperty()))
+			{
+				return InStruct != nullptr && InStruct->IsChildOf(ObjectProperty->PropertyClass);
+			}
+			return false;
 		});
 
 	Args.OnCanAcceptPropertyOrChildren = FOnCanBindProperty::CreateLambda([](FProperty* InProperty)
@@ -223,13 +275,18 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 			IPropertyAccessEditor& PropertyAccessEditor = IModularFeatures::Get().GetModularFeature<IPropertyAccessEditor>("PropertyAccessEditor");
 			if (EditorBindings && OwnerObject)
 			{
-				if (TargetPath.IsValid() && InBindingChain.Num() > 1)	// Assume at least: [0] struct index, [1] a property.
+				if (TargetPath.IsValid() && InBindingChain.Num() > 0)
 				{
+					// First item in the binding chain is the index in AccessibleStructs.
 					FStateTreeEditorPropertyPath SourcePath;
 					const int32 SourceStructIndex = InBindingChain[0].ArrayIndex;
-					TArray<FBindingChainElement> SourceBindingChain(InBindingChain.GetData() + 1, InBindingChain.Num() - 1);
+					
+					TArray<FBindingChainElement> SourceBindingChain = InBindingChain;
+					SourceBindingChain.RemoveAt(0); // remove struct index.
+
 					check(SourceStructIndex >= 0 && SourceStructIndex < AccessibleStructs.Num());
 
+					// If SourceBindingChain is empty at this stage, it means that the binding points to the source struct itself.
 					SourcePath.StructID = AccessibleStructs[SourceStructIndex].ID;
 					PropertyAccessEditor.MakeStringPath(SourceBindingChain, SourcePath.Path);
 
@@ -296,7 +353,7 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 	Args.CurrentBindingImage = MakeAttributeLambda([]() -> const FSlateBrush*
 		{
 			static FName PropertyIcon(TEXT("Kismet.Tabs.Variables"));
-			return FEditorStyle::GetBrush(PropertyIcon);
+			return FAppStyle::GetBrush(PropertyIcon);
 		});
 
 	Args.CurrentBindingColor = MakeAttributeLambda([InPropertyHandle]() -> FLinearColor
@@ -323,4 +380,3 @@ void FStateTreeBindingExtension::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, 
 }
 
 #undef LOCTEXT_NAMESPACE
-

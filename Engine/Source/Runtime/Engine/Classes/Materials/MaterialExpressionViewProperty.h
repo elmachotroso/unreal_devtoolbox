@@ -39,6 +39,8 @@ enum EMaterialExposedViewProperty
 	MEVP_PreExposure UMETA(DisplayName = "Pre-Exposure"),
 	/** Maximum mip level of Runtime Virtual Texture that Runtime Virtual Texture Output is rendering to. */
 	MEVP_RuntimeVirtualTextureMaxLevel UMETA(DisplayName = "Virtual Texture Max Level"),
+	/** Screen percentage at which the rendering resolution happens, to allow tech-art to remain consistent with dynamic resolution. */
+	MEVP_ResolutionFraction UMETA(DisplayName = "ScreenPercentage / 100"),
 
 	MEVP_MAX,
 };
@@ -49,13 +51,14 @@ class UMaterialExpressionViewProperty : public UMaterialExpression
 	GENERATED_UCLASS_BODY()
 	
 	/** View input property to be accessed */
-	UPROPERTY(EditAnywhere, Category=UMaterialExpressionViewProperty, meta=(DisplayName = "View Property"))
+	UPROPERTY(EditAnywhere, Category=UMaterialExpressionViewProperty, meta=(DisplayName = "View Property", ShowAsInputPin = "Advanced"))
 	TEnumAsByte<EMaterialExposedViewProperty> Property;
 	
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 };

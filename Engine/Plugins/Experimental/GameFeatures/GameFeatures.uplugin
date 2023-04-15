@@ -18,7 +18,7 @@
 		{
 			"Name": "GameFeatures",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PreDefault"
 		},
 		{
 			"Name": "GameFeaturesEditor",
@@ -38,6 +38,11 @@
 		{
 			"Name": "AssetReferenceRestrictions",
 			"Enabled": true
+		},
+		{
+			"Name": "PluginUtils",
+			"Enabled": true,
+			"TargetAllowList": [ "Editor" ]
 		}
 	]
 }

@@ -121,7 +121,10 @@ public:
 		StateOut.World = EditorModeManager->GetWorld();
 		EditorModeManager->GetSelectedActors()->GetSelectedObjects(StateOut.SelectedActors);
 		EditorModeManager->GetSelectedComponents()->GetSelectedObjects(StateOut.SelectedComponents);
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		StateOut.TypedElementSelectionSet = EditorModeManager->GetEditorSelectionSet();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	virtual void GetCurrentViewState(FViewCameraState& StateOut) const override
@@ -251,10 +254,16 @@ public:
 		int NumActors = SelectionChange.Actors.Num();
 		for (int k = 0; k < NumActors; ++k)
 		{
-			GEditor->SelectActor(SelectionChange.Actors[k], bAdd, false, true, false);
+			// Calling GEditor->NoteSelectionChange(true) will not send out change notifications on the TypedElementSelectionSet.
+			// The selection change will work but any Editor stuff listening for changes will not be notified.
+			// This may be a bug, needs further investigation.
+			// In the meantime, just send out the notification on the last SelectActor() call
+			bool bNotify = (k == NumActors-1);
+			GEditor->SelectActor(SelectionChange.Actors[k], bAdd, bNotify, true, false);
 		}
 
 		GEditor->NoteSelectionChange(true);
+
 		return true;
 	}
 
@@ -286,11 +295,14 @@ void UEditorInteractiveToolsContext::Initialize(IToolsContextQueriesAPI* Queries
 
 void UEditorInteractiveToolsContext::Shutdown()
 {
+	bIsActive = false;
+
 	// auto-accept any in-progress tools
 	DeactivateAllActiveTools(EToolShutdownType::Accept);
 
 	UInteractiveToolsContext::Shutdown();
 }
+
 
 void UEditorInteractiveToolsContext::InitializeContextWithEditorModeManager(FEditorModeTools* InEditorModeManager, UInputRouter* UseInputRouter)
 {
@@ -382,7 +394,7 @@ void UEditorInteractiveToolsContext::PostInvalidation()
 
 UWorld* UEditorInteractiveToolsContext::GetWorld() const
 {
-	if (EditorModeManager)
+	if (bIsActive && EditorModeManager)
 	{
 		return EditorModeManager->GetWorld();
 	}
@@ -394,12 +406,12 @@ void UEditorInteractiveToolsContext::Tick(FEditorViewportClient* ViewportClient,
 {
 	// invalidate this viewport if it's timestamp is not current
 	const int32* FoundTimestamp = InvalidationMap.Find(ViewportClient);
-	if (FoundTimestamp == nullptr)
+	if (ViewportClient && FoundTimestamp == nullptr)
 	{
 		ViewportClient->Invalidate(false, false);
 		InvalidationMap.Add(ViewportClient, InvalidationTimestamp);
 	}
-	if (FoundTimestamp != nullptr && *FoundTimestamp < InvalidationTimestamp)
+	if (ViewportClient && FoundTimestamp != nullptr && *FoundTimestamp < InvalidationTimestamp)
 	{
 		ViewportClient->Invalidate(false, false);
 		InvalidationMap[ViewportClient] = InvalidationTimestamp;
@@ -429,11 +441,15 @@ void UEditorInteractiveToolsContext::Tick(FEditorViewportClient* ViewportClient,
 	// Cache current camera state from this Viewport in the ContextQueries, which we will use for things like snapping/etc that
 	// is computed by the Tool and Gizmo Tick()s
 	// (This is not necessarily correct for Hover, because we might be Hovering over a different Viewport than the Active one...)
-	((FEdModeToolsContextQueriesImpl*)this->QueriesAPI)->CacheCurrentViewState(ViewportClient);
+	if (ViewportClient)
+	{
+		((FEdModeToolsContextQueriesImpl*)this->QueriesAPI)->CacheCurrentViewState(ViewportClient);
+	}
 
 	// tick our stuff
 	ToolManager->Tick(DeltaTime);
 	GizmoManager->Tick(DeltaTime);
+	OnTick.Broadcast(DeltaTime);
 }
 
 
@@ -474,6 +490,11 @@ public:
 
 	void CacheCurrentViewState(FViewport* Viewport, FEditorViewportClient* ViewportClient)
 	{
+		if (!ViewportClient)
+		{
+			return;
+		}
+
 		FViewportCameraTransform ViewTransform = ViewportClient->GetViewTransform();
 		ViewCameraState.bIsOrthographic = ViewportClient->IsOrtho();
 		ViewCameraState.Position = ViewTransform.GetLocation();
@@ -562,6 +583,7 @@ void UEditorInteractiveToolsContext::Render(const FSceneView* View, FViewport* V
 	FEdModeTempRenderContext RenderContext(View, Viewport, ViewportClient, PDI, InteractionState);
 	ToolManager->Render(&RenderContext);
 	GizmoManager->Render(&RenderContext);
+	OnRender.Broadcast(&RenderContext);
 }
 
 void UEditorInteractiveToolsContext::DrawHUD(FViewportClient* ViewportClient,FViewport* Viewport,const FSceneView* View, FCanvas* Canvas)
@@ -581,6 +603,7 @@ void UEditorInteractiveToolsContext::DrawHUD(FViewportClient* ViewportClient,FVi
 	FEdModeTempRenderContext RenderContext(View, Viewport, EditorViewportClient, nullptr /*PDI*/, InteractionState);
 	ToolManager->DrawHUD(Canvas, &RenderContext);
 	GizmoManager->DrawHUD(Canvas, &RenderContext);
+	OnDrawHUD.Broadcast(Canvas, &RenderContext);
 }
 
 
@@ -629,6 +652,11 @@ bool UEditorInteractiveToolsContext::ProcessEditDelete()
 
 FRay UEditorInteractiveToolsContext::GetRayFromMousePos(FEditorViewportClient* ViewportClient, FViewport* Viewport, int MouseX, int MouseY)
 {
+	if (!ViewportClient)
+	{
+		return FRay();
+	}
+
 	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
 		ViewportClient->Viewport,
 		ViewportClient->GetScene(),
@@ -700,6 +728,15 @@ void UEditorInteractiveToolsContext::EndTool(EToolShutdownType ShutdownType)
 	PostInvalidation();
 }
 
+void UEditorInteractiveToolsContext::Activate()
+{
+	bIsActive = true;
+}
+
+void UEditorInteractiveToolsContext::Deactivate()
+{
+	bIsActive = false;
+}
 
 
 void UEditorInteractiveToolsContext::DeactivateActiveTool(EToolSide WhichSide, EToolShutdownType ShutdownType)
@@ -869,16 +906,19 @@ bool UModeManagerInteractiveToolsContext::InputKey(FEditorViewportClient* Viewpo
 				// to wherever they get handled.
 				// Someday these kinds of prioritizations will be handled by having camera manipulation be
 				// in a common input router so that behavior priorities can determine the ordering.
-				if (ViewportClient->IsAltPressed() && InputRouter->HasActiveMouseCapture() == false)
+				if (ViewportClient && ViewportClient->IsAltPressed() && InputRouter->HasActiveMouseCapture() == false)
 				{
 					return false;
 				}
 
 				FInputDeviceState InputState = CurrentMouseState;
 				InputState.InputDevice = EInputDevices::Mouse;
+
+				FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 				InputState.SetModifierKeyStates(
-					ViewportClient->IsShiftPressed(), ViewportClient->IsAltPressed(),
-					ViewportClient->IsCtrlPressed(), ViewportClient->IsCmdPressed());
+					ModifierKeys.IsShiftDown(), ModifierKeys.IsAltDown(),
+					ModifierKeys.IsControlDown(), ModifierKeys.IsCommandDown());
+
 				if (bIsLeftMouse)
 				{
 					InputState.Mouse.Left.SetStates(
@@ -915,9 +955,11 @@ bool UModeManagerInteractiveToolsContext::InputKey(FEditorViewportClient* Viewpo
 
 				FInputDeviceState InputState = CurrentMouseState;
 				InputState.InputDevice = EInputDevices::Mouse;
+
+				FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 				InputState.SetModifierKeyStates(
-					ViewportClient->IsShiftPressed(), ViewportClient->IsAltPressed(),
-					ViewportClient->IsCtrlPressed(), ViewportClient->IsCmdPressed());
+					ModifierKeys.IsShiftDown(), ModifierKeys.IsAltDown(),
+					ModifierKeys.IsControlDown(), ModifierKeys.IsCommandDown());
 
 				InputState.Mouse.WheelDelta = (Event != IE_Pressed) ? 0
 					: (Key == EKeys::MouseScrollUp) ? 1 
@@ -942,9 +984,12 @@ bool UModeManagerInteractiveToolsContext::InputKey(FEditorViewportClient* Viewpo
 		{
 			FInputDeviceState InputState;
 			InputState.InputDevice = EInputDevices::Keyboard;
+
+			FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 			InputState.SetModifierKeyStates(
-				ViewportClient->IsShiftPressed(), ViewportClient->IsAltPressed(),
-				ViewportClient->IsCtrlPressed(), ViewportClient->IsCmdPressed());
+				ModifierKeys.IsShiftDown(), ModifierKeys.IsAltDown(),
+				ModifierKeys.IsControlDown(), ModifierKeys.IsCommandDown());
+
 			InputState.Keyboard.ActiveKey.Button = Key;
 			bool bPressed = (Event == IE_Pressed);
 			InputState.Keyboard.ActiveKey.SetStates(bPressed, bPressed, !bPressed);
@@ -979,9 +1024,10 @@ bool UModeManagerInteractiveToolsContext::MouseMove(FEditorViewportClient* Viewp
 	FInputDeviceState InputState = CurrentMouseState;
 	InputState.InputDevice = EInputDevices::Mouse;
 
+	FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 	InputState.SetModifierKeyStates(
-		ViewportClient->IsShiftPressed(), ViewportClient->IsAltPressed(),
-		ViewportClient->IsCtrlPressed(), ViewportClient->IsCmdPressed());
+		ModifierKeys.IsShiftDown(), ModifierKeys.IsAltDown(),
+		ModifierKeys.IsControlDown(), ModifierKeys.IsCommandDown());
 
 	if (InputRouter->HasActiveMouseCapture())
 	{
@@ -1031,9 +1077,12 @@ bool UModeManagerInteractiveToolsContext::CapturedMouseMove(FEditorViewportClien
 
 		FInputDeviceState InputState = CurrentMouseState;
 		InputState.InputDevice = EInputDevices::Mouse;
+		
+		FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 		InputState.SetModifierKeyStates(
-			InViewportClient->IsShiftPressed(), InViewportClient->IsAltPressed(),
-			InViewportClient->IsCtrlPressed(), InViewportClient->IsCmdPressed());
+			ModifierKeys.IsShiftDown(), ModifierKeys.IsAltDown(),
+			ModifierKeys.IsControlDown(), ModifierKeys.IsCommandDown());
+
 		InputState.Mouse.Delta2D = CurrentMouseState.Mouse.Position2D - OldPosition;
 		InputRouter->PostInputEvent(InputState);
 		return true;
@@ -1049,7 +1098,10 @@ bool UModeManagerInteractiveToolsContext::EndTracking(FEditorViewportClient* InV
 		// If the input router captured the mouse input, we need to invalidate the viewport client here, since the mouse delta tracker's end tracking will not be called.
 		constexpr bool bForceChildViewportRedraw = true;
 		constexpr bool bInvalidateHitProxies = true;
-		InViewportClient->Invalidate(bForceChildViewportRedraw, bInvalidateHitProxies);
+		if (InViewportClient)
+		{
+			InViewportClient->Invalidate(bForceChildViewportRedraw, bInvalidateHitProxies);
+		}
 		bIsTrackingMouse = false;
 		return true;
 	}
@@ -1131,6 +1183,7 @@ bool UModeManagerInteractiveToolsContext::OnChildEdModeActivated(UEdModeInteract
 	}
 
 	EdModeToolsContexts.Add(ChildToolsContext);
+	ChildToolsContext->Activate();
 	return true;
 }
 
@@ -1142,6 +1195,7 @@ bool UModeManagerInteractiveToolsContext::OnChildEdModeDeactivated(UEdModeIntera
 		if (EdModeToolsContexts[k] == ChildToolsContext)
 		{
 			ChildToolsContext->DeactivateAllActiveTools(EToolShutdownType::Cancel);
+			ChildToolsContext->Deactivate();
 			EdModeToolsContexts.RemoveAt(k);
 			return true;
 		}

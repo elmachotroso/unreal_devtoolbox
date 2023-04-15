@@ -2,7 +2,7 @@
 
 #include "STimecodeProviderTab.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Engine.h"
 #include "Engine/TimecodeProvider.h"
 #include "Framework/Application/SlateApplication.h"
@@ -20,7 +20,7 @@
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
-
+LLM_DEFINE_TAG(VirtualProductionUtilities_TimecodeProviderTab);
 #define LOCTEXT_NAMESPACE "TimecodeProviderTab"
 
 namespace TimecodeProviderTab
@@ -40,8 +40,11 @@ namespace TimecodeProviderTab
 
 void STimecodeProviderTab::RegisterNomadTabSpawner()
 {
+	LLM_SCOPE_BYTAG(VirtualProductionUtilities_TimecodeProviderTab);
+
 	auto RegisterTabSpawner = []()
 	{
+		LLM_SCOPE_BYTAG(VirtualProductionUtilities_TimecodeProviderTab);
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
@@ -49,7 +52,7 @@ void STimecodeProviderTab::RegisterNomadTabSpawner()
 			.SetDisplayName(NSLOCTEXT("TimecodeProviderTab", "DisplayName", "Timecode Provider"))
 			.SetTooltipText(NSLOCTEXT("TimecodeProviderTab", "TooltipText", "Displays the Timecode and the state of the current Timecode Provider."))
 			.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorVirtualProductionCategory())
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "TimecodeProvider.TabIcon"));
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimecodeProvider.TabIcon"));
 	};
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -100,11 +103,11 @@ void STimecodeProviderTab::Construct(const FArguments& InArgs)
 	[
 		SNew(SBorder)
 		.Padding(FMargin(0, 3, 0, 0))
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()

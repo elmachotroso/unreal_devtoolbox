@@ -11,12 +11,14 @@
 
 REMOTECONTROL_API DECLARE_LOG_CATEGORY_EXTERN(LogRemoteControl, Log, All);
 
+class IRemoteControlMaskingFactory;
 class IStructDeserializerBackend;
 class IStructSerializerBackend;
 class URemoteControlPreset;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FExposedProperty;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+struct FRCMaskingOperation;
 struct FRemoteControlProperty;
 class IRemoteControlPropertyFactory;
 
@@ -49,20 +51,39 @@ struct FRCCallReference
 	FRCCallReference()
 		: Object(nullptr)
 		, Function(nullptr)
+		, PropertyWithSetter(nullptr)
 	{}
 
 	bool IsValid() const
 	{
-		return Object.IsValid() && Function.IsValid();
+		/** The object and either the function or property must be valid */
+		return Object.IsValid() && (Function.IsValid() || PropertyWithSetter.IsValid());
 	}
 
 	TWeakObjectPtr<UObject> Object; 
 	TWeakObjectPtr<UFunction> Function;
+	TWeakFieldPtr<FProperty> PropertyWithSetter;
 	
 	friend uint32 GetTypeHash(const FRCCallReference& CallRef)
 	{
-		return CallRef.IsValid() ? HashCombine(GetTypeHash(CallRef.Object), GetTypeHash(CallRef.Function)) : 0;
+		if(!CallRef.IsValid())
+		{
+			return 0;
+		}
+		
+		return HashCombine(GetTypeHash(CallRef.Object),
+			CallRef.PropertyWithSetter.IsValid()
+			? GetTypeHash(CallRef.PropertyWithSetter)
+			: GetTypeHash(CallRef.Function));
 	}
+};
+
+UENUM()
+enum class ERCTransactionMode : uint8
+{
+	NONE = 0,
+	AUTOMATIC,
+	MANUAL,
 };
 
 /**
@@ -72,12 +93,15 @@ struct FRCCall
 {
 	bool IsValid() const
 	{
-		return CallRef.IsValid() && ParamStruct.IsValid();
+		return CallRef.IsValid() && (ParamStruct.IsValid() || !ParamData.IsEmpty());
 	}
 
 	FRCCallReference CallRef;
+	// Payload for UFunctiom
 	FStructOnScope ParamStruct;
-	bool bGenerateTransaction = false;
+	// Payload for native function
+	TArray<uint8> ParamData;
+	ERCTransactionMode TransactionMode;
 };
 
 /**
@@ -90,6 +114,15 @@ struct FResolvePresetFieldArgs
 };
 
 /**
+ * Arguments for resolving a Controller on a preset.
+ */
+struct FResolvePresetControllerArgs
+{
+	FString PresetName;
+	FString ControllerName;
+};
+
+/**
  * Requested access mode to a remote property
  */
 UENUM()
@@ -99,6 +132,7 @@ enum class ERCAccess : uint8
 	READ_ACCESS,
 	WRITE_ACCESS,
 	WRITE_TRANSACTION_ACCESS,
+	WRITE_MANUAL_TRANSACTION_ACCESS,
 };
 
 /**
@@ -220,6 +254,40 @@ public:
 	virtual void UnregisterPreset(FName Name) = 0;
 
 	/**
+	 * Registers a hosted (non-asset based) preset with an attached name.
+	 * Embedded presets should only be registered while they are active.
+	 * @return whether registration was successful.
+	 */
+	virtual bool RegisterEmbeddedPreset(URemoteControlPreset* Preset, bool bReplaceExisting = false) = 0;
+
+	/**
+	 * Unregisters a hosted (non-asset based) preset with the given name.
+	 */
+	virtual void UnregisterEmbeddedPreset(FName Name) = 0;
+	virtual void UnregisterEmbeddedPreset(URemoteControlPreset* Preset) = 0;
+
+	/**
+	 * Performs the given masking operation.
+	 * @param InMaskingOperation Masking operation to be performed.
+	 */
+	virtual void PerformMasking(const TSharedRef<FRCMaskingOperation>& InMaskingOperation) = 0;
+
+	/**
+	 * Register a masking factory to handle that masks the supported properties.
+	 */
+	virtual void RegisterMaskingFactoryForType(UScriptStruct* RemoteControlPropertyType, const TSharedPtr<IRemoteControlMaskingFactory>& InMaskingFactory) = 0;
+
+	/**
+	 * Unregister a previously registered masking factory.
+	 */
+	virtual void UnregisterMaskingFactoryForType(UScriptStruct* RemoteControlPropertyType) = 0;
+
+	/**
+	 * Returns true if the given property can be masked, false otherwise.
+	 */
+	virtual bool SupportsMasking(const FProperty* InProperty) const = 0;
+
+	/**
 	 * Resolve a RemoteCall Object and Function.
 	 * This will look for object and function to resolve. 
 	 * It will only successfully resolve function that are blueprint callable. 
@@ -293,6 +361,28 @@ public:
 	virtual bool ResetObjectProperties(const FRCObjectReference& ObjectAccess, const bool bAllowIntercept = false) = 0;
 
 	/**
+	* Set a controller's value on a Remote Control Preset
+	* @param PresetName - The Remote Control Preset asset's name
+	* @param ControllerName - The name of the controller being manipulated
+	* @param Backend - the struct deserializer backend to use to deserialize the object properties.
+	* @param InPayload - the JSON payoad
+	* @param bAllowIntercept - Whether the call needs to be replicated to interceptors or invoked directly
+	*	@return true if the operation succeeded
+	*/
+	virtual bool SetPresetController(const FName PresetName, const FName ControllerName, IStructDeserializerBackend& Backend, const TArray<uint8>& InPayload, const bool bAllowIntercept) = 0;
+
+	/**
+	 * Set a controller's value on a Remote Control Preset
+	 * @param PresetName - The Remote Control Preset asset's name
+	 * @param Controller - The controller object being manipulated
+	 * @param Backend - the struct deserializer backend to use to deserialize the object properties.
+	 * @param InPayload - the JSON payoad
+	* @param bAllowIntercept - Whether the call needs to be replicated to interceptors or invoked directly
+	 * @return true if the operation succeeded
+	 */
+	virtual bool SetPresetController(const FName PresetName, class URCVirtualPropertyBase* Controller, IStructDeserializerBackend& Backend, const TArray<uint8>& InPayload, const bool bAllowIntercept) = 0;
+
+	/**
 	 * Resolve the underlying function from a preset.
 	 * @return the underlying function and objects that the property is exposed on.
 	 */
@@ -325,15 +415,56 @@ public:
 	virtual URemoteControlPreset* ResolvePreset(const FGuid& PresetId) const = 0;
 
 	/**
+	 * Create a transient preset.
+	 * Make sure to call DestroyTransientPreset when done with the preset or it will stay in memory.
+	 * @return the new preset, or nullptr if it couldn't be created.
+	 */
+	virtual URemoteControlPreset* CreateTransientPreset() = 0;
+
+	/**
+	 * Destroy a transient preset using its name.
+	 * @arg PresetName name of the preset to destroy.
+	 * @return true if a transient preset with that name existed and was destroyed.
+	 */
+	virtual bool DestroyTransientPreset(FName PresetName) = 0;
+
+	/**
+	 * Destroy a transient preset using its id.
+     * @arg PresetId id of the preset to destroy.
+	 * @return true if a transient preset with that name existed and was destroyed.
+	 */
+	virtual bool DestroyTransientPreset(const FGuid& PresetId) = 0;
+
+	/**
+	 * Check whether a preset is transient using its name.
+	 * @arg PresetName name of the preset to check.
+	 * @return true if the preset exists and is transient.
+	 */
+	virtual bool IsPresetTransient(FName PresetName) const = 0;
+
+	/**
+	 * Check whether a preset is transient using its id.
+     * @arg PresetId id of the preset to check.
+	 * @return true if the preset exists and is transient.
+	 */
+	virtual bool IsPresetTransient(const FGuid& PresetId) const = 0;
+
+	/**
 	 * Get all the presets currently registered with the module.
 	 */
 	virtual void GetPresets(TArray<TSoftObjectPtr<URemoteControlPreset>>& OutPresets) const = 0;
 
 	/**
 	 * Get all the preset asset currently registered with the module.
+	 * @arg bIncludeTransient Whether to include transient presets.
 	 */
-	virtual void GetPresetAssets(TArray<FAssetData>& OutPresetAssets) const = 0;
-	
+	virtual void GetPresetAssets(TArray<FAssetData>& OutPresetAssets, bool bIncludeTransient = true) const = 0;
+
+	/**
+	 * Gets all hosted presets currently registered with the module.
+	 */
+	virtual void GetEmbeddedPresets(TArray<TWeakObjectPtr<URemoteControlPreset>>& OutEmbeddedPresets) const = 0;
+
 	/**
 	 * Get the map of registered default entity metadata initializers. 
 	 */
@@ -372,6 +503,22 @@ public:
 	 */
 	virtual void UnregisterEntityFactory( const FName InFactoryName ) = 0;
 
+	/**
+	 * Start a manual editor transaction originating from a remote request.
+	 * @param InDescription A description of the transaction.
+	 * @param TypeHash The type hash of the object or call to which the transaction applies, or 0 if not applicable (e.g. multiple objects being modified).
+	 * @return The ID of the new transaction if one was created, or an invalid ID otherwise.
+	 */
+	virtual FGuid BeginManualEditorTransaction(const FText& InDescription, uint32 TypeHash) = 0;
+
+	/**
+	 * End a manual editor transaction originating from a remote request.
+	 * @param TransactionId The ID of the transaction. If this doesn't match the current active transaction, the transaction won't be ended.
+	 * @return INDEX_NONE if there was no transaction to end; otherwise, the number of remaining actions in the transaction (i.e. 1 means this was the last action and the transaction will end).
+	 */
+	virtual int32 EndManualEditorTransaction(const FGuid& TransactionId) = 0;
+
 	/** Get map of the factories which is responsible for the Remote Control property creation */
 	virtual const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& GetEntityFactories() const = 0;
 };
+

@@ -16,6 +16,17 @@
 
 const FName FRemoteControlProtocolMIDI::ProtocolName = TEXT("MIDI");
 
+#if WITH_EDITOR
+
+namespace RemoteControlMIDIProtocolColumns
+{
+	static FName Channel = TEXT("Channel");
+	static FName Identifier = TEXT("Identifier");
+	static FName Type = TEXT("Type");
+}
+
+#endif // WITH_EDITOR
+
 int32 FRemoteControlMIDIDevice::ResolveDeviceId(const TArray<FFoundMIDIDevice>& InFoundDevices)
 {
 	if(InFoundDevices.Num() == 0)
@@ -132,6 +143,18 @@ bool FRemoteControlMIDIProtocolEntity::IsSame(const FRemoteControlProtocolEntity
 	return false;
 }
 
+#if WITH_EDITOR
+
+void FRemoteControlMIDIProtocolEntity::RegisterProperties()
+{
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlMIDIProtocolColumns::Channel, FRemoteControlMIDIProtocolEntity, Channel);
+
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlMIDIProtocolColumns::Identifier, FRemoteControlMIDIProtocolEntity, MessageData1);
+
+	EXPOSE_PROTOCOL_PROPERTY(RemoteControlMIDIProtocolColumns::Type, FRemoteControlMIDIProtocolEntity, EventType);
+}
+
+#endif // WITH_EDITOR
 
 void FRemoteControlProtocolMIDI::Bind(FRemoteControlProtocolEntityPtr InRemoteControlProtocolEntityPtr)
 {
@@ -360,7 +383,25 @@ void FRemoteControlProtocolMIDI::ProcessAutoBinding(EMIDIEventType MIDIEventType
 		}
 	}
 }
-#endif
+
+void FRemoteControlProtocolMIDI::RegisterColumns()
+{
+	FRemoteControlProtocol::RegisterColumns();
+
+	REGISTER_COLUMN(RemoteControlMIDIProtocolColumns::Channel
+		, LOCTEXT("RCPresetChannelColumnHeader", "Channel")
+		, ProtocolColumnConstants::ColumnSizeMicro);
+	
+	REGISTER_COLUMN(RemoteControlMIDIProtocolColumns::Identifier
+		, LOCTEXT("RCPresetIdentifierColumnHeader", "ID")
+		, ProtocolColumnConstants::ColumnSizeMicro);
+
+	REGISTER_COLUMN(RemoteControlMIDIProtocolColumns::Type
+		, LOCTEXT("RCPresetTypeColumnHeader", "Type")
+		, ProtocolColumnConstants::ColumnSizeSmall);
+}
+
+#endif // WITH_EDITOR
 
 void FRemoteControlProtocolMIDI::UnbindAll()
 {

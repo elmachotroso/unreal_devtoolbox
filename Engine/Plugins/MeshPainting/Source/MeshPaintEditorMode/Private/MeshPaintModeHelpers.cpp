@@ -46,6 +46,10 @@
 #include "MeshPaintMode.h"
 #include "MeshVertexPaintingTool.h"
 #include "MeshTexturePaintingTool.h"
+#include "InterchangeAssetImportData.h"
+#include "InterchangeGenericAssetsPipeline.h"
+#include "InterchangeGenericMeshPipeline.h"
+#include "InterchangePythonPipelineBase.h"
 
 
 void UMeshPaintModeSubsystem::SetViewportColorMode(EMeshPaintDataColorViewMode ColorViewMode, FEditorViewportClient* ViewportClient)
@@ -229,10 +233,10 @@ void UMeshPaintModeSubsystem::ImportVertexColorsFromTexture(UMeshComponent* Mesh
 				{
 					USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(MeshComponent);
 
-					if (SkeletalMeshComponent->SkeletalMesh)
+					if (SkeletalMeshComponent->GetSkeletalMeshAsset())
 					{
 						// Import colors to skeletal mesh
-						ImportVertexColorsToSkeletalMesh(SkeletalMeshComponent->SkeletalMesh, Options, ColorTexture);
+						ImportVertexColorsToSkeletalMesh(SkeletalMeshComponent->GetSkeletalMeshAsset(), Options, ColorTexture);
 					}
 				}
 			}
@@ -310,6 +314,33 @@ void UMeshPaintModeSubsystem::ImportVertexColorsToSkeletalMesh(USkeletalMesh* Sk
 			ImportData->SetFlags(RF_Transactional);
 			ImportData->Modify();
 			ImportData->VertexColorImportOption = EVertexColorImportOption::Ignore;
+		}
+
+		UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(SkeletalMesh->GetAssetImportData());
+		if (InterchangeAssetImportData)
+		{
+			for (TObjectPtr<UObject> PipelineBase : InterchangeAssetImportData->Pipelines)
+			{
+				UInterchangeGenericAssetsPipeline* GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PipelineBase.Get());
+
+				if (!GenericAssetPipeline)
+				{
+					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(PipelineBase.Get()))
+					{
+						GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PythonPipelineAsset->GeneratedPipeline);
+					}
+				}
+
+				if (GenericAssetPipeline)
+				{
+					if (GenericAssetPipeline->CommonMeshesProperties && GenericAssetPipeline->CommonMeshesProperties->VertexColorImportOption != EInterchangeVertexColorImportOption::IVCIO_Ignore)
+					{
+						GenericAssetPipeline->SetFlags(RF_Transactional);
+						GenericAssetPipeline->Modify();
+						GenericAssetPipeline->CommonMeshesProperties->VertexColorImportOption = EInterchangeVertexColorImportOption::IVCIO_Ignore;
+					}
+				}
+			}
 		}
 	}
 }

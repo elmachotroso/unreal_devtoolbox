@@ -6,15 +6,24 @@
 #include "GameplayCueInterface.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
+#include "AbilitySystemLog.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayCueManager.h"
 #include "GameplayTagResponseTable.h"
 #include "GameplayTagsManager.h"
 #include "UObject/UObjectIterator.h"
 
+#if UE_WITH_IRIS
+#include "Serialization/GameplayAbilityTargetDataHandleNetSerializer.h"
+#include "Serialization/GameplayEffectContextHandleNetSerializer.h"
+#include "Serialization/PredictionKeyNetSerializer.h"
+#endif // UE_WITH_IRIS
+
 #if WITH_EDITOR
 #include "Editor.h"
 #endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilitySystemGlobals)
 
 UAbilitySystemGlobals::UAbilitySystemGlobals(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -252,6 +261,10 @@ UFunction* UAbilitySystemGlobals::GetGameplayCueFunction(const FGameplayTag& Chi
 void UAbilitySystemGlobals::InitTargetDataScriptStructCache()
 {
 	TargetDataStructCache.InitForType(FGameplayAbilityTargetData::StaticStruct());
+#if UE_WITH_IRIS
+	InitGameplayAbilityTargetDataHandleNetSerializerTypeCache();
+	InitGameplayEffectContextHandleNetSerializerTypeCache();
+#endif // UE_WITH_IRIS
 }
 
 // --------------------------------------------------------------------
@@ -496,9 +509,9 @@ void UAbilitySystemGlobals::ListPlayerAbilities()
 	UAbilitySystemComponent* AbilityComponent = PC ? GetAbilitySystemComponentFromActor(PC->GetPawn()) : nullptr;
 	if(AbilityComponent)
 	{
-		const UEnum* ExecutionEnumPtr = FindObject<UEnum>(ANY_PACKAGE, TEXT("EGameplayAbilityNetExecutionPolicy"), true);
+		const UEnum* ExecutionEnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/GameplayAbilities.EGameplayAbilityNetExecutionPolicy"), true);
 		check(ExecutionEnumPtr && TEXT("Couldn't locate EGameplayAbilityNetExecutionPolicy enum!"));
-		const UEnum* SecurityEnumPtr = FindObject<UEnum>(ANY_PACKAGE, TEXT("EGameplayAbilityNetSecurityPolicy"), true);
+		const UEnum* SecurityEnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/GameplayAbilities.EGameplayAbilityNetSecurityPolicy"), true);
 		check(SecurityEnumPtr && TEXT("Couldn't locate EGameplayAbilityNetSecurityPolicy enum!"));
 
 		PC->ClientMessage(TEXT("Available abilities:"));

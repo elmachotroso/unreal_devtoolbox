@@ -15,6 +15,12 @@
 #include "ProfilingDebugging/MallocProfiler.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Containers/VersePath.h"
+
+#if UE_USE_VERSE_PATHS
+#include "Misc/PathViews.h"
+#include "Interfaces/IPluginManager.h"
+#endif
 
 /***********************/
 /******** Names ********/
@@ -96,15 +102,22 @@ FString UObjectBaseUtility::GetFullName(const UObject* StopOuter, EObjectFullNam
   */
 void UObjectBaseUtility::GetFullName(const UObject* StopOuter, FString& ResultString, EObjectFullNameFlags Flags) const
 {
+	TStringBuilder<256> StringBuilder;
+	GetFullName(StringBuilder, StopOuter, Flags);
+	ResultString.Append(StringBuilder);
+}
+
+void UObjectBaseUtility::GetFullName(FStringBuilderBase& ResultString, const UObject* StopOuter, EObjectFullNameFlags Flags) const
+{
 	if (this != nullptr)
 	{
 		if (EnumHasAllFlags(Flags, EObjectFullNameFlags::IncludeClassPackage))
 		{
-			ResultString += GetClass()->GetPathName();
+			GetClass()->GetPathName(nullptr, ResultString);
 		}
 		else
 		{
-			GetClass()->AppendName(ResultString);
+			GetClass()->GetFName().AppendString(ResultString);
 		}
 		ResultString += TEXT(' ');
 		GetPathName(StopOuter, ResultString);
@@ -112,7 +125,7 @@ void UObjectBaseUtility::GetFullName(const UObject* StopOuter, FString& ResultSt
 	else
 	{
 		ResultString += TEXT("None");
-	} 
+	}
 }
 
 
@@ -193,6 +206,88 @@ UPackage* UObjectBaseUtility::GetPackage() const
 		Top = Top->GetOuter();
 	}
 }
+
+#if UE_USE_VERSE_PATHS
+
+UE::Core::FVersePath UObjectBaseUtility::GetVersePath() const
+{
+	UObject* ThisOuter = GetOuter();
+	const UObjectBaseUtility* Outermost = nullptr;
+	const UObjectBaseUtility* Src       = nullptr;
+	if (!ThisOuter)
+	{
+		Outermost = this;
+		Src       = this;
+	}
+	else
+	{
+		UObject* OuterOuter = ThisOuter->GetOuter();
+		if (!OuterOuter)
+		{
+			Outermost = ThisOuter;
+			Src       = this;
+		}
+	}
+
+	// We only handle vpaths at the level of the package and top level objects right now
+	if (!Outermost)
+	{
+		return {};
+	}
+
+	FString PackageName = Outermost->GetPathName();
+	const FStringView MountPointName = FPathViews::GetMountPointNameFromPath(PackageName);
+	check(PackageName.StartsWith(TEXT("/") + FString(MountPointName)));
+
+	IPluginManager& PluginManager = IPluginManager::Get();
+
+	// If the object isn't mounted under a plugin, it doesn't have a vpath
+	TSharedPtr<IPlugin> Plugin = PluginManager.FindPlugin(MountPointName);
+	if (!Plugin)
+	{
+		return {};
+	}
+
+	// If the plugin doesn't have a root vpath, it's not a UEFN plugin
+	FString PluginVersePath = Plugin->GetVersePath();
+	if (PluginVersePath.IsEmpty())
+	{
+		return {};
+	}
+
+	FString VerseModule = FPaths::Combine(PluginVersePath, PackageName.RightChop(MountPointName.Len() + 1));
+
+	// If this is not the package, append the name of the object
+	if (this != Outermost)
+	{
+		VerseModule = FPaths::Combine(MoveTemp(VerseModule), Src->GetName());
+	}
+
+	// Hack to reject names containing "$" - currently used for non-user facing vobject names in Verse, e.g. $SolarisSignatureFunctionOuter
+	if (VerseModule.Contains("$"))
+	{
+		return {};
+	}
+
+	UE::Core::FVersePath Result;
+	if (!UE::Core::FVersePath::TryMake(Result, VerseModule))
+	{
+#if !NO_LOGGING
+		static thread_local TSet<FString> AlreadyLogged;
+
+		bool bAlreadyInSet = false;
+		AlreadyLogged.Add(VerseModule, &bAlreadyInSet);
+		if (!bAlreadyInSet)
+		{
+			UE_LOG(LogCore, Warning, TEXT("Unable to make a VersePath from %s"), *GetPathName());
+		}
+#endif
+	}
+
+	return Result;
+}
+
+#endif
 
 /**
  * Legacy function, has the same behavior as GetPackage
@@ -276,6 +371,8 @@ bool UObjectBaseUtility::IsTemplate( EObjectFlags TemplateTypes ) const
  */
 UObject* UObjectBaseUtility::GetTypedOuter(UClass* Target) const
 {
+	ensureMsgf(Target != UPackage::StaticClass(), TEXT("Calling GetTypedOuter to retrieve a package is now invalid, you should use GetPackage() instead."));
+
 	UObject* Result = NULL;
 	for ( UObject* NextOuter = GetOuter(); Result == NULL && NextOuter != NULL; NextOuter = NextOuter->GetOuter() )
 	{
@@ -285,6 +382,20 @@ UObject* UObjectBaseUtility::GetTypedOuter(UClass* Target) const
 		}
 	}
 	return Result;
+}
+
+UObjectBaseUtility* UObjectBaseUtility::GetImplementingOuterObject(const UClass* InInterfaceClass) const
+{
+	for (UObject* NextOuter = GetOuter(); NextOuter != nullptr; NextOuter = NextOuter->GetOuter())
+	{
+		UClass* OuterClass = NextOuter->GetClass();
+		if (OuterClass && OuterClass->ImplementsInterface(InInterfaceClass))
+		{
+			return NextOuter;
+		}
+	}
+
+	return nullptr;
 }
 
 /*-----------------------------------------------------------------------------
@@ -480,7 +591,7 @@ void* UObjectBaseUtility::GetNativeInterfaceAddress(UClass* InterfaceClass)
 
 bool UObjectBaseUtility::IsDefaultSubobject() const
 {
-	const bool bIsInstanced = GetOuter() && (GetOuter()->HasAnyFlags(RF_ClassDefaultObject) || ((UObject*)this)->GetArchetype() != GetClass()->GetDefaultObject(false));
+	const bool bIsInstanced = !HasAnyFlags(RF_ClassDefaultObject) && GetOuter() && (GetOuter()->HasAnyFlags(RF_ClassDefaultObject) || ((UObject*)this)->GetArchetype() != GetClass()->GetDefaultObject(false));
 	return bIsInstanced;
 }
 

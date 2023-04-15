@@ -189,7 +189,9 @@ public:
           TraverseImplicitCastExpr(initCast);
         } else if (DeclRefExpr *initRef = dyn_cast<DeclRefExpr>(initExp)) {
           TraverseDeclRefExpr(initRef);
-        }
+        } else if (Stmt* initStmt = dyn_cast<Stmt>(initExp)) {
+          TraverseStmt(initStmt);
+		}
       }
     }
     return true;
@@ -322,6 +324,12 @@ bool MacroPairCompareIsLessThan(
     const std::pair<const IdentifierInfo *, const MacroInfo *> &left,
     const std::pair<const IdentifierInfo *, const MacroInfo *> &right) {
   return left.first->getName().compare(right.first->getName()) < 0;
+}
+
+bool ParsedSemanticDefineCompareIsLessThan(
+    const ParsedSemanticDefine &left,
+    const ParsedSemanticDefine &right) {
+    return left.Name < right.Name;
 }
 
 ParsedSemanticDefineList
@@ -508,7 +516,6 @@ ParsedSemanticDefineList hlsl::CollectSemanticDefinesParsedByCompiler(
   }
 
   if (!macros.empty()) {
-    std::sort(macros.begin(), macros.end(), MacroPairCompareIsLessThan);
     MacroExpander expander(pp);
     for (std::pair<const IdentifierInfo *, MacroInfo *> m : macros) {
       std::string expandedValue;
@@ -519,6 +526,7 @@ ParsedSemanticDefineList hlsl::CollectSemanticDefinesParsedByCompiler(
     }
   }
 
+  std::stable_sort(parsedDefines.begin(), parsedDefines.end(), ParsedSemanticDefineCompareIsLessThan);
   return parsedDefines;
 }
 
@@ -547,16 +555,22 @@ void SetupCompilerCommon(CompilerInstance &compiler,
   if (opts.WarningAsError)
     compiler.getDiagnostics().setWarningsAsErrors(true);
   compiler.getDiagnostics().setIgnoreAllWarnings(!opts.OutputWarnings);
-  compiler.getLangOpts().HLSLVersion = (unsigned)opts.HLSLVersion;
+  compiler.getLangOpts().HLSLVersion = opts.HLSLVersion;
   compiler.getLangOpts().StrictUDTCasting = opts.StrictUDTCasting;
   compiler.getLangOpts().UseMinPrecision = !opts.Enable16BitTypes;
   compiler.getLangOpts().EnableDX9CompatMode = opts.EnableDX9CompatMode;
   compiler.getLangOpts().EnableFXCCompatMode = opts.EnableFXCCompatMode;
+  compiler.getLangOpts().EnableTemplates = opts.EnableTemplates;
+  compiler.getLangOpts().EnableOperatorOverloading = opts.EnableOperatorOverloading;
+  compiler.getLangOpts().StrictUDTCasting = opts.StrictUDTCasting;
+  compiler.getLangOpts().EnablePayloadAccessQualifiers = opts.EnablePayloadQualifiers;
+  compiler.getLangOpts().EnableShortCircuit = opts.EnableShortCircuit;
+  compiler.getLangOpts().EnableBitfields = opts.EnableBitfields;
+#ifdef ENABLE_SPIRV_CODEGEN
+  compiler.getLangOpts().SPIRV = opts.GenSPIRV;
+#endif
   compiler.getDiagnostics().setIgnoreAllWarnings(!opts.OutputWarnings);
   compiler.getCodeGenOpts().MainFileName = pMainFile;
-  // UE Change Begin: Enable Vulkan specific features in rewriter.
-  compiler.getLangOpts().SPIRV = opts.GenSPIRV;
-  // UE Change End: Enable Vulkan specific features in rewriter.
 
   PreprocessorOptions &PPOpts = compiler.getPreprocessorOpts();
   if (rewrite != nullptr) {
@@ -741,7 +755,8 @@ HRESULT CollectRewriteHelper(TranslationUnitDecl *tu, LPCSTR pEntryPoint,
       }
 
       // UE Change Begin: Don't remove static const variables.
-      if (varDecl->getStorageClass() != SC_Static) {
+      if (varDecl->getStorageClass() != SC_Static ||
+          IsHLSLResourceType(varDecl->getType())) {
         unusedGlobals.insert(varDecl);
         if (const RecordType *recordType =
                 varDecl->getType()->getAs<RecordType>()) {
@@ -880,7 +895,9 @@ HRESULT ReadOptsAndValidate(hlsl::options::MainArgs &mainArgs,
   IFT(CreateMemoryStream(GetGlobalHeapMalloc(), &pOutputStream));
   raw_stream_ostream outStream(pOutputStream);
 
-  if (0 != hlsl::options::ReadDxcOpts(table, hlsl::options::HlslFlags::RewriteOption,
+  if (0 != hlsl::options::ReadDxcOpts(table,
+                                      hlsl::options::HlslFlags::RewriteOption |
+                                          hlsl::options::HlslFlags::CoreOption,
                                       mainArgs, opts, outStream)) {
     CComPtr<IDxcBlob> pErrorBlob;
     IFT(pOutputStream->QueryInterface(&pErrorBlob));
@@ -1012,6 +1029,7 @@ static HRESULT
 DoRewriteUnused(_In_ DxcLangExtensionsHelper *pHelper, _In_ LPCSTR pFileName,
                 _In_ ASTUnit::RemappedFile *pRemap, _In_ LPCSTR pEntryPoint,
                 _In_ DxcDefine *pDefines, _In_ UINT32 defineCount,
+                _In_ const char **pArgs, _In_ UINT32 argCount,
                 bool bRemoveGlobals, bool bRemoveFunctions,
                 std::string &warnings, std::string &result,
                 _In_opt_ dxcutil::DxcArgsFileSystem *msfPtr) {
@@ -1020,11 +1038,13 @@ DoRewriteUnused(_In_ DxcLangExtensionsHelper *pHelper, _In_ LPCSTR pFileName,
   raw_string_ostream w(warnings);
 
   ASTHelper astHelper;
+
+  // Parse compiler arguments
   hlsl::options::DxcOpts opts;
-  opts.HLSLVersion = 2015;
-  // UE Change Begin: Enable Vulkan specific features in rewriter.
-  opts.GenSPIRV = true;
-  // UE Change End: Enable Vulkan specific features in rewriter.
+  opts.HLSLVersion = hlsl::LangStd::v2015;
+  hlsl::options::MainArgs optsArgs{static_cast<int>(argCount), pArgs, 0};
+  CComPtr<IDxcOperationResult> optsArgResult;
+  ReadOptsAndValidate(optsArgs, opts, &optsArgResult);
 
   GenerateAST(pHelper, pFileName, pRemap, pDefines, defineCount, astHelper,
               opts, msfPtr, w);
@@ -1616,6 +1636,7 @@ public:
                                                 _In_z_ LPCWSTR pEntryPoint,
                                                 _In_count_(defineCount) DxcDefine *pDefines,
                                                 _In_ UINT32 defineCount,
+                                                _In_count_(argCount) const char **pArgs, _In_ UINT32 argCount,
                                                 _COM_Outptr_ IDxcOperationResult **ppResult) override
   {
     
@@ -1649,7 +1670,7 @@ public:
       LPCWSTR pOutputName = nullptr;  // TODO: Fill this in
       HRESULT status = DoRewriteUnused(
           &m_langExtensionsHelper, fakeName, pRemap.get(), utf8EntryPoint,
-          pDefines, defineCount, true /*removeGlobals*/,
+          pDefines, defineCount, pArgs, argCount, true /*removeGlobals*/,
           false /*removeFunctions*/, errors, rewrite, nullptr);
       return DxcResult::Create(status, DXC_OUT_HLSL, {
           DxcOutputObject::StringOutput(DXC_OUT_HLSL, CP_UTF8,  // TODO: Support DefaultTextCodePage
@@ -1665,6 +1686,7 @@ public:
   RewriteUnchanged(_In_ IDxcBlobEncoding *pSource,
                    _In_count_(defineCount) DxcDefine *pDefines,
                    _In_ UINT32 defineCount,
+                   _In_count_(argCount) const char **pArgs, _In_ UINT32 argCount,
                    _COM_Outptr_ IDxcOperationResult **ppResult) override {
     if (pSource == nullptr || ppResult == nullptr || (defineCount > 0 && pDefines == nullptr))
       return E_POINTER;
@@ -1689,11 +1711,11 @@ public:
       std::unique_ptr<llvm::MemoryBuffer> pBuffer(llvm::MemoryBuffer::getMemBufferCopy(Data, fakeName));
       std::unique_ptr<ASTUnit::RemappedFile> pRemap(new ASTUnit::RemappedFile(fakeName, pBuffer.release()));
 
+	  // Parse compiler arguments
       hlsl::options::DxcOpts opts;
-      opts.HLSLVersion = 2015;
-      // UE Change Begin: Enable Vulkan specific features in rewriter.
-      opts.GenSPIRV = true;
-      // UE Change End: Enable Vulkan specific features in rewriter.
+      opts.HLSLVersion = hlsl::LangStd::v2015;
+      hlsl::options::MainArgs optsArgs{static_cast<int>(argCount), pArgs, 0};
+      ReadOptsAndValidate(optsArgs, opts, ppResult);
 
       std::string errors;
       std::string rewrite;
@@ -1715,6 +1737,7 @@ public:
       // Optional file name for pSource. Used in errors and include handlers.
       _In_opt_ LPCWSTR pSourceName, _In_count_(defineCount) DxcDefine *pDefines,
       _In_ UINT32 defineCount,
+      _In_count_(argCount) const char **pArgs, _In_ UINT32 argCount,
       // user-provided interface to handle #include directives (optional)
       _In_opt_ IDxcIncludeHandler *pIncludeHandler,
       _In_ UINT32 rewriteOption,
@@ -1742,11 +1765,11 @@ public:
       std::unique_ptr<llvm::MemoryBuffer> pBuffer(llvm::MemoryBuffer::getMemBufferCopy(Data, fName));
       std::unique_ptr<ASTUnit::RemappedFile> pRemap(new ASTUnit::RemappedFile(fName, pBuffer.release()));
 
+	  // Parse compiler arguments
       hlsl::options::DxcOpts opts;
-      opts.HLSLVersion = 2015;
-      // UE Change Begin: Enable Vulkan specific features in rewriter.
-      opts.GenSPIRV = true;
-      // UE Change End: Enable Vulkan specific features in rewriter.
+      opts.HLSLVersion = hlsl::LangStd::v2015;
+      hlsl::options::MainArgs optsArgs{static_cast<int>(argCount), pArgs, 0};
+      ReadOptsAndValidate(optsArgs, opts, ppResult);
 
       opts.RWOpt.SkipFunctionBody |=
           rewriteOption & RewriterOptionMask::SkipFunctionBody;

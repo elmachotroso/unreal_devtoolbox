@@ -2,12 +2,11 @@
 
 #include "RigVMCore/RigVMMemoryStorage.h"
 #include "RigVMModule.h"
+#include "RigVMTypeUtils.h"
+#include "UObject/Interface.h"
+#include "AssetRegistry/AssetData.h"
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-#endif
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMMemoryStorage)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -17,6 +16,44 @@ const FString FRigVMPropertyDescription::ContainerSuffix = TEXT(">");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Generator class should be parented to the asset object, instead of the package
+// because the engine no longer supports multiple 'assets' per package
+static UObject* GetGeneratorClassOuter(UPackage* InPackage)
+{
+	if (!InPackage)
+	{
+		return nullptr;
+	}
+
+	// special case handling for transient package
+	if (InPackage == GetTransientPackage())
+	{
+		return InPackage;
+	}
+
+	// find the asset object to use as the class outer
+	// not using FindAssetInPackage here because
+	// in ControlRigEditor::UpdateControlRig
+	// we set the BP object to transient before VM recompilation
+	// so FindAssetInPackage would fail in finding the BP object
+	// the transient flag was needed such that recompile VM does not dirty BP
+	TArray<UObject*> TopLevelObjects;
+	GetObjectsWithOuter(InPackage, TopLevelObjects, false);
+	
+	UObject* AssetObject = nullptr;
+	for (UObject* Object : TopLevelObjects)
+	{
+		if (FAssetData::IsUAsset(Object))
+		{
+			AssetObject = Object;
+			break;
+		}
+	}
+
+	return AssetObject;	
+}
+
+
 FRigVMPropertyDescription::FRigVMPropertyDescription(const FProperty* InProperty, const FString& InDefaultValue, const FName& InName)
 	: Name(InName)
 	, Property(InProperty)
@@ -25,6 +62,69 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FProperty* InProperty
 	, Containers()
 	, DefaultValue(InDefaultValue)
 {
+	if(InName.IsNone() && Property != nullptr)
+	{
+		Name = Property->GetFName();
+	}
+
+	if(CPPType.IsEmpty() && Property != nullptr)
+	{
+		FString ExtendedType;
+		CPPType = Property->GetCPPType(&ExtendedType);
+		CPPType += ExtendedType;
+
+		if(CPPType == RigVMTypeUtils::UInt8Type)
+		{
+			if(CastField<FBoolProperty>(Property))
+			{
+				CPPType = RigVMTypeUtils::BoolType;
+			}
+		}
+		else if(CPPType == RigVMTypeUtils::UInt8ArrayType)
+		{
+			if(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				if(CastField<FBoolProperty>(ArrayProperty->Inner))
+				{
+					CPPType = RigVMTypeUtils::BoolArrayType;
+				}
+			}
+		}
+	}
+
+	if(CPPTypeObject == nullptr && Property != nullptr)
+	{
+		const FProperty* ValueProperty = Property;
+		if(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ValueProperty))
+		{
+			ValueProperty = ArrayProperty->Inner;
+		}
+		if(const FStructProperty* StructProperty = CastField<FStructProperty>(ValueProperty))
+		{
+			CPPTypeObject = StructProperty->Struct;
+		}
+#if UE_RIGVM_UOBJECT_PROPERTIES_ENABLED
+		else if(const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(ValueProperty))
+		{
+			CPPTypeObject = ObjectProperty->PropertyClass;
+		}
+#endif
+#if UE_RIGVM_UINTERFACE_PROPERTIES_ENABLED
+		else if (const FInterfaceProperty* InterfaceProperty = CastField<FInterfaceProperty>(ValueProperty))
+		{
+			CPPTypeObject = InterfaceProperty->InterfaceClass;
+		}
+#endif
+		else if(const FEnumProperty* EnumProperty = CastField<FEnumProperty>(ValueProperty))
+		{
+			CPPTypeObject = EnumProperty->GetEnum();
+		}
+		else if(const FByteProperty* ByteProperty = CastField<FByteProperty>(ValueProperty))
+		{
+			CPPTypeObject = ByteProperty->Enum;
+		}
+	}
+	
 	// make sure to use valid names only
 	SanitizeName();
 
@@ -33,6 +133,17 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FProperty* InProperty
 	const FProperty* ChildProperty = InProperty;
 	do
 	{
+		if(ChildProperty->IsA<FObjectProperty>() ||
+			ChildProperty->IsA<FSoftObjectProperty>())
+		{
+			checkf(RigVMCore::SupportsUObjects(), TEXT("UClass types are not supported."));
+		}
+
+		if (ChildProperty->IsA<FInterfaceProperty>())
+		{
+			checkf(RigVMCore::SupportsUInterfaces(), TEXT("UInterface types are not supported."));
+		}
+
 		if(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ChildProperty))
 		{
 			Containers.Add(EPinContainerType::Array);
@@ -69,6 +180,17 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FName& InName, const 
 		checkf(CPPTypeObject != nullptr, TEXT("CPPType '%s' requires the CPPTypeObject to be provided."), *CPPType);
 	}
 
+	if(CPPTypeObject)
+	{
+		if(CPPTypeObject->IsA<UClass>())
+		{
+			if (!RigVMCore::SupportsUInterfaces() || !Cast<UClass>(CPPTypeObject)->IsChildOf<UInterface>())
+			{
+				checkf(RigVMCore::SupportsUObjects(), TEXT("UClass types are not supported."));
+			}
+		}
+	}
+
 	// only allow valid names
 	SanitizeName();
 
@@ -98,8 +220,8 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FName& InName, const 
 	// sanity check the CPPType matches the provided struct
 	if(const UScriptStruct* ScriptStruct = Cast<UScriptStruct>(CPPTypeObject))
 	{
-		checkf(TailCPPType == ScriptStruct->GetStructCPPName(), TEXT("CPPType '%s' doesn't match provided Struct '%s'"),
-			*TailCPPType, *ScriptStruct->GetStructCPPName());
+		checkf(TailCPPType == RigVMTypeUtils::GetUniqueStructTypeName(ScriptStruct), TEXT("CPPType '%s' doesn't match provided Struct '%s'"),
+			*TailCPPType, *RigVMTypeUtils::GetUniqueStructTypeName(ScriptStruct));
 	}
 }
 
@@ -178,7 +300,8 @@ bool FRigVMPropertyDescription::RequiresCPPTypeObject(const FString& InCPPType)
 		TEXT("U"), 
 		TEXT("TArray<U"),
 		TEXT("TObjectPtr<"), 
-		TEXT("TArray<TObjectPtr<")
+		TEXT("TArray<TObjectPtr<"),
+		TEXT("TScriptInterface<")
 	};
 	static const TArray<FString> CPPTypesNotRequiringCPPTypeObject = {
 		TEXT("FString"), 
@@ -203,11 +326,40 @@ bool FRigVMPropertyDescription::RequiresCPPTypeObject(const FString& InCPPType)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+class FRigVMMemoryStorageImportErrorContext : public FOutputDevice
+{
+public:
+
+	bool bLogErrors;
+	int32 NumErrors;
+
+	FRigVMMemoryStorageImportErrorContext(bool InLogErrors = true)
+		: FOutputDevice()
+		, bLogErrors(InLogErrors)
+		, NumErrors(0)
+	{
+	}
+
+	FORCEINLINE_DEBUGGABLE void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	{
+		if(bLogErrors)
+		{
+#if WITH_EDITOR
+			UE_LOG(LogRigVM, Display, TEXT("Skipping Importing To MemoryStorage: %s"), V);
+#else
+			UE_LOG(LogRigVM, Error, TEXT("Error Importing To MemoryStorage: %s"), V);
+#endif
+		}
+		NumErrors++;
+	}
+};
+
 void URigVMMemoryStorageGeneratorClass::PurgeClass(bool bRecompilingOnLoad)
 {
 	Super::PurgeClass(bRecompilingOnLoad);
 
 	// clear our state as well
+	CachedMemoryHash = 0;
 	LinkedProperties.Reset();
 	PropertyPaths.Reset();
 	PropertyPathDescriptions.Reset();
@@ -238,7 +390,7 @@ void URigVMMemoryStorageGeneratorClass::Serialize(FArchive& Ar)
 		URigVMMemoryStorageGeneratorClass* AuxStorageClass = NewObject<URigVMMemoryStorageGeneratorClass>(
 			GetTransientPackage(),
 			TEXT("URigVMMemoryStorageGeneratorClass_Auxiliary"));
-		AuxStorageClass->ClassAddReferencedObjects = &this->AddReferencedObjects;
+		AuxStorageClass->CppClassStaticFunctions.SetAddReferencedObjects(&this->AddReferencedObjects);
 		AuxStorageClass->Serialize(Ar);
 		return;
 	}
@@ -323,17 +475,44 @@ URigVMMemoryStorageGeneratorClass* URigVMMemoryStorageGeneratorClass::CreateStor
 	const FString& ClassName = GetClassName(InMemoryType);
 
 	// if there's an old class - remove it from the package and mark it to destroy
-	URigVMMemoryStorageGeneratorClass* OldClass = FindObject<URigVMMemoryStorageGeneratorClass>(Package, *ClassName);
+	//
+	// we need to use StaticFindObjectFastInternal with ExclusiveInternalFlags = EInternalObjectFlags::None
+	// here because objects with RF_NeedPostLoad cannot be found by regular FindObject calls as they will have
+	// ExclusiveInternalFlags = EInternalObjectFlags::AsyncLoading when called from game thread.
+	//
+	// in theory, whenever this function is called as part of OnEndLoadPackage -> CRBP::HandlePackageDone,
+	// all objects within the package should have been fully loaded, but it turns out that OnEndLoadPackage
+	// does not guarantee that condition. As a result we will do OldClass->ConditionalPostLoad() to ensure the OldClass
+	// is fully loaded, ready to be replaced.
+	
+	UObject* OldClass = StaticFindObjectFastInternal( /*Class=*/ NULL, Package, *ClassName, true, RF_NoFlags, EInternalObjectFlags::None);
 	if(OldClass)
 	{
-		OldClass->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+		// ensure the OldClass is completely loaded so that we can remove it and replace it with the new class
+		// otherwise we get an assertion trying to replace objects currently being loaded
+		OldClass->ConditionalPostLoad();
+		
+		FString DiscardedMemoryClassName;
+		static const TCHAR DiscardedMemoryClassTemplate[] = TEXT("DiscardedMemoryClassTemplate_%d");
+		static int32 DiscardedMemoryClassIndex = 0;
+		do
+		{
+			DiscardedMemoryClassName = FString::Printf(DiscardedMemoryClassTemplate, DiscardedMemoryClassIndex++);
+			if(StaticFindObjectFast(nullptr, GetTransientPackage(), *DiscardedMemoryClassName) == nullptr)
+			{
+				break;
+			}
+		}
+		while (DiscardedMemoryClassIndex < INT_MAX);
+
+		OldClass->Rename(*DiscardedMemoryClassName, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 	}
 
 	// create the new class
 	URigVMMemoryStorageGeneratorClass* Class = NewObject<URigVMMemoryStorageGeneratorClass>(
 		Package,
 		*ClassName,
-		RF_Standalone | RF_Public
+		RF_Standalone
 	);
 
 	// clear the class (sets relevant flags)
@@ -385,7 +564,19 @@ URigVMMemoryStorageGeneratorClass* URigVMMemoryStorageGeneratorClass::CreateStor
 		const FProperty* Property = LinkedProperties[PropertyIndex];
 		uint8* ValuePtr = Property->ContainerPtrToValuePtr<uint8>(CDO);
 
-		Property->ImportText(*DefaultValue, ValuePtr, EPropertyPortFlags::PPF_None, nullptr);
+		FRigVMMemoryStorageImportErrorContext ErrorPipe(false);
+		Property->ImportText_Direct(*DefaultValue, ValuePtr, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe);
+		if(ErrorPipe.NumErrors > 0)
+		{
+			// check if the default value was provided as a single element
+			if(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				static constexpr TCHAR BraceFormat[] = TEXT("(%s)");
+				const FString DefaultValueWithBraces = FString::Printf(BraceFormat, *DefaultValue);
+				ErrorPipe = FRigVMMemoryStorageImportErrorContext(false);
+				Property->ImportText_Direct(*DefaultValueWithBraces, ValuePtr, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe);
+			}
+		}
 	}
 
 	return Class;
@@ -407,6 +598,37 @@ bool URigVMMemoryStorageGeneratorClass::RemoveStorageClass(UObject* InOuter, ERi
 	}
 
 	return false;
+}
+
+uint32 URigVMMemoryStorageGeneratorClass::GetMemoryHash() const
+{
+	if(CachedMemoryHash != 0)
+	{
+		return CachedMemoryHash;
+	}
+	
+	CachedMemoryHash = 0;
+
+	for(const FProperty* Property : LinkedProperties)
+	{
+		CachedMemoryHash = HashCombine(CachedMemoryHash, GetTypeHash(Property->GetFName().ToString()));
+		CachedMemoryHash = HashCombine(CachedMemoryHash, GetTypeHash(Property->GetCPPType()));
+	}
+	
+	// for literals we also hash the content / defaults for each property
+	if(GetMemoryType() == ERigVMMemoryType::Literal)
+	{
+		if(URigVMMemoryStorage* CDO = Cast<URigVMMemoryStorage>(GetDefaultObject(true)))
+		{
+			for(const FProperty* Property : LinkedProperties)
+			{
+				FString DefaultValue;
+				Property->ExportTextItem_InContainer(DefaultValue, CDO, nullptr, nullptr, PPF_None, nullptr);
+				CachedMemoryHash = HashCombine(CachedMemoryHash, GetTypeHash(DefaultValue));
+			}
+		}
+	}
+	return CachedMemoryHash;
 }
 
 FRigVMMemoryStatistics URigVMMemoryStorageGeneratorClass::GetStatistics() const
@@ -502,6 +724,8 @@ FProperty* URigVMMemoryStorageGeneratorClass::AddProperty(URigVMMemoryStorageGen
 			}
 			else if(UClass* PropertyClass = Cast<UClass>(InProperty.CPPTypeObject))
 			{
+				check(RigVMCore::SupportsUObjects());
+
 				FObjectProperty* ObjectProperty = new FObjectProperty(PropertyOwner, InProperty.Name, RF_Public);
 				ObjectProperty->SetPropertyClass(PropertyClass);
 				(*ValuePropertyPtr) = ObjectProperty;
@@ -563,7 +787,7 @@ FProperty* URigVMMemoryStorageGeneratorClass::AddProperty(URigVMMemoryStorageGen
 
 				for(UScriptStruct* BaseStructure : BaseStructures)
 				{
-					if(BaseStructure->GetStructCPPName() == BaseCPPType)
+					if(RigVMTypeUtils::GetUniqueStructTypeName(BaseStructure) == BaseCPPType)
 					{
 						FStructProperty* StructProperty = new FStructProperty(PropertyOwner, InProperty.Name, RF_Public);
 						StructProperty->Struct = BaseStructure;
@@ -611,6 +835,7 @@ FProperty* URigVMMemoryStorageGeneratorClass::AddProperty(URigVMMemoryStorageGen
 
 void URigVMMemoryStorageGeneratorClass::RefreshLinkedProperties()
 {
+	CachedMemoryHash = 0;
 	LinkedProperties.Reset();
 	const FProperty* Property = CastField<FProperty>(ChildProperties);
 	while(Property)
@@ -649,7 +874,7 @@ FString URigVMMemoryStorage::GetDataAsString(int32 InPropertyIndex, int32 PortFl
 	const uint8* Data = GetData<uint8>(InPropertyIndex);
 
 	FString Value;
-	GetProperties()[InPropertyIndex]->ExportTextItem(Value, Data, nullptr, nullptr, PortFlags);
+	GetProperties()[InPropertyIndex]->ExportTextItem_Direct(Value, Data, nullptr, nullptr, PortFlags);
 	return Value;
 }
 
@@ -675,40 +900,15 @@ FString URigVMMemoryStorage::GetDataAsStringSafe(const FRigVMOperand& InOperand,
 	return GetDataAsStringSafe(PropertyIndex, PortFlags);
 }
 
-class FRigVMMemoryStorageImportErrorContext : public FOutputDevice
-{
-public:
-
-	int32 NumErrors;
-
-	FRigVMMemoryStorageImportErrorContext()
-		: FOutputDevice()
-		, NumErrors(0)
-	{
-	}
-
-	FORCEINLINE_DEBUGGABLE void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
-	{
-#if WITH_EDITOR
-		UE_LOG(LogRigVM, Display, TEXT("Skipping Importing To MemoryStorage: %s"), V);
-#else
-		UE_LOG(LogRigVM, Error, TEXT("Error Importing To MemoryStorage: %s"), V);
-#endif
-		NumErrors++;
-	}
-};
-
 bool URigVMMemoryStorage::SetDataFromString(int32 InPropertyIndex, const FString& InValue)
 {
 	check(IsValidIndex(InPropertyIndex));
 	uint8* Data = GetData<uint8>(InPropertyIndex);
 	
 	FRigVMMemoryStorageImportErrorContext ErrorPipe;
-	GetProperties()[InPropertyIndex]->ImportText(*InValue, Data, EPropertyPortFlags::PPF_None, nullptr, &ErrorPipe);
+	GetProperties()[InPropertyIndex]->ImportText_Direct(*InValue, Data, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe);
 	return ErrorPipe.NumErrors == 0;
 }
-
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 
 FRigVMMemoryHandle URigVMMemoryStorage::GetHandle(int32 InPropertyIndex, const FRigVMPropertyPath* InPropertyPath)
 {
@@ -719,8 +919,6 @@ FRigVMMemoryHandle URigVMMemoryStorage::GetHandle(int32 InPropertyIndex, const F
 
 	return FRigVMMemoryHandle(Data, Property, InPropertyPath);
 }
-
-#endif
 
 bool URigVMMemoryStorage::CopyProperty(
 	const FProperty* InTargetProperty,
@@ -742,26 +940,54 @@ bool URigVMMemoryStorage::CopyProperty(
 		{
 			if(const FDoubleProperty* SourceDoubleProperty = CastField<FDoubleProperty>(InSourceProperty))
 			{
-				float* TargetFloats = (float*)InTargetPtr;
-				double* SourceDoubles = (double*)InSourcePtr;
-				for(int32 Index=0;Index<TargetFloatProperty->ArrayDim;Index++)
+				if(TargetFloatProperty->ArrayDim == SourceDoubleProperty->ArrayDim)
 				{
-					TargetFloats[Index] = (float)SourceDoubles[Index];
+					float* TargetFloats = (float*)InTargetPtr;
+					double* SourceDoubles = (double*)InSourcePtr;
+					for(int32 Index=0;Index<TargetFloatProperty->ArrayDim;Index++)
+					{
+						TargetFloats[Index] = (float)SourceDoubles[Index];
+					}
+					return true;
 				}
-				return true;
 			}
 		}
 		else if(const FDoubleProperty* TargetDoubleProperty = CastField<FDoubleProperty>(InTargetProperty))
 		{
 			if(const FFloatProperty* SourceFloatProperty = CastField<FFloatProperty>(InSourceProperty))
 			{
-				double* TargetDoubles = (double*)InTargetPtr;
-				float* SourceFloats = (float*)InSourcePtr;
-				for(int32 Index=0;Index<TargetDoubleProperty->ArrayDim;Index++)
+				if(TargetDoubleProperty->ArrayDim == SourceFloatProperty->ArrayDim)
 				{
-					TargetDoubles[Index] = (double)SourceFloats[Index];
+					double* TargetDoubles = (double*)InTargetPtr;
+					float* SourceFloats = (float*)InSourcePtr;
+					for(int32 Index=0;Index<TargetDoubleProperty->ArrayDim;Index++)
+					{
+						TargetDoubles[Index] = (double)SourceFloats[Index];
+					}
+					return true;
 				}
-				return true;
+			}
+		}
+		else if (const FByteProperty* TargetByteProperty = CastField<FByteProperty>(InTargetProperty))
+		{
+			if (const FEnumProperty* SourceEnumProperty = CastField<FEnumProperty>(InSourceProperty))
+			{
+				if (TargetByteProperty->Enum == SourceEnumProperty->GetEnum())
+				{
+					InTargetProperty->CopyCompleteValue(InTargetPtr, InSourcePtr);
+					return true;
+				}
+			}
+		}
+		else if (const FEnumProperty* TargetEnumProperty = CastField<FEnumProperty>(InTargetProperty))
+		{
+			if (const FByteProperty* SourceByteProperty = CastField<FByteProperty>(InSourceProperty))
+			{
+				if (TargetEnumProperty->GetEnum() == SourceByteProperty->Enum)
+				{
+					InTargetProperty->CopyCompleteValue(InTargetPtr, InSourcePtr);
+					return true;
+				}
 			}
 		}
 		else if(const FArrayProperty* TargetArrayProperty = CastField<FArrayProperty>(InTargetProperty))
@@ -797,6 +1023,28 @@ bool URigVMMemoryStorage::CopyProperty(
 							*TargetDouble = (double)*SourceFloat;
 						}
 						return true;
+					}
+				}
+				else if(FByteProperty* TargetArrayInnerByteProperty = CastField<FByteProperty>(TargetArrayProperty->Inner))
+				{
+					if(FEnumProperty* SourceArrayInnerEnumProperty = CastField<FEnumProperty>(SourceArrayProperty->Inner))
+					{
+						if (TargetArrayInnerByteProperty->Enum == SourceArrayInnerEnumProperty->GetEnum())
+						{
+							InTargetProperty->CopyCompleteValue(InTargetPtr, InSourcePtr);
+							return true;
+						}
+					}
+				}
+				else if(FEnumProperty* TargetArrayInnerEnumProperty = CastField<FEnumProperty>(TargetArrayProperty->Inner))
+				{
+					if(FByteProperty* SourceArrayInnerByteProperty = CastField<FByteProperty>(SourceArrayProperty->Inner))
+					{
+						if (TargetArrayInnerEnumProperty->GetEnum() == SourceArrayInnerByteProperty->Enum)
+						{
+							InTargetProperty->CopyCompleteValue(InTargetPtr, InSourcePtr);
+							return true;
+						}
 					}
 				}
 			}
@@ -857,6 +1105,17 @@ bool URigVMMemoryStorage::CopyProperty(
 	TraversePropertyPath(InTargetProperty, InTargetPtr, InTargetPropertyPath);
 	TraversePropertyPath(InSourceProperty, SourcePtr, InSourcePropertyPath);
 
+	if(InTargetPtr == nullptr)
+	{
+		check(!InTargetPropertyPath.IsEmpty());
+		return false;
+	}
+	if(InSourcePtr == nullptr)
+	{
+		check(!InSourcePropertyPath.IsEmpty());
+		return false;
+	}
+
 	return CopyProperty(InTargetProperty, InTargetPtr, InSourceProperty, SourcePtr);
 }
 
@@ -879,8 +1138,6 @@ bool URigVMMemoryStorage::CopyProperty(
 	return CopyProperty(TargetProperty, TargetPtr, InTargetPropertyPath, SourceProperty, SourcePtr, InSourcePropertyPath);
 }
 
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
 bool URigVMMemoryStorage::CopyProperty(
 	FRigVMMemoryHandle& InTargetHandle,
 	FRigVMMemoryHandle& InSourceHandle)
@@ -894,7 +1151,23 @@ bool URigVMMemoryStorage::CopyProperty(
 		InSourceHandle.GetPropertyPathRef());
 }
 
-#endif
+void URigVMMemoryStorage::CopyFrom(URigVMMemoryStorage* InSourceMemory)
+{
+	check(InSourceMemory);
+	check(GetClass() == InSourceMemory->GetClass());
+
+	for(int32 PropertyIndex = 0; PropertyIndex < Num(); PropertyIndex++)
+	{
+		URigVMMemoryStorage::CopyProperty(
+			this,
+			PropertyIndex,
+			FRigVMPropertyPath::Empty,
+			InSourceMemory,
+			PropertyIndex,
+			FRigVMPropertyPath::Empty
+		);
+	}
+}
 
 const TArray<const FProperty*>& URigVMMemoryStorage::GetProperties() const
 {
@@ -958,3 +1231,4 @@ FRigVMOperand URigVMMemoryStorage::GetOperandByName(const FName& InName, int32 I
 	const int32 PropertyIndex = GetPropertyIndexByName(InName);
 	return GetOperand(PropertyIndex, InPropertyPathIndex);
 }
+

@@ -67,6 +67,8 @@ public:
 
 	TOptional<FString> GetCurrentStepDebugName() const;
 
+	TSharedPtr<FTrackedActivity> GetTrackedActivity() const;
+
 public:
 
 	template<typename...ArgsT>
@@ -105,11 +107,21 @@ public:
 		return *this;
 	}
 
+	template<typename FunctionT, typename...ArgsT>
+	FControlFlow& ForkFlow(FunctionT InForkLambda, ArgsT...Params)
+	{
+		QueueConcurrentFlows(FormatOrGetNewNodeDebugName()).BindLambda(InForkLambda, Params...);
+		return *this;
+	}
+
+	FControlFlow& TrackActivities(TSharedPtr<FTrackedActivity> InActivity = nullptr);
+
 public:
 	FSimpleDelegate& QueueFunction(const FString& FlowNodeDebugName = TEXT(""));
 	FControlFlowWaitDelegate& QueueWait(const FString& FlowNodeDebugName = TEXT(""));
 	FControlFlowPopulator& QueueControlFlow(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
 	FControlFlowBranchDefiner& QueueControlFlowBranch(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	FConcurrentFlowsDefiner& QueueConcurrentFlows(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
 
 private:
 	template<typename BindingObjectT, typename...PayloadParamsT>
@@ -130,7 +142,10 @@ private:
 	template<typename BindingObjectClassT, typename...ArgsT>
 	void QueueStep_Internal_DeduceBindingObject(const FString& InDebugName, typename TEnableIf<TIsDerivedFrom<BindingObjectClassT, TSharedFromThis<BindingObjectClassT>>::IsDerived, BindingObjectClassT*>::Type InBindingObject, ArgsT...Params)
 	{
-		QueueStep_Internal_TSharedFromThis(InDebugName, InBindingObject->AsShared(), Params...);
+		if (static_cast<TSharedFromThis<BindingObjectClassT>*>(InBindingObject)->DoesSharedInstanceExist())
+		{
+			QueueStep_Internal_TSharedFromThis(InDebugName, InBindingObject->AsShared(), Params...);
+		}
 	}
 
 	template<typename BindingObjectClassT, typename...ArgsT>
@@ -141,6 +156,12 @@ private:
 
 private:
 	
+	template<typename BindingObjectClassT, typename...PayloadParamsT>
+	void QueueStep_Internal_TSharedFromThis(const FString& InDebugName, TSharedRef<BindingObjectClassT> InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, void(TSharedRef<FConcurrentControlFlows>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
+	{
+		QueueConcurrentFlows(InDebugName).BindSP(InBindingObject, InFunction, Params...);
+	}
+
 	template<typename BindingObjectClassT, typename...PayloadParamsT>
 	void QueueStep_Internal_TSharedFromThis(const FString& InDebugName, TSharedRef<BindingObjectClassT> InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, int32(TSharedRef<FControlFlowBranch>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
 	{
@@ -166,6 +187,13 @@ private:
 	}
 
 private:
+
+	template<typename BindingObjectClassT, typename...PayloadParamsT>
+	void QueueStep_Internal_UObject(const FString& InDebugName, BindingObjectClassT* InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, void(TSharedRef<FConcurrentControlFlows>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
+	{
+		QueueConcurrentFlows(InDebugName).BindUObject(InBindingObject, InFunction, Params...);
+	}
+
 	template<typename BindingObjectClassT, typename...PayloadParamsT>
 	void QueueStep_Internal_UObject(const FString& InDebugName, BindingObjectClassT* InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, int32(TSharedRef<FControlFlowBranch>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
 	{
@@ -198,6 +226,8 @@ private:
 	friend class FControlFlowTask_Loop;
 	friend class FControlFlowTask_BranchLegacy;
 	friend class FControlFlowTask_Branch;
+	friend class FControlFlowStatics;
+	friend struct FConcurrencySubFlowContainer;
 
 public:
 	/** These work, but they are a bit clunky to use. The heart of the issue is that it requires the caller to define two functions. We want only the caller to use one function.
@@ -268,4 +298,6 @@ private:
 	TArray<TSharedRef<FControlFlow>> SubFlowStack_ForDebugging;
 
 	TArray<TSharedRef<FControlFlowNode>> FlowQueue;
+
+	TSharedPtr<FTrackedActivity> Activity;
 };

@@ -28,7 +28,7 @@ void UChaosCacheCollection::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutT
 
 UChaosCache* UChaosCacheCollection::FindCache(const FName& CacheName) const
 {
-	UChaosCache* const* ExistingCache = Algo::FindByPredicate(Caches, [&CacheName](const UChaosCache* Test)
+	TObjectPtr<UChaosCache> const* ExistingCache = Algo::FindByPredicate(Caches, [&CacheName](const UChaosCache* Test)
 	{
 		if (Test)
 		{
@@ -47,7 +47,7 @@ UChaosCache* UChaosCacheCollection::FindOrAddCache(const FName& CacheName)
 
 	if(FinalName != NAME_None)
 	{
-		UChaosCache** ExistingCache = Algo::FindByPredicate(Caches, [&FinalName](const UChaosCache* Test)
+		TObjectPtr<UChaosCache>* ExistingCache = Algo::FindByPredicate(Caches, [&FinalName](const UChaosCache* Test)
 		{
 			if (Test)
 			{
@@ -87,7 +87,12 @@ void UChaosCacheCollection::FlushAllCacheWrites()
 	});
 }
 
-const TArray<UChaosCache*> UChaosCacheCollection::GetCaches() const
+float UChaosCacheCollection::GetMaxDuration() const
 {
-	return Caches;
+	float MaxDuration = 0.0;
+    for( UChaosCache* CacheInstance : Caches)
+    {
+    	MaxDuration = FMath::Max(CacheInstance->GetDuration(), MaxDuration);
+    }
+	return MaxDuration;
 }

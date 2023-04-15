@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Horde.Storage;
+using Jupiter.Implementation;
 using System;
 using System.Threading.Tasks;
-using Jupiter.Implementation;
+using ContentId = Jupiter.Implementation.ContentId;
 
 namespace Horde.Storage.Implementation
 {
@@ -13,8 +15,9 @@ namespace Horde.Storage.Implementation
         /// </summary>
         /// <param name="ns">The namespace to operate in</param>
         /// <param name="contentId">The identifier for the content id</param>
+        /// <param name="mustBeContentId"></param>
         /// <returns></returns>
-        Task<BlobIdentifier[]?> Resolve(NamespaceId ns, BlobIdentifier contentId);
+        Task<BlobIdentifier[]?> Resolve(NamespaceId ns, ContentId contentId, bool mustBeContentId = false);
 
         /// <summary>
         /// Add a mapping from contentId to blobIdentifier
@@ -24,22 +27,22 @@ namespace Horde.Storage.Implementation
         /// <param name="blobIdentifier">The blob the content id maps to</param>
         /// <param name="contentWeight">Weight of this identifier compared to previous mappings, used to determine which is more important, lower weight is considered a better fit</param>
         /// <returns></returns>
-        Task Put(NamespaceId ns, BlobIdentifier contentId, BlobIdentifier blobIdentifier, int contentWeight);
+        Task Put(NamespaceId ns, ContentId contentId, BlobIdentifier blobIdentifier, int contentWeight);
     }
 
     public class InvalidContentIdException : Exception
     {
-        public InvalidContentIdException(BlobIdentifier contentId) : base($"Unknown content id {contentId}")
+        public InvalidContentIdException(ContentId contentId) : base($"Unknown content id {contentId}")
         {
-            
+
         }
     }
 
     public class ContentIdResolveException : Exception
     {
-        public BlobIdentifier ContentId { get; }
+        public ContentId ContentId { get; }
 
-        public ContentIdResolveException(BlobIdentifier contentId): base($"Unable to find any mapping of contentId {contentId} that has all blobs present")
+        public ContentIdResolveException(ContentId contentId) : base($"Unable to find any mapping of contentId {contentId} that has all blobs present")
         {
             ContentId = contentId;
         }

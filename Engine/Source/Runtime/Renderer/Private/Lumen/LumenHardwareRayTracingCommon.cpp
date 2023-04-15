@@ -66,12 +66,14 @@ static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingMaxTranslucentSkip
 	ECVF_RenderThreadSafe
 );
 
-bool Lumen::UseHardwareRayTracing()
+bool Lumen::UseHardwareRayTracing(const FSceneViewFamily& ViewFamily)
 {
 #if RHI_RAYTRACING
-	// As of 2021-11-24, Lumen can only run in full RT pipeline mode.
-	// It will be able to run using inline ray tracing mode in the future.
-	return (IsRayTracingEnabled() && GRHISupportsRayTracingShaders && CVarLumenUseHardwareRayTracing.GetValueOnAnyThread() != 0);
+	return IsRayTracingEnabled()
+		&& (GRHISupportsRayTracingShaders || GRHISupportsInlineRayTracing)
+		&& CVarLumenUseHardwareRayTracing.GetValueOnAnyThread() != 0
+		// Ray Tracing does not support split screen yet, but stereo views can be allowed
+		&& (ViewFamily.Views.Num() == 1 || (ViewFamily.Views.Num() == 2 && IStereoRendering::IsStereoEyeView(*ViewFamily.Views[0])));
 #else
 	return false;
 #endif
@@ -88,7 +90,8 @@ Lumen::EHardwareRayTracingLightingMode Lumen::GetHardwareRayTracingLightingMode(
 		
 	int32 LightingModeInt = CVarLumenHardwareRayTracingLightingMode.GetValueOnRenderThread();
 
-	if (View.FinalPostProcessSettings.LumenRayLightingMode == ELumenRayLightingModeOverride::SurfaceCache)
+	// Without ray tracing shaders support we can only use Surface Cache mode.
+	if (View.FinalPostProcessSettings.LumenRayLightingMode == ELumenRayLightingModeOverride::SurfaceCache || !GRHISupportsRayTracingShaders)
 	{
 		LightingModeInt = static_cast<int32>(Lumen::EHardwareRayTracingLightingMode::LightingFromSurfaceCache);
 	}
@@ -122,10 +125,10 @@ const TCHAR* Lumen::GetRayTracedLightingModeName(Lumen::EHardwareRayTracingLight
 	return nullptr;
 }
 
-bool Lumen::UseHardwareInlineRayTracing()
+bool Lumen::UseHardwareInlineRayTracing(const FSceneViewFamily& ViewFamily)
 {
 #if RHI_RAYTRACING
-	return (Lumen::UseHardwareRayTracing() && CVarLumenUseHardwareRayTracingInline.GetValueOnRenderThread() != 0 && GRHISupportsInlineRayTracing);
+	return (Lumen::UseHardwareRayTracing(ViewFamily) && CVarLumenUseHardwareRayTracingInline.GetValueOnRenderThread() != 0 && GRHISupportsInlineRayTracing);
 #else
 	return false;
 #endif
@@ -168,21 +171,26 @@ void SetLumenHardwareRayTracingSharedParameters(
 	const FSceneTextureParameters& SceneTextures,
 	const FViewInfo& View,
 	const FLumenCardTracingInputs& TracingInputs,
-	FLumenHardwareRayTracingRGS::FSharedParameters* SharedParameters
+	FLumenHardwareRayTracingShaderBase::FSharedParameters* SharedParameters
 )
 {
 	SharedParameters->SceneTextures = SceneTextures;
+	SharedParameters->SceneTexturesStruct = View.GetSceneTextures().UniformBuffer;
+	SharedParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+
 	//SharedParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	checkf(View.HasRayTracingScene(), TEXT("TLAS does not exist. Verify that the current pass is represented in Lumen::AnyLumenHardwareRayTracingPassEnabled()."));
-	SharedParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	SharedParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 
 	// Lighting data
-	SharedParameters->LightDataPacked = View.RayTracingLightData.UniformBuffer;
-	SharedParameters->LightDataBuffer = View.RayTracingLightData.LightBufferSRV;
-	SharedParameters->SSProfilesTexture = View.RayTracingSubSurfaceProfileTexture;
+	SharedParameters->LightDataPacked = View.RayTracingLightDataUniformBuffer;
+
+	// Inline
+	SharedParameters->HitGroupData = View.LumenHardwareRayTracingHitDataBufferSRV;
+	SharedParameters->RayTracingSceneMetadata = View.GetRayTracingSceneChecked()->GetMetadataBufferSRV();
 
 	// Use surface cache, instead
-	GetLumenCardTracingParameters(View, TracingInputs, SharedParameters->TracingParameters);
+	GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, SharedParameters->TracingParameters);
 }
 
 class FLumenHWRTCompactRaysIndirectArgsCS : public FGlobalShader

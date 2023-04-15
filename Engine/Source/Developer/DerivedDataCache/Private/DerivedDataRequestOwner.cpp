@@ -7,9 +7,13 @@
 #include "DerivedDataRequestTypes.h"
 #include "Experimental/Async/LazyEvent.h"
 #include "HAL/CriticalSection.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeRWLock.h"
+#include "Tasks/Task.h"
+#include "Templates/Function.h"
 #include "Templates/RefCounting.h"
+#include <atomic>
 
 namespace UE::DerivedData::Private
 {
@@ -71,8 +75,8 @@ void FRequestOwnerShared::Begin(IRequest* Request)
 	{
 		FWriteScopeLock WriteLock(Lock);
 		checkf(BarrierCount > 0 || !bBeginExecuted,
-			TEXT("At least one FRequestBarrier must be in scope when beginning a request after the first request. ")
-			TEXT("The overload of End that invokes a callback handles this automatically for most use cases."));
+			TEXT("At least one FRequestBarrier must be in scope when beginning a request after the first request. "
+			     "The overload of End that invokes a callback handles this automatically for most use cases."));
 		check(Request);
 		Requests.Add(Request);
 		bBeginExecuted = true;
@@ -86,7 +90,12 @@ void FRequestOwnerShared::Begin(IRequest* Request)
 	for (EPriority CheckPriority; ; NewPriority = CheckPriority)
 	{
 		Request->SetPriority(NewPriority);
-		CheckPriority = (FReadScopeLock(Lock), Priority);
+		
+		{
+			FReadScopeLock ScopeLock(Lock);
+			CheckPriority = Priority;
+		}
+
 		if (CheckPriority == NewPriority)
 		{
 			break;
@@ -252,7 +261,11 @@ void FRequestOwnerShared::KeepAlive()
 
 void FRequestOwnerShared::Destroy()
 {
-	const bool bLocalKeepAlive = (FWriteScopeLock(Lock), bKeepAlive);
+	bool bLocalKeepAlive;
+	{
+		FWriteScopeLock ScopeLock(Lock);
+		bLocalKeepAlive = bKeepAlive;
+	}
 	if (!bLocalKeepAlive)
 	{
 		Cancel();
@@ -275,5 +288,34 @@ void FRequestOwner::Wait()                              { return ToSharedOwner(O
 bool FRequestOwner::Poll() const                        { return ToSharedOwner(Owner.Get())->Poll(); }
 FRequestOwner::operator IRequest*()                     { return ToSharedOwner(Owner.Get()); }
 void FRequestOwner::Destroy(IRequestOwner& SharedOwner) { return ToSharedOwner(&SharedOwner)->Destroy(); }
+
+void IRequestOwner::LaunchTask(const TCHAR* DebugName, TUniqueFunction<void ()>&& TaskBody)
+{
+	using namespace Tasks;
+
+	struct FTaskRequest final : public FRequestBase
+	{
+		void SetPriority(EPriority Priority) final {}
+		void Cancel() final { Task.Wait(); }
+		void Wait() final { Task.Wait(); }
+		FTask Task;
+		LLM(const UE::LLMPrivate::FTagData* MemTag = nullptr);
+	};
+
+	Tasks::FTaskEvent TaskEvent(TEXT("LaunchTaskRequest"));
+	FTaskRequest* Request = new FTaskRequest;
+	LLM_IF_ENABLED(Request->MemTag = FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
+	Request->Task = Launch(
+		DebugName,
+		[this, Request, TaskBody = MoveTemp(TaskBody)]
+		{
+			LLM_SCOPE(Request->MemTag);
+			End(Request, TaskBody);
+		},
+		TaskEvent,
+		GetPriority() <= EPriority::Normal ? ETaskPriority::BackgroundNormal : ETaskPriority::BackgroundHigh);
+	Begin(Request);
+	TaskEvent.Trigger();
+}
 
 } // UE::DerivedData

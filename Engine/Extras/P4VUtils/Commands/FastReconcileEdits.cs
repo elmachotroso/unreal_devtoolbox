@@ -51,9 +51,9 @@ namespace P4VUtils.Commands
 			// %D is 'selected files or folders', ensure we only use folders
 			for (int i=1;i<Args.Length;i++)
 			{
-				Logger.LogInformation("params {i} - {Args[i]}", i, Args[i]);
+				Logger.LogInformation("params {Idx} - {Arg}", i, Args[i]);
 
-				if (Args[i].EndsWith("..."))
+				if (Args[i].EndsWith("...", StringComparison.Ordinal))
 				{
 					foreach (string ext in Extensions)
 					{
@@ -62,17 +62,17 @@ namespace P4VUtils.Commands
 				}
 				else
 				{
-					Logger.LogError("   ignoring individial selected file {file}", Args[i]);
+					Logger.LogError("   ignoring individial selected file {File}", Args[i]);
 				}
 			}
 
-			foreach (string p in ReconcilePaths)
+			foreach (string Path in ReconcilePaths)
 			{
-				Logger.LogInformation("paths {p}", p);
+				Logger.LogInformation("paths {Path}", Path);
 			}
 
 			string? ClientName = Environment.GetEnvironmentVariable("P4CLIENT");
-			PerforceConnection Perforce = new PerforceConnection(null, null, ClientName, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, ClientName, Logger);
 
 			ClientRecord Client = await Perforce.GetClientAsync(ClientName, CancellationToken.None);
 			if(Client.Stream == null)
@@ -96,7 +96,7 @@ namespace P4VUtils.Commands
 
 			foreach (ReconcileRecord res in Results)
 			{
-				Logger.LogInformation("Marked for Edit {res}", res);
+				Logger.LogInformation("Marked for Edit {Res}", res);
 			}
 			
 			Logger.LogInformation("Completed in {Duration}s", Duration);

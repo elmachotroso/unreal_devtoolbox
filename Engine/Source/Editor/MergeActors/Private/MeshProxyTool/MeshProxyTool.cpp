@@ -19,12 +19,12 @@
 #include "MeshUtilities.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IMeshReductionInterfaces.h"
 #include "IMeshMergeUtilities.h"
 #include "MeshMergeModule.h"
 
-#include "SMeshProxyDialog.h"
+#include "MeshProxyTool/SMeshProxyDialog.h"
 
 #define LOCTEXT_NAMESPACE "MeshProxyTool"
 
@@ -77,7 +77,7 @@ FString FMeshProxyTool::GetDefaultPackageName() const
 		if (Actor)
 		{
 			TInlineComponentArray<UStaticMeshComponent*> SMComponets;
-			Actor->GetComponents<UStaticMeshComponent>(SMComponets);
+			Actor->GetComponents(SMComponets);
 			for (UStaticMeshComponent* Component : SMComponets)
 			{
 				if (Component->GetStaticMesh())
@@ -250,7 +250,7 @@ FString FThirdPartyMeshProxyTool::GetDefaultPackageName() const
 		if (Actor)
 		{
 			TInlineComponentArray<UStaticMeshComponent*> SMComponets;
-			Actor->GetComponents<UStaticMeshComponent>(SMComponets);
+			Actor->GetComponents(SMComponets);
 			for (UStaticMeshComponent* Component : SMComponets)
 			{
 				if (Component->GetStaticMesh())

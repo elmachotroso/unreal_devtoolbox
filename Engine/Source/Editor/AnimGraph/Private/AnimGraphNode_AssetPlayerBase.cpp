@@ -5,6 +5,7 @@
 #include "Animation/AnimComposite.h"
 #include "BlueprintActionFilter.h"
 #include "BlueprintNodeSpawner.h"
+#include "BlueprintAssetNodeSpawner.h"
 #include "UObject/UObjectIterator.h"
 #include "Animation/AnimLayerInterface.h"
 #include "IAnimBlueprintGeneratedClassCompiledData.h"
@@ -256,7 +257,7 @@ void UAnimGraphNode_AssetPlayerBase::GetMenuActionsHelper(
 			InSetupNewNodeFromAssetFunction(InNewNode, bInIsTemplateNode, InAssetData);
 		};
 
-		UBlueprintNodeSpawner* NodeSpawner = UBlueprintNodeSpawner::Create(InNodeClass.Get());
+		UBlueprintAssetNodeSpawner* NodeSpawner = UBlueprintAssetNodeSpawner::Create(InNodeClass.Get(), InAssetData);
 		NodeSpawner->CustomizeNodeDelegate = UBlueprintNodeSpawner::FCustomizeNodeDelegate::CreateLambda(AssetSetup);
 		NodeSpawner->DefaultMenuSignature.MenuName = InMenuNameFunction(InAssetData, InAssetData.GetClass());
 		NodeSpawner->DefaultMenuSignature.Category = InMenuCategoryFunction != nullptr ? InMenuCategoryFunction(InAssetData) : FText::GetEmpty();
@@ -299,11 +300,11 @@ void UAnimGraphNode_AssetPlayerBase::GetMenuActionsHelper(
 		FARFilter Filter;
 		for(const TSubclassOf<UObject>& AssetType : InAssetTypes)
 		{
-			Filter.ClassNames.Add(AssetType.Get()->GetFName());
+			Filter.ClassPaths.Add(AssetType.Get()->GetClassPathName());
 		}
 		for(const TSubclassOf<UObject>& ExcludedAssetType : InExcludedAssetTypes)
 		{
-			Filter.RecursiveClassesExclusionSet.Add(ExcludedAssetType.Get()->GetFName());
+			Filter.RecursiveClassPathsExclusionSet.Add(ExcludedAssetType.Get()->GetClassPathName());
 		}	
 		Filter.bRecursiveClasses = true;
 		
@@ -533,7 +534,7 @@ void UAnimGraphNode_AssetPlayerBase::ValidateAnimNodeDuringCompilationHelper(USk
 		USkeleton* AssetSkeleton = AssetToCheck->GetSkeleton();
 		
 		// if asset doesn't have a skeleton, it might be due to the asset no being not loaded yet
-		if(AssetSkeleton && !ForSkeleton->IsCompatible(AssetSkeleton))
+		if(AssetSkeleton && (!ForSkeleton || !ForSkeleton->IsCompatible(AssetSkeleton)))
 		{
 			MessageLog.Error(*FText::Format(LOCTEXT("IncompatibleSkeletonFormat", "@@ references {0} that uses an incompatible skeleton @@"), InAssetType->GetDisplayNameText()).ToString(), this, AssetSkeleton);
 		}

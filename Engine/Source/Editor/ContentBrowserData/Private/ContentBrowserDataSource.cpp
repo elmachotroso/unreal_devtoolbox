@@ -1,15 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContentBrowserDataSource.h"
-#include "Features/IModularFeatures.h"
-#include "Interfaces/IPluginManager.h"
+
+#include "Containers/StringView.h"
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserItemData.h"
-#include "IContentBrowserDataModule.h"
-#include "Settings/ContentBrowserSettings.h"
+#include "ContentBrowserItemPath.h"
+#include "CoreTypes.h"
+#include "Features/IModularFeatures.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "Misc/PackageName.h"
-#include "Misc/NamePermissionList.h"
-#include "IContentBrowserSingleton.h"
+#include "Misc/StringBuilder.h"
+#include "Settings/ContentBrowserSettings.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowserDataSource"
 
@@ -217,6 +223,18 @@ bool UContentBrowserDataSource::EnumerateItemsForObjects(const TArrayView<UObjec
 	return true;
 }
 
+TArray<FContentBrowserItemPath> UContentBrowserDataSource::GetAliasesForPath(const FSoftObjectPath& InInternalPath) const
+{
+	return TArray<FContentBrowserItemPath>();
+}
+
+TArray<FContentBrowserItemPath> UContentBrowserDataSource::GetAliasesForPath(FName InInternalPath) const
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return GetAliasesForPath(FSoftObjectPath(InInternalPath));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 bool UContentBrowserDataSource::IsDiscoveringItems(FText* OutStatus)
 {
 	return false;
@@ -362,6 +380,26 @@ bool UContentBrowserDataSource::BulkDeleteItems(TArrayView<const FContentBrowser
 	return bSuccess;
 }
 
+bool UContentBrowserDataSource::CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	return false;
+}
+
+bool UContentBrowserDataSource::PrivatizeItem(const FContentBrowserItemData& InItem)
+{
+	return false;
+}
+
+bool UContentBrowserDataSource::BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems)
+{
+	bool bSuccess = false;
+	for (const FContentBrowserItemData& Item : InItems)
+	{
+		bSuccess |= PrivatizeItem(Item);
+	}
+	return bSuccess;
+}
+
 bool UContentBrowserDataSource::CanRenameItem(const FContentBrowserItemData& InItem, const FString* InNewName, FText* OutErrorMsg)
 {
 	return false;
@@ -447,7 +485,7 @@ bool UContentBrowserDataSource::HandleDragDropOnItem(const FContentBrowserItemDa
 	return false;
 }
 
-bool UContentBrowserDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId)
+bool UContentBrowserDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId)
 {
 	return false;
 }

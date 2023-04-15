@@ -6,6 +6,9 @@
 #include "ConcertUtil.h"
 #include "ConcertLogger.h"
 #include "ConcertLogGlobal.h"
+#include "ConcertTransportEvents.h"
+
+#include "Algo/Transform.h"
 
 #include "Containers/Ticker.h"
 #include "Misc/App.h"
@@ -19,6 +22,7 @@
 
 #define LOCTEXT_NAMESPACE "ConcertClient"
 
+LLM_DEFINE_TAG(Concert_ConcertClient);
 
 namespace ConcertUtil
 {
@@ -669,6 +673,8 @@ const FString& FConcertClient::GetRole() const
 
 void FConcertClient::Configure(const UConcertClientConfig* InSettings)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	ClientInfo.Initialize();
 	check(InSettings != nullptr);
 	Settings = TStrongObjectPtr<const UConcertClientConfig>(InSettings);
@@ -706,11 +712,18 @@ bool FConcertClient::IsStarted() const
 
 void FConcertClient::Startup()
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
 	check(IsConfigured());
 	if (!ClientAdminEndpoint.IsValid() && EndpointProvider.IsValid())
 	{
 		// Create the client administration endpoint
-		ClientAdminEndpoint = EndpointProvider->CreateLocalEndpoint(TEXT("Admin"), Settings->EndpointSettings, &FConcertLogger::CreateLogger);
+		ClientAdminEndpoint = EndpointProvider->CreateLocalEndpoint(TEXT("Admin"), Settings->EndpointSettings, [this](const FConcertEndpointContext& Context)
+		{
+			return FConcertLogger::CreateLogger(Context, [this](const FConcertLog& Log)
+			{
+				ConcertTransportEvents::OnConcertClientLogEvent().Broadcast(*this, Log);
+			});
+		});
 	}
 
 	FCoreDelegates::OnEndFrame.AddRaw(this, &FConcertClient::OnEndFrame);
@@ -869,6 +882,8 @@ EConcertConnectionStatus FConcertClient::GetSessionConnectionStatus() const
 
 TFuture<EConcertResponseCode> FConcertClient::CreateSession(const FGuid& ServerAdminEndpointId, const FConcertCreateSessionArgs& CreateSessionArgs)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	// We don't want the client to get automatically reconnected to it's default session if something wrong happens
 	AutoConnection.Reset();
 	return InternalCreateSession(ServerAdminEndpointId, CreateSessionArgs);
@@ -876,6 +891,8 @@ TFuture<EConcertResponseCode> FConcertClient::CreateSession(const FGuid& ServerA
 
 TFuture<EConcertResponseCode> FConcertClient::JoinSession(const FGuid& ServerAdminEndpointId, const FGuid& SessionId)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	// We don't want the client to get automatically reconnected to it's default session if something wrong happens
 	AutoConnection.Reset();
 	return InternalJoinSession(ServerAdminEndpointId, SessionId);
@@ -883,6 +900,8 @@ TFuture<EConcertResponseCode> FConcertClient::JoinSession(const FGuid& ServerAdm
 
 TFuture<EConcertResponseCode> FConcertClient::RestoreSession(const FGuid& ServerAdminEndpointId, const FConcertCopySessionArgs& RestoreSessionArgs)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	// We don't want the client to get automatically reconnected to the default session if something wrong happens
 	if (RestoreSessionArgs.bAutoConnect)
 	{
@@ -893,6 +912,8 @@ TFuture<EConcertResponseCode> FConcertClient::RestoreSession(const FGuid& Server
 
 TFuture<EConcertResponseCode> FConcertClient::CopySession(const FGuid& ServerAdminEndpointId, const FConcertCopySessionArgs& CopySessionArgs)
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+	
 	// We don't want the client to get automatically reconnected to the default session if the copy/connect fails.
 	if (CopySessionArgs.bAutoConnect)
 	{
@@ -1000,6 +1021,52 @@ TFuture<EConcertResponseCode> FConcertClient::DeleteSession(const FGuid& ServerA
 		});
 }
 
+TFuture<FConcertAdmin_BatchDeleteSessionResponse> FConcertClient::BatchDeleteSessions(const FGuid& ServerAdminEndpointId, const FConcertBatchDeleteSessionsArgs& BatchDeletionArgs)
+{
+	FConcertAdmin_BatchDeleteSessionRequest DeleteSessionRequest;
+	DeleteSessionRequest.SessionIds = BatchDeletionArgs.SessionIds;
+	DeleteSessionRequest.Flags = BatchDeletionArgs.Flags;
+
+	// Fill the information for the client identification
+	DeleteSessionRequest.UserName = ClientInfo.UserName;
+	DeleteSessionRequest.DeviceName = ClientInfo.DeviceName;
+
+	FAsyncTaskNotificationConfig NotificationConfig;
+	NotificationConfig.bIsHeadless = Settings->bIsHeadless;
+	NotificationConfig.bKeepOpenOnFailure = true;
+	NotificationConfig.TitleText = LOCTEXT("DeletingSessions", "Deleting Sessions...");
+	NotificationConfig.LogCategory = ConcertUtil::GetLogConcertPtr();
+
+	FAsyncTaskNotification Notification(NotificationConfig);
+
+	return ClientAdminEndpoint->SendRequest<FConcertAdmin_BatchDeleteSessionRequest, FConcertAdmin_BatchDeleteSessionResponse>(DeleteSessionRequest, ServerAdminEndpointId)
+		.Next([this, NumRequested = DeleteSessionRequest.SessionIds.Num(), Notification = MoveTemp(Notification)](const FConcertAdmin_BatchDeleteSessionResponse& RequestResponse) mutable
+		{
+			if (RequestResponse.ResponseCode == EConcertResponseCode::Success)
+			{
+				const bool bDeletedAll = RequestResponse.DeletedItems.Num() == NumRequested;
+				const FText Message = bDeletedAll
+					? FText::Format(LOCTEXT("DeletedSessionsFmt.All", "Deleted {0} Sessions"), RequestResponse.DeletedItems.Num())
+					: FText::Format(LOCTEXT("DeletedSessionsFmt.Some", "Deleted {0} of {1} Sessions"), RequestResponse.DeletedItems.Num(), NumRequested);
+				const FText ProgressText = bDeletedAll
+					? FText::GetEmpty()
+					: [&RequestResponse]()
+					{
+						TArray<FString> SessionNames;
+						Algo::Transform(RequestResponse.NotOwnedByClient, SessionNames, [](const FDeletedSessionInfo& Skipped){ return Skipped.SessionName; });
+						return FText::FromString(FString::Join(SessionNames, TEXT(", ")));
+					}();
+				Notification.SetComplete(Message, ProgressText, true);
+			}
+			else
+			{
+				Notification.SetComplete(LOCTEXT("FailedToDeleteSessionsFmt", "Failed to Delete Sessions"), RequestResponse.Reason, false);
+			}
+
+			return RequestResponse;
+		});
+}
+
 void FConcertClient::DisconnectSession()
 {
 	// We don't want the client to get automatically reconnected to it's default session
@@ -1043,6 +1110,8 @@ TSharedPtr<IConcertClientSession> FConcertClient::GetCurrentSession() const
 
 TFuture<FConcertAdmin_MountSessionRepositoryResponse> FConcertClient::MountSessionRepository(const FGuid& ServerAdminEndpointId, const FString& RepositoryRootDir, const FGuid& RepositoryId, bool bCreateIfNotExist, bool bAsDefault) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_MountSessionRepositoryRequest MountRepositoryRequest;
 	MountRepositoryRequest.RepositoryId = RepositoryId;
 	MountRepositoryRequest.RepositoryRootDir = RepositoryRootDir;
@@ -1053,12 +1122,16 @@ TFuture<FConcertAdmin_MountSessionRepositoryResponse> FConcertClient::MountSessi
 
 TFuture<FConcertAdmin_GetSessionRepositoriesResponse> FConcertClient::GetSessionRepositories(const FGuid& ServerAdminEndpointId) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetSessionRepositoriesRequest GetRepositoryRequest;
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_GetSessionRepositoriesRequest, FConcertAdmin_GetSessionRepositoriesResponse>(GetRepositoryRequest, ServerAdminEndpointId);
 }
 
 TFuture<FConcertAdmin_DropSessionRepositoriesResponse> FConcertClient::DropSessionRepositories(const FGuid& ServerAdminEndpointId, const TArray<FGuid>& RepositoryIds) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_DropSessionRepositoriesRequest DropRepositoryRequest;
 	DropRepositoryRequest.RepositoryIds = RepositoryIds;
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_DropSessionRepositoriesRequest, FConcertAdmin_DropSessionRepositoriesResponse>(DropRepositoryRequest, ServerAdminEndpointId);
@@ -1066,24 +1139,32 @@ TFuture<FConcertAdmin_DropSessionRepositoriesResponse> FConcertClient::DropSessi
 
 TFuture<FConcertAdmin_GetAllSessionsResponse> FConcertClient::GetServerSessions(const FGuid& ServerAdminEndpointId) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetAllSessionsRequest GetSessionsRequest = FConcertAdmin_GetAllSessionsRequest();
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_GetAllSessionsRequest, FConcertAdmin_GetAllSessionsResponse>(GetSessionsRequest, ServerAdminEndpointId);
 }
 
 TFuture<FConcertAdmin_GetSessionsResponse> FConcertClient::GetLiveSessions(const FGuid& ServerAdminEndpointId) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetLiveSessionsRequest GetLiveSessionsRequest;
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_GetLiveSessionsRequest, FConcertAdmin_GetSessionsResponse>(GetLiveSessionsRequest, ServerAdminEndpointId);
 }
 
 TFuture<FConcertAdmin_GetSessionsResponse> FConcertClient::GetArchivedSessions(const FGuid& ServerAdminEndpointId) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetArchivedSessionsRequest GetArchivedSessionsRequest;
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_GetArchivedSessionsRequest, FConcertAdmin_GetSessionsResponse>(GetArchivedSessionsRequest, ServerAdminEndpointId);
 }
 
 TFuture<FConcertAdmin_GetSessionClientsResponse> FConcertClient::GetSessionClients(const FGuid& ServerAdminEndpointId, const FGuid& SessionId) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetSessionClientsRequest GetSessionClientsRequest;
 	GetSessionClientsRequest.SessionId = SessionId;
 	return ClientAdminEndpoint->SendRequest<FConcertAdmin_GetSessionClientsRequest, FConcertAdmin_GetSessionClientsResponse>(GetSessionClientsRequest, ServerAdminEndpointId);
@@ -1091,6 +1172,8 @@ TFuture<FConcertAdmin_GetSessionClientsResponse> FConcertClient::GetSessionClien
 
 TFuture<FConcertAdmin_GetSessionActivitiesResponse> FConcertClient::GetSessionActivities(const FGuid& ServerAdminEndpointId, const FGuid& SessionId, int64 FromActivityId, int64 ActivityCount, bool bIncludeDetails) const
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClient);
+
 	FConcertAdmin_GetSessionActivitiesRequest GetSessionActivitiesRequest;
 	GetSessionActivitiesRequest.SessionId = SessionId;
 	GetSessionActivitiesRequest.FromActivityId = FromActivityId;
@@ -1119,7 +1202,7 @@ TFuture<EConcertResponseCode> FConcertClient::InternalCreateSession(const FGuid&
 		FConcertAdmin_CreateSessionRequest CreateSessionRequest;
 		CreateSessionRequest.SessionName = CreateSessionArgs.SessionName;
 		CreateSessionRequest.OwnerClientInfo = ClientInfo;
-		CreateSessionRequest.VersionInfo.Initialize();
+		CreateSessionRequest.VersionInfo.Initialize(GetConfiguration()->ClientSettings.bSupportMixedBuildTypes);
 	
 		// Session settings
 		CreateSessionRequest.SessionSettings.Initialize();
@@ -1165,7 +1248,7 @@ TFuture<EConcertResponseCode> FConcertClient::InternalJoinSession(const FGuid& S
 		FConcertAdmin_FindSessionRequest FindSessionRequest;
 		FindSessionRequest.SessionId = SessionId;
 		FindSessionRequest.OwnerClientInfo = ClientInfo;
-		FindSessionRequest.VersionInfo.Initialize();
+		FindSessionRequest.VersionInfo.Initialize(GetConfiguration()->ClientSettings.bSupportMixedBuildTypes);
 
 		// Session settings
 		FindSessionRequest.SessionSettings.Initialize();
@@ -1194,7 +1277,7 @@ TFuture<EConcertResponseCode> FConcertClient::InternalCopySession(const FGuid& S
 	CopySessionRequest.SessionFilter = CopySessionArgs.SessionFilter;
 	CopySessionRequest.bRestoreOnly = bRestoreOnlyConstraint;
 	CopySessionRequest.OwnerClientInfo = ClientInfo;
-	CopySessionRequest.VersionInfo.Initialize();
+	CopySessionRequest.VersionInfo.Initialize(GetConfiguration()->ClientSettings.bSupportMixedBuildTypes);
 
 	// Session settings
 	CopySessionRequest.SessionSettings.Initialize();
@@ -1327,7 +1410,13 @@ TFuture<EConcertResponseCode> FConcertClient::CreateClientSession(const FConcert
 		SessionInfo, 
 		ClientInfo, 
 		Settings->ClientSettings, 
-		EndpointProvider->CreateLocalEndpoint(SessionInfo.SessionName, Settings->EndpointSettings, &FConcertLogger::CreateLogger),
+		EndpointProvider->CreateLocalEndpoint(SessionInfo.SessionName, Settings->EndpointSettings, [this](const FConcertEndpointContext& Context)
+		{
+			return FConcertLogger::CreateLogger(Context, [this](const FConcertLog& Log)
+			{
+				ConcertTransportEvents::OnConcertClientLogEvent().Broadcast(*this, Log);
+			});
+		}),
 		Paths.GetSessionWorkingDir(SessionInfo.SessionId)
 		);
 	OnSessionStartupDelegate.Broadcast(ClientSession.ToSharedRef());
@@ -1335,7 +1424,7 @@ TFuture<EConcertResponseCode> FConcertClient::CreateClientSession(const FConcert
 	ClientSession->Startup();
 	ClientSession->Connect();
 
-	// Promise the caller to tell him once the client connection state is known (connected or not).
+	// Promise the caller to tell it once the client connection state is known (connected or not).
 	check(!ConnectionPromise.IsValid()); // InternalDisconnect() triggers a disconnnect and this will release of the promise.
 	ConnectionPromise = MakeUnique<TPromise<EConcertResponseCode>>();
 	return ConnectionPromise->GetFuture();

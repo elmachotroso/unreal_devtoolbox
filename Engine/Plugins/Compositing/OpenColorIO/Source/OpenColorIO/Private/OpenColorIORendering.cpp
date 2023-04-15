@@ -6,7 +6,6 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
 #include "GlobalShader.h"
-#include "CommonRenderResources.h"
 #include "Logging/LogMacros.h"
 #include "Logging/MessageLog.h"
 #include "OpenColorIOConfiguration.h"
@@ -14,91 +13,54 @@
 #include "OpenColorIOShader.h"
 #include "OpenColorIOShaderType.h"
 #include "OpenColorIOShared.h"
-#include "PipelineStateCache.h"
-#include "RHIStaticStates.h"
-#include "SceneInterface.h"
-#include "SceneUtils.h"
-#include "ShaderParameterUtils.h"
-#include "TextureResource.h"
+#include "OpenColorIOColorTransform.h"
 #include "ScreenPass.h"
-
-namespace {
-	/** This function is similar to DrawScreenPass in OpenColorIODisplayExtension.cpp except it is catered for Viewless texture rendering. */
-	template<typename TSetupFunction>
-	void DrawScreenPass(
-		FRHICommandListImmediate& RHICmdList,
-		const FIntPoint& OutputResolution,
-		const FScreenPassPipelineState& PipelineState,
-		TSetupFunction SetupFunction)
-	{
-		RHICmdList.SetViewport(0.f, 0.f, 0.f, OutputResolution.X, OutputResolution.Y, 1.0f);
-
-		SetScreenPassPipelineState(RHICmdList, PipelineState);
-
-		// Setting up buffers.
-		SetupFunction(RHICmdList);
-
-		FIntPoint LocalOutputPos(FIntPoint::ZeroValue);
-		FIntPoint LocalOutputSize(OutputResolution);
-		EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
-
-		DrawPostProcessPass(
-			RHICmdList,
-			LocalOutputPos.X, LocalOutputPos.Y, LocalOutputSize.X, LocalOutputSize.Y,
-			0., 0., OutputResolution.X, OutputResolution.Y,
-			OutputResolution,
-			OutputResolution,
-			PipelineState.VertexShader,
-			INDEX_NONE,
-			false,
-			DrawRectangleFlags);
-	}
-}
+#include "TextureResource.h"
 
 
 void ProcessOCIOColorSpaceTransform_RenderThread(
 	FRHICommandListImmediate& InRHICmdList
 	, ERHIFeatureLevel::Type InFeatureLevel
 	, FOpenColorIOTransformResource* InOCIOColorTransformResource
-	, FTextureResource* InLUT3dResource
+	, const TSortedMap<int32, FTextureResource*>& InTextureResources
 	, FTextureRHIRef InputSpaceColorTexture
 	, FTextureRHIRef OutputSpaceColorTexture
 	, FIntPoint OutputResolution)
 {
 	check(IsInRenderingThread());
 
-	SCOPED_DRAW_EVENT(InRHICmdList, ProcessOCIOColorSpaceTransform);
+	FRDGBuilder GraphBuilder(InRHICmdList);
 
-	InRHICmdList.Transition(FRHITransitionInfo(OutputSpaceColorTexture, ERHIAccess::Unknown, ERHIAccess::RTV));
+	FRDGTextureRef InputTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(InputSpaceColorTexture->GetTexture2D(), TEXT("OCIOInputTexture")));
+	FRDGTextureRef OutputTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(OutputSpaceColorTexture->GetTexture2D(), TEXT("OCIORenderTargetTexture")));
+	FScreenPassTextureViewport Viewport = FScreenPassTextureViewport(OutputTexture);
+	FScreenPassRenderTarget ScreenPassRenderTarget = FScreenPassRenderTarget(OutputTexture, FIntRect(FIntPoint::ZeroValue, OutputResolution), ERenderTargetLoadAction::EClear);
 
-	FRHIRenderPassInfo RPInfo(OutputSpaceColorTexture, ERenderTargetActions::DontLoad_Store);
-	InRHICmdList.BeginRenderPass(RPInfo, TEXT("ProcessOCIOColorSpaceXfrm"));
-
-	// Get shader from shader map.
-	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(InFeatureLevel);
-	TShaderMapRef<FOpenColorIOVertexShader> VertexShader(GlobalShaderMap);
 	TShaderRef<FOpenColorIOPixelShader> OCIOPixelShader = InOCIOColorTransformResource->GetShader<FOpenColorIOPixelShader>();
 
-	FScreenPassPipelineState PipelineState(VertexShader, OCIOPixelShader, TStaticBlendState<>::GetRHI(), TStaticDepthStencilState<false, CF_Always>::GetRHI());
-	DrawScreenPass(InRHICmdList, OutputResolution, PipelineState, [&](FRHICommandListImmediate& RHICmdList)
-	{
-		// Set Gamma to 1., since we do not have any display parameters or requirement for Gamma.
-		const float Gamma = 1.0;
+	FOpenColorIOPixelShaderParameters* Parameters = GraphBuilder.AllocParameters<FOpenColorIOPixelShaderParameters>();
+	Parameters->InputTexture = InputTexture;
+	Parameters->InputTextureSampler = TStaticSamplerState<>::GetRHI();
+	OpenColorIOBindTextureResources(Parameters, InTextureResources);
+	// Set Gamma to 1., since we do not have any display parameters or requirement for Gamma.
+	Parameters->Gamma = 1.0;
+	Parameters->RenderTargets[0] = ScreenPassRenderTarget.GetRenderTargetBinding();
 
-		// Update pixel shader parameters.
-		OCIOPixelShader->SetParameters(InRHICmdList, InputSpaceColorTexture, Gamma);
+	//Dummy ViewFamily/ViewInfo created for AddDrawScreenPass.
+	FSceneViewFamily ViewFamily(FSceneViewFamily::ConstructionValues(nullptr, nullptr, FEngineShowFlags(ESFIM_Game))
+		.SetTime(FGameTime())
+		.SetGammaCorrection(1.0f));
+	FSceneViewInitOptions ViewInitOptions;
+	ViewInitOptions.ViewFamily = &ViewFamily;
+	ViewInitOptions.SetViewRectangle(ScreenPassRenderTarget.ViewRect);
+	ViewInitOptions.ViewOrigin = FVector::ZeroVector;
+	ViewInitOptions.ViewRotationMatrix = FMatrix::Identity;
+	ViewInitOptions.ProjectionMatrix = FMatrix::Identity;
+	FViewInfo DummyView(ViewInitOptions);
 
-		if (InLUT3dResource != nullptr)
-		{
-			OCIOPixelShader->SetLUTParameter(InRHICmdList, InLUT3dResource);
-		}
-	});
+	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("ProcessOCIOColorSpaceXfrm"), DummyView, Viewport, Viewport, OCIOPixelShader, Parameters);
 
-	// Resolve render target.
-	InRHICmdList.EndRenderPass();
-
-	// Restore readable state
-	InRHICmdList.Transition(FRHITransitionInfo(OutputSpaceColorTexture, ERHIAccess::RTV, ERHIAccess::SRVGraphics));
+	GraphBuilder.Execute();
 }
 
 // static
@@ -141,8 +103,8 @@ bool FOpenColorIORendering::ApplyColorTransform(UWorld* InWorld, const FOpenColo
 
 	const ERHIFeatureLevel::Type FeatureLevel = InWorld->Scene->GetFeatureLevel();
 	FOpenColorIOTransformResource* ShaderResource = nullptr;
-	FTextureResource* LUT3dResource = nullptr;
-	bool bFoundTransform = InSettings.ConfigurationSource->GetShaderAndLUTResources(FeatureLevel, InSettings.SourceColorSpace.ColorSpaceName, InSettings.DestinationColorSpace.ColorSpaceName, ShaderResource, LUT3dResource);
+	TSortedMap<int32, FTextureResource*> TextureResources;
+	bool bFoundTransform = InSettings.ConfigurationSource->GetRenderResources(FeatureLevel, InSettings, ShaderResource, TextureResources);
 	if (!bFoundTransform)
 	{
 		UE_LOG(LogOpenColorIO, Warning, TEXT("Can't apply color transform - Couldn't find shader to transform from %s to %s"), *InSettings.SourceColorSpace.ColorSpaceName, *InSettings.DestinationColorSpace.ColorSpaceName);
@@ -159,13 +121,13 @@ bool FOpenColorIORendering::ApplyColorTransform(UWorld* InWorld, const FOpenColo
 
 
 	ENQUEUE_RENDER_COMMAND(ProcessColorSpaceTransform)(
-		[FeatureLevel, InputResource, OutputResource, ShaderResource, LUT3dResource](FRHICommandListImmediate& RHICmdList)
+		[FeatureLevel, InputResource, OutputResource, ShaderResource, TextureResources](FRHICommandListImmediate& RHICmdList)
 		{
 			ProcessOCIOColorSpaceTransform_RenderThread(
 			RHICmdList,
 			FeatureLevel,
 			ShaderResource,
-			LUT3dResource,
+			TextureResources,
 			InputResource->TextureRHI,
 			OutputResource->TextureRHI,
 			FIntPoint(OutputResource->GetSizeX(), OutputResource->GetSizeY()));

@@ -2,6 +2,8 @@
 
 #include "Animation/TimeStretchCurve.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TimeStretchCurve)
+
 bool FTimeStretchCurve::IsValid() const
 {
 	return Markers.Num() > 0;
@@ -39,7 +41,7 @@ void FTimeStretchCurve::BakeFromFloatCurve(const FFloatCurve& TimeStretchCurve, 
 	}
 
 	// If Max Value is near zero, we have no valid time stretching curve.
-	if (MaxValue < KINDA_SMALL_NUMBER)
+	if (MaxValue < UE_KINDA_SMALL_NUMBER)
 	{
 		Reset();
 		return;
@@ -295,7 +297,7 @@ void FTimeStretchCurveInstance::InitializeFromPlayRate(float InPlayRate, const F
 		If our OverallPlayRate is too small, abort and don't use the Time Stretch Curve.
 	*/
 	const float OverallPlayRate = U * (1.f + S);
-	if (OverallPlayRate < SMALL_NUMBER)
+	if (OverallPlayRate < UE_SMALL_NUMBER)
 	{
 		return;
 	}
@@ -352,7 +354,7 @@ void FTimeStretchCurveInstance::InitializeFromPlayRate(float InPlayRate, const F
 			const float dT_Target = (P_NextMarker_Target - P_CurrMarker_Target);
 			const float dT_Original = (P_NextMarker_Original - P_CurrMarker_Original);
 
-			if (FMath::IsNearlyZero(dT_Target, KINDA_SMALL_NUMBER) || FMath::IsNearlyZero(dT_Original, KINDA_SMALL_NUMBER))
+			if (FMath::IsNearlyZero(dT_Target, UE_KINDA_SMALL_NUMBER) || FMath::IsNearlyZero(dT_Original, UE_KINDA_SMALL_NUMBER))
 			{
 				P_Marker_Target.RemoveAt(MarkerIndex + 1, 1, false);
 				P_Marker_Original.RemoveAt(MarkerIndex + 1, 1, false);

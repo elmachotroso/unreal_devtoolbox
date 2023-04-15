@@ -1,11 +1,12 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
+import csv
 import datetime
 from enum import Enum
+import io
 import os
-import pathlib
 import subprocess
-import sys
 import threading
+from typing import Optional
 
 from .switchboard_logging import LOGGER
 
@@ -109,6 +110,26 @@ class PollProcess(object):
     '''
     def __init__(self, task_name: str):
         self.task_name = task_name
+
+    @property
+    def args(self) -> str:
+        get_commandline_cmd = f"wmic process where caption=\"{self.task_name}\" get commandline"
+        try:
+            output = subprocess.check_output(get_commandline_cmd, startupinfo=get_hidden_sp_startupinfo()).decode()
+            return output
+        except:
+            return ""
+
+    @property
+    def pid(self) -> Optional[int]:
+        pid_cmd = f"tasklist /FI \"IMAGENAME eq {self.task_name}\" /FO csv"
+        try:
+            output = subprocess.check_output(pid_cmd, startupinfo=get_hidden_sp_startupinfo()).decode()
+            dictobj = next(csv.DictReader(io.StringIO(output)))
+            if dictobj:
+                return int(dictobj['PID'])
+        except:
+            return None
 
     def poll(self):
         # 'list' output format because default 'table' truncates imagename to 25 characters

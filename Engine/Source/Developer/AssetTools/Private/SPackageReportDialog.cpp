@@ -11,7 +11,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Interfaces/IMainFrameModule.h"
 
 #define LOCTEXT_NAMESPACE "PackageReportDialog"
@@ -25,8 +25,7 @@ struct FCompareFPackageReportNodeByName
 };
 
 FPackageReportNode::FPackageReportNode()
-	: bIsChecked(true)
-	, bIsActive(true)
+	: CheckedState(ECheckBoxState::Undetermined)
 	, bShouldMigratePackage(nullptr)
 	, bIsFolder(false)
 	, Parent(nullptr)
@@ -34,8 +33,7 @@ FPackageReportNode::FPackageReportNode()
 
 FPackageReportNode::FPackageReportNode(const FString& InNodeName, bool InIsFolder)
 	: NodeName(InNodeName)
-	, bIsChecked(true)
-	, bIsActive(true)
+	, CheckedState(ECheckBoxState::Undetermined)
 	, bShouldMigratePackage(nullptr)
 	, bIsFolder(InIsFolder)
 	, Parent(nullptr)
@@ -46,20 +44,24 @@ void FPackageReportNode::AddPackage(const FString& PackageName, bool* bInShouldM
 	TArray<FString> PathElements;
 	PackageName.ParseIntoArray(PathElements, TEXT("/"), /*InCullEmpty=*/true);
 
-	return AddPackage_Recursive(PathElements, bInShouldMigratePackage);
+	(void)AddPackage_Recursive(PathElements, bInShouldMigratePackage);
 }
 
 void FPackageReportNode::ExpandChildrenRecursively(const TSharedRef<PackageReportTree>& Treeview)
 {
 	for ( auto ChildIt = Children.CreateConstIterator(); ChildIt; ++ChildIt )
 	{
-		Treeview->SetItemExpansion(*ChildIt, true);
+		Treeview->SetItemExpansion(*ChildIt, (*ChildIt)->CheckedState != ECheckBoxState::Unchecked);
 		(*ChildIt)->ExpandChildrenRecursively(Treeview);
 	}
 }
 
-void FPackageReportNode::AddPackage_Recursive(TArray<FString>& PathElements, bool* bInShouldMigratePackage)
+FPackageReportNode::FChildrenState FPackageReportNode::AddPackage_Recursive(TArray<FString>& PathElements, bool* bInShouldMigratePackage)
 {
+	FChildrenState ChildrenState;
+	ChildrenState.bAnyChildIsChecked = false;
+	ChildrenState.bAllChildrenAreChecked = true;
+
 	if ( PathElements.Num() > 0 )
 	{
 		// Pop the bottom element
@@ -89,29 +91,37 @@ void FPackageReportNode::AddPackage_Recursive(TArray<FString>& PathElements, boo
 
 		if ( ensure(Child.IsValid()) )
 		{
-			Child->AddPackage_Recursive(PathElements, bInShouldMigratePackage);
+			FChildrenState ChildChildrenState = Child->AddPackage_Recursive(PathElements, bInShouldMigratePackage);
+			ChildrenState.bAnyChildIsChecked |= ChildChildrenState.bAnyChildIsChecked;
+			ChildrenState.bAllChildrenAreChecked &= ChildChildrenState.bAllChildrenAreChecked;
 		}
+
+		CheckedState = ChildrenState.bAllChildrenAreChecked ? ECheckBoxState::Checked : (ChildrenState.bAnyChildIsChecked ? ECheckBoxState::Undetermined : ECheckBoxState::Unchecked);
 	}
-	else 
+	else
 	{
+		CheckedState = *bInShouldMigratePackage ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		ChildrenState.bAnyChildIsChecked = ChildrenState.bAllChildrenAreChecked = CheckedState == ECheckBoxState::Checked;
 		bShouldMigratePackage = bInShouldMigratePackage;
 	}
+
+	return ChildrenState;
 }
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SPackageReportDialog::Construct( const FArguments& InArgs, const FText& InReportMessage, TArray<ReportPackageData>& InPackageNames, const FOnReportConfirmed& InOnReportConfirmed )
 {
 	OnReportConfirmed = InOnReportConfirmed;
-	FolderOpenBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderOpen");
-	FolderClosedBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
-	PackageBrush = FEditorStyle::GetBrush("ContentBrowser.ColumnViewAssetIcon");
+	FolderOpenBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderOpen");
+	FolderClosedBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
+	PackageBrush = FAppStyle::GetBrush("ContentBrowser.ColumnViewAssetIcon");
 
 	ConstructNodeTree(InPackageNames);
 	
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+		.BorderImage( FAppStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
 		.Padding(FMargin(4, 8, 4, 4))
 		[
 			SNew(SVerticalBox)
@@ -123,7 +133,7 @@ void SPackageReportDialog::Construct( const FArguments& InArgs, const FText& InR
 			[
 				SNew(STextBlock)
 				.Text(InReportMessage)
-				.TextStyle( FEditorStyle::Get(), "PackageMigration.DialogTitle" )
+				.TextStyle( FAppStyle::Get(), "PackageMigration.DialogTitle" )
 			]
 
 			// Tree of packages in the report
@@ -131,7 +141,7 @@ void SPackageReportDialog::Construct( const FArguments& InArgs, const FText& InR
 			.FillHeight(1.f)
 			[
 				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+				.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 				[
 					SAssignNew( ReportTreeView, PackageReportTree )
 					.TreeItemsSource(&PackageReportRootNode.Children)
@@ -149,14 +159,14 @@ void SPackageReportDialog::Construct( const FArguments& InArgs, const FText& InR
 			.Padding(0,4,0,0)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0,0)
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding( FEditorStyle::GetMargin("StandardDialog.ContentPadding") )
+					.ContentPadding( FAppStyle::GetMargin("StandardDialog.ContentPadding") )
 					.OnClicked(this, &SPackageReportDialog::OkClicked)
 					.Text(LOCTEXT("OkButton", "OK"))
 				]
@@ -164,7 +174,7 @@ void SPackageReportDialog::Construct( const FArguments& InArgs, const FText& InR
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding( FEditorStyle::GetMargin("StandardDialog.ContentPadding") )
+					.ContentPadding( FAppStyle::GetMargin("StandardDialog.ContentPadding") )
 					.OnClicked(this, &SPackageReportDialog::CancelClicked)
 					.Text(LOCTEXT("CancelButton", "Cancel"))
 				]
@@ -227,8 +237,6 @@ TSharedRef<ITableRow> SPackageReportDialog::GenerateTreeRow( TSharedPtr<FPackage
 				SNew(SCheckBox)
 				.OnCheckStateChanged(this, &SPackageReportDialog::CheckBoxStateChanged, TreeItem, OwnerTable)
 				.IsChecked(this, &SPackageReportDialog::GetEnabledCheckState, TreeItem)
-				.IsEnabled(TreeItem.Get()->Parent == nullptr ? true : TreeItem.Get()->Parent->bIsActive)
-
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
@@ -240,40 +248,62 @@ TSharedRef<ITableRow> SPackageReportDialog::GenerateTreeRow( TSharedPtr<FPackage
 			.FillWidth(1.f)
 			[
 				SNew(STextBlock).Text(FText::FromString(TreeItem->NodeName))
-				.ColorAndOpacity(TreeItem.Get()->bIsActive ? FSlateColor::UseForeground() : FSlateColor::UseSubduedForeground())
+				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		];
 }
 
 ECheckBoxState SPackageReportDialog::GetEnabledCheckState(TSharedPtr<FPackageReportNode> TreeItem) const
 {
-	return TreeItem.Get()->bIsChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return TreeItem.Get()->CheckedState;
 }
 
-void SPackageReportDialog::SetStateRecursive(TSharedPtr<FPackageReportNode> TreeItem, bool bWasChecked)
+void SPackageReportDialog::SetStateRecursive(TSharedPtr<FPackageReportNode> TreeItem, bool bIsChecked)
 {
-	if (TreeItem.Get() == nullptr) return;
+	if (TreeItem.Get() == nullptr)
+	{
+		return;
+	}
 
-	TreeItem.Get()->bIsActive = bWasChecked && TreeItem.Get()->bIsChecked;
+	TreeItem.Get()->CheckedState = bIsChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+
 	if (TreeItem.Get()->bShouldMigratePackage)
 	{
-		*(TreeItem.Get()->bShouldMigratePackage) = TreeItem.Get()->bIsActive;
+		*(TreeItem.Get()->bShouldMigratePackage) = bIsChecked;
 	}
 
 	TArray< TSharedPtr<FPackageReportNode> > Children;
 	GetChildrenForTree(TreeItem, Children);
 	for (int i = 0; i < Children.Num(); i++)
 	{
-		if (Children[i].Get() == nullptr) continue;
+		if (Children[i].Get() == nullptr)
+		{
+			continue;
+		}
 
-		SetStateRecursive(Children[i], TreeItem.Get()->bIsActive);
+		SetStateRecursive(Children[i], bIsChecked);
 	}
 }
 
 void SPackageReportDialog::CheckBoxStateChanged(ECheckBoxState InCheckBoxState, TSharedPtr<FPackageReportNode> TreeItem, TSharedRef<STableViewBase> OwnerTable)
 {
-	TreeItem.Get()->bIsChecked = InCheckBoxState == ECheckBoxState::Checked;
 	SetStateRecursive(TreeItem, InCheckBoxState == ECheckBoxState::Checked);
+
+	FPackageReportNode* CurrentParent = TreeItem->Parent;
+	while (CurrentParent != nullptr)
+	{
+		bool bAnyChildIsChecked = false;
+		bool bAllChildrenAreChecked = true;
+		for (int i = 0; i < CurrentParent->Children.Num(); i++)
+		{
+			bAnyChildIsChecked |= CurrentParent->Children[i]->CheckedState != ECheckBoxState::Unchecked;
+			bAllChildrenAreChecked &= CurrentParent->Children[i]->CheckedState != ECheckBoxState::Unchecked;
+		}
+
+		CurrentParent->CheckedState = bAllChildrenAreChecked ? ECheckBoxState::Checked : (bAnyChildIsChecked ? ECheckBoxState::Undetermined : ECheckBoxState::Unchecked);
+		CurrentParent = CurrentParent->Parent;
+	}
+
 	OwnerTable.Get().RebuildList();
 }
 

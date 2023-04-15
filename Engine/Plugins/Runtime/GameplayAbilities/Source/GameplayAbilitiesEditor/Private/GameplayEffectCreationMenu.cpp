@@ -14,6 +14,8 @@
 #include "AssetToolsModule.h"
 #include "IContentBrowserSingleton.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayEffectCreationMenu)
+
 // Static
 TFunction< FString(FString BaseName, FString Path) > UGameplayEffectCreationMenu::GetDefaultAssetNameFunc;
 
@@ -37,7 +39,7 @@ struct FGEMenuItem : TSharedFromThis<FGEMenuItem>
 			TSharedPtr<FGEMenuItem> SubItem  = It.Value;
 			FString CatName = It.Key;
 
-			// Add a submenu if this guy has sub items
+			// Add a submenu if this item has sub items
 			if (SubItem->SubItems.Num() > 0)
 			{
 				MenuBuilder.AddSubMenu(
@@ -165,3 +167,4 @@ void UGameplayEffectCreationMenu::AddMenuExtensions() const
 		return Extender;
 	}));
 }
+

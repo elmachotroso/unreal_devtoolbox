@@ -46,16 +46,17 @@ class UMaterialExpressionTransformPosition : public UMaterialExpression
 	FExpressionInput Input;
 
 	/** source format of the position that will be transformed */
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionTransformPosition, meta=(DisplayName = "Source"))
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionTransformPosition, meta=(DisplayName = "Source", ShowAsInputPin = "Advanced"))
 	TEnumAsByte<enum EMaterialPositionTransformSource> TransformSourceType;
 
 	/** type of transform to apply to the input expression */
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionTransformPosition, meta=(DisplayName = "Destination"))
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionTransformPosition, meta=(DisplayName = "Destination", ShowAsInputPin = "Advanced"))
 	TEnumAsByte<enum EMaterialPositionTransformSource> TransformType;
 
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 #endif

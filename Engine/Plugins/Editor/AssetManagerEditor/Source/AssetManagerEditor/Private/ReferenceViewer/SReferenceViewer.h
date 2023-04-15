@@ -9,14 +9,16 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "GraphEditor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "HistoryManager.h"
 #include "CollectionManagerTypes.h"
 #include "AssetManagerEditorModule.h"
 #include "Containers/ArrayView.h"
+#include "ReferenceViewer/ReferenceViewerSettings.h"
+#include "ReferenceViewer/EdGraph_ReferenceViewer.h"
+#include "ReferenceViewer/SReferenceViewerFilterBar.h"
 
 class UEdGraph;
-class UEdGraph_ReferenceViewer;
 
 /**
  * 
@@ -47,6 +49,11 @@ public:
 	/** Called when the current registry source changes */
 	void SetCurrentRegistrySource(const FAssetManagerEditorRegistrySource* RegistrySource);
 
+	/**SWidget interface **/
+	virtual bool SupportsKeyboardFocus() const override { return true; }
+	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
+	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
+
 private:
 
 	/** Call after a structural change is made that causes the graph to be recreated */
@@ -65,13 +72,13 @@ private:
 	bool IsForwardEnabled() const;
 
 	/** Handler for clicking the history back button */
-	FReply BackClicked();
+	void BackClicked();
 
 	/** Handler for clicking the history forward button */
-	FReply ForwardClicked();
+	void ForwardClicked();
 
 	/** Refresh the current view */
-	FReply RefreshClicked();
+	void RefreshClicked();
 
 	/** Handler for when the graph panel tells us to go back in history (like using the mouse thumb button) */
 	void GraphNavigateHistoryBack();
@@ -100,11 +107,17 @@ private:
 	void OnApplyHistoryData(const FReferenceViewerHistoryData& History);
 
 	void OnUpdateHistoryData(FReferenceViewerHistoryData& HistoryData) const;
+
+	void OnUpdateFilterBar();
 	
 	void OnSearchDepthEnabledChanged( ECheckBoxState NewState );
 	ECheckBoxState IsSearchDepthEnabledChecked() const;
-	int32 GetSearchDepthCount() const;
-	void OnSearchDepthCommitted(int32 NewValue);
+
+	int32 GetSearchReferencerDepthCount() const;
+	int32 GetSearchDependencyDepthCount() const;
+
+	void OnSearchReferencerDepthCommitted(int32 NewValue);
+	void OnSearchDependencyDepthCommitted(int32 NewValue);
 
 	void OnSearchBreadthEnabledChanged( ECheckBoxState NewState );
 	ECheckBoxState IsSearchBreadthEnabledChecked() const;
@@ -116,31 +129,35 @@ private:
 	void HandleCollectionFilterChanged(TSharedPtr<FName> Item, ESelectInfo::Type SelectInfo);
 	FText GetCollectionFilterText() const;
 
-	void OnShowSoftReferencesChanged( ECheckBoxState NewState );
-	ECheckBoxState IsShowSoftReferencesChecked() const;
-	void OnShowHardReferencesChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowHardReferencesChecked() const;
-	void OnShowEditorOnlyReferencesChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowEditorOnlyReferencesChecked() const;
+	void OnShowSoftReferencesChanged();
+	bool IsShowSoftReferencesChecked() const;
+	void OnShowHardReferencesChanged();
+	bool IsShowHardReferencesChecked() const;
+	void OnShowEditorOnlyReferencesChanged();
+	bool IsShowEditorOnlyReferencesChecked() const;
 
-	void OnShowFilteredPackagesOnlyChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowFilteredPackagesOnlyChecked() const;
-	void UpdateIsPassingFilterPackageCallback();
+	void OnShowFilteredPackagesOnlyChanged();
+	bool IsShowFilteredPackagesOnlyChecked() const;
+	void UpdateIsPassingSearchFilterCallback();
 
-	void OnCompactModeChanged(ECheckBoxState NewState);
-	ECheckBoxState IsCompactModeChecked() const;
+	void OnCompactModeChanged();
+	bool IsCompactModeChecked() const;
 
-	EVisibility GetManagementReferencesVisibility() const;
-	void OnShowManagementReferencesChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowManagementReferencesChecked() const;
+	void OnShowDuplicatesChanged();
+	bool IsShowDuplicatesChecked() const;
 
-	void OnShowSearchableNamesChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowSearchableNamesChecked() const;
-	void OnShowNativePackagesChanged(ECheckBoxState NewState);
-	ECheckBoxState IsShowNativePackagesChecked() const;
+	bool GetManagementReferencesVisibility() const;
+	void OnShowManagementReferencesChanged();
+	bool IsShowManagementReferencesChecked() const;
+	void OnShowSearchableNamesChanged();
+	bool IsShowSearchableNamesChecked() const;
+	void OnShowCodePackagesChanged();
+	bool IsShowCodePackagesChecked() const;
 
 	int32 GetSearchBreadthCount() const;
 	void OnSearchBreadthCommitted(int32 NewValue);
+
+	TSharedRef<SWidget> GetShowMenuContent();
 
 	void RegisterActions();
 	void ShowSelectionInContentBrowser();
@@ -179,6 +196,9 @@ private:
 	EActiveTimerReturnType TriggerZoomToFit(double InCurrentTime, float InDeltaTime);
 private:
 
+	TSharedRef<SWidget> MakeToolBar();
+
+
 	/** The manager that keeps track of history data for this browser */
 	FReferenceViewerHistoryManager HistoryManager;
 
@@ -186,8 +206,15 @@ private:
 
 	TSharedPtr<FUICommandList> ReferenceViewerActions;
 	TSharedPtr<SSearchBox> SearchBox;
+	TSharedPtr<SWidget> ReferencerCountBox;
+	TSharedPtr<SWidget> DependencyCountBox;
+	TSharedPtr<SWidget> BreadthLimitBox;
+
+	TSharedPtr< SReferenceViewerFilterBar > FilterWidget;
 
 	UEdGraph_ReferenceViewer* GraphObj;
+
+	UReferenceViewerSettings* Settings;
 
 	/** The temporary copy of the path text when it is actively being edited. */
 	FText TemporaryPathBeingEdited;
@@ -216,14 +243,22 @@ private:
 	bool bShowShowReferencesOptions;
 	/** Whether to visually show to the user the option of "Show Searchable Names" */
 	bool bShowShowSearchableNames;
-	/** Whether to visually show to the user the option of "Show Native Packages" */
-	bool bShowShowNativePackages;
+	/** Whether to visually show to the user the option of "Show C++ Packages" */
+	bool bShowShowCodePackages;
 	/** Whether to visually show to the user the option of "Show Filtered Packages Only" */
 	bool bShowShowFilteredPackagesOnly;
 	/** True if our view is out of date due to asset registry changes */
 	bool bDirtyResults;
 	/** Whether to visually show to the user the option of "Compact Mode" */
 	bool bShowCompactMode;
+
+	/** A recursion check so as to avoid the rebuild of the graph if we are currently rebuilding the filters */
+	bool bRebuildingFilters;
+
+	/** Used to delay graph rebuilding during spinbox slider interaction */
+	bool bNeedsGraphRebuild;
+	double SliderDelayLastMovedTime = 0.0;
+	double GraphRebuildSliderDelay = 0.25;
 
 	/** Handle to know if dirty */
 	FDelegateHandle AssetRefreshHandle;

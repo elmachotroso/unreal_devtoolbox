@@ -11,8 +11,10 @@ using System.Xml;
 using System.IO;
 using EpicGames.Core;
 using UnrealBuildBase;
+using EpicGames.BuildGraph;
+using AutomationTool.Tasks;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	static class StringExtensions
 	{
@@ -50,7 +52,7 @@ namespace BuildGraph.Tasks
 	/// Invokes an AutomationTool child process to run the given command.
 	/// </summary>
 	[TaskElement("Command", typeof(CommandTaskParameters))]
-	public class CommandTask : CustomTask
+	public class CommandTask : BgTaskImpl
 	{
 		/// <summary>
 		/// Parameters for this task
@@ -72,7 +74,7 @@ namespace BuildGraph.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// If we're merging telemetry from the child process, get a temp filename for it
 			FileReference TelemetryFile = null;
@@ -126,6 +128,7 @@ namespace BuildGraph.Tasks
 					Log.TraceWarning("Unable to read UAT telemetry file from {0}", TelemetryFile);
 				}
 			}
+			return Task.CompletedTask;
 		}
 
 		/// <summary>
@@ -161,6 +164,26 @@ namespace BuildGraph.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			yield break;
+		}
+	}
+
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Runs another UAT command
+		/// </summary>
+		/// <param name="State">The execution state</param>
+		/// <param name="Name">Name of the command to run</param>
+		/// <param name="Arguments">Arguments for the command</param>
+		/// <param name="MergeTelemetryWithPrefix">If non-null, instructs telemetry from the command to be merged into the telemetry for this UAT instance with the given prefix. May be an empty (non-null) string.</param>
+		public static async Task CommandAsync(this BgContext State, string Name, string Arguments = null, string MergeTelemetryWithPrefix = null)
+		{
+			CommandTaskParameters Parameters = new CommandTaskParameters();
+			Parameters.Name = Name;
+			Parameters.Arguments = Arguments ?? Parameters.Arguments;
+			Parameters.MergeTelemetryWithPrefix = MergeTelemetryWithPrefix ?? Parameters.MergeTelemetryWithPrefix;
+
+			await ExecuteAsync(new CommandTask(Parameters));
 		}
 	}
 }

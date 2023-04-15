@@ -59,19 +59,9 @@ public:
 	 * Pushes the specified stat onto the hierarchy for this thread. Starts
 	 * the timing of the cycles used
 	 */
-	FORCEINLINE_STATS FScopeCycleCounter( TStatId StatId, EStatFlags StatFlags, bool bAlways = false
-#if CPUPROFILERTRACE_ENABLED
-		// Optional verbose description added for CPU profiler, without affecting the stat name.  Should be invariant
-		// across frames, to avoid bloating memory in the name map used in the CPU profiler.
-		, const TCHAR* OptionalVerboseDescription = nullptr
-#endif
-	)
+	FORCEINLINE_STATS FScopeCycleCounter( TStatId StatId, EStatFlags StatFlags, bool bAlways = false)
 	{
-		Start( StatId, StatFlags, bAlways
-#if CPUPROFILERTRACE_ENABLED
-			, OptionalVerboseDescription
-#endif
-			);
+		Start( StatId, StatFlags, bAlways);
 	}
 
 	FORCEINLINE_STATS FScopeCycleCounter(TStatId StatId, bool bAlways = false)
@@ -88,13 +78,25 @@ public:
 
 };
 
+FORCEINLINE void StatsPrimaryEnableAdd(int32 Value = 1)
+{
+	FThreadStats::PrimaryEnableAdd(Value);
+}
+FORCEINLINE void StatsPrimaryEnableSubtract(int32 Value = 1)
+{
+	FThreadStats::PrimaryEnableSubtract(Value);
+}
+
+UE_DEPRECATED(5.1, "Use StatsPrimaryEnableAdd instead")
 FORCEINLINE void StatsMasterEnableAdd(int32 Value = 1)
 {
-	FThreadStats::MasterEnableAdd(Value);
+	StatsPrimaryEnableAdd(Value);
 }
+
+UE_DEPRECATED(5.1, "Use StatsPrimaryEnableSubtract instead")
 FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 {
-	FThreadStats::MasterEnableSubtract(Value);
+	StatsPrimaryEnableSubtract(Value);
 }
 
 #else	//STATS
@@ -218,10 +220,10 @@ public:
 };
 #endif
 
-FORCEINLINE void StatsMasterEnableAdd(int32 Value = 1)
+FORCEINLINE void StatsPrimaryEnableAdd(int32 Value = 1)
 {
 }
-FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
+FORCEINLINE void StatsPrimaryEnableSubtract(int32 Value = 1)
 {
 }
 
@@ -236,8 +238,8 @@ FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 #endif
 
 #define SCOPE_CYCLE_COUNTER_TO_TRACE(StatString, StatName, Condition) \
-	TRACE_CPUPROFILER_EVENT_DECLARE(StatString, PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__), CpuChannel, Condition && GCycleStatsShouldEmitNamedEvents>0); \
-	TRACE_CPUPROFILER_EVENT_SCOPE_USE(PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__), PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Scope_, StatName), __LINE__), CpuChannel, Condition && GCycleStatsShouldEmitNamedEvents>0);
+	TRACE_CPUPROFILER_EVENT_DECLARE(PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__)); \
+	TRACE_CPUPROFILER_EVENT_SCOPE_USE(PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__), StatString, PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Scope_, StatName), __LINE__), Condition && GCycleStatsShouldEmitNamedEvents);
 
 #define DECLARE_SCOPE_CYCLE_COUNTER(CounterName,Stat,GroupId) \
 	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
@@ -254,10 +256,6 @@ FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition) \
 	FScopeCycleCounter StatNamedEventsScope_##Stat(bCondition ? ANSI_TO_PROFILING(#Stat) : nullptr); \
 	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, bCondition);
-
-#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat, VerboseDescription) \
-	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
-	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, true);
 
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId(ANSI_TO_PROFILING(#StatId));
 
@@ -299,9 +297,6 @@ public:
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition) \
 	FLightweightStatScope LightweightStatScope_##Stat(bCondition ? TEXT(#Stat) : nullptr);
 
-#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription) \
-	FLightweightStatScope LightweightStatScope_##Stat(TEXT(#Stat));
-
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId();
 #define GET_STATID(Stat) (TStatId())
 
@@ -310,7 +305,6 @@ public:
 #define QUICK_SCOPE_CYCLE_COUNTER(Stat)
 #define DECLARE_SCOPE_CYCLE_COUNTER(CounterName,StatId,GroupId)
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition)
-#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription)
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId();
 #define GET_STATID(Stat) (TStatId())
 
@@ -343,6 +337,7 @@ public:
 
 #define DECLARE_STATS_GROUP(GroupDesc,GroupId,GroupCat)
 #define DECLARE_STATS_GROUP_VERBOSE(GroupDesc,GroupId,GroupCat)
+#define DECLARE_STATS_GROUP_SORTBYNAME(GroupDesc,GroupId,GroupCat)
 #define DECLARE_STATS_GROUP_MAYBE_COMPILED_OUT(GroupDesc,GroupId,GroupCat,CompileIn)
 
 #define SET_CYCLE_COUNTER(Stat,Cycles)

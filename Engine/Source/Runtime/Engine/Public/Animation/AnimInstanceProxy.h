@@ -4,33 +4,60 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "Engine/EngineTypes.h"
 #include "Animation/AnimTypes.h"
-#include "BoneContainer.h"
-#include "Animation/Skeleton.h"
 #include "Animation/AnimationAsset.h"
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimClassInterface.h"
+#include "Animation/AnimTrace.h"
+#include "Animation/AnimSync.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "BoneContainer.h"
+#include "Animation/Skeleton.h"
 #include "BonePose.h"
 #include "Animation/AnimNotifyQueue.h"
 #include "Animation/PoseSnapshot.h"
 #include "Animation/AnimInstance.h"
 #include "Engine/PoseWatch.h"
-#include "Animation/AnimClassInterface.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Logging/TokenizedMessage.h"
-#include "Animation/AnimTrace.h"
-#include "Animation/AnimSync.h"
 #include "Animation/AnimSyncScope.h"
 #include "Animation/ActiveStateMachineScope.h"
+#endif
 #include "AnimInstanceProxy.generated.h"
 
+class UAnimInstance;
+class UBlendProfile;
 class UBlendSpace;
+struct FAnimationPoseData;
+struct FAnimBlueprintDebugData_NodeVisit;
+struct FAnimBlueprintDebugData_AttributeRecord;
+struct FAnimGroupInstance;
+struct FAnimNodePoseWatch;
 struct FAnimNode_AssetPlayerBase;
+struct FAnimNode_AssetPlayerRelevancyBase;
 struct FAnimNode_Base;
+struct FAnimNode_LinkedInputPose;
 struct FAnimNode_SaveCachedPose;
 struct FAnimNode_StateMachine;
-struct FAnimNode_LinkedInputPose;
+struct FAnimTickRecord;
+struct FBakedAnimationStateMachine;
+struct FCompactPose;
 struct FNodeDebugData;
 struct FPoseContext;
+struct FPoseSnapshot;
+enum class ETransitionRequestQueueMode : uint8;
+enum class ETransitionRequestOverwriteMode : uint8;
+
+namespace UE::Anim
+{
+	class FAnimSyncGroupScope;
+	class FActiveStateMachineScope;
+	struct FAnimSyncParams;
+	using FSlotInertializationRequest = TPair<float, const UBlendProfile*>;
+}
+
+template<class PoseType> struct FCSPose;
 
 // Disable debugging information for shipping and test builds.
 #define ENABLE_ANIM_DRAW_DEBUG (1 && !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
@@ -54,124 +81,75 @@ namespace EDrawDebugItemType
 		OnScreenMessage,
 		CoordinateSystem,
 		Point,
+		Circle,
+		Cone,
 	};
 }
 
-USTRUCT()
 struct FQueuedDrawDebugItem 
 {
-	GENERATED_BODY()
+	struct FVectorEntry
+	{
+		FVectorEntry(const FVector& InVector)
+			: Value(InVector)
+		{}
 
-	UPROPERTY(Transient)
+		FVector Value;
+	};
+
 	TEnumAsByte<EDrawDebugItemType::Type> ItemType = EDrawDebugItemType::DirectionalArrow;
 
-	UPROPERTY(Transient)
-	FVector StartLoc = FVector(0.f);
+	union
+	{
+		FVector StartLoc;
+		struct
+		{
+			float Length;
+			float AngleWidth;
+			float AngleHeight;
+		};
+	};
+	
+	union
+	{
+		FVectorEntry EndLoc;
+		FVectorEntry Direction;
+	};
 
-	UPROPERTY(Transient)
-	FVector EndLoc = FVector(0.f);
-
-	UPROPERTY(Transient)
 	FVector Center = FVector(0.f);
-
-	UPROPERTY(Transient)
 	FRotator Rotation = FRotator(0.f);
-
-	UPROPERTY(Transient)
 	float Radius = 0.f;
-
-	UPROPERTY(Transient)
 	float Size = 0.f;
-
-	UPROPERTY(Transient)
 	int32 Segments = 0;
-
-	UPROPERTY(Transient)
 	FColor Color = FColor(0);
-
-	UPROPERTY(Transient)
 	bool bPersistentLines = false;
-
-	UPROPERTY(Transient)
 	float LifeTime = 0.f;
-
-	UPROPERTY(Transient)
 	float Thickness = 0.f;
-
-	UPROPERTY(Transient)
 	FString Message;
-
-	UPROPERTY(Transient)
 	FVector2D TextScale = FVector2D(0.f);
-
-	UPROPERTY(Transient)
 	TEnumAsByte<ESceneDepthPriorityGroup> DepthPriority = SDPG_World;
+	FQueuedDrawDebugItem() 
+		: StartLoc(FVector(0.f))
+		, EndLoc(FVector(0.f))
+	{};
 };
 
 /** Proxy object passed around during animation tree update in lieu of a UAnimInstance */
 USTRUCT(meta = (DisplayName = "Native Variables"))
 struct ENGINE_API FAnimInstanceProxy
 {
-	GENERATED_BODY()
+	GENERATED_USTRUCT_BODY()
 
 public:
 	using FSyncGroupMap = TMap<FName, FAnimGroupInstance>;
 
-	FAnimInstanceProxy()
-		: AnimInstanceObject(nullptr)
-		, AnimClassInterface(nullptr)
-		, Skeleton(nullptr)
-		, SkeletalMeshComponent(nullptr)
-		, MainInstanceProxy(nullptr)
-		, CurrentDeltaSeconds(0.0f)
-		, CurrentTimeDilation(1.0f)
-		, RootNode(nullptr)
-		, DefaultLinkedInstanceInputNode(nullptr)
-		, BufferWriteIndex(0)
-		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
-		, FrameCounterForUpdate(0)
-		, FrameCounterForNodeUpdate(0)
-		, CacheBonesRecursionCounter(0)
-		, MainMontageEvaluationData(&MontageEvaluationData)
-		, bUpdatingRoot(false)
-		, bBoneCachesInvalidated(false)
-		, bShouldExtractRootMotion(false)
-		, bDeferRootNodeInitialization(false)
-#if WITH_EDITORONLY_DATA
-		, bIsBeingDebugged(false)
-#endif
-		, bInitializeSubsystems(false)
-	{
-	}
+	FAnimInstanceProxy();
+	FAnimInstanceProxy(UAnimInstance* Instance);
 
-	FAnimInstanceProxy(UAnimInstance* Instance)
-		: AnimInstanceObject(Instance)
-		, AnimClassInterface(IAnimClassInterface::GetFromClass(Instance->GetClass()))
-		, Skeleton(nullptr)
-		, SkeletalMeshComponent(nullptr)
-		, MainInstanceProxy(nullptr)
-		, CurrentDeltaSeconds(0.0f)
-		, CurrentTimeDilation(1.0f)
-		, RootNode(nullptr)
-		, DefaultLinkedInstanceInputNode(nullptr)
-		, BufferWriteIndex(0)
-		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
-		, FrameCounterForUpdate(0)
-		, FrameCounterForNodeUpdate(0)
-		, CacheBonesRecursionCounter(0)
-		, MainMontageEvaluationData(&MontageEvaluationData)
-		, bUpdatingRoot(false)
-		, bBoneCachesInvalidated(false)
-		, bShouldExtractRootMotion(false)
-		, bDeferRootNodeInitialization(false)
-#if WITH_EDITORONLY_DATA
-		, bIsBeingDebugged(false)
-#endif
-		, bInitializeSubsystems(false)
-	{
-	}
-
-	virtual ~FAnimInstanceProxy() {}
+	FAnimInstanceProxy(const FAnimInstanceProxy&);
+	FAnimInstanceProxy& operator=(FAnimInstanceProxy&&);
+	FAnimInstanceProxy& operator=(const FAnimInstanceProxy&);
+	virtual ~FAnimInstanceProxy();
 
 	// Get the IAnimClassInterface associated with this context, if there is one.
 	// Note: This can return NULL, so check the result.
@@ -200,10 +178,7 @@ public:
 	}
 
 	/** Record a visited node in the debugger */
-	void RecordNodeVisit(int32 TargetNodeIndex, int32 SourceNodeIndex, float BlendWeight)
-	{
-		UpdatedNodesThisFrame.Emplace(SourceNodeIndex, TargetNodeIndex, BlendWeight);
-	}
+	void RecordNodeVisit(int32 TargetNodeIndex, int32 SourceNodeIndex, float BlendWeight);
 
 	/** Record a node attribute in the debugger */
 	void RecordNodeAttribute(const FAnimInstanceProxy& InSourceProxy, int32 InTargetNodeIndex, int32 InSourceNodeIndex, FName InAttribute);
@@ -450,7 +425,7 @@ public:
 	// Allow slot nodes to store off their weight during ticking
 	void UpdateSlotNodeWeight(const FName& SlotNodeName, float InLocalMontageWeight, float InNodeGlobalWeight);
 
-	bool GetSlotInertializationRequest(const FName& SlotName, float& OutDuration);
+	bool GetSlotInertializationRequest(const FName& SlotName, UE::Anim::FSlotInertializationRequest& OutRequest);
 
 	/** Register a named slot */
 	void RegisterSlotNodeWithAnimInstance(const FName& SlotNodeName);
@@ -483,6 +458,8 @@ public:
 	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
 	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
 	void AnimDrawDebugPoint(const FVector& Loc, float Size, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World);
+	void AnimDrawDebugCircle(const FVector& Center, float Radius, int32 Segments, const FColor& Color, const FVector& UpVector = FVector::UpVector, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World, float Thickness = 0.f);
+	void AnimDrawDebugCone(const FVector& Center, float Radius, const FVector& Direction, float AngleWidth, float AngleHeight, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World, float Thickness = 0.f);
 #else
 	void AnimDrawDebugOnScreenMessage(const FString& DebugMessage, const FColor& Color, const FVector2D& TextScale = FVector2D::UnitVector, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
 	void AnimDrawDebugLine(const FVector& StartLoc, const FVector& EndLoc, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
@@ -491,6 +468,8 @@ public:
 	void AnimDrawDebugCoordinateSystem(FVector const& AxisLoc, FRotator const& AxisRot, float Scale = 1.f, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
 	void AnimDrawDebugPlane(const FTransform& BaseTransform, float Radii, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, float Thickness = 0.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
 	void AnimDrawDebugPoint(const FVector& Loc, float Size, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World) {}
+	void AnimDrawDebugCircle(const FVector& Center, float Radius, int32 Segments, const FColor& Color, const FVector& UpVector = FVector::UpVector, bool bPersistentLines = false, float LifeTime=-1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World, float Thickness = 0.f) {}
+	void AnimDrawDebugCone(const FVector& Center, float Radius, const FVector& Direction, float AngleWidth, float AngleHeight, int32 Segments, const FColor& Color, bool bPersistentLines = false, float LifeTime = -1.f, ESceneDepthPriorityGroup DepthPriority = SDPG_World, float Thickness = 0.f) {}
 #endif // ENABLE_ANIM_DRAW_DEBUG
 
 #if ENABLE_ANIM_LOGGING
@@ -542,6 +521,12 @@ public:
 	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
 	TArray<FAnimNode_AssetPlayerBase*> GetMutableInstanceAssetPlayers(const FName& GraphName);
 
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerRelevancyBase class within the specified (named) Animation Graph */
+	TArray<const FAnimNode_AssetPlayerRelevancyBase*> GetInstanceRelevantAssetPlayers(const FName& GraphName) const;
+
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerRelevancyBase class within the specified (named) Animation Graph */
+	TArray<FAnimNode_AssetPlayerRelevancyBase*> GetMutableInstanceRelevantAssetPlayers(const FName& GraphName);
+
 	/** Returns true if SyncGroupName is valid (exists, and if is based on markers, has valid markers) */
 	bool IsSyncGroupValid(FName InSyncGroupName) const;
 
@@ -570,6 +555,7 @@ public:
 	friend class UAnimSingleNodeInstance;
 	friend class USkeletalMeshComponent;
 	friend struct FAnimNode_LinkedAnimGraph;
+	friend struct FAnimNode_LinkedAnimLayer;
 	friend struct FAnimationBaseContext;
 	friend struct FAnimTrace;
 	friend struct UE::Anim::FAnimSync;
@@ -595,22 +581,8 @@ protected:
 	/** Update override point */
 	virtual void Update(float DeltaSeconds) {}
 
-	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
-	virtual void UpdateAnimationNode(float DeltaSeconds)
-	{
-		FAnimationUpdateContext Context(this, DeltaSeconds);
-		UpdateAnimationNode(Context);
-	}
-
 	/** Updates the anim graph */
 	virtual void UpdateAnimationNode(const FAnimationUpdateContext& InContext);
-
-	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
-	virtual void UpdateAnimationNode_WithRoot(float DeltaSeconds, FAnimNode_Base* InRootNode, FName InLayerName) 
-	{
-		FAnimationUpdateContext Context(this, DeltaSeconds);
-		UpdateAnimationNode_WithRoot(Context, InRootNode, InLayerName);
-	}
 
 	/** Updates the anim graph using a specified root node */
 	virtual void UpdateAnimationNode_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName);
@@ -675,13 +647,6 @@ protected:
 
 	/** Calls Update(), updates the anim graph, ticks asset players */
 	void UpdateAnimation();
-
-	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
-	void UpdateAnimation_WithRoot(FAnimNode_Base* InRootNode, FName InLayerName)
-	{
-		FAnimationUpdateContext Context(this, CurrentDeltaSeconds);
-		UpdateAnimation_WithRoot(Context, InRootNode, InLayerName);
-	}
 
 	/** Calls Update(), updates the anim graph from the specified root, ticks asset players */
 	void UpdateAnimation_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName);
@@ -790,7 +755,7 @@ protected:
 		Note that there might be multiple Active at the same time. This will only return the first active one it finds. **/
 	const FMontageEvaluationState* GetActiveMontageEvaluationState() const;
 
-	TMap<FName, float>& GetSlotGroupInertializationRequestMap() { return SlotGroupInertializationRequestMap; }
+	TMap<FName, UE::Anim::FSlotInertializationRequest>& GetSlotGroupInertializationRequestMap();
 
 	/** Access montage array data */
 	TArray<FMontageEvaluationState>& GetMontageEvaluationData();
@@ -799,8 +764,16 @@ protected:
 	const TArray<FMontageEvaluationState>& GetMontageEvaluationData() const;
 
 	/** Check whether we have active morph target curves */
+
 	/** Gets the most relevant asset player in a specified state */
-	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex) const;
+	UE_DEPRECATED(5.1, "Please use GetRelevantAssetPlayerInterfaceFromState")
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex) const
+	{
+		return nullptr;
+	}
+
+	/** Gets the most relevant asset player in a specified state */
+	const FAnimNode_AssetPlayerRelevancyBase* GetRelevantAssetPlayerInterfaceFromState(int32 MachineIndex, int32 StateIndex) const;
 
 	/** Gets an unchecked (can return nullptr) node given a property of the anim instance */
 	template<class NodeType>
@@ -883,7 +856,22 @@ protected:
 	
 	/** Get whether the given state machine triggered the animation notify with the specified name last tick. */
     bool WasAnimNotifyNameTriggeredInStateMachine(int32 MachineIndex, FName NotifyName);
+
+	/** Attempts to queue a transition request, returns true if successful */
+	bool RequestTransitionEvent(const FName& EventName, const double RequestTimeout, const ETransitionRequestQueueMode& QueueMode, const ETransitionRequestOverwriteMode& OverwriteMode);
 	
+	/** Removes all queued transition requests with the given event name */
+	void ClearTransitionEvents(const FName& EventName);
+
+	/** Removes all queued transition requests */
+	void ClearAllTransitionEvents();
+
+	/** Returns whether or not the given event transition request has been queued */
+	bool QueryTransitionEvent(int32 MachineIndex, int32 TransitionIndex, const FName& EventName) const;
+
+	/** Behaves like QueryTransitionEvent but additionally marks the event for consumption */
+	bool QueryAndMarkTransitionEvent(int32 MachineIndex, int32 TransitionIndex, const FName& EventName);
+
 	// Sets up a native transition delegate between states with PrevStateName and NextStateName, in the state machine with name MachineName.
 	// Note that a transition already has to exist for this to succeed
 	void AddNativeTransitionBinding(const FName& MachineName, const FName& PrevStateName, const FName& NextStateName, const FCanTakeTransition& NativeTransitionDelegate, const FName& TransitionName = NAME_None);
@@ -957,9 +945,16 @@ protected:
 	static void ResetCounterInputProxy(FAnimInstanceProxy* InputProxy);
 
 private:
+
+	/** Executes the provided functor on each valid state machine on this anim instance */
+	void ForEachStateMachine(const TFunctionRef<void(FAnimNode_StateMachine&)>& Functor);
+
 	/** Evaluate the slot when there are blend spaces involved in any of the active anim montages. */
 	void SlotEvaluatePoseWithBlendProfiles(const FName& SlotNodeName, const FAnimationPoseData& SourceAnimationPoseData, float InSourceWeight, FAnimationPoseData& OutBlendedAnimationPoseData, float InBlendWeight);
 
+	/** Initialize cached class data - state machines, pre-update nodes etc. */
+	void InitializeCachedClassData();
+	
 	/** The component to world transform of the component we are running on */
 	FTransform ComponentTransform;
 
@@ -992,17 +987,14 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	/** Array of visited nodes this frame */
-	TArray<FAnimBlueprintDebugData::FNodeVisit> UpdatedNodesThisFrame;
+	TArray<FAnimBlueprintDebugData_NodeVisit> UpdatedNodesThisFrame;
 
 	/** Map of node attributes this frame */
-	TMap<int32, TArray<FAnimBlueprintDebugData::FAttributeRecord>> NodeInputAttributesThisFrame;
-	TMap<int32, TArray<FAnimBlueprintDebugData::FAttributeRecord>> NodeOutputAttributesThisFrame;
+	TMap<int32, TArray<FAnimBlueprintDebugData_AttributeRecord>> NodeInputAttributesThisFrame;
+	TMap<int32, TArray<FAnimBlueprintDebugData_AttributeRecord>> NodeOutputAttributesThisFrame;
 
 	/** Map of node syncs this frame - maps from player node index to graph-determined group name */
 	TMap<int32, FName> NodeSyncsThisFrame;
-
-	/** Array of nodes to watch this frame */
-	TArray<FAnimNodePoseWatch> PoseWatchEntriesForThisFrame;
 #endif
 
 #if ENABLE_ANIM_LOGGING
@@ -1088,10 +1080,9 @@ private:
 private:
 	/** Copy of UAnimInstance::MontageInstances data used for update & evaluation */
 	TArray<FMontageEvaluationState> MontageEvaluationData;
-	TArray<FMontageEvaluationState>* MainMontageEvaluationData;
 
-	// Inertialization request for each slot. Mapped with SlotNameToTrackerIndex. Initialized to a value of 1.0f, which indicates no request for this slot.
-	TMap<FName, float> SlotGroupInertializationRequestMap;
+	// Inertialization request for each slot.
+	TMap<FName, UE::Anim::FSlotInertializationRequest> SlotGroupInertializationRequestMap;
 
 	/** Delegate fired on the game thread before update occurs */
 	TArray<FAnimNode_Base*> GameThreadPreUpdateNodes;
@@ -1148,4 +1139,6 @@ private:
 
 	// Whether subsystems should be initialized
 	uint8 bInitializeSubsystems : 1;
+
+	uint8 bUseMainInstanceMontageEvaluationData : 1;
 };

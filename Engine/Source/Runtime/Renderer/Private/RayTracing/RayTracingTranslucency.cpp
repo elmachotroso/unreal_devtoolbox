@@ -9,7 +9,7 @@
 
 #include "ClearQuad.h"
 #include "SceneRendering.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "RHIResources.h"
 #include "SystemTextures.h"
 #include "ScreenSpaceDenoise.h"
@@ -112,7 +112,7 @@ FRayTracingPrimaryRaysOptions GetRayTracingTranslucencyOptions(const FViewInfo& 
 {
 	FRayTracingPrimaryRaysOptions Options;
 
-	Options.bEnabled = ShouldRenderRayTracingEffect(CVarRayTracingTranslucency.GetValueOnRenderThread() != 0, ERayTracingPipelineCompatibilityFlags::FullPipeline, &View);
+	Options.bEnabled = ShouldRenderRayTracingTranslucency(View);
 	Options.SamplerPerPixel = GRayTracingTranslucencySamplesPerPixel >= 0 ? GRayTracingTranslucencySamplesPerPixel : View.FinalPostProcessSettings.RayTracingTranslucencySamplesPerPixel;
 	Options.ApplyHeightFog = GRayTracingTranslucencyHeightFog;
 	Options.PrimaryRayBias = GRayTracingTranslucencyPrimaryRayBias;

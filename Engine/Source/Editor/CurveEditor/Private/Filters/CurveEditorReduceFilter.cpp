@@ -1,31 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Filters/CurveEditorReduceFilter.h"
+
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "CurveDataAbstraction.h"
 #include "CurveEditor.h"
 #include "CurveEditorSelection.h"
-#include "ScopedTransaction.h"
-#include "CurveDataAbstraction.h"
-#include "Misc/FrameRate.h"
-#include "CurveModel.h"
-#include "Templates/SharedPointer.h"
 #include "CurveEditorSnapMetrics.h"
-
-/**
-The following key reduction is the same as that found in FRichCurve.
-It would be nice if there was just one implementation of the reduction (and) baking algorithms.
-*/
-/** Util to find float value on bezier defined by 4 control points */
-static float BezierInterp(float P0, float P1, float P2, float P3, float Alpha)
-{
-	const float P01 = FMath::Lerp(P0, P1, Alpha);
-	const float P12 = FMath::Lerp(P1, P2, Alpha);
-	const float P23 = FMath::Lerp(P2, P3, Alpha);
-	const float P012 = FMath::Lerp(P01, P12, Alpha);
-	const float P123 = FMath::Lerp(P12, P23, Alpha);
-	const float P0123 = FMath::Lerp(P012, P123, Alpha);
-
-	return P0123;
-}
+#include "CurveEditorTypes.h"
+#include "CurveModel.h"
+#include "Curves/CurveEvaluation.h"
+#include "Curves/KeyHandle.h"
+#include "Curves/RealCurve.h"
+#include "Curves/RichCurve.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
+#include "Misc/FrameTime.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
 
 static float EvalForTwoKeys(const FKeyPosition& Key1Pos, const FKeyAttributes& Key1Attrib,
 	const FKeyPosition& Key2Pos, const FKeyAttributes& Key2Attrib,
@@ -49,7 +46,7 @@ static float EvalForTwoKeys(const FKeyPosition& Key1Pos, const FKeyAttributes& K
 			const float P1 = Key1Attrib.HasLeaveTangent() ? P0 + (Key1Attrib.GetLeaveTangent() * Diff*OneThird) : P0;
 			const float P2 = Key2Attrib.HasArriveTangent() ? P3 - (Key2Attrib.GetArriveTangent() * Diff*OneThird) : P3;
 
-			return BezierInterp(P0, P1, P2, P3, Alpha);
+			return UE::Curves::BezierInterp(P0, P1, P2, P3, Alpha);
 		}
 	}
 	else
@@ -109,14 +106,69 @@ void UCurveEditorReduceFilter::ApplyFilter_Impl(TSharedRef<FCurveEditor> InCurve
 			TArray<FKeyHandle> KeysToRemove;
 			for (int32 TestIndex = 1; TestIndex < KeyHandles.Num() - 1; ++TestIndex)
 			{
+				bool bKeepKey = false;				
+				if (bTryRemoveUserSetTangentKeys && SampleRate.IsValid())
+				{
+					const FFrameTime KeyOneFrameTime = SampleRate.AsFrameTime(SelectedKeyPositions[MostRecentKeepKeyIndex].InputValue);
+					const FFrameTime KeyTwoFrameTime = SampleRate.AsFrameTime(SelectedKeyPositions[TestIndex + 1].InputValue);
 
-				const float KeyValue = SelectedKeyPositions[TestIndex].OutputValue;
-				const float ValueWithoutKey = EvalForTwoKeys(SelectedKeyPositions[MostRecentKeepKeyIndex], SelectedKeyAttributes[MostRecentKeepKeyIndex],
-					SelectedKeyPositions[TestIndex + 1], SelectedKeyAttributes[TestIndex + 1],
-					SelectedKeyPositions[TestIndex].InputValue);
+					FFrameTime SampleFrameTime = KeyOneFrameTime;
+					const double ToRemoveKeyTime = SelectedKeyPositions[TestIndex].InputValue;
 
-				// Check if there is a great enough change in value to consider this key needed.
-				if (FMath::Abs(ValueWithoutKey - KeyValue) > Tolerance)
+					// Sample curve at intervals, dictated by provided sample-rate, between the keys surrounding the to-be-removed key
+					// this makes sure that any impact on non-lerp keys is taken into account
+					while (SampleFrameTime <= KeyTwoFrameTime)
+					{
+						const double SampleSeconds = SampleRate.AsSeconds(SampleFrameTime);
+						const float ValueWithoutKey = EvalForTwoKeys(SelectedKeyPositions[MostRecentKeepKeyIndex],	SelectedKeyAttributes[MostRecentKeepKeyIndex],
+							SelectedKeyPositions[TestIndex + 1], SelectedKeyAttributes[TestIndex + 1],
+							SampleSeconds);
+
+						const FKeyPosition& KeyOne = SampleSeconds <= ToRemoveKeyTime ? SelectedKeyPositions[MostRecentKeepKeyIndex] : SelectedKeyPositions[TestIndex];
+						const FKeyPosition& KeyTwo = SampleSeconds <= ToRemoveKeyTime ? SelectedKeyPositions[TestIndex] : SelectedKeyPositions[TestIndex + 1];
+						
+						const FKeyAttributes& AttributesOne = SampleSeconds <= ToRemoveKeyTime ? SelectedKeyAttributes[MostRecentKeepKeyIndex] : SelectedKeyAttributes[TestIndex];
+						const FKeyAttributes& AttributesTwo = SampleSeconds <= ToRemoveKeyTime ? SelectedKeyAttributes[TestIndex] : SelectedKeyAttributes[TestIndex + 1];
+						
+						const float ValueWithKey = EvalForTwoKeys(KeyOne, AttributesOne,KeyTwo, AttributesTwo, SampleSeconds);
+				
+						if (FMath::Abs(ValueWithoutKey - ValueWithKey) > Tolerance)
+						{
+							bKeepKey = true;
+							break;
+						}
+
+						// Next frame
+						SampleFrameTime.FrameNumber += 1;	
+					}	
+					
+				}
+				else
+				{
+					auto IsNonUserTangentKey = [](const FKeyAttributes& KeyAttributes)
+					{
+						return !KeyAttributes.HasTangentMode() ||
+							(KeyAttributes.GetTangentMode() != RCTM_User && KeyAttributes.GetTangentMode() != RCTM_Break);
+					};
+					
+					bKeepKey = true;
+
+					// Only try to remove keys which have automatic tangent data
+					if (IsNonUserTangentKey(SelectedKeyAttributes[MostRecentKeepKeyIndex]) &&
+						IsNonUserTangentKey(SelectedKeyAttributes[TestIndex]) &&
+						IsNonUserTangentKey(SelectedKeyAttributes[TestIndex + 1]))
+					{
+						const float KeyValue = SelectedKeyPositions[TestIndex].OutputValue;
+						const float ValueWithoutKey = EvalForTwoKeys(SelectedKeyPositions[MostRecentKeepKeyIndex], SelectedKeyAttributes[MostRecentKeepKeyIndex],
+							SelectedKeyPositions[TestIndex + 1], SelectedKeyAttributes[TestIndex + 1],
+							SelectedKeyPositions[TestIndex].InputValue);
+
+						// Check if there is a great enough change in value to consider this key needed.
+						bKeepKey = FMath::Abs(ValueWithoutKey - KeyValue) > Tolerance;
+					}
+				}
+
+				if (bKeepKey)
 				{
 					MostRecentKeepKeyIndex = TestIndex;
 				}

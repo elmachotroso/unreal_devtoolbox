@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -198,7 +199,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Rules">Rules for this module</param>
 		/// <param name="IntermediateDirectory">Intermediate directory for this module</param>
-		public UEBuildModule(ModuleRules Rules, DirectoryReference IntermediateDirectory)
+		/// <param name="Logger">Logger for output</param>
+		public UEBuildModule(ModuleRules Rules, DirectoryReference IntermediateDirectory, ILogger Logger)
 		{
 			this.Rules = Rules;
 			this.IntermediateDirectory = IntermediateDirectory;
@@ -227,13 +229,13 @@ namespace UnrealBuildTool
 				}
 				else if (PublicPreBuildLibraries.Contains(LibraryName))
 				{
-					Log.TraceLog("Library '{0}' was not resolvable to a file when used in Module '{1}'.  Be sure to add either a TargetRules.PreBuildSteps entry or a TargetRules.PreBuildTargets entry to assure it is built for your target.", LibraryName, Name);
+					Logger.LogDebug("Library '{LibraryName}' was not resolvable to a file when used in Module '{Name}'.  Be sure to add either a TargetRules.PreBuildSteps entry or a TargetRules.PreBuildTargets entry to assure it is built for your target.", LibraryName, Name);
 					PublicLibraries.Add(Library.Location);
 				}
 				else
 				{
 					// the library path does not seem to be resolvable as is, lets warn about it as dependency checking will not work for it
-					LogWarningOrThrowError(Rules.Target.DefaultWarningLevel, "Library '{0}' was not resolvable to a file when used in Module '{1}', assuming it is a filename and will search library paths for it. This is slow and dependency checking will not work for it. Please update reference to be fully qualified alternatively use PublicSystemLibraryPaths if you do intended to use this slow path to suppress this warning. ", LibraryName, Name);
+					LogWarningOrThrowError(Logger, Rules.Target.DefaultWarningLevel, "Library '{0}' was not resolvable to a file when used in Module '{1}', assuming it is a filename and will search library paths for it. This is slow and dependency checking will not work for it. Please update reference to be fully qualified alternatively use PublicSystemLibraryPaths if you do intended to use this slow path to suppress this warning. ", LibraryName, Name);
 					PublicSystemLibraries.Add(LibraryName);
 				}
 			}
@@ -269,27 +271,8 @@ namespace UnrealBuildTool
 				PrivateIncludePaths = CreateDirectoryHashSet(Rules.PrivateIncludePaths);
 			}
 
-			RestrictedFoldersAllowList = new HashSet<DirectoryReference>(Rules.AllowedRestrictedFolders.Count());
+			RestrictedFoldersAllowList = new HashSet<DirectoryReference>(Rules.AllowedRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
 
-#pragma warning disable 618
-			{
-				// consume values from deprecated WhitelistRestrictedFolders, but only if AllowedRestrictedFolders has not been set.
-				// Remove this block when WhitelistRestrictedFolders has been removed.
-				if (Rules.WhitelistRestrictedFolders.Count() > 0)
-				{
-					if (Rules.AllowedRestrictedFolders.Count() > 0)
-					{
-						Log.TraceWarning($"Value(s) have been set for both ModuleRules.WhitelistRestrictedFolders and ModuleRules.AllowedRestrictedFolders for module \"{Rules.Name}\". ModuleRules.WhitelistRestrictedFolders has been deprecated and will be ignored.");
-					}
-					else
-					{
-						RestrictedFoldersAllowList.UnionWith(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
-					}
-				}
-			}
-#pragma warning restore 618
-
-			RestrictedFoldersAllowList.UnionWith(Rules.AllowedRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
 			AliasRestrictedFolders = new Dictionary<string, string>(Rules.AliasRestrictedFolders);
 
 			// get the module directories from the module
@@ -299,10 +282,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Log a warning or throw an error message
 		/// </summary>
+		/// <param name="Logger"></param>
 		/// <param name="Level"></param>
 		/// <param name="Format"></param>
 		/// <param name="Args"></param>
-		static void LogWarningOrThrowError(WarningLevel Level, string Format, params object[] Args)
+		static void LogWarningOrThrowError(ILogger Logger, WarningLevel Level, string Format, params object[] Args)
 		{
 			if (Level == WarningLevel.Error)
 			{
@@ -310,7 +294,7 @@ namespace UnrealBuildTool
 			}
 			else if (Level == WarningLevel.Warning)
 			{
-				Log.TraceWarning(Format, Args);
+				Logger.LogWarning("{Message}", String.Format(Format, Args));
 			}
 		}
 
@@ -360,7 +344,7 @@ namespace UnrealBuildTool
 		/// <returns>An enumerable containing the dependencies of the module.</returns>
 		public IEnumerable<UEBuildModule> GetDirectDependencyModules()
 		{
-			return PublicDependencyModules.Concat(PrivateDependencyModules).Concat(DynamicallyLoadedModules);
+			return PublicDependencyModules!.Concat(PrivateDependencyModules!).Concat(DynamicallyLoadedModules!);
 		}
 
 		/// <summary>
@@ -432,14 +416,14 @@ namespace UnrealBuildTool
 
 				// Remove all the allow listed folders
 				ReferencedDirs.ExceptWith(RestrictedFoldersAllowList);
-				ReferencedDirs.ExceptWith(PublicDependencyModules.SelectMany(x => x.RestrictedFoldersAllowList));
-				ReferencedDirs.ExceptWith(PrivateDependencyModules.SelectMany(x => x.RestrictedFoldersAllowList));
+				ReferencedDirs.ExceptWith(PublicDependencyModules!.SelectMany(x => x.RestrictedFoldersAllowList));
+				ReferencedDirs.ExceptWith(PrivateDependencyModules!.SelectMany(x => x.RestrictedFoldersAllowList));
 
 				// Add flags for each of them
 				foreach(DirectoryReference ReferencedDir in ReferencedDirs)
 				{
 					// Find the base directory containing this reference
-					DirectoryReference BaseDir = RootDirectories.FirstOrDefault(x => ReferencedDir.IsUnderDirectory(x));
+					DirectoryReference? BaseDir = RootDirectories.FirstOrDefault(x => ReferencedDir.IsUnderDirectory(x));
 					// @todo platplug does this need to check platform extension engine directories? what are ReferencedDir's here?
 					if (BaseDir == null)
 					{
@@ -871,7 +855,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Compiles the module, and returns a list of files output by the compiler.
 		/// </summary>
-		public virtual List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, List<FileReference> SpecificFilesToCompile, ISourceFileWorkingSet WorkingSet, IActionGraphBuilder Graph)
+		public virtual List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, List<FileReference> SpecificFilesToCompile, ISourceFileWorkingSet WorkingSet, IActionGraphBuilder Graph, ILogger Logger)
 		{
 			// Generate type libraries for Windows
 			foreach(ModuleRules.TypeLibrary TypeLibrary in Rules.TypeLibraries)
@@ -896,8 +880,8 @@ namespace UnrealBuildTool
 		public List<UEBuildModule> GetUnboundReferences()
 		{
 			List<UEBuildModule> Modules = new List<UEBuildModule>();
-			Modules.AddRange(PrivateDependencyModules.Where(x => x.Binary == null));
-			Modules.AddRange(PublicDependencyModules.Where(x => x.Binary == null));
+			Modules.AddRange(PrivateDependencyModules!.Where(x => x.Binary == null));
+			Modules.AddRange(PublicDependencyModules!.Where(x => x.Binary == null));
 			return Modules;
 		}
 
@@ -947,10 +931,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="CreateModule"></param>
 		/// <param name="ReferenceChain"></param>
-		public void RecursivelyCreateModules(CreateModuleDelegate CreateModule, string ReferenceChain)
+		/// <param name="Logger"></param>
+		public void RecursivelyCreateModules(CreateModuleDelegate CreateModule, string ReferenceChain, ILogger Logger)
 		{
 			List<UEBuildModule> ReferenceStack = new List<UEBuildModule>();
-			RecursivelyCreateModules(CreateModule, ReferenceChain, ReferenceStack);
+			RecursivelyCreateModules(CreateModule, ReferenceChain, ReferenceStack, Logger);
 		}
 
 		/// <summary>
@@ -959,7 +944,8 @@ namespace UnrealBuildTool
 		/// <param name="CreateModule">Delegate to create a module with a given name</param>
 		/// <param name="ReferenceChain">Chain of references before reaching this module</param>
 		/// <param name="ReferenceStack">Stack of module dependencies that led to this module</param>
-		protected void RecursivelyCreateModules(CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack)
+		/// <param name="Logger">Logger for output</param>
+		protected void RecursivelyCreateModules(CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack, ILogger Logger)
 		{
 			// Name of this reference
 			string ThisRefName = (RulesFile == null) ? Name : RulesFile.GetFileName();
@@ -1003,16 +989,16 @@ namespace UnrealBuildTool
 				if (string.IsNullOrEmpty(GuiltyModule))
 				{
 					string CycleChain = string.Join(" -> ", ReferenceStack);
-					Log.TraceError("Circular dependency on {0} detected.\n" +
-						"\tFull Route: {1}\n" +
-						"\tCycled Route: is {2}.\n" +
+					Logger.LogError("Circular dependency on {Name} detected.\n" +
+						"\tFull Route: {FullRoute}\n" +
+						"\tCycled Route: is {CycleRoot}.\n" +
 						"Break this loop by moving dependencies into a separate module or using Private/PublicIncludePathModuleNames to reference declarations\n", 
 						ThisRefName, NextReferenceChain, CycleChain);
 
 				}
 				else
 				{
-					Log.TraceVerbose("Found circular reference to {0}, but {1} declares a cycle on {2} which breaks the chain", ThisRefName, GuiltyModule, VictimModule);
+					Logger.LogDebug("Found circular reference to {ThisRefName}, but {GuiltyModule} declares a cycle on {VictimModule} which breaks the chain", ThisRefName, GuiltyModule, VictimModule);
 				}
 			}		
 
@@ -1039,14 +1025,28 @@ namespace UnrealBuildTool
 				RecursivelyCreateIncludePathModulesByName(Rules.PrivateIncludePathModuleNames, ref PrivateIncludePathModules, ref bDependsOnVerse, CreateModule, NextReferenceChain);
 
 				// Create all the dependency modules - pass through the reference stack so we can check for cycles
-				RecursivelyCreateModulesByName(Rules.PublicDependencyModuleNames, ref PublicDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack);
-				RecursivelyCreateModulesByName(Rules.PrivateDependencyModuleNames, ref PrivateDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack);
+				RecursivelyCreateModulesByName(Rules.PublicDependencyModuleNames, ref PublicDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack, Logger);
+				if (Rules.Target.IsTestTarget)
+				{
+					// Move the test runner dependency to last position to give it the opportunity to build its special dependencies such as CoreUObject, ApplicationCore etc.
+					MoveTestsRunnerDependencyToLastPosition();
+				}
+				RecursivelyCreateModulesByName(Rules.PrivateDependencyModuleNames, ref PrivateDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack, Logger);
 				// Dynamic loads aren't considered a reference chain so start with an empty stack
-				RecursivelyCreateModulesByName(Rules.DynamicallyLoadedModuleNames, ref DynamicallyLoadedModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, new List<UEBuildModule>());
+				RecursivelyCreateModulesByName(Rules.DynamicallyLoadedModuleNames, ref DynamicallyLoadedModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, new List<UEBuildModule>(), Logger);
 			}
 
 			// pop us off the current stack
 			ReferenceStack.RemoveAt(ReferenceStack.Count - 1);
+		}
+
+		private void MoveTestsRunnerDependencyToLastPosition()
+		{
+			if (Rules.PrivateDependencyModuleNames.Contains("LowLevelTestsRunner"))
+			{
+				Rules.PrivateDependencyModuleNames.Remove("LowLevelTestsRunner");
+				Rules.PrivateDependencyModuleNames.Add("LowLevelTestsRunner");
+			}
 		}
 
 		private static void LogDependencyNameList(string Title, List<string> DependencyNameList)
@@ -1058,7 +1058,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		private static void RecursivelyCreateModulesByName(List<string> ModuleNames, ref List<UEBuildModule>? Modules, ref bool bDependsOnVerse, CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack)
+		private static void RecursivelyCreateModulesByName(List<string> ModuleNames, ref List<UEBuildModule>? Modules, ref bool bDependsOnVerse, CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack, ILogger Logger)
 		{
 			// Check whether the module list is already set. We set this immediately (via the ref) to avoid infinite recursion.
 			if (Modules == null)
@@ -1069,7 +1069,7 @@ namespace UnrealBuildTool
 					UEBuildModule Module = CreateModule(ModuleName, ReferenceChain);
 					if (!Modules.Contains(Module))
 					{
-						Module.RecursivelyCreateModules(CreateModule, ReferenceChain, ReferenceStack);
+						Module.RecursivelyCreateModules(CreateModule, ReferenceChain, ReferenceStack, Logger);
 						Modules.Add(Module);
 						bDependsOnVerse |= Module.bDependsOnVerse;
 					}
@@ -1115,6 +1115,7 @@ namespace UnrealBuildTool
 		public virtual void ExportJson(DirectoryReference? BinaryOutputDir, DirectoryReference? TargetOutputDir, JsonWriter Writer)
 		{
 			Writer.WriteValue("Name", Name);
+			Writer.WriteValue("Type", Rules.Type.ToString());
 			Writer.WriteValue("Directory", ModuleDirectory.FullName);
 			Writer.WriteValue("Rules", RulesFile.FullName);
 			Writer.WriteValue("PCHUsage", Rules.PCHUsage.ToString());

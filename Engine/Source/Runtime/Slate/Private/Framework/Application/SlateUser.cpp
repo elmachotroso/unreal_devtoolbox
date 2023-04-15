@@ -6,6 +6,7 @@
 #include "Misc/App.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/SWeakWidget.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #if PLATFORM_MICROSOFT
 // Needed to be able to use RECT
@@ -98,12 +99,31 @@ TSharedRef<FSlateUser> FSlateUser::Create(int32 InUserIndex, TSharedPtr<ICursor>
 	return MakeShareable(new FSlateUser(InUserIndex, InCursor));
 }
 
+TSharedRef<FSlateUser> FSlateUser::Create(FPlatformUserId InPlatformUserId, TSharedPtr<ICursor> InCursor)
+{
+	return MakeShareable(new FSlateUser(InPlatformUserId, InCursor));
+}
+
 FSlateUser::FSlateUser(int32 InUserIndex, TSharedPtr<ICursor> InCursor)
 	: UserIndex(InUserIndex)
 	, Cursor(InCursor)
 {
-	UE_LOG(LogSlate, Log, TEXT("New Slate User Created.  User Index %d, Is Virtual User: %d"), UserIndex, IsVirtualUser());
+	PlatformUser = FPlatformMisc::GetPlatformUserForUserIndex(InUserIndex);
+	UE_LOG(LogSlate, Log, TEXT("New Slate User Created. Platform User Id %d, User Index %d, Is Virtual User: %d"), PlatformUser.GetInternalId(), UserIndex, IsVirtualUser());
 
+	PointerPositionsByIndex.Add(FSlateApplication::CursorPointerIndex, FVector2D::ZeroVector);
+	PreviousPointerPositionsByIndex.Add(FSlateApplication::CursorPointerIndex, FVector2D::ZeroVector);
+}
+
+FSlateUser::FSlateUser(FPlatformUserId InPlatformUser, TSharedPtr<ICursor> InCursor)
+	: PlatformUser(InPlatformUser)
+	, Cursor(InCursor)
+{
+	// TODO: Remove this part, its backwards compatible for now
+	UserIndex = InPlatformUser.GetInternalId();
+	
+	UE_LOG(LogSlate, Log, TEXT("New Slate User Created.  Platform User Id %d,  Old User Index: %d  , Is Virtual User: %d"), PlatformUser.GetInternalId(), UserIndex, IsVirtualUser());
+	
 	PointerPositionsByIndex.Add(FSlateApplication::CursorPointerIndex, FVector2D::ZeroVector);
 	PreviousPointerPositionsByIndex.Add(FSlateApplication::CursorPointerIndex, FVector2D::ZeroVector);
 }
@@ -649,20 +669,28 @@ bool FSlateUser::SynthesizeCursorMoveIfNeeded()
 
 		FSlateApplication& SlateApp = FSlateApplication::Get();
 		
-		const bool bHasHardwareCursor = SlateApp.GetPlatformCursor() == Cursor;
-		const TSet<FKey> EmptySet;
-		FPointerEvent SyntheticCursorMoveEvent(
-			GetUserIndex(),
-			FSlateApplication::CursorPointerIndex,
-			GetCursorPosition(),
-			GetPreviousCursorPosition(),
-			bHasHardwareCursor ? SlateApp.GetPressedMouseButtons() : EmptySet,
-			EKeys::Invalid,
-			0,
-			bHasHardwareCursor ? SlateApp.GetPlatformApplication()->GetModifierKeys() : FModifierKeysState());
+		FInputDeviceId InputDeviceId = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(GetPlatformUserId());
+		
+		// The input device might be invalid if a split screen player has logged off but still has their controller plugged in
+		if (InputDeviceId.IsValid())
+		{			
+			const bool bHasHardwareCursor = SlateApp.GetPlatformCursor() == Cursor;
+			const TSet<FKey> EmptySet;
+			FPointerEvent SyntheticCursorMoveEvent(
+				InputDeviceId,
+				FSlateApplication::CursorPointerIndex,
+				GetCursorPosition(),
+				GetPreviousCursorPosition(),
+				bHasHardwareCursor ? SlateApp.GetPressedMouseButtons() : EmptySet,
+				EKeys::Invalid,
+				0,
+				bHasHardwareCursor ? SlateApp.GetPlatformApplication()->GetModifierKeys() : FModifierKeysState(),
+				UserIndex);
 
-		SlateApp.ProcessMouseMoveEvent(SyntheticCursorMoveEvent, true);
-		return true;
+			SlateApp.ProcessMouseMoveEvent(SyntheticCursorMoveEvent, true);
+			return true;
+
+		}		
 	}
 	return false;
 }
@@ -907,7 +935,7 @@ void FSlateUser::LockCursorInternal(const FWidgetPath& WidgetPath)
 		// Generate a screen space clip rect based on the widget's geometry
 #if PLATFORM_DESKTOP
 		const bool bIsBorderlessGameWindow = NativeWindow->IsDefinitionValid() && NativeWindow->GetDefinition().Type == EWindowType::GameWindow && !NativeWindow->GetDefinition().HasOSWindowBorder;
-		const int32 ClipRectAdjustment = bIsBorderlessGameWindow ? 1 : 0;
+		const int32 ClipRectAdjustment = bIsBorderlessGameWindow ? 0 : 1;
 #else
 		const int32 ClipRectAdjustment = 0;
 #endif

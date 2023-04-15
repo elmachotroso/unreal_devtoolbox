@@ -3,9 +3,11 @@
 #include "VCamModifier.h"
 #include "VCamComponent.h"
 #include "VCamTypes.h"
+#include "EnhancedInputComponent.h"
+#include "Engine/InputDelegateBinding.h"
 
 
-void UVCamBlueprintModifier::Initialize(UVCamModifierContext* Context)
+void UVCamBlueprintModifier::Initialize(UVCamModifierContext* Context, UInputComponent* InputComponent)
 {
 	// Forward the Initialize call to the Blueprint Event
 	{
@@ -14,7 +16,22 @@ void UVCamBlueprintModifier::Initialize(UVCamModifierContext* Context)
 		OnInitialize(Context);
 	}
 
-	UVCamModifier::Initialize(Context);
+	UVCamModifier::Initialize(Context, InputComponent);
+}
+
+void UVCamBlueprintModifier::Deinitialize()
+{
+	if (GetWorld()
+		&& !HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed)
+		// Executing BP code during this phase is not allowed - you hit this when saving the world.
+		&& !FUObjectThreadContext::Get().IsRoutingPostLoad)
+	{
+		FEditorScriptExecutionGuard ScriptGuard;
+
+		OnDeinitialize();
+	}
+	
+	Super::Deinitialize();
 }
 
 void UVCamBlueprintModifier::Apply(UVCamModifierContext* Context, UCineCameraComponent* CameraComponent, const float DeltaTime)
@@ -27,9 +44,26 @@ void UVCamBlueprintModifier::Apply(UVCamModifierContext* Context, UCineCameraCom
 	}
 }
 
-void UVCamModifier::Initialize(UVCamModifierContext* Context)
+void UVCamModifier::Initialize(UVCamModifierContext* Context, UInputComponent* InputComponent /* = nullptr */)
 {
-	bRequiresInitialization = false; 
+	// Binds any dynamic input delegates to the provided input component
+	if (IsValid(InputComponent))
+	{
+		UInputDelegateBinding::BindInputDelegates(GetClass(), InputComponent, this);
+	}
+
+	bRequiresInitialization = false;
+}
+
+void UVCamModifier::Deinitialize()
+{
+	UVCamComponent* VCamComponent = GetOwningVCamComponent();
+	if (IsValid(VCamComponent))
+	{
+		VCamComponent->UnregisterObjectForInput(this);
+	}
+
+	bRequiresInitialization = true;
 }
 
 void UVCamModifier::PostLoad()
@@ -58,6 +92,11 @@ void UVCamModifier::SetEnabled(bool bNewEnabled)
 	{
 		StackEntry->bEnabled = bNewEnabled;
 	}
+
+	if (!bNewEnabled)
+	{
+		Deinitialize();
+	}
 }
 
 bool UVCamModifier::IsEnabled() const
@@ -68,6 +107,36 @@ bool UVCamModifier::IsEnabled() const
 	}
 
 	return false;
+}
+
+bool UVCamModifier::SetStackEntryName(FName NewName)
+{
+	if (const UVCamComponent* ParentComponent = GetOwningVCamComponent())
+	{
+		const bool bNameAlreadyExists = ParentComponent->ModifierStack.ContainsByPredicate([NewName](const FModifierStackEntry& StackEntryToTest)
+		{
+			return StackEntryToTest.Name.IsEqual(NewName);
+		});
+
+		if (!bNameAlreadyExists)
+		{
+			if (FModifierStackEntry* StackEntry = GetCorrespondingStackEntry())
+			{
+				StackEntry->Name = NewName;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+FName UVCamModifier::GetStackEntryName() const
+{
+	if (FModifierStackEntry* StackEntry = GetCorrespondingStackEntry())
+	{
+		return StackEntry->Name;
+	}
+	return NAME_None;
 }
 
 FModifierStackEntry* UVCamModifier::GetCorrespondingStackEntry() const
@@ -83,4 +152,13 @@ FModifierStackEntry* UVCamModifier::GetCorrespondingStackEntry() const
 	}
 
 	return StackEntry;
+}
+
+UWorld* UVCamModifier::GetWorld() const
+{
+	if (UVCamComponent* ParentComponent = GetOwningVCamComponent())
+	{
+		return ParentComponent->GetWorld();
+	}
+	return nullptr;
 }

@@ -1,32 +1,81 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCSEditorViewportClient.h"
-#include "Components/StaticMeshComponent.h"
-#include "Materials/Material.h"
+
+#include "BlueprintEditor.h"
 #include "CanvasItem.h"
+#include "CanvasTypes.h"
+#include "ComponentVisualizer.h"
+#include "ComponentVisualizerManager.h"
+#include "Components/ActorComponent.h"
+#include "Components/ChildActorComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
 #include "Editor/EditorPerProjectUserSettings.h"
-#include "Settings/LevelEditorViewportSettings.h"
 #include "Editor/UnrealEdEngine.h"
+#include "EditorComponents.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "EngineDefines.h"
+#include "EngineUtils.h"
+#include "GameFramework/Actor.h"
+#include "HitProxies.h"
+#include "ISCSEditorCustomization.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/ComponentEditorUtils.h"
+#include "Logging/LogMacros.h"
+#include "Materials/Material.h"
+#include "Math/Color.h"
+#include "Math/IntPoint.h"
+#include "Math/Plane.h"
+#include "Math/QuatRotationTranslationMatrix.h"
+#include "Math/Transform.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "PhysicsEngine/ConstraintInstance.h"
+#include "PhysicsEngine/PhysicsConstraintComponent.h"
+#include "PreviewScene.h"
+#include "SEditorViewport.h"
+#include "SSCSEditorViewport.h"
+#include "SSubobjectEditor.h"
+#include "SceneManagement.h"
+#include "SceneView.h"
+#include "ScopedTransaction.h"
+#include "Settings/LevelEditorViewportSettings.h"
+#include "ShowFlags.h"
+#include "SubobjectData.h"
+#include "SubobjectDataSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
-#include "Engine/StaticMesh.h"
-#include "Components/InstancedStaticMeshComponent.h"
-#include "Kismet2/ComponentEditorUtils.h"
-#include "EngineUtils.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+#include "UnrealClient.h"
 #include "UnrealEdGlobals.h"
-#include "SEditorViewport.h"
-#include "EngineGlobals.h"
-#include "Editor.h"
-#include "SSubobjectEditor.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "SKismetInspector.h"
-#include "ScopedTransaction.h"
-#include "ISCSEditorCustomization.h"
-#include "CanvasTypes.h"
-#include "Engine/TextureCube.h"
-#include "SSCSEditorViewport.h"
-#include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "UnrealWidget.h"
+#include "Widgets/SWidget.h"
+
+struct FSubobjectDataHandle;
 
 DEFINE_LOG_CATEGORY_STATIC(LogSCSEditorViewport, Log, All);
 
@@ -264,8 +313,8 @@ void FSCSEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneView& Vi
 
 		TGuardValue<bool> AutoRestore(GAllowActorScriptExecutionInEditor, true);
 
-		const int32 HalfX = 0.5f * Viewport->GetSizeXY().X;
-		const int32 HalfY = 0.5f * Viewport->GetSizeXY().Y;
+		const int32 HalfX = Viewport->GetSizeXY().X / 2;
+		const int32 HalfY = Viewport->GetSizeXY().Y / 2;
 
 		TArray<FSubobjectEditorTreeNodePtrType> SelectedNodes = BlueprintEditorPtr.Pin()->GetSelectedSubobjectEditorTreeNodes();
 
@@ -279,8 +328,8 @@ void FSCSEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneView& Vi
 				const FPlane Proj = View.Project(WidgetLocation);
 				if(Proj.W > 0.0f)
 				{
-					const int32 XPos = HalfX + (HalfX * Proj.X);
-					const int32 YPos = HalfY + (HalfY * (Proj.Y * -1));
+					const int32 XPos = static_cast<int32>(HalfX + (HalfX * Proj.X));
+					const int32 YPos = static_cast<int32>(HalfY + (HalfY * Proj.Y * -1.0));
 					DrawAngles(&Canvas, XPos, YPos, GetCurrentWidgetAxis(), GetWidgetMode(), GetWidgetCoordSystem().Rotator(), WidgetLocation);
 				}
 			}
@@ -288,13 +337,13 @@ void FSCSEditorViewportClient::DrawCanvas( FViewport& InViewport, FSceneView& Vi
 	}
 }
 
-bool FSCSEditorViewportClient::InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool FSCSEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
-	bool bHandled = GUnrealEd->ComponentVisManager.HandleInputKey(this, InViewport, Key, Event);;
+	bool bHandled = GUnrealEd->ComponentVisManager.HandleInputKey(this, EventArgs.Viewport, EventArgs.Key, EventArgs.Event);
 
-	if( !bHandled )
+	if(!bHandled)
 	{
-		bHandled = FEditorViewportClient::InputKey(InViewport, ControllerId, Key, Event, AmountDepressed, bGamepad);
+		bHandled = FEditorViewportClient::InputKey(EventArgs);
 	}
 
 	return bHandled;
@@ -781,15 +830,15 @@ void FSCSEditorViewportClient::ResetCamera()
 	}
 
 	// Clamp zoom to the actor's bounding sphere radius
-	float OrbitZoom = ThumbnailInfo->OrbitZoom;
-	if (PreviewActorBounds.SphereRadius + OrbitZoom < 0)
+	double OrbitZoom = ThumbnailInfo->OrbitZoom;
+	if (PreviewActorBounds.SphereRadius + OrbitZoom < 0.0)
 	{
 		OrbitZoom = -PreviewActorBounds.SphereRadius;
 	}
 
 	ToggleOrbitCamera(true);
 	{
-		float TargetDistance = PreviewActorBounds.SphereRadius;
+		double TargetDistance = PreviewActorBounds.SphereRadius;
 		if(TargetDistance <= 0.0f)
 		{
 			TargetDistance = AutoViewportOrbitCameraTranslate;

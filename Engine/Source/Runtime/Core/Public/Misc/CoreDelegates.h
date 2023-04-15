@@ -2,19 +2,38 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Containers/Array.h"
-#include "Containers/UnrealString.h"
-#include "Containers/Map.h"
-#include "Delegates/Delegate.h"
-#include "Math/IntVector.h"
-#include "Misc/AES.h"
-#include "GenericPlatform/GenericPlatformFile.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/PlatformFile.h"
+#include "HAL/PlatformMisc.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogVerbosity.h"
+#include "Math/IntVector.h"
+#include "Math/MathFwd.h"
+#include "Misc/AES.h"
+#include "Misc/Build.h"
+#include "Misc/Optional.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
 
 class AActor;
 class Error;
+class FConfigFile;
+class FName;
+class FSHAHash;
+class FText;
 class IPakFile;
+class ITargetPlatform;
+struct FGuid;
+
+enum class EForkProcessRole : uint8;
 
 // delegates for hotfixes
 namespace EHotfixDelegates
@@ -155,9 +174,11 @@ public:
 	static FOnUserLoginChangedEvent OnUserLoginChangedEvent;
 
 	// Callback when controllers disconnected / reconnected
+	UE_DEPRECATED(5.1, "OnControllerConnectionChange, use IPlatformInputDeviceMapper::GetOnInputDeviceConnectionChange() instead")
 	static FOnUserControllerConnectionChange OnControllerConnectionChange;
 
 	// Callback when a single controller pairing changes
+	UE_DEPRECATED(5.1, "OnControllerPairingChange, use IPlatformInputDeviceMapper::GetOnInputDevicePairingChange() instead")
 	static FOnUserControllerPairingChange OnControllerPairingChange;
 
 	// Callback when a user changes the safe frame size
@@ -238,12 +259,22 @@ public:
     static FSimpleMulticastDelegate PostSlateModal;
     
 #endif	//WITH_EDITOR
-	
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	// Called when the CVar (ConsoleManager) needs to retrieve CVars for a deviceprofile for another platform - this dramatically simplifies module dependencies
+	typedef TMap<FName, FString> FCVarKeyValueMap;
+	DECLARE_DELEGATE_RetVal_OneParam(FCVarKeyValueMap, FGatherDeviceProfileCVars, const FString&  /*DeviceProfileName*/);
+	static FGatherDeviceProfileCVars GatherDeviceProfileCVars;
+#endif
+
 	// Called when an error occurred.
 	static FSimpleMulticastDelegate OnShutdownAfterError;
 
 	// Called when appInit is called, very early in startup
 	static FSimpleMulticastDelegate OnInit;
+
+	// Called during FEngineLoop::PreInit after GWarn & GError have been first set so that they can be overridden before anything in PreInit uses them
+	static FSimpleMulticastDelegate OnOutputDevicesInit;
 
 	// Called at the end of UEngine::Init, right before loading PostEngineInit modules for both normal execution and commandlets
 	static FSimpleMulticastDelegate OnPostEngineInit;
@@ -341,6 +372,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConfigSectionRead, const TCHAR* /*IniFilename*/, const TCHAR* /*SectionName*/);
 	static FOnConfigSectionRead OnConfigSectionRead;
 	static FOnConfigSectionRead OnConfigSectionNameRead;
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConfigSectionsChanged, const FString& /*IniFilename*/, const TSet<FString>& /*SectionNames*/);
+	static FOnConfigSectionsChanged OnConfigSectionsChanged;
 
 	DECLARE_MULTICAST_DELEGATE_FourParams(FOnApplyCVarFromIni, const TCHAR* /*SectionName*/, const TCHAR* /*IniFilename*/, uint32 /*SetBy*/, bool /*bAllowCheating*/);
 	static FOnApplyCVarFromIni OnApplyCVarFromIni;
@@ -562,8 +596,15 @@ public:
 	// Caller is responsible for flushing rendering etc. See UEngine::TrimMemory
 	static FSimpleMulticastDelegate& GetMemoryTrimDelegate();
 
+	// Called to request that low level allocator free whatever memory they are able to. 
+	static FSimpleMulticastDelegate& GetLowLevelAllocatorMemoryTrimDelegate();
+
 	// Called when OOM event occurs, after backup memory has been freed, so there's some hope of being effective
 	static FSimpleMulticastDelegate& GetOutOfMemoryDelegate();
+
+	// Called from TerminateOnOutOfMemory in D3D11Util.cpp/D3D12Util.cpp
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FGPUOutOfMemoryDelegate, const uint64, const uint64);
+	static FGPUOutOfMemoryDelegate& GetGPUOutOfMemoryDelegate();
 
 	enum class EOnScreenMessageSeverity : uint8
 	{
@@ -589,6 +630,10 @@ public:
 	// Return true for to launch the url
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldLaunchUrl, const TCHAR* /* URL */);
 	static FShouldLaunchUrl ShouldLaunchUrl;
+
+	// Callback when the application has been activated by protocol (with optional user id, depending on the platform)
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnActivatedByProtocol, const FString& /* parameter */, FPlatformUserId /* user id = PLATFORMUSERID_NONE */ );
+	static FOnActivatedByProtocol OnActivatedByProtocol;
 
 	/** Sent when GC finish destroy takes more time than expected */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnGCFinishDestroyTimeExtended, const FString&);
@@ -631,8 +676,23 @@ public:
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnLogVerbosityChanged, const FLogCategoryName& /* CategoryName */, ELogVerbosity::Type /* OldVerbosity */, ELogVerbosity::Type /* NewVerbosity */);
 	static FOnLogVerbosityChanged OnLogVerbosityChanged;
 
+	UE_DEPRECATED(5.1, "Use FPackageStore::Mount() instead")
 	DECLARE_DELEGATE_RetVal(TSharedPtr<class IPackageStore>, FCreatePackageStore);
+	UE_DEPRECATED(5.1, "Use FPackageStore::Mount() instead")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	static FCreatePackageStore CreatePackageStore;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	// Called immediately before the parent process will start responding to signals to fork
+	static FSimpleMulticastDelegate OnParentBeginFork;
+	// Called each time immediately before the parent process forks itself
+	static FSimpleMulticastDelegate OnParentPreFork;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FProcessForkDelegate, EForkProcessRole /* ProcessRole */);
+	// Called immediately after the process spawned a fork
+	static FProcessForkDelegate OnPostFork;
+	// Called at the end of the frame where the process spawned a fork
+	static FSimpleMulticastDelegate OnChildEndFramePostFork;
 
 private:
 

@@ -9,6 +9,8 @@
 #include "GameplayTagContainer.h"
 #include "Misc/ConfigCacheIni.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonUISettings)
+
 UE_DEFINE_GAMEPLAY_TAG(TAG_PlatformTrait_PlayInEditor, "Platform.Trait.PlayInEditor");
 
 UCommonUISettings::UCommonUISettings(const FObjectInitializer& Initializer)
@@ -16,6 +18,12 @@ UCommonUISettings::UCommonUISettings(const FObjectInitializer& Initializer)
 	, bAutoLoadData(true)
 	, bDefaultDataLoaded(false)
 {}
+
+UCommonUISettings::UCommonUISettings(FVTableHelper& Helper) : Super(Helper)
+{
+}
+
+UCommonUISettings::~UCommonUISettings() = default;
 
 void UCommonUISettings::LoadData()
 {

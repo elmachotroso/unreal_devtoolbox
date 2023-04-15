@@ -1,43 +1,45 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
 using Blake3;
+using EpicGames.Core;
+using EpicGames.Serialization;
 using Newtonsoft.Json;
+using JsonWriter = Newtonsoft.Json.JsonWriter;
 
 namespace Jupiter.Implementation
 {
     [JsonConverter(typeof(ContentHashConverter))]
+    [CbConverter(typeof(ContentHashCbConverter))]
     public class ContentHash : IEquatable<ContentHash>, IEquatable<byte[]>
     {
-        protected readonly ByteArrayComparer Comparer = new ByteArrayComparer();
-        protected readonly byte[] Identifier;
-        public static int HashLength = 20;
-
+	    protected ByteArrayComparer Comparer { get; } = new ByteArrayComparer();
+        protected byte[] Identifier { get; init; }
+        public const int HashLength = 20;
+        public byte[] HashData => Identifier;
         public ContentHash(byte[] identifier)
         {
             Identifier = identifier;
             if (identifier.Length != HashLength)
+            {
                 throw new ArgumentException("Supplied identifier was not 20 bytes, this is not a valid identifier", nameof(identifier));
+            }
         }
 
         [JsonConstructor]
         public ContentHash(string identifier)
         {
             if (identifier == null)
+            {
                 throw new ArgumentNullException(nameof(identifier));
+            }
 
             byte[] byteIdentifier = StringUtils.ToHashFromHexString(identifier);
             Identifier = byteIdentifier;
             if (byteIdentifier.Length != HashLength)
+            {
                 throw new ArgumentException("Supplied identifier was not 20 bytes, this is not a valid identifier", nameof(identifier));
-        }
-
-        public byte[] HashData
-        {
-            get { return Identifier; }
+            }
         }
 
         public override int GetHashCode()
@@ -48,7 +50,9 @@ namespace Jupiter.Implementation
         public bool Equals(ContentHash? other)
         {
             if (other == null)
+            {
                 return false;
+            }
 
             return Comparer.Equals(Identifier, other.Identifier);
         }
@@ -56,7 +60,10 @@ namespace Jupiter.Implementation
         public bool Equals(byte[]? other)
         {
             if (other == null)
+            {
                 return false;
+            }
+
             return Comparer.Equals(Identifier, other);
         }
 
@@ -72,7 +79,7 @@ namespace Jupiter.Implementation
                 return true;
             }
 
-            if (obj.GetType() != this.GetType())
+            if (obj.GetType() != GetType())
             {
                 return false;
             }
@@ -92,7 +99,7 @@ namespace Jupiter.Implementation
             Hash blake3Hash = hasher.Finalize();
 
             // we only keep the first 20 bytes of the Blake3 hash
-            Span<byte> hash = blake3Hash.AsSpan().Slice(0, HashLength);
+            Span<byte> hash = blake3Hash.AsSpanUnsafe().Slice(0, HashLength);
 
             return new ContentHash(hash.ToArray());
         }
@@ -111,5 +118,16 @@ namespace Jupiter.Implementation
 
             return new ContentHash(s!);
         }
+    }
+
+    public class ContentHashCbConverter : CbConverterBase<ContentHash>
+    {
+        public override ContentHash Read(CbField field) => new ContentHash(field.AsHash().ToByteArray());
+
+        /// <inheritdoc/>
+        public override void Write(CbWriter writer, ContentHash value) => writer.WriteHashValue(new IoHash(value.HashData));
+
+        /// <inheritdoc/>
+        public override void WriteNamed(CbWriter writer, Utf8String name, ContentHash value) => writer.WriteHash(name, new IoHash(value.HashData));
     }
 }

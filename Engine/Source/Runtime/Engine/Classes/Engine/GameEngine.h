@@ -7,16 +7,15 @@
 #include "Widgets/SWindow.h"
 #include "Widgets/SViewport.h"
 #include "Engine/Engine.h"
-#include "Runtime/MovieSceneCapture/Public/MovieSceneCaptureHandle.h"
+#include "MovieSceneCaptureHandle.h"
+#include "Templates/PimplPtr.h"
 #include "GameEngine.generated.h"
 
 class Error;
+class FEngineConsoleCommandExecutor;
 class FSceneViewport;
 class UGameViewportClient;
 class UNetDriver;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-// disabled for: virtual bool NetworkRemapPath(UNetDriver* Driver, FString& Str, bool bReading = true) override;
 
 /**
  * Engine that manages core systems that enable a game.
@@ -70,8 +69,16 @@ public:
 
 	static void SafeFrameChanged();
 
+	/** 
+	 * Enables/disables game window resolution setting overrides specified on the command line (true by default) 
+	 * @note Does not trigger a refresh of the game window based on the newly effective settings
+	 * @note Not thread-safe; must be called from the main thread
+	 */
+	static void EnableGameWindowSettingsOverride(bool bEnabled);
+
 	/**
 	 * Modifies the game window resolution settings if any overrides have been specified on the command line
+	 * and overrides are enabled (see EnableGameWindowSettingsOverride)
 	 *
 	 * @param ResolutionX	[in/out] Width of the game window, in pixels
 	 * @param ResolutionY	[in/out] Height of the game window, in pixels
@@ -130,7 +137,6 @@ public:
 	virtual float GetMaxTickRate( float DeltaTime, bool bAllowFrameRateSmoothing = true ) const override;
 	virtual void ProcessToggleFreezeCommand( UWorld* InWorld ) override;
 	virtual void ProcessToggleFreezeStreamingCommand( UWorld* InWorld ) override;
-	virtual bool NetworkRemapPath(UNetDriver* Driver, FString& Str, bool bReading = true) override;
 	virtual bool NetworkRemapPath(UNetConnection* Connection, FString& Str, bool bReading = true) override;
 	virtual bool ShouldDoAsyncEndOfFrameTasks() const override;
 
@@ -182,6 +188,6 @@ private:
 
 	/** Last time the logs have been flushed. */
 	double LastTimeLogsFlushed;
-};
 
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	TPimplPtr<FEngineConsoleCommandExecutor> CmdExec;
+};

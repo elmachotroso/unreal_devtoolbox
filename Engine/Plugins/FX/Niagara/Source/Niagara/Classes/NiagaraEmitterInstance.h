@@ -24,6 +24,8 @@ struct FNiagaraEmitterCompiledData;
 */
 class FNiagaraEmitterInstance
 {
+	friend class UNiagaraSimCache;
+
 private:
 	struct FEventInstanceData
 	{
@@ -88,9 +90,6 @@ public:
 	FORCEINLINE bool IsInactive()const { return ExecutionState == ENiagaraExecutionState::Inactive; }
 	FORCEINLINE bool IsComplete()const { return ExecutionState == ENiagaraExecutionState::Complete || ExecutionState == ENiagaraExecutionState::Disabled; }
 
-	/** Create a new NiagaraRenderer. The old renderer is not immediately deleted, but instead put in the ToBeRemoved list.*/
-	//void NIAGARA_API UpdateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, TArray<NiagaraRenderer*>& ToBeAddedList, TArray<NiagaraRenderer*>& ToBeRemovedList);
-
 private:
 	NIAGARA_API int32 GetNumParticlesGPUInternal() const;
 public:
@@ -112,7 +111,7 @@ public:
 	}
 
 	FORCEINLINE int32 GetTotalSpawnedParticles()const { return TotalSpawnedParticles; }
-	FORCEINLINE const FNiagaraEmitterScalabilitySettings& GetScalabilitySettings()const { return CachedEmitter->GetScalabilitySettings(); }
+	FORCEINLINE const FNiagaraEmitterScalabilitySettings& GetScalabilitySettings()const { return GetCachedEmitterData()->GetScalabilitySettings(); }
 
 	NIAGARA_API const FNiagaraEmitterHandle& GetEmitterHandle() const;
 
@@ -124,14 +123,16 @@ public:
 	ENiagaraExecutionState NIAGARA_API GetExecutionState() { return ExecutionState; }
 	void NIAGARA_API SetExecutionState(ENiagaraExecutionState InState);
 
-	FBox GetBounds() const;
+	bool AreBoundsDynamic() const { return bCachedBoundsDynamic; }
+	FBox GetBounds() const { return CachedBounds; }
 
 	FNiagaraScriptExecutionContext& GetSpawnExecutionContext() { return SpawnExecContext; }
 	FNiagaraScriptExecutionContext& GetUpdateExecutionContext() { return UpdateExecContext; }
 	TArrayView<FNiagaraScriptExecutionContext> GetEventExecutionContexts();
 
 	FORCEINLINE FName GetCachedIDName()const { return CachedIDName; }
-	FORCEINLINE UNiagaraEmitter* GetCachedEmitter()const { return CachedEmitter; }
+	FORCEINLINE FVersionedNiagaraEmitter GetCachedEmitter()const { return CachedEmitter; }
+	FORCEINLINE FVersionedNiagaraEmitterData* GetCachedEmitterData()const { return CachedEmitter.GetEmitterData(); }
 
 	TArray<FNiagaraSpawnInfo>& GetSpawnInfo() { return SpawnInfos; }
 
@@ -201,6 +202,9 @@ private:
 	/** A parameter store which contains the data interfaces parameters which were defined by the scripts. */
 	FNiagaraParameterStore ScriptDefinedDataInterfaceParameters;
 
+	/* Are the cached emitter bounds dynamic */
+	bool bCachedBoundsDynamic = false;
+
 	/* Emitter bounds */
 	FBox CachedBounds;
 
@@ -212,7 +216,7 @@ private:
 	 ** EmitterInstance and the cached bounds will be unset. */
 	FBox CachedSystemFixedBounds;
 
-	FNiagaraSystemInstanceID OwnerSystemInstanceID;
+	FNiagaraSystemInstanceID OwnerSystemInstanceID = 0;
 
 	FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = nullptr;
 
@@ -222,7 +226,7 @@ private:
 	FNiagaraSystemInstance *ParentSystemInstance = nullptr;
 
 	/** Raw pointer to the emitter that we're instanced from. Raw ptr should be safe here as we check for the validity of the system and it's emitters higher up before any ticking. */
-	UNiagaraEmitter* CachedEmitter = nullptr;
+	FVersionedNiagaraEmitter CachedEmitter;
 	FName CachedIDName;
 
 	/** The index of our emitter in our parent system instance. */

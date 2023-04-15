@@ -88,33 +88,28 @@ FAnisotropyMeshProcessor::FAnisotropyMeshProcessor(
 	const FMeshPassProcessorRenderState& InPassDrawRenderState, 
 	FMeshPassDrawListContext* InDrawListContext
 	)
-	: FMeshPassProcessor(Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::AnisotropyPass, Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InPassDrawRenderState)
 {
 }
 
-FMeshPassProcessor* CreateAnisotropyPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateAnisotropyPassProcessor(ERHIFeatureLevel::Type InFeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	const ERHIFeatureLevel::Type FeatureLevel = Scene ? Scene->GetFeatureLevel() : (InViewIfDynamicMeshCommand ? InViewIfDynamicMeshCommand->GetFeatureLevel() : GMaxRHIFeatureLevel);
+	const ERHIFeatureLevel::Type FeatureLevel = InViewIfDynamicMeshCommand ? InViewIfDynamicMeshCommand->GetFeatureLevel() : InFeatureLevel;
 
 	FMeshPassProcessorRenderState AnisotropyPassState;
 
 	AnisotropyPassState.SetBlendState(TStaticBlendState<>::GetRHI());
 	AnisotropyPassState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Equal>::GetRHI());
 
-	return new(FMemStack::Get()) FAnisotropyMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, AnisotropyPassState, InDrawListContext);
+	return new FAnisotropyMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, AnisotropyPassState, InDrawListContext);
 }
 
-FRegisterPassProcessorCreateFunction RegisterAnisotropyPass(
-	&CreateAnisotropyPassProcessor,
-	EShadingPath::Deferred, 
-	EMeshPass::AnisotropyPass, 
-	EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView
-	);
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(AnisotropyPass, CreateAnisotropyPassProcessor, EShadingPath::Deferred, EMeshPass::AnisotropyPass, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
 
 bool GetAnisotropyPassShaders(
 	const FMaterial& Material,
-	FVertexFactoryType* VertexFactoryType,
+	const FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
 	TShaderRef<FAnisotropyVS>& VertexShader,
 	TShaderRef<FAnisotropyPS>& PixelShader
@@ -136,6 +131,13 @@ bool GetAnisotropyPassShaders(
 	check(VertexShader.IsValid() && PixelShader.IsValid());
 
 	return true;
+}
+
+static bool ShouldDraw(const FMaterial& Material, bool bMaterialUsesAnisotropy)
+{
+	const EBlendMode BlendMode = Material.GetBlendMode();
+	const bool bIsNotTranslucent = BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked;
+	return (bMaterialUsesAnisotropy && bIsNotTranslucent && Material.GetShadingModels().HasAnyShadingModel({ MSM_DefaultLit, MSM_ClearCoat }));
 }
 
 void FAnisotropyMeshProcessor::AddMeshBatch(
@@ -172,15 +174,12 @@ bool FAnisotropyMeshProcessor::TryAddMeshBatch(
 	const FMaterialRenderProxy& MaterialRenderProxy,
 	const FMaterial& Material)
 {
-	const EBlendMode BlendMode = Material.GetBlendMode();
-	const bool bIsNotTranslucent = BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked;
-
 	bool bResult = true;
-	if (Material.MaterialUsesAnisotropy_RenderThread() && bIsNotTranslucent && Material.GetShadingModels().HasAnyShadingModel({ MSM_DefaultLit, MSM_ClearCoat }))
+	if (ShouldDraw(Material, Material.MaterialUsesAnisotropy_RenderThread()))
 	{
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 
 		bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
 	}
@@ -238,6 +237,44 @@ bool FAnisotropyMeshProcessor::Process(
 	return true;
 }
 
+void FAnisotropyMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+{
+	if (ShouldDraw(Material, Material.MaterialUsesAnisotropy_GameThread()) && 
+		SupportsAnisotropicMaterials(FeatureLevel, GShaderPlatformForFeatureLevel[FeatureLevel]))
+	{
+		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
+
+		TMeshProcessorShaders<
+			FAnisotropyVS,
+			FAnisotropyPS> AnisotropyPassShaders;
+
+		if (!GetAnisotropyPassShaders(
+			Material,
+			VertexFactoryType,
+			FeatureLevel,
+			AnisotropyPassShaders.VertexShader,
+			AnisotropyPassShaders.PixelShader))
+		{
+			return;
+		}
+
+		FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+		AddGraphicsPipelineStateInitializer(
+			VertexFactoryType,
+			Material,
+			PassDrawRenderState,
+			RenderTargetsInfo,
+			AnisotropyPassShaders,
+			MeshFillMode,
+			MeshCullMode,
+			(EPrimitiveType)PreCacheParams.PrimitiveType,
+			EMeshPassFeatures::Default,
+			PSOInitializers);
+	}
+}
+
 bool ShouldRenderAnisotropyPass(const FViewInfo& View)
 {
 	if (!SupportsAnisotropicMaterials(View.FeatureLevel, View.GetShaderPlatform()))
@@ -245,7 +282,7 @@ bool ShouldRenderAnisotropyPass(const FViewInfo& View)
 		return false;
 	}
 
-	if (IsAnyForwardShadingEnabled(GetFeatureLevelShaderPlatform(View.FeatureLevel)))
+	if (IsForwardShadingEnabled(GetFeatureLevelShaderPlatform(View.FeatureLevel)))
 	{
 		return false;
 	}
@@ -318,9 +355,9 @@ void FDeferredShadingSceneRenderer::RenderAnisotropyPass(
 					RDG_EVENT_NAME("AnisotropyPassParallel"),
 					PassParameters,
 					ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
-					[this, &View, &ParallelMeshPass, PassParameters](FRHICommandListImmediate& RHICmdList)
+					[this, &View, &ParallelMeshPass, PassParameters](const FRDGPass* InPass, FRHICommandListImmediate& RHICmdList)
 				{
-					FRDGParallelCommandListSet ParallelCommandListSet(RHICmdList, GET_STATID(STAT_CLP_AnisotropyPass), *this, View, FParallelCommandListBindings(PassParameters));
+					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_AnisotropyPass), *this, View, FParallelCommandListBindings(PassParameters));
 
 					ParallelMeshPass.DispatchDraw(&ParallelCommandListSet, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 				});

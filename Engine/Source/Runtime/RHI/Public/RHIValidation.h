@@ -64,6 +64,16 @@ public:
 		return *RHIName;
 	}
 
+	virtual ERHIInterfaceType GetInterfaceType() const override final
+	{
+		return RHI->GetInterfaceType();
+	}
+
+	virtual FDynamicRHI* GetNonValidationRHI() override final
+	{
+		return RHI;
+	}
+
 	/////// RHI Methods
 
 	// FlushType: Thread safe
@@ -185,7 +195,6 @@ public:
 	// FlushType: Wait RHI Thread
 	virtual FComputeShaderRHIRef RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash) override final
 	{
-		check(RHISupportsComputeShaders(GMaxRHIShaderPlatform));
 		return RHI->RHICreateComputeShader(Code, Hash);
 	}
 
@@ -202,9 +211,19 @@ public:
 		return RHI->RHICreateShaderLibrary(Platform, FilePath, Name);
 	}
 
+	virtual FRenderQueryPoolRHIRef RHICreateRenderQueryPool(ERenderQueryType QueryType, uint32 NumQueries = UINT32_MAX) override final
+	{
+		return RHI->RHICreateRenderQueryPool(QueryType, NumQueries);
+	}
+
 	virtual FGPUFenceRHIRef RHICreateGPUFence(const FName &Name) override final
 	{
 		return RHI->RHICreateGPUFence(Name);
+	}
+
+	virtual void RHIWriteGPUFence_TopOfPipe(FRHICommandListBase& RHICmdList, FRHIGPUFence* FenceRHI) override final
+	{
+		RHI->RHIWriteGPUFence_TopOfPipe(RHICmdList, FenceRHI);
 	}
 
 	virtual void RHICreateTransition(FRHITransition* Transition, const FRHITransitionCreateInfo& CreateInfo);
@@ -333,7 +352,6 @@ public:
 
 	virtual TRefCountPtr<FRHIComputePipelineState> RHICreateComputePipelineState(FRHIComputeShader* ComputeShader, FRHIPipelineBinaryLibrary* PipelineBinary) override final
 	{
-		check(RHISupportsComputeShaders(GMaxRHIShaderPlatform));
 		return RHI->RHICreateComputePipelineState(ComputeShader, PipelineBinary);
 	}
 
@@ -347,17 +365,19 @@ public:
 	// FlushType: Thread safe, but varies depending on the RHI override final
 	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation) override final
 	{
-		// RHICreateUniformBuffer can be called from the RenderThread (normal use case) or the RHI Thread (FLocalUniformBuffer)
+		check(Layout);
 		check(Layout->Resources.Num() > 0 || Layout->ConstantBufferSize > 0);
 		FUniformBufferRHIRef UniformBuffer = RHI->RHICreateUniformBuffer(Contents, Layout, Usage, Validation);
-		UniformBuffer->InitLifetimeTracking(IsInRenderingThread() ? RenderThreadFrameID : RHIThreadFrameID, Usage);
+		// Use the render thread frame ID for any non RHI thread allocations.
+		UniformBuffer->InitLifetimeTracking(IsInRHIThread() ? RHIThreadFrameID : RenderThreadFrameID, Contents, Usage);
 		return UniformBuffer;
 	}
 
-	virtual void RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents) override final
+	virtual void RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents) override final
 	{
-		check(IsInRenderingThread());
-		RHI->RHIUpdateUniformBuffer(UniformBufferRHI, Contents);
+		check(UniformBufferRHI);
+		check(Contents);
+		RHI->RHIUpdateUniformBuffer(RHICmdList, UniformBufferRHI, Contents);
 		UniformBufferRHI->UpdateAllocation(RenderThreadFrameID);
 	}
 
@@ -365,9 +385,15 @@ public:
 	* @param ResourceArray - An optional pointer to a resource array containing the resource's data.
 	*/
 	// FlushType: Wait RHI Thread
-	virtual FBufferRHIRef RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) override final
+	virtual FBufferRHIRef RHICreateBuffer(FRHICommandListBase& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) override final
 	{
-		FBufferRHIRef Buffer = RHI->RHICreateBuffer(Size, Usage, Stride, ResourceState, CreateInfo);
+		if (CreateInfo.ResourceArray && RHICmdList.IsInsideRenderPass())
+		{
+			FString Msg = FString::Printf(TEXT("Creating buffers with initial data during a render pass is not supported, buffer name: \"%s\""), CreateInfo.DebugName);
+			RHI_VALIDATION_CHECK(false, *Msg);
+		}
+
+		FBufferRHIRef Buffer = RHI->RHICreateBuffer(RHICmdList, Size, Usage, Stride, ResourceState, CreateInfo);
 		Buffer->InitBarrierTracking(ResourceState, CreateInfo.DebugName);
 		return Buffer;
 	}
@@ -380,15 +406,15 @@ public:
 	}
 
 	// FlushType: Flush RHI Thread
-	virtual void* RHILockBuffer(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final;
-	virtual void* RHILockBufferMGPU(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final;
+	virtual void* RHILockBuffer(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final;
+	virtual void* RHILockBufferMGPU(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final;
 
 	// FlushType: Flush RHI Thread
-	virtual void RHIUnlockBuffer(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final
+	virtual void RHIUnlockBuffer(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer) override final
 	{
 		RHI->RHIUnlockBuffer(RHICmdList, Buffer);
 	}
-	virtual void RHIUnlockBufferMGPU(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex) override final
+	virtual void RHIUnlockBufferMGPU(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex) override final
 	{
 		RHI->RHIUnlockBufferMGPU(RHICmdList, Buffer, GPUIndex);
 	}
@@ -439,7 +465,6 @@ public:
 	// FlushType: Wait RHI Thread
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer) override final
 	{
-		check(RHISupportsComputeShaders(GMaxRHIShaderPlatform));
 		FShaderResourceViewRHIRef SRV = RHI->RHICreateShaderResourceView(Buffer);
 		SRV->ViewIdentity = Buffer->GetWholeResourceIdentity();
 		return SRV;
@@ -467,80 +492,37 @@ public:
 	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final
 	{
 		RHI->RHIUpdateShaderResourceView(SRV, Buffer, Stride, Format);
-		SRV->ViewIdentity = Buffer->GetWholeResourceIdentity();
+
+		if (Buffer)
+		{
+			SRV->ViewIdentity = Buffer->GetWholeResourceIdentity();
+		}
+		else
+		{
+			SRV->ResetViewIdentity();
+		}
 	}
 
 	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer) override final
 	{
 		RHI->RHIUpdateShaderResourceView(SRV, Buffer);
-		SRV->ViewIdentity = Buffer->GetWholeResourceIdentity();
+
+		if (Buffer)
+		{
+			SRV->ViewIdentity = Buffer->GetWholeResourceIdentity();
+		}
+		else
+		{
+			SRV->ResetViewIdentity();
+		}
 	}
 
-	/**
-	* Computes the total size of a 2D texture with the specified parameters.
-	*
-	* @param SizeX - width of the texture to compute
-	* @param SizeY - height of the texture to compute
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to compute or 0 for full mip pyramid
-	* @param NumSamples - number of MSAA samples, usually 1
-	* @param Flags - ETextureCreateFlags creation flags
-	* @param OutAlign - Alignment required for this texture.  Output parameter.
-	*/
-	// FlushType: Thread safe
-	virtual uint64 RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) override final
+	virtual FRHICalcTextureSizeResult RHICalcTexturePlatformSize(FRHITextureDesc const& Desc, uint32 FirstMipIndex) override final
 	{
-		return RHI->RHICalcTexture2DPlatformSize(SizeX, SizeY, Format, NumMips, NumSamples, Flags, CreateInfo, OutAlign);
-	}
+		ensure(Desc.IsValid());
+		ensure(FirstMipIndex < Desc.NumMips);
 
-	/**
-	* Computes the total size of a virtual memory (VM) based 2D texture with the specified parameters.
-	*
-	* @param Mip0Width - width of the top mip
-	* @param Mip0Height - height of the top mip
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips the texture has
-	* @param FirstMipIdx - index of the first resident mip
-	* @param NumSamples - number of MSAA samples, usually 1
-	* @param Flags - ETextureCreateFlags creation flags
-	* @param OutAlign - Alignment required for this texture. Output parameter.
-	*/
-	// FlushType: Thread safe
-	virtual uint64 RHICalcVMTexture2DPlatformSize(uint32 Mip0Width, uint32 Mip0Height, uint8 Format, uint32 NumMips, uint32 FirstMipIdx, uint32 NumSamples, ETextureCreateFlags Flags, uint32& OutAlign) override final
-	{
-		return RHI->RHICalcVMTexture2DPlatformSize(Mip0Width, Mip0Height, Format, NumMips, FirstMipIdx, NumSamples, Flags, OutAlign);
-	}
-
-
-	/**
-	* Computes the total size of a 3D texture with the specified parameters.
-	* @param SizeX - width of the texture to create
-	* @param SizeY - height of the texture to create
-	* @param SizeZ - depth of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	* @param OutAlign - Alignment required for this texture.  Output parameter.
-	*/
-	// FlushType: Thread safe
-	virtual uint64 RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) override final
-	{
-		return RHI->RHICalcTexture3DPlatformSize(SizeX, SizeY, SizeZ, Format, NumMips, Flags, CreateInfo, OutAlign);
-	}
-
-	/**
-	* Computes the total size of a cube texture with the specified parameters.
-	* @param Size - width/height of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	* @param OutAlign - Alignment required for this texture.  Output parameter.
-	*/
-	// FlushType: Thread safe
-	virtual uint64 RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) override final
-	{
-		ensure(Size >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		return RHI->RHICalcTextureCubePlatformSize(Size, Format, NumMips, Flags, CreateInfo, OutAlign);
+		return RHI->RHICalcTexturePlatformSize(Desc, FirstMipIndex);
 	}
 
 	/**
@@ -571,38 +553,13 @@ public:
 	}
 
 	/**
-	* Creates a 2D RHI texture resource
-	* @param SizeX - width of the texture to create
-	* @param SizeY - height of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param NumSamples - number of MSAA samples, usually 1
-	* @param Flags - ETextureCreateFlags creation flags
+	* Creates an RHI texture resource.
 	*/
-	// FlushType: Wait RHI Thread
-	virtual FTexture2DRHIRef RHICreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
+	virtual FTextureRHIRef RHICreateTexture(const FRHITextureCreateDesc& CreateDesc) override final
 	{
-		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DRHIRef Texture = RHI->RHICreateTexture2D(SizeX, SizeY, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		Texture->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return Texture;
-	}
-
-	/**
-	* Creates a 2D RHI texture external resource
-	* @param SizeX - width of the texture to create
-	* @param SizeY - height of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param NumSamples - number of MSAA samples, usually 1
-	* @param Flags - ETextureCreateFlags creation flags
-	*/
-	// FlushType: Wait RHI Thread
-	virtual FTexture2DRHIRef RHICreateTextureExternal2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DRHIRef Texture = RHI->RHICreateTextureExternal2D(SizeX, SizeY, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		Texture->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
+		CreateDesc.CheckValidity();
+		FTextureRHIRef Texture = RHI->RHICreateTexture(CreateDesc);
+		ensure(Texture->IsBarrierTrackingInitialized());
 		return Texture;
 	}
 
@@ -620,12 +577,12 @@ public:
 	* @returns a reference to a 2D texture resource
 	*/
 	// FlushType: Thread safe
-	virtual FTexture2DRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) override final
+	virtual FTextureRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) override final
 	{
 		check(GRHISupportsAsyncTextureCreation);
 		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DRHIRef Texture = RHI->RHIAsyncCreateTexture2D(SizeX, SizeY, Format, NumMips, Flags, InResourceState, InitialMipData, NumInitialMips);
-		Texture->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, TEXT("UnknownTexture_RHIAsyncCreateTexture2D"));
+		FTextureRHIRef Texture = RHI->RHIAsyncCreateTexture2D(SizeX, SizeY, Format, NumMips, Flags, InResourceState, InitialMipData, NumInitialMips);
+		ensure(Texture->IsBarrierTrackingInitialized());
 		return Texture;
 	}
 
@@ -648,48 +605,13 @@ public:
 	}
 
 	/**
-	* Creates a Array RHI texture resource
-	* @param SizeX - width of the texture to create
-	* @param SizeY - height of the texture to create
-	* @param SizeZ - depth of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	*/
-	// FlushType: Wait RHI Thread
-	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)
-	{
-		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DArrayRHIRef TextureArray = RHI->RHICreateTexture2DArray(SizeX, SizeY, SizeZ, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		TextureArray->InitBarrierTracking(NumMips, SizeZ, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return TextureArray;
-	}
-
-	/**
-	* Creates a 3d RHI texture resource
-	* @param SizeX - width of the texture to create
-	* @param SizeY - height of the texture to create
-	* @param SizeZ - depth of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	*/
-	// FlushType: Wait RHI Thread
-	virtual FTexture3DRHIRef RHICreateTexture3D(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(FMath::Max(SizeX, FMath::Max(SizeY, SizeZ)) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture3DRHIRef Texture = RHI->RHICreateTexture3D(SizeX, SizeY, SizeZ, Format, NumMips, Flags, InResourceState, CreateInfo);
-		Texture->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return Texture;
-	}
-
-	/**
 	* Creates a shader resource view for a texture
 	*/
 	// FlushType: Wait RHI Thread
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* TextureRHI, const FRHITextureSRVCreateInfo& CreateInfo) override final
 	{
 		RHI_VALIDATION_CHECK(TextureRHI->GetTextureReference() == nullptr, TEXT("Creating a shader resource view of an FRHITextureReference is not supported."));
+		FRHITextureSRVCreateInfo::CheckValidity(TextureRHI->GetDesc(), CreateInfo, TextureRHI->GetTrackerResource()->GetDebugName());
 
 		FShaderResourceViewRHIRef SRV = RHI->RHICreateShaderResourceView(TextureRHI, CreateInfo);
 
@@ -881,6 +803,11 @@ public:
 		RHI->RHIUpdateTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
 	}
 
+	virtual void RHIUpdateFromBufferTexture2D(FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIBuffer* Buffer, uint32 BufferOffset) override final
+	{
+		RHI->RHIUpdateFromBufferTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, Buffer, BufferOffset);
+	}
+
 	/**
 	* Updates a region of a 3D texture from system memory
 	* @param Texture - the RHI texture resource to update
@@ -894,39 +821,6 @@ public:
 	virtual void RHIUpdateTexture3D(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData) override final
 	{
 		RHI->RHIUpdateTexture3D(Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData);
-	}
-
-	/**
-	* Creates a Cube RHI texture resource
-	* @param Size - width/height of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	*/
-	// FlushType: Wait RHI Thread
-	virtual FTextureCubeRHIRef RHICreateTextureCube(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(Size >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTextureCubeRHIRef TextureCube = RHI->RHICreateTextureCube(Size, Format, NumMips, Flags, InResourceState, CreateInfo);
-		TextureCube->InitBarrierTracking(NumMips, 6, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return TextureCube;
-	}
-
-	/**
-	* Creates a Cube Array RHI texture resource
-	* @param Size - width/height of the texture to create
-	* @param ArraySize - number of array elements of the texture to create
-	* @param Format - EPixelFormat texture format
-	* @param NumMips - number of mips to generate or 0 for full mip pyramid
-	* @param Flags - ETextureCreateFlags creation flags
-	*/
-	// FlushType: Wait RHI Thread
-	virtual FTextureCubeRHIRef RHICreateTextureCubeArray(uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(Size >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTextureCubeRHIRef TextureCubeArray = RHI->RHICreateTextureCubeArray(Size, ArraySize, Format, NumMips, Flags, InResourceState, CreateInfo);
-		TextureCubeArray->InitBarrierTracking(NumMips, ArraySize * 6, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return TextureCubeArray;
 	}
 
 	/**
@@ -968,6 +862,19 @@ public:
 		});
 
 		RHI->RHIBindDebugLabelName(Texture, Name);
+	}
+
+	virtual void RHIBindDebugLabelName(FRHIBuffer* Buffer, const TCHAR* Name) override final
+	{
+		check(IsInRenderingThread());
+
+		FString NameCopyRT = Name;
+		FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([Buffer, NameCopyRHIT = MoveTemp(NameCopyRT)](FRHICommandListImmediate& RHICmdList)
+		{
+			((FValidationContext&)RHICmdList.GetContext()).Tracker->Rename(Buffer, *NameCopyRHIT);
+		});
+
+		RHI->RHIBindDebugLabelName(Buffer, Name);
 	}
 
 	virtual void RHIBindDebugLabelName(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const TCHAR* Name) override final
@@ -1024,6 +931,11 @@ public:
 		RHI->RHIRead3DSurfaceFloatData(Texture, Rect, ZMinMax, OutData);
 	}
 
+	virtual void RHIRead3DSurfaceFloatData(FRHITexture* Texture, FIntRect Rect, FIntPoint ZMinMax, TArray<FFloat16Color>& OutData, FReadSurfaceDataFlags InFlags) override final
+	{
+		RHI->RHIRead3DSurfaceFloatData(Texture, Rect, ZMinMax, OutData, InFlags);
+	}
+
 	// FlushType: Wait RHI Thread
 	virtual FRenderQueryRHIRef RHICreateRenderQuery(ERenderQueryType QueryType) override final
 	{
@@ -1034,6 +946,26 @@ public:
 	virtual bool RHIGetRenderQueryResult(FRHIRenderQuery* RenderQuery, uint64& OutResult, bool bWait, uint32 GPUIndex = INDEX_NONE) override final
 	{
 		return RHI->RHIGetRenderQueryResult(RenderQuery, OutResult, bWait, GPUIndex);
+	}
+
+	virtual void RHIBeginOcclusionQueryBatch_TopOfPipe(FRHICommandListBase& RHICmdList, uint32 NumQueriesInBatch) override final
+	{
+		RHI->RHIBeginOcclusionQueryBatch_TopOfPipe(RHICmdList, NumQueriesInBatch);
+	}
+
+	virtual void RHIEndOcclusionQueryBatch_TopOfPipe(FRHICommandListBase& RHICmdList) override final
+	{
+		RHI->RHIEndOcclusionQueryBatch_TopOfPipe(RHICmdList);
+	}
+
+	virtual void RHIBeginRenderQuery_TopOfPipe(FRHICommandListBase& RHICmdList, FRHIRenderQuery* RenderQuery) override final
+	{
+		RHI->RHIBeginRenderQuery_TopOfPipe(RHICmdList, RenderQuery);
+	}
+
+	virtual void RHIEndRenderQuery_TopOfPipe(FRHICommandListBase& RHICmdList, FRHIRenderQuery* RenderQuery) override final
+	{
+		RHI->RHIEndRenderQuery_TopOfPipe(RHICmdList, RenderQuery);
 	}
 
 	// FlushType: Thread safe
@@ -1058,7 +990,6 @@ public:
 
 	virtual FUnorderedAccessViewRHIRef RHIGetViewportBackBufferUAV(FRHIViewport* ViewportRHI) override final
 	{
-		checkNoEntry(); // @todo fix barrier tracking for this, or remove this function
 		return RHI->RHIGetViewportBackBufferUAV(ViewportRHI);
 	}
 
@@ -1167,6 +1098,21 @@ public:
 		RHI->RHIResizeViewport(Viewport, SizeX, SizeY, bIsFullscreen, PreferredPixelFormat);
 	}
 
+	virtual EColorSpaceAndEOTF RHIGetColorSpace(FRHIViewport* Viewport) override final
+	{
+		return RHI->RHIGetColorSpace(Viewport);
+	}
+
+	virtual EPixelFormat RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelFormat) override final
+	{
+		return RHI->RHIPreferredPixelFormatHint(PreferredPixelFormat);
+	}
+
+	virtual void RHICheckViewportHDRStatus(FRHIViewport* Viewport) override final
+	{
+		RHI->RHICheckViewportHDRStatus(Viewport);
+	}
+
 	//  must be called from the main thread.
 	// FlushType: Thread safe
 	virtual void RHITick(float DeltaTime) override final
@@ -1211,12 +1157,6 @@ public:
 	virtual bool RHIIsRenderingSuspended() override final
 	{
 		return RHI->RHIIsRenderingSuspended();
-	}
-
-	// FlushType: Flush Immediate
-	virtual bool RHIEnqueueDecompress(uint8_t* SrcBuffer, uint8_t* DestBuffer, int CompressedSize, void* ErrorCodeBuffer) override final
-	{
-		return RHI->RHIEnqueueDecompress(SrcBuffer, DestBuffer, CompressedSize, ErrorCodeBuffer);
 	}
 
 	/**
@@ -1336,43 +1276,15 @@ public:
 		return RHI->RHIGetNativeCommandBuffer();
 	}
 
-	// FlushType: Thread safe
 	virtual IRHICommandContext* RHIGetDefaultContext() override final;
-
-	// FlushType: Thread safe
 	virtual IRHIComputeContext* RHIGetDefaultAsyncComputeContext() override final;
-
-	// FlushType: Thread safe
-	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) override final
-	{
-		class IRHICommandContextContainer* InnerContainer = RHI->RHIGetCommandContextContainer(Index, Num);
-		return new FValidationRHICommandContextContainer(InnerContainer);
-	}
-
-#if WITH_MGPU
-	virtual IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num, FRHIGPUMask GPUMask) override final
-	{
-		class IRHICommandContextContainer* InnerContainer = RHI->RHIGetCommandContextContainer(Index, Num, GPUMask);
-		return new FValidationRHICommandContextContainer(InnerContainer);
-	}
-#endif // WITH_MGPU
+	virtual IRHIComputeContext* RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask) override final;
+	virtual IRHIPlatformCommandList* RHIFinalizeContext(IRHIComputeContext* OuterContext) override final;
+	virtual void RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> OuterCommandLists) override final;
 
 	virtual uint64 RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format) override final
 	{
 		return RHI->RHIGetMinimumAlignmentForBufferBackedSRV(Format);
-	}
-
-	virtual FBufferRHIRef CreateBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		if (CreateInfo.ResourceArray && RHICmdList.IsInsideRenderPass())
-		{
-			FString Msg = FString::Printf(TEXT("Creating buffers with initial data during a render pass is not supported, buffer name: \"%s\""), CreateInfo.DebugName);
-			RHI_VALIDATION_CHECK(false, *Msg);
-		}
-
-		FBufferRHIRef Buffer = RHI->CreateBuffer_RenderThread(RHICmdList, Size, Usage, Stride, ResourceState, CreateInfo);
-		Buffer->InitBarrierTracking(ResourceState, CreateInfo.DebugName);
-		return Buffer;
 	}
 
 	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final
@@ -1423,13 +1335,13 @@ public:
 		return RHI->CancelAsyncReallocateTexture2D_RenderThread(RHICmdList, Texture2D, bBlockUntilCompleted);
 	}
 
-	virtual void* LockBuffer_BottomOfPipe(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final
+	virtual void* LockBuffer_BottomOfPipe(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) override final
 	{
 		RHI_VALIDATION_CHECK(LockMode != RLM_WriteOnly_NoOverwrite || GRHISupportsMapWriteNoOverwrite, TEXT("Using RLM_WriteOnly_NoOverwrite when the RHI doesn't support it."));
 		return RHI->LockBuffer_BottomOfPipe(RHICmdList, Buffer, Offset, SizeRHI, LockMode);
 	}
 	
-	virtual void UnlockBuffer_BottomOfPipe(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final
+	virtual void UnlockBuffer_BottomOfPipe(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer) override final
 	{
 		RHI->UnlockBuffer_BottomOfPipe(RHICmdList, Buffer);
 	}
@@ -1464,7 +1376,6 @@ public:
 
 	virtual FComputeShaderRHIRef CreateComputeShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
 	{
-		check(RHISupportsComputeShaders(GMaxRHIShaderPlatform));
 		return RHI->CreateComputeShader_RenderThread(RHICmdList, Code, Hash);
 	}
 
@@ -1481,6 +1392,21 @@ public:
 	virtual void UpdateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData) override final
 	{
 		RHI->UpdateTexture2D_RenderThread(RHICmdList, Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
+	}
+
+	virtual void UpdateFromBufferTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIBuffer* Buffer, uint32 BufferOffset) override final
+	{
+		RHI->UpdateFromBufferTexture2D_RenderThread(RHICmdList, Texture, MipIndex, UpdateRegion, SourcePitch, Buffer, BufferOffset);
+	}
+
+	virtual void* LockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) override final
+	{
+		return RHI->LockTexture2DArray_RenderThread(RHICmdList, Texture, ArrayIndex, MipIndex, LockMode, DestStride, bLockWithinMiptail);
+	}
+
+	virtual void UnlockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) override final
+	{
+		RHI->UnlockTexture2DArray_RenderThread(RHICmdList, Texture, ArrayIndex, MipIndex, bLockWithinMiptail);
 	}
 
 	virtual FUpdateTexture3DData BeginUpdateTexture3D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion) override final
@@ -1508,28 +1434,12 @@ public:
 		return RHI->RHICreateShaderLibrary_RenderThread(RHICmdList, Platform, FilePath, Name);
 	}
 
-	virtual FTexture2DRHIRef RHICreateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
+	virtual FTextureRHIRef RHICreateTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, const FRHITextureCreateDesc& CreateDesc) override final
 	{
-		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DRHIRef Texture2D = RHI->RHICreateTexture2D_RenderThread(RHICmdList, SizeX, SizeY, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		Texture2D->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return Texture2D;
-	}
-
-	virtual FTexture2DRHIRef RHICreateTextureExternal2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(FMath::Max(SizeX, SizeY) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture2DRHIRef Texture2D = RHI->RHICreateTextureExternal2D_RenderThread(RHICmdList, SizeX, SizeY, Format, NumMips, NumSamples, Flags, InResourceState, CreateInfo);
-		Texture2D->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return Texture2D;
-	}
-
-	virtual FTexture3DRHIRef RHICreateTexture3D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(FMath::Max(SizeX, FMath::Max(SizeY, SizeZ)) >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTexture3DRHIRef Texture3D = RHI->RHICreateTexture3D_RenderThread(RHICmdList, SizeX, SizeY, SizeZ, Format, NumMips, Flags, InResourceState, CreateInfo);
-		Texture3D->InitBarrierTracking(NumMips, 1, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return Texture3D;
+		CreateDesc.CheckValidity();
+		FTextureRHIRef Texture = RHI->RHICreateTexture_RenderThread(RHICmdList, CreateDesc);
+		ensure(Texture->IsBarrierTrackingInitialized());
+		return Texture;
 	}
 
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) override final
@@ -1548,6 +1458,15 @@ public:
 		return UAV;
 	}
 
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices) override final
+	{
+		RHI_VALIDATION_CHECK(Texture->GetTextureReference() == nullptr, TEXT("Creating an unordered access view of an FRHITextureReference is not supported."));
+
+		FUnorderedAccessViewRHIRef UAV = RHI->RHICreateUnorderedAccessView_RenderThread(RHICmdList, Texture, MipLevel, Format, FirstArraySlice, NumArraySlices);
+		UAV->ViewIdentity = Texture->GetViewIdentity(MipLevel, 1, FirstArraySlice, NumArraySlices, uint32(RHIValidation::EResourcePlane::Common), 1);
+		return UAV;
+	}
+
 	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint8 Format) override final
 	{
 		FUnorderedAccessViewRHIRef UAV = RHI->RHICreateUnorderedAccessView_RenderThread(RHICmdList, Buffer, Format);
@@ -1558,6 +1477,7 @@ public:
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) override final
 	{
 		RHI_VALIDATION_CHECK(Texture->GetTextureReference() == nullptr, TEXT("Creating a shader resource view of an FRHITextureReference is not supported."));
+		FRHITextureSRVCreateInfo::CheckValidity(Texture->GetDesc(), CreateInfo, Texture->GetTrackerResource()->GetDebugName());
 
 		FShaderResourceViewRHIRef SRV = RHI->RHICreateShaderResourceView_RenderThread(RHICmdList, Texture, CreateInfo);
 		RHIValidation::EResourcePlane Plane = CreateInfo.Format == PF_X24_G8
@@ -1600,22 +1520,6 @@ public:
 			SRV->ViewIdentity = Texture2D->GetViewIdentity(0, 0, 0, 0, uint32(RHIValidation::EResourcePlane::Fmask), 1);
 		}
 		return SRV;
-	}
-
-	virtual FTextureCubeRHIRef RHICreateTextureCube_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(Size >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTextureCubeRHIRef TextureCube = RHI->RHICreateTextureCube_RenderThread(RHICmdList, Size, Format, NumMips, Flags, InResourceState, CreateInfo);
-		TextureCube->InitBarrierTracking(NumMips, 6, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return TextureCube;
-	}
-
-	virtual FTextureCubeRHIRef RHICreateTextureCubeArray_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final
-	{
-		ensure(Size >= (1u << (FMath::Max(1u, NumMips) - 1)));
-		FTextureCubeRHIRef TextureCubeArray = RHI->RHICreateTextureCubeArray_RenderThread(RHICmdList, Size, ArraySize, Format, NumMips, Flags, InResourceState, CreateInfo);
-		TextureCubeArray->InitBarrierTracking(NumMips, ArraySize * 6, EPixelFormat(Format), Flags, InResourceState, CreateInfo.DebugName);
-		return TextureCubeArray;
 	}
 	
 	virtual FRenderQueryRHIRef RHICreateRenderQuery_RenderThread(class FRHICommandListImmediate& RHICmdList, ERenderQueryType QueryType) override final
@@ -1660,31 +1564,6 @@ public:
 		RHI->VirtualTextureSetFirstMipVisible_RenderThread(RHICmdList, Texture, FirstMip);
 	}
 
-	/* Copy the source box pixels in the destination box texture, return true if implemented for the current platform*/
-	virtual void RHICopySubTextureRegion_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* SourceTexture, FRHITexture2D* DestinationTexture, FBox2D SourceBox, FBox2D DestinationBox) override final
-	{
-		int32 Width = static_cast<int32>(SourceBox.GetSize().X);
-		int32 Height = static_cast<int32>(SourceBox.GetSize().Y);
-		int32 SrcX = static_cast<int32>(SourceBox.Min.X);
-		int32 SrcY = static_cast<int32>(SourceBox.Min.Y);
-		int32 DestX = static_cast<int32>(DestinationBox.Min.X);
-		int32 DestY = static_cast<int32>(DestinationBox.Min.Y);
-		FValidationRHIUtils::ValidateCopyTexture(SourceTexture, DestinationTexture, FIntVector(Width, Height, 1), FIntVector(SrcX, SrcY, 0), FIntVector(DestX, DestY, 0));
-		return RHI->RHICopySubTextureRegion_RenderThread(RHICmdList, SourceTexture, DestinationTexture, SourceBox, DestinationBox);
-	}
-
-	virtual void RHICopySubTextureRegion(FRHITexture2D* SourceTexture, FRHITexture2D* DestinationTexture, FBox2D SourceBox, FBox2D DestinationBox) override final
-	{
-		int32 Width = static_cast<int32>(SourceBox.GetSize().X);
-		int32 Height = static_cast<int32>(SourceBox.GetSize().Y);
-		int32 SrcX = static_cast<int32>(SourceBox.Min.X);
-		int32 SrcY = static_cast<int32>(SourceBox.Min.Y);
-		int32 DestX = static_cast<int32>(DestinationBox.Min.X);
-		int32 DestY = static_cast<int32>(DestinationBox.Min.Y);
-		FValidationRHIUtils::ValidateCopyTexture(SourceTexture, DestinationTexture, FIntVector(Width, Height, 1), FIntVector(SrcX, SrcY, 0), FIntVector(DestX, DestY, 0));
-		RHI->RHICopySubTextureRegion(SourceTexture, DestinationTexture, SourceBox, DestinationBox);
-	}
-
 	virtual FRHIFlipDetails RHIWaitForFlip(double TimeoutInSeconds) override final
 	{
 		return RHI->RHIWaitForFlip(TimeoutInSeconds);
@@ -1715,13 +1594,6 @@ public:
 	virtual FRayTracingGeometryRHIRef RHICreateRayTracingGeometry(const FRayTracingGeometryInitializer& Initializer) override final
 	{
 		FRayTracingGeometryRHIRef Result = RHI->RHICreateRayTracingGeometry(Initializer);
-		Result->InitBarrierTracking(ERHIAccess::BVHWrite, *Initializer.DebugName.ToString()); // BVHs are always created in BVHWrite state
-		return Result;
-	}
-
-	virtual FRayTracingSceneRHIRef RHICreateRayTracingScene(const FRayTracingSceneInitializer& Initializer) override final
-	{
-		FRayTracingSceneRHIRef Result = RHI->RHICreateRayTracingScene(Initializer);
 		Result->InitBarrierTracking(ERHIAccess::BVHWrite, *Initializer.DebugName.ToString()); // BVHs are always created in BVHWrite state
 		return Result;
 	}
@@ -1765,7 +1637,6 @@ public:
 	static void ReportValidationFailure(const TCHAR* InMessage);
 
 	FDynamicRHI*				RHI;
-	TIndirectArray<IRHIComputeContext> OwnedContexts;
 	TMap<FRHIDepthStencilState*, FDepthStencilStateInitializerRHI> DepthStencilStates;
 
 	uint64						RenderThreadFrameID;
@@ -1779,7 +1650,7 @@ private:
 	void ValidatePipeline(const FGraphicsPipelineStateInitializer& Initializer);
 
 	// Shared validation logic, called from RHILockBuffer / RHILockBufferMGPU
-	void LockBufferValidate(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, EResourceLockMode LockMode);
+	void LockBufferValidate(class FRHICommandListBase& RHICmdList, FRHIBuffer* Buffer, EResourceLockMode LockMode);
 };
 
 #endif	// ENABLE_RHI_VALIDATION

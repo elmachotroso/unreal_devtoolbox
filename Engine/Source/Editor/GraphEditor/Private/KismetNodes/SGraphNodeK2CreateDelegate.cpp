@@ -1,16 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KismetNodes/SGraphNodeK2CreateDelegate.h"
-#include "SSearchableComboBox.h"
+
+#include "BlueprintEventNodeSpawner.h"
+#include "BlueprintNodeBinder.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CustomEvent.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "KismetCompilerMisc.h"
+#include "K2Node.h"
 #include "K2Node_CreateDelegate.h"
-#include "Editor/UnrealEd/Public/Kismet2/BlueprintEditorUtils.h"
-#include "Editor/UnrealEd/Public/Kismet2/KismetEditorUtilities.h"
-#include "Editor/UnrealEd/Public/ScopedTransaction.h"
-#include "Editor/BlueprintGraph/Classes/BlueprintNodeBinder.h"
-#include "Editor/BlueprintGraph/Classes/BlueprintEventNodeSpawner.h"
-#include "Editor/BlueprintGraph/Classes/K2Node_CustomEvent.h"
-#include "Editor/GraphEditor/Public/SGraphNode.h"
+#include "Layout/Margin.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "ScopedTransaction.h"
+#include "SSearchableComboBox.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 FText SGraphNodeK2CreateDelegate::FunctionDescription(const UFunction* Function, const bool bOnlyDescribeSignature /*= false*/, const int32 CharacterLimit /*= 32*/)
 {
@@ -282,7 +309,8 @@ void SGraphNodeK2CreateDelegate::CreateBelowPinControls(TSharedPtr<SVerticalBox>
 			for (TFieldIterator<UFunction> It(ScopeClass); It; ++It)
 			{
 				UFunction* Func = *It;
-				if (Func && FunctionSignature->IsSignatureCompatibleWith(Func) &&
+				if (Func && 
+					(FKismetCompilerUtilities::DoSignaturesHaveConvertibleFloatTypes(Func, FunctionSignature) != ConvertibleSignatureMatchResult::Different) &&
 					UEdGraphSchema_K2::FunctionCanBeUsedInDelegate(Func))
 				{
 					FFunctionItemData ItemData;

@@ -2,14 +2,29 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Misc/EnumClassFlags.h"
-#include "Internationalization/InternationalizationManifest.h"
+#include "HAL/Platform.h"
 #include "Internationalization/InternationalizationArchive.h"
+#include "Internationalization/InternationalizationManifest.h"
 #include "Internationalization/LocKeyFuncs.h"
+#include "Misc/DateTime.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/ObjectMacros.h"
+
 #include "LocTextHelper.generated.h"
 
+class FArchiveEntry;
+class FInternationalizationArchive;
 class FLocMetadataObject;
+class FText;
+class FJsonObject;
 
 /** Flags controlling the behavior used when loading manifests and archives into FLocTextHelper */
 enum class ELocTextHelperLoadFlags : uint8
@@ -78,6 +93,13 @@ struct LOCALIZATION_API FLocTextPlatformSplitUtils
 	/** Get the platforms names that should be split, based on the given split mode */
 	static const TArray<FString>& GetPlatformsToSplit(const ELocTextPlatformSplitMode& InSplitMode);
 };
+/** An enum representing all the formats the conflict report can be output in. */
+enum class EConflictReportFormat : uint8
+{
+	None,
+	Txt,
+	CSV
+};
 
 /**
  * Class that tracks any conflicts that occur when gathering source text entries.
@@ -123,11 +145,15 @@ public:
 	 * @param InSourceLocation		The source location of the conflict.
 	 */
 	void AddConflict(const FLocKey& InNamespace, const FLocKey& InKey, const TSharedPtr<FLocMetadataObject>& InKeyMetadata, const FLocItem& InSource, const FString& InSourceLocation);
-
+	
 	/**
-	 * Convert the conflicts to a string format that can be easily saved as a report summary.
+	 * Convert the conflicts to a string format that can be easily saved as a .txt report summary.
 	 */
 	FString GetConflictReport() const;
+	/**
+	 * Convert the conflicts to a string format that can be easily saved as a .csv report summary.
+	 */
+	FString GetConflictReportAsCSV() const;
 
 private:
 	FLocTextConflicts(const FLocTextConflicts&) = delete;
@@ -343,6 +369,13 @@ public:
 	 * @return True if the file was saved, false otherwise.
 	 */
 	bool SaveManifest(FText* OutError = nullptr) const;
+
+
+	/**
+	 * Attempt to serialize the entire manifest to an input json object
+	 * @return True if the serialization succeeds false otherwise.
+	 */
+	bool SerializeManifestToJson(TSharedRef<FJsonObject> JsonObject);
 
 	/**
 	 * Attempt to save the manifest file to the given file path.
@@ -778,16 +811,18 @@ public:
 	 * Get a conflict report that can be easily saved as a report summary.
 	 */
 	FString GetConflictReport() const;
+	
 
 	/**
 	 * Save the conflict report summary to disk.
 	 *
 	 * @param InReportFilePath		Full file path to write the report to.
+	 * @param InConflictReportFormat		The format the conflict report should be generated in.
 	 * @param OutError				Optional text to be filled when an error occurs.
 	 *
 	 * @return True if the file was saved, false otherwise.
 	 */
-	bool SaveConflictReport(const FString& InReportFilePath, FText* OutError = nullptr) const;
+	bool SaveConflictReport(const FString& InReportFilePath, EConflictReportFormat InConflictReportFormat, FText* OutError = nullptr) const;
 
 	/**
 	 * Get a word count report for the current state of the manifest and archives.

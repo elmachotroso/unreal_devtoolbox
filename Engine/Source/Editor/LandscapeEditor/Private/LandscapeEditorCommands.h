@@ -2,9 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Map.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Templates/SharedPointer.h"
+
+class FName;
+class FUICommandInfo;
 
 /**
  * Unreal landscape editor actions
@@ -88,6 +91,7 @@ public:
 	TSharedPtr<FUICommandInfo> IncreaseAlphaBrushRotation;
 	TSharedPtr<FUICommandInfo> DecreaseAlphaBrushRotation;
 
+	TSharedPtr<FUICommandInfo> DragBrushSizeAndFalloff;
 	TSharedPtr<FUICommandInfo> DragBrushSize;
 	TSharedPtr<FUICommandInfo> DragBrushFalloff;
 	TSharedPtr<FUICommandInfo> DragBrushStrength;

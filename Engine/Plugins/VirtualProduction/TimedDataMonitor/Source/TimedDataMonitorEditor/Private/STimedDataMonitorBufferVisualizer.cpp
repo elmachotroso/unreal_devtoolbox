@@ -3,24 +3,17 @@
 #include "STimedDataMonitorBufferVisualizer.h"
 
 #include "Engine/Engine.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Misc/App.h"
-#include "Modules/ModuleManager.h"
+#include "STimingDiagramWidget.h"
 #include "TimedDataMonitorEditorSettings.h"
 #include "TimedDataMonitorSubsystem.h"
-
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Notifications/NotificationManager.h"
-
-#include "STimingDiagramWidget.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBorder.h"
 #include "Widgets/Views/STableRow.h"
 
 #define LOCTEXT_NAMESPACE "TimedDataBufferVisualizer"
-
 
 class STimedDataMonitorBufferVisualizerListView;
 
@@ -127,6 +120,12 @@ public:
 	{
 		float Scale = 2.f;
 		float MinValue = 2.f;
+
+		if (FSlateApplication::Get().GetModifierKeys().IsControlDown())
+		{
+			Scale *= ControlKeyModifier;
+		}
+
 		SizePerSeconds = FMath::Max(MinValue, SizePerSeconds + MouseEvent.GetWheelDelta() * Scale);
 		return FReply::Handled();
 	}
@@ -137,6 +136,7 @@ public:
 	}
 
 	float SizePerSeconds = 100.f;
+	float ControlKeyModifier = 50.f;
 };
 
 
@@ -260,10 +260,15 @@ void STimedDataMonitorBufferVisualizer::RebuiltListItemsSource()
 
 	if (bListModified)
 	{
-		Algo::Sort(ListItemsSource, [](const TSharedPtr<FTimedDataMonitorBuffervisualizerItem>& A, const TSharedPtr<FTimedDataMonitorBuffervisualizerItem>& B)
+		struct FSortNamesAlphabetically
+		{
+			bool operator()(const TSharedPtr<FTimedDataMonitorBuffervisualizerItem>& LHS, const TSharedPtr<FTimedDataMonitorBuffervisualizerItem>& RHS) const
 			{
-				return (A->InputIdentifier == B->InputIdentifier) ? A->ChannelDisplayName.CompareTo(B->ChannelDisplayName) < 0 : A->InputIdentifier < B->InputIdentifier;
-			});
+				return (LHS->ChannelDisplayName.CompareTo(RHS->ChannelDisplayName) < 0);
+			}
+		};
+
+		ListItemsSource.Sort(FSortNamesAlphabetically());
 		ListViewWidget->RequestListRefresh();
 	}
 }

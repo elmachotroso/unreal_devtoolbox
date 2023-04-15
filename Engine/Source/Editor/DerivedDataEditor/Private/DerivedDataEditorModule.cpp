@@ -5,14 +5,13 @@
 #include "SDerivedDataStatusBar.h"
 #include "SDerivedDataDialogs.h"
 #include "SDerivedDataCacheSettings.h"
-#include "SVirtualAssetsStatistics.h"
 #include "ZenServerInterface.h"
 #include "DerivedDataCacheNotifications.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
@@ -22,14 +21,10 @@ IMPLEMENT_MODULE(FDerivedDataEditorModule, DerivedDataEditor );
 
 static const FName DerivedDataResourceUsageTabName = FName(TEXT("DerivedDataResourceUsage"));
 static const FName DerivedDataCacheStatisticsTabName = FName(TEXT("DerivedDataCacheStatistics"));
-static const FName VirtualAssetsStatisticsTabName = FName(TEXT("VirtualAssetsStatistics"));
 
 void FDerivedDataEditorModule::StartupModule()
 {
-	// We're going to call a static function in the editor style module, so we need to make sure the module has actually been loaded
-	FModuleManager::Get().LoadModuleChecked("EditorStyle");
-
-	const FSlateIcon ResourceUsageIcon(FEditorStyle::GetStyleSetName(), "DerivedData.ResourceUsage");
+	const FSlateIcon ResourceUsageIcon(FAppStyle::GetAppStyleSetName(), "DerivedData.ResourceUsage");
 
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(DerivedDataResourceUsageTabName, FOnSpawnTab::CreateRaw(this, &FDerivedDataEditorModule::CreateResourceUsageTab))
 		.SetDisplayName(LOCTEXT("DerivedDataResourceUsageTabTitle", "Resource Usage"))
@@ -37,7 +32,7 @@ void FDerivedDataEditorModule::StartupModule()
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
 		.SetIcon(ResourceUsageIcon);
 
-	const FSlateIcon CacheStatisticsIcon(FEditorStyle::GetStyleSetName(), "DerivedData.Cache.Statistics");
+	const FSlateIcon CacheStatisticsIcon(FAppStyle::GetAppStyleSetName(), "DerivedData.Cache.Statistics");
 
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(DerivedDataCacheStatisticsTabName, FOnSpawnTab::CreateRaw(this, &FDerivedDataEditorModule::CreateCacheStatisticsTab))
 		.SetDisplayName(LOCTEXT("DerivedDataCacheStatisticsTabTitle", "Cache Statistics"))
@@ -45,21 +40,11 @@ void FDerivedDataEditorModule::StartupModule()
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
 		.SetIcon(CacheStatisticsIcon);
 
-	const FSlateIcon VirtaulAssetsStatisticsIcon(FEditorStyle::GetStyleSetName(), "DerivedData.Cache.Statistics");
-
-	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(VirtualAssetsStatisticsTabName, FOnSpawnTab::CreateRaw(this, &FDerivedDataEditorModule::CreateVirtualAssetsStatisticsTab))
-		.SetDisplayName(LOCTEXT("VirtualAssetsStatisticsTabTitle", "Virtual Assets"))
-		.SetTooltipText(LOCTEXT("VirtualAssetsStatisticsTabToolTipText", "Virtual Assets  Statistics"))
-		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
-		.SetIcon(CacheStatisticsIcon);
-
-
 #if WITH_RELOAD
 	// This code attempts to relaunch the tabs when you reload this module
 	if (IsReloadActive() && FSlateApplication::IsInitialized())
 	{
 		ShowCacheStatisticsTab();
-		ShowVirtualAssetsStatisticsTab();
 		ShowResourceUsageTab();
 	}
 #endif // WITH_RELOAD
@@ -85,13 +70,6 @@ void FDerivedDataEditorModule::ShutdownModule()
 		if (CacheStatisticsTab.IsValid())
 		{
 			CacheStatisticsTab.Pin()->RequestCloseTab();
-		}
-
-		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(VirtualAssetsStatisticsTabName);
-
-		if (VirtualAssetsStatisticsTab.IsValid())
-		{
-			VirtualAssetsStatisticsTab.Pin()->RequestCloseTab();
 		}
 	}
 
@@ -141,26 +119,6 @@ TSharedRef<SDockTab> FDerivedDataEditorModule::CreateCacheStatisticsTab(const FS
 void FDerivedDataEditorModule::ShowCacheStatisticsTab()
 {
 	FGlobalTabmanager::Get()->TryInvokeTab(FTabId(DerivedDataCacheStatisticsTabName));
-}
-
-
-TSharedPtr<SWidget> FDerivedDataEditorModule::CreateVirtualAssetsStatisticsDialog()
-{
-	return SNew(SVirtualAssetsStatisticsDialog);
-}
-
-TSharedRef<SDockTab> FDerivedDataEditorModule::CreateVirtualAssetsStatisticsTab(const FSpawnTabArgs& Args)
-{
-	return SAssignNew(ResourceUsageTab, SDockTab)
-		.TabRole(ETabRole::NomadTab)
-		[
-			CreateVirtualAssetsStatisticsDialog().ToSharedRef()
-		];
-}
-
-void FDerivedDataEditorModule::ShowVirtualAssetsStatisticsTab()
-{
-	FGlobalTabmanager::Get()->TryInvokeTab(FTabId(VirtualAssetsStatisticsTabName));
 }
 
 void FDerivedDataEditorModule::ShowSettingsDialog()

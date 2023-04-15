@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonInputSubsystem.h"
-#include "CommonInputPrivatePCH.h"
+#include "CommonInputPrivate.h"
 #include "Misc/ConfigCacheIni.h"
 
 #include "Framework/Application/IInputProcessor.h"
@@ -18,9 +18,7 @@
 #include "Engine/Engine.h"
 #include "Stats/Stats.h"
 
-#if NV_GEFORCENOW
-#include "GeForceNOWWrapper.h"
-#endif
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonInputSubsystem)
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -326,6 +324,8 @@ void UCommonInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonInputSubsystem::Tick), 0.1f);
 
 	CVarInputKeysVisible->SetOnChangedCallback(FConsoleVariableDelegate::CreateUObject(this, &UCommonInputSubsystem::ShouldShowInputKeysChanged));
+
+	SetActionDomainTable(FCommonInputBase::GetInputSettings()->GetActionDomainTable());
 }
 
 void UCommonInputSubsystem::Deinitialize()
@@ -717,17 +717,16 @@ bool UCommonInputSubsystem::PlatformSupportsInputType(ECommonInputType InInputTy
 	{
 		case ECommonInputType::MouseAndKeyboard:
 		{
-#if PLATFORM_SWITCH
+#if UE_COMMONINPUT_PLATFORM_KBM_REQUIRES_ATTACHED_MOUSE
 			bPlatformSupportsInput &= FSlateApplication::Get().IsMouseAttached();
 #endif
 		}
 		break;
 		case ECommonInputType::Touch:
 		{
-#if PLATFORM_SWITCH
-			bPlatformSupportsInput &= SUPPORT_SWITCH_TOUCHSCREEN;
-#elif PLATFORM_DESKTOP && !UE_BUILD_SHIPPING
-			bPlatformSupportsInput = true; // Support touch testing until touch is supported on desktop
+			bPlatformSupportsInput &= UE_COMMONINPUT_PLATFORM_SUPPORTS_TOUCH != 0;
+#if PLATFORM_DESKTOP && !UE_BUILD_SHIPPING
+			bPlatformSupportsInput = true; // Enable touch in debug editor
 #endif
 		}
 		break;
@@ -765,3 +764,4 @@ bool UCommonInputSubsystem::IsMobileGamepadKey(const FKey& InKey)
 
 	return PhysicalMobileKeys.Contains(InKey);
 }
+

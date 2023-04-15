@@ -15,7 +15,7 @@
 
 #include "Sequencer/MovieSceneControlRigSpaceChannel.h"
 #include "Sequencer/MovieSceneControlRigParameterSection.h"
-#include "SRigSpacePickerWidget.h"
+#include "Editor/SRigSpacePickerWidget.h"
 #include "Containers/SortedMap.h"
 #include "KeyBarCurveModel.h"
 
@@ -59,11 +59,6 @@ struct FControlRigSpaceChannelHelpers
 	static FLinearColor GetColor(const FMovieSceneControlRigSpaceBaseKey& Key);
 	static FReply OpenBakeDialog(ISequencer* Sequencer, FMovieSceneControlRigSpaceChannel* Channel, int32 KeyIndex, UMovieSceneSection* SectionToKey);
 	static TArray<FKeyBarCurveModel::FBarRange> FindRanges(FMovieSceneControlRigSpaceChannel* Channel, const UMovieSceneSection* Section);
-
-	// evaluates the tangent by central difference at a specific time. (return the closest key tangent if within an acceptable tolerance) 
-	static void EvaluateTangentAtThisTime(UControlRig* ControlRig, UMovieSceneControlRigParameterSection* Section, FName ControlName, FFrameNumber Time, TArray<FMovieSceneTangentData>& OutTangents);
-	// set the tangent at a specific time. (if there's a key to set at this time)
-	static void SetTangentsAtThisTime(UControlRig* ControlRig, UMovieSceneControlRigParameterSection* Section, FName ControlName, FFrameNumber Time, const TArray<FMovieSceneTangentData>& InTangents);
 	// retrieve the control and the channel infos for that ControlRig/Section.
 	static TPair<FRigControlElement*, FChannelMapInfo*> GetControlAndChannelInfo(UControlRig* ControlRig, UMovieSceneControlRigParameterSection* Section, FName ControlName);
 	// retrieve the number of float channels based on the control type.
@@ -79,7 +74,7 @@ TSharedRef<SWidget> CreateKeyEditor(const TMovieSceneChannelHandle<FMovieSceneCo
 
 /** Key drawing overrides */
 void DrawKeys(FMovieSceneControlRigSpaceChannel* Channel, TArrayView<const FKeyHandle> InKeyHandles, const UMovieSceneSection* InOwner, TArrayView<FKeyDrawParams> OutKeyDrawParams);
-void DrawExtra(FMovieSceneControlRigSpaceChannel* Channel, const UMovieSceneSection* Owner, const FGeometry& AllottedGeometry,FSequencerSectionPainter& Painter);
+int32 DrawExtra(FMovieSceneControlRigSpaceChannel* Channel, const UMovieSceneSection* Owner, const FSequencerChannelPaintArgs& PaintArgs, int32 LayerId);
 
 //UMovieSceneKeyStructType* IstanceGeneratedStruct(FMovieSceneControlRigSpaceChannel* Channel, FSequencerKeyStructGenerator* Generator);
 

@@ -9,7 +9,7 @@
 #include "CADKernel/Topo/TopologicalLoop.h"
 #include "CADKernel/Topo/TopologicalVertex.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FFaceMesh::GetNodeIdToCoordinates(TMap<int32, const FPoint*>& NodeIdToCoordinates) const
@@ -62,7 +62,7 @@ void FFaceMesh::InverseOrientation()
 		Swap(TrianglesVerticesIndex[Index], TrianglesVerticesIndex[Index+1]);
 	}
 
-	for (FVector& Normal : Normals)
+	for (FVector3f& Normal : Normals)
 	{
 		Normal *= -1.;
 	}

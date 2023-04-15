@@ -10,11 +10,12 @@ namespace UnrealBuildTool.Rules
 {
 	public class PixelStreaming : ModuleRules
 	{
-		const string PixelStreamingProgramsDirectory = "../../Samples/PixelStreaming";
+		string PixelStreamingProgramsOutputDirectory = "$(ProjectDir)/Samples/PixelStreaming/WebServers";
+		const string PixelStreamingProgramsDirectory = "../../Engine/Plugins/Media/PixelStreaming/Resources/WebServers";
 
 		private void AddFolder(string Folder)
 		{
-			string DirectoryToAdd = new DirectoryInfo(PixelStreamingProgramsDirectory + "/WebServers/" + Folder).FullName;
+			string DirectoryToAdd = new DirectoryInfo(Path.Combine(PixelStreamingProgramsDirectory, Folder)).FullName;
 
 			if (!Directory.Exists(DirectoryToAdd))
 			{
@@ -48,43 +49,50 @@ namespace UnrealBuildTool.Rules
 				// If we are not skipping, we want to add this to our packaged output
 				if(!bSkip)
 				{
-					RuntimeDependencies.Add(DependencySource, StagedFileType.NonUFS);
+					string RelativeSourcePath = Path.GetRelativePath(PixelStreamingProgramsDirectory, DependencySource);
+					RuntimeDependencies.Add(Path.Combine(PixelStreamingProgramsOutputDirectory, RelativeSourcePath), DependencySource, StagedFileType.SystemNonUFS);
 				}
 			}
 		}
 
 		public PixelStreaming(ReadOnlyTargetRules Target) : base(Target)
 		{
-			// use private PCH to include lots of WebRTC headers
-			PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-			PrivatePCHHeaderFile = "Private/PCH.h";
-
 			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 
 			// This is so for game projects using our public headers don't have to include extra modules they might not know about.
 			PublicDependencyModuleNames.AddRange(new string[]
 			{
-				"InputDevice"
+				"ApplicationCore",
+				"InputDevice",
+				"WebRTC",
+				"PixelCapture"
 			});
 
 			// NOTE: General rule is not to access the private folder of another module
 			PrivateIncludePaths.AddRange(new string[]
+			{
+				System.IO.Path.Combine(GetModuleDirectory("AudioMixer"), "Private"),
+				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+			});
+
+			// WebRTC third party includes (just libyuv for colour format conversions for now)
+			PublicIncludePaths.AddRange(new string[]
 				{
-					Path.Combine(EngineDir, "Source/Runtime/AudioMixer/Private"),
-					Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private"),
+					Path.Combine(EngineDir, "Source/ThirdParty/WebRTC/4147/Include/third_party/libyuv/include"),
 				});
 
 			PrivateDependencyModuleNames.AddRange(new string[]
 			{
-				"ApplicationCore",
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"EngineSettings",
 				"InputCore",
 				"Json",
+				"Renderer",
 				"RenderCore",
 				"RHI",
-				"RHICore",
+				"SignalProcessing",
 				"Slate",
 				"SlateCore",
 				"AudioMixer",
@@ -93,46 +101,32 @@ namespace UnrealBuildTool.Rules
 				"Sockets",
 				"MediaUtils",
 				"DeveloperSettings",
-				"AVEncoder"
+				"AVEncoder",
+				"PixelCaptureShaders",
+				"PixelStreamingServers",
 			});
 
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
-
-			// required for casting UE4 BackBuffer to Vulkan Texture2D for NvEnc
-			PrivateDependencyModuleNames.AddRange(new string[] { "CUDA", "VulkanRHI", "nvEncode" });
-
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-			
-			PrivateIncludePathModuleNames.Add("VulkanRHI");
-			PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private"));
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
+			PrivateDependencyModuleNames.Add("VulkanRHI");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan", "CUDA");
 
 			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 			{
-				PublicDependencyModuleNames.Add("D3D11RHI");
-				PublicDependencyModuleNames.Add("D3D12RHI");
-				PrivateIncludePaths.AddRange(
-					new string[]{
-						Path.Combine(EngineDir, "Source/Runtime/D3D12RHI/Private"),
-						Path.Combine(EngineDir, "Source/Runtime/D3D12RHI/Private/Windows")
-					});
+				PrivateDependencyModuleNames.Add("D3D11RHI");
+				PrivateDependencyModuleNames.Add("D3D12RHI");
 
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-				PublicSystemLibraries.AddRange(new string[] {
-					"DXGI.lib",
-					"d3d11.lib",
-				});
-
-				PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private/Windows"));
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
 			}
-			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
+
+			// When we build a Game target we also package the servers with it as runtime dependencies
+			if(Target.Type == TargetType.Game && Target.ProjectFile != null)
 			{
-				PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private/Linux"));
-			}
+				AddFolder("SignallingWebServer");
+				AddFolder("Matchmaker");
+				AddFolder("SFU");
 
-			AddFolder("SignallingWebServer");
-			AddFolder("Matchmaker");
-			AddFolder("SFU");
+				RuntimeDependencies.Add("$(ProjectDir)/Samples/PixelStreaming/WebServers/get_ps_servers.bat", "$(PluginDir)/Resources/WebServers/get_ps_servers.bat", StagedFileType.NonUFS);
+				RuntimeDependencies.Add("$(ProjectDir)/Samples/PixelStreaming/WebServers/get_ps_servers.sh", "$(PluginDir)/Resources/WebServers/get_ps_servers.sh", StagedFileType.NonUFS);
+			}
 		}
 	}
 }

@@ -40,14 +40,15 @@ UPhysicsAssetEditorOptions::UPhysicsAssetEditorOptions(const FObjectInitializer&
 	InterpolationSpeed = 50.f;
 
 	bShowConstraintsAsPoints = false;
+	bSimulationFloorCollisionEnabled = true;
 	ConstraintDrawSize = 1.0f;
 
 	// view options
-	MeshViewMode = EPhysicsAssetEditorRenderMode::Solid;
-	CollisionViewMode = EPhysicsAssetEditorRenderMode::Solid;
+	MeshViewMode = EPhysicsAssetEditorMeshViewMode::Solid;
+	CollisionViewMode = EPhysicsAssetEditorCollisionViewMode::Solid;
 	ConstraintViewMode = EPhysicsAssetEditorConstraintViewMode::AllLimits;
-	SimulationMeshViewMode = EPhysicsAssetEditorRenderMode::Solid;
-	SimulationCollisionViewMode = EPhysicsAssetEditorRenderMode::Solid;
+	SimulationMeshViewMode = EPhysicsAssetEditorMeshViewMode::Solid;
+	SimulationCollisionViewMode = EPhysicsAssetEditorCollisionViewMode::Solid;
 	SimulationConstraintViewMode = EPhysicsAssetEditorConstraintViewMode::None;
 
 	CollisionOpacity = 0.3f;
@@ -106,6 +107,7 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, DefaultLocalAxesSelection(2)
 	, DefaultBoneDrawSelection(1)
+	, bPauseAnimationOnCameraMove(false)
 	, bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons(true)
 {
 	AssetEditorOptions.AddUnique(FAssetEditorOptions(TEXT("SkeletonEditor")));
@@ -122,6 +124,13 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 	SectionTimingNodeColor = FLinearColor(0.39f, 0.39f, 1.0f, 0.75f);
 	NotifyTimingNodeColor = FLinearColor(0.8f, 0.1f, 0.1f);
 	BranchingPointTimingNodeColor = FLinearColor(0.5f, 1.0f, 1.0f);
+	
+	DefaultBoneColor = FLinearColor(0.0f,0.0f,0.025f,1.0f);
+	SelectedBoneColor = FLinearColor(0.2f,1.0f,0.2f,1.0f);
+	AffectedBoneColor = FLinearColor(1.0f,1.0f,1.0f,1.0f);
+	DisabledBoneColor = FLinearColor(0.4f,0.4f,0.4f,1.0f);
+	ParentOfSelectedBoneColor = FLinearColor(0.85f,0.45f,0.12f,1.0f);
+	VirtualBoneColor = FLinearColor(0.4f, 0.4f, 1.0f, 1.0f);
 
 	bAutoAlignFloorToMesh = true;
 

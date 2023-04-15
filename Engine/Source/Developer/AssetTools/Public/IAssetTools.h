@@ -12,11 +12,13 @@
 #include "AssetTypeCategories.h"
 #include "IAssetTypeActions.h"
 #include "AutomatedAssetImportData.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
+#include "Engine/Blueprint.h"
+#include "Logging/TokenizedMessage.h"
 #include "IAssetTools.generated.h"
 
-
 struct FAssetData;
+class IAssetTools;
 class IAssetTypeActions;
 class IClassTypeActions;
 class UFactory;
@@ -24,6 +26,24 @@ class UAssetImportTask;
 class UAdvancedCopyCustomization;
 class FNamePermissionList;
 class FPathPermissionList;
+
+namespace UE::AssetTools
+{
+	// Declared in PackageMigrationContext.h
+	struct FPackageMigrationContext;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPackageMigration, FPackageMigrationContext&);
+}
+
+UENUM()
+enum class EAssetClassAction : uint8
+{
+	/** Whether an action can be created by an AssetTypeAction */
+	CreateAsset,
+	/** Whether an asset can be viewed in the content browser */
+	ViewAsset,
+	AllAssetActions
+};
 
 UENUM()
 enum class EAssetRenameResult : uint8
@@ -98,6 +118,7 @@ struct FAssetRenameData
 
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FAssetPostRenameEvent, const TArray<FAssetRenameData>&);
+DECLARE_DELEGATE_RetVal_TwoParams(bool, FIsNameAllowed, const FString& /*Name*/, FText* /*OutErrorMessage*/);
 
 
 struct FAdvancedAssetCategory
@@ -166,6 +187,44 @@ private:
 	FString DropLocationForAdvancedCopy;
 };
 
+
+UENUM()
+enum class EAssetMigrationConflict : uint8
+{
+	// Skip Assets
+	Skip,
+	// Overwrite Assets
+	Overwrite,
+	// Cancel the whole Migration
+	Cancel
+};
+
+USTRUCT(BlueprintType)
+struct FMigrationOptions
+{
+	GENERATED_BODY()
+
+	/** Prompt user for confirmation (always false through scripting) */
+	bool bPrompt;
+
+	/** What to do when Assets are conflicting on the destination */
+	UPROPERTY(BlueprintReadWrite, Category = MigrationOptions)
+	EAssetMigrationConflict AssetConflict;
+
+	/** Destination for assets that don't have a corresponding content folder. If left empty those assets are not migrated. (Not used by the new migration)*/
+	UPROPERTY(BlueprintReadWrite, Category = MigrationOptions)
+	FString OrphanFolder;
+
+	FMigrationOptions()
+		: bPrompt(false)
+		, AssetConflict(EAssetMigrationConflict::Skip)
+	{}
+
+};
+
+// An array of maps each storing pairs of original object -> duplicated object
+using FDuplicatedObjects = TArray<TMap<TSoftObjectPtr<UObject>, TSoftObjectPtr<UObject>>>;
+
 UINTERFACE(MinimalApi, BlueprintType, meta = (CannotImplementInterfaceInBlueprint))
 class UAssetTools : public UInterface
 {
@@ -177,7 +236,7 @@ class IAssetTools
 	GENERATED_IINTERFACE_BODY()
 
 public:
-
+	ASSETTOOLS_API static IAssetTools& Get();
 
 	/** Registers an asset type actions object so it can provide information about and actions for asset types. */
 	virtual void RegisterAssetTypeActions(const TSharedRef<IAssetTypeActions>& NewActions) = 0;
@@ -253,6 +312,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Editor Scripting | Asset Tools")
 	virtual UObject* DuplicateAsset(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject) = 0;
 
+	/** Controls whether or not newly created assets are made externally referneceable or not */
+	virtual void SetCreateAssetsAsExternallyReferenceable(bool bValue) = 0;
+
+	/** Gets whether assets are being made externally referenceable or not */
+	virtual bool GetCreateAssetsAsExternallyReferenceable() = 0;
+
 	/** Renames assets using the specified names. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual bool RenameAssets(const TArray<FAssetRenameData>& AssetsAndNames) = 0;
@@ -307,7 +372,7 @@ public:
 	 * @param bAllowAsyncImport	This allow the import code to use a async importer if enabled. (Note doing so will ignore the ChosenFactory arguments (If you want a async import prefer the InterchangeManager api))
 	 * @return list of successfully imported assets
 	 */
-	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory = NULL, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr, bool bAllowAsyncImport = false) const = 0;
+	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory = NULL, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr, bool bAllowAsyncImport = false, bool bSceneImport = false) const = 0;
 
 	/**
 	 * Imports assets using data specified completely up front.  Does not ever ask any questions of the user or show any modal error messages
@@ -374,9 +439,11 @@ public:
 	 * @param InPackagePath - The fullpath to the package
 	 * @param InPackageName - The name of the package
 	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual void DiffAgainstDepot(UObject* InObject, const FString& InPackagePath, const FString& InPackageName) const = 0;
 
 	/** Try and diff two assets using class-specific tool. Will do nothing if either asset is NULL, or they are not the same class. */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual void DiffAssets(UObject* OldAsset, UObject* NewAsset, const struct FRevisionInfo& OldRevision, const struct FRevisionInfo& NewRevision) const = 0;
 
 	/** Util for dumping an asset to a temporary text file. Returns absolute filename to temp file */
@@ -395,6 +462,16 @@ public:
 
 	/* Migrate packages to another game content folder */
 	virtual void MigratePackages(const TArray<FName>& PackageNamesToMigrate) const = 0;
+
+	/* Migrate packages and dependencies to another folder */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
+	virtual void MigratePackages(const TArray<FName>& PackageNamesToMigrate, const FString& DestinationPath, const struct FMigrationOptions& Options = FMigrationOptions()) const = 0;
+
+	/**
+	 * Event called when some packages are migrated
+	 * Note this is only true when AssetTools.UseNewPackageMigration is true
+	 */
+	virtual UE::AssetTools::FOnPackageMigration& GetOnPackageMigration() = 0;
 
 	/* Copy packages and dependencies to another folder */
 	virtual void BeginAdvancedCopyPackages(const TArray<FName>& InputNamesToCopy, const FString& TargetPath) const = 0;
@@ -415,7 +492,7 @@ public:
 	virtual bool AdvancedCopyPackages(const FAdvancedCopyParams& CopyParams, const TArray<TMap<FString, FString>> PackagesAndDestinations) const = 0;
 
 	/** Copies files after the flattened map of sources and destinations was confirmed */
-	virtual bool AdvancedCopyPackages(const TMap<FString, FString>& SourceAndDestPackages, const bool bForceAutosave = false, const bool bCopyOverAllDestinationOverlaps = true) const = 0;
+	virtual bool AdvancedCopyPackages(const TMap<FString, FString>& SourceAndDestPackages, const bool bForceAutosave = false, const bool bCopyOverAllDestinationOverlaps = true, FDuplicatedObjects* OutDuplicatedObjects = nullptr, EMessageSeverity::Type NotificationSeverityFilter = EMessageSeverity::Info) const = 0;
 
 	/* Given a set of packages to copy, generate the map of those packages to destination filenames */
 	virtual void GenerateAdvancedCopyDestinations(FAdvancedCopyParams& InParams, const TArray<FName>& InPackageNamesToCopy, const UAdvancedCopyCustomization* CopyCustomization, TMap<FString, FString>& OutPackagesAndDestinations) const = 0;
@@ -449,8 +526,15 @@ public:
 	/** Find all supported asset factories. */
 	virtual TArray<UFactory*> GetNewAssetFactories() const = 0;
 
-	/** Get asset class permission list for content browser and other systems */
+	/** Get asset class permission list for the ViewAsset action */
+	UE_DEPRECATED(5.1, "Pass in an EAssetClassAction instead of nothing")
 	virtual TSharedRef<FNamePermissionList>& GetAssetClassPermissionList() = 0;
+
+	/** Get asset class permission list for content browser and other systems */
+	virtual TSharedRef<FPathPermissionList>& GetAssetClassPathPermissionList(EAssetClassAction AssetClassAction) = 0;
+
+	/** Which BlueprintTypes are allowed to be created. An empty list should allow everything. */
+	virtual TSet<EBlueprintType>& GetAllowedBlueprintTypes() = 0;
 
 	/** Get folder permission list for content browser and other systems */
 	virtual TSharedRef<FPathPermissionList>& GetFolderPermissionList() = 0;
@@ -460,6 +544,13 @@ public:
 
 	/** Returns true if all in list pass writable folder filter */
 	virtual bool AllPassWritableFolderFilter(const TArray<FString>& InPaths) const = 0;
+
+	/** Returns true if IsNameAllowedDelegate is not set, or if the name passes the filter function*/
+	virtual bool IsNameAllowed(const FString& Name, FText* OutErrorMessage = nullptr) const = 0;
+	/** Allows setting of a global name filter that is applied to folders, assets, plugins, etc. */
+	virtual void RegisterIsNameAllowedDelegate(const FName OwnerName, FIsNameAllowed Delegate) = 0;
+	/** Remove a previously-set global name filter */
+	virtual void UnregisterIsNameAllowedDelegate(const FName OwnerName) = 0;
 
 	/** Show notification that writable folder filter blocked an action */
 	virtual void NotifyBlockedByWritableFolderFilter() const = 0;

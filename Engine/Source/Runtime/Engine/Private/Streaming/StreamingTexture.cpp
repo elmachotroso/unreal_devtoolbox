@@ -115,15 +115,6 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 					LODScreenSizes[ResourceState.MaxNumLODs - LODIndex - 1] = AssetLODInfos[LODIndex + ResourceState.AssetLODBias].ScreenSize.GetValue() * 0.5f;
 				}
 			}
-			else
-			{
-				const ULandscapeLODStreamingProxy* LandscapeProxy = CastChecked<ULandscapeLODStreamingProxy>(RenderAsset);
-				const TArray<float> LODScreenSizeArray = LandscapeProxy->GetLODScreenSizeArray();
-				for (int32 LODIndex = 0; LODIndex < ResourceState.MaxNumLODs; ++LODIndex)
-				{
-					LODScreenSizes[ResourceState.MaxNumLODs - LODIndex - 1] = LODScreenSizeArray[LODIndex + ResourceState.AssetLODBias];
-				}
-			}
 		}
 
 		for (int32 LODIndex = 0; LODIndex < ResourceState.MaxNumLODs; ++LODIndex)
@@ -227,6 +218,9 @@ void FStreamingRenderAsset::UpdateDynamicData(const int32* NumStreamedMips, int3
 		}
 		NoRefLODBias = LocalNoRefBias;
 
+		check( ResourceState.MaxNumLODs >= ResourceState.NumNonOptionalLODs );
+		check( ResourceState.NumNonOptionalLODs >= ResourceState.NumNonStreamingLODs );
+
 		// If the optional mips are not available, or if we shouldn't load them now, clamp the possible mips requested. 
 		// (when the non-optional mips are not yet loaded, loading optional mips generates cross files requests).
 		// This is not bullet proof though since the texture/mesh could have a pending stream-out request.
@@ -239,6 +233,8 @@ void FStreamingRenderAsset::UpdateDynamicData(const int32* NumStreamedMips, int3
 			MaxAllowedMips = FMath::Clamp<int32>(ResourceState.MaxNumLODs - LODBias, ResourceState.NumNonStreamingLODs, ResourceState.MaxNumLODs);
 		}
 	
+		check( MaxAllowedMips >= ResourceState.NumNonStreamingLODs );
+
 		check(LODGroup < NumLODGroups);
 		if (NumStreamedMips[LODGroup] > 0)
 		{
@@ -315,7 +311,7 @@ int32 FStreamingRenderAsset::GetWantedMipsFromSize(float Size, float InvMaxScree
 	}
 	else
 	{
-		check(RenderAssetType == EStreamableRenderAssetType::StaticMesh || RenderAssetType == EStreamableRenderAssetType::SkeletalMesh || RenderAssetType == EStreamableRenderAssetType::LandscapeMeshMobile);
+		check(RenderAssetType == EStreamableRenderAssetType::StaticMesh || RenderAssetType == EStreamableRenderAssetType::SkeletalMesh);
 		if (Size == FLT_MAX)
 		{
 			return MaxAllowedMips;

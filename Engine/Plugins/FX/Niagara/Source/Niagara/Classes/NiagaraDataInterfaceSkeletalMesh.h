@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Containers/Array.h"
 #include "Engine/SkeletalMesh.h"
+#include "Experimental/NiagaraMeshUvMappingHandle.h"
 #include "NiagaraDataInterfaceMeshCommon.h"
 #include "NiagaraParameterStore.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -17,7 +18,7 @@ struct FSkeletalMeshSkinningData;
 struct FSkeletalMeshConnectivity;
 class FSkeletalMeshConnectivityProxy;
 struct FSkeletalMeshUvMapping;
-class FSkeletalMeshUvMappingBufferProxy;
+class FMeshUvMappingBufferProxy;
 struct FNDISkeletalMesh_InstanceData;
 class FSkinWeightVertexBuffer;
 struct FSkeletalMeshSamplingRegion;
@@ -241,47 +242,6 @@ private:
 	bool bForceDataRefresh;
 };
 
-struct FSkeletalMeshUvMappingUsage
-{
-	FSkeletalMeshUvMappingUsage() = default;
-	FSkeletalMeshUvMappingUsage(bool InRequiresCpuAccess, bool InrequiresGpuAccess)
-		: RequiresCpuAccess(InRequiresCpuAccess)
-		, RequiresGpuAccess(InrequiresGpuAccess)
-	{}
-
-	bool IsValid() const { return RequiresCpuAccess || RequiresGpuAccess; }
-
-	bool RequiresCpuAccess = false;
-	bool RequiresGpuAccess = false;
-};
-
-struct NIAGARA_API FSkeletalMeshUvMappingHandle
-{
-	FSkeletalMeshUvMappingHandle();
-	FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingUsage InUsage, const TSharedPtr<struct FSkeletalMeshUvMapping>& InUvMappingData, bool bNeedsDataImmediately);
-	FSkeletalMeshUvMappingHandle(const FSkeletalMeshUvMappingHandle& Other) = delete;
-	FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingHandle&& Other) noexcept;
-	~FSkeletalMeshUvMappingHandle();
-
-	FSkeletalMeshUvMappingHandle& operator=(const FSkeletalMeshUvMappingHandle& Other) = delete;
-	FSkeletalMeshUvMappingHandle& operator=(FSkeletalMeshUvMappingHandle&& Other) noexcept;
-	explicit operator bool() const;
-
-	FSkeletalMeshUvMappingUsage Usage;
-
-	void FindOverlappingTriangles(const FVector2D& InUv, float Tolerance, TArray<int32>& TriangleIndices) const;
-	int32 FindFirstTriangle(const FVector2D& InUv, float Tolerance, FVector3f& BarycentricCoord) const;
-	int32 FindFirstTriangle(const FBox2D& InUvBox, FVector3f& BarycentricCoord) const;
-	const FSkeletalMeshUvMappingBufferProxy* GetQuadTreeProxy() const;
-	int32 GetUvSetIndex() const;
-	int32 GetLodIndex() const;
-
-	void PinAndInvalidateHandle();
-
-private:
-	TSharedPtr<FSkeletalMeshUvMapping> UvMappingData;
-};
-
 struct FSkeletalMeshConnectivityUsage
 {
 	FSkeletalMeshConnectivityUsage() = default;
@@ -333,7 +293,7 @@ class NIAGARA_API FNDI_SkeletalMesh_GeneratedData : public FNDI_GeneratedData
 
 public:
 	FSkeletalMeshSkinningDataHandle GetCachedSkinningData(TWeakObjectPtr<USkeletalMeshComponent>& InComponent, FSkeletalMeshSkinningDataUsage Usage, bool bNeedsDataImmediately);
-	FSkeletalMeshUvMappingHandle GetCachedUvMapping(TWeakObjectPtr<USkeletalMesh>& InMeshObject, int32 InLodIndex, int32 InUvSetIndex, FSkeletalMeshUvMappingUsage Usage, bool bNeedsDataImmediately);
+	FSkeletalMeshUvMappingHandle GetCachedUvMapping(TWeakObjectPtr<USkeletalMesh>& InMeshObject, int32 InLodIndex, int32 InUvSetIndex, FMeshUvMappingUsage Usage, bool bNeedsDataImmediately);
 	FSkeletalMeshConnectivityHandle GetCachedConnectivity(TWeakObjectPtr<USkeletalMesh>& InMeshObject, int32 InLodIndex, FSkeletalMeshConnectivityUsage Usage, bool bNeedsDataImmediately);
 
 	virtual void Tick(ETickingGroup TickGroup, float DeltaSeconds) override;
@@ -435,7 +395,7 @@ public:
 
 	virtual ~FSkeletalMeshGpuSpawnStaticBuffers() override;
 
-	FORCEINLINE_DEBUGGABLE void Initialise(struct FNDISkeletalMesh_InstanceData* InstData, const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData,const FSkeletalMeshSamplingLODBuiltData& SkeletalMeshSamplingLODBuiltData, FNiagaraSystemInstance* SystemInstance);
+	FORCEINLINE_DEBUGGABLE void Initialise(struct FNDISkeletalMesh_InstanceData* InstData, const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData,const FSkeletalMeshSamplingLODBuiltData* SkeletalMeshSamplingLODBuiltData, FNiagaraSystemInstance* SystemInstance);
 
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
@@ -454,6 +414,9 @@ public:
 	FRHIShaderResourceView* GetSampleRegionsProbAliasSRV() const { return SampleRegionsProbAliasSRV; }
 	FRHIShaderResourceView* GetSampleRegionsTriangleIndicesSRV() const { return SampleRegionsTriangleIndicesSRV; }
 	FRHIShaderResourceView* GetSampleRegionsVerticesSRV() const { return SampleRegionsVerticesSRV; }
+
+	bool IsMeshValid() const { return bMeshValid; }
+	bool HasMeshColors() const { return bHasMeshColors; }
 
 	FRHIShaderResourceView* GetBufferPositionSRV() const { return MeshVertexBufferSRV; }
 	FRHIShaderResourceView* GetBufferIndexSRV() const { return MeshIndexBufferSRV; }
@@ -503,6 +466,8 @@ protected:
 	int32 FilteredSocketBoneOffset = 0;
 
 	/** Cached SRV to gpu buffers of the mesh we spawn from */
+	bool bMeshValid = false;
+	bool bHasMeshColors = false;
 	FShaderResourceViewRHIRef MeshVertexBufferSRV;
 	FShaderResourceViewRHIRef MeshIndexBufferSRV;
 	FShaderResourceViewRHIRef MeshTangentBufferSRV;
@@ -619,6 +584,10 @@ struct FNDISkeletalMesh_InstanceData
 	/** Time separating Transform and PrevTransform. */
 	float DeltaSeconds;
 
+	/** Preskinned local bounds pulled from attached skeletal mesh */
+	FVector3f PreSkinnedLocalBoundsCenter = FVector3f::ZeroVector;
+	FVector3f PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
+
 	/* Excluded bone for some specific functions, generally the root bone which you don't want to include when picking a random bone. */
 	int32 ExcludedBoneIndex = INDEX_NONE;
 
@@ -689,7 +658,7 @@ struct FNDISkeletalMesh_InstanceData
 	FORCEINLINE_DEBUGGABLE const FSkinWeightVertexBuffer* GetSkinWeights()
 	{
 		USkeletalMeshComponent* SkelComp = Cast<USkeletalMeshComponent>(SceneComponent.Get());
-		if (SkelComp != nullptr && SkelComp->SkeletalMesh != nullptr)
+		if (SkelComp != nullptr && SkelComp->GetSkeletalMeshAsset() != nullptr)
 		{
 			return SkelComp->GetSkinWeightBuffer(CachedLODIdx);
 		}
@@ -711,30 +680,38 @@ class NIAGARA_API UNiagaraDataInterfaceSkeletalMesh : public UNiagaraDataInterfa
 	GENERATED_UCLASS_BODY()
 
 public:
-
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	/** Controls how to retrieve the Skeletal Mesh Component to attach to. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	ENDISkeletalMesh_SourceMode SourceMode;
 
 #if WITH_EDITORONLY_DATA
 	/** Mesh used to sample from when not overridden by a source actor from the scene. Only available in editor for previewing. This is removed in cooked builds. */
-	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (DisallowedClasses = "DestructibleMesh"))
+	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (DisallowedClasses = "/Script/ApexDestruction.DestructibleMesh"))
 	TSoftObjectPtr<USkeletalMesh> PreviewMesh;
 #endif
 
+protected:
 	/** The source actor from which to sample. Takes precedence over the direct mesh. Note that this can only be set when used as a user variable on a component in the world.*/
-	UPROPERTY(EditAnywhere, Category = "Mesh")
-	TObjectPtr<AActor> Source;
+	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (DisplayName = "Source Actor"))
+	TSoftObjectPtr<AActor> SoftSourceActor;
 
-	/** Reference to a user parameter if we're reading one. */
+	/** If defined, the supplied tags will be used to identify a valid component */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
-	FNiagaraUserParameterBinding MeshUserParameter;
+	TArray<FName> ComponentTags;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TObjectPtr<AActor> Source_DEPRECATED;
+#endif
 
 	/** The source component from which to sample. Takes precedence over the direct mesh. Not exposed to the user, only indirectly accessible from blueprints. */
 	UPROPERTY(Transient)
 	TObjectPtr<USkeletalMeshComponent> SourceComponent;
+
+public:
+	/** Reference to a user parameter if we're reading one. */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	FNiagaraUserParameterBinding MeshUserParameter;
 
 	/** Selects which skinning mode to use, for most cases Skin On The Fly will cover your requirements, see individual tooltips for more information. */
 	UPROPERTY(EditAnywhere, Category="Mesh")
@@ -798,6 +775,9 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)override;
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target)const override { return true; }
+#if WITH_NIAGARA_DEBUGGER
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override;
+#endif
 #if WITH_EDITOR
 	virtual void GetFeedback(UNiagaraSystem* Asset, UNiagaraComponent* Component, TArray<FNiagaraDataInterfaceError>& OutErrors,
 		TArray<FNiagaraDataInterfaceFeedback>& Warnings, TArray<FNiagaraDataInterfaceFeedback>& Info) override;
@@ -816,6 +796,9 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 	//~ UNiagaraDataInterface interface END
 
 	/** This overload is for use when initializing per-instance data. It possibly uses the SystemInstance and instance data to initialize a user binding */
@@ -823,57 +806,26 @@ public:
 	/** Finds the skeletal mesh based on settings of the DI and the hierarchy of the object provided */
 	USkeletalMesh* GetSkeletalMesh(UNiagaraComponent* Component);
 
+	USkeletalMeshComponent* GetSourceComponent() const { return SourceComponent; }
+	AActor* GetSourceActor() const { return SoftSourceActor.Get(); }
+
 	int32 CalculateLODIndexAndSamplingRegions(USkeletalMesh* InMesh, TArray<int32>& OutSamplingRegionIndices, bool& OutAllRegionsAreAreaWeighting) const;
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
-	static const FString MeshIndexBufferName;
-	static const FString MeshVertexBufferName;
-	static const FString MeshSkinWeightBufferName;
-	static const FString MeshSkinWeightLookupBufferName;
-	static const FString MeshCurrBonesBufferName;
-	static const FString MeshPrevBonesBufferName;
-	static const FString MeshCurrSamplingBonesBufferName;
-	static const FString MeshPrevSamplingBonesBufferName;
-	static const FString MeshTangentBufferName;
-	static const FString MeshTexCoordBufferName;
-	static const FString MeshColorBufferName;
-	static const FString MeshTriangleSamplerProbAliasBufferName;
-	static const FString MeshNumSamplingRegionTrianglesName;
-	static const FString MeshNumSamplingRegionVerticesName;
-	static const FString MeshSamplingRegionsProbAliasBufferName;
-	static const FString MeshSampleRegionsTriangleIndicesName;
-	static const FString MeshSampleRegionsVerticesName;
-	static const FString MeshTriangleMatricesOffsetBufferName;
-	static const FString MeshTriangleCountName;
-	static const FString MeshVertexCountName;
-	static const FString MeshWeightStrideName;
-	static const FString MeshSkinWeightIndexSizeName;
-	static const FString MeshNumTexCoordName;
-	static const FString MeshNumWeightsName;
-	static const FString NumBonesName;
-	static const FString NumFilteredBonesName;
-	static const FString NumUnfilteredBonesName;
-	static const FString RandomMaxBoneName;
-	static const FString ExcludeBoneIndexName;
-	static const FString FilteredAndUnfilteredBonesName;
-	static const FString NumFilteredSocketsName;
-	static const FString FilteredSocketBoneOffsetName;
-	static const FString UvMappingBufferName;
-	static const FString UvMappingBufferLengthName;
-	static const FString UvMappingSetName;
-	static const FString ConnectivityBufferName;
-	static const FString ConnectivityBufferLengthName;
-	static const FString ConnectivityMaxAdjacentPerVertexName;
-	static const FString InstanceTransformName;
-	static const FString InstancePrevTransformName;
-	static const FString InstanceRotationName;
-	static const FString InstancePrevRotationName;
-	static const FString InstanceInvDeltaTimeName;
-	static const FString EnabledFeaturesName;
-
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
+
+	// Bind/unbind delegates to release references to the source actor & component.
+	void UnbindSourceDelegates();
+	void BindSourceDelegates();
+
+	UFUNCTION()
+	void OnSourceEndPlay(AActor* InSource, EEndPlayReason::Type Reason);
+
+	//////////////////////////////////////////////////////////////////////////
+	// Misc Functions
+	void VMGetPreSkinnedLocalBounds(FVectorVMExternalFunctionContext& Context);
 
 	//////////////////////////////////////////////////////////////////////////
 	//Triangle sampling
@@ -1017,6 +969,8 @@ public:
 
 	void SetSourceComponentFromBlueprints(USkeletalMeshComponent* ComponentToUse);
 	void SetSamplingRegionsFromBlueprints(const TArray<FName>& InSamplingRegions);
+	void SetFilteredBonesFromBlueprints(const TArray<FName>& InFilteredBones);
+	void SetFilteredSocketsFromBlueprints(const TArray<FName>& InFilteredSockets);
 	void SetWholeMeshLODFromBlueprints(int32 MeshLODLevel);
 };
 
@@ -1099,7 +1053,7 @@ struct FNiagaraDISkeletalMeshPassedDataToRT
 	FSkeletalMeshGpuDynamicBufferProxy* DynamicBuffer = nullptr;
 	const FSkinWeightDataVertexBuffer* MeshSkinWeightBuffer = nullptr;
 	const FSkinWeightLookupVertexBuffer* MeshSkinWeightLookupBuffer = nullptr;
-	const FSkeletalMeshUvMappingBufferProxy* UvMappingBuffer = nullptr;
+	const FMeshUvMappingBufferProxy* UvMappingBuffer = nullptr;
 	const FSkeletalMeshConnectivityProxy* ConnectivityBuffer = nullptr;
 
 	bool bIsGpuUniformlyDistributedSampling = false;
@@ -1111,6 +1065,8 @@ struct FNiagaraDISkeletalMeshPassedDataToRT
 	FMatrix44f PrevTransform = FMatrix44f::Identity;
 	float DeltaSeconds = 0.0f;
 	uint32 UvMappingSet = 0;
+	FVector3f PreSkinnedLocalBoundsCenter = FVector3f::ZeroVector;
+	FVector3f PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
 };
 
 typedef FNiagaraDISkeletalMeshPassedDataToRT FNiagaraDataInterfaceProxySkeletalMeshData;

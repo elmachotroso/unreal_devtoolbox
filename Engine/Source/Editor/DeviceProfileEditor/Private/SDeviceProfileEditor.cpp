@@ -1,36 +1,66 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDeviceProfileEditor.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "UObject/UnrealType.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
-#include "Misc/MessageDialog.h"
-#include "HAL/FileManager.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "EditorStyleSet.h"
-#include "ISourceControlOperation.h"
-#include "SourceControlOperations.h"
-#include "ISourceControlProvider.h"
-#include "ISourceControlModule.h"
-#include "IPropertyTable.h"
-#include "PropertyEditorModule.h"
-#include "IPropertyTableCustomColumn.h"
+
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "DeviceProfileConsoleVariableColumn.h"
 #include "DeviceProfileTextureLODSettingsColumn.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Docking/WorkspaceItem.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/FileManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "IPropertyTable.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
 #include "SDeviceProfileEditorSingleProfileView.h"
-#include "SDeviceProfileCreateProfilePanel.h"
 #include "SDeviceProfileSelectionPanel.h"
 #include "SSettingsEditorCheckoutNotice.h"
-
+#include "SlotBase.h"
+#include "SourceControlOperations.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FUICommandList;
+class IPropertyTableCustomColumn;
+class SWidget;
+class SWindow;
+struct FGeometry;
 
 
 #define LOCTEXT_NAMESPACE "DeviceProfileEditor"
@@ -186,7 +216,7 @@ void SDeviceProfileSourceControl::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.Unlock"))
+						.Image(FAppStyle::GetBrush("Icons.Unlock"))
 					]
 					+ SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
@@ -213,7 +243,7 @@ void SDeviceProfileSourceControl::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.Lock"))
+						.Image(FAppStyle::GetBrush("Icons.Lock"))
 					]
 					+ SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
@@ -288,7 +318,7 @@ void SDeviceProfileEditor::Construct( const FArguments& InArgs )
 
 		TabManager->RegisterTabSpawner( DeviceProfileEditorTabName, FOnSpawnTab::CreateRaw( this, &SDeviceProfileEditor::HandleTabManagerSpawnTab, DeviceProfileEditorTabName) )
 			.SetDisplayName(LOCTEXT("DeviceProfilePropertyEditorLabel", "Device Profile Property Editor..."))
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "DeviceDetails.Tabs.ProfileEditor"))
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "DeviceDetails.Tabs.ProfileEditor"))
 			.SetGroup( DeviceManagerMenuGroup.ToSharedRef() );
 	}
 
@@ -375,7 +405,7 @@ TSharedPtr< SWidget > SDeviceProfileEditor::CreateMainDeviceProfilePanel()
 		.Value( 1.0f )
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
+			.BorderImage( FAppStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
 			[
 				SAssignNew( DeviceProfileSelectionPanel, SDeviceProfileSelectionPanel, DeviceProfileManager )
 				.OnDeviceProfilePinned( this, &SDeviceProfileEditor::HandleDeviceProfilePinned )
@@ -387,7 +417,7 @@ TSharedPtr< SWidget > SDeviceProfileEditor::CreateMainDeviceProfilePanel()
 		.SizeRule(SSplitter::ESizeRule::SizeToContent)
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
+			.BorderImage( FAppStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
 			[
 				SNew( STextBlock )
 				.AutoWrapText(true)
@@ -406,7 +436,7 @@ TSharedRef<SDockTab> SDeviceProfileEditor::HandleTabManagerSpawnTab( const FSpaw
 	if( TabIdentifier == DeviceProfileEditorTabName )
 	{
 		TabWidget = SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SOverlay)
 				+ SOverlay::Slot()
@@ -433,7 +463,7 @@ TSharedRef<SDockTab> SDeviceProfileEditor::HandleTabManagerSpawnTab( const FSpaw
 					+ SVerticalBox::Slot()
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 						[
 							SNew(SHorizontalBox)
 							+ SHorizontalBox::Slot()
@@ -442,7 +472,7 @@ TSharedRef<SDockTab> SDeviceProfileEditor::HandleTabManagerSpawnTab( const FSpaw
 							.VAlign(VAlign_Center)
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("PropertyEditor.AddColumnOverlay"))
+								.Image(FAppStyle::GetBrush("PropertyEditor.AddColumnOverlay"))
 							]
 
 							+ SHorizontalBox::Slot()
@@ -451,7 +481,7 @@ TSharedRef<SDockTab> SDeviceProfileEditor::HandleTabManagerSpawnTab( const FSpaw
 							.VAlign(VAlign_Center)
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("PropertyEditor.RemoveColumn"))
+								.Image(FAppStyle::GetBrush("PropertyEditor.RemoveColumn"))
 							]
 
 							+ SHorizontalBox::Slot()
@@ -461,9 +491,9 @@ TSharedRef<SDockTab> SDeviceProfileEditor::HandleTabManagerSpawnTab( const FSpaw
 							.Padding(FMargin(0, 0, 3, 0))
 							[
 								SNew(STextBlock)
-								.Font(FEditorStyle::GetFontStyle("PropertyEditor.AddColumnMessage.Font"))
+								.Font(FAppStyle::GetFontStyle("PropertyEditor.AddColumnMessage.Font"))
 								.Text(LOCTEXT("GenericPropertiesTitle", "Pin Profiles to Add Columns"))
-								.ColorAndOpacity(FEditorStyle::GetColor("PropertyEditor.AddColumnMessage.Color"))
+								.ColorAndOpacity(FAppStyle::GetColor("PropertyEditor.AddColumnMessage.Color"))
 							]
 						]
 					]
@@ -535,7 +565,7 @@ void SDeviceProfileEditor::HandleDeviceProfileViewAlone( const TWeakObjectPtr< U
 
 		TabManager->RegisterTabSpawner(TabId, FOnSpawnTab::CreateRaw(this, &SDeviceProfileEditor::HandleTabManagerSpawnSingleProfileTab, DeviceProfile))
 			.SetDisplayName(FText::FromName(TabId))
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "DeviceDetails.Tabs.ProfileEditorSingleProfile"))
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "DeviceDetails.Tabs.ProfileEditorSingleProfile"))
 			.SetGroup(DeviceManagerMenuGroup.ToSharedRef());
 	}
 

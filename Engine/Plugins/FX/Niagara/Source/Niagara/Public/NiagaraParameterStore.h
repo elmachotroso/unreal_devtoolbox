@@ -167,6 +167,16 @@ struct NIAGARA_API FNiagaraParameterStore
 {
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE(FOnChanged);
+	struct FScopedSuppressOnChanged : TGuardValue<bool>
+	{
+		FScopedSuppressOnChanged(FNiagaraParameterStore& TargetStore)
+			: TGuardValue(TargetStore.bSuppressOnChanged, true)
+		{
+		}
+	};
+	
+	DECLARE_MULTICAST_DELEGATE(FOnStructureChanged)
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnParameterRenamed, FNiagaraVariable OldVariable, FName NewName)
 #endif
 
 	GENERATED_USTRUCT_BODY()
@@ -179,7 +189,7 @@ struct NIAGARA_API FNiagaraParameterStore
 private:
 	/** Owner of this store. Used to provide an outer to data interfaces in this store. */
 	UPROPERTY(Transient)
-	TObjectPtr<UObject> Owner;
+	TWeakObjectPtr<UObject> Owner;
 	
 #if WITH_EDITORONLY_DATA
 	/** Map from parameter defs to their offset in the data table or the data interface. TODO: Separate out into a layout and instance class to reduce duplicated data for this?  */
@@ -229,6 +239,9 @@ private:
 
 #if WITH_EDITOR
 	FOnChanged OnChangedDelegate;
+	bool bSuppressOnChanged = false;
+	FOnStructureChanged OnStructureChangedDelegate;
+	FOnParameterRenamed OnParameterRenamedDelegate;
 #endif
 
 	void SetPositionData(const FName& Name, const FVector& Position);
@@ -253,7 +266,7 @@ public:
 #endif
 
 	void SetOwner(UObject* InOwner);
-	UObject* GetOwner()const { return Owner; }
+	UObject* GetOwner() const { return Owner.Get(); }
 
 	void Dump();
 	void DumpParameters(bool bDumpBindings = false)const;
@@ -349,7 +362,7 @@ public:
 	// Called to initially set up the parameter store to *exactly* match the input store (other than any bindings and the internal name of it).
 	virtual void InitFromSource(const FNiagaraParameterStore* SrcStore, bool bNotifyAsDirty);
 
-	/** Gets the index of the passed parameter. If it is a data interface, this is an offset into the data interface table, otherwise a byte offset into he parameter data buffer. */
+	/** Gets the index of the passed parameter. If it is a data interface, this is an offset into the data interface table, otherwise a byte offset into the parameter data buffer. */
 	FORCEINLINE_DEBUGGABLE int32 IndexOf(const FNiagaraVariable& Parameter) const
 	{
 		const int32* Off = FindParameterOffset(Parameter);
@@ -469,8 +482,8 @@ public:
 				{
 					if (ensureMsgf(DestStore.Owner != nullptr, TEXT("Destination data interface pointer was null and a new one couldn't be created because the destination store's owner pointer was also null.")))
 					{
-						UE_LOG(LogNiagara, Warning, TEXT("While trying to copy parameter data the destination data interface was null, creating a new one.  Parameter: %s Destination Store Owner: %s"), *Parameter.GetName().ToString(), *DestStore.Owner->GetPathName());
-						DestDataInterface = NewObject<UNiagaraDataInterface>(DestStore.Owner, Parameter.GetType().GetClass(), NAME_None, RF_Transactional | RF_Public);
+						UE_LOG(LogNiagara, Warning, TEXT("While trying to copy parameter data the destination data interface was null, creating a new one.  Parameter: %s Destination Store Owner: %s"), *Parameter.GetName().ToString(), *GetPathNameSafe(DestStore.Owner.Get()));
+						DestDataInterface = NewObject<UNiagaraDataInterface>(DestStore.Owner.Get(), Parameter.GetType().GetClass(), NAME_None, RF_Transactional | RF_Public);
 						DestStore.DataInterfaces[DestIndex] = DestDataInterface;
 					}
 					else
@@ -610,7 +623,10 @@ public:
 	{ 
 		bParametersDirty = true;
 #if WITH_EDITOR
-		OnChangedDelegate.Broadcast();
+		if (bSuppressOnChanged == false)
+		{
+			OnChangedDelegate.Broadcast();
+		}
 #endif
 	}
 
@@ -618,7 +634,10 @@ public:
 	{ 
 		bInterfacesDirty = true;
 #if WITH_EDITOR
-		OnChangedDelegate.Broadcast();
+		if (bSuppressOnChanged == false)
+		{
+			OnChangedDelegate.Broadcast();
+		}
 #endif
 	}
 
@@ -626,7 +645,10 @@ public:
 	{
 		bUObjectsDirty = true;
 #if WITH_EDITOR
-		OnChangedDelegate.Broadcast();
+		if (bSuppressOnChanged == false)
+		{
+			OnChangedDelegate.Broadcast();
+		}
 #endif
 	}
 
@@ -636,7 +658,10 @@ public:
 		bInterfacesDirty = true;
 		bParametersDirty = true;
 #if WITH_EDITOR
-		OnChangedDelegate.Broadcast();
+		if (bSuppressOnChanged == false)
+		{
+			OnChangedDelegate.Broadcast();
+		}
 #endif
 	}
 
@@ -644,6 +669,9 @@ public:
 	FDelegateHandle AddOnChangedHandler(FOnChanged::FDelegate InOnChanged);
 	void RemoveOnChangedHandler(FDelegateHandle DelegateHandle);
 	void RemoveAllOnChangedHandlers(const void* InUserObject);
+
+	FOnStructureChanged& OnStructureChanged() { return OnStructureChangedDelegate; }
+	FOnParameterRenamed& OnParameterRenamed() { return OnParameterRenamedDelegate; }
 #endif
 
 	void TriggerOnLayoutChanged() { OnLayoutChange(); }

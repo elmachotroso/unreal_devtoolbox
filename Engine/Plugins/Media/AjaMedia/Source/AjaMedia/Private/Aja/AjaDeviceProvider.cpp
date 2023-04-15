@@ -235,6 +235,7 @@ public:
 				}
 
 				InOnAutoDetected.ExecuteIfBound(Configurations);
+				AutoDetectChannelPin->Uninitialize();
 			}
 		});
 	}
@@ -244,13 +245,11 @@ public:
 //--------------------------------------------------------------------
 FAjaDeviceProvider::FAjaDeviceProvider()
 {
-	AutoDetectCallback = nullptr;
 }
 
 
 FAjaDeviceProvider::~FAjaDeviceProvider()
 {
-	delete AutoDetectCallback;
 }
 
 FName FAjaDeviceProvider::GetProviderName()
@@ -303,9 +302,13 @@ void FAjaDeviceProvider::AutoDetectConfiguration(FOnConfigurationAutoDetected On
 
 	if (OnAutoDetected.IsBound())
 	{
-		delete AutoDetectCallback;
-		AutoDetectCallback = new FAJAAutoDetectChannelCallback(OnAutoDetected);
+		AutoDetectCallback = MakeUnique<FAJAAutoDetectChannelCallback>(OnAutoDetected);
 	}
+}
+
+void FAjaDeviceProvider::EndAutoDetectConfiguration()
+{
+	AutoDetectCallback.Reset();
 }
 
 TArray<FMediaIOConnection> FAjaDeviceProvider::GetConnections() const
@@ -495,7 +498,7 @@ TArray<FMediaIOConfiguration> FAjaDeviceProvider::GetConfigurations(bool bAllowI
 						}
 
 						const int32 HdmiPortCount = MediaConfiguration.bIsInput ? HdmiInputCount : HdmiOutputCount;
-						if (HdmiPortCount > 0 && MediaConfiguration.bIsInput) // only support HDMI input
+						if (HdmiPortCount > 0)
 						{
 							for (int32 FormatIndex = 0; FormatIndex < NumSupportedFormat; ++FormatIndex)
 							{
@@ -738,6 +741,28 @@ TArray<FMediaIOMode> FAjaDeviceProvider::GetModes(const FMediaIODevice& InDevice
 	return Results;
 }
 
+TArray<FMediaIOVideoTimecodeConfiguration> FAjaDeviceProvider::GetTimecodeConfigurations() const
+{
+	TArray<FMediaIOVideoTimecodeConfiguration> MediaConfigurations;
+	bool bHasInputConfiguration = false;
+	{
+		TArray<FMediaIOConfiguration> InputConfigurations = GetConfigurations(true, false);
+
+		FMediaIOVideoTimecodeConfiguration DefaultTimecodeConfiguration;
+		MediaConfigurations.Reset(InputConfigurations.Num() * 2);
+		for (const FMediaIOConfiguration& InputConfiguration : InputConfigurations)
+		{
+			DefaultTimecodeConfiguration.MediaConfiguration = InputConfiguration;
+			DefaultTimecodeConfiguration.TimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::LTC;
+			MediaConfigurations.Add(DefaultTimecodeConfiguration);
+
+			DefaultTimecodeConfiguration.TimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::VITC;
+			MediaConfigurations.Add(DefaultTimecodeConfiguration);
+		}
+	}
+	return MediaConfigurations;
+}
+
 TArray<FAjaMediaTimecodeConfiguration> FAjaDeviceProvider::GetTimecodeConfiguration() const
 {
 	TArray<FAjaMediaTimecodeConfiguration> MediaConfigurations;
@@ -856,6 +881,13 @@ FMediaIOOutputConfiguration FAjaDeviceProvider::GetDefaultOutputConfiguration() 
 	Configuration.MediaConfiguration.bIsInput = false;
 	Configuration.OutputReference = EMediaIOReferenceType::FreeRun;
 	Configuration.OutputType = EMediaIOOutputType::Fill;
+	return Configuration;
+}
+
+FMediaIOVideoTimecodeConfiguration FAjaDeviceProvider::GetDefaultTimecodeConfiguration() const
+{
+	FMediaIOVideoTimecodeConfiguration Configuration;
+	Configuration.MediaConfiguration = GetDefaultConfiguration();
 	return Configuration;
 }
 

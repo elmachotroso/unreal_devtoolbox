@@ -12,6 +12,11 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "PlanarCut.h"
 #include "FractureToolContext.h"
+#include "FractureToolBackgroundTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolBrick)
+
+using namespace UE::Fracture;
 
 #define LOCTEXT_NAMESPACE "FractureBrick"
 
@@ -373,6 +378,36 @@ void UFractureToolBrick::AddBoxEdges(const FVector& Min, const FVector& Max)
 	Edges.Emplace(MakeTuple(FVector(Min.X, Max.Y, Max.Z), Max));
 }
 
+class FCellsFractureOp : public FGeometryCollectionFractureOperator
+{
+public:
+	FCellsFractureOp(const FGeometryCollection& SourceCollection) : FGeometryCollectionFractureOperator(SourceCollection)
+	{}
+
+	virtual ~FCellsFractureOp() = default;
+
+	TArray<int> Selection;
+	FPlanarCells Cells;
+	FVector CellsOrigin;
+	float PointSpacing;
+	float Grout = 0;
+	int Seed;
+	FTransform Transform;
+
+	// TGenericDataOperator interface:
+	virtual void CalculateResult(FProgressCancel* Progress) override
+	{
+		if (Progress && Progress->Cancelled())
+		{
+			return;
+		}
+
+		ResultGeometryIndex = CutMultipleWithPlanarCells(Cells, *CollectionCopy, Selection, Grout, PointSpacing, Seed, Transform, true, true, Progress, CellsOrigin);
+
+		SetResult(MoveTemp(CollectionCopy));
+	}
+};
+
 int32 UFractureToolBrick::ExecuteFracture(const FFractureToolContext& FractureContext)
 {
 	if (FractureContext.IsValid())
@@ -393,34 +428,44 @@ int32 UFractureToolBrick::ExecuteFracture(const FFractureToolContext& FractureCo
 
 		TArray<FBox> BricksToCut;
 
-		// space the bricks by the grout setting, constrained to not erase the bricks or have zero grout
-		// (currently zero grout bricks would break assumptions in the fracture)
+		// space the bricks by the grout setting, constrained to not erase the bricks
 		const float MinDim = FMath::Min3(BrickHalfDimensions.X, BrickHalfDimensions.Y, BrickHalfDimensions.Z);
-		const float HalfGrout = FMath::Clamp(0.5f * CutterSettings->Grout, MinDim * 0.02f, MinDim * 0.98f);
+		const float HalfGrout = FMath::Clamp(0.5f * CutterSettings->Grout, 0, MinDim * 0.98f);
 		const FVector HalfBrick(BrickHalfDimensions - HalfGrout);
 		const FBox BrickBox(-HalfBrick, HalfBrick);
 
+		FTransform ContextTransform = FractureContext.GetTransform();
+		FVector Origin = ContextTransform.GetTranslation();
+
 		for (const FTransform& Trans : BrickTransforms)
 		{
-			BricksToCut.Add(BrickBox.TransformBy(Trans));
+			FTransform ToApply = Trans * FTransform(-Origin);
+			BricksToCut.Add(BrickBox.TransformBy(ToApply));
 		}
 
- 		FPlanarCells VoronoiPlanarCells = FPlanarCells(BricksToCut);
-
-		FNoiseSettings NoiseSettings;
+		TUniquePtr<FCellsFractureOp> BrickOp = MakeUnique<FCellsFractureOp>(*(FractureContext.GetGeometryCollection()));
+		BrickOp->Selection = FractureContext.GetSelection();
+		BrickOp->Grout = 0; // CutterSettings->Grout; // Note: Grout is currently baked directly into the brick cells above
+		BrickOp->PointSpacing = CollisionSettings->GetPointSpacing();
+		const bool bBricksAreTouching = CutterSettings->Grout <= UE_KINDA_SMALL_NUMBER;
+		BrickOp->Cells = FPlanarCells(BricksToCut, bBricksAreTouching);
 		if (CutterSettings->Amplitude > 0.0f)
 		{
-			CutterSettings->TransferNoiseSettings(NoiseSettings);
-			VoronoiPlanarCells.InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
+			FNoiseSettings Settings;
+			CutterSettings->TransferNoiseSettings(Settings);
+			BrickOp->Cells.InternalSurfaceMaterials.NoiseSettings = Settings;
 		}
+		BrickOp->Seed = FractureContext.GetSeed();
+		BrickOp->Transform = FractureContext.GetTransform();
+		BrickOp->CellsOrigin = Origin;
 
-		// Proximity is invalidated.
-		ClearProximity(FractureContext.GetGeometryCollection().Get());
-
-		return CutMultipleWithPlanarCells(VoronoiPlanarCells, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), 0, CollisionSettings->GetPointSpacing(), FractureContext.GetSeed(), FractureContext.GetTransform());
+		int Result = RunCancellableGeometryCollectionOp<FCellsFractureOp>(*(FractureContext.GetGeometryCollection()),
+			MoveTemp(BrickOp), LOCTEXT("ComputingBrickFractureMessage", "Computing Brick Fracture"));
+		return Result;
 	}
 
 	return INDEX_NONE;
 }
 
 #undef LOCTEXT_NAMESPACE
+

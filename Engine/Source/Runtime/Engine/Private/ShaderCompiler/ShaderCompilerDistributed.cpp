@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ShaderCompiler.h"
+#include "DistributedBuildControllerInterface.h"
 #include "HAL/FileManager.h"
-#include "DistributedBuildInterface/Public/DistributedBuildControllerInterface.h"
+#include "ShaderCompiler.h"
 
 namespace DistributedShaderCompilerVariables
 {
 	//TODO: Remove the XGE doublet
-	int32 MinBatchSize = 20;
+	int32 MinBatchSize = 50;
 	FAutoConsoleVariableRef CVarXGEShaderCompileMinBatchSize(
         TEXT("r.XGEShaderCompile.MinBatchSize"),
         MinBatchSize,
@@ -77,7 +77,7 @@ void FShaderCompileDistributedThreadRunnable_Interface::DispatchShaderCompileJob
 	// Serialize the jobs to the input file
 	GShaderCompilerStats->RegisterJobBatch(JobsToSerialize.Num(), FShaderCompilerStats::EExecutionType::Distributed);
 	FArchive* InputFileAr = IFileManager::Get().CreateFileWriter(*InputFilePath, FILEWRITE_EvenIfReadOnly | FILEWRITE_NoFail);
-	FShaderCompileUtilities::DoWriteTasks(JobsToSerialize, *InputFileAr, CachedController.RequiresRelativePaths());
+	FShaderCompileUtilities::DoWriteTasks(JobsToSerialize, *InputFileAr, &CachedController, CachedController.RequiresRelativePaths());
 	delete InputFileAr;
 
 	// Kick off the job
@@ -106,8 +106,8 @@ TArray<FString> FShaderCompileDistributedThreadRunnable_Interface::GetDependency
 	TArray<FShaderCommonCompileJobPtr>& Jobs)
 {
 	TArray<FString> Dependencies;
-	uint64 ShaderPlatformMask = 0;
-	static_assert(EShaderPlatform::SP_NumPlatforms <= sizeof(ShaderPlatformMask) * 8, "Insufficient bits in ShaderPlatformMask.");
+	TBitArray<> ShaderPlatformMask;
+	ShaderPlatformMask.Init(false, EShaderPlatform::SP_NumPlatforms);
 	for (const FShaderCommonCompileJobPtr& Job : Jobs)
 	{
 		EShaderPlatform ShaderPlatform = EShaderPlatform::SP_PCD3D_SM5;
@@ -139,9 +139,9 @@ TArray<FString> FShaderCompileDistributedThreadRunnable_Interface::GetDependency
 			}
 		}
 		// Add base dependencies for the platform only once.
-		if (!(ShaderPlatformMask & (static_cast<uint64>(1) << ShaderPlatform)))
+		if (!(ShaderPlatformMask[(int)ShaderPlatform]))
 		{
-			ShaderPlatformMask |= (static_cast<uint64>(1) << ShaderPlatform);
+			ShaderPlatformMask[(int)ShaderPlatform] = true;
 			TArray<FString>& ShaderPlatformCacheEntry = PlatformShaderInputFilesCache.FindOrAdd(ShaderPlatform);
 			if (!ShaderPlatformCacheEntry.Num())
 			{
@@ -204,7 +204,7 @@ int32 FShaderCompileDistributedThreadRunnable_Interface::CompilingLoop()
 		// Just to provide typical numbers: the number of total jobs is usually in tens of thousands at most, oftentimes in low thousands. Thus JobsPerBatch when calculated as a log2 rarely reaches the value of 16,
 		// and that seems to be a sweet spot: lowering it does not result in faster completion, while increasing the number of jobs per batch slows it down.
 		const uint32 JobsPerBatch = FMath::Max(MinJobsPerBatch, FMath::FloorToInt(FMath::LogX(2.f, PendingJobs.Num() + NumDispatchedJobs)));
-		UE_LOG(LogShaderCompilers, Verbose, TEXT("Current jobs: %d, Batch size: %d, Num Already Dispatched: %d"), PendingJobs.Num(), JobsPerBatch, NumDispatchedJobs);
+		UE_LOG(LogShaderCompilers, Display, TEXT("Current jobs: %d, Batch size: %d, Num Already Dispatched: %d"), PendingJobs.Num(), JobsPerBatch, NumDispatchedJobs);
 
 
 		struct FJobBatch

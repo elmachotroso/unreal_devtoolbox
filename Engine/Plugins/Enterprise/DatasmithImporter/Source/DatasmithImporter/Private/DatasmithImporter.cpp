@@ -8,7 +8,10 @@
 #include "DatasmithAssetImportData.h"
 #include "DatasmithAssetUserData.h"
 #include "DatasmithCameraImporter.h"
+#include "DatasmithCloth.h"
+#include "DatasmithClothImporter.h"
 #include "DatasmithImportContext.h"
+#include "DatasmithImporterModule.h"
 #include "DatasmithLevelSequenceImporter.h"
 #include "DatasmithLevelVariantSetsImporter.h"
 #include "DatasmithLightImporter.h"
@@ -30,10 +33,8 @@
 #include "Utility/DatasmithImporterUtils.h"
 #include "Utility/DatasmithTextureResize.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "Async/Async.h"
-#include "Async/AsyncWork.h"
 #include "CineCameraComponent.h"
 #include "ComponentReregisterContext.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -42,6 +43,8 @@
 #include "Editor/UnrealEdEngine.h"
 #include "EditorLevelUtils.h"
 #include "Engine/Engine.h"
+#include "Engine/RendererSettings.h"
+#include "Engine/SkinnedAsset.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "HAL/FileManager.h"
@@ -57,6 +60,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "MaterialCachedData.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopedSlowTask.h"
@@ -68,7 +72,9 @@
 #include "Serialization/ObjectReader.h"
 #include "Serialization/ObjectWriter.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "SkinnedAssetCompiler.h"
 #include "SourceControlOperations.h"
+#include "Tasks/Task.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
@@ -78,176 +84,172 @@ extern UNREALED_API UEditorEngine* GEditor;
 
 #define LOCTEXT_NAMESPACE "DatasmithImporter"
 
-namespace UE
+namespace UE::DatasmithImporter::Private
 {
-	namespace DatasmithImporter
+	/**
+	 * Make the necessary adjustment to the materials so that the functions have unique parameter names in the material where they are use.
+	 */
+	void MakeChangeToExpressionsNameForMaterialFunctions(const TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt>& FunctionMaterialAndTheirReferencer)
 	{
-		namespace Private
-		{
-			namespace DatasmithImporter
+		// Contains the name of the parameters for a material that isn't use as a function and the set of names used the by material functions it call
+		TMap<TSharedPtr<IDatasmithUEPbrMaterialElement>,TArray<TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>>> TopMaterialAndNamesUsedByType;
+		TMap<EDatasmithMaterialExpressionType, TUniquePtr<FDatasmithUniqueNameProvider>> ExpressionTypeToUniqueNameProvider;
+		using FFunctionAndMaterialsThatUseIt = FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt;
+
+		TMap<TSharedPtr<IDatasmithUEPbrMaterialElement>, int32> MaterialToIndexInArray;
+		MaterialToIndexInArray.Reserve( FunctionMaterialAndTheirReferencer.Num() );
+
+		// Check if the name was already used in this function or in one of its referencers
+		TFunction<bool (uint32, const TSharedPtr<IDatasmithUEPbrMaterialElement>&, uint32, FName, EDatasmithMaterialExpressionType)> CheckIfNameIsUsed;
+		CheckIfNameIsUsed = [&TopMaterialAndNamesUsedByType, &MaterialToIndexInArray, &FunctionMaterialAndTheirReferencer, &CheckIfNameIsUsed] (uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material, uint32 ExpressionHash, FName Expression, EDatasmithMaterialExpressionType ExpressionType)
 			{
-				/**
-				 * Make the necessary adjustment to the materials so that the functions have unique parameter names in the material where they are use.
-				 */
-				void MakeChangeToExpressionsNameForMaterialFunctions(const TArray<FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt>& FunctionMaterialAndTheirReferencer)
+				if ( int32* Index = MaterialToIndexInArray.FindByHash( MaterialHash, Material ) )
 				{
-					// Contains the name of the parameters for a material that isn't use as a function and the set of names used the by material functions it call
-					TMap<TSharedPtr<IDatasmithUEPbrMaterialElement>,TArray<TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>>> TopMaterialAndNamesUsedByType;
-					TMap<EDatasmithMaterialExpressionType, TUniquePtr<FDatasmithUniqueNameProvider>> ExpressionTypeToUniqueNameProvider;
-					using FFunctionAndMaterialsThatUseIt = FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt;
-
-					TMap<TSharedPtr<IDatasmithUEPbrMaterialElement>, int32> MaterialToIndexInArray;
-					MaterialToIndexInArray.Reserve( FunctionMaterialAndTheirReferencer.Num() );
-
-					// Check if the name was already used in this function or in one of its referencers
-					TFunction<bool (uint32, const TSharedPtr<IDatasmithUEPbrMaterialElement>&, uint32, FName, EDatasmithMaterialExpressionType)> CheckIfNameIsUsed;
-					CheckIfNameIsUsed = [&TopMaterialAndNamesUsedByType, &MaterialToIndexInArray, &FunctionMaterialAndTheirReferencer, &CheckIfNameIsUsed] (uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material, uint32 ExpressionHash, FName Expression, EDatasmithMaterialExpressionType ExpressionType)
-						{
-							if ( int32* Index = MaterialToIndexInArray.FindByHash( MaterialHash, Material ) )
-							{
-								for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionMaterialAndTheirReferencer[*Index].Value )
-								{
-									if ( CheckIfNameIsUsed( GetTypeHash( Referencer ), Referencer, ExpressionHash, Expression, ExpressionType ) )
-									{
-										return true;
-									}
-								}
-							}
-							else if ( const TArray<TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>>* NameUsedArray = TopMaterialAndNamesUsedByType.FindByHash( MaterialHash, Material ) )
-							// Only check if we are in a material that aren't referenced elsewhere
-							{
-								for ( const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>& NamesUsed : *NameUsedArray )
-								{
-									if ( NamesUsed->Contains( TPair<FName, EDatasmithMaterialExpressionType>( Expression, ExpressionType ) ) )
-									{
-										return true;
-									}
-								}
-							}
-
-							return false;
-						};
-
-					// Make sure that the parameter have a unique name in the materials were they are use
-					auto HandleExpressionNameForMaterialFunction =
-						[&ExpressionTypeToUniqueNameProvider, &CheckIfNameIsUsed] (uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material, FName Expression, EDatasmithMaterialExpressionType ExpressionType, int32 ExpressionIndex, TSet<TPair<FName, EDatasmithMaterialExpressionType>>& NameUsed)
-						{
-							TUniquePtr<FDatasmithUniqueNameProvider>& UniqueNameProvider = ExpressionTypeToUniqueNameProvider.FindOrAdd( ExpressionType );
-							if ( !UniqueNameProvider )
-							{
-								UniqueNameProvider = MakeUnique<FDatasmithUniqueNameProvider>();
-							}
-
-							FString ChosenName;
-
-							if ( CheckIfNameIsUsed( MaterialHash, Material, GetTypeHash( Expression ), Expression, ExpressionType ) )
-							{
-								// Make the name unique
-								ChosenName = UniqueNameProvider->GenerateUniqueName( Expression.ToString() );
-								Material->GetExpression( ExpressionIndex )->SetName( *ChosenName );
-							}
-							else
-							{
-								// Keep track of the used names
-								ChosenName = Expression.ToString();
-								UniqueNameProvider->AddExistingName( ChosenName );
-							}
-
-							NameUsed.Add( TPair<FName, EDatasmithMaterialExpressionType>( *ChosenName, ExpressionType ) );
-
-							if ( ExpressionType != EDatasmithMaterialExpressionType::Generic )
-							{
-								// Always add to the generic, we don't know what type of parameter a generic expression would be
-								TUniquePtr<FDatasmithUniqueNameProvider>& GenericUniqueNameProvider = ExpressionTypeToUniqueNameProvider.FindOrAdd( EDatasmithMaterialExpressionType::Generic );
-								if ( !GenericUniqueNameProvider )
-								{
-									GenericUniqueNameProvider = MakeUnique<FDatasmithUniqueNameProvider>();
-								}
-
-								GenericUniqueNameProvider->AddExistingName( ChosenName );
-								NameUsed.Add( TPair<FName, EDatasmithMaterialExpressionType>( *ChosenName, EDatasmithMaterialExpressionType::Generic ) );
-							}
-						};
-
-					TFunction<void (const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>&, uint32, const TSharedPtr<IDatasmithUEPbrMaterialElement>&)> PushUsedNamesIntoTopLevelMaterial;
-					PushUsedNamesIntoTopLevelMaterial = [&MaterialToIndexInArray, &TopMaterialAndNamesUsedByType, &FunctionMaterialAndTheirReferencer, &PushUsedNamesIntoTopLevelMaterial] (const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>& UsedNames, uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material)
-						{
-							if ( int32* Index = MaterialToIndexInArray.FindByHash( MaterialHash, Material ) )
-							{
-								for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionMaterialAndTheirReferencer[*Index].Value )
-								{
-									PushUsedNamesIntoTopLevelMaterial( UsedNames, GetTypeHash( Referencer ), Referencer );
-								}
-							}
-							else
-							{
-								TopMaterialAndNamesUsedByType.FindOrAddByHash( MaterialHash, Material ).Add( UsedNames );
-							}
-						};
-
-
-					TSet<TSharedPtr<IDatasmithUEPbrMaterialElement>> VisitedMaterials;
-					// Plus one because there is at least one top material that isn't used as a function
-					VisitedMaterials.Reserve( FunctionMaterialAndTheirReferencer.Num() + 1 );
-
-					/**
-					 * We expect the independents function to be at the start of the array
-					 * We want the top level function to conserve their name in case of conflicted naming of the parameters.
-					 */
-					for ( int32 Index = FunctionMaterialAndTheirReferencer.Num()-1; Index >= 0; Index-- )
+					for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionMaterialAndTheirReferencer[*Index].Value )
 					{
-						const FFunctionAndMaterialsThatUseIt& FunctionAndReferencer = FunctionMaterialAndTheirReferencer[Index];
-						const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement = FunctionAndReferencer.Key;
-						uint32 CurrentElementHash = GetTypeHash( CurrentElement );
-						MaterialToIndexInArray.AddByHash( CurrentElementHash, CurrentElement, Index );
-
-						// Populate the name used by the Referencers
-						for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionAndReferencer.Value )
+						if ( CheckIfNameIsUsed( GetTypeHash( Referencer ), Referencer, ExpressionHash, Expression, ExpressionType ) )
 						{
-							uint32  ReferencerHash = GetTypeHash( Referencer );
-
-							if ( !VisitedMaterials.ContainsByHash( ReferencerHash, Referencer ) )
-							{
-								TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>> UsedNames = MakeShared<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>();
-
-								FDatasmithMaterialExpressions::ForEachParamsNameInMaterial( Referencer,
-									[ReferencerHash, &Referencer, &HandleExpressionNameForMaterialFunction, &UsedNames] (FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
-									{
-										HandleExpressionNameForMaterialFunction( ReferencerHash, Referencer, Expression, ExpressionType, Index, UsedNames.Get() );
-									});
-								VisitedMaterials.AddByHash( ReferencerHash, Referencer );
-								PushUsedNamesIntoTopLevelMaterial( UsedNames, ReferencerHash, Referencer );
-							}
+							return true;
 						}
-
-						// For the current element
-						TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>> UsedNames = MakeShared<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>();
-
-						TFunction<void(FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)> ForEachParameter =
-							[CurrentElementHash, &CurrentElement, &UsedNames, &HandleExpressionNameForMaterialFunction](FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
-							{
-								HandleExpressionNameForMaterialFunction( CurrentElementHash, CurrentElement, Expression, ExpressionType, Index, UsedNames.Get() );
-							};
-
-						FDatasmithMaterialExpressions::ForEachParamsNameInMaterial( CurrentElement,
-							[CurrentElementHash, &CurrentElement, &UsedNames, &HandleExpressionNameForMaterialFunction] (FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
-							{
-								HandleExpressionNameForMaterialFunction( CurrentElementHash, CurrentElement, Expression, ExpressionType, Index, UsedNames.Get() );
-							});
-						VisitedMaterials.AddByHash( CurrentElementHash, CurrentElement );
-						PushUsedNamesIntoTopLevelMaterial( UsedNames, CurrentElementHash, CurrentElement );
 					}
 				}
+				else if ( const TArray<TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>>* NameUsedArray = TopMaterialAndNamesUsedByType.FindByHash( MaterialHash, Material ) )
+				// Only check if we are in a material that aren't referenced elsewhere
+				{
+					for ( const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>& NamesUsed : *NameUsedArray )
+					{
+						if ( NamesUsed->Contains( TPair<FName, EDatasmithMaterialExpressionType>( Expression, ExpressionType ) ) )
+						{
+							return true;
+						}
+					}
+				}
+
+				return false;
+			};
+
+		// Make sure that the parameter have a unique name in the materials were they are use
+		auto HandleExpressionNameForMaterialFunction =
+			[&ExpressionTypeToUniqueNameProvider, &CheckIfNameIsUsed] (uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material, FName Expression, EDatasmithMaterialExpressionType ExpressionType, int32 ExpressionIndex, TSet<TPair<FName, EDatasmithMaterialExpressionType>>& NameUsed)
+			{
+				TUniquePtr<FDatasmithUniqueNameProvider>& UniqueNameProvider = ExpressionTypeToUniqueNameProvider.FindOrAdd( ExpressionType );
+				if ( !UniqueNameProvider )
+				{
+					UniqueNameProvider = MakeUnique<FDatasmithUniqueNameProvider>();
+				}
+
+				FString ChosenName;
+
+				if ( CheckIfNameIsUsed( MaterialHash, Material, GetTypeHash( Expression ), Expression, ExpressionType ) )
+				{
+					// Make the name unique
+					ChosenName = UniqueNameProvider->GenerateUniqueName( Expression.ToString() );
+					Material->GetExpression( ExpressionIndex )->SetName( *ChosenName );
+				}
+				else
+				{
+					// Keep track of the used names
+					ChosenName = Expression.ToString();
+					UniqueNameProvider->AddExistingName( ChosenName );
+				}
+
+				NameUsed.Add( TPair<FName, EDatasmithMaterialExpressionType>( *ChosenName, ExpressionType ) );
+
+				if ( ExpressionType != EDatasmithMaterialExpressionType::Generic )
+				{
+					// Always add to the generic, we don't know what type of parameter a generic expression would be
+					TUniquePtr<FDatasmithUniqueNameProvider>& GenericUniqueNameProvider = ExpressionTypeToUniqueNameProvider.FindOrAdd( EDatasmithMaterialExpressionType::Generic );
+					if ( !GenericUniqueNameProvider )
+					{
+						GenericUniqueNameProvider = MakeUnique<FDatasmithUniqueNameProvider>();
+					}
+
+					GenericUniqueNameProvider->AddExistingName( ChosenName );
+					NameUsed.Add( TPair<FName, EDatasmithMaterialExpressionType>( *ChosenName, EDatasmithMaterialExpressionType::Generic ) );
+				}
+			};
+
+		TFunction<void (const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>&, uint32, const TSharedPtr<IDatasmithUEPbrMaterialElement>&)> PushUsedNamesIntoTopLevelMaterial;
+		PushUsedNamesIntoTopLevelMaterial = [&MaterialToIndexInArray, &TopMaterialAndNamesUsedByType, &FunctionMaterialAndTheirReferencer, &PushUsedNamesIntoTopLevelMaterial] (const TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>& UsedNames, uint32 MaterialHash, const TSharedPtr<IDatasmithUEPbrMaterialElement>& Material)
+			{
+				if ( int32* Index = MaterialToIndexInArray.FindByHash( MaterialHash, Material ) )
+				{
+					for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionMaterialAndTheirReferencer[*Index].Value )
+					{
+						PushUsedNamesIntoTopLevelMaterial( UsedNames, GetTypeHash( Referencer ), Referencer );
+					}
+				}
+				else
+				{
+					TopMaterialAndNamesUsedByType.FindOrAddByHash( MaterialHash, Material ).Add( UsedNames );
+				}
+			};
+
+
+		TSet<TSharedPtr<IDatasmithUEPbrMaterialElement>> VisitedMaterials;
+		// Plus one because there is at least one top material that isn't used as a function
+		VisitedMaterials.Reserve( FunctionMaterialAndTheirReferencer.Num() + 1 );
+
+		/**
+			* We expect the independents function to be at the start of the array
+			* We want the top level function to conserve their name in case of conflicted naming of the parameters.
+			*/
+		for ( int32 Index = FunctionMaterialAndTheirReferencer.Num()-1; Index >= 0; Index-- )
+		{
+			const FFunctionAndMaterialsThatUseIt& FunctionAndReferencer = FunctionMaterialAndTheirReferencer[Index];
+			const TSharedPtr<IDatasmithUEPbrMaterialElement>& CurrentElement = FunctionAndReferencer.Key;
+			uint32 CurrentElementHash = GetTypeHash( CurrentElement );
+			MaterialToIndexInArray.AddByHash( CurrentElementHash, CurrentElement, Index );
+
+			// Populate the name used by the Referencers
+			for ( const TSharedPtr<IDatasmithUEPbrMaterialElement>& Referencer : FunctionAndReferencer.Value )
+			{
+				uint32  ReferencerHash = GetTypeHash( Referencer );
+
+				if ( !VisitedMaterials.ContainsByHash( ReferencerHash, Referencer ) )
+				{
+					TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>> UsedNames = MakeShared<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>();
+
+					FDatasmithMaterialExpressions::ForEachParamsNameInMaterial( Referencer,
+						[ReferencerHash, &Referencer, &HandleExpressionNameForMaterialFunction, &UsedNames] (FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
+						{
+							HandleExpressionNameForMaterialFunction( ReferencerHash, Referencer, Expression, ExpressionType, Index, UsedNames.Get() );
+						});
+					VisitedMaterials.AddByHash( ReferencerHash, Referencer );
+					PushUsedNamesIntoTopLevelMaterial( UsedNames, ReferencerHash, Referencer );
+				}
 			}
+
+			// For the current element
+			TSharedRef<TSet<TPair<FName, EDatasmithMaterialExpressionType>>> UsedNames = MakeShared<TSet<TPair<FName, EDatasmithMaterialExpressionType>>>();
+
+			TFunction<void(FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)> ForEachParameter =
+				[CurrentElementHash, &CurrentElement, &UsedNames, &HandleExpressionNameForMaterialFunction](FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
+				{
+					HandleExpressionNameForMaterialFunction( CurrentElementHash, CurrentElement, Expression, ExpressionType, Index, UsedNames.Get() );
+				};
+
+			FDatasmithMaterialExpressions::ForEachParamsNameInMaterial( CurrentElement,
+				[CurrentElementHash, &CurrentElement, &UsedNames, &HandleExpressionNameForMaterialFunction] (FName Expression, const EDatasmithMaterialExpressionType& ExpressionType, int32 Index)
+				{
+					HandleExpressionNameForMaterialFunction( CurrentElementHash, CurrentElement, Expression, ExpressionType, Index, UsedNames.Get() );
+				});
+			VisitedMaterials.AddByHash( CurrentElementHash, CurrentElement );
+			PushUsedNamesIntoTopLevelMaterial( UsedNames, CurrentElementHash, CurrentElement );
 		}
 	}
-}
+} // namespace UE::DatasmithImporter::Private
 
 void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportContext )
 {
 	const int32 StaticMeshesCount = ImportContext.FilteredScene->GetMeshesCount();
 
 	if ( !ImportContext.Options->BaseOptions.bIncludeGeometry || StaticMeshesCount == 0 )
+	{
+		return;
+	}
+
+	if (!ImportContext.AssetsContext.StaticMeshesFinalPackage || ImportContext.AssetsContext.StaticMeshesFinalPackage->GetFName() == NAME_None || ImportContext.SceneTranslator == nullptr)
 	{
 		return;
 	}
@@ -262,13 +264,10 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 		ProgressPtr->MakeDialog(true);
 	}
 
-	TMap<TSharedRef<IDatasmithMeshElement>, TFuture<FDatasmithMeshElementPayload*>> MeshElementPayloads;
+	TMap<TSharedRef<IDatasmithMeshElement>, UE::Tasks::TTask<FDatasmithMeshElementPayload*>> MeshElementPayloads;
 
 	FDatasmithTranslatorCapabilities TranslatorCapabilities;
-	if (ImportContext.SceneTranslator)
-	{
-		ImportContext.SceneTranslator->Initialize(TranslatorCapabilities);
-	}
+	ImportContext.SceneTranslator->Initialize(TranslatorCapabilities);
 
 	// Parallelize loading by doing a first pass to send translator loading into async task
 	if (TranslatorCapabilities.bParallelLoadStaticMeshSupported)
@@ -278,11 +277,6 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 			if (FDatasmithImporterImpl::HasUserCancelledTask(ImportContext.FeedbackContext))
 			{
 				ImportContext.bUserCancelled = true;
-			}
-
-			if (!ImportContext.AssetsContext.StaticMeshesFinalPackage || ImportContext.AssetsContext.StaticMeshesFinalPackage->GetFName() == NAME_None || ImportContext.SceneTranslator == nullptr)
-			{
-				continue;
 			}
 
 			TSharedRef<IDatasmithMeshElement> MeshElement = ImportContext.FilteredScene->GetMesh( MeshIndex ).ToSharedRef();
@@ -295,8 +289,7 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 				// Parallel loading from the translator using futures
 				MeshElementPayloads.Add(
 					MeshElement,
-					Async(
-						EAsyncExecution::LargeThreadPool,
+					UE::Tasks::Launch(UE_SOURCE_LOCATION,
 						[&ImportContext, MeshElement]() -> FDatasmithMeshElementPayload*
 						{
 							if (ImportContext.bUserCancelled)
@@ -344,11 +337,11 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 		//  - GetDestination (find or create StaticMesh, duplicate, flags and context etc)
 		//  - Import (Import data in simple memory repr (eg. TArray<FMeshDescription>)
 		//  - Set (fill UStaticMesh with imported data)
-		TFuture<FDatasmithMeshElementPayload*> MeshPayload;
+		UE::Tasks::TTask<FDatasmithMeshElementPayload*> MeshPayload;
 		if (MeshElementPayloads.RemoveAndCopyValue(MeshElement, MeshPayload))
 		{
-			TUniquePtr<FDatasmithMeshElementPayload> MeshPayloadPtr(MeshPayload.Get());
-			if (MeshPayloadPtr.IsValid())
+			TUniquePtr<FDatasmithMeshElementPayload> MeshPayloadPtr(MeshPayload.GetResult());
+			if (MeshPayloadPtr)
 			{
 				ImportStaticMesh(ImportContext, MeshElement, ExistingStaticMesh, MeshPayloadPtr.Get());
 			}
@@ -362,10 +355,10 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 	}
 
 	//Just make sure there is no async task left running in case of a cancellation
-	for ( const TPair<TSharedRef<IDatasmithMeshElement>, TFuture<FDatasmithMeshElementPayload*>> & Kvp : MeshElementPayloads)
+	for (TPair<TSharedRef<IDatasmithMeshElement>, UE::Tasks::TTask<FDatasmithMeshElementPayload*>>& Kvp : MeshElementPayloads)
 	{
 		// Wait for the result and delete it when getting out of scope
-		TUniquePtr<FDatasmithMeshElementPayload> MeshPayloadPtr(Kvp.Value.Get());
+		TUniquePtr<FDatasmithMeshElementPayload> MeshPayloadPtr(Kvp.Value.GetResult());
 	}
 
 	TMap< TSharedRef< IDatasmithMeshElement >, float > LightmapWeights = FDatasmithStaticMeshImporter::CalculateMeshesLightmapWeights( ImportContext.Scene.ToSharedRef() );
@@ -373,6 +366,140 @@ void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportCont
 	for ( TPair< TSharedRef< IDatasmithMeshElement >, UStaticMesh* >& ImportedStaticMeshPair : ImportContext.ImportedStaticMeshes )
 	{
 		FDatasmithStaticMeshImporter::SetupStaticMesh( ImportContext.AssetsContext, ImportedStaticMeshPair.Key, ImportedStaticMeshPair.Value, ImportContext.Options->BaseOptions.StaticMeshOptions, LightmapWeights[ ImportedStaticMeshPair.Key ] );
+	}
+}
+
+void FDatasmithImporter::ImportClothes(FDatasmithImportContext& ImportContext)
+{
+	// #ue_ds_cloth_note: FDatasmithImporter::ImportClothes: experimental import code
+	const int32 ClothesCount = ImportContext.FilteredScene->GetClothesCount();
+
+	if (!ImportContext.Options->BaseOptions.bIncludeGeometry
+	 || ClothesCount == 0
+	 || ImportContext.SceneTranslator == nullptr
+	 || !ImportContext.AssetsContext.StaticMeshesFinalPackage
+	 || ImportContext.AssetsContext.StaticMeshesFinalPackage->GetFName() == NAME_None)
+	{
+		return;
+	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::ImportClothes);
+
+	TUniquePtr<FScopedSlowTask> ProgressPtr;
+	if (ImportContext.FeedbackContext)
+	{
+		ProgressPtr = MakeUnique<FScopedSlowTask>(ClothesCount, LOCTEXT("ImportClothes", "Importing Clothes..."), true, *ImportContext.FeedbackContext);
+		ProgressPtr->MakeDialog(true);
+	}
+
+	FScopedSlowTask* Progress = ProgressPtr.Get();
+
+	for (int32 ClothIndex = 0; ClothIndex < ClothesCount && !ImportContext.bUserCancelled; ++ClothIndex)
+	{
+		ImportContext.bUserCancelled = FDatasmithImporterImpl::HasUserCancelledTask(ImportContext.FeedbackContext);
+
+		TSharedPtr<IDatasmithClothElement> ClothElementPtr = ImportContext.FilteredScene->GetCloth(ClothIndex);
+		if (!ClothElementPtr)
+		{
+			continue;
+		}
+		TSharedRef<IDatasmithClothElement> ClothElement = ClothElementPtr.ToSharedRef();
+
+		FDatasmithImporterImpl::ReportProgress(Progress, 1.f, FText::FromString(FString::Printf(TEXT("Importing cloth %d/%d (%s) ..."), ClothIndex + 1, ClothesCount, ClothElement->GetLabel())));
+
+		UObject* ExistingCloth = nullptr;
+		if (ImportContext.SceneAsset)
+		{
+			if (TSoftObjectPtr<UObject>* ExistingAssetPtr = ImportContext.SceneAsset->Clothes.Find(ClothElement->GetName()))
+			{
+				ExistingCloth = ExistingAssetPtr->LoadSynchronous();
+			}
+		}
+
+		{ // copy of FDatasmithImporter::ImportStaticMesh
+
+			{ // copy of FDatasmithStaticMeshImporter::ImportStaticMesh
+// 				// 2. get destination asset
+// 				// 2.1. FDatasmithImporterUtils::CanCreateAsset<UStaticMesh>
+				int32 MaxNameCharCount = FDatasmithImporterUtils::GetAssetNameMaxCharCount(ImportContext.AssetsContext.StaticMeshesFinalPackage.Get());
+				FString ClothName = ImportContext.AssetsContext.StaticMeshNameProvider.GenerateUniqueName(ClothElement->GetLabel(), MaxNameCharCount);
+				ClothName = ObjectTools::SanitizeObjectName(ClothName);
+
+				UPackage* Outer = ImportContext.AssetsContext.StaticMeshesImportPackage.Get();
+				EObjectFlags ObjectFlags = ImportContext.ObjectFlags & ~RF_Public; // not RF_Public yet, the publicized asset will be.
+
+				FDatasmithClothElementPayload Payload;
+				// #ue_ds_cloth_todo: async parallel support
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::ImportClothes:TranslatorLoadCloth);
+					if (!ImportContext.SceneTranslator->LoadCloth(ClothElement, Payload))
+					{
+						UE_LOG(LogDatasmithImport, Warning, TEXT("Cloth %s: load failed, translator issue."), ClothElement->GetName());
+						return;
+					}
+				}
+				FDatasmithCloth DsCloth = MoveTemp(Payload.Cloth);
+
+				UObject* ClothAsset = nullptr;
+				TArray<UObject*> ClothPresetAssets;
+
+				// #ue_ds_cloth_arch The ImporterExtension code is expected to be temporary
+				if (IDatasmithImporterExt* Ext = IDatasmithImporterModule::Get().GetClothImporterExtension())
+				{
+					for (const FDatasmithClothPresetPropertySet& PS : DsCloth.PropertySets)
+					{
+						FString PresetAssetName = ObjectTools::SanitizeObjectName(PS.SetName);
+						if (UObject* PropertySetObject = Ext->MakeClothPropertyAsset(Outer, *PresetAssetName, ObjectFlags))
+						{
+							ClothPresetAssets.Add(PropertySetObject);
+							Ext->FillPropertySet(PropertySetObject, ClothElement, PS);
+						}
+					}
+
+					bool bShouldBuildAsset = false;
+					if (ExistingCloth)
+					{
+						if (ExistingCloth->GetOuter() != Outer)
+						{
+							// #ue_ds_todo why do we duplicate assets here ?
+							// We create a new asset from an existing instead of a new one, but we strip it from template information... Why ?
+
+							// Temporary flag to skip PostLoad during DuplicateObject
+							ExistingCloth->SetFlags(RF_ArchetypeObject);
+							ClothAsset = ::DuplicateObject<UObject>(ExistingCloth, Outer, *ClothName);
+							ExistingCloth->ClearFlags(RF_ArchetypeObject);
+							ClothAsset->ClearFlags(RF_ArchetypeObject);
+
+							IDatasmithImporterModule::Get().ResetOverrides(ClothAsset);
+						}
+						else
+						{
+							ClothAsset = ExistingCloth;
+						}
+
+						ExistingCloth->SetFlags(ObjectFlags);
+					}
+					else
+					{
+						ClothAsset = Ext->MakeClothAsset(Outer, *ClothName, ObjectFlags);
+						bShouldBuildAsset = true;
+					}
+
+					Ext->FillCloth(ClothAsset, ClothElement, DsCloth); // , bShouldBuildAsset);
+				}
+
+				ImportContext.ImportedClothes.Add(ClothElement, ClothAsset);
+				for (UObject* ClothPresetAsset : ClothPresetAssets)
+				{
+					ImportContext.ImportedClothPresets.Add(ClothPresetAsset);
+				}
+			}
+
+			// #ue_ds_cloth_todo: CreateStaticMeshAssetImportData
+			// #ue_ds_cloth_todo: ImportMetaDataForObject
+		}
+
+		// #ue_ds_cloth_todo: ImportContext.ImportedStaticMeshesByName.Add(MeshElement->GetName(), MeshElement); // see FDatasmithFindAssetTypeHelper
 	}
 }
 
@@ -447,6 +574,25 @@ UStaticMesh* FDatasmithImporter::FinalizeStaticMesh( UStaticMesh* SourceStaticMe
 	return DestinationStaticMesh;
 }
 
+UObject* FDatasmithImporter::FinalizeCloth(UObject* SourceCloth, const TCHAR* FolderPath, UObject* ExistingCloth, TMap<UObject*, UObject*>* ReferencesToRemap)
+{
+	// #ue_ds_cloth_note FDatasmithImporter::FinalizeCloth
+	if (Cast<USkinnedAsset>(ExistingCloth))
+	{
+		// #ue_ds_cloth_todo review if this step is legit
+		FSkinnedAssetCompilingManager::Get().FinishCompilation({Cast<USkinnedAsset>(ExistingCloth)});
+	}
+
+	UObject* Asset = FDatasmithImporterImpl::FinalizeAsset(SourceCloth, FolderPath, ExistingCloth, ReferencesToRemap);
+
+	if (Cast<USkinnedAsset>(Asset))
+	{
+		// #ue_ds_cloth_todo review if this step is legit
+		FSkinnedAssetCompilingManager::Get().FinishCompilation({Cast<USkinnedAsset>(Asset)});
+	}
+	return Asset;
+}
+
 void FDatasmithImporter::CreateStaticMeshAssetImportData(FDatasmithImportContext& InContext, TSharedRef< IDatasmithMeshElement > MeshElement, UStaticMesh* ImportedStaticMesh, TArray<UDatasmithAdditionalData*>& AdditionalData)
 {
 	UDatasmithStaticMeshImportData::DefaultOptionsPair ImportOptions = UDatasmithStaticMeshImportData::DefaultOptionsPair( InContext.Options->BaseOptions.StaticMeshOptions, InContext.Options->BaseOptions.AssetOptions );
@@ -505,8 +651,9 @@ void FDatasmithImporter::ImportTextures( FDatasmithImportContext& ImportContext 
 
 		FDatasmithTextureResize::Initialize();
 
-		// Try to import textures async first, if possible
-		if ( GetDefault<UEditorExperimentalSettings>()->bEnableInterchangeFramework )
+		// Try to import textures async first, this does not work with DatasmithImportFactory as it creates a deadlock on the main thread.
+		const bool bInterchangeImport = false; /*GetDefault<UEditorExperimentalSettings>()->bEnableInterchangeFramework*/
+		if ( bInterchangeImport )
 		{
 			for ( int32 TextureIndex = 0; TextureIndex < FilteredTextureElements.Num(); TextureIndex++ )
 			{
@@ -547,9 +694,10 @@ void FDatasmithImporter::ImportTextures( FDatasmithImportContext& ImportContext 
 		{
 			FString       Extension;
 			TArray<uint8> TextureData;
-			TFuture<bool> Result;
+			UE::Tasks::TTask<bool> Result;
 		};
 		TArray<FAsyncData> AsyncData;
+
 		AsyncData.SetNum(FilteredTextureElements.Num());
 
 		for ( int32 TextureIndex = 0; TextureIndex < FilteredTextureElements.Num(); TextureIndex++ )
@@ -565,8 +713,7 @@ void FDatasmithImporter::ImportTextures( FDatasmithImportContext& ImportContext 
 			}
 
 			AsyncData[TextureIndex].Result =
-				Async(
-					EAsyncExecution::LargeThreadPool,
+				UE::Tasks::Launch(UE_SOURCE_LOCATION,
 					[&ImportContext, &AsyncData, &FilteredTextureElements, &DatasmithTextureImporter, TextureIndex]()
 					{
 						if (ImportContext.bUserCancelled)
@@ -622,7 +769,7 @@ void FDatasmithImporter::ImportTextures( FDatasmithImportContext& ImportContext 
 					}
 				}
 
-				if (AsyncData[TextureIndex].Result.Get())
+				if (AsyncData[TextureIndex].Result.GetResult())
 				{
 					ImportTexture( ImportContext, DatasmithTextureImporter, TextureElement.ToSharedRef(), ExistingTexture, AsyncData[TextureIndex].TextureData, AsyncData[TextureIndex].Extension );
 				}
@@ -673,8 +820,7 @@ void FDatasmithImporter::ImportMaterials( FDatasmithImportContext& ImportContext
 			using FFunctionAndMaterialsThatUseIt = FDatasmithImporterUtils::FFunctionAndMaterialsThatUseIt;
 			TArray<FFunctionAndMaterialsThatUseIt> Functions = FDatasmithImporterUtils::GetOrderedListOfMaterialsReferencedByMaterials( ImportContext.FilteredScene );
 
-			using namespace UE::DatasmithImporter::Private::DatasmithImporter;
-			MakeChangeToExpressionsNameForMaterialFunctions(Functions);
+			UE::DatasmithImporter::Private::MakeChangeToExpressionsNameForMaterialFunctions(Functions);
 
 			for (const FFunctionAndMaterialsThatUseIt& FunctionAndMaterials : Functions)
 			{
@@ -748,21 +894,22 @@ UMaterialInterface* FDatasmithImporter::ImportMaterial( FDatasmithImportContext&
 		return nullptr;
 	}
 
-#if MATERIAL_OPACITYMASK_DOESNT_SUPPORT_VIRTUALTEXTURE
-	TArray<UTexture*> OutOpacityMaskTextures;
-	if (ImportedMaterial->GetTexturesInPropertyChain(MP_OpacityMask, OutOpacityMaskTextures, nullptr, nullptr))
+	if (GetDefault<URendererSettings>()->bEnableVirtualTextureOpacityMask == false)
 	{
-		for (UTexture* CurrentTexture : OutOpacityMaskTextures)
+		//Virtual textures are not supported in the OpacityMask slot, convert any textures back to a regular texture.
+		TArray<UTexture*> OutOpacityMaskTextures;
+		if (ImportedMaterial->GetTexturesInPropertyChain(MP_OpacityMask, OutOpacityMaskTextures, nullptr, nullptr))
 		{
-			UTexture2D* Texture2D = Cast<UTexture2D>(CurrentTexture);
-			if (Texture2D && Texture2D->VirtualTextureStreaming)
+			for (UTexture* CurrentTexture : OutOpacityMaskTextures)
 			{
-				//Virtual textures are not supported yet in the OpacityMask slot, convert the texture back to a regular texture.
-				ImportContext.AssetsContext.VirtualTexturesToConvert.Add(Texture2D);
+				UTexture2D* Texture2D = Cast<UTexture2D>(CurrentTexture);
+				if (Texture2D && Texture2D->VirtualTextureStreaming)
+				{
+					ImportContext.AssetsContext.VirtualTexturesToConvert.Add(Texture2D);
+				}
 			}
 		}
 	}
-#endif
 
 	UDatasmithAssetImportData* AssetImportData = Cast< UDatasmithAssetImportData >(ImportedMaterial->AssetImportData);
 
@@ -789,7 +936,7 @@ UObject* FDatasmithImporter::FinalizeMaterial( UObject* SourceMaterial, const TC
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::FinalizeMaterial);
 
-	// Finalizing the master material might add a remapping for the instance parent property so make sure we have a remapping map available
+	// Finalizing the material instance might add a remapping for the instance parent property so make sure we have a remapping map available
 	TOptional< TMap< UObject*, UObject* > > ReferencesToRemapLocal;
 	if ( !ReferencesToRemap )
 	{
@@ -857,7 +1004,6 @@ void FDatasmithImporter::ImportActors( FDatasmithImportContext& ImportContext )
 		}
 	}
 	// end of the hotfix
-
 
 	ADatasmithSceneActor* ImportSceneActor = ImportContext.ActorsContext.ImportSceneActor;
 
@@ -952,13 +1098,15 @@ AActor* FDatasmithImporter::ImportActor( FDatasmithImportContext& ImportContext,
 	AActor* ImportedActor = nullptr;
 	if (ActorElement->IsA(EDatasmithElementType::HierarchicalInstanceStaticMesh))
 	{
-		TSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement > HISMActorElement = StaticCastSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement >( ActorElement );
-		ImportedActor =  FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshAsActor( ImportContext, HISMActorElement, UniqueNameProvider );
+		ImportedActor =  FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshAsActor( ImportContext, StaticCastSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement >( ActorElement ), UniqueNameProvider );
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
 	{
-		TSharedRef< IDatasmithMeshActorElement > MeshActorElement = StaticCastSharedRef< IDatasmithMeshActorElement >( ActorElement );
-		ImportedActor = FDatasmithActorImporter::ImportStaticMeshActor( ImportContext, MeshActorElement );
+		ImportedActor = FDatasmithActorImporter::ImportStaticMeshActor( ImportContext, StaticCastSharedRef< IDatasmithMeshActorElement >( ActorElement ) );
+	}
+	else if (ActorElement->IsA(EDatasmithElementType::ClothActor))
+	{
+		ImportedActor = FDatasmithActorImporter::ImportClothActor(ImportContext, StaticCastSharedRef<IDatasmithClothActorElement>( ActorElement ) );
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::EnvironmentLight))
 	{
@@ -1135,7 +1283,7 @@ void FDatasmithImporter::FinalizeActors( FDatasmithImportContext& ImportContext,
 				{
 					if ( UAssetUserData* AssetUserData = Cast<UAssetUserData>( SubObject ) )
 					{
-						AssetUserData->SetFlags( AssetUserData->GetFlags() | RF_Public );
+						AssetUserData->SetFlags( RF_Public );
 					}
 				}
 
@@ -1214,9 +1362,9 @@ void FDatasmithImporter::FinalizeActors( FDatasmithImportContext& ImportContext,
 					continue;
 				}
 
-				const bool bActorIsRelatedToDestionScene = DestinationSceneActor->RelatedActors.Contains( SourceActorPair.Key );
+				const bool bActorIsRelatedToDestinationScene = DestinationSceneActor->RelatedActors.Contains( SourceActorPair.Key );
 				TSoftObjectPtr< AActor >& ExistingActorPtr = DestinationSceneActor->RelatedActors.FindOrAdd( SourceActorPair.Key );
-				const bool bShouldFinalizeActor = bShouldSpawnNonExistingActors || !bActorIsRelatedToDestionScene || ( ExistingActorPtr.Get() && !ExistingActorPtr.Get()->IsPendingKillPending() );
+				const bool bShouldFinalizeActor = bShouldSpawnNonExistingActors || !bActorIsRelatedToDestinationScene || ( ExistingActorPtr.Get() && !ExistingActorPtr.Get()->IsPendingKillPending() );
 
 				if ( bShouldFinalizeActor )
 				{
@@ -1347,6 +1495,9 @@ AActor* FDatasmithImporter::FinalizeActor( FDatasmithImportContext& ImportContex
 		// The templates for the actor need to be applied after the components were created.
 		FDatasmithImporterImpl::ApplyMigratedTemplates( MigratedTemplates, DestinationActor );
 
+		// Actors that were created via blueprint (can happen with Dataprep) will have their components destroyed by the finalizer after this scope's end.
+		// This will disallow destruction of such components.
+		DestinationActor->bActorSeamlessTraveled = 1;
 	}
 
 	// Update label to match the source actor's
@@ -1610,7 +1761,7 @@ void FDatasmithImporter::FilterElementsToImport( FDatasmithImportContext& Import
 
 	auto ElementNeedsReimport = [&](const FString& FullyQualifiedName, TSharedRef<IDatasmithElement> Element, const FString& SourcePath) -> bool
 	{
-		const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(*FullyQualifiedName);
+		const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(FullyQualifiedName));
 		const FAssetDataTagMapSharedView::FFindTagResult ImportDataStr = AssetData.TagsAndValues.FindTag(TEXT("AssetImportData"));
 		FString CurrentRelativeFileName;
 
@@ -1669,7 +1820,7 @@ void FDatasmithImporter::FilterElementsToImport( FDatasmithImportContext& Import
 		// If the mesh element does not need to be re-imported, register its name
 		else
 		{
-			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( *AssetName);
+			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( FSoftObjectPath(AssetName) );
 			ImportContext.AssetsContext.StaticMeshNameProvider.AddExistingName( FPaths::GetBaseFilename( AssetData.PackageName.ToString() ) );
 		}
 	}
@@ -1696,7 +1847,7 @@ void FDatasmithImporter::FilterElementsToImport( FDatasmithImportContext& Import
 		// If the texture element does not need to be re-imported, register its name
 		else
 		{
-			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( *AssetName);
+			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( FSoftObjectPath(AssetName) );
 			ImportContext.AssetsContext.TextureNameProvider.AddExistingName( FPaths::GetBaseFilename( AssetData.PackageName.ToString() ) );
 		}
 	}
@@ -1707,6 +1858,8 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::FinalizeImport);
 
 	const int32 NumImportedObjects = ImportContext.ImportedStaticMeshes.Num() +
+									 ImportContext.ImportedClothes.Num() +
+									 ImportContext.ImportedClothPresets.Num() +
 									 ImportContext.ImportedTextures.Num() +
 									 ImportContext.ImportedMaterialFunctions.Num() +
 									 ImportContext.ImportedMaterials.Num() +
@@ -1804,7 +1957,6 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 			FDatasmithImporterImpl::CheckAssetPersistenceValidity(ExistingMaterialFunction, ImportContext);
 		}
 
-		TArray<UMaterial*> MaterialsToRefreshAfterVirtualTextureConversion;
 		for (const TPair< TSharedRef< IDatasmithBaseMaterialElement >, UMaterialInterface* >& ImportedMaterialPair : ImportContext.ImportedMaterials)
 		{
 			if (ImportContext.bUserCancelled)
@@ -1831,17 +1983,6 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 			if (UMaterial* SourceMaterial = Cast< UMaterial >(SourceMaterialInterface))
 			{
 				SourceMaterial->UpdateCachedExpressionData();
-
-				TArray<UObject*> ReferencedTextures;
-				ReferencedTextures = SourceMaterial->GetReferencedTextures();
-				for (UTexture2D* VirtualTexture : ImportContext.AssetsContext.VirtualTexturesToConvert)
-				{
-					if (ReferencedTextures.Contains(VirtualTexture))
-					{
-						MaterialsToRefreshAfterVirtualTextureConversion.Add(SourceMaterial);
-						break;
-					}
-				}
 
 				TArray<UMaterialFunctionInterface*> FinalizableFunctions;
 				for (const FMaterialFunctionInfo& MaterialFunctionInfo : SourceMaterial->GetCachedExpressionData().FunctionInfos)
@@ -1919,6 +2060,56 @@ void FDatasmithImporter::FinalizeImport(FDatasmithImportContext& ImportContext, 
 	};
 
 	FDatasmithStaticMeshImporter::BuildStaticMeshes(StaticMeshes.Array(), ProgressFunction);
+
+	// #ue_ds_cloth_note: experimental FinalizeImport code
+	for (auto& SourcePresetObj : ImportContext.ImportedClothPresets)
+	{
+		if (!SourcePresetObj || (ValidAssets.Num() > 0 && !ValidAssets.Contains(SourcePresetObj)))
+		{
+			continue;
+		}
+
+		FDatasmithImporterImpl::ReportProgress(Progress, 1.f, FText::FromString(FString::Printf(TEXT("Finalizing assets %d/%d (Cloth Preset %s) ..."), ++AssetIndex, NumAssetsToFinalize, *SourcePresetObj->GetName())));
+
+		// #ue_ds_cloth_existing presets
+		UObject* ExistingPreset = nullptr; // Cloth = ImportContext.SceneAsset ? ImportContext.SceneAsset->Clothes.FindOrAdd(StaticMeshId).Get() : nullptr;
+
+		FString SourcePackagePath = SourcePresetObj->GetOutermost()->GetName();
+		FString DestinationPackagePath = SourcePackagePath.Replace( *TransientFolderPath, *RootFolderPath, ESearchCase::CaseSensitive );
+
+		UObject* FinalizedPreset = FDatasmithImporterImpl::FinalizeAsset(SourcePresetObj, *DestinationPackagePath, ExistingPreset, &ReferencesToRemap);
+
+		FDatasmithImporterImpl::CheckAssetPersistenceValidity(FinalizedPreset, ImportContext);
+
+		SourcePresetObj = FinalizedPreset;
+	}
+
+	for (auto& ImportedPair : ImportContext.ImportedClothes)
+	{
+		UObject* SourceClothObj = ImportedPair.Value;
+
+		if (!SourceClothObj || (ValidAssets.Num() > 0 && !ValidAssets.Contains(SourceClothObj)))
+		{
+			continue;
+		}
+
+		FDatasmithImporterImpl::ReportProgress(Progress, 1.f, FText::FromString(FString::Printf(TEXT("Finalizing assets %d/%d (Cloth %s) ..."), ++AssetIndex, NumAssetsToFinalize, *SourceClothObj->GetName())));
+
+		FName ClothId = ImportedPair.Key->GetName();
+		UObject* ExistingCloth = ImportContext.SceneAsset ? ImportContext.SceneAsset->Clothes.FindOrAdd(ClothId).Get() : nullptr;
+
+		FString SourcePackagePath = SourceClothObj->GetOutermost()->GetName();
+		FString DestinationPackagePath = SourcePackagePath.Replace( *TransientFolderPath, *RootFolderPath, ESearchCase::CaseSensitive );
+
+		UObject* FinalizedCloth = FinalizeCloth(SourceClothObj, *DestinationPackagePath, ExistingCloth, &ReferencesToRemap);
+		if (ImportContext.SceneAsset)
+		{
+			ImportContext.SceneAsset->Clothes[ClothId] = FinalizedCloth;
+		}
+		FDatasmithImporterImpl::CheckAssetPersistenceValidity(FinalizedCloth, ImportContext);
+
+		ImportedPair.Value = FinalizedCloth;
+	}
 
 	for (const TPair< TSharedRef< IDatasmithLevelSequenceElement >, ULevelSequence* >& ImportedLevelSequencePair : ImportContext.ImportedLevelSequences)
 	{

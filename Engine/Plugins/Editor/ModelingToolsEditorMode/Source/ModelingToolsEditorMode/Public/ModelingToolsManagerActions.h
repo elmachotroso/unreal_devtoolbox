@@ -69,6 +69,8 @@ public:
 	TSharedPtr<FUICommandInfo> BeginTransferMeshTool;
 	TSharedPtr<FUICommandInfo> BeginConvertMeshesTool;
 	TSharedPtr<FUICommandInfo> BeginSplitMeshesTool;
+	TSharedPtr<FUICommandInfo> BeginPatternTool;
+
 
 	TSharedPtr<FUICommandInfo> BeginRemeshSculptMeshTool;
 	TSharedPtr<FUICommandInfo> BeginRemeshMeshTool;
@@ -119,6 +121,7 @@ public:
 	TSharedPtr<FUICommandInfo> BeginAttributeEditorTool;
 	TSharedPtr<FUICommandInfo> BeginBakeMeshAttributeMapsTool;
 	TSharedPtr<FUICommandInfo> BeginBakeMultiMeshAttributeMapsTool;
+	TSharedPtr<FUICommandInfo> BeginBakeRenderCaptureTool;
 	TSharedPtr<FUICommandInfo> BeginBakeMeshAttributeVertexTool;
 	TSharedPtr<FUICommandInfo> BeginUVSeamEditTool;
 
@@ -127,6 +130,7 @@ public:
 	
 	TSharedPtr<FUICommandInfo> BeginLODManagerTool;
 	TSharedPtr<FUICommandInfo> BeginGenerateStaticMeshLODAssetTool;
+	TSharedPtr<FUICommandInfo> BeginISMEditorTool;
 
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_FaceSelect;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_EdgeSelect;
@@ -139,6 +143,20 @@ public:
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Inset;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_Outset;
 	TSharedPtr<FUICommandInfo> BeginPolyModelTool_CutFaces;
+
+
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToVertexType;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToEdgeType;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToFaceType;
+
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToObjectType;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToTriangleType;
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_ToPolygroupType;
+
+	TSharedPtr<FUICommandInfo> BeginSelectionAction_Delete;
+
+	// For connecting ModelingMode with UVEditor plugin
+	TSharedPtr<FUICommandInfo> LaunchUVEditor;
 
 	//
 	// Accept/Cancel/Complete commands are used to end the active Tool via ToolManager
@@ -156,3 +174,4 @@ public:
 	 */
 	virtual void RegisterCommands() override;
 };
+

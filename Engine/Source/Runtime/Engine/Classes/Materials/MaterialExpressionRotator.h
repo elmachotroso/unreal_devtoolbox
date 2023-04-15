@@ -20,17 +20,17 @@ class UMaterialExpressionRotator : public UMaterialExpression
 	UPROPERTY(meta = (RequiredInput = "false", ToolTip = "Defaults to Game Time if not specified"))
 	FExpressionInput Time;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator, meta = (ShowAsInputPin = "Advanced"))
 	float CenterX;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator, meta = (ShowAsInputPin = "Advanced"))
 	float CenterY;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotator, meta = (ShowAsInputPin = "Advanced"))
 	float Speed;
 
 	/** only used if Coordinate is not hooked up */
-	UPROPERTY(EditAnywhere, Category = MaterialExpressionRotator)
+	UPROPERTY(EditAnywhere, Category = MaterialExpressionRotator, meta = (OverridingInputProperty = "Coordinate"))
 	uint32 ConstCoordinate;
 
 	//~ Begin UMaterialExpression Interface
@@ -38,6 +38,7 @@ class UMaterialExpressionRotator : public UMaterialExpression
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual bool NeedsRealtimePreview() override { return Time.Expression==NULL && Speed != 0.f; }
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 

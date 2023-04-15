@@ -47,7 +47,6 @@
 #include "VectorField/VectorField.h"
 #include "Misc/CoreDelegates.h"
 #include "PipelineStateCache.h"
-#include "SceneRenderTargetParameters.h"
 #include "MeshMaterialShader.h"
 
 DECLARE_CYCLE_STAT(TEXT("GPUSpriteEmitterInstance Init GT"), STAT_GPUSpriteEmitterInstance_Init, STATGROUP_Particles);
@@ -227,10 +226,8 @@ class FParticleStateTextures : public FRenderResource
 public:
 
 	/** Contains the positions of all simulating particles. */
-	FTexture2DRHIRef PositionTextureTargetRHI;
 	FTexture2DRHIRef PositionTextureRHI;
 	/** Contains the velocity of all simulating particles. */
-	FTexture2DRHIRef VelocityTextureTargetRHI;
 	FTexture2DRHIRef VelocityTextureRHI;
 
 	bool bTexturesCleared;
@@ -245,51 +242,45 @@ public:
 		const int32 SizeY = GParticleSimulationTextureSizeY;
 
 		// 32-bit per channel RGBA texture for position.
-		check( !IsValidRef( PositionTextureTargetRHI ) );
 		check( !IsValidRef( PositionTextureRHI ) );
 
 #define PARTICLE_STATE_POSITION_TEXTURE_NAME	TEXT("ParticleStatePosition")
 #define PARTICLE_STATE_VELOCITY_TEXTURE_NAME	TEXT("ParticleStateVelocity")
 
-		FRHIResourceCreateInfo CreateInfo(PARTICLE_STATE_POSITION_TEXTURE_NAME, FClearValueBinding::Transparent);
-		RHICreateTargetableShaderResource2D(
-			SizeX,
-			SizeY,
-			PF_A32B32G32R32F,
-			/*NumMips=*/ 1,
-			TexCreate_None,
-			TexCreate_RenderTargetable,
-			/*bForceSeparateTargetAndShaderResource=*/ false,
-			CreateInfo,
-			PositionTextureTargetRHI,
-			PositionTextureRHI
-			);
+		{
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(PARTICLE_STATE_POSITION_TEXTURE_NAME)
+				.SetExtent(SizeX, SizeY)
+				.SetFormat(PF_A32B32G32R32F)
+				.SetClearValue(FClearValueBinding::Transparent)
+				.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetInitialState(ERHIAccess::SRVMask);
+
+			PositionTextureRHI = RHICreateTexture(Desc);
+		}
 
 		// 16-bit per channel RGBA texture for velocity.
-		check( !IsValidRef( VelocityTextureTargetRHI ) );
 		check( !IsValidRef( VelocityTextureRHI ) );
 
-		CreateInfo.DebugName = PARTICLE_STATE_VELOCITY_TEXTURE_NAME;
-		RHICreateTargetableShaderResource2D(
-			SizeX,
-			SizeY,
-			PF_FloatRGBA,
-			/*NumMips=*/ 1,
-			TexCreate_None,
-			TexCreate_RenderTargetable,
-			/*bForceSeparateTargetAndShaderResource=*/ false,
-			CreateInfo,
-			VelocityTextureTargetRHI,
-			VelocityTextureRHI
-			);
+		{
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2D(PARTICLE_STATE_VELOCITY_TEXTURE_NAME)
+				.SetExtent(SizeX, SizeY)
+				.SetFormat(PF_FloatRGBA)
+				.SetClearValue(FClearValueBinding::Transparent)
+				.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetInitialState(ERHIAccess::SRVMask);
+
+			VelocityTextureRHI = RHICreateTexture(Desc);
+		}
 
 		// using FName's ability to append a number to a string (..._0) without an extra string allocation, except suffixing is done when number > 0 hence the +1 here : 
 		FName PositionTextureName(PARTICLE_STATE_POSITION_TEXTURE_NAME, ParticleStateIndex + 1); 
 		FName VelocityTextureName(PARTICLE_STATE_VELOCITY_TEXTURE_NAME, ParticleStateIndex + 1);
-		PositionTextureTargetRHI->SetName(PositionTextureName);
-		VelocityTextureTargetRHI->SetName(VelocityTextureName);
-		RHIBindDebugLabelName(PositionTextureTargetRHI, *PositionTextureName.ToString());
-		RHIBindDebugLabelName(VelocityTextureTargetRHI, *VelocityTextureName.ToString());
+		PositionTextureRHI->SetName(PositionTextureName);
+		VelocityTextureRHI->SetName(VelocityTextureName);
+		RHIBindDebugLabelName(PositionTextureRHI, *PositionTextureName.ToString());
+		RHIBindDebugLabelName(VelocityTextureRHI, *VelocityTextureName.ToString());
 #undef PARTICLE_STATE_VELOCITY_TEXTURE_NAME
 #undef PARTICLE_STATE_POSITION_TEXTURE_NAME
 
@@ -301,10 +292,7 @@ public:
 	 */
 	virtual void ReleaseRHI() override
 	{
-		// Release textures.
-		PositionTextureTargetRHI.SafeRelease();
 		PositionTextureRHI.SafeRelease();
-		VelocityTextureTargetRHI.SafeRelease();
 		VelocityTextureRHI.SafeRelease();
 	}
 };
@@ -317,8 +305,7 @@ class FParticleAttributesTexture : public FRenderResource
 public:
 
 	/** Contains the attributes of all simulating particles. */
-	FTexture2DRHIRef TextureTargetRHI;
-	FTexture2DRHIRef TextureRHI;
+	FTextureRHIRef TextureRHI;
 
 	/**
 	 * Initialize RHI resources used for particle simulation.
@@ -331,32 +318,25 @@ public:
 		const ETextureCreateFlags ExtraFlags = CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1 ? TexCreate_AFRManual : TexCreate_None;
 
 #define ATTRIBUTES_TEXTURE_NAME	TEXT("ParticleAttributes")
-		FRHIResourceCreateInfo CreateInfo(ATTRIBUTES_TEXTURE_NAME, FClearValueBinding::Transparent);
-		RHICreateTargetableShaderResource2D(
-			SizeX,
-			SizeY,
-			PF_B8G8R8A8,
-			/*NumMips=*/ 1,
-			TexCreate_None,
-			TexCreate_RenderTargetable | TexCreate_NoFastClear | ExtraFlags,
-			/*bForceSeparateTargetAndShaderResource=*/ false,
-			CreateInfo,
-			TextureTargetRHI,
-			TextureRHI
-			);
+
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(ATTRIBUTES_TEXTURE_NAME)
+			.SetExtent(SizeX, SizeY)
+			.SetFormat(PF_B8G8R8A8)
+			.SetClearValue(FClearValueBinding::Transparent)
+			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource | ETextureCreateFlags::NoFastClear | ExtraFlags)
+			.SetInitialState(ERHIAccess::RTV);
+
+		TextureRHI = RHICreateTexture(Desc);
 
 		static FName AttributesTextureName(ATTRIBUTES_TEXTURE_NAME);
-		TextureTargetRHI->SetName(AttributesTextureName);
-		RHIBindDebugLabelName(TextureTargetRHI, ATTRIBUTES_TEXTURE_NAME);
+		TextureRHI->SetName(AttributesTextureName);
+		RHIBindDebugLabelName(TextureRHI, ATTRIBUTES_TEXTURE_NAME);
 #undef ATTRIBUTES_TEXTURE_NAME
-		
-		{
-			FRHIRenderPassInfo RPInfo(TextureTargetRHI, ERenderTargetActions::Clear_Store);
-			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-			RHICmdList.Transition(FRHITransitionInfo(TextureTargetRHI, ERHIAccess::SRVMask, ERHIAccess::RTV));
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("Clear"));
-			RHICmdList.EndRenderPass();
-		}
+
+		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+		ClearRenderTarget(RHICmdList, TextureRHI);
+		RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask));
 	}
 
 	/**
@@ -364,7 +344,6 @@ public:
 	 */
 	virtual void ReleaseRHI() override
 	{
-		TextureTargetRHI.SafeRelease();
 		TextureRHI.SafeRelease();
 	}
 };
@@ -406,12 +385,13 @@ public:
 			ParticleResources->SimulationAttributesTexture.InitResource();
 
 			RHICmdList.Transition({ 
-				FRHITransitionInfo(ParticleResources->RenderAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
-				FRHITransitionInfo(ParticleResources->SimulationAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
-				FRHITransitionInfo(ParticleResources->StateTextures[0].PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
-				FRHITransitionInfo(ParticleResources->StateTextures[0].VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
-				FRHITransitionInfo(ParticleResources->StateTextures[1].PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
-				FRHITransitionInfo(ParticleResources->StateTextures[1].VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics)});
+				FRHITransitionInfo(ParticleResources->RenderAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask),
+				FRHITransitionInfo(ParticleResources->SimulationAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask),
+				FRHITransitionInfo(ParticleResources->StateTextures[0].PositionTextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask),
+				FRHITransitionInfo(ParticleResources->StateTextures[0].VelocityTextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask),
+				FRHITransitionInfo(ParticleResources->StateTextures[1].PositionTextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask),
+				FRHITransitionInfo(ParticleResources->StateTextures[1].VelocityTextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask)
+			});
 		});
 	}
 
@@ -666,92 +646,52 @@ struct FGPUSpriteMeshDataUserData  : public FOneFrameResource
 };
 
 /**
- * Vertex factory for render sprites from GPU simulated particles.
+ * Return the vertex elements from the fixed GGPUSpriteVertexDeclaration used by this factory
  */
-class FGPUSpriteVertexFactory : public FParticleVertexFactoryBase
+void FGPUSpriteVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements) 
+{ 
+	GGPUSpriteVertexDeclaration.VertexDeclarationRHI->GetInitializer(Elements);
+}
+
+/**
+ * Constructs render resources for this vertex factory.
+ */
+void FGPUSpriteVertexFactory::InitRHI()
 {
-	DECLARE_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory);
+	FVertexStream Stream;
 
-public:
-	FGPUSpriteVertexFactory(ERHIFeatureLevel::Type InFeatureLevel)
-		: FParticleVertexFactoryBase(InFeatureLevel)
-	{
-	}
+	// No streams should currently exist.
+	check(Streams.Num() == 0);
 
-	/** Emitter uniform buffer. */
-	FRHIUniformBuffer* EmitterUniformBuffer;
-	/** Emitter uniform buffer for dynamic parameters. */
-	FUniformBufferRHIRef EmitterDynamicUniformBuffer;
-	/** Buffer containing unsorted particle indices. */
-	FRHIShaderResourceView* UnsortedParticleIndicesSRV;
-	/** Texture containing positions for all particles. */
-	FRHITexture2D* PositionTextureRHI;
-	/** Texture containing velocities for all particles. */
-	FRHITexture2D* VelocityTextureRHI;
-	/** Texture containint attributes for all particles. */
-	FRHITexture2D* AttributesTextureRHI;
-	/** LWC tile offset, will be 0,0,0 for localspace emitters. */
-	FVector3f LWCTile;
+	// Stream 0: Global particle texture coordinate buffer.
+	Stream.VertexBuffer = &GParticleTexCoordVertexBuffer;
+	Stream.Stride = sizeof(FVector2f);
+	Stream.Offset = 0;
+	Streams.Add( Stream );
 
-	FGPUSpriteVertexFactory()
-		: FParticleVertexFactoryBase(PVFT_MAX, ERHIFeatureLevel::Num)
-		, UnsortedParticleIndicesSRV(0)
-		, PositionTextureRHI(nullptr)
-		, VelocityTextureRHI(nullptr)
-		, AttributesTextureRHI(nullptr)
-		, LWCTile(FVector3f::ZeroVector)
-	{}
+	// Set the declaration.
+	SetDeclaration(GGPUSpriteVertexDeclaration.VertexDeclarationRHI);
+}
 
-	/**
-	 * Constructs render resources for this vertex factory.
-	 */
-	virtual void InitRHI() override
-	{
-		FVertexStream Stream;
+/**
+ * Should we cache the material's shadertype on this platform with this vertex factory?
+ */
+bool FGPUSpriteVertexFactory::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
+{
+	return (Parameters.MaterialParameters.bIsUsedWithParticleSprites || Parameters.MaterialParameters.bIsSpecialEngineMaterial) && SupportsGPUParticles(Parameters.Platform);
+}
 
-		// No streams should currently exist.
-		check( Streams.Num() == 0 );
+/**
+ * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
+ */
+void FGPUSpriteVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+{
+	FParticleVertexFactoryBase::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	OutEnvironment.SetDefine(TEXT("PARTICLES_PER_INSTANCE"), MAX_PARTICLES_PER_INSTANCE);
 
-		// Stream 0: Global particle texture coordinate buffer.
-		Stream.VertexBuffer = &GParticleTexCoordVertexBuffer;
-		Stream.Stride = sizeof(FVector2f);
-		Stream.Offset = 0;
-		Streams.Add( Stream );
-
-		// Set the declaration.
-		SetDeclaration( GGPUSpriteVertexDeclaration.VertexDeclarationRHI );
-	}
-
-	virtual bool RendersPrimitivesAsCameraFacingSprites() const override { return true; }
-
-	/**
-	 * Set the source vertex buffer that contains particle indices.
-	 */
-	void SetUnsortedParticleIndicesSRV(FRHIShaderResourceView* VertexBuffer )
-	{
-		UnsortedParticleIndicesSRV = VertexBuffer;
-	}
-
-	/**
-	 * Should we cache the material's shadertype on this platform with this vertex factory? 
-	 */
-	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
-	{
-		return (Parameters.MaterialParameters.bIsUsedWithParticleSprites || Parameters.MaterialParameters.bIsSpecialEngineMaterial) && SupportsGPUParticles(Parameters.Platform);
-	}
-
-	/**
-	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
-	 */
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FParticleVertexFactoryBase::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("PARTICLES_PER_INSTANCE"), MAX_PARTICLES_PER_INSTANCE);
-
-		// Set a define so we can tell in MaterialTemplate.usf when we are compiling a sprite vertex factory
-		OutEnvironment.SetDefine(TEXT("PARTICLE_SPRITE_FACTORY"),TEXT("1"));
-	}
-};
+	// Set a define so we can tell in MaterialTemplate.usf when we are compiling a sprite vertex factory
+	OutEnvironment.SetDefine(TEXT("PARTICLE_SPRITE_FACTORY"), TEXT("1"));
+}
 
 void FGPUSpriteVertexFactoryShaderParametersVS::GetElementShaderBindings(
 	const FSceneInterface* Scene,
@@ -808,6 +748,7 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FGPUSpriteVertexFactory, SF_Pixel, FGPUS
 IMPLEMENT_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory,"/Engine/Private/ParticleGPUSpriteVertexFactory.ush",
 	  EVertexFactoryFlags::UsedWithMaterials
 	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsPSOPrecaching
 );
 
 /*-----------------------------------------------------------------------------
@@ -1032,7 +973,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return SupportsGPUParticles(Parameters.Platform) && IsParticleCollisionModeSupported(Parameters.Platform, CollisionMode, true);
+		return SupportsGPUParticles(Parameters.Platform) && IsParticleCollisionModeSupported(Parameters.Platform, CollisionMode);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -1406,7 +1347,6 @@ struct FSimulationCommandGPU
 	FParticlePerFrameSimulationParameters PerFrameParameters;
 	/** Parameters to sample the local vector field for this simulation. */
 	FVectorFieldUniformBufferRef VectorFieldsUniformBuffer;
-	FLocalUniformBuffer VectorFieldsUniformBufferLocal;
 	/** Vector field volume textures for this simulation. */
 	FRHITexture3D* VectorFieldTexturesRHI[MAX_VECTOR_FIELDS];
 	/** The number of tiles to simulate. */
@@ -2278,7 +2218,7 @@ static FBox ComputeParticleBounds(
 
 		// Grab the shader.
 		TShaderMapRef<FParticleBoundsCS> ParticleBoundsCS(GetGlobalShaderMap(FeatureLevel));
-		RHICmdList.SetComputeShader(ParticleBoundsCS.GetComputeShader());
+		SetComputePipelineState(RHICmdList, ParticleBoundsCS.GetComputeShader());
 
 		// Dispatch shader to compute bounds.
 		ParticleBoundsCS->SetOutput(RHICmdList, BoundsVertexBufferUAV);
@@ -2957,7 +2897,6 @@ public:
 
 				const bool bTranslucent = RendersWithTranslucentMaterial();
 				const bool bAllowSorting = FXConsoleVariables::bAllowGPUSorting
-					&& RHISupportsComputeShaders(ViewFamily.GetShaderPlatform())
 					&& bTranslucent;
 
 				// Iterate over views and assign parameters for each.
@@ -4131,7 +4070,7 @@ private:
 	 */
 	void BuildNewParticles(FNewParticle* InNewParticles, FSpawnInfo SpawnInfo, TArray<FNewParticle> &ForceSpawned)
 	{
-		const float OneOverTwoPi = 1.0f / (2.0f * PI);
+		const float OneOverTwoPi = 1.0f / (2.0f * UE_PI);
 		UParticleModuleRequired* RequiredModule = EmitterInfo.RequiredModule;
 
 		// Allocate stack memory for a dummy particle.
@@ -4542,7 +4481,6 @@ void FFXSystem::RemoveGPUSimulation(FParticleSimulationGPU* Simulation)
 bool FFXSystem::AddSortedGPUSimulation(FParticleSimulationGPU* Simulation, const FVector& ViewOrigin, bool bIsTranslucent, FGPUSortManager::FAllocationInfo& OutInfo)
 {
 	LLM_SCOPE(ELLMTag::Particles);
-	check(RHISupportsComputeShaders(ShaderPlatform));
 
 	const EGPUSortFlags SortFlags = 
 		EGPUSortFlags::KeyGenAfterPostRenderOpaque |
@@ -4565,7 +4503,12 @@ bool FFXSystem::AddSortedGPUSimulation(FParticleSimulationGPU* Simulation, const
 void FFXSystem::GenerateSortKeys(FRHICommandListImmediate& RHICmdList, int32 BatchId, int32 NumElementsInBatch, EGPUSortFlags Flags, FRHIUnorderedAccessView* KeysUAV, FRHIUnorderedAccessView* ValuesUAV)
 {
 	check(EnumHasAnyFlags(Flags, EGPUSortFlags::KeyGenAfterPostRenderOpaque));
-	check(EnumHasAnyFlags(Flags, EGPUSortFlags::LowPrecisionKeys));
+
+	// Cascade does not support high precision keys so we can safely ignore this as we will not have a batch which conatins anything but low precision
+	if (EnumHasAnyFlags(Flags, EGPUSortFlags::LowPrecisionKeys) == false)
+	{
+		return;
+	}
 
 	// First generate keys for each emitter to be sorted.
 	const int32 TotalParticleCount = GenerateParticleSortKeys(
@@ -4679,8 +4622,8 @@ void FFXSystem::PrepareGPUSimulation(FRHICommandListImmediate& RHICmdList)
 	{
 		// Setup render states.
 		RHICmdList.Transition({
-			FRHITransitionInfo(CurrentStateTextures.PositionTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV),
-			FRHITransitionInfo(CurrentStateTextures.VelocityTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV)
+			FRHITransitionInfo(CurrentStateTextures.PositionTextureRHI, ERHIAccess::SRVMask, ERHIAccess::RTV),
+			FRHITransitionInfo(CurrentStateTextures.VelocityTextureRHI, ERHIAccess::SRVMask, ERHIAccess::RTV)
 		});
 	}
 }
@@ -4700,8 +4643,6 @@ void FFXSystem::SimulateGPUParticles(
 	check(IsInRenderingThread());
 	SCOPE_CYCLE_COUNTER(STAT_GPUParticleTickTime);
 
-	FMemMark Mark(FMemStack::Get());
-
 	const float FixDeltaSeconds = CVarGPUParticleFixDeltaSeconds.GetValueOnRenderThread();
 
 	// Grab resources.
@@ -4709,8 +4650,8 @@ void FFXSystem::SimulateGPUParticles(
 	FParticleStateTextures& PrevStateTextures = ParticleSimulationResources->GetPreviousStateTextures();	
 
 	// Setup render states.
-	FRHITexture* CurrentStateRenderTargets[2] = { CurrentStateTextures.PositionTextureTargetRHI, CurrentStateTextures.VelocityTextureTargetRHI };
-	FRHITexture* PreviousStateRenderTargets[2] = { PrevStateTextures.PositionTextureTargetRHI, PrevStateTextures.VelocityTextureTargetRHI };
+	FRHITexture* CurrentStateRenderTargets[2] = { CurrentStateTextures.PositionTextureRHI, CurrentStateTextures.VelocityTextureRHI };
+	FRHITexture* PreviousStateRenderTargets[2] = { PrevStateTextures.PositionTextureRHI, PrevStateTextures.VelocityTextureRHI };
 
 
 #if WITH_MGPU
@@ -4786,16 +4727,16 @@ void FFXSystem::SimulateGPUParticles(
 
 			{
 				RHICmdList.Transition({
-					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::SRVGraphics, ERHIAccess::RTV),
-					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
+					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::SRVMask, ERHIAccess::RTV),
+					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::SRVMask, ERHIAccess::RTV)});
 
 				FRHIRenderPassInfo RPInfo(2, PreviousStateRenderTargets, ERenderTargetActions::Clear_Store);
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("GPUParticlesClearPreviousStateTextures"));
 				RHICmdList.EndRenderPass();
 
 				RHICmdList.Transition({
-					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVGraphics),
-					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVGraphics) });
+					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVMask),
+					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVMask) });
 			}
 			
 			PrevStateTextures.bTexturesCleared = true;
@@ -5014,20 +4955,21 @@ void FFXSystem::SimulateGPUParticles(
 		// Set render targets.
 		FRHITexture* InjectRenderTargets[4] =
 		{
-			CurrentStateTextures.PositionTextureTargetRHI,
-			CurrentStateTextures.VelocityTextureTargetRHI,
-			ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI,
-			ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI
+			CurrentStateTextures.PositionTextureRHI,
+			CurrentStateTextures.VelocityTextureRHI,
+			ParticleSimulationResources->RenderAttributesTexture.TextureRHI,
+			ParticleSimulationResources->SimulationAttributesTexture.TextureRHI
 		};
-		RHICmdList.BeginUpdateMultiFrameResource(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
-		RHICmdList.BeginUpdateMultiFrameResource(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
+		RHICmdList.BeginUpdateMultiFrameResource(ParticleSimulationResources->RenderAttributesTexture.TextureRHI);
+		RHICmdList.BeginUpdateMultiFrameResource(ParticleSimulationResources->SimulationAttributesTexture.TextureRHI);
 
 		FRHIRenderPassInfo RPInfo(4, InjectRenderTargets, ERenderTargetActions::Load_Store);
 		{
 			// Transition attribute textures to writeble, particle state texture are in writeble state already
 			RHICmdList.Transition({ 
-				FRHITransitionInfo(InjectRenderTargets[2], ERHIAccess::SRVGraphics, ERHIAccess::RTV),
-				FRHITransitionInfo(InjectRenderTargets[3], ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
+				FRHITransitionInfo(InjectRenderTargets[2], ERHIAccess::SRVMask, ERHIAccess::RTV),
+				FRHITransitionInfo(InjectRenderTargets[3], ERHIAccess::SRVMask, ERHIAccess::RTV)
+			});
 
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ParticleInjection"));
 
@@ -5044,17 +4986,10 @@ void FFXSystem::SimulateGPUParticles(
 
 			RHICmdList.EndRenderPass();
 
-			// Resolve attributes textures. State textures are resolved later.
-			RHICmdList.CopyToResolveTarget(
-				ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI,
-				ParticleSimulationResources->RenderAttributesTexture.TextureRHI,
-				FResolveParams()
-			);
-			RHICmdList.CopyToResolveTarget(
-				ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI,
-				ParticleSimulationResources->SimulationAttributesTexture.TextureRHI,
-				FResolveParams()
-			);
+			RHICmdList.Transition({
+				FRHITransitionInfo(InjectRenderTargets[2], ERHIAccess::RTV, ERHIAccess::SRVMask),
+				FRHITransitionInfo(InjectRenderTargets[3], ERHIAccess::RTV, ERHIAccess::SRVMask)
+			});
 		}
 
 		if (GNumAlternateFrameRenderingGroups > 1)
@@ -5069,26 +5004,26 @@ void FFXSystem::SimulateGPUParticles(
 			else
 			{
 #if WITH_MGPU
-				TemporalEffectTextures.Add(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
-				TemporalEffectTextures.Add(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
+				TemporalEffectTextures.Add(ParticleSimulationResources->RenderAttributesTexture.TextureRHI);
+				TemporalEffectTextures.Add(ParticleSimulationResources->SimulationAttributesTexture.TextureRHI);
 #endif
 			}
 		}
 #if WITH_MGPU
 		if (bCrossTransferEnabled)
 		{
-			AddCrossGPUTransferResource(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
-			AddCrossGPUTransferResource(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
+			AddCrossGPUTransferResource(ParticleSimulationResources->RenderAttributesTexture.TextureRHI);
+			AddCrossGPUTransferResource(ParticleSimulationResources->SimulationAttributesTexture.TextureRHI);
 		}
 #endif
-		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
-		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
+		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->RenderAttributesTexture.TextureRHI);
+		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->SimulationAttributesTexture.TextureRHI);
 	}
 	
 	// finish current state render
 	RHICmdList.Transition({ 
-		FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVGraphics),
-		FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVGraphics)});
+		FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVMask),
+		FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVMask)});
 
 	RHICmdList.EndUpdateMultiFrameResource(CurrentStateRenderTargets[0]);
 	RHICmdList.EndUpdateMultiFrameResource(CurrentStateRenderTargets[1]);
@@ -5100,10 +5035,11 @@ void FFXSystem::SimulateGPUParticles(
 		FParticleStateTextures& VisualizeStateTextures = ParticleSimulationResources->GetPreviousStateTextures();
 		
 		RHICmdList.Transition({ 
-			FRHITransitionInfo(VisualizeStateTextures.PositionTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV),
-			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
+			FRHITransitionInfo(VisualizeStateTextures.PositionTextureRHI, ERHIAccess::SRVMask, ERHIAccess::RTV),
+			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureRHI, ERHIAccess::SRVMask, ERHIAccess::RTV)
+		});
 				
-		FRHITexture* VisualizeStateRHIs[2] = { VisualizeStateTextures.PositionTextureTargetRHI, VisualizeStateTextures.VelocityTextureTargetRHI };
+		FRHITexture* VisualizeStateRHIs[2] = { VisualizeStateTextures.PositionTextureRHI, VisualizeStateTextures.VelocityTextureRHI };
 		FRHIRenderPassInfo RPInfo(2, VisualizeStateRHIs, ERenderTargetActions::Load_Store);
 		{
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ExecuteSimulationCommands"));
@@ -5131,8 +5067,9 @@ void FFXSystem::SimulateGPUParticles(
 		}
 
 		RHICmdList.Transition({ 
-			FRHITransitionInfo(VisualizeStateTextures.PositionTextureTargetRHI, ERHIAccess::RTV, ERHIAccess::SRVGraphics),
-			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureTargetRHI, ERHIAccess::RTV, ERHIAccess::SRVGraphics)});
+			FRHITransitionInfo(VisualizeStateTextures.PositionTextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask),
+			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask)
+		});
 	}
 
 #if WITH_MGPU
@@ -5191,15 +5128,18 @@ void FFXSystem::UpdateMultiGPUResources(FRHICommandListImmediate& RHICmdList)
 		// Set render targets.
 		FRHITexture* InjectRenderTargets[2] =
 		{
-			ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI,
-			ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI
+			ParticleSimulationResources->RenderAttributesTexture.TextureRHI,
+			ParticleSimulationResources->SimulationAttributesTexture.TextureRHI
 		};
 
 		FRHIRenderPassInfo RPInfo(2, InjectRenderTargets, ERenderTargetActions::Load_Store);
 		RPInfo.ColorRenderTargets[0].ResolveTarget = ParticleSimulationResources->RenderAttributesTexture.TextureRHI;
 		RPInfo.ColorRenderTargets[1].ResolveTarget = ParticleSimulationResources->SimulationAttributesTexture.TextureRHI;
 		{
-			TransitionRenderPassTargets(RHICmdList, RPInfo);
+			RHICmdList.Transition({
+				FRHITransitionInfo(ParticleSimulationResources->RenderAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV),
+				FRHITransitionInfo(ParticleSimulationResources->SimulationAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV)
+			});
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("UpdateMultiGPUResources"));
 
 			RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)GParticleSimulationTextureSizeX, (float)GParticleSimulationTextureSizeY, 1.0f);
@@ -5319,7 +5259,7 @@ static void SetGPUSpriteResourceData( FGPUSpriteResources* Resources, const FGPU
 		}
 
 		// For locked rotation about Z the particle should be rotated by 90 degrees.
-		Resources->UniformParameters.RotationBias = (LockAxisFlag == EPAL_ROTATE_Z) ? (0.5f * PI) : 0.0f;
+		Resources->UniformParameters.RotationBias = (LockAxisFlag == EPAL_ROTATE_Z) ? (0.5f * UE_PI) : 0.0f;
 	}
 
 	// Alignment overrides

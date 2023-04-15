@@ -1,10 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SplineMeshComponentVisualizer.h"
-#include "Widgets/SNullWidget.h"
-#include "Editor.h"
-#include "EditorViewportClient.h"
+
+#include "Components/ActorComponent.h"
 #include "Components/SplineMeshComponent.h"
+#include "Containers/Array.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorViewportClient.h"
+#include "Engine/EngineTypes.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/Color.h"
+#include "Math/InterpCurvePoint.h"
+#include "Math/QuatRotationTranslationMatrix.h"
+#include "Math/Transform.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "SceneManagement.h"
+#include "Templates/Casts.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnrealWidgetFwd.h"
+#include "Widgets/SNullWidget.h"
 
 IMPLEMENT_HIT_PROXY(HSplineMeshVisProxy, HComponentVisProxy);
 IMPLEMENT_HIT_PROXY(HSplineMeshKeyProxy, HSplineMeshVisProxy);
@@ -58,9 +75,9 @@ void FSplineMeshComponentVisualizer::DrawVisualization(const UActorComponent* Co
 			PDI->SetHitProxy(NULL);
 			const float DefaultDashSize = 5.f;
 			const int32 MaxDashDrawCount = 65536;
-			const float LineSize = TangentWorldDirection.Size();
-			int32 DrawCount = FMath::CeilToInt(LineSize / (2.f * DefaultDashSize));
-			float DashSize = (DrawCount > MaxDashDrawCount) ? LineSize / (2.f * MaxDashDrawCount) : DefaultDashSize;
+			const double LineSize = TangentWorldDirection.Size();
+			int64 DrawCount = FMath::CeilToInt64(LineSize / (2.f * DefaultDashSize));
+			double DashSize = (DrawCount > MaxDashDrawCount) ? LineSize / (2.f * MaxDashDrawCount) : DefaultDashSize;
 			DrawDashedLine(PDI, KeyPos, KeyPos + TangentWorldDirection, Color, DashSize, SDPG_Foreground);
 			DrawDashedLine(PDI, KeyPos, KeyPos - TangentWorldDirection, Color, DashSize, SDPG_Foreground);
 			PDI->SetHitProxy(new HSplineMeshTangentHandleProxy(Component, PointIndex, false));
@@ -314,11 +331,11 @@ bool FSplineMeshComponentVisualizer::HandleInputDelta(FEditorViewportClient* Vie
 				// Break tangent into direction and length so we can change its scale (the 'tension')
 				// independently of its direction.
 				FVector Direction;
-				float Length;
+				double Length;
 				KeyTangent.ToDirectionAndLength(Direction, Length);
 
 				// Figure out which component has changed, and use it
-				float DeltaScaleValue = (DeltaScale.X != 0.0f) ? DeltaScale.X : ((DeltaScale.Y != 0.0f) ? DeltaScale.Y : DeltaScale.Z);
+				double DeltaScaleValue = (DeltaScale.X != 0.0f) ? DeltaScale.X : ((DeltaScale.Y != 0.0f) ? DeltaScale.Y : DeltaScale.Z);
 
 				// Change scale, avoiding singularity by never allowing a scale of 0, hence preserving direction.
 				Length += DeltaScaleValue * 10.0f;

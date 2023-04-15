@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Windows.Forms;
 using System.IO;
 using System.IO.Compression;
@@ -10,64 +13,96 @@ namespace UnrealGameSync
 {
 	public partial class DiagnosticsWindow : Form
 	{
-		string DataFolder;
+		DirectoryReference _appDataFolder;
+		DirectoryReference _workspaceDataFolder;
+		List<FileReference> _extraFiles;
 
-		public DiagnosticsWindow(string InDataFolder, string InDiagnosticsText)
+		public DiagnosticsWindow(DirectoryReference inAppDataFolder, DirectoryReference inWorkspaceDataFolder, string inDiagnosticsText, IEnumerable<FileReference> inExtraFiles)
 		{
 			InitializeComponent();
-			DataFolder = InDataFolder;
-			DiagnosticsTextBox.Text = InDiagnosticsText.Replace("\n", "\r\n");
+
+			_appDataFolder = inAppDataFolder;
+			_workspaceDataFolder = inWorkspaceDataFolder;
+
+			DiagnosticsTextBox.Text = inDiagnosticsText.Replace("\n", "\r\n");
+			_extraFiles = inExtraFiles.ToList();
 		}
 
-		private void ViewLogsButton_Click(object sender, EventArgs e)
+		private void ViewApplicationDataButton_Click(object sender, EventArgs e)
 		{
-			Process.Start("explorer.exe", DataFolder);
+			Process.Start("explorer.exe", _appDataFolder.FullName);
+		}
+
+		private void ViewWorkspaceDataButton_Click(object sender, EventArgs e)
+		{
+			Process.Start("explorer.exe", _workspaceDataFolder.FullName);
 		}
 
 		private void SaveButton_Click(object sender, EventArgs e)
 		{
-			SaveFileDialog Dialog = new SaveFileDialog();
-			Dialog.Filter = "Zip Files (*.zip)|*.zip|AllFiles (*.*)|*.*";
-			Dialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-			Dialog.FileName = Path.Combine(Dialog.InitialDirectory, "UGS-Diagnostics.zip");
-			if(Dialog.ShowDialog() == DialogResult.OK)
+			SaveFileDialog dialog = new SaveFileDialog();
+			dialog.Filter = "Zip Files (*.zip)|*.zip|AllFiles (*.*)|*.*";
+			dialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+			dialog.FileName = Path.Combine(dialog.InitialDirectory, "UGS-Diagnostics.zip");
+			if(dialog.ShowDialog() == DialogResult.OK)
 			{
-				string DiagnosticsFileName = Path.Combine(DataFolder, "Diagnostics.txt");
+				FileReference diagnosticsFileName = FileReference.Combine(_appDataFolder, "Diagnostics.txt");
 				try
 				{
-					File.WriteAllLines(DiagnosticsFileName, DiagnosticsTextBox.Lines);
+					FileReference.WriteAllLines(diagnosticsFileName, DiagnosticsTextBox.Lines);
 				}
-				catch(Exception Ex)
+				catch(Exception ex)
 				{
-					MessageBox.Show(String.Format("Couldn't write to '{0}'\n\n{1}", DiagnosticsFileName, Ex.ToString()));
+					MessageBox.Show(String.Format("Couldn't write to '{0}'\n\n{1}", diagnosticsFileName, ex.ToString()));
 					return;
 				}
 
-				string ZipFileName = Dialog.FileName;
+				string zipFileName = dialog.FileName;
 				try
 				{
-					using (ZipArchive Zip = new ZipArchive(File.OpenWrite(ZipFileName), ZipArchiveMode.Create))
+					using (ZipArchive zip = new ZipArchive(File.OpenWrite(zipFileName), ZipArchiveMode.Create))
 					{
-						foreach (string FileName in Directory.EnumerateFiles(DataFolder))
+						AddFilesToZip(zip, _appDataFolder, "App/");
+						AddFilesToZip(zip, _workspaceDataFolder, "Workspace/");
+
+						foreach (FileReference extraFile in _extraFiles)
 						{
-							if (!FileName.EndsWith(".exe", StringComparison.InvariantCultureIgnoreCase) && !FileName.EndsWith(".dll", StringComparison.InvariantCultureIgnoreCase))
+							if(FileReference.Exists(extraFile))
 							{
-								using (FileStream InputStream = File.Open(FileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+								using (FileStream inputStream = FileReference.Open(extraFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
 								{
-									ZipArchiveEntry Entry = Zip.CreateEntry(Path.GetFileName(FileName));
-									using (Stream OutputStream = Entry.Open())
+									ZipArchiveEntry entry = zip.CreateEntry(extraFile.FullName.Replace(":", "").Replace('\\', '/'));
+									using (Stream outputStream = entry.Open())
 									{
-										InputStream.CopyTo(OutputStream);
+										inputStream.CopyTo(outputStream);
 									}
 								}
 							}
 						}
 					}
 				}
-				catch(Exception Ex)
+				catch(Exception ex)
 				{
-					MessageBox.Show(String.Format("Couldn't save '{0}'\n\n{1}", ZipFileName, Ex.ToString()));
+					MessageBox.Show(String.Format("Couldn't save '{0}'\n\n{1}", zipFileName, ex.ToString()));
 					return;
+				}
+			}
+		}
+
+		private static void AddFilesToZip(ZipArchive zip, DirectoryReference dataFolder, string relativeDir)
+		{
+			foreach (FileReference fileName in DirectoryReference.EnumerateFiles(dataFolder))
+			{
+				if (!fileName.HasExtension(".exe") && !fileName.HasExtension(".dll"))
+				{
+					using (FileStream inputStream = FileReference.Open(fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+					{
+						ZipArchiveEntry entry = zip.CreateEntry(relativeDir + fileName.MakeRelativeTo(dataFolder).Replace('\\', '/'));
+						using (Stream outputStream = entry.Open())
+						{
+							inputStream.CopyTo(outputStream);
+						}
+					}
 				}
 			}
 		}

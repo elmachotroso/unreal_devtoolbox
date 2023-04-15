@@ -71,7 +71,7 @@ bool FDerivedDataGeometryCollectionCooker::Build(TArray<uint8>& OutData)
 
 const TCHAR* FDerivedDataGeometryCollectionCooker::GetVersionString() const
 {
-	const TCHAR* VersionString = TEXT("3448151914544729A210FBB9B0524868");
+	const TCHAR* VersionString = TEXT("007038F125ED47A4AF928FAC54FD9493");
 
 	static FString CachedNaniteVersionString;
 	if (CachedNaniteVersionString.IsEmpty())
@@ -85,14 +85,23 @@ const TCHAR* FDerivedDataGeometryCollectionCooker::GetVersionString() const
 
 FString FDerivedDataGeometryCollectionCooker::GetPluginSpecificCacheKeySuffix() const
 {
-	return FString::Printf(
+	FString KeySuffix = FString::Printf(
 		TEXT("%s_%s_%s_%d_%d"),
-		*Chaos::ChaosVersionString,
+		Chaos::ChaosVersionGUID,
 		*GeometryCollection.GetIdGuid().ToString(),
 		*GeometryCollection.GetStateGuid().ToString(),
 		FDestructionObjectVersion::Type::LatestVersion,
 		FUE5MainStreamObjectVersion::Type::LatestVersion
 	);
+
+#if PLATFORM_CPU_ARM_FAMILY
+	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
+	// input. Add the arm specifically so that a) we avoid rebuilding the current DDC and
+	// b) we can remove it once we get arm64 to be consistent.
+	KeySuffix.Append(TEXT("_arm64"));
+#endif
+
+	return KeySuffix;
 }
 
 #endif // WITH_EDITOR

@@ -355,8 +355,11 @@ FMalloc* FMallocStomp2::OverrideIfEnabled(FMalloc* InUsedAlloc)
 		const TCHAR* CommandLine = ::GetCommandLineW();
 		FParse::Value(CommandLine, TEXT("MallocStomp2MinSize="), MinSize);
 		FParse::Value(CommandLine, TEXT("MallocStomp2MaxSize="), MaxSize);
+		bool bUseUnderrunMode = FParse::Param(CommandLine, TEXT("MallocStomp2UnderrunMode"));
+#else
+		bool bUseUnderrunMode = false;
 #endif
-		GMallocStomp2 = new FMallocStomp2(InUsedAlloc);
+		GMallocStomp2 = new FMallocStomp2(InUsedAlloc, bUseUnderrunMode);
 		GMallocStomp2->Init();
 		return GMallocStomp2;
 	}

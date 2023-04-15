@@ -165,10 +165,6 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Store Version (1-2147483647)", ClampMin="1", ClampMax="2147483647"))
 	int32 StoreVersion;
 
-	// Offset to add to store version for APKs generated for armv7
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", meta = (DisplayName = "Store Version offset (armv7)"))
-	int32 StoreVersionOffsetArmV7;
-
 	// Offset to add to store version for APKs generated for arm64
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", meta = (DisplayName = "Store Version offset (arm64)"))
 	int32 StoreVersionOffsetArm64;
@@ -185,21 +181,17 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Version Display Name (usually x.y)"))
 	FString VersionDisplayName;
 
-	// What OS version the app is allowed to be installed on (do not set this lower than 19)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Minimum SDK Version (19=KitKat, 21=Lollipop)"))
+	// What OS version the app is allowed to be installed on (do not set this lower than 26)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Minimum SDK Version (26=8.0.0, 27=8.1.0, 28=9, 29=10, 30=11, 31=12)"))
 	int32 MinSDKVersion;
 	
-	// What OS version the app is expected to run on (do not set this lower than 19)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Target SDK Version (19=KitKat, 21=Lollipop)"))
+	// What OS version the app is expected to run on (do not set this lower than 26)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Target SDK Version (26=8.0.0, 27=8.1.0, 28=9, 29=10, 30=11, 31=12)"))
 	int32 TargetSDKVersion;
 
 	// Preferred install location for the application
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging")
 	TEnumAsByte<EAndroidInstallLocation::Type> InstallLocation;
-
-	// Use Gradle instead of Ant for Java compiling and APK generation
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Enable Gradle instead of Ant"))
-	bool bEnableGradle;
 
 	// Enable -Xlint:unchecked and -Xlint:depreciation for Java compiling (Gradle only)
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Enable Lint depreciation checks"))
@@ -396,16 +388,27 @@ public:
 	bool bDetectVulkanByDefault;
 
 	// Build the shipping config with hidden visibility by default. Results in smaller .so file but will also removes symbols used to display callstack dumps.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Build with hidden symbol visibility in shipping config. [Experimental]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Build with hidden symbol visibility in shipping config."))
 	bool bBuildWithHiddenSymbolVisibility;
+
+	// Disables extra checks for buffer overflows, comes with perf improvement, but might make tracing stack corruptions in production harder. Note that _FORTIFY_SOURCE=2 is still enabled by the toolchain providing lightweight stack checks
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Disable extra checks for buffer overflows"))
+	bool bDisableStackProtector;
+
+	// Disable libc++_shared dependency validation in all .so files linked with libUnreal.so
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Disable libc++_shared dependency validation in all dependencies"))
+	bool bDisableLibCppSharedDependencyValidation;
 
 	// Always save .so file with symbols allowing use of addr2line on raw callstack addresses.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Always save a copy of the libUnreal.so with symbols. [Experimental]"))
 	bool bSaveSymbols;
 
-	// Use legacy ld instead of new lld linker.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Force linking to use ld instead of lld"))
-	bool bForceLDLinker;
+	// Strip shader reflection information under Android to avoid issues on older drivers
+	UPROPERTY(config, EditAnywhere, Category = AdvancedBuild, meta = (
+	DisplayName = "Strip shader reflection information",
+	ToolTip = "If true, strip shader reflection information under Android",
+	ConfigRestartRequired = true))
+	bool bStripShaderReflection;
 
 	// If selected, the checked architectures will be split into separate .apk files [CURRENTLY FOR FULL SOURCE GAMES ONLY]
 	// @todo android fat binary: Currently, there isn't much utility in merging multiple .so's into a single .apk except for debugging,
@@ -505,6 +508,10 @@ public:
 	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
+
+	/** Which of the currently enabled source data override plugins to use. */
+	UPROPERTY(config, EditAnywhere, Category = "Audio")
+	FString SourceDataOverridePlugin;
 
 	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")

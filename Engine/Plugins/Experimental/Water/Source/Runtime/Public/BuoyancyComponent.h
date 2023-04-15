@@ -20,14 +20,17 @@ class WATER_API UBuoyancyComponent : public UActorComponent
 public:
 	UBuoyancyComponent(const FObjectInitializer& ObjectInitializer);
 
+	//~ Begin UActorComponent Interface.	
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-
-	virtual void PostLoad() override;
-
-	virtual void Serialize(FArchive& Ar) override;
-
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	//~ End UActorComponent Interface
+
+	//~ Begin UObject Interface.	
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
+	virtual void PostLoad() override;
+	virtual void Serialize(FArchive& Ar) override;
+	//~ End UObject Interface
 
 	virtual void Update(float DeltaTime);
 
@@ -97,7 +100,7 @@ public:
 	void GetLastWaterSurfaceInfo(FVector& OutWaterPlaneLocation, FVector& OutWaterPlaneNormal,
 	FVector& OutWaterSurfacePosition, float& OutWaterDepth, int32& OutWaterBodyIdx, FVector& OutWaterVelocity);
 
-	UPROPERTY(EditDefaultsOnly, Category = Buoyancy)
+	UPROPERTY(BlueprintReadOnly, EditDefaultsOnly, Category = Buoyancy)
 	FBuoyancyData BuoyancyData;
 
 protected:
@@ -106,11 +109,11 @@ protected:
 	void ComputePontoonCoefficients();
 
 	UPROPERTY(Transient)
-	TArray<UWaterBodyComponent*> CurrentWaterBodyComponents;
+	TArray<TObjectPtr<UWaterBodyComponent>> CurrentWaterBodyComponents;
 
 	// Primitive component that will be used for physics simulation.
 	UPROPERTY()
-	UPrimitiveComponent* SimulatingComponent;
+	TObjectPtr<UPrimitiveComponent> SimulatingComponent;
 
 	// async data
 

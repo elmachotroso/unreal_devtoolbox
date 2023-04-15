@@ -13,6 +13,7 @@ FStringFormatArg::FStringFormatArg( const uint64 Value ) : Type(UInt), UIntValue
 FStringFormatArg::FStringFormatArg( const float Value ) : Type(Double), DoubleValue(Value) {}
 FStringFormatArg::FStringFormatArg( const double Value ) : Type(Double), DoubleValue(Value) {}
 FStringFormatArg::FStringFormatArg( FString Value ) : Type(String), StringValue(MoveTemp(Value)) {}
+FStringFormatArg::FStringFormatArg( FStringView Value ) : Type(String), StringValue(Value) {}
 FStringFormatArg::FStringFormatArg( const ANSICHAR* Value ) : Type(StringLiteralANSI), StringLiteralANSIValue(Value) {}
 FStringFormatArg::FStringFormatArg( const WIDECHAR* Value ) : Type(StringLiteralWIDE), StringLiteralWIDEValue(Value) {}
 FStringFormatArg::FStringFormatArg( const UCS2CHAR* Value ) : Type(StringLiteralUCS2), StringLiteralUCS2Value(Value) {}
@@ -107,7 +108,7 @@ TOptional<FExpressionError> ParseIndex(FExpressionTokenConsumer& Consumer, bool 
 {
 	auto& Stream = Consumer.GetStream();
 
-	TOptional<FStringToken> OpeningChar = Stream.ParseSymbol('{');
+	TOptional<FStringToken> OpeningChar = Stream.ParseSymbol(TEXT('{'));
 	if (!OpeningChar.IsSet())
 	{
 		return TOptional<FExpressionError>();
@@ -150,7 +151,7 @@ TOptional<FExpressionError> ParseIndex(FExpressionTokenConsumer& Consumer, bool 
 	// Optional whitespace
 	Stream.ParseToken([](TCHAR InC) { return FChar::IsWhitespace(InC) ? EParseState::Continue : EParseState::StopBefore; }, &EntireToken);
 	
-	if (!Stream.ParseSymbol('}', &EntireToken).IsSet())
+	if (!Stream.ParseSymbol(TEXT('}'), &EntireToken).IsSet())
 	{
 		// Not a valid token
 		if (bEmitErrors)
@@ -172,7 +173,7 @@ TOptional<FExpressionError> ParseSpecifier(FExpressionTokenConsumer& Consumer, b
 {
 	auto& Stream = Consumer.GetStream();
 
-	TOptional<FStringToken> OpeningChar = Stream.ParseSymbol('{');
+	TOptional<FStringToken> OpeningChar = Stream.ParseSymbol(TEXT('{'));
 	if (!OpeningChar.IsSet())
 	{
 		return TOptional<FExpressionError>();
@@ -217,7 +218,7 @@ TOptional<FExpressionError> ParseSpecifier(FExpressionTokenConsumer& Consumer, b
 	// Optional whitespace
 	Stream.ParseToken([](TCHAR InC) { return FChar::IsWhitespace(InC) ? EParseState::Continue : EParseState::StopBefore; }, &EntireToken);
 
-	if (!Stream.ParseSymbol('}', &EntireToken).IsSet())
+	if (!Stream.ParseSymbol(TEXT('}'), &EntireToken).IsSet())
 	{		
 		// Not a valid token
 		if (bEmitErrors)
@@ -235,7 +236,7 @@ TOptional<FExpressionError> ParseSpecifier(FExpressionTokenConsumer& Consumer, b
 	return TOptional<FExpressionError>();
 }
 
-static const TCHAR EscapeChar = '`';
+static const TCHAR EscapeChar = TEXT('`');
 
 /** Parse an escaped character */
 TOptional<FExpressionError> ParseEscapedChar(FExpressionTokenConsumer& Consumer, bool bEmitErrors)

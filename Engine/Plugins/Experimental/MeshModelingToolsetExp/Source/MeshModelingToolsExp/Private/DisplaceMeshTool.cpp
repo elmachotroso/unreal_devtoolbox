@@ -18,12 +18,13 @@
 #include "ModelingToolTargetUtil.h"
 #include "Operations/PNTriangles.h"
 #include "Operations/UniformTessellate.h"
-
+#include "Operations/SelectiveTessellate.h"
+#include "Materials/MaterialInterface.h"
 
 // needed to disable normals recalculation on the underlying asset
 #include "AssetUtils/MeshDescriptionUtil.h"
-#include "Engine/Classes/Engine/StaticMesh.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 
 using namespace UE::Geometry;
 
@@ -63,20 +64,42 @@ namespace DisplaceMeshToolLocals{
 			const TArray<FVector3d>& Positions,
 			const FMeshNormals& Normals,
 			TArray<FVector3d>& DisplacedPositions,
-			DisplaceFunc Displace)
+			TArray<int>* VerticesToDisplace,
+			DisplaceFunc Displace,
+			bool bUseParallel = true)
 		{
 			ensure(Positions.Num() == Normals.GetNormals().Num());
 			ensure(Positions.Num() == DisplacedPositions.Num());
 			ensure(Mesh.VertexCount() == Positions.Num());
 
-			int32 NumVertices = Mesh.MaxVertexID();
-			ParallelFor(NumVertices, [&](int32 vid)
-			{
-				if (Mesh.IsVertex(vid))
+			if (VerticesToDisplace) 
+			{	
+				// Copy over the original positions first since most likely some of the vertices won't be displaced
+				for (int VID : Mesh.VertexIndicesItr()) 
 				{
-					DisplacedPositions[vid] = Displace(vid, Positions[vid], Normals[vid]);
+					DisplacedPositions[VID] = Positions[VID];
 				}
-			});
+
+				ParallelFor(VerticesToDisplace->Num(), [&](int32 Idx)
+				{	
+					const int VID = (*VerticesToDisplace)[Idx];
+					if (ensure(Mesh.IsVertex(VID))) // if this test fails then VerticesToDisplace is invalid
+					{
+						DisplacedPositions[VID] = Displace(VID, Positions[VID], Normals[VID]);
+					}
+				 }, bUseParallel ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
+			}
+			else 
+			{	
+				// Displace all vertices
+				ParallelFor(Mesh.MaxVertexID(), [&](int32 VID)
+				{
+					if (Mesh.IsVertex(VID))
+					{
+						DisplacedPositions[VID] = Displace(VID, Positions[VID], Normals[VID]);
+					}
+				}, bUseParallel ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
+			}
 		}
 
 
@@ -84,9 +107,10 @@ namespace DisplaceMeshToolLocals{
 			const TArray<FVector3d>& Positions, 
 			const FMeshNormals& Normals, 
 			TFunctionRef<float(int32, const FVector3d&, const FVector3d&)> IntensityFunc,
-			TArray<FVector3d>& DisplacedPositions)
+			TArray<FVector3d>& DisplacedPositions,
+			TArray<int>* VerticesToDisplace = nullptr)
 		{
-			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions,
+			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions, VerticesToDisplace,
 				[&](int32 vid, const FVector3d& Position, const FVector3d& Normal)
 			{
 				double Intensity = IntensityFunc(vid, Position, Normal);
@@ -100,15 +124,20 @@ namespace DisplaceMeshToolLocals{
 			const FMeshNormals& Normals,
 			TFunctionRef<float(int32, const FVector3d&, const FVector3d&)> IntensityFunc,
 			int RandomSeed, 
-			TArray<FVector3d>& DisplacedPositions)
+			TArray<FVector3d>& DisplacedPositions,
+			TArray<int>* VerticesToDisplace = nullptr)
 		{
 			FMath::SRandInit(RandomSeed);
-			for (int vid : Mesh.VertexIndicesItr())
+			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions, VerticesToDisplace,
+			[&](int32 vid, const FVector3d& Position, const FVector3d& Normal)
 			{
-				double RandVal = 2.0 * (FMath::SRand() - 0.5);
-				double Intensity = IntensityFunc(vid, Positions[vid], Normals[vid]);
-				DisplacedPositions[vid] = Positions[vid] + (Normals[vid] * RandVal * Intensity);
-			}
+				// FMath::SRand() is not thread safe, hence we pass bUseParallel = false to ParallelDisplace to force 
+				// displacement to be single threaded
+				double RandVal = 2.0 * (FMath::SRand() - 0.5); 
+				double Intensity = IntensityFunc(vid, Position, Normal);
+				return Position + (Normal * RandVal * Intensity);
+			}, false);
+	
 		}
 
 		void PerlinNoise(const FDynamicMesh3& Mesh,
@@ -117,12 +146,13 @@ namespace DisplaceMeshToolLocals{
 			TFunctionRef<float(int32, const FVector3d&, const FVector3d&)> IntensityFunc,
 			const TArray<FPerlinLayerProperties>& PerlinLayerProperties,
 			int RandomSeed,
-			TArray<FVector3d>& DisplacedPositions)
+			TArray<FVector3d>& DisplacedPositions,
+			TArray<int>* VerticesToDisplace = nullptr)
 		{
 			FMath::SRandInit(RandomSeed);
 			const float RandomOffset = 10000.0f * FMath::SRand();
 
-			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions,
+			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions, VerticesToDisplace,
 				[&](int32 vid, const FVector3d& Position, const FVector3d& Normal)
 			{
 				// Compute the sum of Perlin noise evaluations for this point
@@ -146,7 +176,9 @@ namespace DisplaceMeshToolLocals{
 			float DisplaceFieldBaseValue = 128.0/255, // value that corresponds to zero displacement
 			FVector2f UVScale = FVector2f(1, 1),
 			FVector2f UVOffset = FVector2f(0,0),
-			FRichCurve* AdjustmentCurve = nullptr)
+			TArray<int>* VerticesToDisplace = nullptr,
+			FRichCurve* AdjustmentCurve = nullptr,
+			bool bUseParallel = true)
 		{
 			const FDynamicMeshUVOverlay* UVOverlay = Mesh.Attributes()->GetUVLayer(0);
 
@@ -154,36 +186,85 @@ namespace DisplaceMeshToolLocals{
 			// but the V direction may be shorter or longer if the texture is not square
 			// (it will be 1/AspectRatio)
 			float VHeight = DisplaceField.Height() * DisplaceField.CellDimensions.Y;
+		
+			// Stores average offset for all elements sharing a vertex
+			TArray<double> OffsetArray;
+			OffsetArray.SetNumZeroed(Mesh.MaxVertexID());
+			
+			auto ComputeOffsetForElement = [&](int32 ElementID) 
+			{	
+				FVector2f UV = UVOverlay->GetElement(ElementID);
 
-			for (int tid : Mesh.TriangleIndicesItr())
-			{
-				FIndex3i Tri = Mesh.GetTriangle(tid);
-				FIndex3i UVTri = UVOverlay->GetTriangle(tid);
-				for (int j = 0; j < 3; ++j)
+				// Adjust UV value and tile it. 
+				// Note that we're effectively stretching the texture to be square before tiling, since this
+				// seems to be what non square textures do by default in UE. If we decide to tile without 
+				// stretching by default someday, we'd do UV - FVector2f(FMath::Floor(UV.X), FMath:Floor(UV.Y/VHeight)*VHeight)
+				// without multiplying by VHeight afterward.
+				UV = UV * UVScale + UVOffset;
+				UV = UV - FVector2f(FMath::Floor(UV.X), FMath::Floor(UV.Y));
+				UV.Y *= VHeight;
+
+				double Offset = DisplaceField.BilinearSampleClamped(UV);
+				if (AdjustmentCurve) 
 				{
-					int vid = Tri[j];
-					FVector2f UV = UVOverlay->GetElement(UVTri[j]);
+					Offset = AdjustmentCurve->Eval(Offset);
+				}
 
-					// Adjust UV value and tile it. 
-					// Note that we're effectively stretching the texture to be square before tiling, since this
-					// seems to be what non square textures do by default in UE. If we decide to tile without 
-					// stretching by default someday, we'd do UV - FVector2f(FMath::Floor(UV.X), FMath:Floor(UV.Y/VHeight)*VHeight)
-					// without multiplying by VHeight afterward.
-					UV = UV * UVScale + UVOffset;
-					UV = UV - FVector2f(FMath::Floor(UV.X), FMath::Floor(UV.Y));
-					UV.Y *= VHeight;
+				Offset -= DisplaceFieldBaseValue;
 
-					double Offset = DisplaceField.BilinearSampleClamped(UV);
-					if (AdjustmentCurve)
-					{
-						Offset = AdjustmentCurve->Eval(Offset);
-					}
-					Offset -= DisplaceFieldBaseValue;
-
-					double Intensity = IntensityFunc(vid, Positions[vid], Normals[vid]);
-					DisplacedPositions[vid] = Positions[vid] + (Offset * Intensity * Normals[vid]);
+				return Offset;
+			};
+			
+			// Copy over the original positions if we are only displacing some of them
+			if (VerticesToDisplace) 
+			{
+				for (int VID : Mesh.VertexIndicesItr()) 
+				{
+					DisplacedPositions[VID] = Positions[VID];
 				}
 			}
+
+			const int NumVertices = VerticesToDisplace ? VerticesToDisplace->Num() : Mesh.MaxVertexID();
+
+			ParallelFor(NumVertices, [&](int32 Idx)
+			{
+				const int VID = VerticesToDisplace ? (*VerticesToDisplace)[Idx] : Idx;
+
+				if (Mesh.IsVertex(VID) == false) 
+				{
+					return;
+				}	
+
+				
+				if (UVOverlay->IsSeamVertex(VID)) 
+				{
+					// If the vertex is on a UV seam edge then average out offsets for all elements sharing the vertex
+					TArray<int> TrianglesOut;
+					Mesh.GetVtxTriangles(VID, TrianglesOut);
+
+					for (const int TID : TrianglesOut) 
+					{
+						int ElementID = UVOverlay->GetElementIDAtVertex(TID, VID);
+						double Offset = ComputeOffsetForElement(ElementID);
+						OffsetArray[VID] += Offset;
+					}
+
+					checkSlow(TrianglesOut.Num() > 0);
+					OffsetArray[VID] /= TrianglesOut.Num();
+				}
+				else 
+				{
+					// Grab any triangle if it's not a uv seam vertex
+					int TID = Mesh.GetVtxSingleTriangle(VID);
+					int ElementID = UVOverlay->GetElementIDAtVertex(TID, VID);
+					double Offset = ComputeOffsetForElement(ElementID);
+					OffsetArray[VID] = Offset;
+				}
+				
+				double Intensity = IntensityFunc(VID, Positions[VID], Normals[VID]);
+				DisplacedPositions[VID] = Positions[VID] + (OffsetArray[VID] * Intensity * Normals[VID]);
+
+			}, bUseParallel ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
 		}
 		
 		void Sine(const FDynamicMesh3& Mesh,
@@ -193,11 +274,12 @@ namespace DisplaceMeshToolLocals{
 			double Frequency,
 			double PhaseShift,
 			const FVector3d& Direction,
-			TArray<FVector3d>& DisplacedPositions)
+			TArray<FVector3d>& DisplacedPositions,
+			TArray<int>* VerticesToDisplace = nullptr)
 		{
 			FQuaterniond RotateToDirection(Direction, { 0.0, 0.0, 1.0 });
 
-			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions,
+			ParallelDisplace(Mesh, Positions, Normals, DisplacedPositions, VerticesToDisplace,
 				[&](int32 vid, const FVector3d& Position, const FVector3d& Normal)
 			{
 				FVector3d RotatedPosition = RotateToDirection * Position;
@@ -211,18 +293,40 @@ namespace DisplaceMeshToolLocals{
 
 	}
 
+	/** A collection of subdivision parameters. */
+	struct FSubdivideParameters
+	{
+		int SubdivisionsCount = -1;
+		TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap = nullptr;
+
+		// Optional selection parameters
+		TOptional<EDisplaceMeshToolTriangleSelectionType> SelectionType;
+		
+		// Material selection variables (SelectionType == EDisplaceMeshToolTriangleSelectionType::Material)
+		TOptional<int> ActiveMaterialID;
+	};
+
 	class FSubdivideMeshOp : public FDynamicMeshOperator
 	{
 	public:
-		FSubdivideMeshOp(const FDynamicMesh3& SourceMesh, EDisplaceMeshToolSubdivisionType SubdivisionTypeIn, int SubdivisionsCountIn, TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap);
+		FSubdivideMeshOp(const FDynamicMesh3& SourceMesh, const FSubdivideParameters& InParameters, EDisplaceMeshToolSubdivisionType InSubdivisionType);
 		void CalculateResult(FProgressCancel* Progress) final;
+		
+		TUniquePtr<TArray<int>> ExtractVerticesToDisplace() 
+		{
+			return MoveTemp(VerticesToDisplace);
+		}
+		
+	protected: 
+		TUniquePtr<TArray<int>> VerticesToDisplace = nullptr;
 	private:
+		FSubdivideParameters Parameters;
 		EDisplaceMeshToolSubdivisionType SubdivisionType;
-		int SubdivisionsCount;
 	};
 
-	FSubdivideMeshOp::FSubdivideMeshOp(const FDynamicMesh3& SourceMesh, EDisplaceMeshToolSubdivisionType SubdivisionTypeIn, int SubdivisionsCountIn, TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap)
-		: SubdivisionType(SubdivisionTypeIn), SubdivisionsCount(SubdivisionsCountIn)
+	FSubdivideMeshOp::FSubdivideMeshOp(const FDynamicMesh3& SourceMesh, const FSubdivideParameters& InParameters, EDisplaceMeshToolSubdivisionType InSubdivisionType)
+	: 
+	Parameters(InParameters), SubdivisionType(InSubdivisionType)
 	{
 		ResultMesh->Copy(SourceMesh);
 
@@ -230,11 +334,11 @@ namespace DisplaceMeshToolLocals{
 		// we could (for exmaple) speculatively compute another weightmap, or store previous weightmap values there, to support
 		// fast switching between two...
 		ResultMesh->EnableVertexUVs(FVector2f::Zero());
-		if (WeightMap != nullptr)
+		if (Parameters.WeightMap != nullptr)
 		{
 			for (int32 vid : ResultMesh->VertexIndicesItr())
 			{
-				ResultMesh->SetVertexUV(vid, FVector2f(WeightMap->GetValue(vid), 0));
+				ResultMesh->SetVertexUV(vid, FVector2f(Parameters.WeightMap->GetValue(vid), 0));
 			}
 		}
 		else
@@ -248,15 +352,58 @@ namespace DisplaceMeshToolLocals{
 
 	void FSubdivideMeshOp::CalculateResult(FProgressCancel* ProgressCancel)
 	{
+		int SubdivisionsCount = Parameters.SubdivisionsCount;
 		if (SubdivisionType == EDisplaceMeshToolSubdivisionType::Flat) 
 		{
-			FUniformTessellate Tessellator(ResultMesh.Get());
-			Tessellator.Progress = ProgressCancel;
-			Tessellator.TessellationNum = SubdivisionsCount;
-						
-			if (Tessellator.Validate() == EOperationValidationResult::Ok) 
+			if (Parameters.SelectionType.IsSet()) // user wants to only tessellate a subset of the triangles
+			{	
+				EDisplaceMeshToolTriangleSelectionType SelectionType = Parameters.SelectionType.GetValue();
+				if (SelectionType == EDisplaceMeshToolTriangleSelectionType::Material && 
+					Parameters.ActiveMaterialID.IsSet() && 
+					Parameters.ActiveMaterialID.GetValue() != INDEX_NONE)
+				{
+					TUniquePtr<FTessellationPattern> Pattern = FSelectiveTessellate::CreateConcentricRingsPatternFromMaterial(ResultMesh.Get(), SubdivisionsCount, Parameters.ActiveMaterialID.GetValue());;
+					
+					FDynamicMesh3 OutMesh;
+					FSelectiveTessellate Tessellator(ResultMesh.Get(), &OutMesh);
+					Tessellator.Progress = ProgressCancel;
+					Tessellator.SetPattern(Pattern.Get());
+
+					VerticesToDisplace = MakeUnique<TArray<int>>();
+					Tessellator.TessInfo.SelectedVertices = VerticesToDisplace.Get();
+					
+					if (ensureMsgf(Tessellator.Validate() == EOperationValidationResult::Ok, TEXT("The tessellator parameters are invalid.")))
+					{
+						if (Tessellator.Compute())
+						{
+							*ResultMesh = MoveTemp(OutMesh);
+						}
+					}
+				}
+				else
+				{
+					// Fall back to the uniform tessellation if either SelectionType is EDisplaceMeshToolTriangleSelectionType::None 
+					// or not all the parameters were set for the other selection types. 
+					FUniformTessellate Tessellator(ResultMesh.Get());
+					Tessellator.Progress = ProgressCancel;
+					Tessellator.TessellationNum = SubdivisionsCount;
+
+					if (ensureMsgf(Tessellator.Validate() == EOperationValidationResult::Ok, TEXT("The tessellator parameters are invalid.")))
+					{
+						Tessellator.Compute();
+					}
+				}
+			}
+			else
 			{
-				Tessellator.Compute();
+				FUniformTessellate Tessellator(ResultMesh.Get());
+				Tessellator.Progress = ProgressCancel;
+				Tessellator.TessellationNum = SubdivisionsCount;
+						
+				if (ensureMsgf(Tessellator.Validate() == EOperationValidationResult::Ok, TEXT("The tessellator parameters are invalid.")))
+				{
+					Tessellator.Compute();
+				}
 			}
 		}
 		else if (SubdivisionType == EDisplaceMeshToolSubdivisionType::PNTriangles) 
@@ -265,9 +412,9 @@ namespace DisplaceMeshToolLocals{
 			PNTriangles.Progress = ProgressCancel;
 			PNTriangles.TessellationLevel = SubdivisionsCount;
 
-			if (PNTriangles.Validate() == EOperationValidationResult::Ok)
+			if (ensureMsgf(PNTriangles.Validate() == EOperationValidationResult::Ok, TEXT("The tessellator parameters are invalid.")))
 			{
-				PNTriangles.Compute(); 
+				PNTriangles.Compute();
 			}
 		}
 		else 
@@ -281,10 +428,10 @@ namespace DisplaceMeshToolLocals{
 	{
 	public:
 		FSubdivideMeshOpFactory(FDynamicMesh3& SourceMeshIn,
-			EDisplaceMeshToolSubdivisionType SubdivisionTypeIn,
-			int SubdivisionsCountIn,
-			TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMapIn)
-			: SourceMesh(SourceMeshIn), SubdivisionType(SubdivisionTypeIn), SubdivisionsCount(SubdivisionsCountIn), WeightMap(WeightMapIn)
+								const FSubdivideParameters& InParameters,
+								EDisplaceMeshToolSubdivisionType SubdivisionTypeIn)
+		: 
+		SourceMesh(SourceMeshIn), Parameters(InParameters), SubdivisionType(SubdivisionTypeIn)
 		{
 		}
 
@@ -296,15 +443,25 @@ namespace DisplaceMeshToolLocals{
 
 		void SetWeightMap(TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMapIn);
 
+		void SetSelectionType(EDisplaceMeshToolTriangleSelectionType SelectionTypeIn) 
+		{
+			Parameters.SelectionType = SelectionTypeIn;
+		}
+
+		// Materials
+		void SetActiveMaterialID(int ActiveMaterialID) 
+		{
+			Parameters.ActiveMaterialID = ActiveMaterialID;
+		}
+		
 		TUniquePtr<FDynamicMeshOperator> MakeNewOperator() final
 		{
-			return MakeUnique<FSubdivideMeshOp>(SourceMesh, SubdivisionType, SubdivisionsCount, WeightMap);
+			return MakeUnique<FSubdivideMeshOp>(SourceMesh, Parameters, SubdivisionType);
 		}
 	private:
 		const FDynamicMesh3& SourceMesh;
+		FSubdivideParameters Parameters;
 		EDisplaceMeshToolSubdivisionType SubdivisionType;
-		int SubdivisionsCount;
-		TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap;
 	};
 
 	void FSubdivideMeshOpFactory::SetSubdivisionType(EDisplaceMeshToolSubdivisionType SubdivisionTypeIn) 
@@ -319,17 +476,17 @@ namespace DisplaceMeshToolLocals{
 
 	void FSubdivideMeshOpFactory::SetSubdivisionsCount(int SubdivisionsCountIn)
 	{
-		SubdivisionsCount = SubdivisionsCountIn;
+		Parameters.SubdivisionsCount = SubdivisionsCountIn;
 	}
 
 	int FSubdivideMeshOpFactory::GetSubdivisionsCount() const
 	{
-		return SubdivisionsCount;
+		return Parameters.SubdivisionsCount;
 	}
 
 	void FSubdivideMeshOpFactory::SetWeightMap(TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMapIn)
 	{
-		WeightMap = WeightMapIn;
+		Parameters.WeightMap = WeightMapIn;
 	}
 
 	// A collection of parameters to avoid having excess function parameters
@@ -359,6 +516,8 @@ namespace DisplaceMeshToolLocals{
 
 		TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap;
 		TFunction<float(const FVector3d&, const FIndexedWeightMap)> WeightMapQueryFunc;
+
+		TSharedPtr<TArray<int>, ESPMode::ThreadSafe> VerticesToDisplace; // if set, only displace vertices whose ids are part of the array
 	};
 
 	class FDisplaceMeshOp : public FDynamicMeshOperator
@@ -381,9 +540,10 @@ namespace DisplaceMeshToolLocals{
 	FDisplaceMeshOp::FDisplaceMeshOp(TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe> SourceMeshIn,
 									 const DisplaceMeshParameters& DisplaceParametersIn,
 									 EDisplaceMeshToolDisplaceType DisplacementTypeIn)
-		: SourceMesh(MoveTemp(SourceMeshIn)), 
-		  Parameters(DisplaceParametersIn), 
-		  DisplacementType(DisplacementTypeIn)
+	: 
+	SourceMesh(MoveTemp(SourceMeshIn)), 
+	Parameters(DisplaceParametersIn), 
+	DisplacementType(DisplacementTypeIn)
 	{
 	}
 
@@ -450,7 +610,8 @@ namespace DisplaceMeshToolLocals{
 				SourcePositions, 
 				SourceNormals,
 				IntensityFunc,
-				DisplacedPositions);
+				DisplacedPositions,
+				Parameters.VerticesToDisplace.Get());
 			break;
 
 		case EDisplaceMeshToolDisplaceType::RandomNoise:
@@ -459,7 +620,8 @@ namespace DisplaceMeshToolLocals{
 				SourceNormals,
 				IntensityFunc,
 				Parameters.RandomSeed,
-				DisplacedPositions);
+				DisplacedPositions,
+				Parameters.VerticesToDisplace.Get());
 			break;
 			
 		case EDisplaceMeshToolDisplaceType::PerlinNoise:
@@ -469,7 +631,8 @@ namespace DisplaceMeshToolLocals{
 				IntensityFunc,
 				Parameters.PerlinLayerProperties,	
 				Parameters.RandomSeed,
-				DisplacedPositions);
+				DisplacedPositions,
+				Parameters.VerticesToDisplace.Get());
 			break;
 
 		case EDisplaceMeshToolDisplaceType::DisplacementMap:
@@ -482,6 +645,7 @@ namespace DisplaceMeshToolLocals{
 				Parameters.DisplacementMapBaseValue,
 				Parameters.UVScale,
 				Parameters.UVOffset,
+				Parameters.VerticesToDisplace.Get(),
 				Parameters.AdjustmentCurve.Get());
 			break;
 
@@ -493,7 +657,8 @@ namespace DisplaceMeshToolLocals{
 				Parameters.SineWaveFrequency,
 				Parameters.SineWavePhaseShift,
 				(FVector3d)Parameters.SineWaveDirection,
-				DisplacedPositions);
+				DisplacedPositions,
+				Parameters.VerticesToDisplace.Get());
 			break;
 		}
 
@@ -524,9 +689,10 @@ namespace DisplaceMeshToolLocals{
 	{
 	public:
 		FDisplaceMeshOpFactory(TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>& SourceMeshIn,
-			const DisplaceMeshParameters& DisplaceParametersIn,
-			EDisplaceMeshToolDisplaceType DisplacementTypeIn )
-			: SourceMesh(SourceMeshIn)
+							   const DisplaceMeshParameters& DisplaceParametersIn,
+							   EDisplaceMeshToolDisplaceType DisplacementTypeIn )
+		: 
+		SourceMesh(SourceMeshIn)
 		{
 			SetIntensity(DisplaceParametersIn.DisplaceIntensity);
 			SetRandomSeed(DisplaceParametersIn.RandomSeed);
@@ -539,6 +705,7 @@ namespace DisplaceMeshToolLocals{
 			SetFilterFalloffWidth(DisplaceParametersIn.FilterWidth);
 			SetPerlinNoiseLayerProperties(DisplaceParametersIn.PerlinLayerProperties);
 			SetDisplacementType(DisplacementTypeIn);
+			SetVerticesToDisplace(DisplaceParametersIn.VerticesToDisplace);
 
 			Parameters.WeightMap = DisplaceParametersIn.WeightMap;
 			Parameters.WeightMapQueryFunc = DisplaceParametersIn.WeightMapQueryFunc;
@@ -549,6 +716,7 @@ namespace DisplaceMeshToolLocals{
 
 			Parameters.AdjustmentCurve = DisplaceParametersIn.AdjustmentCurve;
 		}
+		
 		void SetIntensity(float IntensityIn);
 		void SetRandomSeed(int RandomSeedIn);
 		void SetDisplacementMap(UTexture2D* DisplacementMapIn, int32 ChannelIn);
@@ -565,6 +733,7 @@ namespace DisplaceMeshToolLocals{
 		void SetPerlinNoiseLayerProperties(const TArray<FPerlinLayerProperties>& PerlinLayerProperties);
 		void SetWeightMap(TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> WeightMap);
 		void SetRecalculateNormals(bool bRecalculateNormals);
+		void SetVerticesToDisplace(TSharedPtr<TArray<int>, ESPMode::ThreadSafe> VerticesToDisplace);
 
 		TUniquePtr<FDynamicMeshOperator> MakeNewOperator() final
 		{
@@ -709,6 +878,11 @@ namespace DisplaceMeshToolLocals{
 		Parameters.bRecalculateNormals = RecalcNormalsIn;
 	}
 
+	void FDisplaceMeshOpFactory::SetVerticesToDisplace(TSharedPtr<TArray<int>, ESPMode::ThreadSafe> VerticesToDisplace)
+	{
+		Parameters.VerticesToDisplace = VerticesToDisplace;
+	}
+
 } // namespace
 
 /*
@@ -744,6 +918,8 @@ void UDisplaceMeshTool::Setup()
 	TextureMapProperties->RestoreProperties(this);
 	SineWaveProperties = NewObject<UDisplaceMeshSineWaveProperties>();
 	SineWaveProperties->RestoreProperties(this);
+	SelectiveTessellationProperties = NewObject<USelectiveTessellationProperties>();
+	SelectiveTessellationProperties->RestoreProperties(this);
 
 	if (TextureMapProperties->DisplacementMap != nullptr && TextureMapProperties->DisplacementMap->IsValidLowLevel() == false)
 	{
@@ -813,6 +989,25 @@ void UDisplaceMeshTool::Setup()
 		
 	// hide input StaticMeshComponent
 	UE::ToolTarget::HideSourceObject(Target);
+	
+	// Fetch the list of the materials if available
+	SelectiveTessellationProperties->MaterialIDList.Reset();
+	for (int32 Idx = 0; Idx < MaterialSet.Materials.Num(); ++Idx)
+	{
+		UMaterialInterface* Mat = MaterialSet.Materials[Idx];
+		FString MatName = (Mat != nullptr) ? Mat->GetName() : "(none)";
+		FString UseName = FString::Printf(TEXT("[%d] %s"), Idx, *MatName);
+		SelectiveTessellationProperties->MaterialIDList.Add(UseName);
+	}
+
+	if (SelectiveTessellationProperties->MaterialIDList.IsEmpty())
+	{
+		SelectiveTessellationProperties->ActiveMaterial = NAME_None;
+	}
+	else if (SelectiveTessellationProperties->MaterialIDList.Contains(SelectiveTessellationProperties->ActiveMaterial.ToString()) == false) 
+	{
+		SelectiveTessellationProperties->ActiveMaterial = NAME_None;
+	}
 
 	// initialize our properties
 	ToolPropertyObjects.Add(this);
@@ -829,6 +1024,9 @@ void UDisplaceMeshTool::Setup()
 	AddToolPropertySource(SineWaveProperties);
 	SetToolPropertySourceEnabled(SineWaveProperties, CommonProperties->DisplacementType == EDisplaceMeshToolDisplaceType::SineWave);
 
+	AddToolPropertySource(SelectiveTessellationProperties);
+	SetToolPropertySourceEnabled(SelectiveTessellationProperties, CommonProperties->SubdivisionType == EDisplaceMeshToolSubdivisionType::Flat);
+
 	AddToolPropertySource(NoiseProperties);
 	SetToolPropertySourceEnabled(NoiseProperties, CommonProperties->DisplacementType == EDisplaceMeshToolDisplaceType::PerlinNoise);
 
@@ -841,8 +1039,27 @@ void UDisplaceMeshTool::Setup()
 										SetToolPropertySourceEnabled(TextureMapProperties, (NewType == EDisplaceMeshToolDisplaceType::DisplacementMap));
 									} );
 
+	CommonProperties->WatchProperty(CommonProperties->SubdivisionType,
+									[this](EDisplaceMeshToolSubdivisionType NewType)
+									{
+										SetToolPropertySourceEnabled(SelectiveTessellationProperties, (NewType == EDisplaceMeshToolSubdivisionType::Flat));
+									} );
+
+
 	ValidateSubdivisions();
-	Subdivider = MakeUnique<FSubdivideMeshOpFactory>(OriginalMesh, CommonProperties->SubdivisionType, CommonProperties->Subdivisions, ActiveWeightMap);
+
+	FSubdivideParameters SubParameters;
+	SubParameters.SubdivisionsCount = CommonProperties->Subdivisions;
+	SubParameters.WeightMap = ActiveWeightMap;
+	SubParameters.SelectionType = SelectiveTessellationProperties->SelectionType;
+	
+	if (SelectiveTessellationProperties->ActiveMaterial.IsNone() == false) 
+	{
+		int32 Index = SelectiveTessellationProperties->MaterialIDList.Find(SelectiveTessellationProperties->ActiveMaterial.ToString());
+		SubParameters.ActiveMaterialID = Index;
+	}
+
+	Subdivider = MakeUnique<FSubdivideMeshOpFactory>(OriginalMesh, SubParameters, CommonProperties->SubdivisionType);
 
 	StartComputation();
 
@@ -862,6 +1079,8 @@ void UDisplaceMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 	DirectionalFilterProperties->SaveProperties(this);
 	SineWaveProperties->SaveProperties(this);
 	TextureMapProperties->SaveProperties(this);
+	SelectiveTessellationProperties->SaveProperties(this);
+	
 
 	if (DynamicMeshComponent != nullptr)
 	{
@@ -952,6 +1171,12 @@ void UDisplaceMeshTool::ValidateSubdivisions()
 void UDisplaceMeshTool::OnPropertyModified(UObject* PropertySet, FProperty* Property)
 {
 	using namespace DisplaceMeshToolLocals;
+	
+	if (AreAllTargetsValid() == false)
+	{
+		GetToolManager()->DisplayMessage(LOCTEXT("InvalidTargets", "Target mesh is no longer valid"), EToolMessageLevel::UserWarning);
+		return;
+	}
 
 	if (PropertySet && Property)
 	{
@@ -1062,7 +1287,7 @@ void UDisplaceMeshTool::OnPropertyModified(UObject* PropertySet, FProperty* Prop
 		{
 			DisplacerDownCast->SetFilterFalloffWidth(DirectionalFilterProperties->FilterWidth);
 		}
-		else if ((PropName == GET_MEMBER_NAME_CHECKED(FPerlinLayerProperties, Frequency)) || (PropName == GET_MEMBER_NAME_CHECKED(FPerlinLayerProperties, Intensity)))
+		else if (PropertySet == NoiseProperties)
 		{
 			DisplacerDownCast->SetPerlinNoiseLayerProperties(NoiseProperties->PerlinLayerProperties);
 		}
@@ -1079,7 +1304,18 @@ void UDisplaceMeshTool::OnPropertyModified(UObject* PropertySet, FProperty* Prop
 			DisplacerDownCast->SetSineWaveDirection(SineWaveProperties->SineWaveDirection);
 			DisplacerDownCast->SetDisplacementMapUVAdjustment(FVector2f(TextureMapProperties->UVScale), FVector2f(TextureMapProperties->UVOffset));	// LWC_TODO: Precision loss
 		}
-
+		else if (PropName == GET_MEMBER_NAME_CHECKED(USelectiveTessellationProperties, SelectionType))
+		{
+			SubdividerDownCast->SetSelectionType(SelectiveTessellationProperties->SelectionType);
+			bNeedsSubdivided = true;
+		}
+		else if (PropName == GET_MEMBER_NAME_CHECKED(USelectiveTessellationProperties, ActiveMaterial)) 
+		{
+			int32 Index = SelectiveTessellationProperties->MaterialIDList.Find(SelectiveTessellationProperties->ActiveMaterial.ToString());
+			SubdividerDownCast->SetActiveMaterialID(Index);
+			bNeedsSubdivided = true;
+		}
+		
 		StartComputation();
 	}
 }
@@ -1177,7 +1413,12 @@ void UDisplaceMeshTool::AdvanceComputation()
 
 	if (SubdivideTask && SubdivideTask->IsDone())
 	{
-		SubdividedMesh = TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>(SubdivideTask->GetTask().ExtractOperator()->ExtractResult().Release());
+		TUniquePtr<FDynamicMeshOperator> SubOp = SubdivideTask->GetTask().ExtractOperator();
+		FSubdivideMeshOp* SubOpDownCast = static_cast<FSubdivideMeshOp*>(SubOp.Get());
+		
+		SubdividedMesh = TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>(SubOp->ExtractResult().Release());
+		VerticesToDisplace = TSharedPtr<TArray<int>, ESPMode::ThreadSafe>(SubOpDownCast->ExtractVerticesToDisplace().Release());
+
 		delete SubdivideTask;
 		SubdivideTask = nullptr;
 	}
@@ -1186,6 +1427,7 @@ void UDisplaceMeshTool::AdvanceComputation()
 		// force update of contrast curve
 		FDisplaceMeshOpFactory* DisplacerDownCast = static_cast<FDisplaceMeshOpFactory*>(Displacer.Get());
 		DisplacerDownCast->SetAdjustmentCurve(TextureMapProperties->bApplyAdjustmentCurve ? TextureMapProperties->AdjustmentCurve : nullptr);
+		DisplacerDownCast->SetVerticesToDisplace(VerticesToDisplace);
 
 		DisplaceTask = new FAsyncTaskExecuterWithAbort<TModelingOpTask<FDynamicMeshOperator>>(Displacer->MakeNewOperator());
 		DisplaceTask->StartBackgroundTask();
@@ -1241,5 +1483,8 @@ float UDisplaceMeshTool::WeightMapQuery(const FVector3d& Position, const FIndexe
 
 #include "Tests/DisplaceMeshTool_Tests.inl"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DisplaceMeshTool)
+
 
 #undef LOCTEXT_NAMESPACE
+

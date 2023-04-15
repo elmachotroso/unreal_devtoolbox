@@ -2,27 +2,49 @@
 
 #pragma once
 
-#include "InteractiveTool.h"
-#include "InteractiveToolsContext.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "Delegates/Delegate.h"
-#include "InputCoreTypes.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Engine/World.h"
+#include "HAL/Platform.h"
+#include "InputCoreTypes.h"
+#include "InputState.h"
+#include "InteractiveTool.h"
+#include "InteractiveToolManager.h"
+#include "InteractiveToolsContext.h"
+#include "Math/Ray.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "EdModeInteractiveToolsContext.generated.h"
 
+class FCanvas;
 class FEdMode;
 class FEditorModeTools;
 class FEditorViewportClient;
-class UGizmoViewContext;
+class FPrimitiveDrawInterface;
 class FSceneView;
 class FViewport;
-class UMaterialInterface;
-class FPrimitiveDrawInterface;
 class FViewportClient;
 class ILevelEditor;
+class IToolsContextQueriesAPI;
+class IToolsContextRenderAPI;
+class IToolsContextTransactionsAPI;
+class UEdModeInteractiveToolsContext;
+class UGizmoViewContext;
+class UInputRouter;
+class UInteractiveToolBuilder;
+class UMaterialInterface;
+class UObject;
 class USelection;
 class UTypedElementSelectionSet;
-class UEdModeInteractiveToolsContext;
+struct FToolBuilderState;
 
 /**
  * UEditorInteractiveToolsContext is an extension/adapter of an InteractiveToolsContext designed 
@@ -77,6 +99,15 @@ public:
 	virtual void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI);
 	virtual void DrawHUD(FViewportClient* ViewportClient,FViewport* Viewport,const FSceneView* View, FCanvas* Canvas);
 
+	// These delegates can be used to hook into the Render() / DrawHUD() / Tick() calls above. In particular, non-legacy UEdMode's
+	// don't normally receive Render() and DrawHUD() calls from the mode manager, but can attach to these.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnRender, IToolsContextRenderAPI* RenderAPI);
+	FOnRender OnRender;
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDrawHUD, FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI);
+	FOnDrawHUD OnDrawHUD;
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTick, float DeltaTime);
+	FOnTick OnTick;
+
 	/** @return true if selected actors/components can be deleted */
 	virtual bool ProcessEditDelete();
 
@@ -93,6 +124,8 @@ public:
 	virtual bool CanCompleteActiveTool() const;
 	virtual void StartTool(const FString ToolTypeIdentifier);
 	virtual void EndTool(EToolShutdownType ShutdownType);
+	void Activate();
+	void Deactivate();
 
 
 	/** @return Ray into 3D scene at last mouse event */
@@ -179,6 +212,8 @@ private:
 
 	// currently defaulting to enabled as FEdModes generally assume this, and in most cases hitproxy pass is not expensive.
 	bool bEnableRenderingDuringHitProxyPass = true;
+
+	bool bIsActive = false;
 };
 
 

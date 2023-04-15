@@ -14,6 +14,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using OpenTracing.Util;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 
 namespace UnrealBuildTool
 {
@@ -39,7 +41,8 @@ namespace UnrealBuildTool
 		/// Links the actions together and sets up their dependencies
 		/// </summary>
 		/// <param name="Actions">List of actions in the graph</param>
-		public static void Link(List<LinkedAction> Actions)
+		/// <param name="Logger">Logger for output</param>
+		public static void Link(List<LinkedAction> Actions, ILogger Logger)
 		{
 			// Build a map from item to its producing action
 			Dictionary<FileItem, LinkedAction> ItemToProducingAction = new Dictionary<FileItem, LinkedAction>();
@@ -52,7 +55,7 @@ namespace UnrealBuildTool
 			}
 
 			// Check for cycles
-			DetectActionGraphCycles(Actions, ItemToProducingAction);
+			DetectActionGraphCycles(Actions, ItemToProducingAction, Logger);
 
 			// Use this map to add all the prerequisite actions
 			foreach (LinkedAction Action in Actions)
@@ -75,7 +78,8 @@ namespace UnrealBuildTool
 		/// Checks a set of actions for conflicts (ie. different actions producing the same output items)
 		/// </summary>
 		/// <param name="Actions">The set of actions to check</param>
-		public static void CheckForConflicts(IEnumerable<IExternalAction> Actions)
+		/// <param name="Logger">Logger for output</param>
+		public static void CheckForConflicts(IEnumerable<IExternalAction> Actions, ILogger Logger)
 		{
 			bool bResult = true;
 
@@ -86,7 +90,7 @@ namespace UnrealBuildTool
 				{
 					if (ItemToProducingAction.TryGetValue(ProducedItem, out IExternalAction? ExistingAction))
 					{
-						bResult &= CheckForConflicts(ExistingAction, Action);
+						bResult &= CheckForConflicts(ExistingAction, Action, Logger);
 					}
 					else
 					{
@@ -106,8 +110,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="A">The first action</param>
 		/// <param name="B">The second action</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if no conflicts were found, false otherwise.</returns>
-		private static bool CheckForConflicts(IExternalAction A, IExternalAction B)
+		private static bool CheckForConflicts(IExternalAction A, IExternalAction B, ILogger Logger)
 		{
 			ActionConflictReasonFlags Reason = ActionConflictReasonFlags.None;
 			if (A.ActionType != B.ActionType)
@@ -147,7 +152,7 @@ namespace UnrealBuildTool
 
 			if (Reason != ActionConflictReasonFlags.None)
 			{
-				LogConflict(A, B, Reason);
+				LogConflict(A, B, Reason, Logger);
 				return false;
 			}
 
@@ -212,13 +217,14 @@ namespace UnrealBuildTool
 		/// <param name="A">The first action with the conflict</param>
 		/// <param name="B">The second action with the conflict</param>
 		/// <param name="Reason">Enum flags for which properties are in conflict</param>
-		static void LogConflict(IExternalAction A, IExternalAction B, ActionConflictReasonFlags Reason)
+		/// <param name="Logger">Logger for output</param>
+		static void LogConflict(IExternalAction A, IExternalAction B, ActionConflictReasonFlags Reason, ILogger Logger)
 		{
 			// Convert some complex types in IExternalAction to strings when printing json
 			JsonSerializerOptions Options = new JsonSerializerOptions
 			{
 				WriteIndented = true,
-				IgnoreNullValues = true,
+				DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 				Converters =
 				{
 					new LogActionActionTypeConverter(),
@@ -237,24 +243,24 @@ namespace UnrealBuildTool
 			File.WriteAllText(AJsonPath, AJson);
 			File.WriteAllText(BJsonPath, BJson);
 
-			Log.TraceError($"Unable to merge actions '{A.StatusDescription}' and '{B.StatusDescription}': {Reason} are different");
-			Log.TraceInformation($"  First Action: {AJson}");
-			Log.TraceInformation($"  Second Action: {BJson}");
-			Log.TraceInformation($"  First Action json written to '{AJsonPath}'");
-			Log.TraceInformation($"  Second Action json written to '{BJsonPath}'");
+			Logger.LogError("Unable to merge actions '{StatusA}' and '{StatusB}': {Reason} are different", A.StatusDescription, B.StatusDescription, Reason);
+			Logger.LogInformation("  First Action: {AJson}", AJson);
+			Logger.LogInformation("  Second Action: {BJson}", BJson);
+			Logger.LogInformation("  First Action json written to '{AJsonPath}'", AJsonPath);
+			Logger.LogInformation("  Second Action json written to '{BJsonPath}'", BJsonPath);
 		}
 
 		/// <summary>
 		/// Builds a list of actions that need to be executed to produce the specified output items.
 		/// </summary>
 		public static List<LinkedAction> GetActionsToExecute(List<LinkedAction> Actions,
-			CppDependencyCache CppDependencies, ActionHistory History, bool bIgnoreOutdatedImportLibraries)
+			CppDependencyCache CppDependencies, ActionHistory History, bool bIgnoreOutdatedImportLibraries, ILogger Logger)
 		{
 			using (GlobalTracer.Instance.BuildSpan("ActionGraph.GetActionsToExecute()").StartActive())
 			{
 				// For all targets, build a set of all actions that are outdated.
-				Dictionary<LinkedAction, bool> OutdatedActionDictionary = new Dictionary<LinkedAction, bool>();
-				GatherAllOutdatedActions(Actions, History, OutdatedActionDictionary, CppDependencies, bIgnoreOutdatedImportLibraries);
+				ConcurrentDictionary<LinkedAction, bool> OutdatedActionDictionary = new ConcurrentDictionary<LinkedAction, bool>();
+				GatherAllOutdatedActions(Actions, History, OutdatedActionDictionary, CppDependencies, bIgnoreOutdatedImportLibraries, Logger);
 
 				// Build a list of actions that are both needed for this target and outdated.
 				return Actions.Where(Action => OutdatedActionDictionary[Action]).ToList();
@@ -266,7 +272,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="BuildConfiguration">The build configuration</param>
 		/// <param name="Actions">List of actions in the graph</param>
-		public static void CheckPathLengths(BuildConfiguration BuildConfiguration, IEnumerable<IExternalAction> Actions)
+		/// <param name="Logger"></param>
+		public static void CheckPathLengths(BuildConfiguration BuildConfiguration, IEnumerable<IExternalAction> Actions, ILogger Logger)
 		{
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 			{
@@ -322,57 +329,65 @@ namespace UnrealBuildTool
 					}
 
 					Message.Append($"\n\nConsider setting {nameof(ModuleRules.ShortName)} = ... in module *.Build.cs files to use alternative names for intermediate paths.");
-					Log.TraceWarning(Message.ToString());
+					Logger.LogWarning("{Message}", Message.ToString());
 				}
 			}
 		}
 
 		/// <summary>
+		/// Selects an ActionExecutor
+		/// </summary>
+		private static ActionExecutor SelectExecutor(BuildConfiguration BuildConfiguration, int ActionCount, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
+		{
+			if (ActionCount > ParallelExecutor.GetDefaultNumParallelProcesses(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, Logger))
+			{
+				if (BuildConfiguration.bAllowHybridExecutor && HybridExecutor.IsAvailable(Logger))
+				{
+					return new HybridExecutor(TargetDescriptors, BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
+				}
+				else if (BuildConfiguration.bAllowXGE && XGE.IsAvailable(Logger) && ActionCount >= XGE.MinActions)
+				{
+					return new XGE();
+				}
+				else if (BuildConfiguration.bAllowFASTBuild && FASTBuild.IsAvailable(Logger))
+				{
+					return new FASTBuild(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
+				}
+				else if (BuildConfiguration.bAllowSNDBS && SNDBS.IsAvailable(Logger))
+				{
+					return new SNDBS(TargetDescriptors);
+				}
+				else if (BuildConfiguration.bAllowHordeCompute && HordeExecutor.IsAvailable())
+				{
+					return new HordeExecutor(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
+				}
+			}
+
+			return new ParallelExecutor(BuildConfiguration.MaxParallelActions, BuildConfiguration.bAllCores, BuildConfiguration.bCompactOutput, Logger);
+		}
+
+		/// <summary>
 		/// Executes a list of actions.
 		/// </summary>
-		public static void ExecuteActions(BuildConfiguration BuildConfiguration, List<LinkedAction> ActionsToExecute, List<TargetDescriptor> TargetDescriptors)
+		public static void ExecuteActions(BuildConfiguration BuildConfiguration, List<LinkedAction> ActionsToExecute, List<TargetDescriptor> TargetDescriptors, ILogger Logger)
 		{
 			if (ActionsToExecute.Count == 0)
 			{
-				Log.TraceInformation("Target is up to date");
+				Logger.LogInformation("Target is up to date");
 			}
 			else
 			{
 				// Figure out which executor to use
-				ActionExecutor Executor;
-				if (BuildConfiguration.bAllowHybridExecutor && HybridExecutor.IsAvailable())
-				{
-					Executor = new HybridExecutor(BuildConfiguration.MaxParallelActions);
-				}
-				else if (BuildConfiguration.bAllowXGE && XGE.IsAvailable())
-				{
-					Executor = new XGE();
-				}
-				else if (BuildConfiguration.bAllowFASTBuild && FASTBuild.IsAvailable())
-				{
-					Executor = new FASTBuild(BuildConfiguration.MaxParallelActions);
-				}
-				else if (BuildConfiguration.bAllowSNDBS && SNDBS.IsAvailable())
-				{
-					Executor = new SNDBS(TargetDescriptors);
-				}
-				else if (BuildConfiguration.bAllowTaskExecutor && TaskExecutor.IsAvailable())
-				{
-					Executor = new TaskExecutor(BuildConfiguration.MaxParallelActions);
-				}
-				else
-				{
-					Executor = new ParallelExecutor(BuildConfiguration.MaxParallelActions);
-				}
+				ActionExecutor Executor = SelectExecutor(BuildConfiguration, ActionsToExecute.Count, TargetDescriptors, Logger);
 
 				// Execute the build
 				Stopwatch Timer = Stopwatch.StartNew();
-				if (!Executor.ExecuteActions(ActionsToExecute))
+				if (!Executor.ExecuteActions(ActionsToExecute, Logger))
 				{
 					throw new CompilationResultException(CompilationResult.OtherCompilationError);
 				}
 
-				Log.TraceInformation($"Total time in {Executor.Name} executor: {Timer.Elapsed.TotalSeconds:0.00} seconds");
+				Logger.LogInformation("Total time in {ExecutorName} executor: {TotalSeconds:0.00} seconds", Executor.Name, Timer.Elapsed.TotalSeconds);
 
 				// Reset the file info for all the produced items
 				foreach (LinkedAction BuildAction in ActionsToExecute)
@@ -412,10 +427,10 @@ namespace UnrealBuildTool
 			}
 
 			// Increment all the dependencies
-			foreach (LinkedAction Action in Actions)
+			Actions.AsParallel().ForAll((Action) =>
 			{
 				Action.IncrementDependentCount(new HashSet<LinkedAction>());
-			}
+			});
 
 			// Sort actions by number of actions depending on them, descending. Secondary sort criteria is file size.
 			Actions.Sort(LinkedAction.Compare);
@@ -424,7 +439,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Checks for cycles in the action graph.
 		/// </summary>
-		static void DetectActionGraphCycles(List<LinkedAction> Actions, Dictionary<FileItem, LinkedAction> ItemToProducingAction)
+		static void DetectActionGraphCycles(List<LinkedAction> Actions, Dictionary<FileItem, LinkedAction> ItemToProducingAction, ILogger Logger)
 		{
 			// Starting with actions that only depend on non-produced items, iteratively expand a set of actions that are only dependent on
 			// non-cyclical actions.
@@ -493,11 +508,11 @@ namespace UnrealBuildTool
 				}
 
 				// Describe the cyclical actions.
-				string CycleDescription = "";
 				foreach (LinkedAction Action in Actions)
 				{
 					if (!ActionIsNonCyclical.ContainsKey(Action))
 					{
+						string CycleDescription = "";
 						CycleDescription += $"Action #{ActionToIndex[Action].ToString()}: {Action.CommandPath}\n";
 						CycleDescription += $"\twith arguments: {Action.CommandArguments}\n";
 						foreach (FileItem PrerequisiteItem in Action.PrerequisiteItems)
@@ -541,11 +556,11 @@ namespace UnrealBuildTool
 							CycleDescription += "\t\tNone?? Coding error!\n";
 						}
 
-						CycleDescription += "\n\n";
+						Logger.LogInformation(CycleDescription);
 					}
 				}
 
-				throw new BuildException($"Action graph contains cycle!\n\n{CycleDescription}");
+				throw new BuildException($"Action graph contains cycle!");
 			}
 		}
 
@@ -593,23 +608,20 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="RootAction">- The action being considered.</param>
 		/// <param name="OutdatedActionDictionary">-</param>
-		/// <param name="OutdatedActionLock"></param>
 		/// <param name="ActionHistory"></param>
 		/// <param name="CppDependencies"></param>
 		/// <param name="bIgnoreOutdatedImportLibraries"></param>
+		/// <param name="Logger"></param>
 		/// <returns>true if outdated</returns>
 		private static void IsIndividualActionOutdated(LinkedAction RootAction,
-			Dictionary<LinkedAction, bool> OutdatedActionDictionary, ReaderWriterLockSlim OutdatedActionLock,
-			ActionHistory ActionHistory, CppDependencyCache CppDependencies, bool bIgnoreOutdatedImportLibraries)
+			ConcurrentDictionary<LinkedAction, bool> OutdatedActionDictionary,
+			ActionHistory ActionHistory, CppDependencyCache CppDependencies, bool bIgnoreOutdatedImportLibraries, ILogger Logger)
 		{
 			// Only compute the outdated-ness for actions that don't aren't cached in the outdated action dictionary.
 			bool bIsOutdated = false;
 			{
 				// OutdatedActionDictionary may have already been populated for RootAction as part of a previously processed target
-				OutdatedActionLock.EnterReadLock();
-				bool bPresent = OutdatedActionDictionary.ContainsKey(RootAction);
-				OutdatedActionLock.ExitReadLock();
-				if (bPresent)
+				if (OutdatedActionDictionary.ContainsKey(RootAction))
 				{
 					return;
 				}
@@ -621,12 +633,12 @@ namespace UnrealBuildTool
 			{
 				// Check if the command-line of the action previously used to produce the item is outdated.
 				string NewProducingAttributes = $"{RootAction.CommandPath.FullName} {RootAction.CommandArguments} (ver {RootAction.CommandVersion})";
-				if (ActionHistory.UpdateProducingAttributes(ProducedItem, NewProducingAttributes) && RootAction.bUseActionHistory)
+				if (ActionHistory.UpdateProducingAttributes(ProducedItem, NewProducingAttributes, Logger) && RootAction.bUseActionHistory)
 				{
 					if (ProducedItem.Exists)
 					{
-						Log.TraceLog($"{RootAction.StatusDescription}: Produced item \"{ProducedItem.AbsolutePath}\" was produced by outdated attributes.");
-						Log.TraceLog($"  New attributes: {NewProducingAttributes}");
+						Logger.LogDebug("{StatusDescription}: Produced item \"{ProducedItem}\" was produced by outdated attributes.", RootAction.StatusDescription, ProducedItem.Location);
+						Logger.LogDebug("  New attributes: {NewProducingAttributes}", NewProducingAttributes);
 					}
 
 					bIsOutdated = true;
@@ -647,7 +659,7 @@ namespace UnrealBuildTool
 				else
 				{
 					// If any of the produced items doesn't exist, the action is outdated.
-					Log.TraceLog($"{RootAction.StatusDescription}: Produced item \"{ProducedItem.AbsolutePath}\" doesn't exist.");
+					Logger.LogDebug("{StatusDescription}: Produced item \"{ProducedItem}\" doesn't exist.", RootAction.StatusDescription, ProducedItem.Location);
 					bIsOutdated = true;
 				}
 			}
@@ -667,7 +679,7 @@ namespace UnrealBuildTool
 							// Need to check for import libraries here too
 							if (!bIgnoreOutdatedImportLibraries || !IsImportLibraryDependency(RootAction, PrerequisiteItem))
 							{
-								Log.TraceLog($"{RootAction.StatusDescription}: Prerequisite {PrerequisiteItem.AbsolutePath} is newer than the last execution of the action: " +
+								Logger.LogDebug("{StatusDescription}: Prerequisite {PrerequisiteItem} is newer than the last execution of the action: {Message}", RootAction.StatusDescription, PrerequisiteItem.Location, 
 									$"{PrerequisiteItem.LastWriteTimeUtc.ToLocalTime().ToString(CultureInfo.CurrentCulture)} vs {LastExecutionTimeUtc.LocalDateTime.ToString(CultureInfo.CurrentCulture)}");
 								bIsOutdated = true;
 								break;
@@ -680,18 +692,24 @@ namespace UnrealBuildTool
 			// Check the dependency list
 			if (!bIsOutdated && RootAction.DependencyListFile != null)
 			{
-				if (!CppDependencies.TryGetDependencies(RootAction.DependencyListFile, out List<FileItem>? DependencyFiles))
+				if (!CppDependencies.TryGetDependencies(RootAction.DependencyListFile, Logger, out List<FileItem>? DependencyFiles))
 				{
-					Log.TraceLog($"{RootAction.StatusDescription}: Missing dependency list file \"{RootAction.DependencyListFile}\"");
+					Logger.LogDebug("{StatusDescription}: Missing dependency list file \"{DependencyListFile}\"", RootAction.StatusDescription, RootAction.DependencyListFile);
 					bIsOutdated = true;
 				}
 				else
 				{
 					foreach (FileItem DependencyFile in DependencyFiles)
 					{
-						if (!DependencyFile.Exists || DependencyFile.LastWriteTimeUtc > LastExecutionTimeUtc)
+						if (!DependencyFile.Exists)
 						{
-							Log.TraceLog($"{RootAction.StatusDescription}: Dependency {DependencyFile.AbsolutePath} is newer than the last execution of the action:" +
+							Logger.LogDebug("{RootAction.StatusDescription}: Dependency {DependencyFile} doesn't exist", RootAction.StatusDescription, DependencyFile.AbsolutePath);
+							bIsOutdated = true;
+							break;
+						}
+						else if (DependencyFile.LastWriteTimeUtc > LastExecutionTimeUtc)
+						{
+							Logger.LogDebug("{RootAction.StatusDescription}: Dependency {DependencyFile} is newer than the last execution of the action: {Message}", RootAction.StatusDescription, DependencyFile.AbsolutePath,
 								$"{DependencyFile.LastWriteTimeUtc.ToLocalTime().ToString(CultureInfo.CurrentCulture)} vs {LastExecutionTimeUtc.LocalDateTime.ToString(CultureInfo.CurrentCulture)}");
 							bIsOutdated = true;
 							break;
@@ -704,9 +722,7 @@ namespace UnrealBuildTool
 			// We don't yet know that the action is up-to-date - to determine that requires traversal of the graph of prerequisites.
 			if (bIsOutdated)
 			{
-				OutdatedActionLock.EnterWriteLock();
-				OutdatedActionDictionary.Add(RootAction, bIsOutdated);
-				OutdatedActionLock.ExitWriteLock();
+				OutdatedActionDictionary.TryAdd(RootAction, bIsOutdated);
 			}
 		}
 
@@ -717,8 +733,9 @@ namespace UnrealBuildTool
 		/// <param name="RootAction">- The action being considered.</param>
 		/// <param name="OutdatedActionDictionary">-</param>
 		/// <param name="bIgnoreOutdatedImportLibraries"></param>
+		/// <param name="Logger">Logger instance</param>
 		/// <returns>true if outdated</returns>
-		private static bool IsActionOutdatedDueToPrerequisites(LinkedAction RootAction,	Dictionary<LinkedAction, bool> OutdatedActionDictionary, bool bIgnoreOutdatedImportLibraries)
+		private static bool IsActionOutdatedDueToPrerequisites(LinkedAction RootAction, ConcurrentDictionary<LinkedAction, bool> OutdatedActionDictionary, bool bIgnoreOutdatedImportLibraries, ILogger Logger)
 		{
 			// Only compute the outdated-ness for actions that aren't already cached in the outdated action dictionary.
 			if (OutdatedActionDictionary.TryGetValue(RootAction, out bool bIsOutdated))
@@ -729,7 +746,7 @@ namespace UnrealBuildTool
 			// Check if any of the prerequisite actions are out of date
 			foreach (LinkedAction PrerequisiteAction in RootAction.PrerequisiteActions)
 			{
-				if (IsActionOutdatedDueToPrerequisites(PrerequisiteAction, OutdatedActionDictionary, bIgnoreOutdatedImportLibraries))
+				if (IsActionOutdatedDueToPrerequisites(PrerequisiteAction, OutdatedActionDictionary, bIgnoreOutdatedImportLibraries, Logger))
 				{
 					// Only check for outdated import libraries if we were configured to do so.  Often, a changed import library
 					// won't affect a dependency unless a public header file was also changed, in which case we would be forced
@@ -737,7 +754,7 @@ namespace UnrealBuildTool
 					// won't have to wait for dependent targets to be relinked after each change.
 					if (!bIgnoreOutdatedImportLibraries || !IsImportLibraryDependency(RootAction, PrerequisiteAction))
 					{
-						Log.TraceLog($"{RootAction.StatusDescription}: Prerequisite {PrerequisiteAction.StatusDescription} is produced by outdated action.");
+						Logger.LogDebug("{StatusDescription}: Prerequisite {PrereqStatusDescription} is produced by outdated action.", RootAction.StatusDescription, PrerequisiteAction.StatusDescription);
 						bIsOutdated = true;
 						break;
 					}
@@ -745,7 +762,7 @@ namespace UnrealBuildTool
 			}
 
 			// Cache the outdated-ness of this action.
-			OutdatedActionDictionary.Add(RootAction, bIsOutdated);
+			OutdatedActionDictionary.TryAdd(RootAction, bIsOutdated);
 
 			return bIsOutdated;
 		}
@@ -760,7 +777,7 @@ namespace UnrealBuildTool
 		{
 			if (PrerequisiteAction.bProducesImportLibrary)
 			{
-				return PrerequisiteAction.ProducedItems.All(I => I.Location.HasExtension(".lib") || !RootAction.PrerequisiteItems.Contains(I));
+				return PrerequisiteAction.ProducedItems.All(I => IsLibraryFile(I.Location) || !RootAction.PrerequisiteItems.Contains(I));
 			}
 			else
 			{
@@ -776,7 +793,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the only dependency between two actions is for an import library</returns>
 		static bool IsImportLibraryDependency(LinkedAction RootAction, FileItem PrerequisiteItem)
 		{
-			if (PrerequisiteItem.Location.HasExtension(".lib"))
+			if (IsLibraryFile(PrerequisiteItem.Location))
 			{
 				foreach (LinkedAction PrerequisiteAction in RootAction.PrerequisiteActions)
 				{
@@ -791,12 +808,22 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Test to see if the given file is a library file (or in the case of linux/mac, a dynamic library)
+		/// </summary>
+		/// <param name="Location">File to test</param>
+		/// <returns>True if the file is a library file</returns>
+		static bool IsLibraryFile(FileReference Location)
+		{
+			return Location.HasExtension(".lib") || Location.HasExtension(".so") || Location.HasExtension(".dylib");
+		}
+
+		/// <summary>
 		/// Builds a dictionary containing the actions from AllActions that are outdated by calling
 		/// IsActionOutdated.
 		/// </summary>
 		public static void GatherAllOutdatedActions(IReadOnlyList<LinkedAction> Actions, ActionHistory ActionHistory,
-			Dictionary<LinkedAction, bool> OutdatedActions, CppDependencyCache CppDependencies,
-			bool bIgnoreOutdatedImportLibraries)
+			ConcurrentDictionary<LinkedAction, bool> OutdatedActions, CppDependencyCache CppDependencies,
+			bool bIgnoreOutdatedImportLibraries, ILogger Logger)
 		{
 			using (GlobalTracer.Instance.BuildSpan("Prefetching include dependencies").StartActive())
 			{
@@ -809,22 +836,21 @@ namespace UnrealBuildTool
 					}
 				}
 
-				Parallel.ForEach(Dependencies, File => { CppDependencies.TryGetDependencies(File, out _); });
+				Parallel.ForEach(Dependencies, File => { CppDependencies.TryGetDependencies(File, Logger, out _); });
 			}
 
 			using (GlobalTracer.Instance.BuildSpan("Cache individual outdated actions").StartActive())
 			{
-				ReaderWriterLockSlim OutdatedActionsLock = new ReaderWriterLockSlim();
 				Parallel.ForEach(Actions,
-					Action => IsIndividualActionOutdated(Action, OutdatedActions, OutdatedActionsLock, 
-						ActionHistory, CppDependencies, bIgnoreOutdatedImportLibraries));
+					Action => IsIndividualActionOutdated(Action, OutdatedActions,
+						ActionHistory, CppDependencies, bIgnoreOutdatedImportLibraries, Logger));
 			}
 
 			using (GlobalTracer.Instance.BuildSpan("Cache outdated actions based on recursive prerequisites").StartActive())
 			{
 				foreach (var Action in Actions)
 				{
-					IsActionOutdatedDueToPrerequisites(Action, OutdatedActions, bIgnoreOutdatedImportLibraries);
+					IsActionOutdatedDueToPrerequisites(Action, OutdatedActions, bIgnoreOutdatedImportLibraries, Logger);
 				}
 			}
 		}
@@ -833,7 +859,8 @@ namespace UnrealBuildTool
 		/// Deletes all the items produced by actions in the provided outdated action dictionary.
 		/// </summary>
 		/// <param name="OutdatedActions">List of outdated actions</param>
-		public static void DeleteOutdatedProducedItems(List<LinkedAction> OutdatedActions)
+		/// <param name="Logger">Logger for output</param>
+		public static void DeleteOutdatedProducedItems(List<LinkedAction> OutdatedActions, ILogger Logger)
 		{
 			foreach (LinkedAction OutdatedAction in OutdatedActions)
 			{
@@ -841,8 +868,8 @@ namespace UnrealBuildTool
 				{
 					if (DeleteItem.Exists)
 					{
-						Log.TraceLog($"Deleting outdated item: {DeleteItem.AbsolutePath}");
-						DeleteItem.Delete();
+						Logger.LogDebug("Deleting outdated item: {DeleteItem}", DeleteItem.Location);
+						DeleteItem.Delete(Logger);
 					}
 				}
 			}

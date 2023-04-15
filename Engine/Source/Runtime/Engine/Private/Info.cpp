@@ -5,6 +5,8 @@
 #include "Components/BillboardComponent.h"
 #include "Engine/Texture2D.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Info)
+
 AInfo::AInfo(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -50,4 +52,25 @@ AInfo::AInfo(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 /** Returns SpriteComponent subobject **/
 UBillboardComponent* AInfo::GetSpriteComponent() const { return SpriteComponent; }
+#endif
+
+#if WITH_EDITOR
+void AInfo::PostLoad()
+{
+	Super::PostLoad();
+
+	// Fixes Actors that were saved prior to their constructor using ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite"))
+	// Those Components are MarkForGarbage in their UActorComponent::PostInitProperties and so we need to clear the Component pointers
+	if (RootComponent != nullptr && !IsValid(RootComponent))
+	{
+		RootComponent = nullptr;
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (SpriteComponent != nullptr && !IsValid(SpriteComponent))
+	{
+		SpriteComponent = nullptr;
+	}
+#endif
+}
 #endif

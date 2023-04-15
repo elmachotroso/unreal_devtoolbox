@@ -18,8 +18,8 @@
 
 void SNiagaraGraphParameterMapGetNode::Construct(const FArguments& InArgs, UEdGraphNode* InGraphNode)
 {
-	BackgroundBrush = FEditorStyle::GetBrush("Graph.Pin.Background");
-	BackgroundHoveredBrush = FEditorStyle::GetBrush("PlainBorder");
+	BackgroundBrush = FAppStyle::GetBrush("Graph.Pin.Background");
+	BackgroundHoveredBrush = FAppStyle::GetBrush("PlainBorder");
 
 	GraphNode = InGraphNode; 
 	RegisterNiagaraGraphNode(InGraphNode);
@@ -64,7 +64,7 @@ TSharedRef<SWidget> SNiagaraGraphParameterMapGetNode::CreateNodeContentArea()
 		.Content()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			.Padding(FMargin(0, 3))
@@ -133,7 +133,7 @@ void SNiagaraGraphParameterMapGetNode::CreatePinWidgets()
 
 	AddRowWidgetToNode(SourceRowWidget);
 	
-	// Deferred pin adding to line up input/output pins by name.
+	// Deferred pin adding to line up input/output pins by persistent guid mapping.
 	for (int32 i = 0; i < OutputPins.Num(); i++)
 	{
 		TSharedRef<SGraphPin> OutputPin = OutputPins[i];

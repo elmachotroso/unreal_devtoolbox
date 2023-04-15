@@ -152,10 +152,10 @@ FPoly FBSPOps::BuildInfiniteFPoly( UModel* Model, int32 iNode )
 	EdPoly.Init();
 	EdPoly.Normal      = (FVector3f)Normal;
 	EdPoly.Base        = (FVector3f)Base;
-	new(EdPoly.Vertices) FVector3f(Base + Axis1*WORLD_MAX + Axis2*WORLD_MAX);
-	new(EdPoly.Vertices) FVector3f(Base - Axis1*WORLD_MAX + Axis2*WORLD_MAX);
-	new(EdPoly.Vertices) FVector3f(Base - Axis1*WORLD_MAX - Axis2*WORLD_MAX);
-	new(EdPoly.Vertices) FVector3f(Base + Axis1*WORLD_MAX - Axis2*WORLD_MAX);
+	new(EdPoly.Vertices) FVector3f(Base + Axis1*UE_OLD_WORLD_MAX + Axis2*UE_OLD_WORLD_MAX);
+	new(EdPoly.Vertices) FVector3f(Base - Axis1*UE_OLD_WORLD_MAX + Axis2*UE_OLD_WORLD_MAX);
+	new(EdPoly.Vertices) FVector3f(Base - Axis1*UE_OLD_WORLD_MAX - Axis2*UE_OLD_WORLD_MAX);
+	new(EdPoly.Vertices) FVector3f(Base + Axis1*UE_OLD_WORLD_MAX - Axis2*UE_OLD_WORLD_MAX);
 
 	return EdPoly;
 }
@@ -182,8 +182,8 @@ static void FilterBound
 	FVector3f&	Normal	= Model->Vectors[Surf.vNormal];
 	FBox		Bound(ForceInit);
 
-	Bound.Min.X = Bound.Min.Y = Bound.Min.Z = +WORLD_MAX;
-	Bound.Max.X = Bound.Max.Y = Bound.Max.Z = -WORLD_MAX;
+	Bound.Min.X = Bound.Min.Y = Bound.Min.Z = +UE_OLD_WORLD_MAX;	// LWC_TODO: Should be HALF_WORLD_MAX
+	Bound.Max.X = Bound.Max.Y = Bound.Max.Z = -UE_OLD_WORLD_MAX;
 
 	// Split bound into front half and back half.
 	FPoly** FrontList = new(FMemStack::Get(),nPolys*2+16)FPoly*; int32 nFront=0;
@@ -373,7 +373,7 @@ static FPoly *FindBestSplit
 		}
 		// added by Legend 1/31/1999
 		// Score optimization: minimize cuts vs. balance tree (as specified in BSP Rebuilder dialog)
-		Score = ( 100.0 - float(Balance) ) * Splits + float(Balance) * FMath::Abs( Front - Back );
+		Score = static_cast<float>(( 100.0 - float(Balance) ) * Splits + float(Balance) * FMath::Abs( Front - Back ));
 		if( Poly->PolyFlags & PF_Portal )
 		{
 			// PortalBias -- added by Legend on 4/12/2000
@@ -393,7 +393,7 @@ static FPoly *FindBestSplit
 			// should not be so high that portals cut through adjacent geometry in a way that
 			// increases complexity of the room being (typically, accidentally) cut.
 			//
-			Score -= ( 100.0 - float(Balance) ) * Splits * PortalBias; // ignore PortalBias of the split polys -- bias toward portal selection for cutting planes!
+			Score -= static_cast<float>(( 100.0 - float(Balance) ) * Splits * PortalBias); // ignore PortalBias of the split polys -- bias toward portal selection for cutting planes!
 		}
 		//UE_LOG(LogBSPOps, Log,  "  %4d: Score = %f (Front = %4d, Back = %4d, Splits = %4d, Flags = %08X)", Index, Score, Front, Back, Splits, Poly->PolyFlags ); //LEC
 
@@ -1187,7 +1187,7 @@ int32	FBSPOps::bspAddNode( UModel* Model, int32 iParent, ENodePlace NodePlace, u
 
 		// Set node properties.
 		Node.iSurf       	 = EdPoly->iLinkSurf;
-		Node.NodeFlags   	 = NodeFlags;
+		Node.NodeFlags   	 = static_cast<uint8>(NodeFlags);
 		Node.iCollisionBound = INDEX_NONE;
 		Node.Plane           = FPlane4f( EdPoly->Vertices[0], EdPoly->Normal );
 		Node.iVertPool       = Model->Verts.AddUninitialized(EdPoly->Vertices.Num());
@@ -1367,9 +1367,9 @@ int32 FBspPointsGrid::FindOrAddPoint(const FVector& Point, int32 Index, float Po
 	// Offset applied to the grid coordinates so aligned vertices (the normal case) don't overlap several grid items (taking into account the threshold)
 	const float GridOffset = 0.12345f;
 
-	const float AdjustedPointX = Point.X - GridOffset;
-	const float AdjustedPointY = Point.Y - GridOffset;
-	const float AdjustedPointZ = Point.Z - GridOffset;
+	const float AdjustedPointX = static_cast<float>(Point.X - GridOffset);
+	const float AdjustedPointY = static_cast<float>(Point.Y - GridOffset);
+	const float AdjustedPointZ = static_cast<float>(Point.Z - GridOffset);
 
 	const float GridX = AdjustedPointX * OneOverGranularity;
 	const float GridY = AdjustedPointY * OneOverGranularity;

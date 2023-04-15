@@ -1,8 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseWatchManagerDragDrop.h"
-#include "IPoseWatchManagerTreeItem.h"
-#include "PoseWatchManagerStandaloneTypes.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "Misc/Attribute.h"
+#include "SlotBase.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SPoseWatchManager"
 
@@ -29,7 +39,7 @@ TSharedPtr<SWidget> FPoseWatchManagerDragDropOp::GetDefaultDecorator() const
 	VerticalBox->AddSlot()
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Graph.ConnectorFeedback.Border"))
+		.BorderImage(FAppStyle::GetBrush("Graph.ConnectorFeedback.Border"))
 		.Visibility(this, &FPoseWatchManagerDragDropOp::GetOverrideVisibility)
 		.Content()
 		[

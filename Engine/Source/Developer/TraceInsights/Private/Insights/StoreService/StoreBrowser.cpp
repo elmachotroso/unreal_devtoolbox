@@ -2,6 +2,7 @@
 
 #include "StoreBrowser.h"
 
+#include "Async/ParallelFor.h"
 #include "Trace/Analysis.h"
 #include "Trace/StoreClient.h"
 
@@ -78,10 +79,32 @@ void FStoreBrowser::Exit()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void FStoreBrowser::Refresh()
+{
+	if (!IsLocked())
+	{
+		FScopeLock Lock(&TracesCriticalSection);
+
+		StoreChangeSerial = 0;
+		TracesChangeSerial = 0;
+		Traces.Reset();
+		TraceMap.Reset();
+		LiveTraceMap.Reset();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 UE::Trace::FStoreClient* FStoreBrowser::GetStoreClient() const
 {
-	// TODO: thread safety !?
 	return FInsightsManager::Get()->GetStoreClient();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FCriticalSection& FStoreBrowser::GetStoreClientCriticalSection() const
+{
+	return FInsightsManager::Get()->GetStoreClientCriticalSection();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -97,6 +120,8 @@ void FStoreBrowser::UpdateTraces()
 
 	FStopwatch StopwatchTotal;
 	StopwatchTotal.Start();
+
+	FScopeLock StoreClientLock(&GetStoreClientCriticalSection());
 
 	// Check if the list of trace sessions has changed.
 	{
@@ -139,8 +164,8 @@ void FStoreBrowser::UpdateTraces()
 							Trace.TraceId = TraceId;
 							Trace.TraceIndex = TraceIndex;
 
-							const FAnsiStringView AnsiTraceName = TraceInfo->GetName();
-							Trace.Name = FString(AnsiTraceName.Len(), AnsiTraceName.GetData());
+							const FUtf8StringView Utf8NameView = TraceInfo->GetName();
+							Trace.Name = FString(Utf8NameView);
 
 							Trace.Timestamp = FStoreBrowserTraceInfo::ConvertTimestamp(TraceInfo->GetTimestamp());
 							Trace.Size = TraceInfo->GetSize();
@@ -261,6 +286,8 @@ void FStoreBrowser::UpdateTraces()
 		}
 	}
 
+	StoreClientLock.Unlock();
+
 	StopwatchTotal.Update();
 	const uint64 Step3 = StopwatchTotal.GetAccumulatedTimeMs();
 
@@ -269,22 +296,49 @@ void FStoreBrowser::UpdateTraces()
 		FStopwatch Stopwatch;
 		Stopwatch.Start();
 
-		int32 MetadataUpdateCount = 0; // for debugging
+		struct FStoreBrowserTraceInfoBox
+		{
+			FStoreBrowserTraceInfo* Ptr;
+		};
+		TArray<FStoreBrowserTraceInfoBox> TracesToUpdate;
 
-		//if (false)
 		for (TSharedPtr<FStoreBrowserTraceInfo>& TracePtr : Traces)
 		{
-			if (!TracePtr->bIsMetadataUpdated)
+			if (TracePtr->MetadataUpdateCount > 0)
 			{
-				MetadataUpdateCount++;
-				UpdateMetadata(*TracePtr);
+				TracesToUpdate.Add({ TracePtr.Get() });
 			}
 		}
 
-		Stopwatch.Stop();
-		if (MetadataUpdateCount > 0)
+		// Sort descending by timestamp (i.e. to update the newer traces first).
+		TracesToUpdate.Sort([](const FStoreBrowserTraceInfoBox& A, const FStoreBrowserTraceInfoBox& B)
+			{
+				return A.Ptr->Timestamp.GetTicks() > B.Ptr->Timestamp.GetTicks();
+			});
+
+#if 0
+		for (const FStoreBrowserTraceInfoBox& Trace : TracesToUpdate)
 		{
-			UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Metadata updated in %llu ms for %d trace(s)."), Stopwatch.GetAccumulatedTimeMs(), MetadataUpdateCount);
+			UpdateMetadata(*Trace.Ptr);
+		}
+#else
+		if (TracesToUpdate.Num() > 0)
+		{
+			ParallelFor(TracesToUpdate.Num(), [this, &TracesToUpdate](uint32 Index)
+				{
+					UpdateMetadata(*TracesToUpdate[Index].Ptr);
+				},
+				EParallelForFlags::BackgroundPriority);
+		}
+#endif
+
+		Stopwatch.Stop();
+		if (TracesToUpdate.Num() > 0)
+		{
+			UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Metadata updated in %llu ms for %d trace(s) (~%llu ms/trace)."),
+				Stopwatch.GetAccumulatedTimeMs(),
+				TracesToUpdate.Num(),
+				Stopwatch.GetAccumulatedTimeMs() / TracesToUpdate.Num());
 		}
 	}
 
@@ -292,7 +346,8 @@ void FStoreBrowser::UpdateTraces()
 	const uint64 TotalTime = StopwatchTotal.GetAccumulatedTimeMs();
 	if (TotalTime > 5)
 	{
-		UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Updated in %llu ms (%llu + %llu + %llu + %llu)."), TotalTime, Step1, Step2 - Step1, Step3 - Step2, TotalTime - Step3);
+		UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Updated in %llu ms (%llu + %llu + %llu + %llu)."),
+			TotalTime, Step1, Step2 - Step1, Step3 - Step2, TotalTime - Step3);
 	}
 }
 
@@ -313,8 +368,6 @@ void FStoreBrowser::ResetTraces()
 
 void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 {
-	//UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Updating metadata for trace 0x%08X (%s)..."), TraceSession.TraceId, *TraceSession.Name.ToString());
-
 	UE::Trace::FStoreClient* StoreClient = GetStoreClient();
 	if (StoreClient == nullptr)
 	{
@@ -323,7 +376,9 @@ void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 
 	FPlatformProcess::SleepNoStats(0.0f);
 
+	FScopeLock StoreClientLock(&GetStoreClientCriticalSection());
 	UE::Trace::FStoreClient::FTraceData TraceData = StoreClient->ReadTrace(Trace.TraceId);
+	StoreClientLock.Unlock();
 	if (!TraceData)
 	{
 		return;
@@ -331,10 +386,25 @@ void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 
 	struct FDataStream : public UE::Trace::IInDataStream
 	{
+		enum class EReadStatus
+		{
+			Ready = 0,
+			StoppedByReadSizeLimit,
+			StoppedByTimeLimit,
+		};
+
 		virtual int32 Read(void* Data, uint32 Size) override
 		{
 			if (BytesRead >= 1024 * 1024)
 			{
+				Status = EReadStatus::StoppedByReadSizeLimit;
+				return 0;
+			}
+
+			Stopwatch.Update();
+			if (Stopwatch.GetAccumulatedTime() > TimeLimit)
+			{
+				Status = EReadStatus::StoppedByTimeLimit;
 				return 0;
 			}
 
@@ -349,12 +419,17 @@ void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 			Inner->Close();
 		}
 
-		int32 BytesRead = 0;
 		UE::Trace::IInDataStream* Inner;
+		double TimeLimit = 1.0;
+		FStopwatch Stopwatch;
+		int32 BytesRead = 0;
+		EReadStatus Status = EReadStatus::Ready;
 	};
 
 	FDataStream DataStream;
 	DataStream.Inner = TraceData.Get();
+	DataStream.TimeLimit = 1.0 + (double)(Trace.MetadataUpdateCount - 1) * 2.0; // 1s, 3s, 5s, ...
+	DataStream.Stopwatch.Start();
 
 	FDiagnosticsSessionAnalyzer Analyzer;
 	UE::Trace::FAnalysisContext Context;
@@ -364,11 +439,11 @@ void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 	// Update the FStoreBrowserTraceInfo object.
 	{
 		FScopeLock Lock(&TracesCriticalSection);
-		TracesChangeSerial++;
-		Trace.ChangeSerial++;
-		Trace.bIsMetadataUpdated = true;
+
 		if (Analyzer.Platform.Len() != 0)
 		{
+			TracesChangeSerial++;
+			Trace.ChangeSerial++;
 			Trace.Platform = Analyzer.Platform;
 			Trace.AppName = Analyzer.AppName;
 			Trace.CommandLine = Analyzer.CommandLine;
@@ -378,7 +453,25 @@ void FStoreBrowser::UpdateMetadata(FStoreBrowserTraceInfo& Trace)
 			Trace.ConfigurationType = static_cast<EBuildConfiguration>(Analyzer.ConfigurationType);
 			Trace.TargetType = static_cast<EBuildTargetType>(Analyzer.TargetType);
 		}
+
+		if (DataStream.Status == FDataStream::EReadStatus::StoppedByTimeLimit)
+		{
+			// Try again later.
+			++Trace.MetadataUpdateCount;
+			if (Trace.MetadataUpdateCount > 5)
+			{
+				Trace.MetadataUpdateCount = 0; // no more updates
+			}
+		}
+		else
+		{
+			Trace.MetadataUpdateCount = 0; // no more updates
+		}
 	}
+
+	DataStream.Stopwatch.Stop();
+	UE_LOG(TraceInsights, Log, TEXT("[StoreBrowser] Metadata updated in %llu ms for trace \"%s\""),
+		DataStream.Stopwatch.GetAccumulatedTimeMs(), *Trace.Name);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

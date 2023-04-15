@@ -22,7 +22,6 @@ public class AssetSearch : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"SQLiteCore",
-				"EditorStyle",
 				"InputCore",
 				"Slate",
 				"SlateCore",
@@ -45,6 +44,7 @@ public class AssetSearch : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"DerivedDataCache",
+				"MaterialEditor",
 			}
 		);
 	}

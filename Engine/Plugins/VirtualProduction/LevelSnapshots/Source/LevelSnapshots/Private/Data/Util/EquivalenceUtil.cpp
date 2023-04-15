@@ -5,7 +5,7 @@
 #include "Archive/ApplySnapshotToEditorArchive.h"
 #include "Data/CustomSerialization/CustomObjectSerializationWrapper.h"
 #include "Data/SnapshotCustomVersion.h"
-#include "Data/Util/Restoration/ActorUtil.h"
+#include "Data/Util/WorldData/ActorUtil.h"
 #include "Data/WorldSnapshotData.h"
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
@@ -20,6 +20,7 @@
 #include "GameFramework/Actor.h"
 #include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
+#include "WorldData/WorldDataUtil.h"
 
 namespace UE::LevelSnapshots::Private::Internal
 {
@@ -91,10 +92,10 @@ namespace UE::LevelSnapshots::Private::Internal
 	}
 
 	/** @return False if one component could not be matched */
-	static bool EnqueueMatchingComponents(TInlineComponentArray<TPair<UObject*, UObject*>>& SnapshotOriginalPairsToProcess, const FWorldSnapshotData& WorldData, AActor* SnapshotActor, AActor* WorldActor)
+	static bool EnqueueMatchingComponents(ULevelSnapshot* Snapshot, TInlineComponentArray<TPair<UObject*, UObject*>>& SnapshotOriginalPairsToProcess, const FWorldSnapshotData& WorldData, AActor* SnapshotActor, AActor* WorldActor)
 	{
 		bool bFoundUnmatchedObjects = false;
-		UE::LevelSnapshots::Private::IterateComponents(SnapshotActor, WorldActor,
+		UE::LevelSnapshots::Private::IterateRestorableComponents(Snapshot, SnapshotActor, WorldActor,
 			[&SnapshotOriginalPairsToProcess, &WorldData, &bFoundUnmatchedObjects](UActorComponent* SnapshotComp, UActorComponent* WorldComp)
 			{
 				bFoundUnmatchedObjects |= EnqueueMatchingCustomSubobjects(SnapshotOriginalPairsToProcess, WorldData, SnapshotComp, WorldComp);
@@ -113,20 +114,22 @@ namespace UE::LevelSnapshots::Private::Internal
 	}
 }
 
-void UE::LevelSnapshots::Private::IterateComponents(AActor* SnapshotActor, AActor* WorldActor, FHandleMatchedActorComponent OnComponentsMatched, FHandleUnmatchedActorComponent OnSnapshotComponentUnmatched, FHandleUnmatchedActorComponent OnWorldComponentUnmatched)
+void UE::LevelSnapshots::Private::IterateRestorableComponents(ULevelSnapshot* Snapshot, AActor* SnapshotActor, AActor* WorldActor, FHandleMatchedActorComponent OnComponentsMatched, FHandleUnmatchedActorComponent OnSnapshotComponentUnmatched, FHandleUnmatchedActorComponent OnWorldComponentUnmatched)
 {
+	const FSoftObjectPath WorldActorPath = WorldActor;
 	for (UActorComponent* WorldComp : WorldActor->GetComponents())
 	{
 		if (!Restorability::IsComponentDesirableForCapture(WorldComp))
 		{
 			continue;
 		}
-		
-		if (UActorComponent* SnapshotMatchedComp = Internal::TryFindMatchingComponent(SnapshotActor, WorldComp))
+
+		UActorComponent* SnapshotMatchedComp = Internal::TryFindMatchingComponent(SnapshotActor, WorldComp);
+		if (SnapshotMatchedComp && HasSavedComponentData(Snapshot->GetSerializedData(), WorldActorPath, WorldComp))
 		{
 			OnComponentsMatched(SnapshotMatchedComp, WorldComp);
 		}
-		else
+		else if (!SnapshotMatchedComp)
 		{
 			OnWorldComponentUnmatched(WorldComp);
 		}
@@ -135,6 +138,7 @@ void UE::LevelSnapshots::Private::IterateComponents(AActor* SnapshotActor, AActo
 	for (UActorComponent* SnapshotComp : SnapshotActor->GetComponents())
 	{
 		if (Restorability::IsComponentDesirableForCapture(SnapshotComp)
+			&& HasSavedComponentData(Snapshot->GetSerializedData(), WorldActorPath, SnapshotComp)
 			&& Internal::TryFindMatchingComponent(WorldActor, SnapshotComp) == nullptr)
 		{
 			OnSnapshotComponentUnmatched(SnapshotComp);
@@ -191,7 +195,7 @@ bool UE::LevelSnapshots::Private::HasOriginalChangedPropertiesSinceSnapshotWasTa
 	TInlineComponentArray<TPair<UObject*, UObject*>> SnapshotOriginalPairsToProcess;
 	SnapshotOriginalPairsToProcess.Add(TPair<UObject*, UObject*>(SnapshotActor, WorldActor));
 	
-	const bool bFailedToMatchAllComponentObjects = Internal::EnqueueMatchingComponents(SnapshotOriginalPairsToProcess, Snapshot->GetSerializedData(), SnapshotActor, WorldActor);
+	const bool bFailedToMatchAllComponentObjects = Internal::EnqueueMatchingComponents(Snapshot, SnapshotOriginalPairsToProcess, Snapshot->GetSerializedData(), SnapshotActor, WorldActor);
 	if (bFailedToMatchAllComponentObjects)
 	{
 		return true;
@@ -213,6 +217,12 @@ bool UE::LevelSnapshots::Private::HasOriginalChangedPropertiesSinceSnapshotWasTa
 		}
 	}
 	return false;
+}
+
+namespace UE::LevelSnapshots::Private
+{
+	bool AreMapPropertiesEquivalent(ULevelSnapshot* Snapshot, const FMapProperty* MapProperty, void* SnapshotValuePtr, void* WorldValuePtr, AActor* SnapshotActor, AActor* WorldActor);
+	bool AreSetPropertiesEquivalent(ULevelSnapshot* Snapshot, const FSetProperty* SetProperty, void* SnapshotValuePtr, void* WorldValuePtr, AActor* SnapshotActor, AActor* WorldActor);
 }
 
 bool UE::LevelSnapshots::Private::AreSnapshotAndOriginalPropertiesEquivalent(ULevelSnapshot* Snapshot, const FProperty* LeafProperty, void* SnapshotContainer, void* WorldContainer, AActor* SnapshotActor, AActor* WorldActor)
@@ -280,12 +290,12 @@ bool UE::LevelSnapshots::Private::AreSnapshotAndOriginalPropertiesEquivalent(ULe
 		
 		if (const FMapProperty* MapProperty = CastField<FMapProperty>(LeafProperty))
 		{
-			// TODO: Use custom function. Need to do something similar to UE4MapProperty_Private::IsPermutation
+			return AreMapPropertiesEquivalent(Snapshot, MapProperty, SnapshotValuePtr, WorldValuePtr, SnapshotActor, WorldActor);
 		}
 
 		if (const FSetProperty* SetProperty = CastField<FSetProperty>(LeafProperty))
 		{
-			// TODO: Use custom function. Need to do something similar to UE4SetProperty_Private::IsPermutation
+			return AreSetPropertiesEquivalent(Snapshot, SetProperty, SnapshotValuePtr, WorldValuePtr, SnapshotActor, WorldActor);
 		}
 
 		if (const FTextProperty* TextProperty = CastField<FTextProperty>(LeafProperty))
@@ -297,6 +307,54 @@ bool UE::LevelSnapshots::Private::AreSnapshotAndOriginalPropertiesEquivalent(ULe
 		
 		// Use normal property comparison for all other properties
 		if (!LeafProperty->Identical_InContainer(SnapshotContainer, WorldContainer, i, PPF_DeepComparison | PPF_DeepCompareDSOsOnly))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool UE::LevelSnapshots::Private::AreMapPropertiesEquivalent(ULevelSnapshot* Snapshot, const FMapProperty* MapProperty, void* SnapshotValuePtr, void* WorldValuePtr, AActor* SnapshotActor, AActor* WorldActor)
+{
+	// Technically we need to check permutations like done in UE4MapProperty_Private::IsPermutation... 
+	FScriptMapHelper SnapshotMap(MapProperty, SnapshotValuePtr);
+	FScriptMapHelper WorldMap(MapProperty, WorldValuePtr);
+	if (SnapshotMap.Num() != WorldMap.Num())
+	{
+		return false;
+	}
+
+	for (int32 j = 0; j < SnapshotMap.Num(); ++j)
+	{
+		void* const SnapshotPairPtr = SnapshotMap.GetPairPtr(j);
+		void* const WorldPairPtr = WorldMap.GetPairPtr(j);
+
+		const bool bAreKeysEquivalent = AreSnapshotAndOriginalPropertiesEquivalent(Snapshot, SnapshotMap.KeyProp, SnapshotPairPtr, WorldPairPtr, SnapshotActor, WorldActor);
+		const bool bAreValuesEquivalent = AreSnapshotAndOriginalPropertiesEquivalent(Snapshot, SnapshotMap.ValueProp, SnapshotPairPtr, WorldPairPtr, SnapshotActor, WorldActor);
+		if (!bAreKeysEquivalent || !bAreValuesEquivalent)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool UE::LevelSnapshots::Private::AreSetPropertiesEquivalent(ULevelSnapshot* Snapshot, const FSetProperty* SetProperty, void* SnapshotValuePtr, void* WorldValuePtr, AActor* SnapshotActor, AActor* WorldActor)
+{
+	// Technically we need to check permutations like done in UE4SetProperty_Private::IsPermutation... 
+	FScriptSetHelper SnapshotMap(SetProperty, SnapshotValuePtr);
+	FScriptSetHelper WorldMap(SetProperty, WorldValuePtr);
+	if (SnapshotMap.Num() != WorldMap.Num())
+	{
+		return false;
+	}
+
+	for (int32 j = 0; j < SnapshotMap.Num(); ++j)
+	{
+		void* const SnapshotElemValuePtr = SnapshotMap.GetElementPtr(j);
+		void* const WorldElemValuePtr = WorldMap.GetElementPtr(j);
+
+		if (!AreSnapshotAndOriginalPropertiesEquivalent(Snapshot, SetProperty->ElementProp, SnapshotElemValuePtr, WorldElemValuePtr, SnapshotActor, WorldActor))
 		{
 			return false;
 		}
@@ -321,21 +379,6 @@ bool UE::LevelSnapshots::Private::AreObjectPropertiesEquivalent(ULevelSnapshot* 
 
 namespace UE::LevelSnapshots::Private::Internal
 {
-	/** Checks whether the two actors object properties should be considered equivalent */
-	static bool AreActorsEquivalent(UObject* SnapshotPropertyValue, AActor* OriginalActorReference, const TMap<FSoftObjectPath, FActorSnapshotData>& ActorData, const FSnapshotDataCache& Cache)
-	{
-		// Compare actors
-		const FActorSnapshotData* SavedData = ActorData.Find(OriginalActorReference);
-		if (SavedData == nullptr)
-		{
-			return false;
-		}
-
-		// The snapshot actor was already allocated, if some other snapshot actor is referencing it
-		const TOptional<TNonNullPtr<AActor>> PreallocatedSnapshotVersion = UE::LevelSnapshots::Private::GetPreallocatedIfCached(OriginalActorReference, Cache);
-		return PreallocatedSnapshotVersion.Get(nullptr) == SnapshotPropertyValue;
-	}
-	
 	/** Checks whether the two subobject object properties should be considered equivalent */
 	static bool HaveSameNames(UObject* SnapshotPropertyValue, UObject* OriginalPropertyValue, const FSnapshotDataCache& Cache)
 	{
@@ -376,7 +419,7 @@ namespace UE::LevelSnapshots::Private::Internal
 		AActor* OwningWorldActor = OriginalPropertyValue->GetTypedOuter<AActor>();
 		if (ensure(OwningSnapshotActor && OwningWorldActor))
 		{
-			return AreActorsEquivalent(OwningSnapshotActor, OwningWorldActor, Snapshot->GetSerializedData().ActorData, Snapshot->GetCache()) && !HaveDifferentPropertyValues(Snapshot, SnapshotPropertyValue, OriginalPropertyValue, SnapshotActor, OriginalActor);
+			return AreActorsEquivalent(OwningSnapshotActor, OwningWorldActor, Snapshot->GetSerializedData(), Snapshot->GetCache()) && !HaveDifferentPropertyValues(Snapshot, SnapshotPropertyValue, OriginalPropertyValue, SnapshotActor, OriginalActor);
 		}
 		return false;
 	}
@@ -400,7 +443,7 @@ bool UE::LevelSnapshots::Private::AreReferencesEquivalent(ULevelSnapshot* Snapsh
 
 	if (AActor* OriginalActorReference = Cast<AActor>(OriginalPropertyValue))
 	{
-		return Internal::AreActorsEquivalent(SnapshotPropertyValue, OriginalActorReference, Snapshot->GetSerializedData().ActorData, Snapshot->GetCache());
+		return AreActorsEquivalent(SnapshotPropertyValue, OriginalActorReference, Snapshot->GetSerializedData(), Snapshot->GetCache());
 	}
 	
 	const bool bIsWorldObject = SnapshotPropertyValue->IsInA(UWorld::StaticClass()) && OriginalPropertyValue->IsInA(UWorld::StaticClass());
@@ -414,4 +457,18 @@ bool UE::LevelSnapshots::Private::AreReferencesEquivalent(ULevelSnapshot* Snapsh
 	}
 	
 	return SnapshotPropertyValue == OriginalPropertyValue;
+}
+
+bool UE::LevelSnapshots::Private::AreActorsEquivalent(UObject* SnapshotPropertyValue, AActor* OriginalActorReference, const FWorldSnapshotData& WorldData, const FSnapshotDataCache& Cache)
+{
+	// Compare actors
+	const FActorSnapshotData* SavedData = WorldData.ActorData.Find(OriginalActorReference);
+	if (SavedData == nullptr)
+	{
+		return false;
+	}
+
+	// The snapshot actor was already allocated, if some other snapshot actor is referencing it
+	const TOptional<TNonNullPtr<AActor>> PreallocatedSnapshotVersion = UE::LevelSnapshots::Private::GetPreallocatedIfCached(OriginalActorReference, Cache);
+	return PreallocatedSnapshotVersion.Get(nullptr) == SnapshotPropertyValue;
 }

@@ -11,6 +11,7 @@
 #include "Channels/MovieSceneChannelTraits.h"
 #include "MovieSceneClipboard.h"
 #include "GameplayCueInterface.h"
+#include "MovieSceneObjectBindingID.h"
 #include "MovieSceneGameplayCueSections.generated.h"
 
 
@@ -58,7 +59,7 @@ struct FMovieSceneGameplayCueKey
 
 	/** PhysMat of the hit, if there was a hit. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category="Gameplay Cue")
-	const UPhysicalMaterial* PhysicalMaterial;
+	TObjectPtr<const UPhysicalMaterial> PhysicalMaterial;
 
 	/** The level of that GameplayEffect */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category="Gameplay Cue")

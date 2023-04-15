@@ -9,6 +9,13 @@
 #include "Net/OnlineEngineInterface.h"
 #include "GameFramework/GameStateBase.h"
 #include "Net/Core/PushModel/PushModel.h"
+#if UE_WITH_IRIS
+#include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
+#include "Iris/ReplicationSystem/ReplicationSystem.h"
+#include "Iris/ReplicationSystem/Prioritization/NetObjectPrioritizer.h"
+#endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlayerState)
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 APlayerState::APlayerState(const FObjectInitializer& ObjectInitializer)
@@ -399,7 +406,10 @@ void APlayerState::RegisterPlayerWithSession(bool bWasFromInvite)
 		{
 			// Register the player as part of the session
 			const APlayerState* PlayerState = GetDefault<APlayerState>();
-			UOnlineEngineInterface::Get()->RegisterPlayer(GetWorld(), PlayerState->SessionName, GetUniqueId(), bWasFromInvite);
+			if (UOnlineEngineInterface::Get()->DoesSessionExist(GetWorld(), PlayerState->SessionName))
+			{
+				UOnlineEngineInterface::Get()->RegisterPlayer(GetWorld(), PlayerState->SessionName, GetUniqueId(), bWasFromInvite);
+			}
 		}
 	}
 }
@@ -411,7 +421,10 @@ void APlayerState::UnregisterPlayerWithSession()
 		const APlayerState* PlayerState = GetDefault<APlayerState>();
 		if (PlayerState->SessionName != NAME_None)
 		{
-			UOnlineEngineInterface::Get()->UnregisterPlayer(GetWorld(), PlayerState->SessionName, GetUniqueId());
+			if (UOnlineEngineInterface::Get()->DoesSessionExist(GetWorld(), PlayerState->SessionName))
+			{
+				UOnlineEngineInterface::Get()->UnregisterPlayer(GetWorld(), PlayerState->SessionName, GetUniqueId());
+			}
 		}
 	}
 }
@@ -593,3 +606,39 @@ void APlayerState::OnPawnPrivateDestroyed(AActor* InActor)
 }
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+#if UE_WITH_IRIS
+void APlayerState::BeginReplication()
+{
+	using namespace UE::Net;
+
+	Super::BeginReplication();
+
+	/**
+	 * If we're replicating using Iris we set the prioritizer to one named PlayerState if there is one.
+	 * For example add the following to your DefaultEngine.ini to limit the number of player states
+	 * replicated each frame, but still allow the owning connection's to be replicated each frame.
+	 * You can also implement your own prioritzer of course.
+	 * 
+	 * [/Script/IrisCore.NetObjectPrioritizerDefinitions]
+	 * +NetObjectPrioritizerDefinitions=(PrioritizerName=PlayerState, ClassName=/Script/IrisCore.NetObjectCountLimiter, ConfigClassName=/Script/Engine.PlayerStateCountLimiterConfig)
+	 */
+	const FNetHandle NetHandle = FReplicationSystemUtil::GetNetHandle(this);
+	if (!NetHandle.IsValid())
+	{
+		return;
+	}
+
+	UReplicationSystem* ReplicationSystem = GetReplicationSystem(NetHandle.GetReplicationSystemId());
+	if (ReplicationSystem == nullptr)
+	{
+		return;
+	}
+
+	FNetObjectPrioritizerHandle PrioritizerHandle = ReplicationSystem->GetPrioritizerHandle(FName("PlayerState", FNAME_Find));
+	if (PrioritizerHandle != InvalidNetObjectPrioritizerHandle)
+	{
+		ReplicationSystem->SetPrioritizer(NetHandle, PrioritizerHandle);
+	}	
+}
+#endif

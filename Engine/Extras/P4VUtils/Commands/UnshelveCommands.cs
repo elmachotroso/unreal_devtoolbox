@@ -18,15 +18,15 @@ namespace P4VUtils.Commands
 	abstract class UnshelveCommandBase : Command
 	{
 
-		protected async Task<int> UnshelveFiles(List<(string, string, int)> FilesInfoToUnshelve, bool bMakeDataWritable, int ChangeNumber, int IntoChangeNumber, ILogger Logger)
+		protected static async Task<int> UnshelveFiles(List<(string, string, int)> FilesInfoToUnshelve, bool bMakeDataWritable, int ChangeNumber, int IntoChangeNumber, ILogger Logger)
 		{
-			PerforceConnection Perforce = new PerforceConnection(null, null, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, Logger);
 
 			List<string> FileSpecs = FilesInfoToUnshelve.Select(t => t.Item1).ToList();
-			List<FStatRecord> StatRecords = await Perforce.FStatAsync(FileSpecs, CancellationToken.None);
+			List<FStatRecord> StatRecords = await Perforce.FStatAsync(FileSpecs, CancellationToken.None).ToListAsync();
 			Dictionary<string, int> CurrentFileRevisions = StatRecords.ToDictionary(r => r.DepotFile!, r => r.HaveRevision);
 			Dictionary<string, string> CurrentDepotToClientFile = StatRecords.ToDictionary(r => r.DepotFile!, r => r.ClientFile!);
-			List<WhereRecord> WhereRecords = await Perforce.WhereAsync(FileSpecs, CancellationToken.None);
+			List<WhereRecord> WhereRecords = await Perforce.WhereAsync(FileSpecs, CancellationToken.None).ToListAsync();
 
 			// Figure out the local path of the added file with a p4 where command
 			foreach (WhereRecord WhereRecord in WhereRecords)
@@ -44,7 +44,7 @@ namespace P4VUtils.Commands
 				FilesInfoToUnshelve.ForEach(async t =>
 				{
 					(string DepotFile, string Type, int Revision) = t;
-					if (Type.StartsWith("binary"))
+					if (Type.StartsWith("binary", StringComparison.Ordinal))
 					{
 						if (CurrentDepotToClientFile.TryGetValue(DepotFile, out string? ClientFile) && ClientFile != null)
 						{
@@ -53,7 +53,7 @@ namespace P4VUtils.Commands
 						}
 						else
 						{
-							Logger.LogError("Unshelve failed: could not map locally depot file:{DepotFile}");
+							Logger.LogError("Unshelve failed: could not map locally depot file:{DepotFile}", DepotFile);
 						}
 
 					}
@@ -84,10 +84,10 @@ namespace P4VUtils.Commands
 			List<UnshelveRecord> UnshelveRecords = await Perforce.UnshelveAsync(ChangeNumber, IntoChangeNumber, null, null, null, UnshelveOptions.None, FilesToUnshelve, CancellationToken.None);
 			if (FilesToSync.Count > 0)
 			{
-				List<SyncRecord> SyncFiles = await Perforce.SyncAsync(FilesToSync, CancellationToken.None);
+				List<SyncRecord> SyncFiles = await Perforce.SyncAsync(FilesToSync, CancellationToken.None).ToListAsync();
 				SyncFiles.ForEach(r =>
 				{
-					Logger.LogInformation("Restore file:{r.ClientFile} to revision:{r.Revision}");
+					Logger.LogInformation("Restore file:{ClientFile} to revision:{Revision}", r.Path, r.Revision);
 				});
 
 				List<ResolveRecord> ResolveRecords = await Perforce.ResolveAsync(-1, ResolveOptions.Automatic, FilesToResolve, CancellationToken.None);
@@ -96,9 +96,9 @@ namespace P4VUtils.Commands
 			return 0;
 		}
 
-		protected async Task<int> UnshelveChangeList(int ChangeNumber, bool bMakeDataWritable, ILogger Logger)
+		protected static async Task<int> UnshelveChangeList(int ChangeNumber, bool bMakeDataWritable, ILogger Logger)
 		{
-			PerforceConnection Perforce = new PerforceConnection(null, null, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, Logger);
 			List<DescribeRecord> Describe = await Perforce.DescribeAsync(DescribeOptions.Shelved, -1, new int[] { ChangeNumber }, CancellationToken.None);
 
 			int IntoChangeNumber = -1;
@@ -110,12 +110,12 @@ namespace P4VUtils.Commands
 
 			if (Describe == null || Describe.Count != 1)
 			{
-				Logger.LogError("Unable to find changelist {Change}");
+				Logger.LogError("Unable to find changelist {Change}", ChangeNumber);
 				return 1;
 			}
 			if (Describe[0].Files.Count == 0)
 			{
-				Logger.LogError("No files are shelved in the given changelist{Change}");
+				Logger.LogError("No files are shelved in the given changelist{Change}", ChangeNumber);
 				return 1;
 			}
 

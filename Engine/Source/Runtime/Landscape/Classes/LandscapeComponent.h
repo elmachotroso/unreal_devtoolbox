@@ -8,6 +8,7 @@
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/PrimitiveComponent.h"
 #include "PerPlatformProperties.h"
+#include "Serialization/BulkData.h"
 #include "LandscapePhysicalMaterial.h"
 #include "LandscapeWeightmapUsage.h"
 #include "Containers/ArrayView.h"
@@ -102,68 +103,6 @@ public:
 	void UpdateDebugColorMaterial(const ULandscapeComponent* const Component);
 	void UpdateSelectionMaterial(int32 InSelectedType, const ULandscapeComponent* const Component);
 #endif
-};
-
-class FLandscapeComponentDerivedData
-{
-	/** The compressed Landscape component data for mobile rendering. Serialized to disk. 
-	    On device, freed once it has been decompressed. */
-	TArray<uint8> CompressedLandscapeData;
-
-	TArray<FByteBulkData> StreamingLODDataArray;
-	
-	/** Cached render data. Only valid on device. */
-	TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe > CachedRenderData;
-
-	UE_DEPRECATED(5.0, "The path will not be valid when staged via the IoStore, functionality is being removed")
-	FPackagePath CachedLODDataPackagePath;
-	UE_DEPRECATED(5.0, "The path will not be valid when staged via the IoStore, functionality is being removed")
-	EPackageSegment CachedLODDataPackageSegment;
-
-	friend class ULandscapeLODStreamingProxy;
-
-public:
-	/** Returns true if there is any valid platform data */
-	bool HasValidPlatformData() const
-	{
-		return CompressedLandscapeData.Num() != 0;
-	}
-
-	/** Returns true if there is any valid platform data */
-	bool HasValidRuntimeData() const
-	{
-		return CompressedLandscapeData.Num() != 0 || CachedRenderData.IsValid();
-	}
-
-	/** Returns the size of the platform data if there is any. */
-	int32 GetPlatformDataSize() const
-	{
-		int32 Result = CompressedLandscapeData.Num();
-		for (int32 Idx = 0; Idx < StreamingLODDataArray.Num(); ++Idx)
-		{
-			Result += (int32)StreamingLODDataArray[Idx].GetBulkDataSize();
-		}
-		return Result;
-	}
-
-	/** Initializes the compressed data from an uncompressed source. */
-	void InitializeFromUncompressedData(const TArray<uint8>& UncompressedData, const TArray<TArray<uint8>>& StreamingLODs);
-
-	/** Decompresses data if necessary and returns the render data object. 
-     *  On device, this frees the compressed data and keeps a reference to the render data. */
-	TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe> GetRenderData();
-
-	/** Constructs a key string for the DDC that uniquely identifies a the Landscape component's derived data. */
-	static FString GetDDCKeyString(const FGuid& StateId);
-
-	/** Loads the platform data from DDC */
-	bool LoadFromDDC(const FGuid& StateId, UObject* Component);
-
-	/** Saves the compressed platform data to the DDC */
-	void SaveToDDC(const FGuid& StateId, UObject* Component);
-
-	/* Serializer */
-	void Serialize(FArchive& Ar, UObject* Owner);
 };
 
 /* Used to uniquely reference a landscape vertex in a component. */
@@ -300,8 +239,8 @@ struct FLandscapeComponentGrassData
 	friend FArchive& operator<<(FArchive& Ar, FLandscapeComponentGrassData& Data);
 };
 
-USTRUCT(NotBlueprintable)
-struct FLandscapeComponentMaterialOverride
+USTRUCT(NotBlueprintable, meta = (Deprecated = "5.1"))
+struct UE_DEPRECATED(5.1, "FLandscapeComponentMaterialOverride is deprecated; please use FLandscapePerLODMaterialOverride instead") FLandscapeComponentMaterialOverride
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -310,6 +249,24 @@ struct FLandscapeComponentMaterialOverride
 
 	UPROPERTY(EditAnywhere, Category = LandscapeComponent)
 	TObjectPtr<UMaterialInterface> Material = nullptr;
+};
+
+USTRUCT(NotBlueprintable)
+struct FLandscapePerLODMaterialOverride
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Category = Material, meta = (UIMin = 0, UIMax = 8, ClampMin = 0, ClampMax = 8))
+	int32 LODIndex = 0;
+
+	UPROPERTY(EditAnywhere, Category = Material)
+	TObjectPtr<UMaterialInterface> Material = nullptr;
+
+	bool operator == (const FLandscapePerLODMaterialOverride & InOther) const
+	{
+		return (LODIndex == InOther.LODIndex)
+			&& (Material == InOther.Material);
+	}
 };
 
 USTRUCT(NotBlueprintable)
@@ -416,37 +373,9 @@ enum ELandscapeClearMode
 };
 
 UCLASS(MinimalAPI)
-class ULandscapeLODStreamingProxy : public UStreamableRenderAsset
+class ULandscapeLODStreamingProxy_DEPRECATED : public UStreamableRenderAsset
 {
 	GENERATED_UCLASS_BODY()
-
-	//~ Begin UStreamableRenderAsset Interface
-	virtual LANDSCAPE_API int32 CalcCumulativeLODSize(int32 NumLODs) const final override;
-	virtual LANDSCAPE_API FIoFilenameHash GetMipIoFilenameHash(const int32 MipIndex) const  final override;
-	virtual LANDSCAPE_API bool HasPendingRenderResourceInitialization() const final override;
-	virtual bool StreamOut(int32 NewMipCount) final override;
-	virtual bool StreamIn(int32 NewMipCount, bool bHighPrio) final override;
-	virtual EStreamableRenderAssetType GetRenderAssetType() const final override { return EStreamableRenderAssetType::LandscapeMeshMobile; }
-	//~ End UStreamableRenderAsset Interface
-
-	UE_DEPRECATED(5.0, "The mip will not be able to return a valid file name when staged via the IoStore, functionality is being removed")
-	LANDSCAPE_API bool GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataFilename) const;
-	UE_DEPRECATED(5.0, "The mip will not be able to return a valid package path when staged via the IoStore, functionality is being removed")
-	LANDSCAPE_API bool GetMipDataPackagePath(const int32 MipIndex, FPackagePath& OutBulkDataPackagePath, EPackageSegment& OutPackageSegment) const;
-
-	LANDSCAPE_API TArray<float> GetLODScreenSizeArray() const;
-	LANDSCAPE_API TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe> GetRenderData() const;
-
-	LANDSCAPE_API FByteBulkData& GetStreamingLODBulkData(int32 LODIdx) const;
-
-	static LANDSCAPE_API void CancelAllPendingStreamingActions();
-
-	void ClearStreamingResourceState();
-	void InitResourceStateForMobileStreaming();
-
-private:
-
-	ULandscapeComponent* LandscapeComponent = nullptr;
 };
 
 UCLASS(hidecategories=(Display, Attachment, Physics, Debug, Collision, Movement, Rendering, PrimitiveComponent, Object, Transform, Mobility, VirtualTexture), showcategories=("Rendering|Material"), MinimalAPI, Within=LandscapeProxy)
@@ -480,10 +409,13 @@ class ULandscapeComponent : public UPrimitiveComponent
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LandscapeComponent, AdvancedDisplay)
 	TObjectPtr<UMaterialInterface> OverrideHoleMaterial;
 
-	UPROPERTY(EditAnywhere, Category = LandscapeComponent)
-	TArray<FLandscapeComponentMaterialOverride> OverrideMaterials;
-
 #if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.1, "OverrideMaterials has been deprecated, use PerLODOverrideMaterials instead.")
+	UPROPERTY()
+	TArray<FLandscapeComponentMaterialOverride> OverrideMaterials_DEPRECATED;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceConstant> MaterialInstance_DEPRECATED;
 #endif
@@ -523,6 +455,9 @@ class ULandscapeComponent : public UPrimitiveComponent
 	TLazyObjectPtr<ULandscapeHeightfieldCollisionComponent> CollisionComponent;
 
 private:
+	UPROPERTY(Transient)
+	bool bNaniteActive;
+
 #if WITH_EDITORONLY_DATA
 	/** Unique ID for this component, used for caching during distributed lighting */
 	UPROPERTY()
@@ -565,9 +500,8 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<UTexture2D>> WeightmapTextures;
 
-	/** Used to interface the component to the LOD streamer. */
-	UPROPERTY()
-	TObjectPtr<ULandscapeLODStreamingProxy> LODStreamingProxy;
+	UPROPERTY(EditAnywhere, Category = LandscapeComponent)
+	TArray<FLandscapePerLODMaterialOverride> PerLODOverrideMaterials;
 
 public:
 
@@ -660,10 +594,6 @@ public:
 	uint32 LastSavedPhysicalMaterialHash;
 #endif
 
-	/** For mobile */
-	UPROPERTY()
-	uint8 MobileBlendableLayerMask;
-
 	UPROPERTY(NonPIEDuplicateTransient)
 	TObjectPtr<UMaterialInterface> MobileMaterialInterface_DEPRECATED;
 
@@ -690,9 +620,6 @@ public:
 #endif
 
 public:
-	/** Platform Data where don't support texture sampling in vertex buffer */
-	FLandscapeComponentDerivedData PlatformData;
-
 	/** Grass data for generation **/
 	TSharedRef<FLandscapeComponentGrassData, ESPMode::ThreadSafe> GrassData;
 	TArray<FBox> ActiveExcludedBoxes;
@@ -702,7 +629,13 @@ public:
 	/** Physical material update task */
 	FLandscapePhysicalMaterialRenderTask PhysicalMaterialTask;
 	uint32 CalculatePhysicalMaterialTaskHash() const;
-#endif
+
+	/**
+	 * Get the physical materials that are configured by the landscape component graphical material.
+	 * Returns false if there are no non-null physical materials. (We probably don't want to use if no physical material connections are bound.)
+	 */
+	bool GetRenderPhysicalMaterials(TArray<UPhysicalMaterial*>& OutPhysicalMaterials) const;
+#endif // WITH_EDITOR
 
 	//~ Begin UObject Interface.	
 	virtual void PostInitProperties() override;	
@@ -710,9 +643,13 @@ public:
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual void BeginDestroy() override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 #if WITH_EDITOR
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform) override;
-	virtual void PostLoad() override;
 	virtual void PostEditUndo() override;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -760,6 +697,9 @@ public:
 	LANDSCAPE_API TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(const FGuid& InLayerGuid);
 	LANDSCAPE_API const TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(const FGuid& InLayerGuid) const;
 
+	const TArray<FLandscapePerLODMaterialOverride>& GetPerLODOverrideMaterials() const { return PerLODOverrideMaterials; }
+	void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue) { PerLODOverrideMaterials = InValue; }
+
 #if WITH_EDITOR
 	LANDSCAPE_API uint32 ComputeLayerHash(bool InReturnEditingHash = true) const;
 
@@ -796,12 +736,12 @@ public:
 	bool GetPendingLayerCollisionDataUpdate() const { return bPendingLayerCollisionDataUpdate; }
 #endif 
 
+	virtual bool IsShown(const FEngineShowFlags& ShowFlags) const override;
+
 #if WITH_EDITOR
 	virtual int32 GetNumMaterials() const override;
 	virtual UMaterialInterface* GetMaterial(int32 ElementIndex) const override;
 	virtual void SetMaterial(int32 ElementIndex, UMaterialInterface* Material) override;
-	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
-	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
 	virtual void PreFeatureLevelChange(ERHIFeatureLevel::Type PendingFeatureLevel) override;
 #endif
 	//~ End UPrimitiveComponent Interface.
@@ -821,7 +761,7 @@ public:
 	virtual void InvalidateLightingCacheDetailed(bool bInvalidateBuildEnqueuedLighting, bool bTranslationOnly) override;
 #endif
 	virtual void PropagateLightingScenarioChange() override;
-	virtual bool IsHLODRelevant() const { return true; }
+	virtual bool IsHLODRelevant() const override;
 	//~ End UActorComponent Interface.
 
 	/** Gets the landscape info object for this landscape */
@@ -829,8 +769,11 @@ public:
 
 #if WITH_EDITOR
 
-	/** Deletes a layer from this component, removing all its data */
+	/** Deletes a layer from this component, removing all its data, adjusting other layer's weightmaps if necessary, etc. */
 	LANDSCAPE_API void DeleteLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
+
+	/** Deletes a layer from this component, but doesn't do anything else (assumes the user knows what he's doing, use DeleteLayer otherwise) */
+	void DeleteLayerAllocation(const FGuid& InEditLayerGuid, int32 InLayerIdx, bool bInShouldDirtyPackage);
 
 	/** Fills a layer to 100% on this component, adding it if needed and removing other layers that get painted away */
 	LANDSCAPE_API void FillLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
@@ -862,11 +805,10 @@ public:
 
 	// Generates mobile platform data for this component
 	void GenerateMobileWeightmapLayerAllocations();
-	void GeneratePlatformVertexData(const ITargetPlatform* TargetPlatform);
-	void GeneratePlatformPixelData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
+	void GenerateMobilePlatformPixelData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
 
 	/** Generate mobile data if it's missing or outdated */
-	void CheckGenerateLandscapePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
+	void CheckGenerateMobilePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
 
 	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const override;
 #endif
@@ -1045,6 +987,8 @@ public:
 	 */
 	LANDSCAPE_API void UpdateCollisionLayerData();
 
+	/** Returns true if we can currently update physical materials. */
+	bool CanUpdatePhysicalMaterial();
 	/** Update physical material render tasks. */
 	void UpdatePhysicalMaterialTasks();
 	/** Update collision component physical materials from render task results. */
@@ -1090,12 +1034,13 @@ public:
 	/** @todo document */
 	LANDSCAPE_API float GetLayerWeightAtLocation( const FVector& InLocation, ULandscapeLayerInfoObject* LayerInfo, TArray<uint8>* LayerCache = NULL, bool bUseEditingWeightmap = false);
 
-	/** Extends passed region with this component section size */
+	/** Extends passed region with this component's 2D bounds (values are in landscape quads) */
 	LANDSCAPE_API void GetComponentExtent(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY) const;
 
+	/** returns the 2D bounds of this component (in landscape quads) */
 	LANDSCAPE_API FIntRect GetComponentExtent() const;
 
-	/** Updates navigation properties to match landscape's master switch */
+	/** Updates navigation properties to match landscape actor's */
 	void UpdateNavigationRelevance();
 
 	/** Updates the reject navmesh underneath flag in the collision component */
@@ -1121,9 +1066,21 @@ public:
 
 	friend class FLandscapeComponentSceneProxy;
 	friend struct FLandscapeComponentDataInterface;
-	friend class ULandscapeLODStreamingProxy;
 
-	void SetLOD(bool bForced, int32 InLODValue);
+	LANDSCAPE_API void SetLOD(bool bForced, int32 InLODValue);
+
+	UFUNCTION(BlueprintCallable, Category = "LandscapeComponent")
+	LANDSCAPE_API void SetForcedLOD(int32 InForcedLOD);
+
+	UFUNCTION(BlueprintCallable, Category = "LandscapeComponent")
+	LANDSCAPE_API void SetLODBias(int32 InLODBias);
+
+	void SetNaniteActive(bool bValue);
+
+	inline bool IsNaniteActive() const
+	{
+		return bNaniteActive;
+	}
 
 protected:
 

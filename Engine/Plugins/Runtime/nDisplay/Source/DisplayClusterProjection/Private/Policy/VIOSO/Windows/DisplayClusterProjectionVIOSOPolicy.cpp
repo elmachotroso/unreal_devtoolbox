@@ -26,17 +26,23 @@
 // D3D11
 //-------------------------------------------------------------------------------------------------
 #if VIOSO_USE_GRAPHICS_API_D3D11
-#include "D3D11RHIPrivate.h"
-#include "D3D11Util.h"
+#include "ID3D11DynamicRHI.h"
 #endif // VIOSO_USE_GRAPHICS_API_D3D11
 
 //-------------------------------------------------------------------------------------------------
 // D3D12
 //-------------------------------------------------------------------------------------------------
 #if VIOSO_USE_GRAPHICS_API_D3D12
-#include "D3D12RHIPrivate.h"
-#include "D3D12Util.h"
+#include "ID3D12DynamicRHI.h"
 #endif // VIOSO_USE_GRAPHICS_API_D3D12
+
+int32 GDisplayClusterProjectionVIOSOPolicyEnableNearClippingPlane = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterProjectionVIOSOPolicyEnableNearClippingPlane(
+	TEXT("nDisplay.render.projection.EnableNearClippingPlane.vioso"),
+	GDisplayClusterProjectionVIOSOPolicyEnableNearClippingPlane,
+	TEXT("Enable NearClippingPlane for VIOSO (0 - disable).\n"),
+	ECVF_RenderThreadSafe
+);
 
 #if VIOSO_USE_GRAPHICS_API_D3D11
 /**
@@ -53,8 +59,8 @@ public:
 		DepthStencilView = NULL;
 
 
-		FD3D11DynamicRHI* d3d11RHI = static_cast<FD3D11DynamicRHI*>(GDynamicRHI);
-		DeviceContext = d3d11RHI ? d3d11RHI->GetDeviceContext() : nullptr;
+		ID3D11DynamicRHI* D3D11RHI = GDynamicRHI ? GetDynamicRHI<ID3D11DynamicRHI>() : nullptr;
+		DeviceContext = D3D11RHI ? D3D11RHI->RHIGetDeviceContext() : nullptr;
 
 		if (DeviceContext)
 		{
@@ -98,8 +104,7 @@ public:
 		if (DeviceContext)
 		{
 			// Set RTV
-			FD3D11TextureBase* DestTextureD3D11RHI = static_cast<FD3D11TextureBase*>(RenderTargetTexture->GetTextureBaseRHI());
-			ID3D11RenderTargetView* DestTextureRTV = DestTextureD3D11RHI->GetRenderTargetView(0, -1);
+			ID3D11RenderTargetView* DestTextureRTV = GetID3D11DynamicRHI()->RHIGetRenderTargetView(RenderTargetTexture, 0, -1);
 			DeviceContext->OMSetRenderTargets(1, &DestTextureRTV, nullptr);
 
 			// Set viewport
@@ -137,25 +142,9 @@ private:
 //////////////////////////////////////////////////////////////////////////////////////////////
 // FDisplayClusterProjectionVIOSOPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
-FDisplayClusterProjectionVIOSOPolicy::FDisplayClusterProjectionVIOSOPolicy(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
+FDisplayClusterProjectionVIOSOPolicy::FDisplayClusterProjectionVIOSOPolicy(const FString& ProjectionPolicyId, const FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
 	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
 {
-	FString RHIName = GDynamicRHI->GetName();
-
-	// Create warper for view
-	if (RHIName == DisplayClusterProjectionStrings::rhi::D3D11)
-	{
-		RenderDevice = ERenderDevice::D3D11;
-	}
-	else
-	if (RHIName == DisplayClusterProjectionStrings::rhi::D3D12)
-	{
-		RenderDevice = ERenderDevice::D3D12;
-	}
-	else
-	{
-		UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("VIOSO warp projection not supported by '%s' rhi"),*RHIName);
-	}
 }
 
 FDisplayClusterProjectionVIOSOPolicy::~FDisplayClusterProjectionVIOSOPolicy()
@@ -163,7 +152,14 @@ FDisplayClusterProjectionVIOSOPolicy::~FDisplayClusterProjectionVIOSOPolicy()
 	ImplRelease();
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::HandleStartScene(class IDisplayClusterViewport* InViewport)
+
+const FString& FDisplayClusterProjectionVIOSOPolicy::GetType() const
+{
+	static const FString Type(DisplayClusterProjectionStrings::projection::VIOSO);
+	return Type;
+}
+
+bool FDisplayClusterProjectionVIOSOPolicy::HandleStartScene(IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());	
 
@@ -182,17 +178,12 @@ bool FDisplayClusterProjectionVIOSOPolicy::HandleStartScene(class IDisplayCluste
 	InitializeOriginComponent(InViewport, ViosoConfigData.OriginCompId);
 
 	Views.AddDefaulted(2);
-	//ViewportSize = InViewportSize;
 
 	// Initialize data for all views
 	FScopeLock lock(&DllAccessCS);
-	for (FViewData& ViewIt : Views)
+	for (TSharedPtr<FDisplayClusterProjectionVIOSOPolicyViewData, ESPMode::ThreadSafe>& ViewIt : Views)
 	{
-		if (!ViewIt.Initialize(RenderDevice, ViosoConfigData))
-		{
-			UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("VIOSO not initialized"));
-			return false;
-		}
+		ViewIt = MakeShared<FDisplayClusterProjectionVIOSOPolicyViewData>();
 	}
 
 	UE_LOG(LogDisplayClusterProjectionVIOSO, Verbose, TEXT("VIOSO policy has been initialized: %s"), *ViosoConfigData.ToString());
@@ -200,7 +191,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::HandleStartScene(class IDisplayCluste
 	return true;
 }
 
-void FDisplayClusterProjectionVIOSOPolicy::HandleEndScene(class IDisplayClusterViewport* InViewport)
+void FDisplayClusterProjectionVIOSOPolicy::HandleEndScene(IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
 
@@ -213,15 +204,20 @@ void FDisplayClusterProjectionVIOSOPolicy::ImplRelease()
 
 	// Destroy VIOSO for all views
 	FScopeLock lock(&DllAccessCS);
-	for (FViewData& ViewIt : Views)
-	{
-		ViewIt.DestroyVIOSO();
-	}
+	Views.Reset();
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
+bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float InNCP, const float InFCP)
 {
-	check(Views.Num() > (int32)InContextNum);
+	check(Views.IsValidIndex(InContextNum));
+	TSharedPtr<FDisplayClusterProjectionVIOSOPolicyViewData, ESPMode::ThreadSafe>& CurrentView = Views[InContextNum];
+	if (!CurrentView.IsValid())
+	{
+		return false;
+	}
+
+	const float NCP = GDisplayClusterProjectionVIOSOPolicyEnableNearClippingPlane ? InNCP : 1;
+	const float FCP = GDisplayClusterProjectionVIOSOPolicyEnableNearClippingPlane ? InFCP : 1;
 
 	// Get view location in local space
 	const USceneComponent* const OriginComp = GetOriginComp();
@@ -234,9 +230,9 @@ bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport
 
 	// Get view prj data from VIOSO
 	FScopeLock lock(&DllAccessCS);
-	if (!Views[InContextNum].UpdateVIOSO(InViewport, InContextNum, LocalEyeOrigin, LocalRotator, WorldToMeters, NCP, FCP))
+	if (!CurrentView->UpdateVIOSO(InViewport, InContextNum, LocalEyeOrigin, LocalRotator, WorldToMeters, NCP, FCP))
 	{
-		if (Views[InContextNum].IsValid() && !FDisplayClusterProjectionPolicyBase::IsEditorOperationMode(InViewport))
+		if (!FDisplayClusterProjectionPolicyBase::IsEditorOperationMode(InViewport))
 		{
 			// Vioso api used, but failed inside math. The config base matrix or vioso geometry is invalid
 			UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("Couldn't Calculate View for VIOSO viewport '%s'"), *InViewport->GetId());
@@ -246,17 +242,23 @@ bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport
 	}
 
 	// Transform rotation to world space
-	InOutViewRotation = World2LocalTransform.TransformRotation(Views[InContextNum].ViewRotation.Quaternion()).Rotator();
-	InOutViewLocation = World2LocalTransform.TransformPosition(Views[InContextNum].ViewLocation);
+	InOutViewRotation = World2LocalTransform.TransformRotation(CurrentView->ViewRotation.Quaternion()).Rotator();
+	InOutViewLocation = World2LocalTransform.TransformPosition(CurrentView->ViewLocation);
 
 	return true;
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::GetProjectionMatrix(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix)
+bool FDisplayClusterProjectionVIOSOPolicy::GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix)
 {
 	check(IsInGameThread());
+	check(Views.IsValidIndex(InContextNum));
+	TSharedPtr<FDisplayClusterProjectionVIOSOPolicyViewData, ESPMode::ThreadSafe>& CurrentView = Views[InContextNum];
+	if (!CurrentView.IsValid())
+	{
+		return false;
+	}
 
-	OutPrjMatrix = Views[InContextNum].ProjectionMatrix;
+	OutPrjMatrix = CurrentView->ProjectionMatrix;
 	
 	return true;
 }
@@ -266,7 +268,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::IsWarpBlendSupported()
 	return true;
 }
 
-void FDisplayClusterProjectionVIOSOPolicy::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy)
+void FDisplayClusterProjectionVIOSOPolicy::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const IDisplayClusterViewportProxy* InViewportProxy)
 {
 	check(IsInRenderingThread());
 
@@ -277,7 +279,7 @@ void FDisplayClusterProjectionVIOSOPolicy::ApplyWarpBlend_RenderThread(FRHIComma
 	}
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy)
+bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const IDisplayClusterViewportProxy* InViewportProxy)
 {
 	check(IsInRenderingThread());
 
@@ -296,6 +298,8 @@ bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHIC
 		}
 	}
 
+	// Get output resources with rects
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT 
 	if (!InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::AdditionalTargetableResource, OutputTextures))
 	{
 		return false;
@@ -307,47 +311,62 @@ bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHIC
 	// External SDK not use our RHI flow, call flush to finish resolve context image to input resource
 	RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
-
 	TRACE_CPUPROFILER_EVENT_SCOPE(nDisplay VIOSO::Render);
 	{
 		FScopeLock lock(&DllAccessCS);
 
 		for (int32 ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
 		{
-			if (!Views[ContextNum].RenderVIOSO_RenderThread(RHICmdList, InputTextures[ContextNum], OutputTextures[ContextNum], ViosoConfigData))
+			if (Views[ContextNum].IsValid())
 			{
-				return false;
+				if (!Views[ContextNum]->RenderVIOSO_RenderThread(RHICmdList, InputTextures[ContextNum], OutputTextures[ContextNum], ViosoConfigData))
+				{
+					return false;
+				}
 			}
 		}
 	}
 
-	// resolve warp result images from temp targetable to FrameTarget
-	return InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType_RenderThread());
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////
-// FDisplayClusterProjectionVIOSOPolicy::FViewData
-//////////////////////////////////////////////////////////////////////////////////////////////
-bool FDisplayClusterProjectionVIOSOPolicy::FViewData::IsValid()
-{
-	return bDataInitialized && bInitialized && Warper.IsValid();
-}
-
-bool FDisplayClusterProjectionVIOSOPolicy::FViewData::Initialize(ERenderDevice InRenderDevice, const FViosoPolicyConfiguration& InConfigData)
-{
-	check(IsInGameThread());
-
-	Warper.Release();
-
-	// VIOSO requre render thread resources to initialize.
-	// Store args, and initialize latter, on render thread
-	RenderDevice = InRenderDevice;
-
-	bDataInitialized = true;
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT 
 	return true;
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::FViewData::UpdateVIOSO(IDisplayClusterViewport* InViewport, const uint32 InContextNum, const FVector& LocalLocation, const FRotator& LocalRotator, const float WorldToMeters, const float NCP, const float FCP)
+//////////////////////////////////////////////////////////////////////////////////////////////
+// FDisplayClusterProjectionVIOSOPolicyViewData
+//////////////////////////////////////////////////////////////////////////////////////////////
+FDisplayClusterProjectionVIOSOPolicyViewData::FDisplayClusterProjectionVIOSOPolicyViewData()
+{
+	const ERHIInterfaceType RHIType = RHIGetInterfaceType();
+
+	// Create warper for view
+	if (RHIType == ERHIInterfaceType::D3D11)
+	{
+		RenderDevice = ERenderDevice::D3D11;
+	}
+	else if (RHIType == ERHIInterfaceType::D3D12)
+	{
+		RenderDevice = ERenderDevice::D3D12;
+	}
+	else
+	{
+		UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("VIOSO warp projection not supported by '%s' rhi"), GDynamicRHI->GetName());
+	}
+}
+
+FDisplayClusterProjectionVIOSOPolicyViewData::~FDisplayClusterProjectionVIOSOPolicyViewData()
+{
+	if (IsValid())
+	{
+		Warper.Release();
+	}
+}
+
+bool FDisplayClusterProjectionVIOSOPolicyViewData::IsValid()
+{
+	return bInitialized && Warper.IsValid();
+}
+
+bool FDisplayClusterProjectionVIOSOPolicyViewData::UpdateVIOSO(IDisplayClusterViewport* InViewport, const uint32 InContextNum, const FVector& LocalLocation, const FRotator& LocalRotator, const float WorldToMeters, const float NCP, const float FCP)
 {
 	if (IsValid())
 	{
@@ -360,7 +379,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::UpdateVIOSO(IDisplayCluste
 	return false;
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::FViewData::RenderVIOSO_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* ShaderResourceTexture, FRHITexture2D* RenderTargetTexture, const FViosoPolicyConfiguration& InConfigData)
+bool FDisplayClusterProjectionVIOSOPolicyViewData::RenderVIOSO_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* ShaderResourceTexture, FRHITexture2D* RenderTargetTexture, const FViosoPolicyConfiguration& InConfigData)
 {
 	check(IsInRenderingThread());
 
@@ -372,7 +391,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::RenderVIOSO_RenderThread(F
 		if (bRequireInitialize)
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(nDisplay Vioso::Initialize);
-			InitializeVIOSO(RenderTargetTexture, InConfigData);
+			InitializeVIOSO_RenderThread(RHICmdList, RenderTargetTexture, InConfigData);
 		}
 
 		if (IsValid())
@@ -397,29 +416,29 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::RenderVIOSO_RenderThread(F
 #ifdef VIOSO_USE_GRAPHICS_API_D3D12
 			case ERenderDevice::D3D12:
 			{
-				FD3D12Texture2D* SrcTexture2D = FD3D12DynamicRHI::ResourceCast(ShaderResourceTexture);
-				FD3D12Texture2D* DestTexture2D = FD3D12DynamicRHI::ResourceCast(RenderTargetTexture);
+				// Insert an outer query that encloses the whole batch
+				RHICmdList.EnqueueLambda([ViosoViewData = SharedThis(this), RenderTargetTexture = RenderTargetTexture, ShaderResourceTexture= ShaderResourceTexture](FRHICommandList& ExecutingCmdList)
+					{
+						ID3D12DynamicRHI* D3D12RHI = GetID3D12DynamicRHI();
+						const D3D12_CPU_DESCRIPTOR_HANDLE RTVHandle = D3D12RHI->RHIGetRenderTargetView(RenderTargetTexture);
 
-				FD3D12RenderTargetView* RTV = DestTexture2D->GetRenderTargetView(0, 0);
-				D3D12_CPU_DESCRIPTOR_HANDLE RTVHandle = RTV->GetView();
+						VWB_D3D12_RENDERINPUT RenderInput = {};
+						RenderInput.textureResource = D3D12RHI->RHIGetResource(ShaderResourceTexture);
+						RenderInput.renderTarget = D3D12RHI->RHIGetResource(RenderTargetTexture);
+						RenderInput.rtvHandlePtr = RTVHandle.ptr;
 
-				FD3D12Device* Device = DestTexture2D->GetParentDevice();
-				FD3D12CommandListHandle& hCommandList = Device->GetDefaultCommandContext().CommandListHandle;
+						//experimental: add resource barrier
+						D3D12RHI->RHITransitionResource(ExecutingCmdList, RenderTargetTexture, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
-				VWB_D3D12_RENDERINPUT RenderInput = {};
-				RenderInput.textureResource = (ID3D12Resource*)SrcTexture2D->GetNativeResource();;
-				RenderInput.renderTarget = (ID3D12Resource*)DestTexture2D->GetNativeResource();;
-				RenderInput.rtvHandlePtr = RTVHandle.ptr;
+						if (ViosoViewData->Warper.Render(&RenderInput, VWB_STATEMASK_DEFAULT_D3D12))
+						{
+							//experimental: add resource barrier
+							D3D12RHI->RHITransitionResource(ExecutingCmdList, RenderTargetTexture, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+						}
+					});
 
-				//experimental: add resource barrier
-				hCommandList.AddPendingResourceBarrier(DestTexture2D->GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+				return true;
 
-				if (Warper.Render(&RenderInput, VWB_STATEMASK_DEFAULT_D3D12))
-				{
-					//experimental: add resource barrier
-					hCommandList.AddPendingResourceBarrier(DestTexture2D->GetResource(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-					return true;
-				}
 				break;
 			}
 #endif // VIOSO_USE_GRAPHICS_API_D3D12
@@ -433,21 +452,14 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::RenderVIOSO_RenderThread(F
 	return false;
 }
 
-bool FDisplayClusterProjectionVIOSOPolicy::FViewData::InitializeVIOSO(FRHITexture2D* RenderTargetTexture, const FViosoPolicyConfiguration& InConfigData)
+bool FDisplayClusterProjectionVIOSOPolicyViewData::InitializeVIOSO_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* RenderTargetTexture, const FViosoPolicyConfiguration& InConfigData)
 {
-	if (!bDataInitialized)
-	{
-		return false;
-	}
-
 	if (bInitialized)
 	{
 		return true;
 	}
 
 	bInitialized = true;
-
-	DestroyVIOSO();
 
 	switch (RenderDevice)
 	{
@@ -469,9 +481,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::InitializeVIOSO(FRHITextur
 #if VIOSO_USE_GRAPHICS_API_D3D12
 	case ERenderDevice::D3D12:
 	{
-		FD3D12DynamicRHI* DynamicRHI = FD3D12DynamicRHI::GetD3DRHI();
-		ID3D12CommandQueue* D3D12CommandQueue = DynamicRHI->RHIGetD3DCommandQueue();
-
+		ID3D12CommandQueue* D3D12CommandQueue = GetID3D12DynamicRHI()->RHIGetCommandQueue();
 		if (Warper.Initialize(D3D12CommandQueue, InConfigData))
 		{
 			return true;
@@ -487,12 +497,4 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::InitializeVIOSO(FRHITextur
 
 	UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("Couldn't initialize VIOSO internals"));
 	return false;
-}
-
-void FDisplayClusterProjectionVIOSOPolicy::FViewData::DestroyVIOSO()
-{
-	if (IsValid())
-	{
-		Warper.Release();
-	}
 }

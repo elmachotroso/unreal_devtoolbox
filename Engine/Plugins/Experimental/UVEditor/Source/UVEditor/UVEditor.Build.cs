@@ -31,6 +31,7 @@ public class UVEditor : ModuleRules
 				"InputCore",
 				"InteractiveToolsFramework",
 				"MeshModelingToolsExp",
+				"GeometryProcessingInterfaces" // For supporting launching the UVEditor directly from Modeling Tools or elsewhere
 				
 				// ... add other public dependencies that you statically link with here ...
 			}
@@ -49,8 +50,7 @@ public class UVEditor : ModuleRules
 				"ContentBrowser",
 				"DynamicMesh",
 				"EditorFramework", // FEditorModeInfo
-				"EditorInteractiveToolsFramework",
-				"EditorStyle",
+				"EditorInteractiveToolsFramework",			
 				"EditorSubsystem",
 				"GeometryCore",
 				"LevelEditor",
@@ -62,6 +62,7 @@ public class UVEditor : ModuleRules
 				"UVEditorTools",
 				"UVEditorToolsEditorOnly",
 				"WorkspaceMenuStructure",
+				"TextureUtilitiesCommon"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

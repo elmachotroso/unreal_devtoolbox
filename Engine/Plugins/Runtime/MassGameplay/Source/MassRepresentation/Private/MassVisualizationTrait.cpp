@@ -8,6 +8,9 @@
 #include "MassRepresentationActorManagement.h"
 #include "Engine/World.h"
 #include "MassLODFragments.h"
+#include "MassActorSubsystem.h"
+#include "MassEntityUtils.h"
+
 
 UMassVisualizationTrait::UMassVisualizationTrait()
 {
@@ -39,7 +42,7 @@ UMassVisualizationTrait::UMassVisualizationTrait()
 	LODParams.DistanceToFrustumHysteresis = 0.0f;
 }
 
-void UMassVisualizationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+void UMassVisualizationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
 	// This should not be ran on NM_Server network mode
 	if (World.IsNetMode(NM_DedicatedServer))
@@ -47,14 +50,11 @@ void UMassVisualizationTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 		return;
 	}
 
-	// the following needs to be always there for mesh vis to work. Adding following fragments after already 
-	// adding Config.AdditionalDataFragments to let user configure the fragments first. Calling BuildContext.Add() 
-	// won't override any fragments that are already there
-	BuildContext.AddTag<FMassCollectLODViewerInfoTag>(); // Depends on FMassViewerInfoFragment
-	BuildContext.AddFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassViewerInfoFragment>();
+	BuildContext.RequireFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassActorFragment>();
 
-	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
-	check(EntitySubsystem);
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
 
 	UMassRepresentationSubsystem* RepresentationSubsystem = Cast<UMassRepresentationSubsystem>(World.GetSubsystemBase(RepresentationSubsystemClass));
 	if (RepresentationSubsystem == nullptr)
@@ -64,18 +64,17 @@ void UMassVisualizationTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 		check(RepresentationSubsystem);
 	}
 
-	FMassRepresentationSubsystemSharedFragment Subsystem;
-	Subsystem.RepresentationSubsystem = RepresentationSubsystem;
-	uint32 SubsystemHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(Subsystem));
-	FSharedStruct SubsystemFragment = EntitySubsystem->GetOrCreateSharedFragment<FMassRepresentationSubsystemSharedFragment>(SubsystemHash, Subsystem);
+	FMassRepresentationSubsystemSharedFragment SubsystemSharedFragment;
+	SubsystemSharedFragment.RepresentationSubsystem = RepresentationSubsystem;
+	uint32 SubsystemHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(SubsystemSharedFragment));
+	FSharedStruct SubsystemFragment = EntityManager.GetOrCreateSharedFragmentByHash<FMassRepresentationSubsystemSharedFragment>(SubsystemHash, SubsystemSharedFragment);
 	BuildContext.AddSharedFragment(SubsystemFragment);
 
 	if (!Params.RepresentationActorManagementClass)
 	{
 		UE_LOG(LogMassRepresentation, Error, TEXT("Expecting a valid class for the representation actor management"));
 	}
-	uint32 ParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(Params));
-	FConstSharedStruct ParamsFragment = EntitySubsystem->GetOrCreateConstSharedFragment<FMassRepresentationParameters>(ParamsHash, Params);
+	FConstSharedStruct ParamsFragment = EntityManager.GetOrCreateConstSharedFragment(Params);
 	ParamsFragment.Get<FMassRepresentationParameters>().ComputeCachedValues();
 	BuildContext.AddConstSharedFragment(ParamsFragment);
 
@@ -84,10 +83,11 @@ void UMassVisualizationTrait::BuildTemplate(FMassEntityTemplateBuildContext& Bui
 	RepresentationFragment.HighResTemplateActorIndex = HighResTemplateActor.Get() ? RepresentationSubsystem->FindOrAddTemplateActor(HighResTemplateActor.Get()) : INDEX_NONE;
 	RepresentationFragment.LowResTemplateActorIndex = LowResTemplateActor.Get() ? RepresentationSubsystem->FindOrAddTemplateActor(LowResTemplateActor.Get()) : INDEX_NONE;
 
-	uint32 LODParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(LODParams));
-	FConstSharedStruct LODParamsFragment = EntitySubsystem->GetOrCreateConstSharedFragment<FMassVisualizationLODParameters>(LODParamsHash, LODParams);
+	FConstSharedStruct LODParamsFragment = EntityManager.GetOrCreateConstSharedFragment(LODParams);
 	BuildContext.AddConstSharedFragment(LODParamsFragment);
-	FSharedStruct LODSharedFragment = EntitySubsystem->GetOrCreateSharedFragment<FMassVisualizationLODSharedFragment>(LODParamsHash, LODParams);
+
+	uint32 LODParamsHash = UE::StructUtils::GetStructCrc32(FConstStructView::Make(LODParams));
+	FSharedStruct LODSharedFragment = EntityManager.GetOrCreateSharedFragmentByHash<FMassVisualizationLODSharedFragment>(LODParamsHash, LODParams);
 	BuildContext.AddSharedFragment(LODSharedFragment);
 
 	BuildContext.AddFragment<FMassRepresentationLODFragment>();

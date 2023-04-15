@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 #include "Misc/TVariant.h"
 #include "Templates/Function.h"
+#include "Templates/Identity.h"
 #include "Templates/SharedPointer.h"
 #include "Delegates/Delegate.h"
 
@@ -111,10 +112,24 @@ public:
 	 * @param  InFuncPtr Member function to bind.  The function's structure (return value, arguments, etc) must match IBoundAttributeDelegate's definition.
 	 */
 	template <typename... VarTypes >
-	UE_NODISCARD static TAttribute Create( typename FGetter::template FStaticDelegate< VarTypes... >::FuncType InFuncPtr, VarTypes... Vars )
+	UE_NODISCARD static TAttribute CreateStatic( TIdentity_T< typename FGetter::template TFuncPtr< VarTypes... > > InFuncPtr, VarTypes... Vars )
 	{
 		const bool bExplicitConstructor = true;
 		return TAttribute( FGetter::CreateStatic( InFuncPtr, Vars... ), bExplicitConstructor );
+	}
+
+	/**
+	 * Creates an attribute by binding an arbitrary function that will be called to generate this attribute's value on demand.
+	 * After binding, the attribute will no longer have a value that can be accessed directly, and instead the bound
+	 * function will always be called to generate the value.
+	 *
+	 * @param  InFuncPtr Member function to bind.  The function's structure (return value, arguments, etc) must match IBoundAttributeDelegate's definition.
+	 */
+	template <typename FuncPtrType, typename... VarTypes >
+	UE_NODISCARD static TAttribute CreateStatic(FuncPtrType&& InFuncPtr, VarTypes... Vars)
+	{
+		const bool bExplicitConstructor = true;
+		return TAttribute(FGetter::CreateStatic(InFuncPtr, MoveTemp(Vars)...), bExplicitConstructor);
 	}
 
 	/**
@@ -284,7 +299,7 @@ public:
 	 * @param  InFuncPtr	Function to bind.  The function's structure (return value, arguments, etc) must match IBoundAttributeDelegate's definition.
 	 */
 	template < typename... VarTypes >
-	void BindStatic( typename FGetter::template FStaticDelegate< VarTypes... >::FFuncPtr InFuncPtr, VarTypes... Vars )
+	void BindStatic( TIdentity_T< typename FGetter::template TFuncPtr< VarTypes... > > InFuncPtr, VarTypes... Vars )
 	{
 		bIsSet = true;
 		Getter.BindStatic( InFuncPtr, Vars... );

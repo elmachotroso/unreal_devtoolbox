@@ -4,9 +4,6 @@
 
 #include "Engine/BlueprintGeneratedClass.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #include "ScriptBlueprintGeneratedClass.generated.h"
 
 class UScriptBlueprintGeneratedClass;
@@ -151,7 +148,7 @@ public:
 
 	/** Script-generated properties */
 	UPROPERTY()
-	TArray<UProperty*> ScriptProperties_DEPRECATED;
+	TArray<TObjectPtr<UProperty>> ScriptProperties_DEPRECATED;
 	TArray<TFieldPath<FProperty>> ScriptProperties;
 
 	virtual void PurgeClass(bool bRecompilingOnLoad) override;
@@ -185,5 +182,3 @@ public:
 
 	virtual void Serialize(FArchive& Ar) override;
 };
-
-#include "UObject/DefineUPropertyMacros.h"

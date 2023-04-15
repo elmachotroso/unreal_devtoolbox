@@ -42,6 +42,7 @@
 #include "LauncherPlatformModule.h"
 #include "SPrimaryButton.h"
 #include "Styling/StyleColors.h"
+#include "Styling/AppStyle.h"
 
 
 #define LOCTEXT_NAMESPACE "GameProjectGeneration"
@@ -299,7 +300,7 @@ private:
 		{
 			return ItemPtr->Thumbnail.Get();
 		}
-		return FEditorStyle::GetBrush("UnrealDefaultThumbnail");
+		return FAppStyle::GetBrush("UnrealDefaultThumbnail");
 	}
 	
 };
@@ -703,7 +704,7 @@ TSharedRef<SWidget> SProjectDialog::MakeTemplateProjectView()
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+					.TextStyle(FAppStyle::Get(), "DialogButtonText")
 					.Font(FAppStyle::Get().GetFontStyle("HeadingExtraSmall"))
 					.ColorAndOpacity(FAppStyle::Get().GetSlateColor("Colors.White"))
 					.Text(this, &SProjectDialog::GetSelectedTemplateProperty, &FTemplateItem::Name)
@@ -738,7 +739,7 @@ TSharedRef<SWidget> SProjectDialog::MakeTemplateProjectView()
 								+ SVerticalBox::Slot()
 								[
 									SNew(STextBlock)
-									.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+									.TextStyle(FAppStyle::Get(), "DialogButtonText")
 									.Text(LOCTEXT("ProjectTemplateAssetTypes", "Asset Type References"))
 								]
 								+ SVerticalBox::Slot()
@@ -759,7 +760,7 @@ TSharedRef<SWidget> SProjectDialog::MakeTemplateProjectView()
 								+ SVerticalBox::Slot()
 								[
 									SNew(STextBlock)
-									.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+									.TextStyle(FAppStyle::Get(), "DialogButtonText")
 									.Text(LOCTEXT("ProjectTemplateClassTypes", "Class Type References"))
 								]
 								+ SVerticalBox::Slot()
@@ -786,6 +787,7 @@ TSharedRef<SWidget> SProjectDialog::MakeHybridView(EProjectDialogModeMode Mode)
 
 	SelectedHardwareClassTarget = EHardwareClass::Desktop;
 	SelectedGraphicsPreset = EGraphicsPreset::Maximum;
+	bIsStarterContentAvailable = true;
 
 	// Find all template projects
 	Templates = FindTemplateProjects();
@@ -878,7 +880,7 @@ TSharedRef<SWidget> SProjectDialog::MakeProjectOptionsWidget()
 			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
 			[
 				SNew(STextBlock)	
-				.TextStyle(FEditorStyle::Get(), "DialogButtonText")
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
 				.Text(LOCTEXT("ProjectDefaults", "Project Defaults"))
 			]
 		]
@@ -1010,15 +1012,15 @@ TSharedRef<SWidget> SProjectDialog::MakeProjectOptionsWidget()
 	if (!HiddenSettings.Contains(ETemplateSetting::StarterContent))
 	{
 		FProjectInformation ProjectInfo = CreateProjectInfo();
+		bIsStarterContentAvailable = GameProjectUtils::IsStarterContentAvailableForProject(ProjectInfo);
 
-		const bool bIsStarterContentAvailable = GameProjectUtils::IsStarterContentAvailableForProject(ProjectInfo);
 		ProjectOptionsBox->AddSlot()
 			.Padding(0.0f, 8.0f, 0.0f, 0.0f)
 			.AutoHeight()
 			[
 				SNew(SHorizontalBox)
 				.ToolTipText(LOCTEXT("CopyStarterContent_ToolTip", "Enable to include an additional content pack containing simple placeable meshes with basic materials and textures.\nYou can also add the Starter Content to your project later using the Content Browser."))
-				.IsEnabled(bIsStarterContentAvailable)
+				.IsEnabled(this, &SProjectDialog::IsStarterContentAvailable)
 				+ SHorizontalBox::Slot()
 				.Padding(0.0f, 0.0f, 8.0f, 0.0f)
 				.VAlign(VAlign_Center)
@@ -1058,7 +1060,7 @@ TSharedRef<SWidget> SProjectDialog::MakeProjectOptionsWidget()
 			[
 				// Warning when enabled for mobile, since the current starter content is bad for mobile
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Warning"))
+				.Image(FAppStyle::GetBrush("Icons.Warning"))
 				.ToolTipText(this, &SNewProjectWizard::GetStarterContentWarningTooltip)
 				.Visibility(this, &SNewProjectWizard::GetStarterContentWarningVisibility)
 			];
@@ -1072,12 +1074,12 @@ TSharedRef<SWidget> SProjectDialog::MakeProjectOptionsWidget()
 	{
 		TArray<SDecoratedEnumCombo<int32>::FComboOption> VirtualRealityOptions;
 		VirtualRealityOptions.Add(SDecoratedEnumCombo<int32>::FComboOption(
-			0, FSlateIcon(FEditorStyle::GetStyleSetName(), "GameProjectDialog.XRDisabled"),
+			0, FSlateIcon(FAppStyle::GetAppStyleSetName(), "GameProjectDialog.XRDisabled"),
 			LOCTEXT("XRDisabled", "XR Disabled")));
 
 		VirtualRealityOptions.Add(SDecoratedEnumCombo<int32>::FComboOption(
 			1, 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "GameProjectDialog.XREnabled"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GameProjectDialog.XREnabled"),
 			LOCTEXT("XREnabled", "XR Enabled")));
 
 		TSharedRef<SDecoratedEnumCombo<int32>> Enum = SNew(SDecoratedEnumCombo<int32>, MoveTemp(VirtualRealityOptions))
@@ -1088,7 +1090,7 @@ TSharedRef<SWidget> SProjectDialog::MakeProjectOptionsWidget()
 		TSharedRef<SRichTextBlock> Description = SNew(SRichTextBlock)
 			.Text(LOCTEXT("ProjectDialog_XREnabledDescription", "Choose if XR should be enabled in the new project."))
 			.AutoWrapText(true)
-			.DecoratorStyleSet(&FEditorStyle::Get());
+			.DecoratorStyleSet(&FAppStyle::Get());
 	}
 #endif 
 
@@ -1258,6 +1260,9 @@ void SProjectDialog::OnSetBlueprintOrCppIndex(int32 Index)
 {
 	bShouldGenerateCode = Index == 1;
 	UpdateProjectFileValidity();
+	FProjectInformation ProjectInfo = CreateProjectInfo();
+	bIsStarterContentAvailable = GameProjectUtils::IsStarterContentAvailableForProject(ProjectInfo);
+	bCopyStarterContent &= bIsStarterContentAvailable;
 }
 
 void SProjectDialog::SetHardwareClassTarget(EHardwareClass InHardwareClass)
@@ -1496,8 +1501,8 @@ TMap<FName, TArray<TSharedPtr<FTemplateItem>> > SProjectDialog::FindTemplateProj
 		BlankTemplate->Description = LOCTEXT("BlankProjectDescription", "A clean empty project with no code and default settings.");
 		BlankTemplate->Key = TEXT("Blank");
 		BlankTemplate->SortKey = TEXT("_1");
-		BlankTemplate->Thumbnail = MakeShareable(new FSlateBrush(*FEditorStyle::GetBrush("GameProjectDialog.BlankProjectThumbnail")));
-		BlankTemplate->PreviewImage = MakeShareable(new FSlateBrush(*FEditorStyle::GetBrush("GameProjectDialog.BlankProjectPreview")));
+		BlankTemplate->Thumbnail = MakeShareable(new FSlateBrush(*FAppStyle::GetBrush("GameProjectDialog.BlankProjectThumbnail")));
+		BlankTemplate->PreviewImage = MakeShareable(new FSlateBrush(*FAppStyle::GetBrush("GameProjectDialog.BlankProjectPreview")));
 		BlankTemplate->BlueprintProjectFile = TEXT("");
 		BlankTemplate->CodeProjectFile = TEXT("");
 		BlankTemplate->bIsEnterprise = false;
@@ -1628,23 +1633,19 @@ FProjectInformation SProjectDialog::CreateProjectInfo() const
 	ProjectInfo.TemplateCategory = ActiveCategory;
 	ProjectInfo.bIsEnterpriseProject = SelectedTemplate->bIsEnterprise;
 	ProjectInfo.bIsBlankTemplate = SelectedTemplate->bIsBlankTemplate;
-	ProjectInfo.bForceExtendedLuminanceRange = SelectedTemplate->bIsBlankTemplate;
 
-	if (bCopyStarterContent)
+	if (bShouldGenerateCode)
 	{
-		if (bShouldGenerateCode)
+		if (SelectedTemplate->CodeTemplateDefs != nullptr)
 		{
-			if (SelectedTemplate->CodeTemplateDefs != nullptr)
-			{
-				ProjectInfo.StarterContent = SelectedTemplate->CodeTemplateDefs->StarterContent;
-			}
+			ProjectInfo.StarterContent = SelectedTemplate->CodeTemplateDefs->StarterContent;
 		}
-		else
+	}
+	else
+	{
+		if (SelectedTemplate->BlueprintTemplateDefs != nullptr)
 		{
-			if (SelectedTemplate->BlueprintTemplateDefs != nullptr)
-			{
-				ProjectInfo.StarterContent = SelectedTemplate->BlueprintTemplateDefs->StarterContent;
-			}
+			ProjectInfo.StarterContent = SelectedTemplate->BlueprintTemplateDefs->StarterContent;
 		}
 	}
 
@@ -2043,7 +2044,8 @@ void SProjectDialog::UpdateProjectFileValidity()
 					}
 					else
 					{
-						LastGlobalValidityErrorText = FText::Format(LOCTEXT("NoCompilerFound", "In order to use a C++ template, you must first install or disable {0}."), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
+						LastGlobalValidityErrorText = FText::Format(LOCTEXT("MissingIDEProjectDialog", "Your IDE {0} is missing or incorrectly configured, please consider using {1}"),
+			FSourceCodeNavigation::GetSelectedSourceCodeIDE(), FSourceCodeNavigation::GetSuggestedSourceCodeIDE());
 					}
 				}
 				else if (!FDesktopPlatformModule::Get()->IsUnrealBuildToolAvailable())

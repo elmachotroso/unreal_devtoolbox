@@ -6,34 +6,33 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using EpicGames.Horde.Storage;
 using Jupiter;
-using Jupiter.Implementation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace Horde.Storage.Implementation
 {
+    public class ReplicationState
+    {
+        public List<IReplicator> Replicators { get; } = new List<IReplicator>();
+    }
+
     // ReSharper disable once ClassNeverInstantiated.Global
-    public class ReplicationService : PollingService<ReplicationService.ReplicationState>, IDisposable
+    public class ReplicationService : PollingService<ReplicationState>
     {
         private readonly IOptionsMonitor<ReplicationSettings> _settings;
         private readonly ILeaderElection _leaderElection;
         private readonly ILogger _logger = Log.ForContext<ReplicationService>();
         private readonly Dictionary<string, Task<bool>> _currentReplications = new Dictionary<string, Task<bool>>();
 
-        public class ReplicationState
-        {
-            public List<IReplicator> Replicators { get; } = new List<IReplicator>();
-        }
-
-        public override bool ShouldStartPolling()
+        protected override bool ShouldStartPolling()
         {
             return _settings.CurrentValue.Enabled;
         }
 
-        public ReplicationService(IOptionsMonitor<ReplicationSettings> settings, IServiceProvider provider, ILeaderElection leaderElection) :
-            base(serviceName: nameof(ReplicationService), TimeSpan.FromSeconds(settings.CurrentValue.ReplicationPollFrequencySeconds), new ReplicationState())
+        public ReplicationService(IOptionsMonitor<ReplicationSettings> settings, IServiceProvider provider, ILeaderElection leaderElection) : base(serviceName: nameof(ReplicationService), TimeSpan.FromSeconds(settings.CurrentValue.ReplicationPollFrequencySeconds), new ReplicationState(), startAtRandomTime: true)
         {
             _settings = settings;
             _leaderElection = leaderElection;
@@ -43,7 +42,7 @@ namespace Horde.Storage.Implementation
             DirectoryInfo di = new DirectoryInfo(settings.CurrentValue.StateRoot);
             Directory.CreateDirectory(di.FullName);
 
-            foreach (var replicator in settings.CurrentValue.Replicators)
+            foreach (ReplicatorSettings replicator in settings.CurrentValue.Replicators)
             {
                 try
                 {
@@ -54,19 +53,20 @@ namespace Horde.Storage.Implementation
                     _logger.Error(e, "Failed to create replicator {Name}", replicator.ReplicatorName);
                 }
             }
-
         }
 
-        private void OnLeaderChanged(object? sender, ILeaderElection.OnLeaderChangedEventArgs e)
+        private void OnLeaderChanged(object? sender, OnLeaderChangedEventArgs e)
         {
             if (e.IsLeader)
+            {
                 return;
+            }
 
             // if we are no longer the leader cancel any pending replications
-            foreach (IReplicator replicator in State.Replicators)
-            {
-                //TODO: Cancel replications
-            }
+            // TODO: Reset replication token if we are the new leader
+            /*Task[] stopReplicatingTasks = State.Replicators.Select(replicator => replicator.StopReplicating()).ToArray();
+            Task.WaitAll(stopReplicatingTasks);*/
+
         }
 
         private static IReplicator CreateReplicator(ReplicatorSettings replicatorSettings, IServiceProvider provider)
@@ -78,7 +78,7 @@ namespace Horde.Storage.Implementation
                 case ReplicatorVersion.Refs:
                     return ActivatorUtilities.CreateInstance<RefsReplicator>(provider, replicatorSettings);
                 default:
-                    throw new ArgumentOutOfRangeException();
+                    throw new NotImplementedException($"Unknown replicator version: {replicatorSettings.Version}");
             }
         }
 
@@ -96,6 +96,8 @@ namespace Horde.Storage.Implementation
                 return false;
             }
 
+            _logger.Information("Polling for new replication to start");
+
             foreach (IReplicator replicator in state.Replicators)
             {
                 if (_currentReplications.TryGetValue(replicator.Info.ReplicatorName, out Task<bool>? replicationTask))
@@ -111,16 +113,21 @@ namespace Horde.Storage.Implementation
                             continue;
                         }
                      
+                        DateTime time = DateTime.Now;
+                        _logger.Information("Joining replication task for replicator {Name}", replicator.Info.ReplicatorName);
                         await replicationTask;
+                        _logger.Information("Waited for replication task {Name} for {Duration} seconds", replicator.Info.ReplicatorName, (DateTime.Now - time).TotalSeconds);
                     }
                     else
                     {
+                        _logger.Debug("Replication of replicator: {Name} is still running", replicator.Info.ReplicatorName);
                         // if the replication is still running let it continue to run
                         continue;
                     }
                 }
 
                 // start a new run of the replication
+                _logger.Debug("Triggering new replication of replicator: {Name}", replicator.Info.ReplicatorName);
                 Task<bool> newReplication = replicator.TriggerNewReplications();
                 _currentReplications[replicator.Info.ReplicatorName] = newReplication;
             }
@@ -137,17 +144,14 @@ namespace Horde.Storage.Implementation
         protected override async Task OnStopping(ReplicationState state)
         {
             await Task.WhenAll(state.Replicators.Select(replicator => replicator.StopReplicating()).ToArray());
-        }
 
-        public void Dispose()
-        {
             // we should have been stopped first so this should not be needed, but to make sure state is stored we dispose of it again
             foreach (IReplicator replicator in State.Replicators)
             {
                 replicator.Dispose();
             }
         }
-
+        
         public IEnumerable<IReplicator> GetReplicators(NamespaceId ns)
         {
             return State.Replicators

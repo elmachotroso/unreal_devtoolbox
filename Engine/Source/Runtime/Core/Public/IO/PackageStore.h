@@ -2,14 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "CoreMinimal.h"
-#include "PackageId.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/SecureHash.h"
+#include "PackageId.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
 class FArchive;
-class FStructuredArchiveSlot;
 class FCbObject;
 class FCbWriter;
+class FStructuredArchiveSlot;
 
 /**
  * Package export information.
@@ -32,9 +40,9 @@ struct FPackageStoreExportInfo
 enum class EPackageStoreEntryStatus
 {
 	None,
-	Ok,
-	Pending,
 	Missing,
+	Pending,
+	Ok,
 };
 
 /**
@@ -48,6 +56,8 @@ struct FPackageStoreEntry
 #if WITH_EDITOR
 	FName UncookedPackageName;
 	uint8 UncookedPackageHeaderExtension; // TODO: Can't include PackagePath.h
+	FPackageStoreExportInfo OptionalSegmentExportInfo;
+	TArrayView<const FPackageId> OptionalSegmentImportedPackageIds;
 #endif
 };
 
@@ -58,7 +68,7 @@ enum class EPackageStoreEntryFlags : uint32
 {
 	None		= 0,
 	Redirected	= 0x01,
-	Optional	= 0x02,
+	AutoOptional= 0x02,
 };
 ENUM_CLASS_FLAGS(EPackageStoreEntryFlags);
 
@@ -83,19 +93,23 @@ struct FPackageStoreEntryResource
 	FPackageStoreExportInfo ExportInfo;
 	/** Imported package IDs. */
 	TArray<FPackageId> ImportedPackageIds;
-	/** Referenced shader map hashes. */
+	/** Referenced shader map hashes - must be sorted in order to preserve determinism across builds. */
 	TArray<FSHAHash> ShaderMapHashes;
+	/** The editor data package export information. */
+	FPackageStoreExportInfo OptionalSegmentExportInfo;
+	/** Editor data imported package IDs. */
+	TArray<FPackageId> OptionalSegmentImportedPackageIds;
 
 	/** Returns the package ID. */
 	FPackageId GetPackageId() const
 	{
-		return FPackageId::FromName(PackageName, IsOptional());
+		return FPackageId::FromName(PackageName);
 	}
 
 	/** Returns the source package ID. */
 	FPackageId GetSourcePackageId() const
 	{
-		return SourcePackageName.IsNone() ? FPackageId() : FPackageId::FromName(SourcePackageName, IsOptional());
+		return SourcePackageName.IsNone() ? FPackageId() : FPackageId::FromName(SourcePackageName);
 	}
 
 	FName GetSourcePackageName() const
@@ -109,10 +123,10 @@ struct FPackageStoreEntryResource
 		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::Redirected); 
 	}
 
-	/** Returns whether this package is optional. */
-	bool IsOptional() const
+	/** Returns whether this package was saved as auto optional */
+	bool IsAutoOptional() const
 	{
-		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::Optional);
+		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::AutoOptional);
 	}
 
 	CORE_API friend FArchive& operator<<(FArchive& Ar, FPackageStoreEntryResource& PackageStoreEntry);
@@ -125,7 +139,7 @@ struct FPackageStoreEntryResource
 /**
  * Stores information about available packages that can be loaded.
  */
-class IPackageStore
+class UE_DEPRECATED(5.1, "Use IPackageStoreBackend instead") IPackageStore
 {
 public:
 	/* Destructor. */
@@ -153,8 +167,10 @@ public:
 	virtual FEntriesAddedEvent& OnPendingEntriesAdded() = 0;
 };
 
-class FPackageStoreBase
+class UE_DEPRECATED(5.1, "Use IPackageStoreBackend instead") FPackageStoreBase
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: public IPackageStore
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
 public:
 	virtual FEntriesAddedEvent& OnPendingEntriesAdded() override
@@ -164,4 +180,77 @@ public:
 
 protected:
 	FEntriesAddedEvent PendingEntriesAdded;
+};
+
+class FPackageStoreBackendContext
+{
+public:
+	/* Event broadcasted when pending entries are completed and added to the package store */
+	DECLARE_EVENT(FPackageStoreBackendContext, FPendingEntriesAddedEvent);
+	FPendingEntriesAddedEvent PendingEntriesAdded;
+};
+
+/**
+ * Package store backend interface.
+ */
+class IPackageStoreBackend
+{
+public:
+	/* Destructor. */
+	virtual ~IPackageStoreBackend() { }
+
+	/** Called when the backend is mounted */
+	virtual void OnMounted(TSharedRef<const FPackageStoreBackendContext> Context) = 0;
+
+	/** Called when the loader enters a package store read scope. */
+	virtual void BeginRead() = 0;
+
+	/** Called when the loader exits a package store read scope. */
+	virtual void EndRead() = 0;
+
+	/* Returns the package store entry data with export info and imported packages for the specified package ID. */
+	virtual EPackageStoreEntryStatus GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry) = 0;
+
+	/* Returns the redirected package ID and source package name for the specified package ID if it's being redirected. */
+	virtual bool GetPackageRedirectInfo(FPackageId PackageId, FName& OutSourcePackageName, FPackageId& OutRedirectedToPackageId) = 0;
+};
+
+/**
+ * Stores information about available packages that can be loaded.
+ */
+class FPackageStore
+{
+public:
+	CORE_API static FPackageStore& Get();
+
+	/* Mount a package store backend. */
+	CORE_API void Mount(TSharedRef<IPackageStoreBackend> Backend);
+
+	/* Returns the package store entry data with export info and imported packages for the specified package ID. */
+	CORE_API EPackageStoreEntryStatus GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry);
+
+	/* Returns the redirected package ID and source package name for the specified package ID if it's being redirected. */
+	CORE_API bool GetPackageRedirectInfo(FPackageId PackageId, FName& OutSourcePackageName, FPackageId& OutRedirectedToPackageId);
+
+	CORE_API FPackageStoreBackendContext::FPendingEntriesAddedEvent& OnPendingEntriesAdded();
+
+private:
+	FPackageStore();
+
+	friend class FPackageStoreReadScope;
+
+	TSharedRef<FPackageStoreBackendContext> BackendContext;
+	TArray<TSharedRef<IPackageStoreBackend>> Backends;
+
+	static thread_local int32 ThreadReadCount;
+};
+
+class FPackageStoreReadScope
+{
+public:
+	CORE_API FPackageStoreReadScope(FPackageStore& InPackageStore);
+	CORE_API ~FPackageStoreReadScope();
+
+private:
+	FPackageStore& PackageStore;
 };

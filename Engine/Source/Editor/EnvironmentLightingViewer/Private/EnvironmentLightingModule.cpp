@@ -1,19 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EnvironmentLightingModule.h"
-#include "SEnvironmentLightingViewer.h"
-#include "Widgets/SWidget.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+
+#include "Delegates/Delegate.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
-#include "Textures/SlateIcon.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Modules/ModuleManager.h"
 #include "ISettingsModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Modules/ModuleManager.h"
+#include "SEnvironmentLightingViewer.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
 #define LOCTEXT_NAMESPACE "EnvironmentLightingViewer"
 
@@ -44,7 +46,7 @@ void FEnvironmentLightingViewerModule::StartupModule()
 		.SetDisplayName(NSLOCTEXT("EnvironmentLightingViewerApp", "TabTitle", "EnvironmentLighting Viewer"))
 		.SetTooltipText(NSLOCTEXT("EnvironmentLightingViewerApp", "TooltipText", "Environment lighting window."))
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassViewer.TabIcon"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassViewer.TabIcon"));
 
 	// TODO setting module ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
 }

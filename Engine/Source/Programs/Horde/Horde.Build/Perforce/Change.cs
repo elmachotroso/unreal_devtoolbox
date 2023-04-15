@@ -1,10 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeServer.Api;
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -12,12 +7,11 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
+using EpicGames.Core;
+using Horde.Build.Users;
 
-namespace HordeServer.Models
+namespace Horde.Build.Perforce
 {
-	using UserId = ObjectId<IUser>;
-
 	/// <summary>
 	/// Summary information for a change
 	/// </summary>
@@ -47,16 +41,16 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Number">Changelist number</param>
-		/// <param name="Author">Author of the change</param>
-		/// <param name="Path">Base path for modified files</param>
-		/// <param name="Description">Changelist description</param>
-		public ChangeSummary(int Number, IUser Author, string Path, string Description)
+		/// <param name="number">Changelist number</param>
+		/// <param name="author">Author of the change</param>
+		/// <param name="path">Base path for modified files</param>
+		/// <param name="description">Changelist description</param>
+		public ChangeSummary(int number, IUser author, string path, string description)
 		{
-			this.Number = Number;
-			this.Author = Author;
-			this.Path = Path;
-			this.Description = Description;
+			Number = number;
+			Author = author;
+			Path = path;
+			Description = description;
 		}
 	}
 
@@ -115,20 +109,20 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Path"></param>
-		/// <param name="DepotPath"></param>
-		/// <param name="Revision"></param>
-		/// <param name="Length"></param>
-		/// <param name="Digest"></param>
-		/// <param name="Type"></param>
-		public ChangeFile(string Path, string DepotPath, int Revision, long Length, Md5Hash? Digest, string Type)
+		/// <param name="path"></param>
+		/// <param name="depotPath"></param>
+		/// <param name="revision"></param>
+		/// <param name="length"></param>
+		/// <param name="digest"></param>
+		/// <param name="type"></param>
+		public ChangeFile(string path, string depotPath, int revision, long length, Md5Hash? digest, string type)
 		{
-			this.Path = Path;
-			this.DepotPath = DepotPath;
-			this.Revision = Revision;
-			this.Length = Length;
-			this.Digest = Digest;
-			this.Type = Type;
+			Path = path;
+			DepotPath = depotPath;
+			Revision = revision;
+			Length = length;
+			Digest = digest;
+			Type = type;
 		}
 	}
 
@@ -141,11 +135,12 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Set of extensions to treat as code
 		/// </summary>
-		static readonly HashSet<string> CodeExtensions = new HashSet<string>
+		static readonly HashSet<string> s_codeExtensions = new HashSet<string>
 		{
 			".c",
 			".cc",
 			".cpp",
+			".inl",
 			".m",
 			".mm",
 			".rc",
@@ -194,20 +189,20 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Number">Changelist number</param>
-		/// <param name="Author">Author of the change</param>
-		/// <param name="Path">Base path for modified files</param>
-		/// <param name="Description">Changelist description</param>
-		/// <param name="Files">List of files modified, relative to the stream base</param>
-		/// <param name="Date">Date that the change was submitted</param>
-		public ChangeDetails(int Number, IUser Author, string Path, string Description, List<ChangeFile> Files, DateTime Date)
+		/// <param name="number">Changelist number</param>
+		/// <param name="author">Author of the change</param>
+		/// <param name="path">Base path for modified files</param>
+		/// <param name="description">Changelist description</param>
+		/// <param name="files">List of files modified, relative to the stream base</param>
+		/// <param name="date">Date that the change was submitted</param>
+		public ChangeDetails(int number, IUser author, string path, string description, List<ChangeFile> files, DateTime date)
 		{
-			this.Number = Number;
-			this.Author = Author;
-			this.Path = Path;
-			this.Description = Description;
-			this.Files = Files;
-			this.Date = Date;
+			Number = number;
+			Author = author;
+			Path = path;
+			Description = description;
+			Files = files;
+			Date = date;
 		}
 
 		/// <summary>
@@ -216,44 +211,44 @@ namespace HordeServer.Models
 		/// <returns>True if this change is a code change</returns>
 		public ChangeContentFlags GetContentFlags()
 		{
-			ChangeContentFlags Scope = 0;
+			ChangeContentFlags scope = 0;
 
 			// Check whether the files are code or content
-			foreach (ChangeFile File in Files)
+			foreach (ChangeFile file in Files)
 			{
-				if (CodeExtensions.Any(Extension => File.Path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase)))
+				if (s_codeExtensions.Any(extension => file.Path.EndsWith(extension, StringComparison.OrdinalIgnoreCase)))
 				{
-					Scope |= ChangeContentFlags.ContainsCode;
+					scope |= ChangeContentFlags.ContainsCode;
 				}
 				else
 				{
-					Scope |= ChangeContentFlags.ContainsContent;
+					scope |= ChangeContentFlags.ContainsContent;
 				}
 
-				if (Scope == (ChangeContentFlags.ContainsCode | ChangeContentFlags.ContainsContent))
+				if (scope == (ChangeContentFlags.ContainsCode | ChangeContentFlags.ContainsContent))
 				{
 					break;
 				}
 			}
-			return Scope;
+			return scope;
 		}
 
 		/// <summary>
 		/// Attempts to parse the Robomerge source from this commit information
 		/// </summary>
-		/// <param name="Source">On success, receives the source information</param>
+		/// <param name="source">On success, receives the source information</param>
 		/// <returns>True if the commit was merged from another stream</returns>
-		public bool TryParseRobomergeSource([NotNullWhen(true)] out (string, int)? Source)
+		public bool TryParseRobomergeSource([NotNullWhen(true)] out (string, int)? source)
 		{
-			Match Match = Regex.Match(Description, @"#ROBOMERGE-SOURCE: CL (\d+) in (//[^ ]*)/...", RegexOptions.Multiline);
-			if (Match.Success)
+			Match match = Regex.Match(Description, @"#ROBOMERGE-SOURCE: CL (\d+) in (//[^ ]*)/...", RegexOptions.Multiline);
+			if (match.Success)
 			{
-				Source = (Match.Groups[2].Value, int.Parse(Match.Groups[1].Value, CultureInfo.InvariantCulture));
+				source = (match.Groups[2].Value, Int32.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture));
 				return true;
 			}
 			else
 			{
-				Source = null;
+				source = null;
 				return false;
 			}
 		}
@@ -287,16 +282,16 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Information about a file
 		/// </summary>
-		/// <param name="DepotPath">Depot </param>
-		/// <param name="Exists"></param>
-		/// <param name="Change"></param>
-		/// <param name="Error"></param>
-		public FileSummary(string DepotPath, bool Exists, int Change, string? Error = null)
+		/// <param name="depotPath">Depot </param>
+		/// <param name="exists"></param>
+		/// <param name="change"></param>
+		/// <param name="error"></param>
+		public FileSummary(string depotPath, bool exists, int change, string? error = null)
 		{
-			this.DepotPath = DepotPath;
-			this.Exists = Exists;
-			this.Change = Change;
-			this.Error = Error;
+			DepotPath = depotPath;
+			Exists = exists;
+			Change = change;
+			Error = error;
 		}
 	}
 }

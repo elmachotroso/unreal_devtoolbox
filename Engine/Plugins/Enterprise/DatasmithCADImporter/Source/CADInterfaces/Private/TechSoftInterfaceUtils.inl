@@ -68,7 +68,7 @@ public:
 	}
 
 private:
-	void FillVertexArray(TArray<FVector>& VertexArray)
+	void FillVertexArray(TArray<FVector3f>& VertexArray)
 	{
 		using namespace CADLibrary;
 
@@ -82,10 +82,11 @@ private:
 		int32 VertexCount = TessellationBaseData->m_uiCoordSize / 3;
 		VertexArray.Reserve(VertexArray.Num() + VertexCount);
 
+		const double ScaleFactor = BodyUnit * FImportParameters::GUnitScale;
 		double* Coordinates = TessellationBaseData->m_pdCoords;
 		for (unsigned int Index = 0; Index < TessellationBaseData->m_uiCoordSize; ++Index)
 		{
-			Coordinates[Index] *= BodyUnit;
+			Coordinates[Index] *= ScaleFactor;
 		}
 
 		for (unsigned int Index = 0; Index < TessellationBaseData->m_uiCoordSize; Index += 3)
@@ -164,16 +165,25 @@ private:
 		for (unsigned int Index = 0; Index < A3DTessellationData->m_uiFaceTessSize; ++Index)
 		{
 			const A3DTessFaceData& FaceTessData = A3DTessellationData->m_psFaceTessData[Index];
+
+			uint32 FaceSetIndex = 0;
+			bool bMustProcess = FaceTessData.m_uiSizesTriangulatedSize > FaceSetIndex;
+			// don't create empty TessellationData
+			if (!bMustProcess)
+			{
+				continue;
+			}
+
 			FTessellationData& Tessellation = Faces.Emplace_GetRef();
 
 			// there is a bijection between A3DTess3DData->m_psFaceTessData and A3DTopoShellData->m_ppFaces
 			Tessellation.PatchId = Index;
 
-			Tessellation.MaterialName = FTechSoftInterface::InvalidScriptIndex;
-			if (FaceTessData.m_uiStyleIndexesSize > 0)
+			Tessellation.MaterialUId = 0;
+			if (FaceTessData.m_uiStyleIndexesSize != 0)
 			{
 				// Store the StyleIndex on the MaterialName. It will be processed after tessellation
-				Tessellation.MaterialName = FaceTessData.m_puiStyleIndexes[0];
+				Tessellation.MaterialUId = FaceTessData.m_puiStyleIndexes[0];
 			}
 
 			// Pre-allocate memory for triangles' data
@@ -190,9 +200,6 @@ private:
 
 			uint32 LastTrianguleIndex = FaceTessData.m_uiStartTriangulated;
 			LastVertexIndex = 0;
-
-			uint32 FaceSetIndex = 0;
-			bool bMustProcess = FaceTessData.m_uiSizesTriangulatedSize > FaceSetIndex;
 
 			if (bMustProcess && UsedEntitiesFlags & kA3DTessFaceDataTriangle)
 			{
@@ -354,7 +361,7 @@ private:
 		return true;
 	};
 
-	void AddNormals(const A3DDouble* Normals, const int32 Indices[3], TArray<FVector>& NormalsArray)
+	void AddNormals(const A3DDouble* Normals, const int32 Indices[3], TArray<FVector3f>& NormalsArray)
 	{
 		for (int32 Index = 0; Index < 3; ++Index)
 		{
@@ -363,7 +370,7 @@ private:
 		}
 	};
 
-	void AddTextureCoordinates(const A3DDouble* TextureCoords, const int32 Indices[3], TArray<FVector2D>& TessellationTextures)
+	void AddTextureCoordinates(const A3DDouble* TextureCoords, const int32 Indices[3], TArray<FVector2f>& TessellationTextures)
 	{
 		for (int32 Index = 0; Index < 3; ++Index)
 		{
@@ -790,7 +797,7 @@ private:
 		}
 	}
 
-	void ScaleUV(const A3DTopoFace* TopoFace, TArray<FVector2D>& TexCoordArray)
+	void ScaleUV(const A3DTopoFace* TopoFace, TArray<FVector2f>& TexCoordArray)
 	{
 		CADLibrary::TUniqueTSObj<A3DTopoFaceData> TopoFaceData(TopoFace);
 		if (!TopoFaceData.IsValid())
@@ -874,10 +881,10 @@ private:
 
 		// Texture unit is meter, Coord unit from TechSoft is mm, so TextureScale = 0.001 to convert mm into m
 		const double TextureScale = 0.01;
-		const double UScale = TextureUnit * TextureScale * LengthUMed / (Domain->m_sMax.m_dX - Domain->m_sMin.m_dX);
-		const double VScale = TextureUnit * TextureScale * LengthVMed / (Domain->m_sMax.m_dY - Domain->m_sMin.m_dY);
+		const float UScale = TextureUnit * TextureScale * LengthUMed / (Domain->m_sMax.m_dX - Domain->m_sMin.m_dX);
+		const float VScale = TextureUnit * TextureScale * LengthVMed / (Domain->m_sMax.m_dY - Domain->m_sMin.m_dY);
 
-		for (FVector2D& TexCoord : TexCoordArray)
+		for (FVector2f& TexCoord : TexCoordArray)
 		{
 			TexCoord[0] *= UScale;
 			TexCoord[1] *= VScale;
@@ -910,8 +917,6 @@ private:
 		CADLibrary::TUniqueTSObj<A3DTopoBrepDataData> TopoBrepData(A3DBrepData);
 		if (TopoBrepData.IsValid())
 		{
-
-
 			for (A3DUns32 Index = 0; Index < TopoBrepData->m_uiConnexSize; ++Index)
 			{
 				CADLibrary::TUniqueTSObj<A3DTopoConnexData> TopoConnexData(TopoBrepData->m_ppConnexes[Index]);

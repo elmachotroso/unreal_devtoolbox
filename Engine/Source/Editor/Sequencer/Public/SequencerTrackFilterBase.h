@@ -34,7 +34,7 @@ public:
 	/** Returns whether the filter supports the sequence type */
 	virtual bool SupportsSequence(UMovieSceneSequence* InSequence) const
 	{
-		static UClass* LevelSequenceClass = FindObject<UClass>(ANY_PACKAGE, TEXT("LevelSequence"), true);
+		static UClass* LevelSequenceClass = FindObject<UClass>(nullptr, TEXT("/Script/LevelSequence.LevelSequence"), true);
 		return InSequence != nullptr && (LevelSequenceClass != nullptr && InSequence->GetClass()->IsChildOf(LevelSequenceClass));
 	}
 
@@ -53,7 +53,7 @@ public:
 
 	virtual bool PassesFilterChannel(FMovieSceneChannel* InMovieSceneChannel) const { return false; }
 
-	virtual void BindCommands(TSharedRef<FUICommandList> CommandBindings, TWeakPtr<ISequencer> Sequencer) {}
+	virtual void BindCommands(TSharedRef<FUICommandList> SequencerBindings, TSharedRef<FUICommandList> CurveEditorBindings, TWeakPtr<ISequencer> Sequencer) {}
 
 protected:
 	void BroadcastChangedEvent() const { ChangedEvent.Broadcast(); }
@@ -66,6 +66,7 @@ private:
 template<typename TrackType>
 class FSequencerTrackFilter_ClassType : public FSequencerTrackFilter
 {
+public:
 	// IFilter implementation
 	virtual bool PassesFilter(FTrackFilterType InItem) const override
 	{
@@ -81,6 +82,7 @@ class FSequencerTrackFilter_ClassType : public FSequencerTrackFilter
 template<typename ComponentType>
 class FSequencerTrackFilter_ComponentType : public FSequencerTrackFilter
 {
+public:
 	// IFilter implementation
 	virtual bool PassesFilter(FTrackFilterType InItem) const override
 	{

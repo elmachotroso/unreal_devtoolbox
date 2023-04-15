@@ -7,7 +7,7 @@
 #include "LevelSnapshotsEditorStyle.h"
 #include "LevelSnapshotsEditorSettings.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "IDetailCustomization.h"
@@ -87,7 +87,15 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 {
 	WidgetWindow = InWidgetWindow;
 	CallOnCloseDelegate = CallOnClose;
-	bNameDiffersFromDefault = ULevelSnapshotsEditorSettings::Get()->IsNameOverridden();
+	
+	FSlateFontInfo NameTextFont = FAppStyle::Get().GetFontStyle("Regular");
+	NameTextFont.Size = 9;
+	
+	FSlateFontInfo OverrideNameTextFont = FAppStyle::Get().GetFontStyle("Bold");
+	OverrideNameTextFont.Size = 16;
+
+	FSlateFontInfo DescriptionTextFont = FAppStyle::Get().GetFontStyle("Bold");
+	DescriptionTextFont.Size = 10;
 	
 	ChildSlot
 	[
@@ -103,7 +111,7 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 			.VAlign(VAlign_Top)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -114,7 +122,7 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 					.VAlign(VAlign_Top)
 					[
 						SNew(STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+						.Font(NameTextFont)
 						.ColorAndOpacity(FColor(200, 200, 200))
 						.Text(NSLOCTEXT("LevelSnapshots", "CreationForm_SnapshotNameLabel", "Name"))
 					]
@@ -129,7 +137,7 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 						.HAlign(HAlign_Fill)
 						[
 							SNew(SEditableTextBox)
-							.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+							.Font(OverrideNameTextFont)
 							.BackgroundColor(FLinearColor::Transparent)
 							.ForegroundColor(FSlateColor::UseForeground())
 							.Justification(ETextJustify::Center)
@@ -150,14 +158,14 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 							.IsFocusable(false)
 							.ToolTipText(
 								NSLOCTEXT("LevelSnapshots", "CreationForm_ResetNameTooltipText", "Reset the overridden name to the one defined in Project Settings."))
-							.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+							.ButtonStyle(FAppStyle::Get(), "NoBorder")
 							.ContentPadding(0)
 							.Visibility(this, &SLevelSnapshotsEditorCreationForm::GetNameDiffersFromDefaultAsVisibility)
 							.OnClicked(this, &SLevelSnapshotsEditorCreationForm::OnResetNameClicked)
 							.Content()
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+								.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 							]
 						]
 					]
@@ -169,7 +177,7 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 			.VAlign(VAlign_Fill)
 			[
 				SNew(SMultiLineEditableTextBox)
-				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
+				.Font(DescriptionTextFont)
 				.BackgroundColor(FLinearColor(0.2f, 0.2f, 0.2f))
 				.ForegroundColor(FSlateColor::UseForeground())
 				.SelectAllTextWhenFocused(true)
@@ -186,7 +194,7 @@ void SLevelSnapshotsEditorCreationForm::Construct(
 			.VAlign(VAlign_Bottom)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
+				.TextStyle(FAppStyle::Get(), "NormalText.Important")
 				.Text(NSLOCTEXT("LevelSnapshots", "CreationForm_SaveDirLabel", "Save Directory"))
 			]
 
@@ -231,7 +239,7 @@ TSharedRef<SWidget> SLevelSnapshotsEditorCreationForm::MakeDataManagementSetting
 	DetailsViewArgs.bShowScrollBar = false;
 
 	TSharedRef<IDetailsView> Details = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
-	const TArray<UObject*> ProjectSettingsObjects = { ULevelSnapshotsEditorSettings::GetMutable() };
+	const TArray<UObject*> ProjectSettingsObjects = { ULevelSnapshotsEditorSettings::Get() };
 	// By requirement, we're only supposed to show the data management settings
 	Details->RegisterInstancedCustomPropertyLayout(
 		ULevelSnapshotsEditorSettings::StaticClass(),
@@ -243,24 +251,20 @@ TSharedRef<SWidget> SLevelSnapshotsEditorCreationForm::MakeDataManagementSetting
 	return Details;
 }
 
-SLevelSnapshotsEditorCreationForm::~SLevelSnapshotsEditorCreationForm()
-{
-	CallOnCloseDelegate.Unbind();
-}
-
 FText SLevelSnapshotsEditorCreationForm::GetNameOverrideText() const
 {
 	const ULevelSnapshotsEditorSettings* Settings = ULevelSnapshotsEditorSettings::Get();
 	check(Settings);
-	
+
+	const FString SnapshotName = NameOverride.Get(Settings->DefaultLevelSnapshotName);
 	UWorld* World = ULevelSnapshotsEditorData::GetEditorWorld();
 	if (!ensure(World))
 	{
-		return FText::FromString(Settings->GetNameOverride());
+		return FText::FromString(SnapshotName);
 	}
 
 	return ULevelSnapshotsEditorSettings::ParseLevelSnapshotsTokensInText(
-		FText::FromString(Settings->GetNameOverride()),
+		FText::FromString(SnapshotName),
 		World->GetName()
 		);
 }
@@ -269,10 +273,7 @@ void SLevelSnapshotsEditorCreationForm::SetNameOverrideText(const FText& InNewTe
 {
 	FString NameAsString = InNewText.ToString();
 	ULevelSnapshotsEditorSettings::SanitizePathInline(NameAsString, true);
-
-	ULevelSnapshotsEditorSettings* Settings = ULevelSnapshotsEditorSettings::GetMutable();
-	Settings->SetNameOverride(NameAsString);
-	bNameDiffersFromDefault = Settings->IsNameOverridden();
+	NameOverride = NameAsString;
 }
 
 void SLevelSnapshotsEditorCreationForm::SetDescriptionText(const FText& InNewText, ETextCommit::Type InCommitType)
@@ -282,7 +283,7 @@ void SLevelSnapshotsEditorCreationForm::SetDescriptionText(const FText& InNewTex
 
 EVisibility SLevelSnapshotsEditorCreationForm::GetNameDiffersFromDefaultAsVisibility() const
 {
-	return bNameDiffersFromDefault ? EVisibility::Visible : EVisibility::Hidden;
+	return NameOverride.IsSet() ? EVisibility::Visible : EVisibility::Hidden;
 }
 
 FReply SLevelSnapshotsEditorCreationForm::OnResetNameClicked()
@@ -293,7 +294,7 @@ FReply SLevelSnapshotsEditorCreationForm::OnResetNameClicked()
 
 FReply SLevelSnapshotsEditorCreationForm::OnCreateButtonPressed()
 {
-	bWasCreateSnapshotPressed = true;
+	CallOnCloseDelegate.ExecuteIfBound(DescriptionText, GetNameOverrideText().ToString());
 
 	check(WidgetWindow.IsValid());
 	WidgetWindow.Pin()->RequestDestroyWindow();
@@ -304,12 +305,7 @@ FReply SLevelSnapshotsEditorCreationForm::OnCreateButtonPressed()
 void SLevelSnapshotsEditorCreationForm::OnWindowClosed(const TSharedRef<SWindow>& ParentWindow) const
 {
 	const FVector2D WindowSize = ParentWindow->GetClientSizeInScreen();
-	ULevelSnapshotsEditorSettings* Settings = ULevelSnapshotsEditorSettings::GetMutable();
+	ULevelSnapshotsEditorSettings* Settings = ULevelSnapshotsEditorSettings::Get();
 	Settings->SetLastCreationWindowSize(WindowSize);
 	Settings->SaveConfig();
-
-	if (bWasCreateSnapshotPressed)
-	{
-		CallOnCloseDelegate.ExecuteIfBound(DescriptionText);
-	}
 }

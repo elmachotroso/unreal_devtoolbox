@@ -1,11 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Map.h"
+#include "Containers/Ticker.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Logging/LogMacros.h"
 #include "Misc/CoreMisc.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
-#include "Containers/Ticker.h" 
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 
 class FHttpListener;
 class IHttpRouter;
@@ -40,10 +45,11 @@ public:
 	/**
 	 * Per-port-binding access to an http router
 	 *
-	 * @param  Port The listener's bound port 
+	 * @param  Port The listener's bound port
+	 * @param  bFailOnBindFailure if true, return nullptr if we fail to bind/listen on the given port
 	 * @return An IHttpRouter instance that can be leveraged to respond to HTTP requests
 	 */
-	HTTPSERVER_API TSharedPtr<IHttpRouter> GetHttpRouter(uint32 Port);
+	HTTPSERVER_API TSharedPtr<IHttpRouter> GetHttpRouter(uint32 Port, bool bFailOnBindFailure = false);
 
 	/**
 	 * FTSTicker callback

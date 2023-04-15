@@ -2,13 +2,15 @@
 
 #include "EditorValidator_Localization.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "Misc/Paths.h"
 #include "HAL/FileManager.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/PackageLocalizationUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorValidator_Localization)
 
 #define LOCTEXT_NAMESPACE "AssetValidation"
 
@@ -39,7 +41,7 @@ EDataValidationResult UEditorValidator_Localization::ValidateLoadedAsset_Impleme
 		FString SourceObjectPath;
 		if (FPackageLocalizationUtil::ConvertLocalizedToSource(AssetPathName, SourceObjectPath))
 		{
-			const FAssetData SourceAssetData = AssetRegistry.GetAssetByObjectPath(*SourceObjectPath);
+			const FAssetData SourceAssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(SourceObjectPath));
 
 			// Does this source asset exist?
 			// It is valid to have orphan localized assets, as they may be a direct reference of another localized asset
@@ -63,9 +65,9 @@ EDataValidationResult UEditorValidator_Localization::ValidateLoadedAsset_Impleme
 				}
 
 				// Is the source asset the expected type?
-				if (SourceAssetData.AssetClass != InAsset->GetClass()->GetFName())
+				if (SourceAssetData.AssetClassPath != InAsset->GetClass()->GetClassPathName())
 				{
-					AssetFails(InAsset, FText::Format(LOCTEXT("LocalizationError_LocalizedTypeMismatchWithSourceAsset", "Localized asset is of type '{0}', but its source asset is of type '{1}'. A localized asset must have the same type as its source asset!"), FText::FromString(InAsset->GetClass()->GetName()), FText::FromName(SourceAssetData.AssetClass)), ValidationErrors);
+					AssetFails(InAsset, FText::Format(LOCTEXT("LocalizationError_LocalizedTypeMismatchWithSourceAsset", "Localized asset is of type '{0}', but its source asset is of type '{1}'. A localized asset must have the same type as its source asset!"), FText::FromString(InAsset->GetClass()->GetPathName()), FText::FromString(SourceAssetData.AssetClassPath.ToString())), ValidationErrors);
 					return EDataValidationResult::Invalid;
 				}
 			}
@@ -87,7 +89,7 @@ EDataValidationResult UEditorValidator_Localization::ValidateLoadedAsset_Impleme
 					FString LocalizedObjectPath;
 					if (FPackageLocalizationUtil::ConvertSourceToLocalized(AssetPathName, CultureName, LocalizedObjectPath))
 					{
-						const FAssetData LocalizedAssetData = AssetRegistry.GetAssetByObjectPath(*LocalizedObjectPath);
+						const FAssetData LocalizedAssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(LocalizedObjectPath));
 
 						if (LocalizedAssetData.IsValid())
 						{
@@ -109,9 +111,9 @@ EDataValidationResult UEditorValidator_Localization::ValidateLoadedAsset_Impleme
 							}
 
 							// Is the localized asset the expected type?
-							if (LocalizedAssetData.AssetClass != InAsset->GetClass()->GetFName())
+							if (LocalizedAssetData.AssetClassPath != InAsset->GetClass()->GetClassPathName())
 							{
-								AssetFails(InAsset, FText::Format(LOCTEXT("LocalizationError_SourceTypeMismatchWithLocalizedAsset", "Source asset is of type '{0}', but its localized asset for '{1}' is of type '{2}'. A localized asset must have the same type as its source asset!"), FText::FromString(InAsset->GetClass()->GetName()), FText::FromString(CultureName), FText::FromName(LocalizedAssetData.AssetClass)), ValidationErrors);
+								AssetFails(InAsset, FText::Format(LOCTEXT("LocalizationError_SourceTypeMismatchWithLocalizedAsset", "Source asset is of type '{0}', but its localized asset for '{1}' is of type '{2}'. A localized asset must have the same type as its source asset!"), FText::FromString(InAsset->GetClass()->GetPathName()), FText::FromString(CultureName), FText::FromString(LocalizedAssetData.AssetClassPath.ToString())), ValidationErrors);
 								return EDataValidationResult::Invalid;
 							}
 						}
@@ -158,3 +160,4 @@ const TArray<FString>* UEditorValidator_Localization::FindOrCacheCulturesForLoca
 }
 
 #undef LOCTEXT_NAMESPACE
+

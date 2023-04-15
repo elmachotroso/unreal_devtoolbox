@@ -19,6 +19,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PolygonOnMeshTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UPolygonOnMeshTool"
@@ -110,7 +112,16 @@ void UPolygonOnMeshTool::Setup()
 		{
 			GetToolManager()->PostInvalidation();
 			UpdateVisualization();
-			UpdateAcceptWarnings(UpdatedPreview->HaveEmptyResult() ? EAcceptWarning::EmptyForbidden : EAcceptWarning::NoWarning);
+			if (!bOperationSucceeded)
+			{
+				GetToolManager()->DisplayMessage(LOCTEXT("FailNotification", "Unable to complete cut."),
+					EToolMessageLevel::UserWarning);
+			}
+			else
+			{
+				// This clears the warning if needed
+				UpdateAcceptWarnings(UpdatedPreview->HaveEmptyResult() ? EAcceptWarning::EmptyForbidden : EAcceptWarning::NoWarning);
+			}
 		}
 	);
 
@@ -167,6 +178,13 @@ void UPolygonOnMeshTool::UpdateVisualization()
 		{
 			TargetMesh->GetEdgeV(EID, A, B);
 			DrawnLineSet->AddLine((FVector)A, (FVector)B, PartialPathEdgeColor, PartialPathEdgeThickness, PartialPathEdgeDepthBias);
+		}
+		// In the case where we don't allow failed results, it can be disorienting to show the broken mesh (especially since sometimes
+		// most of it may be cut away). But user can change this behavior.
+		if (!BasicProperties->bCanAcceptFailedResult && !BasicProperties->bShowIntermediateResultOnFailure)
+		{
+			// Reset the preview.
+			Preview->PreviewMesh->UpdatePreview(OriginalDynamicMesh.Get());
 		}
 	}
 }
@@ -260,15 +278,23 @@ TUniquePtr<FDynamicMeshOperator> UPolygonOnMeshTool::MakeNewOperator()
 		BasicProperties->Operation == EEmbeddedPolygonOpMethod::TrimOutside;
 	EmbedOp->bAttemptFixHolesOnBoolean = !bOpLeavesOpenBoundaries && BasicProperties->bTryToFixCracks;
 
-	FFrame3d LocalFrame = DrawPlaneWorld;
-	FTransform3d ToLocal = WorldTransform.Inverse();
-	LocalFrame.Transform(ToLocal);
+	// Match the world plane in the local space
+	FVector3d LocalOrigin = WorldTransform.InverseTransformPosition(DrawPlaneWorld.Origin);
+	FVector3d TempLocalX = WorldTransform.InverseTransformVector(DrawPlaneWorld.GetAxis(0));
+	FVector3d TempLocalY = WorldTransform.InverseTransformVector(DrawPlaneWorld.GetAxis(1));
+	FVector3d LocalZ = TempLocalX.Cross(TempLocalY);
+	FFrame3d LocalFrame(LocalOrigin, LocalZ);
 	EmbedOp->PolygonFrame = LocalFrame;
 	
-	FVector2d LocalFrameScale(ToLocal.TransformVector(LocalFrame.X()).Length(), ToLocal.TransformVector(LocalFrame.Y()).Length());
-	LocalFrameScale *= BasicProperties->PolygonScale;
+	// Transform the active polygon by the polygon scale put it on the local space's frame
 	EmbedOp->EmbedPolygon = ActivePolygon;
-	EmbedOp->EmbedPolygon.Scale(LocalFrameScale, FVector2d::Zero());
+	const TArray<FVector2d>& Vertices = EmbedOp->EmbedPolygon.GetVertices();
+	for (int32 Idx = 0; Idx < EmbedOp->EmbedPolygon.VertexCount(); ++Idx)
+	{
+		FVector2d World2d = Vertices[Idx] * BasicProperties->PolygonScale;
+		FVector2d LocalPos = LocalFrame.ToPlaneUV(WorldTransform.InverseTransformPosition(DrawPlaneWorld.FromPlaneUV(World2d)));
+		EmbedOp->EmbedPolygon.Set(Idx, LocalPos);
+	}
 
 	// TODO: scale any extrude by ToLocal.TransformVector(LocalFrame.Z()).Length() ??
 	// EmbedOp->ExtrudeDistance = Tool->BasicProperties->ExtrudeDistance;
@@ -395,7 +421,8 @@ void UPolygonOnMeshTool::CompleteDrawPolygon()
 
 bool UPolygonOnMeshTool::CanAccept() const
 {
-	return Super::CanAccept() && Preview != nullptr && Preview->HaveValidNonEmptyResult();
+	return Super::CanAccept() && Preview != nullptr && Preview->HaveValidNonEmptyResult() 
+		&& (bOperationSucceeded || BasicProperties->bCanAcceptFailedResult);
 }
 
 
@@ -491,3 +518,4 @@ bool UPolygonOnMeshTool::OnUpdateHover(const FInputDeviceRay& DevicePos)
 
 
 #undef LOCTEXT_NAMESPACE
+

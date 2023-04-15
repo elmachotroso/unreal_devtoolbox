@@ -2,26 +2,28 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformCrt.h"
+#include "Math/IntPoint.h"
+#include "Math/MathFwd.h"
 #include "Math/Vector2D.h"
 #include "Math/Vector4.h"
 #include "Templates/SharedPointer.h"
-#include "Delegates/Delegate.h"
 #if WITH_ACCESSIBILITY
 #include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
 #endif
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
-#include "GenericPlatform/GenericWindowDefinition.h"
 #include "GenericPlatform/GenericWindow.h"
+#include "GenericPlatform/GenericWindowDefinition.h"
 
 class FSlateApplication;
 class IAnalyticsProvider;
 class ICursor;
 class IInputInterface;
 class ITextInputMethodSystem;
-class IForceFeedbackSystem;
 
 /**
 * Enumerates available modifier keys for input gestures.
@@ -375,11 +377,6 @@ struct FDisplayMetrics
 
 	/** Virtual display coordinate range (includes all active displays) */
 	FPlatformRect VirtualDisplayRect;
-
-#if PLATFORM_IOS
-	/** Area of the UIWindow on IOS devices */
-	FPlatformRect IosUiWindowAreaRect;
-#endif
 
 	/**
 	 * The safe area for all content on TVs (see http://en.wikipedia.org/wiki/Safe_area_%28television%29) - content will be inset 

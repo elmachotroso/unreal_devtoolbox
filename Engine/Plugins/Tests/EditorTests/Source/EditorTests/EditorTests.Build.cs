@@ -6,22 +6,6 @@ public class EditorTests : ModuleRules
 {
 	public EditorTests(ReadOnlyTargetRules Target) : base(Target)
 	{
-
-		PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-		);
-
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"EditorTests/Private",
-				// ... add other private include paths required here ...
-			}
-		);
-
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -29,7 +13,6 @@ public class EditorTests : ModuleRules
 				// ... add other public dependencies that you statically link with here ...
 			}
 		);
-
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
@@ -50,7 +33,7 @@ public class EditorTests : ModuleRules
 				"JsonUtilities",
 				"Analytics",
 				"ContentBrowser",
-				"EditorStyle",
+				
 				"SourceControl",
 				"RHI",
 				"BlueprintGraph",
@@ -69,15 +52,8 @@ public class EditorTests : ModuleRules
                 "MeshBuilder",
                 "RawMesh",
 				"AutomationController",
+				"Blutility",
 				//"SubobjectDataInterface",
-			}
-		);
-
-
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
 			}
 		);
 	}

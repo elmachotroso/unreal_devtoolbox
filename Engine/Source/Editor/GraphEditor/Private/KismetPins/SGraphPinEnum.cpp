@@ -2,9 +2,43 @@
 
 
 #include "KismetPins/SGraphPinEnum.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Views/SListView.h"
+
+#include "Containers/BitArray.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SGraphPinComboBox.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
 
 //Construct combo box using combo button and combo list
 void SPinComboBox::Construct( const FArguments& InArgs )
@@ -28,7 +62,7 @@ void SPinComboBox::Construct( const FArguments& InArgs )
 			[
 				SNew( STextBlock ).ToolTipText(NSLOCTEXT("PinComboBox", "ToolTip", "Select enum values from the list"))
 				.Text( this, &SPinComboBox::OnGetVisibleTextInternal )
-				.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+				.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 			]
 		]
 		.MenuContent()
@@ -38,7 +72,7 @@ void SPinComboBox::Construct( const FArguments& InArgs )
 			.MaxHeight(450.0f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+				.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 				.Padding( 0 )
 				[
 					SAssignNew( ComboList, SComboList )
@@ -91,7 +125,7 @@ TSharedRef<ITableRow> SPinComboBox::OnGenerateComboWidget( TSharedPtr<int32> InC
 				SNew(STextBlock)
 				.Text( this, &SPinComboBox::GetRowString, RowIndex )
 				.ToolTipText( this, &SPinComboBox::GetRowTooltip, RowIndex )
-				.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+				.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 			]
 		];
 }

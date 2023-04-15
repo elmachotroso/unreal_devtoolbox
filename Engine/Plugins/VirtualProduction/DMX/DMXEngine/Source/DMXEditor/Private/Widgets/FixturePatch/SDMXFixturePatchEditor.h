@@ -10,6 +10,7 @@ class FDMXEditor;
 class FDMXFixturePatchSharedData;
 class SDMXFixturePatcher;
 class SDMXFixturePatchTree;
+class SDMXMVRFixtureList;
 class UDMXEntityFixturePatch;
 
 struct FPropertyChangedEvent;
@@ -34,19 +35,21 @@ public:
 	void Construct(const FArguments& InArgs);
 
 public:
-	/** Begin SDMXEntityEditorTab interface */
+	//~ Begin SWidget interface
+	virtual bool SupportsKeyboardFocus() const override { return true; }
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+	//~ End SWidget interface
+
+	// Begin SDMXEntityEditorTab interface
 	void RequestRenameOnNewEntity(const UDMXEntity* InEntity, ESelectInfo::Type SelectionType);
 	void SelectEntity(UDMXEntity* InEntity, ESelectInfo::Type InSelectionType = ESelectInfo::Type::Direct);
 	void SelectEntities(const TArray<UDMXEntity*>& InEntities, ESelectInfo::Type SelectionType = ESelectInfo::Type::Direct);
 	TArray<UDMXEntity*> GetSelectedEntities() const;
-	/** ~End SDMXEntityEditorTab interface */
+	// ~End SDMXEntityEditorTab interface 
 
 private:
 	/** Selects the patch */
 	void SelectUniverse(int32 UniverseID);
-
-	/** Callback for when some property has changed in the inspector */
-	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 
 	/** Called whewn Fixture Patches were selected in Fixture Patch Shared Data */
 	void OnFixturePatchesSelected();
@@ -54,8 +57,8 @@ private:
 	/** Generates a Detail View for the edited Fixture Patch */
 	TSharedRef<IDetailsView> GenerateFixturePatchDetailsView() const;
 
-	/** Tree View of available Fixture Patches */
-	TSharedPtr<SDMXFixturePatchTree> FixturePatchTree;
+	/** List of Fixture Patches as MVR Fixtures */
+	TSharedPtr<SDMXMVRFixtureList> MVRFixtureList;
 
 	/** Details View for the selected Fixture Patches */
 	TSharedPtr<IDetailsView> FixturePatchDetailsView;

@@ -76,9 +76,11 @@ public:
 	void OnSystemComplete(const FNiagaraSystemInstance& SystemInstance);
 	void RecacheRenderers(const FNiagaraSystemInstance& SystemInstance, const FNiagaraSystemInstanceController& Controller);
 
-	FORCEINLINE bool IsRenderingEnabled() const { return bRenderingEnabled && EmitterRenderers_GT.Num() > 0; }
+	FORCEINLINE bool IsRenderingEnabled() const { return bRenderingEnabled && (IsInRenderingThread() ? EmitterRenderers_RT.Num() > 0 : EmitterRenderers_GT.Num() > 0); }
 	FORCEINLINE void SetRenderingEnabled(bool bInEnabled) { bRenderingEnabled = bInEnabled; }
 	FORCEINLINE bool HasAnyMotionBlurEnabled() const { return bAnyMotionBlurEnabled; }
+
+	FORCEINLINE int32 GetNumRenderers() const { return RendererDrawOrder.Num(); }
 
 	FVector3f LWCRenderTile = FVector3f::ZeroVector;
 private:

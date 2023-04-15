@@ -13,6 +13,8 @@
 #include "Engine/Texture2DArray.h"
 #include "ClearQuad.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTarget2DArray)
+
 /*-----------------------------------------------------------------------------
 	UTextureRenderTarget2DArray
 -----------------------------------------------------------------------------*/
@@ -101,10 +103,7 @@ EMaterialValueType UTextureRenderTarget2DArray::GetMaterialType() const
 #if WITH_EDITOR
 void UTextureRenderTarget2DArray::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	// Allow for high resolution captures when ODS is enabled
-	static const auto CVarODSCapture = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.ODSCapture"));
-	const bool bIsODSCapture = CVarODSCapture && (CVarODSCapture->GetValueOnGameThread() != 0);
-	const int32 MaxSize = (bIsODSCapture) ? 4096 : 2048;
+	constexpr int32 MaxSize = 2048;
 
 	EPixelFormat Format = GetFormat();
 	SizeX = FMath::Clamp<int32>(SizeX - (SizeX % GPixelFormats[Format].BlockSizeX), 1, MaxSize);
@@ -166,7 +165,7 @@ UTexture2DArray* UTextureRenderTarget2DArray::ConstructTexture2DArray(UObject* O
 
 	bool bSRGB = true;
 	// if render target gamma used was 1.0 then disable SRGB for the static texture
-	if (FMath::Abs(TextureResource->GetDisplayGamma() - 1.0f) < KINDA_SMALL_NUMBER)
+	if (FMath::Abs(TextureResource->GetDisplayGamma() - 1.0f) < UE_KINDA_SMALL_NUMBER)
 	{
 		bSRGB = false;
 	}
@@ -227,44 +226,39 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 		bool bIsSRGB = true;
 
 		// if render target gamma used was 1.0 then disable SRGB for the static texture
-		if(FMath::Abs(GetDisplayGamma() - 1.0f) < KINDA_SMALL_NUMBER)
+		if(FMath::Abs(GetDisplayGamma() - 1.0f) < UE_KINDA_SMALL_NUMBER)
 		{
 			bIsSRGB = false;
 		}
 
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
-		ETextureCreateFlags TexCreateFlags = bIsSRGB ? TexCreate_SRGB : TexCreate_None;
+		ETextureCreateFlags TexCreateFlags = bIsSRGB ? ETextureCreateFlags::SRGB : ETextureCreateFlags::None;
 		if (Owner->bCanCreateUAV)
 		{
-			TexCreateFlags |= TexCreate_UAV;
+			TexCreateFlags |= ETextureCreateFlags::UAV;
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTarget2DArrayResource"), FClearValueBinding(Owner->ClearColor));
-			RHICreateTargetableShaderResource2DArray(
-				Owner->SizeX,
-				Owner->SizeY,
-				Owner->Slices,
-				Owner->GetFormat(),
-				Owner->GetNumMips(),
-				TexCreateFlags,
-				TexCreate_RenderTargetable,
-				CreateInfo,
-				RenderTarget2DArrayRHI,
-				Texture2DArrayRHI
-			);
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create2DArray(TEXT("FTextureRenderTarget2DArrayResource"))
+				.SetExtent(Owner->SizeX, Owner->SizeY)
+				.SetArraySize(Owner->Slices)
+				.SetFormat(Owner->GetFormat())
+				.SetNumMips(Owner->GetNumMips())
+				.SetFlags(TexCreateFlags | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+				.SetClearValue(FClearValueBinding(Owner->ClearColor))
+				.SetInitialState(ERHIAccess::SRVMask);
+
+			TextureRHI = RHICreateTexture(Desc);
 		}
 
-		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
+		if (EnumHasAnyFlags(TexCreateFlags, ETextureCreateFlags::UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTarget2DArrayRHI);
+			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI);
 		}
 
-		TextureRHI = Texture2DArrayRHI;
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, TextureRHI);
-
-		// Can't set this as it's a texture 2D
-		//RenderTargetTextureRHI = 2DArraySurfaceRHI;
+		RenderTargetTextureRHI = TextureRHI;
 
 		AddToDeferredUpdateList(true);
 	}
@@ -291,8 +285,7 @@ void FTextureRenderTarget2DArrayResource::ReleaseDynamicRHI()
 	ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
-	RenderTarget2DArrayRHI.SafeRelease();
-	Texture2DArrayRHI.SafeRelease();
+	RenderTargetTextureRHI.SafeRelease();
 
 	// remove from global list of deferred clears
 	RemoveFromDeferredUpdateList();
@@ -305,16 +298,14 @@ void FTextureRenderTarget2DArrayResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTarget2DArrayResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/)
 {
-	const FIntPoint Dims = GetSizeXY();
+	if (!bClearRenderTarget)
+	{
+		return;
+	}
 
-	const ERenderTargetLoadAction LoadAction = bClearRenderTarget ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
-
-	FRHIRenderPassInfo RPInfo(RenderTarget2DArrayRHI, MakeRenderTargetActions(LoadAction, ERenderTargetStoreAction::EStore));
-	TransitionRenderPassTargets(RHICmdList, RPInfo);
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("UpdateTarget2DArray"));
-	RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)Dims.X, (float)Dims.Y, 1.0f);
-	RHICmdList.EndRenderPass();
-	RHICmdList.CopyToResolveTarget(RenderTarget2DArrayRHI, Texture2DArrayRHI, FResolveParams());
+	RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV));
+	ClearRenderTarget(RHICmdList, TextureRHI);
+	RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask));
 }
 
 /** 
@@ -343,7 +334,7 @@ FIntPoint FTextureRenderTarget2DArrayResource::GetSizeXY() const
 
 float FTextureRenderTarget2DArrayResource::GetDisplayGamma() const
 {
-	if(Owner->TargetGamma > KINDA_SMALL_NUMBER * 10.0f)
+	if(Owner->TargetGamma > UE_KINDA_SMALL_NUMBER * 10.0f)
 	{
 		return Owner->TargetGamma;
 	}
@@ -369,7 +360,7 @@ bool FTextureRenderTarget2DArrayResource::ReadPixels(TArray<FColor>& OutImageDat
 		[RenderTarget_RT=this, OutData_RT=&OutImageData, Rect_RT=InRect, Slice_RT=InSlice, bSRGB_RT= bSRGB](FRHICommandListImmediate& RHICmdList)
 		{
 			TArray<FFloat16Color> TempData;
-			RHICmdList.ReadSurfaceFloatData(RenderTarget_RT->Texture2DArrayRHI, Rect_RT, TempData, (ECubeFace)0, Slice_RT, 0);
+			RHICmdList.ReadSurfaceFloatData(RenderTarget_RT->TextureRHI, Rect_RT, TempData, (ECubeFace)0, Slice_RT, 0);
 			for (const FFloat16Color& SrcColor : TempData)
 			{
 				OutData_RT->Emplace(FLinearColor(SrcColor).ToFColor(bSRGB_RT));
@@ -394,10 +385,11 @@ bool FTextureRenderTarget2DArrayResource::ReadPixels(TArray<FFloat16Color>& OutI
 	(
 		[RenderTarget_RT=this, OutData_RT=&OutImageData, Rect_RT=InRect, Slice_RT=InSlice](FRHICommandListImmediate& RHICmdList)
 		{
-			RHICmdList.ReadSurfaceFloatData(RenderTarget_RT->Texture2DArrayRHI, Rect_RT, *OutData_RT, (ECubeFace)0, Slice_RT, 0);
+			RHICmdList.ReadSurfaceFloatData(RenderTarget_RT->TextureRHI, Rect_RT, *OutData_RT, (ECubeFace)0, Slice_RT, 0);
 		}
 	);
 	FlushRenderingCommands();
 
 	return true;
 }
+

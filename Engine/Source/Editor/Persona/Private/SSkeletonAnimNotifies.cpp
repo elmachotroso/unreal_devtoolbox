@@ -5,9 +5,9 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Animation/AnimSequenceBase.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Animation/EditorSkeletonNotifyObj.h"
 
 #include "Widgets/Input/SSearchBox.h"
@@ -37,7 +37,7 @@ FSkeletonAnimNotifiesSummoner::FSkeletonAnimNotifiesSummoner(TSharedPtr<class FA
 	, OnObjectsSelected(InOnObjectsSelected)
 {
 	TabLabel = LOCTEXT("SkeletonAnimNotifiesTabTitle", "Animation Notifies");
-	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.Tabs.AnimationNotifies");
+	TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.Tabs.AnimationNotifies");
 
 	EnableTabPadding();
 	bIsSingleton = true;

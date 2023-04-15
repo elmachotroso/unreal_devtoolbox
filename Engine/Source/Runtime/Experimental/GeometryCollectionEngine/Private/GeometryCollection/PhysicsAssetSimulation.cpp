@@ -29,7 +29,6 @@
 
 void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActor* OwningActor, const USkeletalMeshComponent* SkelMeshComponent, const UPhysicsAsset* PhysicsAsset, FSkeletalMeshPhysicsProxyParams& Params)
 {
-#if WITH_PHYSX
 	Params.LocalToWorld = Params.InitialTransform = OwningActor->GetTransform();
 
 	FVector ActorOriginVec, ActorBoxExtentVec;	// LWC_TODO: Perf pessimization
@@ -37,7 +36,7 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 	Chaos::FVec3 ActorOrigin(ActorOriginVec);
 	Chaos::FVec3 ActorBoxExtent(ActorBoxExtentVec);
 
-	const USkeletalMesh* SkeletalMesh = SkelMeshComponent->SkeletalMesh;
+	const USkeletalMesh* SkeletalMesh = SkelMeshComponent->GetSkeletalMeshAsset();
 	if (!SkeletalMesh)
 	{
 		return;
@@ -281,96 +280,8 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 					Bounds += Points[i];
 				}
 
-#if PHYSICS_INTERFACE_PHYSX
-				if (physx::PxConvexMesh *ConvexMesh = Elem.GetConvexMesh())
-				{
-					ConvexMesh->acquireReference();
-					const PxU32 NumPolygons = ConvexMesh->getNbPolygons();
-					TArray<Chaos::TVec3<int32>> Triangles;
-					Triangles.Reserve(NumPolygons);
-					PxHullPolygon Polygon;
-					for (uint32 i = 0; i < NumPolygons; i++)
-					{
-						if (ConvexMesh->getPolygonData(i, Polygon))
-						{
-							if (Polygon.mNbVerts == 3)
-							{
-								// getPolygonData() augments what getIndexBuffer() returns?
-								const auto LocalIndices = ConvexMesh->getIndexBuffer() + Polygon.mIndexBase;
-								Triangles.Add(
-									Chaos::TVec3<int32>(LocalIndices[0], LocalIndices[1], LocalIndices[2]));
-							}
-							else if (Polygon.mNbVerts > 3)
-							{
-								for (uint32 j = 2; j < Polygon.mNbVerts; j++)
-								{
-									const auto LocalIndices = ConvexMesh->getIndexBuffer() + Polygon.mIndexBase;
-									Triangles.Add(
-										Chaos::TVec3<int32>(LocalIndices[0], LocalIndices[j], LocalIndices[j - 1]));
-								}
-							}
-						}
-					}
-					ConvexMesh->release();
-
-					const Chaos::FVec3 Extents(Bounds.Max - Bounds.Min);
-					const Chaos::FReal LocalMaxExtent = Bounds.GetExtent().GetMax();
-					Bounds = Bounds.ExpandBy(Extents.Size() / 10);
-
-					//TODO: this gets used later which is incorrect. However, it was already broken because it passed a view and then moved the underlying data.
-					//Keeping as is for now, needs fixing
-					Chaos::FParticles Particles(MoveTemp(Points));
-					TUniquePtr<Chaos::FTriangleMesh> TriangleMesh(
-						new Chaos::FTriangleMesh(MoveTemp(Triangles)));
-					Chaos::FErrorReporter ErrorReporter;
-
-					const Chaos::FReal ActorMaxExtent = ActorBoxExtent.Max();
-					const int32 NormalizedMinRes = FMath::CeilToInt(ActorMaxExtent > SMALL_NUMBER ? LocalMaxExtent / ActorMaxExtent * Params.MinRes : Params.MinRes);
-					const int32 NormalizedMaxRes = FMath::CeilToInt(ActorMaxExtent > SMALL_NUMBER ? LocalMaxExtent / ActorMaxExtent * Params.MaxRes : Params.MaxRes);
-
-					Chaos::FLevelSet* LevelSet =
-						static_cast<Chaos::FLevelSet*>(
-							FCollisionStructureManager::NewImplicit(
-								ErrorReporter,
-								Particles,							// mesh particles
-								*TriangleMesh,						// triangle mesh
-								Bounds,								// collision bounds
-								Bounds.GetExtent().Size() * 0.5,	// radius
-								NormalizedMinRes, NormalizedMaxRes,	// min, max resolution
-								100.f,								// CollisionObjectReduction, 100 = no shrinking
-								Params.CollisionType,				// collision type
-								EImplicitTypeEnum::Chaos_Implicit_LevelSet)); // implicit type
-					if (!ErrorReporter.EncounteredAnyErrors())
-					{
-						const int32 Index = AnalyticShapeGroup->Add(Xf, LevelSet);
-						if (DoCollisionGeom)
-						{
-							AnalyticShapeGroup->SetCollisionTopology(
-								Index, MoveTemp(Points), MoveTemp(*TriangleMesh).GetSurfaceElements());
-						}
-						UE_LOG(USkeletalMeshSimulationComponentLogging, Log,
-							TEXT("USkeletalMeshSimulationComponent::OnCreatePhysicsState() - Caller: %p Actor: '%s' - "
-								"ADDED LEVELSET"), Caller, &OwningActor->GetName()[0]);
-					}
-					else
-					{
-						// Something went wrong.  Use a sphere instead.
-						// TODO: report the error.
-						delete LevelSet;
-
-						AnalyticShapeGroup->Add(
-							Xf,
-							new Chaos::TSphere<Chaos::FReal, 3>(Bounds.GetCenter(), LocalMaxExtent * 0.5));
-
-						UE_LOG(USkeletalMeshSimulationComponentLogging, Log,
-							TEXT("USkeletalMeshSimulationComponent::OnCreatePhysicsState() - Caller: %p Actor: '%s' - "
-								"ADDED (LEVELSET) SPHERE"), Caller, &OwningActor->GetName()[0]);
-					}
-				}
-#elif WITH_CHAOS
 				// TODO: Use Chaos convex.
 				CHAOS_ENSURE(false);
-#endif
 			}
 		}
 		Params.BoneHierarchy.Add(MoveTemp(AnalyticShapeGroup));
@@ -434,7 +345,7 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 		int32 TmpBoneIndex = BoneIndex;
 		int32 SocketIndex = INDEX_NONE;
 		if (USkeletalMeshSocket const* Socket =
-			SkelMeshComponent->SkeletalMesh->FindSocketInfo(
+			SkelMeshComponent->GetSkeletalMeshAsset()->FindSocketInfo(
 				Params.BoneHierarchy.GetAnalyticShapeGroup(BoneIndex)->GetBoneName(),
 				BoneXf,
 				TmpBoneIndex,
@@ -458,20 +369,24 @@ void FPhysicsAssetSimulationUtil::BuildParams(const UObject* Caller, const AActo
 			"Bone hierarchy, num shape groups: %d"),
 		Caller, &OwningActor->GetName()[0],
 		Params.BoneHierarchy.GetAnalyticShapeGroups().Num());
-#endif
 }
 
 bool FPhysicsAssetSimulationUtil::UpdateAnimState(const UObject* Caller, const AActor* OwningActor, const USkeletalMeshComponent* SkelMeshComponent, const float Dt, FSkeletalMeshPhysicsProxyParams& Params)
 {
 	int32 UpdatedBones = 0;
 
-#if WITH_PHYSX
-	const USkeletalMesh* SkeletalMesh = SkelMeshComponent->SkeletalMesh;
+	const USkeletalMesh* SkeletalMesh = SkelMeshComponent->GetSkeletalMeshAsset();
+	
 	if (!SkeletalMesh)
+	{
 		return false;
+	}
+
 	const FSkeletalMeshRenderData* SkelMeshRenderData = SkeletalMesh->GetResourceForRendering();
 	if (!SkelMeshRenderData || !SkelMeshRenderData->LODRenderData.Num())
+	{
 		return false;
+	}
 
 	// Calling this doesn't seem to matter...
 	//SkelMeshComponent->UpdateKinematicBonesToAnim(
@@ -498,7 +413,7 @@ bool FPhysicsAssetSimulationUtil::UpdateAnimState(const UObject* Caller, const A
 			const int32 SocketIndex = Params.BoneHierarchy.GetSocketIndexForBone(BoneIndex);
 			if (SocketIndex != INDEX_NONE)
 			{
-				USkeletalMeshSocket *Socket = SkelMeshComponent->SkeletalMesh->GetSocketByIndex(SocketIndex);
+				USkeletalMeshSocket *Socket = SkelMeshComponent->GetSkeletalMeshAsset()->GetSocketByIndex(SocketIndex);
 				Params.BoneHierarchy.SetAnimLocalSpaceTransform(
 					BoneIndex,
 					Socket->GetSocketLocalTransform());
@@ -514,6 +429,6 @@ bool FPhysicsAssetSimulationUtil::UpdateAnimState(const UObject* Caller, const A
 			UpdatedBones++;
 		}
 	}
-#endif
+
 	return (UpdatedBones > 0);
 }

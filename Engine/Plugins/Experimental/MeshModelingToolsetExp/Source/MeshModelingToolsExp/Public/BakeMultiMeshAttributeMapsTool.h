@@ -39,8 +39,8 @@ class MESHMODELINGTOOLSEXP_API UBakeMultiMeshAttributeMapsToolProperties : publi
 
 public:
 	/** The map types to generate */
-	UPROPERTY(EditAnywhere, Category = BakeOutput, meta=(DisplayName="Output Types", Bitmask, BitmaskEnum=EBakeMapType,
-		ValidEnumValues="TangentSpaceNormal, Texture"))
+	UPROPERTY(EditAnywhere, Category = BakeOutput, meta=(DisplayName="Output Types", Bitmask, BitmaskEnum= "/Script/MeshModelingToolsExp.EBakeMapType",
+		ValidEnumValues="TangentSpaceNormal, ObjectSpaceNormal, Position, Texture"))
 	int32 MapTypes = (int32) EBakeMapType::None;
 
 	/** The map type index to preview */
@@ -59,6 +59,10 @@ public:
 	/** Number of samples per pixel */
 	UPROPERTY(EditAnywhere, Category = Textures)
 	EBakeTextureSamplesPerPixel SamplesPerPixel = EBakeTextureSamplesPerPixel::Sample1;
+
+	/** Mask texture for filtering out samples/pixels from the output texture */
+	UPROPERTY(EditAnywhere, Category = Textures, AdvancedDisplay)
+	TObjectPtr<UTexture2D> SampleFilterMask = nullptr;
 
 	UFUNCTION()
 	const TArray<FString>& GetMapPreviewNamesFunc()
@@ -99,8 +103,19 @@ class MESHMODELINGTOOLSEXP_API UBakeMultiMeshInputToolProperties : public UInter
 
 public:
 	/** Target mesh to sample to */
-	UPROPERTY(VisibleAnywhere, Category = BakeInput, DisplayName = "Target Mesh", meta = (TransientToolProperty))
+	UPROPERTY(VisibleAnywhere, Category = BakeInput, DisplayName = "Target Mesh", meta = (TransientToolProperty,
+		EditCondition = "TargetStaticMesh != nullptr", EditConditionHides))
 	TObjectPtr<UStaticMesh> TargetStaticMesh = nullptr;
+
+	/** Target mesh to sample to */
+	UPROPERTY(VisibleAnywhere, Category = BakeInput, DisplayName = "Target Mesh", meta = (TransientToolProperty,
+		EditCondition = "TargetSkeletalMesh != nullptr", EditConditionHides))
+	TObjectPtr<USkeletalMesh> TargetSkeletalMesh = nullptr;
+
+	/** Target mesh to sample to */
+	UPROPERTY(VisibleAnywhere, Category = BakeInput, DisplayName = "Target Mesh", meta = (TransientToolProperty,
+		EditCondition = "TargetDynamicMesh != nullptr", EditConditionHides))
+	TObjectPtr<AActor> TargetDynamicMesh = nullptr;
 
 	/** UV channel to use for the target mesh */
 	UPROPERTY(EditAnywhere, Category = BakeInput, meta = (DisplayName = "Target Mesh UV Channel",

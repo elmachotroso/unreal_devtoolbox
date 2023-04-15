@@ -4,8 +4,10 @@
 
 #include "ScreenPass.h"
 #include "OverridePassSequence.h"
+#include "Strata/Strata.h"
 
 class UMaterialInterface;
+struct FSceneWithoutWaterTextures;
 
 const uint32 kPostProcessMaterialInputCountMax = 5;
 
@@ -38,16 +40,19 @@ enum class EPostProcessMaterialInput : uint32
 BEGIN_SHADER_PARAMETER_STRUCT(FPostProcessMaterialParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters, SceneTextures)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
 	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PostProcessInput, [kPostProcessMaterialInputCountMax])
 	SHADER_PARAMETER_SAMPLER(SamplerState, PostProcessInput_BilinearSampler)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, MobileCustomStencilTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, MobileCustomStencilTextureSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, EyeAdaptationBuffer)
-	SHADER_PARAMETER(int32, MobileStencilValueRef)
-	SHADER_PARAMETER(uint32, bFlipYAxis)
 	SHADER_PARAMETER(uint32, bMetalMSAAHDRDecode)
+	SHADER_PARAMETER(uint32, bSceneDepthWithoutWaterTextureAvailable)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthWithoutSingleLayerWaterTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SceneDepthWithoutSingleLayerWaterSampler)
+	SHADER_PARAMETER(FVector4f, SceneWithoutSingleLayerWaterMinMaxUV)
+	SHADER_PARAMETER(FVector2f, SceneWithoutSingleLayerWaterTextureSize)
+	SHADER_PARAMETER(FVector2f, SceneWithoutSingleLayerWaterInvTextureSize)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
@@ -104,8 +109,8 @@ struct FPostProcessMaterialInputs
 	/** The uniform buffer containing all scene textures. */
 	FSceneTextureShaderParameters SceneTextures;
 
-	/** Performs a vertical axis flip if the RHI allows it. */
-	bool bFlipYAxis = false;
+	/** Depth and color textures of the scene without single layer water. May be nullptr if not available. */
+	const FSceneWithoutWaterTextures* SceneWithoutWaterTextures = nullptr;
 
 	/** Allows (but doesn't guarantee) an optimization where, if possible, the scene color input is reused as
 	 *  the output. This can elide a copy in certain circumstances; for example, when the scene color input isn't

@@ -48,6 +48,7 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	WheelLoadRatio = 0.5f;
 	RollbarScaling = 0.15f;
 	SweepType = ESweepType::SimpleSweep;
+	ExternalTorqueCombineMethod = ETorqueCombineMethod::None;
 }
 
 
@@ -99,6 +100,12 @@ float UChaosVehicleWheel::GetSuspensionOffset() const
 	return VehicleComponent->GetSuspensionOffset(WheelIndex);
 }
 
+FVector UChaosVehicleWheel::GetSuspensionAxis() const
+{
+	check(VehicleComponent);
+	return SuspensionAxis;
+}
+
 bool UChaosVehicleWheel::IsInAir() const
 {
 	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
@@ -113,19 +120,6 @@ void UChaosVehicleWheel::Init( UChaosWheeledVehicleMovementComponent* InVehicleS
 
 	VehicleComponent = InVehicleSim;
 	WheelIndex = InWheelIndex;
-
-//#if WITH_PHYSX_VEHICLES
-//	WheelShape = NULL;
-//
-//	FChaosVehicleManager* VehicleManager = FChaosVehicleManager::GetVehicleManagerFromScene(VehicleSim->GetWorld()->GetPhysicsScene());
-//	SCOPED_SCENE_READ_LOCK(VehicleManager->GetScene());
-//
-//	const int32 WheelShapeIdx = VehicleSim->PVehicle->mWheelsSimData.getWheelShapeMapping( WheelIndex );
-//	check(WheelShapeIdx >= 0);
-//
-//	VehicleSim->PVehicle->getRigidDynamicActor()->getShapes( &WheelShape, 1, WheelShapeIdx );
-//	check(WheelShape);
-//#endif // WITH_PHYSX
 
 	Location = GetPhysicsLocation();
 	OldLocation = Location;
@@ -168,14 +162,8 @@ void UChaosVehicleWheel::PostEditChangeProperty( FPropertyChangedEvent& Property
 
 UPhysicalMaterial* UChaosVehicleWheel::GetContactSurfaceMaterial()
 {
-	UPhysicalMaterial* PhysMaterial = NULL;
-
-	if (HitResult.bBlockingHit && HitResult.PhysMaterial.IsValid())
-	{
-		PhysMaterial = HitResult.PhysMaterial.Get();
-	}
-
-	return PhysMaterial;
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return VehicleComponent->GetPhysMaterial(WheelIndex);
 }
 
 

@@ -2,6 +2,8 @@
 
 #include "Kismet/KismetStringLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(KismetStringLibrary)
+
 //////////////////////////////////////////////////////////////////////////
 // UKismetStringLibrary
 
@@ -68,7 +70,7 @@ FString UKismetStringLibrary::Conv_IntToString(int32 InInt)
 
 FString UKismetStringLibrary::Conv_Int64ToString(int64 InInt)
 {
-	return FString::Printf(TEXT("%ld"), InInt);
+	return FString::Printf(TEXT("%lld"), InInt);
 }
 
 FString UKismetStringLibrary::Conv_ByteToString(uint8 InByte)
@@ -118,7 +120,17 @@ FString UKismetStringLibrary::Conv_TransformToString(const FTransform& InTrans)
 
 FString UKismetStringLibrary::Conv_ObjectToString(class UObject* InObj)
 {
-	return (InObj != NULL) ? InObj->GetName() : FString(TEXT("None"));
+	return (InObj != nullptr) ? InObj->GetName() : FString(TEXT("None"));
+}
+
+FString UKismetStringLibrary::Conv_InputDeviceIdToString(FInputDeviceId InDeviceId)
+{
+	return FString::Printf(TEXT("%d"), InDeviceId.GetId());
+}
+
+FString UKismetStringLibrary::Conv_PlatformUserIdToString(FPlatformUserId InPlatformUserId)
+{
+	return FString::Printf(TEXT("%d"), InPlatformUserId.GetInternalId());
 }
 
 FString UKismetStringLibrary::Conv_ColorToString(FLinearColor C)
@@ -144,6 +156,11 @@ FName UKismetStringLibrary::Conv_StringToName(const FString& InString)
 int32 UKismetStringLibrary::Conv_StringToInt(const FString& InString)
 {
 	return FCString::Atoi(*InString);
+}
+
+int64 UKismetStringLibrary::Conv_StringToInt64(const FString& InString)
+{
+	return FCString::Atoi64(*InString);
 }
 
 float UKismetStringLibrary::Conv_StringToFloat(const FString& InString)
@@ -519,3 +536,4 @@ FString UKismetStringLibrary::TimeSecondsToString(float InSeconds)
 	// Create string, including leading zeroes
 	return FString::Printf(TEXT("%s%02d:%02d.%02d"), NegativeModifier, NumMinutes, NumSeconds, NumCentiseconds);
 }
+

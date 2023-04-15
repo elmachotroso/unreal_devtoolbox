@@ -244,10 +244,10 @@ public:
 		}
 
 		// Adjust strength based on brush size and drawscale, so strength 1 = one hemisphere
-		const float AdjustedStrength = ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->BrushRadius);
+		const float AdjustedStrength = ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->GetCurrentToolBrushRadius());
 		FWeightmapToolTarget::CacheClass::DataType DestValue = FWeightmapToolTarget::CacheClass::ClampValue(255.0f * UISettings->WeightTargetValue);
 
-		float PaintStrength = UISettings->ToolStrength * Pressure * AdjustedStrength;
+		float PaintStrength = UISettings->GetCurrentToolStrength() * Pressure * AdjustedStrength;
 
 		// TODO: make paint tool framerate independent like the sculpt tool
 		// const float DeltaTime = FMath::Min<float>(FApp::GetDeltaTime(), 0.1f); // Under 10 fps slow down paint speed
@@ -317,9 +317,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Paint"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Paint", "Paint"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Paint_Message", "The Paint tool increases or decreases the weight of the Material layer being applied to the Landscape."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Paint"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Paint", "Paint"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Paint_Message", "The Paint tool increases or decreases the weight of the Material layer being applied to the Landscape."); };
 
 	virtual void EnterTool()
 	{
@@ -387,7 +387,7 @@ public:
 
 				if (BrushValue > 0.0f)
 				{
-					float Strength = FMath::Clamp<float>(BrushValue * UISettings->ToolStrength * Pressure, 0.0f, 1.0f);
+					float Strength = FMath::Clamp<float>(BrushValue * UISettings->GetCurrentToolStrength() * Pressure, 0.0f, 1.0f);
 
 					int32 Delta = DataScanline[X] - FlattenHeight;
 					if (Delta > 0)
@@ -461,9 +461,9 @@ public:
 		FMatrix FromWorld = ToolTarget::FromWorldMatrix(this->LandscapeInfo);
 
 		// Adjust strength based on brush size and drawscale, so strength 1 = one hemisphere
-		const float AdjustedStrength = ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->BrushRadius);
+		const float AdjustedStrength = ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->GetCurrentToolBrushRadius());
 
-		float SculptStrength = UISettings->ToolStrength * Pressure * AdjustedStrength;
+		float SculptStrength = UISettings->GetCurrentToolStrength() * Pressure * AdjustedStrength;
 		const float DeltaTime = FMath::Min<float>(FApp::GetDeltaTime(), 0.1f); // Under 10 fps slow down paint speed
 		SculptStrength *= DeltaTime * 3.0f; // * 3.0f to partially compensate for impact of DeltaTime on slowing the tools down compared to the old framerate-dependent version
 
@@ -628,9 +628,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Sculpt"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Sculpt", "Sculpt"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Sculpt_Message", "Raise or lower the Landscape using the selected brush shape and falloff."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Sculpt"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Sculpt", "Sculpt"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Sculpt_Message", "Raise or lower the Landscape using the selected brush shape and falloff."); };
 };
 
 class FLandscapeToolErase : public FLandscapeToolPaintBase<FHeightmapToolTarget, FLandscapeToolStrokeErase>
@@ -641,9 +641,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Erase"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erase", "Erase"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erase_Message", "Erase the Landscape using the selected brush shape and falloff."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Erase"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erase", "Erase"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Erase_Message", "Erase the Landscape using the selected brush shape and falloff."); };
 };
 
 // 
@@ -696,7 +696,7 @@ public:
 		TArray<typename ToolTarget::CacheClass::DataType> Data;
 		LayerDataCache.Initialize(this->LandscapeInfo, bCombinedLayerOperation);
 		LayerDataCache.Read(X1, Y1, X2, Y2, Data);
-		const float ToolStrength = FMath::Clamp<float>(UISettings->ToolStrength * Pressure, 0.0f, 1.0f);
+		const float ToolStrength = FMath::Clamp<float>(UISettings->GetCurrentToolStrength() * Pressure, 0.0f, 1.0f);
 
 		// Apply the brush
 		if (UISettings->bDetailSmooth)
@@ -779,9 +779,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Smooth"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Smooth", "Smooth"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Smooth_Message", "Smooth the Landscape within the brushes influence by averaging the Z position of the Landscape vertices."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Smooth"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Smooth", "Smooth"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Smooth_Message", "Smooth the Landscape within the brushes influence by averaging the Z position of the Landscape vertices."); };
 
 };
 
@@ -925,7 +925,7 @@ public:
 
 				if (BrushValue > 0.0f)
 				{
-					float Strength = FMath::Clamp<float>(BrushValue * UISettings->ToolStrength * Pressure, 0.0f, 1.0f);
+					float Strength = FMath::Clamp<float>(BrushValue * UISettings->GetCurrentToolStrength() * Pressure, 0.0f, 1.0f);
 
 					if (!(bUseSlopeFlatten && bTargetIsHeightmap))
 					{
@@ -1103,9 +1103,9 @@ public:
 		Collector.AddReferencedObject(HeightmapFlattenPreviewComponent);
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Flatten"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Flatten", "Flatten"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Flatten_Message", "Raise and lower the Landscape to be the same Z height as the location from which you started using the tool."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Flatten"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Flatten", "Flatten"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Flatten_Message", "Raise and lower the Landscape to be the same Z height as the location from which you started using the tool."); };
 
 	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override
 	{
@@ -1131,21 +1131,22 @@ public:
 		if (ViewportClient->IsLevelEditorClient() && HeightmapFlattenPreviewComponent != nullptr)
 		{
 			FVector MousePosition;
-			this->EdMode->LandscapeMouseTrace((FEditorViewportClient*)ViewportClient, x, y, MousePosition);
+			if (this->EdMode->LandscapeMouseTrace((FEditorViewportClient*)ViewportClient, x, y, MousePosition))
+			{
+				const FTransform LocalToWorld = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy()->ActorToWorld();
+				FVector Origin;
+				Origin.X = FMath::RoundToFloat(MousePosition.X);
+				Origin.Y = FMath::RoundToFloat(MousePosition.Y);
+				Origin.Z = (FMath::RoundToFloat((this->EdMode->UISettings->FlattenTarget - LocalToWorld.GetTranslation().Z) / LocalToWorld.GetScale3D().Z * LANDSCAPE_INV_ZSCALE) - 0.1f) * LANDSCAPE_ZSCALE;
+				HeightmapFlattenPreviewComponent->SetRelativeLocation(Origin, false);
 
-			const FTransform LocalToWorld = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy()->ActorToWorld();
-			FVector Origin;
-			Origin.X = FMath::RoundToFloat(MousePosition.X);
-			Origin.Y = FMath::RoundToFloat(MousePosition.Y);
-			Origin.Z = (FMath::RoundToFloat((this->EdMode->UISettings->FlattenTarget - LocalToWorld.GetTranslation().Z) / LocalToWorld.GetScale3D().Z * LANDSCAPE_INV_ZSCALE) - 0.1f) * LANDSCAPE_ZSCALE;
-			HeightmapFlattenPreviewComponent->SetRelativeLocation(Origin, false);
+				// Clamp the value to the height map
+				uint16 TexHeight = LandscapeDataAccess::GetTexHeight(MousePosition.Z);
+				float Height = LandscapeDataAccess::GetLocalHeight(TexHeight);
 
-			// Clamp the value to the height map
-			uint16 TexHeight = LandscapeDataAccess::GetTexHeight(MousePosition.Z);
-			float Height = LandscapeDataAccess::GetLocalHeight(TexHeight);
-
-			// Convert the height back to world space
-			this->EdMode->UISettings->FlattenEyeDropperModeDesiredTarget = (Height * LocalToWorld.GetScale3D().Z) + LocalToWorld.GetTranslation().Z;
+				// Convert the height back to world space
+				this->EdMode->UISettings->FlattenEyeDropperModeDesiredTarget = (Height * LocalToWorld.GetScale3D().Z) + LocalToWorld.GetTranslation().Z;
+			}
 		}
 
 		return bResult;
@@ -1187,6 +1188,7 @@ public:
 		{
 			HeightmapFlattenPreviewComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
 			HeightmapFlattenPreviewComponent->DestroyComponent();
+			HeightmapFlattenPreviewComponent = nullptr;
 		}
 	}
 };
@@ -1236,9 +1238,9 @@ public:
 
 		float BrushSizeAdjust = 1.0f;
 		CA_SUPPRESS(6326);
-		if (ToolTarget::TargetType != ELandscapeToolTargetType::Weightmap && UISettings->BrushRadius < UISettings->MaximumValueRadius)
+		if (ToolTarget::TargetType != ELandscapeToolTargetType::Weightmap && UISettings->GetCurrentToolBrushRadius() < UISettings->MaximumValueRadius)
 		{
-			BrushSizeAdjust = UISettings->BrushRadius / UISettings->MaximumValueRadius;
+			BrushSizeAdjust = UISettings->GetCurrentToolBrushRadius() / UISettings->MaximumValueRadius;
 		}
 
 		CA_SUPPRESS(6326);
@@ -1277,11 +1279,11 @@ public:
 							}
 							break;
 						}
-						DataScanline[X] = ToolTarget::CacheClass::ClampValue(FMath::RoundToInt(FMath::Lerp(OriginalValue, DestValue, BrushValue * UISettings->ToolStrength * Pressure)));
+						DataScanline[X] = ToolTarget::CacheClass::ClampValue(FMath::RoundToInt(FMath::Lerp(OriginalValue, DestValue, BrushValue * UISettings->GetCurrentToolStrength() * Pressure)));
 					}
 					else
 					{
-						float TotalStrength = BrushValue * UISettings->ToolStrength * Pressure * ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->BrushRadius);
+						float TotalStrength = BrushValue * UISettings->GetCurrentToolStrength() * Pressure * ToolTarget::StrengthMultiplier(this->LandscapeInfo, UISettings->GetCurrentToolBrushRadius());
 						FNoiseParameter NoiseParam(0, UISettings->NoiseScale, TotalStrength * BrushSizeAdjust);
 						float PaintAmount = NoiseModeConversion(UISettings->NoiseMode, NoiseParam.NoiseAmount, NoiseParam.Sample(X, Y));
 						DataScanline[X] = ToolTarget::CacheClass::ClampValue(OriginalValue + PaintAmount);
@@ -1310,9 +1312,9 @@ public:
 	{
 	}
 
-	virtual const TCHAR* GetToolName() override { return TEXT("Noise"); }
-	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Noise", "Noise"); };
-	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Noise_Message", "The Noise tool applies a noise filter to the heightmap or layer weight. The strength determines the amount of noise."); };
+	virtual const TCHAR* GetToolName() const override { return TEXT("Noise"); }
+	virtual FText GetDisplayName() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Noise", "Noise"); };
+	virtual FText GetDisplayMessage() const override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Noise_Message", "The Noise tool applies a noise filter to the heightmap or layer weight. The strength determines the amount of noise."); };
 };
 
 

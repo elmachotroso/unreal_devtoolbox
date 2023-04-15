@@ -3,8 +3,14 @@
 #pragma once
 
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Guid.h"
 #include "Misc/QualifiedFrameTime.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
 
 #include "StageMessages.generated.h"
@@ -45,6 +51,16 @@ enum class EStageCriticalStateEvent : uint8
 	Enter,
 	/** Critical state has been exited */
 	Exit,
+};
+
+/** Different events associated with stage critical state */
+UENUM()
+enum class EStageLoadingState : uint8
+{
+	/** Asset loading has started. */
+	PreLoad,
+	/** Asset loading has finished. */
+	PostLoad
 };
 
 /**
@@ -246,4 +262,30 @@ public:
 	/** Source of the critical state. i.e. TakeName, CustomRecorder, etc... */
 	UPROPERTY(VisibleAnywhere, Category = "CriticalState")
 	FName SourceName;
+};
+
+/**
+ * Message sent to indicate that the node has entered or exited a loading state.
+ */
+USTRUCT()
+struct STAGEDATACORE_API FAssetLoadingStateProviderMessage : public FStageProviderEventMessage
+{
+	GENERATED_BODY()
+
+public:
+	FAssetLoadingStateProviderMessage() = default;
+
+	FAssetLoadingStateProviderMessage(EStageLoadingState InState, const FString& InAssetName)
+		: LoadingState(InState), AssetName(InAssetName)
+	{}
+
+	virtual FString ToString() const override;
+
+	/** Event for this critical state */
+	UPROPERTY(VisibleAnywhere, Category = "AssetLoading")
+	EStageLoadingState LoadingState = EStageLoadingState::PreLoad;
+
+	/** Name of the asset currently loading. */
+	UPROPERTY(VisibleAnywhere, Category = "AssetLoading")
+	FString AssetName;
 };

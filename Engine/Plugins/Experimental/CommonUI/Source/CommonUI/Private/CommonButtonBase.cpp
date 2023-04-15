@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonButtonBase.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 
 #include "CommonTextBlock.h"
 #include "CommonActionWidget.h"
@@ -24,6 +24,9 @@
 #include "CommonUIUtils.h"
 #include "Input/CommonUIInputTypes.h"
 #include "Sound/SoundBase.h"
+#include "Styling/UMGCoreStyle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonButtonBase)
 
 //////////////////////////////////////////////////////////////////////////
 // UCommonButtonStyle
@@ -147,14 +150,27 @@ void UCommonButtonStyle::GetDisabledBrush(FSlateBrush& Brush) const
 }
 
 //////////////////////////////////////////////////////////////////////////
-// UCommonButtonBase
+// UCommonButtonInternalBase
 //////////////////////////////////////////////////////////////////////////
+
+static int32 bUseTransparentButtonStyleAsDefault = 0;
+static FAutoConsoleVariableRef CVarUseTransparentButtonStyleAsDefault(
+	TEXT("UseTransparentButtonStyleAsDefault"),
+	bUseTransparentButtonStyleAsDefault,
+	TEXT("If true, the default Button Style for the CommonButtonBase's SButton will be set to NoBorder, which has a transparent background and no padding"));
 
 UCommonButtonInternalBase::UCommonButtonInternalBase(const FObjectInitializer& Initializer)
 	: Super(Initializer)
 	, bButtonEnabled(true)
 	, bInteractionEnabled(true)
-{}
+{
+	if (bUseTransparentButtonStyleAsDefault)
+	{
+		// SButton will have a transparent background and have no padding if Button Style is set to None
+		static const FButtonStyle* TransparentButtonStyle = new FButtonStyle(FUMGCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"));
+		WidgetStyle = *TransparentButtonStyle;
+	}
+}
 
 void UCommonButtonInternalBase::SetButtonEnabled(bool bInIsButtonEnabled)
 {
@@ -237,7 +253,8 @@ TSharedRef<SWidget> UCommonButtonInternalBase::RebuildWidget()
 		.IsFocusable(IsFocusable)
 		.IsButtonEnabled(bButtonEnabled)
 		.IsInteractionEnabled(bInteractionEnabled)
-		.OnReceivedFocus(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandleOnReceivedFocus));
+		.OnReceivedFocus(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandleOnReceivedFocus))
+		.OnLostFocus(BIND_UOBJECT_DELEGATE(FSimpleDelegate, SlateHandleOnLostFocus));
 
 	MyBox = SNew(SBox)
 		.MinDesiredWidth(MinWidth)
@@ -300,6 +317,11 @@ void UCommonButtonInternalBase::SlateHandleOnReceivedFocus()
 	OnReceivedFocus.ExecuteIfBound();
 }
 
+void UCommonButtonInternalBase::SlateHandleOnLostFocus()
+{
+	OnLostFocus.ExecuteIfBound();
+}
+
 //////////////////////////////////////////////////////////////////////////
 // UCommonButtonBase
 //////////////////////////////////////////////////////////////////////////
@@ -309,9 +331,11 @@ UCommonButtonBase::UCommonButtonBase(const FObjectInitializer& ObjectInitializer
 	, MinWidth(0)
 	, MinHeight(0)
 	, bApplyAlphaOnDisable(true)
+	, bLocked(false)
 	, bSelectable(false)
 	, bShouldSelectUponReceivingFocus(false)
 	, bToggleable(false)
+	, bTriggerClickedAfterSelection(false)
 	, bDisplayInputActionWhenNotInteractable(true)
 	, bShouldUseFallbackDefaultInputAction(true)
 	, bSelected(false)
@@ -335,7 +359,9 @@ void UCommonButtonBase::PostLoad()
 	// We will remove this once existing content is fixed up. Since previously the native CDO was actually the default style, this code will attempt to set the style on assets that were once using this default
 	if (!Style && !bStyleNoLongerNeedsConversion && !IsRunningDedicatedServer())
 	{
-		Style = ICommonUIModule::GetEditorSettings().GetTemplateButtonStyle();
+		UCommonUIEditorSettings& Settings = ICommonUIModule::GetEditorSettings();
+		Settings.ConditionalPostLoad();
+		Style = Settings.GetTemplateButtonStyle();
 	}
 
 	bStyleNoLongerNeedsConversion = true;
@@ -394,6 +420,7 @@ bool UCommonButtonBase::Initialize()
 			RootButton->OnClicked.AddUniqueDynamic(this, &UCommonButtonBase::HandleButtonClicked);
 			RootButton->HandleDoubleClicked.BindUObject(this, &UCommonButtonBase::HandleButtonDoubleClicked);
 			RootButton->OnReceivedFocus.BindUObject(this, &UCommonButtonBase::HandleFocusReceived);
+			RootButton->OnLostFocus.BindUObject(this, &UCommonButtonBase::HandleFocusLost);
 			RootButton->OnPressed.AddUniqueDynamic(this, &UCommonButtonBase::HandleButtonPressed);
 			RootButton->OnReleased.AddUniqueDynamic(this, &UCommonButtonBase::HandleButtonReleased);
 		}
@@ -434,7 +461,7 @@ void UCommonButtonBase::SetIsEnabled(bool bInIsEnabled)
 	else
 	{
 		// Change the underlying enabled bool but do not call the case because we don't want to propogate it to the underlying SWidget
-		bIsEnabled = bInIsEnabled;
+		Super::SetIsEnabled(bInIsEnabled);
 		DisableButton();
 	}
 }
@@ -467,6 +494,7 @@ void UCommonButtonBase::UnbindInputMethodChangedDelegate()
 void UCommonButtonBase::OnInputMethodChanged(ECommonInputType CurrentInputType)
 {
 	UpdateInputActionWidget();
+	BP_OnInputMethodChanged(CurrentInputType);
 }
 
 void UCommonButtonBase::BindTriggeringInputActionToClick()
@@ -567,6 +595,13 @@ void UCommonButtonBase::SetIsInteractionEnabled(bool bInIsInteractionEnabled)
 			NativeOnUnhovered();
 		}
 	}
+}
+
+void UCommonButtonBase::SetHideInputAction(bool bInHideInputAction)
+{
+	bHideInputAction = bInHideInputAction;
+
+	UpdateInputActionWidgetVisibility();
 }
 
 bool UCommonButtonBase::IsInteractionEnabled() const
@@ -711,6 +746,15 @@ void UCommonButtonBase::SetIsSelected(bool InSelected, bool bGiveClickFeedback)
 	}
 }
 
+void UCommonButtonBase::SetIsLocked(bool bInIsLocked)
+{
+	bLocked = bInIsLocked;
+
+	SetButtonStyle();
+
+	BP_OnLockedChanged(bLocked);
+}
+
 void UCommonButtonBase::SetSelectedInternal(bool bInSelected, bool bAllowSound /*= true*/, bool bBroadcast /*= true*/)
 {
 	bSelected = bInSelected;
@@ -746,9 +790,12 @@ void UCommonButtonBase::SetSelectedInternal(bool bInSelected, bool bAllowSound /
 
 void UCommonButtonBase::RefreshDimensions()
 {
-	const UCommonButtonStyle* const StyleCDO = GetStyleCDO();
-	RootButton->SetMinDesiredWidth(FMath::Max(MinWidth, StyleCDO ? StyleCDO->MinWidth : 0));
-	RootButton->SetMinDesiredHeight(FMath::Max(MinHeight, StyleCDO ? StyleCDO->MinHeight : 0));
+	if (RootButton.IsValid())
+	{
+		const UCommonButtonStyle* const StyleCDO = GetStyleCDO();
+		RootButton->SetMinDesiredWidth(FMath::Max(MinWidth, StyleCDO ? StyleCDO->MinWidth : 0));
+		RootButton->SetMinDesiredHeight(FMath::Max(MinHeight, StyleCDO ? StyleCDO->MinHeight : 0));
+	}
 }
 
 void UCommonButtonBase::NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -780,6 +827,11 @@ void UCommonButtonBase::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
 bool UCommonButtonBase::GetSelected() const
 {
 	return bSelected;
+}
+
+bool UCommonButtonBase::GetLocked() const
+{
+	return bLocked;
 }
 
 void UCommonButtonBase::ClearSelection()
@@ -902,6 +954,8 @@ void UCommonButtonBase::SetTriggeredInputAction(const FDataTableRowHandle &Input
 	{
 		TriggeredInputAction = InputActionRow;
 		UpdateInputActionWidget();
+
+		OnTriggeredInputActionChanged(InputActionRow);
 	}
 
 }
@@ -921,6 +975,8 @@ void UCommonButtonBase::SetTriggeringInputAction(const FDataTableRowHandle & Inp
 
 		// Update the Input action widget whenever the triggering input action changes
 		UpdateInputActionWidget();
+
+		OnTriggeringInputActionChanged(InputActionRow);
 	}
 }
 
@@ -996,9 +1052,16 @@ void UCommonButtonBase::HandleButtonClicked()
 	// Guard against this case.
 	if (IsInteractionEnabled())
 	{
-		SetIsSelected(!bSelected, false);
-
-		NativeOnClicked();
+		if (bTriggerClickedAfterSelection)
+		{
+			SetIsSelected(!bSelected, false);
+			NativeOnClicked();
+		}
+		else
+		{
+			NativeOnClicked();
+			SetIsSelected(!bSelected, false);
+		}
 
 		ExecuteTriggeredInput();
 	}
@@ -1013,16 +1076,23 @@ FReply UCommonButtonBase::HandleButtonDoubleClicked()
 
 void UCommonButtonBase::HandleFocusReceived()
 {
-	if (bShouldSelectUponReceivingFocus && !IsSelected())
+	if (bShouldSelectUponReceivingFocus && !GetSelected())
 	{
 		SetIsSelected(true, false);
 	}
 	OnFocusReceived().Broadcast();
+	BP_OnFocusReceived();
+}
+
+void UCommonButtonBase::HandleFocusLost()
+{
+	OnFocusLost().Broadcast();
+	BP_OnFocusLost();
 }
 
 void UCommonButtonBase::HandleButtonPressed()
 {
-	OnPressed().Broadcast();
+	NativeOnPressed();
 
 	UCommonInputSubsystem* CommonInputSubsystem = GetInputSubsystem();
 
@@ -1035,7 +1105,7 @@ void UCommonButtonBase::HandleButtonPressed()
 
 void UCommonButtonBase::HandleButtonReleased()
 {
-	OnReleased().Broadcast();
+	NativeOnReleased();
 
 	UCommonInputSubsystem* CommonInputSubsystem = GetInputSubsystem();
 
@@ -1053,6 +1123,13 @@ FReply UCommonButtonBase::NativeOnFocusReceived(const FGeometry& InGeometry, con
 	HandleFocusReceived();
 
 	return Reply;
+}
+
+void UCommonButtonBase::NativeOnFocusLost(const FFocusEvent& InFocusEvent)
+{
+	Super::NativeOnFocusLost(InFocusEvent);
+
+	HandleFocusLost();
 }
 
 void UCommonButtonBase::NativeOnSelected(bool bBroadcast)
@@ -1083,6 +1160,7 @@ void UCommonButtonBase::NativeOnHovered()
 {
 	BP_OnHovered();
 	OnHovered().Broadcast();
+	
 	if (OnButtonBaseHovered.IsBound())
 	{
 		OnButtonBaseHovered.Broadcast(this);
@@ -1098,6 +1176,7 @@ void UCommonButtonBase::NativeOnUnhovered()
 {
 	BP_OnUnhovered();
 	OnUnhovered().Broadcast();
+	
 	if (OnButtonBaseUnhovered.IsBound())
 	{
 		OnButtonBaseUnhovered.Broadcast(this);
@@ -1111,39 +1190,67 @@ void UCommonButtonBase::NativeOnUnhovered()
 
 void UCommonButtonBase::NativeOnClicked()
 {
-	BP_OnClicked();
-	OnClicked().Broadcast();
-	if (OnButtonBaseClicked.IsBound())
+	if (!GetLocked())
 	{
-		OnButtonBaseClicked.Broadcast(this);
-	}
-
-	FString ButtonName, ABTestName, ExtraData;
-	if (GetButtonAnalyticInfo(ButtonName, ABTestName, ExtraData))
-	{
-		UCommonUISubsystemBase* CommonUISubsystem = GetUISubsystem();
-		if (GetGameInstance())
+		BP_OnClicked();
+		OnClicked().Broadcast();
+		if (OnButtonBaseClicked.IsBound())
 		{
-			check(CommonUISubsystem);
-
-			CommonUISubsystem->FireEvent_ButtonClicked(ButtonName, ABTestName, ExtraData);
+			OnButtonBaseClicked.Broadcast(this);
 		}
+		
+		FString ButtonName, ABTestName, ExtraData;
+		if (GetButtonAnalyticInfo(ButtonName, ABTestName, ExtraData))
+		{
+			UCommonUISubsystemBase* CommonUISubsystem = GetUISubsystem();
+			if (GetGameInstance())
+			{
+				check(CommonUISubsystem);
+
+				CommonUISubsystem->FireEvent_ButtonClicked(ButtonName, ABTestName, ExtraData);
+			}
+		}
+	}
+	else
+	{
+		BP_OnLockClicked();
+		OnLockClicked().Broadcast();
 	}
 }
 
 void UCommonButtonBase::NativeOnDoubleClicked()
 {
-	BP_OnDoubleClicked();
-	OnDoubleClicked().Broadcast();
-	if (OnButtonBaseDoubleClicked.IsBound())
+	if (!GetLocked())
 	{
-		OnButtonBaseDoubleClicked.Broadcast(this);
+		BP_OnDoubleClicked();
+		OnDoubleClicked().Broadcast();
+		if (OnButtonBaseDoubleClicked.IsBound())
+		{
+			OnButtonBaseDoubleClicked.Broadcast(this);
+		}
+	}
+	else
+	{
+		BP_OnLockDoubleClicked();
+		OnLockDoubleClicked().Broadcast();
 	}
 }
 
 void UCommonButtonBase::StopDoubleClickPropagation()
 {
 	bStopDoubleClickPropagation = true;
+}
+
+void UCommonButtonBase::NativeOnPressed()
+{
+	BP_OnPressed();
+	OnPressed().Broadcast();
+}
+
+void UCommonButtonBase::NativeOnReleased()
+{
+	BP_OnReleased();
+	OnReleased().Broadcast();
 }
 
 void UCommonButtonBase::NativeOnEnabled()
@@ -1205,6 +1312,8 @@ void UCommonButtonBase::BuildStyles()
 		NormalStyle.Disabled = CommonButtonStyle->bSingleMaterial ? DynamicSingleMaterialBrush : DisabledBrush;
 		NormalStyle.NormalPadding = ButtonPadding;
 		NormalStyle.PressedPadding = ButtonPadding;
+
+		// Sets the sound overrides for the Normal state
 		NormalStyle.PressedSlateSound = bHasPressedSlateSoundOverride ? PressedSlateSoundOverride : CommonButtonStyle->PressedSlateSound;
 		NormalStyle.HoveredSlateSound = bHasHoveredSlateSoundOverride ? HoveredSlateSoundOverride : CommonButtonStyle->HoveredSlateSound;
 
@@ -1214,24 +1323,53 @@ void UCommonButtonBase::BuildStyles()
 		SelectedStyle.Disabled = CommonButtonStyle->bSingleMaterial ? DynamicSingleMaterialBrush : DisabledBrush;
 		SelectedStyle.NormalPadding = ButtonPadding;
 		SelectedStyle.PressedPadding = ButtonPadding;
-		SelectedStyle.PressedSlateSound =
+
+		DisabledStyle = NormalStyle;
+
+		/**
+		 * Selected State Sound overrides
+		 * If there is no Selected state sound override, the Normal state's sound will be used.
+		 * This sound may come from either the button style or the sound override in Blueprints.
+		 */
+		if (SelectedPressedSlateSoundOverride.GetResourceObject())
+		{
+			SelectedStyle.PressedSlateSound = SelectedPressedSlateSoundOverride;
+		}
+		else
+		{
+			SelectedStyle.PressedSlateSound =
 			bHasPressedSlateSoundOverride || !CommonButtonStyle->SelectedPressedSlateSound
 			? NormalStyle.PressedSlateSound
 			: CommonButtonStyle->SelectedPressedSlateSound.Sound;
-
-		SelectedStyle.HoveredSlateSound =
+		}
+		
+		if (SelectedHoveredSlateSoundOverride.GetResourceObject())
+		{
+			SelectedStyle.HoveredSlateSound = SelectedHoveredSlateSoundOverride;
+		}
+		else
+		{
+			SelectedStyle.HoveredSlateSound =
 			bHasHoveredSlateSoundOverride || !CommonButtonStyle->SelectedHoveredSlateSound
 			? NormalStyle.HoveredSlateSound
 			: CommonButtonStyle->SelectedHoveredSlateSound.Sound;
-
-		DisabledStyle = NormalStyle;
-		if (!bHasPressedSlateSoundOverride && CommonButtonStyle->DisabledPressedSlateSound)
-		{
-			DisabledStyle.PressedSlateSound = CommonButtonStyle->DisabledPressedSlateSound.Sound;
 		}
-		if (!bHasHoveredSlateSoundOverride && CommonButtonStyle->DisabledHoveredSlateSound)
+
+		// Locked State Sound overrides
+		LockedStyle = NormalStyle;
+		if (CommonButtonStyle->LockedPressedSlateSound || LockedPressedSlateSoundOverride.GetResourceObject())
 		{
-			DisabledStyle.HoveredSlateSound = CommonButtonStyle->DisabledHoveredSlateSound.Sound;
+			LockedStyle.PressedSlateSound =
+			LockedPressedSlateSoundOverride.GetResourceObject()
+			? LockedPressedSlateSoundOverride
+			: CommonButtonStyle->LockedPressedSlateSound.Sound;
+		}
+		if (CommonButtonStyle->LockedHoveredSlateSound || LockedHoveredSlateSoundOverride.GetResourceObject())
+		{
+			LockedStyle.HoveredSlateSound =
+			LockedHoveredSlateSoundOverride.GetResourceObject()
+			? LockedHoveredSlateSoundOverride
+			: CommonButtonStyle->LockedHoveredSlateSound.Sound;
 		}
 
 		SetButtonStyle();
@@ -1245,7 +1383,11 @@ void UCommonButtonBase::SetButtonStyle()
 	if (UButton* ButtonPtr = RootButton.Get())
 	{
 		const FButtonStyle* UseStyle;
-		if (bSelected)
+		if (bLocked)
+		{
+			UseStyle = &LockedStyle;
+		}
+		else if (bSelected)
 		{
 			UseStyle = &SelectedStyle;
 		}
@@ -1284,6 +1426,42 @@ void UCommonButtonBase::SetHoveredSoundOverride(USoundBase* Sound)
 	if (HoveredSlateSoundOverride.GetResourceObject() != Sound)
 	{
 		HoveredSlateSoundOverride.SetResourceObject(Sound);
+		BuildStyles();
+	}
+}
+
+void UCommonButtonBase::SetSelectedPressedSoundOverride(USoundBase* Sound)
+{
+	if (SelectedPressedSlateSoundOverride.GetResourceObject() != Sound)
+	{
+		SelectedPressedSlateSoundOverride.SetResourceObject(Sound);
+		BuildStyles();
+	}
+}
+
+void UCommonButtonBase::SetSelectedHoveredSoundOverride(USoundBase* Sound)
+{
+	if (SelectedHoveredSlateSoundOverride.GetResourceObject() != Sound)
+	{
+		SelectedHoveredSlateSoundOverride.SetResourceObject(Sound);
+		BuildStyles();
+	}
+}
+
+void UCommonButtonBase::SetLockedPressedSoundOverride(USoundBase* Sound)
+{
+	if (LockedPressedSlateSoundOverride.GetResourceObject() != Sound)
+	{
+		LockedPressedSlateSoundOverride.SetResourceObject(Sound);
+		BuildStyles();
+	}
+}
+
+void UCommonButtonBase::SetLockedHoveredSoundOverride(USoundBase* Sound)
+{
+	if (LockedHoveredSlateSoundOverride.GetResourceObject() != Sound)
+	{
+		LockedHoveredSlateSoundOverride.SetResourceObject(Sound);
 		BuildStyles();
 	}
 }
@@ -1376,3 +1554,4 @@ bool UCommonButtonBase::GetIsFocusable() const
 {
 	return bIsFocusable;
 }
+

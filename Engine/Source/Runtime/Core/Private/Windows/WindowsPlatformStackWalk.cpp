@@ -242,11 +242,18 @@ void FWindowsPlatformStackWalk::StackWalkAndDump( ANSICHAR* HumanReadableString,
 	InitStackWalking();
 
 	// If the callstack is for the executing thread, ignore this function
-	if(Context == nullptr)
+	if (Context == nullptr)
 	{
 		IgnoreCount++;
 	}
 	FGenericPlatformStackWalk::StackWalkAndDump(HumanReadableString, HumanReadableStringSize, IgnoreCount, Context);
+	// If we incremented IgnoreCount, make sure we have instructions after StackWalkAndDump so the compiler
+	// can not remove this function from the callstack using Tail Call Elimination
+	if (Context == nullptr)
+	{
+		static volatile int32 ForceCompilerToReturnHere = 0;
+		ForceCompilerToReturnHere += static_cast<int32>(HumanReadableStringSize);
+	}
 }
 
 void FWindowsPlatformStackWalk::StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, void* Context )
@@ -746,7 +753,7 @@ void LoadSymbolsForModule(HMODULE ModuleHandle, const FString& RemoteStorage)
 	{
 		if (!SearchPathList.IsEmpty())
 		{
-			SearchPathList.AppendChar(';');
+			SearchPathList.AppendChar(TEXT(';'));
 		}
 		SearchPathList.Append(RemoteStorage);
 	}
@@ -920,6 +927,18 @@ int32 FWindowsPlatformStackWalk::GetProcessModuleSignatures(FStackWalkModuleInfo
  */ 
 static void OnModulesChanged( FName ModuleThatChanged, EModuleChangeReason ReasonForChange )
 {
+	// PluginDirectoryChanged didn't change which modules are loaded or unloaded.
+	if (ReasonForChange == EModuleChangeReason::PluginDirectoryChanged)
+	{
+		return;
+	}
+#if ON_DEMAND_SYMBOL_LOADING
+	if (ReasonForChange == EModuleChangeReason::ModuleLoaded)
+	{
+		return; // If the module is needed to resolve a callstack, the module and its symbols will be loaded on demand.
+	}
+#endif
+
 	GNeedToRefreshSymbols = true;
 }
 
@@ -968,11 +987,11 @@ FString GetRemoteStorage(const FString& DownstreamStorage)
 		{
 			if (StorageIndex > 0) 
 			{
-				SymbolStorage.AppendChar(';');
+				SymbolStorage.AppendChar(TEXT(';'));
 			}
 			SymbolStorage.Append(TEXT("SRV*"));
 			SymbolStorage.Append(DownstreamStorage);
-			SymbolStorage.AppendChar('*');
+			SymbolStorage.AppendChar(TEXT('*'));
 			SymbolStorage.Append(RemoteStorage[StorageIndex]);
 		}
 		return SymbolStorage;
@@ -1079,7 +1098,7 @@ bool FWindowsPlatformStackWalk::InitStackWalkingInternal(void* Process, bool bFo
 		return false;
 	}
 
-	if (!GStackWalkingInitialized)
+	auto InitDbgHelp = []()
 	{
 		// Set up the symbol engine.
 		uint32 SymOpts = SymGetOptions();
@@ -1115,9 +1134,34 @@ bool FWindowsPlatformStackWalk::InitStackWalkingInternal(void* Process, bool bFo
 			LoadSymbolsForProcessModules(RemoteStorage);
 		}
 #endif
+	};
+
+	if (!GStackWalkingInitialized)
+	{
+		InitDbgHelp();
 	}
 	else if (GNeedToRefreshSymbols)
 	{
+#if ON_DEMAND_SYMBOL_LOADING
+		// Cleaning up and reinitializing is faster than calling SymRefreshModuleList() in a basic test conditions. The MS documentation claims that SymInitialize() with bInvadeProcess true (as done above)
+		// do the same thing as SymRefreshModuleList(), but that's likely not true. It was measured as following:
+		//
+		// FPlatformStackWalk::InitStackWalking(); // Must be the very first call (no prior ensure and anything that dumped the stack)
+		// FPlatformStackWalk::StackWalkAndDump(...);
+		// FModuleManager::Get().OnModulesChanged().Broadcast(NAME_None, EModuleChangeReason::ModuleUnloaded); // This set to GNeedToRefreshSymbols = true.
+		// FPlatformStackWalk::InitStackWalking(); // This will trigger the code that needs to be measured.
+		// FPlatformStackWalk::StackWalkAndDump(...);
+		//
+		// If we use: SymRefreshModuleList(), it takes 7 seconds and the memory usage of the Editor is doubled.
+		// If we use: SymCleanup() + SymInitializeW(..., bInvadeProcess=true), it takes 0.03s and doesn't use more memory to perform the dump.
+		//
+		// Why? Hard to tell. Maybe a bug. That's in the internal working of DBGHelp and this might change in the future. Cleaning up DBGHelp
+		// invalidates the cached states. This may affect negatively other use cases, but that's speculation. Also, module change events mostly
+		// happen at startup, usually before PlatformStackWalk::InitStackWalking() is called the first time unless an ensure() fires early or
+		// some code calls StackWalkAndDump() during the initialization phase, forcing initialization of DBGHelp.
+		SymCleanup(GProcessHandle);
+		InitDbgHelp();
+#else
 		// Refresh and reload symbols
 		SymRefreshModuleList(GProcessHandle);
 
@@ -1130,6 +1174,7 @@ bool FWindowsPlatformStackWalk::InitStackWalkingInternal(void* Process, bool bFo
 			// so load symbols for all modules the process has loaded.
 			LoadSymbolsForProcessModules( RemoteStorage );
 		}
+#endif
 	}
 
 	return GStackWalkingInitialized;

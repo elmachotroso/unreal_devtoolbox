@@ -1,30 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterSubsystem.h"
-#include "WaterModule.h"
-#include "HAL/IConsoleManager.h"
-#include "Engine/World.h"
-#include "TimerManager.h"
-#include "WaterZoneActor.h"
-#include "WaterMeshComponent.h"
+#include "BuoyancyManager.h"
+#include "CollisionShape.h"
 #include "Engine/Engine.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
+#include "HAL/IConsoleManager.h"
+#include "Interfaces/Interface_PostProcessVolume.h"
+#include "LandscapeSubsystem.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
+#include "Math/NumericLimits.h"
+#include "SceneView.h"
+#include "TimerManager.h"
 #include "WaterBodyActor.h"
-#include "WaterBodyIslandActor.h"
 #include "WaterBodyExclusionVolume.h"
+#include "WaterBodyIslandActor.h"
+#include "WaterMeshComponent.h"
+#include "WaterModule.h"
+#include "WaterRuntimeSettings.h"
 #include "WaterSplineComponent.h"
 #include "WaterUtils.h"
-#include "CollisionShape.h"
-#include "Interfaces/Interface_PostProcessVolume.h"
-#include "SceneView.h"
-#include "Math/NumericLimits.h"
-#include "BuoyancyManager.h"
-#include "WaterRuntimeSettings.h"
-#include "Engine/CollisionProfile.h"
-#include "Engine/StaticMesh.h"
+#include "WaterViewExtension.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterSubsystem)
 
 // ----------------------------------------------------------------------------------
 
@@ -170,22 +172,23 @@ UWaterSubsystem* UWaterSubsystem::GetWaterSubsystem(const UWorld* InWorld)
 	return nullptr;
 }
 
-FWaterBodyManager* UWaterSubsystem::GetWaterBodyManager(UWorld* InWorld)
+FWaterBodyManager* UWaterSubsystem::GetWaterBodyManager(const UWorld* InWorld)
 {
 	if (UWaterSubsystem* Subsystem = GetWaterSubsystem(InWorld))
 	{
-		return &Subsystem->WaterBodyManager;
+		return &Subsystem->GetWaterBodyManagerInternal();
 	}
 
 	return nullptr;
 }
 
-void UWaterSubsystem::ForEachWaterBodyComponent(const UWorld* World, TFunctionRef<bool(UWaterBodyComponent*)> Predicate)
+TWeakPtr<FWaterViewExtension, ESPMode::ThreadSafe> UWaterSubsystem::GetWaterViewExtension(const UWorld* InWorld)
 {
-	if (UWaterSubsystem* Subsystem = GetWaterSubsystem(World))
+	if (UWaterSubsystem* Subsystem = GetWaterSubsystem(InWorld))
 	{
-		Subsystem->WaterBodyManager.ForEachWaterBodyComponent(Predicate);
+		return Subsystem->WaterViewExtension;
 	}
+	return {};
 }
 
 void UWaterSubsystem::Tick(float DeltaTime)
@@ -202,9 +205,12 @@ void UWaterSubsystem::Tick(float DeltaTime)
 	SetMPCTime(MPCTime, PrevWorldTimeSeconds);
 	PrevWorldTimeSeconds = MPCTime;
 
-	if (WaterZoneActor)
+	for (AWaterZone* WaterZoneActor : TActorRange<AWaterZone>(GetWorld()))
 	{
-		WaterZoneActor->Update();
+		if (WaterZoneActor)
+		{
+			WaterZoneActor->Update();
+		}
 	}
 
 	if (!bUnderWaterForAudio && CachedDepthUnderwater > 0.0f)
@@ -244,7 +250,8 @@ void UWaterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	UWorld* World = GetWorld();
 	check(World != nullptr);
 
-	WaterBodyManager.Initialize(World);
+	GetWaterBodyManagerInternal().Initialize(World);
+	WaterViewExtension = FSceneViewExtensions::NewExtension<FWaterViewExtension>(World);
 
 	bUsingSmoothedTime = false;
 	FConsoleVariableDelegate NotifyWaterScalabilityChanged = FConsoleVariableDelegate::CreateUObject(this, &UWaterSubsystem::NotifyWaterScalabilityChangedInternal);
@@ -276,8 +283,23 @@ void UWaterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		// Store the buoyancy manager we create for future use.
 		BuoyancyManager = World->SpawnActor<ABuoyancyManager>(SpawnInfo);
 	}
-	UCollisionProfile::Get()->OnLoadProfileConfig.AddUObject(this, &UWaterSubsystem::OnLoadProfileConfig);
-	AddWaterCollisionProfile();
+}
+
+void UWaterSubsystem::PostInitialize()
+{
+	Super::PostInitialize();
+
+	UWorld* World = GetWorld();
+	check(World);
+
+#if WITH_EDITOR
+	// Register for heightmap streaming notifications
+	if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+	{
+		check(!OnHeightmapStreamedHandle.IsValid());
+		OnHeightmapStreamedHandle = LandscapeSubsystem->GetOnHeightmapStreamedDelegate().AddUObject(this, &UWaterSubsystem::OnHeightmapStreamed);
+	}
+#endif // WITH_EDITOR
 }
 
 void UWaterSubsystem::Deinitialize()
@@ -285,7 +307,16 @@ void UWaterSubsystem::Deinitialize()
 	UWorld* World = GetWorld();
 	check(World != nullptr);
 
-	UCollisionProfile::Get()->OnLoadProfileConfig.RemoveAll(this);
+#if WITH_EDITOR
+	if (OnHeightmapStreamedHandle.IsValid())
+	{
+		if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+		{
+			LandscapeSubsystem->GetOnHeightmapStreamedDelegate().Remove(OnHeightmapStreamedHandle);
+		}
+		OnHeightmapStreamedHandle.Reset();
+	}
+#endif // WITH_EDITOR
 
 	FConsoleVariableDelegate NullCallback;
 	CVarShallowWaterSimulationRenderTargetSize->SetOnChangedCallback(NullCallback);
@@ -297,7 +328,7 @@ void UWaterSubsystem::Deinitialize()
 	World->OnBeginPostProcessSettings.RemoveAll(this);
 	World->RemovePostProcessVolume(&UnderwaterPostProcessVolume);
 
-	WaterBodyManager.Deinitialize();
+	GetWaterBodyManagerInternal().Deinitialize();
 
 #if WITH_EDITOR
 	GetDefault<UWaterRuntimeSettings>()->OnSettingsChange.RemoveAll(this);
@@ -314,10 +345,13 @@ void UWaterSubsystem::ApplyRuntimeSettings(const UWaterRuntimeSettings* Settings
 	MaterialParameterCollection = Settings->MaterialParameterCollection.LoadSynchronous();
 
 #if WITH_EDITOR
-	for (TActorIterator<AWaterBody> ActorItr(World); ActorItr; ++ActorItr)
+	// Update sprites since we may have changed the sprite Z offset setting.
+
+	GetWaterBodyManagerInternal().ForEachWaterBodyComponent([](UWaterBodyComponent* Component)
 	{
-		(*ActorItr)->UpdateActorIcon();
-	}
+		Component->UpdateWaterSpriteComponent();
+		return true;
+	});
 
 	for (TActorIterator<AWaterBodyIsland> ActorItr(World); ActorItr; ++ActorItr)
 	{
@@ -331,36 +365,20 @@ void UWaterSubsystem::ApplyRuntimeSettings(const UWaterRuntimeSettings* Settings
 #endif // WITH_EDITOR
 }
 
-void UWaterSubsystem::AddWaterCollisionProfile()
+#if WITH_EDITOR
+void UWaterSubsystem::OnHeightmapStreamed(const FOnHeightmapStreamedContext& InContext)
 {
-	// Make sure WaterCollisionProfileName is added to Engine's collision profiles
-	const FName WaterCollisionProfileName = GetDefault<UWaterRuntimeSettings>()->GetDefaultWaterCollisionProfileName();
-	FCollisionResponseTemplate WaterBodyCollisionProfile;
-	if (!UCollisionProfile::Get()->GetProfileTemplate(WaterCollisionProfileName, WaterBodyCollisionProfile))
-	{
-		WaterBodyCollisionProfile.Name = WaterCollisionProfileName;
-		WaterBodyCollisionProfile.CollisionEnabled = ECollisionEnabled::QueryOnly;
-		WaterBodyCollisionProfile.ObjectType = ECollisionChannel::ECC_WorldStatic;
-		WaterBodyCollisionProfile.bCanModify = false;
-		WaterBodyCollisionProfile.ResponseToChannels = FCollisionResponseContainer::GetDefaultResponseContainer();
-		WaterBodyCollisionProfile.ResponseToChannels.Camera = ECR_Ignore;
-		WaterBodyCollisionProfile.ResponseToChannels.Visibility = ECR_Ignore;
-		WaterBodyCollisionProfile.ResponseToChannels.WorldDynamic = ECR_Overlap;
-		WaterBodyCollisionProfile.ResponseToChannels.Pawn = ECR_Overlap;
-		WaterBodyCollisionProfile.ResponseToChannels.PhysicsBody = ECR_Overlap;
-		WaterBodyCollisionProfile.ResponseToChannels.Destructible = ECR_Overlap;
-		WaterBodyCollisionProfile.ResponseToChannels.Vehicle = ECR_Overlap;
-#if WITH_EDITORONLY_DATA
-		WaterBodyCollisionProfile.HelpMessage = TEXT("Default Water Collision Profile (Created by Water Plugin)");
-#endif
-		FCollisionProfilePrivateAccessor::AddProfileTemplate(WaterBodyCollisionProfile);
-	}
+	UE_LOG(LogWater, Verbose, TEXT("UWaterSubsystem::OnHeightmapStreamed() -- Rebuilding Water Info Texture..."));
+	MarkWaterZonesInRegionForRebuild(InContext.GetUpdateRegion(), EWaterZoneRebuildFlags::UpdateWaterInfoTexture);
 }
+#endif // WITH_EDITOR
 
-void UWaterSubsystem::OnLoadProfileConfig(UCollisionProfile* CollisionProfile)
+FWaterBodyManager& UWaterSubsystem::GetWaterBodyManagerInternal()
 {
-	check(CollisionProfile == UCollisionProfile::Get());
-	AddWaterCollisionProfile();
+	// #todo_water [roey]: Remove these pragmas when we can move WaterBodyManager to private.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return WaterBodyManager;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UWaterSubsystem::IsShallowWaterSimulationEnabled() const
@@ -457,39 +475,26 @@ void UWaterSubsystem::SetOceanFloodHeight(float InFloodHeight)
 {
 	if (UWorld* World = GetWorld())
 	{
-	const float ClampedFloodHeight = FMath::Max(0.0f, InFloodHeight);
+		const float ClampedFloodHeight = FMath::Max(0.0f, InFloodHeight);
 
-	if (FloodHeight != ClampedFloodHeight)
-	{
-		FloodHeight = ClampedFloodHeight;
-		MarkAllWaterMeshesForRebuild();
+		if (FloodHeight != ClampedFloodHeight)
+		{
+			FloodHeight = ClampedFloodHeight;
+			MarkAllWaterZonesForRebuild();
 
-		// the ocean body is dynamic and needs to be readjusted when the flood height changes : 
+			// the ocean body is dynamic and needs to be readjusted when the flood height changes : 
 			if (OceanBodyComponent.IsValid())
-		{
+			{
 				OceanBodyComponent->SetHeightOffset(InFloodHeight);
-		}
+			}
 
-			WaterBodyManager.ForEachWaterBodyComponent([this](UWaterBodyComponent* WaterBodyComponent)
-		{
+			GetWaterBodyManagerInternal().ForEachWaterBodyComponent([this](UWaterBodyComponent* WaterBodyComponent)
+			{
 				WaterBodyComponent->UpdateMaterialInstances();
 				return true;
 			});
 		}
 	}
-}
-
-AWaterZone* UWaterSubsystem::GetWaterZoneActor() const
-{
-	if (UWorld* World = GetWorld())
-	{
-		// #todo_water: this assumes only one water zone actor right now.  In the future we may need to associate a water mesh actor with a water body more directly
-		TActorIterator<AWaterZone> It(World);
-		WaterZoneActor = It ? *It : nullptr;
-		return WaterZoneActor;
-	}
-
-	return nullptr;
 }
 
 float UWaterSubsystem::GetOceanBaseHeight() const
@@ -502,15 +507,33 @@ float UWaterSubsystem::GetOceanBaseHeight() const
 	return TNumericLimits<float>::Lowest();
 }
 
-void UWaterSubsystem::MarkAllWaterMeshesForRebuild()
+void UWaterSubsystem::MarkAllWaterZonesForRebuild(EWaterZoneRebuildFlags RebuildFlags)
 {
 	if (UWorld* World = GetWorld())
 	{
-		for (AWaterZone* WaterMesh : TActorRange<AWaterZone>(World))
-	{
-		WaterMesh->MarkWaterMeshComponentForRebuild();
+		for (AWaterZone* WaterZone : TActorRange<AWaterZone>(World))
+		{
+			WaterZone->MarkForRebuild(RebuildFlags);
+		}
 	}
 }
+
+void UWaterSubsystem::MarkWaterZonesInRegionForRebuild(const FBox2D& InUpdateRegion, EWaterZoneRebuildFlags InRebuildFlags)
+{
+	if (UWorld* World = GetWorld())
+	{
+		for (AWaterZone* WaterZone : TActorRange<AWaterZone>(World))
+		{
+			FVector2D ZoneExtent = WaterZone->GetZoneExtent();
+			FVector2D ZoneLocation = FVector2D(WaterZone->GetActorLocation());
+			const FBox2D WaterZoneBounds(ZoneLocation - ZoneExtent * 0.5, ZoneLocation + ZoneExtent * 0.5);
+
+			if (WaterZoneBounds.Intersect(InUpdateRegion))
+			{
+				WaterZone->MarkForRebuild(InRebuildFlags);
+			}
+		}
+	}
 }
 
 void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CVar)
@@ -521,7 +544,7 @@ void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CV
 void UWaterSubsystem::NotifyWaterVisibilityChangedInternal(IConsoleVariable* CVar)
 {
 	// Water body visibility depends on various CVars. All need to update the visibility in water body components : 
-	WaterBodyManager.ForEachWaterBodyComponent([](UWaterBodyComponent* WaterBodyComponent)
+	GetWaterBodyManagerInternal().ForEachWaterBodyComponent([](UWaterBodyComponent* WaterBodyComponent)
 	{
 		WaterBodyComponent->UpdateComponentVisibility(/* bAllowWaterMeshRebuild = */true);
 		return true;
@@ -587,8 +610,8 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 
 	TArray<FHitResult> Hits;
 	TArray<FWaterBodyPostProcessQuery, TInlineAllocator<4>> WaterBodyQueriesToProcess;
-	const AWaterZone* LocalWaterZoneActor = GetWaterZoneActor();
-	if ((LocalWaterZoneActor != nullptr) && World->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
+	const bool bWorldHasWater  = GetWaterBodyManagerInternal().HasAnyWaterBodies();
+	if (bWorldHasWater && World->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
 	{
 		if (Hits.Num() > 1)
 		{
@@ -667,7 +690,7 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 
 	SceneView->UnderwaterDepth = CachedDepthUnderwater;
 
-	if (!bUnderwaterForPostProcess || !IsUnderwaterPostProcessEnabled())
+	if (!bUnderwaterForPostProcess || !IsUnderwaterPostProcessEnabled() || SceneView->Family->EngineShowFlags.PathTracing)
 	{
 		UnderwaterPostProcessVolume.PostProcessProperties.bIsEnabled = false;
 		UnderwaterPostProcessVolume.PostProcessProperties.Settings = nullptr;

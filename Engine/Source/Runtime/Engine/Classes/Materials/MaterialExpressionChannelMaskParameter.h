@@ -4,20 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "Materials/MaterialExpressionChannelMaskParameterColor.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "MaterialExpressionChannelMaskParameter.generated.h"
-
-UENUM()
-namespace EChannelMaskParameterColor
-{
-	enum Type
-	{
-		Red,
-		Green,
-		Blue,
-		Alpha,
-	};
-}
 
 UCLASS(collapsecategories, hidecategories=(Object, MaterialExpressionVectorParameter), MinimalAPI)
 class UMaterialExpressionChannelMaskParameter : public UMaterialExpressionVectorParameter
@@ -27,10 +16,8 @@ class UMaterialExpressionChannelMaskParameter : public UMaterialExpressionVector
 	UPROPERTY(EditAnywhere, Category=MaterialExpressionChannelMaskParameter)
 	TEnumAsByte<EChannelMaskParameterColor::Type> MaskChannel;
 
-#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FExpressionInput Input;
-#endif
 
 #if WITH_EDITOR
 	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override

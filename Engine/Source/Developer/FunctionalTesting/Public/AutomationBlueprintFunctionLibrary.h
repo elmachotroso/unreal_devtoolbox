@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Engine/LatentActionManager.h"
-#include "Kismet/BlueprintFunctionLibrary.h"
 #include "AutomationScreenshotOptions.h"
+#include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/LatentActionManager.h"
 #include "HAL/IConsoleManager.h"
-#include "Templates/UniquePtr.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "Misc/AutomationTest.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/ObjectMacros.h"
 #include "AutomationBlueprintFunctionLibrary.generated.h"
 
 class ACameraActor;
@@ -189,6 +190,14 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Automation", meta = (HidePin = "WorldContextObject", DefaultToSelf = "WorldContextObject"))
 	static void SetScalabilityQualityToLow(UObject* WorldContextObject);
+
+	/** Sets all viewports of the first found level editor to have the given ViewMode (Lit/Unlit/etc.) **/
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static void SetEditorViewportViewMode(EViewModeIndex Index);
+
+	/** Sets all viewports of the first found level editor to have the VisualizeBuffer ViewMode and also display a given buffer (BaseColor/Metallic/Roughness/etc.) **/
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static void SetEditorViewportVisualizeBuffer(FName BufferName);
 };
 
 #if WITH_AUTOMATION_TESTS
@@ -236,6 +245,8 @@ private:
 	FConsoleVariableSwapperTempl<float> TonemapperSharpen;
 	FConsoleVariableSwapperTempl<float> ScreenPercentage;
 	FConsoleVariableSwapperTempl<int32> ScreenPercentageMode;
+	FConsoleVariableSwapperTempl<int32> DynamicResTestScreenPercentage;
+	FConsoleVariableSwapperTempl<int32> DynamicResOperationMode;
 	FConsoleVariableSwapperTempl<int32> EditorViewportOverrideGameScreenPercentage;
 	FConsoleVariableSwapperTempl<float> SecondaryScreenPercentage;
 

@@ -29,19 +29,14 @@
 #include "SketchUpAPI/model/camera.h"
 #include "SketchUpAPI/model/component_definition.h"
 #include "SketchUpAPI/model/component_instance.h"
-#include "SketchUpAPI/model/drawing_element.h"
-#include "SketchUpAPI/model/edge.h"
-#include "SketchUpAPI/model/entities.h"
-#include "SketchUpAPI/model/entity.h"
-#include "SketchUpAPI/model/face.h"
-#include "SketchUpAPI/model/geometry.h"
-#include "SketchUpAPI/model/group.h"
+#include <SketchUpAPI/model/image.h>
+
 #include "SketchUpAPI/model/layer.h"
-#include "SketchUpAPI/model/mesh_helper.h"
 #include "SketchUpAPI/model/model.h"
+#include <SketchUpAPI/model/rendering_options.h>
 #include "SketchUpAPI/model/scene.h"
-#include "SketchUpAPI/model/texture.h"
-#include "SketchUpAPI/model/uv_helper.h"
+#include <SketchUpAPI/model/typed_value.h>
+
 
 #include "SketchUpAPI/application/application.h"
 
@@ -57,9 +52,10 @@ FExportContext::FExportContext()
 	, Materials(*this)
 	, Scenes(*this)
 	, Textures(*this)
-
+	, Layers(*this)
+	, Images(*this)
+	, ImageFiles(*this)
 {
-
 }
 
 const TCHAR* FExportContext::GetAssetsOutputPath() const
@@ -98,17 +94,88 @@ void FExportContext::Populate()
 	RootNode->DatasmithActorLabel = TEXT("Model");
 
 	// Parse/convert Model
-	Scenes.PopulateFromModel(ModelRef);
+	Layers.PopulateFromModel(ModelRef);
+	Scenes.Update();
 	ComponentDefinitions.PopulateFromModel(ModelRef);
 
-	RootNode->ToDatasmith(*this);
+	ModelDefinition->ParseNode(*this, *RootNode); // Create node hierarchy
 }
 
-void FExportContext::Update()
+// ColorByLayer(or ColorByTag) changes material display on every entity by useinf either regular materials or colors(materials) set up for layers
+bool FExportContext::PreUpdateColorByLayer()
 {
+	if (bColorByLayerInvaliated)
+	{
+		bColorByLayerInvaliated = false;
+
+		bool bColorByLayerNew = bColorByLayer;
+		SURenderingOptionsRef RenderingOptionsRef = SU_INVALID;
+		if (SUModelGetRenderingOptions(ModelRef, &RenderingOptionsRef) == SU_ERROR_NONE)
+		{
+			SUTypedValueRef DisplayColorByLayerTypedValue = SU_INVALID;
+			SUTypedValueCreate(&DisplayColorByLayerTypedValue);
+			if (SURenderingOptionsGetValue(RenderingOptionsRef, "DisplayColorByLayer", &DisplayColorByLayerTypedValue) == SU_ERROR_NONE)
+			{
+				bool DisplayColorByLayer;
+				if (SUTypedValueGetBool(DisplayColorByLayerTypedValue, &DisplayColorByLayer) == SU_ERROR_NONE)
+				{
+					bColorByLayerNew = DisplayColorByLayer;
+				}
+			}
+		}
+
+		// Check that flag was actually toggled to different state since last update
+		if (bColorByLayer != bColorByLayerNew)
+		{
+			// Invalidate essentially everything when mode changed
+			//    - layer materials vs regular materials need to be build/removed (material rebuild is caused by nodes/geom rebuild)
+			//	  - meshes need to be rebuild(to split by layer, not by regular material)
+			//	  - mesh actors need rebuild tochange override materials
+			for (TPair<FComponentInstanceIDType, TSharedPtr<FComponentInstance>> Instance : ComponentInstances.ComponentInstanceMap)
+			{
+				Instance.Value->InvalidateEntityProperties();
+			}
+			
+			for (const auto& IdValue : ComponentDefinitions.ComponentDefinitionMap)
+			{
+				TSharedPtr<FComponentDefinition> Definition = IdValue.Value;
+				Definition->InvalidateDefinitionGeometry();
+			}
+			ModelDefinition->InvalidateDefinitionGeometry();
+
+			bColorByLayer = bColorByLayerNew;
+			return true;
+		}
+	}
+	else
+	{
+		if (bColorByLayer)
+		{
+			return Materials.LayerMaterials.CheckForModifications();
+		}
+	}
+	return false;
+}
+
+
+bool FExportContext::Update(bool bModifiedHint)
+{
+	bool bModified = bModifiedHint;
+
+	bModified |= PreUpdateColorByLayer();
+
+	bModified |= Scenes.Update();
+
+	if (!bModified)
+	{
+		// code below is not supposed to change Datasmith scene if not modification hint(i.e. no invalidated data) was present
+		return false;
+	}
+
 	// Invalidate occurrences for changed instances first
 	Model->UpdateEntityProperties(*this);
-	ComponentInstances.UpdateProperties(); 
+	ComponentInstances.UpdateProperties();
+	Images.UpdateProperties();
 
 	// Update occurrences visibility(before updating meshes to make sure to skip updating unused meshes)
 	RootNode->UpdateVisibility(*this);
@@ -116,6 +183,7 @@ void FExportContext::Update()
 	// Update Datasmith Meshes after their usage was refreshed(in visibility update) and before node hierarchy update(where Mesh Actors are updated for meshes)
 	ModelDefinition->UpdateDefinition(*this);
 	ComponentDefinitions.Update();
+	Images.Update();
 
 	// ComponentInstances will invalidate occurrences 
 	Model->UpdateEntityGeometry(*this);
@@ -132,6 +200,8 @@ void FExportContext::Update()
 		Task.Get();
 	}
 	MeshExportTasks.Reset();
+
+	return bModified;
 }
 
 FDefinition* FExportContext::GetDefinition(SUEntityRef Entity)
@@ -165,6 +235,12 @@ FDefinition* FExportContext::GetDefinition(FEntityIDType DefinitionEntityId)
 	return nullptr;
 }
 
+bool FExportContext::InvalidateColorByLayer()
+{
+	bColorByLayerInvaliated = true;
+	return false; // Don't return 'modified'  - in case user toggles the flag back and forth Update will check if it's actually changed
+}
+
 void FComponentDefinitionCollection::Update()
 {
 	for (const auto& IdValue : ComponentDefinitionMap)
@@ -174,18 +250,87 @@ void FComponentDefinitionCollection::Update()
 	}
 }
 
-void FSceneCollection::PopulateFromModel(SUModelRef InModelRef)
+void FImageCollection::Update()
 {
-	// Get the number of scenes in the SketchUp model.
+	for (const auto& IdValue : Images)
+	{
+		IdValue.Value->Update(Context);
+	}
+}
+
+void FImageCollection::UpdateProperties()
+{
+	for (const auto& IdValue : Images)
+	{
+		IdValue.Value->UpdateEntityProperties(Context);
+	}
+}
+
+bool FImageCollection::InvalidateImage(const FEntityIDType& EntityID)
+{
+	if (TSharedPtr<FImage>* Found = Images.Find(EntityID))
+	{
+		(*Found)->InvalidateImage();
+		return true;
+	}
+	return false;
+}
+
+bool FImageCollection::RemoveImage(FComponentInstanceIDType ParentEntityId, FEntityIDType ImageId)
+{
+	TSharedPtr<FImage>* Found = Images.Find(ImageId);
+	if (!Found)
+	{
+		return false;
+	}
+	const TSharedPtr<FImage>& Image = *Found;
+
+	FDefinition* ParentDefinition =  Context.GetDefinition(ParentEntityId);
+
+	// Remove ComponentInstance for good only if incoming ParentDefinition is current Instance's parent. 
+	//
+	// Details:
+	// ComponentInstance which removal is notified could have been relocated to another Definition 
+	// This happens when Make Group is done - first new Group is added, containing existing ComponentInstance
+	// And only after that event about removal from previous owning Definition is received
+	if (Image->IsParentDefinition(ParentDefinition))
+	{
+		Image->RemoveImage(Context);
+		Images.Remove(ImageId);
+	}
+
+	return true;
+
+}
+
+bool FSceneCollection::SetActiveScene(const FEntityIDType& EntityID)
+{
+	if (ActiveSceneId == EntityID)
+	{
+		return false;
+	}
+	ActiveSceneId = EntityID;
+	return true;
+}
+
+bool FSceneCollection::Update()
+{
+	// Extract set of scenes(cameras ) and compute data hash to determine if Datasmith update is needed
+
+	FMD5 MD5;
+
 	size_t SceneCount = 0;
-	SUModelGetNumScenes(InModelRef, &SceneCount); // we can ignore the returned SU_RESULT
+	SUModelGetNumScenes(Context.ModelRef, &SceneCount);
+	MD5.Update(reinterpret_cast<uint8*>(&SceneCount), sizeof(SceneCount));
+
+	TArray<FEntityIDType> SceneIds;
 
 	if (SceneCount > 0)
 	{
 		// Retrieve the scenes in the SketchUp model.
 		TArray<SUSceneRef> Scenes;
 		Scenes.Init(SU_INVALID, SceneCount);
-		SUResult SResult = SUModelGetScenes(InModelRef, SceneCount, Scenes.GetData(), &SceneCount);
+		SUResult SResult = SUModelGetScenes(Context.ModelRef, SceneCount, Scenes.GetData(), &SceneCount);
 		Scenes.SetNum(SceneCount);
 		// Make sure the SketchUp model has scenes to retrieve (no SU_ERROR_NO_DATA).
 		if (SResult == SU_ERROR_NONE)
@@ -195,17 +340,122 @@ void FSceneCollection::PopulateFromModel(SUModelRef InModelRef)
 				// Make sure the SketchUp scene uses a camera.
 				bool bSceneUseCamera = false;
 				SUSceneGetUseCamera(SceneRef, &bSceneUseCamera); // we can ignore the returned SU_RESULT
+				MD5.Update(reinterpret_cast<uint8*>(&bSceneUseCamera), sizeof(bSceneUseCamera));
 
 				if (bSceneUseCamera)
 				{
-					TSharedPtr<DatasmithSketchUp::FCamera> Camera = FCamera::Create(Context, SceneRef);
-					SceneIdToCameraMap.Add(DatasmithSketchUpUtils::GetSceneID(SceneRef), Camera);
+					FEntityIDType SceneId = DatasmithSketchUpUtils::GetSceneID(SceneRef);
+
+					TSharedPtr<DatasmithSketchUp::FCamera> Camera;
+					if (TSharedPtr<DatasmithSketchUp::FCamera>* Found =  SceneIdToCameraMap.Find(SceneId))
+					{
+						Camera = *Found;
+					}
+					else
+					{
+						Camera = FCamera::Create(Context, SceneRef);
+						SceneIdToCameraMap.Add(SceneId, Camera);
+					}
+
+					MD5.Update(reinterpret_cast<uint8*>(&SceneId), sizeof(SceneId));
+
+					Camera->bIsActive = SceneId == ActiveSceneId;
+					
+					FMD5Hash CameraHash = Camera->GetHash();
+					
+					MD5.Update(CameraHash.GetBytes(), CameraHash.GetSize());
+
+					SceneIds.Add(SceneId);
 				}
 			}
 		}
 	}
+
+	MD5.Update(reinterpret_cast<uint8*>(&ActiveSceneId), sizeof(ActiveSceneId));
+
+	FMD5Hash Hash;
+	Hash.Set(MD5);
+
+	bool bModified = ScenesHash != Hash;
+
+	ScenesHash = Hash;
+
+	if (bModified)
+	{
+
+		for (TPair<FEntityIDType, TSharedPtr<FCamera>> IdCamera : SceneIdToCameraMap.Array())
+		{
+			FEntityIDType SceneId = IdCamera.Key;
+			TSharedPtr<FCamera> Camera = IdCamera.Value;
+			if (SceneIds.Contains(SceneId))
+			{
+				Camera->Update(Context);
+			}
+			else
+			{
+				// Cleanup removed scenes
+				Context.DatasmithScene->RemoveActor(Camera->DatasmithCamera, EDatasmithActorRemovalRule::RemoveChildren);
+				SceneIdToCameraMap.Remove(SceneId);
+			}
+		}
+	}
+
+	return bModified;
 }
 
+void FLayerCollection::PopulateFromModel(SUModelRef InModelRef)
+{
+	size_t LayerCount = 0;
+	SUModelGetNumLayers(InModelRef, &LayerCount);
+
+	TArray<SULayerRef> Layers;
+	Layers.Init(SU_INVALID, LayerCount);
+	SUResult SResult = SUModelGetLayers(InModelRef, LayerCount, Layers.GetData(), &LayerCount);
+	Layers.SetNum(LayerCount);
+
+	for (SULayerRef LayerRef : Layers)
+	{
+		UpdateLayer(LayerRef);
+	}
+}
+
+void FLayerCollection::UpdateLayer(SULayerRef LayerRef)
+{
+	LayerVisibility.FindOrAdd(DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef))) = DatasmithSketchUpUtils::IsLayerVisible(LayerRef);
+}
+
+bool FLayerCollection::IsLayerVisible(SULayerRef LayerRef)
+{
+	bool* Found = LayerVisibility.Find(DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef)));
+	return Found ? *Found : true;
+}
+
+
+
+SULayerRef FLayerCollection::GetLayer(FLayerIDType LayerId)
+{
+	size_t LayerCount = 0;
+	SUModelGetNumLayers(Context.ModelRef, &LayerCount);
+
+	TArray<SULayerRef> Layers;
+	Layers.Init(SU_INVALID, LayerCount);
+	SUResult SResult = SUModelGetLayers(Context.ModelRef, LayerCount, Layers.GetData(), &LayerCount);
+	Layers.SetNum(LayerCount);
+
+	for (SULayerRef LayerRef : Layers)
+	{
+		if (GetLayerId(LayerRef) == LayerId)
+		{
+			return LayerRef;
+		}
+	}
+	return SU_INVALID;
+}
+
+FLayerIDType FLayerCollection::GetLayerId(SULayerRef LayerRef)
+{
+	return DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef));
+}
 
 void FComponentDefinitionCollection::PopulateFromModel(SUModelRef InModelRef)
 {
@@ -281,6 +531,26 @@ TSharedPtr<FComponentDefinition>* FComponentDefinitionCollection::FindComponentD
 	return ComponentDefinitionMap.Find(ComponentDefinitionID);
 }
 
+TSharedPtr<FImage> FImageCollection::AddImage(FDefinition& ParentDefinition, const SUImageRef& ImageRef)
+{
+	FEntityIDType ImageId = DatasmithSketchUpUtils::GetEntityID(SUImageToEntity(ImageRef));
+
+	TSharedPtr<FImage> Image;
+	if (TSharedPtr<FImage>* Found = Images.Find(ImageId))
+	{
+		Image = *Found; 
+	}
+	else
+	{
+		Image = MakeShared<FImage>(ImageRef);
+		Images.Add(ImageId, Image);
+	}
+
+	Image->SetParentDefinition(Context, &ParentDefinition);
+
+	return Image;
+}
+
 void FEntitiesObjectCollection::RegisterEntities(DatasmithSketchUp::FEntities& Entities)
 {
 	for (int32 FaceId : Entities.EntitiesGeometry->FaceIds)
@@ -315,11 +585,13 @@ void FEntitiesObjectCollection::UnregisterEntities(DatasmithSketchUp::FEntities&
 	}
 }
 
+
 TSharedPtr<FEntities> FEntitiesObjectCollection::AddEntities(FDefinition& InDefinition, SUEntitiesRef EntitiesRef)
 {
 	TSharedPtr<FEntities> Entities = MakeShared<FEntities>(InDefinition);
 
 	Entities->EntitiesRef = EntitiesRef;
+
 	return Entities;
 }
 
@@ -466,30 +738,7 @@ void FComponentInstanceCollection::LayerModified(DatasmithSketchUp::FEntityIDTyp
 	}
 }
 
-void FMaterialCollection::PopulateFromModel(SUModelRef InModelRef)
-{
-	// Get the number of material definitions in the SketchUp model.
-	size_t SMaterialDefinitionCount = 0;
-	SUModelGetNumMaterials(InModelRef, &SMaterialDefinitionCount); // we can ignore the returned SU_RESULT
-
-	if (SMaterialDefinitionCount > 0)
-	{
-		// Retrieve the material definitions in the SketchUp model.
-		TArray<SUMaterialRef> SMaterialDefinitions;
-		SMaterialDefinitions.Init(SU_INVALID, SMaterialDefinitionCount);
-		SUModelGetMaterials(InModelRef, SMaterialDefinitionCount, SMaterialDefinitions.GetData(), &SMaterialDefinitionCount); // we can ignore the returned SU_RESULT
-		SMaterialDefinitions.SetNum(SMaterialDefinitionCount);
-
-		// Add the material definitions to our dictionary.
-		for (SUMaterialRef SMaterialDefinitionRef : SMaterialDefinitions)
-		{
-
-			CreateMaterial(SMaterialDefinitionRef);
-		}
-	}
-}
-
-FMaterialOccurrence* FMaterialCollection::RegisterInstance(FMaterialIDType MaterialID, FNodeOccurence* NodeOccurrence)
+FMaterialOccurrence* FRegularMaterials::RegisterInstance(FMaterialIDType MaterialID, FNodeOccurence* NodeOccurrence)
 {
 	if (NodeOccurrence->MaterialOverride)
 	{
@@ -501,10 +750,19 @@ FMaterialOccurrence* FMaterialCollection::RegisterInstance(FMaterialIDType Mater
 		return &Material->RegisterInstance(NodeOccurrence);
 	}
 
-	return nullptr; // Don't use a material if material id is unknown(of default)
+	return {}; // Don't use a material if material id is unknown(of default)
 }
 
-FMaterialOccurrence* FMaterialCollection::RegisterGeometry(FMaterialIDType MaterialID, DatasmithSketchUp::FEntitiesGeometry* EntitiesGeometry)
+void FRegularMaterials::UnregisterGeometry(DatasmithSketchUp::FEntitiesGeometry* EntitiesGeometry)
+{
+	if (EntitiesGeometry->bDefaultMaterialUsed)
+	{
+		DefaultMaterial.UnregisterGeometry(Context, EntitiesGeometry);
+		EntitiesGeometry->bDefaultMaterialUsed = false;
+	}
+}
+
+FMaterialOccurrence* FRegularMaterials::RegisterGeometry(FMaterialIDType MaterialID, DatasmithSketchUp::FEntitiesGeometry* EntitiesGeometry)
 {
 	if (const TSharedPtr<DatasmithSketchUp::FMaterial> Material = FindOrCreateMaterial(MaterialID))
 	{
@@ -519,6 +777,17 @@ FMaterialOccurrence* FMaterialCollection::RegisterGeometry(FMaterialIDType Mater
 		EntitiesGeometry->bDefaultMaterialUsed = true;
 	}
 	return &DefaultMaterial; 
+}
+
+FMaterialOccurrence* FLayerMaterials::RegisterGeometryForLayer(FLayerIDType LayerID, FEntitiesGeometry* EntitiesGeometry)
+{
+	if (const TSharedPtr<DatasmithSketchUp::FMaterial> Material = FindOrCreateMaterialForLayer(LayerID))
+	{
+		EntitiesGeometry->MaterialsUsed.Add(Material.Get());
+		return &Material->RegisterGeometry(EntitiesGeometry);
+	}
+
+	return {};
 }
 
 void FMaterialCollection::UnregisterGeometry(DatasmithSketchUp::FEntitiesGeometry* EntitiesGeometry)
@@ -536,11 +805,7 @@ void FMaterialCollection::UnregisterGeometry(DatasmithSketchUp::FEntitiesGeometr
 		Material.UnregisterGeometry(Context, EntitiesGeometry);
 	}
 
-	if (EntitiesGeometry->bDefaultMaterialUsed)
-	{
-		DefaultMaterial.UnregisterGeometry(Context, EntitiesGeometry);
-		EntitiesGeometry->bDefaultMaterialUsed = false;
-	}
+	RegularMaterials.UnregisterGeometry(EntitiesGeometry);
 
 	EntitiesGeometry->MaterialsUsed.Reset();
 }
@@ -548,12 +813,84 @@ void FMaterialCollection::UnregisterGeometry(DatasmithSketchUp::FEntitiesGeometr
 TSharedPtr<FMaterial> FMaterialCollection::CreateMaterial(SUMaterialRef MaterialDefinitionRef)
 {
 	TSharedPtr<FMaterial> Material = FMaterial::Create(Context, MaterialDefinitionRef);
-	MaterialDefinitionMap.Emplace(DatasmithSketchUpUtils::GetMaterialID(MaterialDefinitionRef), Material);
+	Materials.Add(Material.Get());
 	return Material;
 }
 
-TSharedPtr<FMaterial> FMaterialCollection::CreateMaterial(FMaterialIDType MaterialID)
+void FMaterialCollection::SetMeshActorOverrideMaterial(FNodeOccurence& Node, DatasmithSketchUp::FEntitiesGeometry& EntitiesGeometry, const TSharedPtr<IDatasmithMeshActorElement>& MeshActor)
 {
+	// SketchUp has 'material override' only for single material - 'Default' material or material from default('Layer0') layer in ColorByTag mode. 
+	// So we reset overrides on the actor to remove this single override(if it was set) and re-add new override(if there's one)
+	MeshActor->ResetMaterialOverrides();
+
+	if (Context.bColorByLayer)
+	{
+		// Retrieve the default layer in the SketchUp model.
+		SULayerRef DefaultLayerRef = SU_INVALID;
+		SUModelGetDefaultLayer(Context.ModelRef, &DefaultLayerRef);
+
+		if (!SUAreEqual(DefaultLayerRef, Node.EffectiveLayerRef)) // Don't apply default layer(Layer0) material as override
+		{
+			FEntityIDType LayerId = DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(Node.EffectiveLayerRef));
+			if (FMaterialOccurrence* Material = LayerMaterials.RegisterInstance(LayerId, &Node))
+			{
+				MeshActor->AddMaterialOverride(Material->GetName(), EntitiesGeometry.GetInheritedMaterialOverrideSlotId());
+			}
+		}
+	}
+	else
+	{
+		if (FMaterialOccurrence* Material = RegularMaterials.RegisterInstance(Node.InheritedMaterialID, &Node))
+		{
+			MeshActor->AddMaterialOverride(Material->GetName(), EntitiesGeometry.GetInheritedMaterialOverrideSlotId());
+		}
+	}
+}
+
+bool FRegularMaterials::InvalidateMaterial(FMaterialIDType MateriadId)
+{
+	if (TSharedPtr<FMaterial>* Ptr = MaterialForMaterialId.Find(MateriadId))
+	{
+		FMaterial& Material = **Ptr;
+
+		Material.Invalidate();
+		return true;
+	}
+	return false;
+}
+
+bool FRegularMaterials::RemoveMaterial(FMaterialIDType EntityId)
+{
+	TSharedPtr<FMaterial> Material;
+	if (MaterialForMaterialId.RemoveAndCopyValue(EntityId, Material))
+	{
+		MaterialIdForMaterial.Remove(Material.Get());
+		Context.Materials.RemoveMaterial(Material.Get());
+		return true;
+	}
+	return false;
+}
+
+bool FMaterialCollection::RemoveMaterial(FMaterial* Material)
+{
+	Materials.Remove(Material);
+	Material->Remove(Context);
+	return true;
+}
+
+bool FRegularMaterials::InvalidateDefaultMaterial()
+{
+	DefaultMaterial.Invalidate(Context);
+	return true;
+}
+
+TSharedPtr<FMaterial> FRegularMaterials::FindOrCreateMaterial(FMaterialIDType MaterialId)
+{
+	if (TSharedPtr<FMaterial>* Ptr = MaterialForMaterialId.Find(MaterialId))
+	{
+		return *Ptr;
+	}
+
 	// Get the number of material definitions in the SketchUp model.
 	size_t SMaterialDefinitionCount = 0;
 	SUModelGetNumMaterials(Context.ModelRef, &SMaterialDefinitionCount); // we can ignore the returned SU_RESULT
@@ -567,60 +904,38 @@ TSharedPtr<FMaterial> FMaterialCollection::CreateMaterial(FMaterialIDType Materi
 	// Add the material definitions to our dictionary.
 	for (SUMaterialRef SMaterialDefinitionRef : SMaterialDefinitions)
 	{
-		if (MaterialID == DatasmithSketchUpUtils::GetMaterialID(SMaterialDefinitionRef))
+		if (MaterialId == DatasmithSketchUpUtils::GetMaterialID(SMaterialDefinitionRef))
 		{
-			return CreateMaterial(SMaterialDefinitionRef);
+			TSharedPtr<FMaterial> Material = Context.Materials.CreateMaterial(SMaterialDefinitionRef);
+			MaterialForMaterialId.Emplace(MaterialId, Material);
+			MaterialIdForMaterial.Add(Material.Get(), MaterialId);
+			return Material;
 		}
 	}
-	return nullptr;
+	return {};
 }
 
-void FMaterialCollection::InvalidateMaterial(SUMaterialRef MaterialDefinitionRef)
+TSharedPtr<FMaterial> FLayerMaterials::FindOrCreateMaterialForLayer(FLayerIDType LayerID)
 {
-	FMaterialIDType MateriadId = DatasmithSketchUpUtils::GetMaterialID(MaterialDefinitionRef);
-
-	if (InvalidateMaterial(MateriadId))
-	{
-		return;
-	}
-	CreateMaterial(MaterialDefinitionRef);
-}
-
-bool FMaterialCollection::InvalidateMaterial(FMaterialIDType MateriadId)
-{
-	if (TSharedPtr<FMaterial>* Ptr = MaterialDefinitionMap.Find(MateriadId))
-	{
-		FMaterial& Material = **Ptr;
-
-		Material.Invalidate();
-		return true;
-	}
-	return false;
-}
-
-bool FMaterialCollection::RemoveMaterial(FEntityIDType EntityId)
-{
-	TSharedPtr<FMaterial> Material;
-	if (MaterialDefinitionMap.RemoveAndCopyValue(EntityId, Material))
-	{
-		Material->Remove(Context);
-		return true;
-	}
-	return false;
-}
-
-bool FMaterialCollection::InvalidateDefaultMaterial()
-{
-	DefaultMaterial.Invalidate(Context);
-	return true;
-}
-
-TSharedPtr<FMaterial> FMaterialCollection::FindOrCreateMaterial(FMaterialIDType MaterialID)
-{
-	if (TSharedPtr<FMaterial>* Ptr = MaterialDefinitionMap.Find(MaterialID))
+	if (TSharedPtr<FMaterial>* Ptr = MaterialForLayerId.Find(LayerID))
 	{
 		return *Ptr;
 	}
-	return CreateMaterial(MaterialID);
+
+	SULayerRef LayerRef = Context.Layers.GetLayer(LayerID);
+
+	if (SUIsValid(LayerRef))
+	{
+		SUMaterialRef MaterialRef;
+		if (SULayerGetMaterial(LayerRef, &MaterialRef) == SU_ERROR_NONE)
+		{
+			TSharedPtr<FMaterial> Material = Context.Materials.CreateMaterial(MaterialRef);
+			Material->bGeometryHasScalingBakedIntoUvs = false;
+			MaterialForLayerId.Add(LayerID, Material);
+			LayerIdForMaterial.Add(Material.Get(), LayerID);
+			return Material;
+		}
+	}
+	return {};
 }
 

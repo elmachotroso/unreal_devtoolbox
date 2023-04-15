@@ -13,79 +13,89 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogFilePackageStore, Log, All);
 
-thread_local int32 FFilePackageStore::LockedOnThreadCount = 0;
+namespace FilePackageStore
+{
+	FStringView GetRootPathFromPackageName(const FStringView Path)
+	{
+		FStringView RootPath;
+		int32 SecondForwardSlash = INDEX_NONE;
+		if (ensure(FStringView(Path.GetData() + 1, Path.Len() - 1).FindChar(TEXT('/'), SecondForwardSlash)))
+		{
+			RootPath = FStringView(Path.GetData(), SecondForwardSlash + 2);
+		}
+		return RootPath;
+	}
+}
 
-FFilePackageStore::FFilePackageStore()
+FFilePackageStoreBackend::FFilePackageStoreBackend()
 {
 #if WITH_EDITOR
 	OnContentPathMountedDelegateHandle = FPackageName::OnContentPathMounted().AddLambda([this](const FString& InAssetPath, const FString& InFilesystemPath)
 		{
 			{
 				FScopeLock _(&UncookedPackageRootsLock);
-				PendingUncookedPackageRoots.Add(InFilesystemPath);
+				PendingAddUncookedPackageRoots.Add(InFilesystemPath);
 			}
 			{
 				FWriteScopeLock _(EntriesLock);
-				bNeedsUpdate = true;
+				bNeedsUncookedPackagesUpdate = true;
 			}
 		});
-#endif
-}
 
-FFilePackageStore::~FFilePackageStore()
-{
-#if WITH_EDITOR
-	FPackageName::OnContentPathMounted().Remove(OnContentPathMountedDelegateHandle);
-#endif
-}
+	OnContentPathDismountedDelegateHandle = FPackageName::OnContentPathDismounted().AddLambda([this](const FString& InAssetPath, const FString& InFilesystemPath)
+		{
+			{
+				FScopeLock _(&UncookedPackageRootsLock);
+				PendingRemoveUncookedPackageRoots.Add(InAssetPath);
+				PendingAddUncookedPackageRoots.Remove(InFilesystemPath);
+			}
+			{
+				FWriteScopeLock _(EntriesLock);
+				bNeedsUncookedPackagesUpdate = true;
+			}
+		});
 
-void FFilePackageStore::Initialize()
-{
-#if WITH_EDITOR
 	TArray<FString> RootPaths;
 	FPackageName::QueryRootContentPaths(RootPaths);
 	{
 		FScopeLock _(&UncookedPackageRootsLock);
-		PendingUncookedPackageRoots.Append(RootPaths);
+		PendingAddUncookedPackageRoots.Append(RootPaths);
 	}
 	{
 		FWriteScopeLock _(EntriesLock);
-		bNeedsUpdate = true;
+		bNeedsUncookedPackagesUpdate = true;
 	}
+#endif //if WITH_EDITOR
+}
+
+FFilePackageStoreBackend::~FFilePackageStoreBackend()
+{
+#if WITH_EDITOR
+	FPackageName::OnContentPathMounted().Remove(OnContentPathMountedDelegateHandle);
+	FPackageName::OnContentPathDismounted().Remove(OnContentPathDismountedDelegateHandle);
 #endif
 }
 
-void FFilePackageStore::Lock()
+void FFilePackageStoreBackend::BeginRead()
 {
-	if (!LockedOnThreadCount)
+	EntriesLock.ReadLock();
+	if (bNeedsContainerUpdate
+#if WITH_EDITOR
+		|| bNeedsUncookedPackagesUpdate
+#endif
+		)
 	{
-		EntriesLock.ReadLock();
-		if (bNeedsUpdate)
-		{
-			Update();
-		}
-	}
-	++LockedOnThreadCount;
-}
-
-void FFilePackageStore::Unlock()
-{
-	check(LockedOnThreadCount > 0);
-	if (--LockedOnThreadCount == 0)
-	{
-		EntriesLock.ReadUnlock();
+		Update();
 	}
 }
 
-bool FFilePackageStore::DoesPackageExist(FPackageId PackageId)
+void FFilePackageStoreBackend::EndRead()
 {
-	check(LockedOnThreadCount);
-	return PackageId.IsValid() && StoreEntriesMap.Contains(PackageId);
+	EntriesLock.ReadUnlock();
 }
 
-EPackageStoreEntryStatus FFilePackageStore::GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry)
+EPackageStoreEntryStatus FFilePackageStoreBackend::GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry)
 {
-	check(LockedOnThreadCount);
 #if WITH_EDITOR
 	const FUncookedPackage* FindUncookedPackage = UncookedPackagesMap.Find(PackageId);
 	if (FindUncookedPackage)
@@ -102,14 +112,22 @@ EPackageStoreEntryStatus FFilePackageStore::GetPackageStoreEntry(FPackageId Pack
 		OutPackageStoreEntry.ExportInfo.ExportBundleCount = FindEntry->ExportBundleCount;
 		OutPackageStoreEntry.ImportedPackageIds = MakeArrayView(FindEntry->ImportedPackages.Data(), FindEntry->ImportedPackages.Num());
 		OutPackageStoreEntry.ShaderMapHashes = MakeArrayView(FindEntry->ShaderMapHashes.Data(), FindEntry->ShaderMapHashes.Num());
+#if WITH_EDITOR
+		const FFilePackageStoreEntry* FindOptionalSegmentEntry = OptionalSegmentStoreEntriesMap.FindRef(PackageId);
+		if (FindOptionalSegmentEntry)
+		{
+			OutPackageStoreEntry.OptionalSegmentExportInfo.ExportCount = FindOptionalSegmentEntry->ExportCount;
+			OutPackageStoreEntry.OptionalSegmentExportInfo.ExportBundleCount = FindOptionalSegmentEntry->ExportBundleCount;
+			OutPackageStoreEntry.OptionalSegmentImportedPackageIds = MakeArrayView(FindOptionalSegmentEntry->ImportedPackages.Data(), FindOptionalSegmentEntry->ImportedPackages.Num());
+		}
+#endif
 		return EPackageStoreEntryStatus::Ok;
 	}
 	return EPackageStoreEntryStatus::Missing;
 }
 
-bool FFilePackageStore::GetPackageRedirectInfo(FPackageId PackageId, FName& OutSourcePackageName, FPackageId& OutRedirectedToPackageId)
+bool FFilePackageStoreBackend::GetPackageRedirectInfo(FPackageId PackageId, FName& OutSourcePackageName, FPackageId& OutRedirectedToPackageId)
 {
-	check(LockedOnThreadCount);
 	TTuple<FName, FPackageId>* FindRedirect = RedirectsPackageMap.Find(PackageId);
 	if (FindRedirect)
 	{
@@ -138,19 +156,23 @@ bool FFilePackageStore::GetPackageRedirectInfo(FPackageId PackageId, FName& OutS
 	return false;
 }
 
-void FFilePackageStore::Mount(const FIoContainerHeader* ContainerHeader, uint32 Order)
+void FFilePackageStoreBackend::Mount(const FIoContainerHeader* ContainerHeader, uint32 Order)
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
 	FWriteScopeLock _(EntriesLock);
-	MountedContainers.Add({ ContainerHeader, Order });
+	MountedContainers.Add({ ContainerHeader, Order, NextSequence++ });
 	Algo::Sort(MountedContainers, [](const FMountedContainer& A, const FMountedContainer& B)
 		{
-			return A.Order < B.Order;
+			if (A.Order == B.Order)
+			{
+				return A.Sequence > B.Sequence;
+			}
+			return A.Order > B.Order;
 		});
-	bNeedsUpdate = true;
+	bNeedsContainerUpdate = true;
 }
 
-void FFilePackageStore::Unmount(const FIoContainerHeader* ContainerHeader)
+void FFilePackageStoreBackend::Unmount(const FIoContainerHeader* ContainerHeader)
 {
 	FWriteScopeLock _(EntriesLock);
 	for (auto It = MountedContainers.CreateIterator(); It; ++It)
@@ -158,90 +180,119 @@ void FFilePackageStore::Unmount(const FIoContainerHeader* ContainerHeader)
 		if (It->ContainerHeader == ContainerHeader)
 		{
 			It.RemoveCurrent();
-			bNeedsUpdate = true;
+			bNeedsContainerUpdate = true;
 			return;
 		}
 	}
 }
 
-void FFilePackageStore::Update()
+void FFilePackageStoreBackend::Update()
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
 	TRACE_CPUPROFILER_EVENT_SCOPE(UpdateFilePackageStore);
 
 	FScopeLock Lock(&UpdateLock);
-	if (!bNeedsUpdate)
+	if (bNeedsContainerUpdate)
 	{
-		return;
-	}
+		StoreEntriesMap.Empty();
+		LocalizedPackages.Empty();
+		RedirectsPackageMap.Empty();
+#if WITH_EDITOR
+		OptionalSegmentStoreEntriesMap.Empty();
+#endif
 
-	StoreEntriesMap.Empty();
-	LocalizedPackages.Empty();
-	RedirectsPackageMap.Empty();
-
-	uint32 TotalPackageCount = 0;
-	for (const FMountedContainer& MountedContainer : MountedContainers)
-	{
-		TotalPackageCount += MountedContainer.ContainerHeader->PackageCount;
-	}
-
-	StoreEntriesMap.Reserve(TotalPackageCount);
-	for (const FMountedContainer& MountedContainer : MountedContainers)
-	{
-		const FIoContainerHeader* ContainerHeader = MountedContainer.ContainerHeader;
-		TArrayView<const FFilePackageStoreEntry> ContainerStoreEntries(reinterpret_cast<const FFilePackageStoreEntry*>(ContainerHeader->StoreEntries.GetData()), ContainerHeader->PackageCount);
-		int32 Index = 0;
-		for (const FFilePackageStoreEntry& StoreEntry : ContainerStoreEntries)
+		uint32 TotalPackageCount = 0;
+		for (const FMountedContainer& MountedContainer : MountedContainers)
 		{
-			const FPackageId& PackageId = ContainerHeader->PackageIds[Index];
-			check(PackageId.IsValid());
-			StoreEntriesMap.FindOrAdd(PackageId, &StoreEntry);
-			++Index;
+			TotalPackageCount += MountedContainer.ContainerHeader->PackageIds.Num();
 		}
 
-		for (const FIoContainerHeaderLocalizedPackage& LocalizedPackage : ContainerHeader->LocalizedPackages)
+		StoreEntriesMap.Reserve(TotalPackageCount);
+		for (const FMountedContainer& MountedContainer : MountedContainers)
 		{
-			FName& LocalizedPackageSourceName = LocalizedPackages.FindOrAdd(LocalizedPackage.SourcePackageId);
-			if (LocalizedPackageSourceName.IsNone())
+			const FIoContainerHeader* ContainerHeader = MountedContainer.ContainerHeader;
+			TArrayView<const FFilePackageStoreEntry> ContainerStoreEntries(reinterpret_cast<const FFilePackageStoreEntry*>(ContainerHeader->StoreEntries.GetData()), ContainerHeader->PackageIds.Num());
+			int32 Index = 0;
+			for (const FFilePackageStoreEntry& StoreEntry : ContainerStoreEntries)
 			{
-				FNameEntryId NameEntry = ContainerHeader->RedirectsNameMap[LocalizedPackage.SourcePackageName.GetIndex()];
-				LocalizedPackageSourceName = FName::CreateFromDisplayId(NameEntry, LocalizedPackage.SourcePackageName.GetNumber());
+				const FPackageId& PackageId = ContainerHeader->PackageIds[Index];
+				check(PackageId.IsValid());
+				StoreEntriesMap.FindOrAdd(PackageId, &StoreEntry);
+				++Index;
+			}
+
+#if WITH_EDITOR
+			TArrayView<const FFilePackageStoreEntry> ContainerOptionalSegmentStoreEntries(reinterpret_cast<const FFilePackageStoreEntry*>(ContainerHeader->OptionalSegmentStoreEntries.GetData()), ContainerHeader->OptionalSegmentPackageIds.Num());
+			Index = 0;
+			for (const FFilePackageStoreEntry& OptionalSegmentStoreEntry : ContainerOptionalSegmentStoreEntries)
+			{
+				const FPackageId& PackageId = ContainerHeader->OptionalSegmentPackageIds[Index];
+				check(PackageId.IsValid());
+				OptionalSegmentStoreEntriesMap.FindOrAdd(PackageId, &OptionalSegmentStoreEntry);
+				++Index;
+			}
+#endif //if WITH_EDITOR
+
+			for (const FIoContainerHeaderLocalizedPackage& LocalizedPackage : ContainerHeader->LocalizedPackages)
+			{
+				FName& LocalizedPackageSourceName = LocalizedPackages.FindOrAdd(LocalizedPackage.SourcePackageId);
+				if (LocalizedPackageSourceName.IsNone())
+				{
+					FDisplayNameEntryId NameEntry = ContainerHeader->RedirectsNameMap[LocalizedPackage.SourcePackageName.GetIndex()];
+					LocalizedPackageSourceName = NameEntry.ToName(LocalizedPackage.SourcePackageName.GetNumber());
+				}
+			}
+
+			for (const FIoContainerHeaderPackageRedirect& Redirect : ContainerHeader->PackageRedirects)
+			{
+				TTuple<FName, FPackageId>& RedirectEntry = RedirectsPackageMap.FindOrAdd(Redirect.SourcePackageId);
+				FName& SourcePackageName = RedirectEntry.Key;
+				if (SourcePackageName.IsNone())
+				{
+					FDisplayNameEntryId NameEntry = ContainerHeader->RedirectsNameMap[Redirect.SourcePackageName.GetIndex()];
+					SourcePackageName = NameEntry.ToName(Redirect.SourcePackageName.GetNumber());
+					RedirectEntry.Value = Redirect.TargetPackageId;
+				}
 			}
 		}
-
-		for (const FIoContainerHeaderPackageRedirect& Redirect : ContainerHeader->PackageRedirects)
-		{
-			FNameEntryId NameEntry = ContainerHeader->RedirectsNameMap[Redirect.SourcePackageName.GetIndex()];
-			FName SourcePackageName = FName::CreateFromDisplayId(NameEntry, Redirect.SourcePackageName.GetNumber());
-			RedirectsPackageMap.Emplace(Redirect.SourcePackageId, MakeTuple(SourcePackageName, Redirect.TargetPackageId));
-		}
+		bNeedsContainerUpdate = false;
 	}
 
 #if WITH_EDITOR
+	if (bNeedsUncookedPackagesUpdate)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UpdateUncookedPackages);
 		FScopeLock _(&UncookedPackageRootsLock);
-		uint64 TotalAddedCount = 0;
-		if (!PendingUncookedPackageRoots.IsEmpty())
+
+		if (!PendingRemoveUncookedPackageRoots.IsEmpty())
 		{
-			UE_LOG(LogFilePackageStore, Display, TEXT("Searching for uncooked packages in %d new roots..."), PendingUncookedPackageRoots.Num());
-			for (const FString& RootPath : PendingUncookedPackageRoots)
+			UE_LOG(LogFilePackageStore, Display, TEXT("Removing uncooked packages from %d old roots..."), PendingRemoveUncookedPackageRoots.Num());
+			uint64 TotalRemovedCount = RemoveUncookedPackagesFromRoot(PendingRemoveUncookedPackageRoots);
+			PendingRemoveUncookedPackageRoots.Empty();
+			UE_LOG(LogFilePackageStore, Display, TEXT("Removed %lld uncooked packages"), TotalRemovedCount);
+		}
+
+		if (!PendingAddUncookedPackageRoots.IsEmpty())
+		{
+			UE_LOG(LogFilePackageStore, Display, TEXT("Adding uncooked packages from %d new roots..."), PendingAddUncookedPackageRoots.Num());
+			uint64 TotalAddedCount = 0;
+			for (const FString& RootPath : PendingAddUncookedPackageRoots)
 			{
 				TotalAddedCount += AddUncookedPackagesFromRoot(RootPath);
 			}
-			PendingUncookedPackageRoots.Empty();
-			UE_LOG(LogFilePackageStore, Display, TEXT("Found %lld uncooked packages"), TotalAddedCount);
+			PendingAddUncookedPackageRoots.Empty();
+			UE_LOG(LogFilePackageStore, Display, TEXT("Added %lld uncooked packages"), TotalAddedCount);
 		}
+		bNeedsUncookedPackagesUpdate = false;
 	}
-#endif
-
-	bNeedsUpdate = false;
+#endif //if WITH_EDITOR
 }
 
 #if WITH_EDITOR
-uint64 FFilePackageStore::AddUncookedPackagesFromRoot(const FString& RootPath)
+uint64 FFilePackageStoreBackend::AddUncookedPackagesFromRoot(const FString& RootPath)
 {
-	uint64 TotalAddedCount = 0;
-	FPackageName::IteratePackagesInDirectory(RootPath, [this, &RootPath, &TotalAddedCount](const TCHAR* InPackageFileName) -> bool
+	uint64 Count = 0;
+	FPackageName::IteratePackagesInDirectory(RootPath, [this, &RootPath, &Count](const TCHAR* InPackageFileName) -> bool
 		{
 			FPackagePath PackagePath = FPackagePath::FromLocalPath(InPackageFileName);
 			FName PackageName = PackagePath.GetPackageFName();
@@ -251,12 +302,35 @@ uint64 FFilePackageStore::AddUncookedPackagesFromRoot(const FString& RootPath)
 				FUncookedPackage& UncookedPackage = UncookedPackagesMap.FindOrAdd(PackageId);
 				UncookedPackage.PackageName = PackageName;
 				UncookedPackage.HeaderExtension = PackagePath.GetHeaderExtension();
-				++TotalAddedCount;
+				++Count;
 			}
 			return true;
 		});
-	return TotalAddedCount;
+	return Count;
 }
-#endif
+
+uint64 FFilePackageStoreBackend::RemoveUncookedPackagesFromRoot(const TSet<FString>& RootPaths)
+{
+	uint64 Count = 0;
+	TMap<FPackageId, FUncookedPackage> RemainingUncookedPackagesMap;
+	RemainingUncookedPackagesMap.Reserve(UncookedPackagesMap.Num());
+	for (auto& Pair : UncookedPackagesMap)
+	{
+		const FNameBuilder PackageName(Pair.Value.PackageName);
+		const FStringView PackageRootPath = FilePackageStore::GetRootPathFromPackageName(PackageName);
+		if (RootPaths.ContainsByHash(GetTypeHash(PackageRootPath), PackageRootPath))
+		{
+			++Count;
+		}
+		else
+		{
+			RemainingUncookedPackagesMap.Add(Pair.Key, MoveTemp(Pair.Value));
+		}
+	}
+	UncookedPackagesMap = MoveTemp(RemainingUncookedPackagesMap);
+	return Count;
+}
+#endif //if WITH_EDITOR
+
 
 //PRAGMA_ENABLE_OPTIMIZATION

@@ -12,6 +12,7 @@ FLocalLightSceneProxy::FLocalLightSceneProxy(const ULocalLightComponent* Compone
 	: FLightSceneProxy(Component)
 	, MaxDrawDistance(Component->MaxDrawDistance)
 	, FadeRange(Component->MaxDistanceFadeRange)
+	, InverseExposureBlend(Component->InverseExposureBlend)
 {
 	UpdateRadius(Component->AttenuationRadius);
 }
@@ -85,6 +86,15 @@ FSphere FLocalLightSceneProxy::GetBoundingSphere() const
 	return FSphere(GetPosition(), GetRadius());
 }
 
+float FLocalLightSceneProxy::GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices, const FIntPoint& CameraViewRectSize) const
+{
+	const FVector2D& ProjectionScale = ShadowViewMatrices.GetProjectionScale();
+	const float ScreenScale = FMath::Max(CameraViewRectSize.X * 0.5f * ProjectionScale.X, CameraViewRectSize.Y * 0.5f * ProjectionScale.Y);
+
+	const float LightDistance = (GetOrigin() - ShadowViewMatrices.GetViewOrigin()).Size();
+	return ScreenScale * GetRadius() / FMath::Max(LightDistance, 1.0f);
+}
+
 float FLocalLightSceneProxy::GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices) const
 {
 	// Use the distance from the view origin to the light to approximate perspective projection
@@ -141,6 +151,9 @@ void FLocalLightSceneProxy::UpdateRadius(float ComponentRadius)
 
 	// Min to avoid div by 0 (NaN in InvRadius)
 	InvRadius = 1.0f / FMath::Max(0.00001f, ComponentRadius);
+}
 
-	bMobileMovablePointLightUniformBufferNeedsUpdate = true;
+bool FLocalLightSceneProxy::IsLocalLight() const
+{
+	return true;
 }

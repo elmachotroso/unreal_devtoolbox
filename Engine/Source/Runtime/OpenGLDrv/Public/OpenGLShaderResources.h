@@ -138,13 +138,14 @@ struct FOpenGLShaderBindings
 
 		bEqual &= FMemory::Memcmp(A.PackedGlobalArrays.GetData(),B.PackedGlobalArrays.GetData(),A.PackedGlobalArrays.GetTypeSize()*A.PackedGlobalArrays.Num()) == 0; 
 
-		for (int32 Item = 0; Item < A.PackedUniformBuffers.Num(); Item++)
+		for (int32 Item = 0; bEqual && Item < A.PackedUniformBuffers.Num(); Item++)
 		{
-			const TArray<CrossCompiler::FPackedArrayInfo> &ArrayA = A.PackedUniformBuffers[Item];
-			const TArray<CrossCompiler::FPackedArrayInfo> &ArrayB = B.PackedUniformBuffers[Item];
+			const TArray<CrossCompiler::FPackedArrayInfo>& ArrayA = A.PackedUniformBuffers[Item];
+			const TArray<CrossCompiler::FPackedArrayInfo>& ArrayB = B.PackedUniformBuffers[Item];
 
-			bEqual &= FMemory::Memcmp(ArrayA.GetData(),ArrayB.GetData(),ArrayA.GetTypeSize()*ArrayA.Num()) == 0;
+			bEqual = bEqual && (ArrayA.Num() == ArrayB.Num()) && (FMemory::Memcmp(ArrayA.GetData(), ArrayB.GetData(), ArrayA.GetTypeSize() * ArrayA.Num()) == 0);
 		}
+
 		
 		for (int32 Item = 0; bEqual && Item < A.InputVaryings.Num(); Item++)
 		{
@@ -319,6 +320,44 @@ public:
 };
 
 
+class FOpenGLCompiledShaderKey
+{
+public:
+	FOpenGLCompiledShaderKey()
+		: TypeEnum(0)
+		, CodeSize(0)
+		, CodeCRC(0)
+	{
+	}
+
+	FOpenGLCompiledShaderKey(
+		GLenum InTypeEnum,
+		uint32 InCodeSize,
+		uint32 InCodeCRC
+	)
+		: TypeEnum(InTypeEnum)
+		, CodeSize(InCodeSize)
+		, CodeCRC(InCodeCRC)
+	{
+	}
+
+	friend bool operator ==(const FOpenGLCompiledShaderKey& A, const FOpenGLCompiledShaderKey& B)
+	{
+		return A.TypeEnum == B.TypeEnum && A.CodeSize == B.CodeSize && A.CodeCRC == B.CodeCRC;
+	}
+
+	friend uint32 GetTypeHash(const FOpenGLCompiledShaderKey& Key)
+	{
+		return GetTypeHash(Key.TypeEnum) ^ GetTypeHash(Key.CodeSize) ^ GetTypeHash(Key.CodeCRC);
+	}
+
+	uint32 GetCodeCRC() const { return CodeCRC; }
+
+private:
+	GLenum TypeEnum;
+	uint32 CodeSize;
+	uint32 CodeCRC;
+};
 
 /**
  * Caching of OpenGL uniform parameters.
@@ -441,6 +480,8 @@ public:
 	{
 		FOpenGLShaderBindings Bindings;
 		GLuint Resource;
+
+		FOpenGLCompiledShaderKey ShaderKey; // This is the key to the shader within FOpenGLCompiledShader container
 	}
 	Shaders[CrossCompiler::NUM_SHADER_STAGES];
 	FOpenGLProgramKey ProgramKey;
@@ -468,184 +509,4 @@ public:
 	{
 		return GetTypeHash(Config.ProgramKey);
 	}
-};
-
-struct FGLProgramBinaryFileCacheEntry;
-class FOpenGLProgramBinaryCache
-{
-public:
-	static void Initialize();
-	static void Shutdown();
-
-	static bool IsEnabled();
-	
-	/** Defer shader compilation until we link a program, so we will have a chance to load cached binary and skip compilation  */
-	static bool DeferShaderCompilation(GLuint Shader, const TArray<ANSICHAR>& GlslCode);
-	
-	/** Compile required shaders for a program, only in case binary program was not found in the cache   */
-	static void CompilePendingShaders(const FOpenGLLinkedProgramConfiguration& Config);
-	
-	/** Try to find and load program binary from cache */
-	static bool UseCachedProgram(GLuint& ProgramOUT, const FOpenGLProgramKey& ProgramKey, TArray<uint8>& CachedProgramBinaryOUT);
-	
-	/** Store program binary on disk in case ProgramBinaryCache is enabled */
-	static void CacheProgram(GLuint Program, const FOpenGLProgramKey& ProgramKey, TArray<uint8>& CachedProgramBinaryOUT);
-
-	static void OnShaderLibraryRequestShaderCode(const FSHAHash& Hash, FArchive* Ar);
-
-	/** Create any pending GL programs that have come from shader library requests */
-	static void CheckPendingGLProgramCreateRequests();
-
-	/** Create any single GL program that have come from shader library requests */
-	static bool CheckSinglePendingGLProgramCreateRequest(const FOpenGLProgramKey& ProgramKey);
-
-	/** true if the program binary cache is currently in cache build mode */
-	static bool IsBuildingCache();
-
-private:
-	FOpenGLProgramBinaryCache(const FString& InCachePath);
-	~FOpenGLProgramBinaryCache();
-
-	FString GetProgramBinaryCacheFilePath() const;
-	
-	struct FPendingShaderCode
-	{
-		TArray<ANSICHAR> GlslCode;
-		int32 UncompressedSize;
-		bool bCompressed;
-	};
-
-	static void CompressShader(const TArray<ANSICHAR>& InGlslCode, FPendingShaderCode& OutCompressedShader);
-	static void UncompressShader(const FPendingShaderCode& InCompressedShader, TArray<ANSICHAR>& OutGlslCode);
-	
-private:
-	static TAutoConsoleVariable<int32> CVarPBCEnable;
-	static TAutoConsoleVariable<int32> CVarRestartAndroidAfterPrecompile;
-	static FOpenGLProgramBinaryCache* CachePtr;
-	
-	/*  Path to directory where binary programs will be stored excluding the cache filename */
-	FString CachePath;
-	/* Just the cache filename, without the path */
-	FString CacheFilename;
-
-	
-	/**
-	* Shaders that were requested for compilation
-	* They will be compiled just before linking a program only in case when there is no saved binary program
-	*/
-	TMap<GLuint, FPendingShaderCode> ShadersPendingCompilation;
-
-	bool AppendProgramBinaryFile(FArchive& Ar, const FOpenGLProgramKey& ProgramKey, GLuint Program, uint32& ProgramBinaryOffsetOUT, uint32& ProgramBinarySizeOUT);
-	void AppendProgramBinaryFileEofEntry(FArchive& Ar);
-
-	void ScanProgramCacheFile(const FGuid& ShaderPipelineCacheVersionGuid = FGuid());
-
-	/* Add a program */
-	void AddProgramFileEntryToMap(FGLProgramBinaryFileCacheEntry* IndexEntry);
-
-	void OpenAsyncReadHandle();
-	void CloseAsyncReadHandle();
-
-	bool OpenWriteHandle();
-	void CloseWriteHandle();
-
-	void AppendGLProgramToBinaryCache(const FOpenGLProgramKey& ProgramKey, GLuint Program, TArray<uint8>& CachedProgramBinaryOUT);
-	void AddUniqueGLProgramToBinaryCache(FArchive* FileWriter, const FOpenGLProgramKey& ProgramKey, GLuint Program, TArray<uint8>& CachedProgramBinaryOUT);
-
-	void AddProgramBinaryDataToBinaryCache(FArchive& Ar, TArray<uint8>& BinaryProgramData, const FOpenGLProgramKey& ProgramKey);
-
-	void ReleaseGLProgram_internal(FOpenGLLinkedProgramConfiguration& Config, GLuint Program);
-
-	FORCEINLINE_DEBUGGABLE bool ShaderIsLoaded(const FSHAHash& Hash)
-	{
-		const FGLShaderToPrograms* FoundShaderToBinary = CachePtr->ShaderToProgramsMap.Find(Hash);
-		return FoundShaderToBinary && FoundShaderToBinary->bLoaded;
-	}
-
-	bool UseCachedProgram_internal(GLuint& ProgramOUT, const FOpenGLProgramKey& ProgramKey, TArray<uint8>& CachedProgramBinaryOUT);
-
-	void OnShaderLibraryRequestShaderCode_internal(const FSHAHash& Hash, FArchive* Ar);
-
-	void BeginProgramReadRequest(FGLProgramBinaryFileCacheEntry* IndexEntry, FArchive* Ar);
-
-	void CheckPendingGLProgramCreateRequests_internal();
-	bool CheckSinglePendingGLProgramCreateRequest_internal(const FOpenGLProgramKey& ProgramKey);
-
-	void CompleteLoadedGLProgramRequest_internal(FGLProgramBinaryFileCacheEntry* PendingGLCreate);
-
-	/** Delegate handlers to track the ShaderPipelineCache precompile. */
-	void OnShaderPipelineCacheOpened(FString const& Name, EShaderPlatform Platform, uint32 Count, const FGuid& VersionGuid, FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
-	void OnShaderPipelineCachePrecompilationComplete(uint32 Count, double Seconds, const FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
-
-private:
-
-	FDelegateHandle OnShaderPipelineCacheOpenedDelegate;
-	FDelegateHandle OnShaderPipelineCachePrecompilationCompleteDelegate;
-
-	TArray<TUniquePtr<FGLProgramBinaryFileCacheEntry>> ProgramEntryContainer; // this is the owner of all FGLProgramBinaryFileCacheEntry ptrs
-
-	TMap<FOpenGLProgramKey, FGLProgramBinaryFileCacheEntry*> ProgramToBinaryMap; // program key to program entry.
-
-	struct FGLShaderToPrograms
-	{
-		FGLShaderToPrograms() : bLoaded(false)
-		{
-		}
-
-		FGLShaderToPrograms(FGLProgramBinaryFileCacheEntry* ProgramEntry) : bLoaded(false)
-		{
-			AssociatedPrograms.Add(ProgramEntry);
-		}
-
-		void Add(FGLProgramBinaryFileCacheEntry* ProgramEntry)
-		{
-			checkSlow(!AssociatedPrograms.Contains(ProgramEntry));
-			AssociatedPrograms.Add(ProgramEntry);
-		}
-
-		bool bLoaded;
-		TArray<FGLProgramBinaryFileCacheEntry*> AssociatedPrograms;
-	};
-
-	// Map of shader hash to a list of programs which reference it.
-	TMap<FSHAHash, FGLShaderToPrograms> ShaderToProgramsMap;
-
-	// programs loaded via async and now ready for creation on GL context owning thread.
-	TArray<FGLProgramBinaryFileCacheEntry*> PendingGLProgramCreateRequests;
-
-	IAsyncReadFileHandle* BinaryCacheAsyncReadFileHandle;
-	FArchive* BinaryCacheWriteFileHandle;
-	bool bShownLoadingScreen;
-
-	enum class EBinaryFileState : uint8
-	{
-		Uninitialized,					// No binary file is yet established and we should not read or write to it.
-		BuildingCacheFile,				// We are precompiling shaders from the PSO and storing them in a new binary cache. Do not attempt to read.
-		BuildingCacheFileWithMove,		// We are precompiling shaders from the PSO and storing them in a new binary cache, shaders matching from the existing cache are moved to the new file. Do not attempt to read.
-		ValidCacheFile,					// We have a valid cache file we can use for reading. Do not attempt to write.
-	};
-
-	bool IsBuildingCache_internal() const
-	{
-		return BinaryFileState == EBinaryFileState::BuildingCacheFile || BinaryFileState == EBinaryFileState::BuildingCacheFileWithMove;
-	}
-
-	struct FPreviousGLProgramBinaryCacheInfo
-	{
-		FPreviousGLProgramBinaryCacheInfo();
-		FPreviousGLProgramBinaryCacheInfo(FPreviousGLProgramBinaryCacheInfo&&);
-		FPreviousGLProgramBinaryCacheInfo& operator=(FPreviousGLProgramBinaryCacheInfo&&);
-		~FPreviousGLProgramBinaryCacheInfo();
-
-
-		FString OldCacheFilename;
-		TUniquePtr<FArchive> OldCacheArchive;
-		TMap<FOpenGLProgramKey, TUniquePtr<FGLProgramBinaryFileCacheEntry> > ProgramToOldBinaryCacheMap; // program key to program entry for old cache used when generating new cache.
-
-		// for logging
-		uint32 NumberOfOldEntriesReused;
-	};
-	FPreviousGLProgramBinaryCacheInfo PreviousBinaryCacheInfo;
-
-	EBinaryFileState BinaryFileState;
 };

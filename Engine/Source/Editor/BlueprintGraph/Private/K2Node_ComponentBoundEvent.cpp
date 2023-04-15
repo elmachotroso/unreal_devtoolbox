@@ -1,13 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_ComponentBoundEvent.h"
-#include "Kismet2/BlueprintEditorUtils.h"
+
+#include "Containers/Array.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
 #include "Engine/ComponentDelegateBinding.h"
-#include "Kismet2/KismetEditorUtilities.h"
+#include "Engine/DynamicBlueprintBinding.h"
+#include "Engine/MemberReference.h"
+#include "EngineLogs.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "Logging/MessageLog.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
+
+static TAutoConsoleVariable<bool> CVarBPEnableDeprecatedWarningForComponentDelegateNodes(
+	TEXT("bp.EnableDeprecatedWarningForComponentDelegateNodes"),
+	true,
+	TEXT("Show Deprecated warning for component delegate event nodes"),
+	ECVF_Cheat);
 
 // @TODO_BH: Remove the CVar for validity checking when we can get all the errors sorted out
 namespace PinValidityCheck
@@ -55,7 +84,7 @@ FText UK2Node_ComponentBoundEvent::GetNodeTitle(ENodeTitleType::Type TitleType) 
 	if (CachedNodeTitle.IsOutOfDate(this))
 	{
 		FFormatNamedArguments Args;
-		Args.Add(TEXT("DelegatePropertyName"), DelegatePropertyDisplayName.IsEmpty() ? FText::FromName(DelegatePropertyName) : DelegatePropertyDisplayName);
+		Args.Add(TEXT("DelegatePropertyName"), GetTargetDelegateDisplayName());
 		Args.Add(TEXT("ComponentPropertyName"), FText::FromName(ComponentPropertyName));
 
 		// FText::Format() is slow, so we cache this to save on performance
@@ -70,7 +99,6 @@ void UK2Node_ComponentBoundEvent::InitializeComponentBoundEventParams(FObjectPro
 	{
 		ComponentPropertyName = InComponentProperty->GetFName();
 		DelegatePropertyName = InDelegateProperty->GetFName();
-		DelegatePropertyDisplayName = InDelegateProperty->GetDisplayNameText();
 		DelegateOwnerClass = CastChecked<UClass>(InDelegateProperty->GetOwner<UObject>())->GetAuthoritativeClass();
 
 		EventReference.SetFromField<UFunction>(InDelegateProperty->SignatureFunction, /*bIsConsideredSelfContext =*/false);
@@ -102,7 +130,7 @@ void UK2Node_ComponentBoundEvent::RegisterDynamicBinding(UDynamicBlueprintBindin
 
 void UK2Node_ComponentBoundEvent::HandleVariableRenamed(UBlueprint* InBlueprint, UClass* InVariableClass, UEdGraph* InGraph, const FName& InOldVarName, const FName& InNewVarName)
 {	
-	if (InVariableClass->IsChildOf(InBlueprint->GeneratedClass))
+	if (InVariableClass && InVariableClass->IsChildOf(InBlueprint->GeneratedClass))
 	{
 		// This could be the case if the component that this was originally bound to was removed, and a new one was 
 		// added in it's place. @see UE-88511
@@ -145,6 +173,35 @@ bool UK2Node_ComponentBoundEvent::IsDelegateValid() const
 		&& (GetTargetDelegateProperty() || FMemberReference::FindRemappedField<FMulticastDelegateProperty>(DelegateOwnerClass, DelegatePropertyName));
 }
 
+bool UK2Node_ComponentBoundEvent::HasDeprecatedReference() const
+{
+	if (CVarBPEnableDeprecatedWarningForComponentDelegateNodes.GetValueOnGameThread())
+	{
+		if (const FMulticastDelegateProperty* DelegateProperty = GetTargetDelegateProperty())
+		{
+			return DelegateProperty->HasAnyPropertyFlags(EPropertyFlags::CPF_Deprecated);	
+		}
+	}
+	return false;
+}
+
+FEdGraphNodeDeprecationResponse UK2Node_ComponentBoundEvent::GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const
+{
+	FEdGraphNodeDeprecationResponse Response = Super::GetDeprecationResponse(DeprecationType);
+	if (DeprecationType == EEdGraphNodeDeprecationType::NodeHasDeprecatedReference)
+	{
+		const UFunction* Function = EventReference.ResolveMember<UFunction>(GetBlueprintClassFromNode());
+		if (ensureMsgf(Function != nullptr, TEXT("This node should not be able to report having a deprecated reference if the event override cannot be resolved.")))
+		{
+			Response.MessageType = EEdGraphNodeDeprecationMessageType::Warning;
+			const FText DetailedMessage = FText::FromString(Function->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage));
+			Response.MessageText = FBlueprintEditorUtils::GetDeprecatedMemberUsageNodeWarning(GetTargetDelegateDisplayName(), DetailedMessage);
+		}
+	}
+
+	return Response;
+}
+
 bool UK2Node_ComponentBoundEvent::IsUsedByAuthorityOnlyDelegate() const
 {
 	FMulticastDelegateProperty* TargetDelegateProp = GetTargetDelegateProperty();
@@ -156,6 +213,11 @@ FMulticastDelegateProperty* UK2Node_ComponentBoundEvent::GetTargetDelegateProper
 	return FindFProperty<FMulticastDelegateProperty>(DelegateOwnerClass, DelegatePropertyName);
 }
 
+FText UK2Node_ComponentBoundEvent::GetTargetDelegateDisplayName() const
+{
+	FMulticastDelegateProperty* Prop = GetTargetDelegateProperty();
+	return Prop ? Prop->GetDisplayNameText() : FText::FromName(DelegatePropertyName);
+}
 
 FText UK2Node_ComponentBoundEvent::GetTooltipText() const
 {

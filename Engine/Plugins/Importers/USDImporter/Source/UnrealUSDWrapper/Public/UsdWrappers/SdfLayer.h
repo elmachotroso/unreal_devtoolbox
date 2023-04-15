@@ -9,6 +9,7 @@
 namespace UE
 {
 	class FSdfPath;
+	class FSdfPrimSpec;
 
 	namespace Internal
 	{
@@ -80,18 +81,35 @@ namespace UE
 
 	// Wrapped pxr::SdfLayer functions, refer to the USD SDK documentation
 	public:
+		FString GetComment() const;
+		void SetComment( const TCHAR* Comment ) const;
+
+		void TransferContent( const FSdfLayer& SourceLayer );
+
 		static FSdfLayer FindOrOpen( const TCHAR* Identifier );
+		static FSdfLayer CreateNew( const TCHAR* Identifier );
 
 		bool Save( bool bForce = false ) const;
+
+		TSet<FString> GetCompositionAssetDependencies() const;
+
+		bool UpdateCompositionAssetDependency(
+			const TCHAR* OldAssetPath,
+			const TCHAR* NewAssetPath = nullptr);
 
 		FString GetRealPath() const;
 		FString GetIdentifier() const;
 		FString GetDisplayName() const;
 
+		FString ComputeAbsolutePath(const FString& AssetPath) const;
+
+		bool IsDirty() const;
 		bool IsEmpty() const;
 		bool IsAnonymous() const;
 
 		bool Export( const TCHAR* Filename ) const;
+
+		void Clear();
 
 		bool HasStartTimeCode() const;
 		double GetStartTimeCode() const;
@@ -107,6 +125,7 @@ namespace UE
 
 		bool HasFramesPerSecond() const;
 		double GetFramesPerSecond() const;
+		void RemoveSubLayerPath( int32 Index );
 		void SetFramesPerSecond( double FramesPerSecond );
 
 		int64 GetNumSubLayerPaths() const;
@@ -116,6 +135,9 @@ namespace UE
 		void SetSubLayerOffset( const FSdfLayerOffset& LayerOffset, int32 Index );
 
 		bool HasSpec( const FSdfPath& Path ) const;
+
+		FSdfPrimSpec GetPseudoRoot() const;
+		FSdfPrimSpec GetPrimAtPath( const FSdfPath& Path ) const;
 
 		TSet< double > ListTimeSamplesForPath( const FSdfPath& Path ) const;
 		void EraseTimeSample( const FSdfPath& Path, double Time );

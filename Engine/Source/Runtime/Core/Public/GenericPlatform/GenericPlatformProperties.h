@@ -256,6 +256,11 @@ struct FGenericPlatformProperties
 		return false; // Currently VT is opt-in
 	}
 
+	static FORCEINLINE bool SupportsRayTracing()
+	{
+		return false;
+	}
+
 	static FORCEINLINE bool SupportsLumenGI()
 	{
 		return true;
@@ -297,4 +302,11 @@ struct FGenericPlatformProperties
 	{
 		return nullptr;
 	}
+	 
+	// Whether the platform requires an original release version to make a patch
+	static FORCEINLINE bool RequiresOriginalReleaseVersionForPatch()
+	{
+		return false;
+	}
+
 };

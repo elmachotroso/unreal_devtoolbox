@@ -5,11 +5,30 @@
 #include "Math/ControlRigMathLibrary.h"
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
+#include "Rigs/RigHierarchyDefines.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_MathTransform)
 
 FRigUnit_MathTransformFromEulerTransform_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = EulerTransform.ToFTransform();
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathTransformFromEulerTransform::GetUpgradeInfo() const
+{
+	FRigUnit_MathTransformFromEulerTransformV2 NewNode;
+	NewNode.Value = EulerTransform;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("EulerTransform"), TEXT("Value"));
+	return Info;
+}
+
+FRigUnit_MathTransformFromEulerTransformV2_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Result = Value.ToFTransform();
 }
 
 FRigUnit_MathTransformToEulerTransform_Execute()
@@ -119,10 +138,16 @@ FRigUnit_MathTransformSelectBool_Execute()
 	Result = Condition ? IfTrue : IfFalse;
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathTransformSelectBool::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_MathTransformRotateVector_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
-	Result = Transform.TransformVector(Direction);
+	Result = Transform.TransformVector(Vector);
 }
 
 FRigUnit_MathTransformTransformVector_Execute()
@@ -140,6 +165,28 @@ FRigUnit_MathTransformFromSRT_Execute()
 	EulerTransform.FromFTransform(Transform);
 }
 
+
+FRigUnit_MathTransformArrayToSRT_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	if (Transforms.Num() == 0)
+	{
+		return;
+	}
+
+	Translations.SetNumUninitialized(Transforms.Num());
+	Rotations.SetNumUninitialized(Transforms.Num());
+	Scales.SetNumUninitialized(Transforms.Num());
+
+	for (int32 Index = 0; Index < Transforms.Num(); Index++)
+	{
+		Translations[Index] = Transforms[Index].GetTranslation();
+		Rotations[Index] = Transforms[Index].GetRotation();
+		Scales[Index] = Transforms[Index].GetScale3D();
+	}
+
+}
+
 FRigUnit_MathTransformClampSpatially_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -148,3 +195,16 @@ FRigUnit_MathTransformClampSpatially_Execute()
 	Result = Value;
 	Result.SetTranslation(Position);
 }
+
+FRigUnit_MathTransformMirrorTransform_Execute()
+{
+	FRigMirrorSettings MirrorSettings;
+	MirrorSettings.MirrorAxis = MirrorAxis;
+	MirrorSettings.AxisToFlip = AxisToFlip;
+
+	FTransform Local = FTransform::Identity;
+	FRigUnit_MathTransformMakeRelative::StaticExecute(RigVMExecuteContext, Value, CentralTransform, Local, Context);
+	Local = MirrorSettings.MirrorTransform(Local);
+	FRigUnit_MathTransformMakeAbsolute::StaticExecute(RigVMExecuteContext, Local, CentralTransform, Result, Context);
+}
+

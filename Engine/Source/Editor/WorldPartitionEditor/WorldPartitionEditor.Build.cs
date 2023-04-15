@@ -5,22 +5,13 @@ using UnrealBuildTool;
 public class WorldPartitionEditor : ModuleRules
 {
     public WorldPartitionEditor(ReadOnlyTargetRules Target) : base(Target)
-    {
-        PublicIncludePaths.Add("Editor/WorldPartitionEditor/Public");
-
-        PrivateIncludePaths.Add("Editor/WorldPartitionEditor/Private");	// For PCH includes (because they don't work with relative paths, yet)
-
-        PrivateIncludePathModuleNames.AddRange(
-            new string[] {
-			}
-		);
-     
+    {     
         PrivateDependencyModuleNames.AddRange(
             new string[] {
 				"Core",
 				"CoreUObject",
 				"EditorFramework",
-				"EditorStyle",
+				"EditorSubsystem",
 				"Engine",
 				"InputCore",
 				"Slate",
@@ -34,6 +25,7 @@ public class WorldPartitionEditor : ModuleRules
 				"RenderCore",
 				"Renderer",
 				"RHI",
+				"SceneOutliner"
 			}
 		);
 
@@ -42,5 +34,20 @@ public class WorldPartitionEditor : ModuleRules
 				"AssetTools",
             }
 		);
-    }
+
+		PrivateIncludePathModuleNames.AddRange
+		(
+			new string[]
+			{
+				"SceneOutliner",
+				"WorkspaceMenuStructure",
+			}
+		);
+
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+			}
+		);
+	}
 }

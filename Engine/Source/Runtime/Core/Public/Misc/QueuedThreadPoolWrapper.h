@@ -2,15 +2,33 @@
 
 #pragma once
 
+#include "Async/Fundamental/Scheduler.h"
+#include "Async/Fundamental/Task.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "CoreMinimal.h"
+#include "Experimental/ConcurrentLinearAllocator.h"
+#include "Experimental/Containers/FAAArrayQueue.h"
+#include "Experimental/Misc/ExecutionResource.h"
 #include "GenericPlatform/GenericPlatformAffinity.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformAffinity.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "HAL/UnrealMemory.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/IQueuedWork.h"
+#include "Misc/MemStack.h"
+#include "Misc/ScopeLock.h"
 #include "QueuedThreadPool.h"
 #include "ScopeRWLock.h"
-#include "Async/TaskGraphInterfaces.h"
-#include "Misc/IQueuedWork.h"
-#include "Async/Fundamental/Scheduler.h"
-#include "Experimental/Containers/FAAArrayQueue.h"
-#include "Experimental/ConcurrentLinearAllocator.h"
+#include "Stats/Stats2.h"
+#include "Templates/Atomic.h"
+#include "Templates/Function.h"
+#include "Templates/RefCounting.h"
 
 #include <atomic>
 
@@ -51,7 +69,109 @@ public:
 	int32 GetCurrentConcurrency() const { return CurrentConcurrency.load(std::memory_order_relaxed); }
 
 protected:
-	FRWLock Lock;
+	class CORE_API FScheduledWork : public IQueuedWork, public IExecutionResource
+	{
+	public:
+		FScheduledWork();
+
+		FScheduledWork(const FScheduledWork&) = delete;
+		FScheduledWork& operator=(const FScheduledWork&) = delete;
+
+		FScheduledWork(const FScheduledWork&&) = delete;
+		FScheduledWork& operator=(const FScheduledWork&&) = delete;
+
+		~FScheduledWork() override;
+
+	private:
+		uint32 AddRef() const override
+		{
+			return uint32(NumRefs.Increment());
+		}
+
+		uint32 Release() const override
+		{
+			uint32 Refs = uint32(NumRefs.Decrement());
+
+ 			// When the last ref is released, we call the schedule function of the parent pool
+			// so that OnUnschedule can release any resources acquired by the OnSchedule function and
+			// the scheduling of the next work items can proceed.
+			if (Refs == 0)
+			{
+				ParentPool->Schedule(const_cast<FScheduledWork*>(this));
+			}
+			return Refs;
+		}
+
+		uint32 GetRefCount() const override
+		{
+			return uint32(NumRefs.GetValue());
+		}
+
+		void Assign(FQueuedThreadPoolWrapper* InParentPool, IQueuedWork* InWork, EQueuedWorkPriority InPriority)
+		{
+			check(GetRefCount() == 0);
+			ParentPool = InParentPool;
+			Work = InWork;
+			Priority = InPriority;
+			AddRef();
+		}
+
+		void DoThreadedWork() override
+		{
+			{
+				// Add this object as an execution context that can be retrieved via
+				// FExecutionResourceContext::Get() if a task needs to hold on the
+				// resources acquired (i.e. Concurrency Limit, Memory Pressure, etc...)
+				// longer than for the DoThreadedWork() scope.
+				FExecutionResourceContextScope ExecutionContextScope(this);
+
+				Work->DoThreadedWork();
+			}
+
+			Release();
+		}
+
+		void Abandon() override
+		{
+			Work->Abandon();
+
+			Release();
+		}
+
+		EQueuedWorkFlags GetQueuedWorkFlags() const override
+		{
+			return Work->GetQueuedWorkFlags();
+		}
+
+		int64 GetRequiredMemory() const override
+		{
+			return Work->GetRequiredMemory();
+		}
+
+		IQueuedWork* GetInnerWork() const
+		{
+			return Work;
+		}
+
+		EQueuedWorkPriority GetPriority() const
+		{
+			return Priority;
+		}
+
+		void Reset()
+		{
+			Work = nullptr;
+		}
+
+		mutable FThreadSafeCounter NumRefs;
+		friend class FQueuedThreadPoolWrapper;
+		FQueuedThreadPoolWrapper* ParentPool;
+		IQueuedWork* Work;
+		EQueuedWorkPriority Priority;
+	};
+
+	// A critical section is used since we need reentrancy support from the same thread
+	FCriticalSection Lock;
 	FThreadPoolPriorityQueue QueuedWork;
 
 	// Can be overriden to dynamically control the maximum concurrency
@@ -62,8 +182,10 @@ protected:
 	
 	// Can be overriden to know when work has been unscheduled.
 	virtual void OnUnscheduled(const IQueuedWork*) {}
+
+	// Can be overriden to allocate a more specialized version if needed.
+	virtual FScheduledWork* AllocateScheduledWork() { return new FScheduledWork(); }
 private:
-	struct FScheduledWork;
 	FScheduledWork* AllocateWork(IQueuedWork* InnerWork, EQueuedWorkPriority Priority);
 	bool CanSchedule(EQueuedWorkPriority Priority) const;
 	bool Create(uint32 InNumQueuedThreads, uint32 StackSize, EThreadPriority ThreadPriority, const TCHAR* Name) override;
@@ -81,6 +203,7 @@ private:
 	int32 MaxTaskToSchedule;
 	std::atomic<int32> CurrentConcurrency;
 	EQueuedWorkPriority WrappedQueuePriority;
+	bool bIsScheduling = false;
 };
 
 /** ThreadPool wrapper implementation allowing to schedule
@@ -112,7 +235,7 @@ public:
 	 */
 	void Sort(TFunctionRef<bool(const IQueuedWork* Lhs, const IQueuedWork* Rhs)> Predicate)
 	{
-		FRWScopeLock ScopeLock(Lock, SLT_Write);
+		FScopeLock ScopeLock(&Lock);
 		QueuedWork.Sort(EQueuedWorkPriority::Normal, Predicate);
 	}
 };
@@ -319,6 +442,13 @@ private:
 		}
 	}
 
+	void FinalizeExecution()
+	{
+		TaskCount.fetch_sub(1, std::memory_order_release);
+		bool bWakeUpWorker = false;
+		ScheduleTasks(bWakeUpWorker);
+	}
+
 	void AddQueuedWork(IQueuedWork* InQueuedWork, EQueuedWorkPriority InPriority = EQueuedWorkPriority::Normal) override
 	{
 		check(bIsExiting == false);
@@ -329,21 +459,13 @@ private:
 
 		LowLevelTasks::ETaskPriority TaskPriorityMapper[int(EQueuedWorkPriority::Count)] = { LowLevelTasks::ETaskPriority::High, LowLevelTasks::ETaskPriority::High, LowLevelTasks::ETaskPriority::BackgroundHigh, LowLevelTasks::ETaskPriority::BackgroundNormal, LowLevelTasks::ETaskPriority::BackgroundLow, LowLevelTasks::ETaskPriority::BackgroundLow };
 		LowLevelTasks::ETaskPriority TaskPriority = TaskPriorityMapper[int(Priority)];
-		const bool bAllowBusyWaiting = (InQueuedWork->GetQueuedWorkFlags() & EQueuedWorkFlags::DoNotRunInsideBusyWait) == EQueuedWorkFlags::None;
+		LowLevelTasks::ETaskFlags Flags = (InQueuedWork->GetQueuedWorkFlags() & EQueuedWorkFlags::DoNotRunInsideBusyWait) == EQueuedWorkFlags::None ? LowLevelTasks::ETaskFlags::DefaultFlags : (LowLevelTasks::ETaskFlags::DefaultFlags & ~LowLevelTasks::ETaskFlags::AllowCancellation);
 
-		QueuedWorkInternalData->Task.Init(TEXT("FQueuedLowLevelThreadPoolTask"), TaskPriority, [InQueuedWork]
+		QueuedWorkInternalData->Task.Init(TEXT("FQueuedLowLevelThreadPoolTask"), TaskPriority, [InQueuedWork, InternalData = InQueuedWork->InternalData, Deleter = LowLevelTasks::TDeleter<FQueuedLowLevelThreadPool, &FQueuedLowLevelThreadPool::FinalizeExecution>{ this }]
 		{
 			FMemMark Mark(FMemStack::Get());
 			InQueuedWork->DoThreadedWork();
-		},
-		[this, InternalData = InQueuedWork->InternalData]()
-		{
-			TaskCount.fetch_sub(1, std::memory_order_release);
-			bool bWakeUpWorker = false;
-			ScheduleTasks(bWakeUpWorker);
-		},
-		bAllowBusyWaiting
-		);
+		}, Flags);
 
 		if (!bIsPaused)
 		{

@@ -19,7 +19,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SViewport.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "RenderingThread.h"
 #include "Settings/ContentBrowserSettings.h"
 #include "RenderUtils.h"
@@ -29,8 +29,8 @@
 #include "UnrealEdGlobals.h"
 #include "Slate/SlateTextures.h"
 #include "ObjectTools.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "ShaderCompiler.h"
 #include "AssetCompilingManager.h"
 #include "IAssetTools.h"
@@ -105,7 +105,7 @@ public:
 
 		const FAssetData& AssetData = AssetThumbnail->GetAssetData();
 
-		UClass* Class = FindObjectSafe<UClass>(ANY_PACKAGE, *AssetData.AssetClass.ToString());
+		UClass* Class = FindObjectSafe<UClass>(AssetData.AssetClassPath);
 		static FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
 		TSharedPtr<IAssetTypeActions> AssetTypeActions;
 		if ( Class != NULL )
@@ -126,7 +126,7 @@ public:
 
 		TSharedRef<SOverlay> OverlayWidget = SNew(SOverlay);
 
-		UpdateThumbnailClass();
+		UpdateThumbnailClass(AssetTypeActions.Get());
 
 		ClassThumbnailBrushOverride = InArgs._ClassThumbnailBrushOverride;
 
@@ -151,7 +151,7 @@ public:
 					.Text(GetLabelText())
 					.Font(GetTextFont())
 					.Justification(ETextJustify::Center)
-					.ColorAndOpacity(FEditorStyle::GetColor(Style, ".ColorAndOpacity"))
+					.ColorAndOpacity(FAppStyle::GetColor(Style, ".ColorAndOpacity"))
 					.HighlightText(HighlightedText)
 				]
 
@@ -175,7 +175,8 @@ public:
 				// In VR editor every widget is in the world and gamma corrected by the scene renderer.  Thumbnails will have already been gamma
 				// corrected and so they need to be reversed
 				.ReverseGammaCorrection(IVREditorModule::Get().IsVREditorModeActive())
-				.EnableBlending(true);
+				.EnableBlending(true)
+				.ViewportSize(AssetThumbnail->GetSize());
 
 			Viewport->SetViewportInterface( AssetThumbnail.ToSharedRef() );
 			AssetThumbnail->GetViewportRenderTargetTexture(); // Access the render texture to push it on the stack if it isn't already rendered
@@ -212,7 +213,7 @@ public:
 			.Padding(GetClassIconPadding())
 			[
 				SAssignNew(ClassIconWidget, SBorder)
-				.BorderImage(FEditorStyle::GetNoBrush())
+				.BorderImage(FAppStyle::GetNoBrush())
 				[
 					SNew(SImage)
 					.Image(this, &SAssetThumbnail::GetClassIconBrush)
@@ -228,7 +229,7 @@ public:
 				.Padding(FMargin(2, 2, 2, 2))
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush(Style, ".HintBackground"))
+					.BorderImage(FAppStyle::GetBrush(Style, ".HintBackground"))
 					.BorderBackgroundColor(this, &SAssetThumbnail::GetHintBackgroundColor) //Adjust the opacity of the border itself
 					.ColorAndOpacity(HintColorAndOpacity) //adjusts the opacity of the contents of the border
 					.Visibility(this, &SAssetThumbnail::GetHintTextVisibility)
@@ -237,7 +238,7 @@ public:
 						SAssignNew(HintTextBlock, STextBlock)
 						.Text(GetLabelText())
 						.Font(GetHintTextFont())
-						.ColorAndOpacity(FEditorStyle::GetColor(Style, ".HintColorAndOpacity"))
+						.ColorAndOpacity(FAppStyle::GetColor(Style, ".HintColorAndOpacity"))
 						.HighlightText(HighlightedText)
 					]
 				];
@@ -249,7 +250,7 @@ public:
 		.VAlign(ColorStripOrientation == EThumbnailColorStripOrientation::HorizontalBottomEdge ? VAlign_Bottom : VAlign_Fill)
 		[
 			SAssignNew(AssetColorStripWidget, SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(AssetColor)
 			.Padding(this, &SAssetThumbnail::GetAssetColorStripPadding)
 		];
@@ -276,18 +277,38 @@ public:
 
 	}
 
-	void UpdateThumbnailClass()
+	void UpdateThumbnailClass(const IAssetTypeActions* AssetTypeActions)
 	{
 		const FAssetData& AssetData = AssetThumbnail->GetAssetData();
 		ThumbnailClass = MakeWeakObjectPtr(const_cast<UClass*>(FClassIconFinder::GetIconClassForAssetData(AssetData, &bIsClassType)));
+		const FName AssetClassName = AssetThumbnail->GetAssetData().AssetClassPath.GetAssetName();
 
-		// For non-class types, use the default based upon the actual asset class
-		// This has the side effect of not showing a class icon for assets that don't have a proper thumbnail image available
-		const FName DefaultThumbnail = (bIsClassType) ? NAME_None : FName(*FString::Printf(TEXT("ClassThumbnail.%s"), *AssetThumbnail->GetAssetData().AssetClass.ToString()));
-		ThumbnailBrush = FClassIconFinder::FindThumbnailForClass(ThumbnailClass.Get(), DefaultThumbnail);
+		ClassIconBrush = nullptr;
+		ThumbnailBrush = nullptr;
+		if (AssetTypeActions)
+		{
+			if (const FSlateBrush* AssetTypeThumbnail = AssetTypeActions->GetThumbnailBrush(AssetData, AssetClassName))
+			{
+				ThumbnailBrush = AssetTypeThumbnail;
+			}
 
-		ClassIconBrush = FSlateIconFinder::FindIconBrushForClass(ThumbnailClass.Get());
+			if (const FSlateBrush* AssetTypeIcon = AssetTypeActions->GetIconBrush(AssetData, AssetClassName))
+			{
+				ClassIconBrush = AssetTypeIcon;
+			}
+		}
 
+		if (!ThumbnailBrush)
+		{
+			// For non-class types, use the default based upon the actual asset class
+			// This has the side effect of not showing a class icon for assets that don't have a proper thumbnail image available
+			const FName DefaultThumbnail = (bIsClassType) ? NAME_None : FName(*FString::Printf(TEXT("ClassThumbnail.%s"), *AssetClassName.ToString()));
+			ThumbnailBrush = FClassIconFinder::FindThumbnailForClass(ThumbnailClass.Get(), DefaultThumbnail);
+		}
+		if (!ClassIconBrush)
+		{
+			ClassIconBrush = FSlateIconFinder::FindIconBrushForClass(ThumbnailClass.Get());
+		}
 	}
 
 	FSlateColor GetHintBackgroundColor() const
@@ -368,15 +389,19 @@ private:
 
 		const FAssetData& AssetData = AssetThumbnail->GetAssetData();
 
-		UClass* Class = FindObject<UClass>(ANY_PACKAGE, *AssetData.AssetClass.ToString());
+		UClass* Class = FindObject<UClass>(AssetData.AssetClassPath);
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-		TWeakPtr<IAssetTypeActions> AssetTypeActions;
+		TSharedPtr<IAssetTypeActions> AssetTypeActions;
 		if ( Class != NULL )
 		{
-			AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(Class);
+			TWeakPtr<IAssetTypeActions> TypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(Class);
+			if (TypeActions.IsValid())
+			{
+				AssetTypeActions = TypeActions.Pin();
+			}
 		}
 
-		UpdateThumbnailClass();
+		UpdateThumbnailClass(AssetTypeActions.Get());
 
 		AssetColor = FLinearColor::White;
 		if( AssetTypeColorOverride.IsSet() )
@@ -385,7 +410,7 @@ private:
 		}
 		else if ( AssetTypeActions.IsValid() )
 		{
-			AssetColor = AssetTypeActions.Pin()->GetTypeColor();
+			AssetColor = AssetTypeActions->GetTypeColor();
 		}
 
 		//AssetBackgroundWidget->SetBorderBackgroundColor(AssetColor.CopyWithNewOpacity(0.3f));
@@ -396,12 +421,12 @@ private:
 
 	FSlateFontInfo GetTextFont() const
 	{
-		return FEditorStyle::GetFontStyle( WidthLastFrame <= 64 ? FEditorStyle::Join(Style, ".FontSmall") : FEditorStyle::Join(Style, ".Font") );
+		return FAppStyle::GetFontStyle( WidthLastFrame <= 64 ? FAppStyle::Join(Style, ".FontSmall") : FAppStyle::Join(Style, ".Font") );
 	}
 
 	FSlateFontInfo GetHintTextFont() const
 	{
-		return FEditorStyle::GetFontStyle( WidthLastFrame <= 64 ? FEditorStyle::Join(Style, ".HintFontSmall") : FEditorStyle::Join(Style, ".HintFont") );
+		return FAppStyle::GetFontStyle( WidthLastFrame <= 64 ? FAppStyle::Join(Style, ".HintFontSmall") : FAppStyle::Join(Style, ".HintFont") );
 	}
 
 	float GetTextWrapWidth() const
@@ -411,13 +436,13 @@ private:
 
 	const FSlateBrush* GetAssetBackgroundBrush() const
 	{
-		return FEditorStyle::GetBrush(AssetBackgroundBrushName);
+		return FAppStyle::GetBrush(AssetBackgroundBrushName);
 	}
 
 	const FSlateBrush* GetClassBackgroundBrush() const
 	{
 
-		return FEditorStyle::GetBrush(ClassBackgroundBrushName);
+		return FAppStyle::GetBrush(ClassBackgroundBrushName);
 	}
 
 	FLinearColor GetViewportColorAndOpacity() const
@@ -558,11 +583,11 @@ private:
 			return !CachedThumbnail->IsEmpty();
 		}
 
-		if ( AssetData.AssetClass != UBlueprint::StaticClass()->GetFName() )
+		if ( AssetData.AssetClassPath != UBlueprint::StaticClass()->GetClassPathName() )
 		{
 			// If we are not a blueprint, see if the CDO of the asset's class has a rendering info
 			// Blueprints can't do this because the rendering info is based on the generated class
-			UClass* AssetClass = FindObject<UClass>(ANY_PACKAGE, *AssetData.AssetClass.ToString());
+			UClass* AssetClass = FindObject<UClass>(AssetData.AssetClassPath);
 
 			if ( AssetClass )
 			{
@@ -653,15 +678,15 @@ private:
 	FText GetAssetClassDisplayName() const
 	{
 		const FAssetData& AssetData = AssetThumbnail->GetAssetData();
-		FString AssetClass = AssetData.AssetClass.ToString();
-		UClass* Class = FindObjectSafe<UClass>(ANY_PACKAGE, *AssetClass);
+		FTopLevelAssetPath AssetClass = AssetData.AssetClassPath;
+		UClass* Class = FindObjectSafe<UClass>(AssetClass);
 
 		if ( Class )
 		{
 			return GetDisplayNameForClass( Class, &AssetData );
 		}
 
-		return FText::FromString(AssetClass);
+		return FText::FromString(AssetClass.GetAssetName().ToString());
 	}
 
 	FText GetAssetDisplayName() const
@@ -817,9 +842,9 @@ FSlateShaderResource* FAssetThumbnail::GetViewportRenderTargetTexture() const
 
 UObject* FAssetThumbnail::GetAsset() const
 {
-	if ( AssetData.ObjectPath != NAME_None )
+	if ( AssetData.IsValid() )
 	{
-		return FindObject<UObject>(NULL, *AssetData.ObjectPath.ToString());
+		return AssetData.GetSoftObjectPath().ResolveObject();
 	}
 	else
 	{
@@ -987,7 +1012,7 @@ void FAssetThumbnailPool::ReleaseResources()
 		const TSharedRef<FThumbnailInfo>& Thumb = *ThumbIt;
 		if ( !Thumb.IsUnique() )
 		{
-			ensureMsgf(0, TEXT("Thumbnail info for '%s' is still referenced by '%d' other objects"), *Thumb->AssetData.ObjectPath.ToString(), Thumb.GetSharedReferenceCount());
+			ensureMsgf(0, TEXT("Thumbnail info for '%s' is still referenced by '%d' other objects"), *Thumb->AssetData.GetObjectPathString(), Thumb.GetSharedReferenceCount());
 		}
 	}
 }
@@ -1096,7 +1121,7 @@ void FAssetThumbnailPool::Tick( float DeltaTime )
 					{
 						if (FPackageName::IsValidObjectPath(CustomThumbnailTagValue))
 						{
-							CustomThumbnailAsset = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get().GetAssetByObjectPath(*CustomThumbnailTagValue);
+							CustomThumbnailAsset = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get().GetAssetByObjectPath(FSoftObjectPath(CustomThumbnailTagValue));
 						}
 					}
 
@@ -1108,9 +1133,11 @@ void FAssetThumbnailPool::Tick( float DeltaTime )
 						// Only load the custom thumbnail if the original asset is also loaded
 						//if (InfoRef->AssetData.IsAssetLoaded())
 						{
-							UObject* CustomThumbnail = CustomThumbnailAsset.GetAsset();
-							bLoadedThumbnail = LoadThumbnail(InfoRef, bIsAssetStillCompiling, CustomThumbnailAsset);
-							CustomThumbnail->ClearFlags(RF_Standalone);
+							if (UObject* CustomThumbnail = CustomThumbnailAsset.GetAsset())
+							{
+								bLoadedThumbnail = LoadThumbnail(InfoRef, bIsAssetStillCompiling, CustomThumbnailAsset);
+								CustomThumbnail->ClearFlags(RF_Standalone);
+							}
 						}
 					}
 
@@ -1232,13 +1259,13 @@ bool FAssetThumbnailPool::LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo
 
 FSlateTexture2DRHIRef* FAssetThumbnailPool::AccessTexture( const FAssetData& AssetData, uint32 Width, uint32 Height )
 {
-	if(AssetData.ObjectPath == NAME_None || Width == 0 || Height == 0)
+	if(!AssetData.IsValid() || Width == 0 || Height == 0)
 	{
 		return NULL;
 	}
 	else
 	{
-		FThumbId ThumbId( AssetData.ObjectPath, Width, Height ) ;
+		FThumbId ThumbId( AssetData.GetSoftObjectPath(), Width, Height ) ;
 		// Check to see if a thumbnail for this asset exists.  If so we don't need to render it
 		const TSharedRef<FThumbnailInfo>* ThumbnailInfoPtr = ThumbnailToTextureMap.Find( ThumbId );
 		TSharedPtr<FThumbnailInfo> ThumbnailInfo;
@@ -1327,14 +1354,14 @@ FSlateTexture2DRHIRef* FAssetThumbnailPool::AccessTexture( const FAssetData& Ass
 void FAssetThumbnailPool::AddReferencer( const FAssetThumbnail& AssetThumbnail )
 {
 	FIntPoint Size = AssetThumbnail.GetSize();
-	if ( AssetThumbnail.GetAssetData().ObjectPath == NAME_None || Size.X == 0 || Size.Y == 0 )
+	if ( !AssetThumbnail.GetAssetData().IsValid() || Size.X == 0 || Size.Y == 0 )
 	{
 		// Invalid referencer
 		return;
 	}
 
 	// Generate a key and look up the number of references in the RefCountMap
-	FThumbId ThumbId( AssetThumbnail.GetAssetData().ObjectPath, Size.X, Size.Y ) ;
+	FThumbId ThumbId( AssetThumbnail.GetAssetData().GetSoftObjectPath(), Size.X, Size.Y ) ;
 	int32* RefCountPtr = RefCountMap.Find(ThumbId);
 
 	if ( RefCountPtr )
@@ -1352,8 +1379,8 @@ void FAssetThumbnailPool::AddReferencer( const FAssetThumbnail& AssetThumbnail )
 void FAssetThumbnailPool::RemoveReferencer( const FAssetThumbnail& AssetThumbnail )
 {
 	FIntPoint Size = AssetThumbnail.GetSize();
-	const FName ObjectPath = AssetThumbnail.GetAssetData().ObjectPath;
-	if ( ObjectPath == NAME_None || Size.X == 0 || Size.Y == 0 )
+	const FSoftObjectPath ObjectPath = AssetThumbnail.GetAssetData().GetSoftObjectPath();
+	if ( ObjectPath.IsNull() || Size.X == 0 || Size.Y == 0 )
 	{
 		// Invalid referencer
 		return;
@@ -1388,9 +1415,9 @@ bool FAssetThumbnailPool::IsInRenderStack( const TSharedPtr<FAssetThumbnail>& Th
 	const uint32 Width = Thumbnail->GetSize().X;
 	const uint32 Height = Thumbnail->GetSize().Y;
 
-	if ( ensure(AssetData.ObjectPath != NAME_None) && ensure(Width > 0) && ensure(Height > 0) )
+	if ( ensure(AssetData.IsValid()) && ensure(Width > 0) && ensure(Height > 0) )
 	{
-		FThumbId ThumbId( AssetData.ObjectPath, Width, Height ) ;
+		FThumbId ThumbId(AssetData.GetSoftObjectPath(), Width, Height);
 		const TSharedRef<FThumbnailInfo>* ThumbnailInfoPtr = ThumbnailToTextureMap.Find( ThumbId );
 		if ( ThumbnailInfoPtr )
 		{
@@ -1407,9 +1434,9 @@ bool FAssetThumbnailPool::IsRendered(const TSharedPtr<FAssetThumbnail>& Thumbnai
 	const uint32 Width = Thumbnail->GetSize().X;
 	const uint32 Height = Thumbnail->GetSize().Y;
 
-	if (ensure(AssetData.ObjectPath != NAME_None) && ensure(Width > 0) && ensure(Height > 0))
+	if (ensure(AssetData.IsValid()) && ensure(Width > 0) && ensure(Height > 0))
 	{
-		FThumbId ThumbId(AssetData.ObjectPath, Width, Height);
+		FThumbId ThumbId(AssetData.GetSoftObjectPath(), Width, Height);
 		const TSharedRef<FThumbnailInfo>* ThumbnailInfoPtr = ThumbnailToTextureMap.Find(ThumbId);
 		if (ThumbnailInfoPtr)
 		{
@@ -1424,17 +1451,17 @@ void FAssetThumbnailPool::PrioritizeThumbnails( const TArray< TSharedPtr<FAssetT
 {
 	if ( ensure(Width > 0) && ensure(Height > 0) )
 	{
-		TSet<FName> ObjectPathList;
+		TSet<FSoftObjectPath> ObjectPathList;
 		for ( int32 ThumbIdx = 0; ThumbIdx < ThumbnailsToPrioritize.Num(); ++ThumbIdx )
 		{
-			ObjectPathList.Add(ThumbnailsToPrioritize[ThumbIdx]->GetAssetData().ObjectPath);
+			ObjectPathList.Add(ThumbnailsToPrioritize[ThumbIdx]->GetAssetData().GetSoftObjectPath());
 		}
 
 		TArray< TSharedRef<FThumbnailInfo> > FoundThumbnails;
 		for ( int32 ThumbIdx = ThumbnailsToRenderStack.Num() - 1; ThumbIdx >= 0; --ThumbIdx )
 		{
 			const TSharedRef<FThumbnailInfo>& ThumbnailInfo = ThumbnailsToRenderStack[ThumbIdx];
-			if ( ThumbnailInfo->Width == Width && ThumbnailInfo->Height == Height && ObjectPathList.Contains(ThumbnailInfo->AssetData.ObjectPath) )
+			if (ThumbnailInfo->Width == Width && ThumbnailInfo->Height == Height && ObjectPathList.Contains(ThumbnailInfo->AssetData.GetSoftObjectPath()))
 			{
 				FoundThumbnails.Add(ThumbnailInfo);
 				ThumbnailsToRenderStack.RemoveAt(ThumbIdx);
@@ -1454,9 +1481,9 @@ void FAssetThumbnailPool::RefreshThumbnail( const TSharedPtr<FAssetThumbnail>& T
 	const uint32 Width = ThumbnailToRefresh->GetSize().X;
 	const uint32 Height = ThumbnailToRefresh->GetSize().Y;
 
-	if ( ensure(AssetData.ObjectPath != NAME_None) && ensure(Width > 0) && ensure(Height > 0) )
+	if ( ensure(AssetData.IsValid()) && ensure(Width > 0) && ensure(Height > 0) )
 	{
-		FThumbId ThumbId( AssetData.ObjectPath, Width, Height ) ;
+		FThumbId ThumbId(AssetData.GetSoftObjectPath(), Width, Height);
 		const TSharedRef<FThumbnailInfo>* ThumbnailInfoPtr = ThumbnailToTextureMap.Find( ThumbId );
 		if ( ThumbnailInfoPtr )
 		{
@@ -1471,9 +1498,9 @@ void FAssetThumbnailPool::SetRealTimeThumbnail( const TSharedPtr<FAssetThumbnail
 	const uint32 Width = Thumbnail->GetSize().X;
 	const uint32 Height = Thumbnail->GetSize().Y;
 
-	if (ensure(AssetData.ObjectPath != NAME_None) && ensure(Width > 0) && ensure(Height > 0) )
+	if (ensure(AssetData.IsValid()) && ensure(Width > 0) && ensure(Height > 0) )
 	{
-		FThumbId ThumbId( AssetData.ObjectPath, Width, Height );
+		FThumbId ThumbId(AssetData.GetSoftObjectPath(), Width, Height);
 		const TSharedRef<FThumbnailInfo>* ThumbnailInfoPtr = ThumbnailToTextureMap.Find( ThumbId );
 		if ( ThumbnailInfoPtr )
 		{
@@ -1489,9 +1516,9 @@ void FAssetThumbnailPool::SetRealTimeThumbnail( const TSharedPtr<FAssetThumbnail
 	}
 }
 
-void FAssetThumbnailPool::FreeThumbnail( const FName& ObjectPath, uint32 Width, uint32 Height )
+void FAssetThumbnailPool::FreeThumbnail( const FSoftObjectPath& ObjectPath, uint32 Width, uint32 Height )
 {
-	if(ObjectPath != NAME_None && Width != 0 && Height != 0)
+	if(ObjectPath.IsValid() && Width != 0 && Height != 0)
 	{
 		FThumbId ThumbId( ObjectPath, Width, Height ) ;
 
@@ -1517,7 +1544,7 @@ void FAssetThumbnailPool::FreeThumbnail( const FName& ObjectPath, uint32 Width, 
 			
 }
 
-void FAssetThumbnailPool::RefreshThumbnailsFor( FName ObjectPath )
+void FAssetThumbnailPool::RefreshThumbnailsFor( const FSoftObjectPath& ObjectPath )
 {
 	for ( auto ThumbIt = ThumbnailToTextureMap.CreateIterator(); ThumbIt; ++ThumbIt)
 	{
@@ -1532,7 +1559,7 @@ void FAssetThumbnailPool::OnAssetLoaded( UObject* Asset )
 {
 	if ( Asset != NULL )
 	{
-		RecentlyLoadedAssets.Add( FName(*Asset->GetPathName()) );
+		RecentlyLoadedAssets.Add( FSoftObjectPath(Asset) );
 	}
 }
 
@@ -1543,7 +1570,10 @@ void FAssetThumbnailPool::OnActorPostEditMove( AActor* Actor )
 
 void FAssetThumbnailPool::OnObjectPropertyChanged( UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent )
 {
-	DirtyThumbnailForObject(ObjectBeingModified);
+	if(PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		DirtyThumbnailForObject(ObjectBeingModified);
+	}
 }
 
 void FAssetThumbnailPool::DirtyThumbnailForObject(UObject* ObjectBeingModified)
@@ -1606,6 +1636,6 @@ void FAssetThumbnailPool::DirtyThumbnailForObject(UObject* ObjectBeingModified)
 			Thumbnail->MarkAsDirty();
 		}
 
-		RefreshThumbnailsFor( FName(*ObjectBeingModified->GetPathName()) );
+		RefreshThumbnailsFor(FSoftObjectPath(ObjectBeingModified));
 	}
 }

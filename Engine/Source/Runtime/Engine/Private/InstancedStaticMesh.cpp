@@ -26,13 +26,12 @@
 #include "UObject/MobileObjectVersion.h"
 #include "EngineStats.h"
 #include "Interfaces/ITargetPlatform.h"
-#if WITH_EDITOR
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
-#endif // WITH_EDITOR
 #include "MeshMaterialShader.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "NaniteSceneProxy.h"
+#include "MaterialCachedData.h"
+#include "Collision.h"
+#include "PipelineStateCache.h"
 
 #include "Elements/Framework/EngineElementsLibrary.h"
 #include "Elements/SMInstance/SMInstanceElementData.h"
@@ -129,6 +128,14 @@ static TAutoConsoleVariable<int32> CVarRayTracingSimulatedInstanceCount(
 	TEXT("Maximum number of instances to simulate per instanced static mesh, presently capped to 256")
 );
 
+#if WITH_EDITOR
+static TAutoConsoleVariable<int32> CVarEnableViewportSMInstanceSelection(
+	TEXT("TypedElements.EnableViewportSMInstanceSelection"),
+	1,
+	TEXT("Enable direct selection of Instanced Static Mesh Component (ISMC) Instances in the Level Editor Viewport")
+);
+#endif
+
 class FISMExecHelper : public FSelfRegisteringExec
 {
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
@@ -208,11 +215,14 @@ FTypedElementHandle HInstancedStaticMeshInstance::GetElementHandle() const
 #if WITH_EDITOR
 	if (Component)
 	{
-		// Prefer per-instance selection if available
-		// This may fail to return a handle if the feature is disabled, or if per-instance editing is disabled for this component
-		if (FTypedElementHandle ElementHandle = UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle(Component, InstanceIndex))
+		if (CVarEnableViewportSMInstanceSelection.GetValueOnAnyThread() != 0)
 		{
-			return ElementHandle;
+			// Prefer per-instance selection if available
+			// This may fail to return a handle if the feature is disabled, or if per-instance editing is disabled for this component
+			if (FTypedElementHandle ElementHandle = UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle(Component, InstanceIndex))
+			{
+				return ElementHandle;
+			}
 		}
 
 		// If per-instance selection isn't possible, fallback to general per-component selection (which may choose to select the owner actor instead)
@@ -227,6 +237,7 @@ FInstanceUpdateCmdBuffer::FInstanceUpdateCmdBuffer()
 	  NumUpdates(0),
 	  NumRemoves(0)
 	, NumEdits(0)
+	, NumEditInstances(0)
 {
 }
 
@@ -444,6 +455,10 @@ void FStaticMeshInstanceBuffer::UpdateFromCommandBuffer_Concurrent(FInstanceUpda
 	
 	// leave NumEdits unchanged in commandbuffer
 	CmdBuffer.NumEdits = NewCmdBuffer->NumEdits; 
+
+	// Compute render instances (same value that will computed on the render thread in UpdateFromCommandBuffer_RenderThread)
+	// Any query of number of render instances on game thread should use this instead of InstanceData->GetNumInstances();
+	CmdBuffer.NumEditInstances = NewCmdBuffer->NumAdds + InstanceData->GetNumInstances();
 	CmdBuffer.ResetInlineCommands();
 		
 	ENQUEUE_RENDER_COMMAND(InstanceBuffer_UpdateFromPreallocatedData)(
@@ -489,7 +504,7 @@ void FStaticMeshInstanceBuffer::UpdateFromCommandBuffer_RenderThread(FInstanceUp
 			InstanceData->NullifyInstance(InstanceIndex);
 			break;
 		case FInstanceUpdateCmdBuffer::Update:
-			InstanceData->SetInstance(InstanceIndex, FMatrix44f(Cmd.XForm), 0);		// LWC_TODO: precision loss?
+			InstanceData->SetInstance(InstanceIndex, FMatrix44f(Cmd.XForm));		// LWC_TODO: precision loss?
 			break;
 		case FInstanceUpdateCmdBuffer::EditorData:
 			InstanceData->SetInstanceEditorData(InstanceIndex, Cmd.HitProxyColor, Cmd.bSelected);
@@ -810,6 +825,15 @@ void FInstancedStaticMeshVertexFactory::ModifyCompilationEnvironment(const FVert
 	FLocalVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 }
 
+/**
+ * Get vertex elements used when during PSO precaching materials using this vertex factory type
+ */
+void FInstancedStaticMeshVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
+{
+	// Fallback to local vertex factory because manual vertex fetch is supported but special case handling might be needed when 
+	// ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES is disabled (does that code path still work?)
+	FLocalVertexFactory::GetPSOPrecacheVertexFetchElements(VertexInputStreamType, Elements);
+}
 
 /**
  * Copy the data from another vertex factory
@@ -869,62 +893,84 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 		Elements.Add(AccessStreamComponent(Data.PositionComponent,0));
 	}
 
-	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel);
-
-	// only tangent,normal are used by the stream. the binormal is derived in the shader
-	uint8 TangentBasisAttributes[2] = { 1, 2 };
-	for(int32 AxisIndex = 0;AxisIndex < 2;AxisIndex++)
-	{
-		if(Data.TangentBasisComponents[AxisIndex].VertexBuffer != NULL)
-		{
-			Elements.Add(AccessStreamComponent(Data.TangentBasisComponents[AxisIndex],TangentBasisAttributes[AxisIndex]));
-		}
-	}
-
-	if (Data.ColorComponentsSRV == nullptr)
-	{
-		Data.ColorComponentsSRV = GNullColorVertexBuffer.VertexBufferSRV;
-		Data.ColorIndexMask = 0;
-	}
-
-	if(Data.ColorComponent.VertexBuffer)
-	{
-		Elements.Add(AccessStreamComponent(Data.ColorComponent,3));
-	}
-	else
-	{
-		//If the mesh has no color component, set the null color buffer on a new stream with a stride of 0.
-		//This wastes 4 bytes of bandwidth per vertex, but prevents having to compile out twice the number of vertex factories.
-		FVertexStreamComponent NullColorComponent(&GNullColorVertexBuffer, 0, 0, VET_Color, EVertexStreamUsage::ManualFetch);
-		Elements.Add(AccessStreamComponent(NullColorComponent, 3));
-	}
-
-	if(Data.TextureCoordinates.Num())
-	{
-		const int32 BaseTexCoordAttribute = 4;
-		for(int32 CoordinateIndex = 0;CoordinateIndex < Data.TextureCoordinates.Num();CoordinateIndex++)
-		{
-			Elements.Add(AccessStreamComponent(
-				Data.TextureCoordinates[CoordinateIndex],
-				BaseTexCoordAttribute + CoordinateIndex
-				));
-		}
-
-		for(int32 CoordinateIndex = Data.TextureCoordinates.Num(); CoordinateIndex < (InstancedStaticMeshMaxTexCoord + 1) / 2; CoordinateIndex++)
-		{
-			Elements.Add(AccessStreamComponent(
-				Data.TextureCoordinates[Data.TextureCoordinates.Num() - 1],
-				BaseTexCoordAttribute + CoordinateIndex
-				));
-		}
-	}
-	
 	// on mobile with GPUScene enabled instanced attributes[8-12] are used for a general auto-instancing
 	// so we add them only for desktop or if mobile has GPUScene disabled
 	// FIXME mobile: instanced attributes encode some editor related data as well (selection etc), need to split it into separate SRV as it's not supported with auto-instancing
 	uint8 AutoInstancingAttr_Mobile = 8;
 	const bool bMobileUsesGPUScene = MobileSupportsGPUScene();
-	
+
+	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, GetFeatureLevel());
+	const bool bUseManualVertexFetch = GetType()->SupportsManualVertexFetch(GetFeatureLevel());
+
+	if (!bUseManualVertexFetch)
+	{
+		// only tangent,normal are used by the stream. the binormal is derived in the shader
+		uint8 TangentBasisAttributes[2] = { 1, 2 };
+		for (int32 AxisIndex = 0; AxisIndex < 2; AxisIndex++)
+		{
+			if (Data.TangentBasisComponents[AxisIndex].VertexBuffer != NULL)
+			{
+				Elements.Add(AccessStreamComponent(Data.TangentBasisComponents[AxisIndex], TangentBasisAttributes[AxisIndex]));
+			}
+		}
+
+		if (Data.ColorComponentsSRV == nullptr)
+		{
+			Data.ColorComponentsSRV = GNullColorVertexBuffer.VertexBufferSRV;
+			Data.ColorIndexMask = 0;
+		}
+
+		if (Data.ColorComponent.VertexBuffer)
+		{
+			Elements.Add(AccessStreamComponent(Data.ColorComponent, 3));
+		}
+		else
+		{
+			//If the mesh has no color component, set the null color buffer on a new stream with a stride of 0.
+			//This wastes 4 bytes of bandwidth per vertex, but prevents having to compile out twice the number of vertex factories.
+			FVertexStreamComponent NullColorComponent(&GNullColorVertexBuffer, 0, 0, VET_Color, EVertexStreamUsage::ManualFetch);
+			Elements.Add(AccessStreamComponent(NullColorComponent, 3));
+		}
+
+		if (Data.TextureCoordinates.Num())
+		{
+			const int32 BaseTexCoordAttribute = 4;
+			for (int32 CoordinateIndex = 0; CoordinateIndex < Data.TextureCoordinates.Num(); CoordinateIndex++)
+			{
+				Elements.Add(AccessStreamComponent(
+					Data.TextureCoordinates[CoordinateIndex],
+					BaseTexCoordAttribute + CoordinateIndex
+				));
+			}
+
+			for (int32 CoordinateIndex = Data.TextureCoordinates.Num(); CoordinateIndex < (InstancedStaticMeshMaxTexCoord + 1) / 2; CoordinateIndex++)
+			{
+				Elements.Add(AccessStreamComponent(
+					Data.TextureCoordinates[Data.TextureCoordinates.Num() - 1],
+					BaseTexCoordAttribute + CoordinateIndex
+				));
+			}
+		}
+
+		// PreSkinPosition is only used when skin cache is on, in which case skinned mesh uses local vertex factory as pass through.
+		// It is not used by ISM so fill with dummy buffer.
+		extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
+		if (IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform))
+		{
+			FVertexStreamComponent NullComponent(&GNullVertexBuffer, 0, 0, VET_Float4);
+			Elements.Add(AccessStreamComponent(NullComponent, 14));
+		}
+
+		if (Data.LightMapCoordinateComponent.VertexBuffer)
+		{
+			Elements.Add(AccessStreamComponent(Data.LightMapCoordinateComponent, 15));
+		}
+		else if (Data.TextureCoordinates.Num())
+		{
+			Elements.Add(AccessStreamComponent(Data.TextureCoordinates[0], 15));
+		}
+	}
+
 	if (GetFeatureLevel() > ERHIFeatureLevel::ES3_1 || !bMobileUsesGPUScene)
 	{
 		// toss in the instanced location stream
@@ -944,24 +990,15 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 
 		if (Data.InstanceLightmapAndShadowMapUVBiasComponent.VertexBuffer)
 		{
-			Elements.Add(AccessStreamComponent(Data.InstanceLightmapAndShadowMapUVBiasComponent,12));
+			Elements.Add(AccessStreamComponent(Data.InstanceLightmapAndShadowMapUVBiasComponent, 12));
 		}
 
 		// Do not add general auto-instancing attributes for mobile
 		AutoInstancingAttr_Mobile = 0xff;
 	}
-	
+
 	AddPrimitiveIdStreamElement(EVertexInputStreamType::Default, Elements, 13, AutoInstancingAttr_Mobile);
 
-	if(Data.LightMapCoordinateComponent.VertexBuffer)
-	{
-		Elements.Add(AccessStreamComponent(Data.LightMapCoordinateComponent,15));
-	}
-	else if(Data.TextureCoordinates.Num())
-	{
-		Elements.Add(AccessStreamComponent(Data.TextureCoordinates[0],15));
-	}
-		
 	// we don't need per-vertex shadow or lightmap rendering
 	InitDeclaration(Elements);
 
@@ -978,6 +1015,8 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 }
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_Vertex, FInstancedStaticMeshVertexFactoryShaderParameters);
+// pixel shader may need access to InstanceCustomDataBuffer in non-GPUScene case
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_Pixel, FInstancedStaticMeshVertexFactoryShaderParameters);
 #if RHI_RAYTRACING
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_RayHitGroup, FInstancedStaticMeshVertexFactoryShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_Compute, FInstancedStaticMeshVertexFactoryShaderParameters);
@@ -988,11 +1027,15 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FInstancedStaticMeshVertexFactory,"/Engine/Private
 	| EVertexFactoryFlags::SupportsStaticLighting
 	| EVertexFactoryFlags::SupportsDynamicLighting
 	| EVertexFactoryFlags::SupportsPrecisePrevWorldPos
-	| EVertexFactoryFlags::SupportsPositionOnly
+	| (!ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES ? EVertexFactoryFlags::SupportsPositionOnly : EVertexFactoryFlags::None)
 	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
 	| EVertexFactoryFlags::SupportsRayTracing
 	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsLightmapBaking
 	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+	| (ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES ? EVertexFactoryFlags::DoesNotSupportNullPixelShader : EVertexFactoryFlags::None)
+	| EVertexFactoryFlags::SupportsManualVertexFetch
+	| EVertexFactoryFlags::SupportsPSOPrecaching
 );
 
 void FInstancedStaticMeshRenderData::BindBuffersToVertexFactories()
@@ -1209,11 +1252,18 @@ void FPerInstanceRenderData::EnsureInstanceDataUpdated(bool bForceUpdate)
 	}
 }
 
-const TArray<FVector4f>& FPerInstanceRenderData::GetPerInstanceBounds()
+const TArray<FVector4f>& FPerInstanceRenderData::GetPerInstanceBounds(FBox CurrentBounds)
 {
 	// if bounds tracking has not been enabled, it needs to be enabled and instance data must be forced to update
 	bool bForceUpdate = !bTrackBounds;
 	bTrackBounds = true;
+
+	if (CurrentBounds != InstanceLocalBounds)
+	{
+		// bounding box changed, need to force an update
+		bForceUpdate = true;
+		InstanceLocalBounds = CurrentBounds;
+	}
 	EnsureInstanceDataUpdated(bForceUpdate);
 	return PerInstanceBounds;
 }
@@ -1304,6 +1354,21 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 
 							Collector.AddMesh(ViewIndex, MeshElement);
 							INC_DWORD_STAT_BY(STAT_StaticMeshTriangles, MeshElement.GetNumPrimitives());
+
+							if (OverlayMaterial != nullptr)
+							{
+								FMeshBatch& OverlayMeshBatch = Collector.AllocateMesh();
+								OverlayMeshBatch = MeshElement;
+								OverlayMeshBatch.bOverlayMaterial = true;
+								OverlayMeshBatch.CastShadow = false;
+								OverlayMeshBatch.bSelectable = false;
+								OverlayMeshBatch.MaterialRenderProxy = OverlayMaterial->GetRenderProxy();
+								// make sure overlay is always rendered on top of base mesh
+								OverlayMeshBatch.MeshIdInPrimitive += LODModel.Sections.Num();
+								Collector.AddMesh(ViewIndex, OverlayMeshBatch);
+								
+								INC_DWORD_STAT_BY(STAT_StaticMeshTriangles, OverlayMeshBatch.GetNumPrimitives());
+							}
 						}
 					}
 				}
@@ -1368,6 +1433,15 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 		}
 	}
 
+	if (OverlayMaterial != nullptr)
+	{
+		if (!OverlayMaterial->CheckMaterialUsage_Concurrent(MATUSAGE_InstancedStaticMeshes))
+		{
+			OverlayMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+			UE_LOG(LogStaticMesh, Error, TEXT("Overlay material with missing usage flag was applied to instanced static mesh %s"),	*InComponent->GetStaticMesh()->GetPathName());
+		}
+	}
+
 	// Copy the parameters for LOD - all instances
 	UserData_AllInstances.MeshRenderData = InComponent->GetStaticMesh()->GetRenderData();
 	UserData_AllInstances.StartCullDistance = InComponent->InstanceStartCullDistance;
@@ -1402,7 +1476,7 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 
 		// NumRenderInstances is the extent that the reorder table can map to.
 		// Temporarily when removing instances from a HISM this can be sparse so that InComponent->GetInstanceCount() < NumRenderInstances.
-		const int32 NumRenderInstances = FMath::Max<int32>(InComponent->PerInstanceRenderData->InstanceBuffer.GetNumInstances(), InComponent->GetInstanceCount());
+		const int32 NumRenderInstances = FMath::Max<int32>(InComponent->InstanceUpdateCmdBuffer.NumEditInstances, InComponent->GetInstanceCount());
 
 		bSupportsInstanceDataBuffer = true;
 		InstanceSceneData.SetNumZeroed(NumRenderInstances);
@@ -1439,6 +1513,14 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 		for (int32 InstanceIndex = 0; InstanceIndex < InComponent->GetInstanceCount(); ++InstanceIndex)
 		{
 			const int32 RenderInstanceIndex = InstanceReorderTable.IsValidIndex(InstanceIndex) ? InstanceReorderTable[InstanceIndex] : InstanceIndex;
+
+			if (RenderInstanceIndex == INDEX_NONE)
+			{
+				// Happens when the instance is excluded due to scalability, e.g., in the Build() of
+				// HISM.
+				continue;
+			}
+
 			if (!ensure(InstanceSceneData.IsValidIndex(RenderInstanceIndex)))
 			{
 				continue;
@@ -1674,16 +1756,18 @@ void FInstancedStaticMeshSceneProxy::GetDistanceFieldAtlasData(const FDistanceFi
 	FStaticMeshSceneProxy::GetDistanceFieldAtlasData(OutDistanceFieldData, SelfShadowBias);
 }
 
-void FInstancedStaticMeshSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const
+void FInstancedStaticMeshSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
 {
-	ObjectLocalToWorldTransforms.Reset();
+	check(InstanceLocalToPrimitiveTransforms.IsEmpty());
 
 	if (ensureMsgf(InstancedRenderData.PerInstanceRenderData->InstanceBuffer.RequireCPUAccess, TEXT("GetDistanceFieldInstanceData requires a CPU copy of the per-instance data to be accessible. Possible mismatch in ComponentRequestsCPUAccess / IncludePrimitiveInDistanceFieldSceneData filtering.")))
 	{
 		const TArray<FRenderTransform>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-		for (const FRenderTransform& InstanceToLocal : PerInstanceTransforms)
+
+		InstanceLocalToPrimitiveTransforms.SetNumUninitialized(PerInstanceTransforms.Num());
+		for (int32 InstanceIndex = 0; InstanceIndex < PerInstanceTransforms.Num(); ++InstanceIndex)
 		{
-			ObjectLocalToWorldTransforms.Add(InstanceToLocal * (FMatrix44f)GetLocalToWorld());
+			InstanceLocalToPrimitiveTransforms[InstanceIndex] = PerInstanceTransforms[InstanceIndex];
 		}
 	}
 }
@@ -1819,8 +1903,9 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		DistanceToInstanceStart = (DistanceToInstanceCenter - InstanceRadius) * LocalToWorldScale;
 	};
 
+	const FBox CurrentBounds = StaticMeshBounds.GetBox();
 	const TArray<FRenderTransform>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-	const TArray<FVector4f>& PerInstanceBounds = InstancedRenderData.PerInstanceRenderData->GetPerInstanceBounds();
+	const TArray<FVector4f>& PerInstanceBounds = InstancedRenderData.PerInstanceRenderData->GetPerInstanceBounds(CurrentBounds);
 	if (CVarRayTracingRenderInstancesCulling.GetValueOnRenderThread() > 0 && PerInstanceBounds.Num())
 	{
 		// whether to use angular culling instead of distance, angle is halved as it is compared against the projection of the radius rather than the diameter
@@ -1865,7 +1950,7 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			//  This ensures objects essentially cull based on size as seen from viewer rather than distance. Provides much less
 			//  popping for the same number of instances
 			//
-			float Ratio = FMath::Tan(CullAngle / 360.0f * 2.0f * PI);
+			float Ratio = FMath::Tan(CullAngle / 360.0f * 2.0f * UE_PI);
 
 			for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
 			{
@@ -2225,7 +2310,7 @@ void UInstancedStaticMeshComponent::SendRenderInstanceData_Concurrent()
 
 	// If the primitive isn't hidden update its transform.
 	const bool bDetailModeAllowsRendering = DetailMode <= GetCachedScalabilityCVars().DetailMode;
-	if (InstanceUpdateCmdBuffer.NumTotalCommands() && bDetailModeAllowsRendering && (ShouldRender() || bCastHiddenShadow || bRayTracingFarField))
+	if (InstanceUpdateCmdBuffer.NumTotalCommands() && bDetailModeAllowsRendering && (ShouldRender() || bCastHiddenShadow || bAffectIndirectLightingWhileHidden || bRayTracingFarField))
 	{
 		UpdateBounds();
 
@@ -2434,11 +2519,9 @@ void UInstancedStaticMeshComponent::InitInstanceBody(int32 InstanceIdx, FBodyIns
 	// make sure we never enable bSimulatePhysics for ISMComps
 	InstanceBodyInstance->bSimulatePhysics = false;
 
-#if WITH_PHYSX
 	// Create physics body instance.
 	InstanceBodyInstance->bAutoWeld = false;	//We don't support this for instanced meshes.
 	InstanceBodyInstance->InitBody(BodySetup, InstanceTransform, this, GetWorld()->GetPhysicsScene(), nullptr);
-#endif //WITH_PHYSX
 }
 
 void UInstancedStaticMeshComponent::CreateAllInstanceBodies()
@@ -3054,6 +3137,17 @@ int32 UInstancedStaticMeshComponent::AddInstanceInternal(int32 InstanceIndex, FI
 	}
 #endif
 
+	// If it's the first instance, register the component. 
+	// If there was no instance on component register, component registration was skipped because of UInstancedStaticMeshComponent::IsNavigationRelevant().
+	if (GetInstanceCount() == 1)
+	{
+		if (const bool bNewNavigationRelevant = IsNavigationRelevant())
+		{
+			bNavigationRelevant = bNewNavigationRelevant;
+			FNavigationSystem::RegisterComponent(*this);
+		}
+	}
+	
 	PartialNavigationUpdate(InstanceIndex);
 
 	if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
@@ -3106,6 +3200,17 @@ TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(const TArray<F
 
 		if (SupportsPartialNavigationUpdate())
 		{
+			// If it's the first instance, register the component. 
+			// If there was no instance on component register, component registration was skipped because of UInstancedStaticMeshComponent::IsNavigationRelevant().
+			if (GetInstanceCount() == 1)
+			{
+				if (const bool bNewNavigationRelevant = IsNavigationRelevant())
+				{
+					bNavigationRelevant = bNewNavigationRelevant;
+					FNavigationSystem::RegisterComponent(*this);
+				}
+			}
+			
 			PartialNavigationUpdate(InstanceIndex);
 		}
 
@@ -3187,14 +3292,28 @@ bool UInstancedStaticMeshComponent::SetCustomData(int32 InstanceIndex, const TAr
 
 bool UInstancedStaticMeshComponent::RemoveInstanceInternal(int32 InstanceIndex, bool InstanceAlreadyRemoved)
 {
+#if WITH_EDITOR
+	DeletionState = InstanceAlreadyRemoved ? EInstanceDeletionReason::EntryAlreadyRemoved : EInstanceDeletionReason::EntryRemoval;
+#endif
+
 	// remove instance
 	if (!InstanceAlreadyRemoved && PerInstanceSMData.IsValidIndex(InstanceIndex))
 	{
+		const bool bWasNavRelevant = bNavigationRelevant;
+		
 		// Request navigation update
 		PartialNavigationUpdate(InstanceIndex);
 
 		PerInstanceSMData.RemoveAt(InstanceIndex);
 		PerInstanceSMCustomData.RemoveAt(InstanceIndex * NumCustomDataFloats, NumCustomDataFloats);
+
+		// If it's the last instance, unregister the component since component with no instances are not registered. 
+		// (because of GetInstanceCount() > 0 in UInstancedStaticMeshComponent::IsNavigationRelevant())
+		if (bWasNavRelevant && GetInstanceCount() == 0)
+		{
+			bNavigationRelevant = false;
+			FNavigationSystem::UnregisterComponent(*this);
+		}
 	}
 
 #if WITH_EDITOR
@@ -3243,6 +3362,9 @@ bool UInstancedStaticMeshComponent::RemoveInstanceInternal(int32 InstanceIndex, 
 	// Force recreation of the render data
 	InstanceUpdateCmdBuffer.Edit();
 	MarkRenderStateDirty();
+#if WITH_EDITOR
+	DeletionState = EInstanceDeletionReason::NotDeleting;
+#endif
 	return true;
 }
 
@@ -3330,7 +3452,7 @@ void UInstancedStaticMeshComponent::UpdateInstanceBodyTransform(int32 InstanceIn
 	check(bPhysicsStateCreated);
 
 	FBodyInstance*& InstanceBodyInstance = InstanceBodies[InstanceIndex];
-#if WITH_PHYSX
+
 	if (WorldSpaceInstanceTransform.GetScale3D().IsNearlyZero())
 	{
 		if (InstanceBodyInstance)
@@ -3356,7 +3478,6 @@ void UInstancedStaticMeshComponent::UpdateInstanceBodyTransform(int32 InstanceIn
 			InitInstanceBody(InstanceIndex, InstanceBodyInstance);
 		}
 	}
-#endif //WITH_PHYSX
 }
 
 bool UInstancedStaticMeshComponent::UpdateInstanceTransform(int32 InstanceIndex, const FTransform& NewInstanceTransform, bool bWorldSpace, bool bMarkRenderStateDirty, bool bTeleport)
@@ -3901,7 +4022,7 @@ float UInstancedStaticMeshComponent::GetTextureStreamingTransformScale() const
 			WeightSum += Weight;
 		}
 
-		if (WeightSum > SMALL_NUMBER)
+		if (WeightSum > UE_SMALL_NUMBER)
 		{
 			TransformScale *= WeightedAxisScaleSum / WeightSum;
 		}
@@ -3943,6 +4064,10 @@ void UInstancedStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextur
 
 void UInstancedStaticMeshComponent::ClearInstances()
 {
+#if WITH_EDITOR
+	DeletionState = EInstanceDeletionReason::Clearing;
+#endif
+
 	const int32 PrevNumInstances = GetInstanceCount();
 
 	// Clear all the per-instance data
@@ -3969,6 +4094,10 @@ void UInstancedStaticMeshComponent::ClearInstances()
 	}
 
 	FNavigationSystem::UpdateComponentData(*this);
+
+#if WITH_EDITOR
+	DeletionState = EInstanceDeletionReason::NotDeleting;
+#endif
 }
 
 int32 UInstancedStaticMeshComponent::GetInstanceCount() const
@@ -4035,7 +4164,8 @@ static bool ComponentRequestsCPUAccess(UInstancedStaticMeshComponent* InComponen
 				true, /* conservatively overestimate DrawInGame - it has complex logic in the Proxy. */
 				InComponent->bCastHiddenShadow,
 				/* bCastsDynamicShadow */ InComponent->bCastDynamicShadow && InComponent->CastShadow && !InComponent->GetShadowIndirectOnly(),
-				InComponent->bAffectDynamicIndirectLighting);
+				InComponent->bAffectDynamicIndirectLighting,
+				InComponent->bAffectIndirectLightingWhileHidden);
 		}
 
 		// Check Nanite
@@ -4102,10 +4232,16 @@ void UInstancedStaticMeshComponent::InitPerInstanceRenderData(bool InitializeFro
 	ERHIFeatureLevel::Type FeatureLevel = World != nullptr ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
 
 	bool KeepInstanceBufferCPUAccess = UseGPUScene(GetFeatureLevelShaderPlatform(FeatureLevel), FeatureLevel) || GIsEditor || InRequireCPUAccess || ComponentRequestsCPUAccess(this, FeatureLevel);
-	bool bTrackBounds = IsRayTracingEnabled() && bVisibleInRayTracing;
 
 	FBox LocalBounds;
-	GetLocalBounds(LocalBounds.Min, LocalBounds.Max);
+	if (GetStaticMesh())
+	{
+		FVector BoundsMin, BoundsMax;
+		GetLocalBounds(BoundsMin, BoundsMax);
+		LocalBounds = FBox(BoundsMin, BoundsMax);
+	}
+
+	bool bTrackBounds = IsRayTracingEnabled() && bVisibleInRayTracing && LocalBounds.IsValid;
 
 	// If Nanite is used, we should defer the upload to GPU as the Nanite proxy simply will skip this step.
 	// We can't just disable the upload, because at this point we can't know whether the Nanite proxy will be created in the end
@@ -4148,6 +4284,193 @@ void UInstancedStaticMeshComponent::OnRegister()
 	}
 }
 
+#if WITH_EDITOR
+
+bool UInstancedStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+{
+	if (bConsiderOnlyBSP)
+	{
+		return false;
+	}
+
+	for (int32 Index = 0; Index < PerInstanceSMData.Num(); ++Index)
+	{
+		if (IsInstanceTouchingSelectionBox(Index, InSelBBox, bMustEncompassEntireComponent) && !bMustEncompassEntireComponent)
+		{
+			return true;
+		}
+		else if (bMustEncompassEntireComponent)
+		{
+			return false;
+		}
+	}
+
+	return bMustEncompassEntireComponent;
+}
+
+bool UInstancedStaticMeshComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+{
+	if (bConsiderOnlyBSP)
+	{
+		return false;
+	}
+
+	for (int32 Index = 0; Index < PerInstanceSMData.Num(); ++Index)
+	{
+		if (IsInstanceTouchingSelectionFrustum(Index, InFrustum, bMustEncompassEntireComponent) && !bMustEncompassEntireComponent)
+		{
+			return true;
+		}
+		else if (bMustEncompassEntireComponent)
+		{
+			return false;
+		}
+	}
+
+	return bMustEncompassEntireComponent;
+}
+
+bool UInstancedStaticMeshComponent::IsInstanceTouchingSelectionBox(int32 InstanceIndex, const FBox& InBox, const bool bMustEncompassEntireInstance) const
+{
+	if (PerInstanceSMData.IsValidIndex(InstanceIndex))
+	{
+		const UStaticMesh* Mesh = GetStaticMesh();
+		if (Mesh && Mesh->HasValidRenderData())
+		{
+			const FBoxSphereBounds& MeshBoundingBox = Mesh->GetBounds();
+
+			FTransform InstanceTransfrom;
+			const bool bWorldSpace = true;
+			GetInstanceTransform(InstanceIndex, InstanceTransfrom, bWorldSpace);
+
+			const FBox& InstanceBoundingBox = MeshBoundingBox.TransformBy(InstanceTransfrom).GetBox();
+
+			// If the bounds are fully contains assume the static mesh instance is fully contained
+			if (InstanceBoundingBox.IsInside(InBox))
+			{
+				return true;
+			}
+
+			// Test the bounding box first to avoid heavy computation.
+			if (InBox.Intersect(InstanceBoundingBox))
+			{
+				TArray<FVector> Vertex;
+
+				FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
+				FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
+
+				for (const FStaticMeshSection& Section : LODModel.Sections)
+				{
+					// Iterate over each triangle.
+					for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
+					{
+						Vertex.Empty(3);
+
+						int32 FirstIndex = TriangleIndex * 3 + Section.FirstIndex;
+						for (int32 i = 0; i < 3; i++)
+						{
+							int32 VertexIndex = Indices[FirstIndex + i];
+							FVector LocalPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex));
+							Vertex.Emplace(InstanceTransfrom.TransformPosition(LocalPosition));
+						}
+
+						// Check if the triangle is colliding with the bounding box.
+						FSeparatingAxisPointCheck ThePointCheck(Vertex, InBox.GetCenter(), InBox.GetExtent(), false);
+						if (!bMustEncompassEntireInstance && ThePointCheck.bHit)
+						{
+							// Needn't encompass entire component: any intersection, we consider as touching
+							return true;
+						}
+						else if (bMustEncompassEntireInstance && !ThePointCheck.bHit)
+						{
+							// Must encompass entire component: any non intersection, we consider as not touching
+							return false;
+						}
+					}
+				}
+
+				// Either:
+				// a) It must encompass the entire component and all points were intersected (return true), or;
+				// b) It needn't encompass the entire component but no points were intersected (return false)
+				return bMustEncompassEntireInstance;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool UInstancedStaticMeshComponent::IsInstanceTouchingSelectionFrustum(int32 InstanceIndex, const FConvexVolume& InFrustum, const bool bMustEncompassEntireInstance) const
+{
+	if (PerInstanceSMData.IsValidIndex(InstanceIndex))
+	{
+		const UStaticMesh* Mesh = GetStaticMesh();
+		if (Mesh && Mesh->HasValidRenderData())
+		{
+			const FBoxSphereBounds& MeshBoundingBox = Mesh->GetBounds();
+
+			FTransform InstanceTransfrom;
+			const bool bWorldSpace = true;
+			GetInstanceTransform(InstanceIndex, InstanceTransfrom, bWorldSpace);
+
+			const FBoxSphereBounds& InstanceBoundingBox = MeshBoundingBox.TransformBy(InstanceTransfrom);
+
+			// Test the bounding box first to avoid heavy computation.
+			bool bIsFullyInside = false;
+			if (InFrustum.IntersectBox(InstanceBoundingBox.Origin, InstanceBoundingBox.BoxExtent, bIsFullyInside))
+			{
+				// If the bounds are fully contains assume the static mesh instance is fully contained
+				if (bIsFullyInside)
+				{
+					return true;
+				}
+
+				FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
+				FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
+
+				for (const FStaticMeshSection& Section : LODModel.Sections)
+				{
+					// Iterate over each triangle.
+					for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
+					{
+						int32 Index = TriangleIndex * 3 + Section.FirstIndex;
+
+						FVector PointA(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index]));
+						FVector PointB(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 1]));
+						FVector PointC(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 2]));
+
+						PointA = InstanceTransfrom.TransformPosition(PointA);
+						PointB = InstanceTransfrom.TransformPosition(PointB);
+						PointC = InstanceTransfrom.TransformPosition(PointC);
+
+						bool bFullyContained = false;
+						bool bIntersect = InFrustum.IntersectTriangle(PointA, PointB, PointC, bFullyContained);
+
+						if (!bMustEncompassEntireInstance && bIntersect)
+						{
+							// Needn't encompass entire component: any intersection, we consider as touching
+							return true;
+						}
+						else if (bMustEncompassEntireInstance && !bFullyContained)
+						{
+							// Must encompass entire component: any non intersection, we consider as not touching
+							return false;
+						}
+					}
+				}
+
+				// Either:
+				// a) It must encompass the entire component and all points were intersected (return true), or;
+				// b) It needn't encompass the entire component but no points were intersected (return false)
+				return bMustEncompassEntireInstance;
+			}
+		}
+	}
+
+	return false;
+}
+#endif //WITH_EDITOR
+
 void UInstancedStaticMeshComponent::PostLoad()
 {
 	Super::PostLoad();
@@ -4164,6 +4487,41 @@ void UInstancedStaticMeshComponent::PostLoad()
 
 	// Has different implementation in HISMC
 	OnPostLoadPerInstanceData();
+}
+
+void UInstancedStaticMeshComponent::PrecachePSOs()
+{	
+	if (!IsComponentPSOPrecachingEnabled() || GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
+	{
+		return;
+	}
+
+	bool bAnySectionCastsShadows = false;
+	TArray<int16, TInlineAllocator<2>> UsedMaterialIndices;
+	for (FStaticMeshLODResources& LODRenderData : GetStaticMesh()->GetRenderData()->LODResources)
+	{
+		for (FStaticMeshSection& RenderSection : LODRenderData.Sections)
+		{
+			UsedMaterialIndices.AddUnique(RenderSection.MaterialIndex);
+			bAnySectionCastsShadows |= RenderSection.bCastShadow;
+		}
+	}
+
+	FPSOPrecacheParams PrecachePSOParams;
+	SetupPrecachePSOParams(PrecachePSOParams);
+	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
+	PrecachePSOParams.bReverseCulling = bReverseCulling;
+	
+	const FVertexFactoryType* VFType = ShouldCreateNaniteProxy() ? &Nanite::FVertexFactory::StaticType : &FInstancedStaticMeshVertexFactory::StaticType;
+
+	for (uint16 MaterialIndex : UsedMaterialIndices)
+	{
+		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
+		if (MaterialInterface)
+		{
+			MaterialInterface->PrecachePSOs(VFType, PrecachePSOParams);
+		}
+	}
 }
 
 void UInstancedStaticMeshComponent::OnPostLoadPerInstanceData()
@@ -4403,7 +4761,7 @@ bool UInstancedStaticMeshComponent::IsInstanceSelected(int32 InInstanceIndex) co
 void UInstancedStaticMeshComponent::SelectInstance(bool bInSelected, int32 InInstanceIndex, int32 InInstanceCount)
 {
 #if WITH_EDITOR
-	if (InInstanceCount > 0)
+	if (InInstanceCount > 0 && DeletionState == EInstanceDeletionReason::NotDeleting)
 	{
 		if (PerInstanceSMData.Num() != SelectedInstances.Num())
 		{

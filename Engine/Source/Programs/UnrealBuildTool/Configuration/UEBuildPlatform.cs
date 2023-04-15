@@ -10,6 +10,7 @@ using EpicGames.Core;
 using System.Reflection;
 using System.Diagnostics.CodeAnalysis;
 using OpenTracing.Util;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -24,6 +25,11 @@ namespace UnrealBuildTool
 		/// The corresponding target platform enum
 		/// </summary>
 		public readonly UnrealTargetPlatform Platform;
+
+		/// <summary>
+		/// Logger for this platform
+		/// </summary>
+		protected readonly ILogger Logger;
 
 		/// <summary>
 		/// All the platform folder names
@@ -45,9 +51,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="InPlatform">The enum value for this platform</param>
 		/// <param name="SDK">The SDK management object for this platform</param>
-		public UEBuildPlatform(UnrealTargetPlatform InPlatform, UEBuildPlatformSDK SDK)
+		/// <param name="InLogger">Logger for output</param>
+		public UEBuildPlatform(UnrealTargetPlatform InPlatform, UEBuildPlatformSDK SDK, ILogger InLogger)
 		{
 			Platform = InPlatform;
+			Logger = InLogger;
 
 			// check DDPI to see if the platform is enabled on this host platform
 			string IniPlatformName = ConfigHierarchy.GetIniPlatformName(Platform);
@@ -66,7 +74,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="bIncludeNonInstalledPlatforms">Whether to register platforms that are not installed</param>
 		/// <param name="bHostPlatformOnly">Only register the host platform</param>
-		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly)
+		/// <param name="Logger">Logger for output</param>
+		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly, ILogger Logger)
 		{
 			// Initialize the installed platform info
 			using (GlobalTracer.Instance.BuildSpan("Initializing InstalledPlatformInfo").StartActive())
@@ -88,7 +97,7 @@ namespace UnrealBuildTool
 				{
 					if (CheckType.IsSubclassOf(typeof(UEBuildPlatformFactory)))
 					{
-						Log.TraceVerbose("    Registering build platform: {0}", CheckType.ToString());
+						Logger.LogDebug("    Registering build platform: {Platform}", CheckType.ToString());
 						using (GlobalTracer.Instance.BuildSpan(CheckType.Name).StartActive())
 						{
 							UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)Activator.CreateInstance(CheckType)!;
@@ -102,7 +111,7 @@ namespace UnrealBuildTool
 							// We need all platforms to be registered when we run -validateplatform command to check SDK status of each
 							if (bIncludeNonInstalledPlatforms || InstalledPlatformInfo.IsValidPlatform(TempInst.TargetPlatform))
 							{
-								TempInst.RegisterBuildPlatforms();
+								TempInst.RegisterBuildPlatforms(Logger);
 							}
 						}
 					}
@@ -178,6 +187,14 @@ namespace UnrealBuildTool
 		public virtual VCProjectFileFormat GetRequiredVisualStudioVersion()
 		{
 			return VCProjectFileFormat.Default;
+		}
+
+		/// <summary>
+		/// The version required to support Visual Studio
+		/// </summary>
+		public virtual Version GetVersionRequiredForVisualStudio(VCProjectFileFormat Format)
+		{
+			return new Version();
 		}
 
 		/// <summary>
@@ -396,13 +413,14 @@ namespace UnrealBuildTool
 		/// Register the given platforms UEBuildPlatform instance
 		/// </summary>
 		/// <param name="InBuildPlatform"> The UEBuildPlatform instance to use for the InPlatform</param>
-		public static void RegisterBuildPlatform(UEBuildPlatform InBuildPlatform)
+		/// <param name="Logger">Logger for output</param>
+		public static void RegisterBuildPlatform(UEBuildPlatform InBuildPlatform, ILogger Logger)
 		{
-			Log.TraceVerbose("        Registering build platform: {0} - buildable: {1}", InBuildPlatform.Platform, InBuildPlatform.HasRequiredSDKsInstalled() == SDKStatus.Valid);
+			Logger.LogDebug("        Registering build platform: {Platform} - buildable: {Buildable}", InBuildPlatform.Platform, InBuildPlatform.HasRequiredSDKsInstalled() == SDKStatus.Valid);
 
 			if (BuildPlatformDictionary.ContainsKey(InBuildPlatform.Platform) == true)
 			{
-				Log.TraceWarning("RegisterBuildPlatform Warning: Registering build platform {0} for {1} when it is already set to {2}",
+				Logger.LogWarning("RegisterBuildPlatform Warning: Registering build platform {Platform} for {ForPlatform} when it is already set to {CurPlatform}",
 					InBuildPlatform.ToString(), InBuildPlatform.Platform.ToString(), BuildPlatformDictionary[InBuildPlatform.Platform].ToString());
 				BuildPlatformDictionary[InBuildPlatform.Platform] = InBuildPlatform;
 			}
@@ -502,14 +520,12 @@ namespace UnrealBuildTool
 			{
 				return ":";
 			}
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || 
-				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.HoloLens)
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 			{
 				return ";";
 			}
 
-			Log.TraceWarning("PATH variable delimiter unknown for platform " + BuildHostPlatform.Current.Platform.ToString() + " using ';'");
-			return ";";
+			throw new InvalidOperationException($"PATH variable delimiter unknown for platform {BuildHostPlatform.Current.Platform}");
 		}
 
 		/// <summary>
@@ -563,6 +579,15 @@ namespace UnrealBuildTool
 		/// Validate a target's settings
 		/// </summary>
 		public virtual void ValidateTarget(TargetRules Target)
+		{
+		}
+
+		/// <summary>
+		/// Validate a UEBuildModule before it's processed
+		/// <param name="Module">The UEBuildModule that needs to be validated</param>
+		/// <param name="Target">Options for the target being built</param>
+		/// </summary>
+		public virtual void ValidateModule(UEBuildModule Module, ReadOnlyTargetRules Target)
 		{
 		}
 
@@ -663,7 +688,7 @@ namespace UnrealBuildTool
 			return Configurations;
 		}
 
-		protected static bool DoProjectSettingsMatchDefault(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName, string Section, string[]? BoolKeys, string[]? IntKeys, string[]? StringKeys)
+		protected static bool DoProjectSettingsMatchDefault(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName, string Section, string[]? BoolKeys, string[]? IntKeys, string[]? StringKeys, ILogger Logger)
 		{
 			ConfigHierarchy ProjIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectDirectoryName, Platform);
 			ConfigHierarchy DefaultIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference?)null, Platform);
@@ -725,7 +750,7 @@ namespace UnrealBuildTool
 			};
 
 			return DoProjectSettingsMatchDefault(Platform, ProjectDirectoryName, "/Script/BuildSettings.BuildSettings",
-				BoolKeys, null, null);
+				BoolKeys, null, null, Logger);
 		}
 
 		/// <summary>
@@ -840,6 +865,20 @@ namespace UnrealBuildTool
 		/// <param name="Graph">Action graph that is used to build the binary</param>
 		public virtual void ModifyBinaryLinkEnvironment( LinkEnvironment BinaryLinkEnvironment, CppCompileEnvironment BinaryCompileEnvironment, ReadOnlyTargetRules Target, UEToolChain ToolChain, IActionGraphBuilder Graph)
 		{
+		}
+
+		/// <summary>
+		/// Indicates whether this platform requires a .loadorder file to be generated for the build.
+		/// .loadorder files contain a list of dynamic modules and the exact order in which they should be loaded
+		/// to ensure that all dependencies are satisfied i.e. we don't attempt to load a module without loading
+		/// all its dependencies first.
+		/// As such, this file is only needed in modular builds on some platforms (depending on the way they implement dynamic modules such as DLLs).
+		/// </summary>
+		/// <param name="Target">The target rules in use</param>
+		/// <returns>True if .loadorder file should be generated</returns>
+		public virtual bool RequiresLoadOrderManifest(ReadOnlyTargetRules Target)
+		{
+			return false;
 		}
 
 

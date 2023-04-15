@@ -165,6 +165,19 @@ namespace GeometryCollection
 	CHAOS_API
 	GenerateTemporaryGuids(FTransformCollection* Collection, int32 StartIdx = 0, bool bForceInit=false);
 
+	/***
+	* Compute inner and outer radius from a set of vertices 
+	* @param Vertices		array containing the vertices used to computer the radii
+	* @param VertexStart	start index of the range of vertex to use within the array
+	* @param VertexCount	Number of vertices to use from VertexStart
+	* @param VertexCount	Total number of vertices to use (from VertexStart)
+	* @param OutInnerRadius	Computed InnerRadius ( existing value will be overriden )
+	* @param OutOuterRadius	Computed outerRadius ( existing value will be overriden )
+	*/
+	void 
+	CHAOS_API
+	ComputeInnerAndOuterRadiiFromGeometryVertices(const TManagedArray<FVector3f>& Vertices, const int32 VertexStart, const int32 VertexCount, float& OutInnerRadius, float& OutOuterRadius);
+
 };
 
 // AttributeTransfer implementation
@@ -173,7 +186,7 @@ void GeometryCollection::AttributeTransfer(const FGeometryCollection * FromColle
 {
 	// #todo(dmp): later on we will support different attribute groups for transfer		
 	const TManagedArray<T> &FromAttribute = FromCollection->GetAttribute<T>(FromAttributeName, FGeometryCollection::VerticesGroup);
-	TManagedArray<T> &ToAttribute = ToCollection->GetAttribute<T>(ToAttributeName, FGeometryCollection::VerticesGroup);
+	TManagedArray<T> &ToAttribute = ToCollection->ModifyAttribute<T>(ToAttributeName, FGeometryCollection::VerticesGroup);
 
 	const TManagedArray<FVector3f> &FromVertex = FromCollection->Vertex;
 	TManagedArray<FVector3f> &ToVertex = ToCollection->Vertex;
@@ -184,7 +197,7 @@ void GeometryCollection::AttributeTransfer(const FGeometryCollection * FromColle
 	ParallelFor(ToCollection->NumElements(FGeometryCollection::VerticesGroup), [&](int32 ToIndex)
 	{
 		int32 ClosestFromIndex = -1;
-		Chaos::FReal ClosestDist = MAX_FLT;
+		Chaos::FReal ClosestDist = UE_MAX_FLT;
 		for (int32 FromIndex = 0, ni = FromVertex.Num(); FromIndex < ni ; ++FromIndex)
 		{
 			Chaos::FReal CurrDist = FVector3f::DistSquared(FromVertex[FromIndex], ToVertex[ToIndex]);

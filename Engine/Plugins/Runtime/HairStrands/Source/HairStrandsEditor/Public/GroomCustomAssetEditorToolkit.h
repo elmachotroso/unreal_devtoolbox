@@ -15,11 +15,13 @@ class UGroomComponent;
 class IDetailsView;
 class SDockableTab;
 class SGroomEditorViewport;
-class UStaticMeshComponent;
 class USkeletalMesh;
 class UStaticMesh;
 class USkeletalMeshComponent;
-
+class UGroomAsset;
+class UGroomBindingAsset;
+class UGroomBindingAssetList;
+class UAnimationAsset;
 
 class HAIRSTRANDSEDITOR_API IGroomCustomAssetEditorToolkit : public FAssetEditorToolkit
 {
@@ -29,6 +31,11 @@ public:
 
 	/** Set the current custom asset. */
 	virtual void SetCustomAsset(UGroomAsset* InCustomAsset) = 0;
+
+	/** Set preview of a particular binding. */
+	virtual void PreviewBinding(int32 BindingIndex) = 0;
+
+	virtual int32 GetActiveBindingIndex() const =0;
 };
 
 class HAIRSTRANDSEDITOR_API FGroomCustomAssetEditorToolkit : public IGroomCustomAssetEditorToolkit
@@ -69,6 +76,12 @@ public:
 	/** Set the current custom asset. */
 	virtual void SetCustomAsset(UGroomAsset* InCustomAsset) override;	
 
+	/** Set preview of a particular binding. */
+	virtual void PreviewBinding(int32 BindingIndex) override;
+
+	/** Return the index of the active binding. */
+	virtual int32 GetActiveBindingIndex() const override;
+
 private:
 
 	// called when The Play simulation button is pressed
@@ -83,6 +96,14 @@ private:
 	void OnResetSimulation();
 	bool CanResetSimulation() const;
 
+	// Called when the play animation button is pressed
+	void OnPlayAnimation();
+	bool CanPlayAnimation() const;
+
+	// Called when the stop animation button is pressed
+	void OnStopAnimation();
+	bool CanStopAnimation() const;
+
 	// Add buttons to to the toolbar
 	void ExtendToolbar();
 
@@ -90,17 +111,19 @@ private:
 	void DocPropChanged(UObject *, FPropertyChangedEvent &);
 
 	// THis is called when the groom target object changes and needs updating
-	void OnStaticGroomTargetChanged(UStaticMesh *NewTarget);
-
-	// THis is called when the groom target object changes and needs updating
 	void OnSkeletalGroomTargetChanged(USkeletalMesh *NewTarget);
+
+	// Return true if the animation asset should be filtered out (not compatible with the preview skel. mesh)
+	bool OnShouldFilterAnimAsset(const FAssetData& AssetData);
+	void OnObjectChangedAnimAsset(const FAssetData& AssetData);
+	bool OnIsEnabledAnimAsset();
+	FString GetCurrentAnimAssetPath() const;
 
 	// create the custom components we need
 	void InitPreviewComponents();
 
 	// return a pointer to the groom preview component
 	UGroomComponent*		GetPreview_GroomComponent() const;
-	UStaticMeshComponent*	GetPreview_StaticMeshComponent() const;
 	USkeletalMeshComponent*	GetPreview_SkeletalMeshComponent() const;
 
 	TSharedRef<SDockTab> SpawnViewportTab(const FSpawnTabArgs& Args);
@@ -113,7 +136,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_MaterialProperties(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PhysicsProperties(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PreviewGroomComponent(const FSpawnTabArgs& Args);
-
+	TSharedRef<SDockTab> SpawnTab_BindingProperties(const FSpawnTabArgs& Args);
 private:
 
 	/** Dockable tab for properties */
@@ -128,6 +151,7 @@ private:
 	TSharedPtr<class IDetailsView> DetailView_MaterialProperties;
 	TSharedPtr<class IDetailsView> DetailView_PhysicsProperties;
 	TSharedPtr<class IDetailsView> DetailView_PreviewGroomComponent;
+	TSharedPtr<class IDetailsView> DetailView_BindingProperties;
 
 	static const FName ToolkitFName;
 	static const FName TabId_Viewport;
@@ -140,12 +164,19 @@ private:
 	static const FName TabId_MaterialProperties;
 	static const FName TabId_PhysicsProperties;
 	static const FName TabId_PreviewGroomComponent;
+	static const FName TabId_BindingProperties;
 
+
+	int32 ActiveGroomBindingIndex = -1;
 	FDelegateHandle PropertyListenDelegate;
+	TWeakObjectPtr<UGroomAsset> GroomAsset;
+	TWeakObjectPtr<UGroomBindingAsset> GroomBindingAsset;
+	TWeakObjectPtr<UGroomBindingAssetList> GroomBindingAssetList;
 
-	TWeakObjectPtr  < class UGroomAsset>  GroomAsset;
-	TWeakObjectPtr  < UGroomComponent > PreviewGroomComponent;
-	TWeakObjectPtr  < UStaticMeshComponent > PreviewStaticMeshComponent;
-	TWeakObjectPtr  < USkeletalMeshComponent > PreviewSkeletalMeshComponent;
+	TWeakObjectPtr<UGroomComponent> PreviewGroomComponent;
+	TWeakObjectPtr<USkeletalMeshComponent> PreviewSkeletalMeshComponent;
+	TWeakObjectPtr<UAnimationAsset> PreviewSkeletalAnimationAsset;
+
+	TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
 };
 

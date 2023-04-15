@@ -3,18 +3,22 @@
 
 #include "CADKernel/Core/CADKernelArchive.h"
 #include "CADKernel/Core/Entity.h"
+#include "CADKernel/Core/HaveStates.h"
 #include "CADKernel/Core/MetadataDictionary.h"
+#include "CADKernel/Core/OrientedEntity.h"
 #include "CADKernel/Core/Types.h"
 #include "CADKernel/Geo/GeoEnum.h"
+#include "CADKernel/Topo/TopologicalFace.h"
 #include "CADKernel/Topo/TopologicalShapeEntity.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
-class FTopologicalFace;
 class FBody;
+class FCADKernelArchive;
+class FDatabase;
+class FTopologicalFace;
 class FTopologyReport;
-
 struct FFaceSubset;
 
 class CADKERNEL_API FOrientedFace : public TOrientedEntity<FTopologicalFace>
@@ -132,7 +136,10 @@ public:
 	virtual void UpdateShellOrientation();
 
 	void CheckTopology(TArray<FFaceSubset>& Subshells);
+
+#ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
+#endif
 
 	/**
 	 * @return true if the shell has at least one border edge
@@ -167,6 +174,9 @@ public:
 	 * @return SwapFaceCount for report purpose
 	 */
 	int32 Orient();
+
+	virtual void Remove(const FTopologicalShapeEntity*) override;
+
 };
 
 }

@@ -1,10 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialEditorActions.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Materials/MaterialExpression.h"
+
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Text.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
+#include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionComment.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Parse.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
+struct FEdGraphSchemaAction;
 
 #define LOCTEXT_NAMESPACE "MaterialEditorCommands"
 
@@ -60,7 +76,11 @@ void FMaterialEditorCommands::RegisterCommands()
 	UI_COMMAND( ForceRefreshPreviews, "Force Refresh Previews", "Forces a refresh of all previews", EUserInterfaceActionType::Button, FInputChord(EKeys::SpaceBar) );
 	UI_COMMAND( CreateComponentMaskNode, "Create ComponentMask Node", "Creates a ComponentMask node at the current cursor position.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Shift, EKeys::C));
 	UI_COMMAND( FindInMaterial, "Search", "Finds expressions and comments in the current Material", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::F));
-	UI_COMMAND( PromoteToParameter, "Promote to Parameter", "Promote selected Pin to parameter of pin type", EUserInterfaceActionType::Button, FInputChord());	
+	UI_COMMAND( PromoteToParameter, "Promote to Parameter", "Promote selected Pin to parameter of pin type", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( CreateSlabNode, "Create Slab Node", "Create a Slab Node linked to the pin", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( CreateHorizontalMixNode, "Create Horizontal Mix Node", "Create a Horizontal Mix Node linked to the pin", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( CreateVerticalLayerNode, "Create Vertical Layer Node", "Create a Vertical Layer Node linked to the pin", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( CreateWeightNode, "Create Weight Node", "Create a Weight Node linked to the pin", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND(QualityLevel_All, "All", "Sets node preview to show all quality levels.)", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND(QualityLevel_Epic, "Epic", "Sets node preview to Epic quality.", EUserInterfaceActionType::RadioButton, FInputChord());
@@ -71,6 +91,7 @@ void FMaterialEditorCommands::RegisterCommands()
 	UI_COMMAND(FeatureLevel_All, "All", "Sets node preview to show all feature levels.", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND(FeatureLevel_ES31, "ES3.1", "Sets node preview to show the ES3.1 feature level.", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND(FeatureLevel_SM5, "SM5", "Sets node preview to show the SM5 feature level.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(FeatureLevel_SM6, "SM6", "Sets node preview to show the SM6 feature level.", EUserInterfaceActionType::RadioButton, FInputChord());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -110,7 +131,7 @@ void FMaterialEditorSpawnNodeCommands::RegisterCommands()
 		}
 
 		FString CommandLabel;
-		UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *ClassName, true);
+		UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(ClassName, EFindFirstObjectOptions::ExactClass);
 		TSharedPtr< FExpressionSpawnInfo > InfoPtr;
 
 		if(FoundClass && FoundClass->IsChildOf(UMaterialExpression::StaticClass()))
@@ -150,7 +171,7 @@ void FMaterialEditorSpawnNodeCommands::RegisterCommands()
 			const FText CommandLabelText = FText::FromString( CommandLabel );
 			const FText Description = FText::Format( NSLOCTEXT("MaterialEditor", "NodeSpawnDescription", "Hold down the bound keys and left click in the graph panel to spawn a {0} node."), CommandLabelText);
 
-			FUICommandInfo::MakeCommandInfo( this->AsShared(), CommandInfo, FName(*NodeSpawns[x]), CommandLabelText, Description, FSlateIcon(FEditorStyle::GetStyleSetName(), *FString::Printf(TEXT("%s.%s"), *this->GetContextName().ToString(), *NodeSpawns[x])), EUserInterfaceActionType::Button, Chord );
+			FUICommandInfo::MakeCommandInfo( this->AsShared(), CommandInfo, FName(*NodeSpawns[x]), CommandLabelText, Description, FSlateIcon(FAppStyle::GetAppStyleSetName(), *FString::Printf(TEXT("%s.%s"), *this->GetContextName().ToString(), *NodeSpawns[x])), EUserInterfaceActionType::Button, Chord );
 
 			InfoPtr->CommandInfo = CommandInfo;
 

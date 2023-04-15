@@ -5,12 +5,17 @@
 #include "WebBrowserSingleton.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/Paths.h"
 #if WITH_CEF3
 #	include "CEF3Utils.h"
 #	if PLATFORM_MAC
 #		include "include/wrapper/cef_library_loader.h"
 #		define CEF3_BIN_DIR TEXT("Binaries/ThirdParty/CEF3")
-#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework.framework")
+#     if PLATFORM_MAC_ARM64
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework arm64.framework")
+#     else
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework x86.framework")
+#     endif
 #		define CEF3_FRAMEWORK_EXE CEF3_FRAMEWORK_DIR TEXT("/Chromium Embedded Framework")
 #	endif
 #endif
@@ -20,7 +25,7 @@ DEFINE_LOG_CATEGORY(LogWebBrowser);
 static FWebBrowserSingleton* WebBrowserSingleton = nullptr;
 
 FWebBrowserInitSettings::FWebBrowserInitSettings()
-	: ProductVersion(FString::Printf(TEXT("%s/%s UnrealEngine/%s Chrome/84.0.4147.38"), FApp::GetProjectName(), FApp::GetBuildVersion(), *FEngineVersion::Current().ToString()))
+	: ProductVersion(FString::Printf(TEXT("%s/%s UnrealEngine/%s Chrome/90.0.4430.212"), FApp::GetProjectName(), FApp::GetBuildVersion(), *FEngineVersion::Current().ToString()))
 {
 }
 
@@ -51,6 +56,10 @@ IMPLEMENT_MODULE( FWebBrowserModule, WebBrowser );
 void FWebBrowserModule::StartupModule()
 {
 #if WITH_CEF3
+	if (!IsRunningCommandlet())
+	{
+		CEF3Utils::BackupCEF3Logfile(FPaths::ProjectLogDir());
+	}
 	bLoadedCEFModule = CEF3Utils::LoadCEF3Modules(true);
 #if PLATFORM_MAC
 	// Dynamically load the CEF framework library into this dylibs memory space.

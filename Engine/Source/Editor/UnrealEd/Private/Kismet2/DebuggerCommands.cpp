@@ -12,8 +12,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/UnrealEdEngine.h"
@@ -86,6 +85,16 @@
 #define LOCTEXT_NAMESPACE "DebuggerCommands"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDebuggerCommands, Log, All);
+
+namespace DebuggerCommands
+{
+	static bool bAllowPlayWorldFeature = true;
+	static FAutoConsoleVariableRef AllowPlayWorldFeatureCVar(TEXT("Editor.AllowPlayWorldFeature"), bAllowPlayWorldFeature, TEXT("When true play world is allowed."));
+	static bool AllowPlayWorldFeature()
+	{
+		return bAllowPlayWorldFeature;
+	}
+}
 
 void SGlobalPlayWorldActions::Construct(const FArguments& InArgs)
 {
@@ -270,7 +279,7 @@ void FPlayWorldCommands::SetActiveGlobalPlayWorldActionsWidget(TWeakPtr<SGlobalP
 }
 
 FPlayWorldCommands::FPlayWorldCommands()
-	: TCommands<FPlayWorldCommands>("PlayWorld", LOCTEXT("PlayWorld", "Play World (PIE/SIE)"), "MainFrame", FEditorStyle::GetStyleSetName())
+	: TCommands<FPlayWorldCommands>("PlayWorld", LOCTEXT("PlayWorld", "Play World (PIE/SIE)"), "MainFrame", FAppStyle::GetAppStyleSetName())
 {
 	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
 
@@ -370,7 +379,7 @@ void FPlayWorldCommands::AddPIEPreviewDeviceCommands()
 				FName(*CommandLabel.ToString()),
 				CommandLabel,
 				CommandDesc,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.PlayInMobilePreview"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.PlayInMobilePreview"),
 				EUserInterfaceActionType::Check,
 				FInputChord());
 		}
@@ -468,7 +477,7 @@ void FPlayWorldCommands::BindGlobalPlayWorldCommands()
 		FExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::StopPlaySession_Clicked),
 		FCanExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::HasPlayWorld),
 		FIsActionChecked(),
-		FIsActionButtonVisible()
+		FIsActionButtonVisible::CreateStatic(&DebuggerCommands::AllowPlayWorldFeature)
 	);
 
 	// Late join session
@@ -498,7 +507,7 @@ void FPlayWorldCommands::BindGlobalPlayWorldCommands()
 		FExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::SingleFrameAdvance_Clicked),
 		FCanExecuteAction::CreateStatic(&FPlayWorldCommandCallbacks::HasPlayWorldAndPaused),
 		FIsActionChecked(),
-		FIsActionButtonVisible()
+		FIsActionButtonVisible::CreateStatic(&DebuggerCommands::AllowPlayWorldFeature)
 	);
 
 	ActionList.MapAction(Commands.TogglePlayPauseOfPlaySession,
@@ -521,7 +530,7 @@ void FPlayWorldCommands::BindGlobalPlayWorldCommands()
 		FExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::PossessEjectPlayer_Clicked),
 		FCanExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::CanPossessEjectPlayer),
 		FIsActionChecked(),
-		FIsActionButtonVisible()
+		FIsActionButtonVisible::CreateStatic(&DebuggerCommands::AllowPlayWorldFeature)
 	);
 
 	// Breakpoint-only commands
@@ -637,6 +646,7 @@ void FPlayWorldCommands::BuildToolbar(FToolMenuSection& InSection, bool bInclude
 
 	FUIAction SpecialPIEOptionsMenuAction;
 	SpecialPIEOptionsMenuAction.CanExecuteAction = FCanExecuteAction::CreateStatic(&FInternalPlayWorldCommandCallbacks::CanShowNonPlayWorldOnlyActions);
+	SpecialPIEOptionsMenuAction.IsActionVisibleDelegate = FIsActionButtonVisible::CreateStatic(&DebuggerCommands::AllowPlayWorldFeature);
 
 	FToolMenuEntry PIEComboEntry = FToolMenuEntry::InitComboButton("PIECombo", SpecialPIEOptionsMenuAction, FOnGetContent::CreateStatic(&GeneratePlayMenuContent, GlobalPlayWorldActions.ToSharedRef()), FText(), LOCTEXT("PIEComboToolTip", "Change Play Mode and Play Settings"));
 	PIEComboEntry.StyleNameOverride = FName("Toolbar.BackplateRightCombo");
@@ -805,7 +815,7 @@ TSharedRef< SWidget > FPlayWorldCommands::GeneratePlayMenuContent(TSharedRef<FUI
 					LOCTEXT("TargetedMobilePreviewSubMenu", "Mobile Preview (PIE)"),
 					LOCTEXT("TargetedMobilePreviewSubMenu_ToolTip", "Play this level using a specified mobile device preview (runs in its own process)"),
 					FNewMenuDelegate::CreateStatic(&MakePreviewDeviceMenu), false,
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.PlayInMobilePreview")
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.PlayInMobilePreview")
 				);
 			}
 
@@ -870,7 +880,7 @@ TSharedRef< SWidget > FPlayWorldCommands::GeneratePlayMenuContent(TSharedRef<FUI
 					LOCTEXT("NetworkModeToolTip", "Which network mode should the clients launch in? A server will automatically be started if needed."),
 					FNewMenuDelegate::CreateLambda([](FMenuBuilder& InMenuBuilder)
 						{
-							const UEnum* PlayNetModeEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("EPlayNetMode"));
+							const UEnum* PlayNetModeEnum = FindObject<UEnum>(nullptr, TEXT("/Script/UnrealEd.EPlayNetMode"));
 
 							for (int32 i = 0; i < PlayNetModeEnum->NumEnums() - 1; i++)
 							{
@@ -1072,11 +1082,11 @@ FSlateIcon FInternalPlayWorldCommandCallbacks::GetPossessEjectImage()
 {
 	if (IsInSIE())
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.PossessPlayer");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.PossessPlayer");
 	}
 	else
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.EjectFromPlayer");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.EjectFromPlayer");
 	}
 }
 
@@ -1281,6 +1291,11 @@ void SetLastExecutedLaunchMode(ELaunchModeType LaunchMode)
 
 void FInternalPlayWorldCommandCallbacks::RepeatLastPlay_Clicked()
 {
+	if (!DebuggerCommands::AllowPlayWorldFeature())
+	{
+		return;
+	}
+
 	ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
 	PlaySettings->PostEditChange();
 
@@ -1302,6 +1317,11 @@ void FInternalPlayWorldCommandCallbacks::RepeatLastPlay_Clicked()
 
 bool FInternalPlayWorldCommandCallbacks::RepeatLastPlay_CanExecute()
 {
+	if (!DebuggerCommands::AllowPlayWorldFeature())
+	{
+		return false;
+	}
+
 	const ULevelEditorPlaySettings* PlaySettings = GetDefault<ULevelEditorPlaySettings>();
 	if (PlaySettings->LastExecutedPlayModeType == EPlayModeType::PlayMode_QuickLaunch)
 	{
@@ -1337,7 +1357,7 @@ FSlateIcon FInternalPlayWorldCommandCallbacks::GetRepeatLastPlayIcon()
 
 		// get platform name from DeviceId
 		
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), FDataDrivenPlatformInfoRegistry::GetPlatformInfo(DeviceId.GetPlatformName()).GetIconStyleName(EPlatformIconSize::Normal));
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), FDataDrivenPlatformInfoRegistry::GetPlatformInfo(DeviceId.GetPlatformName()).GetIconStyleName(EPlatformIconSize::Normal));
 	}
 
 	return GetLastPlaySessionCommand()->GetIcon();
@@ -1642,11 +1662,11 @@ FSlateIcon FInternalPlayWorldCommandCallbacks::GetResumePlaySessionImage()
 {
 	if (IsInPIE())
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.ResumePlaySession");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.ResumePlaySession");
 	}
 	else if (IsInSIE())
 	{
-		return FSlateIcon(FEditorStyle::GetStyleSetName(), "PlayWorld.Simulate");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlayWorld.Simulate");
 	}
 	else
 	{
@@ -1775,17 +1795,17 @@ void FInternalPlayWorldCommandCallbacks::TogglePlayPause_Clicked()
 
 bool FInternalPlayWorldCommandCallbacks::CanShowNonPlayWorldOnlyActions()
 {
-	return !HasPlayWorld();
+	return !HasPlayWorld() && DebuggerCommands::AllowPlayWorldFeature();
 }
 
 bool FInternalPlayWorldCommandCallbacks::CanShowVulkanNonPlayWorldOnlyActions()
 {
-	return !HasPlayWorld() && GetDefault<UEditorExperimentalSettings>()->bAllowVulkanPreview && FModuleManager::Get().ModuleExists(TEXT("VulkanRHI"));
+	return !HasPlayWorld() && GetDefault<UEditorExperimentalSettings>()->bAllowVulkanPreview && FModuleManager::Get().ModuleExists(TEXT("VulkanRHI")) && DebuggerCommands::AllowPlayWorldFeature();
 }
 
 bool FInternalPlayWorldCommandCallbacks::CanShowVROnlyActions()
 {
-	return !HasPlayWorld();
+	return !HasPlayWorld() && DebuggerCommands::AllowPlayWorldFeature();
 }
 
 int32 FInternalPlayWorldCommandCallbacks::GetNumberOfClients()

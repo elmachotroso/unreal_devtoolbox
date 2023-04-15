@@ -14,9 +14,8 @@
 
 #if INTEL_ISPC && !UE_BUILD_SHIPPING
 static_assert(sizeof(ispc::FVector3f) == sizeof(Chaos::Softs::FSolverVec3), "sizeof(ispc::FVector3f) != sizeof(Chaos::Softs::FSolverVec3)");
-
-bool bChaos_DampVelocity_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarChaosDampVelocityISPCEnabled(TEXT("p.Chaos.DampVelocity.ISPC"), bChaos_DampVelocity_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in per particle damp velocity calculation"));
+bool bChaos_DampVelocity_ISPC_Enabled = CHAOS_DAMP_VELOCITY_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarChaosDampVelocityISPCEnabled(TEXT("p.Chaos.DampVelocity.ISPC"), bChaos_DampVelocity_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in per particle damp velocity calculation"));
 #endif
 
 namespace Chaos::Softs {
@@ -78,7 +77,7 @@ void FPerParticleDampVelocity::UpdatePositionBasedState(const FSolverParticles& 
 		}
 
 		const FSolverReal Det = I.Determinant();
-		Omega = Det < (FSolverReal)SMALL_NUMBER || !FMath::IsFinite(Det) ?
+		Omega = Det < (FSolverReal)UE_SMALL_NUMBER || !FMath::IsFinite(Det) ?
 			FSolverVec3(0.) :
 #if COMPILE_WITHOUT_UNREAL_SUPPORT
 			FSolverRigidTransform3(I).InverseTransformVector(L);

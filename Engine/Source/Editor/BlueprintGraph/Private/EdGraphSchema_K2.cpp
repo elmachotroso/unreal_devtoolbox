@@ -65,11 +65,11 @@
 #include "K2Node_VariableSet.h"
 #include "K2Node_SetFieldsInStruct.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor.h"
-
 #include "Kismet/BlueprintMapLibrary.h"
 #include "Kismet/BlueprintSetLibrary.h"
+#include "Kismet/BlueprintTypeConversions.h"
 #include "Kismet/KismetArrayLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "GraphEditorActions.h"
@@ -86,7 +86,7 @@
 #include "ComponentTypeRegistry.h"
 #include "BlueprintNodeBinder.h"
 #include "BlueprintComponentNodeSpawner.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "K2Node_CastByteToEnum.h"
 #include "K2Node_ClassDynamicCast.h"
@@ -104,17 +104,17 @@
 //////////////////////////////////////////////////////////////////////////
 
 // How to display PC_Real pin types to users
-enum class EBlueprintRealDisplayMode
+enum class EBlueprintRealDisplayMode : uint8
 {
 	Real,
 	Float,
 	Number
 };
 
-namespace BlueprintDisplay
+namespace UE::BlueprintDisplay::Private
 {
 	int32 LastRealNamingMode = -1;
-	int32 RealNamingMode = (int32)EBlueprintRealDisplayMode::Float;
+	int32 RealNamingMode = static_cast<int32>(EBlueprintRealDisplayMode::Float);
 	FAutoConsoleVariableRef CVarRealNamingMode(TEXT("Blueprint.PC_Real.DisplayMode"), RealNamingMode, TEXT("Real naming mode\n\t0: Real\n\t1: Float (default)\n\t2: Number\n\nNote the editor needs to be restarted for this to fully take effect"));
 
 	EBlueprintRealDisplayMode GetRealDisplayMode()
@@ -157,6 +157,7 @@ const FName FBlueprintMetadata::MD_CompactNodeTitle(TEXT("CompactNodeTitle"));
 const FName FBlueprintMetadata::MD_DisplayName(TEXT("DisplayName"));
 const FName FBlueprintMetadata::MD_ReturnDisplayName(TEXT("ReturnDisplayName"));
 const FName FBlueprintMetadata::MD_InternalUseParam(TEXT("InternalUseParam"));
+const FName FBlueprintMetadata::MD_ForceAsFunction(TEXT("ForceAsFunction"));
 const FName FBlueprintMetadata::MD_IgnoreTypePromotion(TEXT("IgnoreTypePromotion"));
 
 const FName FBlueprintMetadata::MD_PropertyGetFunction(TEXT("BlueprintGetter"));
@@ -176,6 +177,7 @@ const FName FBlueprintMetadata::MD_ShowWorldContextPin(TEXT("ShowWorldContextPin
 const FName FBlueprintMetadata::MD_Private(TEXT("BlueprintPrivate"));
 
 const FName FBlueprintMetadata::MD_BlueprintInternalUseOnly(TEXT("BlueprintInternalUseOnly"));
+const FName FBlueprintMetadata::MD_BlueprintInternalUseOnlyHierarchical(TEXT("BlueprintInternalUseOnlyHierarchical"));
 const FName FBlueprintMetadata::MD_NeedsLatentFixup(TEXT("NeedsLatentFixup"));
 const FName FBlueprintMetadata::MD_LatentInfo(TEXT("LatentInfo"));
 const FName FBlueprintMetadata::MD_LatentCallbackTarget(TEXT("LatentCallbackTarget"));
@@ -262,7 +264,7 @@ struct FUnloadedAssetData
 		InAsset.GetTagValue(FBlueprintMetadata::MD_Tooltip, Tooltip);
 		if (Tooltip.IsEmpty())
 		{
-			Tooltip = FText::FromString(InAsset.ObjectPath.ToString());
+			Tooltip = FText::FromString(InAsset.GetObjectPathString());
 		}
 	}
 };
@@ -389,7 +391,7 @@ public:
 
 		{
 			TArray<FAssetData> AssetData;
-			AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedEnum::StaticClass()->GetFName(), AssetData);
+			AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedEnum::StaticClass()->GetClassPathName(), AssetData);
 
 			FTypesDatabase::FUnLoadedTypesList UnLoadedTypesList = MakeShareable(new TArray<FUnloadedAssetData>());
 			for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
@@ -408,7 +410,7 @@ public:
 		{
 			{
 				TArray<FAssetData> AssetData;
-				AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetFName(), AssetData);
+				AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetClassPathName(), AssetData);
 
 				FTypesDatabase::FUnLoadedTypesList UnLoadedTypesList = MakeShareable(new TArray<FUnloadedAssetData>());
 				for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
@@ -425,7 +427,7 @@ public:
 
 			{
 				TArray<FAssetData> AssetData;
-				AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetFName(), AssetData);
+				AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), AssetData);
 
 				const FString BPInterfaceTypeAllowed(TEXT("BPTYPE_Interface"));
 				const FString BPNormalTypeAllowed(TEXT("BPTYPE_Normal"));
@@ -512,30 +514,20 @@ public:
 
 		OutChildren.Sort(FCompareChildren());
 	}
-
-	/** Loads an asset based on the AssetReference through the asset registry */
-	static UObject* LoadAsset(const FSoftObjectPath& AssetReference)
-	{
-		if (AssetReference.IsValid())
-		{
-			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetReference.ToString());
-			return AssetData.GetAsset(); //-V558
-		}
-		return nullptr;
-	}
 };
 
 const FEdGraphPinType& UEdGraphSchema_K2::FPinTypeTreeInfo::GetPinType(bool bForceLoadedSubCategoryObject)
 {
-	if (bForceLoadedSubCategoryObject)
+	// Only attempt to load the sub category object if we need to
+	if (SubCategoryObjectAssetReference.IsValid() && (!PinType.PinSubCategoryObject.IsValid() || FSoftObjectPath(PinType.PinSubCategoryObject.Get()) != SubCategoryObjectAssetReference))
 	{
-		// Only attempt to load the sub category object if we need to
-		if ( SubCategoryObjectAssetReference.IsValid() && (!PinType.PinSubCategoryObject.IsValid() || FSoftObjectPath(PinType.PinSubCategoryObject.Get()) != SubCategoryObjectAssetReference) )
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(SubCategoryObjectAssetReference);
+		if (bForceLoadedSubCategoryObject || AssetData.IsAssetLoaded())
 		{
-			UObject* LoadedObject = FGatherTypesHelper::LoadAsset(SubCategoryObjectAssetReference);
+			UObject* LoadedObject = AssetData.GetAsset();
 
-			if(UBlueprint* BlueprintObject = Cast<UBlueprint>(LoadedObject))
+			if (UBlueprint* BlueprintObject = Cast<UBlueprint>(LoadedObject))
 			{
 				PinType.PinSubCategoryObject = *BlueprintObject->GeneratedClass;
 			}
@@ -545,33 +537,7 @@ const FEdGraphPinType& UEdGraphSchema_K2::FPinTypeTreeInfo::GetPinType(bool bFor
 			}
 		}
 	}
-	else
-	{
-		if (SubCategoryObjectAssetReference.IsValid())
-		{
-			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*SubCategoryObjectAssetReference.ToString());
 
-			if(!AssetData.IsAssetLoaded())
-			{
-				UObject* LoadedObject = FindObject<UClass>(ANY_PACKAGE, *AssetData.AssetClass.ToString());
-
-				// If the unloaded asset is a Blueprint, we need to pull the generated class and assign that
-				if(UBlueprint* BlueprintObject = Cast<UBlueprint>(LoadedObject))
-				{
-					PinType.PinSubCategoryObject = *BlueprintObject->GeneratedClass;
-				}
-				else
-				{
-					PinType.PinSubCategoryObject = LoadedObject;
-				}
-			}
-			else
-			{
-				PinType.PinSubCategoryObject = AssetData.GetAsset();
-			}
-		}
-	}
 	return PinType;
 }
 
@@ -707,7 +673,6 @@ const FName UEdGraphSchema_K2::PN_Item(TEXT("Item"));
 const FName UEdGraphSchema_K2::PN_CastSucceeded(TEXT("then"));
 const FName UEdGraphSchema_K2::PN_CastFailed(TEXT("CastFailed"));
 const FString UEdGraphSchema_K2::PN_CastedValuePrefix(TEXT("As"));
-const FName UEdGraphSchema_K2::PN_MatineeFinished(TEXT("Finished"));
 
 const FName UEdGraphSchema_K2::FN_UserConstructionScript(TEXT("UserConstructionScript"));
 const FName UEdGraphSchema_K2::FN_ExecuteUbergraphBase(TEXT("ExecuteUbergraph"));
@@ -830,7 +795,7 @@ bool UEdGraphSchema_K2::CanFunctionBeUsedInGraph(const UClass* InClass, const UF
 			// Blueprint functions visibility flags can be enforced in blueprints - native functions
 			// are often using these flags to only hide functionality from other native functions:
 			const bool bIsProtected = (InFunction->FunctionFlags & FUNC_Protected) != 0;
-			const bool bFuncBelongsToSubClass = InClass->IsChildOf(InFunction->GetOuterUClass()->GetSuperStruct());
+			const bool bFuncBelongsToSubClass = InClass && InClass->IsChildOf(InFunction->GetOuterUClass()->GetSuperStruct());
 			if (bIsProtected)
 			{
 				const bool bAllowProtectedFuncs = (InAllowedFunctionTypes & FT_Protected) != 0;
@@ -1010,6 +975,12 @@ bool UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(const UFunction* InFunction)
 {
 	// First check we are override-able, non-static, non-const and not marked thread safe
 	if (!InFunction || !CanKismetOverrideFunction(InFunction) || InFunction->HasAnyFunctionFlags(FUNC_Static|FUNC_Const) || FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(InFunction))
+	{
+		return false;
+	}
+
+	// Check if meta data has been set to force this to appear as blueprint function even if it doesn't return a value.
+	if (InFunction->HasAllFunctionFlags(FUNC_BlueprintEvent) && InFunction->HasMetaData(FBlueprintMetadata::MD_ForceAsFunction))
 	{
 		return false;
 	}
@@ -1296,7 +1267,29 @@ bool UEdGraphSchema_K2::IsAllowableBlueprintVariableType(const UScriptStruct* In
 		// User-defined structs are always allowed as BP variable types.
 		return true;
 	}
-	return (InStruct && InStruct->GetBoolMetaDataHierarchical(FBlueprintMetadata::MD_AllowableBlueprintVariableType) && (bForInternalUse || !InStruct->GetBoolMetaData(FBlueprintMetadata::MD_BlueprintInternalUseOnly)));
+
+	// struct needs to be marked as BP type
+	if (InStruct && InStruct->GetBoolMetaDataHierarchical(FBlueprintMetadata::MD_AllowableBlueprintVariableType))
+	{
+		// for internal use, all BP types are allowed
+		if (bForInternalUse)
+		{
+			return true;
+		}
+
+		// for user-facing use case, only allow structs that don't have the internal-use-only tag
+		// struct itself should not be tagged
+		if (!InStruct->GetBoolMetaData(FBlueprintMetadata::MD_BlueprintInternalUseOnly))
+		{
+			// struct's base structs should not be tagged
+			if (!InStruct->GetBoolMetaDataHierarchical(FBlueprintMetadata::MD_BlueprintInternalUseOnlyHierarchical))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 bool UEdGraphSchema_K2::DoesGraphSupportImpureFunctions(const UEdGraph* InGraph) const
@@ -2599,11 +2592,20 @@ bool UEdGraphSchema_K2::SearchForAutocastFunction(const FEdGraphPinType& OutputP
 
 bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputPin, const UEdGraphPin* InputPin, bool bCreateNode, /*out*/ UK2Node*& TargetNode) const
 {
+	return FindSpecializedConversionNode(OutputPin->PinType, InputPin, bCreateNode, TargetNode);
+}
+
+bool UEdGraphSchema_K2::FindSpecializedConversionNode(const FEdGraphPinType& OutputPinType, const UEdGraphPin* InputPin, bool bCreateNode, UK2Node*& TargetNode) const
+{
 	bool bCanConvert = false;
 	TargetNode = nullptr;
+	if (!InputPin)
+	{
+		return bCanConvert;
+	}
 
 	// Conversion for scalar -> array
-	if( (!OutputPin->PinType.IsContainer() && InputPin->PinType.IsArray()) && ArePinTypesCompatible(OutputPin->PinType, InputPin->PinType, nullptr, true))
+	if( (!OutputPinType.IsContainer() && InputPin->PinType.IsArray()) && ArePinTypesCompatible(OutputPinType, InputPin->PinType, nullptr, true))
 	{
 		bCanConvert = true;
 		if(bCreateNode)
@@ -2613,10 +2615,10 @@ bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputP
 	}
 	// If connecting an object to a 'call function' self pin, and not currently compatible, see if there is a property we can call a function on
 	else if (InputPin->GetOwningNode()->IsA(UK2Node_CallFunction::StaticClass()) && IsSelfPin(*InputPin) && 
-		((OutputPin->PinType.PinCategory == PC_Object) || (OutputPin->PinType.PinCategory == PC_Interface)))
+		((OutputPinType.PinCategory == PC_Object) || (OutputPinType.PinCategory == PC_Interface)))
 	{
 		UK2Node_CallFunction* CallFunctionNode = (UK2Node_CallFunction*)(InputPin->GetOwningNode());
-		UClass* OutputPinClass = Cast<UClass>(OutputPin->PinType.PinSubCategoryObject.Get());
+		UClass* OutputPinClass = Cast<UClass>(OutputPinType.PinSubCategoryObject.Get());
 
 		UClass* FunctionClass = CallFunctionNode->FunctionReference.GetMemberParentClass(CallFunctionNode->GetBlueprintClassFromNode());
 		if(FunctionClass != NULL && OutputPinClass != NULL)
@@ -2626,7 +2628,7 @@ bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputP
 			{
 				FObjectProperty* ObjProp = *PropIt;
 				// .. if we have a blueprint visible var, and is of the type which contains this function..
-				if(ObjProp->HasAllPropertyFlags(CPF_BlueprintVisible) && ObjProp->PropertyClass->IsChildOf(FunctionClass))
+				if(ObjProp->HasAllPropertyFlags(CPF_BlueprintVisible) && ObjProp->PropertyClass && ObjProp->PropertyClass->IsChildOf(FunctionClass))
 				{
 					// say we can convert
 					bCanConvert = true;
@@ -2647,7 +2649,7 @@ bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputP
 	{
 		// CHECK ENUM TO NAME CAST
 		const bool bInoputMatch = InputPin && !InputPin->PinType.IsContainer() && ((PC_Name == InputPin->PinType.PinCategory) || (PC_String == InputPin->PinType.PinCategory));
-		const bool bOutputMatch = OutputPin && !OutputPin->PinType.IsContainer() && (PC_Byte == OutputPin->PinType.PinCategory) && (NULL != Cast<UEnum>(OutputPin->PinType.PinSubCategoryObject.Get()));
+		const bool bOutputMatch = !OutputPinType.IsContainer() && (PC_Byte == OutputPinType.PinCategory) && (NULL != Cast<UEnum>(OutputPinType.PinSubCategoryObject.Get()));
 		if(bOutputMatch && bInoputMatch)
 		{
 			bCanConvert = true;
@@ -2666,10 +2668,10 @@ bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputP
 		}
 	}
 
-	if (!bCanConvert && InputPin && OutputPin)
+	if (!bCanConvert && InputPin)
 	{
 		FEdGraphPinType const& InputType  = InputPin->PinType;
-		FEdGraphPinType const& OutputType = OutputPin->PinType;
+		FEdGraphPinType const& OutputType = OutputPinType;
 
 		// CHECK BYTE TO ENUM CAST
 		UEnum* Enum = Cast<UEnum>(InputType.PinSubCategoryObject.Get());
@@ -2689,7 +2691,7 @@ bool UEdGraphSchema_K2::FindSpecializedConversionNode(const UEdGraphPin* OutputP
 		else
 		{
 			UClass* InputClass  = FBlueprintEditorUtils::GetTypeForPin(*InputPin);
-			UClass* OutputClass = FBlueprintEditorUtils::GetTypeForPin(*OutputPin);
+			UClass* OutputClass = Cast<UClass>(OutputPinType.PinSubCategoryObject.Get());
 
 			if ((OutputType.PinCategory == PC_Interface) && (InputType.PinCategory == PC_Object))
 			{
@@ -3295,7 +3297,7 @@ void UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph& Graph, UClass* 
 	}
 }
 
-void UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph& Graph, UFunction* FunctionSignature) const
+void UEdGraphSchema_K2::CreateFunctionGraphTerminators(UEdGraph& Graph, const UFunction* FunctionSignature) const
 {
 	const FName GraphName = Graph.GetFName();
 
@@ -3566,7 +3568,7 @@ bool UEdGraphSchema_K2::ConvertPropertyToPinType(const FProperty* Property, /*ou
 		if(!BitmaskEnumName.IsEmpty())
 		{
 			// @TODO: Potentially replace this with a serialized UEnum reference on the FProperty (e.g. FByteProperty::Enum)
-			TypeOut.PinSubCategoryObject = FindObject<UEnum>(ANY_PACKAGE, *BitmaskEnumName);
+			TypeOut.PinSubCategoryObject = UClass::TryFindTypeSlow<UEnum>(BitmaskEnumName);
 		}
 	}
 
@@ -3677,6 +3679,13 @@ FText UEdGraphSchema_K2::TypeToText(const FProperty* const Property)
 
 FText UEdGraphSchema_K2::GetCategoryText(const FName Category, const bool bForMenu)
 {
+	return GetCategoryText(Category, NAME_None, bForMenu);
+}
+
+FText UEdGraphSchema_K2::GetCategoryText(FName Category, FName SubCategory, bool bForMenu)
+{
+	using namespace UE::BlueprintDisplay::Private;
+
 	if (Category.IsNone())
 	{
 		return FText::GetEmpty();
@@ -3686,46 +3695,68 @@ FText UEdGraphSchema_K2::GetCategoryText(const FName Category, const bool bForMe
 	if (CategoryDescriptions.Num() == 0)
 	{
 		CategoryDescriptions.Add(PC_Exec, LOCTEXT("Exec", "Exec"));
-		CategoryDescriptions.Add(PC_Boolean, LOCTEXT("BoolCategory","Boolean"));
-		CategoryDescriptions.Add(PC_Byte, LOCTEXT("ByteCategory","Byte"));
-		CategoryDescriptions.Add(PC_Class, LOCTEXT("ClassCategory","Class Reference"));
+		CategoryDescriptions.Add(PC_Boolean, LOCTEXT("BoolCategory", "Boolean"));
+		CategoryDescriptions.Add(PC_Byte, LOCTEXT("ByteCategory", "Byte"));
+		CategoryDescriptions.Add(PC_Class, LOCTEXT("ClassCategory", "Class Reference"));
 		CategoryDescriptions.Add(PC_Int, LOCTEXT("IntCategory", "Integer"));
 		CategoryDescriptions.Add(PC_Int64, LOCTEXT("Int64Category", "Integer64"));
 		CategoryDescriptions.Add(PC_Real, LOCTEXT("RealCategory", "Real"));
-		CategoryDescriptions.Add(PC_Name, LOCTEXT("NameCategory","Name"));
-		CategoryDescriptions.Add(PC_Delegate, LOCTEXT("DelegateCategory","Delegate"));
-		CategoryDescriptions.Add(PC_MCDelegate, LOCTEXT("MulticastDelegateCategory","Multicast Delegate"));
-		CategoryDescriptions.Add(PC_Object, LOCTEXT("ObjectCategory","Object Reference"));
-		CategoryDescriptions.Add(PC_Interface, LOCTEXT("InterfaceCategory","Interface"));
-		CategoryDescriptions.Add(PC_String, LOCTEXT("StringCategory","String"));
-		CategoryDescriptions.Add(PC_Text, LOCTEXT("TextCategory","Text"));
-		CategoryDescriptions.Add(PC_Struct, LOCTEXT("StructCategory","Structure"));
-		CategoryDescriptions.Add(PC_Wildcard, LOCTEXT("WildcardCategory","Wildcard"));
-		CategoryDescriptions.Add(PC_Enum, LOCTEXT("EnumCategory","Enum"));
+		CategoryDescriptions.Add(PC_Float, LOCTEXT("FloatCategory", "Real (single-precision)"));
+		CategoryDescriptions.Add(PC_Double, LOCTEXT("DoubleCategory", "Real (double-precision)"));
+		CategoryDescriptions.Add(PC_Name, LOCTEXT("NameCategory", "Name"));
+		CategoryDescriptions.Add(PC_Delegate, LOCTEXT("DelegateCategory", "Delegate"));
+		CategoryDescriptions.Add(PC_MCDelegate, LOCTEXT("MulticastDelegateCategory", "Multicast Delegate"));
+		CategoryDescriptions.Add(PC_Object, LOCTEXT("ObjectCategory", "Object Reference"));
+		CategoryDescriptions.Add(PC_Interface, LOCTEXT("InterfaceCategory", "Interface"));
+		CategoryDescriptions.Add(PC_String, LOCTEXT("StringCategory", "String"));
+		CategoryDescriptions.Add(PC_Text, LOCTEXT("TextCategory", "Text"));
+		CategoryDescriptions.Add(PC_Struct, LOCTEXT("StructCategory", "Structure"));
+		CategoryDescriptions.Add(PC_Wildcard, LOCTEXT("WildcardCategory", "Wildcard"));
+		CategoryDescriptions.Add(PC_Enum, LOCTEXT("EnumCategory", "Enum"));
 		CategoryDescriptions.Add(PC_SoftObject, LOCTEXT("SoftObjectReferenceCategory", "Soft Object Reference"));
 		CategoryDescriptions.Add(PC_SoftClass, LOCTEXT("SoftClassReferenceCategory", "Soft Class Reference"));
 		CategoryDescriptions.Add(PC_FieldPath, LOCTEXT("FieldPathReferenceCategory", "Property Reference"));
 		CategoryDescriptions.Add(AllObjectTypes, LOCTEXT("AllObjectTypes", "Object Types"));
 	}
 
-	if (BlueprintDisplay::ShouldRefreshRealDisplay())
+	if (ShouldRefreshRealDisplay())
 	{
-		switch (BlueprintDisplay::GetRealDisplayMode())
+		switch (GetRealDisplayMode())
 		{
 		case EBlueprintRealDisplayMode::Real:
 			CategoryDescriptions[PC_Real] = LOCTEXT("RealCategory_DisplayAsReal", "Real");
+			CategoryDescriptions[PC_Float] = LOCTEXT("RealCategory_DisplayAsReal_SinglePrecision", "Real (single-precision)");
+			CategoryDescriptions[PC_Double] = LOCTEXT("RealCategory_DisplayAsReal_DoublePrecision", "Real (double-precision)");
 			break;
 		case EBlueprintRealDisplayMode::Float:
 			CategoryDescriptions[PC_Real] = LOCTEXT("RealCategory_DisplayAsFloat", "Float");
+			CategoryDescriptions[PC_Float] = LOCTEXT("RealCategory_DisplayAsFloat_SinglePrecision", "Float (single-precision)");
+			CategoryDescriptions[PC_Double] = LOCTEXT("RealCategory_DisplayAsFloat_DoublePrecision", "Float (double-precision)");
 			break;
 		case EBlueprintRealDisplayMode::Number:
 			CategoryDescriptions[PC_Real] = LOCTEXT("RealCategory_DisplayAsNumber", "Number");
+			CategoryDescriptions[PC_Float] = LOCTEXT("RealCategory_DisplayAsNumber_SinglePrecision", "Number (single-precision)");
+			CategoryDescriptions[PC_Double] = LOCTEXT("RealCategory_DisplayAsNumber_DoublePrecision", "Number (double-precision)");
+			break;
+		default:
+			check(false);
 			break;
 		}
 	}
 
-	if (FText const* TypeDesc = CategoryDescriptions.Find(Category))
+	if (const FText* TypeDesc = CategoryDescriptions.Find(Category))
 	{
+		const bool bUseDetailedRealCategory =
+			bForMenu &&
+			(Category == PC_Real) &&
+			((SubCategory == PC_Float) || (SubCategory == PC_Double));
+
+		if (bUseDetailedRealCategory)
+		{
+			TypeDesc = CategoryDescriptions.Find(SubCategory);
+			check(TypeDesc);
+		}
+
 		return *TypeDesc;
 	}
 	else
@@ -3796,7 +3827,9 @@ FText UEdGraphSchema_K2::TerminalTypeToText(const FName Category, const FName Su
 	{
 		if (Category == UEdGraphSchema_K2::PC_Real)
 		{
-			switch (BlueprintDisplay::GetRealDisplayMode())
+			using namespace UE::BlueprintDisplay::Private;
+
+			switch (GetRealDisplayMode())
 			{
 			case EBlueprintRealDisplayMode::Real:
 				PropertyText = (SubCategory == UEdGraphSchema_K2::PC_Float) ? LOCTEXT("SinglePrecisionReal", "Real (single-precision)") : LOCTEXT("DoublePrecisionReal", "Real (double-precision)");
@@ -4048,7 +4081,7 @@ namespace
 		// We have a native (C++) class, do a normal IsChildOf check
 		if (!bIsNonNativeClass)
 		{
-			bResult = InSourceStruct->IsChildOf(InTargetStruct);
+			bResult = InSourceStruct && InSourceStruct->IsChildOf(InTargetStruct);
 		}
 
 		return bResult;
@@ -4056,7 +4089,7 @@ namespace
 
 	static bool ExtendedIsChildOf(const UClass* Child, const UClass* Parent)
 	{
-		if (Child->IsChildOf(Parent))
+		if (Child && Child->IsChildOf(Parent))
 		{
 			return true;
 		}
@@ -4068,7 +4101,7 @@ namespace
 		}
 
 		const UClass* OriginalParent = GetOriginalClassToFixCompatibilit(Parent);
-		if (OriginalParent && Child->IsChildOf(OriginalParent))
+		if (OriginalParent && Child && Child->IsChildOf(OriginalParent))
 		{
 			return true;
 		}
@@ -4243,9 +4276,17 @@ bool UEdGraphSchema_K2::DefaultValueSimpleValidation(const FEdGraphPinType& PinT
 		{
 			ObjectClass = ObjectClass->GetAuthoritativeClass();
 		}
-		if (NewDefaultObject != nullptr && ObjectClass != nullptr && !NewDefaultObject->GetClass()->GetAuthoritativeClass()->IsChildOf(ObjectClass))
+		if (NewDefaultObject != nullptr && ObjectClass != nullptr)
 		{
-			DVSV_RETURN_MSG(FString::Printf(TEXT("%s isn't a %s (specified on pin %s)"), *NewDefaultObject->GetPathName(), *ObjectClass->GetName(), *PinName.ToString()));
+			const UClass* AuthoritativeClass = NewDefaultObject->GetClass()->GetAuthoritativeClass();
+			if (!AuthoritativeClass || !AuthoritativeClass->IsChildOf(ObjectClass))
+			{
+				// Not a type of object, but is it an object implementing an interface?
+                if(PinCategory != PC_Interface || !NewDefaultObject->GetClass()->ImplementsInterface(ObjectClass))
+                {
+                	DVSV_RETURN_MSG(FString::Printf(TEXT("%s isn't a %s (specified on pin %s)"), *NewDefaultObject->GetPathName(), *ObjectClass->GetName(), *PinName.ToString()));
+                }
+			}
 		}
 	}
 	else if ((PinCategory == PC_SoftObject) || (PinCategory == PC_SoftClass))
@@ -4353,6 +4394,8 @@ bool UEdGraphSchema_K2::DefaultValueSimpleValidation(const FEdGraphPinType& PinT
 
 bool UEdGraphSchema_K2::ArePinTypesCompatible(const FEdGraphPinType& Output, const FEdGraphPinType& Input, const UClass* CallingContext, bool bIgnoreArray /*= false*/) const
 {
+	using namespace UE::Kismet::BlueprintTypeConversions;
+
 	if (!bIgnoreArray && 
 		(Output.ContainerType != Input.ContainerType) && 
 		(Input.PinCategory != PC_Wildcard || Input.IsContainer()) && 
@@ -4362,9 +4405,14 @@ bool UEdGraphSchema_K2::ArePinTypesCompatible(const FEdGraphPinType& Output, con
 	}
 	else if (Output.PinCategory == Input.PinCategory)
 	{
-		bool bAreConvertibleVectorTypes =
-			((Output.PinSubCategoryObject == VectorStruct) && (Input.PinSubCategoryObject == Vector3fStruct)) ||
-			((Output.PinSubCategoryObject == Vector3fStruct) && (Input.PinSubCategoryObject == VectorStruct));
+		bool bAreConvertibleStructs = false;
+		const UScriptStruct* OutputStruct = Cast<UScriptStruct>(Output.PinSubCategoryObject.Get());
+		const UScriptStruct* InputStruct = Cast<UScriptStruct>(Input.PinSubCategoryObject.Get());
+		if (OutputStruct != InputStruct)
+		{
+			bAreConvertibleStructs =
+				FStructConversionTable::Get().GetConversionFunction(OutputStruct, InputStruct).IsSet();
+		}
 
 		if ((Output.PinSubCategory == Input.PinSubCategory) 
 			&& (Output.PinSubCategoryObject == Input.PinSubCategoryObject)
@@ -4372,10 +4420,19 @@ bool UEdGraphSchema_K2::ArePinTypesCompatible(const FEdGraphPinType& Output, con
 		{
 			if(Input.IsMap())
 			{
+				OutputStruct = Cast<UScriptStruct>(Output.PinValueType.TerminalSubCategoryObject.Get());
+				InputStruct = Cast<UScriptStruct>(Input.PinValueType.TerminalSubCategoryObject.Get());
+				if (OutputStruct != InputStruct)
+				{
+					bAreConvertibleStructs =
+						FStructConversionTable::Get().GetConversionFunction(OutputStruct, InputStruct).IsSet();
+				}
+
 				return 
 					Input.PinValueType.TerminalCategory == PC_Wildcard ||
 					Output.PinValueType.TerminalCategory == PC_Wildcard ||
 					((Input.PinValueType.TerminalCategory == PC_Real) && (Output.PinValueType.TerminalCategory == PC_Real)) ||
+					bAreConvertibleStructs ||
 					Input.PinValueType == Output.PinValueType;
 			}
 			return true;
@@ -4386,7 +4443,7 @@ bool UEdGraphSchema_K2::ArePinTypesCompatible(const FEdGraphPinType& Output, con
 		{
 			return true;
 		}
-		else if (bAreConvertibleVectorTypes)
+		else if (bAreConvertibleStructs)
 		{
 			return true;
 		}
@@ -4903,17 +4960,18 @@ bool UEdGraphSchema_K2::DoesDefaultValueMatchAutogenerated(const UEdGraphPin& In
 		}
 		else if (InPin.AutogeneratedDefaultValue.IsEmpty())
 		{
-			const FString PinDefaultValue = InPin.GetDefaultAsString();
-			if (PinDefaultValue.IsEmpty())
+			if (InPin.IsDefaultAsStringEmpty())
 			{
 				return true;
 			}
 			else if (InPin.PinType.PinCategory == PC_Boolean)
 			{
+				const FString PinDefaultValue = InPin.GetDefaultAsString();
 				return (PinDefaultValue == TEXT("false"));
 			}
 			else if (InPin.PinType.PinCategory == PC_Int)
 			{
+				const FString PinDefaultValue = InPin.GetDefaultAsString();
 				if (FCString::Atoi(*PinDefaultValue) == 0)
 				{
 					return true;
@@ -4921,6 +4979,7 @@ bool UEdGraphSchema_K2::DoesDefaultValueMatchAutogenerated(const UEdGraphPin& In
 			}
 			else if (InPin.PinType.PinCategory == PC_Int64)
 			{
+				const FString PinDefaultValue = InPin.GetDefaultAsString();
 				if (FCString::Atoi64(*PinDefaultValue) == 0)
 				{
 					return true;
@@ -4928,6 +4987,7 @@ bool UEdGraphSchema_K2::DoesDefaultValueMatchAutogenerated(const UEdGraphPin& In
 			}
 			else if (InPin.PinType.PinCategory == PC_Name)
 			{
+				const FString PinDefaultValue = InPin.GetDefaultAsString();
 				return (PinDefaultValue == TEXT("None"));
 			}
 		}
@@ -5039,7 +5099,8 @@ bool UEdGraphSchema_K2::FindFunctionParameterDefaultValue(const UFunction* Funct
 		// If the parameter is a class then try and get the full name as the metadata might just be the short name
 		if (Param->IsA<FClassProperty>() && !FPackageName::IsValidObjectPath(OutString))
 		{
-			if (UClass* DefaultClass = FindObject<UClass>(ANY_PACKAGE, *OutString, true))
+			UE_LOG(LogBlueprint, Warning, TEXT("Short class name \"%s\" in meta data \"%s\" for function %s"), *OutString, *Param->GetName(), *Function->GetPathName());
+			if (UClass* DefaultClass = FindFirstObject<UClass>(*OutString, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("UEdGraphSchema_K2::FindFunctionParameterDefaultValue")))
 			{
 				OutString = DefaultClass->GetPathName();
 			}
@@ -5262,7 +5323,7 @@ namespace FSetVariableByNameFunctionNames
 
 UFunction* UEdGraphSchema_K2::FindSetVariableByNameFunction(const FEdGraphPinType& PinType)
 {
-	//!!!! Keep this function synced with FExposeOnSpawnValidator::IsSupported !!!!
+	//!!!! Keep this function synced with FExposeOnSpawnValidator::IsSupported and Uht*Property.cs, CanExposeOnSpawn!!!!
 
 	struct FIsCustomStructureParamHelper
 	{
@@ -5715,7 +5776,7 @@ void UEdGraphSchema_K2::DroppedAssetsOnGraph(const TArray<FAssetData>& Assets, c
 			}
 
 			TSubclassOf<UActorComponent> DestinationComponentType;
-			if (AssetClass->IsChildOf(UActorComponent::StaticClass()) && IsAllowableBlueprintVariableType(AssetClass))
+			if (AssetClass && AssetClass->IsChildOf(UActorComponent::StaticClass()) && IsAllowableBlueprintVariableType(AssetClass))
 			{
 				// If it's an actor component subclass that is a BlueprintableComponent, we're good to go
 				DestinationComponentType = AssetClass;
@@ -5724,7 +5785,7 @@ void UEdGraphSchema_K2::DroppedAssetsOnGraph(const TArray<FAssetData>& Assets, c
 			{
 				// Otherwise see if we can factory a component from the asset
 				DestinationComponentType = FComponentAssetBrokerage::GetPrimaryComponentForAsset(AssetClass);
-				if ((DestinationComponentType == nullptr) && AssetClass->IsChildOf(AActor::StaticClass()))
+				if ((DestinationComponentType == nullptr) && AssetClass && AssetClass->IsChildOf(AActor::StaticClass()))
 				{
 					DestinationComponentType = UChildActorComponent::StaticClass();
 				}
@@ -5822,7 +5883,7 @@ void UEdGraphSchema_K2::GetAssetsGraphHoverMessage(const TArray<FAssetData>& Ass
 				}
 
 				TSubclassOf<UActorComponent> DestinationComponentType;
-				if (AssetClass->IsChildOf(UActorComponent::StaticClass()) && IsAllowableBlueprintVariableType(AssetClass))
+				if (AssetClass && AssetClass->IsChildOf(UActorComponent::StaticClass()) && IsAllowableBlueprintVariableType(AssetClass))
 				{
 					// If it's an actor component subclass that is a BlueprintableComponent, we're good to go
 					DestinationComponentType = AssetClass;
@@ -5831,7 +5892,7 @@ void UEdGraphSchema_K2::GetAssetsGraphHoverMessage(const TArray<FAssetData>& Ass
 				{
 					// Otherwise, see if we have a way to make a component out of the specified asset
 					DestinationComponentType = FComponentAssetBrokerage::GetPrimaryComponentForAsset(AssetClass);
-					if ((DestinationComponentType == nullptr) && AssetClass->IsChildOf(AActor::StaticClass()))
+					if ((DestinationComponentType == nullptr) && AssetClass && AssetClass->IsChildOf(AActor::StaticClass()))
 					{
 						DestinationComponentType = UChildActorComponent::StaticClass();
 					}
@@ -6135,7 +6196,7 @@ struct FBackwardCompatibilityConversionHelper
 			, ClassPinName(FunctionRedirect.ClassParamName)
 			, FuncScope(NULL)
 		{
-			FuncScope = FindObject<UClass>(ANY_PACKAGE, *FunctionRedirect.ClassName);
+			FuncScope = FindFirstObject<UClass>(*FunctionRedirect.ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Fatal, TEXT("looking for FunctionRedirect.ClassName"));			
 		}
 
 	};
@@ -7321,7 +7382,7 @@ void UEdGraphSchema_K2::OnPinConnectionDoubleCicked(UEdGraphPin* PinA, UEdGraphP
 void UEdGraphSchema_K2::ConfigureVarNode(UK2Node_Variable* InVarNode, FName InVariableName, UStruct* InVariableSource, UBlueprint* InTargetBlueprint)
 {
 	// See if this is a 'self context' (ie. blueprint class is owner (or child of owner) of dropped var class)
-	if ((InVariableSource == NULL) || InTargetBlueprint->SkeletonGeneratedClass->IsChildOf(InVariableSource))
+	if ((InVariableSource == NULL) || (InTargetBlueprint->SkeletonGeneratedClass && InTargetBlueprint->SkeletonGeneratedClass->IsChildOf(InVariableSource)))
 	{
 		FGuid Guid = FBlueprintEditorUtils::FindMemberVariableGuidByName(InTargetBlueprint, InVariableName);
 		InVarNode->VariableReference.SetSelfMember(InVariableName, Guid);
@@ -7548,129 +7609,130 @@ bool UEdGraphSchema_K2::SafeDeleteNodeFromGraph(UEdGraph* Graph, UEdGraphNode* N
 
 //////////////////////////////////////////////////////////////////////////
 /** CVars for tweaking how the blueprint context menu search picks the best match */
-namespace ContextMenuConsoleVariables
+namespace BPContextMenuConsoleVariables
 {
 	/** Increasing this weight will give a bonus to shorter matching words */
 	static float ShorterWeight = 10.0f;
 	static FAutoConsoleVariableRef CVarShorterWeight(
-		TEXT("ContextMenu.ShorterWeight"), ShorterWeight,
+		TEXT("BP.ContextMenu.ShorterWeight"), ShorterWeight,
 		TEXT("Increasing this weight will make shorter words preferred"),
 		ECVF_Default);
 
 	/** When calculating shorter weight, this is the maximum length to make it relative to */
 	static int32 MaxWordLength = 30;
 	static FAutoConsoleVariableRef CVarMaxWordLength(
-		TEXT("ContextMenu.MaxWordLength"), MaxWordLength,
+		TEXT("BP.ContextMenu.MaxWordLength"), MaxWordLength,
 		TEXT("Maximum length to count while awarding short word weight"),
 		ECVF_Default);
 
 	/** Increasing this will prefer whole percentage matches when comparing the keyword to what the user has typed in */
 	static float PercentageMatchWeightMultiplier = 1.0f;
 	static FAutoConsoleVariableRef CVarPercentageMatchWeightMultiplier(
-		TEXT("ContextMenu.PercentageMatchWeightMultiplier"), PercentageMatchWeightMultiplier,
+		TEXT("BP.ContextMenu.PercentageMatchWeightMultiplier"), PercentageMatchWeightMultiplier,
 		TEXT("A multiplier for how much weight to give something based on the percentage match it is"),
 		ECVF_Default);
 
 	/** How much weight the description of actions have */
 	static float DescriptionWeight = 10.0f;
 	static FAutoConsoleVariableRef CVarDescriptionWeight(
-		TEXT("ContextMenu.DescriptionWeight"), DescriptionWeight,
+		TEXT("BP.ContextMenu.DescriptionWeight"), DescriptionWeight,
 		TEXT("The amount of weight placed on search items description"),
 		ECVF_Default);
 
 	/** Weight used to prefer categories that are the same as the node that was dragged off of */
 	static float MatchingFromPinCategory = 500.0f;
 	static FAutoConsoleVariableRef CVarMatchingFromPinCategory(
-		TEXT("ContextMenu.MatchingFromPinCategory"), MatchingFromPinCategory,
+		TEXT("BP.ContextMenu.MatchingFromPinCategory"), MatchingFromPinCategory,
 		TEXT("The amount of weight placed on actions with the same category as the node being dragged off of"),
 		ECVF_Default);
 
 	/** Weight that a match to a category search has */
 	static float CategoryWeight = 4.0f;
 	static FAutoConsoleVariableRef CVarCategoryWeight(
-		TEXT("ContextMenu.CategoryWeight"), CategoryWeight,
+		TEXT("BP.ContextMenu.CategoryWeight"), CategoryWeight,
 		TEXT("The amount of weight placed on categories that match what the user has typed in"),
 		ECVF_Default);
 
 	/** How much weight the node's title has */
 	static float NodeTitleWeight = 10.0f;
 	static FAutoConsoleVariableRef CVarNodeTitleWeight(
-		TEXT("ContextMenu.NodeTitleWeight"), NodeTitleWeight,
+		TEXT("BP.ContextMenu.NodeTitleWeight"), NodeTitleWeight,
 		TEXT("The amount of weight placed on the search items title"),
 		ECVF_Default);
 
 	/** Weight used to prefer keywords of actions  */
 	static float KeywordWeight = 30.0f;
 	static FAutoConsoleVariableRef CVarKeywordWeight(
-		TEXT("ContextMenu.KeywordWeight"), KeywordWeight,
+		TEXT("BP.ContextMenu.KeywordWeight"), KeywordWeight,
 		TEXT("The amount of weight placed on search items keyword"),
 		ECVF_Default);
 
 	/** The multiplier given if the keyword starts with a term the user typed in */
 	static float StartsWithBonusWeightMultiplier = 4.0f;
 	static FAutoConsoleVariableRef CVarStartsWithBonusWeightMultiplier(
-		TEXT("ContextMenu.StartsWithBonusWeightMultiplier"), StartsWithBonusWeightMultiplier,
+		TEXT("BP.ContextMenu.StartsWithBonusWeightMultiplier"), StartsWithBonusWeightMultiplier,
 		TEXT("The multiplier given if the keyword starts with a term the user typed in"),
 		ECVF_Default);
 
 	/** The multiplier given if the keyword contains a term the user typed in */
 	static float WordContainsLetterWeightMultiplier = 0.5f;
 	static FAutoConsoleVariableRef CVarWordContainsLetterWeightMultiplier(
-		TEXT("ContextMenu.WordContainsLetterWeightMultiplier"), WordContainsLetterWeightMultiplier,
+		TEXT("BP.ContextMenu.WordContainsLetterWeightMultiplier"), WordContainsLetterWeightMultiplier,
 		TEXT("The multiplier given if the keyword only contains a term the user typed in"),
 		ECVF_Default);
 
 	/** The bonus given if node is a favorite */
 	static float FavoriteBonus = 1000.0f;
 	static FAutoConsoleVariableRef CVarWordContainsLetterFavoriteBonus(
-		TEXT("ContextMenu.FavoriteBonus"), FavoriteBonus,
+		TEXT("BP.ContextMenu.FavoriteBonus"), FavoriteBonus,
 		TEXT("The bonus given if node is a favorite"),
 		ECVF_Default);
 
 	/** The bonus given if an action has the same container type as the dragged from pin */
 	static float ContainerBonus = 1000.0f;
 	static FAutoConsoleVariableRef CVarContainerBonus(
-		TEXT("ContextMenu.ContainerBonus"), ContainerBonus,
+		TEXT("BP.ContextMenu.ContainerBonus"), ContainerBonus,
 		TEXT("The bonus given if the dragged from pin matches the same container type of the action"),
 		ECVF_Default);
+};	// namespace BPContextMenuConsoleVariables
 
-	/** Enabling the debug printing of context menu selections */
-	static bool bPrintDebugContextSelection = false;
-	static FAutoConsoleVariableRef CVarPrintDebugContextSelection(
-		TEXT("ContextMenu.bPrintDebugContextSelection"), bPrintDebugContextSelection,
-		TEXT("Flag for printing the debug info about the context menu selection"),
-		ECVF_Default);
-
-};	// namespace ContextMenuConsoleVariables
+FGraphSchemaSearchWeightModifiers UEdGraphSchema_K2::GetSearchWeightModifiers() const
+{
+	FGraphSchemaSearchWeightModifiers Modifiers;
+	Modifiers.NodeTitleWeight = BPContextMenuConsoleVariables::NodeTitleWeight;
+	Modifiers.KeywordWeight = BPContextMenuConsoleVariables::KeywordWeight;
+	Modifiers.DescriptionWeight = BPContextMenuConsoleVariables::DescriptionWeight;
+	Modifiers.CategoryWeight = BPContextMenuConsoleVariables::DescriptionWeight;
+	Modifiers.WholeMatchLocalizedWeightMultiplier = BPContextMenuConsoleVariables::WordContainsLetterWeightMultiplier;
+	Modifiers.WholeMatchWeightMultiplier = BPContextMenuConsoleVariables::WordContainsLetterWeightMultiplier;
+	Modifiers.StartsWithBonusWeightMultiplier = BPContextMenuConsoleVariables::StartsWithBonusWeightMultiplier;
+	Modifiers.PercentageMatchWeightMultiplier = BPContextMenuConsoleVariables::PercentageMatchWeightMultiplier;
+	Modifiers.ShorterMatchWeight = BPContextMenuConsoleVariables::ShorterWeight;
+	return Modifiers;
+}
 
 /**
 * Debug Info about how the preferred context menu action is chosen
 * @see SGraphActionMenu::GetActionFilteredWeight
 */
-struct FContextMenuWeightDebugInfo
+struct FBPContextMenuWeightDebugInfo : public FGraphSchemaSearchTextDebugInfo
 {
-	float TotalWeight = 0.0f;
-	// Info about which sets of words match up with what weight
-	float KeywordArrayWeight = 0.0f;
-	float DescriptionWeight = 0.0f;
-	float NodeTitleWeight = 0.0f;
-	float CategoryWeight = 0.0f;
 	float FavoriteBonusWeight = 0.0f;
-
-	float PercentageMatchWeight = 0.0f;
-	/** The calculated match percentage */
-	float PercMatch = 0.0f;
-	float ShorterWeight = 0.0f;
 	float CategoryBonusWeight = 0.0f;
 
 	/**
 	* Print out the debug info about this weight info to the console
 	*/
-	void Print(const FString& Desc)
+	virtual void Print(const TArray<FString>& SearchForKeywords, const FGraphActionListBuilderBase::ActionGroup& Action) const override
 	{
+		// Combine the actions string, separate with \n so terms don't run into each other, and remove the spaces (incase the user is searching for a variable)
+		// In the case of groups containing multiple actions, they will have been created and added at the same place in the code, using the same description
+		// and keywords, so we only need to use the first one for filtering.
+		const FString& SearchText = Action.GetSearchTextForFirstAction();
+
 		UE_LOG(LogTemp, Warning, TEXT("[Weight for %s] \
 TotalWeight: %-8.2f | PercentageMatchWeight: %-8.2f | PercMatch: %-8.2f | ShorterWeight: %-8.2f | CategoryBonusWeight: %-8.2f | KeywordArrayWeight: %-8.2f | DescriptionWeight: %-8.2f | NodeTitleWeight: %-8.2f | CategoryWeight: %-8.2f | Fav. Bonus:%-8.2f\n"),
-			*Desc, TotalWeight, PercentageMatchWeight, PercMatch, ShorterWeight, CategoryBonusWeight, KeywordArrayWeight, DescriptionWeight, NodeTitleWeight, CategoryWeight, FavoriteBonusWeight);
+			*SearchText, TotalWeight, PercentMatchWeight, PercentMatch, ShorterMatchWeight, CategoryBonusWeight, KeywordWeight, DescriptionWeight, NodeTitleWeight, CategoryWeight, FavoriteBonusWeight);
 	}
 };
 
@@ -7678,24 +7740,10 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 {
 	// The overall 'weight' of this action 
 	float TotalWeight = 0.0f;
-	// Helper array for tracking actions and the weight that they have added
-	struct FArrayWithWeight
-	{
-		FArrayWithWeight(const TArray< FString >* InArray, float InWeightModifier, float* OutDebugWeight)
-			: Array(InArray)
-			, OutWeight(OutDebugWeight)
-			, WeightModifier(InWeightModifier)
-		{
-		}
-
-		const TArray< FString >* Array = nullptr;
-		float* OutWeight = nullptr;
-		float WeightModifier = 0.0f;
-	};
 
 	// Setup an array of arrays so we can do a weighted search			
-	TArray< FArrayWithWeight > WeightedArrayList;
-	FContextMenuWeightDebugInfo OutDebugInfo;
+	TArray< FGraphSchemaSearchTextWeightInfo > WeightedArrayList;
+	FBPContextMenuWeightDebugInfo OutDebugInfo;
 
 	const bool bIsFromDrag = (DraggedFromPins.Num() > 0);
 
@@ -7704,38 +7752,12 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 	{
 		TSharedPtr<FEdGraphSchemaAction> CurrentAction = InCurrentAction.Actions[Action];
 
-		// Combine the actions string, separate with \n so terms don't run into each other, and remove the spaces (incase the user is searching for a variable)
-		// In the case of groups containing multiple actions, they will have been created and added at the same place in the code, using the same description
-		// and keywords, so we only need to use the first one for filtering.
-		const FString& SearchText = InCurrentAction.GetSearchTextForFirstAction();
-
+		FGraphSchemaSearchWeightModifiers WeightModifiers = GetSearchWeightModifiers();
 		// If there are no keywords, bump the weight on description to compensate
 		const TArray<FString>& LocKeywords = InCurrentAction.GetLocalizedSearchKeywordsArrayForFirstAction();
-		const float DescriptionWeight = LocKeywords.Num() > 0 ? ContextMenuConsoleVariables::DescriptionWeight : ContextMenuConsoleVariables::DescriptionWeight * 2.0f;
+		WeightModifiers.DescriptionWeight = LocKeywords.Num() > 0 ? WeightModifiers.DescriptionWeight : WeightModifiers.DescriptionWeight * 2.0f;
 
-		// First the localized keywords
-		WeightedArrayList.Add(FArrayWithWeight(&LocKeywords, ContextMenuConsoleVariables::KeywordWeight, &OutDebugInfo.KeywordArrayWeight));
-
-		// The localized description
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetLocalizedMenuDescriptionArrayForFirstAction(), DescriptionWeight, &OutDebugInfo.DescriptionWeight));
-
-		// The node search localized title weight, in most case this will be the same as description
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetLocalizedSearchTitleArrayForFirstAction(), ContextMenuConsoleVariables::NodeTitleWeight, &OutDebugInfo.NodeTitleWeight));
-
-		// The localized category
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetLocalizedSearchCategoryArrayForFirstAction(), ContextMenuConsoleVariables::CategoryWeight, &OutDebugInfo.CategoryWeight));
-
-		// First the keywords
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetSearchKeywordsArrayForFirstAction(), ContextMenuConsoleVariables::KeywordWeight, &OutDebugInfo.KeywordArrayWeight));
-
-		// The description
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetMenuDescriptionArrayForFirstAction(), DescriptionWeight, &OutDebugInfo.DescriptionWeight));
-
-		// The node search title weight
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetSearchTitleArrayForFirstAction(), ContextMenuConsoleVariables::NodeTitleWeight, &OutDebugInfo.NodeTitleWeight));
-
-		// The category
-		WeightedArrayList.Add(FArrayWithWeight(&InCurrentAction.GetSearchCategoryArrayForFirstAction(), ContextMenuConsoleVariables::CategoryWeight, &OutDebugInfo.CategoryWeight));
+		CollectSearchTextWeightInfo(InCurrentAction, WeightModifiers, WeightedArrayList, &OutDebugInfo);
 
 		// Give a weight bonus to actions whose category matches what was dragged off of
 		if (bIsFromDrag)
@@ -7775,7 +7797,7 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 					// For containers, add a preference for functions that are marked in their category
 					if (!bAddedContainerPreferenceBonus && FromPin->PinType.IsContainer() && InActionCategory == GetContainerTypeString(FromPin->PinType.ContainerType))
 					{
-						TotalWeight += ContextMenuConsoleVariables::ContainerBonus;
+						TotalWeight += BPContextMenuConsoleVariables::ContainerBonus;
 						bAddedContainerPreferenceBonus = true;
 					}
 
@@ -7804,8 +7826,8 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 					// If we found match in any cases above then add the weight bonus and stop looking
 					if (bAddMatchBonus)
 					{
-						TotalWeight += ContextMenuConsoleVariables::MatchingFromPinCategory;
-						OutDebugInfo.CategoryBonusWeight += ContextMenuConsoleVariables::MatchingFromPinCategory;
+						TotalWeight += BPContextMenuConsoleVariables::MatchingFromPinCategory;
+						OutDebugInfo.CategoryBonusWeight += BPContextMenuConsoleVariables::MatchingFromPinCategory;
 
 						// Break out of the loop so that we don't give any extra bonuses
 						break;
@@ -7820,8 +7842,8 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 		{
 			if (BlueprintFavorites->IsFavorited(CurrentAction))
 			{
-				TotalWeight += ContextMenuConsoleVariables::FavoriteBonus;
-				OutDebugInfo.FavoriteBonusWeight += ContextMenuConsoleVariables::FavoriteBonus;
+				TotalWeight += BPContextMenuConsoleVariables::FavoriteBonus;
+				OutDebugInfo.FavoriteBonusWeight += BPContextMenuConsoleVariables::FavoriteBonus;
 			}
 		}
 
@@ -7858,12 +7880,12 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 					if (KeywordArray[iEachWord].Contains(*EachTermSanitized, ESearchCase::CaseSensitive) || KeywordArray[iEachWord].Contains(*EachTerm, ESearchCase::CaseSensitive))
 					{
 						++WordMatchCount;
-						WeightPerWord += KeywordArrayWeight * ContextMenuConsoleVariables::WordContainsLetterWeightMultiplier;
+						WeightPerWord += KeywordArrayWeight * BPContextMenuConsoleVariables::WordContainsLetterWeightMultiplier;
 
 						// If the word starts with the letter, give it a little extra boost of weight
 						if (KeywordArray[iEachWord].StartsWith(*EachTermSanitized, ESearchCase::CaseSensitive) || KeywordArray[iEachWord].StartsWith(*EachTerm, ESearchCase::CaseSensitive))
 						{
-							WeightPerWord += KeywordArrayWeight * ContextMenuConsoleVariables::StartsWithBonusWeightMultiplier;
+							WeightPerWord += KeywordArrayWeight * BPContextMenuConsoleVariables::StartsWithBonusWeightMultiplier;
 						}
 
 						if (WeightPerWord > WeightPerList)
@@ -7881,35 +7903,32 @@ float UEdGraphSchema_K2::GetActionFilteredWeight(const FGraphActionListBuilderBa
 				if (BestMatchCharLength > 0 && WeightPerList > 0)
 				{
 					// How many words that we are checking had partial matches compared to what the user typed in?
-					float PercMatch = (float)WordMatchCount / (float)KeywordArray.Num();
+					float PercMatch = static_cast<float>(WordMatchCount) / static_cast<float>(KeywordArray.Num());
 
-					float PercentageBonus = (WeightPerList * PercMatch * ContextMenuConsoleVariables::PercentageMatchWeightMultiplier);
+					float PercentageBonus = (WeightPerList * PercMatch * BPContextMenuConsoleVariables::PercentageMatchWeightMultiplier);
 					WeightPerList += PercentageBonus;
 
 					// The shorter the matching word, the larger bonus it gets
-					float ShortFactor = ContextMenuConsoleVariables::MaxWordLength - FMath::Min(BestMatchCharLength, ContextMenuConsoleVariables::MaxWordLength);
-					float ShortWeight = ShortFactor * ContextMenuConsoleVariables::ShorterWeight * (bIsFromDrag ? 0.25f : 1.0f);
+					float ShortFactor = static_cast<float>(BPContextMenuConsoleVariables::MaxWordLength - FMath::Min(BestMatchCharLength, BPContextMenuConsoleVariables::MaxWordLength));
+					float ShortWeight = ShortFactor * BPContextMenuConsoleVariables::ShorterWeight * (bIsFromDrag ? 0.25f : 1.0f);
 					WeightPerList += ShortWeight;
 
-					OutDebugInfo.PercMatch += PercMatch;
-					OutDebugInfo.ShorterWeight += ShortWeight;
-					OutDebugInfo.PercentageMatchWeight += PercentageBonus;
+					OutDebugInfo.PercentMatch += PercMatch;
+					OutDebugInfo.ShorterMatchWeight += ShortWeight;
+					OutDebugInfo.PercentMatchWeight += PercentageBonus;
 				}
 
 				TotalWeight += WeightPerList;
-				if (WeightedArrayList[iFindCount].OutWeight)
+				if (WeightedArrayList[iFindCount].DebugWeight)
 				{
 					// Each weight is used twice so add them
-					*WeightedArrayList[iFindCount].OutWeight += WeightPerList;
+					*WeightedArrayList[iFindCount].DebugWeight += WeightPerList;
 				}
 			}
 		}
 		OutDebugInfo.TotalWeight = TotalWeight;
 
-		if (ContextMenuConsoleVariables::bPrintDebugContextSelection)
-		{
-			OutDebugInfo.Print(SearchText);
-		}
+		PrintSearchTextDebugInfo(InFilterTerms, CurrentAction, &OutDebugInfo);
 	}
 
 	return TotalWeight;

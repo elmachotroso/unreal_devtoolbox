@@ -12,10 +12,11 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "SWarningOrErrorBox.h"
 #include "Styling/StyleColors.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #include "Kismet/KismetSystemLibrary.h"
+#include "Engine/World.h"
 #endif
 
 TWeakPtr<class SWindow> SHighResScreenshotDialog::CurrentWindow = NULL;
@@ -326,7 +327,7 @@ TWeakPtr<class SWindow> SHighResScreenshotDialog::OpenDialog(const TSharedPtr<FS
 		TSharedRef<SHighResScreenshotDialog> Dialog = SNew(SHighResScreenshotDialog);
 		TSharedRef<SWindow> Window = SNew(SWindow)
 			.Title( NSLOCTEXT("HighResScreenshot", "HighResolutionScreenshot", "High Resolution Screenshot") )
-			.ClientSize(FVector2D(480, 286))
+			.ClientSize(FVector2D(480, 302))
 			.SupportsMinimize(false)
 			.SupportsMaximize(false)
 			.FocusWhenFirstShown(true)

@@ -48,18 +48,22 @@ void FLevelSequenceEditorActorBinding::AddPossessActorMenuExtensions(FMenuBuilde
 	// pointer comparison and not an object comparison, and the async list shouldn't run the filter if the object is no longer valid.
 	// We don't need to check against Sequencer spawnables as they're not valid for possession.
 	TSet<UObject*> ExistingPossessedObjects;
+	UMovieSceneSequence* MovieSceneSequence = nullptr;
 	if (Sequencer.IsValid())
 	{
-		UMovieSceneSequence* MovieSceneSequence = Sequencer.Pin()->GetFocusedMovieSceneSequence();
+		MovieSceneSequence = Sequencer.Pin()->GetFocusedMovieSceneSequence();
 		UMovieScene* MovieScene = MovieSceneSequence->GetMovieScene();
 		if(MovieScene)
 		{
 			for (int32 Index = 0; Index < MovieScene->GetPossessableCount(); Index++)
 			{
+				// Only get bound objects for top-level possessables.
 				FMovieScenePossessable& Possessable = MovieScene->GetPossessable(Index);
-
-				// A possession guid can apply to more than one object, so we get all bound objects for the GUID and add them to our set.
-				ExistingPossessedObjects.Append(MovieSceneSequence->LocateBoundObjects(Possessable.GetGuid(), Sequencer.Pin()->GetPlaybackContext()));
+				if (!Possessable.GetParent().IsValid())
+				{
+					// A possession guid can apply to more than one object, so we get all bound objects for the GUID and add them to our set.
+					ExistingPossessedObjects.Append(MovieSceneSequence->LocateBoundObjects(Possessable.GetGuid(), Sequencer.Pin()->GetPlaybackContext()));
+				}
 			}
 		}
 	}
@@ -94,7 +98,7 @@ void FLevelSequenceEditorActorBinding::AddPossessActorMenuExtensions(FMenuBuilde
 			AddActorsToSequencer(ActorsValidForPossession.GetData(), ActorsValidForPossession.Num());
 		}));
 	}
-	
+
 	MenuBuilder.BeginSection("ChooseActorSection", LOCTEXT("ChooseActor", "Choose Actor:"));
 
 	// Set up a menu entry to add any arbitrary actor to the sequencer
@@ -105,6 +109,9 @@ void FLevelSequenceEditorActorBinding::AddPossessActorMenuExtensions(FMenuBuilde
 		InitOptions.bShowSearchBox = true;
 		InitOptions.bShowCreateNewFolder = false;
 		InitOptions.bFocusSearchBoxWhenOpened = true;
+
+		// Allow transient actors if the level sequence itself is transient (the expectation is that these would never be saved)
+		InitOptions.bShowTransient = MovieSceneSequence && MovieSceneSequence->GetOutermost() == GetTransientPackage();
 
 		// Only want the actor label column
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0));

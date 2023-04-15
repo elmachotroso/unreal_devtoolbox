@@ -8,10 +8,10 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Styling/SlateIconFinder.h"
 #include "AssetThumbnail.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "Editor/MaterialEditor/Public/IMaterialEditor.h"
+#include "IMaterialEditor.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
@@ -54,16 +54,13 @@ TSharedRef<SWidget> SSearchTreeRow::GenerateWidgetForColumn(const FName& ColumnN
 		{
 			TSharedPtr<FAssetObjectNode> ObjectNode = StaticCastSharedPtr<FAssetObjectNode>(BrowserObject);
 
-			if (UClass* ObjectClass = FindObject<UClass>(ANY_PACKAGE, *ObjectNode->object_native_class, true))
+			if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(*ObjectNode->object_native_class, EFindFirstObjectOptions::ExactClass))
 			{
-				//TSharedPtr<IAssetTypeActions> AssetActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(ObjectClass).Pin();
-
 				FSlateIcon ClassIcon = FSlateIconFinder::FindIconForClass(ObjectClass);
 				if (ClassIcon.IsSet())
 				{
 					IconWidget = SNew(SImage)
 						.Image(ClassIcon.GetIcon());
-						//.ColorAndOpacity(AssetActions.IsValid() ? AssetActions->GetTypeColor() : FColor::White);
 				}
 			}
 		}
@@ -71,7 +68,7 @@ TSharedRef<SWidget> SSearchTreeRow::GenerateWidgetForColumn(const FName& ColumnN
 		{
 			TSharedPtr<FAssetNode> ObjectNode = StaticCastSharedPtr<FAssetNode>(BrowserObject);
 
-			if (UClass* ObjectClass = FindObject<UClass>(ANY_PACKAGE, *ObjectNode->AssetClass, true))
+			if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(ObjectNode->AssetClass, EFindFirstObjectOptions::ExactClass))
 			{
 				TSharedPtr<IAssetTypeActions> AssetActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(ObjectClass).Pin();
 

@@ -18,8 +18,8 @@ FCollectionAssetManagement::FCollectionAssetManagement()
 	OnCollectionRenamedHandle = CollectionManagerModule.Get().OnCollectionRenamed().AddRaw(this, &FCollectionAssetManagement::HandleCollectionRenamed);
 	OnCollectionDestroyedHandle = CollectionManagerModule.Get().OnCollectionDestroyed().AddRaw(this, &FCollectionAssetManagement::HandleCollectionDestroyed);
 	OnCollectionUpdatedHandle = CollectionManagerModule.Get().OnCollectionUpdated().AddRaw(this, &FCollectionAssetManagement::HandleCollectionUpdated);
-	OnAssetsAddedHandle = CollectionManagerModule.Get().OnAssetsAdded().AddRaw(this, &FCollectionAssetManagement::HandleAssetsAddedToCollection);
-	OnAssetsRemovedHandle = CollectionManagerModule.Get().OnAssetsRemoved().AddRaw(this, &FCollectionAssetManagement::HandleAssetsRemovedFromCollection);
+	OnAssetsAddedHandle = CollectionManagerModule.Get().OnAssetsAddedToCollection().AddRaw(this, &FCollectionAssetManagement::HandleAssetsAddedToCollection);
+	OnAssetsRemovedHandle = CollectionManagerModule.Get().OnAssetsRemovedFromCollection().AddRaw(this, &FCollectionAssetManagement::HandleAssetsRemovedFromCollection);
 }
 
 FCollectionAssetManagement::~FCollectionAssetManagement()
@@ -32,8 +32,8 @@ FCollectionAssetManagement::~FCollectionAssetManagement()
 		CollectionManagerModule.Get().OnCollectionRenamed().Remove(OnCollectionRenamedHandle);
 		CollectionManagerModule.Get().OnCollectionDestroyed().Remove(OnCollectionDestroyedHandle);
 		CollectionManagerModule.Get().OnCollectionUpdated().Remove(OnCollectionUpdatedHandle);
-		CollectionManagerModule.Get().OnAssetsAdded().Remove(OnAssetsAddedHandle);
-		CollectionManagerModule.Get().OnAssetsRemoved().Remove(OnAssetsRemovedHandle);
+		CollectionManagerModule.Get().OnAssetsAddedToCollection().Remove(OnAssetsAddedHandle);
+		CollectionManagerModule.Get().OnAssetsRemovedFromCollection().Remove(OnAssetsRemovedHandle);
 	}
 }
 
@@ -42,13 +42,13 @@ void FCollectionAssetManagement::SetCurrentAssets(const TArray<FAssetData>& Curr
 	CurrentAssetPaths.Empty();
 	for (const FAssetData& AssetData : CurrentAssets)
 	{
-		CurrentAssetPaths.Add(AssetData.ObjectPath);
+		CurrentAssetPaths.Add(AssetData.GetSoftObjectPath());
 	}
 
 	UpdateAssetManagementState();
 }
 
-void FCollectionAssetManagement::SetCurrentAssetPaths(const TArray<FName>& CurrentAssets)
+void FCollectionAssetManagement::SetCurrentAssetPaths(const TArray<FSoftObjectPath>& CurrentAssets)
 {
 	CurrentAssetPaths.Empty();
 	CurrentAssetPaths.Append(CurrentAssets);
@@ -60,7 +60,7 @@ void FCollectionAssetManagement::AddCurrentAssetsToCollection(FCollectionNameTyp
 {
 	FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
 
-	const TArray<FName> ObjectPaths = CurrentAssetPaths.Array();
+	const TArray<FSoftObjectPath> ObjectPaths = CurrentAssetPaths.Array();
 
 	FText ResultText;
 	bool bSuccess = false;
@@ -99,7 +99,7 @@ void FCollectionAssetManagement::RemoveCurrentAssetsFromCollection(FCollectionNa
 {
 	FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
 
-	const TArray<FName> ObjectPaths = CurrentAssetPaths.Array();
+	const TArray<FSoftObjectPath> ObjectPaths = CurrentAssetPaths.Array();
 
 	FText ResultText;
 	bool bSuccess = false;
@@ -189,15 +189,14 @@ void FCollectionAssetManagement::UpdateAssetManagementState()
 	}
 	else
 	{
-		const TArray<FName> ObjectPaths = CurrentAssetPaths.Array();
-
-		TMap<FCollectionNameType, TArray<FName>> CollectionsAndMatchedObjects;
+		const TArray<FSoftObjectPath> ObjectPaths = CurrentAssetPaths.Array();
+		TMap<FCollectionNameType, TArray<FSoftObjectPath>> CollectionsAndMatchedObjects;
 		CollectionManagerModule.Get().GetCollectionsContainingObjects(ObjectPaths, CollectionsAndMatchedObjects);
 
-		for (const auto& MatchedCollection : CollectionsAndMatchedObjects)
+		for (const TPair<FCollectionNameType, TArray<FSoftObjectPath>>& MatchedCollection : CollectionsAndMatchedObjects)
 		{
 			const FCollectionNameType& CollectionKey = MatchedCollection.Key;
-			const TArray<FName>& MatchedObjects = MatchedCollection.Value;
+			const TArray<FSoftObjectPath>& MatchedObjects = MatchedCollection.Value;
 
 			// Collections that contain all of the selected assets are shown as checked, collections that only contain some of the selected assets are shown as undetermined
 			AssetManagementState.Add(
@@ -228,11 +227,11 @@ void FCollectionAssetManagement::HandleCollectionDestroyed(const FCollectionName
 	AssetManagementState.Remove(Collection);
 }
 
-void FCollectionAssetManagement::HandleAssetsAddedToCollection(const FCollectionNameType& Collection, const TArray<FName>& AssetsAdded)
+void FCollectionAssetManagement::HandleAssetsAddedToCollection(const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsAdded)
 {
 	// Only need to update if one of the added assets belongs to our current selection set
 	bool bNeedsUpdate = false;
-	for (const FName& AssetPath : AssetsAdded)
+	for (const FSoftObjectPath& AssetPath : AssetsAdded)
 	{
 		if (CurrentAssetPaths.Contains(AssetPath))
 		{
@@ -247,11 +246,11 @@ void FCollectionAssetManagement::HandleAssetsAddedToCollection(const FCollection
 	}
 }
 
-void FCollectionAssetManagement::HandleAssetsRemovedFromCollection(const FCollectionNameType& Collection, const TArray<FName>& AssetsRemoved)
+void FCollectionAssetManagement::HandleAssetsRemovedFromCollection(const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsRemoved)
 {
 	// Only need to update if one of the removed assets belongs to our current selection set
 	bool bNeedsUpdate = false;
-	for (const FName& AssetPath : AssetsRemoved)
+	for (const FSoftObjectPath& AssetPath : AssetsRemoved)
 	{
 		if (CurrentAssetPaths.Contains(AssetPath))
 		{

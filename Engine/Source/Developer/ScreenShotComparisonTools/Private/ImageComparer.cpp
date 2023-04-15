@@ -6,9 +6,12 @@
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "ImageWrapperHelper.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImageComparer)
 
 
 #define LOCTEXT_NAMESPACE "ImageComparer"
@@ -214,6 +217,7 @@ FComparisonReport::FComparisonReport(const FString& InReportRootDirectory, const
 
 TSharedPtr<FComparableImage> FImageComparer::Open(const FString& ImagePath, FText& OutError)
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/ImageCompare"));
 	const FString ImageExtension = FPaths::GetExtension(ImagePath);
 	const EImageFormat ImageFormat = ImageWrapperHelper::GetImageFormat(ImageExtension);
 
@@ -289,6 +293,7 @@ FImageComparisonResult FImageComparer::Compare(const FString& ImagePathA, const 
 
 FImageComparisonResult FImageComparer::Compare(const FComparableImage* ImageA, const FComparableImage* ImageB, FImageTolerance Tolerance, const FString& OutDeltaPath)
 {
+	LLM_SCOPE_BYNAME(TEXT("AutomationTest/ImageCompare"));
 	FImageComparisonResult Results;
 
 	// Compare the smallest shared dimensions, this will be a forced failure
@@ -568,3 +573,4 @@ double FImageComparer::CompareStructuralSimilarity(const FComparableImage* Image
 }
 
 #undef LOCTEXT_NAMESPACE
+

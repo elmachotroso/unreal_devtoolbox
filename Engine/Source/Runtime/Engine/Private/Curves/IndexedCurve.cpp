@@ -2,6 +2,8 @@
 
 #include "Curves/IndexedCurve.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IndexedCurve)
+
 
 /* FIndexedCurve interface
  *****************************************************************************/
@@ -86,6 +88,7 @@ FKeyHandle FIndexedCurve::GetKeyHandle(int32 KeyIndex) const
 
 void FIndexedCurve::ShiftCurve(float DeltaTime)
 {
+	EnsureAllIndicesHaveHandles();
 	TSet<FKeyHandle> KeyHandles;
 	for (auto It = KeyHandlesToIndices.CreateConstIterator(); It; ++It)
 	{
@@ -112,6 +115,7 @@ void FIndexedCurve::ShiftCurve(float DeltaTime, const TSet<FKeyHandle>& KeyHandl
 
 void FIndexedCurve::ScaleCurve(float ScaleOrigin, float ScaleFactor)
 {
+	EnsureAllIndicesHaveHandles();
 	TSet<FKeyHandle> KeyHandles;
 	for (auto It = KeyHandlesToIndices.CreateConstIterator(); It; ++It)
 	{

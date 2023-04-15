@@ -8,6 +8,8 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialShaderQualitySettings)
+
 UMaterialShaderQualitySettings* UMaterialShaderQualitySettings::RenderQualitySingleton = nullptr;
 
 UMaterialShaderQualitySettings::UMaterialShaderQualitySettings(const FObjectInitializer& ObjectInitializer)
@@ -160,8 +162,8 @@ bool FMaterialQualityOverrides::HasAnyOverridesSet() const
 		|| bForceDisableLMDirectionality != DefaultOverrides.bForceDisableLMDirectionality
 		|| bForceFullyRough != DefaultOverrides.bForceFullyRough
 		|| bForceNonMetal != DefaultOverrides.bForceNonMetal
-		|| bForceLQReflections != DefaultOverrides.bForceLQReflections
 		|| bForceDisablePreintegratedGF != DefaultOverrides.bForceDisablePreintegratedGF
 		|| bDisableMaterialNormalCalculation != DefaultOverrides.bDisableMaterialNormalCalculation
 		|| bDiscardQualityDuringCook != DefaultOverrides.bDiscardQualityDuringCook;
 }
+

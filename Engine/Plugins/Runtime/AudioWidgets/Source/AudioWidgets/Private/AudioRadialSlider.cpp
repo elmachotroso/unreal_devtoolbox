@@ -4,6 +4,8 @@
 #include "AudioWidgets.h"
 #include "SAudioRadialSlider.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioRadialSlider)
+
 #define LOCTEXT_NAMESPACE "AUDIO_UMG"
 
 static FAudioRadialSliderStyle* DefaultAudioRadialSliderStyle = nullptr;
@@ -57,6 +59,16 @@ UAudioRadialSlider::UAudioRadialSlider(const FObjectInitializer& ObjectInitializ
 	AccessibleBehavior = ESlateAccessibleBehavior::NotAccessible;
 	bCanChildrenBeAccessible = false;
 #endif
+}
+
+float UAudioRadialSlider::GetOutputValue(const float InSliderValue)
+{
+	return MyAudioRadialSlider->GetOutputValue(InSliderValue);
+}
+
+float UAudioRadialSlider::GetSliderValue(const float OutputValue)
+{
+	return MyAudioRadialSlider->GetSliderValue(OutputValue);
 }
 
 void UAudioRadialSlider::SetWidgetLayout(EAudioRadialSliderLayout InLayout)

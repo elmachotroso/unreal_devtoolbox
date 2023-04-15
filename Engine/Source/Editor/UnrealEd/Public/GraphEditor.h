@@ -2,25 +2,46 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "GameFramework/Actor.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
 #include "BlueprintUtilities.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "Engine/LevelStreaming.h"
 #include "Framework/Commands/InputChord.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Engine/LevelStreaming.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformMath.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
 
-class UEdGraph;
-class SGraphPanel;
-struct FNotificationInfo;
-struct Rect;
-class FMenuBuilder;
+class FActiveTimerHandle;
 class FAssetEditorToolkit;
+class FMenuBuilder;
+class FReply;
+class SGraphPanel;
+class SWidget;
+class UEdGraph;
+class UEdGraphNode;
+class UEdGraphPin;
+struct FDiffSingleResult;
+struct FInputChord;
+struct FNotificationInfo;
+struct FPropertyChangedEvent;
+struct FSlateBrush;
+struct Rect;
 
 DECLARE_DELEGATE_ThreeParams( FOnNodeTextCommitted, const FText&, ETextCommit::Type, UEdGraphNode* );
 DECLARE_DELEGATE_RetVal_ThreeParams( bool, FOnNodeVerifyTextCommit, const FText&, UEdGraphNode*, FText& );
@@ -137,7 +158,6 @@ public:
 		, _DisplayAsReadOnly(false)
 		, _IsEmpty(false)
 		, _GraphToEdit(NULL)
-		, _GraphToDiff(NULL)
 		, _AutoExpandActionMenu(false)
 		, _ShowGraphStateOverlay(true)
 		{}
@@ -150,7 +170,15 @@ public:
 		SLATE_ATTRIBUTE( FGraphAppearanceInfo, Appearance )
 		SLATE_EVENT( FEdGraphEvent, OnGraphModuleReloaded )
 		SLATE_ARGUMENT( UEdGraph*, GraphToEdit )
+	
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		UE_DEPRECATED(5.1, "GraphToDiff is no longer supported. Use DiffResults instead")
 		SLATE_ARGUMENT( UEdGraph*, GraphToDiff )
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+		SLATE_ARGUMENT( TSharedPtr<TArray<FDiffSingleResult>>, DiffResults )
+		SLATE_ATTRIBUTE( int32, FocusedDiffResult )
+	
 		SLATE_ARGUMENT( FGraphEditorEvents, GraphEvents)
 		SLATE_ARGUMENT( bool, AutoExpandActionMenu )
 		SLATE_ARGUMENT( TWeakPtr<FAssetEditorToolkit>, AssetEditorToolkit)

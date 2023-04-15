@@ -8,7 +8,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "SlateOptMacros.h"
 #include "Styling/AppStyle.h"
-#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Model/Counters.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -409,8 +409,8 @@ TSharedPtr<SWidget> SStatsView::TreeView_GetMenuContent()
 				MenuBuilder.AddMenuEntry
 				(
 					LOCTEXT("ContextMenu_RemoveFromGraphTrack", "Remove series from graph track"),
-					LOCTEXT("ContextMenu_RemoveFromGraphTrack_Desc", "Remove the series containing event instances of the selected counter from the timing graph track."),
-					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ToggleShowGraphSeries"),
+					LOCTEXT("ContextMenu_RemoveFromGraphTrack_Desc", "Removes the series containing event instances of the selected counter from the Main Graph track."),
+					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.RemoveGraphSeries"),
 					Action_ToggleCounterInGraphTrack,
 					NAME_None,
 					EUserInterfaceActionType::Button
@@ -421,8 +421,8 @@ TSharedPtr<SWidget> SStatsView::TreeView_GetMenuContent()
 				MenuBuilder.AddMenuEntry
 				(
 					LOCTEXT("ContextMenu_AddToGraphTrack", "Add series to graph track"),
-					LOCTEXT("ContextMenu_AddToGraphTrack_Desc", "Add a series containing event instances of the selected counter to the timing graph track."),
-					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ToggleShowGraphSeries"),
+					LOCTEXT("ContextMenu_AddToGraphTrack_Desc", "Adds a series containing event instances of the selected counter to the Main Graph track."),
+					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.AddGraphSeries"),
 					Action_ToggleCounterInGraphTrack,
 					NAME_None,
 					EUserInterfaceActionType::Button
@@ -757,34 +757,18 @@ void SStatsView::InsightsManager_OnSessionAnalysisCompleted()
 
 void SStatsView::UpdateTree()
 {
-	FStopwatch Stopwatch;
-	Stopwatch.Start();
-
 	CreateGroups();
-
-	Stopwatch.Update();
-	const double Time1 = Stopwatch.GetAccumulatedTime();
-
 	SortTreeNodes();
-
-	Stopwatch.Update();
-	const double Time2 = Stopwatch.GetAccumulatedTime();
-
 	ApplyFiltering();
-
-	Stopwatch.Stop();
-	const double TotalTime = Stopwatch.GetAccumulatedTime();
-	if (TotalTime > 0.1)
-	{
-		UE_LOG(TimingProfiler, Log, TEXT("[Counters] Tree view updated in %.3fs (%d counters) --> G:%.3fs + S:%.3fs + F:%.3fs"),
-			TotalTime, StatsNodes.Num(), Time1, Time2 - Time1, TotalTime - Time2);
-	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SStatsView::ApplyFiltering()
 {
+	FStopwatch Stopwatch;
+	Stopwatch.Start();
+
 	FilteredGroupNodes.Reset();
 
 	// Apply filter to all groups and its children.
@@ -928,6 +912,14 @@ void SStatsView::ApplyFiltering()
 
 	// Request tree refresh
 	TreeView->RequestTreeRefresh();
+
+	Stopwatch.Stop();
+	const double TotalTime = Stopwatch.GetAccumulatedTime();
+	if (TotalTime > 0.1)
+	{
+		UE_LOG(TimingProfiler, Log, TEXT("[Counters] Tree view filtered in %.3fs (%d counters)"),
+			TotalTime, StatsNodes.Num());
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1200,6 +1192,9 @@ bool SStatsView::SearchBox_IsEnabled() const
 
 void SStatsView::CreateGroups()
 {
+	FStopwatch Stopwatch;
+	Stopwatch.Start();
+
 	if (GroupingMode == EStatsGroupingMode::Flat)
 	{
 		GroupNodes.Reset();
@@ -1325,6 +1320,14 @@ void SStatsView::CreateGroups()
 		GroupNodeSet.KeySort([](const uint32& A, const uint32& B) { return A > B; }); // sort groups by order
 		GroupNodeSet.GenerateValueArray(GroupNodes);
 	}
+
+	Stopwatch.Stop();
+	const double TotalTime = Stopwatch.GetAccumulatedTime();
+	if (TotalTime > 0.1)
+	{
+		UE_LOG(TimingProfiler, Log, TEXT("[Counters] Tree view grouping updated in %.3fs (%d counters)"),
+			TotalTime, StatsNodes.Num());
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1437,12 +1440,25 @@ void SStatsView::UpdateCurrentSortingByColumn()
 
 void SStatsView::SortTreeNodes()
 {
+	FStopwatch Stopwatch;
+	Stopwatch.Start();
+
 	if (CurrentSorter.IsValid())
 	{
 		for (FStatsNodePtr& Root : GroupNodes)
 		{
 			SortTreeNodesRec(*Root, *CurrentSorter);
 		}
+	}
+
+	Stopwatch.Stop();
+	const double TotalTime = Stopwatch.GetAccumulatedTime();
+	if (TotalTime > 0.1)
+	{
+		UE_LOG(TimingProfiler, Log, TEXT("[Counters] Tree view sorted (%s, %c) in %.3fs (%d counters)"),
+			CurrentSorter.IsValid() ? *CurrentSorter->GetShortName().ToString() : TEXT("N/A"),
+			(ColumnSortMode == EColumnSortMode::Type::Descending) ? TEXT('D') : TEXT('A'),
+			TotalTime, StatsNodes.Num());
 	}
 }
 
@@ -1458,6 +1474,16 @@ void SStatsView::SortTreeNodesRec(FStatsNode& Node, const Insights::ITableCellVa
 	{
 		Node.SortChildrenAscending(Sorter);
 	}
+
+#if 0 // Current groupings creates only one level.
+	for (Insights::FBaseTreeNodePtr ChildPtr : Node.GetChildren())
+	{
+		if (ChildPtr->GetChildren().Num() > 0)
+		{
+			SortTreeNodesRec(*StaticCastSharedPtr<FTimerNode>(ChildPtr), Sorter);
+		}
+	}
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1590,6 +1616,7 @@ void SStatsView::ShowColumn(const FName ColumnId)
 		.VAlignHeader(VAlign_Center)
 		.HAlignCell(HAlign_Fill)
 		.VAlignCell(VAlign_Fill)
+		.InitialSortMode(Column.GetInitialSortMode())
 		.SortMode(this, &SStatsView::GetSortModeForColumn, Column.GetId())
 		.OnSort(this, &SStatsView::OnSortModeChanged)
 		.FillWidth(Column.GetInitialWidth())
@@ -1845,7 +1872,7 @@ void SStatsView::RebuildTree(bool bResync)
 
 		const TraceServices::ICounterProvider& CountersProvider = TraceServices::ReadCounterProvider(*Session.Get());
 
-		const uint32 CounterCount = CountersProvider.GetCounterCount();
+		const uint32 CounterCount = static_cast<uint32>(CountersProvider.GetCounterCount());
 		if (CounterCount != PreviousNodeCount)
 		{
 			check(CounterCount > PreviousNodeCount);
@@ -1858,17 +1885,20 @@ void SStatsView::RebuildTree(bool bResync)
 			const FName MiscInt64Group(TEXT("Misc_int64"));
 
 			// Add nodes only for new counters.
-			CountersProvider.EnumerateCounters([this, MemoryGroup, MiscFloatGroup, MiscInt64Group](uint32 CounterId, const TraceServices::ICounter& Counter)
+			uint32 CounterIndex = PreviousNodeCount;
+			CountersProvider.EnumerateCounters([this, &CounterIndex, MemoryGroup, MiscFloatGroup, MiscInt64Group](uint32 CounterId, const TraceServices::ICounter& Counter)
 			{
 				FStatsNodePtr NodePtr = StatsNodesIdMap.FindRef(CounterId);
 				if (!NodePtr)
 				{
 					FName Name(Counter.GetName());
-					const FName Group = ((Counter.GetDisplayHint() == TraceServices::CounterDisplayHint_Memory) ? MemoryGroup :
+					const FName Group = Counter.GetGroup() ? Counter.GetGroup() :
+										((Counter.GetDisplayHint() == TraceServices::CounterDisplayHint_Memory) ? MemoryGroup :
 										  Counter.IsFloatingPoint() ? MiscFloatGroup : MiscInt64Group);
 					const EStatsNodeType Type = EStatsNodeType::Counter;
 					const EStatsNodeDataType DataType = Counter.IsFloatingPoint() ? EStatsNodeDataType::Double : EStatsNodeDataType::Int64;
 					NodePtr = MakeShared<FStatsNode>(CounterId, Name, Group, Type, DataType);
+					NodePtr->SetDefaultSortOrder(++CounterIndex);
 					UpdateNode(NodePtr);
 					StatsNodes.Add(NodePtr);
 					StatsNodesIdMap.Add(CounterId, NodePtr);

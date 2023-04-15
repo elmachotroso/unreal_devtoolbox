@@ -4,6 +4,8 @@
 #include "ChaosCloth/ChaosClothingSimulationCloth.h"
 #include "ChaosCloth/ChaosClothingSimulation.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosClothingSimulationInteractor)
+
 namespace ChaosClothingInteractor
 {
 	static const float InvStiffnessLogBase = 1.f / FMath::Loge(1.e3f);  // Log base for updating old linear stiffnesses to the new stiffness exponentiation
@@ -81,11 +83,11 @@ void UChaosClothingInteractor::SetBackstop(bool bEnabled)
 		Cloth->SetBackstopProperties(bEnabled);
 	}));
 }
-void UChaosClothingInteractor::SetDamping(float DampingCoefficient)
+void UChaosClothingInteractor::SetDamping(float DampingCoefficient, float LocalDampingCoefficient)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DampingCoefficient](Chaos::FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DampingCoefficient, LocalDampingCoefficient](Chaos::FClothingSimulationCloth* Cloth)
 	{
-		Cloth->SetDampingProperties(DampingCoefficient);
+		Cloth->SetDampingProperties(DampingCoefficient, LocalDampingCoefficient);
 	}));
 }
 
@@ -103,6 +105,14 @@ void UChaosClothingInteractor::SetWind(FVector2D Drag, FVector2D Lift, float Air
 	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([Drag, Lift, AirDensity, WindVelocity](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetAerodynamicsProperties(Chaos::TVec2<Chaos::FRealSingle>(Drag[0], Drag[1]), Chaos::TVec2<Chaos::FRealSingle>(Lift[0], Lift[1]), AirDensity, WindVelocity);
+	}));
+}
+
+void UChaosClothingInteractor::SetPressure(FVector2D Pressure)
+{
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([Pressure](Chaos::FClothingSimulationCloth* Cloth)
+	{
+		Cloth->SetPressureProperties(Chaos::TVec2<Chaos::FRealSingle>(Pressure[0], Pressure[1]));
 	}));
 }
 
@@ -247,3 +257,4 @@ UClothingInteractor* UChaosClothingSimulationInteractor::CreateClothingInteracto
 {
 	return NewObject<UChaosClothingInteractor>(this);
 }
+

@@ -22,6 +22,7 @@
 #define CHAOS_DETERMINISTIC 1
 #endif
 
+
 namespace Chaos
 {
 	class FConstraintHandle;
@@ -29,6 +30,12 @@ namespace Chaos
 
 	using FShapesArray = TArray<TUniquePtr<FPerShapeData>, TInlineAllocator<1>>;
 	using FConstraintHandleArray = TArray<FConstraintHandle*>;
+
+	namespace CVars
+	{
+		CHAOS_API extern int32 CCDAxisThresholdMode;
+		CHAOS_API extern bool bCCDAxisThresholdUsesProbeShapes;
+	}
 
 	/** Data that is associated with geometry. If a union is used an entry is created per internal geometry */
 	class CHAOS_API FPerShapeData
@@ -86,7 +93,7 @@ namespace Chaos
 		// The world-space transform of the leaf geometry.
 		// If we have non-identity leaf relative transform, is cached from the last call to UpdateWorldSpaceState.
 		// If not cahced, is constructed from arguments.
-		FRigidTransform3 GetLeafWorldTransform(FGeometryParticleHandle* Particle) const;
+		FRigidTransform3 GetLeafWorldTransform(const FGeometryParticleHandle* Particle) const;
 		void UpdateLeafWorldTransform(FGeometryParticleHandle* Particle);
 
 		// Are we caching leaf transform info?
@@ -186,6 +193,12 @@ namespace Chaos
 		void SetSimEnabled(const bool bEnable)
 		{
 			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [bEnable](FCollisionData& Data){ Data.bSimCollision = bEnable; });
+		}
+
+		bool GetIsProbe() const { return CollisionData.Read().bIsProbe; }
+		void SetIsProbe(const bool bIsProbe)
+		{
+			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [bIsProbe](FCollisionData& Data){ Data.bIsProbe = bIsProbe; });
 		}
 
 		EChaosCollisionTraceFlag GetCollisionTraceType() const { return CollisionData.Read().CollisionTraceType; }
@@ -359,39 +372,6 @@ namespace Chaos
 
 	void CHAOS_API UpdateShapesArrayFromGeometry(FShapesArray& ShapesArray, TSerializablePtr<FImplicitObject> Geometry, const FRigidTransform3& ActorTM, IPhysicsProxyBase* Proxy);
 
-
-	struct FParticleID
-	{
-		int32 GlobalID;	//Set by global ID system
-		int32 LocalID;		//Set by local client. This can only be used in cases where the LocalID will be set in the same way (for example we always spawn N client only particles)
-
-		bool operator<(const FParticleID& Other) const
-		{
-			if(GlobalID == Other.GlobalID)
-			{
-				return LocalID < Other.LocalID;
-			}
-			return GlobalID < Other.GlobalID;
-		}
-
-		bool operator==(const FParticleID& Other) const
-		{
-			return GlobalID == Other.GlobalID && LocalID == Other.LocalID;
-		}
-
-		FParticleID()
-		: GlobalID(INDEX_NONE)
-		, LocalID(INDEX_NONE)
-		{
-		}
-
-		bool IsSet() const
-		{
-			return (GlobalID != INDEX_NONE) || (LocalID != INDEX_NONE);
-		}
-	};
-
-
 	FORCEINLINE uint32 GetTypeHash(const FParticleID& Unique)
 	{
 		return ::GetTypeHash(Unique.GlobalID);
@@ -437,9 +417,10 @@ namespace Chaos
 
 	enum class EResimType : uint8
 	{
-		FullResim,	//fully re-run simulation and keep results (any forces must be applied again)
+		FullResim = 0,	//fully re-run simulation and keep results (any forces must be applied again)
 		//ResimWithPrevForces, //use previous forces and keep results (UNIMPLEMENTED)
-		ResimAsSlave //use previous forces and snap to previous results regardless of variation - used to push other objects away
+		ResimAsSlave UE_DEPRECATED(5.1, "EResimType::ResimAsSlave is deprecated, please use EResimType::ResimAsFollower") = 1,
+		ResimAsFollower = 1 //use previous forces and snap to previous results regardless of variation - used to push other objects away
 		//ResimAsKinematic //treat as kinematic (UNIMPLEMENTED)
 	};
 	
@@ -462,18 +443,21 @@ namespace Chaos
 			TArrayCollection::AddArray(&MGeometry);
 			TArrayCollection::AddArray(&MSharedGeometry);
 			TArrayCollection::AddArray(&MDynamicGeometry);
+#if CHAOS_DETERMINISTIC
 			TArrayCollection::AddArray(&MParticleIDs);
+#endif
 			TArrayCollection::AddArray(&MHasCollision);
 			TArrayCollection::AddArray(&MShapesArray);
 			TArrayCollection::AddArray(&MLocalBounds);
+			TArrayCollection::AddArray(&MCCDAxisThreshold);
 			TArrayCollection::AddArray(&MWorldSpaceInflatedBounds);
 			TArrayCollection::AddArray(&MHasBounds);
 			TArrayCollection::AddArray(&MSpatialIdx);
-			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
+			TArrayCollection::AddArray(&MGraphIndex);
 			TArrayCollection::AddArray(&MResimType);
 			TArrayCollection::AddArray(&MEnabledDuringResim);
 			TArrayCollection::AddArray(&MLightWeightDisabled);
@@ -505,22 +489,25 @@ namespace Chaos
 			, MHasCollision(MoveTemp(Other.MHasCollision))
 			, MShapesArray(MoveTemp(Other.MShapesArray))
 			, MLocalBounds(MoveTemp(Other.MLocalBounds))
+			, MCCDAxisThreshold(MoveTemp(Other.MCCDAxisThreshold))
 			, MWorldSpaceInflatedBounds(MoveTemp(Other.MWorldSpaceInflatedBounds))
 			, MHasBounds(MoveTemp(Other.MHasBounds))
 			, MSpatialIdx(MoveTemp(Other.MSpatialIdx))
-			, MUserData(MoveTemp(Other.MUserData))
 			, MSyncState(MoveTemp(Other.MSyncState))
 			, MWeakParticleHandle(MoveTemp(Other.MWeakParticleHandle))
 			, MParticleConstraints(MoveTemp(Other.MParticleConstraints))
 			, MParticleCollisions(MoveTemp(Other.MParticleCollisions))
+			, MGraphIndex(MoveTemp(Other.MGraphIndex))
 			, MResimType(MoveTemp(Other.MResimType))
 			, MEnabledDuringResim(MoveTemp(Other.MEnabledDuringResim))
 			, MLightWeightDisabled(MoveTemp(Other.MLightWeightDisabled))
-
-
 #if CHAOS_DETERMINISTIC
 			, MParticleIDs(MoveTemp(Other.MParticleIDs))
 #endif
+#if CHAOS_DEBUG_NAME
+			, MDebugName(MoveTemp(Other.MDebugName))
+#endif
+
 		{
 			MParticleType = EParticleType::Static;
 			TArrayCollection::AddArray(&MUniqueIdx);
@@ -528,21 +515,25 @@ namespace Chaos
 			TArrayCollection::AddArray(&MGeometry);
 			TArrayCollection::AddArray(&MSharedGeometry);
 			TArrayCollection::AddArray(&MDynamicGeometry);
+#if CHAOS_DETERMINISTIC
+			TArrayCollection::AddArray(&MParticleIDs);
+#endif
 			TArrayCollection::AddArray(&MHasCollision);
 			TArrayCollection::AddArray(&MShapesArray);
 			TArrayCollection::AddArray(&MLocalBounds);
+			TArrayCollection::AddArray(&MCCDAxisThreshold);
 			TArrayCollection::AddArray(&MWorldSpaceInflatedBounds);
 			TArrayCollection::AddArray(&MHasBounds);
 			TArrayCollection::AddArray(&MSpatialIdx);
-			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
+			TArrayCollection::AddArray(&MGraphIndex);
+			TArrayCollection::AddArray(&MResimType);
+			TArrayCollection::AddArray(&MEnabledDuringResim);
+			TArrayCollection::AddArray(&MLightWeightDisabled);
 
-#if CHAOS_DETERMINISTIC
-			TArrayCollection::AddArray(&MParticleIDs);
-#endif
 #if CHAOS_DEBUG_NAME
 			TArrayCollection::AddArray(&MDebugName);
 #endif
@@ -553,10 +544,6 @@ namespace Chaos
 				TArrayCollection::AddArray(&MGeometryParticle);
 				TArrayCollection::AddArray(&MPhysicsProxy);
 			}
-
-			TArrayCollection::AddArray(&MResimType);
-			TArrayCollection::AddArray(&MEnabledDuringResim);
-			TArrayCollection::AddArray(&MLightWeightDisabled);
 		}
 
 		static constexpr bool IsRigidBodySim() { return SimType == EGeometryParticlesSimType::RigidBodySim; }
@@ -570,21 +557,26 @@ namespace Chaos
 			TArrayCollection::AddArray(&MGeometry);
 			TArrayCollection::AddArray(&MSharedGeometry);
 			TArrayCollection::AddArray(&MDynamicGeometry);
+#if CHAOS_DETERMINISTIC
+			TArrayCollection::AddArray(&MParticleIDs);
+#endif
 			TArrayCollection::AddArray(&MHasCollision);
 			TArrayCollection::AddArray(&MShapesArray);
 			TArrayCollection::AddArray(&MLocalBounds);
+			TArrayCollection::AddArray(&MCCDAxisThreshold);
 			TArrayCollection::AddArray(&MWorldSpaceInflatedBounds);
 			TArrayCollection::AddArray(&MHasBounds);
 			TArrayCollection::AddArray(&MSpatialIdx);
-			TArrayCollection::AddArray(&MUserData);
 			TArrayCollection::AddArray(&MSyncState);
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
+			TArrayCollection::AddArray(&MGraphIndex);
+			TArrayCollection::AddArray(&MResimType);
+			TArrayCollection::AddArray(&MEnabledDuringResim);
+			TArrayCollection::AddArray(&MLightWeightDisabled);
 
-#if CHAOS_DETERMINISTIC
-			TArrayCollection::AddArray(&MParticleIDs);
-#endif
+
 #if CHAOS_DEBUG_NAME
 			TArrayCollection::AddArray(&MDebugName);
 #endif
@@ -595,10 +587,6 @@ namespace Chaos
 				TArrayCollection::AddArray(&MGeometryParticle);
 				TArrayCollection::AddArray(&MPhysicsProxy);
 			}
-			
-			TArrayCollection::AddArray(&MResimType);
-			TArrayCollection::AddArray(&MEnabledDuringResim);
-			TArrayCollection::AddArray(&MLightWeightDisabled);
 		}
 
 		CHAOS_API virtual ~TGeometryParticlesImp()
@@ -663,6 +651,52 @@ namespace Chaos
 			{
 				MLocalBounds[Index] = TAABB<T, d>(InGeometry->BoundingBox());
 
+				if (CVars::CCDAxisThresholdMode == 0)
+				{
+					// Use object extents as CCD axis threshold
+					MCCDAxisThreshold[Index] = MLocalBounds[Index].Extents();
+				}
+				else if (CVars::CCDAxisThresholdMode == 1)
+				{
+					// Use thinnest object extents as all axis CCD thresholds
+					MCCDAxisThreshold[Index] = FVec3(MLocalBounds[Index].Extents().GetMin());
+				}
+				else
+				{
+					// Find minimum shape bounds thickness on each axis
+					FVec3 ThinnestBoundsPerAxis = MLocalBounds[Index].Extents();
+					for (const TUniquePtr<FPerShapeData>& Shape : ShapesArray(Index))
+					{
+						// Only sim-enabled shapes should ever be swept with CCD, so make sure the
+						// sim-enabled flag is on for each shape before considering it's min bounds
+						// for CCD extents.
+						if (Shape->GetSimEnabled() && (CVars::bCCDAxisThresholdUsesProbeShapes || !Shape->GetIsProbe()))
+						{
+							const TSerializablePtr<FImplicitObject> Geometry = Shape->GetGeometry();
+							if (Geometry->HasBoundingBox())
+							{
+								const TVector<T, d> ShapeExtents = Geometry->BoundingBox().Extents();
+								TVector<T, d>& CCDAxisThreshold = MCCDAxisThreshold[Index];
+								for (int32 AxisIndex = 0; AxisIndex < d; ++AxisIndex)
+								{
+									ThinnestBoundsPerAxis[AxisIndex] = FMath::Min(ShapeExtents[AxisIndex], ThinnestBoundsPerAxis[AxisIndex]);
+								}
+							}
+						}
+					}
+
+					if (CVars::CCDAxisThresholdMode == 2)
+					{
+						// On each axis, use the thinnest shape bound on that axis
+						MCCDAxisThreshold[Index] = ThinnestBoundsPerAxis;
+					}
+					else if (CVars::CCDAxisThresholdMode == 3)
+					{
+						// Find the thinnest shape bound on any axis and use this for all axes
+						MCCDAxisThreshold[Index] = FVec3(ThinnestBoundsPerAxis.GetMin());
+					}
+				}
+
 				// Update the world-space stat of all the shapes - must be called after UpdateShapesArray
 				// world space inflated bounds needs to take expansion into account - this is done in integrate for dynamics anyway, so
 				// this computation is mainly for statics
@@ -679,6 +713,11 @@ namespace Chaos
 		CHAOS_API TAABB<T, d>& LocalBounds(const int32 Index)
 		{
 			return MLocalBounds[Index];
+		}
+
+		CHAOS_API const TVector<T,d>& CCDAxisThreshold(const int32 Index) const
+		{
+			return MCCDAxisThreshold[Index];
 		}
 
 		CHAOS_API bool HasBounds(const int32 Index) const
@@ -798,6 +837,9 @@ namespace Chaos
 			return MParticleCollisions[Index];
 		}
 
+		FORCEINLINE const int32 ConstraintGraphIndex(const int32 Index) const { return MGraphIndex[Index]; }
+		FORCEINLINE int32& ConstraintGraphIndex(const int32 Index) { return MGraphIndex[Index]; }
+
 		FORCEINLINE EResimType ResimType(const int32 Index) const { return MResimType[Index]; }
 		FORCEINLINE EResimType& ResimType(const int32 Index) { return MResimType[Index]; }
 
@@ -914,14 +956,15 @@ public:
 		TArrayCollectionArray<bool> MHasCollision;
 		TArrayCollectionArray<FShapesArray> MShapesArray;
 		TArrayCollectionArray<TAABB<T,d>> MLocalBounds;
+		TArrayCollectionArray<TVector<T,d>> MCCDAxisThreshold;
 		TArrayCollectionArray<TAABB<T, d>> MWorldSpaceInflatedBounds;
 		TArrayCollectionArray<bool> MHasBounds;
 		TArrayCollectionArray<FSpatialAccelerationIdx> MSpatialIdx;
-		TArrayCollectionArray<void*> MUserData;
 		TArrayCollectionArray<FSyncState> MSyncState;
 		TArrayCollectionArray<FWeakParticleHandle> MWeakParticleHandle;
 		TArrayCollectionArray<FConstraintHandleArray> MParticleConstraints;
 		TArrayCollectionArray<FParticleCollisions> MParticleCollisions;
+		TArrayCollectionArray<int32> MGraphIndex;
 		TArrayCollectionArray<EResimType> MResimType;
 		TArrayCollectionArray<bool> MEnabledDuringResim;
 		TArrayCollectionArray<bool> MLightWeightDisabled;
@@ -963,3 +1006,4 @@ public:
 	TGeometryParticlesImp<FReal, 3, EGeometryParticlesSimType::Other>* TGeometryParticlesImp<FReal, 3, EGeometryParticlesSimType::Other>::SerializationFactory(FChaosArchive& Ar, TGeometryParticlesImp<FReal, 3, EGeometryParticlesSimType::Other>* Particles);
 
 }
+

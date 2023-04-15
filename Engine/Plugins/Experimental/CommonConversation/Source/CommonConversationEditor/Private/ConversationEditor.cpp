@@ -7,7 +7,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "UObject/Package.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Factories/DataAssetFactory.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -43,7 +43,7 @@
 #include "ConversationCompiler.h"
 
 #include "ClassViewerFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -245,14 +245,14 @@ void FConversationEditor::RestoreConversation()
 
 			if (UConversationGraph* ConversationGraph = Cast<UConversationGraph>(DocumentObject))
 			{
-				TSharedPtr<SDockTab> DocumentTab = DocumentManager->OpenDocument(Payload, FDocumentTracker::OpenNewDocument);
+				TSharedPtr<SDockTab> DocumentTab = DocumentManager->OpenDocument(Payload, FDocumentTracker::RestorePreviousDocument);
 
 				TSharedRef<SGraphEditor> GraphEditor = StaticCastSharedRef<SGraphEditor>(DocumentTab->GetContent());
 				GraphEditor->SetViewLocation(DocumentInfo.SavedViewOffset, DocumentInfo.SavedZoomAmount);
 			}
 			else
 			{
-				DocumentManager->OpenDocument(Payload, FDocumentTracker::OpenNewDocument);
+				DocumentManager->OpenDocument(Payload, FDocumentTracker::RestorePreviousDocument);
 			}
 		}
 	}
@@ -355,16 +355,6 @@ TSharedRef<SGraphEditor> FConversationEditor::CreateGraphEditorWidget(UEdGraph* 
 	{
 		CreateCommandList();
 
-// 		GraphEditorCommands->MapAction( FGraphEditorCommands::Get().RemoveExecutionPin,
-// 			FExecuteAction::CreateSP( this, &FConversationEditor::OnRemoveInputPin ),
-// 			FCanExecuteAction::CreateSP( this, &FConversationEditor::CanRemoveInputPin )
-// 			);
-// 
-// 		GraphEditorCommands->MapAction( FGraphEditorCommands::Get().AddExecutionPin,
-// 			FExecuteAction::CreateSP( this, &FConversationEditor::OnAddInputPin ),
-// 			FCanExecuteAction::CreateSP( this, &FConversationEditor::CanAddInputPin )
-// 			);
-
 		// Debug actions
 		GraphEditorCommands->MapAction( FGraphEditorCommands::Get().AddBreakpoint,
 			FExecuteAction::CreateSP( this, &FConversationEditor::OnAddBreakpoint ),
@@ -410,7 +400,7 @@ TSharedRef<SGraphEditor> FConversationEditor::CreateGraphEditorWidget(UEdGraph* 
 	// Make title bar
 	TSharedRef<SWidget> TitleBarWidget = 
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
+		.BorderImage( FAppStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
 		.HAlign(HAlign_Fill)
 		[
 			SNew(SHorizontalBox)
@@ -420,7 +410,7 @@ TSharedRef<SGraphEditor> FConversationEditor::CreateGraphEditorWidget(UEdGraph* 
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("ConversationGraphLabel", "Conversation Editor"))
-				.TextStyle( FEditorStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
+				.TextStyle( FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
 			]
 		];
 

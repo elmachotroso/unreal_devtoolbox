@@ -13,7 +13,10 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Perception/AISenseEvent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AIPerceptionSystem)
+
 DECLARE_CYCLE_STAT(TEXT("Perception System"),STAT_AI_PerceptionSys,STATGROUP_AI);
+DECLARE_CYCLE_STAT(TEXT("Perception System - Process Stim"),STAT_AI_Perception_ProcessStim,STATGROUP_AI);
 
 DEFINE_LOG_CATEGORY(LogAIPerception);
 
@@ -213,19 +216,21 @@ void UAIPerceptionSystem::Tick(float DeltaSeconds)
 				}
 			}
 		}
-
-		/** no point in sorting if no new stimuli was processed */
-		bool bStimuliDelivered = DeliverDelayedStimuli(bNeedsUpdate ? RequiresSorting : NoNeedToSort);
-
-		if (bNeedsUpdate || bStimuliDelivered || bSomeListenersNeedUpdateDueToStimuliAging)
 		{
-			for (AIPerception::FListenerMap::TIterator ListenerIt(ListenerContainer); ListenerIt; ++ListenerIt)
-			{
-				check(ListenerIt->Value.Listener.IsValid());
+			SCOPE_CYCLE_COUNTER(STAT_AI_Perception_ProcessStim);
+			/** no point in sorting if no new stimuli was processed */
+			const bool bStimuliDelivered = DeliverDelayedStimuli(bNeedsUpdate ? RequiresSorting : NoNeedToSort);
 
-				if (ListenerIt->Value.HasAnyNewStimuli())
+			if (bNeedsUpdate || bStimuliDelivered || bSomeListenersNeedUpdateDueToStimuliAging)
+			{
+				for (AIPerception::FListenerMap::TIterator ListenerIt(ListenerContainer); ListenerIt; ++ListenerIt)
 				{
-					ListenerIt->Value.ProcessStimuli();
+					check(ListenerIt->Value.Listener.IsValid());
+
+					if (ListenerIt->Value.HasAnyNewStimuli())
+					{
+						ListenerIt->Value.ProcessStimuli();
+					}
 				}
 			}
 		}
@@ -357,13 +362,20 @@ void UAIPerceptionSystem::UnregisterListener(UAIPerceptionComponent& Listener)
 }
 
 void UAIPerceptionSystem::UnregisterSource(AActor& SourceActor, const TSubclassOf<UAISense> Sense)
-{	
+{
+	// Log a message if it turns out the source actor was not registered nor pending registration
+	bool bSourceWasKnown = false;
+	
 	FPerceptionStimuliSource* StimuliSource = RegisteredStimuliSources.Find(&SourceActor);
 	if (StimuliSource)
 	{
-		// single sense case
+		// Source actor was registered
+		bSourceWasKnown = true;
+
+		// A single sense can be targeted, or Sense == null for all senses
 		if (Sense)
 		{
+			// Unregister the source actor from a single sense
 			const FAISenseID SenseID = UAISense::GetSenseID(Sense);
 			if (Senses[SenseID] != nullptr && StimuliSource->RelevantSenses.ShouldRespondToChannel(Senses[SenseID]->GetSenseID()))
 			{
@@ -371,8 +383,9 @@ void UAIPerceptionSystem::UnregisterSource(AActor& SourceActor, const TSubclassO
 				StimuliSource->RelevantSenses.FilterOutChannel(SenseID);
 			}
 		}
-		else // unregister from all senses
+		else
 		{
+			// Unregister the source actor from all senses
 			for (UAISense* const SenseInstance : Senses)
 			{
 				if (SenseInstance != nullptr && StimuliSource->RelevantSenses.ShouldRespondToChannel(SenseInstance->GetSenseID()))
@@ -383,24 +396,34 @@ void UAIPerceptionSystem::UnregisterSource(AActor& SourceActor, const TSubclassO
 			StimuliSource->RelevantSenses.Clear();
 		}
 
+		// If the source actor is no longer relevant for any senses, we can remove its stimuli source entry
 		if (StimuliSource->RelevantSenses.IsEmpty())
 		{
 			SourceActor.OnEndPlay.Remove(StimuliSourceEndPlayDelegate);
 			RegisteredStimuliSources.Remove(&SourceActor);
 		}
 	}
-	else
-	{
-		UE_VLOG(this, LogAIPerception, Log, TEXT("UnregisterSource called for %s but it doesn't seem to be registered as a source"), *SourceActor.GetName());
-	}
+	
 	// Remove this from any pending adds (add/remove same frame)
 	for (int32 RemoveIndex = SourcesToRegister.Num() - 1; RemoveIndex >= 0; RemoveIndex--)
 	{
-		if (SourcesToRegister[RemoveIndex].Source == &SourceActor &&
-			SourcesToRegister[RemoveIndex].SenseID == UAISense::GetSenseID(Sense))
+		if (SourcesToRegister[RemoveIndex].Source == &SourceActor)
 		{
-			SourcesToRegister.RemoveAt(RemoveIndex, 1, false);
+			// Source actor was pending registration
+			bSourceWasKnown = true;
+
+			// A single sense can be targeted, or Sense == null for all senses
+			if (!Sense || SourcesToRegister[RemoveIndex].SenseID == UAISense::GetSenseID(Sense))
+			{
+				SourcesToRegister.RemoveAt(RemoveIndex, 1, false);
+			}
 		}
+	}
+
+	// Log if SourceActor was not registered or pending registration for any sense
+	if (!bSourceWasKnown)
+	{
+		UE_VLOG(this, LogAIPerception, Log, TEXT("UnregisterSource called for %s but it doesn't seem to be registered as a source"), *SourceActor.GetName());
 	}
 }
 

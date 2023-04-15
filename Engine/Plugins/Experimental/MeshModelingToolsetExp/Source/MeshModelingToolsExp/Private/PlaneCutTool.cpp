@@ -35,6 +35,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlaneCutTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UPlaneCutTool"
@@ -285,12 +287,11 @@ TUniquePtr<FDynamicMeshOperator> UPlaneCutOperatorFactory::MakeNewOperator()
 		}
 	}
 	LocalToWorld.SetScale3D(LocalToWorldScale);
-	FTransform WorldToLocal = LocalToWorld.Inverse();
 
-	FVector LocalOrigin = WorldToLocal.TransformPosition((FVector)CutTool->CutPlaneWorld.Origin);
+	FVector LocalOrigin = LocalToWorld.InverseTransformPosition((FVector)CutTool->CutPlaneWorld.Origin);
 	FVector3d WorldNormal = CutTool->CutPlaneWorld.GetAxis(2);
-	FTransformSRT3d W2LForNormal(WorldToLocal);
-	FVector LocalNormal = (FVector)W2LForNormal.TransformNormal(WorldNormal);
+	FTransformSRT3d L2WForNormal(LocalToWorld);
+	FVector LocalNormal = (FVector)L2WForNormal.InverseTransformNormal(WorldNormal);
 	FVector BackTransformed = LocalToWorld.TransformVector(LocalNormal);
 	float NormalScaleFactor = FVector::DotProduct(BackTransformed, (FVector)WorldNormal);
 	if (NormalScaleFactor >= FLT_MIN)
@@ -524,3 +525,4 @@ void UPlaneCutTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 
 
 #undef LOCTEXT_NAMESPACE
+

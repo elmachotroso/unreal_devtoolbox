@@ -5,18 +5,20 @@
 #include "IImgMediaModule.h"
 #include "ImgMediaGlobalCache.h"
 #include "ImgMediaMipMapInfo.h"
-#include "ImgMediaMipMapInfoManager.h"
 #include "ImgMediaPrivate.h"
 
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ImgMediaSource)
 
 
 /* UImgMediaSource structors
  *****************************************************************************/
 
 UImgMediaSource::UImgMediaSource()
-	: IsPathRelativeToProjectRoot(false)
+	: IsPathRelativeToProjectRoot_DEPRECATED(false)
 	, FrameRateOverride(0, 0)
 	, bFillGapsInSequence(true)
 	, MipMapInfo(MakeShared<FImgMediaMipMapInfo, ESPMode::ThreadSafe>())
@@ -32,12 +34,15 @@ void UImgMediaSource::GetProxies(TArray<FString>& OutProxies) const
 	IFileManager::Get().FindFiles(OutProxies, *FPaths::Combine(GetFullPath(), TEXT("*")), false, true);
 }
 
+const FString UImgMediaSource::GetSequencePath() const
+{
+	return ExpandSequencePathTokens(SequencePath.Path);
+}
 
 void UImgMediaSource::SetSequencePath(const FString& Path)
 {
 	const FString SanitizedPath = FPaths::GetPath(Path);
 
-	IsPathRelativeToProjectRoot = false;
 	if (SanitizedPath.IsEmpty() || SanitizedPath.StartsWith(TEXT(".")))
 	{
 		SequencePath.Path = SanitizedPath;
@@ -45,11 +50,11 @@ void UImgMediaSource::SetSequencePath(const FString& Path)
 	else
 	{
 		FString FullPath = FPaths::ConvertRelativePathToFull(SanitizedPath);
-		const FString FullGameContentDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
+		const FString RelativeDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 
-		if (FullPath.StartsWith(FullGameContentDir))
+		if (FullPath.StartsWith(RelativeDir))
 		{
-			FPaths::MakePathRelativeTo(FullPath, *FullGameContentDir);
+			FPaths::MakePathRelativeTo(FullPath, *RelativeDir);
 			FullPath = FString(TEXT("./")) + FullPath;
 		}
 
@@ -57,34 +62,70 @@ void UImgMediaSource::SetSequencePath(const FString& Path)
 	}
 }
 
-
-void UImgMediaSource::AddGlobalCamera(AActor* InActor)
+void UImgMediaSource::SetTokenizedSequencePath(const FString& Path)
 {
-	FImgMediaMipMapInfoManager::Get().AddCamera(InActor);
+	SequencePath.Path = SanitizeTokenizedSequencePath(Path);
 }
 
-
-void UImgMediaSource::RemoveGlobalCamera(AActor* InActor)
+FString UImgMediaSource::ExpandSequencePathTokens(const FString& InPath)
 {
-	FImgMediaMipMapInfoManager::Get().RemoveCamera(InActor);
+	return InPath
+		.Replace(TEXT("{engine_dir}"), *FPaths::ConvertRelativePathToFull(FPaths::EngineDir()))
+		.Replace(TEXT("{project_dir}"), *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()))
+		;
 }
 
+FString UImgMediaSource::SanitizeTokenizedSequencePath(const FString& InPath)
+{
+	FString SanitizedPickedPath = InPath.TrimStartAndEnd().Replace(TEXT("\""), TEXT(""));
+
+	const FString ProjectAbsolutePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+
+	// Replace supported tokens
+	FString ExpandedPath = UImgMediaSource::ExpandSequencePathTokens(SanitizedPickedPath);
+
+	// Relative paths are always w.r.t. the project root.
+	if (FPaths::IsRelative(ExpandedPath))
+	{
+		ExpandedPath = FPaths::Combine(ProjectAbsolutePath, SanitizedPickedPath);
+	}
+
+	// Chop trailing file path, in case the user picked a file instead of a folder
+	if (FPaths::FileExists(ExpandedPath))
+	{
+		ExpandedPath = FPaths::GetPath(ExpandedPath);
+		SanitizedPickedPath = FPaths::GetPath(SanitizedPickedPath);
+	}
+
+	// If the user picked the absolute path of a directory that is inside the project, use relative path.
+	// Unless the user has a token in the beginning.
+	if (!InPath.Len() || InPath[0] != '{') // '{' indicates that the path begins with a token
+	{
+		FString PathRelativeToProject;
+
+		if (IsPathUnderBasePath(ExpandedPath, ProjectAbsolutePath, PathRelativeToProject))
+		{
+			SanitizedPickedPath = PathRelativeToProject;
+		}
+	}
+
+	return SanitizedPickedPath;
+}
+
+void UImgMediaSource::AddTargetObject(AActor* InActor)
+{
+	MipMapInfo->AddObject(InActor);
+}
 
 void UImgMediaSource::AddTargetObject(AActor* InActor, float Width)
 {
-	MipMapInfo->AddObject(InActor, Width, 0.0f);
+	AddTargetObject(InActor);
 }
 
 
 void UImgMediaSource::RemoveTargetObject(AActor* InActor)
 {
 	MipMapInfo->RemoveObject(InActor);
-}
-
-
-void UImgMediaSource::SetMipLevelDistance(float Distance)
-{
-	MipMapInfo->SetMipLevelDistance(Distance);
 }
 
 
@@ -180,6 +221,8 @@ void UImgMediaSource::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 			GlobalCache->EmptyCache();
 		}
 	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 #endif // WITH_EDITOR
@@ -189,24 +232,50 @@ void UImgMediaSource::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 
 FString UImgMediaSource::GetFullPath() const
 {
-	if (!FPaths::IsRelative(SequencePath.Path))
-	{
-		return SequencePath.Path;
-	}
+	const FString ExpandedSequencePath = GetSequencePath();
 
-	if (SequencePath.Path.StartsWith(TEXT("./")))
+	if (FPaths::IsRelative(ExpandedSequencePath))
 	{
-		FString RelativeDir;
-		if (IsPathRelativeToProjectRoot)
-		{
-			RelativeDir = FPaths::ProjectDir();
-		}
-		else
-		{
-			RelativeDir = FPaths::ProjectContentDir();
-		}
-		return FPaths::ConvertRelativePathToFull(RelativeDir, SequencePath.Path.RightChop(2));
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), ExpandedSequencePath));
 	}
-
-	return FPaths::ConvertRelativePathToFull(SequencePath.Path);
+	else
+	{
+		return ExpandedSequencePath;
+	}
 }
+
+void UImgMediaSource::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+#if WITH_EDITOR
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::ImgMediaPathResolutionWithEngineOrProjectTokens)
+	{
+		if (Ar.IsLoading() && !IsPathRelativeToProjectRoot_DEPRECATED)
+		{
+			// This is an object that was saved with the old value (or before the property was added), so we need to convert the path accordingly
+
+			IsPathRelativeToProjectRoot_DEPRECATED = true;
+
+			if (FPaths::IsRelative(SequencePath.Path))
+			{
+				SequencePath.Path = FString::Printf(TEXT("Content/%s"), *SequencePath.Path);
+
+				SequencePath.Path = UImgMediaSource::SanitizeTokenizedSequencePath(SequencePath.Path);
+			}
+		}
+	}
+#endif
+}
+
+bool UImgMediaSource::IsPathUnderBasePath(const FString& InPath, const FString& InBasePath, FString& OutRelativePath)
+{
+	OutRelativePath = InPath;
+
+	return 
+		FPaths::MakePathRelativeTo(OutRelativePath, *InBasePath) 
+		&& !OutRelativePath.StartsWith(TEXT(".."));
+}
+

@@ -23,7 +23,16 @@ class FDelegateHandle;
 class IDelegateInstance;
 struct FWeakObjectPtr;
 template <typename FuncType, typename UserPolicy> struct IBaseDelegateInstance;
+template <typename T> struct TObjectPtr;
+
+template <typename T>
+T* ToRawPtr(const TObjectPtr<T>& Ptr);
+
+template <typename To, typename From>
+To* Cast(From* Src);
+
 template<typename UserPolicy> class TMulticastDelegateBase;
+template<typename UserPolicy> class TTSMulticastDelegateBase;
 
 /**
  * Unicast delegate template class.
@@ -35,7 +44,7 @@ template<typename UserPolicy> class TMulticastDelegateBase;
 template <typename DelegateSignature, typename UserPolicy = FDefaultDelegateUserPolicy>
 class TDelegate
 {
-	static_assert(sizeof(DelegateSignature) == 0, "Expected a function signature for the delegate template parameter");
+	static_assert(sizeof(UserPolicy) == 0, "Expected a function signature for the delegate template parameter");
 };
 
 template <typename InRetValType, typename... ParamTypes, typename UserPolicy>
@@ -49,12 +58,15 @@ class TDelegate<InRetValType(ParamTypes...), UserPolicy> : public TDelegateBase<
 	using DelegateInstanceType  = typename UserPolicy::FDelegateInstanceExtras;
 	using MulticastDelegateType = typename UserPolicy::FMulticastDelegateExtras;
 
-	static_assert(std::is_convertible<DelegateType*,          FDelegateBase*                     >::value, "UserPolicy::FDelegateExtras should publicly inherit FDelegateBase");
-	static_assert(std::is_convertible<DelegateInstanceType*,  IDelegateInstance*                 >::value, "UserPolicy::FDelegateInstanceExtras should publicly inherit IDelegateInstance");
-	static_assert(std::is_convertible<MulticastDelegateType*, TMulticastDelegateBase<UserPolicy>*>::value, "UserPolicy::FMulticastDelegateExtras should publicly inherit TMulticastDelegateBase<UserPolicy>");
+	static_assert(std::is_convertible_v<DelegateType*, FDelegateBase*>, "UserPolicy::FDelegateExtras should publicly inherit FDelegateBase");
+	static_assert(std::is_convertible_v<DelegateInstanceType*, IDelegateInstance*>, "UserPolicy::FDelegateInstanceExtras should publicly inherit IDelegateInstance");
+	static_assert(std::is_convertible_v<MulticastDelegateType*, TMulticastDelegateBase<UserPolicy>*> || std::is_convertible_v<MulticastDelegateType*, TTSMulticastDelegateBase<UserPolicy>*>, "UserPolicy::FMulticastDelegateExtras should publicly inherit TMulticastDelegateBase<UserPolicy> or TTSMulticastDelegateBase<UserPolicy>");
 
 	template <typename>
 	friend class TMulticastDelegateBase;
+
+	template <typename>
+	friend class TTSMulticastDelegateBase;
 
 public:
 	// Make sure FDelegateBase's public functions are publicly exposed through the TDelegate API
@@ -70,66 +82,67 @@ public:
 	typedef InRetValType TFuncType(ParamTypes...);
 
 	/* Helper typedefs for getting a member function pointer type for the delegate with a given payload */
+	template <typename... VarTypes>                     using TFuncPtr        = RetValType(*)(ParamTypes..., VarTypes...);
 	template <typename UserClass, typename... VarTypes> using TMethodPtr      = typename TMemFunPtrType<false, UserClass, RetValType(ParamTypes..., VarTypes...)>::Type;
 	template <typename UserClass, typename... VarTypes> using TConstMethodPtr = typename TMemFunPtrType<true,  UserClass, RetValType(ParamTypes..., VarTypes...)>::Type;
 
 	/** Declare the user's shared pointer-based delegate instance types. */
-	template <typename UserClass                                                                            > struct TSPMethodDelegate                 : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TSPMethodDelegate                (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass                                                                            > struct TSPMethodDelegate_Const           : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TSPMethodDelegate_Const          (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TSPMethodDelegate_OneVar          : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TSPMethodDelegate_OneVar         (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TSPMethodDelegate_OneVar_Const    : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TSPMethodDelegate_OneVar_Const   (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TSPMethodDelegate_TwoVars         : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TSPMethodDelegate_TwoVars        (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TSPMethodDelegate_TwoVars_Const   : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TSPMethodDelegate_TwoVars_Const  (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TSPMethodDelegate_ThreeVars       : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TSPMethodDelegate_ThreeVars      (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TSPMethodDelegate_ThreeVars_Const : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TSPMethodDelegate_ThreeVars_Const(const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TSPMethodDelegate_FourVars        : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TSPMethodDelegate_FourVars       (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TSPMethodDelegate_FourVars_Const  : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TSPMethodDelegate_FourVars_Const (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")                      TSPMethodDelegate                 : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TSPMethodDelegate                (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")           TSPMethodDelegate_Const           : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TSPMethodDelegate_Const          (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_OneVar<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")               TSPMethodDelegate_OneVar          : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TSPMethodDelegate_OneVar         (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_OneVar_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")    TSPMethodDelegate_OneVar_Const    : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TSPMethodDelegate_OneVar_Const   (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_TwoVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")              TSPMethodDelegate_TwoVars         : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TSPMethodDelegate_TwoVars        (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_TwoVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")   TSPMethodDelegate_TwoVars_Const   : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TSPMethodDelegate_TwoVars_Const  (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_ThreeVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")            TSPMethodDelegate_ThreeVars       : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TSPMethodDelegate_ThreeVars      (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_ThreeVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead") TSPMethodDelegate_ThreeVars_Const : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TSPMethodDelegate_ThreeVars_Const(const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_FourVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")             TSPMethodDelegate_FourVars        : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TSPMethodDelegate_FourVars       (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TSPMethodDelegate_FourVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")  TSPMethodDelegate_FourVars_Const  : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TSPMethodDelegate_FourVars_Const (const TSharedRef< UserClass, ESPMode::ThreadSafe >& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
 
 	/** Declare the user's shared pointer-based delegate instance types. */
-	template <typename UserClass                                                                            > struct TThreadSafeSPMethodDelegate                 : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TThreadSafeSPMethodDelegate                (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass                                                                            > struct TThreadSafeSPMethodDelegate_Const           : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TThreadSafeSPMethodDelegate_Const          (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TThreadSafeSPMethodDelegate_OneVar          : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TThreadSafeSPMethodDelegate_OneVar         (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TThreadSafeSPMethodDelegate_OneVar_Const    : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TThreadSafeSPMethodDelegate_OneVar_Const   (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TThreadSafeSPMethodDelegate_TwoVars         : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TThreadSafeSPMethodDelegate_TwoVars        (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TThreadSafeSPMethodDelegate_TwoVars_Const   : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TThreadSafeSPMethodDelegate_TwoVars_Const  (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TThreadSafeSPMethodDelegate_ThreeVars       : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TThreadSafeSPMethodDelegate_ThreeVars      (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TThreadSafeSPMethodDelegate_ThreeVars_Const : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TThreadSafeSPMethodDelegate_ThreeVars_Const(const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TThreadSafeSPMethodDelegate_FourVars        : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TThreadSafeSPMethodDelegate_FourVars       (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TThreadSafeSPMethodDelegate_FourVars_Const  : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TThreadSafeSPMethodDelegate_FourVars_Const (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")                      TThreadSafeSPMethodDelegate                 : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TThreadSafeSPMethodDelegate                (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")           TThreadSafeSPMethodDelegate_Const           : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy                                        > Super; TThreadSafeSPMethodDelegate_Const          (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_OneVar<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")               TThreadSafeSPMethodDelegate_OneVar          : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TThreadSafeSPMethodDelegate_OneVar         (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_OneVar_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")    TThreadSafeSPMethodDelegate_OneVar_Const    : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type                              > Super; TThreadSafeSPMethodDelegate_OneVar_Const   (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_TwoVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")              TThreadSafeSPMethodDelegate_TwoVars         : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TThreadSafeSPMethodDelegate_TwoVars        (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_TwoVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")   TThreadSafeSPMethodDelegate_TwoVars_Const   : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TThreadSafeSPMethodDelegate_TwoVars_Const  (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_ThreeVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")            TThreadSafeSPMethodDelegate_ThreeVars       : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TThreadSafeSPMethodDelegate_ThreeVars      (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_ThreeVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead") TThreadSafeSPMethodDelegate_ThreeVars_Const : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TThreadSafeSPMethodDelegate_ThreeVars_Const(const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_FourVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")             TThreadSafeSPMethodDelegate_FourVars        : TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<false, UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TThreadSafeSPMethodDelegate_FourVars       (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TThreadSafeSPMethodDelegate_FourVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")  TThreadSafeSPMethodDelegate_FourVars_Const  : TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseSPMethodDelegateInstance<true , UserClass, ESPMode::ThreadSafe, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TThreadSafeSPMethodDelegate_FourVars_Const (const TSharedRef<UserClass, ESPMode::ThreadSafe>& InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
 
 	/** Declare the user's C++ pointer-based delegate instance types. */
-	template <typename UserClass                                                                            > struct TRawMethodDelegate                 : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > Super; TRawMethodDelegate                (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass                                                                            > struct TRawMethodDelegate_Const           : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > Super; TRawMethodDelegate_Const          (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TRawMethodDelegate_OneVar          : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > Super; TRawMethodDelegate_OneVar         (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TRawMethodDelegate_OneVar_Const    : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > Super; TRawMethodDelegate_OneVar_Const   (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TRawMethodDelegate_TwoVars         : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TRawMethodDelegate_TwoVars        (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TRawMethodDelegate_TwoVars_Const   : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TRawMethodDelegate_TwoVars_Const  (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TRawMethodDelegate_ThreeVars       : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TRawMethodDelegate_ThreeVars      (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TRawMethodDelegate_ThreeVars_Const : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TRawMethodDelegate_ThreeVars_Const(UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TRawMethodDelegate_FourVars        : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TRawMethodDelegate_FourVars       (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TRawMethodDelegate_FourVars_Const  : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TRawMethodDelegate_FourVars_Const (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")                      TRawMethodDelegate                 : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > Super; TRawMethodDelegate                (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")           TRawMethodDelegate_Const           : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > Super; TRawMethodDelegate_Const          (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_OneVar<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")               TRawMethodDelegate_OneVar          : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > Super; TRawMethodDelegate_OneVar         (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_OneVar_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")    TRawMethodDelegate_OneVar_Const    : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > Super; TRawMethodDelegate_OneVar_Const   (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_TwoVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")              TRawMethodDelegate_TwoVars         : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TRawMethodDelegate_TwoVars        (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_TwoVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")   TRawMethodDelegate_TwoVars_Const   : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TRawMethodDelegate_TwoVars_Const  (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_ThreeVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")            TRawMethodDelegate_ThreeVars       : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TRawMethodDelegate_ThreeVars      (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_ThreeVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead") TRawMethodDelegate_ThreeVars_Const : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TRawMethodDelegate_ThreeVars_Const(UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_FourVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")             TRawMethodDelegate_FourVars        : TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseRawMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TRawMethodDelegate_FourVars       (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TRawMethodDelegate_FourVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")  TRawMethodDelegate_FourVars_Const  : TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseRawMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TRawMethodDelegate_FourVars_Const (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
 	
 	/** Declare the user's UFunction-based delegate instance types. */
-	template <typename UObjectTemplate                                                                            > struct TUFunctionDelegateBinding           : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy                                        > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy                                        > Super; TUFunctionDelegateBinding          (UObjectTemplate* InUserObject, const FName& InFunctionName                                                            ) : Super(InUserObject, InFunctionName                        ) {} };
-	template <typename UObjectTemplate, typename Var1Type                                                         > struct TUFunctionDelegateBinding_OneVar    : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type                              > Super; TUFunctionDelegateBinding_OneVar   (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1                                             ) : Super(InUserObject, InFunctionName, Var1                  ) {} };
-	template <typename UObjectTemplate, typename Var1Type, typename Var2Type                                      > struct TUFunctionDelegateBinding_TwoVars   : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUFunctionDelegateBinding_TwoVars  (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InFunctionName, Var1, Var2            ) {} };
-	template <typename UObjectTemplate, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TUFunctionDelegateBinding_ThreeVars : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUFunctionDelegateBinding_ThreeVars(UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InFunctionName, Var1, Var2, Var3      ) {} };
-	template <typename UObjectTemplate, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TUFunctionDelegateBinding_FourVars  : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUFunctionDelegateBinding_FourVars (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InFunctionName, Var1, Var2, Var3, Var4) {} };
+	template <typename UObjectTemplate                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TUFunctionDelegateBinding has been deprecated")           TUFunctionDelegateBinding           : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy                                        > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy                                        > Super; TUFunctionDelegateBinding          (UObjectTemplate* InUserObject, const FName& InFunctionName                                                            ) : Super(InUserObject, InFunctionName                        ) {} };
+	template <typename UObjectTemplate, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TUFunctionDelegateBinding_OneVar has been deprecated")    TUFunctionDelegateBinding_OneVar    : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type                              > Super; TUFunctionDelegateBinding_OneVar   (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1                                             ) : Super(InUserObject, InFunctionName, Var1                  ) {} };
+	template <typename UObjectTemplate, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TUFunctionDelegateBinding_TwoVars has been deprecated")   TUFunctionDelegateBinding_TwoVars   : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUFunctionDelegateBinding_TwoVars  (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InFunctionName, Var1, Var2            ) {} };
+	template <typename UObjectTemplate, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TUFunctionDelegateBinding_ThreeVars has been deprecated") TUFunctionDelegateBinding_ThreeVars : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUFunctionDelegateBinding_ThreeVars(UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InFunctionName, Var1, Var2, Var3      ) {} };
+	template <typename UObjectTemplate, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TUFunctionDelegateBinding_FourVars has been deprecated")  TUFunctionDelegateBinding_FourVars  : TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUFunctionDelegateBinding_FourVars (UObjectTemplate* InUserObject, const FName& InFunctionName, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InFunctionName, Var1, Var2, Var3, Var4) {} };
 
 	/** Declare the user's UObject-based delegate instance types. */
-	template <typename UserClass                                                                            > struct TUObjectMethodDelegate                 : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > Super; TUObjectMethodDelegate                (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass                                                                            > struct TUObjectMethodDelegate_Const           : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > Super; TUObjectMethodDelegate_Const          (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TUObjectMethodDelegate_OneVar          : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > Super; TUObjectMethodDelegate_OneVar         (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type                                                         > struct TUObjectMethodDelegate_OneVar_Const    : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > Super; TUObjectMethodDelegate_OneVar_Const   (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TUObjectMethodDelegate_TwoVars         : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUObjectMethodDelegate_TwoVars        (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct TUObjectMethodDelegate_TwoVars_Const   : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUObjectMethodDelegate_TwoVars_Const  (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TUObjectMethodDelegate_ThreeVars       : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUObjectMethodDelegate_ThreeVars      (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct TUObjectMethodDelegate_ThreeVars_Const : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUObjectMethodDelegate_ThreeVars_Const(UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TUObjectMethodDelegate_FourVars        : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUObjectMethodDelegate_FourVars       (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
-	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct TUObjectMethodDelegate_FourVars_Const  : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUObjectMethodDelegate_FourVars_Const (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")                      TUObjectMethodDelegate                 : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy                                        > Super; TUObjectMethodDelegate                (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass                                                                            > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")           TUObjectMethodDelegate_Const           : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy                                        > Super; TUObjectMethodDelegate_Const          (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr                                                            ) : Super(InUserObject, InMethodPtr                        ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_OneVar<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")               TUObjectMethodDelegate_OneVar          : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type                              > Super; TUObjectMethodDelegate_OneVar         (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type                                                         > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_OneVar_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")    TUObjectMethodDelegate_OneVar_Const    : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type                              > Super; TUObjectMethodDelegate_OneVar_Const   (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1                                             ) : Super(InUserObject, InMethodPtr, Var1                  ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_TwoVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")              TUObjectMethodDelegate_TwoVars         : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUObjectMethodDelegate_TwoVars        (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type                                      > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_TwoVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")   TUObjectMethodDelegate_TwoVars_Const   : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type                    > Super; TUObjectMethodDelegate_TwoVars_Const  (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2                              ) : Super(InUserObject, InMethodPtr, Var1, Var2            ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_ThreeVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")            TUObjectMethodDelegate_ThreeVars       : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUObjectMethodDelegate_ThreeVars      (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type                   > struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_ThreeVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead") TUObjectMethodDelegate_ThreeVars_Const : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type          > Super; TUObjectMethodDelegate_ThreeVars_Const(UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3               ) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3      ) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_FourVars<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TMethodPtr<UserClass, ...> instead")             TUObjectMethodDelegate_FourVars        : TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUObjectMethodDelegate_FourVars       (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
+	template <typename UserClass, typename Var1Type, typename Var2Type, typename Var3Type, typename Var4Type> struct UE_DEPRECATED(5.1, "DelegateType::TUObjectMethodDelegate_FourVars_Const<UserClass, ...>::FMethodPtr has been deprecated - use DelegateType::TConstMethodPtr<UserClass, ...> instead")  TUObjectMethodDelegate_FourVars_Const  : TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> { typedef TBaseUObjectMethodDelegateInstance<true , UserClass, FuncType, UserPolicy, Var1Type, Var2Type, Var3Type, Var4Type> Super; TUObjectMethodDelegate_FourVars_Const (UserClass* InUserObject, typename Super::FMethodPtr InMethodPtr, Var1Type Var1, Var2Type Var2, Var3Type Var3, Var4Type Var4) : Super(InUserObject, InMethodPtr, Var1, Var2, Var3, Var4) {} };
 	
 	/** Declare the user's static function pointer delegate instance types. */
-	template <typename... VarTypes > struct FStaticDelegate : TBaseStaticDelegateInstance<FuncType, UserPolicy, VarTypes... > { typedef TBaseStaticDelegateInstance<FuncType, UserPolicy, VarTypes... > Super; FStaticDelegate ( typename Super::FFuncPtr InFuncPtr, VarTypes... Vars ) : Super(InFuncPtr, Vars... ) {} };
+	template <typename... VarTypes > struct UE_DEPRECATED(5.1, "DelegateType::FStaticDelegate<...>::FFuncPtr has been deprecated - use DelegateType::TFuncPtr<...> instead") FStaticDelegate : TBaseStaticDelegateInstance<FuncType, UserPolicy, VarTypes... > { typedef TBaseStaticDelegateInstance<FuncType, UserPolicy, VarTypes... > Super; FStaticDelegate ( typename Super::FFuncPtr InFuncPtr, VarTypes... Vars ) : Super(InFuncPtr, Vars... ) {} };
 
 public:
 
@@ -292,6 +305,13 @@ public:
 		TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, VarTypes...>::Create(Result, InUserObject, InFunctionName, Vars...);
 		return Result;
 	}
+	template <typename UObjectTemplate, typename... VarTypes>
+	UE_NODISCARD inline static TDelegate<RetValType(ParamTypes...), UserPolicy> CreateUFunction(TObjectPtr<UObjectTemplate> InUserObject, const FName& InFunctionName, VarTypes... Vars)
+	{
+		TDelegate<RetValType(ParamTypes...), UserPolicy> Result;
+		TBaseUFunctionDelegateInstance<UObjectTemplate, FuncType, UserPolicy, VarTypes...>::Create(Result, ToRawPtr(InUserObject), InFunctionName, Vars...);
+		return Result;
+	}
 
 	/**
 	 * Static: Creates a UObject-based member function delegate.
@@ -313,6 +333,22 @@ public:
 	{
 		TDelegate<RetValType(ParamTypes...), UserPolicy> Result;
 		TBaseUObjectMethodDelegateInstance<true, const UserClass, FuncType, UserPolicy, VarTypes...>::Create(Result, InUserObject, InFunc, Vars...);
+		return Result;
+	}
+	template <typename UserClass, typename... VarTypes>
+	UE_NODISCARD inline static TDelegate<RetValType(ParamTypes...), UserPolicy> CreateUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<false, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		static_assert(!TIsConst<UserClass>::Value, "Attempting to bind a delegate with a const object pointer and non-const member function.");
+
+		TDelegate<RetValType(ParamTypes...), UserPolicy> Result;
+		TBaseUObjectMethodDelegateInstance<false, UserClass, FuncType, UserPolicy, VarTypes...>::Create(Result, ToRawPtr(InUserObject), InFunc, Vars...);
+		return Result;
+	}
+	template <typename UserClass, typename... VarTypes>
+	UE_NODISCARD inline static TDelegate<RetValType(ParamTypes...), UserPolicy> CreateUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<true, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		TDelegate<RetValType(ParamTypes...), UserPolicy> Result;
+		TBaseUObjectMethodDelegateInstance<true, const UserClass, FuncType, UserPolicy, VarTypes...>::Create(Result, ToRawPtr(InUserObject), InFunc, Vars...);
 		return Result;
 	}
 
@@ -345,10 +381,7 @@ public:
 	 *
 	 * @param Other The delegate object to move from.
 	 */
-	inline TDelegate(TDelegate&& Other)
-	{
-		*this = MoveTemp(Other);
-	}
+	TDelegate(TDelegate&& Other) = default;
 
 	/**
 	 * Creates and initializes a new instance from an existing delegate object.
@@ -365,25 +398,7 @@ public:
 	 *
 	 * @param	OtherDelegate	Delegate object to copy from
 	 */
-	inline TDelegate& operator=(TDelegate&& Other)
-	{
-		if (&Other != this)
-		{
-			// this down-cast is OK! allows for managing invocation list in the base class without requiring virtual functions
-			DelegateInstanceInterfaceType* OtherInstance = Other.GetDelegateInstanceProtected();
-
-			if (OtherInstance != nullptr)
-			{
-				OtherInstance->CreateCopy(*this);
-			}
-			else
-			{
-				Unbind();
-			}
-		}
-
-		return *this;
-	}
+	TDelegate& operator=(TDelegate&& Other) = default;
 
 	/**
 	 * Assignment operator.
@@ -548,6 +563,11 @@ public:
 	{
 		*this = CreateUFunction(InUserObject, InFunctionName, Vars...);
 	}
+	template <typename UObjectTemplate, typename... VarTypes>
+	inline void BindUFunction(TObjectPtr<UObjectTemplate> InUserObject, const FName& InFunctionName, VarTypes... Vars)
+	{
+		*this = CreateUFunction(InUserObject, InFunctionName, Vars...);
+	}
 
 	/**
 	 * Binds a UObject-based member function delegate.
@@ -564,6 +584,18 @@ public:
 	}
 	template <typename UserClass, typename... VarTypes>
 	inline void BindUObject(const UserClass* InUserObject, typename TMemFunPtrType<true, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		*this = CreateUObject(InUserObject, InFunc, Vars...);
+	}
+	template <typename UserClass, typename... VarTypes>
+	inline void BindUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<false, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		static_assert(!TIsConst<UserClass>::Value, "Attempting to bind a delegate with a const object pointer and non-const member function.");
+
+		*this = CreateUObject(InUserObject, InFunc, Vars...);
+	}
+	template <typename UserClass, typename... VarTypes>
+	inline void BindUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<true, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
 	{
 		*this = CreateUObject(InUserObject, InFunc, Vars...);
 	}
@@ -664,11 +696,6 @@ private:
 	// Make sure TMulticastDelegateBase's protected functions are not accidentally exposed through the TMulticastDelegate API
 	using Super::AddDelegateInstance;
 	using Super::RemoveDelegateInstance;
-	using Super::CompactInvocationList;
-	using Super::GetInvocationList;
-	using Super::LockInvocationList;
-	using Super::UnlockInvocationList;
-	using Super::GetInvocationListLockCount;
 	using Super::GetDelegateInstanceProtectedHelper;
 
 public:
@@ -679,13 +706,7 @@ public:
 	 */
 	FDelegateHandle Add(FDelegate&& InNewDelegate)
 	{
-		FDelegateHandle Result;
-		if (Super::GetDelegateInstanceProtectedHelper(InNewDelegate))
-		{
-			Result = Super::AddDelegateInstance(MoveTemp(InNewDelegate));
-		}
-
-		return Result;
+		return Super::AddDelegateInstance(MoveTemp(InNewDelegate));
 	}
 
 	/**
@@ -695,13 +716,7 @@ public:
 	 */
 	FDelegateHandle Add(const FDelegate& InNewDelegate)
 	{
-		FDelegateHandle Result;
-		if (Super::GetDelegateInstanceProtectedHelper(InNewDelegate))
-		{
-			Result = Super::AddDelegateInstance(CopyTemp(InNewDelegate));
-		}
-
-		return Result;
+		return Super::AddDelegateInstance(CopyTemp(InNewDelegate));
 	}
 
 	/**
@@ -861,6 +876,11 @@ public:
 	{
 		return Add(FDelegate::CreateUFunction(InUserObject, InFunctionName, Vars...));
 	}
+	template <typename UObjectTemplate, typename... VarTypes>
+	inline FDelegateHandle AddUFunction(TObjectPtr<UObjectTemplate> InUserObject, const FName& InFunctionName, VarTypes... Vars)
+	{
+		return Add(FDelegate::CreateUFunction(InUserObject, InFunctionName, Vars...));
+	}
 
 	/**
 	 * Adds a UObject-based member function delegate.
@@ -879,6 +899,18 @@ public:
 	}
 	template <typename UserClass, typename... VarTypes>
 	inline FDelegateHandle AddUObject(const UserClass* InUserObject, typename TMemFunPtrType<true, UserClass, void (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		return Add(FDelegate::CreateUObject(InUserObject, InFunc, Vars...));
+	}
+	template <typename UserClass, typename... VarTypes>
+	inline FDelegateHandle AddUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<false, UserClass, void (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
+	{
+		static_assert(!TIsConst<UserClass>::Value, "Attempting to bind a delegate with a const object pointer and non-const member function.");
+
+		return Add(FDelegate::CreateUObject(InUserObject, InFunc, Vars...));
+	}
+	template <typename UserClass, typename... VarTypes>
+	inline FDelegateHandle AddUObject(TObjectPtr<UserClass> InUserObject, typename TMemFunPtrType<true, UserClass, void (ParamTypes..., VarTypes...)>::Type InFunc, VarTypes... Vars)
 	{
 		return Add(FDelegate::CreateUObject(InUserObject, InFunc, Vars...));
 	}
@@ -928,19 +960,8 @@ public:
 	{
 		if (&Other != this)
 		{
-			Super::Clear();
-
-			for (const TDelegateBase<UserPolicy>& OtherDelegateRef : Other.GetInvocationList())
-			{
-				if (IDelegateInstance* OtherInstance = Super::GetDelegateInstanceProtectedHelper(OtherDelegateRef))
-				{
-					FDelegate TempDelegate;
-					((DelegateInstanceInterfaceType*)OtherInstance)->CreateCopy(TempDelegate);
-					Super::AddDelegateInstance(MoveTemp(TempDelegate));
-				}
-			}
+			Super::template CopyFrom<DelegateInstanceInterfaceType, FDelegate>(Other);
 		}
-
 		return *this;
 	}
 
@@ -951,31 +972,7 @@ public:
 	 */
 	void Broadcast(ParamTypes... Params) const
 	{
-		bool NeedsCompaction = false;
-
-		Super::LockInvocationList();
-		{
-			const InvocationListType& LocalInvocationList = Super::GetInvocationList();
-
-			// call bound functions in reverse order, so we ignore any instances that may be added by callees
-			for (int32 InvocationListIndex = LocalInvocationList.Num() - 1; InvocationListIndex >= 0; --InvocationListIndex)
-			{
-				// this down-cast is OK! allows for managing invocation list in the base class without requiring virtual functions
-				const FDelegate& DelegateBase = (const FDelegate&)LocalInvocationList[InvocationListIndex];
-
-				IDelegateInstance* DelegateInstanceInterface = Super::GetDelegateInstanceProtectedHelper(DelegateBase);
-				if (DelegateInstanceInterface == nullptr || !((DelegateInstanceInterfaceType*)DelegateInstanceInterface)->ExecuteIfSafe(Params...))
-				{
-					NeedsCompaction = true;
-				}
-			}
-		}
-		Super::UnlockInvocationList();
-
-		if (NeedsCompaction)
-		{
-			const_cast<TMulticastDelegate*>(this)->CompactInvocationList();
-		}
+		Super::template Broadcast<DelegateInstanceInterfaceType, FDelegate, ParamTypes...>(Params...);
 	}
 };
 
@@ -1032,12 +1029,17 @@ public:
 
 		// NOTE: If you hit a compile error on the following line, it means you're trying to use a non-UObject type
 		//       with this delegate, which is not supported
-		this->Object = InUserObject;
+		this->Object = Cast<UObject>(InUserObject);
 
 		// Store the function name.  The incoming function name was generated by a macro and includes the method's class name.
 		this->FunctionName = InFunctionName;
 
 		ensureMsgf(this->IsBound(), TEXT("Unable to bind delegate to '%s' (function might not be marked as a UFUNCTION or object may be pending kill)"), *InFunctionName.ToString());
+	}
+	template< class UserClass >
+	void __Internal_BindDynamic( TObjectPtr<UserClass> InUserObject, typename TMethodPtrResolver< UserClass >::FMethodPtr InMethodPtr, FName InFunctionName )
+	{
+		__Internal_BindDynamic(ToRawPtr(InUserObject), InMethodPtr, InFunctionName);
 	}
 
 	friend uint32 GetTypeHash(const TBaseDynamicDelegate& Key)
@@ -1098,6 +1100,11 @@ public:
 
 		return this->Contains( InUserObject, InFunctionName );
 	}
+	template< class UserClass >
+	bool __Internal_IsAlreadyBound( TObjectPtr<UserClass> InUserObject, typename FDelegate::template TMethodPtrResolver< UserClass >::FMethodPtr InMethodPtr, FName InFunctionName ) const
+	{
+		return __Internal_IsAlreadyBound(ToRawPtr(InUserObject), InMethodPtr, InFunctionName);
+	}
 
 	/**
 	 * Binds a UObject instance and a UObject method address to this multi-cast delegate.
@@ -1120,6 +1127,11 @@ public:
 		NewDelegate.__Internal_BindDynamic( InUserObject, InMethodPtr, InFunctionName );
 
 		this->Add( NewDelegate );
+	}
+	template< class UserClass >
+	void __Internal_AddDynamic( TObjectPtr<UserClass> InUserObject, typename FDelegate::template TMethodPtrResolver< UserClass >::FMethodPtr InMethodPtr, FName InFunctionName )
+	{
+		__Internal_AddDynamic(ToRawPtr(InUserObject), InMethodPtr, InFunctionName);
 	}
 
 	/**
@@ -1144,6 +1156,11 @@ public:
 
 		this->AddUnique( NewDelegate );
 	}
+	template< class UserClass >
+	void __Internal_AddUniqueDynamic( TObjectPtr<UserClass> InUserObject, typename FDelegate::template TMethodPtrResolver< UserClass >::FMethodPtr InMethodPtr, FName InFunctionName )
+	{
+		__Internal_AddUniqueDynamic(ToRawPtr(InUserObject), InMethodPtr, InFunctionName);
+	}
 
 	/**
 	 * Unbinds a UObject instance and a UObject method address from this multi-cast delegate.
@@ -1163,6 +1180,11 @@ public:
 		// NOTE: We're not actually storing the incoming method pointer or calling it.  We simply require it for type-safety reasons.
 
 		this->Remove( InUserObject, InFunctionName );
+	}
+	template< class UserClass >
+	void __Internal_RemoveDynamic( TObjectPtr<UserClass> InUserObject, typename FDelegate::template TMethodPtrResolver< UserClass >::FMethodPtr InMethodPtr, FName InFunctionName )
+	{
+		__Internal_RemoveDynamic(ToRawPtr(InUserObject), InMethodPtr, InFunctionName);
 	}
 
 	// NOTE:  Broadcast() method must be defined in derived classes

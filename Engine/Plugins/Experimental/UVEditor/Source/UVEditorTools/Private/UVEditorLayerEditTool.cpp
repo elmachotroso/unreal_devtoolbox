@@ -11,11 +11,13 @@
 #include "ParameterizationOps/UVLayoutOp.h"
 #include "Properties/UVLayoutProperties.h"
 #include "ToolTargets/UVEditorToolMeshInput.h"
-#include "UVToolContextObjects.h"
+#include "ContextObjects/UVToolContextObjects.h"
 #include "ModelingToolTargetUtil.h"
 #include "Components.h"
 #include "UVEditorToolAnalyticsUtils.h"
 #include "EngineAnalytics.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVEditorLayerEditTool)
 
 using namespace UE::Geometry;
 

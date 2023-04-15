@@ -1,25 +1,70 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseDriverDetails.h"
+
 #include "AnimGraphNode_PoseDriver.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailsView.h"
+#include "AnimNodes/AnimNode_PoseDriver.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/PoseAsset.h"
+#include "Animation/Skeleton.h"
+#include "Animation/SmartName.h"
+#include "Containers/UnrealString.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "IDetailPropertyRow.h"
-#include "PropertyCustomizationHelpers.h"
-#include "Widgets/Input/SVectorInputBox.h"
-#include "Widgets/Input/SRotatorInputBox.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/Layout/SExpandableArea.h"
-#include "Widgets/Input/SComboBox.h"
-#include "SSearchableComboBox.h"
-#include "Widgets/Input/SButton.h"
-#include "SCurveEditor.h"
-#include "Widgets/Input/SCheckBox.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "IDetailPropertyRow.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "RBF/RBFSolver.h"
+#include "SCurveEditor.h"
+#include "SSearchableComboBox.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Input/SRotatorInputBox.h"
+#include "Widgets/Input/SVectorInputBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FGeometry;
+struct FPointerEvent;
 
 #define LOCTEXT_NAMESPACE "PoseDriverDetails"
 
@@ -46,8 +91,8 @@ public:
 		SButton::Construct(
 			SButton::FArguments()
 			.Text(FText::FromString(TEXT("S")))
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Default")
-			.TextStyle(FEditorStyle::Get(), "FlatButton.DefaultTextStyle")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Default")
+			.TextStyle(FAppStyle::Get(), "FlatButton.DefaultTextStyle")
 			.ContentPadding(4.0f)
 			.ForegroundColor(FSlateColor::UseForeground())
 			.OnPressed(this, &FSoloToggleButton::OnButtonPressed)
@@ -88,7 +133,7 @@ void SPDD_TargetRow::Construct(const FArguments& InArgs, const TSharedRef<STable
 
 	if (DistanceMethodOptions.Num() == 0)
 	{
-		UEnum * Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFDistanceMethod"));
+		UEnum* Enum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/AnimGraphRuntime.ERBFDistanceMethod"));
 		for (int32 i = 0; i < Enum->NumEnums() - 1; i++)
 		{
 			DistanceMethodOptions.Add(MakeShareable(new FString(Enum->GetDisplayNameTextByIndex(i).ToString())));
@@ -97,7 +142,7 @@ void SPDD_TargetRow::Construct(const FArguments& InArgs, const TSharedRef<STable
 
 	if (FunctionTypeOptions.Num() == 0)
 	{
-		UEnum * Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFFunctionType"));
+		UEnum* Enum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/AnimGraphRuntime.ERBFFunctionType"));
 		for (int32 i = 0; i < Enum->NumEnums() - 1; i++)
 		{
 			FunctionTypeOptions.Add(MakeShareable(new FString(Enum->GetDisplayNameTextByIndex(i).ToString())));
@@ -123,7 +168,7 @@ TSharedRef< SWidget > SPDD_TargetRow::GenerateWidgetForColumn(const FName& Colum
 		SNew(SBorder)
 		.Padding(0)
 		.ForegroundColor(FLinearColor::White)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		[
 			SAssignNew(ExpandArea, SExpandableArea)
 			.Padding(0)
@@ -169,7 +214,7 @@ TSharedRef< SWidget > SPDD_TargetRow::GenerateWidgetForColumn(const FName& Colum
 						[
 							SNew(SImage)
 							.ColorAndOpacity(this, &SPDD_TargetRow::GetWeightBarColor)
-							.Image(FEditorStyle::GetBrush("WhiteBrush"))
+							.Image(FAppStyle::GetBrush("WhiteBrush"))
 						]
 					]
 				]
@@ -209,7 +254,7 @@ TSharedRef< SWidget > SPDD_TargetRow::GenerateWidgetForColumn(const FName& Colum
 			.BodyContent()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SAssignNew(TargetEntryVertBox, SVerticalBox)
 
@@ -940,7 +985,7 @@ FSlateColor FPoseDriverDetails::GetToolsForegroundColor() const
 	static const FName InvertedForegroundName("InvertedForeground");
 	static const FName DefaultForegroundName("DefaultForeground");
 
-	return ToolsButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
+	return ToolsButton->IsHovered() ? FAppStyle::GetSlateColor(InvertedForegroundName) : FAppStyle::GetSlateColor(DefaultForegroundName);
 }
 
 void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
@@ -965,6 +1010,8 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	UpdateDrivenNameOptions();
 
 	TSharedPtr<IPropertyHandle> PoseTargetsProperty = DetailBuilder.GetProperty("Node.PoseTargets", UAnimGraphNode_PoseDriver::StaticClass());
+	// Update target infos when resetting the property 
+	PoseTargetsProperty->SetOnPropertyResetToDefault(FSimpleDelegate::CreateSP(this, &FPoseDriverDetails::UpdateTargetInfosList));
 
 	IDetailPropertyRow& PoseTargetsRow = PoseTargetsCategory.AddProperty(PoseTargetsProperty);
 	PoseTargetsRow.ShowPropertyButtons(false);
@@ -978,8 +1025,8 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		.HAlign(HAlign_Right)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "RoundButton")
-			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+			.ButtonStyle(FAppStyle::Get(), "RoundButton")
+			.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 			.ContentPadding(FMargin(2, 0))
 			.OnClicked(this, &FPoseDriverDetails::ClickedAddTarget)
 			.HAlign(HAlign_Center)
@@ -992,7 +1039,7 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 				.Padding(FMargin(0, 1))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Plus"))
+					.Image(FAppStyle::GetBrush("Plus"))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -1067,7 +1114,7 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 				SAssignNew(ToolsButton, SComboButton)
 				.ContentPadding(3)
 				.ForegroundColor(this, &FPoseDriverDetails::GetToolsForegroundColor)
-				.ButtonStyle(FEditorStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
+				.ButtonStyle(FAppStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
 				.OnGetMenuContent(this, &FPoseDriverDetails::GetToolsMenuContent)
 				.ButtonContent()
 				[

@@ -37,7 +37,7 @@ elif [ ! -f ../Binaries/DotNET/AutomationTool/AutomationTool.dll ]; then
 
 elif [ -f ../Intermediate/Build/AutomationToolLastBuildTime ]; then
   UPDATED_DEP_FILES="$(find \
-    Programs/Shared/EpicGames.Core Programs/Shared/EpicGames.Build Programs/UnrealBuildTool \
+    Programs/Shared/EpicGames.Core Programs/Shared/EpicGames.Build Programs/Shared/EpicGames.MsBuild Programs/Shared/EpicGames.UHT Programs/UnrealBuildTool \
     -type f \
     \( -iname \*.cs -or -iname \*.csproj \) \
     -newer ../Intermediate/Build/AutomationToolLastBuildTime)"
@@ -77,8 +77,7 @@ if [ $PERFORM_REBUILD -eq 1 ]; then
     source "$SCRIPT_DIR/Linux/SetupEnvironment.sh" $EnvironmentType "$SCRIPT_DIR/Linux"
   fi
 
-  dotnet msbuild -restore -t:build -property:Configuration=Development -nologo \
-    Programs/AutomationTool/AutomationTool.csproj -verbosity:$MSBuild_Verbosity
+  dotnet build Programs/AutomationTool/AutomationTool.csproj -c Development -v $MSBuild_Verbosity
   if [ $? -ne 0 ]; then
     echo "Compilation failed"
     popd >/dev/null

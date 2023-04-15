@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigContextMenuContext.h"
+#include "Editor/ControlRigContextMenuContext.h"
 
 #include "ControlRigBlueprint.h"
-#include "ControlRigEditor.h"
-#include "Slate/Public/Framework/Application/SlateApplication.h"
+#include "Editor/ControlRigEditor.h"
+#include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigContextMenuContext)
 
 FString FControlRigRigHierarchyToGraphDragAndDropContext::GetSectionTitle() const
 {
@@ -86,3 +88,4 @@ FControlRigEditor* UControlRigContextMenuContext::GetControlRigEditor() const
 	}
 	return nullptr;
 }
+

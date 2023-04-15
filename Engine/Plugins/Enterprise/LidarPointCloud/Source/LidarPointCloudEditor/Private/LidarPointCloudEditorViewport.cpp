@@ -7,10 +7,9 @@
 #include "LidarPointCloudEditorCommands.h"
 
 #include "Slate/SceneViewport.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ComponentReregisterContext.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Components/StaticMeshComponent.h"
 
 ///////////////////////////////////////////////////////////
 // SPointCloudEditorViewportToolbar
@@ -55,9 +54,6 @@ public:
 
 void SLidarPointCloudEditorViewport::Construct(const FArguments& InArgs)
 {
-	PreviewScene.SetFloorVisibility(false, true);
-	PreviewScene.SetEnvironmentVisibility(false);
-
 	PointCloudEditorPtr = InArgs._PointCloudEditor;
 
 	PointCloud = InArgs._ObjectToEdit;
@@ -73,18 +69,7 @@ void SLidarPointCloudEditorViewport::Construct(const FArguments& InArgs)
 	PreviewScene.AddComponent(PreviewCloudComponent, FTransform::Identity);
 
 	SetPreviewCloud(PointCloud);
-
-	// Add Paint Brush
-	static UStaticMesh* PaintBrushMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
-	static UMaterialInterface* PaintBrushMat = Cast<UMaterialInterface>(StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, TEXT("/LidarPointCloud/Materials/M_LidarSelectionBrush.M_LidarSelectionBrush")));
-
-	PaintBrush = NewObject<UStaticMeshComponent>();
-	PaintBrush->SetMobility(EComponentMobility::Movable);
-	PaintBrush->SetVisibility(false);
-	PaintBrush->SetStaticMesh(PaintBrushMesh);
-	PaintBrush->SetMaterial(0, PaintBrushMat);
-	PreviewScene.AddComponent(PaintBrush, FTransform::Identity);
-
+	
 	ViewportOverlay->AddSlot()
 		.VAlign(VAlign_Top)
 		.HAlign(HAlign_Left)
@@ -101,7 +86,7 @@ void SLidarPointCloudEditorViewport::Construct(const FArguments& InArgs)
 }
 
 SLidarPointCloudEditorViewport::SLidarPointCloudEditorViewport()
-	: PreviewScene(FPreviewScene::ConstructionValues(), FLT_MAX)
+	: PreviewScene(FPreviewScene::ConstructionValues())
 {
 }
 
@@ -123,7 +108,6 @@ SLidarPointCloudEditorViewport::~SLidarPointCloudEditorViewport()
 void SLidarPointCloudEditorViewport::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(PreviewCloudComponent);
-	Collector.AddReferencedObject(PaintBrush);
 	Collector.AddReferencedObject(PointCloud);
 }
 
@@ -161,7 +145,7 @@ void SLidarPointCloudEditorViewport::PopulateOverlayText(const TArray<FOverlayTe
 			[
 				SNew(STextBlock)
 				.Text(TextItem.Text)
-				.TextStyle(FEditorStyle::Get(), TextItem.Style)
+				.TextStyle(FAppStyle::Get(), TextItem.Style)
 			];
 	}
 
@@ -175,7 +159,7 @@ bool SLidarPointCloudEditorViewport::IsVisible() const
 
 TSharedRef<FEditorViewportClient> SLidarPointCloudEditorViewport::MakeEditorViewportClient()
 {
-	EditorViewportClient = MakeShareable(new FLidarPointCloudEditorViewportClient(PointCloudEditorPtr, SharedThis(this), &PreviewScene, PointCloud, PreviewCloudComponent));
+	EditorViewportClient = MakeShareable(new FLidarPointCloudEditorViewportClient(PointCloudEditorPtr, SharedThis(this), &PreviewScene, PreviewCloudComponent));
 
 	EditorViewportClient->bSetListenerPosition = false;
 
@@ -232,6 +216,5 @@ void SLidarPointCloudEditorViewport::OnFocusViewportToSelection()
 	if (PreviewCloudComponent)
 	{
 		EditorViewportClient->FocusViewportOnBox(PreviewCloudComponent->Bounds.GetBox());
-		return;
 	}
 }

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraCommon.h"
 #include "VectorVM.h"
@@ -11,13 +12,13 @@
 class AActor;
 
 /** Element offsets in the array list */
-struct FElementOffset
+struct FNDIRigidMeshCollisionElementOffset
 {
-	FElementOffset(const uint32 InBoxOffset, const uint32 InSphereOffset, const uint32 InCapsuleOffset, const uint32 InNumElements) :
+	FNDIRigidMeshCollisionElementOffset(const uint32 InBoxOffset, const uint32 InSphereOffset, const uint32 InCapsuleOffset, const uint32 InNumElements) :
 		BoxOffset(InBoxOffset), SphereOffset(InSphereOffset), CapsuleOffset(InCapsuleOffset), NumElements(InNumElements)
 	{}
 
-	FElementOffset() :
+	FNDIRigidMeshCollisionElementOffset() :
 		BoxOffset(0), SphereOffset(0), CapsuleOffset(0), NumElements(0)
 	{}
 	uint32 BoxOffset;
@@ -29,64 +30,37 @@ struct FElementOffset
 /** Arrays in which the cpu datas will be str */
 struct FNDIRigidMeshCollisionArrays
 {
-	FElementOffset ElementOffsets;
-	TArray<FVector4f> WorldTransform;
-	TArray<FVector4f> InverseTransform;
+	FNDIRigidMeshCollisionElementOffset ElementOffsets;
 	TArray<FVector4f> CurrentTransform;
 	TArray<FVector4f> CurrentInverse;
 	TArray<FVector4f> PreviousTransform;
 	TArray<FVector4f> PreviousInverse;
 	TArray<FVector4f> ElementExtent;
 	TArray<uint32> PhysicsType;
-	TArray<uint32> DFIndex;
-	TArray<FPrimitiveSceneProxy*> SourceSceneProxy;
+	TArray<int32> ComponentIdIndex;
+	TArray<FPrimitiveComponentId> UniqueCompnentId;
 
-	FNDIRigidMeshCollisionArrays()
-	{
-		Resize(100);
-	}
-
+	FNDIRigidMeshCollisionArrays() = delete;
 	FNDIRigidMeshCollisionArrays(uint32 Num)
+		: MaxPrimitives(Num)
 	{
-		Resize(Num);
+		Reset();
 	}
 
-	void CopyFrom(const FNDIRigidMeshCollisionArrays* Other)
+	void Reset()
 	{
-		Resize(Other->MaxPrimitives);
-
-		ElementOffsets = Other->ElementOffsets;
-		WorldTransform = Other->WorldTransform;
-		InverseTransform = Other->InverseTransform;
-		CurrentTransform = Other->CurrentTransform;
-		CurrentInverse = Other->CurrentInverse;
-		PreviousTransform = Other->PreviousTransform;
-		PreviousInverse = Other->PreviousInverse;
-		ElementExtent = Other->ElementExtent;
-		PhysicsType = Other->PhysicsType;
-		DFIndex = Other->DFIndex;
-		SourceSceneProxy = Other->SourceSceneProxy;
-	}
-
-	void Resize(uint32 Num)
-	{
-		MaxPrimitives = Num;
-		MaxTransforms = MaxPrimitives * 2;				
-
-		WorldTransform.Init(FVector4f(0, 0, 0, 0), 3 * MaxTransforms);
-		InverseTransform.Init(FVector4f(0, 0, 0, 0), 3 * MaxTransforms);
+		ElementOffsets = FNDIRigidMeshCollisionElementOffset();
 		CurrentTransform.Init(FVector4f(0, 0, 0, 0), 3 * MaxPrimitives);
 		CurrentInverse.Init(FVector4f(0, 0, 0, 0), 3 * MaxPrimitives);
 		PreviousTransform.Init(FVector4f(0, 0, 0, 0), 3 * MaxPrimitives);
 		PreviousInverse.Init(FVector4f(0, 0, 0, 0), 3 * MaxPrimitives);
 		ElementExtent.Init(FVector4f(0, 0, 0, 0), MaxPrimitives);
 		PhysicsType.Init(0, MaxPrimitives);
-		DFIndex.Init(0, MaxPrimitives);
-		SourceSceneProxy.Init(nullptr, MaxPrimitives);
+		ComponentIdIndex.Init(INDEX_NONE, MaxPrimitives);
+		UniqueCompnentId.Reset();
 	}
 
-	uint32 MaxPrimitives = 100;
-	uint32 MaxTransforms = MaxPrimitives * 2;
+	const uint32 MaxPrimitives;
 };
 
 /** Render buffers that will be used in hlsl functions */
@@ -102,19 +76,19 @@ struct FNDIRigidMeshCollisionBuffer : public FRenderResource
 	virtual FString GetFriendlyName() const override { return TEXT("FNDIRigidMeshCollisionBuffer"); }
 
 	/** World transform buffer */
-	FRWBuffer WorldTransformBuffer;
+	FReadBuffer WorldTransformBuffer;
 
 	/** Inverse transform buffer*/
-	FRWBuffer InverseTransformBuffer;
+	FReadBuffer InverseTransformBuffer;
 
 	/** Element extent buffer */
-	FRWBuffer ElementExtentBuffer;
+	FReadBuffer ElementExtentBuffer;
 
 	/** Physics type buffer */
-	FRWBuffer PhysicsTypeBuffer;
+	FReadBuffer PhysicsTypeBuffer;
 
 	/** Distance field index buffer */
-	FRWBuffer DFIndexBuffer;
+	FReadBuffer DFIndexBuffer;
 
 	/** Max number of primitives */
 	uint32 MaxNumPrimitives;
@@ -129,31 +103,56 @@ struct FNDIRigidMeshCollisionBuffer : public FRenderResource
 	}
 };
 
-/** Data stored per physics asset instance*/
+/** Data stored per DI instance*/
 struct FNDIRigidMeshCollisionData
 {
+	FNDIRigidMeshCollisionData(const FNiagaraSystemInstance* InSystemInstance, bool InRequiresSourceActors, bool InHasScriptedFindActor)
+	: SystemInstance(InSystemInstance)
+	, bRequiresSourceActors(InRequiresSourceActors)
+	, bHasScriptedFindActor(InHasScriptedFindActor)
+	{}
+
 	/** Initialize the cpu datas */
-	void Init(class UNiagaraDataInterfaceRigidMeshCollisionQuery* Interface, FNiagaraSystemInstance* SystemInstance);
+	void Init(int32 MaxNumPrimitives);
 
 	/** Update the gpu datas */
-	void Update(class UNiagaraDataInterfaceRigidMeshCollisionQuery* Interface, FNiagaraSystemInstance* SystemInstance);
+	void Update(UNiagaraDataInterfaceRigidMeshCollisionQuery* Interface);
 
 	/** Release the buffers */
-	void Release();
+	void ReleaseBuffers();
 
-	ETickingGroup ComputeTickingGroup();
+	bool HasActors() const;
+	bool ShouldRunGlobalSearch(UNiagaraDataInterfaceRigidMeshCollisionQuery* Interface) const;
 
-	/** The instance ticking group */
-	ETickingGroup TickingGroup;
+	using FMergedActorArray = TArray<AActor*, TInlineAllocator<16>>;
+	void MergeActors(FMergedActorArray& MergedActors) const;
 
 	/** Physics asset Gpu buffer */
 	FNDIRigidMeshCollisionBuffer* AssetBuffer = nullptr;
 
 	/** Physics asset Cpu arrays */
-	FNDIRigidMeshCollisionArrays *AssetArrays = nullptr;
+	TUniquePtr<FNDIRigidMeshCollisionArrays> AssetArrays = nullptr;
 
-	/** Static Mesh Components **/
-	TArray<AActor*> Actors;
+	/** Source actors **/
+	TArray<TWeakObjectPtr<AActor>> ExplicitActors;
+
+	/** Source actors **/
+	TArray<TWeakObjectPtr<AActor>> FoundActors;
+
+	const FNiagaraSystemInstance* SystemInstance = nullptr;
+
+	/** If false indicates that the instance is not dependent on any RigidBodies, and processing can be skipped. */
+	const bool bRequiresSourceActors;
+
+	/** Indicates that the instance is being used in a call to FindActors */
+	const bool bHasScriptedFindActor;
+
+	/** Indicates that something has updated the list of FoundActors */
+	bool bFoundActorsUpdated = false;
+
+	/** Indicates that a full update of the arrays is required */
+	bool bRequiresFullUpdate = false;
+
 };
 
 /** Data Interface used to collide against static meshes - whether it is the mesh distance field or a physics asset's collision primitive */
@@ -163,25 +162,56 @@ class UNiagaraDataInterfaceRigidMeshCollisionQuery : public UNiagaraDataInterfac
 	GENERATED_UCLASS_BODY()
 
 public:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FString Tag_DEPRECATED = TEXT("");
+#endif
 
-	DECLARE_NIAGARA_DI_PARAMETER();
+	/** Set of tags used to match against actors when searching for RigidBody providers.  Empty tags will be ignored, and only a single 
+		tag is required for an actor to be matched. */
+	UPROPERTY(EditAnywhere, Category = "Search")
+	TArray<FName> ActorTags;
 
-	UPROPERTY(EditAnywhere, Category = "Static Mesh")
-	FString Tag = TEXT("");
+	/** Set of tags used to match against components when searching for RigidBody providers.  Empty tags will be ignored, and only a
+		single tag is required for a component to be matched. */
+	UPROPERTY(EditAnywhere, Category = "Source")
+	TArray<FName> ComponentTags;
 
-	UPROPERTY(EditAnywhere, Category = "Static Mesh")
+	/** Hardcoded references to actors that will be used as RigidBody providers. */
+	UPROPERTY(EditAnywhere, Category = "Source")
+	TArray<TSoftObjectPtr<AActor>> SourceActors;
+
+	/** If enabled only actors that are considered moveable will be searched for RigidBodies. */
+	UPROPERTY(EditAnywhere, Category = "Source")
 	bool OnlyUseMoveable = true;
 
+	/** If enabled the global search can be executed dependeing on GlobalSearchForced and GlobalSearchFallback_Unscripted */
+	UPROPERTY(EditAnywhere, Category = "Source", meta = (DisplayName = "Global Search Allowed"))
+	bool GlobalSearchAllowed = true;
+
+	/** If enabled the global search will be performed only if there are no explicit actors specified */
+	UPROPERTY(EditAnywhere, Category = "Source", meta = (DisplayName = "Global Search Forced", EditCondition = GlobalSearchAllowed))
+	bool GlobalSearchForced = false;
+
+	/** If enabled the global search will be performed only if there are no explicit actors specified */
+	UPROPERTY(EditAnywhere, Category = "Source", meta = (DisplayName = "Global Search Only If Unscripted", EditCondition = GlobalSearchAllowed))
+	bool GlobalSearchFallback_Unscripted = true;
+
+	/** Maximum number of RigidBody represented by this DataInterface. */
 	UPROPERTY(EditAnywhere, Category = "General")
 	int MaxNumPrimitives = 100;
 
 	/** UObject Interface */
 	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
 
 	/** UNiagaraDataInterface Interface */
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc) override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return Target == ENiagaraSimTarget::GPUComputeSim; }
+#if WITH_NIAGARA_DEBUGGER
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override;
+#endif
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
 	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)override;
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) override;
@@ -197,66 +227,45 @@ public:
 #if WITH_EDITORONLY_DATA
 	virtual void GetCommonHLSL(FString& OutHLSL) override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
+
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 
 	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
+
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
-	/** Name of element offsets */
-	static const FString MaxTransformsName;
+	bool UpdateSourceActors(FNiagaraSystemInstance* SystemInstance, FNDIRigidMeshCollisionData& InstanceData) const;
 
-	/** Name of element offsets */
-	static const FString CurrentOffsetName;
+	bool GetExplicitActors(FNDIRigidMeshCollisionData& InstanceData);
+	bool FindActors(UWorld* World, FNDIRigidMeshCollisionData& InstanceData, ECollisionChannel Channel, const FVector& OverlapLocation, const FVector& OverlapExtent, const FQuat& OverlapRotation) const;
+	bool GlobalFindActors(UWorld* World, FNDIRigidMeshCollisionData& InstanceData) const;
 
-	/** Name of element offsets */
-	static const FString PreviousOffsetName;
-
-	/** Name of element offsets */
-	static const FString ElementOffsetsName;
-
-	/** Name of the world transform buffer */
-	static const FString WorldTransformBufferName;
-
-	/** Name of the inverse transform buffer */
-	static const FString InverseTransformBufferName;
-
-	/** Name of the element extent buffer */
-	static const FString ElementExtentBufferName;
-
-	/** Name of the physics type buffer */
-	static const FString PhysicsTypeBufferName;
-
-	/** Name of the DF Index type buffer */
-	static const FString DFIndexBufferName;
+	void FindActorsCPU(FVectorVMExternalFunctionContext& Context);
 
 protected:
 	/** Copy one niagara DI to this */
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
+
+	bool FilterComponent(const UPrimitiveComponent* Component) const;
+	bool FilterActor(const AActor* Actor) const;
 };
 
-/** Proxy to send data to gpu */
-struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
+/**
+* C++ and Blueprint library for accessing array types
+*/
+UCLASS()
+class NIAGARA_API UNiagaraDIRigidMeshCollisionFunctionLibrary : public UBlueprintFunctionLibrary
 {
-	/** Get the size of the data that will be passed to render*/
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIRigidMeshCollisionData); }
+	GENERATED_BODY()
 
-	/** Get the data that will be passed to render*/
-	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override;
+public:
 
-	/** Initialize the Proxy data buffer */
-	void InitializePerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
-
-	/** Destroy the proxy data if necessary */
-	void DestroyPerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
-
-	/** Launch all pre stage functions */
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
-
-	/** Reset the buffers  */
-	virtual void ResetData(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override;
-
-	/** List of proxy data for each system instances*/
-	TMap<FNiagaraSystemInstanceID, FNDIRigidMeshCollisionData> SystemInstancesToProxyData;
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Niagara Set Source Actors"))
+	static void SetSourceActors(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<AActor*>& SourceActors);
 };

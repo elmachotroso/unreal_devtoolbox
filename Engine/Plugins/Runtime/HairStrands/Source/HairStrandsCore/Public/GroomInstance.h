@@ -132,6 +132,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	struct FGuides : FStrandsBase
 	{
 		bool bIsSimulationEnable = false;
+		bool bIsDeformationEnable = false;
 		bool bHasGlobalInterpolation = false;
 	} Guides;
 
@@ -249,6 +250,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 		int32					MeshLODIndex = ~0;
 		EGroomBindingMeshType	GroomBindingType;
 		EGroomCacheType			GroomCacheType;
+		FPrimitiveSceneProxy*	Proxy = nullptr;
 		UMeshComponent*			MeshComponent = nullptr;
 		FString					MeshComponentName;
 		const UGroomComponent*	GroomComponentForDebug = nullptr; // For debug only, shouldn't be deferred on the rendering thread
@@ -273,19 +275,25 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance : public FHairStrandsInstance
 	FHairGroupPublicData*	HairGroupPublicData = nullptr;
 	EHairGeometryType		GeometryType = EHairGeometryType::NoneGeometry;
 	EHairBindingType		BindingType = EHairBindingType::NoneBinding;
-	const FBoxSphereBounds*	ProxyBounds = nullptr;
-	const FBoxSphereBounds* ProxyLocalBounds = nullptr;
 	bool					bForceCards = false;
 	bool					bUpdatePositionOffset = false;
 	bool					bCastShadow = true;
-
+	
+	// Deformed component to extract the bone buffer 
+	UMeshComponent*	 DeformedComponent = nullptr;
+	
+	// Section of the deformed component to be used 
+	int32	 DeformedSection = INDEX_NONE;
+	
 	bool IsValid() const 
 	{
 		return Meshes.IsValid() || Cards.IsValid() || Strands.IsValid();
 	}
 
-	virtual const FBoxSphereBounds* GetBounds() const override { return ProxyBounds;  }
+	virtual const FBoxSphereBounds& GetBounds() const override { return Debug.Proxy->GetBounds(); }
+	virtual const FBoxSphereBounds& GetLocalBounds() const { return Debug.Proxy->GetLocalBounds(); }
 	virtual const FHairGroupPublicData* GetHairData() const { return HairGroupPublicData; }
+	virtual const EHairGeometryType GetHairGeometry() const { return GeometryType; }
 
 	/** Get the current local to world transform according to the internal binding type */
 	FORCEINLINE const FTransform& GetCurrentLocalToWorld() const

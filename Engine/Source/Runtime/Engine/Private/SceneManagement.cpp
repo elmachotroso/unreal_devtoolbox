@@ -6,8 +6,8 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "StaticMeshResources.h"
-#include "Runtime/Renderer/Private/SceneRendering.h"
-#include "Runtime/Renderer/Private/SceneCore.h"
+#include "SceneRendering.h"
+#include "SceneCore.h"
 #include "Async/ParallelFor.h"
 #include "LightMap.h"
 #include "ShadowMap.h"
@@ -16,6 +16,7 @@
 #include "Engine/ShadowMapTexture2D.h"
 #include "VT/LightmapVirtualTexture.h"
 #include "UnrealEngine.h"
+#include "ColorSpace.h"
 
 static TAutoConsoleVariable<float> CVarLODTemporalLag(
 	TEXT("lod.TemporalLag"),
@@ -55,6 +56,32 @@ void FTemporalLODState::UpdateTemporalLODTransition(const FViewInfo& View, float
 	}
 }
 
+
+IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(WorkingColorSpace);
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FWorkingColorSpaceShaderParameters, "WorkingColorSpace", WorkingColorSpace);
+
+void FDefaultWorkingColorSpaceUniformBuffer::Update(const UE::Color::FColorSpace& InColorSpace)
+{
+	using namespace UE::Color;
+
+	const FVector2d& White = InColorSpace.GetWhiteChromaticity();
+	const FVector2d ACES_D60 = GetWhitePoint(EWhitePoint::ACES_D60);
+
+	FWorkingColorSpaceShaderParameters Parameters;
+	Parameters.ToXYZ = Transpose<float>(InColorSpace.GetRgbToXYZ());
+	Parameters.FromXYZ = Transpose<float>(InColorSpace.GetXYZToRgb());
+
+	Parameters.ToAP1 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP1), EChromaticAdaptationMethod::Bradford));
+	Parameters.FromAP1 = Parameters.ToAP1.Inverse();
+	
+	Parameters.ToAP0 = Transpose<float>(FColorSpaceTransform(InColorSpace, FColorSpace(EColorSpace::ACESAP0), EChromaticAdaptationMethod::Bradford));
+
+	Parameters.bIsSRGB = InColorSpace.IsSRGB();
+
+	SetContents(Parameters);
+}
+
+TGlobalResource<FDefaultWorkingColorSpaceUniformBuffer> GDefaultWorkingColorSpaceUniformBuffer;
 
 
 FSimpleElementCollector::FSimpleElementCollector() :
@@ -195,9 +222,6 @@ void FSimpleElementCollector::RegisterDynamicResource(FDynamicPrimitiveResource*
 
 void FSimpleElementCollector::DrawBatchedElements(FRHICommandList& RHICmdList, const FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& InView, EBlendModeFilter::Type Filter, ESceneDepthPriorityGroup DepthPriorityGroup) const
 {
-	// Mobile HDR does not execute post process, so does not need to render flipped
-	const bool bNeedToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(InView.GetShaderPlatform()) && !bIsMobileHDR;
-
 	const FBatchedElements& Elements = DepthPriorityGroup == SDPG_World ? BatchedElements : TopBatchedElements;
 
 	// Draw the batched elements.
@@ -205,7 +229,6 @@ void FSimpleElementCollector::DrawBatchedElements(FRHICommandList& RHICmdList, c
 		RHICmdList,
 		DrawRenderState,
 		InView.GetFeatureLevel(),
-		bNeedToSwitchVerticalAxis,
 		InView,
 		InView.Family->EngineShowFlags.HitProxies,
 		1.0f,
@@ -228,7 +251,8 @@ static TAutoConsoleVariable<int32> CVarUseParallelGetDynamicMeshElementsTasks(
 	0,
 	TEXT("If > 0, and if FApp::ShouldUseThreadingForPerformance(), then parts of GetDynamicMeshElements will be done in parallel."));
 
-FMeshElementCollector::FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel) :
+FMeshElementCollector::FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel, FSceneRenderingBulkObjectAllocator& InBulkAllocator) :
+	OneFrameResources(InBulkAllocator),
 	PrimitiveSceneProxy(NULL),
 	DynamicIndexBuffer(nullptr),
 	DynamicVertexBuffer(nullptr),
@@ -247,15 +271,13 @@ void FMeshElementCollector::ProcessTasks()
 	if (ParallelTasks.Num())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMeshElementCollector_ProcessTasks);
-		TArray<TFunction<void()>*, SceneRenderingAllocator>& LocalParallelTasks(ParallelTasks);
+		TArray<TFunction<void()>, SceneRenderingAllocator>& LocalParallelTasks(ParallelTasks);
 		ParallelFor(ParallelTasks.Num(), 
 			[&LocalParallelTasks](int32 Index)
 			{
-				TFunction<void()>* Func = LocalParallelTasks[Index];
-				(*Func)();
-				Func->~TFunction<void()>();
-			}
-			);
+				LocalParallelTasks[Index]();
+				LocalParallelTasks[Index] = {};
+			});
 		ParallelTasks.Empty();
 	}
 }
@@ -325,7 +347,6 @@ void FDynamicPrimitiveUniformBuffer::Set(
 	const FBoxSphereBounds& PreSkinnedLocalBounds,
 	bool bReceivesDecals,
 	bool bHasPrecomputedVolumetricLightmap,
-	bool bDrawsVelocity,
 	bool bOutputVelocity,
 	const FCustomPrimitiveData* CustomPrimitiveData)
 {
@@ -341,7 +362,6 @@ void FDynamicPrimitiveUniformBuffer::Set(
 			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
 			.ReceivesDecals(bReceivesDecals)
 			.OutputVelocity(bOutputVelocity)
-			.DrawsVelocity(bDrawsVelocity)
 			.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
 			.CustomPrimitiveData(CustomPrimitiveData)
 		.Build()
@@ -357,10 +377,9 @@ void FDynamicPrimitiveUniformBuffer::Set(
 	const FBoxSphereBounds& PreSkinnedLocalBounds,
 	bool bReceivesDecals,
 	bool bHasPrecomputedVolumetricLightmap,
-	bool bDrawsVelocity,
 	bool bOutputVelocity)
 {
-	Set(LocalToWorld, PreviousLocalToWorld, WorldBounds, LocalBounds, PreSkinnedLocalBounds, bReceivesDecals, bHasPrecomputedVolumetricLightmap, bDrawsVelocity, bOutputVelocity, nullptr);
+	Set(LocalToWorld, PreviousLocalToWorld, WorldBounds, LocalBounds, PreSkinnedLocalBounds, bReceivesDecals, bHasPrecomputedVolumetricLightmap, bOutputVelocity, nullptr);
 }
 
 void FDynamicPrimitiveUniformBuffer::Set(
@@ -370,10 +389,9 @@ void FDynamicPrimitiveUniformBuffer::Set(
 	const FBoxSphereBounds& LocalBounds,
 	bool bReceivesDecals,
 	bool bHasPrecomputedVolumetricLightmap,
-	bool bDrawsVelocity,
 	bool bOutputVelocity)
 {
-	Set(LocalToWorld, PreviousLocalToWorld, WorldBounds, LocalBounds, LocalBounds, bReceivesDecals, bHasPrecomputedVolumetricLightmap, bDrawsVelocity, bOutputVelocity, nullptr);
+	Set(LocalToWorld, PreviousLocalToWorld, WorldBounds, LocalBounds, LocalBounds, bReceivesDecals, bHasPrecomputedVolumetricLightmap, bOutputVelocity, nullptr);
 }
 
 FLightMapInteraction FLightMapInteraction::Texture(
@@ -545,7 +563,7 @@ float ComputeBoundsDrawDistance(const float ScreenSize, const float SphereRadius
 	const float ScreenMultiple = FMath::Max(0.5f * ProjMatrix.M[0][0], 0.5f * ProjMatrix.M[1][1]);
 
 	// ScreenSize is the projected diameter, so halve it
-	const float ScreenRadius = FMath::Max(SMALL_NUMBER, ScreenSize * 0.5f);
+	const float ScreenRadius = FMath::Max(UE_SMALL_NUMBER, ScreenSize * 0.5f);
 
 	// Invert the calcs in ComputeBoundsScreenSize
 	return (ScreenMultiple * SphereRadius) / ScreenRadius;
@@ -709,6 +727,7 @@ FMobileDirectionalLightShaderParameters::FMobileDirectionalLightShaderParameters
 	// light, default to black
 	DirectionalLightColor = FLinearColor::Black;
 	DirectionalLightDirectionAndShadowTransition = FVector4f(EForceInit::ForceInitToZero);
+	DirectionalLightShadowMapChannelMask = 0xFF;
 
 	// white texture should act like a shadowmap cleared to the farplane.
 	DirectionalLightShadowTexture = GWhiteTexture->TextureRHI;
@@ -810,6 +829,8 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	WaterIndirection = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 	WaterData = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 
+	// Landscape
+	LandscapeWeightmapSampler = TStaticSamplerState<SF_AnisotropicPoint, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	LandscapeIndirection = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 	LandscapePerComponentData = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 
@@ -832,6 +853,12 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	ShadingEnergyClothSpecTexture = GBlackTextureWithSRV->TextureRHI;
 	ShadingEnergyDiffuseTexture = GBlackTextureWithSRV->TextureRHI;
 
+	// Rect light atlas
+	RectLightAtlasMaxMipLevel = 1;
+	RectLightAtlasSizeAndInvSize = FVector4f(1, 1, 1, 1);
+	RectLightAtlasTexture = GBlackTextureWithSRV->TextureRHI;
+	RectLightAtlasSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
 	// Subsurface profiles/pre-intregrated
 	SSProfilesTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);
 	SSProfilesTexture = GBlackTextureWithSRV->TextureRHI;
@@ -839,7 +866,7 @@ FViewUniformShaderParameters::FViewUniformShaderParameters()
 	SSProfilesTransmissionSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	SSProfilesPreIntegratedTextureSizeAndInvSize = FVector4f(1.f,1.f,1.f,1.f);
-	SSProfilesPreIntegratedTexture = GBlackTextureWithSRV->TextureRHI;
+	SSProfilesPreIntegratedTexture = GBlackArrayTexture->TextureRHI;
 	SSProfilesPreIntegratedSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	//this can be deleted once sm4 support is removed.
@@ -902,7 +929,10 @@ void InitializeSharedSamplerStates()
 
 void FLightCacheInterface::CreatePrecomputedLightingUniformBuffer_RenderingThread(ERHIFeatureLevel::Type FeatureLevel)
 {
-	if (LightMap || ShadowMap)
+	const bool bPrecomputedLightingParametersFromGPUScene = UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel) && bCanUsePrecomputedLightingParametersFromGPUScene;
+
+	// Only create UB when GPUScene isn't available
+	if (!bPrecomputedLightingParametersFromGPUScene && (LightMap || ShadowMap))
 	{
 		FPrecomputedLightingUniformParameters Parameters;
 		GetPrecomputedLightingParameters(FeatureLevel, Parameters, this);
@@ -950,7 +980,7 @@ static FRHISamplerState* GetTextureSamplerState(const UTexture* Texture, FRHISam
 void GetLightmapClusterResourceParameters(
 	ERHIFeatureLevel::Type FeatureLevel, 
 	const FLightmapClusterResourceInput& Input,
-	IAllocatedVirtualTexture* AllocatedVT,
+	const IAllocatedVirtualTexture* AllocatedVT,
 	FLightmapResourceClusterShaderParameters& Parameters)
 {
 	const bool bAllowHighQualityLightMaps = AllowHighQualityLightmaps(FeatureLevel);
@@ -1161,10 +1191,7 @@ void FReadOnlyCVARCache::Init()
 	static const auto CVarMobileAllowMovableDirectionalLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowMovableDirectionalLights"));
 	static const auto CVarMobileEnableStaticAndCSMShadowReceivers = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableStaticAndCSMShadowReceivers"));
 	static const auto CVarMobileAllowDistanceFieldShadows = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowDistanceFieldShadows"));
-	static const auto CVarMobileNumDynamicPointLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileNumDynamicPointLights"));
 	static const auto CVarMobileSkyLightPermutation = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SkyLightPermutation"));
-	static const auto CVarMobileEnableMovableSpotLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableMovableSpotlights"));
-	static const auto CVarMobileEnableMovableSpotLightsShadow = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableMovableSpotlightsShadow"));
 	static const auto CVarMobileEnableNoPrecomputedLightingCSMShader = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableNoPrecomputedLightingCSMShader"));
 
 	const bool bForceAllPermutations = CVarSupportAllShaderPermutations && CVarSupportAllShaderPermutations->GetValueOnAnyThread() != 0;
@@ -1179,10 +1206,7 @@ void FReadOnlyCVARCache::Init()
 	bMobileAllowMovableDirectionalLights = CVarMobileAllowMovableDirectionalLights->GetValueOnAnyThread() != 0;
 	bMobileAllowDistanceFieldShadows = CVarMobileAllowDistanceFieldShadows->GetValueOnAnyThread() != 0;
 	bMobileEnableStaticAndCSMShadowReceivers = CVarMobileEnableStaticAndCSMShadowReceivers->GetValueOnAnyThread() != 0;
-	NumMobileMovablePointLights = CVarMobileNumDynamicPointLights->GetValueOnAnyThread();
 	MobileSkyLightPermutation = CVarMobileSkyLightPermutation->GetValueOnAnyThread();
-	bMobileEnableMovableSpotlights = CVarMobileEnableMovableSpotLights->GetValueOnAnyThread() != 0;
-	bMobileEnableMovableSpotlightsShadow = bMobileEnableMovableSpotlights && CVarMobileEnableMovableSpotLightsShadow->GetValueOnAnyThread() != 0;
 	bMobileEnableNoPrecomputedLightingCSMShader = CVarMobileEnableNoPrecomputedLightingCSMShader->GetValueOnAnyThread() != 0;
 
 	const bool bShowMissmatchedLowQualityLightmapsWarning = (!bEnableLowQualityLightmaps) && (GEngine->bShouldGenerateLowQualityLightmaps_DEPRECATED);

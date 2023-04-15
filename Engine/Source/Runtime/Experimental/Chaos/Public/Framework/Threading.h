@@ -148,7 +148,7 @@ public:
 
 	bool IsInGameThreadContext() const
 	{
-		return IsInGameThread() || GameThreadContext > 0;
+		return (IsInGameThread() || GameThreadContext > 0) && !bFrozenGameThread;
 	}
 
 	void IncPhysicsSimContext()
@@ -173,9 +173,22 @@ public:
 		--GameThreadContext;
 	}
 
+	void FreezeGameThreadContext()
+	{
+		ensure(!bFrozenGameThread);
+		bFrozenGameThread = true;
+	}
+
+	void UnFreezeGameThreadContext()
+	{
+		ensure(bFrozenGameThread);
+		bFrozenGameThread = false;
+	}
+
 private:
 	int32 PhysicsSimContext = 0;
 	int32 GameThreadContext = 0;
+	bool bFrozenGameThread = false;
 };
 
 struct FPhysicsThreadContextScope
@@ -220,6 +233,19 @@ struct FGameThreadContextScope
 	}
 
 	bool bParentIsGameThreadContext;
+};
+
+struct FFrozenGameThreadContextScope
+{
+	FFrozenGameThreadContextScope()
+	{
+		FPhysicsThreadContext::Get().FreezeGameThreadContext();
+	}
+
+	~FFrozenGameThreadContextScope()
+	{
+		FPhysicsThreadContext::Get().UnFreezeGameThreadContext();
+	}
 };
 
 
@@ -671,7 +697,7 @@ FORCEINLINE void EnsureIsInGameThreadContext()
 		TPhysicsSceneGuardScopedWrite(MutexType& InMutex)
 			: Mutex(InMutex)
 		{
-			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(AcquireSceneWriteLock);
+			CSV_SCOPED_TIMING_STAT(PhysicsVerbose,AcquireSceneWriteLock);
 			Mutex.WriteLock();
 		}
 
@@ -700,7 +726,7 @@ FORCEINLINE void EnsureIsInGameThreadContext()
 		TPhysicsSceneGuardScopedRead(MutexType& InMutex)
 			: Mutex(InMutex)
 		{
-			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(AcquireSceneReadLock);
+			CSV_SCOPED_TIMING_STAT(PhysicsVerbose, AcquireSceneReadLock);
 			Mutex.ReadLock();
 		}
 

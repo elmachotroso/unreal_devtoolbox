@@ -6,19 +6,35 @@
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/PackageMapClient.h"
 #include "NetworkReplayStreaming.h"
+#include "Net/Core/Connection/NetResult.h"
+#include "Net/ReplayResult.h"
 #include "ReplayTypes.h"
+#include "Containers/ArrayView.h"
 
 class APlayerController;
 class UNetConnection;
+
+class FReplayHelper;
+
+class FReplayResultHandler final : public UE::Net::FNetResultHandler
+{
+	friend class FReplayHelper;
+
+private:
+	void InitResultHandler(FReplayHelper* InReplayHelper);
+
+	virtual UE::Net::EHandleNetResult HandleNetResult(UE::Net::FNetResult&& InResult) override;
+
+private:
+	FReplayHelper* ReplayHelper = nullptr;
+};
 
 class FReplayHelper
 {
 	friend class UDemoNetDriver;
 	friend class UDemoNetConnection;
 	friend class UReplayNetConnection;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	friend class FScopedPacketManager;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	friend class FReplayResultHandler;
 
 public:
 	FReplayHelper();
@@ -86,10 +102,10 @@ private:
 	/** Returns either CheckpointSaveMaxMSPerFrame or the value of demo.CheckpointSaveMaxMSPerFrameOverride if it's >= 0. */
 	float GetCheckpointSaveMaxMSPerFrame() const;
 
-	DECLARE_MULTICAST_DELEGATE(FOnReplayRecordError);
+	DECLARE_DELEGATE_OneParam(FOnReplayRecordError, const UE::Net::TNetResult<EReplayResult>&);
 	FOnReplayRecordError OnReplayRecordError;
 
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnReplayPlaybackError, EDemoPlayFailure::Type);
+	DECLARE_DELEGATE_OneParam(FOnReplayPlaybackError, const UE::Net::TNetResult<EReplayResult>&);
 	FOnReplayPlaybackError OnReplayPlaybackError;
 
 	static float GetClampedDeltaSeconds(UWorld* World, const float DeltaSeconds);
@@ -104,6 +120,10 @@ private:
 	void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider);
 
 	void RequestCheckpoint();
+
+	void RemoveActorFromCheckpoint(UNetConnection* Connection, AActor* Actor);
+
+	void NotifyActorDestroyed(UNetConnection* Connection, AActor* Actor);
 
 private:
 	// Hooks used to determine when levels are streamed in, streamed out, or if there's a map change.
@@ -143,7 +163,6 @@ private:
 	static const EReadPacketState ReadPacket(FArchive& Archive, TArray<uint8>& OutBuffer, const EReadPacketMode Mode);
 
 	void CacheNetGuids(UNetConnection* Connection);
-	void CacheDeletedActors(UNetConnection* Connection);
 
 	bool SerializeGuidCache(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
 	bool SerializeDeletedStartupActors(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
@@ -238,7 +257,6 @@ private:
 	{
 		Idle,
 		ProcessCheckpointActors,
-		CacheDeletedActors,
 		SerializeDeletedStartupActors,
 		SerializeDeltaDynamicDestroyed,
 		SerializeDeltaClosedChannels,
@@ -247,6 +265,60 @@ private:
 		SerializeNetFieldExportGroupMap,
 		SerializeDemoFrameFromQueuedDemoPackets,
 		Finalize,
+	};
+
+	struct FCheckpointStepHelper
+	{
+		FCheckpointStepHelper() = delete;
+		FCheckpointStepHelper(ECheckpointSaveState InCheckpointState, const double InCheckpointStartTime, int32* InCurrentIndex, int32 InTotalCount)
+			: CheckpointState(InCheckpointState)
+			, CheckpointStartTime(InCheckpointStartTime)
+			, CurrentIndex(InCurrentIndex)
+			, TotalCount(InTotalCount)
+		{
+			check(InCurrentIndex);
+			StartTime = FPlatformTime::Seconds();
+		}
+
+		~FCheckpointStepHelper()
+		{
+			const double EndTime = FPlatformTime::Seconds();
+			const double TotalTimeInMS = (EndTime - CheckpointStartTime) * 1000.0;
+			const double StepTimeInMS = (EndTime - StartTime) * 1000.0;
+
+			const TCHAR* StateStr = TEXT("Unknown");
+
+			switch (CheckpointState)
+			{
+			case ECheckpointSaveState::ProcessCheckpointActors:
+				StateStr = TEXT("ProcessCheckpointActors");
+				break;
+			case ECheckpointSaveState::SerializeDeletedStartupActors:
+				StateStr = TEXT("SerializeDeletedStartupActors");
+				break;
+			case ECheckpointSaveState::SerializeDeltaDynamicDestroyed:
+				StateStr = TEXT("SerializeDeltaDynamicDestroyed");
+				break;
+			case ECheckpointSaveState::SerializeDeltaClosedChannels:
+				StateStr = TEXT("SerializeDeltaClosedChannels");
+				break;
+			case ECheckpointSaveState::SerializeGuidCache:
+				StateStr = TEXT("SerializeGuidCache");
+				break;
+			default:
+				ensureMsgf(false, TEXT("FCheckpointStepHelper: Unsupported checkpoint state: %d"), CheckpointState);
+				break;
+			}
+
+			UE_LOG(LogDemo, Verbose, TEXT("Checkpoint. %s: %i/%i, took %.2fms (Total this frame: %.2fms)"), StateStr, *CurrentIndex, TotalCount, StepTimeInMS, TotalTimeInMS);
+		}
+
+	private:
+		ECheckpointSaveState CheckpointState;
+		double StartTime = 0.0;
+		double CheckpointStartTime = 0.0;
+		int32* CurrentIndex = nullptr;
+		int32 TotalCount = 0;
 	};
 
 	/** When we save a checkpoint, we remember all of the actors that need a checkpoint saved out by adding them to this list */
@@ -282,6 +354,7 @@ private:
 		ECheckpointSaveState CheckpointSaveState;						// Current state of checkpoint SaveState
 		FPackageMapAckState CheckpointAckState;							// Current ack state of packagemap for the current checkpoint being saved
 		TArray<FPendingCheckPointActor> PendingCheckpointActors;		// Actors to be serialized by pending checkpoint
+		TMap<TWeakObjectPtr<AActor>, int32, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<AActor>, int32>> PendingActorToIndex;
 		double				TotalCheckpointSaveTimeSeconds;				// Total time it took to save checkpoint including the finaling part across all frames
 		double				TotalCheckpointReplicationTimeSeconds;		// Total time it took to write all replicated objects across all frames
 		bool				bWriteCheckpointOffset;
@@ -302,16 +375,7 @@ private:
 
 		TMap<FName, uint32> NameTableMap;
 
-		void CountBytes(FArchive& Ar) const
-		{
-			CheckpointAckState.CountBytes(Ar);
-			PendingCheckpointActors.CountBytes(Ar);
-			DeltaCheckpointData.CountBytes(Ar);
-			DeltaChannelCloseKeys.CountBytes(Ar);
-			NetGuidCacheSnapshot.CountBytes(Ar);
-			CheckpointDeletedNetStartupActors.CountBytes(Ar);
-			NameTableMap.CountBytes(Ar);
-		}
+		void CountBytes(FArchive& Ar) const;
 	};
 
 	FCheckpointSaveStateContext CheckpointSaveContext;
@@ -391,6 +455,13 @@ private:
 	// Maintain a quick lookup for loaded levels directly to LevelStatus
 	TMap<const ULevel*, int32> LevelStatusIndexByLevel;
 
+	// Map of ULevel GetFName to weak object pointer to the level
+	// Populated during playback, not using NetworkRemapPath because it is never serialized
+	TMap<FName, TWeakObjectPtr<ULevel>> WeakLevelsByName;
+
+	void ResetLevelMap();
+	void ClearLevelMap();
+
 	// List of seen level statuses indices (in AllLevelStatuses).
 	TArray<int32> SeenLevelStatuses;
 
@@ -402,6 +473,8 @@ private:
 	TSet<class ULevel*> LevelsPendingFastForward;
 
 	bool bPendingCheckpointRequest;
+
+	UE::Net::FNetResultManager ResultManager;
 
 	static FString GetLevelPackageName(const ULevel& InLevel);
 
@@ -434,6 +507,11 @@ private:
 
 	FLevelStatus& FindOrAddLevelStatus(const FString& LevelPackageName)
 	{
+		return FindOrAddLevelStatus(FString(LevelPackageName));
+	}
+
+	FLevelStatus& FindOrAddLevelStatus(FString&& LevelPackageName)
+	{
 		if (int32* LevelStatusIndex = LevelStatusesByName.Find(LevelPackageName))
 		{
 			return AllLevelStatuses[*LevelStatusIndex];
@@ -442,7 +520,7 @@ private:
 		const int32 Index = AllLevelStatuses.Emplace(LevelPackageName);
 		AllLevelStatuses[Index].LevelIndex = Index;
 
-		LevelStatusesByName.Add(LevelPackageName, Index);
+		LevelStatusesByName.Add(MoveTemp(LevelPackageName), Index);
 		NumLevelsAddedThisFrame++;
 
 		return AllLevelStatuses[Index];
@@ -475,6 +553,12 @@ private:
 	void ReadDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, TSet<FString>& DeletedStartupActors);
 
 	ECheckpointSaveState GetCheckpointSaveState() const { return CheckpointSaveContext.CheckpointSaveState; }
+
+	void ProcessCheckpointActors(UNetConnection* Connection, TArrayView<FPendingCheckPointActor> PendingActors, int32& NextIndex, FRepActorsCheckpointParams& Params);
+
+	void NotifyReplayError(UE::Net::TNetResult<EReplayResult>&& Result);
+
+	bool bRecording;
 
 	static constexpr int32 MAX_DEMO_READ_WRITE_BUFFER = 1024 * 2;
 	static constexpr int32 MAX_DEMO_STRING_SERIALIZATION_SIZE = 16 * 1024 * 1024;

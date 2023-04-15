@@ -6,7 +6,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Fonts/SlateFontInfo.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "PropertyEditorHelpers.h"
 #include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
@@ -22,7 +22,7 @@ class SPropertyEditorArray : public SCompoundWidget
 public:
 
 	SLATE_BEGIN_ARGS( SPropertyEditorArray )
-		: _Font( FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
+		: _Font( FAppStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) ) 
 		{}
 		SLATE_ATTRIBUTE( FSlateFontInfo, Font )
 	SLATE_END_ARGS()
@@ -110,9 +110,9 @@ private:
 				for (FAssetData AssetData : DragDropOp->GetAssets())
 				{
 					// if the type matches
-					if (AssetData.GetClass()->IsChildOf(ObjectProperty->PropertyClass))
+					if (AssetData.IsInstanceOf(ObjectProperty->PropertyClass))
 					{
-						PropertyEditor->AddGivenItem(AssetData.ObjectPath.ToString());
+						PropertyEditor->AddGivenItem(AssetData.GetObjectPathString());
 					}
 				}
 				// Let this bubble up to the rest of the row
@@ -158,7 +158,7 @@ private:
 				for (FAssetData AssetData : DragDropOp->GetAssets())
 				{
 					// if the type does not match
-					if (!AssetData.GetClass()->IsChildOf(ObjectProperty->PropertyClass))
+					if (!AssetData.IsInstanceOf(ObjectProperty->PropertyClass))
 					{
 						bHasOnlyValidElements = false;
 						break;

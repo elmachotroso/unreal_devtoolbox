@@ -4,14 +4,14 @@
 
 #include "MassCrowdTypes.h"
 #include "MassCrowdFragments.h"
-#include "MassLODSubsystem.h"
+#include "MassProcessor.h"
 #include "MassLODCalculator.h"
 #include "MassLODTickRateController.h"
 
 #include "MassCrowdServerRepresentationLODProcessor.generated.h"
 
 UCLASS(meta=(DisplayName="Crowd Simulation LOD"))
-class MASSCROWD_API UMassCrowdServerRepresentationLODProcessor : public UMassLODProcessorBase
+class MASSCROWD_API UMassCrowdServerRepresentationLODProcessor : public UMassProcessor
 {
 	GENERATED_BODY()
 
@@ -22,7 +22,7 @@ protected:
 
 	virtual void ConfigureQueries() override;
 	virtual void Initialize(UObject& InOwner) override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	/** Distance where each LOD becomes relevant */
 	UPROPERTY(EditAnywhere, Category = "Mass|LOD", config)

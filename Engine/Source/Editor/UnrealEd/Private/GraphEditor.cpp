@@ -2,11 +2,21 @@
 
 
 #include "GraphEditor.h"
+
 #include "EdGraph/EdGraph.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Layout/SBox.h"
+#include "EdGraph/EdGraphNode.h"
 #include "GraphEditorModule.h"
+#include "HAL/PlatformCrt.h"
+#include "Layout/Children.h"
+#include "Layout/SlateRect.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "Types/ISlateMetaData.h"
+#include "UObject/ObjectPtr.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SMissingWidget.h"
+
+struct FPropertyChangedEvent;
 
 // List of all active GraphEditor wrappers
 TArray< TWeakPtr<SGraphEditor> > SGraphEditor::AllInstances;
@@ -28,7 +38,8 @@ void SGraphEditor::ConstructImplementation( const FArguments& InArgs )
 		InArgs._GraphToEdit,
 		InArgs._GraphEvents,
 		InArgs._AutoExpandActionMenu,
-		InArgs._GraphToDiff,
+		InArgs._DiffResults,
+		InArgs._FocusedDiffResult,
 		InArgs._OnNavigateHistoryBack,
 		InArgs._OnNavigateHistoryForward,
 		InArgs._ShowGraphStateOverlay

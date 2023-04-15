@@ -15,22 +15,20 @@
 
 DECLARE_CYCLE_STAT(TEXT("STAT_MoviePipeline_SurfaceReadback"), STAT_MoviePipeline_SurfaceReadback, STATGROUP_MoviePipeline);
 
-FMoviePipelineSurfaceReader::FMoviePipelineSurfaceReader(EPixelFormat InPixelFormat, FIntPoint InSurfaceSize, bool bInInvertAlpha)
+FMoviePipelineSurfaceReader::FMoviePipelineSurfaceReader(EPixelFormat InPixelFormat, bool bInInvertAlpha)
 {
 	AvailableEvent = nullptr;
 	ReadbackTexture = nullptr;
 	PixelFormat = InPixelFormat;
 	bQueuedForCapture = false;
 	bInvertAlpha = bInInvertAlpha;
-	
-	Resize(InSurfaceSize.X, InSurfaceSize.Y);
 }
 
 FMoviePipelineSurfaceReader::~FMoviePipelineSurfaceReader()
 {
 	BlockUntilAvailable();
 
-	ReadbackTexture.SafeRelease();
+	ReadbackTexture = nullptr;
 }
 
 void FMoviePipelineSurfaceReader::Initialize()
@@ -40,27 +38,16 @@ void FMoviePipelineSurfaceReader::Initialize()
 	AvailableEvent = FPlatformProcess::GetSynchEventFromPool();
 }
 
-void FMoviePipelineSurfaceReader::Resize(uint32 Width, uint32 Height)
+void FMoviePipelineSurfaceReader::ResizeImpl(uint32 Width, uint32 Height)
 {
-	ReadbackTexture.SafeRelease();
+	ReadbackTexture = nullptr;
 	Size = FIntPoint((int32)Width, (int32)Height);
 
 	// TexCreate_CPUReadback is important to make this texture available for reading later.
-	FMoviePipelineSurfaceReader* This = this;
 	ENQUEUE_RENDER_COMMAND(CreateCaptureFrameTexture)(
-		[Width, Height, This](FRHICommandListImmediate& RHICmdList)
+		[SurfaceReader = SharedThis(this)](FRHICommandListImmediate& RHICmdList)
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("FMoviePipelineSurfaceReader"));
-
-			This->ReadbackTexture = RHICreateTexture2D(
-				Width,
-				Height,
-				This->PixelFormat,
-				1,
-				1,
-				TexCreate_CPUReadback,
-				CreateInfo
-				);
+			SurfaceReader->ReadbackTexture = MakeUnique<FRHIGPUTextureReadback>(TEXT("FMoviePipelineSurfaceReader"));
 		});
 }
 
@@ -97,11 +84,11 @@ void FMoviePipelineSurfaceReader::ResolveSampleToReadbackTexture_RenderThread(co
 	FRHICommandListImmediate& RHICmdList = GetImmediateCommandList_ForRenderCommand();
 
 	// Retrieve a temporary render target that matches the destination surface type/size.
-	const FIntPoint TargetSize(ReadbackTexture->GetSizeX(), ReadbackTexture->GetSizeY());
+	const FIntPoint TargetSize(Size);
 
 	FPooledRenderTargetDesc OutputDesc = FPooledRenderTargetDesc::Create2DDesc(
 		TargetSize,
-		ReadbackTexture->GetFormat(),
+		PixelFormat,
 		FClearValueBinding::None,
 		TexCreate_None,
 		TexCreate_RenderTargetable,
@@ -110,9 +97,11 @@ void FMoviePipelineSurfaceReader::ResolveSampleToReadbackTexture_RenderThread(co
 	GRenderTargetPool.FindFreeElement(RHICmdList, OutputDesc, ResampleTexturePooledRenderTarget, TEXT("ResampleTexture"));
 	check(ResampleTexturePooledRenderTarget);
 
+	RHICmdList.Transition(FRHITransitionInfo(ResampleTexturePooledRenderTarget->GetRHI(), ERHIAccess::Unknown, ERHIAccess::RTV));
+
 	// Enqueue a render pass which uses a simple shader and a fullscreen quad to copy the SourceSurfaceSample to this SurfaceReader's cpu-readback enabled texture.
 	// This RenderPass resolves to our ReadbackTexture 
-	FRHIRenderPassInfo RPInfo(ResampleTexturePooledRenderTarget->GetRenderTargetItem().TargetableTexture, ERenderTargetActions::Load_Store, ReadbackTexture);
+	FRHIRenderPassInfo RPInfo(ResampleTexturePooledRenderTarget->GetRHI(), ERenderTargetActions::Load_Store);
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("MoviePipelineSurfaceResolveRenderTarget"));
 	{
 		RHICmdList.SetViewport(0, 0, 0.0f, TargetSize.X, TargetSize.Y, 1.0f);
@@ -166,6 +155,9 @@ void FMoviePipelineSurfaceReader::ResolveSampleToReadbackTexture_RenderThread(co
 			EDRF_Default);
 	}
 	RHICmdList.EndRenderPass();
+
+	RHICmdList.Transition(FRHITransitionInfo(ResampleTexturePooledRenderTarget->GetRHI(), ERHIAccess::RTV, ERHIAccess::CopySrc));
+	ReadbackTexture->EnqueueCopy(RHICmdList, ResampleTexturePooledRenderTarget->GetRHI());
 }
 
 void FMoviePipelineSurfaceReader::CopyReadbackTexture_RenderThread(TUniqueFunction<void(TUniquePtr<FImagePixelData>&&)>&& InFunctionCallback, TSharedPtr<FImagePixelDataPayload, ESPMode::ThreadSafe> InFramePayload)
@@ -188,10 +180,9 @@ void FMoviePipelineSurfaceReader::CopyReadbackTexture_RenderThread(TUniqueFuncti
 		SCOPED_GPU_MASK(RHICmdList, GPUMask);
 #endif
 
-		void* ColorDataBuffer = nullptr;
-
 		int32 ActualSizeX = 0, ActualSizeY = 0;
-		RHICmdList.MapStagingSurface(ReadbackTexture, ColorDataBuffer, ActualSizeX, ActualSizeY);
+		void* ColorDataBuffer = ReadbackTexture->Lock(ActualSizeX, &ActualSizeY);
+
 		int32 ExpectedSizeX = Size.X;
 		int32 ExpectedSizeY = Size.Y;
 
@@ -255,7 +246,7 @@ void FMoviePipelineSurfaceReader::CopyReadbackTexture_RenderThread(TUniqueFuncti
 		}
 
 		// Enqueue the Unmap before we broadcast the resulting pixels, though the broadcast shouldn't do anything blocking.
-		RHICmdList.UnmapStagingSurface(ReadbackTexture);
+		ReadbackTexture->Unlock();
 
 		InFunctionCallback(MoveTemp(PixelData));
 
@@ -290,7 +281,7 @@ void FMoviePipelineSurfaceQueue::BlockUntilAnyAvailable()
 	bool bAnyAvailable = false;
 	for(FResolveSurface& ResolveSurface : Surfaces)
 	{
-		if (ResolveSurface.Surface.IsAvailable())
+		if (ResolveSurface.Surface->IsAvailable())
 		{
 			bAnyAvailable = true;
 			break;
@@ -302,7 +293,7 @@ void FMoviePipelineSurfaceQueue::BlockUntilAnyAvailable()
 	if (!bAnyAvailable)
 	{
 		const int32 OldestIndex = (CurrentFrameIndex + 1) % Surfaces.Num();
-		Surfaces[OldestIndex].Surface.BlockUntilAvailable();
+		Surfaces[OldestIndex].Surface->BlockUntilAvailable();
 	}
 }
 
@@ -315,9 +306,9 @@ void FMoviePipelineSurfaceQueue::Shutdown()
 			[ResolveSurface](FRHICommandListImmediate& RHICmdList)
 			{
 				// Ensure that all surfaces have queued up their readback.
-				if (ResolveSurface->Surface.WasEverQueued())
+				if (ResolveSurface->Surface->WasEverQueued())
 				{
-					ResolveSurface->Surface.CopyReadbackTexture_RenderThread(MoveTemp(ResolveSurface->FunctionCallback), ResolveSurface->FunctionPayload);
+					ResolveSurface->Surface->CopyReadbackTexture_RenderThread(MoveTemp(ResolveSurface->FunctionCallback), ResolveSurface->FunctionPayload);
 				}
 			});
 	}
@@ -328,7 +319,7 @@ void FMoviePipelineSurfaceQueue::Shutdown()
 	for (FResolveSurface& ResolveSurface : Surfaces)
 	{
 		// These should now all be available.
-		ensureMsgf(ResolveSurface.Surface.IsAvailable(), TEXT("Flushed rendering commands but surface reader didn't perform the readback on a surface!"));
+		ensureMsgf(ResolveSurface.Surface->IsAvailable(), TEXT("Flushed rendering commands but surface reader didn't perform the readback on a surface!"));
 	}
 }
 
@@ -338,7 +329,7 @@ void FMoviePipelineSurfaceQueue::OnRenderTargetReady_RenderThread(const FTexture
 
 	// Pick the next destination surface and ensure it's available.
 	FResolveSurface* NextResolveTarget = &Surfaces[CurrentFrameIndex];
-	if (!NextResolveTarget->Surface.IsAvailable())
+	if (!NextResolveTarget->Surface->IsAvailable())
 	{
 		// BlockUntilAnyAvailable should have been called before submitting more work. We can't block
 		// until a surface is available in this callback because we'd be waiting on the render thread
@@ -346,12 +337,12 @@ void FMoviePipelineSurfaceQueue::OnRenderTargetReady_RenderThread(const FTexture
 		check(false);
 	}
 
-	NextResolveTarget->Surface.Initialize();
+	NextResolveTarget->Surface->Initialize();
 	NextResolveTarget->FunctionCallback = MoveTemp(InFunctionCallback);
 	NextResolveTarget->FunctionPayload = InFramePayload;
 
 	// Queue this sample to be copied to the target surface.
-	NextResolveTarget->Surface.ResolveSampleToReadbackTexture_RenderThread(InRenderTarget);
+	NextResolveTarget->Surface->ResolveSampleToReadbackTexture_RenderThread(InRenderTarget);
 
 	// By the time we get to this point, our oldest surface should have successfully been rendered to, and no longer be in use by the GPU.
 	// We can now safely map the surface and copy the data out of it without causing a GPU stall.
@@ -364,10 +355,10 @@ void FMoviePipelineSurfaceQueue::OnRenderTargetReady_RenderThread(const FTexture
 		FResolveSurface* OldestResolveTarget = &Surfaces[PrevCaptureIndex];
 
 		// Only try to do the readback if the target has ever been written to.
-		if (OldestResolveTarget->Surface.WasEverQueued())
+		if (OldestResolveTarget->Surface->WasEverQueued())
 		{
 			SCOPE_CYCLE_COUNTER(STAT_MoviePipeline_SurfaceReadback);
-			OldestResolveTarget->Surface.CopyReadbackTexture_RenderThread(MoveTemp(OldestResolveTarget->FunctionCallback), OldestResolveTarget->FunctionPayload);
+			OldestResolveTarget->Surface->CopyReadbackTexture_RenderThread(MoveTemp(OldestResolveTarget->FunctionCallback), OldestResolveTarget->FunctionPayload);
 		}
 	}
 

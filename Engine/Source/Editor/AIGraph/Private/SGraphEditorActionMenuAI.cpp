@@ -1,13 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphEditorActionMenuAI.h"
-#include "EdGraph/EdGraph.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
-#include "EditorStyleSet.h"
+
 #include "AIGraphNode.h"
 #include "AIGraphSchema.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
 #include "SGraphActionMenu.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateStructs.h"
+#include "Widgets/Layout/SBox.h"
 
 SGraphEditorActionMenuAI::~SGraphEditorActionMenuAI()
 {
@@ -26,7 +34,7 @@ void SGraphEditorActionMenuAI::Construct( const FArguments& InArgs )
 
 	// Build the widget layout
 	SBorder::Construct( SBorder::FArguments()
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		.Padding(5)
 		[
 			// Achieving fixed width by nesting items within a fixed width box.

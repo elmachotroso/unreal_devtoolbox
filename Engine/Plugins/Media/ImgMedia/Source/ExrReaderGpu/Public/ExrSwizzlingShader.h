@@ -5,16 +5,9 @@
 #if defined(PLATFORM_WINDOWS) && PLATFORM_WINDOWS
 
 #include "CoreMinimal.h"
-#include "UObject/ConstructorHelpers.h"
-#include "RHI.h"
-#include "Runtime/RenderCore/Public/ShaderParameterUtils.h"
-#include "Runtime/RenderCore/Public/RenderResource.h"
-#include "Runtime/RenderCore/Public/RenderGraphResources.h"
-
-// FScreenPassTextureViewportParameters and FScreenPassTextureInput
-#include "Runtime/Renderer/Private/ScreenPass.h"
-#include "Runtime/Renderer/Private/SceneTextureParameters.h"
-
+#include "GlobalShader.h"
+#include "ShaderParameterUtils.h"
+#include "ShaderParameterStruct.h"
 
 // The vertex shader used by DrawScreenPass to draw a rectangle.
 class EXRREADERGPU_API FExrSwizzleVS : public FGlobalShader
@@ -40,8 +33,11 @@ class EXRREADERGPU_API FExrSwizzlePS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FExrSwizzlePS, FGlobalShader);
 
 	/** If the provided buffer is RGBA the shader would work slightly differently to RGB. */
-	class FRgbaSwizzle : SHADER_PERMUTATION_INT("NUM_CHANNELS", 5);
-	using FPermutationDomain = TShaderPermutationDomain<FRgbaSwizzle>;
+	class FRgbaSwizzle : SHADER_PERMUTATION_INT("NUM_CHANNELS", 4);
+	class FRenderTiles : SHADER_PERMUTATION_BOOL("RENDER_TILES");
+	class FCustomExr : SHADER_PERMUTATION_BOOL("CUSTOM_EXR");
+	class FPartialTiles : SHADER_PERMUTATION_BOOL("PARTIAL_TILES");
+	using FPermutationDomain = TShaderPermutationDomain<FRgbaSwizzle, FRenderTiles, FCustomExr, FPartialTiles>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
 	{
@@ -50,8 +46,11 @@ class EXRREADERGPU_API FExrSwizzlePS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, UnswizzledBuffer)
-		SHADER_PARAMETER(int, TextureWidth)
-		SHADER_PARAMETER(int, TextureHeight)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FTileDesc>, TileDescBuffer)
+		SHADER_PARAMETER(FIntPoint, TextureSize)
+		SHADER_PARAMETER(FIntPoint, TileSize)
+		SHADER_PARAMETER(FIntPoint, NumTiles)
+		SHADER_PARAMETER(int32, NumChannels)
 	END_SHADER_PARAMETER_STRUCT()
 };
 #endif

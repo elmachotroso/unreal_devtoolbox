@@ -12,6 +12,7 @@
 #include "MassActorSubsystem.h"
 #include "GameFramework/PlayerController.h"
 #include "MassAgentComponent.h"
+#include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
 #include "MassNavigationFragments.h"
 #include "Steering/MassSteeringFragments.h"
@@ -19,10 +20,13 @@
 #include "MassStateTreeFragments.h"
 #include "MassStateTreeExecutionContext.h"
 #include "MassZoneGraphNavigationFragments.h"
+#include "MassSmartObjectFragments.h"
+#include "SmartObjectSubsystem.h"
 #include "Util/ColorConstants.h"
 #include "MassSimulationLOD.h"
 #include "CanvasItem.h"
 #include "Engine/World.h"
+#include "MassDebugger.h"
 
 namespace UE::Mass::Debug
 {
@@ -40,7 +44,7 @@ namespace UE::Mass::Debug
 		}
 		return EntityHandle;
 	};
-	
+
 	FMassEntityHandle GetBestEntity(const FVector ViewLocation, const FVector ViewDirection, const TConstArrayView<FMassEntityHandle> Entities, const TConstArrayView<FVector> Locations, const bool bLimitAngle)
 	{
 		// Reusing similar algorithm as UGameplayDebuggerLocalController for now 
@@ -108,13 +112,13 @@ FGameplayDebuggerCategory_Mass::FGameplayDebuggerCategory_Mass()
 	BindKeyPress(EKeys::C.GetFName(), FGameplayDebuggerInputModifier::Shift, this, &FGameplayDebuggerCategory_Mass::OnToggleNearEntityPath, EGameplayDebuggerInputMode::Replicated);
 }
 
-void FGameplayDebuggerCategory_Mass::SetCachedEntity(const FMassEntityHandle Entity, UMassDebuggerSubsystem& Debugger)
+void FGameplayDebuggerCategory_Mass::SetCachedEntity(const FMassEntityHandle Entity, const FMassEntityManager& EntityManager)
 {
 	CachedEntity = Entity;
-	Debugger.SetSelectedEntity(Entity);
+	FMassDebugger::SelectEntity(EntityManager, Entity);
 }
 
-void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC, const UWorld& World, UMassDebuggerSubsystem& Debugger, const bool bLimitAngle)
+void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC, const UWorld& World, FMassEntityManager& EntityManager, const bool bLimitAngle)
 {
 	FVector ViewLocation = FVector::ZeroVector;
 	FVector ViewDirection = FVector::ForwardVector;
@@ -124,17 +128,30 @@ void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC
 	// entities indicated by UE::Mass::Debug take precedence 
     if (UE::Mass::Debug::HasDebugEntities())
     {
-	    if (const UMassEntitySubsystem* EntitySystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World))
-	    {
-	    	TArray<FMassEntityHandle> Entities;
-	    	TArray<FVector> Locations;
-	    	UE::Mass::Debug::GetDebugEntitiesAndLocations(*EntitySystem, Entities, Locations);
-	    	BestEntity = UE::Mass::Debug::GetBestEntity(ViewLocation, ViewDirection, Entities, Locations, bLimitAngle);
-	    }
+		TArray<FMassEntityHandle> Entities;
+	    TArray<FVector> Locations;
+	    UE::Mass::Debug::GetDebugEntitiesAndLocations(EntityManager, Entities, Locations);
+	    BestEntity = UE::Mass::Debug::GetBestEntity(ViewLocation, ViewDirection, Entities, Locations, bLimitAngle);
     }
 	else
 	{
-		BestEntity = UE::Mass::Debug::GetBestEntity(ViewLocation, ViewDirection, Debugger.GetEntities(), Debugger.GetLocations(), bLimitAngle);
+		TArray<FMassEntityHandle> Entities;
+		TArray<FVector> Locations;
+		FMassExecutionContext ExecutionContext;
+		FMassEntityQuery Query;
+		Query.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
+		Query.ForEachEntityChunk(EntityManager, ExecutionContext, [&Entities, &Locations](FMassExecutionContext& Context)
+		{
+			Entities.Append(Context.GetEntities().GetData(), Context.GetEntities().Num());
+			TConstArrayView<FTransformFragment> InLocations = Context.GetFragmentView<FTransformFragment>();
+			Locations.Reserve(Locations.Num() + InLocations.Num());
+			for (const FTransformFragment& TransformFragment : InLocations)
+			{
+				Locations.Add(TransformFragment.GetTransform().GetLocation());
+			}
+		});
+
+		BestEntity = UE::Mass::Debug::GetBestEntity(ViewLocation, ViewDirection, Entities, Locations, bLimitAngle);
 	}
 
 	AActor* BestActor = nullptr;
@@ -146,7 +163,7 @@ void FGameplayDebuggerCategory_Mass::PickEntity(const APlayerController& OwnerPC
 		}
 	}
 
-	SetCachedEntity(BestEntity, Debugger);
+	SetCachedEntity(BestEntity, EntityManager);
 	CachedDebugActor = BestActor;
 	GetReplicator()->SetDebugActor(BestActor);
 }
@@ -160,24 +177,26 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 {
 	UWorld* World = GetDataWorld(OwnerPC, DebugActor);
 	check(World);
-	UMassDebuggerSubsystem* Debugger = World->GetSubsystem<UMassDebuggerSubsystem>();
-	if (Debugger == nullptr)
+
+	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(World);
+	if (EntitySubsystem == nullptr)
 	{
-		AddTextLine(FString::Printf(TEXT("{Red}MassDebuggerSubsystem instance is missing")));
+		AddTextLine(FString::Printf(TEXT("{Red}EntitySubsystem instance is missing")));
 		return;
 	}
-	Debugger->SetCollectingData();
+	FMassEntityManager& EntityManager = EntitySubsystem->GetMutableEntityManager();
+	UMassDebuggerSubsystem* Debugger = World->GetSubsystem<UMassDebuggerSubsystem>();
 
 	const UMassAgentComponent* AgentComp = nullptr;
 	if (DebugActor)
 	{
 		const FMassEntityHandle EntityHandle = UE::Mass::Debug::GetEntityFromActor(*DebugActor, AgentComp);	
-		SetCachedEntity(EntityHandle, *Debugger);
+		SetCachedEntity(EntityHandle, EntityManager);
 		CachedDebugActor = DebugActor;
 	}
 	else if (CachedDebugActor)
 	{
-		SetCachedEntity(FMassEntityHandle(), *Debugger);
+		SetCachedEntity(FMassEntityHandle(), EntityManager);
 		CachedDebugActor = nullptr;
 	}
 
@@ -187,61 +206,53 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 		// also support client-server picking. For now, we handle explicit mass picking requests on the authority
 		if (bPickEntity)
 		{
-			PickEntity(*OwnerPC, *World, *Debugger);
+			PickEntity(*OwnerPC, *World, EntityManager);
 			bPickEntity = false;
 		}
 		// if we're debugging based on UE::Mass::Debug and the range changed
 		else if (CachedDebugActor == nullptr && UE::Mass::Debug::HasDebugEntities() && UE::Mass::Debug::IsDebuggingEntity(CachedEntity) == false)
 		{
 			// using bLimitAngle = false to not limit the selection to only the things in from of the player
-			PickEntity(*OwnerPC, *World, *Debugger, /*bLimitAngle=*/false);
+			PickEntity(*OwnerPC, *World, EntityManager, /*bLimitAngle=*/false);
 		}
 	}
 
-	UMassEntitySubsystem* EntitySystem = UWorld::GetSubsystem<UMassEntitySubsystem>(World);
-	if (EntitySystem)
+	AddTextLine(FString::Printf(TEXT("{Green}Entities count active{grey}/all: {white}%d{grey}/%d"), EntityManager.DebugGetEntityCount(), EntityManager.DebugGetEntityCount()));
+	AddTextLine(FString::Printf(TEXT("{Green}Registered Archetypes count: {white}%d {green}data ver: {white}%d"), EntityManager.DebugGetArchetypesCount(), EntityManager.GetArchetypeDataVersion()));
+
+	if (UE::Mass::Debug::HasDebugEntities())
 	{
-		AddTextLine(FString::Printf(TEXT("{Green}Entities count active{grey}/all: {white}%d{grey}/%d"), EntitySystem->DebugGetEntityCount(), EntitySystem->DebugGetEntityCount()));
-		AddTextLine(FString::Printf(TEXT("{Green}Registered Archetypes count: {white}%d {green}data ver: {white}%d"), EntitySystem->DebugGetArchetypesCount(), EntitySystem->GetArchetypeDataVersion()));
-
-		if (UE::Mass::Debug::HasDebugEntities())
-		{
-			int32 RangeBegin, RangeEnd;
-			UE::Mass::Debug::GetDebugEntitiesRange(RangeBegin, RangeEnd);
-			AddTextLine(FString::Printf(TEXT("{Green}Debugged entity range: {orange}%d-%d"), RangeBegin, RangeEnd));
-		}
-
-		if (bShowArchetypes)
-		{
-			FStringOutputDevice Ar;
-			Ar.SetAutoEmitLineTerminator(true);
-			EntitySystem->DebugPrintArchetypes(Ar, /*bIncludeEmpty*/false);
-
-			AddTextLine(Ar);
-		}
-
-		if (CachedEntity.IsSet() && bMarkEntityBeingDebugged)
-		{
-			if (const FTransformFragment* TransformFragment = EntitySystem->GetFragmentDataPtr<FTransformFragment>(CachedEntity))
-			{
-				const FVector Location = TransformFragment->GetTransform().GetLocation();
-				AddShape(FGameplayDebuggerShape::MakeBox(Location, FVector(3,3,250), FColor::Purple));
-				AddShape(FGameplayDebuggerShape::MakePoint(Location, 10, FColor::Purple));
-			}
-		}
+		int32 RangeBegin, RangeEnd;
+		UE::Mass::Debug::GetDebugEntitiesRange(RangeBegin, RangeEnd);
+		AddTextLine(FString::Printf(TEXT("{Green}Debugged entity range: {orange}%d-%d"), RangeBegin, RangeEnd));
 	}
-	else
+
+	if (bShowArchetypes)
 	{
-		AddTextLine(FString::Printf(TEXT("{Red}EntitySystem instance is missing")));
+		FStringOutputDevice Ar;
+		Ar.SetAutoEmitLineTerminator(true);
+		EntityManager.DebugPrintArchetypes(Ar, /*bIncludeEmpty*/false);
+
+		AddTextLine(Ar);
 	}
 
-	if (CachedEntity.IsSet())
+	if (CachedEntity.IsSet() && bMarkEntityBeingDebugged)
+	{
+		if (const FTransformFragment* TransformFragment = EntityManager.GetFragmentDataPtr<FTransformFragment>(CachedEntity))
+		{
+			const FVector Location = TransformFragment->GetTransform().GetLocation();
+			AddShape(FGameplayDebuggerShape::MakeBox(Location, FVector(8,8,500), FColor::Purple,  FString::Printf(TEXT("[%s]"), *CachedEntity.DebugGetDescription())));
+			AddShape(FGameplayDebuggerShape::MakePoint(Location, 10, FColor::Purple));
+		}
+	}
+
+	if (CachedEntity.IsSet() && Debugger)
 	{
 		AddTextLine(Debugger->GetSelectedEntityInfo());
 	}
 
 	//@todo could shave off some perf cost if UMassDebuggerSubsystem used FGameplayDebuggerShape directly
-	if (bShowShapes)
+	if (bShowShapes && Debugger)
 	{
 		const TArray<UMassDebuggerSubsystem::FShapeDesc>* Shapes = Debugger->GetShapes();
 		check(Shapes);
@@ -272,11 +283,11 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 
 	if (bShowAgentFragments)
 	{
-		if (CachedEntity.IsSet() && EntitySystem)
+		if (CachedEntity.IsSet())
 		{
 			// CachedEntity can become invalid if the entity "dies" or in editor mode when related actor gets moved 
 			// (which causes the MassAgentComponent destruction and recreation).
-			if (EntitySystem->IsEntityActive(CachedEntity))
+			if (EntityManager.IsEntityActive(CachedEntity))
 			{
 				AddTextLine(FString::Printf(TEXT("{Green}Entity: {White}%s"), *CachedEntity.DebugGetDescription()));
 				AddTextLine(FString::Printf(TEXT("{Green}Type: {White}%s"), (AgentComp == nullptr) ? TEXT("N/A") : AgentComp->IsPuppet() ? TEXT("PUPPET") : TEXT("AGENT")));
@@ -286,44 +297,47 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 					FStringOutputDevice FragmentsDesc;
 					FragmentsDesc.SetAutoEmitLineTerminator(true);
 					const TCHAR* PrefixToRemove = TEXT("DataFragment_");
-					EntitySystem->DebugPrintEntity(CachedEntity, FragmentsDesc, PrefixToRemove);
+					FMassDebugger::OutputEntityDescription(FragmentsDesc, EntityManager, CachedEntity, PrefixToRemove);
 					AddTextLine(FString::Printf(TEXT("{Green}Fragments:\n{White}%s"), *FragmentsDesc));
 				}
 				else
 				{
-					const FMassArchetypeHandle Archetype = EntitySystem->GetArchetypeForEntity(CachedEntity);
-					TArray<FName> ComponentNames;
-					TArray<FName> TagNames;
-					EntitySystem->DebugGetArchetypeStrings(Archetype, ComponentNames, TagNames);
-
-					FString Tags;
-					int i = 0;
-					for (const FName Name : TagNames)
-					{
-						Tags += FString::Printf(TEXT("%s, "), *Name.ToString());
-						if (i++ % 2)
+					const FMassArchetypeHandle Archetype = EntityManager.GetArchetypeForEntity(CachedEntity);
+					const FMassArchetypeCompositionDescriptor& Composition = EntityManager.GetArchetypeComposition(Archetype);
+					
+					auto DescriptionBuilder = [](const TArray<FName>& ItemNames) -> FString {
+						constexpr int ColumnsCount = 2;
+						FString Description;
+						int i = 0;
+						for (const FName Name : ItemNames)
 						{
-							Tags += TEXT("\n");
+							if ((i++ % ColumnsCount) == 0)
+							{
+								Description += TEXT("\n");
+							}
+							Description += FString::Printf(TEXT("%s,\t"), *Name.ToString());
 						}
-					}
-					AddTextLine(FString::Printf(TEXT("{Green}Tags:\n{White}%s"), *Tags));
+						return Description;
+					};
 
-					AddTextLine(FString::Printf(TEXT("{Green}Fragments:{White}")));
-					constexpr int ColumnsCount = 2;
-					i = 0;
-					while (i + ColumnsCount < ComponentNames.Num())
-					{
-						AddTextLine(FString::Printf(TEXT("%-42s, %-42s"), *ComponentNames[i].ToString(), *ComponentNames[i + 1].ToString()));
-						i += ColumnsCount;
-					}
-					if (i < ComponentNames.Num())
-					{
-						AddTextLine(FString::Printf(TEXT("%s"), *ComponentNames[i].ToString()));
-					}
+					TArray<FName> ItemNames;
+					Composition.Tags.DebugGetIndividualNames(ItemNames);
+					AddTextLine(FString::Printf(TEXT("{Green}Tags:{White}%s"), *DescriptionBuilder(ItemNames)));
+					
+					ItemNames.Reset();
+					Composition.Fragments.DebugGetIndividualNames(ItemNames);
+					AddTextLine(FString::Printf(TEXT("{Green}Fragments:{White}%s"), *DescriptionBuilder(ItemNames)));
+					
+					ItemNames.Reset();
+					Composition.ChunkFragments.DebugGetIndividualNames(ItemNames);
+					AddTextLine(FString::Printf(TEXT("{Green}Chunk Fragments:{White}%s"), *DescriptionBuilder(ItemNames)));
 
+					ItemNames.Reset();
+					Composition.SharedFragments.DebugGetIndividualNames(ItemNames);
+					AddTextLine(FString::Printf(TEXT("{Green}Shared Fragments:{White}%s"), *DescriptionBuilder(ItemNames)));
 				}
 
-				const FTransformFragment& TransformFragment = EntitySystem->GetFragmentDataChecked<FTransformFragment>(CachedEntity);
+				const FTransformFragment& TransformFragment = EntityManager.GetFragmentDataChecked<FTransformFragment>(CachedEntity);
 				constexpr float CapsuleRadius = 50.f;
 				AddShape(FGameplayDebuggerShape::MakeCapsule(TransformFragment.GetTransform().GetLocation() + 2.f * CapsuleRadius * FVector::UpVector, CapsuleRadius, CapsuleRadius * 2.f, FColor::Orange));
 			}
@@ -346,7 +360,8 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 		ensureMsgf(GetViewPoint(OwnerPC, ViewLocation, ViewDirection), TEXT("GetViewPoint is expected to always succeed when passing a valid controller."));
 
 		FMassEntityQuery EntityQuery;
-		EntityQuery.AddRequirement<FMassStateTreeFragment>(EMassFragmentAccess::ReadOnly);
+		EntityQuery.AddRequirement<FMassStateTreeInstanceFragment>(EMassFragmentAccess::ReadOnly);
+		EntityQuery.AddConstSharedRequirement<FMassStateTreeSharedFragment>();
 		EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 		EntityQuery.AddRequirement<FAgentRadiusFragment>(EMassFragmentAccess::ReadOnly);
 		EntityQuery.AddRequirement<FMassSteeringFragment>(EMassFragmentAccess::ReadOnly);
@@ -358,20 +373,24 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 		EntityQuery.AddRequirement<FMassLookAtFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 		EntityQuery.AddRequirement<FMassSimulationLODFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 		EntityQuery.AddRequirement<FMassZoneGraphShortPathFragment>(EMassFragmentAccess::ReadOnly);
+		EntityQuery.AddRequirement<FMassSmartObjectUserFragment>(EMassFragmentAccess::ReadOnly, EMassFragmentPresence::Optional);
 
 		const float CurrentTime = World->GetTimeSeconds();
 		
 		UMassStateTreeSubsystem* MassStateTreeSubsystem = World->GetSubsystem<UMassStateTreeSubsystem>();
 		UMassSignalSubsystem* SignalSubsystem = World->GetSubsystem<UMassSignalSubsystem>();
+		USmartObjectSubsystem* SmartObjectSubsystem = World->GetSubsystem<USmartObjectSubsystem>();
 		
-		if (MassStateTreeSubsystem && EntitySystem && SignalSubsystem)
+		if (MassStateTreeSubsystem && SignalSubsystem && SmartObjectSubsystem)
 		{
-			FMassExecutionContext Context(0.0f);
+			FMassExecutionContext Context(EntityManager.AsShared(), 0.0f);
 		
-			EntityQuery.ForEachEntityChunk(*EntitySystem, Context, [this, MassStateTreeSubsystem, SignalSubsystem, EntitySystem, OwnerPC, ViewLocation, ViewDirection, CurrentTime](FMassExecutionContext& Context)
+			EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, MassStateTreeSubsystem, SignalSubsystem, SmartObjectSubsystem, OwnerPC, ViewLocation, ViewDirection, CurrentTime](FMassExecutionContext& Context)
 			{
+				FMassEntityManager& EntityManager = Context.GetEntityManagerChecked();
+
 				const int32 NumEntities = Context.GetNumEntities();
-				const TConstArrayView<FMassStateTreeFragment> StateTreeList = Context.GetFragmentView<FMassStateTreeFragment>();
+				const TConstArrayView<FMassStateTreeInstanceFragment> StateTreeInstanceList = Context.GetFragmentView<FMassStateTreeInstanceFragment>();
 				const TConstArrayView<FTransformFragment> TransformList = Context.GetFragmentView<FTransformFragment>();
 				const TConstArrayView<FAgentRadiusFragment> RadiusList = Context.GetFragmentView<FAgentRadiusFragment>();
 				const TConstArrayView<FMassSteeringFragment> SteeringList = Context.GetFragmentView<FMassSteeringFragment>();
@@ -381,16 +400,20 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 				const TConstArrayView<FMassForceFragment> ForceList = Context.GetFragmentView<FMassForceFragment>();
 				const TConstArrayView<FMassMoveTargetFragment> MoveTargetList = Context.GetFragmentView<FMassMoveTargetFragment>();
 				const TConstArrayView<FMassLookAtFragment> LookAtList = Context.GetFragmentView<FMassLookAtFragment>();
-				const bool bHasLookAt = (LookAtList.Num() > 0);
 				const TConstArrayView<FMassSimulationLODFragment> SimLODList = Context.GetFragmentView<FMassSimulationLODFragment>();
-				const bool bHasLOD = (SimLODList.Num() > 0);
 				const TConstArrayView<FMassZoneGraphShortPathFragment> ShortPathList = Context.GetFragmentView<FMassZoneGraphShortPathFragment>();
+				const TConstArrayView<FMassSmartObjectUserFragment> SOUserList = Context.GetFragmentView<FMassSmartObjectUserFragment>();
+				const FMassStateTreeSharedFragment& SharedStateTree = Context.GetConstSharedFragment<FMassStateTreeSharedFragment>();
+
+				const bool bHasLOD = (SimLODList.Num() > 0);
+				const bool bHasLookAt = (LookAtList.Num() > 0);
+				const bool bHasSOUser = (SOUserList.Num() > 0);
 
 				const UGameplayDebuggerUserSettings* Settings = GetDefault<UGameplayDebuggerUserSettings>();
 				const float MaxViewDistance = Settings->MaxViewDistance;
 				const float MinViewDirDot = FMath::Cos(FMath::DegreesToRadians(Settings->MaxViewAngle));
 
-				const UStateTree* StateTree = MassStateTreeSubsystem->GetRegisteredStateTreeAsset(StateTreeList[0].StateTreeHandle);
+				const UStateTree* StateTree = SharedStateTree.StateTree;
 
 				for (int32 EntityIndex = 0; EntityIndex < NumEntities; ++EntityIndex)
 				{
@@ -419,6 +442,7 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 					const FMassMoveTargetFragment& MoveTarget = MoveTargetList[EntityIndex];
 					const FMassSimulationLODFragment& SimLOD = bHasLOD ? SimLODList[EntityIndex] : FMassSimulationLODFragment();
 					const FMassZoneGraphShortPathFragment& ShortPath = ShortPathList[EntityIndex];
+					const FMassStateTreeInstanceFragment& StateTreeInstance = StateTreeInstanceList[EntityIndex];
 
 					const FVector EntityForward = Transform.GetTransform().GetRotation().GetForwardVector();
 
@@ -449,9 +473,9 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 						const FMassLookAtFragment& LookAt = LookAtList[EntityIndex];
 						const FVector WorldLookDirection = Transform.GetTransform().TransformVector(LookAt.Direction);
 						bool bLookArrowDrawn = false;
-						if (LookAt.LookAtMode == EMassLookAtMode::LookAtEntity && EntitySystem->IsEntityValid(LookAt.TrackedEntity))
+						if (LookAt.LookAtMode == EMassLookAtMode::LookAtEntity && EntityManager.IsEntityValid(LookAt.TrackedEntity))
 						{
-							if (const FTransformFragment* TargetTransform = EntitySystem->GetFragmentDataPtr<FTransformFragment>(LookAt.TrackedEntity))
+							if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(LookAt.TrackedEntity))
 							{
 								FVector TargetPosition = TargetTransform->GetTransform().GetLocation();
 								TargetPosition.Z = BasePos.Z;
@@ -463,9 +487,9 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 							}
 						}
 
-						if (LookAt.bRandomGazeEntities && EntitySystem->IsEntityValid(LookAt.GazeTrackedEntity))
+						if (LookAt.bRandomGazeEntities && EntityManager.IsEntityValid(LookAt.GazeTrackedEntity))
 						{
-							if (const FTransformFragment* TargetTransform = EntitySystem->GetFragmentDataPtr<FTransformFragment>(LookAt.GazeTrackedEntity))
+							if (const FTransformFragment* TargetTransform = EntityManager.GetFragmentDataPtr<FTransformFragment>(LookAt.GazeTrackedEntity))
 							{
 								FVector TargetPosition = TargetTransform->GetTransform().GetLocation();
 								TargetPosition.Z = BasePos.Z;
@@ -476,6 +500,19 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 						if (!bLookArrowDrawn)
 						{
 							AddShape(FGameplayDebuggerShape::MakeArrow(BasePos, BasePos + WorldLookDirection * LookArrowLength, 10.0f, 1.0f, FColor::Turquoise));
+						}
+					}
+
+					// SmartObject
+					if (bHasSOUser)
+					{
+						const FMassSmartObjectUserFragment& SOUser = SOUserList[EntityIndex];
+						if (SOUser.InteractionHandle.IsValid())
+						{
+							const FVector ZOffset = FVector(0.0f , 0.0f , 25.0f );
+							const FTransform SlotTransform = SmartObjectSubsystem->GetSlotTransform(SOUser.InteractionHandle).Get(FTransform::Identity);
+							const FVector SlotLocation = SlotTransform.GetLocation();
+							AddShape(FGameplayDebuggerShape::MakeSegment(EntityLocation + ZOffset, SlotLocation + ZOffset, 3.0f, FColorList::Orange));
 						}
 					}
 
@@ -546,14 +583,18 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 						// Current StateTree task
 						if (StateTree != nullptr)
 						{
-							FMassStateTreeExecutionContext StateTreeContext(*EntitySystem, *SignalSubsystem, Context);
-							StateTreeContext.Init(*OwnerPC, *StateTree, EStateTreeStorage::External);
-							StateTreeContext.SetEntity(Entity);
-							
-							FStructView Storage = EntitySystem->GetFragmentDataStruct(Entity, StateTree->GetInstanceStorageStruct());
-							
-							Status += StateTreeContext.GetActiveStateName(Storage);
-							Status += TEXT("\n");
+							if (FStateTreeInstanceData* InstanceData = MassStateTreeSubsystem->GetInstanceData(StateTreeInstance.InstanceHandle))
+							{
+								FMassStateTreeExecutionContext StateTreeContext(*OwnerPC, *StateTree, *InstanceData, EntityManager, *SignalSubsystem, Context);
+								StateTreeContext.SetEntity(Entity);
+
+								Status += StateTreeContext.GetActiveStateName();
+								Status += FString::Printf(TEXT("  {yellow}%d{white}\n"), StateTreeContext.GetStateChangeCount());
+							}
+							else
+							{
+								Status += TEXT("{red}<No StateTree instance>{white}\n");
+							}
 						}
 
 						// Movement info
@@ -583,13 +624,13 @@ void FGameplayDebuggerCategory_Mass::CollectData(APlayerController* OwnerPC, AAc
 			});
 		}
 
-		if (bShowNearEntityAvoidance && EntitySystem)
+		if (bShowNearEntityAvoidance)
 		{
 			FMassEntityQuery EntityColliderQuery;
 			EntityColliderQuery.AddRequirement<FMassAvoidanceColliderFragment>(EMassFragmentAccess::ReadOnly);
 			EntityColliderQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
-			FMassExecutionContext Context(0.f);
-			EntityColliderQuery.ForEachEntityChunk(*EntitySystem, Context, [this, ViewLocation, ViewDirection](const FMassExecutionContext& Context)
+			FMassExecutionContext Context(EntityManager.AsShared(), 0.f);
+			EntityColliderQuery.ForEachEntityChunk(EntityManager, Context, [this, ViewLocation, ViewDirection](const FMassExecutionContext& Context)
 			{
 				const int32 NumEntities = Context.GetNumEntities();
 				const TConstArrayView<FTransformFragment> TransformList = Context.GetFragmentView<FTransformFragment>();

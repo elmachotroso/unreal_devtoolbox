@@ -18,10 +18,8 @@ public:
 	
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
-	virtual void Initialize(UObject& InOwner) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
-	TWeakObjectPtr<UMassDebugVisualizationComponent> WeakVisualizer;
 	FMassEntityQuery EntityQuery;
 };
 
@@ -37,7 +35,7 @@ class MASSGAMEPLAYDEBUG_API UMassProcessor_UpdateDebugVis : public UMassProcesso
 public:
 	UMassProcessor_UpdateDebugVis();
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 protected:
 	FMassEntityQuery EntityQuery;

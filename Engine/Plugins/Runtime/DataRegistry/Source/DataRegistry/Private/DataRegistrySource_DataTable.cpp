@@ -6,7 +6,10 @@
 #include "DataRegistrySettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Engine/AssetManager.h"
+#include "UObject/CoreRedirects.h"
 #include "UObject/ObjectSaveContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistrySource_DataTable)
 
 void UDataRegistrySource_DataTable::SetSourceTable(const TSoftObjectPtr<UDataTable>& InSourceTable, const FDataRegistrySource_DataTableRules& InTableRules)
 {
@@ -328,7 +331,7 @@ bool UMetaDataRegistrySource_DataTable::SetDataForChild(FName SourceId, UDataReg
 	UDataRegistrySource_DataTable* ChildDataTable = Cast<UDataRegistrySource_DataTable>(ChildSource);
 	if (ensure(ChildDataTable))
 	{
-		TSoftObjectPtr<UDataTable> NewTable = TSoftObjectPtr<UDataTable>(FSoftObjectPath(SourceId));
+		TSoftObjectPtr<UDataTable> NewTable = TSoftObjectPtr<UDataTable>(FSoftObjectPath(SourceId.ToString()));
 		ChildDataTable->SetSourceTable(NewTable, TableRules);
 		return true;
 	}
@@ -361,18 +364,32 @@ bool UMetaDataRegistrySource_DataTable::DoesAssetPassFilter(const FAssetData& As
 	if (AssetData.GetTagValue(RowStructureTagName, RowStructureString))
 	{
 		const UScriptStruct* ItemStruct = GetItemStruct();
-		if (RowStructureString == ItemStruct->GetName())
+		if (RowStructureString == ItemStruct->GetName() || RowStructureString == ItemStruct->GetStructPathName().ToString())
 		{
 			return true;
 		}
 		else
 		{
 			// TODO no 100% way to check for inherited row structs, but BP types can't inherit anyway
-			UScriptStruct* RowStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *RowStructureString, true);
+			const UScriptStruct* RowStruct = FindFirstObject<UScriptStruct>(*RowStructureString, EFindFirstObjectOptions::ExactClass);
 
-			if (RowStruct && RowStruct->IsChildOf(ItemStruct))
+			// Check if the row struct is a child of the item struct
+			if (RowStruct != nullptr)
 			{
-				return true;
+				if (RowStruct->IsChildOf(ItemStruct))
+				{
+					return true;
+				}	
+			}
+			// Otherwise check if the row struct has been redirected to the item struct
+			else
+			{
+				FName RowStructureName = FName(FPackageName::ObjectPathToObjectName(RowStructureString)); // RobM this should use path names as well
+				
+				TArray<FCoreRedirectObjectName> PreviousNames;
+				FCoreRedirects::FindPreviousNames(ECoreRedirectFlags::Type_Struct, ItemStruct->GetPathName(), PreviousNames);
+				
+				return PreviousNames.ContainsByPredicate([&RowStructureName](const FCoreRedirectObjectName& PreviousName){ return PreviousName.ObjectName == RowStructureName; });
 			}
 		}
 	}
@@ -384,4 +401,5 @@ bool UMetaDataRegistrySource_DataTable::DoesAssetPassFilter(const FAssetData& As
 
 	return false;
 }
+
 

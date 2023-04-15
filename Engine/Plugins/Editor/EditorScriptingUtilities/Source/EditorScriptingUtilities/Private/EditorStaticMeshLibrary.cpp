@@ -5,7 +5,7 @@
 #include "EditorScriptingUtils.h"
 
 #include "ActorEditorUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/MeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
@@ -35,9 +35,11 @@
 #include "Misc/ScopedSlowTask.h"
 
 #include "UnrealEdGlobals.h"
-#include "UnrealEd/Private/GeomFitUtils.h"
+#include "GeomFitUtils.h"
 #include "ConvexDecompTool.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorStaticMeshLibrary)
 
 #define LOCTEXT_NAMESPACE "EditorStaticMeshLibrary"
 
@@ -383,3 +385,4 @@ int32 UDEPRECATED_EditorStaticMeshLibrary::AddSimpleCollisionsWithNotification(U
 }
 
 #undef LOCTEXT_NAMESPACE
+

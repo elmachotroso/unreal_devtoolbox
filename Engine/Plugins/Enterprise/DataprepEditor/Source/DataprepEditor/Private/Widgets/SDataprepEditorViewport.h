@@ -10,7 +10,7 @@
 
 #include "AdvancedPreviewScene.h"
 #include "Components/StaticMeshComponent.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorViewportClient.h"
 #include "Layout/Visibility.h"
 #include "Math/Box.h"
@@ -48,7 +48,7 @@ public:
 
 #ifdef VIEWPORT_EXPERIMENTAL
 	FPrototypeOrientedBox MeshProperties;
-	bool bShoudlBeInstanced;
+	bool bShouldBeInstanced;
 #endif
 
 protected:
@@ -67,7 +67,7 @@ public:
 			TEXT("DataprepEditorViewport"), // Context name for fast lookup
 			NSLOCTEXT( "DataprepEditorViewportCommands", "DataprepEditorViewportText", "Dataprep Editor Viewport"), // Localized context name for displaying
 			NAME_None, // Parent
-			FEditorStyle::GetStyleSetName() // Icon Style Set
+			FAppStyle::GetAppStyleSetName() // Icon Style Set
 			)
 	{
 	}
@@ -132,7 +132,7 @@ public:
 	~FDataprepEditorViewportClient() {}
 
 	// FEditorViewportClient interface
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
 	virtual void ProcessClick(class FSceneView& View, class HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY) override;
 	virtual void DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas ) override;
 	// End of FEditorViewportClient interface
@@ -185,6 +185,9 @@ public:
 
 	/** Load the settings affecting the viewport, i.e. environment map */
 	static void LoadDefaultSettings();
+
+	/** Release the materials used for the different rendering options in the viewport */
+	static void ReleaseDefaultMaterials();
 
 	int32 GetDrawCallsAverage() const
 	{
@@ -370,23 +373,23 @@ private:
 	bool bWireframeRenderingMode;
 
 	/** Material used to create utility material instances */
-	static TWeakObjectPtr<UMaterial> PreviewMaterial;
+	static TStrongObjectPtr<UMaterial> PreviewMaterial;
 
 	/** Stylized XRay Material */
-	static TWeakObjectPtr<UMaterial> XRayMaterial;
+	static TStrongObjectPtr<UMaterial> XRayMaterial;
 
 	/** Material used to display front facing triangle in green and back facing one in red */
-	static TWeakObjectPtr<UMaterial> BackFaceMaterial;
+	static TStrongObjectPtr<UMaterial> BackFaceMaterial;
 
 	/** Transparent material instance used to display non-selected meshes */
-	static TWeakObjectPtr<UMaterialInstanceConstant> TransparentMaterial;
+	static TStrongObjectPtr<UMaterialInstanceConstant> TransparentMaterial;
 
 	/** Fully reflective material used to display surface discontinuity */
-	static TWeakObjectPtr<UMaterial> ReflectionMaterial;
+	static TStrongObjectPtr<UMaterial> ReflectionMaterial;
 
-	/** Materials	 used to display each mesh component in a different color */
-	static TWeakObjectPtr<UMaterial> PerMeshMaterial;
-	static TArray<TWeakObjectPtr<UMaterialInstanceConstant>> PerMeshMaterialInstances;
+	/** Materials used to display each mesh component in a different color */
+	static TStrongObjectPtr<UMaterial> PerMeshMaterial;
+	static TArray<TStrongObjectPtr<UMaterialInstanceConstant>> PerMeshMaterialInstances;
 
 	TWeakPtr<FDataprepEditor> DataprepEditor;
 

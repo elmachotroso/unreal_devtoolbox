@@ -9,6 +9,7 @@
 #include "Engine/EngineTypes.h"
 #include "WaterRuntimeSettings.generated.h"
 
+class UMaterialInterface;
 class UMaterialParameterCollection;
 class UWaterBodyComponent;
 class UWaterBodyRiverComponent;
@@ -31,6 +32,8 @@ public:
 
 	FName GetDefaultWaterCollisionProfileName() const { return DefaultWaterCollisionProfileName; }
 
+	UMaterialInterface* GetDefaultWaterInfoMaterial() const;
+
 	TSubclassOf<UWaterBodyRiverComponent> GetWaterBodyRiverComponentClass() const;
 
 	TSubclassOf<UWaterBodyLakeComponent> GetWaterBodyLakeComponentClass() const;
@@ -52,13 +55,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
 	TSoftObjectPtr<UMaterialParameterCollection> MaterialParameterCollection;
 
-	/** Size of the water body icon in world-space. */
-	UPROPERTY(EditAnywhere, config, Category = Rendering)
-	float WaterBodyIconWorldSize = 1000.0f;
-
 	/** Offset in Z for the water body icon in world-space. */
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
-	float WaterBodyIconWorldZOffset = 250.0f;
+	float WaterBodyIconWorldZOffset = 75.0f;
 
 #if WITH_EDITORONLY_DATA
 	// Delegate called whenever the curve data is updated
@@ -71,15 +70,23 @@ private:
 	UPROPERTY(VisibleAnywhere, config, Category = Collision)
 	FName DefaultWaterCollisionProfileName;
 
-	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "WaterBodyRiverComponent"))
+	UPROPERTY(EditAnywhere, config, Category = Water)
+	TSoftObjectPtr<UMaterialInterface> DefaultWaterInfoMaterial;
+	
+	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "/Script/Water.WaterBodyRiverComponent"))
 	TSubclassOf<UWaterBodyRiverComponent> WaterBodyRiverComponentClass;
 
-	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "WaterBodyLakeComponent"))
+	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "/Script/Water.WaterBodyLakeComponent"))
 	TSubclassOf<UWaterBodyLakeComponent> WaterBodyLakeComponentClass;
 
-	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "WaterBodyOceanComponent"))
+	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "/Script/Water.WaterBodyOceanComponent"))
 	TSubclassOf<UWaterBodyOceanComponent> WaterBodyOceanComponentClass;
 
-	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "WaterBodyCustomComponent"))
+	UPROPERTY(EditAnywhere, Config, Category = Water,  meta = (MetaClass = "/Script/Water.WaterBodyCustomComponent"))
 	TSubclassOf<UWaterBodyCustomComponent> WaterBodyCustomComponentClass;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	float WaterBodyIconWorldSize_DEPRECATED;
+#endif // WITH_EDITORONLY_DATA
 };

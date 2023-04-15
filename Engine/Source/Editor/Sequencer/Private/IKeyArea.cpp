@@ -143,15 +143,16 @@ TSharedPtr<FStructOnScope> IKeyArea::GetKeyStruct(FKeyHandle KeyHandle) const
 	return nullptr;
 }
 
-void IKeyArea::DrawExtra(FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry) const
+int32 IKeyArea::DrawExtra(const FSequencerChannelPaintArgs& PaintArgs, int32 LayerId) const
 {
 	ISequencerChannelInterface* EditorInterface = FindChannelEditorInterface();
 	if (EditorInterface)
 	{
 		FMovieSceneChannel* Channel = ChannelHandle.Get();
 		const UMovieSceneSection* OwningSection = GetOwningSection();
-		EditorInterface->DrawExtra_Raw(Channel,OwningSection, KeyGeometry,Painter);
+		return EditorInterface->DrawExtra_Raw(Channel, OwningSection, PaintArgs, LayerId);
 	}
+	return LayerId;
 }
 
 void IKeyArea::DrawKeys(TArrayView<const FKeyHandle> InKeyHandles, TArrayView<FKeyDrawParams> OutKeyDrawParams)
@@ -206,21 +207,19 @@ void IKeyArea::CopyKeys(FMovieSceneClipboardBuilder& ClipboardBuilder, TArrayVie
 	}
 }
 
-void IKeyArea::PasteKeys(const FMovieSceneClipboardKeyTrack& KeyTrack, const FMovieSceneClipboardEnvironment& SrcEnvironment, const FSequencerPasteEnvironment& DstEnvironment)
+TArray<FKeyHandle> IKeyArea::PasteKeys(const FMovieSceneClipboardKeyTrack& KeyTrack, const FMovieSceneClipboardEnvironment& SrcEnvironment, const FSequencerPasteEnvironment& DstEnvironment)
 {
+	TArray<FKeyHandle> PastedKeys;
+
 	ISequencerChannelInterface* EditorInterface = FindChannelEditorInterface();
 	FMovieSceneChannel* Channel = ChannelHandle.Get();
 	UMovieSceneSection* OwningSection = GetOwningSection();
 	if (EditorInterface && Channel && OwningSection)
 	{
-		TArray<FKeyHandle> PastedKeys;
 		EditorInterface->PasteKeys_Raw(Channel, OwningSection, KeyTrack, SrcEnvironment, DstEnvironment, PastedKeys);
-
-		for (FKeyHandle KeyHandle : PastedKeys)
-		{
-			DstEnvironment.ReportPastedKey(KeyHandle, *this);
-		}
 	}
+
+	return PastedKeys;
 }
 
 FText GetOwningObjectBindingName(UMovieSceneTrack* InTrack, ISequencer& InSequencer)
@@ -239,6 +238,33 @@ FText GetOwningObjectBindingName(UMovieSceneTrack* InTrack, ISequencer& InSequen
 	// Couldn't find an owning track, so must not be nestled inside of something!
 	return FText();
 }
+
+namespace UE
+{
+namespace MovieScene
+{
+	void CleanUpCurveEditorFormatStringInline(FString& InStr)
+	{
+		for (int32 Index = 0; Index < InStr.GetCharArray().Num() - 1; Index++)
+		{
+			TCHAR CurrentChar = InStr.GetCharArray()[Index];
+			TCHAR NextChar = InStr.GetCharArray()[Index + 1];
+			if (CurrentChar == '.' && NextChar == '.')
+			{
+				const bool bAllowShrinking = false;
+				const int32 NumToRemove = 1;
+				InStr.RemoveAt(Index, NumToRemove, bAllowShrinking);
+				Index--;
+			}
+		}
+
+		// We can still end up with a "." at the end using the above logic
+		if (InStr.GetCharArray()[InStr.GetCharArray().Num() - 1] == '.')
+		{
+			InStr.RemoveAt(InStr.GetCharArray().Num() - 1);
+		}
+	}
+}}
 
 TUniquePtr<FCurveModel> IKeyArea::CreateCurveEditorModel(TSharedRef<ISequencer> InSequencer) const
 {
@@ -261,49 +287,47 @@ TUniquePtr<FCurveModel> IKeyArea::CreateCurveEditorModel(TSharedRef<ISequencer> 
 				// This track might be inside an object binding and we'd like to prepend the object binding's name for more context.
 				ObjectBindingName = GetOwningObjectBindingName(OwningTrack, *InSequencer);
 			}
+			
+			// This is a FText (even though the end result is a FString) because all the incoming data sources are FText
+			// And it's probably cheaper to convert one FText->FString instead of 4 shorter ones.
+			FFormatNamedArguments FormatArgs;
 
 			// Not all tracks have all the information so we need to format it differently depending on how many are valid.
-			TArray<FText> ValidNames;
+			FormatArgs.Add(TEXT("ObjectBindingName"), ObjectBindingName);
+			FormatArgs.Add(TEXT("OwningTrackName"), OwningTrackName);
+			FormatArgs.Add(TEXT("GroupName"), ChannelHandle.GetMetaData()->Group);
+			FormatArgs.Add(TEXT("DisplayName"), DisplayText);
 
-			if (!ObjectBindingName.IsEmptyOrWhitespace())
-			{
-				ValidNames.Add(ObjectBindingName);
-			}
-			if (!OwningTrackName.IsEmptyOrWhitespace())
-			{
-				ValidNames.Add(OwningTrackName);
-			}
-			if (!ChannelHandle.GetMetaData()->Group.IsEmptyOrWhitespace())
-			{
-				ValidNames.Add(ChannelHandle.GetMetaData()->Group);
-			}
-			if (!DisplayText.IsEmptyOrWhitespace())
-			{
-				ValidNames.Add(DisplayText);
-			}
+			FText FormatText = NSLOCTEXT("SequencerIKeyArea", "CurveLongDisplayNameFormat", "{ObjectBindingName}.{OwningTrackName}.{GroupName}.{DisplayName}");
+			FString FormattedText = FText::Format(FormatText, FormatArgs).ToString();
 
-			// Now we loop through and string them together into one big format string.
-			FText LongDisplayNameFormatString;
-			for (int32 NameIndex = 0; NameIndex < ValidNames.Num(); NameIndex++)
-			{
-				const bool bLastEntry = NameIndex == ValidNames.Num() - 1;
-				if (!bLastEntry)
-				{
-					LongDisplayNameFormatString = FText::Format(NSLOCTEXT("SequencerIKeyArea", "CurveLongDisplayNameFormat", "{0}`{{1}`}."), LongDisplayNameFormatString, NameIndex);
-				}
-				else
-				{
-					LongDisplayNameFormatString = FText::Format(NSLOCTEXT("SequencerIKeyArea", "CurveLongDisplayNameFormatEnd", "{0}`{{1}`}"), LongDisplayNameFormatString, NameIndex);
-				}
-			}
+			UE::MovieScene::CleanUpCurveEditorFormatStringInline(FormattedText);
 
-			FText LongDisplayName = FText::Format(LongDisplayNameFormatString, FFormatOrderedArguments(ValidNames));
+			FText LongDisplayName = FText::FromString(FormattedText);
 			const FText ShortDisplayName = DisplayText;
-			const FString IntentName = ChannelHandle.GetMetaData()->Group.IsEmptyOrWhitespace() ? DisplayText.ToString() : FString::Format(TEXT("{0}.{1}"), { ChannelHandle.GetMetaData()->Group.ToString(), DisplayText.ToString() });
+			FString IntentName = ChannelHandle.GetMetaData()->IntentName.ToString();
+			if (IntentName.IsEmpty())
+			{
+				IntentName = ChannelHandle.GetMetaData()->Group.IsEmptyOrWhitespace() ? DisplayText.ToString() : FString::Format(TEXT("{0}.{1}"), { ChannelHandle.GetMetaData()->Group.ToString(), DisplayText.ToString() });
+			}
+
+			FText LongIntentNameFormat = ChannelHandle.GetMetaData()->LongIntentNameFormat;
+			if (LongIntentNameFormat.IsEmpty())
+			{
+				LongIntentNameFormat = NSLOCTEXT("SequencerIKeyArea", "LongIntentNameFormat", "{ObjectBindingName}.{GroupName}.{DisplayName}");
+			}
+			
+			FormatArgs.Add(TEXT("IntentName"), FText::FromString(IntentName));
+
+
+			FString LongIntentName = FText::Format(LongIntentNameFormat, FormatArgs).ToString();
+			UE::MovieScene::CleanUpCurveEditorFormatStringInline(LongIntentName);
+
 
 			CurveModel->SetShortDisplayName(DisplayText);
 			CurveModel->SetLongDisplayName(LongDisplayName);
 			CurveModel->SetIntentionName(IntentName);
+			CurveModel->SetLongIntentionName(LongIntentName);
 			if (Color.IsSet())
 			{
 				CurveModel->SetColor(Color.GetValue());
@@ -327,4 +351,17 @@ TUniquePtr<FCurveModel> IKeyArea::CreateCurveEditorModel(TSharedRef<ISequencer> 
 	}
 
 	return nullptr;
+}
+
+bool IKeyArea::ShouldShowCurve() const
+{
+	ISequencerChannelInterface* EditorInterface = FindChannelEditorInterface();
+	FMovieSceneChannel* Channel = ChannelHandle.Get();
+	UMovieSceneSection* OwningSection = GetOwningSection();
+	if (EditorInterface && Channel && OwningSection)
+	{
+		return EditorInterface->ShouldShowCurve_Raw(Channel, OwningSection);
+	}
+
+	return false;
 }

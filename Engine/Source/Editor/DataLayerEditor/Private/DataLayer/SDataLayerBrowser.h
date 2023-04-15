@@ -1,19 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
+#include "Containers/Set.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
-class ISceneOutliner;
-class SButton;
-class SVerticalBox;
 class SBorder;
-class UDataLayer;
+class SButton;
+class SMultiLineEditableTextBox;
+class SVerticalBox;
+class UDataLayerInstance;
 
 //////////////////////////////////////////////////////////////////////////
 // SDataLayerBrowser
@@ -25,8 +23,6 @@ public:
 	SLATE_BEGIN_ARGS( SDataLayerBrowser ) {}
 	SLATE_END_ARGS()
 
-	~SDataLayerBrowser(){}
-
 	/**
 	 * Construct this widget.  Called by the SNew() Slate macro.
 	 *
@@ -35,18 +31,18 @@ public:
 	 */
 	void Construct(const FArguments& InArgs);
 
-	void SyncDataLayerBrowserToDataLayer(const UDataLayer* DataLayer);
-	void OnSelectionChanged(TSet<TWeakObjectPtr<const UDataLayer>>& SelectedDataLayersSet);
+	void SyncDataLayerBrowserToDataLayer(const UDataLayerInstance* DataLayer);
+	void OnSelectionChanged(TSet<TWeakObjectPtr<const UDataLayerInstance>>& SelectedDataLayersSet);
 
 private:
-
 	void InitializeDataLayerBrowser();
 
-	TSet<TWeakObjectPtr<const UDataLayer>> SelectedDataLayersSet;
+	TSet<TWeakObjectPtr<const UDataLayerInstance>> SelectedDataLayersSet;
 	TSharedPtr<class SDataLayerOutliner> DataLayerOutliner;
 	TSharedPtr<class IDetailsView> DetailsWidget;
 	TSharedPtr<SButton> ToggleModeButton;
 	TSharedPtr<SVerticalBox> ContentAreaBox;
 	TSharedPtr<SBorder> DataLayerContentsSection;
 	TSharedPtr<SBorder> DataLayerContentsHeader;
+	TSharedPtr<SMultiLineEditableTextBox> DeprecatedDataLayerWarningBox;
 };

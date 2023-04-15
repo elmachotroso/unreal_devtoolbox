@@ -29,6 +29,10 @@ public:
 	UPROPERTY(EditAnywhere, Category="Compositing Pass", meta = (DisplayAfter = "PassName", EditCondition = "bEnabled"))
 	int32 PlayerIndex = 0;
 
+	/** Enable or disable the tone curve (and expand gamut) when the tonemap pass settings are passed down to the main viewport post-processing. */
+	UPROPERTY(EditAnywhere, Category = "Compositing Pass", meta = (DisplayAfter = "ColorConversion", EditCondition = "bEnabled"))
+	bool ApplyToneCurve = false;
+
 public:
 	//~ Begin UCompositingElementOutput interface
 	virtual void OnFrameBegin_Implementation(bool bCameraCutThisFrame) override;
@@ -40,6 +44,10 @@ public:
 	virtual void OverrideBlendableSettings(FSceneView& View, float Weight) const override;
 	//~ End IBlendableInterface interface
 
+
+#if WITH_EDITOR
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
+#endif
 protected:
 	bool OverridePlayerCamera(int32 PlayerIndex);
 	void ClearViewportOverride();
@@ -52,15 +60,15 @@ private:
 	int32 ActiveOverrideIndex = INDEX_NONE;
 
 	UPROPERTY(Transient, DuplicateTransient, SkipSerialization)
-	UPlayerCompOutputCameraModifier* ActiveCamModifier;
+	TObjectPtr<UPlayerCompOutputCameraModifier> ActiveCamModifier;
 
 	UPROPERTY(Transient)
-	UMaterialInterface* TonemapperBaseMat;
+	TObjectPtr<UMaterialInterface> TonemapperBaseMat;
 	UPROPERTY(Transient)
-	UMaterialInterface* PreTonemapBaseMat;
+	TObjectPtr<UMaterialInterface> PreTonemapBaseMat;
 
 	UPROPERTY(Transient, DuplicateTransient, SkipSerialization)
-	UMaterialInstanceDynamic* ViewportOverrideMID;
+	TObjectPtr<UMaterialInstanceDynamic> ViewportOverrideMID;
 
 	TWeakObjectPtr<APlayerController> TargetedPlayerController;
 };
@@ -82,6 +90,6 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UPlayerViewportCompositingOutput* Owner;
+	TObjectPtr<UPlayerViewportCompositingOutput> Owner;
 };
 

@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/RadialSlider.h"
-#include "Slate/SRadialSlider.h"
+#include "Widgets/SRadialSlider.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RadialSlider)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -361,3 +363,4 @@ const FText URadialSlider::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

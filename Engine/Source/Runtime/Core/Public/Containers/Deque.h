@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 #include "GenericPlatform/GenericPlatformMath.h"
 #include "IteratorAdapter.h"
+#include "Math/UnrealMathUtility.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/MemoryOps.h"
@@ -561,7 +562,7 @@ private:
 		SizeType Offset = 0;
 		while (Offset < InCount)
 		{
-			const SizeType Step = ::FMath::Min(Head, InCount - Offset);
+			const SizeType Step = FMath::Min(Head, InCount - Offset);
 			RelocateConstructItems<ElementType>(GetData() + Offset, GetData() + Head + Offset, Step);
 			Offset += Step;
 		}

@@ -7,6 +7,8 @@
 
 extern bool ShouldRenderLumenDiffuseGI(const FScene* Scene, const FSceneView& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
 extern bool ShouldRenderLumenReflections(const FViewInfo& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
+extern bool ShouldRenderLumenDirectLighting(const FScene* Scene, const FSceneView& View);
+extern bool ShouldRenderAOWithLumenGI();
 
 class FLumenSceneData;
 
@@ -27,7 +29,6 @@ namespace Lumen
 	constexpr uint32 NumResLevels = MaxResLevel - MinResLevel + 1;
 	constexpr uint32 CardTileSize = 8;
 
-	constexpr float MaxTracingEndDistanceFromCamera = 0.5f * UE_OLD_WORLD_MAX;
 	constexpr float MaxTraceDistance = 0.5f * UE_OLD_WORLD_MAX;
 
 	enum class ETracingPermutation
@@ -39,31 +40,25 @@ namespace Lumen
 	};
 
 	void DebugResetSurfaceCache();
-	void DebugResetVoxelLighting();
 
-	bool UseMeshSDFTracing(const FSceneViewFamily& ViewFamily);
-	bool UseGlobalSDFTracing(const FSceneViewFamily& ViewFamily);
-	bool UseHeightfieldTracing(const FSceneViewFamily& ViewFamily, const FLumenSceneData& LumenSceneData);
-	bool UseHeightfieldTracingForVoxelLighting(const FLumenSceneData& LumenSceneData);
-	int32 GetHeightfieldMaxTracingSteps();
 	float GetMaxTraceDistance(const FViewInfo& View);
-	bool AnyLumenHardwareRayTracingPassEnabled(const FScene* Scene, const FViewInfo& View);
-	bool AnyLumenHardwareInlineRayTracingPassEnabled(const FScene* Scene, const FViewInfo& View);
-	bool IsSoftwareRayTracingSupported();
 	bool IsLumenFeatureAllowedForView(const FScene* Scene, const FSceneView& View, bool bSkipTracingDataCheck = false, bool bSkipProjectCheck = false);
 	bool ShouldVisualizeScene(const FSceneViewFamily& ViewFamily);
 	bool ShouldVisualizeHardwareRayTracing(const FSceneViewFamily& ViewFamily);
 	bool ShouldHandleSkyLight(const FScene* Scene, const FSceneViewFamily& ViewFamily);
 
-	void ExpandDistanceFieldUpdateTrackingBounds(const FSceneViewState* ViewState, DistanceField::FUpdateTrackingBounds& UpdateTrackingBounds);
 	float GetDistanceSceneNaniteLODScaleFactor();
 
 	bool ShouldUpdateLumenSceneViewOrigin();
+	FVector GetLumenSceneViewOrigin(const FViewInfo& View, int32 ClipmapIndex);
+
+	// Global Distance Field
 	int32 GetGlobalDFResolution();
-	float GetGlobalDFClipmapExtent();
-	float GetFirstClipmapWorldExtent();
+	float GetGlobalDFClipmapExtent(int32 ClipmapIndex);
+	int32 GetNumGlobalDFClipmaps(const FSceneView& View);
 
 	// Features
+	bool UseThreadGroupSize32();
 	bool IsRadiosityEnabled(const FSceneViewFamily& ViewFamily);
 	uint32 GetRadiosityAtlasDownsampleFactor();
 
@@ -72,15 +67,23 @@ namespace Lumen
 	bool IsSurfaceCacheUpdateFrameFrozen();
 
 	// Software ray tracing
-	bool UseVoxelLighting(const FSceneViewFamily& ViewFamily);
+	bool IsSoftwareRayTracingSupported();
+	bool UseMeshSDFTracing(const FSceneViewFamily& ViewFamily);
+	bool UseGlobalSDFTracing(const FSceneViewFamily& ViewFamily);
+	bool UseGlobalSDFObjectGrid(const FSceneViewFamily& ViewFamily);
+	bool UseHeightfieldTracing(const FSceneViewFamily& ViewFamily, const FLumenSceneData& LumenSceneData);
+	bool UseHeightfieldTracingForVoxelLighting(const FLumenSceneData& LumenSceneData);
+	int32 GetHeightfieldMaxTracingSteps();
 
 	// Hardware ray tracing
-	bool UseHardwareRayTracing();
+	bool AnyLumenHardwareRayTracingPassEnabled(const FScene* Scene, const FViewInfo& View);
+	bool AnyLumenHardwareInlineRayTracingPassEnabled(const FScene* Scene, const FViewInfo& View);
+	bool UseHardwareRayTracing(const FSceneViewFamily& ViewFamily);
 	bool UseHardwareRayTracedSceneLighting(const FSceneViewFamily& ViewFamily);
-	bool UseHardwareRayTracedDirectLighting();
-	bool UseHardwareRayTracedReflections();
-	bool UseHardwareRayTracedScreenProbeGather();
-	bool UseHardwareRayTracedRadianceCache();
+	bool UseHardwareRayTracedDirectLighting(const FSceneViewFamily& ViewFamily);
+	bool UseHardwareRayTracedReflections(const FSceneViewFamily& ViewFamily);
+	bool UseHardwareRayTracedScreenProbeGather(const FSceneViewFamily& ViewFamily);
+	bool UseHardwareRayTracedRadianceCache(const FSceneViewFamily& ViewFamily);
 	bool UseHardwareRayTracedRadiosity(const FSceneViewFamily& ViewFamily);
 	bool UseHardwareRayTracedVisualize(const FSceneViewFamily& ViewFamily);
 
@@ -88,8 +91,7 @@ namespace Lumen
 	bool ShouldVisualizeHardwareRayTracing(const FSceneViewFamily& ViewFamily);
 
 	int32 GetMaxTranslucentSkipCount();
-
-	bool UseHardwareInlineRayTracing();
+	bool UseHardwareInlineRayTracing(const FSceneViewFamily& ViewFamily);
 
 	enum class EHardwareRayTracingLightingMode
 	{

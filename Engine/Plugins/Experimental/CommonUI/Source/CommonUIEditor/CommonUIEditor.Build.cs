@@ -21,8 +21,7 @@ public class CommonUIEditor : ModuleRules
 				"UMG",
 				"SlateCore",
 				"CommonUI",
-                "EditorWidgets",
-				"EditorStyle",
+                "EditorWidgets",	
 				"UnrealEd",
 				"GameplayTags",
 				"GameplayTagsEditor",
@@ -35,8 +34,8 @@ public class CommonUIEditor : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[]
 			{
-				"CommonUI/Private",
-                "CommonUIEditor/Private",
+				System.IO.Path.Combine(GetModuleDirectory("CommonUI"), "Private"),
+				System.IO.Path.Combine(GetModuleDirectory("CommonUIEditor"), "Private"),
 			}
 		);
 
@@ -44,6 +43,7 @@ public class CommonUIEditor : ModuleRules
 			new string[] {
 				"AssetRegistry",
 				"AssetTools",
+				"DataTableEditor",
 			}
 		);
 

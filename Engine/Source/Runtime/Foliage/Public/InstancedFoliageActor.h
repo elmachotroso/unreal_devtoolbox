@@ -15,7 +15,10 @@
 
 #include "InstancedFoliageActor.generated.h"
 
+#if WITH_EDITOR
 class UProceduralFoliageComponent;
+struct FActorPartitionIdentifier;
+#endif
 
 // Function for filtering out hit components during FoliageTrace
 typedef TFunction<bool(const UPrimitiveComponent*)> FFoliageTraceFilterFunc;
@@ -53,11 +56,14 @@ public:
 
 	//~ Begin AActor Interface.
 	// we don't want to have our components automatically destroyed by the Blueprint code
+#if WITH_EDITOR
 	virtual void RerunConstructionScripts() override {}
+#endif
 	virtual bool IsLevelBoundsRelevant() const override { return false; }
 
 public:
 #if WITH_EDITOR
+	bool CanDeleteSelectedActor(FText& OutReason) const override { return true; }
 	bool CanEditFoliageInstance(const FFoliageInstanceId& InstanceId) const;
 	bool CanMoveFoliageInstance(const FFoliageInstanceId& InstanceId, const ETypedElementWorldType WorldType) const;
 	bool GetFoliageInstanceTransform(const FFoliageInstanceId& InstanceId, FTransform& OutInstanceTransform, bool bWorldSpace) const;
@@ -92,11 +98,13 @@ public:
 	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
 	virtual void Destroyed() override;
+	virtual bool IsListedInSceneOutliner() const override;
+	
 	FOLIAGE_API void CleanupDeletedFoliageType();
 	FOLIAGE_API void DetectFoliageTypeChangeAndUpdate();
 
 	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override;
-	virtual bool ShouldIncludeGridSizeInName(UWorld* InWorld) const override;
+	virtual bool ShouldIncludeGridSizeInName(UWorld* InWorld, const FActorPartitionIdentifier& InIdentifier) const override;
 
 	// Delegate type for selection change events
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSelectionChanged, bool, const TArray<AActor*>&);
@@ -162,6 +170,8 @@ public:
 
 	static FOLIAGE_API AInstancedFoliageActor* GetDefault(UWorld* InWorld);
 
+	static FOLIAGE_API void UpdateInstancePartitioning(UWorld* InWorld);
+
 	static FOLIAGE_API bool FoliageTrace(const UWorld* InWorld, FHitResult& OutHit, const FDesiredFoliageInstance& DesiredInstance, FName InTraceTag = NAME_None, bool InbReturnFaceIndex = false, const FFoliageTraceFilterFunc& FilterFunc = FFoliageTraceFilterFunc(), bool bAverageNormal = false);
 	static FOLIAGE_API bool CheckCollisionWithWorld(const UWorld* InWorld, const UFoliageType* Settings, const FFoliageInstance& Inst, const FVector& HitNormal, const FVector& HitLocation, UPrimitiveComponent* HitComponent);
 
@@ -170,6 +180,7 @@ public:
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual bool ShouldExport() override;
 	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
+	virtual FBox GetStreamingBounds() const override;
 
 	// Called in response to BSP rebuilds to migrate foliage from obsolete to new components.
 	FOLIAGE_API void MapRebuild();
@@ -211,10 +222,13 @@ public:
 	static FOLIAGE_API void DeleteInstancesForComponent(UWorld* InWorld, UActorComponent* InComponent);
 
 	// Deletes the instances spawned by a procedural component
-	void DeleteInstancesForProceduralFoliageComponent(const UProceduralFoliageComponent* ProceduralFoliageComponent, bool InRebuildTree);
+	FOLIAGE_API bool DeleteInstancesForProceduralFoliageComponent(const UProceduralFoliageComponent* InProceduralFoliageComponent, bool bInRebuildTree);
+	FOLIAGE_API bool DeleteInstancesForProceduralFoliageComponent(const FGuid& InProceduralGuid, bool bInRebuildTree);
+	FOLIAGE_API bool DeleteInstancesForAllProceduralFoliageComponents(bool bInRebuildTree);
 
 	/** @return True if any instances exist that were spawned by the given procedural component */
-	bool ContainsInstancesFromProceduralFoliageComponent(const UProceduralFoliageComponent* ProceduralFoliageComponent);
+	FOLIAGE_API bool ContainsInstancesFromProceduralFoliageComponent(const UProceduralFoliageComponent* InProceduralFoliageComponent);
+	FOLIAGE_API bool ContainsInstancesFromProceduralFoliageComponent(const FGuid& InProceduralGuid);
 
 	// Finds a mesh entry or adds it if it doesn't already exist
 	FOLIAGE_API FFoliageInfo* FindOrAddMesh(UFoliageType* InType);
@@ -292,6 +306,7 @@ private:
 	void OnPostApplyLevelOffset(ULevel* InLevel, UWorld* InWorld, const FVector& InOffset, bool bWorldShift);
 	void OnPostWorldInitialization(UWorld* World, const UWorld::InitializationValues IVS);
 	void MoveInstancesToNewComponent(UPrimitiveComponent* InOldComponent, UPrimitiveComponent* InNewComponent, TFunctionRef<TArray<int32>(const FFoliageInfo&)> GetInstancesToMoveFunc);
+	bool DeleteInstancesForProceduralFoliageComponentInternal(const FGuid& InProceduralGuid, bool bInRebuildTree, bool bInDeleteAll);
 #endif
 private:
 #if WITH_EDITOR

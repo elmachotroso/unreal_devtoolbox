@@ -2,9 +2,8 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection.Metadata;
 using System.Threading.Tasks;
-using Horde.Storage.Implementation.TransactionLog;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 using Newtonsoft.Json;
 
@@ -14,33 +13,38 @@ namespace Horde.Storage.Implementation
     {
         IAsyncEnumerable<NamespaceId> GetNamespaces();
 
-        Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timeBucket = null);
-        Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timeBucket = null);
+        Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, IoHashKey key, BlobIdentifier objectBlob, DateTime? timeBucket = null);
+        Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, IoHashKey key, DateTime? timeBucket = null);
         IAsyncEnumerable<ReplicationLogEvent> Get(NamespaceId ns, string? lastBucket, Guid? lastEvent);
 
         Task AddSnapshot(SnapshotInfo snapshotHeader);
         Task<SnapshotInfo?> GetLatestSnapshot(NamespaceId ns);
         IAsyncEnumerable<SnapshotInfo> GetSnapshots(NamespaceId ns);
+
+        Task UpdateReplicatorState(NamespaceId ns, string replicatorName, ReplicatorState newState);
+        Task<ReplicatorState?> GetReplicatorState(NamespaceId ns, string replicatorName);
     }
 
     public class SnapshotInfo
     {
         [JsonConstructor]
-        public SnapshotInfo(NamespaceId snapshottedNamespace, NamespaceId blobNamespace, BlobIdentifier snapshotBlob)
+        public SnapshotInfo(NamespaceId snapshottedNamespace, NamespaceId blobNamespace, BlobIdentifier snapshotBlob, DateTime timestamp)
         {
             SnapshottedNamespace = snapshottedNamespace;
             BlobNamespace = blobNamespace;
             SnapshotBlob = snapshotBlob;
+            Timestamp = timestamp;
         }
 
         public NamespaceId SnapshottedNamespace { get; set; }
         public NamespaceId BlobNamespace { get; set; }
         public BlobIdentifier SnapshotBlob { get; set; }
+        public DateTime Timestamp { get; set; }
     }
 
     public class ReplicationLogEvent
     {
-        public ReplicationLogEvent(NamespaceId @namespace, BucketId bucket, KeyId key, BlobIdentifier blob, Guid eventId, string timeBucket, DateTime timestamp, OpType op)
+        public ReplicationLogEvent(NamespaceId @namespace, BucketId bucket, IoHashKey key, BlobIdentifier? blob, Guid eventId, string timeBucket, DateTime timestamp, OpType op)
         {
             Namespace = @namespace;
             Bucket = bucket;
@@ -61,12 +65,12 @@ namespace Horde.Storage.Implementation
 
         public NamespaceId Namespace { get; }
         public BucketId Bucket { get; }
-        public KeyId Key { get; }
+        public IoHashKey Key { get; }
         public OpType Op { get; }
         public DateTime Timestamp { get; }
         public string TimeBucket { get; }
         public Guid EventId { get; }
-        public BlobIdentifier Blob { get; }
+        public BlobIdentifier? Blob { get; }
     }
 
     public class IncrementalLogNotAvailableException : Exception

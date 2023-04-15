@@ -6,18 +6,9 @@ namespace UnrealBuildTool.Rules
 	{
 		public MassAIBehavior(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-
-			PublicIncludePaths.AddRange(
+			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-				"Runtime/AIModule/Public",
-				ModuleDirectory + "/Public",
-				}
-			);
-
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
+					"AIModule"
 				}
 			);
 
@@ -27,6 +18,7 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"Engine",
+					"GameplayTags",
 					"MassActors",
 					"MassCommon",
 					"MassLOD",
@@ -43,7 +35,8 @@ namespace UnrealBuildTool.Rules
 					"StateTreeModule",
 					"StructUtils",
 					"ZoneGraph",
-					"ZoneGraphAnnotations"
+					"ZoneGraphAnnotations",
+					"MassGameplayExternalTraits"
 				}
 			);
 

@@ -15,6 +15,8 @@
 
 enum EAdditiveAnimationType;
 
+class UAnimationSettings;
+
 namespace UE
 {
 	namespace Anim
@@ -42,14 +44,28 @@ namespace UE
 
 		struct ENGINE_API AttributeTypes
 		{
+			DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAttributeTypesChanged, const UScriptStruct*, bool /* bIsAdded */ );
+			
 		protected:
 			static TArray<TWeakObjectPtr<const UScriptStruct>> RegisteredTypes;
 			static TArray<TUniquePtr<IAttributeBlendOperator>> Operators;
 			static TArray<TWeakObjectPtr<const UScriptStruct>> InterpolatableTypes;
-		public:
-			
+			static std::atomic<bool> bInitialized;
+			static FOnAttributeTypesChanged OnAttributeTypesChangedDelegate;
+
 			static void Initialize();
 
+			/** Register user defined structs as non-blendable animation attribute */
+			static bool RegisterNonBlendableType(const UScriptStruct* InScriptStruct);
+
+			/** Unregisters a specific attribute type and deletes its associated blend operator */
+			static void UnregisterType(const UScriptStruct* InScriptStruct);
+			
+		public:			
+			static void LazyInitialize();
+
+			static FOnAttributeTypesChanged& GetOnAttributeTypesChanged() { return OnAttributeTypesChangedDelegate; };
+			
 			/** Used for registering an attribute type for which TAttributeTypeTraits::WithCustomBlendOperator is set to true, use RegisterType() otherwise */
 			template<typename AttributeType, typename OperatorType, typename... OperatorArgs>
 			static void RegisterTypeWithOperator(OperatorArgs&&... args)
@@ -112,6 +128,7 @@ namespace UE
 			/** Returns the blend operator for the provided type, asserts when the type is not registered */
 			static const IAttributeBlendOperator* GetTypeOperator(TWeakObjectPtr<const UScriptStruct> WeakStruct)
 			{
+				LazyInitialize();
 				const int32 Index = AttributeTypes::RegisteredTypes.IndexOfByKey(WeakStruct);
 				ensure(WeakStruct.IsValid());
 				checkf(Index != INDEX_NONE, TEXT("Missing operator for attribute, type %s was not registered previously"), *WeakStruct->GetName());
@@ -121,20 +138,25 @@ namespace UE
 			/** Returns whether or not the provided type can be interpolated, defaults to false when the type is not registered */
 			static bool CanInterpolateType(TWeakObjectPtr<const UScriptStruct> WeakStruct)
 			{
+				LazyInitialize();
 				return AttributeTypes::InterpolatableTypes.Contains(WeakStruct);
 			}
 
 			/** Returns whether or not the type is registered */
 			static bool IsTypeRegistered(const UScriptStruct* ScriptStruct)
 			{
+				LazyInitialize();
 				return AttributeTypes::RegisteredTypes.Contains(ScriptStruct);
 			}
 
 			/** Returns all registered types */
 			static TArray<TWeakObjectPtr<const UScriptStruct>>& GetRegisteredTypes()
 			{
+				LazyInitialize();
 				return AttributeTypes::RegisteredTypes;
 			}
+			
+			friend class ::UAnimationSettings;
 		};
 	}
 }

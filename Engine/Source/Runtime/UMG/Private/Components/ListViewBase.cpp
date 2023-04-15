@@ -7,6 +7,8 @@
 #include "Engine/Blueprint.h"
 #include "Editor/WidgetCompilerLog.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ListViewBase)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 UListViewBase::UListViewBase(const FObjectInitializer& ObjectInitializer)
@@ -14,7 +16,7 @@ UListViewBase::UListViewBase(const FObjectInitializer& ObjectInitializer)
 	, EntryWidgetPool(*this)
 {
 	bIsVariable = true;
-	Clipping = EWidgetClipping::ClipToBounds;
+	SetClipping(EWidgetClipping::ClipToBounds);
 }
 
 #if WITH_EDITOR
@@ -239,3 +241,4 @@ void UListViewBase::HandleAnnounceGeneratedEntries()
 }
 
 #undef LOCTEXT_NAMESPACE
+

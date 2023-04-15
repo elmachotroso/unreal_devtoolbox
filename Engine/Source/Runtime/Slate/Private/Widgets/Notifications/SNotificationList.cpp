@@ -69,12 +69,7 @@ public:
 
 	virtual void ExpireAndFadeout() override
 	{
-		FadeAnimation = FCurveSequence();
-		// Add some space for the expire time
-		FadeAnimation.AddCurve(FadeOutDuration.Get(), ExpireDuration.Get());
-		// Add the actual fade curve
-		FadeCurve = FadeAnimation.AddCurve(0.f, FadeOutDuration.Get());
-		FadeAnimation.PlayReverse(this->AsShared());
+		bAutoExpire = true;
 	}
 
 	/** Begins the fadein of this message */
@@ -147,17 +142,29 @@ public:
 
 	void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override
 	{
-		const bool bIsFadingOut = FadeAnimation.IsInReverse();
-		const bool bIsCurrentlyPlaying = FadeAnimation.IsPlaying();
-		const bool bIsIntroPlaying = IntroAnimation.IsPlaying();
+		bool bIsFadingOut = FadeAnimation.IsInReverse();
+		if (bAutoExpire)
+		{
+			InternalTime += InDeltaTime;
 
-		if ( !bIsCurrentlyPlaying && bIsFadingOut )
+			if (!bIsFadingOut && 
+				InternalTime > (FadeInDuration.Get() + ExpireDuration.Get()))
+			{
+				// if we've faded in and shown the notification for the expire duration, start fading out
+				Fadeout();
+				bIsFadingOut = true;
+			}
+		}
+
+		const bool bIsCurrentlyPlaying = FadeAnimation.IsPlaying();
+		if (bIsFadingOut && !bIsCurrentlyPlaying)
 		{
 			// Reset the Animation
 			FadeoutComplete();
 		}
 
-		if ( !bIsIntroPlaying && ThrottleHandle.IsValid() )
+		const bool bIsIntroPlaying = IntroAnimation.IsPlaying();
+		if (!bIsIntroPlaying && ThrottleHandle.IsValid())
 		{
 			// Leave responsive mode once the intro finishes playing
 			FSlateThrottleManager::Get().LeaveResponsiveMode( ThrottleHandle );
@@ -327,6 +334,9 @@ protected:
 
 	/** Handle to a throttle request made to ensure the intro animation is smooth in low FPS situations */
 	FThrottleRequest ThrottleHandle;
+
+	float InternalTime = 0.0f;
+	bool bAutoExpire = false;
 };
 
 

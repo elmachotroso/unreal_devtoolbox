@@ -13,7 +13,6 @@
 #include "Dom/JsonObject.h"
 #include "Framework/MultiBox/MultiBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Runtime/Slate/Private/Framework/Docking/SDockingTabStack.h"
 
 /* Private includes
 *****************************************************************************/
@@ -23,13 +22,13 @@
 #include "HAL/RunnableThread.h"
 #include "Engine/World.h"
 #include "SVisualLogger.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerToolbar.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerFilters.h"
+#include "SVisualLoggerToolbar.h"
+#include "SVisualLoggerFilters.h"
 #include "Widgets/Layout/SScrollBarTrack.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerView.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerLogsList.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerStatusView.h"
+#include "SVisualLoggerView.h"
+#include "SVisualLoggerLogsList.h"
+#include "SVisualLoggerStatusView.h"
 #include "SVisualLoggerTimeline.h"
-#include "Developer/LogVisualizer/Private/SVisualLoggerTimelineBar.h"
+#include "SVisualLoggerTimelineBar.h"
 #include "MovieScene.h"
-#include "Developer/LogVisualizer/Private/VisualLoggerTimeSliderController.h"
+#include "VisualLoggerTimeSliderController.h"

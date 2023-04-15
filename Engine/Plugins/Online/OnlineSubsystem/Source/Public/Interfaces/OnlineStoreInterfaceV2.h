@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "OnlineDelegateMacros.h"
+#include "OnlineStoreInterfaceV2.generated.h"
 
 ONLINESUBSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogOnlineStoreV2, Log, All);
 
@@ -22,6 +23,25 @@ class FUniqueNetId;
 typedef FString FUniqueOfferId;
 typedef FString FOfferNamespace;
 typedef FString FUniqueCategoryId;
+
+/**
+ * Possible result states of an in-app purchase transaction
+ */
+UENUM(BlueprintType)
+namespace EInAppPurchaseState
+{
+	enum Type
+	{
+		Unknown = 0 UMETA(DisplayName = "Unknown"),
+		Success UMETA(DisplayName = "Success"),
+		Failed UMETA(DisplayName = "Failed"),
+		Cancelled UMETA(DisplayName = "Cancelled"),
+		Invalid UMETA(DisplayName = "Invalid"),
+		NotAllowed UMETA(DisplayName = "NotAllowed"),
+		Restored UMETA(DisplayName = "Restored"),
+		AlreadyOwned UMETA(DisplayName = "AlreadyOwned"),
+	};
+}
 
 enum class EOnlineStoreOfferDiscountType : uint8
 {

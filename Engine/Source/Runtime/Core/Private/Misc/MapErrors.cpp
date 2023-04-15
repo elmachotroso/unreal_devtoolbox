@@ -2,6 +2,8 @@
 
 #include "Misc/MapErrors.h"
 
+#include "CoreTypes.h"
+
 FLazyName FMapErrors::MatchingActorGUID(TEXT("MatchingActorGUID"));
 FLazyName FMapErrors::MatchingLightGUID(TEXT("MatchingLightGUID"));
 FLazyName FMapErrors::ActorLargeShadowCaster(TEXT("ActorLargeShadowCaster"));
@@ -53,6 +55,7 @@ FLazyName FMapErrors::StaticMeshNull(TEXT("StaticMeshNull"));
 FLazyName FMapErrors::StaticMeshComponent(TEXT("StaticMeshComponent"));
 FLazyName FMapErrors::SimpleCollisionButNonUniformScale(TEXT("SimpleCollisionButNonUniformScale"));
 FLazyName FMapErrors::MoreMaterialsThanReferenced(TEXT("MoreMaterialsThanReferenced"));
+FLazyName FMapErrors::MoreNaniteMaterialsThanReferenced(TEXT("MoreNaniteMaterialsThanReferenced"));
 FLazyName FMapErrors::ElementsWithZeroTriangles(TEXT("ElementsWithZeroTriangles"));
 FLazyName FMapErrors::LevelStreamingVolume(TEXT("LevelStreamingVolume"));
 FLazyName FMapErrors::NoLevelsAssociated(TEXT("NoLevelsAssociated"));
@@ -63,11 +66,12 @@ FLazyName FMapErrors::LODActorMissingStaticMesh(TEXT("LODActorMissingStaticMesh"
 FLazyName FMapErrors::LODActorMissingActor(TEXT("LODActorMissingActor"));
 FLazyName FMapErrors::LODActorNoActorFound(TEXT("LODActorNoActor"));
 FLazyName FMapErrors::InvalidVirtualTextureUsage(TEXT("InvalidVirtualTextureUsage"));
+FLazyName FMapErrors::PrimitiveComponentHasInvalidTranslucentShadowSetting(TEXT("PrimitiveComponentHasInvalidTranslucentShadowSetting"));
 
 namespace
 {
-	constexpr TCHAR MapErrorsURLPath[] = TEXT("BuildingWorlds/LevelEditor/MapErrors");
-	constexpr TCHAR MapErrorsLocalPath[] = TEXT("Shared/Editor/MapErrors");
+	const TCHAR* MapErrorsURLPath = TEXT("BuildingWorlds/LevelEditor/MapErrors");
+	const TCHAR* MapErrorsLocalPath = TEXT("Shared/Editor/MapErrors");
 }
 
 FMapErrorToken::FMapErrorToken(const FName& InErrorName)

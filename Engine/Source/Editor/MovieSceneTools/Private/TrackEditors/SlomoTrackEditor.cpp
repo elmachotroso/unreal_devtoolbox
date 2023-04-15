@@ -1,8 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/SlomoTrackEditor.h"
-#include "EditorStyleSet.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "TrackEditors/PropertyTrackEditors/FloatPropertyTrackEditor.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ISequencer.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "MovieScene.h"
+#include "MovieSceneSequence.h"
+#include "MovieSceneTrack.h"
+#include "MovieSceneTrackEditor.h"
+#include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
 #include "Tracks/MovieSceneSlomoTrack.h"
+#include "UObject/WeakObjectPtr.h"
+
+class ISequencerTrackEditor;
+class UMovieSceneSection;
+struct FSlateBrush;
 
 
 #define LOCTEXT_NAMESPACE "FSlomoTrackEditor"
@@ -33,7 +54,7 @@ void FSlomoTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddTimeDilationTrack", "Time Dilation Track"),
 		LOCTEXT("AddTimeDilationTrackTooltip", "Adds a new track that controls the world's time dilation."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Slomo"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Slomo"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FSlomoTrackEditor::HandleAddSlomoTrackMenuEntryExecute),
 			FCanExecuteAction::CreateRaw(this, &FSlomoTrackEditor::HandleAddSlomoTrackMenuEntryCanExecute)
@@ -54,7 +75,7 @@ bool FSlomoTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) const
 
 const FSlateBrush* FSlomoTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Slomo");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Slomo");
 }
 
 
@@ -92,6 +113,7 @@ void FSlomoTrackEditor::HandleAddSlomoTrackMenuEntryExecute()
 	UMovieSceneSection* NewSection = SlomoTrack->CreateNewSection();
 	check(NewSection);
 
+	SlomoTrack->Modify();
 	SlomoTrack->AddSection(*NewSection);
 
 	if (GetSequencer().IsValid())

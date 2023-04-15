@@ -8,6 +8,8 @@
 
 #include "Sampling/MeshCurvatureMapEvaluator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BakeMeshAttributeTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UBakeMeshAttributeTool"
@@ -282,7 +284,7 @@ int UBakeMeshAttributeTool::SelectColorTextureToBake(const TArray<UTexture*>& Te
 #if WITH_EDITORONLY_DATA
 			// Texture has multiple channels
 			ETextureSourceFormat Format = Tex->Source.GetFormat();
-			if (Format == TSF_BGRA8 || Format == TSF_BGRE8 || Format == TSF_RGBA16 || Format == TSF_RGBA16F)
+			if (Format == TSF_BGRA8 || Format == TSF_BGRE8 || Format == TSF_RGBA16 || Format == TSF_RGBA16F || Format == TSF_RGBA32F)
 			{
 				++TextureVotes[TextureIndex];
 			}
@@ -359,4 +361,5 @@ void UBakeMeshAttributeTool::UpdateUVLayerNames(FString& UVLayer, TArray<FString
 }
 
 #undef LOCTEXT_NAMESPACE
+
 

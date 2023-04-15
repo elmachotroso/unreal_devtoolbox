@@ -3,6 +3,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/Guid.h"
+#include "UObject/DevObjectVersion.h"
 
 // Custom serialization version for changes made in //UE5/Main stream
 struct CORE_API FUE5MainStreamObjectVersion
@@ -190,6 +191,95 @@ struct CORE_API FUE5MainStreamObjectVersion
 		// Add Texture DoScaleMipsForAlphaCoverage
 		TextureDoScaleMipsForAlphaCoverage,
 
+		// Fixed default value of volumetric cloud to be exact match with main view, more expenssive but we let user choosing how to lower the quality.
+		VolumetricCloudReflectionSampleCountDefaultUpdate,
+
+		// Use special BVH for TriangleMesh, instead of the AABBTree
+		UseTriangleMeshBVH,
+
+		// FDynamicMeshAttributeSet has Weight Maps. TDynamicAttributeBase serializes its name.
+		DynamicMeshAttributesWeightMapsAndNames,
+
+		// Switching FK control naming scheme to incorporate _CURVE for curve controls
+		FKControlNamingScheme,
+
+		// Fix-up for FRichCurveKey::TangentWeightMode, which were found to contain invalid value w.r.t the enum-type
+		RichCurveKeyInvalidTangentMode,
+
+		// Enforcing new automatic tangent behaviour, enforcing auto-tangents for Key0 and KeyN to be flat, for Animation Assets.
+		ForceUpdateAnimationAssetCurveTangents,
+
+		// SoundWave Update to use EditorBuildData for it's RawData
+		SoundWaveVirtualizationUpdate,
+
+		// Fix material feature level nodes to account for new SM6 input pin.
+		MaterialFeatureLevelNodeFixForSM6,
+
+		// Fix material feature level nodes to account for new SM6 input pin.
+		GeometryCollectionPerChildDamageThreshold,
+
+		// Move some Chaos flags into a bitfield
+		AddRigidParticleControlFlags,
+
+		// Allow each LiveLink controller to specify its own component to control
+		LiveLinkComponentPickerPerController,
+
+		// Remove Faces in Triangle Mesh BVH
+		RemoveTriangleMeshBVHFaces,
+
+		// Moving all nodal offset handling to Lens Component
+		LensComponentNodalOffset,
+
+		// GPU none interpolated spawning no longer calls the update script
+		FixGpuAlwaysRunningUpdateScriptNoneInterpolated,
+
+		// World partition streaming policy serialization only for cooked builds
+		WorldPartitionSerializeStreamingPolicyOnCook,
+
+		// Remove serialization of bounds relevant from  WorldPartitionActorDesc
+		WorldPartitionActorDescRemoveBoundsRelevantSerialization,
+
+		// Added IAnimationDataModel interface and replace UObject based representation for Animation Assets
+		// This version had to be undone. Animation assets saved between this and the subsequent backout version
+		// will be unable to be loaded
+		AnimationDataModelInterface_BackedOut,
+
+		// Deprecate LandscapeSplineActorDesc
+		LandscapeSplineActorDescDeprecation,
+
+		// Revert the IAnimationDataModel changes. Animation assets 
+		BackoutAnimationDataModelInterface,
+
+		// Made stationary local and skylights behave similar to SM5
+		MobileStationaryLocalLights,
+
+		// Made ManagedArrayCollection::FValueType::Value always serialize when FValueType is
+		ManagedArrayCollectionAlwaysSerializeValue,
+
+		// Moving all distortion handling to Lens Component
+		LensComponentDistortion,
+
+		// Updated image media source path resolution logic
+		ImgMediaPathResolutionWithEngineOrProjectTokens,
+
+		// Add low resolution data in Height Field
+		AddLowResolutionHeightField,
+
+		// Low resolution data in Height Field will store one height for (6x6) 36 cells
+		DecreaseLowResolutionHeightField,
+
+		// Add damage propagation settings to geometry collections
+		GeometryCollectionDamagePropagationData,
+
+		// Wheel friction forces are now applied at tire contact point
+		VehicleFrictionForcePositionChange,
+
+		// Add flag to override MeshDeformer on a SkinnedMeshComponent.
+		AddSetMeshDeformerFlag,
+
+		// Replace FNames for class/actor paths with FSoftObjectPath
+		WorldPartitionActorDescActorAndClassPaths,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
@@ -197,6 +287,8 @@ struct CORE_API FUE5MainStreamObjectVersion
 
 	// The GUID for this custom version number
 	const static FGuid GUID;
+
+	static TMap<FGuid, FGuid> GetSystemGuids();
 
 	FUE5MainStreamObjectVersion() = delete;
 };

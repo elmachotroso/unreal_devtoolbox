@@ -8,6 +8,8 @@
 #include "Engine/AssetManager.h"
 #include "UObject/ObjectSaveContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistrySource_CurveTable)
+
 void UDataRegistrySource_CurveTable::SetSourceTable(const TSoftObjectPtr<UCurveTable>& InSourceTable, const FDataRegistrySource_DataTableRules& InTableRules)
 {
 	if (ensure(IsTransientSource() || GIsEditor))
@@ -331,7 +333,7 @@ bool UMetaDataRegistrySource_CurveTable::SetDataForChild(FName SourceId, UDataRe
 	UDataRegistrySource_CurveTable* ChildCurveTable = Cast<UDataRegistrySource_CurveTable>(ChildSource);
 	if (ensure(ChildCurveTable))
 	{
-		TSoftObjectPtr<UCurveTable> NewTable = TSoftObjectPtr<UCurveTable>(FSoftObjectPath(SourceId));
+		TSoftObjectPtr<UCurveTable> NewTable = TSoftObjectPtr<UCurveTable>(FSoftObjectPath(SourceId.ToString()));
 		ChildCurveTable->SetSourceTable(NewTable, TableRules);
 		return true;
 	}
@@ -362,6 +364,7 @@ bool UMetaDataRegistrySource_CurveTable::DoesAssetPassFilter(const FAssetData& A
 	// TODO no good way to validate unloaded curvetables
 	return true;
 }
+
 
 
 

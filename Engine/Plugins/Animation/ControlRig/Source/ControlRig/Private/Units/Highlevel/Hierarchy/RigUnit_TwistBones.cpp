@@ -3,6 +3,8 @@
 #include "Units/Highlevel/Hierarchy/RigUnit_TwistBones.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_TwistBones)
+
 FRigUnit_TwistBones_Execute()
 {
 	if (Context.State == EControlRigState::Init)
@@ -33,6 +35,12 @@ FRigUnit_TwistBones_Execute()
 		WorkData,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_TwistBones::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_TwistBonesPerItem_Execute()
@@ -137,3 +145,10 @@ FRigUnit_TwistBonesPerItem_Execute()
 		Hierarchy->SetGlobalTransform(CachedItems[Index], ItemTransforms[Index], bPropagateToChildren);
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_TwistBonesPerItem::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+

@@ -32,6 +32,15 @@
 #include "GPUMessaging.h"
 #include "HairStrands/HairStrandsData.h"
 
+static int32 GNaniteProgrammableRasterHitProxy = 1;
+static FAutoConsoleVariableRef CNaniteProgrammableRasterHitProxy(
+	TEXT("r.Nanite.ProgrammableRaster.HitProxy"),
+	GNaniteProgrammableRasterHitProxy,
+	TEXT("A toggle that allows Nanite programmable raster in hit proxy passes.\n")
+	TEXT(" 0: Programmable raster is disabled\n")
+	TEXT(" 1: Programmable raster is enabled (default)"),
+	ECVF_RenderThreadSafe);
+
 class FHitProxyShaderElementData : public FMeshMaterialShaderElementData
 {
 public:
@@ -54,7 +63,7 @@ public:
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		// Only compile the hit proxy vertex shader on desktop editor platforms
-		return IsPCPlatform(Parameters.Platform) && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
+		return IsPCPlatform(Parameters.Platform)// && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
 			// and only compile for the default material or materials that are masked.
 			&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
 				!Parameters.MaterialParameters.bWritesEveryPixel ||
@@ -111,7 +120,7 @@ public:
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		// Only compile the hit proxy vertex shader on desktop editor platforms
-		return IsPCPlatform(Parameters.Platform) && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
+		return IsPCPlatform(Parameters.Platform)// && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
 			// and only compile for default materials or materials that are masked.
 			&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
 				!Parameters.MaterialParameters.bWritesEveryPixel ||
@@ -170,7 +179,7 @@ IMPLEMENT_MATERIAL_SHADER_TYPE(,FHitProxyPS,TEXT("/Engine/Private/HitProxyPixelS
 
 #if WITH_EDITOR
 
-void InitHitProxyRender(FRDGBuilder& GraphBuilder, const FSceneRenderer* SceneRenderer, const FSceneTexturesConfig& SceneTexturesConfig, FRDGTextureRef& OutHitProxyTexture, FRDGTextureRef& OutHitProxyDepthTexture)
+void InitHitProxyRender(FRDGBuilder& GraphBuilder, FSceneRenderer* SceneRenderer, FRDGTextureRef& OutHitProxyTexture, FRDGTextureRef& OutHitProxyDepthTexture)
 {
 	auto& ViewFamily = SceneRenderer->ViewFamily;
 	auto FeatureLevel = ViewFamily.Scene->GetFeatureLevel();
@@ -180,13 +189,18 @@ void InitHitProxyRender(FRDGBuilder& GraphBuilder, const FSceneRenderer* SceneRe
 	{
 		FVirtualTextureSystem::Get().AllocateResources(GraphBuilder, FeatureLevel);
 		FVirtualTextureSystem::Get().CallPendingCallbacks();
+		// Because there is no Update(), we need to manually finalize the resources
+		FVirtualTextureSystem::Get().FinalizeResources(GraphBuilder, FeatureLevel);
 	}
 
 	// Initialize global system textures (pass-through if already initialized).
 	GSystemTextures.InitializeTextures(GraphBuilder.RHICmdList, FeatureLevel);
 	FRDGSystemTextures::Create(GraphBuilder);
 
-	const FMinimalSceneTextures& SceneTextures = FMinimalSceneTextures::Create(GraphBuilder, SceneTexturesConfig);
+	const FSceneTexturesConfig& SceneTexturesConfig = ViewFamily.SceneTexturesConfig;
+
+	FMinimalSceneTextures::InitializeViewFamily(GraphBuilder, SceneRenderer->ViewFamily);
+	const FMinimalSceneTextures& SceneTextures = ViewFamily.GetSceneTextures();
 
 	// Create a texture to store the resolved light attenuation values, and a render-targetable surface to hold the unresolved light attenuation values.
 	{
@@ -197,7 +211,7 @@ void InitHitProxyRender(FRDGBuilder& GraphBuilder, const FSceneRenderer* SceneRe
 		const EShaderPlatform CurrentShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
 		FRDGTextureDesc DepthDesc = SceneTextures.Depth.Target->Desc;
 
-		if (DepthDesc.NumSamples > 1 && RHISupportsSeparateMSAAAndResolveTextures(CurrentShaderPlatform))
+		if (DepthDesc.NumSamples > 1)
 		{
 			DepthDesc.NumSamples = 1;
 			OutHitProxyDepthTexture = GraphBuilder.CreateTexture(DepthDesc, TEXT("NoMSAASceneDepthZ"));
@@ -254,7 +268,6 @@ static void DoRenderHitProxies(
 	auto& ViewFamily = SceneRenderer->ViewFamily;
 	auto& Views = SceneRenderer->Views;
 	const auto FeatureLevel = SceneRenderer->FeatureLevel;
-	const bool bNeedToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[FeatureLevel]);
 	const FIntPoint HitProxyTextureExtent = HitProxyTexture->Desc.Extent;
 
 	{
@@ -319,13 +332,13 @@ static void DoRenderHitProxies(
 
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(HitProxyTexture, ERenderTargetLoadAction::ELoad);
 		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(HitProxyDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilWrite);
-		PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, SceneRenderer->FeatureLevel, ESceneTextureSetupMode::None);
+		PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, &SceneRenderer->GetActiveSceneTextures(), SceneRenderer->FeatureLevel, ESceneTextureSetupMode::None);
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("HitProxies::Render"),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[SceneRenderer, &View, LocalScene, FeatureLevel, bNeedToSwitchVerticalAxis, PassParameters](FRHICommandListImmediate& RHICmdList)
+			[SceneRenderer, &View, LocalScene, FeatureLevel, PassParameters](FRHICommandList& RHICmdList)
 		{
 			FMeshPassProcessorRenderState DrawRenderState;
 
@@ -413,7 +426,7 @@ static void DoRenderHitProxies(
 
 
 			// Draw the view's batched simple elements(lines, sprites, etc).
-			View.BatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, true);
+			View.BatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, true);
 
 			// Some elements should never be occluded (e.g. gizmos).
 			// So we render those twice, first to overwrite potentially nearer objects,
@@ -439,7 +452,7 @@ static void DoRenderHitProxies(
 				}
 			});
 
-			View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, true);
+			View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, true);
 
 			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
 
@@ -462,7 +475,7 @@ static void DoRenderHitProxies(
 				}
 			});
 
-			View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, true);
+			View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, true);
 		});
 	}
 
@@ -482,7 +495,7 @@ static void DoRenderHitProxies(
 			RDG_EVENT_NAME("HitProxies::CopyOutput"),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[&Views, HitProxyTextureExtent, HitProxyTexture, ViewFamilyTexture, FeatureLevel, bNeedToSwitchVerticalAxis](FRHICommandListImmediate& RHICmdList)
+			[&Views, HitProxyTextureExtent, HitProxyTexture, ViewFamilyTexture, FeatureLevel](FRHICommandListImmediate& RHICmdList)
 		{
 			// Set up a FTexture that is used to draw the hit proxy buffer to the view family's render target.
 			FTexture HitProxyRenderTargetTexture;
@@ -505,10 +518,10 @@ static void DoRenderHitProxies(
 
 				// Note: High DPI .  We are drawing to the size of the unscaled view rect because that is the size of the views render target
 				// if we do not do this clicking would be off.
-				const int32 V00 = BatchedElements.AddVertex(FVector4(View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Min.Y, 0, 1), FVector2D(U0, V0), FLinearColor::White, FHitProxyId());
-				const int32 V10 = BatchedElements.AddVertex(FVector4(View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Min.Y, 0, 1), FVector2D(U1, V0), FLinearColor::White, FHitProxyId());
-				const int32 V01 = BatchedElements.AddVertex(FVector4(View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Max.Y, 0, 1), FVector2D(U0, V1), FLinearColor::White, FHitProxyId());
-				const int32 V11 = BatchedElements.AddVertex(FVector4(View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Max.Y, 0, 1), FVector2D(U1, V1), FLinearColor::White, FHitProxyId());
+				const int32 V00 = BatchedElements.AddVertexf(FVector4f(View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Min.Y, 0, 1), FVector2f(U0, V0), FLinearColor::White, FHitProxyId());
+				const int32 V10 = BatchedElements.AddVertexf(FVector4f(View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Min.Y, 0, 1), FVector2f(U1, V0), FLinearColor::White, FHitProxyId());
+				const int32 V01 = BatchedElements.AddVertexf(FVector4f(View.UnscaledViewRect.Min.X, View.UnscaledViewRect.Max.Y, 0, 1), FVector2f(U0, V1), FLinearColor::White, FHitProxyId());
+				const int32 V11 = BatchedElements.AddVertexf(FVector4f(View.UnscaledViewRect.Max.X, View.UnscaledViewRect.Max.Y, 0, 1), FVector2f(U1, V1), FLinearColor::White, FHitProxyId());
 
 				BatchedElements.AddTriangle(V00, V10, V11, &HitProxyRenderTargetTexture, BLEND_Opaque);
 				BatchedElements.AddTriangle(V00, V11, V01, &HitProxyRenderTargetTexture, BLEND_Opaque);
@@ -536,7 +549,6 @@ static void DoRenderHitProxies(
 				RHICmdList,
 				DrawRenderState,
 				FeatureLevel,
-				bNeedToSwitchVerticalAxis,
 				SceneView,
 				false,
 				1.0f
@@ -559,11 +571,13 @@ void FMobileSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 	PrepareViewRectsForRendering(GraphBuilder.RHICmdList);
 
 #if WITH_EDITOR
-	FSceneTexturesConfig SceneTexturesConfig = FSceneTexturesConfig::Create(ViewFamily);
+	InitializeSceneTexturesConfig(ViewFamily.SceneTexturesConfig, ViewFamily);
+	FSceneTexturesConfig& SceneTexturesConfig = GetActiveSceneTexturesConfig();
+	FSceneTexturesConfig::Set(SceneTexturesConfig);
 
 	FRDGTextureRef HitProxyTexture = nullptr;
 	FRDGTextureRef HitProxyDepthTexture = nullptr;
-	InitHitProxyRender(GraphBuilder, this, SceneTexturesConfig, HitProxyTexture, HitProxyDepthTexture);
+	InitHitProxyRender(GraphBuilder, this, HitProxyTexture, HitProxyDepthTexture);
 
 	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(Scene->GPUScene.IsEnabled(), GraphBuilder);
 
@@ -588,7 +602,7 @@ void FMobileSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 {
-	static const bool bNaniteEnabled = UseNanite(ShaderPlatform);
+	const bool bNaniteEnabled = UseNanite(ShaderPlatform);
 
 	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder);
 
@@ -599,13 +613,14 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 	PrepareViewRectsForRendering(GraphBuilder.RHICmdList);
 
 #if WITH_EDITOR
-	const FSceneTexturesConfig SceneTexturesConfig = FSceneTexturesConfig::Create(ViewFamily);
+	InitializeSceneTexturesConfig(ViewFamily.SceneTexturesConfig, ViewFamily);
+	FSceneTexturesConfig& SceneTexturesConfig = GetActiveSceneTexturesConfig();
 	FSceneTexturesConfig::Set(SceneTexturesConfig);
 
 	FRDGTextureRef HitProxyTexture = nullptr;
 	FRDGTextureRef HitProxyDepthTexture = nullptr;
 
-	InitHitProxyRender(GraphBuilder, this, SceneTexturesConfig, HitProxyTexture, HitProxyDepthTexture);
+	InitHitProxyRender(GraphBuilder, this, HitProxyTexture, HitProxyDepthTexture);
 
 	const FIntPoint HitProxyTextureSize = HitProxyDepthTexture->Desc.Extent;
 
@@ -613,9 +628,10 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 	// Find the visible primitives.
 	{
+		FLumenSceneFrameTemporaries LumenFrameTemporaries;
 		FILCUpdatePrimTaskData ILCTaskData;
 		InitViews(GraphBuilder, SceneTexturesConfig, FExclusiveDepthStencil::DepthWrite_StencilWrite, ILCTaskData, InstanceCullingManager);
-		InitViewsAfterPrepass(GraphBuilder, ILCTaskData, InstanceCullingManager);
+		InitViewsAfterPrepass(GraphBuilder, LumenFrameTemporaries, ILCTaskData, InstanceCullingManager);
 	}
 
 	extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
@@ -631,16 +647,22 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 		}
 	}
 
-	Scene->GPUScene.Update(GraphBuilder, *Scene);
-
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		ShaderPrint::BeginView(GraphBuilder, Views[ViewIndex]);
 	}
 
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
-		Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, Scene, Views[ViewIndex]);
+		FRDGExternalAccessQueue ExternalAccessQueue;
+
+		Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
+
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
+		}
+
+		ExternalAccessQueue.Submit(GraphBuilder);
 	}
 
 	InstanceCullingManager.FlushRegisteredViews(GraphBuilder);
@@ -692,6 +714,9 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 		Nanite::FCullingContext::FConfiguration CullingConfig = {0};
 		CullingConfig.bForceHWRaster = RasterContext.RasterScheduling == Nanite::ERasterScheduling::HardwareOnly;
+		CullingConfig.bProgrammableRaster = GNaniteProgrammableRasterHitProxy != 0;
+
+		FNaniteVisibilityResults VisibilityResults; // No material visibility culling for hit proxies at this time
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
@@ -707,8 +732,19 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 				CullingConfig
 			);
 
-			Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(View, HitProxyTextureSize, NANITE_VIEW_FLAG_HZBTEST);
-			Nanite::CullRasterize(GraphBuilder, *Scene, View, { PackedView }, SharedContext, CullingContext, RasterContext, RasterState);
+			Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(View, HitProxyTextureSize, NANITE_VIEW_FLAG_HZBTEST | NANITE_VIEW_FLAG_NEAR_CLIP);
+			Nanite::CullRasterize(
+				GraphBuilder,
+				Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
+				VisibilityResults,
+				*Scene,
+				View,
+				{ PackedView },
+				SharedContext,
+				CullingContext,
+				RasterContext,
+				RasterState
+			);
 			Nanite::ExtractResults(GraphBuilder, CullingContext, RasterContext, NaniteRasterResults[ViewIndex]);
 		}
 	}
@@ -731,8 +767,8 @@ bool FHitProxyMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatc
 {
 	const EBlendMode BlendMode = Material->GetBlendMode();
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*Material, OverrideSettings);
 
 	if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
 	{
@@ -872,26 +908,26 @@ bool FHitProxyMeshProcessor::Process(
 }
 
 FHitProxyMeshProcessor::FHitProxyMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, bool InbAllowTranslucentPrimitivesInHitProxy, const FMeshPassProcessorRenderState& InRenderState, FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::HitProxy, Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InRenderState)
 	, bAllowTranslucentPrimitivesInHitProxy(InbAllowTranslucentPrimitivesInHitProxy)
 {
 }
 
-FMeshPassProcessor* CreateHitProxyPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateHitProxyPassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
 	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
 	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
-	return new(FMemStack::Get()) FHitProxyMeshProcessor(Scene, InViewIfDynamicMeshCommand, true, PassDrawRenderState, InDrawListContext);
+	return new FHitProxyMeshProcessor(Scene, InViewIfDynamicMeshCommand, true, PassDrawRenderState, InDrawListContext);
 }
 
-FMeshPassProcessor* CreateHitProxyOpaqueOnlyPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateHitProxyOpaqueOnlyPassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
 	FMeshPassProcessorRenderState PassDrawRenderState;
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
 	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
-	return new(FMemStack::Get()) FHitProxyMeshProcessor(Scene, InViewIfDynamicMeshCommand, false, PassDrawRenderState, InDrawListContext);
+	return new FHitProxyMeshProcessor(Scene, InViewIfDynamicMeshCommand, false, PassDrawRenderState, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterHitProxyPass(&CreateHitProxyPassProcessor, EShadingPath::Deferred, EMeshPass::HitProxy, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
@@ -902,7 +938,7 @@ FRegisterPassProcessorCreateFunction RegisterMobileHitProxyOpaqueOnlyPass(&Creat
 bool FEditorSelectionMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material)
 {
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
 	const ERasterizerCullMode MeshCullMode = CM_None;
 
 	if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
@@ -1028,7 +1064,7 @@ int32 FEditorSelectionMeshProcessor::GetStencilValue(const FSceneView* View, con
 }
 
 FEditorSelectionMeshProcessor::FEditorSelectionMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::EditorSelection, Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 {
 	checkf(InViewIfDynamicMeshCommand, TEXT("Editor selection mesh process required dynamic mesh command mode."));
 
@@ -1038,9 +1074,9 @@ FEditorSelectionMeshProcessor::FEditorSelectionMeshProcessor(const FScene* Scene
 	PassDrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_NONE, CW_NONE, CW_NONE, CW_NONE>::GetRHI());
 }
 
-FMeshPassProcessor* CreateEditorSelectionPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateEditorSelectionPassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	return new(FMemStack::Get()) FEditorSelectionMeshProcessor(Scene, InViewIfDynamicMeshCommand, InDrawListContext);
+	return new FEditorSelectionMeshProcessor(Scene, InViewIfDynamicMeshCommand, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterEditorSelectionPass(&CreateEditorSelectionPassProcessor, EShadingPath::Deferred, EMeshPass::EditorSelection, EMeshPassFlags::MainView);
@@ -1079,7 +1115,7 @@ bool FEditorLevelInstanceMeshProcessor::TryAddMeshBatch(
 {
 	// Determine the mesh's material and blend mode.
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
 	const ERasterizerCullMode MeshCullMode = CM_None;
 
 	if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
@@ -1155,7 +1191,7 @@ int32 FEditorLevelInstanceMeshProcessor::GetStencilValue(const FSceneView* View,
 }
 
 FEditorLevelInstanceMeshProcessor::FEditorLevelInstanceMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::EditorLevelInstance, Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 {
 	checkf(InViewIfDynamicMeshCommand, TEXT("Editor selection mesh process required dynamic mesh command mode."));
 
@@ -1163,9 +1199,9 @@ FEditorLevelInstanceMeshProcessor::FEditorLevelInstanceMeshProcessor(const FScen
 	PassDrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_NONE, CW_NONE, CW_NONE, CW_NONE>::GetRHI());
 }
 
-FMeshPassProcessor* CreateEditorLevelInstancePassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateEditorLevelInstancePassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	return new(FMemStack::Get()) FEditorLevelInstanceMeshProcessor(Scene, InViewIfDynamicMeshCommand, InDrawListContext);
+	return new FEditorLevelInstanceMeshProcessor(Scene, InViewIfDynamicMeshCommand, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterEditorLevelInstancePass(&CreateEditorLevelInstancePassProcessor, EShadingPath::Deferred, EMeshPass::EditorLevelInstance, EMeshPassFlags::MainView);

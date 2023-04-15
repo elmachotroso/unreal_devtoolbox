@@ -3,17 +3,19 @@
 #include "MassUpdateISMProcessor.h"
 #include "MassVisualizationComponent.h"
 #include "MassRepresentationSubsystem.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassRepresentationFragments.h"
 #include "MassCommonFragments.h"
 #include "MassLODFragments.h"
 #include "Engine/World.h"
 
 UMassUpdateISMProcessor::UMassUpdateISMProcessor()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)(EProcessorExecutionFlags::Client | EProcessorExecutionFlags::Standalone);
 
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Representation);
+	bRequiresGameThreadExecution = true;
 }
 
 void UMassUpdateISMProcessor::ConfigureQueries()
@@ -26,9 +28,9 @@ void UMassUpdateISMProcessor::ConfigureQueries()
 	EntityQuery.AddSharedRequirement<FMassRepresentationSubsystemSharedFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassUpdateISMProcessor::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassUpdateISMProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [](FMassExecutionContext& Context)
 	{
 		UMassRepresentationSubsystem* RepresentationSubsystem = Context.GetSharedFragment<FMassRepresentationSubsystemSharedFragment>().RepresentationSubsystem;
 		check(RepresentationSubsystem);

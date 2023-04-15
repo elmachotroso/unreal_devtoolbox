@@ -1,28 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
-#include "Layout/Visibility.h"
-#include "Layout/Margin.h"
-#include "Misc/Attribute.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBox.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Interfaces/IProjectTargetPlatformEditorModule.h"
-#include "EditorStyleSet.h"
+#include "Containers/Array.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
 #include "Dialogs/Dialogs.h"
-#include "PlatformInfo.h"
-#include "Widgets/SProjectTargetPlatformSettings.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "ISettingsModule.h"
 #include "Interfaces/IProjectManager.h"
+#include "Interfaces/IProjectTargetPlatformEditorModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "Modules/ModuleManager.h"
+#include "PlatformInfo.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SProjectTargetPlatformSettings.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 
 #define LOCTEXT_NAMESPACE "FProjectTargetPlatformEditorModule"
@@ -100,7 +115,7 @@ public:
 					.HeightOverride(MenuIconSize)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal)))
+						.Image(FAppStyle::GetBrush(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal)))
 					]
 				]
 				+SOverlay::Slot()
@@ -114,7 +129,7 @@ public:
 					[
 						SNew(SImage)
 						.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(&Local::IsUnsupportedPlatformWarningVisible, PlatformInfo.VanillaInfo->Name)))
-						.Image(FEditorStyle::GetBrush("Launcher.Platform.Warning"))
+						.Image(FAppStyle::GetBrush("Launcher.Platform.Warning"))
 					]
 				]
 			]
@@ -124,7 +139,7 @@ public:
 			.VAlign(VAlign_Center)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "Menu.Label")
+				.TextStyle(FAppStyle::Get(), "Menu.Label")
 				.Text((DisplayNameOverride.IsEmpty()) ? PlatformInfo.DisplayName : DisplayNameOverride)
 			];
 	}

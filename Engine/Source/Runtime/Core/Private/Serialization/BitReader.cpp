@@ -1,15 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/BitReader.h"
-#include "Math/UnrealMathUtility.h"
-#include "Logging/LogMacros.h"
+
 #include "CoreGlobals.h"
+#include "HAL/IConsoleManager.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathUtility.h"
+#include "Serialization/Archive.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
 
 PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 // Table.
 extern const uint8 GShift[8]={0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80};
 extern const uint8 GMask [8]={0x00,0x01,0x03,0x07,0x0f,0x1f,0x3f,0x7f};
+
+static TAutoConsoleVariable<bool> CVarLogFatalOnOverflow(
+	TEXT("BitReader.LogFatalOnOverflow"),
+	false,
+	TEXT("LogFatal if BitReader Overflows"));
 
 // Optimized arbitrary bit range memory copy routine.
 
@@ -188,6 +199,20 @@ void FBitReader::SetData( FBitReader& Src, int64 CountBits )
 	Src.SerializeBits(Buffer.GetData(), CountBits);
 }
 
+void FBitReader::ResetData(FBitReader& Src, int64 CountBits)
+{
+	Num = CountBits;
+	Pos = 0;
+	ClearError();
+
+	// Setup network version
+	this->SetNetVersionsFromArchive(Src);
+
+	Buffer.Reset();
+	Buffer.AddUninitialized((CountBits + 7) >> 3);
+	Src.SerializeBits(Buffer.GetData(), CountBits);
+}
+
 /** This appends data from another BitReader. It checks that this bit reader is byte-aligned so it can just do a TArray::Append instead of a bitcopy.
  *	It is intended to be used by performance minded code that wants to ensure an appBitCpy is avoided.
  */
@@ -227,8 +252,16 @@ void FBitReader::CountMemory(FArchive& Ar) const
 
 void FBitReader::SetOverflowed(int64 LengthBits)
 {
-	UE_LOG(LogNetSerialization, Error, TEXT("FBitReader::SetOverflowed() called! (ReadLen: %i, Remaining: %i, Max: %i)"),
+	if (CVarLogFatalOnOverflow.GetValueOnAnyThread())
+	{
+		UE_LOG(LogNetSerialization, Fatal, TEXT("FBitReader::SetOverflowed() called! (ReadLen: %i, Remaining: %i, Max: %i)"),
 			LengthBits, (Num - Pos), Num);
+	}
+	else
+	{
+		ensureMsgf(false, TEXT("FBitReader::SetOverflowed() called! (ReadLen: %i, Remaining: %i, Max: %i)"),
+			LengthBits, (Num - Pos), Num);
+	}
 
 	SetError();
 }

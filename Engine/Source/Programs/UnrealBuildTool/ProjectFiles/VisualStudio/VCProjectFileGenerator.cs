@@ -9,6 +9,7 @@ using System.Text;
 using System.Xml.Linq;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -54,6 +55,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bWriteSolutionOptionFile = true;
+
+		/// <summary>
+		/// Whether to write a .vsconfig file next to the sln to suggest components to install.
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool bVsConfigFile = true;
 
 		/// <summary>
 		/// Forces UBT to be built in debug configuration, regardless of the solution configuration
@@ -126,6 +133,9 @@ namespace UnrealBuildTool
 			{
 				BuildToolOverride = "-2022";
 			}
+
+			// Allow generating the solution even if the only installed toolchain is banned.			
+			MicrosoftPlatformSDK.IgnoreToolchainErrors = true;
 		}
 
 		public override string[] GetTargetArguments(string[] Arguments)
@@ -144,7 +154,7 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// </summary>
-		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesDirectory)
+		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesDirectory, ILogger Logger)
 		{
 			FileReference PrimaryProjectFile = FileReference.Combine(InPrimaryProjectDirectory, InPrimaryProjectName);
 			FileReference PrimaryProjDeleteFilename = PrimaryProjectFile + ".sln";
@@ -172,6 +182,11 @@ namespace UnrealBuildTool
 			{
 				FileReference.Delete(PrimaryProjDeleteFilename);
 			}
+			PrimaryProjDeleteFilename = FileReference.Combine(InPrimaryProjectDirectory, ".vsconfig");
+			if (FileReference.Exists(PrimaryProjDeleteFilename))
+			{
+				FileReference.Delete(PrimaryProjDeleteFilename);
+			}
 
 			// Delete the project files folder
 			if (DirectoryReference.Exists(InIntermediateProjectFilesDirectory))
@@ -182,8 +197,8 @@ namespace UnrealBuildTool
 				}
 				catch (Exception Ex)
 				{
-					Log.TraceInformation("Error while trying to clean project files path {0}. Ignored.", InIntermediateProjectFilesDirectory);
-					Log.TraceInformation("\t" + Ex.Message);
+					Logger.LogInformation("Error while trying to clean project files path {InIntermediateProjectFilesDirectory}. Ignored.", InIntermediateProjectFilesDirectory);
+					Logger.LogInformation("\t{Message}", Ex.Message);
 				}
 			}
 		}
@@ -234,41 +249,38 @@ namespace UnrealBuildTool
 			VCProjectFileContent.AppendLine("    <PlatformToolset>{0}</PlatformToolset>", PlatformToolsetVersionString);
 		}
 
-		/// <summary>
-		/// Configures project generator based on command-line options
-		/// </summary>
-		/// <param name="Arguments">Arguments passed into the program</param>
-		/// <param name="IncludeAllPlatforms">True if all platforms should be included</param>
-		protected override void ConfigureProjectFileGeneration(String[] Arguments, ref bool IncludeAllPlatforms)
+		/// <inheritdoc/>
+		protected override void ConfigureProjectFileGeneration(String[] Arguments, ref bool IncludeAllPlatforms, ILogger Logger)
 		{
 			// Call parent implementation first
-			base.ConfigureProjectFileGeneration(Arguments, ref IncludeAllPlatforms);
+			base.ConfigureProjectFileGeneration(Arguments, ref IncludeAllPlatforms, Logger);
 		}
 
 		/// <summary>
 		/// Selects which platforms and build configurations we want in the project file
 		/// </summary>
 		/// <param name="IncludeAllPlatforms">True if we should include ALL platforms that are supported on this machine.  Otherwise, only desktop platforms will be included.</param>
+		/// <param name="Logger"></param>
 		/// <param name="SupportedPlatformNames">Output string for supported platforms, returned as comma-separated values.</param>
-		protected override void SetupSupportedPlatformsAndConfigurations(bool IncludeAllPlatforms, out string SupportedPlatformNames)
+		protected override void SetupSupportedPlatformsAndConfigurations(bool IncludeAllPlatforms, ILogger Logger, out string SupportedPlatformNames)
 		{
 			// Call parent implementation to figure out the actual platforms
-			base.SetupSupportedPlatformsAndConfigurations(IncludeAllPlatforms, out SupportedPlatformNames);
+			base.SetupSupportedPlatformsAndConfigurations(IncludeAllPlatforms, Logger, out SupportedPlatformNames);
 
 			// If we have a non-default setting for visual studio, check the compiler exists. If not, revert to the default.
 			if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2019)
 			{
-				if (!WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2019, WindowsArchitecture.x64))
+				if (!WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2019, WindowsArchitecture.x64, Logger))
 				{
-					Log.TraceWarning("Visual Studio C++ 2019 installation not found - ignoring preferred project file format.");
+					Logger.LogWarning("Visual Studio C++ 2019 installation not found - ignoring preferred project file format.");
 					Settings.ProjectFileFormat = VCProjectFileFormat.Default;
 				}
 			}
 			else if (Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2022)
 			{
-				if (!WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2022, WindowsArchitecture.x64))
+				if (!WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2022, WindowsArchitecture.x64, Logger))
 				{
-					Log.TraceWarning("Visual Studio C++ 2022 installation not found - ignoring preferred project file format.");
+					Logger.LogWarning("Visual Studio C++ 2022 installation not found - ignoring preferred project file format.");
 					Settings.ProjectFileFormat = VCProjectFileFormat.Default;
 				}
 			}
@@ -279,10 +291,10 @@ namespace UnrealBuildTool
 			if (Settings.ProjectFileFormat == VCProjectFileFormat.Default)
 			{
 				// Enumerate all the valid installations. This list is already sorted by preference.
-				List<VisualStudioInstallation> Installations = WindowsPlatform.VisualStudioInstallations.Where(x => WindowsPlatform.HasCompiler(x.Compiler, WindowsArchitecture.x64)).ToList();
+				List<VisualStudioInstallation> Installations = MicrosoftPlatformSDK.FindVisualStudioInstallations(Logger).Where(x => WindowsPlatform.HasCompiler(x.Compiler, WindowsArchitecture.x64, Logger)).ToList();
 
 				// Get the corresponding project file format
-				VCProjectFileFormat Format = VCProjectFileFormat.VisualStudio2019;
+				VCProjectFileFormat Format = VCProjectFileFormat.Default;
 				foreach (VisualStudioInstallation Installation in Installations)
 				{
 					if (Installation.Compiler == WindowsCompiler.VisualStudio2022)
@@ -297,6 +309,8 @@ namespace UnrealBuildTool
 					}
 				}
 				Settings.ProjectFileFormat = Format;
+
+				bool Vs2019Available = Installations.Any(x => x.Compiler == WindowsCompiler.VisualStudio2019);
 
 				// Allow the SDKs to override
 				foreach (UnrealTargetPlatform SupportedPlatform in SupportedPlatforms)
@@ -314,12 +328,36 @@ namespace UnrealBuildTool
 								// Reduce the Visual Studio version to the max supported by each platform we plan to include.
 								if (Settings.ProjectFileFormat == VCProjectFileFormat.Default || ProposedFormat < Settings.ProjectFileFormat)
 								{
-									Settings.ProjectFileFormat = ProposedFormat;
+									Logger.LogInformation("Available {SupportedPlatform} SDK does not support Visual Studio 2022.", SupportedPlatform);
+									Version Version = BuildPlatform.GetVersionRequiredForVisualStudio(VCProjectFileFormat.VisualStudio2022);
+									if (Version > new Version())
+									{
+										Logger.LogInformation("Please update {SupportedPlatform} SDK to {Version} if Visual Studio 2022 support is desired.", SupportedPlatform, Version);
+									}
+									if (!Vs2019Available)
+									{
+										Logger.LogInformation("Generated solution cannot be downgraded to Visual Studio 2019 as it is not installed. Please install Visual Studio 2019 if {SupportedPlatform} SDK support is required.", SupportedPlatform);
+									}
+									else
+									{
+										Settings.ProjectFileFormat = ProposedFormat;
+										Logger.LogInformation("Downgrading generated solution to Visual Studio 2019.");
+										Logger.LogInformation("To force Visual Studio 2022 solutions to always be generated add the following to BuildConfiguration.xml:");
+										Logger.LogInformation("  <VCProjectFileGenerator>\r\n    <Version>VisualStudio2022</Version>\r\n  </VCProjectFileGenerator>");
+									}
+									Logger.LogInformation(string.Empty);
 								}
 							}
 						}
 					}
 				}
+			}
+
+			if (bIncludeDotNetPrograms && Settings.ProjectFileFormat == VCProjectFileFormat.VisualStudio2019)
+			{
+				Logger.LogInformation("Visual Studio 2019 does not support .NET 6.0 C# projects, these projects will not be added to the generated solution.");
+				Logger.LogInformation("Please generate the Visual Studio 2022 solution if .NET 6.0 C# project support is required.");
+				bIncludeDotNetPrograms = false;
 			}
 		}
 
@@ -327,7 +365,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Used to sort VC solution config names along with the config and platform values
 		/// </summary>
-		class VCSolutionConfigCombination
+		public class VCSolutionConfigCombination
 		{
 			/// <summary>
 			/// Visual Studio solution configuration name for this config+platform
@@ -367,7 +405,7 @@ namespace UnrealBuildTool
 		/// <param name="Configuration">The build configuration</param>
 		/// <param name="TargetType">The type of target being built</param>
 		/// <returns>The generated solution configuration name</returns>
-		string MakeSolutionConfigurationName(UnrealTargetConfiguration Configuration, TargetType TargetType)
+		static string MakeSolutionConfigurationName(UnrealTargetConfiguration Configuration, TargetType TargetType)
 		{
 			string SolutionConfigName = Configuration.ToString();
 
@@ -437,9 +475,9 @@ namespace UnrealBuildTool
 		/// Writes the project files to disk
 		/// </summary>
 		/// <returns>True if successful</returns>
-		protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
-			if (!base.WriteProjectFiles(PlatformProjectGenerators))
+			if (!base.WriteProjectFiles(PlatformProjectGenerators, Logger))
 			{
 				return false;
 			}
@@ -450,7 +488,7 @@ namespace UnrealBuildTool
 			{
 				XNamespace NS = XNamespace.Get("http://schemas.microsoft.com/developer/msbuild/2003");
 
-				DirectoryReference AutomationToolDir = DirectoryReference.Combine(UnrealBuildTool.EngineSourceDirectory, "Programs", "AutomationTool");
+				DirectoryReference AutomationToolDir = DirectoryReference.Combine(Unreal.EngineSourceDirectory, "Programs", "AutomationTool");
 				new XDocument(
 					new XElement(NS + "Project",
 						new XAttribute("ToolsVersion", VCProjectFileGenerator.GetProjectFileToolVersionString(Settings.ProjectFileFormat)),
@@ -469,7 +507,7 @@ namespace UnrealBuildTool
 		}
 
 
-		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
 			bool bSuccess = true;
 
@@ -502,6 +540,28 @@ namespace UnrealBuildTool
 
 			IDictionary<PrimaryProjectFolder, Guid> ProjectFolderGuids = GenerateProjectFolderGuids(RootFolder);
 
+			// check if the give folder has any projects that will be put into the solution
+			System.Func<PrimaryProjectFolder, bool>? HasProjectFunc = null;
+			HasProjectFunc = (ProjectFolder) =>
+			{
+				foreach (MSBuildProjectFile ChildProject in ProjectFolder.ChildProjects)
+				{
+					if (AllProjectFiles.Contains(ChildProject))
+					{
+						return true;
+					}
+				}
+
+				foreach (PrimaryProjectFolder SubFolder in ProjectFolder.SubFolders)
+				{
+					if (HasProjectFunc!(SubFolder))
+					{
+						return true;
+					}
+				}
+				return false;
+			};
+
 			// Solution folders, files and project entries
 			{
 				// This the GUID that Visual Studio uses to identify a solution folder
@@ -512,6 +572,11 @@ namespace UnrealBuildTool
 					IEnumerable<PrimaryProjectFolder> AllSolutionFolders = ProjectFolderGuids.Keys.OrderBy(Folder => Folder.FolderName).ThenBy(Folder => ProjectFolderGuids[Folder]);
 					foreach (PrimaryProjectFolder CurFolder in AllSolutionFolders)
 					{
+						// if this folder has no projects anywhere under it then skip it
+						if (!HasProjectFunc(CurFolder))
+						{
+							continue;
+						}
 						string FolderGUIDString = ProjectFolderGuids[CurFolder].ToString("B").ToUpperInvariant();
 						VCSolutionFileContent.AppendLine("Project(\"" + SolutionFolderEntryGUID + "\") = \"" + CurFolder.FolderName + "\", \"" + CurFolder.FolderName + "\", \"" + FolderGUIDString + "\"");
 
@@ -591,90 +656,19 @@ namespace UnrealBuildTool
 
 			// Solution configuration platforms.  This is just a list of all of the platforms and configurations that
 			// appear in Visual Studio's build configuration selector.
-			List<VCSolutionConfigCombination> SolutionConfigCombinations = new List<VCSolutionConfigCombination>();
+			List<VCSolutionConfigCombination> SolutionConfigCombinations;
 
 			// The "Global" section has source control, solution configurations, project configurations,
 			// preferences, and project hierarchy data
 			{
 				VCSolutionFileContent.AppendLine("Global");
 				{
-					HashSet<UnrealTargetPlatform> PlatformsValidForProjects = new HashSet<UnrealTargetPlatform>();
+					HashSet<UnrealTargetPlatform> PlatformsValidForProjects;
 					{
 						VCSolutionFileContent.AppendLine("	GlobalSection(SolutionConfigurationPlatforms) = preSolution");
 
-						Dictionary<string, Tuple<UnrealTargetConfiguration, TargetType>> SolutionConfigurationsValidForProjects = new Dictionary<string, Tuple<UnrealTargetConfiguration, TargetType>>();
-
-						foreach (UnrealTargetConfiguration CurConfiguration in SupportedConfigurations)
-						{
-							if (InstalledPlatformInfo.IsValidConfiguration(CurConfiguration, EProjectType.Code))
-							{
-								foreach (UnrealTargetPlatform CurPlatform in SupportedPlatforms)
-								{
-									if (InstalledPlatformInfo.IsValidPlatform(CurPlatform, EProjectType.Code))
-									{
-										foreach (ProjectFile CurProject in AllProjectFiles)
-										{
-											if (!CurProject.IsStubProject)
-											{
-												if (CurProject.ProjectTargets.Count == 0)
-												{
-													throw new BuildException("Expecting project '" + CurProject.ProjectFilePath + "' to have at least one ProjectTarget associated with it!");
-												}
-
-												// Figure out the set of valid target configuration names
-												foreach (Project ProjectTarget in CurProject.ProjectTargets)
-												{
-													if (VCProjectFile.IsValidProjectPlatformAndConfiguration(ProjectTarget, CurPlatform, CurConfiguration))
-													{
-														PlatformsValidForProjects.Add(CurPlatform);
-
-														// Default to a target configuration name of "Game", since that will collapse down to an empty string
-														TargetType TargetType = TargetType.Game;
-														if (ProjectTarget.TargetRules != null)
-														{
-															TargetType = ProjectTarget.TargetRules.Type;
-														}
-
-														string SolutionConfigName = MakeSolutionConfigurationName(CurConfiguration, TargetType);
-														SolutionConfigurationsValidForProjects[SolutionConfigName] = new Tuple<UnrealTargetConfiguration, TargetType>(CurConfiguration, TargetType);
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-
-						foreach (UnrealTargetPlatform CurPlatform in PlatformsValidForProjects)
-						{
-							foreach (KeyValuePair<string, Tuple<UnrealTargetConfiguration, TargetType>> SolutionConfigKeyValue in SolutionConfigurationsValidForProjects)
-							{
-								// e.g.  "Development|Win64 = Development|Win64"
-								string SolutionConfigName = SolutionConfigKeyValue.Key;
-								UnrealTargetConfiguration Configuration = SolutionConfigKeyValue.Value.Item1;
-								TargetType TargetType = SolutionConfigKeyValue.Value.Item2;
-
-								string SolutionPlatformName = CurPlatform.ToString();
-
-								string SolutionConfigAndPlatformPair = SolutionConfigName + "|" + SolutionPlatformName;
-								SolutionConfigCombinations.Add(
-										new VCSolutionConfigCombination(SolutionConfigAndPlatformPair)
-										{
-											Configuration = Configuration,
-											Platform = CurPlatform,
-											TargetConfigurationName = TargetType
-										}
-									);
-							}
-						}
-
-						// Sort the list of solution platform strings alphabetically (Visual Studio prefers it)
-						SolutionConfigCombinations.Sort(
-								new Comparison<VCSolutionConfigCombination>(
-									(x, y) => { return String.Compare(x.VCSolutionConfigAndPlatformName, y.VCSolutionConfigAndPlatformName, StringComparison.InvariantCultureIgnoreCase); }
-								)
-							);
+						CollectSolutionConfigurations(SupportedConfigurations, SupportedPlatforms, AllProjectFiles,
+							Logger, out PlatformsValidForProjects, out SolutionConfigCombinations);
 
 						HashSet<string> AppendedSolutionConfigAndPlatformNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
 						foreach (VCSolutionConfigCombination SolutionConfigCombination in SolutionConfigCombinations)
@@ -709,7 +703,7 @@ namespace UnrealBuildTool
 							foreach (VCSolutionConfigCombination SolutionConfigCombination in SolutionConfigCombinations)
 							{
 								// Get the context for the current solution context
-								MSBuildProjectContext ProjectContext = CurProject.GetMatchingProjectContext(SolutionConfigCombination.TargetConfigurationName, SolutionConfigCombination.Configuration, SolutionConfigCombination.Platform, PlatformProjectGenerators);
+								MSBuildProjectContext ProjectContext = CurProject.GetMatchingProjectContext(SolutionConfigCombination.TargetConfigurationName, SolutionConfigCombination.Configuration, SolutionConfigCombination.Platform, PlatformProjectGenerators, Logger);
 
 								// Override the configuration to build for UBT
 								if (Settings.bBuildUBTInDebug && CurProject == UBTProject)
@@ -763,14 +757,21 @@ namespace UnrealBuildTool
 
 									foreach (MSBuildProjectFile ChildProject in CurFolder.ChildProjects)
 									{
-										//	e.g. "{BF6FB09F-A2A6-468F-BE6F-DEBE07EAD3EA} = {C43B6BB5-3EF0-4784-B896-4099753BCDA9}"
-										LocalVCSolutionFileContent.AppendLine("		" + ChildProject.ProjectGUID.ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
+										if (AllProjectFiles.Contains(ChildProject))
+										{
+											//	e.g. "{BF6FB09F-A2A6-468F-BE6F-DEBE07EAD3EA} = {C43B6BB5-3EF0-4784-B896-4099753BCDA9}"
+											LocalVCSolutionFileContent.AppendLine("		" + ChildProject.ProjectGUID.ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
+										}
 									}
 
 									foreach (PrimaryProjectFolder SubFolder in CurFolder.SubFolders)
 									{
-										//	e.g. "{BF6FB09F-A2A6-468F-BE6F-DEBE07EAD3EA} = {C43B6BB5-3EF0-4784-B896-4099753BCDA9}"
-										LocalVCSolutionFileContent.AppendLine("		" + ProjectFolderGuids[SubFolder].ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
+										// if this folder has no projects anywhere under it then skip it
+										if (HasProjectFunc(SubFolder))
+										{
+											//	e.g. "{BF6FB09F-A2A6-468F-BE6F-DEBE07EAD3EA} = {C43B6BB5-3EF0-4784-B896-4099753BCDA9}"
+											LocalVCSolutionFileContent.AppendLine("		" + ProjectFolderGuids[SubFolder].ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
+										}
 									}
 
 									// Recurse into subfolders
@@ -791,12 +792,13 @@ namespace UnrealBuildTool
 			if (bSuccess)
 			{
 				string SolutionFilePath = FileReference.Combine(PrimaryProjectPath, SolutionFileName).FullName;
-				bSuccess = WriteFileIfChanged(SolutionFilePath, VCSolutionFileContent.ToString());
+				bSuccess = WriteFileIfChanged(SolutionFilePath, VCSolutionFileContent.ToString(), Logger);
 			}
 
 
 			// Save a solution config file which selects the development editor configuration by default.
-			if (bSuccess && Settings.bWriteSolutionOptionFile)
+			// .suo file writable only on Windows, requires ole32
+			if (bSuccess && Settings.bWriteSolutionOptionFile && OperatingSystem.IsWindows())
 			{
 				// Figure out the filename for the SUO file. VS will automatically import the options from earlier versions if necessary.
 				FileReference SolutionOptionsFileName;
@@ -848,10 +850,118 @@ namespace UnrealBuildTool
 				}
 			}
 
+			if (bSuccess && Settings.bVsConfigFile && OperatingSystem.IsWindows())
+			{
+				StringBuilder VsConfigFileContent = new StringBuilder();
+
+				VsConfigFileContent.AppendLine("{");
+				VsConfigFileContent.AppendLine("  \"version\": \"1.0\",");
+				VsConfigFileContent.AppendLine("  \"components\": [");
+				IEnumerable<string> Components = MicrosoftPlatformSDK.GetVisualStudioSuggestedComponents(Settings.ProjectFileFormat);
+				string ComponentsString = string.Join($",{Environment.NewLine}    ", Components.Select(x => $"\"{x}\""));
+				VsConfigFileContent.AppendLine($"    {ComponentsString}");
+				VsConfigFileContent.AppendLine("  ]");
+				VsConfigFileContent.AppendLine("}");
+
+				FileReference VsConfigFileName = FileReference.Combine(PrimaryProjectPath, ".vsconfig");
+				bSuccess = WriteFileIfChanged(VsConfigFileName.FullName, VsConfigFileContent.ToString(), Logger);
+			}
+
 			return bSuccess;
 		}
 
-		protected override void WriteDebugSolutionFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators, DirectoryReference IntermediateProjectFilesPath)
+		public static void CollectSolutionConfigurations(List<UnrealTargetConfiguration> AllConfigurations,
+			List<UnrealTargetPlatform> AllPlatforms, List<ProjectFile> AllProjectFiles, ILogger Logger,
+			out HashSet<UnrealTargetPlatform> OutValidPlatforms, out List<VCSolutionConfigCombination> OutSolutionConfigs)
+		{
+			OutValidPlatforms = new HashSet<UnrealTargetPlatform>();
+			OutSolutionConfigs = new List<VCSolutionConfigCombination>();
+			Dictionary<string, Tuple<UnrealTargetConfiguration, TargetType>> SolutionConfigurationsValidForProjects =
+				new Dictionary<string, Tuple<UnrealTargetConfiguration, TargetType>>();
+
+			foreach (UnrealTargetConfiguration CurConfiguration in AllConfigurations)
+			{
+				if (InstalledPlatformInfo.IsValidConfiguration(CurConfiguration, EProjectType.Code))
+				{
+					foreach (UnrealTargetPlatform CurPlatform in AllPlatforms)
+					{
+						if (InstalledPlatformInfo.IsValidPlatform(CurPlatform, EProjectType.Code))
+						{
+							foreach (ProjectFile CurProject in AllProjectFiles)
+							{
+								if (!CurProject.IsStubProject)
+								{
+									if (CurProject.ProjectTargets.Count == 0)
+									{
+										throw new BuildException("Expecting project '" + CurProject.ProjectFilePath +
+										                         "' to have at least one ProjectTarget associated with it!");
+									}
+
+									// Figure out the set of valid target configuration names
+									foreach (Project ProjectTarget in CurProject.ProjectTargets)
+									{
+										if (VCProjectFile.IsValidProjectPlatformAndConfiguration(ProjectTarget, CurPlatform,
+											    CurConfiguration, Logger))
+										{
+											OutValidPlatforms.Add(CurPlatform);
+
+											// Default to a target configuration name of "Game", since that will collapse down to an empty string
+											TargetType TargetType = TargetType.Game;
+											if (ProjectTarget.TargetRules != null)
+											{
+												TargetType = ProjectTarget.TargetRules.Type;
+											}
+
+											string SolutionConfigName =
+												MakeSolutionConfigurationName(CurConfiguration, TargetType);
+											SolutionConfigurationsValidForProjects[SolutionConfigName] =
+												new Tuple<UnrealTargetConfiguration, TargetType>(CurConfiguration, TargetType);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			foreach (UnrealTargetPlatform CurPlatform in OutValidPlatforms)
+			{
+				foreach (KeyValuePair<string, Tuple<UnrealTargetConfiguration, TargetType>> SolutionConfigKeyValue in
+				         SolutionConfigurationsValidForProjects)
+				{
+					// e.g.  "Development|Win64 = Development|Win64"
+					string SolutionConfigName = SolutionConfigKeyValue.Key;
+					UnrealTargetConfiguration Configuration = SolutionConfigKeyValue.Value.Item1;
+					TargetType TargetType = SolutionConfigKeyValue.Value.Item2;
+
+					string SolutionPlatformName = CurPlatform.ToString();
+
+					string SolutionConfigAndPlatformPair = SolutionConfigName + "|" + SolutionPlatformName;
+					OutSolutionConfigs.Add(
+						new VCSolutionConfigCombination(SolutionConfigAndPlatformPair)
+						{
+							Configuration = Configuration,
+							Platform = CurPlatform,
+							TargetConfigurationName = TargetType
+						}
+					);
+				}
+			}
+
+			// Sort the list of solution platform strings alphabetically (Visual Studio prefers it)
+			OutSolutionConfigs.Sort(
+				new Comparison<VCSolutionConfigCombination>(
+					(x, y) =>
+					{
+						return String.Compare(x.VCSolutionConfigAndPlatformName, y.VCSolutionConfigAndPlatformName,
+							StringComparison.InvariantCultureIgnoreCase);
+					}
+				)
+			);
+		}
+
+		protected override void WriteDebugSolutionFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators, DirectoryReference IntermediateProjectFilesPath, ILogger Logger)
 		{
 			//build and collect UnrealVS configuration
 			StringBuilder UnrealVSContent = new StringBuilder();
@@ -870,7 +980,7 @@ namespace UnrealBuildTool
 
 				string ConfigFilePath = FileReference.Combine(IntermediateProjectFilesPath, "UnrealVS.xml").FullName;
 				/* bool bSuccess = */
-				ProjectFileGenerator.WriteFileIfChanged(ConfigFilePath, UnrealVSContent.ToString());
+				ProjectFileGenerator.WriteFileIfChanged(ConfigFilePath, UnrealVSContent.ToString(), Logger);
 			}
 		}
 

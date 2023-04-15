@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Misc/Timespan.h"
+#include "Serialization/Archive.h"
 #include "Serialization/StructuredArchive.h"
 #include "Templates/TypeHash.h"
 
@@ -127,17 +129,10 @@ public:
 		return *this;
 	}
 
-	/**
-	 * Adds the time from the given date to this date.
-	 *
-	 * @return This date.
-	 * @see FDateTime
-	 */
-	FDateTime& operator+(const FDateTime& Other)
+	UE_DEPRECATED(5.1, "Adding dates doesn't make sense. Please use FDateTime + FTimespan instead")
+	FDateTime operator+(const FDateTime& Other)
 	{
-		Ticks += Other.Ticks;
-
-		return *this;
+		return FDateTime(Ticks + Other.Ticks);
 	}
 
 	/**
@@ -332,7 +327,7 @@ public:
 	 */
 	double GetJulianDay() const
 	{
-		return (double)(1721425.5 + Ticks / ETimespan::TicksPerDay);
+		return 1721425.5 + double(Ticks / ETimespan::TicksPerDay) + GetTimeOfDay().GetTotalDays();
 	}
 
 	/**

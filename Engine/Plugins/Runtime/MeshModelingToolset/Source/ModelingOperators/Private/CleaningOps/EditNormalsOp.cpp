@@ -8,6 +8,8 @@
 #include "Operations/RepairOrientation.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditNormalsOp)
+
 using namespace UE::Geometry;
 
 void FEditNormalsOp::SetTransform(const FTransformSRT3d& Transform) 
@@ -103,9 +105,12 @@ void FEditNormalsOp::CalculateResult(FProgressCancel* Progress)
 		}
 		else // SplitNormalMethod == ESplitNormalMethod::FaceGroupID
 		{
-			ResultMesh->Attributes()->PrimaryNormals()->CreateFromPredicate([this](int VID, int TA, int TB)
+			FPolygroupSet DefaultGroups(ResultMesh.Get());
+			FPolygroupSet& UsePolygroups = (MeshPolygroups.IsValid()) ? *MeshPolygroups : DefaultGroups;
+
+			ResultMesh->Attributes()->PrimaryNormals()->CreateFromPredicate([this, &UsePolygroups](int VID, int TA, int TB)
 			{
-				return ResultMesh->GetTriangleGroup(TA) == ResultMesh->GetTriangleGroup(TB);
+				return UsePolygroups.GetTriangleGroup(TA) == UsePolygroups.GetTriangleGroup(TB);
 			}, 0);
 		}
 	}

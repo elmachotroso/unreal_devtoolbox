@@ -2,11 +2,20 @@
 
 #include "SmartObjectDefinition.h"
 
+#include "SmartObjectSettings.h"
 #include "SmartObjectTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectDefinition)
 
 namespace UE::SmartObject
 {
 	const FVector DefaultSlotSize(40, 40, 90);
+}
+
+USmartObjectDefinition::USmartObjectDefinition(const FObjectInitializer& ObjectInitializer): UDataAsset(ObjectInitializer)
+{
+	UserTagsFilteringPolicy = GetDefault<USmartObjectSettings>()->DefaultUserTagsFilteringPolicy;
+	ActivityTagsMergingPolicy = GetDefault<USmartObjectSettings>()->DefaultActivityTagsMergingPolicy;
 }
 
 bool USmartObjectDefinition::Validate() const
@@ -55,23 +64,6 @@ bool USmartObjectDefinition::Validate() const
 	return true;
 }
 
-const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinition(const FSmartObjectSlotIndex& SlotIndex,
-																			const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const
-{
-	const USmartObjectBehaviorDefinition* Definition = nullptr;
-	if (Slots.IsValidIndex(SlotIndex))
-	{
-		Definition = GetBehaviorDefinitionByType(Slots[SlotIndex].BehaviorDefinitions, DefinitionClass);
-	}
-
-	if (Definition == nullptr)
-	{
-		Definition = GetBehaviorDefinitionByType(DefaultBehaviorDefinitions, DefinitionClass);
-	}
-
-	return Definition;
-}
-
 FBox USmartObjectDefinition::GetBounds() const
 {
 	FBox BoundingBox(ForceInitToZero);
@@ -80,7 +72,29 @@ FBox USmartObjectDefinition::GetBounds() const
 		BoundingBox += Slot.Offset + UE::SmartObject::DefaultSlotSize;
 		BoundingBox += Slot.Offset - UE::SmartObject::DefaultSlotSize;
 	}
-	 return BoundingBox;
+	return BoundingBox;
+}
+
+void USmartObjectDefinition::GetSlotActivityTags(const FSmartObjectSlotIndex& SlotIndex, FGameplayTagContainer& OutActivityTags) const
+{
+	if (ensureMsgf(Slots.IsValidIndex(SlotIndex), TEXT("Requesting activity tags for an out of range slot index: %s"), *LexToString(SlotIndex)))
+	{
+		GetSlotActivityTags(Slots[SlotIndex], OutActivityTags);
+	}
+}
+
+void USmartObjectDefinition::GetSlotActivityTags(const FSmartObjectSlotDefinition& SlotDefinition, FGameplayTagContainer& OutActivityTags) const
+{
+	OutActivityTags = ActivityTags;
+
+	if (ActivityTagsMergingPolicy == ESmartObjectTagMergingPolicy::Combine)
+	{
+		OutActivityTags.AppendTags(SlotDefinition.ActivityTags);
+	}
+	else if (ActivityTagsMergingPolicy == ESmartObjectTagMergingPolicy::Override && !SlotDefinition.ActivityTags.IsEmpty())
+	{
+		OutActivityTags = SlotDefinition.ActivityTags;
+	}
 }
 
 TOptional<FTransform> USmartObjectDefinition::GetSlotTransform(const FTransform& OwnerTransform, const FSmartObjectSlotIndex SlotIndex) const
@@ -96,6 +110,25 @@ TOptional<FTransform> USmartObjectDefinition::GetSlotTransform(const FTransform&
 	return Transform;
 }
 
+
+const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinition(const FSmartObjectSlotIndex& SlotIndex,
+																					const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const
+{
+	const USmartObjectBehaviorDefinition* Definition = nullptr;
+	if (Slots.IsValidIndex(SlotIndex))
+	{
+		Definition = GetBehaviorDefinitionByType(Slots[SlotIndex].BehaviorDefinitions, DefinitionClass);
+	}
+
+	if (Definition == nullptr)
+	{
+		Definition = GetBehaviorDefinitionByType(DefaultBehaviorDefinitions, DefinitionClass);
+	}
+
+	return Definition;
+}
+
+
 const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinitionByType(const TArray<USmartObjectBehaviorDefinition*>& BehaviorDefinitions,
 																				 const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
 {
@@ -106,4 +139,5 @@ const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinit
 
 	return BehaviorDefinition != nullptr ? *BehaviorDefinition : nullptr;
 }
+
 

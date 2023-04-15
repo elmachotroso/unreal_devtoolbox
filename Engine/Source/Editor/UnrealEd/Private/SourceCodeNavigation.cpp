@@ -17,7 +17,7 @@
 #include "UObject/MetaData.h"
 #include "Misc/PackageName.h"
 #include "Async/TaskGraphInterfaces.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "TickableEditorObject.h"
@@ -27,6 +27,9 @@
 #include "Interfaces/IHttpResponse.h"
 #include "Interfaces/IHttpRequest.h"
 #include "HttpModule.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -766,11 +769,9 @@ void FSourceCodeNavigation::Initialize()
 
 const FSourceFileDatabase& FSourceCodeNavigation::GetSourceFileDatabase()
 {
-#if !( PLATFORM_WINDOWS && defined(__clang__) )		// @todo clang: This code causes a strange stack overflow issue when compiling using Clang on Windows
 	// Lock so that nothing may proceed while the AsyncTask is constructing the FSourceFileDatabase for the first time
 	FScopeLock Lock(&CriticalSection);
 	Instance.UpdateIfNeeded();
-#endif
 
 	return Instance;
 }
@@ -824,7 +825,7 @@ void FSourceCodeNavigation::NavigateToFunctionSourceAsync( const FString& Functi
 	};
 
 	FNotificationInfo Info( LOCTEXT("ReadingSymbols", "Reading C++ Symbols") );
-	Info.Image = FEditorStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
+	Info.Image = FAppStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
 	Info.ExpireDuration = 2.0f;
 	Info.bFireAndForget = false;
 
@@ -1487,6 +1488,11 @@ bool FSourceCodeNavigation::CanNavigateToClass(const UClass* InClass)
 		return false;
 	}
 
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
+		return false;
+	}
+
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
 		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
@@ -1532,6 +1538,11 @@ bool FSourceCodeNavigation::CanNavigateToStruct(const UScriptStruct* InStruct)
 		return false;
 	}
 
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
+		return false;
+	}
+
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
 		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
@@ -1573,6 +1584,11 @@ bool FSourceCodeNavigation::NavigateToStruct(const UScriptStruct* InStruct)
 bool FSourceCodeNavigation::CanNavigateToFunction(const UFunction* InFunction)
 {
 	if (!InFunction)
+	{
+		return false;
+	}
+
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
 	{
 		return false;
 	}
@@ -1631,6 +1647,11 @@ bool FSourceCodeNavigation::CanNavigateToProperty(const FProperty* InProperty)
 		return false;
 	}
 
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
+		return false;
+	}
+
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
 		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
@@ -1677,6 +1698,11 @@ bool FSourceCodeNavigation::NavigateToProperty(const FProperty* InProperty)
 bool FSourceCodeNavigation::CanNavigateToStruct(const UStruct* InStruct)
 {
 	if (!InStruct)
+	{
+		return false;
+	}
+
+	if (ensure(GUnrealEd) && !GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
 	{
 		return false;
 	}
@@ -1981,7 +2007,7 @@ bool FSourceCodeNavigation::FindClassHeaderPath( const UField* InField, FString 
 	}
 
 	// Get the class package, and skip past the "/Script/" portion to get the module name
-	UPackage* ModulePackage = InField->GetTypedOuter<UPackage>();
+	UPackage* ModulePackage = InField->GetPackage();
 
 	// Find the base path for the module
 	FString ModuleBasePath;
@@ -2006,7 +2032,7 @@ bool FSourceCodeNavigation::FindClassSourcePath( const UField* InField, FString 
 	}
 
 	// Get the class package, and skip past the "/Script/" portion to get the module name
-	UPackage *ModulePackage = InField->GetTypedOuter<UPackage>();
+	UPackage *ModulePackage = InField->GetPackage();
 
 	// Find the base path for the module
 	FString ModuleBasePath;

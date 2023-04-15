@@ -4,10 +4,9 @@
 
 #include "CameraCalibrationSettings.h"
 #include "CameraCalibrationStepsController.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Fonts/FontMeasure.h"
 #include "LensFile.h"
-#include "LiveLinkCameraController.h"
 
 /** Utility struct for converting between scrub range space and local/absolute screen space */
 struct FCameraCalibrationTimeSliderController::FScrubRangeToScreen
@@ -40,8 +39,8 @@ FCameraCalibrationTimeSliderController::FCameraCalibrationTimeSliderController(c
 	: CalibrationStepsControllerWeakPtr(InCalibrationStepsController)
 	, LensFileWeakPtr(InLensFile)
 {
-	ScrubHandleUpBrush          = FEditorStyle::GetBrush( TEXT( "Sequencer.Timeline.VanillaScrubHandleUp" ) ); 
-	ScrubHandleDownBrush        = FEditorStyle::GetBrush( TEXT( "Sequencer.Timeline.VanillaScrubHandleDown" ) );
+	ScrubHandleUpBrush          = FAppStyle::GetBrush( TEXT( "Sequencer.Timeline.VanillaScrubHandleUp" ) ); 
+	ScrubHandleDownBrush        = FAppStyle::GetBrush( TEXT( "Sequencer.Timeline.VanillaScrubHandleDown" ) );
 
 	TimeSliderArgs.DisplayRate = FFrameRate(30, 1);
 	TimeSliderArgs.TickResolution =  FFrameRate(30000, 1);
@@ -70,8 +69,8 @@ int32 FCameraCalibrationTimeSliderController::OnPaintTimeSlider( bool bMirrorLab
 
 		// draw playback & selection range
 		FPaintPlaybackRangeArgs PlaybackRangeArgs(
-			bMirrorLabels ? FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_L") : FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Top_L"),
-			bMirrorLabels ? FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_R") : FEditorStyle::GetBrush("Sequencer.Timeline.PlayRange_Top_R"),
+			bMirrorLabels ? FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_L") : FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Top_L"),
+			bMirrorLabels ? FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Bottom_R") : FAppStyle::GetBrush("Sequencer.Timeline.PlayRange_Top_R"),
 			6.f
 		);
 
@@ -215,18 +214,16 @@ void FCameraCalibrationTimeSliderController::Tick(float DeltaTime)
 		return;
 	}
 
-	ULiveLinkCameraController* CameraController = CalibrationStepsController->FindLiveLinkCameraController();
-	if (!CameraController)
+	const ELensDataCategory SelectedCategoryValue = SelectedCategory.GetValue();
+	const FLensFileEvaluationInputs EvalInputs = CalibrationStepsController->GetLensFileEvaluationInputs();
+	if (!EvalInputs.bIsValid)
 	{
 		return;
 	}
 
-	const ELensDataCategory SelectedCategoryValue = SelectedCategory.GetValue();
-	const FLensFileEvalData& LensFileEvalData = CameraController->GetLensFileEvalDataRef();
-
 	if (SelectedCategoryValue == ELensDataCategory::Focus)
 	{
-		const float RawFocus = LensFileEvalData.Input.Focus;
+		const float RawFocus = EvalInputs.Focus;
 		CommitPositionChange(RawFocus, TEXT("Focus"));
 	}
 	else if (SelectedCategoryValue == ELensDataCategory::Zoom ||
@@ -238,8 +235,8 @@ void FCameraCalibrationTimeSliderController::Tick(float DeltaTime)
 		if (SelectedFocus.IsSet())
 		{
 			
-			const float RawFocus = LensFileEvalData.Input.Focus;
-			const float RawZoom = LensFileEvalData.Input.Zoom;
+			const float RawFocus = EvalInputs.Focus;
+			const float RawZoom = EvalInputs.Zoom;
 			if (LensFileWeakPtr->GetDataTable(SelectedCategoryValue)->IsFocusBetweenNeighbor(SelectedFocus.GetValue(), RawFocus))
 			{
 				CommitPositionChange(RawZoom, TEXT("Zoom"));
@@ -248,7 +245,7 @@ void FCameraCalibrationTimeSliderController::Tick(float DeltaTime)
 	}
 	else if (SelectedCategory == ELensDataCategory::Iris)
 	{
-		const float RawIris = LensFileEvalData.Input.Iris;
+		const float RawIris = EvalInputs.Iris;
 		CommitPositionChange(RawIris, TEXT("Iris"));
 	}
 }

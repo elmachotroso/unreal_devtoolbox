@@ -9,7 +9,6 @@
 #include "HairStrandsMeshProjection.h"
 #include "HairStrandsData.h"
 
-#include "GPUSkinCache.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
 #include "CommonRenderResources.h"
@@ -60,8 +59,48 @@ static TAutoConsoleVariable<int32> CVarHairStrandsSimulation(
 	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarHairStrandsNonVisibleShadowCasting(
-	TEXT("r.HairStrands.Shadow.CastShadowWhenNonVisible"), 0,
+	TEXT("r.HairStrands.Shadow.CastShadowWhenNonVisible"), 1,
 	TEXT("Enable shadow casting for hair strands even when culled out from the primary view"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarHairStrandsNonVisibleShadowCasting_CullDistance(
+	TEXT("r.HairStrands.Visibility.NonVisibleShadowCasting.CullDistance"), 2000,
+	TEXT("Cull distance at which shadow casting starts to be disabled for non-visible hair strands instances."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsNonVisibleShadowCasting_Debug(
+	TEXT("r.HairStrands.Visibility.NonVisibleShadowCasting.Debug"), 0,
+	TEXT("Enable debug rendering for non-visible hair strands instance, casting shadow."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsContinuousDecimationReordering(
+	TEXT("r.HairStrands.ContinuousDecimationReordering"), 0,
+	TEXT("Enable strand reordering to allow Continuous LOD. Experimental"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsVisibilityComputeRaster(
+	TEXT("r.HairStrands.Visibility.ComputeRaster"), 0,
+	TEXT("Hair Visiblity uses raster compute. Experimental"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsVisibilityComputeRaster_ContinuousLOD(
+	TEXT("r.HairStrands.Visibility.ComputeRaster.ContinuousLOD"), 1,
+	TEXT("Enable Continuos LOD when using compute rasterization. Experimental"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsVisibilityComputeRaster_TemporalLayering(
+	TEXT("r.HairStrands.Visibility.ComputeRaster.TemporalLayering"), 1,
+	TEXT("Enable Experimental WIP Temporal Layering (requires TAA changes to work well)"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsVisibilityComputeRaster_TemporalLayering_LayerCount(
+	TEXT("r.HairStrands.Visibility.ComputeRaster.TemporalLayering.LayerCount"), 2,
+	TEXT("Temporal Layering Layer Count (default: 2)"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsVisibilityComputeRaster_TemporalLayering_OverrideIndex(
+	TEXT("r.HairStrands.Visibility.ComputeRaster.TemporalLayering.OverrideIndex"), -1,
+	TEXT("Enable Temporal Layering Override Index (default: -1 = no override)"),
 	ECVF_RenderThreadSafe);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -376,25 +415,6 @@ uint32 FHairGroupPublicData::GetResourcesSize() const
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-void TransitBufferToReadable(FRDGBuilder& GraphBuilder, FBufferTransitionQueue& BuffersToTransit)
-{
-	if (BuffersToTransit.Num())
-	{
-		AddPass(GraphBuilder, RDG_EVENT_NAME("TransitionToSRV"), [LocalBuffersToTransit = MoveTemp(BuffersToTransit)](FRHICommandList& RHICmdList)
-		{
-			FMemMark Mark(FMemStack::Get());
-			TArray<FRHITransitionInfo, TMemStackAllocator<>> Transitions;
-			Transitions.Reserve(LocalBuffersToTransit.Num());
-			for (FRHIUnorderedAccessView* UAV : LocalBuffersToTransit)
-			{
-				Transitions.Add(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-			}
-			RHICmdList.Transition(Transitions);
-		});
-	}
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool IsHairStrandsNonVisibleShadowCastingEnable()
 {
@@ -403,35 +423,69 @@ bool IsHairStrandsNonVisibleShadowCastingEnable()
 
 bool IsHairStrandsVisibleInShadows(const FViewInfo& View, const FHairStrandsInstance& Instance)
 {
+	const bool bDebugEnable = CVarHairStrandsNonVisibleShadowCasting_Debug.GetValueOnRenderThread() > 0;
+	FHairStrandsDebugData::FCullData* CullingData = nullptr;
+	if (bDebugEnable)
+	{
+		CullingData = const_cast<FHairStrandsDebugData::FCullData*>(&View.HairStrandsViewData.DebugData.CullData);
+		CullingData->bIsValid = true;
+		CullingData->ViewFrustum = View.ViewFrustum;
+	}
+
 	bool bIsVisibleInShadow = false;
 	if (const FHairGroupPublicData* HairData = Instance.GetHairData())
 	{
-		const int32 LODIndex = FMath::CeilToInt(HairData->LODIndex);
-		const bool bIsStrands = LODIndex >= 0 && HairData->IsVisible(LODIndex) && HairData->GetGeometryType(LODIndex) == EHairGeometryType::Strands;
-		if (bIsStrands)
+		const bool bIsStrands = HairData->LODIndex >= 0 && Instance.GetHairGeometry() == EHairGeometryType::Strands;
+		if (!bIsStrands)
 		{
-			if (const FBoxSphereBounds* Bounds = Instance.GetBounds())
-			{
-				{
-					for (const FLightSceneInfo* LightInfo : View.HairStrandsViewData.VisibleShadowCastingLights)
-					{
-						// Influence radius check
-						if (LightInfo->Proxy->AffectsBounds(*Bounds))
-						{
-							bIsVisibleInShadow = true;
-							break;
-						}
-					}
-				}
+			return false;
+		}
 
-				if (!bIsVisibleInShadow)
+		const FBoxSphereBounds& Bounds = Instance.GetBounds();
+		{
+			// Local lights
+			for (const FLightSceneInfo* LightInfo : View.HairStrandsViewData.VisibleShadowCastingLights)
+			{
+				if (LightInfo->Proxy->AffectsBounds(Bounds))
 				{
-					for (const FSphere& LightBound : View.HairStrandsViewData.VisibleShadowCastingBounds)
+					bIsVisibleInShadow = true;
+					break;
+				}
+			}
+
+			// Directional lights
+			if (!bIsVisibleInShadow)
+			{
+				const float CullDistance = FMath::Max(0.f, CVarHairStrandsNonVisibleShadowCasting_CullDistance.GetValueOnAnyThread());
+				for (const FHairStrandsViewData::FDirectionalLightCullData& CullData : View.HairStrandsViewData.VisibleShadowCastingDirectionalLights)
+				{
+					// Transform frustum into light space
+					const FMatrix& WorldToLight = CullData.LightInfo->Proxy->GetWorldToLight();
+					
+					// Transform groom bound into light space, and extend it along the light direction
+					FBoxSphereBounds BoundsInLightSpace = Bounds.TransformBy(WorldToLight);
+					BoundsInLightSpace.BoxExtent.X += CullDistance;
+
+					const bool bIntersect = CullData.ViewFrustumInLightSpace.IntersectBox(BoundsInLightSpace.Origin, BoundsInLightSpace.BoxExtent);
+					if (bDebugEnable)
 					{
-						// Influence radius check
-						if (Bounds->GetSphere().Intersects(LightBound))
+						FHairStrandsDebugData::FCullData::FLight& LightData = CullingData->DirectionalLights.AddDefaulted_GetRef();
+						LightData.WorldToLight = WorldToLight;
+						LightData.LightToWorld = CullData.LightInfo->Proxy->GetLightToWorld();
+						LightData.Center = FVector3f(CullData.LightInfo->Proxy->GetBoundingSphere().Center);
+						LightData.Extent = FVector3f(CullData.LightInfo->Proxy->GetBoundingSphere().W);
+						LightData.ViewFrustumInLightSpace = CullData.ViewFrustumInLightSpace;
+						LightData.InstanceBoundInLightSpace.Add({FVector3f(BoundsInLightSpace.GetBox().Min), FVector3f(BoundsInLightSpace.GetBox().Max)});
+						LightData.InstanceBoundInWorldSpace.Add({ FVector3f(Bounds.GetBox().Min), FVector3f(Bounds.GetBox().Max)});
+						LightData.InstanceIntersection.Add(bIntersect ? 1u : 0u);
+					}
+
+					// Ensure the extended groom bound interest the frustum
+					if (bIntersect)
+					{
+						bIsVisibleInShadow = true;
+						if (!bDebugEnable)
 						{
-							bIsVisibleInShadow = true;
 							break;
 						}
 					}
@@ -440,6 +494,112 @@ bool IsHairStrandsVisibleInShadows(const FViewInfo& View, const FHairStrandsInst
 		}
 	}
 	return bIsVisibleInShadow;
+}
+
+bool IsHairStrandContinuousDecimationReorderingEnabled()
+{
+	//NB this is a readonly cvar - and causes changes in platform data and runtime allocations 
+	return CVarHairStrandsContinuousDecimationReordering.GetValueOnAnyThread() > 0;
+}
+
+bool IsHairVisibilityComputeRasterEnabled()
+{
+	return CVarHairStrandsVisibilityComputeRaster.GetValueOnAnyThread() > 0;
+}
+
+bool IsHairVisibilityComputeRasterContinuousLODEnabled()
+{
+	return IsHairStrandContinuousDecimationReorderingEnabled() && IsHairVisibilityComputeRasterEnabled() && (CVarHairStrandsVisibilityComputeRaster_ContinuousLOD.GetValueOnAnyThread() > 0);
+}
+
+float GetHairVisibilityComputeRasterContinuousLODScale(float ScreenSize)
+{
+	//TODO: make values in this calculation customizable per groom 
+	return FMath::Pow(FMath::Clamp(ScreenSize, 1.0f / 16.0f, 1.0f), 1.0f);
+}
+
+bool IsHairVisibilityComputeRasterTemporalLayeringEnabled()
+{
+	return IsHairStrandContinuousDecimationReorderingEnabled() && IsHairVisibilityComputeRasterEnabled() && (CVarHairStrandsVisibilityComputeRaster_TemporalLayering.GetValueOnAnyThread() > 0);
+}
+
+int32 GetHairVisibilityComputeRasterTemporalLayerCount()
+{
+	const uint32 LayerCount = FMath::Clamp(CVarHairStrandsVisibilityComputeRaster_TemporalLayering_LayerCount.GetValueOnAnyThread(), 1, 32);
+	return LayerCount;
+}
+
+uint32 GetHairVisibilityComputeRasterVertexStart(uint32 TemporalIndex, uint32 InVertexCount)
+{
+	uint32 VertexStart = 0;
+
+	if (IsHairVisibilityComputeRasterTemporalLayeringEnabled())
+	{
+		const uint32 LayerCount = GetHairVisibilityComputeRasterTemporalLayerCount();
+		const int32 OverrideIndex = CVarHairStrandsVisibilityComputeRaster_TemporalLayering_OverrideIndex.GetValueOnAnyThread();
+
+		const uint32 VertexCount = InVertexCount / LayerCount;
+
+		VertexStart = (((OverrideIndex >= 0) ? OverrideIndex : TemporalIndex) % LayerCount) * VertexCount;
+	}
+
+	return VertexStart;
+}
+
+uint32 GetHairVisibilityComputeRasterVertexCount(float ScreenSize, uint32 InVertexCount)
+{
+	uint32 VertexCount = InVertexCount;
+
+	if (IsHairVisibilityComputeRasterTemporalLayeringEnabled())
+	{
+		VertexCount /= GetHairVisibilityComputeRasterTemporalLayerCount();
+	}
+
+	if (IsHairVisibilityComputeRasterContinuousLODEnabled())
+	{
+		VertexCount *= GetHairVisibilityComputeRasterContinuousLODScale(ScreenSize);
+	}
+
+	return VertexCount;
+}
+
+float GetHairVisibilityComputeRasterSampleWeight(float ScreenSize, bool bUseTemporalWeight)
+{
+	float SampleWeight = 1.0;
+
+	if (IsHairVisibilityComputeRasterTemporalLayeringEnabled() && bUseTemporalWeight)
+	{
+		// sample weight should increase if layer count increases
+		SampleWeight *= GetHairVisibilityComputeRasterTemporalLayerCount();
+	}
+
+	if (IsHairVisibilityComputeRasterContinuousLODEnabled())
+	{
+		//sample weight should increase if decimation scale is lower
+		SampleWeight /= GetHairVisibilityComputeRasterContinuousLODScale(ScreenSize);
+	}
+
+	return SampleWeight;
+}
+
+uint32 FHairGroupPublicData::GetActiveStrandsVertexStart(uint32 InVertexCount) const
+{
+	return GetHairVisibilityComputeRasterVertexStart(TemporalIndex, InVertexCount);
+}
+
+uint32 FHairGroupPublicData::GetActiveStrandsVertexCount(uint32 InVertexCount, float ScreenSize) const
+{
+	return GetHairVisibilityComputeRasterVertexCount(FMath::Min(MaxScreenSize, ScreenSize), InVertexCount);
+}
+
+float FHairGroupPublicData::GetActiveStrandsSampleWeight(bool bUseTemporalWeight, float ScreenSize) const
+{
+	return GetHairVisibilityComputeRasterSampleWeight(FMath::Min(MaxScreenSize, ScreenSize), bUseTemporalWeight);
+}
+
+void FHairGroupPublicData::UpdateTemporalIndex()
+{
+	TemporalIndex = IsHairVisibilityComputeRasterTemporalLayeringEnabled() ? ((TemporalIndex + 1) % GetHairVisibilityComputeRasterTemporalLayerCount()) : 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -491,23 +651,9 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 			}
 		}
 	}
+	Out.InstanceCountPerType[HairInstanceCount_StrandsPrimaryView] = Out.VisibleInstances.Num();
 
-	// 2. Add all visible cards instances
-	for (const FMeshBatchAndRelevance& MeshBatch : View.HairCardsMeshElements)
-	{
-		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
-		if (MeshBatch.Mesh && MeshBatch.Mesh->Elements.Num() > 0)
-		{
-			FHairGroupPublicData* HairData = HairStrands::GetHairData(MeshBatch.Mesh);
-			if (HairData && HairData->Instance)
-			{
-				Out.VisibleInstances.Add(HairData->Instance);
-				InstancesVisibility[HairData->Instance->RegisteredIndex] = true;
-			}
-		}
-	}
-
-	// 3. Add all instances non-visible primary view(s) but visible in shadow view(s)
+	// 2. Add all instances non-visible primary view(s) but visible in shadow view(s)
 	if (IsHairStrandsNonVisibleShadowCastingEnable())
 	{
 		for (FHairStrandsInstance* Instance : Scene->HairStrandsSceneData.RegisteredProxies)
@@ -521,10 +667,25 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 			}
 		}
 	}
+	Out.InstanceCountPerType[HairInstanceCount_StrandsShadowView] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_StrandsPrimaryView];
 
-	Out.ShaderDebugData			= ShaderDrawDebug::IsEnabled(View) ? &View.ShaderDrawData : nullptr;
-	Out.ShaderPrintData			= ShaderPrint::IsEnabled(View) ? &View.ShaderPrintData : nullptr;
-	Out.SkinCache				= View.Family->Scene->GetGPUSkinCache();
+	// 3. Add all visible cards instances
+	for (const FMeshBatchAndRelevance& MeshBatch : View.HairCardsMeshElements)
+	{
+		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
+		if (MeshBatch.Mesh && MeshBatch.Mesh->Elements.Num() > 0)
+		{
+			FHairGroupPublicData* HairData = HairStrands::GetHairData(MeshBatch.Mesh);
+			if (HairData && HairData->Instance)
+			{
+				Out.VisibleInstances.Add(HairData->Instance);
+				InstancesVisibility[HairData->Instance->RegisteredIndex] = true;
+			}
+		}
+	}
+	Out.InstanceCountPerType[HairInstanceCount_CardsOrMeshes] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_StrandsShadowView];
+
+	Out.ShaderPrintData			= ShaderPrint::IsEnabled(View.ShaderPrintData) ? &View.ShaderPrintData : nullptr;
 	Out.ShaderMap				= View.ShaderMap;
 	Out.Instances				= &Scene->HairStrandsSceneData.RegisteredProxies;
 	Out.View					= &View;
@@ -539,15 +700,11 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 	return Out;
 }
 
-FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, TArray<FViewInfo>& Views)
+FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, TArray<FViewInfo>& Views, TArray<const FSceneView*>& AllFamilyViews)
 {
 	FHairStrandsBookmarkParameters Out;
 	Out = CreateHairStrandsBookmarkParameters(Scene, Views[0]);
-	Out.AllViews.Reserve(Views.Num());
-	for (const FViewInfo& View : Views)
-	{
-		Out.AllViews.Add(&View);
-	}
+	Out.AllViews = AllFamilyViews;
 
 	return Out;
 }
@@ -604,26 +761,37 @@ FHairGroupPublicData* GetHairData(const FMeshBatch* Mesh)
 
 void AddVisibleShadowCastingLight(const FScene& Scene, TArray<FViewInfo>& Views, const FLightSceneInfo* LightSceneInfo)
 {
+	const uint8 LightType = LightSceneInfo->Proxy->GetLightType();
 	for (FViewInfo& View : Views)
 	{
-		// If any hair data are registered, track which lights are visible so that hair strands can cast shadow even if not visibible in primary view
+		// If any hair data are registered, track which lights are visible so that hair strands can cast shadow even if not visible in primary view
+		// 
+		// Actual intersection test is done in IsHairStrandsVisibleInShadows():
+		// * For local lights, shadow casting is determined based on light influence radius
+		// * For directional light, view frustum and hair instance bounds are transformed in light space to determined potential intersections
 		if (Scene.HairStrandsSceneData.RegisteredProxies.Num() > 0)
 		{
-			View.HairStrandsViewData.VisibleShadowCastingLights.Add(LightSceneInfo);
-			break;
-		}
-	}
-}
+			if (LightType == ELightComponentType::LightType_Directional)
+			{
+				FHairStrandsViewData::FDirectionalLightCullData& Data = View.HairStrandsViewData.VisibleShadowCastingDirectionalLights.AddDefaulted_GetRef();
 
-void AddVisibleShadowCastingLight(const FScene& Scene, TArray<FViewInfo>& Views, const FSphere& Bounds)
-{
-	for (FViewInfo& View : Views)
-	{
-		// If any hair data are registered, track which lights are visible so that hair strands can cast shadow even if not visibible in primary view
-		if (Scene.HairStrandsSceneData.RegisteredProxies.Num() > 0)
-		{
-			View.HairStrandsViewData.VisibleShadowCastingBounds.Add(Bounds);
-			break;
+				// Transform view frustum into light space
+				const FMatrix& WorldToLight = LightSceneInfo->Proxy->GetWorldToLight();
+				const uint32 PlaneCount = View.ViewFrustum.Planes.Num();
+				Data.ViewFrustumInLightSpace.Planes.SetNum(PlaneCount);
+				for (uint32 PlaneIt = 0; PlaneIt < PlaneCount; ++PlaneIt)
+				{
+					Data.ViewFrustumInLightSpace.Planes[PlaneIt] = View.ViewFrustum.Planes[PlaneIt].TransformBy(WorldToLight);
+				}
+				Data.ViewFrustumInLightSpace.Init();
+				Data.LightInfo = LightSceneInfo;
+				break;
+			}
+			else
+			{
+				View.HairStrandsViewData.VisibleShadowCastingLights.Add(LightSceneInfo);
+				break;
+			}
 		}
 	}
 }

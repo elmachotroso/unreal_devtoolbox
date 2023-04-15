@@ -6,22 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public SpeedTreeImporter(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PublicIncludePaths.AddRange(
-				new string[] {
-				}
-				);
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				}
-				);
-
-			PublicDependencyModuleNames.AddRange(
-				new string[]
-				{
-				}
-				);
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -30,7 +14,6 @@ namespace UnrealBuildTool.Rules
 				    "Engine",
 				    "Slate",
 					"SlateCore",
-                    "EditorStyle",
                     "InputCore",
 					"EditorFramework",
                     "UnrealEd",
@@ -38,12 +21,6 @@ namespace UnrealBuildTool.Rules
                     "MeshDescription",
 					"StaticMeshDescription"
                 }
-				);
-
-			DynamicallyLoadedModuleNames.AddRange(
-				new string[]
-				{
-				}
 				);
 				
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SpeedTree");

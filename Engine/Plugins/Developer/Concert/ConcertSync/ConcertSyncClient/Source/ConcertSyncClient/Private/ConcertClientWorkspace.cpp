@@ -19,6 +19,7 @@
 #include "ConcertSyncClientUtil.h"
 #include "ConcertLogGlobal.h"
 #include "ConcertWorkspaceData.h"
+#include "ConcertWorkspaceMessages.h"
 #include "ConcertClientDataStore.h"
 #include "ConcertClientLiveTransactionAuthors.h"
 
@@ -48,7 +49,7 @@
 #include "Backends/JsonStructDeserializerBackend.h"
 #include "Backends/JsonStructSerializerBackend.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 
@@ -62,6 +63,7 @@
 	#include "GameMapsSettings.h"
 #endif
 
+LLM_DEFINE_TAG(Concert_ConcertClientWorkspace);
 #define LOCTEXT_NAMESPACE "ConcertClientWorkspace"
 
 /** Provides a workaround for scoped slow tasks that are push/pop out of order by Concert. Concert doesn't use FScopedSlowTask as designed when syncing
@@ -305,31 +307,35 @@ TOptional<FString> FConcertClientWorkspace::GetValidPackageSessionPath(FName Pac
 	return {};
 }
 
-bool FConcertClientWorkspace::PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons)
+
+FPersistResult FConcertClientWorkspace::PersistSessionChanges(FPersistParameters InParam)
 {
 	bool bSuccess = false;
 #if WITH_EDITOR
 	if (PackageManager)
 	{
-		for (const FName& PackageName : InPackagesToPersist)
+		TArray<FName> PackageNames;
+		for (const FName& PackageName : InParam.PackagesToPersist)
 		{
 			SaveLiveTransactionsToPackage(PackageName);
+			PackageNames.Add(PackageName);
 		}
 
-		bSuccess = PackageManager->PersistSessionChanges(InPackagesToPersist, SourceControlProvider, OutFailureReasons);
-
+		FPersistResult Result = PackageManager->PersistSessionChanges(MoveTemp(InParam));
 		// if we successfully persisted the files, record persist events for them in the db
-		if (bSuccess)
+		if (Result.PersistStatus == EPersistStatus::Success)
 		{
 			int64 PersistEventId = 0;
-			for (const FName& PackageName : InPackagesToPersist)
+			for (const FName& PackageName : PackageNames)
 			{
-				LiveSession->GetSessionDatabase().AddPersistEventForHeadRevision(PackageName, PersistEventId);
+				LiveSession->GetSessionDatabase().AddPersistEventForHeadRevision(
+					PackageName, PersistEventId);
 			}
 		}
+		return Result;
 	}
 #endif
-	return bSuccess;
+	return {};
 }
 
 bool FConcertClientWorkspace::HasLiveTransactionSupport(UPackage* InPackage) const
@@ -404,7 +410,7 @@ bool FConcertClientWorkspace::IsTransactionEventPartiallySynced(const FConcertSy
 	return TransactionEvent.Transaction.ExportedObjects.Num() == 0;
 }
 
-void FConcertClientWorkspace::GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertClientSessionActivity>& OutActivities) const
+void FConcertClientWorkspace::GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertSessionActivity>& OutActivities) const
 {
 	OutEndpointClientInfoMap.Reset();
 	OutActivities.Reset();
@@ -425,7 +431,7 @@ void FConcertClientWorkspace::GetActivities(const int64 FirstActivityIdToFetch, 
 			OutActivities.Emplace(MoveTemp(InActivity), MoveTemp(ActivitySummary));
 		}
 
-		return true;
+		return EBreakBehavior::Continue;
 	});
 }
 
@@ -444,6 +450,16 @@ FOnActivityAddedOrUpdated& FConcertClientWorkspace::OnActivityAddedOrUpdated()
 FOnWorkspaceSynchronized& FConcertClientWorkspace::OnWorkspaceSynchronized()
 {
 	return OnWorkspaceSyncedDelegate;
+}
+
+FOnFinalizeWorkspaceSyncCompleted& FConcertClientWorkspace::OnFinalizeWorkspaceSyncCompleted()
+{
+	return OnFinalizeWorkspaceSyncCompletedDelegate;
+}
+
+FOnWorkspaceEndFrameCompleted& FConcertClientWorkspace::OnWorkspaceEndFrameCompleted()
+{
+	return OnWorkspaceEndFrameCompletedDelegate;
 }
 
 IConcertClientDataStore& FConcertClientWorkspace::GetDataStore()
@@ -802,6 +818,7 @@ void FConcertClientWorkspace::HandleEndPIE(const bool InIsSimulating)
 
 void FConcertClientWorkspace::OnEndFrame()
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClientWorkspace);
 	SCOPED_CONCERT_TRACE(FConcertClientWorkspace_OnEndFrame);
 
 	if (CanFinalize())
@@ -841,9 +858,13 @@ void FConcertClientWorkspace::OnEndFrame()
 		// Finalize the sync
 		bHasSyncedWorkspace = true;
 		FConcertSlowTaskStackWorkaround::Get().PopTask(MoveTemp(InitialSyncSlowTask));
+		OnFinalizeWorkspaceSyncCompletedDelegate.Broadcast();
+
+		// Notify the server that we've finalized our workspace.
+		LiveSession->GetSession().SendCustomEvent(FConcertWorkspaceSyncAndFinalizeCompletedEvent(), LiveSession->GetSession().GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 	}
 
-	if (bHasSyncedWorkspace && CanProcessPendingPackages() && !ConcertSyncClientUtil::UserIsEditing())
+	if (bHasSyncedWorkspace && CanProcessPendingPackages() && !ConcertSyncClientUtil::ShouldDelayTransaction())
 	{
 		if (PackageManager)
 		{
@@ -861,6 +882,8 @@ void FConcertClientWorkspace::OnEndFrame()
 			LiveSession->GetSession().SendCustomEvent(StateChangeEvent, LiveSession->GetSession().GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 			bPendingStopIgnoringActivityOnRestore = false;
 		}
+
+		OnWorkspaceEndFrameCompletedDelegate.Broadcast();
 	}
 	LiveSession->GetSessionDatabase().UpdateAsynchronousTasks();
 	IConcertClientRef ConcertClient = OwnerSyncClient->GetConcertClient();
@@ -889,6 +912,7 @@ void FConcertClientWorkspace::HandleWorkspaceSyncActivityEvent(const FConcertSes
 
 	check(ActivityPayload.IsValid() && ActivityPayload.GetStruct()->IsChildOf(FConcertSyncActivity::StaticStruct()));
 	FConcertSyncActivity* Activity = (FConcertSyncActivity*)ActivityPayload.GetStructMemory();
+	ensureAlwaysMsgf((Activity->Flags & EConcertSyncActivityFlags::Muted) == EConcertSyncActivityFlags::None, TEXT("Clients are not supposed to receive muted activities!"));
 
 	// Update slow task dialog
 	if (InitialSyncSlowTask.IsValid())

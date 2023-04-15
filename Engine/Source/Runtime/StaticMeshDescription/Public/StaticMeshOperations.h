@@ -2,14 +2,27 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "Logging/LogMacros.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
 #include "MeshTypes.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "Misc/SecureHash.h"
 
+class FName;
 struct FMeshDescription;
 struct FOverlappingCorners;
 struct FPolygonGroupID;
 struct FRawMesh;
 struct FUVMapParameters;
+
 enum class ELightmapUVVersion : int32;
 
 typedef TMap<FPolygonGroupID, FPolygonGroupID> PolygonGroupMap;
@@ -75,7 +88,7 @@ public:
 	static void ComputeMikktTangents(FMeshDescription& MeshDescription, bool bIgnoreDegenerateTriangles);
 
 	/** Determine the edge hardnesses from existing normals */
-	static void DetermineEdgeHardnessesFromVertexInstanceNormals(FMeshDescription& MeshDescription, float Tolerance = KINDA_SMALL_NUMBER);
+	static void DetermineEdgeHardnessesFromVertexInstanceNormals(FMeshDescription& MeshDescription, float Tolerance = UE_KINDA_SMALL_NUMBER);
 
 	/** Convert this mesh description into the old FRawMesh format. */
 	static void ConvertToRawMesh(const FMeshDescription& SourceMeshDescription, FRawMesh& DestinationRawMesh, const TMap<FName, int32>& MaterialMap);

@@ -2,35 +2,50 @@
 
 #pragma once
 
+#include "Async/Future.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "CoreGlobals.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/Object.h"
+#include "Delegates/Delegate.h"
+#include "HAL/PlatformMath.h"
 #include "IO/PackageId.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/DateTime.h"
 #include "Misc/Guid.h"
-#include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
+#include "Misc/OutputDeviceError.h"
 #include "Misc/PackagePath.h"
 #include "Misc/SecureHash.h"
 #include "Misc/WorldCompositionUtility.h"
 #include "Serialization/CustomVersion.h"
 #include "Templates/PimplPtr.h"
 #include "Templates/UniquePtr.h"
-#include "Async/Future.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UObjectGlobals.h"
 
 class Error;
-
-// This is a dummy type which is not implemented anywhere. It's only 
+class FArchive;
+class FLinkerLoad;
+// This is a dummy type which is not implemented anywhere. It's only
 // used to flag a deprecated Conform argument to package save functions.
 class FLinkerNull;
-class FLinkerLoad;
 class FLinkerSave;
-class ITargetPlatform;
-struct FPackageSaveInfo;
+class FObjectPostSaveContext;
+class FObjectPreSaveContext;
+class FOutputDevice;
 class FSavePackageContext;
-struct FSavePackageArgs;
-
+class FString;
+class ITargetPlatform;
+class UFunction;
 class UMetaData;
+struct FMD5Hash;
+struct FPackageSaveInfo;
+struct FSavePackageArgs;
 
 /**
 * Represents the result of saving a package
@@ -60,11 +75,14 @@ enum class ESavePackageResult
 	ValidatorSuppress,
 	/** Internal save result used to identify a valid empty internal save realm to skip over. @see ESaveRealm */
 	EmptyRealm,
+	/** SavePackage is blocked by an asynchronous operation, so it quickly aborted. Can only be returned if SAVE_AllowTimeout is present in SaveFlags */
+	Timeout,
 };
 
 /**
 * Struct returned from save package, contains the enum as well as extra data about what was written
 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Silence deprecation warnings for deprecated CookedHash member in implicit constructors
 struct FSavePackageResultStruct
 {
 	/** Success/failure of the save operation */
@@ -73,7 +91,7 @@ struct FSavePackageResultStruct
 	/** Total size of all files written out, including bulk data */
 	int64 TotalFileSize;
 
-	/** MD5 hash of the cooked data */
+	UE_DEPRECATED(5.1, "CookedHash is now available through PackageWriter->CommitPackage instead. For waiting on completion in the non-cook case, use UPackage::WaitForAsyncFileWrites.")
 	TFuture<FMD5Hash> CookedHash;
 
 	/** Serialized package flags */
@@ -86,7 +104,7 @@ struct FSavePackageResultStruct
 	FSavePackageResultStruct() : Result(ESavePackageResult::Error), TotalFileSize(0), SerializedPackageFlags(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult) : Result(InResult), TotalFileSize(0), SerializedPackageFlags(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize) : Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(0) {}
-	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, TFuture<FMD5Hash>&& InHash, uint32 InSerializedPackageFlags, TPimplPtr<FLinkerSave> Linker = nullptr) : Result(InResult), TotalFileSize(InTotalFileSize), CookedHash(MoveTemp(InHash)), SerializedPackageFlags(InSerializedPackageFlags), LinkerSave(MoveTemp(Linker)) {}
+	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, uint32 InSerializedPackageFlags, TPimplPtr<FLinkerSave> Linker = nullptr) : Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(InSerializedPackageFlags), LinkerSave(MoveTemp(Linker)) {}
 
 	bool operator==(const FSavePackageResultStruct& Other) const
 	{
@@ -107,6 +125,7 @@ struct FSavePackageResultStruct
 			Result == ESavePackageResult::ReplaceCompletely;
 	}
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
 * A package.
@@ -215,7 +234,8 @@ private:
 #endif
 
 #if WITH_EDITORONLY_DATA
-	/** Indicates which folder to display this package under in the Generic Browser's list of packages. If not specified, package is added to the root level.	*/
+	/** Indicates which folder to display this package under in the Generic Browser's list of packages. If not specified, package is added to the root level. deprecated	*/
+	UE_DEPRECATED(5.1, "Unused property to be removed. Use something like FPackageName::GetLongPackagePath if requiring something similar.")
 	FName FolderName;
 
 	/** Persistent GUID of package if it was loaded from disk. Persistent across saves. */
@@ -440,6 +460,7 @@ public:
 	* Get the package's folder name
 	* @return		Folder name
 	*/
+	UE_DEPRECATED(5.1, "Unused property to be removed. Use something like FPackageName::GetLongPackagePath if requiring something similar.")
 	FName GetFolderName() const
 	{
 		return FolderName;
@@ -448,6 +469,7 @@ public:
 	/**
 	* Set the package's folder name
 	*/
+	UE_DEPRECATED(5.1, "Unused property to be removed. Use something like FPackageName::GetLongPackagePath if requiring something similar.")
 	void SetFolderName (FName name)
 	{
 		FolderName = name;
@@ -640,6 +662,31 @@ public:
 	FORCEINLINE uint32 GetPackageFlags() const
 	{
 		return PackageFlagsPrivate;
+	}
+
+	/**
+	* @return true if the package is marked as ExternallyReferenceable
+	*/
+	FORCEINLINE bool IsExternallyReferenceable() const
+	{
+		return (PackageFlagsPrivate & PKG_NotExternallyReferenceable) == 0;
+	}
+
+	/**
+	* Sets whether or not the package is ExternallyReferenceable
+	* 
+	* @param bValue Sets the package to be ExternallyReferenceable if true or NotExternallyReferenceable if false
+	*/
+	FORCEINLINE void SetIsExternallyReferenceable(bool bValue)
+	{
+		if (bValue)
+		{
+			ClearPackageFlags(PKG_NotExternallyReferenceable);
+		}
+		else
+		{
+			SetPackageFlags(PKG_NotExternallyReferenceable);
+		}
 	}
 
 #if WITH_EDITORONLY_DATA

@@ -1,13 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationNodes/SGraphNodeStateMachineInstance.h"
-#include "AnimationStateMachineGraph.h"
+
+#include "AnimationNodes/SAnimationGraphNode.h"
+#include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_StateMachineBase.h"
-#include "Engine/PoseWatch.h"
-#include "AnimationEditorUtils.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Images/SImage.h"
+#include "AnimationStateMachineGraph.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/Optional.h"
+#include "SNodePanel.h"
 #include "SPoseWatchOverlay.h"
+#include "Templates/Casts.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "SGraphNodeStateMachineInstance"
 
@@ -48,6 +54,32 @@ TArray<FOverlayWidgetInfo> SGraphNodeStateMachineInstance::GetOverlayWidgets(boo
 	}
 
 	return Widgets;
+}
+
+TSharedRef<SWidget> SGraphNodeStateMachineInstance::CreateNodeBody()
+{
+	TSharedRef<SWidget> NodeBody = SGraphNodeK2Composite::CreateNodeBody();
+
+	UAnimGraphNode_StateMachineBase* StateMachineNode = CastChecked<UAnimGraphNode_StateMachineBase>(GraphNode);
+
+	auto UseLowDetailNode = [this]()
+	{
+		return GetCurrentLOD() <= EGraphRenderingLOD::LowDetail;
+	};
+
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				NodeBody
+			]
+		+ SVerticalBox::Slot()
+			.AutoHeight()
+			.HAlign(HAlign_Right)
+			.Padding(4.0f, 2.0f, 4.0f, 2.0f)
+			[
+				SAnimationGraphNode::CreateNodeTagWidget(StateMachineNode, MakeAttributeLambda(UseLowDetailNode))
+			];
 }
 
 #undef LOCTEXT_NAMESPACE

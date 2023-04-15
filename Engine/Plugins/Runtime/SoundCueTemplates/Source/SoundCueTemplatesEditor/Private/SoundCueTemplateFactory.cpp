@@ -3,6 +3,7 @@
 #include "SoundCueTemplateFactory.h"
 #include "SoundCueTemplateClassFilter.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerModule.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Engine/Engine.h"
@@ -10,6 +11,8 @@
 #include "SoundCueGraph/SoundCueGraphNode.h"
 #include "Sound/SoundCue.h"
 #include "UObject/Class.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundCueTemplateFactory)
 
 #define LOCTEXT_NAMESPACE "SoundCueTemplatesEditor"
 
@@ -81,12 +84,17 @@ UObject* USoundCueTemplateFactory::FactoryCreateNew(UClass* Class, UObject* InPa
 	{
 		if (USoundCueTemplate* NewSoundCueTemplate = NewObject<USoundCueTemplate>(InParent, SoundCueTemplateClass, Name, Flags))
 		{
+			NewSoundCueTemplate->LoadTemplateDefaultSettings();
+
 			if (SoundWaves.Num())
 			{
 				NewSoundCueTemplate->AddSoundWaves(SoundWaves);
 			}
 
 			NewSoundCueTemplate->RebuildGraph(*NewSoundCueTemplate);
+
+			Audio::Analytics::RecordEvent_Usage(TEXT("SoundCueTemplates.TemplateCreated"));
+
 			return NewSoundCueTemplate;
 		}
 	}
@@ -98,7 +106,18 @@ FString USoundCueTemplateFactory::GetDefaultNewAssetName() const
 {
 	if (SoundCueTemplateClass)
 	{
-		return SoundCueTemplateClass->GetName() + FString(TEXT("_"));
+		FString TemplatePrefix;
+		if (const USoundCueTemplate* TemplateCDO = SoundCueTemplateClass.GetDefaultObject())
+		{
+			TemplatePrefix = TemplateCDO->GenerateDefaultNewAssetName(SoundWaves);
+		}
+
+		if (TemplatePrefix.IsEmpty())
+		{
+			SoundCueTemplateClass->GetName(TemplatePrefix);
+		}
+
+		return TemplatePrefix + FString(TEXT("_"));
 	}
 
 	return Super::GetDefaultNewAssetName();
@@ -111,3 +130,4 @@ USoundCueTemplateClassTemplate::USoundCueTemplateClassTemplate(const FObjectInit
 	SetGeneratedBaseClass(USoundCueTemplate::StaticClass());
 }
 #undef LOCTEXT_NAMESPACE // "SoundCueTemplatesEditor"
+

@@ -5,6 +5,7 @@
 #include "Blackmagic.h"
 #include "BlackmagicLib.h"
 #include "BlackmagicMediaPrivate.h"
+#include "BlackmagicMediaSource.h"
 #include "IBlackmagicMediaModule.h"
 #include "MediaIOCoreCommonDisplayMode.h"
 
@@ -279,6 +280,27 @@ TArray<FMediaIOOutputConfiguration> FBlackmagicDeviceProvider::GetOutputConfigur
 	return Results;
 }
 
+TArray<FMediaIOVideoTimecodeConfiguration> FBlackmagicDeviceProvider::GetTimecodeConfigurations() const
+{
+	TArray<FMediaIOVideoTimecodeConfiguration> MediaConfigurations;
+	bool bHasInputConfiguration = false;
+	{
+		TArray<FMediaIOConfiguration> InputConfigurations = GetConfigurations(true, false);
+
+		FMediaIOVideoTimecodeConfiguration DefaultTimecodeConfiguration;
+		MediaConfigurations.Reset(InputConfigurations.Num() * 2);
+		for (const FMediaIOConfiguration& InputConfiguration : InputConfigurations)
+		{
+			DefaultTimecodeConfiguration.MediaConfiguration = InputConfiguration;
+			DefaultTimecodeConfiguration.TimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::LTC;
+			MediaConfigurations.Add(DefaultTimecodeConfiguration);
+
+			DefaultTimecodeConfiguration.TimecodeFormat = EMediaIOAutoDetectableTimecodeFormat::VITC;
+			MediaConfigurations.Add(DefaultTimecodeConfiguration);
+		}
+	}
+	return MediaConfigurations;
+}
 
 TArray<FMediaIODevice> FBlackmagicDeviceProvider::GetDevices() const
 {
@@ -372,6 +394,12 @@ FMediaIOConfiguration FBlackmagicDeviceProvider::GetDefaultConfiguration() const
 	return Configuration;
 }
 
+FMediaIOVideoTimecodeConfiguration FBlackmagicDeviceProvider::GetDefaultTimecodeConfiguration() const
+{
+	FMediaIOVideoTimecodeConfiguration Configuration;
+	Configuration.MediaConfiguration = GetDefaultConfiguration();
+	return Configuration;
+}
 
 FMediaIOMode FBlackmagicDeviceProvider::GetDefaultMode() const
 {
@@ -404,8 +432,30 @@ FMediaIOOutputConfiguration FBlackmagicDeviceProvider::GetDefaultOutputConfigura
 }
 
 
-FText FBlackmagicDeviceProvider::ToText(const FMediaIOConfiguration& InConfiguration) const
+UMediaSource* FBlackmagicDeviceProvider::CreateMediaSource(
+	const FMediaIOConfiguration& InConfiguration, UObject* Outer) const
 {
+	UBlackmagicMediaSource* MediaSource = NewObject<UBlackmagicMediaSource>(Outer);
+	if (MediaSource != nullptr)
+	{
+		MediaSource->MediaConfiguration = InConfiguration;
+	}
+
+	return MediaSource;
+}
+
+
+FText FBlackmagicDeviceProvider::ToText(const FMediaIOConfiguration& InConfiguration, bool bInIsAutoDetected) const
+{
+	if (bInIsAutoDetected)
+	{
+		return FText::Format(LOCTEXT("FMediaIOConfigurationToTextAutoDetect", "[{0}] - {1} [device{2}/auto]")
+		, InConfiguration.bIsInput ? LOCTEXT("In", "In") : LOCTEXT("Out", "Out")
+		, FText::FromName(InConfiguration.MediaConnection.Device.DeviceName)
+		, FText::AsNumber(InConfiguration.MediaConnection.Device.DeviceIdentifier)
+		);
+	}
+	
 	if (InConfiguration.IsValid())
 	{
 		return FText::Format(LOCTEXT("FMediaIOConfigurationToText", "[{0}] - {1} [device{2}/{3}]")
@@ -446,6 +496,5 @@ FText FBlackmagicDeviceProvider::ToText(const FMediaIOOutputConfiguration& InCon
 	}
 	return LOCTEXT("Invalid", "<Invalid>");
 }
-
 
 #undef LOCTEXT_NAMESPACE

@@ -8,7 +8,7 @@
 #include "IDataprepProgressReporter.h"
 
 #include "ActorEditorUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Blueprint.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -134,6 +134,10 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 					SourceModel.BuildSettings.DistanceFieldResolutionScale = 0;
 					//SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 				}
+				
+				// As soon as StaticMeshes are built, the mesh description can be released
+				// This generate a significant freeing of memory
+				StaticMesh->ClearMeshDescription(Index);
 			}
 
 			StaticMeshesSettings.Add(MoveTemp(BuildSettings));				
@@ -206,7 +210,7 @@ void DataprepCorePrivateUtils::CompileMaterial(UMaterialInterface* MaterialInter
 			FStaticParameterSet StaticParameters;
 			ConstantMaterialInstance->GetStaticParameterValues( StaticParameters );
 
-			for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
+			for ( FStaticSwitchParameter& Switch : StaticParameters.EditorOnly.StaticSwitchParameters )
 			{
 				if ( Switch.bOverride )
 				{

@@ -160,7 +160,6 @@ bool FDateTimeFormattingRulesTest::RunTest (const FString& Parameters)
 	return true;
 }
 
-
 PRAGMA_ENABLE_OPTIMIZATION
 
 #endif //WITH_DEV_AUTOMATION_TESTS

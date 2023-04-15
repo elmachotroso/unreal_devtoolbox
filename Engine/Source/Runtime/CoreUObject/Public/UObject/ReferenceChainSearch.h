@@ -2,10 +2,30 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/GarbageCollectionHistory.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/ThreadHeartBeat.h"
+#include "HAL/UnrealMemory.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/TypeHash.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/GarbageCollectionHistory.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
+class FGCObjectInfo;
+class FOutputDevice;
+class UObject;
+struct FGCSnapshot;
+template <typename FuncType> class TFunctionRef;
 
 /** Search mode flags */
 enum class EReferenceChainSearchMode
@@ -22,6 +42,14 @@ enum class EReferenceChainSearchMode
 	Direct = 1 << 3,
 	// Returns complete chains. (Ignoring non GC objects)
 	FullChain = 1 << 4,
+	// Returns the shortest path to a garbage object from which the target object is reachable
+	ShortestToGarbage = 1 << 5,
+	// Attempts to find a plausible path to the target object with minimal memory usage
+	// E.g. returns a direct external reference to the target object if one is found 
+	//	otherwise returns an external reference to an inner of the target object
+	Minimal = 1 << 6,
+	// Skips the disregard-for-GC set that will never be GCd and whose outgoing references are not checked during GC
+	GCOnly = 1 << 7,
 
 	// Print results
 	PrintResults = 1 << 16,
@@ -46,51 +74,56 @@ public:
 	{
 		Unknown = 0,
 		Property = 1,
-		AddReferencedObjects
+		AddReferencedObjects = 2,
+		OuterChain = 3,
 	};
 
 	/** Extended information about a reference */
-	template <typename T>
+	template<typename T> 
 	struct TReferenceInfo
 	{
 		// Maximum number of stack frames to keep for AddReferencedObjects function calls
 		static constexpr uint32 MaxStackFrames = 30;
 
 		/** Object that is being referenced */
-		T* Object;
+		T* Object = nullptr;
+		TArray<uint64> StackFrames;
 		/** Type of reference to the object being referenced */
 		EReferenceType Type;
 		/** Name of the object or property that is referencing this object */
 		FName ReferencerName;
-		uint64 StackFrames[MaxStackFrames];
-		int32 NumStackFrames;
 
 		/** Default ctor */
 		TReferenceInfo()
-			: Object(nullptr)
-			, Type(EReferenceType::Unknown)
+			: Type(EReferenceType::Unknown)
 		{
-			InitStackFrames(nullptr, 0);
 		}
 
-		/** Simple refernce constructor. Probably will be filled with more info later */
+		/** Simple reference constructor. Probably will be filled with more info later */
 		TReferenceInfo(T* InObject)
 			: Object(InObject)
 			, Type(EReferenceType::Unknown)
 		{
-			InitStackFrames(nullptr, 0);
 		}
 
-		/** Full reference infor constructor */
-		TReferenceInfo(T* InObject, EReferenceType InType, const FName& InReferencerName, uint64* InStackFrames, int32 InNumStackFrames)
+		/** Full reference info constructor */
+		TReferenceInfo(
+			T* InObject, 
+			EReferenceType InType, 
+			FName InReferencerName,
+			TConstArrayView<uint64> InStackFrames = {}
+		)
 			: Object(InObject)
+			, StackFrames(InStackFrames)
 			, Type(InType)
 			, ReferencerName(InReferencerName)
 		{
-			InitStackFrames(InStackFrames, InNumStackFrames);
 		}
 
-		bool operator == (const TReferenceInfo& Other) const
+		TReferenceInfo(TReferenceInfo&&) = default;
+		TReferenceInfo& operator=(TReferenceInfo&&) = default;
+
+		bool operator ==(const TReferenceInfo& Other) const
 		{
 			return Object == Other.Object;
 		}
@@ -120,19 +153,13 @@ public:
 			}
 			return FString();
 		}
-	private:
-
-		void InitStackFrames(uint64* InStackFrames,int32 InNumStackFrames)
-		{
-			check(InNumStackFrames <= MaxStackFrames);
-			NumStackFrames = InNumStackFrames;
-			FMemory::Memset(StackFrames, 0, sizeof(StackFrames));
-			if (InStackFrames && InNumStackFrames)
-			{
-				FMemory::Memcpy(StackFrames, InStackFrames, InNumStackFrames * sizeof(uint64));
-			}
-		}
 	};
+	
+	struct FGraphNode;
+
+	/** Convenience type definitions to avoid template hell */
+	typedef TReferenceInfo<FGCObjectInfo> FObjectReferenceInfo;
+	typedef TReferenceInfo<FGraphNode> FNodeReferenceInfo;
 
 	/** Single node in the reference graph */
 	struct FGraphNode
@@ -143,26 +170,31 @@ public:
 		/** Object pointer */
 		FGCObjectInfo* ObjectInfo = nullptr;
 		/** Objects referenced by this object with reference info */
-		TSet< TReferenceInfo<FGraphNode> > ReferencedObjects;
+		TSet<FNodeReferenceInfo> ReferencedObjects;
 		/** Objects that have references to this object */
 		TSet<FGraphNode*> ReferencedByObjects;
 		/** Non-zero if this node has been already visited during reference search */
 		int32 Visited = 0;
+
+		int64 GetAllocatedSize() const
+		{
+			return ReferencedObjects.GetAllocatedSize() + ReferencedByObjects.GetAllocatedSize();
+		}
 	};
 
-	/** Convenience type definitions to avoid template hell */
-	typedef TReferenceInfo<FGCObjectInfo> FObjectReferenceInfo;
-	typedef TReferenceInfo<FGraphNode> FNodeReferenceInfo;
 
 	/** Reference chain. The first object in the list is the target object and the last object is a root object */
 	class FReferenceChain
 	{
 		friend class FReferenceChainSearch;
 
+		/** The target nodes that caused this chain to be created. Usually this will be Nodes[0] unless the chain was truncated by request. */
+		FGraphNode* TargetNode = nullptr;
+
 		/** Nodes in this reference chain. The first node is the target object and the last one is a root object */
 		TArray<FGraphNode*> Nodes;
 		/** Reference information for Nodes */
-		TArray<FNodeReferenceInfo> ReferenceInfos;
+		TArray<const FNodeReferenceInfo*> ReferenceInfos;
 
 		/** Fills this chain with extended reference info for each node */
 		void FillReferenceInfo();
@@ -172,6 +204,11 @@ public:
 		FReferenceChain(int32 ReserveDepth)
 		{
 			Nodes.Reserve(ReserveDepth);
+		}
+
+		int64 GetAllocatedSize() const
+		{
+			return Nodes.GetAllocatedSize() + ReferenceInfos.GetAllocatedSize();
 		}
 
 		/** Adds a new node to the chain */
@@ -187,6 +224,15 @@ public:
 		FGraphNode* GetNode(int32 NodeIndex) const
 		{
 			return Nodes[NodeIndex];
+		}
+		FGraphNode* GetRootNode(FGraphNode* Exclude) const
+		{
+			if (Nodes.Last() == Exclude && Nodes.Num() > 2)
+			{
+				return Nodes[Nodes.Num()-2];
+			}
+
+			return Nodes.Last();
 		}
 		FGraphNode* GetRootNode() const
 		{
@@ -209,7 +255,7 @@ public:
 			return Nodes.Contains(InNode);
 		}
 		/** Gets extended reference info for the specified node index */
-		const FNodeReferenceInfo& GetReferenceInfo(int32 NodeIndex) const
+		const FNodeReferenceInfo* GetReferenceInfo(int32 NodeIndex) const
 		{
 			return ReferenceInfos[NodeIndex];
 		}
@@ -234,6 +280,7 @@ public:
 
 	/** Constructs a new search engine and finds references to the specified object */
 	COREUOBJECT_API explicit FReferenceChainSearch(UObject* InObjectToFindReferencesTo, EReferenceChainSearchMode Mode = EReferenceChainSearchMode::PrintResults);
+	COREUOBJECT_API explicit FReferenceChainSearch(TConstArrayView<UObject*> InObjectsToFindReferencesTo, EReferenceChainSearchMode Mode = EReferenceChainSearchMode::PrintResults);
 
 	/** Constructs a new search engine but does not find references to any objects until one of the PerformSearch*() functions is called */
 	COREUOBJECT_API explicit FReferenceChainSearch(EReferenceChainSearchMode Mode);
@@ -244,29 +291,32 @@ public:
 #if ENABLE_GC_HISTORY
 	/** Searches for references in a previous GC run snapshot temporarily acquiring its object info */
 	COREUOBJECT_API void PerformSearchFromGCSnapshot(UObject* InObjectToFindReferencesTo, FGCSnapshot& InSnapshot);
+	COREUOBJECT_API void PerformSearchFromGCSnapshot(TConstArrayView<UObject*> InObjectsToFindReferencesTo, FGCSnapshot& InSnapshot);
 #endif //ENABLE_GC_HISTORY
 
 	/**
 	 * Dumps results to log
 	 * @param bDumpAllChains - if set to false, the output will be trimmed to the first 100 reference chains
+	 * @returns The number of results printed.
 	 */
-	COREUOBJECT_API void PrintResults(bool bDumpAllChains = false) const;
+	COREUOBJECT_API int32 PrintResults(bool bDumpAllChains = false, UObject* TargetObject=nullptr) const;
 
 	/**
 	 * Dumps results to log
 	 * @param ReferenceCallback - function called when processing each reference, if true is returned the next reference will be processed otherwise printing will be aborted
 	 * @param bDumpAllChains - if set to false, the output will be trimmed to the first 100 reference chains
+	 * @returns The number of results printed.
 	 */
-	COREUOBJECT_API void PrintResults(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, bool bDumpAllChains = false) const;
+	COREUOBJECT_API int32 PrintResults(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, bool bDumpAllChains = false, UObject* TargetObject = nullptr) const;
 
 	/** Returns a string with a short report explaining the root path, will contain newlines */
-	COREUOBJECT_API FString GetRootPath() const;
+	COREUOBJECT_API FString GetRootPath(UObject* TargetObject = nullptr) const;
 
 	/** 
 	 * Returns a string with a short report explaining the root path, will contain newlines 
 	 * @param ReferenceCallback - function called when processing each reference, if true is returned the next reference will be processed otherwise printing will be aborted
 	 */
-	COREUOBJECT_API FString GetRootPath(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback) const;
+	COREUOBJECT_API FString GetRootPath(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, UObject* TargetObject = nullptr) const;
 
 	/** Returns all reference chains */
 	COREUOBJECT_API const TArray<FReferenceChain*>& GetReferenceChains() const
@@ -274,17 +324,20 @@ public:
 		return ReferenceChains;
 	}
 
+	int64 GetAllocatedSize() const;
+
 private:
 
-	/** The object we're going to look for references to */
-	UObject* ObjectToFindReferencesTo = nullptr;
-	FGCObjectInfo* ObjectInfoToFindReferencesTo = nullptr;
+	/** The objects we're going to look for references to */
+	TArray<UObject*> ObjectsToFindReferencesTo;
+	TArray<FGCObjectInfo*> ObjectInfosToFindReferencesTo;
 
 	/** Search mode and options */
 	EReferenceChainSearchMode SearchMode = EReferenceChainSearchMode::Default;
 
-	/** All reference chain found during the search */
+	/** All reference chain found during the search, one per entry in ObjectsToFindReferencesTo */
 	TArray<FReferenceChain*> ReferenceChains;
+
 	/** All nodes created during the search */
 	TMap<FGCObjectInfo*, FGraphNode*> AllNodes;
 	/** Maps UObject pointers to object info structs */
@@ -293,8 +346,11 @@ private:
 	/** Performs the search */
 	void PerformSearch();
 
-	/** Performs the search */
+	/** Constructs a complete graph of all references between objects */
 	void FindDirectReferencesForObjects();
+
+	/** Constructs a subset of the graph of references between objects to try and find the targets using minimal memory */
+	void FindMinimalDirectReferencesForObjects();
 
 	/** Frees memory */
 	void Cleanup();
@@ -303,19 +359,37 @@ private:
 	FGraphNode* FindOrAddNode(UObject* InObjectToFindNodeFor);
 	FGraphNode* FindOrAddNode(FGCObjectInfo* InObjectInfo);
 
+	/** Link two nodes together with the given reference info */
+	void LinkNodes(
+		UObject* From,
+		UObject* To,
+		EReferenceType ReferenceType,
+		FName PropertyName,
+		TConstArrayView<uint64> StackFrames = {});
+	void LinkNodes(
+		FGCObjectInfo* From,
+		FGCObjectInfo* To,
+		EReferenceType ReferenceType,
+		FName PropertyName,
+		TConstArrayView<uint64> StackFrames = {});
+
 	/** Builds reference chains */
-	static int32 BuildReferenceChains(FGraphNode* TargetNode, TArray<FReferenceChain*>& ProducedChains, int32 ChainDepth, const int32 VisitCounter, EReferenceChainSearchMode SearchMode);
+	static int32 BuildReferenceChainsRecursive(FGraphNode* TargetNodes, TArray<FReferenceChain*>& ProducedChains, int32 ChainDepth, const int32 VisitCounter, EReferenceChainSearchMode SearchMode, FGraphNode* GCObjReferencerNode);
 	/** Builds reference chains */
-	static void BuildReferenceChains(FGraphNode* TargetNode, TArray<FReferenceChain*>& AllChains, EReferenceChainSearchMode SearchMode);
+	static void BuildReferenceChains(TConstArrayView<FGraphNode*> TargetNodes, TArray<FReferenceChain*>& AllChains, EReferenceChainSearchMode SearchMode, FGraphNode* GCObjReferencerNode);
 	/** Builds reference chains for direct references only */
-	static void BuildReferenceChainsForDirectReferences(FGraphNode* TargetNode, TArray<FReferenceChain*>& AllChains, EReferenceChainSearchMode SearchMode);
+	static void BuildReferenceChainsForDirectReferences(TConstArrayView<FGraphNode*> TargetNodes, TArray<FReferenceChain*>& AllChains, EReferenceChainSearchMode SearchMode, FGraphNode* GCObjReferencerNode);
 	/** Leaves only chains with unique root objects */
-	static void RemoveChainsWithDuplicatedRoots(TArray<FReferenceChain*>& AllChains);
+	static void RemoveChainsWithDuplicatedRoots(TArray<FReferenceChain*>& AllChains, FGraphNode* GCObjReferencerNode);
 	/** Leaves only unique chains */
-	static void RemoveDuplicatedChains(TArray<FReferenceChain*>& AllChains);
+	static void RemoveDuplicatedChains(TArray<FReferenceChain*>& AllChains, FGraphNode* GCObjReferencerNode);
+	/** Deduplicates chains that have the same root and first garbage object encountered */
+	static void RemoveDuplicateGarbageChains(TArray<FReferenceChain*>& AllChains, FGraphNode* GCObjReferencerNode);
 
 	/** Returns a string with all flags (we care about) set on an object */
 	static FString GetObjectFlags(FGCObjectInfo* InObject);
+	static FString GetObjectFlags(EInternalObjectFlags InternalFlags, EObjectFlags Flags);
+
 	/** Dumps a reference chain to log */
 	static void DumpChain(FReferenceChainSearch::FReferenceChain* Chain, TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, FOutputDevice& Out);
 };

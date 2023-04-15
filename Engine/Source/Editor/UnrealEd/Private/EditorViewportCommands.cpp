@@ -5,7 +5,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/Selection.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "Modules/ModuleManager.h"
 #include "ContentBrowserModule.h"
@@ -14,6 +14,7 @@
 #include "MaterialShared.h"
 #include "Engine/Texture2D.h"
 #include "RayTracingDebugVisualizationMenuCommands.h"
+#include "GPUSkinCacheVisualizationMenuCommands.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewportCommands"
 
@@ -29,7 +30,7 @@ FEditorViewportCommands::FEditorViewportCommands()
 		TEXT("EditorViewport"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "EditorViewportCommands", "Common Viewport Commands"), // Localized context name for displaying
 		TEXT("MainFrame"),
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 {
 	AddBundle(ShowTextureScaleBundle, LOCTEXT("ShowTextureCommands_TextureScale_Bundle", "Show Texture Scale"));
@@ -113,6 +114,8 @@ void FEditorViewportCommands::RegisterCommands()
 	UI_COMMAND( GroupLODColorationMode, "Level of Detail Coloration View Mode", "Renders the scene using Level of Detail visualization", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND( LODColorationMode, "LOD Coloration View Mode", "Renders the scene using LOD color visualization", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( HLODColorationMode, "HLOD Coloration View Mode", "Renders the scene using HLOD color visualization", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND( VisualizeGPUSkinCacheMode, "Skin Cache Visualization View Mode", "Visualizes various aspects of Skin ache", EUserInterfaceActionType::RadioButton, FInputChord());
+	FGPUSkinCacheVisualizationMenuCommands::Register();
 
 	UI_COMMAND( VisualizeBufferMode, "Buffer Visualization View Mode", "Renders a set of selected post process materials, which visualize various intermediate render buffers (material attributes)", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND( VisualizeNaniteMode, "Nanite Visualization View Mode", "Visualizes various rendering aspects of Nanite.", EUserInterfaceActionType::RadioButton, FInputChord());

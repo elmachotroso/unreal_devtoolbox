@@ -11,9 +11,11 @@
 #include "ConcertTransactionEvents.h"
 #include "ConcertServerDataStore.h"
 #include "ConcertLogGlobal.h"
+#include "ConcertPackageEvents.h"
 #include "ConcertUtil.h"
 #include "Serialization/MemoryReader.h"
 #include "Algo/Transform.h"
+#include "HistoryEdition/ActivityDependencyGraph.h"
 
 FConcertServerWorkspace::FConcertServerWorkspace(const TSharedRef<FConcertSyncServerLiveSession>& InLiveSession, TSharedPtr<IConcertFileSharingService> InFileSharingService)
 	: FileSharingService(MoveTemp(InFileSharingService))
@@ -50,9 +52,12 @@ void FConcertServerWorkspace::BindSession(const TSharedRef<FConcertSyncServerLiv
 
 	// Register Client Change events
 	LiveSession->GetSession().OnSessionClientChanged().AddRaw(this, &FConcertServerWorkspace::HandleSessionClientChanged);
+	
+	LiveSession->GetSession().OnConcertMessageAcknowledgementReceived().AddRaw(this, &FConcertServerWorkspace::HandleSessionAcknowledgementReceived);
 
 	LiveSession->GetSession().RegisterCustomEventHandler<FConcertWorkspaceSyncRequestedEvent>(this, &FConcertServerWorkspace::HandleSyncRequestedEvent);
 
+	LiveSession->GetSession().RegisterCustomEventHandler<FConcertPackageTransmissionStartEvent>(this, &FConcertServerWorkspace::HandlePackageTransmissionStartEvent);
 	LiveSession->GetSession().RegisterCustomEventHandler<FConcertPackageUpdateEvent>(this, &FConcertServerWorkspace::HandlePackageUpdateEvent);
 	LiveSession->GetSession().RegisterCustomEventHandler<FConcertPlaySessionEvent>(this, &FConcertServerWorkspace::HandlePlaySessionEvent);
 
@@ -63,6 +68,7 @@ void FConcertServerWorkspace::BindSession(const TSharedRef<FConcertSyncServerLiv
 	LiveSession->GetSession().RegisterCustomRequestHandler<FConcertSyncEventRequest, FConcertSyncEventResponse>(this, &FConcertServerWorkspace::HandleSyncEventRequest);
 	LiveSession->GetSession().RegisterCustomEventHandler<FConcertIgnoreActivityStateChangedEvent>(this, &FConcertServerWorkspace::HandleIgnoredActivityStateChanged);
 	LiveSession->GetSession().RegisterCustomEventHandler<FConcertServerLogging>(this, &FConcertServerWorkspace::HandleServerLoggingEvent);
+
 }
 
 void FConcertServerWorkspace::UnbindSession()
@@ -84,8 +90,11 @@ void FConcertServerWorkspace::UnbindSession()
 		// Unregister Client Change events
 		LiveSession->GetSession().OnSessionClientChanged().RemoveAll(this);
 
+		LiveSession->GetSession().OnConcertMessageAcknowledgementReceived().RemoveAll(this);
+
 		LiveSession->GetSession().UnregisterCustomEventHandler<FConcertWorkspaceSyncRequestedEvent>(this);
 
+		LiveSession->GetSession().UnregisterCustomEventHandler<FConcertPackageTransmissionStartEvent>(this);
 		LiveSession->GetSession().UnregisterCustomEventHandler<FConcertPackageUpdateEvent>(this);
 		LiveSession->GetSession().UnregisterCustomEventHandler<FConcertPlaySessionEvent>(this);
 
@@ -174,6 +183,41 @@ void FConcertServerWorkspace::HandleSessionClientChanged(IConcertServerSession& 
 	}
 }
 
+namespace UE::ConcertSyncServer::Private
+{
+	template<typename TSyncActivityType>
+	static void ExtractSyncActivity(const TSharedRef<IConcertMessage>& AckedMessage, TFunctionRef<void(const TSyncActivityType& Activity)> Callback)
+	{
+		if (AckedMessage->GetMessageType() == FConcertSession_CustomEvent::StaticStruct())
+		{
+			const FConcertSession_CustomEvent* CustomEvent = reinterpret_cast<const FConcertSession_CustomEvent*>(AckedMessage->ConstructMessage());
+			if (CustomEvent->SerializedPayload.IsTypeChildOf<FConcertWorkspaceSyncActivityEvent>())
+			{
+				FConcertWorkspaceSyncActivityEvent SyncActivity;
+				CustomEvent->SerializedPayload.GetTypedPayload(SyncActivity);
+				if (SyncActivity.Activity.IsTypeChildOf(TBaseStructure<TSyncActivityType>::Get()))
+				{
+					TSyncActivityType Result;
+					SyncActivity.Activity.GetTypedPayload(Result);
+					Callback(Result);
+				}
+			}
+		}
+	}
+}
+
+void FConcertServerWorkspace::HandleSessionAcknowledgementReceived(const FConcertEndpointContext& LocalEndpoint, const FConcertEndpointContext& RemoteEndpoint, const TSharedRef<IConcertMessage>& AckedMessage, const FConcertMessageContext& MessageContext) const
+{
+	UE::ConcertSyncServer::Private::ExtractSyncActivity<FConcertSyncPackageActivity>(AckedMessage, [&RemoteEndpoint, &AckedMessage](const FConcertSyncPackageActivity& PackageActivity)
+	{
+		if (PackageActivity.EventData.Package.HasPackageData())
+		{
+			const FGuid TransmissionId = HashEndpointIdAndActivityId(RemoteEndpoint.EndpointId, PackageActivity.ActivityId);
+			UE::ConcertSyncCore::ConcertPackageEvents::OnLocalFinishSendPackage().Broadcast({ { TransmissionId, PackageActivity.EventData.Package.Info, RemoteEndpoint.EndpointId }, AckedMessage->GetMessageId() });
+		}
+	});
+}
+
 void FConcertServerWorkspace::HandleIgnoredActivityStateChanged(const FConcertSessionContext& Context, const FConcertIgnoreActivityStateChangedEvent& Event)
 {
 	if (Event.bIgnore)
@@ -227,8 +271,13 @@ void FConcertServerWorkspace::HandleSyncRequestedEvent(const FConcertSessionCont
 	});
 
 	// Sync all activity
-	LiveSession->GetSessionDatabase().EnumerateActivityIdsAndEventTypesInRange(FirstActivityIdToSync, NumActivitiesToSync, [this, &Context](const int64 InActivityId, const EConcertSyncActivityEventType InEventType)
+	LiveSession->GetSessionDatabase().EnumerateActivityIdsWithEventTypesAndFlagsInRange(FirstActivityIdToSync, NumActivitiesToSync, [this, &Context](const int64 InActivityId, const EConcertSyncActivityEventType InEventType, const EConcertSyncActivityFlags InFlags)
 	{
+		if ((InFlags & EConcertSyncActivityFlags::Muted) != EConcertSyncActivityFlags::None)
+		{
+			return true;
+		}
+		
 		SyncCommandQueue->QueueCommand(Context.SourceEndpointId, [this, SyncActivityId = InActivityId, SyncEventType = InEventType](const FConcertServerSyncCommandQueue::FSyncCommandContext& InSyncCommandContext, const FGuid& InEndpointId)
 		{
 			switch (SyncEventType)
@@ -292,6 +341,16 @@ void FConcertServerWorkspace::HandleSyncRequestedEvent(const FConcertSessionCont
 	});
 }
 
+void FConcertServerWorkspace::HandlePackageTransmissionStartEvent(const FConcertSessionContext& Context, const FConcertPackageTransmissionStartEvent& Event)
+{
+	if (EnumHasAnyFlags(LiveSession->GetSessionFlags(), EConcertSyncSessionFlags::EnablePackages)
+		&& ensureMsgf(Event.PackageNumBytes > 0, TEXT("Client sent invalid message")))
+	{
+		// Clients send this before the FConcertPackageUpdateEvent in reliable order so we can be sure we'll trigger OnRemoteBeginSendPackage before OnRemoteFinishSendPackage
+		UE::ConcertSyncCore::ConcertPackageEvents::OnRemoteBeginSendPackage().Broadcast({ { Event.TransmissionId, Event.PackageInfo, Context.SourceEndpointId }, Event.PackageNumBytes });
+	}
+}
+
 void FConcertServerWorkspace::HandlePackageUpdateEvent(const FConcertSessionContext& Context, const FConcertPackageUpdateEvent& Event)
 {
 	if (!EnumHasAnyFlags(LiveSession->GetSessionFlags(), EConcertSyncSessionFlags::EnablePackages))
@@ -346,16 +405,27 @@ void FConcertServerWorkspace::HandlePackageUpdateEvent(const FConcertSessionCont
 					PackageDataAr ? PackageDataAr->TotalSize() : 0,
 					Event.Package.PackageData.Bytes.Num() ? &Event.Package.PackageData.Bytes : nullptr
 				};
-
+ 
 				AddPackageActivity(PackageActivityBasePart, Package.Info, PackageDataStream);
 			}
 		}
 
+		if (Event.Package.HasPackageData())
+		{
+			UE::ConcertSyncCore::ConcertPackageEvents::OnRemoteFinishSendPackage().Broadcast({ { Event.TransmissionId, Event.Package.Info, Context.SourceEndpointId }, Context.MessageId });
+		}
+		
 		// Explicitly unlock the resource after saving it
 		UnlockWorkspaceResource(Event.Package.Info.PackageName, Context.SourceEndpointId, EConcertLockFlags::Explicit);
 	}
 	else
 	{
+		if (Event.Package.HasPackageData())
+		{
+			const UE::ConcertSyncCore::ConcertPackageEvents::FConcertRejectSendPackageParams Params {{{ Event.TransmissionId, Event.Package.Info, Context.SourceEndpointId }, Context.MessageId}};
+			UE::ConcertSyncCore::ConcertPackageEvents::OnRejectRemoteSendPackage().Broadcast(Params);
+		}
+		
 		// If the client didn't have the lock, then queue a rejection event so that the client will re-load the head-revision of the package
 		SyncCommandQueue->QueueCommand(Context.SourceEndpointId, [this, PackageName = Event.Package.Info.PackageName](const FConcertServerSyncCommandQueue::FSyncCommandContext& InSyncCommandContext, const FGuid& InEndpointId)
 		{
@@ -927,6 +997,13 @@ void FConcertServerWorkspace::AddTransactionActivity(const FConcertSyncTransacti
 	}
 }
 
+FGuid FConcertServerWorkspace::HashEndpointIdAndActivityId(const FGuid& TargetEndpointId, FActivityID ActivityID)
+{
+	const int32 LowBits = static_cast<int32>(ActivityID);
+	const int32 HighBits = (ActivityID >> 32);
+	return FGuid(TargetEndpointId.A + LowBits, TargetEndpointId.B + HighBits, TargetEndpointId.C, TargetEndpointId.D);
+}
+
 TOptional<FConcertWorkspaceSyncActivityEvent> FConcertServerWorkspace::SyncTransactionActivityEvent(const int64 InSyncActivityId, const int32 InNumRemainingSyncEvents, const bool InLiveOnly) const
 {
 	FConcertSyncTransactionActivity SyncActivity;
@@ -986,7 +1063,6 @@ void FConcertServerWorkspace::AddPackageActivity(const FConcertSyncActivity& InP
 				SendSyncPackageActivityEvent(Event.GetValue(), InEndpointId);
 			});
 		}
-
 	}
 	else
 	{
@@ -1052,6 +1128,25 @@ TOptional<FConcertWorkspaceSyncActivityEvent> FConcertServerWorkspace::MakeSyncA
 void FConcertServerWorkspace::SendSyncPackageActivityEvent(const FConcertWorkspaceSyncActivityEvent& SyncEvent, const FGuid& InTargetEndpointId) const
 {
 	SCOPED_CONCERT_TRACE(FConcertServerWorkspace_SendSyncPackageActivityEvent);
+
+	if (UE::ConcertSyncCore::ConcertPackageEvents::OnLocalBeginSendPackage().IsBound())
+	{
+		FConcertSyncPackageActivity PackageActivity;
+		SyncEvent.Activity.GetTypedPayload(PackageActivity);
+		const FGuid TransmissionId = HashEndpointIdAndActivityId(InTargetEndpointId, PackageActivity.ActivityId);
+		UE::ConcertSyncCore::ConcertPackageEvents::FConcertBeginSendPackageParams PreTransmitEvent{ { TransmissionId, PackageActivity.EventData.Package.Info, InTargetEndpointId } };
+		// This loads the file even though we only want the file size... could be improved
+		LiveSession->GetSessionDatabase().GetPackageEvent(PackageActivity.EventId, [&PreTransmitEvent](const FConcertSyncPackageEventData& Data)
+		{
+			PreTransmitEvent.PackageNumBytes = static_cast<uint64>(Data.PackageDataStream.DataSize);
+		});
+		
+		if (PackageActivity.EventData.Package.HasPackageData())
+		{
+			UE::ConcertSyncCore::ConcertPackageEvents::OnLocalBeginSendPackage().Broadcast(PreTransmitEvent);
+		}
+	}
+	
 	LiveSession->GetSession().SendCustomEvent(SyncEvent, InTargetEndpointId, EConcertMessageFlags::ReliableOrdered);
 }
 
@@ -1060,6 +1155,8 @@ void FConcertServerWorkspace::PostActivityAdded(const int64 InActivityId)
 	FConcertSyncActivity Activity;
 	if (LiveSession->GetSessionDatabase().GetActivity(InActivityId, Activity))
 	{
+		LiveSession->GetSessionDatabase().OnActivityProduced().Broadcast(Activity);
+		
 		FConcertSyncEndpointData EndpointData;
 		if (LiveSession->GetSessionDatabase().GetEndpoint(Activity.EndpointId, EndpointData))
 		{

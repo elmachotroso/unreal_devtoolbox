@@ -8,6 +8,9 @@
 #include "PyConversion.h"
 
 #include "Containers/ArrayView.h"
+#include "Internationalization/Text.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PyWrapperEnum)
 
 #if WITH_PYTHON
 
@@ -403,6 +406,17 @@ PyTypeObject InitializePyWrapperEnumType()
 			UEnum* Enum = FPyWrapperEnumMetaData::GetEnum(InType);
 			return PyConversion::Pythonize(Enum);
 		}
+
+		static PyObject* GetDisplayName(FPyWrapperEnum* InSelf)
+		{
+			if (!FPyWrapperEnum::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+			int64 EnumEntryValue = FPyWrapperEnum::GetEnumEntryValue(InSelf);
+			UEnum* Enum = FPyWrapperEnumMetaData::GetEnum(InSelf);
+			return PyConversion::Pythonize(Enum->GetDisplayNameTextByValue(EnumEntryValue));
+		}
 	};
 
 	static PyMemberDef PyMembers[] = {
@@ -411,9 +425,11 @@ PyTypeObject InitializePyWrapperEnumType()
 		{ nullptr, 0, 0, 0, nullptr }
 	};
 
+	// NOTE: _T is defines as: _T = typing.TypeVar('_T') and Type is defined by the Python typing module.
 	static PyMethodDef PyMethods[] = {
-		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "X.cast(object) -> enum -- cast the given object to this Unreal enum type" },
-		{ "static_enum", PyCFunctionCast(&FMethods::StaticEnum), METH_NOARGS | METH_CLASS, "X.static_enum() -> Enum -- get the Unreal enum of this type" },
+		{ "cast", PyCFunctionCast(&FMethods::Cast), METH_VARARGS | METH_CLASS, "cast(cls: Type[_T], object: object) -> _T -- cast the given object to this Unreal enum type" },
+		{ "static_enum", PyCFunctionCast(&FMethods::StaticEnum), METH_NOARGS | METH_CLASS, "static_enum(cls) -> Enum -- get the Unreal enum of this type" },
+		{ "get_display_name", PyCFunctionCast(&FMethods::GetDisplayName), METH_NOARGS, "get_display_name(self) -> Text -- get the UMETA display name of this type in the current culture" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -935,3 +951,4 @@ UPythonGeneratedEnum* UPythonGeneratedEnum::GenerateEnum(PyTypeObject* InPyType)
 }
 
 #endif	// WITH_PYTHON
+

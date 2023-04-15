@@ -17,7 +17,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorDirectories.h"
 #include "PropertyHandle.h"
 #include "DetailLayoutBuilder.h"
@@ -27,6 +27,9 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformModule.h"
 #include "SExternalImageReference.h"
+#include "RHIDefinitions.h"
+#include "RHIShaderFormatDefinitions.inl"
+#include "ShaderFormatsPropertyDetails.h"
 
 #if WITH_ENGINE
 #include "AudioDevice.h"
@@ -46,33 +49,30 @@ namespace LinuxTargetSettingsDetailsConstants
 	const FText DisabledTip = LOCTEXT("GitHubSourceRequiredToolTip", "This requires GitHub source.");
 }
 
-static FText GetFriendlyNameFromLinuxRHIName(const FString& InRHIName)
+static FText GetFriendlyNameFromLinuxShaderFormat(const FName InShaderFormat)
 {
-	FText FriendlyRHIName = LOCTEXT("UnknownRHI", "UnknownRHI");
-	if (InRHIName == TEXT("GLSL_150"))
-	{
-		FriendlyRHIName = LOCTEXT("OpenGL3", "OpenGL 3 (SM4)");
-	}
-	else if (InRHIName == TEXT("GLSL_150_ES2"))
-	{
-		FriendlyRHIName = LOCTEXT("OpenGL3ES2", "OpenGL 3 (ES2)");
-	}
-	else if (InRHIName == TEXT("GLSL_150_ES31"))
+	FText FriendlyRHIName;
+
+	if (InShaderFormat == NAME_GLSL_150_ES31)
 	{
 		FriendlyRHIName = LOCTEXT("OpenGL3ES31", "OpenGL 3 (ES3.1, Experimental)");
 	}
-	else if (InRHIName == TEXT("SF_VULKAN_ES31_ANDROID") || InRHIName == TEXT("SF_VULKAN_ES31"))
+	else if (InShaderFormat == NAME_VULKAN_ES3_1_ANDROID || InShaderFormat == NAME_VULKAN_ES3_1)
 	{
 		FriendlyRHIName = LOCTEXT("Vulkan ES31", "Vulkan Mobile (ES3.1)");
 	}
-	else if (InRHIName == TEXT("SF_VULKAN_SM5"))
+	else if (InShaderFormat == NAME_VULKAN_SM5)
 	{
 		FriendlyRHIName = LOCTEXT("VulkanSM5", "Vulkan Desktop (SM5)");
 	}
-	else if (InRHIName == TEXT("GLSL_430"))
+	else if (InShaderFormat == TEXT("GLSL_430"))
 	{
 		// Explicitly remove these formats as they are obsolete/not quite supported; users can still target them by adding them as +TargetedRHIs in the TargetPlatform ini.
 		FriendlyRHIName = FText::GetEmpty();
+	}
+	else
+	{
+		FriendlyRHIName = LOCTEXT("UnknownRHI", "UnknownRHI");
 	}
 
 	return FriendlyRHIName;
@@ -151,7 +151,7 @@ void FLinuxTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& Detail
 	// Setup the supported/targeted RHI property view
 	ITargetPlatform* TargetPlatform = FModuleManager::GetModuleChecked<ITargetPlatformModule>("LinuxTargetPlatform").GetTargetPlatforms()[0];
 	TargetShaderFormatsDetails = MakeShareable(new FShaderFormatsPropertyDetails(&DetailBuilder));
-	TargetShaderFormatsDetails->CreateTargetShaderFormatsPropertyView(TargetPlatform, GetFriendlyNameFromLinuxRHIName);
+	TargetShaderFormatsDetails->CreateTargetShaderFormatsPropertyView(TargetPlatform, &GetFriendlyNameFromLinuxShaderFormat);
 
 	// Next add the splash image customization
 	const FText EditorSplashDesc(LOCTEXT("EditorSplashLabel", "Editor Splash"));
@@ -305,7 +305,7 @@ FSlateColor FLinuxTargetSettingsDetails::HandleAudioDeviceBoxForegroundColor(TSh
 			static const FName InvertedForegroundName("InvertedForeground");
 
 			// Return a valid slate color for a valid audio device
-			return FEditorStyle::GetSlateColor(InvertedForegroundName);
+			return FAppStyle::GetSlateColor(InvertedForegroundName);
 		}
 	}
 

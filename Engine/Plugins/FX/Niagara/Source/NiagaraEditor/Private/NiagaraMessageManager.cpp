@@ -3,8 +3,8 @@
 #include "NiagaraMessageManager.h"
 #include "NiagaraScriptSource.h"
 #include "Modules/ModuleManager.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "NiagaraMessages.h"
 #include "NiagaraScriptToolkit.h"
 #include "NiagaraEditorModule.h"
@@ -344,7 +344,7 @@ void FNiagaraCompileEventToken::OpenScriptAssetByPathAndFocusNodeOrPinIfSet(
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(*InScriptAssetPath);
+	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(InScriptAssetPath));
 	if (AssetData.IsValid())
 	{
 		UNiagaraScript* ScriptAsset = Cast<UNiagaraScript>(AssetData.GetAsset());

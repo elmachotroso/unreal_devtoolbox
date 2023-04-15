@@ -47,12 +47,9 @@ bool FMeshMaterialRenderItem::Render_RenderThread(FCanvasRenderContext& RenderCo
 	View.FinalPostProcessSettings.bOverride_IndirectLightingIntensity = 1;
 	View.FinalPostProcessSettings.IndirectLightingIntensity = 0.0f;
 
-	const bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && !Canvas->GetAllowSwitchVerticalAxis();
-	check(bNeedsToSwitchVerticalAxis == false);
-
 	if (Vertices.Num() && Indices.Num())
 	{
-		FMeshPassProcessorRenderState LocalDrawRenderState(View);
+		FMeshPassProcessorRenderState LocalDrawRenderState;
 
 		// disable depth test & writes
 		LocalDrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA>::GetRHI());

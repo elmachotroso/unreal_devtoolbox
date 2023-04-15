@@ -2,15 +2,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "Internationalization/Text.h"
 #include "MetasoundBuilderInterface.h"
 #include "MetasoundDataFactory.h"
+#include "MetasoundEnvironment.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundFacade.h"
 #include "MetasoundLog.h"
 #include "MetasoundNodeInterface.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundOperatorInterface.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundVertex.h"
@@ -18,7 +21,6 @@
 #include <type_traits>
 
 #define LOCTEXT_NAMESPACE "MetasoundFrontend"
-
 
 namespace Metasound
 {
@@ -44,20 +46,30 @@ namespace Metasound
 
 	namespace ArrayNodeVertexNames
 	{
-		/* Input Vertex Names */
-		METASOUNDFRONTEND_API const FVertexName& GetInputArrayName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputLeftArrayName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputRightArrayName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputTriggerName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputStartIndexName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputEndIndexName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputIndexName();
-		METASOUNDFRONTEND_API const FVertexName& GetInputValueName();
+		static const TCHAR* InputInitialArrayName = TEXT("Array");
+#if WITH_EDITOR
+		static const FText InputInitialArrayTooltip = LOCTEXT("InitialArrayTooltip", "Initial Array");
+		static const FText InputInitialArrayDisplayName = LOCTEXT("InitialArrayDisplayName", "Init Array"); 
+#else
+		static const FText InputInitialArrayTooltip = FText::GetEmpty();
+		static const FText InputInitialArrayDisplayName = FText::GetEmpty();
+#endif
 
-		/* Output Vertex Names */
-		METASOUNDFRONTEND_API const FVertexName& GetOutputNumName();
-		METASOUNDFRONTEND_API const FVertexName& GetOutputValueName();
-		METASOUNDFRONTEND_API const FVertexName& GetOutputArrayName();
+		METASOUND_PARAM(InputArray, "Array", "Input Array.")
+		METASOUND_PARAM(InputLeftArray, "Left Array", "Input Left Array.")
+		METASOUND_PARAM(InputRightArray, "Right Array", "Input Right Array.")
+		METASOUND_PARAM(InputTriggerGet, "Trigger", "Trigger to get value.")
+		METASOUND_PARAM(InputTriggerSet, "Trigger", "Trigger to set value.")
+		METASOUND_PARAM(InputIndex, "Index", "Index in Array.")
+		METASOUND_PARAM(InputStartIndex, "Start Index", "First index to include.")
+		METASOUND_PARAM(InputEndIndex, "End Index", "Last index to include.")
+		METASOUND_PARAM(InputValue, "Value", "Value to set.")
+
+		METASOUND_PARAM(OutputNum, "Num", "Number of elements in the array.")
+		METASOUND_PARAM(OutputValue, "Element", "Value of element at array index.")
+		METASOUND_PARAM(OutputArrayConcat, "Array", "Array after concatenation.")
+		METASOUND_PARAM(OutputArraySet, "Array", "Array after setting.")
+		METASOUND_PARAM(OutputArraySubset, "Array", "Subset of input array.")
 	};
 
 	/** TArrayNumOperator gets the number of elements in an Array. The operator
@@ -76,10 +88,10 @@ namespace Metasound
 
 			static const FVertexInterface DefaultInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<ArrayType>(GetInputArrayName(), METASOUND_LOCTEXT("ArrayOpArrayNumInput", "Array to inspect."))
+					TInputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputArray))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<int32>(GetOutputNumName(), METASOUND_LOCTEXT("ArrayOpArrayNumOutput", "Number of elements in the array."))
+					TOutputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputNum))
 				)
 			);
 
@@ -112,7 +124,7 @@ namespace Metasound
 			const FInputVertexInterface& Inputs = InParams.Node.GetVertexInterface().GetInputInterface();
 
 			// Get the input array or construct an empty one. 
-			FArrayDataReadReference Array = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputArrayName(), InParams.OperatorSettings);
+			FArrayDataReadReference Array = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, METASOUND_GET_PARAM_NAME(InputArray), InParams.OperatorSettings);
 
 			return MakeUnique<TArrayNumOperator>(Array);
 		}
@@ -133,7 +145,7 @@ namespace Metasound
 
 			FDataReferenceCollection Inputs;
 
-			Inputs.AddDataReadReference(GetInputArrayName(), Array);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputArray), Array);
 
 			return Inputs;
 		}
@@ -144,7 +156,7 @@ namespace Metasound
 
 			FDataReferenceCollection Outputs;
 
-			Outputs.AddDataReadReference(GetOutputNumName(), Num);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputNum), Num);
 
 			return Outputs;
 		}
@@ -188,12 +200,12 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			static const FVertexInterface DefaultInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FTrigger>(GetInputTriggerName(), METASOUND_LOCTEXT("ArrayOpArrayGetTrigger", "Trigger to get value.")),
-					TInputDataVertexModel<ArrayType>(GetInputArrayName(), METASOUND_LOCTEXT("ArrayOpArrayGetInput", "Input Array.")),
-					TInputDataVertexModel<int32>(GetInputIndexName(), METASOUND_LOCTEXT("ArrayOpArrayGetIndex", "Index in Array."))
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerGet)),
+					TInputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputArray)),
+					TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputIndex))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<ElementType>(GetOutputValueName(), METASOUND_LOCTEXT("ArrayOpArrayGetOutput", "Value of element at array index."))
+					TOutputDataVertex<ElementType>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputValue))
 				)
 			);
 
@@ -218,6 +230,16 @@ namespace Metasound
 			return Metadata;
 		}
 
+		struct FInitParams
+		{
+			TDataReadReference<FTrigger> Trigger;
+			FArrayDataReadReference Array;
+			TDataReadReference<int32> Index;
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+			FString GraphName;
+#endif
+		};
+
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, TArray<TUniquePtr<IOperatorBuildError>>& OutErrors)
 		{
 			using namespace ArrayNodeVertexNames;
@@ -226,23 +248,44 @@ namespace Metasound
 			const FInputVertexInterface& Inputs = InParams.Node.GetVertexInterface().GetInputInterface();
 
 			// Input Trigger
-			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, GetInputTriggerName(), InParams.OperatorSettings);
+			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, METASOUND_GET_PARAM_NAME(InputTriggerGet), InParams.OperatorSettings);
 			
 			// Input Array
-			FArrayDataReadReference Array = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputArrayName(), InParams.OperatorSettings);
+			FArrayDataReadReference Array = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, METASOUND_GET_PARAM_NAME(InputArray), InParams.OperatorSettings);
 
 			// Input Index
-			TDataReadReference<int32> Index = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, GetInputIndexName(), InParams.OperatorSettings);
+			TDataReadReference<int32> Index = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, METASOUND_GET_PARAM_NAME(InputIndex), InParams.OperatorSettings);
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+			FString GraphName;
+			if (InParams.Environment.Contains<FString>(Frontend::SourceInterface::Environment::GraphName))
+			{
+				GraphName = InParams.Environment.GetValue<FString>(Frontend::SourceInterface::Environment::GraphName);
+			}
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 
-			return MakeUnique<TArrayGetOperator>(InParams.OperatorSettings, Trigger, Array, Index);
+			FInitParams OperatorInitParams
+			{
+				Trigger
+				, Array
+				, Index
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+				, GraphName
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+			};
+
+			return MakeUnique<TArrayGetOperator>(InParams.OperatorSettings, MoveTemp(OperatorInitParams));
 		}
 
 
-		TArrayGetOperator(const FOperatorSettings& InSettings, TDataReadReference<FTrigger> InTrigger, FArrayDataReadReference InArray, TDataReadReference<int32> InIndex)
-		: Trigger(InTrigger)
-		, Array(InArray)
-		, Index(InIndex)
+
+		TArrayGetOperator(const FOperatorSettings& InSettings, FInitParams&& InParams)
+		: Trigger(InParams.Trigger)
+		, Array(InParams.Array)
+		, Index(InParams.Index)
 		, Value(TDataWriteReferenceFactory<ElementType>::CreateAny(InSettings))
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+		, GraphName(InParams.GraphName)
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 		{
 		}
 
@@ -254,9 +297,9 @@ namespace Metasound
 
 			FDataReferenceCollection Inputs;
 
-			Inputs.AddDataReadReference(GetInputTriggerName(), Trigger);
-			Inputs.AddDataReadReference(GetInputArrayName(), Array);
-			Inputs.AddDataReadReference(GetInputIndexName(), Index);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerGet), Trigger);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputArray), Array);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputIndex), Index);
 
 			return Inputs;
 		}
@@ -267,7 +310,7 @@ namespace Metasound
 
 			FDataReferenceCollection Outputs;
 
-			Outputs.AddDataReadReference(GetOutputValueName(), Value);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputValue), Value);
 
 			return Outputs;
 		}
@@ -284,10 +327,12 @@ namespace Metasound
 				{
 					*Value = ArrayRef[IndexValue];
 				}
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
 				else
 				{
-					UE_LOG(LogMetaSound, Error, TEXT("Attempt to get value at invalid index [ArraySize:%d, Index:%d]"), ArrayRef.Num(), IndexValue);
+					UE_LOG(LogMetaSound, Warning, TEXT("Attempt to get value at invalid index [ArraySize:%d, Index:%d] in MetaSound Graph \"%s\"."), ArrayRef.Num(), IndexValue, *GraphName);
 				}
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 			}
 		}
 
@@ -297,6 +342,11 @@ namespace Metasound
 		FArrayDataReadReference Array;
 		TDataReadReference<int32> Index;
 		TDataWriteReference<ElementType> Value;
+
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+		FString GraphName;
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+
 	};
 
 	template<typename ArrayType>
@@ -325,13 +375,13 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			static const FVertexInterface DefaultInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FTrigger>(GetInputTriggerName(), METASOUND_LOCTEXT("ArrayOpArraySetTrigger", "Trigger to set value.")),
-					TInputDataVertexModel<ArrayType>(GetInputArrayName(), METASOUND_LOCTEXT("ArrayOpArraySetInput", "Input Array.")),
-					TInputDataVertexModel<int32>(GetInputIndexName(), METASOUND_LOCTEXT("ArrayOpArraySetIndex", "Index in Array.")),
-					TInputDataVertexModel<ElementType>(GetInputValueName(), METASOUND_LOCTEXT("ArrayOpArraySetElement", "Value to set"))
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerSet)),
+					TInputDataVertex<ArrayType>(InputInitialArrayName, FDataVertexMetadata { InputInitialArrayTooltip, InputInitialArrayDisplayName }),
+					TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputIndex)),
+					TInputDataVertex<ElementType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputValue))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<ArrayType>(GetOutputArrayName(), METASOUND_LOCTEXT("ArrayOpArraySetOutput", "Array after setting."))
+					TOutputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputArraySet))
 				)
 			);
 
@@ -356,6 +406,18 @@ namespace Metasound
 			return Metadata;
 		}
 
+		struct FInitParams
+		{
+			TDataReadReference<FTrigger> Trigger;
+			FArrayDataReadReference InitArray;
+			FArrayDataWriteReference Array;
+			TDataReadReference<int32> Index;
+			TDataReadReference<ElementType> Value;
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+			FString GraphName;
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+		};
+
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, TArray<TUniquePtr<IOperatorBuildError>>& OutErrors)
 		{
 			using namespace ArrayNodeVertexNames;
@@ -363,26 +425,47 @@ namespace Metasound
 
 			const FInputVertexInterface& Inputs = InParams.Node.GetVertexInterface().GetInputInterface();
 			
-			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, GetInputTriggerName(), InParams.OperatorSettings);
+			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, METASOUND_GET_PARAM_NAME(InputTriggerSet), InParams.OperatorSettings);
 
-			FArrayDataReadReference InitArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputArrayName(), InParams.OperatorSettings);
+			FArrayDataReadReference InitArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, InputInitialArrayName, InParams.OperatorSettings);
 			FArrayDataWriteReference Array = TDataWriteReferenceFactory<ArrayType>::CreateExplicitArgs(InParams.OperatorSettings, *InitArray);
 
-			TDataReadReference<int32> Index = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, GetInputIndexName(), InParams.OperatorSettings);
+			TDataReadReference<int32> Index = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, METASOUND_GET_PARAM_NAME(InputIndex), InParams.OperatorSettings);
 
-			TDataReadReference<ElementType> Value = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ElementType>(Inputs, GetInputValueName(), InParams.OperatorSettings);
+			TDataReadReference<ElementType> Value = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ElementType>(Inputs, METASOUND_GET_PARAM_NAME(InputValue), InParams.OperatorSettings);
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+			FString GraphName;
+			if (InParams.Environment.Contains<FString>(Frontend::SourceInterface::Environment::GraphName))
+			{
+				GraphName = InParams.Environment.GetValue<FString>(Frontend::SourceInterface::Environment::GraphName);
+			}
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 
-			return MakeUnique<TArraySetOperator>(InParams.OperatorSettings, Trigger, InitArray, Array, Index, Value);
+			FInitParams OperatorInitParams 
+			{
+				Trigger
+				, InitArray
+				, Array 
+				, Index 
+				, Value
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+				, GraphName
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+			};
+
+			return MakeUnique<TArraySetOperator>(InParams.OperatorSettings, MoveTemp(OperatorInitParams));
 		}
 
-
-		TArraySetOperator(const FOperatorSettings& InSettings, TDataReadReference<FTrigger> InTrigger, FArrayDataReadReference InInitArray, FArrayDataWriteReference InArray, TDataReadReference<int32> InIndex, TDataReadReference<ElementType> InValue)
+		TArraySetOperator(const FOperatorSettings& InSettings, FInitParams&& InParams)
 		: OperatorSettings(InSettings)
-		, Trigger(InTrigger)
-		, InitArray(InInitArray)
-		, Array(InArray)
-		, Index(InIndex)
-		, Value(InValue)
+		, Trigger(InParams.Trigger)
+		, InitArray(InParams.InitArray)
+		, Array(InParams.Array)
+		, Index(InParams.Index)
+		, Value(InParams.Value)
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+		, GraphName(InParams.GraphName)
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 		{
 		}
 
@@ -393,10 +476,10 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			FDataReferenceCollection Inputs;
 
-			Inputs.AddDataReadReference(GetInputTriggerName(), Trigger);
-			Inputs.AddDataReadReference(GetInputArrayName(), InitArray);
-			Inputs.AddDataReadReference(GetInputIndexName(), Index);
-			Inputs.AddDataReadReference(GetInputValueName(), Value);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerSet), Trigger);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputArray), InitArray);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputIndex), Index);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputValue), Value);
 
 			return Inputs;
 		}
@@ -406,7 +489,7 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			FDataReferenceCollection Outputs;
 
-			Outputs.AddDataReadReference(GetOutputArrayName(), Array);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputArraySet), Array);
 
 			return Outputs;
 		}
@@ -422,10 +505,12 @@ namespace Metasound
 				{
 					ArrayRef[IndexValue] = *Value;
 				}
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
 				else
 				{
-					UE_LOG(LogMetaSound, Error, TEXT("Attempt to set value at invalid index [ArraySize:%d, Index:%d]"), ArrayRef.Num(), IndexValue);
+					UE_LOG(LogMetaSound, Warning, TEXT("Attempt to set value at invalid index [ArraySize:%d, Index:%d] in MetaSound Graph \"%s\"."), ArrayRef.Num(), IndexValue, *GraphName);
 				}
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
 			}
 		}
 
@@ -437,6 +522,11 @@ namespace Metasound
 		FArrayDataWriteReference Array;
 		TDataReadReference<int32> Index;
 		TDataReadReference<ElementType> Value;
+
+#if WITH_METASOUND_DEBUG_ENVIRONMENT
+		FString GraphName;
+#endif // WITH_METASOUND_DEBUG_ENVIRONMENT
+
 	};
 
 	template<typename ArrayType>
@@ -466,12 +556,12 @@ namespace Metasound
 
 			static const FVertexInterface DefaultInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FTrigger>(GetInputTriggerName(), METASOUND_LOCTEXT("ArrayOpArrayConcatTrigger", "Trigger to set value.")),
-					TInputDataVertexModel<ArrayType>(GetInputLeftArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatInputLeft", "Input Left Array.")),
-					TInputDataVertexModel<ArrayType>(GetInputRightArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatInputRight", "Input Right Array."))
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerGet)),
+					TInputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputLeftArray)),
+					TInputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputRightArray))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<ArrayType>(GetOutputArrayName(), METASOUND_LOCTEXT("ArrayOpArrayConcatOutput", "Array after concatenation."))
+					TOutputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputArrayConcat))
 				)
 			);
 
@@ -503,10 +593,10 @@ namespace Metasound
 
 			const FInputVertexInterface& Inputs = InParams.Node.GetVertexInterface().GetInputInterface();
 			
-			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, GetInputTriggerName(), InParams.OperatorSettings);
+			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, METASOUND_GET_PARAM_NAME(InputTriggerGet), InParams.OperatorSettings);
 
-			FArrayDataReadReference LeftArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputLeftArrayName(), InParams.OperatorSettings);
-			FArrayDataReadReference RightArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputRightArrayName(), InParams.OperatorSettings);
+			FArrayDataReadReference LeftArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, METASOUND_GET_PARAM_NAME(InputLeftArray), InParams.OperatorSettings);
+			FArrayDataReadReference RightArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, METASOUND_GET_PARAM_NAME(InputRightArray), InParams.OperatorSettings);
 
 			FArrayDataWriteReference OutArray = TDataWriteReferenceFactory<ArrayType>::CreateExplicitArgs(InParams.OperatorSettings);
 
@@ -529,9 +619,9 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			FDataReferenceCollection Inputs;
 
-			Inputs.AddDataReadReference(GetInputTriggerName(), Trigger);
-			Inputs.AddDataReadReference(GetInputLeftArrayName(), LeftArray);
-			Inputs.AddDataReadReference(GetInputRightArrayName(), RightArray);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerGet), Trigger);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLeftArray), LeftArray);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputRightArray), RightArray);
 
 			return Inputs;
 		}
@@ -541,7 +631,7 @@ namespace Metasound
 			using namespace ArrayNodeVertexNames;
 			FDataReferenceCollection Outputs;
 
-			Outputs.AddDataReadReference(GetOutputArrayName(), OutArray);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputArrayConcat), OutArray);
 
 			return Outputs;
 		}
@@ -590,14 +680,14 @@ namespace Metasound
 
 			static const FVertexInterface DefaultInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FTrigger>(GetInputTriggerName(), METASOUND_LOCTEXT("ArrayOpArraySubsetTrigger", "Trigger to set value.")),
-					TInputDataVertexModel<ArrayType>(GetInputArrayName(), METASOUND_LOCTEXT("ArrayOpArraySubsetInputLeft", "Input Array.")),
-					TInputDataVertexModel<int32>(GetInputStartIndexName(), METASOUND_LOCTEXT("ArrayOpArraySubsetStartIndex", "First index to include.")),
-					TInputDataVertexModel<int32>(GetInputEndIndexName(), METASOUND_LOCTEXT("ArrayOpArraySubsetEndIndex", "Last index to include."))
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputTriggerGet)),
+					TInputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputArray)),
+					TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputStartIndex)),
+					TInputDataVertex<int32>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputEndIndex))
 
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<ArrayType>(GetOutputArrayName(), METASOUND_LOCTEXT("ArrayOpArraySubsetOutput", "Subset of input array."))
+					TOutputDataVertex<ArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputArraySubset))
 				)
 			);
 
@@ -629,12 +719,12 @@ namespace Metasound
 
 			const FInputVertexInterface& Inputs = InParams.Node.GetVertexInterface().GetInputInterface();
 			
-			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, GetInputTriggerName(), InParams.OperatorSettings);
+			TDataReadReference<FTrigger> Trigger = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<FTrigger>(Inputs, METASOUND_GET_PARAM_NAME(InputTriggerGet), InParams.OperatorSettings);
 
-			FArrayDataReadReference InArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, GetInputArrayName(), InParams.OperatorSettings);
+			FArrayDataReadReference InArray = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<ArrayType>(Inputs, METASOUND_GET_PARAM_NAME(InputArray), InParams.OperatorSettings);
 
-			TDataReadReference<int32> StartIndex = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, GetInputStartIndexName(), InParams.OperatorSettings);
-			TDataReadReference<int32> EndIndex = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, GetInputEndIndexName(), InParams.OperatorSettings);
+			TDataReadReference<int32> StartIndex = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, METASOUND_GET_PARAM_NAME(InputStartIndex), InParams.OperatorSettings);
+			TDataReadReference<int32> EndIndex = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<int32>(Inputs, METASOUND_GET_PARAM_NAME(InputEndIndex), InParams.OperatorSettings);
 
 			FArrayDataWriteReference OutArray = TDataWriteReferenceFactory<ArrayType>::CreateExplicitArgs(InParams.OperatorSettings);
 
@@ -659,10 +749,10 @@ namespace Metasound
 
 			FDataReferenceCollection Inputs;
 
-			Inputs.AddDataReadReference(GetInputTriggerName(), Trigger);
-			Inputs.AddDataReadReference(GetInputArrayName(), InputArray);
-			Inputs.AddDataReadReference(GetInputStartIndexName(), StartIndex);
-			Inputs.AddDataReadReference(GetInputEndIndexName(), EndIndex);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerGet), Trigger);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputArray), InputArray);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStartIndex), StartIndex);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputEndIndex), EndIndex);
 
 			return Inputs;
 		}
@@ -673,7 +763,7 @@ namespace Metasound
 
 			FDataReferenceCollection Outputs;
 
-			Outputs.AddDataReadReference(GetOutputArrayName(), OutputArray);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputArraySubset), OutputArray);
 
 			return Outputs;
 		}

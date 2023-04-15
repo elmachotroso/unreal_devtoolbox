@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-ImageUtils.cpp: Image utility functions.
+this is MDLImporter ImageUtils
+NOT the ImageUtils in Engine
 =============================================================================*/
 
 #include "ImageUtils.h"
@@ -13,8 +14,6 @@ ImageUtils.cpp: Image utility functions.
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "Misc/FileHelper.h"
-#include "DDSLoader.h"
-#include "HDRLoader.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 

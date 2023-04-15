@@ -1,29 +1,63 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAssetPicker.h"
-#include "Styling/SlateTypes.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetThumbnail.h"
+#include "CollectionManagerTypes.h"
+#include "ContentBrowserDataFilter.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserUtils.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/SBoxPanel.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
 #include "FrontendFilters.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/FilterCollection.h"
+#include "Misc/Paths.h"
+#include "PropertyHandle.h"
 #include "SAssetSearchBox.h"
-#include "SFilterList.h"
 #include "SAssetView.h"
 #include "SContentBrowser.h"
-#include "ContentBrowserUtils.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "Editor.h"
-#include "PropertyHandle.h"
+#include "SFilterList.h"
+#include "SlotBase.h"
+#include "SourceControlOperations.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/ISlateMetaData.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+
+class SWidget;
+class UObject;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -125,7 +159,7 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 		.Padding(4.f, 0.0f, 0.0f, 0.0f)
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "ToggleButtonCheckBox")
+			.Style(FAppStyle::Get(), "ToggleButtonCheckBox")
 			.ToolTipText(this, &SAssetPicker::GetShowOtherDevelopersToolTip)
 			.OnCheckStateChanged(this, &SAssetPicker::HandleShowOtherDevelopersCheckStateChanged)
 			.IsChecked(this, &SAssetPicker::GetShowOtherDevelopersCheckState)
@@ -133,7 +167,7 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 			[
 				SNew(SImage)
 				.ColorAndOpacity(FSlateColor::UseForeground())
-				.Image(FEditorStyle::GetBrush("ContentBrowser.ColumnViewDeveloperFolderIcon"))
+				.Image(FAppStyle::GetBrush("ContentBrowser.ColumnViewDeveloperFolderIcon"))
 			]
 		];
 	}
@@ -187,8 +221,8 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 				.AutoHeight()
 				[
 					SNew(SButton)
-						.ButtonStyle( FEditorStyle::Get(), "ContentBrowser.NoneButton" )
-						.TextStyle( FEditorStyle::Get(), "ContentBrowser.NoneButtonText" )
+						.ButtonStyle( FAppStyle::Get(), "ContentBrowser.NoneButton" )
+						.TextStyle( FAppStyle::Get(), "ContentBrowser.NoneButtonText" )
 						.Text( LOCTEXT("NoneButtonText", "( None )") )
 						.ToolTipText( LOCTEXT("NoneButtonTooltip", "Clears the asset selection.") )
 						.HAlign(HAlign_Center)
@@ -218,10 +252,10 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 	{
 		// Filters
 		TArray<UClass*> FilterClassList;
-		for(auto Iter = CurrentBackendFilter.ClassNames.CreateIterator(); Iter; ++Iter)
+		for(auto Iter = CurrentBackendFilter.ClassPaths.CreateIterator(); Iter; ++Iter)
 		{
-			FName ClassName = (*Iter);
-			UClass* FilterClass = FindObject<UClass>(ANY_PACKAGE, *ClassName.ToString());
+			FTopLevelAssetPath ClassName = (*Iter);
+			UClass* FilterClass = FindObject<UClass>(ClassName);
 			if(FilterClass)
 			{
 				FilterClassList.AddUnique(FilterClass);
@@ -235,6 +269,7 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 			.OnFilterChanged(this, &SAssetPicker::OnFilterChanged)
 			.FrontendFilters(FrontendFilters)
 			.InitialClassFilters(FilterClassList)
+			.FilterBarIdentifier(FName(SaveSettingsName))
 			.ExtraFrontendFilters(InArgs._AssetPickerConfig.ExtraFrontendFilters)
 		];
 
@@ -320,7 +355,6 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 		.CanShowDevelopersFolder( InArgs._AssetPickerConfig.bCanShowDevelopersFolder )
 		.ForceShowEngineContent( InArgs._AssetPickerConfig.bForceShowEngineContent )
 		.ForceShowPluginContent( InArgs._AssetPickerConfig.bForceShowPluginContent )
-		.PreloadAssetsForContextMenu( InArgs._AssetPickerConfig.bPreloadAssetsForContextMenu )
 		.HighlightedText( HighlightText )
 		.ThumbnailLabel( ThumbnailLabel )
 		.AssetShowWarningText( InArgs._AssetPickerConfig.AssetShowWarningText)
@@ -353,7 +387,7 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 	if (AssetViewPtr.IsValid() && !InArgs._AssetPickerConfig.bAutohideSearchBar)
 	{
 		TextFilter = MakeShareable(new FFrontendFilter_Text());
-		bool bClassNamesProvided = (InArgs._AssetPickerConfig.Filter.ClassNames.Num() != 1);
+		bool bClassNamesProvided = (InArgs._AssetPickerConfig.Filter.ClassPaths.Num() != 1);
 		TextFilter->SetIncludeClassName(bClassNamesProvided || AssetViewPtr->IsIncludingClassNames());
 		TextFilter->SetIncludeAssetPath(AssetViewPtr->IsIncludingAssetPaths());
 		TextFilter->SetIncludeCollectionNames(AssetViewPtr->IsIncludingCollectionNames());
@@ -362,15 +396,19 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 	AssetViewPtr->RequestSlowFullListRefresh();
 }
 
+TSharedPtr<SWidget> SAssetPicker::GetSearchBox() const
+{
+	return SearchBoxPtr;
+}
+
 EActiveTimerReturnType SAssetPicker::SetFocusPostConstruct( double InCurrentTime, float InDeltaTime )
 {
-	if ( SearchBoxPtr.IsValid() )
+	if (SearchBoxPtr.IsValid())
 	{
 		FWidgetPath WidgetToFocusPath;
-		FSlateApplication::Get().GeneratePathToWidgetUnchecked( SearchBoxPtr.ToSharedRef(), WidgetToFocusPath );
-		FSlateApplication::Get().SetKeyboardFocus( WidgetToFocusPath, EFocusCause::SetDirectly );
+		FSlateApplication::Get().GeneratePathToWidgetUnchecked(SearchBoxPtr.ToSharedRef(), WidgetToFocusPath);
+		FSlateApplication::Get().SetKeyboardFocus(WidgetToFocusPath, EFocusCause::SetDirectly);
 		WidgetToFocusPath.GetWindow()->SetWidgetToFocusOnActivate(SearchBoxPtr);
-
 		return EActiveTimerReturnType::Stop;
 	}
 
@@ -494,7 +532,7 @@ void SAssetPicker::SetNewBackendFilter(const FARFilter& NewFilter)
 	// Update the Text filter too, since now class names may no longer matter
 	if (TextFilter.IsValid())
 	{
-		TextFilter->SetIncludeClassName(NewFilter.ClassNames.Num() != 1);
+		TextFilter->SetIncludeClassName(NewFilter.ClassPaths.Num() != 1);
 	}
 
 	OnFilterChanged();
@@ -701,7 +739,7 @@ void SAssetPicker::LoadSettings()
 		// Load all our data using the settings string as a key in the user settings ini
 		if (FilterListPtr.IsValid())
 		{
-			FilterListPtr->LoadSettings(GEditorPerProjectIni, SContentBrowser::SettingsIniSection, SettingsString);
+			FilterListPtr->LoadSettings();
 		}
 		
 		AssetViewPtr->LoadSettings(GEditorPerProjectIni, SContentBrowser::SettingsIniSection, SettingsString);
@@ -717,7 +755,7 @@ void SAssetPicker::SaveSettings() const
 		// Save all our data using the settings string as a key in the user settings ini
 		if (FilterListPtr.IsValid())
 		{
-			FilterListPtr->SaveSettings(GEditorPerProjectIni, SContentBrowser::SettingsIniSection, SettingsString);
+			FilterListPtr->SaveSettings();
 		}
 
 		AssetViewPtr->SaveSettings(GEditorPerProjectIni, SContentBrowser::SettingsIniSection, SettingsString);

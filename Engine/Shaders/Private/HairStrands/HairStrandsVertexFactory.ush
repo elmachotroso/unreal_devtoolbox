@@ -93,6 +93,9 @@ struct FVertexFactoryInput
 	// Dynamic instancing related attributes with InstanceIdOffset : ATTRIBUTE13
 	VF_GPUSCENE_DECLARE_INPUT_BLOCK(13)
 
+	// Instanced stereo related params
+	VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+
 	uint VertexId : SV_VertexID;
 };
 
@@ -159,11 +162,9 @@ FVertexFactoryInput LoadVertexFactoryInputForHGS(uint TriangleIndex, int VertexI
 	Input.VertexId = TriangleBase.Indices[VertexIndex];
 	Input.TriangleId = TriangleIndex;
 	Input.TriangleVertexId = VertexIndex;
-#if VF_USE_PRIMITIVE_SCENE_DATA
 	// Note: GetInstanceUserData() stores the GPU-Scene primitive ID
-	Input.InstanceIdOffset = GetInstanceUserData() | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;
-	Input.DrawInstanceId = 0;
-#endif
+	VF_GPUSCENE_SET_INPUT_FOR_RT(Input, GetInstanceUserData(), 0U);
+
 	return Input;
 }
 #endif
@@ -401,17 +402,18 @@ RAY_TRACING_ENTRY_INTERSECTION(MaterialIS)
 		VertexIndex1 = HairStrandsVF.CulledVertexIdsBuffer[VertexIndex1];
 	}
 
+	const float EffectiveRadius = HairStrandsVF.Radius * HairStrandsVF.RaytracingRadiusScale;
 	const float3 PositionOffset = HairStrandsVF.PositionOffsetBuffer[0].xyz;
 	FHairControlPoint P0 = UnpackHairControlPoint(
 		HairStrandsVF.PositionBuffer[VertexIndex0],
 		PositionOffset,
-		HairStrandsVF.Radius * ScaleR0,
+		EffectiveRadius * ScaleR0,
 		HairStrandsVF.RootScale,
 		HairStrandsVF.TipScale);
 	FHairControlPoint P1 = UnpackHairControlPoint(
 		HairStrandsVF.PositionBuffer[VertexIndex1],
 		PositionOffset,
-		HairStrandsVF.Radius * ScaleR1,
+		EffectiveRadius * ScaleR1,
 		HairStrandsVF.RootScale,
 		HairStrandsVF.TipScale);
 
@@ -444,8 +446,8 @@ RAY_TRACING_ENTRY_INTERSECTION(MaterialIS)
 		if ((dot(t * rd - w1, tb) * dot(tb, u) > 0)) return;
 
 		float h = sign(dot(dp, n)) * sqrt(saturate(d2 / r2));
-		FDefaultAttributes Attributes = (FDefaultAttributes)0;
-		Attributes.Barycentrics = float2(sc, 0.5 * h + 0.5);
+		FRayTracingIntersectionAttributes Attributes = (FRayTracingIntersectionAttributes)0;
+		Attributes.SetBarycentrics(float2(sc, 0.5 * h + 0.5));
 		ReportHit(t, HIT_KIND_TRIANGLE_FRONT_FACE, Attributes);
 	}
 }
@@ -458,18 +460,19 @@ RAY_TRACING_ENTRY_INTERSECTION(MaterialIS)
 // define this to let shaders know this alternative method is available
 #define VF_SUPPORTS_RAYTRACING_PREPARE_MATERIAL_PIXEL_PARAMETERS 1 
 
-FMaterialPixelParameters GetMaterialPixelParameters(float3 RayOrigin, float3 RayDirection, float HitT, uint HitPrimitiveIndex, FDefaultAttributes HitAttributes, uint HitKind, out float3 WorldGeoNormal)
+FMaterialPixelParameters GetMaterialPixelParameters(float3 RayOrigin, float3 RayDirection, float HitT, uint HitPrimitiveIndex, FRayTracingIntersectionAttributes HitAttributes, uint HitKind, out float3 WorldGeoNormal)
 {
 	FMaterialPixelParameters Result = MakeInitializedMaterialPixelParameters();
 
 #if VF_USE_PRIMITIVE_SCENE_DATA
 	FVertexFactoryInput Input;
 	// Note: GetInstanceUserData() stores the GPU-Scene primitive ID
-	Input.InstanceIdOffset = GetInstanceUserData() | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;
-	Input.DrawInstanceId = 0;
+	VF_GPUSCENE_SET_INPUT_FOR_RT(Input, GetInstanceUserData(), 0U);
 #endif
 
 	FSceneDataIntermediates SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input); // NOTE: Input is not used when VF_USE_PRIMITIVE_SCENE_DATA == 0
+
+	const float2 Barycentrics = HitAttributes.GetBarycentrics();
 
 #if ENABLE_PROCEDURAL_INTERSECTOR
 	uint VertexIndex0 = HitPrimitiveIndex / HairStrandsVF.RaytracingProceduralSplits;
@@ -481,27 +484,28 @@ FMaterialPixelParameters GetMaterialPixelParameters(float3 RayOrigin, float3 Ray
 		VertexIndex1 = HairStrandsVF.CulledVertexIdsBuffer[VertexIndex1];
 	}
 
-	float UCoord = HitAttributes.Barycentrics.x;
-	float VCoord = HitAttributes.Barycentrics.y;
+	const float EffectiveRadius = HairStrandsVF.Radius * HairStrandsVF.RaytracingRadiusScale;
+	float UCoord = Barycentrics.x;
+	float VCoord = Barycentrics.y;
 	const float3 PositionOffset = HairStrandsVF.PositionOffsetBuffer[0].xyz;
 	FHairControlPoint P0 = UnpackHairControlPoint(
 		HairStrandsVF.PositionBuffer[VertexIndex0],
 		PositionOffset,
-		HairStrandsVF.Radius,
+		EffectiveRadius,
 		HairStrandsVF.RootScale,
 		HairStrandsVF.TipScale);
 	FHairControlPoint P1 = UnpackHairControlPoint(
 		HairStrandsVF.PositionBuffer[VertexIndex1],
 		PositionOffset,
-		HairStrandsVF.Radius,
+		EffectiveRadius,
 		HairStrandsVF.RootScale,
 		HairStrandsVF.TipScale);
 
 #else
 	const float3 Weights = float3(
-		1 - HitAttributes.Barycentrics.x - HitAttributes.Barycentrics.y,
-		HitAttributes.Barycentrics.x,
-		HitAttributes.Barycentrics.y);
+		1 - Barycentrics.x - Barycentrics.y,
+		Barycentrics.x,
+		Barycentrics.y);
 
 	// fetch triangle
 	FTriangleBaseAttributes Tri = LoadTriangleBaseAttributes(HitPrimitiveIndex);
@@ -536,16 +540,17 @@ FMaterialPixelParameters GetMaterialPixelParameters(float3 RayOrigin, float3 Ray
 	{
 		// find central point of the hair strand
 		const float3 PositionOffset = HairStrandsVF.PositionOffsetBuffer[0].xyz;
+		const float EffectiveRadius = HairStrandsVF.Radius * HairStrandsVF.RaytracingRadiusScale;
 		FHairControlPoint P0 = UnpackHairControlPoint(
 			HairStrandsVF.PositionBuffer[VertexIndex0],
 			PositionOffset,
-			HairStrandsVF.Radius,
+			EffectiveRadius,
 			HairStrandsVF.RootScale,
 			HairStrandsVF.TipScale);
 		FHairControlPoint P1 = UnpackHairControlPoint(
 			HairStrandsVF.PositionBuffer[VertexIndex1],
 			PositionOffset,
-			HairStrandsVF.Radius,
+			EffectiveRadius,
 			HairStrandsVF.RootScale,
 			HairStrandsVF.TipScale);
 		float4 A = float4(P0.Position, P0.WorldRadius);
@@ -808,9 +813,6 @@ FVertexFactoryInput LoadVertexFactoryInputForDynamicUpdate(uint TriangleIndex, i
 
 	Input.VertexId = TriangleIndex * 3 + VertexIndex;
 
-#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4 && ONEPASS_POINTLIGHT_SHADOW && USING_VERTEX_SHADER_LAYER
-	Input.InstanceInd = 0;
-#endif
 	return Input;
 }
 

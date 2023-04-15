@@ -26,14 +26,18 @@ public:
 	/** Refreshes the quick info panel */
 	virtual void PopulateQuickInfo() = 0;
 
-	/** Calculates the display size of the texture */
-	virtual void CalculateTextureDimensions(uint32& Width, uint32& Height, uint32& Depth, uint32& ArraySize) const = 0;
+	/** Calculates the display size of the texture, optionally including the size of the displayed texture border */
+	virtual void CalculateTextureDimensions(int32& OutWidth, int32& OutHeight, int32& OutDepth, int32& OutArraySize, bool bInIncludeBorderSize) const = 0;
 
 	/** Accessors */ 
 	virtual int32 GetMipLevel() const = 0;
 	virtual int32 GetLayer() const = 0;
+	virtual int32 GetSlice() const = 0;
+	virtual int32 GetFace() const = 0;
 	virtual ESimpleElementBlendMode GetColourChannelBlendMode() const = 0;
 	virtual bool GetUseSpecifiedMip() const = 0;
+	virtual bool GetUseSpecifiedSlice() const = 0;
+	virtual bool GetUseSpecifiedFace() const = 0;
 	virtual double GetCustomZoomLevel() const = 0;
 	virtual void SetCustomZoomLevel( double ZoomValue ) = 0;
 	virtual void ZoomIn() = 0;
@@ -43,8 +47,14 @@ public:
 	virtual double CalculateDisplayedZoomLevel() const = 0;
 	virtual float GetVolumeOpacity( ) const = 0;
 	virtual void SetVolumeOpacity( float VolumeOpacity ) = 0;
-	virtual const FRotator& GetVolumeOrientation( ) const = 0;
-	virtual void SetVolumeOrientation( const FRotator& InOrientation ) = 0;
+	virtual ETextureEditorVolumeViewMode GetVolumeViewMode() const = 0;
+	virtual void SetVolumeViewMode(const ETextureEditorVolumeViewMode VolumeViewMode) = 0;
+	virtual ETextureEditorCubemapViewMode GetCubemapViewMode() const = 0;
+	virtual void SetCubemapViewMode(const ETextureEditorCubemapViewMode CubemapViewMode) = 0;
+	virtual bool IsUsingOrientation() const = 0;
+	virtual const FRotator& GetOrientation() const = 0;
+	virtual void SetOrientation(const FRotator& InOrientation) = 0;
+	virtual void ResetOrientation() = 0;
 	virtual int32 GetExposureBias() const = 0;
 	virtual bool IsVolumeTexture() const = 0;
 public:

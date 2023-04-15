@@ -5,7 +5,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Internationalization/Text.h"
 #include "Logging/LogMacros.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/BlueprintSupport.h"
 
 #include "TraceSourceFilteringProjectSettings.h"
@@ -47,8 +47,8 @@ void FSourceFilterPresets::ListAvailablePresets()
 void FSourceFilterPresets::GetPresets(TArray<FAssetData>& InOutPresetAssetData)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	TMultiMap<FName, FString> TagValues = { { FBlueprintTags::NativeParentClassPath, FString::Printf(TEXT("%s'%s'"), *UClass::StaticClass()->GetName(), *USourceFilterCollection::StaticClass()->GetPathName()) } };
-	AssetRegistryModule.Get().GetAssetsByClass(USourceFilterCollection::StaticClass()->GetFName(), InOutPresetAssetData);
+	TMultiMap<FName, FString> TagValues = { { FBlueprintTags::NativeParentClassPath, FObjectPropertyBase::GetExportPath(USourceFilterCollection::StaticClass()) } };
+	AssetRegistryModule.Get().GetAssetsByClass(USourceFilterCollection::StaticClass()->GetClassPathName(), InOutPresetAssetData);
 }
 
 void FSourceFilterPresets::LoadPreset(const FSoftObjectPath& PresetPath)
@@ -80,7 +80,7 @@ void FSourceFilterPresets::LoadPresetCommand(const TArray<FString>& Arguments)
 			// Retrieve specific asset data at user index
 			if (PresetAssetData.IsValidIndex(Index))
 			{
-				LoadPreset(PresetAssetData[Index].ObjectPath.ToString());
+				LoadPreset(PresetAssetData[Index].GetObjectPathString());
 			}
 			else
 			{

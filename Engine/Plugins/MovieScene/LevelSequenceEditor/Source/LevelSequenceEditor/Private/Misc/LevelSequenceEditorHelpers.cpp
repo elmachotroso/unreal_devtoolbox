@@ -8,7 +8,7 @@
 #include "UObject/GCObject.h"
 #include "LevelSequence.h"
 #include "Factories/Factory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "Layout/Margin.h"
@@ -21,14 +21,14 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelSequenceEditorModule.h"
 #include "Framework/Docking/TabManager.h"
 
 #include "Misc/LevelSequenceEditorSettings.h"
 #include "Widgets/Layout/SScrollBox.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IDetailsView.h"
 #include "MovieSceneToolsProjectSettings.h"
 #include "PropertyEditorModule.h"
@@ -115,7 +115,7 @@ class SMasterSequenceSettings : public SCompoundWidget, public FGCObject
 			[
 				SAssignNew(ErrorText, STextBlock)
 				.Text(this, &SMasterSequenceSettings::GetErrorText)
-				.TextStyle(FEditorStyle::Get(), TEXT("Log.Warning"))
+				.TextStyle(FAppStyle::Get(), TEXT("Log.Warning"))
 			]
 
 			+ SVerticalBox::Slot()
@@ -185,7 +185,7 @@ private:
 		FullPath /= LevelSequenceSettings->MasterSequenceName;
 		FullPath /= LevelSequenceSettings->MasterSequenceName;
 		FullPath += LevelSequenceSettings->MasterSequenceSuffix;
-		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*FullPath));
+		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(FullPath));
 		if (AssetData.IsValid())
 		{
 			return LOCTEXT("MasterSequenceExists", "Warning: Master Sequence Exists");

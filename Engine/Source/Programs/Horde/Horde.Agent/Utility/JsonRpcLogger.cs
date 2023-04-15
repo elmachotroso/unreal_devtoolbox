@@ -1,39 +1,92 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeAgent.Parser.Interfaces;
-using HordeAgent.Utility;
-using HordeCommon;
-using HordeCommon.Rpc;
-using Microsoft.Extensions.Logging;
 using System;
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using EpicGames.Core;
+using Horde.Agent.Utility;
+using HordeCommon;
+using HordeCommon.Rpc;
+using Microsoft.Extensions.Logging;
 
-namespace HordeAgent.Parser
+namespace Horde.Agent.Parser
 {
+	using JsonObject = System.Text.Json.Nodes.JsonObject;
+
+	interface IJsonRpcLogSink
+	{
+		Task WriteEventsAsync(List<CreateEventRequest> events);
+		Task WriteOutputAsync(WriteOutputRequest request);
+		Task SetOutcomeAsync(JobStepOutcome outcome);
+	}
+
+	sealed class JsonRpcLogSink : IJsonRpcLogSink
+	{
+		readonly IRpcConnection _rpcClient;
+		readonly string? _jobId;
+		readonly string? _jobBatchId;
+		readonly string? _jobStepId;
+		readonly ILogger _logger;
+
+		public JsonRpcLogSink(IRpcConnection rpcClient, string? jobId, string? jobBatchId, string? jobStepId, ILogger logger)
+		{
+			_rpcClient = rpcClient;
+			_jobId = jobId;
+			_jobBatchId = jobBatchId;
+			_jobStepId = jobStepId;
+			_logger = logger;
+		}
+
+		/// <inheritdoc/>
+		public async Task WriteEventsAsync(List<CreateEventRequest> events)
+		{
+			await _rpcClient.InvokeAsync(x => x.CreateEventsAsync(new CreateEventsRequest(events)), new RpcContext(), CancellationToken.None);
+		}
+
+		/// <inheritdoc/>
+		public async Task WriteOutputAsync(WriteOutputRequest request)
+		{
+			await _rpcClient.InvokeAsync(x => x.WriteOutputAsync(request), new RpcContext(), CancellationToken.None);
+		}
+
+		public async Task SetOutcomeAsync(JobStepOutcome outcome)
+		{
+			// Update the outcome of this jobstep
+			if (_jobId != null && _jobBatchId != null && _jobStepId != null)
+			{
+				try
+				{
+					await _rpcClient.InvokeAsync(x => x.UpdateStepAsync(new UpdateStepRequest(_jobId, _jobBatchId, _jobStepId, JobStepState.Unspecified, outcome)), new RpcContext(), CancellationToken.None);
+				}
+				catch (Exception ex)
+				{
+					_logger.LogWarning(ex, "Unable to update step outcome to {NewOutcome}", outcome);
+				}
+			}
+		}
+	}
+
 	/// <summary>
 	/// Class to handle uploading log data to the server in the background
 	/// </summary>
-	class JsonRpcLogger : JsonLogger, IAsyncDisposable
+	sealed class JsonRpcLogger : ILogger, IAsyncDisposable
 	{
 		class QueueItem
 		{
-			public byte[] Data;
-			public CreateEventRequest? Event;
+			public byte[] Data { get; }
+			public CreateEventRequest? CreateEvent { get; }
 
-			public QueueItem(byte[] Data, CreateEventRequest? Event)
+			public QueueItem(byte[] data, CreateEventRequest? createEvent)
 			{
-				this.Data = Data;
-				this.Event = Event;
+				Data = data;
+				CreateEvent = createEvent;
 			}
 
 			public override string ToString()
@@ -42,13 +95,12 @@ namespace HordeAgent.Parser
 			}
 		}
 
-		readonly IRpcConnection RpcClient;
-		readonly string LogId;
-		readonly string? JobId;
-		readonly string? JobBatchId;
-		readonly string? JobStepId;
-		Channel<QueueItem> DataChannel;
-		Task? DataWriter;
+		readonly IJsonRpcLogSink _sink;
+		readonly string _logId;
+		readonly bool _warnings;
+		readonly ILogger _inner;
+		readonly Channel<JsonLogEvent> _dataChannel;
+		Task? _dataWriter;
 
 		/// <summary>
 		/// The current outcome for this step. Updated to reflect any errors and warnings that occurred.
@@ -62,87 +114,74 @@ namespace HordeAgent.Parser
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="RpcClient">RPC client to use for server requests</param>
-		/// <param name="LogId">The log id to write to</param>
-		/// <param name="JobId">Id of the job being executed</param>
-		/// <param name="JobBatchId">Batch being executed</param>
-		/// <param name="JobStepId">Id of the step being executed</param>
-		/// <param name="Warnings">Whether to include warnings in the output</param>
-		/// <param name="Inner">Additional logger to write to</param>
-		public JsonRpcLogger(IRpcConnection RpcClient, string LogId, string? JobId, string? JobBatchId, string? JobStepId, bool? Warnings, ILogger Inner)
-			: base(Warnings, Inner)
+		/// <param name="sink">Sink for log events</param>
+		/// <param name="logId">The log id to write to</param>
+		/// <param name="warnings">Whether to include warnings in the output</param>
+		/// <param name="inner">Additional logger to write to</param>
+		public JsonRpcLogger(IJsonRpcLogSink sink, string logId, bool? warnings, ILogger inner)
 		{
-			this.RpcClient = RpcClient;
-			this.LogId = LogId;
-			this.JobId = JobId;
-			this.JobBatchId = JobBatchId;
-			this.JobStepId = JobStepId;
-			this.DataChannel = Channel.CreateUnbounded<QueueItem>();
-			this.DataWriter = Task.Run(() => RunDataWriter());
-			this.Outcome = JobStepOutcome.Success;
+			_sink = sink;
+			_logId = logId;
+			_warnings = warnings ?? true;
+			_inner = inner;
+			_dataChannel = Channel.CreateUnbounded<JsonLogEvent>();
+			_dataWriter = Task.Run(() => RunDataWriter());
+
+			Outcome = JobStepOutcome.Success;
 		}
 
-		protected override void WriteFormattedEvent(LogLevel Level, byte[] Line)
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="rpcClient">RPC client to use for server requests</param>
+		/// <param name="logId">The log id to write to</param>
+		/// <param name="jobId">Id of the job being executed</param>
+		/// <param name="jobBatchId">Batch being executed</param>
+		/// <param name="jobStepId">Id of the step being executed</param>
+		/// <param name="warnings">Whether to include warnings in the output</param>
+		/// <param name="inner">Additional logger to write to</param>
+		public JsonRpcLogger(IRpcConnection rpcClient, string logId, string? jobId, string? jobBatchId, string? jobStepId, bool? warnings, ILogger inner)
+			: this(new JsonRpcLogSink(rpcClient, jobId, jobBatchId, jobStepId, inner), logId, warnings, inner)
+		{
+		}
+
+		/// <inheritdoc/>
+		public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+		{
+			// Downgrade warnings to information if not required
+			if (logLevel == LogLevel.Warning && !_warnings)
+			{
+				logLevel = LogLevel.Information;
+			}
+
+			JsonLogEvent jsonLogEvent = JsonLogEvent.FromLoggerState(logLevel, eventId, state, exception, formatter);
+			WriteFormattedEvent(jsonLogEvent);
+		}
+
+		/// <inheritdoc/>
+		public bool IsEnabled(LogLevel logLevel) => _inner.IsEnabled(logLevel);
+
+		/// <inheritdoc/>
+		public IDisposable BeginScope<TState>(TState state) => _inner.BeginScope(state);
+
+		private void WriteFormattedEvent(JsonLogEvent jsonLogEvent)
 		{
 			// Update the state of this job if this is an error status
-			if (Level == LogLevel.Error || Level == LogLevel.Critical)
+			LogLevel level = jsonLogEvent.Level;
+			if (level == LogLevel.Error || level == LogLevel.Critical)
 			{
 				Outcome = JobStepOutcome.Failure;
 			}
-			else if (Level == LogLevel.Warning && Outcome != JobStepOutcome.Failure)
+			else if (level == LogLevel.Warning && Outcome != JobStepOutcome.Failure)
 			{
 				Outcome = JobStepOutcome.Warnings;
 			}
 
-			// If we want an event for this log event, create one now
-			CreateEventRequest? Event = null;
-			if (Level == LogLevel.Warning || Level == LogLevel.Error || Level == LogLevel.Critical)
-			{
-				Event = CreateEvent(Level, 1);
-			}
-
-			// Write the data to the output channel
-			QueueItem QueueItem = new QueueItem(Line, Event);
-			if (!DataChannel.Writer.TryWrite(QueueItem))
+			// Write the event
+			if (!_dataChannel.Writer.TryWrite(jsonLogEvent))
 			{
 				throw new InvalidOperationException("Expected unbounded writer to complete immediately");
 			}
-		}
-
-		/// <summary>
-		/// Callback to write a systemic event
-		/// </summary>
-		/// <param name="EventId">The event id</param>
-		/// <param name="Text">The event text</param>
-		protected override void WriteSystemicEvent(EventId EventId, string Text)
-		{
-			if (JobId == null)
-			{
-				Inner.LogWarning("Systemic event {KnownLogEventId} in log {LogId}: {Text}", EventId.Id, Text);
-			}
-			else if (JobBatchId == null)
-			{
-				Inner.LogWarning("Systemic event {KnownLogEventId} in log {LogId} (job {JobId}): {Text})", EventId.Id, JobId, Text);
-			}
-			else if (JobStepId == null)
-			{
-				Inner.LogWarning("Systemic event {KnownLogEventId} in log {LogId} (job batch {JobId}:{BatchId}): {Text})", EventId.Id, JobId, JobStepId, Text);
-			}
-			else
-			{
-				Inner.LogWarning("Systemic event {KnownLogEventId} in log {LogId} (job step {JobId}:{BatchId}:{StepId}): {Text}", EventId.Id, LogId, JobId, JobBatchId, JobStepId, Text);
-			}
-		}
-
-		/// <summary>
-		/// Makes a <see cref="CreateEventRequest"/> for the given parameters
-		/// </summary>
-		/// <param name="LogLevel">Level for this log event</param>
-		/// <param name="LineCount">Number of lines in the event</param>
-		CreateEventRequest CreateEvent(LogLevel LogLevel, int LineCount)
-		{
-			EventSeverity Severity = (LogLevel == LogLevel.Warning) ? EventSeverity.Warning : EventSeverity.Error;
-			return new CreateEventRequest(Severity, LogId, 0, LineCount);
 		}
 
 		/// <summary>
@@ -151,11 +190,11 @@ namespace HordeAgent.Parser
 		/// <returns>Async task</returns>
 		public async Task StopAsync()
 		{
-			if (DataWriter != null)
+			if (_dataWriter != null)
 			{
-				DataChannel.Writer.TryComplete();
-				await DataWriter;
-				DataWriter = null;
+				_dataChannel.Writer.TryComplete();
+				await _dataWriter;
+				_dataWriter = null;
 			}
 		}
 
@@ -174,64 +213,60 @@ namespace HordeAgent.Parser
 		async Task RunDataWriter()
 		{
 			// Current position and line number in the log file
-			long Offset = 0;
-			int LineIndex = 0;
+			long offset = 0;
+			int lineIndex = 0;
 
 			// Total number of errors and warnings
 			const int MaxErrors = 50;
-			int NumErrors = 0;
+			int numErrors = 0;
 			const int MaxWarnings = 50;
-			int NumWarnings = 0;
+			int numWarnings = 0;
 
 			// Buffers for chunks and events read in a single iteration
-			ArrayBufferWriter<byte> Writer = new ArrayBufferWriter<byte>();
-			List<CreateEventRequest> Events = new List<CreateEventRequest>();
-
-			// Line separator for JSON events
-			byte[] Newline = { (byte)'\n' };
-			JsonEncodedText Timestamp = JsonEncodedText.Encode("");
+			ArrayBufferWriter<byte> writer = new ArrayBufferWriter<byte>();
+			List<CreateEventRequest> events = new List<CreateEventRequest>();
 
 			// The current jobstep outcome
-			JobStepOutcome PostedOutcome = JobStepOutcome.Success;
+			JobStepOutcome postedOutcome = JobStepOutcome.Success;
 
 			// Whether we've written the flush command
 			for (; ; )
 			{
-				Writer.Clear();
-				Events.Clear();
+				writer.Clear();
+				events.Clear();
 
 				// Save off the current line number for sending to the server
-				int InitialLineIndex = LineIndex;
+				int initialLineIndex = lineIndex;
 
 				// Get the next data
-				Task WaitTask = Task.Delay(TimeSpan.FromSeconds(2.0));
-				while (Writer.WrittenCount < 256 * 1024)
+				Task waitTask = Task.Delay(TimeSpan.FromSeconds(2.0));
+				while (writer.WrittenCount < 256 * 1024)
 				{
-					QueueItem? Data;
-					if (DataChannel.Reader.TryRead(out Data))
+					JsonLogEvent jsonLogEvent;
+					if (_dataChannel.Reader.TryRead(out jsonLogEvent))
 					{
-						if (Data.Event != null)
+						int lineCount = WriteEvent(jsonLogEvent, writer);
+						if (jsonLogEvent.LineIndex == 0)
 						{
-							if ((Data.Event.Severity == EventSeverity.Warning && ++NumWarnings < MaxWarnings) || (Data.Event.Severity == EventSeverity.Error && ++NumErrors < MaxErrors))
+							if (jsonLogEvent.Level == LogLevel.Warning && ++numWarnings <= MaxWarnings)
 							{
-								Data.Event.LineIndex = LineIndex;
-								Events.Add(Data.Event);
+								AddEvent(jsonLogEvent.Data.Span, lineIndex, Math.Max(lineCount, jsonLogEvent.LineCount), EventSeverity.Warning, events);
+							}
+							else if ((jsonLogEvent.Level == LogLevel.Error || jsonLogEvent.Level == LogLevel.Critical) && ++numErrors <= MaxErrors)
+							{
+								AddEvent(jsonLogEvent.Data.Span, lineIndex, Math.Max(lineCount, jsonLogEvent.LineCount), EventSeverity.Error, events);
 							}
 						}
-
-						Writer.Write(Data.Data);
-						Writer.Write(Newline);
-
-						LineIndex++;
+						lineIndex += lineCount;
 					}
 					else
 					{
-						Task<bool> ReadTask = DataChannel.Reader.WaitToReadAsync().AsTask();
-						if (await Task.WhenAny(ReadTask, WaitTask) == WaitTask)
+						Task<bool> readTask = _dataChannel.Reader.WaitToReadAsync().AsTask();
+						if (await Task.WhenAny(readTask, waitTask) == waitTask)
 						{
 							break;
 						}
-						if (!await ReadTask)
+						if (!await readTask)
 						{
 							break;
 						}
@@ -239,60 +274,225 @@ namespace HordeAgent.Parser
 				}
 
 				// Upload it to the server
-				if (Writer.WrittenCount > 0)
+				if (writer.WrittenCount > 0)
 				{
-					byte[] Data = Writer.WrittenSpan.ToArray();
+					byte[] data = writer.WrittenSpan.ToArray();
 					try
 					{
-						await RpcClient.InvokeAsync(x => x.WriteOutputAsync(new WriteOutputRequest(LogId, Offset, InitialLineIndex, Data, false)), new RpcContext(), CancellationToken.None);
+						await _sink.WriteOutputAsync(new WriteOutputRequest(_logId, offset, initialLineIndex, data, false));
 					}
-					catch (Exception Ex)
+					catch (Exception ex)
 					{
-						Inner.LogWarning(Ex, "Unable to write data to server (log {LogId}, offset {Offset})", LogId, Offset);
+						_inner.LogWarning(ex, "Unable to write data to server (log {LogId}, offset {Offset})", _logId, offset);
 					}
-					Offset += Data.Length;
+					offset += data.Length;
 				}
 
 				// Write all the events
-				if (Events.Count > 0)
+				if (events.Count > 0)
 				{
 					try
 					{
-						await RpcClient.InvokeAsync(x => x.CreateEventsAsync(new CreateEventsRequest(Events)), new RpcContext(), CancellationToken.None);
+						await _sink.WriteEventsAsync(events);
 					}
-					catch (Exception Ex)
+					catch (Exception ex)
 					{
-						Inner.LogWarning(Ex, "Unable to create events");
+						_inner.LogWarning(ex, "Unable to create events");
 					}
 				}
 
 				// Update the outcome of this jobstep
-				if (JobId != null && JobBatchId != null && JobStepId != null && Outcome != PostedOutcome)
+				if (Outcome != postedOutcome)
 				{
 					try
 					{
-						await RpcClient.InvokeAsync(x => x.UpdateStepAsync(new UpdateStepRequest(JobId, JobBatchId, JobStepId, JobStepState.Unspecified, Outcome)), new RpcContext(), CancellationToken.None);
+						await _sink.SetOutcomeAsync(Outcome);
 					}
-					catch (Exception Ex)
+					catch (Exception ex)
 					{
-						Inner.LogWarning(Ex, "Unable to update step outcome to {NewOutcome}", Outcome);
+						_inner.LogWarning(ex, "Unable to update step outcome to {NewOutcome}", Outcome);
 					}
-					PostedOutcome = Outcome;
+					postedOutcome = Outcome;
 				}
 
 				// Wait for more data to be available
-				if (!await DataChannel.Reader.WaitToReadAsync())
+				if (!await _dataChannel.Reader.WaitToReadAsync())
 				{
 					try
 					{
-						await RpcClient.InvokeAsync(x => x.WriteOutputAsync(new WriteOutputRequest(LogId, Offset, LineIndex, Array.Empty<byte>(), true)), new RpcContext(), CancellationToken.None);
+						await _sink.WriteOutputAsync(new WriteOutputRequest(_logId, offset, lineIndex, Array.Empty<byte>(), true));
 					}
-					catch (Exception Ex)
+					catch (Exception ex)
 					{
-						Inner.LogWarning(Ex, "Unable to flush data to server (log {LogId}, offset {Offset})", LogId, Offset);
+						_inner.LogWarning(ex, "Unable to flush data to server (log {LogId}, offset {Offset})", _logId, offset);
 					}
 					break;
 				}
+			}
+		}
+
+		static readonly string s_messagePropertyName = LogEventPropertyName.Message.ToString();
+		static readonly string s_formatPropertyName = LogEventPropertyName.Format.ToString();
+		static readonly string s_linePropertyName = LogEventPropertyName.Line.ToString();
+		static readonly string s_lineCountPropertyName = LogEventPropertyName.LineCount.ToString();
+
+		static readonly Utf8String s_newline = "\n";
+		static readonly Utf8String s_escapedNewline = "\\n";
+
+		public static int WriteEvent(JsonLogEvent jsonLogEvent, IBufferWriter<byte> writer)
+		{
+			ReadOnlySpan<byte> span = jsonLogEvent.Data.Span;
+			if (jsonLogEvent.LineCount == 1 && span.IndexOf(s_escapedNewline) != -1)
+			{
+				JsonObject obj = (JsonObject)JsonNode.Parse(span)!;
+
+				JsonValue? formatValue = obj["format"] as JsonValue;
+				if (formatValue != null && formatValue.TryGetValue(out string? format))
+				{
+					return WriteEventWithFormat(obj, format, writer);
+				}
+
+				JsonValue? messageValue = obj["message"] as JsonValue;
+				if (messageValue != null && messageValue.TryGetValue(out string? message))
+				{
+					return WriteEventWithMessage(obj, message, writer);
+				}
+			}
+
+			writer.Write(span);
+			writer.Write(s_newline);
+			return 1;
+		}
+
+		static int WriteEventWithFormat(JsonObject obj, string format, IBufferWriter<byte> writer)
+		{
+			IEnumerable<KeyValuePair<string, object?>> propertyValueList = Enumerable.Empty<KeyValuePair<string, object?>>();
+
+			// Split all the multi-line properties into separate properties
+			JsonObject? properties = obj["properties"] as JsonObject;
+			if (properties != null)
+			{
+				// Get all the current property values
+				Dictionary<string, string> propertyValues = new Dictionary<string, string>(StringComparer.Ordinal);
+				foreach ((string name, JsonNode? node) in properties)
+				{
+					string value = String.Empty;
+					if (node != null)
+					{
+						if (node is JsonObject valueObject)
+						{
+							value = valueObject["$text"]?.ToString() ?? String.Empty;
+						}
+						else
+						{
+							value = node.ToString();
+						}
+					}
+					propertyValues[name] = value;
+				}
+
+				// Split all the multi-line properties into separate things
+				int nameStart = -1;
+				for (int idx = 0; idx < format.Length; idx++)
+				{
+					if (format[idx] == '{')
+					{
+						nameStart = idx + 1;
+					}
+					else if (format[idx] == '}' && nameStart != -1)
+					{
+						string name = format.Substring(nameStart, idx - nameStart);
+						if (propertyValues.TryGetValue(name, out string? text))
+						{
+							int textLineEnd = text.IndexOf('\n', StringComparison.Ordinal);
+							if (textLineEnd != -1)
+							{
+								int lineNum = 0;
+
+								StringBuilder builder = new StringBuilder();
+								builder.Append(format, 0, nameStart - 1);
+
+								string delimiter = String.Empty;
+								for (int textLineStart = 0; textLineStart < text.Length;)
+								{
+									string newName = $"{name}${lineNum++}";
+									string newLine = text.Substring(textLineStart, textLineEnd - textLineStart);
+
+									// Insert this line
+									builder.Append($"{delimiter}{{{newName}}}");
+									properties![newName] = newLine;
+									propertyValues[newName] = newLine;
+									delimiter = "\n";
+
+									// Move to the next line
+									textLineStart = ++textLineEnd;
+									while (textLineEnd < text.Length && text[textLineEnd] != '\n')
+									{
+										textLineEnd++;
+									}
+								}
+
+								builder.Append(format, idx + 1, format.Length - (idx + 1));
+								format = builder.ToString();
+							}
+						}
+					}
+				}
+
+				// Get the enumerable property list for formatting
+				propertyValueList = propertyValues.Select(x => new KeyValuePair<string, object?>(x.Key, x.Value));
+			}
+
+			// Finally split the format string into multiple lines
+			string[] lines = format.Split('\n');
+			for (int idx = 0; idx < lines.Length; idx++)
+			{
+				string message = MessageTemplate.Render(lines[idx], propertyValueList);
+				WriteSingleEvent(obj, message, lines[idx], idx, lines.Length, writer);
+			}
+			return lines.Length;
+		}
+
+		static int WriteEventWithMessage(JsonObject obj, string message, IBufferWriter<byte> writer)
+		{
+			string[] lines = message.Split('\n');
+			for (int idx = 0; idx < lines.Length; idx++)
+			{
+				WriteSingleEvent(obj, lines[idx], null, idx, lines.Length, writer);
+			}
+			return lines.Length;
+		}
+
+		static void WriteSingleEvent(JsonObject obj, string message, string? format, int line, int lineCount, IBufferWriter<byte> writer)
+		{
+			obj[s_messagePropertyName] = message;
+			if (format != null)
+			{
+				obj[s_formatPropertyName] = format;
+			}
+			if (lineCount > 1)
+			{
+				obj[s_linePropertyName] = line;
+				obj[s_lineCountPropertyName] = lineCount;
+			}
+
+			using (Utf8JsonWriter jsonWriter = new Utf8JsonWriter(writer))
+			{
+				obj.WriteTo(jsonWriter);
+			}
+
+			writer.Write(s_newline.Span);
+		}
+
+		void AddEvent(ReadOnlySpan<byte> span, int lineIndex, int lineCount, EventSeverity severity, List<CreateEventRequest> events)
+		{
+			try
+			{
+				events.Add(new CreateEventRequest(severity, _logId, lineIndex, lineCount));
+			}
+			catch (Exception ex)
+			{
+				_inner.LogError(ex, "Exception while trying to parse line count from data ({Message})", Encoding.UTF8.GetString(span));
 			}
 		}
 	}

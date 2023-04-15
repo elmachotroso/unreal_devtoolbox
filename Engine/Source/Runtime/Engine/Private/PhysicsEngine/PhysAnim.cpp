@@ -19,9 +19,6 @@
 #include "PhysicsPublic.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Physics/PhysicsInterfaceCore.h"
-#if WITH_PHYSX
-	#include "PhysXPublic.h"
-#endif // WITH_PHYSX
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 
@@ -135,7 +132,7 @@ void UpdateWorldBoneTM(TAssetWorldBoneTMArray& WorldBoneTMs, const TArray<FTrans
 	else
 	{
 		// If not root, use our cached world-space bone transforms.
-		int32 ParentIndex = SkelComp->SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+		int32 ParentIndex = SkelComp->GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(BoneIndex);
 		UpdateWorldBoneTM(WorldBoneTMs, InBoneSpaceTransforms, ParentIndex, SkelComp, LocalToWorldTM, Scale3D);
 		ParentTM = WorldBoneTMs[ParentIndex].TM;
 	}
@@ -204,9 +201,13 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 			int32 BoneIndex = InRequiredBones[i];
 
 			// See if this is a physics bone..
-			int32 BodyIndex = PhysicsAsset->FindBodyIndex(SkeletalMesh->GetRefSkeleton().GetBoneName(BoneIndex));
+			int32 BodyIndex = PhysicsAsset->FindBodyIndex(GetSkeletalMeshAsset()->GetRefSkeleton().GetBoneName(BoneIndex));
 			// need to update back to physX so that physX knows where it was after blending
 			FBodyInstance* PhysicsAssetBodyInstance = nullptr;
+
+			// Gets set to true if we have a valid body and the skeletal mesh option has been set to
+			// be driven by kinematic body parts.
+			bool bDriveMeshWhenKinematic = false;
 
 			// If so - get its world space matrix and its parents world space matrix and calc relative atom.
 			if(BodyIndex != INDEX_NONE )
@@ -216,7 +217,7 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 				if ( !ensure(Bodies.IsValidIndex(BodyIndex)) )
 				{
 					UE_LOG(LogPhysics, Warning, TEXT("%s(Mesh %s, PhysicsAsset %s)"), 
-						*GetName(), *GetNameSafe(SkeletalMesh), *GetNameSafe(PhysicsAsset));
+						*GetName(), *GetNameSafe(GetSkeletalMeshAsset()), *GetNameSafe(PhysicsAsset));
 					UE_LOG(LogPhysics, Warning, TEXT(" - # of BodySetup (%d), # of Bodies (%d), Invalid BodyIndex(%d)"), 
 						PhysicsAsset->SkeletalBodySetups.Num(), Bodies.Num(), BodyIndex);
 					continue;
@@ -224,8 +225,12 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 #endif
 				PhysicsAssetBodyInstance = Bodies[BodyIndex];
 
+				bDriveMeshWhenKinematic =
+					bUpdateMeshWhenKinematic &&
+					PhysicsAssetBodyInstance->IsValidBodyInstance();
+
 				//if simulated body copy back and blend with animation
-				if(PhysicsAssetBodyInstance->IsInstanceSimulatingPhysics())
+				if(PhysicsAssetBodyInstance->IsInstanceSimulatingPhysics() || bDriveMeshWhenKinematic)
 				{
 					FTransform PhysTM = PhysicsAssetBodyInstance->GetUnrealWorldTransform_AssumesLocked();
 
@@ -233,10 +238,10 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 					WorldBoneTMs[BoneIndex].TM = PhysTM;
 					WorldBoneTMs[BoneIndex].bUpToDate = true;
 
-					float UsePhysWeight = (bBlendPhysics)? 1.f : PhysicsAssetBodyInstance->PhysicsBlendWeight;
+					float UsePhysWeight = (bBlendPhysics || bDriveMeshWhenKinematic)? 1.f : PhysicsAssetBodyInstance->PhysicsBlendWeight;
 
 					// if the body instance is disabled, then we want to use the animation transform and ignore the physics one
-					if (PhysicsAssetBodyInstance->IsPhysicsDisabled())
+					if (PhysicsAssetBodyInstance->IsPhysicsDisabled() && !bDriveMeshWhenKinematic)
 					{
 						UsePhysWeight = 0.0f;
 					}
@@ -244,7 +249,7 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 					// Find this bones parent matrix.
 					FTransform ParentWorldTM;
 
-					// if we wan't 'full weight' we just find 
+					// if we want 'full weight' we just find 
 					if(UsePhysWeight > 0.f)
 					{
 						if (!(ensure(InOutBoneSpaceTransforms.Num())))
@@ -259,7 +264,7 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 						else
 						{
 							// If not root, get parent TM from cache (making sure its up-to-date).
-							int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+							int32 ParentIndex = GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(BoneIndex);
 							UpdateWorldBoneTM(WorldBoneTMs, InOutBoneSpaceTransforms, ParentIndex, this, LocalToWorldTM, TotalScale3D);
 							ParentWorldTM = WorldBoneTMs[ParentIndex].TM;
 						}
@@ -303,13 +308,13 @@ void USkeletalMeshComponent::PerformBlendPhysicsBones(const TArray<FBoneIndexTyp
 			}
 			else
 			{
-				if(bLocalSpaceKinematics || BodyIndex == INDEX_NONE || Bodies[BodyIndex]->IsInstanceSimulatingPhysics())
+				if(bDriveMeshWhenKinematic || bLocalSpaceKinematics || BodyIndex == INDEX_NONE || Bodies[BodyIndex]->IsInstanceSimulatingPhysics())
 				{
 					if (!(ensure(BoneIndex < InOutBoneSpaceTransforms.Num())))
 					{
 						continue;
 					}
-					const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+					const int32 ParentIndex = GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(BoneIndex);
 					InOutComponentSpaceTransforms[BoneIndex] = InOutBoneSpaceTransforms[BoneIndex] * InOutComponentSpaceTransforms[ParentIndex];
 
 					/**
@@ -360,7 +365,7 @@ void USkeletalMeshComponent::BlendInPhysicsInternal(FTickFunction& ThisTickFunct
 	check(IsInGameThread());
 
 	// Can't do anything without a SkeletalMesh
-	if( !SkeletalMesh )
+	if( !GetSkeletalMeshAsset())
 	{
 		return;
 	}
@@ -454,8 +459,8 @@ void USkeletalMeshComponent::FinalizeAnimationUpdate()
 	// New bone positions need to be sent to render thread
 	MarkRenderDynamicDataDirty();
 
-	// If we have any Slave Components, they need to be refreshed as well.
-	RefreshSlaveComponents();
+	// If we have any Follower Components, they need to be refreshed as well.
+	RefreshFollowerComponents();
 }
 
 void USkeletalMeshComponent::CompleteParallelBlendPhysics()
@@ -530,13 +535,13 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// If desired, draw the skeleton at the point where we pass it to the physics.
-	if (bShowPrePhysBones && SkeletalMesh && InSpaceBases.Num() == SkeletalMesh->GetRefSkeleton().GetNum())
+	if (bShowPrePhysBones && GetSkeletalMeshAsset() && InSpaceBases.Num() == GetSkeletalMeshAsset()->GetRefSkeleton().GetNum())
 	{
 		for (int32 i = 1; i<InSpaceBases.Num(); i++)
 		{
 			FVector ThisPos = CurrentLocalToWorld.TransformPosition(InSpaceBases[i].GetLocation());
 
-			int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(i);
+			int32 ParentIndex = GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(i);
 			FVector ParentPos = CurrentLocalToWorld.TransformPosition(InSpaceBases[ParentIndex].GetLocation());
 
 			World->LineBatcher->DrawLine(ThisPos, ParentPos, AnimSkelDrawColor, SDPG_Foreground);
@@ -549,7 +554,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if( !MeshScale3D.IsUniform() )
 	{
-		UE_LOG(LogPhysics, Log, TEXT("USkeletalMeshComponent::UpdateKinematicBonesToAnim : Non-uniform scale factor (%s) can cause physics to mismatch for %s  SkelMesh: %s"), *MeshScale3D.ToString(), *GetFullName(), SkeletalMesh ? *SkeletalMesh->GetFullName() : TEXT("NULL"));
+		UE_LOG(LogPhysics, Log, TEXT("USkeletalMeshComponent::UpdateKinematicBonesToAnim : Non-uniform scale factor (%s) can cause physics to mismatch for %s  SkelMesh: %s"), *MeshScale3D.ToString(), *GetFullName(), GetSkeletalMeshAsset() ? *GetSkeletalMeshAsset()->GetFullName() : TEXT("NULL"));
 	}
 #endif
 
@@ -557,18 +562,17 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 	if (bEnablePerPolyCollision == false)
 	{
 		const UPhysicsAsset* const PhysicsAsset = GetPhysicsAsset();
-		if (PhysicsAsset && SkeletalMesh && Bodies.Num() > 0)
+		if (PhysicsAsset && GetSkeletalMeshAsset() && Bodies.Num() > 0)
 		{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			if (!ensureMsgf(PhysicsAsset->SkeletalBodySetups.Num() == Bodies.Num(), TEXT("Mesh (%s) has PhysicsAsset(%s), and BodySetup(%d) and Bodies(%d) don't match"),
-						*SkeletalMesh->GetName(), *PhysicsAsset->GetName(), PhysicsAsset->SkeletalBodySetups.Num(), Bodies.Num()))
+						*GetSkeletalMeshAsset()->GetName(), *PhysicsAsset->GetName(), PhysicsAsset->SkeletalBodySetups.Num(), Bodies.Num()))
 			{
 				return;
 			}
 #endif
 			const int32 NumComponentSpaceTransforms = GetNumComponentSpaceTransforms();
 			const int32 NumBodies = Bodies.Num();
-#if WITH_PHYSX
 
 			// Lock the scenes we need (flags set in InitArticulated)
 			FPhysicsCommand::ExecuteWrite(this, [&]()
@@ -597,7 +601,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 							{
 								BodyName = PhysicsAsset->SkeletalBodySetups[i]->BoneName;
 							}
-							UE_LOG(LogPhysics, Log, TEXT("UpdateRBBones: WARNING: Failed to find bone '%s' need by PhysicsAsset '%s' in SkeletalMesh '%s'."), *BodyName.ToString(), *PhysicsAsset->GetName(), *SkeletalMesh->GetName());
+							UE_LOG(LogPhysics, Log, TEXT("UpdateRBBones: WARNING: Failed to find bone '%s' need by PhysicsAsset '%s' in SkeletalMesh '%s'."), *BodyName.ToString(), *PhysicsAsset->GetName(), *GetSkeletalMeshAsset()->GetName());
 						}
 						else
 						{
@@ -608,7 +612,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 								{
 									BodyName = PhysicsAsset->SkeletalBodySetups[i]->BoneName;
 								}
-								UE_LOG(LogPhysics, Warning, TEXT("BoneIndex %d out of range of SpaceBases (Size %d) on PhysicsAsset '%s' in SkeletalMesh '%s' for bone '%s'"), BoneIndex, InSpaceBases.Num(), *PhysicsAsset->GetName(), *SkeletalMesh->GetName(), *BodyName.ToString());
+								UE_LOG(LogPhysics, Warning, TEXT("BoneIndex %d out of range of SpaceBases (Size %d) on PhysicsAsset '%s' in SkeletalMesh '%s' for bone '%s'"), BoneIndex, InSpaceBases.Num(), *PhysicsAsset->GetName(), *GetSkeletalMeshAsset()->GetName(), *BodyName.ToString());
 								continue;
 							}
 
@@ -622,7 +626,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 									BodyName = PhysicsAsset->SkeletalBodySetups[i]->BoneName;
 								}
 
-								UE_LOG(LogPhysics, Warning, TEXT("UpdateKinematicBonesToAnim: Trying to set transform with bad data %s on PhysicsAsset '%s' in SkeletalMesh '%s' for bone '%s'"), *BoneTransform.ToHumanReadableString(), *PhysicsAsset->GetName(), *SkeletalMesh->GetName(), *BodyName.ToString());
+								UE_LOG(LogPhysics, Warning, TEXT("UpdateKinematicBonesToAnim: Trying to set transform with bad data %s on PhysicsAsset '%s' in SkeletalMesh '%s' for bone '%s'"), *BoneTransform.ToHumanReadableString(), *PhysicsAsset->GetName(), *GetSkeletalMeshAsset()->GetName(), *BodyName.ToString());
 								BoneTransform.DiagnosticCheck_IsValid();	//In special nan mode we want to actually ensure
 
 								continue;
@@ -669,14 +673,11 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 							//It's not clear whether this should be a warning. There are certainly cases where you interpolate the blend weight towards 0. The blend feature needs some work which will probably change this in the future.
 							//Making it Verbose for now
 							UE_LOG(LogPhysics, Verbose, TEXT("%s(Mesh %s, PhysicsAsset %s, Bone %s) is simulating, but no blending. "),
-								*GetName(), *GetNameSafe(SkeletalMesh), *GetNameSafe(PhysicsAsset), *BodyInst->BodySetup.Get()->BoneName.ToString());
+								*GetName(), *GetNameSafe(GetSkeletalMeshAsset()), *GetNameSafe(PhysicsAsset), *BodyInst->BodySetup.Get()->BoneName.ToString());
 						}
 					}
 				}
 			});
-
-#endif // WITH_PHYSX
-
 		}
 	}
 	else
@@ -707,7 +708,7 @@ void USkeletalMeshComponent::UpdateKinematicBonesToAnim(const TArray<FTransform>
 						}
 					}
 				}
-				BodyInstance.UpdateTriMeshVertices(LWC::ConvertArrayType<FVector>(NewPositions));
+				BodyInstance.UpdateTriMeshVertices(UE::LWC::ConvertArrayType<FVector>(NewPositions));
 			}
 			
 			BodyInstance.SetBodyTransform(CurrentLocalToWorld, Teleport);
@@ -731,7 +732,7 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 	}
 
 	const UPhysicsAsset* const PhysicsAsset = GetPhysicsAsset();
-	if(PhysicsAsset && Constraints.Num() > 0 && SkeletalMesh)
+	if(PhysicsAsset && Constraints.Num() > 0 && GetSkeletalMeshAsset())
 	{
 		check( PhysicsAsset->ConstraintSetup.Num() == Constraints.Num() );
 
@@ -743,7 +744,7 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 			FConstraintInstance* CI = Constraints[i];
 
 			FName JointChildBoneName = CS->DefaultInstance.GetChildBoneName();
-			int32 BoneIndex = SkeletalMesh->GetRefSkeleton().FindBoneIndex(JointChildBoneName);
+			int32 BoneIndex = GetSkeletalMeshAsset()->GetRefSkeleton().FindBoneIndex(JointChildBoneName);
 
 			// If we found this bone, and a visible bone that is not the root, and its joint is motorised in some way..
 			if( (BoneIndex != INDEX_NONE) && (BoneIndex != 0) &&
@@ -762,8 +763,8 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 				// We need this to compensate for welding, where graphics and physics parents may not be the same.
 				FMatrix ControlBodyToParentBoneTM = FMatrix::Identity;
 
-				int32 TestBoneIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex); // This give the 'graphics' parent of this bone
-				bool bFoundControlBody = (SkeletalMesh->GetRefSkeleton().GetBoneName(TestBoneIndex) == CS->DefaultInstance.ConstraintBone2); // ConstraintBone2 is the 'physics' parent of this joint.
+				int32 TestBoneIndex = GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(BoneIndex); // This give the 'graphics' parent of this bone
+				bool bFoundControlBody = (GetSkeletalMeshAsset()->GetRefSkeleton().GetBoneName(TestBoneIndex) == CS->DefaultInstance.ConstraintBone2); // ConstraintBone2 is the 'physics' parent of this joint.
 
 				while(!bFoundControlBody)
 				{
@@ -772,7 +773,7 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 					const FVector Scale3D = BoneSpaceTransforms[TestBoneIndex].GetScale3D();
 					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					const float ScaleSum = Scale3D.X + Scale3D.Y + Scale3D.Z;
-					if(ScaleSum < KINDA_SMALL_NUMBER)
+					if(ScaleSum < UE_KINDA_SMALL_NUMBER)
 					{
 						break;
 					}
@@ -785,7 +786,7 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 					ControlBodyToParentBoneTM = ControlBodyToParentBoneTM * RelTM;
 
 					// Move on to parent
-					TestBoneIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(TestBoneIndex);
+					TestBoneIndex = GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(TestBoneIndex);
 
 					// If we are at the root - bail out.
 					if(TestBoneIndex == 0)
@@ -794,7 +795,7 @@ void USkeletalMeshComponent::UpdateRBJointMotors()
 					}
 
 					// See if this is the controlling body
-					bFoundControlBody = (SkeletalMesh->GetRefSkeleton().GetBoneName(TestBoneIndex) == CS->DefaultInstance.ConstraintBone2);
+					bFoundControlBody = (GetSkeletalMeshAsset()->GetRefSkeleton().GetBoneName(TestBoneIndex) == CS->DefaultInstance.ConstraintBone2);
 				}
 
 				// If after that we didn't find a parent body, we can' do this, so skip.

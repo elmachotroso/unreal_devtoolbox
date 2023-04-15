@@ -3,7 +3,7 @@
 #include "Commandlets/ImportLocalizedDialogueCommandlet.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Sound/SoundWave.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
@@ -11,7 +11,7 @@
 #include "EditorFramework/AssetImportData.h"
 #include "Sound/DialogueWave.h"
 #include "Utils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "AudioEditorModule.h"
@@ -156,7 +156,7 @@ int32 UImportLocalizedDialogueCommandlet::Main(const FString& Params)
 
 	// We want all the non-localized project specific dialogue waves
 	TArray<FAssetData> AssetDataArrayForDialogueWaves;
-	if (!FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, *RootAssetPath, UDialogueWave::StaticClass()->GetFName(), /*bIncludeLocalizedAssets*/false, AssetDataArrayForDialogueWaves))
+	if (!FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, *RootAssetPath, UDialogueWave::StaticClass()->GetClassPathName(), /*bIncludeLocalizedAssets*/false, AssetDataArrayForDialogueWaves))
 	{
 		UE_LOG(LogImportLocalizedDialogueCommandlet, Error, TEXT("Unable to get dialogue wave asset data from asset registry."));
 		return -1;
@@ -193,8 +193,8 @@ int32 UImportLocalizedDialogueCommandlet::Main(const FString& Params)
 			LocalizedSoundWavePathsToSearch.Add(*CultureImportInfo.LocalizedImportedDialoguePackagePath);
 		}
 
-		FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, LocalizedDialogueWavePathsToSearch, UDialogueWave::StaticClass()->GetFName(), /*bIncludeLocalizedAssets*/true, LocalizedAssetsToPotentiallyDelete);
-		FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, LocalizedSoundWavePathsToSearch, USoundWave::StaticClass()->GetFName(), /*bIncludeLocalizedAssets*/true, LocalizedAssetsToPotentiallyDelete);
+		FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, LocalizedDialogueWavePathsToSearch, UDialogueWave::StaticClass()->GetClassPathName(), /*bIncludeLocalizedAssets*/true, LocalizedAssetsToPotentiallyDelete);
+		FLocalizedAssetUtil::GetAssetsByPathAndClass(AssetRegistry, LocalizedSoundWavePathsToSearch, USoundWave::StaticClass()->GetClassPathName(), /*bIncludeLocalizedAssets*/true, LocalizedAssetsToPotentiallyDelete);
 	}
 
 	// We're going to walk every context from every dialogue wave asset looking to see whether there's new audio to import for each culture we generate for
@@ -255,7 +255,7 @@ int32 UImportLocalizedDialogueCommandlet::Main(const FString& Params)
 	for (const FAssetData& LocalizedAssetData : LocalizedAssetsToPotentiallyDelete)
 	{
 		// Has this asset already keen marked as "keep"?
-		if (AssetsToKeep.Contains(LocalizedAssetData.ObjectPath))
+		if (AssetsToKeep.Contains(LocalizedAssetData.GetSoftObjectPath()))
 		{
 			continue;
 		}
@@ -308,7 +308,7 @@ bool UImportLocalizedDialogueCommandlet::ImportDialogueForCulture(FLocTextHelper
 		}
 
 		// Mark this localized dialogue wave as used so it doesn't get deleted later
-		AssetsToKeep.Add(*LocalizedDialogueWave->GetPathName());
+		AssetsToKeep.Add(FSoftObjectPath(LocalizedDialogueWave));
 	}
 
 	// First pass, handle any contexts that have an exact mapping to their audio file
@@ -324,7 +324,7 @@ bool UImportLocalizedDialogueCommandlet::ImportDialogueForCulture(FLocTextHelper
 			// We're skipping this context entry due to our manifest, but we don't want the sound wave it's using to be deleted
 			if (ContextMapping.SoundWave)
 			{
-				AssetsToKeep.Add(*ContextMapping.SoundWave->GetPathName());
+				AssetsToKeep.Add(FSoftObjectPath(ContextMapping.SoundWave));
 			}
 
 			UE_LOG(LogImportLocalizedDialogueCommandlet, Log, TEXT("No internationalization manifest entry was found for context '%s' in culture '%s'. This context will be skipped."), *ContextLocalizationKey, *InCultureImportInfo.Name);
@@ -352,7 +352,7 @@ bool UImportLocalizedDialogueCommandlet::ImportDialogueForCulture(FLocTextHelper
 		// This sound wave is in use, so shouldn't be deleted
 		if (ContextMapping.SoundWave)
 		{
-			AssetsToKeep.Add(*ContextMapping.SoundWave->GetPathName());
+			AssetsToKeep.Add(FSoftObjectPath(ContextMapping.SoundWave));
 		}
 	}
 
@@ -431,7 +431,7 @@ bool UImportLocalizedDialogueCommandlet::ImportDialogueForCulture(FLocTextHelper
 		// This sound wave is in use, so shouldn't be deleted
 		if (ContextMappingPtr->SoundWave)
 		{
-			AssetsToKeep.Add(*ContextMappingPtr->SoundWave->GetPathName());
+			AssetsToKeep.Add(FSoftObjectPath(ContextMappingPtr->SoundWave));
 		}
 	}
 

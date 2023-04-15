@@ -8,6 +8,8 @@
 #include "VT/VirtualTextureBuiltData.h"
 #include "PlatformInfo.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextureLODSettings)
+
 int32 GUITextureLODBias = 0;
 FAutoConsoleVariableRef CVarUITextureLODBias(
 	TEXT("r.UITextureLODBias"),
@@ -220,6 +222,10 @@ int32 UTextureLODSettings::CalculateNumOptionalMips(int32 LODGroup, const int32 
 
 	int32 OptionalLOD = FMath::Min<int32>(FMath::CeilLogTwo(LODGroupInfo.OptionalMaxLODSize) + 1, NumMips);
 
+	// "MinMipToInline" actually comes from NumNonStreaming
+	//  this ensures that optional mips are always streaming mips
+	//  also streaming mips are always compression block sized aligned, therefore optional mips are too
+
 	int32 NumOptionalMips = FMath::Min(NumMips - (OptionalLOD - LODGroupInfo.OptionalLODBias), MinMipToInline);
 	return NumOptionalMips;
 }
@@ -270,6 +276,7 @@ void UTextureLODSettings::GetMipGenSettings(const UTexture& Texture, TextureMipG
 	}
 
 	// angular filtering only applies to cubemaps
+	// note: currently intentionally NOT allowed on cubearrays
 	if (Setting == TMGS_Angular && !Texture.IsA(UTextureCube::StaticClass()))
 	{
 		Setting = TMGS_NoMipmaps;
@@ -292,6 +299,7 @@ void UTextureLODSettings::GetMipGenSettings(const UTexture& Texture, TextureMipG
 	else if(Setting >= TMGS_Blur1 && Setting <= TMGS_Blur5)
 	{
 		int32 BlurFactor = ((int32)Setting + 1 - (int32)TMGS_Blur1);
+		check( BlurFactor > 0 );
 		OutSharpen = -BlurFactor * 2;
 		OutKernelSize = 2 + 2 * BlurFactor;
 		bOutDownsampleWithAverage = false;
@@ -391,3 +399,4 @@ ETextureMipLoadOptions UTextureLODSettings::GetMipLoadOptions(const UTexture* Te
 		return TextureLODGroups[Texture->LODGroup].MipLoadOptions;
 	}
 }
+

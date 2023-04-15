@@ -6,9 +6,13 @@
 #include "Landscape.h"
 #include "LandscapeSplinesComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LandscapeSplineActor)
+
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionActorDesc.h"
-#include "WorldPartition/Landscape/LandscapeSplineActorDesc.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
+#include "ControlPointMeshComponent.h"
 #endif
 
 ALandscapeSplineActor::ALandscapeSplineActor(const FObjectInitializer& ObjectInitializer)
@@ -36,15 +40,39 @@ ULandscapeInfo* ALandscapeSplineActor::GetLandscapeInfo() const
 }
 
 #if WITH_EDITOR
-TUniquePtr<FWorldPartitionActorDesc> ALandscapeSplineActor::CreateClassActorDesc() const
+void ALandscapeSplineActor::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const
 {
-	return TUniquePtr<FWorldPartitionActorDesc>(new FLandscapeSplineActorDesc());
+	Super::GetActorDescProperties(PropertyPairsMap);
+
+	if (LandscapeGuid.IsValid())
+	{
+		PropertyPairsMap.AddProperty(ALandscape::AffectsLandscapeActorDescProperty, *LandscapeGuid.ToString());
+	}
 }
 
 void ALandscapeSplineActor::GetSharedProperties(ULandscapeInfo* InLandscapeInfo)
 {
 	Modify();
 	LandscapeGuid = InLandscapeInfo->LandscapeGuid;
+	LandscapeActor = InLandscapeInfo->LandscapeActor.Get();
+}
+
+void ALandscapeSplineActor::SetLandscapeGuid(const FGuid& InGuid)
+{ 
+	LandscapeGuid = InGuid;
+	check(!LandscapeActor || (LandscapeGuid == LandscapeActor->GetLandscapeGuid()));
+}
+
+// This function is only allowed to be called to fixup LandscapeActor pointer
+void ALandscapeSplineActor::SetLandscapeActor(ALandscape* InLandscapeActor)
+{
+	if (LandscapeActor != InLandscapeActor)
+	{
+		Modify();
+		check(LandscapeActor == nullptr);
+		check(LandscapeGuid == InLandscapeActor->GetLandscapeGuid());
+		LandscapeActor = InLandscapeActor;
+	}
 }
 
 void ALandscapeSplineActor::Destroyed()
@@ -65,10 +93,23 @@ void ALandscapeSplineActor::PostRegisterAllComponents()
 	Super::PostRegisterAllComponents();
 	if (!IsPendingKillPending())
 	{
+		UWorld* World = GetWorld();
 		if (LandscapeGuid.IsValid())
 		{
-			ULandscapeInfo* LandscapeInfo = ULandscapeInfo::FindOrCreate(GetWorld(), LandscapeGuid);
+			ULandscapeInfo* LandscapeInfo = ULandscapeInfo::FindOrCreate(World, LandscapeGuid);
 			LandscapeInfo->RegisterSplineActor(this);
+		}
+
+		// If Landscape uses generated LandscapeSplineMeshesActors, ensure SplineMeshComponents & ControlPointMeshComponents are hidden in PIE
+		if (World->IsGameWorld() && HasGeneratedLandscapeSplineMeshesActors())
+		{
+			ForEachComponent<UStaticMeshComponent>(true, [](UStaticMeshComponent* Component)
+			{
+				if (Component->IsA<USplineMeshComponent>() || Component->IsA<UControlPointMeshComponent>())
+				{
+					Component->SetHiddenInGame(true);
+				}
+			});
 		}
 	}
 }
@@ -106,4 +147,10 @@ AActor* ALandscapeSplineActor::GetSceneOutlinerParent() const
 	return nullptr;
 }
 
+bool ALandscapeSplineActor::HasGeneratedLandscapeSplineMeshesActors() const
+{
+	return IsValid(LandscapeActor) && LandscapeActor->GetUseGeneratedLandscapeSplineMeshesActors();
+}
+
 #endif
+

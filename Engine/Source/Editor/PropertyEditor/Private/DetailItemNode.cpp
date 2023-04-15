@@ -89,9 +89,13 @@ EDetailNodeType FDetailItemNode::GetNodeType() const
 TSharedPtr<IPropertyHandle> FDetailItemNode::CreatePropertyHandle() const
 {
 	TSharedPtr<FDetailCategoryImpl> ParentCategoryPtr = ParentCategory.Pin();
-	if (Customization.HasPropertyNode() && ParentCategoryPtr && ParentCategoryPtr->IsParentLayoutValid())
+	if (Customization.HasPropertyNode() && ParentCategoryPtr.IsValid())
 	{
-		return ParentCategoryPtr->GetParentLayoutImpl().GetPropertyHandle(Customization.GetPropertyNode());
+		TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = ParentCategoryPtr->GetParentLayoutImpl();
+		if (ParentLayout.IsValid())
+		{
+			return ParentLayout->GetPropertyHandle(Customization.GetPropertyNode());
+		}
 	}
 	else if (Customization.HasCustomWidget())
 	{
@@ -263,7 +267,7 @@ bool FDetailItemNode::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const
 		[
 			SNew(STextBlock)
 			.Text(Customization.GetPropertyNode()->GetDisplayName())
-			.Font(FEditorStyle::GetFontStyle(bIsInnerCategory ? "PropertyWindow.NormalFont" : "DetailsView.CategoryFontStyle"))
+			.Font(FAppStyle::GetFontStyle(bIsInnerCategory ? "PropertyWindow.NormalFont" : "DetailsView.CategoryFontStyle"))
 			.ShadowOffset(bIsInnerCategory ? FVector2D::ZeroVector : FVector2D(1.0f, 1.0f))
 		];
 
@@ -356,10 +360,10 @@ bool FDetailItemNode::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const
 
 void FDetailItemNode::GetChildren(FDetailNodeList& OutChildren)
 {
-	for( int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex )
-	{
-		TSharedRef<FDetailTreeNode>& Child = Children[ChildIndex];
+	OutChildren.Reserve(Children.Num());
 
+	for (const TSharedRef<FDetailTreeNode>& Child : Children)
+	{
 		ENodeVisibility ChildVisibility = Child->GetVisibility();
 
 		// Report the child if the child is visible or we are visible due to filtering and there were no filtered children.  
@@ -387,7 +391,13 @@ void FDetailItemNode::GenerateChildren( bool bUpdateFilteredNodes )
 	Children.Empty();
 
 	TSharedPtr<FDetailCategoryImpl> ParentCategoryPinned = ParentCategory.Pin();
-	if (ParentCategoryPinned.IsValid() == false || !ParentCategoryPinned->IsParentLayoutValid())
+	if (!ParentCategoryPinned.IsValid())
+	{
+		return;
+	}
+
+	TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = ParentCategoryPinned->GetParentLayoutImpl();
+	if (!ParentLayout.IsValid())
 	{
 		return;
 	}
@@ -398,7 +408,7 @@ void FDetailItemNode::GenerateChildren( bool bUpdateFilteredNodes )
 		TSharedPtr<FComplexPropertyNode> OldChildExternalRootPropertyNode = OldChild->GetExternalRootPropertyNode();
 		if (OldChildExternalRootPropertyNode.IsValid())
 		{
-			ParentCategoryPinned->GetParentLayoutImpl().RemoveExternalRootPropertyNode(OldChildExternalRootPropertyNode.ToSharedRef());
+			ParentLayout->RemoveExternalRootPropertyNode(OldChildExternalRootPropertyNode.ToSharedRef());
 		}
 	}
 
@@ -420,25 +430,27 @@ void FDetailItemNode::GenerateChildren( bool bUpdateFilteredNodes )
 
 	// Discard generated nodes that don't pass the property allow list, as well as generated categories who no longer contain any children
 	// Searching backwards guarantees that a category's children will be culled before the category itself.
-	for (int32 i = Children.Num() - 1; i >= 0; --i)
+	for (int32 Index = Children.Num() - 1; Index >= 0; --Index)
 	{
-		Children[i]->SetParentNode(AsShared());
-		if (Children[i]->GetNodeType() == EDetailNodeType::Object || Children[i]->GetNodeType() == EDetailNodeType::Item)
+		const TSharedRef<FDetailTreeNode>& Child = Children[Index];
+
+		Child->SetParentNode(AsShared());
+		if (Child->GetNodeType() == EDetailNodeType::Object || Child->GetNodeType() == EDetailNodeType::Item)
 		{
-			if (!FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(Children[i]->GetParentBaseStructure(), Children[i]->GetNodeName()))
+			if (!FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(Child->GetParentBaseStructure(), Child->GetNodeName()))
 			{
-				Children.RemoveAt(i);
+				Children.RemoveAt(Index);
 			}
 		}
-		else if (Children[i]->GetNodeType() == EDetailNodeType::Category)
+		else if (Child->GetNodeType() == EDetailNodeType::Category)
 		{
 			// Nodes default to hidden until the filter runs the first time - categories return no children if they're hidden, so force an empty filter to initialize properly
-			Children[i]->FilterNode(FDetailFilter());
+			Child->FilterNode(FDetailFilter());
 			FDetailNodeList Subchildren;
-			Children[i]->GetChildren(Subchildren);
+			Child->GetChildren(Subchildren);
 			if (Subchildren.Num() == 0)
 			{
-				Children.RemoveAt(i);
+				Children.RemoveAt(Index);
 			}
 		}
 	}
@@ -485,11 +497,25 @@ ENodeVisibility FDetailItemNode::GetVisibility() const
 	{
 		Visibility = (bShouldBeVisibleDueToFiltering || bShouldBeVisibleDueToChildFiltering) ? Visibility : ENodeVisibility::HiddenDueToFiltering;
 	}
+	
+	if (Visibility == ENodeVisibility::Visible && GetNodeType() == EDetailNodeType::Category)
+	{
+		Visibility = ENodeVisibility::ForcedHidden;
+		for (const TSharedRef<FDetailTreeNode>& Child : Children)
+		{
+			if (Child->GetVisibility() != ENodeVisibility::ForcedHidden)
+			{
+				Visibility = ENodeVisibility::Visible;
+				break;
+			}
+		}
+	}
+	
 	return Visibility;
 }
 
 static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCustomization& InCustomization, const FDetailFilter& InFilter, const FString& InCategoryName )
-{	
+{
 	struct Local
 	{
 		static bool StringPassesFilter(const FDetailFilter& InDetailFilter, const FString& InString)
@@ -593,6 +619,12 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 			return FString();
 		}
 	};
+	
+	auto IsCustomResetToDefaultVisible = [ItemNode, &InCustomization]()
+	{
+		TOptional<FResetToDefaultOverride> CustomResetToDefault = InCustomization.GetCustomResetToDefault();
+		return CustomResetToDefault.IsSet() && CustomResetToDefault.GetValue().IsResetToDefaultVisible(ItemNode->CreatePropertyHandle());
+	};
 
 	bool bPassesAllFilters = true;
 
@@ -617,7 +649,13 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 			const bool bIsParentSeenDueToFiltering = PropertyNodePin->HasNodeFlags(EPropertyNodeFlags::IsParentSeenDueToFiltering) != 0;
 
 			const bool bPassesSearchFilter = bPassesCategoryFilter || bPassesValueFilter || bSearchFilterIsEmpty || ( bIsNotBeingFiltered || bIsSeenDueToFiltering || bIsParentSeenDueToFiltering );
-			const bool bPassesModifiedFilter = bPassesSearchFilter && ( InFilter.bShowOnlyModified == false || PropertyNodePin->GetDiffersFromDefault() == true );
+
+			bool bPassesModifiedFilter = true;
+			if (bPassesSearchFilter && InFilter.bShowOnlyModified)
+			{
+				bPassesModifiedFilter = PropertyNodePin->GetDiffersFromDefault() || IsCustomResetToDefaultVisible();
+			}
+
 			const bool bPassesAllowListFilter = InFilter.bShowOnlyAllowed ? InFilter.PropertyAllowList.Contains(*FPropertyNode::CreatePropertyPath(PropertyNodePin.ToSharedRef())) : true;
 
 			bool bPassesKeyableFilter = true;
@@ -642,17 +680,17 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 		else if (InCustomization.HasCustomWidget())
 		{
 			const bool bPassesTextFilter = bPassesCategoryFilter || bPassesValueFilter || Local::StringPassesFilter(InFilter, InCustomization.WidgetDecl->FilterTextString.ToString());
-			const bool bPassesModifiedFilter = InFilter.bShowOnlyModified == false || InCustomization.WidgetDecl->EditConditionValue.Get(false);
 			//@todo we need to support custom widgets for keyable, animated, in particular for transforms(ComponentTransformDetails).
+			const bool bPassesModifiedFilter = (InFilter.bShowOnlyModified == false || InCustomization.WidgetDecl->EditConditionValue.Get(false) || IsCustomResetToDefaultVisible());
 			const bool bPassesKeyableFilter = (InFilter.bShowOnlyKeyable == false);
 			const bool bPassesAnimatedFilter = (InFilter.bShowOnlyAnimated == false);
 			bPassesAllFilters = bPassesTextFilter && bPassesModifiedFilter && bPassesKeyableFilter && bPassesAnimatedFilter;
 		}
 		else if (InCustomization.HasCustomBuilder())
 		{
-			const bool bPassesTextFilter = bPassesCategoryFilter || bPassesValueFilter || Local::StringPassesFilter(InFilter, InCustomization.CustomBuilderRow->GetWidgetRow().FilterTextString.ToString());
+			const bool bPassesTextFilter = bPassesCategoryFilter || bPassesValueFilter || Local::StringPassesFilter(InFilter, InCustomization.CustomBuilderRow->GetWidgetRow()->FilterTextString.ToString());
 			//@todo we need to support custom builders for modified, keyable, animated, in particular for transforms(ComponentTransformDetails).
-			const bool bPassesModifiedFilter = (InFilter.bShowOnlyModified == false);
+			const bool bPassesModifiedFilter = (InFilter.bShowOnlyModified == false || IsCustomResetToDefaultVisible());
 			const bool bPassesKeyableFilter = (InFilter.bShowOnlyKeyable == false);
 			const bool bPassesAnimatedFilter = (InFilter.bShowOnlyAnimated == false);
 			bPassesAllFilters = bPassesTextFilter && bPassesModifiedFilter && bPassesKeyableFilter && bPassesAnimatedFilter;
@@ -694,11 +732,16 @@ EVisibility FDetailItemNode::ComputeItemVisibility() const
 		if (NewVisibility != EVisibility::Collapsed)
 		{
 			TSharedPtr<FDetailCategoryImpl> ParentCategoryPtr = GetParentCategory();
-			if (ParentCategoryPtr.IsValid() && ParentCategoryPtr->IsParentLayoutValid())
+			if (ParentCategoryPtr.IsValid())
 			{
-				if (!ParentCategoryPtr->GetParentLayout().IsPropertyVisible(CreatePropertyHandle().ToSharedRef()))
+				TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = ParentCategoryPtr->GetParentLayoutImpl();
+				if (ParentLayout.IsValid())
 				{
-					NewVisibility = EVisibility::Collapsed;
+					TSharedPtr<IPropertyHandle> PropertyHandle = ParentLayout->GetPropertyHandle(Customization.GetPropertyNode());
+					if (!ParentLayout->IsPropertyVisible(PropertyHandle.ToSharedRef()))
+					{
+						NewVisibility = EVisibility::Collapsed;
+					}
 				}
 			}
 		}
@@ -725,29 +768,17 @@ EVisibility FDetailItemNode::ComputeItemVisibility() const
 		}
 	}
 
-	// check the details view's IsCustomRowVisible delegate if this isn't a property row
-	if (NewVisibility != EVisibility::Collapsed && 
-		GetDetailsView() != nullptr && 
-		!Customization.HasPropertyNode())
+	const IDetailsViewPrivate* DetailsView = GetDetailsView();
+	if (DetailsView != nullptr)
 	{
-		const FName CategoryName = GetParentCategory()->GetCategoryName();
-		FName RowName;
-		if (Customization.HasCustomWidget())
+		// check the details view's IsCustomRowVisible delegate if this isn't a property row
+		// properties are handled by the IsPropertyVisible delegate
+		if (NewVisibility != EVisibility::Collapsed && !Customization.HasPropertyNode())
 		{
-			RowName = Customization.WidgetDecl->GetRowName();
-		}
-		else if (Customization.HasCustomBuilder())
-		{
-			RowName = Customization.CustomBuilderRow->GetCustomBuilderName();
-		}
-		else if (Customization.HasGroup())
-		{
-			RowName = Customization.DetailGroup->GetGroupName();
-		}
-
-		if (!GetDetailsView()->IsCustomRowVisible(RowName, CategoryName))
-		{
-			NewVisibility = EVisibility::Collapsed;
+			if (!DetailsView->IsCustomRowVisible(Customization.GetName(), GetParentCategory()->GetCategoryName()))
+			{
+				NewVisibility = EVisibility::Collapsed;
+			}
 		}
 	}
 
@@ -769,6 +800,26 @@ FPropertyPath FDetailItemNode::GetPropertyPath() const
 	{
 		Ret = *FPropertyNode::CreatePropertyPath( PropertyNode.ToSharedRef() );
 	}
+
+	// add properties used by custom widgets
+	if (Customization.WidgetDecl)
+	{
+		for (const TSharedPtr<IPropertyHandle> &ItemPropHandle : Customization.WidgetDecl->PropertyHandles)
+		{
+			if (ItemPropHandle)
+			{
+				if (ItemPropHandle->GetIndexInArray() != INDEX_NONE)
+				{
+					Ret.AddProperty(FPropertyInfo(ItemPropHandle->GetParentHandle()->GetProperty(), INDEX_NONE));
+					Ret.AddProperty(FPropertyInfo(ItemPropHandle->GetProperty(), ItemPropHandle->GetIndexInArray()));
+				}
+				else
+				{
+					Ret.AddProperty(FPropertyInfo(ItemPropHandle->GetProperty(), INDEX_NONE));
+				}
+			}
+		}
+	}
 	return Ret;
 }
 
@@ -779,18 +830,26 @@ TAttribute<bool> FDetailItemNode::IsPropertyEditingEnabled() const
 
 bool FDetailItemNode::IsPropertyEditingEnabledImpl() const
 {
-	const bool IsParentEnabledValue = IsParentEnabled.Get(true);
-	if (Customization.HasCustomWidget())
+	bool bIsEnabled = IsParentEnabled.Get(true);
+
+	IDetailsViewPrivate* DetailsView = GetDetailsView();
+	if (DetailsView)
 	{
-		IDetailsViewPrivate* DetailsView = GetDetailsView();
-		if (DetailsView)
+		if (Customization.HasPropertyNode())
 		{
-			return IsParentEnabledValue &&
-				!DetailsView->IsCustomRowReadOnly(FName(*Customization.WidgetDecl->FilterTextString.ToString()), FName(*GetParentCategory()->GetDisplayName().ToString()));
+			TSharedPtr<FPropertyNode> PropertyNode = Customization.GetPropertyNode();
+			if (PropertyNode->GetProperty() != nullptr)
+			{
+				bIsEnabled &= !DetailsView->IsPropertyReadOnly(FPropertyAndParent(PropertyNode.ToSharedRef()));
+			}
+		}
+		else if (Customization.HasCustomWidget())
+		{
+			bIsEnabled &= !DetailsView->IsCustomRowReadOnly(Customization.GetName(), GetParentCategory()->GetCategoryName());
 		}
 	}
 	
-	return IsParentEnabledValue;
+	return bIsEnabled;
 }
 
 TSharedPtr<FPropertyNode> FDetailItemNode::GetPropertyNode() const

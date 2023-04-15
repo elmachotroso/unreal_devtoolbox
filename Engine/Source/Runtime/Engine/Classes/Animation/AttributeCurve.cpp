@@ -5,6 +5,8 @@
 #include "Animation/AttributeBlendOperator.h"
 #include "Animation/AttributeTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AttributeCurve)
+
 FAttributeCurve::FAttributeCurve(const FAttributeCurve& OtherCurve)
 {
 	Keys = OtherCurve.Keys;
@@ -218,7 +220,7 @@ FAttributeKey& FAttributeCurve::GetKey(FKeyHandle KeyHandle)
 	return Keys[GetIndex(KeyHandle)];
 }
 
-FAttributeKey FAttributeCurve::GetKey(FKeyHandle KeyHandle) const
+const FAttributeKey& FAttributeCurve::GetKey(FKeyHandle KeyHandle) const
 {
 	EnsureAllIndicesHaveHandles();
 	return Keys[GetIndex(KeyHandle)];

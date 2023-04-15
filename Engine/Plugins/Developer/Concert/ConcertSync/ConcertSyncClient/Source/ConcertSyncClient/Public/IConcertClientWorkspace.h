@@ -8,6 +8,8 @@
 #include "ConcertWorkspaceMessages.h"
 #include "ConcertSyncSessionTypes.h"
 
+#include "ConcertClientPersistData.h"
+
 class ISourceControlProvider;
 class IConcertClientSession;
 class IConcertClientDataStore;
@@ -16,42 +18,8 @@ DECLARE_DELEGATE_RetVal(bool, FCanFinalizeWorkspaceDelegate);
 DECLARE_DELEGATE_RetVal(bool, FCanProcessPendingPackages);
 
 DECLARE_MULTICAST_DELEGATE(FOnWorkspaceSynchronized);
+DECLARE_MULTICAST_DELEGATE(FOnFinalizeWorkspaceSyncCompleted);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnActivityAddedOrUpdated, const FConcertClientInfo&/*InClientInfo*/, const FConcertSyncActivity&/*InActivity*/, const FStructOnScope&/*InActivitySummary*/);
-
-
-struct FConcertClientSessionActivity
-{
-	FConcertClientSessionActivity() = default;
-
-	FConcertClientSessionActivity(const FConcertSyncActivity& InActivity, const FStructOnScope& InActivitySummary, TUniquePtr<FConcertSessionSerializedPayload> OptionalEventPayload = nullptr)
-		: Activity(InActivity)
-		, EventPayload(MoveTemp(OptionalEventPayload))
-	{
-		ActivitySummary.InitializeFromChecked(InActivitySummary);
-	}
-
-	FConcertClientSessionActivity(FConcertSyncActivity&& InActivity, FStructOnScope&& InActivitySummary, TUniquePtr<FConcertSessionSerializedPayload> OptionalEventPayload = nullptr)
-		: Activity(MoveTemp(InActivity))
-		, EventPayload(MoveTemp(OptionalEventPayload))
-	{
-		ActivitySummary.InitializeFromChecked(MoveTemp(InActivitySummary));
-	}
-
-	/** The generic activity part. */
-	FConcertSyncActivity Activity;
-
-	/** Contains the activity summary to display as text. */
-	TStructOnScope<FConcertSyncActivitySummary> ActivitySummary;
-
-	/**
-	 * The activity event payload usable for activity inspection. Might be null if it was not requested or did not provide insightful information.
-	 *   - If the activity type is 'transaction' and EventPayload is not null, it contains a FConcertSyncTransactionEvent with full transaction data.
-	 *   - If the activity type is 'package' and EventPayload is not null, it contains a FConcertSyncPackageEvent with the package meta data only.
-	 *   - Not set for other activity types (connection/lock).
-	 * @see FConcertActivityStream
-	 */
-	TUniquePtr<FConcertSessionSerializedPayload> EventPayload;
-};
 
 class IConcertClientWorkspace
 {
@@ -115,7 +83,7 @@ public:
 	virtual TOptional<FString> GetValidPackageSessionPath(FName PackageName) const = 0;
 
 	/** Persist the session changes from the package list and prepare it for source control submission */
-	virtual bool PersistSessionChanges(TArrayView<const FName> InPackageToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasonMap = nullptr) = 0;
+	virtual FPersistResult PersistSessionChanges(FPersistParameters InParam) = 0;
 
 	/**
 	 * Get Activities from the session.
@@ -124,7 +92,7 @@ public:
 	 * @param OutEndpointClientInfoMap The client info for the activities fetched.
 	 * @param OutActivities the activities fetched.
 	 */
-	virtual void GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertClientSessionActivity>& OutActivities) const = 0;
+	virtual void GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertSessionActivity>& OutActivities) const = 0;
 
 	/**
 	 * Get the ID of the last activity in the session.
@@ -183,9 +151,15 @@ public:
 	virtual bool FindPackageEvent(const int64 PackageEventId, FConcertSyncPackageEventMetaData& OutPackageEvent) const = 0;
 
 	/**
-	 * @return the delegate called every time the workspace is synced.
+	 * @return the delegate called every time the workspace is synced. This is when the server has indicated that all
+	 * activities have been sent and ready to be finalized in the current workspace.
 	 */
 	virtual FOnWorkspaceSynchronized& OnWorkspaceSynchronized() = 0;
+
+	/**
+	 * @return The delegate called after a workspace has been completely synced and finalized.  All transactions are posted and packages have been loaded.
+	 */
+	virtual FOnFinalizeWorkspaceSyncCompleted& OnFinalizeWorkspaceSyncCompleted() = 0;
 
 	/**
 	 * This delegate allows user to defer the finalization of a sync workspace. This is for situtations where multiple

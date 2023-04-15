@@ -1,15 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/MessageDialog.h"
-#include "Misc/CString.h"
-#include "Logging/LogMacros.h"
+
+#include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
-#include "Internationalization/Text.h"
+#include "CoreTypes.h"
 #include "Internationalization/Internationalization.h"
-#include "Misc/OutputDeviceRedirector.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/CoreDelegates.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Logging/LogVerbosity.h"
 #include "Misc/App.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "Trace/Detail/Channel.h"
 
 namespace
 {
@@ -48,7 +55,7 @@ void FMessageDialog::ShowLastError()
 {
 	uint32 LastError = FPlatformMisc::GetLastError();
 
-	TCHAR TempStr[MAX_SPRINTF]=TEXT("");
+	TCHAR TempStr[MAX_SPRINTF] = {};
 	TCHAR ErrorBuffer[1024];
 	FCString::Sprintf( TempStr, TEXT("GetLastError : %d\n\n%s"), LastError, FPlatformMisc::GetSystemErrorMessage(ErrorBuffer, 1024, 0) );
 	if( FApp::IsUnattended() == true )

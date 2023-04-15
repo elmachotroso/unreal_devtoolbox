@@ -8,6 +8,8 @@
 #include "Styling/UMGCoreStyle.h"
 #include "Blueprint/WidgetTree.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Button)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -208,17 +210,6 @@ void UButton::PostLoad()
 			}
 		}
 	}
-
-	if( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS && Style_DEPRECATED != nullptr )
-	{
-		const FButtonStyle* StylePtr = Style_DEPRECATED->GetStyle<FButtonStyle>();
-		if(StylePtr != nullptr)
-		{
-			WidgetStyle = *StylePtr;
-		}
-
-		Style_DEPRECATED = nullptr;
-	}
 }
 
 FReply UButton::SlateHandleClicked()
@@ -267,3 +258,4 @@ const FText UButton::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -1,16 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDeviceProfileCreateProfilePanel.h"
-#include "Misc/CoreMisc.h"
-#include "Templates/Casts.h"
+
 #include "DeviceProfiles/DeviceProfileManager.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformMath.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/CoreMisc.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "UObject/ObjectPtr.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 
 #define LOCTEXT_NAMESPACE "DeviceProfileCreateProfilePanel"
@@ -53,13 +67,13 @@ void SDeviceProfileCreateProfilePanel::Construct( const FArguments& InArgs, TWea
 			.Padding( 0.0f, 0.0f, 4.0f, 0.0f )
 			[
 				SNew( SImage )
-				.Image( FEditorStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
+				.Image( FAppStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
 			]
 			+SHorizontalBox::Slot()
 			.HAlign(HAlign_Left)
 			[
 				SNew(STextBlock)
-				.TextStyle( FEditorStyle::Get(), "Docking.TabFont" )
+				.TextStyle( FAppStyle::Get(), "Docking.TabFont" )
 				.Text( LOCTEXT("CreateAProfileLabel", "Create A Profile...") )			
 			]
 		]
@@ -69,7 +83,7 @@ void SDeviceProfileCreateProfilePanel::Construct( const FArguments& InArgs, TWea
 		.FillHeight(1.0f)
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
+			.BorderImage( FAppStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 			[
 				// Name entry
 				SNew( SVerticalBox )
@@ -82,7 +96,7 @@ void SDeviceProfileCreateProfilePanel::Construct( const FArguments& InArgs, TWea
 					.AutoHeight()
 					[
 						SNew( STextBlock )
-						.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+						.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 						.Text( LOCTEXT("EnterProfileNameLabel", "Profile Name:") )
 					]
 					+SVerticalBox::Slot()
@@ -114,7 +128,7 @@ void SDeviceProfileCreateProfilePanel::Construct( const FArguments& InArgs, TWea
 						.FillWidth(1.0f)
 						[
 							SNew( STextBlock )
-							.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+							.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 							.Text( LOCTEXT("EnterProfileTypeLabel", "Profile Type:") )
 						]
 					]
@@ -153,7 +167,7 @@ void SDeviceProfileCreateProfilePanel::Construct( const FArguments& InArgs, TWea
 						.FillWidth(1.0f)
 						[
 							SNew( STextBlock )
-							.Font( FEditorStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
+							.Font( FAppStyle::GetFontStyle( TEXT("PropertyWindow.NormalFont") ) )
 							.Text( LOCTEXT("EnterProfileParentLabel", "Select a parent:") )
 						]
 					]

@@ -1,16 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorStyle.h"
-#include "Styling/SlateTypes.h"
-#include "EditorStyleSet.h"
-#include "Styling/SlateStyleRegistry.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Layout/SUniformGridPanel.h"
-#include "Brushes/SlateImageBrush.h"
+
 #include "Brushes/SlateBoxBrush.h"
-#include "Brushes/SlateBorderBrush.h"
+#include "Brushes/SlateImageBrush.h"
+#include "Brushes/SlateNoResource.h"
+#include "Containers/UnrealString.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Paths.h"
+#include "Rendering/SlateRenderer.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateStyleRegistry.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/TypeHash.h"
+
+class ISlateStyle;
 
 TSharedPtr< FSlateStyleSet > FVREditorStyle::VREditorStyleInstance = NULL;
 
@@ -62,13 +71,13 @@ TSharedRef< FSlateStyleSet > FVREditorStyle::Create()
 	Style->SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
 	// Use the default menu button style, but set the background to dark grey.
-	const FButtonStyle NormalButton = FEditorStyle::GetWidgetStyle<FButtonStyle>("Menu.Button");
+	const FButtonStyle NormalButton = FAppStyle::GetWidgetStyle<FButtonStyle>("Menu.Button");
 	Style->Set("VREditorStyle.Button", FButtonStyle(NormalButton)
 		.SetNormal(BOX_BRUSH("Common/RoundedSelection_16x", 4.0f / 16.0f, FLinearColor(0.1f, 0.1f, 0.1f))));
 	Style->Set("VREditorStyle.CollapsedButton", FButtonStyle(NormalButton)
 		.SetNormal(BOX_BRUSH("Common/RoundedSelection_16x", 4.0f / 16.0f, FLinearColor(0.1f, 0.1f, 0.1f))));
 
-	const FTextBlockStyle NormalText = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FTextBlockStyle NormalText = FAppStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
 	Style->Set("VREditorStyle.Label", FTextBlockStyle(NormalText)
 		.SetFont(DEFAULT_FONT("Regular", 7)));
 
@@ -109,15 +118,15 @@ TSharedRef< FSlateStyleSet > FVREditorStyle::Create()
 	Style->Set("VREditorStyle.CheckBox", VRMenuCheckBoxStyle);
 	Style->Set("VRRadialStyle.CheckBox", VRMenuCheckBoxStyle);
 
-	const FCheckBoxStyle RadioButtonStyle = FEditorStyle::GetWidgetStyle<FCheckBoxStyle>("Menu.RadioButton");
+	const FCheckBoxStyle RadioButtonStyle = FAppStyle::GetWidgetStyle<FCheckBoxStyle>("Menu.RadioButton");
 	Style->Set("VREditorStyle.RadioButton", FCheckBoxStyle(RadioButtonStyle));
 	Style->Set("VRRadialStyle.RadioButton", FCheckBoxStyle(RadioButtonStyle));
 
-	const FCheckBoxStyle ToggleButton = FEditorStyle::GetWidgetStyle<FCheckBoxStyle>("Menu.ToggleButton");
+	const FCheckBoxStyle ToggleButton = FAppStyle::GetWidgetStyle<FCheckBoxStyle>("Menu.ToggleButton");
 	Style->Set("VREditorStyle.ToggleButton", FCheckBoxStyle(ToggleButton));
 	Style->Set("VRRadialStyle.ToggleButton", FCheckBoxStyle(ToggleButton));
 
-	const FTextBlockStyle KeybindingStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("Menu.Keybinding");
+	const FTextBlockStyle KeybindingStyle = FAppStyle::GetWidgetStyle<FTextBlockStyle>("Menu.Keybinding");
 	Style->Set("VREditorStyle.Keybinding", FTextBlockStyle(KeybindingStyle));
 	Style->Set("VRRadialStyle.Keybinding", FTextBlockStyle(KeybindingStyle));
 

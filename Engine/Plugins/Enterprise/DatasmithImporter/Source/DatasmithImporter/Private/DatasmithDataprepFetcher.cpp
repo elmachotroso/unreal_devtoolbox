@@ -8,12 +8,13 @@
 
 /* UDataprepStringMetadataValueFetcher methods
  *****************************************************************************/
-FString UDatasmithStringMetadataValueFetcher::Fetch_Implementation(const UObject* Object, bool& bOutFetchSucceded) const
+TArray<FString> UDatasmithStringMetadataValueFetcher::Fetch_Implementation(const UObject* Object, bool& bOutFetchSucceded) const
 {
 	if ( Object ) 
 	{
 		bOutFetchSucceded = true;
-		return UDatasmithContentBlueprintLibrary::GetDatasmithUserDataValueForKey( const_cast< UObject* >( Object ), Key );
+		bool bMatchPartialKey = KeyMatch == EMetadataKeyMatchingCriteria::Contains;
+		return UDatasmithContentBlueprintLibrary::GetDatasmithUserDataValuesForKey( const_cast< UObject* >( Object ), Key, bMatchPartialKey);
 	}
 
 	bOutFetchSucceded = false;

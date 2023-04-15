@@ -53,8 +53,8 @@ struct PARAMETRICSURFACE_API FParametricMeshParameters
 
 		Parameters.bNeedSwapOrientation = bNeedSwapOrientation;
 		Parameters.bIsSymmetric = bIsSymmetric;
-		Parameters.SymmetricNormal = SymmetricNormal;
-		Parameters.SymmetricOrigin = SymmetricOrigin;
+		Parameters.SymmetricNormal = (FVector3f) SymmetricNormal;
+		Parameters.SymmetricOrigin = (FVector3f) SymmetricOrigin;
 
 		return Parameters;
 	}
@@ -112,25 +112,4 @@ protected:
 	// Too costly to serialize as a UPROPERTY, will use custom serialization.
 	TArray<uint8> RawData;
 };
-
-//void AddSurfaceDataForMesh(const TCHAR* InFilePath, const CADLibrary::FImportParameters& InSceneParameters, const CADLibrary::FMeshParameters& InMeshParameters, , FDatasmithMeshElementPayload& OutMeshPayload)
-//{
-//	if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Available)
-//	{
-//		if (FPaths::FileExists(InFilePath))
-//		{
-//			TArray<uint8> ByteArray;
-//			if (FFileHelper::LoadFileToArray(ByteArray, InFilePath))
-//			{
-//				UCoreTechParametricSurfaceData* CoreTechData = Datasmith::MakeAdditionalData<UCoreTechParametricSurfaceData>();
-//				CoreTechData->SourceFile = InFilePath;
-//				CoreTechData->RawData = MoveTemp(ByteArray);
-
-
-//				CoreTechData->
-//				OutMeshPayload.AdditionalData.Add(CoreTechData);
-//			}
-//		}
-//	}
-//}
 

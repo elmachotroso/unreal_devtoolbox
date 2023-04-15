@@ -2,8 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Serialization/Archive.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
 #include "UObject/UnrealType.h"
+
+class FProperty;
 
 /**
  * The RigVMPropertyPathDescription is used to provide all of the information
@@ -39,6 +47,9 @@ struct RIGVM_API FRigVMPropertyPathDescription
 		, HeadCPPType(InHeadCPPType)
 		, SegmentPath(InSegmentPath)
 	{}
+
+	// returns true if this property path is valid
+	bool IsValid() const { return PropertyIndex != INDEX_NONE && !HeadCPPType.IsEmpty() && !SegmentPath.IsEmpty(); }
 
 	// Archive operator for serialization
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMPropertyPathDescription& Path)

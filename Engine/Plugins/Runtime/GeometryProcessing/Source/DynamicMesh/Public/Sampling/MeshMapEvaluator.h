@@ -19,7 +19,8 @@ enum class EMeshMapEvaluatorType
 	Curvature,
 	Property,
 	ResampleImage,
-	MultiResampleImage
+	MultiResampleImage,
+	RenderCapture
 };
 
 class FMeshMapEvaluator
@@ -51,7 +52,8 @@ public:
 		FMeshUVSampleInfo BaseSample;
 		FVector3d BaseNormal = FVector3d::Zero();
 
-		const void* DetailMesh = nullptr;
+		// The following data has an interpretation which depends on the concrete MeshMapEvaluator/IMeshBakerDetailSampler
+		const void* DetailMesh = nullptr; // Arbitrary pointer to the mesh/surface being sampled
 		int32 DetailTriID = IndexConstants::InvalidID;
 		FVector3d DetailBaryCoords = FVector3d::Zero();
 	};
@@ -143,6 +145,9 @@ public:
 	 * @param Context [out] the evaluation context.
 	 */
 	virtual void Setup(const FMeshBaseBaker& Baker, FEvaluationContext& Context) = 0;
+
+	/** @return the data layout of the evaluator */
+	virtual const TArray<EComponents>& DataLayout() const = 0;
 
 	/** @return the type of evaluator. */
 	virtual EMeshMapEvaluatorType Type() const = 0;

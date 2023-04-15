@@ -9,16 +9,16 @@
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "LevelEditor.h"
 #include "ISessionFrontendModule.h"
 #include "IPlacementModeModule.h"
 #include "FunctionalTest.h"
 #include "ScreenshotFunctionalTest.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -41,7 +41,7 @@ void OpenMapAndFocusActor(const TArray<FString>& Args)
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
-	FAssetData MapAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData MapAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	if ( MapAssetData.IsValid() )
 	{

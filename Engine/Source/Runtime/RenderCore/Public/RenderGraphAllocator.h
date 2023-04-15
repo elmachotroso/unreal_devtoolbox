@@ -2,19 +2,37 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreGlobals.h"
 #include "CoreMinimal.h"
+#include "HAL/MemoryBase.h"
+#include "HAL/UnrealMemory.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/MemStack.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
+
+#define RDG_USE_MALLOC 0
 
 /** Private allocator used by RDG to track its internal memory. All memory is released after RDG builder execution. */
 class RENDERCORE_API FRDGAllocator final
 {
 public:
+	static FRDGAllocator& Get();
 	~FRDGAllocator();
 
 	/** Allocates raw memory. */
 	FORCEINLINE void* Alloc(uint64 SizeInBytes, uint32 AlignInBytes)
 	{
+#if RDG_USE_MALLOC
+		void* Memory = FMemory::Malloc(SizeInBytes, AlignInBytes);
+		GetContext().RawAllocs.Emplace(Memory);
+		return Memory;
+#else
 		return GetContext().MemStack.Alloc(SizeInBytes, AlignInBytes);
+#endif
 	}
 
 	/** Allocates an uninitialized type without destructor tracking. */
@@ -29,7 +47,11 @@ public:
 	FORCEINLINE T* Alloc(TArgs&&... Args)
 	{
 		FContext& LocalContext = GetContext();
+	#if RDG_USE_MALLOC
+		TTrackedAlloc<T>* TrackedAlloc = new TTrackedAlloc<T>(Forward<TArgs&&>(Args)...);
+	#else
 		TTrackedAlloc<T>* TrackedAlloc = new(LocalContext.MemStack) TTrackedAlloc<T>(Forward<TArgs&&>(Args)...);
+	#endif
 		check(TrackedAlloc);
 		LocalContext.TrackedAllocs.Add(TrackedAlloc);
 		return &TrackedAlloc->Alloc;
@@ -39,17 +61,27 @@ public:
 	template <typename T, typename... TArgs>
 	FORCEINLINE T* AllocNoDestruct(TArgs&&... Args)
 	{
+#if RDG_USE_MALLOC
+		return new (AllocUninitialized<T>(1)) T(Forward<TArgs&&>(Args)...);
+#else
 		return new (GetContext().MemStack) T(Forward<TArgs&&>(Args)...);
+#endif
 	}
 
 	FORCEINLINE int32 GetByteCount() const
 	{
+	#if RDG_USE_MALLOC
+		return 0;
+	#else
 		return Context.MemStack.GetByteCount() + ContextForTasks.MemStack.GetByteCount();
+	#endif
 	}
 
 private:
-	static FRDGAllocator& Get();
 	FRDGAllocator() = default;
+	FRDGAllocator(FRDGAllocator&&) = default;
+	FRDGAllocator& operator = (FRDGAllocator&&) = default;
+
 	void ReleaseAll();
 
 	struct FTrackedAlloc
@@ -70,7 +102,11 @@ private:
 
 	struct FContext
 	{
+#if RDG_USE_MALLOC
+		TArray<void*> RawAllocs;
+#else
 		FMemStackBase MemStack;
+#endif
 		TArray<FTrackedAlloc*> TrackedAllocs;
 
 		void ReleaseAll();
@@ -91,22 +127,25 @@ private:
 };
 
 /** Base class for RDG builder which scopes the allocations and releases them in the destructor. */
-class FRDGAllocatorScope
+class RENDERCORE_API FRDGAllocatorScope
 {
-protected:
-	FRDGAllocator& Allocator;
-
-private:
+public:
 	FRDGAllocatorScope()
 		: Allocator(FRDGAllocator::Get())
 	{}
 
-	~FRDGAllocatorScope()
+	~FRDGAllocatorScope();
+
+protected:
+	FRDGAllocator& Allocator;
+
+	void BeginAsyncDelete(TUniqueFunction<void()>&& InAsyncDeleteFunction)
 	{
-		Allocator.ReleaseAll();
+		AsyncDeleteFunction = MoveTemp(InAsyncDeleteFunction);
 	}
 
-	friend class FRDGBuilder;
+private:
+	TUniqueFunction<void()> AsyncDeleteFunction;
 };
 
 /** A container allocator that allocates from a global RDG allocator instance. */

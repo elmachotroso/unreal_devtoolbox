@@ -13,6 +13,8 @@
 #include "Navigation/NavLocalGridManager.h"
 #include "Misc/CommandLine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AISystem)
+
 DEFINE_STAT(STAT_AI_Overall);
 
 FRandomStream UAISystem::RandomStream;
@@ -45,7 +47,7 @@ UAISystem::UAISystem(const FObjectInitializer& ObjectInitializer)
 
 void UAISystem::BeginDestroy()
 {
-	CleanupWorld(true, true, NULL);
+	CleanupWorld(true, true);
 	Super::BeginDestroy();
 }
 
@@ -127,7 +129,12 @@ void UAISystem::WorldOriginLocationChanged(FIntVector OldOriginLocation, FIntVec
 
 void UAISystem::CleanupWorld(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld)
 {
-	Super::CleanupWorld(bSessionEnded, bCleanupResources, NewWorld);
+	CleanupWorld(bSessionEnded, bCleanupResources);
+}
+
+void UAISystem::CleanupWorld(bool bSessionEnded, bool bCleanupResources)
+{
+	Super::CleanupWorld(bSessionEnded, bCleanupResources);
 	
 	if (bCleanupResources)
 	{
@@ -260,3 +267,4 @@ void UAISystem::LoadDebuggerPlugin()
 {
 	FModuleManager::LoadModulePtr< IModuleInterface >("GameplayDebugger");
 }
+

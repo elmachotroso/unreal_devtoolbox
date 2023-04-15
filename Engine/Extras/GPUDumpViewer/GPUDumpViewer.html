@@ -15,6 +15,7 @@ const k_null_json_ptr = "0000000000000000";
 
 // -------------------------------------------------------------------- GLOBALS
 
+var g_dump_service = {};
 var g_infos = {};
 var g_dump_cvars = {};
 var g_passes = [];
@@ -100,10 +101,11 @@ function load_text_file(relative_path)
 		{
 			return request.responseText;
 		}
+		add_console_event('error', `couldn't load ${relative_path}: Returned HTTP status ${request.status}`);
 	}
 	catch (error)
 	{
-		return null;
+		add_console_event('error', `couldn't load ${relative_path}: ${error}`);
 	}
 	return null;
 }
@@ -125,11 +127,13 @@ function load_binary_file(relative_path, callback)
 			}
 			else
 			{
+				add_console_event('error', `couldn't load ${relative_path}: Returned HTTP status ${request.status}`);
 				callback(null);
 			}
 		};
 
 		request.onerror = function() {
+			add_console_event('error', `couldn't load ${relative_path}`);
 			callback(null);
 		};
 
@@ -137,8 +141,34 @@ function load_binary_file(relative_path, callback)
 	}
 	catch (error)
 	{
+		add_console_event('error', `couldn't load ${relative_path}: ${error}`);
 		callback(null);
 	}
+}
+
+function load_resource_binary_file(relative_path, callback)
+{
+	return load_binary_file(relative_path, function(raw_texture_data)
+	{
+		var compression_type = '';
+		if (g_dump_service['CompressionName'] == 'Zlib')
+		{
+			compression_type = 'deflate';
+		}
+		else if (g_dump_service['CompressionName'] == 'GZip')
+		{
+			compression_type = 'gzip';
+		}
+
+		if (raw_texture_data === null || compression_type == '')
+		{
+			return callback(raw_texture_data);
+		}
+
+		var decompressor = new DecompressionStream(compression_type);
+		var decompressed_stream = new Blob([raw_texture_data]).stream().pipeThrough(decompressor);
+		new Response(decompressed_stream).arrayBuffer().then(callback, function() { callback(null); });
+	});
 }
 
 function load_json(relative_path)
@@ -156,6 +186,10 @@ function load_json(relative_path)
 function load_json_dict_sequence(relative_path)
 {
 	var text_file = load_text_file(relative_path);
+	if (text_file == '')
+	{
+		return new Array();
+	}
 	var dicts = text_file.split("}{");
 	var dict_sequence = [];
 	dicts.forEach(function(value, index, array) {
@@ -235,26 +269,59 @@ function parse_subresource_unique_name(subresource_unique_name)
 	var splitted_name = subresource_unique_name.split(".");
 
 	var subresource_info = {};
-	if (splitted_name[splitted_name.length - 1 ].startsWith('mip') || splitted_name[splitted_name.length - 1 ] == 'stencil')
+	subresource_info['subresource'] = null;
+	subresource_info['array_slice'] = null;
+
+	if (splitted_name[splitted_name.length - 1].startsWith('mip') || splitted_name[splitted_name.length - 1] == 'stencil')
 	{
 		subresource_info['subresource'] = splitted_name.pop();
-		subresource_info['resource'] = splitted_name.join('.');
 	}
-	else
+
+	if (splitted_name[splitted_name.length - 1].startsWith('[') && splitted_name[splitted_name.length - 1].endsWith(']'))
 	{
-		subresource_info['subresource'] = null;
-		subresource_info['resource'] = subresource_unique_name;
+		var array_slice_bracket = splitted_name.pop();
+		subresource_info['array_slice'] = parseInt(array_slice_bracket.substring(1, array_slice_bracket.length - 1));
 	}
+
+	subresource_info['resource'] = splitted_name.join('.');
+
 	return subresource_info;
 }
 
 function get_subresource_unique_name(subresource_info)
 {
-	if (subresource_info['subresource'] === null)
+	var subresource_unique_name = subresource_info['resource'];
+	if (subresource_info['array_slice'] !== null)
 	{
-		return subresource_info['resource'];
+		subresource_unique_name += `.[${subresource_info['array_slice']}]`;
 	}
-	return `${subresource_info['resource']}.${subresource_info['subresource']}`;
+	if (subresource_info['subresource'] !== null)
+	{
+		subresource_unique_name += `.${subresource_info['subresource']}`;
+	}
+	return subresource_unique_name;
+}
+
+function prettify_subresource_unique_name(subresource_info, resource_desc)
+{
+	if (!resource_desc)
+	{
+		return get_subresource_unique_name(subresource_info);
+	}
+
+	var name = resource_desc['Name'];
+
+	if (subresource_info['array_slice'] !== null)
+	{
+		name += ` slice[${subresource_info['array_slice']}]`;
+	}
+
+	if (subresource_info['subresource'] !== null && (subresource_info['subresource'] == 'stencil' || resource_desc['NumMips'] > 1))
+	{
+		name += ` ${subresource_info['subresource']}`;
+	}
+	
+	return name;
 }
 
 function parse_subresource_unique_version_name(subresource_unique_version_name)
@@ -505,6 +572,7 @@ class ResourceView extends IView
 		super();
 		this.subresource_version_info = subresource_version_info;
 		this.resource_desc = resource_desc;
+		this.onload = function() { };
 	}
 
 	get navigations()
@@ -619,18 +687,10 @@ class PassView extends IView
 			var subresource_info = parse_subresource_unique_name(subresource_unique_name);
 			var resource_desc = get_resource_desc(subresource_info['resource']);
 
-			var name = subresource_unique_name;
+			var name = prettify_subresource_unique_name(subresource_info, resource_desc);
 			var href = null;
 			if (resource_desc)
 			{
-				if (subresource_info['subresource'] == null)
-				{
-					name = resource_desc['Name'];
-				}
-				else
-				{
-					name = `${resource_desc['Name']} ${subresource_info['subresource']}`;
-				}
 				href = `#display_input_resource(${this.pass_id},'${subresource_unique_name}');`
 			}
 
@@ -661,19 +721,10 @@ class PassView extends IView
 			var subresource_info = parse_subresource_unique_name(subresource_unique_name);
 			var resource_desc = get_resource_desc(subresource_info['resource']);
 
-			var name = subresource_unique_name;
+			var name = prettify_subresource_unique_name(subresource_info, resource_desc);
 			var href = null;
 			if (resource_desc)
 			{
-				if (subresource_info['subresource'] == null)
-				{
-					name = resource_desc['Name'];
-				}
-				else
-				{
-					name = `${resource_desc['Name']} ${subresource_info['subresource']}`;
-				}
-
 				if (draw_id >= 0)
 				{
 					href = `#display_draw_output_resource(${this.pass_id},'${subresource_unique_name}',${draw_id});`;
@@ -892,13 +943,28 @@ function display_resource_internal(subresource_version_info)
 		return;
 	}
 
-	if (resource_desc['Type'] == 'Texture2D')
-	{
-		g_view.set_resource_view(new TextureView(subresource_version_info, resource_desc));
-	}
-	else if (resource_desc['Type'] == 'VertexBuffer' || resource_desc['Type'] == 'StructuredBuffer')
+	if (resource_desc['Desc'] == 'FRDGBufferDesc')
 	{
 		g_view.set_resource_view(new BufferView(subresource_version_info, resource_desc));
+	}
+	else if (resource_desc['Desc'] == 'FRDGTextureDesc' && (resource_desc['Type'] == 'Texture2D' || resource_desc['Type'] == 'Texture2DArray'))
+	{
+		var new_texture_view = new TextureView(subresource_version_info, resource_desc);
+
+		// Keep the same zoom settings if the subresources are exactly the same extent
+		if (g_view && 'resource_view' in g_view && g_view.resource_view instanceof TextureView)
+		{
+			var zoom_settings = g_view.resource_view.get_zoom_settings();
+
+			if (new_texture_view.is_zoom_settings_compatible(zoom_settings))
+			{
+				new_texture_view.onload = function() {
+					new_texture_view.apply_zoom_settings(zoom_settings);
+				};
+			}
+		}
+
+		g_view.set_resource_view(new_texture_view);
 	}
 }
 
@@ -968,6 +1034,103 @@ function display_draw_output_resource(pass_id, subresource_unique_name, draw_id)
 
 	display_pass_internal(pass_id);
 	display_resource_internal(subresource_version_info);
+}
+
+
+// -------------------------------------------------------------------- DISPLAY VIEWER CONSOLE
+
+var g_console_events = [];
+var g_console_error_count = 0;
+
+class ConsoleEvent
+{
+	constructor(type, message)
+	{
+		this.type = type;
+		this.message = message;
+	}
+}
+
+class ConsoleView extends IView
+{
+	constructor()
+	{
+		super();
+	}
+
+	setup_html(parent_dom)
+	{
+		parent_dom.innerHTML = `
+			<div class="main_div">
+				<div class="pass_title">Viewer Console</div>
+				<div id="console_events_pannel"></div>
+			</div>`;
+
+		document.title = 'Viewer Console';
+		this.update_console_events();
+	}
+
+	update_console_events()
+	{
+		var html = `
+			<table width="100%" class="pretty_table">`;
+
+		for (var console_event of g_console_events)
+		{
+			html += `
+				<tr class="${console_event.type}">
+					<td>${console_event.type}: ${console_event.message}</td>
+				</tr>`;
+		};
+
+		html += `
+			</table>`;
+
+		document.getElementById('console_events_pannel').innerHTML = html;
+	}
+
+	get navigations()
+	{
+		return [`display_console();`];
+	}
+}
+
+function update_console_button()
+{
+	if (document.getElementById('console_button') && g_console_error_count > 0)
+	{
+		document.getElementById('console_button').classList.add('error');
+		document.getElementById('console_button').innerHTML = `Console (${g_console_error_count} Errors)`;
+	}
+}
+
+function add_console_event(type, message)
+{
+	console.assert(['error', 'log'].includes(type));
+	g_console_events.push(new ConsoleEvent(type, message));
+
+	if (type == 'error')
+	{
+		g_console_error_count += 1;
+		update_console_button();
+	}
+
+	if (g_view instanceof ConsoleView)
+	{
+		g_view.update_console_events();
+	}
+}
+
+function display_console(tip_id)
+{
+	set_main_view(new ConsoleView());
+}
+
+function init_console()
+{
+	window.addEventListener('error', function(event) {
+		add_console_event('error', `${event.filename}:${event.fileno}: ${event.message}`);
+	});
 }
 
 
@@ -1224,12 +1387,24 @@ function display_cvars()
 
 // -------------------------------------------------------------------- DISPLAY LOG
 
+function get_log_path()
+{
+	return `Base/${g_infos['Project']}.log`;
+}
+
 class LogView extends IView
 {
 	constructor()
 	{
 		super();
-		this.log = load_text_file(`Base/${g_infos['Project']}.log`).split('\n');
+
+		this.log = [];
+
+		var log = load_text_file(get_log_path());
+		if (log)
+		{
+			this.log = log.split('\n');
+		}
 	}
 
 	setup_html(parent_dom)
@@ -1347,7 +1522,7 @@ class TextureView extends ResourceView
 				</table>`;
 		}
 
-		var title = `${this.resource_desc['Name']} ${this.subresource_version_info['subresource']}`;
+		var title = prettify_subresource_unique_name(this.subresource_version_info, this.resource_desc);
 		if (this.subresource_version_info['draw'] >= 0)
 		{
 			title += ` draw:${this.subresource_version_info['draw']}`;
@@ -1474,7 +1649,7 @@ class TextureView extends ResourceView
 
 		var texture_view = this;
 		var subresource_version_name = get_subresource_unique_version_name(this.subresource_version_info);
-		load_binary_file(`Resources/${subresource_version_name}.bin`, function(raw_texture_data)
+		load_resource_binary_file(`Resources/${subresource_version_name}.bin`, function(raw_texture_data)
 		{
 			if (raw_texture_data)
 			{
@@ -1483,6 +1658,7 @@ class TextureView extends ResourceView
 				texture_view.resize_canvas(texture_view.pixel_scaling);
 				texture_view.process_texture_data_for_visualization();
 				texture_view.refresh_texture_visualization();
+				texture_view.onload();
 			}
 			else
 			{
@@ -1511,7 +1687,7 @@ class TextureView extends ResourceView
 		var pixel_data_offset = texel_x + (extent['y'] - 1 - texel_y) * extent['x'];
 
 		var texel_value = [0];
-		for (var c = 1; c < this.subresource_desc['webgl_channel_count']; c++)
+		for (var c = 1; c < this.subresource_desc['raw_channel_count']; c++)
 		{
 			texel_value.push(0);
 		}
@@ -1546,22 +1722,22 @@ class TextureView extends ResourceView
 			var data = null;
 			if (this.subresource_desc['raw_channel_bit_depth'] === 8)
 			{
-				data = new Uint8Array(this.raw_texture_data, this.subresource_desc['webgl_channel_count'] * pixel_data_offset * 1, this.subresource_desc['webgl_channel_count']);
+				data = new Uint8Array(this.raw_texture_data, this.subresource_desc['raw_channel_count'] * pixel_data_offset * 1, this.subresource_desc['raw_channel_count']);
 			}
 			else if (this.subresource_desc['raw_channel_bit_depth'] === 16)
 			{
-				data = new Uint16Array(this.raw_texture_data, this.subresource_desc['webgl_channel_count'] * pixel_data_offset * 2, this.subresource_desc['webgl_channel_count']);
+				data = new Uint16Array(this.raw_texture_data, this.subresource_desc['raw_channel_count'] * pixel_data_offset * 2, this.subresource_desc['raw_channel_count']);
 			}
 			else if (this.subresource_desc['raw_channel_bit_depth'] === 32)
 			{
-				data = new Uint32Array(this.raw_texture_data, this.subresource_desc['webgl_channel_count'] * pixel_data_offset * 4, this.subresource_desc['webgl_channel_count']);
+				data = new Uint32Array(this.raw_texture_data, this.subresource_desc['raw_channel_count'] * pixel_data_offset * 4, this.subresource_desc['raw_channel_count']);
 			}
 			else
 			{
 				return;
 			}
 
-			for (var c = 0; c < this.subresource_desc['webgl_channel_count']; c++)
+			for (var c = 0; c < this.subresource_desc['raw_channel_count']; c++)
 			{
 				texel_value[c] = data[this.subresource_desc['raw_channel_swizzling'][c]];
 			}
@@ -1650,7 +1826,7 @@ class TextureView extends ResourceView
 			const channel_color = ['rgb(255, 38, 38)', 'rgb(38, 255, 38)', 'rgb(38, 187, 255)', 'white'];
 
 			var texel_string = [];
-			for (var c = 0; c < texel_value.length; c++)
+			for (var c = 0; c < this.subresource_desc['raw_channel_count']; c++)
 			{
 				texel_string.push(`${texel_value[c].toString()} (0x${texel_raw[c].toString(16)})`);
 			}
@@ -1661,7 +1837,7 @@ class TextureView extends ResourceView
 			}
 
 			var html = ``;
-			for (var c = 0; c < texel_value.length; c++)
+			for (var c = 0; c < this.subresource_desc['raw_channel_count']; c++)
 			{
 				html += `<span style="margin-left: 20px; color: ${channel_color[c]};">${channel_name[c]}: <span style="min-width: 170px; display: inline-block; text-align: right;">${texel_string[c]}</span></span>`;
 			}
@@ -1772,21 +1948,22 @@ class TextureView extends ResourceView
 		var [texel_x, texel_y] = this.get_texel_coordinate_of_mouse(event);
 
 		this.resize_canvas(new_pixel_scaling, texel_x, texel_y);
-
-		// Update the state of the zooming buttons
-		{
-			const pixel_scaling_names = {
-				0: 'Fit',
-				1: '1:1',
-				2: '2:1',
-				4: '4:1',
-				8: '8:1',
-				16: '16:1',
-			};
-			update_value_selection(document.getElementById('texture_visualization_change_pixel_scaling'), pixel_scaling_names[this.pixel_scaling]);
-		}
+		this.update_change_pixel_scaling_button();
 
 		return false;
+	}
+
+	update_change_pixel_scaling_button()
+	{
+		const pixel_scaling_names = {
+			0: 'Fit',
+			1: '1:1',
+			2: '2:1',
+			4: '4:1',
+			8: '8:1',
+			16: '16:1',
+		};
+		update_value_selection(document.getElementById('texture_visualization_change_pixel_scaling'), pixel_scaling_names[this.pixel_scaling]);
 	}
 
 	canvas_click(event)
@@ -1972,6 +2149,44 @@ class TextureView extends ResourceView
 		this.pixel_scaling = new_pixel_scaling;
 	}
 
+	get_zoom_settings()
+	{
+		var subresource_extent = this.get_subresource_extent();
+
+		var canvas_viewport = document.getElementById('canvas_viewport');
+
+		var zoom_settings = {
+			'subresource_extent_x': subresource_extent['x'],
+			'subresource_extent_y': subresource_extent['y'],
+			'pixel_scaling': this.pixel_scaling,
+			'canvas_width': this.canvas.style.width,
+			'canvas_height': this.canvas.style.height,
+			'canvas_viewport_scoll_left': canvas_viewport.scrollLeft,
+			'canvas_viewport_scoll_top': canvas_viewport.scrollTop,
+		};
+		return zoom_settings;
+	}
+
+	is_zoom_settings_compatible(zoom_settings)
+	{
+		var subresource_extent = this.get_subresource_extent();
+
+		return (zoom_settings['subresource_extent_x'] == subresource_extent['x'] && zoom_settings['subresource_extent_y'] == subresource_extent['y']);
+	}
+
+	apply_zoom_settings(zoom_settings)
+	{
+		var canvas_viewport = document.getElementById('canvas_viewport');
+
+		this.pixel_scaling = zoom_settings['pixel_scaling'];
+		this.canvas.style.width = zoom_settings['canvas_width'];
+		this.canvas.style.height = zoom_settings['canvas_height'];
+		canvas_viewport.scrollLeft = zoom_settings['canvas_viewport_scoll_left'];
+		canvas_viewport.scrollTop = zoom_settings['canvas_viewport_scoll_top'];
+
+		this.update_change_pixel_scaling_button();
+	}
+
 	init_gl()
 	{
 		var gl_ctx_attributes = {
@@ -2010,6 +2225,9 @@ class TextureView extends ResourceView
 				gl_ext[ext_name] = gl.getExtension(ext_name);
 			});
 		}
+
+		// Set unpacking alignement to 1 to allow uploading texture size not multple of 4 
+		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
 		// Create vertex buffer
 		{
@@ -2142,12 +2360,7 @@ void main(void)
 			text += `Pass:\n\t${pass_data['EventName']}\n`;
 
 			{
-				var name = texture_view.resource_desc['Name'];
-				if (texture_view.subresource_version_info['subresource'])
-				{
-					name = `${texture_view.resource_desc['Name']} ${texture_view.subresource_version_info['subresource']}`;
-				}
-
+				var name = prettify_subresource_unique_name(texture_view.subresource_version_info, texture_view.resource_desc);
 				text += `${is_output_resource ? 'Output' : 'Input'} resource:\n\t${name}\n`;
 			}
 
@@ -2493,25 +2706,17 @@ void main(void)
 			shader_display_operation = `${shader_float_vector[raw_channel_count]}(${shader_display_operation}) / ${divide}.0`;
 		}
 
-		var shader_display_assignment = 'display.rgba';
-		var shader_fetch_return_operation = 'raw';
 		var webgl_channel_count = 0;
 		if (webgl_texture_src_format === gl.RED || webgl_texture_src_format === gl.RED_INTEGER)
 		{
-			shader_display_assignment = `display.r`;
-			shader_fetch_return_operation = `${shader_fetch_return_operation}.r`;
 			webgl_channel_count = 1;
 		}
 		else if (webgl_texture_src_format === gl.RG)
 		{
-			shader_display_assignment = `display.rg`;
-			shader_fetch_return_operation = `${shader_fetch_return_operation}.rg`;
 			webgl_channel_count = 2;
 		}
 		else if (webgl_texture_src_format === gl.RGB)
 		{
-			shader_display_assignment = `display.rgb`;
-			shader_fetch_return_operation = `${shader_fetch_return_operation}.rgb`;
 			webgl_channel_count = 3;
 		}
 		else if (webgl_texture_src_format === gl.RGBA || webgl_texture_src_format === gl.RGBA_INTEGER)
@@ -2542,12 +2747,22 @@ void main(void)
 			shader_fetch_operation = `texelFetch(texture0, texel_coord , 0)`;
 		}
 
+		const k_get_n_channels = new Array(
+			'',
+			'.r',
+			'.rg',
+			'.rgb',
+			'.rgba'
+		);
+
+		var shader_display_assignment = `display${k_get_n_channels[raw_channel_count]}`;
+
 		webgl_pixel_shader_private += `
 ${shader_sampler_return_type[raw_channel_count]} fetchTexel(vec2 uv)
 {
 	ivec2 texel_coord = ivec2(uv * vec2(textureSize(texture0, 0)));
 	${shader_sampler_return_type[4]} raw = ${shader_fetch_operation};
-	return ${shader_fetch_return_operation};
+	return raw${k_get_n_channels[raw_channel_count]};
 }
 
 in vec2 uv;
@@ -2738,15 +2953,15 @@ ${shader_display_assignment} = ${shader_display_operation};`;
 					{
 						for (var c = 0; c < this.subresource_desc['webgl_channel_count']; c++)
 						{
-							var i = this.subresource_desc['webgl_channel_count'] * (x + extent['x'] * y);
+							var texel_offset = x + extent['x'] * y;
 
 							var value = 0;
 							if (c < this.subresource_desc['raw_channel_count'])
 							{
-								var src = original_converted_data[i + this.subresource_desc['raw_channel_swizzling'][c]];
+								var src = original_converted_data[texel_offset * this.subresource_desc['raw_channel_count'] + this.subresource_desc['raw_channel_swizzling'][c]];
 								value = (src >> (8 * tex_id)) % 256;
 							}
-							converted_data[i + c] = value;
+							converted_data[texel_offset * this.subresource_desc['webgl_channel_count'] + c] = value;
 						}
 					}
 				}
@@ -2926,7 +3141,7 @@ void main(void) {
 		else
 		{
 			var user_frag_code = document.getElementById('texture_visualization_code_input').value;
-			shader_program = this.compile_screen_shader_program(this.subresource_desc['webgl_pixel_shader_private'] + 'void main(void) { display = vec4(0.0, 0.0, 0.0, 0.0);\n' + user_frag_code + `}`);
+			shader_program = this.compile_screen_shader_program(this.subresource_desc['webgl_pixel_shader_private'] + 'void main(void) { display = vec4(0.0, 0.0, 0.0, 0.0);\n' + user_frag_code + `\n}`);
 
 			if (!shader_program)
 			{
@@ -3116,12 +3331,13 @@ class GenericBufferView extends ResourceView
 
 		var buffer_view = this;
 		console.assert(this.raw_buffer_data_path);
-		load_binary_file(this.raw_buffer_data_path, function(raw_buffer_data)
+		load_resource_binary_file(this.raw_buffer_data_path, function(raw_buffer_data)
 		{
 			if (raw_buffer_data)
 			{
 				buffer_view.raw_buffer_data = raw_buffer_data;
 				buffer_view.refresh_buffer_visualization(/* refresh header = */ true);
+				buffer_view.onload();
 			}
 			else
 			{
@@ -3614,7 +3830,6 @@ function display_pass_parameters(pass_id)
 	resource_desc['Name'] = 'PassParameters';
 	resource_desc['ByteSize'] = structure_metadata['Size'];
 	resource_desc['Desc'] = 'FRDGParameterStruct';
-	resource_desc['Type'] = 'Parameters';
 	resource_desc['BytesPerElement'] = resource_desc['ByteSize'];
 	resource_desc['NumElements'] = 1;
 	resource_desc['Metadata'] = pass_data['ParametersMetadata'];
@@ -3762,16 +3977,44 @@ function init_top_buttons()
 		<a href="#display_infos();">Infos</a>
 		<a href="#display_cvars();">CVars</a>
 		<a href="#display_log();">Log</a>`;
+	document.getElementById('top_viewer_buttons').innerHTML = `
+		<a id="console_button" href="#display_console();">Console</a>`;
+	update_console_button();
 }
 
 function init_page()
 {
+	// Load the dump service information to know how to read files. This is independent of Base/Infos.json because may depends whether it was uploaded through the DumpGPUServices plugin.
+	g_dump_service = load_json('Base/DumpService.json');
+
 	// Load the base information of the page.
 	g_infos = load_json('Base/Infos.json');
-	if (!g_infos)
+
+	if (!g_dump_service || !g_infos)
 	{
 		document.body.innerHTML = 'Please use OpenGPUDumpViewer script for the viewer to work correctly.';
 		return;
+	}
+
+	// Verify the status of the dump, to check whether a crash happened during the dump.
+	{
+		var dump_status = load_text_file('Base/Status.txt');
+		if (dump_status == 'ok')
+		{
+			add_console_event('log', `The dump completed gracefully.`);
+		}
+		else if (dump_status == 'crash')
+		{
+			add_console_event('error', `A crash happened while the frame was being dumped.`);
+		}
+		else if (dump_status == 'dumping')
+		{
+			add_console_event('error', `The dump has not completed. This may be due to opening the viewer before completion, or serious problem that has not been handled with FCoreDelegates::OnShutdownAfterError`);
+		}
+		else
+		{
+			add_console_event('error', `The dump completed with status: ${dump_status}`);
+		}
 	}
 
 	// Load the cvars used for dumping.
@@ -3833,6 +4076,15 @@ function init_page()
 		{
 			g_descs[desc['UniqueResourceName']] = desc;
 		}
+	}
+
+	if (!does_file_exists(get_log_path()))
+	{
+		add_console_event('error', `The dump does not contain ${get_log_path()}. The log is normally copied into the dump directory once the dump is completed. Failing to have is may be due to a premature end of the dumping process.`);
+	}
+	else
+	{
+		add_console_event('log', `Viewer init ok`);
 	}
 
 	init_top();
@@ -4313,6 +4565,10 @@ input::placeholder
 	text-align: center;
 }
 
+.pretty_table tr.error td
+{
+	color: var(--error-txt-color);
+}
 
 .resource_desc tr td:not(.empty)
 {
@@ -4354,6 +4610,11 @@ input::placeholder
 .button_list input:not(.match_value):not(:active):hover
 {
 	background-color: var(--button-bg-color-hover);
+}
+
+.button_list a:not(.match_location_hash):not(.error):not(:active):hover,
+.button_list input:not(.match_value):not(:active):hover
+{
 	color: var(--button-txt-color-hover);
 }
 
@@ -4364,6 +4625,12 @@ input::placeholder
 {
 	background-color: var(--button-bg-color-selected);
 	color: var(--button-txt-color-selected);
+}
+
+.button_list a.error,
+.button_list a.error:active
+{
+	color: var(--error-txt-color);
 }
 
 
@@ -4377,7 +4644,8 @@ input::placeholder
 	display: inline-block;
 }
 
-#top_buttons
+#top_buttons,
+#top_viewer_buttons
 {
 	padding: 12px;
 	display: inline-block;
@@ -4577,12 +4845,13 @@ input::placeholder
 </style>
 
 
-<body onload="onresize_body(); init_page();" onresize="onresize_body();" onhashchange="navigate_to_hash();">
+<body onload="init_console(); onresize_body(); init_page();" onresize="onresize_body();" onhashchange="navigate_to_hash();">
 	<table cellpadding="0" cellspacing="0" border="0" id="onresize_body_table">
 		<tr>
 			<td colspan="2" id="onresize_body_top_bar">
 				<div id="top_bar"></div>
 				<div id="top_buttons" class="button_list"></div>
+				<div id="top_viewer_buttons" class="button_list"></div>
 			</td>
 		</tr>
 		<tr>

@@ -97,7 +97,7 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 	}
 
 	TargetSkeleton = AnimGraphNode->HasValidBlueprint() ? AnimGraphNode->GetAnimBlueprint()->TargetSkeleton : nullptr;
-	TargetSkeletonName = TargetSkeleton ? FString::Printf(TEXT("%s'%s'"), *TargetSkeleton->GetClass()->GetName(), *TargetSkeleton->GetPathName()) : FString(TEXT(""));
+	TargetSkeletonName = TargetSkeleton ? FObjectPropertyBase::GetExportPath(TargetSkeleton) : FString(TEXT(""));
 
 	// Get the node property
 	const FStructProperty* NodeProperty = AnimGraphNode->GetFNodeProperty();
@@ -115,6 +115,13 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 	// customize anim graph node's own details if needed
 	AnimGraphNode->CustomizeDetails(DetailBuilder);
 
+	// Hide categories not relevant for interface BPs
+	if(AnimGraphNode->HasValidBlueprint() && AnimGraphNode->GetBlueprint()->BlueprintType == BPTYPE_Interface)
+	{
+		DetailBuilder.HideCategory("Functions");
+		DetailBuilder.HideCategory("Tag");
+	}
+	
 	// Hide the Node property as we are going to be adding its inner properties below
 	TSharedRef<IPropertyHandle> NodePropertyHandle = DetailBuilder.GetProperty(NodeProperty->GetFName(), AnimGraphNode->GetClass());
 	DetailBuilder.HideProperty(NodePropertyHandle);
@@ -272,7 +279,7 @@ bool FAnimGraphNodeDetails::OnShouldFilterAnimAsset( const FAssetData& AssetData
 	{
 		const UClass* AssetClass = AssetData.GetClass();
 		// If node is an 'asset player', only let you select the right kind of asset for it
-		if (!NodeToFilterFor->IsChildOf(UAnimGraphNode_AssetPlayerBase::StaticClass()) || SupportNodeClassForAsset(AssetClass, NodeToFilterFor))
+		if (!NodeToFilterFor->IsChildOf(UAnimGraphNode_AssetPlayerBase::StaticClass()) || (AssetClass && SupportNodeClassForAsset(AssetClass, NodeToFilterFor)))
 		{
 			return false;
 		}
@@ -537,7 +544,7 @@ void FBoneReferenceCustomization::SetEditableSkeleton(TSharedRef<IPropertyHandle
 
 	bEnsureOnInvalidSkeleton = true;
 
-	auto FindSkeletonForObject = [this, &TargetSkeleton, &EditableSkeleton](UObject* InObject)
+	auto FindSkeletonForObject = [this, &TargetSkeleton, &EditableSkeleton, &StructPropertyHandle](UObject* InObject)
 	{
 		for( ; InObject; InObject = InObject->GetOuter())
 		{
@@ -594,7 +601,7 @@ void FBoneReferenceCustomization::SetEditableSkeleton(TSharedRef<IPropertyHandle
 
 			if (IBoneReferenceSkeletonProvider* SkeletonProvider = Cast<IBoneReferenceSkeletonProvider>(InObject))
 			{
-				TargetSkeleton = SkeletonProvider->GetSkeleton(bEnsureOnInvalidSkeleton);
+				TargetSkeleton = SkeletonProvider->GetSkeleton(bEnsureOnInvalidSkeleton, &StructPropertyHandle.Get());
 				break;
 			}
 		}
@@ -1016,13 +1023,13 @@ TSharedRef<SWidget> SParentPlayerTreeRow::GenerateWidgetForColumn(const FName& C
 			.AutoWidth()
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+				.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 				.ToolTip(IDocumentation::Get()->CreateToolTip(LOCTEXT("FocusNodeButtonTip", "Open the graph that contains this node in read-only mode and focus on the node"), NULL, "Shared/Editors/Persona", "FocusNodeButton"))
 				.OnClicked(FOnClicked::CreateSP(this, &SParentPlayerTreeRow::OnFocusNodeButtonClicked))
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("GenericViewButton"))
+					.Image(FAppStyle::GetBrush("GenericViewButton"))
 				]
 				
 			];
@@ -1047,14 +1054,14 @@ TSharedRef<SWidget> SParentPlayerTreeRow::GenerateWidgetForColumn(const FName& C
 				.AutoWidth()
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 					.Visibility(this, &SParentPlayerTreeRow::GetResetToDefaultVisibility)
 					.OnClicked(this, &SParentPlayerTreeRow::OnResetButtonClicked)
 					.ToolTip(IDocumentation::Get()->CreateToolTip(LOCTEXT("ResetToParentButtonTip", "Undo the override, returning to the default asset for this node"), NULL, "Shared/Editors/Persona", "ResetToParentButton"))
 					.Content()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+						.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 					]
 				];
 		}
@@ -1151,13 +1158,13 @@ void FPlayerTreeViewEntry::GenerateNameWidget(TSharedPtr<SHorizontalBox> Box)
 	switch(EntryType)
 	{
 		case EPlayerTreeViewEntryType::Blueprint:
-			EntryImageBrush = FEditorStyle::GetBrush("ClassIcon.Blueprint");
+			EntryImageBrush = FAppStyle::GetBrush("ClassIcon.Blueprint");
 			break;
 		case EPlayerTreeViewEntryType::Graph:
-			EntryImageBrush = FEditorStyle::GetBrush("GraphEditor.EventGraph_16x");
+			EntryImageBrush = FAppStyle::GetBrush("GraphEditor.EventGraph_16x");
 			break;
 		case EPlayerTreeViewEntryType::Node:
-			EntryImageBrush = FEditorStyle::GetBrush("GraphEditor.Default_16x");
+			EntryImageBrush = FAppStyle::GetBrush("GraphEditor.Default_16x");
 			break;
 		default:
 			break;

@@ -4,6 +4,8 @@
 #include "NiagaraComponent.h"
 #include "Particles/FXBudget.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScalabilityManager)
+
 static float GScalabilityUpdateTime_Low = 1.0f;
 static float GScalabilityUpdateTime_Medium = 0.5f;
 static float GScalabilityUpdateTime_High = 0.25f;
@@ -31,7 +33,7 @@ static float GetScalabilityUpdatePeriod(ENiagaraScalabilityUpdateFrequency Frequ
 
 static int32 GetMaxUpdatesPerFrame(const UNiagaraEffectType* EffectType, int32 ItemsRemaining, float UpdatePeriod, float DeltaSeconds)
 {
-	if (GScalabilityMaxUpdatesPerFrame > 0)
+	if (GScalabilityMaxUpdatesPerFrame > 0 && EffectType->UpdateFrequency != ENiagaraScalabilityUpdateFrequency::Continuous)
 	{
 		int32 UpdateCount = ItemsRemaining;
 
@@ -146,7 +148,7 @@ void FNiagaraScalabilityManager::Register(UNiagaraComponent* Component)
 
 void FNiagaraScalabilityManager::Unregister(UNiagaraComponent* Component)
 {
-	check(Component->ScalabilityManagerHandle != INDEX_NONE);
+	checkf(Component->ScalabilityManagerHandle != INDEX_NONE, TEXT("Component(%s) is not in the scalability manager but is being unregistered.  Asset(%s)."), *GetFullNameSafe(Component), *GetFullNameSafe(Component->GetAsset()));
 
 	int32 IndexToRemove = Component->ScalabilityManagerHandle;
 	Component->ScalabilityManagerHandle = INDEX_NONE;
@@ -714,3 +716,4 @@ void FNiagaraScalabilityManager::CSVProfilerUpdate(FCsvProfiler* CSVProfiler)
 	CSVProfiler->RecordCustomStat(Budget, CSV_CATEGORY_INDEX(Particles), NumByBudget, ECsvCustomStatOp::Accumulate);
 }
 #endif
+

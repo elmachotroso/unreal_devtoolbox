@@ -390,6 +390,26 @@ FString FSetRichCurveKeysAction::ToStringInternal() const
 	return FText::Format(LOCTEXT("SetNamedRichCurveKeysAction_Description", "Replacing keys for {0} curve '{1}'."), FText::FromString(CurveId.CurveType == ERawCurveTrackTypes::RCT_Float ? FloatLabel : TransformLabel), FText::FromName(CurveId.InternalName.DisplayName)).ToString();
 }
 
+TUniquePtr<FChange> FSetRichCurveAttributesAction::ExecuteInternal(UAnimDataModel* Model, UAnimDataController* Controller)
+{
+	const FRichCurve& RichCurve = Model->GetRichCurve(CurveId);
+
+	FCurveAttributes CurrentAttributes;
+	CurrentAttributes.SetPreExtrapolation(RichCurve.PreInfinityExtrap);
+	CurrentAttributes.SetPostExtrapolation(RichCurve.PostInfinityExtrap);
+
+	TUniquePtr<FChange> InverseAction = MakeUnique<FSetRichCurveAttributesAction>(CurveId, CurrentAttributes);	
+	Controller->SetCurveAttributes(CurveId, Attributes, false);
+	
+	return InverseAction;
+	
+}
+
+FString FSetRichCurveAttributesAction::ToStringInternal() const
+{
+	return FText::Format(LOCTEXT("SetCurveAttributesAction_Description", "Setting curve attributes '{0}'."), FText::FromName(CurveId.InternalName.DisplayName)).ToString();
+}
+
 TUniquePtr<FChange> FSetCurveColorAction::ExecuteInternal(UAnimDataModel* Model, UAnimDataController* Controller)
 {
 	const FAnimCurveBase& AnimationCurve = Model->GetCurve(CurveId);

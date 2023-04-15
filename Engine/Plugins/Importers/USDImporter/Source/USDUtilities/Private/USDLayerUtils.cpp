@@ -25,6 +25,7 @@
 
 #include "USDIncludesStart.h"
 	#include "pxr/usd/pcp/layerStack.h"
+	#include "pxr/usd/sdf/attributeSpec.h"
 	#include "pxr/usd/sdf/fileFormat.h"
 	#include "pxr/usd/sdf/layer.h"
 	#include "pxr/usd/sdf/layerUtils.h"
@@ -38,12 +39,120 @@
 
 #define LOCTEXT_NAMESPACE "USDLayerUtils"
 
-namespace UsdUtils
+namespace UE::UsdLayerUtilsImpl::Private
 {
-	std::string GetUESessionStateLayerDisplayName( const pxr::UsdStageRefPtr& Stage )
+	/**
+		* Adapted from flattenUtils.cpp::_FixAssetPaths, except that we only handle actual AssetPaths here as layer/prim paths
+		* will be remapped via Layer.UpdateCompositionAssetDependency().
+		* Returns whether anything was remapped
+		*/
+	bool FixAssetPaths( const pxr::SdfLayerHandle& SourceLayer, pxr::VtValue* Value )
 	{
-		return pxr::SdfLayer::GetDisplayNameFromIdentifier( Stage->GetRootLayer()->GetIdentifier() ) + "-UE-session-state.usda";
+		if ( Value->IsHolding<pxr::SdfAssetPath>() )
+		{
+			pxr::SdfAssetPath AssetPath;
+			Value->Swap( AssetPath );
+			AssetPath = pxr::SdfAssetPath( SourceLayer->ComputeAbsolutePath( AssetPath.GetAssetPath() ) );
+			Value->Swap( AssetPath );
+			return true;
+		}
+		else if ( Value->IsHolding<pxr::VtArray<pxr::SdfAssetPath>>() )
+		{
+			pxr::VtArray<pxr::SdfAssetPath> PathArray;
+			Value->Swap( PathArray );
+			for ( pxr::SdfAssetPath& AssetPath : PathArray )
+			{
+				AssetPath = pxr::SdfAssetPath( SourceLayer->ComputeAbsolutePath( AssetPath.GetAssetPath() ) );
+			}
+			Value->Swap( PathArray );
+			return true;
+		}
+
+		return false;
 	}
+}
+
+FText UsdUtils::ToText( ECanInsertSublayerResult Result )
+{
+	switch ( Result )
+	{
+	default:
+	case ECanInsertSublayerResult::Success:
+		return FText::GetEmpty();
+		break;
+	case ECanInsertSublayerResult::ErrorSubLayerNotFound:
+		return LOCTEXT( "CanAddSubLayerNotFound", "SubLayer not found!" );
+		break;
+	case ECanInsertSublayerResult::ErrorSubLayerInvalid:
+		return LOCTEXT( "CanAddSubLayerInvalid", "SubLayer is invalid!" );
+		break;
+	case ECanInsertSublayerResult::ErrorSubLayerIsParentLayer:
+		return LOCTEXT( "CanAddSubLayerIsParent", "SubLayer is the same as the parent layer!" );
+		break;
+	case ECanInsertSublayerResult::ErrorCycleDetected:
+		return LOCTEXT( "CanAddSubLayerCycle", "Cycles detected!" );
+		break;
+	}
+}
+
+UsdUtils::ECanInsertSublayerResult UsdUtils::CanInsertSubLayer(
+	const pxr::SdfLayerRefPtr& ParentLayer,
+	const TCHAR* SubLayerIdentifier
+)
+{
+	if ( !SubLayerIdentifier )
+	{
+		return ECanInsertSublayerResult::ErrorSubLayerNotFound;
+	}
+
+	FScopedUsdAllocs Allocs;
+
+	pxr::SdfLayerRefPtr SubLayer = pxr::SdfLayer::FindOrOpen( UnrealToUsd::ConvertString( SubLayerIdentifier ).Get() );
+	if ( !SubLayer )
+	{
+		return ECanInsertSublayerResult::ErrorSubLayerNotFound;
+	}
+
+	if ( SubLayer == ParentLayer )
+	{
+		return ECanInsertSublayerResult::ErrorSubLayerIsParentLayer;
+	}
+
+	// We can't climb through ancestors of ParentLayer, so we have to open sublayer and see if parentlayer is a
+	// descendant of *it* in order to detect cycles
+	TFunction< ECanInsertSublayerResult( const pxr::SdfLayerRefPtr& ) > CanAddSubLayerRecursive;
+	CanAddSubLayerRecursive = [ParentLayer, &CanAddSubLayerRecursive](
+		const pxr::SdfLayerRefPtr& CurrentParent
+	) -> ECanInsertSublayerResult
+	{
+		for ( const std::string& SubLayerPath : CurrentParent->GetSubLayerPaths() )
+		{
+			// This may seem expensive, but keep in mind the main use case for this (at least for now) is for checking
+			// during layer drag and drop, where all of these layers are actually already open anyway
+			pxr::SdfLayerRefPtr ChildSubLayer = pxr::SdfLayer::FindOrOpenRelativeToLayer(
+				CurrentParent,
+				SubLayerPath
+			);
+
+			if ( !ChildSubLayer )
+			{
+				return ECanInsertSublayerResult::ErrorSubLayerInvalid;
+			}
+
+			ECanInsertSublayerResult RecursiveResult = ChildSubLayer == ParentLayer
+				 ? ECanInsertSublayerResult::ErrorCycleDetected
+				 : CanAddSubLayerRecursive( ChildSubLayer );
+
+			if ( RecursiveResult != ECanInsertSublayerResult::Success )
+			{
+				return RecursiveResult;
+			}
+		}
+
+		return ECanInsertSublayerResult::Success;
+	};
+
+	return CanAddSubLayerRecursive( SubLayer );
 }
 
 bool UsdUtils::InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index, double OffsetTimeCodes, double TimeCodesScale )
@@ -83,7 +192,7 @@ bool UsdUtils::InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCH
 }
 
 #if WITH_EDITOR
-TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< const SWidget > OriginatingWidget )
+TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode )
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 
@@ -92,15 +201,16 @@ TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< 
 		return {};
 	}
 
-	// show the file browse dialog
-	TSharedPtr< SWindow > ParentWindow = FSlateApplication::Get().FindWidgetWindow( OriginatingWidget );
-	void* ParentWindowHandle = ( ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid() )
-		? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
-		: nullptr;
-
 	TArray< FString > OutFiles;
 
-	TArray< FString > SupportedExtensions = UnrealUSDWrapper::GetAllSupportedFileFormats();
+	// When browsing files for the purposes of opening a stage or saving layers,
+	// we offer the native USD file formats as options. Browsing files in order
+	// to use them as the targets of composition arcs (e.g. sublayers,
+	// references, payloads, etc.) also offers any plugin file formats that are
+	// registered.
+	TArray< FString > SupportedExtensions = ( Mode == EBrowseFileMode::Composition ) ?
+		UnrealUSDWrapper::GetAllSupportedFileFormats() :
+		UnrealUSDWrapper::GetNativeFileFormats();
 	if ( SupportedExtensions.Num() == 0 )
 	{
 		UE_LOG(LogUsd, Error, TEXT("No file extensions supported by the USD SDK!"));
@@ -125,8 +235,17 @@ TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< 
 	switch ( Mode )
 	{
 		case EBrowseFileMode::Open :
+		case EBrowseFileMode::Composition :
 		{
-			if ( !DesktopPlatform->OpenFileDialog( ParentWindowHandle, LOCTEXT( "ChooseFile", "Choose file").ToString(), TEXT(""), TEXT(""), *FileTypes, EFileDialogFlags::None, OutFiles ) )
+			if ( !DesktopPlatform->OpenFileDialog(
+				FSlateApplication::Get().FindBestParentWindowHandleForDialogs( nullptr ),
+				LOCTEXT( "ChooseFile", "Choose file").ToString(),
+				TEXT(""),
+				TEXT(""),
+				*FileTypes,
+				EFileDialogFlags::None,
+				OutFiles
+			) )
 			{
 				return {};
 			}
@@ -134,7 +253,15 @@ TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< 
 		}
 		case EBrowseFileMode::Save :
 		{
-			if ( !DesktopPlatform->SaveFileDialog( ParentWindowHandle, LOCTEXT( "ChooseFile", "Choose file").ToString(), TEXT(""), TEXT(""), *FileTypes, EFileDialogFlags::None, OutFiles ) )
+			if ( !DesktopPlatform->SaveFileDialog(
+				FSlateApplication::Get().FindBestParentWindowHandleForDialogs( nullptr ),
+				LOCTEXT( "ChooseFile", "Choose file").ToString(),
+				TEXT(""),
+				TEXT(""),
+				*FileTypes,
+				EFileDialogFlags::None,
+				OutFiles
+			) )
 			{
 				return {};
 			}
@@ -513,7 +640,7 @@ UE::FSdfLayer UsdUtils::GetUEPersistentStateSublayer( const UE::FUsdStage& Stage
 
 		// For consistency we always add the UEPersistentState sublayer as the weakest sublayer of the stage's session layer
 		// Note that we intentionally only guarantee the UEPersistentLayer is weaker than the UESessionLayer when inserting,
-		// so that the user may reorder these if he wants, for whatever reason
+		// so that the user may reorder these if they want, for whatever reason
 		bool bNeedsToBeAdded = true;
 		for ( const FString& Path : SessionLayer.GetSubLayerPaths() )
 		{
@@ -662,6 +789,47 @@ bool UsdUtils::IsSessionLayerWithinStage( const pxr::SdfLayerRefPtr& Layer, cons
 	}
 
 	return false;
+}
+
+void UsdUtils::ConvertAssetRelativePathsToAbsolute( UE::FSdfLayer& LayerToConvert, const UE::FSdfLayer& AnchorLayer )
+{
+	FScopedUsdAllocs Allocs;
+
+	pxr::SdfLayerRefPtr UsdLayer{ LayerToConvert };
+
+	UsdLayer->Traverse(
+		pxr::SdfPath::AbsoluteRootPath(),
+		[ &UsdLayer, &AnchorLayer ]( const pxr::SdfPath& Path )
+		{
+			pxr::SdfSpecType SpecType = UsdLayer->GetSpecType( Path );
+			if ( SpecType != pxr::SdfSpecTypeAttribute )
+			{
+				return;
+			}
+
+			pxr::VtValue LayerValue;
+			if ( !UsdLayer->HasField( Path, pxr::SdfFieldKeys->Default, &LayerValue ) )
+			{
+				return;
+			}
+
+			if ( UE::UsdLayerUtilsImpl::Private::FixAssetPaths( pxr::SdfLayerRefPtr{ AnchorLayer }, &LayerValue ) )
+			{
+				UsdLayer->SetField( Path, pxr::SdfFieldKeys->Default, LayerValue );
+			}
+		}
+	);
+}
+
+int32 UsdUtils::GetSdfLayerNumFrames( const pxr::SdfLayerRefPtr& Layer )
+{
+	if ( !Layer )
+	{
+		return 0;
+	}
+
+	// USD time code range is inclusive on both ends
+	return FMath::Abs( FMath::CeilToInt32( Layer->GetEndTimeCode() ) - FMath::FloorToInt32( Layer->GetStartTimeCode() ) + 1 );
 }
 
 #undef LOCTEXT_NAMESPACE

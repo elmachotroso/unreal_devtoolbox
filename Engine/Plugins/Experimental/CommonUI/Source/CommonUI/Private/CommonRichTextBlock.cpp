@@ -24,6 +24,9 @@
 #include "Types/ReflectionMetadata.h"
 #include "Framework/Text/IRichTextMarkupWriter.h"
 #include "Framework/Text/RichTextMarkupProcessing.h"
+#include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonRichTextBlock)
 
 namespace SupportedMarkupKeys
 {
@@ -133,10 +136,17 @@ public:
 			ModelRange.EndIndex = InOutModelText->Len();
 
 			// Calculate the baseline of the text within the owning rich text
-			const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-			int16 WidgetBaseline = FontMeasure->GetBaseline(TextStyle.Font) - FMath::Min(0.0f, TextStyle.ShadowOffset.Y);
+			// Requested on demand as the font may not be loaded right now
+			const FSlateFontInfo Font = TextStyle.Font;
+			const float ShadowOffsetY = FMath::Min(0.0f, TextStyle.ShadowOffset.Y);
 
-			FSlateWidgetRun::FWidgetRunInfo WidgetRunInfo(DecoratorWidget.ToSharedRef(), WidgetBaseline);
+			TAttribute<int16> GetBaseline = TAttribute<int16>::CreateLambda([Font, ShadowOffsetY]()
+			{
+				const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+				return FontMeasure->GetBaseline(Font) - ShadowOffsetY;
+			});
+
+			FSlateWidgetRun::FWidgetRunInfo WidgetRunInfo(DecoratorWidget.ToSharedRef(), GetBaseline);
 			SlateRun = FSlateWidgetRun::Create(TextLayout, RunInfo, InOutModelText, WidgetRunInfo, ModelRange);
 		}
 		else
@@ -493,6 +503,17 @@ void UCommonRichTextBlock::SetText(const FText& InText)
 		}
 		MyRichTextBlock->SetText(InText);
 	}
+
+	if (bAutoCollapseWithEmptyText)
+	{
+		SetVisibility(InText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+	}
+}
+
+void UCommonRichTextBlock::SetScrollingEnabled(bool bInIsScrollingEnabled)
+{
+	bIsScrollingEnabled = bInIsScrollingEnabled;
+	SynchronizeProperties();
 }
 
 #if WITH_EDITOR
@@ -510,15 +531,24 @@ const FText UCommonRichTextBlock::GetPaletteCategory()
 
 bool UCommonRichTextBlock::CanEditChange(const FProperty* InProperty) const
 {
+	const FName PropertyName = InProperty->GetFName();
+
 	if (DefaultTextStyleOverrideClass)
 	{
-		const FName PropertyName = InProperty->GetFName();
 		if (PropertyName.IsEqual(GET_MEMBER_NAME_CHECKED(UCommonRichTextBlock, DefaultTextStyleOverride)) ||
 			PropertyName.IsEqual(GET_MEMBER_NAME_CHECKED(UCommonRichTextBlock, MinDesiredWidth)))
 		{
 			return false;
 		}
 	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (bAutoCollapseWithEmptyText && PropertyName.IsEqual(GET_MEMBER_NAME_CHECKED(UCommonRichTextBlock, Visibility)))
+	{
+		return false;
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	return Super::CanEditChange(InProperty);
 }
 
@@ -552,9 +582,9 @@ TSharedRef<SWidget> UCommonRichTextBlock::RebuildWidget()
 
 	// If the clipping mode is the default, but we're using a scrolling style,
 	// we need to switch over to a clip to bounds style.
-	if (Clipping == EWidgetClipping::Inherit)
+	if (GetClipping() == EWidgetClipping::Inherit)
 	{
-		Clipping = EWidgetClipping::OnDemand;
+		SetClipping(EWidgetClipping::OnDemand);
 	}
 
 	MyTextScroller =
@@ -577,16 +607,40 @@ TSharedRef<SWidget> UCommonRichTextBlock::RebuildWidget()
 void UCommonRichTextBlock::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	if (bAutoCollapseWithEmptyText)
+	{
+		SetVisibility(GetText().IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+	}
 	
 	RefreshOverrideStyle();
 
 	if (MyRichTextBlock.IsValid())
 	{
-		if (IsDesignTime())
+		if (CommonUIUtils::ShouldDisplayMobileUISizes() && DefaultTextStyleOverrideClass.GetDefaultObject() == nullptr)
 		{
-			if (CommonUIUtils::ShouldDisplayMobileUISizes() && DefaultTextStyleOverrideClass.GetDefaultObject() == nullptr)
+			ApplyTextBlockScale();
+		}
+	}
+
+	if (MyTextScroller.IsValid())
+	{
+		if (bIsScrollingEnabled)
+		{
+			MyTextScroller->StartScrolling();
+
+			if (MyRichTextBlock.IsValid())
 			{
-				ApplyTextBlockScale();
+				MyRichTextBlock->SetOverflowPolicy(ETextOverflowPolicy::Clip);
+			}
+		}
+		else
+		{
+			MyTextScroller->SuspendScrolling();
+
+			if (MyRichTextBlock.IsValid())
+			{
+				MyRichTextBlock->SetOverflowPolicy(TOptional<ETextOverflowPolicy>());
 			}
 		}
 	}
@@ -628,3 +682,4 @@ void UCommonRichTextBlock::ApplyTextBlockScale() const
 		MyRichTextBlock->SetTextBlockScale(MobileTextBlockScale);
 	}
 }
+

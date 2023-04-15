@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Map.h"
-#include "Misc/DateTime.h"
-#include "Misc/Guid.h"
+#include "Containers/Ticker.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "IMessageContext.h"
 #include "IMessageRpcServer.h"
+#include "Misc/DateTime.h"
+#include "Misc/Guid.h"
 #include "Templates/SharedPointer.h"
-#include "Containers/Ticker.h"
+#include "UObject/TopLevelAssetPath.h"
 
 class FMessageEndpoint;
 class FMessagingRpcModule;
@@ -16,9 +18,9 @@ class IAsyncProgress;
 class IAsyncTask;
 class IMessageBus;
 class IMessageRpcHandler;
-
-struct FMessageRpcCancel;
+class IMessageRpcReturn;
 struct FMessageEndpointBuilder;
+struct FMessageRpcCancel;
 
 
 /**
@@ -39,9 +41,12 @@ public:
 
 	//~ IMessageRpcServer interface
 
-	virtual void AddHandler(const FName& RequestMessageType, const TSharedRef<IMessageRpcHandler>& Handler) override;
+	virtual void AddHandler(const FTopLevelAssetPath& RequestMessageType, const TSharedRef<IMessageRpcHandler>& Handler) override;
 	virtual const FMessageAddress& GetAddress() const override;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual FOnMessageRpcNoHandler& OnNoHandler() override;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual FOnMessagePathNameRpcNoHandler& OnNoHandlerWithPathName() override;
 	virtual void SetSendProgressUpdate(bool InSendProgress) override;
 protected:
 	explicit FMessageRpcServer(FMessageEndpointBuilder&& InEndpointBuilder);
@@ -85,10 +90,15 @@ private:
 private:
 
 	/** Registered request message handlers. */
-	TMap<FName, TSharedPtr<IMessageRpcHandler>> Handlers;
+	TMap<FTopLevelAssetPath, TSharedPtr<IMessageRpcHandler>> Handlers;
 
 	/* Delegate that is executed when a received RPC message has no registered handler. */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FOnMessageRpcNoHandler NoHandlerDelegate;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/* Delegate that is executed when a received RPC message has no registered handler. */
+	FOnMessagePathNameRpcNoHandler NoHandlerDelegateWithPathName;
 
 	/** Collection of pending RPC returns. */
 	TMap<FGuid, FReturnInfo> Returns;

@@ -362,14 +362,24 @@ void UUnrealEdEngine::PasteActors(TArray<AActor*>& OutPastedActors, UWorld* InWo
 	ULayersSubsystem* LayersSubsystem = GEditor->GetEditorSubsystem<ULayersSubsystem>();
 	for (AActor* Actor : OutPastedActors)
 	{
-		// We only want to offset the location if this actor is the root of a selected attachment hierarchy
-		// Offsetting children of an attachment hierarchy would cause them to drift away from the node they're attached to
-		// as the offset would effectively get applied twice
-		const AActor* const ParentActor = Actor->GetAttachParentActor();
-		const FVector& ActorLocationOffset = (ParentActor && ParentActor->IsSelected()) ? FVector::ZeroVector : LocationOffset;
-
-		// Offset the actor's location.
-		Actor->TeleportTo(Actor->GetActorLocation() + ActorLocationOffset, Actor->GetActorRotation(), false, true);
+		if (!LocationOffset.IsZero())
+		{
+			// We only want to offset the location if this actor is the root of a selected attachment hierarchy
+			// Offsetting children of an attachment hierarchy would cause them to drift away from the node they're attached to
+			// as the offset would effectively get applied twice
+			AActor* ParentActor = Actor->GetAttachParentActor();
+			if (!ParentActor)
+			{
+				Actor->TeleportTo(Actor->GetActorLocation() + LocationOffset, Actor->GetActorRotation(), false, true);
+			}
+			else if(!OutPastedActors.Contains(ParentActor))
+			{
+				FName SocketName = Actor->GetAttachParentSocketName();
+				Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+				Actor->TeleportTo(Actor->GetActorLocation() + LocationOffset, Actor->GetActorRotation(), false, true);
+				Actor->AttachToActor(ParentActor, FAttachmentTransformRules::KeepWorldTransform, SocketName);
+			}
+		}
 
 		if (!GetDefault<ULevelEditorMiscSettings>()->bAvoidRelabelOnPasteSelected)
 		{
@@ -895,15 +905,15 @@ bool UUnrealEdEngine::DeleteActors(const TArray<AActor*>& InActorsToDelete, UWor
 	TMap<FSoftObjectPath, TArray<UObject*>> SoftReferencingObjectsMap;
 	{
 		TArray<UClass*> ClassTypesToIgnore;
-		ClassTypesToIgnore.Add(ALevelScriptActor::StaticClass());
+		ClassesToIgnoreDeleteReferenceWarning.AddUnique(ALevelScriptActor::StaticClass());
 		// The delete warning is meant for actor references that affect gameplay.  Group actors do not affect gameplay and should not show up as a warning.
-		ClassTypesToIgnore.Add(AGroupActor::StaticClass());
+		ClassesToIgnoreDeleteReferenceWarning.AddUnique(AGroupActor::StaticClass());
 
 		// If we want to warn about references to the actors to be deleted, it is a lot more efficient to query
 		// the world first and build a map of actors referenced by other actors. We can then quickly look this up later on in the loop.
 		if (bWarnAboutReferences)
 		{
-			FBlueprintEditorUtils::GetActorReferenceMap(InWorld, ClassTypesToIgnore, ReferencingActorsMap);
+			FBlueprintEditorUtils::GetActorReferenceMap(InWorld, ClassesToIgnoreDeleteReferenceWarning, ReferencingActorsMap);
 
 			if (bWarnAboutSoftReferences)
 			{
@@ -963,7 +973,20 @@ bool UUnrealEdEngine::DeleteActors(const TArray<AActor*>& InActorsToDelete, UWor
 
 			if (SoftReferencingObjects)
 			{
-				bReferencedBySoftReference = true;
+				// Remove any references from object types marked to be ignored
+				for (int32 i = SoftReferencingObjects->Num() - 1; i >= 0; --i)
+				{
+					for (const TObjectPtr<UClass>& ClassToIgnore : ClassesToIgnoreDeleteReferenceWarning)
+					{
+						if ((*SoftReferencingObjects)[i]->IsA(ClassToIgnore))
+						{
+							SoftReferencingObjects->RemoveAt(i);
+							break;
+						}
+					}
+				}
+
+				bReferencedBySoftReference = SoftReferencingObjects->Num() > 0;
 			}
 		}
 
@@ -1346,9 +1369,6 @@ AActor* UUnrealEdEngine::ReplaceActor( AActor* CurrentActor, UClass* NewActorCla
 			NewActor->Layers.Empty();
 
 			LayersSubsystem->AddActorToLayers( NewActor, CurrentActor->Layers );
-
-			NewActor->SetActorLabel( CurrentActor->GetActorLabel() );
-			NewActor->Tags = CurrentActor->Tags;
 
 			NewActor->EditorReplacedActor( CurrentActor );
 		}
@@ -2350,7 +2370,7 @@ void UUnrealEdEngine::edactSelectMatchingSkeletalMesh(bool bAllClasses)
 		if(SkelMeshActor && SkelMeshActor->GetSkeletalMeshComponent())
 		{
 			bSelectSkelMeshActors = true;
-			SelectedMeshes.AddUnique(SkelMeshActor->GetSkeletalMeshComponent()->SkeletalMesh);
+			SelectedMeshes.AddUnique(SkelMeshActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset());
 			SelectedWorlds.AddUnique(Actor->GetWorld());			
 		}
 
@@ -2362,7 +2382,7 @@ void UUnrealEdEngine::edactSelectMatchingSkeletalMesh(bool bAllClasses)
 			if (PawnSkeletalMesh)
 			{
 				bSelectPawns = true;
-				SelectedMeshes.AddUnique(PawnSkeletalMesh->SkeletalMesh);
+				SelectedMeshes.AddUnique(PawnSkeletalMesh->GetSkeletalMeshAsset());
 				SelectedWorlds.AddUnique(Actor->GetWorld());
 			}
 		}
@@ -2398,7 +2418,7 @@ void UUnrealEdEngine::edactSelectMatchingSkeletalMesh(bool bAllClasses)
 				ASkeletalMeshActor* SkelMeshActor = Cast<ASkeletalMeshActor>(Actor);
 				if( SkelMeshActor && 
 					SkelMeshActor->GetSkeletalMeshComponent() && 
-					SelectedMeshes.Contains(SkelMeshActor->GetSkeletalMeshComponent()->SkeletalMesh) )
+					SelectedMeshes.Contains(SkelMeshActor->GetSkeletalMeshComponent()->GetSkeletalMeshAsset()) )
 				{
 					bSelectActor = true;
 				}
@@ -2410,7 +2430,7 @@ void UUnrealEdEngine::edactSelectMatchingSkeletalMesh(bool bAllClasses)
 				if (Pawn)
 				{
 					USkeletalMeshComponent* PawnSkeletalMesh = Pawn->FindComponentByClass<USkeletalMeshComponent>();
-					if (PawnSkeletalMesh && SelectedMeshes.Contains(PawnSkeletalMesh->SkeletalMesh) )
+					if (PawnSkeletalMesh && SelectedMeshes.Contains(PawnSkeletalMesh->GetSkeletalMeshAsset()) )
 					{
 						bSelectActor = true;
 					}

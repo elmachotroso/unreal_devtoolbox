@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayAnalyzer.h"
-#include "TraceServices/Utils.h"
-#include "TraceServices/Model/AnalysisSession.h"
+
 #include "GameplayProvider.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "TraceServices/Model/AnalysisSession.h"
+#include "TraceServices/Utils.h"
 
 FGameplayAnalyzer::FGameplayAnalyzer(TraceServices::IAnalysisSession& InSession, FGameplayProvider& InGameplayProvider)
 	: Session(InSession)
@@ -19,8 +21,10 @@ void FGameplayAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_Class, "Object", "Class");
 	Builder.RouteEvent(RouteId_Object, "Object", "Object");
 	Builder.RouteEvent(RouteId_ObjectEvent, "Object", "ObjectEvent");
-	Builder.RouteEvent(RoutId_ObjectLifetimeBegin, "Object", "ObjectLifetimeBegin");
-	Builder.RouteEvent(RoutId_ObjectLifetimeEnd, "Object", "ObjectLifetimeEnd");
+	Builder.RouteEvent(RouteId_ObjectLifetimeBegin, "Object", "ObjectLifetimeBegin");
+	Builder.RouteEvent(RouteId_ObjectLifetimeBegin2, "Object", "ObjectLifetimeBegin2");
+	Builder.RouteEvent(RouteId_ObjectLifetimeEnd, "Object", "ObjectLifetimeEnd");
+	Builder.RouteEvent(RouteId_ObjectLifetimeEnd2, "Object", "ObjectLifetimeEnd2");
 	Builder.RouteEvent(RouteId_PawnPossess, "Object", "PawnPossess");
 	Builder.RouteEvent(RouteId_World, "Object", "World");
 	Builder.RouteEvent(RouteId_View, "Object", "View");
@@ -32,6 +36,8 @@ void FGameplayAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 
 bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FGameplayAnalyzer"));
+
 	TraceServices::FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
@@ -105,18 +111,34 @@ bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		GameplayProvider.AppendObjectEvent(Id, Context.EventTime.AsSeconds(Cycle), *Event);
 		break;
 	}
-	case RoutId_ObjectLifetimeBegin:
+	case RouteId_ObjectLifetimeBegin:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
 		uint64 Id = EventData.GetValue<uint64>("Id");
-		GameplayProvider.AppendObjectLifetimeBegin(Id, Context.EventTime.AsSeconds(Cycle));
+		GameplayProvider.AppendObjectLifetimeBegin(Id, Context.EventTime.AsSeconds(Cycle), 0.0);
 		break;
 	}
-	case RoutId_ObjectLifetimeEnd:
+	case RouteId_ObjectLifetimeBegin2:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		double RecordingTime = EventData.GetValue<double>("RecordingTime");
+		uint64 Id = EventData.GetValue<uint64>("Id");
+		GameplayProvider.AppendObjectLifetimeBegin(Id, Context.EventTime.AsSeconds(Cycle), RecordingTime);
+		break;
+	}
+	case RouteId_ObjectLifetimeEnd:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
 		uint64 Id = EventData.GetValue<uint64>("Id");
-		GameplayProvider.AppendObjectLifetimeEnd(Id, Context.EventTime.AsSeconds(Cycle));
+		GameplayProvider.AppendObjectLifetimeEnd(Id, Context.EventTime.AsSeconds(Cycle), 0.0);
+		break;
+	}
+	case RouteId_ObjectLifetimeEnd2:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		double RecordingTime = EventData.GetValue<double>("RecordingTime");
+		uint64 Id = EventData.GetValue<uint64>("Id");
+		GameplayProvider.AppendObjectLifetimeEnd(Id, Context.EventTime.AsSeconds(Cycle), RecordingTime);
 		break;
 	}
 	case RouteId_PawnPossess:

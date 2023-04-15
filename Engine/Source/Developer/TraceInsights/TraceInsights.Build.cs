@@ -6,13 +6,6 @@ public class TraceInsights : ModuleRules
 {
 	public TraceInsights(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange
-		(
-			new string[] {
-				"Developer/TraceInsights/Private",
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange
 		(
 			new string[] {
@@ -22,7 +15,6 @@ public class TraceInsights : ModuleRules
 				"Core",
 				"CoreUObject",
 				"DesktopPlatform",
-				"EditorStyle",
 				"InputCore",
 				"RenderCore",
 				"RHI",
@@ -61,6 +53,7 @@ public class TraceInsights : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"ImageCore",
 				"SlateCore",
 			}
 		);
@@ -68,6 +61,13 @@ public class TraceInsights : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Messaging",
+				"MessageLog",
+			}
+		);
+
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(EngineDirectory,"Source/Developer/TraceServices/Private"),
 			}
 		);
 	}

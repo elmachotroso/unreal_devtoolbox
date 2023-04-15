@@ -5,6 +5,8 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Components/UniformGridSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UniformGridPanel)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -14,7 +16,7 @@ UUniformGridPanel::UUniformGridPanel(const FObjectInitializer& ObjectInitializer
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UUniformGridPanel::ReleaseSlateResources(bool bReleaseChildren)
@@ -80,6 +82,12 @@ UUniformGridSlot* UUniformGridPanel::AddChildToUniformGrid(UWidget* Content, int
 	return GridSlot;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FMargin UUniformGridPanel::GetSlotPadding() const
+{
+	return SlotPadding;
+}
+
 void UUniformGridPanel::SetSlotPadding(FMargin InSlotPadding)
 {
 	SlotPadding = InSlotPadding;
@@ -89,6 +97,11 @@ void UUniformGridPanel::SetSlotPadding(FMargin InSlotPadding)
 	}
 }
 
+float UUniformGridPanel::GetMinDesiredSlotWidth() const
+{
+	return MinDesiredSlotWidth;
+}
+
 void UUniformGridPanel::SetMinDesiredSlotWidth(float InMinDesiredSlotWidth)
 {
 	MinDesiredSlotWidth = InMinDesiredSlotWidth;
@@ -96,6 +109,11 @@ void UUniformGridPanel::SetMinDesiredSlotWidth(float InMinDesiredSlotWidth)
 	{
 		MyUniformGridPanel->SetMinDesiredSlotWidth(InMinDesiredSlotWidth);
 	}
+}
+
+float UUniformGridPanel::GetMinDesiredSlotHeight() const
+{
+	return MinDesiredSlotHeight;
 }
 
 void UUniformGridPanel::SetMinDesiredSlotHeight(float InMinDesiredSlotHeight)
@@ -115,6 +133,7 @@ void UUniformGridPanel::SynchronizeProperties()
 	MyUniformGridPanel->SetMinDesiredSlotWidth(MinDesiredSlotWidth);
 	MyUniformGridPanel->SetMinDesiredSlotHeight(MinDesiredSlotHeight);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #if WITH_EDITOR
 
@@ -128,3 +147,4 @@ const FText UUniformGridPanel::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -15,7 +15,7 @@
  *     yourgame.exe UnrealEd.CookCommandlet
  *
  * As a convenience, if a user tries to run a commandlet and the exact
- * name he types isn't found, then ucc.exe appends the text "commandlet"
+ * name they type isn't found, then ucc.exe appends the text "commandlet"
  * onto the name and tries again.  Therefore, the following shortcuts
  * perform identically to the above:
  *
@@ -161,5 +161,12 @@ class UCommandlet : public UObject
 
 };
 
-
-
+namespace CommandletHelpers
+{
+	/**
+	 * Simulate an engine frame tick.
+	 * Can be used by commandlets to tick various subsystems. If running with -AllowCommandletRendering, this will
+	 * also tick rendering for the provided world scene(s).
+	 */
+	ENGINE_API void TickEngine(class UWorld* InWorld = nullptr, double InDeltaTime = 0.0);
+}

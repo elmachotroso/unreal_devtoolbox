@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Drawing/UVLayoutPreview.h"
+#include "SceneManagement.h"
 #include "ToolSetupUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVLayoutPreview)
 
 using namespace UE::Geometry;
 
@@ -16,6 +19,7 @@ void UUVLayoutPreview::CreateInWorld(UWorld* World)
 {
 	PreviewMesh = NewObject<UPreviewMesh>(this);
 	PreviewMesh->CreateInWorld(World, FTransform::Identity);
+	PreviewMesh->SetShadowsEnabled(false);
 
 	TriangleComponent = NewObject<UTriangleSetComponent>(PreviewMesh->GetActor());
 	TriangleComponent->SetupAttachment(PreviewMesh->GetRootComponent());

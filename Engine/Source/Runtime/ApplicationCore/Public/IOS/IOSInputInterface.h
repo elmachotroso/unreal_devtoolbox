@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "GenericPlatform/IInputInterface.h"
-#include "GenericPlatform/IForceFeedbackSystem.h"
 #if !PLATFORM_TVOS
 #import <CoreMotion/CoreMotion.h>
 #endif
@@ -81,7 +80,7 @@ public:
 	void SendControllerEvents();
 	
 	/**
-	 * IForceFeedbackSystem implementation
+	 * IInputInterface implementation
 	 */
 	virtual void SetForceFeedbackChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value) override;
 	virtual void SetForceFeedbackChannelValues(int32 ControllerId, const FForceFeedbackValues &values) override;
@@ -139,12 +138,6 @@ private:
 
 	// can the game handle multiple gamepads at the same time (siri remote is a gamepad) ?
 	bool bGameSupportsMultipleActiveControllers;
-
-	// should the remote be used as virtual joystick vs touch events
-	bool bUseRemoteAsVirtualJoystick_DEPRECATED;
-
-	// should the tracking use the pad center as the virtual joystick center?
-	bool bUseRemoteAbsoluteDpadValues;
 
 	// bluetooth connected controllers will block force feedback.
 	bool bControllersBlockDeviceFeedback;

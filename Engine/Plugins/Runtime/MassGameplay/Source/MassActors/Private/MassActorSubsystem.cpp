@@ -3,6 +3,7 @@
 #include "MassActorSubsystem.h"
 #include "MassCommonTypes.h"
 #include "Engine/World.h"
+#include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
 #include "MassSimulationSubsystem.h"
 #include "VisualLogger/VisualLogger.h"
@@ -62,7 +63,15 @@ void UMassActorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	// making sure UMassSimulationSubsystem gets created before the MassActorSubsystem
 	Collection.InitializeDependency<UMassSimulationSubsystem>();
 	
-	EntitySystem = UWorld::GetSubsystem<UMassEntitySubsystem>(GetWorld());
+	if (UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(GetWorld()))
+	{
+		EntityManager = EntitySubsystem->GetMutableEntityManager().AsShared();
+	}
+}
+
+void UMassActorSubsystem::Deinitialize()
+{
+	EntityManager.Reset();
 }
 
 FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey<const AActor> Actor)
@@ -71,7 +80,7 @@ FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey
 	FMassEntityHandle* Entity = ActorHandleMap.Find(Actor);
 	if (!Entity)
 	{
-		return UMassEntitySubsystem::InvalidEntity;
+		return FMassEntityManager::InvalidEntity;
 	}
 
 	check(TObjectKey<const AActor>(GetActorFromHandle(*Entity)) == Actor);
@@ -80,8 +89,8 @@ FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey
 
 AActor* UMassActorSubsystem::GetActorFromHandle(const FMassEntityHandle Handle) const
 {
-	check(EntitySystem);
-	FMassActorFragment* Data = EntitySystem->GetFragmentDataPtr<FMassActorFragment>(Handle);
+	check(EntityManager);
+	FMassActorFragment* Data = EntityManager->GetFragmentDataPtr<FMassActorFragment>(Handle);
 	return Data != nullptr ? Data->GetMutable() : nullptr;
 }
 
@@ -118,8 +127,8 @@ void UMassActorSubsystem::DisconnectActor(const TObjectKey<const AActor> Actor, 
 
 	if (FoundEntity == Handle)
 	{
-		check(EntitySystem);
-		if (FMassActorFragment* Data = EntitySystem->GetFragmentDataPtr<FMassActorFragment>(Handle))
+		check(EntityManager);
+		if (FMassActorFragment* Data = EntityManager->GetFragmentDataPtr<FMassActorFragment>(Handle))
 		{
 			Data->ResetAndUpdateHandleMap();
 		}

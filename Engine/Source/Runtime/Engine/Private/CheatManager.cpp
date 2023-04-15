@@ -39,6 +39,9 @@
 #include "Misc/CoreDelegates.h"
 #include "Engine/NetConnection.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Engine/DamageEvents.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CheatManager)
 
 DEFINE_LOG_CATEGORY_STATIC(LogCheatManager, Log, All);
 
@@ -78,6 +81,10 @@ UCheatManager::UCheatManager(const FObjectInitializer& ObjectInitializer)
 
 void UCheatManager::OnPlayerEndPlayed(AActor* Player, EEndPlayReason::Type EndPlayReason)
 {
+	for (UCheatManagerExtension* CheatExtension : CheatManagerExtensions)
+	{
+		CheatExtension->RemovedFromCheatManager();
+	}
 	CheatManagerExtensions.Empty();
 }
 
@@ -421,15 +428,7 @@ void UCheatManager::Summon( const FString& ClassName )
 	bool bSpawnedActor = false;
 	if ( bIsValidClassName )
 	{
-		UClass* NewClass = NULL;
-		if ( FPackageName::IsShortPackageName(ClassName) )
-		{
-			NewClass = FindObject<UClass>(ANY_PACKAGE, *ClassName);
-		}
-		else
-		{
-			NewClass = FindObject<UClass>(NULL, *ClassName);
-		}
+		UClass* NewClass = UClass::TryFindTypeSlow<UClass>(ClassName);
 
 		if( NewClass )
 		{
@@ -1341,19 +1340,27 @@ void UCheatManager::DestroyServerStatReplicator()
 
 void UCheatManager::ToggleServerStatReplicatorClientOverwrite()
 {
-	AServerStatReplicator* ServerStatReplicator = FindObject<AServerStatReplicator>(ANY_PACKAGE, TEXT("ServerStatReplicatorInst"));
-	if (ServerStatReplicator != nullptr)
+	APlayerController* PlayerController = GetOuterAPlayerController();
+	if (ensure(PlayerController))
 	{
-		ServerStatReplicator->bOverwriteClientStats = !ServerStatReplicator->bOverwriteClientStats;
+		AServerStatReplicator* ServerStatReplicator = FindObject<AServerStatReplicator>(PlayerController->GetLevel(), TEXT("ServerStatReplicatorInst"));
+		if (ServerStatReplicator != nullptr)
+		{
+			ServerStatReplicator->bOverwriteClientStats = !ServerStatReplicator->bOverwriteClientStats;
+		}
 	}
 }
 
 void UCheatManager::ToggleServerStatReplicatorUpdateStatNet()
 {
-	AServerStatReplicator* ServerStatReplicator = FindObject<AServerStatReplicator>(ANY_PACKAGE, TEXT("ServerStatReplicatorInst"));
-	if (ServerStatReplicator != nullptr)
+	APlayerController* PlayerController = GetOuterAPlayerController();
+	if (ensure(PlayerController))
 	{
-		ServerStatReplicator->bUpdateStatNet = !ServerStatReplicator->bUpdateStatNet;
+		AServerStatReplicator* ServerStatReplicator = FindObject<AServerStatReplicator>(PlayerController->GetLevel(), TEXT("ServerStatReplicatorInst"));
+		if (ServerStatReplicator != nullptr)
+		{
+			ServerStatReplicator->bUpdateStatNet = !ServerStatReplicator->bUpdateStatNet;
+		}
 	}
 }
 
@@ -1366,7 +1373,11 @@ void UCheatManager::AddCheatManagerExtension(UCheatManagerExtension* CheatObject
 {
 	if (ensure(CheatObject))
 	{
-		CheatManagerExtensions.AddUnique(CheatObject);
+		if (!CheatManagerExtensions.Contains(CheatObject))
+		{
+			CheatManagerExtensions.Add(CheatObject);
+			CheatObject->AddedToCheatManager();
+		}
 	}
 }
 
@@ -1374,7 +1385,12 @@ void UCheatManager::RemoveCheatManagerExtension(UCheatManagerExtension* CheatObj
 {
 	if (ensure(CheatObject))
 	{
-		CheatManagerExtensions.Remove(CheatObject);
+		int32 CheatExtensionIdx = CheatManagerExtensions.IndexOfByKey(CheatObject);
+		if (CheatExtensionIdx != INDEX_NONE)
+		{
+			CheatManagerExtensions.RemoveAt(CheatExtensionIdx);
+			CheatObject->RemovedFromCheatManager();
+		}
 	}
 }
 
@@ -1430,3 +1446,4 @@ APlayerController* UCheatManager::GetPlayerController() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

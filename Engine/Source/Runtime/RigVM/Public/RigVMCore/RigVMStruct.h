@@ -2,17 +2,39 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "RigVMDefines.h"
-#include "RigVMCore/RigVMRegistry.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
 #include "RigVMCore/RigVMExternalVariable.h"
+#include "RigVMCore/RigVMFunction.h"
+#include "RigVMCore/RigVMRegistry.h"
+#include "RigVMCore/RigVMStructUpgradeInfo.h"
 #include "RigVMCore/RigVMTraits.h"
+#include "RigVMCore/RigVMUserWorkflow.h"
+#include "RigVMDefines.h"
+#include "Templates/EnableIf.h"
+#include "Templates/IsEnum.h"
+#include "Templates/Models.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/UnrealNames.h"
+
 #include "RigVMStruct.generated.h"
+
+class FProperty;
+class UObject;
 
 // delegates used for variable introspection / creation
 DECLARE_DELEGATE_RetVal(TArray<FRigVMExternalVariable>, FRigVMGetExternalVariablesDelegate)
 DECLARE_DELEGATE_RetVal_TwoParams(FName, FRigVMCreateExternalVariableDelegate, FRigVMExternalVariable, FString)
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FRigVMBindPinToExternalVariableDelegate, FString, FString)
+
+struct FRigVMStruct;
 
 /** Context as of why the node was created */
 enum class ERigVMNodeCreatedReason : uint8
@@ -144,12 +166,9 @@ struct RIGVM_API FRigVMStruct
 	virtual ~FRigVMStruct() {}
 	virtual FString ProcessPinLabelForInjection(const FString& InLabel) const { return InLabel; }
 	virtual FName GetEventName() const { return NAME_None; }
+	virtual bool CanOnlyExistOnce() const { return false; }
 
 public:
-
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	FORCEINLINE virtual int32 GetArraySize(const FName& InParameterName, const FRigVMUserDataArray& RigVMUserData) { return INDEX_NONE; }
-#endif
 
 	// loop related
 	FORCEINLINE virtual bool IsForLoop() const { return false; }
@@ -158,8 +177,10 @@ public:
 	// node creation
 	FORCEINLINE virtual void OnUnitNodeCreated(FRigVMUnitNodeCreatedContext& InContext) const {}
 
-#if WITH_EDITOR
+	// user workflow
+	TArray<FRigVMUserWorkflow> GetWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const; 
 
+#if WITH_EDITOR
 	static bool ValidateStruct(UScriptStruct* InStruct, FString* OutErrorMessage);
 	static bool CheckPinType(UScriptStruct* InStruct, const FName& PinName, const FString& ExpectedType, FString* OutErrorMessage = nullptr);
 	static bool CheckPinDirection(UScriptStruct* InStruct, const FName& PinName, const FName& InDirectionMetaName);
@@ -167,9 +188,32 @@ public:
 	static bool CheckPinExists(UScriptStruct* InStruct, const FName& PinName, const FString& ExpectedType = FString(), FString* OutErrorMessage = nullptr);
 	static bool CheckMetadata(UScriptStruct* InStruct, const FName& PinName, const FName& InMetadataKey, FString* OutErrorMessage = nullptr);
 	static bool CheckFunctionExists(UScriptStruct* InStruct, const FName& FunctionName, FString* OutErrorMessage = nullptr);
-	static FString ExportToFullyQualifiedText(FProperty* InMemberProperty, const uint8* InMemberMemoryPtr);
-	static FString ExportToFullyQualifiedText(UScriptStruct* InStruct, const uint8* InStructMemoryPtr);
 #endif
+	static FString ExportToFullyQualifiedText(const FProperty* InMemberProperty, const uint8* InMemberMemoryPtr, bool bUseQuotes = true);
+	static FString ExportToFullyQualifiedText(const UScriptStruct* InStruct, const uint8* InStructMemoryPtr, bool bUseQuotes = true);
+
+	template <
+		typename T,
+		typename TEnableIf<TRigVMIsBaseStructure<T>::Value>::Type * = nullptr
+	>
+	FORCEINLINE static FString ExportToFullyQualifiedText(const T& InStructValue)
+	{
+		return ExportToFullyQualifiedText(TBaseStructure<T>::Get(), (const uint8*)&InStructValue);
+	}
+	
+	template <
+		typename T,
+		typename TEnableIf<TModels<CRigVMUStruct, T>::Value>::Type * = nullptr
+	>
+	FORCEINLINE static FString ExportToFullyQualifiedText(const T& InStructValue)
+	{
+		return ExportToFullyQualifiedText(T::StaticStruct(), (const uint8*)&InStructValue);
+	}
+
+	FString ExportToFullyQualifiedText(const UScriptStruct* InScriptStruct, const FName& InPropertyName, const uint8* InStructMemoryPointer = nullptr, bool bUseQuotes = true) const;
+	
+	virtual FName GetNextAggregateName(const FName& InLastAggregatePinName) const;
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const { return FRigVMStructUpgradeInfo(); }
 
 	static const FName DeprecatedMetaName;
 	static const FName InputMetaName;
@@ -192,7 +236,8 @@ public:
 	// Example: Icon="EditorStyle|GraphEditor.Sequence_16x"
 	static const FName IconMetaName;
 	static const FName KeywordsMetaName;
-	static const FName PrototypeNameMetaName;
+	static const FName TemplateNameMetaName;
+	static const FName AggregateMetaName;
 	static const FName ExpandPinByDefaultMetaName;
 	static const FName DefaultArraySizeMetaName;
 	static const FName VaryingMetaName;
@@ -208,5 +253,11 @@ public:
 protected:
 
 	static float GetRatioFromIndex(int32 InIndex, int32 InCount);
+	TMap<FName, FString> GetDefaultValues(UScriptStruct* InScriptStruct) const;
+	bool ApplyUpgradeInfo(const FRigVMStructUpgradeInfo& InUpgradeInfo);
+	FORCEINLINE virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(const UObject* InSubject) const { return TArray<FRigVMUserWorkflow>(); } 
 
+	friend struct FRigVMStructUpgradeInfo;
+	friend class FRigVMGraphStructUpgradeInfoTest;
+	friend class URigVMController;
 };

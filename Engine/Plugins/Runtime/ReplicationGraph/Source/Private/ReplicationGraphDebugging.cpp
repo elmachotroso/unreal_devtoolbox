@@ -511,7 +511,7 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetClassCullDistance(TEXT("Net.Re
 			return;
 		}
 
-		UClass* Class = FindObject<UClass>(ANY_PACKAGE, *Args[0]);
+		UClass* Class = UClass::TryFindTypeSlow<UClass>(Args[0]);
 		if (Class == nullptr)
 		{
 			UE_LOG(LogReplicationGraph, Display, TEXT("Could not find Class: %s"), *Args[0]);
@@ -572,7 +572,7 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetPeriodFrame(TEXT("Net.RepGraph
 			return;
 		}
 
-		UClass* Class = FindObject<UClass>(ANY_PACKAGE, *Args[0]);
+		UClass* Class = UClass::TryFindTypeSlow<UClass>(Args[0]);
 		if (Class == nullptr)
 		{
 			UE_LOG(LogReplicationGraph, Display, TEXT("Could not find Class: %s"), *Args[0]);
@@ -622,7 +622,7 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetDebugActorConnectionCmd(TEXT("
 		}
 		else
 		{
-			float ClosestMatchDistSq = WORLD_MAX;
+			FVector::FReal ClosestMatchDistSq = WORLD_MAX;
 			AActor* ClosestMatchActor = nullptr;
 			FVector CamLoc;
 			FRotator CamRot;
@@ -649,7 +649,7 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetDebugActorConnectionCmd(TEXT("
 
 				if (Class)
 				{
-					float DistSq = (Actor->GetActorLocation() - CamLoc).SizeSquared2D();
+					FVector::FReal DistSq = (Actor->GetActorLocation() - CamLoc).SizeSquared2D();
 					if (DistSq < ClosestMatchDistSq)
 					{
 						ClosestMatchDistSq = DistSq;
@@ -708,7 +708,7 @@ FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& 
 }));
 #endif
 
-#if !(UE_BUILD_SHIPPING | UE_BUILD_TEST)
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 FAutoConsoleCommandWithWorldAndArgs NetRepGraphForceRebuild(TEXT("Net.RepGraph.Spatial.ForceRebuild"),TEXT(""),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
@@ -1031,7 +1031,7 @@ void UReplicationGraph::CollectRepListStats(FActorRepListStatCollector& StatColl
 	}
 }
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if DO_ENABLE_REPGRAPH_DEBUG_ACTOR
 AReplicationGraphDebugActor* UReplicationGraph::CreateDebugActor() const
 {
 	return GetWorld()->SpawnActor<AReplicationGraphDebugActor>();

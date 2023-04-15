@@ -1,17 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNewSystemDialog.h"
-#include "NiagaraSystem.h"
+#include "NiagaraEditorModule.h"
 #include "NiagaraEditorStyle.h"
-#include "NiagaraEditor/Private/SNiagaraAssetPickerList.h"
+#include "NiagaraSystem.h"
+#include "SNiagaraAssetPickerList.h"
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Layout/SWrapBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -39,12 +40,14 @@ void SNewSystemDialog::Construct(const FArguments& InArgs)
 	TemplateAndBehaviorsOnlyTabOptions.ChangeTabState(ENiagaraScriptTemplateSpecification::Template, true);
 	TemplateAndBehaviorsOnlyTabOptions.ChangeTabState(ENiagaraScriptTemplateSpecification::Behavior, true);
 
+	FNiagaraEditorModule::Get().PreloadSelectablePluginAssetsByClass(UNiagaraEmitter::StaticClass());
 	SAssignNew(EmitterAssetPicker, SNiagaraAssetPickerList, UNiagaraEmitter::StaticClass())
 		.OnTemplateAssetActivated(this, &SNewSystemDialog::OnEmitterAssetsActivated)
 		.ViewOptions(DisplayAllViewOptions)
 		.TabOptions(AllTabOptions)
 		.bAllowMultiSelect(true);
 
+	FNiagaraEditorModule::Get().PreloadSelectablePluginAssetsByClass(UNiagaraSystem::StaticClass());
 	SAssignNew(TemplateBehaviorAssetPicker, SNiagaraAssetPickerList, UNiagaraSystem::StaticClass())
 		.OnTemplateAssetActivated(this, &SNewSystemDialog::ConfirmSelection)
 		.ViewOptions(DisplayAllViewOptions)
@@ -87,7 +90,7 @@ void SNewSystemDialog::Construct(const FArguments& InArgs)
 					.VAlign(VAlign_Center)
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+						.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 						.IsEnabled(this, &SNewSystemDialog::IsAddEmittersToSelectionButtonEnabled)
 						.OnClicked(this, &SNewSystemDialog::AddEmittersToSelectionButtonClicked)
 						.ToolTipText(LOCTEXT("AddSelectedEmitterToolTip", "Add the selected emitter to the collection\n of emitters to be added to the new system."))
@@ -100,8 +103,8 @@ void SNewSystemDialog::Construct(const FArguments& InArgs)
 							.VAlign(VAlign_Center)
 							[
 								SNew(STextBlock)
-								.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+								.TextStyle(FAppStyle::Get(), "NormalText.Important")
+								.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 								.Text(FText::FromString(FString(TEXT("\xf067"))) /*fa-plus*/)
 							]
 						]
@@ -153,7 +156,7 @@ TOptional<FAssetData> SNewSystemDialog::GetSelectedSystemAsset() const
 	TArray<FAssetData> SelectedSystemAssets;
 	for (const FAssetData& SelectedAsset : AllSelectedAssets)
 	{
-		if (SelectedAsset.AssetClass == UNiagaraSystem::StaticClass()->GetFName())
+		if (SelectedAsset.AssetClassPath == UNiagaraSystem::StaticClass()->GetClassPathName())
 		{
 			SelectedSystemAssets.Add(SelectedAsset);
 		}
@@ -171,7 +174,7 @@ TArray<FAssetData> SNewSystemDialog::GetSelectedEmitterAssets() const
 	TArray<FAssetData> ConfirmedSelectedEmitterAssets;
 	for (const FAssetData& SelectedAsset : AllSelectedAssets)
 	{
-		if (SelectedAsset.AssetClass == UNiagaraEmitter::StaticClass()->GetFName())
+		if (SelectedAsset.AssetClassPath == UNiagaraEmitter::StaticClass()->GetClassPathName())
 		{
 			ConfirmedSelectedEmitterAssets.Add(SelectedAsset);
 		}
@@ -240,13 +243,13 @@ void SNewSystemDialog::AddEmitterAssetsToSelection(const TArray<FAssetData>& Emi
 					.Padding(2, 0, 0, 0)
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.OnClicked(this, &SNewSystemDialog::RemoveEmitterFromSelectionButtonClicked, SelectedEmitterAsset)
 						.ToolTipText(LOCTEXT("RemoveSelectedEmitterToolTip", "Remove the selected emitter from the collection\n of emitters to be added to the new system."))
 						[
 							SNew(STextBlock)
-							//.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+							//.TextStyle(FAppStyle::Get(), "NormalText.Important")
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 							.Text(FText::FromString(FString(TEXT("\xf057"))) /*times-circle*/)
 							.ColorAndOpacity(FLinearColor(.8f, .2f, .2f, 1.0f))
 						]

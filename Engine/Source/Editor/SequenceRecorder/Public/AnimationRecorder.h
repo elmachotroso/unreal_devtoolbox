@@ -11,6 +11,7 @@
 #include "Animation/AnimNotifyQueue.h"
 #include "Serializers/MovieSceneAnimationSerialization.h"
 #include "Misc/QualifiedFrameTime.h"
+#include "AnimationRecorder.generated.h"
 
 class UAnimBoneCompressionSettings;
 class UAnimNotify;
@@ -19,6 +20,32 @@ class UAnimSequence;
 class USkeletalMeshComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(AnimationSerialization, Verbose, All);
+
+UENUM(BlueprintType)
+enum class ETimecodeBoneMode : uint8
+{
+	All,
+	Root,
+	UserDefined,
+	MAX UMETA(Hidden)
+};
+
+USTRUCT(BlueprintType)
+struct FTimecodeBoneMethod
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Default constructor, initializing with default values */
+	FTimecodeBoneMethod() : BoneMode(ETimecodeBoneMode::Root) { }
+
+	/** The timecode bone mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Timecode")
+	ETimecodeBoneMode BoneMode;
+
+	/** Name of the bone to assign timecode values to */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Timecode")
+	FName BoneName;
+};
 
 //////////////////////////////////////////////////////////////////////////
 // FAnimationRecorder
@@ -90,7 +117,7 @@ public:
 
 	const FTransform& GetInitialRootTransform() const { return InitialRootTransform; }
 
-	void ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate);
+	void ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate, const FTimecodeBoneMethod& TimecodeBoneMethod);
 
 	/** If true, it will record root to include LocalToWorld */
 	uint8 bRecordLocalToWorld :1;
@@ -100,6 +127,8 @@ public:
 	uint8 bRemoveRootTransform : 1;
 	/** If true we check delta time at beginning of recording */
 	uint8 bCheckDeltaTimeAtBeginning : 1;
+	/** Interpolation type for the recorded sequence */
+	EAnimInterpolationType Interpolation;
 	/** The interpolation mode for the recorded keys */
 	ERichCurveInterpMode InterpMode;
 	/** The tangent mode for the recorded keys*/
@@ -114,6 +143,10 @@ public:
 	uint8 bRecordAttributeCurves : 1;
 	/** Whether or not to record material curves*/
 	uint8 bRecordMaterialCurves : 1;
+	/** Include list */
+	TArray<FString> IncludeAnimationNames;
+	/** Exclude list */
+	TArray<FString> ExcludeAnimationNames;
 public:
 	/** Helper function to get space bases depending on master pose component */
 	static void GetBoneTransforms(USkeletalMeshComponent* Component, TArray<FTransform>& BoneTransforms);
@@ -124,6 +157,8 @@ private:
 	void RecordNotifies(USkeletalMeshComponent* Component, const TArray<FAnimNotifyEventReference>& AnimNotifies, float DeltaTime, float RecordTime);
 
 	void ProcessNotifies();
+
+	bool ShouldSkipName(const FName& InName) const;
 
 	// recording curve data 
 	struct FBlendedCurve
@@ -160,7 +195,7 @@ public:
 	bool BeginRecording();
 	void Update(float DeltaTime);
 	void FinishRecording(bool bShowMessage = true);
-	void ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate);
+	void ProcessRecordedTimes(UAnimSequence* AnimSequence, USkeletalMeshComponent* SkeletalMeshComponent, const FString& HoursName, const FString& MinutesName, const FString& SecondsName, const FString& FramesName, const FString& SubFramesName, const FString& SlateName, const FString& Slate, const FTimecodeBoneMethod& TimecodeBoneMethod);
 
 private:
 	void InitInternal(USkeletalMeshComponent* InComponent, const FAnimationRecordingSettings& Settings, FAnimationSerializer *InAnimationSerializer = nullptr);

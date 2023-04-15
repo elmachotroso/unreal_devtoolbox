@@ -1,14 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BufferVisualizationMenuCommands.h"
-#include "Containers/UnrealString.h"
-#include "Framework/Commands/InputChord.h"
-#include "Materials/Material.h"
-#include "Internationalization/Text.h"
+
 #include "BufferVisualizationData.h"
-#include "Templates/Function.h"
-#include "EditorStyleSet.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "EditorViewportClient.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Function.h"
+#include "UObject/UnrealNames.h"
+
+class UMaterialInterface;
 
 #define LOCTEXT_NAMESPACE "BufferVisualizationMenuCommands"
 
@@ -47,7 +58,7 @@ FBufferVisualizationMenuCommands::FBufferVisualizationMenuCommands()
 		TEXT("VisualizationMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "VisualizationMenu", "Render Buffer Visualization"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	),
 	CommandMap()
 {

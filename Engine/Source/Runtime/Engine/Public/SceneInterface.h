@@ -19,6 +19,7 @@ class FMaterialShaderMap;
 class FPrimitiveSceneInfo;
 class FRenderResource;
 class FRenderTarget;
+class FRectLightSceneProxy;
 class FSkyLightSceneProxy;
 class FTexture;
 class FVertexFactory;
@@ -34,7 +35,9 @@ class UTextureCube;
 class FViewInfo;
 class FSceneRenderer;
 class FInstanceCullingManager;
+class FSceneViewStateInterface;
 struct FHairStrandsInstance;
+struct FLightRenderParameters;
 
 enum EBasePassDrawListType
 {
@@ -168,8 +171,23 @@ public:
 	 * Allocates reflection captures in the scene's reflection cubemap array and updates them by recapturing the scene.
 	 * Existing captures will only be updated.  Must be called from the game thread.
 	 */
-	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile) {}
+	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile, bool bInsideTick) {}
 	virtual void ReleaseReflectionCubemap(UReflectionCaptureComponent* CaptureComponent) {}
+
+	/**
+	  * Resets reflection capture data to allow it to be rebuilt from scratch.  Allows shrinking of the number of items in
+	  * the capture array, which otherwise only grows.  This can allow the user to solve cases where an out of memory (OOM)
+	  * condition prevented captures from being generated.  The user can remove some items or reduce the capture resolution
+	  * to fix the issue, and run "Build Reflection Captures" (which calls this function), instead of needing to restart
+	  * the editor.  The flag "bOnlyIfOOM" only does the reset if an OOM had occurred.
+	  */
+	virtual void ResetReflectionCaptures(bool bOnlyIfOOM) {}
+
+	UE_DEPRECATED(5.1, "This method now accepts a bInsideTick parameter, which specifies whether it's called during the frame Tick.")
+	inline void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile)
+	{
+		AllocateReflectionCaptures(NewCaptures, CaptureReason, bVerifyOnlyCapturing, bCapturingForMobile, false);
+	}
 
 	/** 
 	 * Updates the contents of the given sky capture by rendering the scene. 
@@ -213,6 +231,9 @@ public:
 
 	/** Mark scene as needing to restart path tracer accumulation. */
 	virtual void InvalidatePathTracedOutput() {}
+
+	/**  Invalidates Lumen surface cache and forces it to be refreshed. Useful to make material updates more responsive. */
+	virtual void InvalidateLumenSurfaceCache_GameThread(UPrimitiveComponent* Component) {}
 
 	/** 
 	 * Retrieves primitive uniform shader parameters that are internal to the renderer.
@@ -311,6 +332,14 @@ public:
 	 * @param Proxy - the hair strands proxy
 	 */
 	virtual void RemoveHairStrands(FHairStrandsInstance* Proxy) = 0;
+
+	/**
+	 * Return the rect. light atlas slot information corresponding to the rect light proxy
+	 *
+	 * @param Proxy - the rect light proxy
+	 * @param Out - the light parameters which will be filled with the rect light atlas information
+	 */
+	virtual void GetRectLightAtlasSlot(const FRectLightSceneProxy* Proxy, FLightRenderParameters* Out) = 0;
 
 	/**
 	 * Set the physics field scene proxy to the scene
@@ -421,13 +450,14 @@ public:
 	 * @return UWorld instance used by this scene
 	 */
 	virtual class UWorld* GetWorld() const = 0;
+	
 	/**
-	 * Return the scene to be used for rendering. Note that this can return NULL if rendering has
+	 * Return the scene to be used for rendering. Note that this can return null if rendering has
 	 * been disabled!
 	 */
 	virtual class FScene* GetRenderScene()
 	{
-		return NULL;
+		return nullptr;
 	}
 
 	virtual void OnWorldCleanup()
@@ -471,7 +501,6 @@ public:
 	virtual void Export( FArchive& Ar ) const
 	{}
 
-	
 	/**
 	 * Shifts scene data by provided delta
 	 * Called on world origin changes
@@ -551,9 +580,13 @@ public:
 	virtual class FRayTracingSkinnedGeometryUpdateQueue* GetRayTracingSkinnedGeometryUpdateQueue() { return nullptr; }
 #endif
 
+	virtual bool RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState) { return false; }
+
 protected:
 	virtual ~FSceneInterface() {}
 
 	/** This scene's feature level */
 	ERHIFeatureLevel::Type FeatureLevel;
+
+	friend class FSceneViewStateReference;
 };

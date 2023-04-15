@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IKRigDataTypes.h"
+#include "IKRigLogger.h"
 #include "IKRigSkeleton.h"
 
 #include "IKRigProcessor.generated.h"
@@ -38,16 +39,19 @@ public:
 	* 5. Copy output transforms with CopyOutputGlobalPoseToArray()
 	* 
 	*/
-	 
+
+	UIKRigProcessor();
+	
 	/** setup a new processor to run the given IKRig asset
 	 *  NOTE!! this function creates new UObjects and consequently MUST be called from the main thread!!
 	 *  @param InRigAsset - the IK Rig defining the collection of solvers to execute and all the rig settings
-	 *  @param InputSkeleton - the skeleton in reference pose that you want to solve the IK on
+	 *  @param SkeletalMesh - the skeletal mesh you want to solve the IK on
+	 *  @param ExcludedGoals - a list of goal names to exclude from this processor instance (support per-instance removal of goals)
 	 */
-	void Initialize(const UIKRigDefinition* InRigAsset, const FIKRigInputSkeleton& InputSkeleton);
-
-	/** Anim Graph: convenience to initialize directly from an FReferenceSkeleton. */
-	void Initialize(const UIKRigDefinition* InRigAsset, const FReferenceSkeleton& RefSkeleton);
+	void Initialize(
+		const UIKRigDefinition* InRigAsset,
+		const USkeletalMesh* SkeletalMesh,
+		const TArray<FName>& ExcludedGoals = TArray<FName>());
 
 	//
 	// BEGIN UPDATE SEQUENCE FUNCTIONS
@@ -83,21 +87,29 @@ public:
 
 	/** Get access to the internal goal data (read only) */
 	const FIKRigGoalContainer& GetGoalContainer() const;
+	/** Get the bone associated with a goal */
+	const FGoalBone* GetGoalBone(const FName& GoalName) const;
 	
-	/** Get access to the internal skeleton data */
-	FIKRigSkeleton& GetSkeleton();
+	/** Get read/write access to the internal skeleton data */
+	FIKRigSkeleton& GetSkeletonWriteable();
+	/** Get read-only access to the internal skeleton data */
+	const FIKRigSkeleton& GetSkeleton() const;
 
 	/** Used to determine if the IK Rig asset is compatible with a given skeleton. */
-	static bool IsIKRigCompatibleWithSkeleton(const UIKRigDefinition* InRigAsset, const FIKRigInputSkeleton& InputSkeleton);
+	static bool IsIKRigCompatibleWithSkeleton(
+		const UIKRigDefinition* InRigAsset,
+		const FIKRigInputSkeleton& InputSkeleton,
+		const FIKRigLogger* Log);
 
 	bool IsInitialized() const { return bInitialized; };
 
 	void SetNeedsInitialized();
 
-#if WITH_EDITOR
+	/** logging system */
+	FIKRigLogger Log;
+
 	/** Used to propagate setting values from the source asset at runtime (settings that do not require re-initialization) */
 	void CopyAllInputsFromSourceAssetAtRuntime(const UIKRigDefinition* SourceAsset);
-#endif
 	
 private:
 

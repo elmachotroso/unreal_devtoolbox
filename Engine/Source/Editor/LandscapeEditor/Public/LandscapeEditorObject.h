@@ -8,7 +8,7 @@
 #include "LandscapeProxy.h"
 #include "Editor/LandscapeEditor/Private/LandscapeEdMode.h"
 #include "LandscapeFileFormatInterface.h"
-#include "LandscapeBlueprintBrush.h"
+#include "LandscapeBlueprintBrushBase.h"
 #include "LandscapeImportHelper.h"
 
 #include "LandscapeEditorObject.generated.h"
@@ -272,9 +272,13 @@ class ULandscapeEditorObject : public UObject
 
 	// Common Tool Settings:
 
-	// Strength of the tool. If you're using a pen/tablet with pressure-sensing, the pressure used affects the strength of the tool.
-	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(ShowForTools="Paint,Sculpt,Erase,Smooth,Flatten,Erosion,HydraErosion,Noise,Mask,CopyPaste", ClampMin="0", ClampMax="10", UIMin="0", UIMax="1"))
+	// Strength of the Sculpt tool. If you're using a pen/tablet with pressure-sensing, the pressure used affects the strength of the tool.
+	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Tool Strength", ShowForTools="Paint,Sculpt,Erase,Smooth,Flatten,Erosion,HydraErosion,Noise,Mask,CopyPaste", ShowForTargetTypes = "Heightmap,Visibility",  ClampMin="0", ClampMax="10", UIMin="0", UIMax="1"))
 	float ToolStrength;
+
+	// Strength of the Paint tool. If you're using a pen/tablet with pressure-sensing, the pressure used affects the strength of the tool.
+	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Tool Strength", ShowForTools="Paint,Sculpt,Erase,Smooth,Flatten,Erosion,HydraErosion,Noise,Mask,CopyPaste", ShowForTargetTypes = "Weightmap", ClampMin="0", ClampMax="10", UIMin="0", UIMax="1"))
+	float PaintToolStrength;
 
 	// Enable to make tools blend towards a target value
 	UPROPERTY(Category = "Tool Settings", NonTransactional, EditAnywhere, meta = (InlineEditConditionToggle))
@@ -476,7 +480,7 @@ class ULandscapeEditorObject : public UObject
 	// Blueprint Brush Tool
 
 	UPROPERTY(Category = "Tool Settings", EditAnywhere, Transient, meta = (DisplayName = "Blueprint Brush", ShowForTools = "BlueprintBrush"))
-	TSubclassOf<ALandscapeBlueprintBrush> BlueprintBrush;
+	TSubclassOf<ALandscapeBlueprintBrushBase> BlueprintBrush;
 
 	// Resize Landscape Tool
 
@@ -556,8 +560,11 @@ class ULandscapeEditorObject : public UObject
 	UPROPERTY(NonTransactional)
 	bool bHeightmapSelected = false;
 	
-	UPROPERTY(Category = "Import / Export", EditAnywhere, NonTransactional, meta = (DisplayName="Export Edit Layer", ShowForTools = "ImportExport", ToolTip="When true exports the selected edit layer, if false exports the blend result"))
+	UPROPERTY(Category = "Import / Export", EditAnywhere, NonTransactional, meta = (DisplayName="Export Selected Edit Layer", ShowForTools = "ImportExport", ToolTip="When true exports the selected edit layer, if false exports the blended result"))
 	bool bExportEditLayer = true;
+
+	UPROPERTY(Category = "Import / Export", EditAnywhere, NonTransactional, meta = (DisplayName = "Export Single File", ShowForTools = "ImportExport", ToolTip = "(World Partition only) When true, exports the landscape as a single file, if false exports each grid tile individually."))
+	bool bExportSingleFile = false;
 
 	UPROPERTY(NonTransactional)
 	FLandscapeImportDescriptor HeightmapImportDescriptor;
@@ -569,7 +576,7 @@ private:
 	TArray<uint16> ImportLandscape_Data;
 public:
 	UPROPERTY(Category = "New Landscape", EditAnywhere, NonTransactional, meta = (DisplayName= "Enable Edit Layers", ToolTip="Enable support for landscape edit layers.", ShowForTools= "NewLandscape"))
-	bool bCanHaveLayersContent = false;
+	bool bCanHaveLayersContent = true;
 
 	UPROPERTY(Category = "New Landscape", EditAnywhere, NonTransactional, meta = (DisplayName = "Flip Y Axis", ToolTip = "Whether to flip Y coordinate of imported files.", ShowForTools = "NewLandscape,ImportExport"))
 	bool bFlipYAxis = false;
@@ -587,13 +594,21 @@ public:
 
 	// Common Brush Settings:
 
-	// The radius of the brush, in unreal units
-	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Size", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern", ClampMin="1", ClampMax="65536", UIMin="1", UIMax="8192", SliderExponent="3"))
+	// The radius of the sculpt brush, in unreal units
+	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Size", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern", ShowForTargetTypes = "Heightmap,Visibility", ClampMin="1", ClampMax="65536", UIMin="1", UIMax="8192", SliderExponent="3"))
 	float BrushRadius;
 
-	// The falloff at the edge of the brush, as a fraction of the brush's size. 0 = no falloff, 1 = all falloff
-	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(ShowForBrushes="BrushSet_Circle,BrushSet_Gizmo,BrushSet_Pattern", ClampMin="0", ClampMax="1", UIMin = "0", UIMax = "1"))
+	// The radius of the paint brush, in unreal units
+	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Size", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern", ShowForTargetTypes = "Weightmap", ClampMin="1", ClampMax="65536", UIMin="1", UIMax="8192", SliderExponent="3"))
+	float PaintBrushRadius;
+
+	// The falloff at the edge of the sculpt brush, as a fraction of the brush's size. 0 = no falloff, 1 = all falloff
+	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Falloff", ShowForBrushes="BrushSet_Circle,BrushSet_Gizmo,BrushSet_Pattern", ShowForTargetTypes = "Heightmap,Visibility", ClampMin="0", ClampMax="1", UIMin = "0", UIMax = "1"))
 	float BrushFalloff;
+	
+	// The falloff at the edge of the point brush, as a fraction of the brush's size. 0 = no falloff, 1 = all falloff
+	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Falloff", ShowForBrushes="BrushSet_Circle,BrushSet_Gizmo,BrushSet_Pattern", ShowForTargetTypes = "Weightmap", ClampMin="0", ClampMax="1", UIMin = "0", UIMax = "1"))
+	float PaintBrushFalloff;
 
 	// Selects the Clay Brush painting mode
 	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(ShowForTools="Sculpt", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern"))
@@ -682,7 +697,7 @@ public:
 	void SetPasteMode(ELandscapeToolPasteMode InPasteMode);
 
 	// Alpha/Pattern Brush
-	bool SetAlphaTexture(UTexture2D* InTexture, EColorChannel::Type InTextureChannel);
+	void SetAlphaTexture(UTexture2D* InTexture, EColorChannel::Type InTextureChannel);
 
 	// New Landscape
 	FString LastImportPath;
@@ -759,4 +774,21 @@ public:
 
 	void UpdateTargetLayerDisplayOrder();
 	void UpdateShowUnusedLayers();
+
+	float GetCurrentToolStrength() const;
+	void SetCurrentToolStrength(float NewToolStrength);
+
+	float GetCurrentToolBrushRadius() const;
+	void SetCurrentToolBrushRadius(float NewBrushStrength);
+
+	float GetCurrentToolBrushFalloff() const;
+	void SetCurrentToolBrushFalloff(float NewBrushFalloff);
+
+private:
+
+	bool IsWeightmapTarget() const
+	{
+		check(ParentMode);
+		return !(ParentMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap || ParentMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Visibility);
+	}
 };

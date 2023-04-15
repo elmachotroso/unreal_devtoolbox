@@ -3,29 +3,46 @@
 #pragma once
 
 #include "NiagaraCommon.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraSystemGpuComputeProxy.h"
+
+struct FNiagaraComputeInstanceData;
+struct FNiagaraSimStageData;
 
 //////////////////////////////////////////////////////////////////////////
 // Public API for tracking GPU time when the profiler is enabled
+struct NIAGARA_API FNiagaraGpuProfileEvent
+{
+#if WITH_NIAGARA_GPU_PROFILER
+	friend class FNiagaraGPUProfiler;
+
+	explicit FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, const bool bFirstInstanceData);
+	explicit FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, FName CustomStageName);
+	explicit FNiagaraGpuProfileEvent(const FNiagaraGpuProfileEvent& Other) = default;
+
+private:
+	uint32									bUniqueInstance : 1;
+	TWeakObjectPtr<class USceneComponent>	OwnerComponent;
+	FVersionedNiagaraEmitterWeakPtr			OwnerEmitter;
+	FName									StageName;
+#else
+	explicit FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData, const bool bFirstInstanceData) {}
+	explicit FNiagaraGpuProfileEvent(const FNiagaraComputeInstanceData& InstanceData, FName CustomStageName) {}
+	explicit FNiagaraGpuProfileEvent(const FNiagaraGpuProfileEvent& Other) = default;
+#endif
+};
+
 struct NIAGARA_API FNiagaraGpuProfileScope
 {
 #if WITH_NIAGARA_GPU_PROFILER
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, FName StageName);
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const struct FNiagaraGpuDispatchInstance& DispatchInstance);
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceArgs& Context, FName StageName);
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceSetArgs& Context, FName StageName);
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceStageArgs& Context, FName StageName);
+	explicit FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraGpuProfileEvent& Event);
 	~FNiagaraGpuProfileScope();
 
 private:
 	FRHICommandList& RHICmdList;
 	class FNiagaraGPUProfiler* GPUProfiler = nullptr;
 #else
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, FName StageName) {}
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const struct FNiagaraGpuDispatchInstance& DispatchInstance) {}
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceArgs& Context, FName StageName) {}
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceSetArgs& Context, FName StageName) {}
-	FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const struct FNiagaraDataInterfaceStageArgs& Context, FName StageName) {}
+	explicit FNiagaraGpuProfileScope(FRHICommandList& RHICmdList, const class FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, const FNiagaraGpuProfileEvent& Event) {}
 	~FNiagaraGpuProfileScope() {}
 #endif
 };
@@ -35,24 +52,19 @@ private:
 /** Results generated when the frame is ready and sent to that game thread */
 struct FNiagaraGpuFrameResults : public TSharedFromThis<FNiagaraGpuFrameResults, ESPMode::ThreadSafe>
 {
-	struct FStageResults
-	{
-		int32	NumDispatchGroups = 0;
-		int32	NumDispatches = 0;
-		uint64	DurationMicroseconds = 0;
-	};
-
 	struct FDispatchResults
 	{
 		uint32									bUniqueInstance : 1;		// Set only once for all dispatches from an instance across all ticks
 		TWeakObjectPtr<class USceneComponent>	OwnerComponent;				// Optional pointer back to owning Component
-		TWeakObjectPtr<class UNiagaraEmitter>	OwnerEmitter;				// Optional pointer back to owning Emitter
+		FVersionedNiagaraEmitterWeakPtr			OwnerEmitter;				// Optional pointer back to owning Emitter
 		FName									StageName;					// Generally the simulation stage but may be a DataInterface name
 		uint64									DurationMicroseconds;		// Duration in microseconds of the dispatch
 	};
 
 	uintptr_t					OwnerContext = 0;
-	FStageResults				StageResults[ENiagaraGpuComputeTickStage::Max];
+	int32						TotalDispatches = 0;
+	int32						TotalDispatchGroups = 0;
+	uint64						TotalDurationMicroseconds = 0;
 	TArray<FDispatchResults>	DispatchResults;
 };
 
@@ -95,4 +107,3 @@ protected:
 };
 
 #endif //WITH_NIAGARA_GPU_PROFILER
-

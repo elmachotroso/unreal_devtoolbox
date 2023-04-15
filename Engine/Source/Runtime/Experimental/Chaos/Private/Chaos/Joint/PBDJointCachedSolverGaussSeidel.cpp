@@ -43,11 +43,11 @@ void FPBDJointCachedSolver::ComputeBodyState(const int32 BodyIndex)
 void FPBDJointCachedSolver::UpdateDerivedState()
 {
 	// Kinematic bodies will not be moved, so we don't update derived state during iterations
-	if (InvM(0) > SMALL_NUMBER)
+	if (InvM(0) > UE_SMALL_NUMBER)
 	{
 		ComputeBodyState(0);
 	}
-	if (InvM(1) > SMALL_NUMBER)
+	if (InvM(1) > UE_SMALL_NUMBER)
 	{
 		ComputeBodyState(1);
 	}
@@ -90,13 +90,12 @@ void FPBDJointCachedSolver::Update(
 	//UpdateIsActive();
 }
 
-void FPBDJointCachedSolver::UpdateMass0()
+void FPBDJointCachedSolver::UpdateMass0(const FReal& InInvM, const FVec3& InInvIL)
 {
-	// @todo(chaos): this needs to recache all the mass-dependent state on the axis data etc
-	if ((ConditionedInvMs[0] > 0) && (InvMScales[0] > 0))
+	if (Body0().IsDynamic())
 	{
-		InvMs[0] = InvMScales[0] * ConditionedInvMs[0];
-		InvIs[0] = Utilities::ComputeWorldSpaceInertia(CurrentQs[0], InvMScales[0] * ConditionedInvILs[0]);
+		InvMs[0] = InInvM;
+		InvIs[0] = Utilities::ComputeWorldSpaceInertia(CurrentQs[0], InInvIL);
 	}
 	else
 	{
@@ -105,13 +104,12 @@ void FPBDJointCachedSolver::UpdateMass0()
 	}
 }
 
-void FPBDJointCachedSolver::UpdateMass1()
+void FPBDJointCachedSolver::UpdateMass1(const FReal& InInvM, const FVec3& InInvIL)
 {
-	// @todo(chaos): this needs to recache all the mass-dependent state on the axis data etc
-	if ((ConditionedInvMs[1] > 0) && (InvMScales[1] > 0))
+	if (Body1().IsDynamic())
 	{
-		InvMs[1] = InvMScales[1] * ConditionedInvMs[1];
-		InvIs[1] = Utilities::ComputeWorldSpaceInertia(CurrentQs[1], InvMScales[1] * ConditionedInvILs[1]);
+		InvMs[1] = InInvM;
+		InvIs[1] = Utilities::ComputeWorldSpaceInertia(CurrentQs[1], InInvIL);
 	}
 	else
 	{
@@ -120,19 +118,23 @@ void FPBDJointCachedSolver::UpdateMass1()
 	}
 }
 
-void FPBDJointCachedSolver::SetInvMassScales(const FReal InvMScale0, const FReal InvMScale1, const FReal Dt)
+void FPBDJointCachedSolver::SetShockPropagationScales(const FReal InvMScale0, const FReal InvMScale1, const FReal Dt)
 {
 	bool bNeedsUpdate = false;
-	if (InvMScales[0] != InvMScale0)
+	if (Body0().ShockPropagationScale() != InvMScale0 && Body0().ShockPropagationScale() > 0.0f)
 	{
-		InvMScales[0] = InvMScale0;
-		UpdateMass0();
+		const FReal Mult = InvMScale0 / Body0().ShockPropagationScale();
+		InvMs[0] *= Mult;
+		InvIs[0] *= Mult;
+		Body0().SetShockPropagationScale(InvMScale0);
 		bNeedsUpdate = true;
 	}
-	if (InvMScales[1] != InvMScale1)
+	if (Body1().ShockPropagationScale() != InvMScale1 && Body1().ShockPropagationScale() > 0.0f)
 	{
-		InvMScales[1] = InvMScale1;
-		UpdateMass1();
+		const FReal Mult = InvMScale1 / Body1().ShockPropagationScale();
+		InvMs[1] *= Mult;
+		InvIs[1] *= Mult;
+		Body1().SetShockPropagationScale(InvMScale1);
 		bNeedsUpdate = true;
 	}
 	if(bNeedsUpdate)
@@ -159,40 +161,28 @@ void FPBDJointCachedSolver::SetInvMassScales(const FReal InvMScale0, const FReal
 	}
 }
 
-void FPBDJointCachedSolver::EnableProjection()
-{
-	Body0().SetInvMScale(0);
-}
-
 /** Main init function to cache datas that could be reused in the apply */
 
 void FPBDJointCachedSolver::Init(
 	const FReal Dt,
-	const FSolverBodyPtrPair& SolverBodyPair,
 	const FPBDJointSolverSettings& SolverSettings,
 	const FPBDJointSettings& JointSettings,
 	const FRigidTransform3& XL0,
 	const FRigidTransform3& XL1)
 {
-	SolverBodies[0] = *SolverBodyPair[0];
-	SolverBodies[1] = *SolverBodyPair[1];
-
 	LocalConnectorXs[0] = XL0;
 	LocalConnectorXs[1] = XL1;
 
 	// \todo(chaos): joint should support parent/child in either order
 	SolverBodies[0].SetInvMScale(JointSettings.ParentInvMassScale);
 	SolverBodies[1].SetInvMScale(FReal(1));
+	SolverBodies[0].SetInvIScale(JointSettings.ParentInvMassScale);
+	SolverBodies[1].SetInvIScale(FReal(1));
+	SolverBodies[0].SetShockPropagationScale(FReal(1));
+	SolverBodies[1].SetShockPropagationScale(FReal(1));
 
-	InvMScales[0] = FReal(1);
-	InvMScales[1] = FReal(1);
-	FPBDJointUtilities::ConditionInverseMassAndInertia(Body0().InvM(), Body1().InvM(), Body0().InvILocal(), Body1().InvILocal(), SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio, ConditionedInvMs[0], ConditionedInvMs[1], ConditionedInvILs[0], ConditionedInvILs[1]);
-	
 	NetLinearImpulse = FVec3(0);
 	NetAngularImpulse = FVec3(0);
-
-	LinearConstraintPadding = FVec3(-1);
-	AngularConstraintPadding = FVec3(-1);
 
 	// Tolerances are positional errors below visible detection. But in PBD the errors
 	// we leave behind get converted to velocity, so we need to ensure that the resultant
@@ -212,8 +202,12 @@ void FPBDJointCachedSolver::Init(
 
 	InitDerivedState();
 
-	UpdateMass0();
-	UpdateMass1();
+	FReal ConditionedInvMs[2];
+	FVec3 ConditionedInvILs[2];
+	FPBDJointUtilities::ConditionInverseMassAndInertia(Body0().InvM(), Body1().InvM(), Body0().InvILocal(), Body1().InvILocal(), SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio, ConditionedInvMs[0], ConditionedInvMs[1], ConditionedInvILs[0], ConditionedInvILs[1]);
+
+	UpdateMass0(ConditionedInvMs[0], ConditionedInvILs[0]);
+	UpdateMass1(ConditionedInvMs[1], ConditionedInvILs[1]);
 
 	// Cache all the informations for the position and rotation constraints
 	InitPositionConstraints(Dt, SolverSettings, JointSettings);
@@ -233,16 +227,11 @@ void FPBDJointCachedSolver::InitProjection(
 	const FPBDJointSolverSettings& SolverSettings,
 	const FPBDJointSettings& JointSettings)
 {
-	bool bHasLinearProjection = false;
-	{
-		const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
-		bHasLinearProjection = JointSettings.bProjectionEnabled && LinearProjection > 0.0;
-	}
-	bool bHasAngularProjection = false;
-	{
-		const FReal AngularProjection = FPBDJointUtilities::GetAngularProjection(SolverSettings, JointSettings);
-		bHasAngularProjection = JointSettings.bProjectionEnabled && AngularProjection > 0.0;
-	}
+	const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
+	const FReal AngularProjection = FPBDJointUtilities::GetAngularProjection(SolverSettings, JointSettings);
+	const bool bHasLinearProjection = JointSettings.bProjectionEnabled && ((LinearProjection > 0) || (JointSettings.TeleportDistance > 0));
+	const bool bHasAngularProjection = JointSettings.bProjectionEnabled && ((AngularProjection > 0) || (JointSettings.TeleportAngle > 0));
+
 	if(bHasLinearProjection || bHasAngularProjection)
 	{
 		ComputeBodyState(0);
@@ -250,11 +239,11 @@ void FPBDJointCachedSolver::InitProjection(
 
 		ConnectorRs[1].EnforceShortestArcWith(ConnectorRs[0]);
 
-		InvMScales[0] = 0.0;
-		InvMScales[1] = 1.0;
-
-		UpdateMass0();
-		UpdateMass1();
+		// Fake spherical inertia for angular projection (avoid cost of recomputing inertia at current world space rotation)
+		InvMs[0] = 0;
+		InvIs[0] = FMatrix33(0, 0, 0);
+		InvMs[1] = Body1().InvM();
+		InvIs[1] = FMatrix33::FromDiagonal(FVec3(Body1().InvILocal().GetMin()));
 
 		if(bHasLinearProjection)
 		{
@@ -391,58 +380,48 @@ void FPBDJointCachedSolver::InitPositionConstraints(
 
 	const TVec3<EJointMotionType>& LinearMotion = JointSettings.LinearMotionTypes;
 
-
-	const FVec3 ConstraintArm0Limited = ConnectorXs[1] - CurrentPs[0];
-	const FVec3 ConstraintArm1Limited = ConnectorXs[1] - CurrentPs[1];
-	
-	FVec3 ConstraintArm0Locked = ConstraintArm0Limited;
-	FVec3 ConstraintArm1Locked = ConstraintArm1Limited;
-
-	const FVec3 DX = ConnectorXs[1] - ConnectorXs[0];
-	const FMatrix33 R0M = ConnectorRs[0].ToMatrix(); 
-	FVec3 CX = FVec3::ZeroVector;
-
-	for(int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
+	if (bLinearLocked[0] || bLinearLocked[1] || bLinearLocked[2]) 
 	{
-		if(bLinearLocked[ConstraintIndex] || bLinearLimited[ConstraintIndex])
-		{
-			const FVec3 ConstraintAxis = R0M.GetAxis(ConstraintIndex);
-			CX[ConstraintIndex] = FVec3::DotProduct(DX, ConstraintAxis);
-
-			if(bLinearLocked[ConstraintIndex])
-			{
-				ConstraintArm0Locked -= ConstraintAxis * CX[ConstraintIndex];
-			}
-		}
+		// Process locked constraints
+		InitLockedPositionConstraint(JointSettings, Dt, LinearMotion);
 	}
-	
-	for(int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
+	if (bLinearLimited[0] || bLinearLimited[1] || bLinearLimited[2])
 	{
-		if(bLinearLocked[ConstraintIndex] || bLinearLimited[ConstraintIndex])
+		// Process limited constraints
+		if (bLinearLimited[0] && bLinearLimited[1] && bLinearLimited[2])
 		{
-			const FVec3 ConstraintAxis = R0M.GetAxis(ConstraintIndex);
-			PositionConstraints.MotionType[ConstraintIndex] = LinearMotion[ConstraintIndex];
-			
-			if(bLinearLocked[ConstraintIndex])
-			{
-				PositionConstraints.ConstraintLimits[ConstraintIndex] = 0.0f;
-				PositionConstraints.UpdateDatas(ConstraintIndex, ConstraintAxis, CX[ConstraintIndex],
-					0.0, false, ConstraintArm0Locked, ConstraintArm1Locked);
-			}
-			else if(bLinearLimited[ConstraintIndex])
-			{
-				PositionConstraints.ConstraintLimits[ConstraintIndex] =
-					FMath::Max(JointSettings.LinearLimit - GetLinearConstraintPadding(ConstraintIndex), (FReal)0.);
-				PositionConstraints.UpdateDatas(ConstraintIndex, ConstraintAxis, CX[ConstraintIndex],
-					JointSettings.LinearRestitution, true, ConstraintArm0Limited, ConstraintArm1Limited);
-			}
-			const FVec3 CV0 = V(0) + FVec3::CrossProduct(W(0), PositionConstraints.ConstraintArms[ConstraintIndex][0]);
-			const FVec3 CV1 = V(1) + FVec3::CrossProduct(W(1), PositionConstraints.ConstraintArms[ConstraintIndex][1]);
-			const FVec3 CV = CV1 - CV0;
-			
-			InitConstraintAxisLinearVelocities[ConstraintIndex] = FVec3::DotProduct(CV, ConstraintAxis);
-
-			InitPositionDatasMass(PositionConstraints, ConstraintIndex, Dt);
+			// Spherical constraint
+			InitSphericalPositionConstraint(JointSettings, Dt);
+		}
+		else if (bLinearLimited[1] && bLinearLimited[2])
+		{
+			// Cylindrical constraint along X axis
+			InitCylindricalPositionConstraint(JointSettings, Dt, 0);
+		}
+		else if (bLinearLimited[0] && bLinearLimited[2])
+		{
+			// Cylindrical constraint along Y axis
+			InitCylindricalPositionConstraint(JointSettings, Dt, 1);
+		}
+		else if (bLinearLimited[0] && bLinearLimited[1])
+		{
+			// Cylindrical constraint along Z axis
+			InitCylindricalPositionConstraint(JointSettings, Dt, 2);
+		}
+		else if (bLinearLimited[0])
+		{
+			// Planar constraint along X axis
+			InitPlanarPositionConstraint(JointSettings, Dt, 0);
+		}
+		else if (bLinearLimited[1])
+		{
+			// Planar constraint along Y axis
+			InitPlanarPositionConstraint(JointSettings, Dt, 1);
+		}
+		else if (bLinearLimited[2])
+		{
+			// Planar constraint along Z axis
+			InitPlanarPositionConstraint(JointSettings, Dt, 2);
 		}
 	}
 }
@@ -460,6 +439,151 @@ void FPBDJointCachedSolver::InitPositionDatasMass(
 	const FReal II1 = FVec3::DotProduct(AngularAxis1, IA1);
 
 	PositionDatas.UpdateMass(ConstraintIndex, IA0, IA1, InvM(0) + II0 + InvM(1) + II1, Dt);
+}
+	
+void FPBDJointCachedSolver::InitPositionConstraintDatas(
+	const int32 ConstraintIndex,
+	const FVec3& ConstraintAxis,
+	const FReal& ConstraintDelta,
+	const FReal ConstraintRestitution,
+	const FReal Dt,
+	const FReal ConstraintLimit,
+	const EJointMotionType JointType,
+	const FVec3& ConstraintArm0,
+	const FVec3& ConstraintArm1)
+{
+	const FVec3 LocalAxis = (ConstraintDelta < 0.0f) ? -ConstraintAxis : ConstraintAxis;
+	const FReal LocalDelta = (ConstraintDelta < 0.0f) ? -ConstraintDelta : ConstraintDelta;
+
+	PositionConstraints.MotionType[ConstraintIndex] = JointType;
+
+	if(JointType == EJointMotionType::Locked)
+	{
+		PositionConstraints.ConstraintLimits[ConstraintIndex] = 0.0f;
+		PositionConstraints.UpdateDatas(ConstraintIndex, LocalAxis, LocalDelta,
+			0.0, false, ConstraintArm0, ConstraintArm1);
+	}
+	else if(JointType == EJointMotionType::Limited)
+	{
+		PositionConstraints.ConstraintLimits[ConstraintIndex] = ConstraintLimit;
+		PositionConstraints.UpdateDatas(ConstraintIndex, LocalAxis, LocalDelta,
+			ConstraintRestitution, true, ConstraintArm0, ConstraintArm1);
+	}
+
+	const FVec3 CV0 = V(0) + FVec3::CrossProduct(W(0), ConstraintArm0);
+	const FVec3 CV1 = V(1) + FVec3::CrossProduct(W(1), ConstraintArm1);
+	const FVec3 CV = CV1 - CV0;
+
+	InitConstraintAxisLinearVelocities[ConstraintIndex] = FVec3::DotProduct(CV, LocalAxis);
+
+	InitPositionDatasMass(PositionConstraints, ConstraintIndex, Dt);
+}
+
+	
+void FPBDJointCachedSolver::InitLockedPositionConstraint(
+		const FPBDJointSettings& JointSettings,
+		const FReal Dt,
+		const TVec3<EJointMotionType>& LinearMotion)
+{
+	FVec3 ConstraintArm0 = ConnectorXs[1] - CurrentPs[0];
+	const FVec3 ConstraintArm1 = ConnectorXs[1] - CurrentPs[1];
+	
+	const FVec3 DX = ConnectorXs[1] - ConnectorXs[0];
+	const FMatrix33 R0M = ConnectorRs[0].ToMatrix(); 
+	FVec3 CX = FVec3::ZeroVector;
+	
+	// For a locked constraint we try to match an exact constraint, 
+	// it is why we are adding back the constraint projection along each axis.
+	// If the 3 axis are locked the constraintarm0 is then ConnectorXs[0] - CurrentPs[0];
+	for(int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
+	{
+		if(LinearMotion[ConstraintIndex] == EJointMotionType::Locked)
+		{
+			const FVec3 ConstraintAxis = R0M.GetAxis(ConstraintIndex);
+			CX[ConstraintIndex] = FVec3::DotProduct(DX, ConstraintAxis);
+			ConstraintArm0 -= ConstraintAxis * CX[ConstraintIndex];
+			
+		}
+	}
+	for(int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
+	{
+		if(LinearMotion[ConstraintIndex] == EJointMotionType::Locked)
+		{
+			const FVec3 ConstraintAxis = R0M.GetAxis(ConstraintIndex);
+			InitPositionConstraintDatas(ConstraintIndex, ConstraintAxis,  CX[ConstraintIndex], 0.0, Dt,
+				0.0, EJointMotionType::Locked, ConstraintArm0, ConstraintArm1);
+		}
+	}
+}
+
+void FPBDJointCachedSolver::InitSphericalPositionConstraint(
+	const FPBDJointSettings& JointSettings,
+	const FReal Dt)
+{
+	FVec3 SphereAxis0;
+	FReal SphereDelta0;
+	FPBDJointUtilities::GetSphericalAxisDelta(ConnectorXs[0], ConnectorXs[1], SphereAxis0, SphereDelta0);
+	
+	const FVec3 SphereAxis1 = (FMath::Abs(FMath::Abs(SphereAxis0.Dot(FVec3(1,0,0))-1.0)) > UE_SMALL_NUMBER) ? SphereAxis0.Cross(FVec3(1,0,0)) :
+	                          (FMath::Abs(FMath::Abs(SphereAxis0.Dot(FVec3(0,1,0))-1.0)) > UE_SMALL_NUMBER) ? SphereAxis0.Cross(FVec3(0,1,0)) : SphereAxis0.Cross(FVec3(0,0,1)) ;
+	const FVec3 SphereAxis2 = SphereAxis0.Cross(SphereAxis1);
+
+	// Using Connector1 for both conserves angular momentum and avoid having 
+	// too much torque applied onto the COM. But can only be used for limited constraints
+	const FVec3 ConstraintArm0 = ConnectorXs[1] - CurrentPs[0];
+	const FVec3 ConstraintArm1 = ConnectorXs[1] - CurrentPs[1];
+	
+	InitPositionConstraintDatas(0, SphereAxis0,  SphereDelta0, JointSettings.LinearRestitution, Dt,
+		JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);
+
+	// SphereAxis0 being the direction axis, the geometric error for the 2 other axis are 0
+	// We need to add these 2 constraints for a linear solver to avoid drifting away in
+	//  the other directions while solving. For a non linear solver since we are recomputing 
+	// the main direction at each time we don't need that
+	InitPositionConstraintDatas(1, SphereAxis1,  0.0, JointSettings.LinearRestitution, Dt,
+		JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);
+
+	InitPositionConstraintDatas(2, SphereAxis2,  0.0, JointSettings.LinearRestitution, Dt,
+		JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);
+}
+
+void FPBDJointCachedSolver::InitCylindricalPositionConstraint(
+	const FPBDJointSettings& JointSettings,
+	const FReal Dt,
+	const int32 AxisIndex)
+{
+	FVec3 PlaneAxis, RadialAxis0;
+	FReal PlaneDelta, RadialDelta0;
+	FPBDJointUtilities::GetCylindricalAxesDeltas(ConnectorRs[0], ConnectorXs[0], ConnectorXs[1],
+		AxisIndex, PlaneAxis, PlaneDelta, RadialAxis0, RadialDelta0);
+
+	const FVec3 RadialAxis1 = PlaneAxis.Cross(RadialAxis0);
+	const FReal RadialDelta1 =  (ConnectorXs[1] - ConnectorXs[0]).Dot(RadialAxis1);
+
+	const FVec3 ConstraintArm0 = ConnectorXs[1] - CurrentPs[0];
+	const FVec3 ConstraintArm1 = ConnectorXs[1] - CurrentPs[1];
+	
+	InitPositionConstraintDatas((AxisIndex+1)%3, RadialAxis0, RadialDelta0, JointSettings.LinearRestitution, Dt,
+		JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);
+
+	InitPositionConstraintDatas((AxisIndex+2)%3, RadialAxis1, RadialDelta1, JointSettings.LinearRestitution, Dt,
+	    JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);   
+}
+
+void FPBDJointCachedSolver::InitPlanarPositionConstraint(
+	const FPBDJointSettings& JointSettings,
+	const FReal Dt,
+	const int32 AxisIndex)
+{
+	FVec3 PlaneAxis;
+	FReal PlaneDelta;
+	FPBDJointUtilities::GetPlanarAxisDelta(ConnectorRs[0], ConnectorXs[0], ConnectorXs[1], AxisIndex, PlaneAxis, PlaneDelta);
+	
+	const FVec3 ConstraintArm0 = ConnectorXs[1] - CurrentPs[0];
+	const FVec3 ConstraintArm1 = ConnectorXs[1] - CurrentPs[1];
+	
+	InitPositionConstraintDatas(AxisIndex, PlaneAxis, PlaneDelta, JointSettings.LinearRestitution, Dt,
+		JointSettings.LinearLimit, EJointMotionType::Limited, ConstraintArm0, ConstraintArm1);
 }
 
 /** APPLY POSITION CONSTRAINT *****************************************************************************************/
@@ -520,7 +644,7 @@ void FPBDJointCachedSolver::SolvePositionConstraintSoft(
 	const FReal TargetVel)
 {
 	FReal VelDt = 0;
-	if (PositionConstraints.ConstraintSoftDamping[ConstraintIndex] > KINDA_SMALL_NUMBER)
+	if (PositionConstraints.ConstraintSoftDamping[ConstraintIndex] > UE_KINDA_SMALL_NUMBER)
 	{
 		const FVec3 V0Dt = FVec3::CalculateVelocity(InitConnectorXs[0], ConnectorXs[0]+Body(0).DP() + FVec3::CrossProduct(Body(0).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][0]), 1.0f);
 		const FVec3 V1Dt = FVec3::CalculateVelocity(InitConnectorXs[1], ConnectorXs[1]+Body(1).DP() + FVec3::CrossProduct(Body(1).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][1]), 1.0f);
@@ -565,10 +689,6 @@ void FPBDJointCachedSolver::ApplyAxisPositionConstraint(
 		}
 		else if (PositionConstraints.MotionType[ConstraintIndex] != EJointMotionType::Free)
 		{
-			if (PositionConstraints.ConstraintRestitution[ConstraintIndex] > 0.0f)
-			{
-				CalculateLinearConstraintPadding(ConstraintIndex, Dt, PositionConstraints.ConstraintRestitution[ConstraintIndex], DeltaPosition);
-			}
 			SolvePositionConstraintHard(ConstraintIndex, DeltaPosition);
 		}
 	}
@@ -618,7 +738,7 @@ void FPBDJointCachedSolver::SolveLinearVelocityConstraint(
 
 void FPBDJointCachedSolver::ApplyAxisVelocityConstraint(const int32 ConstraintIndex)
 {
-	if(!NetLinearImpulse.IsNearlyZero() && (FMath::Abs(PositionConstraints.ConstraintLambda[ConstraintIndex]) > SMALL_NUMBER) )
+	if(!NetLinearImpulse.IsNearlyZero() && (FMath::Abs(PositionConstraints.ConstraintLambda[ConstraintIndex]) > UE_SMALL_NUMBER) )
 	{
 		FReal TargetVel = 0.0f;
 		if (PositionConstraints.MotionType[ConstraintIndex] == EJointMotionType::Limited && PositionConstraints.ConstraintRestitution[ConstraintIndex] != 0.0f)
@@ -707,6 +827,7 @@ FPBDJointUtilities::GetSoftTwistStiffness(SolverSettings, JointSettings),
 	const FVec3 Twist1 = ConnectorRs[1] * FJointConstants::TwistAxis();
 	const bool bDegenerate = (FVec3::DotProduct(Twist0, Twist1) < Chaos_Joint_DegenerateRotationLimit);
 
+	
 	// Apply twist constraint
 	// NOTE: Cannot calculate twist angle at 180degree swing
 	if (SolverSettings.bEnableTwistLimits)
@@ -795,8 +916,7 @@ void FPBDJointCachedSolver::InitRotationConstraintDatas(
 
 	RotationConstraints.UpdateDatas(ConstraintIndex, LocalAxis, LocalAngle, ConstraintRestitution, bCheckLimit);
 
-	RotationConstraints.ConstraintLimits[ConstraintIndex] = FMath::Max(
-		JointSettings.AngularLimits[ConstraintIndex] - GetAngularConstraintPadding(ConstraintIndex), (FReal)0.);
+	RotationConstraints.ConstraintLimits[ConstraintIndex] = JointSettings.AngularLimits[ConstraintIndex];
 
 	InitConstraintAxisAngularVelocities[ConstraintIndex] = FVec3::DotProduct(W(1) - W(0), LocalAxis);
 
@@ -809,8 +929,7 @@ void FPBDJointCachedSolver::CorrectAxisAngleConstraint(
 		FVec3& ConstraintAxis,
 		FReal& ConstraintAngle) const
 {
-	const FReal AngleMax = FMath::Max(JointSettings.AngularLimits[ConstraintIndex] -
-		GetAngularConstraintPadding(ConstraintIndex), (FReal)0.);
+	const FReal AngleMax = JointSettings.AngularLimits[ConstraintIndex];
 
 	if (ConstraintAngle > AngleMax)
 	{
@@ -1012,7 +1131,7 @@ void FPBDJointCachedSolver::SolveRotationConstraintSoft(
 {
 	// Damping angular velocity
 	FReal AngVelDt = 0;
-	if (RotationConstraints.ConstraintSoftDamping[ConstraintIndex] > KINDA_SMALL_NUMBER)
+	if (RotationConstraints.ConstraintSoftDamping[ConstraintIndex] > UE_KINDA_SMALL_NUMBER)
 	{
 		const FVec3 W0Dt = FVec3(Body(0).DQ()) + ConnectorWDts[0];
 		const FVec3 W1Dt = FVec3(Body(1).DQ()) + ConnectorWDts[1];
@@ -1058,10 +1177,6 @@ void FPBDJointCachedSolver::ApplyRotationConstraint(
 		}
 		else
 		{
-			if (RotationConstraints.ConstraintRestitution[ConstraintIndex] > 0.0f)
-			{
-				CalculateAngularConstraintPadding(ConstraintIndex, RotationConstraints.ConstraintRestitution[ConstraintIndex], DeltaAngle);
-			}
 			SolveRotationConstraintHard(ConstraintIndex, DeltaAngle);
 		}
 	}
@@ -1105,7 +1220,7 @@ void FPBDJointCachedSolver::SolveAngularVelocityConstraint(
 
 void FPBDJointCachedSolver::ApplyAngularVelocityConstraint(const int32 ConstraintIndex)
 {
-	if(!NetAngularImpulse.IsNearlyZero() && (FMath::Abs(RotationConstraints.ConstraintLambda[ConstraintIndex]) > SMALL_NUMBER))
+	if(!NetAngularImpulse.IsNearlyZero() && (FMath::Abs(RotationConstraints.ConstraintLambda[ConstraintIndex]) > UE_SMALL_NUMBER))
 	{
 		FReal TargetVel = 0.0f;
 		if (RotationConstraints.ConstraintRestitution[ConstraintIndex] != 0.0f)
@@ -1186,19 +1301,22 @@ void FPBDJointCachedSolver::InitAxisPositionDrive(
 	
 void FPBDJointCachedSolver::ApplyProjections(
 		const FReal Dt,
-		const FReal InSolverStiffness,
 		const FPBDJointSolverSettings& SolverSettings,
 		const FPBDJointSettings& JointSettings,
 		const bool bLastIteration)
 {
+	if (!JointSettings.bProjectionEnabled)
+	{
+		return;
+	}
+
 	if (!IsDynamic(1))
 	{
 		// If child is kinematic, return. 
 		return;
 	}
 
-	SolverStiffness = InSolverStiffness;
-	
+	SolverStiffness = 1;
 
 	if (SolverSettings.bSolvePositionLast)
 	{
@@ -1210,29 +1328,18 @@ void FPBDJointCachedSolver::ApplyProjections(
 		ApplyPositionProjection(Dt, SolverSettings, JointSettings);
 		ApplyRotationProjection(Dt, SolverSettings, JointSettings);
 	}
+
 	if(bLastIteration)
 	{
-		//Final position fixup
-		const TVec3<EJointMotionType>& LinearMotion = JointSettings.LinearMotionTypes;
-		const bool bLinearLocked = (LinearMotion[0] == EJointMotionType::Locked) && (LinearMotion[1] == EJointMotionType::Locked) && (LinearMotion[2] == EJointMotionType::Locked);
-		if (bLinearLocked)
+		// Add velocity correction from the net projection motion
+		// @todo(chaos): this should be a joint setting?
+		if (Chaos_Joint_VelProjectionAlpha > 0.0f)
 		{
-			const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
-			if (JointSettings.bProjectionEnabled && (LinearProjection > 0))
-			{
-				const FVec3 DP1 = -LinearProjection * (ConnectorXs[1] - ConnectorXs[0]);
-				ApplyPositionDelta(1, DP1);
-			}
+			const FSolverReal VelocityScale = Chaos_Joint_VelProjectionAlpha  / static_cast<FSolverReal>(Dt);
+			const FSolverVec3 DV1 = Body1().DP() * VelocityScale;
+			const FSolverVec3 DW1 = Body1().DQ()* VelocityScale;
 		
-			// Add velocity correction from the net projection motion
-			if (Chaos_Joint_VelProjectionAlpha > 0.0f)
-			{
-				const FSolverReal VelocityScale = Chaos_Joint_VelProjectionAlpha  / static_cast<FSolverReal>(Dt);
-				const FSolverVec3 DV1 = Body1().DP() * VelocityScale;
-				const FSolverVec3 DW1 = Body1().DQ()* VelocityScale;
-		
-				Body(1).ApplyVelocityDelta(DV1, DW1);
-			}
+			Body(1).ApplyVelocityDelta(DV1, DW1);
 		}
 	}
 }
@@ -1243,6 +1350,10 @@ void FPBDJointCachedSolver::ApplyRotationProjection(
 			const FPBDJointSettings& JointSettings)
 {
 	const FReal AngularProjection = FPBDJointUtilities::GetAngularProjection(SolverSettings, JointSettings);
+	if (AngularProjection == 0)
+	{
+		return;
+	}
 	
 	const TVec3<EJointMotionType>& LinearMotion = JointSettings.LinearMotionTypes;
 	const bool bLinearLocked = (LinearMotion[0] == EJointMotionType::Locked) && (LinearMotion[1] == EJointMotionType::Locked) && (LinearMotion[2] == EJointMotionType::Locked);
@@ -1251,40 +1362,37 @@ void FPBDJointCachedSolver::ApplyRotationProjection(
 	{
 		if(RotationConstraints.bValidDatas[ConstraintIndex])
 		{
-			if (JointSettings.bProjectionEnabled && (AngularProjection > 0.0f))
-			{
-				FReal DeltaAngle = RotationConstraints.ConstraintCX[ConstraintIndex] +
-					FVec3::DotProduct(Body(1).DQ() - Body(0).DQ(), RotationConstraints.ConstraintAxis[ConstraintIndex]);
+			FReal DeltaAngle = RotationConstraints.ConstraintCX[ConstraintIndex] +
+				FVec3::DotProduct(Body(1).DQ() - Body(0).DQ(), RotationConstraints.ConstraintAxis[ConstraintIndex]);
 	
-				bool NeedsSolve = false;
-				if(RotationConstraints.bLimitsCheck[ConstraintIndex])
+			bool NeedsSolve = false;
+			if(RotationConstraints.bLimitsCheck[ConstraintIndex])
+			{
+				if(DeltaAngle > RotationConstraints.ConstraintLimits[ConstraintIndex] )
 				{
-					if(DeltaAngle > RotationConstraints.ConstraintLimits[ConstraintIndex] )
-					{
-						DeltaAngle -= RotationConstraints.ConstraintLimits[ConstraintIndex];
-						NeedsSolve = true;
-					}
-					else if(DeltaAngle < -RotationConstraints.ConstraintLimits[ConstraintIndex])
-					{
-						DeltaAngle += RotationConstraints.ConstraintLimits[ConstraintIndex];
-						NeedsSolve = true;
-			
-					}
+					DeltaAngle -= RotationConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
 				}
-
-				if (!RotationConstraints.bLimitsCheck[ConstraintIndex] || (RotationConstraints.bLimitsCheck[ConstraintIndex] && NeedsSolve && FMath::Abs(DeltaAngle) > AngleTolerance))
+				else if(DeltaAngle < -RotationConstraints.ConstraintLimits[ConstraintIndex])
 				{
-					const FReal IM = -FVec3::DotProduct(RotationConstraints.ConstraintAxis[ConstraintIndex], RotationConstraints.ConstraintDRAxis[ConstraintIndex][1]);
-					const FReal DeltaLambda = SolverStiffness * RotationConstraints.ConstraintHardStiffness[ConstraintIndex] * DeltaAngle / IM;
-					
-					const FVec3 DR1 = AngularProjection * RotationConstraints.ConstraintDRAxis[ConstraintIndex][1] * DeltaLambda;
-					ApplyRotationDelta(1, DR1);
+					DeltaAngle += RotationConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
+			
+				}
+			}
 
-					if(bLinearLocked)
-					{
-						const FVec3 DP1 = -AngularProjection * FVec3::CrossProduct(DR1, PositionConstraints.ConstraintArms[ConstraintIndex][1]);
-						ApplyPositionDelta(1,DP1);
-					}
+			if (!RotationConstraints.bLimitsCheck[ConstraintIndex] || (RotationConstraints.bLimitsCheck[ConstraintIndex] && NeedsSolve && FMath::Abs(DeltaAngle) > AngleTolerance))
+			{
+				const FReal IM = -FVec3::DotProduct(RotationConstraints.ConstraintAxis[ConstraintIndex], RotationConstraints.ConstraintDRAxis[ConstraintIndex][1]);
+				const FReal DeltaLambda = SolverStiffness * RotationConstraints.ConstraintHardStiffness[ConstraintIndex] * DeltaAngle / IM;
+					
+				const FVec3 DR1 = AngularProjection * RotationConstraints.ConstraintDRAxis[ConstraintIndex][1] * DeltaLambda;
+				ApplyRotationDelta(1, DR1);
+
+				if(bLinearLocked)
+				{
+					const FVec3 DP1 = -AngularProjection * FVec3::CrossProduct(DR1, PositionConstraints.ConstraintArms[ConstraintIndex][1]);
+					ApplyPositionDelta(1,DP1);
 				}
 			}
 		}
@@ -1297,51 +1405,116 @@ void FPBDJointCachedSolver::ApplyPositionProjection(
 		const FPBDJointSettings& JointSettings)
 {
 	const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
+	if (LinearProjection == 0)
+	{
+		return;
+	}
 
 	for(int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
 	{
 		if(PositionConstraints.bValidDatas[ConstraintIndex])
 		{
-			if (JointSettings.bProjectionEnabled && (LinearProjection > 0.0f))
+			const FVec3 CX = Body(1).DP()  - Body(0).DP() +
+				FVec3::CrossProduct(Body(1).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][1]) -
+				FVec3::CrossProduct(Body(0).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][0]);
+				
+			FReal DeltaPosition = PositionConstraints.ConstraintCX[ConstraintIndex] + FVec3::DotProduct(CX, PositionConstraints.ConstraintAxis[ConstraintIndex]);
+				
+			bool NeedsSolve = false;
+			if(PositionConstraints.bLimitsCheck[ConstraintIndex])
 			{
-				const FVec3 CX = Body(1).DP()  - Body(0).DP() +
-					FVec3::CrossProduct(Body(1).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][1]) -
-					FVec3::CrossProduct(Body(0).DQ(), PositionConstraints.ConstraintArms[ConstraintIndex][0]);
-				
-				FReal DeltaPosition = PositionConstraints.ConstraintCX[ConstraintIndex] + FVec3::DotProduct(CX, PositionConstraints.ConstraintAxis[ConstraintIndex]);
-				
-				bool NeedsSolve = false;
-				if(PositionConstraints.bLimitsCheck[ConstraintIndex])
+				if(DeltaPosition > PositionConstraints.ConstraintLimits[ConstraintIndex] )
 				{
-					if(DeltaPosition > PositionConstraints.ConstraintLimits[ConstraintIndex] )
-					{
-						DeltaPosition -= PositionConstraints.ConstraintLimits[ConstraintIndex];
-						NeedsSolve = true;
-					}
-					else if(DeltaPosition < -PositionConstraints.ConstraintLimits[ConstraintIndex])
-					{
-						DeltaPosition += PositionConstraints.ConstraintLimits[ConstraintIndex];
-						NeedsSolve = true;
-					}
+					DeltaPosition -= PositionConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
 				}
-				if (!PositionConstraints.bLimitsCheck[ConstraintIndex] || (PositionConstraints.bLimitsCheck[ConstraintIndex] && NeedsSolve && FMath::Abs(DeltaPosition ) > PositionTolerance))
+				else if(DeltaPosition < -PositionConstraints.ConstraintLimits[ConstraintIndex])
 				{
-					const FVec3 AngularAxis1 = FVec3::CrossProduct(PositionConstraints.ConstraintArms[ConstraintIndex][1], PositionConstraints.ConstraintAxis[ConstraintIndex]);
-					const FReal IM = InvM(1) - FVec3::DotProduct(AngularAxis1, PositionConstraints.ConstraintDRAxis[ConstraintIndex][1]);
-					const FReal DeltaLambda = SolverStiffness * PositionConstraints.ConstraintHardStiffness[ConstraintIndex] * DeltaPosition / IM;
+					DeltaPosition += PositionConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
+				}
+			}
+			if (!PositionConstraints.bLimitsCheck[ConstraintIndex] || (PositionConstraints.bLimitsCheck[ConstraintIndex] && NeedsSolve && FMath::Abs(DeltaPosition ) > PositionTolerance))
+			{
+				const FVec3 AngularAxis1 = FVec3::CrossProduct(PositionConstraints.ConstraintArms[ConstraintIndex][1], PositionConstraints.ConstraintAxis[ConstraintIndex]);
+				const FReal IM = InvM(1) - FVec3::DotProduct(AngularAxis1, PositionConstraints.ConstraintDRAxis[ConstraintIndex][1]);
+				const FReal DeltaLambda = SolverStiffness * PositionConstraints.ConstraintHardStiffness[ConstraintIndex] * DeltaPosition / IM;
 	
-					const FVec3 DX = PositionConstraints.ConstraintAxis[ConstraintIndex] * DeltaLambda;
+				const FVec3 DX = PositionConstraints.ConstraintAxis[ConstraintIndex] * DeltaLambda;
 					
-					const FVec3 DP1 = -LinearProjection * InvM(1) * DX;
-					const FVec3 DR1 = LinearProjection * PositionConstraints.ConstraintDRAxis[ConstraintIndex][1] * DeltaLambda;
-					
-					ApplyPositionDelta(1,DP1);
-					ApplyRotationDelta(1,DR1);
+				const FVec3 DP1 = -LinearProjection * InvM(1) * DX;
+				const FVec3 DR1 = LinearProjection * PositionConstraints.ConstraintDRAxis[ConstraintIndex][1] * DeltaLambda;
+
+				ApplyPositionDelta(1, DP1);
+				ApplyRotationDelta(1, DR1);
+			}
+		}
+	}
+}
+
+void FPBDJointCachedSolver::ApplyTeleports(
+	const FReal Dt,
+	const FPBDJointSolverSettings& SolverSettings,
+	const FPBDJointSettings& JointSettings)
+{
+	ApplyRotationTeleport(Dt, SolverSettings, JointSettings);
+	ApplyPositionTeleport(Dt, SolverSettings, JointSettings);
+}
+
+
+void FPBDJointCachedSolver::ApplyPositionTeleport(
+	const FReal Dt,
+	const FPBDJointSolverSettings& SolverSettings,
+	const FPBDJointSettings& JointSettings)
+{
+	if (JointSettings.TeleportDistance <= 0)
+	{
+		return;
+	}
+
+	for (int32 ConstraintIndex = 0; ConstraintIndex < 3; ++ConstraintIndex)
+	{
+		if (PositionConstraints.bValidDatas[ConstraintIndex])
+		{
+			FReal DeltaPosition = PositionConstraints.ConstraintCX[ConstraintIndex];
+
+			bool NeedsSolve = false;
+			if (PositionConstraints.bLimitsCheck[ConstraintIndex])
+			{
+				if (DeltaPosition > PositionConstraints.ConstraintLimits[ConstraintIndex])
+				{
+					DeltaPosition -= PositionConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
+				}
+				else if (DeltaPosition < -PositionConstraints.ConstraintLimits[ConstraintIndex])
+				{
+					DeltaPosition += PositionConstraints.ConstraintLimits[ConstraintIndex];
+					NeedsSolve = true;
+				}
+			}
+			if (!PositionConstraints.bLimitsCheck[ConstraintIndex] || (PositionConstraints.bLimitsCheck[ConstraintIndex] && NeedsSolve))
+			{
+				if (FMath::Abs(DeltaPosition) > JointSettings.TeleportDistance)
+				{
+					const FVec3 DP1 = -DeltaPosition * PositionConstraints.ConstraintAxis[ConstraintIndex];
+					ApplyPositionDelta(1, DP1);
 				}
 			}
 		}
 	}
 }
+
+void FPBDJointCachedSolver::ApplyRotationTeleport(
+	const FReal Dt,
+	const FPBDJointSolverSettings& SolverSettings,
+	const FPBDJointSettings& JointSettings)
+{
+	if (JointSettings.TeleportAngle <= 0)
+	{
+		return;
+	}
+}
+
 
 /** APPLY POSITION  DRIVES *********************************************************************************/
 
@@ -1368,7 +1541,7 @@ void FPBDJointCachedSolver::ApplyAxisPositionDrive(
 	const FReal DeltaPos = PositionDrives.ConstraintCX[ConstraintIndex] + FVec3::DotProduct(Delta1 - Delta0, PositionDrives.ConstraintAxis[ConstraintIndex]);
 
 	FReal VelDt = 0;
-	if (PositionDrives.ConstraintSoftDamping[ConstraintIndex] > KINDA_SMALL_NUMBER)
+	if (PositionDrives.ConstraintSoftDamping[ConstraintIndex] > UE_KINDA_SMALL_NUMBER)
 	{
 		const FVec3 V0Dt = FVec3::CalculateVelocity(InitConnectorXs[0], ConnectorXs[0]+ Delta0, 1.0f);
 		const FVec3 V1Dt = FVec3::CalculateVelocity(InitConnectorXs[1], ConnectorXs[1]+ Delta1, 1.0f);
@@ -1512,58 +1685,32 @@ void FPBDJointCachedSolver::InitSLerpDrive(
 	}
 	RotationDrives.bAccelerationMode = FPBDJointUtilities::GetDriveAccelerationMode(SolverSettings, JointSettings);
 
-	// If damping is enabled, we need to apply the drive about all 3 axes, but without damping we can just drive along the axis of error
-	if (RotationDrives.ConstraintSoftDamping[0]  > 0.0f)
-	{
-		// NOTE: Slerp target velocity only works properly if we have a stiffness of zero.
-		FVec3 Axes[3] = { FVec3(1, 0, 0), FVec3(0, 1, 0), FVec3(0, 0, 1) };
-		if (RotationDrives.ConstraintSoftStiffness[0] > 0.0f)
-		{
-			FPBDJointUtilities::GetLockedRotationAxes(ConnectorRs[0], ConnectorRs[1], Axes[0], Axes[1], Axes[2]);
-			Utilities::NormalizeSafe(Axes[0], KINDA_SMALL_NUMBER);
-			Utilities::NormalizeSafe(Axes[1], KINDA_SMALL_NUMBER);
-			Utilities::NormalizeSafe(Axes[2], KINDA_SMALL_NUMBER);
-		}
-		const FRotation3 R01 = ConnectorRs[0].Inverse() * ConnectorRs[1];
-		FRotation3 TargetAngPos = JointSettings.AngularDrivePositionTarget;
-		TargetAngPos.EnforceShortestArcWith(R01);
-		const FRotation3 R1Error = TargetAngPos.Inverse() * R01;
-		FReal AxisAngles[3] = 
-		{ 
-			2.0f * FMath::Asin(R1Error.X), 
-			2.0f * FMath::Asin(R1Error.Y), 
-			2.0f * FMath::Asin(R1Error.Z) 
-		};
+	const FRotation3 R01 = ConnectorRs[0].Inverse() * ConnectorRs[1];
+	FRotation3 TargetAngPos = JointSettings.AngularDrivePositionTarget;
+	TargetAngPos.EnforceShortestArcWith(R01);
+	const FRotation3 R1Error = TargetAngPos.Inverse() * R01;
 
+	FReal AxisAngles[3] =
+	{
+		2.0f * Utilities::AsinEst(R1Error.X),
+		2.0f * Utilities::AsinEst(R1Error.Y),
+		2.0f * Utilities::AsinEst(R1Error.Z)
+	};
+
+	FVec3 Axes[3];
+	ConnectorRs[1].ToMatrixAxes(Axes[0], Axes[1], Axes[2]);
+
+	InitRotationConstraintDrive(0, Axes[0], Dt, AxisAngles[0]);
+	InitRotationConstraintDrive(1, Axes[1], Dt, AxisAngles[1]);
+	InitRotationConstraintDrive(2, Axes[2], Dt, AxisAngles[2]);
+
+	// @todo(chaos): pass constraint target velocity into InitRotationConstraintDrive (it currently sets it ConstraintVX to 0)
+	if (!JointSettings.AngularDriveVelocityTarget.IsNearlyZero())
+	{
 		const FVec3 TargetAngVel = ConnectorRs[0] * JointSettings.AngularDriveVelocityTarget;
-
-		for (int32 AxisIndex = 0; AxisIndex < 3; ++AxisIndex)
-		{
-			InitRotationConstraintDrive(AxisIndex, Axes[AxisIndex],  Dt, AxisAngles[AxisIndex]);
-			RotationDrives.ConstraintVX[AxisIndex] = FVec3::DotProduct(TargetAngVel, RotationDrives.ConstraintAxis[AxisIndex]);
-		}
-	}
-	else
-	{
-		const FRotation3 TargetR1 = ConnectorRs[0] * JointSettings.AngularDrivePositionTarget;
-		const FRotation3 DR = TargetR1 * ConnectorRs[1].Inverse();
-
-		FVec3 SLerpAxis;
-		FReal SLerpAngle;
-		if (DR.ToAxisAndAngleSafe(SLerpAxis, SLerpAngle, FVec3(1, 0, 0)))
-		{
-			if (SLerpAngle > (FReal)PI)
-			{
-				SLerpAngle = SLerpAngle - (FReal)2 * PI;
-			}
-
-			if (FMath::Abs(SLerpAngle) > AngleTolerance)
-			{
-				FReal AngVelTarget = (JointSettings.AngularDriveDamping > FReal(0)) ? FVec3::DotProduct(SLerpAxis, ConnectorRs[0] * JointSettings.AngularDriveVelocityTarget) : 0.0f;
-				InitRotationConstraintDrive((int32)EJointAngularConstraintIndex::Swing1, SLerpAxis, Dt, -SLerpAngle);
-				RotationDrives.ConstraintVX[(int32)EJointAngularConstraintIndex::Swing1] = AngVelTarget;
-			}
-		}
+		RotationDrives.ConstraintVX[0] = FVec3::DotProduct(TargetAngVel, Axes[0]);
+		RotationDrives.ConstraintVX[1] = FVec3::DotProduct(TargetAngVel, Axes[1]);
+		RotationDrives.ConstraintVX[2] = FVec3::DotProduct(TargetAngVel, Axes[2]);
 	}
 }
 
@@ -1590,7 +1737,7 @@ void FPBDJointCachedSolver::ApplyAxisRotationDrive(
 
 	// Damping angular velocity
 	FReal AngVelDt = 0;
-	if (RotationDrives.ConstraintSoftDamping[ConstraintIndex] > KINDA_SMALL_NUMBER)
+	if (RotationDrives.ConstraintSoftDamping[ConstraintIndex] > UE_KINDA_SMALL_NUMBER)
 	{
 		const FVec3 W0Dt = FVec3(Body(0).DQ()) + ConnectorWDts[0];
 		const FVec3 W1Dt = FVec3(Body(1).DQ()) + ConnectorWDts[1];
@@ -1619,66 +1766,6 @@ void FPBDJointCachedSolver::ApplyRotationDelta(
 	const FVec3& DR)
 {
 	Body(BodyIndex).ApplyRotationDelta(DR);
-}
-
-// Used for non-zero restitution. We pad constraints by an amount such that the velocity
-// calculated after solving constraint positions will as required for the restitution.
-void FPBDJointCachedSolver::CalculateLinearConstraintPadding(
-	const int32 ConstraintIndex,
-	const FReal Dt,
-	const FReal Restitution,
-	FReal& InOutPos)
-{
-	// NOTE: We only calculate the padding after the constraint is first violated, and after
-	// that the padding is fixed for the rest of the iterations in the current step.
-	if ((Restitution > 0.0f) && (InOutPos > 0.0f) && !HasLinearConstraintPadding(ConstraintIndex))
-	{
-		SetLinearConstraintPadding(ConstraintIndex, 0.0f);
-
-		// Calculate the velocity we want to match
-    
-		const FVec3 V0Dt = FVec3::CalculateVelocity(InitConnectorXs[0], ConnectorXs[0]+Body(0).DP() + FVec3::CrossProduct(Body(0).DQ(), PositionConstraints.ConstraintArms[PointPositionConstraintIndex][0]), 1.0f);
-		const FVec3 V1Dt = FVec3::CalculateVelocity(InitConnectorXs[1], ConnectorXs[1]+Body(1).DP() + FVec3::CrossProduct(Body(1).DQ(), PositionConstraints.ConstraintArms[PointPositionConstraintIndex][1]), 1.0f);
-		const FReal AxisVDt = FVec3::DotProduct(V1Dt - V0Dt, PositionConstraints.ConstraintAxis[ConstraintIndex]);
-
-		// Calculate the padding to apply to the constraint that will result in the
-		// desired outward velocity (assuming the constraint is fully resolved)
-		const FReal Padding = (1.0f + Restitution) * AxisVDt - InOutPos;
-		if (Padding > 0.0f)
-		{
-			SetLinearConstraintPadding(ConstraintIndex, Padding);
-			InOutPos += Padding;
-		}
-	}
-}
-
-// Used for non-zero restitution. We pad constraints by an amount such that the velocity
-// calculated after solving constraint positions will as required for the restitution.
-void FPBDJointCachedSolver::CalculateAngularConstraintPadding(
-	const int32 ConstraintIndex,
-	const FReal Restitution,
-	FReal& InOutAngle)
-{
-	// NOTE: We only calculate the padding after the constraint is first violated, and after
-	// that the padding is fixed for the rest of the iterations in the current step.
-	if ((Restitution > 0.0f) && (InOutAngle > 0.0f) && !HasAngularConstraintPadding(ConstraintIndex))
-	{
-		SetAngularConstraintPadding(ConstraintIndex, 0.0f);
-
-		// Calculate the velocity we want to match
-		const FVec3 W0Dt = FVec3(Body(0).DQ()) + ConnectorWDts[0];
-		const FVec3 W1Dt = FVec3(Body(1).DQ()) + ConnectorWDts[1];
-		const FReal AxisWDt = FVec3::DotProduct(W1Dt - W0Dt, RotationConstraints.ConstraintAxis[(int32)ConstraintIndex]);
-
-		// Calculate the padding to apply to the constraint that will result in the
-		// desired outward velocity (assuming the constraint is fully resolved)
-		const FReal Padding = (1.0f + Restitution) * AxisWDt - InOutAngle;
-		if (Padding > 0.0f)
-		{
-			SetAngularConstraintPadding(ConstraintIndex, Padding);
-			InOutAngle += Padding;
-		}
-	}
 }
 
 void FAxisConstraintDatas::InitDatas(

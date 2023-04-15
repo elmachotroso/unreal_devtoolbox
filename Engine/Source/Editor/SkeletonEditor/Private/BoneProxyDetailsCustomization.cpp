@@ -113,7 +113,7 @@ static TSharedRef<SWidget> BuildTransformFieldLabel(bool* bValuePtr, const FText
 			[
 				SNew(SComboButton)
 				.ContentPadding( 0 )
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 				.ForegroundColor( FSlateColor::UseForeground() )
 				.MenuContent()
 				[
@@ -131,6 +131,38 @@ static TSharedRef<SWidget> BuildTransformFieldLabel(bool* bValuePtr, const FText
 				]
 			];
 	}
+}
+
+namespace
+{
+
+class FBoneProxyDetailsErrorPipe : public FOutputDevice
+{
+public:
+
+	int32 NumErrors;
+
+	FBoneProxyDetailsErrorPipe()
+		: FOutputDevice()
+		, NumErrors(0)
+	{
+	}
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	{
+		NumErrors++;
+	}
+};
+
+template<typename DataType>
+bool GetDataFromContent(const FString& Content, DataType& OutData)
+{
+	FBoneProxyDetailsErrorPipe ErrorPipe;
+	static UScriptStruct* DataStruct = TBaseStructure<DataType>::Get();
+	DataStruct->ImportText(*Content, &OutData, nullptr, PPF_None, &ErrorPipe, DataStruct->GetName(), true);
+	return (ErrorPipe.NumErrors == 0);
+}
+	
 }
 
 void FBoneProxyDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
@@ -336,65 +368,71 @@ void FBoneProxyDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& Deta
 				return;
 			}
 
+			FScopedTransaction Transaction(LOCTEXT("PasteTransform", "Paste Transform"));
+			
+			static const FName LocationPropertyName = GET_MEMBER_NAME_CHECKED(UBoneProxy, Location);
+			static const FName RotationPropertyName = GET_MEMBER_NAME_CHECKED(UBoneProxy, Rotation);
+			static const FName ScalePropertyName = GET_MEMBER_NAME_CHECKED(UBoneProxy, Scale);
+			static constexpr bool bIsCommit = true;
+
 			for (UBoneProxy* BoneProxy : BoneProxiesView)
 			{
-				if (UDebugSkelMeshComponent* Component = BoneProxy->SkelMeshComponent.Get())
+				if (const UDebugSkelMeshComponent* Component = BoneProxy->SkelMeshComponent.Get())
 				{
-					if (FAnimNode_ModifyBone* ModifyBone = Component->PreviewInstance->FindModifiedBone(BoneProxy->BoneName))
+					switch(InComponent)
 					{
-						class FBoneProxyDetailsCustomization : public FOutputDevice
+						case ESlateTransformComponent::Location:
 						{
-						public:
-
-							int32 NumErrors;
-
-							FBoneProxyDetailsCustomization()
-								: FOutputDevice()
-								, NumErrors(0)
+							FVector Data = BoneProxy->Location;
+							if (GetDataFromContent(Content, Data))
 							{
+								BoneProxy->OnPreEditChange(LocationPropertyName, bIsCommit);
+								BoneProxy->Location = Data;
+								BoneProxy->OnPostEditChangeProperty(LocationPropertyName, bIsCommit);
 							}
-
-							virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
-							{
-								NumErrors++;
-							}
-						};
-
-						FBoneProxyDetailsCustomization ErrorPipe;
-										
-						switch(InComponent)
+							break;
+						}
+						case ESlateTransformComponent::Rotation:
 						{
-							case ESlateTransformComponent::Location:
+							FRotator Data = BoneProxy->Rotation;
+							if (GetDataFromContent(Content, Data))
 							{
-								FVector Data = BoneProxy->Location;
-								TBaseStructure<FVector>::Get()->ImportText(*Content, &Data, nullptr, PPF_None, &ErrorPipe, TBaseStructure<FVector>::Get()->GetName(), true);
-								ModifyBone->Translation = Data;
-								break;
+								BoneProxy->OnPreEditChange(RotationPropertyName, bIsCommit);
+								BoneProxy->Rotation = Data;
+								BoneProxy->OnPostEditChangeProperty(RotationPropertyName, bIsCommit);
 							}
-							case ESlateTransformComponent::Rotation:
+							break;
+						}
+						case ESlateTransformComponent::Scale:
+						{
+							FVector Data = BoneProxy->Scale;
+							if (GetDataFromContent(Content, Data))
 							{
-								FRotator Data = BoneProxy->Rotation;
-								TBaseStructure<FRotator>::Get()->ImportText(*Content, &Data, nullptr, PPF_None, &ErrorPipe, TBaseStructure<FRotator>::Get()->GetName(), true);
-								ModifyBone->Rotation = Data;
-								break;
+								BoneProxy->OnPreEditChange(ScalePropertyName, bIsCommit);
+								BoneProxy->Scale = Data;
+								BoneProxy->OnPostEditChangeProperty(ScalePropertyName, bIsCommit);
 							}
-							case ESlateTransformComponent::Scale:
+							break;
+						}
+						case ESlateTransformComponent::Max:
+						default:
+						{
+							FEulerTransform Data = FEulerTransform::Identity;
+							if (GetDataFromContent(Content, Data))
 							{
-								FVector Data = BoneProxy->Scale;
-								TBaseStructure<FVector>::Get()->ImportText(*Content, &Data, nullptr, PPF_None, &ErrorPipe, TBaseStructure<FVector>::Get()->GetName(), true);
-								ModifyBone->Scale = Data;
-								break;
+								BoneProxy->OnPreEditChange(LocationPropertyName, bIsCommit);
+								BoneProxy->Location = Data.GetLocation();
+								BoneProxy->OnPostEditChangeProperty(LocationPropertyName, bIsCommit);
+								
+								BoneProxy->OnPreEditChange(RotationPropertyName, bIsCommit);
+								BoneProxy->Rotation = Data.Rotator();
+								BoneProxy->OnPostEditChangeProperty(RotationPropertyName, bIsCommit);
+								
+								BoneProxy->OnPreEditChange(ScalePropertyName, bIsCommit);
+								BoneProxy->Scale = Data.GetScale3D();
+								BoneProxy->OnPostEditChangeProperty(ScalePropertyName, bIsCommit);
 							}
-							case ESlateTransformComponent::Max:
-							default:
-							{
-								FEulerTransform Data = FEulerTransform::Identity;
-								TBaseStructure<FEulerTransform>::Get()->ImportText(*Content, &Data, nullptr, PPF_None, &ErrorPipe, TBaseStructure<FEulerTransform>::Get()->GetName(), true);
-								ModifyBone->Translation = Data.GetLocation();
-								ModifyBone->Rotation = Data.Rotator();
-								ModifyBone->Scale = Data.GetScale3D();
-								break;
-							}
+							break;
 						}
 					}
 				}

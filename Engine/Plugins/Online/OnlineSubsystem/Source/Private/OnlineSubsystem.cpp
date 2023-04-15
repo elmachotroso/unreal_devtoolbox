@@ -3,11 +3,13 @@
 #include "OnlineSubsystem.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/TrackedActivity.h"
 #include "HAL/IConsoleManager.h"
-#include "NboSerializer.h"
+#include "Online/NboSerializer.h"
 #include "Misc/NetworkVersion.h"
 #include "Logging/LogMacros.h"
 #include "Misc/EngineVersion.h"
+#include "OnlineSessionSettings.h"
 
 #include "Interfaces/OnlineChatInterface.h"
 #include "Interfaces/OnlinePartyInterface.h"
@@ -15,7 +17,6 @@
 #include "Interfaces/OnlineUserInterface.h"
 #include "Interfaces/OnlineEventsInterface.h"
 #include "Interfaces/OnlineSessionInterface.h"
-#include "Interfaces/OnlineStoreInterface.h"
 #include "Interfaces/OnlineStoreInterfaceV2.h"
 #include "Interfaces/OnlinePurchaseInterface.h"
 #include "Interfaces/OnlineSharingInterface.h"
@@ -29,6 +30,8 @@
 #include "Interfaces/OnlineLeaderboardInterface.h"
 #include "Interfaces/OnlineTournamentInterface.h"
 #include "Interfaces/OnlineStatsInterface.h"
+
+LLM_DEFINE_TAG(OnlineSubsystem);
 
 DEFINE_LOG_CATEGORY(LogOnline);
 DEFINE_LOG_CATEGORY(LogOnlineGame);
@@ -48,7 +51,6 @@ DEFINE_LOG_CATEGORY(LogOnlineTitleFile);
 DEFINE_LOG_CATEGORY(LogOnlineEntitlement);
 DEFINE_LOG_CATEGORY(LogOnlineEvents);
 DEFINE_LOG_CATEGORY(LogOnlineSharing);
-DEFINE_LOG_CATEGORY(LogOnlineStore);
 DEFINE_LOG_CATEGORY(LogOnlineStoreV2);
 DEFINE_LOG_CATEGORY(LogOnlinePurchase);
 DEFINE_LOG_CATEGORY(LogOnlineTournament);
@@ -63,7 +65,6 @@ ONLINESUBSYSTEM_API DEFINE_STAT(STAT_Voice_Interface);
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FName WECHAT_SUBSYSTEM(TEXT("WeChat"));
-FName TWITCH_SUBSYSTEM(TEXT("TWITCH"));
 FName LIVE_SUBSYSTEM(TEXT("LIVE"));
 FName LIVESERVER_SUBSYSTEM(TEXT("LIVESERVER"));
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -178,6 +179,10 @@ int32 GetBuildUniqueId()
 		{
 			BuildId = BuildIdOverride;
 		}
+
+		// Will add an info entry to the console
+		static FTrackedActivity Ta(TEXT("BuildId"), *FString::FromInt(BuildId), FTrackedActivity::ELight::None, FTrackedActivity::EType::Info);
+		CVarBuildIdOverride->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* CVar) { Ta.Update(*CVar->GetString()); }));
 	}
 
 	return BuildId;

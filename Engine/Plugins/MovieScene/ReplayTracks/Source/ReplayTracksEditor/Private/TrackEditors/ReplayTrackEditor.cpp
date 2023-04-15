@@ -2,7 +2,7 @@
 
 #include "TrackEditors/ReplayTrackEditor.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/EngineTypes.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -49,7 +49,7 @@ TSharedPtr<SWidget> FReplayTrackEditor::BuildOutlinerEditWidget(const FGuid& Obj
 			.ContentPadding(FMargin(5, 2))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.IsEnabled(this, &FReplayTrackEditor::HandleToggleReplayButtonIsEnabled)
 			.ToolTipText(this, &FReplayTrackEditor::HandleToggleReplayButtonToolTipText)
@@ -78,7 +78,7 @@ void FReplayTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddReplayTrack", "Replay Track"),
 		LOCTEXT("AddReplayTrackTooltip", "Adds a replay track."),
-		FSlateIcon(), //FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.CameraCut"),
+		FSlateIcon(), //FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.CameraCut"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FReplayTrackEditor::HandleAddReplayTrackMenuEntryExecute),
 			FCanExecuteAction::CreateRaw(this, &FReplayTrackEditor::HandleAddReplayTrackMenuEntryCanExecute)
@@ -252,7 +252,10 @@ void FReplayTrackEditor::OnInitialize()
 void FReplayTrackEditor::OnRelease()
 {
 	const TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
-	SequencerPtr->OnGlobalTimeChanged().Remove(GlobalTimeChangedHandle);
+	if (SequencerPtr.IsValid())
+	{
+		SequencerPtr->OnGlobalTimeChanged().Remove(GlobalTimeChangedHandle);
+	}
 }
 
 void FReplayTrackEditor::Tick(float DeltaTime)
@@ -391,8 +394,10 @@ void FReplayTrackEditor::MovePIEViewTargetToLockedActor(UWorld* PlaybackWorld)
 
 			// Rotate the pawn... most of the time that's going to rotate the same thing we just rotated above (ViewTargetSceneComponent)
 			// but it's not necessarily the case.
-			ASpectatorPawn* SpectatorPawn = PlayerController->GetSpectatorPawn();
-			SpectatorPawn->SetActorRotation(Rotation);
+			if (ASpectatorPawn* SpectatorPawn = PlayerController->GetSpectatorPawn())
+			{
+				SpectatorPawn->SetActorRotation(Rotation);
+			}
 
 			// Rotate the player controller, because the view target doesn't always solely define the final camera view. Most of the time,
 			// the player controller's own rotation is inserted into the mix.

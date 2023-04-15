@@ -9,7 +9,10 @@ public class DatasmithSDKTarget : TargetRules
 		: base(Target)
 	{
 		Type = TargetType.Program;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+		DefaultBuildSettings = BuildSettingsVersion.V2;
 		SolutionDirectory = "Programs/Datasmith";
+		bBuildInSolutionByDefault = false;
 
 		LaunchModuleName = "DatasmithSDK";
 		ExeBinariesSubFolder = "DatasmithSDK";
@@ -26,7 +29,7 @@ public class DatasmithSDKTarget : TargetRules
 		bCompileAgainstCoreUObject = true;
 		bCompileICU = false;
 		bUsesSlate = false;
-		bDisableDebugInfo = true;
+		bDisableDebugInfo = false;
 		bUsePDBFiles = true;
 		bHasExports = true;
 		bIsBuildingConsoleApplication = true;
@@ -35,12 +38,19 @@ public class DatasmithSDKTarget : TargetRules
 		{
 			AddWindowsPostBuildSteps();
 		}
+
+		// Enable UDP in shipping (used by DirectLink)
+		if (BuildEnvironment == TargetBuildEnvironment.Unique)
+		{
+			GlobalDefinitions.Add("ALLOW_UDP_MESSAGING_SHIPPING=1"); // bypasses the 'if shipping' of UdpMessagingModule.cpp
+			GlobalDefinitions.Add("PLATFORM_SUPPORTS_MESSAGEBUS=1"); // required to enable the default MessageBus in MessagingModule.cpp
+		}
 	}
 
 	public void PostBuildCopy(string SrcPath, string DestPath)
 	{
 		PostBuildSteps.Add(string.Format("echo Copying {0} to {1}", SrcPath, DestPath));
-		PostBuildSteps.Add(string.Format("xcopy {0} {1} /R /Y /S", SrcPath, DestPath));
+		PostBuildSteps.Add(string.Format("xcopy \"{0}\" \"{1}\" /R /Y /S /Q", SrcPath, DestPath));
 	}
 
 	public void AddWindowsPostBuildSteps()
@@ -65,6 +75,11 @@ public class DatasmithSDKTarget : TargetRules
 		PostBuildCopy(
 			@"$(EngineDir)\Source\Developer\Datasmith\DatasmithExporter\Public\*.h",
 			@"$(EngineDir)\Binaries\$(TargetPlatform)\DatasmithSDK\Public\"
+		);
+
+		PostBuildCopy(
+			@"$(EngineDir)\Extras\VisualStudioDebugging\Unreal.natvis",
+			@"$(EngineDir)\Binaries\$(TargetPlatform)\DatasmithSDK\"
 		);
 
 		// Other headers we depend on, but that are not part of our public API:

@@ -2,10 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "Templates/RefCounting.h"
-#include "VideoCommon.h"
 #include "CudaModule.h"
+#include "HAL/Platform.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "Templates/Function.h"
+#include "Templates/RefCounting.h"
+#include "Templates/SharedPointer.h"
+#include "VideoCommon.h"
+
 
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
 #include "vulkan/vulkan_core.h"
@@ -40,23 +46,22 @@ namespace AVEncoder
 	{
 	public:
 		// --- construct video encoder input based on expected input frame format
-		static TSharedPtr<FVideoEncoderInput> CreateDummy(uint32 InWidth, uint32 InHeight, bool isResizable = false);
+		static TSharedPtr<FVideoEncoderInput> CreateDummy(bool isResizable = false);
 		static TSharedPtr<FVideoEncoderInput> CreateForYUV420P(uint32 InWidth, uint32 InHeight, bool isResizable = false);
 
 		// create input for an encoder that encodes a D3D11 texture 
-		static TSharedPtr<FVideoEncoderInput> CreateForD3D11(void* InApplicationD3D11Device, uint32 InWidth, uint32 InHeight, bool IsResizable = false, bool IsShared = false);
+		static TSharedPtr<FVideoEncoderInput> CreateForD3D11(void* InApplicationD3D11Device, bool IsResizable = false, bool IsShared = false);
 
 		// create input for an encoder that encodes a D3D12 texture
-		static TSharedPtr<FVideoEncoderInput> CreateForD3D12(void* InApplicationD3D12Device, uint32 InWidth, uint32 InHeight, bool IsResizable = false, bool IsShared = false);
+		static TSharedPtr<FVideoEncoderInput> CreateForD3D12(void* InApplicationD3D12Device, bool IsResizable = false, bool IsShared = false);
 
 		// create input for an encoder that encodes a CUarray
-		static TSharedPtr<FVideoEncoderInput> CreateForCUDA(void* InApplicationCudaContext, uint32 InWidth, uint32 InHeight, bool IsResizable = false);
+		static TSharedPtr<FVideoEncoderInput> CreateForCUDA(void* InApplicationCudaContext, bool IsResizable = false);
 
 		// create input for an encoder that encodes a VkImage
-		static TSharedPtr<FVideoEncoderInput> CreateForVulkan(void* InApplicationVulkanData, uint32 InWidth, uint32 InHeight, bool IsResizable = false);
+		static TSharedPtr<FVideoEncoderInput> CreateForVulkan(void* InApplicationVulkanData, bool IsResizable = false);
 
 		// --- properties
-		virtual void SetResolution(uint32 InWidth, uint32 InHeight);
 		virtual void SetMaxNumBuffers(uint32 InMaxNumBuffers);
 
 		EVideoFrameFormat GetFrameFormat() const { return FrameFormat; }
@@ -82,7 +87,7 @@ namespace AVEncoder
 		// --- encoder input frames - managed by this object
 
 		// obtain a video frame that can be used as a buffer for input to a video encoder
-		virtual FVideoEncoderInputFrame* ObtainInputFrame() = 0;
+		virtual TSharedPtr<FVideoEncoderInputFrame> ObtainInputFrame() = 0;
 
 		// release (free) an input frame and make it available for future use
 		virtual void ReleaseInputFrame(FVideoEncoderInputFrame* InFrame) = 0;
@@ -108,8 +113,6 @@ namespace AVEncoder
 		FVideoEncoderInput& operator=(const FVideoEncoderInput&) = delete;
 
 		EVideoFrameFormat				FrameFormat = EVideoFrameFormat::Undefined;
-		uint32 Width;
-		uint32 Height;
 		uint32 MaxNumBuffers = 3;
 		uint32 NumBuffers = 0;
 
@@ -146,8 +149,10 @@ namespace AVEncoder
 		// current format of frame
 		EVideoFrameFormat GetFormat() const { return Format; }
 		// width of frame buffer
+		void SetWidth(uint32 InWidth) { Width = InWidth; }
 		uint32 GetWidth() const { return Width; }
 		// height of frame buffer
+		void SetHeight(uint32 InHeight) { Height = InHeight; }
 		uint32 GetHeight() const { return Height; }
 
 		TFunction<void()> OnTextureEncode;
@@ -258,10 +263,11 @@ namespace AVEncoder
 		void SetTexture(VkImage InTexture, VkDeviceMemory InTextureDeviceMemory, uint64 InTextureSize, FReleaseVulkanTextureCallback InOnReleaseTexture);
 #endif
 
+		virtual ~FVideoEncoderInputFrame();
 	protected:
 		FVideoEncoderInputFrame();
 		explicit FVideoEncoderInputFrame(const FVideoEncoderInputFrame& CloneFrom);
-		virtual ~FVideoEncoderInputFrame();
+		
 
 		uint32									FrameID;
 		int64									TimestampUs;

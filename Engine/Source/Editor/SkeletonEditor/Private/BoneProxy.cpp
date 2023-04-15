@@ -27,6 +27,12 @@ void UBoneProxy::Tick(float DeltaTime)
 	{
 		if (UDebugSkelMeshComponent* Component = SkelMeshComponent.Get())
 		{
+			if (Component->GetSkeletalMeshAsset() && Component->GetSkeletalMeshAsset()->IsCompiling())
+			{
+				//We do not want to tick if the skeletalmesh is inside a compilation
+				return;
+			}
+
 			TArray<FTransform> LocalBoneTransforms = Component->GetBoneSpaceTransforms();
 
 			int32 BoneIndex = Component->GetBoneIndex(BoneName);
@@ -62,7 +68,7 @@ void UBoneProxy::Tick(float DeltaTime)
 					Scale = BoneTransform.GetScale3D();
 				}
 
-				FTransform ReferenceTransform = Component->SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex];
+				FTransform ReferenceTransform = Component->GetSkeletalMeshAsset()->GetRefSkeleton().GetRefBonePose()[BoneIndex];
 				ReferenceLocation = ReferenceTransform.GetLocation();
 				ReferenceRotation = ReferenceTransform.GetRotation().Rotator();
 				ReferenceScale = ReferenceTransform.GetScale3D();

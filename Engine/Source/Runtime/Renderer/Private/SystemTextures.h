@@ -23,6 +23,7 @@ struct FRDGSystemTextures
 	FRDGTextureRef White{};
 	FRDGTextureRef Black{};
 	FRDGTextureRef BlackAlphaOne{};
+	FRDGTextureRef BlackArray{};
 	FRDGTextureRef MaxFP16Depth{};
 	FRDGTextureRef DepthDummy{};
 	FRDGTextureRef StencilDummy{};
@@ -33,6 +34,8 @@ struct FRDGSystemTextures
 	FRDGTextureRef VolumetricBlack{};
 	FRDGTextureRef VolumetricBlackAlphaOne{};
 	FRDGTextureRef VolumetricBlackUint{};
+	FRDGTextureRef CubeBlack{};
+	FRDGTextureRef CubeArrayBlack{};
 
 	FRDGTextureSRVRef StencilDummySRV{};
 };
@@ -139,9 +142,15 @@ public:
 	TRefCountPtr<IPooledRenderTarget> VolumetricBlackDummy;
 	TRefCountPtr<IPooledRenderTarget> VolumetricBlackAlphaOneDummy;
 	TRefCountPtr<IPooledRenderTarget> VolumetricBlackUintDummy;
-	
+
+	/** float4(0,0,0,0) cube textures. */
+	TRefCountPtr<IPooledRenderTarget> CubeBlackDummy;
+	TRefCountPtr<IPooledRenderTarget> CubeArrayBlackDummy;
+
 	// Dummy 0 Uint texture for RHIs that need explicit overloads
 	TRefCountPtr<IPooledRenderTarget> ZeroUIntDummy;
+	// Dummy 0 Uint texture for RHIs that need explicit overloads
+	TRefCountPtr<IPooledRenderTarget> ZeroUIntArrayDummy;
 
 	// SRV for WhiteDummy Texture.
 	TRefCountPtr<FRHIShaderResourceView> WhiteDummySRV;
@@ -156,6 +165,7 @@ public:
 	FRDGTextureRef RENDERER_API GetBlackDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetBlackArrayDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetZeroUIntDummy(FRDGBuilder& GraphBuilder) const;
+	FRDGTextureRef RENDERER_API GetZeroUIntArrayDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetZeroUShort4Dummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetBlackAlphaOneDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetMaxFP16Depth(FRDGBuilder& GraphBuilder) const;
@@ -166,6 +176,8 @@ public:
 	FRDGTextureRef RENDERER_API GetMidGreyDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetVolumetricBlackDummy(FRDGBuilder& GraphBuilder) const;
 	FRDGTextureRef RENDERER_API GetVolumetricBlackUintDummy(FRDGBuilder& GraphBuilder) const;
+	FRDGTextureRef RENDERER_API GetCubeBlackDummy(FRDGBuilder& GraphBuilder) const;
+	FRDGTextureRef RENDERER_API GetCubeArrayBlackDummy(FRDGBuilder& GraphBuilder) const;
 
 	// Create default 2D texture (1x1) with specific format and initialize value 
 	FRDGTextureRef RENDERER_API GetDefaultTexture2D(FRDGBuilder& GraphBuilder, EPixelFormat Format, float Value);
@@ -188,6 +200,18 @@ public:
 	// Create default buffer initialize to zero.
 	FRDGBufferRef RENDERER_API GetDefaultBuffer(FRDGBuilder& GraphBuilder, uint32 NumBytePerElement);
 	FRDGBufferRef RENDERER_API GetDefaultStructuredBuffer(FRDGBuilder& GraphBuilder, uint32 NumBytePerElement);
+
+	template <typename T>
+	FRDGBufferRef GetDefaultBuffer(FRDGBuilder& GraphBuilder)
+	{
+		return GetDefaultBuffer(GraphBuilder, sizeof(T));
+	}
+
+	template <typename T>
+	FRDGBufferRef GetDefaultStructuredBuffer(FRDGBuilder& GraphBuilder)
+	{
+		return GetDefaultStructuredBuffer(GraphBuilder, sizeof(T));
+	}
 
 	// Create a default buffer initialized with a reference element.
 	FRDGBufferRef RENDERER_API GetDefaultBuffer(FRDGBuilder& GraphBuilder, uint32 NumBytePerElement, float Value);

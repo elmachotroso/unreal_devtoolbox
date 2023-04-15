@@ -101,8 +101,6 @@ FIOSInputInterface::FIOSInputInterface( const TSharedRef< FGenericApplicationMes
 	: FAppleControllerInterface( InMessageHandler )
 	, bAllowRemoteRotation(false)
 	, bGameSupportsMultipleActiveControllers(false)
-	, bUseRemoteAsVirtualJoystick_DEPRECATED(true)
-	, bUseRemoteAbsoluteDpadValues(false)
     , LastHapticValue(0.0f)
     , MouseDeltaX(0)
     , MouseDeltaY(0)
@@ -120,8 +118,6 @@ FIOSInputInterface::FIOSInputInterface( const TSharedRef< FGenericApplicationMes
     
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bGameSupportsMultipleActiveControllers"), bGameSupportsMultipleActiveControllers, GEngineIni);
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowRemoteRotation"), bAllowRemoteRotation, GEngineIni);
-    GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bUseRemoteAsVirtualJoystick"), bUseRemoteAsVirtualJoystick_DEPRECATED, GEngineIni);
-    GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bUseRemoteAbsoluteDpadValues"), bUseRemoteAbsoluteDpadValues, GEngineIni);
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
     GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bControllersBlockDeviceFeedback"), bControllersBlockDeviceFeedback, GEngineIni);
     
@@ -309,7 +305,7 @@ void ModifyVectorByOrientation(FVector& Vec, bool bIsRotation)
             if (bIsRotation)
             {
                 // swap and negate (as needed) roll and pitch
-                float Temp = Vec.X;
+                double Temp = Vec.X;
                 Vec.X = -Vec.Z;
                 Vec.Z = Temp;
                 Vec.Y *= -1.0f;
@@ -317,7 +313,7 @@ void ModifyVectorByOrientation(FVector& Vec, bool bIsRotation)
             else
             {
                 // swap and negate (as needed) x and y
-                float Temp = Vec.X;
+                double Temp = Vec.X;
                 Vec.X = -Vec.Y;
                 Vec.Y = Temp;
             }
@@ -327,14 +323,14 @@ void ModifyVectorByOrientation(FVector& Vec, bool bIsRotation)
             if (bIsRotation)
             {
                 // swap and negate (as needed) roll and pitch
-                float Temp = Vec.X;
+                double Temp = Vec.X;
                 Vec.X = -Vec.Z;
                 Vec.Z = -Temp;
             }
             else
             {
                 // swap and negate (as needed) x and y
-                float Temp = Vec.X;
+                double Temp = Vec.X;
                 Vec.X = Vec.Y;
                 Vec.Y = -Temp;
             }
@@ -378,7 +374,7 @@ void FIOSInputInterface::ProcessTouchesAndKeys(uint32 ControllerId, const TArray
         int32 KeyCode = InKeyInputStack[KeyIndex];
         int32 CharCode = InKeyInputStack[KeyIndex + 1];
         MessageHandler->OnKeyDown(KeyCode, CharCode, false);
-        MessageHandler->OnKeyChar(CharCode,  false);
+        MessageHandler->OnKeyChar((TCHAR)CharCode,  false);
         MessageHandler->OnKeyUp  (KeyCode, CharCode, false);
     }
 }
@@ -481,8 +477,8 @@ void FIOSInputInterface::SendControllerEvents()
 #if !PLATFORM_TVOS
     // on ios, touches always go go player 0
     ProcessTouchesAndKeys(0, LocalTouchInputStack, LocalKeyInputStack);
-    ProcessDeferredEvents();
 #endif
+    ProcessDeferredEvents();
 
     
 #if !PLATFORM_TVOS // @todo tvos: This needs to come from the Microcontroller rotation
@@ -512,7 +508,7 @@ void FIOSInputInterface::SendControllerEvents()
     
     if ( bHaveMouse )
     {
-        MessageHandler->OnRawMouseMove(MouseDeltaX, MouseDeltaY);
+        MessageHandler->OnRawMouseMove(FMath::TruncToInt(MouseDeltaX), FMath::TruncToInt(MouseDeltaY));
         MouseDeltaX = 0.f;
         MouseDeltaY = 0.f;
         
@@ -540,23 +536,13 @@ void FIOSInputInterface::SendControllerEvents()
                 HandleButtonGamepad(FGamepadKeyNames::FaceButtonLeft, i);
                 HandleButtonGamepad(FGamepadKeyNames::SpecialRight, i);
                 
-                // if we want virtual joysticks, then use the dpad values (and drain the touch queue to not leak memory)
-                if (bUseRemoteAsVirtualJoystick_DEPRECATED)
-                {
-                    HandleAnalogGamepad(FGamepadKeyNames::LeftAnalogX, i);
-                    HandleAnalogGamepad(FGamepadKeyNames::LeftAnalogY, i);
+                HandleAnalogGamepad(FGamepadKeyNames::LeftAnalogX, i);
+                HandleAnalogGamepad(FGamepadKeyNames::LeftAnalogY, i);
 
-                    HandleButtonGamepad(FGamepadKeyNames::LeftStickUp, i);
-                    HandleButtonGamepad(FGamepadKeyNames::LeftStickDown, i);
-                    HandleButtonGamepad(FGamepadKeyNames::LeftStickRight, i);
-                    HandleButtonGamepad(FGamepadKeyNames::LeftStickLeft, i);
-                }
-                // otherwise, process touches like ios for the remote's index
-                else
-                {
-                    ProcessTouchesAndKeys(Cont.playerIndex, LocalTouchInputStack, LocalKeyInputStack);
-                }
-
+                HandleButtonGamepad(FGamepadKeyNames::LeftStickUp, i);
+                HandleButtonGamepad(FGamepadKeyNames::LeftStickDown, i);
+                HandleButtonGamepad(FGamepadKeyNames::LeftStickRight, i);
+                HandleButtonGamepad(FGamepadKeyNames::LeftStickLeft, i);
                 
                 [Controller.PreviousMicroGamepad release];
                 Controller.PreviousMicroGamepad = MicroGamepad;
@@ -671,8 +657,8 @@ void FIOSInputInterface::GetMovementData(FVector& Attitude, FVector& RotationRat
         FVector FinalAcceleration = -FilteredAccelerometer.GetSafeNormal();
         
         // calculate Roll/Pitch
-        float CurrentPitch = FMath::Atan2(FinalAcceleration.Y, FinalAcceleration.Z);
-        float CurrentRoll = -FMath::Atan2(FinalAcceleration.X, FinalAcceleration.Z);
+        float CurrentPitch = (float)FMath::Atan2(FinalAcceleration.Y, FinalAcceleration.Z);
+        float CurrentRoll = -(float)FMath::Atan2(FinalAcceleration.X, FinalAcceleration.Z);
         
         // if we want to calibrate, use the current values as center
         if (bIsCalibrationRequested)

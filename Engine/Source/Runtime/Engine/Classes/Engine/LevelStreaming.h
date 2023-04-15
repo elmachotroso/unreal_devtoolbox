@@ -10,6 +10,7 @@
 #include "Engine/LatentActionManager.h"
 #include "LatentActions.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
+#include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 
 #if WITH_EDITOR
 #include "Folder.h"
@@ -20,6 +21,29 @@ class ALevelScriptActor;
 class ALevelStreamingVolume;
 class ULevel;
 class ULevelStreaming;
+struct FNetLevelVisibilityTransactionId;
+
+enum class ENetLevelVisibilityRequest
+{
+	MakingVisible,
+	MakingInvisible
+};
+
+struct FNetLevelVisibilityState
+{
+	TOptional<bool> ClientAckedRequestCanMakeVisible;
+	TOptional<ENetLevelVisibilityRequest> PendingRequestType;
+	uint32 ServerRequestIndex = 0;
+	uint32 ClientPendingRequestIndex = 0;
+	uint32 ClientAckedRequestIndex = 0;
+	bool bHasClientPendingRequest = false;
+
+	void InvalidateClientPendingRequest()
+	{
+		bHasClientPendingRequest = false;
+		PendingRequestType.Reset();
+	}
+};
 
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLevelStreaming, Log, All);
 
@@ -203,6 +227,12 @@ protected:
 	UPROPERTY(Category=LevelStreaming, BlueprintSetter=SetShouldBeLoaded, BlueprintGetter=ShouldBeLoaded)
 	uint8 bShouldBeLoaded:1;
 
+	/** Whether the streaming level can safely skip making invisible transaction request from the client to the server */
+	uint8 bSkipClientUseMakingInvisibleTransactionRequest:1;
+
+	/** Whether the streaming level can safely skip making visible transaction request from the client to the server */
+	uint8 bSkipClientUseMakingVisibleTransactionRequest:1;
+
 	/** What the current streamed state of the streaming level is */
 	ECurrentState CurrentState;
 
@@ -284,6 +314,19 @@ public:
 
 private:
 
+	/** If true client will wait for acknowledgment from server before making streaming levels invisible */
+	bool ShouldClientUseMakingInvisibleTransactionRequest() const;
+	/** If true client will wait for acknowledgment from server before making streaming levels visible */
+	bool ShouldClientUseMakingVisibleTransactionRequest() const;
+	/** Returns whether the streaming level should wait for the server ack before changing its visibility. */
+	bool ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest InRequestType, bool bInShouldBeVisible);
+	/** Ack a client instigated visibility/streaming transaction */
+	void AckNetVisibilityTransaction(FNetLevelVisibilityTransactionId AckedClientTransactionId, bool bClientAckCanMakeVisible);
+	/** Returns whether the streaming level can make visible (can call AddToWorld). */
+	bool CanMakeVisible();
+	/** Returns whether the streaming level can make invisible (can call RemoveFromWorld). */
+	bool CanMakeInvisible();
+
 	/** Determine what the streaming levels target state should be. Returns whether the streaming level should be in the consider list. */
 	bool DetermineTargetState();
 
@@ -300,6 +343,15 @@ private:
 	bool IsDesiredLevelLoaded() const;
 
 public:
+
+	/** Begin a client instigated NetVisibility request */
+	void BeginClientNetVisibilityRequest(bool bInShouldBeVisible);
+
+	/** Check if we are waiting for a making visible or invisible streaming transaction */
+	bool IsWaitingForNetVisibilityTransactionAck(ENetLevelVisibilityRequest InRequestType = ENetLevelVisibilityRequest::MakingInvisible) const;
+
+	/** Set the current state of the current visibility/streaming transaction */
+	void UpdateNetVisibilityTransactionState(bool bInShouldBeVisible, FNetLevelVisibilityTransactionId TransactionId);
 
 	/** Returns the value of bShouldBeVisible. Use ShouldBeVisible to query whether a streaming level should be visible based on its own criteria. */
 	bool GetShouldBeVisibleFlag() const { return bShouldBeVisible; }
@@ -491,13 +543,25 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FLevelStreamingLoadedStatus			OnLevelUnloaded;
 	
-	/** Called when level is added to the world  */
+	/** Called when level is added to the world and is visible  */
 	UPROPERTY(BlueprintAssignable)
 	FLevelStreamingVisibilityStatus		OnLevelShown;
 	
-	/** Called when level is removed from the world  */
+	/** Called when level is no longer visible, may not be removed from world yet  */
 	UPROPERTY(BlueprintAssignable)
 	FLevelStreamingVisibilityStatus		OnLevelHidden;
+
+	/** Whether client should be using making invisible transaction requests to the server (default value). */
+	static bool DefaultAllowClientUseMakingInvisibleTransactionRequests();
+
+	/** Whether client should be using making visible transaction requests to the server (default value). */
+	static bool DefaultAllowClientUseMakingVisibleTransactionRequests();
+
+	/** If true server will wait for client acknowledgment before making treating streaming levels as visible for the client */
+	static bool ShouldServerUseMakingVisibleTransactionRequest();
+
+	/** If true level streaming can reuse an unloaded level that wasn't GC'd yet. */
+	static bool ShouldReuseUnloadedButStillAroundLevels(const ULevel* InLevel);
 
 	/** 
 	 * Traverses all streaming level objects in the persistent world and in all inner worlds and calls appropriate delegate for streaming objects that refer specified level 
@@ -594,7 +658,28 @@ private:
 	/** The cached package name of the currently loaded level. */
 	mutable FName CachedLoadedLevelPackageName;
 
+	/** State for server handshake of NetLevelVisibilty requests */
+	FNetLevelVisibilityState NetVisibilityState;
+
+	/** Whether streaming level is concerned by net visibility transactions */
+	bool IsConcernedByNetVisibilityTransactionAck() const;
+
+	/** Helper method that updates server level visibility for each player controller of streaming level world */
+	void ServerUpdateLevelVisibility(bool bIsVisible, bool bTryMakeVisible = false, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId());
+
+	friend struct FAckNetVisibilityTransaction;
 	friend struct FStreamingLevelPrivateAccessor;
+};
+
+/** Internal struct used by APlayerController to call AckNetVisibilityTransaction on streaming level object */
+struct FAckNetVisibilityTransaction
+{
+private:
+	static void Call(ULevelStreaming* StreamingLevel, FNetLevelVisibilityTransactionId TransactionId, bool bClientAckCanMakeVisibleResponse)
+	{
+		StreamingLevel->AckNetVisibilityTransaction(TransactionId, bClientAckCanMakeVisibleResponse);
+	}
+	friend class APlayerController;
 };
 
 struct FStreamingLevelPrivateAccessor

@@ -21,6 +21,8 @@
 #include "Engine/HLODProxy.h"
 #include "UObject/PropertyPortFlags.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LODActor)
+
 #if WITH_EDITOR
 #include "Editor.h"
 #include "HierarchicalLODUtilitiesModule.h"
@@ -277,7 +279,7 @@ void ALODActor::PostLoad()
 		}
 		else
 		{
-			const float HalfFOV = PI * 0.25f;
+			const float HalfFOV = UE_PI * 0.25f;
 			const float ScreenWidth = 1920.0f;
 			const float ScreenHeight = 1080.0f;
 			const FPerspectiveMatrix ProjMatrix(HalfFOV, ScreenWidth, ScreenHeight, 1.0f);
@@ -290,7 +292,7 @@ void ALODActor::PostLoad()
 
 			// legacy transition screen size was previously a screen AREA fraction using resolution-scaled values, so we need to convert to distance first to correctly calculate the threshold
 			const float ScreenArea = TransitionScreenSize * (ScreenWidth * ScreenHeight);
-			const float ScreenRadius = FMath::Sqrt(ScreenArea / PI);
+			const float ScreenRadius = FMath::Sqrt(ScreenArea / UE_PI);
 			const float ScreenDistance = FMath::Max(ScreenWidth / 2.0f * ProjMatrix.M[0][0], ScreenHeight / 2.0f * ProjMatrix.M[1][1]) * Bounds.SphereRadius / ScreenRadius;
 
 			// Now convert using the query function
@@ -309,7 +311,7 @@ void ALODActor::PostLoad()
 			{
 					// Make the parent HLOD
 					ParentLODActor->SubActors.Remove(this);
-					ParentLODActor->SubActors.Append(SubActors);
+					ParentLODActor->SubActors.Append(SubActors); // Don't register callbacks here, PostLoad should happen before PostRegisterAllComponents
 					for (AActor* Actor : SubActors)
 					{
 						if (Actor)
@@ -451,7 +453,7 @@ void ALODActor::Tick(float DeltaSeconds)
 		}
 		else
         {
-			const float CurrentTimeDilation = FMath::Max(GetActorTimeDilation(), SMALL_NUMBER);
+			const float CurrentTimeDilation = FMath::Max(GetActorTimeDilation(), UE_SMALL_NUMBER);
 			ResetDrawDistanceTime += DeltaSeconds / CurrentTimeDilation;
         }
 	}
@@ -528,6 +530,17 @@ void ALODActor::PostRegisterAllComponents()
 		UnregisterMeshComponents();
 	}
 
+	if( UWorld* World = GetWorld(); World && World->IsGameWorld())
+	{
+		for (TObjectPtr<AActor> ActorPtr : SubActors)
+		{
+			if (AActor* Actor = ActorPtr.Get())
+			{
+				Actor->OnEndPlay.AddUniqueDynamic(this, &ALODActor::OnSubActorEndPlay);
+			}
+		}
+	}
+
 #if WITH_EDITOR
 	if(!GetWorld()->IsPlayInEditor())
 	{
@@ -537,6 +550,15 @@ void ALODActor::PostRegisterAllComponents()
 		UpdateSubActorLODParents();
 	}
 #endif
+}
+
+void ALODActor::OnSubActorEndPlay(AActor* Actor, EEndPlayReason::Type Reason)
+{
+	// Other end play reasons will also be removing this actor from play so we don't need to touch our array
+	if (Reason == EEndPlayReason::Destroyed)
+	{
+		SubActors.RemoveSwap(Actor);
+	}
 }
 
 void ALODActor::RegisterMeshComponents()
@@ -797,6 +819,16 @@ void ALODActor::AddSubActor(AActor* InActor)
 
 void ALODActor::AddSubActors(const TArray<AActor*>& InActors)
 {
+	if (UWorld* World = GetWorld(); World && World->IsGameWorld())
+	{
+		for (AActor* Actor : InActors)
+		{
+			if (Actor)
+			{
+				Actor->OnEndPlay.AddDynamic(this, &ALODActor::OnSubActorEndPlay);
+			}
+		}
+	}
 	SubActors.Append(InActors);
 
 	float LODDrawDistanceWithOverride = GetLODDrawDistanceWithOverride();
@@ -813,7 +845,7 @@ void ALODActor::AddSubActors(const TArray<AActor*>& InActors)
 		if (!LODActor)
 		{
 			StaticMeshComponents.Reset();
-			Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+			Actor->GetComponents(StaticMeshComponents);
 
 			for (UStaticMeshComponent* Component : StaticMeshComponents)
 			{
@@ -839,6 +871,7 @@ const bool ALODActor::RemoveSubActor(AActor* InActor)
 {
 	if ((InActor != nullptr) && SubActors.Contains(InActor))
 	{
+		InActor->OnEndPlay.RemoveAll(this);
 		SubActors.Remove(InActor);
 		InActor->SetLODParent(nullptr, 0);
 
@@ -846,7 +879,7 @@ const bool ALODActor::RemoveSubActor(AActor* InActor)
 		if (!InActor->IsA<ALODActor>())
 		{
 			TArray<UStaticMeshComponent*> StaticMeshComponents;
-			InActor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+			InActor->GetComponents(StaticMeshComponents);
 			for (UStaticMeshComponent* Component : StaticMeshComponents)
 			{
 				const UStaticMesh* StaticMesh = (Component) ? ToRawPtr(Component->GetStaticMesh()) : nullptr;
@@ -1072,7 +1105,7 @@ void ALODActor::CleanSubActorArray()
 	for (int32 SubActorIndex = 0; SubActorIndex < SubActors.Num(); ++SubActorIndex)
 	{
 		AActor* Actor = SubActors[SubActorIndex];
-		if (Actor == nullptr)
+		if (!IsValid(Actor))
 		{
 			SubActors.RemoveAtSwap(SubActorIndex);
 			SubActorIndex--;
@@ -1083,7 +1116,7 @@ void ALODActor::CleanSubActorArray()
 void ALODActor::RecalculateDrawingDistance(const float InTransitionScreenSize)
 {
 	// At the moment this assumes a fixed field of view of 90 degrees (horizontal and vertical axes)
-	static const float FOVRad = 90.0f * (float)PI / 360.0f;
+	static const float FOVRad = 90.0f * (float)UE_PI / 360.0f;
 	static const FMatrix ProjectionMatrix = FPerspectiveMatrix(FOVRad, 1920, 1080, 0.01f);
 	FBoxSphereBounds Bounds(ForceInit);
 	ForEachComponent<UStaticMeshComponent>(false, [&Bounds](UStaticMeshComponent* SMComponent)
@@ -1178,7 +1211,7 @@ static FHLODInstancingKey GetInstancingKey(const AActor* InActor, int32 InLODLev
 	FHLODInstancingKey InstancingKey;
 
 	TArray<UStaticMeshComponent*> Components;
-	InActor->GetComponents<UStaticMeshComponent>(Components);
+	InActor->GetComponents(Components);
 	Components.RemoveAll([&](UStaticMeshComponent* Val)
 	{
 		return Val->GetStaticMesh() == nullptr || !Val->ShouldGenerateAutoLOD(InLODLevel - 1);
@@ -1416,3 +1449,4 @@ void ALODActor::PreSave(FObjectPreSaveContext ObjectSaveContext)
 #endif	// #if WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE
+

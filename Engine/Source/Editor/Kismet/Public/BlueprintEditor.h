@@ -2,59 +2,106 @@
 
 #pragma once
 
+#include "BlueprintEditorModule.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Developer/Merge/Public/Merge.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
-#include "UObject/GCObject.h"
-#include "Layout/Visibility.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Styling/SlateBrush.h"
-#include "Widgets/SWindow.h"
-#include "PreviewScene.h"
-#include "Framework/Commands/InputChord.h"
-#include "Framework/Application/IMenu.h"
-#include "Misc/NotifyHook.h"
-#include "TickableEditorObject.h"
 #include "EditorUndoClient.h"
-#include "Toolkits/IToolkitHost.h"
+#include "Engine/Blueprint.h"
+#include "FindInBlueprints.h"
+#include "Framework/Application/IMenu.h"
+#include "Framework/Commands/InputChord.h"
+#include "GraphEditor.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/Guid.h"
+#include "Misc/NotifyHook.h"
+#include "Misc/Optional.h"
+#include "PreviewScene.h"
+#include "SKismetInspector.h"
+#include "SourceControlOperations.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Tickable.h"
+#include "TickableEditorObject.h"
 #include "Toolkits/AssetEditorToolkit.h"
+#include "Toolkits/IToolkit.h"
+#include "Toolkits/IToolkitHost.h"
+#include "Types/SlateEnums.h"
+#include "UObject/GCObject.h"
+#include "UObject/NameTypes.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 #include "WorkflowOrientedApp/WorkflowTabFactory.h"
 #include "WorkflowOrientedApp/WorkflowTabManager.h"
-#include "BlueprintEditorModule.h"
-#include "GraphEditor.h"
-#include "Developer/Merge/Public/Merge.h"
 
+class AActor;
 class FBlueprintEditorToolbar;
+class FBlueprintNamespaceHelper;
+class FProperty;
+class FReferenceCollector;
 class FSCSEditorTreeNode;
+class FSubobjectEditorTreeNode;
+class FUICommandList;
 class IMessageLogListing;
 class INameValidatorInterface;
 class ISCSEditorCustomization;
-class SBlueprintPalette;
 class SBlueprintBookmarks;
+class SBlueprintPalette;
+class SDockTab;
 class SFindInBlueprints;
 class SKismetInspector;
 class SMyBlueprint;
 class SReplaceNodeReferences;
 class SSCSEditor;
 class SSCSEditorViewport;
+class SSubobjectEditor;
+class SWidget;
+class UActorComponent;
+class UBlueprintEditorOptions;
+class UBlueprintEditorProjectSettings;
+class UBlueprintEditorSettings;
+class UClass;
 class UEdGraph;
 class UEdGraphNode;
+class UEdGraphSchema;
+class UK2Node_Event;
+class UK2Node_FunctionEntry;
+class ULevelStreaming;
+class UObject;
+class USceneComponent;
+class UStruct;
+class UToolMenu;
+class UToolMenu;
 class UUserDefinedEnum;
 class UUserDefinedStruct;
-class UBlueprintEditorOptions;
-struct Rect;
-class UToolMenu;
+struct FEdGraphSchemaAction;
+struct FPropertyChangedEvent;
+struct FSlateBrush;
+struct FSlateColor;
+struct FSubobjectData;
 struct FToolMenuContext;
-class UK2Node_FunctionEntry;
-class UK2Node_Event;
-class UToolMenu;
-class FBlueprintNamespaceHelper;
-class SSubobjectEditor;
-class FSubobjectEditorTreeNode;
-class UBlueprintEditorSettings;
-class UBlueprintEditorProjectSettings;
+struct Rect;
 
 /* Enums to use when grouping the blueprint members in the list panel. The order here will determine the order in the list */
 namespace NodeSectionID
@@ -243,8 +290,11 @@ public:
 	virtual void AnalyticsTrackNodeEvent(UBlueprint* Blueprint, UEdGraphNode *GraphNode, bool bNodeDelete = false) const override;
 	void AnalyticsTrackCompileEvent(UBlueprint* Blueprint, int32 NumErrors, int32 NumWarnings) const;
 	virtual TSharedPtr<class IClassViewerFilter> GetImportedClassViewerFilter() const override { return ImportedClassViewerFilter; }
+	UE_DEPRECATED(5.1, "Please use GetPinTypeSelectorFilters")
 	virtual TSharedPtr<class IPinTypeSelectorFilter> GetImportedPinTypeSelectorFilter() const override { return ImportedPinTypeSelectorFilter; }
+	virtual void GetPinTypeSelectorFilters(TArray<TSharedPtr<class IPinTypeSelectorFilter>>& OutFilters) const override;
 	virtual bool IsNonImportedObject(const UObject* InObject) const;
+	virtual bool IsNonImportedObject(const FSoftObjectPath& InObject) const;
 	//~ End IBlueprintEditor Interface
 
 	//~ Begin FTickableEditorObject Interface
@@ -326,6 +376,9 @@ public:
 
 	/**	Returns whether the edited blueprint has components */
 	bool CanAccessComponentsMode() const;
+
+	/** Returns if we are currently closing the editor */
+	bool IsEditorClosing() const;
 
 	// @todo This is a hack for now until we reconcile the default toolbar with application modes
 	void RegisterToolbarTab(const TSharedRef<class FTabManager>& TabManager);
@@ -521,6 +574,9 @@ public:
 
 	/** Delegate invoked when an item is double clicked in the subobject editor widget */
 	virtual void OnComponentDoubleClicked(TSharedPtr<class FSubobjectEditorTreeNode> Node);
+
+	/** Delegate invoked when a new subobject is added in the subobject editor widget */
+	virtual void OnComponentAddedToBlueprint(const FSubobjectData& NewSubobjectData);
 	
 	/** Delegate invoked when the selection is changed in the subobject editor widget */
 	UE_DEPRECATED(5.0, "OnSelectionUpdated(const TArray<TSharedPtr<class FSCSEditorTreeNode>>&) has been deprecated. Use OnSelectionUpdated(const TArray<TSharedPtr<class FSubobjectEditorTreeNode>>&) instead.")
@@ -713,15 +769,41 @@ public:
 
 	/** Gets the default schema for this editor */
 	TSubclassOf<UEdGraphSchema> GetDefaultSchema() const { return GetDefaultSchemaClass(); }
-
+	
 	/** Imports the given namespace into the editor. This may trigger a load event for additional macro and/or function library assets if not already loaded. */
 	void ImportNamespace(const FString& InNamespace);
 
-	/** Returns an instanced namespace helper utility object that corresponds to the given Blueprint. */
-	TSharedRef<FBlueprintNamespaceHelper> GetOrCreateNamespaceHelperForBlueprint(const UBlueprint* InBlueprint);
+	/** Parameters for the extended ImportNamespaceEx() method */
+	struct FImportNamespaceExParameters
+	{
+		/** Whether this is an automatic or explicit (i.e. user-initiated) action. */
+		bool bIsAutoImport;
+
+		/** Callback to use for any post-import actions. Will not be invoked if nothing is imported. */
+		FSimpleDelegate OnPostImportCallback;
+
+		/** One or more unique namespace identifiers to be imported as part of the single transaction. */
+		TSet<FString> NamespacesToImport;
+
+		/** Default ctor (for initialization). */
+		FImportNamespaceExParameters()
+		{
+			// Treat as auto-import by default (implies that the editor will auto-refresh the details view).
+			bIsAutoImport = true;
+		}
+	};
+
+	/** Imports a set of namespace(s) into the editor. This may trigger a load event for additional macro and/or function library assets if not already loaded. */
+	void ImportNamespaceEx(const FImportNamespaceExParameters& InParams);
+
+	/** Removes the given namespace from the editor's current import context. However, this will NOT unload any associated macro and/or function library assets. */
+	void RemoveNamespace(const FString& InNamespace);
 
 	/** Selects a local variable to load in the details panel. */
 	virtual bool SelectLocalVariable(const UEdGraph* Graph, const FName& VariableName) { return false; }
+
+	/** Duplicates an EdGraphNode using selection and copy / paste functionality */
+	void SelectAndDuplicateNode(UEdGraphNode* InNode);
 
 protected:
 	UE_DEPRECATED(4.26, "Please do any validation inside the UBlueprint class during compilation, extra errors during compiling only supplied by the designer can lead to design time only errors being reported and being missed during cooks/content validation.")
@@ -1254,6 +1336,9 @@ private:
 	/** Util to try and get doc link for the currently selected node */
 	FString GetDocLinkForSelectedNode();
 
+	/** Util to try and get the base URL for the doc link for the currently selected node */
+	FString GetDocLinkBaseUrlForSelectedNode();
+
 	/** Set the enabled state for currently-selected nodes */
 	void OnSetEnabledStateForSelectedNodes(ENodeEnabledState NewState);
 
@@ -1284,6 +1369,15 @@ public://@TODO
 	
 	/** Update all nodes' unrelated states when the graph has changed */
 	void UpdateNodesUnrelatedStatesAfterGraphChange();
+
+	/** Whether event graphs are allowed to be displayed/created in a blueprint */
+	virtual bool AreEventGraphsAllowed() const;
+
+	/** Whether macros are allowed  to be displayed/created in a blueprint */
+	virtual bool AreMacrosAllowed() const;
+
+	/** Whether delegates are allowed  to be displayed/created in a blueprint */
+	virtual bool AreDelegatesAllowed() const;
 
 protected:
 
@@ -1363,8 +1457,8 @@ protected:
 	/** The toolbar builder class */
 	TSharedPtr<class FBlueprintEditorToolbar> Toolbar;
 
-	/** Cached set of instanced namespace helper objects */
-	TMap<TWeakObjectPtr<const UBlueprint>, TSharedRef<FBlueprintNamespaceHelper>> CachedNamespaceHelpers;
+	/** Imported namespace helper utility object */
+	TSharedPtr<FBlueprintNamespaceHelper> ImportedNamespaceHelper;
 
 	/** Filter used to restrict class viewer widgets in the editor context to imported namespaces only */
 	TSharedPtr<class IClassViewerFilter> ImportedClassViewerFilter;
@@ -1372,6 +1466,15 @@ protected:
 	/** Filter used to restrict pin type selector widgets in the editor context to imported namespaces only */
 	TSharedPtr<class IPinTypeSelectorFilter> ImportedPinTypeSelectorFilter;
 
+	/** Filter used to restrict pin type selector widgets to those which permissions allow */
+	TSharedPtr<class IPinTypeSelectorFilter> PermissionsPinTypeSelectorFilter;
+
+	/** Filter used to compose multiple pin type filters together */
+	TSharedPtr<class IPinTypeSelectorFilter> CompositePinTypeSelectorFilter;
+
+	/** Pending set of namespaces to be auto-imported on the next tick */
+	TSet<FString> DeferredNamespaceImports;
+	
 	FOnSetPinVisibility OnSetPinVisibility;
 
 	/** Has someone requested a deferred update of the saved document state? */

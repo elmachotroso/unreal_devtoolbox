@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Types/SlateEnums.h"
 #include "Misc/EnumClassFlags.h"
+#include "Widgets/Views/SHeaderRow.h" // for EColumnSortMode
 
 #include "Insights/Table/ViewModels/TableCellValue.h"
 
@@ -41,6 +42,7 @@ enum class ETableColumnAggregation : uint32
 	Max,
 	//Average,
 	//Median,
+	SameValue
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -73,6 +75,7 @@ public:
 		, ValueGetter(GetDefaultValueGetter())
 		, ValueFormatter(GetDefaultValueFormatter())
 		, ValueSorter(nullptr)
+		, InitialSortMode(EColumnSortMode::Ascending)
 		, ParentTable(nullptr)
 	{
 	}
@@ -162,6 +165,7 @@ public:
 	void SetValueGetter(TSharedRef<ITableCellValueGetter> InValueGetter) { ValueGetter = InValueGetter; }
 
 	const TOptional<FTableCellValue> GetValue(const FBaseTreeNode& InNode) const;
+	uint64 GetValueId(const FBaseTreeNode& InNode) const;
 
 	//////////////////////////////////////////////////
 	// Value Formatter
@@ -173,6 +177,7 @@ public:
 
 	FText GetValueAsText(const FBaseTreeNode& InNode) const;
 	FText GetValueAsTooltipText(const FBaseTreeNode& InNode) const;
+	FText GetValueAsGroupingText(const FBaseTreeNode& InNode) const;
 
 	FString GetValueAsSerializableString(const FBaseTreeNode& InNode) const;
 
@@ -184,6 +189,12 @@ public:
 
 	/** Whether this column can be used for sorting. */
 	bool CanBeSorted() const { return ValueSorter.IsValid(); }
+
+	/** Gets the initial sorting mode. */
+	EColumnSortMode::Type GetInitialSortMode() const { return InitialSortMode; }
+
+	/** Sets the initial sorting mode. */
+	void SetInitialSortMode(EColumnSortMode::Type InMode) { InitialSortMode = InMode; }
 
 	//////////////////////////////////////////////////
 	// Value Converter (can be nullptr)
@@ -248,7 +259,10 @@ private:
 
 	/** Custom sorter for values displayed by this column. */
 	TSharedPtr<ITableCellValueSorter> ValueSorter;
-	
+
+	/** Initial sorting mode. */
+	EColumnSortMode::Type InitialSortMode;
+
 	/** Used to convert in a custom way from string to column data type in FilterConfigurator */
 	TSharedPtr<IFilterValueConverter> ValueConverter;
 

@@ -20,72 +20,9 @@
 #include "WaterModule.h"
 #include "Modules/ModuleManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterEditorSubsystem)
+
 #define LOCTEXT_NAMESPACE "WaterEditorSubsystem"
-
-void UpdateSingleTexture(UTexture2D*& DestTexture, UTextureRenderTarget2D* SrcRenderTarget, UObject* Outer, const TCHAR* TextureName)
-{
-	uint32 TextureFlags = CTF_Default;
-	if (!DestTexture)
-	{
-		DestTexture = SrcRenderTarget->ConstructTexture2D(Outer, TextureName, RF_NoFlags, TextureFlags);
-	}
-
-	const EPixelFormat PixelFormat = SrcRenderTarget->GetFormat();
-	ETextureSourceFormat TextureFormat = TSF_Invalid;
-	switch (PixelFormat)
-	{
-	case PF_B8G8R8A8:
-		TextureFormat = TSF_BGRA8;
-		break;
-	case PF_FloatRGBA:
-		TextureFormat = TSF_RGBA16F;
-		break;
-	}
-
-	bool bTextureModified = false;
-
-	UTextureRenderTarget2D::FTextureChangingDelegate OnTextureChanging;
-	OnTextureChanging.BindLambda([&bTextureModified](UTexture* InTexture)
-	{
-		if (!bTextureModified)
-		{
-			InTexture->Modify();
-			InTexture->PreEditChange(nullptr);
-			bTextureModified = true;
-		}
-	});
-	
-	// Verify if we need to update the destination texture
-	bool bMustUpdateTexture = false;
-
-	// Compare LOD group
-	TEnumAsByte<TextureGroup> TexLODGroup = GetDefault<UWaterEditorSettings>()->TextureGroupForGeneratedTextures;
-	bMustUpdateTexture |= DestTexture->LODGroup != TexLODGroup;
-	
-	// Compare mip gen settings
-	TEnumAsByte<TextureMipGenSettings> TexMipGenSetting = TMGS_NoMipmaps;
-	bMustUpdateTexture |= DestTexture->MipGenSettings != TexMipGenSetting;
-
-	// Compare max texture size
-	int32 TexMaxSize = GetDefault<UWaterEditorSettings>()->MaxWaterVelocityAndHeightTextureSize;
-	bMustUpdateTexture |= DestTexture->MaxTextureSize != TexMaxSize;
-
-	// Update the texture if needed
-	if (bMustUpdateTexture)
-	{
-		OnTextureChanging.Execute(DestTexture);
-	}
-
-	DestTexture->LODGroup = TexLODGroup;
-	DestTexture->MipGenSettings = TexMipGenSetting;
-	DestTexture->MaxTextureSize = TexMaxSize;
-	SrcRenderTarget->UpdateTexture2D(DestTexture, TextureFormat, TextureFlags, nullptr, OnTextureChanging);
-
-	if (bTextureModified)
-	{
-		DestTexture->PostEditChange();
-	}
-}
 
 UWaterEditorSubsystem::UWaterEditorSubsystem()
 {
@@ -130,35 +67,6 @@ void UWaterEditorSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-void UWaterEditorSubsystem::UpdateWaterTextures(
-	UWorld* World, 
-	UTextureRenderTarget2D* SourceVelocityTarget, 
-	UTexture2D*& OutWaterVelocityTexture)
-{
-	TActorIterator<AWaterZone> WaterZoneActorIt(World);
-	AWaterZone* ZoneActor = WaterZoneActorIt ? *WaterZoneActorIt : nullptr;
-	if (ZoneActor)
-	{
-		if (SourceVelocityTarget)
-		{
-			UTexture2D* PreviousTexture = ZoneActor->WaterVelocityTexture;
-			UpdateSingleTexture(ZoneActor->WaterVelocityTexture, SourceVelocityTarget, ZoneActor, TEXT("WaterVelocityTexture"));
-
-			// The water bodies' material instances are referencing the water velocity texture so they need to be in sync : 
-			if (ZoneActor->WaterVelocityTexture != PreviousTexture)
-			{
-				UWaterSubsystem::ForEachWaterBodyComponent(World, [this](UWaterBodyComponent* WaterBodyComponent)
-				{
-					WaterBodyComponent->UpdateMaterialInstances();
-					return true;
-				});
-			}
-
-			OutWaterVelocityTexture = ZoneActor->WaterVelocityTexture;
-		}
-	}
-}
-
 void UWaterEditorSubsystem::RegisterWaterActorSprite(UClass* InClass, UTexture2D* Texture)
 {
 	WaterActorSprites.Add(InClass, Texture);
@@ -167,7 +75,7 @@ void UWaterEditorSubsystem::RegisterWaterActorSprite(UClass* InClass, UTexture2D
 UTexture2D* UWaterEditorSubsystem::GetWaterActorSprite(UClass* InClass) const
 {
 	UClass const* Class = InClass;
-	UTexture2D* const* SpritePtr = nullptr;
+	typename decltype(WaterActorSprites)::ValueType const* SpritePtr = nullptr;
 
 	// Traverse the class hierarchy and find the first available sprite
 	while (Class != nullptr && SpritePtr == nullptr)
@@ -185,3 +93,4 @@ UTexture2D* UWaterEditorSubsystem::GetWaterActorSprite(UClass* InClass) const
 }
 
 #undef LOCTEXT_NAMESPACE
+

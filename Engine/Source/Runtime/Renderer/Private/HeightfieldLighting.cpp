@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-HeightfieldLighting.cpp
-=============================================================================*/
-
 #include "HeightfieldLighting.h"
 #include "StaticBoundShaderState.h"
 #include "SceneUtils.h"
@@ -20,10 +16,7 @@ HeightfieldLighting.cpp
 // In float4's, must match usf
 static const int32 HEIGHTFIELD_DATA_STRIDE = 12;
 
-void FillHeightfieldDescriptionData(const TArray<FHeightfieldComponentDescription>& HeightfieldDescriptions, 
-	FVector2D InvLightingAtlasSize, 
-	float InvDownsampleFactor,
-	TArray<FVector4f, SceneRenderingAllocator>& HeightfieldDescriptionData)
+void FillHeightfieldDescriptionData(const TArray<FHeightfieldComponentDescription>& HeightfieldDescriptions, TArray<FVector4f, SceneRenderingAllocator>& HeightfieldDescriptionData)
 {
 	HeightfieldDescriptionData.Empty(HeightfieldDescriptions.Num() * HEIGHTFIELD_DATA_STRIDE);
 
@@ -43,23 +36,23 @@ void FillHeightfieldDescriptionData(const TArray<FHeightfieldComponentDescriptio
 		HeightfieldDescriptionData.Add(HeightfieldScaleBias);
 		HeightfieldDescriptionData.Add(Description.MinMaxUV);
 
-		const FVector4f LightingUVScaleBias(
-			InvLightingAtlasSize.X * InvDownsampleFactor,
-			InvLightingAtlasSize.Y * InvDownsampleFactor,
-			Description.LightingAtlasLocation.X * InvLightingAtlasSize.X,
-			Description.LightingAtlasLocation.Y * InvLightingAtlasSize.Y);
-
-		HeightfieldDescriptionData.Add(LightingUVScaleBias);
-
 		HeightfieldDescriptionData.Add(FVector4f(Description.HeightfieldRect.Size().X, Description.HeightfieldRect.Size().Y, 1.f / Description.HeightfieldRect.Size().X, 1.f / Description.HeightfieldRect.Size().Y));
-		HeightfieldDescriptionData.Add(FVector4f(InvLightingAtlasSize.X, InvLightingAtlasSize.Y, 0.f, 0.f));
 
-		const FMatrix44f LocalToWorldT = FMatrix44f(Description.LocalToWorld.GetTransposed());
-		const FMatrix44f WorldToLocalT = FMatrix44f(Description.LocalToWorld.Inverse().GetTransposed());
+		const FLargeWorldRenderPosition WorldPosition(Description.LocalToWorld.GetOrigin());
+		const FVector TilePositionOffset = WorldPosition.GetTileOffset();
+
+		// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
+		const FMatrix LocalToRelativeWorld = FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(TilePositionOffset, Description.LocalToWorld);
+
+		HeightfieldDescriptionData.Add(WorldPosition.GetTile());
+
+		const FMatrix44f WorldToLocalT = FMatrix44f(LocalToRelativeWorld.Inverse().GetTransposed());
 
 		HeightfieldDescriptionData.Add(*(FVector4f*)&WorldToLocalT.M[0]);
 		HeightfieldDescriptionData.Add(*(FVector4f*)&WorldToLocalT.M[1]);
 		HeightfieldDescriptionData.Add(*(FVector4f*)&WorldToLocalT.M[2]);
+
+		const FMatrix44f LocalToWorldT = FMatrix44f(LocalToRelativeWorld.GetTransposed());
 
 		HeightfieldDescriptionData.Add(*(FVector4f*)&LocalToWorldT.M[0]);
 		HeightfieldDescriptionData.Add(*(FVector4f*)&LocalToWorldT.M[1]);
@@ -71,19 +64,22 @@ void FillHeightfieldDescriptionData(const TArray<FHeightfieldComponentDescriptio
 			ChannelMask.Component(Description.VisibilityChannel) = 1.f;
 		}
 		HeightfieldDescriptionData.Add(ChannelMask);
+
+		FVector4f& V0 = HeightfieldDescriptionData.AddDefaulted_GetRef();
+		V0.X = *(float*)&Description.GPUSceneInstanceIndex;
+		V0.Y = 1.0f / LocalToRelativeWorld.GetMaximumAxisScale();
+		V0.Z = 0.0f;
+		V0.W = 0.0f;
 	}
 
 	check(HeightfieldDescriptionData.Num() % HEIGHTFIELD_DATA_STRIDE == 0);
 }
 
-FRDGBufferRef UploadHeightfieldDescriptions(FRDGBuilder& GraphBuilder, const TArray<FHeightfieldComponentDescription>& HeightfieldDescriptions, FVector2D InvLightingAtlasSize, float InvDownsampleFactor)
+FRDGBufferRef UploadHeightfieldDescriptions(FRDGBuilder& GraphBuilder, const TArray<FHeightfieldComponentDescription>& HeightfieldDescriptions)
 {
 	TArray<FVector4f, SceneRenderingAllocator> HeightfieldDescriptionData;
 
-	FillHeightfieldDescriptionData(HeightfieldDescriptions,
-		InvLightingAtlasSize,
-		InvDownsampleFactor,
-		/*out*/ HeightfieldDescriptionData);
+	FillHeightfieldDescriptionData(HeightfieldDescriptions, /*out*/ HeightfieldDescriptionData);
 
 	FRDGBufferRef HeightfieldDescriptionsBuffer = CreateUploadBuffer(
 		GraphBuilder,

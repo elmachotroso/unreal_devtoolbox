@@ -7,6 +7,7 @@
 
 #include "Algo/AllOf.h"
 #include "Algo/AnyOf.h"
+#include "MultiUser/ConsoleVariableSync.h"
 #include "Views/List/ConsoleVariablesEditorList.h"
 #include "Views/List/SConsoleVariablesEditorList.h"
 
@@ -125,7 +126,7 @@ void FConsoleVariablesEditorListRow::ResetToStartupValueAndSource() const
 	if (const TSharedPtr<FConsoleVariablesEditorCommandInfo> PinnedCommand = GetCommandInfo().Pin())
 	{
 		PinnedCommand->SetSourceFlag(PinnedCommand->StartupSource);
-		PinnedCommand->ExecuteCommand(PinnedCommand->StartupValueAsString, false);
+		PinnedCommand->ExecuteCommand(PinnedCommand->StartupValueAsString, true, false);
 	}
 }
 
@@ -318,14 +319,14 @@ FReply FConsoleVariablesEditorListRow::OnActionButtonClicked()
 	FConsoleVariablesEditorModule& ConsoleVariablesEditorModule = FConsoleVariablesEditorModule::Get();
 
 	const FString& CommandName = GetCommandInfo().Pin()->Command;
-
+	const FString& StartupValue = GetCommandInfo().Pin()->StartupValueAsString;
 	const TObjectPtr<UConsoleVariablesAsset> EditableAsset = ConsoleVariablesEditorModule.GetPresetAsset();
 	check(EditableAsset);
 
 	if (bIsGlobalSearch)
 	{
 		FConsoleVariablesEditorAssetSaveData MatchingData;
-		if (!ConsoleVariablesEditorModule.GetPresetAsset()->FindSavedDataByCommandString(CommandName, MatchingData))
+		if (!ConsoleVariablesEditorModule.GetPresetAsset()->FindSavedDataByCommandString(CommandName, MatchingData, ESearchCase::IgnoreCase))
 		{
 			EditableAsset->AddOrSetConsoleObjectSavedData(
 				{
@@ -338,6 +339,8 @@ FReply FConsoleVariablesEditorListRow::OnActionButtonClicked()
 		else
 		{
 			EditableAsset->RemoveConsoleVariable(CommandName);
+
+			ConsoleVariablesEditorModule.SendMultiUserConsoleVariableChange(ERemoteCVarChangeType::Remove, CommandName, StartupValue);
 		}
 	}
 	else
@@ -346,6 +349,7 @@ FReply FConsoleVariablesEditorListRow::OnActionButtonClicked()
 
 		EditableAsset->RemoveConsoleVariable(CommandName);
 
+		ConsoleVariablesEditorModule.SendMultiUserConsoleVariableChange(ERemoteCVarChangeType::Remove, CommandName, StartupValue);
 		ListViewPtr.Pin()->RebuildListWithListMode(ListViewPtr.Pin()->GetListModelPtr().Pin()->GetListMode());
 	}
 

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "PyTestInterface.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "UObject/ObjectPtr.h"
 #include "PyTest.generated.h"
 
 /**
@@ -18,12 +19,17 @@ DECLARE_DYNAMIC_DELEGATE_RetVal_OneParam(int32, FPyTestDelegate, int32, InValue)
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPyTestMulticastDelegate, FString, InStr);
 
 /**
+ * Delegate for slate pre/post tick event.
+ */
+DECLARE_DYNAMIC_DELEGATE_OneParam(FPyTestSlateTickDelegate, float, InDeltaTime);
+
+/**
  * Enum to allow testing of the various UEnum features that are exposed to Python wrapped types.
  */
 UENUM(BlueprintType)
 enum class EPyTestEnum : uint8
 {
-	One,
+	One UMETA(DisplayName = "Says One but my value is Zero"),
 	Two,
 };
 
@@ -58,6 +64,12 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
 	FText Text;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TFieldPath<FProperty> FieldPath;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TFieldPath<FStructProperty> StructFieldPath;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
 	TArray<FString> StringArray;
@@ -101,7 +113,7 @@ class UPyTestStructLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptMethod, DeprecatedFunction, DeprecationMessage="LegacyIsBoolSet is deprecated. Please use IsBoolSet instead."))
 	static bool LegacyIsBoolSet(const FPyTestStruct& InStruct);
 
-	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="ConstantValue", ScriptConstantHost="PyTestStruct"))
+	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="ConstantValue", ScriptConstantHost="/Script/PythonScriptPlugin.PyTestStruct"))
 	static int32 GetConstantValue();
 
 	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptMethod, ScriptMethodSelfReturn, ScriptOperator="+;+="))
@@ -145,6 +157,12 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
 	FText Text;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TFieldPath<FProperty> FieldPath = TFieldPath<FProperty>(FPyTestStruct::StaticStruct()->FindPropertyByName(TEXT("StringArray")));
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TFieldPath<FStructProperty> StructFieldPath = TFieldPath<FStructProperty>(CastField<FStructProperty>(UPyTestObject::GetClass()->FindPropertyByName(TEXT("Struct"))));
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
 	TArray<FString> StringArray;
@@ -210,6 +228,9 @@ public:
 	int32 FuncTakingPyTestDelegate(const FPyTestDelegate& InDelegate, const int32 InValue) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
+	void FuncTakingFieldPath(const TFieldPath<FProperty>& InFieldPath); // UHT couldn't parse any default value for the FieldPath.
+
+	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
 	int32 DelegatePropertyCallback(const int32 InValue) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
@@ -223,6 +244,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
 	static TMap<int32, bool> ReturnMap();
+
+	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
+	static TFieldPath<FProperty> ReturnFieldPath();
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
 	static void EmitScriptError();
@@ -267,6 +291,186 @@ class UPyTestObjectLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptMethod="IsBoolSet"))
 	static bool IsBoolSet(const UPyTestObject* InObj);
 
-	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="OtherConstantValue", ScriptConstantHost="PyTestObject"))
+	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="OtherConstantValue", ScriptConstantHost="/Script/PythonScriptPlugin.PyTestObject"))
 	static int32 GetOtherConstantValue();
 };
+
+/**
+ * This class along with UPyTestVectorDelegate verify that 2 UObjects with the same delegate name/type, do not collide.
+ */
+UCLASS(Blueprintable)
+class UPyTestStructDelegate : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNameCollisionDelegate, const FPyTestStruct&, PyStruct);
+
+	/** Called when a new item is selected in the combobox. */
+	UPROPERTY(BlueprintAssignable, Category = "Python|Internal")
+	FOnNameCollisionDelegate OnNameCollisionTestDelegate; // Same prop name and type name as UPyTestVectorDelegate::FOnNameCollisionTestDelegate, but different params.
+};
+
+/**
+ * This class along with UPyTestStructDelegate verify that 2 UObjects with the same delegate name/type, do not collide.
+ */
+UCLASS(Blueprintable)
+class UPyTestVectorDelegate : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNameCollisionDelegate, const FVector2D&, Vec);
+
+	/** Called when a new item is selected in the combobox. */
+	UPROPERTY(BlueprintAssignable, Category = "Python|Internal")
+	FOnNameCollisionDelegate OnNameCollisionTestDelegate; // Same prop name and type name as UPyTestStructDelegate::FOnNameCollisionTestDelegate, but different params.
+};
+
+
+/* Used to verify if the generated Python stub is correctly type-hinted (if type hint is enabled). The stub is generated
+ * in the project intermediate folder when the Python developer mode is enabled (Editor preferences). The type hints can
+ * be checked in the stub itself or PythonScriptPlugin/Content/Python/test_type_hints.py can be loaded in a Python IDE that
+ * supports type checking and look at the code to verify that there is not problems with the types.
+ */
+UCLASS(Blueprintable)
+class UPyTestTypeHint : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	//
+	// Check type hinted init methods.
+	//
+
+	UPyTestTypeHint();
+	UPyTestTypeHint(bool bParam1, int32 Param2, float Param3, const FString& Param4 = "Hi", const FText& Param5 = FText());
+
+	//
+	// Check type hinted constants
+	//
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="StrConst"))
+	static FString GetStringConst();
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="IntConst"))
+	static int32 GetIntConst();
+
+	//
+	// Check type hinted properties (setter/getter)
+	//
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	bool BoolProp = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	int32 IntProp = 32;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	float FloatProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	EPyTestEnum EnumProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FString StringProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FName NameProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FText TextProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TFieldPath<FProperty> FieldPathProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FPyTestStruct StructProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TObjectPtr<UPyTestObject> ObjectProp = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TArray<FString> StrArrayProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TArray<FName> NameArrayProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TArray<FText> TextArrayProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TArray<TObjectPtr<UObject>> ObjectArrayProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TSet<FString> SetProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	TMap<int32, FString> MapProp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FPyTestDelegate DelegateProp;
+
+	UPROPERTY(EditAnywhere, BlueprintAssignable, Category = "Python|Internal")
+	FPyTestMulticastDelegate MulticastDelegateProp;
+
+	//
+	// Check type hinted methods.
+	//
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	bool CheckBoolTypeHints(bool bParam1, bool bParam2 = true, bool bParam3 = false);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	int32 CheckIntegerTypeHints(uint8 Param1, int32 Param2 = 4, int64 Param3 = 5);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	double CheckFloatTypeHints(float Param1, double Param2, float Param3 = -3.3f, double Param4 = 4.4);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	EPyTestEnum CheckEnumTypeHints(EPyTestEnum Param1, EPyTestEnum Param2 = EPyTestEnum::One);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	FString CheckStringTypeHints(const FString& Param1, const FString& Param2 = TEXT("Hi"));
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	FName CheckNameTypeHints(const FName& Param1, const FName& Param2 = FName(TEXT("Hi")));
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	FText CheckTextTypeHints(const FText& Param1, const FText& Param2 = INVTEXT("Hi"));
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	TFieldPath<FProperty> CheckFieldPathTypeHints(const TFieldPath<FProperty> Param1);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	FPyTestStruct CheckStructTypeHints(const FPyTestStruct& Param1, const FPyTestStruct& Param2 = FPyTestStruct());
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	UPyTestObject* CheckObjectTypeHints(const UPyTestObject* Param1, const UPyTestObject* Param4 = nullptr);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	TArray<FText> CheckArrayTypeHints(const TArray<FString>& Param1, const TArray<FName>& Param2, const TArray<FText>& Param3, const TArray<UObject*>& Param4);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	TSet<FName> CheckSetTypeHints(const TSet<FString>& Param1, const TSet<FName>& Param2, const TSet<UObject*>& Param3);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	TMap<FString, UObject*> CheckMapTypeHints(const TMap<int, FString>& Param1, const TMap<int, FName>& Param2, const TMap<int, FText>& Param3, const TMap<int, UObject*>& Param4);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	FPyTestDelegate& CheckDelegateTypeHints(const FPyTestDelegate& Param1);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	static bool CheckStaticFunction(bool Param1, int32 Param2, double Param3, const FString& Param4);
+
+	UFUNCTION(BlueprintPure, Category = "Python|Internal")
+	static int CheckTupleReturnType(UPARAM(ref) FString& InOutString);
+
+	//
+	// Members to facilitate testing particular Python API.
+	//
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Python|Internal")
+	FPyTestSlateTickDelegate SlateTickDelegate;
+};
+

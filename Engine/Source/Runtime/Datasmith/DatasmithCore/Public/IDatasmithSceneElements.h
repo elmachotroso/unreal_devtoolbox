@@ -10,6 +10,7 @@
 #include "Math/Color.h"
 #include "Math/Quat.h"
 #include "Math/Vector.h"
+#include "Misc/CoreMiscDefines.h"
 #include "Misc/SecureHash.h"
 #include "Templates/SharedPointer.h"
 
@@ -24,8 +25,6 @@ class IDatasmithLevelVariantSetsElement;
 class DATASMITHCORE_API IDatasmithElement : public DirectLink::ISceneGraphNode
 {
 public:
-	virtual ~IDatasmithElement() {}
-
 	/** returns if this DatasmithElement is of a specified type */
 	virtual bool IsA(EDatasmithElementType Type) const = 0;
 
@@ -77,7 +76,7 @@ public:
 	virtual FVector GetTranslation() const = 0;
 
 	/** Set absolute translation of this entity */
-	virtual void SetTranslation(float InX, float InY, float InZ, bool bKeepChildrenRelative = true) = 0;
+	virtual void SetTranslation(double InX, double InY, double InZ, bool bKeepChildrenRelative = true) = 0;
 
 	/** Set absolute translation of this entity */
 	virtual void SetTranslation(const FVector& Value, bool bKeepChildrenRelative = true) = 0;
@@ -86,7 +85,7 @@ public:
 	virtual FVector GetScale() const = 0;
 
 	/** Set absolute scale of this entity */
-	virtual void SetScale(float InX, float InY, float InZ, bool bKeepChildrenRelative = true) = 0;
+	virtual void SetScale(double InX, double InY, double InZ, bool bKeepChildrenRelative = true) = 0;
 
 	/** Set absolute scale of this entity */
 	virtual void SetScale(const FVector& Value, bool bKeepChildrenRelative = true) = 0;
@@ -95,7 +94,7 @@ public:
 	virtual FQuat GetRotation() const = 0;
 
 	/** Set rotation (in quaternion format) of this entity */
-	virtual void SetRotation(float InX, float InY, float InZ, float InW, bool bKeepChildrenRelative = true) = 0;
+	virtual void SetRotation(double InX, double InY, double InZ, double InW, bool bKeepChildrenRelative = true) = 0;
 
 	/** Set rotation (in quaternion format) of this entity */
 	virtual void SetRotation(const FQuat& Value, bool bKeepChildrenRelative = true) = 0;
@@ -140,11 +139,17 @@ public:
 	virtual void SetIsAComponent(bool Value) = 0;
 	virtual bool IsAComponent() const = 0;
 
-	/** Get a mesh actor's visibility */
+	/** Set a mesh actor's visibility */
 	virtual void SetVisibility(bool bInVisibility) = 0;
 
-	/** Set a mesh actor's visibility */
+	/** Get a mesh actor's visibility */
 	virtual bool GetVisibility() const = 0;
+
+	/** Set whether an actor's casts shadow */
+	virtual void SetCastShadow(bool bInCastShadow) = 0;
+
+	/** Get whether an actor's casts shadow */
+	virtual bool GetCastShadow() const = 0;
 };
 
 /**
@@ -177,10 +182,10 @@ public:
 	 * @param InHeight bounding box height
 	 * @param InDepth bounding box depth
 	 */
-	virtual void SetDimensions(const float InArea, const float InWidth, const float InHeight, const float InDepth) = 0;
+	virtual void SetDimensions(float InArea, float InWidth, float InHeight, float InDepth) = 0;
 
 	/** Get the bounding box dimension of the mesh, in a vector in the form of (Width, Height, Depth )*/
-	virtual FVector GetDimensions() const = 0;
+	virtual FVector3f GetDimensions() const = 0;
 
 	/** Get the total surface area */
 	virtual float GetArea() const = 0;
@@ -233,6 +238,21 @@ protected:
 };
 
 /**
+* #ue_ds_cloth_doc IDatasmithClothElement class: experimental class that describes a cloth asset
+*/
+class DATASMITHCORE_API IDatasmithClothElement : public IDatasmithElement
+{
+public:
+	/** Get the FDatasmithCloth resource filename */
+	virtual const TCHAR* GetFile() const = 0;
+
+	/** Set the FDatasmithCloth resource filename, it can be absolute or relative to the scene file */
+	virtual void SetFile(const TCHAR* InFile) = 0;
+
+// class DATASMITHCORE_API IDatasmithClothPropertiesElement : public IDatasmithElement
+};
+
+/**
  * IDatasmithActorElement used in any geometry instance independently if it could be static or movable.
  * It doesn't define the actual geometry, you'll need IDatasmithMeshElement for this.
  * Notice that several IDatasmithMeshActorElements could use the same geometry.
@@ -246,7 +266,7 @@ public:
 	 * Adds a new material override to the Actor Element
 	 *
 	 * @param MaterialName name of the material, it should be unique
-	 * @param Id material identifier to be used with mesh sub-material indices
+	 * @param Id material identifier to be used with mesh sub-material indices. Use -1 to override all material slots.
 	 */
 	virtual void AddMaterialOverride(const TCHAR* MaterialName, int32 Id) = 0;
 
@@ -276,6 +296,13 @@ public:
 	 * It can be either a package path to refer to an existing mesh or a mesh name to refer to a MeshElement in the DatasmithScene
 	 */
 	virtual void SetStaticMeshPathName(const TCHAR* InStaticMeshPathName) = 0;
+};
+
+class DATASMITHCORE_API IDatasmithClothActorElement : public IDatasmithActorElement
+{
+public:
+	virtual void SetCloth(const TCHAR* Cloth) = 0;
+	virtual const TCHAR* GetCloth() const = 0;
 };
 
 class DATASMITHCORE_API IDatasmithHierarchicalInstancedStaticMeshActorElement : public IDatasmithMeshActorElement
@@ -615,16 +642,16 @@ public:
 	virtual const TSharedPtr< IDatasmithShaderElement >& GetShader(int32 InIndex) const = 0;
 };
 
-class DATASMITHCORE_API IDatasmithMasterMaterialElement : public IDatasmithBaseMaterialElement
+class DATASMITHCORE_API IDatasmithMaterialInstanceElement : public IDatasmithBaseMaterialElement
 {
 public:
-	virtual ~IDatasmithMasterMaterialElement() {}
+	virtual ~IDatasmithMaterialInstanceElement() {}
 
-	virtual EDatasmithMasterMaterialType GetMaterialType() const = 0;
-	virtual void SetMaterialType(EDatasmithMasterMaterialType InType) = 0;
+	virtual EDatasmithReferenceMaterialType GetMaterialType() const = 0;
+	virtual void SetMaterialType(EDatasmithReferenceMaterialType InType) = 0;
 
-	virtual EDatasmithMasterMaterialQuality GetQuality() const = 0;
-	virtual void SetQuality(EDatasmithMasterMaterialQuality InQuality) = 0;
+	virtual EDatasmithReferenceMaterialQuality GetQuality() const = 0;
+	virtual void SetQuality(EDatasmithReferenceMaterialQuality InQuality) = 0;
 
 	/** Only used when the material type is set to Custom. The path name to an existing material to instantiate. */
 	virtual const TCHAR* GetCustomMaterialPathName() const = 0;
@@ -672,8 +699,6 @@ public:
 class DATASMITHCORE_API IDatasmithPostProcessElement : public IDatasmithElement
 {
 public:
-	virtual ~IDatasmithPostProcessElement() {}
-
 	/** Get color filter temperature in Kelvin */
 	virtual float GetTemperature() const = 0;
 
@@ -1437,7 +1462,7 @@ public:
 	/** Resets all the settings on the scene */
 	virtual void Reset() = 0;
 
-	/** Sets the name of the host application which created the scene */
+	/** Returns the name of the host application which created the scene */
 	virtual const TCHAR* GetHost() const = 0;
 
 	/**
@@ -1499,16 +1524,14 @@ public:
 	 */
 	virtual void SetProductVersion(const TCHAR*) = 0;
 
-	/** Returns the original path resources were stored */
+	/** Returns the ';' separated list of paths where resources are stored */
 	virtual const TCHAR* GetResourcePath() const = 0;
 
 	/**
-	 * Sets the original path resources were stored.
+	 * Similar to how the PATH environment variable works, sets list of paths where resources can be stored.
 	 *
-	 * @param InResoucePath	The original path
+	 * @param InResoucePath	The ';' separated list of paths
 	 */
-	// #ue_directlink_design: Find a better way to allow DirectLink clients to retrieve assets
-	// associated with elements. Assets will have to be passed over network too
 	virtual void SetResourcePath(const TCHAR*) = 0;
 
 	/** Returns the user identifier who exported the scene */
@@ -1586,6 +1609,15 @@ public:
 	* Remove all meshes from the scene
 	*/
 	virtual void EmptyMeshes() = 0;
+
+	// #ue_ds_cloth_doc IDatasmithScene API
+	virtual void AddCloth(const TSharedPtr< IDatasmithClothElement >& InElement) = 0;
+	virtual int32 GetClothesCount() const = 0;
+	virtual TSharedPtr< IDatasmithClothElement > GetCloth(int32 InIndex) = 0;
+	virtual const TSharedPtr< IDatasmithClothElement >& GetCloth(int32 InIndex) const = 0;
+	virtual void RemoveCloth(const TSharedPtr< IDatasmithClothElement >& InElement) = 0;
+	virtual void RemoveClothAt(int32 InIndex) = 0;
+	virtual void EmptyClothes() = 0;
 
 	/**
 	 * Adds an Actor to the scene.
@@ -1684,15 +1716,6 @@ public:
 	virtual const TSharedPtr< IDatasmithPostProcessElement >& GetPostProcess() const = 0;
 
 	/**
-	 * Adds a new LOD screen size setting. The first one added is used for the base LOD, the second one is for LOD1, etc.
-	 *
-	 * @param ScreenSize Ratio of the screen clamped between 0 and 1
-	 */
-	virtual void AddLODScreenSize(float ScreenSize) = 0;
-	virtual int32 GetLODScreenSizesCount() const = 0;
-	virtual float GetLODScreenSize(int32 InIndex) const = 0;
-
-	/**
 	 * Add a metadata to the scene
 	 * There should be only one metadata per Datasmith element (the element associated with the metadata)
 	 */
@@ -1758,8 +1781,11 @@ public:
 	 */
 	virtual void RemoveLevelVariantSetsAt(int32 InIndex) = 0;
 
-	/** Attach the actor to his new parent. Detach the actor if he was already attach. */
+	/** Attach the actor to its new parent. Detach the actor if it was already attached. */
 	virtual void AttachActor(const TSharedPtr< IDatasmithActorElement >& NewParent, const TSharedPtr< IDatasmithActorElement >& Child, EDatasmithActorAttachmentRule AttachmentRule) = 0;
-	/** Attach the actor to the scene root. Detach the actor if he was already attach. */
+	/** Attach the actor to the scene root. Detach the actor if it was already attached. */
 	virtual void AttachActorToSceneRoot(const TSharedPtr< IDatasmithActorElement >& Child, EDatasmithActorAttachmentRule AttachmentRule) = 0;
 };
+
+
+using IDatasmithMasterMaterialElement UE_DEPRECATED(5.1, "IDatasmithMasterMaterialElement will not be supported in 5.2. Please use IDatasmithMaterialInstanceElement instead.") = IDatasmithMaterialInstanceElement;

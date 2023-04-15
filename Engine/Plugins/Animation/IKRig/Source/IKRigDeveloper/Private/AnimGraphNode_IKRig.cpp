@@ -13,6 +13,8 @@
 
 #include "BoneSelectionWidget.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimGraphNode_IKRig)
+
 /////////////////////////////////////////////////////
 // UAnimGraphNode_IKRig 
 
@@ -325,6 +327,11 @@ void UAnimGraphNode_IKRig::ValidateAnimNodeDuringCompilation(USkeleton* ForSkele
 	}
 }
 
+UObject* UAnimGraphNode_IKRig::GetJumpTargetForDoubleClick() const
+{
+	return Node.RigDefinitionAsset;
+}
+
 void UAnimGraphNode_IKRig::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {	
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
@@ -431,6 +438,8 @@ void UAnimGraphNode_IKRig::CreateCustomPins(TArray<UEdGraphPin*>* InOldPins)
 
 void UAnimGraphNode_IKRig::SetPinDefaultValue(UEdGraphPin* InPin, const FName& InPropertyName)
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/IKRig"));
+	
 	// default FIKRigGoal structure 
 	static FIKRigGoal DefaultGoal;
 	static const TSharedPtr<FStructOnScope> StructOnScope =
@@ -464,7 +473,7 @@ void UAnimGraphNode_IKRig::SetPinDefaultValue(UEdGraphPin* InPin, const FName& I
 
 		// fallback to default behaviour 
 		FString DefaultValue;
-		InProperty->ExportTextItem(DefaultValue, Memory, nullptr, nullptr, PPF_None);
+		InProperty->ExportTextItem_Direct(DefaultValue, Memory, nullptr, nullptr, PPF_None);
 		return DefaultValue;
 	};
 	
@@ -748,6 +757,8 @@ void UAnimGraphNode_IKRig::CustomizePinData(UEdGraphPin* Pin, FName SourceProper
 
 void UAnimGraphNode_IKRig::BindPropertyChanges()
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/IKRig"));
+	
 	// already bound
 	if (OnAssetPropertyChangedHandle.IsValid())
 	{
@@ -866,3 +877,4 @@ void UAnimGraphNode_IKRig::SetupGoal(const UIKRigEffectorGoal* InAssetGoal, FIKR
 }
 
 #undef LOCTEXT_NAMESPACE
+

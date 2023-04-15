@@ -27,17 +27,18 @@ class FSlateMaterialShaderVS;
 struct FSlateRenderingParams
 {
 	FMatrix44f ViewProjectionMatrix;
-	FVector2D ViewOffset;
+	FVector2f ViewOffset;
 	FGameTime Time;
-	bool bAllowSwitchVerticalAxis;
+	TRefCountPtr<IPooledRenderTarget> UITarget;
+	EDisplayColorGamut HDRDisplayColorGamut;
 	bool bWireFrame;
 	bool bIsHDR;
 
 	FSlateRenderingParams(const FMatrix& InViewProjectionMatrix, FGameTime InTime)
 		: ViewProjectionMatrix(InViewProjectionMatrix)
-		, ViewOffset(0, 0)
+		, ViewOffset(0.f, 0.f)
 		, Time(InTime)
-		, bAllowSwitchVerticalAxis(true)
+		, HDRDisplayColorGamut(EDisplayColorGamut::sRGB_D65)
 		, bWireFrame(false)
 		, bIsHDR(false)
 	{
@@ -66,6 +67,8 @@ public:
 	void SetUseGammaCorrection( bool bInUseGammaCorrection ) { bGammaCorrect = bInUseGammaCorrection; }
 	void SetApplyColorDeficiencyCorrection(bool bInApplyColorCorrection) { bApplyColorDeficiencyCorrection = bInApplyColorCorrection; }
 
+	bool GetApplyColorDeficiencyCorrection() const { return bApplyColorDeficiencyCorrection; }
+
 	virtual void AddSceneAt(FSceneInterface* Scene, int32 Index) override;
 	virtual void ClearScenes() override;
 
@@ -89,8 +92,8 @@ private:
 
 private:
 	/** Buffers used for rendering */
-	TSlateElementVertexBuffer<FSlateVertex> MasterVertexBuffer;
-	FSlateElementIndexBuffer MasterIndexBuffer;
+	TSlateElementVertexBuffer<FSlateVertex> SourceVertexBuffer;
+	FSlateElementIndexBuffer SourceIndexBuffer;
 
 	FSlateStencilClipVertexBuffer StencilVertexBuffer;
 

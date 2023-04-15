@@ -218,20 +218,20 @@ bool FGameplayMediaEncoder::Initialize()
 
 	if(GDynamicRHI)
 	{
-		FString RHIName = GDynamicRHI->GetName();
+		const ERHIInterfaceType RHIType = RHIGetInterfaceType();
 
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
-		if(RHIName == TEXT("D3D11"))
+		if (RHIType == ERHIInterfaceType::D3D11)
 		{
-			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), VideoConfig.Width, VideoConfig.Height, true, IsRHIDeviceAMD());
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), true, IsRHIDeviceAMD());
 		}
-		else if(RHIName == TEXT("D3D12"))
+		else if (RHIType == ERHIInterfaceType::D3D12)
 		{
-			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), VideoConfig.Width, VideoConfig.Height, true, IsRHIDeviceNVIDIA());
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), true, IsRHIDeviceNVIDIA());
 		}
-		else if (RHIName == TEXT("Vulkan"))
+		else if (RHIType == ERHIInterfaceType::Vulkan)
 		{
-			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForVulkan(GDynamicRHI->RHIGetNativeDevice(), VideoConfig.Width, VideoConfig.Height, true);
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForVulkan(GDynamicRHI->RHIGetNativeDevice(), true);
 		}
 		else
 #endif
@@ -263,7 +263,7 @@ bool FGameplayMediaEncoder::Initialize()
 		return false;
 	}
 
-	VideoEncoder->SetOnEncodedPacket([this](uint32 LayerIndex, const AVEncoder::FVideoEncoderInputFrame* Frame, const AVEncoder::FCodecPacket& Packet)
+	VideoEncoder->SetOnEncodedPacket([this](uint32 LayerIndex, const TSharedPtr<AVEncoder::FVideoEncoderInputFrame> Frame, const AVEncoder::FCodecPacket& Packet)
 	                                 { OnEncodedVideoFrame(LayerIndex, Frame, Packet); });
 
 	if(!VideoEncoder)
@@ -561,7 +561,7 @@ void FGameplayMediaEncoder::ProcessVideoFrame(const FTexture2DRHIRef& FrameBuffe
 
 	UpdateVideoConfig();
 
-	AVEncoder::FVideoEncoderInputFrame* InputFrame = ObtainInputFrame();
+	TSharedPtr<AVEncoder::FVideoEncoderInputFrame> InputFrame = ObtainInputFrame();
 	const int32 FrameId = InputFrame->GetFrameID();
 	InputFrame->SetTimestampUs(Now.GetTicks());
 
@@ -574,27 +574,35 @@ void FGameplayMediaEncoder::ProcessVideoFrame(const FTexture2DRHIRef& FrameBuffe
 	NumCapturedFrames++;
 }
 
-AVEncoder::FVideoEncoderInputFrame* FGameplayMediaEncoder::ObtainInputFrame()
+TSharedPtr<AVEncoder::FVideoEncoderInputFrame> FGameplayMediaEncoder::ObtainInputFrame()
 {
-	AVEncoder::FVideoEncoderInputFrame* InputFrame = VideoEncoderInput->ObtainInputFrame();
+	TSharedPtr<AVEncoder::FVideoEncoderInputFrame> InputFrame = VideoEncoderInput->ObtainInputFrame();
+	InputFrame->SetWidth(VideoConfig.Width);
+	InputFrame->SetHeight(VideoConfig.Height);
 
 	if(!BackBuffers.Contains(InputFrame))
 	{
 #if PLATFORM_WINDOWS && PLATFORM_DESKTOP
-		FString RHIName = GDynamicRHI->GetName();
-		if(RHIName == TEXT("D3D11"))
+		const ERHIInterfaceType RHIType = RHIGetInterfaceType();
+
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("VideoCapturerBackBuffer"), VideoConfig.Width, VideoConfig.Height, PF_B8G8R8A8)
+			.SetFlags(ETextureCreateFlags::Shared | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV)
+			.SetInitialState(ERHIAccess::CopyDest);
+
+		if (RHIType == ERHIInterfaceType::D3D11)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
-			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_B8G8R8A8, 1, 1,
-			                                                           TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			FTextureRHIRef Texture = RHICreateTexture(Desc);
+
 			InputFrame->SetTexture((ID3D11Texture2D*)Texture->GetNativeResource(), [&, InputFrame](ID3D11Texture2D* NativeTexture) { BackBuffers.Remove(InputFrame); });
 			BackBuffers.Add(InputFrame, Texture);
 		}
-		else if(RHIName == TEXT("D3D12"))
+		else if (RHIType == ERHIInterfaceType::D3D12)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
-			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_B8G8R8A8, 1, 1,
-			                                                           TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			FTextureRHIRef Texture = RHICreateTexture(Desc);
+
 			InputFrame->SetTexture((ID3D12Resource*)Texture->GetNativeResource(), [&, InputFrame](ID3D12Resource* NativeTexture) { BackBuffers.Remove(InputFrame); });
 			BackBuffers.Add(InputFrame, Texture);
 		}
@@ -654,7 +662,7 @@ void FGameplayMediaEncoder::OnEncodedAudioFrame(const AVEncoder::FMediaPacket& P
 	}
 }
 
-void FGameplayMediaEncoder::OnEncodedVideoFrame(uint32 LayerIndex, const AVEncoder::FVideoEncoderInputFrame* InputFrame, const AVEncoder::FCodecPacket& Packet)
+void FGameplayMediaEncoder::OnEncodedVideoFrame(uint32 LayerIndex, const TSharedPtr<AVEncoder::FVideoEncoderInputFrame> InputFrame, const AVEncoder::FCodecPacket& Packet)
 {
 	AVEncoder::FMediaPacket packet(AVEncoder::EPacketType::Video);
 
@@ -682,7 +690,7 @@ void FGameplayMediaEncoder::CopyTexture(const FTexture2DRHIRef& SourceTexture, F
 
 	if(SourceTexture->GetFormat() == DestinationTexture->GetFormat() && SourceTexture->GetSizeXY() == DestinationTexture->GetSizeXY())
 	{
-		RHICmdList.CopyToResolveTarget(SourceTexture, DestinationTexture, FResolveParams{});
+		TransitionAndCopyTexture(RHICmdList, SourceTexture, DestinationTexture, {});
 	}
 	else // Texture format mismatch, use a shader to do the copy.
 	{
@@ -691,6 +699,7 @@ void FGameplayMediaEncoder::CopyTexture(const FTexture2DRHIRef& SourceTexture, F
 		// #todo-renderpasses there's no explicit resolve here? Do we need one?
 		FRHIRenderPassInfo RPInfo(DestinationTexture, ERenderTargetActions::Load_Store);
 
+		RHICmdList.Transition(FRHITransitionInfo(DestinationTexture, ERHIAccess::Unknown, ERHIAccess::RTV));
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyBackbuffer"));
 
 		{
@@ -735,5 +744,6 @@ void FGameplayMediaEncoder::CopyTexture(const FTexture2DRHIRef& SourceTexture, F
 		}
 
 		RHICmdList.EndRenderPass();
+		RHICmdList.Transition(FRHITransitionInfo(DestinationTexture, ERHIAccess::RTV, ERHIAccess::SRVMask));
 	}
 }

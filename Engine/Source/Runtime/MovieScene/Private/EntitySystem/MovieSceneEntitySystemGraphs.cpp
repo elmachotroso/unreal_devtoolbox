@@ -11,6 +11,8 @@
 #include "Algo/RemoveIf.h"
 #include "Algo/BinarySearch.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneEntitySystemGraphs)
+
 
 FMovieSceneEntitySystemDirectedGraph::FDepthFirstSearch::FDepthFirstSearch(const FMovieSceneEntitySystemDirectedGraph* InGraph)
 	: Visited(false, InGraph->Nodes.Num())
@@ -779,7 +781,17 @@ void FMovieSceneEntitySystemGraph::ExecutePhase(const ArrayType& SortedEntries, 
 #if DO_CHECK
 			for (int32 NewIndex = 0; NewIndex < CurrentIndex; ++NewIndex)
 			{
-				ensureMsgf(HeadList.Contains(SortedEntries[NewIndex]), TEXT("New system has been added upstream to the same execution phase as is currently in-flight - this will not be run this frame"));
+				if (!HeadList.Contains(SortedEntries[NewIndex]))
+				{
+					const uint16 NewNodeIndex     = SortedEntries[NewIndex];
+					const uint16 CurrentNodeIndex = SortedEntries[CurrentIndex];
+					ensureAlwaysMsgf(false, 
+						TEXT("System %s has been inserted upstream of %s in the same execution phase that is currently in-flight, and will not be run this frame. "
+							 "This can be either because this system has been newly linked, or because it has been re-ordered due to other newly linked systems."),
+						*this->Nodes.Array[NewNodeIndex].System->GetName(),
+						*this->Nodes.Array[CurrentNodeIndex].System->GetName()
+					);
+				}
 			}
 #endif
 		}

@@ -41,8 +41,8 @@ private:
 
 
 	// Implements ISceneViewFamilyScreenPercentage
-	virtual float GetPrimaryResolutionFractionUpperBound() const override;
-	virtual float GetPrimaryResolutionFraction_RenderThread() const override;
+	virtual DynamicRenderScaling::TMap<float> GetResolutionFractionsUpperBound() const override;
+	virtual DynamicRenderScaling::TMap<float> GetResolutionFractions_RenderThread() const override;
 	virtual ISceneViewFamilyScreenPercentage* Fork_GameThread(const class FSceneViewFamily& ForkedViewFamily) const override;
 };
 
@@ -65,6 +65,10 @@ enum class EScreenPercentageMode
  */
 struct ENGINE_API FStaticResolutionFractionHeuristic
 {
+	FStaticResolutionFractionHeuristic() = default;
+
+	FStaticResolutionFractionHeuristic(const FEngineShowFlags& EngineShowFlags);
+
 	// User configurable settings
 	struct ENGINE_API FUserSettings
 	{
@@ -80,6 +84,9 @@ struct ENGINE_API FStaticResolutionFractionHeuristic
 		// r.ScreenPercentage.Auto.* Mode = EMode::BasedOnDisplayResolution.
 		float AutoPixelCountMultiplier = 1.0f;
 
+		// stereo HMDs cannot use percentage modes based on 2D monitor
+		bool bAllowDisplayBasedScreenPercentageMode = true;
+
 		/** Return whether should use the editor settings for PIE. */
 #if WITH_EDITOR
 		static bool EditorOverridePIESettings();
@@ -94,7 +101,7 @@ struct ENGINE_API FStaticResolutionFractionHeuristic
 		void PullRunTimeRenderingSettings();
 
 		/** Pulls the user settings from the editor cvars. */
-		void PullEditorRenderingSettings(bool bIsRealTime);
+		void PullEditorRenderingSettings(bool bIsRealTime, bool bIsPathTraced);
 	};
 
 	FUserSettings Settings;

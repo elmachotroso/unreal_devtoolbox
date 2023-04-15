@@ -3,6 +3,8 @@
 #include "RigUnit_GetTransform.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_GetTransform)
+
 FString FRigUnit_GetTransform::GetUnitLabel() const
 {
 	FString Initial = bInitial ? TEXT(" Initial") : FString();
@@ -21,7 +23,9 @@ FRigUnit_GetTransform_Execute()
 			case EControlRigState::Init:
 			{
 				CachedIndex.Reset();
-				break;
+				// there is no "break;" here because an old node, Transform Constrtaint,
+				// still caches data during init stage. Thus, if a it takes a GetTransform
+				// as input, that GetTransform needs to execute and output a valid transform					
 			}
 			case EControlRigState::Update:
 			{
@@ -86,6 +90,15 @@ FRigUnit_GetTransformArray_Execute()
 	FRigUnit_GetTransformItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Space, bInitial, Transforms, CachedIndex, Context);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_GetTransformArray::GetUpgradeInfo() const
+{
+	FRigUnit_GetTransformItemArray NewNode;
+	NewNode.Items = Items.GetKeys();
+	NewNode.Space = Space;
+	NewNode.bInitial = bInitial;
+	return FRigVMStructUpgradeInfo(*this, NewNode);
+}
+
 FRigUnit_GetTransformItemArray_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -103,3 +116,4 @@ FRigUnit_GetTransformItemArray_Execute()
 
 	}
 }
+

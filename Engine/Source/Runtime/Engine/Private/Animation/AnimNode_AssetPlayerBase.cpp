@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNode_AssetPlayerBase.h"
-#include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimSyncScope.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_AssetPlayerBase)
 
 void FAnimNode_AssetPlayerBase::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
@@ -50,11 +51,6 @@ void FAnimNode_AssetPlayerBase::CreateTickRecordForNode(const FAnimationUpdateCo
 	TRACE_ANIM_TICK_RECORD(Context, TickRecord);
 }
 
-float FAnimNode_AssetPlayerBase::GetCachedBlendWeight() const
-{
-	return BlendWeight;
-}
-
 float FAnimNode_AssetPlayerBase::GetAccumulatedTime() const
 {
 	return InternalTimeAccumulator;
@@ -65,12 +61,17 @@ void FAnimNode_AssetPlayerBase::SetAccumulatedTime(float NewTime)
 	InternalTimeAccumulator = NewTime;
 }
 
-UAnimationAsset* FAnimNode_AssetPlayerBase::GetAnimAsset() const
+float FAnimNode_AssetPlayerBase::GetCachedBlendWeight() const
 {
-	return nullptr;
+	return BlendWeight;
 }
 
 void FAnimNode_AssetPlayerBase::ClearCachedBlendWeight()
 {
 	BlendWeight = 0.0f;
+}
+
+float FAnimNode_AssetPlayerBase::GetCurrentAssetTimePlayRateAdjusted() const
+{
+	return  GetCurrentAssetTime();
 }

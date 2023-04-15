@@ -7,7 +7,7 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimSequence.h"
@@ -24,8 +24,8 @@
 #include "SBlendProfilePicker.h"
 #include "AssetNotifications.h"
 #include "BlueprintActionDatabase.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SSkeletonWidget.h"
 #include "Engine/DataAsset.h"
 #include "Animation/PreviewCollectionInterface.h"
@@ -375,7 +375,7 @@ void FEditableSkeleton::GetAssetsContainingCurves(const FName& InContainerName, 
 	const FString CurrentSkeletonName = SkeletonData.GetExportTextName();
 
 	FAssetRegistryModule& AssetModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	AssetModule.Get().GetAssetsByClass(UAnimationAsset::StaticClass()->GetFName(), OutAssets, true);
+	AssetModule.Get().GetAssetsByClass(UAnimationAsset::StaticClass()->GetClassPathName(), OutAssets, true);
 
 	GWarn->BeginSlowTask(LOCTEXT("CollectAnimationsTaskDesc", "Collecting assets..."), true);
 
@@ -455,16 +455,16 @@ void FEditableSkeleton::RemoveSmartnamesAndFixupAnimations(const FName& InContai
 
 		AnimationAssets.Sort([&](const FAssetData& A, const FAssetData& B)
 		{ 
-			if (A.AssetClass == B.AssetClass)
+			if (A.AssetClassPath == B.AssetClassPath)
 			{
 				return A.AssetName.LexicalLess(B.AssetName);
 			}
-			return A.AssetClass.LexicalLess(B.AssetClass);
+			return A.AssetClassPath.Compare(B.AssetClassPath) < 0;
 		});
 
 		for (FAssetData& Data : AnimationAssets)
 		{
-			AssetMessage += Data.AssetName.ToString() + " (" + Data.AssetClass.ToString() + ")\n";
+			AssetMessage += Data.AssetName.ToString() + " (" + Data.AssetClassPath.ToString() + ")\n";
 		}
 
 		FText AssetTitleText = LOCTEXT("DeleteCurveDialogTitle", "Confirm Deletion");
@@ -796,7 +796,7 @@ void FEditableSkeleton::HandleRemoveAllAssets(TSharedPtr<IPersonaPreviewScene> I
 
 	DeleteAttachedObjects(Skeleton->PreviewAttachedAssetContainer, InPreviewScene);
 
-	USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
+	USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset();
 	if (SkeletalMesh)
 	{
 		SkeletalMesh->Modify();
@@ -910,7 +910,7 @@ void FEditableSkeleton::HandleAttachAssets(const TArray<UObject*>& InObjects, co
 
 		if (bAttachToMesh)
 		{
-			USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
+			USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset();
 			if (SkeletalMesh != nullptr)
 			{
 				FScopedTransaction Transaction(LOCTEXT("DragDropAttachMeshUndo", "Attach Assets to Mesh"));
@@ -957,7 +957,7 @@ void FEditableSkeleton::HandleDeleteAttachedAssets(const TArray<FPreviewAttached
 	if (InAttachedObjects.Num() > 0)
 	{
 		Skeleton->Modify();
-		USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
+		USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset();
 		if (SkeletalMesh != nullptr)
 		{
 			SkeletalMesh->Modify();
@@ -993,7 +993,7 @@ void FEditableSkeleton::HandleDeleteSockets(const TArray<FSelectedSocketInfo>& I
 		}
 		else
 		{
-			USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
+			USkeletalMesh* SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->GetSkeletalMeshAsset();
 			if (SkeletalMesh != nullptr)
 			{
 				UObject* Object = SkeletalMesh->GetPreviewAttachedAssetContainer().GetAttachedObjectByAttachName(SocketName);
@@ -1230,7 +1230,7 @@ void FEditableSkeleton::GetCompatibleAnimSequences(TArray<struct FAssetData>& Ou
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	TArray<FAssetData> AssetDataList;
-	AssetRegistryModule.Get().GetAssetsByClass(UAnimSequenceBase::StaticClass()->GetFName(), AssetDataList, true);
+	AssetRegistryModule.Get().GetAssetsByClass(UAnimSequenceBase::StaticClass()->GetClassPathName(), AssetDataList, true);
 
 	OutAssets.Empty(AssetDataList.Num());
 
@@ -1493,6 +1493,22 @@ void FEditableSkeleton::RefreshRetargetSources(const TArray<FName>& InRetargetSo
 	}
 }
 
+void FEditableSkeleton::AddCompatibleSkeleton(const USkeleton* InCompatibleSkeleton)
+{
+	const FScopedTransaction Transaction(LOCTEXT("AddedCompatibleSkeletons", "Add Compatible Skeleton"));
+	Skeleton->Modify();
+
+	Skeleton->AddCompatibleSkeleton(InCompatibleSkeleton);
+}
+
+void FEditableSkeleton::RemoveCompatibleSkeleton(const USkeleton* InCompatibleSkeleton)
+{
+	const FScopedTransaction Transaction(LOCTEXT("RemoveCompatibleSkeletons", "Remove Compatible Skeleton"));
+	Skeleton->Modify();
+
+	Skeleton->RemoveCompatibleSkeleton(InCompatibleSkeleton);
+}
+
 void FEditableSkeleton::RefreshRigConfig()
 {
 	Skeleton->RefreshRigConfig();
@@ -1534,7 +1550,7 @@ void FEditableSkeleton::RemoveUnusedBones()
 	}
 
 	FARFilter Filter;
-	Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 
 	FString SkeletonString = FAssetData(Skeleton).GetExportTextName();
 	Filter.TagsAndValues.Add(USkeletalMesh::GetSkeletonMemberName(), SkeletonString);

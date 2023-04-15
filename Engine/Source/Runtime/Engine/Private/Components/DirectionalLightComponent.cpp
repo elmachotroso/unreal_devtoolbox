@@ -14,6 +14,8 @@
 #include "Engine/DirectionalLight.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DirectionalLightComponent)
+
 static float GMaxCSMRadiusToAllowPerObjectShadows = 8000;
 static FAutoConsoleVariableRef CVarMaxCSMRadiusToAllowPerObjectShadows(
 	TEXT("r.MaxCSMRadiusToAllowPerObjectShadows"),
@@ -47,9 +49,9 @@ static TAutoConsoleVariable<float> CVarPerObjectCastDistanceRadiusScale(
 	);
 static TAutoConsoleVariable<float> CVarPerObjectCastDistanceMin(
 	TEXT("r.Shadow.PerObjectCastDistanceMin"),
-	(float)HALF_WORLD_MAX / 32.0f,
+	(float)UE_FLOAT_HUGE_DISTANCE / 32.0f,
 	TEXT("Minimum cast distance for Per-Object shadows, i.e., CastDistDance = Max(r.Shadow.PerObjectCastDistanceRadiusScale * object-radius, r.Shadow.PerObjectCastDistanceMin).\n")
-	TEXT("  Default: HALF_WORLD_MAX / 32.0f"),
+	TEXT("  Default: UE_FLOAT_HUGE_DISTANCE / 32.0f"),
 	ECVF_RenderThreadSafe
 	);
 static TAutoConsoleVariable<int32> CVarMaxNumFarShadowCascades(
@@ -93,9 +95,6 @@ static TAutoConsoleVariable<float> CVarRTDFDistanceScale(
 // Computes a shadow culling volume (convex hull) based on a set of 8 vertices and a light direction
 void ComputeShadowCullingVolume(bool bReverseCulling, const FVector* CascadeFrustumVerts, const FVector& LightDirection, FConvexVolume& ConvexVolumeOut, FPlane& NearPlaneOut, FPlane& FarPlaneOut) 
 {
-	// For mobile platforms that switch vertical axis and MobileHDR == false the sense of bReverseCulling is inverted.
-	bReverseCulling = XOR(bReverseCulling, (RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]) && !IsMobileHDR()));
-
 	// Pairs of plane indices from SubFrustumPlanes whose intersections
 	// form the edges of the frustum.
 	static const int32 AdjacentPlanePairs[12][2] =
@@ -257,6 +256,9 @@ public:
 	/** If greater than WholeSceneDynamicShadowRadius, a cascade will be created to support ray traced distance field shadows covering up to this distance. */
 	float DistanceFieldShadowDistance;
 
+	/** Forward lighting priority for the single slot available for a single directional light.*/
+	int32 ForwardShadingPriority;
+
 	/** Light source angle in degrees. */
 	float LightSourceAngle;
 
@@ -299,6 +301,7 @@ public:
 		CascadeTransitionFraction(Component->CascadeTransitionFraction),
 		ShadowDistanceFadeoutFraction(Component->ShadowDistanceFadeoutFraction),
 		DistanceFieldShadowDistance(Component->bUseRayTracedDistanceFieldShadows ? Component->DistanceFieldShadowDistance : 0),
+		ForwardShadingPriority(Component->ForwardShadingPriority),
 		LightSourceAngle(Component->LightSourceAngle),
 		LightSourceSoftAngle(Component->LightSourceSoftAngle),
 		ShadowSourceAngleFactor(Component->ShadowSourceAngleFactor),
@@ -349,8 +352,10 @@ public:
 				const bool bUsingDeferredRenderer = Scene == nullptr ? true : Scene->GetShadingPath() == EShadingPath::Deferred;
 				bUseWholeSceneCSMForMovableObjects = Component->Mobility == EComponentMobility::Stationary && !Component->bUseInsetShadowsForMovableObjects && !bUsingDeferredRenderer;
 			}
+			// Modulated shadow is only supported on mobile forward
+			bCastModulatedShadows = Component->bCastModulatedShadows && (Scene == nullptr || !IsMobileDeferredShadingEnabled(Scene->GetShaderPlatform()));
 		}
-		bCastModulatedShadows = Component->bCastModulatedShadows;
+		
 		ModulatedShadowColor = FLinearColor(Component->ModulatedShadowColor);
 		ShadowAmount = Component->ShadowAmount;
 	}
@@ -384,7 +389,11 @@ public:
 		LightParameters.SourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceAngle ) );
 		LightParameters.SoftSourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceSoftAngle ) );
 		LightParameters.SourceLength = 0.0f;
-		LightParameters.SourceTexture = GWhiteTexture->TextureRHI;
+		LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
+		LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
+		LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
+
+		LightParameters.InverseExposureBlend = 0.0f;
 	}
 
 	virtual float GetLightSourceAngle() const override
@@ -501,7 +510,12 @@ public:
 		// The far distance for the dynamic to static fade is the range of the directional light.
 		// The near distance is placed at a depth of 90% of the light's range.
 		const float NearDistance = FarDistance - FarDistance * ( ShadowDistanceFadeoutFraction * CVarCSMShadowDistanceFadeoutMultiplier.GetValueOnAnyThread() );
-		return FVector2D(NearDistance, 1.0f / FMath::Max<float>(FarDistance - NearDistance, KINDA_SMALL_NUMBER));
+		return FVector2D(NearDistance, 1.0f / FMath::Max<float>(FarDistance - NearDistance, UE_KINDA_SMALL_NUMBER));
+	}
+
+	virtual int32 GetDirectionalLightForwardShadingPriority() const override
+	{
+		return ForwardShadingPriority;
 	}
 
 	virtual bool GetPerObjectProjectedShadowInitializer(const FBoxSphereBounds& SubjectBounds,FPerObjectProjectedShadowInitializer& OutInitializer) const override
@@ -587,7 +601,7 @@ public:
 
 	virtual float GetSunLightHalfApexAngleRadian() const override
 	{
-		return 0.5f * LightSourceAngle * PI / 180.0f; // LightSourceAngle is apex angle (angular diameter) in degree
+		return 0.5f * LightSourceAngle * UE_PI / 180.0f; // LightSourceAngle is apex angle (angular diameter) in degree
 	}
 
 
@@ -785,8 +799,8 @@ private:
 		bool bIsPerspectiveProjection = View.ShadowViewMatrices.IsPerspectiveProjection();
 
 		// Build the camera frustum for this cascade
-		float HalfHorizontalFOV = bIsPerspectiveProjection ? FMath::Atan(1.0f / ProjectionMatrix.M[0][0]) : PI / 4.0f;
-		float HalfVerticalFOV = bIsPerspectiveProjection ? FMath::Atan(1.0f / ProjectionMatrix.M[1][1]) : FMath::Atan((FMath::Tan(PI / 4.0f) / AspectRatio));
+		float HalfHorizontalFOV = bIsPerspectiveProjection ? FMath::Atan(1.0f / ProjectionMatrix.M[0][0]) : UE_PI / 4.0f;
+		float HalfVerticalFOV = bIsPerspectiveProjection ? FMath::Atan(1.0f / ProjectionMatrix.M[1][1]) : FMath::Atan((FMath::Tan(UE_PI / 4.0f) / AspectRatio));
 		float AsymmetricFOVScaleX = ProjectionMatrix.M[2][0];
 		float AsymmetricFOVScaleY = ProjectionMatrix.M[2][1];
 
@@ -967,6 +981,7 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 	WholeSceneDynamicShadowRadius_DEPRECATED = 20000.0f;
 	DynamicShadowDistanceStationaryLight = 0.f;
 
+	ForwardShadingPriority = 0;
 	// For 5.0 double dynamic shadow distance by default & enable DF shadows.
 	// Note, we reset this to old defaults in Serialize for lights created with older versions of the engine.
 	DynamicShadowDistanceMovableLight = 40000.0f;
@@ -1031,7 +1046,7 @@ void UDirectionalLightComponent::PostEditChangeProperty(FPropertyChangedEvent& P
 	DynamicShadowCascades = FMath::Clamp(DynamicShadowCascades, 0, 10);
 	FarShadowCascadeCount = FMath::Clamp(FarShadowCascadeCount, 0, 10);
 	CascadeDistributionExponent = FMath::Clamp(CascadeDistributionExponent, .1f, 10.0f);
-	CascadeTransitionFraction = FMath::Clamp(CascadeTransitionFraction, KINDA_SMALL_NUMBER, 0.3f);
+	CascadeTransitionFraction = FMath::Clamp(CascadeTransitionFraction, UE_KINDA_SMALL_NUMBER, 0.3f);
 	ShadowDistanceFadeoutFraction = FMath::Clamp(ShadowDistanceFadeoutFraction, 0.0f, 1.0f);
 	// max range is larger than UI
 	ShadowBias = FMath::Clamp(ShadowBias, 0.0f, 10.0f);
@@ -1381,3 +1396,4 @@ void UDirectionalLightComponent::InvalidateLightingCacheDetailed(bool bInvalidat
 		Super::InvalidateLightingCacheDetailed(bInvalidateBuildEnqueuedLighting, bTranslationOnly);
 	}
 }
+

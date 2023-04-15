@@ -82,13 +82,13 @@ struct RIGVMDEVELOPER_API FRigVMCompilerWorkData
 public:
 	bool bSetupMemory;
 	URigVM* VM;
+	UScriptStruct* ExecuteContextStruct;
 	FRigVMUserDataArray RigVMUserData;
 	TMap<FString, FRigVMOperand>* PinPathToOperand;
 	TMap<const FRigVMVarExprAST*, FRigVMOperand> ExprToOperand;
 	TMap<const FRigVMExprAST*, bool> ExprComplete;
 	TArray<const FRigVMExprAST*> ExprToSkip;
 	TMap<FString, int32> ProcessedLinks;
-	TArray<TSharedPtr<FStructOnScope>> DefaultStructs;
 	TMap<int32, FRigVMOperand> IntegerLiterals;
 	FRigVMOperand ComparisonOperand;
 
@@ -100,8 +100,6 @@ public:
 	const FRigVMASTProxySourceMap* ProxySources;
 	FRigVMASTProxyTargetsMap ProxyTargets;
 
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
 	TArray<URigVMPin*> WatchedPins;
 	
 	TMap<ERigVMMemoryType, TArray<FRigVMPropertyPathDescription>> PropertyPathDescriptions;
@@ -111,8 +109,6 @@ public:
 	FRigVMOperand FindProperty(ERigVMMemoryType InMemoryType, const FName& InName);
 	FRigVMPropertyDescription GetProperty(const FRigVMOperand& InOperand);
 	int32 FindOrAddPropertyPath(const FRigVMOperand& InOperand, const FString& InHeadCPPType, const FString& InSegmentPath);
-	
-#endif
 
 	TSharedPtr<FRigVMParserAST> AST;
 	
@@ -141,12 +137,12 @@ public:
 	FRigVMCompileSettings Settings;
 
 	UFUNCTION(BlueprintCallable, Category = FRigVMCompiler)
-		bool Compile(URigVMGraph* InGraph, URigVMController* InController, URigVM* OutVM)
+	bool Compile(TArray<URigVMGraph*> InGraphs, URigVMController* InController, URigVM* OutVM)
 	{
-		return Compile(InGraph, InController, OutVM, TArray<FRigVMExternalVariable>(), TArray<FRigVMUserDataArray>(), nullptr);
+		return Compile(InGraphs, InController, OutVM, TArray<FRigVMExternalVariable>(), TArray<FRigVMUserDataArray>(), nullptr);
 	}
 
-	bool Compile(URigVMGraph* InGraph, URigVMController* InController, URigVM* OutVM, const TArray<FRigVMExternalVariable>& InExternalVariables, const TArray<FRigVMUserDataArray>& InRigVMUserData, TMap<FString, FRigVMOperand>* OutOperands, TSharedPtr<FRigVMParserAST> InAST = TSharedPtr<FRigVMParserAST>());
+	bool Compile(TArray<URigVMGraph*> InGraphs, URigVMController* InController, URigVM* OutVM, const TArray<FRigVMExternalVariable>& InExternalVariables, const TArray<FRigVMUserDataArray>& InRigVMUserData, TMap<FString, FRigVMOperand>* OutOperands, TSharedPtr<FRigVMParserAST> InAST = TSharedPtr<FRigVMParserAST>());
 
 	static UScriptStruct* GetScriptStructForCPPType(const FString& InCPPType);
 	static FString GetPinHash(const URigVMPin* InPin, const FRigVMVarExprAST* InVarExpr, bool bIsDebugValue = false, const FRigVMASTProxy& InPinProxy = FRigVMASTProxy());
@@ -156,21 +152,14 @@ public:
 	// this is currently only used for arrays.
 	static const FRigVMVarExprAST* GetSourceVarExpr(const FRigVMExprAST* InExpr);
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	
-	void CreateDebugRegister(URigVMPin* InPin, URigVM* OutVM, TMap<FString, FRigVMOperand>* OutOperands, TSharedPtr<FRigVMParserAST> InRuntimeAST);
-	void RemoveDebugRegister(URigVMPin* InPin, URigVM* OutVM, TMap<FString, FRigVMOperand>* OutOperands, TSharedPtr<FRigVMParserAST> InRuntimeAST);
-
-#else
-
 	void MarkDebugWatch(bool bRequired, URigVMPin* InPin, URigVM* OutVM, TMap<FString, FRigVMOperand>* OutOperands, TSharedPtr<FRigVMParserAST> InRuntimeAST);
-
-#endif
 
 private:
 
 	TArray<URigVMPin*> GetLinkedPins(URigVMPin* InPin, bool bInputs = true, bool bOutputs = true, bool bRecursive = true);
 	uint16 GetElementSizeFromCPPType(const FString& InCPPType, UScriptStruct* InScriptStruct);
+
+	static FString GetPinHashImpl(const URigVMPin* InPin, const FRigVMVarExprAST* InVarExpr, bool bIsDebugValue = false, const FRigVMASTProxy& InPinProxy = FRigVMASTProxy());
 
 	void TraverseExpression(const FRigVMExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
 	void TraverseChildren(const FRigVMExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
@@ -190,6 +179,7 @@ private:
 	void TraverseIf(const FRigVMIfExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
 	void TraverseSelect(const FRigVMSelectExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
 	void TraverseArray(const FRigVMArrayExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
+	void TraverseInvokeEntry(const FRigVMInvokeEntryExprAST* InExpr, FRigVMCompilerWorkData& WorkData);
 
 	void AddCopyOperator(
 		const FRigVMCopyOp& InOp,
@@ -209,7 +199,7 @@ private:
 	FRigVMOperand FindOrAddRegister(const FRigVMVarExprAST* InVarExpr, FRigVMCompilerWorkData& WorkData, bool bIsDebugValue = false);
 	const FRigVMCompilerWorkData::FRigVMASTProxyArray& FindProxiesWithSharedOperand(const FRigVMVarExprAST* InVarExpr, FRigVMCompilerWorkData& WorkData);
 
-	bool ValidateNode(URigVMNode* InNode);
+	bool ValidateNode(URigVMNode* InNode, bool bCheck = true);
 	
 	void ReportInfo(const FString& InMessage);
 	void ReportWarning(const FString& InMessage);

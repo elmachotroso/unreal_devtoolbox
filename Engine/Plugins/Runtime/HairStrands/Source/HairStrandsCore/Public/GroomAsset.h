@@ -60,6 +60,9 @@ struct HAIRSTRANDSCORE_API FHairGroupInfo
 
 	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Imported width (DCC) of the larget hair strands"))
 	float MaxImportedWidth = -1.f;
+
+	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Card Group ID for split hair card generation"))
+	int32 GroupCardsID = 0;
 };
 
 USTRUCT(BlueprintType)
@@ -389,6 +392,24 @@ struct HAIRSTRANDSCORE_API FHairGroupInfoWithVisibility : public FHairGroupInfo
 	bool bIsVisible = true;
 };
 
+UENUM(BlueprintType)
+enum class EHairAtlasTextureType : uint8
+{
+	Depth,
+	Tangent,
+	Attribute,
+	Coverage,
+	AuxilaryData,
+	Material
+};
+
+struct FHairVertexFactoryTypesPerMaterialData
+{
+	int16 MaterialIndex;
+	EHairGeometryType HairGeometryType;
+	TArray<const FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
+};
+
 /**
  * Implements an asset that can be used to store hair strands
  */
@@ -443,6 +464,14 @@ public:
 	/** Type of interpolation used */
 	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairInterpolation", meta = (ToolTip = "Type of interpolation used (WIP)"))
 	EGroomInterpolationType HairInterpolationType = EGroomInterpolationType::SmoothTransform;
+
+	/** Deformed skeletal mesh that will drive the groom deformation/simulation. For creating this skeletal mesh, enable EnableDeformation within the interpolation settings*/
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "HairInterpolation")
+	TObjectPtr<USkeletalMesh> RiggedSkeletalMesh;
+
+	/** Deformed skeletal mesh mapping from groups to sections */
+	UPROPERTY()
+	TArray<int32> DeformedGroupSections;
 
 	/** Minimum LOD to cook */
 	UPROPERTY(EditAnywhere, Category = "LOD", meta = (DisplayName = "Minimum LOD"))
@@ -542,6 +571,7 @@ public:
 	bool IsVisible(int32 GroupIndex, int32 LODIndex) const;
 	bool IsSimulationEnable(int32 GroupIndex, int32 LODIndex) const;
 	bool IsSimulationEnable() const;
+	bool IsDeformationEnable(int32 GroupIndex) const;
 	bool IsGlobalInterpolationEnable(int32 GroupIndex, int32 LODIndex) const;
 	bool NeedsInterpolationData(int32 GroupIndex) const;
 	bool NeedsInterpolationData() const;
@@ -549,6 +579,10 @@ public:
 	void UpdateHairGroupsInfo();
 	bool HasGeometryType(EGroomGeometryType Type) const;
 	bool HasGeometryType(uint32 GroupIndex, EGroomGeometryType Type) const;
+
+	/** Used for PSO precaching of used materials and vertex factories */
+	TArray<FHairVertexFactoryTypesPerMaterialData> CollectVertexFactoryTypesPerMaterialData(EShaderPlatform ShaderPlatform);
+
 //private :
 #if WITH_EDITOR
 	FOnGroomAssetChanged OnGroomAssetChanged;
@@ -559,6 +593,7 @@ public:
 
 	// Save out a static mesh based on generated cards
 	void SaveProceduralCards(uint32 CardsGroupIndex);
+	
 #endif
 
 	/** Array of user data stored with the asset */
@@ -607,8 +642,15 @@ private:
 	bool HasValidCardsData(uint32 GroupIndex) const;
 	bool HasValidMeshesData(uint32 GroupIndex) const;
 public:
+	enum EHairDescriptionType
+	{
+		Source,
+		Edit,
+		Count
+	};
+
 	/** Commits a HairDescription to buffer for serialization */
-	void CommitHairDescription(FHairDescription&& HairDescription);
+	void CommitHairDescription(FHairDescription&& HairDescription, EHairDescriptionType Type);
 	FHairDescription GetHairDescription() const;
 
 	/** Get/Build render & guides data based on the hair description and interpolation settings */
@@ -629,17 +671,19 @@ public:
 	FString GetDerivedDataKeyForStrands(uint32 GroupIndex);
 	FString GetDerivedDataKeyForMeshes(uint32 GroupIndex);
 
-private:
 	const FHairDescriptionGroups& GetHairDescriptionGroups();
+private:
+	
 	FString BuildDerivedDataKeySuffix(uint32 GroupIndex, const FHairGroupsInterpolation& InterpolationSettings, const FHairGroupsLOD& LODSettings) const;
 	bool IsFullyCached();
-	TUniquePtr<FHairDescriptionBulkData> HairDescriptionBulkData;
+	TUniquePtr<FHairDescriptionBulkData> HairDescriptionBulkData[EHairDescriptionType::Count];
+	EHairDescriptionType HairDescriptionType = EHairDescriptionType::Source;
 
 	// Transient HairDescription & HairDescriptionGroups, which are built from HairDescriptionBulkData.
 	// All these data (bulk/desc/groups) needs to be in sync. I.e., when the HairDescription is updated, 
 	// HairDescriptionGroups needs to also be updated
-	TUniquePtr<FHairDescription> CachedHairDescription;
-	TUniquePtr<FHairDescriptionGroups> CachedHairDescriptionGroups;
+	TUniquePtr<FHairDescription> CachedHairDescription[EHairDescriptionType::Count];
+	TUniquePtr<FHairDescriptionGroups> CachedHairDescriptionGroups[EHairDescriptionType::Count];
 
 	TArray<FString> StrandsDerivedDataKey;
 	TArray<FString> CardsDerivedDataKey;

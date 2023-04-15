@@ -29,7 +29,7 @@
 #include "ObjectTemplates/DatasmithStaticMeshComponentTemplate.h"
 
 #include "ActorEditorUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
@@ -39,6 +39,7 @@
 #include "Components/SpotLightComponent.h"
 #include "Editor.h"
 #include "Engine/DirectionalLight.h"
+#include "Engine/RectLight.h"
 #include "Engine/Level.h"
 #include "Engine/Light.h"
 #include "Engine/PostProcessVolume.h"
@@ -511,7 +512,7 @@ bool FDatasmithImporterUtils::CanCreateAsset(const FString& AssetPathName, const
 		case EAssetCreationStatus::CS_ClassMismatch:
 		{
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(*AssetPathName);
+			const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AssetPathName));
 
 			const FString FoundClassName(AssetData.GetClass()->GetFName().ToString());
 			const FString ExpectedClassName(AssetClass->GetFName().ToString());
@@ -546,7 +547,7 @@ FDatasmithImporterUtils::EAssetCreationStatus FDatasmithImporterUtils::CanCreate
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 
-	const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(*AssetPathName);
+	const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AssetPathName));
 
 	// Asset does not exist yet. Safe to import
 	if (!AssetData.IsValid())
@@ -574,7 +575,7 @@ UDatasmithScene* FDatasmithImporterUtils::FindDatasmithSceneForAsset( UObject* A
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
 	TArray< FAssetData > DatasmithSceneAssets;
-	AssetRegistry.GetAssetsByClass( UDatasmithScene::StaticClass()->GetFName(), DatasmithSceneAssets, true );
+	AssetRegistry.GetAssetsByClass( UDatasmithScene::StaticClass()->GetClassPathName(), DatasmithSceneAssets, true );
 
 	for ( FAssetData& DatasmithSceneAsset : DatasmithSceneAssets )
 	{
@@ -735,6 +736,11 @@ namespace FDatasmithImporterUtilsHelper
 			SpotLightActorElement->SetOuterConeAngle(SpotLightComponent->OuterConeAngle );
 
 			LightActorElement = SpotLightActorElement;
+		}
+		else if(LightActor->IsA<ARectLight>())
+		{
+			UE_LOG(LogDatasmithImport, Warning, TEXT("Import of RectLight is not yet supported"));
+			return TSharedPtr< IDatasmithLightActorElement >();
 		}
 		else
 		{
@@ -1009,7 +1015,11 @@ namespace FDatasmithImporterUtilsHelper
 
 					for(UMaterialInterface* MaterialInterface : HISMComponent->OverrideMaterials)
 					{
-						HISMActorElement->AddMaterialOverride( *MaterialInterface->GetName(), 0 );
+						// Quick fix to avoid a crash. The logic for material override seems bogus for HISMComponent and StaticMeshComponent
+						if (MaterialInterface)
+						{
+							HISMActorElement->AddMaterialOverride(*MaterialInterface->GetName(), 0);
+						}
 					}
 
 					FString StaticMeshTag = FDatasmithImporterUtils::GetDatasmithElementIdString( HISMComponent->GetStaticMesh() );
@@ -1023,7 +1033,7 @@ namespace FDatasmithImporterUtilsHelper
 				{
 					ActorElement = FDatasmithSceneFactory::CreateActor( *ActorName );
 					TArray<UStaticMeshComponent*> MeshComponents;
-					Actor->GetComponents<UStaticMeshComponent>( MeshComponents );
+					Actor->GetComponents( MeshComponents );
 					for(UStaticMeshComponent* MeshComponent : MeshComponents)
 					{
 						TSharedPtr< IDatasmithMeshActorElement > MeshActorElement = CreateMeshActorElement( ActorName, MeshComponent );
@@ -1033,6 +1043,11 @@ namespace FDatasmithImporterUtilsHelper
 				}
 				break;
 			}
+		}
+
+		if (!ActorElement.IsValid())
+		{
+			return TSharedPtr< IDatasmithActorElement >();
 		}
 
 		// Store actor's label
@@ -1068,6 +1083,11 @@ namespace FDatasmithImporterUtilsHelper
 		{
 			TSharedPtr< IDatasmithActorElement > ChildActorElement = ConvertActorToActorElement( ChildActor, SceneElement );
 
+			if (!ChildActorElement.IsValid())
+			{
+				continue;
+			}
+
 			ParentActorElement->AddChild( ChildActorElement );
 
 			TArray<AActor*> ActorsToVisit;
@@ -1084,6 +1104,11 @@ void FDatasmithImporterUtils::FillSceneElement(TSharedPtr<IDatasmithScene>& Scen
 	{
 		// Convert root actor to actor element
 		TSharedPtr< IDatasmithActorElement > RootActorElement = FDatasmithImporterUtilsHelper::ConvertActorToActorElement( RootActor, SceneElement );
+
+		if (!RootActorElement.IsValid())
+		{
+			continue;
+		}
 
 		// Add newly created actor element to scene element
 		SceneElement->AddActor( RootActorElement );
@@ -1376,6 +1401,8 @@ FScopedLogger::~FScopedLogger()
 
 TSharedRef<FTokenizedMessage> FScopedLogger::Push(EMessageSeverity::Type Severity, const FText& Message)
 {
+	FScopeLock Lock(&TokenizedMessageCS);
+
 	TokenizedMessages.Add(FTokenizedMessage::Create(Severity, Message));
 
 	return TokenizedMessages.Last();
@@ -1383,6 +1410,8 @@ TSharedRef<FTokenizedMessage> FScopedLogger::Push(EMessageSeverity::Type Severit
 
 void FScopedLogger::Dump(bool bClearPrevious)
 {
+	FScopeLock Lock(&TokenizedMessageCS);
+
 	if (TokenizedMessages.Num() > 0)
 	{
 		if (bClearPrevious)
@@ -1403,6 +1432,8 @@ void FScopedLogger::ClearLog()
 
 void FScopedLogger::ClearPending()
 {
+	FScopeLock Lock(&TokenizedMessageCS);
+
 	TokenizedMessages.Empty();
 }
 

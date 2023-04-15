@@ -2,8 +2,9 @@
 
 #include "CsvProfilerModule.h"
 #include "Analyzers/CsvProfilerTraceAnalysis.h"
-#include "AnalysisServicePrivate.h"
-#include "TraceServices/ModuleService.h"
+#include "TraceServices/Model/Counters.h"
+#include "TraceServices/Model/Frames.h"
+#include "TraceServices/Model/Threads.h"
 
 namespace TraceServices
 {
@@ -22,10 +23,10 @@ void FCsvProfilerModule::OnAnalysisBegin(IAnalysisSession& Session)
 {
 	const IFrameProvider& FrameProvider = ReadFrameProvider(Session);
 	const IThreadProvider& ThreadProvider = ReadThreadProvider(Session);
-	ICounterProvider& CounterProvider = EditCounterProvider(Session);
-	FCsvProfilerProvider* CsvProfilerProvider = new FCsvProfilerProvider(Session);
+	IEditableCounterProvider& EditableCounterProvider = EditCounterProvider(Session);
+	TSharedPtr<FCsvProfilerProvider> CsvProfilerProvider = MakeShared<FCsvProfilerProvider>(Session);
 	Session.AddProvider(CsvProfilerProviderName, CsvProfilerProvider);
-	Session.AddAnalyzer(new FCsvProfilerAnalyzer(Session, *CsvProfilerProvider, CounterProvider, FrameProvider, ThreadProvider));
+	Session.AddAnalyzer(new FCsvProfilerAnalyzer(Session, *CsvProfilerProvider, EditableCounterProvider, FrameProvider, ThreadProvider));
 }
 
 void FCsvProfilerModule::GenerateReports(const IAnalysisSession& Session, const TCHAR* CmdLine, const TCHAR* OutputDirectory)

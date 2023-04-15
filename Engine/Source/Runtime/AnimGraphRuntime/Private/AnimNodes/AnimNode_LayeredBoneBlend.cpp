@@ -5,6 +5,8 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_LayeredBoneBlend)
+
 #define DEFAULT_SOURCEINDEX 0xFF
 /////////////////////////////////////////////////////
 // FAnimNode_LayeredBoneBlend
@@ -166,7 +168,7 @@ void FAnimNode_LayeredBoneBlend::Update_AnyThread(const FAnimationUpdateContext&
 					FAnimationRuntime::UpdateDesiredBoneWeight(DesiredBoneBlendWeights, CurrentBoneBlendWeights, BlendWeights);
 					bHasRelevantPoses = true;
 
-					if(bBlendRootMotionBasedOnRootBone)
+					if(bBlendRootMotionBasedOnRootBone && !CurrentBoneBlendWeights.IsEmpty())
 					{
 						const float NewRootMotionWeight = CurrentBoneBlendWeights[0].BlendWeight;
 						if(NewRootMotionWeight > ZERO_ANIMWEIGHT_THRESH)
@@ -181,11 +183,6 @@ void FAnimNode_LayeredBoneBlend::Update_AnyThread(const FAnimationUpdateContext&
 				BlendPoses[ChildIndex].Update(Context.FractionalWeightAndRootMotion(ChildWeight, ThisPoseRootMotionWeight));
 			}
 		}
-	}
-	else
-	{
-		// Clear BlendWeights if disabled by LODThreshold.
-		BlendWeights.Init(0.f, BlendWeights.Num());
 	}
 
 	// initialize children
@@ -259,14 +256,14 @@ void FAnimNode_LayeredBoneBlend::Evaluate_AnyThread(FPoseContext& Output)
 				int32 SourceIndex = CurvePoseSourceIndices[CurvePoseIndex];
 				if (SourceIndex != DEFAULT_SOURCEINDEX)
 				{
-					// if source index is set, clear base pose curve value
-					BasePoseContext.Curve.Set(UIDIndex, 0.f);
+					// if source index is set, invalidate base pose curve value
+					BasePoseContext.Curve.InvalidateCurveWeight(UIDIndex);
 					for (int32 ChildIndex = 0; ChildIndex < NumPoses; ++ChildIndex)
 					{
 						if (SourceIndex != ChildIndex)
 						{
-							// if not source, clear it
-							TargetBlendCurves[ChildIndex].Set(UIDIndex, 0.f);
+							// if not source, invalidate it
+							TargetBlendCurves[ChildIndex].InvalidateCurveWeight(UIDIndex);
 						}
 					}
 				}
@@ -304,4 +301,15 @@ void FAnimNode_LayeredBoneBlend::GatherDebugData(FNodeDebugData& DebugData)
 	{
 		BlendPoses[ChildIndex].GatherDebugData(DebugData.BranchFlow(BlendWeights[ChildIndex]));
 	}
+}
+
+void FAnimNode_LayeredBoneBlend::SetBlendMask(int32 InPoseIndex, UBlendProfile* InBlendMask)
+{
+	check(BlendMode == ELayeredBoneBlendMode::BlendMask);
+	check(BlendPoses.IsValidIndex(InPoseIndex));
+	check(BlendMasks.IsValidIndex(InPoseIndex));
+
+	BlendMasks[InPoseIndex] = InBlendMask;
+
+	InvalidatePerBoneBlendWeights();
 }

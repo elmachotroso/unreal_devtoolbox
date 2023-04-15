@@ -96,10 +96,11 @@ void UCameraNodalOffsetAlgoOpticalAxis::Tick(float DeltaTime)
 	// Inform the user if the focus or zoom has changed since the last tick
 	if (OpticalAxis.IsSet() && !bFocusZoomWarningIssued)
 	{
-		if (const FLensFileEvalData* EvalData = StepsController->GetLensFileEvalData())
+		const FLensFileEvaluationInputs EvalInputs = StepsController->GetLensFileEvaluationInputs();
+		if (EvalInputs.bIsValid)
 		{
 			const float InputTolerance = GetDefault<UCameraCalibrationSettings>()->GetCalibrationInputTolerance();
-			if (!FMath::IsNearlyEqual(CachedFocus, EvalData->Input.Focus, InputTolerance) || !FMath::IsNearlyEqual(CachedZoom, EvalData->Input.Zoom, InputTolerance))
+			if (!FMath::IsNearlyEqual(CachedFocus, EvalInputs.Focus, InputTolerance) || !FMath::IsNearlyEqual(CachedZoom, EvalInputs.Zoom, InputTolerance))
 			{
 				FFormatOrderedArguments Arguments;
 				Arguments.Add(FText::FromString(FString::Printf(TEXT("%.2f"), CachedFocus)));
@@ -208,11 +209,11 @@ bool UCameraNodalOffsetAlgoOpticalAxis::GetNodalOffset(FNodalPointOffset& OutNod
  	}
 
 	// Validate that all rows have approximately the same camera pose
-	const TSharedPtr<FCalibrationRowData>& FirstRow = CalibrationRows[0];
+	const TSharedPtr<FNodalOffsetPointsRowData>& FirstRow = CalibrationRows[0];
 	const FTransform CameraPose = FirstRow->CameraData.Pose;
 	CachedInverseCameraPose = CameraPose.Inverse();
 
-	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	for (const TSharedPtr<FNodalOffsetPointsRowData>& Row : CalibrationRows)
 	{
 		if (!FCameraCalibrationUtils::IsNearlyEqual(CameraPose, Row->CameraData.Pose))
 		{
@@ -222,15 +223,18 @@ bool UCameraNodalOffsetAlgoOpticalAxis::GetNodalOffset(FNodalPointOffset& OutNod
 	}
 
 	// Cache the evaluated focus and zoom so that modifications to the nodal offset table will update the same point
-	OutFocus = CachedFocus = FirstRow->CameraData.LensFileEvalData.Input.Focus;
-	OutZoom = CachedZoom = FirstRow->CameraData.LensFileEvalData.Input.Zoom;
+	CachedFocus = FirstRow->CameraData.InputFocus;
+	CachedZoom = FirstRow->CameraData.InputZoom;
+
+	OutFocus = CachedFocus;
+	OutZoom = CachedZoom;
 
 #if WITH_OPENCV
 	// Gather the 3D points from each of the calibration rows
 	std::vector<cv::Point3f> Points3d;
 	Points3d.reserve(CalibrationRows.Num());
 
-	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	for (const TSharedPtr<FNodalOffsetPointsRowData>& Row : CalibrationRows)
 	{
 		Points3d.push_back(cv::Point3f(
 			Row->CalibratorPointData.Location.X,
@@ -248,14 +252,14 @@ bool UCameraNodalOffsetAlgoOpticalAxis::GetNodalOffset(FNodalPointOffset& OutNod
 
 	// Find a look at rotation for the camera
 	const FVector Point0 = PointAlongAxis + (0.0f * OpticalAxis.GetValue());
-	const FVector Point1 = PointAlongAxis + (1.0f * OpticalAxis.GetValue());
+	const FVector Point1 = PointAlongAxis - (1.0f * OpticalAxis.GetValue());
 
 	LookAtRotation = UKismetMathLibrary::FindLookAtRotation(Point1, Point0);
 
 	// Cache the existing nodal offset, if one exists
 	CachedNodalOffset = FTransform::Identity;
 
-	if (FirstRow->CameraData.LensFileEvalData.NodalOffset.bWasApplied)
+	if (FirstRow->CameraData.bWasNodalOffsetApplied)
 	{
 		FNodalPointOffset NodalPointOffset;
 

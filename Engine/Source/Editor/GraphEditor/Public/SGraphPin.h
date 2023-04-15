@@ -2,25 +2,47 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "Misc/Guid.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateColor.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "Input/DragAndDrop.h"
 #include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
 #include "SGraphNode.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/SWidget.h"
 
+class FDragDropEvent;
+class FDragDropOperation;
+class FPinValueInspectorTooltip;
+class IToolTip;
+class SGraphNode;
 class SGraphPanel;
 class SGraphPin;
 class SHorizontalBox;
 class SImage;
+class SWidget;
 class SWrapBox;
-class FPinValueInspectorTooltip;
+struct FGeometry;
+struct FPointerEvent;
+struct FSlateBrush;
 
 #define NAME_DefaultPinLabelStyle TEXT("Graph.Node.PinName")
 
@@ -150,6 +172,9 @@ public:
 	/** @return whether this pin is connected to another pin */
 	bool IsConnected() const;
 
+	/** @return whether to fade out the pin's connections */
+	bool AreConnectionsFaded() const;
+
 	/** Tries to handle making a connection to another pin, depending on the schema and the pins it may do:  
 		 - Nothing
 		 - Break existing links on either side while making the new one
@@ -168,6 +193,23 @@ public:
 	void SetPinColorModifier(FLinearColor InColor)
 	{
 		PinColorModifier = InColor;
+	}
+
+	void SetDiffHighlighted(bool bHighlighted)
+	{
+		bIsDiffHighlighted = bHighlighted;
+	}
+
+	/** Allows Diff to highlight pins */
+	void SetPinDiffColor(TOptional<FLinearColor> InColor)
+	{
+		PinDiffColor = InColor;
+	}
+
+	/** Makes Pin Connection Wires transparent */
+	void SetFadeConnections(bool bInFadeConnections)
+	{
+		bFadeConnections = bInFadeConnections;
 	}
 
 	/** Set this pin to only be used to display default value */
@@ -251,6 +293,11 @@ protected:
 	/** @return The color that we should use to draw this pin */
 	virtual FSlateColor GetPinColor() const;
 
+	/** @return The color that we should use to draw the highlight for this pin */
+	virtual FSlateColor GetHighlightColor() const;
+
+	virtual FSlateColor GetPinDiffColor() const;
+
 	/** @return The secondary color that we should use to draw this pin (e.g. value color for Map pins) */
 	FSlateColor GetSecondaryPinColor() const;
 
@@ -316,6 +363,9 @@ protected:
 	/** Set of pins that are currently being hovered */
 	TSet< FEdGraphPinReference > HoverPinSet;
 
+	/** If set, this will change the color of the pin's background highlight */
+	TOptional<FLinearColor> PinDiffColor;
+
 	//@TODO: Want to cache these once for all SGraphPins, but still handle slate style updates
 	const FSlateBrush* CachedImg_ArrayPin_Connected;
 	const FSlateBrush* CachedImg_ArrayPin_Disconnected;
@@ -333,6 +383,8 @@ protected:
 
 	const FSlateBrush* CachedImg_Pin_Background;
 	const FSlateBrush* CachedImg_Pin_BackgroundHovered;
+	
+	const FSlateBrush* CachedImg_Pin_DiffOutline;
 
 	const FSlateBrush* Custom_Brush_Connected;
 	const FSlateBrush* Custom_Brush_Disconnected;
@@ -354,4 +406,10 @@ protected:
 
 	/** TRUE if the pin should allow any drag and drop */
 	bool bDragAndDropEnabled;
+
+	/** True if this pin is being diffed and it's currently selected in the diff view. Highlights this pin */
+	bool bIsDiffHighlighted;
+
+	/** TRUE if the connections from this pin should be drawn at a lower opacity */
+	bool bFadeConnections;
 };

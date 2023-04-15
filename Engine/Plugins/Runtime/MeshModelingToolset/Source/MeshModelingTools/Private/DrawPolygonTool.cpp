@@ -20,9 +20,11 @@
 #include "Distance/DistLine3Ray3.h"
 #include "Intersection/IntrSegment2Segment2.h"
 #include "ToolSceneQueriesUtil.h"
+#include "SceneManagement.h" // FPrimitiveDrawInterface
 #include "SceneQueries/SceneSnappingManager.h"
 #include "ConstrainedDelaunay2.h"
 #include "Arrangement2d.h"
+#include "DynamicMesh/MeshTangents.h"
 
 #include "DynamicMeshEditor.h"
 
@@ -33,6 +35,10 @@
 #include "Selection/SelectClickedAction.h"
 #include "Selection/ToolSelectionUtil.h"
 #include "ModelingObjectsCreationAPI.h"
+
+#include "Mechanics/DragAlignmentMechanic.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DrawPolygonTool)
 
 using namespace UE::Geometry;
 
@@ -129,6 +135,10 @@ void UDrawPolygonTool::Setup()
 	// listen for changes to the proxy and update the plane when that happens
 	PlaneTransformProxy->OnTransformChanged.AddUObject(this, &UDrawPolygonTool::PlaneTransformChanged);
 
+	DragAlignmentMechanic = NewObject<UDragAlignmentMechanic>(this);
+	DragAlignmentMechanic->Setup(this);
+	DragAlignmentMechanic->AddToGizmo(PlaneTransformGizmo);
+
 	// initialize material properties for new objects
 	MaterialProperties = NewObject<UNewMeshMaterialProperties>(this);
 	MaterialProperties->RestoreProperties(this);
@@ -189,6 +199,8 @@ void UDrawPolygonTool::Shutdown(EToolShutdownType ShutdownType)
 	{
 		delete SetPointInWorldConnector;
 	}
+
+	DragAlignmentMechanic->Shutdown();
 
 	GetToolManager()->GetPairedGizmoManager()->DestroyAllGizmosByOwner(this);
 
@@ -1107,6 +1119,7 @@ void UDrawPolygonTool::EmitCurrentPolygon()
 		ResetPolygon();
 		return;
 	}
+	UE::Geometry::FMeshTangentsf::ComputeDefaultOverlayTangents(Mesh);
 
 	GetToolManager()->BeginUndoTransaction(LOCTEXT("CreatePolygon", "Create Polygon"));
 
@@ -1396,3 +1409,4 @@ FString FDrawPolygonStateChange::ToString() const
 
 
 #undef LOCTEXT_NAMESPACE
+

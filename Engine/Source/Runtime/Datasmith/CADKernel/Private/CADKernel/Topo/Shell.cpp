@@ -4,9 +4,12 @@
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Topo/Body.h"
 #include "CADKernel/Topo/TopologicalFace.h"
-#include "CADKernel/Topo/TopologyReport.h"
 
-namespace CADKernel
+#ifdef CADKERNEL_DEV
+#include "CADKernel/Topo/TopologyReport.h"
+#endif
+
+namespace UE::CADKernel
 {
 
 FShell::FShell(const TArray<TSharedPtr<FTopologicalFace>>& InTopologicalFaces, bool bIsInnerShell)
@@ -74,6 +77,17 @@ void FShell::Add(TSharedRef<FTopologicalFace> InTopologicalFace, EOrientation Or
 	TopologicalFaces.Emplace(Face, Orientation);
 
 	Face->SetHost(this);
+}
+
+void FShell::Remove(const FTopologicalShapeEntity* FaceToRemove)
+{
+	if (!FaceToRemove)
+	{
+		return;
+	}
+
+	int32 Index = TopologicalFaces.IndexOfByPredicate([&](const FOrientedFace& Face) { return (Face.Entity.Get() == FaceToRemove); });
+	TopologicalFaces.RemoveAt(Index);
 }
 
 #ifdef CADKERNEL_DEV
@@ -249,7 +263,8 @@ void FShell::CheckTopology(TArray<FFaceSubset>& Subshells)
 	ResetMarkersRecursively();
 }
 
-void FShell::FillTopologyReport(FTopologyReport& Report) const 
+#ifdef CADKERNEL_DEV
+void FShell::FillTopologyReport(FTopologyReport& Report) const
 {
 	Report.Add(this);
 	for (const FOrientedFace& OrientedFace : GetFaces())
@@ -257,6 +272,7 @@ void FShell::FillTopologyReport(FTopologyReport& Report) const
 		OrientedFace.Entity->FillTopologyReport(Report);
 	}
 }
+#endif
 
 int32 FShell::Orient()
 {
@@ -391,14 +407,14 @@ int32 FShell::Orient()
 			F3DDebugSession _(TEXT("BBox Face"));
 
 			FAABB AABB(BBox.Min, BBox.Max);
-			CADKernel::DisplayAABB(AABB);
+			UE::CADKernel::DisplayAABB(AABB);
 
 			for (int32 Index = 0; Index < 3; ++Index)
 			{
-				CADKernel::DisplayPoint(BBox.MaxPoints[Index], EVisuProperty::YellowPoint);
-				CADKernel::DisplayPoint(BBox.MinPoints[Index], EVisuProperty::YellowPoint);
-				CADKernel::DisplaySegment(BBox.MaxPoints[Index], BBox.MaxPoints[Index] + BBox.MaxPointNormals[Index], 0, EVisuProperty::YellowCurve);
-				CADKernel::DisplaySegment(BBox.MinPoints[Index], BBox.MinPoints[Index] + BBox.MinPointNormals[Index], 0, EVisuProperty::YellowCurve);
+				UE::CADKernel::DisplayPoint(BBox.MaxPoints[Index], EVisuProperty::YellowPoint);
+				UE::CADKernel::DisplayPoint(BBox.MinPoints[Index], EVisuProperty::YellowPoint);
+				UE::CADKernel::DisplaySegment(BBox.MaxPoints[Index], BBox.MaxPoints[Index] + BBox.MaxPointNormals[Index], 0, EVisuProperty::YellowCurve);
+				UE::CADKernel::DisplaySegment(BBox.MinPoints[Index], BBox.MinPoints[Index] + BBox.MinPointNormals[Index], 0, EVisuProperty::YellowCurve);
 			}
 			Wait();
 		}

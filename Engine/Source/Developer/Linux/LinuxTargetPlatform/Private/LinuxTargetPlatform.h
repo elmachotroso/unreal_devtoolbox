@@ -12,6 +12,8 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Common/TargetPlatformBase.h"
+#include "SteamDeck/SteamDeckDevice.h"
+#include "AnalyticsEventAttribute.h"
 
 
 #if WITH_ENGINE
@@ -59,6 +61,12 @@ public:
 		StaticMeshLODSettings.Initialize(this);
 
 		InitDevicesFromConfig();
+
+		if (!TProperties::IsArm64())
+		{
+			SteamDevices = TSteamDeckDevice<FLinuxTargetDevice>::DiscoverDevices(*this, TEXT("Native Linux"));
+		}
+
 
 		// Get the Target RHIs for this platform, we do not always want all those that are supported.
 		TArray<FName> TargetedShaderFormats;
@@ -125,6 +133,14 @@ public:
 		{
 			OutDevices.Add(DeviceIter.Value);
 		}
+
+		for (const ITargetDevicePtr& SteamDeck : SteamDevices)
+		{
+			if (SteamDeck.IsValid())
+			{
+				OutDevices.Add(SteamDeck);
+			}
+		}
 	}
 
 	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& PakchunkMap, const TSet<int32>& PakchunkIndicesInUse) const override
@@ -154,6 +170,14 @@ public:
 			if (DeviceId == DeviceIter.Value->GetId())
 			{
 				return DeviceIter.Value;
+			}
+		}
+
+		for (const ITargetDevicePtr& SteamDeck : SteamDevices)
+		{
+			if (SteamDeck.IsValid() && DeviceId == SteamDeck->GetId())
+			{
+				return SteamDeck;
 			}
 		}
 
@@ -235,11 +259,14 @@ public:
 
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override
 	{
-		static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
-		static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
+		if (!TProperties::IsServerOnly())
+		{
+			static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
+			static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
 
-		OutFormats.AddUnique(NAME_VULKAN_SM5);
-		OutFormats.AddUnique(NAME_VULKAN_ES31);
+			OutFormats.AddUnique(NAME_VULKAN_SM5);
+			OutFormats.AddUnique(NAME_VULKAN_ES31);
+		}
 	}
 
 	virtual void GetAllTargetedShaderFormats( TArray<FName>& OutFormats ) const override
@@ -267,6 +294,13 @@ public:
 		}
 	}
 
+	virtual void GetPlatformSpecificProjectAnalytics( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray ) const override
+	{
+		TSuper::GetPlatformSpecificProjectAnalytics(AnalyticsParamArray);
+
+		TSuper::AppendAnalyticsEventConfigArray(AnalyticsParamArray, TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings"), TEXT("TargetedRHIs"), GEngineIni);
+	}
+
 #if WITH_ENGINE
 	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
 	{
@@ -288,7 +322,7 @@ public:
 		if (this->AllowAudioVisualData())
 		{
 			// just use the standard texture format name for this texture
-			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, true);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, true, 4, true);
 		}
 	}
 
@@ -297,7 +331,7 @@ public:
 		if (this->AllowAudioVisualData())
 		{
 			// just use the standard texture format name for this texture
-			GetAllDefaultTextureFormats(this, OutFormats, true);
+			GetAllDefaultTextureFormats(this, OutFormats);
 		}
 	}
 
@@ -309,34 +343,6 @@ public:
 	virtual void RegisterTextureLODSettings(const UTextureLODSettings* InTextureLODSettings) override
 	{
 		TextureLODSettings = InTextureLODSettings;
-	}
-
-	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
-	{
-		FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
-
-		if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
-		{
-			if (Wave->IsStreaming(*this->IniPlatformName()))
-			{
-				return Audio::NAME_OPUS;
-			}
-
-			return Audio::NAME_OGG;
-		}
-		else
-		{
-			return FormatName;
-		}
-	}
-
-	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
-	{
-		OutFormats.Add(Audio::NAME_BINKA);
-		OutFormats.Add(Audio::NAME_ADPCM);
-		OutFormats.Add(Audio::NAME_PCM);
-		OutFormats.Add(Audio::NAME_OGG);
-		OutFormats.Add(Audio::NAME_OPUS);
 	}
 
 #endif //WITH_ENGINE
@@ -456,6 +462,7 @@ protected:
 	FLinuxTargetDevicePtr LocalDevice;
 	// Holds a map of valid devices.
 	TMap<FString, FLinuxTargetDevicePtr> Devices;
+	TArray<ITargetDevicePtr> SteamDevices;
 
 
 #if WITH_ENGINE

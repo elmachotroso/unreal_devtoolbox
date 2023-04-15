@@ -2,11 +2,13 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
-using Blake3;
+using System.Linq;
 using Datadog.Trace;
+using EpicGames.Core;
 using Force.Crc32;
-using Jupiter;
+using Jupiter.Implementation;
 using Jupiter.Utils;
 using K4os.Compression.LZ4;
 
@@ -21,8 +23,9 @@ namespace Horde.Storage.Implementation
             _oodleCompressor = oodleCompressor;
         }
 
-        public class Header
+        private class Header
         {
+            [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1028:Enum Storage should be Int32", Justification = "Interop requires byte")]
             public enum CompressionMethod : byte
             {
                 // Header is followed by one uncompressed block. 
@@ -32,32 +35,35 @@ namespace Horde.Storage.Implementation
                 LZ4 = 4,
             }
 
-            public static uint ExpectedMagic = 0xb7756362; // <dot>ucb
-            public static uint HeaderLength = 64;
+            public const uint ExpectedMagic = 0xb7756362; // <dot>ucb
+            public const uint HeaderLength = 64;
 
             // A magic number to identify a compressed buffer. Always 0xb7756362.
-            public uint Magic;
+
+            public uint Magic { get; set; }
             // A CRC-32 used to check integrity of the buffer. Uses the polynomial 0x04c11db7.
-            public uint Crc32;
+
+            public uint Crc32 { get; set; }
+
             // The method used to compress the buffer. Affects layout of data following the header. 
-            public CompressionMethod Method;
-            public byte CompressionLevel;
-            public byte CompressionMethodUsed;
+            public CompressionMethod Method { get; set; }
+            public byte CompressionLevel { get; set; }
+            public byte CompressionMethodUsed { get; set; }
 
             // The power of two size of every uncompressed block except the last. Size is 1 << BlockSizeExponent. 
-            public byte BlockSizeExponent;
+            public byte BlockSizeExponent { get; set; }
 
             // The number of blocks that follow the header. 
-            public uint BlockCount;
+            public uint BlockCount { get; set; }
 
             // The total size of the uncompressed data. 
-            public ulong TotalRawSize;
+            public ulong TotalRawSize { get; set; }
 
             // The total size of the compressed data including the header. 
-            public ulong TotalCompressedSize;
+            public ulong TotalCompressedSize { get; set; }
 
             /** The hash of the uncompressed data. */
-            public byte[] RawHash = Array.Empty<byte>();
+            public byte[] RawHash { get; set; } = Array.Empty<byte>();
 
             public void ByteSwap()
             {
@@ -69,12 +75,14 @@ namespace Horde.Storage.Implementation
             }
         }
 
-        public Header ExtractHeader(byte[] content)
+        private static Header ExtractHeader(byte[] content)
         {
             // the header is always stored big endian
             bool needsByteSwap = BitConverter.IsLittleEndian;
             if (content.Length < Header.HeaderLength)
+            {
                 throw new ArgumentOutOfRangeException(nameof(content), $"Content was less then {Header.HeaderLength} bytes and thus is not a compressed buffer");
+            }
 
             using MemoryStream ms = new MemoryStream(content);
             using BinaryReader reader = new BinaryReader(ms);
@@ -95,34 +103,74 @@ namespace Horde.Storage.Implementation
             header.RawHash = hash;
 
             if (needsByteSwap)
+            {
                 header.ByteSwap();
+            }
 
             if (ms.Position != Header.HeaderLength)
+            {
                 throw new Exception($"Read {ms.Position} bytes but expected to read {Header.HeaderLength}");
+            }
 
             if (header.Magic != Header.ExpectedMagic)
+            {
                 throw new InvalidMagicException(header.Magic, Header.ExpectedMagic);
+            }
 
             // calculate the crc from the start of the method field (skipping magic which is a constant and the crc field itself)
-            const int methodOffset = sizeof(uint) + sizeof(uint);
+            const int MethodOffset = sizeof(uint) + sizeof(uint);
 
             // none compressed objects have no extra blocks
             uint blocksByteUsed = header.Method != Header.CompressionMethod.None ? header.BlockCount * (uint)sizeof(uint) : 0;
-            uint calculatedCrc = Crc32Algorithm.Compute(content, methodOffset, (int)(Header.HeaderLength - methodOffset + blocksByteUsed));
+            uint calculatedCrc = Crc32Algorithm.Compute(content, MethodOffset, (int)(Header.HeaderLength - MethodOffset + blocksByteUsed));
             
             if (header.Crc32 != calculatedCrc)
+            {
                 throw new InvalidHashException(header.Crc32, calculatedCrc);
+            }
 
             return header;
         }
 
+        static void WriteHeader(Header header, BinaryWriter writer)
+        {
+            // the header is always stored big endian
+            bool needsByteSwap = BitConverter.IsLittleEndian;
+            if (needsByteSwap)
+            {
+                header.ByteSwap();
+            }
+
+            writer.Write(header.Magic);
+            writer.Write(header.Crc32);
+            writer.Write((byte)header.Method);
+            writer.Write((byte)header.CompressionLevel);
+            writer.Write((byte)header.CompressionMethodUsed);
+            writer.Write((byte)header.BlockSizeExponent);
+            writer.Write(header.BlockCount);
+            writer.Write(header.TotalRawSize);
+            writer.Write(header.TotalCompressedSize);
+            writer.Write(header.RawHash, 0, 20); // write the first 20 bytes as iohashes are 20 bytes
+            for (int i = 0; i < 12; i++)
+            {
+                // the last 12 bytes should be 0 as they are reserved
+                writer.Write((byte)0);
+            }
+
+            if (needsByteSwap)
+            {
+                header.ByteSwap();
+            }
+        }
 
         public byte[] DecompressContent(byte[] content)
         {
             Header header = ExtractHeader(content);
 
             if (content.LongLength < (long)header.TotalCompressedSize)
+            {
                 throw new Exception($"Expected buffer to be {header.TotalCompressedSize} but it was {content.LongLength}");
+            }
 
             ulong decompressedPayloadOffset = 0;
             byte[] decompressedPayload = new byte[header.TotalRawSize];
@@ -175,19 +223,25 @@ namespace Horde.Storage.Implementation
             }
            
             if (header.TotalRawSize != decompressedPayloadOffset)
-                throw new Exception("Did not decompress the full payload");
-
             {
-                using Scope _ = Tracer.Instance.StartActive("cb.hash");
-                using Hasher hasher = Hasher.New();
-                hasher.UpdateWithJoin(decompressedPayload);
-                Hash blake3Hash = hasher.Finalize();
-
-                Span<byte> hash = blake3Hash.AsSpan();
-                if (!new ByteArrayComparer().Equals(hash.ToArray(), header.RawHash))
-                    throw new Exception($"Payload was expected to be {StringUtils.FormatAsHexString(header.RawHash)} but was {StringUtils.FormatAsHexString(hash.ToArray())}");
+                throw new Exception("Did not decompress the full payload");
             }
 
+            {
+                using IScope _ = Tracer.Instance.StartActive("web.hash");
+
+                // only read the first 20 bytes of the hash field as IoHashes are 20 bytes and not 32 bytes
+                byte[] slicedHash = new byte[20];
+                Array.Copy(header.RawHash, 0, slicedHash, 0, 20);
+
+                BlobIdentifier headerIdentifier = new BlobIdentifier(slicedHash);
+                BlobIdentifier contentHash = BlobIdentifier.FromBlob(decompressedPayload);
+               
+                if (!headerIdentifier.Equals(contentHash))
+                {
+                    throw new Exception($"Payload was expected to be {headerIdentifier} but was {contentHash}");
+                }
+            }
 
             return decompressedPayload;
         }
@@ -201,10 +255,7 @@ namespace Horde.Storage.Implementation
                     return compressedPayload.Length;
                 case Header.CompressionMethod.Oodle:
                 {
-                    // we have separate enums from the official oodle api to make sure they are stable enums so we need to translate to the ones expected by the api
-                    OodleLZ_Compressor compressor = OodleUtils.ToOodleApiCompressor((OoodleCompressorMethod)header.CompressionMethodUsed);
-                    OodleLZ_CompressionLevel compressionLevel = OodleUtils.ToOodleApiCompressionLevel((OoodleCompressionLevel)header.CompressionLevel);
-                    long writtenBytes = _oodleCompressor.Decompress(compressor,compressedPayload.ToArray(), compressionLevel, (long)rawBlockSize, out byte[] result);
+                    long writtenBytes = _oodleCompressor.Decompress(compressedPayload.ToArray(), (long)rawBlockSize, out byte[] result);
                     if (writtenBytes == 0)
                     {
                         throw new Exception("Failed to run oodle decompress");
@@ -218,12 +269,99 @@ namespace Horde.Storage.Implementation
                     return writtenBytes;
                 }
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(header.Method), header.Method, null);
+                    throw new NotImplementedException($"Method {header.Method} is not a support value");
             }
+        }
+
+        public byte[] CompressContent(OoodleCompressorMethod method, OoodleCompressionLevel compressionLevel, byte[] rawContents)
+        {
+            OodleLZ_Compressor oodleMethod = OodleUtils.ToOodleApiCompressor(method);
+            OodleLZ_CompressionLevel oodleLevel = OodleUtils.ToOodleApiCompressionLevel(compressionLevel);
+
+            const long DefaultBlockSize = 256 * 1024;
+            long blockSize = DefaultBlockSize;
+            long blockCount = (rawContents.LongLength + blockSize - 1) / blockSize;
+
+            byte blockSizeExponent = (byte)Math.Floor(Math.Log2(blockSize));
+
+            Span<byte> contentsSpan = new Span<byte>(rawContents);
+            List<byte[]> compressedBlocks = new List<byte[]>();
+
+            for (int i = 0; i < blockCount; i++)
+            {
+                int rawBlockSize = Math.Min(rawContents.Length - (i * (int)blockSize), (int)blockSize);
+                Span<byte> bufferToCompress = contentsSpan.Slice((int)(i * blockSize), rawBlockSize);
+
+                long encodedSize = _oodleCompressor.Compress(oodleMethod, bufferToCompress.ToArray(), oodleLevel, out byte[] compressedBlock);
+
+                if (encodedSize == 0)
+                {
+                    throw new Exception("Failed to compress content");
+                }
+
+                compressedBlocks.Add(compressedBlock);
+            }
+
+            uint compressedContentLength = (uint)compressedBlocks.Sum(b => b.LongLength);
+
+            Header header = new Header
+            {
+                Magic = Header.ExpectedMagic,
+                Crc32 = 0,
+                Method = Header.CompressionMethod.Oodle,
+                CompressionLevel = (byte)compressionLevel,
+                CompressionMethodUsed = (byte)method,
+                BlockSizeExponent = blockSizeExponent,
+                BlockCount = (uint)blockCount,
+                TotalRawSize = (ulong)rawContents.LongLength,
+                TotalCompressedSize = (ulong)compressedContentLength,
+                RawHash = IoHash.Compute(rawContents).ToByteArray()
+            };
+
+            uint blocksByteUsed = (uint)blockCount * sizeof(uint);
+
+            byte[] headerBuffer = new byte[Header.HeaderLength + blocksByteUsed + compressedContentLength];
+
+            // write the compressed buffer, but with the wrong crc which we update and rewrite later
+            {
+                using MemoryStream ms = new MemoryStream(headerBuffer);
+                using BinaryWriter writer = new BinaryWriter(ms);
+
+                WriteHeader(header, writer);
+
+                for (int i = 0; i < blockCount; i++)
+                {
+                    uint value = (uint)compressedBlocks[i].Length;
+                    if (BitConverter.IsLittleEndian)
+                    {
+                        value = BinaryPrimitives.ReverseEndianness(value);
+                    }
+                    writer.Write(value);
+                }
+
+                for (int i = 0; i < blockCount; i++)
+                {
+                    writer.Write(compressedBlocks[i]);
+                }
+            }
+
+            // calculate the crc from the start of the method field (skipping magic which is a constant and the crc field itself)
+            const int MethodOffset = sizeof(uint) + sizeof(uint);
+            uint calculatedCrc = Crc32Algorithm.Compute(headerBuffer, MethodOffset, (int)(Header.HeaderLength - MethodOffset + blocksByteUsed));
+            header.Crc32 = calculatedCrc;
+
+            // write the header again now that we have the crc
+            {
+                using MemoryStream ms = new MemoryStream(headerBuffer);
+                using BinaryWriter writer = new BinaryWriter(ms);
+                WriteHeader(header, writer);
+            }
+
+            return headerBuffer;
         }
     }
 
-    internal class InvalidHashException : Exception
+    public class InvalidHashException : Exception
     {
         public InvalidHashException(uint headerCrc32, uint calculatedCrc) : base($"Header specified crc \"{headerCrc32}\" but calculated hash was \"{calculatedCrc}\"")
         {
@@ -231,7 +369,7 @@ namespace Horde.Storage.Implementation
         }
     }
 
-    internal class InvalidMagicException : Exception
+    public class InvalidMagicException : Exception
     {
         public InvalidMagicException(uint headerMagic, uint expectedMagic) : base($"Header magic \"{headerMagic}\" was incorrect, expected to be {expectedMagic}")
         {
@@ -239,7 +377,9 @@ namespace Horde.Storage.Implementation
     }
 
     // from OodleDataCompression.h , we define our own enums for oodle compressions used and convert to the ones expected in the oodle api
+#pragma warning disable CA1028 // Enum Storage should be Int32
     public enum OoodleCompressorMethod: byte
+
     {
         NotSet = 0,
         Selkie = 1,
@@ -264,7 +404,7 @@ namespace Horde.Storage.Implementation
         Optimal3 = 7,
         Optimal4 = 8,
     }
-
+#pragma warning restore CA1028 // Enum Storage should be Int32
     public static class OodleUtils
     {
         public static OodleLZ_CompressionLevel ToOodleApiCompressionLevel(OoodleCompressionLevel compressionLevel)
@@ -320,6 +460,5 @@ namespace Horde.Storage.Implementation
                     throw new ArgumentOutOfRangeException(nameof(compressor), compressor, null);
             }
         }
-
     }
 }

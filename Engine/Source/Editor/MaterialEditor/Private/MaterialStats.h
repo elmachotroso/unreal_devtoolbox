@@ -102,7 +102,7 @@ public:
 		/** flag that marks the usage of this data structure */
 		bool bExtractStats = false;
 
-		/** true when code is listed in his own tab */
+		/** true when code is listed in its own tab */
 		bool bExtractCode = false;
 
 		/** cached shader code computed by FShaderPlatformSettings::GetShaderCode() */
@@ -531,11 +531,13 @@ void FMaterialStats::SetMaterial(TMaterial& MaterialPtr)
 	if (MaterialInterface != MaterialPtr)
 	{
 		MaterialInterface = MaterialPtr;
-
 		for (const auto& Entry : ShaderPlatformStatsDB)
 		{
-			auto Platform = Entry.Value;
-			Platform->SetMaterial(MaterialPtr);
+			auto& Platform = Entry.Value;
+			if (Platform.IsValid())
+			{
+				Platform->SetMaterial(MaterialPtr);
+			}
 		}
 	}
 }

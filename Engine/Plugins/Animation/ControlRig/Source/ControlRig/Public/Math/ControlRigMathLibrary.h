@@ -42,7 +42,7 @@ enum class EControlRigAnimEasingType : uint8
 	BounceEaseInOut
 };
 
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FCRFourPointBezier
 {
 	GENERATED_BODY()
@@ -52,16 +52,16 @@ struct FCRFourPointBezier
 		A = B = C = D = FVector::ZeroVector;
 	}
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category=Bezier)
 	FVector A;
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category=Bezier)
 	FVector B;
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category=Bezier)
 	FVector C;
 
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category=Bezier)
 	FVector D;
 };
 
@@ -75,4 +75,12 @@ public:
 	static FTransform LerpTransform(const FTransform& A, const FTransform& B, float T);
 	static void SolveBasicTwoBoneIK(FTransform& BoneA, FTransform& BoneB, FTransform& Effector, const FVector& PoleVector, const FVector& PrimaryAxis, const FVector& SecondaryAxis, float SecondaryAxisWeight, float BoneALength, float BoneBLength, bool bEnableStretch, float StretchStartRatio, float StretchMaxRatio);
 	static FVector ClampSpatially(const FVector& Value, EAxis::Type Axis, EControlRigClampSpatialMode::Type Type, float Minimum, float Maximum, FTransform Space);
+	static FQuat FindQuatBetweenVectors(const FVector& A, const FVector& B);
+	static FQuat FindQuatBetweenNormals(const FVector& A, const FVector& B);
+
+	// See - "Computing Euler angles from a rotation matrix" by Gregory G. Slabaugh
+	// Each spatial orientation can be mapped to two equivalent euler angles within range (-180, 180)
+	static FVector GetEquivalentEulerAngle(const FVector& InEulerAngle, const EEulerRotationOrder& InOrder);
+	
+	static FVector& ChooseBetterEulerAngleForAxisFilter(const FVector& Base, FVector& A, FVector& B);
 };

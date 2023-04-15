@@ -564,7 +564,8 @@ public:
 			if (bUseDistanceShellForWinding == false || bRequiresWindingQueryFallback)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(MeshScene_WrapperBuild_DMesh_FWNTree);
-				FWNTree = MakeUnique<TFastWindingTree<FColliderMesh>>(&ColliderMesh.GetAABBTree(), true);
+				check( ColliderMesh.GetRawAABBTreeUnsafe() != nullptr );
+				FWNTree = MakeUnique<TFastWindingTree<FColliderMesh>>(ColliderMesh.GetRawAABBTreeUnsafe(), true);
 			}
 		}
 		return true;
@@ -650,7 +651,7 @@ public:
 			{
 				FVector3d UseP = (bHasBakedTransform) ? P : LocalToWorldTransform.InverseTransformPosition(P);
 				double NearestDistSqr;
-				int32 NearTriID = ColliderMesh.GetAABBTree().FindNearestTriangle(UseP, NearestDistSqr, IMeshSpatial::FQueryOptions(WindingShellThickness));
+				int32 NearTriID = ColliderMesh.FindNearestTriangle(UseP, NearestDistSqr, IMeshSpatial::FQueryOptions(WindingShellThickness));
 				if (NearTriID != IndexConstants::InvalidID)
 				{
 					// Do we even need to do this? won't we return InvalidID if we don't find point within distance?
@@ -688,7 +689,7 @@ public:
 		}
 
 		double RayHitT; int32 HitTID; FVector3d HitBaryCoords;
-		if (ColliderMesh.GetAABBTree().FindNearestHitTriangle(UseRay, RayHitT, HitTID, HitBaryCoords))
+		if (ColliderMesh.FindNearestHitTriangle(UseRay, RayHitT, HitTID, HitBaryCoords))
 		{
 			WorldHitResultOut.HitMeshTriIndex = HitTID;
 			WorldHitResultOut.HitMeshSpatialWrapper = this;
@@ -922,7 +923,6 @@ public:
 	UStaticMesh* StaticMesh = nullptr;
 	int32 LODIndex = 0;
 
-	FVector3d BuildScale = FVector3d::One();
 	TUniquePtr<MeshAdapterType> Adapter;
 
 	TUniquePtr<TMeshAABBTree3<MeshAdapterType>> AABBTree;
@@ -943,14 +943,6 @@ public:
 		{
 			return false;
 		}
-
-		BuildScale = FVector3d::One();
-#if WITH_EDITOR
-		// respect BuildScale build setting
-		const FMeshBuildSettings& LODBuildSettings = StaticMesh->GetSourceModel(LODIndex).BuildSettings;
-		BuildScale = (FVector3d)LODBuildSettings.BuildScale3D;
-		Adapter->SetBuildScale(BuildScale, false);
-#endif
 
 		if (BuildOptions.bBuildSpatialDataStructures)
 		{
@@ -1136,7 +1128,10 @@ public:
 	{
 #if WITH_EDITOR
 		CachedSourceMeshDescription = StaticMesh->GetMeshDescription(LODIndex);
-		return MakeUnique<FMeshDescriptionTriangleMeshSurfaceAdapter>(CachedSourceMeshDescription, StaticMesh, BuildOptions.bOnlySurfaceMaterials);
+		TUniquePtr<FMeshDescriptionTriangleMeshSurfaceAdapter> SurfaceAdapter = MakeUnique<FMeshDescriptionTriangleMeshSurfaceAdapter>(CachedSourceMeshDescription, StaticMesh, BuildOptions.bOnlySurfaceMaterials);
+		const FMeshBuildSettings& LODBuildSettings = StaticMesh->GetSourceModel(LODIndex).BuildSettings;
+		SurfaceAdapter->SetBuildScale(LODBuildSettings.BuildScale3D, false);
+		return SurfaceAdapter;
 #else
 		// cannot use this path in non-editor builds, but this should have been handled higher up by instantiating 
 		// the runtime subclass
@@ -1312,46 +1307,39 @@ public:
 
 static TUniquePtr<IMeshSpatialWrapper> SpatialWrapperFactory( const FMeshTypeContainer& MeshContainer, const FMeshSceneAdapterBuildOptions& BuildOptions )
 {
-
 	if (MeshContainer.MeshType == ESceneMeshType::StaticMeshAsset)
 	{
+		UStaticMesh* StaticMesh = MeshContainer.GetStaticMesh();
+		if (ensure(StaticMesh != nullptr))
+		{
 #if WITH_EDITOR
-		bool bUseRenderMeshes = BuildOptions.bIgnoreStaticMeshSourceData;
+			bool bUseRenderMeshes = BuildOptions.bIgnoreStaticMeshSourceData || StaticMesh->GetOutermost()->bIsCookedForEditor;
 #else
-		bool bUseRenderMeshes = true;
+			bool bUseRenderMeshes = true;
 #endif
 
-		if (bUseRenderMeshes)
-		{
-			TUniquePtr<FStaticMeshRenderDataSpatialWrapper> SMWrapper = MakeUnique<FStaticMeshRenderDataSpatialWrapper>();
-			SMWrapper->SourceContainer = MeshContainer;
-			SMWrapper->StaticMesh = MeshContainer.GetStaticMesh();
-			if (ensure(SMWrapper->StaticMesh != nullptr))
+			if (bUseRenderMeshes)
 			{
+				TUniquePtr<FStaticMeshRenderDataSpatialWrapper> SMWrapper = MakeUnique<FStaticMeshRenderDataSpatialWrapper>();
+				SMWrapper->SourceContainer = MeshContainer;
+				SMWrapper->StaticMesh = StaticMesh;
+				return SMWrapper;
+			}
+			else if (BuildOptions.bEnableUVQueries == false && BuildOptions.bEnableNormalsQueries == false)
+			{
+				TUniquePtr<FCompressedStaticMeshSpatialWrapper> SMWrapper = MakeUnique<FCompressedStaticMeshSpatialWrapper>();
+				SMWrapper->SourceContainer = MeshContainer;
+				SMWrapper->StaticMesh = StaticMesh;
+				return SMWrapper;
+			}
+			else
+			{
+				TUniquePtr<FStaticMeshSourceDataSpatialWrapper> SMWrapper = MakeUnique<FStaticMeshSourceDataSpatialWrapper>();
+				SMWrapper->SourceContainer = MeshContainer;
+				SMWrapper->StaticMesh = StaticMesh;
 				return SMWrapper;
 			}
 		}
-		else if (BuildOptions.bEnableUVQueries == false && BuildOptions.bEnableNormalsQueries == false)
-		{
-			TUniquePtr<FCompressedStaticMeshSpatialWrapper> SMWrapper = MakeUnique<FCompressedStaticMeshSpatialWrapper>();
-			SMWrapper->SourceContainer = MeshContainer;
-			SMWrapper->StaticMesh = MeshContainer.GetStaticMesh();
-			if (ensure(SMWrapper->StaticMesh != nullptr))
-			{
-				return SMWrapper;
-			}
-		}
-		else
-		{
-			TUniquePtr<FStaticMeshSourceDataSpatialWrapper> SMWrapper = MakeUnique<FStaticMeshSourceDataSpatialWrapper>();
-			SMWrapper->SourceContainer = MeshContainer;
-			SMWrapper->StaticMesh = MeshContainer.GetStaticMesh();
-			if (ensure(SMWrapper->StaticMesh != nullptr))
-			{
-				return SMWrapper;
-			}
-		}
-
 	}
 
 	return TUniquePtr<IMeshSpatialWrapper>();

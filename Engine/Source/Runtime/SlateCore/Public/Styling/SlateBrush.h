@@ -7,6 +7,8 @@
 #include "Styling/SlateColor.h"
 #include "Layout/Margin.h"
 #include "Textures/SlateShaderResource.h"
+#include "Types/SlateBox2.h"
+#include "Types/SlateVector2.h"
 #include "SlateBrush.generated.h"
 
 /**
@@ -213,7 +215,38 @@ struct SLATECORE_API FSlateBrush
 	GENERATED_USTRUCT_BODY()
 
 	friend class FSlateShaderResourceManager;
+
+protected:
+	/** Whether or not the brush path is a path to a UObject */
+	UPROPERTY()
+	uint8 bIsDynamicallyLoaded:1;
+
+	/** Whether or not the brush has a UTexture resource */
+	UPROPERTY()
+	uint8 bHasUObject_DEPRECATED:1;
+
+	/** This is true for all constructed brushes except for optional brushes */
+	uint8 bIsSet : 1;
+
 public:
+
+	/** How to draw the image */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
+	TEnumAsByte<enum ESlateBrushDrawType::Type > DrawAs;
+
+	/** How to tile the image in Image mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
+	TEnumAsByte<enum ESlateBrushTileType::Type> Tiling;
+
+	/** How to mirror the image in Image mode.  This is normally only used for dynamic image brushes where the source texture
+	    comes from a hardware device such as a web camera. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
+	TEnumAsByte<enum ESlateBrushMirrorType::Type> Mirroring;
+
+	/** The type of image */
+	UPROPERTY()
+	TEnumAsByte<enum ESlateBrushImageType::Type> ImageType;
+
 	/** Size of the resource in Slate Units */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
 	FVector2D ImageSize;
@@ -232,6 +265,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush, meta=( DisplayName="Tint", sRGB="true" ))
 	FSlateColor TintColor;
 
+public:
 	/** How to draw the outline.  Currently only used for RoundedBox type brushes. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
 	FSlateBrushOutlineSettings OutlineSettings;
@@ -334,9 +368,9 @@ public:
 	 *
 	 * @return UV region
 	 */
-	FBox2D GetUVRegion() const
+	UE::Slate::FDeprecateBox2D GetUVRegion() const
 	{
-		return FBox2D(UVRegion);
+		return UVRegion;
 	}
 
 	/**
@@ -344,9 +378,14 @@ public:
 	 *
 	 * @param InUVRegion When valid - overrides UV region specified in resource proxy
 	 */
-	void SetUVRegion(const FBox2D& InUVRegion)
+	void SetUVRegion(const FBox2d& InUVRegion)
 	{
 		UVRegion = FBox2f(InUVRegion);
+	}
+
+	void SetUVRegion(const FBox2f& InUVRegion)
+	{
+		UVRegion = InUVRegion;
 	}
 
 	/**
@@ -433,7 +472,7 @@ private:
 	 * The image to render for this brush, can be a UTexture or UMaterialInterface or an object implementing 
 	 * the AtlasedTextureInterface. 
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush, meta=( AllowPrivateAccess="true", DisplayThumbnail="true", DisplayName="Image", AllowedClasses="Texture,MaterialInterface,SlateTextureAtlasInterface", DisallowedClasses = "MediaTexture"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush, meta=( AllowPrivateAccess="true", DisplayThumbnail="true", DisplayName="Image", AllowedClasses="/Script/Engine.Texture,/Script/Engine.MaterialInterface,/Script/Engine.SlateTextureAtlasInterface", DisallowedClasses = "/Script/MediaAssets.MediaTexture"))
 	TObjectPtr<UObject> ResourceObject;
 
 protected:
@@ -449,37 +488,10 @@ protected:
 	FBox2f UVRegion;
 
 public:
-	/** How to draw the image */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
-	TEnumAsByte<enum ESlateBrushDrawType::Type > DrawAs;
-
-	/** How to tile the image in Image mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
-	TEnumAsByte<enum ESlateBrushTileType::Type> Tiling;
-
-	/** How to mirror the image in Image mode.  This is normally only used for dynamic image brushes where the source texture
-	    comes from a hardware device such as a web camera. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Brush)
-	TEnumAsByte<enum ESlateBrushMirrorType::Type> Mirroring;
-
-	/** The type of image */
-	UPROPERTY()
-	TEnumAsByte<enum ESlateBrushImageType::Type> ImageType;
 
 	/** Rendering resource for this brush */
 	mutable FSlateResourceHandle ResourceHandle;
 protected:
-
-	/** Whether or not the brush path is a path to a UObject */
-	UPROPERTY()
-	uint8 bIsDynamicallyLoaded:1;
-
-	/** Whether or not the brush has a UTexture resource */
-	UPROPERTY()
-	uint8 bHasUObject_DEPRECATED:1;
-
-	/** This is true for all constructed brushes except for optional brushes */
-	uint8 bIsSet : 1;
 
 	/** 
 	 * This constructor is protected; use one of the deriving classes instead.

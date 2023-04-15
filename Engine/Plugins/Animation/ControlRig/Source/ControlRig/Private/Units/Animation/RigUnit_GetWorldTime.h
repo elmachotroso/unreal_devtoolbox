@@ -2,13 +2,13 @@
 
 #pragma once
 
-#include "Units/Animation/RigUnit_AnimBase.h"
+#include "RigUnit_AnimBase.h"
 #include "RigUnit_GetWorldTime.generated.h"
 
 /**
  * Returns the current time (year, month, day, hour, minute)
  */
-USTRUCT(meta = (DisplayName = "Now", Keywords = "Time,Clock"))
+USTRUCT(meta = (DisplayName = "Now", Keywords = "Time,Clock", Varying))
 struct CONTROLRIG_API FRigUnit_GetWorldTime : public FRigUnit_AnimBase
 {
 	GENERATED_BODY()

@@ -2,14 +2,30 @@
 
 
 #include "K2Node_AssignmentStatement.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphUtilities.h"
-#include "KismetCastingUtils.h"
-#include "KismetCompiler.h"
-#include "VariableSetHandler.h"
-#include "BlueprintNodeSpawner.h"
 #include "EditorCategoryUtils.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCastingUtils.h"
+#include "KismetCompiledFunctionContext.h"
+#include "KismetCompiler.h"
+#include "Misc/AssertionMacros.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "VariableSetHandler.h"
+
+struct FBPTerminal;
 
 #define LOCTEXT_NAMESPACE "K2Node_AssignmentStatement"
 
@@ -50,26 +66,14 @@ public:
 
 		if (VariablePinNet && ValuePinNet)
 		{
-			TOptional<CastingUtils::StatementNamePair> ConversionType =
-				CastingUtils::GetFloatingPointConversionType(*ValuePinNet, *VariablePinNet);
+			CastingUtils::FConversion Conversion =
+				CastingUtils::GetFloatingPointConversion(*ValuePinNet, *VariablePinNet);
 
-			if (ConversionType)
+			if (Conversion.Type != CastingUtils::FloatingPointCastType::None)
 			{
-				FString DescriptiveName = Node->GetName();
+				FBPTerminal* NewTerm = CastingUtils::MakeImplicitCastTerminal(Context, VariablePinNet, Node);
 
-				FString TerminalName = FString::Printf(TEXT("%s_%s_%s"),
-					*DescriptiveName,
-					*VariablePinNet->PinName.ToString(),
-					ConversionType->Get<1>());
-
-				FBPTerminal* NewTerm = Context.CreateLocalTerminal();
-				NewTerm->Name = TerminalName;
-				NewTerm->Type = VariablePinNet->PinType;
-				NewTerm->Source = Node;
-
-				EKismetCompiledStatementType CastType = ConversionType->Get<0>();
-
-				Context.ImplicitCastMap.Add(VariablePin, FImplicitCastParams{CastType, NewTerm, Node});
+				Context.ImplicitCastMap.Add(VariablePin, CastingUtils::FImplicitCastParams{Conversion, NewTerm, Node});
 			}
 		}
 		else

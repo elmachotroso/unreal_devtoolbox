@@ -97,7 +97,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bInheritDebugStatus = true;
 
-	NIAGARAEDITOR_API bool ScriptIsValid() const;
+	NIAGARAEDITOR_API bool HasValidScriptAndGraph() const;
 
 	//Begin UObject interface
 	virtual void PostLoad()override;
@@ -107,10 +107,11 @@ public:
 	//~ Begin UNiagaraNode Interface
 	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;
 	virtual UObject* GetReferencedAsset() const override;
+	virtual void OpenReferencedAsset() const override;
 	virtual bool RefreshFromExternalChanges() override;
 	virtual ENiagaraNumericOutputTypeSelectionMode GetNumericOutputTypeSelectionMode() const override;
 	virtual bool CanAddToGraph(UNiagaraGraph* TargetGraph, FString& OutErrorMsg) const override;
-	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
+	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
 	virtual void UpdateCompileHashForNode(FSHA1& HashState) const override;
 	//End UNiagaraNode interface
 
@@ -124,9 +125,6 @@ public:
 	/** Returns true if this node is deprecated */
 	virtual bool IsDeprecated() const override;
 	//~ End EdGraphNode Interface
-
-	/** Checks if the existing pin names match the function script parameter names and try to fix them via guid matching if there is a difference */
-	NIAGARAEDITOR_API bool FixupPinNames();
 
 	/** When overriding an input value, this updates which variable guid was bound to which input name, so it can be reassigned when the input is renamed.*/
 	void UpdateInputNameBinding(const FGuid& BoundVariableGuid, const FName& BoundName);
@@ -145,6 +143,7 @@ public:
 
 	/** Walk through the internal script graph for an ParameterMapGet nodes and see if any of them specify a default for VariableName.*/
 	UEdGraphPin* FindParameterMapDefaultValuePin(const FName VariableName, ENiagaraScriptUsage InParentUsage, FCompileConstantResolver ConstantResolver) const;
+	void FindParameterMapDefaultValuePins(TConstArrayView<FName> VariableNames, ENiagaraScriptUsage InParentUsage, const FCompileConstantResolver& ConstantResolver, TArrayView<UEdGraphPin*> DefaultPins);
 
 	/** Attempts to find the input pin for a static switch with the given name in the internal script graph. Returns nullptr if no such pin can be found. */
 	UEdGraphPin* FindStaticSwitchInputPin(const FName& VariableName) const;
@@ -179,6 +178,7 @@ public:
 	NIAGARAEDITOR_API void RemoveCustomNote(const FGuid& MessageKey);
 	NIAGARAEDITOR_API FSimpleDelegate& OnCustomNotesChanged() { return OnCustomNotesChangedDelegate; }
 	void RemoveCustomNoteViaDelegate(const FGuid MessageKey);
+	TArray<FGuid> GetBoundPinGuidsByName(FName InputName) const;
 
 	/** Adds a static switch pin to this function call node by variable id and sets it's default value using the supplied data and marks it as
 		orphaned. This allows a previously available static switch value to be retained on the node even if the the switch is no longer exposed. */
@@ -202,8 +202,6 @@ protected:
 	bool IsValidPropagatedVariable(const FNiagaraVariable& Variable) const;
 
 	void UpdateNodeErrorMessage();
-
-	TArray<FGuid> GetBoundPinGuidsByName(FName InputName) const;
 
 	void FixupFunctionScriptVersion();
 

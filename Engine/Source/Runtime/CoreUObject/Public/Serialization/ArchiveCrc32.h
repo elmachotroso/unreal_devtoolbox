@@ -2,9 +2,17 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "Serialization/ArchiveUObject.h"
 #include "Serialization/MemoryLayout.h"
+#include "Templates/EnableIf.h"
+#include "Templates/Models.h"
+
+class FArchive;
+class UObject;
+struct CStaticStructProvider;
 
 /**
 * Calculates a checksum from the input provided to the archive.
@@ -36,7 +44,7 @@ public:
 	 * @param Value The value to serialize.
 	 */
 	template <typename StructType>
-	FORCEINLINE friend typename TEnableIf<TProvidesStaticStruct<StructType>::Value, FArchive&>::Type operator <<(FArchive& Ar, const StructType& Value)
+	FORCEINLINE friend typename TEnableIf<TModels<CStaticStructProvider, StructType>::Value, FArchive&>::Type operator <<(FArchive& Ar, const StructType& Value)
 	{
 		StructType* MutableValue = const_cast<StructType*>(&Value);
 		StructType::StaticStruct()->SerializeItem(Ar, MutableValue, nullptr);

@@ -3,6 +3,8 @@
 #include "RigVMModel/Nodes/RigVMFunctionReferenceNode.h"
 #include "RigVMModel/RigVMFunctionLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMFunctionReferenceNode)
+
 FString URigVMFunctionReferenceNode::GetNodeTitle() const
 {
 	if (URigVMLibraryNode* ReferencedNode = GetReferencedNode())
@@ -165,6 +167,15 @@ bool URigVMFunctionReferenceNode::IsFullyRemapped() const
 TArray<FRigVMExternalVariable> URigVMFunctionReferenceNode::GetExternalVariables() const
 {
 	return GetExternalVariables(true);
+}
+
+const FRigVMTemplate* URigVMFunctionReferenceNode::GetTemplate() const
+{
+	if (URigVMLibraryNode* ReferencedNode = GetReferencedNode())
+	{
+		return ReferencedNode->GetTemplate();
+	}
+	return nullptr;
 }
 
 TArray<FRigVMExternalVariable> URigVMFunctionReferenceNode::GetExternalVariables(bool bRemapped) const

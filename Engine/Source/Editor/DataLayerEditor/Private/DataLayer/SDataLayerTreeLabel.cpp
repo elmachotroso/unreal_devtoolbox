@@ -1,15 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDataLayerTreeLabel.h"
+
+#include "Containers/BitArray.h"
+#include "Containers/UnrealString.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
 #include "DataLayerTreeItem.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
-#include "Math/ColorList.h"
+#include "Delegates/Delegate.h"
+#include "Engine/World.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/Platform.h"
 #include "ISceneOutliner.h"
 #include "ISceneOutlinerMode.h"
-#include "DataLayerTransaction.h"
-#include "Editor.h"
+#include "ISceneOutlinerTreeItem.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/ColorList.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/Optional.h"
+#include "SceneOutlinerPublicTypes.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
+
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
@@ -19,6 +48,7 @@ void SDataLayerTreeLabel::Construct(const FArguments& InArgs, FDataLayerTreeItem
 	TreeItemPtr = StaticCastSharedRef<FDataLayerTreeItem>(DataLayerItem.AsShared());
 	DataLayerPtr = DataLayerItem.GetDataLayer();
 	HighlightText = SceneOutliner.GetFilterHighlightText();
+	bInEditingMode = false;
 
 	TSharedPtr<SInlineEditableTextBlock> InlineTextBlock;
 
@@ -35,10 +65,12 @@ void SDataLayerTreeLabel::Construct(const FArguments& InArgs, FDataLayerTreeItem
 		.ColorAndOpacity(this, &SDataLayerTreeLabel::GetForegroundColor)
 		.OnTextCommitted(this, &SDataLayerTreeLabel::OnLabelCommitted)
 		.OnVerifyTextChanged(this, &SDataLayerTreeLabel::OnVerifyItemLabelChanged)
+		.OnEnterEditingMode(this, &SDataLayerTreeLabel::OnEnterEditingMode)
+		.OnExitEditingMode(this, &SDataLayerTreeLabel::OnExitEditingMode)
 		.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FSceneOutlinerTreeItemPtr>::IsSelectedExclusively))
 		.IsReadOnly_Lambda([Item = DataLayerItem.AsShared(), this]()
 		{
-			return !CanExecuteRenameRequest(Item.Get());
+			return DataLayerPtr == nullptr || !DataLayerPtr->SupportRelabeling() || !CanExecuteRenameRequest(Item.Get());
 		})
 	]
 
@@ -90,9 +122,9 @@ void SDataLayerTreeLabel::Construct(const FArguments& InArgs, FDataLayerTreeItem
 		.VAlign(VAlign_Center)
 		[
 			SNew(SImage)
-			.Visibility_Lambda([this] { return (DataLayerPtr.IsValid() && DataLayerPtr->IsLocked() && !DataLayerPtr->GetWorld()->IsPlayInEditor()) ? EVisibility::Visible : EVisibility::Collapsed; })
+			.Visibility_Lambda([this] { return (DataLayerPtr.IsValid() && DataLayerPtr->IsLocked() && !DataLayerPtr->IsReadOnly() && !DataLayerPtr->GetWorld()->IsPlayInEditor()) ? EVisibility::Visible : EVisibility::Collapsed; })
 			.ColorAndOpacity(FSlateColor::UseForeground())
-			.Image(FEditorStyle::GetBrush(TEXT("PropertyWindow.Locked")))
+			.Image(FAppStyle::GetBrush(TEXT("PropertyWindow.Locked")))
 			.ToolTipText(LOCTEXT("LockedRuntimeDataLayerEditing", "Locked editing. (To allow editing, in Data Layer Outliner, go to Advanced -> Allow Runtime Data Layer Editing)"))
 		]
 	];
@@ -105,38 +137,77 @@ bool SDataLayerTreeLabel::ShouldBeHighlighted() const
 	return DataLayerTreeItem && DataLayerTreeItem->ShouldBeHighlighted();
 }
 
+bool SDataLayerTreeLabel::ShouldBeItalic() const
+{
+	if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerPtr.Get()))
+	{
+		return !DataLayerInstanceWithAsset->GetAsset();
+	}
+
+	return false;
+}
+
+bool SDataLayerTreeLabel::IsInActorEditorContext() const
+{
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
+	return DataLayer && DataLayer->IsInActorEditorContext();
+}
+
 FSlateFontInfo SDataLayerTreeLabel::GetDisplayNameFont() const
 {
 	if (ShouldBeHighlighted())
 	{
 		return FAppStyle::Get().GetFontStyle("DataLayerBrowser.LabelFontBold");
 	}
-	else
+	else if(ShouldBeItalic())
 	{
-		return FAppStyle::Get().GetFontStyle("DataLayerBrowser.LabelFont");
+		return FAppStyle::Get().GetFontStyle("PropertyWindow.ItalicFont");
 	}
+
+	return FAppStyle::Get().GetFontStyle("DataLayerBrowser.LabelFont");
 }
 
 FText SDataLayerTreeLabel::GetDisplayText() const
 {
-	const UDataLayer* DataLayer = DataLayerPtr.Get();
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
 	bool bIsDataLayerActive = false;
-	FText DataLayerRuntimeStateText = FText::GetEmpty();
-	if (DataLayer && DataLayer->IsRuntime() && DataLayer->GetWorld()->IsPlayInEditor())
+	FText SuffixText = FText::GetEmpty();
+	if (!bInEditingMode)
 	{
-		const UDataLayerSubsystem* DataLayerSubsystem = DataLayer->GetWorld()->GetSubsystem<UDataLayerSubsystem>();
-		DataLayerRuntimeStateText = FText::Format(LOCTEXT("DataLayerRuntimeState", " ({0})"), FTextStringHelper::CreateFromBuffer(GetDataLayerRuntimeStateName(DataLayerSubsystem->GetDataLayerEffectiveRuntimeState(DataLayer))));
+		if (DataLayer && DataLayer->IsRuntime() && DataLayer->GetWorld()->IsPlayInEditor())
+		{
+			const UDataLayerSubsystem* DataLayerSubsystem = DataLayer->GetWorld()->GetSubsystem<UDataLayerSubsystem>();
+			SuffixText = FText::Format(LOCTEXT("DataLayerRuntimeState", " ({0})"), FTextStringHelper::CreateFromBuffer(GetDataLayerRuntimeStateName(DataLayerSubsystem->GetDataLayerEffectiveRuntimeState(DataLayer))));
+		}
+		else if (IsInActorEditorContext())
+		{
+			SuffixText = FText(LOCTEXT("IsCurrentSuffix", " (Current)"));
+		}
+	}
+
+	if (DataLayer)
+	{
+		if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayer))
+		{
+			if (!DataLayerInstanceWithAsset->GetAsset())
+			{
+				return LOCTEXT("DataLayerLabelUnknown", "Unknown");
+			}
+		}
+
+		return FText::Format(LOCTEXT("DataLayerDisplayText", "{0}{1}"), FText::FromString(DataLayer->GetDataLayerShortName()), SuffixText);
 	}
 	
 	static const FText DataLayerDeleted = LOCTEXT("DataLayerLabelForMissingDataLayer", "(Deleted Data Layer)");
-	return DataLayer ? FText::Format(LOCTEXT("DataLayerDisplayText", "{0}{1}"), FText::FromName(DataLayer->GetDataLayerLabel()), DataLayerRuntimeStateText) : DataLayerDeleted;
+	return DataLayerDeleted;
 }
 
 FText SDataLayerTreeLabel::GetTooltipText() const
 {
 	if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
 	{
-		return FText::FromString(TreeItem->GetDisplayString());
+		FText Description = IsInActorEditorContext() ? LOCTEXT("DataLayerIsCurrentDescription", "This Data Layer is part of Current Data Layers. New actors will attempt to be added to this Data Layer.") : FText::GetEmpty();
+		return FText::Format(LOCTEXT("DataLayerTooltipText", "{0}\n{1}"), FText::FromString(TreeItem->GetDisplayString()), Description);
 	}
 
 	return FText();
@@ -144,7 +215,7 @@ FText SDataLayerTreeLabel::GetTooltipText() const
 
 FText SDataLayerTreeLabel::GetTypeText() const
 {
-	const UDataLayer* DataLayer = DataLayerPtr.Get();
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
 	return DataLayer ? FText::FromName(DataLayer->GetClass()->GetFName()) : FText();
 }
 
@@ -155,7 +226,7 @@ EVisibility SDataLayerTreeLabel::GetTypeTextVisibility() const
 
 const FSlateBrush* SDataLayerTreeLabel::GetIcon() const
 {
-	const UDataLayer* DataLayer = DataLayerPtr.Get();
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
 	if (DataLayer && WeakSceneOutliner.IsValid())
 	{
 		const TCHAR* IconName = DataLayer->GetDataLayerIconName();
@@ -164,7 +235,7 @@ const FSlateBrush* SDataLayerTreeLabel::GetIcon() const
 			return CachedBrush;
 		}
 
-		const FSlateBrush* FoundSlateBrush = FEditorStyle::GetBrush(IconName);
+		const FSlateBrush* FoundSlateBrush = FAppStyle::GetBrush(IconName);
 		WeakSceneOutliner.Pin()->CacheIconForClass(IconName, FoundSlateBrush);
 		return FoundSlateBrush;
 	}
@@ -173,7 +244,7 @@ const FSlateBrush* SDataLayerTreeLabel::GetIcon() const
 
 FText SDataLayerTreeLabel::GetIconTooltip() const
 {
-	const UDataLayer* DataLayer = DataLayerPtr.Get();
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
 	return DataLayer ? (DataLayer->IsRuntime() ? FText(LOCTEXT("RuntimeDataLayer", "Runtime Data Layer")) : FText(LOCTEXT("EditorDataLayer", "Editor Data Layer"))) : FText();
 }
 
@@ -184,7 +255,7 @@ FSlateColor SDataLayerTreeLabel::GetForegroundColor() const
 		return BaseColor.GetValue();
 	}
 
-	const UDataLayer* DataLayer = DataLayerPtr.Get();
+	const UDataLayerInstance* DataLayer = DataLayerPtr.Get();
 	if (DataLayer)
 	{
 		if (DataLayer->GetWorld()->IsPlayInEditor())
@@ -221,6 +292,10 @@ FSlateColor SDataLayerTreeLabel::GetForegroundColor() const
 	{
 		return FAppStyle::Get().GetSlateColor("Colors.AccentBlue");
 	}
+	else if (IsInActorEditorContext())
+	{
+		return FAppStyle::Get().GetSlateColor("Colors.AccentGreen");
+	}
 	return FSlateColor::UseForeground();
 }
 
@@ -232,10 +307,19 @@ bool SDataLayerTreeLabel::OnVerifyItemLabelChanged(const FText& InLabel, FText& 
 		return false;
 	}
 
-	UDataLayer* FoundDataLayer;
-	if (UDataLayerEditorSubsystem::Get()->TryGetDataLayerFromLabel(*InLabel.ToString(), FoundDataLayer) && FoundDataLayer != DataLayerPtr.Get())
+	UDataLayerInstance* FoundDataLayerInstance;
+	
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (UDataLayerEditorSubsystem::Get()->TryGetDataLayerFromLabel(*InLabel.ToString(), FoundDataLayerInstance) && FoundDataLayerInstance != DataLayerPtr.Get())
 	{
 		OutErrorMessage = LOCTEXT("RenameFailed_AlreadyExists", "This Data Layer already exists");
+		return false;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	if (FoundDataLayerInstance != nullptr && !FoundDataLayerInstance->SupportRelabeling())
+	{
+		OutErrorMessage = LOCTEXT("RenameFailed_NotPermittedOnDataLayer", "This Data Layer does not support renaming");
 		return false;
 	}
 
@@ -244,17 +328,31 @@ bool SDataLayerTreeLabel::OnVerifyItemLabelChanged(const FText& InLabel, FText& 
 
 void SDataLayerTreeLabel::OnLabelCommitted(const FText& InLabel, ETextCommit::Type InCommitInfo)
 {
-	UDataLayer* DataLayer = DataLayerPtr.Get();
-	if (DataLayer && !InLabel.ToString().Equals(DataLayer->GetDataLayerLabel().ToString(), ESearchCase::CaseSensitive))
+	UDataLayerInstance* DataLayerInstance = DataLayerPtr.Get();
+	check(DataLayerInstance->SupportRelabeling());
+	if (!InLabel.ToString().Equals(DataLayerInstance->GetDataLayerShortName(), ESearchCase::CaseSensitive))
 	{
-		const FScopedDataLayerTransaction Transaction(LOCTEXT("SceneOutlinerRenameDataLayerTransaction", "Rename Data Layer"), DataLayer->GetWorld());
-		UDataLayerEditorSubsystem::Get()->RenameDataLayer(DataLayer, *InLabel.ToString());
+		const FScopedTransaction Transaction(LOCTEXT("SceneOutlinerRenameDataLayerTransaction", "Rename Data Layer"));
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		UDataLayerEditorSubsystem::Get()->RenameDataLayer(DataLayerInstance, *InLabel.ToString());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if (WeakSceneOutliner.IsValid())
 		{
 			WeakSceneOutliner.Pin()->SetKeyboardFocus();
 		}
 	}
+}
+
+void SDataLayerTreeLabel::OnEnterEditingMode()
+{
+	bInEditingMode = true;
+}
+
+void SDataLayerTreeLabel::OnExitEditingMode()
+{
+	bInEditingMode = false;
 }
 
 #undef LOCTEXT_NAMESPACE 

@@ -3,6 +3,10 @@
 #include "Transport/UdpMessageProcessor.h"
 #include "Algo/AllOf.h"
 #include "Algo/Transform.h"
+#include "HAL/IConsoleManager.h"
+#include "INetworkMessagingExtension.h"
+#include "Interfaces/IPv4/IPv4Endpoint.h"
+#include "Misc/AssertionMacros.h"
 #include "UdpMessagingPrivate.h"
 
 #include "Common/UdpSocketSender.h"
@@ -29,9 +33,80 @@
 
 const int32 FUdpMessageProcessor::DeadHelloIntervals = 5;
 
+TAutoConsoleVariable<int32> CVarFakeSocketError(
+	TEXT("MessageBus.UDP.InduceSocketError"),
+	0,
+	TEXT("This CVar can be used to induce a socket failure on outbound communication.\n")
+	TEXT("Any non zero value will force the output socket connection to fail if the IP address matches\n")
+	TEXT("one of the values in MessageBus.UDP.ConnectionsToError. The list can be cleared by invoking\n")
+	TEXT("MessageBus.UDP.ClearDenyList."),
+	ECVF_Default
+);
 
+TAutoConsoleVariable<FString> CVarConnectionsToError(
+	TEXT("MessageBus.UDP.ConnectionsToError"),
+	TEXT(""),
+	TEXT("Connections to error out on when MessageBus.UDP.InduceSocketError is enabled.\n")
+	TEXT("This can be a comma separated list in the form IPAddr2:port,IPAddr3:port"),
+	ECVF_Default);
+
+namespace UE::Private::MessageProcessor
+{
+
+bool ShouldErrorOnConnection(const FIPv4Endpoint& InEndpoint)
+{
+	if (CVarFakeSocketError.GetValueOnAnyThread() == 0)
+	{
+		return false;
+	}
+
+	const FString ConnectionsToErrorString = CVarConnectionsToError.GetValueOnAnyThread();
+	TArray<FString> EndpointStrings;
+	ConnectionsToErrorString.ParseIntoArray(EndpointStrings, TEXT(","));
+	for (const FString& EndpointString : EndpointStrings)
+	{
+		FIPv4Endpoint Endpoint;
+		if (FIPv4Endpoint::Parse(EndpointString, Endpoint))
+		{
+			if (Endpoint.Address == InEndpoint.Address &&
+				(Endpoint.Port == 0 || Endpoint.Port == InEndpoint.Port))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+FOnOutboundTransferDataUpdated& OnSegmenterUpdated()
+{
+	static FOnOutboundTransferDataUpdated OnTransferUpdated;
+	return OnTransferUpdated;
+}
+
+FOnInboundTransferDataUpdated& OnReassemblerUpdated()
+{
+	static FOnInboundTransferDataUpdated OnTransferUpdated;
+	return OnTransferUpdated;
+}
+
+uint16 GetMessageProcessorWorkQueueSize()
+{
+	return GetDefault<UUdpMessagingSettings>()->WorkQueueSize;
+}
+
+}
 /* FUdpMessageProcessor structors
  *****************************************************************************/
+FUdpMessageProcessor::FNodeInfo::FNodeInfo()
+	: LastSegmentReceivedTime(FDateTime::MinValue())
+	, NodeId()
+	, ProtocolVersion(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION)
+	, WorkQueue(UE::Private::MessageProcessor::GetMessageProcessorWorkQueueSize())
+{
+	ComputeWindowSize(0,0);
+}
+
 
 FUdpMessageProcessor::FUdpMessageProcessor(FSocket& InSocket, const FGuid& InNodeId, const FIPv4Endpoint& InMulticastEndpoint)
 	: Beacon(nullptr)
@@ -98,6 +173,16 @@ void FUdpMessageProcessor::RemoveStaticEndpoint(const FIPv4Endpoint& InEndpoint)
 	{
 		Beacon->RemoveStaticEndpoint(InEndpoint);
 	}
+}
+
+TArray<FIPv4Endpoint> FUdpMessageProcessor::GetKnownEndpoints() const
+{
+	TArray<FIPv4Endpoint> Endpoints;
+	for (const auto& NodePair : KnownNodes)
+	{
+		Endpoints.Add(NodePair.Value.Endpoint);
+	}
+	return Endpoints;
 }
 
 /* FUdpMessageProcessor interface
@@ -176,10 +261,10 @@ bool FUdpMessageProcessor::EnqueueOutboundMessage(const TSharedRef<IMessageConte
 	return true;
 }
 
-FUdpMessageTransportStatistics FUdpMessageProcessor::GetStats(FGuid Node) const
+FMessageTransportStatistics FUdpMessageProcessor::GetStats(FGuid Node) const
 {
 	FScopeLock NodeVersionLock(&StatisticsCS);
-	if (FUdpMessageTransportStatistics const* Stats = NodeStats.Find(Node))
+	if (FMessageTransportStatistics const* Stats = NodeStats.Find(Node))
 	{
 		return *Stats;
 	}
@@ -188,6 +273,7 @@ FUdpMessageTransportStatistics FUdpMessageProcessor::GetStats(FGuid Node) const
 
 void FUdpMessageProcessor::SendSegmenterStatsToListeners(int32 MessageId, FGuid NodeId, const TSharedPtr<FUdpMessageSegmenter>& Segmenter)
 {
+	FOnOutboundTransferDataUpdated& SegmenterUpdatedDelegate = UE::Private::MessageProcessor::OnSegmenterUpdated();
 	if(!SegmenterUpdatedDelegate.IsBound())
 	{
 		return;
@@ -198,13 +284,14 @@ void FUdpMessageProcessor::SendSegmenterStatsToListeners(int32 MessageId, FGuid 
 		return;
 	}
 	uint32 SegmentCount = Segmenter->GetSegmentCount();
-	SegmenterUpdatedDelegate.Execute(
+	SegmenterUpdatedDelegate.Broadcast(
 		{
 			NodeId,
 			MessageId,
-			SegmentCount - Segmenter->GetPendingSendSegmentsCount(),
-			Segmenter->GetAcknowledgedSegmentsCount(),
-			SegmentCount
+			// Convert segment data into bytes.
+			UDP_MESSAGING_SEGMENT_SIZE * SegmentCount,
+			UDP_MESSAGING_SEGMENT_SIZE * (SegmentCount - Segmenter->GetPendingSendSegmentsCount()),
+			UDP_MESSAGING_SEGMENT_SIZE * (Segmenter->GetAcknowledgedSegmentsCount())
 		});
 }
 
@@ -234,9 +321,10 @@ bool FUdpMessageProcessor::Init()
 		Beacon = new FUdpMessageBeacon(Socket, LocalNodeId, MulticastEndpoint);
 		SocketSender = new FUdpSocketSender(Socket, TEXT("FUdpMessageProcessor.Sender"));
 
-		// Current protocol version 15
+		// Current protocol version 16
 		SupportedProtocolVersions.Add(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION);
-		// Support Protocol version 10, 11, 12, 13, 14
+		// Support Protocol version 10, 11, 12, 13, 14, 15
+		SupportedProtocolVersions.Add(15);
 		SupportedProtocolVersions.Add(14);
 		SupportedProtocolVersions.Add(13);
 		SupportedProtocolVersions.Add(12);
@@ -382,7 +470,7 @@ void FUdpMessageProcessor::ConsumeInboundSegments()
 		FUdpMessageSegment::FHeader Header;
 		*Segment.Data << Header;
 
-		if (FilterSegment(Header))
+		if (FilterSegment(Header, Segment.Sender))
 		{
 			FNodeInfo& NodeInfo = KnownNodes.FindOrAdd(Header.SenderNodeId);
 
@@ -468,7 +556,11 @@ bool FUdpMessageProcessor::ConsumeOneOutboundMessage(const FOutboundMessage& Out
 					  [FindNodeWithLog](const FGuid &Id) {return FindNodeWithLog(Id);},
 					  [this](const FGuid &Id) {return KnownNodes.Find(Id);} );
 
-	const bool bCanConsume = Algo::AllOf(Recipients, [](FNodeInfo *Node) {return !Node->WorkQueue.IsFull();});
+	const bool bCanConsume = Algo::AllOf(Recipients, [this](FNodeInfo *Node)
+		{
+			return Node->CanCommitToWorkQueue(CurrentTime);
+		});
+
 	const bool bIsReliable = EnumHasAnyFlags(OutboundMessage.MessageFlags, EMessageFlags::Reliable);
 	if (bCanConsume)
 	{
@@ -509,13 +601,6 @@ void FUdpMessageProcessor::ConsumeOutboundMessages()
 	SCOPED_MESSAGING_TRACE(FUdpMessageProcessor_ConsumeOutputMessages);
 	FOutboundMessage OutboundMessage;
 
-	const auto CannotConsumeMsg = []()
-	{
-		UE_LOG(LogUdpMessaging, Warning, TEXT("Can't consume outbound messages. Work queue on one or more receipents is full. Will try again next tick."));
-		// We can't queue any messages at the moment because our some/all of our work queues are full.
-		//
-	};
-
 	if (DeferredOutboundMessage)
 	{
 		if (ConsumeOneOutboundMessage(DeferredOutboundMessage.GetValue()))
@@ -524,7 +609,6 @@ void FUdpMessageProcessor::ConsumeOutboundMessages()
 		}
 		else
 		{
-			CannotConsumeMsg();
 			return ;
 		}
 	}
@@ -533,17 +617,21 @@ void FUdpMessageProcessor::ConsumeOutboundMessages()
 	{
 		if (!ConsumeOneOutboundMessage(OutboundMessage))
 		{
-			CannotConsumeMsg();
 			DeferredOutboundMessage = OutboundMessage;
 			return ;
 		}
 	}
 }
 
-bool FUdpMessageProcessor::FilterSegment(const FUdpMessageSegment::FHeader& Header)
+bool FUdpMessageProcessor::FilterSegment(const FUdpMessageSegment::FHeader& Header, const FIPv4Endpoint& Sender)
 {
 	// filter locally generated segments
 	if (Header.SenderNodeId == LocalNodeId)
+	{
+		return false;
+	}
+
+	if (!CanAcceptEndpointDelegate.Execute(Header.SenderNodeId, Sender))
 	{
 		return false;
 	}
@@ -642,8 +730,19 @@ void FUdpMessageProcessor::ProcessDataSegment(FInboundSegment& Segment, FNodeInf
 		}
 	}
 
-	NodeInfo.Statistics.SegmentsReceived++;
+	NodeInfo.Statistics.TotalBytesReceived += DataChunk.Data.Num();
+	NodeInfo.Statistics.PacketsReceived++;
 	ReassembledMessage->Reassemble(DataChunk.SegmentNumber, DataChunk.SegmentOffset, DataChunk.Data, CurrentTime);
+	FOnInboundTransferDataUpdated& ReassemblerUpdated = UE::Private::MessageProcessor::OnReassemblerUpdated();
+	if(ReassemblerUpdated.IsBound())
+	{
+		ReassemblerUpdated.Broadcast(
+			{NodeInfo.NodeId,
+			 DataChunk.MessageId,
+			 UDP_MESSAGING_SEGMENT_SIZE * ReassembledMessage->GetPendingSegmentsCount(),
+			 ReassembledMessage->GetReceivedBytes()}
+			);
+	}
 
 	// Deliver or re-sequence message
 	if (!ReassembledMessage->IsComplete() || ReassembledMessage->IsDelivered())
@@ -840,6 +939,13 @@ bool FUdpMessageProcessor::MoreToSend()
 	return false;
 }
 
+void FUdpMessageProcessor::HandleSocketError(const FNodeInfo& NodeInfo) const
+{
+	UE_LOG(LogUdpMessaging, Error,
+		   TEXT("Socket error detected when communicating with %s. Banning communication to that endpoint."), *NodeInfo.Endpoint.ToString());
+	ErrorSendingToEndpointDelegate.Execute(NodeInfo.NodeId, NodeInfo.Endpoint);
+}
+
 void FUdpMessageProcessor::UpdateKnownNodes()
 {
 	SCOPED_MESSAGING_TRACE(FUdpMessageProcessor_UpdateKnownNodes);
@@ -855,9 +961,10 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 		int32 NodeByteSent = UpdateSegmenters(KnownNodePair.Value);
 		// if NodByteSent is negative, there is a socket error, continuing is useless
 		bSuccess = NodeByteSent >= 0;
-		if (!bSuccess)
+		if (!bSuccess || UE::Private::MessageProcessor::ShouldErrorOnConnection(KnownNodePair.Value.Endpoint))
 		{
-			UE_LOG(LogUdpMessaging, Verbose, TEXT("FUdpMessageProcessor::UpdateKnownNodes received negative NodeByteSent (%d) from socket sender."), NodeByteSent);
+			bSuccess = false; // To ensure we trigger the delegate on a forced error.
+			HandleSocketError(KnownNodePair.Value);
 			break;
 		}
 
@@ -865,6 +972,7 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 		// if there is a socket error, continuing is useless
 		if (!bSuccess)
 		{
+			HandleSocketError(KnownNodePair.Value);
 			break;
 		}
 
@@ -874,6 +982,7 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 	// if we had socket error, fire up the error delegate
 	if (!bSuccess || Beacon->HasSocketError())
 	{
+		bStopping = true;
 		ErrorDelegate.ExecuteIfBound();
 	}
 }
@@ -961,7 +1070,7 @@ FSentSegmentInfo FUdpMessageProcessor::SendNextSegmentForMessageId(FNodeInfo& No
 
 		Segmenter->MarkAsSent(DataChunk.SegmentNumber);
 
-		NodeInfo.Statistics.SegmentsSent++;
+		NodeInfo.Statistics.PacketsSent++;
 		SentInfo.BytesSent += Writer->Num();
 		SentInfo.SequenceNumber = ++NodeInfo.SequenceId;
 		SentInfo.bIsReliable = EnumHasAnyFlags(Segmenter->GetMessageFlags(), EMessageFlags::Reliable);
@@ -987,9 +1096,8 @@ FSentSegmentInfo FUdpMessageProcessor::SendNextSegmentForMessageId(FNodeInfo& No
 		SentInfo.bRequiresRequeue = true;
 	}
 
-	NodeInfo.Statistics.BytesSent += SentInfo.BytesSent;
-	NodeInfo.Statistics.IpAddress = NodeInfo.Endpoint;
-	NodeInfo.Statistics.SegmentsInFlight = NodeInfo.InflightSegments.Num();
+	NodeInfo.Statistics.TotalBytesSent += SentInfo.BytesSent;
+	NodeInfo.Statistics.IPv4AsString = NodeInfo.Endpoint.ToString();
 	return MoveTemp(SentInfo);
 }
 
@@ -1023,6 +1131,9 @@ int32 FUdpMessageProcessor::UpdateSegmenters(FNodeInfo& NodeInfo)
 
 		BytesSent += Info.BytesSent;
 	}
+	
+	NodeInfo.Statistics.PacketsInFlight = NodeInfo.InflightSegments.Num();
+	NodeInfo.Statistics.BytesInflight = NodeInfo.InflightSegments.Num() * UDP_MESSAGING_SEGMENT_SIZE;
 
 	// Requeue for the next round.
 	for (int32 RequeueMessageId : MessagesForRequeue)

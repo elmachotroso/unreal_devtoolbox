@@ -2,65 +2,99 @@
 
 #pragma once
 
-#include "Async/Fundamental/Task.h"
 #include "Async/Fundamental/Scheduler.h"
+#include "Async/Fundamental/Task.h"
 #include "Async/TaskTrace.h"
-#include "Templates/Invoke.h"
-#include "Templates/TypeCompatibleBytes.h"
-#include "Misc/Timeout.h"
-#include "Containers/ClosableMpscQueue.h"
-#include "Containers/SpscQueue.h"
-#include "Templates/UnrealTemplate.h"
-#include "Templates/RefCounting.h"
+#include "Containers/Array.h"
+#include "Containers/LockFreeFixedSizeAllocator.h"
+#include "Containers/LockFreeList.h"
+#include "CoreGlobals.h"
 #include "CoreTypes.h"
+#include "Experimental/ConcurrentLinearAllocator.h"
+#include "HAL/Event.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTLS.h"
+#include "HAL/Thread.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "Math/NumericLimits.h"
-#include "Misc/SpinLock.h"
-#include "Misc/ScopeLock.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Timeout.h"
+#include "Misc/Timespan.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Templates/EnableIf.h"
+#include "Templates/Invoke.h"
+#include "Templates/MemoryOps.h"
+#include "Templates/RefCounting.h"
+#include "Templates/TypeCompatibleBytes.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
 
 #include <atomic>
 #include <type_traits>
 
-namespace UE { namespace Tasks
+#if !defined(TASKGRAPH_NEW_FRONTEND)
+#define TASKGRAPH_NEW_FRONTEND 0
+#endif
+
+namespace UE::Tasks
 {
 	using LowLevelTasks::ETaskPriority;
+	using LowLevelTasks::ToString;
+	using LowLevelTasks::ToTaskPriority;
+
+	// special task priorities for tasks that are never sent to the scheduler
+	enum class EExtendedTaskPriority
+	{
+		None,
+		Inline, // a task priority for "inline" task execution - a task is executed "inline" by the thread that unlocked it, w/o scheduling
+		TaskEvent, // a task priority used by task events, allows to shortcut task execution
+
+#if TASKGRAPH_NEW_FRONTEND
+		// for integration with named threads
+		GameThreadNormalPri,
+		GameThreadHiPri,
+		GameThreadNormalPriLocalQueue,
+		GameThreadHiPriLocalQueue,
+
+		RenderThreadNormalPri,
+		RenderThreadHiPri,
+		RenderThreadNormalPriLocalQueue,
+		RenderThreadHiPriLocalQueue,
+
+		RHIThreadNormalPri,
+		RHIThreadHiPri,
+		RHIThreadNormalPriLocalQueue,
+		RHIThreadHiPriLocalQueue,
+#endif
+
+		Count
+	};
+
+	const TCHAR* ToString(EExtendedTaskPriority ExtendedPriority);
+	bool ToExtendedTaskPriority(const TCHAR* ExtendedPriorityStr, EExtendedTaskPriority& OutExtendedPriority);
 
 	class FPipe;
 
 	namespace Private
 	{
-		// intrusive atomic reference-counting base class.
-		class FRefCountedBase
-		{
-		public:
-			explicit FRefCountedBase(uint32 InitRefCount = 0)
-				: RefCount{ InitRefCount }
-			{}
+		class FTaskBase;
 
-			virtual ~FRefCountedBase() = default;
+		// returns the task (if any) that is being executed by the current thread
+		CORE_API FTaskBase* GetCurrentTask();
+		// sets the current task and returns the previous current task
+		CORE_API FTaskBase* ExchangeCurrentTask(FTaskBase* Task);
 
-			void AddRef()
-			{
-				RefCount.fetch_add(1, std::memory_order_relaxed);
-			}
+		// Returns true if called from inside a task that is being retracted
+		UE_DEPRECATED(5.1, "You should not use this function as it exists only to patch another system and can be removed any time.")
+		CORE_API bool IsThreadRetractingTask();
 
-			void Release()
-			{
-				uint32 LocalRefCount = RefCount.fetch_sub(1, std::memory_order_release) - 1;
-				if (LocalRefCount == 0)
-				{
-					std::atomic_thread_fence(std::memory_order_acquire);
-					delete this;
-				}
-			}
-
-		private:
-			std::atomic<uint32> RefCount;
-		};
-
-		// A base class for high-level task implementation.
-		// Must be dynamically allocated and used with TRefCountPtr.
-		// @see Tasks::FTaskBase
-		class CORE_API FTaskBase : public FRefCountedBase
+		// An abstract base class for task implementation. 
+		// Implements internal logic of task prerequisites, nested tasks and deep task retraction.
+		// Implements intrusive ref-counting and so can be used with TRefCountPtr.
+		// It doesn't store task body, instead it expects a derived class to provide a task body as a parameter to `TryExecute` method. @see TExecutableTask
+		class FTaskBase
 		{
 			UE_NONCOPYABLE(FTaskBase);
 
@@ -69,74 +103,120 @@ namespace UE { namespace Tasks
 			// "completion prerequisites" (a number of nested uncompleted tasks that block task completion)
 			static constexpr uint32 ExecutionFlag = 0x80000000;
 
+			////////////////////////////////////////////////////////////////////////////
+			// ref-count
 		public:
-			FTaskBase()
-				: FRefCountedBase(2) // for the initial reference (we don't increment it on passing to `TRefCountPtr`),
-				// and for the reference passed to the scheduler - is released when scheduler's "runnable" lambda is destroyed (see `Init`)
-			{}
-
-			virtual ~FTaskBase() override
+			void AddRef()
 			{
-				check(IsCompleted());
+				RefCount.fetch_add(1, std::memory_order_relaxed);
 			}
 
-			// a special internal task priority for "inline" task execution - a task is executed as soon as it's launched and has no 
-			// pending dependencies, "inline", w/o scheduling
-			static constexpr ETaskPriority InlineTaskPriority{ ETaskPriority::Count };
-
-			// initialises the task but doesn't launches it
-			template<typename TaskBodyType>
-			void Init(const TCHAR* DebugName, TaskBodyType&& InTaskBody, LowLevelTasks::ETaskPriority Priority)
+			void Release()
 			{
-				TaskBody = Forward<TaskBodyType>(InTaskBody);
+				uint32 LocalRefCount = RefCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+				if (LocalRefCount == 0)
+				{
+					delete this;
+				}
+			}
 
-				LowLevelTask.Init(DebugName, Priority,
+			uint32 GetRefCount() const
+			{
+				return RefCount.load(std::memory_order_relaxed);
+			}
+
+		private:
+			std::atomic<uint32> RefCount;
+			////////////////////////////////////////////////////////////////////////////
+
+		protected:
+			explicit FTaskBase(uint32 InitRefCount)
+				: RefCount(InitRefCount)
+			{
+			}
+
+			void Init(const TCHAR* InDebugName, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority)
+			{
+				// store debug name, priority and an adaptor for task execution in low-level task. The task body can't be stored as this task implementation needs to do some accounting
+				// before the task is executed (e.g. maintainance of TLS "current task")
+				LowLevelTask.Init(InDebugName, InPriority,
 					[
 						this,
 						// releasing scheduler's task reference can cause task's automatic destruction and so must be done after the low-level task
 						// task is flagged as completed. The task is flagged as completed after the continuation is executed but before its destroyed.
 						// `Deleter` is captured by value and is destroyed along with the continuation, calling the given functor on destruction
-						Deleter = LowLevelTasks::TDeleter<FRefCountedBase, &FRefCountedBase::Release>{ this }
-					] 
+						Deleter = LowLevelTasks::TDeleter<FTaskBase, &FTaskBase::Release>{ this }
+					]
 					{
-						TryExecute();
+						TryExecuteTask();
 					}
 				);
+				ExtendedPriority = InExtendedPriority;
+			}
+
+			virtual ~FTaskBase()
+			{
+				check(IsCompleted());
+				TaskTrace::Destroyed(GetTraceId());
+			}
+
+			// will be called to execute the task, must be implemented by a derived class that should call `FTaskBase::TryExecute` and pass the task body
+			// @see TExecutableTask::TryExecuteTask
+			virtual bool TryExecuteTask() = 0;
+
+		public:
+			// returns true if it's valid to wait for the task completion.
+			// it's not valid to wait for a task e.g. from inside task's execution, as this would deadlock
+			bool IsAwaitable() const
+			{
+				return FPlatformTLS::GetCurrentThreadId() != ExecutingThreadId.load(std::memory_order_relaxed);
+			}
+
+#if TASKGRAPH_NEW_FRONTEND
+			bool IsNamedThreadTask() const
+			{
+				return ExtendedPriority >= EExtendedTaskPriority::GameThreadNormalPri;
+			}
+#endif
+
+			EExtendedTaskPriority GetExtendedPriority() const
+			{
+				return ExtendedPriority;
 			}
 
 			// The task will be executed only when all prerequisites are completed. The task type must be a task handle that holds a pointer to
 			// FTaskBase as its `Pimpl` member (see Tasks::TTaskBase).
 			// Must not be called concurrently
-			void AddPrerequisites(FTaskBase& Prerequisite)
+			bool AddPrerequisites(FTaskBase& Prerequisite)
 			{
 				checkf(NumLocks.load(std::memory_order_relaxed) >= NumInitialLocks && NumLocks.load(std::memory_order_relaxed) < ExecutionFlag, TEXT("Prerequisites can be added only before the task is launched"));
 
 				// registering the task as a subsequent of the given prerequisite can cause its immediate launch by the prerequisite
 				// (if the prerequisite has been completed on another thread), so we need to keep the task locked by assuming that the 
 				// prerequisite can be added successfully, and release the lock if it wasn't
-				uint32 PrevNumLocks = NumLocks.fetch_add(1, std::memory_order_acquire); // `acquire` to make it happen before the task is registered as a subsequent
+				uint32 PrevNumLocks = NumLocks.fetch_add(1, std::memory_order_relaxed); // relaxed because the following
+				// `AddSubsequent` provides required sync
 				checkf(PrevNumLocks + 1 < ExecutionFlag, TEXT("Max number of nested tasks reached: %d"), ExecutionFlag);
 
-				if (Prerequisite.AddSubsequent(*this))
-				{
-					Prerequisites.Enqueue(&Prerequisite);
-					// keep it alive until this task's execution
-					Prerequisite.AddRef();
-				}
-				else
+				if (!Prerequisite.AddSubsequent(*this)) // linearisation point, acq_rel semantic
 				{
 					// failed to add the prerequisite (too late), correct the number
-					NumLocks.fetch_sub(1, std::memory_order_release); // `release` to make it happen after the task is registered as a subsequent
+					NumLocks.fetch_sub(1, std::memory_order_relaxed); // relaxed because the previous `AddSubsequent` call provides required sync
+					return false;
 				}
+
+				Prerequisite.AddRef(); // keep it alive until this task's execution
+				Prerequisites.Push(&Prerequisite); // release memory order
+				return true;
 			}
 
 			// The task will be executed only when all prerequisites are completed. The task type must be a task handle that holds a pointer to
 			// FTaskBase as its `Pimpl` member (see Tasks::TTaskBase).
 			// Must not be called concurrently
 			template<typename HigherLevelTaskType, decltype(std::declval<HigherLevelTaskType>().Pimpl)* = nullptr>
-			void AddPrerequisites(const HigherLevelTaskType& Prerequisite)
+			bool AddPrerequisites(const HigherLevelTaskType& Prerequisite)
 			{
-				AddPrerequisites(*Prerequisite.Pimpl);
+				return AddPrerequisites(*Prerequisite.Pimpl);
 			}
 
 			// The task will be executed only when all prerequisites are completed.
@@ -150,7 +230,8 @@ namespace UE { namespace Tasks
 				// registering the task as a subsequent of the given prerequisite can cause its immediate launch by the prerequisite
 				// (if the prerequisite has been completed on another thread), so we need to keep the task locked by assuming that the 
 				// prerequisite can be added successfully, and release the lock if it wasn't
-				uint32 PrevNumLocks = NumLocks.fetch_add(GetNum(InPrerequisites), std::memory_order_acquire); // `acquire` to make it happen before the task is registered as a subsequent
+				uint32 PrevNumLocks = NumLocks.fetch_add(GetNum(InPrerequisites), std::memory_order_relaxed); // relaxed because the following
+				// `AddSubsequent` provides required sync
 				checkf(PrevNumLocks + GetNum(InPrerequisites) < ExecutionFlag, TEXT("Max number of nested tasks reached: %d"), ExecutionFlag);
 
 				uint32 NumCompletedPrerequisites = 0;
@@ -163,16 +244,19 @@ namespace UE { namespace Tasks
 					{
 						Prerequisite = Prereq;
 					}
+					else if constexpr (std::is_pointer_v<FPrerequisiteType>)
+					{
+						Prerequisite = Prereq->Pimpl;
+					}
 					else
 					{
 						Prerequisite = Prereq.Pimpl;
 					}
 
-					if (Prerequisite->AddSubsequent(*this))
+					if (Prerequisite->AddSubsequent(*this)) // acq_rel memory order
 					{
-						Prerequisites.Enqueue(Prerequisite);
-						// keep it alive until this task's execution
-						Prerequisite->AddRef();
+						Prerequisite->AddRef(); // keep it alive until this task's execution
+						Prerequisites.Push(Prerequisite); // release memory order
 					}
 					else
 					{
@@ -181,14 +265,16 @@ namespace UE { namespace Tasks
 				}
 
 				// unlock for prerequisites that weren't added
-				NumLocks.fetch_sub(NumCompletedPrerequisites, std::memory_order_release); // `release` to make it happen after the task is registered as a subsequent
+				NumLocks.fetch_sub(NumCompletedPrerequisites, std::memory_order_relaxed);  // relaxed because the previous 
+				// `AddSubsequent` provides required sync
 			}
 
 			// the task unlocks all its subsequents on completion.
 			// returns false if the task is already completed and the subsequent wasn't added
 			bool AddSubsequent(FTaskBase& Subsequent)
 			{
-				return Subsequents.Enqueue(&Subsequent);
+				TaskTrace::SubsequentAdded(GetTraceId(), Subsequent.GetTraceId()); // doesn't matter if we suceeded below, we need to record task dependency
+				return Subsequents.PushIfNotClosed(&Subsequent);
 			}
 
 			// A piped task is executed after the previous task from this pipe is completed. Tasks from the same pipe are not executed
@@ -196,6 +282,8 @@ namespace UE { namespace Tasks
 			// @See FPipe
 			void SetPipe(FPipe& InPipe)
 			{
+				// keep the task locked until it's pushed into the pipe
+				NumLocks.fetch_add(1, std::memory_order_relaxed); // the order doesn't matter as this happens before the task is launched
 				Pipe = &InPipe;
 			}
 
@@ -212,126 +300,36 @@ namespace UE { namespace Tasks
 				return TryUnlock();
 			}
 
+			// @return true if the task was executed and all its nested tasks are completed
 			bool IsCompleted() const
 			{
 				return Subsequents.IsClosed();
 			}
 
-			// Tries to pull out the task from the scheduler and execute it. Returns false if task execution is already started.
-			bool TryRetractAndExecute(uint32 RecursionDepth = 0)
+			// Tries to pull out the task from the system and execute it. If the task is locked by either prerequisites or nested tasks, tries to retract and execute them recursively. 
+			// @return true if task is completed, not necessarily by retraction. If the task is being executed (or its dependency) in parallel, it doesn't wait for task completion and 
+			// returns false immediately.
+			CORE_API bool TryRetractAndExecute(uint32 RecursionDepth = 0);
+
+			// releases internal reference and maintains low-level task state. must be called iff the task was never launched, otherwise 
+			// the scheduler will do this in due course
+			void ReleaseInternalReference()
 			{
-				if (IsCompleted())
-				{
-					return true;
-				}
-
-				// avoid stack overflow. is not expected in a real-life cases but happens in stress tests
-				if (RecursionDepth == 200)
-				{
-					return false;
-				}
-				++RecursionDepth;
-
-				// prevent concurrent retraction from multiple threads. while it's desirable to allow this (so different threads retract and
-				// execute prerequisites in parallel), multiple threads waiting for the same task with multiple not completed prerequisites is expected
-				// to happen very rarely, and the implementation would be much more complicated potentially leading to a slower common-case
-				// version
-				if (!TryGetExecutionPermission())
-				{
-					return false;
-				}
-
-				auto IsLocked = [this]
-				{
-					return NumLocks.load(std::memory_order_acquire) != (Pipe == nullptr ? 1 : 0);
-				};
-
-				if (IsLocked())
-				{
-					// try to unlock the task. even if prerequisites retraction fails we still need to proceed to try to execute the task here in case
-					// prerequisites were completed in parallel
-
-					// prerequisites are "consumed" here even if their retraction fails. retraction can fail only if task execution has 
-					// already started, and it can't become "retractable" again, so no need to keep them
-					while (TOptional<FTaskBase*> Prerequisite = Prerequisites.Dequeue())
-					{
-						Prerequisite.GetValue()->TryRetractAndExecute(RecursionDepth);
-						Prerequisite.GetValue()->Release();
-					}
-				}
-
-				// the task can be still locked if either prerequisite retraction (above) failed, or the task was piped by another thread, or the task 
-				// wasn't launched yet (Tasks::FTaskEvent can be used as a prerequisites before it's triggered)
-				if (IsLocked())
-				{
-					RevokeExecutionPermission();
-					// prerequisites could be completed in parallel after `IsLocked()` and before we revoked execution permission, so the worker who
-					// unlocked the task won't be able to execute it. double check if the task is still locked and if not - try to execute it
-					if (IsLocked() || !TryGetExecutionPermission()) // if it's the case, try to get back execution permission
-					{
-						return false;
-					}
-				}
-
-				// the task is unlocked and we have execution permission
-				DoExecute();
-				// no need to cancel task execution by the scheduler, when the scheduler will execute its runnable, it will fail to get execution
-				// permissions and will do nothing
-				// LowLevelTask.TryCancel();
-
-				if (IsCompleted()) // still can be hold back by nested tasks
-				{
-					return true;
-				}
-
-				// retract nested tasks. this can happen concurrently with `Close()` called by a nested task, that also consumes `Prerequisite`. 
-				// `Prerequisites` is a single-producer/single-consumer queue so we need to put an aditional synchronisation for dequeueing
-				{
-					TScopeLock<FSpinLock> ScopeLock(PrerequisitesLock);
-
-					// keep trying retracting all nested tasks even if some of them fail, so the current worker can contribute instead of being blocked
-					bool bSucceeded = true;
-					// prerequisites are "consumed" here even if their retraction fails. retraction can fail only if task execution has 
-					// already started, and it can't become "retractable" again, so no need to keep them
-					while (TOptional<FTaskBase*> Prerequisite = Prerequisites.Dequeue())
-					{
-						TScopeUnlock<FSpinLock> ScopeUnlock(PrerequisitesLock); // only `Prerequisites.Dequeue()` needs to be locked
-
-						if (!Prerequisite.GetValue()->TryRetractAndExecute(RecursionDepth))
-						{
-							bSucceeded = false;
-						}
-						Prerequisite.GetValue()->Release();
-					}
-
-					if (!bSucceeded)
-					{
-						return false;
-					}
-				}
-
-				// it happens that all nested tasks are completed and are in the process of completing the parent (this task) concurrently, but the flag
-				// is not set yet. wait for it
-				while (!IsCompleted())
-				{
-					FPlatformProcess::Yield();
-				}
-
-				return true;
+				verify(LowLevelTask.TryCancel());
 			}
 
 			// adds a nested task that must be completed before the parent (this) is completed
 			void AddNested(FTaskBase& Nested)
 			{
-				uint32 PrevNumLocks = NumLocks.fetch_add(1, std::memory_order_relaxed); // in case we'll succeed in adding subsequent
+				uint32 PrevNumLocks = NumLocks.fetch_add(1, std::memory_order_relaxed); // in case we'll succeed in adding subsequent, 
+				// "happens before" registering this task as a subsequent
 				checkf(PrevNumLocks + 1 < TNumericLimits<uint32>::Max(), TEXT("Max number of nested tasks reached: %d"), TNumericLimits<uint32>::Max() - ExecutionFlag);
 				checkf(PrevNumLocks > ExecutionFlag, TEXT("Internal error: nested tasks can be added only during parent's execution (%u)"), PrevNumLocks);
 
-				if (Nested.AddSubsequent(*this))
+				if (Nested.AddSubsequent(*this)) // "release" memory order
 				{
-					Prerequisites.Enqueue(&Nested);
-					// keep it alive until the task destruction
-					Nested.AddRef();
+					Nested.AddRef(); // keep it alive as we store it in `Prerequisites` and we can need it to try to retract it. it's released on closing the task
+					Prerequisites.Push(&Nested);
 				}
 				else
 				{
@@ -340,34 +338,12 @@ namespace UE { namespace Tasks
 			}
 
 			// waits for task's completion, with optional timeout. Tries to retract the task and execute it in-place, if failed - blocks until the task 
-			// is completed by another thread. If timeout is zero, tries to retract the task and returns immedially after that.
+			// is completed by another thread. If timeout is zero, tries to retract the task and returns immedially after that. 
+			// `Wait(FTimespan::Zero())` still tries to retract and execute the task, use `IsCompleted()` to check for completeness. 
+			// The version w/o timeout is slightly more efficient.
 			// @return true if the task is completed
-			bool Wait(FTimespan Timeout = FTimespan::MaxValue())
-			{
-				TaskTrace::FWaitingScope WaitingScope(GetTraceId());
-				TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::Wait);
-
-				if (TryRetractAndExecute())
-				{
-					return true;
-				}
-
-				// the event must be alive for the task and this function lifetime, we don't know which one will be finished first as waiting can time out
-				// before the waiting task is completed
-				FSharedEventRef CompletionEvent;
-
-				TRefCountPtr<Private::FTaskBase> WaitingTask{ new Private::FTaskBase, /*bAddRef=*/ false };
-				WaitingTask->Init(TEXT("Waiting Task"), [CompletionEvent] { CompletionEvent->Trigger(); }, Private::FTaskBase::InlineTaskPriority);
-				WaitingTask->AddPrerequisites(*this);
-
-				if (WaitingTask->TryLaunch())
-				{	// was executed inline
-					check(WaitingTask->IsCompleted());
-					return true;
-				}
-
-				return CompletionEvent->Wait(Timeout);
-			}
+			CORE_API void Wait();
+			CORE_API bool Wait(FTimespan Timeout);
 
 			// waits until the task is completed while executing other tasks
 			void BusyWait()
@@ -425,222 +401,420 @@ namespace UE { namespace Tasks
 #endif
 			}
 
-			// returns the task that is being currently exeucuted by this thread, if any
-			static FTaskBase* GetCurrentTask();
+		protected:
+			using FTaskBodyType = void(*)(FTaskBase&);
+
+			// tries to get execution permission and if successful, executes given task body and completes the task if there're no pending nested tasks. 
+			// does all required accounting before/after task execution. the task can be deleted as a result of this call.
+			// @returns true if the task was executed by the current thread
+			FORCENOINLINE bool TryExecute(FTaskBodyType TaskBody)
+			{
+				if (!TrySetExecutionFlag())
+				{
+					return false;
+				}
+
+				AddRef(); // `LowLevelTask` will automatically release the internal reference after execution, but there can be pending nested tasks, so keep it alive
+				// it's released either later here if the task is closed, or when the last nested task is completed and unlocks its parent (in `TryUnlock`)
+
+				ReleasePrerequisites();
+
+				FTaskBase* PrevTask = ExchangeCurrentTask(this);
+				ExecutingThreadId.store(FPlatformTLS::GetCurrentThreadId(), std::memory_order_relaxed);
+
+				if (GetPipe() != nullptr)
+				{
+					StartPipeExecution();
+				}
+
+				{
+					TaskTrace::FTaskTimingEventScope TaskEventScope(GetTraceId());
+					TaskBody(*this);
+				}
+
+				if (GetPipe() != nullptr)
+				{
+					FinishPipeExecution();
+				}
+
+				ExecutingThreadId.store(FThread::InvalidThreadId, std::memory_order_relaxed); // no need to sync with loads as they matter only if
+				// executed by the same thread
+				ExchangeCurrentTask(PrevTask);
+
+				// close the task if there are no pending nested tasks
+				uint32 LocalNumLocks = NumLocks.fetch_sub(1, std::memory_order_acq_rel) - 1; // "release" to make task execution "happen before" this, and "acquire" to 
+				// "sync with" another thread that completed the last nested task
+				if (LocalNumLocks == ExecutionFlag) // unlocked (no pending nested tasks)
+				{
+					Close();
+					Release(); // the internal reference that kept the task alive for nested tasks
+				} // else there're non completed nested tasks, the last one will unlock, close and release the parent (this task)
+
+				return true;
+			}
+
+			// closes task by unlocking its subsequents and flagging it as completed
+			void Close()
+			{
+				checkSlow(!IsCompleted());
+
+				if (GetPipe() != nullptr)
+				{
+					ClearPipe();
+				}
+
+				TArray<FTaskBase*> Subs;
+				Subsequents.PopAllAndClose(Subs);
+				for (FTaskBase* Sub : Subs)
+				{
+					Sub->TryUnlock();
+				}
+
+				// release nested tasks
+				ReleasePrerequisites();
+
+				TaskTrace::Completed(GetTraceId());
+			}
+
+			CORE_API void ClearPipe();
 
 		private:
-			// sets the current task and returns the previous current task
-			static FTaskBase* ExchangeCurrentTask(FTaskBase* Task);
-
 			// A task can be locked for execution (by prerequisites or if it's not launched yet) or for completion (by nested tasks).
 			// This method is called to unlock the task and so can result in its scheduling (and execution) or completion
 			bool TryUnlock()
 			{
+				FPipe* LocalPipe = GetPipe(); // cache data locally so we won't need to touch the member (read below)
+
 				uint32 PrevNumLocks = NumLocks.fetch_sub(1, std::memory_order_acq_rel); // `acq_rel` to make it happen after task 
 				// preparation and before launching it
+				// the task can be dead already as the prev line can remove the lock hold for this execution path, another thread(s) can unlock
+				// the task, execute, complete and delete it. thus before touching any members or calling methods we need to make sure
+				// the task can't be destroyed concurrently
+
+				uint32 LocalNumLocks = PrevNumLocks - 1;
+
 				if (PrevNumLocks < ExecutionFlag)
 				{
-					checkf(PrevNumLocks != (GetPipe() == nullptr ? 1 : 0), TEXT("The task is not locked"));
-					return TrySchedule(PrevNumLocks - 1);
+					// pre-execution state, try to schedule the task
+
+					checkf(PrevNumLocks != 0, TEXT("The task is not locked"));
+
+					bool bPrerequisitesCompleted = LocalPipe == nullptr ? LocalNumLocks == 0 : LocalNumLocks <= 1; // the only remaining lock is pipe's one (if any)
+					if (!bPrerequisitesCompleted)
+					{
+						return false;
+					}
+
+					// this thread unlocked the task, no other thread can reach this point concurrently, we can touch the task again
+
+					if (LocalPipe != nullptr)
+					{
+						bool bFirstPipingAttempt = LocalNumLocks == 1;
+						if (bFirstPipingAttempt)
+						{
+							FTaskBase* PrevPipedTask = TryPushIntoPipe();
+							if (PrevPipedTask != nullptr) // the pipe is blocked
+							{
+								// the prev task in pipe's chain becomes this task's prerequisite, to enabled piped task retraction.
+								// no need to AddRef as it's already sorted in `FPipe::PushIntoPipe`
+								Prerequisites.Push(PrevPipedTask);
+								return false;
+							}
+
+							NumLocks.store(0, std::memory_order_release); // release pipe's lock
+						}
+					}
+
+					if (ExtendedPriority == EExtendedTaskPriority::Inline)
+					{
+						// "inline" tasks are not scheduled but executed straight away
+						TryExecuteTask(); // result doesn't matter, this can fail if task retraction jumped in and got execution
+						// permission between this thread unlocked the task and tried to execute it
+						verify(LowLevelTask.TryCancel());
+					}
+					else if (ExtendedPriority == EExtendedTaskPriority::TaskEvent)
+					{
+						// task events have nothing to execute, try to close it. task retraction can jump in and close the task event, 
+						// so this thread still needs to check execution permission
+						if (TrySetExecutionFlag())
+						{
+							// task events are used as an empty prerequisites/subsequents
+							ReleasePrerequisites();
+							Close();
+							verify(LowLevelTask.TryCancel()); // releases the internal reference
+						}
+					}
+					else
+					{
+						Schedule();
+					}
+
+					return true;
 				}
 
+				// execution already started (at least), this is nested tasks unlocking their parent
 				checkf(PrevNumLocks != ExecutionFlag, TEXT("The task is not locked"));
-				return TryComplete(PrevNumLocks - 1);
-			}
-
-			// tries to pass the task to the scheduler for eventual execution by checking if something holds it back.
-			// tasks with inline priority can be executed right here.
-			bool TrySchedule(uint32 LocalNumLocks)
-			{
-				const bool bReadyForPiping = LocalNumLocks <= 1; // the only lock that can remain is pipe's one
-				if (!bReadyForPiping)
+				if (LocalNumLocks != ExecutionFlag) // still locked
 				{
 					return false;
 				}
 
-				if (!TryPushIntoPipe(LocalNumLocks))
-				{
-					return false; // pipe is blocked
-				}
-
-				TaskTrace::Scheduled(GetTraceId());
-
-				// "inline" tasks are not scheduled but executed as soon as they are unlocked
-				if (LowLevelTask.GetPriority() == InlineTaskPriority)
-				{
-					// execute before cancelling the low-level task as successful cancellation can release the last reference and destroy the task
-					// the low-level task wasn't scheduled, so successful execution and low-level task cancellation is guaranted
-					TryExecute();
-					verify(LowLevelTask.TryCancel());
-					return true;
-				}
-
-				verify(LowLevelTasks::TryLaunch(LowLevelTask)); // schedule the task
-
+				// this thread unlocked the task, no other thread can reach this point concurrently, we can touch the task again
+				Close();
+				Release(); // the internal reference that kept the task alive for nested tasks
 				return true;
 			}
+
+			CORE_API void Schedule();
+
+			// is called when the task has no pending prerequisites. Returns the previous piped task if any
+			CORE_API FTaskBase* TryPushIntoPipe();
+
+			// only one thread can successfully set execution flag, that grants task execution permission
+			// @returns false if another thread got execution permission first
+			bool TrySetExecutionFlag()
+			{
+				uint32 ExpectedUnlocked = 0;
+				// set the execution flag and simultenously lock it (+1) so a nested task completion doesn't close it before its execution is finished
+				return NumLocks.compare_exchange_strong(ExpectedUnlocked, ExecutionFlag + 1, std::memory_order_acq_rel, std::memory_order_relaxed); // on success 
+				// - linearisation point for task execution, on failure - load order doesn't matter
+			}
+
+			void ReleasePrerequisites()
+			{
+				while (FTaskBase* Prerequisite = Prerequisites.Pop())
+				{
+					Prerequisite->Release();
+				}
+			}
+
+			CORE_API void StartPipeExecution();
+			CORE_API void FinishPipeExecution();
 
 			// the task is already executed but it's not completed yet. This method sets completion flag if there're no pending nested tasks.
 			// The task can be deleted as the result of this call.
-			bool TryComplete(uint32 LocalNumLocks)
-			{
-				if (LocalNumLocks == ExecutionFlag)
-				{
-					checkSlow(!IsCompleted());
-					Close();
-					return true;
-				}
-
-				return false;
-			}
-
-			// prepares the task for execution and executes its body if its execution hasn't been started yet
-			bool TryExecute()
-			{
-				if (TryGetExecutionPermission())
-				{
-					DoExecute();
-					return true;
-				}
-
-				return false; // that task is being retracted in parallel
-			}
-
-			bool TryGetExecutionPermission()
-			{
-				return bAvailableForExecution.exchange(false, std::memory_order_acq_rel);
-			}
-
-			void RevokeExecutionPermission()
-			{
-				checkSlow(!bAvailableForExecution.load(std::memory_order_relaxed));
-				bAvailableForExecution.store(true, std::memory_order_release);
-			}
-
-			void DoExecute()
-			{
-				AddRef(); // for the reference hold by nested tasks, is released when the task is closed
-
-				// release prerequisites refs as they are not needed anymore
-				while (TOptional<FTaskBase*> Prerequisite = Prerequisites.Dequeue())
-				{
-					Prerequisite.GetValue()->Release();
-				}
-
-				checkSlow(Pipe == nullptr ? NumLocks.load(std::memory_order_relaxed) == 1 : NumLocks.load(std::memory_order_relaxed) == 0);
-				NumLocks.store(ExecutionFlag + 1, std::memory_order_relaxed); // +1 to hold it locked during execution, so nested tasks don't
-				// complete it before the execution finishes
-
-				FTaskBase* PrevTask = ExchangeCurrentTask(this);
-				{
-					TaskTrace::FTaskTimingEventScope TaskEventScope(GetTraceId());
-					StartPipeExecution();
-
-					TaskBody();
-					TaskBody.Reset();
-
-					FinishPipeExecution();
-				}
-				ExchangeCurrentTask(PrevTask);
-				
-				uint32 LocalNumLocks = NumLocks.fetch_sub(1, std::memory_order_relaxed) - 1;
-
-				TryComplete(LocalNumLocks);
-			}
-
-			// checks if the task is ready to be launched by trying to push it into the pipe.
-			// can be called up to two times: first to push into the blocked pipe and then when the pipe is unblocked
-			// `LocalNumLocks` is the value that was used to make a decision to push into the pipe, no need to read `NumLocks` again
-			bool TryPushIntoPipe(uint32 LocalNumLocks)
-			{
-				if (Pipe == nullptr)
-				{
-					// the task is locked for a pipe initially even if eventually there's no pipe
-					check(LocalNumLocks == 1);
-
-					return true;
-				}
-
-				// on the first call we try to push the task into the pipe. if unsuccessful (the pipe is blocked), the second time the method is called
-				// only when the pipe is unblocked, so we know that the task is free to be executed
-
-				bool bFirstAttempt = LocalNumLocks == 1;
-				if (bFirstAttempt)
-				{
-					FTaskBase* PrevPipedTask = PushIntoPipe();
-					if (PrevPipedTask == nullptr) // we are free to go
-					{
-						NumLocks.store(0, std::memory_order_relaxed);
-						return true;
-					}
-
-					Prerequisites.Enqueue(PrevPipedTask);
-					// no need to AddRef as it's already sorted in `FPipe::PushIntoPipe`
-					return false;
-				}
-
-				return true;
-			}
-
-			// is called when the task has no pending prerequisites. Returns the previous piped task if any
-			FTaskBase* PushIntoPipe();
-
-			void StartPipeExecution();
-			void FinishPipeExecution();
-
-			// closes task by unlocking its subsequents and flagging it as completed
-			void Close();
 
 		private:
-			LowLevelTasks::FTask LowLevelTask;
-			TUniqueFunction<void()> TaskBody;
-			std::atomic<bool> bAvailableForExecution{ true };
+			EExtendedTaskPriority ExtendedPriority; // internal priorities, if any
 
+			LowLevelTasks::FTask LowLevelTask;
 
 			// the number of times that the task should be unlocked before it can be scheduled or completed
-			// initial count is 1 for launching the task (it can't be scheduled before it's launched) and 1 for a potential blocked pipe. once NumLocks
+			// initial count is 1 for launching the task (it can't be scheduled before it's launched)
 			// reaches 0 the task is scheduled for execution.
-			// NumLocks's the most significant bit (see `ExecutionFlag`) is set on task execution start, and indicates that now NumLocks is about 
-			// how many times the task must be unlocked to be completed
-			static constexpr uint32 NumInitialLocks = 1 + 1;
+			// NumLocks's the most significant bit (see `ExecutionFlag`) is set on task execution start, and indicates that now 
+			// NumLocks is about how many times the task must be unlocked to be completed
+			static constexpr uint32 NumInitialLocks = 1;
 			std::atomic<uint32> NumLocks{ NumInitialLocks };
-
-			// A single-producer/single-consumer container to store back links to "prerequsites" (either execution prerequisites or nested tasks 
-			// that are completion prerequisites).
-			// It's populated in three stages:
-			// 1) by adding execution prerequisites, before the task is launched, single thread, when nobody else accesses it. doesn't need
-			// synchronisation
-			// 2) by piping, when the previous piped task is added as a prerequisite. after adding prerequisites. this can happen in parallel with
-			// retraction that consumes prerequisites. multiple threads can try to retract the task but only one will be allowed to proceed, 
-			// so single producer/single consumer
-			// 3) by adding nested tasks. after piping. during task execution, thus retraction is not possible and won't touch it. single-threaded
-			// `Prerequisites` can be consumed concurrently by retraction and nested tasks closing this task. This case is explicitly locked
-			TSpscQueue<FTaskBase*> Prerequisites;
-			FSpinLock PrerequisitesLock;
-
-			TClosableMpscQueue<FTaskBase*> Subsequents;
-
-			FPipe* Pipe{ nullptr };
 
 #if UE_TASK_TRACE_ENABLED
 			TaskTrace::FId TraceId = TaskTrace::GenerateTaskId();
 #endif
 
-		// some projects are still built on macOS before v.10.14 that doesn't have aligned new/delete operators
-		public:
-			inline void* operator new(size_t Size)
+			// the task is completed when its subsequents list is closed
+			TClosableLockFreePointerListUnorderedSingleConsumer<FTaskBase, 0> Subsequents;
+
+			// stores backlinks to prerequsites, either execution prerequisites or nested tasks (completion prerequisites).
+			// It's populated in three stages:
+			// 1) by adding execution prerequisites, before the task is launched.
+			// 2) by piping, when the previous piped task (if any) is added as a prerequisite. can happen concurrently with other threads accessing prerequisites for
+			//		task retraction.
+			// 3) by adding nested tasks. after piping. during task execution.
+			TLockFreePointerListUnordered<FTaskBase, 0> Prerequisites;
+
+			FPipe* Pipe{ nullptr };
+
+			std::atomic<uint32> ExecutingThreadId = FThread::InvalidThreadId;
+		};
+
+		// an extension of FTaskBase for tasks that return a result.
+		// Stores task execution result and provides an access to it.
+		template<typename ResultType>
+		class TTaskWithResult : public FTaskBase
+		{
+		protected:
+			explicit TTaskWithResult(const TCHAR* InDebugName, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority, uint32 InitRefCount)
+				: FTaskBase(InitRefCount)
 			{
-				return FMemory::Malloc(Size, 64u);
+				Init(InDebugName, InPriority, InExtendedPriority);
 			}
 
-			inline void operator delete(void* Ptr)
+			virtual ~TTaskWithResult() override
 			{
-				FMemory::Free(Ptr);
+				DestructItem(ResultStorage.GetTypedPtr());
+			}
+
+		public:
+			ResultType& GetResult()
+			{
+				checkf(IsCompleted(), TEXT("The task must be completed to obtain its result"));
+				return *ResultStorage.GetTypedPtr();
+			}
+
+		protected:
+			TTypeCompatibleBytes<ResultType> ResultStorage;
+		};
+
+		struct FTaskBlockAllocationTag : FDefaultBlockAllocationTag
+		{
+			static constexpr uint32 BlockSize = 64 * 1024;
+			static constexpr bool AllowOversizedBlocks = false;
+			static constexpr bool RequiresAccurateSize = false;
+			static constexpr bool InlineBlockAllocation = true;
+			static constexpr const char* TagName = "TaskLinearAllocator";
+
+			using Allocator = TBlockAllocationCache<BlockSize, FAlignedAllocator>;
+		};
+
+		// Task implementation that can be executed, as it stores task body. Generic version (for tasks that return non-void results).
+		// In most cases it should be allocated on the heap and used with TRefCountPtr, e.g. @see FTaskHandle. With care, can be allocated on the stack, e.g. see 
+		// WaitingTask in FTaskBase::Wait().
+		// Implements memory allocation from a pooled fixed-size allocator tuned for the everage UE task size
+		template<typename TaskBodyType, typename ResultType = TInvokeResult_T<TaskBodyType>, typename Enable = void>
+		class TExecutableTask final : public TConcurrentLinearObject<TExecutableTask<TaskBodyType>, FTaskBlockAllocationTag>, public TTaskWithResult<ResultType>
+		{
+			UE_NONCOPYABLE(TExecutableTask);
+
+		public:
+			static TExecutableTask* Create(const TCHAR* DebugName, TaskBodyType TaskBody, ETaskPriority Priority, EExtendedTaskPriority InExtendedPriority = EExtendedTaskPriority::None)
+			{
+				return new TExecutableTask(DebugName, MoveTemp(TaskBody), Priority, InExtendedPriority);
+			}
+
+			TExecutableTask(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority):
+				TTaskWithResult<ResultType>(InDebugName, InPriority, InExtendedPriority, 2)
+				// 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
+				// reference that keeps the task alive while it's in the system. is released either on task completion or by the scheduler after
+				// trying to execute the task
+			{
+				new(&TaskBodyStorage) TaskBodyType(MoveTemp(TaskBody));
+			}
+
+			virtual bool TryExecuteTask() override
+			{
+				return FTaskBase::TryExecute(
+					[](FTaskBase& Task) 
+					{ 
+						TExecutableTask& This = static_cast<TExecutableTask&>(Task);
+						new(&This.ResultStorage) ResultType{ Invoke(*This.TaskBodyStorage.GetTypedPtr()) }; 
+
+						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
+						DestructItem(This.TaskBodyStorage.GetTypedPtr());
+					}
+				);
+			}
+
+		private:
+			TTypeCompatibleBytes<TaskBodyType> TaskBodyStorage;
+		};
+
+		// a specialization for tasks that don't return results
+		template<typename TaskBodyType>
+		class TExecutableTask<TaskBodyType, typename TEnableIf<TIsSame<TInvokeResult_T<TaskBodyType>, void>::Value>::Type> final : public TConcurrentLinearObject<TExecutableTask<TaskBodyType>, FTaskBlockAllocationTag>, public FTaskBase
+		{
+			UE_NONCOPYABLE(TExecutableTask);
+
+		public:
+			static TExecutableTask* Create(const TCHAR* DebugName, TaskBodyType TaskBody, ETaskPriority Priority, EExtendedTaskPriority InExtendedPriority = EExtendedTaskPriority::None)
+			{
+				return new TExecutableTask(DebugName, MoveTemp(TaskBody), Priority, InExtendedPriority);
+			}
+
+			TExecutableTask(const TCHAR* InDebugName, TaskBodyType&& TaskBody, ETaskPriority InPriority, EExtendedTaskPriority InExtendedPriority) :
+				FTaskBase(2)
+				// 2 init refs: one for the initial reference (we don't increment it on passing to `TRefCountPtr`), and one for the internal 
+				// reference that keeps the task alive while it's in the system. is released either on task completion or by the scheduler after
+				// trying to execute the task
+			{
+				Init(InDebugName, InPriority, InExtendedPriority);
+				new(&TaskBodyStorage) TaskBodyType(MoveTemp(TaskBody));
+			}
+
+			virtual bool TryExecuteTask() override
+			{
+				return TryExecute(
+					[](FTaskBase& Task)
+					{
+						TExecutableTask& This = static_cast<TExecutableTask&>(Task);
+						Invoke(*This.TaskBodyStorage.GetTypedPtr()); 
+
+						// destroy the task body as soon as we are done with it, as it can have captured data sensitive to destruction order
+						DestructItem(This.TaskBodyStorage.GetTypedPtr());
+					}
+				);
+			}
+
+		private:
+			TTypeCompatibleBytes<TaskBodyType> TaskBodyStorage;
+		};
+
+		// waiting on named threads that replicates TaskGraph logic
+		// returns true if called on a named thread
+		CORE_API bool TryWaitOnNamedThread(FTaskBase& Task);
+
+		// a special kind of task that is used for signalling or dependency management. It can have prerequisites or be used as a prerequisite for other tasks. 
+		// It's optimized for the fact that it doesn't have a task body and so doesn't need to be scheduled and executed
+		class FTaskEventBase : public FTaskBase
+		{
+		public:
+			static FTaskEventBase* Create(const TCHAR* DebugName)
+			{
+				return new FTaskEventBase(DebugName);
+			}
+
+			static void* operator new(size_t Size);
+			static void operator delete(void* Ptr);
+
+		private:
+			FTaskEventBase(const TCHAR* InDebugName)
+				: FTaskBase(/*InitRefCount=*/ 1) // for the initial reference (we don't increment it on passing to `TRefCountPtr`)
+			{
+				Init(InDebugName, ETaskPriority::Normal, EExtendedTaskPriority::TaskEvent);
+			}
+
+			virtual bool TryExecuteTask() override
+			{
+				checkNoEntry(); // never executed because it doesn't have a task body
+				return true;
 			}
 		};
 
+		using FTaskEventBaseAllocator = TLockFreeFixedSizeAllocator_TLSCache<sizeof(FTaskEventBase), PLATFORM_CACHE_LINE_SIZE>;
+		CORE_API extern FTaskEventBaseAllocator TaskEventBaseAllocator;
+
+		inline void* FTaskEventBase::operator new(size_t Size)
+		{
+			return TaskEventBaseAllocator.Allocate();
+		}
+
+		inline void FTaskEventBase::operator delete(void* Ptr)
+		{
+			TaskEventBaseAllocator.Free(Ptr);
+		}
+
+		// task retraction of multiple tasks. 
+		// @return true if all tasks are completed
 		template<typename TaskCollectionType>
-		bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimespan InTimeout = FTimespan::MaxValue())
+		bool TryRetractAndExecute(const TaskCollectionType& Tasks)
+		{
+			bool bResult = true;
+
+			for (auto& Task : Tasks)
+			{
+				if (Task.IsValid() && !Task.Pimpl->TryRetractAndExecute())
+				{
+					bResult = false; // do not stop here to let this thread to help in executing tasks as much as possible, as it's waiting for their completion anyway
+				}
+			}
+
+			return bResult;
+		}
+
+		// task retraction of multiple tasks, with timeout. The timeout is rounded up to any successful task execution, which means that it can time out only in-between individual task
+		// retractions.
+		// @return true if all tasks are completed
+		template<typename TaskCollectionType>
+		bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimespan InTimeout)
 		{
 			FTimeout Timeout{ InTimeout };
 			bool bResult = true;
@@ -649,7 +823,7 @@ namespace UE { namespace Tasks
 			{
 				if (Task.IsValid() && !Task.Pimpl->TryRetractAndExecute())
 				{
-					bResult = false;
+					bResult = false;  // do not stop here to let this thread to help in executing tasks as much as possible, as it's waiting for their completion anyway
 				}
 
 				if (Timeout)
@@ -660,60 +834,5 @@ namespace UE { namespace Tasks
 
 			return bResult;
 		}
-
-		// Extends FTaskBase by supporting execution result.
-		template<typename ResultType>
-		class TTaskWithResult : public FTaskBase
-		{
-			UE_NONCOPYABLE(TTaskWithResult);
-
-		public:
-			TTaskWithResult() = default;
-
-			virtual ~TTaskWithResult() override
-			{
-				checkf(IsCompleted(), TEXT("Every task instance must be completed before it's destroyed"));
-				DestructItem(ResultStorage.GetTypedPtr());
-			}
-
-			template<typename TaskBodyType>
-			void Init(const TCHAR* DebugName, TaskBodyType&& TaskBody, LowLevelTasks::ETaskPriority Priority)
-			{
-				FTaskBase::Init(
-					DebugName,
-					[this, TaskBody = Forward<TaskBodyType>(TaskBody)]() mutable
-					{
-						new(&ResultStorage) ResultType{ Invoke(TaskBody) };
-					},
-					Priority
-				);
-			}
-
-			bool TryLaunch()
-			{
-				return FTaskBase::TryLaunch();
-			}
-
-			ResultType& GetResult()
-			{
-				checkf(IsCompleted(), TEXT("The task must be completed to obtain its result"));
-				return *ResultStorage.GetTypedPtr();
-			}
-
-		private:
-			TTypeCompatibleBytes<ResultType> ResultStorage;
-		};
-
-		template<>
-		class TTaskWithResult<void> : public FTaskBase
-		{
-		public:
-			TTaskWithResult() = default; // instances can be created only on the heap by a ref-counting handler
-
-			void GetResult()
-			{
-				checkf(IsCompleted(), TEXT("The task must be completed to obtain its result"));
-			}
-		};
 	}
-}}
+}

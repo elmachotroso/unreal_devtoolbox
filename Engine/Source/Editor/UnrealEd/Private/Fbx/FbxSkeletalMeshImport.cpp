@@ -39,9 +39,9 @@
 #include "Logging/TokenizedMessage.h"
 #include "FbxImporter.h"
 
-#include "AssetData.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetNotifications.h"
 
 #include "ObjectTools.h"
@@ -1317,7 +1317,7 @@ bool UnFbx::FFbxImporter::ImportBones(TArray<FbxNode*>& NodeArray, FSkeletalMesh
 	return true;
 }
 
-bool UnFbx::FFbxImporter::FillSkeletalMeshImportData(TArray<FbxNode*>& NodeArray, UFbxSkeletalMeshImportData* TemplateImportData, TArray<FbxShape*> *FbxShapeArray, FSkeletalMeshImportData* OutData, TArray<FbxNode*>& OutImportedSkeletonLinkNodes, TArray<FName> &LastImportedMaterialNames, const bool bIsReimport, const TMap<FVector, FColor>& ExistingVertexColorData)
+bool UnFbx::FFbxImporter::FillSkeletalMeshImportData(TArray<FbxNode*>& NodeArray, UFbxSkeletalMeshImportData* TemplateImportData, TArray<FbxShape*> *FbxShapeArray, FSkeletalMeshImportData* OutData, TArray<FbxNode*>& OutImportedSkeletonLinkNodes, TArray<FName> &LastImportedMaterialNames, const bool bIsReimport, const TMap<FVector3f, FColor>& ExistingVertexColorData)
 {
 	if (NodeArray.Num() == 0)
 	{
@@ -1672,7 +1672,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	USkeletalMesh* ExistingSkelMesh = nullptr;
 	if ( !ImportSkeletalMeshArgs.FbxShapeArray  )
 	{
-		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), ImportSkeletalMeshArgs.InParent, ImportSkeletalMeshArgs.Name, false, false, RF_NoFlags, EInternalObjectFlags::Garbage);
+		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), ImportSkeletalMeshArgs.InParent, ImportSkeletalMeshArgs.Name, false, RF_NoFlags, EInternalObjectFlags::Garbage);
 		ExistingSkelMesh = Cast<USkeletalMesh>(ExistingObject);
 
 		if (!ExistingSkelMesh && ExistingObject)
@@ -1682,7 +1682,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 		}
 	}
 
-	TMap<FVector, FColor> ExistingVertexColorData;
+	TMap<FVector3f, FColor> ExistingVertexColorData;
 	if (!ExistingSkelMesh)
 	{
 		// When we are not re-importing we want to create the mesh here to be sure there is no material
@@ -1866,7 +1866,9 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	EARLY_RETURN_ON_CANCEL(false, CancelCleanup);
 
 	if (!GIsAutomationTesting)
-		UE_LOG(LogFbx, Warning, TEXT("Bones digested - %i  Depth of hierarchy - %i"), SkeletalMesh->GetRefSkeleton().GetNum(), SkeletalDepth);
+	{
+		UE_LOG(LogFbx, Log, TEXT("Bones digested - %i  Depth of hierarchy - %i"), SkeletalMesh->GetRefSkeleton().GetNum(), SkeletalDepth);
+	}
 
 	// process bone influences from import data
 	SkeletalMeshImportUtils::ProcessImportMeshInfluences(*SkelMeshImportDataPtr, SkeletalMesh->GetPathName());
@@ -2109,7 +2111,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 						TArray<FAssetData> SkeletalMeshAssetData;
 						
 						FARFilter ARFilter;
-						ARFilter.ClassNames.Add(*USkeletalMesh::StaticClass()->GetName());
+						ARFilter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 						ARFilter.TagsAndValues.Add(TEXT("Skeleton"), FAssetData(Skeleton).GetExportTextName());
 
 						IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
@@ -2593,7 +2595,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ReimportSkeletalMesh(USkeletalMesh* Mesh, UF
 
 		int32 LODIndex;
 		int32 SuccessfulLodIndex = 0;
-		float ProgressStep = 90.0 / MaxLODLevel;
+		float ProgressStep = static_cast<float>(90.0f / MaxLODLevel);
 		for (LODIndex = 0; LODIndex < MaxLODLevel; LODIndex++)
 		{
 			SlowTask.EnterProgressFrame(ProgressStep);
@@ -3100,7 +3102,7 @@ void UnFbx::FFbxImporter::CleanUpUnusedMaterials(FSkeletalMeshImportData& Import
 	}
 }
 
-bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& ImportData, FbxMesh*& Mesh, FbxSkin* Skin, FbxShape* FbxShape, TArray<FbxNode*> &SortedLinks, const TArray<FbxSurfaceMaterial*>& FbxMaterials, FbxNode *RootNode, const TMap<FVector, FColor>& ExistingVertexColorData)
+bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& ImportData, FbxMesh*& Mesh, FbxSkin* Skin, FbxShape* FbxShape, TArray<FbxNode*> &SortedLinks, const TArray<FbxSurfaceMaterial*>& FbxMaterials, FbxNode *RootNode, const TMap<FVector3f, FColor>& ExistingVertexColorData)
 {
 	FbxNode* Node = Mesh->GetNode();
 
@@ -3701,7 +3703,7 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 		{
 			for (int32 VertexIndex = 0; VertexIndex < 3; VertexIndex++)
 			{
-				const FVector VertexPosition = (FVector)ImportData.Points[TmpWedges[VertexIndex].VertexIndex];
+				const FVector3f& VertexPosition = ImportData.Points[TmpWedges[VertexIndex].VertexIndex];
 				const FColor* PaintedColor = ExistingVertexColorData.Find(VertexPosition);
 				
 				// try to match this wedge current vertex with one that existed in the previous mesh.
@@ -4159,7 +4161,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 			{
 				SkeletalMeshImportData::FBone& ImportedBone = LODImportData.RefBonesBinary[ImportBoneIndex];
 				int32 LODBoneIndex = ImportBoneIndex;
-				FName LODBoneName = FName(*ImportedBone.Name);
+				FName LODBoneName = FName(*FSkeletalMeshImportData::FixupBoneName(ImportedBone.Name));
 				int32 BaseBoneIndex = BaseSkeletalMesh->GetRefSkeleton().FindBoneIndex(LODBoneName);
 				ImportDataBoneRemap[ImportBoneIndex] = BaseBoneIndex;
 				if (BaseBoneIndex != INDEX_NONE)
@@ -4549,7 +4551,7 @@ FFbxLogger::~FFbxLogger()
 	{
 		for (TSharedRef<FTokenizedMessage> TokenMessage : TokenizedErrorMessages)
 		{
-			if (TokenMessage->GetSeverity() == EMessageSeverity::CriticalError || TokenMessage->GetSeverity() == EMessageSeverity::Error)
+			if (TokenMessage->GetSeverity() == EMessageSeverity::Error)
 			{
 				ShowLogMessage = true;
 				break;

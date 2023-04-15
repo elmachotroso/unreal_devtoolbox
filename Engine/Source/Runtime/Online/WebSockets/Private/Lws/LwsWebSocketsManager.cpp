@@ -20,6 +20,8 @@
 #include "Misc/Fork.h"
 #include "Stats/Stats.h"
 
+LLM_DEFINE_TAG(WebSockets);
+
 namespace {
 	static const struct lws_extension LwsExtensions[] = {
 		{
@@ -155,7 +157,7 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 	
 	int32 ThreadStackSize = 128 * 1024;
 	GConfig->GetInt(TEXT("WebSockets.LibWebSockets"), TEXT("ThreadStackSize"), ThreadStackSize, GEngineIni);
-	Thread = FForkProcessHelper::CreateForkableThread(this, TEXT("LibwebsocketsThread"), 128 * 1024, TPri_Normal, FPlatformAffinity::GetNoAffinityMask());
+	Thread = FForkProcessHelper::CreateForkableThread(this, TEXT("LibwebsocketsThread"), 128 * 1024, TPri_BelowNormal, FPlatformAffinity::GetNoAffinityMask());
 	if (!Thread)
 	{
 		UE_LOG(LogWebSockets, Error, TEXT("FLwsWebSocketsManager failed to initialize thread!"));
@@ -357,7 +359,7 @@ int FLwsWebSocketsManager::CallbackWrapper(lws* Connection, lws_callback_reasons
 void FLwsWebSocketsManager::Tick()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FLwsWebSocketsManager_Tick);
-	LLM_SCOPE(ELLMTag::Networking);
+	LLM_SCOPE_BYTAG(WebSockets);
 
 	{
 		FLwsWebSocket* SocketToStart;

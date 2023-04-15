@@ -29,16 +29,14 @@ public:
 
 	//~ UNiagaraRendererProperties interface
 	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
-	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override { return nullptr; }
+	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return (InSimTarget == ENiagaraSimTarget::CPUSim); };
 #if WITH_EDITORONLY_DATA
-	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
-	virtual void FixMaterial(UMaterial* Material) override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
+	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
 #endif // WITH_EDITORONLY_DATA
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 	//UNiagaraRendererProperties Interface END
@@ -58,6 +56,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Light Rendering")
 	uint32 bAlphaScalesBrightness : 1;
 
+	/** When enabled we will override the project default setting with our local setting. */
+	UPROPERTY(EditAnywhere, Category = "Light Rendering", meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverrideInverseExposureBlend : 1;
+
 	/** A factor used to scale each particle light radius */
 	UPROPERTY(EditAnywhere, Category = "Light Rendering", meta = (ClampMin = "0"))
 	float RadiusScale;
@@ -68,7 +70,15 @@ public:
 
 	/** A static color shift applied to each rendered light */
 	UPROPERTY(EditAnywhere, Category = "Light Rendering")
-	FVector ColorAdd;
+	FVector3f ColorAdd;
+
+	/**
+	* Blend Factor used to blend between Intensity and Intensity/Exposure.
+	* This is useful for gameplay lights that should have constant brighness on screen independent of current exposure.
+	* This feature can cause issues with exposure particularly when used on the primary light on a scene, as such it's usage should be limited.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Light Rendering", AdvancedDisplay, meta = (UIMin = "0.0", UIMax = "1.0", EditCondition="bOverrideInverseExposureBlend"))
+	float InverseExposureBlend = 0.0f;
 
 	/** If a render visibility tag is present, particles whose tag matches this value will be visible in this renderer. */
 	UPROPERTY(EditAnywhere, Category = "Light Rendering")

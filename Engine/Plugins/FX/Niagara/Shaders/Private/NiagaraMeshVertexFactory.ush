@@ -22,11 +22,6 @@
 #define USE_PARTICLE_LOCAL_TO_WORLD (NEEDS_PARTICLE_LOCAL_TO_WORLD || NEEDS_INSTANCE_LOCAL_TO_WORLD_PS)
 #define USE_PARTICLE_WORLD_TO_LOCAL (NEEDS_PARTICLE_WORLD_TO_LOCAL || NEEDS_INSTANCE_WORLD_TO_LOCAL_PS)
 
-
-#ifndef ENABLE_PRECISE_MOTION_VECTORS
-#define ENABLE_PRECISE_MOTION_VECTORS 0
-#endif
-
 #ifndef MANUAL_VERTEX_FETCH
 #define MANUAL_VERTEX_FETCH 0
 #endif
@@ -75,10 +70,12 @@ struct FVertexFactoryInput
 #endif // !MANUAL_VERTEX_FETCH
 
 #if (VF_USE_PRIMITIVE_SCENE_DATA == 1)
-	uint InstanceIdOffset : ATTRIBUTE13;
+	VF_GPUSCENE_DECLARE_INPUT_BLOCK(13)
+	VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+#else
+	uint InstanceId	: SV_InstanceID;
 #endif
 
-	uint InstanceId	: SV_InstanceID;
 #if PASS_NEEDS_VERTEX_ID || MANUAL_VERTEX_FETCH
 	uint VertexId : SV_VertexID;
 #endif // #if PASS_NEEDS_VERTEX_ID
@@ -457,7 +454,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	FVertexFactoryIntermediates Intermediates = (FVertexFactoryIntermediates)0;
 
 #if (VF_USE_PRIMITIVE_SCENE_DATA == 1)
-	Intermediates.SceneData = GetSceneDataIntermediates(Input.InstanceIdOffset, Input.InstanceId);
+	Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
 
 	// Pull the particle index from the custom data for the instance
 	Intermediates.ParticleIndex = asuint(LoadInstanceCustomDataFloat(Intermediates.SceneData.InstanceData, 0));
@@ -516,11 +513,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	Params.ParticleIndex				= Intermediates.ParticleIndex;
 	Params.SystemLWCTile				= NiagaraMeshVF.SystemLWCTile;
 	Params.bLocalSpace					= NiagaraMeshVF.bLocalSpace;
-	#if ENABLE_PRECISE_MOTION_VECTORS
-		Params.bPreciseMotionVectors 	= true;
-	#else
-		Params.bPreciseMotionVectors 	= false;		
-	#endif
+	Params.bPreciseMotionVectors 		= NiagaraMeshVF.AccurateMotionVectors != 0;
 	Params.FacingMode					= NiagaraMeshVF.FacingMode;
 	Params.DeltaSeconds					= NiagaraMeshVF.DeltaSeconds;
 	Params.MeshScale 					= NiagaraMeshVF.MeshScale;
@@ -800,7 +793,7 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
 float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
     FLWCMatrix Transform = GetParticlePrevTransform(Intermediates);
-    float3 WorldPosition = LWCToFloat(LWCAdd(LWCMultiply(Input.Position.xyz, Transform), ResolvedView.PreViewTranslation));
+    float3 WorldPosition = LWCToFloat(LWCAdd(LWCMultiply(Input.Position.xyz, Transform), ResolvedView.PrevPreViewTranslation));
     return float4(WorldPosition, Input.Position.w);
 }
 
@@ -914,8 +907,6 @@ float4 VertexFactoryGetTranslatedPrimitiveVolumeBounds(FVertexFactoryInterpolant
 
 		FTriangleBaseAttributes Tri = LoadTriangleBaseAttributes(TriangleIndex);
 		uint VertexId = Tri.Indices[VertexIndex];
-		
-		Input.InstanceId = InstanceIndex() - GetBaseInstanceIndex();
 
 		// Fill FVertexFactoryInput with dummy values, the real ones will be fetched later from NiagaraMeshVF using InstanceId  
 		Input.Position = float4(Tri.LocalPositions[VertexIndex], 1.0f);
@@ -924,10 +915,11 @@ float4 VertexFactoryGetTranslatedPrimitiveVolumeBounds(FVertexFactoryInterpolant
 		Input.VertexId = VertexId;
 #endif // #if PASS_NEEDS_VERTEX_ID
 
-#if VF_USE_PRIMITIVE_SCENE_DATA
+#if (VF_USE_PRIMITIVE_SCENE_DATA == 1)
 		// Note: GetInstanceUserData() stores the GPU-Scene primitive ID
-		int PrimitiveId = GetInstanceUserData();
-		Input.InstanceIdOffset = PrimitiveId | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;
+		VF_GPUSCENE_SET_INPUT_FOR_RT(Input, GetInstanceUserData(), InstanceIndex() - GetBaseInstanceIndex());
+#else
+		Input.InstanceId = InstanceIndex() - GetBaseInstanceIndex(); // TIAGO_TODO
 #endif
 
 		return Input;

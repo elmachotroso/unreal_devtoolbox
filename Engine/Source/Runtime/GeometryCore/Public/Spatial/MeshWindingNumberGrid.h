@@ -72,7 +72,7 @@ public:
 
 
 	TMeshWindingNumberGrid(const TriangleMeshType* Mesh, TFastWindingTree<TriangleMeshType>* FastWinding, double CellSize)
-		: Mesh(Mesh), FastWinding(FastWinding), CellSize(CellSize), MeshSDF(Mesh, CellSize, FastWinding->GetTree())
+		: Mesh(Mesh), FastWinding(FastWinding), CellSize(CellSize), MeshSDF(Mesh, (float)CellSize, FastWinding->GetTree())
 	{
 	}
 
@@ -81,6 +81,11 @@ public:
 	{
 		// figure out origin & dimensions
 		FAxisAlignedBox3d bounds = FastWinding->GetTree()->GetBoundingBox();
+
+		if (bounds.IsEmpty())
+		{
+			return;
+		}
 
 		float fBufferWidth = BufferCells * (float)CellSize;
 		GridOrigin = (FVector3f)bounds.Min - fBufferWidth * FVector3f::One();

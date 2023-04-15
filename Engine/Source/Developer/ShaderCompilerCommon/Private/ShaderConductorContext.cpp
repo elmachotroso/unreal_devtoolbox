@@ -284,6 +284,7 @@ namespace CrossCompiler
 	{
 		switch (Version)
 		{
+        case 30000: return "30000";
 		case 20400: return "20400";
 		case 20300: return "20300";
 		case 20200: return "20200";
@@ -415,8 +416,39 @@ namespace CrossCompiler
 			static_cast<uint8>(InOptions.ShaderModel.Minor)
 		};
 
-		// Add additional DXC arguments that are not exposed by ShaderConductor API directly
 		DxcArgRefs.Empty();
+
+		// Select language version
+		DxcArgRefs.Add("-spirv");
+		DxcArgRefs.Add("-Qunused-arguments");
+
+		switch (InOptions.HlslVersion)
+		{
+		case 2015:
+			DxcArgRefs.Add("-HV");
+			DxcArgRefs.Add("2015");
+			break;
+		case 2016:
+			DxcArgRefs.Add("-HV");
+			DxcArgRefs.Add("2016");
+			break;
+		case 2017:
+			DxcArgRefs.Add("-HV");
+			DxcArgRefs.Add("2017");
+			break;
+		case 2018:
+			// Default
+			break;
+		case 2021:
+			DxcArgRefs.Add("-HV");
+			DxcArgRefs.Add("2021");
+			break;
+		default:
+			checkf(false, TEXT("Invalid HLSL version: expected 2015, 2016, 2017, 2018, or 2021 but %u was specified"), InOptions.HlslVersion);
+			break;
+		}
+
+		// Add additional DXC arguments that are not exposed by ShaderConductor API directly
 		if (InOptions.bDisableScalarBlockLayout)
 		{
 			DxcArgRefs.Add("-fspv-no-scalar-block-layout");

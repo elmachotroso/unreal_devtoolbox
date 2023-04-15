@@ -2,11 +2,14 @@
 
 #include "SoundModulationGeneratorFactory.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerFilter.h"
 #include "ClassViewerModule.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "SoundModulationGenerator.h"
 #include "Templates/SharedPointer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundModulationGeneratorFactory)
 
 #define LOCTEXT_NAMESPACE "AudioModulation"
 
@@ -75,6 +78,7 @@ UObject* USoundModulationGeneratorFactory::FactoryCreateNew(UClass* InClass, UOb
 {
 	if (GeneratorClass)
 	{
+		Audio::Analytics::RecordEvent_Usage(TEXT("AudioModulation.ModulationGeneratorCreated"));
 		return NewObject<USoundModulationGenerator>(InParent, GeneratorClass, InName, Flags);
 	}
 
@@ -82,3 +86,4 @@ UObject* USoundModulationGeneratorFactory::FactoryCreateNew(UClass* InClass, UOb
 }
 
 #undef LOCTEXT_NAMESPACE // AudioModulation
+

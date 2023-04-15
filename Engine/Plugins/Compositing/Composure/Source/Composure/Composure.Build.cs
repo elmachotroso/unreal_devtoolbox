@@ -6,10 +6,9 @@ namespace UnrealBuildTool.Rules
 	{
 		public Composure(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
+			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-                    "../../../../Source/Runtime/Engine/",
-					"Composure/Private/"
+					"Engine",
 				}
 				);
             
@@ -49,7 +48,6 @@ namespace UnrealBuildTool.Rules
                     {
 						"ActorLayerUtilities",
 						"EditorFramework",
-						"EditorStyle",
 						"Slate",
 						"SlateCore",
 						"UnrealEd",

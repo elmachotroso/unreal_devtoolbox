@@ -2,9 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "HAL/ThreadSingleton.h"
+#include "Internationalization/Text.h"
+#include "UObject/NameTypes.h"
 #include "UObject/UObjectGlobals.h"
+
+class FObjectInitializer;
+class UClass;
+class UObject;
+class UPackage;
+class UScriptStruct;
+class UStruct;
+struct FUObjectSerializeContext;
 
 // @todo: BP2CPP_remove
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -147,7 +160,7 @@ private:
 /**
  * This is a helper struct that allows us to gather all previously unloaded class dependencies of a UClass
  * The first time we create a new UClass object in FLinkerLoad::CreateExport(), we register it as a dependency
- * master.  Any subsequent UClasses that are created for the first time during the preload of that class are
+ * authority. Any subsequent UClasses that are created for the first time during the preload of that class are
  * added to the list as potential cyclic referencers.  We then step over the list at the end of the load, and
  * recompile any classes that may depend on each other a second time to ensure that that functions and properties
  * are properly resolved
@@ -168,11 +181,11 @@ public:
 	static TArray<UClass*> const& GetCachedDependencies();
 
 private:
-	/** Whether or not this dependency gather is the dependency master, and thus should process all dependencies in the destructor */
-	bool bMasterClass;	
+	/** Whether or not this dependency gather is the dependency authoritative class, and thus should process all dependencies in the destructor */
+	bool bAuthoritativeClass;
 
 	/** The current class that is gathering potential dependencies in this scope */
-	static UClass* BatchMasterClass;
+	static UClass* BatchAuthorityClass;
 
 	/** List of dependencies (i.e. UClasses that have been newly instantiated) in the scope of this dependency gather */
 	static TArray<UClass*> BatchClassDependencies;

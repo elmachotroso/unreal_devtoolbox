@@ -25,6 +25,7 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "UObject/EnterpriseObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "SceneManagement.h"
 #include "AI/AISystemBase.h"
 #include "AI/NavigationSystemConfig.h"
@@ -32,14 +33,16 @@
 #include "Engine/BookmarkBase.h"
 #include "Engine/BookMark.h"
 #include "WorldSettingsCustomVersion.h"
+#include "Materials/Material.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "HierarchicalLOD.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Landscape.h"
 #include "Rendering/StaticLightingSystemInterface.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #endif 
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
@@ -70,7 +73,6 @@ AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 	};
 	static FConstructorStatics ConstructorStatics;
 
-	bEnableLargeWorlds = false;
 	bEnableWorldBoundsChecks = true;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bEnableNavigationSystem = true;
@@ -81,16 +83,17 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bEnableWorldComposition = false;
 	bEnableWorldOriginRebasing = false;
 #if WITH_EDITORONLY_DATA
+	bEnableLargeWorlds_DEPRECATED = (UE_USE_UE4_WORLD_MAX != 0);
 	bEnableHierarchicalLODSystem_DEPRECATED = true;
 	NumHLODLevels = 0;
 	bGenerateSingleClusterForLevel = false;
 #endif
 
-	KillZ = -HALF_WORLD_MAX1;
+	KillZ = -UE_OLD_HALF_WORLD_MAX1;	// LWC_TODO: HALF_WORLD_MAX1? Something else?
 	KillZDamageType = ConstructorStatics.DmgType_Environmental_Object.Object;
 
 #if WITH_EDITORONLY_DATA
-	InstancedFoliageGridSize = DefaultPlacementGridSize = 25600;
+	InstancedFoliageGridSize = DefaultPlacementGridSize = LandscapeSplineMeshesGridSize = 25600;
 	NavigationDataChunkGridSize = 102400;
 	NavigationDataBuilderLoadingCellSize = 102400 * 4;
 	bIncludeGridSizeInNameForFoliageActors = false;
@@ -104,7 +107,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bReplicates = true;
 	bAlwaysRelevant = true;
 	TimeDilation = 1.0f;
-	MatineeTimeDilation = 1.0f;
+	CinematicTimeDilation = 1.0f;
 	DemoPlayTimeDilation = 1.0f;
 	PackedLightAndShadowMapTextureSize = 1024;
 	SetHidden(false);
@@ -210,11 +213,6 @@ void AWorldSettings::PostRegisterAllComponents()
 	{
 		AudioDevice->SetDefaultAudioSettings(World, DefaultReverbSettings, DefaultAmbientZoneSettings);
 	}
-	
-	if(bEnableLargeWorlds)
-	{
-		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
-	}	
 }
 
 UWorldPartition* AWorldSettings::GetWorldPartition() const
@@ -248,6 +246,16 @@ float AWorldSettings::GetGravityZ() const
 
 	return WorldGravityZ;
 }
+
+#if WITH_EDITOR
+void AWorldSettings::SupportsWorldPartitionStreamingChanged()
+{
+	if (WorldPartition)
+	{
+		WorldPartition->OnEnableStreamingChanged();
+	}
+}
+#endif
 
 void AWorldSettings::OnRep_WorldGravityZ()
 {
@@ -285,12 +293,6 @@ void AWorldSettings::NotifyBeginPlay()
 
 		World->bBegunPlay = true;
 	}
-
-	if(bEnableLargeWorlds)
-	{
-		// Done post BeginPlay to give code a chance to set bEnableLargeWorlds.
-		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
-	}	
 }
 
 void AWorldSettings::NotifyMatchStarted()
@@ -300,20 +302,13 @@ void AWorldSettings::NotifyMatchStarted()
 	World->bMatchStarted = true;
 }
 
-void AWorldSettings::UpdateEnableLargeWorldsCVars(bool bEnable) const
-{
-	// LWC_TODO: Large world support. This will be removed once UE_LARGE_WORLD_MAX is stable.
-	IConsoleManager::Get().FindConsoleVariable(TEXT("r.UseVisibilityOctree"))->Set(!bEnable);
-	IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.UseOctreeForCulling"))->Set(!bEnable); 
-}
-
 void AWorldSettings::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifetimeProps ) const
 {
 	Super::GetLifetimeReplicatedProps( OutLifetimeProps );
 
 	DOREPLIFETIME( AWorldSettings, PauserPlayerState );
 	DOREPLIFETIME( AWorldSettings, TimeDilation );
-	DOREPLIFETIME( AWorldSettings, MatineeTimeDilation );
+	DOREPLIFETIME( AWorldSettings, CinematicTimeDilation );
 	DOREPLIFETIME( AWorldSettings, WorldGravityZ );
 	DOREPLIFETIME( AWorldSettings, bHighPriorityLoading );
 }
@@ -345,14 +340,14 @@ void AWorldSettings::Serialize( FArchive& Ar )
 		{
 			const float OldScreenSize = Setup.TransitionScreenSize;
 
-			const float HalfFOV = PI * 0.25f;
+			const float HalfFOV = UE_PI * 0.25f;
 			const float ScreenWidth = 1920.0f;
 			const float ScreenHeight = 1080.0f;
 			const FPerspectiveMatrix ProjMatrix(HalfFOV, ScreenWidth, ScreenHeight, 1.0f);
 
 			const float DummySphereRadius = 16.0f;
 			const float ScreenArea = OldScreenSize * (ScreenWidth * ScreenHeight);
-			const float ScreenRadius = FMath::Sqrt(ScreenArea / PI);
+			const float ScreenRadius = FMath::Sqrt(ScreenArea / UE_PI);
 			const float ScreenDistance = FMath::Max(ScreenWidth / 2.0f * ProjMatrix.M[0][0], ScreenHeight / 2.0f * ProjMatrix.M[1][1]) * DummySphereRadius / ScreenRadius;
 
 			Setup.TransitionScreenSize = ComputeBoundsScreenSize(FVector::ZeroVector, DummySphereRadius, FVector(0.0f, 0.0f, ScreenDistance), ProjMatrix);
@@ -501,10 +496,11 @@ void AWorldSettings::SaveDefaultWorldPartitionSettings()
 
 	if (WorldPartition)
 	{
-		DefaultWorldPartitionSettings.LoadedEditorGridCells = WorldPartition->GetUserLoadedEditorGridCells();		
-		if (AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+		DefaultWorldPartitionSettings.LoadedEditorRegions = WorldPartition->GetUserLoadedEditorRegions();
+
+		if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
 		{
-			WorldDataLayers->GetUserLoadedInEditorStates(DefaultWorldPartitionSettings.LoadedDataLayers, DefaultWorldPartitionSettings.NotLoadedDataLayers);
+			DataLayerSubsystem->GetUserLoadedInEditorStates(DefaultWorldPartitionSettings.LoadedDataLayers, DefaultWorldPartitionSettings.NotLoadedDataLayers);
 		}
 	}
 }
@@ -544,12 +540,6 @@ void AWorldSettings::PostLoad()
 	Super::PostLoad();
 
 #if WITH_EDITOR
-	for (FHierarchicalSimplification& Entry : HierarchicalLODSetup)
-	{
-		Entry.ProxySetting.PostLoadDeprecated();
-		Entry.MergeSetting.PostLoadDeprecated();
-	}
-
 	if (WorldPartition)
 	{
 		// Force to re-apply WorldPartition restrictions on WorldSettings (in case they changed)
@@ -574,6 +564,19 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	}
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
+
+#if WITH_EDITORONLY_DATA
+void AWorldSettings::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UNavigationSystemConfig::StaticClass()));	
+	TSubclassOf<UNavigationSystemConfig> NavSystemConfigClass = UNavigationSystemConfig::GetDefaultConfigClass();
+	if (*NavSystemConfigClass)
+	{
+		OutConstructClasses.Add(FTopLevelAssetPath(NavSystemConfigClass));
+	}
+}
+#endif
 
 bool AWorldSettings::IsNavigationSystemEnabled() const
 {
@@ -676,6 +679,10 @@ bool AWorldSettings::CanEditChange(const FProperty* InProperty) const
 				 PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, bPrecomputeVisibility))
 		{
 			return !IsPartitionedWorld();
+		}
+		else if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, LandscapeSplineMeshesGridSize))
+		{
+			return IsPartitionedWorld();
 		}
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, InstancedFoliageGridSize))
 		{
@@ -790,10 +797,6 @@ void AWorldSettings::InternalPostPropertyChanged(FName PropertyName)
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, DefaultBookmarkClass))
 	{
 		UpdateBookmarkClass();
-	}
-	else if(PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, bEnableLargeWorlds))
-	{
-		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
 	}
 
 	if (GetWorld() != nullptr && GetWorld()->PersistentLevel && GetWorld()->PersistentLevel->GetWorldSettings() == this)
@@ -1018,9 +1021,49 @@ void AWorldSettings::RewindForReplay()
 
 	PauserPlayerState = nullptr;
 	TimeDilation = 1.0;
-	MatineeTimeDilation = 1.0;
+	CinematicTimeDilation = 1.0;
 	bWorldGravitySet = false;
 	bHighPriorityLoading = false;
+}
+
+#if WITH_EDITORONLY_DATA
+
+bool FHierarchicalSimplification::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+
+	// Don't actually serialize, just write the custom version for PostSerialize
+	return false;
+}
+
+void FHierarchicalSimplification::PostSerialize(const FArchive& Ar)
+{
+	if (Ar.IsLoading())
+	{
+		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::HierarchicalSimplificationMethodEnumAdded)
+		{
+			SimplificationMethod = bSimplifyMesh_DEPRECATED ? EHierarchicalSimplificationMethod::Simplify : EHierarchicalSimplificationMethod::Merge;
+		}
+	}
+}
+
+#endif
+
+FMaterialProxySettings* FHierarchicalSimplification::GetSimplificationMethodMaterialSettings()
+{
+	switch (SimplificationMethod)
+	{
+	case EHierarchicalSimplificationMethod::Merge:
+		return &MergeSetting.MaterialSettings;
+
+	case EHierarchicalSimplificationMethod::Simplify:
+		return &ProxySetting.MaterialSettings;
+
+	case EHierarchicalSimplificationMethod::Approximate:
+		return &ApproximateSettings.MaterialSettings;
+	}
+
+	return nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

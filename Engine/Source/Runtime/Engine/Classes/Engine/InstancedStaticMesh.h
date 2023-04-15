@@ -255,7 +255,7 @@ struct FInstancedStaticMeshDataType
 /**
  * A vertex factory for instanced static meshes
  */
-struct FInstancedStaticMeshVertexFactory : public FLocalVertexFactory
+struct ENGINE_API FInstancedStaticMeshVertexFactory : public FLocalVertexFactory
 {
 	DECLARE_VERTEX_FACTORY_TYPE(FInstancedStaticMeshVertexFactory);
 public:
@@ -278,6 +278,11 @@ public:
 	 * @param OutEnvironment - shader compile environment to modify
 	 */
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	/**
+	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
+	 */
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 
 	/**
 	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
@@ -303,10 +308,6 @@ public:
 	{		
 		return 8 * sizeof(uint64);
 	}
-
-#if ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES
-	virtual bool SupportsNullPixelShader() const override { return false; }
-#endif
 
 	inline FRHIShaderResourceView* GetInstanceOriginSRV() const
 	{
@@ -339,7 +340,7 @@ private:
 	TUniformBufferRef<FInstancedStaticMeshVertexFactoryUniformShaderParameters> UniformBuffer;
 };
 
-class FInstancedStaticMeshVertexFactoryShaderParameters : public FLocalVertexFactoryShaderParametersBase
+class ENGINE_API FInstancedStaticMeshVertexFactoryShaderParameters : public FLocalVertexFactoryShaderParametersBase
 {
 	DECLARE_TYPE_LAYOUT(FInstancedStaticMeshVertexFactoryShaderParameters, NonVirtual);
 public:
@@ -421,7 +422,7 @@ struct FPerInstanceRenderData
 	TSharedPtr<FStaticMeshInstanceData, ESPMode::ThreadSafe> InstanceBuffer_GameThread;
 
 	/** Get data for culling ray tracing instances */
-	const TArray<FVector4f>& GetPerInstanceBounds();
+	const TArray<FVector4f>& GetPerInstanceBounds(FBox CurrentBounds);
 
 	/** Get cached CPU-friendly instance transforms */
 	const TArray<FRenderTransform>& GetPerInstanceTransforms();
@@ -437,7 +438,7 @@ private:
 	TArray<FVector4f> PerInstanceBounds;
 	TArray<FRenderTransform> PerInstanceTransforms;
 	FGraphEventRef UpdateBoundsTask;
-	const FBox InstanceLocalBounds;
+	FBox InstanceLocalBounds;
 	bool bTrackBounds;
 	bool bBoundsTransformsDirty;
 };
@@ -525,7 +526,7 @@ private:
 	FInstancedStaticMeshSceneProxy
 -----------------------------------------------------------------------------*/
 
-class FInstancedStaticMeshSceneProxy : public FStaticMeshSceneProxy
+class ENGINE_API FInstancedStaticMeshSceneProxy : public FStaticMeshSceneProxy
 {
 public:
 	SIZE_T GetTypeHash() const override;
@@ -617,7 +618,7 @@ public:
 	virtual bool GetWireframeMeshElement(int32 LODIndex, int32 BatchIndex, const FMaterialRenderProxy* WireframeRenderProxy, uint8 InDepthPriorityGroup, bool bAllowPreCulledIndices, FMeshBatch& OutMeshBatch) const override;
 
 	virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
-	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const override;
+	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
 
 	/**
 	 * Creates the hit proxies are used when DrawDynamicElements is called.

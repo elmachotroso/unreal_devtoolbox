@@ -2,6 +2,7 @@
 
 #include "HairStrandsFactory.h"
 
+#include "AssetImportTask.h"
 #include "EditorFramework/AssetImportData.h"
 #include "GroomAsset.h"
 #include "GroomAssetImportData.h"
@@ -19,6 +20,8 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HairStrandsFactory)
 
 #define LOCTEXT_NAMESPACE "HairStrandsFactory"
 
@@ -71,6 +74,11 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 {
 	bOutOperationCanceled = false;
 
+	const bool bIsUnattended = (IsAutomatedImport()
+		|| FApp::IsUnattended()
+		|| IsRunningCommandlet()
+		|| GIsRunningUnattendedScript);
+
 	// Translate the hair data from the file
 	TSharedPtr<IGroomTranslator> SelectedTranslator = GetTranslator(Filename);
 	if (!SelectedTranslator.IsValid())
@@ -78,10 +86,32 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 		return nullptr;
 	}
 
+	// Use the settings from the script if provided
+	if (AssetImportTask)
+	{
+		if (UGroomImportOptions* GroomOptions = Cast<UGroomImportOptions>(AssetImportTask->Options))
+		{
+			ImportOptions = GroomOptions;
+		}
+
+		if (UGroomCacheImportOptions* CacheOptions = Cast<UGroomCacheImportOptions>(AssetImportTask->Options))
+		{
+			GroomCacheImportOptions = CacheOptions;
+		}
+		else
+		{
+			GroomCacheImportOptions->ImportSettings.bImportGroomCache = false;
+		}
+	}
+
 	FGroomAnimationInfo AnimInfo;
 	{
 		// Load the alembic file upfront to preview & report any potential issue
 		FHairDescriptionGroups OutDescription;
+		bool bHasRootUV = false;
+		bool bHasPrecomputedWeights = false;
+		bool bHasColorAttributes = false;
+		bool bHasRoughnessAttributes = false;
 		{
 			FScopedSlowTask Progress((float)1, LOCTEXT("ImportHairAssetForPreview", "Importing hair asset for preview..."), true);
 			Progress.MakeDialog(true);
@@ -93,7 +123,11 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 			}
 
 			FGroomBuilder::BuildHairDescriptionGroups(HairDescription, OutDescription);
-		
+			bHasRootUV = HairDescription.HasRootUV();
+			bHasPrecomputedWeights = HairDescription.HasGuideWeights();
+			bHasColorAttributes = HairDescription.HasColorAttributes();
+			bHasRoughnessAttributes = HairDescription.HasRoughnessAttributes();
+
 			// Populate the interpolation settings based on the group count, as this is used later during the ImportHair() to define 
 			// the exact number of group to create
 			const uint32 GroupCount = OutDescription.HairGroups.Num();
@@ -113,7 +147,10 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 				OutGroup.GroupID	= Group.Info.GroupID;
 				OutGroup.CurveCount = Group.Info.NumCurves;
 				OutGroup.GuideCount = Group.Info.NumGuides;
-				OutGroup.bHasPrecomputedWeights = Group.Strands.StrandsCurves.HasPrecomputedWeights();
+				OutGroup.bHasRootUV = bHasRootUV;
+				OutGroup.bHasPrecomputedWeights = bHasPrecomputedWeights;
+				OutGroup.bHasColorAttributes = bHasColorAttributes;
+				OutGroup.bHasRoughnessAttributes = bHasRoughnessAttributes;
 
 				if (OutGroup.GroupID < OutDescription.HairGroups.Num())
 				{				
@@ -124,7 +161,8 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 
 		FGroomCacheImporter::SetupImportSettings(GroomCacheImportOptions->ImportSettings, AnimInfo);
 
-		if (!GIsRunningUnattendedScript && !IsAutomatedImport())
+		// Don't bother saving the options coming from script
+		if (!bIsUnattended)
 		{
 			// Display import options and handle user cancellation
 			TSharedPtr<SGroomImportOptionsWindow> GroomOptionWindow = SGroomImportOptionsWindow::DisplayImportOptions(ImportOptions, GroomCacheImportOptions, GroupsPreview, Filename);
@@ -133,17 +171,17 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 				bOutOperationCanceled = true;
 				return nullptr;
 			}
-		}
 
-		// Save the options as the new default
-		for (const FGroomHairGroupPreview& GroupPreview : GroupsPreview->Groups)
-		{
-			if (GroupPreview.GroupID < OutDescription.HairGroups.Num())
+			// Save the options as the new default
+			for (const FGroomHairGroupPreview& GroupPreview : GroupsPreview->Groups)
 			{
-				ImportOptions->InterpolationSettings[GroupPreview.GroupID] = GroupPreview.InterpolationSettings;
+				if (GroupPreview.GroupID < OutDescription.HairGroups.Num())
+				{
+					ImportOptions->InterpolationSettings[GroupPreview.GroupID] = GroupPreview.InterpolationSettings;
+				}
 			}
+			ImportOptions->SaveConfig();
 		}
-		ImportOptions->SaveConfig();
 	}
 
 	FGroomCacheImporter::ApplyImportSettings(GroomCacheImportOptions->ImportSettings, AnimInfo);
@@ -157,19 +195,19 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 		return nullptr;
 	}
 
-	// Might try to import the same file in the same folder, so if an asset already exists there, reuse and update it
-	// Since we are importing (not reimporting) we reset the object completely. All previous settings will be lost.
-	UGroomAsset* ExistingAsset = FindObject<UGroomAsset>(InParent, *InName.ToString());
-	if (ExistingAsset)
-	{
-		ExistingAsset->SetNumGroup(0);
-	}
-
 	UObject* CurrentAsset = nullptr;
 	UGroomAsset* GroomAssetForCache = nullptr;
 	FHairImportContext HairImportContext(ImportOptions, InParent, InClass, InName, Flags);
 	if (GroomCacheImportOptions->ImportSettings.bImportGroomAsset)
 	{
+		// Might try to import the same file in the same folder, so if an asset already exists there, reuse and update it
+		// Since we are importing (not reimporting) we reset the object completely. All previous settings will be lost.
+		UGroomAsset* ExistingAsset = FindObject<UGroomAsset>(InParent, *InName.ToString());
+		if (ExistingAsset)
+		{
+			ExistingAsset->SetNumGroup(0);
+		}
+
 		UGroomAsset* ImportedAsset = FHairStrandsImporter::ImportHair(HairImportContext, HairDescription, ExistingAsset);
 		if (ImportedAsset)
 		{
@@ -244,3 +282,4 @@ TSharedPtr<IGroomTranslator> UHairStrandsFactory::GetTranslator(const FString& F
 }
 
 #undef LOCTEXT_NAMESPACE
+

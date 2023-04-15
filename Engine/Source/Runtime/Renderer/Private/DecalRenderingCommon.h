@@ -49,6 +49,8 @@ enum class EDecalRenderStage : uint8
 	// Ambient occlusion decal pass.
 	// A decal can write regular attributes in another pass and then AO in this pass.
 	AmbientOcclusion = 6,
+
+	Num,
 };
 
 /** Enumeration of the render target layouts for decal rendering. */
@@ -78,7 +80,7 @@ enum class EDecalRasterizerState : uint8
 namespace DecalRendering
 {
 	/** Build the packed decal description from a decal material. */
-	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, FMaterial const* Material);
+	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, const FMaterial& Material);
 
 	/** Build the packed decal description from a decal material. */
 	FDecalBlendDesc ComputeDecalBlendDesc(EShaderPlatform Platform, FMaterialShaderParameters const& MaterialShaderParameters);

@@ -2,6 +2,8 @@
 
 #include "ISoundfieldEndpoint.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ISoundfieldEndpoint)
+
 ISoundfieldEndpoint::ISoundfieldEndpoint(int32 NumRenderCallbacksToBuffer)
 {
 	NumRenderCallbacksToBuffer = FMath::Max(NumRenderCallbacksToBuffer, 2);
@@ -116,8 +118,9 @@ ISoundfieldEndpointFactory* ISoundfieldEndpointFactory::Get(const FName& InName)
 	{
 		return nullptr;
 	}
-
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<ISoundfieldEndpointFactory*> Factories = IModularFeatures::Get().GetModularFeatureImplementations<ISoundfieldEndpointFactory>(GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
 
 	for (ISoundfieldEndpointFactory* Factory : Factories)
 	{
@@ -137,7 +140,10 @@ TArray<FName> ISoundfieldEndpointFactory::GetAllSoundfieldEndpointTypes()
 
 	SoundfieldFormatNames.Add(DefaultSoundfieldEndpointName());
 
+	IModularFeatures::Get().LockModularFeatureList();
 	TArray<ISoundfieldEndpointFactory*> Factories = IModularFeatures::Get().GetModularFeatureImplementations<ISoundfieldEndpointFactory>(GetModularFeatureName());
+	IModularFeatures::Get().UnlockModularFeatureList();
+
 	for (ISoundfieldEndpointFactory* Factory : Factories)
 	{
 		SoundfieldFormatNames.Add(Factory->GetEndpointTypeName());
@@ -168,3 +174,4 @@ bool ISoundfieldEndpointFactory::CanTranscodeToSoundfieldFormat(FName Destinatio
 {
 	return false;
 }
+

@@ -11,6 +11,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Animation/AnimBlueprint.h"
 #include "Modules/ModuleManager.h"
+#include "Engine/PoseWatch.h"
 
 #define LOCTEXT_NAMESPACE "BlendProfileCustomization"
 
@@ -97,15 +98,34 @@ void FBlendProfileCustomization::OnBlendProfileChanged(UBlendProfile* NewProfile
 
 USkeleton* FBlendProfileCustomization::GetSkeletonFromOuter(const UObject* Outer)
 {
+	const UAnimBlueprint* AnimBlueprint = nullptr;
 	if (const UEdGraphNode* OuterEdGraphNode = Cast<UEdGraphNode>(Outer))
 	{
-		// If outer is a node, we can get the skeleton from its anim blueprint.
-		if (const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(OuterEdGraphNode)))
+		AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(OuterEdGraphNode));
+	}
+	else if (const UEdGraph* OuterEdGraph = Cast<UEdGraph>(Outer))
+	{
+		AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(OuterEdGraph));
+	}
+	else if (const UPoseWatch* OuterPoseWatch = Cast<UPoseWatch>(Outer))
+	{
+		AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(OuterPoseWatch->Node.Get()));
+	}
+	else if (const UPoseWatchPoseElement* OuterPoseElement = Cast<UPoseWatchPoseElement>(Outer))
+	{
+		if (const UPoseWatch* OuterPoseElementParent = OuterPoseElement->GetParent())
 		{
-			return AnimBlueprint->TargetSkeleton;
+			AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(OuterPoseElementParent->Node.Get()));
 		}
 	}
-	else if (const UAnimationAsset* OuterAnimAsset = Cast<UAnimationAsset>(Outer))
+
+	// If outer belongs to an anim blueprint, grab its skeleton.
+	if (AnimBlueprint)
+	{
+		return AnimBlueprint->TargetSkeleton;
+	}
+
+	if (const UAnimationAsset* OuterAnimAsset = Cast<UAnimationAsset>(Outer))
 	{
 		// If outer is an anim asset, grab the skeleton
 		return OuterAnimAsset->GetSkeleton();

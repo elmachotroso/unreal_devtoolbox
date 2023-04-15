@@ -1,19 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reservekd.
 
 #include "PoseAssetDetails.h"
-#include "Misc/MessageDialog.h"
+
+#include "Animation/AnimSequence.h"
+#include "Animation/SmartName.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SSearchableComboBox.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectBaseUtility.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Animation/AnimSequence.h"
-#include "AssetData.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
-#include "PropertyCustomizationHelpers.h"
-#include "ScopedTransaction.h"
-#include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE	"PoseAssetDetails"
 
@@ -264,20 +291,21 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	.ValueContent()
 	.MinDesiredWidth(200)
 	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.HAlign(EHorizontalAlignment::HAlign_Left)
+		.AutoHeight()
 		[
 			SNew(SObjectPropertyEntryBox)
 			.AllowedClass(UAnimSequence::StaticClass())
 			.OnShouldFilterAsset(this, &FPoseAssetDetails::ShouldFilterAsset)
 			.PropertyHandle(SourceAnimationPropertyHandle)
 		]
-		+ SHorizontalBox::Slot()
-		.Padding(FMargin(0.f, 5.f))
-		.AutoWidth()
-		[			
-			SNew(SButton)			
+		+ SVerticalBox::Slot()
+		.HAlign(EHorizontalAlignment::HAlign_Left)
+		.AutoHeight()
+		[
+			SNew(SButton)
 			.Text(LOCTEXT("UpdateSource_Lable", "Update Source"))
 			.ToolTipText(LOCTEXT("UpdateSource_Tooltip", "Update Poses From Source Animation"))
 			.OnClicked(this, &FPoseAssetDetails::OnUpdatePoseSourceAnimation)

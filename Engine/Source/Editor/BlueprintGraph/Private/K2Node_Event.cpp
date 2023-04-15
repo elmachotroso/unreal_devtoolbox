@@ -1,22 +1,48 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_Event.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/Interface.h"
-#include "UObject/BlueprintsObjectVersion.h"
-#include "GameFramework/Actor.h"
-#include "GraphEditorSettings.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "DiffResults.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphSchema_K2_Actions.h"
+#include "Engine/Blueprint.h"
+#include "EngineLogs.h"
+#include "EventEntryHandler.h"
+#include "GameFramework/Actor.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_Self.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "KismetCompilerMisc.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "KismetCompiler.h"
-#include "EventEntryHandler.h"
-#include "DiffResults.h"
+#include "KismetCompilerMisc.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/BlueprintsObjectVersion.h"
+#include "UObject/Class.h"
+#include "UObject/Interface.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/Script.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 const FName UK2Node_Event::DelegateOutputName(TEXT("OutputDelegate"));
 
@@ -852,7 +878,7 @@ UObject* UK2Node_Event::GetJumpTargetForDoubleClick() const
 
 FSlateIcon UK2Node_Event::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Event_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
 	return Icon;
 }
 
@@ -882,7 +908,7 @@ void UK2Node_Event::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResults& Resu
 			Diff.Node1 = this;
 			Diff.Node2 = OtherNode;
 			Diff.DisplayString = LOCTEXT("DIF_EventFlags", "Event flags have changed");
-			Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
+			Diff.Category = EDiffType::MODIFICATION;
 
 			Results.Add(Diff);
 		}

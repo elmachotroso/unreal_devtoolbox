@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MassProcessingTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassCommonTypes.h"
 #include "MassTranslator.h"
 #include "MassEntityTemplate.generated.h"
@@ -85,6 +85,9 @@ struct MASSSPAWNER_API FMassEntityTemplate
 	void SetTemplateID(FMassEntityTemplateID InTemplateID) { TemplateID = InTemplateID; }
 	FMassEntityTemplateID GetTemplateID() const { return TemplateID; }
 
+	void SetTemplateName(const FString& Name) { TemplateName = Name; }
+	const FString& GetTemplateName() const { return TemplateName; }
+	
 	const FMassArchetypeCompositionDescriptor& GetCompositionDescriptor() const { return Composition; }
 	const FMassArchetypeSharedFragmentValues& GetSharedFragmentValues() const { return SharedFragmentValues; }
 	TConstArrayView<FInstancedStruct> GetInitialFragmentValues() const { return InitialFragmentValues; }
@@ -197,8 +200,8 @@ struct MASSSPAWNER_API FMassEntityTemplate
 		}
 	}
 
-	FString DebugGetDescription(UMassEntitySubsystem* EntitySubsystem = nullptr) const;
-	FString DebugGetArchetypeDescription(UMassEntitySubsystem& EntitySubsystem) const;
+	FString DebugGetDescription(FMassEntityManager* EntityManager = nullptr) const;
+	FString DebugGetArchetypeDescription(FMassEntityManager& EntityManager) const;
 
 	template<typename T>
 	bool HasFragment() const
@@ -252,4 +255,6 @@ private:
 	TArray<FObjectFragmentInitializerFunction> ObjectInitializers;
 
 	FMassEntityTemplateID TemplateID;
+
+	FString TemplateName;
 };

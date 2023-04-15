@@ -3,58 +3,38 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-#if WITH_COTF
-
 #include "IO/PackageStore.h"
 
 namespace UE { namespace ZenCookOnTheFly { namespace Messaging
 {
 
-struct FPackageStoreData
+struct FCompletedPackages
 {
 	TArray<FPackageStoreEntryResource> CookedPackages;
 	TArray<FPackageId> FailedPackages;
-	int32 TotalCookedPackages = 0;
-	int32 TotalFailedPackages = 0;
 
-	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FPackageStoreData& PackageStoreData);
+	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FCompletedPackages& CompletedPackages);
 };
 
 struct FCookPackageRequest
 {
-	FPackageId PackageId;
+	TArray<FPackageId> PackageIds;
 	
 	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FCookPackageRequest& Request);
 };
 
-struct FCookPackageResponse
-{
-	EPackageStoreEntryStatus Status = EPackageStoreEntryStatus::None;
+using FCookPackageResponse = FCompletedPackages;
 
-	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FCookPackageResponse& Response);
+struct FRecookPackagesRequest
+{
+	TArray<FPackageId> PackageIds;
+
+	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FRecookPackagesRequest& Request);
 };
 
-struct FPackagesCookedMessage
+struct FRecookPackagesResponse
 {
-	FPackageStoreData PackageStoreData;
-
-	friend FArchive& operator<<(FArchive& Ar, FPackagesCookedMessage& PackagesCookedMessage)
-	{
-		return Ar << PackagesCookedMessage.PackageStoreData;
-	}
-};
-
-struct FGetCookedPackagesResponse
-{
-	FPackageStoreData PackageStoreData;
-	
-	friend FArchive& operator<<(FArchive& Ar, FGetCookedPackagesResponse& GetCookedPackagesResponse)
-	{
-		return Ar << GetCookedPackagesResponse.PackageStoreData;
-	}
+	COOKONTHEFLY_API friend FArchive& operator<<(FArchive& Ar, FRecookPackagesResponse& Response);
 };
 
 }}} // namesapce UE::ZenCookOnTheFly::Messaging
-
-#endif // WITH_COTF

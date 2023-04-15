@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
 #include "AssetRegistry.h"
 #include "AssetRegistryConsoleCommands.h"
 

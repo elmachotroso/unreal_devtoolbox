@@ -24,19 +24,19 @@ namespace EPropertyNodeFlags
 {
 	typedef uint32 Type;
 
-	const Type	IsSeen							= 1 << 0;		/** true if this node can be seen based on current parent expansion.  Does not take into account clipping*/
-	const Type	IsSeenDueToFiltering			= 1 << 1;		/** true if this node has been accepted by the filter*/
-	const Type	IsSeenDueToChildFiltering		= 1 << 2;		/** true if this node or one of it's children is seen due to filtering.  It will then be forced on as well.*/
-	const Type	IsParentSeenDueToFiltering		= 1 << 3;		/** True if the parent was visible due to filtering*/
-	const Type	IsSeenDueToChildFavorite		= 1 << 4;		/** True if this node is seen to it having a favorite as a child */
+	const Type	IsSeen							= 1 << 0;	/** true if this node can be seen based on current parent expansion.  Does not take into account clipping*/
+	const Type	IsSeenDueToFiltering			= 1 << 1;	/** true if this node has been accepted by the filter*/
+	const Type	IsSeenDueToChildFiltering		= 1 << 2;	/** true if this node or one of it's children is seen due to filtering.  It will then be forced on as well.*/
+	const Type	IsParentSeenDueToFiltering		= 1 << 3;	/** True if the parent was visible due to filtering*/
+	const Type	IsSeenDueToChildFavorite		= 1 << 4;	/** True if this node is seen to it having a favorite as a child */
 	
-	const Type	Expanded						= 1 << 5;		/** true if this node should display its children*/
-	const Type	CanBeExpanded					= 1 << 6;		/** true if this node is able to be expanded */
+	const Type	Expanded						= 1 << 5;	/** true if this node should display its children*/
+	const Type	CanBeExpanded					= 1 << 6;	/** true if this node is able to be expanded */
 
-	const Type	EditInlineNew					= 1 << 7;		/** true if the property can be expanded into the property window. */
+	const Type	EditInlineNew					= 1 << 7;	/** true if the property can be expanded into the property window. */
 
-	const Type	SingleSelectOnly				= 1 << 8;		/** true if only a single object is selected. */
-	const Type  ShowCategories					= 1 << 9;		/** true if this node should show categories.  Different*/
+	const Type	SingleSelectOnly				= 1 << 8;	/** true if only a single object is selected. */
+	const Type  ShowCategories					= 1 << 9;	/** true if this node should show categories.  Different*/
 
 	const Type  HasEverBeenExpanded				= 1 << 10;	/** true if expand has ever been called on this node */
 
@@ -51,13 +51,13 @@ namespace EPropertyNodeFlags
 	const Type	IsAdvanced						= 1 << 16;	/** true if the property node is advanced (i.e it only shows up in advanced sections) */
 	const Type	IsCustomized					= 1 << 17;	/** true if this node's visual representation has been customized by the editor */
 	
-	const Type	RequiresValidation				= 1 << 18; /** true if this node could unexpectedly change (array changes, editinlinenew changes) */
+	const Type	RequiresValidation				= 1 << 18;	/** true if this node could unexpectedly change (array changes, editinlinenew changes) */
 
-	const Type	ShouldShowDisableEditOnInstance = 1 << 19; /** true if this node should show child properties marked CPF_DisableEditOnInstance */
+	const Type	ShouldShowDisableEditOnInstance = 1 << 19;	/** true if this node should show child properties marked CPF_DisableEditOnInstance */
 
-	const Type	IsReadOnly						= 1 << 20; /** true if this node is overridden to appear as read-only */
+	const Type	IsReadOnly						= 1 << 20;	/** true if this node is overridden to appear as read-only */
 
-	const Type	SkipChildValidation				= 1 << 21; /** true if this node should skip child validation */
+	const Type	SkipChildValidation				= 1 << 21;	/** true if this node should skip child validation */
 
 	const Type  ShowInnerObjectProperties		= 1 << 22;
 
@@ -65,7 +65,7 @@ namespace EPropertyNodeFlags
 
 	const Type	IsSparseClassData				= 1 << 24;	/** true if the property on this node is part of a sparse class data structure */
 
-	const Type	ShouldShowInViewport			= 1 << 25; /** true if the property should be shown in the viewport context menu */
+	const Type	ShouldShowInViewport			= 1 << 25;	/** true if the property should be shown in the viewport context menu */
 
 	const Type 	NoFlags							= 0;
 
@@ -283,8 +283,8 @@ class FPropertyNode : public TSharedFromThis<FPropertyNode>
 {
 public:
 
-	FPropertyNode(void);
-	virtual ~FPropertyNode(void);
+	FPropertyNode();
+	virtual ~FPropertyNode();
 
 	/**
 	 * Init Tree Node internally (used only derived classes to pass through variables that are common to all nodes
@@ -301,6 +301,11 @@ public:
 	 * Used for rebuilding this nodes children
 	 */
 	void RebuildChildren();
+
+	/**
+	 * Mark this and all children as having been rebuilt.
+	 */
+	void MarkChildrenAsRebuilt();
 
 	/**
 	 * For derived windows to be able to add their nodes to the child array
@@ -397,8 +402,8 @@ public:
 	/**
 	 * Returns the parent node in the hierarchy
 	 */
-	FPropertyNode*			GetParentNode() { return ParentNodeWeakPtr.IsValid() ? ParentNodeWeakPtr.Pin().Get() : nullptr; }
-	const FPropertyNode*	GetParentNode() const { return ParentNodeWeakPtr.IsValid() ? ParentNodeWeakPtr.Pin().Get() : nullptr; }
+	FPropertyNode*			GetParentNode() { return ParentNodeWeakPtr.Pin().Get(); }
+	const FPropertyNode*	GetParentNode() const { return ParentNodeWeakPtr.Pin().Get(); }
 	TSharedPtr<FPropertyNode> GetParentNodeSharedPtr() { return ParentNodeWeakPtr.Pin(); }
 	/**
 	 * Returns the Property this Node represents
@@ -452,6 +457,11 @@ public:
 
 	/** @return whether this window's property is constant (can't be edited by the user) */
 	bool IsEditConst() const;
+
+	/**
+	 * Returns whether this window's property should not be serialized (determined by the CPF_SkipSerialization flag).
+	 */
+	bool ShouldSkipSerialization() const;
 
 	/**
 	 * Gets the full name of this node
@@ -641,10 +651,14 @@ public:
 
 	/** Broadcasts when a property value changes */
 	DECLARE_EVENT(FPropertyNode, FPropertyValueChangedEvent);
+	/** Broadcasts when a property value changes, but additionally includes the property changed event.*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FPropertyValueChangedWithData, const FPropertyChangedEvent&)
 	FPropertyValueChangedEvent& OnPropertyValueChanged() { return PropertyValueChangedEvent; }
-
+	FPropertyValueChangedWithData& OnPropertyValueChangedWithData() { return PropertyValueChangedDelegate; }
+	
 	/** Broadcasts when a child of this property changes */
 	FPropertyValueChangedEvent& OnChildPropertyValueChanged() { return ChildPropertyValueChangedEvent; }
+	FPropertyValueChangedWithData& OnChildPropertyValueChangedWithData() { return ChildPropertyValueChangedDelegate; }
 
 	/** Broadcasts when a property value changes */
 	DECLARE_EVENT(FPropertyNode, FPropertyValuePreChangeEvent);
@@ -949,11 +963,15 @@ public:
 	 */
 	void SetExpandedChildPropertyNodes(const TSet<FString>& InNodesToExpand);
 
-protected:
+	/**
+	 * Helper to fetch a PropertyPath 
+	 */
+	const FString& GetPropertyPath() const { return PropertyPath; }
 
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange );
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances );
-	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, TSet<UObject*>&& InAffectedArchetypeInstances );
+protected:
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange ) const;
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances ) const;
+	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, TSet<UObject*>&& InAffectedArchetypeInstances ) const;
 
 	void NotifyPreChangeInternal(TSharedRef<FEditPropertyChain> PropertyChain, FProperty* PropertyAboutToChange, FNotifyHook* InNotifyHook);
 
@@ -1010,6 +1028,12 @@ protected:
 	 */
 	void BroadcastPropertyChangedDelegates();
 
+	/**
+	 * Helper function for derived members to be able to 
+	 * broadcast property changed notifications including property changed event data
+	 */
+	void BroadcastPropertyChangedDelegates(const FPropertyChangedEvent& Event);
+
 
 	/**
 	* Helper function for derived members to be able to
@@ -1045,8 +1069,6 @@ protected:
 	 * The node that is the parent of this node or nullptr for the root
 	 */
 	TWeakPtr<FPropertyNode> ParentNodeWeakPtr;
-	//@todo consolidate with ParentNodeWeakPtr, ParentNode is legacy
-	FPropertyNode* ParentNode;
 
 	/**	The property node, if any, that serves as the key value for this node */
 	TSharedPtr<FPropertyNode> PropertyKeyNode;
@@ -1071,9 +1093,13 @@ protected:
 
 	/** Called when this node's property value has changed (called during NotifyPostChange) */
 	FPropertyValueChangedEvent PropertyValueChangedEvent;
-
+	/** Called when this node's property value has changed with the property changed event data as payload (called during NotifyPostChange) */
+	FPropertyValueChangedWithData PropertyValueChangedDelegate;
+	
 	/** Called when a child's property value has changed */
 	FPropertyValueChangedEvent ChildPropertyValueChangedEvent;
+	/** Called when a child's property value has changed with the property changed event data as payload */
+	FPropertyValueChangedWithData ChildPropertyValueChangedDelegate;
 
 	/** Called when the property is reset to default */
 	FPropertyResetToDefaultEvent PropertyResetToDefaultEvent;

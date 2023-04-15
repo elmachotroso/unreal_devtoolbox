@@ -10,6 +10,8 @@
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshModel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkeletalMeshLODSettings)
+
 DEFINE_LOG_CATEGORY_STATIC(LogSkeletalMeshLODSettings, Warning, All)
 
 
@@ -198,6 +200,7 @@ int32 USkeletalMeshLODSettings::SetLODSettingsToMesh(USkeletalMesh* InMesh) cons
 	if (InMesh)
 	{
 		InMesh->SetMinLod(MinLod);
+		InMesh->SetQualityLevelMinLod(MinQualityLevelLod);
 		InMesh->SetDisableBelowMinLodStripping(DisableBelowMinLodStripping);
 #if WITH_EDITORONLY_DATA
 		InMesh->SetOverrideLODStreamingSettings(bOverrideLODStreamingSettings);
@@ -224,6 +227,7 @@ int32 USkeletalMeshLODSettings::SetLODSettingsFromMesh(USkeletalMesh* InMesh)
 	if (InMesh)
 	{
 		MinLod = InMesh->GetMinLod();
+		MinQualityLevelLod = InMesh->GetQualityLevelMinLod();
 		DisableBelowMinLodStripping = InMesh->GetDisableBelowMinLodStripping();
 #if WITH_EDITORONLY_DATA
 		bOverrideLODStreamingSettings = InMesh->GetOverrideLODStreamingSettings();
@@ -347,3 +351,4 @@ const float FSkeletalMeshLODGroupSettings::GetScreenSize() const
 {
 	return ScreenSize.Default;
 }
+

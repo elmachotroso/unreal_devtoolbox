@@ -10,31 +10,35 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Camera/CameraComponent.h"
+#include "CineCameraComponent.h"
 #include "ComposurePostMoves.h"
 
 #include "Render/Viewport/IDisplayClusterViewport.h"
 #include "Render/Viewport/IDisplayClusterViewportManager.h"
 
-FDisplayClusterProjectionCameraPolicy::FDisplayClusterProjectionCameraPolicy(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
-	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
-{
-}
 
-FDisplayClusterProjectionCameraPolicy::~FDisplayClusterProjectionCameraPolicy()
+FDisplayClusterProjectionCameraPolicy::FDisplayClusterProjectionCameraPolicy(const FString& ProjectionPolicyId, const FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy)
+	: FDisplayClusterProjectionPolicyBase(ProjectionPolicyId, InConfigurationProjectionPolicy)
 {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProjectionPolicy
 //////////////////////////////////////////////////////////////////////////////////////////////
-bool FDisplayClusterProjectionCameraPolicy::HandleStartScene(class IDisplayClusterViewport* InViewport)
+const FString& FDisplayClusterProjectionCameraPolicy::GetType() const
+{
+	static const FString Type(DisplayClusterProjectionStrings::projection::Camera);
+	return Type;
+}
+
+bool FDisplayClusterProjectionCameraPolicy::HandleStartScene(IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
 
 	return true;
 }
 
-void FDisplayClusterProjectionCameraPolicy::HandleEndScene(class IDisplayClusterViewport* InViewport)
+void FDisplayClusterProjectionCameraPolicy::HandleEndScene(IDisplayClusterViewport* InViewport)
 {
 	check(IsInGameThread());
 
@@ -74,20 +78,29 @@ UCameraComponent* FDisplayClusterProjectionCameraPolicy::GetCameraComponent()
 	return  nullptr;
 }
 
-bool FDisplayClusterProjectionCameraPolicy::CalculateView(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
+bool FDisplayClusterProjectionCameraPolicy::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
 	check(IsInGameThread());
 
 	InOutViewLocation = FVector::ZeroVector;
 	InOutViewRotation = FRotator::ZeroRotator;
-
+	
 	// Save Z values
 	ZNear = NCP;
 	ZFar  = FCP;
-	
-	// Use transform of an assigned camera
+
+	// Use assigned camera
 	if (UCameraComponent* CameraComponent = GetCameraComponent())
 	{
+		if (UCineCameraComponent* CineCameraComponent = Cast<UCineCameraComponent>(CameraComponent))
+		{
+			if (CineCameraComponent->bOverride_CustomNearClippingPlane)
+			{
+				ZNear = CineCameraComponent->CustomNearClippingPlane;
+				ZFar = ZNear;
+			}
+		}
+
 		InOutViewLocation = CameraComponent->GetComponentLocation();
 		InOutViewRotation = CameraComponent->GetComponentRotation();
 	}
@@ -158,6 +171,7 @@ bool FDisplayClusterProjectionCameraPolicy::GetProjectionMatrix(IDisplayClusterV
 
 	return false;
 }
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // FDisplayClusterProjectionCameraPolicy

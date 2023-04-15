@@ -295,6 +295,8 @@ protected:
 	/** This function is passed via lambda to the RenderProxy to be able to access TriangleColorFunc */
 	FColor GetTriangleColor(const FDynamicMesh3* Mesh, int TriangleID);
 
+	/** This function is passed via lambda to the RenderProxy when BaseDynamicMeshComponent::ColorMode == Polygroups */
+	FColor GetGroupColor(const FDynamicMesh3* Mesh, int TriangleID) const;
 
 
 
@@ -486,8 +488,6 @@ public:
 	virtual const UBodySetup* GetBodySetup() const { return MeshBodySetup; }
 	/** @return BodySetup for this Component. A new BodySetup will be created if one does not exist. */
 	virtual UBodySetup* GetBodySetup() override;
-	/** @return Set new BodySetup for this Component. */
-	virtual void SetBodySetup(UBodySetup* NewSetup);
 
 	/**
 	 * Force an update of the Collision/Physics data for this Component.
@@ -501,6 +501,32 @@ public:
 	TEnumAsByte<enum ECollisionTraceFlag> CollisionType = ECollisionTraceFlag::CTF_UseSimpleAsComplex;
 
 	/** 
+	 * Update the simple collision shapes associated with this mesh component
+	 * 
+	 * @param AggGeom				New simple collision shapes to be used
+	 * @param bUpdateCollision		Whether to automatically call UpdateCollision() -- if false, manually call it to register the change with the physics system
+	 */
+	virtual void SetSimpleCollisionShapes(const struct FKAggregateGeom& AggGeom, bool bUpdateCollision);
+
+	virtual struct FKAggregateGeom& GetSimpleCollisionShapes()
+	{
+		return AggGeom;
+	}
+
+	/**
+	 * Clear the simple collision shapes associated with this mesh component
+	 * @param bUpdateCollision		Whether to automatically call UpdateCollision() -- if false, manually call it to register the change with the physics system
+	 */
+	virtual void ClearSimpleCollisionShapes(bool bUpdateCollision);
+
+	/**
+	 *	Controls whether the physics cooking should be done off the game thread.
+	 *  This should be used when collision geometry doesn't have to be immediately up to date (For example streaming in far away objects)
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Dynamic Mesh Component|Collision")
+	bool bUseAsyncCooking = false;
+
+	/** 
 	 * If true, current mesh will be used as Complex Collision source mesh. 
 	 * This is independent of the CollisionType setting, ie, even if Complex collision is enabled, if this is false, then the Complex Collision mesh will be empty
 	 */
@@ -511,6 +537,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dynamic Mesh Component|Collision");
 	bool bDeferCollisionUpdates = false;
 
+	/**
+	 * The bDeferCollisionUpdates property is a serialized Component setting that controls when collision is regenerated.
+	 * However, in some cases where a UDynamicMesh is being programmatically edited (eg like a live deformation/etc), we
+	 * want to defer collision updates during the user interaction, but not change the serialized property. 
+	 * In this case a non-serialized version of the flag can be *temporarily* set via this function in C++. 
+	 */
+	void SetTransientDeferCollisionUpdates(bool bEnabled);
+
 protected:
 	UPROPERTY(Instanced)
 	TObjectPtr<UBodySetup> MeshBodySetup;
@@ -518,6 +552,7 @@ protected:
 	virtual void InvalidatePhysicsData();
 	virtual void RebuildPhysicsData();
 
+	bool bTransientDeferCollisionUpdates = false;
 	bool bCollisionUpdatePending = false;
 
 protected:
@@ -531,6 +566,26 @@ protected:
 
 	/** Recompute LocalBounds from the current Mesh */
 	void UpdateLocalBounds();
+
+	//
+	// Internals for managing collision representation and setup
+	//
+
+	/** Simplified collision representation for the mesh component  */
+	UPROPERTY(EditAnywhere, Category = BodySetup, meta = (DisplayName = "Primitives", NoResetToDefault))
+	struct FKAggregateGeom AggGeom;
+
+	/** Queue for async body setups that are being cooked */
+	UPROPERTY(transient)
+	TArray<TObjectPtr<UBodySetup>> AsyncBodySetupQueue;
+
+	/** Once async physics cook is done, create needed state */
+	virtual void FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* FinishedBodySetup);
+
+	virtual UBodySetup* CreateBodySetupHelper();
+	
+	/** @return Set new BodySetup for this Component. */
+	virtual void SetBodySetup(UBodySetup* NewSetup);
 
 	/**
 	 * This is called to tell our RenderProxy about modifications to the material set.
@@ -578,6 +633,7 @@ protected:
 
 	//~ UObject Interface.
 	virtual void PostLoad() override;
+	virtual void BeginDestroy() override;
 #if WITH_EDITOR
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif

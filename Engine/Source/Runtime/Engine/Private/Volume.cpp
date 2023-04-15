@@ -8,6 +8,8 @@
 #include "EngineDefines.h"
 #include "Components/BrushComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Volume)
+
 #if WITH_EDITOR
 /** Define static delegate */
 AVolume::FOnVolumeShapeChanged AVolume::OnVolumeShapeChanged;
@@ -75,7 +77,7 @@ bool AVolume::EncompassesPoint(FVector Point, float SphereRadius/*=0.f*/, float*
 {
 	if (GetBrushComponent())
 	{
-#if WITH_PHYSX
+#if 1
 		FVector ClosestPoint;
 		float DistanceSqr;
 
@@ -120,6 +122,7 @@ bool AVolume::IsVolumeBrush() const
 {
 	return true;
 }
+
 
 
 

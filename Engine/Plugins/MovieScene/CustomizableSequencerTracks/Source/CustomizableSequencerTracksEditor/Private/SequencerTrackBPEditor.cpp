@@ -7,12 +7,12 @@
 #include "SequencerUtilities.h"
 #include "CustomizableSequencerTracksStyle.h"
 
-#include "AssetRegistryModule.h"
-#include "AssetDataTagMap.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetDataTagMap.h"
 #include "UObject/UObjectIterator.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Engine/Blueprint.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EntitySystem/IMovieSceneEntityProvider.h"
 #include "Misc/PathViews.h"
 
@@ -31,7 +31,7 @@ namespace
 
 		TArray<FAssetData> ValidClasses;
 		{
-			FString DesiredClassName = FString::Printf(TEXT("Class'%s'"), *USequencerTrackBP::StaticClass()->GetPathName());
+			FString DesiredClassName = FString::Printf(TEXT("/Script/CoreUObject.Class'%s'"), *USequencerTrackBP::StaticClass()->GetPathName());
 
 			FARFilter Filter;
 			Filter.TagsAndValues.Add(FBlueprintTags::NativeParentClassPath, MoveTemp(DesiredClassName));
@@ -258,7 +258,7 @@ TSharedPtr<SWidget> FSequencerTrackBPEditor::BuildOutlinerEditWidget(const FGuid
 		[
 			SNew(SButton)
 			.OnClicked_Lambda([this, CustomTrack]() -> FReply { this->CreateNewSection(CustomTrack, CustomTrack->DefaultSectionType); return FReply::Handled(); })
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.IsEnabled_Lambda([=]() { return WeakSequencer.IsValid() ? !WeakSequencer.Pin()->IsReadOnly() : false; })
 			.ContentPadding(FMargin(5, 2))
@@ -274,7 +274,7 @@ TSharedPtr<SWidget> FSequencerTrackBPEditor::BuildOutlinerEditWidget(const FGuid
 				[
 					SNew(SImage)
 					.ColorAndOpacity( FSlateColor::UseForeground() )
-					.Image(FEditorStyle::GetBrush("Plus"))
+					.Image(FAppStyle::GetBrush("Plus"))
 				]
 
 				+ SHorizontalBox::Slot()

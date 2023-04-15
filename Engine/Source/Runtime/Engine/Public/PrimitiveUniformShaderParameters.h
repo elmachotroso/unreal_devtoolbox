@@ -13,6 +13,8 @@
 #include "LightmapUniformShaderParameters.h"
 #include "UnifiedBuffer.h"
 #include "Containers/StaticArray.h"
+#include "NaniteDefinitions.h"
+#include "UnrealEngine.h"
 
 /** 
  * The uniform shader parameters associated with a primitive. 
@@ -51,9 +53,14 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FPrimitiveUniformShaderParameters,ENGINE_AP
 	SHADER_PARAMETER(FVector3f,		InstanceLocalBoundsExtent)
 	SHADER_PARAMETER(uint32,		InstancePayloadDataStride)
 	SHADER_PARAMETER(FVector3f,		WireframeColor)											// Only needed for editor/development
-	SHADER_PARAMETER(uint32,		NaniteImposterIndex)
+	SHADER_PARAMETER(uint32,		PackedNaniteFlags)
 	SHADER_PARAMETER(FVector3f,		LevelColor)												// Only needed for editor/development
 	SHADER_PARAMETER(int32,			PersistentPrimitiveIndex)
+	SHADER_PARAMETER(FVector2f,		InstanceDrawDistanceMinMaxSquared)
+	SHADER_PARAMETER(float,			InstanceWPODisableDistanceSquared)
+	SHADER_PARAMETER(uint32,		NaniteRayTracingDataOffset)
+	SHADER_PARAMETER(FVector3f,		Unused)
+	SHADER_PARAMETER(float,			BoundsScale)
 	SHADER_PARAMETER_ARRAY(FVector4f, CustomPrimitiveData, [FCustomPrimitiveData::NumCustomPrimitiveDataFloat4s]) // Custom data per primitive that can be accessed through material expression parameters and modified through UStaticMeshComponent
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -62,7 +69,7 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 #define PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL			0x2
 #define PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL			0x4
 #define PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER						0x8
-#define PRIMITIVE_SCENE_DATA_FLAG_DRAWS_VELOCITY						0x10
+#define PRIMITIVE_SCENE_DATA_FLAG_CACHE_SHADOW_AS_STATIC				0x10
 #define PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY						0x20
 #define PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN						0x40
 #define PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION			0x80
@@ -82,6 +89,9 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 #define PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE				0x200000
 #define PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN							0x400000
 #define PRIMITIVE_SCENE_DATA_FLAG_CAST_HIDDEN_SHADOW					0x800000
+#define PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET		0x1000000
+#define PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL			0x2000000
+#define PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE					0x4000000
 
 struct FPrimitiveUniformShaderParametersBuilder
 {
@@ -93,6 +103,7 @@ public:
 		// Flags defaulted on
 		bCastShadow									= true;
 		bCastContactShadow							= true;
+		bEvaluateWorldPositionOffset				= true;
 		bVisibleInGame								= true;
 		bVisibleInEditor							= true;
 		bVisibleInReflectionCaptures				= true;
@@ -103,7 +114,7 @@ public:
 		bReceivesDecals								= false;
 		bUseSingleSampleShadowFromStationaryLights	= false;
 		bUseVolumetricLightmap						= false;
-		bDrawsVelocity								= false;
+		bCacheShadowAsStatic						= false;
 		bOutputVelocity								= false;
 		bHasCapsuleRepresentation					= false;
 		bHasPreSkinnedLocalBounds					= false;
@@ -113,6 +124,11 @@ public:
 		bVisibleInSceneCaptureOnly					= false;
 		bHiddenInSceneCapture						= false;
 		bForceHidden								= false;
+		bHasNaniteImposter							= false;
+		bHasInstanceDrawDistanceCull				= false;
+		bHasWPODisableDistance						= false;
+
+		Parameters.BoundsScale						= 1.0f;
 
 		// Default colors
 		Parameters.WireframeColor					= FVector3f(1.0f, 1.0f, 1.0f);
@@ -126,9 +142,10 @@ public:
 		Parameters.PrimitiveComponentId				= ~uint32(0u);
 
 		// Nanite
-		Parameters.NaniteResourceID					= INDEX_NONE;
-		Parameters.NaniteHierarchyOffset			= INDEX_NONE;
-		Parameters.NaniteImposterIndex				= INDEX_NONE;
+		Parameters.NaniteResourceID						= INDEX_NONE;
+		Parameters.NaniteHierarchyOffset				= INDEX_NONE;
+		Parameters.PackedNaniteFlags					= NANITE_IMPOSTER_INDEX_MASK;
+		Parameters.NaniteRayTracingDataOffset			= INDEX_NONE;
 
 		// Instance data
 		Parameters.InstanceSceneDataOffset			= INDEX_NONE;
@@ -155,8 +172,9 @@ public:
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CastShadow);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			UseSingleSampleShadowFromStationaryLights);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			UseVolumetricLightmap);
-	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			DrawsVelocity);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			CacheShadowAsStatic);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			OutputVelocity);
+	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			EvaluateWorldPositionOffset);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInGame);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInEditor);
 	PRIMITIVE_UNIFORM_BUILDER_FLAG_METHOD(bool,			VisibleInReflectionCaptures);
@@ -175,7 +193,7 @@ public:
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			PrimitiveComponentId);
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteResourceID);
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteHierarchyOffset);
-	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteImposterIndex);
+	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			NaniteRayTracingDataOffset);
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			LightmapUVIndex);
 	PRIMITIVE_UNIFORM_BUILDER_METHOD(uint32,			LightmapDataIndex);
 
@@ -185,6 +203,12 @@ public:
 	inline FPrimitiveUniformShaderParametersBuilder& LightingChannelMask(uint32 InLightingChannelMask)
 	{
 		LightingChannels = InLightingChannelMask;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& BoundsScale(float InBoundsScale)
+	{
+		Parameters.BoundsScale = InBoundsScale;
 		return *this;
 	}
 
@@ -199,10 +223,10 @@ public:
 	inline FPrimitiveUniformShaderParametersBuilder& WorldBounds(const FBoxSphereBounds& InWorldBounds)
 	{
 		AbsoluteObjectWorldPosition = InWorldBounds.Origin;
-		ObjectRadius = InWorldBounds.SphereRadius;
-		Parameters.ObjectBoundsX = InWorldBounds.BoxExtent.X;
-		Parameters.ObjectBoundsY = InWorldBounds.BoxExtent.Y;
-		Parameters.ObjectBoundsZ = InWorldBounds.BoxExtent.Z;
+		ObjectRadius = static_cast<float>(InWorldBounds.SphereRadius);											//LWC_TODO: Precision loss
+		Parameters.ObjectBoundsX = static_cast<float>(InWorldBounds.BoxExtent.X);
+		Parameters.ObjectBoundsY = static_cast<float>(InWorldBounds.BoxExtent.Y);
+		Parameters.ObjectBoundsZ = static_cast<float>(InWorldBounds.BoxExtent.Z);
 		return *this;
 	}
 
@@ -280,6 +304,42 @@ public:
 		return *this;
 	}
 
+	inline FPrimitiveUniformShaderParametersBuilder& NaniteImposterIndex(uint32 ImposterIndex)
+	{
+		bHasNaniteImposter = ImposterIndex != INDEX_NONE;
+
+		check(!bHasNaniteImposter || ImposterIndex < NANITE_IMPOSTER_INDEX_MASK);
+		Parameters.PackedNaniteFlags = (Parameters.PackedNaniteFlags & NANITE_FILTER_FLAGS_MASK) | (ImposterIndex & NANITE_IMPOSTER_INDEX_MASK);
+
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& NaniteFilterFlags(uint32 FilterFlags)
+	{
+		check(FilterFlags < (1u << NANITE_FILTER_FLAGS_NUM_BITS));
+		Parameters.PackedNaniteFlags = (FilterFlags << NANITE_IMPOSTER_INDEX_NUM_BITS) | (Parameters.PackedNaniteFlags & NANITE_IMPOSTER_INDEX_MASK);
+
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& InstanceDrawDistance(FVector2f DistanceMinMax)
+	{
+		// Only scale the far distance by scalability parameters
+		DistanceMinMax.Y *= GetCachedScalabilityCVars().ViewDistanceScale;
+		Parameters.InstanceDrawDistanceMinMaxSquared = FMath::Square(DistanceMinMax);
+		bHasInstanceDrawDistanceCull = true;
+		return *this;
+	}
+
+	inline FPrimitiveUniformShaderParametersBuilder& InstanceWorldPositionOffsetDisableDistance(float WPODisableDistance)
+	{
+		WPODisableDistance *= GetCachedScalabilityCVars().ViewDistanceScale;
+		bHasWPODisableDistance = true;
+		Parameters.InstanceWPODisableDistanceSquared = WPODisableDistance * WPODisableDistance;
+
+		return *this;
+	}
+
 	inline const FPrimitiveUniformShaderParameters& Build()
 	{
 		const FLargeWorldRenderPosition AbsoluteWorldPosition(AbsoluteLocalToWorld.GetOrigin());
@@ -318,7 +378,6 @@ public:
 			Parameters.InstanceLocalBoundsExtent = InstanceLocalBounds.GetExtent();
 		}
 
-
 		if (!bHasPreSkinnedLocalBounds)
 		{
 			Parameters.PreSkinnedLocalBoundsMin = Parameters.LocalObjectBoundsMin;
@@ -337,9 +396,9 @@ public:
 			float ScaleZ = FVector3f(WorldZ).Size();
 			Parameters.NonUniformScale = FVector4f(ScaleX, ScaleY, ScaleZ, FMath::Max3(FMath::Abs(ScaleX), FMath::Abs(ScaleY), FMath::Abs(ScaleZ)));
 			Parameters.InvNonUniformScale = FVector3f(
-				ScaleX > KINDA_SMALL_NUMBER ? 1.0f / ScaleX : 0.0f,
-				ScaleY > KINDA_SMALL_NUMBER ? 1.0f / ScaleY : 0.0f,
-				ScaleZ > KINDA_SMALL_NUMBER ? 1.0f / ScaleZ : 0.0f);
+				ScaleX > UE_KINDA_SMALL_NUMBER ? 1.0f / ScaleX : 0.0f,
+				ScaleY > UE_KINDA_SMALL_NUMBER ? 1.0f / ScaleY : 0.0f,
+				ScaleZ > UE_KINDA_SMALL_NUMBER ? 1.0f / ScaleZ : 0.0f);
 		}
 
 		// If SingleCaptureIndex is invalid, set it to 0 since there will be a default cubemap at that slot
@@ -350,14 +409,15 @@ public:
 		Parameters.Flags |= bHasCapsuleRepresentation ? PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION : 0u;
 		Parameters.Flags |= bUseSingleSampleShadowFromStationaryLights ? PRIMITIVE_SCENE_DATA_FLAG_USE_SINGLE_SAMPLE_SHADOW_SL : 0u;
 		Parameters.Flags |= (bUseVolumetricLightmap && bUseSingleSampleShadowFromStationaryLights) ? PRIMITIVE_SCENE_DATA_FLAG_USE_VOLUMETRIC_LM_SHADOW_SL : 0u;
-		Parameters.Flags |= bDrawsVelocity ? PRIMITIVE_SCENE_DATA_FLAG_DRAWS_VELOCITY : 0u;
+		Parameters.Flags |= bCacheShadowAsStatic ? PRIMITIVE_SCENE_DATA_FLAG_CACHE_SHADOW_AS_STATIC : 0u;
 		Parameters.Flags |= bOutputVelocity ? PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY : 0u;
+		Parameters.Flags |= bEvaluateWorldPositionOffset ? PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET : 0u;
 		Parameters.Flags |= (Parameters.LocalToRelativeWorld.RotDeterminant() < 0.0f) ? PRIMITIVE_SCENE_DATA_FLAG_DETERMINANT_SIGN : 0u;
 		Parameters.Flags |= bHasCustomData ? PRIMITIVE_SCENE_DATA_FLAG_HAS_PRIMITIVE_CUSTOM_DATA : 0u;
 		Parameters.Flags |= ((LightingChannels & 0x1) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_0 : 0u;
 		Parameters.Flags |= ((LightingChannels & 0x2) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_1 : 0u;
 		Parameters.Flags |= ((LightingChannels & 0x4) != 0) ? PRIMITIVE_SCENE_DATA_FLAG_LIGHTING_CHANNEL_2 : 0u;
-		Parameters.Flags |= (Parameters.NaniteImposterIndex != INDEX_NONE) ? PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER : 0u;
+		Parameters.Flags |= bHasNaniteImposter ? PRIMITIVE_SCENE_DATA_FLAG_HAS_NANITE_IMPOSTER : 0u;
 		Parameters.Flags |= bHasInstanceLocalBounds ? PRIMITIVE_SCENE_DATA_FLAG_HAS_INSTANCE_LOCAL_BOUNDS : 0u;
 		Parameters.Flags |= bCastShadow ? PRIMITIVE_SCENE_DATA_FLAG_CAST_SHADOWS : 0u;
 		Parameters.Flags |= bCastContactShadow ? PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW : 0u;
@@ -372,6 +432,8 @@ public:
 		Parameters.Flags |= bVisibleInSceneCaptureOnly ? PRIMITIVE_SCENE_DATA_FLAG_VISIBLE_IN_SCENE_CAPTURE_ONLY : 0u;
 		Parameters.Flags |= bHiddenInSceneCapture ? PRIMITIVE_SCENE_DATA_FLAG_HIDDEN_IN_SCENE_CAPTURE : 0u;
 		Parameters.Flags |= bForceHidden ? PRIMITIVE_SCENE_DATA_FLAG_FORCE_HIDDEN : 0u;
+		Parameters.Flags |= bHasInstanceDrawDistanceCull ? PRIMITIVE_SCENE_DATA_FLAG_INSTANCE_DRAW_DISTANCE_CULL : 0u;
+		Parameters.Flags |= bHasWPODisableDistance ? PRIMITIVE_SCENE_DATA_FLAG_WPO_DISABLE_DISTANCE : 0u;
 		return Parameters;
 	}
 
@@ -389,8 +451,9 @@ private:
 	uint32 bReceivesDecals : 1;
 	uint32 bUseSingleSampleShadowFromStationaryLights : 1;
 	uint32 bUseVolumetricLightmap : 1;
-	uint32 bDrawsVelocity : 1;
+	uint32 bCacheShadowAsStatic : 1;
 	uint32 bOutputVelocity : 1;
+	uint32 bEvaluateWorldPositionOffset : 1;
 	uint32 bCastShadow : 1;
 	uint32 bCastContactShadow : 1;
 	uint32 bCastHiddenShadow : 1;
@@ -407,6 +470,9 @@ private:
 	uint32 bVisibleInSceneCaptureOnly : 1;
 	uint32 bHiddenInSceneCapture : 1;
 	uint32 bForceHidden : 1;
+	uint32 bHasNaniteImposter : 1;
+	uint32 bHasInstanceDrawDistanceCull : 1;
+	uint32 bHasWPODisableDistance : 1;
 };
 
 inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUniformBufferImmediate(
@@ -415,7 +481,7 @@ inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUnifo
 	const FBoxSphereBounds& LocalBounds,
 	const FBoxSphereBounds& PreSkinnedLocalBounds,
 	bool bReceivesDecals,
-	bool bDrawsVelocity
+	bool bOutputVelocity
 )
 {
 	check(IsInRenderingThread());
@@ -428,7 +494,7 @@ inline TUniformBufferRef<FPrimitiveUniformShaderParameters> CreatePrimitiveUnifo
 			.LocalBounds(LocalBounds)
 			.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
 			.ReceivesDecals(bReceivesDecals)
-			.DrawsVelocity(bDrawsVelocity)
+			.OutputVelocity(bOutputVelocity)
 		.Build(),
 		UniformBuffer_MultiFrame
 	);
@@ -467,7 +533,7 @@ extern ENGINE_API TGlobalResource<FIdentityPrimitiveUniformBuffer> GIdentityPrim
 struct FPrimitiveSceneShaderData
 {
 	// Must match PRIMITIVE_SCENE_DATA_STRIDE in SceneData.ush
-	enum { DataStrideInFloat4s = 40 };
+	enum { DataStrideInFloat4s = 42 };
 
 	TStaticArray<FVector4f, DataStrideInFloat4s> Data;
 
@@ -542,7 +608,7 @@ public:
 	FBufferRHIRef InstancePayloadDataBufferRHI;
 	FShaderResourceViewRHIRef InstancePayloadDataBufferSRV;
 
-	FTexture2DRHIRef PrimitiveSceneDataTextureRHI;
+	FTextureRHIRef PrimitiveSceneDataTextureRHI;
 	FShaderResourceViewRHIRef PrimitiveSceneDataTextureSRV;
 
 	FBufferRHIRef LightmapSceneDataBufferRHI;

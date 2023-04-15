@@ -62,8 +62,7 @@ void SLevelSnapshotsEditorResultsRow::Construct(const FArguments& InArgs, const 
 		bIsSinglePropertyInCollection || RowType == FLevelSnapshotsEditorResultsRow::StructInSetOrArray || RowType == FLevelSnapshotsEditorResultsRow::StructInMap || bIsParentRowCheckboxHidden ||
 		(bIsSingleProperty && !bHasAtLeastOneValidNode && !bHasAtLeastOneCustomWidget));
 
-	FText Tooltip = bHasValidHandle ? ItemHandle->GetToolTipText() : PinnedItem->GetDisplayName();
-	
+	FText Tooltip = bHasValidHandle ? ItemHandle->GetToolTipText() : PinnedItem->GetTooltip();
 	if (bIsSinglePropertyInCollection)
 	{
 		Tooltip = FText::Format(LOCTEXT("CollectionDisclaimer", "({0}) Individual members of collections cannot be selected. The whole collection will be restored."), Tooltip);
@@ -75,10 +74,6 @@ void SLevelSnapshotsEditorResultsRow::Construct(const FArguments& InArgs, const 
 	else if (RowType == FLevelSnapshotsEditorResultsRow::ModifiedComponentGroup)
 	{
 		Tooltip = FText::Format(LOCTEXT("ComponentOrderDisclaimer", "Component ({0}): Please note that component order reflects the order in the world, not the snapshot. LevelSnapshots does not alter component order."), Tooltip);
-	}
-	else
-	{
-		Tooltip = bHasValidHandle ? ItemHandle->GetToolTipText() : PinnedItem->GetDisplayName();
 	}
 
 	int32 IndentationDepth = 0;
@@ -157,7 +152,7 @@ void SLevelSnapshotsEditorResultsRow::Construct(const FArguments& InArgs, const 
 	if (bDoesRowNeedSplitter)
 	{
 		SAssignNew(OuterSplitterPtr, SSplitter)
-		.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+		.Style(FAppStyle::Get(), "DetailsView.Splitter")
 		.PhysicalSplitterHandleSize(5.0f)
 		.HitDetectionSplitterHandleSize(5.0f);
 
@@ -173,7 +168,7 @@ void SLevelSnapshotsEditorResultsRow::Construct(const FArguments& InArgs, const 
 		.Value(TAttribute<float>::Create(TAttribute<float>::FGetter::CreateSP(this, &SLevelSnapshotsEditorResultsRow::CalculateAndReturnNestedColumnSize)))
 		[
 			SAssignNew(NestedSplitterPtr, SSplitter)
-			.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+			.Style(FAppStyle::Get(), "DetailsView.Splitter")
 			.PhysicalSplitterHandleSize(5.0f)
 			.HitDetectionSplitterHandleSize(5.0f)
 		];
@@ -241,10 +236,9 @@ void SLevelSnapshotsEditorResultsRow::GenerateAddedAndRemovedRowComponents(
 	.AutoWidth()
 	.Padding(FMargin(5, 0))
 	[
-		SNew(STextBlock)
-		.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-        .TextStyle(FEditorStyle::Get(), "NormalText.Important")
-        .Text(PinnedItem->GetRowType() == FLevelSnapshotsEditorResultsRow::RemovedComponentToAdd ? FEditorFontGlyphs::Plus : FEditorFontGlyphs::Minus)
+		SNew(SImage)
+		.Image(FAppStyle::Get().GetBrush(
+			PinnedItem->GetRowType() == FLevelSnapshotsEditorResultsRow::RemovedComponentToAdd ? "Icons.Plus" : "Icons.Minus"))
 	];
 
 	BasicRowWidgets->AddSlot()
@@ -252,7 +246,7 @@ void SLevelSnapshotsEditorResultsRow::GenerateAddedAndRemovedRowComponents(
 	.HAlign(HAlign_Left)
 	[
 		SNew(STextBlock)
-		.Font(FCoreStyle::GetDefaultFontStyle("Italic", FCoreStyle::RegularTextSize))
+		.Font(FAppStyle::Get().GetFontStyle("Italic"))
 		.Text(InDisplayText)
 		.ToolTipText(
 			FText::Format

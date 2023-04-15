@@ -80,6 +80,7 @@ public:
 	virtual const FGuid& GetId() const override																								{ return Id; }
 	virtual const FString& GetName() const override																							{ return NotMocked<const FString&>(Name); }
 	virtual void SetName(const FString&) override																							{ return NotMocked<void>(); }
+	virtual FMessageAddress GetClientAddress(const FGuid& ClientEndpointId) const override													{ return NotMocked<FMessageAddress>(); }
 	virtual const FConcertSessionInfo& GetSessionInfo() const override																		{ return NotMocked<const FConcertSessionInfo&>(SessionInfo); }
 	virtual FString GetSessionWorkingDirectory() const override																				{ return GetTestSessionRootPath() / Id.ToString(); }
 	virtual TArray<FGuid> GetSessionClientEndpointIds() const override																		{ return NotMocked<TArray<FGuid>>(); }
@@ -102,6 +103,7 @@ public:
 	// IConcertServerSession Begin
 	virtual FOnConcertServerSessionTick& OnTick() override                          { return NotMocked<FOnConcertServerSessionTick&>(Tick); }
 	virtual FOnConcertServerSessionClientChanged& OnSessionClientChanged() override { return NotMocked<FOnConcertServerSessionClientChanged&>(ConnectionChanged); }
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() override { return NotMocked<FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint&>(AckReceived); }
 	// IConcertServerSession End
 
 protected:
@@ -112,6 +114,7 @@ protected:
 	FConcertSessionInfo SessionInfo;
 	FOnConcertServerSessionTick Tick;
 	FOnConcertServerSessionClientChanged ConnectionChanged;
+	FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint AckReceived;
 };
 
 /** Implements a not-working IConcertClientSession. It must be further overridden to implement just what is required by the tests */
@@ -890,7 +893,7 @@ bool FConcertDataStoreClientServerChangeNotificationHandler::RunTest(const FStri
 		Client2NotificationCount++;
 	});
 
-	// Ensure client 1 is not called back as he is the one performing all the changes.
+	// Ensure client 1 is not called back as it is the one performing all the changes.
 	Client1.RegisterChangeNotificationHandler<int32>(IntKey, EnsureNotCalled<int32>());
 	Client1.RegisterChangeNotificationHandler<float>(FloatKey, EnsureNotCalled<float>());
 	Client1.RegisterChangeNotificationHandler<FConcertDataStore_CustomTypeTest>(CustomKey, EnsureNotCalled<FConcertDataStore_CustomTypeTest>());

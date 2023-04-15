@@ -4,11 +4,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
-using System.Xml.Serialization;
 using System.Net;
-using UnrealBuildTool;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+#pragma warning disable SYSLIB0014
 
 namespace AutomationTool.DeviceReservation
 {
@@ -171,7 +173,8 @@ namespace AutomationTool.DeviceReservation
 
 		public static T InvokeAPI<T>(Uri UriToRequest, string Method, object ObjectToSerialize)
 		{
-			fastJSON.JSON.Instance.RegisterCustomType(typeof(TimeSpan), (o) => o.ToString(), (s) => TimeSpan.Parse(s));
+			var SerializeOptions = new JsonSerializerOptions() { PropertyNameCaseInsensitive = true };
+			SerializeOptions.Converters.Add(new TimeSpanJsonConverter());
 
 			var Request = (HttpWebRequest)WebRequest.Create(UriToRequest);
 			Request.UseDefaultCredentials = true;
@@ -183,7 +186,7 @@ namespace AutomationTool.DeviceReservation
 
 				using (var RequestStream = Request.GetRequestStream())
 				{
-					var JsonString = fastJSON.JSON.Instance.ToJSON(ObjectToSerialize, new fastJSON.JSONParameters() { UseExtensions = false });
+					var JsonString = JsonSerializer.Serialize(ObjectToSerialize, SerializeOptions);
 					var Writer = new StreamWriter(RequestStream);
 					Writer.Write(JsonString);
 					Writer.Flush();
@@ -197,7 +200,7 @@ namespace AutomationTool.DeviceReservation
 				MemoryStream MemoryStream = new MemoryStream();
 				ResponseStream.CopyTo(MemoryStream);
 				string JsonString = Encoding.UTF8.GetString(MemoryStream.ToArray());
-				return fastJSON.JSON.Instance.ToObject<T>(JsonString);
+				return JsonSerializer.Deserialize<T>(JsonString, SerializeOptions );
 			}
 		}
 
@@ -213,7 +216,7 @@ namespace AutomationTool.DeviceReservation
 
 				using (var RequestStream = Request.GetRequestStream())
 				{
-					var JsonString = fastJSON.JSON.Instance.ToJSON(ObjectToSerialize, new fastJSON.JSONParameters() { UseExtensions = false });
+					var JsonString = JsonSerializer.Serialize(ObjectToSerialize, new JsonSerializerOptions());
 					var Writer = new StreamWriter(RequestStream);
 					Writer.Write(JsonString);
 					Writer.Flush();
@@ -244,13 +247,13 @@ namespace AutomationTool.DeviceReservation
 
 		private sealed class CreateReservationData
 		{
-			public string[] DeviceTypes;
-			public string Hostname;
-			public TimeSpan Duration;
-			public string ReservationDetails;
-			public string PoolId;
-			public string JobId;
-			public string StepId;
+			public string[] DeviceTypes { get; set; }
+			public string Hostname { get; set; }
+			public TimeSpan Duration { get; set; }
+			public string ReservationDetails { get; set; }
+			public string PoolId { get; set; }
+			public string JobId { get; set; }
+			public string StepId { get; set; }
 		}
 
 		public static Reservation Create(Uri BaseUri, string[] DeviceTypes, TimeSpan Duration, int RetryMax = 5, string PoolID = "")
@@ -404,6 +407,7 @@ namespace AutomationTool.DeviceReservation
 		public string Type { get; set; }
 		public string IPOrHostName { get; set; }
 		public string PerfSpec { get; set; }
+		public string Model { get; set; }
 		public TimeSpan AvailableStartTime { get; set; }
 		public TimeSpan AvailableEndTime { get; set; }
 		public bool Enabled { get; set; }
@@ -414,6 +418,25 @@ namespace AutomationTool.DeviceReservation
 		public static Device Get(Uri BaseUri, string DeviceName)
 		{
 			return Utils.InvokeAPI<Device>(BaseUri.AppendPath("api/v1/devices/" + DeviceName), "GET", null);
+		}
+	}
+
+	public class TimeSpanJsonConverter : JsonConverter<TimeSpan>
+	{
+		public override bool CanConvert(Type ObjectType)
+		{
+			return ObjectType == typeof(TimeSpan);
+		}
+
+		public override TimeSpan Read(ref Utf8JsonReader Reader, Type TypeToConvert, JsonSerializerOptions Options)
+		{
+			return TimeSpan.Parse(Reader.GetString());
+		}
+
+		public override void Write(Utf8JsonWriter Writer, TimeSpan Value, JsonSerializerOptions Options)
+		{
+			var StrValue = Value.ToString();
+			Writer.WriteStringValue(Options.PropertyNamingPolicy?.ConvertName(StrValue) ?? StrValue);
 		}
 	}
 }

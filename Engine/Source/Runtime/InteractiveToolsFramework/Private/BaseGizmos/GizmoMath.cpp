@@ -9,7 +9,7 @@ FVector GizmoMath::ProjectPointOntoLine(
 	const FVector& Point,
 	const FVector& LineOrigin, const FVector& LineDirection)
 {
-	float ProjectionParam = FVector::DotProduct((Point - LineOrigin), LineDirection);
+	double ProjectionParam = FVector::DotProduct((Point - LineOrigin), LineDirection);
 	return LineOrigin + ProjectionParam * LineDirection;
 }
 
@@ -20,8 +20,9 @@ void GizmoMath::NearestPointOnLine(
 	FVector& NearestPointOut, float& LineParameterOut)
 {
 	check(LineDirection.IsNormalized());
-	LineParameterOut = FVector::DotProduct( (QueryPoint - LineOrigin), LineDirection);
-	NearestPointOut = LineOrigin + LineParameterOut * LineDirection;
+	double LineParameter = FVector::DotProduct( (QueryPoint - LineOrigin), LineDirection);
+	NearestPointOut = LineOrigin + LineParameter * LineDirection;
+	LineParameterOut = (float)LineParameter;
 }
 
 
@@ -32,21 +33,21 @@ void GizmoMath::NearestPointOnLineToRay(
 	FVector& NearestRayPointOut, float& RayParameterOut)
 {
 	FVector kDiff = LineOrigin - RayOrigin;
-	float a01 = -FVector::DotProduct(LineDirection, RayDirection);
-	float b0 = FVector::DotProduct(kDiff, LineDirection);
-	float c = kDiff.SizeSquared();
-	float det = FMath::Abs((float)1 - a01 * a01);
-	float b1, s0, s1;
+	double a01 = -FVector::DotProduct(LineDirection, RayDirection);
+	double b0 = FVector::DotProduct(kDiff, LineDirection);
+	double c = kDiff.SizeSquared();
+	double det = FMath::Abs((double)1 - a01 * a01);
+	double b1, s0, s1;
 
 	if (det >= SMALL_NUMBER)
 	{
 		b1 = -FVector::DotProduct(kDiff, RayDirection);
 		s1 = a01 * b0 - b1;
 
-		if (s1 >= (float)0)
+		if (s1 >= (double)0)
 		{
 			// Two interior points are closest, one on Line and one on Ray
-			float invDet = ((float)1) / det;
+			double invDet = ((double)1) / det;
 			s0 = (a01 * b1 - b0) * invDet;
 			s1 *= invDet;
 		}
@@ -54,20 +55,20 @@ void GizmoMath::NearestPointOnLineToRay(
 		{
 			// Origin of Ray and interior point of Line are closest.
 			s0 = -b0;
-			s1 = (float)0;
+			s1 = (double)0;
 		}
 	}
 	else
 	{
 		// Lines are parallel, closest pair with one point at Ray origin.
 		s0 = -b0;
-		s1 = (float)0;
+		s1 = (double)0;
 	}
 
 	NearestLinePointOut = LineOrigin + s0 * LineDirection;
 	NearestRayPointOut = RayOrigin + s1 * RayDirection;
-	LineParameterOut = s0;
-	RayParameterOut = s1;
+	LineParameterOut = (float)s0;
+	RayParameterOut = (float)s1;
 }
 
 
@@ -81,15 +82,15 @@ void GizmoMath::RayPlaneIntersectionPoint(
 	bIntersectsOut = false;
 	PlaneIntersectionPointOut = PlaneOrigin;
 
-	float PlaneEquationD = -FVector::DotProduct(PlaneOrigin, PlaneNormal);
-	float NormalDot = FVector::DotProduct(RayDirection, PlaneNormal);
+	double PlaneEquationD = -FVector::DotProduct(PlaneOrigin, PlaneNormal);
+	double NormalDot = FVector::DotProduct(RayDirection, PlaneNormal);
 
 	if (FMath::Abs(NormalDot) < SMALL_NUMBER)
 	{
 		return;
 	}
 
-	float RayParam = -( FVector::DotProduct(RayOrigin, PlaneNormal) + PlaneEquationD) / NormalDot;
+	double RayParam = -( FVector::DotProduct(RayOrigin, PlaneNormal) + PlaneEquationD) / NormalDot;
 	if (RayParam < 0)
 	{
 		return;
@@ -109,16 +110,16 @@ void GizmoMath::RaySphereIntersection(
 	SphereIntersectionPointOut = RayOrigin;
 	 
 	FVector DeltaPos = RayOrigin - SphereOrigin;
-	float a0 = DeltaPos.SizeSquared() - SphereRadius*SphereRadius;
-	float a1 = FVector::DotProduct(RayDirection, DeltaPos);
-	float discr = a1 * a1 - a0;
+	double a0 = DeltaPos.SizeSquared() - (double)SphereRadius*(double)SphereRadius;
+	double a1 = FVector::DotProduct(RayDirection, DeltaPos);
+	double discr = a1 * a1 - a0;
 	if (discr > 0)   // intersection only when roots are real
 	{
 		bIntersectsOut = true;
-		float root = FMath::Sqrt(discr);
-		float NearRayParam = -a1 + root;		// isn't it always this one?
-		float NearRayParam2 = -a1 - root;
-		float UseRayParam = FMath::Min(NearRayParam, NearRayParam2);
+		double root = FMath::Sqrt(discr);
+		double NearRayParam = -a1 + root;		// isn't it always this one?
+		double NearRayParam2 = -a1 - root;
+		double UseRayParam = FMath::Min(NearRayParam, NearRayParam2);
 		SphereIntersectionPointOut = RayOrigin + UseRayParam * RayDirection;
 	}
 }
@@ -161,7 +162,7 @@ void GizmoMath::RayCylinderIntersection(
 	Basis[1] = GetOrthogonalVector(Basis[0]).GetSafeNormal();
 	Basis[2] = (Basis[0] ^ Basis[1]).GetSafeNormal();
 
-	RealType HalfHeight = 0.5 * CylinderHeight;
+	RealType HalfHeight = RealType(0.5) * CylinderHeight;
 	RealType RadiusSquared = CylinderRadius * CylinderRadius;
 
 	// Convert incoming line origin to capsule coordinates.
@@ -170,25 +171,25 @@ void GizmoMath::RayCylinderIntersection(
 
 	// Get the z-value, in cylinder coordinates, of the incoming line's
 	// unit-length direction.
-	RealType Dz = Basis[0] | RayDirection;
-	if (FMath::Abs(Dz) == 1.0)
+	RealType Dz = static_cast<RealType>( Basis[0] | RayDirection );
+	if (FMath::IsNearlyEqual(Dz, 1.0, SMALL_NUMBER)) 
 	{
 		// The line is parallel to the cylinder axis.  Determine whether the
 		// line intersects the cylinder end disks.
-		RealType RadialSquaredDist = RadiusSquared - P[0] * P[0] - P[1] * P[1];
+		RealType RadialSquaredDist = static_cast<RealType>( RadiusSquared - P[0] * P[0] - P[1] * P[1]);
 		if (RadialSquaredDist >= 0.0)
 		{
 			// The line intersects the cylinder end disks.
 			NumIntersections = 2;
 			if (Dz > 0.0)
 			{
-				RayParam[0] = -P[2] - HalfHeight;
-				RayParam[1] = -P[2] + HalfHeight;
+				RayParam[0] = static_cast<RealType>( -P[2] - HalfHeight );
+				RayParam[1] = static_cast<RealType>( -P[2] + HalfHeight );
 			}
 			else
 			{
-				RayParam[0] = P[2] - HalfHeight;
-				RayParam[1] = P[2] + HalfHeight;
+				RayParam[0] = static_cast<RealType>( P[2] - HalfHeight );
+				RayParam[1] = static_cast<RealType>( P[2] + HalfHeight );
 			}
 		}
 		// else:  The line is outside the cylinder, no intersection.
@@ -201,7 +202,7 @@ void GizmoMath::RayCylinderIntersection(
 
 		RealType A0, A1, A2, Discr, Root, Inv, TValue;
 
-		if (D[2] == 0.0)
+		if (FMath::IsNearlyZero(D[2]))
 		{
 			// The line is perpendicular to the cylinder axis.
 			if (FMath::Abs(P[2]) <= HalfHeight)
@@ -211,11 +212,18 @@ void GizmoMath::RayCylinderIntersection(
 				// quadratic equation.  If P = (px,py,pz) and D = (dx,dy,dz),
 				// then the quadratic equation is
 				//   (dx^2+dy^2)*t^2 + 2*(px*dx+py*dy)*t + (px^2+py^2-r^2) = 0
-				A0 = P[0] * P[0] + P[1] * P[1] - RadiusSquared;
-				A1 = P[0] * D[0] + P[1] * D[1];
-				A2 = D[0] * D[0] + D[1] * D[1];
+				A0 = static_cast<RealType>( P[0] * P[0] + P[1] * P[1] - RadiusSquared );
+				A1 = static_cast<RealType>( P[0] * D[0] + P[1] * D[1] );
+				A2 = static_cast<RealType>( D[0] * D[0] + D[1] * D[1] );
 				Discr = A1 * A1 - A0 * A2;
-				if (Discr > 0.0)
+				if (FMath::IsNearlyZero(Discr)) 
+				{
+					// The line is tangent to the cylinder.
+					NumIntersections = 1;
+					RayParam[0] = -A1 / A2;
+					RayParam[1] = RayParam[0];
+				}
+				else if (Discr > 0.0)
 				{
 					// The line intersects the cylinder in two places.
 					NumIntersections = 2;
@@ -223,14 +231,7 @@ void GizmoMath::RayCylinderIntersection(
 					Inv = 1.0f / A2;
 					RayParam[0] = (-A1 - Root) * Inv;
 					RayParam[1] = (-A1 + Root) * Inv;
-				}
-				else if (Discr == 0.0)
-				{
-					// The line is tangent to the cylinder.
-					NumIntersections = 1;
-					RayParam[0] = -A1 / A2;
-					RayParam[1] = RayParam[0];
-				}
+				}				
 				// else: The line does not intersect the cylinder.
 			}
 			// else: The line is outside the planes of the cylinder end disks.
@@ -238,20 +239,20 @@ void GizmoMath::RayCylinderIntersection(
 		else
 		{
 			// Test for intersections with the planes of the end disks.
-			Inv = 1.0f / D[2];
+			Inv = static_cast<RealType>( 1.0 / D[2] );
 
-			RealType T0 = (-HalfHeight - P[2]) * Inv;
-			RealType TmpX = P[0] + T0 * D[0];
-			RealType TmpY = P[1] + T0 * D[1];
+			RealType T0 = static_cast<RealType>( (-HalfHeight - P[2]) * Inv );
+			RealType TmpX = static_cast<RealType>( P[0] + T0 * D[0] );
+			RealType TmpY = static_cast<RealType>( P[1] + T0 * D[1] );
 			if (TmpX * TmpX + TmpY * TmpY <= RadiusSquared)
 			{
 				// Plane intersection inside the top cylinder end disk.
 				RayParam[NumIntersections++] = T0;
 			}
 
-			RealType T1 = (+HalfHeight - P[2]) * Inv;
-			TmpX = P[0] + T1 * D[0];
-			TmpY = P[1] + T1 * D[1];
+			RealType T1 = static_cast<RealType>( (+HalfHeight - P[2]) * Inv );
+			TmpX = static_cast<RealType>( P[0] + T1 * D[0] );
+			TmpY = static_cast<RealType>( P[1] + T1 * D[1] );
 			if (TmpX * TmpX + TmpY * TmpY <= RadiusSquared)
 			{
 				// Plane intersection inside the bottom cylinder end disk.
@@ -261,11 +262,29 @@ void GizmoMath::RayCylinderIntersection(
 			if (NumIntersections < 2)
 			{
 				// Test for intersection with the cylinder wall.
-				A0 = P[0] * P[0] + P[1] * P[1] - RadiusSquared;
-				A1 = P[0] * D[0] + P[1] * D[1];
-				A2 = D[0] * D[0] + D[1] * D[1];
+				A0 = static_cast<RealType>( P[0] * P[0] + P[1] * P[1] - RadiusSquared );
+				A1 = static_cast<RealType>( P[0] * D[0] + P[1] * D[1] );
+				A2 = static_cast<RealType>( D[0] * D[0] + D[1] * D[1] );
 				Discr = A1 * A1 - A0 * A2;
-				if (Discr > 0.0f)
+				if (FMath::IsNearlyZero(Discr))
+				{
+					TValue = -A1 / A2;
+					if (T0 <= T1)
+					{
+						if (T0 <= TValue && TValue <= T1)
+						{
+							RayParam[NumIntersections++] = TValue;
+						}
+					}
+					else
+					{
+						if (T1 <= TValue && TValue <= T0)
+						{
+							RayParam[NumIntersections++] = TValue;
+						}
+					}
+				}
+				else if (Discr > 0.0)
 				{
 					Root = FMath::Sqrt(Discr);
 					Inv = (1.0f) / A2;
@@ -304,24 +323,6 @@ void GizmoMath::RayCylinderIntersection(
 						}
 					}
 					// else: Line intersects end disk and cylinder wall.
-				}
-				else if (Discr == 0.0f)
-				{
-					TValue = -A1 / A2;
-					if (T0 <= T1)
-					{
-						if (T0 <= TValue && TValue <= T1)
-						{
-							RayParam[NumIntersections++] = TValue;
-						}
-					}
-					else
-					{
-						if (T1 <= TValue && TValue <= T0)
-						{
-							RayParam[NumIntersections++] = TValue;
-						}
-					}
 				}
 				// else: Line does not intersect cylinder wall.
 			}
@@ -394,10 +395,10 @@ void GizmoMath::RayConeIntersection(
 	// equation subject to the linear inequality constraints.
 
 	FVector PmV = RayOrigin - ConeCenter;
-	RealType DdU = FVector::DotProduct(ConeDirection, RayDirection);
-	RealType DdPmV = FVector::DotProduct(ConeDirection, PmV);
-	RealType UdPmV = FVector::DotProduct(RayDirection, PmV);
-	RealType PmVdPmV = FVector::DotProduct(PmV, PmV);
+	RealType DdU = static_cast<RealType>( FVector::DotProduct(ConeDirection, RayDirection) );
+	RealType DdPmV = static_cast<RealType>( FVector::DotProduct(ConeDirection, PmV) );
+	RealType UdPmV = static_cast<RealType>( FVector::DotProduct(RayDirection, PmV) );
+	RealType PmVdPmV = static_cast<RealType>( FVector::DotProduct(PmV, PmV) );
 	RealType CosAngleSqr = ConeCosAngle * ConeCosAngle;
 	RealType C2 = DdU * DdU - CosAngleSqr;
 	RealType C1 = DdU * DdPmV - CosAngleSqr * UdPmV;
@@ -405,23 +406,40 @@ void GizmoMath::RayConeIntersection(
 	RealType T;
 	RealType RayParam[2];
 
-	if (C2 != 0.0)
+	if (!FMath::IsNearlyZero(C2))
 	{
 		RealType Discr = C1 * C1 - C0 * C2;
-		if (Discr < 0.0)
+		if (FMath::IsNearlyZero(Discr))
+		{
+			// One repeated real Root; the line is tangent to the double-sided
+			// cone at a single point.  Report only the point if it is on the
+			// positive cone.
+			T = -C1 / C2;
+			if (DdU * T + DdPmV >= 0.0)
+			{
+				RayParam[0] = T;
+				RayParam[1] = T;
+			}
+			else
+			{
+				bIntersectsOut = false;
+				return;
+			}
+		}
+		else if (Discr < 0.0)
 		{
 			// The quadratic has no real-valued Roots.  The line does not
 			// intersect the double-sided cone.
 			bIntersectsOut = false;
 			return;
 		}
-		else if (Discr > 0.0)
+		else // (Discr > 0.0)
 		{
 			// The quadratic has two distinct real-valued Roots.  However, one
 			// or both of them might intersect the negative cone.  We are
 			// interested only in those intersections with the positive cone.
 			RealType Root = FMath::Sqrt(Discr);
-			RealType InvC2 = 1.0 / C2;
+			RealType InvC2 = RealType(1) / C2;
 			int NumIntersections = 0;
 
 			T = (-C1 - Root) * InvC2;
@@ -454,30 +472,13 @@ void GizmoMath::RayConeIntersection(
 				// intersection with the positive cone.
 				if (DdU > 0.0)
 				{
-					RayParam[1] = FLT_MAX;
+					RayParam[1] = TNumericLimits<RealType>::Max();
 				}
 				else
 				{
 					bIntersectsOut = false;
 					return;
 				}
-			}
-			else
-			{
-				bIntersectsOut = false;
-				return;
-			}
-		}
-		else  // Discr == 0
-		{
-			// One repeated real Root; the line is tangent to the double-sided
-			// cone at a single point.  Report only the point if it is on the
-			// positive cone.
-			T = -C1 / C2;
-			if (DdU * T + DdPmV >= 0.0)
-			{
-				RayParam[0] = T;
-				RayParam[1] = T;
 			}
 			else
 			{
@@ -492,7 +493,7 @@ void GizmoMath::RayConeIntersection(
 		return;
 	}
 
-	if (DdU != 0.0)
+	if (!FMath::IsNearlyZero(DdU))
 	{
 		// Clamp the intersection to the height of the cone.
 		RealType InvDdU = (1.0f) / DdU;
@@ -502,7 +503,7 @@ void GizmoMath::RayConeIntersection(
 			hInterval[0] = -DdPmV * InvDdU;
 			hInterval[1] = (ConeHeight - DdPmV) * InvDdU;
 		}
-		else // (DdU < 0.0f)
+		else // (DdU < 0.0)
 		{
 			hInterval[0] = (ConeHeight - DdPmV) * InvDdU;
 			hInterval[1] = -DdPmV * InvDdU;
@@ -523,13 +524,10 @@ void GizmoMath::RayConeIntersection(
 			return;
 		}
 	}
-	else if (bIntersectsOut)
-	{
-		if (DdPmV > ConeHeight)
-		{
-			bIntersectsOut = false;
-			return;
-		}
+	else if (DdPmV > ConeHeight)
+	{		
+		bIntersectsOut = false;
+		return;
 	}
 
 	// Get rid of hits before ray origin
@@ -565,8 +563,8 @@ void GizmoMath::IntervalIntervalIntersection(
 	if (Interval0[1] < Interval1[0] || Interval0[0] > Interval1[1])
 	{
 		OutNumIntersections = 0;
-		OutResult0 = FLT_MAX;
-		OutResult1 = -FLT_MAX;
+		OutResult0 = TNumericLimits<RealType>::Max();
+		OutResult1 = -TNumericLimits<RealType>::Max();
 	}
 	else if (Interval0[1] > Interval1[0])
 	{
@@ -607,16 +605,16 @@ void GizmoMath::ClosetPointOnCircle(
 {
 	FVector PointDelta = QueryPoint - CircleOrigin;
 	FVector DeltaInPlane = PointDelta - FVector::DotProduct(CircleNormal,PointDelta)*CircleNormal;
-	float OriginDist = DeltaInPlane.Size();
+	double OriginDist = DeltaInPlane.Size();
 	if (OriginDist > 0.0f)
 	{
-		ClosestPointOut =  CircleOrigin + (CircleRadius / OriginDist) * DeltaInPlane;
+		ClosestPointOut =  CircleOrigin + ((double)CircleRadius / OriginDist) * DeltaInPlane;
 	}
 	else    // all points equidistant, use any one
 	{
 		FVector PlaneX, PlaneY;
 		MakeNormalPlaneBasis(CircleNormal, PlaneX, PlaneY);
-		ClosestPointOut = CircleOrigin + CircleRadius * PlaneX;
+		ClosestPointOut = CircleOrigin + (double)CircleRadius * PlaneX;
 	}
 }
 
@@ -629,8 +627,8 @@ void GizmoMath::MakeNormalPlaneBasis(
 	// Duff et al method, from https://graphics.pixar.com/library/OrthonormalB/paper.pdf
 	if (PlaneNormal.Z < 0)
 	{
-		float A = 1.0f / (1.0f - PlaneNormal.Z);
-		float B = PlaneNormal.X * PlaneNormal.Y * A;
+		double A = 1.0f / (1.0f - PlaneNormal.Z);
+		double B = PlaneNormal.X * PlaneNormal.Y * A;
 		BasisAxis1Out.X = 1.0f - PlaneNormal.X * PlaneNormal.X * A;
 		BasisAxis1Out.Y = -B;
 		BasisAxis1Out.Z = PlaneNormal.X;
@@ -640,8 +638,8 @@ void GizmoMath::MakeNormalPlaneBasis(
 	}
 	else
 	{
-		float A = 1.0f / (1.0f + PlaneNormal.Z);
-		float B = -PlaneNormal.X * PlaneNormal.Y * A;
+		double A = 1.0f / (1.0f + PlaneNormal.Z);
+		double B = -PlaneNormal.X * PlaneNormal.Y * A;
 		BasisAxis1Out.X = 1.0f - PlaneNormal.X * PlaneNormal.X * A;
 		BasisAxis1Out.Y = B;
 		BasisAxis1Out.Z = -PlaneNormal.X;
@@ -661,8 +659,8 @@ float GizmoMath::ComputeAngleInPlane(
 	// project point into plane
 	FVector LocalPoint = Point - PlaneOrigin;
 
-	float X = FVector::DotProduct(LocalPoint, PlaneAxis1);
-	float Y = FVector::DotProduct(LocalPoint, PlaneAxis2);
+	double X = FVector::DotProduct(LocalPoint, PlaneAxis1);
+	double Y = FVector::DotProduct(LocalPoint, PlaneAxis2);
 
 	float SignedAngle = (float)atan2(Y, X);
 	return SignedAngle;
@@ -677,8 +675,8 @@ FVector2D GizmoMath::ComputeCoordinatesInPlane(
 	const FVector& PlaneAxis1, const FVector& PlaneAxis2)
 {
 	FVector LocalPoint = Point - PlaneOrigin;
-	float X = FVector::DotProduct(LocalPoint, PlaneAxis1);
-	float Y = FVector::DotProduct(LocalPoint, PlaneAxis2);
+	double X = FVector::DotProduct(LocalPoint, PlaneAxis1);
+	double Y = FVector::DotProduct(LocalPoint, PlaneAxis2);
 	return FVector2D(X, Y);
 }
 
@@ -688,27 +686,27 @@ FVector GizmoMath::ProjectPointOntoPlane(
 	const FVector& PlaneOrigin, const FVector& PlaneNormal)
 {
 	FVector LocalPoint = Point - PlaneOrigin;
-	float NormalDot = FVector::DotProduct(LocalPoint, PlaneNormal);
+	double NormalDot = FVector::DotProduct(LocalPoint, PlaneNormal);
 	return Point - NormalDot * PlaneNormal;
 }
 
 
-
-float GizmoMath::SnapToIncrement(float Value, float Increment)
+template <typename RealType>
+RealType GizmoMath::SnapToIncrement(RealType Value, RealType Increment)
 {
 	if (!FMath::IsFinite(Value))
 	{
 		return 0;
 	}
-	float Sign = FMath::Sign(Value);
+	RealType Sign = FMath::Sign(Value);
 	Value = FMath::Abs(Value);
 	int IntIncrement = (int)(Value / Increment);
-	float Remainder = (float)fmod(Value, Increment);
+	RealType Remainder = (RealType)fmod(Value, Increment);
 	if (Remainder > IntIncrement / 2)
 	{
 		++IntIncrement;
 	}
-	return Sign * (float)IntIncrement * Increment;
+	return Sign * (RealType)IntIncrement * Increment;
 }
 
 // @todo: Remove this and replace calls to it with MakePerpVectors() once
@@ -755,5 +753,10 @@ namespace GizmoMath
 		const FVector& ConeCenter, const FVector& ConeDirection, double ConeAngle, double ConeHeight,
 		const FVector& RayOrigin, const FVector& RayDirection,
 		bool& bIntersectsOut, double& OutHitDepth);
+	
+	template
+	double INTERACTIVETOOLSFRAMEWORK_API GizmoMath::SnapToIncrement(double Value, double Increment);
 
+	template
+	float INTERACTIVETOOLSFRAMEWORK_API GizmoMath::SnapToIncrement(float Value, float Increment);
 } // end namespace GizmoMath

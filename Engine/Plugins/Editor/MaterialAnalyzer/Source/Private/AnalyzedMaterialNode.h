@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 struct FBasePropertyOverrideNode
 {
@@ -160,7 +160,7 @@ public:
 	}
 
 	FString Path;
-	FName ObjectPath;
+	FSoftObjectPath ObjectPath;
 	FAnalyzedMaterialNodePtr Parent;
 	FAssetData AssetData;
 

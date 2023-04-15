@@ -51,9 +51,9 @@ public:
 
 	void OnChangeImportSettings();
 
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> GetTranslatorImportOptions();
+	TArray<TObjectPtr<UDatasmithOptionsBase>> GetTranslatorImportOptions();
 
-	void SetTranslatorImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>> InOptions)
+	void SetTranslatorImportOptions(TArray<TObjectPtr<UDatasmithOptionsBase>> InOptions)
 	{
 		ImportOptionsOverride = InOptions;
 	}
@@ -96,18 +96,18 @@ private:
 	TUniquePtr< FDataprepWorkReporter > ProgressTaskPtr;
 	TSharedPtr< UE::DatasmithImporter::FExternalSource > ExternalSourcePtr;
 
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> ImportOptionsOverride;
+	TArray<TObjectPtr<UDatasmithOptionsBase>> ImportOptionsOverride;
 
 	UPROPERTY( Transient, DuplicateTransient )
-	UDatasmithScene* DatasmithScene;
+	TObjectPtr<UDatasmithScene> DatasmithScene;
 
 	UPROPERTY( Transient, DuplicateTransient )
-	UPackage* TransientPackage = nullptr;
+	TObjectPtr<UPackage> TransientPackage = nullptr;
 
 	TArray< TWeakObjectPtr< UObject > > Assets;
 
 	UPROPERTY()
-	TArray<UDatasmithOptionsBase*> TranslatorImportOptions;
+	TArray<TObjectPtr<UDatasmithOptionsBase>> TranslatorImportOptions;
 
 	UPROPERTY()
 	bool bTranslatorImportOptionsInitialized = false;
@@ -242,10 +242,10 @@ private:
 	TSet< FString > FilesToProcess;
 
 	UPROPERTY( Transient, DuplicateTransient )
-	UDatasmithFileProducer* FileProducer;
+	TObjectPtr<UDatasmithFileProducer> FileProducer;
 
 	UPROPERTY()
-	UDatasmithCommonTessellationOptions* TessellationOptions;
+	TObjectPtr<UDatasmithCommonTessellationOptions> TessellationOptions;
 
 	static TSet< FString > SupportedFormats;
 

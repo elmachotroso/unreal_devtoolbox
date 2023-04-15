@@ -19,28 +19,30 @@ public:
 	FStreamSegmentRequestHLSfmp4();
 	virtual ~FStreamSegmentRequestHLSfmp4();
 
-	virtual void SetPlaybackSequenceID(uint32 PlaybackSequenceID) override;
-	virtual uint32 GetPlaybackSequenceID() const override;
+	void SetPlaybackSequenceID(uint32 PlaybackSequenceID) override;
+	uint32 GetPlaybackSequenceID() const override;
 
-	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
-	virtual FTimeValue GetExecuteAtUTCTime() const override;
+	void SetExecutionDelay(const FTimeValue& UTCNow, const FTimeValue& ExecutionDelay) override;
+	FTimeValue GetExecuteAtUTCTime() const override;
 
-	virtual EStreamType GetType() const override;
+	EStreamType GetType() const override;
 
-	virtual void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
-	virtual void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
-	virtual void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
+	void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
+	void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
+	void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
 
 	//! Returns the first PTS value as indicated by the media timeline. This should correspond to the actual absolute PTS of the sample.
-	virtual FTimeValue GetFirstPTS() const override;
+	FTimeValue GetFirstPTS() const override;
 
-	virtual int32 GetQualityIndex() const override;
-	virtual int32 GetBitrate() const override;
+	int32 GetQualityIndex() const override;
+	int32 GetBitrate() const override;
 
-	virtual void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
+	void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
+	bool GetStartupDelay(FTimeValue& OutStartTime, FTimeValue& OutTimeIntoSegment, FTimeValue& OutSegmentDuration) const override
+	{ return false; }
 
 	FString																		URL;
-	IElectraHttpManager::FParams::FRange										Range;
+	ElectraHTTPStream::FHttpRange												Range;
 
 	EStreamType																	StreamType;							//!< Type of stream (video, audio, etc.)
 	uint32																		StreamUniqueID;						//!< The unique stream ID identifying the stream for which this is a request.
@@ -101,17 +103,17 @@ public:
 	FStreamReaderHLSfmp4();
 	virtual ~FStreamReaderHLSfmp4();
 
-	virtual UEMediaError Create(IPlayerSessionServices* PlayerSessionService, const CreateParam& InCreateParam) override;
-	virtual void Close() override;
+	UEMediaError Create(IPlayerSessionServices* PlayerSessionService, const CreateParam& InCreateParam) override;
+	void Close() override;
 
 	//! Adds a request to read from a stream
-	virtual EAddResult AddRequest(uint32 CurrentPlaybackSequenceID, TSharedPtrTS<IStreamSegment> Request) override;
+	EAddResult AddRequest(uint32 CurrentPlaybackSequenceID, TSharedPtrTS<IStreamSegment> Request) override;
 
-	//! Cancels any ongoing requests of the given stream type. Silent cancellation will not notify OnFragmentClose() or OnFragmentReachedEOS(). 
-	virtual void CancelRequest(EStreamType StreamType, bool bSilent) override;
+	//! Cancels any ongoing requests of the given stream type. Silent cancellation will not notify OnFragmentClose() or OnFragmentReachedEOS().
+	void CancelRequest(EStreamType StreamType, bool bSilent) override;
 
 	//! Cancels all pending requests.
-	virtual void CancelRequests() override;
+	void CancelRequests() override;
 
 private:
 
@@ -148,21 +150,21 @@ private:
 			virtual ~FStaticResourceRequest()
 			{ }
 
-			virtual EPlaybackResourceType GetResourceType() const override
+			EPlaybackResourceType GetResourceType() const override
 			{ return Type; }
 
-			virtual FString GetResourceURL() const override
+			FString GetResourceURL() const override
 			{ return URL; }
 
-			virtual void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData) override
+			void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData) override
 			{ Data = PlaybackData; }
 
-			virtual void SignalDataReady() override
+			void SignalDataReady() override
 			{ DoneSignal.Signal(); }
 
 			bool IsDone() const
 			{ return DoneSignal.IsSignaled(); }
-			
+
 			bool WaitDone(int32 WaitMicros)
 			{ return DoneSignal.WaitTimeout(WaitMicros); }
 
@@ -182,6 +184,7 @@ private:
 			AlreadyCached,
 			DownloadError,
 			ParseError,
+			InvalidFormat,
 			LicenseKeyError
 		};
 
@@ -213,6 +216,8 @@ private:
 		FMediaEvent												DownloadCompleteSignal;
 		TSharedPtrTS<IParserISO14496_12>						MP4Parser;
 		int32													NumMOOFBoxesFound = 0;
+		bool													bParsingInitSegment = false;
+		bool													bInvalidMP4 = false;
 
 		TMediaQueueDynamicNoLock<FAccessUnit *>					AccessUnitFIFO;
 		FTimeValue 												DurationSuccessfullyRead;
@@ -221,7 +226,7 @@ private:
 		FMediaCriticalSection									MetricUpdateLock;
 		int32													ProgressReportCount = 0;
 		TSharedPtrTS<IAdaptiveStreamSelector>					StreamSelector;
-
+		FString													ABRAbortReason;
 
 		FStreamHandler();
 		virtual ~FStreamHandler();
@@ -238,17 +243,16 @@ private:
 		void HTTPCompletionCallback(const IElectraHttpManager::FRequest* Request);
 		void HTTPUpdateStats(const FTimeValue& CurrentTime, const IElectraHttpManager::FRequest* Request);
 
-
 		bool HasErrored() const;
 
 		// Methods from IParserISO14496_12::IReader
-		virtual int64 ReadData(void* IntoBuffer, int64 NumBytesToRead) override;
-		virtual bool HasReachedEOF() const override;
-		virtual bool HasReadBeenAborted() const override;
-		virtual int64 GetCurrentOffset() const override;
+		int64 ReadData(void* IntoBuffer, int64 NumBytesToRead) override;
+		bool HasReachedEOF() const override;
+		bool HasReadBeenAborted() const override;
+		int64 GetCurrentOffset() const override;
 		// Methods from IParserISO14496_12::IBoxCallback
-		virtual IParserISO14496_12::IBoxCallback::EParseContinuation OnFoundBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
-		virtual IParserISO14496_12::IBoxCallback::EParseContinuation OnEndOfBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
+		IParserISO14496_12::IBoxCallback::EParseContinuation OnFoundBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
+		IParserISO14496_12::IBoxCallback::EParseContinuation OnEndOfBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
 	};
 
 	// Currently set to use 2 handlers, one for video and one for audio. This could become a pool of n if we need to stream

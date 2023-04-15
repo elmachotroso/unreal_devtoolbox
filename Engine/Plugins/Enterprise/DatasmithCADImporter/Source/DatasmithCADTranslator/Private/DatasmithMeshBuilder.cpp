@@ -32,7 +32,7 @@ void FDatasmithMeshBuilder::LoadMeshFiles(TMap<uint32, FString>& CADFileToMeshFi
 		DeserializeBodyMeshFile(*MeshFile, BodyMeshSet);
 		for (CADLibrary::FBodyMesh& Body : BodyMeshSet)
 		{
-			MeshActorNameToBodyMesh.Emplace(Body.MeshActorName, &Body);
+			MeshActorNameToBodyMesh.Emplace(Body.MeshActorUId, &Body);
 		}
 	}
 }
@@ -40,7 +40,7 @@ void FDatasmithMeshBuilder::LoadMeshFiles(TMap<uint32, FString>& CADFileToMeshFi
 TOptional<FMeshDescription> FDatasmithMeshBuilder::GetMeshDescription(TSharedRef<IDatasmithMeshElement> OutMeshElement, CADLibrary::FMeshParameters& OutMeshParameters)
 {
 	const TCHAR* NameLabel = OutMeshElement->GetName();
-	FCADUUID BodyUuid = (FCADUUID) FCString::Atoi64(OutMeshElement->GetName() + 2);  // +2 to remove 2 first char (Ox)
+	FCadUuid BodyUuid = (FCadUuid) FCString::Atoi64(OutMeshElement->GetName() + 2);  // +2 to remove 2 first char (Ox)
 	if (BodyUuid == 0)
 	{
 		return TOptional<FMeshDescription>();
@@ -66,14 +66,16 @@ TOptional<FMeshDescription> FDatasmithMeshBuilder::GetMeshDescription(TSharedRef
 
 		for (CADLibrary::FTessellationData& Face : Body.Faces)
 		{
-			Face.ColorName = MaterialSlotId;
+			Face.ColorUId = MaterialSlotId;
 		}
 	}
 
 	FMeshDescription MeshDescription;
 	DatasmithMeshHelper::PrepareAttributeForStaticMesh(MeshDescription);
 
-	if (ConvertBodyMeshToMeshDescription(ImportParameters, OutMeshParameters, Body, MeshDescription))
+	CADLibrary::FMeshConversionContext ConversionContext(ImportParameters, OutMeshParameters);
+
+	if (ConvertBodyMeshToMeshDescription(ConversionContext, Body, MeshDescription))
 	{
 		return MoveTemp(MeshDescription);
 	}

@@ -46,6 +46,8 @@ FString UDMXEntity::GetDisplayName() const
 
 void UDMXEntity::SetName(const FString& InNewName)
 {
+	const FName UniqueName = MakeUniqueObjectName(GetOuter(), UDMXEntity::StaticClass(), *InNewName);
+	Rename(*UniqueName.ToString(), GetOuter());
 	Name = InNewName;
 }
 

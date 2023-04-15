@@ -4,8 +4,8 @@
 #include "Misc/AutomationTest.h"
 #include "Modules/ModuleManager.h"
 #include "Engine/Engine.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentStreaming.h"
 #include "EngineGlobals.h"
 #include "Tests/AutomationCommon.h"
@@ -103,7 +103,7 @@ public:
 
 			TArray<FAssetData> MapList;
 			FARFilter Filter;
-			Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
+			Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
 			Filter.bRecursiveClasses = true;
 			Filter.bIncludeOnlyOnDiskAssets = true;
 			if (AssetRegistry.GetAssets(Filter, /*out*/ MapList))
@@ -115,9 +115,9 @@ public:
 					{
 						if (!IsDeveloperDirectoryIncluded && MapPackageName.Find(TEXT("/Game/Developers")) == 0) continue;
 
-						FString MapAssetPath = MapAsset.ObjectPath.ToString();
+						FString MapAssetPath = MapAsset.GetObjectPathString();
 
-						OutBeautifiedNames.Add(MapPackageName.RightChop(6)); // Remove "/Game/" from the name
+						OutBeautifiedNames.Add(MapPackageName.RightChop(6).Replace(TEXT("/"), TEXT("."))); // Remove "/Game/" from the name and use dot syntax
 						OutTestCommands.Add(MapAssetPath + TEXT(";") + MapPackageName);
 					}
 				}
@@ -214,7 +214,7 @@ void OpenMap(const TArray<FString>& Args)
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
-	FAssetData MapAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData MapAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	if (MapAssetData.IsValid())
 	{

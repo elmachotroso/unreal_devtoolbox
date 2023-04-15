@@ -1,18 +1,47 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SClassPropertyRecorderSettings.h"
-#include "Templates/SubclassOf.h"
-#include "Widgets/Text/STextBlock.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Modules/ModuleManager.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailWidgetRow.h"
+#include "DetailsViewArgs.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Docking/TabManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailsView.h"
+#include "IPropertyTypeCustomization.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Sections/MovieSceneMultiPropertyRecorder.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "IDetailsView.h"
-#include "Sections/MovieSceneMultiPropertyRecorder.h"
-#include "Framework/Docking/TabManager.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IDetailLayoutBuilder;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "SClassPropertyRecorderSettings"
 
@@ -38,12 +67,12 @@ void SClassPropertyRecorderSettings::Construct(const FArguments& Args, const TSh
 		.VAlign(VAlign_Center)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(LOCTEXT("ChoosePropertiesButtonToolTip", "Choose properties to be recorded for this class"))
 			.OnClicked(this, &SClassPropertyRecorderSettings::HandleChoosePropertiesButtonClicked)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+				.Image(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
 			]
 		]
 	];
@@ -95,7 +124,7 @@ FReply SClassPropertyRecorderSettings::HandleChoosePropertiesButtonClicked()
 
 		Window->SetContent(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush(TEXT("PropertyWindow.WindowBorder")))
+			.BorderImage(FAppStyle::GetBrush(TEXT("PropertyWindow.WindowBorder")))
 			[
 				DetailsView
 			]

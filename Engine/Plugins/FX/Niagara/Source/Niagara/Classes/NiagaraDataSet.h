@@ -111,6 +111,7 @@ protected:
 public:
 	FNiagaraDataBuffer(FNiagaraDataSet* InOwner);
 	void Allocate(uint32 NumInstances, bool bMaintainExisting = false);
+	void ReleaseCPU();
 
 	void AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumInstances, ERHIFeatureLevel::Type FeatureLevel, const TCHAR* DebugSimName);
 	void SwapGPU(FNiagaraDataBuffer* BufferToSwap);
@@ -187,10 +188,6 @@ public:
 
 	FORCEINLINE TArray<int32>& GetIDTable() { return IDToIndexTable; }
 	FORCEINLINE const TArray<int32>& GetIDTable() const { return IDToIndexTable; }
-
-	static void SetInputShaderParams(FRHICommandList& RHICmdList, class FNiagaraShader* Shader, FNiagaraDataBuffer* Buffer);
-	static void SetOutputShaderParams(FRHICommandList& RHICmdList, class FNiagaraShader* Shader, FNiagaraDataBuffer* Buffer);
-	static void UnsetShaderParams(FRHICommandList& RHICmdList, class FNiagaraShader* Shader);
 
 	FORCEINLINE void ClearGPUInstanceCount() { GPUInstanceCountBufferOffset = INDEX_NONE; }
 
@@ -351,6 +348,8 @@ public:
 
 	FORCEINLINE TArray<int32>& GetFreeIDTable() { return FreeIDsTable; }
 	FORCEINLINE TArray<int32>& GetSpawnedIDsTable() { return SpawnedIDsTable; }
+	FORCEINLINE const TArray<int32>& GetFreeIDTable() const { return FreeIDsTable; }
+	FORCEINLINE const TArray<int32>& GetSpawnedIDsTable() const { return SpawnedIDsTable; }
 	FORCEINLINE int32& GetNumFreeIDs() { return NumFreeIDs; }
 	FORCEINLINE int32& GetMaxUsedID() { return MaxUsedID; }
 	FORCEINLINE int32& GetIDAcquireTag() { return IDAcquireTag; }
@@ -403,6 +402,7 @@ public:
 
 	const FNiagaraDataSetCompiledData& GetCompiledData() const { check(CompiledData.Get() != nullptr); return *CompiledData.Get(); }
 
+	int NumSpawnedIDs;
 private:
 
 	void Reset();

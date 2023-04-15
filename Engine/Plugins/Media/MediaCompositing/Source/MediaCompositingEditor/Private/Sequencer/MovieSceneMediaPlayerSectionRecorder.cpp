@@ -2,7 +2,7 @@
 
 #include "MovieSceneMediaPlayerSectionRecorder.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -14,6 +14,7 @@
 #include "MovieSceneMediaTrack.h"
 #include "ImgMediaSource.h"
 #include "UObject/Package.h"
+#include "MovieScene.h"
 
 
 

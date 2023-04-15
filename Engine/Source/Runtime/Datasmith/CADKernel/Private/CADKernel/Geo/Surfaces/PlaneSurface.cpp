@@ -6,9 +6,8 @@
 #include "CADKernel/Core/System.h"
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Geo/Sampling/SurfacicSampling.h"
-#include "CADKernel/Math/Plane.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 FPlaneSurface::FPlaneSurface(const double InToleranceGeometric, const FMatrixH& InMatrix, const FSurfacicBoundary& InBoundary)

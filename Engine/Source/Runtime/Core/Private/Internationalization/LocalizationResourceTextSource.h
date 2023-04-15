@@ -2,8 +2,11 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/ArrayView.h"
 #include "Internationalization/ILocalizedTextSource.h"
+#include "Internationalization/LocalizedTextSourceTypes.h"
+
+class FTextLocalizationResource;
 
 /**
  * Implementation of a localized text source that loads data from Localization Resource (LocRes) files.

@@ -347,9 +347,11 @@ public class CreatePlatformExtension : BuildCommand
 						}
 
 						// remove platform from parent plugin references
-						if (bHasPlatform && ParentModuleDesc.PlatformAllowList != null)
+						if (bHasPlatform && ParentModuleDesc.PlatformAllowList != null && ParentModuleDesc.PlatformAllowList.Contains(Platform) )
 						{
-							bParentPluginDirty |= ParentModuleDesc.PlatformAllowList.Remove(Platform);
+							ParentModuleDesc.PlatformAllowList.Remove(Platform);
+							ParentModuleDesc.bHasExplicitPlatforms |= (ParentModuleDesc.PlatformAllowList.Count == 0); // an empty list is interpreted as 'all platforms are allowed' otherwise
+							bParentPluginDirty = true;
 						}
 						if (bHasPlatform && ParentModuleDesc.PlatformDenyList != null)
 						{
@@ -384,6 +386,7 @@ public class CreatePlatformExtension : BuildCommand
 						if (bHasPlatform && PlatformArrayContainsPlatform( ParentPluginDesc.PlatformAllowList, Platform ) )
 						{
 							ParentPluginDesc.PlatformAllowList = ParentPluginDesc.PlatformAllowList.Where( X => !X.Equals(Platform.ToString() ) ).ToArray();
+							ParentPluginDesc.bHasExplicitPlatforms |= (ParentPluginDesc.PlatformAllowList.Length == 0); // an empty list is interpreted as "all platforms" otherwise
 							bParentPluginDirty = true;
 						}
 						if (bHasPlatform && PlatformArrayContainsPlatform( ParentPluginDesc.PlatformDenyList, Platform ) )
@@ -398,9 +401,11 @@ public class CreatePlatformExtension : BuildCommand
 				ChildPlugin.WriteObjectEnd();
 
 				// remove platform from parent plugin, if necessary
-				if (bHasPlatform && ParentPlugin.SupportedTargetPlatforms != null)
+				if (bHasPlatform && ParentPlugin.SupportedTargetPlatforms != null && ParentPlugin.SupportedTargetPlatforms.Contains(Platform) )
 				{
-					bParentPluginDirty |= ParentPlugin.SupportedTargetPlatforms.Remove(Platform);
+					ParentPlugin.SupportedTargetPlatforms.Remove(Platform);
+					ParentPlugin.bHasExplicitPlatforms |= (ParentPlugin.SupportedTargetPlatforms.Count == 0); // an empty list is interpreted as "all platforms" otherwise
+					bParentPluginDirty = true;
 				}
 			}
 			AddNewFile(FinalFileName);
@@ -451,6 +456,7 @@ public class CreatePlatformExtension : BuildCommand
 		}
 
 		// load module file & find module class name, and optional class namespace
+		char[] ClassNameSeparators = new char[] { ' ', '\t', ':' };
 		const string ClassDeclaration = "public class ";
 		const string NamespaceDeclaration = "namespace ";
 		string[] ModuleContents = File.ReadAllLines(ModulePath.FullName);
@@ -461,10 +467,10 @@ public class CreatePlatformExtension : BuildCommand
 			Log.TraceError($"Cannot find class declaration in ${ModulePath}");
 			return;
 		}
-		string ParentModuleName = ModuleClassDeclaration.Trim().Remove(0, ClassDeclaration.Length).Split(' ', StringSplitOptions.None).Last();
+		string ParentModuleName = ModuleClassDeclaration.Trim().Remove(0, ClassDeclaration.Length).Split(ClassNameSeparators, StringSplitOptions.None).Last();
 		if (bAllowPlatformExtensionsAsParents || ParentModuleName.Equals("ModuleRules") || ParentModuleName.Equals("TargetRules") )
 		{
-			ParentModuleName = ModuleClassDeclaration.Trim().Remove(0, ClassDeclaration.Length ).Split(' ', StringSplitOptions.None ).First();
+			ParentModuleName = ModuleClassDeclaration.Trim().Remove(0, ClassDeclaration.Length ).Split(ClassNameSeparators, StringSplitOptions.None ).First();
 		}
 		if (string.IsNullOrEmpty(ParentModuleName))
 		{

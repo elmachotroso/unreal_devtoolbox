@@ -232,7 +232,8 @@ export class Graph {
 		return null
 	}
 
-	private findAllRoutesBetweenImpl(completeRoutes: Edge[][], routeSoFar: Edge[], src: Node, seen: Set<Node>, target: Node, flags: EdgeFlag[]) {
+	private findAllRoutesBetweenImpl(completeRoutes: Edge[][], routeSoFar: Edge[],
+																	src: Node, seen: Set<Node>, target: Node, flags: EdgeFlag[]) {
 		for (const edge of this.getEdgesBySource(src, ...flags)) {
 			if (!seen.has(edge.target)) {
 				const routePlus = [...routeSoFar, edge]
@@ -248,16 +249,17 @@ export class Graph {
 		}
 	}
 
-	// function called this to match NodeBot function
 	computeImplicitTargets(source: Node, requestedTargets: Map<Node, MergeMode>, allowedBots?: string[])
 		: {status: Success, integrations?: ComputeResult, unreachable?: Node[]} {
 
 		const targetsToFind = new Set<Node>()
 		const skipNodes = new Set<Node>()
 		for (const [target, mergeMode] of requestedTargets.entries()) {
-			targetsToFind.add(target)
 			if (mergeMode === 'skip') {
 				skipNodes.add(target)
+			}
+			else {
+				targetsToFind.add(target)
 			}
 		}
 
@@ -281,11 +283,9 @@ export class Graph {
 			// flood the graph one step to include all unseen direct flowsTo nodes of one branch
 			let anyUnseen = false
 
-			let flowsTo: Set<Edge> | Edge[] | undefined = this.edgesBySource.get(sourceNode) // here's where we will need to be able to filter by bot
+			let flowsTo: Set<Edge> | Edge[] | undefined = this.edgesBySource.get(sourceNode)
 			if (flowsTo && allowedBots) {
-				// console.log('before: ', flowsTo)
 				flowsTo = [...flowsTo].filter((e: Edge) => allowedBots.indexOf(e.bot) >= 0)
-				// console.log('after: ', flowsTo)
 			}
 			if (flowsTo && !skipNodes.has(sourceNode)) {
 				for (const edge of flowsTo) {
@@ -317,7 +317,7 @@ export class Graph {
 
 				for (let index = 1; index < explicit.length; ++index) {
 					const indirectEdge = explicit[index]
-					if (indirectTargets.indexOf(indirectEdge) === -1) {
+					if (indirectTargets.indexOf(indirectEdge) < 0) {
 						indirectTargets.push(indirectEdge)
 					}
 					targetsToFind.delete(indirectEdge.target)
@@ -331,15 +331,16 @@ export class Graph {
 
 		return {status: 'succeeded', integrations: merges}
 	}
+
 }
 
 export function addBranchGraph(graph: Graph, branchGraph: BranchGraphInterface) {
 
-	graph.branchGraphAliases.set(branchGraph.botname.toUpperCase(), branchGraph)
-	if (branchGraph.config.alias) {
-		graph.branchGraphAliases.set(branchGraph.config.alias.toUpperCase(), branchGraph)
-
-	}
+	graph.branchGraphAliases  = new Map([
+		[branchGraph.botname.toUpperCase(), branchGraph],
+		...graph.branchGraphAliases.entries(),
+		...(branchGraph.config.aliases.map(s => [s.toUpperCase(), branchGraph]) as [[string, BranchGraphInterface]])
+	])
 
 	const botname = branchGraph.botname as BotName
 	const branchNodes = new Map<Branch, Node>()
@@ -378,23 +379,23 @@ export function addBranchGraph(graph: Graph, branchGraph: BranchGraphInterface) 
 		}
 	}
 
-	if (branchNodes.size > 1) {
-		//testing syntax
-		const nodeIter = branchNodes.values()
+	// if (branchNodes.size > 1) {
+	// 	//testing syntax
+	// 	const nodeIter = branchNodes.values()
 
-		const src = nodeIter.next().value
-		const targets = new Map<Node, MergeMode>()
-		targets.set(nodeIter.next().value, 'normal')
+	// 	const src = nodeIter.next().value
+	// 	const targets = new Map<Node, MergeMode>()
+	// 	targets.set(nodeIter.next().value, 'normal')
 
-		graph.computeImplicitTargets(src, targets)
-	}
+	// 	graph.computeImplicitTargets(src, targets)
+	// }
 }
 
 export type MergeMode = 'safe' | 'normal' | 'null' | 'clobber' | 'skip'
 
 class Test {
 	graph = new Graph
-	targets = new Map<Node, MergeMode>()
+	targets = new Map<Node, MergeMode>();
 
 	static readonly BOT_NAME = 'TEST' as BotName
 
@@ -441,7 +442,7 @@ class Test {
 
 	private fillTargetsMap(targets: string) {
 
-		const targetBits = targets.split('-') // up to three section in target (1st) string: normal, skip, null
+		const targetBits = targets.split(':') // up to three section in target (1st) string: normal, skip, null
 
 		for (const targetChar of targetBits[0]) {
 			this.targets.set(this.getNode(targetChar), 'normal')
@@ -517,78 +518,130 @@ class Test {
 
 
 
+const colors = require('colors')
+colors.enable()
+colors.setTheme(require('colors/themes/generic-logging.js'))
+
+
 export function runTests(parentLogger: ContextualLogger) {
 
 
 
 	// runUnhandledRejectionTest()
 
+/**
 
+Test format:
+
+[[command, node, ...<graph definition>], expected]
+
+graph definition e.g.: ['b', 'c', ''] means a->b, b->c and d also exists
+expected: ;-separated <direct>:<indirect>
+
+1: A -> B -> C		:c expected to produce '' (c unreachable, could alternatively be syntax error)
+2: A => B -> C		c:b expected to produce null (c unreachable)
+3: A -> B -> C	_:c should produce '' (skip shouldn't affect route)
+
+4/5: dev/release set-up
+
+
+6: A -> B -> c		c:d expected to produce B:C (A->B->C)
+	 -> D -> c
+
+7: A -> B -> c		c:b expected to produce D:C (A->D->C)
+	 => D -> c
+
+8: A => B => C		_:c expected to produce ''
+	 -> D
+
+9: A => B => C		_:c:b expected to produce !B
+
+
+Note first level is treated specially: for the purposes of these tests, force flow from the start node is effectively ignored
+*/
+
+
+// want to find a way of testing commented out ones - the relevant skip handling is done in targets.ts
 
 
 	const unitTestLogger = parentLogger.createChild('Graph')
 	const tests: [string[], string | null][] = [
-		[['c-b', 'a', 'b', 'c', ''], null],
-		[['c-b', 'a', 'B', 'c', ''], null],
-		[['c-d', 'a', 'bd', 'c', '', 'c'], 'B:C'],
-		[['c-b', 'a', 'bD', 'c', '', 'c'], 'D:C'],
-		[['-c', 'a', 'Bd', 'C', '', ''], 'B:-C'],
-		[['-c-b', 'a', 'B', 'C', ''], '!B:-C'],
-		[['b', 'a', 'b', 'C', ''], 'B:'],
-		[['f', 'b', 'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'], 'A:DEF'],
-		[['b', 'f', 'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'], 'E:DAB'],
-		[['a', 'g', 'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'], 'F:EDA'],
-		[['-a', 'g', 'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'], 'F:ED-A'],
-		[['de', 'a', 'b', 'c', 'de', '', ''], 'B:CED'],
-		[['de', 'h', 'hc', 'hd', 'deFg', 'hbc', 'c', 'c', 'c', 'abd'], 'D:CE'],
-		[['de', 'h', 'bd', 'hc', 'hd', 'eFg', 'hbc', 'c', 'c', 'c'], 'C:DE'],
-		[['db', 'h', 'abd', 'hc', 'hd', 'deFg', 'hbc', 'c', 'c', 'c'], 'C:DEB'],
-		[['cg', 'a', 'be', 'acd', 'b', 'b', 'aFg', 'e', 'e'], 'B:C;E:G'],
-		[['cf', 'a', 'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'], 'B:C;E:F'],
-		[['c-e', 'a', 'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'], 'B:C'],
-		[['cf-b', 'a', 'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'], null],
-		[['fg', 'h', 'abd', 'hC', 'hd', 'defg', 'hbc', 'c', 'c', 'c'], 'C:DGF'],
-		[['dge', 'h', 'abd', 'hC', 'hd', 'defg', 'hbc', 'c', 'c', 'c'], 'C:DGE'],
-		[['e', 'i', 'abcd', 'Ie', 'if', 'iG', 'ih', 'a', 'b', 'c', 'D'], 'D:GBE']
+
+		[[':c', 'a',		'b', 'c', ''],										''],
+		[['c:b', 'a', 		'b', 'c', ''],										null],
+		[['c:b', 'a', 		'B', 'c', ''],										null],
+		[[':c', 'a', 		'b', 'c', ''],										''],
+
+		[['c', 'a',			'bDE', 'Ac', 'B', 'a', 'a'],						'B:C'],
+		[[':c', 'a',		'bDE', 'Ac', 'B', 'a', 'a'],						''], //DE'], // 5
+
+		[['c:d', 'a', 		'bd', 'c', '', 'c'],								'B:C'],
+		[['c:b', 'a', 		'bD', 'c', '', 'c'],								'D:C'],
+		[[':c', 'a',		'Bd', 'C', '', ''],									''],
+		[[':c:b', 'a',		'B', 'C', ''],										'!B:'], // !B:-C'], skip is checked by functional test
+		[['b', 'a', 		'b', 'C', ''],										'B:'], // 10
+
+// usual dev/release set-up (d-g are releases going back in time)
+		[['f', 'b',			'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'],			'A:DEF'],
+		[['b', 'f',			'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'],			'E:DAB'],
+		[['a', 'g',			'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'],			'F:EDA'],
+		[[':a', 'g',		'bcd', 'a', 'a', 'Ae', 'Df', 'Eg', 'F'],			''], // taking a look at this one
+
+		[['de', 'a',		'b', 'c', 'de', '', ''],							'B:CED'],
+		[['de', 'h',		'hc', 'hd', 'deFg', 'hbc', 'c', 'c', 'c', 'abd'],	'D:CE'],
+		[['de', 'h',		'bd', 'hc', 'hd', 'eFg', 'hbc', 'c', 'c', 'c'],		'C:DE'],
+		[['db', 'h',		'abd', 'hc', 'hd', 'deFg', 'hbc', 'c', 'c', 'c'],	'C:DEB'],
+		[['cg', 'a',		'be', 'acd', 'b', 'b', 'aFg', 'e', 'e'],			'B:C;E:G'],
+		[['cf', 'a', 		'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'],			'B:C;E:F'],
+		[['c:e', 'a', 		'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'],			'B:C'],
+		[['cf:b', 'a', 		'bE', 'acd', 'b', 'b', 'aFg', 'e', 'e'],			null],
+		[['fg', 'h',		'abd', 'hC', 'hd', 'defg', 'hbc', 'c', 'c', 'c'],	'C:DGF'],
+		[['dge', 'h',		'abd', 'hC', 'hd', 'defg', 'hbc', 'c', 'c', 'c'],	'C:DGE'],
+		[['e', 'i',			'abcd', 'Ie', 'if', 'iG', 'ih', 'a', 'b', 'c', 'D'],'D:GBE']
 	]
 
-	let ran = 0, success = 0, fail = 0
-	for (const [testStr, expected] of tests) {
+	let success = 0, fail = 0, ran = 0
+	for (const [testStr, expected] of tests /*/ .slice(5, 6) /**/) {
 		const test = new Test(testStr.slice(2))
 		const result = test.computeTargets(testStr[1], testStr[0])
 
-		++ran
-		let expectedOnFail
+		let expectedOnFail: string | null = null
 
 		const succeeded = result.status === 'succeeded'
 
 		const formattedResult = succeeded ? test.formatTestComputeTargetsResult(result.integrations!) : 'failed'
-		if (expected) {
+		if (expected !== null) {
+			// not expecting an error
 			if (!succeeded) {
+				// store string we were expecting
 				expectedOnFail = expected
-				++fail
 			}
-			else {
-				if (formattedResult.toUpperCase().replace(/\s|,/g, '') === expected)
-					++success
-				else {
-					expectedOnFail = expected
-					++fail
-				}
+			else if (formattedResult.toUpperCase().replace(/\s|,/g, '') !== expected) {
+				expectedOnFail = expected
 			}
 		}
 		else if (succeeded) {
 			expectedOnFail = 'fail'
 		}
-		if (expectedOnFail) {
-			unitTestLogger.warn(`MISMATCH!!!    ${formattedResult} vs ${expectedOnFail}`)
+
+		++ran
+		if (expectedOnFail === undefined) throw new Error('wut')
+		if (expectedOnFail !== null) {
+			++fail
+			const EMPTY = '<empty>'
+			unitTestLogger.warn(`Test ${colors.warn(ran.toString().padStart(2))} failed:   ` +
+				`${colors.warn((formattedResult || EMPTY).padStart(10))} vs ${colors.warn(expectedOnFail || EMPTY)}`)
+		}
+		else {
+			++success
 		}
 	}
-	unitTestLogger.info(`Graph tests: ran ${ran} tests, ${success} matched, ${fail} failed`)
+	const message = `Graph tests: ran ${ran} tests, ${success} matched, ${fail} failed`
+	unitTestLogger.info((fail > 0 ? colors.error : colors.info)(message))
 	return fail
 }
 
-type ChangeFlag = 'review' | 'manual' | 'null' | 'ignore' | 'disregardexcludedauthors' | 'roboshelf'
+type ChangeFlag = 'manual' | 'null' | 'ignore' | 'disregardexcludedauthors' | 'roboshelf'
 const ALLOWED_RAW_FLAGS = new Set(['null','ignore','deadend'])
 
 const FLAGMAP: {[name: string]: ChangeFlag} = {
@@ -648,7 +701,8 @@ function parseTargetsAndFlagsImpl(tokens: string[], logger: ContextualLogger, fo
 	return {status: 'succeeded', flags, targets}
 }
 
-export function parseTargetsAndFlags(graph: Graph, botname: BotName, tokens: string[], automaticTargets: Node[], logger: ContextualLogger, forcedMode?: MergeMode) {
+export function parseTargetsAndFlags(graph: Graph, botname: BotName, tokens: string[], automaticTargets: Node[],
+																logger: ContextualLogger, forcedMode?: MergeMode) {
 	const result = parseTargetsAndFlagsImpl(tokens, logger, forcedMode)
 	if (result.status !== 'succeeded') {
 		throw new Error('to do!')
@@ -718,7 +772,8 @@ function parseChange(cldesc: string) {
 		}
 
 		if (bot) {
-			const tokensForThisLine: StringBotNamePair[] = value.split(/[ ,]/).filter(Boolean).map(token => [token, bot] as StringBotNamePair)
+			const tokensForThisLine: StringBotNamePair[] = value.split(/[ ,]/)
+													.filter(Boolean).map(token => [token, bot] as StringBotNamePair)
 			tokens = [...tokens, ...tokensForThisLine]
 		}
 	}

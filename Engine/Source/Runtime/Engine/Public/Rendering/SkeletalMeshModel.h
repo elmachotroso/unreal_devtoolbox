@@ -10,6 +10,7 @@
 
 class FSkeletalMeshLODModel;
 class USkeletalMesh;
+class USkinnedAsset;
 class FArchive;
 
 /**
@@ -27,38 +28,38 @@ public:
 	TIndirectArray<FSkeletalMeshLODModel> LODModels;
 
 	/** Default constructor. */
-	FSkeletalMeshModel();
+	ENGINE_API FSkeletalMeshModel();
 
 #if WITH_EDITOR
 	/** Creates a new GUID for this Model */
-	void GenerateNewGUID();
+	ENGINE_API void GenerateNewGUID();
 
 	/** 
 	 *	Util to regenerate a GUID for this Model based on hashing its data 
 	 *	Used by old content, rather than a random new GUID.
 	 */
-	void GenerateGUIDFromHash(USkeletalMesh* Owner);
+	void GenerateGUIDFromHash(USkinnedAsset* Owner);
 
 	/** Get current GUID Id as a string, for DDC key */
-	FString GetIdString() const;
+	ENGINE_API FString GetIdString() const;
 
-	void SyncronizeLODUserSectionsData();
+	ENGINE_API void SyncronizeLODUserSectionsData();
 
-	FString GetLODModelIdString() const;
+	ENGINE_API FString GetLODModelIdString() const;
 
 	ENGINE_API void EmptyOriginalReductionSourceMeshData();
 	
-	/* When user reduce an imported LOD with himself (BaseLOD == TargetLOD), we need to store some imported model data so we can reduce again from the same data.*/
+	/* When user reduce an imported LOD with itself (BaseLOD == TargetLOD), we need to store some imported model data so we can reduce again from the same data.*/
 	/* We do not need to store such a data, since we can use the USkeletalMesh::MeshEditorDataObject which have the imported data */
 	TArray<FReductionBaseSkeletalMeshBulkData*> OriginalReductionSourceMeshData_DEPRECATED;
 
-	/* When user reduce an imported LOD with himself (BaseLOD == TargetLOD), we need to store the geometry count (vertex count and triangle count).
+	/* When user reduce an imported LOD with itself (BaseLOD == TargetLOD), we need to store the geometry count (vertex count and triangle count).
 	We use this data to query if the reduction is active when the reduction criterion is an absolute vertex/triangle number*/
 	TArray<FInlineReductionCacheData> InlineReductionCacheDatas;
 #endif
 
 	/** Serialize to/from the specified archive.. */
-	void Serialize(FArchive& Ar, USkeletalMesh* Owner);
+	ENGINE_API void Serialize(FArchive& Ar, USkinnedAsset* Owner);
 
 	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 };

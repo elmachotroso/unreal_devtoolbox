@@ -13,12 +13,16 @@
 #include "Animation/DebugSkelMeshComponent.h"
 #include "IPersonaPreviewScene.h"
 #include "Preferences/PersonaOptions.h"
+#include "SkeletalDebugRendering.h"
 
 class FCanvas;
 class UPersonaOptions;
 class USkeletalMeshSocket;
 struct FCompactHeapPose;
 struct FSkelMeshRenderSection;
+
+DECLARE_DELEGATE_OneParam(FOnBoneSizeSet, float);
+DECLARE_DELEGATE_RetVal(float, FOnGetBoneSize)
 
 //////////////////////////////////////////////////////////////////////////
 // ELocalAxesMode
@@ -31,23 +35,6 @@ namespace ELocalAxesMode
 		Selected,
 		All,
 		NumAxesModes
-	};
-};
-
-//////////////////////////////////////////////////////////////////////////
-// EBoneDrawMode
-
-namespace EBoneDrawMode
-{
-	enum Type
-	{
-		None,
-		Selected,
-		SelectedAndParents,
-		SelectedAndChildren,
-		SelectedAndParentsAndChildren,
-		All,
-		NumDrawModes
 	};
 };
 
@@ -86,15 +73,15 @@ namespace EAnimationPlaybackSpeeds
 /////////////////////////////////////////////////////////////////////////
 // FAnimationViewportClient
 
-class FAnimationViewportClient : public FEditorViewportClient
+class PERSONA_API FAnimationViewportClient : public FEditorViewportClient
 {
 protected:
 
 	/** Function to display bone names*/
-	void ShowBoneNames(FCanvas* Canvas, FSceneView* View);
+	void ShowBoneNames(FCanvas* Canvas, FSceneView* View, UDebugSkelMeshComponent* MeshComponent);
 
 	/** Function to display transform attribute names*/
-	void ShowAttributeNames(FCanvas* Canvas, FSceneView* View);
+	void ShowAttributeNames(FCanvas* Canvas, FSceneView* View, UDebugSkelMeshComponent* MeshComponent) const;
 
 	/** Function to display debug lines generated from skeletal controls in animBP mode */
 	void DrawNodeDebugLines(TArray<FText>& Lines, FCanvas* Canvas, FSceneView* View);
@@ -107,8 +94,15 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Draw(const FSceneView* View,FPrimitiveDrawInterface* PDI) override;
 	virtual void DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas ) override;
+	
+	UE_DEPRECATED(5.1, "This version of InputKey is deprecated. Please use the version that takes EventArgs instead.")
 	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
+	
+	UE_DEPRECATED(5.1, "This version of InputAxis is deprecated. Please use the version that takes DeviceId instead.")
 	virtual bool InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples = 1, bool bGamepad = false) override;
+	virtual bool InputAxis(FViewport* InViewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples = 1, bool bGamepad = false) override;
+	
 //	virtual void ProcessClick(class FSceneView& View, class HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY) override;
 //	virtual bool InputWidgetDelta( FViewport* Viewport, EAxisList::Type CurrentAxis, FVector& Drag, FRotator& Rot, FVector& Scale ) override;
 	virtual void TrackingStarted( const struct FInputEventState& InInputState, bool bIsDragging, bool bNudge ) override;
@@ -130,10 +124,13 @@ public:
 	// End of FEditorViewportClient interface
 
 	/** Draw call to render UV overlay */
-	void DrawUVsForMesh(FViewport* InViewport, FCanvas* InCanvas, int32 InTextYPos);
+	void DrawUVsForMesh(FViewport* InViewport, FCanvas* InCanvas, int32 InTextYPos, UDebugSkelMeshComponent* MeshComponent);
 
 	/** Set the camera follow mode */
 	void SetCameraFollowMode(EAnimationViewportCameraFollowMode Mode, FName InBoneName = NAME_None);
+
+	/** Called when viewport focuses on a selection */
+	void OnFocusViewportToSelection();
 
 	/** Get the camera follow mode */
 	EAnimationViewportCameraFollowMode GetCameraFollowMode() const;
@@ -160,7 +157,7 @@ public:
 	void HandleSkeletalMeshChanged(class USkeletalMesh* OldSkeletalMesh, class USkeletalMesh* NewSkeletalMesh);
 
 	/** Function to display bone names*/
-	void ShowBoneNames(FViewport* Viewport, FCanvas* Canvas);
+	void ShowBoneNames(FViewport* Viewport, FCanvas* Canvas, UDebugSkelMeshComponent* MeshComponent);
 
 	/** Function to enable/disable floor auto align */
 	void OnToggleAutoAlignFloor();
@@ -198,6 +195,10 @@ public:
 	/** Get the Bone local axis mode */
 	ELocalAxesMode::Type GetLocalAxesMode() const;
 
+	/** Access Bone Draw size config option*/
+	void SetBoneDrawSize(const float InBoneDrawSize);
+	float GetBoneDrawSize() const;
+	
 	/** Function to set Bone Draw  mode for the EBoneDrawType */
 	void SetBoneDrawMode(EBoneDrawMode::Type AxesMode);
 
@@ -225,6 +226,11 @@ public:
 	/** Callback for checking the normals show flag. */
 	bool IsSetCPUSkinningChecked() const;
 
+	/** Toggles whether to lock the camera's rotation to a specified bone's orientation */
+	void ToggleRotateCameraToFollowBone();
+
+	/** Whether or not to lock the camera's rotation to a specified bone's orientation */
+	bool GetShouldRotateCameraToFollowBone() const;
 
 	/** Callback for toggling the normals show flag. */
 	void ToggleShowNormals();
@@ -280,7 +286,7 @@ public:
 	EAnimationPlaybackSpeeds::Type GetPlaybackSpeedMode() const;
 
 	/** Get the preview scene we are viewing */
-	TSharedRef<class IPersonaPreviewScene> GetPreviewScene() const { return PreviewScenePtr.Pin().ToSharedRef(); }
+	TSharedRef<class IPersonaPreviewScene> GetPreviewScene() const { return PreviewScenePtr.ToSharedRef(); }
 
 	/** Get the asset editor we are embedded in */
 	TSharedRef<class FAssetEditorToolkit> GetAssetEditorToolkit() const { return AssetEditorToolkitPtr.Pin().ToSharedRef(); }
@@ -301,6 +307,7 @@ public:
 	int32 GetViewportIndex() const { return ViewportIndex; }
 
 	/** Get the persona mode manager */
+	UE_DEPRECATED(5.1, "Use the UPersonaEditorModeManagerContext object stored in the editor mode tools' context store instead.")
 	class IPersonaEditorModeManager* GetPersonaModeManager() const;
 
 private:
@@ -316,9 +323,18 @@ public:
 	/** persona config options **/
 	UPersonaOptions* ConfigOption;
 
+	/** allow client code to store/serialize bone size if desired */
+	FOnBoneSizeSet OnSetBoneSize;
+	FOnGetBoneSize OnGetBoneSize;
+
 private:
-	/** Weak pointer back to the preview scene we are viewing */
-	TWeakPtr<class IPersonaPreviewScene> PreviewScenePtr;
+	/** Shared pointer back to the preview scene we are viewing 
+	* Workaround fix for FORT-495476, UE-159733, UE-160424, UE-145060
+	* We hold a shared because if the PreviewScene gets destroyed before we reach
+	* this class destructor, we can not unregister the callbacks from this class
+	* and we get crashes when any of the callbacks is triggered afterwards
+	*/
+	TSharedPtr<class IPersonaPreviewScene> PreviewScenePtr;
 
 	/** Weak pointer back to asset editor we are embedded in */
 	TWeakPtr<class FAssetEditorToolkit> AssetEditorToolkitPtr;
@@ -334,6 +350,9 @@ private:
 
 	/** Should we auto align floor to mesh bounds */
 	bool bAutoAlignFloor;
+
+	/** Whether to lock the camera's rotation to a specified bone's orientation */
+	bool bRotateCameraToFollowBone;
 
 	/** User selected color using color picker */
 	FLinearColor SelectedHSVColor;
@@ -380,7 +399,7 @@ private:
 	/** Draws the given array of transforms as bones */
 	void DrawBonesFromTransforms(TArray<FTransform>& Transforms, UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI, FLinearColor BoneColour, FLinearColor RootBoneColour) const;
 	/** Draws Bones for a compact pose */
-	void DrawBonesFromCompactPose(const FCompactHeapPose& Pose, UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI, const FLinearColor& DrawColour) const;
+	void DrawBonesFromCompactPose(const FCompactHeapPose& Pose, UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI, const FLinearColor& DrawColor) const;
 	/** Draws Bones for uncompressed animation **/
 	void DrawMeshBonesUncompressedAnimation(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const;
 	/** Draw Bones for non retargeted animation. */
@@ -392,7 +411,16 @@ private:
 	/** Draw Bones for non retargeted animation. */
 	void DrawMeshBonesBakedAnimation(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const;
 	/** Draws Bones for RequiredBones with WorldTransform **/
-	void DrawBones(const TArray<FBoneIndexType> & RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> & WorldTransforms, const TArray<int32>& InSelectedBones, FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float BoundRadius, float LineThickness = 0.f, bool bForceDraw = false, float InBoneRadius = 1.f) const;
+	void DrawBones(
+		const FVector& ComponentOrigin,
+		const TArray<FBoneIndexType>& RequiredBones,
+		const FReferenceSkeleton& RefSkeleton,
+		const TArray<FTransform>& WorldTransforms,
+		const TArray<int32>& InSelectedBones,
+		const TArray<FLinearColor>& BoneColors,
+		FPrimitiveDrawInterface* PDI,
+		bool bForceDraw,
+		bool bAddHitProxy) const;
 	/** Draw Sub set of Bones **/
 	void DrawMeshSubsetBones(const UDebugSkelMeshComponent* MeshComponent, const TArray<int32>& BonesOfInterest, FPrimitiveDrawInterface* PDI) const;
 
@@ -436,6 +464,9 @@ private:
 	void HandlePreviewScenePostTick();
 
 private:
+	/** Size to draw bones in the viewport. Transient setting. */
+	float BoneDrawSize=1.0f;
+	
 	/** Allow mesh stats to be disabled for specific viewport instances */
 	bool bShowMeshStats;
 
@@ -451,9 +482,12 @@ private:
 	/** Index (0-3) of this viewport */
 	int32 ViewportIndex;
 
-	/** Relative view location stored to match it pre/post tick */
-	FVector RelativeViewLocation;
+	/** The last location the camera was told to look at */
+	FVector LastLookAtLocation;
 
 	// Delegate Handler to allow changing of camera controller
 	void OnCameraControllerChanged();
+
+	/** True when the preview animation should resume playing upon finishing tracking */
+	bool bResumeAfterTracking;
 };

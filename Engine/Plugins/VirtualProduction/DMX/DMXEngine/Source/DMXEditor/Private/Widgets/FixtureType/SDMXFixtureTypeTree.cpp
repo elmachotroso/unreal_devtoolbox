@@ -40,6 +40,10 @@ void SDMXFixtureTypeTree::Construct(const FArguments& InArgs)
 	
 	if (const TSharedPtr<FDMXEditor> PinnedDMXEditor = DMXEditor.Pin())
 	{
+		CommandList->MapAction(FDMXEditorCommands::Get().AddNewEntityFixtureType,
+			FUIAction(FExecuteAction::CreateSP(this, &SDMXFixtureTypeTree::AddNewFixtureType))
+		);
+
 		FixtureTypeSharedData = PinnedDMXEditor->GetFixtureTypeSharedData();
 		FixtureTypeSharedData->OnFixtureTypesSelected.AddSP(this, &SDMXFixtureTypeTree::OnFixtureTypesSelected);
 		PinnedDMXEditor->GetFixturePatchSharedData()->OnFixturePatchSelectionChanged.AddSP(this, &SDMXFixtureTypeTree::OnFixturePatchesSelected);
@@ -82,7 +86,7 @@ TSharedRef<SWidget> SDMXFixtureTypeTree::GenerateAddNewEntityButton()
 
 	return
 		SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 			.ForegroundColor(FLinearColor::White)
 			.ToolTipText(AddButtonToolTip)
 			.ContentPadding(FMargin(5.0f, 1.0f))
@@ -96,7 +100,7 @@ TSharedRef<SWidget> SDMXFixtureTypeTree::GenerateAddNewEntityButton()
 				.Padding(FMargin(0, 1))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Plus"))
+					.Image(FAppStyle::GetBrush("Plus"))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -165,7 +169,7 @@ TSharedRef<ITableRow> SDMXFixtureTypeTree::OnGenerateRow(TSharedPtr<FDMXEntityTr
 			[
 				SNew(STextBlock)
 				.Text(Node->GetDisplayNameText())
-				.TextStyle(FEditorStyle::Get(), "DetailsView.CategoryTextStyle")
+				.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
 			];
 	}
 	else
@@ -621,8 +625,14 @@ void SDMXFixtureTypeTree::OnFixtureTypeChanged(const UDMXEntityFixtureType* Fixt
 
 FReply SDMXFixtureTypeTree::OnAddNewFixtureTypeClicked()
 {
+	AddNewFixtureType();
+	return FReply::Handled();
+}
+
+void SDMXFixtureTypeTree::AddNewFixtureType()
+{
 	if (TSharedPtr<FDMXEditor> PinnedEditor = DMXEditor.Pin())
-	{		
+	{
 		const FScopedTransaction Transaction(LOCTEXT("CreateFixtureTypeTransaction", "Create DMX Fixture Type"));
 
 		FDMXEntityFixtureTypeConstructionParams FixtureTypeConstructionParams;
@@ -633,11 +643,7 @@ FReply SDMXFixtureTypeTree::OnAddNewFixtureTypeClicked()
 		FixtureTypeSharedData->SelectFixtureTypes(TArray<TWeakObjectPtr<UDMXEntityFixtureType>>({ NewFixtureType }));
 
 		UpdateTree();
-
-		return FReply::Handled();
 	}
-
-	return FReply::Unhandled();
 }
 
 #undef LOCTEXT_NAMESPACE

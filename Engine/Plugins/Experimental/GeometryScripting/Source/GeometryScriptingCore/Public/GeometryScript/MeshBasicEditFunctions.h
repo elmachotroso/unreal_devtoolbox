@@ -5,9 +5,14 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GeometryScript/GeometryScriptTypes.h"
+#include "GeometryScript/GeometryScriptSelectionTypes.h"
 #include "MeshBasicEditFunctions.generated.h"
 
 class UDynamicMesh;
+namespace UE::Geometry
+{
+	class FDynamicMesh3;
+}
 
 
 USTRUCT(BlueprintType)
@@ -15,38 +20,69 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptSimpleMeshBuffers
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector> Vertices;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector> Normals;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV0;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV1;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV2;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV3;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV4;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV5;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV6;
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FVector2D> UV7;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FLinearColor> VertexColors;
 
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<FIntVector> Triangles;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	TArray<int> TriGroupIDs;
+};
+
+
+// Options for how attributes from a source and target mesh are combined into the target mesh
+UENUM(BlueprintType)
+enum class EGeometryScriptCombineAttributesMode : uint8
+{
+	// Include attributes enabled on either the source or target mesh
+	EnableAllMatching,
+	// Only include attributes that are already enabled on the target mesh
+	UseTarget,
+	// Make the target mesh have only the attributes that are enabled on the source mesh
+	UseSource
+};
+
+
+/**
+ * Control how details like mesh attributes are handled when one mesh is appended to another
+ */
+USTRUCT(BlueprintType)
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptAppendMeshOptions
+{
+	GENERATED_BODY()
+public:
+
+	// How attributes from each mesh are combined into the result
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	EGeometryScriptCombineAttributesMode CombineMode =
+		EGeometryScriptCombineAttributesMode::EnableAllMatching;
+
+	void UpdateAttributesForCombineMode(UE::Geometry::FDynamicMesh3& Target, const UE::Geometry::FDynamicMesh3& Source);
 };
 
 
@@ -144,7 +180,18 @@ public:
 		int& NumDeleted,
 		bool bDeferChangeNotifications = false );
 
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|MeshEdits", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	DeleteSelectedTrianglesFromMesh( 
+		UDynamicMesh* TargetMesh, 
+		FGeometryScriptMeshSelection Selection,
+		int& NumDeleted,
+		bool bDeferChangeNotifications = false );
 
+	/**
+	 * Apply AppendTransform to AppendMesh and then add its geometry to the TargetMesh
+	 * @param AppendOptions Control how details like mesh attributes are handled when one mesh is appended to another
+	 */
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|MeshEdits", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendMesh( 
@@ -152,8 +199,33 @@ public:
 		UDynamicMesh* AppendMesh, 
 		FTransform AppendTransform, 
 		bool bDeferChangeNotifications = false,
+		FGeometryScriptAppendMeshOptions AppendOptions = FGeometryScriptAppendMeshOptions(),
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	 * For each transform in AppendTransforms, apply the transform to AppendMesh and then add its geometry to the TargetMesh.
+	 * @param ConstantTransform the Constant transform will be applied after each Append transform
+	 * @param bConstantTransformIsRelative if true, the Constant transform is applied "in the frame" of the Append Transform, otherwise it is applied as a second transform in local coordinates (ie rotate around the AppendTransform X axis, vs around the local X axis)
+	 * @param AppendOptions Control how details like mesh attributes are handled when one mesh is appended to another
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|MeshEdits", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	AppendMeshTransformed( 
+		UDynamicMesh* TargetMesh, 
+		UDynamicMesh* AppendMesh, 
+		const TArray<FTransform>& AppendTransforms, 
+		FTransform ConstantTransform,
+		bool bConstantTransformIsRelative = true,
+		bool bDeferChangeNotifications = false,
+		FGeometryScriptAppendMeshOptions AppendOptions = FGeometryScriptAppendMeshOptions(),
+		UGeometryScriptDebug* Debug = nullptr);
+
+	/**
+	 * Repeatedly apply AppendTransform to the AppendMesh, each time adding the geometry to TargetMesh.
+	 * @param RepeatCount number of times to repeat the transform-append cycle
+	 * @param bApplyTransformToFirstInstance if true, the AppendTransform is applied before the first mesh append, otherwise it is applied after
+	 * @param AppendOptions Control how details like mesh attributes are handled when one mesh is appended to another
+	 */
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|MeshEdits", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendMeshRepeated( 
@@ -163,6 +235,7 @@ public:
 		int RepeatCount = 1,
 		bool bApplyTransformToFirstInstance = true,
 		bool bDeferChangeNotifications = false,
+		FGeometryScriptAppendMeshOptions AppendOptions = FGeometryScriptAppendMeshOptions(),
 		UGeometryScriptDebug* Debug = nullptr);
 
 

@@ -3,13 +3,17 @@
 #include "ContextualAnimSceneActorComponent.h"
 #include "Animation/AnimInstance.h"
 #include "GameFramework/Character.h"
-#include "ContextualAnimMetadata.h"
+#include "ContextualAnimSelectionCriterion.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "ContextualAnimManager.h"
-#include "ContextualAnimSceneInstance.h"
 #include "ContextualAnimSceneAsset.h"
 #include "ContextualAnimUtilities.h"
+#include "AnimNotifyState_IKWindow.h"
+#include "EngineUtils.h"
+#include "Net/UnrealNetwork.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ContextualAnimSceneActorComponent)
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 TAutoConsoleVariable<int32> CVarContextualAnimIKDebug(TEXT("a.ContextualAnim.IK.Debug"), 0, TEXT("Draw Debug IK Targets"));
@@ -22,11 +26,50 @@ UContextualAnimSceneActorComponent::UContextualAnimSceneActorComponent(const FOb
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
+	SetIsReplicatedByDefault(true);
+}
+
+void UContextualAnimSceneActorComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty >& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME_CONDITION(UContextualAnimSceneActorComponent, Bindings, COND_SimulatedOnly);
+}
+
+void UContextualAnimSceneActorComponent::OnRep_Bindings()
+{
+	if(Bindings.Num() > 0)
+	{
+		if (const FContextualAnimSceneBinding* Binding = Bindings.FindBindingByActor(GetOwner()))
+		{
+			// Start listening to TickPose if we joined an scene where we need IK
+			if (Bindings.GetIKTargetDefContainerFromBinding(*Binding).IKTargetDefs.Num() > 0)
+			{
+				USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner());
+				if (SkelMeshComp && !SkelMeshComp->OnTickPose.IsBoundToObject(this))
+				{
+					SkelMeshComp->OnTickPose.AddUObject(this, &UContextualAnimSceneActorComponent::OnTickPose);
+				}
+			}
+
+			OnJoinedSceneDelegate.Broadcast(this);
+		}
+	}
+	else
+	{
+		USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner());
+		if (SkelMeshComp && SkelMeshComp->OnTickPose.IsBoundToObject(this))
+		{
+			SkelMeshComp->OnTickPose.RemoveAll(this);
+		}
+
+		OnLeftSceneDelegate.Broadcast(this);
+	}
 }
 
 FBoxSphereBounds UContextualAnimSceneActorComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
-	const float Radius = SceneAsset ? SceneAsset->GetRadius() : 0.f;
+	// The option of having an SceneAsset and draw options on this component may go away in the future anyway, replaced by smart objects.
+	const float Radius = SceneAsset && SceneAsset->HasValidData() ? SceneAsset->GetRadius() : 0.f;
 	return FBoxSphereBounds(FSphere(GetComponentTransform().GetLocation(), Radius));
 }
 
@@ -54,39 +97,41 @@ void UContextualAnimSceneActorComponent::OnUnregister()
 	}
 }
 
-void UContextualAnimSceneActorComponent::OnJoinedScene(const FContextualAnimSceneActorData* SceneActorData)
+void UContextualAnimSceneActorComponent::OnJoinedScene(const FContextualAnimSceneBindings& InBindings)
 {
-	check(SceneActorData);
-	SceneActorDataPtr = SceneActorData;
-
-	// Start listening to TickPose if we joined an scene where we need IK
-	if (SceneActorData->GetSettings()->IKTargetDefinitions.Num() > 0)
+	if (const FContextualAnimSceneBinding* Binding = InBindings.FindBindingByActor(GetOwner()))
 	{
-		if (USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner()))
-		{
-			SkelMeshComp->OnTickPose.AddUObject(this, &UContextualAnimSceneActorComponent::OnTickPose);
-		}
-	}
+		Bindings = InBindings;
 
-	OnJoinedSceneDelegate.Broadcast(this);
+		// Start listening to TickPose if we joined an scene where we need IK
+		if (Bindings.GetIKTargetDefContainerFromBinding(*Binding).IKTargetDefs.Num() > 0)
+		{
+			USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner());
+			if (SkelMeshComp && !SkelMeshComp->OnTickPose.IsBoundToObject(this))
+			{
+				SkelMeshComp->OnTickPose.AddUObject(this, &UContextualAnimSceneActorComponent::OnTickPose);
+			}
+		}
+
+		OnJoinedSceneDelegate.Broadcast(this);
+	}
 }
 
-void UContextualAnimSceneActorComponent::OnLeftScene(const FContextualAnimSceneActorData* SceneActorData)
+void UContextualAnimSceneActorComponent::OnLeftScene()
 {
-	check(SceneActorData);
-
-	OnLeftSceneDelegate.Broadcast(this);
-
-	// Stop listening to TickPose if we were
-	if (SceneActorData->GetSettings()->IKTargetDefinitions.Num() > 0)
+	if (const FContextualAnimSceneBinding* Binding = Bindings.FindBindingByActor(GetOwner()))
 	{
-		if (USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner()))
+		OnLeftSceneDelegate.Broadcast(this);
+
+		// Stop listening to TickPose if we were
+		USkeletalMeshComponent* SkelMeshComp = UContextualAnimUtilities::TryGetSkeletalMeshComponent(GetOwner());
+		if (SkelMeshComp && SkelMeshComp->OnTickPose.IsBoundToObject(this))
 		{
 			SkelMeshComp->OnTickPose.RemoveAll(this);
 		}
-	}
 
-	SceneActorDataPtr = nullptr;
+		Bindings.Reset();
+	}
 }
 
 void UContextualAnimSceneActorComponent::OnTickPose(class USkinnedMeshComponent* SkinnedMeshComponent, float DeltaTime, bool bNeedsValidRootMotion)
@@ -97,94 +142,110 @@ void UContextualAnimSceneActorComponent::OnTickPose(class USkinnedMeshComponent*
 
 void UContextualAnimSceneActorComponent::UpdateIKTargets()
 {
-	const UContextualAnimSceneInstance* SceneInstance = SceneActorDataPtr ? SceneActorDataPtr->GetSceneInstance() : nullptr;
-	if (SceneInstance)
+	IKTargets.Reset();
+
+	const FContextualAnimSceneBinding* BindingPtr = Bindings.FindBindingByActor(GetOwner());
+	if (BindingPtr == nullptr)
 	{
-		IKTargets.Reset();
+		return;
+	}
 
-		for (const FContextualAnimIKTargetDefinition& IKTargetDef : SceneActorDataPtr->GetSettings()->IKTargetDefinitions)
-		{
-			if (UAnimInstance* AnimInstance = SceneActorDataPtr->GetAnimInstance())
-			{
+	const FAnimMontageInstance* MontageInstance = BindingPtr->GetAnimMontageInstance();
+	if(MontageInstance == nullptr)
+	{
+		return;
+	}
 
+	const TArray<FContextualAnimIKTargetDefinition>& IKTargetDefs = Bindings.GetIKTargetDefContainerFromBinding(*BindingPtr).IKTargetDefs;
+	for (const FContextualAnimIKTargetDefinition& IKTargetDef : IKTargetDefs)
+	{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				const bool bDrawDebugEnable = CVarContextualAnimIKDebug.GetValueOnGameThread() > 0;
-				const float DrawDebugDuration = CVarContextualAnimIKDrawDebugLifetime.GetValueOnGameThread();
-				FTransform IKTargetParentTransformForDebug = FTransform::Identity;
+		const bool bDrawDebugEnable = CVarContextualAnimIKDebug.GetValueOnGameThread() > 0;
+		const float DrawDebugDuration = CVarContextualAnimIKDrawDebugLifetime.GetValueOnGameThread();
+		FTransform IKTargetParentTransformForDebug = FTransform::Identity;
 #endif
 
-				FTransform IKTargetTransform = FTransform::Identity;
+		FTransform IKTargetTransform = FTransform::Identity;
 
-				float Alpha = 0.f;
-				bool bCurveFound = AnimInstance->GetCurveValue(IKTargetDef.AlphaCurveName, Alpha);
+		float Alpha = UAnimNotifyState_IKWindow::GetIKAlphaValue(IKTargetDef.GoalName, MontageInstance);
 
-				// @TODO: IKTargetTransform will be off by 1 frame if we tick before target. 
-				// Should we at least add an option to the SceneAsset to setup tick dependencies or should this be entirely up to the user?
+		// @TODO: IKTargetTransform will be off by 1 frame if we tick before target. 
+		// Should we at least add an option to the SceneAsset to setup tick dependencies or should this be entirely up to the user?
 
+		if (const FContextualAnimSceneBinding* TargetBinding = Bindings.FindBindingByRole(IKTargetDef.TargetRoleName))
+		{
+			if (const USkeletalMeshComponent* TargetSkelMeshComp = TargetBinding->GetSkeletalMeshComponent())
+			{
 				if (IKTargetDef.Provider == EContextualAnimIKTargetProvider::Autogenerated)
 				{
-					if (const FContextualAnimSceneActorData* TargetSceneActorData = SceneInstance->FindSceneActorDataForRole(IKTargetDef.AutoParams.TargetRole))
-					{
-						if (USkeletalMeshComponent* TargetSkelMeshComp = TargetSceneActorData->GetSkeletalMeshComponent())
-						{
-							const FTransform IKTargetParentTransform = TargetSkelMeshComp->GetSocketTransform(IKTargetDef.AutoParams.BoneName);
+					const FTransform IKTargetParentTransform = TargetSkelMeshComp->GetSocketTransform(IKTargetDef.TargetBoneName);
 
-							const float Time = SceneActorDataPtr->GetAnimTime();
-							IKTargetTransform = SceneActorDataPtr->GetAnimData()->IKTargetData.ExtractTransformAtTime(IKTargetDef.IKGoalName, Time) * IKTargetParentTransform;
+					const float Time = MontageInstance->GetPosition();
+					IKTargetTransform = Bindings.GetIKTargetTransformFromBinding(*BindingPtr, IKTargetDef.GoalName, Time) * IKTargetParentTransform;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-							if (bDrawDebugEnable)
-							{
-								IKTargetParentTransformForDebug = IKTargetParentTransform;
-							}
-#endif
-						}
+					if (bDrawDebugEnable)
+					{
+						IKTargetParentTransformForDebug = IKTargetParentTransform;
 					}
+#endif
 				}
 				else if (IKTargetDef.Provider == EContextualAnimIKTargetProvider::Bone)
 				{
-					if (const FContextualAnimSceneActorData* TargetSceneActorData = SceneInstance->FindSceneActorDataForRole(IKTargetDef.BoneParams.TargetRole))
+					IKTargetTransform = TargetSkelMeshComp->GetSocketTransform(IKTargetDef.TargetBoneName);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+					if (bDrawDebugEnable)
 					{
-						if (USkeletalMeshComponent* TargetSkelMeshComp = TargetSceneActorData->GetSkeletalMeshComponent())
-						{
-							IKTargetTransform = TargetSkelMeshComp->GetSocketTransform(IKTargetDef.BoneParams.BoneName);
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-							if (bDrawDebugEnable)
-							{
-								IKTargetParentTransformForDebug = TargetSkelMeshComp->GetSocketTransform(TargetSkelMeshComp->GetParentBone(IKTargetDef.BoneParams.BoneName));
-							}
-#endif
-						}
+						IKTargetParentTransformForDebug = TargetSkelMeshComp->GetSocketTransform(TargetSkelMeshComp->GetParentBone(IKTargetDef.TargetBoneName));
 					}
-				}
-
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				const float ForcedAlphaValue = CVarContextualAnimIKForceAlpha.GetValueOnGameThread();
-				if (ForcedAlphaValue > 0.f)
-				{
-					Alpha = FMath::Clamp(ForcedAlphaValue, 0.f, 1.f);
-				}
-
-				if (bDrawDebugEnable)
-				{
-					const float DrawThickness = 0.5f;
-					const FColor DrawColor = FColor::MakeRedToGreenColorFromScalar(Alpha);
-
-					DrawDebugLine(GetWorld(), IKTargetParentTransformForDebug.GetLocation(), IKTargetTransform.GetLocation(), DrawColor, false, DrawDebugDuration, 0, DrawThickness);
-					DrawDebugCoordinateSystem(GetWorld(), IKTargetTransform.GetLocation(), IKTargetTransform.Rotator(), 10.f, false, DrawDebugDuration, 0, DrawThickness);
-					//DrawDebugSphere(GetWorld(), IKTargetTransform.GetLocation(), 5.f, 12, DrawColor, false, 0.f, 0, DrawThickness  );
-
-					//DrawDebugString(GetWorld(), IKTargetTransform.GetLocation(), FString::Printf(TEXT("%s (%f)"), *IKTargetDef.AlphaCurveName.ToString(), Alpha));
-				}
 #endif
-
-				// Convert IK Target to mesh space
-				IKTargetTransform = IKTargetTransform.GetRelativeTransform(SceneActorDataPtr->GetSkeletalMeshComponent()->GetComponentTransform());
-
-				IKTargets.Add(FContextualAnimIKTarget(IKTargetDef.IKGoalName, Alpha, IKTargetTransform));	
+				}
 			}
 		}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		const float ForcedAlphaValue = CVarContextualAnimIKForceAlpha.GetValueOnGameThread();
+		if (ForcedAlphaValue > 0.f)
+		{
+			Alpha = FMath::Clamp(ForcedAlphaValue, 0.f, 1.f);
+		}
+
+		if (bDrawDebugEnable)
+		{
+			const float DrawThickness = 0.5f;
+			const FColor DrawColor = FColor::MakeRedToGreenColorFromScalar(Alpha);
+
+			DrawDebugLine(GetWorld(), IKTargetParentTransformForDebug.GetLocation(), IKTargetTransform.GetLocation(), DrawColor, false, DrawDebugDuration, 0, DrawThickness);
+			DrawDebugCoordinateSystem(GetWorld(), IKTargetTransform.GetLocation(), IKTargetTransform.Rotator(), 10.f, false, DrawDebugDuration, 0, DrawThickness);
+			//DrawDebugSphere(GetWorld(), IKTargetTransform.GetLocation(), 5.f, 12, DrawColor, false, 0.f, 0, DrawThickness  );
+
+			//DrawDebugString(GetWorld(), IKTargetTransform.GetLocation(), FString::Printf(TEXT("%s (%f)"), *IKTargetDef.AlphaCurveName.ToString(), Alpha));
+		}
+#endif
+
+		// Convert IK Target to mesh space
+		//IKTargetTransform = IKTargetTransform.GetRelativeTransform(BindingPtr->GetSkeletalMeshComponent()->GetComponentTransform());
+
+		IKTargets.Add(FContextualAnimIKTarget(IKTargetDef.GoalName, Alpha, IKTargetTransform));
+	}
+}
+
+void UContextualAnimSceneActorComponent::AddIKGoals_Implementation(TMap<FName, FIKRigGoal>& OutGoals)
+{
+	OutGoals.Reserve(IKTargets.Num());
+
+	for(const FContextualAnimIKTarget& IKTarget : IKTargets)
+	{
+		FIKRigGoal Goal;
+		Goal.Name = IKTarget.GoalName;
+		Goal.Position = IKTarget.Transform.GetLocation();
+		Goal.Rotation = IKTarget.Transform.Rotator();
+		Goal.PositionAlpha = IKTarget.Alpha;
+		Goal.RotationAlpha = IKTarget.Alpha;
+		Goal.PositionSpace = EIKRigGoalSpace::World;
+		Goal.RotationSpace = EIKRigGoalSpace::World;
+		OutGoals.Add(Goal.Name, Goal);
 	}
 }
 
@@ -212,47 +273,7 @@ FPrimitiveSceneProxy* UContextualAnimSceneActorComponent::CreateSceneProxy()
 		FSceneActorCompProxy(const UContextualAnimSceneActorComponent* InComponent)
 			: FPrimitiveSceneProxy(InComponent)
 			, SceneAssetPtr(InComponent->SceneAsset)
-			, Params(InComponent->DebugParams)
 		{
-		}
-
-		static void DrawSector(FPrimitiveDrawInterface* PDI, const FVector& Origin, const FVector& Direction, float MinDistance, float MaxDistance, float MinAngle, float MaxAngle, const FLinearColor& Color, uint8 DepthPriority, float Thickness)
-		{
-			// Draw Cone lines
-			const FVector LeftDirection = Direction.RotateAngleAxis(MinAngle, FVector::UpVector);
-			const FVector RightDirection = Direction.RotateAngleAxis(MaxAngle, FVector::UpVector);
-			PDI->DrawLine(Origin + (LeftDirection * MinDistance), Origin + (LeftDirection * MaxDistance), Color, DepthPriority, Thickness);
-			PDI->DrawLine(Origin + (RightDirection * MinDistance), Origin + (RightDirection * MaxDistance), Color, DepthPriority, Thickness);
-
-			// Draw Near Arc
-			FVector LastDirection = LeftDirection;
-			float Angle = MinAngle;
-			while (Angle < MaxAngle)
-			{
-				Angle = FMath::Clamp<float>(Angle + 10, MinAngle, MaxAngle);
-
-				const float Length = MinDistance;
-				const FVector NewDirection = Direction.RotateAngleAxis(Angle, FVector::UpVector);
-				const FVector LineStart = Origin + (LastDirection * Length);
-				const FVector LineEnd = Origin + (NewDirection * Length);
-				PDI->DrawLine(LineStart, LineEnd, Color, DepthPriority, Thickness);
-				LastDirection = NewDirection;
-			}
-
-			// Draw Far Arc
-			LastDirection = LeftDirection;
-			Angle = MinAngle;
-			while (Angle < MaxAngle)
-			{
-				Angle = FMath::Clamp<float>(Angle + 10, MinAngle, MaxAngle);
-
-				const float Length = MaxDistance;
-				const FVector NewDirection = Direction.RotateAngleAxis(Angle, FVector::UpVector);
-				const FVector LineStart = Origin + (LastDirection * Length);
-				const FVector LineEnd = Origin + (NewDirection * Length);
-				PDI->DrawLine(LineStart, LineEnd, Color, DepthPriority, Thickness);
-				LastDirection = NewDirection;
-			}
 		}
 
 		virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override
@@ -283,99 +304,40 @@ FPrimitiveSceneProxy* UContextualAnimSceneActorComponent::CreateSceneProxy()
 
 					//DrawCircle(PDI, ToWorldTransform.GetLocation(), FVector(1, 0, 0), FVector(0, 1, 0), FColor::Red, SceneAssetPtr->GetRadius(), 12, SDPG_World, 1.f);
 
-					SceneAssetPtr->ForEachAnimData([=](const FName& Role, const FContextualAnimData& Data)
+					SceneAssetPtr->ForEachAnimTrack([=](const FContextualAnimTrack& AnimTrack)
 					{
-						if (Role != SceneAssetPtr->PrimaryRole)
+						if (AnimTrack.Role != SceneAssetPtr->GetPrimaryRole())
 						{
-							FLinearColor DrawColor = FLinearColor::White;
-
-							//@TODO: Temp, this should not be here
-							if(Params.TestActor.IsValid())
-							{
-								if (Data.Metadata)
-								{
-									const FTransform EntryTransform = Data.GetAlignmentTransformAtEntryTime() * ToWorldTransform;
-									if (Data.Metadata->DoesQuerierPassConditions(FContextualAnimQuerier(Params.TestActor.Get()), FContextualAnimQueryContext(ToWorldTransform), EntryTransform))
-									{
-										DrawColor = FLinearColor::Red;
-									}
-								}
-							}
-
 							// Draw Entry Point
-							const FTransform EntryTransform = (Data.GetAlignmentTransformAtEntryTime() * ToWorldTransform);
+							const FTransform EntryTransform = (AnimTrack.GetAlignmentTransformAtEntryTime() * ToWorldTransform);
 							DrawCoordinateSystem(PDI, EntryTransform.GetLocation(), EntryTransform.Rotator(), 20.f, SDPG_World, 3.f);
 
 							// Draw Sync Point
-							const FTransform SyncPoint = Data.GetAlignmentTransformAtSyncTime() * ToWorldTransform;
+							const FTransform SyncPoint = AnimTrack.GetAlignmentTransformAtSyncTime() * ToWorldTransform;
 							DrawCoordinateSystem(PDI, SyncPoint.GetLocation(), SyncPoint.Rotator(), 20.f, SDPG_World, 3.f);
 
-							if (Params.DrawAlignmentTransformAtTime != 0.f)
+							FLinearColor DrawColor = FLinearColor::White;
+							for (const UContextualAnimSelectionCriterion* Criterion : AnimTrack.SelectionCriteria)
 							{
-								const FTransform RootAtTime = (Data.GetAlignmentTransformAtTime(Params.DrawAlignmentTransformAtTime) * ToWorldTransform);
-								DrawCoordinateSystem(PDI, RootAtTime.GetLocation(), RootAtTime.Rotator(), 10.f, SDPG_World, 2.f);
-							}
-
-							// Draw Facing Tolerance
-							if (Data.Metadata && Data.Metadata->Facing > 0.f)
-							{
-								DrawSector(PDI, EntryTransform.GetLocation(), EntryTransform.GetRotation().GetForwardVector(), 0.f, 30.f, -Data.Metadata->Facing, Data.Metadata->Facing, DrawColor, SDPG_World, 1.f);
-							}
-							else
-							{
-								DrawCircle(PDI, EntryTransform.GetLocation(), FVector(1, 0, 0), FVector(0, 1, 0), DrawColor, 30.f, 12, SDPG_World, 1.f);
-							}
-
-							// Draw Sector
-							if (Data.Metadata)
-							{
-								FVector Origin = ToWorldTransform.GetLocation();
-								Origin.Z = EntryTransform.GetLocation().Z;
-
-								FVector Direction = (EntryTransform.GetLocation() - ToWorldTransform.GetLocation()).GetSafeNormal2D();
-
-								if (Data.Metadata->DirectionOffset != 0.f)
+								if (const UContextualAnimSelectionCriterion_TriggerArea* Spatial = Cast<UContextualAnimSelectionCriterion_TriggerArea>(Criterion))
 								{
-									Direction = Direction.RotateAngleAxis(Data.Metadata->DirectionOffset, FVector::UpVector);
-								}
+									const float HalfHeight = Spatial->Height / 2.f;
+									const int32 LastIndex = Spatial->PolygonPoints.Num() - 1;
+									for (int32 Idx = 0; Idx <= LastIndex; Idx++)
+									{
+										const FVector P0 = ToWorldTransform.TransformPositionNoScale(Spatial->PolygonPoints[Idx]);
+										const FVector P1 = ToWorldTransform.TransformPositionNoScale(Spatial->PolygonPoints[Idx == LastIndex ? 0 : Idx + 1]);
 
-								if (Data.Metadata->OriginOffset.X != 0.f)
-								{
-									Origin = Origin + Direction * Data.Metadata->OriginOffset.X;
-								}
+										PDI->DrawLine(P0, P1, DrawColor, SDPG_Foreground, 2.f);
+										PDI->DrawLine(P0 + FVector::UpVector * Spatial->Height, P1 + FVector::UpVector * Spatial->Height, DrawColor, SDPG_Foreground, 2.f);
 
-								if (Data.Metadata->OriginOffset.Y != 0.f)
-								{
-									Origin = Origin + (Direction.ToOrientationQuat().GetRightVector()) * Data.Metadata->OriginOffset.Y;
-								}
-
-								if (Data.Metadata->NearWidth > 0.f || Data.Metadata->FarWidth > 0.f)
-								{
-									const float HalfNearWidth = (Data.Metadata->NearWidth / 2.f);
-									const FVector RightVector = Direction.ToOrientationQuat().GetRightVector();
-									const FVector A = Origin + (-RightVector * HalfNearWidth);
-									const FVector B = Origin + (RightVector * HalfNearWidth);
-
-									const float HalfFarWidth = (Data.Metadata->FarWidth / 2.f);
-									const FVector FarEdgeCenter = Origin + (Direction * Data.Metadata->MaxDistance);
-									const FVector C = FarEdgeCenter + (-RightVector * HalfFarWidth);
-									const FVector D = FarEdgeCenter + (RightVector * HalfFarWidth);
-
-									PDI->DrawLine(A, B, DrawColor, SDPG_World, 2.f);
-									PDI->DrawLine(C, D, DrawColor, SDPG_World, 2.f);
-
-									PDI->DrawLine(A, C, DrawColor, SDPG_World, 2.f);
-									PDI->DrawLine(B, D, DrawColor, SDPG_World, 2.f);
-								}
-								else
-								{
-									PDI->DrawLine(Origin, Origin + Direction * Data.Metadata->MaxDistance, DrawColor, SDPG_World, 2.f);
-									DrawCircle(PDI, Origin, FVector(1, 0, 0), FVector(0, 1, 0), DrawColor, Data.Metadata->MaxDistance, 32, SDPG_World, 2.f);
+										PDI->DrawLine(P0, P0 + FVector::UpVector * Spatial->Height, DrawColor, SDPG_Foreground, 2.f);
+									}
 								}
 							}
 						}
 
-						return EContextualAnimForEachResult::Continue;
+						return UE::ContextualAnim::EForEachResult::Continue;
 					});
 				}
 			}
@@ -403,7 +365,6 @@ FPrimitiveSceneProxy* UContextualAnimSceneActorComponent::CreateSceneProxy()
 
 	private:
 		TWeakObjectPtr<const UContextualAnimSceneAsset> SceneAssetPtr;
-		FContextualAnimDebugParams Params;
 	};
 
 	if(bEnableDebug)

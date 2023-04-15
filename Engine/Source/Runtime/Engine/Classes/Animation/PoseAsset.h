@@ -137,7 +137,7 @@ private:
 	bool DeleteCurve(FSmartName CurveName);
 	bool InsertTrack(const FName& InTrackName, USkeleton* InSkeleton, const TArray<FTransform>& RefPose);
 	
-	bool FillUpSkeletonPose(FPoseData* PoseData, USkeleton* InSkeleton);
+	bool FillUpSkeletonPose(FPoseData* PoseData, const USkeleton* InSkeleton);
 	void RetrieveSourcePoseFromExistingPose(bool bAdditive, int32 InBasePoseIndex, const TArray<FTransform>& InBasePose, const TArray<float>& InBaseCurve);
 
 	// editor features for full pose <-> additive pose
@@ -147,7 +147,7 @@ private:
 	friend class UPoseAsset;
 };
 
-/*
+/**
  * Pose Asset that can be blended by weight of curves 
  */
 UCLASS(MinimalAPI, BlueprintType)
@@ -175,7 +175,7 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** If RetargetSource is set to Default (None), this is asset for the base pose to use when retargeting. Transform data will be saved in RetargetSourceAssetReferencePose. */
-	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=Animation, meta = (DisallowedClasses = "DestructibleMesh"))
+	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=Animation, meta = (DisallowedClasses = "/Script/ApexDestruction.DestructibleMesh"))
 	TSoftObjectPtr<USkeletalMesh> RetargetSourceAsset;
 #endif
 
@@ -259,8 +259,9 @@ public:
 	UFUNCTION(BlueprintPure, Category=PoseAsset)
 	void GetPoseNames(TArray<FName>& PoseNames) const;
 	
-	ENGINE_API bool AddOrUpdatePoseWithUniqueName(USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName = nullptr);
-	ENGINE_API void AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true);
+	ENGINE_API bool AddOrUpdatePoseWithUniqueName(const USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName = nullptr);
+	ENGINE_API void AddOrUpdatePose(const FSmartName& PoseName, const USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true);
+	ENGINE_API void AddReferencePose(const FSmartName& PoseName, const FReferenceSkeleton& ReferenceSkeleton);
 	ENGINE_API void CreatePoseFromAnimation(class UAnimSequence* AnimSequence, const TArray<FSmartName>* InPoseNames = nullptr);
 
 	/** Contained poses are re-generated from the provided Animation Sequence*/
@@ -284,6 +285,9 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	// Return full (local space, non additive) pose. Will do conversion if PoseAsset is Additive. 
 	ENGINE_API bool GetFullPose(int32 PoseIndex, TArray<FTransform>& OutTransforms) const;
+	
+	// util to return transform of a bone from the pose asset in component space, by walking up tracks in pose asset */
+	ENGINE_API FTransform GetComponentSpaceTransform(FName BoneName, const TArray<FTransform>& LocalTransforms) const;
 
 	ENGINE_API int32 DeletePoses(TArray<FName> PoseNamesToDelete);
 	ENGINE_API int32 DeleteCurves(TArray<FName> CurveNamesToDelete);
@@ -313,6 +317,9 @@ public:
 	{
 		OnPoseListChanged.Remove(Handle);
 	}
+
+	ENGINE_API static FName GetUniquePoseName(const USkeleton* Skeleton);
+	ENGINE_API static FSmartName GetUniquePoseSmartName(USkeleton* Skeleton);
 
 protected:
 	virtual void RemapTracksToNewSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces) override;

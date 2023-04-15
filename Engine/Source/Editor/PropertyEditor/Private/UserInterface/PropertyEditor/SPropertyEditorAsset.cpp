@@ -14,13 +14,14 @@
 #include "Widgets/Images/SImage.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Particles/ParticleSystem.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorAsset.h"
 #include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "PropertyEditorHelpers.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
 #include "SAssetDropTarget.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Selection.h"
 #include "ObjectPropertyNode.h"
 #include "PropertyHandleImpl.h"
@@ -29,7 +30,10 @@
 #include "UnrealEdGlobals.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "WorldPartition/WorldPartition.h"
 #include "FileHelpers.h"
+#include "Presentation/PropertyEditor/PropertyEditor.h"
+#include "AssetThumbnail.h"
 
 #define LOCTEXT_NAMESPACE "PropertyEditor"
 
@@ -129,6 +133,16 @@ void SPropertyEditorAsset::InitializeClassFilters(const FProperty* Property)
 
 	bExactClass = GetTagOrBoolMetadata(MetadataProperty, TEXT("ExactClass"), false);
 
+	auto FindClass = [](const FString& InClassName)
+	{
+		UClass* Class = UClass::TryFindTypeSlow<UClass>(InClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
+		if (!Class)
+		{
+			Class = LoadObject<UClass>(nullptr, *InClassName);
+		}
+		return Class;
+	};
+
 	const FString AllowedClassesFilterString = MetadataProperty->GetMetaData(TEXT("AllowedClasses"));
 	if (!AllowedClassesFilterString.IsEmpty())
 	{
@@ -137,11 +151,7 @@ void SPropertyEditorAsset::InitializeClassFilters(const FProperty* Property)
 
 		for (const FString& ClassName : AllowedClassFilterNames)
 		{
-			UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
-			if (!Class)
-			{
-				Class = LoadObject<UClass>(nullptr, *ClassName);
-			}
+			UClass* Class = FindClass(ClassName);
 
 			if (Class)
 			{
@@ -179,11 +189,7 @@ void SPropertyEditorAsset::InitializeClassFilters(const FProperty* Property)
 
 		for (const FString& ClassName : DisallowedClassFilterNames)
 		{
-			UClass* Class = FindObject<UClass>(ANY_PACKAGE, *ClassName);
-			if (!Class)
-			{
-				Class = LoadObject<UClass>(nullptr, *ClassName);
-			}
+			UClass* Class = FindClass(ClassName);
 
 			if (Class)
 			{
@@ -277,6 +283,12 @@ bool SPropertyEditorAsset::IsAssetAllowed(const FAssetData& InAssetData)
 		{
 			if (!InAssetData.TagsAndValues.ContainsKeyValue(RequiredTagAndValue.Key, RequiredTagAndValue.Value))
 			{
+				// For backwards compatibility compare against short name version of the tag value.
+				if (!FPackageName::IsShortPackageName(RequiredTagAndValue.Value) &&
+					InAssetData.TagsAndValues.ContainsKeyValue(RequiredTagAndValue.Key, FPackageName::ObjectPathToObjectName(RequiredTagAndValue.Value)))
+				{
+					continue;
+				}
 				return false;
 			}
 		}
@@ -303,6 +315,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 	OwnerAssetDataArray = InArgs._OwnerAssetDataArray;
 	OnSetObject = InArgs._OnSetObject;
 	OnShouldFilterAsset = InArgs._OnShouldFilterAsset;
+	OnShouldFilterActor = InArgs._OnShouldFilterActor;
 	ObjectPath = InArgs._ObjectPath;
 
 	FProperty* Property = nullptr;
@@ -317,6 +330,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 
 	ObjectClass = InArgs._Class != nullptr ? InArgs._Class : GetObjectPropertyClass(Property);
 	bAllowClear = InArgs._AllowClear.IsSet() ? InArgs._AllowClear.GetValue() : (Property ? !(Property->PropertyFlags & CPF_NoClear) : true);
+	bAllowCreate = InArgs._AllowCreate.IsSet() ? InArgs._AllowCreate.GetValue() : (Property ? !Property->HasMetaData("NoCreate") : true);
 
 	InitializeAssetDataTags(Property);
 	if (DisallowedAssetDataTags.IsValid() || RequiredAssetDataTags.IsValid())
@@ -347,8 +361,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 
 	bIsActor = ObjectClass->IsChildOf(AActor::StaticClass());
 
-	const bool bAllowCreation = !Property || !Property->HasMetaData("NoCreate");
-	if (bAllowCreation) 
+	if (bAllowCreate)
 	{
 		if (InArgs._NewAssetFactories.IsSet())
 		{
@@ -440,7 +453,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 			[
 				// Show the name of the asset or actor
 				SNew(STextBlock)
-				.Font( FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) )
+				.Font( FAppStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle ) )
 				.Text(this,&SPropertyEditorAsset::OnGetAssetName)
 			]
 		];
@@ -594,31 +607,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 		];
 	}
 
-	bool bDisplayBrowse = InArgs._DisplayBrowse;
-	if (bDisplayBrowse && bIsActor)
-	{
-		FObjectOrAssetData Value;
-		GetValue(Value);
-
-		UWorld* World = Value.Object ? CastChecked<AActor>(Value.Object)->GetWorld() : nullptr;
-
-		if (!World)
-		{			
-			FSoftObjectPath MapObjectPath = FSoftObjectPath(Value.ObjectPath.GetAssetPathName(), FString());
-
-			if (UObject* MapObject = MapObjectPath.ResolveObject())
-			{
-				World = Cast<UWorld>(MapObject);
-			}
-		}
-
-		if (World && World->IsPartitionedWorld())
-		{
-			bDisplayBrowse = false;
-		}
-	}
-
-	if( bDisplayBrowse )
+	if( InArgs._DisplayBrowse )
 	{
 		ButtonBox->AddSlot()
 		.Padding( 2.0f, 0.0f )
@@ -636,7 +625,7 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 
 	if( bIsActor )
 	{
-		TSharedRef<SWidget> ActorPicker = PropertyCustomizationHelpers::MakeInteractiveActorPicker( FOnGetAllowedClasses::CreateSP(this, &SPropertyEditorAsset::OnGetAllowedClasses), FOnShouldFilterActor(), FOnActorSelected::CreateSP( this, &SPropertyEditorAsset::OnActorSelected ) );
+		TSharedRef<SWidget> ActorPicker = PropertyCustomizationHelpers::MakeInteractiveActorPicker( FOnGetAllowedClasses::CreateSP(this, &SPropertyEditorAsset::OnGetAllowedClasses), FOnShouldFilterActor::CreateSP(this, &SPropertyEditorAsset::IsFilteredActor), FOnActorSelected::CreateSP(this, &SPropertyEditorAsset::OnActorSelected));
 		ActorPicker->SetEnabled( IsEnabledAttribute );
 
 		ButtonBox->AddSlot()
@@ -679,11 +668,11 @@ const FSlateBrush* SPropertyEditorAsset::GetStatusIcon() const
 
 	if (State == EActorReferenceState::Unknown)
 	{
-		return FEditorStyle::GetBrush("Icons.Warning");
+		return FAppStyle::GetBrush("Icons.Warning");
 	}
 	else if (State == EActorReferenceState::Error)
 	{
-		return FEditorStyle::GetBrush("Icons.Error");
+		return FAppStyle::GetBrush("Icons.Error");
 	}
 
 	return &EmptyBrush;
@@ -713,7 +702,7 @@ SPropertyEditorAsset::EActorReferenceState SPropertyEditorAsset::GetActorReferen
 		else
 		{
 			// Get a path pointing to the owning map
-			FSoftObjectPath MapObjectPath = FSoftObjectPath(Value.ObjectPath.GetAssetPathName(), FString());
+			FSoftObjectPath MapObjectPath = Value.ObjectPath.GetWithoutSubPath();
 
 			if (UObject* MapObject = MapObjectPath.ResolveObject())
 			{
@@ -820,6 +809,10 @@ void SPropertyEditorAsset::OnMenuOpenChanged(bool bOpen)
 bool SPropertyEditorAsset::IsFilteredActor( const AActor* const Actor ) const
 {
 	bool IsAllowed = Actor != nullptr && Actor->IsA(ObjectClass) && !Actor->IsChildActor() && IsClassAllowed(Actor->GetClass());
+	if (IsAllowed && OnShouldFilterActor.IsBound())
+	{
+		IsAllowed = OnShouldFilterActor.Execute(Actor);
+	}
 	return IsAllowed;
 }
 
@@ -912,7 +905,7 @@ FText SPropertyEditorAsset::OnGetToolTip() const
 			}
 			else if (State == EActorReferenceState::Exists)
 			{
-				ToolTipText = FText::Format(LOCTEXT("ExistsActorReference", "Unloaded reference to Actor ID '{Actor}', use World Partition editor to load its corresponding cells"), Args);
+				ToolTipText = FText::Format(LOCTEXT("ExistsActorReference", "Unloaded reference to Actor ID '{Actor}', use Browse to pin actor"), Args);
 			}
 			else if (State == EActorReferenceState::Unknown)
 			{
@@ -999,12 +992,12 @@ FPropertyAccess::Result SPropertyEditorAsset::GetValue( FObjectOrAssetData& OutV
 
 				if (SoftObjectPath.IsAsset())
 				{
-					if (!CachedAssetData.IsValid() || CachedAssetData.ObjectPath.ToString() != CurrentObjectPath)
+					if (!CachedAssetData.IsValid() || CachedAssetData.GetObjectPathString() != CurrentObjectPath)
 					{
 						static FName AssetRegistryName("AssetRegistry");
 
 						FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(AssetRegistryName);
-						CachedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*CurrentObjectPath);
+						CachedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(CurrentObjectPath));
 					}
 
 					Result = FPropertyAccess::Success;
@@ -1076,13 +1069,13 @@ FPropertyAccess::Result SPropertyEditorAsset::GetValue( FObjectOrAssetData& OutV
 
 			if (SoftObjectPath.IsAsset())
 			{
-				const FString CurrentObjectPath = SoftObjectPath.ToString();
-				if (CurrentObjectPath != TEXT("None") && (!CachedAssetData.IsValid() || CachedAssetData.ObjectPath.ToString() != CurrentObjectPath))
+				const FSoftObjectPath CurrentObjectPath = SoftObjectPath;
+				if (CurrentObjectPath.IsValid() && (!CachedAssetData.IsValid() || CachedAssetData.GetSoftObjectPath() != CurrentObjectPath))
 				{
 					static FName AssetRegistryName("AssetRegistry");
 
 					FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(AssetRegistryName);
-					CachedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*CurrentObjectPath);
+					CachedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(CurrentObjectPath);
 				}
 
 				OutValue = FObjectOrAssetData(CachedAssetData);
@@ -1179,10 +1172,38 @@ void SPropertyEditorAsset::OnBrowse()
 	FObjectOrAssetData Value;
 	GetValue( Value );
 
-	if(PropertyEditor.IsValid() && Value.Object)
+	if (bIsActor)
 	{
-		// This code only works on loaded objects
-		FPropertyEditor::SyncToObjectsInNode(PropertyEditor->GetPropertyNode());		
+		TSharedPtr<IPropertyHandle> PropertyHandleToUse = GetMostSpecificPropertyHandle();
+		if (PropertyHandleToUse)
+		{
+			// Try to resolve a potentially unloaded object
+			if (!Value.Object)
+			{
+				FSoftObjectPath MapObjectPath = Value.ObjectPath.GetWithoutSubPath();
+
+				if (UObject* MapObject = MapObjectPath.ResolveObject())
+				{
+					if (UWorld* World = Cast<UWorld>(MapObject); World && World->IsPartitionedWorld())
+					{
+						if (const FWorldPartitionActorDesc* ActorDesc = World->GetWorldPartition()->GetActorDesc(Value.ObjectPath))
+						{
+							World->GetWorldPartition()->PinActors({ ActorDesc->GetGuid() });
+							GetValue(Value);
+						}
+					}
+				}
+			}
+
+			if (Value.Object)
+			{
+				// This code only works on loaded objects
+				if (TSharedPtr<FPropertyNode> PropertyNodeToSync = PropertyHandleToUse->GetPropertyNode())
+				{
+					FPropertyEditor::SyncToObjectsInNode(PropertyNodeToSync);
+				}
+			}
+		}
 	}
 	else
 	{
@@ -1203,7 +1224,7 @@ FText SPropertyEditorAsset::GetOnBrowseToolTip() const
 		Args.Add(TEXT("Asset"), FText::AsCultureInvariant(Value.Object->GetName()));
 		if (bIsActor)
 		{
-			return FText::Format(LOCTEXT( "BrowseToAssetInViewport", "Select '{Asset}' in the viewport"), Args);
+			return FText::Format(LOCTEXT( "SelectSpecificActorInViewport", "Select '{Asset}' in the viewport"), Args);
 		}
 		else
 		{
@@ -1211,7 +1232,14 @@ FText SPropertyEditorAsset::GetOnBrowseToolTip() const
 		}
 	}
 	
-	return LOCTEXT( "BrowseToAssetInContentBrowser", "Browse to Asset in Content Browser");
+	if (bIsActor)
+	{
+		return LOCTEXT("SelectActorInViewport", "Select Actor in the viewport");
+	}
+	else
+	{
+		return LOCTEXT("BrowseToAssetInContentBrowser", "Browse to Asset in Content Browser");
+	}
 }
 
 void SPropertyEditorAsset::OnUse()
@@ -1360,7 +1388,7 @@ bool SPropertyEditorAsset::CanPaste()
 		else
 		{
 			FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( *PossibleObjectPath ).IsValid();
+			bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( FSoftObjectPath(PossibleObjectPath) ).IsValid();
 		}
 	}
 
@@ -1390,6 +1418,12 @@ bool SPropertyEditorAsset::CanSetBasedOnCustomClasses( const FAssetData& InAsset
 
 bool SPropertyEditorAsset::IsClassAllowed(const UClass* InClass) const
 {
+	if (!InClass)
+	{
+		// A null class will not match any filters. If we have an allow list, this means failure, otherwise it means success.
+		return AllowedClassFilters.Num() == 0;
+	}
+
 	bool bClassAllowed = true;
 	if (AllowedClassFilters.Num() > 0)
 	{

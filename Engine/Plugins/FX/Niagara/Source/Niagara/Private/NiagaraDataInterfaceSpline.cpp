@@ -3,10 +3,13 @@
 #include "NiagaraDataInterfaceSpline.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraComponent.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
 #include "Internationalization/Internationalization.h"
 #include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceSpline)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceSpline"
 
@@ -24,7 +27,23 @@ struct FNiagaraSplineDIFunctionVersion
 
 namespace NDISplineLocal
 {
-	static const TCHAR*		TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceSplineTemplate.ush");
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(FMatrix44f,	SplineTransform)
+		SHADER_PARAMETER(FMatrix44f,	SplineTransformRotationMat)
+		SHADER_PARAMETER(FMatrix44f,	SplineTransformInverseTranspose)
+		SHADER_PARAMETER(FQuat4f,		SplineTransformRotation)
+		SHADER_PARAMETER(FVector3f,		DefaultUpVector)
+		SHADER_PARAMETER(float,			SplineLength)
+		SHADER_PARAMETER(float,			SplineDistanceStep)
+		SHADER_PARAMETER(float,			InvSplineDistanceStep)
+		SHADER_PARAMETER(int,			MaxIndex)
+
+		SHADER_PARAMETER_SRV(Buffer<float4>, SplinePositionsLUT)
+		SHADER_PARAMETER_SRV(Buffer<float4>, SplineScalesLUT)
+		SHADER_PARAMETER_SRV(Buffer<float4>, SplineRotationsLUT)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static const TCHAR* TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceSplineTemplate.ush");
 
 	static const FName SampleSplinePositionByUnitDistanceName("SampleSplinePositionByUnitDistance");
 	static const FName SampleSplinePositionByUnitDistanceWSName("SampleSplinePositionByUnitDistanceWS");
@@ -44,8 +63,9 @@ namespace NDISplineLocal
 	static const FName SampleSplineTangentByUnitDistanceName("SampleSplineTangentByUnitDistance");
 	static const FName SampleSplineTangentByUnitDistanceWSName("SampleSplineTangentByUnitDistanceWS");
 
-
 	static const FName FindClosestUnitDistanceFromPositionWSName("FindClosestUnitDistanceFromPositionWS");
+
+	static const FName GetSplineLengthName("GetSplineLength");
 
 	/** Temporary solution for exposing the transform of a mesh. Ideally this would be done by allowing interfaces to add to the uniform set for a simulation. */
 	static const FName GetSplineLocalToWorldName("GetSplineLocalToWorld");
@@ -88,188 +108,134 @@ void UNiagaraDataInterfaceSpline::PostInitProperties()
 
 void UNiagaraDataInterfaceSpline::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
 {
+	FNiagaraFunctionSignature DefaultSig;
+	DefaultSig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
+	DefaultSig.bMemberFunction = true;
+	DefaultSig.bRequiresContext = false;
+	DefaultSig.SetFunctionVersion(FNiagaraSplineDIFunctionVersion::LatestVersion);
+
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplinePositionByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplinePositionByUnitDistance", "Sample the spline Position where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplinePositionByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Position")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplinePositionByUnitDistanceWS", "Sample the spline Position where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineRotationByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetQuatDef(), TEXT("Rotation")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineRotationByUnitDistance", "Sample the spline Rotation where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineRotationByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetQuatDef(), TEXT("Rotation")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineRotationByUnitDistanceWS", "Sample the spline Rotation where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineDirectionByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Direction")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineDirectionByUnitDistance", "Sample the spline direction vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineDirectionByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Direction")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineDirectionByUnitDistanceWS", "Sample the spline direction vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineUpVectorByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("UpVector")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineUpVectorByUnitDistance", "Sample the spline up vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineUpVectorByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
-		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineUpVectorByUnitDistanceWS", "Sample the spline up vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("UpVector")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
-		OutFunctions.Add(Sig);
+		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineUpVectorByUnitDistanceWS", "Sample the spline up vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineRightVectorByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("RightVector")));
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineRightVectorByUnitDistance", "Sample the spline right vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("RightVector")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineRightVectorByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
-		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineRightVectorByUnitDistanceWS", "Sample the spline right vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("RightVector")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
-		OutFunctions.Add(Sig);
+		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineRightVectorByUnitDistanceWS", "Sample the spline right vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineTangentByUnitDistanceName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Tangent")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineTangentVectorByUnitDistance", "Sample the spline tangent vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the local space of the referenced USplineComponent."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::SampleSplineTangentByUnitDistanceWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Tangent")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_SampleSplineTangentVectorByUnitDistanceWS", "Sample the spline tangent vector where U is a 0 to 1 value representing the start and normalized length of the spline.\nThis is in the world space of the level."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::GetSplineLocalToWorldName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Transform")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_GetSplineLocalToWorld", "Get the transform from the USplineComponent's local space to world space."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::GetSplineLocalToWorldInverseTransposedName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Transform")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_GetSplineLocalToWorldInverseTransposed", "Get the transform from the world space to the USplineComponent's local space."));
-		OutFunctions.Add(Sig);
 	}
 
 	{
-		FNiagaraFunctionSignature Sig;
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
 		Sig.Name = NDISplineLocal::FindClosestUnitDistanceFromPositionWSName;
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Spline")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("PositionWS")));
-
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("U")));
-		Sig.bMemberFunction = true;
-		Sig.bRequiresContext = false;
 		Sig.SetDescription(LOCTEXT("DataInterfaceSpline_FindClosestUnitDistanceFromPositionWS", "Given a world space position, find the closest value 'U' on the USplineComponent to that point."));
-		OutFunctions.Add(Sig);
 	}
 
-	for (FNiagaraFunctionSignature& FunctionSignature : OutFunctions)
 	{
-		FunctionSignature.SetFunctionVersion(FNiagaraSplineDIFunctionVersion::LatestVersion);
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(DefaultSig);
+		Sig.Name = NDISplineLocal::GetSplineLengthName;
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Length")));
 	}
 }
 
@@ -377,8 +343,11 @@ void UNiagaraDataInterfaceSpline::GetVMExternalFunction(const FVMExternalFunctio
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 16);
 		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceSpline::GetLocalToWorldInverseTransposed);
 	}
-
-	//check(0);
+	else if (BindingInfo.Name == NDISplineLocal::GetSplineLengthName)
+	{
+		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
+		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceSpline::VMGetSplineLength);
+	}
 }
 
 bool UNiagaraDataInterfaceSpline::CopyToInternal(UNiagaraDataInterface* Destination) const
@@ -427,23 +396,7 @@ void UNiagaraDataInterfaceSpline::GetCommonHLSL(FString& OutHLSL)
 void UNiagaraDataInterfaceSpline::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	const TMap<FString, FStringFormatArg> TemplateArgs = {
-		{TEXT("ParameterHLSLSymbol"), ParamInfo.DataInterfaceHLSLSymbol},
-				
-		{TEXT("SplineTransform"), TEXT("SplineTransform_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineTransformRotationMat"), TEXT("SplineTransformRotationMat_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineTransformInverseTranspose"), TEXT("SplineTransformInverseTranspose_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineTransformRotation"), TEXT("SplineTransformRotation_") + ParamInfo.DataInterfaceHLSLSymbol},
-				
-		{TEXT("DefaultUpVector"), TEXT("DefaultUpVector_") + ParamInfo.DataInterfaceHLSLSymbol},		
-				
-		{TEXT("SplineLength"), TEXT("SplineLength_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineDistanceStep"), TEXT("SplineDistanceStep_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("InvSplineDistanceStep"), TEXT("InvSplineDistanceStep_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("MaxIndex"), TEXT("MaxIndex_") + ParamInfo.DataInterfaceHLSLSymbol},
-						
-		{TEXT("SplinePositionsLUT"), TEXT("SplinePositionsLUT_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineScalesLUT"), TEXT("SplineScalesLUT_") + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SplineRotationsLUT"), TEXT("SplineRotationsLUT_") + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("ParameterName"), ParamInfo.DataInterfaceHLSLSymbol},
 	};
 	
 	FString TemplateFile;
@@ -454,22 +407,27 @@ void UNiagaraDataInterfaceSpline::GetParameterDefinitionHLSL(const FNiagaraDataI
 bool UNiagaraDataInterfaceSpline::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	using namespace NDISplineLocal;	
-	const FName& DefinitionName = FunctionInfo.DefinitionName;
-	return DefinitionName == SampleSplinePositionByUnitDistanceName || 
-		DefinitionName == SampleSplinePositionByUnitDistanceWSName ||
-		DefinitionName == SampleSplineRotationByUnitDistanceName ||
-		DefinitionName == SampleSplineRotationByUnitDistanceWSName ||
-		DefinitionName == SampleSplineDirectionByUnitDistanceName ||
-		DefinitionName == SampleSplineDirectionByUnitDistanceWSName ||
-		DefinitionName == SampleSplineUpVectorByUnitDistanceName ||
-		DefinitionName == SampleSplineUpVectorByUnitDistanceWSName ||
-		DefinitionName == SampleSplineRightVectorByUnitDistanceName ||
-		DefinitionName == SampleSplineRightVectorByUnitDistanceWSName ||
-		DefinitionName == SampleSplineTangentByUnitDistanceName ||
-		DefinitionName == SampleSplineTangentByUnitDistanceWSName ||
-		DefinitionName == GetSplineLocalToWorldName ||
-		DefinitionName == GetSplineLocalToWorldInverseTransposedName ||
-		DefinitionName == FindClosestUnitDistanceFromPositionWSName;
+	static const TSet<FName> ValidGpuFunctions =
+	{
+		SampleSplinePositionByUnitDistanceName,
+		SampleSplinePositionByUnitDistanceWSName,
+		SampleSplineRotationByUnitDistanceName,
+		SampleSplineRotationByUnitDistanceWSName,
+		SampleSplineDirectionByUnitDistanceName,
+		SampleSplineDirectionByUnitDistanceWSName,
+		SampleSplineUpVectorByUnitDistanceName,
+		SampleSplineUpVectorByUnitDistanceWSName,
+		SampleSplineRightVectorByUnitDistanceName,
+		SampleSplineRightVectorByUnitDistanceWSName,
+		SampleSplineTangentByUnitDistanceName,
+		SampleSplineTangentByUnitDistanceWSName,
+		GetSplineLocalToWorldName,
+		GetSplineLocalToWorldInverseTransposedName,
+		FindClosestUnitDistanceFromPositionWSName,
+		GetSplineLengthName
+	};
+
+	return ValidGpuFunctions.Contains(FunctionInfo.DefinitionName);
 }
 
 bool UNiagaraDataInterfaceSpline::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
@@ -477,9 +435,51 @@ bool UNiagaraDataInterfaceSpline::AppendCompileHash(FNiagaraCompileHashVisitor* 
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
 	FSHAHash Hash = GetShaderFileHash(NDISplineLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
 	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceExportTemplateHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderParameters<NDISplineLocal::FShaderParameters>();
 	return bSuccess;
 }
 #endif
+
+void UNiagaraDataInterfaceSpline::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<NDISplineLocal::FShaderParameters>();
+}
+
+void UNiagaraDataInterfaceSpline::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	FNiagaraDataInterfaceProxySpline& DIProxy = Context.GetProxy<FNiagaraDataInterfaceProxySpline>();
+	NDISplineLocal::FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<NDISplineLocal::FShaderParameters>();
+	if (FNDISpline_InstanceData_RenderThread* InstanceData_RT = DIProxy.SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()))
+	{
+		ShaderParameters->SplineTransform					= InstanceData_RT->SplineTransform;
+		ShaderParameters->SplineTransformRotationMat		= InstanceData_RT->SplineTransformRotationMat;
+		ShaderParameters->SplineTransformInverseTranspose	= InstanceData_RT->SplineTransformInverseTranspose;
+		ShaderParameters->SplineTransformRotation			= InstanceData_RT->SplineTransformRotation;
+		ShaderParameters->DefaultUpVector					= InstanceData_RT->DefaultUpVector;
+		ShaderParameters->SplineLength						= InstanceData_RT->SplineLength;
+		ShaderParameters->SplineDistanceStep				= InstanceData_RT->SplineDistanceStep;
+		ShaderParameters->InvSplineDistanceStep				= InstanceData_RT->InvSplineDistanceStep;
+		ShaderParameters->MaxIndex							= InstanceData_RT->MaxIndex;
+		ShaderParameters->SplinePositionsLUT				= InstanceData_RT->SplinePositionsLUT.SRV;
+		ShaderParameters->SplineScalesLUT					= InstanceData_RT->SplineScalesLUT.SRV;
+		ShaderParameters->SplineRotationsLUT				= InstanceData_RT->SplineRotationsLUT.SRV;
+	}
+	else
+	{
+		ShaderParameters->SplineTransform					= FMatrix44f::Identity;
+		ShaderParameters->SplineTransformRotationMat		= FMatrix44f::Identity;
+		ShaderParameters->SplineTransformInverseTranspose	= FMatrix44f::Identity;
+		ShaderParameters->SplineTransformRotation			= FQuat4f::Identity;
+		ShaderParameters->DefaultUpVector					= FVector3f::UnitZ();
+		ShaderParameters->SplineLength						= 0.0f;
+		ShaderParameters->SplineDistanceStep				= 0.0f;
+		ShaderParameters->InvSplineDistanceStep				= 0.0f;
+		ShaderParameters->MaxIndex							= 0;
+		ShaderParameters->SplinePositionsLUT				= FNiagaraRenderer::GetDummyFloat4Buffer();
+		ShaderParameters->SplineScalesLUT					= FNiagaraRenderer::GetDummyFloat4Buffer();
+		ShaderParameters->SplineRotationsLUT				= FNiagaraRenderer::GetDummyFloat4Buffer();
+	}
+}
 
 bool UNiagaraDataInterfaceSpline::Equals(const UNiagaraDataInterface* Other) const
 {
@@ -713,77 +713,6 @@ bool UNiagaraDataInterfaceSpline::PerInstanceTick(void* PerInstanceData, FNiagar
 	//Any situations requiring a rebind?
 	return false;
 }
-
-struct FNiagaraDataInterfaceParametersCS_Spline : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Spline, NonVirtual);
-
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{
-		SplineTransform.Bind(ParameterMap, *(TEXT("SplineTransform_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineTransformRotationMat.Bind(ParameterMap, *(TEXT("SplineTransformRotationMat_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineTransformInverseTranspose.Bind(ParameterMap, *(TEXT("SplineTransformInverseTranspose_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineTransformRotation.Bind(ParameterMap, *(TEXT("SplineTransformRotation_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	
-		DefaultUpVector.Bind(ParameterMap, *(TEXT("DefaultUpVector_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	
-		SplineLength.Bind(ParameterMap, *(TEXT("SplineLength_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineDistanceStep.Bind(ParameterMap, *(TEXT("SplineDistanceStep_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		InvSplineDistanceStep.Bind(ParameterMap, *(TEXT("InvSplineDistanceStep_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		MaxIndex.Bind(ParameterMap, *(TEXT("MaxIndex_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	
-		SplinePositionsLUT.Bind(ParameterMap, *(TEXT("SplinePositionsLUT_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineScalesLUT.Bind(ParameterMap, *(TEXT("SplineScalesLUT_") + ParameterInfo.DataInterfaceHLSLSymbol));
-		SplineRotationsLUT.Bind(ParameterMap, *(TEXT("SplineRotationsLUT_") + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-	
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		FNiagaraDataInterfaceProxySpline* RT_Proxy = (FNiagaraDataInterfaceProxySpline*)Context.DataInterface;
-
-	
-		if (FNDISpline_InstanceData_RenderThread* Instance_RT_Proxy = RT_Proxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID))
-		{
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineTransform, Instance_RT_Proxy->SplineTransform);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineTransformRotationMat, Instance_RT_Proxy->SplineTransformRotationMat);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineTransformInverseTranspose, Instance_RT_Proxy->SplineTransformInverseTranspose);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineTransformRotation, Instance_RT_Proxy->SplineTransformRotation);
-	
-			SetShaderValue(RHICmdList, ComputeShaderRHI, DefaultUpVector, Instance_RT_Proxy->DefaultUpVector);
-	
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineLength, Instance_RT_Proxy->SplineLength);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, SplineDistanceStep, Instance_RT_Proxy->SplineDistanceStep);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, InvSplineDistanceStep, Instance_RT_Proxy->InvSplineDistanceStep);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, MaxIndex, Instance_RT_Proxy->MaxIndex);
-	
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, SplinePositionsLUT, Instance_RT_Proxy->SplinePositionsLUT.SRV);
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, SplineScalesLUT, Instance_RT_Proxy->SplineScalesLUT.SRV);
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, SplineRotationsLUT, Instance_RT_Proxy->SplineRotationsLUT.SRV);
-		}
-	}
-
-	LAYOUT_FIELD(FShaderParameter, SplineTransform);
-	LAYOUT_FIELD(FShaderParameter, SplineTransformRotationMat);
-	LAYOUT_FIELD(FShaderParameter, SplineTransformInverseTranspose);
-	LAYOUT_FIELD(FShaderParameter, SplineTransformRotation);
-	
-	LAYOUT_FIELD(FShaderParameter, DefaultUpVector);
-	
-	LAYOUT_FIELD(FShaderParameter, SplineLength);
-	LAYOUT_FIELD(FShaderParameter, SplineDistanceStep);
-	LAYOUT_FIELD(FShaderParameter, InvSplineDistanceStep);
-	LAYOUT_FIELD(FShaderParameter, MaxIndex);
-	
-	LAYOUT_FIELD(FShaderResourceParameter, SplinePositionsLUT);
-	LAYOUT_FIELD(FShaderResourceParameter, SplineScalesLUT);
-	LAYOUT_FIELD(FShaderResourceParameter, SplineRotationsLUT);
-};
-
-IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Spline);
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceSpline, FNiagaraDataInterfaceParametersCS_Spline);
 
 void FNiagaraDataInterfaceSplineLUT::BuildLUT(const FSplineCurves& SplineCurves, int32 NumSteps)
 {
@@ -1489,4 +1418,22 @@ void UNiagaraDataInterfaceSpline::GetLocalToWorldInverseTransposed(FVectorVMExte
 	WriteTransform(InstData->TransformInverseTransposed, Context);
 }
 
+void UNiagaraDataInterfaceSpline::VMGetSplineLength(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<FNDISpline_InstanceData> InstData(Context);
+	FNDIOutputParam<float> OutLength(Context);
+
+	float SplineLength = 0.0f;
+	if (InstData->IsValid())
+	{
+		SplineLength = bUseLUT ? InstData->GetSplineLength<TIntegralConstant<bool, true>>() : InstData->GetSplineLength<TIntegralConstant<bool, false>>();
+	}
+
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		OutLength.SetAndAdvance(SplineLength);
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
+

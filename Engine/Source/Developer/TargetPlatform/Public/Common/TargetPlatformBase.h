@@ -2,14 +2,36 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
 #include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Internationalization/Text.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "PlatformInfo.h"
+#include "Templates/PimplPtr.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class IDeviceManagerCustomPlatformWidgetCreator;
+class IPlugin;
+struct FDataDrivenPlatformInfo;
+
+// Forward declare.
+namespace Audio 
+{
+	class FAudioFormatSettings;
+}
 
 /**
  * Base class for target platforms.
@@ -57,6 +79,7 @@ public:
 
 	TARGETPLATFORM_API virtual bool UsesDBuffer() const override;
 
+	UE_DEPRECATED(5.1, "Use IsUsingBasePassVelocity(EShaderPlatform Platform) in renderutils that will uses FShaderPlatformCachedIniValue to retrieve the cvar value per platform.")
 	TARGETPLATFORM_API virtual bool UsesBasePassVelocity() const override;
 
     TARGETPLATFORM_API virtual bool VelocityEncodeDepth() const override;
@@ -77,6 +100,12 @@ public:
 
 	TARGETPLATFORM_API virtual bool UsesMobileAmbientOcclusion() const override;
 
+	TARGETPLATFORM_API virtual bool UsesASTCHDR() const override;
+
+	TARGETPLATFORM_API virtual void GetRayTracingShaderFormats(TArray<FName>& OutFormats) const override;
+
+	TARGETPLATFORM_API virtual void GetPlatformSpecificProjectAnalytics( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray ) const override;
+
 #if WITH_ENGINE
 	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override
 	{
@@ -86,14 +115,6 @@ public:
 	virtual FName FinalizeVirtualTextureLayerFormat(FName Format) const override
 	{
 		return Format;
-	}
-
-	virtual FName GetVirtualTextureLayerFormat(
-		int32 SourceFormat,
-		bool bAllowCompression, bool bNoAlpha,
-		bool bSupportDX11TextureFormats, int32 Settings) const override
-	{
-		return FName();
 	}
 
 	virtual bool SupportsLQCompressionTextureFormat() const override { return true; };
@@ -178,10 +199,6 @@ public:
 		// do nothing in the base class
 	}
 
-	virtual void RefreshSettings() override
-	{
-	}
-
 	virtual int32 GetPlatformOrdinal() const override
 	{
 		return PlatformOrdinal;
@@ -230,10 +247,12 @@ public:
 			OutModuleNames.Add(*TextureCompressionFormat);
 		}
 	}
+	
+	TARGETPLATFORM_API virtual FName GetWaveFormat(const class USoundWave* Wave) const override;
+	
+	TARGETPLATFORM_API virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override;
 
-	virtual void GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const override
-	{
-	}
+	TARGETPLATFORM_API virtual void GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const override;
 
 #endif
 
@@ -256,19 +275,24 @@ public:
 
 protected:
 
-	FTargetPlatformBase(const PlatformInfo::FTargetPlatformInfo *const InPlatformInfo)
-		: PlatformInfo(InPlatformInfo)
-	{
-		checkf(PlatformInfo, TEXT("Null PlatformInfo was passed to FTargetPlatformBase. Check the static IsUsable function before creating this object. See FWindowsTargetPlatformModule::GetTargetPlatform()"));
-
-		PlatformOrdinal = AssignPlatformOrdinal(*this);
-	}
+	TARGETPLATFORM_API FTargetPlatformBase(const PlatformInfo::FTargetPlatformInfo *const InPlatformInfo);
 
 	/** Information about this platform */
 	const PlatformInfo::FTargetPlatformInfo *PlatformInfo;
 	int32 PlatformOrdinal;
+	
+	TARGETPLATFORM_API const Audio::FAudioFormatSettings& GetAudioFormatSettings() const;
+
+	/** Analytics helper functions */
+	TARGETPLATFORM_API static void AppendAnalyticsEventConfigBool( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride = nullptr );
+	TARGETPLATFORM_API static void AppendAnalyticsEventConfigInt( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride = nullptr );
+	TARGETPLATFORM_API static void AppendAnalyticsEventConfigFloat( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride = nullptr );
+	TARGETPLATFORM_API static void AppendAnalyticsEventConfigString( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride = nullptr );
+	TARGETPLATFORM_API static void AppendAnalyticsEventConfigArray( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride = nullptr );
 
 private:
+	TPimplPtr<Audio::FAudioFormatSettings> AudioFormatSettings;
+	
 	bool HasDefaultBuildSettings() const;
 	static bool DoProjectSettingsMatchDefault(const FString& InPlatformName, const FString& InSection, const TArray<FString>* InBoolKeys, const TArray<FString>* InIntKeys, const TArray<FString>* InStringKeys);
 };
@@ -369,6 +393,11 @@ public:
 		return TPlatformProperties::RequiresCookedData();
 	}
 
+	virtual bool RequiresOriginalReleaseVersionForPatch() const override
+	{
+		return TPlatformProperties::RequiresOriginalReleaseVersionForPatch();
+	}
+
 	virtual bool HasSecurePackageFormat() const override
 	{
 		return TPlatformProperties::HasSecurePackageFormat();
@@ -438,8 +467,6 @@ public:
 			return TPlatformProperties::SupportsTextureStreaming();
 		case ETargetPlatformFeatures::MeshLODStreaming:
 			return TPlatformProperties::SupportsMeshLODStreaming();
-		case ETargetPlatformFeatures::LandscapeMeshLODStreaming:
-			return false;
 
 		case ETargetPlatformFeatures::MemoryMappedFiles:
 			return TPlatformProperties::SupportsMemoryMappedFiles();
@@ -484,6 +511,15 @@ public:
 	virtual int32 GetMemoryMappingAlignment() const override
 	{
 		return TPlatformProperties::GetMemoryMappingAlignment();
+	}
+
+	virtual bool UsesRayTracing() const override
+	{
+		if (TPlatformProperties::SupportsRayTracing())
+		{
+			return FTargetPlatformBase::UsesRayTracing();
+		}
+		return false;
 	}
 
 

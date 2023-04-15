@@ -91,34 +91,39 @@ void ULevelSnapshotsEditorData::BeginDestroy()
 void ULevelSnapshotsEditorData::CleanupAfterEditorClose()
 {
 	OnActiveSnapshotChanged.Clear();
-	OnEditedFiterChanged.Clear();
+	OnEditedFilterChanged.Clear();
 	OnUserDefinedFiltersChanged.Clear();
 
-	ActiveSnapshot.Reset();
-	EditedFilter.Reset();
+	ActiveSnapshot = nullptr;
+	EditedFilter = nullptr;
 
 	FilterResults->CleanReferences();
 }
 
-void ULevelSnapshotsEditorData::SetActiveSnapshot(const TOptional<ULevelSnapshot*>& NewActiveSnapshot)
+void ULevelSnapshotsEditorData::SetActiveSnapshot(ULevelSnapshot* NewActiveSnapshot)
 {
 	SCOPED_SNAPSHOT_EDITOR_TRACE(SetActiveSnapshot);
+
+	if (bIsApplyingSnapshot)
+	{
+		return;
+	}
+
+	if (ActiveSnapshot)
+	{
+		ActiveSnapshot->OnPreApplySnapshot().RemoveAll(this);
+		ActiveSnapshot->OnPostApplySnapshot().RemoveAll(this);
+	}
 	
-	ActiveSnapshot = NewActiveSnapshot.Get(nullptr) ? TStrongObjectPtr<ULevelSnapshot>(NewActiveSnapshot.GetValue()) : TOptional<TStrongObjectPtr<ULevelSnapshot>>();
-	FilterResults->SetActiveLevelSnapshot(NewActiveSnapshot.Get(nullptr));
+	ActiveSnapshot = NewActiveSnapshot;
+	if (ActiveSnapshot)
+	{
+		ActiveSnapshot->OnPreApplySnapshot().AddUObject(this, &ULevelSnapshotsEditorData::OnPreApplySnapshot);
+		ActiveSnapshot->OnPostApplySnapshot().AddUObject(this, &ULevelSnapshotsEditorData::OnPostApplySnapshot);
+	}
+	
+	FilterResults->SetActiveLevelSnapshot(NewActiveSnapshot);
 	OnActiveSnapshotChanged.Broadcast(GetActiveSnapshot());
-}
-
-void ULevelSnapshotsEditorData::ClearActiveSnapshot()
-{
-	ActiveSnapshot.Reset();
-	FilterResults->SetActiveLevelSnapshot(nullptr);
-	OnActiveSnapshotChanged.Broadcast(TOptional<ULevelSnapshot*>(nullptr));
-}
-
-TOptional<ULevelSnapshot*> ULevelSnapshotsEditorData::GetActiveSnapshot() const
-{
-	return ActiveSnapshot.IsSet() ? TOptional<ULevelSnapshot*>(ActiveSnapshot->Get()) : TOptional<ULevelSnapshot*>();
 }
 
 UWorld* ULevelSnapshotsEditorData::GetEditorWorld()
@@ -135,20 +140,13 @@ UWorld* ULevelSnapshotsEditorData::GetEditorWorld()
 	return nullptr;
 }
 
-void ULevelSnapshotsEditorData::SetEditedFilter(const TOptional<UNegatableFilter*>& InFilter)
+void ULevelSnapshotsEditorData::SetEditedFilter(UNegatableFilter* InFilter)
 {
-	EditedFilter = InFilter.Get(nullptr) ? TStrongObjectPtr<UNegatableFilter>(InFilter.GetValue()) : TOptional<TStrongObjectPtr<UNegatableFilter>>();
-	OnEditedFiterChanged.Broadcast(GetEditedFilter());
-}
-
-TOptional<UNegatableFilter*> ULevelSnapshotsEditorData::GetEditedFilter() const
-{
-	return EditedFilter.IsSet() ? TOptional<UNegatableFilter*>(EditedFilter->Get()) : TOptional<UNegatableFilter*>();
-}
-
-bool ULevelSnapshotsEditorData::IsEditingFilter(UNegatableFilter* Filter) const
-{
-	return (Filter == nullptr && !EditedFilter.IsSet()) || (EditedFilter.IsSet() && Filter && Filter == EditedFilter->Get()); 
+	if (EditedFilter != InFilter)
+	{
+		EditedFilter = InFilter;
+		OnEditedFilterChanged.Broadcast(GetEditedFilter());
+	}
 }
 
 UFavoriteFilterContainer* ULevelSnapshotsEditorData::GetFavoriteFilters() const

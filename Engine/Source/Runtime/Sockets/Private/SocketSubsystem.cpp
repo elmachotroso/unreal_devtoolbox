@@ -90,7 +90,8 @@ static bool GetLocalHostAddrViaConnect(TSharedRef<FInternetAddr>& IO)
 	Addr.sin_port = 0x0100;
 	socklen_t AddrSize = sizeof(Addr);
 
-	int Socket = socket(AF_INET, SOCK_DGRAM, 0);
+	// The type returned by socket varies by platform.
+	auto Socket = socket(AF_INET, SOCK_DGRAM, 0);
 
 	if ( connect(Socket, (struct sockaddr*)&Addr, sizeof(Addr)) != 0 )
 	{
@@ -382,9 +383,13 @@ TArray<TSharedRef<FInternetAddr>> ISocketSubsystem::GetLocalBindAddresses()
 	if (BindableAddresses.ReturnCode == SE_NO_ERROR)
 	{
 		// Push in all the bindable addresses.
-		for (const auto& BindAddresses : BindableAddresses.Results)
+		for (const FAddressInfoResultData& BindAddresses : BindableAddresses.Results)
 		{
-			BindingAddresses.Add(BindAddresses.Address);
+			// GetAddressInfo can return both TCP and UDP bindings for the same address - which is redundant when returning only addresses
+			if (!BindingAddresses.ContainsByPredicate([&](const TSharedRef<FInternetAddr>& A) { return *A == *BindAddresses.Address; }))
+			{
+				BindingAddresses.Add(BindAddresses.Address);
+			}
 		}
 	}
 
@@ -488,7 +493,7 @@ TSharedRef<FInternetAddr> ISocketSubsystem::GetLocalBindAddr(FOutputDevice& Out)
 
 bool ISocketSubsystem::GetMultihomeAddress(TSharedRef<FInternetAddr>& Addr)
 {
-	TCHAR Home[256] = TEXT("");
+	TCHAR Home[256] = {};
 	if (FParse::Value(FCommandLine::Get(), TEXT("MULTIHOME="), Home, UE_ARRAY_COUNT(Home)))
 	{
 		TSharedPtr<FInternetAddr> MultiHomeQuery = GetAddressFromString(Home);

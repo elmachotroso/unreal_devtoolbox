@@ -1,16 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KismetPins/SGraphPinStructInstance.h"
-#include "Widgets/SBoxPanel.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailsViewArgs.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "IStructureDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/OutputDeviceNull.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "Modules/ModuleManager.h"
-#include "PropertyEditorModule.h"
-#include "EditorStyleSet.h"
-#include "Misc/OutputDeviceNull.h"
-#include "ScopedTransaction.h"
-#include "EdGraphSchema_K2.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FPropertyChangedEvent;
 
 #define LOCTEXT_NAMESPACE "SGraphPinStructInstance"
 
@@ -140,7 +166,7 @@ TSharedRef<SWidget> SGraphPinStructInstance::GetEditContent()
 		.MinDesiredWidth(350)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Visibility(this, &SGraphPin::GetDefaultValueVisibility)
 			[
 				StructureDetailsView->GetWidget().ToSharedRef()

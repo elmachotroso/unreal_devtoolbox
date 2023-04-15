@@ -6,8 +6,6 @@ public class Sockets : ModuleRules
 {
 	public Sockets(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Runtime/Sockets/Private");
-
 		PublicIncludePathModuleNames.Add("NetCommon");
 
 		PrivateDependencyModuleNames.AddRange(
@@ -17,5 +15,7 @@ public class Sockets : ModuleRules
 			});
 
 		PublicDefinitions.Add("SOCKETS_PACKAGE=1");
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 	}
 }

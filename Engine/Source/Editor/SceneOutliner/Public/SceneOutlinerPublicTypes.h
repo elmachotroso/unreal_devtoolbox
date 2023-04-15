@@ -13,82 +13,50 @@
 
 class FExtender;
 struct FToolMenuContext;
+class FCustomClassFilterData;
+class FFilterCategory;
+template<typename FilterType> class FFilterBase;
 
 DECLARE_DELEGATE_TwoParams(FSceneOutlinerModifyContextMenu, FName& /* MenuName */, FToolMenuContext& /* MenuContext */);
 
 /** A delegate used as a factory to defer mode creation in the outliner */
 DECLARE_DELEGATE_RetVal_OneParam(ISceneOutlinerMode*, FCreateSceneOutlinerMode, SSceneOutliner*);
 
+namespace SceneOutliner
+{
+	/** The type of item that the Outliner's Filter Bar operates on */
+	typedef const ISceneOutlinerTreeItem& FilterBarType;
+}
+
 /** Container for built in column types. Function-static so they are available without linking */
 struct FSceneOutlinerBuiltInColumnTypes
 {
-	/** The gutter column */
-	static const FName& Gutter()
-	{
-		static FName Gutter("Visibility"); // Renamed "Gutter" to "Visibility" so the purpose is more obvious in editor menus
-		return Gutter;
+	#define DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(ColumnID, ColumnName, ColumnKey, ColumnLocalizedTextLiteral) \
+	static FName& ColumnID() \
+	{ \
+		static FName ColumnID = ColumnName; \
+		return ColumnID; \
+	} \
+	static const FText& ColumnID##_Localized() \
+	{ \
+		static FText ColumnID##_Localized = LOCTEXT(ColumnKey, ColumnLocalizedTextLiteral); \
+		return ColumnID##_Localized; \
 	}
 
-	/** Localizable FText name for the Gutter Column (pass into FSceneOutlinerColumnInfo) */
-	static const FText& Gutter_Localized()
-	{
-		static FText Gutter_Localized = LOCTEXT("VisibilityColumnName", "Visibility");
-		return Gutter_Localized;
-	}
-
-	/** The item label column */
-	static const FName& Label()
-	{
-		static FName Label("Item Label");
-		return Label;
-	}
-
-	/** Localizable FText name for the Item Label Column (pass into FSceneOutlinerColumnInfo) */
-	static const FText& Label_Localized()
-	{
-		static FText Label_Localized = LOCTEXT("ItemLabelColumnName", "Item Label");
-		return Label_Localized;
-	}
-
-	/** Generic actor info column */
-	static FName& ActorInfo()
-	{
-		static FName ActorInfo("Type"); // Renamed "Actor Info" to "Type" since it has been refactored to only show type information
-		return ActorInfo;
-	}
-
-	/** Localizable FText name for the Type Column (pass into FSceneOutlinerColumnInfo) */
-	static const FText& ActorInfo_Localized()
-	{
-		static FText ActorInfo_Localized = LOCTEXT("TypeColumnName", "Type");
-		return ActorInfo_Localized;
-	}
-
-	static FName& SourceControl()
-	{
-		static FName SourceControl("Source Control");
-		return SourceControl;
-	}
-
-	/** Localizable FText name for the Type Column (pass into FSceneOutlinerColumnInfo) */
-	static const FText& SourceControl_Localized()
-	{
-		static FText SourceControl_Localized = LOCTEXT("SourceControlColumnName", "Source Control");
-		return SourceControl_Localized;
-	}
-
-	static FName& Pinned()
-	{
-		static FName Pinned("Pinned");
-		return Pinned;
-	}
-
-	/** Localizable FText name for the Type Column (pass into FSceneOutlinerColumnInfo) */
-	static const FText& Pinned_Localized()
-	{
-		static FText Pinned_Localized = LOCTEXT("PinnedColumnName", "Pinned");
-		return Pinned_Localized;
-	}
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Label, "Item Label", "ItemLabelColumnName", "Item Label");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Gutter, "Visibility", "VisibilityColumnName", "Visibility");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(ActorInfo, "Type", "TypeColumnName", "Type");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(SourceControl, "Source Control", "SourceControlColumnName", "Source Control");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Mobility, "Mobility", "SceneOutlinerMobilityColumn", "Mobility");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Level, "Level", "SceneOutlinerLevelColumn", "Level");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Layer, "Layer", "SceneOutlinerLayerColumn", "Layer");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(DataLayer, "Data Layer", "SceneOutlinerDataLayerColumn", "Data Layer");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(SubPackage, "Sub Package", "SceneOutlinerSubPackageColumn", "Sub Package");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Pinned, "Pinned", "SceneOutlinerPinnedColumn", "Pinned");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(IDName, "ID Name", "SceneOutlinerIDNameColumn", "ID Name");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(PackageShortName, "Package Short Name", "SceneOutlinerPackageShortNameColumn", "Package Short Name");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(UncachedLights, "Uncached Lights", "SceneOutlinerUncachedLightsColumn", "# Uncached Lights");
+	DEFINE_SCENEOUTLINER_BUILTIN_COLUMN_TYPE(Socket, "Socket", "SceneOutlinerSocketColumn", "Socket");
 };
 
 /** Visibility enum for scene outliner columns */
@@ -158,6 +126,32 @@ public:
 	void UseDefaultColumns();
 };
 
+
+/* Settings for the Filter Bar attached to the Scene Outliner. Can be specified through FSceneOutlinerInitializationOptions */
+struct FSceneOutlinerFilterBarOptions
+{
+	/** If true, the Scene Outliner has a filter bar attached to it */
+	bool bHasFilterBar = false;
+
+	/** These are the custom filters that the Scene Outliner will have. All active filters will be AND'd together to test
+	 *  against.
+	 *  @see FGenericFilter on how to create generic filters
+	 */
+	TArray<TSharedRef<FFilterBase<SceneOutliner::FilterBarType>>> CustomFilters;
+
+	/** These are the asset type filters that the Scene Outliner will have. All active filters will be OR'd together to
+	 *  test against.
+	 *  Can be created using IAssetTypeActions or UClass (@see constructor)
+	 */
+	TArray<TSharedRef<FCustomClassFilterData>> CustomClassFilters;
+
+	/** If true, share this Outliner filter bar's custom text filters with the level editor outliners */
+	bool bUseSharedSettings = false;
+
+	/** The category to expand in the filter menu (There must be at least one filter attached to the category) */
+	TSharedPtr<FFilterCategory> CategoryToExpand;
+};
+
 /**
 	* Settings for the Scene Outliner set by the programmer before spawning an instance of the widget.  This
 	* is used to modify the outliner's behavior in various ways, such as filtering in or out specific classes
@@ -184,6 +178,9 @@ struct FSceneOutlinerInitializationOptions : FSharedSceneOutlinerData
 
 	/** Identifier for this outliner; NAME_None if this view is anonymous (Needs to be specified to save visibility of columns in EditorConfig)*/
 	FName OutlinerIdentifier;
+
+	/** Init options related to the filter bar */
+	FSceneOutlinerFilterBarOptions FilterBarOptions;
 
 public:
 

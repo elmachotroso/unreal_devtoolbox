@@ -13,7 +13,14 @@
 namespace CADLibrary
 {
 
-uint32 FTechSoftInterface::InvalidScriptIndex = -1;
+#ifdef USE_TECHSOFT_SDK
+const uint32 FTechSoftDefaultValue::Material = A3D_DEFAULT_MATERIAL_INDEX;
+const uint32 FTechSoftDefaultValue::Picture = A3D_DEFAULT_PICTURE_INDEX;
+const uint32 FTechSoftDefaultValue::RgbColor = A3D_DEFAULT_COLOR_INDEX;
+const uint32 FTechSoftDefaultValue::Style = A3D_DEFAULT_STYLE_INDEX;
+const uint32 FTechSoftDefaultValue::TextureApplication = A3D_DEFAULT_TEXTURE_APPLICATION_INDEX;
+const uint32 FTechSoftDefaultValue::TextureDefinition = A3D_DEFAULT_TEXTURE_DEFINITION_INDEX;
+#endif
 
 FTechSoftInterface& FTechSoftInterface::Get()
 {
@@ -59,7 +66,9 @@ bool FTechSoftInterface::InitializeKernel(const TCHAR* InEnginePluginsPath)
 			}
 		}
 	}
+#ifndef CADKERNEL_DEV
 	UE_LOG(LogCADInterfaces, Warning, TEXT("Failed to load required library in %s. Plug-in will not be functional."), *TechSoftDllPath);
+#endif
 
 #endif
 	return false;
@@ -455,7 +464,8 @@ A3DStatus SewModel(A3DAsmModelFile* ModelPtr, double ToleranceInCM, A3DSewOption
 
 A3DStatus SewBReps(A3DRiBrepModel** BRepsToSew, uint32 const BRepCount, double ToleranceInCM, double FileUnit, A3DSewOptionsData const* SewOptions, A3DRiBrepModel*** OutNewBReps, uint32& OutNewBRepCount)
 {
-	const double ToleranceInFileUnit = ToleranceInCM * 10. / FileUnit; 
+	const double CmToMm = 10.;
+	const double ToleranceInFileUnit = ToleranceInCM * CmToMm / FileUnit;
 
 	A3DUns32 NewBRepCount = 0;
 	A3DStatus Status = A3DSewBrep(&BRepsToSew, BRepCount, ToleranceInFileUnit, SewOptions, OutNewBReps, &NewBRepCount);

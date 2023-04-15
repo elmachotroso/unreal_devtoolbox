@@ -2,11 +2,14 @@
 
 #include "WaterRuntimeSettings.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialInterface.h"
 #include "WaterBodyComponent.h"
 #include "WaterBodyRiverComponent.h"
 #include "WaterBodyLakeComponent.h"
 #include "WaterBodyOceanComponent.h"
 #include "WaterBodyCustomComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterRuntimeSettings)
 
 
 #if WITH_EDITOR
@@ -16,6 +19,7 @@ UWaterRuntimeSettings::FOnUpdateSettings UWaterRuntimeSettings::OnSettingsChange
 UWaterRuntimeSettings::UWaterRuntimeSettings()
 	: MaterialParameterCollection(FSoftObjectPath(TEXT("/Water/Materials/MPC/MPC_Water.MPC_Water")))
 	, DefaultWaterCollisionProfileName(TEXT("WaterBodyCollision"))
+	, DefaultWaterInfoMaterial(FSoftObjectPath(TEXT("/Water/Materials/WaterInfo/DrawWaterInfo.DrawWaterInfo")))
 	, WaterBodyRiverComponentClass(UWaterBodyRiverComponent::StaticClass())
 	, WaterBodyLakeComponentClass(UWaterBodyLakeComponent::StaticClass())
 	, WaterBodyOceanComponentClass(UWaterBodyOceanComponent::StaticClass())
@@ -27,6 +31,11 @@ UWaterRuntimeSettings::UWaterRuntimeSettings()
 FName UWaterRuntimeSettings::GetCategoryName() const
 {
 	return FName(TEXT("Plugins"));
+}
+
+UMaterialInterface* UWaterRuntimeSettings::GetDefaultWaterInfoMaterial() const
+{
+	return DefaultWaterInfoMaterial.LoadSynchronous();
 }
 
 void UWaterRuntimeSettings::PostInitProperties()
@@ -62,3 +71,4 @@ void UWaterRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEvent&
 	OnSettingsChange.Broadcast(this, PropertyChangedEvent.ChangeType);
 }
 #endif // WITH_EDITOR
+

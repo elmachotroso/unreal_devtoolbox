@@ -1,33 +1,72 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationNodes/SAnimationGraphNode.h"
-#include "Widgets/SBoxPanel.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
+
 #include "AnimGraphNode_Base.h"
-#include "IDocumentation.h"
-#include "AnimationEditorUtils.h"
-#include "Kismet2/BlueprintEditorUtils.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
-#include "GraphEditorSettings.h"
-#include "SLevelOfDetailBranchNode.h"
-#include "Widgets/Layout/SSpacer.h"
 #include "AnimationGraphSchema.h"
-#include "AnimGraphNode_CustomProperty.h"
 #include "BlueprintMemberReferenceCustomization.h"
-#include "SGraphPin.h"
-#include "Widgets/Layout/SWrapBox.h"
-#include "Brushes/SlateColorBrush.h"
-#include "PropertyEditorModule.h"
-#include "IPropertyRowGenerator.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "GenericPlatform/ICursor.h"
 #include "IDetailTreeNode.h"
-#include "Widgets/Layout/SGridPanel.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "IDocumentation.h"
+#include "IPropertyRowGenerator.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SGraphNode.h"
 #include "SGraphPanel.h"
+#include "SGraphPin.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SNodePanel.h"
 #include "SPoseWatchOverlay.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Casts.h"
+#include "Templates/Function.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SGridPanel.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
 
 #define LOCTEXT_NAMESPACE "AnimationGraphNode"
 
@@ -41,7 +80,7 @@ void SAnimationGraphNode::Construct(const FArguments& InArgs, UAnimGraphNode_Bas
 
 	ReconfigurePinWidgetsForPropertyBindings(CastChecked<UAnimGraphNode_Base>(GraphNode), SharedThis(this), [this](UEdGraphPin* InPin){ return FindWidgetForPin(InPin); });
 
-	const FSlateBrush* ImageBrush = FEditorStyle::Get().GetBrush(TEXT("Graph.AnimationFastPathIndicator"));
+	const FSlateBrush* ImageBrush = FAppStyle::Get().GetBrush(TEXT("Graph.AnimationFastPathIndicator"));
 
 	IndicatorWidget =
 		SNew(SImage)
@@ -73,7 +112,7 @@ TArray<FOverlayWidgetInfo> SAnimationGraphNode::GetOverlayWidgets(bool bSelected
 	{
 		if (AnimNode->BlueprintUsage == EBlueprintUsage::DoesNotUseBlueprint)
 		{
-			const FSlateBrush* ImageBrush = FEditorStyle::Get().GetBrush(TEXT("Graph.AnimationFastPathIndicator"));
+			const FSlateBrush* ImageBrush = FAppStyle::Get().GetBrush(TEXT("Graph.AnimationFastPathIndicator"));
 
 			FOverlayWidgetInfo Info;
 			Info.OverlayOffset = FVector2D(WidgetSize.X - (ImageBrush->ImageSize.X * 0.5f), -(ImageBrush->ImageSize.Y * 0.5f));
@@ -385,7 +424,7 @@ TSharedRef<SWidget> SAnimationGraphNode::CreateNodeTagWidget(UAnimGraphNode_Base
 			[
 				SNew(SInlineEditableTextBlock)
 				.ToolTipText_Lambda([InAnimNode](){ return FText::Format(LOCTEXT("TagFormat_Tooltip", "Tag: {0}\nThis node can be referenced elsewhere in this Anim Blueprint using this tag"), FText::FromName(InAnimNode->GetTag())); })
-				.Style(&FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("AnimGraph.Node.Tag"))
+				.Style(&FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("AnimGraph.Node.Tag"))
 				.Text_Lambda([InAnimNode](){ return FText::FromName(InAnimNode->GetTag()); })
 				.OnTextCommitted_Lambda([InAnimNode](const FText& InText, ETextCommit::Type InCommitType){ InAnimNode->SetTag(*InText.ToString()); })
 			]

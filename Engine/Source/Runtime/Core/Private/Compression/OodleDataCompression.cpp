@@ -1,12 +1,25 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Compression/OodleDataCompression.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/ICompressionFormat.h"
 
+#include "CoreGlobals.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformProperties.h"
+#include "HAL/UnrealMemory.h"
+#include "Logging/LogCategory.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Templates/UnrealTemplate.h"
 #include "oodle2.h"
+#include "oodle2base.h"
+
+struct ICompressionFormat;
 
 DEFINE_LOG_CATEGORY(OodleDataCompression);
+LLM_DEFINE_TAG(OodleData);
 
 extern ICompressionFormat * CreateOodleDataCompressionFormat();
 
@@ -22,7 +35,7 @@ static struct { ECompressor Compressor; const TCHAR* Name; } CompressorNameMap[]
 	{ECompressor::Leviathan, TEXT("Leviathan")}
 };
 
-bool ECompressorToString(ECompressor InCompressor, const TCHAR** OutName)
+CORE_API bool ECompressorToString(ECompressor InCompressor, const TCHAR** OutName)
 {
 	if ((SIZE_T)InCompressor >= sizeof(CompressorNameMap) / sizeof(CompressorNameMap[0]))
 	{
@@ -33,8 +46,14 @@ bool ECompressorToString(ECompressor InCompressor, const TCHAR** OutName)
 	return true;
 }
 
+CORE_API const TCHAR* ECompressorToString(ECompressor InCompressor)
+{
+	const TCHAR* Ret = nullptr;
+	ECompressorToString(InCompressor,&Ret);
+	return Ret;
+}
 
-bool ECompressorFromString(const FString& InName, ECompressor& OutCompressor)
+CORE_API bool ECompressorFromString(const FString& InName, ECompressor& OutCompressor)
 {
 	for (SIZE_T i = 0; i < sizeof(CompressorNameMap) / sizeof(CompressorNameMap[0]); i++)
 	{
@@ -64,7 +83,7 @@ static struct { ECompressionLevel Level; const TCHAR* Name; } CompressionLevelNa
 	{ECompressionLevel::Optimal4, TEXT("Optimal4")}
 };
 
-bool ECompressionLevelToString(ECompressionLevel InLevel, const TCHAR** OutName)
+CORE_API bool ECompressionLevelToString(ECompressionLevel InLevel, const TCHAR** OutName)
 {
 	for (SIZE_T i = 0; i < sizeof(CompressionLevelNameMap) / sizeof(CompressionLevelNameMap[0]); i++)
 	{
@@ -77,7 +96,14 @@ bool ECompressionLevelToString(ECompressionLevel InLevel, const TCHAR** OutName)
 	return false;
 }
 
-bool ECompressionLevelFromValue(int8 InValue, ECompressionLevel& OutLevel)
+CORE_API const TCHAR* ECompressionLevelToString(ECompressionLevel InLevel)
+{
+	const TCHAR* Ret = nullptr;
+	ECompressionLevelToString(InLevel,&Ret);
+	return Ret;
+}
+
+CORE_API bool ECompressionLevelFromValue(int8 InValue, ECompressionLevel& OutLevel)
 {
 	if (InValue < OodleLZ_CompressionLevel_Min ||
 		InValue > OodleLZ_CompressionLevel_Max)
@@ -88,7 +114,6 @@ bool ECompressionLevelFromValue(int8 InValue, ECompressionLevel& OutLevel)
 	OutLevel = (ECompressionLevel)InValue;
 	return true;
 }
-
 
 
 static OodleLZ_Compressor CompressorToOodleLZ_Compressor(ECompressor Compressor)
@@ -189,17 +214,12 @@ int64 CORE_API GetMaximumCompressedSize(int64 InUncompressedSize)
 struct OodleScratchBuffers
 {
 	OO_SINTa OodleScratchMemorySize = 0;
-	int32 OodleScratchBufferCount =0;
+	int32 OodleScratchBufferCount = 0;
 
-	struct OodleScratchBuffer
+	struct alignas(PLATFORM_CACHE_LINE_SIZE) OodleScratchBuffer
 	{
 		FCriticalSection OodleScratchMemoryMutex;
-		void * OodleScratchMemory = nullptr;
-		char pad[64];
-
-		OodleScratchBuffer()
-		{
-		}
+		void* OodleScratchMemory = nullptr;
 	};
 
 	OodleScratchBuffer* OodleScratches = nullptr;
@@ -209,28 +229,55 @@ struct OodleScratchBuffers
 		// enough decoder scratch for any compressor & buffer size.
 		// note "InCompressor" is what we want to Encode with but we may be asked to decode other compressors!
 		OO_SINTa DecoderMemorySizeNeeded = OodleLZDecoder_MemorySizeNeeded(OodleLZ_Compressor_Invalid, -1);
-		OO_SINTa EncoderMemorySizeNeeded = OodleLZ_GetCompressScratchMemBound(OodleLZ_Compressor_Mermaid,OodleLZ_CompressionLevel_VeryFast,64*1024,NULL);
-		// DecoderMemorySizeNeeded is ~ 460000 , EncoderMemorySizeNeeded is ~ 470000
-		OodleScratchMemorySize = DecoderMemorySizeNeeded > EncoderMemorySizeNeeded ? DecoderMemorySizeNeeded : EncoderMemorySizeNeeded;
 
-		int32 BufferCount = 2;
-
-		// be wary of possible init order problem
-		//  if we init Oodle before config might not exist yet?
-		//  can we just check GConfig vs nullptr ?
-		//  (eg. if Oodle is used to unpak ini filed?)
-		if ( GConfig )
+		int32 BufferCount;
+		
+		if ( FPlatformProperties::RequiresCookedData() )
 		{
-			GConfig->GetInt(TEXT("OodleDataCompressionFormat"), TEXT("PreallocatedBufferCount"), BufferCount, GEngineIni);
-			if (BufferCount < 0)
+			// runtime game or similar environment
+
+			OO_SINTa EncoderMemorySizeNeeded = OodleLZ_GetCompressScratchMemBound(OodleLZ_Compressor_Mermaid, OodleLZ_CompressionLevel_VeryFast, 64*1024, nullptr);
+			// DecoderMemorySizeNeeded is ~ 450000 , EncoderMemorySizeNeeded is ~ 470000
+			OodleScratchMemorySize = DecoderMemorySizeNeeded > EncoderMemorySizeNeeded ? DecoderMemorySizeNeeded : EncoderMemorySizeNeeded;
+
+			BufferCount = 2;
+
+			// "PreallocatedBufferCount" is not a great name
+			//	it's actually the max number of static buffers
+			//	 they will only be allocated as needed
+
+			// be wary of possible init order problem
+			//  if we init Oodle before config might not exist yet?
+			//  can we just check GConfig vs nullptr ?
+			//  (eg. if Oodle is used to unpak ini filed?)
+			if ( GConfig )
 			{
-				BufferCount = 0;
+				GConfig->GetInt(TEXT("OodleDataCompressionFormat"), TEXT("PreallocatedBufferCount"), BufferCount, GEngineIni);
+				if (BufferCount < 0)
+				{
+					// negative means one per logical core
+					BufferCount = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+				}
 			}
+		}
+		else
+		{
+			// tools, like UnrealPak or DDC commandlets
+
+			OO_SINTa EncoderMemorySizeNeeded = OodleLZ_GetCompressScratchMemBound(OodleLZ_Compressor_Mermaid, OodleLZ_CompressionLevel_VeryFast, 256*1024, nullptr);
+			// DecoderMemorySizeNeeded is ~ 450000 , EncoderMemorySizeNeeded is ~ 1200000
+			OodleScratchMemorySize = DecoderMemorySizeNeeded > EncoderMemorySizeNeeded ? DecoderMemorySizeNeeded : EncoderMemorySizeNeeded;
+
+			// allow one scratch buffer per logical core
+			// they will only be allocated on demand if we actually reach that level of parallelism
+			//	 so commandlets that don't use parallel compression don't waste memory
+			BufferCount = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
 		}
 
 		OodleScratchBufferCount = BufferCount;
 		if (OodleScratchBufferCount)
 		{
+			LLM_SCOPE_BYTAG(OodleData);
 			OodleScratches = new OodleScratchBuffer[OodleScratchBufferCount];
 		}
 		
@@ -264,6 +311,10 @@ struct OodleScratchBuffers
 	
 	int64 OodleDecode(const void * InCompBuf, int64 InCompBufSize64, void * OutRawBuf, int64 InRawLen64) 
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Oodle.Decode);
+		
+		UE_LOG(OodleDataCompression, VeryVerbose, TEXT("OodleDecode: %lld -> %lld"),InCompBufSize64,InRawLen64);
+
 		OO_SINTa InCompBufSize = IntCastChecked<OO_SINTa>(InCompBufSize64);
 		OO_SINTa InRawLen = IntCastChecked<OO_SINTa>(InRawLen64);
 
@@ -285,6 +336,7 @@ struct OodleScratchBuffers
 			{
 				if (OodleScratches[i].OodleScratchMemory == nullptr)
 				{
+					LLM_SCOPE_BYTAG(OodleData);
 					// allocate on first use
 					OodleScratches[i].OodleScratchMemory = FMemory::Malloc(OodleScratchMemorySize);
 					if (OodleScratches[i].OodleScratchMemory == nullptr)
@@ -325,6 +377,8 @@ struct OodleScratchBuffers
 			return OODLELZ_FAILED;
 		}
 
+		LLM_SCOPE_BYTAG(OodleData);
+
 		// allocate memory for the decoder so that Oodle doesn't allocate anything internally
 		void * DecoderMemory = FMemory::Malloc(DecoderMemorySize);
 		if (DecoderMemory == NULL) 
@@ -349,9 +403,16 @@ struct OodleScratchBuffers
 								ECompressor Compressor,
 								ECompressionLevel Level)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Oodle.Encode);
+
 		OodleLZ_Compressor LZCompressor = CompressorToOodleLZ_Compressor(Compressor);
 		OodleLZ_CompressionLevel LZLevel = CompressionLevelToOodleLZ_CompressionLevel(Level);
-
+		
+		if ( LZCompressor == OodleLZ_Compressor_Invalid || LZLevel == OodleLZ_CompressionLevel_Invalid )
+		{
+			UE_LOG(OodleDataCompression,Error,TEXT("OodleEncode: Compressor or Level Invalid\n"));		
+			return OODLELZ_FAILED;
+		}
 		if ( InCompressedBufferSize < (int64) OodleLZ_GetCompressedBufferSizeNeeded(LZCompressor,IntCastChecked<OO_SINTa>(InUncompressedSize)) )
 		{
 			UE_LOG(OodleDataCompression,Error,TEXT("OodleEncode: OutCompressedSize too small\n"));		
@@ -365,6 +426,7 @@ struct OodleScratchBuffers
 			{
 				if (OodleScratches[i].OodleScratchMemory == nullptr)
 				{
+					LLM_SCOPE_BYTAG(OodleData);
 					// allocate on first use
 					OodleScratches[i].OodleScratchMemory = FMemory::Malloc(OodleScratchMemorySize);
 					if (OodleScratches[i].OodleScratchMemory == nullptr)
@@ -383,6 +445,10 @@ struct OodleScratchBuffers
 
 				OodleScratches[i].OodleScratchMemoryMutex.Unlock();
 
+				
+				UE_LOG(OodleDataCompression, VeryVerbose, TEXT("OodleEncode: %s (%s): %lld -> %lld"), \
+					ECompressorToString(Compressor),ECompressionLevelToString(Level),InUncompressedSize,Result);
+
 				return (int64) Result;
 			}
 		}
@@ -395,6 +461,9 @@ struct OodleScratchBuffers
 		OO_SINTa Result = OodleLZ_Compress(LZCompressor,InUncompressedData,InUncompressedSize,OutCompressedData,LZLevel,
 													NULL,NULL,NULL,
 													scratchMem,scratchSize);
+													
+		UE_LOG(OodleDataCompression, VeryVerbose, TEXT("OodleEncode: %s (%s): %lld -> %lld"), \
+			ECompressorToString(Compressor),ECompressionLevelToString(Level),InUncompressedSize,Result);
 
 		return (int64) Result;
 	}
@@ -455,6 +524,7 @@ bool CORE_API Decompress(
 					
 static void* OODLE_CALLBACK OodleAlloc(OO_SINTa Size, OO_S32 Alignment)
 {
+	LLM_SCOPE_BYTAG(OodleData);
 	return FMemory::Malloc(SIZE_T(Size), uint32(Alignment));
 }
 

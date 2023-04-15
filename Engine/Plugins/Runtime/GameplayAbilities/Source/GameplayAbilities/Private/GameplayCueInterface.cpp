@@ -1,11 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayCueInterface.h"
+#include "AbilitySystemLog.h"
 #include "AbilitySystemStats.h"
 #include "GameplayTagsModule.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayCueSet.h"
 #include "Engine/PackageMapClient.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueInterface)
 
 
 namespace GameplayCueInterfacePrivate
@@ -303,7 +306,7 @@ void FActiveGameplayCueContainer::PredictiveAdd(const FGameplayTag& Tag, FPredic
 	}
 
 	Owner->UpdateTagMap(Tag, 1);	
-	PredictionKey.NewRejectOrCaughtUpDelegate(FPredictionKeyEvent::CreateUObject(Owner, &UAbilitySystemComponent::OnPredictiveGameplayCueCatchup, Tag));
+	PredictionKey.NewRejectOrCaughtUpDelegate(FPredictionKeyEvent::CreateUObject(ToRawPtr(Owner), &UAbilitySystemComponent::OnPredictiveGameplayCueCatchup, Tag));
 }
 
 bool FActiveGameplayCueContainer::HasCue(const FGameplayTag& Tag) const

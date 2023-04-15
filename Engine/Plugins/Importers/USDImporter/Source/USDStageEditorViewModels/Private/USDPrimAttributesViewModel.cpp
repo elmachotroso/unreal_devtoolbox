@@ -3,6 +3,7 @@
 #include "USDPrimAttributesViewModel.h"
 
 #include "UnrealUSDWrapper.h"
+#include "USDAttributeUtils.h"
 #include "USDErrorUtils.h"
 #include "USDLog.h"
 #include "USDMemory.h"
@@ -11,6 +12,7 @@
 
 #include "UsdWrappers/SdfLayer.h"
 #include "UsdWrappers/SdfPath.h"
+#include "UsdWrappers/UsdAttribute.h"
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/VtValue.h"
 
@@ -173,6 +175,7 @@ void FUsdPrimAttributesViewModel::SetPrimAttribute( const FString& AttributeName
 			else if ( UE::FUsdAttribute Attribute = UsdPrim.GetAttribute( *AttributeName ) )
 			{
 				bSuccess = Attribute.Set( VtValue );
+				UsdUtils::NotifyIfOverriddenOpinion( Attribute );
 			}
 		}
 	}
@@ -196,11 +199,13 @@ void FUsdPrimAttributesViewModel::SetPrimAttribute( const FString& AttributeName
 #endif // #if USE_USD_SDK
 }
 
-void FUsdPrimAttributesViewModel::Refresh( const TCHAR* InPrimPath, float TimeCode )
+void FUsdPrimAttributesViewModel::Refresh( const UE::FUsdStageWeak& InUsdStage, const TCHAR* InPrimPath, float TimeCode )
 {
 	FScopedUnrealAllocs UnrealAllocs;
 
+	UsdStage = InUsdStage;
 	PrimPath = InPrimPath;
+
 	PrimAttributes.Reset();
 
 #if USE_USD_SDK

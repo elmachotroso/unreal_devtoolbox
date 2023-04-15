@@ -462,6 +462,33 @@ bool PseudoSolveIterate( const T* RESTRICT A, const T* RESTRICT V, const T* REST
 	return bCloseEnough;
 }
 
+FEdgeQuadric::FEdgeQuadric( const QVec3 p0, const QVec3 p1, const float Weight )
+{
+	n = p1 - p0;
+
+	const QScalar Length = sqrt( n | n );
+	if( Length < (QScalar)SMALL_NUMBER )
+	{
+		Zero();
+		return;
+	}
+	else
+	{
+		n.x /= Length;
+		n.y /= Length;
+		n.z /= Length;
+	}
+
+	a = Weight * Length;
+	
+	nxx = a - a * n.x * n.x;
+	nyy = a - a * n.y * n.y;
+	nzz = a - a * n.z * n.z;
+
+	nxy = -a * n.x * n.y;
+	nxz = -a * n.x * n.z;
+	nyz = -a * n.y * n.z;
+}
 
 FQuadric::FQuadric( const QVec3 p0, const QVec3 p1, const QVec3 p2 )
 {
@@ -518,6 +545,45 @@ FQuadric::FQuadric( const QVec3 p0, const QVec3 p1, const QVec3 p2 )
 #else
 	a = 1.0;
 #endif
+}
+
+FQuadric::FQuadric( const QVec3 p )
+{
+	// (v - p)^T (v - p)
+	// v^T I v - 2 p^T v + p^T p
+	nxx = 1.0;
+	nyy = 1.0;
+	nzz = 1.0;
+
+	nxy = 0.0;
+	nxz = 0.0;
+	nyz = 0.0;
+
+	dn = -p;
+	d2 = p | p;
+
+	a = 0.0;
+}
+
+FQuadric::FQuadric( const QVec3 n, const QVec3 p )
+{
+	// nn^T = projection matrix
+	//( v - nn^T v )^T ( v - nn^T v )
+	// v^T ( I - nn^T ) v - 2p^T ( I - nn^T ) v + (p^T p - p^T nn^T p)
+	nxx = 1.0 - n.x * n.x;
+	nyy = 1.0 - n.y * n.y;
+	nzz = 1.0 - n.z * n.z;
+
+	nxy = -n.x * n.y;
+	nxz = -n.x * n.z;
+	nyz = -n.y * n.z;
+
+	const QScalar dist = -( n | p );
+
+	dn = -p - dist * n;
+	d2 = (p | p) - dist * dist;
+
+	a = 0.0;
 }
 
 float FQuadric::Evaluate( const FVector3f& Point ) const

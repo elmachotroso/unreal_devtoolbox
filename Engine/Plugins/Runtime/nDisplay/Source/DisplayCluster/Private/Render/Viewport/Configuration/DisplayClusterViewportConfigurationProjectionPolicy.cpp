@@ -34,7 +34,7 @@ void FDisplayClusterViewportConfigurationProjectionPolicy::Update()
 		if (ViewportIt && (ViewportIt->GetRenderSettingsICVFX().RuntimeFlags & ViewportRuntime_InternalResource) == 0)
 		{
 			// Support advanced logic for 'camera' projection policy
-			if (ViewportIt->ProjectionPolicy.IsValid() && ViewportIt->ProjectionPolicy->GetTypeId().Compare(DisplayClusterProjectionStrings::projection::Camera) == 0)
+			if (ViewportIt->ProjectionPolicy.IsValid() && ViewportIt->ProjectionPolicy->GetType().Compare(DisplayClusterProjectionStrings::projection::Camera) == 0)
 			{
 				UpdateCameraPolicy(*ViewportIt);
 			}
@@ -62,7 +62,7 @@ bool FDisplayClusterViewportConfigurationProjectionPolicy::UpdateCameraPolicy(FD
 
 	// Get ICVFX camera component
 	TArray<UDisplayClusterICVFXCameraComponent*> ICVFXCameraComps;
-	RootActor.GetComponents<UDisplayClusterICVFXCameraComponent>(ICVFXCameraComps);
+	RootActor.GetComponents(ICVFXCameraComps);
 	for (UDisplayClusterICVFXCameraComponent* CompICVFX : ICVFXCameraComps)
 	{
 		if (CompICVFX->GetName() == CameraComponentId)
@@ -73,7 +73,7 @@ bool FDisplayClusterViewportConfigurationProjectionPolicy::UpdateCameraPolicy(FD
 
 	// Get camera component
 	TArray<UCameraComponent*> CameraComps;
-	RootActor.GetComponents<UCameraComponent>(CameraComps);
+	RootActor.GetComponents(CameraComps);
 	for (UCameraComponent* Comp : CameraComps)
 	{
 		if (Comp->GetName() == CameraComponentId)

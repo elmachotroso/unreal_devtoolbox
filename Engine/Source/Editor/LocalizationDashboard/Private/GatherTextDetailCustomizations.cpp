@@ -1,31 +1,62 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GatherTextDetailCustomizations.h"
-#include "Misc/Attribute.h"
-#include "Layout/Visibility.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
+
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "DesktopPlatformModule.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Notifications/SErrorHint.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/SListView.h"
-#include "LocalizationTargetTypes.h"
 #include "DetailWidgetRow.h"
-#include "PropertyHandle.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/GenericWindow.h"
+#include "HAL/PlatformCrt.h"
+#include "IDesktopPlatform.h"
 #include "IDetailChildrenBuilder.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "LocalizationTargetTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Object.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Notifications/SErrorHint.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "GatherTextDetailCustomizations"
 
@@ -144,7 +175,7 @@ namespace
 				.VAlign(VAlign_Center)
 				[
 					SNew(SButton)
-					.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+					.ButtonStyle( FAppStyle::Get(), "HoverHintOnly" )
 					.ToolTipText( LOCTEXT( "PatchPickerToolTipText", "Choose a directory.") )
 					.OnClicked(this, &SGatherTextPathPicker::PathPickerOnClicked)
 					.ContentPadding( 2.0f )
@@ -152,7 +183,7 @@ namespace
 					.IsFocusable( false )
 					[
 						SNew( SImage )
-						.Image( FEditorStyle::GetBrush("LocalizationTargetEditor.DirectoryPicker") )
+						.Image( FAppStyle::GetBrush("LocalizationTargetEditor.DirectoryPicker") )
 						.ColorAndOpacity( FSlateColor::UseForeground() )
 					]
 				]
@@ -515,7 +546,7 @@ namespace
 
 	const FSlateBrush* SConfigurationValidity::GetImageBrush() const
 	{
-		return ConfigurationError.Get(FText::GetEmpty()).IsEmpty() ? FEditorStyle::GetBrush("LocalizationTargetEditor.GatherSettingsIcon_Valid") : FEditorStyle::GetBrush("LocalizationTargetEditor.GatherSettingsIcon_Warning");
+		return ConfigurationError.Get(FText::GetEmpty()).IsEmpty() ? FAppStyle::GetBrush("LocalizationTargetEditor.GatherSettingsIcon_Valid") : FAppStyle::GetBrush("LocalizationTargetEditor.GatherSettingsIcon_Warning");
 	}
 }
 
@@ -765,11 +796,11 @@ namespace
 				.Padding(2.0f, 0.0f)
 				[
 					SAssignNew(PlaceHolderComboButton, SComboButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ButtonContent()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("LocalizationTargetEditor.GatherSettings.AddMetaDataTextKeyPatternArgument"))
+						.Image(FAppStyle::GetBrush("LocalizationTargetEditor.GatherSettings.AddMetaDataTextKeyPatternArgument"))
 					]
 					.OnGetMenuContent_Lambda([&]() -> TSharedRef<SWidget>
 					{

@@ -10,6 +10,8 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Texture2DDynamic)
+
 /*-----------------------------------------------------------------------------
 	FTexture2DDynamicResource
 -----------------------------------------------------------------------------*/
@@ -46,23 +48,29 @@ void FTexture2DDynamicResource::InitRHI()
 	);
 	SamplerStateRHI = GetOrCreateSamplerState( SamplerStateInitializer );
 
-	ETextureCreateFlags  Flags = TexCreate_None;
-	if ( Owner->bIsResolveTarget )
+	FString Name = Owner->GetName();
+
+	FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(*Name, GetSizeX(), GetSizeY(), Owner->Format)
+		.SetNumMips(Owner->NumMips);
+
+	if (Owner->bIsResolveTarget)
 	{
-		Flags |= TexCreate_ResolveTargetable;
+		Desc.AddFlags(ETextureCreateFlags::ResolveTargetable);
 		bIgnoreGammaConversions = true;		// Note, we're ignoring Owner->SRGB (it should be false).
 	}
-	else if ( Owner->SRGB )
+	else if (Owner->SRGB)
 	{
-		Flags |= TexCreate_SRGB;
+		Desc.AddFlags(ETextureCreateFlags::SRGB);
 	}
-	if ( Owner->bNoTiling )
+
+	if (Owner->bNoTiling)
 	{
-		Flags |= TexCreate_NoTiling;
+		Desc.AddFlags(ETextureCreateFlags::NoTiling);
 	}
-	FString Name = Owner->GetName();
-	FRHIResourceCreateInfo CreateInfo(*Name);
-	Texture2DRHI = RHICreateTexture2D(GetSizeX(), GetSizeY(), Owner->Format, Owner->NumMips, 1, Flags, CreateInfo);
+
+	Texture2DRHI = RHICreateTexture(Desc);
+
 	TextureRHI = Texture2DRHI;
 	TextureRHI->SetName(Owner->GetFName());
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI,TextureRHI);
@@ -82,6 +90,36 @@ FTexture2DRHIRef FTexture2DDynamicResource::GetTexture2DRHI()
 	return Texture2DRHI;
 }
 
+#if !UE_SERVER
+void FTexture2DDynamicResource::WriteRawToTexture_RenderThread(TArrayView64<const uint8> RawData)
+{
+	check(IsInRenderingThread());
+
+	const int32 Width = Texture2DRHI->GetSizeX();
+	const int32 Height = Texture2DRHI->GetSizeY();
+
+	uint32 DestStride = 0;
+	uint8* DestData = reinterpret_cast<uint8*>(RHILockTexture2D(Texture2DRHI, 0, RLM_WriteOnly, DestStride, false, false));
+
+	for (int32 y = 0; y < Height; y++)
+	{
+		uint8* DestPtr = &DestData[((int64)Height - 1 - y) * DestStride];
+
+		const FColor* SrcPtr = &((FColor*)(RawData.GetData()))[((int64)Height - 1 - y) * Width];
+		for (int32 x = 0; x < Width; x++)
+		{
+			*DestPtr++ = SrcPtr->B;
+			*DestPtr++ = SrcPtr->G;
+			*DestPtr++ = SrcPtr->R;
+			*DestPtr++ = SrcPtr->A;
+			SrcPtr++;
+		}
+	}
+
+	RHIUnlockTexture2D(Texture2DRHI, 0, false, false);
+}
+
+#endif
 
 /*-----------------------------------------------------------------------------
 	UTexture2DDynamic
@@ -177,3 +215,4 @@ UTexture2DDynamic* UTexture2DDynamic::Create(int32 InSizeX, int32 InSizeY, const
 		return NULL;
 	}
 }
+

@@ -13,8 +13,8 @@
 #include "GameMapsSettings.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/World.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 /*-----------------------------------------------------------------------------
 	FURL Statics.
@@ -478,12 +478,12 @@ FURL::FURL( FURL* Base, const TCHAR* TextURL, ETravelType Type )
 					if (!AssetRegistry.IsLoadingAssets())
 					{
 						TArray<FAssetData> MapList;
-						if (AssetRegistry.GetAssetsByClass(UWorld::StaticClass()->GetFName(), /*out*/ MapList))
+						if (AssetRegistry.GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), /*out*/ MapList))
 						{
 							FName TargetTestName(*URLStr);
 							for (const FAssetData& MapAsset : MapList)
 							{
-								if (MapAsset.AssetName == TargetTestName)
+								if (MapAsset.AssetName == TargetTestName && !MapAsset.HasAnyPackageFlags(PKG_CookGenerated))
 								{
 									Map = MapAsset.PackageName.ToString();
 									bFoundMap = true;
@@ -510,7 +510,7 @@ FURL::FURL( FURL* Base, const TCHAR* TextURL, ETravelType Type )
 			if (!bFoundMap)
 			{
 				// can't find file, invalidate and bail
-				UE_CLOG(MapNameError.ToString().Len() > 0, LogLongPackageNames, Warning, TEXT("URL: %s: %s"), *URLStr, *MapNameError.ToString());
+				UE_LOG(LogLongPackageNames, Warning, TEXT("Can't Find URL: %s: %s. Invalidating and reverting to Default URL."), *URLStr, *MapNameError.ToString());
 				*this = FURL();
 				Valid = 0;
 			}

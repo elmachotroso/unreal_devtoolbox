@@ -7,7 +7,7 @@
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "UnrealWidget.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
@@ -18,6 +18,8 @@
 #include "ActorEditorUtils.h"
 #include "WorldCollision.h"
 #include "WaterEditorSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterSplineComponentVisualizer)
 
 IMPLEMENT_HIT_PROXY(HWaterSplineVisProxy, HComponentVisProxy);
 IMPLEMENT_HIT_PROXY(HWaterSplineKeyProxy, HWaterSplineVisProxy);
@@ -39,7 +41,7 @@ public:
 			"WaterSplineComponentVisualizer",	// Context name for fast lookup
 			LOCTEXT("WaterSplineComponentVisualizer", "WaterSpline Component Visualizer"),	// Localized context name for displaying
 			NAME_None,	// Parent
-			FEditorStyle::GetStyleSetName()
+			FAppStyle::GetAppStyleSetName()
 			)
 	{
 	}
@@ -580,7 +582,8 @@ bool FWaterSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Vi
 					WaterSplineComp->UpdateSpline();
 					WaterSplineComp->bSplineHasBeenEdited = true;
 
-					NotifyPropertyModified(WaterSplineComp, SplineCurvesProperty);
+					// Transform the spline keys using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
+					NotifyPropertyModified(WaterSplineComp, SplineCurvesProperty, EPropertyChangeType::Interactive);
 
 					GEditor->RedrawLevelEditingViewports(true);
 
@@ -684,3 +687,4 @@ void FWaterSplineComponentVisualizer::GenerateContextMenuSections(FMenuBuilder& 
 }
 
 #undef LOCTEXT_NAMESPACE
+

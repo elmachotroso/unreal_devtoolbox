@@ -152,7 +152,13 @@ public:
 	/**
 	 * Get all the exposed types in the registry (ie. FRemoteControlActor)
 	 */
-	const TSet<UScriptStruct*>& GetExposedEntityTypes() const;
+	const TSet<TObjectPtr<UScriptStruct>>& GetExposedEntityTypes() const
+	{
+		return ExposedTypes;
+	}
+
+	/** Returns true when Exposed Entities is empty. */
+	const bool IsEmpty() const;
 
 	/**
 	 * Add an entity to the set of exposed entities of its type.
@@ -191,6 +197,8 @@ public:
 
 	virtual void PostLoad() override;
 
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+
 private:
 	/** Get a raw pointer to an entity using its id. */
 	TSharedPtr<FRemoteControlEntity> GetEntity(const FGuid& EntityId);
@@ -212,5 +220,5 @@ private:
 
 	/** Holds the types of entities exposed in the registry. */
 	UPROPERTY()
-	TSet<UScriptStruct*> ExposedTypes;
+	TSet<TObjectPtr<UScriptStruct>> ExposedTypes;
 };

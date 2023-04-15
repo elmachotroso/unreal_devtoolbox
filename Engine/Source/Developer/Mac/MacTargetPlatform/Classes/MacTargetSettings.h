@@ -13,14 +13,17 @@
 UENUM()
 enum class EMacMetalShaderStandard : uint8
 {
-    /** Metal Shader 2.2 is the minimum as of UE5.0*/
-    MacMetalSLStandard_Minimum = 0 UMETA(DisplayName="Minimum, Currently v2.2 (10.15.0+)"),
+    /** Metal Shader 2.2 is the minimum*/
+    MacMetalSLStandard_Minimum = 0 UMETA(DisplayName="Minimum, Currently v2.2 (10.15+)"),
     /** Metal Shaders Compatible With macOS 10.15 or later (std=osx-metal2.2) */
-    MacMetalSLStandard_2_2 = 5 UMETA(DisplayName="Metal v2.2 (10.15.0+)"),
+    MacMetalSLStandard_2_2 = 5 UMETA(DisplayName="Metal v2.2 (10.15+)"),
     /** Metal Shaders Compatible With macOS 11.0 or later (std=osx-metal2.3) */
     MacMetalSLStandard_2_3 = 6 UMETA(DisplayName="Metal v2.3 (11.0+)"),
     /** Metal Shaders Compatible With macOS 12.0 or later (std=osx-metal2.4) */
     MacMetalSLStandard_2_4 = 7 UMETA(DisplayName="Metal v2.4 (12.0+)"),
+    /** Metal Shaders Compatible With macOS 13.0 or later (std=metal3.0) */
+    MacMetalSLStandard_3_0 = 8 UMETA(DisplayName="Metal v3.0 (13.0+)"),
+
 };
 
 UENUM()
@@ -78,14 +81,6 @@ public:
 	bool UseFastIntrinsics;
 	
 	/**
-	 * Whether to force Metal shaders to use 32bit floating point precision even when the shader uses half floats.
-	 * Half floats are much more efficient when they are availble but have less accuracy over large ranges,
-	 * as such some projects may need to use 32bit floats to ensure correct rendering.
-	 */
-	UPROPERTY(EditAnywhere, config, Category=Rendering, meta = (DisplayName = "Force 32bit Floating Point Precision", ConfigRestartRequired = true))
-	bool ForceFloats;
-	
-	/**
 	 * Whether to use of Metal shader-compiler's -ffast-math optimisations.
 	 * Fast-Math performs algebraic-equivalent & reassociative optimisations not permitted by the floating point arithmetic standard (IEEE-754).
 	 * These can improve shader performance at some cost to precision and can lead to NaN/INF propagation as they rely on
@@ -121,6 +116,10 @@ public:
 	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
+
+	/** Which of the currently enabled source data override plugins to use. */
+	UPROPERTY(config, EditAnywhere, Category = "Audio")
+	FString SourceDataOverridePlugin;
 
 	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")

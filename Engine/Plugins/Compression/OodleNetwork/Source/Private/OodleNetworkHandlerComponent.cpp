@@ -48,7 +48,9 @@ DEFINE_LOG_CATEGORY(OodleNetworkHandlerComponentLog);
 
 
 #if STATS
+#if !UE_BUILD_SHIPPING
 DEFINE_STAT(STAT_PacketReservedOodle);
+#endif
 
 DEFINE_STAT(STAT_Oodle_OutRaw);
 DEFINE_STAT(STAT_Oodle_OutCompressed);
@@ -71,6 +73,59 @@ DEFINE_STAT(STAT_Oodle_DictionaryCount);
 DEFINE_STAT(STAT_Oodle_DictionaryBytes);
 DEFINE_STAT(STAT_Oodle_SharedBytes);
 DEFINE_STAT(STAT_Oodle_StateBytes);
+#endif
+
+
+// OodleNetwork specific adaptation of timing macros from PacketHandler.cpp
+#if !UE_BUILD_SHIPPING
+namespace UE::Oodle
+{
+	static float GOodleTimeguardThresholdMS = 0.f;
+	static int32 GOodleTimeguardLimit = 20;
+
+	static FAutoConsoleVariableRef CVarOodleNetworkTimeguardThresholdMS(
+		TEXT("net.OodleNetwork.TimeGuardThresholdMS"),
+		GOodleTimeguardThresholdMS,
+		TEXT("Threshold in milliseconds for the OodleNetworkHandlerComponent timeguard."));
+
+	static FAutoConsoleVariableRef CVarOodleNetworkTimeguardLimit(
+		TEXT("net.OodleNetwork.TimeGuardLimit"),
+		GOodleTimeguardLimit,
+		TEXT("Sets the maximum number of OodleNetworkHandlerComponent timeguard logs."));
+}
+
+/** To be placed outside and before the scope of the measured code */
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_DECLARE(Name, ThresholdMS) \
+	const double PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) = ThresholdMS; \
+	double PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_, Name) = 0.0;
+
+/** To be placed inside the scope, directly before the measured code */
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_BEGIN(Name) \
+	uint64 PREPROCESSOR_JOIN(__TimeGuard_StartCycles_, Name) = \
+		(PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) > 0.0 && UE::Oodle::GOodleTimeguardLimit > 0) ? FPlatformTime::Cycles64() : 0;
+
+/** To be placed inside the scope, directly after the measured code */
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_END(Name) \
+	if (PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name) > 0.0 && UE::Oodle::GOodleTimeguardLimit > 0) \
+	{ \
+		PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_, Name) = \
+			FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - PREPROCESSOR_JOIN(__TimeGuard_StartCycles_, Name)); \
+	}
+
+/** To be placed outside and after the scope of the measured code */
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_REPORT(Name) \
+	if (PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_, Name) > PREPROCESSOR_JOIN(__TimeGuard_ThresholdMS_, Name)) \
+	{ \
+		UE_LOG(OodleNetworkHandlerComponentLog, Warning, TEXT("OodleNetworkHandlerComponent '%s' took %.2fms!"), TEXT(#Name), \
+				PREPROCESSOR_JOIN(__TimeGuard_MSElapsed_, Name)); \
+		UE::Oodle::GOodleTimeguardLimit--; \
+	}
+
+#else
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_DECLARE(Name, ThresholdMS)
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_BEGIN(Name)
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_END(Name)
+#define UE_OODLE_LIGHTWEIGHT_TIME_GUARD_REPORT(Name)
 #endif
 
 
@@ -101,8 +156,11 @@ static TArray<OodleNetworkHandlerComponent*> OodleComponentList;
  * CVars
  */
 
-TAutoConsoleVariable<int32> CVarOodleMinSizeForCompression(
-	TEXT("net.OodleMinSizeForCompression"), 0,
+static int32 GOodleMinSizeForCompression = 0;
+
+FAutoConsoleVariableRef CVarOodleMinSizeForCompression(
+	TEXT("net.OodleMinSizeForCompression"),
+	GOodleMinSizeForCompression,
 	TEXT("The minimum size an outgoing packet must be, for it to be considered for compression (does not count overhead of handler components which process packets after Oodle)."));
 
 
@@ -570,6 +628,8 @@ void OodleNetworkHandlerComponent::InitializeDictionaries()
 
 void OodleNetworkHandlerComponent::RemoteInitializeDictionaries()
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Oodle_RemoteInitializeDictionaries);
+
 	InitializeDictionaries();
 
 	if (bOodleNetworkAnalytics && NetAnalyticsData.IsValid())
@@ -1017,14 +1077,24 @@ void OodleNetworkHandlerComponent::Incoming(FIncomingPacketRef PacketRef)
 
 					if (bSuccess)
 					{
+						UE_OODLE_LIGHTWEIGHT_TIME_GUARD_DECLARE(Incoming, UE::Oodle::GOodleTimeguardThresholdMS);
+
 						{
 #if !UE_BUILD_SHIPPING
 							SCOPE_CYCLE_COUNTER(STAT_Oodle_InDecompressTime);
 #endif
 
+							// The lightweight time guard will exclude STAT_Oodle_InDecompressTime processing time,
+							// allowing detection of stats system hitches, while verifying good performance of 'OodleNetwork1UDP_Decode' (hopefully)
+							UE_OODLE_LIGHTWEIGHT_TIME_GUARD_BEGIN(Incoming);
+
 							bSuccess = !!OodleNetwork1UDP_Decode(CurDict->CompressorState, CurDict->SharedDictionary, CompressedData,
 															CompressedLength, DecompressedData, DecompressedLength);
+
+							UE_OODLE_LIGHTWEIGHT_TIME_GUARD_END(Incoming);
 						}
+
+						UE_OODLE_LIGHTWEIGHT_TIME_GUARD_REPORT(Incoming);
 
 
 						if (!bSuccess)
@@ -1058,6 +1128,12 @@ void OodleNetworkHandlerComponent::Incoming(FIncomingPacketRef PacketRef)
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 						if (bCaptureMode && Handler->Mode == Handler::Mode::Server && InPacketLog != nullptr)
 						{
+#if !UE_BUILD_SHIPPING
+							QUICK_SCOPE_CYCLE_COUNTER(STAT_Oodle_InCaptureTime);
+
+							GPacketHandlerDiscardTimeguardMeasurement = true;
+#endif
+
 							InPacketLog->SerializePacket((void*)Packet.GetData(), DecompressedLength);
 						}
 #endif
@@ -1119,6 +1195,12 @@ void OodleNetworkHandlerComponent::Incoming(FIncomingPacketRef PacketRef)
 
 				if (SizeOfPacket > 0)
 				{
+#if !UE_BUILD_SHIPPING
+					QUICK_SCOPE_CYCLE_COUNTER(STAT_Oodle_InCaptureTime);
+
+					GPacketHandlerDiscardTimeguardMeasurement = true;
+#endif
+
 					InPacketLog->SerializePacket((void*)Packet.GetData(), SizeOfPacket);
 				}
 			}
@@ -1140,6 +1222,12 @@ void OodleNetworkHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits
 
 			if (SizeOfPacket > 0)
 			{
+#if !UE_BUILD_SHIPPING
+				QUICK_SCOPE_CYCLE_COUNTER(STAT_Oodle_OutCaptureTime);
+
+				GPacketHandlerDiscardTimeguardMeasurement = true;
+#endif
+
 				OutPacketLog->SerializePacket((void*)Packet.GetData(), SizeOfPacket);
 			}
 		}
@@ -1156,7 +1244,6 @@ void OodleNetworkHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits
 		FOodleNetworkAnalyticsVars* AnalyticsVars = (bOodleNetworkAnalytics && NetAnalyticsData.IsValid()) ? NetAnalyticsData->GetLocalData() : nullptr;
 		const bool bIsServer = (Handler->Mode == Handler::Mode::Server);
 		FOodleNetworkDictionary* CurDict = (bIsServer ? ServerDictionary.Get() : ClientDictionary.Get());
-		uint32 MinSizeForCompression = CVarOodleMinSizeForCompression.GetValueOnAnyThread();
 		uint32 UncompressedBytes = Packet.GetNumBytes();
 		bool bSkipCompressionClientDisabled = false;
 		bool bSkipCompressionTooSmall = false;
@@ -1175,7 +1262,7 @@ void OodleNetworkHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits
 		}
 
 		// Skip compression when the packet is below the minimum size
-		if (!bSkipCompression && (MinSizeForCompression > 0 && UncompressedBytes < MinSizeForCompression))
+		if (!bSkipCompression && (GOodleMinSizeForCompression > 0 && static_cast<int32>(UncompressedBytes) < GOodleMinSizeForCompression))
 		{
 			bSkipCompression = true;
 			bSkipCompressionTooSmall = true;
@@ -1200,7 +1287,7 @@ void OodleNetworkHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits
 				FMemory::Memcpy(UncompressedData, Packet.GetData(), UncompressedBytes);
 					
 				{
-#if STATS && !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING
 					SCOPE_CYCLE_COUNTER(STAT_Oodle_OutCompressTime);
 #endif
 

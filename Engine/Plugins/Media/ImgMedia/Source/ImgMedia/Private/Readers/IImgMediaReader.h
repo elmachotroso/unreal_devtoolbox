@@ -5,12 +5,11 @@
 #include "CoreTypes.h"
 #include "Misc/FrameRate.h"
 #include "IMediaTextureSample.h"
+#include "ImgMediaMipMapInfo.h"
 #include "Math/IntPoint.h"
 #include "Templates/SharedPointer.h"
 #include "RHI.h"
 #include "RHIResources.h"
-
-struct FImgMediaTileSelection;
 
 /**
  * Information about an image sequence frame.
@@ -37,6 +36,21 @@ struct FImgMediaFrameInfo
 
 	/** Number of channels (RGB - 3 or RGBA - 4). */
 	SIZE_T NumChannels;
+
+	/** Does this frame have tiles?. */
+	bool bHasTiles;
+
+	/** Number of tiles in X and Y direction. */
+	FIntPoint NumTiles;
+
+	/** Tile dimensions. */
+	FIntPoint TileDimensions;
+
+	/** Tile border size in texels. This is required for more elaborate tile texel sampling. */
+	int32 TileBorder;
+
+	/** Number of Mip Levels. */
+	int32 NumMipLevels;
 };
 
 
@@ -54,14 +68,14 @@ struct FImgMediaFrame
 	/** Additional information about the frame. */
 	FImgMediaFrameInfo Info;
 
-	/** Bitmask of which mipmaps are present. */
-	int32 MipMapsPresent = 0;
+	/** Tiles present per mip level. */
+	TMap<int32, FImgMediaTileSelection> MipTilesPresent;
+
+	/** Total number of tiles read. */
+	int32 NumTilesRead = 0;
 
 	/** The frame's horizontal stride (in bytes). */
 	uint32 Stride = 0;
-
-	/** Uncompressed EXR files are read faster via plain read and GPU swizzling. This value is used by ExrImgMediaReaderGpu.*/
-	FTexture2DRHIRef Texture;
 
 	/** Sample converter is used by Media Texture Resource to convert the texture or data. */
 	TSharedPtr<IMediaTextureSampleConverter, ESPMode::ThreadSafe> SampleConverter;
@@ -107,7 +121,7 @@ public:
 	 * @return true on success, false otherwise.
 	 * @see GetFrameInfo
 	 */
-	virtual bool ReadFrame(int32 FrameId, int32 MipLevel, const FImgMediaTileSelection& InTileSelection, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame) = 0;
+	virtual bool ReadFrame(int32 FrameId, const TMap<int32, FImgMediaTileSelection>& InMipTiles, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame) = 0;
 
 	/**
 	 * Mark Frame to be canceled based on Frame number. Typically this will be 
@@ -121,7 +135,7 @@ public:
 	 * maximum number of frames with as much efficiency as possible.
 	 *
 	 */
-	virtual void PreAllocateMemoryPool(int32 NumFrames, const FImgMediaFrameInfo& FrameInfo) {};
+	virtual void PreAllocateMemoryPool(int32 NumFrames, const FImgMediaFrameInfo& FrameInfo, const bool bCustomFormat) {};
 
 	/**
 	 * Used in case reader needs to do some processing once per frame.

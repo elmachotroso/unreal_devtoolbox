@@ -68,10 +68,15 @@ namespace DatasmithSolidworks
 				return null;
 			}
 
+			double InitialTime = Study.GetTime();
+
+			// Exporting Motion Study without first calling Stop on it sometimes(!) exports incorrect animation values. E.g. constant rotation.
+			// Even when no animation was playing(so Stop seemed redundant).
+			// Interestingly, even calling Study.IsPlaying helped with this. But 'Stop' looks nicer :)
+			Study.Stop();
+
 			FAnimation Anim = new FAnimation();
 			Anim.Name = Study.Name;
-
-			double InitialTime = Study.GetTime();
 
 			/*
 			 * swMotionStudyTypeAssembly			1 or 0x1 = Animation; D - cubed solver is used to do presentation animation only; no simulation is performed, so no results or plots are available; gravity, contact, springs, and forces cannot be used; mass and inertia values have no effect on the animation
@@ -87,12 +92,12 @@ namespace DatasmithSolidworks
 			int StepIndex = 0;
 			uint AllSteps = (uint)(Duration / Step);
 
-			MathTransform RootTransform = Root.GetTotalTransform(true);
+			MathTransform RootTransform = Root.GetTotalTransform(true) ?? Root.Transform2;
 
 			for (double CurTime = 0.0; CurTime < Duration; CurTime += Step)
 			{
-			    Study.SetTime(CurTime);
-			    ExtractAnimationData(StepIndex++, CurTime, Root, Anim, RootTransform);
+				Study.SetTime(CurTime);
+				ExtractAnimationData(StepIndex++, CurTime, Root, Anim, RootTransform);
 			}
 
 			Study.SetTime(Duration);
@@ -122,20 +127,28 @@ namespace DatasmithSolidworks
 
                 if (ComponentTransform != null)
                 {
-					MathTransform ComponentWorldTransform = RootTransform.IMultiply(ComponentTransform);
+					MathTransform ComponentWorldTransform = RootTransform != null ? RootTransform.IMultiply(ComponentTransform) : ComponentTransform;
 					MathTransform ParentWorldTransform = RootTransform;
 
 					Component2 Parent = Component.GetParent();
 
 					if (Parent != null)
 					{
-						ParentWorldTransform = RootTransform.IMultiply(Parent.GetTotalTransform(true));
+						ParentWorldTransform = RootTransform != null ? RootTransform.IMultiply(Parent.GetTotalTransform(true)) : Parent.GetTotalTransform(true);
 					}
 
-					MathTransform ParentWorldTransformInverse = ParentWorldTransform.Inverse();
-					MathTransform ComponentLocalTransform = ComponentWorldTransform.IMultiply(ParentWorldTransformInverse);
+					MathTransform ComponentLocalTransform;
+					if (ParentWorldTransform != null)
+					{
+						MathTransform ParentInverse = ParentWorldTransform.Inverse();
+						ComponentLocalTransform = ComponentWorldTransform.IMultiply(ParentInverse);
+					}					
+					else
+					{
+						ComponentLocalTransform = ComponentWorldTransform;
+					}
 
-                    FAnimation.FChannel Channel = Anim.GetChannel(Component);
+					FAnimation.FChannel Channel = Anim.GetChannel(Component);
                     if (Channel == null)
                     {
                         Channel = Anim.NewChannel(Component);

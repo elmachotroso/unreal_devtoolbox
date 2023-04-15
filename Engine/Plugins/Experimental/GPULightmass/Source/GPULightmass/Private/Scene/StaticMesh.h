@@ -5,6 +5,7 @@
 #include "LightmapStorage.h"
 #include "GeometryInterface.h"
 #include "Components/StaticMeshComponent.h"
+#include "LocalVertexFactory.h"
 
 namespace GPULightmass
 {
@@ -17,8 +18,6 @@ public:
 
 	TArray<FColorVertexBuffer*> LODOverrideColorVertexBuffers;
 	TArray<TUniformBufferRef<FLocalVertexFactoryUniformShaderParameters>> LODOverrideColorVFUniformBuffers;
-
-	FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters;
 
 	TArray<FMeshBatch> GetMeshBatchesForGBufferRendering(int32 LODIndex);
 

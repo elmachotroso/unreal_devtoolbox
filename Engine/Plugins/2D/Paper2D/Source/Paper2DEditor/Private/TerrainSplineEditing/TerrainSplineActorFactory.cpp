@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TerrainSplineActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "PaperTerrainActor.h"
 #include "PaperTerrainMaterial.h"
 #include "PaperTerrainComponent.h"
 #include "PaperRuntimeSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TerrainSplineActorFactory)
 
 //////////////////////////////////////////////////////////////////////////
 // UTerrainSplineActorFactory
@@ -42,7 +44,7 @@ bool UTerrainSplineActorFactory::CanCreateActorFrom(const FAssetData& AssetData,
 {
 	if (GetDefault<UPaperRuntimeSettings>()->bEnableTerrainSplineEditing)
 	{
-		if (AssetData.IsValid() && AssetData.GetClass()->IsChildOf(UPaperTerrainMaterial::StaticClass()))
+		if (AssetData.IsValid() && AssetData.IsInstanceOf(UPaperTerrainMaterial::StaticClass()))
 		{
 			return true;
 		}
@@ -56,3 +58,4 @@ bool UTerrainSplineActorFactory::CanCreateActorFrom(const FAssetData& AssetData,
 		return false;
 	}
 }
+

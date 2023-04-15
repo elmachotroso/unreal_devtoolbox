@@ -15,6 +15,7 @@
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Misc/IQueuedWork.h"
+#include "ProfilingDebugging/CountersTrace.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "LevelEditor.h"
 #include "SLevelViewport.h"
@@ -89,6 +90,8 @@ namespace StaticMeshCompilingManagerImpl
 FStaticMeshCompilingManager::FStaticMeshCompilingManager()
 	: Notification(GetAssetNameFormat())
 {
+	StaticMeshCompilingManagerImpl::EnsureInitializedCVars();
+
 	PostReachabilityAnalysisHandle = FCoreUObjectDelegates::PostReachabilityAnalysis.AddRaw(this, &FStaticMeshCompilingManager::OnPostReachabilityAnalysis);
 }
 
@@ -160,8 +163,6 @@ FQueuedThreadPool* FStaticMeshCompilingManager::GetThreadPool() const
 	static FQueuedThreadPoolDynamicWrapper* GStaticMeshThreadPool = nullptr;
 	if (GStaticMeshThreadPool == nullptr && FAssetCompilingManager::Get().GetThreadPool() != nullptr)
 	{
-		StaticMeshCompilingManagerImpl::EnsureInitializedCVars();
-
 		// Static meshes will be scheduled on the asset thread pool, where concurrency limits might by dynamically adjusted depending on memory constraints.
 		GStaticMeshThreadPool = new FQueuedThreadPoolDynamicWrapper(FAssetCompilingManager::Get().GetThreadPool(), -1, [](EQueuedWorkPriority) { return EQueuedWorkPriority::Low; });
 
@@ -212,13 +213,13 @@ bool FStaticMeshCompilingManager::IsAsyncStaticMeshCompilationEnabled() const
 		return false;
 	}
 
-	StaticMeshCompilingManagerImpl::EnsureInitializedCVars();
-
 	return CVarAsyncStaticMeshStandard.AsyncCompilation.GetValueOnAnyThread() != 0;
 }
 
+TRACE_DECLARE_INT_COUNTER(QueuedStaticMeshCompilation, TEXT("AsyncCompilation/QueuedStaticMesh"));
 void FStaticMeshCompilingManager::UpdateCompilationNotification()
 {
+	TRACE_COUNTER_SET(QueuedStaticMeshCompilation, GetNumRemainingMeshes());
 	Notification.Update(GetNumRemainingMeshes());
 }
 
@@ -355,6 +356,8 @@ void FStaticMeshCompilingManager::AddStaticMeshes(TArrayView<UStaticMesh* const>
 		check(StaticMesh->AsyncTask != nullptr);
 		RegisteredStaticMesh.Emplace(StaticMesh);
 	}
+
+	TRACE_COUNTER_SET(QueuedStaticMeshCompilation, GetNumRemainingMeshes());
 }
 
 void FStaticMeshCompilingManager::FinishCompilation(TArrayView<UStaticMesh* const> InStaticMeshes)
@@ -479,8 +482,7 @@ void FStaticMeshCompilingManager::FinishCompilationsForGame()
 				{
 					for (const UStaticMeshComponent* Component : ObjectCacheScope.GetContext().GetStaticMeshComponents(StaticMesh))
 					{
-						if (Component->IsRegistered() &&
-							PIEWorlds.Contains(Component->GetWorld()) &&
+						if (PIEWorlds.Contains(Component->GetWorld()) &&
 							(PlayInEditorMode == 0 || Component->GetCollisionEnabled() != ECollisionEnabled::NoCollision || Component->IsNavigationRelevant() || Component->bAlwaysCreatePhysicsState || Component->CanCharacterStepUpOn != ECB_No))
 						{
 							if (PlayInEditorMode == 2)

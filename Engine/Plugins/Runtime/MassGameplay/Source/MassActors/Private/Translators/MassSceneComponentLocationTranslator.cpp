@@ -3,13 +3,14 @@
 #include "Translators/MassSceneComponentLocationTranslator.h"
 #include "MassCommonTypes.h"
 #include "Components/SceneComponent.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassCommonTypes.h"
 
 //----------------------------------------------------------------------//
 //  UMassSceneComponentLocationToMassTranslator
 //----------------------------------------------------------------------//
 UMassSceneComponentLocationToMassTranslator::UMassSceneComponentLocationToMassTranslator()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)EProcessorExecutionFlags::All;
 	ExecutionOrder.ExecuteInGroup = UE::Mass::ProcessorGroupNames::SyncWorldToMass;
@@ -23,9 +24,9 @@ void UMassSceneComponentLocationToMassTranslator::ConfigureQueries()
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassSceneComponentLocationToMassTranslator::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassSceneComponentLocationToMassTranslator::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
 		const TConstArrayView<FMassSceneComponentWrapperFragment> ComponentList = Context.GetFragmentView<FMassSceneComponentWrapperFragment>();
 		const TArrayView<FTransformFragment> LocationList = Context.GetMutableFragmentView<FTransformFragment>();
@@ -45,11 +46,13 @@ void UMassSceneComponentLocationToMassTranslator::Execute(UMassEntitySubsystem& 
 //  UMassSceneComponentLocationToActorTranslator
 //----------------------------------------------------------------------//
 UMassSceneComponentLocationToActorTranslator::UMassSceneComponentLocationToActorTranslator()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)EProcessorExecutionFlags::All;
 	ExecutionOrder.ExecuteInGroup = UE::Mass::ProcessorGroupNames::UpdateWorldFromMass;
 	ExecutionOrder.ExecuteAfter.Add(UE::Mass::ProcessorGroupNames::Movement);
 	RequiredTags.Add<FMassSceneComponentLocationCopyToActorTag>();
+	bRequiresGameThreadExecution = true;
 }
 
 void UMassSceneComponentLocationToActorTranslator::ConfigureQueries()
@@ -57,11 +60,12 @@ void UMassSceneComponentLocationToActorTranslator::ConfigureQueries()
 	AddRequiredTagsToQuery(EntityQuery);
 	EntityQuery.AddRequirement<FMassSceneComponentWrapperFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.RequireMutatingWorldAccess(); // due to mutating World by setting actor's location
 }
 
-void UMassSceneComponentLocationToActorTranslator::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassSceneComponentLocationToActorTranslator::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 		{
 			const TConstArrayView<FMassSceneComponentWrapperFragment> ComponentList = Context.GetFragmentView<FMassSceneComponentWrapperFragment>();
 			const TArrayView<FTransformFragment> LocationList = Context.GetMutableFragmentView<FTransformFragment>();

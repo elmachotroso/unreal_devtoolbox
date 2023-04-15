@@ -12,12 +12,6 @@
 #include "TechSoftUtils.h"
 #include "TUniqueTechSoftObj.h"
 
-// to avoid changing a public header in 5.0.1. Cleaned in 5.1
-namespace CADLibrary::TechSoftUtils
-{
-CADINTERFACES_API void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
-} 
-
 bool FCADModelToTechSoftConverterBase::RepairTopology()
 {
 #ifdef USE_TECHSOFT_SDK
@@ -30,7 +24,7 @@ bool FCADModelToTechSoftConverterBase::RepairTopology()
 		A3DRiBrepModel** OutNewBReps;
 		uint32 OutNewBRepCount;
 		const double SewTolerance = CADLibrary::FImportParameters::GStitchingTolerance;
-		const double FileUnit = 0.1; // CAD Models from (Wire or Rhino) imported in TechSoft are imported in mm so BodyUnit = 0.1 
+		const double FileUnit = 1.; // BReps from Rhino and Alias are converted in mm
 		CADLibrary::TechSoftInterface::SewBReps((A3DRiBrepModel**) RiRepresentationItems.GetData(), RiRepresentationItems.Num(), SewTolerance, FileUnit, SewOptionsData.GetPtr(), &OutNewBReps, OutNewBRepCount);
 
 		RiRepresentationItems.Empty(OutNewBRepCount);
@@ -43,7 +37,7 @@ bool FCADModelToTechSoftConverterBase::RepairTopology()
 	return true;
 }
 
-void FCADModelToTechSoftConverterBase::InitializeProcess(double InMetricUnit)
+void FCADModelToTechSoftConverterBase::InitializeProcess()
 {
 	RiRepresentationItems.Empty();
 	ModelFile.Reset();
@@ -95,7 +89,8 @@ bool FCADModelToTechSoftConverterBase::Tessellate(const CADLibrary::FMeshParamet
 		return false;
 	}
 
-	return CADLibrary::ConvertBodyMeshToMeshDescription(ImportParameters, InMeshParameters, BodyMesh, OutMeshDescription);
+	CADLibrary::FMeshConversionContext MeshConversionContext(ImportParameters, InMeshParameters);
+	return CADLibrary::ConvertBodyMeshToMeshDescription(MeshConversionContext, BodyMesh, OutMeshDescription);
 }
 
 void FCADModelToTechSoftConverterBase::AddSurfaceDataForMesh(const TCHAR* InFilePath, const CADLibrary::FMeshParameters& InMeshParameters, const FDatasmithTessellationOptions& InTessellationOptions, FDatasmithMeshElementPayload& OutMeshPayload) const

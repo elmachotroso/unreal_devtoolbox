@@ -2,10 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "Curves/CurveOwnerInterface.h"
-#include "UObject/WeakObjectPtr.h"
+#include "Curves/RichCurve.h"
 #include "Engine/CurveTable.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class UObject;
+struct FRealCurve;
 
 /**
  * Handle to a particular row in a table, used for editing individual curves
@@ -17,13 +24,13 @@ struct FCurveTableEditorHandle : public FCurveOwnerInterface
 		, RowName(NAME_None)
 	{ }
 
-	FCurveTableEditorHandle(const UCurveTable* InCurveTable, FName InRowName)
+	FCurveTableEditorHandle(UCurveTable* InCurveTable, FName InRowName)
 		: CurveTable(InCurveTable)
 		, RowName(InRowName)
 	{ }
 
 	/** Pointer to table we want a row from */
-	TWeakObjectPtr<const UCurveTable> CurveTable;
+	TWeakObjectPtr<UCurveTable> CurveTable;
 
 	/** Name of row in the table that we want */
 	FName RowName;
@@ -35,11 +42,8 @@ struct FCurveTableEditorHandle : public FCurveOwnerInterface
 	virtual void MakeTransactional() override;
 	virtual void OnCurveChanged(const TArray<FRichCurveEditInfo>& ChangedCurveEditInfos) override;
 	virtual bool IsValidCurve(FRichCurveEditInfo CurveInfo) override;
-	virtual TArray<const UObject*> GetOwners() const override
-	{ 
-		//Note this is read only so we return nothing
-		return TArray<const UObject*>(); 
-	}
+	virtual TArray<const UObject*> GetOwners() const override;
+	
 
 	//~ End FCurveOwnerInterface Interface.
 

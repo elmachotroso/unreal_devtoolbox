@@ -12,6 +12,7 @@
 #include "String/Find.h"
 #include "Templates/UnrealTemplate.h"
 #include "Traits/ElementType.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 #include "Traits/IsCharType.h"
 #include "Traits/IsContiguousContainer.h"
 #include <type_traits>
@@ -42,7 +43,7 @@ namespace UE::Core::Private
  * ProcessPath(Object->GetPathName());
  *
  * A string view is implicitly constructible from null-terminated strings, from contiguous ranges
- * of characters such as FString and TStringBuilder, and from literals such as TEXT("..."_SV).
+ * of characters such as FString and TStringBuilder, and from literals such as TEXTVIEW("...").
  *
  * A string view is cheap to copy and is meant to be passed by value. Avoid passing by reference.
  *
@@ -69,7 +70,7 @@ namespace UE::Core::Private
  *	UseString(CString);
  *	UseString(StringBuilder);
  *	UseString(TEXT("ABC"));
- *	UseString(TEXT("ABC"_SV));
+ *	UseString(TEXTVIEW("ABC"));
  * @endcode
  */
 template <typename CharType>
@@ -99,8 +100,15 @@ public:
 	}
 
 	/** Construct a view of the null-terminated string pointed to by InData. */
-	template <typename OtherCharType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<OtherCharType, CharType>()>* = nullptr>
+	template <
+		typename OtherCharType,
+		std::enable_if_t<
+			TAnd<
+				TIsCharType<OtherCharType>,
+				TIsCharEncodingCompatibleWith<OtherCharType, CharType>
+			>::Value
+		>* = nullptr
+	>
 	constexpr inline TStringView(const OtherCharType* InData)
 		: DataPtr((const CharType*)InData)
 		, Size(InData ? TCString<CharType>::Strlen((const CharType*)InData) : 0)
@@ -108,8 +116,15 @@ public:
 	}
 
 	/** Construct a view of InSize characters beginning at InData. */
-	template <typename OtherCharType,
-		std::enable_if_t<FPlatformString::IsCharEncodingCompatibleWith<OtherCharType, CharType>()>* = nullptr>
+	template <
+		typename OtherCharType,
+		std::enable_if_t<
+			TAnd<
+				TIsCharType<OtherCharType>,
+				TIsCharEncodingCompatibleWith<OtherCharType, CharType>
+			>::Value
+		>* = nullptr
+	>
 	constexpr inline TStringView(const OtherCharType* InData, int32 InSize)
 		: DataPtr((const CharType*)InData)
 		, Size(InSize)
@@ -119,9 +134,11 @@ public:
 	/** Construct a view from a contiguous range of characters, such as FString or TStringBuilder. */
 	template <typename CharRangeType,
 		std::enable_if_t<
-			TIsContiguousContainer<CharRangeType>::Value &&
-			TIsCharType<TElementType_T<CharRangeType>>::Value &&
-			FPlatformString::IsCharEncodingCompatibleWith<TElementType_T<CharRangeType>, CharType>() &&
+			TAnd<
+				TIsContiguousContainer<CharRangeType>,
+				TIsCharType<TElementType_T<CharRangeType>>,
+				TIsCharEncodingCompatibleWith<TElementType_T<CharRangeType>, CharType>
+			>::Value &&
 			!std::is_array_v<std::remove_reference_t<CharRangeType>> &&
 			!std::is_same_v<CharRangeType, ViewType>
 		>* = nullptr>
@@ -152,7 +169,7 @@ public:
 	/** Modifies the view to remove the given number of characters from the end. */
 	inline void RemoveSuffix(int32 CharCount) { Size -= CharCount; }
 	/** Resets to an empty view */
-	inline void Reset() { DataPtr = nullptr; Size = 0; }
+	inline void		Reset()								{ DataPtr = nullptr; Size = 0; }
 
 	// Operations
 
@@ -210,7 +227,7 @@ public:
 	 * Check whether this view is equivalent to a character range.
 	 *
 	 * @param Other        A character range that is comparable with the character type of this view.
-	 * @param SearchCase   Whether the comparison should ignore case.
+	 * @param SearchCase Whether the comparison should ignore case.
 	 */
 	template <typename OtherRangeType, decltype(MakeStringView(DeclVal<OtherRangeType>()))* = nullptr>
 	[[nodiscard]] inline bool Equals(OtherRangeType&& Other, ESearchCase::Type SearchCase = ESearchCase::CaseSensitive) const
@@ -223,7 +240,7 @@ public:
 	 * Check whether this view is equivalent to a string view.
 	 *
 	 * @param Other        A string that is comparable with the character type of this view.
-	 * @param SearchCase   Whether the comparison should ignore case.
+	 * @param SearchCase Whether the comparison should ignore case.
 	 */
 	template <typename OtherCharType,
 		std::enable_if_t<TIsCharType<OtherCharType>::Value>* = nullptr>
@@ -233,7 +250,7 @@ public:
 	 * Compare this view with a character range.
 	 *
 	 * @param Other        A character range that is comparable with the character type of this view.
-	 * @param SearchCase   Whether the comparison should ignore case.
+	 * @param SearchCase Whether the comparison should ignore case.
 	 * @return 0 is equal, negative if this view is less, positive if this view is greater.
 	 */
 	template <typename OtherRangeType, decltype(MakeStringView(DeclVal<OtherRangeType>()))* = nullptr>
@@ -257,7 +274,7 @@ public:
 	 * Compare this view with a null-terminated string.
 	 *
 	 * @param Other        A null-terminated string that is comparable with the character type of this view.
-	 * @param SearchCase   Whether the comparison should ignore case.
+	 * @param SearchCase Whether the comparison should ignore case.
 	 * @return 0 is equal, negative if this view is less, positive if this view is greater.
 	 */
 	template <typename OtherCharType>
@@ -299,7 +316,7 @@ public:
 	 * Search the view for the first occurrence of a character.
 	 *
 	 * @param Search           The character to search for. Comparison is lexicographic.
-	 * @param OutIndex [out]   The position at which the character was found, or INDEX_NONE if not found.
+	 * @param OutIndex [out] The position at which the character was found, or INDEX_NONE if not found.
 	 * @return True if the character was found in the view, otherwise false.
 	 */
 	inline bool FindChar(CharType Search, int32& OutIndex) const;
@@ -308,10 +325,22 @@ public:
 	 * Search the view for the last occurrence of a character.
 	 *
 	 * @param Search           The character to search for. Comparison is lexicographic.
-	 * @param OutIndex [out]   The position at which the character was found, or INDEX_NONE if not found.
+	 * @param OutIndex [out] The position at which the character was found, or INDEX_NONE if not found.
 	 * @return True if the character was found in the view, otherwise false.
 	 */
 	inline bool FindLastChar(CharType Search, int32& OutIndex) const;
+
+	/**
+	 * Tests if index is valid, i.e. greater than or equal to zero, and less than the number of characters in the string view.
+	 *
+	 * @param Index Index to test.
+	 *
+	 * @returns True if index is valid. False otherwise.
+	 */
+	UE_NODISCARD FORCEINLINE bool IsValidIndex(int32 Index) const
+	{
+		return Index >= 0 && Index < Len();
+	}
 
 public:
 	/**
@@ -336,10 +365,10 @@ constexpr inline auto MakeStringView(CharPtrOrRangeType&& CharPtrOrRange) -> dec
 	return TStringView(Forward<CharPtrOrRangeType>(CharPtrOrRange));
 }
 
-template <typename CharPtrType, typename SizeType>
-constexpr inline auto MakeStringView(CharPtrType&& CharPtr, SizeType&& Size) -> decltype(TStringView(Forward<CharPtrType>(CharPtr), Forward<SizeType>(Size)))
+template <typename CharPtrType>
+constexpr inline auto MakeStringView(CharPtrType&& CharPtr, int32 Size) -> decltype(TStringView(Forward<CharPtrType>(CharPtr), Size))
 {
-	return TStringView(Forward<CharPtrType>(CharPtr), Forward<SizeType>(Size));
+	return TStringView(Forward<CharPtrType>(CharPtr), Size);
 }
 
 template <typename CharType>
@@ -351,27 +380,32 @@ constexpr inline auto GetNum(TStringView<CharType> String)
 //////////////////////////////////////////////////////////////////////////
 
 #if PLATFORM_TCHAR_IS_UTF8CHAR
+UE_DEPRECATED(5.1, "The _SV literal is deprecated. Use TEXTVIEW.")
 inline FStringView operator "" _SV(const ANSICHAR* String, size_t Size)
 {
 	return FStringView((const UTF8CHAR*)String, Size);
 }
 #else
+UE_DEPRECATED(5.1, "The _SV literal is deprecated. Use TEXTVIEW.")
 constexpr inline FStringView operator "" _SV(const TCHAR* String, size_t Size)
 {
 	return FStringView(String, Size);
 }
 #endif
 
+UE_DEPRECATED(5.1, "The _ASV literal is deprecated. Use ANSITEXTVIEW.")
 constexpr inline FAnsiStringView operator "" _ASV(const ANSICHAR* String, size_t Size)
 {
 	return FAnsiStringView(String, Size);
 }
 
+UE_DEPRECATED(5.1, "The _WSV literal is deprecated. Use WIDETEXTVIEW.")
 constexpr inline FWideStringView operator "" _WSV(const WIDECHAR* String, size_t Size)
 {
 	return FWideStringView(String, Size);
 }
 
+UE_DEPRECATED(5.1, "The _U8SV literal is deprecated. Use UTF8TEXTVIEW.")
 /*constexpr*/ inline FUtf8StringView operator "" _U8SV(const ANSICHAR* String, size_t Size)
 {
 	// Would like this operator to be constexpr, but cannot be until after this operator can take a UTF8CHAR*
@@ -380,13 +414,42 @@ constexpr inline FWideStringView operator "" _WSV(const WIDECHAR* String, size_t
 }
 
 #if PLATFORM_TCHAR_IS_UTF8CHAR
-	#define TEXTVIEW(str) (str##_SV)
+inline FStringView operator "" _PrivateSV(const ANSICHAR* String, size_t Size)
+{
+	return FStringView((const UTF8CHAR*)String, Size);
+}
 #else
-	#define TEXTVIEW(str) TEXT(str##_SV)
+constexpr inline FStringView operator "" _PrivateSV(const TCHAR* String, size_t Size)
+{
+	return FStringView(String, Size);
+}
 #endif
-#define ANSITEXTVIEW(str) (str##_ASV)
-#define WIDETEXTVIEW(str) PREPROCESSOR_JOIN(WIDETEXT(str), _WSV)
-#define UTF8TEXTVIEW(str) (str##_U8SV)
+
+constexpr inline FAnsiStringView operator "" _PrivateASV(const ANSICHAR* String, size_t Size)
+{
+	return FAnsiStringView(String, Size);
+}
+
+constexpr inline FWideStringView operator "" _PrivateWSV(const WIDECHAR* String, size_t Size)
+{
+	return FWideStringView(String, Size);
+}
+
+/*constexpr*/ inline FUtf8StringView operator "" _PrivateU8SV(const ANSICHAR* String, size_t Size)
+{
+	// Would like this operator to be constexpr, but cannot be until after this operator can take a UTF8CHAR*
+	// rather than an ANSICHAR*, which won't be until we have C++20 char8_t string literals.
+	return FUtf8StringView(reinterpret_cast<const UTF8CHAR*>(String), Size);
+}
+
+#if PLATFORM_TCHAR_IS_UTF8CHAR
+	#define TEXTVIEW(str) (str##_PrivateSV)
+#else
+	#define TEXTVIEW(str) TEXT(str##_PrivateSV)
+#endif
+#define ANSITEXTVIEW(str) (str##_PrivateASV)
+#define WIDETEXTVIEW(str) PREPROCESSOR_JOIN(WIDETEXT(str), _PrivateWSV)
+#define UTF8TEXTVIEW(str) (str##_PrivateU8SV)
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -586,14 +649,14 @@ inline bool TStringView<CharType>::EndsWith(ViewType Suffix, ESearchCase::Type S
 
 template <typename CharType>
 inline int32 TStringView<CharType>::Find(const ViewType Search, const int32 StartPosition) const
-{
+			{
 	const int32 Index = UE::String::FindFirst(RightChop(StartPosition), Search);
 	return Index == INDEX_NONE ? INDEX_NONE : Index + StartPosition;
 }
 
 template <typename CharType>
 inline bool TStringView<CharType>::FindChar(const CharType Search, int32& OutIndex) const
-{
+	{
 	OutIndex = UE::String::FindFirstChar(*this, Search);
 	return OutIndex != INDEX_NONE;
 }

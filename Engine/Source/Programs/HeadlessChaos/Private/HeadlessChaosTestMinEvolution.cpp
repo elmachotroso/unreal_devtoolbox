@@ -2,13 +2,11 @@
 
 #include "HeadlessChaos.h"
 
-#include "Chaos/Collision/NarrowPhase.h"
 #include "Chaos/Collision/ParticlePairBroadPhase.h"
 #include "Chaos/Collision/ParticlePairCollisionDetector.h"
 #include "Chaos/Evolution/PBDMinEvolution.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/PBDCollisionConstraints.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDRigidParticles.h"
 #include "Chaos/PBDRigidSpringConstraints.h"
 
@@ -42,22 +40,20 @@ namespace ChaosTest
 		TArrayCollectionArray<FRotation3> ParticlePrevRs;
 		FCollisionConstraints Collisions(ParticlesContainer, CollidedParticles, ParticleMaterials, PerParticleMaterials, nullptr);
 		FBasicBroadPhase BroadPhase(&ActivePotentiallyCollidingPairs, nullptr, nullptr);
-		FNarrowPhase NarrowPhase(0, 0, Collisions.GetConstraintAllocator());
-		FCollisionDetector CollisionDetector(BroadPhase, NarrowPhase, Collisions);
-		TSimpleConstraintRule<FCollisionConstraints> CollisionsRule(1, Collisions);
+		FCollisionDetector CollisionDetector(BroadPhase, Collisions);
 		// End collisions stuff
 
 		// Springs
 		FPBDRigidSpringConstraints Springs;
-		TSimpleConstraintRule<FPBDRigidSpringConstraints> SpringsRule(0, Springs);
 
 		// Evolution
 		// @todo(ccaulfield): this should start with some reasonable default iterations
 		FPBDMinEvolution Evolution(ParticlesContainer, ParticlePrevXs, ParticlePrevRs, CollisionDetector, 0);
-		Evolution.SetNumIterations(1);
-		Evolution.SetNumPushOutIterations(0);
+		Evolution.SetNumPositionIterations(6);
+		Evolution.SetNumVelocityIterations(1);
+		Evolution.SetNumProjectionIterations(1);
 
-		Evolution.AddConstraintRule(&SpringsRule);
+		Evolution.AddConstraintContainer(Springs);
 		Evolution.SetGravity(FVec3(0));
 
 		FReal Dt = 1.0f / 30.0f;

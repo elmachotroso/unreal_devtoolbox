@@ -36,6 +36,8 @@
 #include "Chaos/ChaosArchive.h"
 #include "GeometryCollectionProxyData.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionObject)
+
 DEFINE_LOG_CATEGORY_STATIC(LogGeometryCollectionInternal, Log, All);
 
 bool GeometryCollectionAssetForceStripOnCook = false;
@@ -73,7 +75,10 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, ClusterGroupIndex(0)
 	, MaxClusterLevel(100)
 	, DamageThreshold({ 500000.f, 50000.f, 5000.f })
+	, bUseSizeSpecificDamageThreshold(false)
+	, PerClusterOnlyDamageThreshold(false)
 	, ClusterConnectionType(EClusterConnectionTypeEnum::Chaos_MinimalSpanningSubsetDelaunayTriangulation)
+	, ConnectionGraphBoundsFilteringMargin(0)
 	, bUseFullPrecisionUVs(false)
 	, bStripOnCook(false)
 	, EnableNanite(false)
@@ -89,10 +94,13 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, bMassAsDensity(true)
 	, Mass(2500.0f)
 	, MinimumMassClamp(0.1f)
+	, bImportCollisionFromSource(false)
 	, bRemoveOnMaxSleep(false)
 	, MaximumSleepTime(5.0, 10.0)
 	, RemovalDuration(2.5, 5.0)
-	, EnableRemovePiecesOnFracture(false)
+	, bSlowMovingAsSleeping(true)
+	, SlowMovingVelocityThreshold(1)
+	, EnableRemovePiecesOnFracture_DEPRECATED(false)
 	, GeometryCollection(new FGeometryCollection())
 {
 	PersistentGuid = FGuid::NewGuid();
@@ -281,7 +289,8 @@ void UGeometryCollection::UpdateConvexGeometry()
 	if (GeometryCollection)
 	{
 		FGeometryCollectionConvexPropertiesInterface::FConvexCreationProperties ConvexProperties = GeometryCollection->GetConvexProperties();
-		FGeometryCollectionConvexUtility::CreateNonOverlappingConvexHullData(GeometryCollection.Get(), ConvexProperties.FractionRemove, ConvexProperties.SimplificationThreshold, ConvexProperties.CanExceedFraction);
+		FGeometryCollectionConvexUtility::CreateNonOverlappingConvexHullData(GeometryCollection.Get(), ConvexProperties.FractionRemove, 
+			ConvexProperties.SimplificationThreshold, ConvexProperties.CanExceedFraction, ConvexProperties.RemoveOverlaps, ConvexProperties.OverlapRemovalShrinkPercent);
 		InvalidateCollection();
 	}
 #endif
@@ -340,33 +349,9 @@ void UGeometryCollection::GetSharedSimulationParams(FSharedSimulationParameters&
 		FillSharedSimulationSizeSpecificData(OutParams.SizeSpecificData[Idx+1], SizeSpecificData[Idx]);
 	}
 
-	if (EnableRemovePiecesOnFracture)
-	{
-		FixupRemoveOnFractureMaterials(OutParams);
-	}
-
+	OutParams.bUseImportedCollisionImplicits = bImportCollisionFromSource;
+	
 	OutParams.SizeSpecificData.Sort();	//can we do this at editor time on post edit change?
-}
-
-void UGeometryCollection::FixupRemoveOnFractureMaterials(FSharedSimulationParameters& SharedParms) const
-{
-	// Match RemoveOnFracture materials with materials in model and record the material indices
-
-	int32 NumMaterials = Materials.Num();
-	for (int32 MaterialIndex = 0; MaterialIndex < NumMaterials; MaterialIndex++)
-	{
-		UMaterialInterface* MaterialInfo = Materials[MaterialIndex];
-
-		for (int32 ROFMaterialIndex = 0; ROFMaterialIndex < RemoveOnFractureMaterials.Num(); ROFMaterialIndex++)
-		{
-			if (MaterialInfo == RemoveOnFractureMaterials[ROFMaterialIndex])
-			{
-				SharedParms.RemoveOnFractureIndices.Add(MaterialIndex);
-				break;
-			}
-		}
-
-	}
 }
 
 void UGeometryCollection::Reset()
@@ -377,6 +362,7 @@ void UGeometryCollection::Reset()
 		GeometryCollection->Empty();
 		Materials.Empty();
 		EmbeddedGeometryExemplar.Empty();
+		AutoInstanceMeshes.Empty();
 		InvalidateCollection();
 	}
 }
@@ -658,6 +644,14 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 	if (bIsCookedOrCooking && Ar.IsSaving())
 	{
 #if WITH_EDITOR
+		// if we have a valid selection material, let's make sure we replace it with one that will be cooked
+		// this avoid getting warning about the selected material being reference but not cooked
+		const int32 SelectedMaterialIndex = GetBoneSelectedMaterialIndex();
+		if (!Materials.IsEmpty() && Materials.IsValidIndex(SelectedMaterialIndex))
+		{
+			Materials[SelectedMaterialIndex] = Materials[0];
+		}
+
 		if (bStripOnCook && EnableNanite && NaniteData)
 		{
 			// If this is a cooked archive, we strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
@@ -812,6 +806,18 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 #endif
 	}
 
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::GeometryCollectionPerChildDamageThreshold)
+	{
+		// prior this version, damage threshold were computed per cluster and propagated to children
+		PerClusterOnlyDamageThreshold = true; 
+	}
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::GeometryCollectionDamagePropagationData)
+	{
+		// prior this version, damage propagation was not enabled by default
+		DamagePropagationData.bEnabled = false;
+	}
+
 #if WITH_EDITORONLY_DATA
 	if (bCreateSimulationData)
 	{
@@ -821,7 +827,7 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 	//for all versions loaded, make sure sim data is up to date
  	if (Ar.IsLoading())
 	{
-		EnsureDataIsCooked();	//make sure loaded content is built
+		EnsureDataIsCooked(true, Ar.IsTransacting());	//make sure loaded content is built
 	}
 #endif
 }
@@ -1035,7 +1041,7 @@ TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::Genera
 	// We also need to resize geometry groups to ensure that they are empty.
 	if (bStripOnCook)
 	{
-		TManagedArray<int32>& TransformToGeometryIndex = DuplicateGeometryCollection->GetAttribute<int32>("TransformToGeometryIndex", FTransformCollection::TransformGroup);
+		const TManagedArray<int32>& TransformToGeometryIndex = DuplicateGeometryCollection->GetAttribute<int32>("TransformToGeometryIndex", FTransformCollection::TransformGroup);
 
 		//
 		// Copy the bounds to the TransformGroup.
@@ -1051,16 +1057,16 @@ TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::Genera
 			DuplicateGeometryCollection->AddAttribute<FBox>("NaniteIndex", "Transform");
 		}
 
-		int32 NumTransforms = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
-		TManagedArray<int32>& NaniteIndex = DuplicateGeometryCollection->GetAttribute<int32>("NaniteIndex", "Transform");
-		TManagedArray<FBox>& TransformBounds = DuplicateGeometryCollection->GetAttribute<FBox>("BoundingBox", "Transform");
-		TManagedArray<FBox>& GeometryBounds = GeometryCollection->GetAttribute<FBox>("BoundingBox", "Geometry");
+		const int32 NumTransforms = GeometryCollection->NumElements(FGeometryCollection::TransformGroup);
+		TManagedArray<int32>& NaniteIndex = DuplicateGeometryCollection->ModifyAttribute<int32>("NaniteIndex", "Transform");
+		TManagedArray<FBox>& TransformBounds = DuplicateGeometryCollection->ModifyAttribute<FBox>("BoundingBox", "Transform");
+		const TManagedArray<FBox>& GeometryBounds = GeometryCollection->GetAttribute<FBox>("BoundingBox", "Geometry");
 
 		NaniteIndex.Fill(INDEX_NONE);
 		for (int TransformIndex = 0; TransformIndex < NumTransforms; TransformIndex++)
 		{
 			NaniteIndex[TransformIndex] = TransformToGeometryIndex[TransformIndex];
-			int32 GeometryIndex = TransformToGeometryIndex[TransformIndex];
+			const int32 GeometryIndex = TransformToGeometryIndex[TransformIndex];
 			if (GeometryIndex != INDEX_NONE)
 			{
 				TransformBounds[TransformIndex] = GeometryBounds[GeometryIndex];
@@ -1138,6 +1144,73 @@ void UGeometryCollection::RemoveExemplars(const TArray<int32>& SortedRemovalIndi
 			EmbeddedGeometryExemplar.RemoveAt(Index);
 		}
 	}
+}
+
+/** find or add a auto instance mesh and return its index */
+const FGeometryCollectionAutoInstanceMesh& UGeometryCollection::GetAutoInstanceMesh(int32 AutoInstanceMeshIndex) const
+{
+	return AutoInstanceMeshes[AutoInstanceMeshIndex];
+}
+
+/**  find or add a auto instance mesh from another one and return its index */
+int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanecMesh)
+{
+	int32 ReturnedIndex = INDEX_NONE;
+
+	for (int32 MeshIndex = 0; MeshIndex < AutoInstanceMeshes.Num(); MeshIndex++)
+	{
+		const FGeometryCollectionAutoInstanceMesh& Mesh = AutoInstanceMeshes[MeshIndex];
+		if (Mesh.StaticMesh == AutoInstanecMesh.StaticMesh && Mesh.Materials == AutoInstanecMesh.Materials)
+		{
+			ReturnedIndex = MeshIndex;
+			break;
+		}
+	}
+	if (ReturnedIndex == INDEX_NONE)
+	{
+		ReturnedIndex = AutoInstanceMeshes.Add(AutoInstanecMesh);
+	}
+	return ReturnedIndex;
+}
+
+int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const UStaticMesh& StaticMesh, const TArray<UMaterialInterface*>& MeshMaterials)
+{
+	int32 ReturnedIndex = INDEX_NONE;
+
+	FSoftObjectPath StaticMeshSoftPath(&StaticMesh);
+
+	for (int32 MeshIndex = 0; MeshIndex < AutoInstanceMeshes.Num(); MeshIndex++)
+	{
+		const FGeometryCollectionAutoInstanceMesh& Mesh = AutoInstanceMeshes[MeshIndex];
+		if (Mesh.StaticMesh == StaticMeshSoftPath)
+		{
+			if (Mesh.Materials.Num() == MeshMaterials.Num())
+			{
+				bool MaterialAreAllTheSame = true;
+				for (int32 MaterialIndex = 0; MaterialIndex < MeshMaterials.Num(); MaterialIndex++)
+				{
+					if (Mesh.Materials[MaterialIndex] != MeshMaterials[MaterialIndex])
+					{
+						MaterialAreAllTheSame = false;
+						break;
+					}
+				}
+				if (MaterialAreAllTheSame)
+				{
+					ReturnedIndex = MeshIndex;
+					break;
+				}
+			}
+		}
+	}
+	if (ReturnedIndex == INDEX_NONE)
+	{
+		FGeometryCollectionAutoInstanceMesh NewMesh;
+		NewMesh.StaticMesh = StaticMeshSoftPath;
+		NewMesh.Materials = MeshMaterials;
+		ReturnedIndex = AutoInstanceMeshes.Emplace(NewMesh);
+	}
+	return ReturnedIndex;
 }
 
 FGuid UGeometryCollection::GetIdGuid() const
@@ -1238,18 +1311,21 @@ bool UGeometryCollection::Modify(bool bAlwaysMarkDirty /*= true*/)
 	return bSuperResult;
 }
 
-void UGeometryCollection::EnsureDataIsCooked(bool bInitResources)
+void UGeometryCollection::EnsureDataIsCooked(bool bInitResources, bool bIsTransacting)
 {
 	if (StateGuid != LastBuiltGuid)
 	{
-		CreateSimulationDataImp(/*bCopyFromDDC=*/ true);
+		CreateSimulationDataImp(/*bCopyFromDDC=*/ !bIsTransacting);
 
 		if (FApp::CanEverRender() && bInitResources)
 		{
 			// If there is no geometry in the collection, we leave Nanite data alone.
 			if (GeometryCollection->NumElements(FGeometryCollection::GeometryGroup) > 0)
 			{
-				NaniteData->InitResources(this);
+				if (NaniteData)
+				{
+					NaniteData->InitResources(this);
+				}
 			}
 		}
 		LastBuiltGuid = StateGuid;

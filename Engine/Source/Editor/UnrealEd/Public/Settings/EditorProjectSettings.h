@@ -192,6 +192,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
 		DisplayName="Default screen percentage mode for realtime editor viewports."))
 	EScreenPercentageMode RealtimeScreenPercentageMode;
+	
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		DisplayName="Default screen percentage mode for path traced editor viewports."))
+	EScreenPercentageMode PathTracerScreenPercentageMode;
 
 	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
 		DisplayName="Default screen percentage mode for non-realtime editor viewports."))
@@ -264,5 +268,5 @@ public:
 	 *
 	 */
 	UPROPERTY(EditAnywhere, config, Category = Warnings)
-	bool RecommendEveryoneUseHordeStorage = false;
+	bool RecommendEveryoneUseUnrealCloudDDC = false;
 };

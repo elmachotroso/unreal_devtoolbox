@@ -10,7 +10,7 @@
 #include "SAssetView.h"
 
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 
 #include "DragDrop/WidgetTemplateDragDropOp.h"
@@ -18,7 +18,7 @@
 #include "Templates/WidgetTemplateClass.h"
 #include "Templates/WidgetTemplateBlueprintClass.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "WidgetBlueprintEditorUtils.h"
 
 #include "IContentBrowserDataModule.h"
@@ -26,11 +26,11 @@
 #include "Settings/WidgetDesignerSettings.h"
 #include "UMGEditorProjectSettings.h"
 #include "WidgetPaletteFavorites.h"
-#include "SLibraryViewModel.h"
+#include "Library/SLibraryViewModel.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
-void FLibraryViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates)
+void FLibraryViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList)
 {
 	TSharedPtr<FWidgetHeaderViewModel> Header = MakeShareable(new FWidgetHeaderViewModel());
 	Header->GroupName = FText::FromString(Category);
@@ -40,7 +40,7 @@ void FLibraryViewModel::BuildWidgetTemplateCategory(FString& Category, TArray<TS
 	Header->Children.Add(TemplateViewModel);
 	WidgetTemplateListViewModels.Add(TemplateViewModel);
 
-	// @TODO: DarenC - Reference for when implementing favorites system
+	// @TODO: DarenC - Reference for when implementing favorites system 
 	//for ( auto& Template : Entry.Value )
 	//{
 	//	TSharedPtr<FWidgetTemplateViewModel> TemplateViewModel = MakeShareable(new FWidgetTemplateViewModel());
@@ -257,7 +257,7 @@ TSharedRef<ITableRow> FWidgetTemplateListViewModel::BuildRow(const TSharedRef<ST
 		.Padding(2.0f)
 		.ShowSelection(false)
 		.ShowWires(false)
-		.Style(FEditorStyle::Get(), "UMGEditor.LibraryView")
+		.Style(FAppStyle::Get(), "UMGEditor.LibraryView")
 		[
 			AssetViewPtr.ToSharedRef()
 		];

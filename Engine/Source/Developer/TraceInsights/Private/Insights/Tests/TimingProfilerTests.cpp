@@ -2,6 +2,7 @@
 
 #include "Insights/Tests/TimingProfilerTests.h"
 
+#include "TraceServices/Model/Threads.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 
@@ -95,6 +96,36 @@ bool EnumerateScopesToFile::RunTest(const FString& Parameters)
 		FString FilePath = FPaths::ProjectSavedDir() + TEXT("/EnumerateScopesToFile.txt");
 		FFileHelper::SaveStringToFile(EnumeratedEventsStr, *FilePath);
 	}
+
+	return !HasAnyErrors();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(InsightsEnumerate10K, "Insights.Enumerate10K", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+bool InsightsEnumerate10K::RunTest(const FString& Parameters)
+{
+	FTimingProfilerTests::FEnumerateTestParams Params;
+	Params.Interval = 0.01;
+	Params.NumEnumerations = 10000;
+
+	FTimingProfilerTests::FCheckValues CheckValues;
+	FTimingProfilerTests::RunEnumerateBenchmark(Params, CheckValues);
+
+	return !HasAnyErrors();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(InsightsEnumerate100K, "Insights.Enumerate100K", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ProductFilter)
+bool InsightsEnumerate100K::RunTest(const FString& Parameters)
+{
+	FTimingProfilerTests::FEnumerateTestParams Params;
+	Params.Interval = 0.01;
+	Params.NumEnumerations = 100000;
+
+	FTimingProfilerTests::FCheckValues CheckValues;
+	FTimingProfilerTests::RunEnumerateBenchmark(Params, CheckValues);
 
 	return !HasAnyErrors();
 }
@@ -222,7 +253,6 @@ bool EnumerateByStartTimeAllTracks5sIntervals::RunTest(const FString& Parameters
 }
 
 #endif // #if !WITH_EDITOR && WITH_DEV_AUTOMATION_TESTS
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FTimingProfilerTests::RunEnumerateBenchmark(const FEnumerateTestParams& InParams, FCheckValues& OutCheckValues)
@@ -279,6 +309,7 @@ void FTimingProfilerTests::RunEnumerateBenchmark(const FEnumerateTestParams& InP
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FTimingProfilerTests::RunEnumerateAsyncBenchmark(const FEnumerateTestParams& InParams, FCheckValues& OutCheckValues)
 {
 	UE_LOG(TimingProfilerTests, Log, TEXT("RUNNING ASYNC ENUMERATE BENCHMARK..."));
@@ -551,4 +582,3 @@ void FTimingProfilerTests::VerifyCheckValues(FAutomationTestBase& Test, FCheckVa
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-

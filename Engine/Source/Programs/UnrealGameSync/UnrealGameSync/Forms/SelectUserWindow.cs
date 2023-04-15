@@ -1,106 +1,104 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Perforce;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+
+#nullable enable
 
 namespace UnrealGameSync
 {
 	partial class SelectUserWindow : Form
 	{
-		class EnumerateUsersTask : IPerforceModalTask
+		static class EnumerateUsersTask
 		{
-			public List<PerforceUserRecord> Users;
-
-			public bool Run(PerforceConnection Perforce, TextWriter Log, out string ErrorMessage)
+			public static async Task<List<UsersRecord>> RunAsync(IPerforceConnection perforce, CancellationToken cancellationToken)
 			{
-				if(!Perforce.FindUsers(out Users, Log))
-				{
-					ErrorMessage = "Unable to enumerate users.";
-					return false;
-				}
-
-				ErrorMessage = null;
-				return true;
+				return await perforce.GetUsersAsync(UsersOptions.None, -1, cancellationToken);
 			}
 		}
 
-		private int SelectedUserIndex;
-		private List<PerforceUserRecord> Users;
+		private int _selectedUserIndex;
+		private List<UsersRecord> _users;
 		
-		private SelectUserWindow(List<PerforceUserRecord> Users, int SelectedUserIndex)
+		private SelectUserWindow(List<UsersRecord> users, int selectedUserIndex)
 		{
 			InitializeComponent();
 
-			this.SelectedUserIndex = SelectedUserIndex;
-			this.Users = Users;
+			this._selectedUserIndex = selectedUserIndex;
+			this._users = users;
 
 			PopulateList();
 			UpdateOkButton();
 		}
 
-		private void MoveSelection(int Delta)
+		private void MoveSelection(int delta)
 		{
 			if(UserListView.Items.Count > 0)
 			{
-				int CurrentIndex = -1;
+				int currentIndex = -1;
 				if(UserListView.SelectedIndices.Count > 0)
 				{
-					CurrentIndex = UserListView.SelectedIndices[0];
+					currentIndex = UserListView.SelectedIndices[0];
 				}
 
-				int NextIndex = CurrentIndex + Delta;
-				if(NextIndex < 0)
+				int nextIndex = currentIndex + delta;
+				if(nextIndex < 0)
 				{
-					NextIndex = 0;
+					nextIndex = 0;
 				}
-				else if(NextIndex >= UserListView.Items.Count)
+				else if(nextIndex >= UserListView.Items.Count)
 				{
-					NextIndex = UserListView.Items.Count - 1;
+					nextIndex = UserListView.Items.Count - 1;
 				}
 
-				if(CurrentIndex != NextIndex)
+				if(currentIndex != nextIndex)
 				{
-					if(CurrentIndex != -1)
+					if(currentIndex != -1)
 					{
-						UserListView.Items[CurrentIndex].Selected = false;
+						UserListView.Items[currentIndex].Selected = false;
 					}
 
-					UserListView.Items[NextIndex].Selected = true;
-					SelectedUserIndex = (int)UserListView.Items[NextIndex].Tag;
+					UserListView.Items[nextIndex].Selected = true;
+					_selectedUserIndex = (int)UserListView.Items[nextIndex].Tag;
 				}
 			}
 		}
 
-		protected override bool ProcessCmdKey(ref Message Msg, Keys KeyData)
+		protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
 		{
-			if(KeyData == Keys.Up)
+			if(keyData == Keys.Up)
 			{
 				MoveSelection(-1);
 				return true;
 			}
-			else if(KeyData == Keys.Down)
+			else if(keyData == Keys.Down)
 			{
 				MoveSelection(+1);
 				return true;
 			}
-			return base.ProcessCmdKey(ref Msg, KeyData);
+			return base.ProcessCmdKey(ref msg, keyData);
 		}
 
-		private bool IncludeInFilter(PerforceUserRecord User, string[] FilterWords)
+		private bool IncludeInFilter(UsersRecord user, string[] filterWords)
 		{
-			foreach(string FilterWord in FilterWords)
+			foreach(string filterWord in filterWords)
 			{
-				if(User.Name.IndexOf(FilterWord, StringComparison.OrdinalIgnoreCase) == -1 
-					&& User.FullName.IndexOf(FilterWord, StringComparison.OrdinalIgnoreCase) == -1
-					&& User.Email.IndexOf(FilterWord, StringComparison.OrdinalIgnoreCase) == -1)
+				if(user.UserName.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1 
+					&& user.FullName.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1
+					&& user.Email.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1)
 				{
 					return false;
 				}
@@ -113,37 +111,37 @@ namespace UnrealGameSync
 			UserListView.BeginUpdate();
 			UserListView.Items.Clear();
 
-			int SelectedItemIndex = -1;
+			int selectedItemIndex = -1;
 
-			string[] Filter = FilterTextBox.Text.Split(new char[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-			for(int Idx = 0; Idx < Users.Count; Idx++)
+			string[] filter = FilterTextBox.Text.Split(new char[]{' '}, StringSplitOptions.RemoveEmptyEntries);
+			for(int idx = 0; idx < _users.Count; idx++)
 			{
-				PerforceUserRecord User = Users[Idx];
-				if(IncludeInFilter(User, Filter))
+				UsersRecord user = _users[idx];
+				if(IncludeInFilter(user, filter))
 				{
-					ListViewItem Item = new ListViewItem(User.Name);
-					Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, User.FullName));
-					Item.SubItems.Add(new ListViewItem.ListViewSubItem(Item, User.Email));
-					Item.Tag = (int)Idx;
-					UserListView.Items.Add(Item);
+					ListViewItem item = new ListViewItem(user.UserName);
+					item.SubItems.Add(new ListViewItem.ListViewSubItem(item, user.FullName));
+					item.SubItems.Add(new ListViewItem.ListViewSubItem(item, user.Email));
+					item.Tag = (int)idx;
+					UserListView.Items.Add(item);
 
-					if(SelectedItemIndex == -1 && Idx >= SelectedUserIndex)
+					if(selectedItemIndex == -1 && idx >= _selectedUserIndex)
 					{
-						SelectedItemIndex = UserListView.Items.Count - 1;
-						Item.Selected = true;
+						selectedItemIndex = UserListView.Items.Count - 1;
+						item.Selected = true;
 					}
 				}
 			}
 
-			if(SelectedItemIndex == -1 && UserListView.Items.Count > 0)
+			if(selectedItemIndex == -1 && UserListView.Items.Count > 0)
 			{
-				SelectedItemIndex = UserListView.Items.Count - 1;
-				UserListView.Items[SelectedItemIndex].Selected = true;
+				selectedItemIndex = UserListView.Items.Count - 1;
+				UserListView.Items[selectedItemIndex].Selected = true;
 			}
 
-			if(SelectedItemIndex != -1)
+			if(selectedItemIndex != -1)
 			{
-				UserListView.EnsureVisible(SelectedItemIndex);
+				UserListView.EnsureVisible(selectedItemIndex);
 			}
 
 			UserListView.EndUpdate();
@@ -151,32 +149,26 @@ namespace UnrealGameSync
 			UpdateOkButton();
 		}
 
-		public static bool ShowModal(IWin32Window Owner, PerforceConnection Perforce, TextWriter Log, out string SelectedUserName)
+		public static bool ShowModal(IWin32Window owner, IPerforceSettings perforceSettings, IServiceProvider serviceProvider, [NotNullWhen(true)] out string? selectedUserName)
 		{
-			EnumerateUsersTask Task = new EnumerateUsersTask();
+			ILogger<SelectUserWindow> logger = serviceProvider.GetRequiredService<ILogger<SelectUserWindow>>();
 
-			string ErrorMessage;
-			ModalTaskResult Result = PerforceModalTask.Execute(Owner, Perforce, Task, "Finding users", "Finding users, please wait...", Log, out ErrorMessage);
-			if(Result != ModalTaskResult.Succeeded)
+			ModalTask<List<UsersRecord>>? usersTask = PerforceModalTask.Execute(owner, "Finding users", "Finding users, please wait...", perforceSettings, EnumerateUsersTask.RunAsync, logger);
+			if(usersTask == null || !usersTask.Succeeded)
 			{
-				if(!String.IsNullOrEmpty(ErrorMessage))
-				{
-					MessageBox.Show(Owner, ErrorMessage);
-				}
-
-				SelectedUserName = null;
+				selectedUserName = null;
 				return false;
 			}
 
-			SelectUserWindow SelectUser = new SelectUserWindow(Task.Users, 0);
-			if(SelectUser.ShowDialog(Owner) == DialogResult.OK)
+			SelectUserWindow selectUser = new SelectUserWindow(usersTask.Result, 0);
+			if(selectUser.ShowDialog(owner) == DialogResult.OK)
 			{
-				SelectedUserName = Task.Users[SelectUser.SelectedUserIndex].Name;
+				selectedUserName = usersTask.Result[selectUser._selectedUserIndex].UserName;
 				return true;
 			}
 			else
 			{
-				SelectedUserName = null;
+				selectedUserName = null;
 				return false;
 			}
 		}
@@ -195,7 +187,7 @@ namespace UnrealGameSync
 		{
 			if(UserListView.SelectedItems.Count > 0)
 			{
-				SelectedUserIndex = (int)UserListView.SelectedItems[0].Tag;
+				_selectedUserIndex = (int)UserListView.SelectedItems[0].Tag;
 				DialogResult = DialogResult.OK;
 				Close();
 			}

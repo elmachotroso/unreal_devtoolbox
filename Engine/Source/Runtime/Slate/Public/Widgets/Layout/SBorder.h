@@ -74,6 +74,25 @@ public:
 
 		/** Flips the background image if the localization's flow direction is RightToLeft */
 		SLATE_ARGUMENT(bool, FlipForRightToLeftFlowDirection)
+
+		FArguments& Padding(float Uniform)
+		{
+			_Padding = FMargin(Uniform);
+			return *this;
+		}
+
+		FArguments& Padding(float Horizontal, float Vertical)
+		{
+			_Padding = FMargin(Horizontal, Vertical);
+			return *this;
+		}
+
+		FArguments& Padding(float Left, float Top, float Right, float Bottom)
+		{
+			_Padding = FMargin(Left, Top, Right, Bottom);
+			return *this;
+		}
+
 	SLATE_END_ARGS()
 
 	/**
@@ -108,6 +127,9 @@ public:
 	/** Sets the color and opacity of the background image of this border. */
 	void SetBorderBackgroundColor(TAttribute<FSlateColor> InColorAndOpacity);
 
+	/** Gets the color and opacity of the background image of this border. */
+	FSlateColor GetBorderBackgroundColor() const { return BorderBackgroundColorAttribute.Get(); }
+
 	/** Set the desired size scale multiplier */
 	void SetDesiredSizeScale(TAttribute<FVector2D> InDesiredSizeScale);
 	
@@ -120,11 +142,14 @@ public:
 	/** See Padding attribute */
 	void SetPadding(TAttribute<FMargin> InPadding);
 
-	/** See ShowEffectWhenDisabled attribute */
+	/** Set whether or not to show the disabled effect when this border is disabled */
 	void SetShowEffectWhenDisabled(TAttribute<bool> InShowEffectWhenDisabled);
 
-	/** See BorderImage attribute */
+	/** Set the image to draw for this border. */
 	void SetBorderImage(TAttribute<const FSlateBrush*> InBorderImage);
+
+	/** Get the image to draw for this border. */
+	const FSlateBrush* GetBorderImage() const { return BorderImageAttribute.Get(); }
 
 public:
 	// SWidget interface
@@ -136,10 +161,12 @@ protected:
 	virtual FVector2D ComputeDesiredSize(float) const override;
 	//~End SWidget overrides.
 
-	const FSlateBrush* GetBorderImage() const { return BorderImageAttribute.Get(); }
-	FSlateColor GetBorderBackgroundColor() const { return BorderBackgroundColorAttribute.Get(); }
-	FVector2D GetDesiredSizeScale() const { return DesiredSizeScaleAttribute.Get(); }
+	/** Get whether or not to show the disabled effect when this border is disabled */
 	bool GetShowDisabledEffect() const { return ShowDisabledEffectAttribute.Get(); }
+
+	/** Get the desired size scale multiplier */
+	FVector2D GetDesiredSizeScale() const { return DesiredSizeScaleAttribute.Get(); }
+
 	TSlateAttributeRef<const FSlateBrush*> GetBorderImageAttribute() const { return TSlateAttributeRef<const FSlateBrush*>(SharedThis(this), BorderImageAttribute); }
 	TSlateAttributeRef<FSlateColor> GetBorderBackgroundColorAttribute() const { return TSlateAttributeRef<FSlateColor>(SharedThis(this), BorderBackgroundColorAttribute); }
 	TSlateAttributeRef<FVector2D> GetDesiredSizeScaleAttribute() const { return TSlateAttributeRef<FVector2D>(SharedThis(this), DesiredSizeScaleAttribute); }

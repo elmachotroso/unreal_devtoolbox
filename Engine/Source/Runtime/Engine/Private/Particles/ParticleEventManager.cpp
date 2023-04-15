@@ -2,6 +2,8 @@
 
 #include "Particles/ParticleEventManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ParticleEventManager)
+
 /*-----------------------------------------------------------------------------
 	AParticleEventManager implementation.
 -----------------------------------------------------------------------------*/
@@ -9,6 +11,22 @@ AParticleEventManager::AParticleEventManager(const FObjectInitializer& ObjectIni
 	: Super(ObjectInitializer)
 {
 	SetCanBeDamaged(false);
+	bReplayRewindable = true;
+}
+
+void AParticleEventManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	Super::EndPlay(EndPlayReason);
+	if (EndPlayReason == EEndPlayReason::Destroyed)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (World->MyParticleEventManager == this)
+			{
+				World->MyParticleEventManager = nullptr;
+			}
+		}
+	}
 }
 
 void AParticleEventManager::HandleParticleSpawnEvents( UParticleSystemComponent* Component, const TArray<FParticleEventSpawnData>& SpawnEvents )
@@ -66,3 +84,4 @@ void AParticleEventManager::HandleParticleBurstEvents( UParticleSystemComponent*
 		}
 	}
 }
+

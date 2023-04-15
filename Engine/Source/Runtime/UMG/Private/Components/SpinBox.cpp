@@ -5,6 +5,8 @@
 #include "Engine/Font.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SpinBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -33,11 +35,13 @@ USpinBox::USpinBox(const FObjectInitializer& ObjectInitializer)
 	MinFractionalDigits = 1;
 	MaxFractionalDigits = 6;
 	bAlwaysUsesDeltaSnap = false;
+	bEnableSlider = true;
 	Delta = 0;
 	SliderExponent = 1;
 	MinDesiredWidth = 0;
 	ClearKeyboardFocusOnCommit = false;
 	SelectAllTextOnCommit = true;
+	KeyboardType = EVirtualKeyboardType::Number;
 
 	if (DefaultSpinBoxStyle == nullptr)
 	{
@@ -85,6 +89,7 @@ TSharedRef<SWidget> USpinBox::RebuildWidget()
 	.ClearKeyboardFocusOnCommit(ClearKeyboardFocusOnCommit)
 	.SelectAllTextOnCommit(SelectAllTextOnCommit)
 	.Justification(Justification)
+	.KeyboardType(EVirtualKeyboardType::AsKeyboardType(KeyboardType.GetValue()))
 	.OnValueChanged(BIND_UOBJECT_DELEGATE(FOnFloatValueChanged, HandleOnValueChanged))
 	.OnValueCommitted(BIND_UOBJECT_DELEGATE(FOnFloatValueCommitted, HandleOnValueCommitted))
 	.OnBeginSliderMovement(BIND_UOBJECT_DELEGATE(FSimpleDelegate, HandleOnBeginSliderMovement))
@@ -107,6 +112,7 @@ void USpinBox::SynchronizeProperties()
 	MySpinBox->SetMinFractionalDigits(MinFractionalDigits);
 	MySpinBox->SetMaxFractionalDigits(MaxFractionalDigits);
 	MySpinBox->SetAlwaysUsesDeltaSnap(bAlwaysUsesDeltaSnap);
+	MySpinBox->SetEnableSlider(bEnableSlider);
 
 	// Set optional values
 	bOverride_MinValue ? SetMinValue(MinValue) : ClearMinValue();
@@ -400,26 +406,6 @@ void USpinBox::HandleOnEndSliderMovement(float InValue)
 	}
 }
 
-void USpinBox::PostLoad()
-{
-	Super::PostLoad();
-
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
-	{
-		if ( Style_DEPRECATED != nullptr )
-		{
-			const FSpinBoxStyle* StylePtr = Style_DEPRECATED->GetStyle<FSpinBoxStyle>();
-			if ( StylePtr != nullptr )
-			{
-				WidgetStyle = *StylePtr;
-			}
-
-			Style_DEPRECATED = nullptr;
-		}
-	}
-}
-
-
 #if WITH_EDITOR
 
 const FText USpinBox::GetPaletteCategory()
@@ -432,3 +418,4 @@ const FText USpinBox::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

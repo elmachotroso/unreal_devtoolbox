@@ -2,10 +2,7 @@
 
 #include "Modules/ModuleManager.h"
 
-#include "VulkanRHIPrivate.h"
-#include "VulkanRHIBridge.h"
-
-#include "DynamicRHI.h"
+#include "IVulkanDynamicRHI.h"
 
 #include "Amf_Common.h"
 #include "Amf_EncoderH264.h"
@@ -36,7 +33,7 @@ public:
 					UE_LOG(LogEncoderAMF, Error, TEXT("Vulkan AMF is currently unsuported and has been disabled."));
 					return;
 #endif
-					AMF.InitializeContext("Vulkan", NULL);
+					AMF.InitializeContext(ERHIInterfaceType::Vulkan, "Vulkan", NULL);
 					amf::AMFContext1Ptr pContext1(AMF.GetContext());
 
 					amf_size NumDeviceExtensions = 0;
@@ -49,7 +46,7 @@ public:
 
 					AMF.DestroyContext();
 
-					VulkanRHIBridge::AddEnabledDeviceExtensionsAndLayers(ExtentionsToAdd, TArray<const ANSICHAR*>());
+					IVulkanDynamicRHI::AddEnabledDeviceExtensionsAndLayers(ExtentionsToAdd, TArray<const ANSICHAR*>());
 				}
 
 				FCoreDelegates::OnPostEngineInit.AddLambda([]() {FVideoEncoderAmf_H264::Register(FVideoEncoderFactory::Get());});

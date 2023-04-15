@@ -1,29 +1,55 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserDefinedStructureCompilerUtils.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Class.h"
-#include "UObject/UnrealType.h"
+
+#include "Algo/Copy.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
 #include "EdGraph/EdGraphPin.h"
-#include "GameFramework/Actor.h"
+#include "EdGraphSchema_K2.h"
+#include "EdMode.h"
 #include "Engine/Blueprint.h"
-#include "UserDefinedStructure/UserDefinedStructEditorData.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/UserDefinedStruct.h"
-#include "EdMode.h"
-#include "EdGraphSchema_K2.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
-#include "K2Node_StructOperation.h"
-#include "KismetCompilerMisc.h"
-#include "KismetCompiler.h"
-#include "Kismet2/StructureEditorUtils.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Serialization/ObjectWriter.h"
-#include "Serialization/ObjectReader.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/StructureEditorUtils.h"
+#include "KismetCompiler.h"
+#include "KismetCompilerMisc.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Tools/LegacyEdModeWidgetHelpers.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
 #include "UObject/FieldIterator.h"
-#include "Algo/Copy.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UserDefinedStructure/UserDefinedStructEditorData.h"
 
 #define LOCTEXT_NAMESPACE "StructureCompiler"
 
@@ -150,9 +176,6 @@ struct FUserDefinedStructureCompilerInner
 
 		if (UUserDefinedStructEditorData* EditorData = Cast<UUserDefinedStructEditorData>(StructToClean->EditorData))
 		{
-			// Ensure that editor data is in sync w/ the current default instance (if valid) so that it can be reinitialized later.
-			EditorData->RefreshValuesFromDefaultInstance();
-
 			EditorData->CleanDefaultInstance();
 		}
 
@@ -391,6 +414,12 @@ struct FUserDefinedStructureCompilerInner
 
 			FUserDefinedStructureCompilerInner::CleanAndSanitizeStruct(Struct);
 			FUserDefinedStructureCompilerInner::InnerCompileStruct(Struct, GetDefault<UEdGraphSchema_K2>(), MessageLog);
+			
+			if (UUserDefinedStructEditorData* EditorData = Cast<UUserDefinedStructEditorData>(Struct->EditorData))
+			{
+				// Ensure that editor data is in sync w/ the current default instance (if valid) so that it can be reinitialized later.
+				EditorData->RefreshValuesFromDefaultInstance();
+			}
 
 			DependencyMap.RemoveAtSwap(StructureToCompileIndex);
 
@@ -469,6 +498,60 @@ void FUserDefinedStructureCompilerUtils::CompileStruct(class UUserDefinedStruct*
 				ChangedStruct->MarkPackageDirty();
 			}
 		}
+	}
+}
+
+void FUserDefinedStructureCompilerUtils::ReplaceStructWithTempDuplicateByPredicate(
+	UUserDefinedStruct* StructureToReinstance,
+	TFunctionRef<bool(FStructProperty* InStructProperty)> ShouldReplaceStructInStructProperty,
+	TFunctionRef<void(UStruct* InStruct)> PostReplace)
+{
+	if (StructureToReinstance)
+	{
+		UUserDefinedStruct* DuplicatedStruct = NULL;
+		{
+			const FString ReinstancedName = FString::Printf(TEXT("STRUCT_REINST_%s"), *StructureToReinstance->GetName());
+			const FName UniqueName = MakeUniqueObjectName(GetTransientPackage(), UUserDefinedStruct::StaticClass(), FName(*ReinstancedName));
+
+			TGuardValue<bool> IsDuplicatingClassForReinstancing(GIsDuplicatingClassForReinstancing, true);
+			DuplicatedStruct = (UUserDefinedStruct*)StaticDuplicateObject(StructureToReinstance, GetTransientPackage(), UniqueName, ~RF_Transactional); 
+		}
+
+		DuplicatedStruct->Guid = StructureToReinstance->Guid;
+		DuplicatedStruct->Bind();
+		DuplicatedStruct->StaticLink(true);
+		DuplicatedStruct->PrimaryStruct = StructureToReinstance;
+		DuplicatedStruct->Status = EUserDefinedStructureStatus::UDSS_Duplicate;
+		DuplicatedStruct->SetFlags(RF_Transient);
+		DuplicatedStruct->AddToRoot();
+
+		CastChecked<UUserDefinedStructEditorData>(DuplicatedStruct->EditorData)->RecreateDefaultInstance();
+
+		// List of unique classes and structs to regenerate
+		TSet<UStruct*> StructsToRegenerateReferencesFor;
+
+		for (TAllFieldsIterator<FStructProperty> FieldIt(RF_NoFlags, EInternalObjectFlags::Garbage); FieldIt; ++FieldIt)
+		{
+			FStructProperty* StructProperty = *FieldIt;
+			if (StructProperty && (StructureToReinstance == StructProperty->Struct))
+			{
+				if(ShouldReplaceStructInStructProperty(StructProperty))
+				{
+					StructProperty->Struct = DuplicatedStruct;
+					StructsToRegenerateReferencesFor.Add(StructProperty->GetOwnerClass());
+				}
+			}
+		}
+
+		for (UStruct* Struct : StructsToRegenerateReferencesFor)
+		{
+			Struct->CollectBytecodeAndPropertyReferencedObjects();
+
+			PostReplace(Struct);
+		}
+
+		// as property owners are re-created, the duplicated struct will be GCed
+		DuplicatedStruct->RemoveFromRoot();
 	}
 }
 

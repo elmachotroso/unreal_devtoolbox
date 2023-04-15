@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ITDSpatializationSourceSettingsFactory.h"
+#include "AudioAnalytics.h"
 #include "ITDSpatializationSourceSettings.h"
 
 FText FAssetTypeActions_ITDSpatializationSettings::GetName() const
@@ -45,6 +46,7 @@ UITDSpatializationSettingsFactory::UITDSpatializationSettingsFactory(const FObje
 UObject* UITDSpatializationSettingsFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName InName, EObjectFlags Flags,
 	UObject* Context, FFeedbackContext* Warn)
 {
+	Audio::Analytics::RecordEvent_Usage("Spatialization.SettingsCreated");
 	return NewObject<UITDSpatializationSourceSettings>(InParent, InName, Flags);
 }
 

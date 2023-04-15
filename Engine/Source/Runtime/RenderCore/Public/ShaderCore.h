@@ -6,17 +6,44 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "Templates/RefCounting.h"
-#include "Misc/SecureHash.h"
-#include "Misc/Paths.h"
-#include "Misc/CoreStats.h"
-#include "UniformBuffer.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
 #include "Containers/SortedMap.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "HAL/UnrealMemory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/CString.h"
+#include "Misc/CoreStats.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "PixelFormat.h"
+#include "RHIDefinitions.h"
+#include "Serialization/Archive.h"
+#include "Serialization/MemoryLayout.h"
+#include "ShaderParameterMetadata.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Function.h"
+#include "Templates/RefCounting.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UniformBuffer.h"
 
 class Error;
+class FMemoryImageWriter;
+class FMemoryUnfreezeContent;
+class FPointerTableBase;
+class FSHA1;
+class ITargetPlatform;
 
 /**
  * Controls whether shader related logs are visible.
@@ -85,6 +112,9 @@ inline TStatId GetMemoryStatType(EShaderFrequency ShaderFrequency)
 
 /** Initializes shader hash cache from IShaderFormatModules. This must be called before reading any shader include. */
 extern RENDERCORE_API void InitializeShaderHashCache();
+
+/** Updates the PreviewPlatform's IncludeDirectory to match that of the Parent Platform*/
+extern RENDERCORE_API void UpdateIncludeDirectoryForPreviewPlatform(EShaderPlatform PreviewPlatform, EShaderPlatform ActualPlatform);
 
 /** Checks if shader include isn't skipped by a shader hash cache. */
 extern RENDERCORE_API void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform);
@@ -183,6 +213,9 @@ enum class EShaderParameterType : uint8
 	SRV,
 	UAV,
 
+	BindlessResourceIndex,
+	BindlessSamplerIndex,
+
 	Num
 };
 
@@ -232,10 +265,14 @@ public:
 	FShaderParameterMap()
 	{}
 
+	RENDERCORE_API TOptional<FParameterAllocation> FindParameterAllocation(const FString& ParameterName) const;
 	RENDERCORE_API bool FindParameterAllocation(const TCHAR* ParameterName,uint16& OutBufferIndex,uint16& OutBaseIndex,uint16& OutSize) const;
 	RENDERCORE_API bool ContainsParameterAllocation(const TCHAR* ParameterName) const;
 	RENDERCORE_API void AddParameterAllocation(const TCHAR* ParameterName,uint16 BufferIndex,uint16 BaseIndex,uint16 Size,EShaderParameterType ParameterType);
 	RENDERCORE_API void RemoveParameterAllocation(const TCHAR* ParameterName);
+
+	/** Returns an array of all parameters with the given type. */
+	RENDERCORE_API TArray<FString> GetAllParameterNamesOfType(EShaderParameterType InType) const;
 
 	/** Checks that all parameters are bound and asserts if any aren't in a debug build
 	* @param InVertexFactoryType can be 0
@@ -407,6 +444,7 @@ inline FArchive& operator<<(FArchive& Ar, FUniformBufferEntry& Entry)
 	Ar << Entry.StaticSlotName;
 	Ar << Entry.LayoutHash;
 	Ar << Entry.BindingFlags;
+	Ar << Entry.bNoEmulatedUniformBuffer;
 	return Ar;
 }
 
@@ -580,7 +618,7 @@ struct FShaderCompilerEnvironment
 		RenderTargetOutputFormatsMap.Append(Other.RenderTargetOutputFormatsMap);
 		RemoteServerData.Append(Other.RemoteServerData);
 		ShaderFormatCVars.Append(Other.ShaderFormatCVars);
-		FullPrecisionInPS = Other.FullPrecisionInPS;
+		FullPrecisionInPS |= Other.FullPrecisionInPS;
 	}
 
 private:
@@ -593,13 +631,21 @@ struct FSharedShaderCompilerEnvironment final : public FShaderCompilerEnvironmen
 	virtual ~FSharedShaderCompilerEnvironment() = default;
 };
 
+enum class EShaderResourceUsageFlags : uint8
+{
+	GlobalUniformBuffer = 1 << 0,
+	BindlessResources   = 1 << 1,
+	BindlessSamplers    = 1 << 2,
+};
+ENUM_CLASS_FLAGS(EShaderResourceUsageFlags)
+
 // if this changes you need to make sure all shaders get invalidated
 struct FShaderCodePackedResourceCounts
 {
 	// for FindOptionalData() and AddOptionalData()
 	static const uint8 Key = 'p';
 
-	bool bGlobalUniformBufferUsed;
+	EShaderResourceUsageFlags UsageFlags;
 	uint8 NumSamplers;
 	uint8 NumSRVs;
 	uint8 NumCBs;
@@ -994,16 +1040,16 @@ extern RENDERCORE_API FString ParseVirtualShaderFilename(const FString& InFilena
 extern RENDERCORE_API bool ReplaceVirtualFilePathForShaderPlatform(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform);
 
 /** Replaces virtual platform path with appropriate autogen path for a given ShaderPlatform. Returns true if path was changed. */
-extern RENDERCORE_API bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform);
+extern RENDERCORE_API bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform, const FName* InShaderPlatformName = nullptr);
 
 /** Loads the shader file with the given name.  If the shader file couldn't be loaded, throws a fatal error. */
-extern RENDERCORE_API void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents);
+extern RENDERCORE_API void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents, const FName* ShaderPlatformName = nullptr);
 
 /**
  * Recursively populates IncludeFilenames with the include filenames from Filename
  */
-extern RENDERCORE_API void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit=100);
-extern RENDERCORE_API void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit = 100);
+extern RENDERCORE_API void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit=100, const FName* ShaderPlatformName = nullptr);
+extern RENDERCORE_API void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit = 100, const FName* ShaderPlatformName = nullptr);
 
 /**
  * Calculates a Hash for the given filename if it does not already exist in the Hash cache.
@@ -1027,13 +1073,13 @@ extern RENDERCORE_API void HashShaderFileWithIncludes(FArchive& HashingArchive, 
  */
 extern RENDERCORE_API const class FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, EShaderPlatform ShaderPlatform);
 
-extern void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables);
+extern void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables, const FName* ShaderPlatformName = nullptr);
 
 /**
  * Flushes the shader file and CRC cache, and regenerates the binary shader files if necessary.
  * Allows shader source files to be re-read properly even if they've been modified since startup.
  */
-extern RENDERCORE_API void FlushShaderFileCache();
+extern RENDERCORE_API void FlushShaderFileCache(const FName* ShaderPlatformName = nullptr);
 
 extern RENDERCORE_API void VerifyShaderSourceFiles(EShaderPlatform ShaderPlatform);
 
@@ -1052,9 +1098,9 @@ extern void GenerateReferencedUniformBuffers(
 
 struct FUniformBufferNameSortOrder
 {
-	FORCEINLINE bool operator()(const TCHAR* Name1, const TCHAR* Name2)
+	FORCEINLINE bool operator()(const TCHAR* Name1, const TCHAR* Name2) const
 	{
-		return FCString::Strcmp(Name1, Name2) <= 0;
+		return FCString::Strcmp(Name1, Name2) < 0;
 	}
 };
 
@@ -1082,5 +1128,5 @@ extern RENDERCORE_API void ResetAllShaderSourceDirectoryMappings();
  */
 extern RENDERCORE_API void AddShaderSourceDirectoryMapping(const FString& VirtualShaderDirectory, const FString& RealShaderDirectory);
 
-extern RENDERCORE_API void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString VirtualFilePath, EShaderPlatform ShaderPlatform);
-extern RENDERCORE_API void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShaderPlatform ShaderPlatform);
+extern RENDERCORE_API void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString VirtualFilePath, EShaderPlatform ShaderPlatform, const FName* ShaderPlatformName = nullptr);
+extern RENDERCORE_API void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShaderPlatform ShaderPlatform, const FName* ShaderPlatformName = nullptr);

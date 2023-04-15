@@ -11,8 +11,8 @@
 #include "ToolDataVisualizer.h"
 
 #include "AssetUtils/MeshDescriptionUtil.h"
-#include "Engine/Classes/Engine/StaticMesh.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 
 #include "TargetInterfaces/MaterialProvider.h"
 #include "TargetInterfaces/MeshDescriptionCommitter.h"
@@ -20,6 +20,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "TargetInterfaces/StaticMeshBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshTangentsTool)
 
 using namespace UE::Geometry;
 
@@ -361,3 +363,4 @@ void UMeshTangentsTool::ComputeMikkTDeviations(const TSet<int32>* DegenerateTris
 
 
 #undef LOCTEXT_NAMESPACE
+

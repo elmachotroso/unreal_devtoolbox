@@ -2,92 +2,144 @@
 
 
 #include "AnimationBlueprintEditor.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
-#include "EditorReimportHandler.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#include "EdGraph/EdGraph.h"
-#include "AssetData.h"
-#include "Animation/AnimSequenceBase.h"
-#include "Animation/AnimBlueprint.h"
-#include "Editor.h"
-#include "IDetailsView.h"
-#include "IAnimationBlueprintEditorModule.h"
-#include "AnimationBlueprintEditorModule.h"
 
-#include "BlueprintEditorTabs.h"
-#include "SKismetInspector.h"
-
-#include "EdGraphUtilities.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "Kismet2/DebuggerCommands.h"
-
-#include "AnimationBlueprintEditorMode.h"
-
+#include "Algo/Transform.h"
+#include "AnimGraphCommands.h"
+#include "AnimGraphNode_AimOffsetLookAt.h"
 #include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_BlendListByInt.h"
 #include "AnimGraphNode_BlendSpaceEvaluator.h"
+#include "AnimGraphNode_BlendSpaceGraph.h"
 #include "AnimGraphNode_BlendSpacePlayer.h"
 #include "AnimGraphNode_LayeredBoneBlend.h"
-#include "AnimGraphNode_SequencePlayer.h"
-#include "AnimGraphNode_SequenceEvaluator.h"
-#include "AnimGraphNode_PoseByName.h"
-#include "AnimGraphNode_PoseBlendNode.h"
+#include "AnimGraphNode_LinkedAnimGraphBase.h"
 #include "AnimGraphNode_MultiWayBlend.h"
-
-#include "Animation/AnimNotifies/AnimNotifyState.h"
-
-#include "AnimPreviewInstance.h"
-
-
-#include "AnimationEditorUtils.h"
-#include "Framework/Commands/GenericCommands.h"
-
-#include "SSingleObjectDetailsPanel.h"
-
-#include "IPersonaToolkit.h"
-#include "ISkeletonTree.h"
-#include "ISkeletonEditorModule.h"
-#include "SBlueprintEditorToolbar.h"
-#include "PersonaModule.h"
-#include "IPersonaPreviewScene.h"
-#include "IPersonaEditorModeManager.h"
-#include "AnimationGraph.h"
-#include "IAssetFamily.h"
-#include "PersonaCommonCommands.h"
-#include "AnimGraphCommands.h"
-
-#include "AnimGraphNode_AimOffsetLookAt.h"
+#include "AnimGraphNode_PoseBlendNode.h"
+#include "AnimGraphNode_PoseByName.h"
 #include "AnimGraphNode_RotationOffsetBlendSpace.h"
-#include "Algo/Transform.h"
-#include "ISkeletonTreeItem.h"
-#include "IPersonaViewport.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorFontGlyphs.h"
+#include "AnimGraphNode_RotationOffsetBlendSpaceGraph.h"
+#include "AnimGraphNode_SequenceEvaluator.h"
+#include "AnimGraphNode_SequencePlayer.h"
+#include "AnimNodes/AnimNode_AimOffsetLookAt.h"
+#include "AnimNodes/AnimNode_BlendSpaceEvaluator.h"
+#include "AnimNodes/AnimNode_BlendSpacePlayer.h"
+#include "AnimNodes/AnimNode_PoseBlendNode.h"
+#include "AnimNodes/AnimNode_PoseByName.h"
+#include "AnimNodes/AnimNode_RotationOffsetBlendSpace.h"
+#include "AnimNodes/AnimNode_SequenceEvaluator.h"
+#include "AnimPreviewInstance.h"
+#include "AnimStateEntryNode.h"
+#include "AnimStateNodeBase.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimNode_SequencePlayer.h"
+#include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Animation/AnimNotifyQueue.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimTypes.h"
+#include "Animation/AnimationAsset.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "AnimationBlueprintEditorMode.h"
+#include "AnimationBlueprintEditorModule.h"
+#include "AnimationBlueprintEditorSettings.h"
 #include "AnimationBlueprintInterfaceEditorMode.h"
 #include "AnimationBlueprintTemplateEditorMode.h"
-#include "ToolMenus.h"
-
-#include "PersonaToolMenuContext.h"
-#include "ToolMenuContext.h"
-
-// Hide related nodes feature
-#include "Preferences/AnimationBlueprintEditorOptions.h"
-#include "AnimationBlueprintEditorSettings.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EdGraphNode_Comment.h"
-#include "AnimStateNodeBase.h"
-#include "AnimStateEntryNode.h"
-#include "PersonaUtils.h"
-#include "Subsystems/AssetEditorSubsystem.h"
+#include "AnimationEditorPreviewScene.h"
+#include "AnimationEditorUtils.h"
+#include "AnimationGraph.h"
+#include "AnimationGraphSchema.h"
+#include "AssetRegistry/AssetData.h"
 #include "BlendSpaceDocumentTabFactory.h"
 #include "BlendSpaceGraph.h"
-#include "TabPayload_BlendSpaceGraph.h"
-#include "AnimGraphNode_RotationOffsetBlendSpaceGraph.h"
-#include "AnimGraphNode_BlendSpaceGraph.h"
-#include "ScopedTransaction.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreGlobals.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphNode_Comment.h"
+#include "EdGraphSchema_K2.h"
+#include "EdGraphSchema_K2_Actions.h"
+#include "EdGraphUtilities.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorFontGlyphs.h"
+#include "EditorReimportHandler.h"
+#include "Engine/Blueprint.h"
+#include "Engine/PoseWatch.h"
+#include "Engine/World.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "HAL/PlatformCrt.h"
+#include "IAnimationBlueprintEditorModule.h"
+#include "IAssetFamily.h"
+#include "IDetailsView.h"
+#include "IPersonaEditorModeManager.h"
+#include "IPersonaPreviewScene.h"
+#include "IPersonaToolkit.h"
+#include "IPersonaViewport.h"
+#include "ISkeletonEditorModule.h"
+#include "ISkeletonTree.h"
+#include "ISkeletonTreeItem.h"
+#include "Input/Reply.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/DebuggerCommands.h"
+#include "Layout/Visibility.h"
+#include "Logging/TokenizedMessage.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "PersonaCommonCommands.h"
+#include "PersonaDelegates.h"
+#include "PersonaModule.h"
+#include "PersonaToolMenuContext.h"
+#include "PersonaUtils.h"
+// Hide related nodes feature
+#include "AnimationBlueprintToolMenuContext.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "PersonaPreviewSceneDescription.h"
+#include "Preferences/AnimationBlueprintEditorOptions.h"
 #include "Preferences/PersonaOptions.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorDelegates.h"
+#include "SBlueprintEditorToolbar.h"
+#include "SKismetInspector.h"
+#include "SSingleObjectDetailsPanel.h"
+#include "ScopedTransaction.h"
+#include "Settings/AnimBlueprintSettings.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Subsystems/ImportSubsystem.h"
+#include "TabPayload_BlendSpaceGraph.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "ToolMenuContext.h"
+#include "ToolMenus.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "WorkflowOrientedApp/WorkflowTabManager.h"
+
+class FEditorModeTools;
+class FToolBarBuilder;
+class IAnimationSequenceBrowser;
+class SDockTab;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "AnimationBlueprintEditor"
 
@@ -137,6 +189,56 @@ template <typename TContainerType, typename TPredicate> void SortedContainerDiff
 	}
 }
 
+void FAnimationBlueprintEditor::NotifyAllNodesOnSelection(const bool bInIsSelected)
+{
+	FEditorModeTools& ModeTools = GetEditorModeManager();
+
+	for (TWeakObjectPtr< class UAnimGraphNode_Base > CurrentAnimGraphNode : SelectedAnimGraphNodes)
+	{
+		UAnimGraphNode_Base* const CurrentAnimGraphNodePtr = CurrentAnimGraphNode.Get();
+		FAnimNode_Base* const PreviewNode = FindAnimNode(CurrentAnimGraphNodePtr);
+		
+		// Note: Potentially passing a null PreviewNode ptr when bInIsSelected is false is required to de-select nodes that no longer exist.
+		if (CurrentAnimGraphNodePtr && (!bInIsSelected || PreviewNode))
+		{
+			CurrentAnimGraphNodePtr->OnNodeSelected(bInIsSelected, ModeTools, PreviewNode);
+		}
+	}
+}
+
+void FAnimationBlueprintEditor::NotifyAllNodesOnPoseWatchChanged(const bool IsPoseWatchEnabled)
+{
+	UAnimBlueprint* const AnimBP = GetAnimBlueprint();
+
+	if (AnimBP)
+	{
+		FEditorModeTools& ModeTools = GetEditorModeManager();
+
+		for (TObjectPtr<UPoseWatch> CurrentPoseWatch : AnimBP->PoseWatches)
+		{
+			UAnimGraphNode_Base* const CurrentAnimGraphNodePtr = Cast<UAnimGraphNode_Base>(CurrentPoseWatch->Node.Get());
+			FAnimNode_Base* const PreviewNode = FindAnimNode(CurrentAnimGraphNodePtr);
+
+			// Note: Potentially passing a null PreviewNode ptr when IsPoseWatchEnabled is false is required to un-watch nodes that no longer exist.
+			if (CurrentAnimGraphNodePtr && (!IsPoseWatchEnabled || PreviewNode))
+			{
+				CurrentAnimGraphNodePtr->OnPoseWatchChanged(IsPoseWatchEnabled, CurrentPoseWatch, ModeTools, PreviewNode);
+			}
+		}
+	}
+}
+
+void FAnimationBlueprintEditor::ReleaseAllManagedNodes()
+{
+	NotifyAllNodesOnPoseWatchChanged(false);
+	NotifyAllNodesOnSelection(false);
+}
+
+void FAnimationBlueprintEditor::AcquireAllManagedNodes()
+{
+	NotifyAllNodesOnPoseWatchChanged(true);
+	NotifyAllNodesOnSelection(true);
+}
 
 /////////////////////////////////////////////////////
 // SAnimBlueprintPreviewPropertyEditor
@@ -179,11 +281,11 @@ public:
 			.Padding(0.f, 8.f, 0.f, 0.f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("Persona.PreviewPropertiesWarning"))
+				.BorderImage(FAppStyle::GetBrush("Persona.PreviewPropertiesWarning"))
 				[
 					SNew(STextBlock)
 					.Text(LOCTEXT("AnimBlueprintEditPreviewText", "Changes to preview options are not saved in the asset."))
-					.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+					.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 					.ShadowColorAndOpacity(FLinearColor::Black.CopyWithNewOpacity(0.3f))
 					.ShadowOffset(FVector2D::UnitVector)
 				]
@@ -261,6 +363,34 @@ void FAnimationBlueprintEditor::ExtendMenu()
 	// add extensible menu if exists
 	FAnimationBlueprintEditorModule& AnimationBlueprintEditorModule = FModuleManager::LoadModuleChecked<FAnimationBlueprintEditorModule>("AnimationBlueprintEditor");
 	AddMenuExtender(AnimationBlueprintEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
+
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	// Add in Editor Specific functionality
+	static const FName MenuName = GetToolMenuName();
+	static const FName ToolsMenuName = *(MenuName.ToString() + TEXT(".") + TEXT("Tools"));
+
+	UToolMenu* ToolsMenu = UToolMenus::Get()->ExtendMenu(ToolsMenuName);
+	const FToolMenuInsert SectionInsertLocation("Programming", EToolMenuInsertType::Before);
+
+	UAnimBlueprint* AnimBlueprint = PersonaToolkit->GetAnimBlueprint();
+	if (AnimBlueprint && AnimBlueprint->BlueprintType != BPTYPE_Interface && !AnimBlueprint->bIsTemplate)
+	{
+		ToolsMenu->AddDynamicSection("Persona", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InToolMenu)
+		{
+			TSharedPtr<FAnimationBlueprintEditor> AnimationBlueprintEditor = GetAnimationBlueprintEditor(InToolMenu->Context);
+			if (AnimationBlueprintEditor.IsValid() && AnimationBlueprintEditor->PersonaToolkit.IsValid())
+			{
+				FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
+				FPersonaModule::FCommonToolbarExtensionArgs Args;
+				Args.bPreviewAnimation = false;
+				Args.bPreviewMesh = true;
+				Args.bReferencePose = false;
+				Args.bCreateAsset = true;
+				PersonaModule.AddCommonMenuExtensions(InToolMenu, Args);
+			}
+		}), SectionInsertLocation);
+	}
 }
 
 void FAnimationBlueprintEditor::RegisterMenus()
@@ -283,8 +413,11 @@ void FAnimationBlueprintEditor::InitAnimationBlueprintEditor(const EToolkitMode:
 
 	GetToolkitCommands()->Append(FPlayWorldCommands::GlobalPlayWorldActions.ToSharedRef());
 
+	FPersonaToolkitArgs PersonaToolkitArgs;
+	PersonaToolkitArgs.OnPreviewSceneSettingsCustomized = FOnPreviewSceneSettingsCustomized::FDelegate::CreateSP(this, &FAnimationBlueprintEditor::HandleOnPreviewSceneSettingsCustomized);
+
 	FPersonaModule& PersonaModule = FModuleManager::GetModuleChecked<FPersonaModule>("Persona");
-	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InAnimBlueprint);
+	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InAnimBlueprint, PersonaToolkitArgs);
 
 	PersonaToolkit->GetPreviewScene()->SetDefaultAnimationMode(EPreviewSceneDefaultAnimationMode::AnimationBlueprint);
 	PersonaToolkit->GetPreviewScene()->RegisterOnPreviewMeshChanged(FOnPreviewMeshChanged::CreateSP(this, &FAnimationBlueprintEditor::HandlePreviewMeshChanged));
@@ -401,12 +534,27 @@ void FAnimationBlueprintEditor::InitAnimationBlueprintEditor(const EToolkitMode:
 	// Register for notifications when settings change
 	AnimationBlueprintEditorSettingsChangedHandle = GetMutableDefault<UAnimationBlueprintEditorSettings>()->RegisterOnUpdateSettings(
 		UAnimationBlueprintEditorSettings::FOnUpdateSettingsMulticaster::FDelegate::CreateSP(this, &FAnimationBlueprintEditor::HandleUpdateSettings));
+
+	PersonaToolkit->GetPreviewScene()->SetAllowMeshHitProxies(false);
 }
 
 void FAnimationBlueprintEditor::BindCommands()
 {
 	GetToolkitCommands()->MapAction(FPersonaCommonCommands::Get().TogglePlay,
 		FExecuteAction::CreateRaw(&GetPersonaToolkit()->GetPreviewScene().Get(), &IPersonaPreviewScene::TogglePlayback));
+}
+
+TSharedPtr<FAnimationBlueprintEditor> FAnimationBlueprintEditor::GetAnimationBlueprintEditor(const FToolMenuContext& InMenuContext)
+{
+	if (UAnimationBlueprintToolMenuContext* Context = InMenuContext.FindContext<UAnimationBlueprintToolMenuContext>())
+	{
+		if (Context->AnimationBlueprintEditor.IsValid())
+		{
+			return StaticCastSharedPtr<FAnimationBlueprintEditor>(Context->AnimationBlueprintEditor.Pin());
+		}
+	}
+
+	return TSharedPtr<FAnimationBlueprintEditor>();
 }
 
 void FAnimationBlueprintEditor::ExtendToolbar()
@@ -445,10 +593,6 @@ void FAnimationBlueprintEditor::ExtendToolbar()
 			FToolBarExtensionDelegate::CreateLambda([this](FToolBarBuilder& ParentToolbarBuilder)
 			{
 				FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
-				FPersonaModule::FCommonToolbarExtensionArgs Args;
-				Args.bPreviewAnimation = false;
-				PersonaModule.AddCommonToolbarExtensions(ParentToolbarBuilder, PersonaToolkit.ToSharedRef(), Args);
-
 				TSharedRef<class IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(GetBlueprintObj());
 				AddToolbarWidget(PersonaModule.CreateAssetFamilyShortcutWidget(SharedThis(this), AssetFamily));
 			}
@@ -533,7 +677,14 @@ void FAnimationBlueprintEditor::CreateDefaultCommands()
 void FAnimationBlueprintEditor::OnCreateGraphEditorCommands(TSharedPtr<FUICommandList> GraphEditorCommandsList)
 {
 	GraphEditorCommandsList->MapAction(FAnimGraphCommands::Get().TogglePoseWatch,
-		FExecuteAction::CreateSP(this, &FAnimationBlueprintEditor::OnTogglePoseWatch));
+		FExecuteAction::CreateSP(this, &FAnimationBlueprintEditor::OnTogglePoseWatch),
+		FCanExecuteAction::CreateSP(this, &FAnimationBlueprintEditor::CanTogglePoseWatch)
+	);
+
+	GraphEditorCommandsList->MapAction(FAnimGraphCommands::Get().HideUnboundPropertyPins,
+		FExecuteAction::CreateSP(this, &FAnimationBlueprintEditor::OnHideUnboundPropertyPins),
+		FCanExecuteAction::CreateSP(this, &FAnimationBlueprintEditor::CanHideUnboundPropertyPins)
+	);
 
 	GraphEditorCommandsList->MapAction( FAnimGraphCommands::Get().AddBlendListPin,
 		FExecuteAction::CreateSP( this, &FAnimationBlueprintEditor::OnAddPosePin ),
@@ -695,8 +846,48 @@ void FAnimationBlueprintEditor::OnRemovePosePin()
 	}
 }
 
+bool FAnimationBlueprintEditor::CanTogglePoseWatch()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
+	UAnimBlueprint* AnimBP = GetAnimBlueprint();
+
+	for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+	{
+		if (UAnimGraphNode_Base* SelectedNode = Cast<UAnimGraphNode_Base>(*NodeIt))
+		{
+			UPoseWatch* ExistingPoseWatch = AnimationEditorUtils::FindPoseWatchForNode(SelectedNode, AnimBP);
+			if (ExistingPoseWatch)
+			{
+				return true;
+			}
+			if (SelectedNode->IsPoseWatchable())
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool FAnimationBlueprintEditor::CanHideUnboundPropertyPins()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
+	for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+	{
+		if (UAnimGraphNode_LinkedAnimGraphBase* SelectedNode = Cast<UAnimGraphNode_LinkedAnimGraphBase>(*NodeIt))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void FAnimationBlueprintEditor::OnTogglePoseWatch()
 {
+	ReleaseAllManagedNodes();
+
 	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
 	UAnimBlueprint* AnimBP = GetAnimBlueprint();
 
@@ -722,11 +913,26 @@ void FAnimationBlueprintEditor::OnTogglePoseWatch()
 				}
 				AnimationEditorUtils::OnPoseWatchesChanged().Broadcast(AnimBP, ExistingPoseWatch->Node.Get());
 			}
-			else
+			else if (SelectedNode->IsPoseWatchable())
 			{
 				UPoseWatch* NewPoseWatch = AnimationEditorUtils::MakePoseWatchForNode(AnimBP, SelectedNode);
 				AnimationEditorUtils::OnPoseWatchesChanged().Broadcast(AnimBP, NewPoseWatch->Node.Get());
 			}
+		}
+	}
+
+	AcquireAllManagedNodes();
+}
+
+void FAnimationBlueprintEditor::OnHideUnboundPropertyPins()
+{
+	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
+
+	for (FGraphPanelSelectionSet::TConstIterator NodeIt(SelectedNodes); NodeIt; ++NodeIt)
+	{
+		if (UAnimGraphNode_LinkedAnimGraphBase* SelectedNode = Cast<UAnimGraphNode_LinkedAnimGraphBase>(*NodeIt))
+		{
+			UAnimationGraphSchema::HideUnboundPropertyPins(SelectedNode);
 		}
 	}
 }
@@ -1308,6 +1514,11 @@ FName FAnimationBlueprintEditor::GetToolkitFName() const
 	return FName("AnimationBlueprintEditor");
 }
 
+FName FAnimationBlueprintEditor::GetToolkitContextFName() const
+{
+	return FName("AnimationBlueprintEditor");
+}
+
 FText FAnimationBlueprintEditor::GetBaseToolkitName() const
 {
 	return LOCTEXT("AppLabel", "Animation Blueprint Editor");
@@ -1332,6 +1543,10 @@ FLinearColor FAnimationBlueprintEditor::GetWorldCentricTabColorScale() const
 void FAnimationBlueprintEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 {
 	IAnimationBlueprintEditor::InitToolMenuContext(MenuContext);
+
+	UAnimationBlueprintToolMenuContext* AnimationBlueprintToolMenuContext = NewObject<UAnimationBlueprintToolMenuContext>();
+	AnimationBlueprintToolMenuContext->AnimationBlueprintEditor = SharedThis(this);
+	MenuContext.AddObject(AnimationBlueprintToolMenuContext);
 
 	UPersonaToolMenuContext* Context = NewObject<UPersonaToolMenuContext>();
 	Context->SetToolkit(GetPersonaToolkit());
@@ -1452,6 +1667,17 @@ void FAnimationBlueprintEditor::GetCustomDebugObjects(TArray<FCustomDebugObject>
 	AnimationBlueprintEditorModule.OnGetCustomDebugObjects().Broadcast(*this, DebugList);
 }
 
+FString FAnimationBlueprintEditor::GetCustomDebugObjectLabel(UObject* ObjectBeingDebugged) const
+{
+	UAnimInstance* PreviewInstance = GetPreviewInstance();
+	if (PreviewInstance == ObjectBeingDebugged)
+	{
+		return LOCTEXT("PreviewObjectLabel", "Preview Instance").ToString();
+	}
+
+	return FString();
+}
+
 void FAnimationBlueprintEditor::CreateDefaultTabContents(const TArray<UBlueprint*>& InBlueprints)
 {
 	FBlueprintEditor::CreateDefaultTabContents(InBlueprints);
@@ -1478,6 +1704,8 @@ void FAnimationBlueprintEditor::ClearSelectedActor()
 
 void FAnimationBlueprintEditor::ClearSelectedAnimGraphNodes()
 {
+	ReleaseAllManagedNodes();
+
 	SelectedAnimGraphNodes.Empty();
 }
 
@@ -1545,7 +1773,10 @@ bool FAnimationBlueprintEditor::IsEditable(UEdGraph* InGraph) const
 {
 	bool bEditable = FBlueprintEditor::IsEditable(InGraph);
 
-	bEditable &= (InGraph->GetTypedOuter<UBlueprint>() == GetBlueprintObj());
+	if (InGraph)
+	{
+		bEditable &= (InGraph->GetTypedOuter<UBlueprint>() == GetBlueprintObj());
+	}
 
 	return bEditable;
 }
@@ -1661,6 +1892,71 @@ void FAnimationBlueprintEditor::CreateEditorModeManager()
 	EditorModeManager = MakeShareable(FModuleManager::LoadModuleChecked<FPersonaModule>("Persona").CreatePersonaEditorModeManager());
 }
 
+bool FAnimationBlueprintEditor::IsSectionVisible(NodeSectionID::Type InSectionID) const
+{
+	const UAnimBlueprintSettings* AnimBlueprintSettings = GetDefault<UAnimBlueprintSettings>();
+
+	switch (InSectionID)
+	{
+	case NodeSectionID::GRAPH:
+		return AnimBlueprintSettings->bAllowEventGraphs;
+	case NodeSectionID::ANIMGRAPH:
+	case NodeSectionID::ANIMLAYER:
+	case NodeSectionID::FUNCTION:
+	case NodeSectionID::FUNCTION_OVERRIDABLE:
+	case NodeSectionID::INTERFACE:
+		return true;
+	case NodeSectionID::MACRO:
+		return AnimBlueprintSettings->bAllowMacros;
+	case NodeSectionID::VARIABLE:
+		return true;
+	case NodeSectionID::COMPONENT:
+		return false;
+	case NodeSectionID::DELEGATE:
+		return AnimBlueprintSettings->bAllowDelegates;
+	case NodeSectionID::USER_ENUM:
+	case NodeSectionID::LOCAL_VARIABLE:
+	case NodeSectionID::USER_STRUCT:
+	case NodeSectionID::USER_SORTED:
+		return true;
+	default:
+		break;
+	}
+
+	return true;
+}
+
+bool FAnimationBlueprintEditor::AreEventGraphsAllowed() const
+{
+	const UAnimBlueprintSettings* AnimBlueprintSettings = GetDefault<UAnimBlueprintSettings>();
+	return AnimBlueprintSettings->bAllowEventGraphs;
+}
+
+bool FAnimationBlueprintEditor::AreMacrosAllowed() const
+{
+	const UAnimBlueprintSettings* AnimBlueprintSettings = GetDefault<UAnimBlueprintSettings>();
+	return AnimBlueprintSettings->bAllowMacros;
+}
+
+bool FAnimationBlueprintEditor::AreDelegatesAllowed() const
+{
+	const UAnimBlueprintSettings* AnimBlueprintSettings = GetDefault<UAnimBlueprintSettings>();
+	return AnimBlueprintSettings->bAllowDelegates;
+}
+
+void FAnimationBlueprintEditor::OnCreateComment()
+{
+	TSharedPtr<SGraphEditor> GraphEditor = FocusedGraphEdPtr.Pin();
+	if (GraphEditor.IsValid())
+	{
+		if (UEdGraph* Graph = GraphEditor->GetCurrentGraph())
+		{
+			FEdGraphSchemaAction_K2AddComment CommentAction;
+			CommentAction.PerformAction(Graph, nullptr, GraphEditor->GetPasteLocation());
+		}
+	}
+}
+
 void FAnimationBlueprintEditor::JumpToHyperlink(const UObject* ObjectReference, bool bRequestRename)
 {
 	if(const UBlendSpaceGraph* BlendSpaceGraph = Cast<UBlendSpaceGraph>(ObjectReference))
@@ -1770,15 +2066,9 @@ void FAnimationBlueprintEditor::OnSelectedNodesChangedImpl(const TSet<class UObj
 
 			SortedContainerDifference(OldSelectionSorted, NewSelectionSorted, AddSelection, RemSelection, SortPredicate);
 		}
+		
+		ReleaseAllManagedNodes(); // Register de-selection with all the previously selected nodes.
 
-		// Register de-selection with all the previously selected nodes.
-		for (FSelectedNodePtr CurrentAnimGraphNode : SelectedAnimGraphNodes)
-		{
-			UAnimGraphNode_Base* const CurrentAnimGraphNodePtr = CurrentAnimGraphNode.Get();
-			FAnimNode_Base* const PreviewNode = FindAnimNode(CurrentAnimGraphNodePtr);
-			// intentionally not null checking PreviewNode here, in order to deselect nodes that are no longer included in the runtime graph after recompile
-			CurrentAnimGraphNodePtr->OnNodeSelected(false, *PersonaEditorModeManager, PreviewNode);
-		}
 
 		// Remove all the nodes that are no longer selected.
 		for (FSelectedNodePtr CurrentAnimGraphNode : RemSelection)
@@ -1792,15 +2082,7 @@ void FAnimationBlueprintEditor::OnSelectedNodesChangedImpl(const TSet<class UObj
 			SelectedAnimGraphNodes.Add(CurrentAnimGraphNode);
 		}
 
-		// Register re-selection with all the currently selected nodes.
-		for (FSelectedNodePtr CurrentAnimGraphNode : SelectedAnimGraphNodes)
-		{
-			UAnimGraphNode_Base* const CurrentAnimGraphNodePtr = CurrentAnimGraphNode.Get();
-			if (FAnimNode_Base* const PreviewNode = FindAnimNode(CurrentAnimGraphNodePtr))
-			{
-				CurrentAnimGraphNodePtr->OnNodeSelected(true, *PersonaEditorModeManager, PreviewNode);
-			}
-		}
+		AcquireAllManagedNodes(); // Register re-selection with all the currently selected nodes.
 	}
 
 	bSelectRegularNode = false;
@@ -1837,6 +2119,8 @@ void FAnimationBlueprintEditor::HandlePoseWatchSelectedNodes()
 	TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
 	if (FocusedGraphEd.IsValid())
 	{
+		ReleaseAllManagedNodes(); // Register de-selection with all the previously selected nodes.
+
 		UAnimBlueprint* AnimBP = GetAnimBlueprint();
 		TArray<UEdGraphNode*> AllNodes = FocusedGraphEd->GetCurrentGraph()->Nodes;
 
@@ -1850,7 +2134,7 @@ void FAnimationBlueprintEditor::HandlePoseWatchSelectedNodes()
 			{
 				if (SelectionNodes.Contains(Node))
 				{
-					if (!PoseWatch)
+					if (!PoseWatch && GraphNode->IsPoseWatchable())
 					{
 						PoseWatch = AnimationEditorUtils::MakePoseWatchForNode(AnimBP, GraphNode);
 						PoseWatch->SetShouldDeleteOnDeselect(true);
@@ -1865,7 +2149,132 @@ void FAnimationBlueprintEditor::HandlePoseWatchSelectedNodes()
 				}
 			}
 		}
+
+		AcquireAllManagedNodes(); // Register re-selection with all the currently selected nodes.
 	}
+}
+
+void FAnimationBlueprintEditor::HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder)
+{
+	const TSharedRef<IPropertyHandle> PreviewAnimationBlueprintProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPersonaPreviewSceneDescription, PreviewAnimationBlueprint));
+	const TSharedRef<IPropertyHandle> ApplicationMethodProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPersonaPreviewSceneDescription, ApplicationMethod));
+	const TSharedRef<IPropertyHandle> LinkedAnimGraphTagProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPersonaPreviewSceneDescription, LinkedAnimGraphTag));
+	
+	// customize "Preview Animation Blueprint" for animation blueprint classes
+	DetailBuilder.EditCategory("Animation Blueprint")
+	.AddProperty(PreviewAnimationBlueprintProperty)
+	.CustomWidget()
+	.NameContent()
+	[
+		SNew(SVerticalBox)
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			PreviewAnimationBlueprintProperty->CreatePropertyNameWidget()
+		]
+	]
+	.ValueContent()
+	.MaxDesiredWidth(250.0f)
+	.MinDesiredWidth(250.0f)
+	[
+		SNew(SObjectPropertyEntryBox)
+		.AllowedClass(UAnimBlueprint::StaticClass())
+		.PropertyHandle(PreviewAnimationBlueprintProperty)
+		.OnShouldFilterAsset(this, &FAnimationBlueprintEditor::HandleShouldFilterAsset, FName("TargetSkeleton"), false)
+		.OnObjectChanged(this, &FAnimationBlueprintEditor::HandlePreviewAnimBlueprintChanged)
+		.ThumbnailPool(DetailBuilder.GetThumbnailPool())
+	];
+
+	ApplicationMethodProperty->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([this]()
+	{
+		FScopedTransaction Transaction(LOCTEXT("SetAnimationBlueprintApplicationMethod", "Set Application Method"));
+		
+		const TSharedRef<FAnimationEditorPreviewScene> LocalPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(PersonaToolkit->GetPreviewScene());
+		const UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = LocalPreviewScene->GetPreviewSceneDescription();
+		PersonaToolkit->GetAnimBlueprint()->SetPreviewAnimationBlueprintApplicationMethod(PersonaPreviewSceneDescription->ApplicationMethod);
+		LocalPreviewScene->SetPreviewAnimationBlueprint(PersonaPreviewSceneDescription->PreviewAnimationBlueprint.Get(), PersonaToolkit->GetAnimBlueprint());
+	}));
+
+	DetailBuilder.EditCategory("Animation Blueprint")
+	.AddProperty(ApplicationMethodProperty)
+	.IsEnabled(MakeAttributeLambda([this]()
+	{
+		TSharedRef<FAnimationEditorPreviewScene> LocalPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(PersonaToolkit->GetPreviewScene());
+		UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = LocalPreviewScene->GetPreviewSceneDescription();
+		
+		return PersonaPreviewSceneDescription->PreviewAnimationBlueprint.IsValid();
+	}));
+
+	LinkedAnimGraphTagProperty->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([this]()
+	{
+		FScopedTransaction Transaction(LOCTEXT("SetAnimationBlueprintTag", "Set Linked Anim Graph Tag"));
+		
+		TSharedRef<FAnimationEditorPreviewScene> LocalPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(PersonaToolkit->GetPreviewScene());
+		UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = LocalPreviewScene->GetPreviewSceneDescription();
+		PersonaToolkit->GetAnimBlueprint()->SetPreviewAnimationBlueprintTag(PersonaPreviewSceneDescription->LinkedAnimGraphTag);
+		LocalPreviewScene->SetPreviewAnimationBlueprint(PersonaPreviewSceneDescription->PreviewAnimationBlueprint.Get(), PersonaToolkit->GetAnimBlueprint());
+	}));
+
+	DetailBuilder.EditCategory("Animation Blueprint")
+	.AddProperty(LinkedAnimGraphTagProperty)
+	.IsEnabled(MakeAttributeLambda([this]()
+	{
+		TSharedRef<FAnimationEditorPreviewScene> LocalPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(PersonaToolkit->GetPreviewScene());
+		UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = LocalPreviewScene->GetPreviewSceneDescription();
+		
+		return PersonaPreviewSceneDescription->PreviewAnimationBlueprint.IsValid() && PersonaPreviewSceneDescription->ApplicationMethod == EPreviewAnimationBlueprintApplicationMethod::LinkedAnimGraph;
+	}));
+	
+	if (PersonaToolkit->GetAnimBlueprint())
+	{
+		PersonaToolkit->GetAnimBlueprint()->OnCompiled().AddSP(this, &FAnimationBlueprintEditor::HandleAnimBlueprintCompiled);
+	}
+}
+
+void FAnimationBlueprintEditor::HandleAnimBlueprintCompiled(UBlueprint* Blueprint) const
+{
+	// Only re-initialize controller if we are not debugging an external instance.
+	// If we switch at this point then we will disconnect from the external instance
+	const TSharedRef<FAnimationEditorPreviewScene> AnimPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(GetPreviewScene());
+	if(AnimPreviewScene->GetPreviewMeshComponent()->PreviewInstance == nullptr || AnimPreviewScene->GetPreviewMeshComponent()->PreviewInstance->GetDebugSkeletalMeshComponent() == nullptr)
+	{
+		UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = AnimPreviewScene->GetPreviewSceneDescription();
+		PersonaPreviewSceneDescription->PreviewControllerInstance->UninitializeView(PersonaPreviewSceneDescription, &GetPreviewScene().Get());
+		PersonaPreviewSceneDescription->PreviewControllerInstance->InitializeView(PersonaPreviewSceneDescription, &GetPreviewScene().Get());
+	}
+}
+
+void FAnimationBlueprintEditor::HandlePreviewAnimBlueprintChanged(const FAssetData& InAssetData) const   
+{
+	UAnimBlueprint* NewAnimBlueprint = Cast<UAnimBlueprint>(InAssetData.GetAsset());
+	PersonaToolkit->SetPreviewAnimationBlueprint(NewAnimBlueprint);
+}
+
+bool FAnimationBlueprintEditor::HandleShouldFilterAsset(
+	const FAssetData& InAssetData,
+	FName InTag,
+	bool bCanUseDifferentSkeleton) const
+{
+	if (bCanUseDifferentSkeleton && GetDefault<UPersonaOptions>()->bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons)
+	{
+		return false;
+	}
+
+	const TSharedRef<FAnimationEditorPreviewScene> AnimPreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(GetPreviewScene());
+	const UPersonaPreviewSceneDescription* PersonaPreviewSceneDescription = AnimPreviewScene->GetPreviewSceneDescription();
+	if(!PersonaPreviewSceneDescription->PreviewMesh.IsValid())
+	{
+		return false;
+	}
+	
+	const USkeleton* Skeleton = PersonaPreviewSceneDescription->PreviewMesh->GetSkeleton();
+	const FString SkeletonTag = InAssetData.GetTagValueRef<FString>(InTag);
+	if (Skeleton && Skeleton->IsCompatibleSkeletonByAssetString(SkeletonTag))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 void FAnimationBlueprintEditor::RemoveAllSelectionPoseWatches()
@@ -1873,6 +2282,8 @@ void FAnimationBlueprintEditor::RemoveAllSelectionPoseWatches()
 	TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
 	if (FocusedGraphEd.IsValid())
 	{
+		ReleaseAllManagedNodes(); // Register de-selection with all the previously selected nodes.
+
 		UAnimBlueprint* AnimBP = GetAnimBlueprint();
 		TArray<UEdGraphNode*> AllNodes = FocusedGraphEd->GetCurrentGraph()->Nodes;
 
@@ -1888,6 +2299,8 @@ void FAnimationBlueprintEditor::RemoveAllSelectionPoseWatches()
 				}
 			}
 		}
+
+		AcquireAllManagedNodes(); // Register re-selection with all the currently selected nodes.
 	}
 }
 void FAnimationBlueprintEditor::OnPostCompile()
@@ -2076,8 +2489,8 @@ void FAnimationBlueprintEditor::HandleViewportCreated(const TSharedRef<IPersonaV
 			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+				.TextStyle(FAppStyle::Get(), "AnimViewport.MessageText")
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
 				.Text_Lambda(GetIcon)
 			]
 			+SHorizontalBox::Slot()
@@ -2086,7 +2499,7 @@ void FAnimationBlueprintEditor::HandleViewportCreated(const TSharedRef<IPersonaV
 			[
 				SNew(STextBlock)
 				.Text_Lambda(GetCompilationStateText)
-				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
+				.TextStyle(FAppStyle::Get(), "AnimViewport.MessageText")
 			]
 		]
 		+SHorizontalBox::Slot()
@@ -2095,7 +2508,7 @@ void FAnimationBlueprintEditor::HandleViewportCreated(const TSharedRef<IPersonaV
 		[
 			SNew(SButton)
 			.ForegroundColor(FSlateColor::UseForeground())
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 			.Visibility_Lambda(GetCompileButtonVisibility)
 			.ToolTipText(LOCTEXT("AnimBPViewportCompileButtonToolTip", "Compile this Animation Blueprint to update the preview to reflect any recent changes."))
 			.OnClicked_Lambda(CompileBlueprint)
@@ -2107,8 +2520,8 @@ void FAnimationBlueprintEditor::HandleViewportCreated(const TSharedRef<IPersonaV
 				.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+					.TextStyle(FAppStyle::Get(), "AnimViewport.MessageText")
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
 					.Text(FEditorFontGlyphs::Cog)
 				]
 				+SHorizontalBox::Slot()
@@ -2116,7 +2529,7 @@ void FAnimationBlueprintEditor::HandleViewportCreated(const TSharedRef<IPersonaV
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
+					.TextStyle(FAppStyle::Get(), "AnimViewport.MessageText")
 					.Text(LOCTEXT("AnimBPViewportCompileButtonLabel", "Compile"))
 				]
 			]

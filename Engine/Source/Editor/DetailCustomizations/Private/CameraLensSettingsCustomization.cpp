@@ -1,18 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CameraLensSettingsCustomization.h"
-#include "PropertyHandle.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
-#include "ScopedTransaction.h"
+
 #include "CineCameraComponent.h"
+#include "Containers/Map.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "Templates/ChooseClass.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IDetailPropertyRow;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "CameraLensSettingsCustomization"
 
-FCameraLensSettingsCustomization::FCameraLensSettingsCustomization()
+void FCameraLensSettingsCustomization::BuildPresetComboList()
 {
-	TArray<FNamedLensPreset> const& Presets = UCineCameraComponent::GetLensPresets();
+	TArray<FNamedLensPreset> const& Presets = UCineCameraSettings::GetLensPresets();
 
 	int32 const NumPresets = Presets.Num();
 	// first create preset combo list
@@ -28,6 +46,11 @@ FCameraLensSettingsCustomization::FCameraLensSettingsCustomization()
 	}
 }
 
+FCameraLensSettingsCustomization::FCameraLensSettingsCustomization()
+{
+	BuildPresetComboList();
+}
+
 TSharedRef<IPropertyTypeCustomization> FCameraLensSettingsCustomization::MakeInstance()
 {
 	return MakeShareable(new FCameraLensSettingsCustomization);
@@ -39,24 +62,34 @@ void FCameraLensSettingsCustomization::CustomizeHeader(TSharedRef<IPropertyHandl
 		NameContent()
 		[
 			StructPropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MaxDesiredWidth(0.f)
-		[
-			SAssignNew(PresetComboBox, SComboBox< TSharedPtr<FString> >)
-			.OptionsSource(&PresetComboList)
-			.OnGenerateWidget(this, &FCameraLensSettingsCustomization::MakePresetComboWidget)
-			.OnSelectionChanged(this, &FCameraLensSettingsCustomization::OnPresetChanged)
-			.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
-			.ContentPadding(2)
-			.Content()
-			[
-				SNew(STextBlock)
-				.Text(this, &FCameraLensSettingsCustomization::GetPresetComboBoxContent)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.ToolTipText(this, &FCameraLensSettingsCustomization::GetPresetComboBoxContent)
-			]
 		];
+
+	// We only want the dropdown list outside of the settings class as the settings class is the thing
+	// defining the presets we use for the dropdown
+	const bool bInSettingsClass = StructPropertyHandle->GetOuterBaseClass() == UCineCameraSettings::StaticClass();
+
+	if (!bInSettingsClass)
+	{
+		HeaderRow.
+			ValueContent()
+			.MaxDesiredWidth(0.f)
+			[
+				SAssignNew(PresetComboBox, SComboBox< TSharedPtr<FString> >)
+				.OptionsSource(&PresetComboList)
+				.OnGenerateWidget(this, &FCameraLensSettingsCustomization::MakePresetComboWidget)
+				.OnSelectionChanged(this, &FCameraLensSettingsCustomization::OnPresetChanged)
+				.OnComboBoxOpening(this, &FCameraLensSettingsCustomization::BuildPresetComboList)
+				.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
+				.ContentPadding(2)
+				.Content()
+				[
+					SNew(STextBlock)
+					.Text(this, &FCameraLensSettingsCustomization::GetPresetComboBoxContent)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(this, &FCameraLensSettingsCustomization::GetPresetComboBoxContent)
+				]
+			];
+	}
 }
 
 
@@ -80,6 +113,7 @@ void FCameraLensSettingsCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 	MinFStopHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FCameraLensSettings, MinFStop));
 	MaxFStopHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FCameraLensSettings, MaxFStop));
 	MinFocusDistanceHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FCameraLensSettings, MinimumFocusDistance));
+	SqueezeFactorHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FCameraLensSettings, SqueezeFactor));
 	DiaphragmBladeCountHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FCameraLensSettings, DiaphragmBladeCount));
 
 	for (auto Iter(PropertyHandles.CreateConstIterator()); Iter; ++Iter)
@@ -110,7 +144,7 @@ void FCameraLensSettingsCustomization::OnPresetChanged(TSharedPtr<FString> NewSe
 		FString const NewPresetName = *NewSelection.Get();
 
 		// search presets for one that matches
-		TArray<FNamedLensPreset> const& Presets = UCineCameraComponent::GetLensPresets();
+		TArray<FNamedLensPreset> const& Presets = UCineCameraSettings::GetLensPresets();
 		int32 const NumPresets = Presets.Num();
 		for (int32 PresetIdx = 0; PresetIdx < NumPresets; ++PresetIdx)
 		{
@@ -126,6 +160,7 @@ void FCameraLensSettingsCustomization::OnPresetChanged(TSharedPtr<FString> NewSe
 				ensure(MinFStopHandle->SetValue(P.LensSettings.MinFStop, EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable) == FPropertyAccess::Result::Success);
 				ensure(MaxFStopHandle->SetValue(P.LensSettings.MaxFStop, EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable) == FPropertyAccess::Result::Success);
 				ensure(MinFocusDistanceHandle->SetValue(P.LensSettings.MinimumFocusDistance, EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable) == FPropertyAccess::Result::Success);
+				ensure(SqueezeFactorHandle->SetValue(P.LensSettings.SqueezeFactor, EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable) == FPropertyAccess::Result::Success);
 				ensure(DiaphragmBladeCountHandle->SetValue(P.LensSettings.DiaphragmBladeCount, EPropertyValueSetFlags::InteractiveChange | EPropertyValueSetFlags::NotTransactable) == FPropertyAccess::Result::Success);
 
 				break;
@@ -168,17 +203,20 @@ TSharedPtr<FString> FCameraLensSettingsCustomization::GetPresetString() const
 	float MinFocusDistance;
 	MinFocusDistanceHandle->GetValue(MinFocusDistance);
 
+	float SqueezeFactor;
+	SqueezeFactorHandle->GetValue(SqueezeFactor);
+
 	int32 DiaphragmBladeCount;
 	DiaphragmBladeCountHandle->GetValue(DiaphragmBladeCount);
 
 	// search presets for one that matches
-	TArray<FNamedLensPreset> const& Presets = UCineCameraComponent::GetLensPresets();
+	TArray<FNamedLensPreset> const& Presets = UCineCameraSettings::GetLensPresets();
 	int32 const NumPresets = Presets.Num();
 	for (int32 PresetIdx = 0; PresetIdx < NumPresets; ++PresetIdx)
 	{
 		FNamedLensPreset const& P = Presets[PresetIdx];
 		if ((P.LensSettings.MinFocalLength == MinFocalLength) && (P.LensSettings.MaxFocalLength == MaxFocalLength) && (P.LensSettings.MinFStop == MinFStop) && 
-			(P.LensSettings.MaxFStop == MaxFStop) && (P.LensSettings.MinimumFocusDistance == MinFocusDistance) && (P.LensSettings.DiaphragmBladeCount == DiaphragmBladeCount) )
+			(P.LensSettings.MaxFStop == MaxFStop) && (P.LensSettings.MinimumFocusDistance == MinFocusDistance) && (P.LensSettings.SqueezeFactor == SqueezeFactor) && (P.LensSettings.DiaphragmBladeCount == DiaphragmBladeCount) )
 		{
 			// this is the one
 			if (PresetComboList.IsValidIndex(PresetIdx + 1))

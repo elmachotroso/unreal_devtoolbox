@@ -9,25 +9,20 @@
 #include "RigHierarchyPose.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "EdGraph/EdGraphPin.h"
+#include "RigHierarchyDefines.h"
 #if WITH_EDITOR
 #include "RigVMPythonUtils.h"
 #endif
+#include "Containers/Queue.h"
 #include "RigHierarchy.generated.h"
 
 class URigHierarchy;
 class URigHierarchyController;
 
-// Define to switch between recursive calls for dirty propagation or flat iteration.
-// Based on this each element will either contains only the next tier of elements to dirty (recursive)
-// or a full flattened list of elements to dirty (no need to recurse)
-#define URIGHIERARCHY_RECURSIVE_DIRTY_PROPAGATION 1
-
-// Debug define which performs a full check on the cache validity for all elements of the hierarchy.
-// This can be useful for debugging cache validity bugs.
-#define URIGHIERARCHY_ENSURE_CACHE_VALIDITY 0
-
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FRigHierarchyModifiedEvent, ERigHierarchyNotification /* type */, URigHierarchy* /* hierarchy */, const FRigBaseElement* /* element */);
 DECLARE_EVENT_FiveParams(URigHierarchy, FRigHierarchyUndoRedoTransformEvent, URigHierarchy*, const FRigElementKey&, ERigTransformType::Type, const FTransform&, bool /* bUndo */);
+DECLARE_MULTICAST_DELEGATE_TwoParams(FRigHierarchyMetadataChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Name */);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FRigHierarchyMetadataTagChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Tag */, bool /* AddedOrRemoved */);
 
 UENUM()
 enum ERigTransformStackEntryType
@@ -101,17 +96,22 @@ public:
 
 	typedef TMap<int32, TArray<int32>> TElementDependencyMap;
 	typedef TPair<int32, TArray<int32>> TElementDependencyMapPair;
+	typedef TTuple<int32, int32, int32, ERigTransformType::Type> TInstructionSliceElement;
+	inline static const FName TagMetadataName = TEXT("Tags");
 
 	URigHierarchy();
-	virtual ~URigHierarchy();
 
 	// UObject interface
+	virtual void BeginDestroy() override;
 	virtual void Serialize(FArchive& Ar) override;
 	void Save(FArchive& Ar);
 	void Load(FArchive& Ar);
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 #if WITH_EDITOR
-	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
+	virtual void PostEditUndo() override;
 #endif
 
 	/**
@@ -121,10 +121,28 @@ public:
 	void Reset();
 
 	/**
+	 * Resets the hierarchy to the state of its default. This refers to the
+	 * hierarchy on the default object.
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	void ResetToDefault();
+
+	/**
 	 * Copies the contents of a hierarchy onto this one
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
 	void CopyHierarchy(URigHierarchy* InHierarchy);
+
+	/**
+	 * Returns a hash for the hierarchy representing all names
+	 * as well as the topology version.
+	 */
+	uint32 GetNameHash() const;
+
+	/**
+	 * Returns a hash representing the topological state of the hierarchy
+	 */
+	uint32 GetTopologyHash(bool bIncludeTopologyVersion = true, bool bIncludeTransientControls = false) const;
 
 #if WITH_EDITOR
 	/**
@@ -141,12 +159,17 @@ public:
 	void ClearListeningHierarchy();
 #endif
 
+	/**
+	 * Returns the default hierarchy for this hierarchy (or nullptr)
+	 */
+	URigHierarchy* GetDefaultHierarchy() { return DefaultHierarchyPtr.Get(); }
+
 public:
 	/**
 	 * Copies the contents of a hierarchy onto this one
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
-	void CopyPose(URigHierarchy* InHierarchy, bool bCurrent, bool bInitial);
+	void CopyPose(URigHierarchy* InHierarchy, bool bCurrent, bool bInitial, bool bWeights, bool bMatchPoseInGlobalIfNeeded = false);
 
 	/**
 	 * Update all elements that depend on external references
@@ -261,6 +284,32 @@ public:
 	}
 
 	/**
+	 * Returns true if the provided element key is valid as a certain typename
+	 * @param InKey The key to validate
+	 * @return Returns true if the provided element key is valid
+	 */
+	template<typename T>
+	FORCEINLINE bool Contains(const FRigElementKey& InKey) const
+	{
+		return Find<T>(InKey) != nullptr;
+	}
+
+	/**
+	 * Returns true if the provided element is procedural.
+	 * @param InKey The key to validate
+	 * @return Returns true if the element is procedural
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	bool IsProcedural(const FRigElementKey& InKey) const;
+
+	/**
+	 * Returns true if the provided element is procedural.
+	 * @param InElement The element to check
+	 * @return Returns true if the element is procedural
+	 */
+	bool IsProcedural(const FRigBaseElement* InElement) const;
+
+	/**
 	 * Returns the index of an element given its key
 	 * @param InKey The key of the element to retrieve the index for
 	 * @return The index of the element or INDEX_NONE
@@ -286,6 +335,21 @@ public:
 	}
 
 	/**
+	 * Returns the indices of an array of keys
+	 * @param InKeys The keys of the elements to retrieve the indices for
+	 * @return The indices of the elements or INDEX_NONE
+	 */
+	FORCEINLINE TArray<int32> GetIndices(const TArray<FRigElementKey>& InKeys) const
+	{
+		TArray<int32> Indices;
+		for(const FRigElementKey& Key : InKeys)
+		{
+			Indices.Add(GetIndex(Key));
+		}
+		return Indices;
+	}
+
+	/**
 	 * Returns the key of an element given its index
 	 * @param InElementIndex The index of the element to retrieve the key for
 	 * @return The key of an element given its index
@@ -298,6 +362,22 @@ public:
 			return Elements[InElementIndex]->Key;
 		}
 		return FRigElementKey();
+	}
+
+	/**
+	 * Returns the keys of an array of indices
+	 * @param InElementIndices The indices to retrieve the keys for
+	 * @return The keys of the elements given the indices
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE TArray<FRigElementKey> GetKeys(const TArray<int32> InElementIndices) const
+	{
+		TArray<FRigElementKey> Keys;
+		for(int32 Index : InElementIndices)
+		{
+			Keys.Add(GetKey(Index));
+		}
+		return Keys;
 	}
 
 	/**
@@ -378,6 +458,20 @@ public:
     FORCEINLINE T* GetChecked(int32 InIndex)
 	{
 		return CastChecked<T>(Get(InIndex));
+	}
+
+	/**
+     * Returns a handle to an existing element
+     * @param InKey The key of the handle to retrieve.
+     * @return The retrieved handle (may be invalid)
+     */
+	FORCEINLINE FRigElementHandle GetHandle(const FRigElementKey& InKey) const
+	{
+		if(Contains(InKey))
+		{
+			return FRigElementHandle((URigHierarchy*)this, InKey);
+		}
+		return FRigElementHandle();
 	}
 
 	/**
@@ -749,11 +843,565 @@ public:
 	}
 
 	/**
+	 * Returns the name of metadata for a given element
+	 * @param InItem The element key to return the metadata keys for
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	TArray<FName> GetMetadataNames(FRigElementKey InItem);
+
+	/**
+	 * Returns the type of metadata given its name the item it is stored under
+	 * @param InItem The element key to return the metadata type for
+	 * @param InMetadataName The name of the metadata to return the type for
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	ERigMetadataType GetMetadataType(FRigElementKey InItem, FName InMetadataName);
+
+	/**
+	 * Removes the metadata under a given element 
+	 * @param InItem The element key to search under
+	 * @param InMetadataName The name of the metadata to remove
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	bool RemoveMetadata(FRigElementKey InItem, FName InMetadataName);
+
+	/**
+     * Removes all of the metadata under a given item 
+	 * @param InItem The element key to search under
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	bool RemoveAllMetadata(FRigElementKey InItem);
+
+	/**
+	 * Queries and returns the value of bool metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE bool GetBoolMetadata(FRigElementKey InItem, FName InMetadataName, bool DefaultValue) const
+	{
+		return GetMetadata<bool>(InItem, ERigMetadataType::Bool, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of bool array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<bool> GetBoolArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<bool>(InItem, ERigMetadataType::BoolArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a bool value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetBoolMetadata(FRigElementKey InItem, FName InMetadataName, bool InValue)
+	{
+		return SetMetadata<bool>(InItem, ERigMetadataType::Bool, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a bool array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetBoolArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<bool> InValue)
+	{
+		return SetArrayMetadata<bool>(InItem, ERigMetadataType::BoolArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of float metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE float GetFloatMetadata(FRigElementKey InItem, FName InMetadataName, float DefaultValue) const
+	{
+		return GetMetadata<float>(InItem, ERigMetadataType::Float, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of float array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<float> GetFloatArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<float>(InItem, ERigMetadataType::FloatArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a float value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetFloatMetadata(FRigElementKey InItem, FName InMetadataName, float InValue)
+	{
+		return SetMetadata<float>(InItem, ERigMetadataType::Float, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a float array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetFloatArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<float> InValue)
+	{
+		return SetArrayMetadata<float>(InItem, ERigMetadataType::FloatArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of int32 metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE int32 GetInt32Metadata(FRigElementKey InItem, FName InMetadataName, int32 DefaultValue) const
+	{
+		return GetMetadata<int32>(InItem, ERigMetadataType::Int32, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of int32 array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<int32> GetInt32ArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<int32>(InItem, ERigMetadataType::Int32Array, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a int32 value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetInt32Metadata(FRigElementKey InItem, FName InMetadataName, int32 InValue)
+	{
+		return SetMetadata<int32>(InItem, ERigMetadataType::Int32, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a int32 array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetInt32ArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<int32> InValue)
+	{
+		return SetArrayMetadata<int32>(InItem, ERigMetadataType::Int32Array, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FName metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FName GetNameMetadata(FRigElementKey InItem, FName InMetadataName, FName DefaultValue) const
+	{
+		return GetMetadata<FName>(InItem, ERigMetadataType::Name, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FName array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FName> GetNameArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FName>(InItem, ERigMetadataType::NameArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FName value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetNameMetadata(FRigElementKey InItem, FName InMetadataName, FName InValue)
+	{
+		return SetMetadata<FName>(InItem, ERigMetadataType::Name, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FName array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetNameArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FName> InValue)
+	{
+		return SetArrayMetadata<FName>(InItem, ERigMetadataType::FloatArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FVector metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FVector GetVectorMetadata(FRigElementKey InItem, FName InMetadataName, FVector DefaultValue) const
+	{
+		return GetMetadata<FVector>(InItem, ERigMetadataType::Vector, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FVector array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FVector> GetVectorArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FVector>(InItem, ERigMetadataType::VectorArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FVector value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetVectorMetadata(FRigElementKey InItem, FName InMetadataName, FVector InValue)
+	{
+		return SetMetadata<FVector>(InItem, ERigMetadataType::Vector, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FVector array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetVectorArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FVector> InValue)
+	{
+		return SetArrayMetadata<FVector>(InItem, ERigMetadataType::VectorArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FRotator metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FRotator GetRotatorMetadata(FRigElementKey InItem, FName InMetadataName, FRotator DefaultValue) const
+	{
+		return GetMetadata<FRotator>(InItem, ERigMetadataType::Rotator, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FRotator array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FRotator> GetRotatorArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FRotator>(InItem, ERigMetadataType::RotatorArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FRotator value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetRotatorMetadata(FRigElementKey InItem, FName InMetadataName, FRotator InValue)
+	{
+		return SetMetadata<FRotator>(InItem, ERigMetadataType::Rotator, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FRotator array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetRotatorArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FRotator> InValue)
+	{
+		return SetArrayMetadata<FRotator>(InItem, ERigMetadataType::RotatorArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FQuat metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FQuat GetQuatMetadata(FRigElementKey InItem, FName InMetadataName, FQuat DefaultValue) const
+	{
+		return GetMetadata<FQuat>(InItem, ERigMetadataType::Quat, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FQuat array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FQuat> GetQuatArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FQuat>(InItem, ERigMetadataType::QuatArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FQuat value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetQuatMetadata(FRigElementKey InItem, FName InMetadataName, FQuat InValue)
+	{
+		return SetMetadata<FQuat>(InItem, ERigMetadataType::Quat, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FQuat array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetQuatArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FQuat> InValue)
+	{
+		return SetArrayMetadata<FQuat>(InItem, ERigMetadataType::QuatArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FTransform metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FTransform GetTransformMetadata(FRigElementKey InItem, FName InMetadataName, FTransform DefaultValue) const
+	{
+		return GetMetadata<FTransform>(InItem, ERigMetadataType::Transform, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FTransform array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FTransform> GetTransformArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FTransform>(InItem, ERigMetadataType::TransformArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FTransform value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetTransformMetadata(FRigElementKey InItem, FName InMetadataName, FTransform InValue)
+	{
+		return SetMetadata<FTransform>(InItem, ERigMetadataType::Transform, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FTransform array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetTransformArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FTransform> InValue)
+	{
+		return SetArrayMetadata<FTransform>(InItem, ERigMetadataType::TransformArray, InMetadataName, InValue);
+	}
+
+		/**
+	 * Queries and returns the value of FLinearColor metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FLinearColor GetLinearColorMetadata(FRigElementKey InItem, FName InMetadataName, FLinearColor DefaultValue) const
+	{
+		return GetMetadata<FLinearColor>(InItem, ERigMetadataType::LinearColor, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FLinearColor array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FLinearColor> GetLinearColorArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FLinearColor>(InItem, ERigMetadataType::LinearColorArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FLinearColor value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetLinearColorMetadata(FRigElementKey InItem, FName InMetadataName, FLinearColor InValue)
+	{
+		return SetMetadata<FLinearColor>(InItem, ERigMetadataType::LinearColor, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FLinearColor array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetLinearColorArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FLinearColor> InValue)
+	{
+		return SetArrayMetadata<FLinearColor>(InItem, ERigMetadataType::LinearColorArray, InMetadataName, InValue);
+	}
+
+	/**
+	 * Queries and returns the value of FRigElementKey metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 * @param DefaultValue The default value to fall back on
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE FRigElementKey GetRigElementKeyMetadata(FRigElementKey InItem, FName InMetadataName, FRigElementKey DefaultValue) const
+	{
+		return GetMetadata<FRigElementKey>(InItem, ERigMetadataType::RigElementKey, InMetadataName, DefaultValue);
+	}
+
+	/**
+	 * Queries and returns the value of FRigElementKey array metadata
+	 * @param InItem The element key to return the metadata for
+	 * @param InMetadataName The name of the metadata to query
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FRigElementKey> GetRigElementKeyArrayMetadata(FRigElementKey InItem, FName InMetadataName) const
+	{
+		return GetArrayMetadata<FRigElementKey>(InItem, ERigMetadataType::RigElementKeyArray, InMetadataName);
+	}
+
+	/**
+	 * Sets the metadata to a FRigElementKey value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetRigElementKeyMetadata(FRigElementKey InItem, FName InMetadataName, FRigElementKey InValue)
+	{
+		return SetMetadata<FRigElementKey>(InItem, ERigMetadataType::RigElementKey, InMetadataName, InValue);
+	}
+
+	/**
+	 * Sets the metadata to a FRigElementKey array value
+	 * @param InItem The element key to set the metadata for
+	 * @param InMetadataName The name of the metadata to set
+	 * @param InValue The value to set
+	 * @return Returns true if setting the metadata was successful
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetRigElementKeyArrayMetadata(FRigElementKey InItem, FName InMetadataName, TArray<FRigElementKey> InValue)
+	{
+		return SetArrayMetadata<FRigElementKey>(InItem, ERigMetadataType::RigElementKeyArray, InMetadataName, InValue);
+	}
+
+	/*
+	 * Returns the tags for a given item
+	 * @param InItem The item to return the tags for
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE TArray<FName> GetTags(FRigElementKey InItem) const
+	{
+		return GetNameArrayMetadata(InItem, TagMetadataName);
+	}
+
+	/*
+	 * Returns true if a given item has a certain tag
+	 * @param InItem The item to return the tags for
+	 * @param InTag The tag to check
+	 */
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	FORCEINLINE bool HasTag(FRigElementKey InItem, FName InTag) const
+	{
+		return GetTags(InItem).Contains(InTag);
+	}
+
+	/*
+     * Sets a tag on an element in the hierarchy
+     * @param InItem The item to set the tag for
+     * @param InTag The tag to set
+     */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE bool SetTag(FRigElementKey InItem, FName InTag)
+	{
+		TArray<FName> Tags = GetTags(InItem);
+		Tags.AddUnique(InTag);
+		return SetNameArrayMetadata(InItem, TagMetadataName, Tags);
+	}
+
+	/**
 	 * Returns the selected elements
 	 * @InTypeFilter The types to retrieve the selection for
 	 * @return An array of the currently selected elements
 	 */
-	TArray<FRigBaseElement*> GetSelectedElements(ERigElementType InTypeFilter = ERigElementType::All) const;
+	TArray<const FRigBaseElement*> GetSelectedElements(ERigElementType InTypeFilter = ERigElementType::All) const;
 
 	/**
 	 * Returns the keys of selected elements
@@ -839,6 +1487,15 @@ public:
 	bool IsNameAvailable(const FString& InPotentialNewName, ERigElementType InType, FString* OutErrorMessage = nullptr) const;
 
 	/**
+	 * Returns true if a given display name is available.
+	 * @param InParentElement The element to check the display name under
+	 * @param InPotentialNewDisplayName The name to test for availability
+	 * @param OutErrorMessage An optional pointer to return a potential error message 
+	 * @return Returns true if the name is available.
+	 */
+	bool IsDisplayNameAvailable(const FRigElementKey& InParentElement, const FString& InPotentialNewDisplayName, FString* OutErrorMessage = nullptr) const;
+
+	/**
 	 * Returns a valid new name for a to-be-added element.
 	 * @param InPotentialNewName The name to be sanitized and adjusted for availability
 	 * @param InType The type of the to-be-added element
@@ -847,11 +1504,33 @@ public:
 	FName GetSafeNewName(const FString& InPotentialNewName, ERigElementType InType) const;
 
 	/**
+	 * Returns a valid new display name for a control
+	 * @param InParentElement The element to check the display name under
+	 * @param InPotentialNewDisplayName The name to be sanitized and adjusted for availability
+	 * @return Returns the name to use for the to-be-added element.
+	 */
+	FName GetSafeNewDisplayName(const FRigElementKey& InParentElement, const FString& InPotentialNewDisplayName) const;
+
+	/**
 	 * Returns the modified event, which can be used to 
 	 * subscribe to topological changes happening within the hierarchy.
 	 * @return The event used for subscription.
 	 */
 	FRigHierarchyModifiedEvent& OnModified() { return ModifiedEvent; }
+
+	/**
+	 * Returns the MetadataChanged event, which can be used to track metadata changes
+	 * Note: This notification has a very high volume - so the consequences of subscribing
+	 * to it may cause performance slowdowns.
+	 */
+	FRigHierarchyMetadataChangedDelegate& OnMetadataChanged() { return MetadataChangedDelegate; }
+
+	/**
+	 * Returns the MetadataTagChanged event, which can be used to track metadata tag changes
+	 * Note: This notification has a very high volume - so the consequences of subscribing
+	 * to it may cause performance slowdowns.
+	 */
+	FRigHierarchyMetadataTagChangedDelegate& OnMetadataTagChanged() { return MetadataTagChangedDelegate; }
 
 	/**
 	 * Returns the local current or initial value for a given key.
@@ -1005,9 +1684,9 @@ public:
 	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
-    FORCEINLINE_DEBUGGABLE void SetGlobalTransform(FRigElementKey InKey, FTransform InTransform, bool bInitial = false, bool bAffectChildren = true, bool bSetupUndo = false)
+    FORCEINLINE_DEBUGGABLE void SetGlobalTransform(FRigElementKey InKey, FTransform InTransform, bool bInitial = false, bool bAffectChildren = true, bool bSetupUndo = false, bool bPrintPythonCommand = false)
 	{
-		SetGlobalTransformByIndex(GetIndex(InKey), InTransform, bInitial, bAffectChildren, bSetupUndo);
+		SetGlobalTransformByIndex(GetIndex(InKey), InTransform, bInitial, bAffectChildren, bSetupUndo, bPrintPythonCommand);
 	}
 
 	/**
@@ -1019,13 +1698,13 @@ public:
 	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
-    FORCEINLINE_DEBUGGABLE void SetGlobalTransformByIndex(int32 InElementIndex, FTransform InTransform, bool bInitial = false, bool bAffectChildren = true, bool bSetupUndo = false)
+    FORCEINLINE_DEBUGGABLE void SetGlobalTransformByIndex(int32 InElementIndex, FTransform InTransform, bool bInitial = false, bool bAffectChildren = true, bool bSetupUndo = false, bool bPrintPythonCommand = false)
 	{
 		if(Elements.IsValidIndex(InElementIndex))
 		{
 			if(FRigTransformElement* TransformElement = Cast<FRigTransformElement>(Elements[InElementIndex]))
 			{
-				SetTransform(TransformElement, InTransform, bInitial ? ERigTransformType::InitialGlobal : ERigTransformType::CurrentGlobal, bAffectChildren, bSetupUndo);
+				SetTransform(TransformElement, InTransform, bInitial ? ERigTransformType::InitialGlobal : ERigTransformType::CurrentGlobal, bAffectChildren, bSetupUndo, false, bPrintPythonCommand);
 			}
 		}
 	}
@@ -1071,6 +1750,37 @@ public:
 			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
 			{
 				return GetControlOffsetTransform(ControlElement, bInitial ? ERigTransformType::InitialGlobal : ERigTransformType::CurrentGlobal);
+			}
+		}
+		return FTransform::Identity;
+	}
+
+	/**
+	 * Returns the local shape transform for a given control element.
+	 * @param InKey The key of the control to retrieve the transform for
+	 * @param bInitial If true the initial transform will be used
+	 * @return The local shape transform
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE FTransform GetLocalControlShapeTransform(FRigElementKey InKey, bool bInitial = false) const
+	{
+		return GetLocalControlShapeTransformByIndex(GetIndex(InKey), bInitial);
+	}
+
+	/**
+	 * Returns the local shape transform for a given control element.
+	 * @param InElementIndex The index of the control to retrieve the transform for
+	 * @param bInitial If true the initial transform will be used
+	 * @return The local shape transform
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE FTransform GetLocalControlShapeTransformByIndex(int32 InElementIndex, bool bInitial = false) const
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				return GetControlShapeTransform(ControlElement, bInitial ? ERigTransformType::InitialLocal : ERigTransformType::CurrentLocal);
 			}
 		}
 		return FTransform::Identity;
@@ -1194,6 +1904,100 @@ public:
 		return GetInitialControlValue(InElementIndex).Get<T>();
 	}
 
+	/**
+	 * Returns a control's preferred rotator (local transform rotation)
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @return Returns the current preferred rotator
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE FRotator GetControlPreferredRotator(FRigElementKey InKey, bool bInitial = false) const
+	{
+		return GetControlPreferredRotatorByIndex(GetIndex(InKey), bInitial);
+	}
+
+	/**
+	 * Returns a control's preferred rotator (local transform rotation)
+	 * @param InElementIndex The element index to look up
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @return Returns the current preferred rotator
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE FRotator GetControlPreferredRotatorByIndex(int32 InElementIndex, bool bInitial = false) const
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				return GetControlPreferredRotator(ControlElement, bInitial);
+			}
+		}
+		return FRotator::ZeroRotator;
+	}
+
+	/**
+	 * Returns a control's preferred rotator (local transform rotation)
+	 * @param InControlElement The element to look up
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @return Returns the current preferred rotator
+	 */
+	FORCEINLINE_DEBUGGABLE FRotator GetControlPreferredRotator(FRigControlElement* InControlElement, bool bInitial = false) const
+	{
+		if(InControlElement)
+		{
+			return InControlElement->PreferredEulerAngles.GetRotator(bInitial);
+		}
+		return FRotator::ZeroRotator;
+	}
+
+	/**
+	 * Sets a control's preferred rotator (local transform rotation)
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param InValue The new preferred rotator to set
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE void SetControlPreferredRotator(FRigElementKey InKey, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		SetControlPreferredRotatorByIndex(GetIndex(InKey), InValue, bInitial, bFixEulerFlips);
+	}
+	
+
+	/**
+	 * Sets a control's preferred rotator (local transform rotation)
+	 * @param InElementIndex The element index to look up
+	 * @param InValue The new preferred rotator to set
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE void SetControlPreferredRotatorByIndex(int32 InElementIndex, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				SetControlPreferredRotator(ControlElement, InValue, bInitial, bFixEulerFlips);
+			}
+		}
+	}
+
+	/**
+	 * Sets a control's preferred rotator (local transform rotation)
+	 * @param InControlElement The element to look up
+	 * @param InValue The new preferred rotator to set
+	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
+	 */
+	FORCEINLINE_DEBUGGABLE void SetControlPreferredRotator(FRigControlElement* InControlElement, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		if(InControlElement)
+		{
+			InControlElement->PreferredEulerAngles.SetRotator(InValue, bInitial, bFixEulerFlips);
+		}
+	}
+	
 	/**
 	 * Returns the pin type to use for a control
 	 * @param InControlElement The control to return the pin type for
@@ -1365,11 +2169,41 @@ public:
 		return 0.f;
 	}
 
+	// TODO: Deprecate?
 	FORCEINLINE_DEBUGGABLE float GetCurveValue(int32 InElementIndex) const
 	{
 		return GetCurveValueByIndex(InElementIndex);
 	}
 
+	/**
+	 * Returns whether a curve's value is set, given its key
+	 * @param InKey The key of the element to retrieve the value for
+	 * @return Returns true if the value is set, false otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE bool IsCurveValueSet(FRigElementKey InKey) const
+	{
+		return IsCurveValueSetByIndex(GetIndex(InKey));
+	}
+
+	/**
+	 * Returns a curve's value given its index
+	 * @param InElementIndex The index of the element to retrieve the value for
+	 * @return Returns true if the value is set, false otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE bool IsCurveValueSetByIndex(int32 InElementIndex) const
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigCurveElement* CurveElement = Cast<FRigCurveElement>(Elements[InElementIndex]))
+			{
+				return IsCurveValueSet(CurveElement);
+			}
+		}
+		return false;
+	}
+	
 	/**
 	 * Sets a curve's value given its key
 	 * @param InKey The key of the element to set the value for
@@ -1400,9 +2234,40 @@ public:
 		}
 	}
 
+	// TODO: Deprecate?
 	FORCEINLINE_DEBUGGABLE void SetCurveValue(int32 InElementIndex, float InValue, bool bSetupUndo = false)
 	{
 		SetCurveValueByIndex(InElementIndex, InValue, bSetupUndo);
+	}
+
+	/**
+	 * Sets a curve's value given its key
+	 * @param InKey The key of the element to set the value for
+	 * @param InValue The value to set on the curve
+	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+    FORCEINLINE_DEBUGGABLE void UnsetCurveValue(FRigElementKey InKey, bool bSetupUndo = false)
+	{
+		UnsetCurveValueByIndex(GetIndex(InKey), bSetupUndo);
+	}
+
+	/**
+	 * Sets a curve's value given its index
+	 * @param InElementIndex The index of the element to set the value for
+	 * @param InValue The value to set on the curve
+	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FORCEINLINE_DEBUGGABLE void UnsetCurveValueByIndex(int32 InElementIndex, bool bSetupUndo = false)
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigCurveElement* CurveElement = Cast<FRigCurveElement>(Elements[InElementIndex]))
+			{
+				UnsetCurveValue(CurveElement, bSetupUndo);
+			}
+		}
 	}
 
 	/**
@@ -1587,6 +2452,14 @@ public:
 	 * @return Returns the parent elements
 	 */
 	FRigBaseElementParentArray GetParents(const FRigBaseElement* InElement, bool bRecursive = false) const;
+
+	/**
+	 * Returns the default parent element's key of a given child key
+	 * @param InKey The key of the element to retrieve the parent for
+	 * @return Returns the default parent element key
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FRigElementKey GetDefaultParent(FRigElementKey InKey) const;
 
 	/**
 	 * Returns the first parent element of a given element key
@@ -1889,6 +2762,15 @@ public:
 	TArray<FRigElementKey> GetAllKeys(bool bTraverse = false, ERigElementType InElementType = ERigElementType::All) const;
 
 	/**
+	 * Returns element keys of this hierarchy, filtered by a predicate.
+	 * @param InPredicateFunc The predicate function to apply. Should return \c true if the element
+	 *    should be added to the result array.
+	 * @param bInTraverse If set to true the keys will be returned by depth first traversal
+	 * @return The keys of all elements
+	 */
+	TArray<FRigElementKey> GetKeysByPredicate(TFunctionRef<bool(const FRigBaseElement&)> InPredicateFunc, bool bInTraverse = false) const;
+
+	/**
 	 * Returns all element keys of this hierarchy
 	 * @param bTraverse If set to true the keys will be returned by depth first traversal
 	 * @return The keys of all elements
@@ -1971,9 +2853,20 @@ public:
 	 * @return The delegate to listen to for events coming from this hierarchy
 	 */
 	FORCEINLINE FRigEventDelegate& OnEventReceived() { return EventDelegate; }
+	
+	/**
+	 * Returns true if the hierarchy controller is currently available
+	 * The controller may not be available during certain events.
+	 * If the controller is not available then GetController() will return nullptr.
+	 */ 
+	UFUNCTION(BlueprintPure, Category = URigHierarchy)
+	bool IsControllerAvailable() const;
 
 	/**
-	 * Returns a controller for this hierarchy
+	 * Returns a controller for this hierarchy.
+	 * Note: If the controller is not available this will return nullptr 
+	 * even if the bCreateIfNeeded flag is set to true. You can check the 
+	 * controller's availability with IsControllerAvailable().
 	 * @param bCreateIfNeeded Creates a controller if needed
 	 * @return The Controller for this hierarchy
 	 */
@@ -1984,6 +2877,37 @@ public:
 	 * Returns the topology version of this hierarchy
 	 */
 	uint16 GetTopologyVersion() const { return TopologyVersion; }
+
+	/**
+	 * Increments the topology version
+	 */
+	void IncrementTopologyVersion();
+
+	/**
+	 * Returns the metadata version of this hierarchy
+	 */
+	uint16 GetMetadataVersion() const { return MetadataVersion; }
+
+	/**
+	 * Increments the metadata version
+	 */
+	FORCEINLINE void IncrementMetadataVersion(const FRigElementKey& InKey, const FName& InName)
+	{
+		MetadataVersion += 1 + (int32)HashCombine(GetTypeHash(InKey), GetTypeHash(InName));
+	}
+
+	/**
+     * Returns the metadata tag version of this hierarchy
+	 */
+	uint16 GetMetadataTagVersion() const { return MetadataTagVersion; }
+
+	/**
+	 * Increments the metadataTag version
+	 */
+	FORCEINLINE void IncrementMetadataTagVersion(const FRigElementKey& InKey, const FName& InTag, bool bAdded)
+	{
+		MetadataTagVersion += 1 + (int32)HashCombine(GetTypeHash(InKey), GetTypeHash(InTag));
+	}
 
 	/**
 	 * Returns the current / initial pose of the hierarchy
@@ -2270,6 +3194,8 @@ public:
 private:
 
 	FRigHierarchyModifiedEvent ModifiedEvent;
+	FRigHierarchyMetadataChangedDelegate MetadataChangedDelegate;
+	FRigHierarchyMetadataTagChangedDelegate MetadataTagChangedDelegate;
 	FRigEventDelegate EventDelegate;
 
 public:
@@ -2371,7 +3297,7 @@ public:
 	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
 	 * @param bForce Set the transform even if it is the same as the previously set one
 	 */
-	void SetControlValue(FRigControlElement* InControlElement, const FRigControlValue& InValue, ERigControlValueType InValueType, bool bSetupUndo = false, bool bForce = false, bool bPrintPythonCommands = false);
+	void SetControlValue(FRigControlElement* InControlElement, const FRigControlValue& InValue, ERigControlValueType InValueType, bool bSetupUndo = false, bool bForce = false, bool bPrintPythonCommands = false, bool bFixEulerFlips = false);
 
 	template<typename T>
 	FORCEINLINE_DEBUGGABLE void SetControlValue(FRigControlElement* InControlElement, const T& InValue, ERigControlValueType InValueType, bool bSetupUndo = false, bool bForce = false) const
@@ -2387,11 +3313,18 @@ public:
 	void SetControlVisibility(FRigControlElement* InControlElement, bool bVisibility);
 
 	/**
-	 * Returns a curve's value
+	 * Returns a curve's value. If the curve value is not set, returns 
 	 * @param InCurveElement The element to retrieve the value for
 	 * @return Returns the value of the curve
 	 */
 	float GetCurveValue(FRigCurveElement* InCurveElement) const;
+
+	/**
+	 * Returns whether a curve's value is set. If the curve value is not set, returns false. 
+	 * @param InCurveElement The element to retrieve the value for
+	 * @return Returns true if the value is set, false otherwise.
+	 */
+	bool IsCurveValueSet(FRigCurveElement* InCurveElement) const;
 
 	/**
 	 * Sets a curve's value
@@ -2401,6 +3334,14 @@ public:
 	 * @param bForce Set the transform even if it is the same as the previously set one
 	 */
 	void SetCurveValue(FRigCurveElement* InCurveElement, float InValue, bool bSetupUndo = false, bool bForce = false);
+
+	/**
+	 * Unsets a curve's value. Basically the curve's value becomes meaningless.
+	 * @param InCurveElement The element to set the value for
+	 * @param bSetupUndo If true the transform stack will be setup for undo / redo
+	 * @param bForce Unset the curve even if it was already unset.
+	 */
+	void UnsetCurveValue(FRigCurveElement* InCurveElement, bool bSetupUndo = false, bool bForce = false);
 
 	/**
 	 * Returns the previous name of an element prior to a rename operation
@@ -2445,6 +3386,26 @@ public:
 	 * This is used for debugging purposes.
 	 */
 	bool IsTracingChanges() const;
+
+	/**
+	 * Returns true if the control is animatable
+	 */
+	bool IsAnimatable(const FRigElementKey& InKey) const;
+
+	/**
+	 * Returns true if the control is animatable
+	 */
+	bool IsAnimatable(const FRigControlElement* InControlElement) const;
+
+	/**
+	 * Returns true if the control should be grouped in editor
+	 */
+	bool ShouldBeGrouped(const FRigElementKey& InKey) const;
+
+	/**
+	 * Returns true if the control should be grouped in editor
+	 */
+	bool ShouldBeGrouped(const FRigControlElement* InControlElement) const;
 
 #if WITH_EDITOR
 
@@ -2510,12 +3471,29 @@ private:
 	/*
 	 * Helper function to create an element for a given type
 	 */
-	static FRigBaseElement* MakeElement(ERigElementType InElementType, int32 InCount = 1, int32* OutStructureSize = nullptr); 
+	FRigBaseElement* MakeElement(ERigElementType InElementType, int32 InCount = 1, int32* OutStructureSize = nullptr); 
 
 	/*
 	* Helper function to create an element for a given type
 	*/
-	static void DestroyElement(FRigBaseElement*& InElement); 
+	void DestroyElement(FRigBaseElement*& InElement);
+
+	/*
+	 * Templated helper function to create an element
+	 */
+	template<typename ElementType = FRigBaseElement>
+	FORCEINLINE ElementType* NewElement(int32 Num = 1)
+	{
+		ElementType* NewElements = (ElementType*)FMemory::Malloc(sizeof(ElementType) * Num);
+		for(int32 Index=0;Index<Num;Index++)
+		{
+			new(&NewElements[Index]) ElementType();
+			NewElements[Index].MetadataChangedDelegate.BindStatic(&URigHierarchy::OnMetadataChanged_Static, this);
+			NewElements[Index].MetadataTagChangedDelegate.BindStatic(&URigHierarchy::OnMetadataTagChanged_Static, this);
+		}
+		NewElements[0].OwnedInstances = Num;
+		return NewElements;
+	}
 
 	/**
 	 * Marks all affected elements of a given element as dirty
@@ -2523,11 +3501,9 @@ private:
 	 * @param bInitial If true the initial transform will be dirtied
 	 * @param bAffectChildren If set to false children will not move (maintain global).
 	 */
-#if URIGHIERARCHY_RECURSIVE_DIRTY_PROPAGATION
 	void PropagateDirtyFlags(FRigTransformElement* InTransformElement, bool bInitial, bool bAffectChildren, bool bComputeOpposed = true, bool bMarkDirty = true) const;
-#else
-	void PropagateDirtyFlags(FRigTransformElement* InTransformElement, bool bInitial, bool bAffectChildren) const;
-#endif
+
+public:
 
 	/**
 	* Performs validation of the cache within the hierarchy on any mutation.
@@ -2542,6 +3518,13 @@ private:
 		}
 #endif
 	}
+
+	/*
+	 * Cleans up caches after load
+	 */
+	void CleanupInvalidCaches();
+
+private:
 	
 	/**
 	 * The topology version of the hierarchy changes when elements are
@@ -2549,6 +3532,20 @@ private:
 	 */
 	UPROPERTY(transient)
 	uint16 TopologyVersion;
+
+	/**
+	 * The metadata version of the hierarchy changes when metadata is being
+	 * created or removed (not when the metadata values changes)
+	 */
+	UPROPERTY(transient)
+	uint16 MetadataVersion;
+
+	/**
+	 * The metadata version of the hierarchy changes when metadata is being
+	 * created or removed (not when the metadata values changes)
+	 */
+	UPROPERTY(transient)
+	uint16 MetadataTagVersion;
 
 	/**
 	 * If set to false the dirty flag propagation will be disabled
@@ -2619,6 +3616,8 @@ private:
             const FRigElementKey& InKey,
             float InOldCurveValue,
             float InNewCurveValue,
+            bool bInOldIsCurveValueSet,
+            bool bInNewIsCurveValueSet,
             bool bModify);
 
 	/**
@@ -2652,9 +3651,12 @@ private:
 	FRigHierarchyUndoRedoTransformEvent UndoRedoEvent;
 
 	TWeakObjectPtr<URigHierarchy> HierarchyForSelectionPtr;
+	TWeakObjectPtr<URigHierarchy> DefaultHierarchyPtr;
+	TArray<FRigElementKey> OrderedSelection;
 
 	UPROPERTY(Transient)
 	TObjectPtr<URigHierarchyController> HierarchyController;
+	bool bIsControllerAvailable;
 
 	TMap<FRigElementKey, FRigElementKey> PreviousParentMap;
 
@@ -2664,7 +3666,8 @@ private:
 
 	int32 ResetPoseHash;
 	TArray<bool> ResetPoseIsFilteredOut;
-
+	TArray<int32> ElementsToRetainLocalTransform;
+	
 #if WITH_EDITOR
 
 	// this is mainly used for propagating changes between hierarchies in the direction of blueprint -> CDO -> other instances
@@ -2804,6 +3807,16 @@ protected:
 		return ERigElementType::None;
 	}
 
+public:
+
+	const FRigElementKeyCollection* FindCachedCollection(uint32 InHash) const { return KeyCollectionCache.Find(InHash); }
+	FRigElementKeyCollection& FindOrAddCachedCollection(uint32 InHash) const { return KeyCollectionCache.FindOrAdd(InHash); };
+	void AddCachedCollection(uint32 InHash, const FRigElementKeyCollection& InCollection) const { KeyCollectionCache.Add(InHash, InCollection); }
+	
+private:
+	
+	mutable TMap<uint32, FRigElementKeyCollection> KeyCollectionCache;
+
 	FTransform GetWorldTransformForReference(const FRigUnitContext* InContext, const FRigElementKey& InKey, bool bInitial);
 	
 	FORCEINLINE static float GetWeightForLerp(const float WeightA, const float WeightB)
@@ -2891,37 +3904,204 @@ protected:
 #if WITH_EDITOR
 	static TArray<FString> ControlSettingsToPythonCommands(const FRigControlSettings& Settings, const FString& NameSettings);
 #endif
-	
+
+	template<typename T>
+	FORCEINLINE const T& GetMetadata(const FRigElementKey& InItem, ERigMetadataType InType, const FName& InMetadataName, const T& DefaultValue) const
+	{
+		return GetMetadata<T>(Find(InItem), InType, InMetadataName, DefaultValue);
+	}
+
+	template<typename T>
+	FORCEINLINE const T& GetMetadata(const FRigBaseElement* InElement, ERigMetadataType InType, const FName& InMetadataName, const T& DefaultValue) const
+	{
+		if(InElement)
+		{
+			if(FRigBaseMetadata* Metadata = InElement->GetMetadata(InMetadataName, InType))
+			{
+				return *(const T*)Metadata->GetValueData();
+			}
+		}
+		return DefaultValue;
+	}
+
+	template<typename T>
+	FORCEINLINE const TArray<T>& GetArrayMetadata(const FRigElementKey& InItem, ERigMetadataType InType, const FName& InMetadataName) const
+	{
+		return GetArrayMetadata<T>(Find(InItem), InType, InMetadataName);
+	}
+
+	template<typename T>
+	FORCEINLINE const TArray<T>& GetArrayMetadata(const FRigBaseElement* InElement, ERigMetadataType InType, const FName& InMetadataName) const
+	{
+		static const TArray<T> EmptyArray;
+		return GetMetadata<TArray<T>>(InElement, InType, InMetadataName, EmptyArray);
+	}
+
+	template<typename T>
+	FORCEINLINE bool SetMetadata(const FRigElementKey& InItem, ERigMetadataType InType, const FName& InMetadataName, const T& InValue)
+	{
+		return SetMetadata<T>(Find(InItem), InType, InMetadataName, InValue);
+	}
+
+	template<typename T>
+	FORCEINLINE bool SetMetadata(FRigBaseElement* InElement, ERigMetadataType InType, const FName& InMetadataName, const T& InValue)
+	{
+		if(InElement)
+		{
+			return InElement->SetMetaData(InMetadataName, InType, &InValue, sizeof(T));
+		}
+		return false;
+	}
+
+	template<typename T>
+	FORCEINLINE bool SetArrayMetadata(const FRigElementKey& InItem, ERigMetadataType InType, const FName& InMetadataName, const TArray<T>& InValue)
+	{
+		return SetMetadata<TArray<T>>(Find(InItem), InType, InMetadataName, InValue);
+	}
+
+	template<typename T>
+	FORCEINLINE bool SetArrayMetadata(FRigBaseElement* InElement, ERigMetadataType InType, const FName& InMetadataName, const TArray<T>& InValue)
+	{
+		return SetMetadata<TArray<T>>(InElement, InType, InMetadataName, InValue);
+	}
+
+	void OnMetadataChanged(const FRigElementKey& InKey, const FName& InName);
+	void OnMetadataTagChanged(const FRigElementKey& InKey, const FName& InTag, bool bAdded);
+
 protected:
+
+	FORCEINLINE static void OnMetadataChanged_Static(const FRigElementKey& InKey, const FName& InName, URigHierarchy* InHierarchy)
+	{
+		check(InHierarchy);
+		check(IsValid(InHierarchy));
+		InHierarchy->OnMetadataChanged(InKey, InName);
+	}
+	FORCEINLINE static void OnMetadataTagChanged_Static(const FRigElementKey& InKey, const FName& InTag, bool bAdded, URigHierarchy* InHierarchy)
+	{
+		check(InHierarchy);
+		check(IsValid(InHierarchy));
+		InHierarchy->OnMetadataTagChanged(InKey, InTag, bAdded);
+	}
 	
 	bool bEnableCacheValidityCheck;
 
+	static bool bEnableValidityCheckbyDefault;
+
 	UPROPERTY(transient)
 	TObjectPtr<URigHierarchy> HierarchyForCacheValidation;
+
+	mutable TMap<FRigElementKey, FRigElementKey> DefaultParentPerElement;
+
+	bool bUpdatePreferedEulerAngleWhenSettingTransform;
 	
 private:
 	
 	void EnsureCacheValidityImpl();
 
-#if WITH_EDITOR
-	const FRigVMExecuteContext* ExecuteContext;
-	mutable bool bRecordTransformsPerInstruction;
-	mutable TArray<TArray<TArray<int32>>> ReadTransformsPerInstructionPerSlice;
-	mutable TArray<TArray<TArray<int32>>> WrittenTransformsPerInstructionPerSlice;
+	const FRigVMExtendedExecuteContext* ExecuteContext;
 
+#if WITH_EDITOR
+	mutable bool bRecordTransformsAtRuntime;
+	mutable TArray<TInstructionSliceElement> ReadTransformsAtRuntime;
+	mutable TArray<TInstructionSliceElement> WrittenTransformsAtRuntime;
 public:
 
-	TElementDependencyMap GetDependenciesForVM(URigVM* InVM, FName InEventName = NAME_None);
+	TElementDependencyMap GetDependenciesForVM(const URigVM* InVM, FName InEventName = NAME_None) const;
 
 private:
 	
 #endif
 
+	void UpdateVisibilityOnProxyControls();
+
+	static const TArray<FString>& GetTransformTypeStrings();
+
+	struct FQueuedNotification
+	{
+		ERigHierarchyNotification Type;
+		FRigElementKey Key;
+		
+		FORCEINLINE bool operator == (const FQueuedNotification& InOther) const
+		{
+			return Type == InOther.Type && Key == InOther.Key;
+		}
+	};
+	TQueue<FQueuedNotification> QueuedNotifications;
+
+	void QueueNotification(ERigHierarchyNotification InNotification, const FRigBaseElement* InElement);
+	void SendQueuedNotifications();
+	
 	friend class URigHierarchyController;
 	friend class UControlRig;
 	friend class FControlRigEditor;
 	friend struct FRigHierarchyValidityBracket;
+	friend struct FRigHierarchyGlobalValidityBracket;
 	friend struct FControlRigVisualGraphUtils;
+	friend struct FRigHierarchyEnableControllerBracket;
+	friend struct FRigHierarchyExecuteContextBracket;
+};
+
+struct CONTROLRIG_API FRigHierarchyInteractionBracket
+{
+public:
+	
+	FRigHierarchyInteractionBracket(URigHierarchy* InHierarchy)
+		: Hierarchy(InHierarchy)
+	{
+		check(Hierarchy);
+		Hierarchy->Notify(ERigHierarchyNotification::InteractionBracketOpened, nullptr);
+	}
+
+	~FRigHierarchyInteractionBracket()
+	{
+		Hierarchy->Notify(ERigHierarchyNotification::InteractionBracketClosed, nullptr);
+	}
+
+private:
+
+	URigHierarchy* Hierarchy;
+};
+
+struct CONTROLRIG_API FRigHierarchyEnableControllerBracket
+{
+private:
+	FRigHierarchyEnableControllerBracket(URigHierarchy* InHierarchy, bool bEnable)
+		: GuardIsControllerAvailable(InHierarchy->bIsControllerAvailable, bEnable)
+	{
+	}
+
+	friend class URigHierarchy;
+	friend class UControlRig;
+
+	// certain units are allowed to use this
+	friend struct FRigUnit_AddParent;
+	friend struct FRigUnit_SetDefaultParent;
+
+private:
+	TGuardValue<bool> GuardIsControllerAvailable;
+};
+
+struct CONTROLRIG_API FRigHierarchyExecuteContextBracket
+{
+private:
+
+	FRigHierarchyExecuteContextBracket(URigHierarchy* InHierarchy, const FRigVMExtendedExecuteContext* InContext)
+		: Hierarchy(InHierarchy)
+		, PreviousContext(InHierarchy->ExecuteContext)
+	{
+		Hierarchy->ExecuteContext = InContext;
+	}
+
+	~FRigHierarchyExecuteContextBracket()
+	{
+		Hierarchy->ExecuteContext = PreviousContext;
+		Hierarchy->SendQueuedNotifications();
+	}
+
+	URigHierarchy* Hierarchy;
+	const FRigVMExtendedExecuteContext* PreviousContext;
+
+	friend class UControlRig;
 };
 
 struct CONTROLRIG_API FRigHierarchyValidityBracket
@@ -2953,6 +4133,25 @@ struct CONTROLRIG_API FRigHierarchyValidityBracket
 
 	bool bPreviousValue;
 	TWeakObjectPtr<URigHierarchy> HierarchyPtr;
+};
+
+struct CONTROLRIG_API FRigHierarchyGlobalValidityBracket
+{
+public:
+	FRigHierarchyGlobalValidityBracket(bool bEnable = true)
+		: bPreviousValue(URigHierarchy::bEnableValidityCheckbyDefault)
+	{
+		URigHierarchy::bEnableValidityCheckbyDefault = true;
+	}
+
+	~FRigHierarchyGlobalValidityBracket()
+	{
+		URigHierarchy::bEnableValidityCheckbyDefault = bPreviousValue;
+	}
+
+private:
+
+	bool bPreviousValue;
 };
 
 template<>

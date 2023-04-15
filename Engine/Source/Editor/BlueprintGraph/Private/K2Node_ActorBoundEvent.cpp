@@ -1,14 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_ActorBoundEvent.h"
+
+#include "Engine/Blueprint.h"
 #include "Engine/Level.h"
 #include "Engine/LevelScriptActor.h"
 #include "Engine/LevelScriptBlueprint.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-
-#include "KismetCompiler.h"
+#include "Engine/MemberReference.h"
 #include "EventEntryHandler.h"
+#include "GameFramework/Actor.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "KismetCompiler.h"
+#include "Serialization/Archive.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+
+struct FKismetFunctionContext;
 
 #define LOCTEXT_NAMESPACE "K2Node_ActorBoundEvent"
 
@@ -133,13 +148,13 @@ FText UK2Node_ActorBoundEvent::GetNodeTitle(ENodeTitleType::Type TitleType) cons
 	if (EventOwner == nullptr)
 	{
 		FFormatNamedArguments Args;
-		Args.Add(TEXT("DelegatePropertyName"), FText::FromName(DelegatePropertyName));
+		Args.Add(TEXT("DelegatePropertyName"), GetTargetDelegateDisplayName());
 		return FText::Format(LOCTEXT("ActorBoundEventTitleNoOwner", "{DelegatePropertyName} (None)"), Args);
 	}
 	else if (CachedNodeTitle.IsOutOfDate(this))
 	{
 		FFormatNamedArguments Args;
-		Args.Add(TEXT("DelegatePropertyName"), FText::FromName(DelegatePropertyName));
+		Args.Add(TEXT("DelegatePropertyName"), GetTargetDelegateDisplayName());
 		Args.Add(TEXT("TargetName"), FText::FromString(EventOwner->GetActorLabel()));
 
 		// FText::Format() is slow, so we cache this to save on performance
@@ -237,6 +252,12 @@ FMulticastDelegateProperty* UK2Node_ActorBoundEvent::GetTargetDelegateProperty()
 FMulticastDelegateProperty* UK2Node_ActorBoundEvent::GetTargetDelegatePropertyFromSkel() const
 {
 	return FindFProperty<FMulticastDelegateProperty>(FBlueprintEditorUtils::GetMostUpToDateClass(DelegateOwnerClass), DelegatePropertyName);
+}
+
+FText UK2Node_ActorBoundEvent::GetTargetDelegateDisplayName() const
+{
+	FMulticastDelegateProperty* Prop = GetTargetDelegateProperty();
+	return Prop ? Prop->GetDisplayNameText() : FText::FromName(DelegatePropertyName);
 }
 
 bool UK2Node_ActorBoundEvent::IsUsedByAuthorityOnlyDelegate() const

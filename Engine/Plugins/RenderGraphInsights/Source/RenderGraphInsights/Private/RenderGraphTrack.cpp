@@ -1199,7 +1199,7 @@ void FRenderGraphTrack::BuildDrawState(FRenderGraphTrackDrawStateBuilder& Builde
 			uint64 SizeInBytes{};
 			uint32 Index{};
 			uint32 Order{};
-			ERDGParentResourceType Type = ERDGParentResourceType::Texture;
+			ERDGViewableResourceType Type = ERDGViewableResourceType::Texture;
 			bool bHasPreviousOwner{};
 		};
 
@@ -1234,7 +1234,7 @@ void FRenderGraphTrack::BuildDrawState(FRenderGraphTrackDrawStateBuilder& Builde
 
 			const auto IsPacketCulled = [&](const FResourcePacket& Packet)
 			{
-				if (Packet.bCulled || Packet.bTransientUntracked)
+				if (Packet.bCulled || Packet.bTrackingSkipped || Packet.bTransientUntracked)
 				{
 					return true;
 				}
@@ -1297,7 +1297,7 @@ void FRenderGraphTrack::BuildDrawState(FRenderGraphTrackDrawStateBuilder& Builde
 					Entry.SizeInBytes = Texture.SizeInBytes;
 					Entry.Index = TextureIndex;
 					Entry.Order = Texture.Order;
-					Entry.Type = ERDGParentResourceType::Texture;
+					Entry.Type = ERDGViewableResourceType::Texture;
 					Entry.bHasPreviousOwner = Texture.PrevousOwnerHandle.IsValid();
 				}
 			}
@@ -1324,7 +1324,7 @@ void FRenderGraphTrack::BuildDrawState(FRenderGraphTrackDrawStateBuilder& Builde
 					Entry.SizeInBytes = Buffer.SizeInBytes;
 					Entry.Index = BufferIndex;
 					Entry.Order = Buffer.Order;
-					Entry.Type = ERDGParentResourceType::Buffer;
+					Entry.Type = ERDGViewableResourceType::Buffer;
 					Entry.bHasPreviousOwner = Buffer.PrevousOwnerHandle.IsValid();
 				}
 			}
@@ -1369,7 +1369,7 @@ void FRenderGraphTrack::BuildDrawState(FRenderGraphTrackDrawStateBuilder& Builde
 			{
 				if (!Entry.bHasPreviousOwner)
 				{
-					auto& Array = Entry.Type == ERDGParentResourceType::Texture ? TextureIndexToDepth : BufferIndexToDepth;
+					auto& Array = Entry.Type == ERDGViewableResourceType::Texture ? TextureIndexToDepth : BufferIndexToDepth;
 					Array[Entry.Index] = DepthOffset++;
 				}
 
@@ -2007,7 +2007,7 @@ void FRenderGraphTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddMenuEntry
 		(
 			LOCTEXT("4MiB", "4MiB"),
-			LOCTEXT("4MiB_Tooltip", "Each depth slot in the timing view is 1MiB in size on the vertical axis."),
+			LOCTEXT("4MiB_Tooltip", "Each depth slot in the timing view is 4MiB in size on the vertical axis."),
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateLambda([this, MiB]()
@@ -2025,7 +2025,7 @@ void FRenderGraphTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddMenuEntry
 		(
 			LOCTEXT("2MiB", "2MiB"),
-			LOCTEXT("2MiB_Tooltip", "Each depth slot in the timing view is 1MiB in size on the vertical axis."),
+			LOCTEXT("2MiB_Tooltip", "Each depth slot in the timing view is 2MiB in size on the vertical axis."),
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateLambda([this, MiB]()

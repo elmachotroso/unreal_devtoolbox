@@ -4,10 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Camera/CameraTypes.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Misc/PathViews.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
-#include "Engine/TextureRenderTarget2D.h"
+#include "UObject/SoftObjectPtr.h"
 
+#include "NiagaraBakerOutput.h"
 #include "NiagaraBakerSettings.generated.h"
 
 UENUM()
@@ -20,22 +23,87 @@ enum class ENiagaraBakerViewMode
 	OrthoRight,
 	OrthoTop,
 	OrthoBottom,
-	Num
+	Num UMETA(Hidden)
 };
 
 USTRUCT()
-struct FNiagaraBakerTextureSource
+struct FNiagaraBakerCameraSettings
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, Category = "Source")
-	FName SourceName;
+	UPROPERTY()
+	ENiagaraBakerViewMode ViewMode = ENiagaraBakerViewMode::Perspective;
+
+	UPROPERTY()
+	FVector ViewportLocation = FVector::ZeroVector;
+
+	UPROPERTY()
+	FRotator ViewportRotation = FRotator::ZeroRotator;
+
+	UPROPERTY()
+	float OrbitDistance = 200.f;
+
+	UPROPERTY()
+	float FOV = 90.0f;
+
+	UPROPERTY()
+	float OrthoWidth = 512.0f;
+
+	UPROPERTY()
+	bool bUseAspectRatio = false;
+
+	UPROPERTY()
+	float AspectRatio = 1.0f;
+
+	bool IsOrthographic() const { return ViewMode != ENiagaraBakerViewMode::Perspective; }
+	bool IsPerspective() const { return ViewMode == ENiagaraBakerViewMode::Perspective; }
+
+	void ResetToDefault()
+	{
+		if (IsPerspective())
+		{
+			ViewportLocation = FVector(0.0f, -200.0f, 0.0f);
+			ViewportRotation = FRotator(180.0f, 0.0f, 90.0f);
+		}
+		else
+		{
+			ViewportLocation = FVector::ZeroVector;
+			ViewportRotation = FRotator::ZeroRotator;
+		}
+		OrbitDistance = 200.0f;
+		FOV = 90.0f;
+		OrthoWidth = 512.0f;
+		bUseAspectRatio = false;
+		AspectRatio = 1.0f;
+	}
+
+	bool operator==(const FNiagaraBakerCameraSettings& Other) const
+	{
+		return
+			ViewMode == Other.ViewMode &&
+			ViewportLocation.Equals(Other.ViewportLocation) &&
+			ViewportRotation.Equals(Other.ViewportRotation) &&
+			OrbitDistance == Other.OrbitDistance &&
+			FOV == Other.FOV &&
+			OrthoWidth == Other.OrthoWidth &&
+			bUseAspectRatio == Other.bUseAspectRatio &&
+			AspectRatio == Other.AspectRatio;
+	}
 };
 
 USTRUCT()
 struct FNiagaraBakerTextureSettings
 {
 	GENERATED_BODY()
+
+	FNiagaraBakerTextureSettings()
+		: bUseFrameSize(false)
+	{
+	}
+
+	/** Optional output name, if left empty a name will be auto generated using the index of the texture/ */
+	UPROPERTY(EditAnywhere, Category = "Texture")
+	FName OutputName;
 	
 	/** Source visualization we should capture, i.e. Scene Color, World Normal, etc */
 	UPROPERTY(EditAnywhere, Category = "Texture")
@@ -59,41 +127,34 @@ struct FNiagaraBakerTextureSettings
 	/** Final texture generated, an existing entry will be updated with new capture data. */
 	UPROPERTY(EditAnywhere, Category = "Texture")
 	TObjectPtr<UTexture2D> GeneratedTexture = nullptr;
-
-	bool IsValidForBake() const { return FrameSize.X > 0 && FrameSize.Y > 0; }
-
-	bool Equals(const FNiagaraBakerTextureSettings& Other) const;
-
-	FNiagaraBakerTextureSettings()
-		: bUseFrameSize(false)
-	{}
 };
 
-UCLASS()
+struct FNiagaraBakerOutputFrameIndices
+{
+	int		NumFrames = 1;
+	float	NormalizedTime = 0.0f;
+	int		FrameIndexA = 0;
+	int		FrameIndexB = 0;
+	float	Interp = 0.0f;
+};
+
+UCLASS(config=Niagara, defaultconfig)
 class NIAGARA_API UNiagaraBakerSettings : public UObject
 {
 	GENERATED_BODY()
 
 public:
-	struct FDisplayInfo
-	{
-		float NormalizedTime;
-		int FrameIndexA;
-		int FrameIndexB;
-		float Interp;
-	};
-
 	UNiagaraBakerSettings(const FObjectInitializer& Init);
 
 	/**
-	This is the start time of the simultion where we being the capture.
+	This is the start time of the simulation where we begin the capture.
 	I.e. 2.0 would mean the simulation warms up by 2 seconds before we begin capturing.
 	*/
-	UPROPERTY(EditAnywhere, Category="Timeline")
+	UPROPERTY(EditAnywhere, Category="Settings")
 	float StartSeconds = 0.0f;
 
 	/** Duration in seconds to take the capture over. */
-	UPROPERTY(EditAnywhere, Category = "Timeline")
+	UPROPERTY(EditAnywhere, Category = "Settings")
 	float DurationSeconds = 4.0f;
 
 	/**
@@ -101,87 +162,90 @@ public:
 	This is only used for the preview view and calculating the number of ticks to execute
 	as we capture the generated texture.
 	*/
-	UPROPERTY(EditAnywhere, Category = "Timeline", meta = (ClampMin=1, ClampMax=480))
+	UPROPERTY(EditAnywhere, Category = "Settings", AdvancedDisplay, meta = (ClampMin=1, ClampMax=480))
 	int FramesPerSecond = 60;
 
 	/** Should the preview playback as looping or not. */
-	UPROPERTY(EditAnywhere, Category = "Preview")
+	UPROPERTY(EditAnywhere, Category = "Settings")
 	uint8 bPreviewLooping : 1;
 
 	/** Number of frames in each dimension. */
-	UPROPERTY(EditAnywhere, Category = "Texture")
-	FIntPoint FramesPerDimension = FIntPoint(8, 8);
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	FIntPoint FramesPerDimension = FIntPoint(8, 8);	//-TODO: Remove me...
 
-	/** List of output textures we will generated. */
-	UPROPERTY(EditAnywhere, Category = "Texture")
-	TArray<FNiagaraBakerTextureSettings> OutputTextures;
+	/** Array of outputs for the baker to generate. */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	TArray<TObjectPtr<UNiagaraBakerOutput>> Outputs;
 
-	/** Current active viewport we will render from. */
-	UPROPERTY(EditAnywhere, Category = "Camera")
-	ENiagaraBakerViewMode CameraViewportMode = ENiagaraBakerViewMode::Perspective;
+	/** Camera Settings, will always be at least ENiagaraBakerViewMode::Num elements and those are fixed cameras. */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	TArray<FNiagaraBakerCameraSettings> CameraSettings;
 
-	/** Per viewport camera position.. */
-	UPROPERTY(EditAnywhere, Category = "Camera")
-	FVector CameraViewportLocation[(int)ENiagaraBakerViewMode::Num];
+	/** Active camera that we were saved with */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	int32 CurrentCameraIndex = 0;
 
-	/** Per viewport camera rotation.. */
-	UPROPERTY(EditAnywhere, Category = "Camera")
-	FRotator CameraViewportRotation[(int)ENiagaraBakerViewMode::Num];
-
-	/** Perspective camera orbit distance. */
-	UPROPERTY(EditAnywhere, Category = "Camera", meta = (EditCondition = "CameraViewportMode == ENiagaraBakerViewMode::Perspective", ClampMin = "0.01"))
-	float CameraOrbitDistance = 200.f;
-
-	/** Camera FOV to use when in perspective mode. */
-	UPROPERTY(EditAnywhere, Category = "Camera", meta=(EditCondition="CameraViewportMode == ENiagaraBakerViewMode::Perspective", ClampMin="1.0", ClampMax="180.0"))
-	float CameraFOV = 90.0f;
-
-	/** Camera Orthographic width to use with in orthographic mode. */
-	UPROPERTY(EditAnywhere, Category = "Camera", meta = (EditCondition = "CameraViewportMode != ENiagaraBakerViewMode::Perspective", ClampMin="1.0"))
-	float CameraOrthoWidth = 512.0f;
-
-	UPROPERTY(EditAnywhere, Category = "Camera", meta = (PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bUseCameraAspectRatio : 1;
-
-	/** Custom aspect ratio to use rather than using the width & height to automatically calculate. */
-	UPROPERTY(EditAnywhere, Category = "Camera", meta = (EditCondition = "bUseCameraAspectRatio", ClampMin="0.01"))
-	float CameraAspectRatio = 1.0f;
+	/** What quality level to use when baking the simulation, where None means use the current quality level. */
+	UPROPERTY(EditAnywhere, Category = "Settings", config)
+	FName BakeQualityLevel;
 
 	/** Should we render just the component or the whole scene. */
-	UPROPERTY(EditAnywhere, Category = "Environment")
+	UPROPERTY(EditAnywhere, Category = "Settings")
 	uint8 bRenderComponentOnly : 1;
-
-	///** Type of level setup to use. */
-	//UPROPERTY(EditAnywhere, Category = "Environment", meta = (PinHiddenByDefault, InlineEditConditionToggle))
-	//uint8 bLoadLevel : 1;
-
-	///** Used to determine type of level setup. */
-	//UPROPERTY(EditAnywhere, Category = "Environment", meta = (EditCondition = "bLoadLevel"))
-	//TSoftObjectPtr<class ULevel> LevelEnvironment;
 
 	bool Equals(const UNiagaraBakerSettings& Other) const;
 
-	int GetNumFrames() const { return FramesPerDimension.X * FramesPerDimension.Y; }
-
 	float GetSeekDelta() const { return 1.0f / float(FramesPerSecond); }
 
-	float GetAspectRatio(int32 iOutputTextureIndex) const;
-	FVector2D GetOrthoSize(int32 iOutputTextureIndex) const;
 	FVector GetCameraLocation() const;
 	FRotator GetCameraRotation() const;
 	FMatrix GetViewportMatrix() const;
 	FMatrix GetViewMatrix() const;
-	FMatrix GetProjectionMatrixForTexture(int32 iOutputTextureIndex) const;
+	FMatrix GetProjectionMatrix() const;
 
-	bool IsOrthographic() const { return CameraViewportMode != ENiagaraBakerViewMode::Perspective; }
-	bool IsPerspective() const { return CameraViewportMode == ENiagaraBakerViewMode::Perspective; }
+	FNiagaraBakerCameraSettings& GetCurrentCamera() { return CameraSettings[CurrentCameraIndex]; }
+	const FNiagaraBakerCameraSettings& GetCurrentCamera() const { return CameraSettings[CurrentCameraIndex]; }
 
-	// Get display info, the input time is expected to tbe relative, i.e. StartDuration is not taking into account
-	FDisplayInfo GetDisplayInfo(float Time, bool bLooping) const;
+	int GetOutputNumFrames(UNiagaraBakerOutput* BakerOutput) const;
+	FNiagaraBakerOutputFrameIndices GetOutputFrameIndices(UNiagaraBakerOutput* BakerOutput, float RelativeTime) const;
+
+	int GetOutputNumFrames(int OutputIndex) const;
+	FNiagaraBakerOutputFrameIndices GetOutputFrameIndices(int OutputIndex, float RelativeTime) const;
 
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 
 #if WITH_EDITORONLY_DATA
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+
+	// Deprecated properties
+	UPROPERTY()
+	TArray<FNiagaraBakerTextureSettings> OutputTextures_DEPRECATED;
+
+	UPROPERTY()
+	ENiagaraBakerViewMode CameraViewportMode_DEPRECATED = ENiagaraBakerViewMode::Perspective;
+
+	UPROPERTY()
+	FVector CameraViewportLocation_DEPRECATED[(int)ENiagaraBakerViewMode::Num];
+
+	UPROPERTY()
+	FRotator CameraViewportRotation_DEPRECATED[(int)ENiagaraBakerViewMode::Num];
+
+	UPROPERTY()
+	float CameraOrbitDistance_DEPRECATED = 200.f;
+
+	UPROPERTY()
+	float CameraFOV_DEPRECATED = 90.0f;
+
+	UPROPERTY()
+	float CameraOrthoWidth_DEPRECATED = 512.0f;
+
+	UPROPERTY()
+	uint8 bUseCameraAspectRatio_DEPRECATED : 1;
+
+	UPROPERTY()
+	float CameraAspectRatio_DEPRECATED = 1.0f;
 };

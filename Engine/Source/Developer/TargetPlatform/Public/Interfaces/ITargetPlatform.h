@@ -64,7 +64,7 @@ enum class ETargetPlatformFeatures
 	MeshLODStreaming,
 
 	/** Landscape visual mesh LOD streaming. */
-	LandscapeMeshLODStreaming,
+	LandscapeMeshLODStreaming UE_DEPRECATED(5.1, "LandscapeMeshLODStreaming is now deprecated and will be removed."),
 
 	/** User credentials are required to use the device. */
 	UserCredentials,
@@ -107,6 +107,9 @@ enum class ETargetPlatformFeatures
 
 	/* The platform makes use of extra cook-time file region metadata in its packaging process. */
 	CookFileRegionMetadata,
+
+	/** The platform supports communication (reading and writing data) between a target a connected PC. */
+	DirectDataExchange
 };
 
 enum class EPlatformAuthentication
@@ -392,6 +395,14 @@ public:
 	virtual bool RequiresCookedData() const = 0;
 
 	/**
+	 * Checks whether this platform requires the originally released version (in addition to the 
+	 * previously released version) to create a patch
+	 *
+	 * @return true if this platform requires the originally released version, false otherwise.
+	 */
+	virtual bool RequiresOriginalReleaseVersionForPatch() const = 0;
+
+	/**
 	* Checks whether this platform has a secure shippable package format, and therefore doesn't need any encryption or signing support
 	*
 	* @return true if this platform requires cooked data, false otherwise.
@@ -505,6 +516,11 @@ public:
 	 * Gets whether the platform uses Mobile AO
 	 */
 	virtual bool UsesMobileAmbientOcclusion() const = 0;
+	
+	/**
+	 * Gets whether the platform uses ASTC HDR
+	 */
+	virtual bool UsesASTCHDR() const = 0;
 
 	/**
 	* Gets the shader formats this platform can use.
@@ -519,6 +535,18 @@ public:
 	* @param OutFormats Will contain the shader formats.
 	*/
 	virtual void GetAllTargetedShaderFormats(TArray<FName>& OutFormats) const = 0;
+
+	/**
+	* Gets the shader formats that support ray tracing for this target platform.
+	* 
+	* @param OutFormats Will contain the shader formats.
+	*/
+	virtual void GetRayTracingShaderFormats(TArray<FName>& OutFormats) const = 0;
+
+	/**
+	 * Gather per-project cook/package analytics
+	 */
+	virtual void GetPlatformSpecificProjectAnalytics( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray ) const = 0;
 
 #if WITH_ENGINE
 	/**
@@ -570,26 +598,7 @@ public:
 	 * might want to use a single specific variant for virtual textures to reduce fragmentation
 	 */
 	virtual FName FinalizeVirtualTextureLayerFormat(FName Format) const = 0;
-
-	/**
-	* Gets the texture format to use for a virtual texturing layer. In order to make a better guess
-	* some parameters are passed to this function.
-	*
-	* @param SourceFormat The raw uncompressed source format (ETextureSourceFormat) the texture is stored in.
-	* @param bAllowCompression Allow a compressed (lossy) format to be chosen.
-	* @param bNoAlpha The chosen format doesn't need to have an alpha channel.
-	* @param bSupportDX11TextureFormats Allow choosing a texture format which is supported only on DX11 hardware (e.g. BC7 etc).
-	* @param settings A hint as to what kind of data is to be stored in the layer or an explicit request for a certain format (TextureCompressionSettings enum value).
-	* @return The chosen format to use for the layer on this platform based on the given input. May return the None name ( Fname::IsNone == true) on platforms that do not support VT.
-	* 
-	* FIXME: Is it better to pass in the UVirtualTexture and layer index instead of all these arguments?! Less encapsulated but cleaner??
-	* this would also mean we don't have to hide the SourceFormat and TextureCompressionSettings enums
-	*/
-	virtual FName GetVirtualTextureLayerFormat(
-		int32 SourceFormat,
-		bool bAllowCompression, bool bNoAlpha,
-		bool bSupportDX11TextureFormats, int32 TextureCompressionSettings) const = 0;
-	
+		
 	//whether R5G6B5 and B5G5R5A1 is supported
 	virtual bool SupportsLQCompressionTextureFormat() const = 0;
 	
@@ -686,11 +695,6 @@ public:
 	 * Project settings to check to determine if a build should occur
 	 */
 	virtual void GetBuildProjectSettingKeys(FString& OutSection, TArray<FString>& InBoolKeys, TArray<FString>& InIntKeys, TArray<FString>& InStringKeys) const = 0;
-
-	/**
-	 * Give the platform a chance to refresh internal settings before a cook, etc
-	 */
-	virtual void RefreshSettings() = 0;
 
 	/**
 	 * Get unique integer identifier for this platform.

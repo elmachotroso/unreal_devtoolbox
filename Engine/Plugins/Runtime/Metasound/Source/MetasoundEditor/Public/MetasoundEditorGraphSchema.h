@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "ConnectionDrawingPolicy.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphUtilities.h"
@@ -17,7 +17,7 @@
 // Forward Declarations
 class UEdGraph;
 class UEdGraphNode;
-class UMetaSound;
+class UMetaSoundPatch;
 class UMetasoundEditorGraphNode;
 
 
@@ -68,14 +68,16 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction : public FEdGraphSchemaAc
 			MoveTemp(InNodeCategory),
 			MoveTemp(InMenuDesc),
 			MoveTemp(InToolTip),
-			/*InNodeCategory.IsEmpty() ? */static_cast<int32>(InGroup)/* : 0*/,
+			static_cast<int32>(InGroup),
 			MoveTemp(InKeywords))
 	{
 	}
 
+	virtual ~FMetasoundGraphSchemaAction() = default;
+
 	virtual const FSlateBrush* GetIconBrush() const
 	{
-		return FEditorStyle::GetBrush("NoBrush");
+		return FAppStyle::GetBrush("NoBrush");
 	}
 
 	virtual const FLinearColor& GetIconColor() const
@@ -99,6 +101,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NodeWithMultipleOutputs :
 		: FMetasoundGraphSchemaAction(InNodeCategory, InMenuDesc, InToolTip, InGroup, InKeywords)
 	{}
 
+	virtual ~FMetasoundGraphSchemaAction_NodeWithMultipleOutputs() = default;
+
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, TArray<UEdGraphPin*>& FromPins, const FVector2D Location, bool bSelectNewNode = true) override;
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) { return nullptr; }
@@ -120,6 +124,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewInput : public FMetaso
 
 	FMetasoundGraphSchemaAction_NewInput(FText InNodeCategory, FText InDisplayName, FGuid InInputNodeID, FText InToolTip, Metasound::Editor::EPrimaryContextGroup InGroup);
 
+	virtual ~FMetasoundGraphSchemaAction_NewInput() = default;
+
 	//~ Begin FMetasoundGraphSchemaAction Interface
 	virtual const FSlateBrush* GetIconBrush() const override;
 
@@ -138,6 +144,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_PromoteToInput : public F
 	GENERATED_USTRUCT_BODY();
 
 	FMetasoundGraphSchemaAction_PromoteToInput();
+
+	virtual ~FMetasoundGraphSchemaAction_PromoteToInput() = default;
 
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
@@ -159,6 +167,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewOutput : public FMetas
 
 	FMetasoundGraphSchemaAction_NewOutput(FText InNodeCategory, FText InDisplayName, FGuid InOutputNodeID, FText InToolTip, Metasound::Editor::EPrimaryContextGroup InGroup);
 
+	virtual ~FMetasoundGraphSchemaAction_NewOutput() = default;
+
 	//~ Begin FMetasoundGraphSchemaAction Interface
 	virtual const FSlateBrush* GetIconBrush() const override;
 
@@ -177,6 +187,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_PromoteToOutput : public 
 	GENERATED_USTRUCT_BODY();
 
 	FMetasoundGraphSchemaAction_PromoteToOutput();
+
+	virtual ~FMetasoundGraphSchemaAction_PromoteToOutput() = default;
 
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
@@ -197,6 +209,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewVariableNode : public 
 	{}
 
 	FMetasoundGraphSchemaAction_NewVariableNode(FText InNodeCategory, FText InDisplayName, FGuid InVariableID, FText InToolTip);
+
+	virtual ~FMetasoundGraphSchemaAction_NewVariableNode() = default;
 
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
@@ -228,6 +242,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewVariableAccessorNode :
 
 	FMetasoundGraphSchemaAction_NewVariableAccessorNode(FText InNodeCategory, FText InDisplayName, FGuid InVariableID, FText InToolTip);
 
+	virtual ~FMetasoundGraphSchemaAction_NewVariableAccessorNode() = default;
+
 protected:
 	virtual Metasound::Frontend::FNodeHandle CreateFrontendVariableNode(const Metasound::Frontend::FGraphHandle& InFrontendGraph, const FGuid& InVariableID) const override;
 
@@ -242,6 +258,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewVariableDeferredAccess
 	FMetasoundGraphSchemaAction_NewVariableDeferredAccessorNode()
 		: FMetasoundGraphSchemaAction_NewVariableNode()
 	{}
+
+	virtual ~FMetasoundGraphSchemaAction_NewVariableDeferredAccessorNode() = default;
 
 	FMetasoundGraphSchemaAction_NewVariableDeferredAccessorNode(FText InNodeCategory, FText InDisplayName, FGuid InVariableID, FText InToolTip);
 	
@@ -259,6 +277,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewVariableMutatorNode : 
 		: FMetasoundGraphSchemaAction_NewVariableNode()
 	{}
 
+	virtual ~FMetasoundGraphSchemaAction_NewVariableMutatorNode() = default;
+
 	FMetasoundGraphSchemaAction_NewVariableMutatorNode(FText InNodeCategory, FText InDisplayName, FGuid InVariableID, FText InToolTip);
 	
 protected:
@@ -273,6 +293,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_PromoteToVariable_Accesso
 
 	FMetasoundGraphSchemaAction_PromoteToVariable_AccessorNode();
 
+	virtual ~FMetasoundGraphSchemaAction_PromoteToVariable_AccessorNode() = default;
+
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
 	//~ End FEdGraphSchemaAction Interface
@@ -286,6 +308,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_PromoteToVariable_Mutator
 
 	FMetasoundGraphSchemaAction_PromoteToVariable_MutatorNode();
 
+	virtual ~FMetasoundGraphSchemaAction_PromoteToVariable_MutatorNode() = default;
+
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
 	//~ End FEdGraphSchemaAction Interface
@@ -298,6 +322,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_PromoteToVariable_Deferre
 	GENERATED_USTRUCT_BODY();
 
 	FMetasoundGraphSchemaAction_PromoteToVariable_DeferredAccessorNode();
+
+	virtual ~FMetasoundGraphSchemaAction_PromoteToVariable_DeferredAccessorNode() = default;
 
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
@@ -321,6 +347,8 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewNode : public FMetasou
 	FMetasoundGraphSchemaAction_NewNode(const FText& InNodeCategory, const FText& InMenuDesc, const FText& InToolTip, Metasound::Editor::EPrimaryContextGroup InGroup, FText InKeywords = FText::GetEmpty())
 		: FMetasoundGraphSchemaAction_NodeWithMultipleOutputs(InNodeCategory, InMenuDesc, InToolTip, InGroup, InKeywords)
 	{}
+
+	virtual ~FMetasoundGraphSchemaAction_NewNode() = default;
 
 	//~ Begin FMetasoundGraphSchemaAction Interface
 	virtual const FSlateBrush* GetIconBrush() const override;
@@ -347,9 +375,37 @@ struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewFromSelected : public 
 		: FMetasoundGraphSchemaAction_NewNode(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGroup)
 	{}
 
+	virtual ~FMetasoundGraphSchemaAction_NewFromSelected() = default;
+
 	//~ Begin FEdGraphSchemaAction Interface
 	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
 	//~ End FEdGraphSchemaAction Interface
+};
+
+/** Action to create new reroute node */
+USTRUCT()
+struct METASOUNDEDITOR_API FMetasoundGraphSchemaAction_NewReroute : public FMetasoundGraphSchemaAction
+{
+	GENERATED_USTRUCT_BODY();
+
+	FMetasoundGraphSchemaAction_NewReroute() = default;
+	FMetasoundGraphSchemaAction_NewReroute(const FLinearColor* InIconColor, bool bInShouldTransact = true);
+
+	virtual ~FMetasoundGraphSchemaAction_NewReroute() = default;
+
+	//~ Begin FMetasoundGraphSchemaAction Interface
+	virtual const FSlateBrush* GetIconBrush() const override;
+
+	virtual const FLinearColor& GetIconColor() const override;
+	//~ End FMetasoundGraphSchemaAction Interface
+
+	//~ Begin FEdGraphSchemaAction Interface
+	virtual UEdGraphNode* PerformAction(UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
+	//~ End FEdGraphSchemaAction Interface
+
+private:
+	FLinearColor IconColor;
+	bool bShouldTransact = true;
 };
 
 /** Action to create new comment */
@@ -401,6 +457,7 @@ class UMetasoundEditorGraphSchema : public UEdGraphSchema
 {
 	GENERATED_UCLASS_BODY()
 
+public:
 	/** Check whether connecting these pins would cause a loop */
 	bool ConnectionCausesLoop(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin) const;
 
@@ -416,6 +473,7 @@ class UMetasoundEditorGraphSchema : public UEdGraphSchema
 	virtual bool TryCreateConnection(UEdGraphPin* A, UEdGraphPin* B) const override;
 	virtual void TrySetDefaultObject(UEdGraphPin& Pin, UObject* NewDefaultObject, bool bInMarkAsModified) const override;
 	virtual void TrySetDefaultValue(UEdGraphPin& Pin, const FString& InNewDefaultValue, bool bInMarkAsModified) const override;
+	virtual bool SafeDeleteNodeFromGraph(UEdGraph* Graph, UEdGraphNode* InNodeToDelete) const override;
 	virtual bool ShouldHidePinDefaultValue(UEdGraphPin* Pin) const override;
 	virtual FLinearColor GetPinTypeColor(const FEdGraphPinType& PinType) const override;
 	virtual void BreakNodeLinks(UEdGraphNode& TargetNode) const override;
@@ -428,6 +486,8 @@ class UMetasoundEditorGraphSchema : public UEdGraphSchema
 	virtual void DroppedAssetsOnPin(const TArray<FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraphPin* Pin) const override;
 	virtual int32 GetNodeSelectionCount(const UEdGraph* Graph) const override;
 	virtual TSharedPtr<FEdGraphSchemaAction> GetCreateCommentAction() const override;
+	virtual void OnPinConnectionDoubleCicked(UEdGraphPin* PinA, UEdGraphPin* PinB, const FVector2D& GraphPosition) const override;
+	virtual void SetNodePosition(UEdGraphNode* Node, const FVector2D& Position) const;
 	//~ End EdGraphSchema Interface
 
 	void BreakNodeLinks(UEdGraphNode& TargetNode, bool bShouldActuallyTransact) const;
@@ -437,6 +497,8 @@ private:
 	void GetConversionActions(FGraphActionMenuBuilder& ActionMenuBuilder, Metasound::Editor::FActionClassFilters InFilters = Metasound::Editor::FActionClassFilters(), bool bShowSelectedActions = true) const;
 	void GetFunctionActions(FGraphActionMenuBuilder& ActionMenuBuilder, Metasound::Editor::FActionClassFilters InFilters = Metasound::Editor::FActionClassFilters(), bool bShowSelectedActions = true, Metasound::Frontend::FConstGraphHandle InGraphHandle = Metasound::Frontend::IGraphController::GetInvalidHandle()) const;
 	void GetVariableActions(FGraphActionMenuBuilder& ActionMenuBuilder, Metasound::Editor::FActionClassFilters InFilters = Metasound::Editor::FActionClassFilters(), bool bShowSelectedActions = true, Metasound::Frontend::FConstGraphHandle InGraphHandle = Metasound::Frontend::IGraphController::GetInvalidHandle()) const;
+
+	void BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin, bool bShouldTransact) const;
 
 	void GetDataTypeInputNodeActions(FGraphContextMenuBuilder& InMenuBuilder, Metasound::Frontend::FConstGraphHandle InGraphHandle, Metasound::Editor::FInterfaceNodeFilterFunction InFilter = Metasound::Editor::FInterfaceNodeFilterFunction(), bool bShowSelectedActions = true) const;
 	void GetDataTypeOutputNodeActions(FGraphContextMenuBuilder& InMenuBuilder, Metasound::Frontend::FConstGraphHandle InGraphHandle, Metasound::Editor::FInterfaceNodeFilterFunction InFilter = Metasound::Editor::FInterfaceNodeFilterFunction(), bool bShowSelectedActions = true) const;

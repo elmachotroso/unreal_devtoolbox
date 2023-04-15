@@ -3,9 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "NiagaraRendererProperties.h"
-#include "StaticMeshResources.h"
+#include "NiagaraGPUSortInfo.h"
 #include "NiagaraCommon.h"
 #include "NiagaraMeshRendererProperties.generated.h"
 
@@ -166,8 +165,8 @@ public:
 	virtual void BeginDestroy() override;
 	virtual void PreEditChange(class FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter) override;
-	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter) override;
+	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter) override;
+	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter) override;
 #endif// WITH_EDITORONLY_DATA
 	//UObject Interface END
 
@@ -177,20 +176,21 @@ public:
 	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
+	virtual void GetStreamingMeshInfo(const FBoxSphereBounds& OwnerBounds, const FNiagaraEmitterInstance* InEmitter, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
+	virtual const FVertexFactoryType* GetVertexFactoryType() const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
 	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) override;
 #if WITH_EDITORONLY_DATA
-	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
-	virtual void FixMaterial(UMaterial* Material) override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
 	virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
 	virtual	void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual	void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
+	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
 	void OnMeshChanged();
 	void OnMeshPostBuild(UStaticMesh*);
 	void OnAssetReimported(UObject*);
 	void CheckMaterialUsage();
+	virtual TArray<FNiagaraVariable> GetBoundAttributes() const override;
 #endif // WITH_EDITORONLY_DATA
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 
@@ -229,13 +229,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Sorting")
 	uint32 bSortOnlyWhenTranslucent : 1;
 
+	/** Sort precision to use when sorting is active. */
+	UPROPERTY(EditAnywhere, Category = "Sorting")
+	ENiagaraRendererSortPrecision SortPrecision = ENiagaraRendererSortPrecision::Default;
+
 	/**
-	If true and a GPU emitter, we will use the current frames data to render with regardless of where the batcher may execute the dispatches.
-	If you have other emitters that are not translucent and using data that forces it to be a frame latent (i.e. view uniform buffer) you may need to disable
-	on renderers with translucent materials if you need the frame they are reading to match exactly.
+	Gpu simulations run at different points in the frame depending on what features are used, i.e. depth buffer, distance fields, etc.
+	Opaque materials will run latent when these features are used.
+	Translucent materials can choose if they want to use this frames or the previous frames data to match opaque draws.
 	*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Rendering")
-	uint32 bGpuLowLatencyTranslucency : 1;
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Sprite Rendering")
+	ENiagaraRendererGpuTranslucentLatency GpuTranslucentLatency = ENiagaraRendererGpuTranslucentLatency::ProjectDefault;
 
 	/** If true, blends the sub-image UV lookup with its next adjacent member using the fractional part of the SubImageIndex float value as the linear interpolation factor.*/
 	UPROPERTY(EditAnywhere, Category = "SubUV", meta = (DisplayName = "Sub UV Blending Enabled"))
@@ -354,7 +358,12 @@ public:
 
 	/** If this array has entries, we will create a MaterialInstanceDynamic per Emitter instance from Material and set the Material parameters using the Niagara simulation variables listed.*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
-	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings;
+	FNiagaraRendererMaterialParameters MaterialParameters;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings_DEPRECATED;
+#endif
 
 	// The following bindings are not provided by the user, but are filled based on what other bindings are set to, and the value of bGenerateAccurateMotionVectors
 
@@ -405,9 +414,9 @@ public:
 
 protected:
 	void InitBindings();
-	void SetPreviousBindings(const UNiagaraEmitter* SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode);
+	void SetPreviousBindings(const FVersionedNiagaraEmitter& SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode);
 	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit = false) override;
-	virtual bool NeedsMIDsForMaterials() const override { return MaterialParameterBindings.Num() > 0; }	
+	virtual bool NeedsMIDsForMaterials() const override { return MaterialParameters.HasAnyBindings(); }
 #if WITH_EDITORONLY_DATA
 	bool ChangeRequiresMeshListRebuild(const FProperty* Property);
 	void RebuildMeshList();

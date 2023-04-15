@@ -5,8 +5,11 @@
 #include "GameFeaturesSubsystem.h"
 #include "GameFeaturesSubsystemSettings.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/CoreRedirects.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeatureData)
 
 #define LOCTEXT_NAMESPACE "GameFeatures"
 
@@ -65,20 +68,32 @@ void UGameFeatureData::InitializeBasePluginIniFile(const FString& PluginInstalle
 	const bool bForceReloadFromDisk = false;
 	const bool bWriteDestIni = false;
 
-	// look for plugin ini
-	// @note: We use the generated config dir, because ReloadConfig will use this path + plugin name to read it out of GConfig, so when we add it to GConfig we make
-	// sure the string is this format
-	FString PluginConfigFilename = FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), *PluginName);
-	FPaths::MakeStandardFilename(PluginConfigFilename);
+	// This will be the generated path including platform
+	FString PluginConfigFilename = GConfig->GetConfigFilename(*PluginName);
 
+	// Try the deprecated path first that doesn't include the Default prefix
 	FConfigFile& PluginConfig = GConfig->Add(PluginConfigFilename, FConfigFile());
 	if (!FConfigCacheIni::LoadExternalIniFile(PluginConfig, *PluginName, *EngineConfigDir, *PluginConfigDir, bIsBaseIniName, nullptr, bForceReloadFromDisk, bWriteDestIni))
 	{
-		// Nothing to add, remove from map
-		GConfig->Remove(PluginConfigFilename);
+		// Now try the same rules as PluginManager using Default and the config hierarchy
+		FConfigContext Context = FConfigContext::ReadIntoPluginFile(PluginConfig, *FPaths::GetPath(PluginInstalledFilename));
+
+		if (!Context.Load(*PluginName))
+		{
+			// Nothing to add, remove from map
+			GConfig->Remove(PluginConfigFilename);
+		}
+		else
+		{
+			FCoreRedirects::ReadRedirectsFromIni(PluginConfigFilename);
+			ReloadConfigs(PluginConfig);
+		}
 	}
 	else
 	{
+		// This is the deprecated loading path that doesn't handle cases like + in arrays
+		UE_LOG(LogGameFeatures, Log, TEXT("[GameFeatureData %s]: Loaded deprecated config %s, rename to start with Default for normal parsing"), *GetPathNameSafe(this), *PluginConfigFilename);
+
 		FCoreRedirects::ReadRedirectsFromIni(PluginConfigFilename);
 		ReloadConfigs(PluginConfig);
 	}
@@ -152,12 +167,12 @@ void UGameFeatureData::ReloadConfigs(FConfigFile& PluginConfig) const
 			const FString ClassName = SectionName.Mid(PerObjConfigDelimIdx + 1);
 
 			// Try to find the class specified by the per-object config
-			UClass* ObjClass = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+			UClass* ObjClass = UClass::TryFindTypeSlow<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
 			if (ObjClass)
 			{
 				// Now try to actually find the object it's referencing specifically and update it
 				// @note: Choosing not to warn on not finding it for now, as Fortnite has transient uses instantiated at run-time (might not be constructed yet)
-				UObject* PerObjConfigObj = StaticFindObject(ObjClass, ANY_PACKAGE, *ObjectName, true);
+				UObject* PerObjConfigObj = StaticFindFirstObject(ObjClass, *ObjectName, EFindFirstObjectOptions::ExactClass, ELogVerbosity::Warning, TEXT("UGameFeatureData::ReloadConfigs"));
 				if (PerObjConfigObj)
 				{
 					// Intentionally using LoadConfig instead of ReloadConfig, since we do not want to call modify/preeditchange/posteditchange on the objects changed when GIsEditor
@@ -175,7 +190,7 @@ void UGameFeatureData::ReloadConfigs(FConfigFile& PluginConfig) const
 			// Find the affected class and push updates to all instances of it, including children
 			// @note:	Intentionally not using the propagation flags inherent in ReloadConfig to handle this, as it utilizes a naive complete object iterator
 			//			and tanks performance pretty badly
-			UClass* ObjClass = FindObjectSafe<UClass>(ANY_PACKAGE, *SectionName, true);
+			UClass* ObjClass = FindFirstObject<UClass>(*SectionName, EFindFirstObjectOptions::ExactClass | EFindFirstObjectOptions::EnsureIfAmbiguous | EFindFirstObjectOptions::NativeFirst);
 			if (ObjClass)
 			{
 				TArray<UObject*> FoundObjects;
@@ -194,3 +209,4 @@ void UGameFeatureData::ReloadConfigs(FConfigFile& PluginConfig) const
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -29,10 +29,14 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "PlatformInfo.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "CookerSettings.h"
 #include "UnrealEdMisc.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Editor/Transactor.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 #include "FileHelpers.h"
 #include "EditorAnalytics.h"
 #include "LevelEditor.h"
@@ -73,7 +77,7 @@ FMainFrameCommands::FMainFrameCommands()
 		TEXT("MainFrame"), // Context name for fast lookup
 		LOCTEXT( "MainFrame", "Main Frame" ), // Localized context name for displaying
 		NAME_None,	 // No parent context
-		FEditorStyle::GetStyleSetName() ), // Icon Style Set
+		FAppStyle::GetAppStyleSetName() ), // Icon Style Set
 	  ToggleFullscreenConsoleCommand(
 		TEXT( "MainFrame.ToggleFullscreen" ),
 		TEXT( "Toggles the editor between \"full screen\" mode and \"normal\" mode.  In full screen mode, the task bar and window title area are hidden." ),
@@ -98,14 +102,14 @@ void FMainFrameCommands::RegisterCommands()
 	UI_COMMAND( SaveAll, "Save All", "Saves all unsaved levels and assets to disk", EUserInterfaceActionType::Button, FInputChord( EModifierKey::Control | EModifierKey::Shift, EKeys::S ) );
 	ActionList->MapAction( SaveAll, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::SaveAll ), FCanExecuteAction::CreateStatic( &FMainFrameActionCallbacks::CanSaveWorld ) );
 
-	UI_COMMAND( ChooseFilesToSave, "Choose Files to Save...", "Opens a dialog with save options for content and levels", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( ChooseFilesToSave, "Choose Files to Save...", "Opens a dialog with save options for content and levels", EUserInterfaceActionType::Button, FInputChord( EModifierKey::Control | EModifierKey::Alt | EModifierKey::Shift, EKeys::S ) );
 	ActionList->MapAction( ChooseFilesToSave, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::ChoosePackagesToSave ), FCanExecuteAction::CreateStatic( &FMainFrameActionCallbacks::CanSaveWorld ) );
 
 	UI_COMMAND( ViewChangelists, "View Changelists", "Opens a dialog displaying current changelists.", EUserInterfaceActionType::Button, FInputChord() );
 	ActionList->MapAction(ViewChangelists, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::ViewChangelists ), FCanExecuteAction::CreateStatic( &FMainFrameActionCallbacks::CanViewChangelists ) );
 
 	UI_COMMAND( SubmitContent, "Submit Content", "Opens a dialog with check in options for content and levels.", EUserInterfaceActionType::Button, FInputChord() );
-	ActionList->MapAction( SubmitContent, FExecuteAction::CreateLambda([]() { FSourceControlWindows::ChoosePackagesToCheckIn(); }), FCanExecuteAction::CreateStatic(&FSourceControlWindows::CanChoosePackagesToCheckIn ) );
+	ActionList->MapAction( SubmitContent, FExecuteAction::CreateLambda([]() { FSourceControlWindows::ChoosePackagesToCheckIn(); }), FCanExecuteAction::CreateStatic(&FSourceControlWindows::CanChoosePackagesToCheckIn ), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic(FSourceControlWindows::ShouldChoosePackagesToCheckBeVisible) );
 
 	UI_COMMAND( ConnectToSourceControl, "Connect to Source Control...", "Connect to source control to allow source control operations to be performed on content and levels.", EUserInterfaceActionType::Button, FInputChord() );
 	ActionList->MapAction( ConnectToSourceControl, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::ConnectToSourceControl ), DefaultExecuteAction );
@@ -119,14 +123,14 @@ void FMainFrameCommands::RegisterCommands()
 	UI_COMMAND( OpenProject, "Open Project...", "Opens a dialog to choose a game project to open", EUserInterfaceActionType::Button, FInputChord() );
 	ActionList->MapAction( OpenProject, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::NewProject, true, false), DefaultExecuteAction );
 
-	UI_COMMAND( AddCodeToProject, "New C++ Class...", "Adds C++ code to the project. The code can only be compiled if you have an appropriate C++ compiler installed.", EUserInterfaceActionType::Button, FInputChord() );
-	ActionList->MapAction( AddCodeToProject, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::AddCodeToProject ));
+	UI_COMMAND(AddCodeToProject, "New C++ Class...", "Adds C++ code to the project. The code can only be compiled if you have an appropriate C++ compiler installed.", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(AddCodeToProject, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::AddCodeToProject), FCanExecuteAction::CreateStatic(&FMainFrameActionCallbacks::CanAddCodeToProject), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic(&FMainFrameActionCallbacks::IsAddCodeToProjectVisible));
 
-	UI_COMMAND( RefreshCodeProject, "Refresh code project", "Refreshes your C++ code project.", EUserInterfaceActionType::Button, FInputChord() );
-	ActionList->MapAction( RefreshCodeProject, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::RefreshCodeProject ), FCanExecuteAction::CreateStatic( &FMainFrameActionCallbacks::IsCodeProject ) );
+	UI_COMMAND(RefreshCodeProject, "Refresh code project", "Refreshes your C++ code project.", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(RefreshCodeProject, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::RefreshCodeProject), FCanExecuteAction::CreateStatic(&FMainFrameActionCallbacks::CanRefreshCodeProject), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic(&FMainFrameActionCallbacks::IsRefreshCodeProjectVisible));
 
-	UI_COMMAND( OpenIDE, "Open IDE", "Opens your C++ code in an integrated development environment.", EUserInterfaceActionType::Button, FInputChord() );
-	ActionList->MapAction( OpenIDE, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::OpenIDE ), FCanExecuteAction::CreateStatic( &FMainFrameActionCallbacks::IsCodeProject ), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic( &FMainFrameActionCallbacks::CanOpenIDE ) );
+	UI_COMMAND(OpenIDE, "Open IDE", "Opens your C++ code in an integrated development environment.", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(OpenIDE, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::OpenIDE), FCanExecuteAction::CreateStatic(&FMainFrameActionCallbacks::CanOpenIDE), FGetActionCheckState(), FIsActionButtonVisible::CreateStatic(&FMainFrameActionCallbacks::IsOpenIDEVisible));
 
 	UI_COMMAND( ZipUpProject, "Zip Project", "Zips the project into a zip file.", EUserInterfaceActionType::Button, FInputChord() );
 	ActionList->MapAction(ZipUpProject, FExecuteAction::CreateStatic( &FMainFrameActionCallbacks::ZipUpProject ), DefaultExecuteAction);
@@ -183,20 +187,26 @@ void FMainFrameCommands::RegisterCommands()
 	UI_COMMAND(DocumentationHome, "Documentation Home", "Authoritative, in-depth technical resources for using Unreal Engine", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(DocumentationHome, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::DocumentationHome));
 
-	UI_COMMAND(VisitOnlineLearning, "Online Learning", "Learn Unreal Engine for free with easy-to-follow video courses and guided learning paths", EUserInterfaceActionType::Button, FInputChord());
-	ActionList->MapAction(VisitOnlineLearning, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitOnlineLearning));
-
 	UI_COMMAND(BrowseAPIReference, "C++ API Reference", "Classes, functions, and other elements that make up the C++ API", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(BrowseAPIReference, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::BrowseAPIReference));
 
 	UI_COMMAND(BrowseCVars, "Console Variables", "Reference companion for console variables and commands", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(BrowseCVars, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::BrowseCVars));
 
+	UI_COMMAND(VisitCommunityHome, "Dev Community", "Join the worldwide community of Unreal developers and explore all the resources it has to offer", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(VisitCommunityHome, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitCommunityHome));
+
+	UI_COMMAND(VisitOnlineLearning, "Learning Library", "Learn Unreal Engine for free with easy-to-follow video courses and guided learning paths", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(VisitOnlineLearning, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitOnlineLearning));
+
 	UI_COMMAND(VisitForums, "Forums", "View announcements and engage in discussions with other developers", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(VisitForums, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitForums));
 
 	UI_COMMAND(VisitSearchForAnswersPage, "Q&A", "Search for answers, ask questions, and share your knowledge with other developers", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(VisitSearchForAnswersPage, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitSearchForAnswersPage));
+
+	UI_COMMAND(VisitCommunitySnippets, "Snippets", "Access and share ready-to-use code blocks and scripts", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(VisitCommunitySnippets, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitCommunitySnippets));
 
 	UI_COMMAND(VisitSupportWebSite, "Support", "Options for personalized technical support", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(VisitSupportWebSite, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitSupportWebSite));
@@ -296,7 +306,7 @@ bool FMainFrameActionCallbacks::CanViewChangelists()
 void FMainFrameActionCallbacks::ConnectToSourceControl()
 {
 	ELoginWindowMode::Type Mode = !FSlateApplication::Get().GetActiveModalWindow().IsValid() ? ELoginWindowMode::Modeless : ELoginWindowMode::Modal;
-	ISourceControlModule::Get().ShowLoginDialog(FSourceControlLoginClosed(), Mode);
+	ISourceControlModule::Get().ShowLoginDialog(FSourceControlLoginClosed(), Mode, EOnLoginWindowStartup::PreserveProvider);
 }
 
 bool FMainFrameActionCallbacks::CanSaveWorld()
@@ -374,6 +384,16 @@ void FMainFrameActionCallbacks::AddCodeToProject()
 	FGameProjectGenerationModule::Get().OpenAddCodeToProjectDialog();
 }
 
+bool FMainFrameActionCallbacks::CanAddCodeToProject()
+{
+	return IsCPPAllowed();
+}
+
+bool FMainFrameActionCallbacks::IsAddCodeToProjectVisible()
+{
+	return IsCPPAllowed();
+}
+
 void FMainFrameActionCallbacks::RefreshCodeProject()
 {
 	if ( !FSourceCodeNavigation::IsCompilerAvailable() )
@@ -387,6 +407,16 @@ void FMainFrameActionCallbacks::RefreshCodeProject()
 	{
 		SOutputLogDialog::Open(LOCTEXT("RefreshProject", "Refresh Project"), FailReason, FailLog, FText::GetEmpty());
 	}
+}
+
+bool FMainFrameActionCallbacks::CanRefreshCodeProject()
+{
+	return IsCPPAllowed() && IsCodeProject();
+}
+
+bool FMainFrameActionCallbacks::IsRefreshCodeProjectVisible()
+{
+	return IsCPPAllowed();
 }
 
 bool FMainFrameActionCallbacks::IsCodeProject()
@@ -414,7 +444,17 @@ void FMainFrameActionCallbacks::OpenIDE()
 
 bool FMainFrameActionCallbacks::CanOpenIDE()
 {
-	return FSourceCodeNavigation::DoesModuleSolutionExist();
+	return IsCPPAllowed() && IsCodeProject();
+}
+
+bool FMainFrameActionCallbacks::IsOpenIDEVisible()
+{
+	return IsCPPAllowed() && FSourceCodeNavigation::DoesModuleSolutionExist();
+}
+
+bool FMainFrameActionCallbacks::IsCPPAllowed()
+{
+	return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
 }
 
 void FMainFrameActionCallbacks::ZipUpProject()
@@ -425,7 +465,7 @@ void FMainFrameActionCallbacks::ZipUpProject()
 	if (DesktopPlatform != NULL)
 	{
 		bOpened = DesktopPlatform->SaveFileDialog(
-			NULL,
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
 			NSLOCTEXT("UnrealEd", "ZipUpProject", "Zip file location").ToString(),
 			FPaths::ProjectDir(),
 			FApp::GetProjectName(),
@@ -445,7 +485,7 @@ void FMainFrameActionCallbacks::ZipUpProject()
 			FString CommandLine = FString::Printf(TEXT("ZipProjectUp -nocompileeditor -project=\"%s\" -install=\"%s\""), *ProjectPath, *FinalFileName);
 
 			IUATHelperModule::Get().CreateUatTask( CommandLine, GetTargetPlatformManager()->GetRunningTargetPlatform()->DisplayName(), LOCTEXT("ZipTaskName", "Zipping Up Project"),
-				LOCTEXT("ZipTaskShortName", "Zip Project Task"), FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")), IUATHelperModule::UatTaskResultCallack(), FPaths::GetPath(FinalFileName));
+				LOCTEXT("ZipTaskShortName", "Zip Project Task"), FAppStyle::GetBrush(TEXT("MainFrame.CookContent")), nullptr, IUATHelperModule::UatTaskResultCallack(), FPaths::GetPath(FinalFileName));
 		}
 	}
 }
@@ -633,10 +673,28 @@ void FMainFrameActionCallbacks::BrowseCVars()
 	GEditor->Exec(GEditor->GetEditorWorldContext().World(), TEXT("help"));
 }
 
+void FMainFrameActionCallbacks::VisitCommunityHome()
+{
+	FString URL;
+	if (FUnrealEdMisc::Get().GetURL(TEXT("CommunityHomeURL"), URL))
+	{
+		FPlatformProcess::LaunchURL(*URL, NULL, NULL);
+	}
+}
+
 void FMainFrameActionCallbacks::VisitForums()
 {
 	FString URL;
 	if (FUnrealEdMisc::Get().GetURL(TEXT("ForumsURL"), URL))
+	{
+		FPlatformProcess::LaunchURL(*URL, NULL, NULL);
+	}
+}
+
+void FMainFrameActionCallbacks::VisitCommunitySnippets()
+{
+	FString URL;
+	if (FUnrealEdMisc::Get().GetURL(TEXT("SnippetsURL"), URL))
 	{
 		FPlatformProcess::LaunchURL(*URL, NULL, NULL);
 	}

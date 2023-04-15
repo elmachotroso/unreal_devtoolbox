@@ -3,69 +3,18 @@
 #include "AudioGameplayVolumeComponent.h"
 #include "AudioGameplayVolumeSubsystem.h"
 #include "AudioGameplayVolumeProxy.h"
-#include "AudioGameplayVolumeProxyMutator.h"
 #include "Interfaces/IAudioGameplayVolumeInteraction.h"
 #include "AudioDevice.h"
 
-UAudioGameplayVolumeComponentBase::UAudioGameplayVolumeComponentBase(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-}
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioGameplayVolumeComponent)
 
-void UAudioGameplayVolumeComponentBase::SetPriority(int32 InPriority)
-{
-	if (Priority != InPriority)
-	{
-		Priority = InPriority;
-		NotifyDataChanged();
-	}
-}
-
-TSharedPtr<FProxyVolumeMutator> UAudioGameplayVolumeComponentBase::CreateMutator() const
-{
-	TSharedPtr<FProxyVolumeMutator> ProxyMutator = FactoryMutator();
-	if (ProxyMutator.IsValid())
-	{
-		FillMutator(ProxyMutator);
-	}
-
-	return ProxyMutator;
-}
-
-TSharedPtr<FProxyVolumeMutator> UAudioGameplayVolumeComponentBase::FactoryMutator() const
-{
-	return TSharedPtr<FProxyVolumeMutator>();
-}
-
-void UAudioGameplayVolumeComponentBase::FillMutator(TSharedPtr<FProxyVolumeMutator> Mutator) const
-{
-	check(Mutator.IsValid());
-	Mutator->PayloadType = PayloadType;
-	Mutator->Priority = Priority;
-}
-
-void UAudioGameplayVolumeComponentBase::NotifyDataChanged() const
-{
-	if (IsActive())
-	{
-		TInlineComponentArray<UAudioGameplayVolumeProxyComponent*> VolumeComponents(GetOwner());
-		if (ensureMsgf(VolumeComponents.Num() == 1, TEXT("Expecting exactly one AudioGameplayVolumeProxyComponent on an actor!")))
-		{
-			if (VolumeComponents[0])
-			{
-				VolumeComponents[0]->OnComponentDataChanged();
-			}
-		}
-	}
-}
-
-UAudioGameplayVolumeProxyComponent::UAudioGameplayVolumeProxyComponent(const FObjectInitializer& ObjectInitializer)
+UAudioGameplayVolumeComponent::UAudioGameplayVolumeComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bAutoActivate = true;
 }
 
-void UAudioGameplayVolumeProxyComponent::SetProxy(UAudioGameplayVolumeProxy* NewProxy)
+void UAudioGameplayVolumeComponent::SetProxy(UAudioGameplayVolumeProxy* NewProxy)
 {
 	RemoveProxy();
 	Proxy = NewProxy;
@@ -76,7 +25,7 @@ void UAudioGameplayVolumeProxyComponent::SetProxy(UAudioGameplayVolumeProxy* New
 	}
 }
 
-void UAudioGameplayVolumeProxyComponent::OnComponentDataChanged()
+void UAudioGameplayVolumeComponent::OnComponentDataChanged()
 {
 	if (IsActive())
 	{
@@ -84,7 +33,7 @@ void UAudioGameplayVolumeProxyComponent::OnComponentDataChanged()
 	}
 }
 
-void UAudioGameplayVolumeProxyComponent::EnterProxy() const
+void UAudioGameplayVolumeComponent::EnterProxy() const
 {
 	TInlineComponentArray<UActorComponent*> ActorComponents(GetOwner());
 	for (UActorComponent* ActorComponent : ActorComponents)
@@ -98,7 +47,7 @@ void UAudioGameplayVolumeProxyComponent::EnterProxy() const
 	OnProxyEnter.Broadcast();
 }
 
-void UAudioGameplayVolumeProxyComponent::ExitProxy() const
+void UAudioGameplayVolumeComponent::ExitProxy() const
 {
 	TInlineComponentArray<UActorComponent*> ActorComponents(GetOwner());
 	for (UActorComponent* ActorComponent : ActorComponents)
@@ -113,11 +62,11 @@ void UAudioGameplayVolumeProxyComponent::ExitProxy() const
 }
 
 #if WITH_EDITOR
-void UAudioGameplayVolumeProxyComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+void UAudioGameplayVolumeComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAudioGameplayVolumeProxyComponent, Proxy))
+	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAudioGameplayVolumeComponent, Proxy))
 	{
 		RemoveProxy();
 
@@ -129,13 +78,13 @@ void UAudioGameplayVolumeProxyComponent::PostEditChangeProperty(FPropertyChanged
 }
 #endif // WITH_EDITOR
 
-void UAudioGameplayVolumeProxyComponent::OnUnregister()
+void UAudioGameplayVolumeComponent::OnUnregister()
 {
 	Super::OnUnregister();
 	RemoveProxy();
 }
 
-void UAudioGameplayVolumeProxyComponent::Enable()
+void UAudioGameplayVolumeComponent::Enable()
 {
 	if (Proxy != nullptr)
 	{
@@ -144,13 +93,13 @@ void UAudioGameplayVolumeProxyComponent::Enable()
 	}
 }
 
-void UAudioGameplayVolumeProxyComponent::Disable()
+void UAudioGameplayVolumeComponent::Disable()
 {
 	RemoveProxy();
 	Super::Disable();
 }
 
-void UAudioGameplayVolumeProxyComponent::AddProxy() const
+void UAudioGameplayVolumeComponent::AddProxy() const
 {
 	if (UAudioGameplayVolumeSubsystem* VolumeSubsystem = GetSubsystem())
 	{
@@ -158,7 +107,7 @@ void UAudioGameplayVolumeProxyComponent::AddProxy() const
 	}
 }
 
-void UAudioGameplayVolumeProxyComponent::RemoveProxy() const
+void UAudioGameplayVolumeComponent::RemoveProxy() const
 {
 	if (UAudioGameplayVolumeSubsystem* VolumeSubsystem = GetSubsystem())
 	{
@@ -166,7 +115,7 @@ void UAudioGameplayVolumeProxyComponent::RemoveProxy() const
 	}
 }
 
-void UAudioGameplayVolumeProxyComponent::UpdateProxy() const
+void UAudioGameplayVolumeComponent::UpdateProxy() const
 {
 	if (UAudioGameplayVolumeSubsystem* VolumeSubsystem = GetSubsystem())
 	{
@@ -174,7 +123,7 @@ void UAudioGameplayVolumeProxyComponent::UpdateProxy() const
 	}
 }
 
-UAudioGameplayVolumeSubsystem* UAudioGameplayVolumeProxyComponent::GetSubsystem() const
+UAudioGameplayVolumeSubsystem* UAudioGameplayVolumeComponent::GetSubsystem() const
 {
 	if (UWorld* World = GetWorld())
 	{
@@ -183,3 +132,10 @@ UAudioGameplayVolumeSubsystem* UAudioGameplayVolumeProxyComponent::GetSubsystem(
 
 	return nullptr;
 }
+
+UAudioGameplayVolumeComponentBase::UAudioGameplayVolumeComponentBase(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	bAutoActivate = true;
+}
+

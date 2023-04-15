@@ -26,6 +26,15 @@ public:
 	static ULevelStreaming* FindStreamingLevel(const ULevel* Level);
 
 	/**
+	 * Returns the streaming level by package FName, or NULL if none exists.
+	 *
+	 * @param		InWorld			World to look in for the streaming level
+	 * @param		PackageFName	FName of the package containing the ULevel to query
+	 * @return						The level's streaming level, or NULL if none exists.
+	 */
+	static ULevelStreaming* FindStreamingLevel(UWorld* InWorld, const FName PackageName);
+
+	/**
 	 * Returns the streaming level by package name, or NULL if none exists.
 	 *
 	 * @param		InWorld			World to look in for the streaming level
@@ -34,6 +43,31 @@ public:
 	 */
 	static ULevelStreaming* FindStreamingLevel(UWorld* InWorld, const TCHAR* PackageName);
 
+	/**
+	 * Returns whether the given package is referenced by one of the world streaming levels or not.
+	 *
+	 * @param		InWorld			World to look in for the streaming level
+	 * @param		InPackageName	Name of the package containing the ULevel to query
+	 * @return						True if the given package is referenced by one of
+	 *								the world streaming levels, else False.
+	 */
+	static bool IsValidStreamingLevel(UWorld* InWorld, const TCHAR* InPackageName);
+
+	/**
+	 * Returns whether the given package is part of the world server visible streaming levels or not.
+	 *
+	 * @param		InWorld			World to look in for the streaming level
+	 * @param		InPackageName	Name of the package containing the ULevel to query
+	 * @return						True if the given package is referenced by one of
+	 *								the world server visible streaming levels, else False.
+	 */
+	static bool IsServerStreamingLevelVisible(UWorld* InWorld, const FName& InPackageName);
+
+	/** Returns whether the world supports for a client to use "making visible" transaction requests to the server. */
+	static bool SupportsMakingVisibleTransactionRequests(UWorld* InWorld);
+
+	/** Returns whether the world supports for a client to use "making invisible" transaction requests to the server. */
+	static bool SupportsMakingInvisibleTransactionRequests(UWorld* InWorld);
 
 	///////////////////////////////////////////////////////////////////////////
 	// Locking/unlocking levels for edit.

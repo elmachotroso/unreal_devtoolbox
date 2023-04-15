@@ -15,8 +15,6 @@ class UFXSystemComponent;
 class UAudioComponent;
 class USoundBase;
 class UCameraShakeBase;
-class UCameraAnim;
-class UCameraAnimInst;
 class ICameraLensEffectInterface;
 class UForceFeedbackEffect;
 class UForceFeedbackAttenuation;
@@ -264,7 +262,6 @@ public:
 		FxSystemComponents.Reset();
 		AudioComponents.Reset();
 		CameraShakes.Reset();
-		CameraAnim = nullptr;
 		CameraLensEffects.Reset();
 		ForceFeedbackComponent = nullptr;
 		ForceFeedbackTargetPC = nullptr;
@@ -275,19 +272,15 @@ public:
 
 	// List of FX components spawned.  There may be null pointers here as it matches the defined order.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	TArray<UFXSystemComponent*> FxSystemComponents;
+	TArray<TObjectPtr<UFXSystemComponent>> FxSystemComponents;
 
 	// List of audio components spawned.  There may be null pointers here as it matches the defined order.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	TArray<UAudioComponent*> AudioComponents;
+	TArray<TObjectPtr<UAudioComponent>> AudioComponents;
 
 	// List of camera shakes played.  There will be one camera shake per local player controller if shake is played in world.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	TArray<UCameraShakeBase*> CameraShakes;
-
-	// Camera animation played.
-	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	UCameraAnimInst* CameraAnim;
+	TArray<TObjectPtr<UCameraShakeBase>> CameraShakes;
 
 	// List of camera len effects spawned.  There will be one camera lens effect per local player controller if the effect is played in world.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
@@ -295,15 +288,15 @@ public:
 
 	// Force feedback component that was spawned.  This is only valid when force feedback is set to play in world.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	UForceFeedbackComponent* ForceFeedbackComponent;
+	TObjectPtr<UForceFeedbackComponent> ForceFeedbackComponent;
 
 	// Player controller used to play the force feedback effect.  Used to stop the effect later.
 	UPROPERTY(Transient)
-	APlayerController* ForceFeedbackTargetPC;
+	TObjectPtr<APlayerController> ForceFeedbackTargetPC;
 
 	// Spawned decal component.  This may be null.
 	UPROPERTY(BlueprintReadOnly, Transient, Category = GameplayCueNotify)
-	UDecalComponent* DecalComponent;
+	TObjectPtr<UDecalComponent> DecalComponent;
 };
 
 
@@ -337,7 +330,7 @@ public:
 
 	// Niagara FX system to spawn.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	UNiagaraSystem* NiagaraSystem;
+	TObjectPtr<UNiagaraSystem> NiagaraSystem;
 
 	// If enabled, use the spawn condition override and not the default one.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (InlineEditConditionToggle))
@@ -401,10 +394,10 @@ public:
 
 	// Sound to play.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	USoundBase* Sound;
+	TObjectPtr<USoundBase> Sound;
 
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "5.0 - SoundCue is deprecated. Instead use the Sound property. The type is USoundBase not USoundCue."))
-	USoundBase* SoundCue;
+	TObjectPtr<USoundBase> SoundCue;
 
 	// How long it should take to fade out.  Only used on looping gameplay cues.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
@@ -502,68 +495,6 @@ public:
 
 
 /**
- * FGameplayCueNotify_CameraAnimInfo
- *
- *	Properties that specify how to play a camera animation.
- */
-USTRUCT(BlueprintType)
-struct FGameplayCueNotify_CameraAnimInfo
-{
-	GENERATED_BODY()
-
-public:
-
-	FGameplayCueNotify_CameraAnimInfo();
-
-	bool PlayCameraAnim(const FGameplayCueNotify_SpawnContext& SpawnContext, FGameplayCueNotify_SpawnResult& OutSpawnResult) const;
-
-	void ValidateBurstAssets(UObject* ContainingAsset, const FString& Context, TArray<FText>& ValidationErrors) const;
-
-public:
-
-	// Condition to check before playing the camera animation.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (EditCondition = "bOverrideSpawnCondition"))
-	FGameplayCueNotify_SpawnCondition SpawnConditionOverride;
-
-	// Camera animation to play.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	UCameraAnim* CameraAnim;
-
-	// Scale applied to the camera animation.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	float AnimScale;
-
-	// Rate to play the camera animation at.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	float PlayRate;
-
-	// Time (in seconds) used to blend in the camera animation.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	float BlendInTime;
-
-	// Time (in seconds) used to blend out the camera animation.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	float BlendOutTime;
-
-	// What coordinate space to play the camera animation relative to.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	EGameplayCueNotify_EffectPlaySpace PlaySpace;
-
-	// If enabled, the camera animation will be set to loop.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	uint32 bIsLooping : 1;
-
-	// If enabled, the camera animation will start at a random time.  Only used when looping.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (EditCondition = "bIsLooping"))
-	uint32 bRandomStartTime : 1;
-
-	// If enabled, use the spawn condition override and not the default one.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (InlineEditConditionToggle))
-	uint32 bOverrideSpawnCondition : 1;
-};
-
-
-/**
  * FGameplayCueNotify_CameraLensEffectInfo
  *
  *	Properties that specify how to play a camera lens effect.
@@ -592,7 +523,7 @@ public:
 	FGameplayCueNotify_PlacementInfo PlacementInfoOverride;
 
 	// Camera lens effect to play.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (MustImplement = "CameraLensEffectInterface"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (MustImplement = "/Script/Engine.CameraLensEffectInterface"))
 	TSubclassOf<AActor> CameraLensEffect;
 
 	// If enabled, use the spawn condition override and not the default one.
@@ -647,7 +578,7 @@ public:
 
 	// Force feedback effect to play.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	UForceFeedbackEffect* ForceFeedbackEffect;
+	TObjectPtr<UForceFeedbackEffect> ForceFeedbackEffect;
 
 	// Tag used to identify the force feedback effect so it can later be canceled.
 	// Warning: If this is "None" it will stop ALL force feedback effects if it is canceled.
@@ -676,7 +607,7 @@ public:
 
 	// How the force feedback is attenuated over distance when played in world.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, Meta = (EditCondition = "bPlayInWorld"))
-	UForceFeedbackAttenuation* WorldAttenuation;
+	TObjectPtr<UForceFeedbackAttenuation> WorldAttenuation;
 };
 
 
@@ -708,7 +639,7 @@ public:
 
 	// Decal material to spawn.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	UMaterialInterface* DecalMaterial;
+	TObjectPtr<UMaterialInterface> DecalMaterial;
 
 	// Decal size in local space (does not include the component scale).
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify, meta = (AllowPreserveRatio = "true"))
@@ -768,10 +699,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
 	FGameplayCueNotify_CameraShakeInfo BurstCameraShake;
 
-	// Camera animation to be played on gameplay cue execution.  This should never use a looping effect!
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	FGameplayCueNotify_CameraAnimInfo BurstCameraAnim;
-
 	// Camera lens effect to be played on gameplay cue execution.  This should never use a looping effect!
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
 	FGameplayCueNotify_CameraLensEffectInfo BurstCameraLensEffect;
@@ -818,10 +745,6 @@ protected:
 	// Camera shake to be played on gameplay cue loop start.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
 	FGameplayCueNotify_CameraShakeInfo LoopingCameraShake;
-
-	// Camera animation to be played on gameplay cue loop start.
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)
-	FGameplayCueNotify_CameraAnimInfo LoopingCameraAnim;
 
 	// Camera lens effect to be played on gameplay cue loop start.
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = GameplayCueNotify)

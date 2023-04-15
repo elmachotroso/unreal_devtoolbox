@@ -3,25 +3,35 @@
 #pragma once
 
 #include "AssetRegistry/AssetData.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/Platform.h"
-#include "Hash/Blake3.h"
 #include "IO/IoHash.h"
 #include "Logging/LogMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/PackageSegment.h"
+#include "Stats/Stats2.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UniquePtr.h"
+#include "Tickable.h"
 #include "TickableEditorObject.h"
 #include "UObject/NameTypes.h"
-#include "UObject/ObjectSaveContext.h"
 #include "UObject/PackageResourceManager.h"
+#include "UObject/UnrealNames.h"
 
-class FAssetPackageData;
+class FArchive;
 class FEditorDomainSaveClient;
+class FObjectPostSaveContext;
+class FPackagePath;
+class FScopeLock;
 class IAssetRegistry;
-class UObject;
+class IMappedFileHandle;
 class UPackage;
-struct FAssetData;
+struct FEndLoadPackageContext;
 namespace UE::DerivedData { class FRequestOwner; }
 
 namespace UE::EditorDomain
@@ -37,6 +47,7 @@ enum class EDomainUse : uint8
 	SaveEnabled = 0x2,
 };
 ENUM_CLASS_FLAGS(EDomainUse);
+FStringBuilderBase& operator<<(FStringBuilderBase& Writer, UE::EditorDomain::EDomainUse DomainUse);
 
 /** Information about a package's loading from the EditorDomain. */
 struct FPackageDigest
@@ -61,8 +72,6 @@ struct FPackageDigest
 	 * created from properties that change if the saved version would change (package bytes, serialization versions).
 	 */
 	FIoHash Hash;
-	/** Classes used by the resaved package: imports or instances that can be created by PostLoad/PreSave */
-	TArray<FName> ImportedClasses;
 	/** List of CustomVersions used to save the package. */
 	UE::AssetRegistry::FPackageCustomVersionsHandle CustomVersions;
 	/** Allow flags for whether the package can be saved/loaded from EditorDomain. */
@@ -71,6 +80,26 @@ struct FPackageDigest
 	EStatus Status = EStatus::NotYetRequested;
 	/** Extended information for the status description (e.g. missing class name). */
 	FName StatusArg;
+};
+
+/**
+ * An interface to cache repeated calls to GetPackageDigest. This would be just a global TMap without an interface,
+ * except that EditorDomain if enabled needs to store other data along with the digest so it takes over the cache duty
+ * using its own storage.
+ */
+class IPackageDigestCache
+{
+public:
+	virtual ~IPackageDigestCache() {}
+	/**
+	 * Calculate the PackageDigest for the given PackageName.
+	 * Callable from any thread, but will return !IsSuccessful digest if game-thread data is required and not cached.
+	 */
+	virtual FPackageDigest GetPackageDigest(FName PackageName) = 0;
+
+	static IPackageDigestCache* Get();
+	static void Set(IPackageDigestCache* Cache);
+	static void SetDefault();
 };
 
 }
@@ -93,7 +122,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogEditorDomain, Log, All);
  * the WorkspaceDomain (through ordinary IFileManager operations on the Root/Game/Content folders) and creates
  * the EditorDomain version for next time.
  */
-class FEditorDomain : public IPackageResourceManager, public FTickableEditorObject
+class FEditorDomain : public IPackageResourceManager, public FTickableEditorObject, public UE::EditorDomain::IPackageDigestCache
 {
 public:
 	/** Different options for which domain a package comes from. */
@@ -143,14 +172,12 @@ public:
 	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
 	virtual TStatId GetStatId() const override { return TStatId(); }
 
+	// IPackageDigestCache interface
+	virtual UE::EditorDomain::FPackageDigest GetPackageDigest(FName PackageDigest) override;
+
 	// EditorDomain interface
 	/** Fetch data from game-thread sources that is required to calculate the PackageDigest of the given PackageName. */
 	void PrecachePackageDigest(FName PackageName);
-	/**
-	 * Calculate the PackageDigest for the given PackageName.
-	 * Callable from any thread, but will fail if game-thread data is required and not cached.
-	 */
-	UE::EditorDomain::FPackageDigest GetPackageDigest(FName PackageDigest);
 
 	/** Request the download of the given packages from the upstream DDC server. */
 	void BatchDownload(TArrayView<FName> PackageNames);
@@ -174,7 +201,8 @@ private:
 	struct FPackageSource : public FThreadSafeRefCountedObject
 	{
 		FPackageSource()
-			:bHasSaved(false), bHasLoaded(false), bHasQueriedCatalog(false), bLoadedAfterCatalogLoaded(false)
+			: bHasSaved(false), bHasLoaded(false), bHasQueriedCatalog(false), bLoadedAfterCatalogLoaded(false)
+			, bHasRecordInEditorDomain(false)
 		{
 		}
 
@@ -189,23 +217,30 @@ private:
 		bool bHasLoaded : 1;
 		bool bHasQueriedCatalog : 1;
 		bool bLoadedAfterCatalogLoaded : 1;
+		bool bHasRecordInEditorDomain : 1;
 	};
 
 	/** Disallow copy constructors */
 	FEditorDomain(const FEditorDomain& Other) = delete;
 	FEditorDomain(FEditorDomain&& Other) = delete;
 
-	/** Read the PackageSource data from PackageSources, or from the asset registry if not in PackageSources. */
-	bool TryFindOrAddPackageSource(FName PackageName, TRefCountPtr<FPackageSource>& OutSource,
+	/**
+	 * Read the PackageSource data from PackageSources, or from the asset registry if not in PackageSources.
+	 * Note this function can exit and reenter the provided ScopeLock. If so it will set bOutReenteredLock=true and caller must handle
+	 * retesting variables that may have changed while outside of the lock.
+	*/
+	bool TryFindOrAddPackageSource(FScopeLock& ScopeLock, bool& bOutReenteredLock, FName PackageName, TRefCountPtr<FPackageSource>& OutSource,
 		UE::EditorDomain::FPackageDigest* OutErrorDigest=nullptr);
 	/** Return the PackageSource data in PackageSources, if it exists */
 	TRefCountPtr<FPackageSource> FindPackageSource(const FPackagePath& PackagePath);
-	/** Mark that we had to load the Package from the workspace domain, and schedule its save into the EditorDomain. */
-	void MarkNeedsLoadFromWorkspace(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource);
+	/** Mark that we had to load the Package from the workspace domain, and schedule its save into the EditorDomain if allowed. */
+	void MarkLoadedFromWorkspaceDomain(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource, bool bHasRecordInEditorDomain);
+	/** Mark that we were able to load from the EditorDomain */
+	void MarkLoadedFromEditorDomain(const FPackagePath& PackagePath, TRefCountPtr<FPackageSource>& PackageSource);
 	/** Callback for PostEngineInit, to handle saving of packages which we could not save before then. */
 	void OnPostEngineInit();
 	/** EndLoad callback to handle saving the EditorDomain version of the package. */
-	void OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPackages);
+	void OnEndLoadPackage(const FEndLoadPackageContext& Context);
 	/** For each of the now-loaded packages, if we had to load from workspace domain, save into the editor domain. */
 	void FilterKeepPackagesToSave(TArray<UPackage*>& InOutLoadedPackages);
 	/** PackageSaved context to invalidate our information about where it should be loaded from. */
@@ -214,7 +249,7 @@ private:
 	/** AssetUpdated event to invalidate our information about where it should be loaded from. */
 	void OnAssetUpdatedOnDisk(const FAssetData& AssetData);
 	/** Same As GetPackageDigest, but assumes lock is already held. */
-	UE::EditorDomain::FPackageDigest GetPackageDigest_WithinLock(FName PackageDigest);
+	UE::EditorDomain::FPackageDigest GetPackageDigest_WithinLock(FScopeLock& ScopeLock, bool& bOutReenteredLock, FName PackageDigest);
 
 
 	/** Subsystem used to request the save of missing packages into the EditorDomain from a separate process. */

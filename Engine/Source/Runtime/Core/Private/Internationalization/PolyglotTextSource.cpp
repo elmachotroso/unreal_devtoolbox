@@ -1,7 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/PolyglotTextSource.h"
+
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Internationalization/PolyglotTextData.h"
+#include "Internationalization/TextKey.h"
 #include "Internationalization/TextLocalizationResource.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
 
 bool FPolyglotTextSource::GetNativeCultureName(const ELocalizedTextSourceCategory InCategory, FString& OutNativeCultureName)
 {
@@ -144,7 +153,7 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 					InPolyglotTextData.GetKey(),
 					InPolyglotTextData.GetNativeString(),
 					LocalizedString,
-					BaseResourcePriority + LocalizedPriority
+					BaseResourcePriority + LocalizedPriority + 1
 					);
 			}
 		}

@@ -123,16 +123,16 @@ private:
 	virtual void GenerateChildContent(IDetailChildrenBuilder& ChildrenBuilder) override;
 	virtual void Tick(float DeltaTime) override {}
 	virtual bool RequiresTick() const override { return false; }
-	virtual FName GetName() const override { static FName MeshReductionSettings("MeshReductionSettings"); return MeshReductionSettings; }
+	virtual FName GetName() const override { static FName MeshReductionSettings("SkeletalMeshOptimizationSettings"); return MeshReductionSettings; }
 	virtual bool InitiallyCollapsed() const override { return true; }
 
 	bool IsReductionEnabled() const;
 
 	//Custom Row Add utilities
-	FDetailWidgetRow& AddFloatRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, const float MinSliderValue, const float MaxSliderValue, FGetFloatDelegate GetterDelegate, FSetFloatDelegate SetterDelegate);
-	FDetailWidgetRow& AddBoolRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentToolitipText, FGetCheckBoxStateDelegate GetterDelegate, FSetCheckBoxStateDelegate SetterDelegate);
-	FDetailWidgetRow& AddIntegerRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, const int32 MinSliderValue, const int32 MaxSliderValue, FGetIntegerDelegate GetterDelegate, FSetIntegerDelegate SetterDelegate);
-	FDetailWidgetRow& AddUnsignedIntegerRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, const uint32 MinSliderValue, const uint32 MaxSliderValue, FGetUnsignedIntegerDelegate GetterDelegate, FSetUnsignedIntegerDelegate SetterDelegate);
+	FDetailWidgetRow& AddFloatRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, FName RowTag, const float MinSliderValue, const float MaxSliderValue, FGetFloatDelegate GetterDelegate, FSetFloatDelegate SetterDelegate);
+	FDetailWidgetRow& AddBoolRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentToolitipText, FName RowTag, FGetCheckBoxStateDelegate GetterDelegate, FSetCheckBoxStateDelegate SetterDelegate);
+	FDetailWidgetRow& AddIntegerRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, FName RowTag, const int32 MinSliderValue, const int32 MaxSliderValue, FGetIntegerDelegate GetterDelegate, FSetIntegerDelegate SetterDelegate);
+	FDetailWidgetRow& AddUnsignedIntegerRow(IDetailChildrenBuilder& ChildrenBuilder, const FText RowTitleText, const FText RowNameContentText, const FText RowNameContentTootlipText, FName RowTag, const uint32 MinSliderValue, const uint32 MaxSliderValue, FGetUnsignedIntegerDelegate GetterDelegate, FSetUnsignedIntegerDelegate SetterDelegate);
 	void AddBaseLODRow(IDetailChildrenBuilder& ChildrenBuilder);
 
 	void SetPercentAndAbsoluteVisibility(FDetailWidgetRow& Row, SkeletalMeshTerminationCriterion FirstCriterion, SkeletalMeshTerminationCriterion SecondCriterion);
@@ -595,6 +595,16 @@ private:
 	TArray<FName> GetNoRefStreamingLODBiasOverrideNames() const;
 	FText GetNoRefStreamingLODBiasTooltip() const;
 
+	void OnMinQualityLevelLodChanged(int32 NewValue, FName QualityLevel);
+	void OnMinQualityLevelLodCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel);
+	int32 GetMinQualityLevelLod(FName QualityLevel) const;
+	TSharedRef<SWidget> GetMinQualityLevelLodWidget(FName QualityLevelName) const;
+	bool AddMinLodQualityLevelOverride(FName QualityLevelName);
+	bool RemoveMinLodQualityLevelOverride(FName QualityLevelName);
+	TArray<FName> GetMinQualityLevelLodOverrideNames() const;
+	FReply ResetToDefault();
+	FPerPlatformInt GetMinLod();
+
 	/** apply LOD changes if the user modified LOD reduction settings */
 	FReply OnApplyChanges();
 	/** regenerate one specific LOD Index no dependencies*/
@@ -778,14 +788,6 @@ private:
 	/* Make uniform grid widget for Apex details */
 	TSharedRef<SUniformGridPanel> MakeClothingDetailsWidget(int32 AssetIndex) const;
 
-#if WITH_APEX_CLOTHING
-	/* Opens dialog to add a new clothing asset */
-	FReply OnOpenClothingFileClicked(IDetailLayoutBuilder* DetailLayout);
-
-	/* Reimports a clothing asset */ 
-	FReply OnReimportApexFileClicked(int32 AssetIndex, IDetailLayoutBuilder* DetailLayout);
-#endif
-
 	/* Removes a clothing asset */ 
 	FReply OnRemoveClothingAssetClicked(int32 AssetIndex, IDetailLayoutBuilder* DetailLayout);
 
@@ -797,6 +799,8 @@ private:
 
 	/** LOD Info editing is enabled? LODIndex == -1, then it just verifies if the asset exists */
 	bool IsLODInfoEditingEnabled(int32 LODIndex) const;
+	bool IsMinLodEnable() const;
+	bool IsQualityLevelMinLodEnable() const;
 	void ModifyMeshLODSettings(int32 LODIndex);
 
 	TMap<int32, TSharedPtr<FSkeletalMeshBuildSettingsLayout>> BuildSettingsWidgetsPerLOD;

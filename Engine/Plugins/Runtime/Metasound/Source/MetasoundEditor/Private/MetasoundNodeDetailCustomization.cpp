@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "MetasoundNodeDetailCustomization.h"
 
+#include "Analysis/MetasoundFrontendAnalyzerAddress.h"
 #include "Components/AudioComponent.h"
 #include "Containers/Set.h"
 #include "Delegates/Delegate.h"
@@ -10,21 +11,24 @@
 #include "Internationalization/Text.h"
 #include "MetasoundDataReference.h"
 #include "MetasoundDataReferenceMacro.h"
+#include "MetasoundEditorGraphBuilder.h"
 #include "MetasoundEditorGraphInputNode.h"
 #include "MetasoundEditorGraphSchema.h"
 #include "MetasoundFrontend.h"
 #include "MetasoundFrontendController.h"
 #include "MetasoundFrontendDataTypeRegistry.h"
 #include "MetasoundFrontendRegistries.h"
+#include "Modules/ModuleManager.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorDelegates.h"
 #include "SAssetDropTarget.h"
-#include "SlateCore/Public/Styling/SlateColor.h"
 #include "SMetasoundActionMenu.h"
 #include "SMetasoundGraphNode.h"
 #include "SSearchableComboBox.h"
+#include "Styling/SlateColor.h"
 #include "Templates/Casts.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Images/SImage.h"
@@ -48,13 +52,17 @@ namespace Metasound
 			static const TSet<FName> HiddenInputTypeNames =
 			{
 				"Audio:Mono",
-				"Audio:Stereo"
+				"Audio:Stereo",
+				GetMetasoundDataTypeName<Frontend::FAnalyzerAddress>()
 			};
 
 			static const FText OverrideInputDefaultText = LOCTEXT("OverridePresetInputDefault", "Override Inherited Default");
 			static const FText OverrideInputDefaultTooltip = LOCTEXT("OverridePresetInputTooltip",
-				"Enables overriding the input's inherited default value otherwise provided by the referenced graph."
-				"Setting to true disables auto-updating the input's default value if modified on the referenced asset.");
+				"Enables overriding the input's inherited default value otherwise provided by the referenced graph. Setting to true disables auto-updating the input's default value if modified on the referenced asset.");
+
+			static const FText ConstructorPinText = LOCTEXT("ConstructorPinText", "Is Constructor Pin");
+			static const FText ConstructorPinTooltip = LOCTEXT("ConstructorPinTooltip",
+				"Whether this input or output is a constructor pin. Constructor values are only read on construction (on play), and are not dynamically updated at runtime.");
 
 			void GetDataTypeFromElementPropertyHandle(TSharedPtr<IPropertyHandle> ElementPropertyHandle, Frontend::FDataTypeRegistryInfo& OutDataTypeInfo)
 			{
@@ -69,7 +77,18 @@ namespace Metasound
 					{
 						if (const UMetasoundEditorGraphMember* Member = Cast<UMetasoundEditorGraphMember>(DefaultLiteral->GetOuter()))
 						{
-							ensure(IDataTypeRegistry::Get().GetDataTypeInfo(Member->GetDataType(), OutDataTypeInfo));
+							FName DataTypeName = Member->GetDataType();
+							ensure(IDataTypeRegistry::Get().GetDataTypeInfo(DataTypeName, OutDataTypeInfo));
+							if (OutDataTypeInfo.bIsArrayType)
+							{
+								DataTypeName = CreateElementTypeNameFromArrayTypeName(DataTypeName);
+								const bool bIsHiddenType = HiddenInputTypeNames.Contains(DataTypeName);
+								OutDataTypeInfo = { };
+								if (!bIsHiddenType)
+								{
+									ensure(IDataTypeRegistry::Get().GetDataTypeInfo(DataTypeName, OutDataTypeInfo));
+								}
+							}
 						}
 					}
 				}
@@ -79,7 +98,7 @@ namespace Metasound
 			// element type. Otherwise, returns this type's DataTypeName.
 			FName GetPrimitiveTypeName(const Frontend::FDataTypeRegistryInfo& InDataTypeInfo)
 			{
-				return InDataTypeInfo.IsArrayType()
+				return InDataTypeInfo.bIsArrayType
 					? CreateElementTypeNameFromArrayTypeName(InDataTypeInfo.DataTypeName)
 					: InDataTypeInfo.DataTypeName;
 			}
@@ -113,21 +132,14 @@ namespace Metasound
 				DefaultValueHandle = Row->GetPropertyHandle();
 			}
 
-			// Apply the clamp range to the default value if 
-			// 1. not using a widget and ClampDefault is true or 
-			// 2. using a widget but not using a volume widget where VolumeWidgetUseLinearOutput is true 
-			const bool bVolumeWidgetWithLinearOutput = DefaultFloat->WidgetValueType == EMetasoundMemberDefaultWidgetValueType::Volume && DefaultFloat->VolumeWidgetUseLinearOutput;
+			// Apply the clamp range to the default value if not using a widget and ClampDefault is true
 			const bool bUsingWidget = DefaultFloat->WidgetType != EMetasoundMemberDefaultWidget::None;
-			const bool bShouldClampDefaultValue = (!bUsingWidget && DefaultFloat->ClampDefault) || (bUsingWidget && !bVolumeWidgetWithLinearOutput);
+			const bool bShouldClampDefaultValue = bUsingWidget || (!bUsingWidget && DefaultFloat->ClampDefault);
 
 			IDetailPropertyRow* ClampRow = DefaultCategoryBuilder->AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, ClampDefault));
 			if (ensure(ClampRow))
 			{
 				DefaultRows.Add(ClampRow);
-				if (bVolumeWidgetWithLinearOutput)
-				{
-					DefaultFloat->SetRange(FVector2D(0.0f, 1.0f));
-				}
 
 				if (DefaultValueHandle.IsValid())
 				{
@@ -152,7 +164,10 @@ namespace Metasound
 						FloatLiteral->OnClampChanged.Remove(OnClampChangedDelegateHandle);
 						if (FMetasoundAssetBase* MetasoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(FloatLiteral->GetOutermostObject()))
 						{
-							MetasoundAsset->SetSynchronizationRequired();
+							if (const UMetasoundEditorGraphMember* Member = Cast<UMetasoundEditorGraphMember>(FloatLiteral->GetOuter()))
+							{
+								MetasoundAsset->GetModifyContext().AddMemberIDsModified({ Member->GetMemberID() });
+							}
 						}
 					}
 				});
@@ -167,26 +182,31 @@ namespace Metasound
 				}
 			}
 
-			bool bIsGraphEditable = false;
-			if (const UMetasoundEditorGraphMember* ParentMember = InLiteral.GetParentMember())
+			// Enable widget options for editable inputs only 
+			bool bShowWidgetOptions = false;
+			if (const UMetasoundEditorGraphInput* ParentMember = Cast <UMetasoundEditorGraphInput>(InLiteral.GetParentMember()))
 			{
 				if (const UMetasoundEditorGraph* OwningGraph = ParentMember->GetOwningGraph())
 				{
-					bIsGraphEditable = OwningGraph->IsEditable();
+					// Disable widget options for constructor inputs for now to prevent changing default value via widget while playing 
+					bShowWidgetOptions = OwningGraph->IsEditable() && ParentMember->GetVertexAccessType() == EMetasoundFrontendVertexAccessType::Reference;
 				}
 			}
 
 			// add input widget properties
-			if (bIsGraphEditable)
+			if (bShowWidgetOptions)
 			{
 				IDetailCategoryBuilder& WidgetCategoryBuilder = InDetailLayout.EditCategory("EditorOptions");
 				DefaultRows.Add(WidgetCategoryBuilder.AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, WidgetType)));
 				DefaultRows.Add(WidgetCategoryBuilder.AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, WidgetOrientation)));
 				DefaultRows.Add(WidgetCategoryBuilder.AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, WidgetValueType)));
-				if (DefaultFloat->WidgetValueType == EMetasoundMemberDefaultWidgetValueType::Volume)
+				if (DefaultFloat->WidgetType != EMetasoundMemberDefaultWidget::None && DefaultFloat->WidgetValueType == EMetasoundMemberDefaultWidgetValueType::Volume)
 				{
 					DefaultRows.Add(WidgetCategoryBuilder.AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, VolumeWidgetUseLinearOutput)));
-
+					if (DefaultFloat->VolumeWidgetUseLinearOutput)
+					{
+						DefaultRows.Add(WidgetCategoryBuilder.AddExternalObjectProperty(TArray<UObject*>({ DefaultFloat }), GET_MEMBER_NAME_CHECKED(UMetasoundEditorGraphMemberDefaultFloat, VolumeWidgetDecibelRange)));
+					}
 				}
 			}
 
@@ -221,10 +241,12 @@ namespace Metasound
 					MemberCustomizationPrivate::GetDataTypeFromElementPropertyHandle(DefaultValueHandle, DataTypeInfo);
 
 					const IMetasoundEditorModule& EditorModule = FModuleManager::GetModuleChecked<IMetasoundEditorModule>("MetaSoundEditor");
-					bool bCanDrop = true;
-					for (const FAssetData& AssetData : InAssets)
+					bool bCanDrop = false;
+
+					if (UClass* ProxyGenClass = DataTypeInfo.ProxyGeneratorClass)
 					{
-						if (DataTypeInfo.ProxyGeneratorClass)
+						bCanDrop = true;
+						for (const FAssetData& AssetData : InAssets)
 						{
 							if (UClass* Class = AssetData.GetClass())
 							{
@@ -239,7 +261,8 @@ namespace Metasound
 							}
 						}
 					}
-					return true;
+
+					return bCanDrop;
 				})
 				.OnAssetsDropped_Lambda([this, DefaultValueHandle](const FDragDropEvent& DragDropEvent, TArrayView<FAssetData> InAssets)
 				{
@@ -545,6 +568,7 @@ namespace Metasound
 					}
 				}
 			}
+
 			MemberCustomizationPrivate::GetDataTypeFromElementPropertyHandle(ElementPropertyHandle, DataTypeInfo);
 
 			TSharedRef<SWidget> ValueWidget = CreateValueWidget(ParentPropertyHandleArray, StructPropertyHandle);
@@ -615,28 +639,27 @@ namespace Metasound
 
 			// Update data type based on "Is Array" checkbox and support for arrays.
 			// If an array type is not supported, default to the base data type.
-			IMetasoundEditorModule& EditorModule = FModuleManager::GetModuleChecked<IMetasoundEditorModule>("MetaSoundEditor");
 			if (DataTypeArrayCheckbox->GetCheckedState() == ECheckBoxState::Checked)
 			{
-				if (EditorModule.IsRegisteredDataType(ArrayDataTypeName))
+				if (Frontend::IDataTypeRegistry::Get().IsRegistered(ArrayDataTypeName))
 				{
 					NewDataTypeName = ArrayDataTypeName;
 				}
 				else
 				{
-					ensure(EditorModule.IsRegisteredDataType(InSelectedTypeName));
+					ensure(Frontend::IDataTypeRegistry::Get().IsRegistered(InSelectedTypeName));
 					NewDataTypeName = InSelectedTypeName;
 				}
 			}
 			else
 			{
-				if (EditorModule.IsRegisteredDataType(InSelectedTypeName))
+				if (Frontend::IDataTypeRegistry::Get().IsRegistered(InSelectedTypeName))
 				{
 					NewDataTypeName = InSelectedTypeName;
 				}
 				else
 				{
-					ensure(EditorModule.IsRegisteredDataType(ArrayDataTypeName));
+					ensure(Frontend::IDataTypeRegistry::Get().IsRegistered(ArrayDataTypeName));
 					NewDataTypeName = ArrayDataTypeName;
 				}
 			}
@@ -653,11 +676,6 @@ namespace Metasound
 			if (GraphMember.IsValid())
 			{
 				GraphMember->SetDataType(NewDataTypeName);
-
-				if (FMetasoundAssetBase* MetasoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(GraphMember->GetOutermostObject()))
-				{
-					MetasoundAsset->SetUpdateDetailsOnSynchronization();
-				}
 			}
 		}
 
@@ -678,8 +696,7 @@ namespace Metasound
 				return;
 			}
 
-			const bool bIsArrayType = DataTypeInfo.IsArrayType();
-			if (bIsArrayType)
+			if (DataTypeInfo.bIsArrayType)
 			{
 				ArrayTypeName = GraphMember->GetDataType();
 				BaseTypeName = CreateElementTypeNameFromArrayTypeName(InGraphMember->GetDataType());
@@ -694,17 +711,15 @@ namespace Metasound
 
 			// Not all types have an equivalent array type. Base types without array
 			// types should have the "Is Array" checkbox disabled.
-			const bool bIsArrayTypeRegistered = bIsArrayType || IDataTypeRegistry::Get().IsRegistered(ArrayTypeName);
+			const bool bIsArrayTypeRegistered = IDataTypeRegistry::Get().IsRegistered(ArrayTypeName);
 			const bool bIsArrayTypeRegisteredHidden = MemberCustomizationPrivate::HiddenInputTypeNames.Contains(ArrayTypeName);
 
 			TArray<FName> BaseDataTypes;
 			IDataTypeRegistry::Get().IterateDataTypeInfo([&BaseDataTypes](const FDataTypeRegistryInfo& RegistryInfo)
 			{
-				// Hide the type from the combo selector if any of the following is true;
-				const bool bIsArrayType = RegistryInfo.IsArrayType();
-				const bool bIsVariable = RegistryInfo.bIsVariable;
+				// Hide the type from the combo selector if any of the following is true
 				const bool bIsHiddenType = MemberCustomizationPrivate::HiddenInputTypeNames.Contains(RegistryInfo.DataTypeName);
-				const bool bHideBaseType = bIsArrayType || bIsVariable || bIsHiddenType;
+				const bool bHideBaseType = RegistryInfo.bIsArrayType || RegistryInfo.bIsVariable || bIsHiddenType;
 				if (!bHideBaseType)
 				{
 					BaseDataTypes.Add(RegistryInfo.DataTypeName);
@@ -724,7 +739,7 @@ namespace Metasound
 			[
 				SNew(STextBlock)
 				.Text(InRowName)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Font(IDetailLayoutBuilder::GetDetailFontBold())
 			]
 			.ValueContent()
 			[
@@ -786,7 +801,7 @@ namespace Metasound
 			const TSharedPtr<FString>* SelectedItem = ComboOptions.FindByPredicate(NameMatchesPredicate);
 			if (ensure(SelectedItem))
 			{
-				DataTypeComboBox->SetSelectedItem(*SelectedItem);
+				DataTypeComboBox->SetSelectedItem(*SelectedItem, ESelectInfo::Direct);
 			}
 		}
 
@@ -799,7 +814,7 @@ namespace Metasound
 				FDataTypeRegistryInfo DataTypeInfo;
 				if (ensure(IDataTypeRegistry::Get().GetDataTypeInfo(InGraphMember->GetDataType(), DataTypeInfo)))
 				{
-					return DataTypeInfo.IsArrayType() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+					return DataTypeInfo.bIsArrayType ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 				}
 			}
 
@@ -819,29 +834,21 @@ namespace Metasound
 
 					const FName DataType = InNewState == ECheckBoxState::Checked ? ArrayTypeName : BaseTypeName;
 					InGraphMember->SetDataType(DataType);
-
-					if (FMetasoundAssetBase* MetasoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(GraphMember->GetOutermostObject()))
-					{
-						MetasoundAsset->SetUpdateDetailsOnSynchronization();
-					}
 				}
 			}
 		}
 
-		void FMetasoundMemberDetailCustomization::UpdateRenameDelegate(UMetasoundEditorGraphMemberDefaultLiteral& InMemberDefaultLiteral)
+		void FMetasoundMemberDetailCustomization::UpdateRenameDelegate(UMetasoundEditorGraphMember& InMember)
 		{
-			if (UMetasoundEditorGraphMember* Member = InMemberDefaultLiteral.GetParentMember())
+			if (InMember.CanRename())
 			{
-				if (Member->CanRename())
+				if (!RenameRequestedHandle.IsValid())
 				{
-					if (!RenameRequestedHandle.IsValid())
+					InMember.OnRenameRequested.Clear();
+					RenameRequestedHandle = InMember.OnRenameRequested.AddLambda([this]()
 					{
-						Member->OnRenameRequested.Clear();
-						RenameRequestedHandle = Member->OnRenameRequested.AddLambda([this]()
-							{
-								FSlateApplication::Get().SetKeyboardFocus(NameEditableTextBox.ToSharedRef(), EFocusCause::SetDirectly);
-							});
-					}
+						FSlateApplication::Get().SetKeyboardFocus(NameEditableTextBox.ToSharedRef(), EFocusCause::SetDirectly);
+					});
 				}
 			}
 		}
@@ -873,10 +880,10 @@ namespace Metasound
 				return DefaultPropertyRows;
 			}
 
+			UpdateRenameDelegate(*GraphMember);
+
 			if (UMetasoundEditorGraphMemberDefaultLiteral* MemberDefaultLiteral = GraphMember->GetLiteral())
 			{
-				UpdateRenameDelegate(*MemberDefaultLiteral);
-
 				UClass* MemberClass = MemberDefaultLiteral->GetClass();
 				check(MemberClass);
 
@@ -1122,62 +1129,104 @@ namespace Metasound
 			bIsNameInvalid = false;
 		}
 
+		void FMetasoundVertexDetailCustomization::AddConstructorPinRow(IDetailLayoutBuilder& InDetailLayout)
+		{
+			if (UMetasoundEditorGraphVertex* Vertex = Cast<UMetasoundEditorGraphVertex>(GraphMember.Get()))
+			{
+				InDetailLayout.EditCategory("General").AddCustomRow(MemberCustomizationPrivate::ConstructorPinText)
+				.IsEnabled(IsGraphEditable() && !IsInterfaceMember())
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(MemberCustomizationPrivate::ConstructorPinText)
+					.ToolTipText(MemberCustomizationPrivate::ConstructorPinTooltip)
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+				]
+				.ValueContent()
+				[
+					SAssignNew(ConstructorPinCheckbox, SCheckBox)
+					.IsChecked_Lambda([this, Vertex]()
+					{
+						return OnGetConstructorPinCheckboxState(Vertex);
+					})
+					.OnCheckStateChanged_Lambda([this, Vertex](ECheckBoxState InNewState)
+					{
+						OnConstructorPinStateChanged(Vertex, InNewState);
+					})
+					[
+						SNew(STextBlock)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+					]
+				];
+			}
+		}
+		
 		void FMetasoundVertexDetailCustomization::CustomizeGeneralCategory(IDetailLayoutBuilder& InDetailLayout)
 		{
 			FMetasoundMemberDetailCustomization::CustomizeGeneralCategory(InDetailLayout);
-
-			IDetailCategoryBuilder& CategoryBuilder = FMetasoundMemberDetailCustomization::GetGeneralCategoryBuilder(InDetailLayout);
 			UMetasoundEditorGraphVertex* Vertex = Cast<UMetasoundEditorGraphVertex>(GraphMember.Get());
-			if (ensure(Vertex))
+			if (!ensure(Vertex))
 			{
-				TWeakObjectPtr<UMetasoundEditorGraphVertex> VertexPtr = Vertex;
-				static const FText SortOrderText = LOCTEXT("Vertex_SortOrderPropertyName", "Sort Order");
-				static const FText SortOrderToolTipFormat = LOCTEXT("Vertex_SortOrderToolTipFormat", "Sort Order for {0}. Used to organize pins in node view. The higher the number, the lower in the list.");
-				const FText SortOrderToolTipText = FText::Format(SortOrderToolTipFormat, GraphMember->GetGraphMemberLabel());
-				CategoryBuilder.AddCustomRow(SortOrderText)
-					.EditCondition(IsGraphEditable(), nullptr)
-					.NameContent()
-					[
-						SNew(STextBlock)
-						.Font(IDetailLayoutBuilder::GetDetailFontBold())
-						.Text(SortOrderText)
-						.ToolTipText(SortOrderToolTipText)
-					]
-					.ValueContent()
-					[
-						SNew(SNumericEntryBox<int32>)
-						.Value_Lambda([VertexPtr]() { return VertexPtr->GetSortOrderIndex(); })
-						.AllowSpin(false)
-						.UndeterminedString(LOCTEXT("Vertex_SortOrder_MultipleValues", "Multiple"))
-						.OnValueCommitted_Lambda([VertexPtr](int32 NewValue, ETextCommit::Type CommitInfo)
-						{
-							if (!VertexPtr.IsValid())
-							{
-								return;
-							}
-
-							const FText TransactionTitle = FText::Format(LOCTEXT("SetVertexSortOrderFormat", "Set MetaSound Graph {0} '{1}' SortOrder to {2}"),
-								VertexPtr->GetGraphMemberLabel(),
-								VertexPtr->GetDisplayName(),
-								FText::AsNumber(NewValue));
-							FScopedTransaction Transaction(TransactionTitle);
-
-							UObject* MetaSoundObject = VertexPtr->GetOutermostObject();
-							FMetasoundAssetBase* MetaSoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(MetaSoundObject);
-							check(MetaSoundAsset);
-
-							MetaSoundObject->Modify();
-							MetaSoundAsset->GetGraphChecked().Modify();
-							VertexPtr->Modify();
-
-							VertexPtr->SetSortOrderIndex(NewValue);
-
-							constexpr bool bInForceViewSynchronization = true;
-							FGraphBuilder::RegisterGraphWithFrontend(*MetaSoundObject, bInForceViewSynchronization);
-						})
-						.Font(IDetailLayoutBuilder::GetDetailFont())
-					];
+				return;
 			}
+
+			// Constructor pin 
+			Frontend::FDataTypeRegistryInfo DataTypeInfo;
+			Frontend::IDataTypeRegistry::Get().GetDataTypeInfo(Vertex->GetDataType(), DataTypeInfo);
+			if (DataTypeInfo.bIsConstructorType)
+			{
+				AddConstructorPinRow(InDetailLayout);
+			}
+
+			// Sort order
+			IDetailCategoryBuilder& CategoryBuilder = FMetasoundMemberDetailCustomization::GetGeneralCategoryBuilder(InDetailLayout);
+			TWeakObjectPtr<UMetasoundEditorGraphVertex> VertexPtr = Vertex;
+			static const FText SortOrderText = LOCTEXT("Vertex_SortOrderPropertyName", "Sort Order");
+			static const FText SortOrderToolTipFormat = LOCTEXT("Vertex_SortOrderToolTipFormat", "Sort Order for {0}. Used to organize pins in node view. The higher the number, the lower in the list.");
+			const FText SortOrderToolTipText = FText::Format(SortOrderToolTipFormat, GraphMember->GetGraphMemberLabel());
+			CategoryBuilder.AddCustomRow(SortOrderText)
+				.EditCondition(IsGraphEditable(), nullptr)
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+					.Text(SortOrderText)
+					.ToolTipText(SortOrderToolTipText)
+				]
+				.ValueContent()
+				[
+					SNew(SNumericEntryBox<int32>)
+					.Value_Lambda([VertexPtr]() { return VertexPtr->GetSortOrderIndex(); })
+					.AllowSpin(false)
+					.UndeterminedString(LOCTEXT("Vertex_SortOrder_MultipleValues", "Multiple"))
+					.OnValueCommitted_Lambda([VertexPtr](int32 NewValue, ETextCommit::Type CommitInfo)
+					{
+						if (!VertexPtr.IsValid())
+						{
+							return;
+						}
+
+						const FText TransactionTitle = FText::Format(LOCTEXT("SetVertexSortOrderFormat", "Set MetaSound Graph {0} '{1}' SortOrder to {2}"),
+							VertexPtr->GetGraphMemberLabel(),
+							VertexPtr->GetDisplayName(),
+							FText::AsNumber(NewValue));
+						FScopedTransaction Transaction(TransactionTitle);
+
+						UObject* MetaSoundObject = VertexPtr->GetOutermostObject();
+						FMetasoundAssetBase* MetaSoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(MetaSoundObject);
+						check(MetaSoundAsset);
+
+						MetaSoundObject->Modify();
+						MetaSoundAsset->GetGraphChecked().Modify();
+						VertexPtr->Modify();
+
+						VertexPtr->SetSortOrderIndex(NewValue);
+
+						constexpr bool bInForceViewSynchronization = true;
+						FGraphBuilder::RegisterGraphWithFrontend(*MetaSoundObject, bInForceViewSynchronization);
+					})
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				];
 		}
 
 		bool FMetasoundVertexDetailCustomization::IsInterfaceMember() const
@@ -1257,6 +1306,41 @@ namespace Metasound
 			}
 		}
 
+		ECheckBoxState FMetasoundVertexDetailCustomization::OnGetConstructorPinCheckboxState(TWeakObjectPtr<UMetasoundEditorGraphVertex> InGraphVertex) const
+		{
+			if (InGraphVertex.IsValid())
+			{
+				return InGraphVertex->GetVertexAccessType() == EMetasoundFrontendVertexAccessType::Value ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			}
+
+			return ECheckBoxState::Undetermined;
+		}
+
+		void FMetasoundVertexDetailCustomization::OnConstructorPinStateChanged(TWeakObjectPtr<UMetasoundEditorGraphVertex> InGraphVertex, ECheckBoxState InNewState)
+		{
+			if (InGraphVertex.IsValid() && ConstructorPinCheckbox.IsValid())
+			{
+				EMetasoundFrontendVertexAccessType NewAccessType = InNewState == ECheckBoxState::Checked ? 
+					EMetasoundFrontendVertexAccessType::Value : EMetasoundFrontendVertexAccessType::Reference;
+
+				if (InGraphVertex->GetVertexAccessType() == NewAccessType)
+				{
+					return;
+				}
+
+				// Have to stop playback to avoid attempting to change live edit data on invalid input type.
+				check(GEditor);
+				GEditor->ResetPreviewAudioComponent();
+
+				InGraphVertex->SetVertexAccessType(NewAccessType);
+				
+				if (FMetasoundAssetBase* MetasoundAsset = Metasound::IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(GraphMember->GetOutermostObject()))
+				{
+					MetasoundAsset->GetModifyContext().AddMemberIDsModified({ GraphMember->GetMemberID() });
+				}
+			}
+		}
+
 		void FMetasoundInputDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& InDetailLayout)
 		{
 			CacheMemberData(InDetailLayout);
@@ -1329,6 +1413,30 @@ namespace Metasound
 							FIsResetToDefaultVisible::CreateLambda([this](TSharedPtr<IPropertyHandle> /* PropertyHandle */) { return !GetInputInheritsDefault(); }),
 							FResetToDefaultHandler::CreateLambda([this](TSharedPtr<IPropertyHandle> /* PropertyHandle */) { SetInputInheritsDefault(); }));
 						DefaultPropertyRow->OverrideResetToDefault(ResetOverride);
+					}
+				}
+			} 
+			else if (!bIsPreset)
+			{
+				// Make default value uneditable while playing for constructor inputs
+				const UMetasoundEditorGraphInput* Input = Cast<UMetasoundEditorGraphInput>(MemberDefaultLiteral->GetParentMember());
+				if (ensure(Input))
+				{
+					auto PropertyEnabled = TAttribute<bool>::CreateLambda([this, Input]
+					{
+						if (Input->GetVertexAccessType() == EMetasoundFrontendVertexAccessType::Value)
+						{
+							UObject* MetaSoundObject = Input->GetOutermostObject();
+							if (TSharedPtr<FEditor> MetaSoundEditor = FGraphBuilder::GetEditorForMetasound(*MetaSoundObject))
+							{
+								return !MetaSoundEditor->IsPlaying();
+							}
+						}
+						return true;
+					});
+					for (IDetailPropertyRow* DefaultPropertyRow : DefaultPropertyRows)
+					{
+						DefaultPropertyRow->EditCondition(PropertyEnabled, { });
 					}
 				}
 			}

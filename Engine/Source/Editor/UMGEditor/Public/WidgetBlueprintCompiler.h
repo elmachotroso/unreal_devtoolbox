@@ -3,12 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "EngineLogs.h"
+#include "Engine/Blueprint.h"
 #include "WidgetBlueprint.h"
 #include "KismetCompiler.h"
 #include "KismetCompilerModule.h"
 #include "ComponentReregisterContext.h"
 #include "Components/WidgetComponent.h"
 
+class FProperty;
+class UWidget;
+class UWidgetAnimation;
+class UWidgetGraphSchema;
 
 //////////////////////////////////////////////////////////////////////////
 // FWidgetBlueprintCompiler 
@@ -52,9 +58,13 @@ public:
 	virtual ~FWidgetBlueprintCompilerContext();
 
 protected:
-	UWidgetBlueprint* WidgetBlueprint() const { return Cast<UWidgetBlueprint>(Blueprint); }
-
 	void ValidateWidgetNames();
+
+	/**
+	 * Checks if the animations' bindings are valid. Shows a compiler warning if any of the animations have a null track, urging the user
+	 * to delete said track to avoid performance hitches when playing said null tracks in large user widgets.
+	*/
+	void ValidateWidgetAnimations();
 
 	// FKismetCompilerContext
 	virtual UEdGraphSchema_K2* CreateSchema() override;
@@ -62,6 +72,7 @@ protected:
 	virtual void SpawnNewClass(const FString& NewClassName) override;
 	virtual void OnNewClassSet(UBlueprintGeneratedClass* ClassToUse) override;
 	virtual void PrecompileFunction(FKismetFunctionContext& Context, EInternalCompilerFlags InternalFlags) override;
+	virtual void PostcompileFunction(FKismetFunctionContext& Context) override;
 	virtual void CleanAndSanitizeClass(UBlueprintGeneratedClass* ClassToClean, UObject*& InOutOldCDO) override;
 	virtual void SaveSubObjectsFromCleanAndSanitizeClass(FSubobjectCollection& SubObjectsToSave, UBlueprintGeneratedClass* ClassToClean) override;
 	virtual void EnsureProperGeneratedClass(UClass*& TargetClass) override;
@@ -69,12 +80,32 @@ protected:
 	virtual void CopyTermDefaultsToDefaultObject(UObject* DefaultObject);
 	virtual void FinishCompilingClass(UClass* Class) override;
 	virtual bool ValidateGeneratedClass(UBlueprintGeneratedClass* Class) override;
-	virtual void OnPostCDOCompiled() override;
+	virtual void OnPostCDOCompiled(const UObject::FPostCDOCompiledContext& Context) override;
 	// End FKismetCompilerContext
 
 	void SanitizeBindings(UBlueprintGeneratedClass* Class);
 
 	void VerifyEventReplysAreNotEmpty(FKismetFunctionContext& Context);
+	void VerifyFieldNotifyFunction(FKismetFunctionContext& Context);
+
+public:
+	UWidgetBlueprint* WidgetBlueprint() const { return Cast<UWidgetBlueprint>(Blueprint); }
+
+	void AddExtension(UWidgetBlueprintGeneratedClass* Class, UWidgetBlueprintGeneratedClassExtension* Extension);
+
+	struct UMGEDITOR_API FCreateVariableContext
+	{
+	public:
+		FProperty* CreateVariable(const FName Name, const FEdGraphPinType& Type) const;
+		UWidgetBlueprint* GetWidgetBlueprint() const;
+		UWidgetBlueprintGeneratedClass* GetSkeletonGeneratedClass() const;
+		EKismetCompileType::Type GetCompileType() const;
+
+	private:
+		friend FWidgetBlueprintCompilerContext;
+		FCreateVariableContext(FWidgetBlueprintCompilerContext& InContext);
+		FWidgetBlueprintCompilerContext& Context;
+	};
 
 protected:
 	void FixAbandonedWidgetTree(UWidgetBlueprint* WidgetBP);
@@ -85,13 +116,13 @@ protected:
 
 	TArray<UWidgetAnimation*> OldWidgetAnimations;
 
-	class UWidgetGraphSchema* WidgetSchema;
+	UWidgetGraphSchema* WidgetSchema;
 
 	// Map of properties created for widgets; to aid in debug data generation
-	TMap<class UWidget*, class FProperty*> WidgetToMemberVariableMap;
+	TMap<UWidget*, FProperty*> WidgetToMemberVariableMap;
 
 	// Map of properties created for widget animations; to aid in debug data generation
-	TMap<class UWidgetAnimation*, class FProperty*> WidgetAnimToMemberVariableMap;
+	TMap<UWidgetAnimation*, FProperty*> WidgetAnimToMemberVariableMap;
 
 	///----------------------------------------------------------------
 };

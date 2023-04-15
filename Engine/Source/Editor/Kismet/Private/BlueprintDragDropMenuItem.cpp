@@ -1,13 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintDragDropMenuItem.h"
-#include "EditorStyleSet.h"
-#include "BlueprintActionMenuItem.h"
-#include "BlueprintNodeSpawner.h"
-#include "BlueprintDelegateNodeSpawner.h"
-#include "BlueprintVariableNodeSpawner.h"
-#include "BPVariableDragDropAction.h"
+
 #include "BPDelegateDragDropAction.h"
+#include "BPVariableDragDropAction.h"
+#include "BlueprintActionMenuItem.h"
+#include "BlueprintDelegateNodeSpawner.h"
+#include "BlueprintNodeSpawner.h"
+#include "BlueprintVariableNodeSpawner.h"
+#include "Containers/UnrealString.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+
+class FDragDropOperation;
+class UEdGraphPin;
+struct FBlueprintActionContext;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "BlueprintDragDropMenuItem"
 DEFINE_LOG_CATEGORY_STATIC(LogBlueprintDragDropMenuItem, Log, All);
@@ -72,7 +92,7 @@ FSlateBrush const* FBlueprintDragDropMenuItem::GetMenuIcon(FSlateColor& ColorOut
 	UBlueprintNodeSpawner const* SampleAction = GetSampleAction();
 	if (UBlueprintDelegateNodeSpawner const* DelegateSpawner = Cast<UBlueprintDelegateNodeSpawner const>(SampleAction))
 	{
-		IconBrush = FEditorStyle::GetBrush(TEXT("GraphEditor.Delegate_16x"));
+		IconBrush = FAppStyle::GetBrush(TEXT("GraphEditor.Delegate_16x"));
 	}
 	else if (UBlueprintVariableNodeSpawner const* VariableSpawner = Cast<UBlueprintVariableNodeSpawner const>(SampleAction))
 	{

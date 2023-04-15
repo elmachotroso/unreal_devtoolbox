@@ -13,6 +13,8 @@
 #include "AndroidOpenGLPrivate.h"
 #include "Android/AndroidPlatformMisc.h"
 #include "Android/AndroidPlatformFramePacer.h"
+#include "Android/AndroidJNI.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 
 PFNeglPresentationTimeANDROID eglPresentationTimeANDROID_p = NULL;
 PFNeglGetNextFrameIdANDROID eglGetNextFrameIdANDROID_p = NULL;
@@ -90,6 +92,78 @@ extern bool AndroidThunkCpp_IsOculusMobileApplication();
 #define GL_DEBUG_TOOL_EXT	0x6789
 static bool bRunningUnderRenderDoc = false;
 
+
+#if UE_BUILD_SHIPPING
+#define CHECK_JNI_EXCEPTIONS(env)  env->ExceptionClear();
+#else
+#define CHECK_JNI_EXCEPTIONS(env)  if (env->ExceptionCheck()) {env->ExceptionDescribe();env->ExceptionClear();}
+#endif
+
+struct FOpenGLRemoteGLProgramCompileJNI
+{
+	jclass OGLServiceAccessor = 0;
+	jmethodID DispatchProgramLink = 0;
+	jmethodID StartRemoteProgramLink = 0;
+	jmethodID StopRemoteProgramLink = 0;
+	jclass ProgramResponseClass = 0;
+	jfieldID ProgramResponse_SuccessField = 0;
+	jfieldID ProgramResponse_ErrorField = 0;
+	jfieldID ProgramResponse_CompiledBinaryField = 0;
+	bool bAllFound = false;
+
+	void Init(JNIEnv* Env)
+	{
+		// class JNIProgramLinkResponse
+		// {
+		// 	boolean bCompileSuccess;
+		// 	String ErrorMessage;
+		// 	byte[] CompiledProgram;
+		// };
+		// JNIProgramLinkResponse AndroidThunkJava_OGLRemoteProgramLink(...):
+
+
+		check(OGLServiceAccessor == 0);
+		OGLServiceAccessor = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/psoservices/PSOProgramServiceAccessor");
+		CHECK_JNI_EXCEPTIONS(Env);
+		if(OGLServiceAccessor)
+		{
+			DispatchProgramLink = FJavaWrapper::FindStaticMethod(Env, OGLServiceAccessor, "AndroidThunkJava_OGLRemoteProgramLink", "([BLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/epicgames/unreal/psoservices/PSOProgramServiceAccessor$JNIProgramLinkResponse;", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			StartRemoteProgramLink = FJavaWrapper::FindStaticMethod(Env, OGLServiceAccessor, "AndroidThunkJava_StartRemoteProgramLink", "(IZ)Z", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			StopRemoteProgramLink = FJavaWrapper::FindStaticMethod(Env, OGLServiceAccessor, "AndroidThunkJava_StopRemoteProgramLink", "()V", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponseClass = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/psoservices/PSOProgramServiceAccessor$JNIProgramLinkResponse");
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_SuccessField = FJavaWrapper::FindField(Env, ProgramResponseClass, "bCompileSuccess", "Z", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_CompiledBinaryField = FJavaWrapper::FindField(Env, ProgramResponseClass, "CompiledProgram", "[B", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_ErrorField = FJavaWrapper::FindField(Env, ProgramResponseClass, "ErrorMessage", "Ljava/lang/String;", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+		}
+
+		bAllFound = OGLServiceAccessor && DispatchProgramLink && StartRemoteProgramLink && StopRemoteProgramLink && ProgramResponseClass && ProgramResponse_SuccessField && ProgramResponse_CompiledBinaryField && ProgramResponse_ErrorField;
+		UE_CLOG(!bAllFound, LogRHI, Fatal, TEXT("Failed to find JNI GL remote program compiler."));
+	}
+}OpenGLRemoteGLProgramCompileJNI;
+
+static bool AreAndroidOpenGLRemoteCompileServicesAvailable()
+{
+	static int RemoteCompileService = -1;
+	if (RemoteCompileService == -1)
+	{
+		const FString* ConfigRulesDisableProgramCompileServices = FAndroidMisc::GetConfigRulesVariable(TEXT("DisableProgramCompileServices"));
+		bool bConfigRulesDisableProgramCompileServices = ConfigRulesDisableProgramCompileServices && ConfigRulesDisableProgramCompileServices->Equals("true", ESearchCase::IgnoreCase);
+		static const auto CVarProgramLRU = IConsoleManager::Get().FindConsoleVariable(TEXT("r.OpenGL.EnableProgramLRUCache"));
+		static const auto CVarNumRemoteProgramCompileServices = IConsoleManager::Get().FindConsoleVariable(TEXT("Android.OpenGL.NumRemoteProgramCompileServices"));
+
+		RemoteCompileService = !bConfigRulesDisableProgramCompileServices && OpenGLRemoteGLProgramCompileJNI.bAllFound && (CVarProgramLRU->GetInt() != 0) && (CVarNumRemoteProgramCompileServices->GetInt() > 0);
+		FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), RemoteCompileService == 0? TEXT("disabled") : TEXT("enabled"));
+	}
+	return RemoteCompileService;
+}
+
 void FPlatformOpenGLDevice::Init()
 {
 	// Initialize frame pacer
@@ -114,6 +188,12 @@ void FPlatformOpenGLDevice::Init()
 	InitDebugContext();
 
 	AndroidEGL::GetInstance()->InitBackBuffer(); //can be done only after context is made current.
+
+	OpenGLRemoteGLProgramCompileJNI.Init(FAndroidApplication::GetJavaEnv());
+
+	// AsyncPipelinePrecompile can be enabled on android GL, precompiles are compiled via separate processes and the result is stored in GL's LRU cache as an evicted binary.
+	// The lru cache is a requirement as the precompile produces binary program data only.
+	GRHISupportsAsyncPipelinePrecompile = AreAndroidOpenGLRemoteCompileServicesAvailable();
 }
 
 FPlatformOpenGLDevice* PlatformCreateOpenGLDevice()
@@ -141,10 +221,12 @@ void* PlatformGetWindow(FPlatformOpenGLContext* Context, void** AddParam)
 
 bool PlatformBlitToViewport(FPlatformOpenGLDevice* Device, const FOpenGLViewport& Viewport, uint32 BackbufferSizeX, uint32 BackbufferSizeY, bool bPresent,bool bLockToVsync )
 {
-	if (FPlatformMisc::SupportsBackbufferSampling())
-	{
-		FPlatformOpenGLContext* const Context = Viewport.GetGLContext();
+	SCOPED_NAMED_EVENT(STAT_PlatformBlitToViewportTime, FColor::Red)
+	
+	FPlatformOpenGLContext* const Context = Viewport.GetGLContext();
 
+	if (bPresent && AndroidEGL::GetInstance()->IsOfflineSurfaceRequired())
+	{
 		if (Device->TargetDirty)
 		{
 			VERIFY_GL_SCOPE();
@@ -164,12 +246,15 @@ bool PlatformBlitToViewport(FPlatformOpenGLDevice* Device, const FOpenGLViewport
 
 			FOpenGL::BlitFramebuffer(
 				0, 0, BackbufferSizeX, BackbufferSizeY,
-				0, 0, BackbufferSizeX, BackbufferSizeY,
+				0, BackbufferSizeY, BackbufferSizeX, 0,
 				GL_COLOR_BUFFER_BIT,
 				GL_NEAREST
 			);
 
 			glEnable(GL_FRAMEBUFFER_SRGB);
+
+			// Bind viewport FBO so driver knows we don't need backbuffer image anymore
+			glBindFramebuffer(GL_FRAMEBUFFER, Context->ViewportFramebuffer);
 		}
 	}
 
@@ -181,12 +266,11 @@ bool PlatformBlitToViewport(FPlatformOpenGLDevice* Device, const FOpenGLViewport
 	}
 	if (bPresent)
 	{
+		AndroidEGL::GetInstance()->UpdateBuffersTransform();
 		FAndroidPlatformRHIFramePacer::SwapBuffers(bLockToVsync);
 	}
 	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("a.UseFrameTimeStampsForPacing"));
 	const bool bForceGPUFence = CVar ? CVar->GetInt() != 0 : false;
-
-
 
 	return bPresent && ShouldUseGPUFencesToLimitLatency();
 }
@@ -277,6 +361,21 @@ bool PlatformInitOpenGL()
 				FAndroidMisc::MessageBoxExt(EAppMsgType::Ok, *Message, TEXT("Unable to run on this device!"));
 			}
 		}
+
+		// Needs to initialize GPU vendor id before AndroidEGL::AcquireCurrentRenderingContext
+		FString& VendorName = FAndroidGPUInfo::Get().VendorName;
+		if (VendorName.Contains(TEXT("ImgTec")) || VendorName.Contains(TEXT("Imagination")))
+		{
+			GRHIVendorId = 0x1010;
+		}
+		else if (VendorName.Contains(TEXT("ARM")))
+		{
+			GRHIVendorId = 0x13B5;
+		}
+		else if (VendorName.Contains(TEXT("Qualcomm")))
+		{
+			GRHIVendorId = 0x5143;
+		}
 	}
 	return true;
 }
@@ -364,17 +463,19 @@ void PlatformDestroyOpenGLContext(FPlatformOpenGLDevice* Device, FPlatformOpenGL
 {
 }
 
-FRHITexture* PlatformCreateBuiltinBackBuffer(FOpenGLDynamicRHI* OpenGLRHI, uint32 SizeX, uint32 SizeY)
+FOpenGLTexture* PlatformCreateBuiltinBackBuffer(FOpenGLDynamicRHI* OpenGLRHI, uint32 SizeX, uint32 SizeY)
 {
+	check(IsInRenderingThread());
 	// Create the built-in back buffer if we disable backbuffer sampling.
 	// Otherwise return null and we will create an off-screen surface afterward.
-	if (!FPlatformMisc::SupportsBackbufferSampling())
+	if (!AndroidEGL::GetInstance()->IsOfflineSurfaceRequired())
 	{
-		ETextureCreateFlags Flags = TexCreate_RenderTargetable;
-		FOpenGLTexture2D* Texture2D = new FOpenGLTexture2D(OpenGLRHI, AndroidEGL::GetInstance()->GetOnScreenColorRenderBuffer(), GL_RENDERBUFFER, GL_COLOR_ATTACHMENT0, SizeX, SizeY, 0, 1, 1, 1, 1, PF_B8G8R8A8, false, false, Flags, FClearValueBinding::Transparent);
-		OpenGLTextureAllocated(Texture2D, Flags);
+		const FOpenGLTextureCreateDesc CreateDesc =
+			FRHITextureCreateDesc::Create2D(TEXT("PlatformCreateBuiltinBackBuffer"), SizeX, SizeY, PF_B8G8R8A8)
+			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::Presentable | ETextureCreateFlags::ResolveTargetable)
+			.DetermineInititialState();
 
-		return Texture2D;
+		return new FOpenGLTexture(CreateDesc);
 	}
 	else
 	{
@@ -385,11 +486,12 @@ FRHITexture* PlatformCreateBuiltinBackBuffer(FOpenGLDynamicRHI* OpenGLRHI, uint3
 void PlatformResizeGLContext( FPlatformOpenGLDevice* Device, FPlatformOpenGLContext* Context, uint32 SizeX, uint32 SizeY, bool bFullscreen, bool bWasFullscreen, GLenum BackBufferTarget, GLuint BackBufferResource)
 {
 	check(Context);
-	
+	VERIFY_GL_SCOPE();
+
 	Context->BackBufferResource = BackBufferResource;
 	Context->BackBufferTarget = BackBufferTarget;
 
-	if (FPlatformMisc::SupportsBackbufferSampling())
+	if (AndroidEGL::GetInstance()->IsOfflineSurfaceRequired())
 	{
 		Device->TargetDirty = true;
 		glBindFramebuffer(GL_FRAMEBUFFER, Context->ViewportFramebuffer);
@@ -463,13 +565,6 @@ void FPlatformOpenGLDevice::SetupCurrentContext()
 
 void PlatformLabelObjects()
 {
-	// @todo: Check that there is a valid id (non-zero) as LabelObject will fail otherwise
-	GLuint RenderBuffer = AndroidEGL::GetInstance()->GetOnScreenColorRenderBuffer();
-	if (RenderBuffer != 0)
-	{
-		FOpenGL::LabelObject(GL_RENDERBUFFER, RenderBuffer, "OnScreenColorRB");
-	}
-
 	GLuint FrameBuffer = AndroidEGL::GetInstance()->GetResolveFrameBuffer();
 	if (FrameBuffer != 0)
 	{
@@ -1023,5 +1118,99 @@ void FAndroidAppEntry::ReleaseEGL()
 		EGL->Terminate();
 	}
 }
+
+static bool GRemoteCompileServicesActive = false;
+
+bool AreAndroidOpenGLRemoteCompileServicesActive()
+{
+	return GRemoteCompileServicesActive && AreAndroidOpenGLRemoteCompileServicesAvailable();
+}
+
+bool FAndroidOpenGL::AreRemoteCompileServicesActive()
+{
+	return AreAndroidOpenGLRemoteCompileServicesActive();
+}
+
+bool FAndroidOpenGL::StartAndWaitForRemoteCompileServices(int NumServices)
+{
+	bool bResult = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+
+	if (Env && AreAndroidOpenGLRemoteCompileServicesAvailable())
+	{
+		bResult = (bool)Env->CallStaticBooleanMethod(OpenGLRemoteGLProgramCompileJNI.OGLServiceAccessor, OpenGLRemoteGLProgramCompileJNI.StartRemoteProgramLink, (jint)NumServices, (jboolean)false);
+		GRemoteCompileServicesActive = bResult;
+	}
+
+	return bResult;
+}
+
+void FAndroidOpenGL::StopRemoteCompileServices()
+{
+	GRemoteCompileServicesActive = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+
+	if (Env && ensure(AreAndroidOpenGLRemoteCompileServicesAvailable()))
+	{
+		Env->CallStaticVoidMethod(OpenGLRemoteGLProgramCompileJNI.OGLServiceAccessor, OpenGLRemoteGLProgramCompileJNI.StopRemoteProgramLink);
+	}
+}
+
+namespace AndroidOGLService
+{
+	std::atomic<bool> bOneTimeErrorEncountered = false;
+}
+
+TArray<uint8> FAndroidOpenGL::DispatchAndWaitForRemoteGLProgramCompile(const TArrayView<uint8> ContextData, const TArray<ANSICHAR>& VertexGlslCode, const TArray<ANSICHAR>& PixelGlslCode, const TArray<ANSICHAR>& ComputeGlslCode, FString& FailureMessageOUT)
+{
+	bool bResult = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+	TArray<uint8> CompiledProgramBinary;
+	FString ErrorMessage;
+
+	if (Env && ensure(GRemoteCompileServicesActive) && ensure(AreAndroidOpenGLRemoteCompileServicesAvailable()))
+	{
+		// todo: double conversion :(
+		auto jVS = NewScopedJavaObject(Env, Env->NewStringUTF(TCHAR_TO_UTF8(ANSI_TO_TCHAR(VertexGlslCode.IsEmpty() ? "" : VertexGlslCode.GetData()))));
+		auto jPS = NewScopedJavaObject(Env, Env->NewStringUTF(TCHAR_TO_UTF8(ANSI_TO_TCHAR(PixelGlslCode.IsEmpty() ? "" : PixelGlslCode.GetData()))));
+		auto jCS = NewScopedJavaObject(Env, Env->NewStringUTF(TCHAR_TO_UTF8(ANSI_TO_TCHAR(ComputeGlslCode.IsEmpty() ? "" : ComputeGlslCode.GetData()))));
+		auto ProgramKeyBuffer = NewScopedJavaObject(Env, Env->NewByteArray(ContextData.Num()));
+		Env->SetByteArrayRegion(*ProgramKeyBuffer, 0, ContextData.Num(), reinterpret_cast<const jbyte*>(ContextData.GetData()));
+		auto ProgramResponseObj = NewScopedJavaObject(Env, Env->CallStaticObjectMethod(OpenGLRemoteGLProgramCompileJNI.OGLServiceAccessor, OpenGLRemoteGLProgramCompileJNI.DispatchProgramLink, *ProgramKeyBuffer, *jVS, *jPS, *jCS));
+ 		CHECK_JNI_EXCEPTIONS(Env);
+
+		if(*ProgramResponseObj)
+		{
+			bool bSucceeded = (bool)Env->GetBooleanField(*ProgramResponseObj, OpenGLRemoteGLProgramCompileJNI.ProgramResponse_SuccessField);
+			if (bSucceeded)
+			{
+				auto ProgramResult = NewScopedJavaObject(Env, (jbyteArray)Env->GetObjectField(*ProgramResponseObj, OpenGLRemoteGLProgramCompileJNI.ProgramResponse_CompiledBinaryField));
+				int len = Env->GetArrayLength(*ProgramResult);
+				CompiledProgramBinary.SetNumUninitialized(len);
+				Env->GetByteArrayRegion(*ProgramResult, 0, len, reinterpret_cast<jbyte*>(CompiledProgramBinary.GetData()));
+			}
+			else
+			{
+				if (AndroidOGLService::bOneTimeErrorEncountered.exchange(true) == false)
+				{
+					FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), TEXT("ec"));
+				}
+
+				FailureMessageOUT = FJavaHelper::FStringFromLocalRef(Env, (jstring)Env->GetObjectField(*ProgramResponseObj, OpenGLRemoteGLProgramCompileJNI.ProgramResponse_ErrorField));
+				check(!FailureMessageOUT.IsEmpty());
+			}
+		}
+		else
+		{
+			if (AndroidOGLService::bOneTimeErrorEncountered.exchange(true) == false)
+			{
+				FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), TEXT("es"));
+			}
+			FailureMessageOUT = TEXT("Remote compiler failed.");
+		}
+	}
+	return CompiledProgramBinary;
+}
+
 
 #endif

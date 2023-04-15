@@ -9,6 +9,7 @@ import shutil
 import socket
 import sys
 import typing
+from typing import Type
 
 from PySide2 import QtCore
 from PySide2 import QtGui
@@ -16,7 +17,8 @@ from PySide2 import QtWidgets
 
 from switchboard import switchboard_widgets as sb_widgets
 from switchboard.switchboard_logging import LOGGER
-from switchboard.switchboard_widgets import DropDownMenuComboBox
+from switchboard.switchboard_widgets import (DropDownMenuComboBox,
+    NonScrollableComboBox)
 
 ROOT_CONFIGS_PATH = pathlib.Path(__file__).parent.with_name('configs')
 CONFIG_SUFFIX = '.json'
@@ -283,9 +285,8 @@ class Setting(QtCore.QObject):
         )
         
         # Clear the widget when it is destroyed to avoid dangling references
-        top_level_widget.destroyed.connect(
-            lambda destroyed_object=None, on_setting_changed_lambda=on_setting_changed_lambda, override_device_name=override_device_name:
-                self._on_widget_destroyed(on_setting_changed_lambda, override_device_name)
+        top_level_widget.destroyed.connect(lambda destroyed_object=None:
+            self._on_widget_destroyed(on_setting_changed_lambda, override_device_name)
         )
         
     def _on_widget_destroyed(self, on_setting_changed_lambda, override_device_name: str):
@@ -435,6 +436,34 @@ class IntSetting(Setting):
     '''
     A UI-displayable Setting for storing and modifying an integer value.
     '''
+    
+    def __init__(
+        self,
+        attr_name: str,
+        nice_name: str,
+        value: str,
+        tool_tip: typing.Optional[str] = None,
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None,
+        is_read_only: bool = False
+    ):
+        '''
+        Create a new IntSetting object.
+
+        Args:
+            attr_name       : Internal name.
+            nice_name       : Display name.
+            value           : The initial value of this Setting.
+            tool_tip        : Tooltip to show in the UI for this Setting.
+            show_ui         : Whether to show this Setting in the Settings UI.
+            is_read_only    : Whether to make entry field editable or not.
+        '''
+        super().__init__(
+            attr_name, nice_name, value,
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
+
+        self.is_read_only = is_read_only
 
     def _create_widgets(
             self, override_device_name: typing.Optional[str] = None) \
@@ -447,6 +476,7 @@ class IntSetting(Setting):
         value = str(self.get_value(override_device_name))
         line_edit.setText(value)
         line_edit.setCursorPosition(0)
+        line_edit.setReadOnly(self.is_read_only)
 
         self.set_widget(
             widget=line_edit, override_device_name=override_device_name)
@@ -487,7 +517,8 @@ class StringSetting(Setting):
         tool_tip: typing.Optional[str] = None,
         show_ui: bool = True,
         allow_reset: bool = True,
-        migrate_data: typing.Callable[[any], None] = None
+        migrate_data: typing.Callable[[any], None] = None,
+        is_read_only: bool = False
     ):
         '''
         Create a new StringSetting object.
@@ -499,12 +530,14 @@ class StringSetting(Setting):
             placeholder_text: Placeholder for this Setting's value in the UI.
             tool_tip        : Tooltip to show in the UI for this Setting.
             show_ui         : Whether to show this Setting in the Settings UI.
+            is_read_only    : Whether to make entry field editable or not.
         '''
         super().__init__(
             attr_name, nice_name, value,
             tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
 
         self.placeholder_text = placeholder_text
+        self.is_read_only = is_read_only
 
     def _create_widgets(
             self, override_device_name: typing.Optional[str] = None) \
@@ -517,6 +550,7 @@ class StringSetting(Setting):
         line_edit.setText(value)
         line_edit.setPlaceholderText(self.placeholder_text)
         line_edit.setCursorPosition(0)
+        line_edit.setReadOnly(self.is_read_only)
 
         self.set_widget(
             widget=line_edit, override_device_name=override_device_name)
@@ -701,8 +735,11 @@ class OptionSetting(Setting):
 
         self.possible_values = possible_values or []
 
-    def _create_widgets(self, override_device_name: typing.Optional[str] = None) -> sb_widgets.NonScrollableComboBox:
-        combo = sb_widgets.NonScrollableComboBox()
+    def _create_widgets(
+        self, override_device_name: typing.Optional[str] = None, *,
+        widget_class: Type[NonScrollableComboBox] = NonScrollableComboBox
+    ) -> NonScrollableComboBox:
+        combo = widget_class()
         if self.tool_tip:
             combo.setToolTip(self.tool_tip)
 
@@ -712,8 +749,9 @@ class OptionSetting(Setting):
         combo.setCurrentIndex(
             combo.findData(self.get_value(override_device_name)))
 
-        self.set_widget(
-            widget=combo, override_device_name=override_device_name)
+        self.set_widget(widget=combo,
+                        override_device_name=override_device_name)
+
         combo.currentIndexChanged.connect(
             lambda index, override_device_name=override_device_name, combo=combo:
                 self._on_widget_value_changed(
@@ -729,9 +767,11 @@ class OptionSetting(Setting):
             return
 
         old_value = widget.currentText()
-        new_str_value = new_value if isinstance(new_value, str) else str(new_value)
+        new_str_value = str(new_value)
         if new_str_value != old_value:
-            widget.setCurrentIndex(widget.findText(new_str_value))
+            index = widget.findText(new_str_value)
+            if index != -1:
+                widget.setCurrentIndex(index)
 
 
 class MultiOptionSetting(OptionSetting):
@@ -1666,7 +1706,7 @@ class LoggingSetting(Setting):
             widget.model().category_verbosities = new_value
 
 
-class IPAddressSetting(OptionSetting):
+class AddressSetting(OptionSetting):
     def __init__(
         self,
         attr_name,
@@ -1677,73 +1717,56 @@ class IPAddressSetting(OptionSetting):
         allow_reset=True,
         migrate_data=None
     ):
-        from socket import getaddrinfo, AF_INET, gethostname
-        ip_addresses = [ip[4][0].__str__() for ip in getaddrinfo(host=gethostname(), port=None, family=AF_INET)]
-        ip_addresses.append("127.0.0.1")
         super().__init__(
             attr_name=attr_name,
             nice_name=nice_name,
             value=value,
-            possible_values=ip_addresses,
+            possible_values=list(self.generate_possible_addresses()),
             tool_tip=tool_tip,
             show_ui=show_ui,
             allow_reset=allow_reset,
-            migrate_data=migrate_data)#
-        
-        self._finishedEditingFired = False
+            migrate_data=migrate_data)
 
-    def _create_widgets(self, override_device_name: typing.Optional[str] = None) -> sb_widgets.NonScrollableComboBox:
-        combo: sb_widgets.NonScrollableComboBox = super()._create_widgets(override_device_name)
-        combo.setEditable(True)
+    def _create_widgets(
+        self, override_device_name: typing.Optional[str] = None
+    ) -> NonScrollableComboBox:
+        combo: NonScrollableComboBox = super()._create_widgets(
+            override_device_name, widget_class=sb_widgets.AddressComboBox)
+
         combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+
+        cur_value = self.get_value(override_device_name)
+        if combo.findText(cur_value, QtCore.Qt.MatchFlag.MatchExactly) == -1:
+            combo.addItem(str(cur_value), cur_value)
+            combo.setCurrentIndex(combo.findText(cur_value))
+
         combo.lineEdit().editingFinished.connect(
-            lambda combo=combo: self._validate_and_commit_ip(combo, override_device_name)
+            lambda: self._validate_and_commit_address(combo,
+                                                      override_device_name)
         )
-        
+
         return combo
-    
-    def _validate_and_commit_ip(self, combo: sb_widgets.NonScrollableComboBox, override_device_name:str):
-        def is_valid_ip(ip_str:str):
-            try:
-                import ipaddress
-                ip = ipaddress.ip_address(ip_str)
-                return True
-            except:
-                return False
-            
-        def perform_validation():
-            ip_str = combo.lineEdit().text()
-            if not is_valid_ip(ip_str):
-                answer = QtWidgets.QMessageBox.question(
-                    None,
-                    'Invalid IP',
-                    f'The IP \"{ip_str}\" seems to be invalid.\nDo you want to use this IP anyway?',
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-                )
-                if answer == QtWidgets.QMessageBox.No:
-                    combo.blockSignals(True)
-                    combo.lineEdit().blockSignals(True)
 
-                    current_value = self.get_value(override_device_name)
-                    index = combo.findData(current_value)
-                    is_combo_box_entry = index != -1
-                    if is_combo_box_entry:
-                        combo.setCurrentIndex(index)
-                    else:
-                        combo.lineEdit().setText(current_value)
+    def _validate_and_commit_address(
+            self, combo: NonScrollableComboBox, override_device_name: str):
+        address_str = combo.lineEdit().text()
+        self._on_widget_value_changed(address_str, override_device_name=override_device_name)
 
-                    combo.lineEdit().blockSignals(False)
-                    combo.blockSignals(False)
-                    return
+    def generate_possible_addresses(self):
+        return set[str]()
 
-            self._on_widget_value_changed(ip_str, override_device_name=override_device_name)
-        
-        if self._finishedEditingFired:
-            return
-        else:
-            self._finishedEditingFired = True
-            perform_validation()
-            self._finishedEditingFired = False
+
+class LocalAddressSetting(AddressSetting):
+    def generate_possible_addresses(self):
+        addresses = set[str]()
+        for address in socket.getaddrinfo(socket.gethostname(), None,
+                                          socket.AF_INET):
+            addresses.add(str(address[4][0]))
+        addresses.add('127.0.0.1')
+        addresses.add('localhost')
+        addresses.add(socket.gethostname())
+        return addresses
+
 
 class ConfigPathError(Exception):
     '''
@@ -1784,7 +1807,6 @@ def get_absolute_config_path(
     The string/path is validated to ensure that:
       - It is not empty, or all whitespace
       - It ends with the config path suffix
-      - If it is already absolute, that it is underneath the root configs path
       - It is not the same path as the user settings file path
     '''
     if isinstance(config_path, str):
@@ -1801,16 +1823,7 @@ def get_absolute_config_path(
         config_path = config_path.with_name(
             f'{config_path.name}{CONFIG_SUFFIX}')
 
-    if config_path.is_absolute():
-        # Paths that are already absolute must have the root configs path as a
-        # parent path.
-        # Python 3.9 introduced pathlib.Path.is_relative_to(), which would read
-        # a bit nicer here.
-        if ROOT_CONFIGS_PATH not in config_path.parents:
-            raise ConfigPathLocationError(
-                f'Config path "{config_path}" is not underneath the root '
-                f'configs path "{ROOT_CONFIGS_PATH}"')
-    else:
+    if not config_path.is_absolute():
         # Relative paths can simply be made absolute.
         config_path = ROOT_CONFIGS_PATH.joinpath(config_path)
 
@@ -1882,9 +1895,10 @@ class Config(object):
                 self.file_path = get_absolute_config_path(file_path)
 
                 # Read the json config file
-                with open(self.file_path) as f:
+                with open(self.file_path, 'r') as f:
                     LOGGER.debug(f'Loading Config {self.file_path}')
-                    data = json.load(f)
+                    data = json.load(f)                    
+                        
             except (ConfigPathError, FileNotFoundError) as e:
                 LOGGER.error(f'Config: {e}')
                 self.file_path = None
@@ -1933,16 +1947,22 @@ class Config(object):
         # into the kwargs.
         for device_type, devices in data.get('devices', {}).items():
             for device_name, data in devices.items():
-                if device_name == "settings":
+                if device_name == 'settings':
                     self._plugin_data_from_config[device_type] = data
                 else:
-                    ip_address = data["ip_address"]
+                    # Migrate ip_address -> address
+                    if 'ip_address' in data:
+                        address = data['ip_address']
+                        del data['ip_address']
+                    else:
+                        address = data['address']
+
                     device_data = {
-                        "name": device_name,
-                        "ip_address": ip_address
+                        'name': device_name,
+                        'address': address
                     }
-                    device_data["kwargs"] = {
-                        k: v for (k, v) in data.items() if k != "ip_address"}
+                    device_data['kwargs'] = {
+                        k: v for (k, v) in data.items() if k != 'address'}
                     self._device_data_from_config.setdefault(
                         device_type, []).append(device_data)
 
@@ -2042,7 +2062,14 @@ class Config(object):
                 data.get('maps_filter', '*.umap'),
                 placeholder_text="*.umap",
                 tool_tip="Walk every file in the Map Path and run a fnmatch to filter the file names"
-            )
+            ),
+            'maps_plugin_filters': StringListSetting(
+                "maps_plugin_filters",
+                "Map Plugin Filters",
+                data.get('maps_plugin_filters', []),
+                tool_tip="Plugins whose name matches any of these filters will also be searched for maps.",
+                migrate_data=migrate_comma_separated_string_to_list
+            ),
         }
 
         self.PROJECT_NAME = self.basic_project_settings["project_name"]
@@ -2051,6 +2078,7 @@ class Config(object):
         self.BUILD_ENGINE = self.basic_project_settings["build_engine"]
         self.MAPS_PATH = self.basic_project_settings["maps_path"]
         self.MAPS_FILTER = self.basic_project_settings["maps_filter"]
+        self.MAPS_PLUGIN_FILTERS = self.basic_project_settings["maps_plugin_filters"]
 
         self.osc_settings = {
             "osc_server_port": IntSetting(
@@ -2122,12 +2150,16 @@ class Config(object):
         self.INSIGHTS_TRACE_ARGS = self.unreal_insight_settings["tracing_args"]
         self.INSIGHTS_STAT_EVENTS = self.unreal_insight_settings["tracing_stat_events"]
 
+    def default_mu_server_name(self):
+        ''' Returns default server name based on current settings '''
+        return f'{self.PROJECT_NAME.get_value()}_MU_Server'
+
     def init_muserver(self, data={}):
         self.mu_settings = {
             "muserver_server_name": StringSetting(
                 "muserver_server_name",
                 "Server name",
-                data.get('muserver_server_name', f'{self.PROJECT_NAME.get_value()}_MU_Server'),
+                data.get('muserver_server_name', self.default_mu_server_name()),
                 tool_tip="The name that will be given to the server"
             ),
             "muserver_command_line_arguments": StringSetting(
@@ -2147,7 +2179,7 @@ class Config(object):
                 value=data.get('muserver_multicast_endpoint', '230.0.0.1:6666'),
                 tool_tip=(
                     'Multicast group and port (-UDPMESSAGING_TRANSPORT_MULTICAST) '
-                    'in the {ip}:{port} endpoint format. The multicast group IP '
+                    'in the {address}:{port} endpoint format. The multicast group address '
                     'must be in the range 224.0.0.0 to 239.255.255.255.'),
             ),
             "multiuser_exe": StringSetting(
@@ -2155,10 +2187,30 @@ class Config(object):
                 "Multiuser Executable Name",
                 data.get('multiuser_exe', 'UnrealMultiUserServer')
             ),
+            "multiuserslate_exe": StringSetting(
+                "multiuserslate_exe",
+                "Multiuser Slate Executable Name",
+                data.get('multiuserslate_exe', 'UnrealMultiUserSlateServer')
+            ),
+            "muserver_archive_dir": DirectoryPathSetting(
+                "muserver_archive_dir",
+                "Directory for Saved Archives",
+                data.get('muserver_archive_dir', '')
+            ),
+            "muserver_working_dir": DirectoryPathSetting(
+                "muserver_working_dir",
+                "Directory for Live Sessions",
+                data.get('muserver_working_dir', '')
+            ),
             "muserver_auto_launch": BoolSetting(
                 "muserver_auto_launch",
                 "Auto Launch",
                 data.get('muserver_auto_launch', True)
+            ),
+            "muserver_slate_mode": BoolSetting(
+                "muserver_slate_mode",
+                "Launch Multi-user server in UI mode",
+                data.get('muserver_slate_mode', True)
             ),
             "muserver_clean_history": BoolSetting(
                 "muserver_clean_history",
@@ -2181,34 +2233,42 @@ class Config(object):
                 data.get('muserver_auto_join', True)
             )
         }
-        
+
         self.MUSERVER_SERVER_NAME = self.mu_settings["muserver_server_name"]
         self.MUSERVER_COMMAND_LINE_ARGUMENTS = self.mu_settings["muserver_command_line_arguments"]
         self.MUSERVER_ENDPOINT = self.mu_settings["muserver_endpoint"]
         self.MUSERVER_MULTICAST_ENDPOINT = self.mu_settings["udpmessaging_multicast_endpoint"]
         self.MULTIUSER_SERVER_EXE = self.mu_settings["multiuser_exe"]
+        self.MULTIUSER_SLATE_SERVER_EXE = self.mu_settings["multiuserslate_exe"]
         self.MUSERVER_AUTO_LAUNCH = self.mu_settings["muserver_auto_launch"]
+        self.MUSERVER_SLATE_MODE = self.mu_settings["muserver_slate_mode"]
         self.MUSERVER_CLEAN_HISTORY = self.mu_settings["muserver_clean_history"]
         self.MUSERVER_AUTO_BUILD = self.mu_settings["muserver_auto_build"]
         self.MUSERVER_AUTO_ENDPOINT = self.mu_settings["muserver_auto_endpoint"]
         self.MUSERVER_AUTO_JOIN = self.mu_settings["muserver_auto_join"]
+        self.MUSERVER_WORKING_DIR = self.mu_settings["muserver_working_dir"]
+        self.MUSERVER_ARCHIVE_DIR = self.mu_settings["muserver_archive_dir"]
 
     def save_unreal_insights(self, data):
         data['tracing_enabled'] = self.INSIGHTS_TRACE_ENABLE.get_value()
         data['tracing_args'] = self.INSIGHTS_TRACE_ARGS.get_value()
         data['tracing_stat_events'] = self.INSIGHTS_STAT_EVENTS.get_value()
-        
+
     def save_muserver(self, data):
         data["muserver_command_line_arguments"] = self.MUSERVER_COMMAND_LINE_ARGUMENTS.get_value()
         data["muserver_server_name"] = self.MUSERVER_SERVER_NAME.get_value()
         data["muserver_endpoint"] = self.MUSERVER_ENDPOINT.get_value()
         data["multiuser_exe"] = self.MULTIUSER_SERVER_EXE.get_value()
+        data["multiuserslate_exe"] = self.MULTIUSER_SLATE_SERVER_EXE.get_value()
         data["muserver_auto_launch"] = self.MUSERVER_AUTO_LAUNCH.get_value()
+        data["muserver_slate_mode"] = self.MUSERVER_SLATE_MODE.get_value()
         data["muserver_clean_history"] = self.MUSERVER_CLEAN_HISTORY.get_value()
         data["muserver_auto_build"] = self.MUSERVER_AUTO_BUILD.get_value()
         data["muserver_auto_endpoint"] = self.MUSERVER_AUTO_ENDPOINT.get_value()
         data["muserver_multicast_endpoint"] = self.MUSERVER_MULTICAST_ENDPOINT.get_value()
         data["muserver_auto_join"] = self.MUSERVER_AUTO_JOIN.get_value()
+        data["muserver_archive_dir"] = self.MUSERVER_ARCHIVE_DIR.get_value()
+        data["muserver_working_dir"] = self.MUSERVER_WORKING_DIR.get_value()
 
     def load_plugin_settings(self, device_type, settings):
         ''' Updates plugin settings values with those read from the config file.
@@ -2258,9 +2318,33 @@ class Config(object):
 
         if self.file_path:
             new_config_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_path.replace(new_config_path)
+            shutil.move(self.file_path, new_config_path)
 
         self.file_path = new_config_path
+        self.save()
+
+    def save_as(self, new_config_path: typing.Union[str, pathlib.Path]):
+        """
+        Copy the file.
+
+        If a file already exists at the new path, it will be overwritten.
+        """
+        new_config_path = get_absolute_config_path(new_config_path)
+
+        new_project_name = new_config_path.stem
+
+        if self.file_path:
+            new_config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src=self.file_path, dst=new_config_path)
+
+            # Don't change project name if the user customized it
+            if self.PROJECT_NAME.get_value() != self.file_path.stem:
+                new_project_name = self.file_path.stem
+
+        self.file_path = new_config_path
+
+        self.PROJECT_NAME.update_value(new_project_name)
+
         self.save()
 
     def save(self):
@@ -2276,6 +2360,7 @@ class Config(object):
         data['build_engine'] = self.BUILD_ENGINE.get_value()
         data["maps_path"] = self.MAPS_PATH.get_value()
         data["maps_filter"] = self.MAPS_FILTER.get_value()
+        data["maps_plugin_filters"] = self.MAPS_PLUGIN_FILTERS.get_value()
         data["listener_exe"] = self.LISTENER_EXE.get_value()
 
         self.save_unreal_insights(data)
@@ -2365,45 +2450,156 @@ class Config(object):
         del self._device_settings[(device_type, device_name)]
         self.save()
 
+    def shrink_path(self, path):
+        path_name = path.replace(self.get_project_dir(), '', 1)
+        path_name = path_name.replace(os.sep, '/')
+        return path_name
+
+    def get_project_dir(self) -> str:
+        '''
+        Get the root directory of the project.
+
+        This is the directory in which the .uproject file lives.
+        '''
+        return os.path.dirname(self.UPROJECT_PATH.get_value().replace('"', ''))
+
+    def get_project_content_dir(self) -> str:
+        '''
+        Get the "Content" directory of the project.
+        '''
+        return os.path.join(self.get_project_dir(), 'Content')
+
+    def get_project_plugins_dir(self) -> str:
+        '''
+        Get the "Plugins" directory of the project where all of the
+        project-based plugins are located.
+        '''
+        return os.path.join(self.get_project_dir(), 'Plugins')
+
+    def get_project_plugin_names(self) -> typing.List[str]:
+        '''
+        Get a list of the names of all project-based plugins in the project.
+        '''
+        project_plugins_path = os.path.normpath(self.get_project_plugins_dir())
+        if not os.path.isdir(project_plugins_path):
+            return []
+
+        plugin_names = [
+            x.name for x in os.scandir(project_plugins_path) if x.is_dir()]
+
+        return plugin_names
+
+    def get_project_plugin_content_dir(self, plugin_name: str) -> str:
+        '''
+        Get the "Content" directory of the project-based plugin with the
+        given name.
+        '''
+        return os.path.join(
+            self.get_project_plugins_dir(), plugin_name, 'Content')
+
+    def plugin_name_matches(self, plugin_name: str, name_filters: typing.List[str]) -> bool:
+        '''
+        Test whether a plugin name matches any of the provided filters.
+
+        Returns True if any one of the filters matches, or False otherwise.
+        '''
+        for name_filter in name_filters:
+            if fnmatch.fnmatch(plugin_name, name_filter):
+                return True
+
+        return False
+
+    def resolve_content_path(self, file_path: str, plugin_name: str = None) -> str:
+        '''
+        Resolve a file path on the file system to the corresponding content
+        path in UE.
+
+        If a plugin_name is provided, the file is assumed to live inside that
+        plugin and its content path will have the appropriate plugin
+        name-based prefix. Otherwise, the file is assumed to live inside the
+        project's content folder.
+        '''
+        if plugin_name:
+            content_dir = self.get_project_plugin_content_dir(plugin_name)
+            ue_path_prefix = f'/{plugin_name}'
+        else:
+            content_dir = self.get_project_content_dir()
+            ue_path_prefix = '/Game'
+
+        path_name = file_path.replace(content_dir, ue_path_prefix, 1)
+        path_name = self.shrink_path(path_name)
+
+        return path_name
+
     def maps(self):
         '''
-        Returns a list of ful map paths in an Unreal Engine project such as [ "/Game/Maps/MapName" ].
-        It will always start with Game and the slashes will always be "/" independent of the platform's separator.
+        Returns a list of full map paths in an Unreal Engine project and
+        in project-based plugins such as:
+            [
+                "/Game/Maps/MapName",
+                "/MyPlugin/Levels/MapName"
+            ]
+        The slashes will always be "/" independent of the platform's separator.
         '''
-        project_dir = os.path.dirname(self.UPROJECT_PATH.get_value().replace('"', ''))
-        maps_path = os.path.normpath(
+        content_maps_path = os.path.normpath(
             os.path.join(
-                project_dir,
-                'Content',
+                self.get_project_content_dir(),
                 self.MAPS_PATH.get_value()))
 
+        # maps_paths stores a list of tuples of the form
+        # (plugin_name, file_path). This allows us to differentiate between
+        # maps in the project and maps in a plugin.
+        maps_paths = [(None, content_maps_path)]
+
+        maps_plugin_filters = self.MAPS_PLUGIN_FILTERS.get_value()
+        if maps_plugin_filters:
+            plugin_names = self.get_project_plugin_names()
+
+            for plugin_name in plugin_names:
+                if self.plugin_name_matches(plugin_name, maps_plugin_filters):
+                    maps_paths.append(
+                        (plugin_name, self.get_project_plugin_content_dir(plugin_name)))
+
         maps = []
-        for path_to_map, b, files in os.walk(maps_path):
-            for name in files:
-                if not fnmatch.fnmatch(name, self.MAPS_FILTER.get_value()):
-                    continue
-                
-                map_name, _ = os.path.splitext(name)
-                path_name = path_to_map.replace(project_dir, '', 1)
-                # Ignore the fact that maps may exist in plugins - we only search game content
-                path_name = path_name.replace('Content', 'Game', 1)
-                path_name = os.path.join(path_name, map_name)
-                path_name = path_name.replace(os.sep, '/')
-                
-                if path_name not in maps:
-                    maps.append(path_name)
+        for (plugin_name, maps_path) in maps_paths:
+            for dirpath, b, file_names in os.walk(maps_path):
+                for file_name in file_names:
+                    if not fnmatch.fnmatch(file_name, self.MAPS_FILTER.get_value()):
+                        continue
+
+                    map_name, _ = os.path.splitext(file_name)
+                    file_path_to_map = os.path.join(dirpath, map_name)
+
+                    content_path_to_map = self.resolve_content_path(
+                        file_path_to_map, plugin_name=plugin_name)
+
+                    if content_path_to_map not in maps:
+                        maps.append(content_path_to_map)
 
         maps.sort()
         return maps
 
     def multiuser_server_path(self):
-        return self.engine_exe_path(
-            self.ENGINE_DIR.get_value(), self.MULTIUSER_SERVER_EXE.get_value())
+        if self.MUSERVER_SLATE_MODE.get_value():
+            return self.engine_exe_path(
+                self.ENGINE_DIR.get_value(), self.MULTIUSER_SLATE_SERVER_EXE.get_value())
+        else:
+            return self.engine_exe_path(
+                self.ENGINE_DIR.get_value(), self.MULTIUSER_SERVER_EXE.get_value())
 
     def multiuser_server_session_directory_path(self):
+        if self.MUSERVER_WORKING_DIR.get_value():
+            return self.MUSERVER_WORKING_DIR.get_value()
+
+        if self.MUSERVER_SLATE_MODE.get_value():
+            return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserSlateServer", "Intermediate", "MultiUser")
+
         return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserServer", "Intermediate", "MultiUser")
-        
+
     def multiuser_server_log_path(self):
+        if self.MUSERVER_SLATE_MODE.get_value():
+            return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserSlateServer", "Saved", "Logs", "UnrealMultiUserSlateServer.log")
+        # else we get the path to the console server.
         return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserServer", "Saved", "Logs", "UnrealMultiUserServer.log")
 
     def listener_path(self):
@@ -2411,15 +2607,15 @@ class Config(object):
             self.ENGINE_DIR.get_value(), self.LISTENER_EXE.get_value())
 
     # todo-dara: find a way to do this directly in the LiveLinkFace plugin code
-    def unreal_device_ip_addresses(self):
-        unreal_ips = []
+    def unreal_device_addresses(self):
+        unreal_addresses = []
         for (device_type, device_name), (settings, overrides) in \
                 self._device_settings.items():
             if device_type == "Unreal":
                 for setting in settings:
-                    if setting.attr_name == "ip_address":
-                        unreal_ips.append(setting.get_value(device_name))
-        return unreal_ips
+                    if setting.attr_name == "address":
+                        unreal_addresses.append(setting.get_value(device_name))
+        return unreal_addresses
 
     @staticmethod
     def engine_exe_path(engine_dir: str, exe_basename: str):
@@ -2498,11 +2694,11 @@ class UserSettings(object):
             config_paths = list_config_paths()
             self.CONFIG = config_paths[0] if config_paths else None
 
-        # IP Address of the machine running Switchboard
-        self.IP_ADDRESS = IPAddressSetting(
-            "ip_address",
-            "IP Address",
-            data.get("ip_address", socket.gethostbyname(socket.gethostname()))
+        # Address of the machine running Switchboard
+        self.ADDRESS = LocalAddressSetting(
+            "address",
+            "Address",
+            data.get("address", socket.gethostbyname(socket.gethostname()))
         )
         self.TRANSPORT_PATH = FilePathSetting(
                 "transport_path",
@@ -2526,7 +2722,7 @@ class UserSettings(object):
     def save(self):
         data = {
             'config': '',
-            'ip_address': self.IP_ADDRESS.get_value(),
+            'address': self.ADDRESS.get_value(),
             'transport_path': self.TRANSPORT_PATH.get_value(),
             'muserver_session_name': self.MUSERVER_SESSION_NAME,
             'current_sequence': self.CURRENT_SEQUENCE,
@@ -2541,6 +2737,8 @@ class UserSettings(object):
                 data['config'] = str(get_relative_config_path(self.CONFIG))
             except ConfigPathError as e:
                 LOGGER.error(e)
+            except ValueError as e:
+                data['config'] = str(self.CONFIG)
 
         with open(USER_SETTINGS_FILE_PATH, 'w') as f:
             json.dump(data, f, indent=4)

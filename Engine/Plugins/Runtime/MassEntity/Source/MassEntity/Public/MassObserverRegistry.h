@@ -30,19 +30,19 @@ struct FMassEntityObserverClassesMap
 	GENERATED_BODY()
 
 	/** a helper accessor simplifying access while still keeping Container private */
-	const TMap<const UScriptStruct*, FMassProcessorClassCollection>& operator*() const
+	const TMap<TObjectPtr<const UScriptStruct>, FMassProcessorClassCollection>& operator*() const
 	{
 		return Container;
 	}
 
-	TMap<const UScriptStruct*, FMassProcessorClassCollection>& operator*()
+	TMap<TObjectPtr<const UScriptStruct>, FMassProcessorClassCollection>& operator*()
 	{
 		return Container;
 	}
 
 private:
 	UPROPERTY()
-	TMap<const UScriptStruct*, FMassProcessorClassCollection> Container;
+	TMap<TObjectPtr<const UScriptStruct>, FMassProcessorClassCollection> Container;
 };
 
 UCLASS()

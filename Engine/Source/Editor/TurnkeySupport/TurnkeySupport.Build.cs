@@ -6,7 +6,6 @@ public class TurnkeySupport : ModuleRules
 {
 	public TurnkeySupport(ReadOnlyTargetRules Target) : base(Target)
 	{
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -27,12 +26,18 @@ public class TurnkeySupport : ModuleRules
  				"ToolMenus",
  				"LauncherServices",
 				"SourceControl",
-				"EditorStyle",
 				"TurnkeyIO",
+				"Analytics",
 			}
 		);
 
-		if (Target.Type == TargetType.Editor)
+		PrivateIncludePathModuleNames.AddRange(
+			new string[] {
+				"DerivedDataCache",
+			}
+		);
+
+		if (Target.bCompileAgainstEditor)
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
@@ -56,12 +61,5 @@ public class TurnkeySupport : ModuleRules
 				}
 			);
 		}
-
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/TurnkeySupport/Private",
-			}
-		);
 	}
 }

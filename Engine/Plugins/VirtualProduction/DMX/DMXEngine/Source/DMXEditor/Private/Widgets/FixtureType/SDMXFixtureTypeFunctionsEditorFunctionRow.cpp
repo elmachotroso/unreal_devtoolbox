@@ -3,6 +3,7 @@
 #include "SDMXFixtureTypeFunctionsEditorFunctionRow.h"
 
 #include "DMXAttribute.h"
+#include "DMXEditor.h"
 #include "DMXEditorStyle.h"
 #include "DMXFixtureTypeSharedData.h"
 #include "DragDrop/DMXFixtureFunctionDragDropOp.h"
@@ -72,12 +73,12 @@ TSharedRef<SWidget> SDMXFixtureTypeFunctionsEditorFunctionRow::GenerateWidgetFor
 					{
 						if (!FunctionItem->ErrorStatus.IsEmpty())
 						{
-							return FEditorStyle::GetBrush("Icons.Error");
+							return FAppStyle::GetBrush("Icons.Error");
 						}
 
 						if (!FunctionItem->WarningStatus.IsEmpty())
 						{
-							return FEditorStyle::GetBrush("Icons.Warning");
+							return FAppStyle::GetBrush("Icons.Warning");
 						}
 
 						static const FSlateBrush EmptyBrush = FSlateNoResource();
@@ -105,7 +106,7 @@ TSharedRef<SWidget> SDMXFixtureTypeFunctionsEditorFunctionRow::GenerateWidgetFor
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Center)
 			.Padding(4.f)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			[
 				SAssignNew(StartingChannelEditableTextBlock, SInlineEditableTextBlock)
 				.Text_Lambda([this]()
@@ -127,7 +128,7 @@ TSharedRef<SWidget> SDMXFixtureTypeFunctionsEditorFunctionRow::GenerateWidgetFor
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Center)
 			.Padding(4.f)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			[
 				SAssignNew(FunctionNameEditableTextBlock, SInlineEditableTextBlock)
 				.Text_Lambda([this]()
@@ -168,25 +169,13 @@ TSharedRef<SWidget> SDMXFixtureTypeFunctionsEditorFunctionRow::GenerateWidgetFor
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Center)
 			.Padding(4.f)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			[
 				SNew(SNameListPicker)
-				.OptionsSource(MakeAttributeLambda(&FDMXAttributeName::GetPossibleValues))
-				.UpdateOptionsDelegate(&FDMXAttributeName::OnValuesChanged)
-				.IsValid_Lambda([this]()
-					{	
-						const FName CurrentValue = GetAttributeName();
-						if (CurrentValue.IsEqual(FDMXNameListItem::None))
-						{
-							return true;
-						}
-
-						return FunctionItem->HasValidAttribute();
-					})
+				.OptionsSource(MakeAttributeLambda(&FDMXAttributeName::GetPredefinedValues))
 				.Value(this, &SDMXFixtureTypeFunctionsEditorFunctionRow::GetAttributeName)
-				.bCanBeNone(FDMXAttributeName::bCanBeNone)
 				.bDisplayWarningIcon(true)
-				.OnValueChanged(this, &SDMXFixtureTypeFunctionsEditorFunctionRow::SetAttributeName)
+				.OnValueChanged(this, &SDMXFixtureTypeFunctionsEditorFunctionRow::OnUserChangedAttributeName)
 			];
 	}
 
@@ -337,15 +326,25 @@ void SDMXFixtureTypeFunctionsEditorFunctionRow::OnFunctionNameCommitted(const FT
 
 FName SDMXFixtureTypeFunctionsEditorFunctionRow::GetAttributeName() const
 {
-	return FunctionItem->GetAttributeName().GetName();
+	return FunctionItem->GetAttributeName().Name;
 }
 
-void SDMXFixtureTypeFunctionsEditorFunctionRow::SetAttributeName(FName NewValue)
+void SDMXFixtureTypeFunctionsEditorFunctionRow::OnUserChangedAttributeName(FName NewValue)
 {
 	FDMXAttributeName NewAttributeName;
 	NewAttributeName.SetFromName(NewValue);
 
 	FunctionItem->SetAttributeName(NewAttributeName);
+
+	// Since edit mode can be entered without selecting the item, select it when a value is set
+	if (TSharedPtr<FDMXEditor> DMXEditor = FunctionItem->GetDMXEditor())
+	{
+		if (TSharedPtr<FDMXFixtureTypeSharedData> SharedData = DMXEditor->GetFixtureTypeSharedData())
+		{
+			constexpr bool bMatrixSelected = false;
+			SharedData->SetFunctionAndMatrixSelection({ FunctionItem->GetFunctionIndex() }, bMatrixSelected);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -11,6 +11,8 @@
 #include "PhysicsEngine/RadialForceActor.h"
 #include "DestructibleInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RadialForceComponent)
+
 //////////////////////////////////////////////////////////////////////////
 // RADIALFORCECOMPONENT
 URadialForceComponent::URadialForceComponent(const FObjectInitializer& ObjectInitializer)
@@ -77,7 +79,7 @@ void URadialForceComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 			if(ComponentOwner)
 			{
 				TInlineComponentArray<UMovementComponent*> MovementComponents;
-				ComponentOwner->GetComponents<UMovementComponent>(MovementComponents);
+				ComponentOwner->GetComponents(MovementComponents);
 				for(const auto& MovementComponent : MovementComponents)
 				{
 					if(MovementComponent->UpdatedComponent == PrimitiveComponent)
@@ -138,7 +140,7 @@ void URadialForceComponent::FireImpulse()
 
 	for(UPrimitiveComponent* PrimitiveComponent : AffectedComponents)
 	{
-		if(DestructibleDamage > SMALL_NUMBER)
+		if(DestructibleDamage > UE_SMALL_NUMBER)
 		{
 			if(IDestructibleInterface* DestructibleInstance = Cast<IDestructibleInterface>(PrimitiveComponent))
 			{
@@ -155,7 +157,7 @@ void URadialForceComponent::FireImpulse()
 			TInlineComponentArray<UMovementComponent*> MovementComponents;
 			if(AActor* OwningActor = PrimitiveComponent->GetOwner())
 			{
-				OwningActor->GetComponents<UMovementComponent>(MovementComponents);
+				OwningActor->GetComponents(MovementComponents);
 				for(const auto& MovementComponent : MovementComponents)
 				{
 					if(MovementComponent->UpdatedComponent == PrimitiveComponent)

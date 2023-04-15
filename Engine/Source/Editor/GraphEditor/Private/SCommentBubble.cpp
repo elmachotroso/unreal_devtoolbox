@@ -1,15 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCommentBubble.h"
-#include "Widgets/SOverlay.h"
-#include "Engine/GameViewportClient.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SMultiLineEditableTextBox.h"
-#include "Widgets/Input/SCheckBox.h"
+
+#include "EdGraph/EdGraphNode.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/ICursor.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Optional.h"
+#include "SGraphNode.h"
 #include "SGraphPanel.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateBrush.h"
 #include "Styling/StyleColors.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+
+class SWidget;
 
 namespace SCommentBubbleDefs
 {
@@ -157,10 +177,10 @@ void SCommentBubble::UpdateBubble()
 {
 	if( GraphNode->bCommentBubbleVisible )
 	{
-		const FSlateBrush* CommentCalloutArrowBrush = FEditorStyle::GetBrush(TEXT("Graph.Node.CommentArrow"));
-		const FMargin BubblePadding = FEditorStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleWidgetMargin"));
-		const FMargin PinIconPadding = FEditorStyle::GetMargin( TEXT("Graph.Node.Comment.PinIconPadding"));
-		const FMargin BubbleOffset = FEditorStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleOffset"));
+		const FSlateBrush* CommentCalloutArrowBrush = FAppStyle::GetBrush(TEXT("Graph.Node.CommentArrow"));
+		const FMargin BubblePadding = FAppStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleWidgetMargin"));
+		const FMargin PinIconPadding = FAppStyle::GetMargin( TEXT("Graph.Node.Comment.PinIconPadding"));
+		const FMargin BubbleOffset = FAppStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleOffset"));
 		// Conditionally create bubble controls
 		TSharedPtr<SWidget> BubbleControls = SNullWidget::NullWidget;
 
@@ -181,7 +201,7 @@ void SCommentBubble::UpdateBubble()
 					.Padding( PinIconPadding )
 					[
 						SNew( SCheckBox )
-						.Style( &FEditorStyle::Get().GetWidgetStyle<FCheckBoxStyle>( "CommentBubblePin" ))
+						.Style( &FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>( "CommentBubblePin" ))
 						.IsChecked( this, &SCommentBubble::GetPinnedButtonCheck )
 						.OnCheckStateChanged( this, &SCommentBubble::OnPinStateToggle )
 						.ToolTipText( this, &SCommentBubble::GetScaleButtonTooltip )
@@ -195,7 +215,7 @@ void SCommentBubble::UpdateBubble()
 				.VAlign( VAlign_Top )
 				[
 					SNew( SCheckBox )
-					.Style( &FEditorStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentBubbleButton" ))
+					.Style( &FAppStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentBubbleButton" ))
 					.IsChecked( ToggleButtonCheck )
 					.OnCheckStateChanged( this, &SCommentBubble::OnCommentBubbleToggle )
 					.ToolTipText( NSLOCTEXT( "CommentBubble", "ToggleCommentTooltip", "Toggle Comment Bubble" ))
@@ -213,7 +233,7 @@ void SCommentBubble::UpdateBubble()
 				.VAlign( VAlign_Top )
 				[
 					SNew( SCheckBox )
-					.Style( &FEditorStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentBubbleButton" ))
+					.Style( &FAppStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentBubbleButton" ))
 					.IsChecked( ToggleButtonCheck )
 					.OnCheckStateChanged( this, &SCommentBubble::OnCommentBubbleToggle )
 					.ToolTipText( NSLOCTEXT( "CommentBubble", "ToggleCommentTooltip", "Toggle Comment Bubble" ))
@@ -238,7 +258,7 @@ void SCommentBubble::UpdateBubble()
 					+SOverlay::Slot()
 					[
 						SNew(SImage)
-						.Image( FEditorStyle::GetBrush( TEXT("Graph.Node.CommentBubble")) )
+						.Image( FAppStyle::GetBrush( TEXT("Graph.Node.CommentBubble")) )
 						.ColorAndOpacity( this, &SCommentBubble::GetBubbleColor )
 					]
 					+SOverlay::Slot()
@@ -295,7 +315,7 @@ void SCommentBubble::UpdateBubble()
 
 		if( bEnableTitleBarBubble )
 		{
-			const FMargin BubbleOffset = FEditorStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleOffset"));
+			const FMargin BubbleOffset = FAppStyle::GetMargin( TEXT("Graph.Node.Comment.BubbleOffset"));
 			// Create Title bar bubble toggle widget
 			SAssignNew( TitleBarBubble, SHorizontalBox )
 			.Visibility( this, &SCommentBubble::GetToggleButtonVisibility )
@@ -306,7 +326,7 @@ void SCommentBubble::UpdateBubble()
 			.Padding( BubbleOffset )
 			[
 				SNew( SCheckBox )
-				.Style( &FEditorStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentTitleButton" ))
+				.Style( &FAppStyle::Get().GetWidgetStyle< FCheckBoxStyle >( "CommentTitleButton" ))
 				.IsChecked( ToggleButtonCheck )
 				.OnCheckStateChanged( this, &SCommentBubble::OnCommentBubbleToggle )
 				.ToolTipText( NSLOCTEXT( "CommentBubble", "ToggleCommentTooltip", "Toggle Comment Bubble" ))

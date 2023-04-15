@@ -5,6 +5,7 @@
 #include "Misc/CallbackDevice.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Templates/SharedPointer.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 static int32 GetDevicePropertyAsInt32(IOHIDDeviceRef DeviceRef, CFStringRef Property)
 {
@@ -256,7 +257,7 @@ void HIDInputInterface::FHIDDeviceInfo::SetupMappings()
 	}
 	else
 	{
-		// Array generated from https://github.com/d235j/360Controller/blob/master/360Controller/Info.plist (with additions)
+		// Array generated from https://github.com/d235j/360Controller-n/blob/c83340e55be337e28a149a2930657006d3a3fef8/360Controller/Info.plist (with additions)
 		static const FXBox360ControllerID XBox360Controllers[] =
 		{
 			{ 0x0E6F, 0x0113 }, 	// AfterglowGamepadforXbox360
@@ -420,6 +421,7 @@ void HIDInputInterface::OnNewHIDController(IOReturn Result, IOHIDDeviceRef Devic
 			DeviceInfo.SetupMappings();
 
 			CFIndex ElementsCount = CFArrayGetCount(ElementsArray);
+			IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
 			for (CFIndex ElementIndex = 0; ElementIndex < ElementsCount; ++ElementIndex)
 			{
 				FHIDElementInfo Element;
@@ -439,7 +441,11 @@ void HIDInputInterface::OnNewHIDController(IOReturn Result, IOHIDDeviceRef Devic
 
 			CFRelease(ElementsArray);
 
-			FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, ControllerIndex);
+			FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+
+			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, OUT PlatformUserId, OUT DeviceId);
+			DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Connected);
 
 			bIsGamepadAttached = true;
 		}
@@ -455,6 +461,11 @@ void HIDInputInterface::SendControllerEvents()
 	for (int32 ControllerIndex = 0; ControllerIndex < MAX_NUM_HIDINPUT_CONTROLLERS; ++ControllerIndex)
 	{
 		FControllerState& ControllerState = ControllerStates[ControllerIndex];
+
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+		FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerState.ControllerId);
+		FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+		DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerState.ControllerId, OUT UserId, OUT DeviceId);
 
 		if( ControllerState.Device.DeviceRef )
 		{
@@ -485,28 +496,28 @@ void HIDInputInterface::SendControllerEvents()
 
 						if (Element.Usage == ControllerState.Device.LeftAnalogXMapping && ControllerState.LeftAnalogX != NewValue)
 						{
-							MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogX, ControllerState.ControllerId, FloatValue);
+							MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogX, UserId, DeviceId, FloatValue);
 							CurrentButtonStates[18] = FloatValue < -0.2f;	// FGamepadKeyNames::LeftStickLeft
 							CurrentButtonStates[19] = FloatValue > 0.2f;	// FGamepadKeyNames::LeftStickRight
 							ControllerState.LeftAnalogX = NewValue;
 						}
 						else if (Element.Usage == ControllerState.Device.LeftAnalogYMapping && ControllerState.LeftAnalogY != NewValue)
 						{
-							MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogY, ControllerState.ControllerId, -FloatValue);
+							MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogY, UserId, DeviceId, -FloatValue);
 							CurrentButtonStates[16] = FloatValue < -0.2f;	// FGamepadKeyNames::LeftStickUp
 							CurrentButtonStates[17] = FloatValue > 0.2f;	// FGamepadKeyNames::LeftStickDown
 							ControllerState.LeftAnalogY = NewValue;
 						}
 						else if (Element.Usage == ControllerState.Device.RightAnalogXMapping && ControllerState.RightAnalogX != NewValue)
 						{
-							MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogX, ControllerState.ControllerId, FloatValue);
+							MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogX, UserId, DeviceId, FloatValue);
 							CurrentButtonStates[22] = FloatValue < -0.2f;	// FGamepadKeyNames::RightStickLeft
 							CurrentButtonStates[23] = FloatValue > 0.2f;	// FGamepadKeyNames::RightStickDown
 							ControllerState.RightAnalogX = NewValue;
 						}
 						else if (Element.Usage == ControllerState.Device.RightAnalogYMapping && ControllerState.RightAnalogY != NewValue)
 						{
-							MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogY, ControllerState.ControllerId, -FloatValue);
+							MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogY, UserId, DeviceId, -FloatValue);
 							CurrentButtonStates[20] = FloatValue < -0.2f;	// FGamepadKeyNames::RightStickUp
 							CurrentButtonStates[21] = FloatValue > 0.2f;	// FGamepadKeyNames::RightStickRight
 							ControllerState.RightAnalogY = NewValue;
@@ -515,7 +526,7 @@ void HIDInputInterface::SendControllerEvents()
 						{
 							if (ControllerState.LeftTriggerAnalog != NewValue)
 							{
-								MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftTriggerAnalog, ControllerState.ControllerId, FloatValue);
+								MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftTriggerAnalog, UserId, DeviceId, FloatValue);
 								ControllerState.LeftTriggerAnalog = NewValue;
 							}
 							CurrentButtonStates[10] = FloatValue > 0.01f;
@@ -524,7 +535,7 @@ void HIDInputInterface::SendControllerEvents()
 						{
 							if (ControllerState.RightTriggerAnalog != NewValue)
 							{
-								MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightTriggerAnalog, ControllerState.ControllerId, FloatValue);
+								MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightTriggerAnalog, UserId, DeviceId, FloatValue);
 								ControllerState.RightTriggerAnalog = NewValue;
 							}
 							CurrentButtonStates[11] = FloatValue > 0.01f;
@@ -557,11 +568,11 @@ void HIDInputInterface::SendControllerEvents()
 				{
 					if (CurrentButtonStates[ButtonIndex])
 					{
-						MessageHandler->OnControllerButtonPressed(Buttons[ButtonIndex], ControllerState.ControllerId, false);
+						MessageHandler->OnControllerButtonPressed(Buttons[ButtonIndex], UserId, DeviceId, false);
 					}
 					else
 					{
-						MessageHandler->OnControllerButtonReleased(Buttons[ButtonIndex], ControllerState.ControllerId, false);
+						MessageHandler->OnControllerButtonReleased(Buttons[ButtonIndex], UserId, DeviceId, false);
 					}
 
 					if (CurrentButtonStates[ButtonIndex] != 0)
@@ -572,7 +583,7 @@ void HIDInputInterface::SendControllerEvents()
 				}
 				else if (CurrentButtonStates[ButtonIndex] != 0 && ControllerState.NextRepeatTime[ButtonIndex] <= CurrentTime)
 				{
-					MessageHandler->OnControllerButtonPressed(Buttons[ButtonIndex], ControllerState.ControllerId, true);
+					MessageHandler->OnControllerButtonPressed(Buttons[ButtonIndex], UserId, DeviceId, true);
 
 					// set the button's NextRepeatTime to the ButtonRepeatDelay
 					ControllerState.NextRepeatTime[ButtonIndex] = CurrentTime + ButtonRepeatDelay;
@@ -622,12 +633,18 @@ void HIDInputInterface::HIDDeviceMatchingCallback(void* Context, IOReturn Result
 void HIDInputInterface::HIDDeviceRemovalCallback(void* Context, IOReturn Result, void* Sender, IOHIDDeviceRef DeviceRef)
 {
 	HIDInputInterface* HIDInput = (HIDInputInterface*)Context;
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
 
 	for (int32 Index = 0; Index < MAX_NUM_HIDINPUT_CONTROLLERS; ++Index)
 	{
 		if(HIDInput->ControllerStates[Index].Device.DeviceRef == DeviceRef)
 		{
-			FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, Index);
+			FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+
+			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(Index, OUT PlatformUserId, OUT DeviceId);
+			DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Disconnected);
+
 			HIDInput->ControllerStates[Index].Device.DeviceRef = NULL;
 			break;
 		}

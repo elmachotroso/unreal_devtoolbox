@@ -256,16 +256,26 @@ namespace Chaos
 		}
 
 		/**
+		 * @brief Get the world-space Actor position 
+		*/
+		inline FVec3 ActorP() const { return P() - ActorQ().RotateVector(CoM()); }
+
+		/**
+		 * @brief Get the world-space Actor rotation 
+		*/
+		inline FRotation3 ActorQ() const { return Q() * RoM().Inverse(); }
+
+		/**
 		 * @brief Get the current world-space Actor position 
 		 * @note This is recalculated from the current CoM transform including the accumulated position and rotation corrections.
 		*/
-		inline FVec3 ActorP() const { return CorrectedP() - ActorQ().RotateVector(CoM()); }
+		inline FVec3 CorrectedActorP() const { return CorrectedP() - CorrectedActorQ().RotateVector(CoM()); }
 
 		/**
 		 * @brief Get the current world-space Actor rotation
 		 * @note This is recalculated from the current CoM transform including the accumulated position and rotation corrections.
 		*/
-		inline FRotation3 ActorQ() const { return CorrectedQ() * RoM().Inverse(); }
+		inline FRotation3 CorrectedActorQ() const { return CorrectedQ() * RoM().Inverse(); }
 
 		/**
 		 * @brief Contact graph level. This is used in shock propagation to determine which of two bodies should have its inverse mass scaled
@@ -277,7 +287,7 @@ namespace Chaos
 		 * @brief Whether the body has a finite mass
 		 * @note This is based on the current inverse mass, so a "dynamic" particle with 0 inverse mass will return true here.
 		*/
-		inline bool IsDynamic() const { return (State.InvM > SMALL_NUMBER); }
+		inline bool IsDynamic() const { return (State.InvM > UE_SMALL_NUMBER); }
 
 		/**
 		 * @brief Apply a world-space position and rotation delta to the body center of mass, and update inverse mass
@@ -465,30 +475,43 @@ namespace Chaos
 		inline const FSolverBody& SolverBody() const { check(IsValid()); return *Body; }
 
 		/**
-		 * @brief A scale applied to both inverse mass and inverse inertia
+		 * @brief A scale applied to inverse mass
 		*/
-		inline FSolverReal InvMScale() const { return State.InvMassScale; }
-		inline void SetInvMScale(FReal InInvMassScale) { State.InvMassScale = FSolverReal(InInvMassScale); }
+		inline FSolverReal InvMScale() const { return State.InvMScale; }
+		inline void SetInvMScale(FReal InValue) { State.InvMScale = FSolverReal(InValue); }
 
 		/**
-		 * @brief The scaled inverse mass
+		 * @brief A scale applied to inverse inertia
 		*/
-		FSolverReal InvM() const { return State.InvMassScale * Body->InvM(); }
+		inline FSolverReal InvIScale() const { return State.InvIScale; }
+		inline void SetInvIScale(FReal InValue) { State.InvIScale = FSolverReal(InValue); }
+
 
 		/**
-		 * @brief The scaled inverse inertia
+		 * @brief Shock propagation mass and inertia scaling (0 for infinite mass, 1 for no effect)
 		*/
-		FSolverMatrix33 InvI() const { return State.InvMassScale * Body->InvI(); }
+		inline FSolverReal ShockPropagationScale() const { return State.ShockPropagationScale; }
+		inline void SetShockPropagationScale(FReal InValue) { State.ShockPropagationScale = FSolverReal(InValue); }
 
 		/**
-		 * @brief The scaled local space inverse inertia
+		 * @brief The net scaled inverse mass
 		*/
-		FSolverVec3 InvILocal() const { return State.InvMassScale * Body->InvILocal(); }
+		FSolverReal InvM() const { return (State.ShockPropagationScale * State.InvMScale) * Body->InvM(); }
 
 		/**
-		 * @brief Whether the body is dynamic (i.e., has a finite mass) after InvMassScale is applied
+		 * @brief The net scaled inverse inertia
 		*/
-		inline bool IsDynamic() const { return (Body->InvM() != 0) && (InvMScale() != 0); }
+		FSolverMatrix33 InvI() const { return (State.ShockPropagationScale * State.InvIScale) * Body->InvI(); }
+
+		/**
+		 * @brief The net scaled local space inverse inertia
+		*/
+		FSolverVec3 InvILocal() const { return (State.ShockPropagationScale * State.InvIScale) * Body->InvILocal(); }
+
+		/**
+		 * @brief Whether the body is dynamic (i.e., has a finite mass) after scaling is applied
+		*/
+		inline bool IsDynamic() const { return (InvM() > TNumericLimits<FSolverReal>::Min()); }
 
 		//
 		// From here all methods just forward to the FSolverBody
@@ -502,6 +525,8 @@ namespace Chaos
 		inline const FRotation3& Q() const { return Body->Q(); }
 		inline const FVec3 ActorP() const { return Body->ActorP(); }
 		inline const FRotation3 ActorQ() const { return Body->ActorQ(); }
+		inline const FVec3 CorrectedActorP() const { return Body->CorrectedActorP(); }
+		inline const FRotation3 CorrectedActorQ() const { return Body->CorrectedActorQ(); }
 		inline const FVec3& V() const { return Body->V(); }
 		inline const FVec3& W() const { return Body->W(); }
 		inline int32 Level() const { return Body->Level(); }
@@ -524,9 +549,13 @@ namespace Chaos
 		struct FState
 		{
 			FState() 
-				: InvMassScale(FSolverReal(1))
+				: InvMScale(FSolverReal(1))
+				, InvIScale(FSolverReal(1))
+				, ShockPropagationScale(FSolverReal(1))
 			{}
-			FSolverReal InvMassScale;
+			FSolverReal InvMScale;
+			FSolverReal InvIScale;
+			FSolverReal ShockPropagationScale;
 		};
 
 		// The body we decorate

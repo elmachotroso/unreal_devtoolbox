@@ -152,6 +152,9 @@ private:
 	/** Whether the property matrix button should be enabled */
 	bool CanOpenRawPropertyEditor() const;
 
+	/** Whether the property matrix button should be shown */
+	EVisibility CanShowRawPropertyEditorButton(const bool bAllowedByDetailsViewArgs) const;
+
 	/**
 	 * Called to open the raw property editor (property matrix)                                                              
 	 */
@@ -181,9 +184,6 @@ private:
 	/** Get all section names and display names for the objects currently selected in the view. */
 	TMap<FName, FText> GetAllSections() const;
 
-	/** Get the display name for the given section. */
-	FText GetSectionDisplayName(FName SectionName) const;
-
 	/** Rebuild the section selector widget after a selection has been changed. */
 	void RebuildSectionSelector();
 
@@ -192,6 +192,9 @@ private:
 
 	/** Get the currently selected section. */
 	ECheckBoxState IsSectionChecked(FName Section) const;
+
+	/** Get the badge for the view options icon (if there are any options active */
+	const FSlateBrush* GetViewOptionsBadgeIcon() const;
 
 private:
 	/** The filter for objects viewed by this details panel */
@@ -223,4 +226,6 @@ private:
 	FDelegateHandle PostUndoRedoDelegateHandle;
 	/** The section selector widget to show if DetailsViewArgs.bShowSectionSelector is true. */
 	TSharedPtr<class SWrapBox> SectionSelectorBox;
+	/** True when currently in the middle of a refreshing the object array */
+	bool bIsRefreshing;
 };

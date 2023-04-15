@@ -24,6 +24,7 @@ struct FSkeletalMeshNamedCurve
 struct FSkeletalMeshPoseMessage
 {
 	FTransform ComponentToWorld;
+	double RecordingTime = 0.0;
 	uint64 TransformStartIndex = 0;
 	uint64 CurveStartIndex = 0;
 	uint64 ComponentId = 0;	
@@ -33,6 +34,19 @@ struct FSkeletalMeshPoseMessage
 	uint16 NumCurves = 0;
 	uint16 FrameCounter = 0;
 	uint16 LodIndex = 0;
+};
+
+struct FPoseWatchMessage
+{
+	double RecordingTime = 0.0;
+	uint64 AnimInstanceId = 0;
+	uint64 PoseWatchId = 0;
+	uint64 BoneTransformsStartIndex = 0;
+	uint16 NumBoneTransforms = 0;
+	FTransform WorldTransform;
+	uint64 RequiredBonesStartIndex = 0;
+	uint16 NumRequiredBones = 0;
+	bool bIsEnabled = false;
 };
 
 struct FSkeletalMeshFrameMessage
@@ -46,6 +60,7 @@ struct FTickRecordMessage
 	uint64 ComponentId = 0;
 	uint64 AnimInstanceId = 0;
 	uint64 AssetId = 0;
+	double RecordingTime = 0.0;
 	int32 NodeId = -1;
 	float BlendWeight = 0.0f;
 	float PlaybackTime = 0.0f;
@@ -216,6 +231,7 @@ struct FAnimNotifyMessage
 	uint64 NotifyId = 0;
 	const TCHAR* Name = nullptr;
 	uint32 NameId = 0;
+	double RecordingTime = 0.0f;
 	float Time = 0.0f; 
 	float Duration = 0.0f;
 	EAnimNotifyMessageType NotifyEventType = EAnimNotifyMessageType::Event;
@@ -225,6 +241,7 @@ struct FAnimMontageMessage
 {
 	uint64 AnimInstanceId = 0;
 	uint64 MontageId = 0;
+	double RecordingTime = 0.0;
 	uint32 CurrentSectionNameId = 0;
 	uint32 NextSectionNameId = 0;
 	float Weight = 0.0f;
@@ -261,11 +278,13 @@ public:
 	typedef TraceServices::ITimeline<FAnimMontageMessage> AnimMontageTimeline;
 	typedef TraceServices::ITimeline<FAnimAttributeMessage> AnimAttributeTimeline;
 	typedef TraceServices::ITimeline<FAnimSyncMessage> AnimSyncTimeline;
+	typedef TraceServices::ITimeline<FPoseWatchMessage> PoseWatchTimeline;
 
 	virtual void EnumerateSkeletalMeshPoseTimelines(TFunctionRef<void(uint64 ObjectId, const SkeletalMeshPoseTimeline&)> Callback) const =0;
 	virtual bool ReadSkeletalMeshPoseTimeline(uint64 InObjectId, TFunctionRef<void(const SkeletalMeshPoseTimeline&, bool)> Callback) const = 0;
 	virtual void GetSkeletalMeshComponentSpacePose(const FSkeletalMeshPoseMessage& InMessage, const FSkeletalMeshInfo& InMeshInfo, FTransform& OutComponentToWorld, TArray<FTransform>& OutTransforms) const = 0;
 	virtual void EnumerateSkeletalMeshCurveIds(uint64 InObjectId, TFunctionRef<void(uint32)> Callback) const = 0;
+	virtual void GetPoseWatchData(const FPoseWatchMessage& InMessage, TArray<FTransform>& BoneTransforms, TArray<uint16>& RequiredBones) const = 0;
 	virtual void EnumerateSkeletalMeshCurves(const FSkeletalMeshPoseMessage& InMessage, TFunctionRef<void(const FSkeletalMeshNamedCurve&)> Callback) const = 0;
 	virtual bool ReadTickRecordTimeline(uint64 InObjectId, TFunctionRef<void(const TickRecordTimeline&)> Callback) const = 0;
 	virtual void EnumerateTickRecordIds(uint64 InObjectId, TFunctionRef<void(uint64, int32)> Callback) const = 0;
@@ -282,6 +301,7 @@ public:
 	virtual bool ReadMontageTimeline(uint64 InObjectId, TFunctionRef<void(const AnimMontageTimeline&)> Callback) const = 0;
 	virtual void EnumerateMontageIds(uint64 InObjectId, TFunctionRef<void(uint64)> Callback) const = 0;
 	virtual bool ReadAnimSyncTimeline(uint64 InObjectId, TFunctionRef<void(const AnimSyncTimeline&)> Callback) const = 0;
+	virtual bool ReadPoseWatchTimeline(uint64 InObjectId, TFunctionRef<void(const PoseWatchTimeline&)> Callback) const = 0;
 	virtual const FSkeletalMeshInfo* FindSkeletalMeshInfo(uint64 InObjectId) const = 0;
 	virtual const TCHAR* GetName(uint32 InId) const = 0;
 	virtual FText FormatNodeKeyValue(const FAnimNodeValueMessage& InMessage) const = 0;

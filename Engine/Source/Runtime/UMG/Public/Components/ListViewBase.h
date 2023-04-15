@@ -53,6 +53,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnListViewScrolled, float, float);
 	virtual FOnListViewScrolled& OnListViewScrolled() const = 0;
 
+	DECLARE_MULTICAST_DELEGATE(FOnFinishedScrolling);
+	virtual FOnFinishedScrolling& OnFinishedScrolling() const = 0;
+
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnItemScrolledIntoView, ItemType, UUserWidget&);
 	virtual FOnItemScrolledIntoView& OnItemScrolledIntoView() const = 0;
 
@@ -233,6 +236,7 @@ protected:
 		EOrientation Orientation = Orient_Vertical;
 		const FTableViewStyle* ListViewStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView");
 		const FScrollBarStyle* ScrollBarStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
+		bool bPreventThrottling = false;
 	};
 
 	template <template<typename> class ListViewT = SListView, typename UListViewBaseT>
@@ -252,12 +256,14 @@ protected:
 			.Orientation(Args.Orientation)
 			.ListViewStyle(Args.ListViewStyle)
 			.ScrollBarStyle(Args.ScrollBarStyle)
+			.PreventThrottling(Args.bPreventThrottling)
 			.OnGenerateRow_UObject(Implementer, &UListViewBaseT::HandleGenerateRow)
 			.OnSelectionChanged_UObject(Implementer, &UListViewBaseT::HandleSelectionChanged)
 			.OnIsSelectableOrNavigable_UObject(Implementer, &UListViewBaseT::HandleIsSelectableOrNavigable)
 			.OnRowReleased_UObject(Implementer, &UListViewBaseT::HandleRowReleased)
 			.OnItemScrolledIntoView_UObject(Implementer, &UListViewBaseT::HandleItemScrolledIntoView)
 			.OnListViewScrolled_UObject(Implementer, &UListViewBaseT::HandleListViewScrolled)
+			.OnFinishedScrolling_UObject(Implementer, &UListViewBaseT::HandleFinishedScrolling)
 			.OnMouseButtonClick_UObject(Implementer, &UListViewBaseT::HandleItemClicked)
 			.OnMouseButtonDoubleClick_UObject(Implementer, &UListViewBaseT::HandleItemDoubleClicked);
 	}
@@ -335,70 +341,6 @@ protected:
 			.OnMouseButtonDoubleClick_UObject(Implementer, &UListViewBaseT::HandleItemDoubleClicked)
 			.OnGetChildren_UObject(Implementer, &UListViewBaseT::HandleGetChildren)
 			.OnExpansionChanged_UObject(Implementer, &UListViewBaseT::HandleExpansionChanged);
-	}
-
-	template <template<typename> class ListViewT = SListView, typename UListViewBaseT>
-	UE_DEPRECATED(4.23, "Use ConstructListView with FListViewConstructArgs instead of individual arguments.")
-	static TSharedRef<ListViewT<ItemType>> ConstructListView(UListViewBaseT* Implementer,
-		const TArray<ItemType>& ListItems,
-		bool bAllowFocus,
-		ESelectionMode::Type SelectionMode = ESelectionMode::Single,
-		bool bClearSelectionOnClick = false,
-		EConsumeMouseWheel ConsumeMouseWheel = EConsumeMouseWheel::WhenScrollingPossible,
-		bool bReturnFocusToSelection = false,
-		EOrientation Orientation = Orient_Vertical)
-	{
-		FListViewConstructArgs Args;
-		Args.bAllowFocus = bAllowFocus;
-		Args.SelectionMode = SelectionMode;
-		Args.bClearSelectionOnClick = bClearSelectionOnClick;
-		Args.ConsumeMouseWheel = ConsumeMouseWheel;
-		Args.bReturnFocusToSelection = bReturnFocusToSelection;
-		Args.Orientation = Orientation;
-
-		return ConstructListView<ListViewT>(Implementer, ListItems, Args);
-	}
-
-	template <template<typename> class TileViewT = STileView, typename UListViewBaseT>
-	UE_DEPRECATED(4.23, "Use ConstructTileView with FTileViewConstructArgs instead of individual arguments.")
-	static TSharedRef<TileViewT<ItemType>> ConstructTileView(UListViewBaseT* Implementer,
-		const TArray<ItemType>& ListItems,
-		EListItemAlignment TileAlignment,
-		TAttribute<float> TileHeight,
-		TAttribute<float> TileWidth,
-		ESelectionMode::Type SelectionMode = ESelectionMode::Single,
-		bool bClearSelectionOnClick = false,
-		bool bWrapDirectionalNavigation = false,
-		EConsumeMouseWheel ConsumeMouseWheel = EConsumeMouseWheel::WhenScrollingPossible,
-		EOrientation Orientation = Orient_Vertical)
-	{
-		FTileViewConstructArgs Args;
-		Args.SelectionMode = SelectionMode;
-		Args.bClearSelectionOnClick = bClearSelectionOnClick;
-		Args.ConsumeMouseWheel = ConsumeMouseWheel;
-		Args.Orientation = Orientation;
-		Args.bWrapDirectionalNavigation = bWrapDirectionalNavigation;
-		Args.TileHeight = TileHeight;
-		Args.TileWidth = TileWidth;
-		Args.TileAlignment = TileAlignment;
-
-		return ConstructTileView<TileViewT>(Implementer, ListItems, Args);
-	}
-
-	template <template<typename> class TreeViewT = STreeView, typename UListViewBaseT>
-	UE_DEPRECATED(4.23, "Use ConstructTreeView with FTreeViewConstructArgs instead of individual arguments.")
-	static TSharedRef<TreeViewT<ItemType>> ConstructTreeView(UListViewBaseT* Implementer,
-		const TArray<ItemType>& ListItems,
-		ESelectionMode::Type SelectionMode,
-		bool bClearSelectionOnClick = false,
-		EConsumeMouseWheel ConsumeMouseWheel = EConsumeMouseWheel::WhenScrollingPossible)
-	{
-		FTreeViewConstructArgs Args;
-		Args.SelectionMode = SelectionMode;
-		Args.bClearSelectionOnClick = bClearSelectionOnClick;
-		Args.ConsumeMouseWheel = ConsumeMouseWheel;
-
-		return ConstructTreeView<TreeViewT>(Implementer, ListItems, Args);
 	}
 
 protected:
@@ -486,6 +428,11 @@ private:
 			OnListViewScrolledInternal(OffsetInItems, DistanceRemaining.Y);
 			OnListViewScrolled().Broadcast(OffsetInItems, DistanceRemaining.Y);
 		}
+	}
+
+	void HandleFinishedScrolling()
+	{
+		OnFinishedScrolling().Broadcast();
 	}
 
 	void HandleItemScrolledIntoView(ItemType Item, const TSharedPtr<ITableRow>& InWidget)
@@ -616,7 +563,19 @@ protected:
 	//@todo DanH: Should probably have the events for native & BP built in up here - need to update existing binds to UListView's version
 	virtual void HandleListEntryHovered(UUserWidget& EntryWidget) {}
 	virtual void HandleListEntryUnhovered(UUserWidget& EntryWidget) {}
+	virtual	void FinishGeneratingEntry(UUserWidget& GeneratedEntry);
+   
+    /** Called when a row widget is generated for a list item */
+    UPROPERTY(BlueprintAssignable, Category = Events, meta = (DisplayName = "On Entry Generated"))
+    FOnListEntryGeneratedDynamic BP_OnEntryGenerated;
 
+	/**
+	* Normally these are processed by UListViewBase::FinishGeneratingEntry which uses World->GetTimerManager() to generate entries next frame
+	* However when for example using a listview in editor utility widgets a world there is not reliable and an alternative is to use
+	* FTSTicker::GetCoreTicker()
+	*/
+	TArray<TWeakObjectPtr<UUserWidget>> GeneratedEntriesToAnnounce;
+	
 	template <typename WidgetEntryT = UUserWidget, typename ObjectTableRowT = SObjectTableRow<UObject*>>
 	WidgetEntryT& GenerateTypedEntry(TSubclassOf<WidgetEntryT> WidgetClass, const TSharedRef<STableViewBase>& OwnerTable)
 	{
@@ -695,7 +654,7 @@ protected:
 
 	// Note: Options for this property can be configured via class and property metadata. See class declaration comment above.
 	/** The type of widget to create for each entry displayed in the list. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ListEntries, meta = (DesignerRebuild, AllowPrivateAccess = true, MustImplement = UserListEntry))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ListEntries, meta = (DesignerRebuild, AllowPrivateAccess = true, MustImplement = "/Script/UMG.UserListEntry"))
 	TSubclassOf<UUserWidget> EntryWidgetClass;
 
 	/** The multiplier to apply when wheel scrolling */
@@ -730,13 +689,7 @@ protected:
 	bool bAllowDragging = true;
 
 private:
-	void FinishGeneratingEntry(UUserWidget& GeneratedEntry);
-	void HandleAnnounceGeneratedEntries();
-
-private:
-	/** Called when a row widget is generated for a list item */
-	UPROPERTY(BlueprintAssignable, Category = Events, meta = (DisplayName = "On Entry Generated"))
-	FOnListEntryGeneratedDynamic BP_OnEntryGenerated;
+	virtual void HandleAnnounceGeneratedEntries();
 
 	/** Called when a row widget is released by the list (i.e. when it no longer represents a list item) */
 	UPROPERTY(BlueprintAssignable, Category = Events, meta = (DisplayName = "On Entry Released"))
@@ -754,8 +707,7 @@ private:
 	FUserWidgetPool EntryWidgetPool;
 
 	FTimerHandle EntryGenAnnouncementTimerHandle;
-	TArray<TWeakObjectPtr<UUserWidget>> GeneratedEntriesToAnnounce;
-
+	
 	FOnListEntryGenerated OnListEntryGeneratedEvent;
 	FOnEntryWidgetReleased OnEntryWidgetReleasedEvent;
 
@@ -783,6 +735,7 @@ private:	\
 	mutable FOnItemIsHoveredChanged OnItemIsHoveredChangedEvent;	\
 	mutable FOnItemScrolledIntoView OnItemScrolledIntoViewEvent;	\
 	mutable FOnListViewScrolled OnListViewScrolledEvent;	\
+	mutable FOnFinishedScrolling OnFinishedScrollingEvent;	\
 	mutable FOnItemExpansionChanged OnItemExpansionChangedEvent;	\
 	mutable FOnGetEntryClassForItem OnGetEntryClassForItemDelegate;	\
 public:	\
@@ -793,5 +746,6 @@ public:	\
 	virtual FOnItemSelectionChanged& OnItemSelectionChanged() const override { return OnItemSelectionChangedEvent; }	\
 	virtual FOnItemScrolledIntoView& OnItemScrolledIntoView() const override { return OnItemScrolledIntoViewEvent; }	\
 	virtual FOnListViewScrolled& OnListViewScrolled() const override { return OnListViewScrolledEvent; }	\
+	virtual FOnFinishedScrolling& OnFinishedScrolling() const override { return OnFinishedScrollingEvent; }	\
 	virtual FOnItemExpansionChanged& OnItemExpansionChanged() const override { return OnItemExpansionChangedEvent; }	\
 	virtual FOnGetEntryClassForItem& OnGetEntryClassForItem() const override { return OnGetEntryClassForItemDelegate; }

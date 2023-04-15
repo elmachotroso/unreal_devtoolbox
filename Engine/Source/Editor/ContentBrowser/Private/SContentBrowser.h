@@ -2,38 +2,63 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Input/Reply.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
-#include "AssetData.h"
-#include "SAssetSearchBox.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
 #include "ContentBrowserDataMenuContexts.h"
-#include "CollectionManagerTypes.h"
-#include "IContentBrowserSingleton.h"
-#include "HistoryManager.h"
 #include "ContentBrowserDataSubsystem.h"
-#include "Textures/SlateIcon.h"
+#include "ContentBrowserDelegates.h"
+#include "HAL/Platform.h"
+#include "HistoryManager.h"
+#include "IAssetTypeActions.h"
+#include "IContentBrowserSingleton.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Navigation/SBreadcrumbTrail.h"
+#include "Widgets/SCompoundWidget.h"
 
-class FAssetContextMenu;
+class FContentBrowserItemDataTemporaryContext;
+class FContentBrowserItemDataUpdate;
+class FExtender;
 class FFrontendFilter_Text;
 class FSourcesSearch;
-class FPathContextMenu;
 class FTabManager;
 class FUICommandList;
+class SAssetSearchBox;
 class SAssetView;
+class SBorder;
 class SCollectionView;
 class SComboButton;
+class SExpandableArea;
 class SFilterList;
 class SPathView;
-class SSplitter;
+class SSearchToggleButton;
+class SWidget;
+class SWidgetSwitcher;
+class UClass;
+class UContentBrowserToolbarMenuContext;
 class UFactory;
 class UToolMenu;
-class SSearchToggleButton;
-class UContentBrowserToolbarMenuContext;
+struct FAssetData;
+struct FAssetSearchBoxSuggestion;
+struct FCollectionNameType;
+struct FContentBrowserItem;
+struct FContentBrowserItemPath;
+struct FGeometry;
+struct FKeyEvent;
+struct FPointerEvent;
+struct FSlateBrush;
+
+enum class EFilterBarLayout : uint8;
 
 struct FToolMenuContext;
 
@@ -193,6 +218,12 @@ public:
 	virtual FReply OnPreviewMouseButtonDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
 	virtual FReply OnMouseButtonDoubleClick( const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent ) override;
 
+	/** Returns true if current path can be written to */
+	bool CanWriteToCurrentPath() const;
+
+	/** Returns true if path can be written to */
+	bool CanWriteToPath(const FContentBrowserItemPath InPath) const;
+
 private:
 
 	/** Called prior to syncing the selection in this Content Browser */
@@ -270,8 +301,11 @@ private:
 	/** Should the "Save Search" button be enabled? */
 	bool IsSaveSearchButtonEnabled() const;
 
-	/** Open the menu to let you save the current search text as a dynamic collection */
-	FReply OnSaveSearchButtonClicked();
+	/** Open the menu to let you save the current search text as a filter or dynamic collection */
+	void OnSaveSearchButtonClicked(const FText& InSearchText);
+
+	/** Save the current search as a filter pill */
+	void SaveSearchAsFilter();
 
 	/** Called when a crumb in the path breadcrumb trail or menu is clicked */
 	void OnPathClicked(const FString& CrumbData);
@@ -467,6 +501,9 @@ private:
 	/** Handles content items being updated */
 	void HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUpdate> InUpdatedItems);
 
+	/* Handles hiding private content if folder is not showing private content*/
+	bool HandlePrivateContentFilter(const FContentBrowserItem& AssetItem);
+
 	/** Gets all suggestions for the asset search box */
 	void OnAssetSearchSuggestionFilter(const FText& SearchText, TArray<FAssetSearchBoxSuggestion>& PossibleSuggestions, FText& SuggestionHighlightText) const;
 
@@ -509,6 +546,9 @@ private:
 	/** Toggles the favorite status of an array of folders*/
 	void ToggleFolderFavorite(const TArray<FString>& FolderPaths);
 
+	/* Toggles the private show private content state of an array of folders*/
+	void TogglePrivateContentEdit(const TArray<FString>& FolderPaths);
+
 	/** Called when Asset View Options "Search" options change */
 	void HandleAssetViewSearchOptionsChanged();
 
@@ -540,6 +580,13 @@ private:
 	SSplitter::ESizeRule GetFavoritesAreaSizeRule() const;
 	SSplitter::ESizeRule GetPathAreaSizeRule() const;
 	SSplitter::ESizeRule GetCollectionsAreaSizeRule() const;
+
+	/** Gets the min size for various areas. When areas are not visible the min size is 0, otherwise there is a minimum size to prevent overlap */
+	float GetFavoritesAreaMinSize() const;
+	float GetCollectionsAreaMinSize() const;
+
+	/** Called when the layout of the SFilterList is changing */
+	void OnFilterBarLayoutChanging(EFilterBarLayout NewLayout);
 
 private:
 
@@ -585,6 +632,12 @@ private:
 	/** The filter list */
 	TSharedPtr<SFilterList> FilterListPtr;
 
+	/** The Combo Button used to summon the filter dropdown */
+	TSharedPtr<SWidget> FilterComboButton;
+
+	/** The border that holds the content in AssetView */
+	TSharedPtr<SBorder> AssetViewBorder;
+
 	/** The path picker */
 	TSharedPtr<SComboButton> PathPickerButton;
 
@@ -626,6 +679,12 @@ private:
 
 	/** True if source should not be changed from an outside source */
 	bool bIsLocked;
+
+	/** Cached result of CanWriteToPath to avoid recalculating it every frame */
+	mutable bool bCachedCanWriteToCurrentPath = false;
+
+	/** Path that was last used to determine bCachedCanWriteToCurrentPath */
+	mutable TOptional<FName> CachedCanWriteToCurrentPath;
 
 	/** The list of FrontendFilters currently applied to the asset view */
 	TSharedPtr<FAssetFilterCollectionType> FrontendFilters;

@@ -3,13 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ISourceControlProvider.h"
 #include "ISourceControlRevision.h"
 
 class FPlasticSourceControlState;
 
 /** Revision of a file, linked to a specific commit */
-class FPlasticSourceControlRevision : public ISourceControlRevision, public TSharedFromThis<FPlasticSourceControlRevision, ESPMode::ThreadSafe>
+class FPlasticSourceControlRevision : public ISourceControlRevision
 {
 public:
 	FPlasticSourceControlRevision()
@@ -22,8 +21,8 @@ public:
 
 	/** ISourceControlRevision interface */
 	virtual bool Get(FString& InOutFilename, EConcurrency::Type InConcurrency = EConcurrency::Synchronous) const override;
-	virtual bool GetAnnotated( TArray<FAnnotationLine>& OutLines ) const override;
-	virtual bool GetAnnotated( FString& InOutFilename ) const override;
+	virtual bool GetAnnotated(TArray<FAnnotationLine>& OutLines) const override;
+	virtual bool GetAnnotated(FString& InOutFilename) const override;
 	virtual const FString& GetFilename() const override;
 	virtual int32 GetRevisionNumber() const override;
 	virtual const FString& GetRevision() const override;
@@ -37,7 +36,6 @@ public:
 	virtual int32 GetFileSize() const override;
 
 public:
-
 	/** Point back to State this Revision is from */
 	FPlasticSourceControlState* State = nullptr;
 
@@ -58,6 +56,9 @@ public:
 
 	/** The user that made the change */
 	FString UserName;
+
+	/** Branch where the change was made */
+	FString Branch;
 
 	/** The action (add, edit, branch etc.) performed at this revision */
 	FString Action;

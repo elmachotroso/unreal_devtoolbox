@@ -28,7 +28,7 @@ static FAutoConsoleVariableRef CVarDisableLatencyMarkers(
 
 void FReflexLatencyMarkers::Initialize()
 {
-	if (IsRHIDeviceNVIDIA())
+	if ((RHIGetInterfaceType() == ERHIInterfaceType::D3D11 || RHIGetInterfaceType() == ERHIInterfaceType::D3D12) && IsRHIDeviceNVIDIA())
 	{
 		FString RHIName = GDynamicRHI->GetName();
 		if (RHIName.StartsWith(TEXT("Vulkan")))
@@ -36,7 +36,7 @@ void FReflexLatencyMarkers::Initialize()
 			return;
 		}
 
-		NvU32 DriverVersion;
+		NvU32 DriverVersion = 0;
 		NvAPI_ShortString BranchString;
 
 		// Driver version check, 455 and above required for Reflex

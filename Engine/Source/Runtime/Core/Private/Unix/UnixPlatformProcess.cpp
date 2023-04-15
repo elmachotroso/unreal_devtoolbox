@@ -30,6 +30,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/App.h"
 #include "Misc/Fork.h"
+#include "HAL/PlatformTime.h"
+#include "Misc/DateTime.h"
 
 namespace PlatformProcessLimits
 {
@@ -311,7 +313,7 @@ bool FUnixPlatformProcess::SetProcessLimits(EProcessResource::Type Resource, uin
 {
 	rlimit NativeLimit;
 
-	static_assert(sizeof(long) == sizeof(NativeLimit.rlim_cur), TEXT("Platform has atypical rlimit type."));
+	static_assert(sizeof(long) == sizeof(NativeLimit.rlim_cur), "Platform has atypical rlimit type.");
 
 	// 32-bit platforms set limits as long
 	if (sizeof(NativeLimit.rlim_cur) < sizeof(Limit))
@@ -1321,6 +1323,8 @@ void FUnixPlatformProcess::TerminateProc( FProcHandle & ProcessHandle, bool Kill
 	}
 }
 
+static FDelegateHandle OnEndFrameHandle;
+
 /*
  * WaitAndFork on Unix
  *
@@ -1343,14 +1347,26 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 #ifndef WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE
 	#define WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE 0
 #endif
-
+#ifndef WAIT_AND_FORK_RESPONSE_TIMEOUT_EXIT_CODE
+	#define WAIT_AND_FORK_RESPONSE_TIMEOUT_EXIT_CODE 1
+#endif
+	
 	// Only works in -nothreading mode for now (probably best this way)
 	if (FPlatformProcess::SupportsMultithreading())
 	{
 		return EWaitAndForkResult::Error;
 	}
 
-	static TCircularQueue<int32> WaitAndForkSignalQueue(WAIT_AND_FORK_QUEUE_LENGTH);
+	struct FForkSignalData
+	{
+		FForkSignalData() = default;
+		FForkSignalData(int32 InSignal, double InTimeSeconds) : SignalValue(InSignal), TimeSeconds(InTimeSeconds) {}
+
+		int32 SignalValue = 0;
+		double TimeSeconds = 0.0;
+	};
+
+	static TCircularQueue<FForkSignalData> WaitAndForkSignalQueue(WAIT_AND_FORK_QUEUE_LENGTH);
 
 	// If we asked to fork up front without the need to send signals, just push the fork requests on the queue and we will refork them if they close
 	// This is mostly used in cases where there is no external process sending signals to this process to create forks and is a simple way to start or test
@@ -1360,7 +1376,7 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 	{
 		for (int32 ForkIdx = 0; ForkIdx < NumForks; ++ForkIdx)
 		{
-			WaitAndForkSignalQueue.Enqueue(ForkIdx + 1);
+			WaitAndForkSignalQueue.Enqueue(FForkSignalData(ForkIdx + 1, FPlatformTime::Seconds()));
 		}
 	}
 
@@ -1379,6 +1395,15 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 	// If we are asked to wait for a response signal, keep track of that here so we can behave differently in children.
 	const bool bRequireResponseSignal = FParse::Param(FCommandLine::Get(), TEXT("WaitAndForkRequireResponse"));
 
+	double WaitAndForkResponseTimeout = -1.0;
+	FParse::Value(FCommandLine::Get(), TEXT("-WaitAndForkResponseTimeout="), WaitAndForkResponseTimeout);
+	if (WaitAndForkResponseTimeout > 0.0)
+	{
+		UE_LOG(LogHAL, Log, TEXT("WaitAndFork setting WaitAndForkResponseTimeout to %0.2f seconds."), WaitAndForkResponseTimeout);
+	}
+
+	FCoreDelegates::OnParentBeginFork.Broadcast();
+
 	// Set up a signal handler for the signal to fork()
 	{
 		struct sigaction Action;
@@ -1388,7 +1413,7 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 		Action.sa_sigaction = [](int32 Signal, siginfo_t* Info, void* Context) {
 			if (Signal == WAIT_AND_FORK_QUEUE_SIGNAL && Info)
 			{
-				WaitAndForkSignalQueue.Enqueue(Info->si_value.sival_int);
+				WaitAndForkSignalQueue.Enqueue(FForkSignalData(Info->si_value.sival_int, FPlatformTime::Seconds()));
 			}
 		};
 		sigaction(WAIT_AND_FORK_QUEUE_SIGNAL, &Action, nullptr);
@@ -1399,11 +1424,11 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 
 	struct FMemoryStatsHolder
 	{
-		float AvailablePhysical;
-		float PeakUsedPhysical;
-		float PeakUsedVirtual;
+		double AvailablePhysical;
+		double PeakUsedPhysical;
+		double PeakUsedVirtual;
 
-		constexpr float ByteToMiB(uint64 InBytes) { return InBytes / (1024.f * 1024.f); }
+		constexpr double ByteToMiB(uint64 InBytes) { return static_cast<double>(InBytes) / (1024.0 * 1024.0); }
 
 		FMemoryStatsHolder(const FPlatformMemoryStats& PlatformStats)
 			: AvailablePhysical(ByteToMiB(PlatformStats.AvailablePhysical))
@@ -1424,16 +1449,25 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 		FPidAndSignal(pid_t InPid, int32 InSignalValue) : Pid(InPid), SignalValue(InSignalValue) {}
 	};
 	TArray<FPidAndSignal> AllChildren;
-	AllChildren.Reserve(1024); // Sized to be big enough that it probably wont reallocte, but its not the end of the world if it does.
+	AllChildren.Reserve(1024); // Sized to be big enough that it probably wont reallocate, but its not the end of the world if it does.
 	while (!IsEngineExitRequested())
 	{
 		BeginExitIfRequested();
 
-		int32 SignalValue = 0;
-		if (WaitAndForkSignalQueue.Dequeue(SignalValue))
+		FForkSignalData SignalData;
+		if (WaitAndForkSignalQueue.Dequeue(SignalData))
 		{
 			// Sleep for a short while to avoid spamming new processes to the OS all at once
 			FPlatformProcess::Sleep(WAIT_AND_FORK_CHILD_SPAWN_DELAY);
+
+			uint16 Cookie = (SignalData.SignalValue >> 16) & 0xffff;
+			uint16 ChildIdx = SignalData.SignalValue & 0xffff;
+
+			FDateTime SignalReceived = FDateTime::FromUnixTimestamp(FMath::FloorToInt64(SignalData.TimeSeconds));
+
+			FCoreDelegates::OnParentPreFork.Broadcast();
+
+			UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork processing child request %04hx-%04hx received at: %s"), Cookie, ChildIdx, *SignalReceived.ToString());
 
 			FMemoryStatsHolder CurrentMasterMemStats(FPlatformMemory::GetStats());
 			UE_LOG(LogHAL, Log, TEXT("MemoryStats PreFork: AvailablePhysical: %.02fMiB (%+.02fMiB), PeakPhysical: %.02fMiB, PeakVirtual: %.02fMiB"),
@@ -1446,6 +1480,8 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 			// Make sure there are no pending messages in the log.
 			GLog->Flush();
 
+			// This should be the very last thing we do before forking for optimal interaction with GMalloc
+			FForkProcessHelper::LowLevelPreFork();
 			// ******** The fork happens here! ********
 			pid_t ChildPID = fork();
 			// ******** The fork happened! This is now either the parent process or the new child process ********
@@ -1461,17 +1497,14 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 			}
 			else if (ChildPID == 0)
 			{
-				FForkProcessHelper::SetIsForkedChildProcess();
+				// This should be the very first thing we do after forking for optimal interaction with GMalloc
+				FForkProcessHelper::LowLevelPostForkChild(ChildIdx);
 
 				if (FPlatformMemory::HasForkPageProtectorEnabled())
 				{
 					UE::FForkPageProtector::OverrideGMalloc();
 					UE::FForkPageProtector::Get().ProtectMemoryRegions();
 				}
-
-				// Child
-				uint16 Cookie = (SignalValue >> 16) & 0xffff;
-				uint16 ChildIdx = SignalValue & 0xffff;
 
 				// Close the log state we inherited from our parent
 				GLog->TearDown();
@@ -1490,19 +1523,23 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 					{
 						FCommandLine::Set(*NewCmdLine);
 					}
+					else
+					{
+						UE_LOG(LogHAL, Error, TEXT("[Child] WaitAndFork child %04hx-%04hx failed to set command line from: %s"), Cookie, ChildIdx, *CmdLineFilename);
+					}
 				}
 
 				// Start up the log again
 				FPlatformOutputDevices::SetupOutputDevices();
-				GLog->SetCurrentThreadAsMasterThread();
+				GLog->SetCurrentThreadAsPrimaryThread();
 
 				// Set the process name, if specified
 				if (ChildIdx > 0)
 				{
-					if (prctl(PR_SET_NAME, TCHAR_TO_UTF8(*FString::Printf(TEXT("DS-%04x-%04x"), Cookie, ChildIdx))) != 0)
+					if (prctl(PR_SET_NAME, TCHAR_TO_UTF8(*FString::Printf(TEXT("DS-%04hx-%04hx"), Cookie, ChildIdx))) != 0)
 					{
 						int ErrNo = errno;
-						UE_LOG(LogHAL, Fatal, TEXT("WaitAndFork failed to set process name with prctl! error:%d"), ErrNo);
+						UE_LOG(LogHAL, Fatal, TEXT("[Child] WaitAndFork failed to set process name with prctl! error:%d"), ErrNo);
 					}
 				}
 
@@ -1525,18 +1562,31 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 					};
 					sigaction(WAIT_AND_FORK_RESPONSE_SIGNAL, &Action, nullptr);
 
-					UE_LOG(LogHAL, Log, TEXT("[Child] WaitAndFork child waiting for signal %d to proceed."), WAIT_AND_FORK_RESPONSE_SIGNAL);
+					const double StartChildWaitSeconds = FPlatformTime::Seconds();
+
+					UE_LOG(LogHAL, Log, TEXT("[Child] WaitAndFork child %04hx-%04hx waiting for signal %d to proceed."), Cookie, ChildIdx, WAIT_AND_FORK_RESPONSE_SIGNAL);
 					while (!IsEngineExitRequested() && !bResponseReceived)
 					{
 						FPlatformProcess::Sleep(1);
+
+						// Check to see how long we've been waiting and if we should time out.
+						if ((WaitAndForkResponseTimeout > 0.0) && ((FPlatformTime::Seconds() - StartChildWaitSeconds) > WaitAndForkResponseTimeout))
+						{
+							UE_LOG(LogHAL, Error, TEXT("[Child] WaitAndFork child %04hx-%04hx has exceeded WAIT_AND_FORK_RESPONSE_SIGNAL timeout"), Cookie, ChildIdx);
+							FPlatformMisc::RequestExitWithStatus(true, WAIT_AND_FORK_RESPONSE_TIMEOUT_EXIT_CODE);
+							break;
+						}
 					}
 
 					FMemory::Memzero(Action);
 					sigaction(WAIT_AND_FORK_RESPONSE_SIGNAL, &Action, nullptr);
 				}
 
-				UE_LOG(LogHAL, Log, TEXT("[Child] WaitAndFork child process has started with pid %d."), GetCurrentProcessId());
+				UE_LOG(LogHAL, Log, TEXT("[Child] WaitAndFork child process %04hx-%04hx has started with pid %d."), Cookie, ChildIdx, GetCurrentProcessId());
 				FApp::PrintStartupLogMessages();
+
+				OnEndFrameHandle = FCoreDelegates::OnEndFrame.AddStatic(FUnixPlatformProcess::OnChildEndFramePostFork);
+				FCoreDelegates::OnPostFork.Broadcast(EForkProcessRole::Child);
 
 				// Children break out of the loop and return
 				RetVal = EWaitAndForkResult::Child;
@@ -1544,10 +1594,15 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 			}
 			else
 			{
-				// Parent
-				AllChildren.Emplace(ChildPID, SignalValue);
+				// This should be the very first thing we do after forking for optimal interaction with GMalloc
+				FForkProcessHelper::LowLevelPostForkParent();
 
-				UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork Successfully made a child with pid %d!"), ChildPID);
+				// Parent
+				AllChildren.Emplace(ChildPID, SignalData.SignalValue);
+
+				FCoreDelegates::OnPostFork.Broadcast(EForkProcessRole::Parent);
+
+				UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork Successfully processed request %04hx-%04hx, made a child with pid %d! Total number of children: %d."), Cookie, ChildIdx, ChildPID, AllChildren.Num());
 			}
 		}
 		else
@@ -1578,7 +1633,7 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 					else if (NumForks > 0 && ChildPidAndSignal.SignalValue > 0 && ChildPidAndSignal.SignalValue <= NumForks)
 					{
 						UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork child %d missing. This was NumForks child %d. Relaunching..."), ChildPidAndSignal.Pid, ChildPidAndSignal.SignalValue);
-						WaitAndForkSignalQueue.Enqueue(ChildPidAndSignal.SignalValue);
+						WaitAndForkSignalQueue.Enqueue(FForkSignalData(ChildPidAndSignal.SignalValue, FPlatformTime::Seconds()));
 					}
 					else
 					{
@@ -1950,7 +2005,6 @@ bool FUnixPlatformProcess::IsFirstInstance()
 	static bool bIsFirstInstance = false;
 	static bool bNeverFirst = FParse::Param(FCommandLine::Get(), TEXT("neverfirst"));
 
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
 	if (!bIsFirstInstance && !bNeverFirst)	// once we determined that we're first, this can never change until we exit; otherwise, we re-check each time
 	{
 		// create the file if it doesn't exist
@@ -1981,13 +2035,12 @@ bool FUnixPlatformProcess::IsFirstInstance()
 			}
 		}
 	}
-#endif
+
 	return bIsFirstInstance;
 }
 
 void FUnixPlatformProcess::CeaseBeingFirstInstance()
 {
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
 	if (GFileLockDescriptor != -1)
 	{
 		// may fail if we didn't have the lock
@@ -1995,5 +2048,80 @@ void FUnixPlatformProcess::CeaseBeingFirstInstance()
 		close(GFileLockDescriptor);
 		GFileLockDescriptor = -1;
 	}
-#endif
+}
+
+void FUnixPlatformProcess::OnChildEndFramePostFork()
+{
+	FCoreDelegates::OnEndFrame.Remove(OnEndFrameHandle);
+	OnEndFrameHandle.Reset();
+
+	FCoreDelegates::OnChildEndFramePostFork.Broadcast();
+}
+
+int32 FUnixPlatformProcess::TranslateThreadPriority(EThreadPriority Priority)
+{
+	// In general, the range is -20 to 19 (negative is highest, positive is lowest)
+	int32 NiceLevel = 0;
+	switch (Priority)
+	{
+		case TPri_TimeCritical:
+			NiceLevel = -20;
+			break;
+
+		case TPri_Highest:
+			NiceLevel = -15;
+			break;
+
+		case TPri_AboveNormal:
+			NiceLevel = -10;
+			break;
+
+		case TPri_Normal:
+			NiceLevel = 0;
+			break;
+
+		case TPri_SlightlyBelowNormal:
+			NiceLevel = 3;
+			break;
+
+		case TPri_BelowNormal:
+			NiceLevel = 5;
+			break;
+
+		case TPri_Lowest:
+			NiceLevel = 10;		// 19 is a total starvation
+			break;
+
+		default:
+			UE_LOG(LogHAL, Fatal, TEXT("Unknown Priority passed to FRunnableThreadPThread::TranslateThreadPriority()"));
+			return 0;
+	}
+
+	// note: a non-privileged process can only go as low as RLIMIT_NICE
+	return NiceLevel;
+}
+
+void FUnixPlatformProcess::SetThreadNiceValue(uint32_t ThreadId, int32 NiceValue)
+{
+	// We still try to set priority, but failure is not considered as an error
+	if (setpriority(PRIO_PROCESS, ThreadId, NiceValue) != 0 && WITH_PROCESS_PRIORITY_CONTROL)
+	{
+		static bool bIsLogged = false;
+		if (!bIsLogged)
+		{
+			bIsLogged = true;
+			// Unfortunately this is going to be a frequent occurence given that by default Unix doesn't allow raising priorities.
+			// NOTE: In WSL run "sudo prlimit --nice=40 --pid $$" to promote current shell to change nice values.
+			int ErrNo = errno;
+			UE_LOG(LogHAL, Error, TEXT("Can't set nice to %d. Reason = %s. Do you have CAP_SYS_NICE capability?"), NiceValue, ANSI_TO_TCHAR(strerror(ErrNo)));
+		}
+	}
+}
+
+void FUnixPlatformProcess::SetThreadPriority(EThreadPriority NewPriority)
+{
+	uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+	int32 NiceValue = FUnixPlatformProcess::TranslateThreadPriority(NewPriority);
+
+	FUnixPlatformProcess::SetThreadNiceValue(ThreadId, NiceValue);
 }

@@ -36,6 +36,10 @@ struct FStaticLightingPrimitiveInfo;
 /** Whether FStaticMeshSceneProxy should to store data and enable codepaths needed for debug rendering */
 #define STATICMESH_ENABLE_DEBUG_RENDERING			ENABLE_DRAW_DEBUG
 
+namespace Nanite
+{
+	struct FResources;
+}
 
 /** Cached vertex information at the time the mesh was painted. */
 USTRUCT()
@@ -223,8 +227,35 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta=(editcondition = "bOverrideWireframeColor"))
 	FColor WireframeColorOverride;
 
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=RayTracing)
-	uint8 bEvaluateWorldPositionOffset:1;
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Rendering)
+	uint8 bDisallowNanite : 1;
+
+	/** 
+	 * Whether to evaluate World Position Offset. 
+	 * This is only used when running with r.OptimizedWPO=1 
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Rendering)
+	uint8 bEvaluateWorldPositionOffset : 1;
+
+	/** 
+	 * Whether to evaluate World Position Offset for ray tracing. 
+	 * This is only used when running with r.RayTracing.Geometry.StaticMeshes.WPO=1 
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = RayTracing)
+	uint8 bEvaluateWorldPositionOffsetInRayTracing : 1;
+
+	/**
+	 * Distance at which to disable World Position Offset for an entire instance (0 = Never disable WPO).
+	 * NOTE: Currently works with Nanite only.
+	 **/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
+	int32 WorldPositionOffsetDisableDistance = 0;
+
+protected:
+	/** Initial value of bEvaluateWorldPositionOffset when BeginPlay() was called. Can be useful if we want to reset to initial state. */
+	uint8 bInitialEvaluateWorldPositionOffset : 1;
+
+public:
 
 #if WITH_EDITORONLY_DATA
 	/** The section currently selected in the Editor. Used for highlighting */
@@ -324,7 +355,7 @@ public:
 	UPROPERTY(transient)
 	uint8 bDisplayPhysicalMaterialMasks : 1;
 
-	/** For nanite enabled meshes, we'll only show the proxy mesh if this is true */
+	/** For Nanite enabled meshes, we'll only show the proxy mesh if this is true */
 	UPROPERTY()
 	uint8 bDisplayNaniteFallbackMesh:1;
 #endif
@@ -399,7 +430,7 @@ public:
 	TObjectPtr<UStaticMesh> GetStaticMesh() const 
 	{ 
 #if WITH_EDITOR
-		// This should never happen and is a last resort, we should have catched the property overwrite well before we reach this code
+		// This should never happen and is a last resort, we should have caught the property overwrite well before we reach this code
 		if (KnownStaticMesh != StaticMesh)
 		{
 			OutdatedKnownStaticMeshDetected();
@@ -407,6 +438,16 @@ public:
 #endif
 		return StaticMesh; 
 	}
+
+	virtual const Nanite::FResources* GetNaniteResources() const;
+
+	/**
+	 * Returns true if the component has valid Nanite render data.
+	 */
+	virtual bool HasValidNaniteData() const;
+
+	/** Determines if we use the nanite overrides from any materials */
+	virtual bool UseNaniteOverrideMaterials() const override;
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|LOD")
 	void SetForcedLodModel(int32 NewForcedLodModel);
@@ -417,6 +458,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category=RayTracing)
 	void SetEvaluateWorldPositionOffsetInRayTracing(bool NewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|LOD")
+	void SetEvaluateWorldPositionOffset(bool NewValue);
+
+	/** Get the initial value of bEvaluateWorldPositionOffset. This is the value when BeginPlay() was last called. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|LOD")
+	bool GetInitialEvaluateWorldPositionOffset() { return bInitialEvaluateWorldPositionOffset; }
 
 	/** 
 	 * Get Local bounds
@@ -494,6 +542,7 @@ public:
 protected: 
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
+	virtual void BeginPlay() override;
 	virtual bool RequiresGameThreadEndOfFrameRecreate() const override;
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void OnCreatePhysicsState() override;
@@ -552,17 +601,21 @@ public:
 	virtual void GetLightAndShadowMapMemoryUsage( int32& LightMapMemoryUsage, int32& ShadowMapMemoryUsage ) const override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
 	virtual UMaterialInterface* GetMaterial(int32 MaterialIndex) const override;
+	virtual UMaterialInterface* GetEditorMaterial(int32 MaterialIndex) const override;
 	virtual int32 GetMaterialIndex(FName MaterialSlotName) const override;
 	virtual UMaterialInterface* GetMaterialFromCollisionFaceIndex(int32 FaceIndex, int32& SectionIndex) const override;
 	virtual TArray<FName> GetMaterialSlotNames() const override;
 	virtual bool IsMaterialSlotNameValid(FName MaterialSlotName) const override;
 
 	virtual bool DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const override;
+
+	virtual bool IsShown(const FEngineShowFlags& ShowFlags) const override;
 #if WITH_EDITOR
 	virtual void PostStaticMeshCompilation();
-	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
-	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
+	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
+	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
 #endif
+	virtual float GetStreamingScale() const override { return GetComponentTransform().GetMaximumAxisScale(); }
 	//~ End UPrimitiveComponent Interface.
 
 	//~ Begin INavRelevantInterface Interface.
@@ -646,7 +699,7 @@ public:
 	 * Copies instance vertex colors from the SourceComponent into this component
 	 * @param SourceComponent The component to copy vertex colors from
 	 */
-	void CopyInstanceVertexColorsIfCompatible( UStaticMeshComponent* SourceComponent );
+	void CopyInstanceVertexColorsIfCompatible( const UStaticMeshComponent* SourceComponent );
 #endif
 
 	/**
@@ -691,6 +744,9 @@ public:
 private:
 	/** Initializes the resources used by the static mesh component. */
 	void InitResources();
+
+	/** Precache all PSOs which can be used by the static mesh component */
+	virtual void PrecachePSOs() override;
 
 #if WITH_EDITOR
 	/** Update the vertex override colors */
@@ -753,14 +809,22 @@ public:
 
 	const FMeshMapBuildData* GetMeshMapBuildData(const FStaticMeshComponentLODInfo& LODInfo, bool bCheckForResourceCluster = true) const;
 
+	/** Called during scene proxy creation to get the Nanite resource data */
+	DECLARE_DELEGATE_RetVal(const Nanite::FResources*, FOnGetNaniteResources);
+	virtual FOnGetNaniteResources& OnGetNaniteResources() { return OnGetNaniteResourcesEvent; }
+	virtual const FOnGetNaniteResources& OnGetNaniteResources() const { return OnGetNaniteResourcesEvent; }
 
 #if WITH_EDITOR
 	/** Called when the static mesh changes  */
 	DECLARE_EVENT_OneParam(UStaticMeshComponent, FOnStaticMeshChanged, UStaticMeshComponent*);
 	virtual FOnStaticMeshChanged& OnStaticMeshChanged() { return OnStaticMeshChangedEvent; }
+#endif
+
 private:
+#if WITH_EDITOR
 	FOnStaticMeshChanged OnStaticMeshChangedEvent;
 #endif
+	FOnGetNaniteResources OnGetNaniteResourcesEvent;
 
 	friend class FStaticMeshComponentRecreateRenderStateContext;
 };

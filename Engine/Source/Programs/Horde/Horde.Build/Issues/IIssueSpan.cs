@@ -1,14 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Streams;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
+using MongoDB.Bson;
 
-namespace HordeServer.Models
+namespace Horde.Build.Issues
 {
 	using StreamId = StringId<IStream>;
 	using TemplateRefId = StringId<TemplateRef>;

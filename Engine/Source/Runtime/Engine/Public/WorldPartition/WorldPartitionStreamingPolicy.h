@@ -43,13 +43,13 @@ class UWorldPartitionStreamingPolicy : public UObject
 
 public:
 	virtual void UpdateStreamingState();
-	virtual void SetTargetStateForCells(EWorldPartitionRuntimeCellState TargetState, const TSet<const UWorldPartitionRuntimeCell*>& Cells);
 	virtual bool CanAddLoadedLevelToWorld(class ULevel* InLevel) const;
-	virtual void DrawRuntimeHash2D(class UCanvas* Canvas, const FVector2D& PartitionCanvasSize, FVector2D& Offset);
+	virtual bool DrawRuntimeHash2D(class UCanvas* Canvas, const FVector2D& PartitionCanvasSize, const FVector2D& Offset, FVector2D& OutUsedCanvasSize);
 	virtual void DrawRuntimeHash3D();
 	virtual void DrawRuntimeCellsDetails(class UCanvas* Canvas, FVector2D& Offset) {}
 	virtual void DrawStreamingStatusLegend(class UCanvas* Canvas, FVector2D& Offset) {}
 
+	virtual bool IsStreamingCompleted(const FWorldPartitionStreamingSource* InStreamingSource) const;
 	virtual bool IsStreamingCompleted(EWorldPartitionRuntimeCellState QueryState, const TArray<FWorldPartitionStreamingQuerySource>& QuerySources, bool bExactState = true) const;
 
 #if WITH_EDITOR
@@ -71,9 +71,9 @@ public:
 	EWorldPartitionStreamingPerformance GetStreamingPerformance() const { return StreamingPerformance; }
 
 protected:
-	virtual void SetCellsStateToLoaded(const TSet<const UWorldPartitionRuntimeCell*>& ToLoadCells);
-	virtual void SetCellsStateToActivated(const TSet<const UWorldPartitionRuntimeCell*>& ToActivateCells);
-	virtual void SetCellsStateToUnloaded(const TSet<const UWorldPartitionRuntimeCell*>& ToUnloadCells);
+	virtual void SetCellsStateToLoaded(const TArray<const UWorldPartitionRuntimeCell*>& ToLoadCells);
+	virtual void SetCellsStateToActivated(const TArray<const UWorldPartitionRuntimeCell*>& ToActivateCells);
+	virtual void SetCellsStateToUnloaded(const TArray<const UWorldPartitionRuntimeCell*>& ToUnloadCells);
 	virtual int32 GetCellLoadingCount() const { return 0; }
 	virtual int32 GetMaxCellsToLoad() const;
 	virtual void UpdateStreamingSources();
@@ -89,14 +89,16 @@ protected:
 	TArray<FWorldPartitionStreamingSource> StreamingSources;
 	TMap<FName, FStreamingSourceVelocity> StreamingSourcesVelocity;
 
-	UWorldPartitionRuntimeHash::FStreamingSourceCells FrameActivateCells;
-	UWorldPartitionRuntimeHash::FStreamingSourceCells FrameLoadCells;
+	TSet<const UWorldPartitionRuntimeCell*> FrameActivateCells;
+	TSet<const UWorldPartitionRuntimeCell*> FrameLoadCells;
 	
 	bool bCriticalPerformanceRequestedBlockTillOnWorld;
 	int32 CriticalPerformanceBlockTillLevelStreamingCompletedEpoch;
-	mutable TArray<const UWorldPartitionRuntimeCell*, TInlineAllocator<256>> SortedAddToWorldCells;
+	mutable TArray<const UWorldPartitionRuntimeCell*> SortedAddToWorldCells;
 
 	int32 DataLayersStatesServerEpoch;
+	int32 ContentBundleServerEpoch;
+	int32 ServerStreamingEnabledEpoch;
 
 	EWorldPartitionStreamingPerformance StreamingPerformance;
 #if !UE_BUILD_SHIPPING

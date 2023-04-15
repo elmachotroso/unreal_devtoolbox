@@ -6,6 +6,8 @@
 #include "OnlineBeaconHost.h"
 #include "OnlineBeaconClient.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineBeaconHostObject)
+
 AOnlineBeaconHostObject::AOnlineBeaconHostObject(const FObjectInitializer& ObjectInitializer) :
 	Super(ObjectInitializer),
 	BeaconTypeName(TEXT("UNDEFINED"))
@@ -33,9 +35,15 @@ AOnlineBeaconClient* AOnlineBeaconHostObject::SpawnBeaconActor(UNetConnection* C
 
 void AOnlineBeaconHostObject::OnClientConnected(AOnlineBeaconClient* NewClientActor, UNetConnection* ClientConnection)
 {
+	if (NewClientActor == nullptr)
+	{
+		return;
+	}
+
+	UNetConnection* ActorConnection = NewClientActor->GetNetConnection();
 	UE_LOG(LogBeacon, Verbose, TEXT("OnClientConnected %s from (%s)"),
-		NewClientActor ? *NewClientActor->GetName() : TEXT("NULL"),
-		NewClientActor ? *NewClientActor->GetNetConnection()->LowLevelDescribe() : TEXT("NULL"));
+		*NewClientActor->GetName(),
+		ActorConnection ? *ActorConnection->LowLevelDescribe() : TEXT("NULL"));
 
 	ClientActors.Add(NewClientActor);
 }
@@ -100,3 +108,4 @@ EBeaconState::Type AOnlineBeaconHostObject::GetBeaconState() const
 
 	return EBeaconState::DenyRequests;
 }
+

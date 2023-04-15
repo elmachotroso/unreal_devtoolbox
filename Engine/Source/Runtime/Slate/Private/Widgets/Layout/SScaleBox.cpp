@@ -7,6 +7,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Widgets/SWidget.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SScaleBox)
+
 
 /* SScaleBox interface
  *****************************************************************************/
@@ -83,6 +85,7 @@ bool SScaleBox::CustomPrepass(float LayoutScaleMultiplier)
 	// size, do that now.
 	if (bNeedsNormalizingPrepassOrLocalGeometry || !LastAllocatedArea.IsSet())
 	{
+		ChildSlotWidget.MarkPrepassAsDirty();
 		ChildSlotWidget.SlatePrepass(LayoutScaleMultiplier);
 
 		NormalizedContentDesiredSize = ChildSlotWidget.GetDesiredSize();
@@ -136,6 +139,7 @@ bool SScaleBox::DoesScaleRequireNormalizingPrepassOrLocalGeometry() const
 	case EStretch::Fill:
 	case EStretch::ScaleBySafeZone:
 	case EStretch::UserSpecified:
+	case EStretch::UserSpecifiedWithClipping:
 		return false;
 	default:
 		return true;
@@ -165,6 +169,7 @@ float SScaleBox::ComputeContentScale(const FGeometry& PaintGeometry) const
 	case EStretch::ScaleBySafeZone:
 		return SafeZoneScale;
 	case EStretch::UserSpecified:
+	case EStretch::UserSpecifiedWithClipping:
 		return UserSpecifiedScaleAttribute.Get();
 	}
 
@@ -245,6 +250,11 @@ void SScaleBox::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedCh
 		LastFinalOffset = FVector2D(0, 0);
 		float FinalScale = TempComputedContentScale;
 
+		if (FMath::IsNearlyZero(FinalScale))
+		{
+			return;
+		}
+
 		// If we're just filling, there's no scale applied, we're just filling the area.
 		if (CurrentStretch != EStretch::Fill)
 		{
@@ -304,6 +314,7 @@ int32 SScaleBox::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeome
 		case EStretch::ScaleToFitX:
 		case EStretch::ScaleToFitY:
 		case EStretch::ScaleToFill:
+		case EStretch::UserSpecifiedWithClipping:
 			bClippingNeeded = true;
 			break;
 		}

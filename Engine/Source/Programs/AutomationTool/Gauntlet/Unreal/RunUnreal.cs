@@ -4,15 +4,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using AutomationTool;
 using AutomationTool.DeviceReservation;
 using UnrealBuildTool;
-using Gauntlet;
 using System.IO;
-using Newtonsoft.Json;
-using System.Reflection;
-using System.Text.RegularExpressions;
 using EpicGames.Core;
 using UnrealBuildBase;
 
@@ -30,9 +25,41 @@ namespace Gauntlet
 	/// For a full list of options see UnrealTestContextOption
 	/// 
 	/// </summary>
+	[Help("Run Unreal tests using Gauntlet")]
+	[ParamHelp("Tests", "List of gauntlet tests to run", Required = true, MultiSelectSeparator = ",")]
+	[ParamHelp("ExecCmds", "List commands to execute", MultiSelectSeparator = "+")]
+	[ParamHelp("Build", "Reference to the build that is being tested")]
+	[ParamHelp("Configuration", "Configuration to perform tests on", Choices = new string[] { "Debug", "DebugGame", "Development", "Test", "Shipping"})]
+	[ParamHelp("Platform", "Platforms to perform tests on and their params")]
+	[ParamHelp("Dev", "Run in Dev mode", ParamType = typeof(bool))]
+	[ParamHelp("MaxDuration", "Maximum duration for test in sections", ParamType = typeof(int), DefaultValue = 3600)]
+	[ParamHelp("NoTimeout", "No maximum timeout", ParamType = typeof(bool))]
+	[ParamHelp("TestIterations", "Number of iterations to repeat this test", ParamType = typeof(int), DefaultValue = 1)]
+	[ParamHelp("CookedEditor", "Restricts usage of uncooked editor role", ParamType = typeof(bool))]
+	[ParamHelp("Device", "List of devices to use for tests", Action = ParamHelpAttribute.ParamAction.Append)]
+	[ParamHelp("NumClients", "Number of clients to run test with", ParamType = typeof(int), DefaultValue = 1)]
+	[ParamHelp("Server", "Run test with server", ParamType = typeof(bool))]
+	[ParamHelp("NullRHI", "Null Rendering Hardware Interface (run headless)", ParamType = typeof(bool))]
+	[ParamHelp("Windowed", "Run in Windowed mode", ParamType = typeof(bool))]
+	[ParamHelp("ResX", "Horizontal resolution", ParamType = typeof(int), DefaultValue = 1920)]
+	[ParamHelp("ResY", "Vertical resolution", ParamType = typeof(int), DefaultValue = 1080)]
+	[ParamHelp("Unattended", "Run in Unattended mode", ParamType = typeof(bool))]
+	[ParamHelp("Reboot", "Reboot device before starting test", ParamType = typeof(bool))]
+	[ParamHelp("SkipDeploy", "Skip deployment of build packages to devices", ParamType = typeof(bool))]
+	[ParamHelp("Log", "Output Logs", ParamType = typeof(bool))]
+	[ParamHelp("LogDir", "Location to store log files. Defaults to TempDir/Logs")]
+	[ParamHelp("Timestamp", "Print timestamp prefix to Log lines", ParamType = typeof(bool))]
+	[ParamHelp("TempDir", "Location to store temporary files. Defaults to GauntletTemp")]
+	[ParamHelp("Verbose", "Verbose logging", ParamType = typeof(bool))]
+	[ParamHelp("VeryVerbose", "Very Verbose logging", ParamType = typeof(bool))]
+	[ParamHelp("HeartbeatPeriod", "Gauntlet heartbeat period", ParamType = typeof(float))]
+	[ParamHelp("Args", "Extra arguments to pass role(s)")]
+	[ParamHelp("ClientArgs", "Extra arguments passed to client role(s)")]
+	[ParamHelp("ServerArgs", "Extra arguments passed to server role(s)")]
+	[ParamHelp("EditorArgs", "Extra arguments passed to editor role(s)")]
+	[ParamHelp("Namespaces", "Comma-separated list of namespaces to check for tests.", MultiSelectSeparator = ",")]
 	public class RunUnreal : BuildCommand
 	{
-
 		/// <summary>
 		/// Test node to create if none were specified
 		/// </summary>
@@ -127,8 +154,8 @@ namespace Gauntlet
 			UnrealTargetPlatform DefaultPlatform = BuildHostPlatform.Current.Platform;
 			UnrealTargetConfiguration DefaultConfiguration = UnrealTargetConfiguration.Development;
 
-			DirectoryReference UnrealPath = new DirectoryReference(Environment.CurrentDirectory);
-					
+			DirectoryReference UnrealPath = new DirectoryReference(!string.IsNullOrEmpty(ContextOptions.EditorDir) ? ContextOptions.EditorDir : Environment.CurrentDirectory);
+
 			// todo, pass this in as a BuildSource and remove the ContextOption params specific to finding builds
 			UnrealBuildSource BuildInfo = (UnrealBuildSource)Activator.CreateInstance(ContextOptions.BuildSourceType, new object[] { ContextOptions.Project, ContextOptions.ProjectPath, UnrealPath, ContextOptions.UsesSharedBuildType, ContextOptions.Build, ContextOptions.SearchPaths });
 
@@ -254,6 +281,14 @@ namespace Gauntlet
 							}
 						}
 					}
+					else if (Type.IsEditor())
+					{
+						Role.Configuration = RequestedConfiguration;
+						if (Role.Configuration > UnrealTargetConfiguration.Development)
+						{
+							Role.Configuration = UnrealTargetConfiguration.Development;
+						}
+					}
 
 					Gauntlet.Log.Verbose("Mapped Role {0} to RoleContext {1}", Type, Role);
 
@@ -281,8 +316,8 @@ namespace Gauntlet
 		bool ExecuteTests(UnrealTestOptions Options, IEnumerable<ITestNode> TestList)
 		{
 			// Create the test executor
-			var Executor = new TextExecutor();
-			
+			var Executor = new TestExecutor(ToString());
+
 			try
 			{
 				bool Result = Executor.ExecuteTests(Options, TestList);

@@ -6,10 +6,12 @@
 #include "Library/DMXEntityReference.h"
 #include "DMXPixelMappingFixtureGroupComponent.generated.h"
 
-
 class UDMXLibrary;
+class UDMXPixelMappingLayoutScript;
+
 class STextBlock;
 class SUniformGridPanel;
+
 
 /**
  * Container component for Fixture Items
@@ -52,7 +54,11 @@ public:
 	//~ End UDMXPixelMappingOutputComponent implementation
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture List")
-	UDMXLibrary* DMXLibrary;
+	TObjectPtr<UDMXLibrary> DMXLibrary;
+
+	/** Layout script for the children of this component (hidden in customizations and displayed in its own panel). */
+	UPROPERTY(EditAnywhere, Instanced, Category = "Layout")
+	TObjectPtr<UDMXPixelMappingLayoutScript> LayoutScript;
 
 private:
 	/** Handles changes in position */

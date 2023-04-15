@@ -45,11 +45,13 @@ namespace ImmediatePhysics_Chaos
 		ConstraintSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing1] = FMath::DegreesToRadians(ConstraintInstance->GetAngularSwing1Limit());
 		ConstraintSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing2] = FMath::DegreesToRadians(ConstraintInstance->GetAngularSwing2Limit());
 
-		ConstraintSettings.bProjectionEnabled = Profile.bEnableLinearProjection || Profile.bEnableAngularProjection;
+		ConstraintSettings.bProjectionEnabled = Profile.bEnableProjection;
 		ConstraintSettings.bShockPropagationEnabled = Profile.bEnableShockPropagation;
 
-		ConstraintSettings.LinearProjection = Profile.bEnableLinearProjection ? Profile.ProjectionLinearAlpha : 0.0f;
-		ConstraintSettings.AngularProjection = Profile.bEnableAngularProjection ? Profile.ProjectionAngularAlpha : 0.0f;
+		ConstraintSettings.LinearProjection = Profile.bEnableProjection ? Profile.ProjectionLinearAlpha : 0.0f;
+		ConstraintSettings.AngularProjection = Profile.bEnableProjection ? Profile.ProjectionAngularAlpha : 0.0f;
+		ConstraintSettings.TeleportDistance = Profile.bEnableProjection ? Profile.ProjectionLinearTolerance : -1.0f;
+		ConstraintSettings.TeleportAngle = Profile.bEnableProjection ? FMath::DegreesToRadians(Profile.ProjectionAngularTolerance) : -1.0f;
 		ConstraintSettings.ShockPropagation = Profile.bEnableShockPropagation ? Profile.ShockPropagationAlpha : 0.0f;
 		ConstraintSettings.ParentInvMassScale = Profile.bParentDominates ? (FReal)0 : (FReal)1;
 
@@ -89,27 +91,29 @@ namespace ImmediatePhysics_Chaos
 		ConstraintSettings.bLinearVelocityDriveEnabled[0] = Profile.LinearDrive.XDrive.bEnableVelocityDrive;
 		ConstraintSettings.bLinearVelocityDriveEnabled[1] = Profile.LinearDrive.YDrive.bEnableVelocityDrive;
 		ConstraintSettings.bLinearVelocityDriveEnabled[2] = Profile.LinearDrive.ZDrive.bEnableVelocityDrive;
-		ConstraintSettings.LinearDriveStiffness = Chaos::ConstraintSettings::LinearDriveStiffnessScale() * Profile.LinearDrive.XDrive.Stiffness;
-		ConstraintSettings.LinearDriveDamping = Chaos::ConstraintSettings::LinearDriveDampingScale() * Profile.LinearDrive.XDrive.Damping;
+		ConstraintSettings.LinearDriveStiffness = Chaos::ConstraintSettings::LinearDriveStiffnessScale() * Chaos::FVec3(Profile.LinearDrive.XDrive.Stiffness, Profile.LinearDrive.YDrive.Stiffness, Profile.LinearDrive.ZDrive.Stiffness);
+		ConstraintSettings.LinearDriveDamping = Chaos::ConstraintSettings::LinearDriveDampingScale() * Chaos::FVec3(Profile.LinearDrive.XDrive.Damping, Profile.LinearDrive.YDrive.Damping, Profile.LinearDrive.ZDrive.Damping);
 		ConstraintSettings.LinearDriveForceMode = EJointForceMode::Acceleration;
 
 		ConstraintSettings.AngularDrivePositionTarget = FQuat(Profile.AngularDrive.OrientationTarget);
-		ConstraintSettings.AngularDriveVelocityTarget = Profile.AngularDrive.AngularVelocityTarget * 2.0f * PI; // Rev/s to Rad/s
+		ConstraintSettings.AngularDriveVelocityTarget = Profile.AngularDrive.AngularVelocityTarget * 2.0f * UE_PI; // Rev/s to Rad/s
 
 		if (Profile.AngularDrive.AngularDriveMode == EAngularDriveMode::SLERP)
 		{
+			ConstraintSettings.AngularDriveStiffness = Chaos::ConstraintSettings::AngularDriveStiffnessScale() * FVec3(Profile.AngularDrive.SlerpDrive.Stiffness);
+			ConstraintSettings.AngularDriveDamping = Chaos::ConstraintSettings::AngularDriveDampingScale() * FVec3(Profile.AngularDrive.SlerpDrive.Damping);
 			ConstraintSettings.bAngularSLerpPositionDriveEnabled = Profile.AngularDrive.SlerpDrive.bEnablePositionDrive;
 			ConstraintSettings.bAngularSLerpVelocityDriveEnabled = Profile.AngularDrive.SlerpDrive.bEnableVelocityDrive;
 		}
 		else
 		{
+			ConstraintSettings.AngularDriveStiffness = Chaos::ConstraintSettings::AngularDriveStiffnessScale() * FVec3(Profile.AngularDrive.TwistDrive.Stiffness, Profile.AngularDrive.SwingDrive.Stiffness, Profile.AngularDrive.SwingDrive.Stiffness);
+			ConstraintSettings.AngularDriveDamping = Chaos::ConstraintSettings::AngularDriveDampingScale() * FVec3(Profile.AngularDrive.TwistDrive.Damping, Profile.AngularDrive.SwingDrive.Damping, Profile.AngularDrive.SwingDrive.Damping);
 			ConstraintSettings.bAngularTwistPositionDriveEnabled = Profile.AngularDrive.TwistDrive.bEnablePositionDrive;
 			ConstraintSettings.bAngularTwistVelocityDriveEnabled = Profile.AngularDrive.TwistDrive.bEnableVelocityDrive;
 			ConstraintSettings.bAngularSwingPositionDriveEnabled = Profile.AngularDrive.SwingDrive.bEnablePositionDrive;
 			ConstraintSettings.bAngularSwingVelocityDriveEnabled = Profile.AngularDrive.SwingDrive.bEnableVelocityDrive;
 		}
-		ConstraintSettings.AngularDriveStiffness = Chaos::ConstraintSettings::AngularDriveStiffnessScale() * Profile.AngularDrive.TwistDrive.Stiffness;
-		ConstraintSettings.AngularDriveDamping = Chaos::ConstraintSettings::AngularDriveDampingScale() * Profile.AngularDrive.TwistDrive.Damping;
 		ConstraintSettings.AngularDriveForceMode = EJointForceMode::Acceleration;
 
 		ConstraintSettings.LinearBreakForce = (Profile.bLinearBreakable) ? Chaos::ConstraintSettings::LinearBreakScale() * Profile.LinearBreakThreshold : FLT_MAX;
@@ -180,11 +184,22 @@ namespace ImmediatePhysics_Chaos
 			ConstraintSettings.LinearSoftForceMode = EJointForceMode::Acceleration;
 			ConstraintSettings.LinearProjection = 0.0f;
 			ConstraintSettings.AngularProjection = 0.0f;
+			ConstraintSettings.TeleportDistance = -1.0f;
+			ConstraintSettings.TeleportAngle = -1.0f;
 		}
 
 		ConstraintSettings.Sanitize();
 
 		ConstraintHandle = Constraints->AddConstraint({ Actor1->ParticleHandle, Actor2->ParticleHandle }, ConstraintSettings);
+
+		if (Actor1->ParticleHandle != nullptr)
+		{
+			FGenericParticleHandle(Actor1->ParticleHandle)->SetInertiaConditioningDirty();
+		}
+		if (Actor2->ParticleHandle != nullptr)
+		{
+			FGenericParticleHandle(Actor2->ParticleHandle)->SetInertiaConditioningDirty();
+		}
 	}
 
 	FJointHandle::~FJointHandle()

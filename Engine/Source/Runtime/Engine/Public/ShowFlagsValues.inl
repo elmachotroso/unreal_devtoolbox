@@ -281,6 +281,8 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(LightShafts, SFG_LightingFeatures, NSLOCTEXT("UnrealE
 SHOWFLAG_FIXED_IN_SHIPPING(1, PostProcessMaterial, SFG_PostProcess, NSLOCTEXT("UnrealEd", "PostProcessMaterialSF", "Post Process Material"))
 /** Render Sky and Atmospheric lighting, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
 SHOWFLAG_ALWAYS_ACCESSIBLE(Atmosphere, SFG_Normal, NSLOCTEXT("UnrealEd", "AtmosphereSF", "Atmosphere"))
+/** Render Cloud */
+SHOWFLAG_FIXED_IN_SHIPPING(1, Cloud, SFG_Normal, NSLOCTEXT("UnrealEd", "CloudSF", "Cloud"))
 /** Render safe frames bars*/
 SHOWFLAG_FIXED_IN_SHIPPING(0, CameraAspectRatioBars, SFG_Advanced, NSLOCTEXT("UnrealEd", "CameraAspectRatioBarsSF", "Camera Aspect Ratio Bars"))
 /** Render safe frames */
@@ -380,11 +382,11 @@ SHOWFLAG_FIXED_IN_SHIPPING(0, RayTracingDebug, SFG_Hidden, NSLOCTEXT("UnrealEd",
 /** Enable the SkyAtmosphere visualization to be drawn on screen */
 SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeSkyAtmosphere, SFG_Visualize, NSLOCTEXT("UnrealEd", "VisualizeSkyAtmosphereSF", "Sky Atmosphere"))
 /** Shows a full-screen calibration color post process material defined in renderer config  */
-SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeCalibrationColor, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationColorSF", "Visualize Calibration Color"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeCalibrationColor, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationColorSF", "Visualize Calibration Color"))
 /** Shows a full-screen calibration grayscale post process material defined in renderer config  */
-SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeCalibrationGrayscale, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationGrayscaleSF", "Visualize Calibration Grayscale"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeCalibrationGrayscale, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationGrayscaleSF", "Visualize Calibration Grayscale"))
 /** Shows a full-screen calibration custom post process material defined in renderer config  */
-SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeCalibrationCustom, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationCustomSF", "Visualize Calibration Custom"))
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeCalibrationCustom, SFG_Developer, NSLOCTEXT("UnrealEd", "VisualizeCalibrationCustomSF", "Visualize Calibration Custom"))
 /** Visualise information about the post processes stacked on screen */
 SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizePostProcessStack, SFG_Visualize, NSLOCTEXT("UnrealEd", "VisualizePostProcessStackSF", "Visualize Post Process Stack"))
 
@@ -398,17 +400,14 @@ SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeStrataMaterial, SFG_Visualize, NSLOCTEXT(
 
 SHOWFLAG_FIXED_IN_SHIPPING(1, VirtualShadowMapCaching, SFG_Developer, NSLOCTEXT("UnrealEd", "VirtualShadowMapCaching", "Cache Virtual Shadow Maps"))
 
-/** Debug the Strata material buffer content */
 SHOWFLAG_FIXED_IN_SHIPPING(0, DrawOnlyVSMInvalidatingGeo, SFG_Visualize, NSLOCTEXT("UnrealEd", "DrawOnlyVSMInvalidatingGeo", "Draw Only Geometry Causing VSM Invalidation"))
-
-/** If single layer water should use a full precision depth buffer for SceneDepthWithoutSingleLayerWater. For now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
-SHOWFLAG_ALWAYS_ACCESSIBLE(SingleLayerWaterRefractionFullPrecision, SFG_Advanced, NSLOCTEXT("UnrealEd", "SingleLayerWaterRefractionFullPrecision", "Single Layer Water Refraction Full Precision"))
+SHOWFLAG_FIXED_IN_SHIPPING(0, DebugDrawDistantVirtualSMLights, SFG_Advanced, NSLOCTEXT("UnrealEd", "DebugDrawDistantVirtualSMLightsSF", "Debug Draw Distant VSM Lights"))
 
 /** Debug the Virtual Texture System */
 SHOWFLAG_FIXED_IN_SHIPPING(0, VirtualTextureResidency, SFG_Hidden, NSLOCTEXT("UnrealEd", "VirtualTextureResidency", "Virtual Texture Residency"))
 
-/** Debug DVR Streaming System System */
-SHOWFLAG_FIXED_IN_SHIPPING(0, DVRStreamingSystem, SFG_Hidden, NSLOCTEXT("UnrealEd", "DVRStreamingSystem", "DVR Streaming System"))
+/** Input Debug Visualizer */
+SHOWFLAG_FIXED_IN_SHIPPING(0, InputDebugVisualizer, SFG_Hidden, NSLOCTEXT("UnrealEd", "InputDebugVisualizer", "Input Debug Visualizer"))
 
 /** Use screen space tracing in Lumen */
 SHOWFLAG_ALWAYS_ACCESSIBLE(LumenScreenTraces, SFG_Lumen, NSLOCTEXT("UnrealEd", "LumenScreenTracesSF", "Screen Traces"))
@@ -424,6 +423,12 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(LumenSecondaryBounces, SFG_Lumen, NSLOCTEXT("UnrealEd
 SHOWFLAG_ALWAYS_ACCESSIBLE(LumenScreenSpaceDirectionalOcclusion, SFG_Lumen, NSLOCTEXT("UnrealEd", "LumenScreenSpaceDirectionalOcclusionSF", "Screen Space Directional Occlusion"))
 /** Whether to reuse shadowmaps when calculating shadowing.  Can be disabled to debug view dependent lighting from shadowing technique mismatches. */
 SHOWFLAG_ALWAYS_ACCESSIBLE(LumenReuseShadowMaps, SFG_Lumen, NSLOCTEXT("UnrealEd", "LumenReuseShadowMapsSF", "Reuse Shadow Maps"))
+
+/** Visualize Skin Cache */
+SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeGPUSkinCache, SFG_Hidden, NSLOCTEXT("UnrealEd", "VisualizeGPUSkinCache", "Visualize GPU Skin Cache"))
+
+/** Enables ShaderPrint functionality that is used for debug printing from shaders (e.g. 'Nanitestats' command). Disable this for certain editor rendering (e.g. thumbnail rendering) */
+SHOWFLAG_ALWAYS_ACCESSIBLE(ShaderPrint, SFG_Developer, NSLOCTEXT("UnrealEd", "ShaderPrint", "Shader Print"))
 
 #undef SHOWFLAG_ALWAYS_ACCESSIBLE
 #undef SHOWFLAG_FIXED_IN_SHIPPING

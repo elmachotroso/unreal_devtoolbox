@@ -2,8 +2,8 @@
 
 #include "Factories/MirrorDataTableFactory.h"
 #include "DataTableEditorUtils.h"
-#include "Engine/Classes/Animation/MirrorDataTable.h"
-#include "Engine/Classes/Animation/AnimationSettings.h"
+#include "Animation/MirrorDataTable.h"
+#include "Animation/AnimationSettings.h"
 #include "Editor.h"
 #include "StructViewerModule.h"
 #include "StructViewerFilter.h"
@@ -30,7 +30,7 @@ public:
 		return FDataTableEditorUtils::IsValidTableStruct(InStruct) && InStruct->FindPropertyByName(TEXT("MirroredName")) != nullptr;
 	}
 
-	virtual bool IsUnloadedStructAllowed(const FStructViewerInitializationOptions& InInitOptions, const FName InStructPath, TSharedRef<FStructViewerFilterFuncs> InFilterFuncs) override
+	virtual bool IsUnloadedStructAllowed(const FStructViewerInitializationOptions& InInitOptions, const FSoftObjectPath& InStructPath, TSharedRef<FStructViewerFilterFuncs> InFilterFuncs) override
 	{
 		// Unloaded structs are always User Defined Structs, and User Defined Structs are always allowed
 		// They will be re-validated by IsStructAllowed once loaded during the pick
@@ -111,8 +111,8 @@ public:
 				.MaxHeight(500)
 				[
 					SNew(SBorder)
-					.Padding(4)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.Padding(4.0f)
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						StructViewerModule.CreateStructViewer(Options, FOnStructPicked::CreateSP(this, &SMirrorDataTableFactoryWindow::OnPickedStruct))
 					]
@@ -135,7 +135,7 @@ public:
 
 		FAssetPickerConfig AssetPickerConfig;
 		/** The asset picker will only show skeletons */
-		AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 		/** The delegate that fires when an asset was selected */
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(this, &SMirrorDataTableFactoryWindow::OnSkeletonSelected);
 		if (Skeleton != nullptr)
@@ -167,7 +167,7 @@ public:
 			.SupportsMaximize(false)
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+			.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 			[
 				SNew(SVerticalBox)
 				+SVerticalBox::Slot()
@@ -204,9 +204,9 @@ public:
 						.AutoHeight()
 						[
 							SNew(SUniformGridPanel)
-							.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-							.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-							.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+							.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+							.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+							.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 							+ SUniformGridPanel::Slot(0, 0)
 							.VAlign(VAlign_Center)
 							[
@@ -243,15 +243,15 @@ public:
 				.Padding(3,3)
 				[
 					SNew(SUniformGridPanel)
-					.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-					.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-					.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+					.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+					.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+					.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 					+ SUniformGridPanel::Slot(0, 0)
 					[
 						SNew(SButton)
 						.Text(LOCTEXT("Accept", "Accept"))
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.IsEnabled(this, &SMirrorDataTableFactoryWindow::CanAccept)
 						.OnClicked_Raw(this, &SMirrorDataTableFactoryWindow::OnAccept)
 					]
@@ -260,7 +260,7 @@ public:
 						SNew(SButton)
 						.Text(LOCTEXT("Cancel", "Cancel"))
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+						.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked_Raw(this, &SMirrorDataTableFactoryWindow::OnCancel)
 					]
 				]

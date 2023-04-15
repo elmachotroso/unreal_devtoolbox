@@ -2,51 +2,93 @@
 
 
 #include "ContentBrowserSingleton.h"
-#include "Textures/SlateIcon.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Widgets/SWindow.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/Docking/WorkspaceItem.h"
-#include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Editor.h"
-#include "ContentBrowserLog.h"
-#include "ContentBrowserUtils.h"
-#include "SAssetPicker.h"
-#include "SPathPicker.h"
-#include "SCollectionPicker.h"
-#include "SContentBrowser.h"
-#include "ContentBrowserModule.h"
-#include "IContentBrowserDataModule.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetToolsModule.h"
+#include "AssetViewUtils.h"
+#include "CollectionAssetRegistryBridge.h"
+#include "Containers/Set.h"
+#include "Containers/StringView.h"
+#include "ContentBrowserCommands.h"
 #include "ContentBrowserDataSubsystem.h"
-#include "WorkspaceMenuStructure.h"
-#include "WorkspaceMenuStructureModule.h"
+#include "ContentBrowserModule.h"
+#include "ContentBrowserUtils.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "EditorDirectories.h"
+#include "EngineLogs.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/Docking/WorkspaceItem.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "IAssetTools.h"
+#include "IContentBrowserDataModule.h"
 #include "IDocumentation.h"
 #include "Interfaces/IMainFrameModule.h"
-#include "SAssetDialog.h"
-#include "TutorialMetaData.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "CollectionAssetRegistryBridge.h"
-#include "ContentBrowserCommands.h"
-#include "CoreGlobals.h"
-#include "AssetToolsModule.h"
-#include "EditorDirectories.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/NamePermissionList.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "Misc/PackageName.h"
+#include "Misc/StringBuilder.h"
+#include "Modules/ModuleManager.h"
+#include "SAssetDialog.h"
+#include "SAssetPicker.h"
+#include "SCollectionPicker.h"
+#include "SContentBrowser.h"
+#include "SPathPicker.h"
 #include "StatusBarSubsystem.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuDelegates.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuMisc.h"
+#include "ToolMenuSection.h"
 #include "ToolMenus.h"
+#include "Trace/Detail/Channel.h"
+#include "TutorialMetaData.h"
+#include "UObject/Class.h"
+#include "UObject/PropertyPortFlags.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
+
+class UObject;
+struct FContentBrowserItem;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
 static const FName ContentBrowserDrawerInstanceName("ContentBrowserDrawer");
 
+IContentBrowserSingleton& IContentBrowserSingleton::Get()
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	return ContentBrowserModule.Get();
+}
+
 FContentBrowserSingleton::FContentBrowserSingleton()
 	: CollectionAssetRegistryBridge(MakeShared<FCollectionAssetRegistryBridge>())
 	, SettingsStringID(0)
 {
-	// We're going to call a static function in the editor style module, so we need to make sure the module has actually been loaded
-	FModuleManager::Get().LoadModuleChecked("EditorStyle");
-
 	const FSlateIcon ContentBrowserIcon(FAppStyle::Get().GetStyleSetName(), "ContentBrowser.TabIcon");
 	const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
 	TSharedRef<FWorkspaceItem> ContentBrowserGroup = MenuStructure.GetLevelEditorCategory()->AddGroup(
@@ -85,6 +127,10 @@ FContentBrowserSingleton::FContentBrowserSingleton()
 	FContentBrowserCommands::Register();
 
 	PopulateConfigValues();
+
+	ShowPrivateContentState.InvariantPaths = MakeShared<FPathPermissionList>();
+	ShowPrivateContentState.InvariantPaths->OnFilterChanged().AddRaw(this, &FContentBrowserSingleton::SetPrivateContentPermissionListDirty);
+	ShowPrivateContentState.CachedVirtualPaths = MakeShared<FPathPermissionList>();
 }
 
 FContentBrowserSingleton::~FContentBrowserSingleton()
@@ -105,6 +151,12 @@ TSharedRef<SWidget> FContentBrowserSingleton::CreateAssetPicker(const FAssetPick
 	return SNew( SAssetPicker )
 		.IsEnabled( FSlateApplication::Get().GetNormalExecutionAttribute() )
 		.AssetPickerConfig(AssetPickerConfig);
+}
+
+TSharedPtr<SWidget> FContentBrowserSingleton::GetAssetPickerSearchBox(const TSharedRef<SWidget>& AssetPickerWidget)
+{
+	TSharedRef<SAssetPicker> AssetPicker = StaticCastSharedRef<SAssetPicker>(AssetPickerWidget);
+	return AssetPicker->GetSearchBox();
 }
 
 TSharedRef<SWidget> FContentBrowserSingleton::CreatePathPicker(const FPathPickerConfig& PathPickerConfig)
@@ -393,7 +445,12 @@ TSharedPtr<SContentBrowser> FContentBrowserSingleton::FindContentBrowserToSync(b
 
 	if ( !ContentBrowserToSync.IsValid() )
 	{
-		UE_LOG( LogContentBrowser, Log, TEXT( "Unable to sync content browser, all browsers appear to be locked" ) );
+		FText NotificationText = FText::FromString(TEXT("Unable to browse to the requested asset. All Content Browsers are locked."));
+		FNotificationInfo Notification(NotificationText);
+		Notification.ExpireDuration = 3.0f;
+		FSlateNotificationManager::Get().AddNotification(Notification);
+
+		UE_LOG(LogNet, Log, TEXT("%s"), *NotificationText.ToString());
 	}
 
 	return ContentBrowserToSync;
@@ -654,9 +711,9 @@ void FContentBrowserSingleton::ChooseNewPrimaryBrowser()
 	}
 
 	// Set the content browser drawer as the primary browser
-	if (!PrimaryContentBrowser.IsValid())
+	if (!PrimaryContentBrowser.IsValid() && ContentBrowserDrawer.IsValid())
 	{
-		PrimaryContentBrowser = ContentBrowserDrawer;
+		SetPrimaryContentBrowser(ContentBrowserDrawer.Pin().ToSharedRef());
 	}
 }
 
@@ -801,8 +858,9 @@ TSharedRef<SDockTab> FContentBrowserSingleton::SpawnContentBrowserTab( const FSp
 	TSharedRef<SDockTab> NewTab = SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
 		.Label( Label )
-		.ToolTip( IDocumentation::Get()->CreateToolTip( Label, nullptr, "Shared/ContentBrowser", "Tab" ) );
-
+		.ToolTip( IDocumentation::Get()->CreateToolTip( Label, nullptr, "Shared/ContentBrowser", "Tab" ) )
+		.OnExtendContextMenu_Raw(this, &FContentBrowserSingleton::ExtendContentBrowserTabContextMenu);
+	
 	TSharedRef<SWidget> NewBrowser = CreateContentBrowser( SpawnTabArgs.GetTabId().TabType, NewTab, nullptr );
 
 	// Add wrapper for tutorial highlighting
@@ -817,6 +875,62 @@ TSharedRef<SDockTab> FContentBrowserSingleton::SpawnContentBrowserTab( const FSp
 
 	return NewTab;
 }
+
+void FContentBrowserSingleton::ExtendContentBrowserTabContextMenu(FMenuBuilder& InMenuBuilder)
+{
+	InMenuBuilder.BeginSection("SummonContentBrowserTabs", LOCTEXT("ContentBrowserTabs", "Content Browser Tabs"));
+
+	for (int32 BrowserIdx = 0; BrowserIdx < UE_ARRAY_COUNT(ContentBrowserTabIDs); BrowserIdx++)
+	{
+		const FName TabID = ContentBrowserTabIDs[BrowserIdx];
+		const FText DefaultDisplayName = GetContentBrowserLabelWithIndex(BrowserIdx);
+
+		InMenuBuilder.AddMenuEntry(DefaultDisplayName,
+			LOCTEXT("ContentBrowserMenuTooltipText", "Open a Content Browser tab."),
+			FSlateIcon(),
+			FUIAction(
+					FExecuteAction::CreateLambda([TabID, this]()
+					{
+						// Go through all the content browsers to check if the current one is open
+						for (int32 BrowserIdx = 0; BrowserIdx < AllContentBrowsers.Num(); ++BrowserIdx)
+						{
+							const TWeakPtr<SContentBrowser>& Browser = AllContentBrowsers[BrowserIdx];
+
+							if (Browser.IsValid() && Browser.Pin()->GetInstanceName() == TabID)
+							{
+								FocusContentBrowser(Browser.Pin()); // Focus it if so
+							}
+						}
+
+						// If the tab was not found, try to open it
+						FGlobalTabmanager::Get()->TryInvokeTab(TabID);
+					}
+				),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([this, TabID]()
+					{
+						// Go through all the content browsers to check if the current one is open
+						for (int32 BrowserIdx = 0; BrowserIdx < AllContentBrowsers.Num(); ++BrowserIdx)
+						{
+							const TWeakPtr<SContentBrowser>& Browser = AllContentBrowsers[BrowserIdx];
+
+							if (Browser.IsValid() && Browser.Pin()->GetInstanceName() == TabID)
+							{
+								return true;
+							}
+						}
+
+						return false;
+						
+					}
+				)),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton);
+	}
+
+	InMenuBuilder.EndSection();
+}
+
 
 bool FContentBrowserSingleton::IsLocked(const FName& InstanceName) const
 {
@@ -981,6 +1095,66 @@ void FContentBrowserSingleton::RefreshPathView(TSharedPtr<SWidget> Widget)
 			PathPicker->RefreshPathView();
 		}
 	}
+}
+
+bool FContentBrowserSingleton::IsShowingPrivateContent(const FStringView VirtualFolderPath)
+{
+	if (!ShowPrivateContentState.InvariantPaths->HasFiltering())
+	{
+		return false;
+	}
+
+	if (!ShowPrivateContentState.CachedVirtualPaths)
+	{
+		RebuildPrivateContentStateCache();
+	}
+
+	return ShowPrivateContentState.CachedVirtualPaths->PassesStartsWithFilter(VirtualFolderPath);
+}
+
+void FContentBrowserSingleton::RebuildPrivateContentStateCache()
+{
+	ShowPrivateContentState.CachedVirtualPaths.Reset();
+	ShowPrivateContentState.CachedVirtualPaths = MakeShared<FPathPermissionList>();
+
+	const auto& InvariantAllowList = ShowPrivateContentState.InvariantPaths->GetAllowList();
+	for (const TPair<FString, FPermissionListOwners>& InvariantPathOwnerPair : InvariantAllowList)
+	{
+		FName VirtualPath;
+		IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(FStringView(InvariantPathOwnerPair.Key), VirtualPath);
+
+		ShowPrivateContentState.CachedVirtualPaths->AddAllowListItem(TEXT("ContentBrowser"), VirtualPath);
+	}
+}
+
+bool FContentBrowserSingleton::IsFolderShowPrivateContentToggleable(const FStringView VirtualFolderPath)
+{
+	if (IsFolderShowPrivateContentToggleableDelegate.IsBound())
+	{
+		return IsFolderShowPrivateContentToggleableDelegate.Execute(VirtualFolderPath);
+	}
+
+	return true;
+}
+
+const TSharedPtr<FPathPermissionList>& FContentBrowserSingleton::GetShowPrivateContentPermissionList()
+{
+	return ShowPrivateContentState.InvariantPaths;
+}
+
+void FContentBrowserSingleton::SetPrivateContentPermissionListDirty()
+{
+	ShowPrivateContentState.CachedVirtualPaths.Reset();
+}
+
+void FContentBrowserSingleton::RegisterIsFolderShowPrivateContentToggleableDelegate(FIsFolderShowPrivateContentToggleableDelegate InIsFolderShowPrivateContentToggleableDelegate)
+{
+	IsFolderShowPrivateContentToggleableDelegate = InIsFolderShowPrivateContentToggleableDelegate;
+}
+
+void FContentBrowserSingleton::UnregisterIsFolderShowPrivateContentToggleableDelegate()
+{
+	IsFolderShowPrivateContentToggleableDelegate = FIsFolderShowPrivateContentToggleableDelegate();
 }
 
 void FContentBrowserSingleton::PopulateConfigValues()

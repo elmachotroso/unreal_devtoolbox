@@ -2,19 +2,31 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Object.h"
-#include "Features/IModularFeature.h"
-#include "ContentBrowserItemData.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "ContentBrowserDataFilter.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserItemData.h"
 #include "ContentBrowserVirtualPathTree.h"
+#include "CoreMinimal.h"
+#include "Features/IModularFeature.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "ContentBrowserDataSource.generated.h"
 
-struct FAssetData;
 class FAssetThumbnail;
-
 class FDragDropEvent;
 class FDragDropOperation;
+class FText;
+struct FAssetData;
+struct FContentBrowserItemPath;
+template <typename FuncType> class TFunctionRef;
 
 namespace ContentBrowserItemAttributes
 {
@@ -41,6 +53,12 @@ namespace ContentBrowserItemAttributes
 	 * Type: int64.
 	 */
 	const FName ItemDiskSize = "ItemDiskSize";
+
+	/**
+	 * Attribute key that can be used to query if the item has virtualized data or not.
+	 * Type: bool.
+	 */
+	const FName VirtualizedData = "HasVirtualizedData";
 
 	/**
 	 * Attribute key that can be used to query whether the given item is considered to be developer content.
@@ -205,6 +223,17 @@ public:
 	 * @param InCallback The function to invoke for each matching item (return true to continue enumeration).
 	 */
 	virtual bool EnumerateItemsForObjects(const TArrayView<UObject*> InObjects, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback);
+
+	/**
+	 * Get a list of other paths that the data source may be using to represent a specific path
+	 *
+	 * @param The internal path (or object path) of an asset to get aliases for
+	 * @return All alternative paths that represent the input path (not including the input path itself)
+	 */
+	virtual TArray<FContentBrowserItemPath> GetAliasesForPath(const FSoftObjectPath& InInternalPath) const;
+
+	UE_DEPRECATED(5.1, "FNames containing full asset paths are deprecated. Use FSoftObjectPath instead.")
+	TArray<FContentBrowserItemPath> GetAliasesForPath(FName InInternalPath) const;
 
 	/**
 	 * Query whether this data source instance is currently discovering content, and retrieve an optional status message that can be shown in the UI.
@@ -450,6 +479,34 @@ public:
 	virtual bool BulkDeleteItems(TArrayView<const FContentBrowserItemData> InItems);
 
 	/**
+	* Query whether the given item can be privatized, optionally providing error information if it cannot.
+	* 
+	* @param InItem The item to query.
+	* @param OutErrorMessage Optional error message to fill on failure.
+	* 
+	* @return True if the item was deleted, false otherwise.
+	*/
+	virtual bool CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg);
+
+	/**
+	* Attempt to mark the given item as private (NotExternallyReferenceable).
+	* 
+	* @param InItem The item to mark private.
+	*
+	* @return True if the item was marked private, false otherwise
+	*/
+	virtual bool PrivatizeItem(const FContentBrowserItemData& InItem);
+
+	/**
+	* Attempt to mark the given items as private (NotExternallyReferenceable)
+	* 
+	* @param InItems The items to be marked private.
+	* 
+	* @return True if any items were marked private, false otherwise
+	*/
+	virtual bool BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems);
+
+	/**
 	 * Query whether the given item is can be renamed, optionally providing error information if it cannot.
 	 *
 	 * @param InItem The item to query.
@@ -610,11 +667,25 @@ public:
 	 * Attempt to retrieve the identifier that should be used when storing a reference to the given item within a collection.
 	 *
 	 * @param InItem The item to query.
-	 * @param InOutStr The collection ID to fill.
+	 * @param OutCollectionId The collection ID to fill.
 	 *
 	 * @return True if the ID was retrieved, false otherwise.
 	 */
-	virtual bool TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId);
+	virtual bool TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId);
+
+	UE_DEPRECATED(5.1, "FNames containing full object paths are deprecated. Use FSoftObjectPath instead.")
+	bool TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FSoftObjectPath Temp;
+		if (TryGetCollectionId(InItem, Temp))
+		{
+			OutCollectionId = Temp.ToFName();
+			return true;
+		}
+		return false;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 	/**
 	 * Attempt to retrieve the package path associated with the given item.

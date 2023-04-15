@@ -4,6 +4,7 @@
 #include "NiagaraDataInterfaceMeshCommon.h"
 #include "StaticMeshResources.h"
 #include "Engine/StaticMesh.h"
+#include "Experimental/NiagaraMeshUvMappingHandle.h"
 #include "NiagaraDataInterfaceStaticMesh.generated.h"
 
 UENUM()
@@ -56,8 +57,6 @@ class NIAGARA_API UNiagaraDataInterfaceStaticMesh : public UNiagaraDataInterface
 	GENERATED_UCLASS_BODY()
 
 public:
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	/** Controls how to retrieve the Static Mesh Component to attach to. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	ENDIStaticMesh_SourceMode SourceMode = ENDIStaticMesh_SourceMode::Default;
@@ -72,13 +71,20 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	TObjectPtr<UStaticMesh> DefaultMesh;
 
+protected:
 	/** The source actor from which to sample. Takes precedence over the direct mesh. Note that this can only be set when used as a user variable on a component in the world. */
-	UPROPERTY(EditAnywhere, Category = "Mesh")
-	TObjectPtr<AActor> Source;
+	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (DisplayName = "Source Actor"))
+	TSoftObjectPtr<AActor> SoftSourceActor;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TObjectPtr<AActor> Source_DEPRECATED;
+#endif
 
 	/** The source component from which to sample. Takes precedence over the direct mesh. Not exposed to the user, only indirectly accessible from blueprints. */
 	UPROPERTY(Transient)
 	TObjectPtr<UStaticMeshComponent> SourceComponent;
+public:
 
 	/** Array of filters the can be used to limit sampling to certain sections of the mesh. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
@@ -97,6 +103,7 @@ public:
 
 	//~ UObject interface
 	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
@@ -112,6 +119,16 @@ public:
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
+	void GetVertexSamplingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetTriangleSamplingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetSocketSamplingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetSectionFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetMiscFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetUVMappingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetDistanceFieldFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetDeprecatedFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const;
+	void GetCpuAccessFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions);
+
 #if WITH_EDITORONLY_DATA
 	virtual void GetCommonHLSL(FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
@@ -127,11 +144,17 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 public:
+#if WITH_NIAGARA_DEBUGGER
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override;
+#endif
 #if WITH_EDITOR
 	virtual void GetFeedback(UNiagaraSystem* Asset, UNiagaraComponent* Component, TArray<FNiagaraDataInterfaceError>& OutErrors,
 		TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo) override;
@@ -143,6 +166,13 @@ public:
 	void SetDefaultMeshFromBlueprints(UStaticMesh* MeshToUse);
 
 protected:
+	// Bind/unbind delegates to release references to the source actor & component.
+	void UnbindSourceDelegates();
+	void BindSourceDelegates();
+
+	UFUNCTION()
+	void OnSourceEndPlay(AActor* InSource, EEndPlayReason::Type Reason);
+
 	// VM Vertex Sampling
 	void VMIsValidVertex(FVectorVMExternalFunctionContext& Context);
 	void VMRandomVertex(FVectorVMExternalFunctionContext& Context);
@@ -150,6 +180,8 @@ protected:
 
 	template<typename TTransformHandler>
 	void VMGetVertex(FVectorVMExternalFunctionContext& Context);
+	template<typename TTransformHandler>
+	void VMGetVertexInterpolated(FVectorVMExternalFunctionContext& Context);
 	void VMGetVertexColor(FVectorVMExternalFunctionContext& Context);
 	void VMGetVertexUV(FVectorVMExternalFunctionContext& Context);
 
@@ -171,6 +203,8 @@ protected:
 
 	template<typename TTransformHandler>
 	void VMGetTriangle(FVectorVMExternalFunctionContext& Context);
+	template<typename TTransformHandler>
+	void VMGetTriangleInterpolated(FVectorVMExternalFunctionContext& Context);
 	void VMGetTriangleColor(FVectorVMExternalFunctionContext& Context);
 	void VMGetTriangleUV(FVectorVMExternalFunctionContext& Context);
 
@@ -180,12 +214,23 @@ protected:
 	void VMGetSocketCount(FVectorVMExternalFunctionContext& Context);
 	void VMGetFilteredSocketCount(FVectorVMExternalFunctionContext& Context);
 	void VMGetUnfilteredSocketCount(FVectorVMExternalFunctionContext& Context);
+	void VMRandomSocket(FVectorVMExternalFunctionContext& Context);
+	void VMRandomFilteredSocket(FVectorVMExternalFunctionContext& Context);
+	void VMRandomUnfilteredSocket(FVectorVMExternalFunctionContext& Context);
 	template<typename TTransformHandler>
 	void VMGetSocketTransform(FVectorVMExternalFunctionContext& Context);
 	template<typename TTransformHandler>
+	void VMGetSocketTransformInterpolated(FVectorVMExternalFunctionContext& Context);
+	template<typename TTransformHandler>
 	void VMGetFilteredSocketTransform(FVectorVMExternalFunctionContext& Context);
 	template<typename TTransformHandler>
+	void VMGetFilteredSocketTransformInterpolated(FVectorVMExternalFunctionContext& Context);
+	template<typename TTransformHandler>
 	void VMGetUnfilteredSocketTransform(FVectorVMExternalFunctionContext& Context);
+	template<typename TTransformHandler>
+	void VMGetUnfilteredSocketTransformInterpolated(FVectorVMExternalFunctionContext& Context);
+	void VMGetFilteredSocket(FVectorVMExternalFunctionContext& Context);
+	void VMGetUnfilteredSocket(FVectorVMExternalFunctionContext& Context);
 
 	// Section functions
 	void VMIsValidSection(FVectorVMExternalFunctionContext& Context);
@@ -210,9 +255,16 @@ protected:
 	// VM Misc Functions
 	void VMIsValid(FVectorVMExternalFunctionContext& Context);
 
+	void VMGetPreSkinnedLocalBounds(FVectorVMExternalFunctionContext& Context);
+
 	void VMGetLocalToWorld(FVectorVMExternalFunctionContext& Context);
 	void VMGetLocalToWorldInverseTransposed(FVectorVMExternalFunctionContext& Context);
 	void VMGetWorldVelocity(FVectorVMExternalFunctionContext& Context);
+
+	// VM UV mapping functions
+	void VMGetTriangleCoordAtUV(FVectorVMExternalFunctionContext& Context);
+	void VMGetTriangleCoordInAabb(FVectorVMExternalFunctionContext& Context);
+	void VMBuildUvMapping(FVectorVMExternalFunctionContext& Context);;
 
 	// Deprecated VM Functions
 	template<typename TTransformHandler>
@@ -225,4 +277,21 @@ protected:
 	void VMGetTriangleTangentBasis_Deprecated(FVectorVMExternalFunctionContext& Context);
 	template<typename TTransformHandler>
 	void VMGetTriangleNormal_Deprecated(FVectorVMExternalFunctionContext& Context);
+};
+
+class NIAGARA_API FNDI_StaticMesh_GeneratedData : public FNDI_GeneratedData
+{
+	FRWLock CachedUvMappingGuard;
+	TArray<TSharedPtr<FStaticMeshUvMapping>> CachedUvMapping;
+
+public:
+	FStaticMeshUvMappingHandle GetCachedUvMapping(TWeakObjectPtr<UStaticMesh>& InMeshObject, int32 InLodIndex, int32 InUvSetIndex, FMeshUvMappingUsage Usage, bool bNeedsDataImmediately);
+
+	virtual void Tick(ETickingGroup TickGroup, float DeltaSeconds) override;
+
+	static TypeHash GetTypeHash()
+	{
+		static const TypeHash Hash = ::GetTypeHash(TEXT("FNDI_StaticMesh_GeneratedData"));
+		return Hash;
+	}
 };

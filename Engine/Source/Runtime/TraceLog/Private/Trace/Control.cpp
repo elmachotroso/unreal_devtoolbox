@@ -15,6 +15,8 @@ namespace UE {
 namespace Trace {
 namespace Private {
 
+#if !defined(TRACE_PRIVATE_CONTROL_ENABLED) || TRACE_PRIVATE_CONTROL_ENABLED
+
 ////////////////////////////////////////////////////////////////////////////////
 bool	Writer_SendTo(const ANSICHAR*, uint32=0);
 bool	Writer_WriteTo(const ANSICHAR*);
@@ -52,7 +54,7 @@ static FControlCommands	GControlCommands;
 static UPTRINT			GControlListen		= 0;
 static UPTRINT			GControlSocket		= 0;
 static EControlState	GControlState;		// = EControlState::Closed;
-static uint32			GControlPort		= 1985;
+static uint16			GControlPort		= 1985;
 
 ////////////////////////////////////////////////////////////////////////////////
 static uint32 Writer_ControlHash(const ANSICHAR* Word)
@@ -112,7 +114,7 @@ static bool Writer_ControlListen()
 		uint32 Seed = uint32(TimeGetTimestamp());
 		for (uint32 i = 0; i < 10 && !GControlListen; Seed *= 13, ++i)
 		{
-			uint32 Port = (Seed & 0x1fff) + 0x8000;
+			uint16 Port((Seed & 0x1fff) + 0x8000);
 			GControlListen = TcpSocketListen(Port);
 			if (GControlListen)
 			{
@@ -312,8 +314,8 @@ void Writer_InitializeControl()
 		}
 	);
 
-	Writer_ControlAddCommand("ToggleChannels", nullptr, 
-		[] (void*, uint32 ArgC, ANSICHAR const* const* ArgV) 
+	Writer_ControlAddCommand("ToggleChannels", nullptr,
+		[] (void*, uint32 ArgC, ANSICHAR const* const* ArgV)
 		{
 			if (ArgC < 2)
 			{
@@ -324,12 +326,12 @@ void Writer_InitializeControl()
 			ANSICHAR Channels[BufferSize] = {};
 			ANSICHAR* Ctx;
 			const bool bState = (ArgV[1][0] != '0');
-			FPlatformString::Strcpy(Channels, BufferSize, ArgV[0]);
-			ANSICHAR* Channel = FPlatformString::Strtok(Channels, ",", &Ctx);
+			FCStringAnsi::Strcpy(Channels, BufferSize, ArgV[0]);
+			ANSICHAR* Channel = FCStringAnsi::Strtok(Channels, ",", &Ctx);
 			while (Channel)
 			{
 				FChannel::Toggle(Channel, bState);
-				Channel = FPlatformString::Strtok(nullptr, ",", &Ctx);
+				Channel = FCStringAnsi::Strtok(nullptr, ",", &Ctx);
 			}
 		}
 	);
@@ -344,6 +346,15 @@ void Writer_ShutdownControl()
 		GControlListen = 0;
 	}
 }
+
+#else
+
+void	Writer_InitializeControl()	{}
+void	Writer_ShutdownControl()	{}
+void	Writer_UpdateControl()		{}
+uint32	Writer_GetControlPort()		{ return ~0u; }
+
+#endif // TRACE_PRIVATE_CONTROL_ENABLED
 
 } // namespace Private
 } // namespace Trace

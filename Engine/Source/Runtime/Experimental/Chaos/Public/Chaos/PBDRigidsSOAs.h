@@ -314,9 +314,25 @@ public:
 
 	void DestroyParticle(FGeometryParticleHandle* Particle)
 	{
+		if (bResimulating)
+		{
+			ResimStaticParticles.Remove(Particle);
+			FKinematicGeometryParticleHandle* Kinematic = Particle->CastToKinematicParticle();
+			if (Kinematic)
+			{
+				ResimKinematicParticles.Remove(Kinematic);
+			}
+		}
+
 		auto PBDRigid = Particle->CastToRigidParticle();
 		if(PBDRigid)
 		{
+			if (bResimulating)
+			{
+				ResimDynamicParticles.Remove(PBDRigid);
+				ResimDynamicKinematicParticles.Remove(PBDRigid);
+			}
+
 			RemoveFromActiveArray(PBDRigid, /*bStillDirty=*/ false);
 			MovingKinematicsMapArray.Remove(PBDRigid->CastToKinematicParticle());
 
@@ -469,6 +485,10 @@ public:
 							bGeometryCollectionDirty = true;
 							return true;
 						}
+						else
+						{
+							AddToActiveArray(PBDRigid);
+						}
 					}
 					else
 					{
@@ -532,6 +552,10 @@ public:
 						{
 							FellAsleepGeometryCollectionArray.Insert(PBDRigid);
 							bGeometryCollectionDirty = true;
+						}
+						else
+						{
+							RemoveFromActiveArray(PBDRigid, /*bStillDirty=*/true);
 						}
 					}
 					else
@@ -771,6 +795,13 @@ public:
 	const FPBDRigidParticles& GetDynamicParticles() const { return *DynamicParticles; }
 	FPBDRigidParticles& GetDynamicParticles() { return *DynamicParticles; }
 
+	const FPBDRigidParticles& GetDynamicKinematicParticles() const { return *DynamicKinematicParticles; }
+	FPBDRigidParticles& GetDynamicKinematicParticles() { return *DynamicKinematicParticles; }
+
+	// Disabled Dynamic and DynamicKinematic Particles
+	const FPBDRigidParticles& GetDynamicDisabledParticles() const { return *DynamicDisabledParticles; }
+	FPBDRigidParticles& GetDynamicDisabledParticles() { return *DynamicDisabledParticles; }
+
 	const FGeometryParticles& GetNonDisabledStaticParticles() const { return *StaticParticles; }
 	FGeometryParticles& GetNonDisabledStaticParticles() { return *StaticParticles; }
 
@@ -924,7 +955,7 @@ private:
 			const int32 HandleIdx = Count + HandlesStartIdx;
 
 			TUniquePtr<TParticleHandleType> NewParticleHandle = TParticleHandleType::CreateParticleHandle(MakeSerializable(Particles), ParticleIdx, HandleIdx);
-			NewParticleHandle->ParticleID().LocalID = BiggestParticleID++;
+			NewParticleHandle->SetParticleID(FParticleID{ INDEX_NONE, BiggestParticleID++ });
 			ReturnHandles[Count] = NewParticleHandle.Get();
 			//If unique indices are null it means there is no GT particle that already registered an ID, so create one
 			if(ExistingIndices)

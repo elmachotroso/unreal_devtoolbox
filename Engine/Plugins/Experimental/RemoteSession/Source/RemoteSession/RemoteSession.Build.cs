@@ -10,8 +10,7 @@ public class RemoteSession : ModuleRules
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"../../../../Source/Runtime/Renderer/Private",
-				// ... add other private include paths required here ...
+				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			}
 		);
 			
@@ -21,6 +20,7 @@ public class RemoteSession : ModuleRules
 				"Core",
 				"MediaIOCore",
 				"BackChannel",
+				"ApplicationCore",
 				// ... add other public dependencies that you statically link with here ...
 			}
 		);

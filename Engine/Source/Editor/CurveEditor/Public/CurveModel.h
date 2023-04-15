@@ -2,31 +2,37 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
-#include "Math/Color.h"
 #include "Containers/ArrayView.h"
-#include "Curves/RichCurve.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "CurveEditorTypes.h"
+#include "Curves/RichCurve.h"
+#include "Delegates/Delegate.h"
+#include "IBufferedCurveModel.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
 #include "Math/TransformCalculus2D.h"
 #include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Templates/Tuple.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/UnrealType.h"
 
-#include "IBufferedCurveModel.h"
-
-struct FKeyHandle;
-struct FKeyDrawInfo;
-struct FCurveDrawParams;
-struct FKeyPosition;
-struct FKeyAttributes;
+class FCurveEditor;
+class FName;
+class IBufferedCurveModel;
+class SCurveEditorView;
+class SWidget;
+class UObject;
 struct FCurveAttributes;
+struct FCurveDrawParams;
 struct FCurveEditorScreenSpace;
 struct FCurveModelID;
-
-class FName;
-class SWidget;
-class FCurveEditor;
-class UObject;
-class SCurveEditorView;
+struct FKeyAttributes;
+struct FKeyDrawInfo;
+struct FKeyHandle;
+struct FKeyPosition;
 
 enum class ECurvePointType : uint8;
 
@@ -38,7 +44,7 @@ class CURVEEDITOR_API FCurveModel
 public:
 
 	FCurveModel()
-		: Color(FLinearColor::White)
+		: Color(0.2f,0.2f,0.2f)
 		, bKeyDrawEnabled(true)
 		, SupportedViews(ECurveEditorViewID::ANY_BUILT_IN)
 	{}
@@ -339,6 +345,16 @@ public:
 		IntentionName = InIntentionName;
 	}
 
+	FORCEINLINE void SetLongIntentionName(const FString& InIntentionName)
+	{
+		LongIntentionName = InIntentionName;
+	}
+
+	FORCEINLINE FString GetLongIntentionName() const
+	{
+		return LongIntentionName;
+	}
+
 	/**
 	 */
 	FORCEINLINE void SetColor(const FLinearColor& InColor)
@@ -378,8 +394,14 @@ protected:
 	/** This curve's long display name. Used in situations where the UI doesn't provide enough context about what the curve is otherwise (such as "Floor.Transform.X") */
 	FText LongDisplayName;
 
-	/** This curve's intention (such as Transform.X or Scale.X). Used internally to match up curves when saving/restoring curves between different objects. */
+	/** This curve's short intention (such as Transform.X or Scale.X). Used internally to match up curves when saving/restoring curves between different objects. */
 	FString IntentionName;
+	
+	/** 
+	* This curve's long intention (such as foot_fk_l.Transform.X or foot_fk_r.Scale.X). Used internally to match up curves when saving/restoring curves between different objects.
+	* Long intention names have priority in copy/paste over short intention names, but we fall back to short intention if it's unclear what the user is trying to do.
+	*/
+	FString LongIntentionName;
 
 	/** This curve's display color */
 	FLinearColor Color;

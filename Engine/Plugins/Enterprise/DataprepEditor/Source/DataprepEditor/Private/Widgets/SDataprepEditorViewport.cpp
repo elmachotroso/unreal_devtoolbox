@@ -43,13 +43,13 @@
 
 #define LOCTEXT_NAMESPACE "DataprepEditorViewport"
 
-TWeakObjectPtr<UMaterial> SDataprepEditorViewport::PreviewMaterial;
-TWeakObjectPtr<UMaterial> SDataprepEditorViewport::XRayMaterial;
-TWeakObjectPtr<UMaterial> SDataprepEditorViewport::BackFaceMaterial;
-TWeakObjectPtr<UMaterial> SDataprepEditorViewport::PerMeshMaterial;
-TWeakObjectPtr<UMaterial> SDataprepEditorViewport::ReflectionMaterial;
-TWeakObjectPtr<UMaterialInstanceConstant> SDataprepEditorViewport::TransparentMaterial;
-TArray<TWeakObjectPtr<UMaterialInstanceConstant>> SDataprepEditorViewport::PerMeshMaterialInstances;
+TStrongObjectPtr<UMaterial> SDataprepEditorViewport::PreviewMaterial;
+TStrongObjectPtr<UMaterial> SDataprepEditorViewport::XRayMaterial;
+TStrongObjectPtr<UMaterial> SDataprepEditorViewport::BackFaceMaterial;
+TStrongObjectPtr<UMaterial> SDataprepEditorViewport::PerMeshMaterial;
+TStrongObjectPtr<UMaterial> SDataprepEditorViewport::ReflectionMaterial;
+TStrongObjectPtr<UMaterialInstanceConstant> SDataprepEditorViewport::TransparentMaterial;
+TArray<TStrongObjectPtr<UMaterialInstanceConstant>> SDataprepEditorViewport::PerMeshMaterialInstances;
 int32 SDataprepEditorViewport::AssetViewerProfileIndex = INDEX_NONE;
 
 
@@ -522,7 +522,7 @@ void SDataprepEditorViewport::UpdateScene()
 				{
 					if(UCustomStaticMeshComponent* PreviewMeshComponent = Cast<UCustomStaticMeshComponent>(PreviewMeshComponentPtr.Get()))
 					{
-						PreviewMeshComponent->bShoudlBeInstanced = ShouldBeInstanced.Contains(PreviewMeshComponent->GetStaticMesh());
+						PreviewMeshComponent->bShouldBeInstanced = ShouldBeInstanced.Contains(PreviewMeshComponent->GetStaticMesh());
 						PreviewMeshComponent->MeshProperties = MeshPropertiesMap[PreviewMeshComponent->GetStaticMesh()];
 					}
 				}
@@ -585,10 +585,10 @@ void SDataprepEditorViewport::PopulateViewportOverlays(TSharedRef<SOverlay> Over
 	SEditorViewport::PopulateViewportOverlays(Overlay);
 
 	FPSText = SNew(STextBlock)
-		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+		.TextStyle(FAppStyle::Get(), "TextBlock.ShadowedText");
 
 	DrawCallsText = SNew(STextBlock)
-		.TextStyle(FEditorStyle::Get(), "TextBlock.ShadowedText");
+		.TextStyle(FAppStyle::Get(), "TextBlock.ShadowedText");
 
 	Overlay->AddSlot()
 	.VAlign(VAlign_Top)
@@ -700,7 +700,7 @@ void SDataprepEditorViewport::UpdateOverlayText()
 		[
 			SNew(STextBlock)
 			.Text(TextItem.Text)
-			.TextStyle(FEditorStyle::Get(), TextItem.Style)
+			.TextStyle(FAppStyle::Get(), TextItem.Style)
 		];
 	}
 }
@@ -850,10 +850,13 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 	auto CreateMaterialFunc = [](FString MaterialName) -> UMaterial*
 	{
 		FSoftObjectPath MaterialSoftPath = FSoftObjectPath(FString("/DataprepEditor/") + MaterialName + "." + MaterialName);
-		if(UMaterial* Material = Cast< UMaterial >( MaterialSoftPath.TryLoad() ))
+		if(UMaterial* BaseMaterial = Cast< UMaterial >( MaterialSoftPath.TryLoad() ))
 		{
+			// Temporary solution to fix UE-170536: Duplicate material asset
+			// TODO: Proper solution is to use material instances for the get go. Will be done in future release.
+			UMaterial* Material = DuplicateObject< UMaterial >(BaseMaterial, nullptr);
+			Material->ClearFlags(RF_AllFlags);
 			Material->SetFlags(RF_Transient);
-			Material->ClearFlags(RF_Transactional);
 
 			return Material;
 		}
@@ -864,7 +867,9 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!PreviewMaterial.IsValid())
 	{
-		PreviewMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("PreviewMaterial") );
+		TransparentMaterial.Reset();
+
+		PreviewMaterial = TStrongObjectPtr<UMaterial>( CreateMaterialFunc("PreviewMaterial") );
 		check( PreviewMaterial.IsValid() );
 
 		DataprepCorePrivateUtils::CompileMaterial(PreviewMaterial.Get());
@@ -872,7 +877,7 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!TransparentMaterial.IsValid())
 	{
-		TransparentMaterial = TWeakObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
+		TransparentMaterial = TStrongObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
 		check( TransparentMaterial.IsValid() );
 
 		TransparentMaterial->Parent = PreviewMaterial.Get();
@@ -888,7 +893,7 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!XRayMaterial.IsValid())
 	{
-		XRayMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("xray_master") );
+		XRayMaterial = TStrongObjectPtr<UMaterial>( CreateMaterialFunc("xray_material") );
 		check( XRayMaterial.IsValid() );
 
 		DataprepCorePrivateUtils::CompileMaterial(XRayMaterial.Get());
@@ -896,14 +901,16 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!BackFaceMaterial.IsValid())
 	{
-		BackFaceMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("BackFaceMaterial") );
+		BackFaceMaterial = TStrongObjectPtr<UMaterial>( CreateMaterialFunc("BackFaceMaterial") );
 
 		DataprepCorePrivateUtils::CompileMaterial(BackFaceMaterial.Get());
 	}
 
 	if(!PerMeshMaterial.IsValid())
 	{
-		PerMeshMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("PerMeshMaterial") );
+		PerMeshMaterialInstances.Empty();
+
+		PerMeshMaterial = TStrongObjectPtr<UMaterial>( CreateMaterialFunc("PerMeshMaterial") );
 		check( PerMeshMaterial.IsValid() );
 
 		DataprepCorePrivateUtils::CompileMaterial(PerMeshMaterial.Get());
@@ -916,11 +923,11 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	for(int32 Index = 0; Index < PerMeshMaterialInstances.Num(); ++Index)
 	{
-		TWeakObjectPtr<UMaterialInstanceConstant>& PerMeshMaterialInstance = PerMeshMaterialInstances[Index];
+		TStrongObjectPtr<UMaterialInstanceConstant>& PerMeshMaterialInstance = PerMeshMaterialInstances[Index];
 
 		if(!PerMeshMaterialInstance.IsValid())
 		{
-			PerMeshMaterialInstance = TWeakObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
+			PerMeshMaterialInstance = TStrongObjectPtr<UMaterialInstanceConstant>( NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, EObjectFlags::RF_Transient) );
 			check( PerMeshMaterialInstance.IsValid() );
 
 			PerMeshMaterialInstance->Parent = PerMeshMaterial.Get();
@@ -935,11 +942,22 @@ void SDataprepEditorViewport::InitializeDefaultMaterials()
 
 	if(!ReflectionMaterial.IsValid())
 	{
-		ReflectionMaterial = TWeakObjectPtr<UMaterial>( CreateMaterialFunc("ReflectionMaterial") );
+		ReflectionMaterial = TStrongObjectPtr<UMaterial>( CreateMaterialFunc("ReflectionMaterial") );
 		check( ReflectionMaterial.IsValid() );
 
 		DataprepCorePrivateUtils::CompileMaterial(ReflectionMaterial.Get());
 	}
+}
+
+void SDataprepEditorViewport::ReleaseDefaultMaterials()
+{
+	PreviewMaterial.Reset();
+	XRayMaterial.Reset();
+	BackFaceMaterial.Reset();
+	ReflectionMaterial.Reset();
+	TransparentMaterial.Reset();
+	PerMeshMaterialInstances.Empty();
+	PerMeshMaterial.Reset();
 }
 
 void SDataprepEditorViewport::SetSelection(UStaticMeshComponent* Component)
@@ -1007,8 +1025,8 @@ void SDataprepEditorViewport::SelectActors(const TArray< AActor* >& SelectedActo
 
 	for(const AActor* SelectedActor : SelectedActors)
 	{
-		TArray< UStaticMeshComponent* > Components;
-		SelectedActor->GetComponents< UStaticMeshComponent >( Components );
+		TArray<UStaticMeshComponent*> Components;
+		SelectedActor->GetComponents( Components );
 		for( UStaticMeshComponent* SelectedComponent : Components )
 		{
 			// If a mesh is displayable, it should have at least one material
@@ -1038,8 +1056,8 @@ void SDataprepEditorViewport::SelectActors(const TArray< AActor* >& SelectedActo
 
 void SDataprepEditorViewport::SetActorVisibility(AActor* SceneActor, bool bInVisibility)
 {
-	TArray< UStaticMeshComponent* > SceneComponents;
-	SceneActor->GetComponents< UStaticMeshComponent >(SceneComponents);
+	TArray<UStaticMeshComponent*> SceneComponents;
+	SceneActor->GetComponents(SceneComponents);
 	for (UStaticMeshComponent* SceneComponent : SceneComponents)
 	{
 		UStaticMeshComponent** PreviewComponent = MeshComponentsMapping.Find(SceneComponent);
@@ -1282,7 +1300,7 @@ void SDataprepEditorViewport::LoadDefaultSettings()
 	FPreviewSceneProfile& DataprepViewportSettingProfile = 	DefaultSettings->Profiles[AssetViewerProfileIndex];
 
 	// Read default settings, tessellation and import, for Datasmith file producer
-	const FString DataprepEditorIni = FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DataprepEditor") );
+	const FString DataprepEditorIni = FConfigCacheIni::NormalizeConfigIniPath(FString::Printf(TEXT("%s%s/%s.ini"), *FPaths::GeneratedConfigDir(), ANSI_TO_TCHAR(FPlatformProperties::PlatformName()), TEXT("DataprepEditor")));
 
 	const TCHAR* ViewportSectionName = TEXT("ViewportSettings");
 	if(GConfig->DoesSectionExist( ViewportSectionName, DataprepEditorIni ))
@@ -1352,13 +1370,13 @@ FDataprepEditorViewportClient::FDataprepEditorViewportClient(const TSharedRef<SE
 	AdvancedPreviewScene->SetProfileIndex( SDataprepEditorViewport::AssetViewerProfileIndex );
 }
 
-bool FDataprepEditorViewportClient::InputKey(FViewport * InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool FDataprepEditorViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 {
 	bool bHandled = false;
 	
 	// #ueent_todo: Put code for specific handling
 
-	return bHandled ? true : FEditorViewportClient::InputKey(InViewport, ControllerId, Key, Event, AmountDepressed, bGamepad );
+	return bHandled ? true : FEditorViewportClient::InputKey(EventArgs);
 }
 
 void FDataprepEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY)
@@ -1450,7 +1468,7 @@ void FDataprepEditorViewportClient::Draw(const FSceneView* View, FPrimitiveDrawI
 
 				for(int32 Index = 0; Index < 24; Index += 2)
 				{
-					PDI->DrawLine( Positions[Indices[Index + 0]], Positions[Indices[Index + 1]], MeshComponent->bShoudlBeInstanced ? FColor( 255, 0, 0 ) : FColor( 255, 255, 0 ), SDPG_World );
+					PDI->DrawLine( Positions[Indices[Index + 0]], Positions[Indices[Index + 1]], MeshComponent->bShouldBeInstanced ? FColor( 255, 0, 0 ) : FColor( 255, 255, 0 ), SDPG_World );
 				}
 
 				FVector TransformedCenter = Transform.TransformPosition(Box.Center);
@@ -1776,7 +1794,7 @@ namespace DataprepEditor3DPreviewUtils
 		}
 
 		TArray<UStaticMeshComponent*> StaticMeshComponents;
-		InActor->GetComponents<UStaticMeshComponent>( StaticMeshComponents );
+		InActor->GetComponents( StaticMeshComponents );
 		for(UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
 		{
 			MeshComponents.Add( StaticMeshComponent );

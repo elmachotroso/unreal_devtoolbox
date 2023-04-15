@@ -4,9 +4,9 @@
 #include "Misc/ScopeLock.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 FEnginePackageLocalizationCache::FEnginePackageLocalizationCache()
 	: bIsScanningPath(false)
@@ -24,11 +24,13 @@ FEnginePackageLocalizationCache::~FEnginePackageLocalizationCache()
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-
-		AssetRegistry.OnAssetAdded().RemoveAll(this);
-		AssetRegistry.OnAssetRemoved().RemoveAll(this);
-		AssetRegistry.OnAssetRenamed().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule.TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+			AssetRegistry->OnAssetRenamed().RemoveAll(this);
+		}
 	}
 }
 
@@ -84,7 +86,7 @@ void FEnginePackageLocalizationCache::FindLocalizedPackages(const TMap<FString, 
 	}
 }
 
-void FEnginePackageLocalizationCache::FindAssetGroupPackages(const FName InAssetGroupName, const FName InAssetClassName)
+void FEnginePackageLocalizationCache::FindAssetGroupPackages(const FName InAssetGroupName, const FTopLevelAssetPath& InAssetClassName)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
@@ -113,7 +115,7 @@ void FEnginePackageLocalizationCache::FindAssetGroupPackages(const FName InAsset
 		Filter.PackagePaths.Add(*LocalizedRootPath);
 	}
 	Filter.bIncludeOnlyOnDiskAssets = false;
-	Filter.ClassNames.Add(InAssetClassName);
+	Filter.ClassPaths.Add(InAssetClassName);
 	Filter.bRecursiveClasses = false;
 
 	TArray<FAssetData> LocalizedAssetsOfClass;

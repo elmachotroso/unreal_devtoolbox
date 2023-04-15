@@ -1,21 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Models;
-using HordeServer.Services;
-using MongoDB.Bson;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using Horde.Build.Server;
+using MongoDB.Bson;
 
-namespace HordeServer.Utilities
+namespace Horde.Build.Utilities
 {
 	/// <summary>
 	/// Attribute specifying the unique id for a singleton document
 	/// </summary>
 	[AttributeUsage(AttributeTargets.Class)]
-	public class SingletonDocumentAttribute : Attribute
+	public sealed class SingletonDocumentAttribute : Attribute
 	{
 		/// <summary>
 		/// Unique id for the singleton document
@@ -25,10 +22,10 @@ namespace HordeServer.Utilities
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Id">Unique id for the singleton document</param>
-		public SingletonDocumentAttribute(string Id)
+		/// <param name="id">Unique id for the singleton document</param>
+		public SingletonDocumentAttribute(string id)
 		{
-			this.Id = Id;
+			Id = id;
 		}
 	}
 
@@ -47,9 +44,9 @@ namespace HordeServer.Utilities
 		/// <summary>
 		/// Attempts to update the document
 		/// </summary>
-		/// <param name="Value">New state of the document</param>
+		/// <param name="value">New state of the document</param>
 		/// <returns>True if the document was updated, false otherwise</returns>
-		Task<bool> TryUpdateAsync(T Value);
+		Task<bool> TryUpdateAsync(T value);
 	}
 
 	/// <summary>
@@ -61,53 +58,53 @@ namespace HordeServer.Utilities
 		/// <summary>
 		/// The database service instance
 		/// </summary>
-		DatabaseService DatabaseService;
+		readonly MongoService _mongoService;
 
 		/// <summary>
 		/// Unique id for the singleton document
 		/// </summary>
-		ObjectId ObjectId;
+		readonly ObjectId _objectId;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="DatabaseService">The database service instance</param>
-		public SingletonDocument(DatabaseService DatabaseService)
+		/// <param name="mongoService">The database service instance</param>
+		public SingletonDocument(MongoService mongoService)
 		{
-			this.DatabaseService = DatabaseService;
+			_mongoService = mongoService;
 
-			SingletonDocumentAttribute? Attribute = typeof(T).GetCustomAttribute<SingletonDocumentAttribute>();
-			if (Attribute == null)
+			SingletonDocumentAttribute? attribute = typeof(T).GetCustomAttribute<SingletonDocumentAttribute>();
+			if (attribute == null)
 			{
 				throw new Exception($"Type {typeof(T).Name} is missing a {nameof(SingletonDocumentAttribute)} annotation");
 			}
 
-			ObjectId = new ObjectId(Attribute.Id);
+			_objectId = new ObjectId(attribute.Id);
 		}
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="DatabaseService">The database service instance</param>
-		/// <param name="ObjectId">The singleton document object id</param>
-		public SingletonDocument(DatabaseService DatabaseService, ObjectId ObjectId)
+		/// <param name="mongoService">The database service instance</param>
+		/// <param name="objectId">The singleton document object id</param>
+		public SingletonDocument(MongoService mongoService, ObjectId objectId)
 		{
-			this.DatabaseService = DatabaseService;
-			this.ObjectId = ObjectId;
+			_mongoService = mongoService;
+			_objectId = objectId;
 		}
 
 		/// <inheritdoc/>
 		public async Task<T> GetAsync()
 		{
-			T Value = await DatabaseService.GetSingletonAsync<T>(ObjectId);
-			Value.Id = ObjectId;
-			return Value;
+			T value = await _mongoService.GetSingletonAsync<T>(_objectId);
+			value.Id = _objectId;
+			return value;
 		}
 
 		/// <inheritdoc/>
-		public Task<bool> TryUpdateAsync(T Value)
+		public Task<bool> TryUpdateAsync(T value)
 		{
-			return DatabaseService.TryUpdateSingletonAsync<T>(Value);
+			return _mongoService.TryUpdateSingletonAsync<T>(value);
 		}
 	}
 
@@ -120,19 +117,19 @@ namespace HordeServer.Utilities
 		/// Update a singleton
 		/// </summary>
 		/// <typeparam name="T"></typeparam>
-		/// <param name="Singleton"></param>
-		/// <param name="UpdateAction"></param>
+		/// <param name="singleton"></param>
+		/// <param name="updateAction"></param>
 		/// <returns></returns>
-		public static async Task<T> UpdateAsync<T>(this ISingletonDocument<T> Singleton, Action<T> UpdateAction) where T : SingletonBase, new()
+		public static async Task<T> UpdateAsync<T>(this ISingletonDocument<T> singleton, Action<T> updateAction) where T : SingletonBase, new()
 		{
 			for (; ; )
 			{
-				T Value = await Singleton.GetAsync();
-				UpdateAction(Value);
+				T value = await singleton.GetAsync();
+				updateAction(value);
 
-				if (await Singleton.TryUpdateAsync(Value))
+				if (await singleton.TryUpdateAsync(value))
 				{
-					return Value;
+					return value;
 				}
 			}
 		}

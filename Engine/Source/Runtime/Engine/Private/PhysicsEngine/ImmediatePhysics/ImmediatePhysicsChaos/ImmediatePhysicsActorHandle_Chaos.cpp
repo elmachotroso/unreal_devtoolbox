@@ -53,7 +53,6 @@ namespace ImmediatePhysics_Chaos
 		return true;
 	}
 
-#if WITH_CHAOS
 	TUniquePtr<Chaos::FImplicitObject> CloneGeometry(const Chaos::FImplicitObject* Geom, TArray<TUniquePtr<Chaos::FPerShapeData>>& OutShapes)
 	{
 		using namespace Chaos;
@@ -88,12 +87,10 @@ namespace ImmediatePhysics_Chaos
 
 		return nullptr;
 	}
-#endif
 
 	// Intended for use with Tri Mesh and Heightfields when cloning world simulation objects into the immediate scene
 	bool CloneGeometry(FBodyInstance* BodyInstance, EActorType ActorType, const FVector& Scale, FReal& OutMass, Chaos::FVec3& OutInertia, Chaos::FRigidTransform3& OutCoMTransform, TUniquePtr<Chaos::FImplicitObject>& OutGeom, TArray<TUniquePtr<Chaos::FPerShapeData>>& OutShapes)
 	{
-#if WITH_CHAOS
 		// We should only get non-simulated objects through this path, but you never know...
 		if ((BodyInstance != nullptr) && !BodyInstance->bSimulatePhysics && BodyInstance->ActorHandle)
 		{
@@ -106,7 +103,6 @@ namespace ImmediatePhysics_Chaos
 				return true;
 			}
 		}
-#endif
 
 		return CreateDefaultGeometry(Scale, OutMass, OutInertia, OutCoMTransform, OutGeom, OutShapes);
 	}
@@ -152,12 +148,7 @@ namespace ImmediatePhysics_Chaos
 #endif
 		AddParams.WorldTransform = BodyInstance->GetUnrealWorldTransform();
 		AddParams.Geometry = &BodySetup->AggGeom;
-#if PHYSICS_INTERFACE_PHYSX
-		AddParams.TriMeshes = TArrayView<PxTriangleMesh*>(BodySetup->TriMeshes);
-#endif
-#if WITH_CHAOS
 		AddParams.ChaosTriMeshes = MakeArrayView(BodySetup->ChaosTriMeshes);
-#endif
 
 		TArray<TUniquePtr<FImplicitObject>> Geoms;
 		FShapesArray Shapes;
@@ -168,7 +159,6 @@ namespace ImmediatePhysics_Chaos
 			return false;
 		}
 
-#if WITH_CHAOS && !PHYSICS_INTERFACE_PHYSX
 		if (ActorType == EActorType::DynamicActor)
 		{
 			// Whether each shape contributes to mass
@@ -187,16 +177,10 @@ namespace ImmediatePhysics_Chaos
 			// as well as the dimension change even though we don't actually change the mass.
 			const bool bInertaScaleIncludeMass = true;
 			FMassProperties MassProperties = BodyUtils::ComputeMassProperties(BodyInstance, Shapes, bContributesToMass, FTransform::Identity, bInertaScaleIncludeMass);
-			MassProperties.RotationOfMass = Chaos::TransformToLocalSpace(MassProperties.InertiaTensor);
 			OutMass = MassProperties.Mass;
 			OutInertia = MassProperties.InertiaTensor.GetDiagonal();
 			OutCoMTransform = FTransform(MassProperties.RotationOfMass, MassProperties.CenterOfMass);
 		}
-#else
-		OutMass = BodyInstance->GetBodyMass();
-		OutInertia = BodyInstance->GetBodyInertiaTensor();
-		OutCoMTransform = BodyInstance->GetMassSpaceLocal();
-#endif
 
 		// If we have multiple root shapes, wrap them in a union
 		if (Geoms.Num() == 1)
@@ -299,6 +283,7 @@ namespace ImmediatePhysics_Chaos
 					Dynamic->SetInvI(TVec3<FRealSingle>(InertiaInv.X, InertiaInv.Y, InertiaInv.Z ));
 					if (BodyInstance != nullptr)
 					{
+						Dynamic->SetInertiaConditioningEnabled(BodyInstance->IsInertiaConditioningEnabled());
 						Dynamic->SetLinearEtherDrag(BodyInstance->LinearDamping);
 						Dynamic->SetAngularEtherDrag(BodyInstance->AngularDamping);
 						Dynamic->SetGravityEnabled(BodyInstance->bEnableGravity);
@@ -334,10 +319,16 @@ namespace ImmediatePhysics_Chaos
 		return ParticleHandle;
 	}
 
+	bool FActorHandle::GetEnabled() const
+	{
+		const Chaos::FConstGenericParticleHandle Particle = ParticleHandle;
+		return !Particle->Disabled();
+	}
+
 	void FActorHandle::SetEnabled(bool bEnabled)
 	{
-		auto* Dynamic = ParticleHandle->CastToRigidParticle();
-		if(Dynamic && Dynamic->ObjectState() == Chaos::EObjectStateType::Dynamic)
+		Chaos::FPBDRigidParticleHandle* Dynamic = ParticleHandle->CastToRigidParticle();
+		if (Dynamic && Dynamic->ObjectState() == Chaos::EObjectStateType::Dynamic)
 		{
 			Dynamic->Disabled() = !bEnabled;
 		}
@@ -607,7 +598,7 @@ namespace ImmediatePhysics_Chaos
 		FPBDRigidParticleHandle* Dynamic = ParticleHandle->CastToRigidParticle();
 		if(Dynamic && Dynamic->ObjectState() == EObjectStateType::Dynamic)
 		{
-			FReal NewMass = (NewInverseMass > SMALL_NUMBER) ? (FReal)1. / NewInverseMass : (FReal)0.;
+			FReal NewMass = (NewInverseMass > UE_SMALL_NUMBER) ? (FReal)1. / NewInverseMass : (FReal)0.;
 			Dynamic->SetM(NewMass);
 			Dynamic->SetInvM(NewInverseMass);
 		}
@@ -631,12 +622,17 @@ namespace ImmediatePhysics_Chaos
 		if(Dynamic && Dynamic->ObjectState() == EObjectStateType::Dynamic)
 		{
 			Chaos::FVec3 NewInertia = FVector3f::ZeroVector;
-			if ((NewInverseInertia.X > SMALL_NUMBER) && (NewInverseInertia.Y > SMALL_NUMBER) && (NewInverseInertia.Z > SMALL_NUMBER))
+			if ((NewInverseInertia.X > UE_SMALL_NUMBER) && (NewInverseInertia.Y > UE_SMALL_NUMBER) && (NewInverseInertia.Z > UE_SMALL_NUMBER))
 			{
 				NewInertia = FVector3f( 1.0f / NewInverseInertia.X , 1.0f / NewInverseInertia.Y, 1.0f / NewInverseInertia.Z );
 			}
 			Dynamic->SetI(TVec3<FRealSingle>(NewInertia.X, NewInertia.Y, NewInertia.Z ));
 			Dynamic->SetInvI(TVec3<FRealSingle>(NewInverseInertia.X, NewInverseInertia.Y, NewInverseInertia.Z ));
+			
+			if (Dynamic->InertiaConditioningEnabled())
+			{
+				Dynamic->SetInertiaConditioningDirty();
+			}
 		}
 	}
 

@@ -7,6 +7,10 @@
 #include "ShaderCompiler.h"
 
 class INetworkFileServer;
+namespace UE::Cook
+{
+	class ICookOnTheFlyNetworkServer;
+}
 
 /**
  * Delegate type for handling file requests from a network client.
@@ -65,6 +69,14 @@ enum ENetworkFileServerProtocol
 {
 	NFSP_Tcp,
 	NFSP_Http,
+
+	/**
+	 * Platform-specific type of connection between a target device and a host pc.
+	 * 
+	 * It potentially offers performance benefits compared to generic networking protocols but is
+	 * supported by only some of the platforms.
+	 */
+	NFSP_Platform,
 };
 
 // Network file server options
@@ -115,6 +127,19 @@ public:
 	 * @return The new file server, or nullptr if creation failed.
 	 */
 	virtual INetworkFileServer* CreateNetworkFileServer(FNetworkFileServerOptions FileServerOptions, bool bLoadTargetPlatforms) const = 0;
+
+	/**
+	 * Creates a new network file server for COTF.
+	 *
+	 * @param CookOnTheFlyNetworkServer CookOnTheFly network server
+	 * @param Delegates Delegates to be invoked when a file is requested by a client.
+	 *
+	 * @return The new file server, or nullptr if creation failed.
+	*/
+	virtual INetworkFileServer* CreateNetworkFileServer(TSharedRef<UE::Cook::ICookOnTheFlyNetworkServer> CookOnTheFlyNetworkServer, FNetworkFileDelegateContainer Delegates) const
+	{
+		return nullptr;
+	}
 
 public:
 

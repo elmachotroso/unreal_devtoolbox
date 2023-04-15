@@ -261,7 +261,25 @@ void FConcertSyncServer::SetFileSharingService(TSharedPtr<IConcertFileSharingSer
 	FileSharingService = MoveTemp(InFileSharingService);
 }
 
-void FConcertSyncServer::GetSessionsFromPath(const IConcertServer& InServer, const FString& InPath, TArray<FConcertSessionInfo>& OutSessionInfos, TArray<FDateTime>* OutSessionCreationTimes)
+TOptional<FConcertSyncSessionDatabaseNonNullPtr> FConcertSyncServer::GetLiveSessionDatabase(const FGuid& SessionId)
+{
+	if (const TSharedPtr<FConcertSyncServerLiveSession>* Session = LiveSessions.Find(SessionId))
+	{
+		return { &Session->Get()->GetSessionDatabase() };
+	}
+	return {};
+}
+
+TOptional<FConcertSyncSessionDatabaseNonNullPtr> FConcertSyncServer::GetArchivedSessionDatabase(const FGuid& SessionId)
+{
+	if (const TSharedPtr<FConcertSyncServerArchivedSession>* Session = ArchivedSessions.Find(SessionId))
+	{
+		return { &Session->Get()->GetSessionDatabase() };
+	}
+	return {};
+}
+
+void FConcertSyncServer::GetSessionsFromPathImpl(const IConcertServer& InServer, const FString& InPath, TArray<FConcertSessionInfo>& OutSessionInfos, TArray<FDateTime>* OutSessionCreationTimes)
 {
 	IFileManager::Get().IterateDirectory(*InPath, [&OutSessionInfos, &OutSessionCreationTimes](const TCHAR* FilenameOrDirectory, bool bIsDirectory) -> bool
 	{
@@ -290,35 +308,35 @@ void FConcertSyncServer::GetSessionsFromPath(const IConcertServer& InServer, con
 	});
 }
 
-bool FConcertSyncServer::OnLiveSessionCreated(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InSession)
+bool FConcertSyncServer::OnLiveSessionCreatedImpl(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InSession, const FInternalLiveSessionCreationParams& AdditionalParams)
 {
 	ConcertSyncServerUtils::WriteSessionInfoToDirectory(InSession->GetSessionWorkingDirectory(), InSession->GetSessionInfo());
-	return CreateLiveSession(InSession);
+	return CreateLiveSession(InSession, AdditionalParams);
 }
 
-void FConcertSyncServer::OnLiveSessionDestroyed(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InSession)
+void FConcertSyncServer::OnLiveSessionDestroyedImpl(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InSession)
 {
 	DestroyLiveSession(InSession);
 }
 
-bool FConcertSyncServer::OnArchivedSessionCreated(const IConcertServer& InServer, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo)
+bool FConcertSyncServer::OnArchivedSessionCreatedImpl(const IConcertServer& InServer, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo)
 {
 	ConcertSyncServerUtils::WriteSessionInfoToDirectory(InArchivedSessionRoot, InArchivedSessionInfo);
 	return CreateArchivedSession(InArchivedSessionRoot, InArchivedSessionInfo);
 }
 
-void FConcertSyncServer::OnArchivedSessionDestroyed(const IConcertServer& InServer, const FGuid& InArchivedSessionId)
+void FConcertSyncServer::OnArchivedSessionDestroyedImpl(const IConcertServer& InServer, const FGuid& InArchivedSessionId)
 {
 	DestroyArchivedSession(InArchivedSessionId);
 }
 
-bool FConcertSyncServer::ArchiveSession(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo, const FConcertSessionFilter& InSessionFilter)
+bool FConcertSyncServer::ArchiveSessionImpl(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo, const FConcertSessionFilter& InSessionFilter)
 {
 	SCOPED_CONCERT_TRACE(ConcertServer_ArchiveSession);
-	return CopySession(InServer, InLiveSession, InArchivedSessionRoot, InSessionFilter);
+	return CopySessionImpl(InServer, InLiveSession, InArchivedSessionRoot, InSessionFilter);
 }
 
-bool FConcertSyncServer::ArchiveSession(const IConcertServer& InServer, const FString& InLiveSessionWorkingDir, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo, const FConcertSessionFilter& InSessionFilter)
+bool FConcertSyncServer::ArchiveSessionImpl(const IConcertServer& InServer, const FString& InLiveSessionWorkingDir, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo, const FConcertSessionFilter& InSessionFilter)
 {
 	FConcertSyncSessionDatabase LiveSessionDatabase;
 	LiveSessionDatabase.Open(InLiveSessionWorkingDir);
@@ -330,7 +348,7 @@ bool FConcertSyncServer::ArchiveSession(const IConcertServer& InServer, const FS
 	return RetVal;
 }
 
-bool FConcertSyncServer::CopySession(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession, const FString& NewSessionRoot, const FConcertSessionFilter& InSessionFilter)
+bool FConcertSyncServer::CopySessionImpl(const IConcertServer& InServer, TSharedRef<IConcertServerSession> InLiveSession, const FString& NewSessionRoot, const FConcertSessionFilter& InSessionFilter)
 {
 	SCOPED_CONCERT_TRACE(ConcertServer_CopySession);
 	if (TSharedPtr<FConcertSyncServerLiveSession> LiveSession = LiveSessions.FindRef(InLiveSession->GetId()))
@@ -340,7 +358,7 @@ bool FConcertSyncServer::CopySession(const IConcertServer& InServer, TSharedRef<
 	return false;
 }
 
-bool FConcertSyncServer::ExportSession(const IConcertServer& InServer, const FGuid& InSessionId, const FString& DestDir, const FConcertSessionFilter& InSessionFilter, bool bAnonymizeData)
+bool FConcertSyncServer::ExportSessionImpl(const IConcertServer& InServer, const FGuid& InSessionId, const FString& DestDir, const FConcertSessionFilter& InSessionFilter, bool bAnonymizeData)
 {
 	SCOPED_CONCERT_TRACE(ConcertServer_ExportSession);
 	if (TSharedPtr<FConcertSyncServerLiveSession> LiveSession = LiveSessions.FindRef(InSessionId)) // If the session is live.
@@ -357,7 +375,7 @@ bool FConcertSyncServer::ExportSession(const IConcertServer& InServer, const FGu
 	return false; // Session not found.
 }
 
-bool FConcertSyncServer::RestoreSession(const IConcertServer& InServer, const FGuid& InArchivedSessionId, const FString& InLiveSessionRoot, const FConcertSessionInfo& InLiveSessionInfo, const FConcertSessionFilter& InSessionFilter)
+bool FConcertSyncServer::RestoreSessionImpl(const IConcertServer& InServer, const FGuid& InArchivedSessionId, const FString& InLiveSessionRoot, const FConcertSessionInfo& InLiveSessionInfo, const FConcertSessionFilter& InSessionFilter)
 {
 	SCOPED_CONCERT_TRACE(ConcertServer_RestoreSession);
 
@@ -368,22 +386,22 @@ bool FConcertSyncServer::RestoreSession(const IConcertServer& InServer, const FG
 	return false;
 }
 
-bool FConcertSyncServer::GetSessionActivities(const IConcertServer& InServer, const FGuid& SessionId, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& Activities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails)
+bool FConcertSyncServer::GetSessionActivitiesImpl(const IConcertServer& InServer, const FGuid& SessionId, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& Activities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails)
 {
 	SCOPED_CONCERT_TRACE(ConcertServer_GetSessionActivities);
 	if (TSharedPtr<FConcertSyncServerLiveSession> LiveSession = LiveSessions.FindRef(SessionId))
 	{
-		return GetSessionActivities(LiveSession->GetSessionDatabase(), FromActivityId, ActivityCount, Activities, OutEndpointClientInfoMap, bIncludeDetails);
+		return GetSessionActivitiesInternal(LiveSession->GetSessionDatabase(), FromActivityId, ActivityCount, Activities, OutEndpointClientInfoMap, bIncludeDetails);
 	}
 	else if (TSharedPtr<FConcertSyncServerArchivedSession> ArchivedSession = ArchivedSessions.FindRef(SessionId))
 	{
-		return GetSessionActivities(ArchivedSession->GetSessionDatabase(), FromActivityId, ActivityCount, Activities, OutEndpointClientInfoMap, bIncludeDetails);
+		return GetSessionActivitiesInternal(ArchivedSession->GetSessionDatabase(), FromActivityId, ActivityCount, Activities, OutEndpointClientInfoMap, bIncludeDetails);
 	}
 
 	return false; // Not Found.
 }
 
-bool FConcertSyncServer::GetSessionActivities(const FConcertSyncSessionDatabase& Database, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& OutActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails)
+bool FConcertSyncServer::GetSessionActivitiesInternal(const FConcertSyncSessionDatabase& Database, int64 FromActivityId, int64 ActivityCount, TArray<FConcertSessionSerializedPayload>& OutActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, bool bIncludeDetails)
 {
 	int64 MaxActivityId;
 	Database.GetActivityMaxId(MaxActivityId);
@@ -398,7 +416,7 @@ bool FConcertSyncServer::GetSessionActivities(const FConcertSyncSessionDatabase&
 	OutActivities.Reset(FMath::Min(ActivityCount, MaxActivityId));
 
 	// Retrieve the generic part of activities.
-	Database.EnumerateActivityIdsAndEventTypesInRange(FromActivityId, ActivityCount, [&Database, &OutActivities, &OutEndpointClientInfoMap, bIncludeDetails](const int64 InActivityId, const EConcertSyncActivityEventType InEventType)
+	Database.EnumerateActivityIdsWithEventTypesAndFlagsInRange(FromActivityId, ActivityCount, [&Database, &OutActivities, &OutEndpointClientInfoMap, bIncludeDetails](const int64 InActivityId, const EConcertSyncActivityEventType InEventType, const EConcertSyncActivityFlags InFlags)
 	{
 		// Maps endpoint client id to the client info.
 		auto UpdateEndpointMap = [](const FConcertSyncSessionDatabase& Database, FGuid EndpointId, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap)
@@ -455,7 +473,11 @@ bool FConcertSyncServer::GetSessionActivities(const FConcertSyncSessionDatabase&
 			}
 		}
 
-		OutActivities.Add(MoveTemp(SerializedSyncActivityPayload));
+		const bool bIsAllowed = (InFlags & EConcertSyncActivityFlags::Muted) == EConcertSyncActivityFlags::None; 
+		if (bIsAllowed)
+		{
+			OutActivities.Add(MoveTemp(SerializedSyncActivityPayload));
+		}
 
 		return true; // Continue until 'ActivityCount' is fetched or the last activity is reached.
 	});
@@ -463,12 +485,12 @@ bool FConcertSyncServer::GetSessionActivities(const FConcertSyncSessionDatabase&
 	return true;
 }
 
-void FConcertSyncServer::OnLiveSessionRenamed(const IConcertServer& InServer,TSharedRef<IConcertServerSession> InLiveSession)
+void FConcertSyncServer::OnLiveSessionRenamedImpl(const IConcertServer& InServer,TSharedRef<IConcertServerSession> InLiveSession)
 {
 	ConcertSyncServerUtils::WriteSessionInfoToDirectory(InLiveSession->GetSessionWorkingDirectory(), InLiveSession->GetSessionInfo());
 }
 
-void FConcertSyncServer::OnArchivedSessionRenamed(const IConcertServer& InServer, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo)
+void FConcertSyncServer::OnArchivedSessionRenamedImpl(const IConcertServer& InServer, const FString& InArchivedSessionRoot, const FConcertSessionInfo& InArchivedSessionInfo)
 {
 	ConcertSyncServerUtils::WriteSessionInfoToDirectory(InArchivedSessionRoot, InArchivedSessionInfo);
 }
@@ -497,7 +519,7 @@ void FConcertSyncServer::DestroySequencerManager(const TSharedRef<FConcertSyncSe
 	LiveSessionSequencerManagers.Remove(InLiveSession->GetSession().GetId());
 }
 
-bool FConcertSyncServer::CreateLiveSession(const TSharedRef<IConcertServerSession>& InSession)
+bool FConcertSyncServer::CreateLiveSession(const TSharedRef<IConcertServerSession>& InSession, const FInternalLiveSessionCreationParams& AdditionalParams)
 {
 	DestroyLiveSession(InSession);
 
@@ -511,6 +533,12 @@ bool FConcertSyncServer::CreateLiveSession(const TSharedRef<IConcertServerSessio
 			CreateSequencerManager(LiveSession.ToSharedRef());
 		}
 
+		// We needn't call OnActivityProduced().Remove(...) because the subscription needs to stay for the lifetime of FConcertSyncServerLiveSession::SessionDatabase
+		check(AdditionalParams.OnModifiedCallback.IsBound());
+		LiveSession->GetSessionDatabase().OnActivityProduced().AddLambda([OnSessionModifiedCallback = AdditionalParams.OnModifiedCallback](const FConcertSyncActivity&)
+		{
+			OnSessionModifiedCallback.Execute();
+		});
 		return true;
 	}
 

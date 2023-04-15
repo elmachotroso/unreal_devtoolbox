@@ -2,25 +2,7 @@
 
 #include "BaseClassDefaultArchive.h"
 
-#include "Util/Property/PropertyUtil.h"
-#include "Util/SnapshotObjectUtil.h"
 #include "WorldSnapshotData.h"
-
-#include "Components/ActorComponent.h"
-#include "GameFramework/Actor.h"
-
-bool UE::LevelSnapshots::Private::FBaseClassDefaultArchive::ShouldSkipProperty(const FProperty* InProperty) const
-{
-	const bool bSuperWantsToSkip = Super::ShouldSkipProperty(InProperty);
-	
-	// Avoid any object references owned by a CDO. References are automatically replaced by object instance creation flow.
-	return bSuperWantsToSkip || IsPropertyReferenceToSubobjectOrClassDefaults(InProperty);
-}
-
-UObject* UE::LevelSnapshots::Private::FBaseClassDefaultArchive::ResolveObjectDependency(int32 ObjectIndex) const
-{
-	return ResolveObjectDependencyForClassDefaultObject(GetSharedData(), ObjectIndex);
-}
 
 UE::LevelSnapshots::Private::FBaseClassDefaultArchive::FBaseClassDefaultArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, bool bIsLoading, UObject* InObjectToRestore)
 	:
@@ -33,38 +15,4 @@ UE::LevelSnapshots::Private::FBaseClassDefaultArchive::FBaseClassDefaultArchive(
 	
 	// Otherwise we are not allowed to serialize transient properties
 	ArSerializingDefaults = true;
-}
-
-bool UE::LevelSnapshots::Private::FBaseClassDefaultArchive::IsPropertyReferenceToSubobjectOrClassDefaults(const FProperty* InProperty) const
-{
-	const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty);
-	if (!ObjectProperty)
-	{
-		return false;
-	}
-
-	const bool bIsMarkedAsSubobject = InProperty->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference | CPF_PersistentInstance);
-	const bool bIsActorOrComponentPtr = ObjectProperty->PropertyClass->IsChildOf(AActor::StaticClass()) || ObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass());
-	if (bIsMarkedAsSubobject || bIsActorOrComponentPtr)
-	{
-		return true;
-	}
-
-	const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
-	void* ContainerPtr = GetSerializedObject();
-	const bool bIsUnsupported = UE::LevelSnapshots::Private::FollowPropertyChainUntilPredicateIsTrue(ContainerPtr, PropertyChain, InProperty, [this, ObjectProperty](void* LeafValuePtr)
-	{
-		if (const UObject* ContainedPtr = ObjectProperty->GetObjectPropertyValue(LeafValuePtr))
-		{
-			const bool bIsClassDefault = ContainedPtr->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
-			const bool bIsPointingToDefaultSubobject = ContainedPtr->HasAnyFlags(RF_DefaultSubObject);
-			const bool bIsPointingToSelf = ContainedPtr == GetSerializedObject();
-			const bool bIsPointingToSubobject = ContainedPtr->IsIn(GetSerializedObject());
-			return bIsClassDefault || bIsPointingToDefaultSubobject || bIsPointingToSelf || bIsPointingToSubobject;
-		}
-	
-		return false;
-	});
-
-	return bIsUnsupported;
 }

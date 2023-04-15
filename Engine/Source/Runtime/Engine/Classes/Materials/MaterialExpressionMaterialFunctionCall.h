@@ -80,10 +80,9 @@ class UMaterialExpressionMaterialFunctionCall : public UMaterialExpression
 	GENERATED_UCLASS_BODY()
 
 	/** The function to call. */
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionMaterialFunctionCall, meta=(DisallowedClasses="MaterialFunctionInstance"))
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionMaterialFunctionCall, meta=(DisallowedClasses="/Script/Engine.MaterialFunctionInstance"))
 	TObjectPtr<class UMaterialFunctionInterface> MaterialFunction;
 
-#if WITH_EDITORONLY_DATA
 	/** Array of all the function inputs that this function exposes. */
 	UPROPERTY()
 	TArray<struct FFunctionExpressionInput> FunctionInputs;
@@ -91,7 +90,6 @@ class UMaterialExpressionMaterialFunctionCall : public UMaterialExpression
 	/** Array of all the function outputs that this function exposes. */
 	UPROPERTY()
 	TArray<struct FFunctionExpressionOutput> FunctionOutputs;
-#endif // WITH_EDITOR
 
 	/** Used by material parameters to split references to separate instances. */
 	UPROPERTY(Transient)
@@ -130,6 +128,7 @@ class UMaterialExpressionMaterialFunctionCall : public UMaterialExpression
 	virtual bool IsResultMaterialAttributes(int32 OutputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	//~ End UMaterialExpression Interface
 
@@ -162,14 +161,14 @@ class UMaterialExpressionMaterialFunctionCall : public UMaterialExpression
 		SharedCompileState = SharedState;
 	}
 
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 
 private:	
 	/** Helper that fixes up expression links where possible. */
 	void FixupReferencingExpressions(
 		const TArray<FFunctionExpressionOutput>& NewOutputs,
 		const TArray<FFunctionExpressionOutput>& OriginalOutputs,
-		TArray<UMaterialExpression*>& Expressions, 
+		TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions, 
 		TArray<FExpressionInput*>& MaterialInputs,
 		bool bMatchByName);
 

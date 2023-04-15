@@ -3,6 +3,9 @@
 #include "GroomAssetCards.h"
 #include "Engine/StaticMesh.h"
 #include "MeshDescription.h"
+#include "GroomAsset.h" // for EHairAtlasTextureType
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GroomAssetCards)
 
 FHairCardsClusterSettings::FHairCardsClusterSettings()
 {
@@ -84,6 +87,32 @@ bool FHairGroupsProceduralCards::operator==(const FHairGroupsProceduralCards& A)
 		GeometrySettings == A.GeometrySettings &&
 		TextureSettings == A.TextureSettings &&
 		Version == A.Version;
+}
+
+void FHairGroupCardsTextures::SetTexture(EHairAtlasTextureType SlotID, UTexture2D* Texture)
+{
+	switch (SlotID)
+	{
+	case EHairAtlasTextureType::Depth:
+		DepthTexture = Texture;
+		break;
+
+	case EHairAtlasTextureType::Coverage:
+		CoverageTexture = Texture;
+		break;
+
+	case EHairAtlasTextureType::Tangent:
+		TangentTexture = Texture;
+		break;
+
+	case EHairAtlasTextureType::Attribute:
+		AttributeTexture = Texture;
+		break;
+
+	case EHairAtlasTextureType::AuxilaryData:
+		AuxilaryDataTexture = Texture;
+		break;
+	};
 }
 
 void FHairGroupsProceduralCards::BuildDDCKey(FArchive& Ar)
@@ -177,3 +206,5 @@ UStaticMesh* FHairGroupsCardsSourceDescription::GetMesh() const
 #endif
 	return nullptr;
 }
+
+

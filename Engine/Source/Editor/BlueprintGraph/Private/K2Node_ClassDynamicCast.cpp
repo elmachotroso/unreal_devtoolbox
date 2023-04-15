@@ -2,11 +2,29 @@
 
 
 #include "K2Node_ClassDynamicCast.h"
-#include "GraphEditorSettings.h"
-#include "EdGraphSchema_K2.h"
+
+#include "BlueprintCompiledStatement.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
 #include "DynamicCastHandler.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
+#include "GraphEditorSettings.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "KismetCompilerMisc.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Class.h"
 #include "UObject/Interface.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+
+class FKismetCompilerContext;
 
 #define LOCTEXT_NAMESPACE "K2Node_ClassDynamicCast"
 
@@ -82,14 +100,16 @@ FText UK2Node_ClassDynamicCast::GetTooltipText() const
 {
 	if (TargetType && TargetType->IsChildOf(UInterface::StaticClass()))
 	{
-		return LOCTEXT("CastToInterfaceTooltip", "Tries to access class as an interface it may implement.");
+		return FText::Format(LOCTEXT("CastToInterfaceTooltip", "Tries to access class as an interface '{0}' it may implement."), FText::FromString(TargetType->GetName()));
 	}
 	UBlueprint* CastToBP = UBlueprint::GetBlueprintFromClass(TargetType);
 	if (CastToBP)
 	{
-		return LOCTEXT("CastToBPTooltip", "Tries to access class as a blueprint class it may inherit from.\n\nNOTE: This will cause the blueprint to always be loaded, which can be expensive.");
+		return FText::Format(LOCTEXT("CastToBPTooltip", "Tries to access class as a blueprint class '{0}' it may inherit from.\n\nNOTE: This will cause the blueprint to always be loaded, which can be expensive."), FText::FromString(CastToBP->GetName()));
 	}
-	return LOCTEXT("CastToNativeTooltip", "Tries to access class as one it may inherit from.");
+	
+	const FString ClassName = TargetType ? TargetType->GetName() : TEXT("");
+	return FText::Format(LOCTEXT("CastToNativeTooltip", "Tries to access class '{0}' as one it may inherit from."), FText::FromString(ClassName));
 }
 
 UEdGraphPin* UK2Node_ClassDynamicCast::GetCastSourcePin() const

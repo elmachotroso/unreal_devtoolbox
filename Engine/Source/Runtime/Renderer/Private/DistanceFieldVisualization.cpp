@@ -25,7 +25,8 @@ public:
 
 	class FUseGlobalDistanceFieldDim : SHADER_PERMUTATION_BOOL("USE_GLOBAL_DISTANCE_FIELD");
 	class FCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_USE_COVERAGE_BASED_EXPAND");
-	using FPermutationDomain = TShaderPermutationDomain<FUseGlobalDistanceFieldDim, FCoverageBasedExpand>;
+	class FOffsetDataStructure : SHADER_PERMUTATION_INT("OFFSET_DATA_STRUCT", 3);
+	using FPermutationDomain = TShaderPermutationDomain<FUseGlobalDistanceFieldDim, FCoverageBasedExpand, FOffsetDataStructure>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
@@ -115,14 +116,16 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(
 
 	FRDGTextureRef VisualizeResultTexture = nullptr;
 	{
-		const FIntPoint BufferSize = GetBufferSizeForAO();
-		const FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_FloatRGBA, FClearValueBinding::None, TexCreate_RenderTargetable | TexCreate_UAV));
+		const FIntPoint BufferSize = GetBufferSizeForAO(FirstView);
+		const FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_FloatRGBA, FClearValueBinding::None, TexCreate_UAV));
 		VisualizeResultTexture = GraphBuilder.CreateTexture(Desc, TEXT("VisualizeDistanceField"));
 	}
 
 	FVisualizeMeshDistanceFieldCS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FVisualizeMeshDistanceFieldCS::FUseGlobalDistanceFieldDim>(bVisualizeGlobalDistanceField);
 	PermutationVector.Set<FVisualizeMeshDistanceFieldCS::FCoverageBasedExpand>(IsLumenEnabled(FirstView));
+	extern int32 GDistanceFieldOffsetDataStructure;
+	PermutationVector.Set<FVisualizeMeshDistanceFieldCS::FOffsetDataStructure>(GDistanceFieldOffsetDataStructure);
 	TShaderMapRef<FVisualizeMeshDistanceFieldCS> ComputeShader(FirstView.ShaderMap, PermutationVector);
 
 	for (const FViewInfo& View : Views)
@@ -154,9 +157,9 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
 		PassParameters->ReflectionStruct = CreateReflectionUniformBuffer(View, UniformBuffer_MultiFrame);
-		PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(Scene->DistanceFieldSceneData);
+		PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 		PassParameters->DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(Scene->DistanceFieldSceneData);
+		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 		PassParameters->AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 		PassParameters->GlobalDistanceFieldParameters = SetupGlobalDistanceFieldParameters(View.GlobalDistanceFieldInfo.ParameterData);
 		PassParameters->NumGroups = FVector2f(GroupSizeX, GroupSizeY);
@@ -170,6 +173,8 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(
 
 	for (const FViewInfo& View : Views)
 	{
+		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+
 		auto* PassParameters = GraphBuilder.AllocParameters<FVisualizeDistanceFieldUpsamplePS::FParameters>();
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = SceneTextures.UniformBuffer;

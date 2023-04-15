@@ -11,6 +11,7 @@
 #include "Shader.h"
 #include "VertexFactory.h"
 #include "ShaderCodeLibrary.h"
+#include "Misc/ScopeRWLock.h"
 #include "Misc/ScopeLock.h"
 
 IMPLEMENT_TYPE_LAYOUT(FShaderParameter);
@@ -42,11 +43,19 @@ FArchive& operator<<(FArchive& Ar,FShaderParameter& P)
 	return Ar << P.BaseIndex << P.NumBytes << PBufferIndex;
 }
 
-void FShaderResourceParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags)
+void FShaderResourceParameter::Bind(const FShaderParameterMap& ParameterMap, const TCHAR* ParameterName, EShaderParameterFlags Flags)
 {
-	uint16 UnusedBufferIndex = 0;
-
-	if(!ParameterMap.FindParameterAllocation(ParameterName,UnusedBufferIndex,BaseIndex,NumResources) && Flags == SPF_Mandatory)
+	if (TOptional<FParameterAllocation> Allocation = ParameterMap.FindParameterAllocation(ParameterName))
+	{
+		if (Allocation->Type == EShaderParameterType::BindlessResourceIndex || Allocation->Type == EShaderParameterType::BindlessSamplerIndex)
+		{
+			checkf(Allocation->BufferIndex == 0, TEXT("Unexpected buffer index (%d) for bindless index. Global bindless parameters are expected to be in the global constant buffer (buffer index 0)."), Allocation->BufferIndex);
+		}
+		BaseIndex = Allocation->BaseIndex;
+		NumResources = Allocation->Size;
+		Type = Allocation->Type;
+	}
+	else if (Flags == SPF_Mandatory)
 	{
 		if (!UE_LOG_ACTIVE(LogShaders, Log))
 		{
@@ -161,9 +170,36 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 		}
 		else if (IsShaderParameterTypeForUniformBufferLayout(Member.GetBaseType()))
 		{
-			// Skip resources, they will be replaced with padding by the next member in the constant buffer.
-			// This padding will cause gaps in the constant buffer.  Alternatively we could compact the constant buffer during RHICreateUniformBuffer.
-			continue;
+			// Generate the type dimensions for vectors and matrices.
+			uint32 HLSLMemberSize = 4;
+
+			const uint32 AbsoluteMemberOffset = StructOffset + Member.GetOffset();
+
+			// If the HLSL offset doesn't match the C++ offset, generate padding to fix it.
+			if (HLSLBaseOffset != AbsoluteMemberOffset)
+			{
+				check(HLSLBaseOffset < AbsoluteMemberOffset);
+				while (HLSLBaseOffset < AbsoluteMemberOffset)
+				{
+					Decl.ConstantBufferMembers += FString::Printf(TEXT("\t%s PrePadding_%s%u;\r\n"), *PreviousBaseTypeName, *NamePrefix, HLSLBaseOffset);
+					HLSLBaseOffset += 4;
+				};
+				check(HLSLBaseOffset == AbsoluteMemberOffset);
+			}
+			PreviousBaseTypeName = TEXT("uint");
+			HLSLBaseOffset = AbsoluteMemberOffset + HLSLMemberSize;
+
+			// Generate the member declaration.
+			const FString ParameterName = FString::Printf(TEXT("%s%s"), *NamePrefix, Member.GetName());
+
+			if (Member.GetBaseType() == UBMT_SAMPLER)
+			{
+				Decl.ConstantBufferMembers += FString::Printf(TEXT("\tDEFINE_SAMPLER_INDEX(%s);\r\n"), *ParameterName);
+			}
+			else
+			{
+				Decl.ConstantBufferMembers += FString::Printf(TEXT("\tDEFINE_RESOURCE_INDEX(%s);\r\n"), *ParameterName);
+			}
 		}
 		else 
 		{
@@ -242,20 +278,26 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 
 		if (IsShaderParameterTypeForUniformBufferLayout(Member.GetBaseType()))
 		{
+			// TODO: handle arrays?
 			checkf(!IsRDGResourceAccessType(Member.GetBaseType()), TEXT("RDG access parameter types (e.g. RDG_TEXTURE_ACCESS) are not allowed in uniform buffers."));
-			if (Member.GetBaseType() == UBMT_SRV)
+
+			const FString ParameterName = FString::Printf(TEXT("%s%s"), *NamePrefix, Member.GetName());
+
+			if (Member.GetBaseType() == UBMT_SAMPLER)
 			{
-				// TODO: handle arrays?
-				FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
-				Decl.ResourceMembers += FString::Printf(TEXT("PLATFORM_SUPPORTS_SRV_UB_MACRO( %s %s; ) \r\n"), Member.GetShaderType(), *ParameterName);
+				Decl.ResourceMembers += FString::Printf(TEXT("UB_RESOURCE_MEMBER_SAMPLER(%s, %s);\r\n"), Member.GetShaderType(), *ParameterName);
+				Decl.StructMembers += FString::Printf(TEXT("\t%s %s;\r\n"), Member.GetShaderType(), Member.GetName());
+				Decl.Initializer += FString::Printf(TEXT("%s,"), *ParameterName);
+			}
+			else if (Member.GetBaseType() == UBMT_SRV)
+			{
+				Decl.ResourceMembers += FString::Printf(TEXT("PLATFORM_SUPPORTS_SRV_UB_MACRO( UB_RESOURCE_MEMBER_RESOURCE(%s, %s); ) \r\n"), Member.GetShaderType(), *ParameterName);
 				Decl.StructMembers += FString::Printf(TEXT("\tPLATFORM_SUPPORTS_SRV_UB_MACRO( %s %s; ) \r\n"), Member.GetShaderType(), Member.GetName());
 				Decl.Initializer += FString::Printf(TEXT(" PLATFORM_SUPPORTS_SRV_UB_MACRO( %s, ) "), *ParameterName);
 			}
 			else
 			{
-				// TODO: handle arrays?
-				FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
-				Decl.ResourceMembers += FString::Printf(TEXT("%s %s;\r\n"), Member.GetShaderType(), *ParameterName);
+				Decl.ResourceMembers += FString::Printf(TEXT("UB_RESOURCE_MEMBER_RESOURCE(%s, %s);\r\n"), Member.GetShaderType(), *ParameterName);
 				Decl.StructMembers += FString::Printf(TEXT("\t%s %s;\r\n"), Member.GetShaderType(), Member.GetName());
 				Decl.Initializer += FString::Printf(TEXT("%s,"), *ParameterName);
 			}
@@ -277,7 +319,7 @@ static FString CreateHLSLUniformBufferDeclaration(const TCHAR* Name,const FShade
 		return FString::Printf(
 			TEXT("#ifndef __UniformBuffer_%s_Definition__\r\n")
 			TEXT("#define __UniformBuffer_%s_Definition__\r\n")
-			TEXT("cbuffer %s\r\n")
+			TEXT("cbuffer UB_CB_NAME(%s)\r\n")
 			TEXT("{\r\n")
 			TEXT("%s")
 			TEXT("}\r\n")
@@ -328,14 +370,14 @@ RENDERCORE_API void CacheUniformBufferIncludes(TMap<const TCHAR*,FCachedUniformB
 }
 
 static const uint32 NumUniformBufferLocks = 16u;
-static FCriticalSection UniformBufferLocks[NumUniformBufferLocks];
+static FRWLock UniformBufferLocks[NumUniformBufferLocks];
 
 void FShaderType::FlushShaderFileCache(const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables)
 {
 	if (CachedUniformBufferPlatform != SP_NumPlatforms)
 	{
 		const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
-		FScopeLock Lock(&UniformBufferLocks[LockIndex]);
+		FWriteScopeLock Lock(UniformBufferLocks[LockIndex]);
 		if (CachedUniformBufferPlatform != SP_NumPlatforms)
 		{
 			ReferencedUniformBufferStructsCache.Empty();
@@ -349,24 +391,38 @@ void FShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment&
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FShaderType::AddReferencedUniformBufferIncludes);
 
-	// Cache uniform buffer struct declarations referenced by this shader type's files
-	if (CachedUniformBufferPlatform != Platform)
+	const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
+	TOptional<FReadScopeLock> ReadScopeLock; // TOptional is so we can unlock and lock manually; the FReadScopeLock api does not support that
+	ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
+	for (;;)
 	{
-		const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
-		FScopeLock Lock(&UniformBufferLocks[LockIndex]);
-		if (CachedUniformBufferPlatform != Platform)
+		// Cache uniform buffer struct declarations referenced by this shader type's files
+		if (CachedUniformBufferPlatform == Platform)
 		{
-			// if there is already a cache but for another platform, keep the keys but reset the values
-			if (CachedUniformBufferPlatform != SP_NumPlatforms)
-			{
-				for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
-				{
-					It.Value() = FCachedUniformBufferDeclaration();
-				}
-			}
-			CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
-			CachedUniformBufferPlatform = Platform;
+			break;
 		}
+
+		// Drop the ReadLock, acquire a write lock
+		//     Write the ReferencedUniformBufferStructsCache for the new Platform
+		// Drop the WriteLock, reacquire the ReadLock
+		ReadScopeLock.Reset();
+		{
+			FWriteScopeLock WriteScopeLock(UniformBufferLocks[LockIndex]);
+			if (CachedUniformBufferPlatform != Platform)
+			{
+				// If there is already a cache but for another platform, keep the keys but reset the values
+				if (CachedUniformBufferPlatform != SP_NumPlatforms)
+				{
+					for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
+					{
+						It.Value() = FCachedUniformBufferDeclaration();
+					}
+				}
+				CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
+				CachedUniformBufferPlatform = Platform;
+			}
+		}
+		ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
 	}
 
 	FString UniformBufferIncludes;
@@ -463,7 +519,7 @@ void FVertexFactoryType::FlushShaderFileCache(const TMap<FString, TArray<const T
 	if (CachedUniformBufferPlatform != SP_NumPlatforms)
 	{
 		const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
-		FScopeLock Lock(&UniformBufferLocks[LockIndex]);
+		FWriteScopeLock Lock(UniformBufferLocks[LockIndex]);
 		if (CachedUniformBufferPlatform != SP_NumPlatforms)
 		{
 			ReferencedUniformBufferStructsCache.Empty();
@@ -475,24 +531,38 @@ void FVertexFactoryType::FlushShaderFileCache(const TMap<FString, TArray<const T
 
 void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment& OutEnvironment, FString& OutSourceFilePrefix, EShaderPlatform Platform) const
 {
-	// Cache uniform buffer struct declarations referenced by this shader type's files
-	if (CachedUniformBufferPlatform != Platform)
+	const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
+	TOptional<FReadScopeLock> ReadScopeLock; // TOptional is so we can unlock and lock manually; the FReadScopeLock api does not support that
+	ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
+	for (;;)
 	{
-		const uint32 LockIndex = HashedName.GetHash() % NumUniformBufferLocks;
-		FScopeLock Lock(&UniformBufferLocks[LockIndex]);
-		if (CachedUniformBufferPlatform != Platform)
+		// Cache uniform buffer struct declarations referenced by this shader type's files
+		if (CachedUniformBufferPlatform == Platform)
 		{
-			// if there is already a cache but for another platform, keep the keys but reset the values
-			if (CachedUniformBufferPlatform != SP_NumPlatforms)
+			break;
+		}
+
+		// Drop the ReadLock, acquire a write lock
+		//     Write the ReferencedUniformBufferStructsCache for the new Platform
+		// Drop the WriteLock, reacquire the ReadLock
+		ReadScopeLock.Reset();
+		{
+			FWriteScopeLock WriteScopeLock(UniformBufferLocks[LockIndex]);
+			if (CachedUniformBufferPlatform != Platform)
 			{
-				for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
+				// If there is already a cache but for another platform, keep the keys but reset the values
+				if (CachedUniformBufferPlatform != SP_NumPlatforms)
 				{
-					It.Value() = FCachedUniformBufferDeclaration();
+					for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TIterator It(ReferencedUniformBufferStructsCache); It; ++It)
+					{
+						It.Value() = FCachedUniformBufferDeclaration();
+					}
 				}
+				CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
+				CachedUniformBufferPlatform = Platform;
 			}
-			CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
-			CachedUniformBufferPlatform = Platform;
-		} 
+		}
+		ReadScopeLock.Emplace(UniformBufferLocks[LockIndex]);
 	}
 
 	FString UniformBufferIncludes;

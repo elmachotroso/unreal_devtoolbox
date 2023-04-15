@@ -3,10 +3,12 @@
 
 #include "CADKernel/Topo/Model.h"
 #include "CADKernel/Topo/Shell.h"
+
+#ifdef CADKERNEL_DEV
 #include "CADKernel/Topo/TopologyReport.h"
+#endif
 
-
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FBody::AddShell(TSharedRef<FShell> Shell)
@@ -33,7 +35,7 @@ void FBody::RemoveEmptyShell(FModel& Model)
 	if (NewShells.IsEmpty())
 	{
 		Delete();
-		Model.RemoveBody(this);
+		Model.Remove(this);
 	}
 	else
 	{
@@ -41,12 +43,22 @@ void FBody::RemoveEmptyShell(FModel& Model)
 	}
 }
 
+void FBody::Remove(const FTopologicalShapeEntity* ShellToRemove)
+{
+	if (!ShellToRemove)
+	{
+		return;
+	}
+
+	int32 Index = Shells.IndexOfByPredicate([&](const TSharedPtr<FShell>& Shell) { return (Shell.Get() == ShellToRemove); });
+	Shells.RemoveAt(Index);
+}
+
 #ifdef CADKERNEL_DEV
 FInfoEntity& FBody::GetInfo(FInfoEntity& Info) const
 {
 	return FTopologicalShapeEntity::GetInfo(Info).Add(TEXT("Shells"), Shells);
 }
-#endif
 
 void FBody::FillTopologyReport(FTopologyReport& Report) const
 {
@@ -56,5 +68,6 @@ void FBody::FillTopologyReport(FTopologyReport& Report) const
 		Shell->FillTopologyReport(Report);
 	}
 }
+#endif
 
 }

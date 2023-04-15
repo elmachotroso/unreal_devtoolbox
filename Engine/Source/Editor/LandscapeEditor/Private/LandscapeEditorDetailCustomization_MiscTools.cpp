@@ -4,6 +4,7 @@
 #include "Modules/ModuleManager.h"
 #include "Widgets/Text/STextBlock.h"
 #include "SlateOptMacros.h"
+#include "SWarningOrErrorBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -136,6 +137,39 @@ void FLandscapeEditorDetailCustomization_MiscTools::CustomizeDetails(IDetailLayo
 				.OnClicked_Static(&FLandscapeEditorDetailCustomization_MiscTools::OnApplySelectedSplinesButtonClicked)
 			]
 		];
+
+		ToolsCategory.AddCustomRow(LOCTEXT("SelectAllLabel", "Select all"))
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.Padding(0, 6, 0, 0)
+			[
+				SNew(STextBlock)
+				.Font(DetailBuilder.GetDetailFont())
+				.ShadowOffset(FVector2D::UnitVector)
+				.Text(LOCTEXT("Spline.SelectAll", "Select All:"))
+			]
+		];
+		ToolsCategory.AddCustomRow(LOCTEXT("SelectAllLabel", "Select all"))
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			[
+				SNew(SButton)
+				.ToolTipText(LOCTEXT("Spline.ControlPoints.All.Tooltip", "Selects all landscape spline control points in the map."))
+				.Text(LOCTEXT("Spline.ControlPoints", "Control Points"))
+				.HAlign(HAlign_Center)
+				.OnClicked_Static(&FLandscapeEditorDetailCustomization_MiscTools::OnSelectAllControlPointsButtonClicked)
+			]
+			+ SHorizontalBox::Slot()
+			[
+				SNew(SButton)
+				.ToolTipText(LOCTEXT("Spline.Segments.All.Tooltip", "Selects all landscape spline segments in the map."))
+				.Text(LOCTEXT("Spline.Segments", "Segments"))
+				.HAlign(HAlign_Center)
+				.OnClicked_Static(&FLandscapeEditorDetailCustomization_MiscTools::OnSelectAllSegmentsButtonClicked)
+			]
+		];
 		ToolsCategory.AddCustomRow(LOCTEXT("Spline.bUseAutoRotateControlPoint.Selected", "Use Auto Rotate Control Point"))
 		[
 			SNew(SHorizontalBox)
@@ -224,6 +258,16 @@ void FLandscapeEditorDetailCustomization_MiscTools::CustomizeDetails(IDetailLayo
 				]
 			]
 		];
+	}
+
+	if (IsToolActive("AddComponent"))
+	{
+		ToolsCategory.AddCustomRow(FText::GetEmpty())
+		[
+			SNew(SWarningOrErrorBox)
+			.Message(this, &FLandscapeEditorDetailCustomization_MiscTools::GetMiscLandscapeErrorText)
+		]
+		.Visibility(TAttribute<EVisibility>(this, &FLandscapeEditorDetailCustomization_MiscTools::GetMiscLandscapeErrorVisibility));
 	}
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
@@ -331,6 +375,28 @@ FReply FLandscapeEditorDetailCustomization_MiscTools::OnApplySelectedSplinesButt
 	return FReply::Handled();
 }
 
+FReply FLandscapeEditorDetailCustomization_MiscTools::OnSelectAllControlPointsButtonClicked()
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (LandscapeEdMode && LandscapeEdMode->CurrentToolTarget.LandscapeInfo.IsValid())
+	{
+		LandscapeEdMode->SelectAllSplineControlPoints();
+	}
+
+	return FReply::Handled();
+}
+
+FReply FLandscapeEditorDetailCustomization_MiscTools::OnSelectAllSegmentsButtonClicked()
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (LandscapeEdMode && LandscapeEdMode->CurrentToolTarget.LandscapeInfo.IsValid())
+	{
+		LandscapeEdMode->SelectAllSplineSegments();
+	}
+
+	return FReply::Handled();
+}
+
 void FLandscapeEditorDetailCustomization_MiscTools::OnbUseAutoRotateControlPointChanged(ECheckBoxState NewState)
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
@@ -419,6 +485,30 @@ TOptional<float> FLandscapeEditorDetailCustomization_MiscTools::GetFlattenValue(
 	}
 
 	return 0.0f;
+}
+
+EVisibility FLandscapeEditorDetailCustomization_MiscTools::GetMiscLandscapeErrorVisibility() const
+{
+	FEdModeLandscape* EdMode = GetEditorMode();
+	
+	if (EdMode != nullptr)
+	{
+		return EdMode->IsLandscapeResolutionCompliant() ? EVisibility::Hidden : EVisibility::Visible;
+	}
+	
+	return EVisibility::Hidden;
+}
+
+FText FLandscapeEditorDetailCustomization_MiscTools::GetMiscLandscapeErrorText() const
+{
+	FEdModeLandscape* EdMode = GetEditorMode();
+
+	if (EdMode != nullptr)
+	{
+		return EdMode->GetLandscapeResolutionErrorText();
+	}
+
+	return FText::GetEmpty();
 }
 
 void FLandscapeEditorDetailCustomization_MiscTools::OnBeginFlattenToolEyeDrop()

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialCachedData.h"
+#include "MaterialCachedHLSLTree.h"
 #include "Materials/MaterialExpressionBreakMaterialAttributes.h"
 #include "Materials/MaterialExpressionShadingModel.h"
 #include "Materials/MaterialExpressionReroute.h"
@@ -31,49 +32,45 @@
 #include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "MaterialHLSLTree.h"
+#include "HLSLTree/HLSLTreeEmit.h"
+#include "HLSLTree/HLSLTree.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "Engine/Font.h"
 #include "LandscapeGrassType.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveLinearColorAtlas.h"
+#include "Misc/MemStack.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialCachedData)
 
 const FMaterialCachedParameterEntry FMaterialCachedParameterEntry::EmptyData{};
 const FMaterialCachedExpressionData FMaterialCachedExpressionData::EmptyData{};
-const FMaterialInstanceCachedData FMaterialInstanceCachedData::EmptyData{};
+const FMaterialCachedExpressionEditorOnlyData FMaterialCachedExpressionEditorOnlyData::EmptyData{};
 
-void FMaterialCachedExpressionData::Reset()
+static_assert((uint32)(EMaterialProperty::MP_MAX)-1 <= (8 * sizeof(FMaterialCachedExpressionData::PropertyConnectedBitmask)), "PropertyConnectedBitmask cannot contain entire EMaterialProperty enumeration.");
+
+FMaterialCachedExpressionData::FMaterialCachedExpressionData()
+	: bHasMaterialLayers(false)
+	, bHasRuntimeVirtualTextureOutput(false)
+	, bHasSceneColor(false)
+	, bHasPerInstanceCustomData(false)
+	, bHasPerInstanceRandom(false)
+	, bHasVertexInterpolator(false)
 {
-	Parameters.Reset();
-	ReferencedTextures.Reset();
-	FunctionInfos.Reset();
-	ParameterCollectionInfos.Reset();
-	GrassTypes.Reset();
-	DynamicParameterNames.Reset();
-	QualityLevelsUsed.Reset();
 	QualityLevelsUsed.AddDefaulted(EMaterialQualityLevel::Num);
-	bHasMaterialLayers = false;
-	bHasRuntimeVirtualTextureOutput = false;
-	bHasSceneColor = false;
-	bHasPerInstanceCustomData = false;
-	bHasPerInstanceRandom = false;
-	bHasVertexInterpolator = false;
-	MaterialAttributesPropertyConnectedBitmask = 0;
-
 #if WITH_EDITORONLY_DATA
-	LandscapeLayerNames.Reset();
+	EditorOnlyData = MakeShared<FMaterialCachedExpressionEditorOnlyData>();
 #endif // WITH_EDITORONLY_DATA
-
-	static_assert((uint32)(EMaterialProperty::MP_MAX)-1 <= (8 * sizeof(MaterialAttributesPropertyConnectedBitmask)), "MaterialAttributesPropertyConnectedBitmask cannot contain entire EMaterialProperty enumeration.");
 }
 
 void FMaterialCachedExpressionData::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	Parameters.AddReferencedObjects(Collector);
 	Collector.AddReferencedObjects(ReferencedTextures);
+	Collector.AddReferencedObjects(GrassTypes);
 	Collector.AddReferencedObjects(MaterialLayers.Layers);
 	Collector.AddReferencedObjects(MaterialLayers.Blends);
-	Collector.AddReferencedObjects(GrassTypes);
 	for (FMaterialFunctionInfo& FunctionInfo : FunctionInfos)
 	{
 		Collector.AddReferencedObject(FunctionInfo.Function);
@@ -102,40 +99,32 @@ void FMaterialCachedExpressionData::AppendReferencedParameterCollectionIdsTo(TAr
 	}
 }
 
-void FMaterialCachedParameters::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	Collector.AddReferencedObjects(TextureValues);
-	Collector.AddReferencedObjects(RuntimeVirtualTextureValues);
-	Collector.AddReferencedObjects(FontValues);
-#if WITH_EDITORONLY_DATA
-	Collector.AddReferencedObjects(ScalarCurveValues);
-	Collector.AddReferencedObjects(ScalarCurveAtlasValues);
-#endif
-}
-
 #if WITH_EDITOR
-static int32 TryAddParameter(FMaterialCachedParameters& CachedParameters,
+static int32 TryAddParameter(FMaterialCachedExpressionData& CachedData,
 	EMaterialParameterType Type,
 	const FMaterialParameterInfo& ParameterInfo,
 	const FMaterialCachedParameterEditorInfo& InEditorInfo)
 {
-	FMaterialCachedParameterEntry& Entry = CachedParameters.GetParameterTypeEntry(Type);
+	check(CachedData.EditorOnlyData);
+	FMaterialCachedParameterEntry& Entry = CachedData.GetParameterTypeEntry(Type);
+	FMaterialCachedParameterEditorEntry& EditorEntry = CachedData.EditorOnlyData->EditorEntries[(int32)Type];
+
 	FSetElementId ElementId = Entry.ParameterInfoSet.FindId(ParameterInfo);
 	int32 Index = INDEX_NONE;
 	if (!ElementId.IsValidId())
 	{
 		ElementId = Entry.ParameterInfoSet.Add(ParameterInfo);
 		Index = ElementId.AsInteger();
-		Entry.EditorInfo.Insert(InEditorInfo, Index);
+		EditorEntry.EditorInfo.Insert(InEditorInfo, Index);
 		// should be valid as long as we don't ever remove elements from ParameterInfoSet
-		check(Entry.ParameterInfoSet.Num() == Entry.EditorInfo.Num());
+		check(Entry.ParameterInfoSet.Num() == EditorEntry.EditorInfo.Num());
 		return Index;
 	}
 
 	// Update any editor values that haven't been set yet
 	// TODO still need to do this??
 	Index = ElementId.AsInteger();
-	FMaterialCachedParameterEditorInfo& EditorInfo = Entry.EditorInfo[Index];
+	FMaterialCachedParameterEditorInfo& EditorInfo = EditorEntry.EditorInfo[Index];
 	if (!EditorInfo.ExpressionGuid.IsValid())
 	{
 		EditorInfo.ExpressionGuid = InEditorInfo.ExpressionGuid;
@@ -149,9 +138,79 @@ static int32 TryAddParameter(FMaterialCachedParameters& CachedParameters,
 		EditorInfo.Group = InEditorInfo.Group;
 		EditorInfo.SortPriority = InEditorInfo.SortPriority;
 	}
-
+	
 	// Still return INDEX_NONE, to signify this parameter was already added (don't want to add it again)
 	return INDEX_NONE;
+}
+
+void FMaterialCachedExpressionData::AddParameter(const FMaterialParameterInfo& ParameterInfo, const FMaterialParameterMetadata& ParameterMeta, UObject*& OutReferencedTexture)
+{
+	check(EditorOnlyData);
+	int32 AssetIndex = INDEX_NONE;
+	if (!ParameterMeta.AssetPath.IsEmpty())
+	{
+		AssetIndex = EditorOnlyData->AssetPaths.AddUnique(ParameterMeta.AssetPath);
+	}
+
+	const FMaterialCachedParameterEditorInfo EditorInfo(ParameterMeta.ExpressionGuid, ParameterMeta.Description, ParameterMeta.Group, ParameterMeta.SortPriority, AssetIndex);
+	const int32 Index = TryAddParameter(*this, ParameterMeta.Value.Type, ParameterInfo, EditorInfo);
+	if (Index != INDEX_NONE)
+	{
+		switch (ParameterMeta.Value.Type)
+		{
+		case EMaterialParameterType::Scalar:
+			ScalarValues.Insert(ParameterMeta.Value.AsScalar(), Index);
+			EditorOnlyData->ScalarMinMaxValues.Insert(FVector2D(ParameterMeta.ScalarMin, ParameterMeta.ScalarMax), Index);
+			ScalarPrimitiveDataIndexValues.Insert(ParameterMeta.PrimitiveDataIndex, Index);
+			if (ParameterMeta.bUsedAsAtlasPosition)
+			{
+				EditorOnlyData->ScalarCurveValues.Insert(ParameterMeta.ScalarCurve.Get(), Index);
+				EditorOnlyData->ScalarCurveAtlasValues.Insert(ParameterMeta.ScalarAtlas.Get(), Index);
+				OutReferencedTexture = ParameterMeta.ScalarAtlas.Get();
+			}
+			else
+			{
+				EditorOnlyData->ScalarCurveValues.Insert(nullptr, Index);
+				EditorOnlyData->ScalarCurveAtlasValues.Insert(nullptr, Index);
+			}
+			break;
+		case EMaterialParameterType::Vector:
+			VectorValues.Insert(ParameterMeta.Value.AsLinearColor(), Index);
+			EditorOnlyData->VectorChannelNameValues.Insert(ParameterMeta.ChannelNames, Index);
+			EditorOnlyData->VectorUsedAsChannelMaskValues.Insert(ParameterMeta.bUsedAsChannelMask, Index);
+			VectorPrimitiveDataIndexValues.Insert(ParameterMeta.PrimitiveDataIndex, Index);
+			break;
+		case EMaterialParameterType::DoubleVector:
+			DoubleVectorValues.Insert(ParameterMeta.Value.AsVector4d(), Index);
+			break;
+		case EMaterialParameterType::Texture:
+			TextureValues.Insert(ParameterMeta.Value.Texture, Index);
+			EditorOnlyData->TextureChannelNameValues.Insert(ParameterMeta.ChannelNames, Index);
+			OutReferencedTexture = ParameterMeta.Value.Texture;
+			break;
+		case EMaterialParameterType::Font:
+			FontValues.Insert(ParameterMeta.Value.Font.Value, Index);
+			FontPageValues.Insert(ParameterMeta.Value.Font.Page, Index);
+			if (ParameterMeta.Value.Font.Value && ParameterMeta.Value.Font.Value->Textures.IsValidIndex(ParameterMeta.Value.Font.Page))
+			{
+				OutReferencedTexture = ParameterMeta.Value.Font.Value->Textures[ParameterMeta.Value.Font.Page];
+			}
+			break;
+		case EMaterialParameterType::RuntimeVirtualTexture:
+			RuntimeVirtualTextureValues.Insert(ParameterMeta.Value.RuntimeVirtualTexture, Index);
+			OutReferencedTexture = ParameterMeta.Value.RuntimeVirtualTexture;
+			break;
+		case EMaterialParameterType::StaticSwitch:
+			EditorOnlyData->StaticSwitchValues.Insert(ParameterMeta.Value.AsStaticSwitch(), Index);
+			break;
+		case EMaterialParameterType::StaticComponentMask:
+			EditorOnlyData->StaticComponentMaskValues.Insert(ParameterMeta.Value.AsStaticComponentMask(), Index);
+			break;
+		default:
+			checkNoEntry();
+			break;
+		}
+	}
 }
 
 void FMaterialCachedExpressionData::UpdateForFunction(const FMaterialCachedExpressionContext& Context, UMaterialFunctionInterface* Function, EMaterialParameterAssociation Association, int32 ParameterIndex)
@@ -170,11 +229,7 @@ void FMaterialCachedExpressionData::UpdateForFunction(const FMaterialCachedExpre
 	FMaterialCachedExpressionData* Self = this;
 	auto ProcessFunction = [Self, &LocalContext, Association, ParameterIndex](UMaterialFunctionInterface* InFunction) -> bool
 	{
-		const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = InFunction->GetFunctionExpressions();
-		if (FunctionExpressions)
-		{
-			Self->UpdateForExpressions(LocalContext, *FunctionExpressions, Association, ParameterIndex);
-		}
+		Self->UpdateForExpressions(LocalContext, InFunction->GetExpressions(), Association, ParameterIndex);
 
 		FMaterialFunctionInfo NewFunctionInfo;
 		NewFunctionInfo.Function = InFunction;
@@ -201,8 +256,10 @@ void FMaterialCachedExpressionData::UpdateForLayerFunctions(const FMaterialCache
 	}
 }
 
-void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedExpressionContext& Context, const TArray<TObjectPtr<UMaterialExpression>>& Expressions, EMaterialParameterAssociation Association, int32 ParameterIndex)
+void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedExpressionContext& Context, TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions, EMaterialParameterAssociation Association, int32 ParameterIndex)
 {
+	check(EditorOnlyData);
+
 	for (UMaterialExpression* Expression : Expressions)
 	{
 		if (!Expression)
@@ -232,65 +289,7 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 			}
 
 			const FMaterialParameterInfo ParameterInfo(ParameterName, Association, ParameterIndex);
-			const FMaterialCachedParameterEditorInfo EditorInfo(ParameterMeta.ExpressionGuid, ParameterMeta.Description, ParameterMeta.Group, ParameterMeta.SortPriority);
-			const int32 Index = TryAddParameter(Parameters, ParameterMeta.Value.Type, ParameterInfo, EditorInfo);
-			if (Index != INDEX_NONE)
-			{
-				switch (ParameterMeta.Value.Type)
-				{
-				case EMaterialParameterType::Scalar:
-					Parameters.ScalarValues.Insert(ParameterMeta.Value.AsScalar(), Index);
-					Parameters.ScalarMinMaxValues.Insert(FVector2D(ParameterMeta.ScalarMin, ParameterMeta.ScalarMax), Index);
-					Parameters.ScalarPrimitiveDataIndexValues.Insert(ParameterMeta.PrimitiveDataIndex, Index);
-					if (ParameterMeta.bUsedAsAtlasPosition)
-					{
-						Parameters.ScalarCurveValues.Insert(ParameterMeta.ScalarCurve.Get(), Index);
-						Parameters.ScalarCurveAtlasValues.Insert(ParameterMeta.ScalarAtlas.Get(), Index);
-						ReferencedTexture = ParameterMeta.ScalarAtlas.Get();
-					}
-					else
-					{
-						Parameters.ScalarCurveValues.Insert(nullptr, Index);
-						Parameters.ScalarCurveAtlasValues.Insert(nullptr, Index);
-					}
-					break;
-				case EMaterialParameterType::Vector:
-					Parameters.VectorValues.Insert(ParameterMeta.Value.AsLinearColor(), Index);
-					Parameters.VectorChannelNameValues.Insert(ParameterMeta.ChannelNames, Index);
-					Parameters.VectorUsedAsChannelMaskValues.Insert(ParameterMeta.bUsedAsChannelMask, Index);
-					Parameters.VectorPrimitiveDataIndexValues.Insert(ParameterMeta.PrimitiveDataIndex, Index);
-					break;
-				case EMaterialParameterType::DoubleVector:
-					Parameters.DoubleVectorValues.Insert(ParameterMeta.Value.AsVector4d(), Index);
-					break;
-				case EMaterialParameterType::Texture:
-					Parameters.TextureValues.Insert(ParameterMeta.Value.Texture, Index);
-					Parameters.TextureChannelNameValues.Insert(ParameterMeta.ChannelNames, Index);
-					ReferencedTexture = ParameterMeta.Value.Texture;
-					break;
-				case EMaterialParameterType::Font:
-					Parameters.FontValues.Insert(ParameterMeta.Value.Font.Value, Index);
-					Parameters.FontPageValues.Insert(ParameterMeta.Value.Font.Page, Index);
-					if (ParameterMeta.Value.Font.Value && ParameterMeta.Value.Font.Value->Textures.IsValidIndex(ParameterMeta.Value.Font.Page))
-					{
-						ReferencedTexture = ParameterMeta.Value.Font.Value->Textures[ParameterMeta.Value.Font.Page];
-					}
-					break;
-				case EMaterialParameterType::RuntimeVirtualTexture:
-					Parameters.RuntimeVirtualTextureValues.Insert(ParameterMeta.Value.RuntimeVirtualTexture, Index);
-					ReferencedTexture = ParameterMeta.Value.RuntimeVirtualTexture;
-					break;
-				case EMaterialParameterType::StaticSwitch:
-					Parameters.StaticSwitchValues.Insert(ParameterMeta.Value.AsStaticSwitch(), Index);
-					break;
-				case EMaterialParameterType::StaticComponentMask:
-					Parameters.StaticComponentMaskValues.Insert(ParameterMeta.Value.AsStaticComponentMask(), Index);
-					break;
-				default:
-					checkNoEntry();
-					break;
-				}
-			}
+			AddParameter(ParameterInfo, ParameterMeta, ReferencedTexture);
 		}
 
 		// We first try to extract the referenced texture from the parameter value, that way we'll also get the proper texture in case value is overriden by a function instance
@@ -306,7 +305,7 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 			ReferencedTextures.AddUnique(ReferencedTexture);
 		}
 
-		Expression->GetLandscapeLayerNames(LandscapeLayerNames);
+		Expression->GetLandscapeLayerNames(EditorOnlyData->LandscapeLayerNames);
 
 		if (UMaterialExpressionCollectionParameter* ExpressionCollectionParameter = Cast<UMaterialExpressionCollectionParameter>(Expression))
 		{
@@ -369,6 +368,10 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 		{
 			bHasPerInstanceCustomData = true;
 		}
+		else if (Expression->IsA(UMaterialExpressionPerInstanceCustomData3Vector::StaticClass()))
+		{
+			bHasPerInstanceCustomData = true;
+		}
 		else if (Expression->IsA(UMaterialExpressionVertexInterpolator::StaticClass()))
 		{
 			bHasVertexInterpolator = true;
@@ -384,7 +387,9 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 
 				// TODO(?) - Layers for MIs are currently duplicated here and in FStaticParameterSet
 				bHasMaterialLayers = true;
-				MaterialLayers = Layers;
+				MaterialLayers = Layers.GetRuntime();
+				EditorOnlyData->MaterialLayers = Layers.EditorOnly;
+				FMaterialLayersFunctions::Validate(MaterialLayers, EditorOnlyData->MaterialLayers);
 				LayersExpression->RebuildLayerGraph(false);
 			}
 		}
@@ -401,30 +406,25 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 		}
 		else if (UMaterialExpressionSetMaterialAttributes* SetMatAttributes = Cast<UMaterialExpressionSetMaterialAttributes>(Expression))
 		{
-			for (int PinIndex = 0; PinIndex < SetMatAttributes->AttributeSetTypes.Num(); ++PinIndex)
+			for (int32 PinIndex = 0; PinIndex < SetMatAttributes->AttributeSetTypes.Num(); ++PinIndex)
 			{
 				// For this material attribute pin do we have something connected?
 				const FGuid& Guid = SetMatAttributes->AttributeSetTypes[PinIndex];
 				const FExpressionInput& AttributeInput = SetMatAttributes->Inputs[PinIndex + 1];
 				const EMaterialProperty MaterialProperty = FMaterialAttributeDefinitionMap::GetProperty(Guid);
-
-				// Only set the material property if it hasn't been set yet.  We want to specifically avoid a Set Material Attributes node which doesn't have a 
-				// attribute set from disabling the attribute from a different Set Material Attributes node which does have it enabled.
-				if (!IsMaterialAttributePropertyConnected(MaterialProperty))
+				if (AttributeInput.Expression)
 				{
-					SetMaterialAttributePropertyConnected(MaterialProperty, AttributeInput.Expression ? true : false);
+					SetPropertyConnected(MaterialProperty);
 				}
 			}
 		}
 		else if (UMaterialExpressionMakeMaterialAttributes* MakeMatAttributes = Cast<UMaterialExpressionMakeMaterialAttributes>(Expression))
 		{
-			// Only set the material property if it hasn't been set yet.  We want to specifically avoid a Set Material Attributes node which doesn't have a 
-			// attribute set from disabling the attribute from a different Set Material Attributes node which does have it enabled.
 			auto SetMatAttributeConditionally = [&](EMaterialProperty InMaterialProperty, bool InIsConnected)
 			{
-				if (!IsMaterialAttributePropertyConnected(InMaterialProperty))
+				if (InIsConnected)
 				{
-					SetMaterialAttributePropertyConnected(InMaterialProperty, InIsConnected);
+					SetPropertyConnected(InMaterialProperty);
 				}
 			};
 
@@ -457,89 +457,126 @@ void FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 		}
 	}
 }
+
+namespace Private
+{
+void PrepareHLSLTree(UE::HLSLTree::FEmitContext& EmitContext,
+	const FMaterialCachedHLSLTree& CachedTree,
+	FMaterialCachedExpressionData& CachedData,
+	EShaderFrequency ShaderFrequency)
+{
+	using namespace UE::HLSLTree;
+	using namespace UE::Shader;
+
+	EmitContext.ShaderFrequency = ShaderFrequency;
+	EmitContext.bUseAnalyticDerivatives = true; // We want to consider expressions used for analytic derivatives
+	EmitContext.bMarkLiveValues = false;
+	FEmitScope* EmitResultScope = EmitContext.PrepareScope(CachedTree.GetResultScope());
+
+	FRequestedType RequestedAttributesType(CachedTree.GetMaterialAttributesType(), false);
+	CachedTree.SetRequestedFields(ShaderFrequency, RequestedAttributesType);
+
+	const FPreparedType& ResultType = EmitContext.PrepareExpression(CachedTree.GetResultExpression(), *EmitResultScope, RequestedAttributesType);
+	if (!ResultType.IsVoid())
+	{
+		EmitContext.bMarkLiveValues = true;
+		EmitContext.PrepareExpression(CachedTree.GetResultExpression(), *EmitResultScope, RequestedAttributesType);
+
+		const TArray<FGuid>& OrderedVisibleAttributes = FMaterialAttributeDefinitionMap::GetOrderedVisibleAttributeList();
+		for (const FGuid& AttributeID : OrderedVisibleAttributes)
+		{
+			if (FMaterialAttributeDefinitionMap::GetShaderFrequency(AttributeID) == ShaderFrequency)
+			{
+				const EMaterialProperty Property = FMaterialAttributeDefinitionMap::GetProperty(AttributeID);
+				if (CachedTree.IsAttributeUsed(EmitContext, *EmitResultScope, ResultType, Property))
+				{
+					CachedData.SetPropertyConnected(Property);
+				}
+			}
+		}
+	}
+}
+
+}
+
+void FMaterialCachedExpressionData::UpdateForCachedHLSLTree(const FMaterialCachedHLSLTree& CachedTree, const FStaticParameterSet* StaticParameters)
+{
+	using namespace UE::HLSLTree;
+
+	// We ignore errors here, errors will be captured when we actually emit HLSL from the tree
+	FNullErrorHandler NullErrorHandler;
+
+	FMemStackBase Allocator;
+	FEmitContext EmitContext(Allocator, FTargetParameters(), NullErrorHandler, CachedTree.GetTypeRegistry());
+
+	Material::FEmitData& EmitMaterialData = EmitContext.AcquireData<Material::FEmitData>();
+	EmitMaterialData.CachedExpressionData = this;
+	EmitMaterialData.StaticParameters = StaticParameters;
+
+	::Private::PrepareHLSLTree(EmitContext, CachedTree, *this, SF_Pixel);
+	::Private::PrepareHLSLTree(EmitContext, CachedTree, *this, SF_Vertex);
+}
+
+void FMaterialCachedExpressionData::Validate()
+{
+	if (EditorOnlyData)
+	{
+		for (int32 TypeIndex = 0; TypeIndex < NumMaterialParameterTypes; ++TypeIndex)
+		{
+			const FMaterialCachedParameterEditorEntry& EditorEntry = EditorOnlyData->EditorEntries[TypeIndex];
+			const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry((EMaterialParameterType)TypeIndex);
+			check(EditorEntry.EditorInfo.Num() == Entry.ParameterInfoSet.Num());
+		}
+		FMaterialLayersFunctions::Validate(MaterialLayers, EditorOnlyData->MaterialLayers);
+	}
+}
+
 #endif // WITH_EDITOR
 
-void FMaterialCachedParameterEntry::Reset()
-{
-	ParameterInfoSet.Reset();
-#if WITH_EDITORONLY_DATA
-	EditorInfo.Reset();
-#endif
-}
-
-void FMaterialCachedParameters::Reset()
-{
-	for (int32 i = 0; i < NumMaterialRuntimeParameterTypes; ++i)
-	{
-		RuntimeEntries[i].Reset();
-	}
-#if WITH_EDITORONLY_DATA
-	for (int32 i = 0; i < NumMaterialEditorOnlyParameterTypes; ++i)
-	{
-		EditorOnlyEntries[i].Reset();
-	}
-#endif
-
-	ScalarPrimitiveDataIndexValues.Reset();
-	VectorPrimitiveDataIndexValues.Reset();
-	ScalarValues.Reset();
-	VectorValues.Reset();
-	DoubleVectorValues.Reset();
-	TextureValues.Reset();
-	FontValues.Reset();
-	FontPageValues.Reset();
-	RuntimeVirtualTextureValues.Reset();
-
-#if WITH_EDITORONLY_DATA
-	StaticSwitchValues.Reset();
-	StaticComponentMaskValues.Reset();
-	ScalarMinMaxValues.Reset();
-	ScalarCurveValues.Reset();
-	ScalarCurveAtlasValues.Reset();
-	VectorChannelNameValues.Reset();
-	VectorUsedAsChannelMaskValues.Reset();
-	TextureChannelNameValues.Reset();
-#endif // WITH_EDITORONLY_DATA
-}
-
-int32 FMaterialCachedParameters::FindParameterIndex(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo) const
+int32 FMaterialCachedExpressionData::FindParameterIndex(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo) const
 {
 	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
 	const FSetElementId ElementId = Entry.ParameterInfoSet.FindId(FMaterialParameterInfo(ParameterInfo));
 	return ElementId.AsInteger();
 }
 
-void FMaterialCachedParameters::GetParameterValueByIndex(EMaterialParameterType Type, int32 ParameterIndex, FMaterialParameterMetadata& OutResult) const
+void FMaterialCachedExpressionData::GetParameterValueByIndex(EMaterialParameterType Type, int32 ParameterIndex, FMaterialParameterMetadata& OutResult) const
 {
-	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
-
 #if WITH_EDITORONLY_DATA
-	const bool bIsEditorOnlyDataStripped = Entry.EditorInfo.Num() == 0;
-	if (!bIsEditorOnlyDataStripped)
+	bool bIsEditorOnlyDataStripped = true;
+	if (EditorOnlyData)
 	{
-		const FMaterialCachedParameterEditorInfo& EditorInfo = Entry.EditorInfo[ParameterIndex];
-		OutResult.ExpressionGuid = EditorInfo.ExpressionGuid;
-		OutResult.Description = EditorInfo.Description;
-		OutResult.Group = EditorInfo.Group;
-		OutResult.SortPriority = EditorInfo.SortPriority;
+		const FMaterialCachedParameterEditorEntry& EditorEntry = EditorOnlyData->EditorEntries[(int32)Type];
+		bIsEditorOnlyDataStripped = EditorEntry.EditorInfo.Num() == 0;
+		if (!bIsEditorOnlyDataStripped)
+		{
+			const FMaterialCachedParameterEditorInfo& EditorInfo = EditorEntry.EditorInfo[ParameterIndex];
+			OutResult.ExpressionGuid = EditorInfo.ExpressionGuid;
+			OutResult.Description = EditorInfo.Description;
+			OutResult.Group = EditorInfo.Group;
+			OutResult.SortPriority = EditorInfo.SortPriority;
+			if (EditorInfo.AssetIndex != INDEX_NONE)
+			{
+				OutResult.AssetPath = EditorOnlyData->AssetPaths[EditorInfo.AssetIndex];
+			}
+		}
 	}
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 	switch (Type)
 	{
 	case EMaterialParameterType::Scalar:
 		OutResult.Value = ScalarValues[ParameterIndex];
 		OutResult.PrimitiveDataIndex = ScalarPrimitiveDataIndexValues[ParameterIndex];
-
 #if WITH_EDITORONLY_DATA
-		if (!bIsEditorOnlyDataStripped)
+		if (EditorOnlyData && !bIsEditorOnlyDataStripped)
 		{
-			OutResult.ScalarMin = ScalarMinMaxValues[ParameterIndex].X;
-			OutResult.ScalarMax = ScalarMinMaxValues[ParameterIndex].Y;
+			OutResult.ScalarMin = EditorOnlyData->ScalarMinMaxValues[ParameterIndex].X;
+			OutResult.ScalarMax = EditorOnlyData->ScalarMinMaxValues[ParameterIndex].Y;
 			{
-				UCurveLinearColor* Curve = ScalarCurveValues[ParameterIndex];
-				UCurveLinearColorAtlas* Atlas = ScalarCurveAtlasValues[ParameterIndex];
-				if (Curve && Atlas)
+				const TSoftObjectPtr<UCurveLinearColor>& Curve = EditorOnlyData->ScalarCurveValues[ParameterIndex];
+				const TSoftObjectPtr<UCurveLinearColorAtlas>& Atlas = EditorOnlyData->ScalarCurveAtlasValues[ParameterIndex];
+				if (!Curve.IsNull() && !Atlas.IsNull())
 				{
 					OutResult.ScalarCurve = Curve;
 					OutResult.ScalarAtlas = Atlas;
@@ -552,12 +589,11 @@ void FMaterialCachedParameters::GetParameterValueByIndex(EMaterialParameterType 
 	case EMaterialParameterType::Vector:
 		OutResult.Value = VectorValues[ParameterIndex];
 		OutResult.PrimitiveDataIndex = VectorPrimitiveDataIndexValues[ParameterIndex];
-
 #if  WITH_EDITORONLY_DATA
-		if (!bIsEditorOnlyDataStripped)
+		if (EditorOnlyData && !bIsEditorOnlyDataStripped)
 		{
-			OutResult.ChannelNames = VectorChannelNameValues[ParameterIndex];
-			OutResult.bUsedAsChannelMask = VectorUsedAsChannelMaskValues[ParameterIndex];
+			OutResult.ChannelNames = EditorOnlyData->VectorChannelNameValues[ParameterIndex];
+			OutResult.bUsedAsChannelMask = EditorOnlyData->VectorUsedAsChannelMaskValues[ParameterIndex];
 		}
 #endif // WITH_EDITORONLY_DATA
 		break;
@@ -565,31 +601,31 @@ void FMaterialCachedParameters::GetParameterValueByIndex(EMaterialParameterType 
 		OutResult.Value = DoubleVectorValues[ParameterIndex];
 		break;
 	case EMaterialParameterType::Texture:
-		OutResult.Value = TextureValues[ParameterIndex];
+		OutResult.Value = TextureValues[ParameterIndex].LoadSynchronous();
 #if WITH_EDITORONLY_DATA
-		if (!bIsEditorOnlyDataStripped)
+		if (EditorOnlyData && !bIsEditorOnlyDataStripped)
 		{
-			OutResult.ChannelNames = TextureChannelNameValues[ParameterIndex];
+			OutResult.ChannelNames = EditorOnlyData->TextureChannelNameValues[ParameterIndex];
 		}
 #endif // WITH_EDITORONLY_DATA
 		break;
 	case EMaterialParameterType::RuntimeVirtualTexture:
-		OutResult.Value = RuntimeVirtualTextureValues[ParameterIndex];
+		OutResult.Value = RuntimeVirtualTextureValues[ParameterIndex].LoadSynchronous();
 		break;
 	case EMaterialParameterType::Font:
-		OutResult.Value = FMaterialParameterValue(FontValues[ParameterIndex], FontPageValues[ParameterIndex]);
+		OutResult.Value = FMaterialParameterValue(FontValues[ParameterIndex].LoadSynchronous(), FontPageValues[ParameterIndex]);
 		break;
 #if WITH_EDITORONLY_DATA
 	case EMaterialParameterType::StaticSwitch:
-		if (!bIsEditorOnlyDataStripped)
+		if (EditorOnlyData && !bIsEditorOnlyDataStripped)
 		{
-			OutResult.Value = StaticSwitchValues[ParameterIndex];
+			OutResult.Value = EditorOnlyData->StaticSwitchValues[ParameterIndex];
 		}
 		break;
 	case EMaterialParameterType::StaticComponentMask:
-		if (!bIsEditorOnlyDataStripped)
+		if (EditorOnlyData && !bIsEditorOnlyDataStripped)
 		{
-			OutResult.Value = StaticComponentMaskValues[ParameterIndex];
+			OutResult.Value = EditorOnlyData->StaticComponentMaskValues[ParameterIndex];
 		}
 		break;
 #endif // WITH_EDITORONLY_DATA
@@ -599,7 +635,7 @@ void FMaterialCachedParameters::GetParameterValueByIndex(EMaterialParameterType 
 	}
 }
 
-bool FMaterialCachedParameters::GetParameterValue(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo, FMaterialParameterMetadata& OutResult) const
+bool FMaterialCachedExpressionData::GetParameterValue(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo, FMaterialParameterMetadata& OutResult) const
 {
 	const int32 Index = FindParameterIndex(Type, ParameterInfo);
 	if (Index != INDEX_NONE)
@@ -611,15 +647,23 @@ bool FMaterialCachedParameters::GetParameterValue(EMaterialParameterType Type, c
 	return false;
 }
 
-#if WITH_EDITORONLY_DATA
-const FGuid& FMaterialCachedParameters::GetExpressionGuid(EMaterialParameterType Type, int32 Index) const
+const FGuid& FMaterialCachedExpressionData::GetExpressionGuid(EMaterialParameterType Type, int32 Index) const
 {
-	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
-	return Entry.EditorInfo[Index].ExpressionGuid;
-}
+#if WITH_EDITORONLY_DATA
+	if (EditorOnlyData)
+	{
+		// cooked materials can strip out expression guids
+		if (EditorOnlyData->EditorEntries[(int32)Type].EditorInfo.Num() != 0)
+		{
+			return EditorOnlyData->EditorEntries[(int32)Type].EditorInfo[Index].ExpressionGuid;
+		}
+	}
 #endif // WITH_EDITORONLY_DATA
+	static const FGuid EmptyGuid;
+	return EmptyGuid;
+}
 
-void FMaterialCachedParameters::GetAllParametersOfType(EMaterialParameterType Type, TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters) const
+void FMaterialCachedExpressionData::GetAllParametersOfType(EMaterialParameterType Type, TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters) const
 {
 	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
 	const int32 NumParameters = Entry.ParameterInfoSet.Num();
@@ -633,7 +677,7 @@ void FMaterialCachedParameters::GetAllParametersOfType(EMaterialParameterType Ty
 	}
 }
 
-void FMaterialCachedParameters::GetAllParameterInfoOfType(EMaterialParameterType Type, TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
+void FMaterialCachedExpressionData::GetAllParameterInfoOfType(EMaterialParameterType Type, TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 {
 	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
 	const int32 NumParameters = Entry.ParameterInfoSet.Num();
@@ -642,22 +686,13 @@ void FMaterialCachedParameters::GetAllParameterInfoOfType(EMaterialParameterType
 
 	for (TSet<FMaterialParameterInfo>::TConstIterator It(Entry.ParameterInfoSet); It; ++It)
 	{
+		const int32 ParameterIndex = It.GetId().AsInteger();
 		OutParameterInfo.Add(*It);
-#if WITH_EDITORONLY_DATA
-		// cooked materials can strip out expression guids
-		if (Entry.EditorInfo.Num() != 0)
-		{
-			OutParameterIds.Add(Entry.EditorInfo[It.GetId().AsInteger()].ExpressionGuid);
-		}
-		else
-#endif
-		{
-			OutParameterIds.Add(FGuid());
-		}
+		OutParameterIds.Add(GetExpressionGuid(Type, ParameterIndex));
 	}
 }
 
-void FMaterialCachedParameters::GetAllGlobalParametersOfType(EMaterialParameterType Type, TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters) const
+void FMaterialCachedExpressionData::GetAllGlobalParametersOfType(EMaterialParameterType Type, TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters) const
 {
 	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
 	const int32 NumParameters = Entry.ParameterInfoSet.Num();
@@ -677,7 +712,7 @@ void FMaterialCachedParameters::GetAllGlobalParametersOfType(EMaterialParameterT
 	}
 }
 
-void FMaterialCachedParameters::GetAllGlobalParameterInfoOfType(EMaterialParameterType Type, TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
+void FMaterialCachedExpressionData::GetAllGlobalParameterInfoOfType(EMaterialParameterType Type, TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 {
 	const FMaterialCachedParameterEntry& Entry = GetParameterTypeEntry(Type);
 	const int32 NumParameters = Entry.ParameterInfoSet.Num();
@@ -689,46 +724,11 @@ void FMaterialCachedParameters::GetAllGlobalParameterInfoOfType(EMaterialParamet
 		const FMaterialParameterInfo& ParameterInfo = *It;
 		if (ParameterInfo.Association == GlobalParameter)
 		{
-			OutParameterInfo.Add(ParameterInfo);
-#if WITH_EDITORONLY_DATA
-			// cooked materials can strip out expression guids
-			if (Entry.EditorInfo.Num() != 0)
-			{
-				OutParameterIds.Add(Entry.EditorInfo[It.GetId().AsInteger()].ExpressionGuid);
-			}
-			else
-#endif
-			{
-				OutParameterIds.Add(FGuid());
-			}
+			const int32 ParameterIndex = It.GetId().AsInteger();
+			OutParameterInfo.Add(*It);
+			OutParameterIds.Add(GetExpressionGuid(Type, ParameterIndex));
 		}
 	}
 }
 
-#if WITH_EDITOR
-void FMaterialInstanceCachedData::InitializeForConstant(const FMaterialLayersFunctions* Layers, const FMaterialLayersFunctions* ParentLayers)
-{
-	const int32 NumLayers = Layers ? Layers->Layers.Num() : 0;
-	ParentLayerIndexRemap.Empty(NumLayers);
-	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
-	{
-		int32 ParentLayerIndex = INDEX_NONE;
-		if (ParentLayers && Layers->LayerLinkStates[LayerIndex] == EMaterialLayerLinkState::LinkedToParent)
-		{
-			const FGuid& LayerGuid = Layers->LayerGuids[LayerIndex];
-			ParentLayerIndex = ParentLayers->LayerGuids.Find(LayerGuid);
-		}
-		ParentLayerIndexRemap.Add(ParentLayerIndex);
-	}
-}
-#endif // WITH_EDITOR
 
-void FMaterialInstanceCachedData::InitializeForDynamic(const FMaterialLayersFunctions* ParentLayers)
-{
-	const int32 NumLayers = ParentLayers ? ParentLayers->Layers.Num() : 0;
-	ParentLayerIndexRemap.Empty(NumLayers);
-	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
-	{
-		ParentLayerIndexRemap.Add(LayerIndex);
-	}
-}

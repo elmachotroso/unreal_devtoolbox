@@ -6,8 +6,6 @@ public class Party : ModuleRules
 {
 	public Party(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateDefinitions.Add("PARTY_PACKAGE=1");
-
 		PublicDefinitions.Add("PARTY_PLATFORM_SESSIONS_PSN=" + (bUsesPSNSessions ? "1" : "0"));
 		PublicDefinitions.Add("PARTY_PLATFORM_SESSIONS_XBL=" + (bUsesXBLSessions ? "1" : "0"));
 		PublicDefinitions.Add("PARTY_PLATFORM_INVITE_PERMISSIONS=" + (bUsesPlatformInvitePermissions? "1" : "0"));
@@ -19,11 +17,6 @@ public class Party : ModuleRules
 				"CoreOnline",
 				"OnlineSubsystem",
 				"OnlineSubsystemUtils",
-			}
-			);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
 			}
 			);
 

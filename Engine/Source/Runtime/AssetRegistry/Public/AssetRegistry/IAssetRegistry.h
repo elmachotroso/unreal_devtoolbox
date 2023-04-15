@@ -8,8 +8,8 @@
 #include "AssetRegistry/AssetData.h"
 #include "Containers/BitArray.h"
 #include "Containers/StringFwd.h"
-#include "Misc/Optional.h"
 #include "Misc/AssetRegistryInterface.h"
+#include "Misc/Optional.h"
 #include "UObject/Interface.h"
 
 #include "IAssetRegistry.generated.h"
@@ -25,6 +25,8 @@ struct FAssetRegistrySerializationOptions;
 class FAssetRegistryState;
 class FDependsNode;
 struct FPackageFileSummary;
+struct FObjectExport;
+struct FObjectImport;
 
 namespace EAssetAvailability
 {
@@ -127,9 +129,10 @@ public:
 	 *
 	 * @param PackageName the package name for the requested assets (eg, /Game/MyFolder/MyAsset)
 	 * @param OutAssetData the list of assets in this path
+	 * @param bSkipARFilteredAssets If true, skips Objects that return true for IsAsset but are not assets in the current platform.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category="AssetRegistry")
-	virtual bool GetAssetsByPackageName(FName PackageName, TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false) const = 0;
+	virtual bool GetAssetsByPackageName(FName PackageName, TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false, bool bSkipARFilteredAssets=true) const = 0;
 
 	/**
 	 * Gets asset data for all assets in the supplied folder path
@@ -159,7 +162,10 @@ public:
 	 * @param bSearchSubClasses if true, all subclasses of the passed in class will be searched as well
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry")
-	virtual bool GetAssetsByClass(FName ClassName, TArray<FAssetData>& OutAssetData, bool bSearchSubClasses = false) const = 0;
+	virtual bool GetAssetsByClass(FTopLevelAssetPath ClassPathName, TArray<FAssetData>& OutAssetData, bool bSearchSubClasses = false) const = 0;
+
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
+	virtual bool GetAssetsByClass(FName ClassPathName, TArray<FAssetData>& OutAssetData, bool bSearchSubClasses = false) const = 0;
 
 	/**
 	 * Gets asset data for all assets with the supplied tags, regardless of their value
@@ -184,9 +190,10 @@ public:
 	 *
 	 * @param Filter filter to apply to the assets in the AssetRegistry
 	 * @param OutAssetData the list of assets in this path
+	 * @param bSkipARFilteredAssets If true, skips Objects that return true for IsAsset but are not assets in the current platform.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category="AssetRegistry")
-	virtual bool GetAssets(const FARFilter& Filter, TArray<FAssetData>& OutAssetData) const = 0;
+	virtual bool GetAssets(const FARFilter& Filter, TArray<FAssetData>& OutAssetData, bool bSkipARFilteredAssets=true) const = 0;
 
 	/**
 	 * Enumerate asset data for all assets that match the filter.
@@ -195,9 +202,12 @@ public:
 	 *
 	 * @param Filter filter to apply to the assets in the AssetRegistry
 	 * @param Callback function to call for each asset data enumerated
+	 * @param bSkipARFilteredAssets If true, skips Objects that return true for IsAsset but are not assets in the current platform.
 	 */
-	virtual bool EnumerateAssets(const FARFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback) const = 0;
-	virtual bool EnumerateAssets(const FARCompiledFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback) const = 0;
+	virtual bool EnumerateAssets(const FARFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback,
+		bool bSkipARFilteredAssets = true) const = 0;
+	virtual bool EnumerateAssets(const FARCompiledFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback,
+		bool bSkipARFilteredAssets = true) const = 0;
 
 	/**
 	 * Gets the asset data for the specified object path
@@ -206,8 +216,49 @@ public:
 	 * @param bIncludeOnlyOnDiskAssets if true, in-memory objects will be ignored. The call will be faster.
 	 * @return the assets data;Will be invalid if object could not be found
 	 */
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use Soft Object Path instead.")
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category="AssetRegistry")
 	virtual FAssetData GetAssetByObjectPath( const FName ObjectPath, bool bIncludeOnlyOnDiskAssets = false ) const = 0;
+
+	/**
+	 * Gets the asset data for the specified object path
+	 *
+	 * @param ObjectPath the path of the object to be looked up
+	 * @param bIncludeOnlyOnDiskAssets if true, in-memory objects will be ignored. The call will be faster.
+	 * @return the assets data;Will be invalid if object could not be found
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry", DisplayName="Get Asset By Object Path")
+	virtual FAssetData K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const
+	{
+		return GetAssetByObjectPath(ObjectPath, bIncludeOnlyOnDiskAssets);
+	}
+
+	/**
+	 * Gets the asset data for the specified object path
+	 *
+	 * @param ObjectPath the path of the object to be looked up
+	 * @param bIncludeOnlyOnDiskAssets if true, in-memory objects will be ignored. The call will be faster.
+	 * @return the assets data;Will be invalid if object could not be found
+	 */
+	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const = 0;
+
+	/**
+	 * Tries to get the asset data for the specified object path
+	 * 
+	 * @param ObjectPath the path of the object to be looked up
+	 * @param OutAssetData out FAssetData 
+	 * @return Enum return code
+	 */
+	virtual UE::AssetRegistry::EExists TryGetAssetByObjectPath(const FSoftObjectPath& ObjectPath, FAssetData& OutAssetData) const = 0;
+
+	/**
+	 * Tries to get the pacakge data for a specified path
+	 *
+	 * @param PackageName name of the package
+	 * @param OutAssetPackageData out FAssetPackageData
+	 * @return Enum return code
+	 */
+	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(FName PackageName, FAssetPackageData& OutAssetPackageData) const = 0;
 
 	/**
 	 * Gets asset data for all assets in the registry.
@@ -320,7 +371,18 @@ public:
 	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use GetAssetPackageDataCopy instead.")
 	virtual const FAssetPackageData* GetAssetPackageData(FName PackageName) const = 0;
 
+	/**
+	 * Enumerate all PackageDatas in the AssetRegistry. The callback is called from within the AssetRegistry's lock, so it must not call
+	 * arbitrary code that could call back into the AssetRegistry; doing so would deadlock.
+	 */
+	virtual void EnumerateAllPackages(TFunctionRef<void(FName PackageName, const FAssetPackageData& PackageData)> Callback) const = 0;
+
+	virtual bool DoesPackageExistOnDisk(FName PackageName, FString* OutCorrectCasePackageName = nullptr, FString* OutExtension = nullptr) const = 0;
+
 	/** Uses the asset registry to look for ObjectRedirectors. This will follow the chain of redirectors. It will return the original path if no redirectors are found */
+	virtual FSoftObjectPath GetRedirectedObjectPath(const FSoftObjectPath& ObjectPath) const = 0;
+
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual FName GetRedirectedObjectPath(const FName ObjectPath) const = 0;
 
 	UE_DEPRECATED(4.27, "Loading then discarding tags is no longer allowed as it can "
@@ -328,9 +390,17 @@ public:
 	virtual void StripAssetRegistryKeyForObject(FName ObjectPath, FName Key) {}
 
 	/** Returns true if the specified ClassName's ancestors could be found. If so, OutAncestorClassNames is a list of all its ancestors. This can be slow if temporary caching mode is not on */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "AssetRegistry", meta = (DisplayName = "GetAncestorClassNames", ScriptName = "GetAncestorClassNames"))
+	virtual bool GetAncestorClassNames(FTopLevelAssetPath ClassPathName, TArray<FTopLevelAssetPath>& OutAncestorClassNames) const = 0;
+
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
 	virtual bool GetAncestorClassNames(FName ClassName, TArray<FName>& OutAncestorClassNames) const = 0;
 
 	/** Returns the names of all classes derived by the supplied class names, excluding any classes matching the excluded class names. This can be slow if temporary caching mode is not on */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "AssetRegistry", meta = (DisplayName = "GetDerivedClassNames", ScriptName = "GetDerivedClassNames"))
+	virtual void GetDerivedClassNames(const TArray<FTopLevelAssetPath>& ClassNames, const TSet<FTopLevelAssetPath>& ExcludedClassNames, TSet<FTopLevelAssetPath>& OutDerivedClassNames) const = 0;
+	
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
 	virtual void GetDerivedClassNames(const TArray<FName>& ClassNames, const TSet<FName>& ExcludedClassNames, TSet<FName>& OutDerivedClassNames) const = 0;
 
 	/** Gets a list of all paths that are currently cached */
@@ -346,6 +416,9 @@ public:
 	/** Gets a list of all paths that are currently cached below the passed-in base path */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry")
 	virtual void GetSubPaths(const FString& InBasePath, TArray<FString>& OutPathList, bool bInRecurse) const = 0;
+
+	/** Gets a list of all paths by name that are currently cached below the passed-in base path */
+	virtual void GetSubPaths(const FName& InBasePath, TArray<FName>& OutPathList, bool bInRecurse) const = 0;
 
 	/** Enumerate the all paths that are currently cached below the passed-in base path */
 	virtual void EnumerateSubPaths(const FString& InBasePath, TFunctionRef<bool(FString)> Callback, bool bInRecurse) const = 0;
@@ -412,6 +485,15 @@ public:
 	 * @param FAssetData the asset which needs to have installation prioritized
 	 */
 	virtual void PrioritizeAssetInstall(const FAssetData& AssetData) const = 0;
+
+	/**
+	 * Gets paths for all Verse files in the supplied folder path
+	 *
+	 * @param PackagePath the path to query asset data in (e.g. /Game/MyFolder)
+	 * @param OutFilePaths the list of Verse files in this path, as pseudo UE LongPackagePaths with extension (e.g. /Game/MyFolder/MyVerseFile.verse)
+	 * @param bRecursive if true, all supplied paths will be searched recursively
+	 */
+	virtual bool GetVerseFilesByPath(FName PackagePath, TArray<FName>& OutFilePaths, bool bRecursive = false) const = 0;
 
 	/** Adds the specified path to the set of cached paths. These will be returned by GetAllCachedPaths(). Returns true if the path was actually added and false if it already existed. */
 	virtual bool AddPath(const FString& PathToAdd) = 0;
@@ -488,6 +570,9 @@ public:
 	/** Informs the asset registry that an in-memory package has been deleted, and all associated assets should be removed */
 	virtual void PackageDeleted (UPackage* DeletedPackage) = 0;
 
+	/** Informs the asset registry that an Asset has finalized its tags after loading. Ignored if the Asset's package has been modified. */
+	virtual void AssetTagsFinalized(const UObject& FinalizedAsset) = 0;
+
 	/** Event for when assets are added to the registry */
 	DECLARE_EVENT_OneParam( IAssetRegistry, FAssetAddedEvent, const FAssetData& );
 	virtual FAssetAddedEvent& OnAssetAdded() = 0;
@@ -563,9 +648,8 @@ public:
 	 * @param OutState			This will be filled in with a copy of the asset data, platform data, and dependency data
 	 * @param Options			Serialization options that will be used to write this later
 	 * @param bRefreshExisting	If true, will not delete or add packages in OutState and will just update things that already exist
-	 * @param OverrideData		Map of ObjectPath to AssetData. If non empty, it will use this map of AssetData, and will filter Platform/Dependency data to only include this set
 	 */
-	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false, const TMap<FName, FAssetData*>& OverrideData = TMap<FName, FAssetData*>()) const = 0;
+	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false) const = 0;
 
 	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use other functions on IAssetRegistry to access the same data, or contact Epic Core team to add the threadsafe functions you require..")
 	virtual const FAssetRegistryState* GetAssetRegistryState() const = 0;
@@ -652,7 +736,9 @@ protected:
 	virtual void SetManageReferences(const TMultiMap<FAssetIdentifier, FAssetIdentifier>& ManagerMap, bool bClearExisting, UE::AssetRegistry::EDependencyCategory RecurseType, TSet<FDependsNode*>& ExistingManagedNodes, ShouldSetManagerPredicate ShouldSetManager = nullptr) = 0;
 
 	/** Sets the PrimaryAssetId for a specific asset. This should only be called by the AssetManager, and is needed when the AssetManager is more up to date than the on disk Registry */
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual bool SetPrimaryAssetIdForObjectPath(const FName ObjectPath, FPrimaryAssetId PrimaryAssetId) = 0;
+	virtual bool SetPrimaryAssetIdForObjectPath(const FSoftObjectPath& ObjectPath, FPrimaryAssetId PrimaryAssetId) = 0;
 };
 
 namespace UE
@@ -668,17 +754,41 @@ namespace AssetRegistry
 	};
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
 	// WritePackageData is declared in AssetRegistryInterface.h, in the CoreUObject module, because it is needed by SavePackage in CoreUObject
-	ASSETREGISTRY_API bool ReadPackageDataMain(FArchive& BinaryArchive, const FString& PackageName, const FPackageFileSummary& PackageFileSummary, int64& OutDependencyDataOffset, TArray<FAssetData*>& OutAssetDataList, EReadPackageDataMainErrorCode& OutError);
+	ASSETREGISTRY_API bool ReadPackageDataMain(FArchive& BinaryArchive, const FString& PackageName, const FPackageFileSummary& PackageFileSummary,
+		int64& OutDependencyDataOffset, TArray<FAssetData*>& OutAssetDataList, EReadPackageDataMainErrorCode& OutError,
+		const TArray<FObjectImport>* InImports = nullptr, const TArray<FObjectExport>* InExports = nullptr);
 	ASSETREGISTRY_API bool ReadPackageDataDependencies(FArchive& BinaryArchive, TBitArray<>& OutImportUsedInGame, TBitArray<>& OutSoftPackageUsedInGame);
 
 	/**
-	 * Given a list of packages, gather the primary assets for each package.
+	 * Given a list of packages, gather the most important assets for each package.
 	 * If multiple assets are in a package, the most important asset will be added.
 	 * If a package does not exist or does not have any assets, no entry will be added for that package name.
 	 */
 	ASSETREGISTRY_API void GetAssetForPackages(TConstArrayView<FName> PackageNames, TMap<FName, FAssetData>& OutPackageToAssetData);
-}
-}
+
+	/**
+	 * Given a list of asset datas for a specific package, find an asset considered "most important" or "representative".
+	 * This is distinct from a Primary asset, and is used for user facing representation of a package or other cases
+	 * where you need to relate information about a package to an asset.
+	 * 
+	 * Usually there is only 1 asset per package so this is straightforward, however in the multiple asset case it:
+	 *	Tries to find the "UAsset" via the FAssetData::IsUAsset() function. (i.e. asset name matches package name)
+	 *	If none exist, tries to find a "Top Level Asset" using FAssetData::IsToplevelAsset(). (i.e. outer == package)
+	 *		If only one exists, use that.
+	 *		Otherwise, if bRequireOneTopLevelAsset is false, gather the set of possibles and return the first sorted on asset class then name.
+	 *			If no top level assets, all package assets
+	 *			If multiple top level assets, all top level assets
+	 * 
+	 * A good source for PackageAssetDatas is FAssetRegistryState::GetAssetsByPackageName.
+	 */
+	ASSETREGISTRY_API const FAssetData* GetMostImportantAsset(TConstArrayView<const FAssetData*> PackageAssetDatas, bool bRequireOneTopLevelAsset);
+
+	// Wildcards (*) used when looking up assets in the asset registry
+	extern ASSETREGISTRY_API const FName WildcardFName;
+	extern ASSETREGISTRY_API const FTopLevelAssetPath WildcardPathName;
+
+} // namespace AssetRegistry
+} // namespace UE
 
 /** Returns the filename without filepath for the DevelopmentAssetRegistry written by the cooker. */
 ASSETREGISTRY_API const TCHAR* GetDevelopmentAssetRegistryFilename();

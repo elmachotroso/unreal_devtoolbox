@@ -1,11 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CustomFontColumn.h"
+
+#include "HAL/PlatformMath.h"
+#include "IPropertyTable.h"
+#include "IPropertyTableCell.h"
+#include "IPropertyTableColumn.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "Modules/ModuleManager.h"
-#include "Widgets/Text/STextBlock.h"
+#include "PropertyEditorModule.h"
+#include "PropertyPath.h"
+#include "SlotBase.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "IPropertyTable.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IPropertyHandle;
+class IPropertyTableUtilities;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "PropertyTable.CustomFontColumn"
 
@@ -41,7 +62,7 @@ TSharedPtr< SWidget > FCustomFontColumn::CreateColumnLabel( const TSharedRef< IP
 	.FillWidth(2)
 	[
 		SNew( STextBlock )
-		.Font( FEditorStyle::GetFontStyle( Style ) )
+		.Font( FAppStyle::GetFontStyle( Style ) )
 		.Text( Column->GetDisplayName() )
 	]
 	+SHorizontalBox::Slot()

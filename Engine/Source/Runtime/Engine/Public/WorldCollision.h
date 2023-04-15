@@ -9,6 +9,8 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
+#include "Engine/OverlapResult.h"
+#include "Engine/HitResult.h"
 
 struct FOverlapDatum;
 struct FTraceDatum;
@@ -282,6 +284,8 @@ struct AsyncTraceData : FNoncopyable
 	 */
 	bool					bAsyncAllowed; 
 
+	bool					bAsyncTasksCompleted;
+
 	/**  Thread completion event for batch **/
 	FGraphEventArray		AsyncTraceCompletionEvent;
 
@@ -289,6 +293,7 @@ struct AsyncTraceData : FNoncopyable
 		: NumQueuedTraceData(0)
 		, NumQueuedOverlapData(0)
 		, bAsyncAllowed(false)
+		, bAsyncTasksCompleted(false)
 	{}
 };
 

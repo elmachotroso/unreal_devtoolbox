@@ -5,8 +5,11 @@ using System.Collections.Generic;
 using System.Text;
 using System.IO;
 using System.Linq;
+using System.Xml;
 using System.Xml.Linq;
 using EpicGames.Core;
+using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -35,11 +38,36 @@ namespace UnrealBuildTool
             return false;
         }
 
+        protected bool IsValidProject(ProjectFile ProjectFile)
+        {
+            XmlDocument Doc = new XmlDocument();
+            Doc.Load(ProjectFile.ProjectFilePath.FullName);
+
+            XmlNodeList Elements = Doc.GetElementsByTagName("TargetFramework");
+            foreach (XmlElement? Element in Elements)
+            {
+                if (Element == null)
+                {
+                    continue;
+                }
+
+                // some projects can have TargetFramework's nested in conditionals for IsWindows, etc. Rather than try to handle that,
+                // we look if _any_ TargetFramework doesn't contain Windows and assume that means the conditionals are set up as expected
+                if (!Element.InnerText.Contains("windows"))
+				{
+                    return true;
+				}
+            }
+
+            // if there was no framework detected without windows, then this is not valid
+            return false;
+        }
+
         /// <summary>
         /// Writes the project files to disk
         /// </summary>
         /// <returns>True if successful</returns>
-        protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators)
+        protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
         {
 			// This can be reset by higher level code when it detects that we don't have
 			// VS2019 installed (TODO - add custom format for Mac?)
@@ -49,7 +77,11 @@ namespace UnrealBuildTool
             // write out OtherProjectFiles and AutomationProjectFiles
             GeneratedProjectFiles.Clear();
 
-            if (!base.WriteProjectFiles(PlatformProjectGenerators))
+            // remove C# projects that require windows (see BuildAllScriptPlugins() looking at TargetFramework)
+            OtherProjectFiles.RemoveAll(x => !IsValidProject(x));
+            AutomationProjectFiles.RemoveAll(x => !IsValidProject(x));
+
+            if (!base.WriteProjectFiles(PlatformProjectGenerators, Logger))
             {
                 return false;
             }
@@ -60,7 +92,7 @@ namespace UnrealBuildTool
             {
                 XNamespace NS = XNamespace.Get("http://schemas.microsoft.com/developer/msbuild/2003");
 
-                DirectoryReference AutomationToolDir = DirectoryReference.Combine(UnrealBuildTool.EngineSourceDirectory, "Programs", "AutomationTool");
+                DirectoryReference AutomationToolDir = DirectoryReference.Combine(Unreal.EngineSourceDirectory, "Programs", "AutomationTool");
                 new XDocument(
                     new XElement(NS + "Project",
                         new XAttribute("ToolsVersion", VCProjectFileGenerator.GetProjectFileToolVersionString(Settings.ProjectFileFormat)),

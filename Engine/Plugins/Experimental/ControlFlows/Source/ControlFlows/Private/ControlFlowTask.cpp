@@ -3,12 +3,14 @@
 #include "ControlFlowTask.h"
 #include "ControlFlows.h"
 #include "ControlFlowBranch.h"
+#include "ControlFlowConcurrency.h"
 
 //////////////////////////
 //FControlFlowTask
 //////////////////////////
 
 FControlFlowSubTaskBase::FControlFlowSubTaskBase(const FString& TaskName)
+:	DebugName(TaskName)
 {
 
 }
@@ -251,6 +253,7 @@ void FControlFlowTask_Branch::Execute()
 		if (ensureAlwaysMsgf(BranchDefinitions->Contains(SelectedBranchKey), TEXT("You've returned a Branch Key that doesn't exist!")))
 		{
 			SelectedBranchFlow = BranchDefinitions->FindChecked(SelectedBranchKey);
+			SelectedBranchFlow->Activity = Activity;
 
 			SelectedBranchFlow->OnComplete().BindSP(SharedThis(this), &FControlFlowTask_Branch::HandleBranchCompleted);
 			SelectedBranchFlow->OnExecutedWithoutAnyNodes().BindSP(SharedThis(this), &FControlFlowTask_Branch::HandleBranchCompleted);
@@ -302,6 +305,59 @@ void FControlFlowTask_Branch::HandleBranchCancelled()
 	if (BranchDelegate.IsBound())
 	{
 		BranchDelegate.Unbind();
+	}
+
+	OnCancelled().ExecuteIfBound();
+}
+
+//////////////////////////////////
+//FControlFlowTask_ConcurrentBranch
+//////////////////////////////////
+
+void FControlFlowTask_ConcurrentFlows::Execute()
+{
+	if (ensureAlways(ConcurrentFlowDelegate.IsBound() && !ConcurrentFlows.IsValid()))
+	{
+		ConcurrentFlows = MakeShared<FConcurrentControlFlows>();
+		ConcurrentFlows->OnConcurrencyCompleted.BindSP(SharedThis(this), &FControlFlowTask_ConcurrentFlows::HandleConcurrentFlowsCompleted);
+		ConcurrentFlows->OnConcurrencyCancelled.BindSP(SharedThis(this), &FControlFlowTask_ConcurrentFlows::HandleConcurrentFlowsCancelled);
+
+		ConcurrentFlowDelegate.Execute(ConcurrentFlows.ToSharedRef());
+		ConcurrentFlows->Execute();
+	}
+	else
+	{
+		HandleConcurrentFlowsCompleted();
+	}
+}
+
+void FControlFlowTask_ConcurrentFlows::Cancel()
+{
+	if (ConcurrentFlows.IsValid())
+	{
+		ConcurrentFlows->CancelAll();
+	}
+	else
+	{
+		HandleConcurrentFlowsCancelled();
+	}
+}
+
+void FControlFlowTask_ConcurrentFlows::HandleConcurrentFlowsCompleted()
+{
+	if (ConcurrentFlowDelegate.IsBound())
+	{
+		ConcurrentFlowDelegate.Unbind();
+	}
+
+	OnComplete().ExecuteIfBound();
+}
+
+void FControlFlowTask_ConcurrentFlows::HandleConcurrentFlowsCancelled()
+{
+	if (ConcurrentFlowDelegate.IsBound())
+	{
+		ConcurrentFlowDelegate.Unbind();
 	}
 
 	OnCancelled().ExecuteIfBound();

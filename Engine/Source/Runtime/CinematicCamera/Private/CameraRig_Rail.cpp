@@ -8,6 +8,8 @@
 #include "Components/SplineComponent.h"
 #include "Components/SplineMeshComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraRig_Rail)
+
 #define LOCTEXT_NAMESPACE "CameraRig_Rail"
 
 ACameraRig_Rail::ACameraRig_Rail(const FObjectInitializer& ObjectInitializer)
@@ -125,11 +127,12 @@ void ACameraRig_Rail::UpdatePreviewMeshes()
 				USplineMeshComponent* const SplineMeshComp = PreviewRailMeshSegments[PtIdx];
 				if (SplineMeshComp)
 				{
-					SplineMeshComp->SetVisibility(bShowRailVisualization);
-					SplineMeshComp->SetStartScale(FVector2D(PreviewMeshScale, PreviewMeshScale));
-					SplineMeshComp->SetEndScale(FVector2D(PreviewMeshScale, PreviewMeshScale));
-					SplineMeshComp->SetForwardAxis(ESplineMeshAxis::Z);
-					SplineMeshComp->SetStartAndEnd(StartLoc, StartTangent, EndLoc, EndTangent, true);
+					SplineMeshComp->SetVisibility(bShowRailVisualization,false);
+					SplineMeshComp->SetStartScale(FVector2D(PreviewMeshScale, PreviewMeshScale),false);
+					SplineMeshComp->SetEndScale(FVector2D(PreviewMeshScale, PreviewMeshScale),false);
+					SplineMeshComp->SetForwardAxis(ESplineMeshAxis::Z,false);
+					SplineMeshComp->SetStartAndEnd(StartLoc, StartTangent, EndLoc, EndTangent, false);
+					SplineMeshComp->UpdateMesh();
 				}
 			}
 
@@ -148,9 +151,13 @@ void ACameraRig_Rail::UpdatePreviewMeshes()
 		// make visualization of the mount follow the contour of the rail
 		if (PreviewMesh_Mount)
 		{
-			float const SplineLen = RailSplineComponent->GetSplineLength();
-			FQuat const RailRot = RailSplineComponent->GetQuaternionAtDistanceAlongSpline(CurrentPositionOnRail*SplineLen, ESplineCoordinateSpace::World);
-			PreviewMesh_Mount->SetWorldRotation(RailRot);
+			if (bLockOrientationToRail)
+			{
+				float const SplineLen = RailSplineComponent->GetSplineLength();
+				FQuat const RailRot = RailSplineComponent->GetQuaternionAtDistanceAlongSpline(CurrentPositionOnRail*SplineLen, ESplineCoordinateSpace::World);
+				PreviewMesh_Mount->SetWorldRotation(RailRot);
+			}
+			
 			PreviewMesh_Mount->SetVisibility(bShowRailVisualization);
 			PreviewMesh_Mount->SetWorldScale3D(FVector(PreviewMeshScale, PreviewMeshScale, PreviewMeshScale));
 		}
@@ -233,3 +240,4 @@ bool ACameraRig_Rail::ShouldTickIfViewportsOnly() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

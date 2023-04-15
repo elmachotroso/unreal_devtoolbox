@@ -26,6 +26,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Engine/LevelStreaming.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameModeBase)
+
 #if WITH_EDITOR
 	#include "IMovieSceneCapture.h"
 	#include "MovieSceneCaptureModule.h"
@@ -40,6 +42,17 @@ FGameModeEvents::FGameModePreLoginEvent FGameModeEvents::GameModePreLoginEvent;
 FGameModeEvents::FGameModePostLoginEvent FGameModeEvents::GameModePostLoginEvent;
 FGameModeEvents::FGameModeLogoutEvent FGameModeEvents::GameModeLogoutEvent;
 FGameModeEvents::FGameModeMatchStateSetEvent FGameModeEvents::GameModeMatchStateSetEvent;
+
+namespace UE::GameModeBase::Private
+{
+	static bool bAllowPIESeamlessTravel = false;
+	static FAutoConsoleVariableRef CVarAllowPIESeamlessTravel(
+		TEXT("net.AllowPIESeamlessTravel"),
+		bAllowPIESeamlessTravel,
+		TEXT("When true, allow seamless travels in single process PIE.")
+	);
+}
+
 
 AGameModeBase::AGameModeBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite")))
@@ -405,8 +418,11 @@ bool AGameModeBase::CanServerTravel(const FString& FURL, bool bAbsolute)
 	// There are a few issues with seamless travel using single process PIE, so we're disabling that for now while working on a fix
 	if (World->WorldType == EWorldType::PIE && bUseSeamlessTravel && !FParse::Param(FCommandLine::Get(), TEXT("MultiprocessOSS")))
 	{
-		UE_LOG(LogGameMode, Warning, TEXT("CanServerTravel: Seamless travel currently NOT supported in single process PIE."));
-		return false;
+		if (!UE::GameModeBase::Private::bAllowPIESeamlessTravel)
+		{
+			UE_LOG(LogGameMode, Warning, TEXT("CanServerTravel: Seamless travel is not supported by default in PIE, set net.AllowPIESeamlessTravel=1 to enable experimental support."));
+			return false;
+		}
 	}
 
 	if (FURL.Contains(TEXT("%")))
@@ -477,10 +493,16 @@ void AGameModeBase::ProcessServerTravel(const FString& URL, bool bAbsolute)
 		World->SeamlessTravel(World->NextURL, bAbsolute);
 		World->NextURL = TEXT("");
 	}
-	// Switch immediately if not networking.
-	else if (NetMode != NM_DedicatedServer && NetMode != NM_ListenServer)
+	else
 	{
-		World->NextSwitchCountdown = 0.0f;
+		// Switch immediately if not networking.
+		if (NetMode != NM_DedicatedServer && NetMode != NM_ListenServer)
+		{
+			World->NextSwitchCountdown = 0.0f;
+		}
+
+		GEngine->IncrementGlobalNetTravelCount();
+		GEngine->SaveConfig();
 	}
 #endif // WITH_SERVER_CODE
 }
@@ -972,7 +994,7 @@ void AGameModeBase::PostLogin(APlayerController* NewPlayer)
 	}
 	else
 	{
-		// If NewPlayer is not only a spectator and has a valid ID, add him as a user to the replay.
+		// If NewPlayer is not only a spectator and has a valid ID, add it as a user to the replay.
 		const FUniqueNetIdRepl& NewPlayerStateUniqueId = NewPlayer->PlayerState->GetUniqueId();
 		if (NewPlayerStateUniqueId.IsValid() && NewPlayerStateUniqueId.IsV1())
 		{
@@ -1418,3 +1440,4 @@ bool AGameModeBase::SpawnPlayerFromSimulate(const FVector& NewLocation, const FR
 #endif
 	return true;
 }
+

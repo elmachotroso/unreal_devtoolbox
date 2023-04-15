@@ -32,10 +32,9 @@ void SDisplayClusterConfiguratorAssetPickerList::Construct(const FArguments& InA
 		AssetPickerConfig.bAutohideSearchBar = false;
 		AssetPickerConfig.bAllowDragging = false;
 		AssetPickerConfig.bCanShowClasses = false;
-		AssetPickerConfig.bPreloadAssetsForContextMenu = true;
 		AssetPickerConfig.ThumbnailLabel = EThumbnailLabel::AssetName;
 		
-		AssetPickerConfig.Filter.ClassNames.Add(UDisplayClusterBlueprint::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UDisplayClusterBlueprint::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 	}
 
@@ -60,7 +59,7 @@ void SDisplayClusterConfiguratorAssetPickerList::OnAssetSelected(const FAssetDat
 
 bool SDisplayClusterConfiguratorAssetPickerList::OnShouldFilterAsset(const FAssetData& InAssetData)
 {
-	if (InAssetData.AssetClass == UDisplayClusterBlueprint::StaticClass()->GetFName())
+	if (InAssetData.AssetClassPath == UDisplayClusterBlueprint::StaticClass()->GetClassPathName())
 	{
 		const FString ParentClassPath = InAssetData.GetTagValueRef<FString>("ParentClass");
 		if (!ParentClassPath.IsEmpty())

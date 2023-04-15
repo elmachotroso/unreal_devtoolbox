@@ -73,7 +73,13 @@ public:
 		return MemberType == UBMT_RDG_UNIFORM_BUFFER;
 	}
 
+	UE_DEPRECATED(5.1, "Use IsViewableResource instead.")
 	bool IsParentResource() const
+	{
+		return IsTexture() || IsBuffer();
+	}
+
+	bool IsViewableResource() const
 	{
 		return IsTexture() || IsBuffer();
 	}
@@ -100,10 +106,18 @@ public:
 		return *GetAs<FRDGUniformBufferBinding>();
 	}
 
-	FRDGParentResourceRef GetAsParentResource() const
+	UE_DEPRECATED(5.1, "Use IsViewableResource instead.")
+	FRDGViewableResource* GetAsParentResource() const
 	{
-		check(IsParentResource());
-		return *GetAs<FRDGParentResourceRef>();
+		check(IsViewableResource());
+		return *GetAs<FRDGViewableResource*>();
+	}
+
+
+	FRDGViewableResource* GetAsViewableResource() const
+	{
+		check(IsViewableResource());
+		return *GetAs<FRDGViewableResource*>();
 	}
 
 	FRDGViewRef GetAsView() const
@@ -280,6 +294,9 @@ public:
 
 	/** Returns the render pass info generated from the render target binding slots. */
 	FRHIRenderPassInfo GetRenderPassInfo() const;
+
+	/** Clears out all uniform buffer references in the parameter struct. */
+	static void ClearUniformBuffers(void* Contents, const FRHIUniformBufferLayout* Layout);
 
 private:
 	FRDGParameter GetParameterInternal(TArrayView<const FRHIUniformBufferResource> Parameters, uint32 ParameterIndex) const

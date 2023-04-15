@@ -10,29 +10,52 @@ class FArchive;
 namespace CADLibrary
 {
 
-class CADINTERFACES_API FCADArchiveObject
+class FArchiveUnloadedReference;
+
+class CADINTERFACES_API FArchiveCADObject : public FArchiveGraphicProperties
 {
 public:
-	FCADArchiveObject(FCadId Id = 0)
-		: ObjectId(Id)
+	FArchiveCADObject()
+		: Id(0)
+		, Unit(1)
 	{
 	}
 
-	virtual ~FCADArchiveObject() = default;
+	FArchiveCADObject(FCadId Id, const FArchiveCADObject& Parent)
+		: FArchiveGraphicProperties(Parent)
+		, Id(Id)
+		, Unit(Parent.Unit)
+	{
+	}
 
-	friend FArchive& operator<<(FArchive& Ar, FCADArchiveObject& C);
+	virtual ~FArchiveCADObject() = default;
+
+	friend FArchive& operator<<(FArchive& Ar, FArchiveCADObject& C);
 
 public:
-	uint32 ObjectId;
+	uint32 Id;
+	FString Label;
 	TMap<FString, FString> MetaData;
 	FMatrix TransformMatrix = FMatrix::Identity;
+
+	// not serialized
+	double Unit = 1;
+
+	bool IsNameDefined() const
+	{
+		return !Label.IsEmpty();
+	}
+
+	bool SetNameWithAttributeValue(const TCHAR* Key);
+
 };
 
-class CADINTERFACES_API FArchiveInstance : public FCADArchiveObject
+class CADINTERFACES_API FArchiveInstance : public FArchiveCADObject
 {
 public:
-	FArchiveInstance(FCadId Id = 0)
-		: FCADArchiveObject(Id)
+	FArchiveInstance() = default;
+	FArchiveInstance(FCadId Id, const FArchiveCADObject& Parent)
+		: FArchiveCADObject(Id, Parent)
 	{
 	}
 
@@ -41,39 +64,57 @@ public:
 public:
 	FCadId ReferenceNodeId = 0;
 	bool bIsExternalReference = false;
-	FFileDescriptor ExternalReference;
 };
 
-class CADINTERFACES_API FArchiveComponent : public FCADArchiveObject
+class CADINTERFACES_API FArchiveReference : public FArchiveCADObject
 {
 public:
-	FArchiveComponent(FCadId Id = 0)
-		: FCADArchiveObject(Id)
+	FArchiveReference() = default;
+	FArchiveReference(FCadId Id, const FArchiveCADObject& Reference)
+		: FArchiveCADObject(Id, Reference)
 	{
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FArchiveComponent& C);
+	friend FArchive& operator<<(FArchive& Ar, FArchiveReference& C);
+
+	void AddChild(const FCadId ChildId);
+	void RemoveLastChild();
+
+	int32 ChildrenCount();
+	void MoveTemp(FArchiveUnloadedReference& Reference);
+	void CopyMetaData(FArchiveUnloadedReference& Reference);
 
 public:
 	TArray<FCadId> Children;
 };
 
-class CADINTERFACES_API FArchiveUnloadedComponent : public FArchiveComponent
+class CADINTERFACES_API FArchiveUnloadedReference : public FArchiveCADObject
 {
 public:
-	FArchiveUnloadedComponent(FCadId Id = 0)
-		: FArchiveComponent(Id)
+	FArchiveUnloadedReference() = default;
+
+	FArchiveUnloadedReference(FCadId Id, const FArchiveCADObject& Parent)
+		: FArchiveCADObject(Id, Parent)
 	{
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FArchiveUnloadedComponent& C);
+	friend FArchive& operator<<(FArchive& Ar, FArchiveUnloadedReference& C);
+
+
+public:
+	FFileDescriptor ExternalFile;
+
+// not serialized
+	bool bIsUnloaded = true;
 };
 
-class CADINTERFACES_API FArchiveBody : public FCADArchiveObject
+class CADINTERFACES_API FArchiveBody : public FArchiveCADObject
 {
 public:
-	FArchiveBody(FCadId Id = 0)
-		: FCADArchiveObject(Id)
+	FArchiveBody() = default;
+	FArchiveBody(FCadId Id, const FArchiveCADObject& Parent)
+		: FArchiveCADObject(Id, Parent)
+		, ParentId(Parent.Id)
 	{
 	}
 
@@ -81,44 +122,48 @@ public:
 
 public:
 	FCadId ParentId = 0;
-	FCADUUID MeshActorName = 0;
-	double BodyUnit = 1.;
+	FCadUuid MeshActorUId = 0;
 
-	TSet<FMaterialId> MaterialFaceSet;
-	TSet<FColorId> ColorFaceSet;
+	TSet<FMaterialUId> MaterialFaceSet;
+	TSet<FMaterialUId> ColorFaceSet;
 
+	void Delete();
+
+	// non serialized fields
+	bool bIsFromCad = true;
+	bool bIsASolid = true;
 };
 
 class CADINTERFACES_API FArchiveColor
 {
 public:
-	FArchiveColor(FColorId Id = 0)
-		: ObjectId(Id)
+	FArchiveColor(FMaterialUId InId = 0)
+		: Id(InId)
 	{
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FArchiveColor& C);
+	friend FArchive& operator<<(FArchive& Ar, FArchiveColor& Color);
 
 public:
-	FColorId ObjectId;
+	FMaterialUId Id;
 	FColor Color;
-	FCADUUID UEMaterialName;
+	FMaterialUId UEMaterialUId;
 };
 
 class CADINTERFACES_API FArchiveMaterial
 {
 public:
-	FArchiveMaterial(FMaterialId Id = 0)
-		: ObjectId(Id)
+	FArchiveMaterial(FMaterialUId InId = 0)
+		: Id(InId)
 	{
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FArchiveMaterial& C);
+	friend FArchive& operator<<(FArchive& Ar, FArchiveMaterial& Material);
 
 public:
-	FMaterialId ObjectId;
-	FCADUUID UEMaterialName;
+	FMaterialUId Id;
 	FCADMaterial Material;
+	FMaterialUId UEMaterialUId;
 };
 
 class CADINTERFACES_API FArchiveSceneGraph
@@ -134,33 +179,66 @@ public:
 	FString ArchiveFileName;
 	FString FullPath;
 
-	TMap<FColorId, FArchiveColor> ColorHIdToColor;
-	TMap<FMaterialId, FArchiveMaterial> MaterialHIdToMaterial;
+	TMap<FMaterialUId, FArchiveColor> ColorHIdToColor;
+	TMap<FMaterialUId, FArchiveMaterial> MaterialHIdToMaterial;
 
 	TArray<FArchiveBody> Bodies;
-	TArray<FArchiveComponent> Components;
-	TArray<FArchiveUnloadedComponent> UnloadedComponents;
-	TArray<FFileDescriptor> ExternalReferences;
+	TArray<FArchiveReference> References;
+	TArray<FArchiveUnloadedReference> UnloadedReferences;
+	TArray<FFileDescriptor> ExternalReferenceFiles;
 	TArray<FArchiveInstance> Instances;
 
-	TMap<FCadId, int32> CADIdToBodyIndex;
-	TMap<FCadId, int32> CADIdToComponentIndex;
-	TMap<FCadId, int32> CADIdToUnloadedComponentIndex;
-	TMap<FCadId, int32> CADIdToInstanceIndex;
+	TArray<int32> CADIdToIndex;
+	FCadId LastEntityId = 1;
 
-	void Reserve(int32 InstanceNum, int32 ComponentNum, int32 BodyNum)
+	void Reserve(uint32* ComponentCount)
 	{
-		Instances.Reserve(InstanceNum);
-		Components.Reserve(ComponentNum);
-		UnloadedComponents.Reserve(ComponentNum);
-		ExternalReferences.Reserve(ComponentNum);
-		Bodies.Reserve(BodyNum);
+		// Must be call once
+		ensure(LastEntityId == 1);
 
-		CADIdToInstanceIndex.Reserve(InstanceNum);
-		CADIdToComponentIndex.Reserve(ComponentNum);
-		CADIdToUnloadedComponentIndex.Reserve(ComponentNum);
-		CADIdToBodyIndex.Reserve(BodyNum);
+		Instances.Reserve(ComponentCount[EComponentType::Instance]);
+		References.Reserve(ComponentCount[EComponentType::Reference]);
+		UnloadedReferences.Reserve(ComponentCount[EComponentType::Reference]);
+		ExternalReferenceFiles.Reserve(ComponentCount[EComponentType::Reference]);
+		Bodies.Reserve(ComponentCount[EComponentType::Body]);
+
+		CADIdToIndex.Reserve(ComponentCount[EComponentType::Instance] + ComponentCount[EComponentType::Reference] + ComponentCount[EComponentType::Body] + 1);
+		CADIdToIndex.Add(0);
 	}
+
+	FArchiveInstance& AddInstance(const FArchiveCADObject& Parent);
+	FArchiveInstance& GetInstance(FCadId CadId);
+	void RemoveLastInstance();
+	bool IsAInstance(FCadId CadId) const;
+
+	FArchiveReference& AddReference(FArchiveUnloadedReference&);
+	FArchiveReference& AddReference(FArchiveInstance& Parent);
+	FArchiveReference& GetReference(FCadId CadId);
+	void RemoveLastReference();
+	bool IsAReference(FCadId CadId) const;
+
+	FArchiveReference& AddOccurence(FArchiveReference& Parent);
+	void RemoveLastOccurence();
+
+	FArchiveUnloadedReference& AddUnloadedReference(FArchiveInstance& Parent);
+	FArchiveUnloadedReference& GetUnloadedReference(FCadId CadId);
+	void RemoveLastUnloadedReference();
+	bool IsAUnloadedReference(FCadId CadId) const;
+
+	FArchiveBody& AddBody(FArchiveReference& Parent);
+	FArchiveBody& GetBody(FCadId CadId);
+	void RemoveLastBody();
+	bool IsABody(FCadId CadId) const;
+
+	void AddExternalReferenceFile(const FArchiveUnloadedReference& Reference);
+
+	int32 ReferencesCount() const
+	{
+		return References.Num();
+	}
+
+private:
+
 };
 
 

@@ -5,7 +5,7 @@
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Framework/Commands/UIAction.h"
 #include "ToolMenus.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PoseWatchManagerDragDrop.h"
 #include "SPoseWatchManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -81,10 +81,7 @@ struct SPoseWatchManagerFolderTreeItemLabel : FPoseWatchManagerCommonLabelData, 
 			.OnTextCommitted(this, &SPoseWatchManagerFolderTreeItemLabel::OnLabelCommitted)
 			.OnVerifyTextChanged(this, &SPoseWatchManagerFolderTreeItemLabel::OnVerifyItemLabelChanged)
 			.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FPoseWatchManagerTreeItemPtr>::IsSelectedExclusively))
-			.IsReadOnly_Lambda([Item = FolderItem.AsShared(), this]()
-		{
-			return !CanExecuteRenameRequest(Item.Get());
-		});
+			.IsReadOnly_Lambda([this]() { return !CanExecuteRenameRequest(*TreeItemPtr.Pin()); });
 
 		FolderItem.RenameRequestEvent.BindSP(InlineTextBlock.Get(), &SInlineEditableTextBlock::EnterEditingMode);
 
@@ -129,16 +126,16 @@ private:
 		auto TreeItem = TreeItemPtr.Pin();
 		if (!TreeItem.IsValid())
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		}
 
 		if (TreeItemPtr.Pin()->IsExpanded() && TreeItem->PoseWatchFolder->HasChildren())
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderOpen"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderOpen"));
 		}
 		else
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		}
 	}
 
@@ -185,9 +182,17 @@ bool FPoseWatchManagerFolderTreeItem::HasChildren() const
 	return PoseWatchFolder.IsValid() ? PoseWatchFolder.Get()->HasChildren() : false;
 }
 
+void FPoseWatchManagerFolderTreeItem::SetIsExpanded(const bool bIsExpanded)
+{
+	if (PoseWatchFolder.IsValid())
+	{
+		PoseWatchFolder.Get()->SetIsExpanded(bIsExpanded);
+	}
+}
+
 bool FPoseWatchManagerFolderTreeItem::IsExpanded() const
 {
-	return PoseWatchFolder.IsValid() ? PoseWatchFolder.Get()->GetIsExpanded() : false;
+	return PoseWatchFolder.IsValid() && PoseWatchFolder.Get()->GetIsExpanded();
 }
 
 #undef LOCTEXT_NAMESPACE

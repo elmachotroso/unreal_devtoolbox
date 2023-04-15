@@ -19,26 +19,9 @@
 #include "PixelQuadMessagePassing.ush"
 #include "ScreenPass.ush"
 
-
-/** Values of DIM_OUTPUT_DEVICE (matching C++'s ETonemapperOutputDevice) */
-#define TONEMAPPER_OUTPUT_sRGB 0
-#define TONEMAPPER_OUTPUT_Rec709 1
-#define TONEMAPPER_OUTPUT_ExplicitGammaMapping 2
-#define TONEMAPPER_OUTPUT_ACES1000nitST2084 3
-#define TONEMAPPER_OUTPUT_ACES2000nitST2084 4
-#define TONEMAPPER_OUTPUT_ACES1000nitScRGB 5
-#define TONEMAPPER_OUTPUT_ACES2000nitScRGB 6
-#define TONEMAPPER_OUTPUT_LinearEXR 7
-#define TONEMAPPER_OUTPUT_NoToneCurve 8
-#define TONEMAPPER_OUTPUT_WithToneCurve 9
-
 #ifndef DIM_OUTPUT_DEVICE
 	#define DIM_OUTPUT_DEVICE (TONEMAPPER_OUTPUT_sRGB)
 #endif
-
-
-
-
 
 // 0 / 1(slower, visualize multiple internals side by side for the same image portion, see DebugTile)
 #define DEBUG_TONEMAPPER 0
@@ -94,6 +77,7 @@ float4 ScreenPosToFilmGrainTextureUV;
 float EditorNITLevel;
 
 uint bOutputInHDR;
+float OutputMaxLuminance;
 
 #if EYEADAPTATION_EXPOSURE_FIX != 1
 // Default value used when eye adaptation is disabled (e.g fixed exposure) or not available.
@@ -198,30 +182,16 @@ half3 ColorLookupTable( half3 LinearColor )
 	return OutDeviceColor * 1.05;
 }
 
-float SwitchVerticalAxis;
-
-#ifndef NEEDTOSWITCHVERTICLEAXIS
-#define NEEDTOSWITCHVERTICLEAXIS 0
-#endif
-
 // can be optimized
 float2 ScreenPosToUV(float2 ScreenPos, float2 ExtentInverse)
 {
 	float2 UV = (ScreenPos * Color_ScreenPosToViewportScale + Color_ScreenPosToViewportBias) * ExtentInverse;
-
-#if NEEDTOSWITCHVERTICLEAXIS
-	UV.y = 1.0 - UV.y;
-#endif
 
 	return UV;
 }
 
 float2 UVToScreenPos(float2 UV, float2 Extent)
 {
-#if NEEDTOSWITCHVERTICLEAXIS
-	UV.y = 1.0 - UV.y;
-#endif
-
 	return (UV * Extent - Color_ScreenPosToViewportBias) / Color_ScreenPosToViewportScale;
 }
 
@@ -239,10 +209,6 @@ void TonemapCommonVS(
 	// Forward renderer uses view size texture
 	// TODO: Looks to be Ronin specific.. check this:
 	OutFullViewUV.xy = Position.xy * float2(0.5,-0.5) + 0.5;
-
-#if NEEDTOSWITCHVERTICLEAXIS
-	OutFullViewUV.y = 1.0 - OutFullViewUV.y;
-#endif
 
 #if EYEADAPTATION_EXPOSURE_FIX == 1
 	#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
@@ -287,11 +253,6 @@ void MainVS(
 	out 				float4 OutPosition 				: SV_POSITION
 	)
 {
-#if NEEDTOSWITCHVERTICLEAXIS
-	// This is currently the last pass, so flip the texture on V to match D3D
-	InTexCoord.y = 1.0 - InTexCoord.y;
-#endif
-
 	DrawRectangle(InPosition, InTexCoord, OutPosition, OutTexCoord);
     TonemapCommonVS(OutPosition, OutTexCoord, OutExposureScaleVignette, OutGrainUV, OutScreenPos, OutFullViewUV);
 }
@@ -397,7 +358,7 @@ float4 SampleSceneColor(float2 SceneUV)
 half3 LookupSceneColor(float2 SceneUV, float2 PixelOffset)
 {
 	float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
-	return SampleSceneColor(SampleUV);
+	return SampleSceneColor(SampleUV).xyz;
 }
 
 float4 TonemapCommonPS(
@@ -463,20 +424,32 @@ float4 TonemapCommonPS(
 		half4 SceneColor = SampleSceneColor(SceneUV);
 	#endif
 
+#if METAL_MSAA_HDR_DECODE && !USE_GAMMA_ONLY
+	// look for PreTonemapMSAA 
+	SceneColor.rgb *= rcp(SceneColor.r * (-0.299) + SceneColor.g * (-0.587) + SceneColor.b * (-0.114) + 1.0);
+	// Try to kill negatives and NaNs here
+	SceneColor.rgb = max(SceneColor.rgb, 0);
+#endif
+
 	SceneColor.rgb *= View.OneOverPreExposure;
 
 	float ExposureScale = ExposureScaleVignette.x;
 
+	float LocalExposureOneOverPreExposure = View.OneOverPreExposure;
+
 #if USE_LOCAL_EXPOSURE
-	float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
-	float LogLuminance = log2(LuminanceVal);
-	float MiddleGreyLumValue = ExposureScaleVignette.y;
+	{
+		float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
+		float LogLuminance = log2(LuminanceVal);
+		float MiddleGreyLumValue = ExposureScaleVignette.y;
 
-	float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
-	float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScale), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureContrastScale, EyeAdaptation_LocalExposureDetailStrength);
+		float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
+		float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScale), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureHighlightContrastScale, EyeAdaptation_LocalExposureShadowContrastScale, EyeAdaptation_LocalExposureDetailStrength);
 
-	// Apply before bloom
-	SceneColor.rgb *= LocalExposure;
+		// Apply before bloom
+		SceneColor.rgb *= LocalExposure;
+		LocalExposureOneOverPreExposure *= LocalExposure;
+	}
 #endif
 
 #if DEBUG_TONEMAPPER
@@ -512,8 +485,8 @@ float4 TonemapCommonPS(
 				
 		half4 LuminanceNeighbors;
 
-		half3 C1 = LookupSceneColor(SceneUV, float2(PQMP.QuadVector.x, 0)).rgb * View.OneOverPreExposure;
-		half3 C3 = LookupSceneColor(SceneUV, float2(0, PQMP.QuadVector.y)).rgb * View.OneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, float2(PQMP.QuadVector.x, 0)).rgb * LocalExposureOneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, float2(0, PQMP.QuadVector.y)).rgb * LocalExposureOneOverPreExposure;
 		LuminanceNeighbors.x = Luminance(C1);
 		LuminanceNeighbors.y = Luminance(C3);
 		
@@ -522,10 +495,10 @@ float4 TonemapCommonPS(
 		LuminanceNeighbors.z =  PQMPReadX(PQMP,A0);
 		LuminanceNeighbors.w =  PQMPReadY(PQMP,A0);
 	#else
-		half3 C1 = LookupSceneColor(SceneUV, float2(-1,  0)) * View.OneOverPreExposure;
-		half3 C2 = LookupSceneColor(SceneUV, float2( 1,  0)) * View.OneOverPreExposure;
-		half3 C3 = LookupSceneColor(SceneUV, float2( 0, -1)) * View.OneOverPreExposure;
-		half3 C4 = LookupSceneColor(SceneUV, float2( 0,  1)) * View.OneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, float2(-1,  0)) * LocalExposureOneOverPreExposure;
+		half3 C2 = LookupSceneColor(SceneUV, float2( 1,  0)) * LocalExposureOneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, float2( 0, -1)) * LocalExposureOneOverPreExposure;
+		half3 C4 = LookupSceneColor(SceneUV, float2( 0,  1)) * LocalExposureOneOverPreExposure;
 		half4 LuminanceNeighbors = half4(Luminance(C1), Luminance(C2), Luminance(C3), Luminance(C4));
 	#endif
 
@@ -563,18 +536,11 @@ float4 TonemapCommonPS(
 
 	#else 
 	{
-		#if METAL_MSAA_HDR_DECODE
-			// look for PreTonemapMSAA 
-			SceneColor.rgb *= rcp(SceneColor.r*(-0.299) + SceneColor.g*(-0.587) + SceneColor.b*(-0.114) + 1.0);
-			// Try to kill negatives and NaNs here
-			SceneColor.rgb = max(SceneColor.rgb, 0); 
-		#endif
-	
 		half3 LinearColor = SceneColor.rgb * ColorScale0.rgb;
 
 		#if SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
 		{
-			float4 SceneColorMultiply = SceneColorApplyParamaters[0];
+			float3 SceneColorMultiply = SceneColorApplyParamaters[0].xyz;
 			LinearColor *= SceneColorMultiply;
 		}
 		#endif
@@ -686,7 +652,7 @@ float4 TonemapCommonPS(
 		#endif
 
 		#if DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_ACES1000nitScRGB || DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_ACES2000nitScRGB
-			OutColor.xyz = ST2084ToScRGB(OutColor.xyz, DIM_OUTPUT_DEVICE);
+			OutColor.xyz = ST2084ToScRGB(OutColor.xyz, DIM_OUTPUT_DEVICE, OutputMaxLuminance);
 
 		#elif DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_LinearEXR
 			OutColor.xyz = ST2084ToLinear(OutColor.xyz);
@@ -756,7 +722,7 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	float4 SvPosition = float4((float2)DispatchThreadId + Output_ViewportMin + 0.5f, 0.0f, 1.0f);
 	float2 UV = SvPosition.xy * Output_ExtentInverse;
-	float4 InScreenPos = float4(UV*2-1,0,1);
+	float4 InScreenPos = float4(UV * float2(2, -2) - float2(1, -1), 0, 1);
 
 	if (IsComputeUVOutOfBounds(UV))
 	{
@@ -771,9 +737,7 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	float4 OutColor = TonemapCommonPS(UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
 
 	uint2 PixelPos = DispatchThreadId + Output_ViewportMin;
-#if NEEDTOSWITCHVERTICLEAXIS
-	PixelPos.y = (uint)(Output_Extent.y) - PixelPos.y;
-#endif
+
 	RWOutputTexture[PixelPos] = OutColor;
 }
 #endif

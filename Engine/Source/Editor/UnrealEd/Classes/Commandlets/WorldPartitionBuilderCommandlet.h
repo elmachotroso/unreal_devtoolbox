@@ -9,7 +9,7 @@
 class UWorldPartitionBuilder;
 
 UCLASS(Config=Engine)
-class UWorldPartitionBuilderCommandlet : public UCommandlet, public FPackageSourceControlHelper
+class UWorldPartitionBuilderCommandlet : public UCommandlet
 {
 	GENERATED_UCLASS_BODY()
 
@@ -18,8 +18,4 @@ class UWorldPartitionBuilderCommandlet : public UCommandlet, public FPackageSour
 	//~ End UCommandlet Interface
 
 	UWorldPartitionBuilder* CreateBuilder(const FString& WorldConfigFilename);
-
-private:
-	UPROPERTY()
-	TArray<TObjectPtr<UWorldPartitionBuilder>> Builders;
 };

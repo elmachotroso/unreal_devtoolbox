@@ -7,7 +7,8 @@
 #include "Misc/EngineVersionComparison.h"
 #include "EOSSharedTypes.h"
 #include "Engine/Engine.h"
-#include "Misc/ConfigCacheIni.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NetDriverEOSBase)
 
 bool UNetDriverEOSBase::IsAvailable() const
 {
@@ -59,8 +60,12 @@ bool UNetDriverEOSBase::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, c
 		return false;
 	}
 
-	// Create our socket
-	SetSocketAndLocalAddress(SocketSubsystem->CreateSocket(NAME_DGram, TEXT("UE4"), NAME_None));
+
+	FUniqueSocket NewSocket = SocketSubsystem->CreateUniqueSocket(NAME_DGram, TEXT("UE4"), NAME_None);
+	TSharedPtr<FSocket> SharedSocket(NewSocket.Release(), FSocketDeleter(NewSocket.GetDeleter()));
+
+	SetSocketAndLocalAddress(SharedSocket);
+
 	if (GetSocket() == nullptr)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Could not create socket"));
@@ -178,22 +183,9 @@ ISocketSubsystem* UNetDriverEOSBase::GetSocketSubsystem()
 	}
 	else
 	{
+		UWorld* CurrentWorld = FindWorld();
 		FSocketSubsystemEOS* DefaultSocketSubsystem = static_cast<FSocketSubsystemEOS*>(ISocketSubsystem::Get(EOS_SOCKETSUBSYSTEM));
-
-		bool bUseOnlineServicesV2 = false;
-		GConfig->GetBool(TEXT("/Script/Engine.OnlineEngineInterface"), TEXT("bUseOnlineServicesV2"), bUseOnlineServicesV2, GEngineIni);
-
-		if (bUseOnlineServicesV2)
-		{
-			// V2 still doesn't have the logic to process several instances, so we'll return the default one
-			return DefaultSocketSubsystem;
-		}
-		else
-		{
-			// We may have several instances of FSocketSubsystemEOS if running in PIE mode, so we need to pick the right one for the current world
-			UWorld* CurrentWorld = FindWorld();
-			return DefaultSocketSubsystem->GetSocketSubsystemForWorld(CurrentWorld);
-		}
+		return DefaultSocketSubsystem->GetSocketSubsystemForWorld(CurrentWorld);
 	}
 }
 
@@ -246,4 +238,5 @@ UWorld* UNetDriverEOSBase::FindWorld() const
 
 	return MyWorld;
 }
+
 

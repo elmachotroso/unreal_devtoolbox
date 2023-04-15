@@ -2,17 +2,114 @@
 
 #include "GameplayProvider.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Model/AsyncEnumerateTask.h"
 
 FName FGameplayProvider::ProviderName("GameplayProvider");
 
 #define LOCTEXT_NAMESPACE "GameplayProvider"
 
+#if WITH_EDITOR
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintCore.h"
+
+// This is copied from EditorUtilitySubsystem (where it is not public)
+// Should probably be somewhere shared
+static UClass* FindBlueprintClass(const FString& TargetNameRaw)
+{
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+	if (AssetRegistry.IsLoadingAssets())
+	{
+		AssetRegistry.SearchAllAssets(true);
+	}
+
+	FString TargetName = TargetNameRaw;
+	TargetName.RemoveFromEnd(TEXT("_C"), ESearchCase::CaseSensitive);
+
+	FARFilter Filter;
+	Filter.bRecursiveClasses = true;
+	Filter.ClassPaths.Add(UBlueprintCore::StaticClass()->GetClassPathName());
+
+	// We enumerate all assets to find any blueprints who inherit from native classes directly - or
+	// from other blueprints.
+	UClass* FoundClass = nullptr;
+	AssetRegistry.EnumerateAssets(Filter, [&FoundClass, TargetName](const FAssetData& AssetData)
+	{
+		if ((AssetData.AssetName.ToString() == TargetName) || (AssetData.GetObjectPathString() == TargetName))
+		{
+			if (UBlueprint* BP = Cast<UBlueprint>(AssetData.GetAsset()))
+			{
+				FoundClass = BP->GeneratedClass;
+				return false;
+			}
+		}
+
+		return true;
+	});
+
+	return FoundClass;
+}
+
+// This is copied from EditorUtilitySubsystem (where it is not public)
+// Should probably be somewhere shared
+static UClass* FindClassByPathName(const FString& RawTargePathtName)
+{
+	FString TargetName = RawTargePathtName;
+
+	// Check native classes and loaded assets first before resorting to the asset registry
+	bool bIsValidClassName = true;
+	if (TargetName.IsEmpty() || TargetName.Contains(TEXT(" ")))
+	{
+		bIsValidClassName = false;
+	}
+	else if (!FPackageName::IsShortPackageName(TargetName))
+	{
+		if (TargetName.Contains(TEXT(".")))
+		{
+			// Convert type'path' to just path (will return the full string if it doesn't have ' in it)
+			TargetName = FPackageName::ExportTextPathToObjectPath(TargetName);
+
+			FString PackageName;
+			FString ObjectName;
+			TargetName.Split(TEXT("."), &PackageName, &ObjectName);
+
+			const bool bIncludeReadOnlyRoots = true;
+			FText Reason;
+			if (!FPackageName::IsValidLongPackageName(PackageName, bIncludeReadOnlyRoots, &Reason))
+			{
+				bIsValidClassName = false;
+			}
+		}
+		else
+		{
+			bIsValidClassName = false;
+		}
+	}
+
+	UClass* ResultClass = nullptr;
+	if (bIsValidClassName)
+	{
+		ResultClass = FindObject<UClass>(nullptr, *TargetName);
+	}
+
+	// If we still haven't found anything yet, try the asset registry for blueprints that match the requirements
+	if (ResultClass == nullptr)
+	{
+		ResultClass = FindBlueprintClass(TargetName);
+	}
+
+	return ResultClass;
+}
+#endif
+
+
 FGameplayProvider::FGameplayProvider(TraceServices::IAnalysisSession& InSession)
 	: Session(InSession)
 	, EndPlayEvent(nullptr)
 	, PawnPossession(InSession.GetLinearAllocator())
 	, ObjectLifetimes(InSession.GetLinearAllocator())
+	, ObjectRecordingLifetimes(InSession.GetLinearAllocator())
 	, bHasAnyData(false)
 	, bHasObjectProperties(false)
 {
@@ -82,7 +179,6 @@ void FGameplayProvider::EnumerateObjectPropertyValues(uint64 InObjectId, const F
 		}
 	}
 }
-
 void FGameplayProvider::EnumerateObjects(TFunctionRef<void(const FObjectInfo&)> Callback) const
 {
 	Session.ReadAccessCheck();
@@ -101,10 +197,25 @@ void FGameplayProvider::EnumerateObjects(double StartTime, double EndTime, TFunc
 		[this, Callback](double InStartTime, double InEndTime, uint32 InDepth, const FObjectExistsMessage& ExistsMessage)
 		{
 			checkSlow(ObjectIdToIndexMap.Contains(ExistsMessage.ObjectId));
-			Callback(ObjectInfos[ObjectIdToIndexMap[ExistsMessage.ObjectId]]);
+			if (const int32* ObjectInfoIndex = ObjectIdToIndexMap.Find(ExistsMessage.ObjectId))
+			{
+				Callback(ObjectInfos[*ObjectInfoIndex]);
+			}
 			return TraceServices::EEventEnumerate::Continue;
 		});
 }
+
+void FGameplayProvider::EnumerateSubobjects(uint64 ObjectId, TFunctionRef<void(uint64 SubobjectId)> Callback) const
+{
+	TArray<uint64, TInlineAllocator<32>> SubobjectIds;
+	ObjectHierarchy.MultiFind(ObjectId, SubobjectIds);
+
+	for (auto SubObjectId : SubobjectIds)
+	{
+		Callback(SubObjectId);
+	}
+}
+
 
 const FClassInfo* FGameplayProvider::FindClassInfo(uint64 InClassId) const
 {
@@ -117,6 +228,19 @@ const FClassInfo* FGameplayProvider::FindClassInfo(uint64 InClassId) const
 	}
 
 	return nullptr;
+}
+
+const UClass* FGameplayProvider::FindClass(uint64 InClassId) const
+{
+#if WITH_EDITOR
+	if (const FClassInfo* ClassInfo = FindClassInfo(InClassId))
+	{
+		return FindClassByPathName(ClassInfo->PathName);
+	}
+	return nullptr;
+#else
+	return nullptr;
+#endif
 }
 
 const FClassInfo* FGameplayProvider::FindClassInfo(const TCHAR* InClassPath) const
@@ -288,10 +412,12 @@ void FGameplayProvider::AppendObject(uint64 InObjectId, uint64 InOuterId, uint64
 
 		int32 NewObjectInfoIndex = ObjectInfos.Add(NewObjectInfo);
 		ObjectIdToIndexMap.Add(InObjectId, NewObjectInfoIndex);
+
+		ObjectHierarchy.AddUnique(NewObjectInfo.OuterId, NewObjectInfo.Id);
 	}
 }
 
-void FGameplayProvider::AppendObjectLifetimeBegin(uint64 InObjectId, double InTime)
+void FGameplayProvider::AppendObjectLifetimeBegin(uint64 InObjectId, double InProfileTime, double InRecordingTime)
 {
 	Session.WriteAccessCheck();
 	bHasAnyData = true;
@@ -300,24 +426,31 @@ void FGameplayProvider::AppendObjectLifetimeBegin(uint64 InObjectId, double InTi
 	{
 		FObjectExistsMessage Message;
 		Message.ObjectId = InObjectId;
-		ActiveObjectLifetimes.Add(InObjectId, ObjectLifetimes.AppendBeginEvent(InTime, Message));
+		ActiveObjectLifetimes.Add(InObjectId, ObjectLifetimes.AppendBeginEvent(InProfileTime, Message));
+		ActiveObjectRecordingLifetimes.Add(InObjectId, ObjectRecordingLifetimes.AppendBeginEvent(InRecordingTime, Message));
 	}
 }
 
-void FGameplayProvider::AppendObjectLifetimeEnd(uint64 InObjectId, double InTime)
+void FGameplayProvider::AppendObjectLifetimeEnd(uint64 InObjectId, double InProfileTime, double InRecordingTime)
 {
 	Session.WriteAccessCheck();
 	bHasAnyData = true;
 
 	if (const uint64 *FoundIndex = ActiveObjectLifetimes.Find(InObjectId))
 	{
-		ObjectLifetimes.EndEvent(*FoundIndex, InTime);
+		ObjectLifetimes.EndEvent(*FoundIndex, InProfileTime);
 		ActiveObjectLifetimes.Remove(InObjectId);
+	}
+
+	if (const uint64 *FoundIndex = ActiveObjectRecordingLifetimes.Find(InObjectId))
+	{
+		ObjectRecordingLifetimes.EndEvent(*FoundIndex, InRecordingTime);
+		// do not remove from ActiveObjectRecordingLifetimes - lifetimes can be queried by Object Id in GetObjectRecordingLifetime
 	}
 
 	if(int32* ObjectInfoIndex = ObjectIdToIndexMap.Find(InObjectId))
 	{
-		OnObjectEndPlayDelegate.Broadcast(InObjectId, InTime, ObjectInfos[*ObjectInfoIndex]);
+		OnObjectEndPlayDelegate.Broadcast(InObjectId, InProfileTime, ObjectInfos[*ObjectInfoIndex]);
 	}
 }
 
@@ -397,6 +530,34 @@ uint64 FGameplayProvider::FindPossessingController(uint64 PawnId, double Time) c
 		return TraceServices::EEventEnumerate::Continue;
 	});
 	return ControllerId;
+}
+
+TRange<double> FGameplayProvider::GetObjectTraceLifetime(uint64 ObjectId) const
+{
+	Session.ReadAccessCheck();
+
+	if (const uint64* FoundIndex = ActiveObjectLifetimes.Find(ObjectId))
+	{
+		return TRange<double>(ObjectLifetimes.GetEventStartTime(*FoundIndex), ObjectLifetimes.GetEventEndTime(*FoundIndex));
+	}
+	else
+	{
+		return TRange<double>(0, 0);
+	}
+}
+
+TRange<double> FGameplayProvider::GetObjectRecordingLifetime(uint64 ObjectId) const
+{
+	Session.ReadAccessCheck();
+
+	if (const uint64 *FoundIndex = ActiveObjectRecordingLifetimes.Find(ObjectId))
+	{
+		return TRange<double>(ObjectRecordingLifetimes.GetEventStartTime(*FoundIndex), ObjectRecordingLifetimes.GetEventEndTime(*FoundIndex));
+	}
+	else
+	{
+		return TRange<double>(0,0);
+	}
 }
 
 void FGameplayProvider::ReadViewTimeline(TFunctionRef<void(const IGameplayProvider::ViewTimeline&)> Callback) const

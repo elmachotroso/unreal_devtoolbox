@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/UnrealString.h"
 #include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "RemoteExecutionSettings.generated.h"
 
 UCLASS(config = EditorSettings)

@@ -5,6 +5,8 @@
 #include "NiagaraTypes.h"
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraFloatParameterSectionTemplate)
+
 FMovieSceneNiagaraFloatParameterSectionTemplate::FMovieSceneNiagaraFloatParameterSectionTemplate()
 {
 }
@@ -15,7 +17,7 @@ FMovieSceneNiagaraFloatParameterSectionTemplate::FMovieSceneNiagaraFloatParamete
 {
 }
 
-void FMovieSceneNiagaraFloatParameterSectionTemplate::GetParameterValue(FFrameTime InTime, const TArray<uint8>& InCurrentValueData, TArray<uint8>& OutAnimatedValueData) const
+void FMovieSceneNiagaraFloatParameterSectionTemplate::GetAnimatedParameterValue(FFrameTime InTime, const FNiagaraVariableBase& InTargetParameter, const TArray<uint8>& InCurrentValueData, TArray<uint8>& OutAnimatedValueData) const
 {
 	FNiagaraFloat const* CurrentValue = (FNiagaraFloat const*)InCurrentValueData.GetData();
 	FNiagaraFloat AnimatedValue = *CurrentValue;

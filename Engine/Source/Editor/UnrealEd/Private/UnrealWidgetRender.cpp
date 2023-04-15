@@ -181,8 +181,17 @@ void FWidget::Render( const FSceneView* View,FPrimitiveDrawInterface* PDI, FEdit
 	const bool bShowFlagsSupportsWidgetDrawing = View->Family->EngineShowFlags.ModeWidgets;
 	const bool bEditorModeToolsSupportsWidgetDrawing = EditorModeTools ? EditorModeTools->GetShowWidget() : true;
 
-	static const auto UseLegacyWidgetCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("Gizmos.UseLegacyWidget"));
-	const bool bUseLegacyWidget = UseLegacyWidgetCVar->GetInt() > 0;
+	// Use legacy widget for TranslateRotateZ or 2D modes or when UseLegacyWidget cvar is true
+	UE::Widget::EWidgetMode WidgetMode = ViewportClient->GetWidgetMode();
+	bool bUseLegacyWidget = (WidgetMode == UE::Widget::EWidgetMode::WM_TranslateRotateZ || WidgetMode == UE::Widget::EWidgetMode::WM_2D);
+	if (!bUseLegacyWidget)
+	{
+		static IConsoleVariable* const UseLegacyWidgetCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("Gizmos.UseLegacyWidget"));
+		if (ensure(UseLegacyWidgetCVar))
+		{
+			bUseLegacyWidget = UseLegacyWidgetCVar->GetInt() > 0;
+		}
+	}
 
 	bool bDrawWidget;
 
@@ -219,7 +228,7 @@ void FWidget::Render( const FSceneView* View,FPrimitiveDrawInterface* PDI, FEdit
 		Origin = NewOrigin;
 	}
 
-	switch( ViewportClient->GetWidgetMode() )
+	switch( WidgetMode )
 	{
 		case UE::Widget::EWidgetMode::WM_Translate:
 			Render_Translate(View, PDI, ViewportClient, WidgetLocation, bDrawWidget);
@@ -638,6 +647,15 @@ void FWidget::DrawColoredSphere(FPrimitiveDrawInterface* PDI, const FVector& Cen
 	}
 	MeshBuilder.Draw(PDI, FScaleMatrix(Radii) * FRotationMatrix(Orientation) * FTranslationMatrix(Center), MaterialRenderProxy, DepthPriority, bDisableBackfaceCulling);
 }
+//CVAR for the arcball size, so animators can adjust it
+//DEPRECRATREDin 5.1, since changing the size will cause hit test problems.
+static TAutoConsoleVariable<float> CVarArcballSize(
+	TEXT("r.Editor.ArcballSize"),
+	1.0,
+	TEXT("DEPRECRATED in 5.1)"),
+	ECVF_RenderThreadSafe
+);
+
 /**
  * Draws the rotation widget.
  */
@@ -653,15 +671,6 @@ void FWidget::Render_Rotate( const FSceneView* View,FPrimitiveDrawInterface* PDI
 
 	EAxisList::Type DrawAxis = GetAxisToDraw(ViewportClient->GetWidgetMode());
 
-	//if drawing arcball, and dragging make sure axis is showing local
-	if (DrawAxis&EAxisList::XYZ  && CurrentAxis == EAxisList::XYZ && bDragging)
-	{
-		FMatrix LocalCoordinate = ViewportClient->GetLocalCoordinateSystem();
-		XAxis = LocalCoordinate.TransformVector(FVector(1, 0, 0));
-		YAxis = LocalCoordinate.TransformVector(FVector(0, 1, 0));
-		ZAxis = LocalCoordinate.TransformVector(FVector(0, 0, 1));
-	}
-
 	FVector DirectionToWidget = View->IsPerspectiveProjection() ? (InLocation - View->ViewMatrices.GetViewOrigin()) : -View->GetViewDirection();
 	DirectionToWidget.Normalize();
 
@@ -669,27 +678,34 @@ void FWidget::Render_Rotate( const FSceneView* View,FPrimitiveDrawInterface* PDI
 	if (bDrawWidget || bDragging)
 	{
 		bIsOrthoDrawingFullRing = false;
-		//now draw the arc segments
-		if (DrawAxis&EAxisList::X)
+		//now draw the arc segments, only if we are not dragging and moving the arcball per animators request
+		if ((DrawAxis & EAxisList::XYZ && CurrentAxis == EAxisList::XYZ && bDragging) == false) 
 		{
-			DrawRotationArc(View, PDI, EAxisList::X, InLocation, ZAxis, YAxis, DirectionToWidget, AxisColorX.ToFColor(true), Scale, XAxisDir);
-		}
 
-		if (DrawAxis&EAxisList::Y)
-		{
-			DrawRotationArc(View, PDI, EAxisList::Y, InLocation, XAxis, ZAxis, DirectionToWidget, AxisColorY.ToFColor(true), Scale, YAxisDir);
-		}
+			if (DrawAxis & EAxisList::X)
+			{
+				DrawRotationArc(View, PDI, EAxisList::X, InLocation, ZAxis, YAxis, DirectionToWidget, AxisColorX.ToFColor(true), Scale, XAxisDir);
+			}
 
-		if (DrawAxis&EAxisList::Z)
-		{
-			DrawRotationArc(View, PDI, EAxisList::Z, InLocation, XAxis, YAxis, DirectionToWidget, AxisColorZ.ToFColor(true), Scale, ZAxisDir);
+			if (DrawAxis & EAxisList::Y)
+			{
+				DrawRotationArc(View, PDI, EAxisList::Y, InLocation, XAxis, ZAxis, DirectionToWidget, AxisColorY.ToFColor(true), Scale, YAxisDir);
+			}
+
+			if (DrawAxis & EAxisList::Z)
+			{
+				DrawRotationArc(View, PDI, EAxisList::Z, InLocation, XAxis, YAxis, DirectionToWidget, AxisColorZ.ToFColor(true), Scale, ZAxisDir);
+			}
+			
 		}
 
 		if (DrawAxis&EAxisList::XYZ  && (!bDragging || CurrentAxis == EAxisList::XYZ) && GetDefault<ULevelEditorViewportSettings>()->bAllowArcballRotate)
 		{
 			FVector Center = InLocation;
 			FRotator Orientation = FRotator::ZeroRotator;
-			const float InnerDistance = (INNER_AXIS_CIRCLE_RADIUS * ARCALL_RELATIVE_INNER_SIZE * Scale) + GetDefault<ULevelEditorViewportSettings>()->TransformWidgetSizeAdjustment;
+			const float ArcballSize = 1.0f; //always constant, otherwise can cause hit testing issues
+
+			const float InnerDistance = (INNER_AXIS_CIRCLE_RADIUS * ArcballSize * Scale) + GetDefault<ULevelEditorViewportSettings>()->TransformWidgetSizeAdjustment;
 			FVector Radii(InnerDistance, InnerDistance, InnerDistance);
 			const bool bDisabled = IsWidgetDisabled();
 			FColor ArcColor = ArcBallColor;

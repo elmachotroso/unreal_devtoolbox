@@ -164,7 +164,7 @@ struct ZONEGRAPH_API FZoneGraphTagMask
 		case EZoneLaneTagMaskComparison::Not:
 			return !ContainsAny(InTags);
 		default:
-			ensureMsgf(false, TEXT("Unhandled operand %s."), *StaticEnum<EZoneLaneTagMaskComparison>()->GetNameStringByValue((int32)Operand));
+			ensureMsgf(false, TEXT("Unhandled operand %s."), *UEnum::GetValueAsString(Operand));
 		}
 		return false;
 	}
@@ -844,7 +844,7 @@ struct ZONEGRAPH_API FZoneShapePoint
 	bool bReverseLaneProfile = false;
 
 	/** Lane connection restrictions */
-	UPROPERTY(Category = Zone, EditAnywhere, BlueprintReadWrite, meta = (Bitmask, BitmaskEnum = EZoneShapeLaneConnectionRestrictions))
+	UPROPERTY(Category = Zone, EditAnywhere, BlueprintReadWrite, meta = (Bitmask, BitmaskEnum = "/Script/ZoneGraph.EZoneShapeLaneConnectionRestrictions"))
 	int32 LaneConnectionRestrictions = 0;
 };
 
@@ -947,7 +947,7 @@ struct ZONEGRAPH_API FZoneGraphLaneRoutingRule
 	UPROPERTY(Category = Rule, EditAnywhere)
 	EZoneGraphLaneRoutingCountRule DestinationIncomingConnections = EZoneGraphLaneRoutingCountRule::Any;
 
-	UPROPERTY(Category = Rule, EditAnywhere, meta = (Bitmask, BitmaskEnum = EZoneShapeLaneConnectionRestrictions))
+	UPROPERTY(Category = Rule, EditAnywhere, meta = (Bitmask, BitmaskEnum = "/Script/ZoneGraph.EZoneShapeLaneConnectionRestrictions"))
 	int32 ConnectionRestrictions = 0;
 };
 

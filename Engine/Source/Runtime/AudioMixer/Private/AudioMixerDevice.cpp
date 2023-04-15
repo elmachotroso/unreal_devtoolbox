@@ -2,8 +2,10 @@
 
 #include "AudioMixerDevice.h"
 
+#include "AudioAnalytics.h"
 #include "AudioMixerSource.h"
 #include "AudioMixerSourceManager.h"
+#include "AudioMixerSourceDecode.h"
 #include "AudioMixerSubmix.h"
 #include "AudioMixerSourceVoice.h"
 #include "AudioPluginUtilities.h"
@@ -18,12 +20,13 @@
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
+#include "IHeadMountedDisplayModule.h"
 #include "Misc/App.h"
 #include "ProfilingDebugging/CsvProfiler.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Async/Async.h"
 #include "AudioDeviceNotificationSubsystem.h"
+#include "Sound/AudioFormatSettings.h"
 
 #if WITH_EDITOR
 #include "AudioEditorModule.h"
@@ -158,7 +161,7 @@ namespace Audio
 		: QuantizedEventClockManager(this)
 		, AudioMixerPlatform(InAudioMixerPlatform)
 		, AudioClockDelta(0.0)
-		, PreviousMasterVolume((float)INDEX_NONE)
+		, PreviousPrimaryVolume((float)INDEX_NONE)
 		, GameOrAudioThreadId(INDEX_NONE)
 		, AudioPlatformThreadId(INDEX_NONE)
 		, bDebugOutputEnabled(false)
@@ -168,6 +171,15 @@ namespace Audio
 		bAudioMixerModuleLoaded = true;
 
 		SourceManager = MakeUnique<FMixerSourceManager>(this);
+
+		// Register AudioLink Factory. 	
+		TArray<FName> Factories = IAudioLinkFactory::GetAllRegisteredFactoryNames();
+		if(Factories.Num() > 0)
+		{
+			// Allow only a single registered factory instance for now.
+			check(Factories.Num()==1);
+			AudioLinkFactory=IAudioLinkFactory::FindFactory(Factories[0]);
+		}
 	}
 
 	FMixerDevice::~FMixerDevice()
@@ -198,6 +210,8 @@ namespace Audio
 
 	void FMixerDevice::OnListenerUpdated(const TArray<FListener>& InListeners)
 	{
+		LLM_SCOPE(ELLMTag::AudioMixer);
+
 		ListenerTransforms.Reset(InListeners.Num());
 
 		for (const FListener& Listener : InListeners)
@@ -419,12 +433,11 @@ namespace Audio
 				// TODO: Migrate this to project settings properly
 				SourceManagerInitParams.NumSourceWorkers = 4;
 
-				SourceManager->Init(SourceManagerInitParams);
 
 				AudioClock = 0.0;
 				AudioClockDelta = (double)OpenStreamParams.NumFrames / OpenStreamParams.SampleRate;
 
-				FAudioPluginInitializationParams PluginInitializationParams;
+
 				PluginInitializationParams.NumSources = SourceManagerInitParams.NumSources;
 				PluginInitializationParams.SampleRate = SampleRate;
 				PluginInitializationParams.BufferLength = OpenStreamParams.NumFrames;
@@ -434,10 +447,8 @@ namespace Audio
 					LLM_SCOPE(ELLMTag::AudioMixerPlugins);
 
 					// Initialize any plugins if they exist
-					if (SpatializationPluginInterface.IsValid())
-					{
-						SpatializationPluginInterface->Initialize(PluginInitializationParams);
-					}
+					// spatialization
+					SetCurrentSpatializationPlugin(AudioPluginUtilities::GetDesiredSpatializationPluginName());
 
 					if (OcclusionInterface.IsValid())
 					{
@@ -455,6 +466,9 @@ namespace Audio
  					}
 				}
 
+				// initialize the source manager after our plugins are spun up (cached by sources)
+				SourceManager->Init(SourceManagerInitParams);
+
 				// Need to set these up before we start the audio stream.
 				InitSoundSubmixes();
 
@@ -464,6 +478,16 @@ namespace Audio
 				AudioThreadTimingData.StartTime = FPlatformTime::Seconds();
 				AudioThreadTimingData.AudioThreadTime = 0.0;
 				AudioThreadTimingData.AudioRenderThreadTime = 0.0;
+
+				// Create synchronized Audio Task Queue for this device...
+				CreateSynchronizedAudioTaskQueue((Audio::AudioTaskQueueId)DeviceID);
+
+				Audio::Analytics::RecordEvent_Usage(TEXT("ProjectSettings"), MakeAnalyticsEventAttributeArray(
+					TEXT("SampleRate"), PlatformSettings.SampleRate,
+					TEXT("BufferSize"), PlatformSettings.CallbackBufferFrameSize,
+					TEXT("NumBuffers"), PlatformSettings.NumBuffers,
+					TEXT("NumSources"), PlatformSettings.MaxChannels,
+					TEXT("NumOutputChannels"), PlatformInfo.NumChannels));
 
 				// Start streaming audio
 				return AudioMixerPlatform->StartAudioStream();
@@ -503,6 +527,9 @@ namespace Audio
 			{
 				UnregisterSoundSubmix(*It);
 			}
+			
+			// Destroy the synchronized Audio Task Queue for this device
+			DestroySynchronizedAudioTaskQueue((Audio::AudioTaskQueueId)DeviceID);
 		}
 		
 		// reset all the sound effect presets loaded
@@ -541,7 +568,8 @@ namespace Audio
 	{
 		LLM_SCOPE(ELLMTag::AudioMixer);
 
-
+		// Pump our command queue sending commands to the game thread
+		PumpGameThreadCommandQueue();
 	}
 
 	void FMixerDevice::UpdateHardware()
@@ -614,11 +642,11 @@ namespace Audio
 			}
 
 			// Check if the background mute changed state and update the submixes which are enabled to do background muting.
-			const float CurrentMasterVolume = GetMasterVolume();
-			if (!FMath::IsNearlyEqual(PreviousMasterVolume, CurrentMasterVolume))
+			const float CurrentPrimaryVolume = GetPrimaryVolume();
+			if (!FMath::IsNearlyEqual(PreviousPrimaryVolume, CurrentPrimaryVolume))
 			{
-				PreviousMasterVolume = CurrentMasterVolume;
-				bool IsMuted = FMath::IsNearlyZero(CurrentMasterVolume);
+				PreviousPrimaryVolume = CurrentPrimaryVolume;
+				bool IsMuted = FMath::IsNearlyZero(CurrentPrimaryVolume);
 
 				for (TObjectIterator<USoundSubmix> It; It; ++It)
 				{
@@ -652,20 +680,8 @@ namespace Audio
 
 	FName FMixerDevice::GetRuntimeFormat(const USoundWave* InSoundWave) const
 	{
-		FName RuntimeFormat = Audio::ToName(InSoundWave->GetSoundAssetCompressionType());
-
-		// If not specified, the default platform codec is BINK.
-		if (RuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
-		{
-			RuntimeFormat = AudioMixerPlatform->GetRuntimeFormat(InSoundWave);
-			if (RuntimeFormat.IsNone())
-			{
-				// TODO: make this an override per platform for "default" platform-specific codec
-				RuntimeFormat = Audio::NAME_BINKA;
-			}
-		}
-		return RuntimeFormat;
-	}
+		return InSoundWave->GetRuntimeFormat();
+    }
 
 	bool FMixerDevice::HasCompressedAudioInfoClass(USoundWave* InSoundWave)
 	{
@@ -685,15 +701,24 @@ namespace Audio
 	{
 		return AudioMixerPlatform->DisablePCMAudioCaching();
 	}
+	
+	ICompressedAudioInfo* FMixerDevice::CreateAudioInfo(FName InFormat) const
+	{
+		if (IAudioInfoFactory* Factory = IAudioInfoFactoryRegistry::Get().Find(InFormat))
+		{
+			return Factory->Create();
+		}
+		return nullptr;
+	}
 
 	ICompressedAudioInfo* FMixerDevice::CreateCompressedAudioInfo(const USoundWave* InSoundWave) const
 	{
-		return AudioMixerPlatform->CreateCompressedAudioInfo(GetRuntimeFormat(InSoundWave));
+		return CreateAudioInfo(GetRuntimeFormat(InSoundWave));
 	}
 
 	class ICompressedAudioInfo* FMixerDevice::CreateCompressedAudioInfo(const FSoundWaveProxyPtr& InSoundWaveProxy) const
 	{
-		return AudioMixerPlatform->CreateCompressedAudioInfo(InSoundWaveProxy->GetRuntimeFormat());
+		return CreateAudioInfo(InSoundWaveProxy->GetRuntimeFormat());
 	}
 
 	bool FMixerDevice::ValidateAPICall(const TCHAR* Function, uint32 ErrorCode)
@@ -745,6 +770,11 @@ namespace Audio
 
 		// Update the audio render thread time at the head of the render
 		AudioThreadTimingData.AudioRenderThreadTime = FPlatformTime::Seconds() - AudioThreadTimingData.StartTime;
+
+		// notify interested parties
+		FAudioDeviceRenderInfo RenderInfo;
+		RenderInfo.NumFrames = SourceManager->GetNumOutputFrames();
+		NotifyAudioDevicePreRender(RenderInfo);
 
 		// Pump the command queue to the audio render thread
 		PumpCommandQueue();
@@ -815,6 +845,10 @@ namespace Audio
 		// Update the audio clock
 		AudioClock += AudioClockDelta;
 
+		// notify interested parties
+		NotifyAudioDevicePostRender(RenderInfo);
+
+		KickQueuedTasks((Audio::AudioTaskQueueId)DeviceID);
 		return true;
 	}
 
@@ -1428,15 +1462,15 @@ namespace Audio
 		}
 	}
 
-	void FMixerDevice::UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation)
+	void FMixerDevice::UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, const TSet<TObjectPtr<USoundModulatorBase>>& InOutputModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InWetLevelModulation, const TSet<TObjectPtr<USoundModulatorBase>>& InDryLevelModulation)
 	{
 		if (!IsInAudioThread())
 		{
 			FMixerDevice* MixerDevice = this;
 
-			FAudioThread::RunCommandOnAudioThread([MixerDevice, InSoundSubmix, InOutputModulation, InWetLevelModulation, InDryLevelModulation]() 
+			FAudioThread::RunCommandOnAudioThread([MixerDevice, InSoundSubmix, OutMod = InOutputModulation, WetMod = InWetLevelModulation, DryMod = InDryLevelModulation]()
 			{
-				MixerDevice->UpdateSubmixModulationSettings(InSoundSubmix, InOutputModulation, InWetLevelModulation, InDryLevelModulation);
+				MixerDevice->UpdateSubmixModulationSettings(InSoundSubmix, OutMod, WetMod, DryMod);
 			});
 			return;
 		}
@@ -1447,11 +1481,7 @@ namespace Audio
 
 			if (MixerSubmixPtr.IsValid())
 			{
-				USoundModulatorBase* VolumeMod = InOutputModulation;
-				USoundModulatorBase* WetMod = InOutputModulation;
-				USoundModulatorBase* DryMod = InOutputModulation;
-
-				AudioRenderThreadCommand([MixerSubmixPtr, VolumeMod, WetMod, DryMod]()
+				AudioRenderThreadCommand([MixerSubmixPtr, VolumeMod = InOutputModulation, WetMod = InOutputModulation, DryMod = InOutputModulation]()
 				{
 					MixerSubmixPtr->UpdateModulationSettings(VolumeMod, WetMod, DryMod);
 				});
@@ -1498,6 +1528,11 @@ namespace Audio
 		CommandQueue.Enqueue(MoveTemp(Command));
 	}
 
+	void FMixerDevice::GameThreadMPSCCommand(TFunction<void()> InCommand)
+	{
+		GameThreadCommandQueue.Enqueue(MoveTemp(InCommand));
+	}
+	
 	void FMixerDevice::PumpCommandQueue()
 	{
 		// Execute the pushed lambda functions
@@ -1508,6 +1543,18 @@ namespace Audio
 		}
 	}
 
+	void FMixerDevice::PumpGameThreadCommandQueue()
+	{
+		TOptional Opt { GameThreadCommandQueue.Dequeue() };
+		while (Opt.IsSet())
+		{
+			TFunction<void()> Command = MoveTemp(Opt.GetValue());
+			Command();
+				
+			Opt = GameThreadCommandQueue.Dequeue();
+		}
+	}
+	
 	void FMixerDevice::FlushAudioRenderingCommands(bool bPumpSynchronously)
 	{
 		if (IsInitialized() && (FPlatformProcess::SupportsMultithreading() && !AudioMixerPlatform->IsNonRealtime()))
@@ -1842,11 +1889,12 @@ namespace Audio
 			return;
 		}
 
-		for (TStrongObjectPtr<UAudioBus>& Bus : DefaultAudioBuses)
+		for (TObjectIterator<UAudioBus> It; It; ++It)
 		{
-			if (Bus.IsValid())
+			UAudioBus* AudioBus = *It;
+			if (AudioBus)
 			{
-				StopAudioBus(Bus->GetUniqueID());
+				StopAudioBus(AudioBus->GetUniqueID());
 			}
 		}
 
@@ -1912,6 +1960,11 @@ namespace Audio
 	int32 FMixerDevice::GetNumSources() const
 	{
 		return Sources.Num();
+	}
+
+	IAudioLinkFactory* FMixerDevice::GetAudioLinkFactory() const
+	{
+		return AudioLinkFactory;
 	}
 
 	int32 FMixerDevice::GetNumActiveSources() const
@@ -2517,6 +2570,14 @@ namespace Audio
 				SourceManager->StartAudioBus(InAudioBusId, InNumChannels, bInIsAutomatic);
 			});
 		}
+		else
+		{
+			// If we're not the game thread, this needs to be on the game thread, so queue up a command to execute it on the game thread
+			GameThreadMPSCCommand([this, InAudioBusId, InNumChannels, bInIsAutomatic]
+			{
+				StartAudioBus(InAudioBusId, InNumChannels, bInIsAutomatic);	
+			});
+		}
 	}
 
 	void FMixerDevice::StopAudioBus(uint32 InAudioBusId)
@@ -2535,6 +2596,14 @@ namespace Audio
 				SourceManager->StopAudioBus(InAudioBusId);
 			});
 		}
+		else
+		{
+			// If we're not the game thread, this needs to be on the game thread, so queue up a command to execute it on the game thread
+			GameThreadMPSCCommand([this, InAudioBusId]
+			{
+				StopAudioBus(InAudioBusId);	
+			});
+		}
 	}
 
 	bool FMixerDevice::IsAudioBusActive(uint32 InAudioBusId) const
@@ -2548,23 +2617,79 @@ namespace Audio
 		return SourceManager->IsAudioBusActive(InAudioBusId);
 	}
 
-	Audio::FPatchOutputStrongPtr FMixerDevice::AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain)
-	{
-		check(SourceManager);
 
-		const int32 NumChannels = SourceManager->GetAudioBusNumChannels(InAudioBusId);
-		if (NumChannels > 0)
+	FPatchOutputStrongPtr FMixerDevice::AddPatchForAudioBus(uint32 InAudioBusId, float InPatchGain)
+	{
+		// This function is supporting adding audio bus patches from multiple threads (AT, ART, GT, and tasks) and is currently
+		// depending on a number of places where data lives, which accounts for the complexity here.
+		// The key idea here is to create and return a strong patch output ptr at roughly the size we expect to need then 
+		// pass the strong ptr down to the audio render thread that then is registered to the audio bus to start feeding audio to.
+		// This code needs a clean up to refactor everything into a true MPSC model, along with an MPSC refactor of the source manager
+		// and our command queues. Once we do that we can remove the code which branches based on the thread the request is coming from. 
+
+		if (IsInGameThread())
 		{
-			const int32 NumOutputFrames = SourceManager->GetNumOutputFrames();
-			FPatchOutputStrongPtr StrongOutputPtr = MakeShareable(new FPatchOutput(NumOutputFrames * NumChannels, InPatchGain));
-			SourceManager->AddPatchOutputForAudioBus(InAudioBusId, StrongOutputPtr);
+			if (ActiveAudioBuses_GameThread.Find(InAudioBusId))
+			{
+				const int32 NumOutputFrames = SourceManager->GetNumOutputFrames();
+				FPatchOutputStrongPtr StrongOutputPtr = MakeShareable(new FPatchOutput(2 * NumOutputFrames, InPatchGain));
+				FAudioThread::RunCommandOnAudioThread([this, StrongOutputPtr, InAudioBusId]() mutable
+				{
+					SourceManager->AddPatchOutputForAudioBus_AudioThread(InAudioBusId, StrongOutputPtr);
+				});
+				return StrongOutputPtr;
+			}
+			UE_LOG(LogAudioMixer, Warning, TEXT("Unable to add a patch output for audio bus because audio bus id '%d' is not active."), InAudioBusId);
+			return nullptr;
+		}
+		else if (IsInAudioThread())
+		{
+			int32 NumOutputFrames = SourceManager->GetNumOutputFrames();
+			FPatchOutputStrongPtr StrongOutputPtr = MakeShareable(new FPatchOutput(2 * NumOutputFrames, InPatchGain));
+
+			SourceManager->AddPatchOutputForAudioBus_AudioThread(InAudioBusId, StrongOutputPtr);
 			return StrongOutputPtr;
 		}
+		else if (IsAudioRenderingThread())
+		{
+			check(SourceManager);
 
-		return nullptr;
+			const int32 NumChannels = SourceManager->GetAudioBusNumChannels(InAudioBusId);
+			if (NumChannels > 0)
+			{
+				const int32 NumOutputFrames = SourceManager->GetNumOutputFrames();
+				FPatchOutputStrongPtr StrongOutputPtr = MakeShareable(new FPatchOutput(NumOutputFrames * NumChannels, InPatchGain));
+				SourceManager->AddPatchOutputForAudioBus(InAudioBusId, StrongOutputPtr);
+				return StrongOutputPtr;
+			}
+
+			return nullptr;
+		}
+		else
+		{
+			// Need to make a strong output patch even if this is not going to ever write to it since the bus may not be running
+			const int32 NumOutputFrames = SourceManager->GetNumOutputFrames();
+			FPatchOutputStrongPtr StrongOutputPtr = MakeShareable(new FPatchOutput(3 * NumOutputFrames, InPatchGain));
+
+			GameThreadMPSCCommand([this, StrongOutputPtr, InAudioBusId]
+			{
+				if (ActiveAudioBuses_GameThread.Find(InAudioBusId))
+				{
+					FAudioThread::RunCommandOnAudioThread([this, InAudioBusId, StrongOutputPtr]() mutable
+					{
+						SourceManager->AddPatchOutputForAudioBus_AudioThread(InAudioBusId, StrongOutputPtr);
+					});
+				}
+				else
+				{
+					UE_LOG(LogAudioMixer, Warning, TEXT("Unable to add a patch output for audio bus because audio bus id '%d' is not active."), InAudioBusId);
+				}
+			});
+			return StrongOutputPtr;
+		}
 	}
 
-	Audio::FPatchOutputStrongPtr FMixerDevice::AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain)
+	FPatchOutputStrongPtr FMixerDevice::AddPatchForAudioBus_GameThread(uint32 InAudioBusId, float InPatchGain)
 	{
 		FPatchOutputStrongPtr StrongOutputPtr;
 		
@@ -2685,6 +2810,21 @@ namespace Audio
 				}
 			}
 		}
+	}
+
+	void FMixerDevice::CreateSynchronizedAudioTaskQueue(AudioTaskQueueId QueueId)
+	{
+		Audio::CreateSynchronizedAudioTaskQueue(QueueId);
+	}
+
+	void FMixerDevice::DestroySynchronizedAudioTaskQueue(AudioTaskQueueId QueueId, bool RunCurrentQueue)
+	{
+		Audio::DestroySynchronizedAudioTaskQueue(QueueId, RunCurrentQueue);
+	}
+
+	int FMixerDevice::KickQueuedTasks(AudioTaskQueueId QueueId)
+	{
+		return Audio::KickQueuedTasks(QueueId);
 	}
 
 }

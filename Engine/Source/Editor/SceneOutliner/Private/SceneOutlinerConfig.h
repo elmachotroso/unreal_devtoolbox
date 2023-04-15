@@ -4,8 +4,13 @@
 
 #include "Containers/Map.h"
 #include "EditorConfigBase.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "SceneOutlinerConfig.generated.h"
+
+class FName;
+class UObject;
 
 
 USTRUCT()
@@ -18,6 +23,10 @@ public:
 	/** Map to store the visibility of each column */
 	UPROPERTY()
 	TMap<FName, bool> ColumnVisibilities;
+
+	/** Whether the hierarchy is pinned at the top of the outliner*/
+	UPROPERTY()
+	bool bShouldStackHierarchyHeaders = true;
 };
 
 
@@ -28,6 +37,13 @@ class UOutlinerConfig : public UEditorConfigBase
 	
 public:
 
+	static void Initialize();
+	static UOutlinerConfig* Get() { return Instance; }
+
 	UPROPERTY(meta=(EditorConfig))
 	TMap<FName, FSceneOutlinerConfig> Outliners;
+
+private:
+
+	static TObjectPtr<UOutlinerConfig> Instance;
 };

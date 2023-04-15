@@ -74,6 +74,7 @@ public:
 	 */
 	static inline IHeadMountedDisplayModule& Get()
 	{
+		check(IsInGameThread());
 		TArray<IHeadMountedDisplayModule*> HMDModules = IModularFeatures::Get().GetModularFeatureImplementations<IHeadMountedDisplayModule>(GetModularFeatureName());
 		HMDModules.Sort(FCompareModulePriority());
 		return *HMDModules[0];
@@ -86,6 +87,7 @@ public:
 	 */
 	static inline bool IsAvailable()
 	{
+		check(IsInGameThread());
 		return IModularFeatures::Get().IsModularFeatureAvailable(GetModularFeatureName());
 	}
 

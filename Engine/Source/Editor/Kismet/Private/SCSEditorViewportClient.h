@@ -2,17 +2,28 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
-#include "UnrealWidgetFwd.h"
 #include "EditorViewportClient.h"
+#include "Engine/EngineBaseTypes.h"
+#include "InputCoreTypes.h"
+#include "Math/Axis.h"
+#include "Math/BoxSphereBounds.h"
+#include "Math/Matrix.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Templates/SharedPointer.h"
+#include "UnrealWidgetFwd.h"
 
-class FBlueprintEditor;
+class AActor;
 class FCanvas;
 class FPreviewScene;
+class FPrimitiveDrawInterface;
+class FSceneView;
 class FScopedTransaction;
+class FText;
+class FViewport;
 class SSCSEditorViewport;
 class UStaticMeshComponent;
+struct FInputKeyEventArgs;
 
 /**
  * An editor viewport client subclass for the SCS editor viewport.
@@ -37,7 +48,7 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Draw(const FSceneView* View,FPrimitiveDrawInterface* PDI) override;
 	virtual void DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas ) override;
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
 	virtual void ProcessClick(class FSceneView& View, class HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY) override;
 	virtual bool InputWidgetDelta( FViewport* Viewport, EAxisList::Type CurrentAxis, FVector& Drag, FRotator& Rot, FVector& Scale ) override;
 	virtual void TrackingStarted( const struct FInputEventState& InInputState, bool bIsDragging, bool bNudge ) override;

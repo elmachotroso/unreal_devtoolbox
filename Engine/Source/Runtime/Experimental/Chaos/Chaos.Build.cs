@@ -26,15 +26,6 @@ namespace UnrealBuildTool.Rules
             PublicDefinitions.Add("COMPILE_WITHOUT_UNREAL_SUPPORT=0");
 			PrivateDefinitions.Add("CHAOS_INCLUDE_LEVEL_1=1");
 
-            if (Target.bCompileChaos == true || Target.bUseChaos == true)
-            {
-                PublicDefinitions.Add("INCLUDE_CHAOS=1");
-            }
-            else
-            {
-                PublicDefinitions.Add("INCLUDE_CHAOS=0");
-            }
-
 			if (Target.bUseChaosMemoryTracking == true)
 			{
 				PublicDefinitions.Add("CHAOS_MEMORY_TRACKING=1");
@@ -45,6 +36,9 @@ namespace UnrealBuildTool.Rules
 			}
 			
 			UnsafeTypeCastWarningLevel = WarningLevel.Error;
+
+			StaticAnalyzerDisabledCheckers.Add("cplusplus.NewDeleteLeaks"); // To be reevalulated, believed to be invalid warnings.
+			StaticAnalyzerDisabledCheckers.Add("core.UndefinedBinaryOperatorResult"); // Invalid warning in mass property calculation.
 		}
     }
 }

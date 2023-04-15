@@ -31,10 +31,10 @@ class FSlateVectorGraphicsCache;
 struct FMaterialKey
 {
 	TWeakObjectPtr<const UMaterialInterface> Material;
-	const FVector2D ImageSize;
+	const FVector2f ImageSize;
 	int32 MaskKey;
 
-	FMaterialKey(const UMaterialInterface* InMaterial, const FVector2D& InImageSize, int32 InMaskKey)
+	FMaterialKey(const UMaterialInterface* InMaterial, const FVector2f InImageSize, int32 InMaskKey)
 		: Material(InMaterial)
 		, ImageSize(InImageSize)
 		, MaskKey(InMaskKey)
@@ -157,7 +157,7 @@ public:
 	void ConditionalFlushAtlases();
 
 	/** FSlateShaderResourceManager interface */
-	virtual FSlateShaderResourceProxy* GetShaderResource(const FSlateBrush& InBrush, FVector2D LocalSize, float DrawScale) override;
+	virtual FSlateShaderResourceProxy* GetShaderResource(const FSlateBrush& InBrush, FVector2f LocalSize, float DrawScale) override;
 	virtual FSlateShaderResource* GetFontShaderResource( int32 InTextureAtlasIndex, FSlateShaderResource* FontTextureAtlas, const class UObject* FontMaterial ) override;
 	virtual ISlateAtlasProvider* GetTextureAtlasProvider() override;
 
@@ -283,7 +283,7 @@ private:
 	 * @param LocalSize	The unscaled local size of the final image
 	 * @param DrawScale	Any scaling applied to the final image
 	 */
-	FSlateShaderResourceProxy* GetVectorResource(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale);
+	FSlateShaderResourceProxy* GetVectorResource(const FSlateBrush& Brush, FVector2f LocalSize, float DrawScale);
 
 	/**
 	 * Called when the application exists before the UObject system shuts down so we can free object resources

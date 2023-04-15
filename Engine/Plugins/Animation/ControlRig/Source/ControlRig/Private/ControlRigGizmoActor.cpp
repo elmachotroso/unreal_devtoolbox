@@ -1,19 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigGizmoActor.h"
+#include "ControlRig.h"
 #include "Engine/World.h"
 #include "Engine/StaticMesh.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/CollisionProfile.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigGizmoActor)
+
 AControlRigShapeActor::AControlRigShapeActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, ControlRigIndex(INDEX_NONE)
+	, ControlRig(nullptr)
 	, ControlName(NAME_None)
-	, bEnabled(true)
+	, ShapeName(NAME_None)
+	, OverrideColor(0, 0, 0, 0)
 	, bSelected(false)
-	, bSelectable(true)
 	, bHovered(false)
 {
 
@@ -31,27 +35,15 @@ AControlRigShapeActor::AControlRigShapeActor(const FObjectInitializer& ObjectIni
 	StaticMeshComponent->SetupAttachment(RootComponent);
 	StaticMeshComponent->bCastStaticShadow = false;
 	StaticMeshComponent->bCastDynamicShadow = false;
-	StaticMeshComponent->bSelectable = bSelectable && bEnabled;
-}
-
-void AControlRigShapeActor::SetEnabled(bool bInEnabled)
-{
-	if(bEnabled != bInEnabled)
-	{
-		bEnabled = bInEnabled;
-		StaticMeshComponent->bSelectable = bSelectable && bEnabled;
-		FEditorScriptExecutionGuard Guard;
-		OnEnabledChanged(bEnabled);
-	}
-}
-
-bool AControlRigShapeActor::IsEnabled() const
-{
-	return bEnabled;
+	StaticMeshComponent->bSelectable = true;
 }
 
 void AControlRigShapeActor::SetSelected(bool bInSelected)
 {
+	if(!IsSelectable() && bInSelected)
+	{
+		return;
+	}
 	if(bSelected != bInSelected)
 	{
 		bSelected = bInSelected;
@@ -65,16 +57,23 @@ bool AControlRigShapeActor::IsSelectedInEditor() const
 	return bSelected;
 }
 
+bool AControlRigShapeActor::IsSelectable() const
+{
+	return StaticMeshComponent->bSelectable;
+}
+
 void AControlRigShapeActor::SetSelectable(bool bInSelectable)
 {
-	if (bSelectable != bInSelectable)
+	if (StaticMeshComponent->bSelectable != bInSelectable)
 	{
-		bSelectable = bInSelectable;
-		StaticMeshComponent->bSelectable = bSelectable && bEnabled;
-		if (!bSelectable)
+		StaticMeshComponent->bSelectable = bInSelectable;
+		if (!StaticMeshComponent->bSelectable)
 		{
 			SetSelected(false);
 		}
+
+		FEditorScriptExecutionGuard Guard;
+		OnEnabledChanged(bInSelectable);
 	}
 }
 
@@ -106,6 +105,75 @@ void AControlRigShapeActor::SetShapeColor(const FLinearColor& InColor)
 			MaterialInstance->SetVectorParameterValue(ColorParameterName, FVector(InColor));
 		}
 	}
+}
+
+bool AControlRigShapeActor::UpdateControlSettings(
+	ERigHierarchyNotification InNotif,
+	UControlRig* InControlRig,
+	const FRigControlElement* InControlElement,
+	bool bHideManipulators,
+	bool bIsInLevelEditor)
+{
+	check(InControlElement);
+
+	const FRigControlSettings& ControlSettings = InControlElement->Settings;
+	
+	// if this actor is not supposed to exist
+	if(!ControlSettings.SupportsShape())
+	{
+		return false;
+	}
+
+	const bool bShapeNameUpdated = ShapeName != ControlSettings.ShapeName;
+	bool bShapeTransformChanged = InNotif == ERigHierarchyNotification::ControlShapeTransformChanged;
+	const bool bLookupShape = bShapeNameUpdated || bShapeTransformChanged;
+	
+	FTransform MeshTransform = FTransform::Identity;
+
+	// update the shape used for the control
+	if(bLookupShape)
+	{
+		const TArray<TSoftObjectPtr<UControlRigShapeLibrary>> ShapeLibraries = InControlRig->GetShapeLibraries();
+		if (const FControlRigShapeDefinition* ShapeDef = UControlRigShapeLibrary::GetShapeByName(ControlSettings.ShapeName, ShapeLibraries))
+		{
+			MeshTransform = ShapeDef->Transform;
+
+			if(bShapeNameUpdated)
+			{
+				if(ShapeDef->StaticMesh.IsValid())
+				{
+					if(UStaticMesh* StaticMesh = ShapeDef->StaticMesh.Get())
+					{
+						if(StaticMesh != StaticMeshComponent->GetStaticMesh())
+						{
+							StaticMeshComponent->SetStaticMesh(StaticMesh);
+							bShapeTransformChanged = true;
+						}
+					}
+					else
+					{
+						return false;
+					}
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	// update the shape transform
+	if(bShapeTransformChanged)
+	{
+		const FTransform ShapeTransform = InControlElement->Shape.Get(ERigTransformType::CurrentLocal);
+		StaticMeshComponent->SetRelativeTransform(MeshTransform * ShapeTransform);
+	}
+	
+	// update the shape color
+	SetShapeColor(ControlSettings.ShapeColor);
+
+	return true;
 }
 
 // FControlRigShapeHelper START
@@ -164,9 +232,14 @@ namespace FControlRigShapeHelper
 		if (ShapeActor)
 		{
 			ShapeActor->ControlRigIndex = CreationParam.ControlRigIndex;
+			ShapeActor->ControlRig = CreationParam.ControlRig;
 			ShapeActor->ControlName = CreationParam.ControlName;
+			ShapeActor->ShapeName = CreationParam.ShapeName;
 			ShapeActor->SetSelectable(CreationParam.bSelectable);
 			ShapeActor->SetActorTransform(CreationParam.SpawnTransform);
+#if WITH_EDITOR
+			ShapeActor->SetActorLabel(CreationParam.ControlName.ToString(), false);
+#endif // WITH_EDITOR
 
 			UStaticMeshComponent* MeshComponent = ShapeActor->StaticMeshComponent;
 
@@ -215,4 +288,6 @@ FTransform AControlRigShapeActor::GetGlobalTransform() const
 
 	return FTransform::Identity;
 }
+
 // FControlRigShapeHelper END
+

@@ -8,7 +8,11 @@ public class Water : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PrivateIncludePaths.Add("Runtime/Private");
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+			}
+		);
 
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
@@ -25,12 +29,14 @@ public class Water : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"RenderCore",
+				"Renderer",
 				"NiagaraCore",
 				"Niagara",
 				"NiagaraShader",
 				"Projects",
 				"Landscape",
 				"GeometryCore",
+				"GeometryAlgorithms",
 				"DynamicMesh",
 				"ChaosCore",
 				"Chaos",
@@ -44,10 +50,18 @@ public class Water : ModuleRules
         {
 			bWithWaterSelectionSupport = true;
 
+			PublicDependencyModuleNames.AddRange(
+				new string[] {
+					"MeshDescription"
+				}
+			);
+
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"SourceControl",
-					"UnrealEd"
+					"UnrealEd",
+					"StaticMeshDescription",
+					"MeshConversion"
 				}
 			);
 		}

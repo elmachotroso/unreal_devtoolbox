@@ -9,8 +9,8 @@
 #include "RenderingThread.h"
 #include "HAL/UnrealMemory.h"
 #include "BoneIndices.h"
-#include "RHI/Public/RHIGPUReadback.h"
-#include "Core/Public/Templates/UniquePtr.h"
+#include "RHIGPUReadback.h"
+#include "Templates/UniquePtr.h"
 
 #include "SkinWeightProfile.generated.h"
 
@@ -131,6 +131,9 @@ struct ENGINE_API FSkinWeightProfilesData
 	void Init(FSkinWeightVertexBuffer* InBaseBuffer);
 
 	~FSkinWeightProfilesData();
+	
+	DECLARE_DELEGATE_RetVal_ThreeParams(int32 /** Index into Profiles ArrayView */, FOnPickOverrideSkinWeightProfile, const USkeletalMesh* /** Skeletal Mesh to pick the profile for */, const TArrayView<const FSkinWeightProfileInfo> /** Available skin weight profiles to pick from */, int32 /** LOD Index */);
+	static FOnPickOverrideSkinWeightProfile OnPickOverrideSkinWeightProfile;
 
 #if !WITH_EDITOR
 	// Mark this as non-editor only to prevent mishaps from users

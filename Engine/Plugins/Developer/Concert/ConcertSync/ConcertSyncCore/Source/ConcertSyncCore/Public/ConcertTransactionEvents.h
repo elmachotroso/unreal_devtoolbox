@@ -6,6 +6,7 @@
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
+#include "Misc/TransactionObjectEvent.h"
 #include "IdentifierTable/ConcertIdentifierTableData.h"
 #include "ConcertTransactionEvents.generated.h"
 
@@ -27,22 +28,19 @@ struct FConcertObjectId
 {
 	GENERATED_BODY()
 
-	FConcertObjectId()
-		: ObjectPersistentFlags(0)
-	{
-	}
+	FConcertObjectId() = default;
 
 	explicit FConcertObjectId(const UObject* InObject)
-		: ObjectClassPathName(*InObject->GetClass()->GetPathName())
-		, ObjectPackageName(InObject->GetPackage()->GetFName())
-		, ObjectName(InObject->GetFName())
-		, ObjectOuterPathName(InObject->GetOuter() ? FName(*InObject->GetOuter()->GetPathName()) : FName())
-		, ObjectExternalPackageName(InObject->GetExternalPackage() ? InObject->GetExternalPackage()->GetFName() : FName())
-		, ObjectPersistentFlags(InObject->GetFlags() & RF_Load)
+		: FConcertObjectId(FTransactionObjectId(InObject), InObject->GetFlags())
 	{
 	}
 
-	FConcertObjectId(const FName InObjectClassPathName, const FName InObjectPackageName, const FName InObjectName, const FName InObjectOuterPathName, const FName InObjectExternalPackageName,  const uint32 InObjectFlags)
+	FConcertObjectId(const FTransactionObjectId& InObjectId, const uint32 InObjectFlags)
+		: FConcertObjectId(InObjectId.ObjectClassPathName, InObjectId.ObjectPackageName, InObjectId.ObjectName, InObjectId.ObjectOuterPathName, InObjectId.ObjectExternalPackageName, InObjectFlags)
+	{
+	}
+
+	FConcertObjectId(const FName InObjectClassPathName, const FName InObjectPackageName, const FName InObjectName, const FName InObjectOuterPathName, const FName InObjectExternalPackageName, const uint32 InObjectFlags)
 		: ObjectClassPathName(InObjectClassPathName)
 		, ObjectPackageName(InObjectPackageName)
 		, ObjectName(InObjectName)
@@ -50,6 +48,26 @@ struct FConcertObjectId
 		, ObjectExternalPackageName(InObjectExternalPackageName)
 		, ObjectPersistentFlags(InObjectFlags & RF_Load)
 	{
+	}
+
+	FTransactionObjectId ToTransactionObjectId() const
+	{
+		FNameBuilder ObjectPathName;
+		ObjectOuterPathName.AppendString(ObjectPathName);
+		{
+			int32 Unused = 0;
+			if (ObjectPathName.ToView().FindChar(TEXT('.'), Unused) && !ObjectPathName.ToView().FindChar(SUBOBJECT_DELIMITER_CHAR, Unused))
+			{
+				ObjectPathName.AppendChar(SUBOBJECT_DELIMITER_CHAR);
+			}
+			else
+			{
+				ObjectPathName.AppendChar(TEXT('.'));
+			}
+		}
+		ObjectName.AppendString(ObjectPathName);
+
+		return FTransactionObjectId(ObjectPackageName, ObjectName, ObjectPathName.ToString(), ObjectOuterPathName, ObjectExternalPackageName, ObjectClassPathName);
 	}
 
 	UPROPERTY()
@@ -68,7 +86,7 @@ struct FConcertObjectId
 	FName ObjectExternalPackageName;
 
 	UPROPERTY()
-	uint32 ObjectPersistentFlags;
+	uint32 ObjectPersistentFlags = 0;
 };
 
 USTRUCT()
@@ -78,6 +96,9 @@ struct FConcertSerializedObjectData
 
 	UPROPERTY()
 	bool bAllowCreate = false;
+
+	UPROPERTY()
+	bool bResetExisting = false;
 
 	UPROPERTY()
 	bool bIsPendingKill = false;

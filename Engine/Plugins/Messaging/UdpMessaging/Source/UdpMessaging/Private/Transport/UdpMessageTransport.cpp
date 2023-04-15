@@ -1,6 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Transport/UdpMessageTransport.h"
+#include "Algo/AnyOf.h"
+#include "INetworkMessagingExtension.h"
+#include "Interfaces/IPv4/IPv4Address.h"
+#include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "UdpMessagingPrivate.h"
 
 #include "Common/UdpSocketBuilder.h"
@@ -27,7 +31,29 @@
 /* FUdpMessageTransport structors
  *****************************************************************************/
 
-FUdpMessageTransport::FUdpMessageTransport(const FIPv4Endpoint& InUnicastEndpoint, const FIPv4Endpoint& InMulticastEndpoint, TArray<FIPv4Endpoint> InStaticEndpoints, uint8 InMulticastTtl)
+TAutoConsoleVariable<int32> CVarMaxRetriesForBadEndpoint(
+	TEXT("MessageBus.UDP.MaxRetriesForBadEndpoint"),
+	5,
+	TEXT("The maximum number of retries that will be attempted when a socket connection fails to reach an endpoint."),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<int32> CVarBadEndpointPeriod(
+	TEXT("MessageBus.UDP.BadEndpointPeriod"),
+	60,
+	TEXT("The period of time, in seconds, between endpoint socket errors to be considered a bad endpoint."),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<bool> CVarEndpointDenyListEnabled(
+	TEXT("MessageBus.UDP.EndpointDenyListEnabled"),
+	true,
+	TEXT("Specifies if the endpoint deny list is enabled. If enabled, a problematic endpoint will be tagged for possible exclusion from communication.")
+	TEXT("The maximum attempts allowed is determined by MessageBus.UDP.MaxRetriesForBadEndpoint"),
+	ECVF_Default
+);
+
+FUdpMessageTransport::FUdpMessageTransport(const FIPv4Endpoint& InUnicastEndpoint, const FIPv4Endpoint& InMulticastEndpoint, TArray<FIPv4Endpoint> InStaticEndpoints, TArray<FIPv4Endpoint> InExcludedEndpoints, uint8 InMulticastTtl)
 	: MessageProcessor(nullptr)
 	, MulticastEndpoint(InMulticastEndpoint)
 	, MulticastReceiver(nullptr)
@@ -41,6 +67,9 @@ FUdpMessageTransport::FUdpMessageTransport(const FIPv4Endpoint& InUnicastEndpoin
 	, UnicastSocket(nullptr)
 #endif
 	, StaticEndpoints(MoveTemp(InStaticEndpoints))
+	, ExcludedEndpoints(MoveTemp(InExcludedEndpoints))
+	, ClearDenyList(TEXT("MessageBus.UDP.ClearDenyList"), TEXT("Clear the UDP socket deny list."),
+					FConsoleCommandDelegate::CreateRaw(this, &FUdpMessageTransport::DoClearDenyCandidateList))
 {
 }
 
@@ -89,6 +118,83 @@ FName FUdpMessageTransport::GetDebugName() const
 	return "UdpMessageTransport";
 }
 
+TArray<FIPv4Endpoint> FUdpMessageTransport::GetKnownEndpoints() const
+{
+	if (MessageProcessor)
+	{
+		return MessageProcessor->GetKnownEndpoints();
+	}
+	return {};
+}
+
+FMessageTransportStatistics FUdpMessageTransport::GetLatestStatistics(FGuid NodeId) const
+{
+	if (MessageProcessor)
+	{
+		return MessageProcessor->GetStats(NodeId);
+	}
+	return {};
+}
+
+TArray<FIPv4Endpoint> FUdpMessageTransport::GetListeningAddresses() const
+{
+	TArray<FIPv4Endpoint> Listeners;
+#if PLATFORM_DESKTOP
+	Listeners.Add(UnicastEndpoint);
+#endif
+
+#if PLATFORM_SUPPORTS_UDP_MULTICAST_GROUP
+	Listeners.Add(MulticastEndpoint);
+#endif
+
+	return Listeners;
+}
+
+namespace UE::UdpMessaging::Private
+{
+
+void DoJoinMulticastGroup(const TSharedRef<FInternetAddr>& MulticastAddr, const TSharedPtr<FInternetAddr>& IpAddr, FSocket* MulticastSocket)
+{
+	if (!IpAddr.IsValid())
+	{
+		return;
+	}
+	const bool bJoinedGroup = MulticastSocket->JoinMulticastGroup(*MulticastAddr, *IpAddr);
+	if (bJoinedGroup)
+	{
+		UE_LOG(LogUdpMessaging, Display, TEXT("Added local interface '%s' to multicast group '%s'"),
+			   *IpAddr->ToString(false), *MulticastAddr->ToString(true));
+	}
+	else
+	{
+		UE_LOG(LogUdpMessaging, Warning, TEXT("Failed to join multicast group '%s' on detected local interface '%s'"),
+			   *MulticastAddr->ToString(true), *IpAddr->ToString(false));
+	}
+}
+
+
+void JoinedToGroup(const FIPv4Endpoint& UnicastEndpoint, const FIPv4Endpoint& MulticastEndpoint, FSocket* MulticastSocket)
+{
+#if PLATFORM_SUPPORTS_UDP_MULTICAST_GROUP
+	TSharedRef<FInternetAddr> MulticastAddr = MulticastEndpoint.ToInternetAddr();
+	if (UnicastEndpoint.Address == FIPv4Address::Any)
+	{
+		TArray<TSharedPtr<FInternetAddr>> LocapIps;
+		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalAdapterAddresses(LocapIps);
+		for (const TSharedPtr<FInternetAddr>& LocalIp : LocapIps)
+		{
+			DoJoinMulticastGroup(MulticastAddr, LocalIp, MulticastSocket);
+		}
+	}
+	else
+	{
+		TSharedRef<FInternetAddr> UnicastAddr = UnicastEndpoint.ToInternetAddr();
+		DoJoinMulticastGroup(MulticastAddr, UnicastAddr , MulticastSocket);
+	}
+#endif
+}
+
+} // namespace UE::UdpMessaging::Private
 
 bool FUdpMessageTransport::StartTransport(IMessageTransportHandler& Handler)
 {
@@ -127,13 +233,14 @@ bool FUdpMessageTransport::StartTransport(IMessageTransportHandler& Handler)
 #endif
 		.BoundToPort(MulticastEndpoint.Port)
 #if PLATFORM_SUPPORTS_UDP_MULTICAST_GROUP
-		.JoinedToGroup(MulticastEndpoint.Address, UnicastEndpoint.Address)
 		.WithMulticastLoopback()
 		.WithMulticastTtl(MulticastTtl)
 		.WithMulticastInterface(UnicastEndpoint.Address)
 #endif
 		.WithReceiveBufferSize(UDP_MESSAGING_RECEIVE_BUFFER_SIZE);
 
+	UE::UdpMessaging::Private::JoinedToGroup(UnicastEndpoint, MulticastEndpoint, MulticastSocket);
+	
 	if (MulticastSocket == nullptr)
 	{
 		UE_LOG(LogUdpMessaging, Warning, TEXT("StartTransport failed to create multicast socket on %s, joined to %s with TTL %i"), *UnicastEndpoint.ToString(), *MulticastEndpoint.ToString(), MulticastTtl);
@@ -162,6 +269,8 @@ bool FUdpMessageTransport::StartTransport(IMessageTransportHandler& Handler)
 		MessageProcessor->OnNodeDiscovered().BindRaw(this, &FUdpMessageTransport::HandleProcessorNodeDiscovered);
 		MessageProcessor->OnNodeLost().BindRaw(this, &FUdpMessageTransport::HandleProcessorNodeLost);
 		MessageProcessor->OnError().BindRaw(this, &FUdpMessageTransport::HandleProcessorError);
+		MessageProcessor->OnErrorSendingToEndpoint_UdpMessageProcessorThread().BindRaw(this, &FUdpMessageTransport::HandleEndpointCommunicationError);
+		MessageProcessor->OnCanAcceptEndpoint_UdpMessageProcessorThread().BindRaw(this, &FUdpMessageTransport::HandleProcessorEndpointCheck);
 	}
 
 	if (MulticastSocket != nullptr)
@@ -238,7 +347,7 @@ bool FUdpMessageTransport::TransportMessage(const TSharedRef<IMessageContext, ES
 	if (UE_GET_LOG_VERBOSITY(LogUdpMessaging) >= ELogVerbosity::Verbose)
 	{
 		FString RecipientStr = FString::JoinBy(Recipients, TEXT("+"), [](const FGuid& Guid) { return Guid.ToString(); });
-		UE_LOG(LogUdpMessaging, Verbose, TEXT("TransportMessage %s from %s to %s"), *Context->GetMessageType().ToString(), *Context->GetSender().ToString(), *RecipientStr);
+		UE_LOG(LogUdpMessaging, Verbose, TEXT("TransportMessage %s from %s to %s"), *Context->GetMessageTypePathName().ToString(), *Context->GetSender().ToString(), *RecipientStr);
 	}
 
 	return MessageProcessor->EnqueueOutboundMessage(Context, Recipients);
@@ -275,6 +384,47 @@ void FUdpMessageTransport::HandleProcessorNodeLost(const FGuid& LostNodeId)
 	TransportHandler->ForgetTransportNode(LostNodeId);
 }
 
+bool FUdpMessageTransport::HandleProcessorEndpointCheck(const FGuid& EndpointNodeId, const FIPv4Endpoint& SenderIpAddress)
+{
+	if (CVarEndpointDenyListEnabled.GetValueOnAnyThread())
+	{
+		FDenyCandidate* DenyCandidate = DenyCandidateList.Find(EndpointNodeId);
+		if (DenyCandidate && DenyCandidate->EndpointFailureCount > CVarMaxRetriesForBadEndpoint.GetValueOnAnyThread())
+		{
+			return false;
+		}
+	}
+
+	for (const FIPv4Endpoint& Endpoint : ExcludedEndpoints)
+	{
+		if ((Endpoint.Port == 0 && SenderIpAddress.Address == Endpoint.Address)
+			|| SenderIpAddress == Endpoint)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+void FUdpMessageTransport::DoClearDenyCandidateList()
+{
+	DenyCandidateList.Reset();
+}
+
+void FUdpMessageTransport::HandleEndpointCommunicationError(const FGuid& EndpointId, const FIPv4Endpoint& /*Unused EndpointIdAddress*/)
+{
+	FDenyCandidate& DenyCandidate = DenyCandidateList.FindOrAdd(EndpointId);
+	FDateTime CurrentTime = FDateTime::UtcNow();
+	if ((CurrentTime - DenyCandidate.LastFailTime).GetSeconds() < CVarBadEndpointPeriod.GetValueOnAnyThread())
+	{
+		DenyCandidate.EndpointFailureCount++;
+	}
+	else
+	{
+		DenyCandidate.EndpointFailureCount = 0;
+	}
+	DenyCandidate.LastFailTime = CurrentTime;
+}
 
 void FUdpMessageTransport::HandleProcessorError()
 {

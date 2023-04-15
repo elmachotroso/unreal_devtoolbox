@@ -7,7 +7,7 @@
 #include "Misc/PackageName.h"
 #include "Particles/ParticleSystem.h"
 #include "Distributions/DistributionFloatConstant.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Particles/ParticleModuleRequired.h"
 #include "Particles/Light/ParticleModuleLight.h"
 #include "Particles/Spawn/ParticleModuleSpawn.h"
@@ -15,8 +15,8 @@
 #include "Particles/TypeData/ParticleModuleTypeDataRibbon.h"
 #include "Particles/TypeData/ParticleModuleTypeDataBeam2.h"
 #include "Particles/TypeData/ParticleModuleTypeDataAnimTrail.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CollectionManagerTypes.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
@@ -77,11 +77,13 @@ bool UParticleSystemAuditCommandlet::ProcessParticleSystems()
 	Filter.PackagePaths = PackagePaths;
 	Filter.bRecursivePaths = true;
 
-	Filter.ClassNames.Add(UParticleSystem::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UParticleSystem::StaticClass()->GetClassPathName());
 	if (!FilterCollection.IsEmpty())
 	{
 		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		CollectionManagerModule.Get().GetObjectsInCollection(FName(*FilterCollection), ECollectionShareType::CST_All, Filter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	TArray<FAssetData> AssetList;
@@ -102,7 +104,7 @@ bool UParticleSystemAuditCommandlet::ProcessParticleSystems()
 	UPackage* CurrentPackage = NULL;
 	for (const FAssetData& AssetIt : AssetList)
 	{
-		const FString PSysName = AssetIt.ObjectPath.ToString();
+		const FString PSysName = AssetIt.GetObjectPathString();
 		const FString PackageName = AssetIt.PackageName.ToString();
 
 		if (PackageName.StartsWith(DevelopersFolder))

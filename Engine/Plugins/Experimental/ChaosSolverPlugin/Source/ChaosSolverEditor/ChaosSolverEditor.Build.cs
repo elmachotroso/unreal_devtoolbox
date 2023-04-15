@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
         public ChaosSolverEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add("ChaosSolverEditor/Private");
-            PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -20,7 +17,6 @@ namespace UnrealBuildTool.Rules
 					"EditorFramework",
                     "UnrealEd",
                     "PropertyEditor",
-                    "EditorStyle",
                     "RenderCore",
                     "RHI",
                     "ChaosSolverEngine",
@@ -28,6 +24,13 @@ namespace UnrealBuildTool.Rules
                     "AssetTools",
                     "AssetRegistry",
 					"ToolMenus",
+				}
+				);
+
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"EditorStyle",
 				}
 				);
 

@@ -10,7 +10,7 @@ public class SessionFrontend : ModuleRules
 			new string[] {
 				"Core",
 				"Slate",
-                "EditorStyle",
+                
 			}
 		);
 
@@ -41,16 +41,6 @@ public class SessionFrontend : ModuleRules
 			new string[] {
 				"Messaging",
 				"TargetDeviceServices",
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Developer/SessionFrontend/Private",
-				"Developer/SessionFrontend/Private/Models",
-				"Developer/SessionFrontend/Private/Widgets",
-				"Developer/SessionFrontend/Private/Widgets/Browser",
-				"Developer/SessionFrontend/Private/Widgets/Console",
 			}
 		);
 	}

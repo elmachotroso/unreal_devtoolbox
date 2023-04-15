@@ -2,24 +2,41 @@
 
 #pragma once
 
-#include "GenericPlatform/GenericPlatformFile.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Parse.h"
-#include "Misc/Paths.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/CommandLine.h"
-#include "Misc/ScopeLock.h"
-#include "Misc/ScopeRWLock.h"
-#include "Math/UnrealMathUtility.h"
-#include "Containers/UnrealString.h"
-#include "Logging/LogMacros.h"
-#include "Templates/UniquePtr.h"
-#include "Async/Async.h"
 #include "Algo/Find.h"
 #include "Algo/IndexOf.h"
+#include "Async/Async.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformString.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/ScopeRWLock.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+
 #include <atomic>
 
-DECLARE_LOG_CATEGORY_EXTERN(LogPlatformFileManagedStorage, Display, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogPlatformFileManagedStorage, Log, All);
 
 namespace ManagedStorageInternal
 {
@@ -207,7 +224,7 @@ public:
 			FWriteScopeLock ScopeLock(FileSizesLock);
 			FileSizes.AddByHash(KeyHash, Filename, FileSize);
 
-			UE_LOG(LogPlatformFileManagedStorage, Log, TEXT("File %s is added to category %s"), *Filename, *CategoryName);
+			UE_LOG(LogPlatformFileManagedStorage, Verbose, TEXT("File %s is added to category %s"), *Filename, *CategoryName);
 		}
 
 		return Result;
@@ -224,7 +241,7 @@ public:
 
 			UsedQuota -= OldSize;
 
-			UE_LOG(LogPlatformFileManagedStorage, Log, TEXT("File %s is removed from category %s"), *Filename, *CategoryName);
+			UE_LOG(LogPlatformFileManagedStorage, Verbose, TEXT("File %s is removed from category %s"), *Filename, *CategoryName);
 
 			return true;
 		}
@@ -340,7 +357,8 @@ public:
 		// FPersistentStorageManager depends on FPaths which depends on the command line being initialized.
 		// FPersistentStorageManager depends on GConfig.
 		// FPersistentStorageManager can't be constructed until its dependencies are ready
-		return GConfig && GConfig->IsReadyForUse() && FCommandLine::IsInitialized();
+		// FPersistentStorageManager will try and allocate memory during a crash but this could hang during log file flushing
+		return GConfig && GConfig->IsReadyForUse() && FCommandLine::IsInitialized() && !GIsCriticalError;
 	}
 
 	/** Singleton access **/
@@ -375,9 +393,18 @@ public:
 
 							// This must be done under the lock because another thread may be modifying or deleting the file while we scan
 							FFileStatData StatData = IPlatformFile::GetPlatformPhysical().GetStatData(FilenameOrDirectory);
-							if (ensure(StatData.bIsValid))
+							if (ensureAlways(StatData.bIsValid))
 							{
+								if (!ensureAlways(StatData.FileSize >= 0))
+								{
+									UE_LOG(LogPlatformFileManagedStorage, Error, TEXT("Invalid File Size for %s!"), FilenameOrDirectory);
+								}
+								
 								Man.AddOrUpdateFile(File, StatData.FileSize);
+							}
+							else
+							{
+								UE_LOG(LogPlatformFileManagedStorage, Error, TEXT("Invalid Stat Data for %s!"), FilenameOrDirectory);
 							}
 						}
 					}
@@ -390,10 +417,12 @@ public:
 
 			for (const FString& RootDir : FPersistentStorageManager::Get().GetRootDirectories())
 			{
-				UE_LOG(LogPlatformFileManagedStorage, Log, TEXT("Scan directory %s"), *RootDir);
+				UE_LOG(LogPlatformFileManagedStorage, Display, TEXT("Scan directory %s"), *RootDir);
 
 				IPlatformFile::GetPlatformPhysical().IterateDirectoryRecursively(*RootDir, Visitor);
 			}
+
+			UE_LOG(LogPlatformFileManagedStorage, Display, TEXT("Done scanning root directories"));
 		});
 
 		bInitialized = true;
@@ -866,13 +895,13 @@ public:
 		FManagedStorageScopeFileLock ScopeFileLockTo(ManagedTo);
 		FManagedStorageScopeFileLock ScopeFileLockFrom(ManagedFrom);
 
-		int64 Size = this->FileSize(From);
-		if (Size < 0)
+		const int64 SizeFrom = this->FileSize(From);
+		if (SizeFrom < 0)
 		{
 			return false;
 		}
 
-		EPersistentStorageManagerFileSizeFlags Result = Manager.AddOrUpdateFile(ManagedTo, Size, EPersistentStorageManagerFileSizeFlags::OnlyUpdateIfLess | EPersistentStorageManagerFileSizeFlags::RespectQuota);
+		EPersistentStorageManagerFileSizeFlags Result = Manager.AddOrUpdateFile(ManagedTo, SizeFrom, EPersistentStorageManagerFileSizeFlags::OnlyUpdateIfLess | EPersistentStorageManagerFileSizeFlags::RespectQuota);
 		if (EnumHasAnyFlags(Result, EPersistentStorageManagerFileSizeFlags::RespectQuota))
 		{
 			UE_LOG(LogPlatformFileManagedStorage, Error, TEXT("Failed to move file to %s.  The target category of the destination has reach quota limit in peristent storage."), To);
@@ -883,11 +912,37 @@ public:
 		if (bSuccess)
 		{
 			Manager.RemoveFileFromManager(ManagedFrom);
-			Manager.AddOrUpdateFile(ManagedTo, Size);
+			Manager.AddOrUpdateFile(ManagedTo, SizeFrom);
 		}
 		else
 		{
-			Manager.RemoveFileFromManager(ManagedTo);
+			// On some implementations MoveFile can operate across volumes, so don't make assumptions about the state of
+			// of the file system in the case of failure.
+
+			if (ManagedFrom && !this->FileExists(From))
+			{
+				Manager.RemoveFileFromManager(ManagedFrom);
+			}
+
+			if (ManagedTo)
+			{
+				if (!this->FileExists(To))
+				{
+					Manager.RemoveFileFromManager(ManagedTo);
+				}
+				else
+				{
+					const int64 SizeTo = this->FileSize(To);
+					if (ensureAlways(SizeTo >= 0))
+					{
+						Manager.AddOrUpdateFile(ManagedTo, SizeTo);
+					}
+					else
+					{
+						Manager.RemoveFileFromManager(ManagedTo);
+					}
+				}
+			}
 		}
 
 		return bSuccess;
@@ -954,13 +1009,13 @@ public:
 		FManagedStorageScopeFileLock ScopeFileLockTo(ManagedTo);
 		FManagedStorageScopeFileLock ScopeFileLockFrom(ManagedFrom);
 
-		int64 Size = this->FileSize(From);
-		if (Size < 0)
+		const int64 SizeFrom = this->FileSize(From);
+		if (SizeFrom < 0)
 		{
 			return false;
 		}
 
-		EPersistentStorageManagerFileSizeFlags Result = Manager.AddOrUpdateFile(ManagedTo, Size, EPersistentStorageManagerFileSizeFlags::OnlyUpdateIfLess | EPersistentStorageManagerFileSizeFlags::RespectQuota);
+		EPersistentStorageManagerFileSizeFlags Result = Manager.AddOrUpdateFile(ManagedTo, SizeFrom, EPersistentStorageManagerFileSizeFlags::OnlyUpdateIfLess | EPersistentStorageManagerFileSizeFlags::RespectQuota);
 		if (EnumHasAnyFlags(Result, EPersistentStorageManagerFileSizeFlags::RespectQuota))
 		{
 			UE_LOG(LogPlatformFileManagedStorage, Error, TEXT("Failed to copy file to %s.  The category of the destination has reach quota limit in peristent storage."), To);
@@ -970,9 +1025,9 @@ public:
 		bool bSuccess = BaseClass::CopyFile(To, From, ReadFlags, WriteFlags);
 		if (bSuccess)
 		{
-			Manager.AddOrUpdateFile(ManagedTo, Size);
+			Manager.AddOrUpdateFile(ManagedTo, SizeFrom);
 		}
-		else
+		else if(ManagedTo)
 		{
 			if (!this->FileExists(To))
 			{
@@ -980,14 +1035,14 @@ public:
 			}
 			else
 			{
-				Size = this->FileSize(To);
-				if (Size < 0)
+				const int64 SizeTo = this->FileSize(To);
+				if (ensureAlways(SizeTo >= 0))
 				{
-					Manager.RemoveFileFromManager(ManagedTo);
+					Manager.AddOrUpdateFile(ManagedTo, SizeTo);
 				}
 				else
 				{
-					Manager.AddOrUpdateFile(ManagedTo, Size);
+					Manager.RemoveFileFromManager(ManagedTo);
 				}
 			}
 		}

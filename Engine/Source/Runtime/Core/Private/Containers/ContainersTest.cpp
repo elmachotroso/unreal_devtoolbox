@@ -2,6 +2,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Concepts/EqualityComparable.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
@@ -237,6 +238,15 @@ namespace
 	}
 
 	template <typename Container>
+	void CheckContainerSelfEquality(Container& Cont)
+	{
+		if constexpr (TModels<CEqualityComparable, Container>::Value)
+		{
+			check(Cont == Cont);
+		}
+	}
+
+	template <typename Container>
 	void CheckContainerNum(Container& Cont)
 	{
 		int32 Count = 0;
@@ -302,42 +312,95 @@ namespace
 	{
 		ContainerType Cont;
 
+		int32 MaxNum = 0;
+		SIZE_T MaxAllocatedSize = 0;
+		const SIZE_T InitialAllocatedSize = Cont.GetAllocatedSize();
+
 		ContainerTestStats.Reset();
+
+		auto CheckContainer = [&Cont]()
+		{
+			CheckContainerNum(Cont);
+			CheckContainerEnds(Cont);
+			CheckContainerElements(Cont);
+			CheckContainerSelfEquality(Cont);
+		};
+
+		// Test Add and Remove
 		// Subtract one to account for temporaries that will be created during an Add
 		for (int32 Count = 0; Count < MAX_TEST_OBJECTS - 1; Count += MAX_TEST_OBJECTS_STEP)
 		{
 			for (int32 N = 0; N != Count; ++N)
 			{
 				Cont.Add(GenerateTestKey<KeyType>(N), FContainerTestValueType(TEXT("New Value")));
-				CheckContainerNum(Cont);
-				CheckContainerEnds(Cont);
-				CheckContainerElements(Cont);
+				CheckContainer();
 			}
+			MaxNum = Cont.Num();
+			MaxAllocatedSize = Cont.GetAllocatedSize();
 
 			for (int32 N = 0; N != Count; ++N)
 			{
 				Cont.Remove(GenerateTestKey<KeyType>(N));
-				CheckContainerNum(Cont);
-				CheckContainerEnds(Cont);
-				CheckContainerElements(Cont);
+				CheckContainer();
 			}
+
+			check(Cont.IsEmpty());
 
 			for (int32 N = 0; N != Count; ++N)
 			{
 				Cont.Add(GenerateTestKey<KeyType>((Count - 1) - N), FContainerTestValueType(TEXT("New Value")));
-				CheckContainerNum(Cont);
-				CheckContainerEnds(Cont);
-				CheckContainerElements(Cont);
+				CheckContainer();
 			}
 
 			for (int32 N = 0; N != Count; ++N)
 			{
 				Cont.Remove(GenerateTestKey<KeyType>(N));
-				CheckContainerNum(Cont);
-				CheckContainerEnds(Cont);
-				CheckContainerElements(Cont);
+				CheckContainer();
 			}
+
+			check(Cont.IsEmpty());
 		}
+
+		// Test Empty and Shrink 
+		{
+			// Test releasing memory allocations
+			Cont.Empty();
+			CheckContainer();
+			check(Cont.GetAllocatedSize() == InitialAllocatedSize);
+
+			// Test integrity after re-growing container to MaxNum elements again
+			for (int32 N = 0; N < MaxNum; ++N)
+			{
+				Cont.Add(GenerateTestKey<KeyType>(N), FContainerTestValueType(TEXT("New Value")));
+			}
+			CheckContainer();
+			check(Cont.GetAllocatedSize() == MaxAllocatedSize);
+
+			// Test data integrity while removing and shrinking continously
+			{
+				SIZE_T PrevAllocatedSize = Cont.GetAllocatedSize();
+				for (int32 N = MaxNum - 1; N >= MaxNum / 4; --N)
+				{
+					Cont.Remove(GenerateTestKey<KeyType>(N));
+					Cont.Shrink();
+					CheckContainer();
+					check(Cont.GetAllocatedSize() <= PrevAllocatedSize);
+					PrevAllocatedSize = Cont.GetAllocatedSize();
+				}
+			}
+
+			// Test removing and releasing remaining elements
+			Cont.Empty();
+			check(Cont.IsEmpty());
+			check(Cont.GetAllocatedSize() == InitialAllocatedSize);
+		}
+	}
+
+	template <typename Container>
+	void RunEmptyContainerSelfEqualityTest()
+	{
+		Container Cont;
+		CheckContainerSelfEquality(Cont);
 	}
 
 	template <typename ContainerType, typename KeyType>
@@ -490,6 +553,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FContainersSmokeTest, "System.Core.Containers.S
 bool FContainersSmokeTest::RunTest( const FString& Parameters )
 {
 	RunContainerTests<TMap<int32, FContainerTestValueType>, int32>();
+	RunContainerTests<TMap<int32, FContainerTestValueType, TInlineSetAllocator<32>>, int32>();
+	RunContainerTests<TMap<int32, FContainerTestValueType, TFixedSetAllocator<64>>, int32>();
 
 	return true;
 }
@@ -500,13 +565,17 @@ bool FContainersFullTest::RunTest(const FString& Parameters)
 	RunContainerTests<TMap<int32, FContainerTestValueType>, int32>();
 	RunContainerTests<TMap<FName, FContainerTestValueType>, FName>();
 	RunContainerTests<TMap<FString, FContainerTestValueType>, FString>();
+	RunContainerTests<TMap<int32, FContainerTestValueType, TInlineSetAllocator<32>>, int32>();
 	RunContainerTests<TMap<int32, FContainerTestValueType, TInlineSetAllocator<64>>, int32>();
+	RunContainerTests<TMap<int32, FContainerTestValueType, TFixedSetAllocator<64>>, int32>();
 	RunContainerTests<TMap<FString, FContainerTestValueType, FDefaultSetAllocator, FCaseSensitiveLookupKeyFuncs<FContainerTestValueType>>, FString>();
 
 	RunContainerTests<TSortedMap<int32, FContainerTestValueType>, int32>();
 	RunContainerTests<TSortedMap<FName, FContainerTestValueType, FDefaultAllocator, FNameLexicalLess>, FName>();
 	RunContainerTests<TSortedMap<FString, FContainerTestValueType>, FString>();
 	RunContainerTests<TSortedMap<FString, FContainerTestValueType, TInlineAllocator<64>>, FString>();
+
+	RunEmptyContainerSelfEqualityTest<TArray<int32>>();
 
 	// Verify use of FName index sorter with SortedMap
 

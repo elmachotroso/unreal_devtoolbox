@@ -9,6 +9,8 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueTranslator)
+
 DEFINE_LOG_CATEGORY_STATIC(LogGameplayCueTranslator, Display, All);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -279,7 +281,7 @@ bool FGameplayCueTranslationManager::BuildTagTranslationTable_r(const FName& Tag
 							SwappedNames = SplitNames;
 
 							// Remove the "To Names" from the SwappedNames array, replace with the single "From Name"
-							// E.g, GC.{Steel.Master} -> GC.{Hero}
+							// E.g, GC.{Steel.Primary} -> GC.{Hero}
 							int32 NumRemoves = SwapRule.ToNames.Num(); // We are going to remove as many tags 
 							int32 RemoveAtIdx = TagIdx - (SwapRule.ToNames.Num() - 1);
 							check(SwappedNames.IsValidIndex(RemoveAtIdx));
@@ -329,7 +331,7 @@ bool FGameplayCueTranslationManager::BuildTagTranslationTable_r(const FName& Tag
 								UE_LOG(LogGameplayCueTranslator, Log, TEXT("   Matches real tags! Adding to translation tree"));
 
 								FGameplayCueTranslatorNodeIndex ChildIdx = GetTranslationIndexForName(TagName, true);
-								ensure(ChildIdx != INDEX_NONE);
+								ensure(ChildIdx.IsValid());
 
 								// Note: important to do this after getting ChildIdx since allocating idx can move TranslationMap memory around
 								FGameplayCueTranslatorNode& ParentNode = TranslationLUT[ParentIdx];
@@ -520,11 +522,11 @@ bool FGameplayCueTranslationManager::TranslateTag_Internal(FGameplayCueTranslato
 
 			// Use the link's NodeLookup to get the real NodeIndex
 			FGameplayCueTranslatorNodeIndex NodeIndex = Link.NodeLookup[TranslationIndex];
-			if (NodeIndex != INDEX_NONE)
+			if (NodeIndex.IsValid())
 			{
 				if (TranslationLUT.IsValidIndex(NodeIndex) == false)
 				{
-					UE_LOG(LogGameplayCueTranslator, Error, TEXT("FGameplayCueTranslationManager::TranslateTag_Internal %s invalid index %d was returned from NodeLookup. NodeLookup.Num=%d. Tag %s"), *GetNameSafe(Link.RulesCDO), NodeIndex, TranslationLUT.Num(), *TagName.ToString());
+					UE_LOG(LogGameplayCueTranslator, Error, TEXT("FGameplayCueTranslationManager::TranslateTag_Internal %s invalid index %d was returned from NodeLookup. NodeLookup.Num=%d. Tag %s"), *GetNameSafe(Link.RulesCDO), NodeIndex.Index, TranslationLUT.Num(), *TagName.ToString());
 					continue;
 				}
 
@@ -608,7 +610,7 @@ bool FGameplayCueTranslationManager::GetTranslatedTags(const FName& ParentTag, T
 			for (int32 LinkIdx=0; LinkIdx < Link.NodeLookup.Num(); ++LinkIdx)
 			{
 				const FGameplayCueTranslatorNodeIndex& Index = Link.NodeLookup[LinkIdx];
-				if (Index != INDEX_NONE)
+				if (Index.IsValid())
 				{
 					FGameplayCueTranslatorNode& ChildNode = TranslationLUT[Index];
 
@@ -683,3 +685,4 @@ FGameplayTag FGameplayCueTranslationManager::SearchSlowForTranslationParent(FGam
 	return FGameplayTag();
 }
 #endif
+

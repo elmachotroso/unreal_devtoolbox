@@ -21,6 +21,7 @@
 #include "Sound/SoundNodeWavePlayer.h"
 #include "GameFramework/GameUserSettings.h"
 #include "AudioCompressionSettingsUtils.h"
+#include "AudioDevice.h"
 #include "AudioThread.h"
 #include "DSP/Dsp.h"
 #if WITH_EDITOR
@@ -35,6 +36,9 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "AudioCompressionSettings.h"
 #include "Sound/AudioSettings.h"
+#include "Templates/SharedPointer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundCue)
 
 /*-----------------------------------------------------------------------------
 	USoundCue implementation.
@@ -169,7 +173,7 @@ void USoundCue::Serialize(FStructuredArchive::FRecord Record)
 
 	if (UnderlyingArchive.UEVer() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
 	{
-		FStripDataFlags StripFlags(Record.EnterField(SA_FIELD_NAME(TEXT("SoundCueStripFlags"))));
+		FStripDataFlags StripFlags(Record.EnterField(TEXT("SoundCueStripFlags")));
 #if WITH_EDITORONLY_DATA
 		if (!StripFlags.IsEditorDataStripped())
 		{
@@ -213,7 +217,7 @@ void USoundCue::PostLoad()
 
 	// Warn if the Quality index is set to something that we can't support.
 	UE_CLOG(USoundCue::GetCachedQualityLevel() != CookedQualityIndex && CookedQualityIndex != INDEX_NONE, LogAudio, Verbose,
-		TEXT("'%s' is ingoring Quality Setting '%s'(%d) as it was cooked with '%s'(%d)"),
+		TEXT("'%s' is igoring Quality Setting '%s'(%d) as it was cooked with '%s'(%d)"),
 		*GetFullNameSafe(this),
 		*GetDefault<UAudioSettings>()->FindQualityNameByIndex(USoundCue::GetCachedQualityLevel()),
 		USoundCue::GetCachedQualityLevel(),
@@ -345,7 +349,7 @@ float USoundCue::FindMaxDistanceInternal() const
 	{
 		if (!Settings->bAttenuate)
 		{
-			return WORLD_MAX;
+			return FAudioDevice::GetMaxWorldDistance();
 		}
 
 		OutMaxDistance = FMath::Max(OutMaxDistance, Settings->GetMaxDimension());
@@ -356,7 +360,7 @@ float USoundCue::FindMaxDistanceInternal() const
 		OutMaxDistance = FMath::Max(OutMaxDistance, FirstNode->GetMaxDistance());
 	}
 
-	if (OutMaxDistance > KINDA_SMALL_NUMBER)
+	if (OutMaxDistance > UE_KINDA_SMALL_NUMBER)
 	{
 		return OutMaxDistance;
 	}
@@ -564,7 +568,7 @@ float USoundCue::GetMaxDistance() const
 float USoundCue::GetDuration() const
 {
 	// Always recalc the duration when in the editor as it could change
-	if (GIsEditor || (Duration < SMALL_NUMBER) || HasDelayNode())
+	if (GIsEditor || (Duration < UE_SMALL_NUMBER) || HasDelayNode())
 	{
 		// This needs to be cached here vs an earlier point due to the need to parse sound cues and load order issues.
 		// Alternative is to make getters not const, this is preferable. 
@@ -708,6 +712,44 @@ bool USoundCue::HasCookedAmplitudeEnvelopeData() const
 	return false;
 }
 
+TSharedPtr<Audio::IParameterTransmitter> USoundCue::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
+{
+	class FSoundCueParameterTransmitter : public Audio::FParameterTransmitterBase
+	{
+	public:
+		FSoundCueParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams)
+			: Audio::FParameterTransmitterBase(MoveTemp(InParams.DefaultParams))
+		{
+		}
+
+		virtual ~FSoundCueParameterTransmitter() = default;
+
+		TArray<UObject*> GetReferencedObjects() const override
+		{
+			TArray<UObject*> Objects;
+			for (const FAudioParameter& Param : AudioParameters)
+			{
+				if (Param.ObjectParam)
+				{
+					Objects.Add(Param.ObjectParam);
+				}
+
+				for (UObject* Object : Param.ArrayObjectParam)
+				{
+					if (Object)
+					{
+						Objects.Add(Object);
+					}
+				}
+			}
+
+			return Objects;
+		}
+	};
+
+	return MakeShared<FSoundCueParameterTransmitter>(MoveTemp(InParams));
+}
+
 #if WITH_EDITOR
 UEdGraph* USoundCue::GetGraph()
 {
@@ -780,3 +822,4 @@ TSharedPtr<ISoundCueAudioEditor> USoundCue::GetSoundCueAudioEditor()
 	return SoundCueAudioEditor;
 }
 #endif // WITH_EDITOR
+

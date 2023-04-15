@@ -2,6 +2,8 @@
 
 #include "WmfMediaSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WmfMediaSettings)
+
 UWmfMediaSettings::UWmfMediaSettings()
 	: AllowNonStandardCodecs(false)
 	, LowLatency(false)
@@ -12,34 +14,6 @@ UWmfMediaSettings::UWmfMediaSettings()
 
 void UWmfMediaSettings::EnableHardwareAcceleratedCodecRegistered()
 {
-	if (bAreHardwareAcceleratedCodecRegistered == false)
-	{
-		bAreHardwareAcceleratedCodecRegistered = true;
-		AllowNonStandardCodecs = true;
-		HardwareAcceleratedVideoDecoding = true;
-#if WITH_EDITOR
-		SaveConfig(CPF_Config, *GetDefaultConfigFilename());
-#endif
-	}
+	bAreHardwareAcceleratedCodecRegistered = true;
 }
-
-#if WITH_EDITOR
-
-bool UWmfMediaSettings::CanEditChange(const FProperty* InProperty) const
-{
-	if (!Super::CanEditChange(InProperty))
-	{
-		return false;
-	}
-
-	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UWmfMediaSettings, AllowNonStandardCodecs) || 
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UWmfMediaSettings, HardwareAcceleratedVideoDecoding))
-	{
-		return !(bAreHardwareAcceleratedCodecRegistered);
-	}
-
-	return true;
-}
-
-#endif //WITH_EDITOR
 

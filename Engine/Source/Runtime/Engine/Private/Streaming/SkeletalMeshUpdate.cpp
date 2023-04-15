@@ -60,6 +60,7 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_RenderThread
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_RenderThread();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_RenderThread();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_RenderThread();
+	MorphBuffer = LODResource.MorphTargetVertexInfoBuffers.CreateMorphRHIBuffer_RenderThread();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkeletalMeshLODRenderData& LODResource)
@@ -73,6 +74,7 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkele
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_Async();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_Async();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_Async();
+	MorphBuffer = LODResource.MorphTargetVertexInfoBuffers.CreateMorphRHIBuffer_Async();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
@@ -86,6 +88,7 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	ClothVertexBuffer.SafeRelease();
 	IndexBuffer.SafeRelease();
 	AltSkinWeightVertexBuffers.Empty();
+	MorphBuffer.SafeRelease();
 }
 
 template <uint32 MaxNumUpdates>
@@ -99,6 +102,7 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::TransferBuffers(FSkeletalMeshL
 	LODResource.ClothVertexBuffer.InitRHIForStreaming(ClothVertexBuffer, Batcher);
 	LODResource.MultiSizeIndexContainer.InitRHIForStreaming(IndexBuffer, Batcher);
 	LODResource.SkinWeightProfilesData.InitRHIForStreaming(AltSkinWeightVertexBuffers, Batcher);
+	LODResource.MorphTargetVertexInfoBuffers.InitRHIForStreaming(MorphBuffer, Batcher);
 	SafeRelease();
 }
 
@@ -112,7 +116,8 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CheckIsNull() const
 		&& !SkinWeightVertexBuffer.LookupVertexBufferRHI
 		&& !ClothVertexBuffer
 		&& !IndexBuffer
-		&& !AltSkinWeightVertexBuffers.Num());
+		&& !AltSkinWeightVertexBuffers.Num()
+		&& !MorphBuffer);
 }
 
 FSkeletalMeshStreamIn::FSkeletalMeshStreamIn(const USkeletalMesh* InMesh)
@@ -356,6 +361,7 @@ void FSkeletalMeshStreamOut::ReleaseBuffers(const FContext& Context)
 			LODResource.ClothVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			LODResource.MultiSizeIndexContainer.ReleaseRHIForStreaming(Batcher);
 			LODResource.SkinWeightProfilesData.ReleaseRHIForStreaming(Batcher);
+			LODResource.MorphTargetVertexInfoBuffers.ReleaseRHIForStreaming(Batcher);
 
 			if (!FPlatformProperties::HasEditorOnlyData())
 			{
@@ -398,7 +404,6 @@ void FSkeletalMeshStreamIn_IO::FCancelIORequestsTask::DoWork()
 
 FSkeletalMeshStreamIn_IO::FSkeletalMeshStreamIn_IO(const USkeletalMesh* InMesh, bool bHighPrio)
 	: FSkeletalMeshStreamIn(InMesh)
-	, IORequest(nullptr)
 	, bHighPrioIORequest(bHighPrio)
 {}
 
@@ -408,7 +413,7 @@ void FSkeletalMeshStreamIn_IO::Abort()
 	{
 		FSkeletalMeshStreamIn::Abort();
 
-		if (IORequest != nullptr)
+		if (BulkDataRequest.IsPending())
 		{
 			// Prevent the update from being considered done before this is finished.
 			// By checking that it was not already cancelled, we make sure this doesn't get called twice.
@@ -417,65 +422,57 @@ void FSkeletalMeshStreamIn_IO::Abort()
 	}
 }
 
-void FSkeletalMeshStreamIn_IO::SetAsyncFileCallback(const FContext& Context)
-{
-	AsyncFileCallback = [this, Context](bool bWasCancelled, IBulkDataIORequest*)
-	{
-		// At this point task synchronization would hold the number of pending requests.
-		TaskSynchronization.Decrement();
-
-		if (bWasCancelled)
-		{
-			// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
-			if (!bIsCancelled)
-			{
-				bFailedOnIOError = true;
-			}
-			MarkAsCancelled();
-		}
-
-#if !UE_BUILD_SHIPPING
-		// On some platforms the IO is too fast to test cancelation requests timing issues.
-		if (FRenderAssetStreamingSettings::ExtraIOLatency > 0 && TaskSynchronization.GetValue() == 0)
-		{
-			FPlatformProcess::Sleep(FRenderAssetStreamingSettings::ExtraIOLatency * .001f); // Slow down the streaming.
-		}
-#endif
-
-		// The tick here is intended to schedule the success or cancel callback.
-		// Using TT_None ensure gets which could create a dead lock.
-		Tick(FSkeletalMeshUpdate::TT_None);
-	};
-}
-
 void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 {
 	if (IsCancelled())
 	{
 		return;
 	}
-	check(!IORequest && PendingFirstLODIdx < CurrentFirstLODIdx);
+	check(BulkDataRequest.IsNone() && PendingFirstLODIdx < CurrentFirstLODIdx);
 
 	const USkeletalMesh* Mesh = Context.Mesh;
 	FSkeletalMeshRenderData* RenderData = Context.RenderData;
 	if (Mesh && RenderData)
 	{
-		SetAsyncFileCallback(Context);
-
-		FBulkDataInterface::BulkDataRangeArray BulkDataArray;
+		const int32 BatchCount = CurrentFirstLODIdx - PendingFirstLODIdx;
+		FBulkDataBatchRequest::FScatterGatherBuilder Batch = FBulkDataBatchRequest::ScatterGather(BatchCount);
 		for (int32 Index = PendingFirstLODIdx; Index < CurrentFirstLODIdx; ++Index)
 		{
-			BulkDataArray.Push(&Context.LODResourcesView[Index]->StreamingBulkData);
+			Batch.Read(Context.LODResourcesView[Index]->StreamingBulkData);
 		}
 
 		// Increment as we push the request. If a request complete immediately, then it will call the callback
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
 
-		IORequest = FBulkDataInterface::CreateStreamingRequestForRange(
-			BulkDataArray,
-			bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low,
-			&AsyncFileCallback);
+		const EAsyncIOPriorityAndFlags Priority = bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low;
+		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
+		{
+			// At this point task synchronization would hold the number of pending requests.
+			TaskSynchronization.Decrement();
+
+			if (FBulkDataRequest::EStatus::Cancelled == Status)
+			{
+				// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
+				if (!bIsCancelled)
+				{
+					bFailedOnIOError = true;
+				}
+				MarkAsCancelled();
+			}
+
+#if !UE_BUILD_SHIPPING
+			// On some platforms the IO is too fast to test cancelation requests timing issues.
+			if (FRenderAssetStreamingSettings::ExtraIOLatency > 0 && TaskSynchronization.GetValue() == 0)
+			{
+				FPlatformProcess::Sleep(FRenderAssetStreamingSettings::ExtraIOLatency * .001f); // Slow down the streaming.
+			}
+#endif
+			// The tick here is intended to schedule the success or cancel callback.
+			// Using TT_None ensure gets which could create a dead lock.
+			Tick(FSkeletalMeshUpdate::TT_None);
+		},
+		BulkDataRequest);
 	}
 	else
 	{
@@ -485,17 +482,14 @@ void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 
 void FSkeletalMeshStreamIn_IO::ClearIORequest(const FContext& Context)
 {
-	if (IORequest != nullptr)
+	if (BulkDataRequest.IsPending())
 	{
-		// If clearing requests not yet completed, cancel and wait.
-		if (!IORequest->PollCompletion())
-		{
-			IORequest->Cancel();
-			IORequest->WaitCompletion();
-		}
-		delete IORequest;
-		IORequest = nullptr;
+		BulkDataRequest.Cancel();
+		BulkDataRequest.Wait();
 	}
+	
+	BulkDataRequest = FBulkDataBatchRequest();
+	BulkData = FIoBuffer();
 }
 
 void FSkeletalMeshStreamIn_IO::ReportIOError(const FContext& Context)
@@ -522,10 +516,9 @@ void FSkeletalMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 	FSkeletalMeshRenderData* RenderData = Context.RenderData;
 	if (!IsCancelled() && Mesh && RenderData)
 	{
-		check(IORequest->GetSize() >= 0 && IORequest->GetSize() <= TNumericLimits<uint32>::Max());
+		check(BulkData.GetSize() >= 0 && BulkData.GetSize() <= TNumericLimits<uint32>::Max());
 
-		TArrayView<uint8> Data(IORequest->GetReadResults(), IORequest->GetSize());
-		FMemoryReaderView Ar(Data, true);
+		FMemoryReaderView Ar(BulkData.GetView(), true);
 		for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 		{
 			FSkeletalMeshLODRenderData& LODResource = *Context.LODResourcesView[LODIndex];
@@ -535,7 +528,7 @@ void FSkeletalMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 			LODResource.SerializeStreamedData(Ar, const_cast<USkeletalMesh*>(Mesh), LODIndex + Context.AssetLODBias, DummyStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
 		}
 
-		FMemory::Free(Data.GetData()); // Free the memory we took ownership of via IORequest->GetReadResults()
+		BulkData = FIoBuffer();
 	}
 }
 
@@ -547,10 +540,9 @@ void FSkeletalMeshStreamIn_IO::Cancel(const FContext& Context)
 
 void FSkeletalMeshStreamIn_IO::CancelIORequest()
 {
-	if (IORequest)
+	if (BulkDataRequest.IsPending())
 	{
-		// Calling cancel will trigger the SetAsyncFileCallback() which will also try a tick but will fail.
-		IORequest->Cancel();
+		BulkDataRequest.Cancel();
 	}
 }
 

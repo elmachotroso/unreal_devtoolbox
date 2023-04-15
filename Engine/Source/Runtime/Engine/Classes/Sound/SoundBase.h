@@ -7,6 +7,7 @@
 #include "IAudioExtensionPlugin.h"
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundClass.h"
+#include "Sound/SoundTimecodeOffset.h"
 #include "SoundConcurrency.h"
 #include "SoundModulationDestination.h"
 #include "SoundSourceBusSend.h"
@@ -73,8 +74,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Sound, meta = (DisplayName = "Class"), AssetRegistrySearchable)
 	TObjectPtr<USoundClass> SoundClassObject;
 
-	/** When "au.debug.Sounds -debug" has been specified, draw this sound's attenuation shape when the sound is audible. For debugging purpose only. */
-	UPROPERTY(EditAnywhere, Category = Developer)
+	/** When "au.3dVisualize.Attenuation" has been specified, draw this sound's attenuation shape when the sound is audible. For debugging purposes only. */
+	UPROPERTY(EditAnywhere, Category = Developer, meta = (DisplayName = "Enable Attenuation Debug"))
 	uint8 bDebug : 1;
 
 	/** Whether or not to override the sound concurrency object with local concurrency settings. */
@@ -196,6 +197,12 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Advanced)
 	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 
+#if WITH_EDITORONLY_DATA	
+private:
+	UPROPERTY()
+	FSoundTimecodeOffset TimecodeOffset;
+#endif //WITH_EDITORONLY_DATA
+
 public:
 	//~ Begin UObject Interface.
 #if WITH_EDITORONLY_DATA
@@ -293,7 +300,7 @@ public:
 	//~ End IInterface_AssetUserData Interface
 
 	/** Called from the Game Thread prior to attempting to pass parameters to the ParameterTransmitter. */
-	virtual void InitParameters(TArray<FAudioParameter>& InParametersToInit, FName InFeatureName);
+	virtual void InitParameters(TArray<FAudioParameter>& ParametersToInit, FName InFeatureName);
 
 	/** Called from the Game Thread prior to attempting to initialize a sound instance. */
 	virtual void InitResources() { }
@@ -303,9 +310,12 @@ public:
 
 	/** Creates a sound generator instance from this sound base. Return true if this is being implemented by a subclass. Sound generators procedurally generate audio in the audio render thread. */
 	virtual ISoundGeneratorPtr CreateSoundGenerator(const FSoundGeneratorInitParams& InParams) { return nullptr; }
+	
+	/** Creates a sound generator instance from this sound base. Return true if this is being implemented by a subclass. Sound generators procedurally generate audio in the audio render thread. */
+	virtual ISoundGeneratorPtr CreateSoundGenerator(const FSoundGeneratorInitParams& InParams, TArray<FAudioParameter>&& InDefaultParameters) { return CreateSoundGenerator(InParams); }
 
 	/** Creates a parameter transmitter for communicating with active sound instances. */
-	virtual TUniquePtr<Audio::IParameterTransmitter> CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const;
+	virtual TSharedPtr<Audio::IParameterTransmitter> CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const;
 
 	/** Returns whether parameter is valid input for the given sound */
 	virtual bool IsParameterValid(const FAudioParameter& InParameter) const;
@@ -315,4 +325,9 @@ public:
 
 	/** Whether or not this sound allows submix sends on preview. */
 	virtual bool EnableSubmixSendsOnPreview() const { return false; }
+
+#if WITH_EDITORONLY_DATA
+	void SetTimecodeOffset(const FSoundTimecodeOffset& InTimecodeOffset);
+	TOptional<FSoundTimecodeOffset> GetTimecodeOffset() const;
+#endif //WITH_EDITORONLY_DATA
 };

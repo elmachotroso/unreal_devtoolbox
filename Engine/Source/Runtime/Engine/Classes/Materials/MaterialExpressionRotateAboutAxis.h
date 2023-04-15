@@ -26,7 +26,7 @@ class UMaterialExpressionRotateAboutAxis : public UMaterialExpression
 	UPROPERTY()
 	FExpressionInput Position;
 
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotateAboutAxis)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionRotateAboutAxis, meta = (ShowAsInputPin = "Advanced"))
 	float Period;
 
 
@@ -34,6 +34,7 @@ class UMaterialExpressionRotateAboutAxis : public UMaterialExpression
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif
 	//~ End UMaterialExpression Interface
 

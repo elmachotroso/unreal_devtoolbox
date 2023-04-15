@@ -2,6 +2,8 @@
 
 #include "Slate/SCommonAnimatedSwitcher.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SCommonAnimatedSwitcher)
+
 void SCommonAnimatedSwitcher::Construct(const FArguments& InArgs)
 {
 	SWidgetSwitcher::Construct(SWidgetSwitcher::FArguments().WidgetIndex(InArgs._InitialIndex));
@@ -231,4 +233,9 @@ float SCommonAnimatedSwitcher::GetTransitionProgress() const
 	}
 		
 	return Progress;
+}
+
+bool SCommonAnimatedSwitcher::IsTransitionPlaying() const
+{
+	return TransitionSequence.IsPlaying();
 }

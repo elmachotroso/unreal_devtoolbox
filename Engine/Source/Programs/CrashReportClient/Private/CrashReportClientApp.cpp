@@ -74,6 +74,9 @@ static FString GameNameFromCmd;
 /** GUID of the crash passed via the command line. */
 static FString CrashGUIDFromCmd;
 
+/** When the application invoking CRC cannot be restarted, force hiding the submit and restart button. */
+static bool bForceHideSubmitAndRestartButtonFromCmd = false;
+
 /** If we are implicitly sending its assumed we are also unattended for now */
 static bool bImplicitSendFromCmd = false;
 /** If we want to enable analytics */
@@ -165,6 +168,11 @@ void ParseCommandLine(const TCHAR* CommandLine)
 		if (Switches.Contains(TEXT("NoAnalytics")))
 		{
 			AnalyticsEnabledFromCmd = false;
+		}
+
+		if (Switches.Contains(TEXT("HideSubmitAndRestart")))
+		{
+			bForceHideSubmitAndRestartButtonFromCmd = true;
 		}
 
 		CrashGUIDFromCmd = Params.FindRef(TEXT("CrashGUID"));
@@ -309,10 +317,18 @@ SubmitCrashReportResult RunWithUI(FPlatformErrorReport ErrorReport, bool bImplic
 
 	// Open up the app window
 	// bImplicitSend now implies bSimpleDialog i.e. immediately send the report and notify the user without requesting input
-	TSharedRef<SCrashReportClient> ClientControl = SNew(SCrashReportClient, CrashReportClient, bImplicitSend);
+	TSharedRef<SCrashReportClient> ClientControl = SNew(SCrashReportClient, CrashReportClient, bImplicitSend)
+		.bHideSubmitAndRestart(bForceHideSubmitAndRestartButtonFromCmd);
 
 	FString CrashedAppName = FPrimaryCrashProperties::Get()->IsValid() ? FPrimaryCrashProperties::Get()->GameName : TEXT("");
-	CrashedAppName.RemoveFromStart(TEXT("UE4-"));
+	// GameNames have taken on a number of prefixes over the years. Try to strip them all off.
+	if (!CrashedAppName.RemoveFromStart(TEXT("UE4-")))
+	{
+		if (!CrashedAppName.RemoveFromStart(TEXT("UE5-")))
+		{
+			CrashedAppName.RemoveFromStart(TEXT("UE-"));
+		}
+	}
 	CrashedAppName.RemoveFromEnd(TEXT("Game"));
 
 	const FString CrashedAppString = NSLOCTEXT("CrashReportClient", "CrashReporterTitle", "Crash Reporter").ToString();
@@ -614,7 +630,7 @@ FPlatformErrorReport CollectErrorReport(FRecoveryService* RecoveryService, uint3
 	if (RecoveryService && 
 		DirectoryExists && 
 		SharedCrashContext.UserSettings.bSendUsageData && 
-		!FGenericCrashContext::IsTypeContinuable(SharedCrashContext.CrashType)
+		!FPlatformCrashContext::IsTypeContinuable(SharedCrashContext.CrashType)
 	{
 		RecoveryService->CollectFiles(ReportDirectoryAbsolutePath);
 	}

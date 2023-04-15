@@ -7,7 +7,7 @@
 #include "Features/IModularFeatures.h"
 #include "Misc/IEngineCrypto.h"
 
-class FPlatformCryptoModularFeature final : public IEngineCrypto
+class FPlatformCryptoModularFeature : public IEngineCrypto
 {
 public:
 
@@ -16,14 +16,14 @@ public:
 		IModularFeatures::Get().RegisterModularFeature(IEngineCrypto::GetFeatureName(), this);
 	}
 
-	~FPlatformCryptoModularFeature()
+	virtual ~FPlatformCryptoModularFeature()
 	{
-		Shutdown();
+		Cleanup();
 	}
 
 	virtual void Shutdown() override
 	{
-		Context.Reset();
+		Cleanup();
 	}
 	
 	/** IEngineCrypto implementation */
@@ -68,6 +68,10 @@ public:
 	}
 
 private:
+	void Cleanup()
+	{
+		Context.Reset();
+	}
 
 	TUniquePtr<FEncryptionContext>& GetContext()
 	{

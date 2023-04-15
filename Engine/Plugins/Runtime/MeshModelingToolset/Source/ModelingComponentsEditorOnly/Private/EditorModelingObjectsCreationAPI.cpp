@@ -27,6 +27,10 @@
 #include "DynamicMeshActor.h"
 #include "Components/DynamicMeshComponent.h"
 
+#include "ActorFactories/ActorFactory.h"
+#include "AssetSelection.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorModelingObjectsCreationAPI)
 
 using namespace UE::Geometry;
 
@@ -140,7 +144,7 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateVolume(FCreateM
 	FActorSpawnParameters SpawnInfo;
 	FTransform NewActorTransform = FTransform::Identity;
 	UClass* VolumeClass = ABlockingVolume::StaticClass();
-	if (CreateMeshParams.TypeHintClass.IsNull() == false
+	if (CreateMeshParams.TypeHintClass
 		&& Cast<AVolume>(CreateMeshParams.TypeHintClass.Get()->GetDefaultObject(false)) != nullptr )
 	{
 		VolumeClass = CreateMeshParams.TypeHintClass;
@@ -287,7 +291,7 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 	AssetOptions.bEnableRecomputeNormals = CreateMeshParams.bEnableRecomputeNormals;
 	AssetOptions.bEnableRecomputeTangents = CreateMeshParams.bEnableRecomputeTangents;
 	AssetOptions.bGenerateNaniteEnabledMesh = CreateMeshParams.bEnableNanite;
-	AssetOptions.NaniteProxyTrianglePercent = CreateMeshParams.NaniteProxyTrianglePercent;
+	AssetOptions.NaniteSettings = CreateMeshParams.NaniteSettings;
 
 	AssetOptions.bCreatePhysicsBody = CreateMeshParams.bEnableCollision;
 	AssetOptions.CollisionType = CreateMeshParams.CollisionMode;
@@ -318,14 +322,23 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 	UStaticMesh* NewStaticMesh = ResultData.StaticMesh;
 
 	// create new StaticMeshActor
-	FRotator Rotation(0.0f, 0.0f, 0.0f);
-	FActorSpawnParameters SpawnInfo;
-	// @todo nothing here is specific to AStaticMeshActor...could we pass in a CDO and clone it instead of using SpawnActor?
-	AStaticMeshActor* StaticMeshActor = CreateMeshParams.TargetWorld->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, Rotation, SpawnInfo);
-	FActorLabelUtilities::SetActorLabelUnique(StaticMeshActor, CreateMeshParams.BaseName);
-	UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
+	AStaticMeshActor* const StaticMeshActor = [NewStaticMesh, &CreateMeshParams]() -> AStaticMeshActor*
+	{
+		if (UActorFactory* const StaticMeshFactory = FActorFactoryAssetProxy::GetFactoryForAssetObject(NewStaticMesh))
+		{
+			AActor* const Actor = StaticMeshFactory->CreateActor(NewStaticMesh, CreateMeshParams.TargetWorld->GetCurrentLevel(), FTransform::Identity);
+			FActorLabelUtilities::SetActorLabelUnique(Actor, CreateMeshParams.BaseName);
+			return Cast<AStaticMeshActor>(Actor);
+		}
+		return nullptr;
+	}();
+	if (!StaticMeshActor)
+	{
+		return FCreateMeshObjectResult{ECreateModelingObjectResult::Failed_ActorCreationFailed};
+	}
 
 	// set the mesh
+	UStaticMeshComponent* const StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
 
 	// this disconnects the component from various events
 	StaticMeshComponent->UnregisterComponent();

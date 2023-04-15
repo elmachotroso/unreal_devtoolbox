@@ -116,7 +116,7 @@ if(${COMPILER_IS_LIKE_GNU})
     set(SPIRV_WARNINGS ${SPIRV_WARNINGS} -Werror)
   endif()
 elseif(MSVC)
-  set(SPIRV_WARNINGS -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS /wd4800)
+  set(SPIRV_WARNINGS -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS /wd4800 /wd4819)
 
   if(${SPIRV_WERROR})
     set(SPIRV_WARNINGS ${SPIRV_WARNINGS} /WX)
@@ -244,8 +244,13 @@ endif()
 
 # Tests require Python3
 # UE Change Begin: Support CMake 3.12+ in finding python3
-find_package(Python3 COMPONENTS Interpreter Development)
-#find_host_package(PythonInterp 3 REQUIRED)
+if(CMAKE_VERSION VERSION_LESS 3.12)
+  find_package(PythonInterp 3 REQUIRED)
+else()
+  find_package(Python3 COMPONENTS Interpreter)
+  set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+endif()
+message("Python3=${PYTHON_EXECUTABLE}")
 # UE Change End: Support CMake 3.12+ in finding python3
 
 # Check for symbol exports on Linux.

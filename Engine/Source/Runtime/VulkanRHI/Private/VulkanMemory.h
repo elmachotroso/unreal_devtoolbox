@@ -24,6 +24,7 @@
 class FVulkanCommandListContext;
 class FVulkanQueue;
 class FVulkanCmdBuffer;
+class FVulkanTexture;
 
 #if !VULKAN_OBJECT_TRACKING
 #define VULKAN_TRACK_OBJECT_CREATE(Type, Ptr) do{}while(0)
@@ -89,15 +90,11 @@ namespace VulkanRHI
 class FVulkanEvictable
 {
 public:
-	virtual void Evict(FVulkanDevice& Device) = 0;
-	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& Allocation) = 0;
-
-	virtual void OnFullDefrag(FVulkanDevice& Device, FVulkanCommandListContext& Context, uint32 NewOffset);
-	
-	virtual struct FVulkanTextureBase* GetTextureBase(){return 0;}
-	virtual bool CanMove(){return true;}
-	virtual bool CanEvict(){return true;}
-	
+	virtual bool CanMove() const { return false; }
+	virtual bool CanEvict() const { return false; }
+	virtual void Evict(FVulkanDevice& Device, FVulkanCommandListContext& Context) { checkNoEntry(); }
+	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& Allocation) { checkNoEntry(); }
+	virtual FVulkanTexture* GetEvictableTexture() { return nullptr; }
 };
 
 
@@ -437,6 +434,8 @@ namespace VulkanRHI
 		TArray<FHeapInfo> HeapInfos;
 
 		int32 PrimaryHeapIndex; // memory usage of this heap will decide when to evict.
+
+		FCriticalSection DeviceMemLock;
 	};
 
 	struct FRange
@@ -630,10 +629,9 @@ namespace VulkanRHI
 	protected:
 		void SetIsDefragging(bool bInIsDefragging){ bIsDefragging = bInIsDefragging; }
 		void DumpFullHeap();
-		bool DefragFull(FVulkanDevice& Device, FVulkanCommandListContext& Context, FVulkanResourceHeap* Heap);
 		int32 DefragTick(FVulkanDevice& Device, FVulkanCommandListContext& Context, FVulkanResourceHeap* Heap, uint32 Count);
 		bool CanDefrag();
-		uint64 EvictToHost(FVulkanDevice& Device);
+		uint64 EvictToHost(FVulkanDevice& Device, FVulkanCommandListContext& Context);
 		void SetFreePending(FVulkanAllocation& Allocation);
 		void FreeInternalData(int32 Index);
 		int32 AllocateInternalData();
@@ -679,8 +677,7 @@ namespace VulkanRHI
 #endif
 		TArray<FVulkanAllocationInternal> InternalData;
 		int32 InternalFreeList= -1;
-		FCriticalSection CS;
-
+		FCriticalSection SubresourceAllocatorCS;
 	};
 
 
@@ -717,7 +714,7 @@ namespace VulkanRHI
 			return MemoryTypeIndex;
 		}
 
-		uint64 EvictOne(FVulkanDevice& Device);
+		uint64 EvictOne(FVulkanDevice& Device, FVulkanCommandListContext& Context);
 		void DefragTick(FVulkanDevice& Device, FVulkanCommandListContext& Context, uint32 Count);
 		void DumpMemory(FResourceHeapStats& Stats);
 
@@ -733,7 +730,7 @@ namespace VulkanRHI
 		uint32 GetPageSize();
 		FMemoryManager* Owner;
 		uint16 MemoryTypeIndex;
-		uint16 HeapIndex;
+		const uint16 HeapIndex;
 
 		bool bIsHostCachedSupported;
 		bool bIsLazilyAllocatedSupported;
@@ -745,6 +742,7 @@ namespace VulkanRHI
 		uint64 UsedMemory;
 		uint32 PageIDCounter;
 
+		FCriticalSection PagesLock;
 		TArray<FVulkanSubresourceAllocator*> ActivePages[MAX_BUCKETS];
 		TArray<FVulkanSubresourceAllocator*> UsedDedicatedImagePages;
 
@@ -775,7 +773,7 @@ namespace VulkanRHI
 		void Init();
 		void Deinit();
 
-		static uint32 CalculateBufferAlignment(FVulkanDevice& InDevice, const VkBufferUsageFlags BufferUsageFlags);
+		static uint32 CalculateBufferAlignment(FVulkanDevice& InDevice, EBufferUsageFlags InUEUsage, bool bZeroSize);
 		static float CalculateBufferPriority(const VkBufferUsageFlags BufferUsageFlags);
 
 		void FreeVulkanAllocation(FVulkanAllocation& Allocation, EVulkanFreeFlags FreeFlags = EVulkanFreeFlag_None);
@@ -785,14 +783,14 @@ namespace VulkanRHI
 		void FreeVulkanAllocationImageDedicated(FVulkanAllocation& Allocation);
 
 
-		bool AllocateBufferPooled(FVulkanAllocation& Allocation, FVulkanEvictable* AllocationOwner, uint32 Size, VkBufferUsageFlags BufferUsageFlags, VkMemoryPropertyFlags MemoryPropertyFlags, EVulkanAllocationMetaType MetaType, const char* File, uint32 Line);
+		bool AllocateBufferPooled(FVulkanAllocation& Allocation, FVulkanEvictable* AllocationOwner, uint32 Size, uint32 MinAlignment, VkBufferUsageFlags BufferUsageFlags, VkMemoryPropertyFlags MemoryPropertyFlags, EVulkanAllocationMetaType MetaType, const char* File, uint32 Line);
 		bool AllocateImageMemory(FVulkanAllocation& Allocation, FVulkanEvictable* AllocationOwner, const VkMemoryRequirements& MemoryReqs, VkMemoryPropertyFlags MemoryPropertyFlags, EVulkanAllocationMetaType MetaType, bool bExternal, const char* File, uint32 Line);
 		bool AllocateBufferMemory(FVulkanAllocation& Allocation, FVulkanEvictable* AllocationOwner, const VkMemoryRequirements& MemoryReqs, VkMemoryPropertyFlags MemoryPropertyFlags, EVulkanAllocationMetaType MetaType, bool bExternal, const char* File, uint32 Line);
 		bool AllocateDedicatedImageMemory(FVulkanAllocation& Allocation, FVulkanEvictable* AllocationOwner, VkImage Image, const VkMemoryRequirements& MemoryReqs, VkMemoryPropertyFlags MemoryPropertyFlags, EVulkanAllocationMetaType MetaType, bool bExternal, const char* File, uint32 Line);
 
 		void RegisterSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator);
 		void UnregisterSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator);
-		void ReleaseSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator);
+		bool ReleaseSubresourceAllocator(FVulkanSubresourceAllocator* SubresourceAllocator);
 
 
 		void ReleaseFreedPages(FVulkanCommandListContext& Context);
@@ -875,9 +873,11 @@ namespace VulkanRHI
 			return PoolSize;
 		}
 
-		FRWLock AllBufferAllocationsLock;  // protects against resizing of array (RenderThread<->RHIThread)
+		FCriticalSection UsedFreeBufferAllocationsLock;
 		TArray<FVulkanSubresourceAllocator*> UsedBufferAllocations[(int32)EPoolSizes::SizesCount + 1];
 		TArray<FVulkanSubresourceAllocator*> FreeBufferAllocations[(int32)EPoolSizes::SizesCount + 1];
+
+		FRWLock AllBufferAllocationsLock;  // protects against resizing of array (RenderThread<->RHIThread)
 		TArray<FVulkanSubresourceAllocator*> AllBufferAllocations;
 		PTRINT AllBufferAllocationsFreeListHead = (PTRINT)-1;
 		inline FVulkanSubresourceAllocator* GetSubresourceAllocator(const uint32 AllocatorIndex)
@@ -890,8 +890,6 @@ namespace VulkanRHI
 		bool bIsEvicting = false;
 		bool bWantEviction = false;
 
-
-		friend FVulkanSubresourceAllocator* GetSubresourceAllocator(FVulkanDevice* Device, const FVulkanAllocation& Allocation);
 		friend class FVulkanResourceHeap;
 
 		void ReleaseFreedResources(bool bImmediately);
@@ -913,15 +911,11 @@ namespace VulkanRHI
 		void ProcessPendingUBFrees(bool bForce);
 	};
 
-	class FStagingBuffer : public FVulkanEvictable, public FRefCount
+	class FStagingBuffer : public FRefCount
 	{
-		virtual void Evict(FVulkanDevice& Device);
-		virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, FVulkanAllocation& Allocation);
-		virtual bool CanMove(){return false;}
-		virtual bool CanEvict(){return false;}
-
 	public:
 		FStagingBuffer(FVulkanDevice* InDevice);
+
 		VkBuffer GetHandle() const;
 		void* GetMappedPointer();
 		uint32 GetSize() const;
@@ -994,6 +988,8 @@ namespace VulkanRHI
 
 			TArray<FPendingItems> PendingItems;
 		};
+
+		FCriticalSection StagingLock;
 
 		TArray<FStagingBuffer*> UsedStagingBuffers;
 		TArray<FPendingItemsPerCmdBuffer> PendingFreeStagingBuffers;
@@ -1092,6 +1088,7 @@ namespace VulkanRHI
 
 	protected:
 		FVulkanDevice* Device;
+		FCriticalSection FenceLock;
 		TArray<FFence*> FreeFences;
 		TArray<FFence*> UsedFences;
 

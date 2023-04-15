@@ -4,7 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /*-----------------------------------------------------------------------------
    FSoundCueGraphEditorCommands
@@ -15,7 +21,7 @@ class FSoundCueGraphEditorCommands : public TCommands<FSoundCueGraphEditorComman
 public:
 	/** Constructor */
 	FSoundCueGraphEditorCommands() 
-		: TCommands<FSoundCueGraphEditorCommands>("SoundCueGraphEditor", NSLOCTEXT("Contexts", "SoundCueGraphEditor", "SoundCue Graph Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FSoundCueGraphEditorCommands>("SoundCueGraphEditor", NSLOCTEXT("Contexts", "SoundCueGraphEditor", "SoundCue Graph Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 	

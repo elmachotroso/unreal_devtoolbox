@@ -24,6 +24,7 @@ export type FailureKind =
 	'Syntax error' |
 	'Disallowed files' |
 	'Too many files' |
+	'Approval required' |
 	'Conversion to edits failure' |
 	'Unit Test error'
 
@@ -116,6 +117,8 @@ export type EdgeStatusFields = BotStatusFields & {
 	lastGoodCL?: number
 	lastGoodCLJobLink?: string
 	lastGoodCLDate?: Date
+
+	num_changes_remaining: number
 }
 
 export type NodeStatusFields = BotStatusFields & {

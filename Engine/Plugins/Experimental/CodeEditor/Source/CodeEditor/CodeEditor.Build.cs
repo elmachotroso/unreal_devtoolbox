@@ -6,11 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public CodeEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				}
-				);
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -21,7 +16,6 @@ namespace UnrealBuildTool.Rules
 					"AssetTools",
 					"EditorFramework",
 					"UnrealEd",
-					"EditorStyle",
 					"PropertyEditor",
 					"Kismet",  // for FWorkflowCentricApplication
 					"InputCore",

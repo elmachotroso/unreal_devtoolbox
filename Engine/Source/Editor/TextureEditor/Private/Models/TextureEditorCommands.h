@@ -2,9 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /**
  * Holds the UI commands for the TextureEditorToolkit widget.
@@ -18,7 +23,7 @@ public:
 	 * Default constructor.
 	 */
 	FTextureEditorCommands( ) 
-		: TCommands<FTextureEditorCommands>("TextureEditor", NSLOCTEXT("Contexts", "TextureEditor", "Texture Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FTextureEditorCommands>("TextureEditor", NSLOCTEXT("Contexts", "TextureEditor", "Texture Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{ }
 
 public:
@@ -61,14 +66,6 @@ public:
 
 	/** Sets the solid color background */
 	TSharedPtr<FUICommandInfo> SolidBackground;
-
-// Begin - Volume Texture Specifics
-	/** For volume texture, shows each depth slice side by side */
-	TSharedPtr<FUICommandInfo> DepthSlices;
-
-	/** For volume texture, shows a trace into the volume */
-	TSharedPtr<FUICommandInfo> TraceIntoVolume;
-// End - Volume Texture Specifics
 
 	/** If enabled, a border is drawn around the texture */
 	TSharedPtr<FUICommandInfo> TextureBorder;

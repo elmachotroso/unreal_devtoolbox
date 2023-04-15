@@ -353,7 +353,7 @@ public:
 		if (ParentBoneIndex != INDEX_NONE)
 		{
 			// Bones are in strictly increasing order.
-			// So child must have an index greater than his parent.
+			// So child must have an index greater than its parent.
 			if (ChildBoneIndex > ParentBoneIndex)
 			{
 				int32 BoneIndex = GetParentIndex(ChildBoneIndex);
@@ -407,7 +407,7 @@ public:
 	SIZE_T GetDataSize() const;
 
 	// very slow search function for all children
-	int32 GetDirectChildBones(int32 ParentBoneIndex, TArray<int32> & Children) const;
-	friend FArchive & operator<<(FArchive & Ar, FReferenceSkeleton & F);
+	ENGINE_API int32 GetDirectChildBones(int32 ParentBoneIndex, TArray<int32> & Children) const;
+	ENGINE_API friend FArchive & operator<<(FArchive & Ar, FReferenceSkeleton & F);
 	friend FReferenceSkeletonModifier;
 };

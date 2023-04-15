@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SEventGraph.h"
+
+#if STATS
+
 #include "Widgets/Layout/SSplitter.h"
 #include "Containers/MapBuilder.h"
 #include "Widgets/SOverlay.h"
@@ -13,11 +16,12 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/StatDragDropOp.h"
 #include "Widgets/SEventGraphTooltip.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "ProfilerStyle.h"
 
 #define LOCTEXT_NAMESPACE "SEventGraph"
 
@@ -243,7 +247,7 @@ protected:
 			[
 				SNew( SImage )
 				.Visibility( this, &SEventGraphTableCell::GetHotPathIconVisibility )
-				.Image( FEditorStyle::GetBrush(TEXT("Profiler.EventGraph.HotPathSmall")) )
+				.Image(FProfilerStyle::Get().GetBrush(TEXT("Profiler.EventGraph.HotPathSmall")) )
 			]
 
 			+SHorizontalBox::Slot()
@@ -254,7 +258,7 @@ protected:
 			[
 				SNew( STextBlock )
 				.Text( FText::FromName(EventPtr->_StatName) )
-				.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+				.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 				.ColorAndOpacity( this, &SEventGraphTableCell::GetColorAndOpacity )
 				.ShadowColorAndOpacity( this, &SEventGraphTableCell::GetShadowColorAndOpacity )
 			]
@@ -265,14 +269,14 @@ protected:
 			.VAlign(VAlign_Center)
 			[
 				SNew( SButton )
-				.ButtonStyle( FEditorStyle::Get(), TEXT("HoverHintOnly") )
+				.ButtonStyle( FAppStyle::Get(), TEXT("HoverHintOnly") )
 				.ContentPadding( 0.0f )
 				.IsFocusable( false )
 				.OnClicked( this, &SEventGraphTableCell::ExpandCulledEvents_OnClicked )
 				[
 					SNew( SImage )
 					.Visibility( this, &SEventGraphTableCell::GetCulledEventsIconVisibility )
-					.Image( FEditorStyle::GetBrush("Profiler.EventGraph.HasCulledEventsSmall") )
+					.Image(FProfilerStyle::Get().GetBrush("Profiler.EventGraph.HasCulledEventsSmall") )
 					.ToolTipText( LOCTEXT("HasCulledEvents_TT","This event contains culled children, if you want to see all children, please disable culling or use function details, or press this icon") )
 				]	
 			]
@@ -284,7 +288,7 @@ protected:
 			[
 				SNew( SImage )
 				.Visibility( this, &SEventGraphTableCell::GetHintIconVisibility )
-				.Image( FEditorStyle::GetBrush("Profiler.Tooltip.HintIcon10") )
+				.Image(FProfilerStyle::Get().GetBrush("Profiler.Tooltip.HintIcon10") )
 				.ToolTip( SEventGraphTooltip::GetTableCellTooltip( EventPtr ) )
 			];
 		}
@@ -304,7 +308,7 @@ protected:
 			[
 				SNew( STextBlock )
 				.Text( FText::FromString(FormattedValue) )
-				.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+				.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 				.ColorAndOpacity( this, &SEventGraphTableCell::GetColorAndOpacity )
 				.ShadowColorAndOpacity( this, &SEventGraphTableCell::GetShadowColorAndOpacity )
 			];
@@ -470,7 +474,7 @@ public:
 		.Padding( 0.0f )
 		[
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("Profiler.LineGraphArea") )
+			.Image(FProfilerStyle::Get().GetBrush("Brushes.White25") )
 			.ColorAndOpacity( this, &SEventGraphTableRow::GetBackgroundColorAndOpacity )
 		]
 
@@ -548,15 +552,15 @@ protected:
 		const FSlateBrush* Brush = nullptr;
 		if( Result == HAlign_Left )
 		{
-			Brush = FEditorStyle::GetBrush("Profiler.EventGraph.Border.L");
+			Brush = FProfilerStyle::Get().GetBrush("Profiler.EventGraph.Border.L");
 		}
 		else if( Result == HAlign_Right )
 		{
-			Brush = FEditorStyle::GetBrush("Profiler.EventGraph.Border.R");
+			Brush = FProfilerStyle::Get().GetBrush("Profiler.EventGraph.Border.R");
 		}
 		else
 		{
-			Brush = FEditorStyle::GetBrush("Profiler.EventGraph.Border.TB");
+			Brush = FProfilerStyle::Get().GetBrush("Profiler.EventGraph.Border.TB");
 		}
 		return Brush;
 	}
@@ -638,7 +642,7 @@ void SEventGraph::Construct( const FArguments& InArgs )
 					.AutoHeight()
 					[
 						SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							.Padding(2.0f)
 							[
 								SNew(SVerticalBox)
@@ -691,7 +695,7 @@ void SEventGraph::Construct( const FArguments& InArgs )
 							.HeightOverride(224.0f)
 							[
 								SNew(SBorder)
-									.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+									.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 									.Padding(2.0f)
 									.Clipping(EWidgetClipping::ClipToBounds)
 									[
@@ -729,7 +733,7 @@ void SEventGraph::Construct( const FArguments& InArgs )
 			.Value(0.5f)
 			[
 				SNew(SBorder)
-					.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+					.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 					.Padding(0.0f)
 					[
 						SNew(SHorizontalBox)
@@ -789,7 +793,7 @@ TSharedRef<SWidget> SEventGraph::GetToggleButtonForEventGraphType( const EEventG
 		.VAlign( VAlign_Center )
 		[
 			SNew(SImage)
-			.Image( FEditorStyle::GetBrush( BrushName ) )
+			.Image(FProfilerStyle::Get().GetBrush( BrushName ) )
 		];
 	}
 
@@ -799,12 +803,12 @@ TSharedRef<SWidget> SEventGraph::GetToggleButtonForEventGraphType( const EEventG
 	[
 		SNew( STextBlock )
 		.Text( FText::FromString(EEventGraphTypes::ToName( EventGraphType )) )
-		.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Caption") )
+		.ColorAndOpacity(FSlateColor::UseForeground())
 	];
 
 	return
 	SNew( SCheckBox )
-	.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+	.Style(FProfilerStyle::Get(), "ToggleButtonCheckbox")
 	.IsEnabled( this, &SEventGraph::EventGraphType_IsEnabled, EventGraphType )
 	.HAlign( HAlign_Center )
 	.Padding( 2.0f )
@@ -820,7 +824,7 @@ TSharedRef<SWidget> SEventGraph::GetToggleButtonForEventGraphViewMode( const EEv
 {
 	return
 	SNew( SCheckBox )
-	.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+	.Style(FProfilerStyle::Get(), "ToggleButtonCheckbox")
 	.IsEnabled( this, &SEventGraph::EventGraph_IsEnabled )
 	.HAlign( HAlign_Center )
 	.Padding( 2.0f )
@@ -837,7 +841,7 @@ TSharedRef<SWidget> SEventGraph::GetToggleButtonForEventGraphViewMode( const EEv
 		.VAlign( VAlign_Center )
 		[
 			SNew(SImage)
-			.Image( FEditorStyle::GetBrush( EEventGraphViewModes::ToBrushName( EventGraphViewMode ) ) )
+			.Image(FProfilerStyle::Get().GetBrush( EEventGraphViewModes::ToBrushName( EventGraphViewMode ) ) )
 		]
 
 		+SHorizontalBox::Slot()
@@ -846,7 +850,7 @@ TSharedRef<SWidget> SEventGraph::GetToggleButtonForEventGraphViewMode( const EEv
 		[
 			SNew( STextBlock )
 			.Text( EEventGraphViewModes::ToName( EventGraphViewMode ) )
-			.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Caption") )
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];
 }
@@ -855,7 +859,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForEventGraphTypes()
 {
 	return
 	SNew( SBorder )
-	.BorderImage( FEditorStyle::GetBrush("Profiler.Group.16") )
+	.BorderImage(FProfilerStyle::Get().GetBrush("Profiler.Group.16") )
 	.Padding(FMargin(2.0f, 0.0))
 	[
 		SNew( SHorizontalBox )
@@ -869,7 +873,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForEventGraphTypes()
 		[	
 			SNew(STextBlock)
 			.Text( LOCTEXT("Toolbar_Type","Type") )
-			.TextStyle( FEditorStyle::Get(), TEXT("Profiler.CaptionBold") )
+			.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.CaptionBold") )
 		]
 
 		// One-frame
@@ -909,7 +913,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForEventGraphViewModes()
 {
 	return
 	SNew( SBorder )
-	.BorderImage( FEditorStyle::GetBrush("Profiler.Group.16") )
+	.BorderImage(FProfilerStyle::Get().GetBrush("Profiler.Group.16") )
 	.Padding(FMargin(2.0f, 0.0))
 	[
 		SNew( SHorizontalBox )
@@ -923,7 +927,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForEventGraphViewModes()
 		[	
 			SNew(STextBlock)
 			.Text( LOCTEXT("Toolbar_ViewMode","View mode") )
-			.TextStyle( FEditorStyle::Get(), TEXT("Profiler.CaptionBold") )
+			.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.CaptionBold") )
 		]
 
 		// View mode - Hierarchical
@@ -981,7 +985,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForEventGraphViewModes()
 TSharedRef<SWidget> SEventGraph::GetWidgetForThreadFilter()
 {
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Profiler.Group.16"))
+		.BorderImage(FProfilerStyle::Get().GetBrush("Profiler.Group.16"))
 		.Padding(FMargin(2.0f, 0.0))
 		[
 			SNew(SHorizontalBox)
@@ -994,7 +998,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetForThreadFilter()
 			[
 				SNew ( STextBlock )
 				.Text( LOCTEXT( "Toolbar_Thread", "Thread" ) )
-				.TextStyle( FEditorStyle::Get(), TEXT( "Profiler.CaptionBold" ) )
+				.TextStyle(FProfilerStyle::Get(), TEXT( "Profiler.CaptionBold" ) )
 			]
 
 			+SHorizontalBox::Slot()
@@ -1090,7 +1094,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetBoxForOptions()
 {
 	return
 	SNew( SBorder )
-	.BorderImage( FEditorStyle::GetBrush("Profiler.Group.16") )
+	.BorderImage(FProfilerStyle::Get().GetBrush("Profiler.Group.16") )
 	.Padding( 0.0f )
 	[
 		SNew(SHorizontalBox)
@@ -1109,7 +1113,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetBoxForOptions()
 			.ContentPadding( 2.0f )
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Profiler.EventGraph.HistoryBack") )
+				.Image(FProfilerStyle::Get().GetBrush("Profiler.EventGraph.HistoryBack") )
 			]
 		]
 
@@ -1127,7 +1131,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetBoxForOptions()
 			.ContentPadding( 2.0f )
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush("Profiler.EventGraph.HistoryForward") )
+				.Image(FProfilerStyle::Get().GetBrush("Profiler.EventGraph.HistoryForward") )
 			]
 		]
 
@@ -1155,7 +1159,7 @@ TSharedRef<SWidget> SEventGraph::GetWidgetBoxForOptions()
 			.OnClicked( this, &SEventGraph::ExpandHotPath_OnClicked )
 			[
 				SNew( SImage )
-				.Image( FEditorStyle::GetBrush(TEXT("Profiler.EventGraph.ExpandHotPath16")) )
+				.Image(FProfilerStyle::Get().GetBrush(TEXT("Profiler.EventGraph.ExpandHotPath16")) )
 			]
 		]
 
@@ -1270,7 +1274,7 @@ TSharedRef<SVerticalBox> SEventGraph::GetVerticalBoxForFunctionDetails( TSharedP
 	[
 		SNew(STextBlock)
 		.Text( Caption )
-		.TextStyle( FEditorStyle::Get(), TEXT("Profiler.CaptionBold") )
+		.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.CaptionBold") )
 	]
 
 	+SVerticalBox::Slot()
@@ -1306,7 +1310,7 @@ TSharedRef<SVerticalBox> SEventGraph::GetVerticalBoxForCurrentFunction()
 	[
 		SNew(STextBlock)
 		.Text( LOCTEXT("FunctionDetails_CurrentFunction","Current Function") )
-		.TextStyle( FEditorStyle::Get(), TEXT("Profiler.CaptionBold") )
+		.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.CaptionBold") )
 	]
 
 	+SVerticalBox::Slot()
@@ -1594,7 +1598,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			SelectionStr, 
 			LOCTEXT("ContextMenu_Selection", "Currently selected events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "@missing.icon"), DummyUIAction, NAME_None, EUserInterfaceActionType::Button
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "@missing.icon"), DummyUIAction, NAME_None, EUserInterfaceActionType::Button
 		);
 	}
 	MenuBuilder.EndSection();
@@ -1606,7 +1610,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Root_Set", "Set Root"), 
 			LOCTEXT("ContextMenu_Root_Set_Desc", "Sets the root to the selected event(s) and switches to hierarchical view"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.SetRoot"), SetRoot_Custom(), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.SetRoot"), SetRoot_Custom(), NAME_None, EUserInterfaceActionType::Button
 		);
 
 		FUIAction Action_AggregateForSelection;
@@ -1642,7 +1646,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			CullingDesc,
 			LOCTEXT("ContextMenu_Culling_Desc_TT","Culls the event graph based on the property value of the selected event"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.CullEvents"), CullByProperty_Custom(SelectedEvent,HoveredColumnID,false), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.CullEvents"), CullByProperty_Custom(SelectedEvent,HoveredColumnID,false), NAME_None, EUserInterfaceActionType::Button
 		);
 
 	// Filtering menu
@@ -1665,7 +1669,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			FilteringDesc,
 			LOCTEXT("ContextMenu_Filtering_Desc_TT","Filters the event graph based on the property value of the selected event"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.FilterEvents"), FilterOutByProperty_Custom(SelectedEvent,HoveredColumnID,false), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.FilterEvents"), FilterOutByProperty_Custom(SelectedEvent,HoveredColumnID,false), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuSeparator();
@@ -1673,7 +1677,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_ClearHistory", "Reset to default"), 
 			LOCTEXT("ContextMenu_ClearHistory_Reset_Desc", "For the selected event graph resets root/culling/filter to the default state and clears the history"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.ResetToDefault"), ClearHistory_Custom(), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.ResetToDefault"), ClearHistory_Custom(), NAME_None, EUserInterfaceActionType::Button 
 		);
 	}
 	MenuBuilder.EndSection();
@@ -1684,42 +1688,42 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandAll", "Expand All"), 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandAll_Desc", "Expands all events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ExpandAll"), SetExpansionForEvents_Custom( ESelectedEventTypes::AllEvents, true ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ExpandAll"), SetExpansionForEvents_Custom( ESelectedEventTypes::AllEvents, true ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuEntry
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseAll", "Collapse All"), 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseAll_Desc", "Collapses all events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.CollapseAll"), SetExpansionForEvents_Custom( ESelectedEventTypes::AllEvents, false ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.CollapseAll"), SetExpansionForEvents_Custom( ESelectedEventTypes::AllEvents, false ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuEntry
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandSelection", "Expand Selection"), 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandSelection_Desc", "Expands selected events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ExpandSelection"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedEvents, true ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ExpandSelection"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedEvents, true ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuEntry
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseSelection", "Collapse Selection"), 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseSelection_Desc", "Collapses selected events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.CollapseSelection"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedEvents, false ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.CollapseSelection"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedEvents, false ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuEntry
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandThread", "Expand Thread"), 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandThread_Desc", "Expands selected threads"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ExpandThread"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedThreadEvents, true ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ExpandThread"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedThreadEvents, true ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddMenuEntry
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseThread", "Collapse Thread"), 
 			LOCTEXT("ContextMenu_Header_Expand_CollapseThread_Desc", "Collapses selected threads"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.CollapseThread"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedThreadEvents, false ), NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.CollapseThread"), SetExpansionForEvents_Custom( ESelectedEventTypes::SelectedThreadEvents, false ), NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		//-----------------------------------------------------------------------------
@@ -1733,7 +1737,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandHotPath", "Expand Hot Path"), 
 			LOCTEXT("ContextMenu_Header_Expand_ExpandHotPath_Desc", "Expands hot path for the selected events, based on the inclusive time, also enables descending sorting by inclusive time"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ExpandHotPath"), Action_ExpandHotPath, NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ExpandHotPath"), Action_ExpandHotPath, NAME_None, EUserInterfaceActionType::Button 
 		);
 	}
 	MenuBuilder.EndSection();
@@ -1744,7 +1748,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInHierarchicalView", "Show In Hierarchical View"), 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInHierarchicalView_Desc", "Switches to hierarchical view and expands selected events"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::Hierarchical)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::Hierarchical), NAME_None, EUserInterfaceActionType::Check
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::Hierarchical)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::Hierarchical), NAME_None, EUserInterfaceActionType::Check
 		);
 
 		//-----------------------------------------------------------------------------
@@ -1753,7 +1757,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatView", "Show In FlatInclusive View"), 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatView_Desc", "Switches to flat view, also enables descending sorting by inclusive time"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusive)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusive), NAME_None, EUserInterfaceActionType::Check 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusive)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusive), NAME_None, EUserInterfaceActionType::Check 
 		);
 
 		if( FProfilerManager::GetSettings().bShowCoalescedViewModesInEventGraph )
@@ -1762,7 +1766,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 			( 
 				LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatCoalesced", "Show In FlatInclusive Coalesced"), 
 				LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatCoalesced_Desc", "Switches to flat coalesced, also enables descending sorting by inclusive time"), 
-				FSlateIcon(FEditorStyle::GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatInclusiveCoalesced)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatInclusiveCoalesced), NAME_None, EUserInterfaceActionType::Check 
+				FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatInclusiveCoalesced)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatInclusiveCoalesced), NAME_None, EUserInterfaceActionType::Check 
 			);
 		}
 
@@ -1772,7 +1776,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatExclusiveView", "Show In Flat Exclusive View"), 
 			LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatExclusiveView_Desc", "Switches to flat exclusive view, also enables ascending sorting by exclusive time"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusive)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusive), NAME_None, EUserInterfaceActionType::Check 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusive)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusive), NAME_None, EUserInterfaceActionType::Check 
 		);
 
 		if( FProfilerManager::GetSettings().bShowCoalescedViewModesInEventGraph )
@@ -1781,7 +1785,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 			( 
 				LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatExclusiveCoalescedView", "Show In Flat Exclusive Coalesced View"), 
 				LOCTEXT("ContextMenu_Header_Navigation_ShowInFlatExclusiveCoalescedView_Desc", "Switches to flat exclusive coalesced view, also enables ascending sorting by exclusive time enabled"), 
-				FSlateIcon(FEditorStyle::GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusiveCoalesced)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusiveCoalesced), NAME_None, EUserInterfaceActionType::Check 
+				FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), EEventGraphViewModes::ToBrushName(EEventGraphViewModes::FlatExclusiveCoalesced)), ShowSelectedEventsInViewMode_Custom(EEventGraphViewModes::FlatExclusiveCoalesced), NAME_None, EUserInterfaceActionType::Check 
 			);
 		}
 
@@ -1810,7 +1814,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Misc_CopySelectedToClipboard", "Copy To Clipboard"), 
 			LOCTEXT("ContextMenu_Header_Misc_CopySelectedToClipboard_Desc", "Copies selection to clipboard"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.CopyToClipboard"), Action_CopySelectedToClipboard, NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.CopyToClipboard"), Action_CopySelectedToClipboard, NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		FUIAction Action_SaveSelectedToFile;
@@ -1824,7 +1828,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Misc_SelectStack", "Select Stack"), 
 			LOCTEXT("ContextMenu_Header_Misc_SelectStack_Desc", "Selects all events in the stack"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_SelectStack, NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.SelectStack"), Action_SelectStack, NAME_None, EUserInterfaceActionType::Button 
 		);
 
 		MenuBuilder.AddSubMenu
@@ -1833,7 +1837,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 			LOCTEXT("ContextMenu_Header_Misc_Sort_Desc", "Sort by column"), 
 			FNewMenuDelegate::CreateSP( const_cast<SEventGraph*>(this), &SEventGraph::EventGraph_BuildSortByMenu ),
 			false, 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortBy")
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.SortBy")
 		);
 	}
 	MenuBuilder.EndSection();
@@ -1846,7 +1850,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 			LOCTEXT("ContextMenu_Header_Columns_View_Desc", "Hides or shows columns"), 
 			FNewMenuDelegate::CreateSP( const_cast<SEventGraph*>(this), &SEventGraph::EventGraph_BuildViewColumnMenu ),
 			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ViewColumn")
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ViewColumn")
 		);
 
 		FUIAction Action_ResetColumns
@@ -1858,7 +1862,7 @@ TSharedPtr<SWidget> SEventGraph::EventGraph_GetMenuContent() const
 		( 
 			LOCTEXT("ContextMenu_Header_Columns_ResetColumns", "Reset Columns To Default"), 
 			LOCTEXT("ContextMenu_Header_Columns_ResetColumns_Desc", "Resets columns to default"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.EventGraph.ResetColumn"), Action_ResetColumns, NAME_None, EUserInterfaceActionType::Button 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.EventGraph.ResetColumn"), Action_ResetColumns, NAME_None, EUserInterfaceActionType::Button 
 		);
 	}
 	MenuBuilder.EndSection();
@@ -1906,7 +1910,7 @@ void SEventGraph::EventGraph_BuildSortByMenu( FMenuBuilder& MenuBuilder )
 		( 
 			LOCTEXT("ContextMenu_Header_Misc_Sort_SortAscending", "Sort Ascending"), 
 			LOCTEXT("ContextMenu_Header_Misc_Sort_SortAscending_Desc", "Sorts ascending"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortAscending"), Action_SortAscending, NAME_None, EUserInterfaceActionType::RadioButton
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.SortAscending"), Action_SortAscending, NAME_None, EUserInterfaceActionType::RadioButton
 		);
 
 		FUIAction Action_SortDescending
@@ -1919,7 +1923,7 @@ void SEventGraph::EventGraph_BuildSortByMenu( FMenuBuilder& MenuBuilder )
 		( 
 			LOCTEXT("ContextMenu_Header_Misc_Sort_SortDescending", "Sort Descending"), 
 			LOCTEXT("ContextMenu_Header_Misc_Sort_SortDescending_Desc", "Sorts descending"), 
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortDescending"), Action_SortDescending, NAME_None, EUserInterfaceActionType::RadioButton 
+			FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.SortDescending"), Action_SortDescending, NAME_None, EUserInterfaceActionType::RadioButton 
 		);
 	}
 	MenuBuilder.EndSection();
@@ -2197,7 +2201,7 @@ TSharedRef< SWidget > SEventGraph::TreeViewHeaderRow_GenerateColumnMenu( const F
 			( 
 				LOCTEXT("ContextMenu_Header_Misc_Sort_SortAscending", "Sort Ascending"), 
 				LOCTEXT("ContextMenu_Header_Misc_Sort_SortAscending_Desc", "Sorts ascending"), 
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortAscending"), Action_SortAscending, NAME_None, EUserInterfaceActionType::RadioButton
+				FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.SortAscending"), Action_SortAscending, NAME_None, EUserInterfaceActionType::RadioButton
 			);
 
 			FUIAction Action_SortDescending
@@ -2210,7 +2214,7 @@ TSharedRef< SWidget > SEventGraph::TreeViewHeaderRow_GenerateColumnMenu( const F
 			( 
 				LOCTEXT("ContextMenu_Header_Misc_Sort_SortDescending", "Sort Descending"), 
 				LOCTEXT("ContextMenu_Header_Misc_Sort_SortDescending_Desc", "Sorts descending"), 
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Profiler.Misc.SortDescending"), Action_SortDescending, NAME_None, EUserInterfaceActionType::RadioButton 
+				FSlateIcon(FProfilerStyle::Get().GetStyleSetName(), "Profiler.Misc.SortDescending"), Action_SortDescending, NAME_None, EUserInterfaceActionType::RadioButton 
 			);
 			bIsMenuVisible = true;
 
@@ -2710,7 +2714,7 @@ void SEventGraph::DisableFunctionDetails()
 		SNew(STextBlock)
 		.WrapTextAt( 128.0f )
 		.Text( LOCTEXT("FunctionDetails_SelectOneEvent","Function details view works only if you select one event. Please select an individual event to proceed.") )
-		.TextStyle( FEditorStyle::Get(), TEXT("Profiler.Tooltip") )
+		.TextStyle(FProfilerStyle::Get(), TEXT("Profiler.Tooltip") )
 	];
 
 	VerticalBox_TopCalling->ClearChildren();
@@ -2858,7 +2862,7 @@ void SEventGraph::RecreateWidgetsForTopEvents( const TSharedPtr<SVerticalBox>& D
 			SNew(SButton)
 			.HAlign( HAlign_Left )
 			.VAlign( VAlign_Center )
-			.TextStyle( FEditorStyle::Get(), "Profiler.Tooltip" )
+			.TextStyle(FProfilerStyle::Get(), "Profiler.Tooltip" )
 			.ContentPadding( FMargin(4.0f, 1.0f) )
 			.OnClicked( this, &SEventGraph::CallingCalledFunctionButton_OnClicked, EventPtrAndPct.EventPtr )
 			[
@@ -2900,7 +2904,7 @@ TSharedRef<SHorizontalBox> SEventGraph::GetContentForEvent( FEventGraphSamplePtr
 	[
 		SNew(STextBlock)
 		.Text( FText::FromString(GetEventDescription(EventPtr,Pct,bSimple)) )
-		.TextStyle( FEditorStyle::Get(), bSimple ? TEXT("Profiler.Tooltip") : TEXT("Profiler.EventGraph.DarkText") )
+		.TextStyle(FProfilerStyle::Get(), bSimple ? TEXT("Profiler.Tooltip") : TEXT("Profiler.EventGraph.DarkText") )
 	];
 
 	if( EventPtr->_bIsCulled )
@@ -2911,7 +2915,7 @@ TSharedRef<SHorizontalBox> SEventGraph::GetContentForEvent( FEventGraphSamplePtr
 		.VAlign(VAlign_Center)
 		[
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("Profiler.EventGraph.CulledEvent") )
+			.Image(FProfilerStyle::Get().GetBrush("Profiler.EventGraph.CulledEvent") )
 			.ToolTipText( LOCTEXT("Misc_EventCulled","Event is culled") )
 		];
 	}
@@ -2924,7 +2928,7 @@ TSharedRef<SHorizontalBox> SEventGraph::GetContentForEvent( FEventGraphSamplePtr
 		.VAlign(VAlign_Center)
 		[
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("Profiler.EventGraph.FilteredEvent") )
+			.Image(FProfilerStyle::Get().GetBrush("Profiler.EventGraph.FilteredEvent") )
 			.ToolTipText( LOCTEXT("Misc_EventFiltered","Event is filtered") )
 		];
 	}
@@ -2935,7 +2939,7 @@ TSharedRef<SHorizontalBox> SEventGraph::GetContentForEvent( FEventGraphSamplePtr
 	.VAlign(VAlign_Center)
 	[
 		SNew( SImage )
-		.Image( FEditorStyle::GetBrush("Profiler.Tooltip.HintIcon10") )
+		.Image(FProfilerStyle::Get().GetBrush("Profiler.Tooltip.HintIcon10") )
 		.ToolTip( SEventGraphTooltip::GetTableCellTooltip( EventPtr ) )
 	];
 
@@ -3521,3 +3525,5 @@ void SEventGraph::FEventGraphState::CreateOneToOneMapping()
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

@@ -71,8 +71,9 @@ void FNiagaraComputeExecutionContext::InitParams(UNiagaraScript* InGPUComputeScr
 	}
 	else
 	{
-		DIClassNames.Empty(InGPUComputeScript->GetRenderThreadScript()->GetDataInterfaceParamInfo().Num());
-		for (const FNiagaraDataInterfaceGPUParamInfo& DIParams : InGPUComputeScript->GetRenderThreadScript()->GetDataInterfaceParamInfo())
+		TSharedRef<FNiagaraShaderScriptParametersMetadata> ScriptParametersMetadata = InGPUComputeScript->GetRenderThreadScript()->GetScriptParametersMetadata();
+		DIClassNames.Empty(ScriptParametersMetadata->DataInterfaceParamInfo.Num());
+		for (const FNiagaraDataInterfaceGPUParamInfo& DIParams : ScriptParametersMetadata->DataInterfaceParamInfo)
 		{
 			DIClassNames.Add(DIParams.DIClassName);
 		}
@@ -85,6 +86,15 @@ bool FNiagaraComputeExecutionContext::IsOutputStage(FNiagaraDataInterfaceProxy* 
 	if (DIProxy && !DIProxy->SourceDIName.IsNone())
 	{		
 		return SimStageInfo[SimulationStageIndex].OutputDestinations.Contains(DIProxy->SourceDIName);
+	}
+	return false;
+}
+
+bool FNiagaraComputeExecutionContext::IsInputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const
+{
+	if (DIProxy && !DIProxy->SourceDIName.IsNone())
+	{
+		return SimStageInfo[SimulationStageIndex].InputDataInterfaces.Contains(DIProxy->SourceDIName);
 	}
 	return false;
 }
@@ -126,6 +136,7 @@ void FNiagaraComputeExecutionContext::DirtyDataInterfaces()
 
 bool FNiagaraComputeExecutionContext::Tick(FNiagaraSystemInstance* ParentSystemInstance)
 {
+	check(ParentSystemInstance);
 	if (CombinedParamStore.GetInterfacesDirty())
 	{
 #if DO_CHECK
@@ -147,7 +158,7 @@ bool FNiagaraComputeExecutionContext::Tick(FNiagaraSystemInstance* ParentSystemI
 			}
 		}
 #endif
-		if (ParentSystemInstance && CombinedParamStore.GetPositionDataDirty())
+		if (CombinedParamStore.GetPositionDataDirty())
 		{
 			CombinedParamStore.ResolvePositions(ParentSystemInstance->GetLWCConverter());
 		}
@@ -251,6 +262,11 @@ void FNiagaraComputeExecutionContext::SetTranslucentDataToRender(FNiagaraDataBuf
 bool FNiagaraComputeInstanceData::IsOutputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const
 {
 	return Context->IsOutputStage(DIProxy, SimulationStageIndex);
+}
+
+bool FNiagaraComputeInstanceData::IsInputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const
+{
+	return Context->IsInputStage(DIProxy, SimulationStageIndex);
 }
 
 bool FNiagaraComputeInstanceData::IsIterationStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 SimulationStageIndex) const

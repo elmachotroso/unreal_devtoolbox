@@ -2,7 +2,9 @@
 
 #include "RenderDocPluginModule.h"
 
+#if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
+#endif
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -70,6 +72,16 @@ static TAutoConsoleVariable<int32> CVarRenderDocCaptureFrameCount(
 // Helper classes
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#if PLATFORM_LINUX
+
+typedef void *HWND;
+static HWND GetActiveWindow()
+{
+	return nullptr;
+}
+
+#endif // PLATFORM_LINUX
+
 struct FRenderDocAsyncGraphTask : public FAsyncGraphTaskBase
 {
 	ENamedThreads::Type TargetThread;
@@ -86,7 +98,7 @@ public:
 	static RENDERDOC_DevicePointer GetRenderdocDevicePointer()
 	{
 		RENDERDOC_DevicePointer Device;
-		if(0 == FCString::Strcmp(GDynamicRHI->GetName(),TEXT("Vulkan")))
+		if (RHIGetInterfaceType() == ERHIInterfaceType::Vulkan)
 		{
 			Device = GDynamicRHI->RHIGetNativeInstance();
 #ifndef RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE
@@ -685,6 +697,8 @@ void FRenderDocPluginModule::EndCapture_RenderThread(FRHICommandListImmediate* I
 
 #undef LOCTEXT_NAMESPACE
 
+#if PLATFORM_WINDOWS
 #include "Windows/HideWindowsPlatformTypes.h"
+#endif
 
 IMPLEMENT_MODULE(FRenderDocPluginModule, RenderDocPlugin)

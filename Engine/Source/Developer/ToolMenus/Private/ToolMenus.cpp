@@ -14,6 +14,8 @@
 #include "HAL/PlatformApplicationMisc.h" // For clipboard
 #include "Widgets/Layout/SScrollBox.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ToolMenus)
+
 #define LOCTEXT_NAMESPACE "ToolMenuSubsystem"
 
 DEFINE_LOG_CATEGORY(LogToolMenus);
@@ -97,7 +99,7 @@ public:
 		{
 			NewMenuDelegate = Block.SubMenuData.ConstructMenu.NewMenuLegacy;
 		}
-		else if (Block.SubMenuData.ConstructMenu.NewToolMenuWidget.IsBound())
+		else if (Block.SubMenuData.ConstructMenu.NewToolMenuWidget.IsBound() || Block.SubMenuData.ConstructMenu.OnGetContent.IsBound())
 		{
 			// Full replacement of the widget shown when submenu is opened
 			FOnGetContent OnGetContent = UToolMenus::Get()->ConvertWidgetChoice(Block.SubMenuData.ConstructMenu, MenuData->Context);
@@ -682,6 +684,7 @@ void UToolMenus::AssembleMenu(UToolMenu* GeneratedMenu, const UToolMenu* Other)
 				break;
 			}
 			ConstructedSections->Context = GeneratedMenu->Context;
+			ConstructedSections->MenuType = GeneratedMenu->MenuType;
 		}
 
 		TArray<FToolMenuSection> GeneratedSections;
@@ -1394,7 +1397,7 @@ void UToolMenus::PopulateToolBarBuilder(FToolBarBuilder& ToolBarBuilder, UToolMe
 			}
 			else
 			{
-				UE_LOG(LogToolMenus, Warning, TEXT("Toolbar '%s', item '%s', type not currently supported: %d"), *MenuData->MenuName.ToString(), *Block.Name.ToString(), Block.Type);
+				UE_LOG(LogToolMenus, Warning, TEXT("Toolbar '%s', item '%s', Toolbars do not support: %s"), *MenuData->MenuName.ToString(), *Block.Name.ToString(), *UEnum::GetValueAsString(Block.Type));
 			}
 
 			ToolBarBuilder.EndStyleOverride();
@@ -2488,3 +2491,4 @@ void UToolMenus::RemoveAllCustomizations()
 }
 
 #undef LOCTEXT_NAMESPACE
+

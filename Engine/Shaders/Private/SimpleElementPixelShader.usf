@@ -14,6 +14,10 @@
 #define ENABLE_EDITOR_COMPOSITING (FEATURE_LEVEL >= FEATURE_LEVEL_SM4 || MOBILE_EMULATION)
 #define WRITE_TO_SHADING_MODEL (FEATURE_LEVEL >= FEATURE_LEVEL_SM4 && !FORWARD_SHADING)
 
+#ifndef TEXTURECUBE_ARRAY
+#define TEXTURECUBE_ARRAY 0
+#endif
+
 Texture2D InTexture;
 SamplerState InTextureSampler;
 
@@ -305,12 +309,23 @@ void GammaDistanceFieldMain(
 	OutColor = SimpleElementEncodeFor32BPPHDR(OutColor);
 }
 
+#if TEXTURECUBE_ARRAY
+TextureCubeArray CubeTexture;
+#else
 TextureCube CubeTexture;
+#endif
+
 SamplerState CubeTextureSampler;
 
-// .x:MipLevel, .yzw:unused
+// .x:MipLevel, .y:bShowLongLatUnwrap, .zw:unused
 float4 PackedProperties0;
 float4x4 ColorWeights;
+float4x4 ViewMatrix;
+
+#if TEXTURECUBE_ARRAY
+float NumSlices;
+float SliceIndex;
+#endif
 
 // used in the Texture info dialog when looking at a cubemap texture
 void CubemapTextureProperties(
@@ -322,15 +337,50 @@ void CubemapTextureProperties(
 #endif
 	)
 {
-	float2 Angles = float2(2 * PI * (TextureCoordinate.x + 0.5f), PI * TextureCoordinate.y);
-	
-	float s = sin(Angles.y);
-	float3 Direction = float3(s * sin(Angles.x), cos(Angles.y), -s * cos(Angles.x));
-
 	float MipLevel = PackedProperties0.x;
+	float bShowLongLatUnwrap = PackedProperties0.y;
+	float3 CubeCoordinates;
+	float4 BaseColor;
 
-	// show specified mip level
-	float4 BaseColor = TextureCubeSampleLevel(CubeTexture, CubeTextureSampler, Direction.xzy, MipLevel);
+	if (bShowLongLatUnwrap > 0.0)
+	{
+		float2 Angles = float2(2 * PI * (TextureCoordinate.x + 0.5f), PI * TextureCoordinate.y);
+		float s = sin(Angles.y);
+		CubeCoordinates = float3(s * sin(Angles.x), -s * cos(Angles.x), cos(Angles.y));
+	}
+	else
+	{
+		float2 ScaledUVs = TextureCoordinate * 2 - 1;
+		// identity view matrix displays the face 0 properly oriented in space
+		CubeCoordinates = mul(float3(1, ScaledUVs.x, -ScaledUVs.y), (float3x3)ViewMatrix);
+	}
+
+#if TEXTURECUBE_ARRAY
+	// SliceIndex represents an index of a cubemap in the array
+	float CurrentSliceIndex = SliceIndex;
+	if (CurrentSliceIndex < 0.0)
+	{
+		// if the slice index is not specified, display a portion of each cubemap from the TextureCube array
+		CurrentSliceIndex = floor(TextureCoordinate.y * NumSlices);
+	}
+#endif
+
+	if (MipLevel >= 0.0)
+	{
+#if TEXTURECUBE_ARRAY
+		BaseColor = TextureCubeArraySampleLevel(CubeTexture, CubeTextureSampler, float4(CubeCoordinates, CurrentSliceIndex), MipLevel);
+#else
+		BaseColor = TextureCubeSampleLevel(CubeTexture, CubeTextureSampler, CubeCoordinates, MipLevel);
+#endif
+	}
+	else
+	{
+#if TEXTURECUBE_ARRAY
+		BaseColor = TextureCubeArraySample(CubeTexture, CubeTextureSampler, float4(CubeCoordinates, CurrentSliceIndex));
+#else
+		BaseColor = TextureCubeSample(CubeTexture, CubeTextureSampler, CubeCoordinates);
+#endif
+	}
 
 	float4 FinalColor;
 

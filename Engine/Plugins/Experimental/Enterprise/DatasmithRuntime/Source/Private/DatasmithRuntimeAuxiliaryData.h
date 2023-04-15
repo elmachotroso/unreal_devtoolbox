@@ -67,14 +67,14 @@ public:
 
 	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override
 	{
-		return &AssetUserData;
+		return &ToRawPtrTArrayUnsafe(AssetUserData);
 	}
 	//~ End IInterface_AssetUserData Interface
 
 private:
 	/** Array of user data stored with the asset */
 	UPROPERTY()
-	TArray< UAssetUserData* > AssetUserData;
+	TArray< TObjectPtr<UAssetUserData> > AssetUserData;
 };
 
 /** Asset user data that can be used with DatasmithRuntime on Actors and other objects  */
@@ -91,7 +91,7 @@ public:
 	}
 
 	UPROPERTY(VisibleAnywhere, Category = "DatasmithRuntime Internal")
-	UObject* Auxiliary;
+	TObjectPtr<UObject> Auxiliary;
 
 	TSet<uint64> Referencers;
 

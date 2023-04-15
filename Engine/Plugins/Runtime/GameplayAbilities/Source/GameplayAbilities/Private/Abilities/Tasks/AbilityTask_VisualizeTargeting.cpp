@@ -6,6 +6,8 @@
 #include "Engine/Engine.h"
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_VisualizeTargeting)
+
 UAbilityTask_VisualizeTargeting::UAbilityTask_VisualizeTargeting(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -93,11 +95,12 @@ bool UAbilityTask_VisualizeTargeting::BeginSpawningActor(UGameplayAbility* Ownin
 
 void UAbilityTask_VisualizeTargeting::FinishSpawningActor(UGameplayAbility* OwningAbility, AGameplayAbilityTargetActor* SpawnedActor)
 {
-	if (SpawnedActor)
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (SpawnedActor && ASC)
 	{
 		check(TargetActor == SpawnedActor);
 
-		const FTransform SpawnTransform = AbilitySystemComponent->GetOwner()->GetTransform();
+		const FTransform SpawnTransform = ASC->GetOwner()->GetTransform();
 
 		SpawnedActor->FinishSpawning(SpawnTransform);
 
@@ -134,7 +137,7 @@ void UAbilityTask_VisualizeTargeting::InitializeTargetActor(AGameplayAbilityTarg
 	check(SpawnedActor);
 	check(Ability);
 
-	SpawnedActor->MasterPC = Ability->GetCurrentActorInfo()->PlayerController.Get();
+	SpawnedActor->PrimaryPC = Ability->GetCurrentActorInfo()->PlayerController.Get();
 }
 
 void UAbilityTask_VisualizeTargeting::FinalizeTargetActor(AGameplayAbilityTargetActor* SpawnedActor) const
@@ -142,7 +145,10 @@ void UAbilityTask_VisualizeTargeting::FinalizeTargetActor(AGameplayAbilityTarget
 	check(SpawnedActor);
 	check(Ability);
 
-	AbilitySystemComponent->SpawnedTargetActors.Push(SpawnedActor);
+	if (UAbilitySystemComponent* ASC = AbilitySystemComponent.Get())
+	{
+		ASC->SpawnedTargetActors.Push(SpawnedActor);
+	}
 
 	SpawnedActor->StartTargeting(Ability);
 }
@@ -167,3 +173,4 @@ void UAbilityTask_VisualizeTargeting::OnTimeElapsed()
 	}
 	EndTask();
 }
+

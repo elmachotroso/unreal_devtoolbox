@@ -2,13 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "ClassViewerModule.h"
-#include "UObject/WeakObjectPtr.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-class IPropertyHandle;
-class IUnloadedBlueprintData;
 class UBlueprint;
+class UClass;
 
 class FClassViewerNode : public TSharedFromThis<FClassViewerNode>
 {
@@ -90,13 +93,13 @@ public:
 	TWeakObjectPtr<UBlueprint> Blueprint;
 
 	/** Full object path to the class including _C, set for both blueprint and native */
-	FName ClassPath;
+	FTopLevelAssetPath ClassPath;
 
 	/** Full object path to the parent class, may be blueprint or native */
-	FName ParentClassPath;
+	FTopLevelAssetPath ParentClassPath;
 
 	/** Full path to the Blueprint that this class is loaded from, none for native classes*/
-	FName BlueprintAssetPath;
+	FSoftObjectPath BlueprintAssetPath;
 
 	/** true if the class passed the filter. */
 	bool bPassesFilter;

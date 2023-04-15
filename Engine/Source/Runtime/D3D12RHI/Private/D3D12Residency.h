@@ -26,7 +26,6 @@ namespace D3DX12Residency
 #include "Windows/AllowWindowsPlatformAtomics.h"
 
 THIRD_PARTY_INCLUDES_START
-#include "dxgi1_6.h"
 #pragma warning(push)
 #pragma warning(disable: 6031)
 	#include <D3DX12Residency.h>
@@ -41,19 +40,29 @@ THIRD_PARTY_INCLUDES_END
 extern bool GEnableResidencyManagement;
 #endif
 
+struct FD3D12ResidencyHandle : public D3DX12Residency::ManagedObject
+{
+#if DO_CHECK
+	class FD3D12GPUObject* GPUObject = nullptr;
+#endif
+};
+
 namespace D3DX12Residency
 {
-	inline void Initialize(ManagedObject& Object, ID3D12Pageable* pResource, uint64 ObjectSize)
+	inline void Initialize(FD3D12ResidencyHandle& Object, ID3D12Pageable* pResource, uint64 ObjectSize, class FD3D12GPUObject* GPUObject)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		if (GEnableResidencyManagement)
 		{
+#if DO_CHECK
+			Object.GPUObject = GPUObject;
+#endif
 			Object.Initialize(pResource, ObjectSize);
 		}
 #endif
 	}
 
-	inline bool IsInitialized(ManagedObject& Object)
+	inline bool IsInitialized(FD3D12ResidencyHandle& Object)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		return GEnableResidencyManagement && Object.IsInitialized();
@@ -62,7 +71,7 @@ namespace D3DX12Residency
 #endif
 	}
 
-	inline bool IsInitialized(ManagedObject* pObject)
+	inline bool IsInitialized(FD3D12ResidencyHandle* pObject)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		return GEnableResidencyManagement && pObject && IsInitialized(*pObject);
@@ -71,7 +80,7 @@ namespace D3DX12Residency
 #endif
 	}
 
-	inline void BeginTrackingObject(ResidencyManager& ResidencyManager, ManagedObject& Object)
+	inline void BeginTrackingObject(ResidencyManager& ResidencyManager, FD3D12ResidencyHandle& Object)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		if (GEnableResidencyManagement)
@@ -81,7 +90,7 @@ namespace D3DX12Residency
 #endif
 	}
 
-	inline void EndTrackingObject(ResidencyManager& ResidencyManager, ManagedObject& Object)
+	inline void EndTrackingObject(ResidencyManager& ResidencyManager, FD3D12ResidencyHandle& Object)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		if (GEnableResidencyManagement)
@@ -150,7 +159,7 @@ namespace D3DX12Residency
 #endif
 	}
 
-	inline void Insert(ResidencySet& Set, ManagedObject& Object)
+	inline void Insert(ResidencySet& Set, FD3D12ResidencyHandle& Object)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		if (GEnableResidencyManagement)
@@ -161,7 +170,7 @@ namespace D3DX12Residency
 #endif
 	}
 
-	inline void Insert(ResidencySet& Set, ManagedObject* pObject)
+	inline void Insert(ResidencySet& Set, FD3D12ResidencyHandle* pObject)
 	{
 #if ENABLE_RESIDENCY_MANAGEMENT
 		if (GEnableResidencyManagement)
@@ -173,6 +182,5 @@ namespace D3DX12Residency
 	}
 }
 
-typedef D3DX12Residency::ManagedObject FD3D12ResidencyHandle;
 typedef D3DX12Residency::ResidencySet FD3D12ResidencySet;
 typedef D3DX12Residency::ResidencyManager FD3D12ResidencyManager;

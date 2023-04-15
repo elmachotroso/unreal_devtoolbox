@@ -31,7 +31,6 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/DateTime.h"
 
-
 TSharedPtr<FMaterialBlend> FMaterialBlend::MaterialBlendInst;
 
 TSharedPtr<FMaterialBlend> FMaterialBlend::Get()
@@ -44,18 +43,13 @@ TSharedPtr<FMaterialBlend> FMaterialBlend::Get()
     return MaterialBlendInst;
 }
 
-
-
 void FMaterialBlend::BlendSelectedMaterials()
 
-
 {
-	
-
 
     const UMaterialBlendSettings *BlendSettings = GetDefault<UMaterialBlendSettings>();
 
-    TArray<UMaterialInstanceConstant *> SelectedMaterialInstances = AssetUtils::GetSelectedAssets(TEXT("MaterialInstanceConstant"));
+    TArray<UMaterialInstanceConstant*> SelectedMaterialInstances = AssetUtils::GetSelectedAssets(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("MaterialInstanceConstant")));
 
     if (SelectedMaterialInstances.Num() < 2)
     {
@@ -145,7 +139,7 @@ void FMaterialBlend::HandleTextureLoading(FAssetData TextureData)
     TextureAsset->MarkPackageDirty();
     TextureAsset->PostEditChange();
 
-    AssetUtils::SavePackage(TextureAsset);
+    // AssetUtils::SavePackage(TextureAsset);
 }
 
 void FMaterialBlend::ConvertToVirtualTextures(FUAssetMeta AssetMetaData)
@@ -157,7 +151,7 @@ void FMaterialBlend::ConvertToVirtualTextures(FUAssetMeta AssetMetaData)
 
     for (FTexturesList TextureMeta : AssetMetaData.textureSets)
     {
-        FAssetData TextureData = AssetRegistry.GetAssetByObjectPath(FName(*TextureMeta.path));
+        FAssetData TextureData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(TextureMeta.path));
 
         if (!TextureData.IsValid())
             return;

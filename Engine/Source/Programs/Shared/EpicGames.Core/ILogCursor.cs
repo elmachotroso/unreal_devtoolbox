@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Text;
 using System.Text.RegularExpressions;
 
 namespace EpicGames.Core
@@ -32,9 +30,9 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Index to find the string at the given offset
 		/// </summary>
-		/// <param name="Offset"></param>
+		/// <param name="offset"></param>
 		/// <returns></returns>
-		string? this[int Offset]
+		string? this[int offset]
 		{
 			get;
 		}
@@ -50,142 +48,266 @@ namespace EpicGames.Core
 		/// </summary>
 		class RebasedLogCursor : ILogCursor
 		{
-			ILogCursor Inner { get; }
-			int BaseLineNumber { get; }
+			readonly ILogCursor _inner;
+			readonly int _baseLineNumber;
 
-			public RebasedLogCursor(ILogCursor Inner, int BaseLineNumber)
+			public RebasedLogCursor(ILogCursor inner, int baseLineNumber)
 			{
-				this.Inner = Inner;
-				this.BaseLineNumber = BaseLineNumber;
+				_inner = inner;
+				_baseLineNumber = baseLineNumber;
 			}
 
-			public string? this[int Index] => Inner[(BaseLineNumber + Index) - Inner.CurrentLineNumber];
-			public string? CurrentLine => Inner[BaseLineNumber - Inner.CurrentLineNumber];
-			public int CurrentLineNumber => BaseLineNumber;
+			public string? this[int index] => _inner[(_baseLineNumber + index) - _inner.CurrentLineNumber];
+			public string? CurrentLine => _inner[_baseLineNumber - _inner.CurrentLineNumber];
+			public int CurrentLineNumber => _baseLineNumber;
 		}
 
 		/// <summary>
 		/// Creates a new log cursor based at an offset from the current line
 		/// </summary>
-		/// <param name="Cursor">The current log cursor instance</param>
-		/// <param name="Offset">Line number offset from the current</param>
+		/// <param name="cursor">The current log cursor instance</param>
+		/// <param name="offset">Line number offset from the current</param>
 		/// <returns>New log cursor instance</returns>
-		public static ILogCursor Rebase(this ILogCursor Cursor, int Offset)
+		public static ILogCursor Rebase(this ILogCursor cursor, int offset)
 		{
-			return new RebasedLogCursor(Cursor, Cursor.CurrentLineNumber + Offset);
+			return new RebasedLogCursor(cursor, cursor.CurrentLineNumber + offset);
 		}
 
 		/// <summary>
 		/// Attempts to get a line at the given offset
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Offset">Offset of the line to retrieve</param>
-		/// <param name="NextLine">On success, receives the matched line</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">Offset of the line to retrieve</param>
+		/// <param name="nextLine">On success, receives the matched line</param>
 		/// <returns>True if the line was retrieved</returns>
-		public static bool TryGetLine(this ILogCursor Cursor, int Offset, [NotNullWhen(true)] out string? NextLine)
+		public static bool TryGetLine(this ILogCursor cursor, int offset, [NotNullWhen(true)] out string? nextLine)
 		{
-			NextLine = Cursor[Offset];
-			return NextLine != null;
+			nextLine = cursor[offset];
+			return nextLine != null;
+		}
+
+		/// <summary>
+		/// Tests whether the current line contains the given text
+		/// </summary>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="text">The text to look for</param>
+		/// <returns>True if the line contains the given string</returns>
+		public static bool Contains(this ILogCursor cursor, string text) => Contains(cursor, 0, text);
+
+		/// <summary>
+		/// Tests whether the current line contains the given text
+		/// </summary>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">Offset of the line to match</param>
+		/// <param name="text">The text to look for</param>
+		/// <returns>True if the line contains the given string</returns>
+		public static bool Contains(this ILogCursor cursor, int offset, string text)
+		{
+			string? line;
+			return cursor.TryGetLine(offset, out line) && line.Contains(text, StringComparison.Ordinal);
+		}
+
+		/// <summary>
+		/// Tests whether the current line starts with the given text
+		/// </summary>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="text">The text to look for</param>
+		/// <returns>True if the line starts with the given string</returns>
+		public static bool StartsWith(this ILogCursor cursor, string text) => StartsWith(cursor, 0, text);
+
+		/// <summary>
+		/// Tests whether the current line starts with the given text
+		/// </summary>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">Offset of the line to match</param>
+		/// <param name="text">The text to look for</param>
+		/// <returns>True if the line starts with the given string</returns>
+		public static bool StartsWith(this ILogCursor cursor, int offset, string text)
+		{
+			string? line;
+			return cursor.TryGetLine(offset, out line) && line.StartsWith(text, StringComparison.Ordinal);
 		}
 
 		/// <summary>
 		/// Determines if the current line matches the given regex
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Pattern">The regex pattern to match</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="pattern">The regex pattern to match</param>
 		/// <returns>True if the current line matches the given patter</returns>
-		public static bool IsMatch(this ILogCursor Cursor, string Pattern)
+		public static bool IsMatch(this ILogCursor cursor, Regex pattern)
 		{
-			return IsMatch(Cursor, 0, Pattern);
+			return IsMatch(cursor, 0, pattern);
 		}
 
 		/// <summary>
 		/// Determines if the line at the given offset matches the given regex
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Offset">Offset of the line to match</param>
-		/// <param name="Pattern">The regex pattern to match</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">Offset of the line to match</param>
+		/// <param name="pattern">The regex pattern to match</param>
 		/// <returns>True if the requested line matches the given patter</returns>
-		public static bool IsMatch(this ILogCursor Cursor, int Offset, string Pattern)
+		public static bool IsMatch(this ILogCursor cursor, int offset, Regex pattern)
 		{
-			string? Line;
-			return Cursor.TryGetLine(Offset, out Line) && Regex.IsMatch(Line!, Pattern);
+			string? line;
+			return cursor.TryGetLine(offset, out line) && pattern.IsMatch(line!);
 		}
 
 		/// <summary>
 		/// Determines if the current line matches the given regex
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Pattern">The regex pattern to match</param>
-		/// <param name="OutMatch">On success, receives the match result</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="pattern">The regex pattern to match</param>
+		/// <param name="outMatch">On success, receives the match result</param>
 		/// <returns>True if the current line matches the given patter</returns>
-		public static bool TryMatch(this ILogCursor Cursor, string Pattern, [NotNullWhen(true)] out Match? OutMatch)
+		public static bool TryMatch(this ILogCursor cursor, Regex pattern, [NotNullWhen(true)] out Match? outMatch)
 		{
-			return TryMatch(Cursor, 0, Pattern, out OutMatch);
+			return TryMatch(cursor, 0, pattern, out outMatch);
 		}
 
 		/// <summary>
 		/// Determines if the line at the given offset matches the given regex
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Offset">The line offset to check</param>
-		/// <param name="Pattern">The regex pattern to match</param>
-		/// <param name="OutMatch">On success, receives the match result</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">The line offset to check</param>
+		/// <param name="pattern">The regex pattern to match</param>
+		/// <param name="outMatch">On success, receives the match result</param>
 		/// <returns>True if the current line matches the given patter</returns>
-		public static bool TryMatch(this ILogCursor Cursor, int Offset, string Pattern, [NotNullWhen(true)] out Match? OutMatch)
+		public static bool TryMatch(this ILogCursor cursor, int offset, Regex pattern, [NotNullWhen(true)] out Match? outMatch)
 		{
-			string? Line;
-			if (!Cursor.TryGetLine(Offset, out Line))
+			string? line;
+			if (!cursor.TryGetLine(offset, out line))
 			{
-				OutMatch = null;
+				outMatch = null;
 				return false;
 			}
 
-			Match Match = Regex.Match(Line, Pattern);
-			if (!Match.Success)
+			Match match = pattern.Match(line);
+			if (!match.Success)
 			{
-				OutMatch = null;
+				outMatch = null;
 				return false;
 			}
 
-			OutMatch = Match;
+			outMatch = match;
 			return true;
 		}
 
 		/// <summary>
 		/// Matches lines forward from the given offset while the given pattern matches
 		/// </summary>
-		/// <param name="Cursor">The log cursor instance</param>
-		/// <param name="Offset">Initial offset</param>
-		/// <param name="Pattern">Pattern to match</param>
+		/// <param name="cursor">The log cursor instance</param>
+		/// <param name="offset">Initial offset</param>
+		/// <param name="pattern">Pattern to match</param>
 		/// <returns>Offset of the last line that still matches the pattern (inclusive)</returns>
-		public static int MatchForwards(this ILogCursor Cursor, int Offset, string Pattern)
+		public static int MatchForwards(this ILogCursor cursor, int offset, Regex pattern)
 		{
-			while (IsMatch(Cursor, Offset + 1, Pattern))
+			while (IsMatch(cursor, offset + 1, pattern))
 			{
-				Offset++;
+				offset++;
 			}
-			return Offset;
+			return offset;
 		}
 
 		/// <summary>
 		/// Matches lines forwards from the given offset until the given pattern matches
 		/// </summary>
-		/// <param name="Cursor">The log cursor</param>
-		/// <param name="Offset">Initial offset</param>
-		/// <param name="Pattern">Pattern to match</param>
+		/// <param name="cursor">The log cursor</param>
+		/// <param name="offset">Initial offset</param>
+		/// <param name="pattern">Pattern to match</param>
 		/// <returns>Offset of the line that matches the pattern (inclusive), or EOF is encountered</returns>
-		public static int MatchForwardsUntil(this ILogCursor Cursor, int Offset, string Pattern)
+		public static int MatchForwardsUntil(this ILogCursor cursor, int offset, Regex pattern)
 		{
-			string? NextLine;
-			for (int NextOffset = Offset + 1; Cursor.TryGetLine(NextOffset, out NextLine); NextOffset++)
+			string? nextLine;
+			for (int nextOffset = offset + 1; cursor.TryGetLine(nextOffset, out nextLine); nextOffset++)
 			{
-				if (Regex.IsMatch(NextLine, Pattern))
+				if (pattern.IsMatch(nextLine))
 				{
-					return NextOffset;
+					return nextOffset;
 				}
 			}
-			return Offset;
+			return offset;
+		}
+
+		/// <summary>
+		/// Tests if a line consists only of whitespace
+		/// </summary>
+		/// <param name="cursor">The log cursor</param>
+		/// <param name="offset">Offset of the line to check</param>
+		/// <returns></returns>
+		public static bool IsBlank(this ILogCursor cursor, int offset)
+		{
+			if (!cursor.TryGetLine(offset, out string? line))
+			{
+				return false;
+			}
+
+			for (int idx = 0; idx < line.Length; idx++)
+			{
+				if (!Char.IsWhiteSpace(line[idx]))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		/// <summary>
+		/// Check if a line at a given offset is left-aligned with at least this indent of another line
+		/// </summary>
+		/// <param name="cursor">The log cursor</param>
+		/// <param name="offset">Offset of the line to check</param>
+		/// <param name="firstLine">The first line to compare with</param>
+		/// <returns>True if the line at the given offset is aligned at least as much as the current lien</returns>
+		public static bool IsAligned(this ILogCursor cursor, int offset, string? firstLine)
+		{
+			if (firstLine == null || !cursor.TryGetLine(offset, out string? line))
+			{
+				return false;
+			}
+
+			for (int idx = 0; idx < line.Length; idx++)
+			{
+				if (idx == firstLine.Length || !Char.IsWhiteSpace(firstLine[idx]))
+				{
+					return true;
+				}
+				if (line[idx] != firstLine[idx])
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		/// <summary>
+		/// Check if a line at a given offset is left-aligned with at least this indent of another line
+		/// </summary>
+		/// <param name="cursor">The log cursor</param>
+		/// <param name="offset">Offset of the line to check</param>
+		/// <param name="firstLine">The first line to compare with</param>
+		/// <returns>True if the line at the given offset is aligned at least as much as the current lien</returns>
+		public static bool IsHanging(this ILogCursor cursor, int offset, string? firstLine)
+		{
+			if (firstLine == null || !cursor.TryGetLine(offset, out string? line))
+			{
+				return false;
+			}
+
+			for (int idx = 0; idx < line.Length; idx++)
+			{
+				if (idx == firstLine.Length || !Char.IsWhiteSpace(firstLine[idx]))
+				{
+					return Char.IsWhiteSpace(line[idx]);
+				}
+				if (line[idx] != firstLine[idx])
+				{
+					return false;
+				}
+			}
+
+			return true;
 		}
 	}
 }

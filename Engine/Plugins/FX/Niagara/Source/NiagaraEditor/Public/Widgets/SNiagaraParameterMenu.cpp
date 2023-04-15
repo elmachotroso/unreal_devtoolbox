@@ -2,7 +2,7 @@
 
 #include "SNiagaraParameterMenu.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "NiagaraActions.h"
@@ -39,7 +39,7 @@ void SNiagaraParameterMenu::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
@@ -155,26 +155,26 @@ void SNiagaraAddParameterFromPanelMenu::CollectMakeNew(FNiagaraMenuActionCollect
 		return;
 	}
 	
-	TConstArrayView<FNiagaraTypeDefinition> SectionTypes;
+	TArray<FNiagaraTypeDefinition> SectionTypes;
 	if(InNamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid) 
 	{
-		SectionTypes = MakeArrayView(FNiagaraTypeRegistry::GetRegisteredUserVariableTypes());
+		FNiagaraEditorUtilities::GetAllowedUserVariableTypes(SectionTypes);
 	}
 	else if(InNamespaceId == FNiagaraEditorGuids::SystemNamespaceMetaDataGuid)
 	{
-		SectionTypes = MakeArrayView(FNiagaraTypeRegistry::GetRegisteredSystemVariableTypes());
+		FNiagaraEditorUtilities::GetAllowedSystemVariableTypes(SectionTypes);
 	}
 	else if (InNamespaceId == FNiagaraEditorGuids::EmitterNamespaceMetaDataGuid)
 	{
-		SectionTypes = MakeArrayView(FNiagaraTypeRegistry::GetRegisteredEmitterVariableTypes());
+		FNiagaraEditorUtilities::GetAllowedEmitterVariableTypes(SectionTypes);
 	}
 	else if (InNamespaceId == FNiagaraEditorGuids::ParticleAttributeNamespaceMetaDataGuid)
 	{
-		SectionTypes = MakeArrayView(FNiagaraTypeRegistry::GetRegisteredParticleVariableTypes());
+		FNiagaraEditorUtilities::GetAllowedParticleVariableTypes(SectionTypes);
 	}
 	else
 	{
-		SectionTypes = MakeArrayView(FNiagaraTypeRegistry::GetRegisteredTypes());
+		FNiagaraEditorUtilities::GetAllowedTypes(SectionTypes);
 	}
 
 	TArray<FNiagaraTypeDefinition> TypeDefinitions;
@@ -278,7 +278,7 @@ void SNiagaraAddParameterFromPanelMenu::CollectParameterCollectionsActions(FNiag
 	//Create sub menus for parameter collections.
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> CollectionAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetFName(), CollectionAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraParameterCollection::StaticClass()->GetClassPathName(), CollectionAssets);
 
 	const FText Category = GetNamespaceCategoryText(FNiagaraEditorGuids::ParameterCollectionNamespaceMetaDataGuid);
 	for (FAssetData& CollectionAsset : CollectionAssets)
@@ -377,11 +377,9 @@ void SNiagaraAddParameterFromPanelMenu::CollectAllActions(FGraphActionListBuilde
 		// If culling parameter actions that match existing parameters in the graph, collect all IDs for parameters visited in the graph.
 		if(bCullParameterActionsAlreadyInGraph)
 		{ 
-			const TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& VariableToScriptVariableMap = Graph->GetAllMetaData();
-			for (auto It = VariableToScriptVariableMap.CreateConstIterator(); It; ++It)
-			{
-				ExistingGraphParameterIds.Add(It.Value()->Metadata.GetVariableGuid());
-			}
+			TArray<FGuid> VariableGuids;
+			Graph->GetAllScriptVariableGuids(VariableGuids);
+			ExistingGraphParameterIds.Append(VariableGuids);
 		}
 	}
 
@@ -440,10 +438,11 @@ void SNiagaraAddParameterFromPanelMenu::CollectAllActions(FGraphActionListBuilde
 				const FNiagaraVariable& Parameter = ParameterEntry.Key;
 
 				// Check if the graph owns the parameter (has a script variable for the parameter.)
-				if (const UNiagaraScriptVariable* ScriptVar = Graph->GetScriptVariable(Parameter))
+				if (Graph->HasVariable(Parameter))
 				{
 					// The graph owns the parameter. Skip if it is a static switch.
-					if (ScriptVar->GetIsStaticSwitch())
+					TOptional<bool> IsStaticSwitch = Graph->IsStaticSwitch(Parameter);
+					if (IsStaticSwitch.IsSet() && *IsStaticSwitch)
 					{
 						continue;
 					}
@@ -828,7 +827,8 @@ void SNiagaraAddParameterFromPinMenu::Construct(const FArguments& InArgs)
 void SNiagaraAddParameterFromPinMenu::CollectAllActions(FGraphActionListBuilderBase& OutAllActions)
 {
 	FNiagaraMenuActionCollector Collector;
-	TArray<FNiagaraTypeDefinition> Types(FNiagaraTypeRegistry::GetRegisteredTypes());
+	TArray<FNiagaraTypeDefinition> Types;
+	FNiagaraEditorUtilities::GetAllowedTypes(Types);
 	Types.Sort([](const FNiagaraTypeDefinition& A, const FNiagaraTypeDefinition& B) { return (A.GetNameText().ToLower().ToString() < B.GetNameText().ToLower().ToString()); });
 
 	for (const FNiagaraTypeDefinition& RegisteredType : Types)
@@ -876,7 +876,8 @@ void SNiagaraChangePinTypeMenu::CollectAllActions(FGraphActionListBuilderBase& O
 	UNiagaraNode* Node = Cast<UNiagaraNode>(PinToModify->GetOwningNode());
 	checkf(Node, TEXT("Niagara node pin did not have a valid outer node!"));
 
-	TArray<FNiagaraTypeDefinition> Types(FNiagaraTypeRegistry::GetRegisteredTypes());
+	TArray<FNiagaraTypeDefinition> Types;
+	FNiagaraEditorUtilities::GetAllowedTypes(Types);
 	Types.Sort([](const FNiagaraTypeDefinition& A, const FNiagaraTypeDefinition& B) { return (A.GetNameText().ToLower().ToString() < B.GetNameText().ToLower().ToString()); });
 
 	for (const FNiagaraTypeDefinition& RegisteredType : Types)

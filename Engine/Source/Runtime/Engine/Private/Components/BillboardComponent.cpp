@@ -17,6 +17,8 @@
 #include "LevelUtils.h"
 #include "TextureCompiler.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BillboardComponent)
+
 namespace BillboardConstants
 {
 	static const float DefaultScreenSize = 0.0025f;
@@ -99,7 +101,7 @@ public:
 
 			//save off override states
 #if WITH_EDITORONLY_DATA
-			bIsActorLocked = Owner->IsLockLocation();
+			bIsActorLocked = InComponent->bShowLockedLocation && Owner->IsLockLocation();
 #else // WITH_EDITORONLY_DATA
 			bIsActorLocked = false;
 #endif // WITH_EDITORONLY_DATA
@@ -333,12 +335,17 @@ FBoxSphereBounds UBillboardComponent::CalcBounds(const FTransform& LocalToWorld)
 	return FBoxSphereBounds(LocalToWorld.GetLocation(),FVector(NewScale,NewScale,NewScale),FMath::Sqrt(3.0f * FMath::Square(NewScale)));
 }
 
+bool UBillboardComponent::IsShown(const FEngineShowFlags& ShowFlags) const
+{
+	return ShowFlags.BillboardSprites;
+}
+
 #if WITH_EDITOR
-bool UBillboardComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UBillboardComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	AActor* Actor = GetOwner();
 
-	if (!bConsiderOnlyBSP && ShowFlags.BillboardSprites && Sprite != nullptr && Actor != nullptr)
+	if (!bConsiderOnlyBSP && Sprite != nullptr && Actor != nullptr)
 	{
 		const float Scale = GetComponentTransform().GetMaximumAxisScale();
 
@@ -360,11 +367,11 @@ bool UBillboardComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox,
 	return false;
 }
 
-bool UBillboardComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UBillboardComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	AActor* Actor = GetOwner();
 
-	if (!bConsiderOnlyBSP && ShowFlags.BillboardSprites && Sprite != nullptr && Actor != nullptr)
+	if (!bConsiderOnlyBSP && Sprite != nullptr && Actor != nullptr)
 	{
 		const float Scale = GetComponentTransform().GetMaximumAxisScale();
 		const float MaxExtent = FMath::Max(Sprite->GetSizeX(), Sprite->GetSizeY());
@@ -421,3 +428,4 @@ void UBillboardComponent::SetEditorScale(float InEditorScale)
 	}
 }
 #endif
+

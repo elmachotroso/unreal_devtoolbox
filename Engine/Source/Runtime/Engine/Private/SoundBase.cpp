@@ -11,6 +11,8 @@
 #include "Sound/SoundClass.h"
 #include "Sound/SoundSubmix.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundBase)
+
 
 USoundBase::USoundBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -63,7 +65,7 @@ float USoundBase::GetMaxDistance() const
 		}
 	}
 
-	return WORLD_MAX;
+	return FAudioDevice::GetMaxWorldDistance();
 }
 
 float USoundBase::GetDuration() const
@@ -286,88 +288,18 @@ const TArray<UAssetUserData*>* USoundBase::GetAssetUserDataArray() const
 	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }
 
-TUniquePtr<Audio::IParameterTransmitter> USoundBase::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
+TSharedPtr<Audio::IParameterTransmitter> USoundBase::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
 {
-	class FDefaultParameterTransmitter : public Audio::IParameterTransmitter
-	{
-		uint64 InstanceID = INDEX_NONE;
-		TArray<FAudioParameter> AudioParameters;
-
-	public:
-		FDefaultParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams)
-			: InstanceID(MoveTemp(InParams.InstanceID))
-			, AudioParameters(MoveTemp(InParams.DefaultParams))
-		{
-		}
-
-		virtual ~FDefaultParameterTransmitter() = default;
-
-		bool Reset() override
-		{
-			AudioParameters.Reset();
-			return true;
-		}
-
-		bool SetParameters(TArray<FAudioParameter>&& InParameters) override
-		{
-			FAudioParameter::Merge(MoveTemp(InParameters), AudioParameters);
-			return true;
-		}
-
-		uint64 GetInstanceID() const override
-		{
-			return InstanceID;
-		}
-
-		bool GetParameter(FName InName, FAudioParameter& OutValue) const override
-		{
-			if (const FAudioParameter* Param = FAudioParameter::FindParam(AudioParameters, InName))
-			{
-				OutValue = *Param;
-				return true;
-			}
-
-			return false;
-		}
-
-		TArray<UObject*> GetReferencedObjects() const override
-		{
-			TArray<UObject*> Objects;
-			for (const FAudioParameter& Param : AudioParameters)
-			{
-				if (Param.ObjectParam)
-				{
-					Objects.Add(Param.ObjectParam);
-				}
-
-				for (UObject* Object : Param.ArrayObjectParam)
-				{
-					if (Object)
-					{
-						Objects.Add(Object);
-					}
-				}
-			}
-
-			return Objects;
-		}
-
-		TUniquePtr<Audio::IParameterTransmitter> Clone() const override
-		{
-			return MakeUnique<FDefaultParameterTransmitter>(*this);
-		}
-	};
-
-	return MakeUnique<FDefaultParameterTransmitter>(MoveTemp(InParams));
+	return nullptr;
 }
 
-void USoundBase::InitParameters(TArray<FAudioParameter>& InParametersToInit, FName InFeatureName)
+void USoundBase::InitParameters(TArray<FAudioParameter>& ParametersToInit, FName InFeatureName)
 {
-	for (int32 i = InParametersToInit.Num() - 1; i >= 0; --i)
+	for (int32 i = ParametersToInit.Num() - 1; i >= 0; --i)
 	{
-		if (!IsParameterValid(InParametersToInit[i]))
+		if (!IsParameterValid(ParametersToInit[i]))
 		{
-			InParametersToInit.RemoveAtSwap(i, 1, false /* bAllowShrinking */);
+			ParametersToInit.RemoveAtSwap(i, 1, false /* bAllowShrinking */);
 		}
 	}
 }
@@ -409,3 +341,22 @@ bool USoundBase::IsParameterValid(const FAudioParameter& InParameter) const
 
 	return true;
 }
+
+#if WITH_EDITORONLY_DATA
+
+void USoundBase::SetTimecodeOffset(const FSoundTimecodeOffset& InTimecodeOffset)
+{
+	TimecodeOffset = InTimecodeOffset;
+}
+
+TOptional<FSoundTimecodeOffset> USoundBase::GetTimecodeOffset() const
+{
+	static const FSoundTimecodeOffset Defaults;
+	if(TimecodeOffset == Defaults)
+	{
+		return {};
+	}
+	return TimecodeOffset;
+}
+
+#endif //WITH_EDITORONLY_DATA

@@ -83,6 +83,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FParticleSpriteUniformParameters, ENGINE_A
 	SHADER_PARAMETER_EX( float, RotationBias, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, NormalsType, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, InvDeltaSeconds, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER( FVector3f, LWCTile )
 	SHADER_PARAMETER_EX( FVector2f, PivotOffset, EShaderPrecisionModifier::Half )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FParticleSpriteUniformParameters> FParticleSpriteUniformBufferRef;
@@ -131,6 +132,11 @@ public:
 	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
 	 */
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	/**
+	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
+	 */
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 
 	/**
 	 * Set the source vertex buffer that contains particle instance data.

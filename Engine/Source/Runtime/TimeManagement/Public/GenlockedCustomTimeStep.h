@@ -2,8 +2,16 @@
 
 #pragma once
 
+#include "CoreTypes.h"
 #include "FixedFrameRateCustomTimeStep.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/FrameRate.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "GenlockedCustomTimeStep.generated.h"
+
+class UObject;
 
 /**
  * Class to control the Engine Timestep from a Genlock signal.
@@ -36,4 +44,11 @@ public:
 
 	/** Returns how many sync counts are expected between ticks*/
 	virtual uint32 GetExpectedSyncCountDelta() const;
+
+	/** Whether automatic format detection is supported. */ 
+	virtual bool SupportsFormatAutoDetection() const { return false; };
+
+	/** Whether this custom time step should autodetect the video format if supported. */
+	UPROPERTY()
+	bool bAutoDetectFormat = false;
 };

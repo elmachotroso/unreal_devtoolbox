@@ -16,6 +16,22 @@
 #include "UObject/PackageResourceManager.h"
 #include "UObject/UObjectGlobals.h"
 
+DEFINE_LOG_CATEGORY(LogBulkDataRegistry);
+
+const TCHAR* LexToString(UE::BulkDataRegistry::ERegisterResult Value)
+{
+	using namespace UE::BulkDataRegistry;
+	switch (Value)
+	{
+	case ERegisterResult::Success:
+		return TEXT("Success");
+	case ERegisterResult::AlreadyExists:
+		return TEXT("AlreadyExists");
+	default:
+		return TEXT("InvalidResultCode");
+	}
+}
+
 namespace UE::BulkDataRegistry::Private
 {
 
@@ -29,19 +45,30 @@ public:
 	FBulkDataRegistryNull() = default;
 	virtual ~FBulkDataRegistryNull() {}
 
-	virtual void Register(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override {}
+	virtual UE::BulkDataRegistry::ERegisterResult
+		TryRegister(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override
+	{
+		return UE::BulkDataRegistry::ERegisterResult::Success;
+	}
+	virtual void UpdateRegistrationData(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override {}
+	virtual void Unregister(const UE::Serialization::FEditorBulkData& BulkData) override {}
 	virtual void OnExitMemory(const UE::Serialization::FEditorBulkData& BulkData) override {}
 	virtual TFuture<UE::BulkDataRegistry::FMetaData> GetMeta(const FGuid& BulkDataId) override
 	{
 		TPromise<UE::BulkDataRegistry::FMetaData> Promise;
-		Promise.SetValue(UE::BulkDataRegistry::FMetaData{ false, FIoHash(), 0 });
+		Promise.SetValue(UE::BulkDataRegistry::FMetaData{ FIoHash(), 0 });
 		return Promise.GetFuture();
 	}
 	virtual TFuture<UE::BulkDataRegistry::FData> GetData(const FGuid& BulkDataId) override
 	{
 		TPromise<UE::BulkDataRegistry::FData> Promise;
-		Promise.SetValue(UE::BulkDataRegistry::FData{ false, FCompressedBuffer() });
+		Promise.SetValue(UE::BulkDataRegistry::FData{ FCompressedBuffer() });
 		return Promise.GetFuture();
+	}
+	virtual bool TryGetBulkData(const FGuid & BulkDataId, UE::Serialization::FEditorBulkData* OutBulk = nullptr,
+		FName* OutOwner = nullptr) override
+	{
+		return false;
 	}
 	virtual uint64 GetBulkDataResaveSize(FName PackageName) override
 	{
@@ -55,9 +82,15 @@ public:
 	FBulkDataRegistryTrackBulkDataToResave() = default;
 	virtual ~FBulkDataRegistryTrackBulkDataToResave() {}
 
-	virtual void Register(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override
+	virtual UE::BulkDataRegistry::ERegisterResult
+		TryRegister(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override
 	{
 		ResaveSizeTracker.Register(Owner, BulkData);
+		return UE::BulkDataRegistry::ERegisterResult::Success;
+	}
+	virtual void UpdateRegistrationData(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData) override
+	{
+		ResaveSizeTracker.UpdateRegistrationData(Owner, BulkData);
 	}
 	virtual uint64 GetBulkDataResaveSize(FName PackageName) override
 	{
@@ -143,11 +176,14 @@ FResaveSizeTracker::FResaveSizeTracker()
 	ELoadingPhase::Type CurrentPhase = IPluginManager::Get().GetLastCompletedLoadingPhase();
 	if (CurrentPhase == ELoadingPhase::None || CurrentPhase < ELoadingPhase::PostEngineInit)
 	{
-		FCoreDelegates::OnPostEngineInit.AddRaw(this, &FResaveSizeTracker::OnPostEngineInit);
+		// Our contract says that we need to keep information up until OnEnginePostInit is called on all
+		// subscribers to it, so we need to subscribe to the first event we can find that occurs after OnEnginePostInit
+		// is done. OnAllModuleLoadingPhasesComplete seems to be it.
+		FCoreDelegates::OnAllModuleLoadingPhasesComplete.AddRaw(this, &FResaveSizeTracker::OnAllModuleLoadingPhasesComplete);
 	}
 	else
 	{
-		OnPostEngineInit();
+		OnAllModuleLoadingPhasesComplete();
 	}
 	FCoreUObjectDelegates::OnEndLoadPackage.AddRaw(this, &FResaveSizeTracker::OnEndLoadPackage);
 }
@@ -155,10 +191,10 @@ FResaveSizeTracker::FResaveSizeTracker()
 FResaveSizeTracker::~FResaveSizeTracker()
 {
 	FCoreUObjectDelegates::OnEndLoadPackage.RemoveAll(this);
-	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FCoreDelegates::OnAllModuleLoadingPhasesComplete.RemoveAll(this);
 }
 
-void FResaveSizeTracker::OnPostEngineInit()
+void FResaveSizeTracker::OnAllModuleLoadingPhasesComplete()
 {
 	bPostEngineInitComplete = true;
 
@@ -189,13 +225,19 @@ void FResaveSizeTracker::Register(UPackage* Owner, const UE::Serialization::FEdi
 	PackageBulkResaveSize.FindOrAdd(Owner->GetFName()) += BulkData.GetPayloadSize();
 }
 
+void FResaveSizeTracker::UpdateRegistrationData(UPackage* Owner, const UE::Serialization::FEditorBulkData& BulkData)
+{
+	// Not yet implemented; we keep the values only from the first registration
+	// Implementing this would require keeping more data; we will need to know the previous payload size to subtract it
+}
+
 uint64 FResaveSizeTracker::GetBulkDataResaveSize(FName PackageName)
 {
 	FReadScopeLock ScopeLock(Lock);
 	return PackageBulkResaveSize.FindRef(PackageName);
 }
 
-void FResaveSizeTracker::OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPackages)
+void FResaveSizeTracker::OnEndLoadPackage(const FEndLoadPackageContext& Context)
 {
 	if (!bPostEngineInitComplete)
 	{
@@ -203,8 +245,8 @@ void FResaveSizeTracker::OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPacka
 	}
 
 	TArray<FName> PackageNames;
-	PackageNames.Reserve(LoadedPackages.Num());
-	for (UPackage* LoadedPackage : LoadedPackages)
+	PackageNames.Reserve(Context.LoadedPackages.Num());
+	for (UPackage* LoadedPackage : Context.LoadedPackages)
 	{
 		PackageNames.Add(LoadedPackage->GetFName());
 	}
@@ -212,13 +254,16 @@ void FResaveSizeTracker::OnEndLoadPackage(TConstArrayView<UPackage*> LoadedPacka
 	FWriteScopeLock ScopeLock(Lock);
 	// The contract for GetBulkDataResaveSize specifies that we must answer correctly until
 	// OnEndLoadPackage is complete. This includes being called from other subscribers to OnEndLoadPackage
-	// that might run after us. So we defer the removals from PackageBulkResaveSize until the next call 
+	// that might run after us. So we defer the removals from PackageBulkResaveSize until the next top-level call 
 	// to OnEndLoadPackage.
-	for (FName PackageName : DeferredRemove)
+	if (Context.RecursiveDepth == 0)
 	{
-		PackageBulkResaveSize.Remove(PackageName);
+		for (FName PackageName : DeferredRemove)
+		{
+			PackageBulkResaveSize.Remove(PackageName);
+		}
+		DeferredRemove.Reset();
 	}
-	DeferredRemove.Reset();
 	DeferredRemove.Append(MoveTemp(PackageNames));
 }
 

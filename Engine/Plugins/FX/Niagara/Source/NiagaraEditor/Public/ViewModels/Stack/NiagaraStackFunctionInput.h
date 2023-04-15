@@ -280,13 +280,20 @@ public:
 	TOptional<FNiagaraVariableMetaData> GetMetadata() const;
 	TOptional<FGuid> GetMetadataGuid() const;
 
+
+	virtual const FCollectedUsageData& GetCollectedUsageData() const override;
+
+	bool OpenSourceAsset() const;
+
+	bool SupportsCustomExpressions() const;
+
 protected:
 	//~ UNiagaraStackEntry interface
 	virtual void FinalizeInternal() override;
 	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
 
 	bool UpdateRapidIterationParametersForAffectedScripts(const uint8* Data);
-	bool RemoveRapidIterationParametersForAffectedScripts();
+	bool RemoveRapidIterationParametersForAffectedScripts(bool bUpdateGraphGuidsForAffected = false);
 	FString ResolveDisplayNameArgument(const FString& InArg) const;
 	FStackIssueFixDelegate GetUpgradeDynamicInputVersionFix();
 

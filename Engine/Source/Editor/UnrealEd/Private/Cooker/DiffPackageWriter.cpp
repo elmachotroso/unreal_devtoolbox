@@ -124,7 +124,7 @@ void FDiffPackageWriter::BeginPackage(const FBeginPackageInfo& Info)
 	Inner->BeginPackage(Info);
 }
 
-TFuture<FMD5Hash> FDiffPackageWriter::CommitPackage(FCommitPackageInfo&& Info)
+void FDiffPackageWriter::CommitPackage(FCommitPackageInfo&& Info)
 {
 	if (bDiffCallstack && bSaveForDiff)
 	{
@@ -192,6 +192,11 @@ bool FDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousR
 {
 	checkf(!Inner->IsAnotherSaveNeeded(PreviousResult, SaveArgs),
 		TEXT("DiffPackageWriter does not support an Inner that needs multiple saves."));
+	if (PreviousResult == ESavePackageResult::Timeout)
+	{
+		return false;
+	}
+
 	// When looking for deterministic cook issues, first serialize the package to memory and do a simple diff with the
 	// existing package. If the simple memory diff was not identical, collect callstacks for all Serialize calls and
 	// dump differences to log
@@ -205,7 +210,7 @@ bool FDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousR
 			// The contract with the Inner is that Begin is paired with a single commit;
 			// send the old commit and the new begin
 			FCommitPackageInfo CommitInfo;
-			CommitInfo.bSucceeded = true;
+			CommitInfo.Status = IPackageWriter::ECommitStatus::Success;
 			CommitInfo.PackageName = BeginInfo.PackageName;
 			CommitInfo.WriteOptions = EWriteOptions::None;
 			Inner->CommitPackage(MoveTemp(CommitInfo));
@@ -295,18 +300,7 @@ FLinkerDiffPackageWriter::FLinkerDiffPackageWriter(TUniquePtr<ICookedPackageWrit
 {
 	FString DiffModeText;
 	FParse::Value(FCommandLine::Get(), TEXT("-LINKERDIFF="), DiffModeText);
-	DiffMode = EDiffMode::LDM_Algo;
-	if (DiffModeText == TEXT("1") || DiffModeText == TEXT("algo"))
-	{
-		DiffMode = EDiffMode::LDM_Algo;
-	}
-	else if (DiffModeText == TEXT("2") || DiffModeText == TEXT("consistent"))
-	{
-		DiffMode = EDiffMode::LDM_Consistent;
-	}
-
-	EnableNewSave = IConsoleManager::Get().FindConsoleVariable(TEXT("SavePackage.EnableNewSave"));
-	CurrentEnableNewSaveValue = EnableNewSave->GetInt();
+	DiffMode = EDiffMode::LDM_Consistent; // (DiffModeText == TEXT("2") || DiffModeText == TEXT("consistent"))
 }
 
 void FLinkerDiffPackageWriter::BeginPackage(const FBeginPackageInfo& Info)
@@ -328,6 +322,13 @@ bool FLinkerDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& Pre
 {
 	checkf(!Inner->IsAnotherSaveNeeded(PreviousResult, SaveArgs),
 		TEXT("LinkerDiffPackageWriter does not support an Inner that needs multiple saves."));
+	if (PreviousResult == ESavePackageResult::Timeout)
+	{
+		OtherResult.LinkerSave.Reset();
+		PreviousResult.LinkerSave.Reset();
+		return false;
+	}
+
 	if (!bHasStartedSecondSave)
 	{
 		bHasStartedSecondSave = true;
@@ -339,7 +340,14 @@ bool FLinkerDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& Pre
 		// The contract with the Inner is that every Begin is paired with a single commit.
 		// Send the old commit and the new begin.
 		IPackageWriter::FCommitPackageInfo CommitInfo;
-		CommitInfo.bSucceeded = OtherResult == ESavePackageResult::Success;
+		if (OtherResult == ESavePackageResult::Success)
+		{
+			CommitInfo.Status = IPackageWriter::ECommitStatus::Success;
+		}
+		else
+		{
+			CommitInfo.Status = IPackageWriter::ECommitStatus::Error;
+		}
 		CommitInfo.PackageName = BeginInfo.PackageName;
 		CommitInfo.WriteOptions = IPackageWriter::EWriteOptions::None;
 		Inner->CommitPackage(MoveTemp(CommitInfo));
@@ -350,10 +358,6 @@ bool FLinkerDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& Pre
 	{
 		CompareResults(PreviousResult);
 
-		if (DiffMode == EDiffMode::LDM_Algo)
-		{
-			EnableNewSave->Set(CurrentEnableNewSaveValue);
-		}
 		OtherResult.LinkerSave.Reset();
 		PreviousResult.LinkerSave.Reset();
 
@@ -363,21 +367,10 @@ bool FLinkerDiffPackageWriter::IsAnotherSaveNeeded(FSavePackageResultStruct& Pre
 
 void FLinkerDiffPackageWriter::SetupOtherAlgorithm()
 {
-	// If mode is comparing the two save algorithms, switch the cvar to the other algo before saving again,
-	// Otherwise the linker diff mode is tracking if the save is consistent across multiple save
-	if (DiffMode == EDiffMode::LDM_Algo)
-	{
-		// see CVarEnablePackageNewSave definition in SavePackageUtilities.cpp for value meaning
-		EnableNewSave->Set(CurrentEnableNewSaveValue & 1 ? 0 : 1);
-	}
 }
 
 void FLinkerDiffPackageWriter::SetupCurrentAlgorithm()
 {
-	if (DiffMode == EDiffMode::LDM_Algo)
-	{
-		EnableNewSave->Set(CurrentEnableNewSaveValue);
-	}
 }
 
 void FLinkerDiffPackageWriter::CompareResults(FSavePackageResultStruct& CurrentResult)

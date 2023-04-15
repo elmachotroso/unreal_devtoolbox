@@ -19,13 +19,14 @@
 #include "Animation/ExposedValueHandler.h"
 #include "AnimNodeFunctionRef.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #include "AnimNodeBase.generated.h"
 
 #define DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Method) \
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+#ifndef UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER
+	#define UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER 0
+#endif
 
 class IAnimClassInterface;
 class UAnimBlueprint;
@@ -135,17 +136,21 @@ struct FAnimationUpdateSharedContext
 	FAnimationUpdateSharedContext(FAnimationUpdateSharedContext& ) = delete;
 	FAnimationUpdateSharedContext& operator=(const FAnimationUpdateSharedContext&) = delete;
 
+#if !UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER
 	UE_DEPRECATED(5.0, "Please use the message & tagging system in UE::Anim::FMessageStack")
 	FAnimNodeTracker AncestorTracker;
+#endif
 
 	// Message stack used for storing scoped messages and tags during execution
 	UE::Anim::FMessageStack MessageStack;
 
 	void CopyForCachedUpdate(FAnimationUpdateSharedContext& Source)
 	{
+#if !UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		AncestorTracker.CopyTopsOnly(Source.AncestorTracker);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
 		MessageStack.CopyForCachedUpdate(Source.MessageStack);
 	}
 };
@@ -184,6 +189,7 @@ public:
 	ENGINE_API UAnimBlueprint* GetAnimBlueprint() const;
 #endif //WITH_EDITORONLY_DATA
 
+#if !UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER
 	template<typename NodeType>
 	UE_DEPRECATED(5.0, "Please use the message & tagging system in UE::Anim::FMessageStack")
 	FScopedAnimNodeTracker TrackAncestor(NodeType* Node) const {
@@ -195,7 +201,9 @@ public:
 
 		return FScopedAnimNodeTracker();
 	}
+#endif
 
+#if !UE_ANIM_REMOVE_DEPRECATED_ANCESTOR_TRACKER
 	template<typename NodeType>
 	UE_DEPRECATED(5.0, "Please use the message & tagging system in UE::Anim::FMessageStack")
 	NodeType* GetAncestor() const {
@@ -207,6 +215,7 @@ public:
 		
 		return nullptr;
 	}
+#endif
 
 	// Get the innermost scoped message of the specified type
 	template<typename TGraphMessageType>
@@ -435,6 +444,8 @@ public:
 	UE::Anim::FStackAttributeContainer CustomAttributes;
 
 public:
+	friend class FScopedExpectsAdditiveOverride;
+	
 	// This constructor allocates a new uninitialized pose for the specified anim instance
 	FPoseContext(FAnimInstanceProxy* InAnimInstanceProxy, bool bInExpectsAdditivePose = false)
 		: FAnimationBaseContext(InAnimInstanceProxy)
@@ -508,6 +519,27 @@ private:
 	// Is this pose expected to be an additive pose
 	bool bExpectsAdditivePose;
 };
+
+// Helper for modifying and resetting ExpectsAdditivePose on a FPoseContext
+class FScopedExpectsAdditiveOverride
+{
+public:
+	FScopedExpectsAdditiveOverride(FPoseContext& InContext, bool bInExpectsAdditive)
+		: Context(InContext)
+	{
+		bPreviousValue = Context.ExpectsAdditivePose();
+		Context.bExpectsAdditivePose = bInExpectsAdditive;
+	}
+	
+	~FScopedExpectsAdditiveOverride()
+	{
+		Context.bExpectsAdditivePose = bPreviousValue;
+	}
+private:
+	FPoseContext& Context;
+	bool bPreviousValue;
+};
+	
 
 
 /** Evaluation context passed around during animation tree evaluation */
@@ -668,12 +700,12 @@ protected:
 
 public:
 	/** Serialized link ID, used to build the non-serialized pointer map. */
-	UPROPERTY()
+	UPROPERTY(meta=(BlueprintCompilerGeneratedDefaults))
 	int32 LinkID;
 
 #if WITH_EDITORONLY_DATA
 	/** The source link ID, used for debug visualization. */
-	UPROPERTY()
+	UPROPERTY(meta=(BlueprintCompilerGeneratedDefaults))
 	int32 SourceLinkID;
 #endif
 
@@ -1023,5 +1055,3 @@ private:
 // Editor-only way of accessing mutable anim node data but with internal checks
 #define GET_MUTABLE_ANIM_NODE_DATA(Type, Identifier) (GetMutableData<Type>(GET_ANIM_NODE_DATA_ID_INTERNAL(Type, Identifier)))
 #endif
-
-#include "UObject/DefineUPropertyMacros.h"

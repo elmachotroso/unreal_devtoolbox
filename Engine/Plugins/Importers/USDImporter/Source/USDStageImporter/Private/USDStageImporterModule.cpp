@@ -3,10 +3,13 @@
 #include "USDStageImporterModule.h"
 
 #include "UnrealUSDWrapper.h"
+#include "USDMemory.h"
 #include "USDStageImporter.h"
+#include "USDStageImportOptionsCustomization.h"
 
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
 #include "Templates/UniquePtr.h"
 
 #define LOCTEXT_NAMESPACE "UsdStageImporterModule"
@@ -17,7 +20,12 @@ public:
 	virtual void StartupModule() override
 	{
 #if USE_USD_SDK
+		LLM_SCOPE_BYTAG(Usd);
+
 		IUnrealUSDWrapperModule& UnrealUSDWrapperModule = FModuleManager::Get().LoadModuleChecked< IUnrealUSDWrapperModule >(TEXT("UnrealUSDWrapper"));
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>( TEXT( "PropertyEditor" ) );
+		PropertyModule.RegisterCustomClassLayout( TEXT( "UsdStageImportOptions" ), FOnGetDetailCustomizationInstance::CreateStatic( &FUsdStageImportOptionsCustomization::MakeInstance ) );
 
 		USDStageImporter = MakeUnique<UUsdStageImporter>();
 #endif // #if USE_USD_SDK
@@ -25,6 +33,9 @@ public:
 
 	virtual void ShutdownModule() override
 	{
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked< FPropertyEditorModule >( TEXT( "PropertyEditor" ) );
+		PropertyModule.UnregisterCustomClassLayout( TEXT( "UsdStageImportOptions" ) );
+
 		USDStageImporter.Reset();
 	}
 

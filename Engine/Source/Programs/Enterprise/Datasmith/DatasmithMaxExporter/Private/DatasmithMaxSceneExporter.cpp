@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "DatasmithMaxSceneExporter.h"
 
+#include "DatasmithMaxDirectLink.h"
+#include "DatasmithMaxConverters.h"
+
 #include "DatasmithMaxAttributes.h"
 #include "DatasmithMaxCameraExporter.h"
 #include "DatasmithMaxExporterDefines.h"
@@ -12,8 +15,9 @@
 #include "DatasmithSceneFactory.h"
 #include "VRayLights.h"
 
+
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -203,7 +207,7 @@ int FDatasmithMaxSceneExporter::GetSeedFromMaterial(Mtl* Material)
 	return Seed;
 }
 
-FString FDatasmithMaxSceneExporter::GetRandomSubMaterial(Mtl* Material, FVector RandomSeed)
+Mtl* FDatasmithMaxSceneExporter::GetRandomSubMaterial(Mtl* Material, FVector3f RandomSeed)
 {
 	uint32 RandomIndex = int(FMath::Abs(RandomSeed.X - RandomSeed.Y + RandomSeed.Z)) + GetSeedFromMaterial(Material);
 
@@ -219,10 +223,10 @@ FString FDatasmithMaxSceneExporter::GetRandomSubMaterial(Mtl* Material, FVector 
 
 	if (SubMats.Num() < 1)
 	{
-		return FString();
+		return nullptr;
 	}
 
-	return FString( SubMats[RandomIndex % SubMats.Num()]->GetName().data() );
+	return SubMats[RandomIndex % SubMats.Num()];
 }
 
 FTransform FDatasmithMaxSceneExporter::GetPivotTransform( INode* Node, float UnitMultiplier )
@@ -263,294 +267,13 @@ FTransform FDatasmithMaxSceneExporter::GetPivotTransform( INode* Node, float Uni
 	return Pivot;
 }
 
-void FDatasmithMaxSceneExporter::ExportAnimation( TSharedRef< IDatasmithLevelSequenceElement > LevelSequence, INode* Node, const TCHAR* Name, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams)
+void FDatasmithMaxSceneExporter::ExportAnimation( TSharedRef< IDatasmithLevelSequenceElement > LevelSequence, INode* ParentNode, INode* Node, const TCHAR* Name, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams)
 {
 	TSharedRef< IDatasmithTransformAnimationElement > Animation = FDatasmithSceneFactory::CreateTransformAnimation( Name );
 
-	if ( ParseTransformAnimation( Node, Animation, UnitMultiplier, LightParams) )
+	if ( ParseTransformAnimation( ParentNode, Node, Animation, UnitMultiplier, LightParams) )
 	{
 		LevelSequence->AddAnimation( Animation );
-	}
-}
-
-void FDatasmithMaxSceneExporter::ExportMeshActor(TSharedRef< IDatasmithScene > DatasmithScene, TSet<uint16>& SupportedChannels, INode* Node, const TCHAR* MeshName,
-	float UnitMultiplier, bool bPivotIsBakedInGeometry, Mtl* StaticMeshMtl, const EStaticMeshExportMode& ExportMode)
-{
-	FTransform Pivot = GetPivotTransform( Node, UnitMultiplier );
-	bool bNeedPivotComponent = !bPivotIsBakedInGeometry && ( !Pivot.Equals( FTransform::Identity ) );
-
-	TSharedRef< IDatasmithMeshActorElement > MeshActor = FDatasmithSceneFactory::CreateMeshActor( *FString::FromInt( Node->GetHandle() ) );
-	MeshActor->SetStaticMeshPathName( MeshName );
-
-	switch (ExportMode)
-	{
-	case EStaticMeshExportMode::BoundingBox:
-		MeshActor->AddTag(TEXT("Datasmith.Attributes.Geometry: BoundingBox"));
-		break;
-	default:
-		break;
-	} 
-
-	TSharedRef< IDatasmithActorElement > NodeActor = MeshActor;
-
-	if ( bNeedPivotComponent )
-	{
-		NodeActor = FDatasmithSceneFactory::CreateActor( *FString::FromInt( Node->GetHandle() ) );
-
-		MeshActor->SetTranslation( Pivot.GetTranslation() );
-		MeshActor->SetRotation( Pivot.GetRotation() );
-		MeshActor->SetScale( Pivot.GetScale3D() );
-	}
-
-	ParseActor( Node, NodeActor, UnitMultiplier, DatasmithScene );
-
-	if (ExportMode == EStaticMeshExportMode::Default && StaticMeshMtl != Node->GetMtl())
-	{
-		ParseMaterialForMeshActor( Node->GetMtl(), MeshActor, SupportedChannels, MeshActor->GetTranslation() );
-	}
-
-	if ( bPivotIsBakedInGeometry || bNeedPivotComponent )
-	{
-		FTransform NodeActorTransform( NodeActor->GetRotation(), NodeActor->GetTranslation(), NodeActor->GetScale() );
-		NodeActorTransform = Pivot.Inverse() * NodeActorTransform; // Remove pivot from the node actor transform
-
-		NodeActor->SetRotation( NodeActorTransform.GetRotation() );
-		NodeActor->SetTranslation( NodeActorTransform.GetTranslation() );
-		NodeActor->SetScale( NodeActorTransform.GetScale3D() );
-	}
-
-	if ( bNeedPivotComponent )
-	{
-		MeshActor->SetName( *( FString( NodeActor->GetName() ) + TEXT("_Pivot") ) );
-		MeshActor->SetLabel( *( FString( NodeActor->GetLabel() ) + TEXT("_Pivot") ) );
-		MeshActor->SetIsAComponent( true );
-
-		NodeActor->AddChild( MeshActor, EDatasmithActorAttachmentRule::KeepRelativeTransform );
-
-		if ( !FMath::IsNearlyEqual( NodeActor->GetScale().X, NodeActor->GetScale().Y ) || !FMath::IsNearlyEqual( NodeActor->GetScale().X, NodeActor->GetScale().Z ) )
-		{
-			DatasmithMaxLogger::Get().AddInvalidTransform( Node );
-		}
-	}
-
-	DatasmithScene->AddActor( NodeActor );
-}
-
-TSharedRef< IDatasmithActorElement > FDatasmithMaxSceneExporter::ExportHierarchicalInstanceStaticMeshActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Node, INode* CustomMeshNode, const TCHAR* Label, TSet<uint16>& SupportedChannels, Mtl* StaticMeshMtl, const TArray<Matrix3>* Instances,
-	const TCHAR* MeshName, float UnitMultiplier, const EStaticMeshExportMode& ExportMode, TSharedPtr< IDatasmithActorElement >& OutInversedHISMActor)
-{
-	check( Node && Instances && MeshName);
-
-	TSharedPtr< IDatasmithMeshActorElement > MeshActor;
-	FVector Pos, Scale;
-	FQuat Rotation;
-
-	const FVector RandomSeed(FMath::Rand(), FMath::Rand(), FMath::Rand());
-	auto FinalizeHISMActor = [&](TSharedPtr< IDatasmithMeshActorElement >& FinalizingActor, FVector Seed, const TCHAR* ActorLabel)
-	{
-		FinalizingActor->SetStaticMeshPathName(MeshName);
-
-		INode* MeshNode = CustomMeshNode ? CustomMeshNode : Node;
-
-		if (ExportMode == EStaticMeshExportMode::Default && StaticMeshMtl != MeshNode->GetMtl())
-		{
-			TSharedRef< IDatasmithMeshActorElement > MeshActorRef = FinalizingActor.ToSharedRef();
-			ParseMaterialForMeshActor(StaticMeshMtl, MeshActorRef, SupportedChannels, Seed);
-		}
-
-		if (ActorLabel)
-		{
-			FinalizingActor->SetLabel(ActorLabel);
-		}
-
-		FinalizingActor->SetIsAComponent(true);
-
-		switch (ExportMode)
-		{
-		case EStaticMeshExportMode::BoundingBox:
-			FinalizingActor->AddTag(TEXT("Datasmith.Attributes.Geometry: BoundingBox"));
-			break;
-		default:
-			break;
-		}
-	};
-
-	if (Node->GetWSMDerivedObject() != nullptr)
-	{
-		MaxToUnrealCoordinates(Node->GetObjTMAfterWSM(GetCOREInterface()->GetTime()), Pos, Rotation, Scale, UnitMultiplier);
-	}
-	else
-	{
-		MaxToUnrealCoordinates(Node->GetObjectTM(GetCOREInterface()->GetTime()), Pos, Rotation, Scale, UnitMultiplier);
-	}
-
-	const int32 InstancesCount = Instances->Num();
-	if ( InstancesCount == 1 )
-	{
-		// Export the the hism as a normal static mesh
-		MeshActor = FDatasmithSceneFactory::CreateMeshActor(MeshName);
-
-		// Apply the relative transfrom of the instance to the forest world transform
-		FTransform WithoutInstance(Rotation, Pos, Scale);
-		FVector InstancePos, InstanceScale;
-		FQuat InstanceRotation;
-		MaxToUnrealCoordinates((*Instances)[0], InstancePos, InstanceRotation, InstanceScale, UnitMultiplier);
-		FTransform WithInstance(WithoutInstance * FTransform(InstanceRotation, InstancePos, InstanceScale));
-
-		MeshActor->SetTranslation(WithInstance.GetLocation());
-		MeshActor->SetScale(WithInstance.GetScale3D());
-		MeshActor->SetRotation(WithInstance.GetRotation());
-	}
-	else
-	{
-		TSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement > HierarchicalInstanceStaticMeshActor = FDatasmithSceneFactory::CreateHierarchicalInstanceStaticMeshActor(MeshName);
-		MeshActor = HierarchicalInstanceStaticMeshActor;
-
-		FTransform HISMActorTransform(Rotation, Pos, Scale);
-		MeshActor->SetTranslation(Pos);
-		MeshActor->SetScale(Scale);
-		MeshActor->SetRotation(Rotation);
-
-		TArray< FTransform > InstancesTransform;
-		InstancesTransform.Reserve(InstancesCount);
-		for (int32 i = 0; i < InstancesCount; i++)
-		{
-			MaxToUnrealCoordinates((*Instances)[i], Pos, Rotation, Scale, UnitMultiplier);
-			InstancesTransform.Emplace(Rotation, Pos, Scale);
-		}
-
-		TArray< FTransform > NonInvertedTransforms, InvertedTransforms;
-		DatasmithMaxHelper::FilterInvertedScaleTransforms(InstancesTransform, NonInvertedTransforms, InvertedTransforms);
-
-		HierarchicalInstanceStaticMeshActor->ReserveSpaceForInstances(NonInvertedTransforms.Num());
-		for (const FTransform& InstanceTransform : NonInvertedTransforms)
-		{
-			HierarchicalInstanceStaticMeshActor->AddInstance(InstanceTransform);
-		}
-
-		//Adding an inverted HierarchicalInstancedStaticMeshActorElement for the instances with an inverted mesh due to negative scaling.
-		if (InvertedTransforms.Num() > 0)
-		{
-			FString InvertedHISMName = FString(MeshName).Append("_inv");
-			TSharedPtr< IDatasmithHierarchicalInstancedStaticMeshActorElement > InvertedHierarchicalInstanceStaticMeshActor = FDatasmithSceneFactory::CreateHierarchicalInstanceStaticMeshActor(*InvertedHISMName);
-			OutInversedHISMActor = InvertedHierarchicalInstanceStaticMeshActor;
-
-			OutInversedHISMActor->SetTranslation( HISMActorTransform.GetTranslation() );
-			OutInversedHISMActor->SetScale( -1 * HISMActorTransform.GetScale3D() );
-			OutInversedHISMActor->SetRotation( HISMActorTransform.GetRotation() );
-			
-			InvertedHierarchicalInstanceStaticMeshActor->ReserveSpaceForInstances(InvertedTransforms.Num());
-			for (const FTransform& InstanceTransform : InvertedTransforms)
-			{
-				//Correcting the instance transform to reverse the negative scaling of the parent.
-				InvertedHierarchicalInstanceStaticMeshActor->AddInstance( FTransform( InstanceTransform.GetRotation(), -1 * InstanceTransform.GetTranslation(), -1 * InstanceTransform.GetScale3D() ) );
-			}
-
-			TSharedPtr< IDatasmithMeshActorElement > InvertedMeshActor = InvertedHierarchicalInstanceStaticMeshActor;
-			if (Label)
-			{
-				FString InversedLabelString = FString(Label).Append("_inv");
-				FinalizeHISMActor(InvertedMeshActor, RandomSeed, *InversedLabelString);
-			}
-			else
-			{
-				FinalizeHISMActor(InvertedMeshActor, RandomSeed, nullptr);
-			}
-		}
-	}
-
-	FinalizeHISMActor(MeshActor, RandomSeed, Label);
-
-	return MeshActor.ToSharedRef();
-}
-
-void FDatasmithMaxSceneExporter::ParseMaterialForMeshActor(Mtl* Material, TSharedRef< IDatasmithMeshActorElement >& MeshActor, TSet<uint16>& SupportedChannels, FVector RandomSeed)
-{
-	if (FDatasmithMaxMatHelper::GetMaterialClass(Material) == EDSMaterialType::XRefMat)
-	{
-		ParseMaterialForMeshActor(FDatasmithMaxMatHelper::GetRenderedXRefMaterial(Material), MeshActor, SupportedChannels, RandomSeed);
-		return;
-	}
-
-	if (Material != nullptr)
-	{
-		if (SupportedChannels.Num() <= 1)
-		{
-			if (FDatasmithMaxMatHelper::GetMaterialClass(Material) != EDSMaterialType::MultiMat)
-			{
-				if (FDatasmithMaxMatHelper::GetMaterialClass(Material) != EDSMaterialType::TheaRandom)
-				{
-					MeshActor->AddMaterialOverride(Material->GetName().data(), -1);
-				}
-				else
-				{
-					MeshActor->AddMaterialOverride( *GetRandomSubMaterial(Material, RandomSeed), -1 );
-				}
-			}
-			else
-			{
-				int Mid = 0;
-
-				//Find the lowest supported material id.
-				SupportedChannels.Sort([](const uint16& A, const uint16& B) { return (A < B); });
-				for (const uint16 SupportedMid : SupportedChannels)
-				{
-					Mid = SupportedMid;
-				}
-
-				// Replicate the 3ds max behavior where material ids greater than the number of sub-materials wrap around and are mapped to the existing sub-materials
-				if (Mtl* SubMaterial = Material->GetSubMtl(Mid % Material->NumSubMtls()))
-				{
-					if (FDatasmithMaxMatHelper::GetMaterialClass(SubMaterial) != EDSMaterialType::TheaRandom)
-					{
-						MeshActor->AddMaterialOverride(SubMaterial->GetName().data(), -1);
-					}
-					else
-					{
-						MeshActor->AddMaterialOverride( *GetRandomSubMaterial(SubMaterial, RandomSeed), -1 );
-					}
-				}
-			}
-		}
-		else
-		{
-			int ActualSubObj = 1;
-			SupportedChannels.Sort([](const uint16& A, const uint16& B) { return (A < B); });
-			for (const uint16 Mid : SupportedChannels)
-			{
-				if (FDatasmithMaxMatHelper::GetMaterialClass(Material) != EDSMaterialType::MultiMat)
-				{
-					if (FDatasmithMaxMatHelper::GetMaterialClass(Material) != EDSMaterialType::TheaRandom)
-					{
-						MeshActor->AddMaterialOverride(Material->GetName().data(), ActualSubObj);
-					}
-					else
-					{
-						MeshActor->AddMaterialOverride( *GetRandomSubMaterial(Material, RandomSeed), ActualSubObj );
-					}
-				}
-				else
-				{
-					// Replicate the 3ds max behavior where material ids greater than the number of sub-materials wrap around and are mapped to the existing sub-materials
-					int32 MaterialIndex = Mid % Material->NumSubMtls();
-
-					Mtl* SubMaterial = Material->GetSubMtl(MaterialIndex);
-					if (SubMaterial != nullptr)
-					{
-						if (FDatasmithMaxMatHelper::GetMaterialClass(SubMaterial) != EDSMaterialType::TheaRandom)
-						{
-							//Material slots in Max are not zero-based, so we serialize our SlotID starting from 1 for better visual consistency.
-							MeshActor->AddMaterialOverride(SubMaterial->GetName().data(), Mid + 1);
-						}
-						else
-						{
-							MeshActor->AddMaterialOverride( *GetRandomSubMaterial(SubMaterial, RandomSeed), MaterialIndex + 1 );
-						}
-					}
-				}
-				ActualSubObj++;
-			}
-		}
 	}
 }
 
@@ -726,7 +449,7 @@ TSharedPtr< IDatasmithLightActorElement > FDatasmithMaxSceneExporter::CreateLigh
 	return TSharedPtr< IDatasmithLightActorElement >();
 }
 
-void FDatasmithMaxSceneExporter::ParseUserProperties(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, TSharedRef< IDatasmithScene > DatasmithScene)
+TSharedPtr<IDatasmithMetaDataElement> FDatasmithMaxSceneExporter::ParseUserProperties(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	// Check if the node has some metadata associated as custom user properties (User Defined Properties in Object Properties)
 	MSTR Buffer;
@@ -773,7 +496,9 @@ void FDatasmithMaxSceneExporter::ParseUserProperties(INode* Node, TSharedRef< ID
 		}
 
 		DatasmithScene->AddMetaData(MetaDataElement);
+		return MetaDataElement;
 	}
+	return TSharedPtr<IDatasmithMetaDataElement>();
 }
 
 bool FDatasmithMaxSceneExporter::ParseActor(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, float UnitMultiplier, TSharedRef< IDatasmithScene > DatasmithScene)
@@ -815,7 +540,7 @@ bool FDatasmithMaxSceneExporter::ParseActor(INode* Node, TSharedRef< IDatasmithA
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParseTransformAnimation(INode* Node, TSharedRef< IDatasmithTransformAnimationElement > AnimationElement, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams)
+bool FDatasmithMaxSceneExporter::ParseTransformAnimation(INode* ParentNode, INode* Node, TSharedRef< IDatasmithTransformAnimationElement > AnimationElement, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams)
 {
 	if (Node == nullptr)
 	{
@@ -832,13 +557,12 @@ bool FDatasmithMaxSceneExporter::ParseTransformAnimation(INode* Node, TSharedRef
 	// Query the node transform in local space at -infinity to determine if it has any animation
 	Interval ValidInterval = FOREVER;
 	Matrix3 NodeTransform = Node->GetNodeTM(TIME_NegInfinity, &ValidInterval);
-	INode* Parent = Node->GetParentNode();
 
 // Matrix3::Matrix3(BOOL) is deprecated in 3ds max 2022 SDK
 #if MAX_PRODUCT_YEAR_NUMBER < 2022
-	Matrix3 ParentTransform = Parent ? Parent->GetNodeTM(TIME_NegInfinity, &ValidInterval) : Matrix3(true);
+	Matrix3 ParentTransform = ParentNode ? ParentNode->GetNodeTM(TIME_NegInfinity, &ValidInterval) : Matrix3(true);
 #else
-	Matrix3 ParentTransform = Parent ? Parent->GetNodeTM(TIME_NegInfinity, &ValidInterval) : Matrix3();
+	Matrix3 ParentTransform = ParentNode ? ParentNode->GetNodeTM(TIME_NegInfinity, &ValidInterval) : Matrix3();
 #endif
 	Matrix3 LocalTransform;
 
@@ -860,12 +584,12 @@ bool FDatasmithMaxSceneExporter::ParseTransformAnimation(INode* Node, TSharedRef
 
 		// The parent node could change at each frame because of the Link Constraint
 		NodeTransform = Node->GetNodeTM(CurrentTime, &ValidInterval);
-		Parent = Node->GetParentNode();
+		
 // Matrix3::Matrix3(BOOL) is deprecated in 3ds max 2022 SDK
 #if MAX_PRODUCT_YEAR_NUMBER < 2022
-		ParentTransform = Parent ? Parent->GetNodeTM(CurrentTime, &ValidInterval) : Matrix3(true);
+		ParentTransform = ParentNode ? ParentNode->GetNodeTM(CurrentTime, &ValidInterval) : Matrix3(true);
 #else
-		ParentTransform = Parent ? Parent->GetNodeTM(CurrentTime, &ValidInterval) : Matrix3();
+		ParentTransform = ParentNode ? ParentNode->GetNodeTM(CurrentTime, &ValidInterval) : Matrix3();
 #endif
 
 		Matrix3 InvParentTransform = Inverse(ParentTransform);
@@ -940,7 +664,7 @@ bool FDatasmithMaxSceneExporter::ParseTransformAnimation(INode* Node, TSharedRef
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParseLight(INode* Node, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene)
+bool FDatasmithMaxSceneExporter::ParseLight(DatasmithMaxDirectLink::FLightNodeConverter& Converter, INode* Node, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	EMaxLightClass LightClass = FDatasmithMaxSceneParser::GetLightClass(Node);
 	if (LightClass == EMaxLightClass::Unknown)
@@ -954,12 +678,7 @@ bool FDatasmithMaxSceneExporter::ParseLight(INode* Node, TSharedRef< IDatasmithL
 	}
 	else if (LightClass == EMaxLightClass::SunEquivalent)
 	{
-		LightElement->SetIntensity( 10.f );
-		LightElement->SetUseIes( false );
-		LightElement->SetUseTemperature( true );
-		LightElement->SetTemperature( 5780.f );
-		LightElement->SetColor( FLinearColor::White );
-
+		ParseSun(Node, LightElement);
 		return true;
 	}
 
@@ -979,7 +698,7 @@ bool FDatasmithMaxSceneExporter::ParseLight(INode* Node, TSharedRef< IDatasmithL
 	{
 		TSharedRef< IDatasmithPointLightElement > PointLightElement = StaticCastSharedRef< IDatasmithPointLightElement >( LightElement );
 
-		ParsePhotometricLight( *Light, PointLightElement, DatasmithScene );
+		ParsePhotometricLight(Converter, *Light, PointLightElement, DatasmithScene );
 	}
 	else if ( LightClass == EMaxLightClass::VRayLight && LightElement->IsA( EDatasmithElementType::AreaLight ) )
 	{
@@ -997,29 +716,25 @@ bool FDatasmithMaxSceneExporter::ParseLight(INode* Node, TSharedRef< IDatasmithL
 	{
 		TSharedRef< IDatasmithPointLightElement > PointLightElement = StaticCastSharedRef< IDatasmithPointLightElement >( LightElement );
 
-		ParseVRayLightIES( *Light, PointLightElement, DatasmithScene );
+		ParseVRayLightIES( Converter,  *Light, PointLightElement, DatasmithScene );
 	}
 	else if ( LightClass == EMaxLightClass::CoronaLight && LightElement->IsA( EDatasmithElementType::AreaLight ) )
 	{
 		TSharedRef< IDatasmithAreaLightElement > AreaLightElement = StaticCastSharedRef< IDatasmithAreaLightElement >( LightElement );
 
-		ParseCoronaLight( *Light, AreaLightElement, DatasmithScene );
+		ParseCoronaLight( Converter, *Light, AreaLightElement, DatasmithScene );
 	}
 	else
 	{
-		ParseLightParameters( LightClass, *Light, LightElement, DatasmithScene );
+		ParseLightParameters( Converter, LightClass, *Light, LightElement, DatasmithScene );
 	}
-
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
 	if ( LightElement->GetUseIes() )
 	{
-		if ( !PlatformFile.FileExists( LightElement->GetIesFile() ) )
+		if ( !Converter.IsIesProfileValid() )
 		{
 			LightElement->SetUseIes( false );
-
-			FString Error = FString("IES light definition \"") + FPaths::GetCleanFilename( LightElement->GetIesFile() ) + FString("\" cannot be found");
-			DatasmithMaxLogger::Get().AddMissingAssetError(*Error);
+			DatasmithMaxDirectLink::LogWarning(FString::Printf(TEXT("IES light definition \"%s\" cannot be found for light \"%s\""), *FPaths::GetCleanFilename(Converter.GetIesProfile()), LightElement->GetName()));
 		}
 	}
 
@@ -1065,14 +780,15 @@ bool FDatasmithMaxSceneExporter::ParseLightObject(LightObject& Light, TSharedRef
 {
 	LightState LState;
 	Interval ValidInterval = FOREVER;
-	Light.EvalLightState( 0, ValidInterval, &LState );
+	RefResult EvalLightStateResult = Light.EvalLightState( 0, ValidInterval, &LState );
 
 	LightElement->SetEnabled( Light.GetUseLight() != 0 );
 
 	Point3 LightColor = LState.color;
 	LightElement->SetColor( FLinearColor( LightColor.x, LightColor.y, LightColor.z ) );
 
-	LightElement->SetIntensity( Light.GetIntensity( GetCOREInterface()->GetTime() ) );
+	float Intensity = Light.GetIntensity( GetCOREInterface()->GetTime() );
+	LightElement->SetIntensity( Intensity );
 
 	if ( LightElement->IsA( EDatasmithElementType::PointLight ) )
 	{
@@ -1095,7 +811,7 @@ bool FDatasmithMaxSceneExporter::ParseLightObject(LightObject& Light, TSharedRef
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParseCoronaLight(LightObject& Light, TSharedRef< IDatasmithAreaLightElement > AreaLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
+bool FDatasmithMaxSceneExporter::ParseCoronaLight(DatasmithMaxDirectLink::FLightNodeConverter& Converter, LightObject& Light, TSharedRef< IDatasmithAreaLightElement > AreaLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	enum class ECoronaIntensityUnits
 	{
@@ -1170,7 +886,7 @@ bool FDatasmithMaxSceneExporter::ParseCoronaLight(LightObject& Light, TSharedRef
 			}
 			else if ( FCString::Stricmp(ParamDefinition.int_name, TEXT("iesfile")) == 0 )
 			{
-				AreaLightElement->SetIesFile( *GetActualPath( ParamBlock2->GetStr( ParamDefinition.ID, GetCOREInterface()->GetTime() ) ) );
+				Converter.ApplyIesProfile(*GetActualPath( ParamBlock2->GetStr( ParamDefinition.ID, GetCOREInterface()->GetTime() ) ));
 			}
 			else if ( FCString::Stricmp(ParamDefinition.int_name, TEXT("colorMode")) == 0 )
 			{
@@ -1241,15 +957,17 @@ bool FDatasmithMaxSceneExporter::ParseCoronaLight(LightObject& Light, TSharedRef
 
 	if ( AreaLightElement->GetUseIes() )
 	{
+
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
-		if (PlatformFile.FileExists(AreaLightElement->GetIesFile()))
+		if (Converter.IsIesProfileValid())
 		{
 			AreaLightElement->SetLightType(EDatasmithAreaLightType::Point);
 		}
 		else
 		{
 			AreaLightElement->SetUseIes( false );
+			DatasmithMaxDirectLink::LogWarning(FString::Printf(TEXT("IES light definition \"%s\" cannot be found for light \"%s\""), *FPaths::GetCleanFilename(Converter.GetIesProfile()), AreaLightElement->GetName()));
 		}
 	}
 
@@ -1361,9 +1079,19 @@ bool FDatasmithMaxSceneExporter::ParseCoronaLight(LightObject& Light, TSharedRef
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParsePhotometricLight(LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
+bool FDatasmithMaxSceneExporter::ParsePhotometricLight(DatasmithMaxDirectLink::FLightNodeConverter& Converter, LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	LightscapeLight& PhotometricLight = static_cast< LightscapeLight& >( Light );
+
+	// Photometric lights don't expose attenuation in EvalLightState
+	IParamBlock2* ParamBlock2 = PhotometricLight.GetParamBlockByID(LightscapeLight::PB_GENERAL);
+	bool bUseAtten = ParamBlock2->GetInt((short) LightscapeLight::PB_USE_FARATTENUATION) != 0;
+	float Atten = ParamBlock2->GetFloat((short) LightscapeLight::PB_END_FARATTENUATION);
+
+	if (bUseAtten)
+	{
+		PointLightElement->SetAttenuationRadius( Atten * (float)GetSystemUnitScale( UNITS_CENTIMETERS ) );
+	}
 
 	LightscapeLight::IntensityType IntensityUnits = PhotometricLight.GetIntensityType();
 
@@ -1407,8 +1135,13 @@ bool FDatasmithMaxSceneExporter::ParsePhotometricLight(LightObject& Light, TShar
 		PointLightElement->SetColor( FLinearColor( RGBFilter.x, RGBFilter.y, RGBFilter.z ) );
 	}
 
-	PointLightElement->SetIesFile( PhotometricLight.GetFullWebFileName() );
-	PointLightElement->SetUseIes( PhotometricLight.GetDistribution() == LightscapeLight::WEB_DIST );
+	bool bUseIes = PhotometricLight.GetDistribution() == LightscapeLight::WEB_DIST;
+
+	PointLightElement->SetUseIes( bUseIes );
+	if (bUseIes)
+	{
+		Converter.ApplyIesProfile(PhotometricLight.GetFullWebFileName());
+	}
 	PointLightElement->SetUseIesBrightness( false );
 
 	FQuat IesRotateX = FQuat( FVector::RightVector, FMath::DegreesToRadians( -PhotometricLight.GetWebRotateX() ) );
@@ -1640,6 +1373,103 @@ bool FDatasmithMaxSceneExporter::ParseVRayLight(LightObject& Light, TSharedRef< 
 	return true;
 }
 
+void FDatasmithMaxSceneExporter::ParseSun(INode* Node, TSharedRef<IDatasmithLightActorElement> LightElement)
+{
+	float Intensity = 10.0f;
+	FLinearColor Color = FLinearColor::White;
+	bool bUseTemperature = true;
+	float Temperature = 5780.f;
+
+	ObjectState ObjState = Node->EvalWorldState(0);
+	LightObject& Light = *(LightObject*)ObjState.obj;
+	Class_ID ClassID = Light.ClassID();
+
+	if(ClassID == VRAYSUNCLASS)
+	{
+		IParamBlock2* ParamBlock2 = Light.GetParamBlockByID( (short)EVRayLightParamBlocks::Params );
+
+		ParamBlockDesc2* ParamBlockDesc = ParamBlock2->GetDesc();
+
+		// Loop through all the defined parameters therein
+		for (int i = 0; i < ParamBlockDesc->count; i++)
+		{
+			const ParamDef& ParamDefinition = ParamBlockDesc->paramdefs[i];
+				
+			if (FCString::Stricmp(ParamDefinition.int_name, TEXT("intensity_multiplier")) == 0)
+			{
+				Intensity = ParamBlock2->GetFloat(ParamDefinition.ID, GetCOREInterface()->GetTime());
+			}
+			else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("filter_color")) == 0)
+			{
+				Color = FDatasmithMaxMatHelper::MaxLinearColorToFLinearColor((BMM_Color_fl)ParamBlock2->GetColor(ParamDefinition.ID, GetCOREInterface()->GetTime()));
+				bUseTemperature = false;
+			}
+		}
+	}
+	else if(ClassID == CORONASUNCLASS || ClassID == CORONASUNCLASSB)
+	{
+		int32 CoronaSunColorMode = 0;
+		float CoronaSunTemperature = 0;
+		FLinearColor CoronaSunColor;
+
+		const int NumParamBlocks = Light.NumParamBlocks();
+
+		for ( int j = 0; j < NumParamBlocks; j++ )
+		{
+			IParamBlock2* ParamBlock2 = Light.GetParamBlockByID( (short)j );
+			ParamBlockDesc2* ParamBlockDesc = ParamBlock2->GetDesc();
+
+			for (int i = 0; i < ParamBlockDesc->count; i++)
+			{
+				const ParamDef& ParamDefinition = ParamBlockDesc->paramdefs[i];
+
+				if (FCString::Stricmp(ParamDefinition.int_name, TEXT("intensity")) == 0)
+				{
+					Intensity = ParamBlock2->GetFloat(ParamDefinition.ID, GetCOREInterface()->GetTime());
+				}
+				else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("colorMode")) == 0)
+				{
+					CoronaSunColorMode = ParamBlock2->GetInt(ParamDefinition.ID, GetCOREInterface()->GetTime());
+				}
+				else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("blackbodyTemperature")) == 0)
+				{
+					CoronaSunTemperature = ParamBlock2->GetFloat(ParamDefinition.ID, GetCOREInterface()->GetTime());
+				}
+				else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("colorDirect")) == 0)
+				{
+					CoronaSunColor = FDatasmithMaxMatHelper::MaxLinearColorToFLinearColor((BMM_Color_fl)ParamBlock2->GetColor(ParamDefinition.ID, GetCOREInterface()->GetTime()));
+				}
+			}
+		}
+		switch (CoronaSunColorMode)
+		{
+		case 0: // Direct Input
+			{
+				bUseTemperature = false;
+				Color = CoronaSunColor;
+				break;
+			}
+		case 1: // Kelvin temp
+			{
+				bUseTemperature = true;
+				Temperature = CoronaSunTemperature;
+				break;
+			}
+		case 2: // Realistic
+			{
+				// Use defaults
+				break;
+			}
+		}
+	}
+
+	LightElement->SetIntensity( Intensity );
+	LightElement->SetUseIes( false );
+	LightElement->SetUseTemperature( bUseTemperature );
+	LightElement->SetTemperature( Temperature );
+	LightElement->SetColor( Color );
+}
+
 bool FDatasmithMaxSceneExporter::ParseVRayLightPortal(LightObject& Light, TSharedRef< IDatasmithLightmassPortalElement > LightPortalElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	IParamBlock2* ParamBlock2 = Light.GetParamBlockByID( (short)EVRayLightParamBlocks::Params );
@@ -1653,7 +1483,7 @@ bool FDatasmithMaxSceneExporter::ParseVRayLightPortal(LightObject& Light, TShare
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParseVRayLightIES(LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
+bool FDatasmithMaxSceneExporter::ParseVRayLightIES(DatasmithMaxDirectLink::FLightNodeConverter& Converter, LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	PointLightElement->SetUseIes( true );
 	PointLightElement->SetUseIesBrightness( false ); // Vray IES lights have their own intensity
@@ -1697,7 +1527,7 @@ bool FDatasmithMaxSceneExporter::ParseVRayLightIES(LightObject& Light, TSharedRe
 			}
 			else if ( FCString::Stricmp(ParamDefinition.int_name, TEXT("ies_file")) == 0 )
 			{
-				PointLightElement->SetIesFile( *GetActualPath( ParamBlock2->GetStr( ParamDefinition.ID, GetCOREInterface()->GetTime() ) ) );
+				Converter.ApplyIesProfile( *GetActualPath( ParamBlock2->GetStr( ParamDefinition.ID, GetCOREInterface()->GetTime() ) ) );
 			}
 			else if ( FCString::Stricmp(ParamDefinition.int_name, TEXT("rotation_X")) == 0 )
 			{
@@ -1810,7 +1640,7 @@ bool FDatasmithMaxSceneExporter::ParseVRayLightIES(LightObject& Light, TSharedRe
 	return true;
 }
 
-bool FDatasmithMaxSceneExporter::ParseLightParameters(EMaxLightClass LightClass, LightObject& Light, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene)
+bool FDatasmithMaxSceneExporter::ParseLightParameters(DatasmithMaxDirectLink::FLightNodeConverter& Converter, EMaxLightClass LightClass, LightObject& Light, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene)
 {
 	const int NumParamBlocks = Light.NumParamBlocks();
 
@@ -1877,6 +1707,11 @@ bool FDatasmithMaxSceneExporter::ParseLightParameters(EMaxLightClass LightClass,
 					ProcessLightTexture( LightElement, TextureMap, DatasmithScene );
 				}
 			}
+			else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("intensity")) == 0 && LightClass == EMaxLightClass::ArnoldLight)
+			{
+				float Intensity = ParamBlock2->GetFloat(ParamDefinition.ID, GetCOREInterface()->GetTime());
+				LightElement->SetIntensity( Intensity );
+			}
 
 			// using ies file
 			if ( LightElement->GetUseIes() )
@@ -1896,7 +1731,7 @@ bool FDatasmithMaxSceneExporter::ParseLightParameters(EMaxLightClass LightClass,
 				if (FCString::Stricmp(ParamDefinition.int_name, TEXT("webfile")) == 0 || FCString::Stricmp(ParamDefinition.int_name, TEXT("IesFile")) == 0 || 
 					FCString::Stricmp(ParamDefinition.int_name, TEXT("ies_file")) == 0 || FCString::Stricmp(ParamDefinition.int_name, TEXT("filename")) == 0)
 				{
-					LightElement->SetIesFile( *GetActualPath(ParamBlock2->GetStr(ParamDefinition.ID, GetCOREInterface()->GetTime())) );
+					Converter.ApplyIesProfile( *GetActualPath(ParamBlock2->GetStr(ParamDefinition.ID, GetCOREInterface()->GetTime())) );
 				}
 			}
 
@@ -2014,47 +1849,6 @@ bool FDatasmithMaxSceneExporter::ExportActor(TSharedRef< IDatasmithScene > Datas
 	return ParseActor(Node, ActorElement, UnitMultiplier, DatasmithScene);
 }
 
-bool FDatasmithMaxSceneExporter::WriteXMLLightActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Parent, INode* Node, const TCHAR* Name, float UnitMultiplier)
-{
-	if ( !Node )
-	{
-		return false;
-	}
-
-	// weird behavior of 3dsmax it returns the head assembly as Instance of the sun
-	ObjectState ObjState = Node->EvalWorldState(0);
-
-	if (ObjState.obj == nullptr || ObjState.obj->SuperClassID() != LIGHT_CLASS_ID)
-	{
-		return false;
-	}
-
-	TSharedPtr< IDatasmithLightActorElement > LightElement = CreateLightElementForNode( Node, Name );
-
-	if ( !LightElement.IsValid() )
-	{
-		if (FDatasmithMaxSceneParser::GetLightClass(Node) == EMaxLightClass::SkyEquivalent)
-		{
-			DatasmithScene->SetUsePhysicalSky(true);
-		}
-		else
-		{
-			DatasmithMaxLogger::Get().AddUnsupportedLight(Node);
-		}
-		return false;
-	}
-
-	ParseActor(Node, LightElement.ToSharedRef(), UnitMultiplier, DatasmithScene);
-
-	if ( !ParseLight(Parent, LightElement.ToSharedRef(), DatasmithScene) )
-	{
-		return false;
-	}
-	
-	DatasmithScene->AddActor( LightElement );
-	return true;
-}
-
 bool FDatasmithMaxSceneExporter::ExportCameraActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Parent, INodeTab Instances, int InstanceIndex, const TCHAR* Name, float UnitMultiplier)
 {
 	// weird behavior of 3dsmax it returns the head assembly as Instance of the sun
@@ -2071,7 +1865,7 @@ bool FDatasmithMaxSceneExporter::ExportCameraActor(TSharedRef< IDatasmithScene >
 
 	TSharedRef< IDatasmithCameraActorElement > CameraActor = FDatasmithSceneFactory::CreateCameraActor(Name);
 
-	if ( !FDatasmithMaxCameraExporter::ExportCamera( *Parent, CameraActor ) )
+	if ( !FDatasmithMaxCameraExporter::ExportCamera( GetCOREInterface()->GetTime(), *Parent, CameraActor ) )
 	{
 		return false;
 	}

@@ -12,6 +12,8 @@
 #include "MovieRenderPipelineCoreModule.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineMasterConfig)
+
 #define LOCTEXT_NAMESPACE "MoviePipelineMasterConfig"
 
 
@@ -103,6 +105,7 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 		FString LevelName = TEXT("Level Name");
 		FString SequenceName = TEXT("Sequence Name");
 		FString JobName = TEXT("Job Name");
+		FString JobComment = TEXT("Job Comment");
 		double FrameRate = 0.0;
 
 		if (InOutFormatArgs.InJob)
@@ -110,10 +113,12 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 			LevelName = InOutFormatArgs.InJob->Map.GetAssetName();
 			SequenceName = InOutFormatArgs.InJob->Sequence.GetAssetName();
 			JobName = InOutFormatArgs.InJob->JobName;
-			
+			JobComment = InOutFormatArgs.InJob->Comment;
+
 			// FrameRate is a combination of Output Settings and Sequence so we do it here instead of in OutputSetting
 			FrameRate = GetEffectiveFrameRate(Cast<ULevelSequence>(InOutFormatArgs.InJob->Sequence.TryLoad())).AsDecimal();
 		}
+
 
 		InOutFormatArgs.FilenameArguments.Add(TEXT("level_name"), LevelName);
 		InOutFormatArgs.FilenameArguments.Add(TEXT("sequence_name"), SequenceName);
@@ -123,18 +128,15 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/levelName"), LevelName);
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/sequenceName"), SequenceName);
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/jobName"), JobName);
+		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/jobComment"), JobComment);
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/frameRate"), FString::SanitizeFloat(FrameRate));
 
 		// Normally these are filled when resolving the file name by the job (so that the time is shared), but stub them in here so
 		// they show up in the UI with a value.
 		FDateTime CurrentTime = FDateTime::Now();
-		InOutFormatArgs.FilenameArguments.Add(TEXT("date"), CurrentTime.ToString(TEXT("%Y.%m.%d")));
-		InOutFormatArgs.FilenameArguments.Add(TEXT("year"), CurrentTime.ToString(TEXT("%Y")));
-		InOutFormatArgs.FilenameArguments.Add(TEXT("month"), CurrentTime.ToString(TEXT("%m")));
-		InOutFormatArgs.FilenameArguments.Add(TEXT("day"), CurrentTime.ToString(TEXT("%d")));
-		InOutFormatArgs.FilenameArguments.Add(TEXT("time"), CurrentTime.ToString(TEXT("%H.%M.%S")));
-		InOutFormatArgs.FilenameArguments.Add(TEXT("job_author"), FPlatformProcess::UserName(false));
-		
+		int32 DummyVersionNumber = 1;
+		UE::MoviePipeline::GetSharedFormatArguments(InOutFormatArgs.FilenameArguments, InOutFormatArgs.FileMetadata, CurrentTime, DummyVersionNumber, InOutFormatArgs.InJob);
+
 		// Let the output state fill out some too, since its the keeper of the information.
 		UMoviePipelineOutputSetting* OutputSettings = FindSetting<UMoviePipelineOutputSetting>();
 		check(OutputSettings);
@@ -155,9 +157,6 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 		{
 			Setting->GetFormatArguments(InOutFormatArgs);
 		}
-
-		// ToDo: Should shots be able to provide arguments too? They're only overrides, and
-		// outside of that shot the format would fail and end up leaving the {text} anyways.
 	}
 }
 
@@ -256,6 +255,11 @@ void UMoviePipelineMasterConfig::CopyFrom(UMoviePipelineConfigBase* InConfig)
 {
 	Super::CopyFrom(InConfig);
 
+	if (InConfig == this)
+	{
+		return;
+	}
+
 	if (InConfig->IsA<UMoviePipelineMasterConfig>())
 	{
 		UMoviePipelineMasterConfig* MasterConfig = CastChecked<UMoviePipelineMasterConfig>(InConfig);
@@ -292,3 +296,4 @@ TArray<UMoviePipelineOutputBase*> UMoviePipelineMasterConfig::GetOutputContainer
 }
 
 #undef LOCTEXT_NAMESPACE // "MovieRenderPipelineConfig"
+

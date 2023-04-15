@@ -8,6 +8,7 @@
 #include "Components/PanelWidget.h"
 #include "GridPanel.generated.h"
 
+class IWidgetCompilerLog;
 class SGridPanel;
 class UGridSlot;
 
@@ -41,7 +42,7 @@ public:
 	void SetColumnFill(int32 ColumnIndex, float Coefficient);
 
 	UFUNCTION(BlueprintCallable, Category = "Widget")
-	void SetRowFill(int32 ColumnIndex, float Coefficient);
+	void SetRowFill(int32 RowIndex, float Coefficient);
 
 public:
 

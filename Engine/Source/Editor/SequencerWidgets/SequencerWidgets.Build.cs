@@ -6,9 +6,13 @@ public class SequencerWidgets : ModuleRules
 {
 	public SequencerWidgets(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Editor/SequencerWidgets/Private");
+		PublicIncludePathModuleNames.AddRange(
+			new string[] {
+				"SequencerCore",
+			}
+		   );
 
-        PrivateIncludePathModuleNames.AddRange(
+		PrivateIncludePathModuleNames.AddRange(
             new string[] {
                 "MovieScene",
             }
@@ -24,7 +28,6 @@ public class SequencerWidgets : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-                "EditorStyle",
 				"Engine",
                 "InputCore",
                 "MovieScene",

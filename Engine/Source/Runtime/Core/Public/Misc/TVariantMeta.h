@@ -8,6 +8,7 @@
 #include "Templates/UnrealTypeTraits.h"
 #include "Delegates/IntegerSequence.h"
 #include "Templates/AndOrNot.h"
+#include "Concepts/Insertable.h"
 
 #include "Misc/AssertionMacros.h"
 
@@ -26,6 +27,13 @@ namespace Core
 {
 namespace Private
 {
+	/** A shim to get at FArchive through a dependent name, allowing TVariant.h to not include Archive.h. Only calling code that needs serialization has to include it. */
+	template <typename T>
+	struct TAlwaysFArchive
+	{
+		using Type = FArchive;
+	};
+
 	/** Determine if all the types in a template parameter pack has duplicate types */
 	template <typename...>
 	struct TTypePackContainsDuplicates;
@@ -67,8 +75,8 @@ namespace Private
 	{
 		static constexpr SIZE_T MaxOf(const SIZE_T Sizes[])
 		{
-			SIZE_T MaxSize = Sizes[0];
-			for (int32 Itr = 1; Itr < sizeof...(Ts); ++Itr)
+			SIZE_T MaxSize = 0;
+			for (SIZE_T Itr = 0; Itr < sizeof...(Ts); ++Itr)
 			{
 				if (Sizes[Itr] > MaxSize)
 				{
@@ -95,7 +103,7 @@ namespace Private
 
 		/** Interpret the underlying data as the type in the variant parameter pack at the compile-time index. This function is used to implement Visit and should not be used directly */
 		template <SIZE_T N>
-		auto& GetValueAsIndexedType()
+		auto& GetValueAsIndexedType() &
 		{
 			using ReturnType = typename TNthTypeFromParameterPack<N, Ts...>::Type;
 			return *reinterpret_cast<ReturnType*>(&Storage);
@@ -103,7 +111,15 @@ namespace Private
 
 		/** Interpret the underlying data as the type in the variant parameter pack at the compile-time index. This function is used to implement Visit and should not be used directly */
 		template <SIZE_T N>
-		const auto& GetValueAsIndexedType() const
+		auto&& GetValueAsIndexedType() &&
+		{
+			using ReturnType = typename TNthTypeFromParameterPack<N, Ts...>::Type;
+			return (ReturnType&&)GetValueAsIndexedType<N>();
+		}
+
+		/** Interpret the underlying data as the type in the variant parameter pack at the compile-time index. This function is used to implement Visit and should not be used directly */
+		template <SIZE_T N>
+		const auto& GetValueAsIndexedType() const&
 		{
 			// Temporarily remove the const qualifier so we can implement GetValueAsIndexedType in one location.
 			return const_cast<TVariantStorage*>(this)->template GetValueAsIndexedType<N>();
@@ -212,6 +228,35 @@ namespace Private
 		}
 	};
 
+	/** A utility for loading a specific type from FArchive into a TVariant */
+	template <typename T, typename VariantType>
+	struct TVariantLoadFromArchiveCaller
+	{
+		/** Default construct the type and load it from the FArchive */
+		static void Load(FArchive& Ar, VariantType& OutVariant)
+		{
+			OutVariant.template Emplace<T>();
+			Ar << OutVariant.template Get<T>();
+		}
+	};
+
+	/** A utility for loading a type from FArchive based on an index into a template parameter pack. */
+	template <typename... Ts>
+	struct TVariantLoadFromArchiveLookup
+	{
+		using VariantType = TVariant<Ts...>;
+		static_assert((std::is_default_constructible<Ts>::value && ...), "Each type in TVariant template parameter pack must be default constructible in order to use FArchive serialization");
+		static_assert((TModels<CInsertable<FArchive&>, Ts>::Value && ...), "Each type in TVariant template parameter pack must be able to use operator<< with an FArchive");
+
+		/** Load the type at the specified index from the FArchive and emplace it into the TVariant */
+		static void Load(SIZE_T TypeIndex, FArchive& Ar, VariantType& OutVariant)
+		{
+			static constexpr void(*Loaders[])(FArchive&, VariantType&) = { &TVariantLoadFromArchiveCaller<Ts, VariantType>::Load... };
+			check(TypeIndex < UE_ARRAY_COUNT(Loaders));
+			Loaders[TypeIndex](Ar, OutVariant);
+		}
+	};
+
 	/** Determine if the type with the provided index in the template parameter pack is the same */
 	template <typename LookupType, typename... Ts>
 	struct TIsType
@@ -276,6 +321,12 @@ namespace Private
 	}
 
 	template <typename... Ts>
+	FORCEINLINE TVariantStorage<Ts...>&& CastToStorage(TVariant<Ts...>&& Variant)
+	{
+		return (TVariantStorage<Ts...>&&)(*(TVariantStorage<Ts...>*)(&Variant));
+	}
+
+	template <typename... Ts>
 	FORCEINLINE const TVariantStorage<Ts...>& CastToStorage(const TVariant<Ts...>& Variant)
 	{
 		return *(const TVariantStorage<Ts...>*)(&Variant);
@@ -286,7 +337,7 @@ namespace Private
 	inline decltype(auto) VisitApplyEncoded(Func&& Callable, Variants&&... Args)
 	{
 		constexpr SIZE_T VariantSizes[] = { TVariantSize<Variants>::Value... };
-		return Callable(CastToStorage(Args).template GetValueAsIndexedType<DecodeIndex(EncodedIndex, VariantIndices, VariantSizes)>()...);
+		return Callable(CastToStorage(Forward<Variants>(Args)).template GetValueAsIndexedType<DecodeIndex(EncodedIndex, VariantIndices, VariantSizes)>()...);
 	}
 
 	/**
@@ -317,5 +368,3 @@ namespace Private
 } // namespace Private
 } // namespace Core
 } // namespace UE
-
-#undef TVARIANT_STORAGE_USE_RECURSIVE_TEMPLATE

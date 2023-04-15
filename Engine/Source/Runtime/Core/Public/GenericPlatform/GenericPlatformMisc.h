@@ -2,28 +2,34 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "CoreFwd.h"
 #include "Containers/StringFwd.h"
+#include "CoreFwd.h"
+#include "CoreTypes.h"
 #include "HAL/PlatformCrt.h"
+#include "Math/NumericLimits.h"
 #include "Misc/CompressionFlags.h"
 #include "Misc/EnumClassFlags.h"
-#include "Math/NumericLimits.h"
 
 class Error;
+class FOutputDevice;
+class FString;
+class FText;
 class GenericApplication;
-class IPlatformChunkInstall;
 class IInstallBundleManager;
+class IPlatformChunkInstall;
 class IPlatformCompression;
+class IPlatformHostCommunication;
+struct FCustomChunk;
 struct FGenericCrashContext;
 struct FGenericMemoryWarningContext;
-struct FCustomChunk;
+struct FGuid;
+
 enum class ECustomChunkType : uint8;
 
 template <typename FuncType>
 class TFunction;
 
-#if UE_BUILD_SHIPPING
+#if UE_BUILD_SHIPPING && !WITH_EDITOR
 #define UE_DEBUG_BREAK() ((void)0)
 #else
 #define UE_DEBUG_BREAK() ((void)(FPlatformMisc::IsDebuggerPresent() && ([] () { UE_DEBUG_BREAK_IMPL(); } (), 1)))
@@ -51,6 +57,15 @@ enum class EBuildConfiguration : uint8
 
 	/** Test build. */
 	Test
+};
+
+/**
+ * Controls behaviour for built in crash handling
+ */
+enum class ECrashHandlingType : uint8
+{
+	Default,	/* UE default handling */
+	Disabled,	/* UE doesn't handle crashes on main thread, general workers, rendering thread. */
 };
 
 /**
@@ -228,6 +243,9 @@ enum class EDeviceScreenOrientation : uint8
 
 	/** The orientation is landscape, oriented upright with the sensor */
 	LandscapeSensor,
+
+	/** The orientation is no longer locked and adjusts according to the sensor */
+	FullSensor,
 };
 
 
@@ -429,6 +447,38 @@ enum class EInputOutputFlags : uint8
 
 ENUM_CLASS_FLAGS(EInputOutputFlags);
 
+/**
+ * Defines the type of format the backbuffer expects. You must update values in TonemapCommon.ush when changing this enum
+ */
+enum class EDisplayOutputFormat
+{
+	SDR_sRGB = 0,
+	SDR_Rec709 = 1,
+	SDR_ExplicitGammaMapping = 2,
+	HDR_ACES_1000nit_ST2084 = 3,
+	HDR_ACES_2000nit_ST2084 = 4,
+	HDR_ACES_1000nit_ScRGB = 5,
+	HDR_ACES_2000nit_ScRGB = 6,
+	HDR_LinearEXR = 7,
+	HDR_LinearNoToneCurve = 8,
+	HDR_LinearWithToneCurve = 9,
+
+	MAX
+};
+
+/**
+ * Display gamut, format, and chromacities. You must update values in TonemapCommon.ush when changing this enum + EHDRCaptureGamut
+ */
+enum class EDisplayColorGamut
+{
+	sRGB_D65 = 0,
+	DCIP3_D65 = 1,
+	Rec2020_D65 = 2,
+	ACES_D60 = 3,
+	ACEScg_D60 = 4,
+
+	MAX
+};
 
 /**
  * Different types of Context Switch stats
@@ -489,6 +539,17 @@ struct CORE_API FGenericPlatformMisc
 	 */
 	static void SetCrashHandler(void (* CrashHandler)(const FGenericCrashContext& Context)) { }
 
+	/**
+	 * Gets the current crash handling type.
+	 */
+	static ECrashHandlingType GetCrashHandlingType() { return ECrashHandlingType::Default; }
+	
+	/**
+	 * Sets the type of crash handling done by the engine. Returns the new crash handling type. If disabling crash
+	 * handling make sure an alternative is active since threads that crash will just disappear.
+	 */
+	static ECrashHandlingType SetCrashHandlingType(ECrashHandlingType Type) { return ECrashHandlingType::Default; }
+	
 	/**
 	 * Retrieve a environment variable from the system
 	 *
@@ -1034,10 +1095,7 @@ public:
 	/**
 	 * return the number of hardware CPU cores
 	 */
-	static int32 NumberOfCores()
-	{
-		return 1;
-	}
+	static int32 NumberOfCores();
 
 	/**
 	* @return a description of all the groups in the current system and their affinities
@@ -1124,6 +1182,11 @@ public:
 	 */
 	static const TCHAR* GamePersistentDownloadDir();
 
+	/**
+	 *	Return the temporary directory
+	 */
+	static const TCHAR* GameTemporaryDownloadDir();
+
 	static const TCHAR* GeneratedConfigDir();
 
 	static const TCHAR* GetUBTPlatform();
@@ -1153,6 +1216,13 @@ public:
 	 * @return Returns the platform specific compression interface
 	 */
 	static IPlatformCompression* GetPlatformCompression();
+
+	/**
+	 * Returns the platform specific interface for communication with processes running on the host pc.
+	 * 
+	 * @return Returns the platform specific host communication interface.
+	 */
+	static IPlatformHostCommunication& GetPlatformHostCommunication();
 
 	/**
 	 * Has the OS execute a command and path pair (such as launch a browser)
@@ -1445,15 +1515,32 @@ public:
 	static bool IsRunningOnBattery();
 
 	/**
-	 * Returns the orientation of the device: e.g. Portrait, LandscapeRight.
-	 * @see EScreenOrientation
+	 * Returns the current orientation of the device: will be either Portrait, LandscapeLeft, PortraitUpsideDown or LandscapeRight.
+	 * 
+	 * @return An EDeviceScreenOrientation value.
 	 */
 	static EDeviceScreenOrientation GetDeviceOrientation();
+
 	/**
-	 * Change the orientation of the device: e.g. Portrait, LandscapeRight.
-	 * @see EScreenOrientation
+	 * Change the orientation of the device.
 	 */
+	UE_DEPRECATED(5.1, "SetDeviceOrientation is deprecated. Use SetAllowedDeviceOrientation instead.")
 	static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrientation);
+
+	/**
+	 * Returns the allowed orientation of the device. This is NOT the same as GetDeviceOrientation, which only returns Portrait, LandscapeLeft, 
+	 * PortraitUpsideDown or LandscapeRight. The allowed orientation limits what orientation your device can have. So if you set the allowed orientation 
+	 * to LandscapeLeft, GetDeviceOrientation will only ever return LandscapeLeft. But if you set the allowed orientation to LandscapeSensor, you are actually 
+	 * restricting the allowed orientations to LandscapeLeft OR LandscapeRight (depending on the sensor), so GetDeviceOrientation might return LandscapeLeft OR LandscapeRight.
+	 * 
+	 * @return An EDeviceScreenOrientation value.
+	 */
+	static EDeviceScreenOrientation GetAllowedDeviceOrientation();
+
+	/**
+	 * Change the allowed orientation of the device. 
+	 */
+	static void SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation);
 
 	/**
 	 * Returns the device volume if the device is capable of returning that information.
@@ -1592,9 +1679,16 @@ public:
 
 	static bool RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc);
 
+	UE_DEPRECATED(5.1, "Use named chunks instead")
 	static TArray<FCustomChunk> GetOnDemandChunksForPakchunkIndices(const TArray<int32>& PakchunkIndices);
+
+	UE_DEPRECATED(5.1, "Use IPlatformChunkInstall::GetNamedChunksByType instead")
 	static TArray<FCustomChunk> GetAllOnDemandChunks();
+
+	UE_DEPRECATED(5.1, "Use IPlatformChunkInstall::GetNamedChunksByType instead")
 	static TArray<FCustomChunk> GetAllLanguageChunks();
+
+	UE_DEPRECATED(5.1, "Use IPlatformChunkInstall::GetNamedChunksByType instead")
 	static TArray<FCustomChunk> GetCustomChunksByType(ECustomChunkType DesiredChunkType);
 
 	/**
@@ -1637,7 +1731,7 @@ public:
 		return false;
 	}
 
-	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, int32& OutputDevice, int32& ColorGamut)
+	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, EDisplayOutputFormat& OutputDevice, EDisplayColorGamut& ColorGamut)
 	{
 	}
 
@@ -1666,11 +1760,19 @@ public:
 	}
 
 	/**
-	 * retrieves the maximum refresh rate supported by the platform
+	 * retrieves the current maximum refresh rate supported by the platform
 	 */
 	static inline int32 GetMaxRefreshRate()
 	{
 		return 60;
+	}
+
+	/**
+	 * retrieves the maximum refresh rate supported by the platform
+	 */
+	static inline int32 GetMaxSupportedRefreshRate()
+	{
+		return GetMaxRefreshRate();
 	}
 
 	/**
@@ -1694,6 +1796,22 @@ public:
 	 */
 	static int GetMobilePropagateAlphaSetting();
 
+	/**
+	*	Return if the game is running on cloud server
+	*/
+	static bool IsRunningInCloud()
+	{
+		return false;
+	}
+
+	static void DisableScreenTimeout()
+	{
+	}
+
+	static void EnableScreenTimeout()
+	{
+	}
+
 #if !UE_BUILD_SHIPPING
 	/**
 	 * Returns any platform specific warning messages we want printed on screen
@@ -1709,6 +1827,25 @@ protected:
 	/** Whether the user should be prompted to allow for a remote debugger to be attached on an ensure */
 	static bool bPromptForRemoteDebugOnEnsure;
 #endif	//#if !UE_BUILD_SHIPPING
+
+	static EDeviceScreenOrientation AllowedDeviceOrientation;
+
+protected:
+	/**
+	 * Parse CoreLimit from CommandLine or from the SetCoreLimit value. The real number of physical cores and logical
+	 * cores must be provided so that CommandLine arguments can be translated.
+	 * 
+	 * @param bOutFullyInitialized True if commandline was available. If false, values are set to defaults.
+	 * @param OutPhysicalCoreLimit The maximum number of physical cores to report in NumberOfCores.
+	 *        Non-negative. 0 indicates unlimited.
+	 * @param OutLogicalCoreLimit The maximum number of logical cores to report in NumberOfCoresIncludingHyperthreads.
+	 *        Non-negative. 0 indicates unlimited.
+	 * @param bOutSetPhysicalCountToLogicalCount Whether NumberOfCores should be overridden to return
+	 *        NumberOfCoresIncludingHyperthreads.
+	 */
+	static void GetConfiguredCoreLimits(int32 PlatformNumPhysicalCores, int32 PlatformNumLogicalCores,
+		bool& bOutFullyInitialized, int32& OutPhysicalCoreLimit, int32& OutLogicalCoreLimit,
+		bool& bOutSetPhysicalCountToLogicalCount);
 
 private:
 	struct FStaticData;

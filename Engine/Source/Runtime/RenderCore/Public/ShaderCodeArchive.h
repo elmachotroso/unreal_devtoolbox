@@ -2,12 +2,33 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RHI.h"
-#include "FileCache/FileCache.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
 #include "Containers/HashTable.h"
-#include "Shader.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "FileCache/FileCache.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/Platform.h"
 #include "IO/IoDispatcher.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/MemoryReadStream.h"
+#include "Misc/SecureHash.h"
+#include "RHI.h"
+#include "RHIDefinitions.h"
+#include "Serialization/Archive.h"
+#include "Shader.h"
+#include "ShaderCodeLibrary.h"
+#include "Templates/RefCounting.h"
+#include "UObject/NameTypes.h"
+
+#if WITH_EDITOR
+class FCbFieldView;
+class FCbWriter;
+#endif
 
 // enable visualization in the desktop Development builds only as it has a memory hit and writes files
 #define UE_SCA_VISUALIZE_SHADER_USAGE			(!WITH_EDITOR && UE_BUILD_DEVELOPMENT && PLATFORM_DESKTOP)
@@ -65,7 +86,8 @@ public:
 	/** An array of all shaders descriptors, deduplicated */
 	TArray<FShaderCodeEntry> ShaderEntries;
 
-	/** An array of preload entries*/
+	/** An array of entries for the bytes of shadercode that need to be preloaded for a shadermap.
+	  * Each shadermap has a range in this array, beginning of which is stored in FShaderMapEntry.FirstPreloadIndex. */
 	TArray<FFileCachePreloadEntry> PreloadEntries;
 
 	/** Flat array of shaders referenced by all shadermaps. Each shadermap has a range in this array, beginning of which is
@@ -175,6 +197,8 @@ public:
 	void CreateAsChunkFrom(const FSerializedShaderArchive& Parent, const TSet<FName>& PackagesInChunk, TArray<int32>& OutShaderCodeEntriesNeeded);
 	void CollectStatsAndDebugInfo(FDebugStats& OutDebugStats, FExtendedDebugStats* OutExtendedDebugStats);
 	void DumpContentsInPlaintext(FString& OutText) const;
+	RENDERCORE_API friend FCbWriter& operator<<(FCbWriter& Writer, const FSerializedShaderArchive& Archive);
+	RENDERCORE_API friend bool LoadFromCompactBinary(FCbFieldView Field, FSerializedShaderArchive& OutArchive);
 #endif
 
 	friend FArchive& operator<<(FArchive& Ar, FSerializedShaderArchive& Ref)
@@ -414,7 +438,7 @@ struct FIoStoreShaderCodeEntry
 	}
 };
 
-static_assert(sizeof(FIoStoreShaderCodeEntry) == sizeof(uint64), TEXT("To reduce memory footprint, shader code entries should be as small as possible"));
+static_assert(sizeof(FIoStoreShaderCodeEntry) == sizeof(uint64), "To reduce memory footprint, shader code entries should be as small as possible");
 
 /** Descriptor of a group of shaders compressed together. This groups already deduplicated, and possibly unrelated, shaders, so this is a distinct concept from a shader map. */
 struct FIoStoreShaderGroupEntry

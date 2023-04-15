@@ -8,8 +8,10 @@
 #include "UObject/CoreRedirects.h"
 #include "UObject/Package.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/ObjectSaveContext.h"
 #include "Serialization/ObjectReader.h"
 #include "Serialization/ObjectWriter.h"
+#include "CookedMetaData.h"
 #include "Engine/Blueprint.h"
 #include "Components/ActorComponent.h"
 #include "Curves/CurveFloat.h"
@@ -27,7 +29,10 @@
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BlueprintGeneratedClass)
+
 #if WITH_EDITOR
+#include "CookerSettings.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "BlueprintCompilationManager.h"
@@ -130,7 +135,7 @@ void UBlueprintGeneratedClass::PostInitProperties()
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		// Default__BlueprintGeneratedClass uses its own AddReferencedObjects function.
-		ClassAddReferencedObjects = &UBlueprintGeneratedClass::AddReferencedObjects;
+		CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UBlueprintGeneratedClass);
 	}
 }
 
@@ -139,17 +144,24 @@ void UBlueprintGeneratedClass::PostLoad()
 	Super::PostLoad();
 
 #if WITH_EDITORONLY_DATA
-	UPackage* Package = GetOutermost();
+	if (bCooked)
+	{
+		if (const UClassCookedMetaData* CookedMetaData = FindCookedMetaData())
+		{
+			CookedMetaData->ApplyMetaData(this);
+			PurgeCookedMetaData();
+		}
+	}
 
 #if WITH_EDITOR
 	// Make BPGC from a cooked package standalone so it doesn't get GCed
-	if (GEditor && Package && Package->HasAnyPackageFlags(PKG_FilterEditorOnly))
+	if (GEditor && bCooked)
 	{
 		SetFlags(RF_Standalone);
 	}
 #endif //if WITH_EDITOR
 
-	if (Package == nullptr || !Package->bIsCookedForEditor)
+	if (!bCooked)
 	{
 		if (GetAuthoritativeClass() != this)
 		{
@@ -236,7 +248,7 @@ void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& O
 
 	if (UClass* ParentClass = GetSuperClass())
 	{
-		ParentClassName = FString::Printf(TEXT("%s'%s'"), *ParentClass->GetClass()->GetName(), *ParentClass->GetPathName());
+		ParentClassName = FObjectPropertyBase::GetExportPath(ParentClass);
 
 		// Walk up until we find a native class (ie 'while they are BP classes')
 		UClass* NativeParentClass = ParentClass;
@@ -244,7 +256,7 @@ void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& O
 		{
 			NativeParentClass = NativeParentClass->GetSuperClass();
 		}
-		NativeParentClassName = FString::Printf(TEXT("%s'%s'"), *NativeParentClass->GetClass()->GetName(), *NativeParentClass->GetPathName());
+		NativeParentClassName = FObjectPropertyBase::GetExportPath(NativeParentClass);
 	}
 	else
 	{
@@ -271,6 +283,28 @@ void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& O
 	}
 #endif //#if WITH_EDITORONLY_DATA
 }
+
+#if WITH_EDITOR
+void UBlueprintGeneratedClass::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+
+	auto FixTagValueShortClassName = [&InAssetData, &OutTagsAndValuesToUpdate](FName TagName, FAssetRegistryTag::ETagType TagType)
+	{
+		FString TagValue = InAssetData.GetTagValueRef<FString>(TagName);
+		if (!TagValue.IsEmpty() && TagValue != TEXT("None"))
+		{
+			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning, TEXT("UBlueprintGeneratedClass::PostLoadAssetRegistryTags")))
+			{
+				OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(TagName, TagValue, TagType));
+			}
+		}
+	};
+
+	FixTagValueShortClassName(FBlueprintTags::ParentClassPath, FAssetRegistryTag::TT_Alphabetical);
+	FixTagValueShortClassName(FBlueprintTags::NativeParentClassPath, FAssetRegistryTag::TT_Alphabetical);
+}
+#endif // WITH_EDITOR
 
 FPrimaryAssetId UBlueprintGeneratedClass::GetPrimaryAssetId() const
 {
@@ -304,7 +338,7 @@ UClass* UBlueprintGeneratedClass::GetAuthoritativeClass()
  	if (nullptr == ClassGeneratedBy) // to track UE-11597 and UE-11595
  	{
 		// If this is a cooked blueprint, the generatedby class will have been discarded so we'll just have to assume we're authoritative!
-		if (bCooked)
+		if (bCooked || RootPackageHasAnyFlags(PKG_FilterEditorOnly))
 		{ 
 			return this;
 		}
@@ -810,7 +844,7 @@ void UBlueprintGeneratedClass::SetupObjectInitializer(FObjectInitializer& Object
 void UBlueprintGeneratedClass::InitPropertiesFromCustomList(uint8* DataPtr, const uint8* DefaultDataPtr)
 {
 	FScopeLock SerializeAndPostLoadLock(&SerializeAndPostLoadCritical);
-	check(bCustomPropertyListForPostConstructionInitialized); // Something went wrong, probably a race condition
+	checkf(bCustomPropertyListForPostConstructionInitialized, TEXT("Custom Property List Not Initialized for %s"), *GetPathNameSafe(this)); // Something went wrong, probably a race condition
 
 	if (const FCustomPropertyListNode* CustomPropertyList = GetCustomPropertyListForPostConstruction())
 	{
@@ -825,25 +859,9 @@ void UBlueprintGeneratedClass::InitPropertiesFromCustomList(const FCustomPropert
 		uint8* PropertyValue = CustomPropertyListNode->Property->ContainerPtrToValuePtr<uint8>(DataPtr, CustomPropertyListNode->ArrayIndex);
 		const uint8* DefaultPropertyValue = CustomPropertyListNode->Property->ContainerPtrToValuePtr<uint8>(DefaultDataPtr, CustomPropertyListNode->ArrayIndex);
 
-		if (const FStructProperty* StructProperty = CastField<FStructProperty>(CustomPropertyListNode->Property))
+		if (!InitPropertyFromSubPropertyList(CustomPropertyListNode->Property, CustomPropertyListNode->SubPropertyList, PropertyValue, DefaultPropertyValue))
 		{
-			if (CustomPropertyListNode->SubPropertyList != nullptr)
-			{
-				InitPropertiesFromCustomList(CustomPropertyListNode->SubPropertyList, StructProperty->Struct, PropertyValue, DefaultPropertyValue);
-			}
-			else
-			{
-				// A NULL sub-property list indicates that we should copy the entire default value (e.g. a struct with one or more non-reflected fields).
-				StructProperty->CopySingleValue(PropertyValue, DefaultPropertyValue);
-			}
-		}
-		else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(CustomPropertyListNode->Property))
-		{
-			// Note: The sub-property list can be NULL here; in that case only the array size will differ from the default value, but the elements themselves will simply be initialized to defaults.
-			InitArrayPropertyFromCustomList(ArrayProperty, CustomPropertyListNode->SubPropertyList, PropertyValue, DefaultPropertyValue);
-		}
-		else
-		{
+			// Unable to init properties from sub custom property list, fall back to the default copy value behavior
 			CustomPropertyListNode->Property->CopySingleValue(PropertyValue, DefaultPropertyValue);
 		}
 	}
@@ -878,19 +896,31 @@ void UBlueprintGeneratedClass::InitArrayPropertyFromCustomList(const FArrayPrope
 			continue;
 		}
 
-		if (const FStructProperty* InnerStructProperty = CastField<FStructProperty>(ArrayProperty->Inner))
+		if (!InitPropertyFromSubPropertyList(ArrayProperty->Inner, CustomArrayPropertyListNode->SubPropertyList, DstArrayItemValue, SrcArrayItemValue))
 		{
-			InitPropertiesFromCustomList(CustomArrayPropertyListNode->SubPropertyList, InnerStructProperty->Struct, DstArrayItemValue, SrcArrayItemValue);
-		}
-		else if (const FArrayProperty* InnerArrayProperty = CastField<FArrayProperty>(ArrayProperty->Inner))
-		{
-			InitArrayPropertyFromCustomList(InnerArrayProperty, CustomArrayPropertyListNode->SubPropertyList, DstArrayItemValue, SrcArrayItemValue);
-		}
-		else
-		{
+			// Unable to init properties from sub custom property list, fall back to the default copy value behavior
 			ArrayProperty->Inner->CopyCompleteValue(DstArrayItemValue, SrcArrayItemValue);
 		}
 	}
+}
+
+bool UBlueprintGeneratedClass::InitPropertyFromSubPropertyList(const FProperty* Property, const FCustomPropertyListNode* SubPropertyList, uint8* PropertyValue, const uint8* DefaultPropertyValue)
+{
+	if (SubPropertyList != nullptr)
+	{
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			InitPropertiesFromCustomList(SubPropertyList, StructProperty->Struct, PropertyValue, DefaultPropertyValue);
+			return true;
+		}
+		else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			InitArrayPropertyFromCustomList(ArrayProperty, SubPropertyList, PropertyValue, DefaultPropertyValue);
+			return true;
+		}
+		// No need to handle Sets and Maps as they are not optimized through the custom property list
+	}
+	return false;
 }
 
 bool UBlueprintGeneratedClass::IsFunctionImplementedInScript(FName InFunctionName) const
@@ -989,9 +1019,24 @@ UObject* UBlueprintGeneratedClass::FindArchetype(const UClass* ArchetypeClass, c
 				// after having previously serialized an instanced into another package (e.g. map). In
 				// that case, the Blueprint class might contain an SCS node with the same name as the
 				// previously-serialized object, but it might also have been switched to a different type.
-				if (SCSNode->ComponentTemplate && SCSNode->ComponentTemplate->IsA(ArchetypeClass))
+				if (SCSNode->ComponentTemplate)
 				{
-					Archetype = SCSNode->ComponentTemplate;
+					if (SCSNode->ComponentTemplate->IsA(ArchetypeClass))
+					{
+						Archetype = SCSNode->ComponentTemplate;
+					}
+
+					// If the component class is in the process of being reinstanced, archetype lookup
+					// will fail the class check because the SCS template will already have been replaced
+					// when instances try to look up their archetype, so return the already reinstanced one
+					else if (ArchetypeClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+					{
+						const FString ArchetypeClassName = ArchetypeClass->GetName();
+						if (ArchetypeClassName.StartsWith("REINST_") && FStringView(ArchetypeClassName).RightChop(7).StartsWith(SCSNode->ComponentTemplate->GetClass()->GetName()))
+						{
+							Archetype = SCSNode->ComponentTemplate;
+						}
+					}
 				}
 			}
 			else if (UInheritableComponentHandler* ICH = Class->GetInheritableComponentHandler())
@@ -1538,6 +1583,40 @@ void UBlueprintGeneratedClass::GetDefaultObjectPreloadDependencies(TArray<UObjec
 			}
 		}
 	}
+
+	// Add objects related to the sparse class data struct
+	if (SparseClassDataStruct)
+	{
+		// Add the super classes CDO, as it needs to be in place to properly serialize the sparse class data's archetype
+		OutDeps.Add(GetSuperClass()->GetDefaultObject());
+	
+		// Add the sparse class data struct, as it is serialized as part of the CDO
+		OutDeps.Add(SparseClassDataStruct);
+
+		// Also add the sparse class data archetype as it will be copied into any newly created sparse class data 
+		// pre-serialization
+		if(UScriptStruct* SparseClassDataArchetype = GetSparseClassDataArchetypeStruct())
+		{
+			OutDeps.Add(SparseClassDataArchetype);
+		}
+
+		// Add anything that the sparse class data also depends on
+		const void* SparseClassDataToUse = GetSparseClassData(EGetSparseClassDataMethod::ArchetypeIfNull);
+		if (UScriptStruct::ICppStructOps* CppStructOps = SparseClassDataStruct->GetCppStructOps())
+		{
+			CppStructOps->GetPreloadDependencies(const_cast<void*>(SparseClassDataToUse), OutDeps);
+		}
+		// The iterator will recursively loop through all structs in structs/containers too.
+		for (TPropertyValueIterator<FStructProperty> It(SparseClassDataStruct, SparseClassDataToUse); It; ++It)
+		{
+			const UScriptStruct* StructType = It.Key()->Struct;
+			if (UScriptStruct::ICppStructOps* CppStructOps = StructType->GetCppStructOps())
+			{
+				void* StructDataPtr = const_cast<void*>(It.Value());
+				CppStructOps->GetPreloadDependencies(StructDataPtr, OutDeps);
+			}
+		}
+	}
 }
 
 bool UBlueprintGeneratedClass::NeedsLoadForServer() const
@@ -1635,6 +1714,80 @@ UClass* UBlueprintGeneratedClass::RegenerateClass(UClass* ClassToRegenerate, UOb
 
 	return this;
 }
+
+void UBlueprintGeneratedClass::PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext)
+{
+	Super::PreSaveRoot(ObjectSaveContext);
+
+	auto ShouldCookBlueprintPropertyGuids = [this]() -> bool
+	{
+		switch (GetDefault<UCookerSettings>()->BlueprintPropertyGuidsCookingMethod)
+		{
+		case EBlueprintPropertyGuidsCookingMethod::EnabledBlueprintsOnly:
+			if (const UBlueprint* BP = Cast<UBlueprint>(ClassGeneratedBy))
+			{
+				return BP->ShouldCookPropertyGuids();
+			}
+			break;
+
+		case EBlueprintPropertyGuidsCookingMethod::AllBlueprints:
+			return true;
+
+		case EBlueprintPropertyGuidsCookingMethod::Disabled:
+		default:
+			break;
+		}
+
+		return false;
+	};
+
+	if (ObjectSaveContext.IsCooking() && ShouldCookBlueprintPropertyGuids())
+	{
+		CookedPropertyGuids = PropertyGuids;
+
+		if (GetDefault<UCookerSettings>()->BlueprintPropertyGuidsCookingMethod == EBlueprintPropertyGuidsCookingMethod::EnabledBlueprintsOnly)
+		{
+			// Ensure that we also have the GUIDs from our parent classes available (if they're not cooking their own GUIDs)
+			for (UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(GetSuperClass()); ParentBPGC; ParentBPGC = Cast<UBlueprintGeneratedClass>(ParentBPGC->GetSuperClass()))
+			{
+				const UBlueprint* ParentBP = Cast<UBlueprint>(ParentBPGC->ClassGeneratedBy);
+				if (!ParentBP || ParentBP->ShouldCookPropertyGuids())
+				{
+					break;
+				}
+				CookedPropertyGuids.Append(ParentBPGC->PropertyGuids);
+			}
+		}
+	}
+	else
+	{
+		CookedPropertyGuids.Reset();
+	}
+
+	if (ObjectSaveContext.IsCooking() && (ObjectSaveContext.GetSaveFlags() & SAVE_Optional))
+	{
+		UClassCookedMetaData* CookedMetaData = NewCookedMetaData();
+		CookedMetaData->CacheMetaData(this);
+
+		if (!CookedMetaData->HasMetaData())
+		{
+			PurgeCookedMetaData();
+		}
+	}
+	else
+	{
+		PurgeCookedMetaData();
+	}
+}
+
+void UBlueprintGeneratedClass::PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext)
+{
+	Super::PostSaveRoot(ObjectSaveContext);
+
+	CookedPropertyGuids.Reset();
+
+	PurgeCookedMetaData();
+}
 #endif
 
 bool UBlueprintGeneratedClass::IsAsset() const
@@ -1697,7 +1850,7 @@ void UBlueprintGeneratedClass::Bind()
 
 	if (UsePersistentUberGraphFrame() && UberGraphFunction)
 	{
-		ClassAddReferencedObjects = &UBlueprintGeneratedClass::AddReferencedObjectsInUbergraphFrame;
+		CppClassStaticFunctions.SetAddReferencedObjects(&UBlueprintGeneratedClass::AddReferencedObjectsInUbergraphFrame);
 	}
 }
 
@@ -2009,60 +2162,114 @@ void FBlueprintCookedComponentInstancingData::BuildCachedPropertyDataFromTemplat
 	INC_MEMORY_STAT_BY(STAT_BPCompInstancingFastPathMemory, CachedPropertyData.GetAllocatedSize());
 }
 
+FName UBlueprintGeneratedClass::FindBlueprintPropertyNameFromGuid(const FGuid& PropertyGuid) const
+{
+	auto FindPropertyNameFromGuidImpl = [&PropertyGuid](const TMap<FName, FGuid>& PropertyGuidsToUse) -> FName
+	{
+		if (const FName* Result = PropertyGuidsToUse.FindKey(PropertyGuid))
+		{
+			return *Result;
+		}
+
+		return NAME_None;
+	};
+
+	if (bCooked)
+	{
+		return FindPropertyNameFromGuidImpl(CookedPropertyGuids);
+	}
+
+#if WITH_EDITORONLY_DATA
+	return FindPropertyNameFromGuidImpl(PropertyGuids);
+#else	// WITH_EDITORONLY_DATA
+	return NAME_None;
+#endif	// WITH_EDITORONLY_DATA
+}
+
+FGuid UBlueprintGeneratedClass::FindBlueprintPropertyGuidFromName(const FName PropertyName) const
+{
+	auto FindPropertyGuidFromNameImpl = [&PropertyName](const TMap<FName, FGuid>& PropertyGuidsToUse) -> FGuid
+	{
+		if (const FGuid* Result = PropertyGuidsToUse.Find(PropertyName))
+		{
+			return *Result;
+		}
+
+		return FGuid();
+	};
+
+	if (bCooked)
+	{
+		return FindPropertyGuidFromNameImpl(CookedPropertyGuids);
+	}
+
+#if WITH_EDITORONLY_DATA
+	return FindPropertyGuidFromNameImpl(PropertyGuids);
+#else	// WITH_EDITORONLY_DATA
+	return FGuid();
+#endif	// WITH_EDITORONLY_DATA
+}
+
 bool UBlueprintGeneratedClass::ArePropertyGuidsAvailable() const
 {
+	auto AreBlueprintPropertyGuidsAvailable = [this]()
+	{
+		if (bCooked)
+		{
+			return CookedPropertyGuids.Num() > 0;
+		}
+
 #if WITH_EDITORONLY_DATA
-	// Property guid's are generated during compilation.
-	if (PropertyGuids.Num() > 0)
+		return PropertyGuids.Num() > 0;
+#else	// WITH_EDITORONLY_DATA
+		return false;
+#endif	// WITH_EDITORONLY_DATA
+	};
+
+	if (AreBlueprintPropertyGuidsAvailable())
 	{
 		return true;
 	}
-	else if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
+
+	if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
 	{
 		// Our parent may have guids for inherited variables
 		return Super->ArePropertyGuidsAvailable();
 	}
-#endif // WITH_EDITORONLY_DATA
+
 	return false;
 }
 
 FName UBlueprintGeneratedClass::FindPropertyNameFromGuid(const FGuid& PropertyGuid) const
 {
-	FName RedirectedName = NAME_None;
-#if WITH_EDITORONLY_DATA
 	// Check parent first as it may have renamed a property since this class was last saved
 	if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
 	{
-		RedirectedName = Super->FindPropertyNameFromGuid(PropertyGuid);
+		FName RedirectedName = Super->FindPropertyNameFromGuid(PropertyGuid);
 		if (!RedirectedName.IsNone())
 		{
 			return RedirectedName;
 		}
 	}
 
-	if (const FName* Result = PropertyGuids.FindKey(PropertyGuid))
-	{
-		RedirectedName = *Result;
-	}
-#endif // WITH_EDITORONLY_DATA
-	return RedirectedName;
+	return FindBlueprintPropertyNameFromGuid(PropertyGuid);
 }
 
 FGuid UBlueprintGeneratedClass::FindPropertyGuidFromName(const FName InName) const
 {
-	FGuid PropertyGuid;
-#if WITH_EDITORONLY_DATA
-	if (const FGuid* Result = PropertyGuids.Find(InName))
+	const FGuid FoundPropertyGuid = FindBlueprintPropertyGuidFromName(InName);
+	if (FoundPropertyGuid.IsValid())
 	{
-		PropertyGuid = *Result;
+		return FoundPropertyGuid;
 	}
-	else if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
+
+	if (UBlueprintGeneratedClass* Super = Cast<UBlueprintGeneratedClass>(GetSuperStruct()))
 	{
 		// Fall back to parent if this is an inherited variable
-		PropertyGuid = Super->FindPropertyGuidFromName(InName);
+		return Super->FindPropertyGuidFromName(InName);
 	}
-#endif // WITH_EDITORONLY_DATA
-	return PropertyGuid;
+
+	return FGuid();
 }
 
 #if WITH_EDITORONLY_DATA
@@ -2075,7 +2282,7 @@ void UBlueprintGeneratedClass::GetEditorTags(FEditorTags& Tags) const
 			const FProperty* Property = FindFieldChecked<FProperty>(UBlueprint::StaticClass(), PropertyName);
 			const uint8* PropertyAddr = PropertyValueOverride ? PropertyValueOverride : Property->ContainerPtrToValuePtr<uint8>(BP);
 			FString PropertyValueAsText;
-			Property->ExportTextItem(PropertyValueAsText, PropertyAddr, PropertyAddr, nullptr, PPF_None);
+			Property->ExportTextItem_Direct(PropertyValueAsText, PropertyAddr, PropertyAddr, nullptr, PPF_None);
 			if (!PropertyValueAsText.IsEmpty())
 			{
 				Tags.Add(TagName, MoveTemp(PropertyValueAsText));
@@ -2098,4 +2305,36 @@ void UBlueprintGeneratedClass::GetEditorTags(FEditorTags& Tags) const
 		}
 	}
 }
+
+TSubclassOf<UClassCookedMetaData> UBlueprintGeneratedClass::GetCookedMetaDataClass() const
+{
+	return UClassCookedMetaData::StaticClass();
+}
+
+UClassCookedMetaData* UBlueprintGeneratedClass::NewCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::NewCookedMetaData<UClassCookedMetaData>(this, "CookedClassMetaData", GetCookedMetaDataClass());
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+const UClassCookedMetaData* UBlueprintGeneratedClass::FindCookedMetaData()
+{
+	if (!CachedCookedMetaDataPtr)
+	{
+		CachedCookedMetaDataPtr = CookedMetaDataUtil::FindCookedMetaData<UClassCookedMetaData>(this, TEXT("CookedClassMetaData"));
+	}
+	return CachedCookedMetaDataPtr;
+}
+
+void UBlueprintGeneratedClass::PurgeCookedMetaData()
+{
+	if (CachedCookedMetaDataPtr)
+	{
+		CookedMetaDataUtil::PurgeCookedMetaData<UClassCookedMetaData>(CachedCookedMetaDataPtr);
+	}
+}
 #endif //if WITH_EDITORONLY_DATA
+

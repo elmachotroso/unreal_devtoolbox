@@ -25,6 +25,7 @@ FLumenGatherCvarState::FLumenGatherCvarState()
 	MeshSDFTraceDistance = 180.0f;
 	SurfaceBias = 5.0f;
 	VoxelTracingMode = 0;
+	DirectLighting = 0;
 }
 
 static TAutoConsoleVariable<int> CVarLumenGlobalIllumination(
@@ -70,14 +71,6 @@ FAutoConsoleVariableRef CVarDiffuseCardInterpolateInfluenceRadius(
 	TEXT("r.Lumen.DiffuseIndirect.CardInterpolateInfluenceRadius"),
 	GLumenDiffuseCardInterpolateInfluenceRadius,
 	TEXT("."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-	);
-
-float GLumenDiffuseVoxelStepFactor = 1.0f;
-FAutoConsoleVariableRef CVarLumenDiffuseVoxelStepFactor(
-	TEXT("r.Lumen.DiffuseIndirect.VoxelStepFactor"),
-	GLumenDiffuseVoxelStepFactor,
-	TEXT(""),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
 
@@ -151,6 +144,21 @@ FAutoConsoleVariableRef CVarCardGridDistributionZScale(
 	TEXT("r.Lumen.DiffuseIndirect.CullGridDistributionZScale"),
 	GCardGridDistributionZScale,
 	TEXT(""),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+int32 GLumenDiffuseIndirectAsyncCompute = 0;
+static FAutoConsoleVariableRef CVarLumenDiffuseIndirectAsyncCompute(
+	TEXT("r.Lumen.DiffuseIndirect.AsyncCompute"),
+	GLumenDiffuseIndirectAsyncCompute,
+	TEXT("Whether to run lumen diffuse indirect passes on the compute pipe if possible."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+int32 GLumenDiffuseIndirectApplySSAO = 0;
+FAutoConsoleVariableRef CVarLumenDiffuseIndirectApplySSAO(
+	TEXT("r.Lumen.DiffuseIndirect.SSAO"),
+	GLumenDiffuseIndirectApplySSAO,
+	TEXT("Whether to render and apply SSAO to Lumen GI, only when r.Lumen.ScreenProbeGather.ScreenSpaceBentNormal is disabled.  This is useful for providing short range occlusion when Lumen's Screen Bent Normal is disabled due to scalability, however SSAO settings like screen radius come from the user's post process settings."),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
@@ -230,13 +238,25 @@ bool ShouldRenderLumenDiffuseGI(const FScene* Scene, const FSceneView& View, boo
 		&& CVarLumenGlobalIllumination.GetValueOnAnyThread()
 		&& View.Family->EngineShowFlags.GlobalIllumination 
 		&& View.Family->EngineShowFlags.LumenGlobalIllumination
-		&& (bSkipTracingDataCheck || Lumen::UseHardwareRayTracedScreenProbeGather() || Lumen::IsSoftwareRayTracingSupported());
+		&& (bSkipTracingDataCheck || Lumen::UseHardwareRayTracedScreenProbeGather(*View.Family) || Lumen::IsSoftwareRayTracingSupported());
+}
+
+bool ShouldRenderLumenDirectLighting(const FScene* Scene, const FSceneView& View)
+{
+	return ShouldRenderLumenDiffuseGI(Scene, View)
+		&& GLumenGatherCvars.DirectLighting
+		&& !GLumenIrradianceFieldGather;
+}
+
+bool ShouldRenderAOWithLumenGI()
+{
+	extern int32 GLumenScreenSpaceBentNormal;
+	return GLumenDiffuseIndirectApplySSAO != 0 && GLumenScreenSpaceBentNormal == 0;
 }
 
 void SetupLumenDiffuseTracingParameters(const FViewInfo& View, FLumenIndirectTracingParameters& OutParameters)
 {
 	OutParameters.StepFactor = FMath::Clamp(GDiffuseTraceStepFactor, .1f, 10.0f);
-	OutParameters.VoxelStepFactor = FMath::Clamp(GLumenDiffuseVoxelStepFactor, .1f, 10.0f);
 	OutParameters.CardTraceEndDistanceFromCamera = GDiffuseCardTraceEndDistanceFromCamera;
 	OutParameters.MinSampleRadius = FMath::Clamp(GLumenDiffuseMinSampleRadius, .01f, 100.0f);
 	OutParameters.MinTraceDistance = FMath::Clamp(GLumenDiffuseMinTraceDistance, .01f, 1000.0f);
@@ -267,9 +287,11 @@ void SetupLumenDiffuseTracingParametersForProbe(const FViewInfo& View, FLumenInd
 	}
 }
 
-void GetCardGridZParams(float NearPlane, float FarPlane, FVector& OutZParams, int32& OutGridSizeZ)
+void GetCardGridZParams(float InNearPlane, float InFarPlane, FVector& OutZParams, int32& OutGridSizeZ)
 {
-	OutGridSizeZ = FMath::TruncToInt(FMath::Log2((FarPlane - NearPlane) * GCardGridDistributionLogZScale) * GCardGridDistributionZScale) + 1;
+	float NearPlane = FMath::Min(InFarPlane, InNearPlane);
+	float FarPlane = FMath::Max(InFarPlane, InNearPlane);
+	OutGridSizeZ = FMath::Max(FMath::TruncToInt(FMath::Log2((FarPlane - NearPlane) * GCardGridDistributionLogZScale) * GCardGridDistributionZScale), 0) + 1;
 	OutZParams = FVector(GCardGridDistributionLogZScale, GCardGridDistributionLogZOffset, GCardGridDistributionZScale);
 }
 
@@ -277,9 +299,11 @@ void CullForCardTracing(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	FLumenCardTracingInputs TracingInputs,
 	const FLumenIndirectTracingParameters& IndirectTracingParameters,
-	FLumenMeshSDFGridParameters& MeshSDFGridParameters)
+	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
@@ -297,11 +321,13 @@ void CullForCardTracing(
 	CullMeshObjectsToViewGrid(
 		View,
 		Scene,
+		FrameTemporaries,
 		IndirectTracingParameters.MaxMeshSDFTraceDistance,
 		IndirectTracingParameters.CardTraceEndDistanceFromCamera,
 		GCardFroxelGridPixelSize,
 		CardGridSizeZ,
 		ZParams,
 		GraphBuilder,
-		MeshSDFGridParameters);
+		MeshSDFGridParameters,
+		ComputePassFlags);
 }

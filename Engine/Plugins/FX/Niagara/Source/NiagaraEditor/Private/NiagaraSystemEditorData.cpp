@@ -10,9 +10,13 @@
 #include "NiagaraOverviewNode.h"
 #include "NiagaraNode.h"
 #include "EdGraphSchema_NiagaraSystemOverview.h"
+#include "NiagaraConstants.h"
+#include "NiagaraScriptVariable.h"
 #include "EdGraph/EdGraph.h"
 
-static const float SystemOverviewNodePadding = 250.0f;
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSystemEditorData)
+
+static constexpr float SystemOverviewNodePadding = 250.0f;
 
 const FName UNiagaraSystemEditorFolder::GetFolderName() const
 {
@@ -62,6 +66,7 @@ UNiagaraSystemEditorData::UNiagaraSystemEditorData(const FObjectInitializer& Obj
 {
 	RootFolder = ObjectInitializer.CreateDefaultSubobject<UNiagaraSystemEditorFolder>(this, TEXT("RootFolder"));
 	StackEditorData = ObjectInitializer.CreateDefaultSubobject<UNiagaraStackEditorData>(this, TEXT("StackEditorData"));
+	UserParameterHierarchy = CreateDefaultSubobject<UNiagaraHierarchyRoot>(TEXT("UserParameterHierarchyRoot"));
 	OwnerTransform.SetLocation(FVector(0.0f, 0.0f, 0.0f));
 	PlaybackRangeMin = 0;
 	PlaybackRangeMax = 10;
@@ -90,7 +95,20 @@ void UNiagaraSystemEditorData::PostLoadFromOwner(UObject* InOwner)
 	{
 		StackEditorData = NewObject<UNiagaraStackEditorData>(this, TEXT("StackEditorData"), RF_Transactional);
 	}
+	if (UserParameterHierarchy == nullptr)
+	{
+		UserParameterHierarchy = NewObject<UNiagaraHierarchyRoot>(this, TEXT("UserParameterHierarchyRoot"), RF_Transactional);
+	}
 
+	TArray<FNiagaraVariable> UserParameters;
+	OwningSystem->GetExposedParameters().GetUserParameters(UserParameters);
+	for(FNiagaraVariable& UserParameter : UserParameters)
+	{
+		FNiagaraVariable RedirectedUserParameter = UserParameter;
+		OwningSystem->GetExposedParameters().RedirectUserVariable(RedirectedUserParameter);
+		FindOrAddUserScriptVariable(RedirectedUserParameter, *OwningSystem);
+	}
+	
 	const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
 
 	if (NiagaraVer < FNiagaraCustomVersion::PlaybackRangeStoredOnSystem)
@@ -103,6 +121,10 @@ void UNiagaraSystemEditorData::PostLoadFromOwner(UObject* InOwner)
 		SystemOverviewGraph = NewObject<UEdGraph>(this, "NiagaraOverview", RF_Transactional);
 		SystemOverviewGraph->Schema = UEdGraphSchema_NiagaraSystemOverview::StaticClass();
 	}
+
+	// we make sure to refresh the script variables mapping to the user parameter store
+	SyncUserScriptVariables(OwningSystem);
+	InitOnSyncScriptVariables(*OwningSystem);
 
 	if(SystemOverviewGraph->Nodes.Num() == 0)
 	{
@@ -117,6 +139,17 @@ void UNiagaraSystemEditorData::PostLoadFromOwner(UObject* InOwner)
 		NiagaraNode->DestroyNode();
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void UNiagaraSystemEditorData::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UEdGraph::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraOverviewNode::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraScriptVariable::StaticClass()));
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraHierarchyRoot::StaticClass()));
+}
+#endif
 
 UNiagaraSystemEditorFolder& UNiagaraSystemEditorData::GetRootFolder() const
 {
@@ -174,7 +207,7 @@ void UNiagaraSystemEditorData::UpdatePlaybackRangeFromEmitters(UNiagaraSystem& O
 
 		for (const FNiagaraEmitterHandle& EmitterHandle : OwnerSystem.GetEmitterHandles())
 		{
-			UNiagaraEmitterEditorData* EmitterEditorData = Cast<UNiagaraEmitterEditorData>(EmitterHandle.GetInstance()->GetEditorData());
+			UNiagaraEmitterEditorData* EmitterEditorData = Cast<UNiagaraEmitterEditorData>(EmitterHandle.GetEmitterData()->GetEditorData());
 			if (EmitterEditorData != nullptr)
 			{
 				EmitterPlaybackRangeMin = FMath::Min(PlaybackRangeMin, EmitterEditorData->GetPlaybackRange().GetLowerBoundValue());
@@ -215,8 +248,6 @@ void FindOuterNodes(const TArray<UNiagaraOverviewNode*> OverviewNodes, UNiagaraO
 
 void UNiagaraSystemEditorData::SynchronizeOverviewGraphWithSystem(UNiagaraSystem& OwnerSystem)
 {
-	float NextNodePosX = 0.0;
-
 	TArray<UNiagaraOverviewNode*> OverviewNodes;
 	SystemOverviewGraph->GetNodesOfClass<UNiagaraOverviewNode>(OverviewNodes);
 
@@ -313,4 +344,99 @@ void UNiagaraSystemEditorData::SynchronizeOverviewGraphWithSystem(UNiagaraSystem
 
 	// Dispatch an empty graph changed message here so that any graph UIs which are visible refresh their node's widgets.
 	SystemOverviewGraph->NotifyGraphChanged();
+}
+
+void UNiagaraSystemEditorData::InitOnSyncScriptVariables(UNiagaraSystem& System)
+{
+	System.GetExposedParameters().AddOnChangedHandler(FNiagaraParameterStore::FOnChanged::FDelegate::CreateUObject(this, &UNiagaraSystemEditorData::SyncUserScriptVariables, &System));
+}
+
+void UNiagaraSystemEditorData::SyncUserScriptVariables(UNiagaraSystem* System)
+{
+	TArray<FNiagaraVariable> UserParameters;
+	System->GetExposedParameters().GetUserParameters(UserParameters);
+
+	TArray<UNiagaraScriptVariable*> CurrentVariables = UserParameterMetaData;
+
+	TSet<UNiagaraScriptVariable*> UpdatedScriptVariables;
+	for(FNiagaraVariable UserParameter : UserParameters)
+	{
+		UpdatedScriptVariables.Add(FindOrAddUserScriptVariable(UserParameter, *System));
+	}
+	
+	for(UNiagaraScriptVariable* CurrentVariable : CurrentVariables)
+	{
+		if(!UpdatedScriptVariables.Contains(CurrentVariable))
+		{
+			UserParameterMetaData.Remove(CurrentVariable);
+		}
+	}
+
+	OnUserParameterScriptVariablesSyncedDelegate.Broadcast();
+}
+
+UNiagaraScriptVariable* UNiagaraSystemEditorData::FindOrAddUserScriptVariable(FNiagaraVariable UserParameter, UNiagaraSystem& System)
+{
+	bool bSuccess = System.GetExposedParameters().RedirectUserVariable(UserParameter);
+	if(bSuccess)
+	{
+		TObjectPtr<UNiagaraScriptVariable>* ExistingScriptVariable = UserParameterMetaData.FindByPredicate([UserParameter](const UNiagaraScriptVariable* ScriptVariable)
+			{
+				return ScriptVariable->Variable == UserParameter;
+			});
+
+		if(ExistingScriptVariable == nullptr)
+		{
+			TObjectPtr<UNiagaraScriptVariable> NewScriptVariable = NewObject<UNiagaraScriptVariable>(this);
+			FNiagaraVariableMetaData MetaData;
+			NewScriptVariable->Init(UserParameter, MetaData);
+			UserParameterMetaData.Add(NewScriptVariable);
+			return NewScriptVariable;
+		}
+		
+		return *ExistingScriptVariable;
+	}
+
+	return nullptr;
+}
+
+UNiagaraScriptVariable* UNiagaraSystemEditorData::FindUserScriptVariable(FGuid UserParameterGuid)
+{
+	TObjectPtr<UNiagaraScriptVariable>* ExistingScriptVariable = UserParameterMetaData.FindByPredicate([UserParameterGuid](const UNiagaraScriptVariable* ScriptVariable)
+		{
+			return ScriptVariable->Metadata.GetVariableGuid() == UserParameterGuid;
+		});
+
+	if(ExistingScriptVariable)
+	{
+		return *ExistingScriptVariable;
+	}
+	
+	return nullptr;
+}
+
+bool UNiagaraSystemEditorData::RenameUserScriptVariable(FNiagaraVariable OldVariable, FName NewName)
+{
+	TObjectPtr<UNiagaraScriptVariable>* ExistingScriptVariable = UserParameterMetaData.FindByPredicate([OldVariable](const UNiagaraScriptVariable* ScriptVariable)
+		{
+			return ScriptVariable->Variable == OldVariable;
+		});
+
+	if(ExistingScriptVariable == nullptr)
+	{
+		return false;
+	}
+
+	(*ExistingScriptVariable)->Modify();
+	(*ExistingScriptVariable)->Variable.SetName(NewName);
+	(*ExistingScriptVariable)->UpdateChangeId();
+	return true;
+}
+
+bool UNiagaraSystemEditorData::RemoveUserScriptVariable(FNiagaraVariable Variable)
+{
+	return UserParameterMetaData.RemoveAll([Variable](const UNiagaraScriptVariable* ScriptVariable)
+		{
+			return ScriptVariable->Variable == Variable;
+		}) > 0;
 }

@@ -68,6 +68,14 @@ public:
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, meta=(ShowInnerProperties), Category = "Actor Source")
 	TObjectPtr<UActorRecorderPropertyMap> RecordedProperties;
 
+	/** Include only the animation bones/curves that match this list */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actor Source")
+	TArray<FString> IncludeAnimationNames;
+
+	/** Exclude all animation bones/curves that match this list */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actor Source")
+	TArray<FString> ExcludeAnimationNames;
+
 	/** The level sequence that this source is being recorded into. Set during PreRecording, null after PostRecording. */
 	UPROPERTY()
 	TObjectPtr<ULevelSequence> TargetLevelSequence;
@@ -92,6 +100,13 @@ public:
 	UPROPERTY()
 	TArray<TObjectPtr<class UMovieSceneTrackRecorder>> TrackRecorders;
 
+	/** The parent actor source that generated this actor source (ie. through parenting or as an attached component). Null after PostRecording */
+	UPROPERTY()
+	TObjectPtr<UTakeRecorderActorSource> ParentSource;
+
+	/** Show Dialog during the (possibly) slow parts of the take recording */
+	UPROPERTY()
+	bool bShowProgressDialog;
 
 public:
 
@@ -181,10 +196,10 @@ protected:
 	/** Update our cached properties for what will be recorded. Done here so the UI doesn't have to iterate through map every frame. */
 	void UpdateCachedNumberOfRecordedProperties();
 
-	/** Returns the Guid of the Spawnable/Possessable in the specified sequence that represents the given actor, or an invalid Guid if the actor has no object binding in the sequence. */
+	/** Returns the Guid of the Possessable in the specified sequence that represents the given actor, or an invalid Guid if the actor has no object binding in the sequence. */
 	FGuid ResolveActorFromSequence(AActor* InActor, ULevelSequence* CurrentSequence) const;
 
-	/** Remove the Spawnable/Possessable data for the given Guid from the sequence. Calls CleanExistingDataFromSequenceImpl afterwards for any other cleanup you may wish to do. */
+	/** Remove the Possessable data for the given Guid from the sequence. Calls CleanExistingDataFromSequenceImpl afterwards for any other cleanup you may wish to do. */
 	void CleanExistingDataFromSequence(const FGuid& ForGuid, ULevelSequence& InSequence);
 
 	/** Called as part of PostRecording before Track Recorders are finalized. Calls PostProcessTrackRecordersImpl afterwards for any other post processing you wish to do before Track recorders are finalized. */

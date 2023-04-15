@@ -352,8 +352,9 @@ namespace Electra
 		FParamDict poolOpts;
 		uint32 frameSize = sizeof(int16) * AACDEC_MAX_CHANNELS * AACDEC_PCM_SAMPLE_SIZE;
 		poolOpts.Set("max_buffer_size", FVariantValue((int64)frameSize));
-		//	poolOpts.Set("buffer_alignment", FVariantValue((int64) 32));
 		poolOpts.Set("num_buffers", FVariantValue((int64)8));
+		poolOpts.Set("samples_per_block", FVariantValue((int64)AACDEC_PCM_SAMPLE_SIZE));
+		poolOpts.Set("max_channels", FVariantValue((int64)AACDEC_MAX_CHANNELS));
 
 		UEMediaError Error = Renderer->CreateBufferPool(poolOpts);
 		check(Error == UEMEDIA_ERROR_OK);
@@ -452,7 +453,7 @@ namespace Electra
 		ThreadSetPriority(Config.ThreadConfig.Decoder.Priority);
 		ThreadSetStackSize(Config.ThreadConfig.Decoder.StackSize);
 		ThreadSetCoreAffinity(Config.ThreadConfig.Decoder.CoreAffinity);
-		ThreadStart(Electra::MakeDelegate(this, &FAudioDecoderAAC::WorkerThread));
+		ThreadStart(FMediaRunnable::FStartDelegate::CreateRaw(this, &FAudioDecoderAAC::WorkerThread));
 		bThreadStarted = true;
 	}
 
@@ -924,7 +925,15 @@ namespace Electra
 							return false;
 						}
 					}
+
 					bool bHaveAvailSmpBlk = CurrentRenderOutputBuffer != nullptr;
+					// Check if the renderer can accept the output we will want to send to it.
+					// If it can't right now we treat this as if we do not have an available output buffer.
+					if (Renderer.IsValid() && !Renderer->CanReceiveOutputFrames(1))
+					{
+						bHaveAvailSmpBlk = false;
+					}
+
 					NotifyReadyBufferListener(bHaveAvailSmpBlk);
 					if (bHaveAvailSmpBlk)
 					{
@@ -1256,7 +1265,7 @@ namespace Electra
 						bHaveDiscontinuity = true;
 					}
 					SequenceIndex = CurrentAccessUnit->AccessUnit->PTS.GetSequenceIndex();
-					if (!Decode(CurrentAccessUnit, false))
+					if (!bError && !Decode(CurrentAccessUnit, false))
 					{
 						bError = true;
 					}

@@ -1,14 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HLODTreeWidgetItem.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/STreeView.h"
-#include "EditorStyleSet.h"
-#include "HierarchicalLODType.h"
+
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
-#include "LODActorItem.h"
+#include "HAL/Platform.h"
+#include "HLODOutlinerDragDrop.h"
+#include "HierarchicalLODType.h"
 #include "IHierarchicalLODUtilities.h"
+#include "ITreeItem.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "LODActorItem.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SExpanderArrow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
+
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "HLODTreeWidgetItem"
 
@@ -16,7 +39,7 @@ namespace HLODOutliner
 {
 	static void UpdateOperationDecorator(const FDragDropEvent& Event, const FDragValidationInfo& ValidationInfo)
 	{
-		const FSlateBrush* Icon = ValidationInfo.IsValid() ? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+		const FSlateBrush* Icon = ValidationInfo.IsValid() ? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 		FDragDropOperation* Operation = Event.GetOperation().Get();
 		if (Operation)

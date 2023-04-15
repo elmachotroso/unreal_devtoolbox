@@ -9,7 +9,7 @@
 #include "Engine/Texture.h"
 #include "TextureResource.h"
 #include "Misc/FieldAccessor.h"
-#include "Serialization/BulkData2.h"
+#include "Serialization/BulkData.h"
 #include "Texture2D.generated.h"
 
 class FTexture2DResourceMem;
@@ -73,7 +73,7 @@ private:
 
 public:
 #if WITH_TEXTURE_PLATFORMDATA_DEPRECATIONS
-	UE_DEPRECATED(5.00, "Use GetPlatformData() / SetPlatformData() accessors instead.")
+	UE_DEPRECATED(5.0, "Use GetPlatformData() / SetPlatformData() accessors instead.")
 	TFieldPtrAccessor<FTexturePlatformData> PlatformData;
 #endif
 
@@ -119,6 +119,7 @@ public:
 	//~ End UObject Interface.
 
 	//~ Begin UTexture Interface.
+	virtual ETextureClass GetTextureClass() const override { return ETextureClass::TwoD; }
 	virtual float GetSurfaceWidth() const override { return static_cast<float>(GetSizeX()); }
 	virtual float GetSurfaceHeight() const override { return static_cast<float>(GetSizeY()); }
 	virtual float GetSurfaceDepth() const override { return 0.0f; }

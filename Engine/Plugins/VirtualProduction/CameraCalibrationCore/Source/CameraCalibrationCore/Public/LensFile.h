@@ -5,6 +5,7 @@
 #include "Tickable.h"
 #include "UObject/Object.h"
 
+#include "CineCameraComponent.h"
 #include "CoreTypes.h"
 #include "Engine/Texture.h"
 #include "ICalibratedMapProcessor.h"
@@ -118,7 +119,7 @@ public:
 	/** Update the resolution used for intermediate blending displacement maps and for STMap derived data */
 	void UpdateDisplacementMapResolution(const FIntPoint NewDisplacementMapResolution);
 
-	/** Whether the sensor dimensions in the lens file will be compatible with the sensor dimensions of the input CineCameraComponent */
+	UE_DEPRECATED(5.1, "This function is deprecated. The LensFile checks this internally when it evaluates for distortion.")
 	bool IsCineCameraCompatible(const UCineCameraComponent* CineCameraComponent) const;
 
 	/** Update the input tolerance used when adding points to calibration tables */
@@ -204,6 +205,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Lens Table")
 	bool HasSamples(ELensDataCategory InDataCategory) const;
 
+	/** Returns total number of the points for given category */
+	UFUNCTION(BlueprintPure, Category = "Lens Table")
+	int32 GetTotalPointNum(ELensDataCategory InDataCategory) const;
+
 	/** Get data table reference based on given category */
 	const FBaseLensTable* GetDataTable(ELensDataCategory InDataCategory) const;
 	
@@ -283,11 +288,11 @@ protected:
 
 	/** Texture used to store temporary undistortion displacement map when using map blending */
 	UPROPERTY(Transient)
-	TArray<UTextureRenderTarget2D*> UndistortionDisplacementMapHolders;
+	TArray<TObjectPtr<UTextureRenderTarget2D>> UndistortionDisplacementMapHolders;
 
 	/** Texture used to store temporary distortion displacement map when using map blending */
 	UPROPERTY(Transient)
-	TArray<UTextureRenderTarget2D*> DistortionDisplacementMapHolders;
+	TArray<TObjectPtr<UTextureRenderTarget2D>> DistortionDisplacementMapHolders;
 
 	/** The number of intermediate displacement maps needed to do map blending */
 	static constexpr int32 DisplacementMapHolderCount = 4;
@@ -317,7 +322,29 @@ public:
 
 	/** LensFile asset to use if DefaultLensFile is not desired */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens File", Meta = (EditCondition = "!bUseDefaultLensFile"))
-	ULensFile* LensFile = nullptr;
+	TObjectPtr<ULensFile> LensFile = nullptr;
+};
+
+USTRUCT(BlueprintType)
+struct FLensFileEvaluationInputs
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(Interp, VisibleAnywhere, BlueprintReadOnly, Category = "Lens File")
+	float Focus = 0.0f;
+
+	UPROPERTY(Interp, VisibleAnywhere, BlueprintReadOnly, Category = "Lens File")
+	float Iris = 0.0f;
+
+	UPROPERTY(Interp, VisibleAnywhere, BlueprintReadOnly, Category = "Lens File")
+	float Zoom = 0.0f;
+
+	UPROPERTY(Interp, VisibleAnywhere, BlueprintReadOnly, Category = "Lens File")
+	FCameraFilmbackSettings Filmback;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Lens File")
+	bool bIsValid = false;
 };
 
 /** Structure that caches the inputs (and other useful bits) used when evaluating the Lens File */
@@ -382,5 +409,3 @@ struct FLensFileEvalData
 		NodalOffset.bWasApplied = false;
 	}
 };
-
-

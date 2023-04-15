@@ -21,6 +21,8 @@
 #include "IPropertyAccessBlueprintBinding.h"
 #include "Animation/AnimBlueprint.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(K2Node_PropertyAccess)
+
 #define LOCTEXT_NAMESPACE "K2Node_PropertyAccess"
 
 void UK2Node_PropertyAccess::CreateClassVariablesFromBlueprint(IAnimBlueprintVariableCreationContext& InCreationContext)
@@ -42,6 +44,8 @@ void UK2Node_PropertyAccess::CreateClassVariablesFromBlueprint(IAnimBlueprintVar
 
 void UK2Node_PropertyAccess::ExpandNode(FKismetCompilerContext& InCompilerContext, UEdGraph* InSourceGraph)
 {
+	Super::ExpandNode(InCompilerContext, InSourceGraph);
+	
 	ResolvePropertyAccess();
 
 	UK2Node_PropertyAccess* OriginalNode = CastChecked<UK2Node_PropertyAccess>(InCompilerContext.MessageLog.FindSourceObject(this));
@@ -435,3 +439,4 @@ const FProperty* UK2Node_PropertyAccess::GetResolvedProperty() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

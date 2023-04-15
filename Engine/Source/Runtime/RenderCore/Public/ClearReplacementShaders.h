@@ -4,10 +4,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ShaderParameters.h"
-#include "ShaderParameterUtils.h"
-#include "Shader.h"
 #include "GlobalShader.h"
+#include "Math/IntVector.h"
+#include "Math/UnrealMathSSE.h"
+#include "PipelineStateCache.h"
+#include "PixelFormat.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "Serialization/MemoryLayout.h"
+#include "Shader.h"
+#include "ShaderCore.h"
+#include "ShaderParameterUtils.h"
+#include "ShaderParameters.h"
+#include "Templates/EnableIf.h"
+#include "Templates/Function.h"
+
+class FPointerTableBase;
 
 enum class EClearReplacementResourceType
 {
@@ -324,7 +337,7 @@ inline void ClearUAVShader_T(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAc
 
 	TShaderMapRef<FClearShader> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 	FRHIComputeShader* ShaderRHI = ComputeShader.GetComputeShader();
-	RHICmdList.SetComputeShader(ShaderRHI);
+	SetComputePipelineState(RHICmdList, ShaderRHI);
 
 	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->GetClearValueParam(), ClearValues);
 	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->GetMinBoundsParam(), FUintVector4(0, 0, 0, 0));

@@ -1,4 +1,4 @@
-﻿using Dia2Lib;
+using Dia2Lib;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -20,7 +20,8 @@ namespace CruncherSharp
         public ulong TotalCount { get; set; }
         public bool IsAbstract { get; set; }
         public bool IsTemplate { get; set; }
-        public List<SymbolMemberInfo> Members { get; set; }
+		public bool IsImportedFromCSV { get; set; }
+		public List<SymbolMemberInfo> Members { get; set; }
         public List<SymbolFunctionInfo> Functions { get; set; }
         public List<SymbolInfo> DerivedClasses { get; set; }
 
@@ -36,7 +37,9 @@ namespace CruncherSharp
             Members = new List<SymbolMemberInfo>();
             Functions = new List<SymbolFunctionInfo>();
             IsAbstract = false;
-            if (Name.Contains("<") && Name.Contains(">"))
+			IsImportedFromCSV = false;
+
+			if (Name.Contains("<") && Name.Contains(">"))
                 IsTemplate = true;
         }
 
@@ -85,7 +88,8 @@ namespace CruncherSharp
             }
         }
 
-        public bool HasMSVCExtraPadding
+		// https://randomascii.wordpress.com/2013/12/01/vc-2013-class-layout-change-and-wasted-space/
+		public bool HasMSVCExtraPadding
         {
             get
             {
@@ -207,7 +211,10 @@ namespace CruncherSharp
         {
             foreach (var function in Functions)
             {
-                if (function.Virtual && function.Category == SymbolFunctionInfo.FunctionCategory.Function && DerivedClasses != null)
+                if (function.Virtual && 
+					function.IsOverloaded == false && 
+					function.Category == SymbolFunctionInfo.FunctionCategory.Function && 
+					DerivedClasses != null)
                 {
                     foreach(var derivedClass in DerivedClasses)
                     {
@@ -276,7 +283,7 @@ namespace CruncherSharp
         {
             foreach (var member in Members)
             {
-                if (member.Category != SymbolMemberInfo.MemberCategory.VTable)
+                if (member.Category == SymbolMemberInfo.MemberCategory.UDT || member.Category == SymbolMemberInfo.MemberCategory.Base)
                 {
                     var referencedInfo = symbolAnalyzer.FindSymbolInfo(member.TypeName);
                     if (referencedInfo != null)

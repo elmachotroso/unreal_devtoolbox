@@ -8,6 +8,7 @@
 #include "RHIStaticStates.h"
 #include "StaticBoundShaderState.h"
 #include "Engine/GameViewportClient.h"
+#include "ProfilingDebugging/MemoryTrace.h"
 
 #if WITH_DX_PERF
 	// For perf events
@@ -32,7 +33,6 @@ extern void UniformBufferBeginFrame();
 
 void FD3D11DynamicRHI::RHIBeginFrame()
 {
-	RHIPrivateBeginFrame();
 	UniformBufferBeginFrame();
 	GPUProfilingData.BeginFrame(this);
 
@@ -645,7 +645,7 @@ bool FD3DGPUProfiler::CheckGpuHeartbeat(bool bShowActiveStatus) const
 					UE_LOG(LogRHI, Error, TEXT("[Aftermath] Invalid context handle"));
 					NVAFTERMATH_ON_ERROR();
 				}
-				GLog->PanicFlushThreadedLogs();
+				GLog->Flush();
 				return false;
 			}
 		}
@@ -725,13 +725,11 @@ void UpdateBufferStats(TRefCountPtr<ID3D11Buffer> Buffer, bool bAllocating)
 			INC_MEMORY_STAT_BY(STAT_StructuredBufferMemory,Desc.ByteWidth);
 		}
 
-#if PLATFORM_WINDOWS
 		// this is a work-around on Windows. Due to the fact that there is no way
 		// to hook the actual d3d allocations we can't track the memory in the normal way.
 		// Instead we simply tell LLM the size of these resources.
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, Desc.ByteWidth, ELLMTracker::Default, ELLMAllocType::None);
 		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::GraphicsPlatform, Desc.ByteWidth, ELLMTracker::Platform, ELLMAllocType::None);
-#endif
+		MemoryTrace_Alloc((uint64)Buffer.GetReference(), Desc.ByteWidth, 0, EMemoryTraceRootHeap::VideoMemory);
 	}
 	else
 	{ //-V523
@@ -752,12 +750,72 @@ void UpdateBufferStats(TRefCountPtr<ID3D11Buffer> Buffer, bool bAllocating)
 			DEC_MEMORY_STAT_BY(STAT_StructuredBufferMemory,Desc.ByteWidth);
 		}
 
-#if PLATFORM_WINDOWS
 		// this is a work-around on Windows. Due to the fact that there is no way
 		// to hook the actual d3d allocations we can't track the memory in the normal way.
 		// Instead we simply tell LLM the size of these resources.
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, -(int64)Desc.ByteWidth, ELLMTracker::Default, ELLMAllocType::None);
 		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::GraphicsPlatform, -(int64)Desc.ByteWidth, ELLMTracker::Platform, ELLMAllocType::None);
-#endif
+		MemoryTrace_Free((uint64)Buffer.GetReference(), EMemoryTraceRootHeap::VideoMemory);
 	}
+}
+
+ID3D11Device* FD3D11DynamicRHI::RHIGetDevice() const
+{
+	return GetDevice();
+}
+
+ID3D11DeviceContext* FD3D11DynamicRHI::RHIGetDeviceContext() const
+{
+	return GetDeviceContext();
+}
+
+IDXGIAdapter* FD3D11DynamicRHI::RHIGetAdapter() const
+{
+	return GetAdapter().DXGIAdapter;
+}
+
+IDXGISwapChain* FD3D11DynamicRHI::RHIGetSwapChain(FRHIViewport* InViewport) const
+{
+	FD3D11Viewport* Viewport = static_cast<FD3D11Viewport*>(InViewport);
+	return Viewport->GetSwapChain();
+}
+
+DXGI_FORMAT FD3D11DynamicRHI::RHIGetSwapChainFormat(EPixelFormat InFormat) const
+{
+	const DXGI_FORMAT PlatformFormat = ::FindDepthStencilDXGIFormat(static_cast<DXGI_FORMAT>(GPixelFormats[InFormat].PlatformFormat));
+	return ::FindShaderResourceDXGIFormat(PlatformFormat, true);
+}
+
+ID3D11Buffer* FD3D11DynamicRHI::RHIGetResource(FRHIBuffer* InBuffer) const
+{
+	FD3D11Buffer* Buffer = ResourceCast(InBuffer);
+	return Buffer->Resource;
+}
+
+ID3D11Resource* FD3D11DynamicRHI::RHIGetResource(FRHITexture* InTexture) const
+{
+	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	return D3D11Texture->GetResource();
+}
+
+int64 FD3D11DynamicRHI::RHIGetResourceMemorySize(FRHITexture* InTexture) const
+{
+	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	return D3D11Texture->GetMemorySize();
+}
+
+ID3D11RenderTargetView* FD3D11DynamicRHI::RHIGetRenderTargetView(FRHITexture* InTexture, int32 InMipIndex, int32 InArraySliceIndex) const
+{
+	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	return D3D11Texture->GetRenderTargetView(InMipIndex, InArraySliceIndex);
+}
+
+ID3D11ShaderResourceView* FD3D11DynamicRHI::RHIGetShaderResourceView(FRHITexture* InTexture) const
+{
+	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	return D3D11Texture->GetShaderResourceView();
+}
+
+void FD3D11DynamicRHI::RHIRegisterWork(uint32 NumPrimitives)
+{
+	RegisterGPUWork(NumPrimitives);
 }

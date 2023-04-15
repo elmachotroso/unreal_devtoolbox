@@ -21,9 +21,11 @@
 #include "Widgets/SToolTip.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Text/SRichTextBlock.h"
-#include "Widgets/SNiagaraParameterMapView.h"
 #include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/SItemSelector.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/Input/SCheckBox.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraParameterPanel"
 
@@ -68,6 +70,11 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	ParameterPanelViewModel->GetOnNotifyParameterPendingNamespaceModifierRenameDelegate().BindSP(this, &SNiagaraParameterPanel::AddParameterPendingNamespaceModifierRename);
 	ParameterPanelViewModel->GetParametersWithNamespaceModifierRenamePendingDelegate().BindSP(this, &SNiagaraParameterPanel::GetParametersWithNamespaceModifierRenamePending);
 
+	if (ParameterPanelViewModel->UsesCategoryFilteringForInitialExpansion())
+	{
+		FilterCategoryExpandedDelegate.BindRaw(ParameterPanelViewModel.Get(), &INiagaraImmutableParameterPanelViewModel::IsCategoryExpandedByDefault);
+	}
+
 	SAssignNew(ItemSelector, SNiagaraParameterPanelSelector)
 	.PreserveSelectionOnRefresh(true)
 	.PreserveExpansionOnRefresh(true)
@@ -85,21 +92,36 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	.OnItemSelected(this, &SNiagaraParameterPanel::OnParameterItemSelected)
 	.OnItemsDragged(this, &SNiagaraParameterPanel::OnParameterItemsDragged)
 	.OnItemActivated(this, &SNiagaraParameterPanel::OnParameterItemActived)
-	.AllowMultiselect(true)
+	.AllowMultiselect(ParameterPanelViewModel->GetAllowMultiSelect())
 	.ClearSelectionOnClick(true)
 	.CategoryRowStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.Parameters.TableRow")
 	.OnGetCategoryBackgroundImage(this, &SNiagaraParameterPanel::GetCategoryBackgroundImage)
+	.OnItemExpandedInitially(FilterCategoryExpandedDelegate)
 	.CategoryBorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 	.CategoryChildSlotPadding(FMargin(0.0f, 2.0f, 0.0f, 0.0f))
 	.CategoryBorderBackgroundPadding(FMargin(0.0f, 3.0f))
 	.OnGetKeyForItem(this, &SNiagaraParameterPanel::OnGetKeyForItem)
-	.OnGetKeyForCategory(this, &SNiagaraParameterPanel::OnGetKeyForCategory);
+	.OnGetKeyForCategory(this, &SNiagaraParameterPanel::OnGetKeyForCategory)
+	.ExpandInitially(false)
+	.SearchBoxAdjacentContent()
+	[
+		ParameterPanelViewModel->GenerateAdjacentWidget()
+	];
 
 	// Finalize the widget
 	ChildSlot
-	[
-		SNew(SBox)
-		.MinDesiredWidth(300)
+		[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(4, 2)
+		[
+			SAssignNew(SectionSelectorBox, SWrapBox)
+			.UseAllottedSize(true)
+			.InnerSlotPadding(FVector2D(4, 4))
+		]
+		+ SVerticalBox::Slot()
+		.Padding(0, 2)
 		[
 			// Drop target
 			SNew(SDropTarget)
@@ -123,8 +145,58 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	ToolkitCommands->MapAction(FGenericCommands::Get().Copy,
 		FExecuteAction::CreateSP(this, &SNiagaraParameterPanel::CopyParameterReference),
 		FCanExecuteAction::CreateSP(this, &SNiagaraParameterPanel::CanCopyParameterReference));
+
+	ConstructSectionButtons();
 }
 
+
+void SNiagaraParameterPanel::ConstructSectionButtons()
+{
+	SectionSelectorBox->ClearChildren();
+
+	SectionSelectorBox->SetVisibility(ParameterPanelViewModel->GetShowSections() ? EVisibility::Visible : EVisibility::Collapsed);
+	for (const INiagaraParameterPanelViewModel::FSectionDesc& Section : ParameterPanelViewModel->GetSections())
+	{
+		SectionSelectorBox->AddSlot()
+			[
+				SNew(SCheckBox)
+				.Style(FAppStyle::Get(), "DetailsView.SectionButton")
+				.OnCheckStateChanged(this, &SNiagaraParameterPanel::OnSectionChecked, Section.DisplayName)
+				.IsChecked(this, &SNiagaraParameterPanel::GetSectionCheckState, Section.DisplayName)
+				.IsEnabled(this, &SNiagaraParameterPanel::GetSectionEnabled, Section.DisplayName)
+				.ToolTipText(Section.Description)
+				[
+					SNew(STextBlock)
+					.TextStyle(FAppStyle::Get(), "SmallText")
+					.Text(Section.DisplayName)
+				]
+			];
+	}
+}
+
+ECheckBoxState SNiagaraParameterPanel::GetSectionCheckState(FText Section) const
+{
+	return Section.IdenticalTo(ParameterPanelViewModel->GetActiveSection()) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+
+bool SNiagaraParameterPanel::GetSectionEnabled(FText Section) const
+{
+	return ParameterPanelViewModel->GetSectionEnabled(Section);
+}
+
+
+void SNiagaraParameterPanel::OnSectionChecked(ECheckBoxState CheckState, FText Section)
+{
+	if (CheckState == ECheckBoxState::Checked)
+	{
+		TArray<FNiagaraParameterPanelCategory> ExpandedItems;
+		ItemSelector->GetExpandedCategoryItems(ExpandedItems);
+		ParameterPanelViewModel->PreSectionChange(ExpandedItems);
+		ParameterPanelViewModel->SetActiveSection(Section);
+		Refresh();
+	}
+}
 
 TArray<FNiagaraParameterPanelCategory> SNiagaraParameterPanel::OnGetCategoriesForItem(const FNiagaraParameterPanelItem& Item)
 {
@@ -204,11 +276,11 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 {
 	// Generate the icon widget.
 	FText			   IconToolTip = Item.ScriptVariable->Variable.GetType().GetNameText();
-	FSlateBrush const* IconBrush = Item.GetVariable().GetType().IsStatic() ? FNiagaraEditorStyle::Get().GetBrush(TEXT("NiagaraEditor.StaticIcon")) : FEditorStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	FSlateBrush const* IconBrush = Item.GetVariable().GetType().IsStatic() ? FNiagaraEditorStyle::Get().GetBrush(TEXT("NiagaraEditor.StaticIcon")) : FAppStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
 	const FLinearColor TypeColor = UEdGraphSchema_Niagara::GetTypeColor(Item.GetVariable().GetType());
 	FSlateColor        IconColor = FSlateColor(TypeColor);
 	FString			   IconDocLink, IconDocExcerpt;
-	FSlateBrush const* SecondaryIconBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	FSlateBrush const* SecondaryIconBrush = FAppStyle::GetBrush(TEXT("NoBrush"));
 	FSlateColor        SecondaryIconColor = IconColor;
 	TSharedRef<SWidget> IconWidget = SNew(SScaleBox)
 	[
@@ -239,7 +311,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 					.MinDesiredWidth(20.0f)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 						.Text(FEditorFontGlyphs::Share_Alt)
 						.ToolTipText(LOCTEXT("ParameterDefinitionDefaultValueOverridingToolTip", "Parameter is overriding the linked Parameter Definition default value."))
 					]
@@ -253,7 +325,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 				.MinDesiredWidth(20.0f)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 					.Text(FEditorFontGlyphs::Book)
 					.ToolTipText(LOCTEXT("ParameterDefinitionSubscribedToolTip", "Parameter is linked to a Parameter Definition."))
 				]
@@ -289,7 +361,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 				.MinDesiredWidth(20.0f)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 					.Text(FEditorFontGlyphs::Book)
 					.ColorAndOpacity(FLinearColor::Red)
 					.ToolTipText(LinkedParameterToolTipText)
@@ -308,7 +380,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 			.MinDesiredWidth(20.0f)
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 				.Text(FEditorFontGlyphs::Lock)
 				.ToolTipText(LOCTEXT("LockedToolTip", "This parameter is used in a referenced external graph and can't be edited directly."))
 			]
@@ -323,7 +395,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 			.MinDesiredWidth(20.0f)
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 				.Text(FEditorFontGlyphs::Database)
 				.ToolTipText(LOCTEXT("DataInterfaceSourceToolTip", "This parameter is a child variable of an existing Data Interface, meant to be used in Simulation Stage based stacks where the parent Data Interface is the Iteration Source."))
 			]
@@ -335,7 +407,10 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 	TSharedPtr<SNiagaraParameterNameTextBlock> ParameterNameTextBlock = SNew(SNiagaraParameterNameTextBlock)
 	.ParameterText(FText::FromName(Item.GetVariable().GetName()))
 	.HighlightText(ItemSelector.ToSharedRef(), &SNiagaraParameterPanelSelector::GetFilterTextNoRef)
-	.ToolTipText(Item.ScriptVariable->Metadata.Description)
+	.ToolTipText_Lambda([Item]
+	{
+		return Item.ScriptVariable->Metadata.Description;
+	})
 	.OnTextCommitted(this, &SNiagaraParameterPanel::OnParameterNameTextCommitted, Item)
 	.OnVerifyTextChanged(this, &SNiagaraParameterPanel::OnParameterNameTextVerifyChanged, Item)
 	.IsSelected(ItemSelector.ToSharedRef(), &SNiagaraParameterPanelSelector::IsItemSelected, Item)
@@ -386,7 +461,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 		[
 			SNew(SComboButton)
 			.HasDownArrow(false)
-			.ButtonStyle(FEditorStyle::Get(), "RoundButton")
+			.ButtonStyle(FAppStyle::Get(), "RoundButton")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.ContentPadding(FMargin(2.0f))
 			.HAlign(HAlign_Right)
@@ -440,7 +515,8 @@ void SNiagaraParameterPanel::Tick(const FGeometry& AllottedGeometry, const doubl
 		if (bPendingRefresh)
 		{
 			bPendingRefresh = false;
-			Refresh();
+			Refresh(bRunCategoryExpansionFilter);
+			bRunCategoryExpansionFilter = false;
 		}
 		else if (bParameterItemsPendingChange)
 		{
@@ -466,8 +542,8 @@ TSharedRef<SWidget> SNiagaraParameterPanel::CreateAddToCategoryButton(const FNia
 {
 	TSharedPtr<SComboButton> Button;
 	SAssignNew(Button, SComboButton)
-	.ButtonStyle(FEditorStyle::Get(), "RoundButton")
-	.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+	.ButtonStyle(FAppStyle::Get(), "RoundButton")
+	.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 	.ContentPadding(FMargin(2, 0))
 	.OnGetMenuContent(this, &SNiagaraParameterPanel::OnGetParameterMenu, Category)
 	.IsEnabled(this, &SNiagaraParameterPanel::GetCanAddParametersToCategory, Category)
@@ -482,7 +558,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::CreateAddToCategoryButton(const FNia
 		.Padding(FMargin(0, 1))
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("Plus"))
+			.Image(FAppStyle::GetBrush("Plus"))
 		]
 	];
 
@@ -579,15 +655,26 @@ bool SNiagaraParameterPanel::OnParameterNameTextVerifyChanged(const FText& InNew
 	return ParameterPanelViewModel->GetCanRenameParameterAndToolTip(ItemToBeRenamed, InNewText, bCheckEmptyNameText, OutErrorMessage);
 }
 
-void SNiagaraParameterPanel::Refresh()
+void SNiagaraParameterPanel::Refresh(bool bInRunCategoryExpansionFilter)
 {
 	ItemSelector->RefreshItemsAndDefaultCategories(ParameterPanelViewModel->GetViewedParameterItems(), ParameterPanelViewModel->GetDefaultCategories());
+	if (bInRunCategoryExpansionFilter && FilterCategoryExpandedDelegate.IsBound() && ParameterPanelViewModel->UsesCategoryFilteringForInitialExpansion())
+	{	
+		ItemSelector->ExpandTreeByFilter(FilterCategoryExpandedDelegate);
+	}
 }
 
-void SNiagaraParameterPanel::RefreshNextTick()
+void SNiagaraParameterPanel::RefreshNextTick(bool bInRunCategoryExpansionFilter)
 {
 	bPendingRefresh = true;
+
+	// We want to make sure that if anyone requested the expansion filter, it doesn't get cleared out, so only set if it isn't already true...
+	if (!bRunCategoryExpansionFilter)
+	{
+		bRunCategoryExpansionFilter = bInRunCategoryExpansionFilter;
+	}
 }
+
 
 void SNiagaraParameterPanel::SelectParameterItemByName(const FName ParameterName) const
 {
@@ -596,8 +683,9 @@ void SNiagaraParameterPanel::SelectParameterItemByName(const FName ParameterName
 		if (Item.GetVariable().GetName() == ParameterName)
 		{
 			const TArray<FNiagaraParameterPanelItem> ItemsToSelect = { Item };
-			ItemSelector->SetSelectedItems(ItemsToSelect);
+			ItemSelector->SetSelectedItems(ItemsToSelect, true);
 			ItemSelector->RequestScrollIntoView(Item);
+			
 			return;
 		}
 	}
@@ -660,11 +748,11 @@ const FSlateBrush* SNiagaraParameterPanel::GetCategoryBackgroundImage(bool bIsCa
 {
 	if (bIsCategoryHovered)
 	{
-		return bIsCategoryExpanded ? FEditorStyle::GetBrush("DetailsView.CategoryTop_Hovered") : FEditorStyle::GetBrush("DetailsView.CollapsedCategory_Hovered");
+		return bIsCategoryExpanded ? FAppStyle::GetBrush("DetailsView.CategoryTop_Hovered") : FAppStyle::GetBrush("DetailsView.CollapsedCategory_Hovered");
 	}
 	else
 	{
-		return bIsCategoryExpanded ? FEditorStyle::GetBrush("DetailsView.CategoryTop") : FEditorStyle::GetBrush("DetailsView.CollapsedCategory");
+		return bIsCategoryExpanded ? FAppStyle::GetBrush("DetailsView.CategoryTop") : FAppStyle::GetBrush("DetailsView.CollapsedCategory");
 	}
 }
 
@@ -720,7 +808,7 @@ const FSlateBrush* SNiagaraParameterPanel::GetViewOptionsBorderBrush()
 	UNiagaraEditorSettings* Settings = GetMutableDefault<UNiagaraEditorSettings>();
 	return Settings->GetDisplayAdvancedParameterPanelCategories()
 		? FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.DepressedHighlightedButtonBrush")
-		: FEditorStyle::GetBrush("NoBrush");
+		: FAppStyle::GetBrush("NoBrush");
 }
 
 #undef LOCTEXT_NAMESPACE // "NiagaraParameterPanel"

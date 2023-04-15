@@ -2,21 +2,24 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Async/Future.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformAffinity.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/CoreStats.h"
+#include "Misc/Fork.h"
 #include "Misc/IQueuedWork.h"
 #include "Misc/QueuedThreadPool.h"
-#include "Misc/Fork.h"
 #include "Stats/Stats.h"
+#include "Stats/Stats2.h"
 #include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
 
 /**
  * Enumerates available asynchronous execution methods.
@@ -347,6 +350,7 @@ auto Async(EAsyncExecution Execution, CallableType&& Callable, TUniqueFunction<v
 	case EAsyncExecution::ThreadPool:
 		if (FPlatformProcess::SupportsMultithreading())
 		{
+			check(GThreadPool != nullptr);
 			GThreadPool->AddQueuedWork(new TAsyncQueuedWork<ResultType>(MoveTemp(Function), MoveTemp(Promise)));
 		}
 		else
@@ -359,6 +363,7 @@ auto Async(EAsyncExecution Execution, CallableType&& Callable, TUniqueFunction<v
 	case EAsyncExecution::LargeThreadPool:
 		if (FPlatformProcess::SupportsMultithreading())
 		{
+			check(GLargeThreadPool != nullptr);
 			GLargeThreadPool->AddQueuedWork(new TAsyncQueuedWork<ResultType>(MoveTemp(Function), MoveTemp(Promise)));
 		}
 		else

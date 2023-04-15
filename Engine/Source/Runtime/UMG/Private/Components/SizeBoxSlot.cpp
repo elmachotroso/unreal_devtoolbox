@@ -5,16 +5,20 @@
 #include "Widgets/Layout/SBox.h"
 #include "Components/Widget.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SizeBoxSlot)
+
 /////////////////////////////////////////////////////
 // USizeBoxSlot
 
 USizeBoxSlot::USizeBoxSlot(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Padding = FMargin(0, 0);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Padding = FMargin(0.f, 0.f);
 
 	HorizontalAlignment = HAlign_Fill;
 	VerticalAlignment = VAlign_Fill;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void USizeBoxSlot::ReleaseSlateResources(bool bReleaseChildren)
@@ -33,6 +37,12 @@ void USizeBoxSlot::BuildSlot(TSharedRef<SBox> InSizeBox)
 	SizeBox.Pin()->SetContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FMargin USizeBoxSlot::GetPadding() const
+{
+	return Padding;
+}
+
 void USizeBoxSlot::SetPadding(FMargin InPadding)
 {
 	Padding = InPadding;
@@ -40,6 +50,11 @@ void USizeBoxSlot::SetPadding(FMargin InPadding)
 	{
 		SizeBox.Pin()->SetPadding(InPadding);
 	}
+}
+
+EHorizontalAlignment USizeBoxSlot::GetHorizontalAlignment() const
+{
+	return HorizontalAlignment;
 }
 
 void USizeBoxSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlignment)
@@ -51,6 +66,11 @@ void USizeBoxSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlign
 	}
 }
 
+EVerticalAlignment USizeBoxSlot::GetVerticalAlignment() const
+{
+	return VerticalAlignment;
+}
+
 void USizeBoxSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignment)
 {
 	VerticalAlignment = InVerticalAlignment;
@@ -59,10 +79,14 @@ void USizeBoxSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignment)
 		SizeBox.Pin()->SetVAlign(InVerticalAlignment);
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void USizeBoxSlot::SynchronizeProperties()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	SetPadding(Padding);
 	SetHorizontalAlignment(HorizontalAlignment);
 	SetVerticalAlignment(VerticalAlignment);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
+

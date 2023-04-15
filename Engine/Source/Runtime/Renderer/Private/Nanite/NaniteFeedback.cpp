@@ -18,7 +18,7 @@ class FNaniteFeedbackStatusCS : public FNaniteGlobalShader
 	DECLARE_GLOBAL_SHADER(FNaniteFeedbackStatusCS);
 	SHADER_USE_PARAMETER_STRUCT(FNaniteFeedbackStatusCS, FNaniteGlobalShader);
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FQueueState>, QueueState)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FQueueState>, OutQueueState)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, InMainRasterizerArgsSWHW)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, InPostRasterizerArgsSWHW)
 
@@ -57,13 +57,13 @@ FFeedbackManager::FFeedbackManager()
 		if (CandidateClusterState.Update(PeakCandidateClusters, MaxCandidateClusters))
 		{
 			UE_LOG(LogRenderer, Warning, TEXT(	"Nanite candidate cluster buffer overflow detected. New high-water mark is %d / %d. "
-												"Increase r.Nanite.MaxNodes to prevent potential visual artifacts."), CandidateClusterState.HighWaterMark, MaxCandidateClusters);
+												"Increase r.Nanite.MaxCandidateClusters to prevent potential visual artifacts."), CandidateClusterState.HighWaterMark, MaxCandidateClusters);
 		}
 		
 		if (VisibleClusterState.Update(PeakVisibleClusters, MaxVisibleClusters))
 		{
 			UE_LOG(LogRenderer, Warning, TEXT(	"Nanite visible cluster buffer overflow detected. New high-water mark is %d / %d. "
-												"Increase r.Nanite.MaxNodes to prevent potential visual artifacts."), VisibleClusterState.HighWaterMark, MaxVisibleClusters);
+												"Increase r.Nanite.MaxVisibleClusters to prevent potential visual artifacts."), VisibleClusterState.HighWaterMark, MaxVisibleClusters);
 		}
 	});
 
@@ -128,7 +128,7 @@ bool FFeedbackManager::FBufferState::Update(const uint32 Peak, const uint32 Capa
 void FFeedbackManager::Update(FRDGBuilder& GraphBuilder, const FSharedContext& SharedContext, FCullingContext& CullingContext)
 {
 	FNaniteFeedbackStatusCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FNaniteFeedbackStatusCS::FParameters>();
-	PassParameters->QueueState = GraphBuilder.CreateUAV(CullingContext.QueueState);
+	PassParameters->OutQueueState = GraphBuilder.CreateUAV(CullingContext.QueueState);
 	PassParameters->InMainRasterizerArgsSWHW = GraphBuilder.CreateSRV(CullingContext.MainRasterizeArgsSWHW);
 	PassParameters->InPostRasterizerArgsSWHW = GraphBuilder.CreateSRV(CullingContext.Configuration.bTwoPassOcclusion ? CullingContext.PostRasterizeArgsSWHW : CullingContext.MainRasterizeArgsSWHW);	// Avoid permutation by doing Post=Main for single pass
 	PassParameters->GPUMessageParams = GPUMessage::GetShaderParameters(GraphBuilder);

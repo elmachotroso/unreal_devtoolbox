@@ -109,6 +109,8 @@ void FLinkerManager::ResetLinkerExports(UPackage* InPackage)
 
 void FLinkerManager::ResetLoaders(UObject* InPkg)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLinkerManager::ResetLoaders);
+
 	// Top level package to reset loaders for.
 	UObject*		TopLevelPackage = InPkg ? InPkg->GetOutermost() : nullptr;
 
@@ -163,6 +165,25 @@ void FLinkerManager::ResetLoaders(UObject* InPkg)
 			RemoveLinker(Linker);
 		}
 	}
+}
+
+void FLinkerManager::ResetLoaders(TArrayView<UObject*> InPackages)
+{
+	TSet<FLinkerLoad*> LinkerLoads;
+	LinkerLoads.Reserve(InPackages.Num());
+
+	for (UObject* Object : InPackages)
+	{
+		if (UPackage* TopLevelPackage = Object->GetPackage())
+		{
+			if (FLinkerLoad* LinkerToReset = FLinkerLoad::FindExistingLinkerForPackage(TopLevelPackage))
+			{
+				LinkerLoads.Add(LinkerToReset);
+			}
+		}
+	}
+
+	ResetLoaders(LinkerLoads);
 }
 
 void FLinkerManager::ResetLoaders(const TSet<FLinkerLoad*>& InLinkerLoads)

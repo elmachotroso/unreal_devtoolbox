@@ -3,17 +3,38 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/IndirectArray.h"
+#include "Containers/Map.h"
+#include "DynamicMesh/DynamicAttribute.h"
 #include "DynamicMesh/DynamicMeshOverlay.h"
 #include "DynamicMesh/DynamicMeshTriangleAttribute.h"
-#include "DynamicMesh/DynamicAttribute.h"
+#include "DynamicMesh/DynamicVertexAttribute.h"
 #include "GeometryTypes.h"
+#include "HAL/PlatformCrt.h"
 #include "InfoTypes.h"
-#include "Containers/IndirectArray.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Math/Vector4.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+#include "Util/DynamicVector.h"
+
+class FArchive;
+namespace DynamicMeshInfo { struct FEdgeCollapseInfo; }
+namespace DynamicMeshInfo { struct FEdgeFlipInfo; }
+namespace DynamicMeshInfo { struct FEdgeSplitInfo; }
+namespace DynamicMeshInfo { struct FMergeEdgesInfo; }
+namespace DynamicMeshInfo { struct FPokeTriangleInfo; }
+namespace DynamicMeshInfo { struct FVertexSplitInfo; }
 
 namespace UE
 {
 namespace Geometry
 {
+class FCompactMaps;
+class FDynamicMesh3;
 
 /** Standard UV overlay type - 2-element float */
 typedef TDynamicMeshVectorOverlay<float, 2, FVector2f> FDynamicMeshUVOverlay;
@@ -27,9 +48,13 @@ typedef TDynamicMeshScalarTriangleAttribute<int32> FDynamicMeshMaterialAttribute
 /** Per-triangle integer polygroup ID */
 typedef TDynamicMeshScalarTriangleAttribute<int32> FDynamicMeshPolygroupAttribute;
 
+/** Per-vertex scalar float weight */
+typedef TDynamicMeshVertexAttribute<float, 1> FDynamicMeshWeightAttribute;
+
 /** Forward declarations */
 template<typename ParentType>
 class TDynamicVertexSkinWeightsAttribute;
+
 using FDynamicMeshVertexSkinWeightsAttribute = TDynamicVertexSkinWeightsAttribute<FDynamicMesh3>;
 	
 /**
@@ -81,9 +106,13 @@ public:
 
 
 	/**
-	 * Enable the matching attributes and overlay layers as the reference Copy set, but do not copy any data across
+	 * Enable the matching attributes and overlay layers as the reference Copy set, but do not copy any data across.
+	 * By default, clears existing attributes, so that there will be an exact match
+	 * If bClearExisting is passed as false, attribute sets will grow if necessary, and new sets are cleared,
+	 * but existing attributes are not removed/cleared.
+	 * @note Currently SkinWeightAttributes and GenericAttributes are always fully cleared regardless of bClearExisting value
 	 */
-	void EnableMatchingAttributes(const FDynamicMeshAttributeSet& ToMatch);
+	void EnableMatchingAttributes(const FDynamicMeshAttributeSet& ToMatch, bool bClearExisting = true);
 
 	/** @return the parent mesh for this overlay */
 	const FDynamicMesh3* GetParentMesh() const { return ParentMesh; }
@@ -268,6 +297,21 @@ public:
 	/** @return the Polygroup layer at the given Index */
 	const FDynamicMeshPolygroupAttribute* GetPolygroupLayer(int Index) const;
 
+	//
+	// Weight layers
+	//
+
+	/** @return number of weight layers */
+	virtual int32 NumWeightLayers() const;
+
+	/** Set the number of weight layers */
+	virtual void SetNumWeightLayers(int32 Num);
+
+	/** @return the weight layer at the given Index */
+	FDynamicMeshWeightAttribute* GetWeightLayer(int Index);
+
+	/** @return the weight layer at the given Index */
+	const FDynamicMeshWeightAttribute* GetWeightLayer(int Index) const;
 
 
 
@@ -408,6 +452,7 @@ protected:
 
 	TUniquePtr<FDynamicMeshMaterialAttribute> MaterialIDAttrib;
 
+	TIndirectArray<FDynamicMeshWeightAttribute> WeightLayers;
 	TIndirectArray<FDynamicMeshPolygroupAttribute> PolygroupLayers;
 
 	using SkinWeightAttributesMap = TMap<FName, TUniquePtr<FDynamicMeshVertexSkinWeightsAttribute>>;
@@ -474,6 +519,10 @@ protected:
 		for (int PolygroupLayerIndex = 0; PolygroupLayerIndex < NumPolygroupLayers(); PolygroupLayerIndex++)
 		{
 			bValid = GetPolygroupLayer(PolygroupLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
+		}
+		for (int WeightLayerIndex = 0; WeightLayerIndex < NumWeightLayers(); WeightLayerIndex++)
+		{
+			bValid = GetWeightLayer(WeightLayerIndex)->CheckValidity(bAllowNonmanifold, FailMode) && bValid;
 		}
 		return bValid;
 	}

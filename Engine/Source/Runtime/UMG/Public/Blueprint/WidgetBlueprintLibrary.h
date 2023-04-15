@@ -40,22 +40,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Widget|Drag and Drop", meta=( BlueprintInternalUseOnly="true" ))
 	static UDragDropOperation* CreateDragDropOperation(TSubclassOf<UDragDropOperation> OperationClass);
-	
+
 	/**
 	 * Setup an input mode that allows only the UI to respond to user input.
 	 * 
 	 * Note: This means that any bound Input Events in the widget will not be called!
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Input", meta=(DisplayName="Set Input Mode UI Only"))
-	static void SetInputMode_UIOnlyEx(APlayerController* PlayerController, UWidget* InWidgetToFocus = nullptr, EMouseLockMode InMouseLockMode = EMouseLockMode::DoNotLock);
-
+	static void SetInputMode_UIOnlyEx(APlayerController* PlayerController, UWidget* InWidgetToFocus = nullptr, EMouseLockMode InMouseLockMode = EMouseLockMode::DoNotLock, const bool bFlushInput = false);
 	/**
 	 * Setup an input mode that allows only the UI to respond to user input, and if the UI doesn't handle it player input / player controller gets a chance.
 	 * 
 	 * Note: This means that any bound Input events in the widget will be called.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Input", meta = (DisplayName = "Set Input Mode Game And UI"))
-	static void SetInputMode_GameAndUIEx(APlayerController* PlayerController, UWidget* InWidgetToFocus = nullptr, EMouseLockMode InMouseLockMode = EMouseLockMode::DoNotLock, bool bHideCursorDuringCapture = true);
+	static void SetInputMode_GameAndUIEx(APlayerController* PlayerController, UWidget* InWidgetToFocus = nullptr, EMouseLockMode InMouseLockMode = EMouseLockMode::DoNotLock, bool bHideCursorDuringCapture = true, const bool bFlushInput = false);
 
 	/**
 	 * Setup an input mode that allows only player input / player controller to respond to user input.
@@ -63,7 +62,7 @@ public:
 	 * Note: Any bound Input Events in this widget will be called.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Input")
-	static void SetInputMode_GameOnly(APlayerController* PlayerController);
+	static void SetInputMode_GameOnly(APlayerController* PlayerController, const bool bFlushInput = false);
 
 	/** */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category="Focus")
@@ -72,6 +71,19 @@ public:
 	/** Draws a box */
 	UFUNCTION(BlueprintCallable, Category="Painting")
 	static void DrawBox(UPARAM(ref) FPaintContext& Context, FVector2D Position, FVector2D Size, USlateBrushAsset* Brush, FLinearColor Tint = FLinearColor::White);
+
+	/**
+	 * Draws a hermite spline.
+	 *
+	 * @param Start			Starting position of the spline in local space.
+	 * @param StartDir		The direction of the spline from the start point.
+	 * @param End			Ending position of the spline in local space.
+	 * @param EndDir		The direction of the spline to the end point.
+	 * @param Tint			Color to render the spline.
+	 * @param Thickness		How many pixels thick this spline should be.
+	 */
+	UFUNCTION(BlueprintCallable, meta = (AdvancedDisplay = "6"), Category = "Painting")
+	static void DrawSpline(UPARAM(ref) FPaintContext& Context, FVector2D Start, FVector2D StartDir, FVector2D End, FVector2D EndDir, FLinearColor Tint = FLinearColor::White, float Thickness = 1.0f);
 
 	/**
 	 * Draws a line.

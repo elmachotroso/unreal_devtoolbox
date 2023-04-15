@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 #include "ShotgridEngine.generated.h"
 
@@ -79,7 +79,7 @@ public:
 	TArray<FAssetData> SelectedAssets;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Python, meta = (Deprecated, DeprecationMessage = "SelectedActors is deprecated, use GetSelectedActors instead." ))
-	TArray<AActor*> SelectedActors;
+	TArray<TObjectPtr<AActor>> SelectedActors;
 
 	/** Selected actors to be used for Shotgrid commands */
 	UFUNCTION(BlueprintCallable, Category = Python)

@@ -6,14 +6,6 @@ public class Profiler : ModuleRules
 {
 	public Profiler( ReadOnlyTargetRules Target ) : base(Target)
 	{
-		PrivateIncludePaths.AddRange
-		(
-			new string[] {
-				"Developer/Profiler/Private",
-				"Developer/Profiler/Private/Widgets",
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange
 		(
 			new string[] {
@@ -23,7 +15,6 @@ public class Profiler : ModuleRules
 				"RHI",
 				"RenderCore",
 				"Slate",
-                "EditorStyle",
 				"ProfilerClient",
 				"DesktopPlatform",
 			}
@@ -41,6 +32,7 @@ public class Profiler : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"SlateCore",
+				"ToolWidgets"
 			}
 		);
 

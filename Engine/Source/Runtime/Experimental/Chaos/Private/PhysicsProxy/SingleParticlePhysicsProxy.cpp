@@ -16,17 +16,18 @@
 #include "Chaos/PullPhysicsDataImp.h"
 #include "RewindData.h"
 
+namespace Chaos
+{
+
 // This is a temporary workaround to avoid GT copying position from physics results for kinematics, as they are already at target.
 // Velocity and such is still copied. This will be handled better in the future.
 int32 SyncKinematicOnGameThread = 0;
 FAutoConsoleVariableRef CVar_SyncKinematicOnGameThread(TEXT("P.Chaos.SyncKinematicOnGameThread"), SyncKinematicOnGameThread, TEXT("If set to 1, if a kinematic is flagged to send position back to game thread, move component, if 0, do not."));
 
-
 FSingleParticlePhysicsProxy::FSingleParticlePhysicsProxy(TUniquePtr<PARTICLE_TYPE>&& InParticle, FParticleHandle* InHandle, UObject* InOwner)
-	: IPhysicsProxyBase(EPhysicsProxyType::SingleParticleProxy, InOwner)
+	: IPhysicsProxyBase(EPhysicsProxyType::SingleParticleProxy, InOwner, MakeShared<FSingleParticleProxyTimestamp>())
 	, Particle(MoveTemp(InParticle))
 	, Handle(InHandle)
-	, PullDataInterpIdx_External(INDEX_NONE)
 {
 	Particle->SetProxy(this);
 }
@@ -51,7 +52,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 
 	if (bResimInitialized)	//todo: assumes particles are always initialized as enabled. This is not true in future versions of code, so check PushData
 	{
-		Evolution.EnableParticle(Handle, nullptr);
+		Evolution.EnableParticle(Handle);
 	}
 	// move the copied game thread data into the handle
 	{
@@ -60,17 +61,19 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 
 		if(NewXR)
 		{
-			Handle->SetXR(*NewXR);
+			// @todo(chaos): we need to know if this is a teleport or not and pass that on. See UE-165746
+			// For now we just set bIsTeleport to true since that's the no-impact option for SetParticleTransform
+			// (there would be issues if we report a non-teleport move for an initial-position a long way from the origin)
+			const bool bIsTeleport = true;
+			Evolution.SetParticleTransform(Handle, NewXR->X(), NewXR->R(), bIsTeleport);
 		}
 
 		if(NewNonFrequentData)
 		{
-			Handle->SetNonFrequentData(*NewNonFrequentData);
-
-			// geometry may have changed, we need to invalidate the particle so it can be removed from caching structures in the evolution
-			// @todo(chaos): Remove collision constraints only. Invalidate particle may remove joint constraints in constraint graph. If joint constraint is persistent, this may cause issues.
+			// Geometry may have changed, we need to remove the particle and its collisions from the graph
 			Evolution.InvalidateParticle(Handle);
-			Evolution.DestroyParticleCollisionsInAllocator(Handle);
+
+			Handle->SetNonFrequentData(*NewNonFrequentData);
 		}
 
 		auto NewVelocities = bHasKinematicData ? ParticleData.FindVelocities(Manager, DataIdx) : nullptr;
@@ -106,7 +109,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 			if(auto NewData = ParticleData.FindDynamics(Manager, DataIdx))
 			{
 				RigidHandle->SetDynamics(*NewData);
-				RigidHandle->ResetVSmoothFromForces();
+				Evolution.ResetVSmoothFromForces(*RigidHandle);
 			}
 
 			if(auto NewData = ParticleData.FindDynamicMisc(Manager,DataIdx))
@@ -118,6 +121,7 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 		//shape properties
 		bool bUpdateCollisionData = false;
 		bool bHasCollision = false;
+		bool bHasMaterial = false;
 		for(int32 ShapeDataIdx : Dirty.ShapeDataIndices)
 		{
 			const FShapeDirtyData& ShapeData = ShapesData[ShapeDataIdx];
@@ -134,10 +138,15 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 			if(auto NewData = ShapeData.FindMaterials(Manager, ShapeDataIdx))
 			{
 				Handle->ShapesArray()[ShapeIdx]->SetMaterialData(*NewData);
+				bHasMaterial = true;
 			}
-
 		}
 		
+		if (bHasMaterial)
+		{
+			// If materials changed, collisions need to recache their material data
+			Evolution.ParticleMaterialChanged(Handle);
+		}
 
 		if(bUpdateCollisionData && !ForceNoCollisionIntoSQ)
 		{
@@ -232,7 +241,19 @@ void FSingleParticlePhysicsProxy::BufferPhysicsResults_External(Chaos::FDirtyRig
 	}
 }
 
-bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData,int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData, const Chaos::FRealSingle* Alpha, const Chaos::FRealSingle* LeashAlpha)
+FRealSingle ResimInterpStrength = 0.2f;
+FAutoConsoleVariableRef CVarResimInterpStrength(TEXT("p.ResimInterpStrength"), ResimInterpStrength, TEXT("How strong the resim interp leash is. 1 means immediately snap to new target, 0 means do not interpolate at all"));
+
+FRealSingle ResimInterpStrength2 = 0.05f;
+FAutoConsoleVariableRef CVarResimInterpStrength2(TEXT("p.ResimInterpStrength2"), ResimInterpStrength2, TEXT("How strong the resim interp leash is for object in channel 2. 1 means immediately snap to new target, 0 means do not interpolate at all"));
+
+FRealSingle MinLinError2ForResimInterp = 1.f;
+FAutoConsoleVariableRef CVarMinLinError2ForResimInterp(TEXT("p.MinLinError2ForResimInterp"), MinLinError2ForResimInterp, TEXT("The minimum squared error needed to continue interpolation during a resim"));
+
+FRealSingle MinRotErrorForResimInterp = 0.1f;
+FAutoConsoleVariableRef CVarMinRotErrorForResimInterp(TEXT("p.MinRotErrorForResimInterp"), MinRotErrorForResimInterp, TEXT("The minimum rotation error needed to continue interpolation during a resim"));
+
+bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData,int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData, const Chaos::FRealSingle* Alpha)
 {
 	using namespace Chaos;
 	// Move buffered data into the TPBDRigidParticle without triggering invalidation of the physics state.
@@ -241,60 +262,68 @@ bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidP
 	{
 		const bool bSyncXR = SyncKinematicOnGameThread || (Rigid->ObjectState() != EObjectStateType::Kinematic);
 
-		const FProxyTimestamp* ProxyTimestamp = PullData.GetTimestamp();
+		const FSingleParticleProxyTimestamp* ProxyTimestamp = PullData.GetTimestamp();
 		
 		if(NextPullData)
 		{
-			auto LerpHelper = [SolverSyncTimestamp](const int32 PropertyTimestamp, const auto& Prev, const auto& Overwrite) -> const auto*
+			auto LerpHelper = [SolverSyncTimestamp](const auto& Prev, const auto& OverwriteProperty) -> const auto*
 			{
 				//if overwrite is in the future, do nothing
 				//if overwrite is on this step, we want to interpolate from overwrite to the result of the frame that consumed the overwrite
 				//if overwrite is in the past, just do normal interpolation
 
 				//this is nested because otherwise compiler can't figure out the type of nullptr with an auto return type
-				return PropertyTimestamp <= SolverSyncTimestamp ? (PropertyTimestamp < SolverSyncTimestamp ? &Prev : &Overwrite) : nullptr;
+				return OverwriteProperty.Timestamp <= SolverSyncTimestamp ? (OverwriteProperty.Timestamp < SolverSyncTimestamp ? &Prev : &OverwriteProperty.Value) : nullptr;
 			};
 
 			if (bSyncXR)
 			{
-				if (const FVec3* Prev = LerpHelper(ProxyTimestamp->XTimestamp, PullData.X, ProxyTimestamp->OverWriteX))
+				const float UseResimInterpStrength = InterpolationData.GetInterpChannel_External() == 0 ? ResimInterpStrength : ResimInterpStrength2;
+
+				bool bKeepSmoothing = false;
+				if (const FVec3* Prev = LerpHelper(PullData.X, ProxyTimestamp->OverWriteX))
 				{
 					FVec3 Target = FMath::Lerp(*Prev, NextPullData->X, *Alpha);
-					if (LeashAlpha)
+					if (InterpolationData.IsResimSmoothing())
 					{
-						Target = FMath::Lerp(Rigid->X(), Target, *LeashAlpha);
+						const FVec3 SmoothedTarget = FMath::Lerp(Rigid->X(), Target, UseResimInterpStrength);
+						if((SmoothedTarget - Target).SizeSquared() > MinLinError2ForResimInterp)
+						{
+							bKeepSmoothing = true;
+							Target = SmoothedTarget;
+						}
+
 					}
 					Rigid->SetX(Target, false);
 				}
 
-				if (const FQuat* Prev = LerpHelper(ProxyTimestamp->RTimestamp, PullData.R, ProxyTimestamp->OverWriteR))
+				if (const FQuat* Prev = LerpHelper(PullData.R, ProxyTimestamp->OverWriteR))
 				{
 					FQuat Target = FMath::Lerp(*Prev, NextPullData->R, *Alpha);
-					if (LeashAlpha)
+					if (InterpolationData.IsResimSmoothing())
 					{
-						Target = FMath::Lerp<FQuat>(Rigid->R(), Target, *LeashAlpha);
+						const FQuat SmoothedTarget = FMath::Lerp<FQuat>(Rigid->R(), Target, UseResimInterpStrength);
+						if(FQuat::ErrorAutoNormalize(SmoothedTarget, Target) > MinRotErrorForResimInterp)
+						{
+							bKeepSmoothing = true;
+							Target = SmoothedTarget;
+						}
 					}
 					Rigid->SetR(Target, false);
 				}
+
+				InterpolationData.SetResimSmoothing(bKeepSmoothing);
 			}
 
-			if (const FVec3* Prev = LerpHelper(ProxyTimestamp->VTimestamp, PullData.V, ProxyTimestamp->OverWriteV))
+			if (const FVec3* Prev = LerpHelper(PullData.V, ProxyTimestamp->OverWriteV))
 			{
 				FVec3 Target = FMath::Lerp(*Prev, NextPullData->V, *Alpha);
-				if (LeashAlpha)
-				{
-					Target = FMath::Lerp(Rigid->V(), Target, *LeashAlpha);
-				}
 				Rigid->SetV(Target, false);
 			}
 
-			if (const FVec3* Prev = LerpHelper(ProxyTimestamp->WTimestamp, PullData.W, ProxyTimestamp->OverWriteW))
+			if (const FVec3* Prev = LerpHelper(PullData.W, ProxyTimestamp->OverWriteW))
 			{
 				FVec3 Target = FMath::Lerp(*Prev, NextPullData->W, *Alpha);
-				if (LeashAlpha)
-				{
-					Target = FMath::Lerp(Rigid->W(), Target, *LeashAlpha);
-				}
 				Rigid->SetW(Target, false);
 			}
 
@@ -316,23 +345,23 @@ bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidP
 			if (bSyncXR)
 			{
 				//no interpolation, just ignore if overwrite comes after
-				if (SolverSyncTimestamp >= ProxyTimestamp->XTimestamp)
+				if (SolverSyncTimestamp >= ProxyTimestamp->OverWriteX.Timestamp)
 				{
 					Rigid->SetX(PullData.X, false);
 				}
 
-				if (SolverSyncTimestamp >= ProxyTimestamp->RTimestamp)
+				if (SolverSyncTimestamp >= ProxyTimestamp->OverWriteR.Timestamp)
 				{
 					Rigid->SetR(PullData.R, false);
 				}
 			}
 
-			if(SolverSyncTimestamp >= ProxyTimestamp->VTimestamp)
+			if(SolverSyncTimestamp >= ProxyTimestamp->OverWriteV.Timestamp)
 			{
 				Rigid->SetV(PullData.V, false);
 			}
 
-			if(SolverSyncTimestamp >= ProxyTimestamp->WTimestamp)
+			if(SolverSyncTimestamp >= ProxyTimestamp->OverWriteW.Timestamp)
 			{
 				Rigid->SetW(PullData.W, false);
 			}
@@ -367,4 +396,5 @@ void FSingleParticlePhysicsProxy::ClearEvents()
 	{
 		Rigid->ClearEvents();
 	}
+}
 }

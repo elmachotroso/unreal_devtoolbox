@@ -15,6 +15,7 @@ class FSceneViewFamilyContext;
 class ADisplayClusterRootActor;
 class UDisplayClusterConfigurationViewport;
 class IDisplayClusterViewportManagerProxy;
+class IDisplayClusterViewportLightCardManager;
 class FReferenceCollector;
 
 class DISPLAYCLUSTER_API IDisplayClusterViewportManager
@@ -49,6 +50,19 @@ public:
 	* @return - true, if success
 	*/
 	virtual bool UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, class ADisplayClusterRootActor* InRootActorPtr, const FDisplayClusterPreviewSettings* InPreviewSettings = nullptr) = 0;
+
+	/**
+	* Update\Create\Delete viewports for frame. For rendering outside of cluster nodes
+	* Update ICVFX configuration from root actor components
+	* [Game thread func]
+	*
+	* @param InRenderMode    - Render mode
+	* @param InViewportNames - Viewports names for next frame
+	* @param InRootActorPtr  - reference to RootActor with actual configuration inside
+	*
+	* @return - true, if success
+	*/
+	virtual bool UpdateCustomConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const TArray<FString>& InViewportNames, class ADisplayClusterRootActor* InRootActorPtr) = 0;
 
 	/**
 	* Initialize new frame for all viewports on game thread, and update context, render resources with viewport new settings
@@ -148,6 +162,12 @@ public:
 	* @return - arrays with viewport objects refs
 	*/
 	virtual const TArrayView<IDisplayClusterViewport*> GetViewports() const = 0;
+
+	/**
+	* Return the light card manager, used to manage and render UV light cards
+	* [Game thread func]
+	*/
+	virtual TSharedPtr<IDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> GetLightCardManager() const = 0;
 
 	/**
 	* Mark the geometry of the referenced component(s) as dirty (ProceduralMesh, etc)

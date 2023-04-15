@@ -8,6 +8,8 @@ NiagaraRenderer.h: Base class for Niagara render modules
 #include "NiagaraRenderer.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraMeshVertexFactory.h"
+#include "NiagaraGPUSortInfo.h"
+#include "StaticMeshResources.h"
 #include "NiagaraGPUSceneUtils.h"
 
 class FNiagaraDataSet;
@@ -20,7 +22,7 @@ class NIAGARA_API FNiagaraRendererMeshes : public FNiagaraRenderer
 {
 public:
 	FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter);
-	~FNiagaraRendererMeshes();
+	virtual ~FNiagaraRendererMeshes() override;
 
 	//FNiagaraRenderer Interface
 	virtual void Initialize(const UNiagaraRendererProperties* InProps, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
@@ -88,27 +90,14 @@ protected:
 		TArray<uint32, TInlineAllocator<4>> MaterialRemapTable;
 	};
 
-	class FMeshCollectorResourcesBase : public FOneFrameResource
+	class FMeshCollectorResources : public FOneFrameResource
 	{
 	public:
+		~FMeshCollectorResources() override { VertexFactory.ReleaseResource(); }
+
+		FNiagaraMeshVertexFactory VertexFactory;
 		FNiagaraMeshUniformBufferRef UniformBuffer;
-
-		virtual ~FMeshCollectorResourcesBase() {}
-		virtual FNiagaraMeshVertexFactory& GetVertexFactory() = 0;
 	};
-
-	template <typename TVertexFactory>
-	class TMeshCollectorResources : public FMeshCollectorResourcesBase
-	{
-	public:
-		TVertexFactory VertexFactory;
-
-		virtual ~TMeshCollectorResources() { VertexFactory.ReleaseResource(); }
-		virtual FNiagaraMeshVertexFactory& GetVertexFactory() override { return VertexFactory; }
-	};
-
-	using FMeshCollectorResources = TMeshCollectorResources<FNiagaraMeshVertexFactory>;
-	using FMeshCollectorResourcesEx = TMeshCollectorResources<FNiagaraMeshVertexFactoryEx>;
 
 	struct FEmitterSourceInstanceData
 	{
@@ -177,6 +166,7 @@ private:
 	ENiagaraSortMode SortMode;
 	ENiagaraMeshFacingMode FacingMode;
 	uint32 bOverrideMaterials : 1;
+	uint32 bSortHighPrecision : 1;
 	uint32 bSortOnlyWhenTranslucent : 1;
 	uint32 bGpuLowLatencyTranslucency : 1;
 	uint32 bLockedAxisEnable : 1;
@@ -191,9 +181,12 @@ private:
 	ENiagaraMeshLockedAxisSpace LockedAxisSpace;
 
 	FVector2f DistanceCullRange;
-	int32 RendererVisTagOffset;
-	int32 RendererVisibility;
-	int32 MeshIndexOffset;
+	FVector2f DistanceCullRangeSquared;
+	int32 ParticleRendererVisTagOffset = INDEX_NONE;
+	int32 ParticleMeshIndexOffset = INDEX_NONE;
+	int32 RendererVisibility = 0;
+	int32 EmitterRendererVisTagOffset = INDEX_NONE;
+	int32 EmitterMeshIndexOffset = INDEX_NONE;
 	uint32 MaterialParamValidMask;
 	uint32 MaxSectionCount;
 

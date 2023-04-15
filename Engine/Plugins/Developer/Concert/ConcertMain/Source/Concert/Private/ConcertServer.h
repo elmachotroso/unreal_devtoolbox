@@ -26,6 +26,11 @@ public:
 	virtual const UConcertServerConfig* GetConfiguration() const override;
 	virtual const FConcertServerInfo& GetServerInfo() const override;
 
+	virtual TArray<FConcertEndpointContext> GetRemoteAdminEndpoints() const override;
+	virtual FOnConcertRemoteEndpointConnectionChanged& OnRemoteEndpointConnectionChanged() override;
+	virtual FMessageAddress GetRemoteAddress(const FGuid& AdminEndpointId) const override;
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() override;
+
 	virtual bool IsStarted() const override;
 	virtual void Startup() override;
 	virtual void Shutdown() override;
@@ -34,17 +39,18 @@ public:
 	virtual FGuid GetArchivedSessionIdByName(const FString& InName) const override;
 
 	virtual FConcertSessionInfo CreateSessionInfo() const override;
-	virtual TArray<FConcertSessionInfo> GetSessionsInfo() const override;
-	virtual TArray<TSharedPtr<IConcertServerSession>> GetSessions() const override;
-	virtual TSharedPtr<IConcertServerSession> GetSession(const FGuid& SessionId) const override;
+	virtual TArray<FConcertSessionInfo> GetLiveSessionInfos() const override;
+	virtual TArray<FConcertSessionInfo> GetArchivedSessionInfos() const override;
+	virtual TArray<TSharedPtr<IConcertServerSession>> GetLiveSessions() const override;
+	virtual TSharedPtr<IConcertServerSession> GetLiveSession(const FGuid& SessionId) const override;
+	virtual TOptional<FConcertSessionInfo> GetArchivedSessionInfo(const FGuid& SessionId) const override;
 	virtual TSharedPtr<IConcertServerSession> CreateSession(const FConcertSessionInfo& SessionInfo, FText& OutFailureReason) override;
 	virtual TSharedPtr<IConcertServerSession> RestoreSession(const FGuid& SessionId, const FConcertSessionInfo& SessionInfo, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason) override;
 	virtual TSharedPtr<IConcertServerSession> CopySession(const FGuid& SrcSessionId, const FConcertSessionInfo& NewSessionInfo, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason) override;
-	virtual FGuid ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason) override;
+	virtual FGuid ArchiveSession(const FGuid& SessionId, const FString& ArchiveNameOverride, const FConcertSessionFilter& SessionFilter, FText& OutFailureReason, FGuid ArchiveSessionIdOverride = FGuid::NewGuid()) override;
 	virtual bool ExportSession(const FGuid& SessionId, const FConcertSessionFilter& SessionFilter, const FString& DestDir, bool bAnonymizeData, FText& OutFailureReason) override;
 	virtual bool RenameSession(const FGuid& SessionId, const FString& NewName, FText& OutFailureReason) override;
 	virtual bool DestroySession(const FGuid& SessionId, FText& OutFailureReason) override;
-	virtual TArray<FConcertSessionClientInfo> GetSessionClients(const FGuid& SessionId) const override;
 
 private:
 	/** Returns the root dir where the servers keeps the its internally created repositories (When the caller doesn't provide the paths). */
@@ -89,6 +95,12 @@ private:
 	FConcertAdmin_RenameSessionResponse RenameSessionInternal(const FConcertAdmin_RenameSessionRequest& Request, bool bCheckPermission);
 
 	/**  */
+	TFuture<FConcertAdmin_BatchDeleteSessionResponse> HandleBatchDeleteSessionRequest(const FConcertMessageContext& Context);
+
+	/** Checks whether the request is valid to serve. Writes any skipped sessions (if any) and error reasons into OutResponse. */
+	bool ValidateBatchDeletionRequest(const FConcertAdmin_BatchDeleteSessionRequest& Request, FConcertAdmin_BatchDeleteSessionResponse& OutResponse, TMap<FGuid, FString>& OutPreparedSessionNames) const;
+	
+	/**  */
 	TFuture<FConcertAdmin_DeleteSessionResponse> HandleDeleteSessionRequest(const FConcertMessageContext& Context);
 
 	/**  */
@@ -111,6 +123,9 @@ private:
 
 	/** Recover the sessions found in the working directory into live session, build the list of archived sessions and rotate them, keeping only the N most recent. */
 	void RecoverSessions(const FConcertServerSessionRepository& InRepository, bool bCleanupExpiredSessions);
+	
+	/** Sets each FConcertSessionInfo::LastModified time to the corresponding index in SessionCreationTimes. */
+	void UpdateLastModified(TArray<FConcertSessionInfo>& SessionInfos, const TArray<FDateTime>& SessionCreationTimes);
 
 	/**
 	 * Migrate the live sessions from the working directory (before sessions being recovered into live one) to the archived directory.
@@ -121,11 +136,11 @@ private:
 	/** */
 	bool CanJoinSession(const TSharedPtr<IConcertServerSession>& ServerSession, const FConcertSessionSettings& SessionSettings, const FConcertSessionVersionInfo& SessionVersionInfo, FText* OutFailureReason = nullptr);
 
-	/** 
-	 * Validate that the request come form the owner of the session that he want to delete/rename, etc.
-	 */
-	bool IsRequestFromSessionOwner(const TSharedPtr<IConcertServerSession>& Session, const FString& FromUserName, const FString& FromDeviceName);
-
+	/**  Validate that the request to delete or modify a session comes from the owner of that session. */
+	bool IsRequestFromSessionOwner(const TSharedPtr<IConcertServerSession>& Session, const FString& FromUserName, const FString& FromDeviceName) const;
+	/**  Validate that the request to delete or modify a session comes from the owner of that session. */
+	bool IsRequestFromSessionOwner(const FConcertSessionInfo& SessionInfo, const FString& FromUserName, const FString& FromDeviceName) const;
+	
 	/**  */
 	TSharedPtr<IConcertServerSession> CreateLiveSession(const FConcertSessionInfo& SessionInfo, const FConcertServerSessionRepository& InRepository);
 
@@ -133,7 +148,7 @@ private:
 	bool DestroyLiveSession(const FGuid& LiveSessionId, const bool bDeleteSessionData);
 
 	/**  */
-	FGuid ArchiveLiveSession(const FGuid& LiveSessionId, const FString& ArchivedSessionNameOverride, const FConcertSessionFilter& SessionFilter);
+	FGuid ArchiveLiveSession(const FGuid& LiveSessionId, const FString& ArchivedSessionNameOverride, const FConcertSessionFilter& SessionFilter, FGuid ArchiveSessionIdOverride = FGuid::NewGuid());
 
 	/**  */
 	bool CreateArchivedSession(const FConcertSessionInfo& SessionInfo);
@@ -167,6 +182,9 @@ private:
 	
 	/** Administration endpoint for the server (i.e. creating, joining sessions) */
 	TSharedPtr<IConcertLocalEndpoint> ServerAdminEndpoint;
+
+	/** Called when ServerAdminEndpoint emits IConcertLocalEndpoint::OnConcertRemoteEndpointConnectionChanged */
+	FOnConcertRemoteEndpointConnectionChanged OnConcertRemoteEndpointConnectionChangedDelegate; 
 	
 	/** Server and Instance Info */
 	FConcertServerInfo ServerInfo;
@@ -182,4 +200,6 @@ private:
 
 	/** The root directory containing the session repositories. */
 	FString SessionRepositoryRootDir;
+
+	FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint OnConcertMessageAcknowledgementReceivedFromLocalEndpoint; 
 };

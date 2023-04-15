@@ -17,7 +17,7 @@
 struct FMorphTargetDelta;
 
 template<typename VertexType, int32 NumberOfUVs>
-static void SkinVertices(FFinalSkinVertex* DestVertex, FMatrix44f* ReferenceToLocal, int32 LODIndex, FSkeletalMeshLODRenderData& LOD, FSkinWeightVertexBuffer& WeightBuffer, TArray<FActiveMorphTarget>& ActiveMorphTargets, TArray<float>& MorphTargetWeights, const TMap<int32, FClothSimulData>& ClothSimulUpdateData, float ClothBlendWeight, const FMatrix& WorldToLocal);
+static void SkinVertices(FFinalSkinVertex* DestVertex, FMatrix44f* ReferenceToLocal, int32 LODIndex, FSkeletalMeshLODRenderData& LOD, FSkinWeightVertexBuffer& WeightBuffer, const FMorphTargetWeightMap& ActiveMorphTargets, const TArray<float>& MorphTargetWeights, const TMap<int32, FClothSimulData>& ClothSimulUpdateData, float ClothBlendWeight, const FMatrix& WorldToLocal);
 
 #define INFLUENCE_0		0
 #define INFLUENCE_1		1
@@ -128,13 +128,19 @@ void FSkeletalMeshObjectCPUSkin::EnableOverlayRendering(bool bEnabled, const TAr
 	}
 }
 
-void FSkeletalMeshObjectCPUSkin::Update(int32 LODIndex,USkinnedMeshComponent* InMeshComponent,const TArray<FActiveMorphTarget>& ActiveMorphTargets, const TArray<float>& MorphTargetWeights, EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode)
+void FSkeletalMeshObjectCPUSkin::Update(
+	int32 LODIndex,
+	USkinnedMeshComponent* InMeshComponent,
+	const FMorphTargetWeightMap& InActiveMorphTargets,
+	const TArray<float>& InMorphTargetWeights,
+	EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode,
+	const FExternalMorphWeightData& InExternalMorphWeightData)
 {
 	if (InMeshComponent)
 	{
 		// create the new dynamic data for use by the rendering thread
 		// this data is only deleted when another update is sent
-		FDynamicSkelMeshObjectDataCPUSkin* NewDynamicData = new FDynamicSkelMeshObjectDataCPUSkin(InMeshComponent,SkeletalMeshRenderData,LODIndex,ActiveMorphTargets, MorphTargetWeights);
+		FDynamicSkelMeshObjectDataCPUSkin* NewDynamicData = new FDynamicSkelMeshObjectDataCPUSkin(InMeshComponent,SkeletalMeshRenderData,LODIndex,InActiveMorphTargets, InMorphTargetWeights);
 
 		// We prepare the next frame but still have the value from the last one
 		uint32 FrameNumberToPrepare = GFrameNumber + 1;
@@ -304,7 +310,7 @@ void FSkeletalMeshObjectCPUSkin::CacheVertices(int32 LODIndex, bool bForce) cons
 
 			MeshLODptr->PositionVertexBuffer.BindPositionVertexBuffer(VertexFactoryPtr, Data);
 			MeshLODptr->StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactoryPtr, Data);
-			MeshLODptr->StaticMeshVertexBuffer.BindTexCoordVertexBuffer(VertexFactoryPtr, Data, 0);
+			MeshLODptr->StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactoryPtr, Data, MAX_TEXCOORDS);
 			MeshLODptr->StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactoryPtr, Data, 0);
 			MeshLODptr->MeshObjectColorBuffer->BindColorVertexBuffer(VertexFactoryPtr, Data);
 
@@ -383,7 +389,7 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 
 			Self->PositionVertexBuffer.BindPositionVertexBuffer(VertexFactoryPtr, Data);
 			Self->StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactoryPtr, Data);
-			Self->StaticMeshVertexBuffer.BindTexCoordVertexBuffer(VertexFactoryPtr, Data, 0);
+			Self->StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactoryPtr, Data, MAX_TEXCOORDS);
 			Self->StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactoryPtr, Data, 0);
 			Self->MeshObjectColorBuffer->BindColorVertexBuffer(VertexFactoryPtr, Data);
 
@@ -415,7 +421,7 @@ void FSkeletalMeshObjectCPUSkin::FSkeletalMeshObjectLOD::InitResources(FSkelMesh
 				FRayTracingGeometryInitializer Initializer;
 				static const FName DebugName("FSkeletalMeshObjectCPUSkin");
 				static int32 DebugNumber = 0;
-				Initializer.DebugName = FName(DebugName, DebugNumber++);
+				Initializer.DebugName = FDebugName(DebugName, DebugNumber++);
 				Initializer.IndexBuffer = IndexBufferRHI;
 				Initializer.TotalPrimitiveCount = TrianglesCount;
 				Initializer.GeometryType = RTGT_Triangles;
@@ -569,7 +575,7 @@ FDynamicSkelMeshObjectDataCPUSkin::FDynamicSkelMeshObjectDataCPUSkin(
 	USkinnedMeshComponent* InMeshComponent,
 	FSkeletalMeshRenderData* InSkelMeshRenderData,
 	int32 InLODIndex,
-	const TArray<FActiveMorphTarget>& InActiveMorphTargets,
+	const FMorphTargetWeightMap& InActiveMorphTargets,
 	const TArray<float>& InMorphTargetWeights
 	)
 :	LODIndex(InLODIndex)
@@ -594,51 +600,45 @@ FDynamicSkelMeshObjectDataCPUSkin::FDynamicSkelMeshObjectDataCPUSkin(
 /** Struct used to hold temporary info during morph target blending */
 struct FMorphTargetInfo
 {
-	/** Info about morphtarget to blend */
-	FActiveMorphTarget			ActiveMorphTarget;
+	/** The index into the morph weight list */
+	int32						WeightIndex = INDEX_NONE;
+	
 	/** Index of next delta to try applying. This prevents us looking at every delta for every vertex. */
-	int32						NextDeltaIndex;
+	int32						NextDeltaIndex = INDEX_NONE;
 	/** Array of deltas to apply to mesh, sorted based on the index of the base mesh vert that they affect. */
-	const FMorphTargetDelta*	Deltas;
+	const FMorphTargetDelta*	Deltas = nullptr;
 	/** How many deltas are in array */
-	int32						NumDeltas;
+	int32						NumDeltas = 0;
 };
 
 /**
  *	Init set of info structs to hold temporary state while blending morph targets in.
  * @return							number of active morphs that are valid
  */
-static uint32 InitEvalInfos(const TArray<FActiveMorphTarget>& ActiveMorphTargets, const TArray<float>& MorphTargetWeights, int32 LODIndex, TArray<FMorphTargetInfo>& OutEvalInfos)
+static uint32 InitEvalInfos(const FMorphTargetWeightMap& InActiveMorphTargets, const TArray<float>& MorphTargetWeights, int32 LODIndex, TArray<FMorphTargetInfo>& OutEvalInfos)
 {
 	uint32 NumValidMorphTargets=0;
 
-	for( int32 MorphIdx=0; MorphIdx < ActiveMorphTargets.Num(); MorphIdx++ )
+	for(const TTuple<const UMorphTarget*, int32>& MorphItem: InActiveMorphTargets)
 	{
 		FMorphTargetInfo NewInfo;
+		const UMorphTarget* MorphTarget = MorphItem.Key;
+		const int32 WeightIndex = MorphItem.Value;
 
-		const FActiveMorphTarget& ActiveMorphTarget = ActiveMorphTargets[MorphIdx];
-		const float ActiveMorphAbsVertexWeight = FMath::Abs(MorphTargetWeights[ActiveMorphTarget.WeightIndex]);
+		const float ActiveMorphAbsVertexWeight = FMath::Abs(MorphTargetWeights[WeightIndex]);
 
-		if( ActiveMorphTarget.MorphTarget != NULL &&
+		if( MorphTarget != nullptr &&
 			ActiveMorphAbsVertexWeight >= MinMorphTargetBlendWeight &&
 			ActiveMorphAbsVertexWeight <= MaxMorphTargetBlendWeight &&
-			ActiveMorphTarget.MorphTarget->HasDataForLOD(LODIndex) )
+			MorphItem.Key->HasDataForLOD(LODIndex) )
 		{
 			// start at the first vertex since they affect base mesh verts in ascending order
-			NewInfo.ActiveMorphTarget = ActiveMorphTarget;
+			NewInfo.WeightIndex = WeightIndex;
 			NewInfo.NextDeltaIndex = 0;
-			NewInfo.Deltas = ActiveMorphTarget.MorphTarget->GetMorphTargetDelta(LODIndex, NewInfo.NumDeltas);
+			NewInfo.Deltas = MorphTarget->GetMorphTargetDelta(LODIndex, NewInfo.NumDeltas);
 
 			NumValidMorphTargets++;
 		}
-		else
-		{
-			// invalidate the indices for any invalid morph models
-			NewInfo.ActiveMorphTarget = FActiveMorphTarget();
-			NewInfo.NextDeltaIndex = INDEX_NONE;
-			NewInfo.Deltas = nullptr;
-			NewInfo.NumDeltas = 0;
-		}			
 
 		OutEvalInfos.Add(NewInfo);
 	}
@@ -704,7 +704,7 @@ FORCEINLINE void UpdateMorphedVertex( VertexType& MorphedVertex, const VertexTyp
 			Info.NextDeltaIndex < Info.NumDeltas &&
 			Info.Deltas[Info.NextDeltaIndex].SourceIdx == CurBaseVertIdx )
 		{
-			ApplyMorphBlend( MorphedVertex, Info.Deltas[Info.NextDeltaIndex], MorphWeights[Info.ActiveMorphTarget.WeightIndex] );
+			ApplyMorphBlend( MorphedVertex, Info.Deltas[Info.NextDeltaIndex], MorphWeights[Info.WeightIndex] );
 
 			// Update 'next delta to use'
 			Info.NextDeltaIndex += 1;
@@ -1059,8 +1059,8 @@ static void SkinVertices(
 	int32 LODIndex, 
 	FSkeletalMeshLODRenderData& LOD,
 	FSkinWeightVertexBuffer& WeightBuffer,
-	TArray<FActiveMorphTarget>& ActiveMorphTargets, 
-	TArray<float>& MorphTargetWeights, 
+	const FMorphTargetWeightMap& InActiveMorphTargets, 
+	const TArray<float>& MorphTargetWeights, 
 	const TMap<int32, FClothSimulData>& ClothSimulUpdateData, 
 	float ClothBlendWeight, 
 	const FMatrix& WorldToLocal)
@@ -1070,7 +1070,7 @@ static void SkinVertices(
 
 	// Create array to track state during morph blending
 	TArray<FMorphTargetInfo> MorphEvalInfos;
-	uint32 NumValidMorphs = InitEvalInfos(ActiveMorphTargets, MorphTargetWeights, LODIndex, MorphEvalInfos);
+	uint32 NumValidMorphs = InitEvalInfos(InActiveMorphTargets, MorphTargetWeights, LODIndex, MorphEvalInfos);
 
 	const uint32 MaxGPUSkinBones = FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones();
 	check(MaxGPUSkinBones <= FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones);
@@ -1177,8 +1177,8 @@ static void CalculateMorphTargetWeights(FFinalSkinVertex* DestVertex, FSkeletalM
 
 	for (FFinalSkinVertex* ClearVert = DestVertex; ClearVert != EndVert; ++ClearVert)
 	{
-		DestVertex->TextureCoordinates[0].X = 0.0f;
-		DestVertex->TextureCoordinates[0].Y = 0.0f;
+		ClearVert->TextureCoordinates[0].X = 0.0f;
+		ClearVert->TextureCoordinates[0].Y = 0.0f;
 	}
 
 	for (const UMorphTarget* Morphtarget : InMorphTargetOfInterest)
@@ -1188,8 +1188,8 @@ static void CalculateMorphTargetWeights(FFinalSkinVertex* DestVertex, FSkeletalM
 		for (int32 MorphVertexIndex = 0; MorphVertexIndex < NumDeltas; ++MorphVertexIndex)
 		{
 			FFinalSkinVertex* SetVert = DestVertex + MTLODVertices[MorphVertexIndex].SourceIdx;
-			DestVertex->TextureCoordinates[0].X += 1.0f;
-			DestVertex->TextureCoordinates[0].Y += 1.0f;
+			SetVert->TextureCoordinates[0].X += 1.0f;
+			SetVert->TextureCoordinates[0].Y += 1.0f;
 		}
 	}
 }
@@ -1198,12 +1198,12 @@ bool FDynamicSkelMeshObjectDataCPUSkin::UpdateClothSimulationData(USkinnedMeshCo
 {
 	USkeletalMeshComponent* SimMeshComponent = Cast<USkeletalMeshComponent>(InMeshComponent);
 
-	if (InMeshComponent->MasterPoseComponent.IsValid() && (SimMeshComponent && SimMeshComponent->IsClothBoundToMasterComponent()))
+	if (InMeshComponent->LeaderPoseComponent.IsValid() && (SimMeshComponent && SimMeshComponent->IsClothBoundToLeaderComponent()))
 	{
 		USkeletalMeshComponent* SrcComponent = SimMeshComponent;
 
-		// if I have master, override sim component
-		SimMeshComponent = Cast<USkeletalMeshComponent>(InMeshComponent->MasterPoseComponent.Get());
+		// if I have Leader, override sim component
+		SimMeshComponent = Cast<USkeletalMeshComponent>(InMeshComponent->LeaderPoseComponent.Get());
 
 		// IF we don't have sim component that is skeletalmeshcomponent, just ignore
 		if (!SimMeshComponent)
@@ -1212,7 +1212,7 @@ bool FDynamicSkelMeshObjectDataCPUSkin::UpdateClothSimulationData(USkinnedMeshCo
 		}
 
 		WorldToLocal = SrcComponent->GetRenderMatrix().InverseFast();
-		ClothBlendWeight = SrcComponent->ClothBlendWeight;
+		ClothBlendWeight = IsSkeletalMeshClothBlendEnabled() ? SrcComponent->ClothBlendWeight : 0.0f;
 		SimMeshComponent->GetUpdateClothSimulationData(ClothSimulUpdateData, SrcComponent);
 
 		return true;
@@ -1221,7 +1221,7 @@ bool FDynamicSkelMeshObjectDataCPUSkin::UpdateClothSimulationData(USkinnedMeshCo
 	if (SimMeshComponent)
 	{
 		WorldToLocal = SimMeshComponent->GetRenderMatrix().InverseFast();
-		ClothBlendWeight = SimMeshComponent->ClothBlendWeight;
+		ClothBlendWeight = IsSkeletalMeshClothBlendEnabled() ? SimMeshComponent->ClothBlendWeight : 0.0f;
 		SimMeshComponent->GetUpdateClothSimulationData(ClothSimulUpdateData);
 		return true;
 	}

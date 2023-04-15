@@ -12,10 +12,9 @@
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 
 
-void FNiagaraSystemGraphSelectionViewModel::Init(TSharedPtr<FNiagaraSystemViewModel> InSystemViewModel)
+void FNiagaraSystemGraphSelectionViewModel::Initialize(TSharedRef<FNiagaraSystemViewModel> InSystemViewModel)
 {
 	SystemViewModelWeak = InSystemViewModel;
-
 	InSystemViewModel->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().AddSP(this, &FNiagaraSystemGraphSelectionViewModel::RefreshSelectedEmitterScriptGraphs);
 	InSystemViewModel->OnEmitterHandleViewModelsChanged().AddSP(this, &FNiagaraSystemGraphSelectionViewModel::RefreshSelectedEmitterScriptGraphs);
 	RefreshSelectedEmitterScriptGraphs();
@@ -34,7 +33,7 @@ void FNiagaraSystemGraphSelectionViewModel::RefreshSelectedEmitterScriptGraphs()
 		{
 			if (SelectedEmitterHandleIds.Contains(EmitterHandleViewModel->GetId()))
 			{
-				SelectedEmitterScriptGraphs.Add(static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph);
+				SelectedEmitterScriptGraphs.Add(static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetEmitterData()->GraphSource)->NodeGraph);
 			}
 		}
 	}
@@ -45,10 +44,9 @@ void FNiagaraSystemGraphSelectionViewModel::RefreshSelectedEmitterScriptGraphs()
 TSharedRef<FNiagaraSystemViewModel> FNiagaraSystemGraphSelectionViewModel::GetSystemViewModel()
 {
 	TSharedPtr<FNiagaraSystemViewModel> SystemViewModel = SystemViewModelWeak.Pin();
-	checkf(SystemViewModel.IsValid(), TEXT("Owning system view model destroyed before system overview view model."));
+	checkf(SystemViewModel.IsValid(), TEXT("Owning system viewmodel destroyed before system graph selection viewmodel."));
 	return SystemViewModel.ToSharedRef();
 }
-
 
 UNiagaraSystemSelectionViewModel* FNiagaraSystemGraphSelectionViewModel::GetSystemSelectionViewModel()
 {

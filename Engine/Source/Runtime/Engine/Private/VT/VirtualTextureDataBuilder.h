@@ -40,7 +40,21 @@ struct FVirtualTextureSourceLayerData
 
 	EGammaSpace GammaSpace;
 	bool bHasAlpha;
-	bool bUseCrunch;
+};
+
+// Holds a bunch of stuff we derive from the input data that we use during the build.
+struct FVirtualTextureBuilderDerivedInfo
+{
+	int32 SizeInBlocksX = 0;
+	int32 SizeInBlocksY = 0;
+	int32 BlockSizeX = 0;
+	int32 BlockSizeY = 0;
+	int32 BlockSizeScale = 1;
+	int32 SizeX = 0;
+	int32 SizeY = 0;
+	int32 NumMips = 0;
+
+	bool InitializeFromBuildSettings(const FTextureSourceData& InSourceData, const FTextureBuildSettings* InSettingsPerLayer);
 };
 
 /**
@@ -65,7 +79,8 @@ public:
 	FVirtualTextureDataBuilder(FVirtualTextureBuiltData &SetOutData, const FString& DebugTexturePathName, ITextureCompressorModule *InCompressor = nullptr, IImageWrapperModule* InImageWrapper = nullptr);
 	~FVirtualTextureDataBuilder();
 
-	void Build(const FTextureSourceData& InSourceData, const FTextureSourceData& InCompositeSourceData, const FTextureBuildSettings* InSettingsPerLayer, bool bAllowAsync);
+	// note: InSourceData is freed by this function
+	void Build(FTextureSourceData& InSourceData, FTextureSourceData& InCompositeSourceData, const FTextureBuildSettings* InSettingsPerLayer, bool bAllowAsync);
 
 private:
 	friend struct FAsyncMacroBlockTask;
@@ -87,13 +102,7 @@ private:
 	FVirtualTextureBuiltData &OutData;
 
 	// Some convenience variables (mostly derived from the passed in build settings)
-	int32 SizeInBlocksX;
-	int32 SizeInBlocksY;
-	int32 BlockSizeX;
-	int32 BlockSizeY;
-	int32 BlockSizeScale;
-	int32 SizeX;
-	int32 SizeY;
+	FVirtualTextureBuilderDerivedInfo DerivedInfo;
 
 	TArray<FVirtualTextureSourceLayerData> SourceLayers;
 	TArray<FTextureSourceBlockData> SourceBlocks;

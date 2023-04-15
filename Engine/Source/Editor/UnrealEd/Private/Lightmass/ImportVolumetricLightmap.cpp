@@ -89,8 +89,6 @@ struct FImportedVolumetricLightmapBrick
 	float AverageClosestGeometryDistance;
 	TArray<FFloat3Packed> AmbientVector;
 	TArray<FColor> SHCoefficients[6];
-	TArray<FFloat3Packed> LQLightColor;
-	TArray<FColor> LQLightDirection;
 	TArray<FColor> SkyBentNormal;
 	TArray<uint8> DirectionalLightShadowing;
 	TArray<Lightmass::FIrradianceVoxelImportProcessingData> TaskVoxelImportProcessingData;
@@ -148,9 +146,6 @@ bool CopyFromBrickmapTexel(
 			*(FColor*)&BrickData.SHCoefficients[i].Data[LinearDestCellIndex * sizeof(FColor)] = FilteredVolumeLookupReconverted<FColor>(BrickTextureCoordinate, CurrentLevelData.BrickDataDimensions, (const FColor*)BrickData.SHCoefficients[i].Data.GetData());
 		}
 
-		*(FFloat3Packed*)&BrickData.LQLightColor.Data[LinearDestCellIndex * sizeof(FFloat3Packed)] = FilteredVolumeLookupReconverted<FFloat3Packed>(BrickTextureCoordinate, CurrentLevelData.BrickDataDimensions, (const FFloat3Packed*)BrickData.LQLightColor.Data.GetData());
-		*(FColor*)&BrickData.LQLightDirection.Data[LinearDestCellIndex * sizeof(FColor)] = FilteredVolumeLookupReconverted<FColor>(BrickTextureCoordinate, CurrentLevelData.BrickDataDimensions, (const FColor*)BrickData.LQLightDirection.Data.GetData());
-
 		if (BrickData.SkyBentNormal.Data.Num() > 0)
 		{
 			*(FColor*)&BrickData.SkyBentNormal.Data[LinearDestCellIndex * sizeof(FColor)] = FilteredVolumeLookupReconverted<FColor>(BrickTextureCoordinate, CurrentLevelData.BrickDataDimensions, (const FColor*)BrickData.SkyBentNormal.Data.GetData());
@@ -200,9 +195,6 @@ void FLightmassProcessor::ImportIrradianceTasks(bool& bGenerateSkyShadowing, TAr
 				{
 					ReadArray(Channel, NewBrick.SHCoefficients[i]);
 				}
-
-				ReadArray(Channel, NewBrick.LQLightColor);
-				ReadArray(Channel, NewBrick.LQLightDirection);
 
 				ReadArray(Channel, NewBrick.SkyBentNormal);
 				ReadArray(Channel, NewBrick.DirectionalLightShadowing);
@@ -347,7 +339,8 @@ void FilterWithNeighbors(
 
 											if (!NeighborVoxelImportData.bInsideGeometry && !NeighborVoxelImportData.bBorderVoxel)
 											{
-												const float Weight = 1.0f / FMath::Max<float>(FMath::Abs(NeighborX) + FMath::Abs(NeighborY) + FMath::Abs(NeighborZ), .5f);
+												const float NeighborTotal = static_cast<float>(FMath::Abs(NeighborX) + FMath::Abs(NeighborY) + FMath::Abs(NeighborZ));
+												const float Weight = 1.0f / FMath::Max<float>(NeighborTotal, .5f);
 												FLinearColor NeighborAmbientVector = FilteredVolumeLookup<FFloat3Packed>(BrickTextureCoordinate, CurrentLevelData.BrickDataDimensions, (const FFloat3Packed*)CurrentLevelData.BrickData.AmbientVector.Data.GetData());
 												AmbientVector += NeighborAmbientVector * Weight;
 
@@ -860,7 +853,7 @@ int32 TrimBricksByInterpolationError(
 				}
 			}
 
-			const float RMSE = FMath::Sqrt((ErrorSquared * InvTotalBrickSize).GetMax());
+			const double RMSE = FMath::Sqrt((ErrorSquared * InvTotalBrickSize).GetMax());
 			const bool bCullBrick = RMSE < VolumetricLightmapSettings.MinBrickError;
 
 			if (bCullBrick)
@@ -893,7 +886,7 @@ int32 TrimBricksForMemoryLimit(
 	TArray<const FImportedVolumetricLightmapBrick*>& HighestDensityBricks = BricksByDepth[VolumetricLightmapSettings.MaxRefinementLevels - 1];
 
 	const uint64 BrickSizeBytes = VoxelSizeBytes * PaddedBrickSize * PaddedBrickSize * PaddedBrickSize;
-	const uint64 MaxBrickBytes = MaximumBrickMemoryMb * 1024 * 1024;
+	const uint64 MaxBrickBytes = static_cast<uint64>(MaximumBrickMemoryMb * 1024 * 1024);
 	check(FMath::DivideAndRoundUp(MaxBrickBytes, BrickSizeBytes) <= 0x7FFFFFFFull);
 	const int32 NumBricksBudgeted = (int32)FMath::DivideAndRoundUp(MaxBrickBytes, BrickSizeBytes);
 	const int32 NumBricksToRemove = FMath::Clamp<int32>(NumBricksBeforeTrimming - NumBricksBudgeted, 0, HighestDensityBricks.Num());
@@ -965,10 +958,10 @@ void BuildIndirectionTexture(
 						const FIntVector IndirectionDestDataCoordinate = Brick.IndirectionTexturePosition + FIntVector(X, Y, Z);
 						const int32 IndirectionDestDataIndex = ((IndirectionDestDataCoordinate.Z * CurrentLevelData.IndirectionTextureDimensions.Y) + IndirectionDestDataCoordinate.Y) * CurrentLevelData.IndirectionTextureDimensions.X + IndirectionDestDataCoordinate.X;
 						uint8* IndirectionVoxelPtr = (uint8*)&CurrentLevelData.IndirectionTexture.Data[IndirectionDestDataIndex * IndirectionTextureDataStride];
-						*(IndirectionVoxelPtr + 0) = BrickLayoutPosition.X;
-						*(IndirectionVoxelPtr + 1) = BrickLayoutPosition.Y;
-						*(IndirectionVoxelPtr + 2) = BrickLayoutPosition.Z;
-						*(IndirectionVoxelPtr + 3) = NumBottomLevelBricks;
+						*(IndirectionVoxelPtr + 0) = static_cast<uint8>(BrickLayoutPosition.X);
+						*(IndirectionVoxelPtr + 1) = static_cast<uint8>(BrickLayoutPosition.Y);
+						*(IndirectionVoxelPtr + 2) = static_cast<uint8>(BrickLayoutPosition.Z);
+						*(IndirectionVoxelPtr + 3) = static_cast<uint8>(NumBottomLevelBricks);
 					}
 				}
 			}
@@ -1085,9 +1078,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 		{
 			CurrentLevelData.BrickData.SHCoefficients[i].Format = PF_B8G8R8A8;
 		}
-
-		CurrentLevelData.BrickData.LQLightColor.Format = PF_FloatR11G11B10;
-		CurrentLevelData.BrickData.LQLightDirection.Format = PF_B8G8R8A8;
 	}
 
 	const int32 NumBottomLevelBricksTrimmedByInterpolationError = TrimBricksByInterpolationError(BricksByDepth, VolumetricLightmapSettings);
@@ -1147,10 +1137,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 			CurrentLevelData.BrickData.SHCoefficients[i].Resize(TotalBrickDataSize * Stride);
 		}
 
-		CurrentLevelData.BrickData.LQLightColor.Resize(TotalBrickDataSize * GPixelFormats[CurrentLevelData.BrickData.LQLightColor.Format].BlockBytes);
-
-		CurrentLevelData.BrickData.LQLightDirection.Resize(TotalBrickDataSize * GPixelFormats[CurrentLevelData.BrickData.LQLightDirection.Format].BlockBytes);
-
 		VoxelImportProcessingData.Empty(TotalBrickDataSize);
 		VoxelImportProcessingData.AddZeroed(TotalBrickDataSize);
 	}
@@ -1184,22 +1170,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 					(const uint8*)Brick.SHCoefficients[i].GetData(),
 					CurrentLevelData.BrickData.SHCoefficients[i].Data.GetData());
 			}
-
-			CopyBrickToAtlasVolumeTexture(
-				GPixelFormats[CurrentLevelData.BrickData.LQLightColor.Format].BlockBytes,
-				CurrentLevelData.BrickDataDimensions,
-				BrickLayoutPosition,
-				FIntVector(BrickSize),
-				(const uint8*)Brick.LQLightColor.GetData(),
-				CurrentLevelData.BrickData.LQLightColor.Data.GetData());
-
-			CopyBrickToAtlasVolumeTexture(
-				GPixelFormats[CurrentLevelData.BrickData.LQLightDirection.Format].BlockBytes,
-				CurrentLevelData.BrickDataDimensions,
-				BrickLayoutPosition,
-				FIntVector(BrickSize),
-				(const uint8*)Brick.LQLightDirection.GetData(),
-				CurrentLevelData.BrickData.LQLightDirection.Data.GetData());
 
 			if (bGenerateSkyShadowing)
 			{
@@ -1379,9 +1349,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 					{
 						SubLevelData.BrickData.SHCoefficients[i].Format = PF_B8G8R8A8;
 					}
-
-					SubLevelData.BrickData.LQLightColor.Format = PF_FloatR11G11B10;
-					SubLevelData.BrickData.LQLightDirection.Format = PF_B8G8R8A8;
 				}
 
 				SubLevelData.BrickDataDimensions = SubLevelBrickLayoutDimension * PaddedBrickSize;
@@ -1401,10 +1368,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 					const int32 Stride = GPixelFormats[SubLevelData.BrickData.SHCoefficients[i].Format].BlockBytes;
 					SubLevelData.BrickData.SHCoefficients[i].Resize(TotalBrickDataSize * Stride);
 				}
-
-				SubLevelData.BrickData.LQLightColor.Resize(TotalBrickDataSize * GPixelFormats[SubLevelData.BrickData.LQLightColor.Format].BlockBytes);
-
-				SubLevelData.BrickData.LQLightDirection.Resize(TotalBrickDataSize * GPixelFormats[SubLevelData.BrickData.LQLightDirection.Format].BlockBytes);
 			}
 		}
 
@@ -1459,26 +1422,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 						SubLevelBrickLayoutPosition,
 						SubLevelData.BrickData.SHCoefficients[i].Data);
 				}
-
-				CopyBetweenAtlasVolumeTextures(
-					GPixelFormats[CurrentLevelData.BrickData.LQLightColor.Format].BlockBytes,
-					FIntVector(PaddedBrickSize),
-					CurrentLevelData.BrickDataDimensions,
-					BrickLayoutPosition,
-					CurrentLevelData.BrickData.LQLightColor.Data,
-					SubLevelBrickLayoutDimensions[LevelGuid] * PaddedBrickSize,
-					SubLevelBrickLayoutPosition,
-					SubLevelData.BrickData.LQLightColor.Data);
-
-				CopyBetweenAtlasVolumeTextures(
-					GPixelFormats[CurrentLevelData.BrickData.LQLightDirection.Format].BlockBytes,
-					FIntVector(PaddedBrickSize),
-					CurrentLevelData.BrickDataDimensions,
-					BrickLayoutPosition,
-					CurrentLevelData.BrickData.LQLightDirection.Data,
-					SubLevelBrickLayoutDimensions[LevelGuid] * PaddedBrickSize,
-					SubLevelBrickLayoutPosition,
-					SubLevelData.BrickData.LQLightDirection.Data);
 
 				if (bGenerateSkyShadowing)
 				{
@@ -1583,8 +1526,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 				{
 					ConvertBGRA8ToRGBA8ForLayer(SubLevelData.BrickData.SHCoefficients[i]);
 				}
-
-				ConvertBGRA8ToRGBA8ForLayer(SubLevelData.BrickData.LQLightDirection);
 			}
 		}
 	}
@@ -1594,7 +1535,7 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 		 * Statistics
 		 */
 
-		float ImportTime = FPlatformTime::Seconds() - StartTime;
+		double ImportTime = FPlatformTime::Seconds() - StartTime;
 		UE_LOG(LogVolumetricLightmapImport, Log, TEXT("Imported Volumetric Lightmap in %.3fs"), ImportTime);
 		UE_LOG(LogVolumetricLightmapImport, Log, TEXT("     Indirection Texture %ux%ux%u = %.1fMb"),
 			CurrentLevelData.IndirectionTextureDimensions.X,
@@ -1624,8 +1565,6 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 				SubLevelData.BrickData.SHCoefficients[5].Data.Num() + 
 				SubLevelData.BrickData.SkyBentNormal.Data.Num() + 
 				SubLevelData.BrickData.DirectionalLightShadowing.Data.Num() +
-				SubLevelData.BrickData.LQLightColor.Data.Num() +
-				SubLevelData.BrickData.LQLightDirection.Data.Num() +
 				SubLevelData.SubLevelBrickPositions.Num() * SubLevelData.SubLevelBrickPositions.GetTypeSize() +
 				SubLevelData.IndirectionTextureOriginalValues.Num() * SubLevelData.IndirectionTextureOriginalValues.GetTypeSize();
 		}
@@ -1638,7 +1577,7 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 			TotalNumBricks += BricksAtCurrentDepth.Num();
 		}
 
-		const int32 ActualBrickSizeBytes = BrickDataSize / TotalNumBricks;
+		const uint64 ActualBrickSizeBytes = BrickDataSize / TotalNumBricks;
 
 		FString TrimmedString;
 
@@ -1669,7 +1608,7 @@ void FLightmassProcessor::ImportVolumetricLightmap()
 			const int32 DetailCellsPerCurrentLevelBrick = 1 << ((VolumetricLightmapSettings.MaxRefinementLevels - CurrentDepth) * BrickSizeLog2);
 			const FVector CurrentDepthBrickSize = DetailCellSize * DetailCellsPerCurrentLevelBrick;
 			const TArray<const FImportedVolumetricLightmapBrick*>& BricksAtCurrentDepth = BricksByDepth[CurrentDepth];
-			const float CurrentDepthBrickVolume = CurrentDepthBrickSize.X * CurrentDepthBrickSize.Y * CurrentDepthBrickSize.Z;
+			const double CurrentDepthBrickVolume = CurrentDepthBrickSize.X * CurrentDepthBrickSize.Y * CurrentDepthBrickSize.Z;
 
 			UE_LOG(LogVolumetricLightmapImport, Log, TEXT("         %u: %.1f%% covering %.1f%% of volume"),
 				CurrentDepth,

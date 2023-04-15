@@ -23,8 +23,16 @@ class ENGINE_API ULocalLightComponent : public ULightComponent
 	 * The peak luminous intensity is measured in candelas,
 	 * while the luminous power is measured in lumens.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, AdvancedDisplay, meta=(DisplayName="Intensity Units"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, AdvancedDisplay, meta=(DisplayName="Intensity Units", EditCondition="!bUseIESBrightness"))
 	ELightUnits IntensityUnits;
+
+	/**
+	* Blend Factor used to blend between Intensity and Intensity/Exposure. 
+	* This is useful for gameplay lights that should have constant brighness on screen independent of current exposure.
+	* This feature can cause issues with exposure particularly when used on the primary light on a scene, as such it's usage should be limited.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, AdvancedDisplay, meta = (UIMin = "0.0", UIMax = "1.0"))
+	float InverseExposureBlend;
 
 	UPROPERTY()
 	float Radius_DEPRECATED;

@@ -4,6 +4,9 @@
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
 #include "Abilities/GameplayAbility.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayAbilityTargetActor_Trace)
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------
 //
@@ -157,7 +160,7 @@ void AGameplayAbilityTargetActor_Trace::StartTargeting(UGameplayAbility* InAbili
 		AGameplayAbilityWorldReticle* SpawnedReticleActor = GetWorld()->SpawnActor<AGameplayAbilityWorldReticle>(ReticleClass, GetActorLocation(), GetActorRotation());
 		if (SpawnedReticleActor)
 		{
-			SpawnedReticleActor->InitializeReticle(this, MasterPC, ReticleParams);
+			SpawnedReticleActor->InitializeReticle(this, PrimaryPC, ReticleParams);
 			ReticleActor = SpawnedReticleActor;
 
 			// This is to catch cases of playing on a listen server where we are using a replicated reticle actor.
@@ -209,3 +212,4 @@ FGameplayAbilityTargetDataHandle AGameplayAbilityTargetActor_Trace::MakeTargetDa
 	/** Note: This will be cleaned up by the FGameplayAbilityTargetDataHandle (via an internal TSharedPtr) */
 	return StartLocation.MakeTargetDataHandleFromHitResult(OwningAbility, HitResult);
 }
+

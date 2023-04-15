@@ -4,9 +4,14 @@
 #include "HAL/ConsoleManager.h"
 #include "Engine/Engine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataDrivenCVars)
+
 FDataDrivenConsoleVariable::~FDataDrivenConsoleVariable()
 {
-	UnRegister();
+	if (!Name.IsEmpty())
+	{
+		UnRegister();
+	}
 }
 
 void FDataDrivenConsoleVariable::Register()
@@ -37,12 +42,16 @@ void FDataDrivenConsoleVariable::Register()
 
 void FDataDrivenConsoleVariable::UnRegister(bool bUseShadowName)
 {
-	IConsoleVariable* CVarToRemove = IConsoleManager::Get().FindConsoleVariable(bUseShadowName  ? *ShadowName : *Name);
-	if (CVarToRemove)
+	const FString& NameToUnregister = bUseShadowName ? ShadowName : Name;
+	if (!NameToUnregister.IsEmpty())
 	{
-		FConsoleVariableDelegate NullCallback;
-		CVarToRemove->SetOnChangedCallback(NullCallback);
-		IConsoleManager::Get().UnregisterConsoleObject(CVarToRemove, false);
+		IConsoleVariable* CVarToRemove = IConsoleManager::Get().FindConsoleVariable(*NameToUnregister);
+		if (CVarToRemove)
+		{
+			FConsoleVariableDelegate NullCallback;
+			CVarToRemove->SetOnChangedCallback(NullCallback);
+			IConsoleManager::Get().UnregisterConsoleObject(CVarToRemove, false);
+		}
 	}
 }
 
@@ -66,6 +75,18 @@ void FDataDrivenConsoleVariable::Refresh()
 
 	// make sure the cvar is registered
 	Register();
+
+	//Ensure the default value is applied, assuming no other external changes to the CVar.
+	IConsoleVariable* CVarToRefresh = IConsoleManager::Get().FindConsoleVariable(*Name);
+	if (CVarToRefresh)
+	{
+		switch (Type)
+		{
+		case FDataDrivenCVarType::CVarBool: CVarToRefresh->Set(DefaultValueBool, ECVF_SetByConstructor); break;
+		case FDataDrivenCVarType::CVarInt: CVarToRefresh->Set(DefaultValueInt, ECVF_SetByConstructor); break;
+		case FDataDrivenCVarType::CVarFloat: CVarToRefresh->Set(DefaultValueFloat, ECVF_SetByConstructor); break;
+		}
+	}
 }
 #endif
 
@@ -108,3 +129,4 @@ FName UDataDrivenConsoleVariableSettings::GetCategoryName() const
 {
 	return FName(TEXT("Engine"));
 }
+

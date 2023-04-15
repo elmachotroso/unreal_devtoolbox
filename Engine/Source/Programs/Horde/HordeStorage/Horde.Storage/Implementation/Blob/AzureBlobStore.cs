@@ -6,11 +6,14 @@ using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using Azure;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Jupiter.Implementation;
 using Serilog;
+using EpicGames.Horde.Storage;
+using Jupiter.Common.Implementation;
 
 namespace Horde.Storage.Implementation
 {
@@ -22,9 +25,27 @@ namespace Horde.Storage.Implementation
         private const string LastTouchedKey = "Io_LastTouched";
         private const string NamespaceKey = "Io_Namespace";
 
-        public AzureBlobStore(IOptionsMonitor<AzureSettings> settings)
+        public AzureBlobStore(IOptionsMonitor<AzureSettings> settings, IServiceProvider provider)
         {
-            _connectionString = settings.CurrentValue.ConnectionString;
+            _connectionString = GetConnectionString(settings.CurrentValue, provider);
+        }
+
+        /// <summary>
+        /// Gets the connection string for Azure storage.
+        /// If a key vault secret is used, the value is cached in <see cref="AzureSettings.ConnectionString"/>
+        /// for next time.
+        /// </summary>
+        /// <param name="settings"></param>
+        /// <param name="provider"></param>
+        /// <returns></returns>
+        public static string GetConnectionString(AzureSettings settings, IServiceProvider provider)
+        {
+            // Cache the connection string in the settings for next time.
+            ISecretResolver secretResolver = provider.GetService<ISecretResolver>()!;
+            string connectionString = secretResolver.Resolve(settings.ConnectionString)!;
+            settings.ConnectionString = connectionString;
+
+            return connectionString;
         }
 
         public async Task<BlobIdentifier> PutObject(NamespaceId ns, ReadOnlyMemory<byte> content, BlobIdentifier blobIdentifier)
@@ -75,7 +96,7 @@ namespace Horde.Storage.Implementation
             return await PutObject(ns, stream, blobIdentifier);
         }
 
-        private async Task TouchBlob(BlobClient blob)
+        private static async Task TouchBlob(BlobClient blob)
         {
             Dictionary<string, string> metadata = new Dictionary<string, string>
             {
@@ -87,7 +108,8 @@ namespace Horde.Storage.Implementation
             await blob.SetMetadataAsync(metadata);
         }
 
-        public async Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blobIdentifier)
+        public async Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier blobIdentifier,
+            LastAccessTrackingFlags flags)
         {
             string fixedNamespace = SanitizeNamespace(ns);
             BlobContainerClient container = new BlobContainerClient(_connectionString, fixedNamespace);
@@ -105,13 +127,15 @@ namespace Horde.Storage.Implementation
             catch (RequestFailedException e)
             {
                 if (e.Status == 404)
+                {
                     throw new BlobNotFoundException(ns, blobIdentifier);
+                }
 
                 throw;
             }
         }
 
-        public async Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier)
+        public async Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier, bool forceCheck)
         {
             BlobContainerClient container = new BlobContainerClient(_connectionString, SanitizeNamespace(ns));
             if (!await container.ExistsAsync())
@@ -146,29 +170,25 @@ namespace Horde.Storage.Implementation
             }
         }
 
-        public async IAsyncEnumerable<BlobIdentifier> ListOldObjects(NamespaceId ns, DateTime cutoff)
+        public async IAsyncEnumerable<(BlobIdentifier, DateTime)> ListObjects(NamespaceId ns)
         {
             string fixedNamespace = SanitizeNamespace(ns);
             BlobContainerClient container = new BlobContainerClient(_connectionString, fixedNamespace);
             bool exists = await container.ExistsAsync();
             if (!exists)
-                yield break;
-
-            await foreach (var item in container.GetBlobsAsync(BlobTraits.Metadata))
             {
-                // ignore any recent blob
-                if ((item.Properties?.LastModified ?? DateTime.Now) > cutoff)
-                {
-                    continue;
-                }
+                yield break;
+            }
 
-                yield return new BlobIdentifier(item.Name);
+            await foreach (BlobItem? item in container.GetBlobsAsync(BlobTraits.Metadata))
+            {
+                yield return (new BlobIdentifier(item.Name), item.Properties?.LastModified?.DateTime ?? DateTime.Now);
             }
         }
 
         private static string SanitizeNamespace(NamespaceId ns)
         {
-            return ns.ToString().Replace(".", "-").ToLower();
+            return ns.ToString().Replace(".", "-", StringComparison.OrdinalIgnoreCase).ToLower();
         }
     }
 }

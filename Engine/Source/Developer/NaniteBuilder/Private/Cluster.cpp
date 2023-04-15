@@ -3,9 +3,6 @@
 #include "Cluster.h"
 #include "GraphPartitioner.h"
 
-template< typename T > FORCEINLINE uint32 Min3Index( const T A, const T B, const T C ) { return ( A < B ) ? ( ( A < C ) ? 0 : 2 ) : ( ( B < C ) ? 1 : 2 ); }
-template< typename T > FORCEINLINE uint32 Max3Index( const T A, const T B, const T C ) { return ( A > B ) ? ( ( A > C ) ? 0 : 2 ) : ( ( B > C ) ? 1 : 2 ); }
-
 namespace Nanite
 {
 
@@ -28,7 +25,7 @@ FCluster::FCluster(
 	const TArray< FStaticMeshBuildVertex >& InVerts,
 	const TArrayView< const uint32 >& InIndexes,
 	const TArrayView< const int32 >& InMaterialIndexes,
-	uint32 InNumTexCoords, bool bInHasColors,
+	uint32 InNumTexCoords, bool bInHasColors, bool bInPreserveArea,
 	uint32 TriBegin, uint32 TriEnd, const FGraphPartitioner& Partitioner, const FAdjacency& Adjacency )
 {
 	GUID = (uint64(TriBegin) << 32) | TriEnd;
@@ -37,6 +34,7 @@ FCluster::FCluster(
 	//ensure(NumTriangles <= FCluster::ClusterSize);
 	
 	bHasColors = bInHasColors;
+	bPreserveArea = bInPreserveArea;
 	NumTexCoords = InNumTexCoords;
 
 	Verts.Reserve( NumTris * GetVertSize() );
@@ -69,7 +67,7 @@ FCluster::FCluster(
 				const FStaticMeshBuildVertex& InVert = InVerts[ OldIndex ];
 
 				GetPosition( NewIndex ) = InVert.Position;
-				GetNormal( NewIndex ) = InVert.TangentZ.ContainsNaN() ? FVector3f::UpVector : InVert.TangentZ;
+				GetNormal( NewIndex ) = InVert.TangentZ;
 	
 				if( bHasColors )
 				{
@@ -79,16 +77,8 @@ FCluster::FCluster(
 				FVector2f* UVs = GetUVs( NewIndex );
 				for( uint32 UVIndex = 0; UVIndex < NumTexCoords; UVIndex++ )
 				{
-					UVs[ UVIndex ] = InVert.UVs[ UVIndex ].ContainsNaN() ? FVector2f::ZeroVector : InVert.UVs[ UVIndex ];
+					UVs[ UVIndex ] = InVert.UVs[ UVIndex ];
 				}
-
-				float* Attributes = GetAttributes( NewIndex );
-
-				// Make sure this vertex is valid from the start
-				if( bHasColors )
-					CorrectAttributesColor( Attributes );
-				else
-					CorrectAttributes( Attributes );
 			}
 
 			Indexes.Add( NewIndex );
@@ -111,6 +101,19 @@ FCluster::FCluster(
 		MaterialIndexes.Add( InMaterialIndexes[ TriIndex ] );
 	}
 
+	SanitizeVertexData();
+
+	for( uint32 VertexIndex = 0; VertexIndex < NumVerts; VertexIndex++ )
+	{
+		float* Attributes = GetAttributes( VertexIndex );
+
+		// Make sure this vertex is valid from the start
+		if( bHasColors )
+			CorrectAttributesColor( Attributes );
+		else
+			CorrectAttributes( Attributes );
+	}
+
 	Bound();
 }
 
@@ -120,8 +123,9 @@ FCluster::FCluster( FCluster& SrcCluster, uint32 TriBegin, uint32 TriEnd, const 
 {
 	GUID = MurmurFinalize64(SrcCluster.GUID) ^ ((uint64(TriBegin) << 32) | TriEnd);
 
-	NumTexCoords = SrcCluster.NumTexCoords;
-	bHasColors   = SrcCluster.bHasColors;
+	NumTexCoords	= SrcCluster.NumTexCoords;
+	bHasColors		= SrcCluster.bHasColors;
+	bPreserveArea	= SrcCluster.bPreserveArea;
 	
 	NumTris = TriEnd - TriBegin;
 
@@ -170,8 +174,7 @@ FCluster::FCluster( FCluster& SrcCluster, uint32 TriBegin, uint32 TriEnd, const 
 			NumExternalEdges += AdjCount != 0 ? 1 : 0;
 		}
 
-		const int32 MaterialIndex = SrcCluster.MaterialIndexes[ TriIndex ];
-		MaterialIndexes.Add( MaterialIndex );
+		MaterialIndexes.Add( SrcCluster.MaterialIndexes[ TriIndex ] );
 	}
 
 	Bound();
@@ -180,8 +183,9 @@ FCluster::FCluster( FCluster& SrcCluster, uint32 TriBegin, uint32 TriEnd, const 
 // Merge
 FCluster::FCluster( const TArray< const FCluster*, TInlineAllocator<32> >& MergeList )
 {
-	NumTexCoords = MergeList[0]->NumTexCoords;
-	bHasColors = MergeList[0]->bHasColors;
+	NumTexCoords	= MergeList[0]->NumTexCoords;
+	bHasColors		= MergeList[0]->bHasColors;
+	bPreserveArea	= MergeList[0]->bPreserveArea;
 
 	const uint32 NumTrisGuess = ClusterSize * MergeList.Num();
 
@@ -195,25 +199,24 @@ FCluster::FCluster( const TArray< const FCluster*, TInlineAllocator<32> >& Merge
 
 	for( const FCluster* Child : MergeList )
 	{
-		Bounds += Child->Bounds;
-		SurfaceArea += Child->SurfaceArea;
+		NumTris			+= Child->NumTris;
+		Bounds			+= Child->Bounds;
+		SurfaceArea		+= Child->SurfaceArea;
 
 		// Can jump multiple levels but guarantee it steps at least 1.
-		MipLevel = FMath::Max( MipLevel, Child->MipLevel + 1 );
+		MipLevel	= FMath::Max( MipLevel,		Child->MipLevel + 1 );
+		LODError	= FMath::Max( LODError,		Child->LODError );
+		EdgeLength	= FMath::Max( EdgeLength,	Child->EdgeLength );
 
 		for( int32 i = 0; i < Child->Indexes.Num(); i++ )
 		{
 			uint32 NewIndex = AddVert( &Child->Verts[ Child->Indexes[i] * GetVertSize() ], VertHashTable );
 
 			Indexes.Add( NewIndex );
-			ExternalEdges.Add( Child->ExternalEdges[i] );
 		}
 
-		for( int32 i = 0; i < Child->MaterialIndexes.Num(); i++ )
-		{
-			const int32 MaterialIndex = Child->MaterialIndexes[i];
-			MaterialIndexes.Add( MaterialIndex );
-		}
+		ExternalEdges.Append( Child->ExternalEdges );
+		MaterialIndexes.Append( Child->MaterialIndexes );
 
 		GUID = MurmurFinalize64(GUID) ^ Child->GUID;
 	}
@@ -251,10 +254,10 @@ FCluster::FCluster( const TArray< const FCluster*, TInlineAllocator<32> >& Merge
 		NumExternalEdges += AdjCount != 0 ? 1 : 0;
 	}
 
-	NumTris = Indexes.Num() / 3;
+	ensure( NumTris == Indexes.Num() / 3 );
 }
 
-float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitNumTris )
+float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitNumTris, bool bForNaniteFallback )
 {
 	if( ( TargetNumTris >= NumTris && TargetError == 0.0f ) || LimitNumTris >= NumTris )
 	{
@@ -296,7 +299,9 @@ float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitN
 	int32 Exponent = FMath::Clamp( (int)DesiredSize.Components.Exponent - (int)CurrentSize.Components.Exponent, -126, 127 );
 	FloatScale.Components.Exponent = Exponent + 127;	//ExpBias
 	// Scale ~= DesiredSize / CurrentSize
-	float PositionScale = FloatScale.FloatValue;
+	// When generating nanite fallback meshes, use the same weights as in FQuadricSimplifierMeshReduction::ReduceMeshDescription
+	// to ensure consistent LOD transition screen size.
+	float PositionScale = bForNaniteFallback ? 1.f : FloatScale.FloatValue;
 
 	for( uint32 i = 0; i < NumVerts; i++ )
 	{
@@ -308,17 +313,17 @@ float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitN
 	float* AttributeWeights = (float*)FMemory_Alloca( NumAttributes * sizeof( float ) );
 
 	// Normal
-	AttributeWeights[0] = 1.0f;
-	AttributeWeights[1] = 1.0f;
-	AttributeWeights[2] = 1.0f;
+	AttributeWeights[0] = bForNaniteFallback ? 16.f : 1.0f;
+	AttributeWeights[1] = bForNaniteFallback ? 16.f : 1.0f;
+	AttributeWeights[2] = bForNaniteFallback ? 16.f : 1.0f;
 
 	if( bHasColors )
 	{
 		float* ColorWeights = AttributeWeights + 3;
-		ColorWeights[0] = 0.0625f;
-		ColorWeights[1] = 0.0625f;
-		ColorWeights[2] = 0.0625f;
-		ColorWeights[3] = 0.0625f;
+		ColorWeights[0] = bForNaniteFallback ? 0.1f : 0.0625f;
+		ColorWeights[1] = bForNaniteFallback ? 0.1f : 0.0625f;
+		ColorWeights[2] = bForNaniteFallback ? 0.1f : 0.0625f;
+		ColorWeights[3] = bForNaniteFallback ? 0.1f : 0.0625f;
 	}
 	
 	uint32 TexCoordOffset = 3 + ( bHasColors ? 4 : 0 );
@@ -327,11 +332,47 @@ float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitN
 	// Normalize UVWeights
 	for( uint32 UVIndex = 0; UVIndex < NumTexCoords; UVIndex++ )
 	{
-		float TriangleUVSize = FMath::Sqrt( UVArea[ UVIndex ] / NumTris );
-		TriangleUVSize = FMath::Max( TriangleUVSize, THRESH_UVS_ARE_SAME );
+		if (bForNaniteFallback)
+		{
+			float MinUV = +FLT_MAX;
+			float MaxUV = -FLT_MAX;
 
-		UVWeights[ 2 * UVIndex + 0 ] = 1.0f / ( 128.0f * TriangleUVSize );
-		UVWeights[ 2 * UVIndex + 1 ] = 1.0f / ( 128.0f * TriangleUVSize );
+			for (uint32 TriIndex = 0; TriIndex < NumTris; TriIndex++)
+			{
+				uint32 Index0 = Indexes[TriIndex * 3 + 0];
+				uint32 Index1 = Indexes[TriIndex * 3 + 1];
+				uint32 Index2 = Indexes[TriIndex * 3 + 2];
+
+				FVector2f UV0 = GetUVs(Index0)[UVIndex];
+				FVector2f UV1 = GetUVs(Index1)[UVIndex];
+				FVector2f UV2 = GetUVs(Index2)[UVIndex];
+
+				MinUV = FMath::Min(MinUV, UV0.X);
+				MinUV = FMath::Min(MinUV, UV0.Y);
+				MinUV = FMath::Min(MinUV, UV1.X);
+				MinUV = FMath::Min(MinUV, UV1.Y);
+				MinUV = FMath::Min(MinUV, UV2.X);
+				MinUV = FMath::Min(MinUV, UV2.Y);
+
+				MaxUV = FMath::Max(MaxUV, UV0.X);
+				MaxUV = FMath::Max(MaxUV, UV0.Y);
+				MaxUV = FMath::Max(MaxUV, UV1.X);
+				MaxUV = FMath::Max(MaxUV, UV1.Y);
+				MaxUV = FMath::Max(MaxUV, UV2.X);
+				MaxUV = FMath::Max(MaxUV, UV2.Y);
+			}
+
+			UVWeights[2 * UVIndex + 0] = 0.5f / FMath::Max(1.f, MaxUV - MinUV);
+			UVWeights[2 * UVIndex + 1] = 0.5f / FMath::Max(1.f, MaxUV - MinUV);
+		}
+		else
+		{
+			float TriangleUVSize = FMath::Sqrt(UVArea[UVIndex] / NumTris);
+			TriangleUVSize = FMath::Max(TriangleUVSize, THRESH_UVS_ARE_SAME);
+
+			UVWeights[2 * UVIndex + 0] = 1.0f / (128.0f * TriangleUVSize);
+			UVWeights[2 * UVIndex + 1] = 1.0f / (128.0f * TriangleUVSize);
+		}
 	}
 
 	FMeshSimplifier Simplifier( Verts.GetData(), NumVerts, Indexes.GetData(), Indexes.Num(), MaterialIndexes.GetData(), NumAttributes );
@@ -357,7 +398,14 @@ float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitN
 
 	Simplifier.SetAttributeWeights( AttributeWeights );
 	Simplifier.SetCorrectAttributes( bHasColors ? CorrectAttributesColor : CorrectAttributes );
-	Simplifier.SetEdgeWeight( 2.0f );
+	Simplifier.SetEdgeWeight(bForNaniteFallback ? 512.f : 2.0f );
+
+	if (bForNaniteFallback)
+	{
+		Simplifier.SetLimitErrorToSurfaceArea(false);
+		Simplifier.DegreePenalty = 100.0f;
+		Simplifier.InversionPenalty = 1000000.0f;
+	}
 
 	float MaxErrorSqr = Simplifier.Simplify(
 		NumVerts, TargetNumTris, FMath::Square( TargetError ),
@@ -365,6 +413,9 @@ float FCluster::Simplify( uint32 TargetNumTris, float TargetError, uint32 LimitN
 
 	check( Simplifier.GetRemainingNumVerts() > 0 );
 	check( Simplifier.GetRemainingNumTris() > 0 );
+
+	if( bPreserveArea )
+		Simplifier.PreserveSurfaceArea();
 
 	Simplifier.Compact();
 	
@@ -429,7 +480,7 @@ void FCluster::Split( FGraphPartitioner& Partitioner, const FAdjacency& Adjacenc
 		return Center * (1.0f / 3.0f);
 	};
 
-	Partitioner.BuildLocalityLinks( DisjointSet, Bounds, GetCenter );
+	Partitioner.BuildLocalityLinks( DisjointSet, Bounds, MaterialIndexes, GetCenter );
 
 	auto* RESTRICT Graph = Partitioner.NewGraph( NumTris * 3 );
 
@@ -481,20 +532,25 @@ FAdjacency FCluster::BuildAdjacency() const
 
 uint32 FCluster::AddVert( const float* Vert, FHashTable& HashTable )
 {
+	const uint32 VertSize = GetVertSize();
 	const FVector3f& Position = *reinterpret_cast< const FVector3f* >( Vert );
 
 	uint32 Hash = HashPosition( Position );
 	uint32 NewIndex;
 	for( NewIndex = HashTable.First( Hash ); HashTable.IsValid( NewIndex ); NewIndex = HashTable.Next( NewIndex ) )
 	{
-		if( 0 == FMemory::Memcmp( &GetPosition( NewIndex ), Vert, GetVertSize() * sizeof( float ) ) )
+		uint32 i;
+		for( i = 0; i < VertSize; i++ )
 		{
-			break;
+			if( Vert[i] != Verts[ NewIndex * VertSize + i ] )
+				break;
 		}
+		if( i == VertSize )
+			break;
 	}
 	if( !HashTable.IsValid( NewIndex ) )
 	{
-		Verts.AddUninitialized( GetVertSize() );
+		Verts.AddUninitialized( VertSize );
 		NewIndex = NumVerts++;
 		HashTable.Add( Hash, NewIndex );
 
@@ -504,118 +560,9 @@ uint32 FCluster::AddVert( const float* Vert, FHashTable& HashTable )
 	return NewIndex;
 }
 
-
-
-struct FNormalCone
-{
-	FVector3f	Axis;
-	float	CosAngle;
-
-	FNormalCone() {}
-	FNormalCone( const FVector3f& InAxis )
-		: Axis( InAxis )
-		, CosAngle( 1.0f )
-	{
-		if( !Axis.Normalize() )
-		{
-			Axis = FVector3f( 0.0f, 0.0f, 1.0f );
-		}
-	}
-};
-
-FORCEINLINE FMatrix44f OrthonormalBasis( const FVector3f& Vec )
-{
-	float Sign = Vec.Z >= 0.0f ? 1.0f : -1.0f;
-	float a = -1.0f / ( Sign + Vec.Z );
-	float b = Vec.X * Vec.Y * a;
-	
-	return FMatrix44f(
-		{ 1.0f + Sign * a * FMath::Square( Vec.X ), Sign * b, -Vec.X * Sign },
-		{ b,     Sign + a * FMath::Square( Vec.Y ),           -Vec.Y },
-		Vec,
-		FVector3f::ZeroVector );
-}
-
-FMatrix44f CovarianceToBasis( const FMatrix44f& Covariance )
-{
-#if 0
-	FMatrix44f Eigenvectors;
-	FVector3f Eigenvalues;
-	diagonalizeSymmetricMatrix( Covariance, Eigenvectors, Eigenvalues );
-
-	//Eigenvectors = Eigenvectors.GetTransposed();
-
-	uint32 i0 = Max3Index( Eigenvalues[0], Eigenvalues[1], Eigenvalues[2] );
-	uint32 i1 = (1 << i0) & 3;
-	uint32 i2 = (1 << i1) & 3;
-	i1 = Eigenvalues[ i1 ] > Eigenvalues[ i2 ] ? i1 : i2;
-
-	FVector3f Eigenvector0 = Eigenvectors.GetColumn( i0 );
-	FVector3f Eigenvector1 = Eigenvectors.GetColumn( i1 );
-
-	Eigenvector0.Normalize();
-	Eigenvector1 -= ( Eigenvector0 | Eigenvector1 ) * Eigenvector1;
-	Eigenvector1.Normalize();
-
-	return FMatrix44f( Eigenvector0, Eigenvector1, Eigenvector0 ^ Eigenvector1, FVector3f::ZeroVector );
-#else
-	// Start with highest variance cardinal direction
-	uint32 HighestVarianceDim = Max3Index( Covariance.M[0][0], Covariance.M[1][1], Covariance.M[2][2] );
-	FVector3f Eigenvector0 = FMatrix44f::Identity.GetColumn( HighestVarianceDim );
-	
-	// Compute dominant eigenvector using power method
-	for( int i = 0; i < 32; i++ )
-	{
-		Eigenvector0 = Covariance.TransformVector( Eigenvector0 );
-		Eigenvector0.Normalize();
-	}
-	if( !Eigenvector0.IsNormalized() )
-	{
-		Eigenvector0 = FVector3f( 0.0f, 0.0f, 1.0f );
-	}
-
-	// Rotate matrix so that Z is Eigenvector0. This allows us to ignore Z dimension and turn this into a 2D problem.
-	FMatrix44f ZSpace = OrthonormalBasis( Eigenvector0 );
-	FMatrix44f ZLocalCovariance = Covariance * ZSpace;
-
-	// Compute eigenvalues in XY plane. Solve for 2x2.
-	float Det = ZLocalCovariance.M[0][0] * ZLocalCovariance.M[1][1] - ZLocalCovariance.M[0][1] * ZLocalCovariance.M[1][0];
-	float Trace = ZLocalCovariance.M[0][0] + ZLocalCovariance.M[1][1];
-	float Sqr = Trace * Trace - 4.0f * Det;
-	if( Sqr < 0.0f )
-	{
-		return ZSpace;
-	}
-	float Sqrt = FMath::Sqrt( Sqr );
-	
-	float Eigenvalue1 = 0.5f * ( Trace + Sqrt );
-	float Eigenvalue2 = 0.5f * ( Trace - Sqrt );
-
-	float MinEigenvalue = FMath::Min( Eigenvalue1, Eigenvalue2 );
-	float MaxEigenvalue = FMath::Max( Eigenvalue1, Eigenvalue2 );
-
-	// Solve ( Eigenvalue * I - M ) * Eigenvector = 0
-	FVector3f Eigenvector1;
-	if( FMath::Abs( ZLocalCovariance.M[0][1] ) > FMath::Abs( ZLocalCovariance.M[1][0] ) )
-	{
-		Eigenvector1 = FVector3f( ZLocalCovariance.M[0][1], MaxEigenvalue - ZLocalCovariance.M[0][0], 0.0f );
-	}
-	else
-	{
-		Eigenvector1 = FVector3f( MaxEigenvalue - ZLocalCovariance.M[1][1], ZLocalCovariance.M[1][0], 0.0f );
-	}
-
-	Eigenvector1 = ZSpace.TransformVector( Eigenvector1 );
-	//Eigenvector1 -= ( Eigenvector0 | Eigenvector1 ) * Eigenvector1;
-	Eigenvector1.Normalize();
-
-	return FMatrix44f( Eigenvector0, Eigenvector1, Eigenvector0 ^ Eigenvector1, FVector3f::ZeroVector );
-#endif
-}
-
 void FCluster::Bound()
 {
-	Bounds = FBounds();
+	Bounds = FBounds3f();
 	SurfaceArea = 0.0f;
 	
 	TArray< FVector3f, TInlineAllocator<128> > Positions;
@@ -651,11 +598,64 @@ void FCluster::Bound()
 	EdgeLength = FMath::Sqrt( MaxEdgeLength2 );
 }
 
+static void SanitizeFloat( float& X, float MinValue, float MaxValue, float DefaultValue )
+{
+	if( X >= MinValue && X <= MaxValue )
+		;
+	else if( X < MinValue )
+		X = MinValue;
+	else if( X > MaxValue )
+		X = MaxValue;
+	else
+		X = DefaultValue;
+}
+
+void FCluster::SanitizeVertexData()
+{
+	const float FltThreshold = 1e12f;	// Fairly arbitrary threshold for sensible float values.
+										// Should be large enough for all practical purposes, while still leaving enough headroom
+										// so that overflows shouldn't be a concern.
+										// With a 1e12 threshold, even x^3 fits comfortable in float range.
+
+	for( uint32 VertexIndex = 0; VertexIndex < NumVerts; VertexIndex++ )
+	{
+		FVector3f& Position = GetPosition( VertexIndex );
+		SanitizeFloat( Position.X, -FltThreshold, FltThreshold, 0.0f );
+		SanitizeFloat( Position.Y, -FltThreshold, FltThreshold, 0.0f );
+		SanitizeFloat( Position.Z, -FltThreshold, FltThreshold, 0.0f );
+
+		FVector3f& Normal = GetNormal( VertexIndex );
+		if( !(  Normal.X >= -FltThreshold && Normal.X <= FltThreshold &&
+				Normal.Y >= -FltThreshold && Normal.Y <= FltThreshold &&
+				Normal.Z >= -FltThreshold && Normal.Z <= FltThreshold ) )	// Don't flip condition. Intentionally written like this to be NaN-safe
+		{
+			Normal = FVector3f::UpVector;
+		}	
+		
+		if( bHasColors )
+		{
+			FLinearColor& Color = GetColor( VertexIndex );
+			SanitizeFloat( Color.R, 0.0f, 1.0f, 1.0f );
+			SanitizeFloat( Color.G, 0.0f, 1.0f, 1.0f );
+			SanitizeFloat( Color.B, 0.0f, 1.0f, 1.0f );
+			SanitizeFloat( Color.A, 0.0f, 1.0f, 1.0f );
+		}
+
+		FVector2f* UVs = GetUVs( VertexIndex );
+		for( uint32 UvIndex = 0; UvIndex < NumTexCoords; UvIndex++ )
+		{
+			SanitizeFloat( UVs[ UvIndex ].X, -FltThreshold, FltThreshold, 0.0f );
+			SanitizeFloat( UVs[ UvIndex ].Y, -FltThreshold, FltThreshold, 0.0f );
+		}
+	}
+}
+
 FArchive& operator<<(FArchive& Ar, FMaterialRange& Range)
 {
 	Ar << Range.RangeStart;
 	Ar << Range.RangeLength;
 	Ar << Range.MaterialIndex;
+	Ar << Range.BatchTriCounts;
 	return Ar;
 }
 
@@ -672,49 +672,4 @@ FArchive& operator<<(FArchive& Ar, FStripDesc& Desc)
 	Ar << Desc.NumPrevNewVerticesBeforeDwords;
 	return Ar;
 }
-/*
-FArchive& operator<<(FArchive& Ar, FCluster& Cluster)
-{
-	Ar << Cluster.NumVerts;
-	Ar << Cluster.NumTris;
-	Ar << Cluster.NumTexCoords;
-	Ar << Cluster.bHasColors;
-
-	Ar << Cluster.Verts;
-	Ar << Cluster.Indexes;
-	Ar << Cluster.MaterialIndexes;
-	Ar << Cluster.BoundaryEdges;
-	Ar << Cluster.ExternalEdges;
-	Ar << Cluster.NumExternalEdges;
-
-	Ar << Cluster.AdjacentClusters;
-
-	Ar << Cluster.Bounds;
-	Ar << Cluster.GUID;
-	Ar << Cluster.MipLevel;
-
-	Ar << Cluster.QuantizedPosStart;
-	Ar << Cluster.QuantizedPosShift;
-
-	Ar << Cluster.MeshBoundsMin;
-	Ar << Cluster.MeshBoundsDelta;
-
-	Ar << Cluster.EdgeLength;
-	Ar << Cluster.LODError;
-
-	Ar << Cluster.SphereBounds;
-	Ar << Cluster.LODBounds;
-
-	Ar << Cluster.GroupIndex;
-	Ar << Cluster.GroupPartIndex;
-	Ar << Cluster.GeneratingGroupIndex;
-
-	Ar << Cluster.MaterialRanges;
-	Ar << Cluster.QuantizedPositions;
-
-	Ar << Cluster.StripDesc;
-	Ar << Cluster.StripIndexData;
-	return Ar;
-}
-*/
 } // namespace Nanite

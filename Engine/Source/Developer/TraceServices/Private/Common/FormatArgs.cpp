@@ -148,20 +148,27 @@ const TCHAR* FFormatArgsHelper::ExtractNextFormatArg(const TCHAR* FormatString, 
 			}
 
 			++Src;
-			uint64 FormatSpecifierLength = Src + 1 - FormatSpecifierStart;
+			int32 FormatSpecifierLength = static_cast<int32>(Src + 1 - FormatSpecifierStart);
 			check(FormatSpecifierLength < 255);
 			FCString::Strncpy(Spec.FormatString, FormatSpecifierStart, FormatSpecifierLength);
 			Spec.Valid = true;
-			Spec.PassthroughLength = FormatSpecifierStart - FormatString;
+			Spec.PassthroughLength = static_cast<int32>(FormatSpecifierStart - FormatString);
 			return Src;
 		}
 	}
-	Spec.PassthroughLength = Src - FormatString;
+	Spec.PassthroughLength = static_cast<int32>(Src - FormatString);
 	return Src;
 }
 
 void FFormatArgsHelper::InitArgumentStream(FFormatArgsStreamContext& Context, const uint8* ArgumentsData)
 {
+	if (ArgumentsData == nullptr)
+	{
+		Context.ArgumentTypeCategory = 0;
+		Context.ArgumentTypeSize = 0;
+		return;
+	}
+
 	Context.ArgumentCount = *ArgumentsData++;
 	Context.DescriptorPtr = ArgumentsData;
 	Context.PayloadPtr = ArgumentsData + Context.ArgumentCount;
@@ -249,7 +256,7 @@ double FFormatArgsHelper::ExtractFloatingPointArgument(FFormatArgsStreamContext&
 	return Result;
 }
 
-const TCHAR* FFormatArgsHelper::ExtractStringArgument(FFormatArgsStreamContext& ArgStream, TCHAR* Temp, uint64 MaxTemp)
+const TCHAR* FFormatArgsHelper::ExtractStringArgument(FFormatArgsStreamContext& ArgStream, TCHAR* Temp, int32 MaxTemp)
 {
 	static TCHAR Empty[] = TEXT("");
 	const TCHAR* Result = Empty;
@@ -276,7 +283,7 @@ const TCHAR* FFormatArgsHelper::ExtractStringArgument(FFormatArgsStreamContext& 
 	return Result;
 }
 
-int32 FFormatArgsHelper::FormatArgument(TCHAR* Out, uint64 MaxOut, TCHAR* Temp, uint64 MaxTemp, const FFormatArgSpec& ArgSpec, FFormatArgsStreamContext& ArgStream)
+int32 FFormatArgsHelper::FormatArgument(TCHAR* Out, int32 MaxOut, TCHAR* Temp, int32 MaxTemp, const FFormatArgSpec& ArgSpec, FFormatArgsStreamContext& ArgStream)
 {
 	check(ArgSpec.AdditionalIntegerArgumentCount <= 2);
 	switch (ArgSpec.ExpectedTypeCategory)
@@ -357,7 +364,7 @@ void FFormatArgsHelper::Format(TCHAR* Out, uint64 MaxOut, TCHAR* Temp, uint64 Ma
 	{
 		FFormatArgSpec Spec;
 		const TCHAR* NextSrc = ExtractNextFormatArg(Src, Spec);
-		uint64 PassthroughCopyLength = FMath::Min<uint64>(Spec.PassthroughLength, DstEnd - Dst);
+		int32 PassthroughCopyLength = FMath::Min(Spec.PassthroughLength, static_cast<int32>(DstEnd - Dst));
 		if (PassthroughCopyLength)
 		{
 			FCString::Strncpy(Dst, Src, PassthroughCopyLength + 1);
@@ -365,7 +372,7 @@ void FFormatArgsHelper::Format(TCHAR* Out, uint64 MaxOut, TCHAR* Temp, uint64 Ma
 		}
 		if (Spec.Valid)
 		{
-			int32 Length = FormatArgument(Dst, DstEnd - Dst, Temp, MaxTemp, Spec, ArgumentStream);
+			int32 Length = FormatArgument(Dst, static_cast<int32>(DstEnd - Dst), Temp, static_cast<int32>(MaxTemp), Spec, ArgumentStream);
 			if (Length < 0)
 			{
 				break;

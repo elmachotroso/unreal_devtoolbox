@@ -8,20 +8,6 @@ public class ModelingToolsEditorMode : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicIncludePaths.AddRange(
-			new string[]
-			{
-				// ... add public include paths required here ...
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				// ... add other private include paths required here ...
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -42,11 +28,14 @@ public class ModelingToolsEditorMode : ModuleRules
 				"UnrealEd",
 				"ContentBrowserData",
 				"StatusBar",
-				"EditorStyle",
 				"Projects",
 				"TypedElementRuntime",
 				"InteractiveToolsFramework",
 				"EditorInteractiveToolsFramework",
+				"GeometryFramework",
+				"GeometryCore",
+				"GeometryProcessingInterfaces",
+				"DynamicMesh",
 				"ModelingComponents",
 				"ModelingComponentsEditorOnly",
 				"MeshModelingTools",
@@ -59,6 +48,8 @@ public class ModelingToolsEditorMode : ModuleRules
 				"ModelingEditorUI",
 				"StylusInput",
 				"DeveloperSettings",
+				"PropertyEditor",
+				"GeometryFramework"
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);

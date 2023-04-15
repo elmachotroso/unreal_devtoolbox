@@ -9,13 +9,18 @@
 #include "UObject/LinkerLoad.h"
 #include "UObject/PropertyHelper.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 /*-----------------------------------------------------------------------------
 	FArrayProperty.
 -----------------------------------------------------------------------------*/
 IMPLEMENT_FIELD(FArrayProperty)
+
+FArrayProperty::FArrayProperty(FFieldVariant InOwner, const UECodeGen_Private::FArrayPropertyParams& Prop)
+	: Super(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop)
+	, Inner(nullptr)
+{
+	ArrayFlags = Prop.ArrayFlags;
+	SetElementSize();
+}
 
 #if WITH_EDITORONLY_DATA
 FArrayProperty::FArrayProperty(UField* InField)
@@ -453,7 +458,7 @@ FString FArrayProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	ExtendedTypeText = Inner->GetCPPType();
 	return TEXT("TARRAY");
 }
-void FArrayProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FArrayProperty::ExportText_Internal( FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	checkSlow(Inner);
 
@@ -465,7 +470,26 @@ void FArrayProperty::ExportTextItem( FString& ValueStr, const void* PropertyValu
 		return;
 	}
 
-	FScriptArrayHelper ArrayHelper(this, PropertyValue);
+	uint8* TempArrayStorage = nullptr;
+	void* PropertyValuePtr = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		// Allocate temporary map as we first need to initialize it with the value provided by the getter function and then export it
+		TempArrayStorage = (uint8*)AllocateAndInitializeValue();
+		PropertyValuePtr = TempArrayStorage;
+		FProperty::GetValue_InContainer(ContainerOrPropertyPtr, PropertyValuePtr);
+	}
+	else
+	{
+		PropertyValuePtr = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+	}
+
+	ON_SCOPE_EXIT
+	{
+		DestroyAndFreeValue(TempArrayStorage);
+	};
+
+	FScriptArrayHelper ArrayHelper(this, PropertyValuePtr);
 
 	int32 DefaultSize = 0;
 	if (DefaultValue)
@@ -543,7 +567,7 @@ void FArrayProperty::ExportTextInnerItem(FString& ValueStr, const FProperty* Inn
 			}
 		}
 
-		Inner->ExportTextItem( ValueStr, PropData, PropDefault, Parent, PortFlags|PPF_Delimited, ExportRootScope );
+		Inner->ExportTextItem_Direct( ValueStr, PropData, PropDefault, Parent, PortFlags|PPF_Delimited, ExportRootScope );
 	}
 
 	if ((Count > 0) && !bReadableForm)
@@ -557,11 +581,35 @@ void FArrayProperty::ExportTextInnerItem(FString& ValueStr, const FProperty* Inn
 	}
 }
 
-const TCHAR* FArrayProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const
+const TCHAR* FArrayProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const
 {
-	FScriptArrayHelper ArrayHelper(this, Data);
+	uint8* TempArrayStorage = nullptr;
+	ON_SCOPE_EXIT
+	{
+		if (TempArrayStorage)
+		{
+			// TempArrayStorage is used by property setter so if it was allocated call the setter now
+			FProperty::SetValue_InContainer(ContainerOrPropertyPtr, TempArrayStorage);
 
-	return ImportTextInnerItem(Buffer, Inner, Data, PortFlags, OwnerObject, &ArrayHelper, ErrorText);
+			// Destroy and free the temp array used by property setter
+			DestroyAndFreeValue(TempArrayStorage);
+		}
+	};
+
+	void* ArrayPtr = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		// Allocate temporary map as we first need to initialize it with the parsed items and then use the setter to update the property
+		TempArrayStorage = (uint8*)AllocateAndInitializeValue();
+		ArrayPtr = TempArrayStorage;
+	}
+	else
+	{
+		ArrayPtr = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+	}
+
+	FScriptArrayHelper ArrayHelper(this, ArrayPtr);
+	return ImportTextInnerItem(Buffer, Inner, ArrayPtr, PortFlags, OwnerObject, &ArrayHelper, ErrorText);
 }
 
 const TCHAR* FArrayProperty::ImportTextInnerItem( const TCHAR* Buffer, const FProperty* Inner, void* Data, int32 PortFlags, UObject* Parent, FScriptArrayHelper* ArrayHelper, FOutputDevice* ErrorText )
@@ -601,7 +649,8 @@ const TCHAR* FArrayProperty::ImportTextInnerItem( const TCHAR* Buffer, const FPr
 		{
 			uint8* Address = ArrayHelper ? ArrayHelper->GetRawPtr(Index) : ((uint8*)Data + Inner->ElementSize * Index);
 			// Parse the item
-			Buffer = Inner->ImportText(Buffer, Address, PortFlags | PPF_Delimited, Parent, ErrorText);
+			checkf(ArrayHelper == nullptr || Inner->GetOffset_ForInternal() == 0, TEXT("Expected the Inner property of the FArrayProperty."));
+			Buffer = Inner->ImportText_Direct(Buffer, Address, Parent, PortFlags | PPF_Delimited, ErrorText);
 
 			if(!Buffer)
 			{
@@ -622,7 +671,7 @@ const TCHAR* FArrayProperty::ImportTextInnerItem( const TCHAR* Buffer, const FPr
 			}
 			else if (Index >= Inner->ArrayDim)
 			{
-				UE_LOG(LogProperty, Warning, TEXT("%s is a fixed-sized array of %i values. Additional data after %i has been ignored during import."), *Inner->GetName(), Inner->ArrayDim, Inner->ArrayDim);
+				ErrorText->Logf(ELogVerbosity::Warning, TEXT("%s is a fixed-sized array of %i values. Additional data after %i has been ignored during import."), *Inner->GetName(), Inner->ArrayDim, Inner->ArrayDim);
 				break;
 			}
 		}
@@ -831,4 +880,11 @@ void FArrayProperty::GetInnerFields(TArray<FField*>& OutFields)
 	}
 }
 
-#include "UObject/DefineUPropertyMacros.h"
+void* FArrayProperty::GetValueAddressAtIndex_Direct(const FProperty* InInner, void* InValueAddress, int32 Index) const
+{
+	FScriptArrayHelper ArrayHelper(this, InValueAddress);
+	checkf(Inner == InInner, TEXT("Passed in inner must be identical to the array property inner property"));
+	checkf(Index < ArrayHelper.Num() && Index >= 0, TEXT("Array index (%d) out of range"), Index);
+
+	return ArrayHelper.GetRawPtr(Index);
+}

@@ -4,44 +4,45 @@
 DerivedDataCacheCommandlet.cpp: Commandlet for DDC maintenence
 =============================================================================*/
 #include "Commandlets/DerivedDataCacheCommandlet.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
+
+#include "Algo/RemoveIf.h"
+#include "Algo/StableSort.h"
+#include "Algo/Transform.h"
+#include "AssetCompilingManager.h"
+#include "CollectionManagerModule.h"
+#include "CollectionManagerTypes.h"
+#include "CookOnTheSide/CookOnTheFlyServer.h"
+#include "DerivedDataCacheInterface.h"
+#include "DistanceFieldAtlas.h"
+#include "Editor.h"
+#include "EditorWorldUtils.h"
+#include "Engine/Texture.h"
+#include "GlobalShader.h"
+#include "ICollectionManager.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
+#include "MeshCardRepresentation.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/PackageName.h"
-#include "PackageHelperFunctions.h"
-#include "DerivedDataCacheInterface.h"
-#include "GlobalShader.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "ShaderCompiler.h"
-#include "DistanceFieldAtlas.h"
-#include "MeshCardRepresentation.h"
 #include "Misc/RedirectCollector.h"
-#include "Engine/Texture.h"
-#include "CookOnTheSide/CookOnTheFlyServer.h"
-#include "Algo/RemoveIf.h"
-#include "Algo/Transform.h"
-#include "Algo/StableSort.h"
+#include "PackageHelperFunctions.h"
 #include "Settings/ProjectPackagingSettings.h"
-#include "Editor.h"
-#include "EditorWorldUtils.h"
-#include "AssetCompilingManager.h"
+#include "ShaderCompiler.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UObjectIterator.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
-#include "LevelInstance/LevelInstanceSubsystem.h"
-#include "CollectionManagerModule.h"
-#include "ICollectionManager.h"
-#include "CollectionManagerTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDerivedDataCacheCommandlet, Log, All);
 
 class UDerivedDataCacheCommandlet::FObjectReferencer : public FGCObject
 {
 public:
-	FObjectReferencer(TMap<UObject*, double>& InReferencedObjects)
+	FObjectReferencer(TMap<UObject*, FCachingData>& InReferencedObjects)
 		: ReferencedObjects(InReferencedObjects)
 	{
 	}
@@ -60,7 +61,7 @@ private:
 	}
 
 	FString ReferencerName;
-	TMap<UObject*, double>& ReferencedObjects;
+	TMap<UObject*, FCachingData>& ReferencedObjects;
 };
 
 class UDerivedDataCacheCommandlet::FPackageListener : public FUObjectArray::FUObjectCreateListener, public FUObjectArray::FUObjectDeleteListener
@@ -120,6 +121,10 @@ UDerivedDataCacheCommandlet::UDerivedDataCacheCommandlet(FVTableHelper& Helper)
 {
 }
 
+UDerivedDataCacheCommandlet::~UDerivedDataCacheCommandlet()
+{
+}
+
 UDerivedDataCacheCommandlet::UDerivedDataCacheCommandlet(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -132,6 +137,22 @@ void UDerivedDataCacheCommandlet::MaybeMarkPackageAsAlreadyLoaded(UPackage* Pack
 	{
 		UE_LOG(LogDerivedDataCacheCommandlet, Verbose, TEXT("Marking %s already loaded."), *Package->GetName());
 		Package->SetPackageFlags(PKG_ReloadingForCooker);
+	}
+}
+
+namespace UE::Private::DerivedDataCacheCommandlet
+{
+
+static void TickCookObjects(bool bCookComplete = false)
+{
+	constexpr double TickPeriod = 0.1;
+	static double LastTickTime = FPlatformTime::Seconds();
+	const double CurrentTime = FPlatformTime::Seconds();
+	if (bCookComplete || LastTickTime + TickPeriod <= CurrentTime)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TickCookObjects);
+		FTickableCookObject::TickObjects(CurrentTime - LastTickTime, bCookComplete);
+		LastTickTime = CurrentTime;
 	}
 }
 
@@ -153,6 +174,8 @@ static void WaitForCompilationToFinish(bool& bInOutHadActivity)
 
 	while (FAssetCompilingManager::Get().GetNumRemainingAssets() > 0)
 	{
+		TickCookObjects();
+
 		for (IAssetCompilingManager* CompilingManager : FAssetCompilingManager::Get().GetRegisteredManagers())
 		{
 			int32 CachedAssetCount = CompilingManager->GetNumRemainingAssets();
@@ -183,17 +206,9 @@ static void WaitForCompilationToFinish(bool& bInOutHadActivity)
 	}
 }
 
-static void PumpAsync(bool* bInOutHadActivity = nullptr)
-{
-	bool bHadActivity = false;
-	WaitForCompilationToFinish(bHadActivity);
-	if (bInOutHadActivity)
-	{
-		*bInOutHadActivity = *bInOutHadActivity || bHadActivity;
-	}
-}
+} // UE::Private::DerivedDataCacheCommandlet
 
-void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, uint8 PackageFilter, const TArray<ITargetPlatform*>& Platforms, TSet<FName>& OutNewProcessedPackages)
+void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, uint8 PackageFilter, TSet<FName>& OutNewProcessedPackages)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UDerivedDataCacheCommandlet::CacheLoadedPackages);
 
@@ -235,7 +250,8 @@ void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, 
 						Object->BeginCacheForCookedPlatformData(Platform);
 					}
 
-					CachingObjects.Add(Object);
+					FCachingData& CachingData = CachingObjects.FindOrAdd(Object);
+					CachingData.PlatformIsComplete.Init(false, Platforms.Num());
 				}
 			}
 		}
@@ -247,10 +263,10 @@ void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, 
 
 	BeginCacheTime += FPlatformTime::Seconds() - BeginCacheTimeStart;
 
-	ProcessCachingObjects(Platforms);
+	ProcessCachingObjects();
 }
 
-bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlatform*>& Platforms)
+bool UDerivedDataCacheCommandlet::ProcessCachingObjects()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UDerivedDataCacheCommandlet::ProcessCachingObjects);
 
@@ -263,7 +279,8 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 		for (auto It = CachingObjects.CreateIterator(); It; ++It)
 		{
 			// Call IsCachedCookedPlatformDataLoaded once a second per object since it can be quite expensive
-			if (CurrentTime - It->Value > 1.0)
+			FCachingData& CachingData = It->Value;
+			if (CurrentTime - CachingData.LastTimeTested > 1.0)
 			{
 				UObject* Object = It->Key;
 				bool bIsFinished = true;
@@ -274,12 +291,26 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 				}
 
 				{
-					UE_TRACK_REFERENCING_PACKAGE_SCOPED(Object->GetPackage(), PackageAccessTrackingOps::NAME_CookerBuildObject);
-					for (auto Platform : Platforms)
+					UE_TRACK_REFERENCING_PACKAGE_SCOPED(Object, PackageAccessTrackingOps::NAME_CookerBuildObject);
+					for (int32 PlatformIndex = 0; PlatformIndex < Platforms.Num(); ++PlatformIndex)
 					{
 						// IsCachedCookedPlatformDataLoaded can be quite slow for some objects
 						// Do not call it if bIsFinished is already false
-						bIsFinished = bIsFinished && Object->IsCachedCookedPlatformDataLoaded(Platform);
+						// Also, by the contract of IsCachedCookedPlatformDataLoaded, we are not allowed to call it
+						// again once it returns true
+						if (bIsFinished && !CachingData.PlatformIsComplete[PlatformIndex])
+						{
+							const ITargetPlatform* Platform = Platforms[PlatformIndex];
+							if (Object->IsCachedCookedPlatformDataLoaded(Platform))
+							{
+								CachingData.PlatformIsComplete[PlatformIndex] = true;
+								bHadActivity = true;
+							}
+							else
+							{
+								bIsFinished = false;
+							}
+						}
 					}
 				}
 
@@ -292,7 +323,7 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 				}
 				else
 				{
-					It->Value = CurrentTime;
+					CachingData.LastTimeTested = CurrentTime;
 				}
 			}
 		}
@@ -301,7 +332,7 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 	return bHadActivity;
 }
 
-void UDerivedDataCacheCommandlet::FinishCachingObjects(const TArray<ITargetPlatform*>& Platforms)
+void UDerivedDataCacheCommandlet::FinishCachingObjects()
 {
 	// Timing variables
 	double DDCCommandletMaxWaitSeconds = 60. * 10.;
@@ -312,19 +343,21 @@ void UDerivedDataCacheCommandlet::FinishCachingObjects(const TArray<ITargetPlatf
 
 	while (CachingObjects.Num() > 0)
 	{
-		bool bHadActivity = ProcessCachingObjects(Platforms);
+		UE::Private::DerivedDataCacheCommandlet::TickCookObjects();
+
+		bool bHadActivity = ProcessCachingObjects();
 
 		double CurrentTime = FPlatformTime::Seconds();
 		if (!bHadActivity)
 		{
-			PumpAsync(&bHadActivity);
+			UE::Private::DerivedDataCacheCommandlet::WaitForCompilationToFinish(bHadActivity);
 		}
 		if (!bHadActivity)
 		{
 			if (CurrentTime - LastActivityTime >= DDCCommandletMaxWaitSeconds)
 			{
 				UObject* Object = CachingObjects.CreateIterator()->Key;
-				UE_LOG(LogDerivedDataCacheCommandlet, Error, TEXT("Timed out for %.2lfs waiting for %d objects to finish caching. First object: %s."),
+				UE_LOG(LogDerivedDataCacheCommandlet, Warning, TEXT("Timed out for %.2lfs waiting for %d objects to finish caching. First object: %s."),
 					DDCCommandletMaxWaitSeconds, CachingObjects.Num(), *Object->GetFullName());
 				break;
 			}
@@ -343,7 +376,7 @@ void UDerivedDataCacheCommandlet::FinishCachingObjects(const TArray<ITargetPlatf
 	FinishCacheTime += FPlatformTime::Seconds() - FinishCacheTimeStart;
 }
 
-void UDerivedDataCacheCommandlet::CacheWorldPackages(UWorld* World, uint8 PackageFilter, const TArray<ITargetPlatform*>& Platforms, TSet<FName>& OutNewProcessedPackages)
+void UDerivedDataCacheCommandlet::CacheWorldPackages(UWorld* World, uint8 PackageFilter, TSet<FName>& OutNewProcessedPackages)
 {
 	// Setup the world
 	UWorld::InitializationValues IVS;
@@ -358,18 +391,18 @@ void UDerivedDataCacheCommandlet::CacheWorldPackages(UWorld* World, uint8 Packag
 
 	// If the world is partitioned
 	bool bResult = true;
-	if (World->HasSubsystem<UWorldPartitionSubsystem>())
+	if (UWorld::IsPartitionedWorld(World))
 	{
 		// Ensure the world has a valid world partition.
 		UWorldPartition* WorldPartition = World->GetWorldPartition();
 		check(WorldPartition);
 
-		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, PackageFilter, &Platforms, &OutNewProcessedPackages](const FWorldPartitionActorDesc* ActorDesc)
+		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, PackageFilter, &OutNewProcessedPackages](const FWorldPartitionActorDesc* ActorDesc)
 		{
 			if (AActor* Actor = ActorDesc->GetActor())
 			{
 				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Loaded actor %s"), *Actor->GetName());
-				CacheLoadedPackages(Actor->GetPackage(), PackageFilter, Platforms, OutNewProcessedPackages);
+				CacheLoadedPackages(Actor->GetPackage(), PackageFilter, OutNewProcessedPackages);
 			}
 			return true;
 		});
@@ -401,6 +434,9 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 	double GCTime = 0.0;
 	FinishCacheTime = 0.;
 	BeginCacheTime = 0.;
+	ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
+	Platforms.Reset();
+	Platforms.Append(TPM->GetActiveTargetPlatforms());
 
 	if (!bStartupOnly && bFillCache)
 	{
@@ -472,12 +508,12 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 					continue;
 				}
 
-				TArray<FName> FoundAssets;
+				TArray<FSoftObjectPath> FoundAssets;
 				CollectionManager.GetAssetsInCollection(*CollectionName, ECollectionShareType::CST_All, FoundAssets, ECollectionRecursionFlags::SelfAndChildren);
 				Tokens.Reserve(Tokens.Num() + FoundAssets.Num());
-				for (FName AssetName : FoundAssets)
+				for (const FSoftObjectPath& AssetPath : FoundAssets)
 				{
-					CommandLinePackageNames.Add(FPackageName::ObjectPathToPackageName(AssetName.ToString()));
+					CommandLinePackageNames.Add(AssetPath.GetLongPackageName());
 				}
 			}
 		}
@@ -615,9 +651,6 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 			}
 		}
 
-		ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
-		const TArray<ITargetPlatform*>& Platforms = TPM->GetActiveTargetPlatforms();
-
 		for (int32 Index = 0; Index < Platforms.Num(); Index++)
 		{
 			TArray<FName> DesiredShaderFormats;
@@ -747,14 +780,14 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 
 			// Find any new packages and cache all the objects in each package
 			TSet<FName> NewProcessedPackages;
-			CacheLoadedPackages(Package, PackageFilter, Platforms, NewProcessedPackages);
+			CacheLoadedPackages(Package, PackageFilter, NewProcessedPackages);
 
 			// Ensure we load maps to process all their referenced packages in case they are using world partition.
 			if (bLastPackageWasMap)
 			{
 				if (UWorld* World = UWorld::FindWorldInPackage(Package))
 				{
-					CacheWorldPackages(World, PackageFilter, Platforms, NewProcessedPackages);
+					CacheWorldPackages(World, PackageFilter, NewProcessedPackages);
 				}
 			}
 
@@ -791,6 +824,8 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 				}
 			}
 
+			UE::Private::DerivedDataCacheCommandlet::TickCookObjects();
+
 			// Perform a GC if conditions are met
 			if (NumProcessedSinceLastGC >= GCInterval || PackagePaths.IsEmpty() || bLastPackageWasMap)
 			{
@@ -813,7 +848,9 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 		}
 	}
 
-	FinishCachingObjects(GetTargetPlatformManager()->GetActiveTargetPlatforms());
+	FinishCachingObjects();
+
+	UE::Private::DerivedDataCacheCommandlet::TickCookObjects(/*bCookComplete*/ true);
 
 	GetDerivedDataCacheRef().WaitForQuiescence(true);
 

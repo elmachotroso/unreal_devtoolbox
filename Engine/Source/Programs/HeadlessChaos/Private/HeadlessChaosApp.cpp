@@ -27,6 +27,7 @@
 #include "HeadlessChaosTestBP.h"
 #include "HeadlessChaosTestRaycast.h"
 #include "HeadlessChaosTestSweep.h"
+#include "HeadlessChaosTestOverlap.h"
 #include "HeadlessChaosTestGJK.h"
 #include "HeadlessChaosTestEPA.h"
 #include "HeadlessChaosTestBroadphase.h"
@@ -118,12 +119,6 @@ TEST(CollisionTests, Collisions) {
 	SUCCEED();
 }
 
-TEST(CollisionTests, PGS) {
-	ChaosTest::CollisionPGS();
-	ChaosTest::CollisionPGS2();
-	SUCCEED();
-}
-
 TEST(Clustering, Clustering) {
 	ChaosTest::ImplicitCluster();
 	ChaosTest::FractureCluster();
@@ -166,6 +161,11 @@ TEST(BroadphaseTests, Broadphase) {
 //	SUCCEED();
 //}
 
+TEST(ClothTests, ClothCollection) {
+	ChaosTest::ClothCollection();
+	SUCCEED();
+}
+
 TEST(RaycastTests, Raycast) {
 	ChaosTest::SphereRaycast();
 	ChaosTest::PlaneRaycast();
@@ -175,6 +175,7 @@ TEST(RaycastTests, Raycast) {
 	ChaosTest::CapsuleRaycastFastLargeDistance();
 	ChaosTest::CapsuleRaycastMissWithEndPointOnBounds();
 	ChaosTest::TriangleRaycast();
+	ChaosTest::TriangleRaycastDenegerated();
 	ChaosTest::BoxRaycast();
 	ChaosTest::VectorizedAABBRaycast();
 	ChaosTest::ScaledRaycast();
@@ -187,6 +188,22 @@ TEST(RaycastTests, Raycast) {
 
 TEST(SweepTests, Sweep) {
 	ChaosTest::CapsuleSweepAgainstTriMeshReal();
+	
+	SUCCEED();
+}
+
+// This test is disabled until we implement  local clipping feature
+TEST(SweepTests, DISABLED_LargeSweep)
+{
+	ChaosTest::GJKLargeDistanceCapsuleSweep();
+
+	SUCCEED();
+}
+
+TEST(OverlapTests, Overlap) {
+	ChaosTest::OverlapTriMesh();
+
+	SUCCEED();
 }
 
 TEST(MostOpposingTests, MostOpposing) {
@@ -234,10 +251,13 @@ TEST(EPA, EPATests) {
 }
 
 TEST(BP, BroadphaseTests) {
+	ChaosTest::AABBTreeDirtyGridFunctionsWithEdgeCase();
 	ChaosTest::GridBPTest();
+	ChaosTest::GridBPEarlyExitTest();
 	ChaosTest::GridBPTest2();
 	ChaosTest::AABBTreeTest();
 	ChaosTest::AABBTreeTestDynamic();
+	ChaosTest::AABBTreeDirtyTreeTest();
 	ChaosTest::AABBTreeDirtyGridTest();
 	ChaosTest::AABBTreeTimesliceTest();
 	ChaosTest::DoForSweepIntersectCellsImpTest();
@@ -311,7 +331,8 @@ TEST(GeometryCollection_CreationTest,DeleteRootLeafMiddle) { GeometryCollectionT
 TEST(GeometryCollection_CreationTest,DeleteEverything) { GeometryCollectionTest::DeleteEverything(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,ReindexMaterialsTest) { GeometryCollectionTest::ReindexMaterialsTest(); SUCCEED(); }
 TEST(GeometryCollection_CreationTest,ContiguousElementsTest) { GeometryCollectionTest::ContiguousElementsTest(); SUCCEED(); }
-TEST(GeometryCollection_CreationTest,AttributeDependencyTest) { GeometryCollectionTest::AttributeDependencyTest(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, AttributeDependencyTest) { GeometryCollectionTest::AttributeDependencyTest(); SUCCEED(); }
+TEST(GeometryCollection_CreationTest, IntListReindexOnDeletionTest) { GeometryCollectionTest::IntListReindexOnDeletionTest(); SUCCEED(); }
 
 
 // Proximity Tests

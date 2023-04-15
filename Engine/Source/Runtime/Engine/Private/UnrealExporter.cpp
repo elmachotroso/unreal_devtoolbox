@@ -374,10 +374,10 @@ bool UExporter::RunAssetExportTask(class UAssetExportTask* Task)
 		const int32 FileCount = Exporter->GetFileCount(Task->Object);
 		for( int32 i = 0; i < FileCount; i++ )
 		{
-			FBufferArchive Buffer;
+			FBufferArchive64 Buffer;
 			if(ExportToArchive(Task->Object, Exporter, Buffer, *Extension, i))
 			{
-				FString UniqueFilename = Exporter->GetUniqueFilename(*Task->Filename, i, FileCount);
+				FString UniqueFilename = Exporter->GetUniqueFilename(Task->Object, *Task->Filename, i, FileCount);
 
 				if(!Task->bReplaceIdentical)
 				{
@@ -654,7 +654,7 @@ void UExporter::ExportObjectInner(const FExportObjectInnerContext* Context, UObj
 			// Export anything extra for the components. Used for instanced foliage.
 			// This is done after the actor properties so these are set when regenerating the extra data objects.
 			TArray<UActorComponent*> Components;
-			Actor->GetComponents<UActorComponent, FDefaultAllocator>(Components);
+			Actor->GetComponents(Components);
 			ExportComponentExtra(Context, Components, Ar, PortFlags);
 		}
 	}
@@ -756,7 +756,7 @@ void ExportProperties
 						bool bExportItem = DiffData == NULL || (!bHasDiffData && (DynamicArrayIndex == ArrayHelper.Num()-1)) || (DiffData != SourceData && !InnerProp->Identical(SourceData, DiffData, ExportFlags));
 						if (bExportItem)
 						{
-							InnerProp->ExportTextItem(Value, SourceData, DiffData, Parent, ExportFlags, ExportRootScope);
+							InnerProp->ExportTextItem_Direct(Value, SourceData, DiffData, Parent, ExportFlags, ExportRootScope);
 							if (ExportObjectProp)
 							{
 								UObject* Obj = ExportObjectProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(DynamicArrayIndex));

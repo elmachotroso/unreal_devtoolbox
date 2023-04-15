@@ -6,9 +6,11 @@
 #include "Chaos/ChaosSolverFactory.h"
 #include "Misc/FileHelper.h"
 #include "ActorFactories/ActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorFactoryChaosSolver)
 
 #define LOCTEXT_NAMESPACE "ActorFactoryChaosSolver"
 
@@ -26,7 +28,7 @@ UActorFactoryChaosSolver::UActorFactoryChaosSolver(const FObjectInitializer& Obj
 
 bool UActorFactoryChaosSolver::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (!AssetData.IsValid() || !AssetData.GetClass()->IsChildOf(UChaosSolver::StaticClass()))
+	if (!AssetData.IsValid() || !AssetData.IsInstanceOf(UChaosSolver::StaticClass()))
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoChaosSolverSpecified", "No ChaosSolver was specified.");
 		return false;
@@ -53,3 +55,4 @@ void UActorFactoryChaosSolver::PostCreateBlueprint(UObject* Asset, AActor* CDO)
 }
 
 #undef LOCTEXT_NAMESPACE
+

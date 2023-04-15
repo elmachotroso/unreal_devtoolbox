@@ -2,23 +2,47 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Misc/Attribute.h"
-#include "InputCoreTypes.h"
-#include "Types/SlateStructs.h"
+#include "Delegates/Delegate.h"
 #include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SlateFwd.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STreeView.h"
-#include "EditorStyleSet.h"
 
 class FKeyTreeInfo;
+class ITableRow;
 class SComboButton;
+class SSearchBox;
+class SWidget;
+struct FAnalogInputEvent;
+struct FGeometry;
+struct FKeyEvent;
+struct FPointerEvent;
+struct FSlateBrush;
 
 DECLARE_DELEGATE_OneParam(FOnKeyChanged, TSharedPtr<FKey>)
 
@@ -36,7 +60,7 @@ public:
 		: _CurrentKey(FKey())
 		, _TreeViewWidth(300.f)
 		, _TreeViewHeight(400.f)
-		, _Font( FEditorStyle::GetFontStyle( TEXT("NormalFont") ) )
+		, _Font( FAppStyle::GetFontStyle( TEXT("NormalFont") ) )
 		, _FilterBlueprintBindable( true )
 		, _AllowClear( true )
 		{}
@@ -51,6 +75,18 @@ public:
 public:
 	void Construct(const FArguments& InArgs);
 
+	/** Sets bool to produce tooltip notifying this key selector it was disabled from KeyStructCustomization */
+	void SetEnabledFromKeyStructCustomization(bool bIsEnabled)
+	{
+		bEnabledFromKeyStructCustomization = bIsEnabled;
+	}
+
+	/** Gets bEnabledFromKeyStructCustomization bool */
+	bool GetSetEnabledFromKeyStructCustomization() const
+	{
+		return bEnabledFromKeyStructCustomization;
+	}
+	
 protected:
 	/** Gets the icon for the key being manipulated */
 	const FSlateBrush* GetKeyIconImage() const;
@@ -59,6 +95,8 @@ protected:
 
 	/** Gets a succinct description for the key being manipulated */
 	FText GetKeyDescription() const;
+	/** Gets a description tooltip for the key being manipulated */
+	FText GetKeyDescriptionToolTip() const;
 	/** Gets a tooltip for the selected key */
 	FText GetKeyTooltip() const;
 
@@ -132,4 +170,5 @@ protected:
 	TArray<FKeyTreeItem>		FilteredKeyTreeRoot;
 
 	bool bListenForNextInput = false;
+	bool bEnabledFromKeyStructCustomization = true;
 };

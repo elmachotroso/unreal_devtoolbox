@@ -18,13 +18,13 @@
 #include "ShaderCompiler.h"
 #include "GameFramework/GameStateBase.h"
 #include "Scalability.h"
-#include "Matinee/MatineeActor.h"
 #include "StereoRendering.h"
 #include "Misc/PackageName.h"
 #include "TextureCompiler.h"
 #include "Tests/AutomationTestSettings.h"
 #include "GameMapsSettings.h"
 #include "IRenderCaptureProvider.h"
+#include "Algo/Accumulate.h"
 
 #if WITH_AUTOMATION_TESTS
 
@@ -487,31 +487,193 @@ bool FWaitForSpecifiedMapToLoadCommand::Update()
 	return false;
 }
 
-bool FWaitForAverageFrameRate::Update()
+/** Adds an easy way to average some value over discrete updates.  */
+template <typename T>
+struct TWaitForFrameRateRollingAverage
 {
-	if (StartTime == 0)
+	static_assert(TIsArithmetic<T>::Value, "Unsupported type for computing a rolling average...");
+
+	TArray<T> Buffer;
+	int32 BufferOffset = 0;
+
+	void SetNum(int32 NewSize)
 	{
-		StartTime = FPlatformTime::Seconds();
+		// at least 1
+		Buffer.SetNum(FMath::Max(NewSize, 1));
+		BufferOffset = BufferOffset % Buffer.Num();
+	}
+
+	void Reset()
+	{
+		BufferOffset = 0;
+	}
+
+	void Add(const T Value)
+	{
+		Buffer[BufferOffset] = Value;
+		BufferOffset = (BufferOffset + 1) % Buffer.Num();
+	}
+
+	const T Average() const
+	{
+		const int32 Num = Buffer.Num();
+		return Num > 0 ? Algo::Accumulate(Buffer, 0) / Num : 0;
+	}
+};
+
+FWaitForInteractiveFrameRate::FWaitForInteractiveFrameRate(float InDesiredFrameRate, float InDuration, float InMaxWaitTime)
+	: DesiredFrameRate(InDesiredFrameRate)
+	, Duration(InDuration)
+	, MaxWaitTime(InMaxWaitTime)
+	, StartTimeOfWait(0)
+	, StartTimeOfAcceptableFrameRate(0)
+	, LastTickTime(0)
+	, BufferIndex(0)
+{
+	UAutomationTestSettings const* AutomationTestSettings = GetDefault<UAutomationTestSettings>();
+
+	if (DesiredFrameRate == 0)
+	{
+		DesiredFrameRate = AutomationTestSettings->DefaultInteractiveFramerate;
+	}
+
+	if (Duration == 0)
+	{
+		Duration = AutomationTestSettings->DefaultInteractiveFramerateDuration;
+	}
+
+	if (MaxWaitTime == 0)
+	{
+		MaxWaitTime = AutomationTestSettings->DefaultInteractiveFramerateWaitTime;
+	}
+}
+
+void FWaitForInteractiveFrameRate::AddTickRateSample(const double Value)
+{
+	if (RollingTickRateBuffer.Num() == kSampleCount)
+	{
+		RollingTickRateBuffer[BufferIndex] = Value;
+		BufferIndex = (BufferIndex + 1) % RollingTickRateBuffer.Num();
 	}
 	else
 	{
-		const double ElapsedTime = FPlatformTime::Seconds() - StartTime;
+		RollingTickRateBuffer.Add(Value);
+	}
+}
 
-		if (ElapsedTime > Delay)
+double FWaitForInteractiveFrameRate::CurrentAverageTickRate() const
+{
+	const int32 Num = RollingTickRateBuffer.Num();	
+	return Num > 0 ? (Algo::Accumulate(RollingTickRateBuffer, 0.0) / Num) : 0.0;
+}
+
+bool FWaitForInteractiveFrameRate::Update()
+{
+	const double kReportInterval = 30;
+	const double TimeNow = FPlatformTime::Seconds();
+
+	if (FApp::CanEverRender() == false)
+	{
+		UE_LOG(LogEngineAutomationLatentCommand, Log, TEXT("FWaitForInteractiveFrameRate: FApp::CanEverRender() == false. Passing wait immediately."));
+		return true;
+	}
+
+	if (StartTimeOfWait == 0)
+	{
+		UE_LOG(LogEngineAutomationLatentCommand, Log, TEXT("FWaitForInteractiveFrameRate: Starting wait for framerate of >= %.f FPS"), DesiredFrameRate);
+		StartTimeOfWait = TimeNow;
+		LastReportTime = TimeNow;
+		LastTickTime = TimeNow;
+	}
+
+	const double TickDelta = TimeNow - LastTickTime;
+
+	// We tick at 60hz to try and hold a few seconds of data vs lots of high frequency ticks from a small window
+	if (TickDelta < (1 / kTickRate))
+	{
+		return false;
+	}
+
+	LastTickTime = TimeNow;
+
+	// Add fps sample but cap at 60 Hz. We don't want really high framerate periods to cause crappy ones to be ignored
+	AddTickRateSample(TickDelta);
+
+	const double AvgTickRate = CurrentAverageTickRate();
+
+	const double AverageFrameRate = AvgTickRate > 0 ? (1.f / AvgTickRate) : 0;
+	bool AtDesiredFramerate = AverageFrameRate >= DesiredFrameRate;
+
+	const double TimeAtFrameRate = AtDesiredFramerate ? (TimeNow - StartTimeOfAcceptableFrameRate) : 0;
+	const double ElapsedWaitTime = TimeNow - StartTimeOfWait;
+
+	// uncomment this for per-second reporting of current and average FPS
+	/*
+	const double CurrentFrameRate = 1.f / TickDelta;
+
+	static int LastSecond = 0;
+
+	if (ElapsedWaitTime > LastSecond)
+	{
+		UE_LOG(LogEngineAutomationLatentCommand, Display, TEXT("FWaitForInteractiveFrameRate: After %.f secs Current: %.02f, Average: %.02f, Desired: %.02f"), ElapsedWaitTime, CurrentFrameRate, AverageFrameRate, DesiredFrameRate);
+		LastSecond = FMath::CeilToInt(ElapsedWaitTime);
+	}
+	*/
+
+	if (!AtDesiredFramerate)
+	{
+		if (StartTimeOfAcceptableFrameRate > 0)
 		{
-			extern ENGINE_API float GAverageFPS;
-			if (GAverageFPS >= DesiredFrameRate)
-			{
-				return true;
-			}
+			const double FailedTimeAtFrameRate = (TimeNow - StartTimeOfAcceptableFrameRate);
 
-			if (ElapsedTime >= MaxWaitTime)
+			UE_LOG(LogEngineAutomationLatentCommand, Display, TEXT("FWaitForInteractiveFrameRate: Dropped below minimal framerate of %.f after %.02f secs. Now %.02f FPS "), 
+				DesiredFrameRate, FailedTimeAtFrameRate, AverageFrameRate);
+		}
+		StartTimeOfAcceptableFrameRate = 0;		
+	}
+	else
+	{
+		if (StartTimeOfAcceptableFrameRate == 0)
+		{
+			StartTimeOfAcceptableFrameRate = TimeNow;
+		}
+		else
+		{
+			if (TimeAtFrameRate >= Duration)
 			{
-				UE_LOG(LogEngineAutomationLatentCommand, Error, TEXT("FWaitForAverageFrameRate: Game did not reach %.02f FPS within %.02f seconds. Giving up."), DesiredFrameRate, MaxWaitTime);
-				
+				UE_LOG(LogEngineAutomationLatentCommand, Log, TEXT("FWaitForInteractiveFrameRate: Hit %.02f FPS for %.f seconds after %.f seconds of waiting"), AverageFrameRate, TimeAtFrameRate, ElapsedWaitTime);
 				return true;
 			}
 		}
+	}
+
+	if (ElapsedWaitTime >= MaxWaitTime)
+	{
+		FString Msg = FString::Printf(TEXT("FWaitForInteractiveFrameRate: Game did not reach %.02f FPS within %.02f seconds. Current FPS=%.f. Giving up."), DesiredFrameRate, MaxWaitTime, AverageFrameRate);
+		UE_LOG(LogEngineAutomationLatentCommand, Display, TEXT("%s"), *Msg);
+
+		if (FAutomationTestBase* CurrentTest = FAutomationTestFramework::Get().GetCurrentTest())
+		{
+			CurrentTest->AddError(Msg);
+		}
+
+		return true;
+	}
+
+	if (TimeNow - LastReportTime >= kReportInterval)
+	{
+		if (AtDesiredFramerate)
+		{
+			UE_LOG(LogEngineAutomationLatentCommand, Display, TEXT("FWaitForInteractiveFrameRate: Waited %.f seconds. Will timeout in %.f. Current FPS=%.f for %.02f secs"), 
+				ElapsedWaitTime, MaxWaitTime- ElapsedWaitTime, AverageFrameRate, TimeAtFrameRate);
+		}
+		else
+		{
+			UE_LOG(LogEngineAutomationLatentCommand, Display, TEXT("FWaitForInteractiveFrameRate: Waited %.f seconds. Will timeout in %.f. Current FPS=%.f "), 
+				ElapsedWaitTime, MaxWaitTime - ElapsedWaitTime, AverageFrameRate);
+
+		}
+		LastReportTime = TimeNow;
 	}
 
 	return false;
@@ -525,26 +687,13 @@ bool FWaitForAverageFrameRate::Update()
 
 bool FPlayMatineeLatentCommand::Update()
 {
-	if (MatineeActor)
-	{
-		UE_LOG(LogEngineAutomationLatentCommand, Log, TEXT("Triggering the matinee named: '%s'"), *MatineeActor->GetName())
-
-		//force this matinee to not be looping so it doesn't infinitely loop
-		MatineeActor->bLooping = false;
-		MatineeActor->Play();
-	}
 	return true;
 }
 
 
 bool FWaitForMatineeToCompleteLatentCommand::Update()
 {
-	bool bTestComplete = true;
-	if (MatineeActor)
-	{
-		bTestComplete = !MatineeActor->bIsPlaying;
-	}
-	return bTestComplete;
+	return true;
 }
 
 
@@ -597,53 +746,12 @@ bool FStreamAllResourcesLatentCommand::Update()
 
 bool FEnqueuePerformanceCaptureCommands::Update()
 {
-	//for every matinee actor in the level
-	for (TObjectIterator<AMatineeActor> It; It; ++It)
-	{
-		AMatineeActor* MatineeActor = *It;
-		if (MatineeActor && MatineeActor->GetName().Contains(TEXT("Automation")))
-		{
-			//add latent action to execute this matinee
-			ADD_LATENT_AUTOMATION_COMMAND(FPlayMatineeLatentCommand(MatineeActor));
-
-			//add action to wait until matinee is complete
-			ADD_LATENT_AUTOMATION_COMMAND(FWaitForMatineeToCompleteLatentCommand(MatineeActor));
-		}
-	}
-
 	return true;
 }
 
 
 bool FMatineePerformanceCaptureCommand::Update()
 {
-	//for every matinee actor in the level
-	for (TObjectIterator<AMatineeActor> It; It; ++It)
-	{
-		AMatineeActor* MatineeActor = *It;
-		FString MatineeFOOName = MatineeActor->GetName();
-		if (MatineeActor->GetName().Equals(MatineeName, ESearchCase::IgnoreCase))
-		{
-
-
-			//add latent action to execute this matinee
-			ADD_LATENT_AUTOMATION_COMMAND(FPlayMatineeLatentCommand(MatineeActor));
-
-			//Run the Stat FPS Chart command
-			ADD_LATENT_AUTOMATION_COMMAND(FExecWorldStringLatentCommand(TEXT("StartFPSChart")));
-
-			//add action to wait until matinee is complete
-			ADD_LATENT_AUTOMATION_COMMAND(FWaitForMatineeToCompleteLatentCommand(MatineeActor));
-
-			//Stop the Stat FPS Chart command
-			ADD_LATENT_AUTOMATION_COMMAND(FExecWorldStringLatentCommand(TEXT("StopFPSChart")));
-		}
-		else
-		{
-			UE_LOG(LogEngineAutomationLatentCommand, Log, TEXT("'%s' is not the matinee name that is being searched for."), *MatineeActor->GetName())
-		}
-	}
-
 	return true;
 
 }
@@ -668,15 +776,15 @@ bool FWaitForShadersToFinishCompilingInGame::Update()
 #if WITH_EDITOR
 	static double TimeShadersFinishedCompiling = 0;
 	static double LastReportTime = FPlatformTime::Seconds();
-	const double TimeToWaitForJobs = 2.0;
+	static bool DidCompileSomething = false;
+	const double TimeToWaitForJobsToStart = 2.0;
 
 	bool ShadersCompiling = GShaderCompilingManager && GShaderCompilingManager->IsCompiling();
-	bool TexturesCompiling = FTextureCompilingManager::Get().GetNumRemainingTextures() > 0;
-
+	bool AssetsCompiling = FAssetCompilingManager::Get().GetNumRemainingAssets() > 0;
 	
 	double TimeNow = FPlatformTime::Seconds();
 
-	if (ShadersCompiling || TexturesCompiling)
+	if (ShadersCompiling || AssetsCompiling)
 	{
 		if (TimeNow - LastReportTime > 5.0)
 		{
@@ -687,13 +795,14 @@ bool FWaitForShadersToFinishCompilingInGame::Update()
 				UE_LOG(LogEditorAutomationTests, Log, TEXT("Waiting for %i shaders to finish."), GShaderCompilingManager->GetNumRemainingJobs() + GShaderCompilingManager->GetNumPendingJobs());
 			}
 
-			if (TexturesCompiling)
+			if (AssetsCompiling)
 			{
-				UE_LOG(LogEditorAutomationTests, Log, TEXT("Waiting for %i texures to finish."), FTextureCompilingManager::Get().GetNumRemainingTextures());
+				UE_LOG(LogEditorAutomationTests, Log, TEXT("Waiting for %i assets to finish."), FAssetCompilingManager::Get().GetNumRemainingAssets());
 			}
 		}
 
 		TimeShadersFinishedCompiling = 0;
+		DidCompileSomething = true;
 
 		return false;
 	}
@@ -704,14 +813,20 @@ bool FWaitForShadersToFinishCompilingInGame::Update()
 		TimeShadersFinishedCompiling = FPlatformTime::Seconds();
 	}
 
-	if (FPlatformTime::Seconds() - TimeShadersFinishedCompiling < TimeToWaitForJobs)
+	if (FPlatformTime::Seconds() - TimeShadersFinishedCompiling < TimeToWaitForJobsToStart)
 	{
 		return false;
 	}
 
 	// may not be necessary, but just double-check everything is finished and ready
 	GShaderCompilingManager->FinishAllCompilation();
-	UE_LOG(LogEditorAutomationTests, Log, TEXT("Done waiting for shaders to finish."));
+	FAssetCompilingManager::Get().FinishAllCompilation();
+
+	if (DidCompileSomething)
+	{
+		UE_LOG(LogEditorAutomationTests, Log, TEXT("Done waiting for shaders to finish."));
+		DidCompileSomething = false;
+	}
 #endif
 
 	return true;

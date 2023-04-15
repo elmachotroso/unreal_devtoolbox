@@ -31,7 +31,7 @@
 #include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/Level.h"
@@ -55,7 +55,7 @@
 #include "Engine/Brush.h"
 #include "Engine/Engine.h"
 #include "Animation/AnimSequence.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/EditorEngine.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Factories/Factory.h"
@@ -116,7 +116,6 @@
 #include "LandscapeProxy.h"
 #include "Lightmass/PrecomputedVisibilityOverrideVolume.h"
 #include "Animation/AnimSet.h"
-#include "Matinee/InterpTrackAnimControl.h"
 #include "InstancedFoliageActor.h"
 #include "IMovieSceneCapture.h"
 #include "MovieSceneCaptureModule.h"
@@ -129,7 +128,7 @@
 #include "IPropertyTable.h"
 #include "IDetailsView.h"
 #include "IStructureDetailsView.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SnappingUtils.h"
 
 #include "Elements/Framework/TypedElementHandle.h"
@@ -160,7 +159,7 @@
 #include "Analytics/AnalyticsPrivacySettings.h"
 #include "Kismet2/KismetReinstanceUtilities.h"
 #include "AnalyticsEventAttribute.h"
-#include "Developer/SlateReflector/Public/ISlateReflectorModule.h"
+#include "ISlateReflectorModule.h"
 #include "MaterialUtilities.h"
 #include "ActorGroupingUtils.h"
 #include "ILauncherPlatform.h"
@@ -180,6 +179,21 @@ DEFINE_LOG_CATEGORY_STATIC(LogEditorServer, Log, All);
 /** Used for the "tagsounds" and "checksounds" commands only			*/
 static FUObjectAnnotationSparseBool DebugSoundAnnotation;
 
+/** Internal struct to hold undo/redo transaction object context */
+struct FEditorTransactionDeltaContext
+{
+	FGuid	OuterOperationId;
+	int32	OperationDepth = 0;
+	TArray<TPair<UObject*, FTransactionObjectEvent>> TransactionObjects;
+
+	void Reset()
+	{
+		OuterOperationId.Invalidate();
+		TransactionObjects.Empty();
+		OperationDepth = 0;
+	}
+};
+
 namespace 
 {
 	/**
@@ -198,21 +212,6 @@ namespace
 		FString Name;
 		int32 Num;
 		int32 Size;
-	};
-
-	struct FAnimSequenceUsageInfo
-	{
-		FAnimSequenceUsageInfo( float InStartOffset, float InEndOffset, UInterpTrackAnimControl* InAnimControl, int32 InTrackKeyIndex )
-		: 	StartOffset( InStartOffset )
-		,	EndOffset( InEndOffset )
-		,	AnimControl( InAnimControl )
-		,	TrackKeyIndex( InTrackKeyIndex )
-		{}
-
-		float						StartOffset;
-		float						EndOffset;
-		UInterpTrackAnimControl*	AnimControl;
-		int32							TrackKeyIndex;
 	};
 }
 
@@ -363,7 +362,7 @@ bool UEditorEngine::SafeExec( UWorld* InWorld, const TCHAR* InStr, FOutputDevice
 		}
 
 		const FString ClassName     = FParse::Token(Str,0);
-		UClass* Class         = FindObject<UClass>( ANY_PACKAGE, *ClassName );
+		UClass* Class         = UClass::TryFindTypeSlow<UClass>(ClassName);
 		if( !Class )
 		{
 			UE_SUPPRESS(LogExec, Warning, Ar.Logf(TEXT("Unrecognized or missing factor class %s"), *ClassName ));
@@ -590,7 +589,7 @@ bool UEditorEngine::Exec_StaticMesh( UWorld* InWorld, const TCHAR* Str, FOutputD
 	{
 		GetSelectedObjects()->DeselectAll( UStaticMesh::StaticClass() );
 		UStaticMesh* StaticMesh = NULL;
-		bResult = ParseObject<UStaticMesh>(Str,TEXT("NAME="), StaticMesh, ANY_PACKAGE);
+		bResult = ParseObject<UStaticMesh>(Str,TEXT("NAME="), StaticMesh, nullptr);
 		if( bResult && StaticMesh)
 		{
 			GetSelectedObjects()->Select( StaticMesh );
@@ -609,7 +608,7 @@ void UEditorEngine::LoadAndSelectAssets( TArray<FAssetData>& Assets, UClass* Typ
 		for ( int32 CurrentAssetIndex=0; CurrentAssetIndex < Assets.Num(); CurrentAssetIndex++ )
 		{
 			FAssetData& SelectedAsset = Assets[CurrentAssetIndex];
-			if ( TypeOfAsset == NULL || SelectedAsset.GetClass()->IsChildOf( TypeOfAsset ) )
+			if ( TypeOfAsset == NULL || SelectedAsset.IsInstanceOf( TypeOfAsset ) )
 			{
 				// GetAsset() will load the asset if necessary
 				UObject* LoadedAsset = SelectedAsset.GetAsset();
@@ -781,6 +780,12 @@ bool UEditorEngine::Exec_Brush( UWorld* InWorld, const TCHAR* Str, FOutputDevice
 				InWorld->GetModel()->Modify();
 				NewBrush->Modify();
 				bspBrushCSG( NewBrush, InWorld->GetModel(), DWord1, Brush_Add, CSG_None, true, true, true );
+
+				if (FParse::Command(&Str, TEXT("SELECTNEWBRUSH")))
+				{
+					SelectNone(false, true);
+					SelectActor(NewBrush, true, true);
+				}
 			}
 			InWorld->InvalidateModelGeometry( InWorld->GetCurrentLevel() );
 		}
@@ -793,23 +798,18 @@ bool UEditorEngine::Exec_Brush( UWorld* InWorld, const TCHAR* Str, FOutputDevice
 			RebuildStaticNavigableGeometry(InWorld->GetCurrentLevel());
 		}
 
-		if(FParse::Command(&Str,TEXT("SELECTNEWBRUSH")))
-		{
-			SelectNone(false, true);
-			SelectActor(NewBrush, true, true);
-		}
-
 		return true;
 	}
 	else if (FParse::Command(&Str,TEXT("ADDVOLUME"))) // BRUSH ADDVOLUME
 	{
-		AVolume* Actor = NULL;
+		AVolume* Actor = nullptr;
 		{
 			const FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "BrushAddVolume", "Brush AddVolume") );
 			FinishAllSnaps();
 
-			UClass* VolumeClass = NULL;
-			ParseObject<UClass>( Str, TEXT("CLASS="), VolumeClass, ANY_PACKAGE );
+			FString VolumeClassName;
+			FParse::Value(Str, TEXT("CLASS="), VolumeClassName);
+			UClass* VolumeClass = UClass::TryFindTypeSlow<UClass>(VolumeClassName);
 			if( !VolumeClass || !VolumeClass->IsChildOf(AVolume::StaticClass()) )
 			{
 				VolumeClass = AVolume::StaticClass();
@@ -819,7 +819,7 @@ bool UEditorEngine::Exec_Brush( UWorld* InWorld, const TCHAR* Str, FOutputDevice
 			Actor = InWorld->SpawnActor<AVolume>( VolumeClass, SpawnLoc, FRotator::ZeroRotator );
 			if( Actor )
 			{
-				Actor->PreEditChange(NULL);
+				Actor->PreEditChange(nullptr);
 
 				FBSPOps::csgCopyBrush
 				(
@@ -838,7 +838,7 @@ bool UEditorEngine::Exec_Brush( UWorld* InWorld, const TCHAR* Str, FOutputDevice
 					for( int32 poly = 0 ; poly < Actor->Brush->Polys->Element.Num() ; ++poly )
 					{
 						FPoly* Poly = &(Actor->Brush->Polys->Element[poly]);
-						Poly->Material = NULL;
+						Poly->Material = nullptr;
 					}
 				}
 				Actor->PostEditChange();
@@ -1187,35 +1187,45 @@ void UEditorEngine::HandleTransactorBeforeRedoUndo(const FTransactionContext& Tr
 	}
 
 	// Before an undo, store the current operation and hook on object transaction, if we do not have an outer operation already
-	if (CurrentUndoRedoContext.OperationDepth++ == 0)
+	if (CurrentUndoRedoContext->OperationDepth++ == 0)
 	{
-		check(!CurrentUndoRedoContext.OuterOperationId.IsValid());
-		CurrentUndoRedoContext.OuterOperationId = TransactionContext.OperationId;
+		check(!CurrentUndoRedoContext->OuterOperationId.IsValid());
+		CurrentUndoRedoContext->OuterOperationId = TransactionContext.OperationId;
 		FCoreUObjectDelegates::OnObjectTransacted.AddUObject(this, &UEditorEngine::HandleObjectTransacted);
 	}
 }
 
 void UEditorEngine::HandleTransactorRedoUndo(const FTransactionContext& TransactionContext, bool Succeeded, bool WasUndo)
 {
-	NoteSelectionChange(bNotifyUndoRedoSelectionChange);
+	if (!bIgnoreSelectionChange)
+	{
+		NoteSelectionChange(bNotifyUndoRedoSelectionChange);
+	}
 	PostUndo(Succeeded);
 
 	// Broadcast only if you have an actual transaction context
 	if (Succeeded)
 	{
-		check(CurrentUndoRedoContext.OuterOperationId.IsValid() && CurrentUndoRedoContext.OperationDepth > 0);
-		BroadcastPostUndoRedo(TransactionContext, WasUndo);
+		check(CurrentUndoRedoContext->OuterOperationId.IsValid() && CurrentUndoRedoContext->OperationDepth > 0);
+		if (!bSuspendBroadcastPostUndoRedo)
+		{
+			BroadcastPostUndoRedo(TransactionContext, WasUndo);
+		}
 
-		if (--CurrentUndoRedoContext.OperationDepth == 0)
+		if (--CurrentUndoRedoContext->OperationDepth == 0)
 		{
 			// Undo/Redo is done clear out operation
-			check(CurrentUndoRedoContext.OuterOperationId == TransactionContext.OperationId);
-			CurrentUndoRedoContext.Reset();
+			check(CurrentUndoRedoContext->OuterOperationId == TransactionContext.OperationId);
+			CurrentUndoRedoContext->Reset();
 			FCoreUObjectDelegates::OnObjectTransacted.RemoveAll(this);
 		}
 	}
 
-	if (!bSquelchTransactionNotification)
+	if (!bSquelchTransactionNotification 
+		// We skip this notification if we failed and there's nothing valid to display. Currently this can occur because
+		// UTransBuffer::Undo/Redo issues broadcasts even when there wasn't a transaction to Undo/Redo, but in these cases
+		// Succeeded is set to false and the context is invalid.
+		&& !(!Succeeded && TransactionContext.Title.IsEmpty() && !TransactionContext.IsValid()))
 	{
 		const FText UndoRedoMessage = WasUndo ? NSLOCTEXT("UnrealEd", "UndoMessageFormat", "Undo: {0}") : NSLOCTEXT("UnrealEd", "RedoMessageFormat", "Redo: {0}");
 		ShowUndoRedoNotification(FText::Format(UndoRedoMessage, TransactionContext.Title), Succeeded);
@@ -1234,10 +1244,10 @@ void UEditorEngine::HandleTransactorUndo(const FTransactionContext& TransactionC
 
 void UEditorEngine::HandleObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionObjectEvent)
 {
-	check(CurrentUndoRedoContext.OuterOperationId.IsValid() && CurrentUndoRedoContext.OperationDepth > 0);
+	check(CurrentUndoRedoContext->OuterOperationId.IsValid() && CurrentUndoRedoContext->OperationDepth > 0);
 	if (InTransactionObjectEvent.GetEventType() == ETransactionObjectEventType::UndoRedo)
 	{
-		CurrentUndoRedoContext.TransactionObjects.Add(TPair<UObject*, FTransactionObjectEvent>{ InObject, InTransactionObjectEvent });
+		CurrentUndoRedoContext->TransactionObjects.Add(TPair<UObject*, FTransactionObjectEvent>{ InObject, InTransactionObjectEvent });
 	}
 }
 
@@ -1263,6 +1273,8 @@ void UEditorEngine::CreateStartupAnalyticsAttributes( TArray<FAnalyticsEventAttr
 
 UTransactor* UEditorEngine::CreateTrans()
 {
+	CurrentUndoRedoContext = MakePimpl<FEditorTransactionDeltaContext>();
+
 	int32 UndoBufferSize;
 
 	if (!GConfig->GetInt(TEXT("Undo"), TEXT("UndoBufferSize"), UndoBufferSize, GEditorPerProjectIni))
@@ -1449,7 +1461,7 @@ FText UEditorEngine::GetTransactionName() const
 
 bool UEditorEngine::IsObjectInTransactionBuffer( const UObject* Object ) const
 {
-	return Trans && Trans->IsObjectInTransationBuffer(Object);
+	return Trans && Trans->IsObjectInTransactionBuffer(Object);
 }
 
 bool UEditorEngine::Map_Select( UWorld* InWorld, const TCHAR* Str, FOutputDevice& Ar)
@@ -1757,7 +1769,10 @@ void UEditorEngine::RebuildLevel(ULevel& Level)
 		}
 	}
 	
-	GLevelEditorModeTools().MapChangeNotify();
+	if (!IsRunningCommandlet())
+	{
+		GLevelEditorModeTools().MapChangeNotify();
+	}
 }
 
 void UEditorEngine::RebuildModelFromBrushes(UModel* Model, bool bSelectedBrushesOnly, bool bTreatMovableBrushesAsStatic)
@@ -1930,9 +1945,11 @@ void UEditorEngine::RebuildAlteredBSP()
 			AActor* Actor = static_cast<AActor*>(*It);
 			checkSlow(Actor->IsA(AActor::StaticClass()));
 
-			if (Actor->GetClass() == ABrush::StaticClass() && !FActorEditorUtils::IsABuilderBrush(Actor))
+			ABrush* SelectedBrush = Cast< ABrush >(Actor);
+			if (SelectedBrush && !FActorEditorUtils::IsABuilderBrush(Actor))
 			{
-				if(ULevel* Level = Actor->GetLevel())
+				ULevel* Level = SelectedBrush->GetLevel();
+				if (Level)
 				{
 					LevelsToRebuild.AddUnique(Level);
 				}
@@ -2018,7 +2035,7 @@ void UEditorEngine::CheckForWorldGCLeaks( UWorld* NewWorld, UPackage* WorldPacka
 		const bool bIsPersistantWorldType = (RemainingWorld->WorldType == EWorldType::Inactive) || (RemainingWorld->WorldType == EWorldType::EditorPreview) || (RemainingWorld->WorldType == EWorldType::GamePreview);
 		if(!bIsNewWorld && !bIsPersistantWorldType && !WorldHasValidContext(RemainingWorld))
 		{
-			FindAndPrintStaleReferencesToObject(RemainingWorld, ELogVerbosity::Error);
+			FindAndPrintStaleReferencesToObject(RemainingWorld, EPrintStaleReferencesOptions::Error);
 			NumFailedToCleanup++;
 		}
 	}
@@ -2032,7 +2049,7 @@ void UEditorEngine::CheckForWorldGCLeaks( UWorld* NewWorld, UPackage* WorldPacka
 			const bool bIsNewWorldPackage = (NewWorldPackage && RemainingPackage == NewWorldPackage);
 			if(!bIsNewWorldPackage && RemainingPackage == WorldPackage)
 			{
-				FindAndPrintStaleReferencesToObject(RemainingPackage, ELogVerbosity::Error);
+				FindAndPrintStaleReferencesToObject(RemainingPackage, EPrintStaleReferencesOptions::Error);
 				NumFailedToCleanup++;
 			}
 		}
@@ -2212,7 +2229,7 @@ bool UEditorEngine::ShouldAbortBecauseOfUnsavedWorld()
 			// Now check if the file exists on disk. If it does, it won't be "lost" when GC'd.
 			if ( !FPackageName::DoesPackageExist(PackageName) )
 			{
-				// This world will be completely lost if a map transition happens. Warn the user that this is happening and ask him/her how to proceed.
+				// This world will be completely lost if a map transition happens. Warn the user that this is happening and ask them how to proceed.
 				if (EAppReturnType::Yes != FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::Yes, FText::Format(NSLOCTEXT("UnrealEd", "Prompt_ThisActionWillDiscardWorldContinue", "The unsaved level {0} will be lost.  Continue?"), FText::FromString(LevelEditorWorld->GetName()))))
 				{
 					// User doesn't want to lose the world -- abort the load.
@@ -2544,11 +2561,11 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 						FMessageLog("LoadErrors").NewPage( FText::Format( LOCTEXT("LoadMapLogPage", "Loading map: {MapFileName}"), Arguments ) );
 					}
 
-					// Only worlds that are uninitialized or reside within newly created packages (so not yet saved) may be considered valid for re-use.
+					// Only worlds that are uninitialized may be considered valid for re-use.
 					// All other worlds need to be reloaded from disk, as a world is only initialized correctly as part of the level loading process.
 					auto IsWorldValidForReuse = [](UWorld* WorldToConsider)
 					{
-						return !WorldToConsider->bIsWorldInitialized || WorldToConsider->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated);
+						return !WorldToConsider->HasEverBeenInitialized();
 					};
 
 					// If we are loading the same world again (reloading) then we must not specify that we want to keep this world in memory.
@@ -2652,6 +2669,9 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 				}
 
 				
+				FLinkerInstancingContext WorldPackageInstancingContext;
+				WorldPackageInstancingContext.AddTag(UWorld::KeepInitializedDuringLoadTag);
+
 				UPackage* WorldPackage;
 				// Load startup maps and templates into new outermost packages so that the Save function in the editor won't overwrite the original
 				if (bIsLoadingMapTemplate)
@@ -2668,7 +2688,18 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 					//now load the map into the package created above
 					const FName WorldPackageFName = WorldPackage->GetFName();
 					UWorld::WorldTypePreLoadMap.FindOrAdd(WorldPackageFName) = EWorldType::Editor;
-					WorldPackage = LoadPackage( WorldPackage, *LongTempFname, LoadFlags );
+					
+					// SoftObjectPaths: Specific case for new maps (/Temp/Untitled) where we need to remap the AssetPath and not just the Package name because the World gets renamed (See UWorld::PostLoad)
+					const FString ShortPackageName = FPackageName::GetShortName(LongTempFname);
+					const FString ShortWorldPackageName = FPackageName::GetShortName(WorldPackage);
+					WorldPackageInstancingContext.AddPathMapping(
+						FSoftObjectPath(*WriteToString<256>(LongTempFname, TEXT("."), ShortPackageName)),
+						FSoftObjectPath(*WriteToString<256>(WorldPackage->GetName(), TEXT("."), ShortWorldPackageName))
+					);
+
+					WorldPackageInstancingContext.SetRegenerateUniqueBulkDataGuids(true);
+
+					WorldPackage = LoadPackage( WorldPackage, *LongTempFname, LoadFlags, nullptr /* InReaderOverride */, &WorldPackageInstancingContext);
 					WorldPackage->SetPackageFlags(PKG_NewlyCreated);
 					UWorld::WorldTypePreLoadMap.Remove(WorldPackageFName);
 				}
@@ -2691,7 +2722,7 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 						//Load the map normally into a new package
 						const FName WorldPackageFName = FName(*LongTempFname);
 						UWorld::WorldTypePreLoadMap.FindOrAdd(WorldPackageFName) = EWorldType::Editor;
-						WorldPackage = LoadPackage( NULL, *LongTempFname, LoadFlags);
+						WorldPackage = LoadPackage( NULL, *LongTempFname, LoadFlags, nullptr /* InReaderOverride */, &WorldPackageInstancingContext);
 						UWorld::WorldTypePreLoadMap.Remove(WorldPackageFName);
 					}
 				}
@@ -2737,38 +2768,21 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 				int32 FeatureLevelIndex = (int32)GMaxRHIFeatureLevel;
 				FParse::Value(Str, TEXT("FEATURELEVEL="), FeatureLevelIndex);
 				FeatureLevelIndex = FMath::Clamp(FeatureLevelIndex, 0, (int32)ERHIFeatureLevel::Num);
+				ERHIFeatureLevel::Type FeatureLevel = (ERHIFeatureLevel::Type)FeatureLevelIndex;
 
-				if (World->bIsWorldInitialized)
+				if (World->HasEverBeenInitialized())
 				{
-					// If we are using a previously initialized world, make sure it has a physics scene and FXSystem.
-					// Inactive worlds are already initialized but lack these two objects for memory reasons.
-					World->ClearWorldComponents();
-
-					// If the world was inactive subsystems would not have been initialized (happens when loading a world trough the asset browser).
-					// When we transition to the editor world initialize them.
-					World->InitializeSubsystems();
-
-					if (World->FeatureLevel != FeatureLevelIndex)
-					{
-						World->ChangeFeatureLevel((ERHIFeatureLevel::Type)FeatureLevelIndex);
-					}
-
-					if (World->GetPhysicsScene() == nullptr)
-					{
-						World->CreatePhysicsScene();
-					}
-
-					if (World->FXSystem == nullptr)
-					{
-						World->CreateFXSystem();
-					}
+					// We do not handle reinitializing. If the World was initialized during Load, we require that it is still fully initialized
+					// This should have been guaranteed by UWorld::KeepInitializedDuringLoadTag
+					check(World->IsInitialized());
+					World->ChangeFeatureLevel(FeatureLevel);
 				}
 				else
 				{
-					World->FeatureLevel = (ERHIFeatureLevel::Type)FeatureLevelIndex;
-					World->InitWorld( GetEditorWorldInitializationValues() );
+					World->FeatureLevel = FeatureLevel;
+					World->InitWorld(GetEditorWorldInitializationValues());
 				}
-
+				
 				SlowTask.EnterProgressFrame(20, FText::Format( LOCTEXT( "LoadingMapStatus_Initializing", "Loading map: {0}... (Initializing world)" ), FText::FromString(MapFileName) ));
 				{
 					FBSPOps::bspValidateBrush(Context.World()->GetDefaultBrush()->Brush, 0, 1);
@@ -4497,7 +4511,7 @@ bool UEditorEngine::Exec_Poly( UWorld* InWorld, const TCHAR* Str, FOutputDevice&
 	else if( FParse::Command(&Str,TEXT("DEFAULT")) ) // POLY DEFAULT <variable>=<value>...
 	{
 		//CurrentMaterial=NULL;
-		//ParseObject<UMaterial>(Str,TEXT("TEXTURE="),CurrentMaterial,ANY_PACKAGE);
+		//ParseObject<UMaterial>(Str,TEXT("TEXTURE="),CurrentMaterial,nullptr);
 		return true;
 	}
 	else if( FParse::Command(&Str,TEXT("SETMATERIAL")) )
@@ -4517,7 +4531,7 @@ bool UEditorEngine::Exec_Poly( UWorld* InWorld, const TCHAR* Str, FOutputDevice&
 				Model->Surfs[SurfaceIndex].Material = SelectedMaterialInstance;
 				const bool bUpdateTexCoords = false;
 				const bool bOnlyRefreshSurfaceMaterials = true;
-				polyUpdateMaster(Model, SurfaceIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
+				polyUpdateBrush(Model, SurfaceIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
 				Model->MarkPackageDirty();
 
 				bModelDirtied = true;
@@ -4550,7 +4564,7 @@ bool UEditorEngine::Exec_Poly( UWorld* InWorld, const TCHAR* Str, FOutputDevice&
 					It.GetModel()->Surfs[SurfaceIndex].Material = Material;
 					const bool bUpdateTexCoords = false;
 					const bool bOnlyRefreshSurfaceMaterials = true;
-					polyUpdateMaster(It.GetModel(), SurfaceIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
+					polyUpdateBrush(It.GetModel(), SurfaceIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
 				}
 			}
 
@@ -4653,15 +4667,18 @@ bool UEditorEngine::Exec_Obj( const TCHAR* Str, FOutputDevice& Ar )
 	if( FParse::Command(&Str,TEXT("EXPORT")) )//oldver
 	{
 		FName Package=NAME_None;
-		UClass* Type;
+		
 		UObject* Res;
 		FParse::Value( Str, TEXT("PACKAGE="), Package );
-
+		FString TypeName;
+		FParse::Value(Str, TEXT("TYPE="), TypeName);
+		UClass* Type = UClass::TryFindTypeSlow<UClass>(TypeName);
 		FString TempFname;
+
 		if
-		(	ParseObject<UClass>( Str, TEXT("TYPE="), Type, ANY_PACKAGE )
+		(	Type
 		&&	FParse::Value( Str, TEXT("FILE="), TempFname )
-		&&	ParseObject( Str, TEXT("NAME="), Type, Res, ANY_PACKAGE ) )
+		&&	ParseObject( Str, TEXT("NAME="), Type, Res, nullptr ) )
 		{
 			for (FThreadSafeObjectIterator It; It; ++It)
 			{
@@ -4764,7 +4781,7 @@ bool UEditorEngine::Exec_Obj( const TCHAR* Str, FOutputDevice& Ar )
 
 AActor* UEditorEngine::SelectNamedActor(const TCHAR* TargetActorName)
 {
-	AActor* Actor = FindObject<AActor>( ANY_PACKAGE, TargetActorName, false );
+	AActor* Actor = FindFirstObject<AActor>( TargetActorName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("SelectNamedActor") );
 	if( Actor && !Actor->IsA(AWorldSettings::StaticClass()) )
 	{
 		SelectActor( Actor, true, true );
@@ -4807,7 +4824,7 @@ void UEditorEngine::MoveViewportCamerasToActor(const TArray<AActor*> &Actors, co
 		return;
 	}
 
-	// If the first actor is a documentation actor open his document link
+	// If the first actor is a documentation actor open its document link
 	if (Actors.Num() == 1)
 	{
 		ADocumentationActor* DocActor = Cast<ADocumentationActor>(Actors[0]);
@@ -5008,7 +5025,7 @@ void UEditorEngine::MoveViewportCamerasToElement(const UTypedElementSelectionSet
 	MoveViewportCamerasToBox(BoundingBox, bActiveViewportOnly);
 }
 
-void UEditorEngine::MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActiveViewportOnly) const
+void UEditorEngine::MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActiveViewportOnly, float DrawDebugBoxTimeInSeconds) const
 {
 	// Make sure we had at least one non-null actor in the array passed in.
 	if (BoundingBox.GetSize() != FVector::ZeroVector || BoundingBox.GetCenter() != FVector::ZeroVector)
@@ -5043,6 +5060,16 @@ void UEditorEngine::MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActi
 				//Dont move camera attach to an actor
 				if (!LinkedViewportClient->IsAnyActorLocked())
 					LinkedViewportClient->FocusViewportOnBox(BoundingBox);
+			}
+		}
+
+		if (DrawDebugBoxTimeInSeconds > 0.f)
+		{
+			const FWorldContext& Context = const_cast<UEditorEngine*>(this)->GetEditorWorldContext();
+			if (const UWorld* World = Context.World())
+			{
+				const FColor DarkGray(40, 40, 40);
+				DrawDebugBox(World, BoundingBox.GetCenter(), BoundingBox.GetExtent(), DarkGray, false, DrawDebugBoxTimeInSeconds);
 			}
 		}
 	}
@@ -5384,7 +5411,7 @@ void UEditorEngine::BroadcastPostUndoRedo(const FTransactionContext& UndoContext
 	for (auto UndoIt = UndoClients.CreateIterator(); UndoIt; ++UndoIt)
 	{
 		FEditorUndoClient* Client = *UndoIt;
-		if (Client && Client->MatchesContext(UndoContext, CurrentUndoRedoContext.TransactionObjects))
+		if (Client && Client->MatchesContext(UndoContext, CurrentUndoRedoContext->TransactionObjects))
 		{
 			if (bWasUndo)
 			{
@@ -5617,8 +5644,8 @@ void ListMapPackageDependencies(const TCHAR* InStr)
 				{
 					for (int32 ExportIdx = 0; ExportIdx < Linker->ExportMap.Num(); ExportIdx++)
 					{
-						FName CheckClassName = Linker->GetExportClassName(ExportIdx);
-						UClass* CheckClass = (UClass*)(StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *(CheckClassName.ToString()), true));
+						FTopLevelAssetPath CheckClassPathName(Linker->GetExportClassPackage(ExportIdx), Linker->GetExportClassName(ExportIdx));
+						UClass* CheckClass = FindObject<UClass>(CheckClassPathName, true);
 						if (
 							(CheckClass != NULL) &&
 							(CheckClass->IsChildOf(UTexture::StaticClass()) == true)
@@ -6025,17 +6052,6 @@ bool UEditorEngine::HandleCallbackCommand( UWorld* InWorld, const TCHAR* Str , F
 
 bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar )
 {
-	UObject* Object;
-	UClass* Class = NULL;
-	if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, ANY_PACKAGE ) != false )
-	{ 
-		Object = NewObject<UObject>(GetTransientPackage(), Class);
-	}
-	else
-	{
-		Object = NewObject<UPropertyEditorTestObject>();
-	}
-
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title( NSLOCTEXT("UnrealEd", "PropertyEditorTestWindowTitle", "Property Editor Test") )
 		.ClientSize(FVector2D(500,1000));
@@ -6044,6 +6060,17 @@ bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar 
 
 	if( FParse::Command(&Str,TEXT("TREE")) )
 	{
+		UObject* Object;
+		UClass* Class = NULL;
+		if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, nullptr ) != false )
+		{ 
+			Object = NewObject<UObject>(GetTransientPackage(), Class);
+		}
+		else
+		{
+			Object = NewObject<UPropertyEditorTestObject>();
+		}
+
 		FDetailsViewArgs Args;
 		Args.bHideSelectionTip = true;
 
@@ -6055,7 +6082,7 @@ bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar 
 		Window->SetContent
 			(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				DetailsView.ToSharedRef()
 			]
@@ -6084,7 +6111,7 @@ bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar 
 		Window->SetContent
 			( 
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				Module.CreatePropertyTableWidget( Table ) 
 			]
@@ -6098,18 +6125,47 @@ bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar 
 		StructArgs.bShowObjects = true;
 		StructArgs.bShowInterfaces = true;
 
-		TSharedRef<IStructureDetailsView> StructDetails = Module.CreateStructureDetailView(DetailsArgs, StructArgs, MakeShared<FStructOnScope>(FPropertyEditorTestBasicStruct::StaticStruct()));
+		UStruct* Struct = nullptr;
+		if (!ParseObject<UStruct>(Str, TEXT("STRUCT="), Struct, nullptr))
+		{
+			Struct = FPropertyEditorTestBasicStruct::StaticStruct();
+		}
+
+		TSharedRef<IStructureDetailsView> StructDetails = Module.CreateStructureDetailView(DetailsArgs, StructArgs, MakeShared<FStructOnScope>(Struct));
 
 		Window->SetContent(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				StructDetails->GetWidget().ToSharedRef()
 			]
 		);
 	}
+	else if ( FParse::Command(&Str, TEXT("GENERATOR")) )
+	{
+		UPropertyEditorRowGeneratorTest* TestGenerator = NewObject<UPropertyEditorRowGeneratorTest>();
+		
+		Window->SetContent(
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				TestGenerator->GenerateWidget()
+			]
+		);
+	}
 	else
 	{
+		UObject* Object;
+		UClass* Class = nullptr;
+		if( ParseObject<UClass>( Str, TEXT("CLASS="), Class, nullptr ) != false )
+		{ 
+			Object = NewObject<UObject>(GetTransientPackage(), Class);
+		}
+		else
+		{
+			Object = NewObject<UPropertyEditorTestObject>();
+		}
+
 		//Details
 		TArray<UObject*> Objects;
 		Objects.Add( Object );
@@ -6120,7 +6176,7 @@ bool UEditorEngine::HandleTestPropsCommand( const TCHAR* Str, FOutputDevice& Ar 
 		Window->SetContent
 			(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				DetailsView 
 			]

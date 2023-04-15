@@ -13,6 +13,8 @@
 #include "EntitySystem/MovieSceneInstanceRegistry.h"
 #include "MovieSceneCommonHelpers.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCameraCutTrackInstance)
+
 DECLARE_CYCLE_STAT(TEXT("Camera Cut Track Token Execute"), MovieSceneEval_CameraCutTrack_TokenExecute, STATGROUP_MovieSceneEval);
 
 namespace UE
@@ -146,7 +148,7 @@ namespace MovieScene
 			if (Params.bHasCutTransform)
 			{
 				FVector Location = Params.CutTransform.GetLocation();
-				IStreamingManager::Get().AddViewSlaveLocation(Location);
+				IStreamingManager::Get().AddViewLocation(Location);
 			}
 			else
 			{
@@ -155,7 +157,7 @@ namespace MovieScene
 				if (AActor* Actor = Cast<AActor>(CameraObject))
 				{
 					FVector Location = Actor->GetActorLocation();
-					IStreamingManager::Get().AddViewSlaveLocation(Location);
+					IStreamingManager::Get().AddViewLocation(Location);
 				}
 			}
 		}
@@ -378,11 +380,13 @@ void UMovieSceneCameraCutTrackInstance::OnAnimate()
 		if (FCameraCutAnimator::AnimateBlendedCameraCut(FinalCameraCut, CameraCutCache, Context, *Player))
 		{
 			// Track whether this ever evaluated to take control. If so, we'll want to remove control in OnDestroyed.
-			FCameraCutUseData& PlayerUseCount = PlayerUseCounts.FindChecked(Player);
-			PlayerUseCount.bValid = true;
-			// Remember whether we had blending support the last time we took control of the viewport. This is also
-			// for OnDestroyed.
-			PlayerUseCount.bCanBlend = FinalCameraCut.bCanBlend;
+			if (FCameraCutUseData* PlayerUseCount = PlayerUseCounts.Find(Player))
+			{
+				PlayerUseCount->bValid = true;
+				// Remember whether we had blending support the last time we took control of the viewport. This is also
+				// for OnDestroyed.
+				PlayerUseCount->bCanBlend = FinalCameraCut.bCanBlend;
+			}
 		}
 	}
 }
@@ -407,11 +411,13 @@ void UMovieSceneCameraCutTrackInstance::OnInputRemoved(const FMovieSceneTrackIns
 	const FSequenceInstance& SequenceInstance = InstanceRegistry->GetInstance(InInput.InstanceHandle);
 	IMovieScenePlayer* Player = SequenceInstance.GetPlayer();
 
-	int32& UseCount = PlayerUseCounts.FindChecked(Player).UseCount;
-	--UseCount;
-	if (UseCount == 0)
+	if (FCameraCutUseData* PlayerUseCount = PlayerUseCounts.Find(Player))
 	{
-		PlayerUseCounts.Remove(Player);
+		PlayerUseCount->UseCount--;
+		if (PlayerUseCount->UseCount == 0)
+		{
+			PlayerUseCounts.Remove(Player);
+		}
 	}
 }
 
@@ -536,10 +542,13 @@ void UMovieSceneCameraCutTrackInstance::OnDestroyed()
 			if (PlayerUseCount.Value.bValid)
 			{
 				EMovieSceneCameraCutParams Params;
-	#if WITH_EDITOR
+#if WITH_EDITOR
 				Params.bCanBlend = PlayerUseCount.Value.bCanBlend;
-	#endif
-				PlayerUseCount.Key->UpdateCameraCut(nullptr, Params);
+#endif
+				if (PlayerUseCount.Key)
+				{
+					PlayerUseCount.Key->UpdateCameraCut(nullptr, Params);
+				}
 				break;  // Only do it on the first one.
 			}
 		}
@@ -547,3 +556,4 @@ void UMovieSceneCameraCutTrackInstance::OnDestroyed()
 
 	PlayerUseCounts.Reset();
 }
+

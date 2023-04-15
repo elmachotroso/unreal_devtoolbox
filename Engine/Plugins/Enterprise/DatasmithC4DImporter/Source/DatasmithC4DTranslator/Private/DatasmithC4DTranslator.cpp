@@ -1,9 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DatasmithC4DTranslator.h"
-#include "DatasmithC4DDynamicImporterModule.h"
 
-#if defined(_MELANGE_SDK_) || defined(_CINEWARE_SDK_)
+#if defined(_MELANGE_SDK_)
 #include "DatasmithC4DTranslatorModule.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithSceneSource.h"
@@ -14,7 +13,17 @@
 #include "Misc/Paths.h"
 #include "Templates/TypeHash.h"
 
-typedef TSharedPtr<IDatasmithC4DImporter>(*CreateC4DImporter)(TSharedRef<IDatasmithScene> OutScene, UDatasmithC4DImportOptions* InOptions);
+#if WITH_EDITOR
+#include "Framework/Notifications/NotificationManager.h"
+#include "Styling/AppStyle.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#endif
+
+#define LOCTEXT_NAMESPACE "DatasmithC4DTranslator"
+
+DEFINE_LOG_CATEGORY_STATIC(DatasmithC4DTranslatorLog, Log, All);
+
+void NotifyImprovedImporter();
 
 void FDatasmithC4DTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
@@ -22,32 +31,16 @@ void FDatasmithC4DTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCa
 	OutCapabilities.bParallelLoadStaticMeshSupported = true;
 
 	TArray<FFileFormatInfo>& Formats = OutCapabilities.SupportedFileFormats;
-    Formats.Emplace(TEXT("c4d"), TEXT("Cinema 4D file format"));
+	Formats.Emplace(TEXT("c4d"), TEXT("Cinema 4D file format"));
 }
 
 bool FDatasmithC4DTranslator::LoadScene(TSharedRef<IDatasmithScene> OutScene)
 {
+	NotifyImprovedImporter();
+
 	OutScene->SetHost(TEXT("C4DTranslator"));
-	
-#ifdef _CHECK_DYNAMIC_IMPORTER_
-	if (IDatasmithC4DDynamicImporterModule::IsAvailable())
-	{
-		FDatasmithC4DImportOptions C4DImportOptions;
-		C4DImportOptions.bImportEmptyMesh = ImportOptions->bImportEmptyMesh;
-		C4DImportOptions.bExportToUDatasmith = ImportOptions->bExportToUDatasmith;
-		C4DImportOptions.bAlwaysGenerateNormals = ImportOptions->bAlwaysGenerateNormals;
-		C4DImportOptions.ScaleVertices = ImportOptions->ScaleVertices;
-		C4DImportOptions.bOptimizeEmptySingleChildActors = ImportOptions->bOptimizeEmptySingleChildActors;
 
-		IDatasmithC4DDynamicImporterModule& DynamicModule = IDatasmithC4DDynamicImporterModule::Get();
-		if (DynamicModule.TryLoadingCineware())
-		{
-			Importer = DynamicModule.GetDynamicImporter(OutScene, C4DImportOptions);
-		}
-	}
-#endif
-
-	if(!Importer.IsValid())
+	if (!Importer.IsValid())
 	{
 		FDatasmithC4DImportOptions C4DImportOptions;
 		Importer = MakeShared<FDatasmithC4DImporter>(OutScene, C4DImportOptions);
@@ -96,16 +89,16 @@ bool FDatasmithC4DTranslator::LoadLevelSequence(const TSharedRef<IDatasmithLevel
 	return false;
 }
 
-void FDatasmithC4DTranslator::GetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithC4DTranslator::GetSceneImportOptions(TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	Options.Add(GetOrCreateC4DImportOptions());
+	Options.Add(GetOrCreateC4DImportOptions().Get());
 }
 
-void FDatasmithC4DTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithC4DTranslator::SetSceneImportOptions(const TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	for (const TStrongObjectPtr<UDatasmithOptionsBase>& OptionPtr : Options)
+	for (const TObjectPtr<UDatasmithOptionsBase>& OptionPtr : Options)
 	{
-		if (UDatasmithC4DImportOptions* InImportOptions = Cast<UDatasmithC4DImportOptions>(OptionPtr.Get()))
+		if (UDatasmithC4DImportOptions* InImportOptions = Cast<UDatasmithC4DImportOptions>(OptionPtr))
 		{
 			ImportOptions.Reset(InImportOptions);
 		}
@@ -115,7 +108,9 @@ void FDatasmithC4DTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDat
 	{
 		FDatasmithC4DImportOptions C4DImportOptions;
 		C4DImportOptions.bImportEmptyMesh = ImportOptions->bImportEmptyMesh;
+#if WITH_EDITORONLY_DATA
 		C4DImportOptions.bExportToUDatasmith = ImportOptions->bExportToUDatasmith;
+#endif
 		C4DImportOptions.bAlwaysGenerateNormals = ImportOptions->bAlwaysGenerateNormals;
 		C4DImportOptions.ScaleVertices = ImportOptions->ScaleVertices;
 		C4DImportOptions.bOptimizeEmptySingleChildActors = ImportOptions->bOptimizeEmptySingleChildActors;
@@ -132,5 +127,42 @@ TStrongObjectPtr<UDatasmithC4DImportOptions>& FDatasmithC4DTranslator::GetOrCrea
 	}
 	return ImportOptions;
 }
+
+constexpr auto IMPROVED_IMPORTER_URL = TEXT("https://www.maxon.net/unreal");
+
+void NotifyImprovedImporter()
+{
+#if WITH_EDITOR
+	if (!IsInGameThread() && !IsInSlateThread() && !IsInAsyncLoadingThread())
+	{
+		return;
+	}
+
+	if (IsRunningCommandlet())
+	{
+		return;
+	}
+
+	UE_LOG(DatasmithC4DTranslatorLog, Warning, TEXT("Old DatasmithC4DTranslator loaded"));
+
+	const FText Msg = FText::Format(LOCTEXT("DatasmithC4DImporterLoaded",
+		"Improved Cineware Import available at {0}"), FText::FromString(IMPROVED_IMPORTER_URL));
+
+	FNotificationInfo Info(Msg);
+	Info.ExpireDuration = 8.0f;
+	Info.bUseLargeFont = true;
+	Info.bUseSuccessFailIcons = true;
+	Info.Image = FAppStyle::GetBrush(TEXT("MessageLog.Warning"));
+	Info.Hyperlink = FSimpleDelegate::CreateLambda([]() {
+		const FString URL = IMPROVED_IMPORTER_URL;
+		FPlatformProcess::LaunchURL(*URL, nullptr, nullptr);
+		});
+	Info.HyperlinkText = LOCTEXT("GoToMaxon", "Go to Maxon...");
+
+	FSlateNotificationManager::Get().AddNotification(Info);
+#endif
+}
+
+#undef LOCTEXT_NAMESPACE
 
 #endif // _MELANGE_SDK_

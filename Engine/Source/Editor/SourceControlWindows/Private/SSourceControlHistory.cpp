@@ -36,6 +36,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Views/SHeaderRow.h"
@@ -43,7 +44,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
@@ -430,7 +431,7 @@ public:
 	virtual TSharedPtr<SWidget> GetDefaultDecorator() const override
 	{
 		return SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Graph.ConnectorFeedback.Border"))
+			.BorderImage(FAppStyle::GetBrush("Graph.ConnectorFeedback.Border"))
 			[				
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -471,8 +472,8 @@ public:
 	FSlateBrush const* GetIcon() const
 	{
 		return PendingDropAction != EDropAction::None
-			? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
-			: FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"))
+			: FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 	}
 };
 
@@ -572,7 +573,7 @@ public:
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(ResourceKey))
+					.Image(FAppStyle::GetBrush(ResourceKey))
 				]
 				+SHorizontalBox::Slot()
 				.AutoWidth()
@@ -681,7 +682,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.BorderBackgroundColor(FLinearColor(0.5f,0.5f,0.5f,1.f))
 			[
 				SNew(SSplitter)
@@ -714,7 +715,7 @@ public:
 				.Value(0.5f)
 				[
 					SAssignNew(AdditionalInfoItemsControl,SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						GetAdditionalInfoItemsControlContent()				
 					]
@@ -923,12 +924,12 @@ private:
 				[
 					SNew(SVerticalBox)
 					+SVerticalBox::Slot()
-					.AutoHeight()
 					.Padding(5)
 					[
-						SNew(SEditableText)
+						SNew(SMultiLineEditableTextBox)
 						.IsReadOnly(true)
-						.Text(this, &SSourceControlHistoryWidget::GetDescription)	
+						.AutoWrapText(true)
+						.Text(this, &SSourceControlHistoryWidget::GetDescription)
 					]
 				]
 			]
@@ -1053,7 +1054,7 @@ private:
 					.Padding(5)
 					[
 						SNew( STextBlock )
-						.Font( FEditorStyle::GetFontStyle( TEXT("BoldFont") ))
+						.Font( FAppStyle::GetFontStyle( TEXT("BoldFont") ))
 						.Text( FText::FromString(FileListItem->FileName) )
 					]
 				]

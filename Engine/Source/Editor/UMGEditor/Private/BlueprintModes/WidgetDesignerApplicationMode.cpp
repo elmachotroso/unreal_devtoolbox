@@ -9,8 +9,11 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "WidgetBlueprintEditorToolbar.h"
 #include "UMGEditorModule.h"
+#include "UMGEditorProjectSettings.h"
 #include "StatusBarSubsystem.h"
 #include "ToolMenus.h"
+#include "WidgetDrawerConfig.h"
+#include "Widgets/Docking/SDockTab.h"
 
 #include "TabFactory/PaletteTabSummoner.h"
 #include "TabFactory/LibraryTabSummoner.h"
@@ -44,7 +47,7 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 		DisplayMetrics.PrimaryDisplayWorkAreaRect.Bottom - DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
 	const FVector2D WindowSize = (CenterScale * DisplaySize) / DPIScale;
 
-	TabLayout = FTabManager::NewLayout("WidgetBlueprintEditor_Designer_Layout_v4_7")
+	TabLayout = FTabManager::NewLayout("WidgetBlueprintEditor_Designer_Layout_v4_8")
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea()
@@ -85,7 +88,14 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 				(
 					FTabManager::NewStack()
 					->SetHideTabWell(true)
-					->SetSizeCoefficient(0.85f)
+					->SetSizeCoefficient(0.05f)
+					->AddTab(FDesignerTabSummoner::ToolPaletteTabID, ETabState::ClosedTab)
+				)
+				->Split
+				(
+					FTabManager::NewStack()
+					->SetHideTabWell(true)
+					->SetSizeCoefficient(0.80f)
 					->AddTab( FDesignerTabSummoner::TabID, ETabState::OpenedTab )
 				)
 				->Split
@@ -130,11 +140,18 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 	TabFactories.RegisterFactory(MakeShareable(new FCompilerResultsSummoner(InWidgetEditor)));
 	TabFactories.RegisterFactory(MakeShareable(new FNavigationTabSummoner(InWidgetEditor)));
 
-	// setup toolbar - clear existing toolbar extender from the BP mode
-	//@TODO: Keep this in sync with BlueprintEditorModes.cpp
+	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
+	UMGEditorModule.OnRegisterTabsForEditor().Broadcast(*this, TabFactories);
+
+	// Add any extenders specified by the UMG Editor Module
+	// Note: Used by WidgetEditorModeUILayer to register the toolbox tab
+	if (LayoutExtender)
+	{
+		UMGEditorModule.OnRegisterLayoutExtensions().Broadcast(*LayoutExtender);
+		TabLayout->ProcessExtensions(*LayoutExtender);
+	}
 
 	//Make sure we start with our existing list of extenders instead of creating a new one
-	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 	ToolbarExtender = UMGEditorModule.GetToolBarExtensibilityManager()->GetAllExtenders();
 	
 	InWidgetEditor->GetWidgetToolbarBuilder()->AddWidgetBlueprintEditorModesToolbar(ToolbarExtender);
@@ -142,6 +159,7 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 	if (UToolMenu* Toolbar = InWidgetEditor->RegisterModeToolbarIfUnregistered(GetModeName()))
 	{
 		InWidgetEditor->GetWidgetToolbarBuilder()->AddWidgetReflector(Toolbar);
+		InWidgetEditor->GetWidgetToolbarBuilder()->AddToolPalettes(Toolbar);
 		InWidgetEditor->GetToolbarBuilder()->AddCompileToolbar(Toolbar);
 		InWidgetEditor->GetToolbarBuilder()->AddDebuggingToolbar(Toolbar);
 	}
@@ -158,22 +176,50 @@ void FWidgetDesignerApplicationMode::RegisterTabFactories(TSharedPtr<FTabManager
 void FWidgetDesignerApplicationMode::PreDeactivateMode()
 {
 	//FWidgetBlueprintApplicationMode::PreDeactivateMode();
+
+	TSharedPtr<FWidgetBlueprintEditor> BP = GetBlueprintEditor();
+	if (TSharedPtr<FTabManager> TabManager = BP->GetTabManager())
+	{
+		if (TSharedPtr<SDockTab> PaletteTab = TabManager->FindExistingLiveTab(FDesignerTabSummoner::ToolPaletteTabID))
+		{
+			PaletteTab->RequestCloseTab();
+		}
+	}
+
+	OnPreDeactivateMode.Broadcast(*this);
 }
 
 void FWidgetDesignerApplicationMode::PostActivateMode()
 {
-	//FWidgetBlueprintApplicationMode::PostActivateMode();
+	// FWidgetBlueprintApplicationMode::PostActivateMode();
+	OnPostActivateMode.Broadcast(*this);
 
 	TSharedPtr<FWidgetBlueprintEditor> BP = GetBlueprintEditor();
 
-	FStatusBarDrawer WidgetAnimSequencerDrawer(FAnimationTabSummoner::WidgetAnimSequencerDrawerID);
-	WidgetAnimSequencerDrawer.GetDrawerContentDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnGetWidgetAnimSequencer);
-	WidgetAnimSequencerDrawer.OnDrawerOpenedDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnWidgetAnimSequencerOpened);
-	WidgetAnimSequencerDrawer.OnDrawerDismissedDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed);
-	WidgetAnimSequencerDrawer.ButtonText = LOCTEXT("StatusBar_WidgetAnimSequencer", "Animations");
-	WidgetAnimSequencerDrawer.ToolTipText = LOCTEXT("StatusBar_WidgetAnimSequencerToolTip", "Opens animation sequencer (Ctrl+Shift+Space Bar).");
-	WidgetAnimSequencerDrawer.Icon = FAppStyle::Get().GetBrush("UMGEditor.AnimTabIcon");
-	BP->RegisterDrawer(MoveTemp(WidgetAnimSequencerDrawer), 1);
+	if (!GetDefault<UUMGEditorProjectSettings>()->bHideWidgetAnimationEditor)
+	{
+		FWidgetDrawerConfig WidgetAnimSequencerDrawer(FAnimationTabSummoner::WidgetAnimSequencerDrawerID);
+		WidgetAnimSequencerDrawer.GetDrawerContentDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnGetWidgetAnimSequencer);
+		WidgetAnimSequencerDrawer.OnDrawerOpenedDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnWidgetAnimSequencerOpened);
+		WidgetAnimSequencerDrawer.OnDrawerDismissedDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnWidgetAnimSequencerDismissed);
+		WidgetAnimSequencerDrawer.ButtonText = LOCTEXT("StatusBar_WidgetAnimSequencer", "Animations");
+		WidgetAnimSequencerDrawer.ToolTipText = LOCTEXT("StatusBar_WidgetAnimSequencerToolTip", "Opens animation sequencer (Ctrl+Shift+Space Bar).");
+		WidgetAnimSequencerDrawer.Icon = FAppStyle::Get().GetBrush("UMGEditor.AnimTabIcon");
+		BP->RegisterDrawer(MoveTemp(WidgetAnimSequencerDrawer), 1);
+	}
+
+	// Toggle any active tool palette modes
+	for (TSharedPtr<FUICommandInfo>& Command : BP->ToolPaletteCommands)
+	{
+		if (Command && BP->GetToolkitCommands()->GetCheckState(Command.ToSharedRef()) == ECheckBoxState::Checked)
+		{
+			BP->GetToolkitCommands()->TryExecuteAction(Command.ToSharedRef());
+
+			// @FIXME: DarenC - Executing twice since a single action is a toggle, 
+			// need toggle twice if in incorrect state. This is not relevant when we move to drop downs.
+			BP->GetToolkitCommands()->TryExecuteAction(Command.ToSharedRef());
+		}
+	}
 
 	BP->OnEnteringDesigner();
 }

@@ -173,6 +173,8 @@ static void InitCpuThermalSensor()
 	CVarAndroidCPUThermalSensorFilePath->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OverrideCpuThermalSensorFileFromCVar));
 
 	uint32 Counter = 0;
+	const uint32 INVALID_INDEX = -1;
+	uint32 CPUSensorIndex = INVALID_INDEX;
 	while (true)
 	{
 		char Buf[256] = "";
@@ -187,6 +189,12 @@ static void InitCpuThermalSensor()
 				++Ptr;
 			}
 			*Ptr = 0;
+
+			if (strstr(Buf, "cpu-") && CPUSensorIndex == INVALID_INDEX)
+			{
+				CPUSensorIndex = Counter;
+				FCStringAnsi::Sprintf(AndroidCpuThermalSensorFileBuf, "/sys/devices/virtual/thermal/thermal_zone%u/temp", Counter);
+			}
 
 			UE_LOG(LogAndroid, Display, TEXT("Detected thermal sensor `%s` at /sys/devices/virtual/thermal/thermal_zone%u/temp"), ANSI_TO_TCHAR(Buf), Counter);
 			++Counter;
@@ -213,7 +221,14 @@ static void InitCpuThermalSensor()
 		}
 	}
 
-	UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
+	if (CPUSensorIndex != INVALID_INDEX)
+	{
+		UE_LOG(LogAndroid, Display, TEXT("Selecting thermal sensor located at `%s`"), ANSI_TO_TCHAR(AndroidCpuThermalSensorFileBuf));
+	}
+	else
+	{
+		UE_LOG(LogAndroid, Display, TEXT("No CPU thermal sensor was detected. To manually override the sensor path set android.CPUThermalSensorFilePath CVar."));
+	}
 }
 
 void FAndroidMisc::RequestExit( bool Force )
@@ -231,9 +246,8 @@ void FAndroidMisc::RequestExit( bool Force )
 #endif
 
 	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i)"), Force);
-	if(GLog)
+	if (GLog)
 	{
-		GLog->FlushThreadedLogs();
 		GLog->Flush();
 	}
 
@@ -267,7 +281,7 @@ void FAndroidMisc::LocalPrint(const TCHAR *Message)
 {
 	// Builds for distribution should not have logging in them:
 	// http://developer.android.com/tools/publishing/preparing.html#publishing-configure
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING || ENABLE_PGO_PROFILE
 	const int MAX_LOG_LENGTH = 4096;
 	// not static since may be called by different threads
 	wchar_t MessageBuffer[MAX_LOG_LENGTH];
@@ -592,6 +606,40 @@ void FAndroidMisc::PlatformTearDown()
 	RemoveBinding(FCoreDelegates::ApplicationHasEnteredForegroundDelegate, AndroidOnForegroundBinding);
 }
 
+void FAndroidMisc::UpdateDeviceOrientation()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAndroidMisc_UpdateDeviceOrientation);
+#if USE_ANDROID_JNI
+	JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
+	if (JEnv)
+	{
+		static jmethodID getOrientationMethod = 0;
+
+		if (getOrientationMethod == 0)
+		{
+			jclass MainClass = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/GameActivity");
+			if (MainClass != nullptr)
+			{
+				getOrientationMethod = JEnv->GetMethodID(MainClass, "AndroidThunkJava_GetDeviceOrientation", "()I");
+				JEnv->DeleteGlobalRef(MainClass);
+			}
+		}
+
+		if (getOrientationMethod != 0)
+		{
+			const int Orientation = JEnv->CallIntMethod(AndroidJavaEnv::GetGameActivityThis(), getOrientationMethod);
+			switch (Orientation)
+			{
+			case 0: DeviceOrientation = EDeviceScreenOrientation::Portrait;             break;
+			case 1: DeviceOrientation = EDeviceScreenOrientation::LandscapeLeft;        break;
+			case 2: DeviceOrientation = EDeviceScreenOrientation::PortraitUpsideDown;   break;
+			case 3: DeviceOrientation = EDeviceScreenOrientation::LandscapeRight;       break;
+			}
+		}
+	}
+#endif
+}
+
 void FAndroidMisc::PlatformHandleSplashScreen(bool ShowSplashScreen)
 {
 #if USE_ANDROID_JNI
@@ -599,6 +647,8 @@ void FAndroidMisc::PlatformHandleSplashScreen(bool ShowSplashScreen)
 	{
 		AndroidThunkCpp_DismissSplashScreen();
 	}
+	// Update the device orientation in case the game thread is blocked
+	FAndroidMisc::UpdateDeviceOrientation();
 #endif
 }
 
@@ -1040,8 +1090,7 @@ void DefaultCrashHandler(const FAndroidCrashContext& Context)
 
 		if (GLog)
 		{
-			GLog->SetCurrentThreadAsMasterThread();
-			GLog->Flush();
+			GLog->Panic();
 		}
 
 		if (GWarn)
@@ -1138,7 +1187,7 @@ private:
 		FPlatformAtomics::AtomicStore(&handling_signal, 0);
 	}
 
-	static void HandleTargetSignal(int Signal, siginfo* Info, void* Context)
+	static void HandleTargetSignal(int Signal, siginfo* Info, void* Context, uint32 CrashingThreadId)
 	{
 		FPlatformStackWalk::HandleBackTraceSignal(Info, Context);
 	}
@@ -1257,8 +1306,8 @@ FString FAndroidMisc::GetFatalSignalMessage(int Signal, siginfo* Info)
 }
 
 // Making the signal handler available to track down issues with failing crash handler.
-static void (*GFatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context) = nullptr;
-void FAndroidMisc::OverrideFatalSignalHandler(void (*FatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context))
+static void (*GFatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context, uint32 CrashingThreadId) = nullptr;
+void FAndroidMisc::OverrideFatalSignalHandler(void (*FatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context, uint32 CrashingThreadId))
 {
 	GFatalSignalHandlerOverrideFunc = FatalSignalHandlerOverrideFunc;
 }
@@ -1311,11 +1360,11 @@ protected:
 		raise(Signal);
 	}
 
-	static void HandleTargetSignal(int Signal, siginfo* Info, void* Context)
+	static void HandleTargetSignal(int Signal, siginfo* Info, void* Context, uint32 CrashingThreadId)
 	{
 		if (GFatalSignalHandlerOverrideFunc)
 		{
-			GFatalSignalHandlerOverrideFunc(Signal, Info, Context);
+			GFatalSignalHandlerOverrideFunc(Signal, Info, Context, CrashingThreadId);
 		}
 		else
 		{
@@ -1325,7 +1374,7 @@ protected:
 			FString Message = FAndroidMisc::GetFatalSignalMessage(Signal, Info);
 			FAndroidCrashContext CrashContext(ECrashContextType::Crash, *Message);
 
-			CrashContext.InitFromSignal(Signal, Info, Context);
+			CrashContext.InitFromSignal(Signal, Info, Context, CrashingThreadId);
 			CrashContext.CaptureCrashInfo();
 			if (GCrashHandlerPointer)
 			{
@@ -1410,8 +1459,7 @@ void FAndroidMisc::TriggerCrashHandler(ECrashContextType InType, const TCHAR* In
 		// we dont flush logs during a fatal signal, malloccrash can cause us to deadlock.
 		if (GLog)
 		{
-			GLog->PanicFlushThreadedLogs();
-			GLog->Flush();
+			GLog->Panic();
 		}
 		if (GWarn)
 		{
@@ -2406,7 +2454,7 @@ FString FAndroidMisc::GetVulkanVersion()
 	return VulkanVersionString;
 }
 
-TMap<FString, FString> FAndroidMisc::GetConfigRulesTMap()
+const TMap<FString, FString>& FAndroidMisc::GetConfigRulesTMap()
 {
 	return ConfigRulesVariables;
 }
@@ -2414,6 +2462,25 @@ TMap<FString, FString> FAndroidMisc::GetConfigRulesTMap()
 FString* FAndroidMisc::GetConfigRulesVariable(const FString& Key)
 {
 	return ConfigRulesVariables.Find(Key);
+}
+
+bool FAndroidMisc::AllowThreadHeartBeat()
+{
+	static uint32 AllowThreadHeartBeatOnce = -1;
+	if (AllowThreadHeartBeatOnce == -1)
+	{
+		const FString* AllowThreadHeartBeatConfigVar = GetConfigRulesVariable(TEXT("EnableThreadHeartBeat"));
+		if (AllowThreadHeartBeatConfigVar)
+		{
+			AllowThreadHeartBeatOnce = (uint32)AllowThreadHeartBeatConfigVar->Equals("true", ESearchCase::IgnoreCase);
+		}
+		else
+		{
+			AllowThreadHeartBeatOnce = 0;
+		}
+	}
+
+	return AllowThreadHeartBeatOnce == 1;
 }
 
 JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetConfigRulesVariables(JNIEnv* jenv, jobject thiz, jobjectArray KeyValuePairs)
@@ -2445,7 +2512,6 @@ JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetAndroidStartupSt
 #if !UE_BUILD_SHIPPING
 bool FAndroidMisc::IsDebuggerPresent()
 {
-	extern CORE_API bool GIgnoreDebugger;
 	if (GIgnoreDebugger)
 	{
 		return false;
@@ -3033,8 +3099,15 @@ const char* FAndroidMisc::GetThreadName(uint32 ThreadId)
 
 void FAndroidMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation)
 {
+	SetAllowedDeviceOrientation(NewDeviceOrentation);
+}
+
+void FAndroidMisc::SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation)
+{
+	AllowedDeviceOrientation = NewAllowedDeviceOrientation;
+
 #if USE_ANDROID_JNI
-	AndroidThunkCpp_SetOrientation(GetAndroidScreenOrientation(NewDeviceOrentation));
+	AndroidThunkCpp_SetOrientation(GetAndroidScreenOrientation(NewAllowedDeviceOrientation));
 #endif // USE_ANDROID_JNI
 }
 
@@ -3070,6 +3143,9 @@ int32 FAndroidMisc::GetAndroidScreenOrientation(EDeviceScreenOrientation ScreenO
 		break;
 	case EDeviceScreenOrientation::LandscapeSensor:
 		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+		break;
+	case EDeviceScreenOrientation::FullSensor:
+		AndroidScreenOrientation = EAndroidScreenOrientation::SCREEN_ORIENTATION_SENSOR;
 		break;
 	}
 

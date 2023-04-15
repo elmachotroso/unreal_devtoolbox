@@ -5,6 +5,8 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SInvalidationPanel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InvalidationBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -14,7 +16,7 @@ UInvalidationBox::UInvalidationBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bCanCache = true;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UInvalidationBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -96,3 +98,4 @@ const FText UInvalidationBox::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -326,25 +326,20 @@ FVisualLogEntry* FVisualLogger::GetEntryToWriteInternal(const UObject* Object, c
 
 		FReadScopeLock RedirectScopeLock(RedirectRWLock);
 		FOwnerToChildrenRedirectionMap& RedirectionMap = GetRedirectionMap(LogOwner);
-		if (RedirectionMap.Contains(LogOwner))
+		if (const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(LogOwner))
 		{
-			if (const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(LogOwner))
-			{
-				DebugSnapshotInterface->GrabDebugSnapshot(CurrentEntry);
-			}
-			for (TWeakObjectPtr<const UObject>& Child : RedirectionMap[LogOwner])
+			DebugSnapshotInterface->GrabDebugSnapshot(CurrentEntry);
+		}
+		
+		TArray<TWeakObjectPtr<const UObject>>* Children = RedirectionMap.Find(LogOwner);
+		if (Children != nullptr)
+		{
+			for (TWeakObjectPtr<const UObject>& Child : *Children)
 			{
 				if (const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(Child.Get()))
 				{
 					DebugSnapshotInterface->GrabDebugSnapshot(CurrentEntry);
 				}
-			}
-		}
-		else
-		{
-			if (const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(LogOwner))
-			{
-				DebugSnapshotInterface->GrabDebugSnapshot(CurrentEntry);
 			}
 		}
 	}
@@ -672,14 +667,14 @@ int32 FVisualLogger::GetUniqueId(const float Timestamp)
 FVisualLogger::FOwnerToChildrenRedirectionMap& FVisualLogger::GetRedirectionMap(const UObject* InObject)
 {
 	const UWorld* World = nullptr;
-	if (FVisualLogger::Get().ObjectToWorldMap.Contains(InObject))
+	if (const TWeakObjectPtr<const UWorld>* Entry = FVisualLogger::Get().ObjectToWorldMap.Find(InObject))
 	{
-		World = FVisualLogger::Get().ObjectToWorldMap[InObject].Get();
+		World = Entry->Get();
 	}
 
 	if (World == nullptr)
 	{
-		World = GetWorldForVisualLogger(nullptr);
+		World = GetWorldForVisualLogger(InObject);
 	}
 
 	return WorldToRedirectionMap.FindOrAdd(World);
@@ -693,24 +688,67 @@ UObject* FVisualLogger::RedirectInternal(const UObject* FromObject, const UObjec
 	}
 
 	const TWeakObjectPtr<const UObject> FromWeakPtr(FromObject);
-	UObject* OldRedirection = FindRedirectionInternal(FromObject);
-	UObject* NewRedirection = FindRedirectionInternal(ToObject);
 
-	if (OldRedirection != NewRedirection)
+	TWeakObjectPtr<const UObject>& WeakOwnerEntry = ChildToOwnerMap.FindOrAdd(FromObject);
+	const UObject* DirectOwner = WeakOwnerEntry.Get();
+	const UObject* NewDirectOwner = ToObject;
+
+	if (DirectOwner != ToObject)
 	{
 		FOwnerToChildrenRedirectionMap& OwnerToChildrenMap = GetRedirectionMap(FromObject);
+		const TArray<TWeakObjectPtr<const UObject>>* ObjectChildren = OwnerToChildrenMap.Find(FromObject);
 
-		TArray<TWeakObjectPtr<const UObject>>* OldArray = OwnerToChildrenMap.Find(OldRedirection);
-		if (OldArray)
+		// A valid direct owner indicates that FromObject was in one or many list(s)
+		// of children so remove it and its children from the owner hierarchy
+		if (DirectOwner != nullptr)
 		{
-			OldArray->RemoveSingleSwap(FromWeakPtr);
+			const UObject* Owner = DirectOwner;
+			while (Owner != nullptr)
+			{
+				if (TArray<TWeakObjectPtr<const UObject>>* DirectOwnerChildren = OwnerToChildrenMap.Find(Owner))
+				{
+					DirectOwnerChildren->RemoveSingleSwap(FromWeakPtr);
+					if (ObjectChildren != nullptr)
+					{
+						for (const TWeakObjectPtr<const UObject>& Child : *ObjectChildren)
+						{
+							DirectOwnerChildren->RemoveSingleSwap(Child);
+						}
+					}
+				}
+
+				const TWeakObjectPtr<const UObject>* WeakOwner = ChildToOwnerMap.Find(Owner);
+				Owner = WeakOwner ? WeakOwner->Get() : nullptr;
+			}
 		}
 
-		OwnerToChildrenMap.FindOrAdd(NewRedirection).AddUnique(FromWeakPtr);
+		// Add this child with its children (if any) to the owner hierarchy
+		const UObject* Owner = NewDirectOwner;
+		while (Owner != nullptr)
+		{
+			TArray<TWeakObjectPtr<const UObject>>* OwnerChildren = OwnerToChildrenMap.Find(Owner);
+			if (OwnerChildren == nullptr)
+			{
+				// Entry not found, add it and refresh current object children since it might have been reallocated
+				OwnerChildren = &OwnerToChildrenMap.Emplace(Owner);
+				ObjectChildren = ObjectChildren ? OwnerToChildrenMap.Find(FromObject) : nullptr;
+			}
+
+			check(OwnerChildren);
+			OwnerChildren->Add(FromWeakPtr);
+			if (ObjectChildren != nullptr)
+			{
+				OwnerChildren->Append(*ObjectChildren);
+			}
+
+			const TWeakObjectPtr<const UObject>* WeakOwner = ChildToOwnerMap.Find(Owner);
+			Owner = WeakOwner ? WeakOwner->Get() : nullptr;
+		}
 	}
 
-	ChildToOwnerMap.FindOrAdd(FromWeakPtr.Get(true/*bEvenIfPendingKill*/)) = ToObject;
+	WeakOwnerEntry = ToObject;
 
+	UObject* NewRedirection = FindRedirectionInternal(ToObject);
 	return NewRedirection;
 }
 
@@ -866,7 +904,7 @@ bool FVisualLogger::IsCategoryLogged(const FLogCategoryBase& Category) const
 const FGuid EVisualLoggerVersion::GUID = FGuid(0xA4237A36, 0xCAEA41C9, 0x8FA218F8, 0x58681BF3);
 FCustomVersionRegistration GVisualLoggerVersion(EVisualLoggerVersion::GUID, EVisualLoggerVersion::LatestVersion, TEXT("VisualLogger"));
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if ENABLE_VISUAL_LOG
 
 class FLogVisualizerExec : private FSelfRegisteringExec
 {
@@ -876,47 +914,51 @@ public:
 	{
 		if (FParse::Command(&Cmd, TEXT("VISLOG")))
 		{
-			if (FModuleManager::Get().LoadModulePtr<IModuleInterface>("LogVisualizer") != nullptr)
+			const FString Command = FParse::Token(Cmd, /*UseEscape*/ false);
+			if (Command == TEXT("record"))
 			{
-#if ENABLE_VISUAL_LOG
-				const FString Command = FParse::Token(Cmd, /*UseEscape*/ false);
-				if (Command == TEXT("record"))
+				if (GIsEditor)
 				{
 					FVisualLogger::Get().SetIsRecording(true);
-					return true;
 				}
-				else if (Command == TEXT("stop"))
-				{
-					FVisualLogger::Get().SetIsRecording(false);
-					return true;
-				}
-				else if (Command == TEXT("disableallbut"))
-				{
-					const FString Category = FParse::Token(Cmd, /*UseEscape*/ true);
-					FVisualLogger::Get().BlockAllCategories(true);
-					FVisualLogger::Get().AddCategoryToAllowList(*Category);
-					return true;
-				}
-#if WITH_EDITOR
 				else
 				{
-					FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("VisualLogger")));
-					return true;
+					FVisualLogger::Get().SetIsRecordingToFile(true);
 				}
-#endif
-#else
-			UE_LOG(LogVisual, Warning, TEXT("Unable to open LogVisualizer - logs are disabled"));
-#endif
+				return true;
+			}
+			else if (Command == TEXT("stop"))
+			{
+				if (GIsEditor)
+				{
+					FVisualLogger::Get().SetIsRecording(false);
+				}
+				else
+				{
+					FVisualLogger::Get().SetIsRecordingToFile(false);
+				}
+				return true;
+			}
+			else if (Command == TEXT("disableallbut"))
+			{
+				const FString Category = FParse::Token(Cmd, /*UseEscape*/ true);
+				FVisualLogger::Get().BlockAllCategories(true);
+				FVisualLogger::Get().AddCategoryToAllowList(*Category);
+				return true;
+			}
+			else if (FModuleManager::Get().LoadModulePtr<IModuleInterface>("LogVisualizer"))
+			{
+				FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("VisualLogger")));
+				return true;
 			}
 		}
-#if ENABLE_VISUAL_LOG
 		else if (FParse::Command(&Cmd, TEXT("LogNavOctree")))
 		{
-			FVisualLogger::NavigationDataDump(GetWorldForVisualLogger(nullptr), LogNavigation, ELogVerbosity::Log, FBox());
+			FVisualLogger::NavigationDataDump(GetWorldForVisualLogger(InWorld), LogNavigation, ELogVerbosity::Log, FBox());
 		}
-#endif
+
 		return false;
 	}
 } LogVisualizerExec;
 
-#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif // ENABLE_VISUAL_LOG

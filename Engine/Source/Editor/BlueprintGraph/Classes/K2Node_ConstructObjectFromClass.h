@@ -2,14 +2,26 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_ConstructObjectFromClass.generated.h"
 
 class FBlueprintActionDatabaseRegistrar;
+class UClass;
 class UEdGraph;
+class UEdGraphPin;
+class UObject;
+template <typename KeyType, typename ValueType> struct TKeyValuePair;
 
 UCLASS(abstract)
 class BLUEPRINTGRAPH_API UK2Node_ConstructObjectFromClass : public UK2Node
@@ -28,6 +40,7 @@ class BLUEPRINTGRAPH_API UK2Node_ConstructObjectFromClass : public UK2Node
 	virtual void GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 	virtual void PostPlacedNewNode() override;
 	virtual void AddSearchMetaDataInfo(TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const override;
+	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
 	//~ End UEdGraphNode Interface.
 
 	//~ Begin UK2Node Interface

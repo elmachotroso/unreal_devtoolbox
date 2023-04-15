@@ -7,8 +7,11 @@
 #include "Animation/AnimNodeBase.h"
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetProcessor.h"
+#include "Retargeter/IKRetargetProfile.h"
 
 #include "AnimNode_RetargetPoseFromMesh.generated.h"
+
+DECLARE_CYCLE_STAT(TEXT("IK Retarget"), STAT_IKRetarget, STATGROUP_Anim);
 
 USTRUCT(BlueprintInternalUseOnly)
 struct IKRIG_API FAnimNode_RetargetPoseFromMesh : public FAnimNode_Base
@@ -20,16 +23,28 @@ struct IKRIG_API FAnimNode_RetargetPoseFromMesh : public FAnimNode_Base
 	TWeakObjectPtr<USkeletalMeshComponent> SourceMeshComponent = nullptr;
 
 	/* If SourceMeshComponent is not valid, and if this is true, it will look for attached parent as a source */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings, meta = (NeverAsPin))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings, meta=(NeverAsPin))
 	bool bUseAttachedParent = true;
 	
 	/** Retarget asset to use. Must define a Source and Target IK Rig compatible with the SourceMeshComponent and current anim instance.*/
-	UPROPERTY(EditAnywhere, Category = Settings)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta=(PinHiddenByDefault))
 	TObjectPtr<UIKRetargeter> IKRetargeterAsset = nullptr;
+
+	/** connect a custom retarget profile to modify the retargeter's settings at runtime.*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, transient, Category=Settings, meta=(PinHiddenByDefault))
+	FRetargetProfile CustomRetargetProfile;
+
+	/* Toggle whether to print warnings about missing or incorrectly configured retarget configurations. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Debug, meta = (NeverAsPin))
+	bool bSuppressWarnings = false;
+	
+	/* Copy curves from SouceMeshComponent. This will copy any curves the source/target Skeleton have in common. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta = (NeverAsPin))
+	bool bCopyCurves = true;
 
 #if WITH_EDITOR
 	/** when true, will copy all setting from target IK Rig asset each tick (for live preview) */
-	bool bDriveTargetIKRigWithAsset = false;
+	bool bDriveWithAsset = false;
 #endif
 	
 	// FAnimNode_Base interface
@@ -41,22 +56,17 @@ struct IKRIG_API FAnimNode_RetargetPoseFromMesh : public FAnimNode_Base
 	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
 	// End of FAnimNode_Base interface
 
-#if WITH_EDITOR
-	/** Force reinitialization. */
-	void SetProcessorNeedsInitialized();
-#endif
-
-	/** Read-only access to the runtime processor */
-	const UIKRetargetProcessor* GetRetargetProcessor() const;
+	/** Access to the runtime processor */
+	UIKRetargetProcessor* GetRetargetProcessor() const;
 
 private:
-	
-	void EnsureInitialized(const UAnimInstance* InAnimInstance);
+
+	/** returns true if processor is setup and ready to go, false otherwise */
+	bool EnsureProcessorIsInitialized(const TObjectPtr<USkeletalMeshComponent> TargetMeshComponent);
+	/** copies the source mesh pose (on main thread) */
 	void CopyBoneTransformsFromSource(USkeletalMeshComponent* TargetMeshComponent);
-	
-	// source mesh references, cached during init so that we can compare and see if it has changed
-	TWeakObjectPtr<USkeletalMesh> CurrentlyUsedSourceMesh;
-	TWeakObjectPtr<USkeletalMesh> CurrentlyUsedTargetMesh;
+	/** indirection to account for Leader Pose Component setup */
+	TObjectPtr<USkeletalMeshComponent> GetComponentToCopyPoseFrom() const;
 
 	/** the runtime processor used to run the retarget and generate new poses */
 	UPROPERTY(Transient)
@@ -67,4 +77,15 @@ private:
 
 	// mapping from required bones to actual bones within the target skeleton
 	TArray< TPair<int32, int32> > RequiredToTargetBoneMapping;
+	// mapping of Skeleton curve names to the UID (for copying curves from the source mesh component)
+	TMap<FName, SmartName::UID_Type> CurveNameToUIDMap;
+	// cached curves, copied on the game thread
+	TMap<FName, float> SourceCurveValues;
+
+	/** update map of curve values containing speeds used for IK planting */
+	void UpdateSpeedValuesFromCurves();
+	// map of curve names to values, passed to retargeter for IK planting (copied from source mesh)
+	TMap<FName, float> SpeedValuesFromCurves;
+	// the accumulated delta time this tick
+	float DeltaTime;
 };

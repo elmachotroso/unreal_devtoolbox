@@ -6,45 +6,15 @@
 #include "MetasoundEnum.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundLiteral.h"
+#include "MetasoundNodeConstructorParams.h"
 #include "MetasoundNodeInterface.h"
 #include "MetasoundOperatorInterface.h"
 #include "MetasoundRouter.h"
 #include "MetasoundVertex.h"
 #include "Templates/Function.h"
 
-
 namespace Metasound
 {
-	// Base implementation for NodeConstructorCallbacks
-	struct FDefaultNamedVertexNodeConstructorParams
-	{
-		// the instance name and name of the specific connection that should be used.
-		FVertexName NodeName;
-		FGuid InstanceID;
-		FVertexName VertexName;
-	};
-
-	struct FDefaultNamedVertexWithLiteralNodeConstructorParams
-	{
-		// the instance name and name of the specific connection that should be used.
-		FVertexName NodeName;
-		FGuid InstanceID;
-		FVertexName VertexName;
-		FLiteral InitParam = FLiteral::CreateInvalid();
-	};
-
-	struct FDefaultLiteralNodeConstructorParams
-	{
-		FVertexName NodeName;
-		FGuid InstanceID;
-		FLiteral Literal = FLiteral::CreateInvalid();
-	};
-
-	using FInputNodeConstructorParams = FDefaultNamedVertexWithLiteralNodeConstructorParams;
-	using FOutputNodeConstructorParams = FDefaultNamedVertexNodeConstructorParams;
-	using FLiteralNodeConstructorParams = FDefaultLiteralNodeConstructorParams;
-	using FVariableNodeConstructorParams = FDefaultLiteralNodeConstructorParams;
-
 	using FIterateMetasoundFrontendClassFunction = TFunctionRef<void(const FMetasoundFrontendClass&)>;
 
 	namespace Frontend
@@ -66,16 +36,21 @@ namespace Metasound
 			FGuid AssetClassID;
 
 			// Path to asset containing graph if external type and references asset class.
-			FName AssetPath;
+			FSoftObjectPath AssetPath;
 
 			// Version of the registered class
 			FMetasoundFrontendVersionNumber Version;
 
+#if WITH_EDITORONLY_DATA
 			// Types of class inputs
 			TSet<FName> InputTypes;
 
 			// Types of class outputs
 			TSet<FName> OutputTypes;
+
+			// Whether or not class is preset
+			bool bIsPreset = false;
+#endif // WITH_EDITORONLY_DATA
 
 			FNodeClassInfo() = default;
 
@@ -83,7 +58,7 @@ namespace Metasound
 			FNodeClassInfo(const FMetasoundFrontendClassMetadata& InMetadata);
 
 			// Constructor used to generate NodeClassInfo from an asset
-			FNodeClassInfo(const FMetasoundFrontendGraphClass& InClass, FName InAssetPath);
+			FNodeClassInfo(const FMetasoundFrontendGraphClass& InClass, const FSoftObjectPath& InAssetPath);
 
 			// Loads the asset from the provided path, ensuring that the class is of type graph.
 			UObject* LoadAsset() const
@@ -101,7 +76,7 @@ namespace Metasound
 		/** INodeRegistryEntry declares the interface for a node registry entry.
 		 * Each node class in the registry must satisfy this interface. 
 		 */
-		class INodeRegistryEntry
+		class METASOUNDFRONTEND_API INodeRegistryEntry
 		{
 		public:
 			virtual ~INodeRegistryEntry() = default;
@@ -151,9 +126,6 @@ namespace Metasound
 			/** Whether or not the node is natively defined */
 			virtual bool IsNative() const = 0;
 		};
-
-
-
 
 		struct METASOUNDFRONTEND_API FConverterNodeRegistryKey
 		{
@@ -212,17 +184,18 @@ namespace Metasound
 				Invalid
 			};
 
+			UE_DEPRECATED("5.1", "This constructor is deprecated. Use a different constructor for FNodeREegistryTransaction")
 			FNodeRegistryTransaction(ETransactionType InType, const FNodeRegistryKey& InKey, const FNodeClassInfo& InNodeClassInfo, FTimeType InTimestamp);
+			FNodeRegistryTransaction(ETransactionType InType, const FNodeClassInfo& InNodeClassInfo, FTimeType InTimestamp);
 
 			ETransactionType GetTransactionType() const;
 			const FNodeClassInfo& GetNodeClassInfo() const;
-			const FNodeRegistryKey& GetNodeRegistryKey() const;
+			FNodeRegistryKey GetNodeRegistryKey() const;
 			FTimeType GetTimestamp() const;
 
 		private:
 
 			ETransactionType Type;
-			FNodeRegistryKey Key;
 			FNodeClassInfo NodeClassInfo;
 			FTimeType Timestamp;
 		};
@@ -239,12 +212,6 @@ namespace Metasound
 
 			// Returns true if both keys represent the same entry in the node registry.
 			METASOUNDFRONTEND_API bool IsEqual(const FNodeRegistryKey& InLHS, const FNodeRegistryKey& InRHS);
-
-			// Returns true if the class metadata and key represent the same entry in the node registry.
-			METASOUNDFRONTEND_API bool IsEqual(const FMetasoundFrontendClassMetadata& InLHS, const FNodeRegistryKey& InRHS);
-
-			// Returns true if the class info and key represent the same entry in the node registry.
-			METASOUNDFRONTEND_API bool IsEqual(const FNodeClassInfo& InLHS, const FNodeRegistryKey& InRHS);
 
 			// Returns true if the class metadata represent the same entry in the node registry.
 			METASOUNDFRONTEND_API bool IsEqual(const FMetasoundFrontendClassMetadata& InLHS, const FMetasoundFrontendClassMetadata& InRHS);
@@ -284,9 +251,13 @@ public:
 
 	static bool GetFrontendClassFromRegistered(const FNodeRegistryKey& InKey, FMetasoundFrontendClass& OutClass);
 	static bool GetNodeClassInfoFromRegistered(const FNodeRegistryKey& InKey, FNodeClassInfo& OutInfo);
+	UE_DEPRECATED(5.1, "Use GetInputNodeRegistryKeyForDataType with EMetasoundFrontendVertexAccessType instead.")
 	static bool GetInputNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey);
+	static bool GetInputNodeRegistryKeyForDataType(const FName& InDataTypeName, const EMetasoundFrontendVertexAccessType InAccessType, FNodeRegistryKey& OutKey);
 	static bool GetVariableNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey);
+	UE_DEPRECATED(5.1, "Use GetOutputNodeRegistryKeyForDataType with EMetasoundFrontendVertexAccessType instead.")
 	static bool GetOutputNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey);
+	static bool GetOutputNodeRegistryKeyForDataType(const FName& InDataTypeName, const EMetasoundFrontendVertexAccessType InAccessType, FNodeRegistryKey& OutKey);
 
 
 	FMetasoundFrontendRegistryContainer() = default;
@@ -303,8 +274,8 @@ public:
 	virtual void RegisterPendingNodes() = 0;
 
 	/** Perform function for each registry transaction since a given transaction ID. */
+	UE_DEPRECATED(5.1, "ForEachNodeRegistryTransactionSince is no longer be supported")
 	virtual void ForEachNodeRegistryTransactionSince(Metasound::Frontend::FRegistryTransactionID InSince, Metasound::Frontend::FRegistryTransactionID* OutCurrentRegistryTransactionID, TFunctionRef<void(const Metasound::Frontend::FNodeRegistryTransaction&)> InFunc) const = 0;
-
 
 	/** Register an external node with the frontend.
 	 *
@@ -314,7 +285,7 @@ public:
 	 * @return A node registration key. If the registration failed, then the registry 
 	 *         key will be invalid.
 	 */
-	virtual FNodeRegistryKey RegisterNode(TUniquePtr<Metasound::Frontend::INodeRegistryEntry>&&) = 0;
+	virtual FNodeRegistryKey RegisterNode(TUniquePtr<Metasound::Frontend::INodeRegistryEntry>&& InEntry) = 0;
 
 	/** Unregister an external node from the frontend.
 	 *
@@ -336,11 +307,13 @@ public:
 	// Query for MetaSound Frontend document objects.
 	virtual bool FindFrontendClassFromRegistered(const Metasound::Frontend::FNodeRegistryKey& InKey, FMetasoundFrontendClass& OutClass) = 0;
 	virtual bool FindNodeClassInfoFromRegistered(const Metasound::Frontend::FNodeRegistryKey& InKey, FNodeClassInfo& OutInfo) = 0;
-
+	UE_DEPRECATED(5.1, "Use FindInputNodeRegistryKeyForDataType with EMetasoundFrontendVertexAccessType instead.")
 	virtual bool FindInputNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey) = 0;
+	virtual bool FindInputNodeRegistryKeyForDataType(const FName& InDataTypeName, const EMetasoundFrontendVertexAccessType InAccessType, FNodeRegistryKey& OutKey) = 0;
 	virtual bool FindVariableNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey) = 0;
+	UE_DEPRECATED(5.1, "Use FindOutputNodeRegistryKeyForDataType with EMetasoundFrontendVertexAccessType instead.")
 	virtual bool FindOutputNodeRegistryKeyForDataType(const FName& InDataTypeName, FNodeRegistryKey& OutKey) = 0;
-
+	virtual bool FindOutputNodeRegistryKeyForDataType(const FName& InDataTypeName, const EMetasoundFrontendVertexAccessType InAccessType, FNodeRegistryKey& OutKey) = 0;
 
 	virtual TUniquePtr<Metasound::INode> CreateNode(const FNodeRegistryKey& InKey, const Metasound::FNodeInitData&) const = 0;
 	virtual TUniquePtr<Metasound::INode> CreateNode(const FNodeRegistryKey& InKey, Metasound::FDefaultLiteralNodeConstructorParams&&) const = 0;
@@ -354,7 +327,6 @@ public:
 	virtual TArray<FConverterNodeInfo> GetPossibleConverterNodes(const FName& FromDataType, const FName& ToDataType) = 0;
 
 private:
-	static FMetasoundFrontendRegistryContainer* LazySingleton;
 };
 
 

@@ -302,7 +302,7 @@ void FDisplayClusterDeviceBase::CalculateStereoViewOffset(const int32 ViewIndex,
 	// Get the actual camera settings
 	const float CfgEyeDist = ViewCamera->GetInterpupillaryDistance();
 	const bool  CfgEyeSwap = ViewCamera->GetSwapEyes();
-	const float CfgNCP     = 1.f;
+	const float CfgNCP     = GNearClippingPlane;
 	const EDisplayClusterEyeStereoOffset CfgEyeOffset = ViewCamera->GetStereoOffset();
 
 	// Calculate eye offset considering the world scale
@@ -463,7 +463,7 @@ DECLARE_GPU_STAT_NAMED(nDisplay_Device_RenderTexture, TEXT("nDisplay RenderDevic
 #include "RenderGraphUtils.h"
 #include "RenderGraphBuilder.h"
 
-void FDisplayClusterDeviceBase::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* BackBuffer, FRHITexture2D* SrcTexture, FVector2D WindowSize) const
+void FDisplayClusterDeviceBase::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* BackBuffer, FRHITexture* SrcTexture, FVector2D WindowSize) const
 {
 	SCOPED_GPU_STAT(RHICmdList, nDisplay_Device_RenderTexture);
 	SCOPED_DRAW_EVENT(RHICmdList, nDisplay_Device_RenderTexture);
@@ -476,11 +476,11 @@ void FDisplayClusterDeviceBase::RenderTexture_RenderThread(FRHICommandListImmedi
 			const FIntPoint SrcSize = SrcTexture->GetSizeXY();
 			const FIntPoint DstSize = BackBuffer->GetSizeXY();
 
-			FResolveRect CopyRect(0, 0, FMath::Min(SrcSize.X, DstSize.X), FMath::Min(SrcSize.Y, DstSize.Y));
-			FResolveParams CopyParams = {};
-			CopyParams.Rect = CopyParams.DestRect = CopyRect;
+			FRHICopyTextureInfo CopyInfo;
+			CopyInfo.Size.X = FMath::Min(SrcSize.X, DstSize.X);
+			CopyInfo.Size.Y = FMath::Min(SrcSize.Y, DstSize.Y);
 
-			RHICmdList.CopyToResolveTarget(SrcTexture, BackBuffer, CopyParams);
+			TransitionAndCopyTexture(RHICmdList, SrcTexture, BackBuffer, CopyInfo);
 		}
 
 		if (RenderFrameMode == EDisplayClusterRenderFrameMode::Stereo && ViewportManagerProxyPtr)
@@ -493,10 +493,8 @@ void FDisplayClusterDeviceBase::RenderTexture_RenderThread(FRHICommandListImmedi
 		if (bClearTextureEnabled)
 		{
 			// Clear render target before out frame resolving, help to make things look better visually for console/resize, etc.
-			FRHIRenderPassInfo RPInfo(SrcTexture, ERenderTargetActions::Clear_Store);
-			TransitionRenderPassTargets(RHICmdList, RPInfo);
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearTexture"));
-			RHICmdList.EndRenderPass();
+			RHICmdList.Transition(FRHITransitionInfo(SrcTexture, ERHIAccess::Unknown, ERHIAccess::RTV));
+			ClearRenderTarget(RHICmdList, SrcTexture);
 		}
 	}
 }

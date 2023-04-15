@@ -62,6 +62,11 @@ public:
 		return RenderTarget;
 	}
 
+	UTextureRenderTarget2D* GetRenderTargetTexturePostProcess() const
+	{
+		return RenderTargetPostProcess;
+	}
+
 	void UpdatePreviewResources();
 
 	UMeshComponent* GetPreviewMesh()
@@ -71,10 +76,18 @@ public:
 		return PreviewMesh;
 	}
 
+	UTexture* GetOverrideTexture() const
+	{
+		return OverrideTexture;
+	}
+
 	/** Create and retrieve a render texture 2d from the render target. */
 	UTexture* GetViewportPreviewTexture2D();
 
 	void ResetPreviewComponent(bool bInRestoreSceneMaterial);
+
+	/** Sets an override texture to display on the viewport instead of the render target */
+	void SetOverrideTexture(UTexture* InOverrideTexture);
 
 protected:
 	bool IsPreviewEnabled() const;
@@ -85,6 +98,13 @@ protected:
 	void UpdatePreviewRenderTarget();
 	void ReleasePreviewRenderTarget();
 
+private:
+	template<typename T>
+	void UpdateRenderTargetImpl(T* InOutRenderTarget);
+	template<typename T>
+	void ReleaseRenderTargetImpl(T* InOutRenderTarget);
+
+protected:
 	bool UpdatePreviewMesh();
 	void ReleasePreviewMesh();
 	void UpdatePreviewMeshReference();
@@ -100,40 +120,47 @@ protected:
 #if WITH_EDITORONLY_DATA
 protected:
 	// Texture for preview material
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Preview", meta = (DisplayName = "Render Target"))
-	UTextureRenderTarget2D* RenderTarget;
+	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadOnly, Category = "Preview", meta = (DisplayName = "Render Target"))
+	TObjectPtr<UTextureRenderTarget2D> RenderTarget;
 
+	// Texture when DCRA has post process disabled but is requesting a post process render target.
+	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadOnly, Category = "Preview")
+	TObjectPtr<UTextureRenderTarget2D> RenderTargetPostProcess;
+	
 private:
 	// Saved mesh policy params
-	UPROPERTY()
+	UPROPERTY(Transient)
 	FDisplayClusterConfigurationProjection WarpMeshSavedProjectionPolicy;
 
-	UPROPERTY()
-	ADisplayClusterRootActor* RootActor = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<ADisplayClusterRootActor> RootActor = nullptr;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	FString ViewportId;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	FString ClusterNodeId;
 
-	UPROPERTY()
-	UDisplayClusterConfigurationViewport* ViewportConfig = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UDisplayClusterConfigurationViewport> ViewportConfig = nullptr;
 
-	UPROPERTY()
-	UMeshComponent* PreviewMesh = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UMeshComponent> PreviewMesh = nullptr;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	bool bIsRootActorPreviewMesh = false;
 
-	UPROPERTY()
-	UMaterial* OriginalMaterial = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterial> OriginalMaterial = nullptr;
 
-	UPROPERTY()
-	UMaterial* PreviewMaterial = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterial> PreviewMaterial = nullptr;
 
-	UPROPERTY()
-	UMaterialInstanceDynamic* PreviewMaterialInstance = nullptr;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> PreviewMaterialInstance = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture> OverrideTexture = nullptr;
 
 #endif /*WITH_EDITORONLY_DATA*/
 };

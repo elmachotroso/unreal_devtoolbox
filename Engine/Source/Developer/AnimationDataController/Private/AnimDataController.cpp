@@ -16,6 +16,8 @@
 #include "Animation/AnimCurveTypes.h"
 #include "Math/UnrealMathUtility.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimDataController)
+
 #define LOCTEXT_NAMESPACE "AnimDataController"
 
 #if WITH_EDITOR
@@ -106,7 +108,7 @@ void UAnimDataController::CloseBracket(bool bShouldTransact /*= true*/)
 
 	if (BracketDepth == 0)
 	{
-		ReportError(LOCTEXT("NoExistingBracketError", "Attempt to close bracket that was not previously opened"));
+		Report(ELogVerbosity::Error, LOCTEXT("NoExistingBracketError", "Attempt to close bracket that was not previously opened"));
 		return;
 	}
 
@@ -124,7 +126,7 @@ void UAnimDataController::CloseBracket(bool bShouldTransact /*= true*/)
 		}
 		
 		Model->Notify(EAnimDataModelNotifyType::BracketClosed);
-	}
+    }
 }
 
 void UAnimDataController::SetPlayLength(float Length, bool bShouldTransact /*= true*/)
@@ -193,15 +195,15 @@ void UAnimDataController::SetFrameRate(FFrameRate FrameRate, bool bShouldTransac
 	{
 		CONDITIONAL_TRANSACTION(LOCTEXT("SetFrameRate", "Setting Frame Rate"));
 
-		CONDITIONAL_ACTION(UE::Anim::FSetFrameRateAction, Model);
+		CONDITIONAL_ACTION(UE::Anim::FSetFrameRateAction, Model.Get());
 
 		FFrameRateChangedPayload Payload;
 		Payload.PreviousFrameRate = Model->FrameRate;
-
-		Model->FrameRate = FrameRate;
+			
+			Model->FrameRate = FrameRate;
 		Model->NumberOfFrames = Model->FrameRate.AsFrameTime(Model->PlayLength).RoundToFrame().Value;
-		Model->NumberOfKeys = Model->NumberOfFrames + 1;
-
+			Model->NumberOfKeys = Model->NumberOfFrames + 1;
+			
 		Model->Notify(EAnimDataModelNotifyType::FrameRateChanged, Payload);
 	}
 	else
@@ -264,7 +266,7 @@ void UAnimDataController::UpdateCurveNamesFromSkeleton(const USkeleton* Skeleton
 	}
 	else
 	{
-		ReportError(LOCTEXT("UpdateCurveInvalidSkeletonError", "Invalid USkeleton supplied"));
+		Report(ELogVerbosity::Error, LOCTEXT("UpdateCurveInvalidSkeletonError", "Invalid USkeleton supplied"));
 	}
 }
 
@@ -319,7 +321,7 @@ void UAnimDataController::FindOrAddCurveNamesOnSkeleton(USkeleton* Skeleton, ERa
 	}
 	else
 	{
-		ReportError(LOCTEXT("FindOrAddCurveInvalidSkeletonError", "Invalid USkeleton supplied "));
+		Report(ELogVerbosity::Error, LOCTEXT("FindOrAddCurveInvalidSkeletonError", "Invalid USkeleton supplied "));
 	}
 }
 
@@ -351,7 +353,7 @@ bool UAnimDataController::RemoveBoneTracksMissingFromSkeleton(const USkeleton* S
 			{				
 				// Remove track
 				TracksToBeRemoved.Add(Track.Name);
-				ReportWarningf(LOCTEXT("InvalidBoneIndexWarning", "Unable to find bone index, animation track will be removed: {0}"), FText::FromName(Track.Name));				
+				Reportf(ELogVerbosity::Display, LOCTEXT("InvalidBoneIndexWarning", "Unable to find bone index, animation track will be removed: {0}"), FText::FromName(Track.Name));				
 			}			
 		}
 
@@ -375,7 +377,7 @@ bool UAnimDataController::RemoveBoneTracksMissingFromSkeleton(const USkeleton* S
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidSkeletonError", "Invalid USkeleton supplied"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidSkeletonError", "Invalid USkeleton supplied"));
 	}
 
 	return false;
@@ -425,7 +427,7 @@ void UAnimDataController::UpdateAttributesFromSkeleton(const USkeleton* Skeleton
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidSkeletonError", "Invalid USkeleton supplied"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidSkeletonError", "Invalid USkeleton supplied"));
 	}
 }
 
@@ -1006,7 +1008,7 @@ bool UAnimDataController::SetCurveColor(const FAnimationCurveIdentifier& CurveId
 		}
 		else
 		{
-			ReportWarning(LOCTEXT("NonSupportedCurveColorSetWarning", "Changing curve color is currently only supported for float curves"));
+			Report(ELogVerbosity::Warning, LOCTEXT("NonSupportedCurveColorSetWarning", "Changing curve color is currently only supported for float curves"));
 		}
 	}
 	else
@@ -1049,7 +1051,7 @@ bool UAnimDataController::ScaleCurve(const FAnimationCurveIdentifier& CurveId, f
 	}
 	else
 	{
-		ReportWarning(LOCTEXT("NonSupportedCurveScalingWarning", "Scaling curves is currently only supported for float curves"));
+		Report(ELogVerbosity::Warning, LOCTEXT("NonSupportedCurveScalingWarning", "Scaling curves is currently only supported for float curves"));
 	}
 
 	return false;
@@ -1158,6 +1160,42 @@ bool UAnimDataController::SetCurveKeys(const FAnimationCurveIdentifier& CurveId,
 	return false;
 }
 
+
+bool UAnimDataController::SetCurveAttributes(const FAnimationCurveIdentifier& CurveId, const FCurveAttributes& Attributes, bool bShouldTransact)
+{
+	ValidateModel();
+
+	FRichCurve* RichCurve = Model->GetMutableRichCurve(CurveId);
+	ERawCurveTrackTypes SupportedCurveType = CurveId.CurveType;
+	if (RichCurve)
+	{
+		CONDITIONAL_TRANSACTION(LOCTEXT("SettingNamedCurveAttributes", "Setting Curve Attributes"));
+
+		FCurveAttributes CurrentAttributes;
+		CurrentAttributes.SetPreExtrapolation(RichCurve->PreInfinityExtrap);
+		CurrentAttributes.SetPostExtrapolation(RichCurve->PostInfinityExtrap);		
+		CONDITIONAL_ACTION(UE::Anim::FSetRichCurveAttributesAction, CurveId, CurrentAttributes);
+
+		if(Attributes.HasPreExtrapolation())
+		{
+			RichCurve->PreInfinityExtrap = Attributes.GetPreExtrapolation();
+		}
+
+		if(Attributes.HasPostExtrapolation())
+		{
+			RichCurve->PostInfinityExtrap = Attributes.GetPostExtrapolation();
+		}		
+
+		FCurveChangedPayload Payload;
+		Payload.Identifier = CurveId;
+		Model->Notify(EAnimDataModelNotifyType::CurveChanged, Payload);
+
+		return true;
+	}
+
+	return false;
+}
+
 void UAnimDataController::NotifyPopulated()
 {
 	ValidateModel();
@@ -1207,7 +1245,7 @@ void UAnimDataController::ResizePlayLength(float Length, float T0, float T1, boo
 					Payload.T1 = T1;
 					Payload.PreviousLength = Model->PlayLength;
 
-					CONDITIONAL_ACTION(UE::Anim::FResizePlayLengthAction, Model, T0, T1);
+					CONDITIONAL_ACTION(UE::Anim::FResizePlayLengthAction, Model.Get(), T0, T1);
 
 					Model->PlayLength = Length;
 
@@ -1237,7 +1275,8 @@ void UAnimDataController::ResizePlayLength(float Length, float T0, float T1, boo
 	}
 }
 
-void UAnimDataController::ReportWarning(const FText& InMessage) const
+
+void UAnimDataController::Report(ELogVerbosity::Type InVerbosity, const FText& InMessage) const
 {
 	FString Message = InMessage.ToString();
 	if (Model != nullptr)
@@ -1248,28 +1287,14 @@ void UAnimDataController::ReportWarning(const FText& InMessage) const
 		}
 	}
 
-	FScriptExceptionHandler::Get().HandleException(ELogVerbosity::Warning, *Message, *FString());
-}
-
-void UAnimDataController::ReportError(const FText& InMessage) const
-{
-	FString Message = InMessage.ToString();
-	if (Model != nullptr)
-	{
-		if (UPackage* Package = Cast<UPackage>(Model->GetOutermost()))
-		{
-			Message = FString::Printf(TEXT("%s : %s"), *Package->GetPathName(), *Message);
-		}
-	}
-
-	FScriptExceptionHandler::Get().HandleException(ELogVerbosity::Error, *Message, *FString());
+	FScriptExceptionHandler::Get().HandleException(InVerbosity, *Message, *FString());
 }
 
 FString UAnimDataController::GetCurveTypeValueName(ERawCurveTrackTypes InType) const
 {
 	FString ValueString;
 
-	const UEnum* Enum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ERawCurveTrackTypes"));
+	const UEnum* Enum = FindObject<UEnum>(nullptr, TEXT("/Script/Engine.ERawCurveTrackTypes"));
 	if (Enum)
 	{
 		ValueString = Enum->GetNameStringByValue((int64)InType);
@@ -1357,24 +1382,24 @@ int32 UAnimDataController::InsertBoneTrack(FName BoneName, int32 DesiredIndex, b
 				}
 				else
 				{
-					ReportError(LOCTEXT("UnableToGetOuterSkeletonError", "Unable to retrieve Skeleton for outer Animation Sequence"));
+					Report(ELogVerbosity::Error, LOCTEXT("UnableToGetOuterSkeletonError", "Unable to retrieve Skeleton for outer Animation Sequence"));
 				}
 			}
 			else
 			{
-				ReportError(LOCTEXT("UnableToGetOuterAnimSequenceError", "Unable to retrieve outer Animation Sequence"));
+				Report(ELogVerbosity::Error, LOCTEXT("UnableToGetOuterAnimSequenceError", "Unable to retrieve outer Animation Sequence"));
 			}
 
-			FAnimationTrackAddedPayload Payload;
-			Payload.Name = BoneName;
-			Payload.TrackIndex = InsertIndex;
+				FAnimationTrackAddedPayload Payload;
+				Payload.Name = BoneName;
+				Payload.TrackIndex = InsertIndex;
 
 			Model->Notify<FAnimationTrackAddedPayload>(EAnimDataModelNotifyType::TrackAdded, Payload);
 			CONDITIONAL_ACTION(UE::Anim::FRemoveTrackAction, NewTrack, InsertIndex);
 
-			return InsertIndex;
+				return InsertIndex;
+			}
 		}
-	}
 	else
 	{
 		ReportWarningf(LOCTEXT("TrackNameAlreadyExistsWarning", "Track with name {0} already exists"), FText::FromName(BoneName));
@@ -1830,7 +1855,7 @@ bool UAnimDataController::AddAttribute(const FAnimationAttributeIdentifier& Attr
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
 	}
 
 	return false;
@@ -1867,7 +1892,7 @@ bool UAnimDataController::RemoveAttribute(const FAnimationAttributeIdentifier& A
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
 	}
 
 	return false;
@@ -1977,12 +2002,12 @@ bool UAnimDataController::SetAttributeKey_Internal(const FAnimationAttributeIden
 		}
 		else
 		{
-			ReportError(LOCTEXT("InvalidAttributeKey", "Invalid attribute key value provided"));
+			Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeKey", "Invalid attribute key value provided"));
 		}
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
 	}
 
 	return false;
@@ -2037,7 +2062,7 @@ bool UAnimDataController::SetAttributeKeys_Internal(const FAnimationAttributeIde
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
 	}
 
 	return false;
@@ -2074,7 +2099,7 @@ bool UAnimDataController::RemoveAttributeKey(const FAnimationAttributeIdentifier
 			}
 			else
 			{
-				ReportWarning(LOCTEXT("AttributeKeyNotFound", "Attribute does not contain key for provided time"));
+				Report(ELogVerbosity::Warning, LOCTEXT("AttributeKeyNotFound", "Attribute does not contain key for provided time"));
 			}	
 		}
 		else
@@ -2085,7 +2110,7 @@ bool UAnimDataController::RemoveAttributeKey(const FAnimationAttributeIdentifier
 	}
 	else
 	{
-		ReportError(LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
+		Report(ELogVerbosity::Error, LOCTEXT("InvalidAttributeIdentifier", "Invalid attribute identifier provided"));
 	}
 
 	return false;
@@ -2144,4 +2169,5 @@ bool UAnimDataController::DuplicateAttribute(const FAnimationAttributeIdentifier
 #endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE // "AnimDataController"
+
 

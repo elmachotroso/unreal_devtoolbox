@@ -2,28 +2,50 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Input/Reply.h"
-#include "Widgets/SCompoundWidget.h"
-#include "AssetData.h"
-#include "AssetTagItemTypes.h"
 #include "CollectionManagerTypes.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STreeView.h"
+#include "CollectionViewTypes.h"
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
 #include "Misc/TextFilter.h"
-#include "Editor/ContentBrowser/Private/CollectionViewTypes.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateConstants.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
 class FCollectionAssetManagement;
-class FCollectionContextMenu;
-class FCollectionDragDropOp;
+class FDragDropEvent;
+class FMenuBuilder;
+class FName;
+class FSlateRect;
 class FSourcesSearch;
 class FUICommandList;
+class ITableRow;
 class SHorizontalBox;
+class SWidget;
+struct FGeometry;
 struct FHistoryData;
+struct FKeyEvent;
+struct FPointerEvent;
+struct FSlateBrush;
 
 /**
  * The list view of collections.
@@ -83,7 +105,7 @@ public:
 	TArray<FCollectionNameType> GetSelectedCollections() const;
 
 	/** Let the collections view know that the list of selected assets has changed, so that it can update the quick asset management check boxes */
-	void SetSelectedAssetPaths(const TArray<FName>& SelectedAssets);
+	void SetSelectedAssetPaths(const TArray<FSoftObjectPath>& SelectedAssets);
 
 	/** Sets the state of the collection view to the one described by the history data */
 	void ApplyHistoryData ( const FHistoryData& History );
@@ -102,7 +124,7 @@ public:
 	virtual FReply OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override;
 
 	/** Creates the menu for the save dynamic collection button */
-	void MakeSaveDynamicCollectionMenu(FText InQueryString);
+	void MakeSaveDynamicCollectionMenu(FText InQueryString, FSimpleDelegate OnSaveSearchClicked = FSimpleDelegate());
 
 	/** Creates the menu for the add collection button */
 	FReply OnAddCollectionClicked();
@@ -232,10 +254,10 @@ private:
 	void HandleCollectionUpdated( const FCollectionNameType& Collection );
 
 	/** Handles assets being added to a collection */
-	void HandleAssetsAddedToCollection( const FCollectionNameType& Collection, const TArray<FName>& AssetsAdded );
+	void HandleAssetsAddedToCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsAdded );
 
 	/** Handles assets being removed from a collection */
-	void HandleAssetsRemovedFromCollection( const FCollectionNameType& Collection, const TArray<FName>& AssetsRemoved );
+	void HandleAssetsRemovedFromCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsRemoved );
 
 	/** Handles the source control provider changing */
 	void HandleSourceControlProviderChanged(class ISourceControlProvider& OldProvider, class ISourceControlProvider& NewProvider);
@@ -257,6 +279,9 @@ private:
 
 	/** Get the active filter text */
 	FText GetCollectionsSearchFilterText() const;
+
+	/** Make the menu to save a search using the given delegate */
+	void MakeSaveSearchMenu(FMenuBuilder& InMenuBuilder, FSimpleDelegate OnSaveSearchClicked) const;
 private:
 
 	/** A helper class to manage PreventSelectionChangedDelegateCount by incrementing it when constructed (on the stack) and decrementing when destroyed */

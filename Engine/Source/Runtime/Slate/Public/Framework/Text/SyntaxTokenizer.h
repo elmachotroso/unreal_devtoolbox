@@ -1,15 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
 
-/**
- * Tokenize the text based upon the given rule set
- */
-class SLATE_API FSyntaxTokenizer
+class SLATE_API ISyntaxTokenizer
 {
 public:
-
 	/** Denotes the type of token */
 	enum class ETokenType : uint8
 	{
@@ -39,6 +40,17 @@ public:
 		TArray<FToken> Tokens;
 	};
 
+	virtual ~ISyntaxTokenizer() {};
+	
+	virtual void Process(TArray<FTokenizedLine>& OutTokenizedLines, const FString& Input) = 0;
+};
+
+/**
+ * Tokenize the text based upon the given rule set
+ */
+class SLATE_API FSyntaxTokenizer : public ISyntaxTokenizer
+{
+public:
 	/** Rule used to match syntax token types */
 	struct FRule
 	{
@@ -58,7 +70,7 @@ public:
 
 	virtual ~FSyntaxTokenizer();
 
-	void Process(TArray<FTokenizedLine>& OutTokenizedLines, const FString& Input);
+	virtual void Process(TArray<FTokenizedLine>& OutTokenizedLines, const FString& Input) override;
 
 private:
 

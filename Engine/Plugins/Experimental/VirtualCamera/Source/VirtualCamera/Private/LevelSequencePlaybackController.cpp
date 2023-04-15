@@ -2,11 +2,12 @@
 
 #include "LevelSequencePlaybackController.h"
 
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "HAL/FileManager.h"
 #include "LevelSequence.h"
 #include "Modules/ModuleManager.h"
+#include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
 #include "UObject/UObjectBase.h"
 #include "UObject/UObjectIterator.h"
@@ -39,7 +40,7 @@ void ULevelSequencePlaybackController::GetLevelSequences(TArray<FLevelSequenceDa
 	if (AssetRegistryModule)
 	{
 		IAssetRegistry& AssetRegistry = AssetRegistryModule->Get();
-		if (!AssetRegistry.GetAssetsByClass("LevelSequence", LevelSequences, false))
+		if (!AssetRegistry.GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/LevelSequence"), TEXT("LevelSequence")), LevelSequences, false))
 		{
 			UE_LOG(LogActor, Error, TEXT("VirtualCamera - No Asset Registry module found!"));
 			return;
@@ -56,7 +57,7 @@ void ULevelSequencePlaybackController::GetLevelSequences(TArray<FLevelSequenceDa
 		);
 
 		FLevelSequenceData NewSequenceData = FLevelSequenceData(
-			LevelSequence.ObjectPath.ToString(),
+			LevelSequence.GetObjectPathString(),
 			LevelSequence.AssetName.ToString(),
 			FileManager.GetTimeStamp(*LevelSequenceFile)
 		);

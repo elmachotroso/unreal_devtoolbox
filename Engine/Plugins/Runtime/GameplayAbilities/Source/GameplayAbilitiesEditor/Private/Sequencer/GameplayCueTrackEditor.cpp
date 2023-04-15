@@ -5,7 +5,7 @@
 #include "Sequencer/MovieSceneGameplayCueSections.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "UObject/Package.h"
 #include "Tracks/MovieSceneEventTrack.h"
 #include "ISequencerSection.h"
@@ -140,12 +140,17 @@ bool FGameplayCueTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) c
 
 bool FGameplayCueTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
+	if (InSequence && InSequence->IsTrackSupported(UMovieSceneGameplayCueTrack::StaticClass()) == ETrackSupport::NotSupported)
+	{
+		return false;
+	}
+
 	return true;
 }
 
 const FSlateBrush* FGameplayCueTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Event");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Event");
 }
 
 void FGameplayCueTrackEditor::AddTracks(TRange<FFrameNumber> SectionTickRange, UClass* SectionClass, TArray<FGuid> InObjectBindingIDs)
@@ -168,10 +173,10 @@ void FGameplayCueTrackEditor::AddTracks(TRange<FFrameNumber> SectionTickRange, U
 
 	if (InObjectBindingIDs.Num() == 0)
 	{
-		UMovieSceneGameplayCueTrack* NewMasterTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneGameplayCueTrack>();
-		AddSectionToTrack(NewMasterTrack, SectionTickRange, SectionClass);
+		UMovieSceneGameplayCueTrack* NewMainTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneGameplayCueTrack>();
+		AddSectionToTrack(NewMainTrack, SectionTickRange, SectionClass);
 
-		SequencerPtr->OnAddTrack(NewMasterTrack, FGuid());
+		SequencerPtr->OnAddTrack(NewMainTrack, FGuid());
 	}
 	else for (const FGuid& ObjectBindingID : InObjectBindingIDs)
 	{

@@ -18,9 +18,16 @@ private:
 	virtual TAttribute<FText> GetContentText() override;
 	virtual TSharedRef<SWidget> HandleSourceComboButtonMenuContent() override;
 
+	ECheckBoxState GetAutoCheckboxState() const;
+	void SetAutoCheckboxState(ECheckBoxState CheckboxState);
 	void OnSelectionChanged(FMediaIOConfiguration SelectedItem);
-	FReply OnButtonClicked() const;
+	FReply OnButtonClicked();
+	bool ShowAdvancedColumns(FName ColumnName, const TArray<FMediaIOConfiguration>& UniquePermutationsForThisColumn) const;
+	bool IsAutoDetected() const;
+	void SetIsAutoDetected(bool Value);
 
+private:
 	TWeakPtr<SWidget> PermutationSelector;
 	FMediaIOConfiguration SelectedConfiguration;
+	bool bAutoDetectFormat = true;
 };

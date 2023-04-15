@@ -115,12 +115,12 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 				continue;
 			}
 
-			const UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter();
+			const FVersionedNiagaraEmitterData* EmitterData = EmitterInstance->GetCachedEmitterData();
 			FNiagaraComputeExecutionContext* GPUContext = EmitterInstance->GetGPUContext();
 
-			check(Emitter);
+			check(EmitterData);
 
-			if (!Emitter || !GPUContext || Emitter->SimTarget != ENiagaraSimTarget::GPUComputeSim)
+			if (!EmitterData || !GPUContext || EmitterData->SimTarget != ENiagaraSimTarget::GPUComputeSim)
 			{
 				continue;
 			}
@@ -152,13 +152,12 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 			}
 			InstanceData->ParticleCountFence = GPUContext->ParticleCountReadFence;
 
-			int32 ParmSize = GPUContext->CombinedParamStore.GetPaddedParameterSizeInBytes();
-
 			InstanceData->EmitterParamData = ParamDataBufferPtr;
 			ParamDataBufferPtr += InterpFactor * sizeof(FNiagaraEmitterParameters);
 
 			InstanceData->ExternalParamData = ParamDataBufferPtr;
-			ParamDataBufferPtr += ParmSize;
+			InstanceData->ExternalParamDataSize = GPUContext->CombinedParamStore.GetPaddedParameterSizeInBytes();
+			ParamDataBufferPtr += InstanceData->ExternalParamDataSize;
 
 			// actually copy all of the data over
 			FMemory::Memcpy(InstanceData->EmitterParamData, &InSystemInstance->GetEmitterParameters(EmitterIdx), sizeof(FNiagaraEmitterParameters));
@@ -167,7 +166,10 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 				FMemory::Memcpy(InstanceData->EmitterParamData + sizeof(FNiagaraEmitterParameters), &InSystemInstance->GetEmitterParameters(EmitterIdx, true), sizeof(FNiagaraEmitterParameters));
 			}
 
-			GPUContext->CombinedParamStore.CopyParameterDataToPaddedBuffer(InstanceData->ExternalParamData, ParmSize);
+			bHasMultipleStages = InstanceData->bHasMultipleStages;
+			bHasInterpolatedParameters |= GPUContext->HasInterpolationParameters;
+
+			GPUContext->CombinedParamStore.CopyParameterDataToPaddedBuffer(InstanceData->ExternalParamData, InstanceData->ExternalParamDataSize);
 
 			// Calling PostTick will push current -> previous parameters this must be done after copying the parameter data
 			GPUContext->PostTick();
@@ -194,10 +196,11 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 
 			// Gather number of iterations for each stage, and if the stage should run or not
 			InstanceData->bHasMultipleStages = false;
-			InstanceData->NumIterationsPerStage.Reserve(GPUContext->SimStageInfo.Num());
+			InstanceData->PerStageInfo.Reserve(GPUContext->SimStageInfo.Num());
 			for ( FSimulationStageMetaData& SimStageMetaData : GPUContext->SimStageInfo )
 			{
 				int32 NumIterations = SimStageMetaData.NumIterations;
+				FIntVector ElementCountXYZ = FIntVector::NoneValue;
 				if (SimStageMetaData.ShouldRunStage(InstanceData->bResetData))
 				{
 					InstanceData->bHasMultipleStages = true;
@@ -219,6 +222,38 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 							NumIterations = StageEnabled.GetValue() ? NumIterations : 0;
 						}
 					}
+					if (SimStageMetaData.bOverrideElementCount)
+					{
+						if (!SimStageMetaData.ElementCountXBinding.IsNone() && (SimStageMetaData.GpuDispatchType >= ENiagaraGpuDispatchType::OneD))
+						{
+							FNiagaraParameterStore& BoundParamStore = EmitterInstance->GetRendererBoundVariables();
+							if (const uint8* ParameterData = BoundParamStore.GetParameterData(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), SimStageMetaData.ElementCountXBinding)))
+							{
+								ElementCountXYZ.X = *reinterpret_cast<const int32*>(ParameterData);
+							}
+						}
+						if (!SimStageMetaData.ElementCountYBinding.IsNone() && (SimStageMetaData.GpuDispatchType >= ENiagaraGpuDispatchType::TwoD))
+						{
+							FNiagaraParameterStore& BoundParamStore = EmitterInstance->GetRendererBoundVariables();
+							if (const uint8* ParameterData = BoundParamStore.GetParameterData(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), SimStageMetaData.ElementCountYBinding)))
+							{
+								ElementCountXYZ.Y = *reinterpret_cast<const int32*>(ParameterData);
+							}
+						}
+						if (!SimStageMetaData.ElementCountZBinding.IsNone() && (SimStageMetaData.GpuDispatchType >= ENiagaraGpuDispatchType::ThreeD))
+						{
+							FNiagaraParameterStore& BoundParamStore = EmitterInstance->GetRendererBoundVariables();
+							if (const uint8* ParameterData = BoundParamStore.GetParameterData(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), SimStageMetaData.ElementCountZBinding)))
+							{
+								ElementCountXYZ.Z = *reinterpret_cast<const int32*>(ParameterData);
+							}
+						}
+
+						// make sure we don't have negatives as we use the values directly for dispatch
+						ElementCountXYZ.X = FMath::Max(0, ElementCountXYZ.X);
+						ElementCountXYZ.Y = FMath::Max(0, ElementCountXYZ.Y);
+						ElementCountXYZ.Z = FMath::Max(0, ElementCountXYZ.Z);
+					}
 				}
 				else
 				{
@@ -226,7 +261,7 @@ void FNiagaraGPUSystemTick::Init(FNiagaraSystemInstance* InSystemInstance)
 				}
 
 				InstanceData->TotalDispatches += NumIterations;
-				InstanceData->NumIterationsPerStage.Add(NumIterations);
+				InstanceData->PerStageInfo.Emplace(NumIterations, ElementCountXYZ);
 			}
 			TotalDispatches += InstanceData->TotalDispatches;
 		}
@@ -255,54 +290,34 @@ void FNiagaraGPUSystemTick::Destroy()
 	}
 }
 
-FUniformBufferRHIRef FNiagaraGPUSystemTick::GetUniformBuffer(EUniformBufferType Type, const FNiagaraComputeInstanceData* Instance, bool Current) const
+void FNiagaraGPUSystemTick::BuildUniformBuffers()
 {
-	const int32 InterpOffset = Current
-		? 0
-		: (UBT_NumSystemTypes + InstanceCount * UBT_NumInstanceTypes);
+	check(ExternalUnformBuffers_RT.Num() == 0);
 
-	if (Instance)
+	const int32 InterpCount = bHasInterpolatedParameters ? 2 : 1;
+	ExternalUnformBuffers_RT.AddDefaulted(InstanceCount * InterpCount);
+
+	TArrayView<FNiagaraComputeInstanceData> Instances = GetInstances();
+	for (uint32 iInstance=0; iInstance < InstanceCount; ++iInstance)
 	{
-		check(Type >= UBT_FirstInstanceType);
-		check(Type < UBT_NumTypes);
+		const FNiagaraComputeInstanceData& Instance = Instances[iInstance];
 
-		const int32 InstanceTypeIndex = Type - UBT_FirstInstanceType;
-
-		const int32 InstanceIndex = (Instance - GetInstances().GetData());
-		return UniformBuffers[InterpOffset + UBT_NumSystemTypes + InstanceCount * InstanceTypeIndex + InstanceIndex];
-	}
-
-	check(Type >= UBT_FirstSystemType);
-	check(Type < UBT_FirstInstanceType);
-
-	return UniformBuffers[InterpOffset + Type];
-}
-
-const uint8* FNiagaraGPUSystemTick::GetUniformBufferSource(EUniformBufferType Type, const FNiagaraComputeInstanceData* Instance, bool Current) const
-{
-	check(Type >= UBT_FirstSystemType);
-	check(Type < UBT_NumTypes);
-
-	switch (Type)
-	{
-		case UBT_Global:
-			return GlobalParamData + (Current ? 0 : sizeof(FNiagaraGlobalParameters));
-		case UBT_System:
-			return SystemParamData + (Current ? 0 : sizeof(FNiagaraSystemParameters));
-		case UBT_Owner:
-			return OwnerParamData + (Current ? 0 : sizeof(FNiagaraOwnerParameters));
-		case UBT_Emitter:
+		FNiagaraRHIUniformBufferLayout* ExternalCBufferLayout = Instance.Context->ExternalCBufferLayout;
+		const bool bExternalLayoutValid = ExternalCBufferLayout && (ExternalCBufferLayout->Resources.Num() || ExternalCBufferLayout->ConstantBufferSize > 0);
+		if ( Instance.Context->GPUScript_RT->IsExternalConstantBufferUsed_RenderThread(0) )
 		{
-			check(Instance);
-			return Instance->EmitterParamData + (Current ? 0 : sizeof(FNiagaraEmitterParameters));
+			if ( ensure(ExternalCBufferLayout && bExternalLayoutValid) )
+			{
+				ExternalUnformBuffers_RT[iInstance] = RHICreateUniformBuffer(Instance.ExternalParamData, ExternalCBufferLayout, bHasMultipleStages ? EUniformBufferUsage::UniformBuffer_SingleFrame : EUniformBufferUsage::UniformBuffer_SingleDraw);
+			}
 		}
-		case UBT_External:
+		if ( Instance.Context->GPUScript_RT->IsExternalConstantBufferUsed_RenderThread(1) )
 		{
-			// External parameters are pushed from the combined parameters store, split into two where first half is current second is previous
-			check(Instance && Instance->Context);
-			return Instance->ExternalParamData + (Current ? 0 : Instance->Context->ExternalCBufferLayoutSize);
+			if (ensure(ExternalCBufferLayout && bExternalLayoutValid))
+			{
+				check(ExternalCBufferLayout->ConstantBufferSize + ExternalCBufferLayout->ConstantBufferSize <= Instance.ExternalParamDataSize);
+				ExternalUnformBuffers_RT[InstanceCount + iInstance] = RHICreateUniformBuffer(Instance.ExternalParamData + ExternalCBufferLayout->ConstantBufferSize, ExternalCBufferLayout, bHasMultipleStages ? EUniformBufferUsage::UniformBuffer_SingleFrame : EUniformBufferUsage::UniformBuffer_SingleDraw);
+			}
 		}
 	}
-
-	return nullptr;
 }

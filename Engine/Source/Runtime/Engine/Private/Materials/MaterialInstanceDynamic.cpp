@@ -15,9 +15,21 @@
 #include "Stats/StatsMisc.h"
 #include "HAL/LowLevelMemTracker.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialInstanceDynamic)
+
 UMaterialInstanceDynamic::UMaterialInstanceDynamic(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+}
+
+void FMaterialInstanceCachedData::InitializeForDynamic(const FMaterialLayersFunctions* ParentLayers)
+{
+	const int32 NumLayers = ParentLayers ? ParentLayers->Layers.Num() : 0;
+	ParentLayerIndexRemap.Empty(NumLayers);
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+	{
+		ParentLayerIndexRemap.Add(LayerIndex);
+	}
 }
 
 void UMaterialInstanceDynamic::UpdateCachedDataDynamic()
@@ -39,6 +51,10 @@ void UMaterialInstanceDynamic::UpdateCachedDataDynamic()
 	{
 		Resource->GameThread_UpdateCachedData(*CachedData);
 	}
+
+#if WITH_EDITOR
+	FObjectCacheEventSink::NotifyReferencedTextureChanged_Concurrent(this);
+#endif // WITH_EDITOR
 }
 
 #if WITH_EDITOR
@@ -116,7 +132,7 @@ void UMaterialInstanceDynamic::SetVectorParameterValue(FName ParameterName, FLin
 	SetVectorParameterValueInternal(ParameterInfo,Value);
 }
 
-void UMaterialInstanceDynamic::SetDoubleVectorParameterValue(FName ParameterName, FVector Value)
+void UMaterialInstanceDynamic::SetDoubleVectorParameterValue(FName ParameterName, FVector4 Value)
 {
 	FMaterialParameterInfo ParameterInfo(ParameterName);
 	SetDoubleVectorParameterValueInternal(ParameterInfo, Value);
@@ -448,6 +464,11 @@ void UMaterialInstanceDynamic::CopyInterpParameters(UMaterialInstance* Source)
 			SetVectorParameterValue(it.ParameterInfo.Name, it.ParameterValue);
 		}
 
+		for (auto& it : Source->DoubleVectorParameterValues)
+		{
+			SetDoubleVectorParameterValue(it.ParameterInfo.Name, it.ParameterValue);
+		}
+
 		for (auto& it : Source->TextureParameterValues)
 		{
 			SetTextureParameterValue(it.ParameterInfo.Name, it.ParameterValue);
@@ -468,6 +489,7 @@ void UMaterialInstanceDynamic::CopyParameterOverrides(UMaterialInstance* Materia
 	if (ensureAsRuntimeWarning(MaterialInstance != nullptr))
 	{
 		VectorParameterValues = MaterialInstance->VectorParameterValues;
+		DoubleVectorParameterValues = MaterialInstance->DoubleVectorParameterValues;
 		ScalarParameterValues = MaterialInstance->ScalarParameterValues;
 		TextureParameterValues = MaterialInstance->TextureParameterValues;
 		FontParameterValues = MaterialInstance->FontParameterValues;
@@ -495,3 +517,4 @@ float UMaterialInstanceDynamic::GetTextureDensity(FName TextureName, const struc
 	}
 	return Density;
 }
+

@@ -29,6 +29,7 @@
 #include "MeshPaintModeHelpers.h"
 #include "MeshTexturePaintingTool.h"
 #include "ContentBrowserDelegates.h"
+#include "GeometryCollection/GeometryCollectionComponent.h"
 
 #define LOCTEXT_NAMESPACE "MeshPaintCustomization"
 
@@ -106,14 +107,14 @@ void FVertexPaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder
 			.AutoWidth()
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ToolTipText(NSLOCTEXT("VertexPaintSettings", "SwapColors", "Swap Paint and Erase Colors"))
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
 				.OnClicked(this, &FVertexPaintingSettingsCustomization::OnSwapColorsClicked, PaintColor, EraseColor)
 				.ContentPadding(0)
 				[
-					SNew(SImage).Image(FEditorStyle::GetBrush("MeshPaint.Swap"))
+					SNew(SImage).Image(FAppStyle::GetBrush("MeshPaint.Swap"))
 				]
 			]
 		];
@@ -303,10 +304,17 @@ void FColorPaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder&
 			{
 				static const FText SkelMeshNotificationText = LOCTEXT("SkelMeshAssetPaintInfo", "Paint is propagated to Skeletal Mesh Asset(s)");
 				static const FText StaticMeshNotificationText = LOCTEXT("StaticMeshAssetPaintInfo", "Paint is applied to all LODs");
+				static const FText GeometryCollectionNotificationText = LOCTEXT("GeometryCollectionAssetPaintInfo", "Paint is propagated to Geometry Collection Asset(s), and Geometry Collection does not currently support LODs.");
 
+				const bool bGeometryCollectionText = UMeshPaintMode::GetMeshPaintMode()->GetSelectedComponents<UGeometryCollectionComponent>().Num() > 0;
 				const bool bSkelMeshText = UMeshPaintMode::GetMeshPaintMode()->GetSelectedComponents<USkeletalMeshComponent>().Num() > 0;
 				const bool bLODPaintText = UMeshPaintMode::GetColorToolProperties() ?  !UMeshPaintMode::GetColorToolProperties()->bPaintOnSpecificLOD : false;
-				return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}")), bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(), bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(), bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty());
+				return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}{3}")), 
+					bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(),
+					bGeometryCollectionText ? GeometryCollectionNotificationText : FText::GetEmpty(),
+					bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(),
+					bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty()
+					);
 			})
 		];
 }
@@ -512,14 +520,14 @@ void FTexturePaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilde
 					.AutoWidth()
 					[
 						SNew(SButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.ToolTipText(NSLOCTEXT("VertexPaintSettings", "SwapColors", "Swap Paint and Erase Colors"))
 						.HAlign(HAlign_Center)
 						.VAlign(VAlign_Center)
 						.OnClicked(this, &FTexturePaintingSettingsCustomization::OnSwapColorsClicked, PaintColor, EraseColor)
 						.ContentPadding(0)
 						[
-							SNew(SImage).Image(FEditorStyle::GetBrush("MeshPaint.Swap"))
+							SNew(SImage).Image(FAppStyle::GetBrush("MeshPaint.Swap"))
 						]
 					]
 				];

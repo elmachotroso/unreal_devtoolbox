@@ -45,10 +45,8 @@ FPrimitiveIdVertexBufferPool::~FPrimitiveIdVertexBufferPool()
 	check(!Entries.Num());
 }
 
-FPrimitiveIdVertexBufferPoolEntry FPrimitiveIdVertexBufferPool::Allocate(int32 BufferSize)
+FPrimitiveIdVertexBufferPoolEntry FPrimitiveIdVertexBufferPool::Allocate(FRHICommandList& RHICmdList, int32 BufferSize)
 {
-	check(IsInRenderingThread());
-
 	FScopeLock Lock(&AllocationCS);
 
 	BufferSize = Align(BufferSize, 1024);
@@ -88,7 +86,7 @@ FPrimitiveIdVertexBufferPoolEntry FPrimitiveIdVertexBufferPool::Allocate(int32 B
 		NewEntry.LastDiscardId = DiscardId;
 		NewEntry.BufferSize = BufferSize;
 		FRHIResourceCreateInfo CreateInfo(TEXT("FPrimitiveIdVertexBufferPool"));
-		NewEntry.BufferRHI = RHICreateVertexBuffer(NewEntry.BufferSize, BUF_Volatile, CreateInfo);
+		NewEntry.BufferRHI = RHICmdList.CreateBuffer(NewEntry.BufferSize, BUF_VertexBuffer | BUF_Volatile, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 		return NewEntry;
 	}
@@ -143,6 +141,7 @@ void UpdateTranslucentMeshSortKeys(
 	const FMatrix& ViewMatrix,
 	const TArray<struct FPrimitiveBounds>& PrimitiveBounds,
 	ETranslucencyPass::Type TranslucencyPass, 
+	bool bInverseSorting,
 	FMeshCommandOneFrameArray& VisibleMeshCommands
 	)
 {
@@ -179,75 +178,19 @@ void UpdateTranslucentMeshSortKeys(
 		const float DistanceOffset = *((float*)&PackedOffset);
 		Distance += DistanceOffset;
 
+		// Sort front-to-back instead of back-to-front
+		if (bInverseSorting)
+		{
+			const float MaxSortingDistance = 1000000.f; // 100km, arbitrary
+			Distance = MaxSortingDistance - Distance;
+		}
+
 		// Patch distance inside translucent mesh sort key.
 		FMeshDrawCommandSortKey SortKey;
 		SortKey.PackedData = VisibleCommand.SortKey.PackedData;
 		SortKey.Translucent.Distance = (uint32)~BitInvertIfNegativeFloat(*((uint32*)&Distance));
 		VisibleCommand.SortKey.PackedData = SortKey.PackedData;
 	}
-}
-
-static uint64 GetMobileBasePassSortKey_FrontToBack(bool bMasked, bool bBackground, uint32 PipelineId, int32 StateBucketId, float PrimitiveDistance)
-{
-	union
-	{
-		uint64 PackedInt;
-		struct
-		{
-			uint64 StateBucketId : 27; 		// Order by state bucket
-			uint64 PipelineId : 20;			// Order by PSO
-			uint64 DepthBits : 15;			// Order by primitive depth
-			uint64 Background : 1;			// Non-background meshes first 
-			uint64 Masked : 1;				// Non-masked first
-		} Fields;
-	} Key;
-
-	union FFloatToInt { float F; uint32 I; };
-	FFloatToInt F2I;
-
-	Key.Fields.Masked = bMasked;
-	Key.Fields.Background = bBackground;
-	F2I.F = PrimitiveDistance;
-	Key.Fields.DepthBits = ((-int32(F2I.I >> 31) | 0x80000000) ^ F2I.I) >> 17;
-	Key.Fields.PipelineId = PipelineId;
-	Key.Fields.StateBucketId = StateBucketId;
-	
-	return Key.PackedInt;
-}
-
-static uint64 GetMobileBasePassSortKey_ByState(bool bMasked, bool bBackground, int32 PipelineId, int32 StateBucketId, float PipelineDistance, float PrimitiveDistance)
-{
-	// maximum primitive distance for bucketing, aprox 10.5km 
-	constexpr float PrimitiveMaxDepth = (1 << 20);
-	constexpr float PrimitiveDepthQuantization = ((1 << 14) - 1);
-	
-	union
-	{
-		uint64 PackedInt;
-		struct
-		{
-			uint64 DepthBits : 14;			// Order by primitive depth
-			uint64 StateBucketId : 20; 		// Order by state bucket
-			uint64 PipelineId : 20;			// Order by PSO
-			uint64 PipelineDepthBits : 8;	// Order PSOs front to back
-			uint64 Background : 1;			// Non-background meshes first 
-			uint64 Masked : 1;				// Non-masked first
-		} Fields;
-	} Key;
-
-	union FFloatToInt { float F; uint32 I; };
-	FFloatToInt F2I;
-
-	Key.PackedInt = 0;
-	Key.Fields.Masked = bMasked;
-	Key.Fields.Background = bBackground;
-	F2I.F = PipelineDistance / PrimitiveMaxDepth;
-	Key.Fields.PipelineDepthBits = (F2I.I >> 23) & 0xff; // 8 bit exponent
-	Key.Fields.PipelineId = PipelineId;
-	Key.Fields.StateBucketId = StateBucketId;
-	Key.Fields.DepthBits = int32((FMath::Min<float>(PrimitiveDistance, PrimitiveMaxDepth) / PrimitiveMaxDepth) * PrimitiveDepthQuantization);
-
-	return Key.PackedInt;
 }
 
 /**
@@ -297,6 +240,79 @@ void MergeMobileBasePassMeshDrawCommands(
 	}
 }
 
+static uint64 GetMobileBasePassSortKey_FrontToBack(bool bMasked, bool bBackground, uint32 PipelineId, int32 StateBucketId, float PrimitiveDistance)
+{
+	union
+	{
+		uint64 PackedInt;
+		struct
+		{
+			uint64 StateBucketId : 25; 		// Order by state bucket
+			uint64 PipelineId : 22;			// Order by PSO
+			uint64 DepthBits : 15;			// Order by primitive depth
+			uint64 Background : 1;			// Non-background meshes first 
+			uint64 Masked : 1;				// Non-masked first
+		} Fields;
+	} Key;
+
+	union FFloatToInt { float F; uint32 I; };
+	FFloatToInt F2I;
+
+	Key.Fields.Masked = bMasked;
+	Key.Fields.Background = bBackground;
+	F2I.F = PrimitiveDistance;
+	Key.Fields.DepthBits = ((-int32(F2I.I >> 31) | 0x80000000) ^ F2I.I) >> 17;
+	Key.Fields.PipelineId = PipelineId;
+	Key.Fields.StateBucketId = StateBucketId;
+
+	return Key.PackedInt;
+}
+
+static uint32 DepthBuckets_4(float Distance)
+{
+	union FFloatToInt { float F; uint32 I; };
+	FFloatToInt F2I;
+
+	F2I.F = Distance;
+	// discard distance shorter than 64
+	int32 Exp = ((F2I.I >> 23u) & 0xff) - (127 + 6);
+	// 16 buckets, ranging from 64 to 2km
+	return (uint32)FMath::Clamp<int32>(Exp, 0, 15);
+}
+
+static uint64 GetMobileBasePassSortKey_ByState(bool bMasked, bool bBackground, uint32 PipelineId, uint32 StateBucketId, float PipelineDistance, float StateBucketDistance, float PrimitiveDistance)
+{
+	// maximum primitive distance for bucketing, aprox 10.5km 
+	constexpr float PrimitiveMaxDepth = (1 << 20);
+	constexpr float PrimitiveDepthQuantization = ((1 << 12) - 1);
+
+	union
+	{
+		uint64 PackedInt;
+		struct
+		{
+			uint64 DepthBits : 12;			// Order by primitive depth
+			uint64 StateBucketId : 20; 		// Order by state bucket
+			uint64 StateBucketDepthBits : 4;// Order state buckets front to back
+			uint64 PipelineId : 22;			// Order by PSO
+			uint64 PipelineDepthBits : 4;	// Order PSOs front to back
+			uint64 Background : 1;			// Non-background meshes first 
+			uint64 Masked : 1;				// Non-masked first
+		} Fields;
+	} Key;
+
+	Key.PackedInt = 0;
+	Key.Fields.Masked = bMasked;
+	Key.Fields.Background = bBackground;
+	Key.Fields.PipelineDepthBits = DepthBuckets_4(PipelineDistance);
+	Key.Fields.PipelineId = PipelineId;
+	Key.Fields.StateBucketDepthBits = DepthBuckets_4(StateBucketDistance);
+	Key.Fields.StateBucketId = StateBucketId;
+	Key.Fields.DepthBits = uint32((FMath::Min<float>(PrimitiveDistance, PrimitiveMaxDepth) / PrimitiveMaxDepth) * PrimitiveDepthQuantization);
+
+	return Key.PackedInt;
+}
+
 /**
 * Compute mesh sort keys for the mobile base pass
 */
@@ -307,7 +323,10 @@ void UpdateMobileBasePassMeshSortKeys(
 )
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_UpdateMobileBasePassMeshSortKeys);
-	
+
+	// Object radius past which we treat object as part of 'background'
+	constexpr float MIN_BACKGROUND_OBJECT_RADIUS = 500000;
+
 	int32 NumCmds = VisibleMeshCommands.Num();
 	int32 MeshSortingMethod = CVarMobileMeshSortingMethod.GetValueOnAnyThread();
 	
@@ -318,41 +337,58 @@ void UpdateMobileBasePassMeshSortKeys(
 		{
 			FVisibleMeshDrawCommand& Cmd = VisibleMeshCommands[CmdIdx];
 			// Set in MobileBasePass.cpp - GetBasePassStaticSortKey;
-			bool bMasked = Cmd.SortKey.PackedData & 0x1 ? true : false; 
+			bool bMasked = Cmd.SortKey.PackedData & 0x1 ? true : false;
 			bool bBackground = Cmd.SortKey.PackedData & 0x2 ? true : false;
 			float PrimitiveDistance = 0;
 			if (Cmd.PrimitiveIdInfo.ScenePrimitiveId < ScenePrimitiveBounds.Num())
 			{
 				const FPrimitiveBounds& PrimitiveBounds = ScenePrimitiveBounds[Cmd.PrimitiveIdInfo.ScenePrimitiveId];
 				PrimitiveDistance = (PrimitiveBounds.BoxSphereBounds.Origin - ViewOrigin).Size();
-				bBackground|= (PrimitiveBounds.BoxSphereBounds.SphereRadius > HALF_WORLD_MAX / 4.0f);
+				bBackground |= (PrimitiveBounds.BoxSphereBounds.SphereRadius > MIN_BACKGROUND_OBJECT_RADIUS);
 			}
 
 			uint32 PipelineId = Cmd.MeshDrawCommand->CachedPipelineId.GetId();
 			// use state bucket if dynamic instancing is enabled, otherwise identify same meshes by index buffer resource
-			int32 StateBucketId = Cmd.StateBucketId >=0 ? Cmd.StateBucketId : PointerHash(Cmd.MeshDrawCommand->IndexBuffer);
+			uint32 StateBucketId = Cmd.StateBucketId >= 0 ? Cmd.StateBucketId : PointerHash(Cmd.MeshDrawCommand->IndexBuffer);
 			Cmd.SortKey.PackedData = GetMobileBasePassSortKey_FrontToBack(bMasked, bBackground, PipelineId, StateBucketId, PrimitiveDistance);
 		}
 	}
-	else // prefer state then distance
+	else
 	{
-		TMap<uint32, float> PipelineDistances;
+		struct FPipelineDistance
+		{
+			double DistanceSum = 0.0;
+			int32 Num = 0;
+		};
+
+		TMap<uint32, FPipelineDistance> PipelineDistances;
 		PipelineDistances.Reserve(256);
-				
-		// pre-compute distance to a group of meshes that share same PSO
+
+		TMap<uint64, float> StateBucketDistances;
+		StateBucketDistances.Reserve(512);
+
+		// pre-compute a distance to a group of meshes that share same PSO and state
 		for (int32 CmdIdx = 0; CmdIdx < NumCmds; ++CmdIdx)
 		{
 			const FVisibleMeshDrawCommand& Cmd = VisibleMeshCommands[CmdIdx];
-			float PrimitiveDistance = 0;
+			float PrimitiveDistance = 0.f;
 			if (Cmd.PrimitiveIdInfo.ScenePrimitiveId < ScenePrimitiveBounds.Num())
 			{
 				const FPrimitiveBounds& PrimitiveBounds = ScenePrimitiveBounds[Cmd.PrimitiveIdInfo.ScenePrimitiveId];
 				PrimitiveDistance = (PrimitiveBounds.BoxSphereBounds.Origin - ViewOrigin).Size();
 			}
 
-			float& PipelineDistance = PipelineDistances.FindOrAdd(Cmd.MeshDrawCommand->CachedPipelineId.GetId());
-			// not sure what could be better: average distance, max or min
-			PipelineDistance = FMath::Max(PipelineDistance, PrimitiveDistance);
+			// group meshes by PSO and find distance to each group
+			uint32 PipelineId = Cmd.MeshDrawCommand->CachedPipelineId.GetId();
+			FPipelineDistance& PipelineDistance = PipelineDistances.FindOrAdd(PipelineId);
+			PipelineDistance.DistanceSum += PrimitiveDistance;
+			PipelineDistance.Num += 1;
+
+			// group meshes by StateBucketId or index buffer resource and find minimum distance to each group 
+			uint32 StateBucketId = Cmd.StateBucketId >= 0 ? Cmd.StateBucketId : PointerHash(Cmd.MeshDrawCommand->IndexBuffer);
+			uint64 PipelineAndStateBucketId = ((uint64)PipelineId << 32u) | StateBucketId;
+			float& StateBucketDistance = StateBucketDistances.FindOrAdd(PipelineAndStateBucketId, BIG_NUMBER);
+			StateBucketDistance = FMath::Min(StateBucketDistance, PrimitiveDistance);
 		}
 
 		// compute sort key for each mesh command
@@ -360,25 +396,28 @@ void UpdateMobileBasePassMeshSortKeys(
 		{
 			FVisibleMeshDrawCommand& Cmd = VisibleMeshCommands[CmdIdx];
 			// Set in MobileBasePass.cpp - GetBasePassStaticSortKey;
-			bool bMasked = Cmd.SortKey.PackedData & 0x1 ? true : false; 
+			bool bMasked = Cmd.SortKey.PackedData & 0x1 ? true : false;
 			bool bBackground = Cmd.SortKey.PackedData & 0x2 ? true : false;
 			float PrimitiveDistance = 0;
 			if (Cmd.PrimitiveIdInfo.ScenePrimitiveId < ScenePrimitiveBounds.Num())
 			{
 				const FPrimitiveBounds& PrimitiveBounds = ScenePrimitiveBounds[Cmd.PrimitiveIdInfo.ScenePrimitiveId];
 				PrimitiveDistance = (PrimitiveBounds.BoxSphereBounds.Origin - ViewOrigin).Size();
-				bBackground|= (PrimitiveBounds.BoxSphereBounds.SphereRadius > HALF_WORLD_MAX / 4.0f);
+				bBackground |= (PrimitiveBounds.BoxSphereBounds.SphereRadius > MIN_BACKGROUND_OBJECT_RADIUS);
 			}
-			
-			int32 PipelineId = Cmd.MeshDrawCommand->CachedPipelineId.GetId();
-			float PipelineDistance = PipelineDistances.FindRef(PipelineId);
-			// use state bucket if dynamic instancing is enabled, otherwise identify same meshes by index buffer resource
-			int32 StateBucketId = Cmd.StateBucketId >=0 ? Cmd.StateBucketId : PointerHash(Cmd.MeshDrawCommand->IndexBuffer);
-			Cmd.SortKey.PackedData = GetMobileBasePassSortKey_ByState(bMasked, bBackground, PipelineId, StateBucketId, PipelineDistance, PrimitiveDistance);
+
+			uint32 PipelineId = Cmd.MeshDrawCommand->CachedPipelineId.GetId();
+			FPipelineDistance PipelineDistance = PipelineDistances.FindRef(PipelineId);
+			float MeanPipelineDistance = PipelineDistance.DistanceSum / PipelineDistance.Num;
+
+			uint32 StateBucketId = Cmd.StateBucketId >= 0 ? Cmd.StateBucketId : PointerHash(Cmd.MeshDrawCommand->IndexBuffer);
+			uint64 PipelineAndStateBucketId = ((uint64)PipelineId << 32u) | StateBucketId;
+			float StateBucketDistance = StateBucketDistances.FindRef(PipelineAndStateBucketId);
+
+			Cmd.SortKey.PackedData = GetMobileBasePassSortKey_ByState(bMasked, bBackground, PipelineId, StateBucketId, MeanPipelineDistance, StateBucketDistance, PrimitiveDistance);
 		}
 	}
 }
-
 
 FORCEINLINE int32 TranslatePrimitiveId(int32 DrawPrimitiveIdIn, int32 DynamicPrimitiveIdOffset, int32 DynamicPrimitiveIdMax)
 {
@@ -628,6 +667,7 @@ void GenerateMobileBasePassDynamicMeshDrawCommands(
 	MobilePassCSMPassMeshProcessor->SetDrawListContext(&DynamicPassMeshDrawListContext);
 
 	const FMobileCSMVisibilityInfo& MobileCSMVisibilityInfo = View.MobileCSMVisibilityInfo;
+	const bool bSkipCSMShaderCulling = MobileBasePassAlwaysUsesCSM(View.GetShaderPlatform());
 	
 	{
 		const int32 NumCommandsBefore = VisibleCommands.Num();
@@ -641,7 +681,8 @@ void GenerateMobileBasePassDynamicMeshDrawCommands(
 				const uint64 BatchElementMask = ~0ull;
 
 				const int32 PrimitiveIndex = MeshAndRelevance.PrimitiveSceneProxy->GetPrimitiveSceneInfo()->GetIndex();
-				if (MobileCSMVisibilityInfo.bMobileDynamicCSMInUse
+				if (!bSkipCSMShaderCulling
+					&& MobileCSMVisibilityInfo.bMobileDynamicCSMInUse
 					&& (MobileCSMVisibilityInfo.bAlwaysUseCSM || MobileCSMVisibilityInfo.MobilePrimitiveCSMReceiverVisibilityMap[PrimitiveIndex]))
 				{
 					MobilePassCSMPassMeshProcessor->AddMeshBatch(*MeshAndRelevance.Mesh, BatchElementMask, MeshAndRelevance.PrimitiveSceneProxy);
@@ -667,7 +708,8 @@ void GenerateMobileBasePassDynamicMeshDrawCommands(
 			const FStaticMeshBatch* StaticMeshBatch = DynamicMeshCommandBuildRequests[MeshIndex];
 
 			const int32 PrimitiveIndex = StaticMeshBatch->PrimitiveSceneInfo->Proxy->GetPrimitiveSceneInfo()->GetIndex();
-			if (MobileCSMVisibilityInfo.bMobileDynamicCSMInUse
+			if (!bSkipCSMShaderCulling
+				&& MobileCSMVisibilityInfo.bMobileDynamicCSMInUse
 				&& (MobileCSMVisibilityInfo.bAlwaysUseCSM || MobileCSMVisibilityInfo.MobilePrimitiveCSMReceiverVisibilityMap[PrimitiveIndex]))
 			{
 				const uint64 DefaultBatchElementMask = ~0ul;
@@ -875,6 +917,10 @@ public:
 			}
 			else if (Context.TranslucencyPass != ETranslucencyPass::TPT_MAX)
 			{
+				// When per-pixel OIT is enabled, sort primitive from front to back ensure avoid 
+				// constantly resorting front-to-back samples list.
+				const bool bInverseSorting = OIT::IsEnabled(EOITSortingType::SortedPixels, Context.ShaderPlatform) && Context.View->AntiAliasingMethod != EAntiAliasingMethod::AAM_MSAA;
+
 				UpdateTranslucentMeshSortKeys(
 					Context.TranslucentSortPolicy,
 					Context.TranslucentSortAxis,
@@ -882,6 +928,7 @@ public:
 					Context.ViewMatrix,
 					*Context.PrimitiveBounds,
 					Context.TranslucencyPass,
+					bInverseSorting,
 					Context.MeshDrawCommands
 				);
 			}
@@ -893,7 +940,19 @@ public:
 
 			if (Context.bUseGPUScene)
 			{
-				Context.InstanceCullingContext.SetupDrawCommands(Context.MeshDrawCommands, true, Context.MaxInstances, Context.VisibleMeshDrawCommandsNum, Context.NewPassVisibleMeshDrawCommandsNum);
+				TArrayView<const FStateBucketAuxData> StateBucketsAuxData;
+				if (Context.PassType != EMeshPass::Num)
+				{
+					StateBucketsAuxData = Context.Scene->CachedStateBucketsAuxData[Context.PassType];
+				}
+				
+				Context.InstanceCullingContext.SetupDrawCommands(
+					StateBucketsAuxData,
+					Context.MeshDrawCommands, 
+					true, 
+					Context.MaxInstances, 
+					Context.VisibleMeshDrawCommandsNum, 
+					Context.NewPassVisibleMeshDrawCommandsNum);
 			}
 		}
 	}
@@ -961,6 +1020,7 @@ private:
  */
 void SortAndMergeDynamicPassMeshDrawCommands(
 	const FSceneView& SceneView,
+	FRHICommandList& RHICmdList,
 	FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
 	FDynamicMeshDrawCommandStorage& MeshDrawCommandStorage,
 	FRHIBuffer*& OutPrimitiveIdVertexBuffer,
@@ -1005,9 +1065,9 @@ void SortAndMergeDynamicPassMeshDrawCommands(
 			const uint32 PrimitiveIdBufferStride = FInstanceCullingContext::GetInstanceIdBufferStride(FeatureLevel);
 			const int32 MaxNumPrimitives = InstanceFactor * NumDrawCommands;
 			const int32 PrimitiveIdBufferDataSize = MaxNumPrimitives * PrimitiveIdBufferStride;
-			FPrimitiveIdVertexBufferPoolEntry Entry = GPrimitiveIdVertexBufferPool.Allocate(PrimitiveIdBufferDataSize);
+			FPrimitiveIdVertexBufferPoolEntry Entry = GPrimitiveIdVertexBufferPool.Allocate(RHICmdList, PrimitiveIdBufferDataSize);
 			OutPrimitiveIdVertexBuffer = Entry.BufferRHI;
-			void* PrimitiveIdBufferData = RHILockBuffer(OutPrimitiveIdVertexBuffer, 0, PrimitiveIdBufferDataSize, RLM_WriteOnly);
+			void* PrimitiveIdBufferData = RHICmdList.LockBuffer(OutPrimitiveIdVertexBuffer, 0, PrimitiveIdBufferDataSize, RLM_WriteOnly);
 
 			if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 			{
@@ -1067,7 +1127,7 @@ void SortAndMergeDynamicPassMeshDrawCommands(
 					WritePrimitiveDataFn);
 			}
 
-			RHIUnlockBuffer(OutPrimitiveIdVertexBuffer);
+			RHICmdList.UnlockBuffer(OutPrimitiveIdVertexBuffer);
 			GPrimitiveIdVertexBufferPool.ReturnToFreeList(Entry);
 		}
 	}
@@ -1162,7 +1222,6 @@ void FParallelMeshDrawCommandPass::DispatchPassSetup(
 #if DO_GUARD_SLOW
 		FMemory::Memzero(TaskContext.PrimitiveIdBufferData, TaskContext.PrimitiveIdBufferDataSize);
 #endif // DO_GUARD_SLOW
-		PrimitiveIdVertexBufferPoolEntry = GPrimitiveIdVertexBufferPool.Allocate(TaskContext.PrimitiveIdBufferDataSize);
 		TaskContext.MeshDrawCommands.Reserve(MaxNumDraws);
 		TaskContext.TempVisibleMeshDrawCommands.Reserve(MaxNumDraws);
 
@@ -1226,18 +1285,13 @@ void FParallelMeshDrawCommandPass::WaitForTasksAndEmpty(EWaitThread WaitThread)
 
 	if (TaskContext.MeshPassProcessor)
 	{
-		TaskContext.MeshPassProcessor->~FMeshPassProcessor();
+		delete TaskContext.MeshPassProcessor;
 		TaskContext.MeshPassProcessor = nullptr;
 	}
 	if (TaskContext.MobileBasePassCSMMeshPassProcessor)
 	{
-		TaskContext.MobileBasePassCSMMeshPassProcessor->~FMeshPassProcessor();
+		delete TaskContext.MobileBasePassCSMMeshPassProcessor;
 		TaskContext.MobileBasePassCSMMeshPassProcessor = nullptr;
-	}
-
-	if (MaxNumDraws > 0)
-	{
-		GPrimitiveIdVertexBufferPool.ReturnToFreeList(PrimitiveIdVertexBufferPoolEntry);
 	}
 
 	FMemory::Free(TaskContext.PrimitiveIdBufferData);
@@ -1326,7 +1380,7 @@ public:
 			InstanceFactor,
 			RHICmdList);
 		RHICmdList.EndRenderPass();
-		RHICmdList.HandleRTThreadTaskCompletion(MyCompletionGraphEvent);
+		RHICmdList.FinishRecording();
 	}
 };
 

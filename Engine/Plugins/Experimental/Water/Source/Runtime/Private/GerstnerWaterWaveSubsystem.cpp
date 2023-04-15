@@ -5,6 +5,8 @@
 #include "Engine/Engine.h"
 #include "Misc/CoreDelegates.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GerstnerWaterWaveSubsystem)
+
 UGerstnerWaterWaveSubsystem::UGerstnerWaterWaveSubsystem()
 {
 }
@@ -38,6 +40,13 @@ void UGerstnerWaterWaveSubsystem::Unregister(FGerstnerWaterWaveViewExtension* In
 	GerstnerWaterWaveViewExtensions.Remove(InViewExtension);
 }
 
+void UGerstnerWaterWaveSubsystem::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GerstnerWaterWaveViewExtensions.GetAllocatedSize());
+}
+
 void UGerstnerWaterWaveSubsystem::BeginFrameCallback()
 {
 	// In case there was a change, all registered view extensions need to update their GPU data : 
@@ -50,3 +59,4 @@ void UGerstnerWaterWaveSubsystem::BeginFrameCallback()
 	}
 	bRebuildGPUData = false;
 }
+

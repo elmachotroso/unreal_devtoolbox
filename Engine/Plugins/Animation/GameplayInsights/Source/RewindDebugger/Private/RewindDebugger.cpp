@@ -1,22 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RewindDebugger.h"
+
 #include "Components/SkeletalMeshComponent.h"
 #include "Editor.h"
 #include "IAnimationProvider.h"
 #include "IGameplayProvider.h"
 #include "Insights/IUnrealInsightsModule.h"
+#include "IGameplayInsightsModule.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTrace.h"
 #include "TraceServices/Model/Frames.h"
 #include "SLevelViewport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SSpacer.h"
 #include "IRewindDebuggerExtension.h"
 #include "IRewindDebuggerDoubleClickHandler.h"
+#include "RewindDebuggerObjectTrack.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "ToolMenus.h"
-
-FRewindDebugger* FRewindDebugger::InternalInstance = nullptr;
+#include "RewindDebuggerSettings.h"
+#include "LevelEditor.h"
+#include "RewindDebuggerModule.h"
+#include "Engine/PoseWatch.h"
+#include "ProfilingDebugging/TraceAuxiliary.h"
 
 static void IterateExtensions(TFunction<void(IRewindDebuggerExtension* Extension)> IteratorFunction)
 {
@@ -35,13 +43,15 @@ FRewindDebugger::FRewindDebugger()  :
 	ControlState(FRewindDebugger::EControlState::Pause),
 	bPIEStarted(false),
 	bPIESimulating(false),
-	bAutoRecord(false),
 	bRecording(false),
 	PlaybackRate(1),
+	PreviousTraceTime(-1),
 	CurrentScrubTime(0),
-	ScrubFrameIndex(0),
+	CurrentViewRange(0,0),
+	CurrentTraceRange(0,0),
 	RecordingIndex(0),
-	bTargetActorPositionValid(false)
+	bTargetActorPositionValid(false),
+	bIsDetailsPanelOpen(true)
 {
 	RecordingDuration.Set(0);
 
@@ -56,7 +66,7 @@ FRewindDebugger::FRewindDebugger()  :
 	FEditorDelegates::EndPIE.AddRaw(this, &FRewindDebugger::OnPIEStopped);
 	FEditorDelegates::SingleStepPIE.AddRaw(this, &FRewindDebugger::OnPIESingleStepped);
 
-	DebugTargetActor.OnPropertyChanged = DebugTargetActor.OnPropertyChanged.CreateLambda([this](FString Target) { RefreshDebugComponents(); });
+	DebugTargetActor.OnPropertyChanged = DebugTargetActor.OnPropertyChanged.CreateLambda([this](FString Target) { RefreshDebugTracks(); });
 
 	UnrealInsightsModule = &FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 
@@ -68,6 +78,9 @@ FRewindDebugger::FRewindDebugger()  :
 
 		return true;
 	});
+
+	IGameplayInsightsModule* GameplayInsightsModule = &FModuleManager::LoadModuleChecked<IGameplayInsightsModule>("GameplayInsights");
+	GameplayInsightsModule->StartTrace();
 }
 
 FRewindDebugger::~FRewindDebugger() 
@@ -108,7 +121,7 @@ void FRewindDebugger::OnPIEStarted(bool bSimulating)
 
 	UE::Trace::ToggleChannel(TEXT("Object"), true);
 
-	if (bAutoRecord)
+	if (ShouldAutoRecordOnPIE())
 	{
 		StartRecording();
 	}
@@ -136,7 +149,7 @@ void FRewindDebugger::OnPIEResumed(bool bSimulating)
 	{
 		if (USkeletalMeshComponent* MeshComponent = MeshData.Value.Component.Get())
 		{
-			MeshComponent->SetRelativeTransform(MeshData.Value.RelativeTransform);
+			MeshComponent->SetRelativeTransform(MeshData.Value.RelativeTransform, false, nullptr, ETeleportType::TeleportPhysics);
 		}
 	}
 
@@ -150,7 +163,7 @@ void FRewindDebugger::OnPIESingleStepped(bool bSimulating)
 	{
 		if (USkeletalMeshComponent* MeshComponent = MeshData.Value.Component.Get())
 		{
-			MeshComponent->SetRelativeTransform(MeshData.Value.RelativeTransform);
+			MeshComponent->SetRelativeTransform(MeshData.Value.RelativeTransform, false, nullptr, ETeleportType::TeleportPhysics);
 		}
 	}
 
@@ -177,80 +190,6 @@ void FRewindDebugger::OnPIEStopped(bool bSimulating)
 	// clear the current recording (until we support playback in the Editor world on spawned actors)
 	RecordingDuration.Set(0);
 	SetCurrentScrubTime(0);
-}
-
-bool FRewindDebugger::UpdateComponentList(uint64 ParentId, TArray<TSharedPtr<FDebugObjectInfo>>& ComponentList, bool bAddController)
-{
-	TSharedPtr<const TraceServices::IAnalysisSession> Session = UnrealInsightsModule->GetAnalysisSession();
-	TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-	UWorld* World = GetWorldToVisualize();
-
-	const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider");
-
-	bool bChanged = false;
-
-	double Time = CurrentTraceTime();
-
-	TArray<uint64, TInlineAllocator<32>> FoundObjects;
-
-	GameplayProvider->EnumerateObjects(Time, Time, [this, &bChanged, ParentId, GameplayProvider, &ComponentList, &FoundObjects](const FObjectInfo& InObjectInfo)
-	{
-		if (InObjectInfo.OuterId == ParentId)
-		{
-			const int32 FoundIndex = ComponentList.FindLastByPredicate([&InObjectInfo](const TSharedPtr<FDebugObjectInfo>& Info) { return Info->ObjectName == InObjectInfo.Name; });
-
-			if (FoundIndex >= 0 && ComponentList[FoundIndex]->ObjectName == InObjectInfo.Name)
-			{
-				// we need to make sure we reusing existing FDebugObjectInfo instances for the treeview selection to be stable
-				ComponentList[FoundIndex]->ObjectId = InObjectInfo.Id; // there is an issue with skeletal mesh components changing ids
-				bChanged = bChanged || UpdateComponentList(InObjectInfo.Id, ComponentList[FoundIndex]->Children);
-			}
-			else
-			{
-				bChanged = true;
-				ComponentList.Add(MakeShared<FDebugObjectInfo>(InObjectInfo.Id,InObjectInfo.Name));
-				UpdateComponentList(InObjectInfo.Id, ComponentList.Last()->Children);
-			}
-			
-			FoundObjects.Add(InObjectInfo.Id);
-		}
-	});
-
-	// add controller and it's component hierarchy if one is attached
-	if (bAddController)
-	{
-		if (uint64 ControllerId = GameplayProvider->FindPossessingController(ParentId, CurrentTraceTime()))
-		{
-			const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(ControllerId);
-			const int32 FoundIndex = ComponentList.FindLastByPredicate([ObjectInfo](const TSharedPtr<FDebugObjectInfo>& Info) { return Info->ObjectName == ObjectInfo.Name; });
-
-			if (FoundIndex >= 0 && ComponentList[FoundIndex]->ObjectName == ObjectInfo.Name)
-			{
-				ComponentList[FoundIndex]->ObjectId = ObjectInfo.Id;
-				bChanged = bChanged || UpdateComponentList(ObjectInfo.Id, ComponentList[FoundIndex]->Children);
-			}
-			else
-			{
-				bChanged = true;
-				ComponentList.Add(MakeShared<FDebugObjectInfo>(ObjectInfo.Id,ObjectInfo.Name));
-				UpdateComponentList(ObjectInfo.Id, ComponentList.Last()->Children);
-			}
-			
-			FoundObjects.Add(ControllerId);
-		}
-	}
-	
-	// remove any components previously in the list that were not found in this time range.
-	for(int Index=ComponentList.Num()-1; Index>=0; Index--)
-	{
-		if (!FoundObjects.Contains(ComponentList[Index]->ObjectId))
-		{
-			bChanged = true;
-			ComponentList.RemoveAt(Index);
-		}
-	}
-	
-	return bChanged;
 }
 
 bool FRewindDebugger::GetTargetActorPosition(FVector& OutPosition) const
@@ -286,42 +225,42 @@ uint64 FRewindDebugger::GetTargetActorId() const
 	return TargetActorId;
 }
 
-void FRewindDebugger::RefreshDebugComponents()
+void FRewindDebugger::RefreshDebugTracks()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::RefreshDebugTracks);
 	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
 	{
 		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
+
 		UWorld* World = GetWorldToVisualize();
 
 		if (const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider"))
 		{
 			uint64 TargetActorId = GetTargetActorId();
 
-			if (TargetActorId == 0)
-			{
-				return;
-			}
-
 			bool bChanged = false;
 
 			// add actor (even if it isn't found in the gameplay provider)
-			if (DebugComponents.Num() == 0)
+			if (DebugTracks.Num() == 0)
 			{
 				bChanged = true;
-				DebugComponents.Add(MakeShared<FDebugObjectInfo>(TargetActorId, DebugTargetActor.Get()));
+				const bool bAddController = true;
+				DebugTracks.Add(MakeShared<RewindDebugger::FRewindDebuggerObjectTrack>(TargetActorId, DebugTargetActor.Get(), bAddController));
 			}
 			else
 			{
-				if (DebugComponents[0]->ObjectName != DebugTargetActor.Get() || DebugComponents[0]->ObjectId != TargetActorId)
+				FString DebugTargetActorName = DebugTargetActor.Get();
+
+				if (DebugTracks[0]->GetDisplayName().ToString() != DebugTargetActorName || DebugTracks[0]->GetObjectId() != TargetActorId)
 				{
 					bChanged = true;
-					DebugComponents[0] = MakeShared<FDebugObjectInfo>(TargetActorId, DebugTargetActor.Get());
+					DebugTracks[0] = MakeShared<RewindDebugger::FRewindDebuggerObjectTrack>(TargetActorId, DebugTargetActorName);
 				}
 			}
 
-			if (TargetActorId != 0 && DebugComponents.Num() > 0)
+			if (TargetActorId != 0 && DebugTracks.Num() > 0)
 			{
-				bChanged = bChanged || UpdateComponentList(TargetActorId, DebugComponents[0]->Children, true);
+				bChanged = bChanged || DebugTracks[0]->Update();
 			}
 
 			if (bChanged)
@@ -360,6 +299,16 @@ void FRewindDebugger::StartRecording()
 	UWorld* World = GetWorldToVisualize();
 	FObjectTrace::ResetWorldElapsedTime(World);
 	FObjectTrace::SetWorldRecordingIndex(World, RecordingIndex);
+}
+
+bool FRewindDebugger::ShouldAutoRecordOnPIE() const
+{
+	return URewindDebuggerSettings::Get().bShouldAutoRecordOnPIE;
+}
+
+void FRewindDebugger::SetShouldAutoRecordOnPIE(bool value)
+{
+	URewindDebuggerSettings::Get().bShouldAutoRecordOnPIE = value;
 }
 
 void FRewindDebugger::StopRecording()
@@ -485,11 +434,11 @@ void FRewindDebugger::Step(int frames)
 
 					if (EventCount > 0)
 					{
-						ScrubFrameIndex = FMath::Clamp<int64>(ScrubFrameIndex + frames, 0, (int64)EventCount - 1);
+						ScrubTimeInformation.FrameIndex = FMath::Clamp<int64>(ScrubTimeInformation.FrameIndex + frames, 0, (int64)EventCount - 1);
+						const FRecordingInfoMessage& Event = Recording->GetEvent(ScrubTimeInformation.FrameIndex);
 
-						const FRecordingInfoMessage& Event = Recording->GetEvent(ScrubFrameIndex);
-						CurrentScrubTime = Event.ElapsedTime;
-						TraceTime.Set(Event.ProfileTime);
+						SetCurrentScrubTime(Event.ElapsedTime);
+						
 						TrackCursorDelegate.ExecuteIfBound(false);
 					}
 				}
@@ -541,51 +490,77 @@ UWorld* FRewindDebugger::GetWorldToVisualize() const
 	return World;
 }
 
-void  FRewindDebugger::SetCurrentScrubTime(double Time)
+void FRewindDebugger::SetCurrentViewRange(const TRange<double>& Range)
 {
-	CurrentScrubTime = Time;
-	UpdateTraceTime();
-}
-
-void FRewindDebugger::UpdateTraceTime()
-{
-	// find the current Insights trace time for the current scrub time.
+	CurrentViewRange = Range;
 	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
 	{
-		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
-		UWorld* World = GetWorldToVisualize();
+		GetScrubTimeInformation(CurrentViewRange.GetLowerBoundValue(), LowerBoundViewTimeInformation, RecordingIndex, Session);
+		GetScrubTimeInformation(CurrentViewRange.GetUpperBoundValue(), UpperBoundViewTimeInformation, RecordingIndex, Session);
+		
+		CurrentTraceRange.SetLowerBoundValue(LowerBoundViewTimeInformation.ProfileTime);
+		CurrentTraceRange.SetUpperBoundValue(UpperBoundViewTimeInformation.ProfileTime);
+	}
+}
 
-		if (const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider"))
+void FRewindDebugger::SetCurrentScrubTime(double Time)
+{
+	CurrentScrubTime = Time;
+
+	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
+	{
+		GetScrubTimeInformation(CurrentScrubTime, ScrubTimeInformation, RecordingIndex, Session);
+		
+		TraceTime.Set(ScrubTimeInformation.ProfileTime);
+	}
+}
+
+void FRewindDebugger::GetScrubTimeInformation(double InDebugTime, FScrubTimeInformation & InOutTimeInformation, uint16 InRecordingIndex, const TraceServices::IAnalysisSession* AnalysisSession)
+{
+	const IGameplayProvider* GameplayProvider = AnalysisSession->ReadProvider<IGameplayProvider>("GameplayProvider");
+	const IAnimationProvider* AnimationProvider = AnalysisSession->ReadProvider<IAnimationProvider>("AnimationProvider");
+	
+	if (GameplayProvider && AnimationProvider)
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+		
+		if (const IGameplayProvider::RecordingInfoTimeline* Recording = GameplayProvider->GetRecordingInfo(InRecordingIndex))
 		{
-			if (const IGameplayProvider::RecordingInfoTimeline* Recording = GameplayProvider->GetRecordingInfo(RecordingIndex))
-			{
-				uint64 EventCount = Recording->GetEventCount();
+			const uint64 EventCount = Recording->GetEventCount();
 
-				if (EventCount > 0)
+			if (EventCount > 0)
+			{
+				int ScrubFrameIndex = InOutTimeInformation.FrameIndex;
+				const FRecordingInfoMessage& FirstEvent = Recording->GetEvent(0);
+				const FRecordingInfoMessage& LastEvent = Recording->GetEvent(EventCount - 1);
+
+				// Check if we are outside of the recorded range, and apply the first or last frame
+				if (InDebugTime <= FirstEvent.ElapsedTime)
 				{
-					// check if we are outside of the recorded range, and apply the first or last frame
-					const FRecordingInfoMessage& FirstEvent = Recording->GetEvent(0);
-					const FRecordingInfoMessage& LastEvent = Recording->GetEvent(EventCount - 1);
-					if (CurrentScrubTime <= FirstEvent.ElapsedTime)
+					ScrubFrameIndex = FMath::Min<uint64>(1, EventCount - 1);
+				}
+				else if (InDebugTime >= LastEvent.ElapsedTime)
+				{
+					ScrubFrameIndex = EventCount - 1;
+				}
+				// Find the two keys surrounding the InDebugTime, and pick the nearest to update InOutTimeInformation
+				else
+				{
+					const FRecordingInfoMessage& ScrubEvent = Recording->GetEvent(ScrubFrameIndex);
+					constexpr float MaxTimeDifferenceInSeconds = 15.0f / 60.0f;
+					
+					// Use linear search on smaller time differences
+					if (FMath::Abs(InDebugTime - ScrubEvent.ElapsedTime) <= MaxTimeDifferenceInSeconds)
 					{
-						ScrubFrameIndex = FMath::Min<uint64>(1, EventCount - 1);
-					}
-					else if (CurrentScrubTime >= LastEvent.ElapsedTime)
-					{
-						ScrubFrameIndex = EventCount - 1;
-					}
-					else
-					{
-						// find the two keys surrounding the CurrentScrubTime, and pick the nearest to update ProfileTime
-						if (Recording->GetEvent(ScrubFrameIndex).ElapsedTime > CurrentScrubTime)
+						if (Recording->GetEvent(ScrubFrameIndex).ElapsedTime > InDebugTime)
 						{
 							for (uint64 EventIndex = ScrubFrameIndex; EventIndex > 0; EventIndex--)
 							{
 								const FRecordingInfoMessage& Event = Recording->GetEvent(EventIndex);
 								const FRecordingInfoMessage& NextEvent = Recording->GetEvent(EventIndex - 1);
-								if (Event.ElapsedTime >= CurrentScrubTime && NextEvent.ElapsedTime <= CurrentScrubTime)
+								if (Event.ElapsedTime >= InDebugTime && NextEvent.ElapsedTime <= InDebugTime)
 								{
-									if (Event.ElapsedTime - CurrentScrubTime < CurrentScrubTime - NextEvent.ElapsedTime)
+									if (Event.ElapsedTime - InDebugTime < InDebugTime - NextEvent.ElapsedTime)
 									{
 										ScrubFrameIndex = EventIndex;
 									}
@@ -603,9 +578,9 @@ void FRewindDebugger::UpdateTraceTime()
 							{
 								const FRecordingInfoMessage& Event = Recording->GetEvent(EventIndex);
 								const FRecordingInfoMessage& NextEvent = Recording->GetEvent(EventIndex + 1);
-								if (Event.ElapsedTime <= CurrentScrubTime && NextEvent.ElapsedTime >= CurrentScrubTime)
+								if (Event.ElapsedTime <= InDebugTime && NextEvent.ElapsedTime >= InDebugTime)
 								{
-									if (CurrentScrubTime - Event.ElapsedTime < NextEvent.ElapsedTime - CurrentScrubTime)
+									if (InDebugTime - Event.ElapsedTime < NextEvent.ElapsedTime - InDebugTime)
 									{
 										ScrubFrameIndex = EventIndex;
 									}
@@ -618,10 +593,50 @@ void FRewindDebugger::UpdateTraceTime()
 							}
 						}
 					}
+					// Binary search for surrounding keys on big time differences
+					else
+					{
+						uint64 StartEventIndex = 0;
+						uint64 EndEventIndex = EventCount -1;
+						
+						while (EndEventIndex - StartEventIndex > 1)
+						{
+							const uint64 MiddleEventIndex = ((StartEventIndex + EndEventIndex) / 2);
+							const FRecordingInfoMessage& MiddleEvent = Recording->GetEvent(MiddleEventIndex);
+							if (InDebugTime < MiddleEvent.ElapsedTime)
+							{
+								EndEventIndex = MiddleEventIndex;
+							}
+							else
+							{
+								StartEventIndex = MiddleEventIndex;
+							}
+						}
 
-					const FRecordingInfoMessage& Event = Recording->GetEvent(ScrubFrameIndex);
-					TraceTime.Set(Event.ProfileTime);
+						// Ensure there is not frames between start and end index
+						check(EndEventIndex == StartEventIndex + 1)
+
+						const FRecordingInfoMessage& Event = Recording->GetEvent(StartEventIndex);
+						const FRecordingInfoMessage& NextEvent = Recording->GetEvent(EndEventIndex);
+
+						// Ensure debug time is between both frames time range
+						check (Event.ElapsedTime <= InDebugTime && NextEvent.ElapsedTime >= InDebugTime)
+
+						// Choose frame that is nearest to the debug time
+						if (InDebugTime - Event.ElapsedTime < NextEvent.ElapsedTime - InDebugTime)
+						{
+							ScrubFrameIndex = StartEventIndex;
+						}
+						else
+						{
+							ScrubFrameIndex = EndEventIndex;
+						}
+					}
 				}
+				
+				const FRecordingInfoMessage& Event = Recording->GetEvent(ScrubFrameIndex);
+				InOutTimeInformation.FrameIndex = ScrubFrameIndex;
+				InOutTimeInformation.ProfileTime = Event.ProfileTime;
 			}
 		}
 	}
@@ -639,13 +654,10 @@ const TraceServices::IAnalysisSession* FRewindDebugger::GetAnalysisSession() con
 
 void FRewindDebugger::Tick(float DeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick);
 	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
 	{
-		if (bRecording)
-		{
-			// if you select a debug target before you start recording, update component list when it becomes valid
-			RefreshDebugComponents();
-		}
+		RefreshDebugTracks();
 		
 		const IAnimationProvider* AnimationProvider = Session->ReadProvider<IAnimationProvider>("AnimationProvider");
 		const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider");
@@ -659,6 +671,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 			{
 				if (bRecording)
 				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdateSimulating);
 					RecordingDuration.Set(FObjectTrace::GetWorldElapsedTime(World));
 					SetCurrentScrubTime(RecordingDuration.Get());
 					TrackCursorDelegate.ExecuteIfBound(false);
@@ -668,10 +681,9 @@ void FRewindDebugger::Tick(float DeltaTime)
 			{
 				if (RecordingDuration.Get() > 0)
 				{
-					UpdateTraceTime();
-
 					if (ControlState == EControlState::Play || ControlState == EControlState::PlayReverse)
 					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdatePlayback);
 						float Rate = PlaybackRate * (ControlState == EControlState::Play ? 1 : -1);
 						SetCurrentScrubTime(FMath::Clamp(CurrentScrubTime + Rate * DeltaTime, 0.0f, RecordingDuration.Get()));
 						TrackCursorDelegate.ExecuteIfBound(Rate<0);
@@ -683,209 +695,281 @@ void FRewindDebugger::Tick(float DeltaTime)
 						}
 					}
 
-					double CurrentTraceTime = TraceTime.Get();
-					const TraceServices::IFrameProvider& FrameProvider = TraceServices::ReadFrameProvider(*Session);
-					TraceServices::FFrame Frame;
-					if(FrameProvider.GetFrameFromTime(ETraceFrameType::TraceFrameType_Game, CurrentTraceTime, Frame))
+					const double CurrentTraceTime = TraceTime.Get();
+					if (CurrentTraceTime != PreviousTraceTime)
 					{
+						PreviousTraceTime = CurrentTraceTime;
 						
-						// until we have actor transforms traced out, the first skeletal mesh component transform on the target actor be used as as the actor position 
-						uint64 TargetActorId = GetTargetActorId();
-						if (TargetActorId != 0)
+						const TraceServices::IFrameProvider& FrameProvider = TraceServices::ReadFrameProvider(*Session);
+						TraceServices::FFrame Frame;
+						if(FrameProvider.GetFrameFromTime(ETraceFrameType::TraceFrameType_Game, CurrentTraceTime, Frame))
 						{
-							if (UObject* ObjectInstance = FObjectTrace::GetObjectFromId(TargetActorId))
 							{
-								if (AActor* TargetActor = Cast<AActor>(ObjectInstance))
+								TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdateActorPosition);
+								// until we have actor transforms traced out, the first skeletal mesh component transform on the target actor be used as as the actor position 
+								uint64 TargetActorId = GetTargetActorId();
+								if (TargetActorId != 0)
 								{
-									TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshComponents;
-									TargetActor->GetComponents(SkeletalMeshComponents);
-
-									if (SkeletalMeshComponents.Num() > 0)
+									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(TargetActorId))
 									{
-										int64 ObjectId = FObjectTrace::GetObjectId(SkeletalMeshComponents[0]);
+										if (AActor* TargetActor = Cast<AActor>(ObjectInstance))
+										{
+											TInlineComponentArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+											TargetActor->GetComponents(SkeletalMeshComponents);
 
-										AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, Frame, ObjectId, AnimationProvider](const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData, bool bHasCurves)
+											if (SkeletalMeshComponents.Num() > 0)
 											{
-												TimelineData.EnumerateEvents(Frame.StartTime, Frame.EndTime,
-													[this](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& PoseMessage)
+												int64 ObjectId = FObjectTrace::GetObjectId(SkeletalMeshComponents[0]);
+
+												AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, Frame, ObjectId, AnimationProvider](const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData, bool bHasCurves)
+												{
+													const FSkeletalMeshPoseMessage * PoseMessage = nullptr;
+
+													// Get last pose in frame
+													TimelineData.EnumerateEvents(Frame.StartTime, Frame.EndTime,
+														[&PoseMessage](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& InPoseMessage)
+														{
+															PoseMessage = &InPoseMessage;
+															return TraceServices::EEventEnumerate::Continue;
+														});
+
+													// Update position based on pose
+													if (PoseMessage)
 													{
 														bTargetActorPositionValid = true;
-														TargetActorPosition = PoseMessage.ComponentToWorld.GetTranslation();
-
-														return TraceServices::EEventEnumerate::Stop;
-													});
-											});
-									}
-								}
-							}
-						}
-						
-						// update pose on all SkeletalMeshComponents:
-						// - enumerate all skeletal mesh pose timelines
-						// - check if the corresponding mesh component still exists
-						// - apply the recorded pose for the current Frame
-						AnimationProvider->EnumerateSkeletalMeshPoseTimelines([this, &Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData)
-						{
-							if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
-							{
-								if(USkeletalMeshComponent* MeshComponent = Cast<USkeletalMeshComponent>(ObjectInstance))
-								{
-									AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, &Frame, ObjectId, MeshComponent, AnimationProvider](const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData, bool bHasCurves)
-									{
-										TimelineData.EnumerateEvents(Frame.StartTime, Frame.EndTime,
-											[this, ObjectId, MeshComponent, AnimationProvider](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& PoseMessage)
-											{
-												FTransform ComponentWorldTransform;
-												const FSkeletalMeshInfo* SkeletalMeshInfo = AnimationProvider->FindSkeletalMeshInfo(PoseMessage.MeshId);
-												AnimationProvider->GetSkeletalMeshComponentSpacePose(PoseMessage, *SkeletalMeshInfo, ComponentWorldTransform, MeshComponent->GetEditableComponentSpaceTransforms());
-												MeshComponent->ApplyEditedComponentSpaceTransforms();
-
-												if (MeshComponentsToReset.Find(ObjectId) == nullptr)
-												{
-													FMeshComponentResetData ResetData;
-													ResetData.Component = MeshComponent;
-													ResetData.RelativeTransform = MeshComponent->GetRelativeTransform();
-													MeshComponentsToReset.Add(ObjectId, ResetData);
-												}
-
-												// todo: we need to take into account tick order requirements for attached objects here
-												MeshComponent->SetWorldTransform(ComponentWorldTransform, false, nullptr, ETeleportType::TeleportPhysics);
-												MeshComponent->SetForcedLOD(PoseMessage.LodIndex + 1);
-												return TraceServices::EEventEnumerate::Stop;
-											});
-									});
-								}
-							}
-						});
-
-						// Apply Animation Blueprint Debugging Data:
-						// - enumerate over all anim graph timelines
-						// - check if their instance class still exists and is the debugging target for the Animation Blueprint Editor
-						// - if it is copy that debug data into the class debug data for the blueprint debugger
-						AnimationProvider->EnumerateAnimGraphTimelines([&Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::AnimGraphTimeline& AnimGraphTimeline)
-						{
-							if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
-							{
-								if(UAnimInstance* AnimInstance = Cast<UAnimInstance>(ObjectInstance))
-								{
-									if(UAnimBlueprintGeneratedClass* InstanceClass = Cast<UAnimBlueprintGeneratedClass>(AnimInstance->GetClass()))
-									{
-										if(UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(InstanceClass->ClassGeneratedBy))
-										{
-											if(AnimBlueprint->IsObjectBeingDebugged(AnimInstance))
-											{
-												// update debug info for attached Animation Blueprint editors
-												uint64 Id = FObjectTrace::GetObjectId(AnimInstance);
-												const int32 NodeCount = InstanceClass->GetAnimNodeProperties().Num();
-						
-												FAnimBlueprintDebugData& DebugData = InstanceClass->GetAnimBlueprintDebugData();
-												DebugData.ResetNodeVisitSites();
-					
-												AnimGraphTimeline.EnumerateEvents(Frame.StartTime, Frame.EndTime, [Id, AnimationProvider, GameplayProvider, &DebugData, NodeCount](double InGraphStartTime, double InGraphEndTime, uint32 InDepth, const FAnimGraphMessage& InMessage)
-												{
-													// Basic verification - check node count is the same
-													// @TODO: could add some form of node hash/CRC to the class to improve this
-													if(InMessage.NodeCount == NodeCount)
-													{
-														// Check for an update phase (which contains weights)
-														if(InMessage.Phase == EAnimGraphPhase::Update)
-														{
-															AnimationProvider->ReadAnimNodesTimeline(Id, [InGraphStartTime, InGraphEndTime, &DebugData](const IAnimationProvider::AnimNodesTimeline& InNodesTimeline)
-															{
-																InNodesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimNodeMessage& InMessage)
-																{
-																	DebugData.RecordNodeVisit(InMessage.NodeId, InMessage.PreviousNodeId, InMessage.Weight);
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-					
-															AnimationProvider->ReadStateMachinesTimeline(Id, [InGraphStartTime, InGraphEndTime, &DebugData](const IAnimationProvider::StateMachinesTimeline& InStateMachinesTimeline)
-															{
-																InStateMachinesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimStateMachineMessage& InMessage)
-																{
-																	DebugData.RecordStateData(InMessage.StateMachineIndex, InMessage.StateIndex, InMessage.StateWeight, InMessage.ElapsedTime);
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-					
-															AnimationProvider->ReadAnimSequencePlayersTimeline(Id, [InGraphStartTime, InGraphEndTime, GameplayProvider, &DebugData](const IAnimationProvider::AnimSequencePlayersTimeline& InSequencePlayersTimeline)
-															{
-																InSequencePlayersTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimSequencePlayerMessage& InMessage)
-																{
-																	DebugData.RecordSequencePlayer(InMessage.NodeId, InMessage.Position, InMessage.Length, InMessage.FrameCounter);
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-					
-															AnimationProvider->ReadAnimBlendSpacePlayersTimeline(Id, [InGraphStartTime, InGraphEndTime, GameplayProvider, &DebugData](const IAnimationProvider::BlendSpacePlayersTimeline& InBlendSpacePlayersTimeline)
-															{
-																InBlendSpacePlayersTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [GameplayProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FBlendSpacePlayerMessage& InMessage)
-																{
-																	UBlendSpace* BlendSpace = nullptr;
-																	const FObjectInfo* BlendSpaceInfo = GameplayProvider->FindObjectInfo(InMessage.BlendSpaceId);
-																	if(BlendSpaceInfo)
-																	{
-																		BlendSpace = TSoftObjectPtr<UBlendSpace>(FSoftObjectPath(BlendSpaceInfo->PathName)).LoadSynchronous();
-																	}
-					
-																	DebugData.RecordBlendSpacePlayer(InMessage.NodeId, BlendSpace, FVector(InMessage.PositionX, InMessage.PositionY, InMessage.PositionZ), FVector(InMessage.FilteredPositionX, InMessage.FilteredPositionY, InMessage.FilteredPositionZ));
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-					
-															AnimationProvider->ReadAnimSyncTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimSyncTimeline& InAnimSyncTimeline)
-															{
-																InAnimSyncTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimSyncMessage& InMessage)
-																{
-																	const TCHAR* GroupName = AnimationProvider->GetName(InMessage.GroupNameId);
-																	if(GroupName)
-																	{
-																		DebugData.RecordNodeSync(InMessage.SourceNodeId, FName(GroupName));
-																	}
-														
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-														}
-					
-														// Some traces come from both update and evaluate phases
-														if(InMessage.Phase == EAnimGraphPhase::Update || InMessage.Phase == EAnimGraphPhase::Evaluate)
-														{
-															AnimationProvider->ReadAnimAttributesTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimAttributeTimeline& InAnimAttributeTimeline)
-															{
-																InAnimAttributeTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimAttributeMessage& InMessage)
-																{
-																	const TCHAR* AttributeName = AnimationProvider->GetName(InMessage.AttributeNameId);
-																	if(AttributeName)
-																	{
-																		DebugData.RecordNodeAttribute(InMessage.TargetNodeId, InMessage.SourceNodeId, FName(AttributeName));
-																	}
-														
-																	return TraceServices::EEventEnumerate::Continue;
-																});
-															});
-														}
-					
-														// Anim node values can come from all phases
-														AnimationProvider->ReadAnimNodeValuesTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimNodeValuesTimeline& InNodeValuesTimeline)
-														{
-															InNodeValuesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimNodeValueMessage& InMessage)
-															{
-																FText Text = AnimationProvider->FormatNodeKeyValue(InMessage);
-																DebugData.RecordNodeValue(InMessage.NodeId, Text.ToString());
-																return TraceServices::EEventEnumerate::Continue;
-															});
-														});
+														TargetActorPosition = PoseMessage->ComponentToWorld.GetTranslation();
 													}
-													return TraceServices::EEventEnumerate::Continue;
 												});
 											}
 										}
 									}
 								}
 							}
-							return TraceServices::EEventEnumerate::Continue;
-						});
+							
+							// update pose on all SkeletalMeshComponents:
+							// - enumerate all skeletal mesh pose timelines
+							// - check if the corresponding mesh component still exists
+							// - apply the recorded pose for the current Frame
+							{
+								TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdatePoses);
+								AnimationProvider->EnumerateSkeletalMeshPoseTimelines([this, &Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData)
+								{
+									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
+									{
+										if(USkeletalMeshComponent* MeshComponent = Cast<USkeletalMeshComponent>(ObjectInstance))
+										{
+											AnimationProvider->ReadSkeletalMeshPoseTimeline(ObjectId, [this, &Frame, ObjectId, MeshComponent, AnimationProvider](const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData, bool bHasCurves)
+											{
+												const FSkeletalMeshPoseMessage * PoseMessage = nullptr;
+
+												// Get last pose in frame
+												TimelineData.EnumerateEvents(Frame.StartTime, Frame.EndTime,
+													[&PoseMessage](double InStartTime, double InEndTime, uint32 InDepth, const FSkeletalMeshPoseMessage& InPoseMessage)
+													{
+														PoseMessage = &InPoseMessage;
+														return TraceServices::EEventEnumerate::Continue;
+													});
+
+												// Update mesh based on pose
+												if (PoseMessage)
+												{
+													FTransform ComponentWorldTransform;
+													const FSkeletalMeshInfo* SkeletalMeshInfo = AnimationProvider->FindSkeletalMeshInfo(PoseMessage->MeshId);
+													AnimationProvider->GetSkeletalMeshComponentSpacePose(*PoseMessage, *SkeletalMeshInfo, ComponentWorldTransform, MeshComponent->GetEditableComponentSpaceTransforms());
+													MeshComponent->ApplyEditedComponentSpaceTransforms();
+
+													if (MeshComponentsToReset.Find(ObjectId) == nullptr)
+													{
+														FMeshComponentResetData ResetData;
+														ResetData.Component = MeshComponent;
+														ResetData.RelativeTransform = MeshComponent->GetRelativeTransform();
+														MeshComponentsToReset.Add(ObjectId, ResetData);
+													}
+
+													MeshComponent->SetWorldTransform(ComponentWorldTransform, false, nullptr, ETeleportType::TeleportPhysics);
+													MeshComponent->SetForcedLOD(PoseMessage->LodIndex + 1);
+													MeshComponent->UpdateChildTransforms(EUpdateTransformFlags::None, ETeleportType::TeleportPhysics);
+												}
+											});
+										}
+									}
+								});
+							}
+
+							{
+								TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_AnimBlueprintsDebug);
+								// Apply Animation Blueprint Debugging Data:
+								// - enumerate over all anim graph timelines
+								// - check if their instance class still exists and is the debugging target for the Animation Blueprint Editor
+								// - if it is copy that debug data into the class debug data for the blueprint debugger
+								AnimationProvider->EnumerateAnimGraphTimelines([&Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::AnimGraphTimeline& AnimGraphTimeline)
+								{
+									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
+									{
+										if(UAnimInstance* AnimInstance = Cast<UAnimInstance>(ObjectInstance))
+										{
+											if(UAnimBlueprintGeneratedClass* InstanceClass = Cast<UAnimBlueprintGeneratedClass>(AnimInstance->GetClass()))
+											{
+												if(UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(InstanceClass->ClassGeneratedBy))
+												{
+													if(AnimBlueprint->IsObjectBeingDebugged(AnimInstance))
+													{
+														TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdateBlueprintDebug);
+														// update debug info for attached Animation Blueprint editors
+														uint64 Id = FObjectTrace::GetObjectId(AnimInstance);
+														const int32 NodeCount = InstanceClass->GetAnimNodeProperties().Num();
+								
+														FAnimBlueprintDebugData& DebugData = InstanceClass->GetAnimBlueprintDebugData();
+														{
+															TRACE_CPUPROFILER_EVENT_SCOPE(ResetNodeVisitStates);
+															DebugData.ResetNodeVisitSites();
+														}
+
+														DebugData.DisableAllPoseWatches();
+							
+														AnimGraphTimeline.EnumerateEvents(Frame.StartTime, Frame.EndTime, [Id, AnimationProvider, GameplayProvider, &DebugData, NodeCount](double InGraphStartTime, double InGraphEndTime, uint32 InDepth, const FAnimGraphMessage& InMessage)
+														{
+															TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphTimelineEvent);
+																	
+															// Basic verification - check node count is the same
+															// @TODO: could add some form of node hash/CRC to the class to improve this
+															if(InMessage.NodeCount == NodeCount)
+															{
+																// Check for an update phase (which contains weights)
+																if(InMessage.Phase == EAnimGraphPhase::Update)
+																{
+																	AnimationProvider->ReadAnimNodesTimeline(Id, [InGraphStartTime, InGraphEndTime, &DebugData](const IAnimationProvider::AnimNodesTimeline& InNodesTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphDebugNodeVisits);
+																		InNodesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimNodeMessage& InMessage)
+																		{
+																			DebugData.RecordNodeVisit(InMessage.NodeId, InMessage.PreviousNodeId, InMessage.Weight);
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+							
+																	AnimationProvider->ReadStateMachinesTimeline(Id, [InGraphStartTime, InGraphEndTime, &DebugData](const IAnimationProvider::StateMachinesTimeline& InStateMachinesTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphDebugStateMachine);
+																		InStateMachinesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimStateMachineMessage& InMessage)
+																		{
+																			DebugData.RecordStateData(InMessage.StateMachineIndex, InMessage.StateIndex, InMessage.StateWeight, InMessage.ElapsedTime);
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+							
+																	AnimationProvider->ReadAnimSequencePlayersTimeline(Id, [InGraphStartTime, InGraphEndTime, GameplayProvider, &DebugData](const IAnimationProvider::AnimSequencePlayersTimeline& InSequencePlayersTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphDebugSequencePlayers);
+																		InSequencePlayersTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [&DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimSequencePlayerMessage& InMessage)
+																		{
+																			DebugData.RecordSequencePlayer(InMessage.NodeId, InMessage.Position, InMessage.Length, InMessage.FrameCounter);
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+							
+																	AnimationProvider->ReadAnimBlendSpacePlayersTimeline(Id, [InGraphStartTime, InGraphEndTime, GameplayProvider, &DebugData](const IAnimationProvider::BlendSpacePlayersTimeline& InBlendSpacePlayersTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphBlendSpaces);
+																		InBlendSpacePlayersTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [GameplayProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FBlendSpacePlayerMessage& InMessage)
+																		{
+																			UBlendSpace* BlendSpace = nullptr;
+																			const FObjectInfo* BlendSpaceInfo = GameplayProvider->FindObjectInfo(InMessage.BlendSpaceId);
+																			if(BlendSpaceInfo)
+																			{
+																				BlendSpace = TSoftObjectPtr<UBlendSpace>(FSoftObjectPath(BlendSpaceInfo->PathName)).LoadSynchronous();
+																			}
+							
+																			DebugData.RecordBlendSpacePlayer(InMessage.NodeId, BlendSpace, FVector(InMessage.PositionX, InMessage.PositionY, InMessage.PositionZ), FVector(InMessage.FilteredPositionX, InMessage.FilteredPositionY, InMessage.FilteredPositionZ));
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+							
+																	AnimationProvider->ReadAnimSyncTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimSyncTimeline& InAnimSyncTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphAnimSync);
+																		InAnimSyncTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimSyncMessage& InMessage)
+																		{
+																			const TCHAR* GroupName = AnimationProvider->GetName(InMessage.GroupNameId);
+																			if(GroupName)
+																			{
+																				DebugData.RecordNodeSync(InMessage.SourceNodeId, FName(GroupName));
+																			}
+																
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+																}
+							
+																// Some traces come from both update and evaluate phases
+																if(InMessage.Phase == EAnimGraphPhase::Update || InMessage.Phase == EAnimGraphPhase::Evaluate)
+																{
+																	AnimationProvider->ReadAnimAttributesTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimAttributeTimeline& InAnimAttributeTimeline)
+																	{
+																		TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphAttributes);
+																		InAnimAttributeTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimAttributeMessage& InMessage)
+																		{
+																			const TCHAR* AttributeName = AnimationProvider->GetName(InMessage.AttributeNameId);
+																			if(AttributeName)
+																			{
+																				DebugData.RecordNodeAttribute(InMessage.TargetNodeId, InMessage.SourceNodeId, FName(AttributeName));
+																			}
+																
+																			return TraceServices::EEventEnumerate::Continue;
+																		});
+																	});
+
+																	
+																	AnimationProvider->ReadPoseWatchTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::PoseWatchTimeline& InPoseWatchTimeline)
+																		{
+																			InPoseWatchTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FPoseWatchMessage& InMessage)
+																				{
+#if WITH_EDITOR
+																					for (FAnimNodePoseWatch& PoseWatch : DebugData.AnimNodePoseWatch)
+																					{
+																						if (PoseWatch.NodeID == InMessage.PoseWatchId)
+																						{
+																							TArray<FBoneIndexType> RequiredBones;
+																							TArray<FTransform> BoneTransforms;
+																							AnimationProvider->GetPoseWatchData(InMessage, BoneTransforms, RequiredBones);
+
+																							PoseWatch.SetPose(RequiredBones, BoneTransforms);
+																							PoseWatch.SetWorldTransform(InMessage.WorldTransform);
+
+																							PoseWatch.PoseWatch->SetIsNodeEnabled(true);
+																							break;
+																						}
+																					}
+#endif //WITH_EDITOR
+																					return TraceServices::EEventEnumerate::Continue;
+																				});
+																		});
+
+																}
+							
+																// Anim node values can come from all phases
+																AnimationProvider->ReadAnimNodeValuesTimeline(Id, [InGraphStartTime, InGraphEndTime, AnimationProvider, &DebugData](const IAnimationProvider::AnimNodeValuesTimeline& InNodeValuesTimeline)
+																{
+																	TRACE_CPUPROFILER_EVENT_SCOPE(AnimGraphNodeValues);
+																	InNodeValuesTimeline.EnumerateEvents(InGraphStartTime, InGraphEndTime, [AnimationProvider, &DebugData](double InStartTime, double InEndTime, uint32 InDepth, const FAnimNodeValueMessage& InMessage)
+																	{
+																		FText Text = AnimationProvider->FormatNodeKeyValue(InMessage);
+																		DebugData.RecordNodeValue(InMessage.NodeId, Text.ToString());
+																		return TraceServices::EEventEnumerate::Continue;
+																	});
+																});
+															}
+															return TraceServices::EEventEnumerate::Continue;
+														});
+													}
+												}
+											}
+										}
+									}
+									return TraceServices::EEventEnumerate::Continue;
+								});
+							}
+						}
 					}
 				}
 			}
@@ -900,63 +984,76 @@ void FRewindDebugger::Tick(float DeltaTime)
 	}
 }
 
-void FRewindDebugger::ComponentSelectionChanged(TSharedPtr<FDebugObjectInfo> SelectedObject)
+void FRewindDebugger::OpenDetailsPanel()
 {
-	SelectedComponent = SelectedObject;
+	bIsDetailsPanelOpen = true;
+	ComponentSelectionChanged(SelectedTrack);
 }
 
-void FRewindDebugger::ComponentDoubleClicked(TSharedPtr<FDebugObjectInfo> SelectedObject)
+void FRewindDebugger::ComponentSelectionChanged(TSharedPtr<RewindDebugger::FRewindDebuggerTrack> SelectedObject)
+{
+	SelectedTrack = SelectedObject;
+
+	if (bIsDetailsPanelOpen)
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+		
+		 // if we now have no selection, don't force the tab into focus - this happens when tracks disappear and can cause PIE to lose focus while playing
+		bool bInvokeAsInactive = !SelectedTrack.IsValid();
+		TSharedPtr<SDockTab> DetailsTab = LevelEditorTabManager->TryInvokeTab(FRewindDebuggerModule::DetailsTabName, bInvokeAsInactive);
+
+		if (DetailsTab.IsValid())
+		{
+			UpdateDetailsPanel(DetailsTab.ToSharedRef());
+		}
+	}
+}
+
+void FRewindDebugger::UpdateDetailsPanel(TSharedRef<SDockTab> DetailsTab)
+{
+	if (bIsDetailsPanelOpen)
+	{
+		TSharedPtr<SWidget> DetailsView;
+
+		if (SelectedTrack)
+		{
+			DetailsView = SelectedTrack->GetDetailsView();
+		}
+
+		if (DetailsView)
+		{
+			DetailsTab->SetContent(DetailsView.ToSharedRef());
+		}
+		else
+		{
+			static TSharedPtr<SWidget> EmptyDetails;
+			if (EmptyDetails == nullptr)
+			{
+				EmptyDetails = SNew(SSpacer);
+			}
+			DetailsTab->SetContent(EmptyDetails.ToSharedRef());
+		}
+	}
+}
+
+void FRewindDebugger::ComponentDoubleClicked(TSharedPtr<RewindDebugger::FRewindDebuggerTrack> SelectedObject)
 {
 	if (!SelectedObject.IsValid())
 	{
 		return;
 	}
 	
-	SelectedComponent = SelectedObject;
-	
-	IModularFeatures& ModularFeatures = IModularFeatures::Get();
-	static const FName HandlerFeatureName = IRewindDebuggerDoubleClickHandler::ModularFeatureName;
-		
-	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
-	{
-		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
-	
-		const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider");
-		const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(SelectedObject->ObjectId);
-		uint64 ClassId = ObjectInfo.ClassId;
-		bool bHandled = false;
-		
-		const int32 NumExtensions = ModularFeatures.GetModularFeatureImplementationCount(HandlerFeatureName);
-
-		// iterate up the class hierarchy, looking for a registered double click handler, until we find the one that succeeeds that is most specific to the type of this object
-		while (ClassId != 0 && !bHandled)
-		{
-			const FClassInfo& ClassInfo = GameplayProvider->GetClassInfo(ClassId);
-		
-			for (int32 ExtensionIndex = 0; ExtensionIndex < NumExtensions; ++ExtensionIndex)
-			{
-				IRewindDebuggerDoubleClickHandler* Handler = static_cast<IRewindDebuggerDoubleClickHandler*>(ModularFeatures.GetModularFeatureImplementation(HandlerFeatureName, ExtensionIndex));
-				if (Handler->GetTargetTypeName() == ClassInfo.Name)
-				{
-					if (Handler->HandleDoubleClick(this))
-					{
-						bHandled = true;
-						break;
-					}
-				}
-			}
-		
-			ClassId = ClassInfo.SuperId;
-		}
-	}
+	SelectedTrack = SelectedObject;
+	SelectedTrack->HandleDoubleClick();
 }
 
 TSharedPtr<SWidget> FRewindDebugger::BuildComponentContextMenu()
 {
 	UComponentContextMenuContext* MenuContext = NewObject<UComponentContextMenuContext>();
-	MenuContext->SelectedObject = SelectedComponent;
+	MenuContext->SelectedObject = GetSelectedComponent();
 
-	if (SelectedComponent.IsValid())
+	if (SelectedTrack.IsValid())
 	{
 		// build a list of class hierarchy names to make it easier for extensions to enable menu entries by type
 		if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
@@ -964,7 +1061,7 @@ TSharedPtr<SWidget> FRewindDebugger::BuildComponentContextMenu()
 			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
 	
 			const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider");
-			const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(SelectedComponent->ObjectId);
+			const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(SelectedTrack->GetObjectId());
 			uint64 ClassId = ObjectInfo.ClassId;
 			while (ClassId != 0)
 			{
@@ -977,3 +1074,43 @@ TSharedPtr<SWidget> FRewindDebugger::BuildComponentContextMenu()
 
 	return UToolMenus::Get()->GenerateWidget("RewindDebugger.ComponentContextMenu", FToolMenuContext(MenuContext));
  }
+
+
+TSharedPtr<FDebugObjectInfo> FRewindDebugger::GetSelectedComponent() const
+{
+	if (!SelectedComponent.IsValid())
+	{
+		SelectedComponent = MakeShared<FDebugObjectInfo>(0, "");
+	}
+	
+	if (SelectedTrack.IsValid())
+	{
+		SelectedComponent->ObjectId = SelectedTrack->GetObjectId();
+		SelectedComponent->ObjectName = SelectedTrack->GetDisplayName().ToString();
+		return SelectedComponent;
+	}
+	else
+	{
+		return TSharedPtr<FDebugObjectInfo>();
+	}
+}
+
+// build a component tree that's compatible with the public api from 5.0 for GetDebugComponents.
+void FRewindDebugger::RefreshDebugComponents(TArray<TSharedPtr<RewindDebugger::FRewindDebuggerTrack>>& InTracks, TArray<TSharedPtr<FDebugObjectInfo>>& OutComponents)
+{
+	OutComponents.SetNum(0);
+	for(auto& Track : InTracks)
+	{
+		int Index = OutComponents.Num();
+		OutComponents.Add(MakeShared<FDebugObjectInfo>(Track->GetObjectId(), Track->GetDisplayName().ToString()));
+		TArray<TSharedPtr<RewindDebugger::FRewindDebuggerTrack>> TrackChildren;
+		Track->IterateSubTracks([&TrackChildren](TSharedPtr<RewindDebugger::FRewindDebuggerTrack> Child) { TrackChildren.Add(Child); });
+		RefreshDebugComponents(TrackChildren, OutComponents[Index]->Children);
+	}
+}
+
+TArray<TSharedPtr<FDebugObjectInfo>>& FRewindDebugger::GetDebugComponents()
+{
+	RefreshDebugComponents(DebugTracks, DebugComponents);
+	return DebugComponents;
+}

@@ -168,5 +168,11 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Component Settings")
 	uint8 bConsiderForActorPlacementWhenHidden : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Component Settings")
+	uint8 bEvaluateWorldPositionOffset : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Component Settings")
+	uint8 bIsLocalToWorldDeterminantNegative : 1;
 #endif
 };

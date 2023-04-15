@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
+#include "CoreTypes.h"
 #include "DerivedDataSharedStringFwd.h"
 #include "Misc/ScopeExit.h"
 #include "Templates/Function.h"
 #include "Templates/RefCounting.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 
 #define UE_API DERIVEDDATACACHE_API
 

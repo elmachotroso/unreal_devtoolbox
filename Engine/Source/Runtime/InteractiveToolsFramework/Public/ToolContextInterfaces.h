@@ -2,26 +2,40 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Interface.h"
 #include "ComponentSourceInterfaces.h"
+#include "Containers/Array.h"
+#include "CoreMinimal.h"
+#include "Elements/Framework/TypedElementSelectionSet.h" // For deprecated FToolBuilderState::TypedElementSelectionSet member
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/Interface.h"
 #include "UObject/ObjectMacros.h"
-
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 // predeclarations so we don't have to include these in all tools
-class UWorld;
 class AActor;
-class UActorComponent;
-class FToolCommandChange;
 class FPrimitiveDrawInterface;
 class FSceneView;
+class FText;
+class FToolCommandChange;
 class FViewport;
-class UInteractiveToolManager;
+class UActorComponent;
 class UInteractiveGizmoManager;
+class UInteractiveToolManager;
+class UMaterialInterface;
+class UObject;
 class UToolTargetManager;
+class UTypedElementSelectionSet;
+
+class UWorld;
 struct FMeshDescription;
 struct FTypedElementHandle;
-class UTypedElementSelectionSet;
 
 /**
  * FToolBuilderState is a bucket of state information that a ToolBuilder might need
@@ -44,6 +58,7 @@ struct INTERACTIVETOOLSFRAMEWORK_API FToolBuilderState
 	/** Current selected Components. May be empty or nullptr. */
 	TArray<UActorComponent*> SelectedComponents;
 
+	UE_DEPRECATED(5.1, "This has moved to a context object. See IAssetEditorContextInterface")
 	TWeakObjectPtr<UTypedElementSelectionSet> TypedElementSelectionSet;
 };
 

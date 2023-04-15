@@ -180,7 +180,7 @@ class ENGINE_API USkyLightComponent : public ULightComponentBase
 	/**
 	 * The strength of the ambient occlusion, higher value will block more light.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = AtmosphereAndCloud, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", SliderExponent = 1.0))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = AtmosphereAndCloud, meta = (UIMin = "0", UIMax = "1", ClampMin = "0", SliderExponent = 1.0))
 	float CloudAmbientOcclusionStrength;
 	/**
 	 * The world space radius of the cloud ambient occlusion map around the camera in kilometers.
@@ -245,6 +245,10 @@ class ENGINE_API USkyLightComponent : public ULightComponentBase
 	/** Sets the cubemap used when SourceType is set to SpecifiedCubemap, and causes a skylight update on the next tick. */
 	UFUNCTION(BlueprintCallable, Category="SkyLight")
 	void SetCubemap(UTextureCube* NewCubemap);
+
+	/** Sets the angle of the cubemap used when SourceType is set to SpecifiedCubemap and it is non static. It will cause the skylight to update on the next tick. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|SkyLight")
+	void SetSourceCubemapAngle(float NewValue);
 
 	/** 
 	 * Creates sky lighting from a blend between two cubemaps, which is only valid when SourceType is set to SpecifiedCubemap. 
@@ -349,6 +353,7 @@ protected:
 	//~ Begin UActorComponent Interface
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void DestroyRenderState_Concurrent() override;
+	virtual void SendRenderTransform_Concurrent() override;
 	//~ Begin UActorComponent Interface
 
 	void UpdateLimitedRenderingStateFast();

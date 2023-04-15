@@ -8,7 +8,7 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Settings/WidgetDesignerSettings.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "PreviewScene.h"
 #include "GraphEditor.h"
 #include "BlueprintEditor.h"
@@ -37,6 +37,9 @@ struct FNamedSlotSelection
  */
 class UMGEDITOR_API FWidgetBlueprintEditor : public FBlueprintEditor
 {
+private:
+	using Super = FBlueprintEditor;
+
 public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnHoveredWidgetSet, const FWidgetReference&)
 	DECLARE_MULTICAST_DELEGATE(FOnHoveredWidgetCleared);
@@ -59,14 +62,31 @@ public:
 
 	void InitWidgetBlueprintEditor(const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode);
 
-	/** FBlueprintEditor interface */
+	//~ Begin FBlueprintEditor interface
 	virtual void Tick(float DeltaTime) override;
 	virtual void PostUndo(bool bSuccessful) override;
 	virtual void PostRedo(bool bSuccessful) override;
 	virtual void Compile() override;
+	//~ End FBlueprintEditor interface
+	
+	//~ Begin FAssetEditorToolkit Interface
+	virtual bool OnRequestClose() override;
+	// End of FAssetEditorToolkit 
 
-	/** FGCObjectInterface */
+	//~ Begin FGCObjectInterface interface
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	//~ End FGCObjectInterface interface
+
+	//~ Begin IToolkit interface
+	virtual FName GetToolkitContextFName() const override;
+	virtual FName GetToolkitFName() const override;
+	virtual FText GetBaseToolkitName() const override;
+	virtual FString GetWorldCentricTabPrefix() const override;
+	virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
+	void OnToolkitHostingStarted(const TSharedRef<IToolkit>& Toolkit) override;
+	void OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit) override;
+	//~ End IToolkit interface
 
 	/** @return The widget blueprint currently being edited in this editor */
 	class UWidgetBlueprint* GetWidgetBlueprintObj() const;
@@ -170,6 +190,15 @@ public:
 	/** Gets sequencer widget, for anim drawer */
 	TSharedRef<SWidget> OnGetWidgetAnimSequencer();
 
+	/** Adds external widget whose lifetime should be managed by this editor */
+	void AddExternalEditorWidget(FName ID, TSharedRef<SWidget> InExternalWidget);
+
+	/** Removes external widget whose lifetime should be managed by this editor */
+	int32 RemoveExternalEditorWidget(FName ID);
+
+	/** Gets external widget whose lifetime should be managed by this editor, NullWidget if not found */
+	TSharedPtr<SWidget> GetExternalEditorWidget(FName ID);
+
 	/** Toggles Anim Drawer, only used for keyboard shortcut */
 	void ToggleAnimDrawer();
 
@@ -211,6 +240,8 @@ public:
 	TSharedPtr<FPaletteViewModel> GetPaletteViewModel() { return PaletteViewModel; };
 	TSharedPtr<FLibraryViewModel> GetLibraryViewModel() { return LibraryViewModel; };
 
+	void CreateEditorModeManager() override;
+
 public:
 	/** Fires whenever a new widget is being hovered over */
 	FOnHoveredWidgetSet OnHoveredWidgetSet;
@@ -235,6 +266,9 @@ public:
 
 	/** Command list for handling widget actions in the WidgetBlueprintEditor */
 	TSharedPtr< FUICommandList > DesignerCommandList;
+
+	/** Commands for switching between tool palettes */
+	TArray< TSharedPtr<FUICommandInfo>> ToolPaletteCommands;
 
 	/** Paste Metadata */
 	FVector2D PasteDropLocation;
@@ -265,11 +299,11 @@ protected:
 	void OnCreateNativeBaseClassSuccessfully(const FString& InClassName, const FString& InClassPath, const FString& InModuleName);
 	TSharedPtr<ISequencer> CreateSequencerWidgetInternal();
 
-	// Begin FBlueprintEditor
+	//~ Begin FBlueprintEditor interface
 	virtual void RegisterApplicationModes(const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode, bool bNewlyCreated = false) override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
 	virtual TSubclassOf<UEdGraphSchema> GetDefaultSchemaClass() const override;
-	// End FBlueprintEditor
+	//~ End FBlueprintEditor interface
 
 private:
 	bool CanDeleteSelectedWidgets();
@@ -286,6 +320,15 @@ private:
 
 	bool CanDuplicateSelectedWidgets();
 	void DuplicateSelectedWidgets();
+
+	void OnFindWidgetReferences();
+	bool CanFindWidgetReferences() const;
+
+	/** Is creating a native base class for the current widget blueprint allowed */
+	bool CanCreateNativeBaseClass() const;
+
+	/** Whether menu to create a native base class is visible */
+	bool IsCreateNativeBaseClassVisible() const;
 
 private:
 	/** Called whenever the blueprint is structurally changed. */
@@ -371,6 +414,9 @@ private:
 	/** The preview scene that owns the preview GUI */
 	FPreviewScene PreviewScene;
 
+	/** For external widgets to have lifetimes bound to this editor instance */
+	TMap<FName, TSharedPtr<SWidget>> ExternalEditorWidgets;
+
 	/** List of created sequencers */
 	TArray<TWeakPtr<ISequencer>> Sequencers;
 
@@ -421,6 +467,9 @@ private:
 
 	/** The toolbar builder associated with this editor */
 	TSharedPtr<class FWidgetBlueprintEditorToolbar> WidgetToolbar;
+
+	/** Used to spawn sidebar tool palette */
+	TSharedPtr<class FWidgetEditorModeUILayer> ModeUILayer;
 
 	/** The widget references out in the ether that may need to be updated after being issued. */
 	TArray< TWeakPtr<FWidgetHandle> > WidgetHandlePool;

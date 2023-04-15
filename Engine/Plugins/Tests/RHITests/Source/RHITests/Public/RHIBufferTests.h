@@ -3,11 +3,62 @@
 #pragma once
 
 #include "RHITestsCommon.h"
+#include "Async/ParallelFor.h"
+
+PRAGMA_DISABLE_OPTIMIZATION
 
 class FRHIBufferTests
 {
 	// Copies data in the specified vertex buffer back to the CPU, and passes a pointer to that data to the provided verification lambda.
+	static bool VerifyBufferContents(const TCHAR* TestName, FRHICommandListImmediate& RHICmdList, TArrayView<FRHIBuffer*> Buffers, TFunctionRef<bool(int32 BufferIndex, void* Ptr, uint32 NumBytes)> VerifyCallback);
 	static bool VerifyBufferContents(const TCHAR* TestName, FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, TFunctionRef<bool(void* Ptr, uint32 NumBytes)> VerifyCallback);
+
+	template <typename TestLambdaType>
+	static void ParallelDispatchCommands(FRHICommandListImmediate& RHICmdList, int32 NumTests, TestLambdaType TestLambda)
+	{
+		const int32 NumTasks = 32;
+
+		int32 NumTestsPerTask = FMath::Max(NumTests / NumTasks, 1);
+		int32 NumTestsLaunched = 0;
+
+		TArray<FRHICommandListImmediate::FQueuedCommandList> CommandLists;
+
+		while (NumTestsLaunched < NumTests)
+		{
+			FRHICommandList* RHICmdListUpload = new FRHICommandList(FRHIGPUMask::All(), FRHICommandList::ERecordingThread::Any);
+
+			const int32 NumTestsInTask = FMath::Min(NumTestsPerTask, NumTests - NumTestsLaunched);
+
+#if 1
+			FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[TestLambda, RHICmdListUpload, NumTestsLaunched, NumTestsInTask](ENamedThreads::Type, const FGraphEventRef&)
+			{
+				FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+
+				for (int32 Index = 0; Index < NumTestsInTask; ++Index)
+				{
+					TestLambda(*RHICmdListUpload, Index + NumTestsLaunched, NumTestsLaunched);
+				}
+
+				RHICmdListUpload->FinishRecording();
+
+			}, TStatId(), nullptr, ENamedThreads::AnyHiPriThreadHiPriTask);
+
+			CommandLists.Emplace(RHICmdListUpload);
+#else
+			for (int32 Index = 0; Index < NumTestsInTask; ++Index)
+			{
+				TestLambda(*RHICmdListUpload, Index + NumTestsLaunched, NumTestsLaunched);
+			}
+			delete RHICmdListUpload;
+#endif
+
+			NumTestsLaunched += NumTestsInTask;
+		}
+
+		RHICmdList.QueueAsyncCommandListSubmit(CommandLists);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::WaitForOutstandingTasksOnly);
+	}
 
 	template <typename BufferType, typename ValueType, uint32 NumTestBytes>
 	static bool RunTest_UAVClear_Buffer(FRHICommandListImmediate& RHICmdList, const FString& TestName, BufferType* BufferRHI, FRHIUnorderedAccessView* UAV, uint32 BufferSize, const ValueType& ClearValue, void(FRHIComputeCommandList::* ClearPtr)(FRHIUnorderedAccessView*, ValueType const&), const uint8(&TestValue)[NumTestBytes])
@@ -31,7 +82,7 @@ class FRHIBufferTests
 		});
 
 		FString ClearValueStr;
-		if (TAreTypesEqual<ValueType, FVector4>::Value)
+		if (TAreTypesEqual<ValueType, FVector4f>::Value)
 		{
 			ClearValueStr = FString::Printf(TEXT("%f %f %f %f"), ClearValue.X, ClearValue.Y, ClearValue.Z, ClearValue.W);
 		}
@@ -54,7 +105,9 @@ class FRHIBufferTests
 			{
 				uint8* Element = ((uint8*)Ptr) + Index * NumTestBytes;
 				if (FMemory::Memcmp(Element, TestValue, NumTestBytes) != 0)
+				{
 					return false;
+				}
 			}
 
 			return true;
@@ -298,4 +351,96 @@ public:
 
 		return bResult;
 	}
+
+	static bool Test_RHICreateBuffer_Parallel(FRHICommandListImmediate& RHICmdList)
+	{
+		if (!GRHISupportsMultithreadedResources)
+		{
+			return true;
+		}
+
+		SCOPED_NAMED_EVENT_TEXT("Test_RHICreateBuffer_Parallel", FColor::Magenta);
+
+		const int32 NumBuffersToCreate = 256;
+
+		FGenericPlatformMath::RandInit(1);
+
+		TArray<TRefCountPtr<FRHIBuffer>> Buffers;
+		Buffers.SetNum(NumBuffersToCreate);
+
+		TArray<int32> RandomNumberPerBuffer;
+		RandomNumberPerBuffer.SetNum(NumBuffersToCreate);
+
+		for (int32 Index = 0; Index < NumBuffersToCreate; ++Index)
+		{
+			RandomNumberPerBuffer[Index] = FGenericPlatformMath::Rand();
+		}
+
+		ParallelDispatchCommands(RHICmdList, NumBuffersToCreate, [&](FRHICommandList& InRHICmdList, int32 Index, int32 Num)
+		{
+			SCOPED_NAMED_EVENT_TEXT("TestCreateBuffer", FColor::Magenta);
+
+			const int32 Random = RandomNumberPerBuffer[Index];
+			const int32 BufferSize = Align(Random % 65536, 16);
+			const int32 BufferStride = 4;
+
+			EBufferUsageFlags Usage = EBufferUsageFlags::VertexBuffer | EBufferUsageFlags::SourceCopy;
+
+			switch (Random % 3)
+			{
+			case 0:
+				Usage |= EBufferUsageFlags::Static;
+				break;
+			case 1:
+				Usage |= EBufferUsageFlags::Dynamic;
+				break;
+			case 2:
+				Usage |= EBufferUsageFlags::Volatile;
+				break;
+			}
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("Buffer"));
+
+			TRefCountPtr<FRHIBuffer> Buffer = InRHICmdList.CreateBuffer(BufferSize, Usage, 0, ERHIAccess::CopySrc, CreateInfo);
+
+			uint32* Data = (uint32*)InRHICmdList.LockBuffer(Buffer, 0, Buffer->GetSize(), RLM_WriteOnly);
+
+			uint32 NumDWORDs = Buffer->GetSize() >> 2;
+
+			for (uint32 DataIndex = 0; DataIndex < NumDWORDs; ++DataIndex)
+			{
+				Data[DataIndex] = DataIndex;
+			}
+
+			InRHICmdList.UnlockBuffer(Buffer);
+
+			Buffers[Index] = Buffer;
+		});
+
+		TArray<FRHIBuffer*> BufferPtrs;
+		BufferPtrs.Reserve(Buffers.Num());
+
+		for (int32 Index = 0; Index < NumBuffersToCreate; ++Index)
+		{
+			BufferPtrs.Emplace(Buffers[Index]);
+		}
+
+		return VerifyBufferContents(TEXT("Test_RHICreateBuffer_Parallel"), RHICmdList, BufferPtrs, [&](int32, void* Ptr, uint32 NumBytes)
+		{
+			uint32* Data = (uint32*)Ptr;
+			uint32 NumDWORDs = NumBytes >> 2;
+
+			for (uint32 Index = 0; Index < NumDWORDs; Index++)
+			{
+				if (Data[Index] != Index)
+				{
+					return false;
+				}
+			}
+
+			return true;
+		});
+	}
 };
+
+PRAGMA_ENABLE_OPTIMIZATION

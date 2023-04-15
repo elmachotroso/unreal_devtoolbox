@@ -53,8 +53,8 @@ public:
 		/** Z size of the bounds box extent of 4 texture/mesh instances */
 		FVector4f ExtentZ;
 
-		/** Sphere radii for the bounding sphere of 4 texture/mesh instances */
-		FVector4f Radius;
+		/** Sphere radii for the bounding sphere of 4 texture/mesh static instances or component scale for dynamic instances */
+		FVector4f RadiusOrComponentScale;
 
 		/** The relative box the bound was computed with. Aligned to be interpreted as FVector4  */
 		MS_ALIGN(16) FUintVector4 PackedRelativeBox;
@@ -265,9 +265,9 @@ class FRenderAssetInstanceAsyncView
 {
 public:
 
-	FRenderAssetInstanceAsyncView() : MaxLevelRenderAssetScreenSize(MAX_FLT) {}
+	FRenderAssetInstanceAsyncView() : MaxLevelRenderAssetScreenSize(UE_MAX_FLT) {}
 
-	FRenderAssetInstanceAsyncView(const FRenderAssetInstanceView* InView) : View(InView), MaxLevelRenderAssetScreenSize(MAX_FLT) {}
+	FRenderAssetInstanceAsyncView(const FRenderAssetInstanceView* InView) : View(InView), MaxLevelRenderAssetScreenSize(UE_MAX_FLT) {}
 
 	void UpdateBoundSizes_Async(
 		const TArray<FStreamingViewInfo>& ViewInfos,
@@ -287,11 +287,20 @@ public:
 		int32& MaxNumForcedLODs,
 		const TCHAR* LogPrefix) const;
 
-	bool HasRenderAssetReferences(const UStreamableRenderAsset* InAsset) const;
+	FORCEINLINE bool HasRenderAssetReferences(const UStreamableRenderAsset* InAsset) const
+	{
+		return View.IsValid() && (bool)View->GetElementIterator(InAsset);
+	}
 
-	bool HasComponentWithForcedLOD(const UStreamableRenderAsset* InAsset) const;
+	FORCEINLINE bool HasComponentWithForcedLOD(const UStreamableRenderAsset* InAsset) const
+	{
+		return View.IsValid() && View->HasComponentWithForcedLOD(InAsset);
+	}
 
-	bool HasAnyComponentWithForcedLOD() const;
+	FORCEINLINE bool HasAnyComponentWithForcedLOD() const
+	{
+		return View.IsValid() && View->HasAnyComponentWithForcedLOD();
+	}
 
 	// Release the data now as this is expensive.
 	void OnTaskDone() { BoundsViewInfo.Empty(); }
@@ -311,6 +320,8 @@ private:
 		 * Visible instances are the one that are in range and also that have been seen recently.
 		 */
 		float MaxNormalizedSize_VisibleOnly;
+		/** A custom per component scale applied to the texel factor. */
+		float ComponentScale;
 	};
 
 	// Normalized Texel Factors for each bounds and view. This is the data built by ComputeBoundsViewInfos

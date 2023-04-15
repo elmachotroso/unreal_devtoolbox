@@ -24,8 +24,9 @@
 
 #include "CoreMinimal.h"
 #include "Detour/DetourAlloc.h"
-#include "Detour/DetourStatus.h"
 #include "Detour/DetourLargeWorldCoordinates.h"
+#include "Detour/DetourStatus.h"
+#include "HAL/PlatformString.h"
 
 static const int DT_TILECACHE_MAGIC = 'D'<<24 | 'T'<<16 | 'L'<<8 | 'R'; ///< 'DTLR';
 static const int DT_TILECACHE_VERSION = 1;
@@ -196,7 +197,7 @@ NAVMESH_API dtStatus dtBuildTileCacheLayer(dtTileCacheCompressor* comp,
 NAVMESH_API void dtFreeTileCacheLayer(dtTileCacheAlloc* alloc, dtTileCacheLayer* layer);
 
 NAVMESH_API dtStatus dtDecompressTileCacheLayer(dtTileCacheAlloc* alloc, dtTileCacheCompressor* comp,
-									unsigned char* compressed, const int compressedSize,
+									const unsigned char* compressed, const int compressedSize,
 									dtTileCacheLayer** layerOut);
 
 NAVMESH_API dtTileCacheContourSet* dtAllocTileCacheContourSet(dtTileCacheAlloc* alloc);

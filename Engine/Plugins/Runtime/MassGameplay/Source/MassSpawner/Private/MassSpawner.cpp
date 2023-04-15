@@ -11,12 +11,16 @@
 #include "EnvironmentQuery/EnvQuery.h"
 #include "VisualLogger/VisualLogger.h"
 #include "MassEntityConfigAsset.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "EngineUtils.h"
 #include "Engine/StreamableManager.h"
 #include "Engine/AssetManager.h"
 #include "MassSpawnLocationProcessor.h"
 #include "MassExecutor.h"
+#include "MassEntityUtils.h"
+#if WITH_EDITOR
+#include "Engine/Texture2D.h"
+#endif
 
 
 namespace UE::MassSpawner
@@ -261,11 +265,13 @@ void AMassSpawner::DEBUG_Clear()
 
 void AMassSpawner::RegisterEntityTemplates()
 {
+	UWorld* World = GetWorld();
+	check(World);
 	for (FMassSpawnedEntityType& EntityType : EntityTypes)
 	{
 		if (const UMassEntityConfigAsset* EntityConfig = EntityType.GetEntityConfig())
 		{
-			EntityConfig->GetConfig().GetOrCreateEntityTemplate(*this, *EntityConfig);
+			EntityConfig->GetOrCreateEntityTemplate(*World);
 		}
 	}
 }
@@ -417,6 +423,9 @@ void AMassSpawner::SpawnGeneratedEntities(TConstArrayView<FMassEntitySpawnDataGe
 		return;
 	}
 
+	UWorld* World = GetWorld();
+	check(World);
+
 	for (const FMassEntitySpawnDataGeneratorResult& Result : Results)
 	{
 		if (Result.NumEntities <= 0)
@@ -431,12 +440,12 @@ void AMassSpawner::SpawnGeneratedEntities(TConstArrayView<FMassEntitySpawnDataGe
 
 		if (const UMassEntityConfigAsset* EntityConfig = EntityType.GetEntityConfig())
 		{
-			const FMassEntityTemplate* EntityTemplate = EntityConfig->GetConfig().GetOrCreateEntityTemplate(*this, *EntityConfig);
-			if (EntityTemplate && EntityTemplate->IsValid())
+			const FMassEntityTemplate& EntityTemplate = EntityConfig->GetOrCreateEntityTemplate(*World);
+			if (EntityTemplate.IsValid())
 			{
 				FSpawnedEntities& SpawnedEntities = AllSpawnedEntities.AddDefaulted_GetRef();
-				SpawnedEntities.TemplateID = EntityTemplate->GetTemplateID();
-				SpawnerSystem->SpawnEntities(EntityTemplate->GetTemplateID(), Result.NumEntities, Result.SpawnData, Result.SpawnDataProcessor, SpawnedEntities.Entities);
+				SpawnedEntities.TemplateID = EntityTemplate.GetTemplateID();
+				SpawnerSystem->SpawnEntities(EntityTemplate.GetTemplateID(), Result.NumEntities, Result.SpawnData, Result.SpawnDataProcessor, SpawnedEntities.Entities);
 			}
 		}
 	}
@@ -462,12 +471,10 @@ void AMassSpawner::SpawnGeneratedEntities(TConstArrayView<FMassEntitySpawnDataGe
 		}
 	}
 
-	if (Processors.Num() > 0)
+	if (Processors.Num() > 0 && World)
 	{
-		UMassEntitySubsystem* EntitySystem = UWorld::GetSubsystem<UMassEntitySubsystem>(GetWorld());
-		check(EntitySystem);
-
-		FMassProcessingContext ProcessingContext(*EntitySystem, /*TimeDelta=*/0.0f);
+		FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(*World);
+		FMassProcessingContext ProcessingContext(EntityManager, /*TimeDelta=*/0.0f);
 		UE::Mass::Executor::RunProcessorsView(Processors, ProcessingContext);
 	}
 
@@ -561,11 +568,14 @@ float AMassSpawner::GetSpawningCountScale() const
 
 void AMassSpawner::ClearTemplates()
 {
+	UWorld* World = GetWorld();
+	check(World);
+
 	for (FMassSpawnedEntityType& EntityType : EntityTypes)
 	{
 		if (const UMassEntityConfigAsset* EntityConfig = EntityType.GetEntityConfig())
 		{
-			EntityConfig->GetConfig().DestroyEntityTemplate(*this, *EntityConfig);
+			EntityConfig->DestroyEntityTemplate(*World);
 		}
 	}
 }

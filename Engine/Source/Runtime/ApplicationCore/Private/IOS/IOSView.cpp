@@ -3,16 +3,13 @@
 #include "IOS/IOSView.h"
 #include "IOS/IOSAppDelegate.h"
 #include "IOS/IOSApplication.h"
-#include "IOSWindow.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "IOS/IOSPlatformProcess.h"
 
-#include <OpenGLES/ES2/gl.h>
 #import "IOS/IOSAsyncTask.h"
 #import <QuartzCore/QuartzCore.h>
-#import <OpenGLES/EAGLDrawable.h>
 #import <UIKit/UIGeometry.h>
 
 #include "IOS/IOSCommandLineHelper.h"
@@ -22,9 +19,7 @@
 #include "IOS/Accessibility/IOSAccessibilityElement.h"
 #endif
 
-#if HAS_METAL
 id<MTLDevice> GMetalDevice = nil;
-#endif
 
 
 @interface IndexedPosition : UITextPosition {
@@ -87,9 +82,7 @@ id<MTLDevice> GMetalDevice = nil;
 @synthesize autocorrectionType = AutocorrectionType;
 @synthesize autocapitalizationType = AutocapitalizationType;
 @synthesize secureTextEntry = bSecureTextEntry;
-@synthesize SwapCount, OnScreenColorRenderBuffer, OnScreenColorRenderBufferMSAA, markedTextStyle;
-
-
+@synthesize SwapCount, markedTextStyle;
 
 
 #if BUILD_EMBEDDED_APP
@@ -114,12 +107,6 @@ id<MTLDevice> GMetalDevice = nil;
 
 #endif
 
-
-
-#if !HAS_METAL
-#error HAS_METAL must be defined
-#endif
-
 /**
  * @return The Layer Class for the window
  */
@@ -131,7 +118,6 @@ id<MTLDevice> GMetalDevice = nil;
 	return [CAMetalLayer class];
 #endif
 	
-#if HAS_METAL
 	// make sure the project setting has enabled Metal support (per-project user settings in the editor)
 	bool bSupportsMetal = false;
 	bool bSupportsMetalMRT = false;
@@ -167,7 +153,6 @@ id<MTLDevice> GMetalDevice = nil;
 		return [CAMetalLayer class];
 	}
 	else
-#endif
 	{
 		return nil;
 	}
@@ -179,14 +164,11 @@ id<MTLDevice> GMetalDevice = nil;
 
 	CachedMarkedText = nil;
 
-	// figure out if we should start up GL or Metal
-#if HAS_METAL
+	check(GMetalDevice);
 	// if the device is valid, we know Metal is usable (see +layerClass)
 	MetalDevice = GMetalDevice;
 	if (MetalDevice != nil)
 	{
-		bIsUsingMetal = true;
-		
 		// grab the MetalLayer and typecast it to match what's in layerClass
 		CAMetalLayer* MetalLayer = (CAMetalLayer*)self.layer;
 		MetalLayer.presentsWithTransaction = NO;
@@ -201,24 +183,19 @@ id<MTLDevice> GMetalDevice = nil;
 		MetalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 		MetalLayer.framebufferOnly = NO;
 		
+		NSLog(@"::: Created a UIView that will support Metal :::");
 	}
-#endif
 	
-	NSLog(@"::: Created a UIView that will support %@ :::", bIsUsingMetal ? @"Metal" : @"@GLES");
 	
-	// Initialize some variables
-	SwapCount = 0;
-
-//	self.userInteractionEnabled = YES;
-//	self.clearsContextBeforeDrawing = NO;
 #if !PLATFORM_TVOS
+	SupportedInterfaceOrientations = UIInterfaceOrientationMaskAll;
 	self.multipleTouchEnabled = YES;
 #endif
 
+	SwapCount = 0;
 	FMemory::Memzero(AllTouches, sizeof(AllTouches));
 	[self setAutoresizingMask: UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight];
 	bIsInitialized = false;
-	
 	
 	[self InitKeyboard];
 
@@ -234,7 +211,7 @@ id<MTLDevice> GMetalDevice = nil;
 	AppDelegate.IOSView = self;
 	
 	// initialize the backbuffer of the view (so the RHI can use it)
-	[self CreateFramebuffer:YES];
+	[self CreateFramebuffer];
 	
 #endif
 	
@@ -267,39 +244,71 @@ id<MTLDevice> GMetalDevice = nil;
 	[super dealloc];
 }
 
-- (bool)CreateFramebuffer:(bool)bIsForOnDevice
+- (void)CalculateContentScaleFactor:(int32)ScreenWidth ScreenHeight:(int32)ScreenHeight
 {
-	if (!bIsInitialized)
-	{
-		// look up what the device can support
-		const float Scale = [[UIScreen mainScreen] scale];
-		const float NativeScale = self.window.screen.nativeScale;
-		const float RequestedContentScaleFactor = [[IOSAppDelegate GetDelegate] GetMobileContentScaleFactor];
+	const IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
+	const float mNativeScale = AppDelegate.NativeScale;
+	const float RequestedContentScaleFactor = AppDelegate.MobileContentScaleFactor;
+	const int32 RequestedResX = AppDelegate.RequestedResX;
+	const int32 RequestedResY = AppDelegate.RequestedResY;
 		
-		UE_LOG(LogIOS, Log, TEXT("RequestedContentScaleFactor %f to nativeScale which is = (s:%f, ns:%f, csf:%f"), RequestedContentScaleFactor, Scale, NativeScale, self.contentScaleFactor);
-		// 0 means to leave the scale alone, use native
-		if (RequestedContentScaleFactor == 0.0f)
+//	UE_LOG(LogIOS, Log, TEXT("RequestedContentScaleFactor %f to nativeScale which is = (s:%f, ns:%f, csf:%f"), RequestedContentScaleFactor, AppDelegate.ScreenScale, mNativeScale, self.contentScaleFactor);
+	
+	int32 Width = ScreenWidth;
+	int32 Height = ScreenHeight;
+	
+	// 0 means to use native size
+	if (RequestedContentScaleFactor == 0.0f && RequestedResX <= 0 && RequestedResY <= 0)
+	{
+		self.contentScaleFactor = mNativeScale;
+	}
+	else
+	{
+		float AspectRatio = (float)ScreenHeight / (float)ScreenWidth;
+		self.contentScaleFactor = 1.0f;
+		if (RequestedResX > 0)
 		{
-			self.contentScaleFactor = NativeScale;
-			UE_LOG(LogIOS, Log, TEXT("Setting contentScaleFactor to nativeScale which is = %f"), self.contentScaleFactor);
+			// set long side for orientation to requested X
+			if (ScreenHeight > ScreenWidth)
+			{
+				Height = RequestedResX;
+				Width = FMath::TruncToInt(Height * AspectRatio + 0.5f);
+			}
+			else
+			{
+				Width = RequestedResX;
+				Height = FMath::TruncToInt(Width * AspectRatio + 0.5f);
+			}
+		}
+		else if (RequestedResY > 0)
+		{
+			// set short side for orientation to requested Y
+			if (ScreenHeight > ScreenWidth)
+			{
+				Width = RequestedResY;
+				Height = FMath::TruncToInt(Width * AspectRatio + 0.5f);
+			}
+			else
+			{
+				Height = RequestedResY;
+				Width = FMath::TruncToInt(Height * AspectRatio + 0.5f);
+			}
 		}
 		else
 		{
-			// for TV screens, always use scale factor of 1
-			self.contentScaleFactor = bIsForOnDevice ? RequestedContentScaleFactor : 1.0f;
-			UE_LOG(LogIOS, Log, TEXT("Setting contentScaleFactor to %0.4f (optimal = %0.4f)"), self.contentScaleFactor, NativeScale);
+			self.contentScaleFactor = RequestedContentScaleFactor;
 		}
+	}
 
-		// TODO: bIsUsingMetal is always true. Remove it.
-		if (bIsUsingMetal)
-		{
-			CAMetalLayer* MetalLayer = (CAMetalLayer*)self.layer;
-			CGSize DrawableSize = self.bounds.size;
-			DrawableSize.width *= self.contentScaleFactor;
-			DrawableSize.height *= self.contentScaleFactor;
-			MetalLayer.drawableSize = DrawableSize;
-		}
+	_ViewSize.width = Width;
+	_ViewSize.height = Height;
+}
 
+- (bool)CreateFramebuffer
+{
+	if (!bIsInitialized)
+	{
+		[self CalculateContentScaleFactor:FMath::TruncToInt(self.frame.size.width) ScreenHeight:FMath::TruncToInt(self.frame.size.height)];
 		bIsInitialized = true;
 	}
 	return true;
@@ -318,27 +327,18 @@ id<MTLDevice> GMetalDevice = nil;
 
 -(void)UpdateRenderWidth:(uint32)Width andHeight:(uint32)Height
 {
-#if HAS_METAL
-	if (bIsUsingMetal)
+	if (MetalDevice != nil)
 	{
-		if (MetalDevice != nil)
-		{
-			// grab the MetalLayer and typecast it to match what's in layerClass, then set the new size
-			CAMetalLayer* MetalLayer = (CAMetalLayer*)self.layer;
-			MetalLayer.drawableSize = CGSizeMake(Width, Height);;
-		}
-		return;
+		// grab the MetalLayer and typecast it to match what's in layerClass, then set the new size
+		CAMetalLayer* MetalLayer = (CAMetalLayer*)self.layer;
+		MetalLayer.drawableSize = CGSizeMake(Width, Height);
 	}
-#endif
-
 }
 
-#if HAS_METAL
 - (id<CAMetalDrawable>)MakeDrawable
 {
     return [(CAMetalLayer*)self.layer nextDrawable];
 }
-#endif
 
 - (void)DestroyFramebuffer
 {
@@ -349,17 +349,8 @@ id<MTLDevice> GMetalDevice = nil;
 	}
 }
 
-- (void)MakeCurrent
-{
-}
-
-- (void)UnmakeCurrent
-{
-}
-
 - (void)SwapBuffers
 {
-	// increment our swap counter
 	SwapCount++;
 }
 
@@ -436,8 +427,8 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 	TouchInput TouchMessage;
 	TouchMessage.Handle = TouchIndex;
 	TouchMessage.Type = Type;
-	TouchMessage.Position = FVector2D(FMath::Min<float>(self.frame.size.width - 1, Loc.x), FMath::Min<float>(self.frame.size.height - 1, Loc.y)) * Scale;
-	TouchMessage.LastPosition = FVector2D(FMath::Min<float>(self.frame.size.width - 1, PrevLoc.x), FMath::Min<float>(self.frame.size.height - 1, PrevLoc.y)) * Scale;
+	TouchMessage.Position = FVector2D(FMath::Min<double>(_ViewSize.width - 1, Loc.x), FMath::Min<double>(_ViewSize.height - 1, Loc.y)) * Scale;
+	TouchMessage.LastPosition = FVector2D(FMath::Min<double>(_ViewSize.width - 1, PrevLoc.x), FMath::Min<double>(_ViewSize.height - 1, PrevLoc.y)) * Scale;
 	TouchMessage.Force = Type != TouchEnded ? Force : 0.0f;
 	
 	// skip moves that didn't actually move - this will help input handling to skip over the first
@@ -530,28 +521,35 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 		CGPoint Loc = [Touch locationInView:self];
 		CGPoint PrevLoc = [Touch previousLocationInView:self];
 		
-		// convert TOuch pointer to a unique 0 based index
+		// View may have been modified via Cvars ("r.mobile.DesiredResX/Y" or CommandLine "mcfs, mobileresx/y"
+		CGPoint ViewSizeModifier = CGPointMake(_ViewSize.width/self.frame.size.width, _ViewSize.height/self.frame.size.height);
+		Loc.x *= ViewSizeModifier.x;
+		Loc.y *= ViewSizeModifier.y;
+		PrevLoc.x *= ViewSizeModifier.x;
+		PrevLoc.y *= ViewSizeModifier.y;
+			
+		// convert Touch pointer to a unique 0 based index
 		int32 TouchIndex = [self GetTouchIndex:Touch];
 		if (TouchIndex < 0)
 		{
 			continue;
 		}
 
-		float Force = Touch.force;
+		double Force = Touch.force;
 		
 		// map larger values to 1..10, so 10 is a max across platforms
-		if (Force > 1.0f)
+		if (Force > 1.0)
 		{
-			Force = 10.0f * Force / Touch.maximumPossibleForce;
+			Force = 10.0 * Force / Touch.maximumPossibleForce;
 		}
 		
 		// Handle devices without force touch
-		if ((Type == TouchBegan || Type == TouchMoved) && Force == 0.f)
+		if ((Type == TouchBegan || Type == TouchMoved) && Force == 0.0)
 		{
-			Force = 1.f;
+			Force = 1.0;
 		}
 
-		[self  HandleTouchAtLoc:Loc PrevLoc:PrevLoc TouchIndex:TouchIndex Force:Force Type:Type TouchesArray:TouchesArray];
+		[self  HandleTouchAtLoc:Loc PrevLoc:PrevLoc TouchIndex:TouchIndex Force:(float)Force Type:Type TouchesArray:TouchesArray];
 	}
 
 	FIOSInputInterface::QueueTouchInput(TouchesArray);
@@ -956,10 +954,10 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 	CGRect Frame = [[info objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue];
 	
 	FPlatformRect ScreenRect;
-	ScreenRect.Top = Frame.origin.y;
-	ScreenRect.Bottom = (Frame.origin.y + Frame.size.height);
-	ScreenRect.Left = Frame.origin.x;
-	ScreenRect.Right = (Frame.origin.x + Frame.size.width);
+	ScreenRect.Top = FMath::TruncToInt(Frame.origin.y);
+	ScreenRect.Bottom = FMath::TruncToInt(Frame.origin.y + Frame.size.height);
+	ScreenRect.Left = FMath::TruncToInt(Frame.origin.x);
+	ScreenRect.Right = FMath::TruncToInt(Frame.origin.x + Frame.size.width);
 	
 	[FIOSAsyncTask CreateTaskWithBlock:^bool(void){
 		[IOSAppDelegate GetDelegate].IOSApplication->OnVirtualKeyboardShown().Broadcast(ScreenRect);
@@ -1010,7 +1008,7 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 @implementation IOSViewController
 
 /**
- * The ViewController was created, so now we need to create our view to be controlled (an EAGLView)
+ * The ViewController was created, so now we need to create our view to be controlled
  */
 - (void) loadView
 {
@@ -1042,11 +1040,19 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 }
 
 /**
- * Tell the OS what the default supported orientations are
+ * Tell the OS about the default supported orientations
  */
 - (NSUInteger)supportedInterfaceOrientations
 {
-	return UIInterfaceOrientationMaskAll;
+	const FIOSView *View = [[IOSAppDelegate GetDelegate] IOSView];
+	if (View != nil)
+	{
+		return View->SupportedInterfaceOrientations;
+	}
+	else
+	{
+		return UIInterfaceOrientationMaskAll;
+	}
 }
 
 /**

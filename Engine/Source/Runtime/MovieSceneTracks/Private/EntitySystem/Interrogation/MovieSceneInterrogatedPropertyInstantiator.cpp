@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
+#include "EntitySystem/MovieSceneBlenderSystem.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
-#include "EntitySystem/MovieSceneBlenderSystem.h"
 #include "EntitySystem/MovieScenePropertyRegistry.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
+#include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
 
 #include "Algo/IndexOf.h"
 #include "Algo/Find.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneInterrogatedPropertyInstantiator)
 
 
 UMovieSceneInterrogatedPropertyInstantiatorSystem::UMovieSceneInterrogatedPropertyInstantiatorSystem(const FObjectInitializer& ObjInit)
@@ -22,6 +25,8 @@ UMovieSceneInterrogatedPropertyInstantiatorSystem::UMovieSceneInterrogatedProper
 				this, &UMovieSceneInterrogatedPropertyInstantiatorSystem::FindPropertyFromSource);
 
 	RelevantComponent = BuiltInComponents->Interrogation.InputKey;
+	SystemCategories |= FSystemInterrogator::GetInterrogationCategory();
+
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineComponentProducer(GetClass(), BuiltInComponents->BlendChannelInput);
@@ -131,9 +136,9 @@ UClass* UMovieSceneInterrogatedPropertyInstantiatorSystem::ResolveBlenderClass(c
 		}
 	}
 	
-	if (!ensureMsgf(BlenderClass, TEXT("No default blender class specified on property, and no custom blender specified on entities. Falling back to float blender.")))
+	if (!ensureMsgf(BlenderClass, TEXT("No default blender class specified on property, and no custom blender specified on entities. Falling back to double blender.")))
 	{
-		BlenderClass = UMovieScenePiecewiseFloatBlenderSystem::StaticClass();
+		BlenderClass = UMovieScenePiecewiseDoubleBlenderSystem::StaticClass();
 	}
 	
 	return BlenderClass;
@@ -291,6 +296,8 @@ void UMovieSceneInterrogatedPropertyInstantiatorSystem::DestroyOutput(UE::MovieS
 
 void UMovieSceneInterrogatedPropertyInstantiatorSystem::OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
 {
+	PropertyTracker.Initialize(this);
+
 	using namespace UE::MovieScene;
 
 	{
@@ -326,3 +333,4 @@ void UMovieSceneInterrogatedPropertyInstantiatorSystem::OnRun(FSystemTaskPrerequ
 
 	PropertyTracker.ProcessInvalidatedOutputs(Linker, *this);
 }
+

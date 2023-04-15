@@ -14,11 +14,9 @@
 #include "MfMediaTracks.h"
 #include "MfMediaUtils.h"
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/WindowsHWrapper.h"
-	#include "Windows/AllowWindowsPlatformTypes.h"
-#else
-	#include "XboxCommonAllowPlatformTypes.h"
+#if PLATFORM_MICROSOFT
+	#include "Microsoft/WindowsHWrapper.h"
+	#include "Microsoft/AllowMicrosoftPlatformTypes.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "FMfMediaPlayer"
@@ -59,6 +57,13 @@ void FMfMediaPlayer::Close()
 		return;
 	}
 
+	if (SourceReader)
+	{
+		SourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
+		SourceReader.Reset();
+	}
+	SourceReaderCallback.Reset();
+
 	// reset player
 	if (MediaSource != NULL)
 	{
@@ -71,13 +76,6 @@ void FMfMediaPlayer::Close()
 	PresentationDescriptor.Reset();
 	RateControl.Reset();
 	RateSupport.Reset();
-
-	if (SourceReader)
-	{
-		SourceReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
-		SourceReader.Reset();
-	}
-	SourceReaderCallback.Reset();
 
 	Characteristics = 0;
 	CurrentDuration = FTimespan::Zero();
@@ -751,7 +749,20 @@ void FMfMediaPlayer::ReceiveSourceReaderEvent(MediaEventType Event)
 
 void FMfMediaPlayer::ReceiveSourceReaderFlush()
 {
-	Samples->FlushSamples();
+	if (IsInGameThread() || IsInSlateThread())
+	{
+		Samples->FlushSamples();
+	}
+	else
+	{
+		TWeakPtr<FMediaSamples, ESPMode::ThreadSafe> WeakSamples(Samples);
+		Async(EAsyncExecution::TaskGraphMainThread, [WeakSamples]() {
+			if (auto PinnedSamples = WeakSamples.Pin())
+			{
+				PinnedSamples->FlushSamples();
+			}
+			});
+	}
 }
 
 
@@ -768,10 +779,8 @@ void FMfMediaPlayer::ReceiveSourceReaderSample(IMFSample* Sample, HRESULT Status
 
 #undef LOCTEXT_NAMESPACE
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/HideWindowsPlatformTypes.h"
-#else
-	#include "XboxCommonHidePlatformTypes.h"
+#if PLATFORM_MICROSOFT
+	#include "Microsoft/HideMicrosoftPlatformTypes.h"
 #endif
 
 #endif //MFMEDIA_SUPPORTED_PLATFORM

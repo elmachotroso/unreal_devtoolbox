@@ -3,6 +3,9 @@
 #include "RigUnit_Item.h"
 #include "Units/Core/RigUnit_Name.h"
 #include "Units/RigUnitContext.h"
+#include "Units/Core/RigUnit_CoreDispatch.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_Item)
 
 FRigUnit_ItemExists_Execute()
 {
@@ -42,9 +45,19 @@ FRigUnit_ItemEquals_Execute()
 	Result = (A == B);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_ItemEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreEquals::StaticStruct());
+}
+
 FRigUnit_ItemNotEquals_Execute()
 {
 	Result = (A != B);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_ItemNotEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreNotEquals::StaticStruct());
 }
 
 FRigUnit_ItemTypeEquals_Execute()

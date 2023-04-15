@@ -2,35 +2,75 @@
 
 #include "NiagaraPlatformSetCustomization.h"
 #include "DetailWidgetRow.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
+#include "IPropertyUtilities.h"
+#include "Layout/Visibility.h"
 #include "NiagaraEditorStyle.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraPlatformSet.h"
+#include "NiagaraSettings.h"
 #include "NiagaraSystem.h"
 #include "NiagaraTypes.h"
 #include "PlatformInfo.h"
 #include "PropertyHandle.h"
-#include "Scalability.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
-#include "Layout/Visibility.h"
+#include "PropertyNode.h"
+#include "StructurePropertyNode.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/SToolTip.h"
 #include "Widgets/Text/STextBlock.h"
-#include "NiagaraSettings.h"
-#include "IDetailPropertyRow.h"
+
 
 #define LOCTEXT_NAMESPACE "FNiagaraPlatformSetCustomization"
+
+uint8* GetBaseAddress(TSharedRef<IPropertyHandle> PropertyHandle)
+{
+	if (PropertyHandle->GetNumOuterObjects() > 0)
+	{
+		TArray<UObject*> Objects;
+		PropertyHandle->GetOuterObjects(Objects);
+		return reinterpret_cast<uint8*>(Objects[0]);
+	}
+	
+	// walk the struct hierarchy to find the parent StructOnScope
+	FStructurePropertyNode* StructurePropertyNode = nullptr;
+	TSharedPtr<IPropertyHandle> LastParent = PropertyHandle;
+	while (StructurePropertyNode == nullptr)
+	{
+		TSharedPtr<IPropertyHandle> NewParent = LastParent->GetParentHandle();
+		if (!ensureMsgf(NewParent.IsValid() && NewParent != LastParent, TEXT("Unable to walk property chain")))
+		{
+			return nullptr;
+		}
+		
+		if (FComplexPropertyNode* ComplexPropertyNode = NewParent->GetPropertyNode()->AsComplexNode())
+		{
+			StructurePropertyNode = ComplexPropertyNode->AsStructureNode();
+		}
+		LastParent = NewParent;
+	}
+	TSharedPtr<FStructOnScope> StructOnScope = StructurePropertyNode->GetStructData();
+	return StructOnScope->GetStructMemory();
+}
 
 void FNiagaraPlatformSetCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	PropertyHandle = InPropertyHandle;
-	TArray<UObject*> Objects;
-	PropertyHandle->GetOuterObjects(Objects);
-	TargetPlatformSet = (FNiagaraPlatformSet*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]);
+	TArray<TWeakObjectPtr<UObject>> WeakObjectPtrs = CustomizationUtils.GetPropertyUtilities()->GetSelectedObjects();
+
+	uint8* BaseAddress = GetBaseAddress(InPropertyHandle);
+	if (!BaseAddress)
+	{
+		return;
+	}
+	
+	TargetPlatformSet = reinterpret_cast<FNiagaraPlatformSet*>(PropertyHandle->GetValueBaseAddress(BaseAddress));
 
 	if (PlatformSelectionStates.Num() == 0)
 	{
@@ -66,22 +106,22 @@ void FNiagaraPlatformSetCustomization::CustomizeHeader(TSharedRef<IPropertyHandl
 				TSharedPtr<IPropertyHandle> ParentHandle = CurrHandle->GetParentHandle();
 				if (CurrStruct == FNiagaraSystemScalabilitySettingsArray::StaticStruct())
 				{
-					SystemScalabilitySettings = (FNiagaraSystemScalabilitySettingsArray*)ParentHandle->GetValueBaseAddress((uint8*)Objects[0]);
+					SystemScalabilitySettings = reinterpret_cast<FNiagaraSystemScalabilitySettingsArray*>(ParentHandle->GetValueBaseAddress(BaseAddress));
 					break;
 				}
 				else if (CurrStruct == FNiagaraEmitterScalabilitySettingsArray::StaticStruct())
 				{
-					EmitterScalabilitySettings = (FNiagaraEmitterScalabilitySettingsArray*)ParentHandle->GetValueBaseAddress((uint8*)Objects[0]);
+					EmitterScalabilitySettings = reinterpret_cast<FNiagaraEmitterScalabilitySettingsArray*>(ParentHandle->GetValueBaseAddress(BaseAddress));
 					break;
 				}
 				else if (CurrStruct == FNiagaraSystemScalabilityOverrides::StaticStruct())
 				{
-					SystemScalabilityOverrides = (FNiagaraSystemScalabilityOverrides*)ParentHandle->GetValueBaseAddress((uint8*)Objects[0]);
+					SystemScalabilityOverrides = reinterpret_cast<FNiagaraSystemScalabilityOverrides*>(ParentHandle->GetValueBaseAddress(BaseAddress));
 					break;
 				}
 				else if (CurrStruct == FNiagaraEmitterScalabilityOverrides::StaticStruct())
 				{
-					EmitterScalabilityOverrides = (FNiagaraEmitterScalabilityOverrides*)ParentHandle->GetValueBaseAddress((uint8*)Objects[0]);
+					EmitterScalabilityOverrides = reinterpret_cast<FNiagaraEmitterScalabilityOverrides*>(ParentHandle->GetValueBaseAddress(BaseAddress));
 					break;
 				}
 			}
@@ -92,7 +132,6 @@ void FNiagaraPlatformSetCustomization::CustomizeHeader(TSharedRef<IPropertyHandl
 
 	UpdateCachedConflicts();
 	
-	BaseSystem = Objects[0]->GetTypedOuter<UNiagaraSystem>();
 	PropertyHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FNiagaraPlatformSetCustomization::OnPropertyValueChanged));
 	PropertyHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateLambda([&]{ TargetPlatformSet->OnChanged(); }));
 
@@ -131,6 +170,8 @@ void FNiagaraPlatformSetCustomization::GenerateQualityLevelSelectionWidgets()
 
 	int32 NumQualityLevels = Settings->QualityLevels.Num();
 	
+	QualityLevelMenuAnchors.Reset();
+	QualityLevelMenuContents.Reset();
 	QualityLevelMenuAnchors.SetNum(NumQualityLevels);
 	QualityLevelMenuContents.SetNum(NumQualityLevels);
 
@@ -150,7 +191,7 @@ void FNiagaraPlatformSetCustomization::GenerateQualityLevelSelectionWidgets()
 					{
 						return QualityLevelWidgetBox->GetChildren()->GetChildAt(QualityLevel)->IsHovered() ? EVisibility::Visible : EVisibility::Hidden;
 					})
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ForegroundColor(FSlateColor::UseForeground())
 					.OnClicked(this, &FNiagaraPlatformSetCustomization::ToggleMenuOpenForQualityLevel, QualityLevel)
 					[
@@ -208,7 +249,7 @@ void FNiagaraPlatformSetCustomization::GenerateQualityLevelSelectionWidgets()
 									SNew(SImage)
 									.ToolTipText(this, &FNiagaraPlatformSetCustomization::GetQualityLevelErrorToolTip, QualityLevel)
 									.Visibility(this, &FNiagaraPlatformSetCustomization::GetQualityLevelErrorVisibility, QualityLevel)
-									.Image(FEditorStyle::GetBrush("Icons.Error"))
+									.Image(FAppStyle::GetBrush("Icons.Error"))
 								]
 							]
 							// dropdown button
@@ -282,7 +323,7 @@ static TSharedPtr<IPropertyHandle> FindChildPlatformSet(TSharedPtr<IPropertyHand
 	uint32 NumChildren = 0;
 	PropertyHandle->GetNumChildren(NumChildren);
 
-	for (int32 Idx = 0; Idx < (int32) NumChildren; ++Idx)
+	for (int32 Idx = 0; Idx < static_cast<int32>(NumChildren); ++Idx)
 	{
 		TSharedPtr<IPropertyHandle> Child = PropertyHandle->GetChildHandle(Idx);
 
@@ -305,7 +346,7 @@ void FNiagaraPlatformSetCustomization::InvalidateSiblingConflicts() const
 
 	uint32 ArrayCount = 0;
 	PlatformSetArray->GetNumElements(ArrayCount);
-	for (int32 Idx = 0; Idx < (int32) ArrayCount; ++Idx)
+	for (int32 Idx = 0; Idx < static_cast<int32>(ArrayCount); ++Idx)
 	{
 		if (Idx == PlatformSetArrayIndex)
 		{
@@ -335,7 +376,7 @@ EVisibility FNiagaraPlatformSetCustomization::GetQualityLevelErrorVisibility(int
 		if (ConflictInfo.SetAIndex == PlatformSetArrayIndex || 
 			ConflictInfo.SetBIndex == PlatformSetArrayIndex)
 		{
-			// this conflict applies to this platform set, check if it applies to this quality leve button
+			// this conflict applies to this platform set, check if it applies to this quality level button
 			const int32 QLMask = FNiagaraPlatformSet::CreateQualityLevelMask(QualityLevel);
 
 			for (const FNiagaraPlatformSetConflictEntry& Conflict : ConflictInfo.Conflicts)
@@ -462,7 +503,7 @@ TSharedRef<SWidget> FNiagaraPlatformSetCustomization::GenerateAdditionalDevicesW
 					SNew(SImage)
 					.ToolTipText(this, &FNiagaraPlatformSetCustomization::GetDeviceProfileErrorToolTip, Profile, QualityLevel)
 					.Visibility(this, &FNiagaraPlatformSetCustomization::GetDeviceProfileErrorVisibility, Profile, QualityLevel)
-					.Image(FEditorStyle::GetBrush("Icons.Error"))
+					.Image(FAppStyle::GetBrush("Icons.Error"))
 				]
 			];
 
@@ -473,7 +514,7 @@ TSharedRef<SWidget> FNiagaraPlatformSetCustomization::GenerateAdditionalDevicesW
 			.Padding(0, 0, 2, 0)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ForegroundColor(FSlateColor::UseForeground())
 				.OnClicked(this, &FNiagaraPlatformSetCustomization::RemoveDeviceProfile, Profile, QualityLevel)
 				.ToolTipText(LOCTEXT("RemoveDevice", "Remove this device override."))
@@ -589,6 +630,9 @@ FText FNiagaraPlatformSetCustomization::GetDeviceProfileErrorToolTip(UDeviceProf
 FReply FNiagaraPlatformSetCustomization::ToggleMenuOpenForQualityLevel(int32 QualityLevel)
 {
 	check(QualityLevelMenuAnchors.IsValidIndex(QualityLevel));
+
+	QualityLevelMenuContents[QualityLevel].Reset();
+	GenerateDeviceProfileTreeWidget(QualityLevel);
 	
 	TSharedPtr<SMenuAnchor> MenuAnchor = QualityLevelMenuAnchors[QualityLevel];
 	MenuAnchor->SetIsOpen(!MenuAnchor->IsOpen());
@@ -599,21 +643,14 @@ FReply FNiagaraPlatformSetCustomization::ToggleMenuOpenForQualityLevel(int32 Qua
 // Is or does a viewmodel contain any children active at the given quality?
 bool FNiagaraPlatformSetCustomization::IsTreeActiveForQL(const TSharedPtr<FNiagaraDeviceProfileViewModel>& Tree, int32 QualityLevelMask) const
 {
-	int32 Mask = TargetPlatformSet->GetEffectQualityMaskForDeviceProfile(Tree->Profile);
-	if ((Mask & QualityLevelMask) != 0)
+	if (TargetPlatformSet->CanConsiderDeviceProfile(Tree->Profile) == false)
 	{
-		return true;
+		return false;
 	}
 
-	for (const TSharedPtr<FNiagaraDeviceProfileViewModel>& Child : Tree->Children)
-	{
-		if (IsTreeActiveForQL(Child, QualityLevelMask))
-		{
-			return true;
-		}
-	}
+	int32 AvailableMask = TargetPlatformSet->GetAvailableQualityMaskForDeviceProfile(Tree->Profile);
 
-	return false;
+	return (AvailableMask & QualityLevelMask) != 0;
 }
 
 void FNiagaraPlatformSetCustomization::FilterTreeForQL(const TSharedPtr<FNiagaraDeviceProfileViewModel>& SourceTree, TSharedPtr<FNiagaraDeviceProfileViewModel>& FilteredTree, int32 QualityLevelMask)
@@ -685,6 +722,7 @@ void FNiagaraPlatformSetCustomization::CreateDeviceProfileTree()
 	check(Settings);
 
 	int32 NumQualityLevels = Settings->QualityLevels.Num();
+	FilteredDeviceProfileTrees.Reset();
 	FilteredDeviceProfileTrees.SetNum(NumQualityLevels);
 	
 	for (TSharedPtr<FNiagaraDeviceProfileViewModel>& FullDeviceRoot : FullDeviceProfileTree)
@@ -708,15 +746,13 @@ void FNiagaraPlatformSetCustomization::CreateDeviceProfileTree()
 
 TSharedRef<SWidget> FNiagaraPlatformSetCustomization::GenerateDeviceProfileTreeWidget(int32 QualityLevel)
 {
+	FullDeviceProfileTree.Reset();
 	if (FullDeviceProfileTree.Num() == 0)
 	{
 		CreateDeviceProfileTree();	
 	}
-
-	if (QualityLevelMenuContents[QualityLevel].IsValid())
-	{
-		return QualityLevelMenuContents[QualityLevel].ToSharedRef();
-	}
+	
+	QualityLevelMenuContents[QualityLevel].Reset();
 
 	TArray<TSharedPtr<FNiagaraDeviceProfileViewModel>>* TreeToUse = &FullDeviceProfileTree;
 	if (QualityLevel != INDEX_NONE)
@@ -726,7 +762,7 @@ TSharedRef<SWidget> FNiagaraPlatformSetCustomization::GenerateDeviceProfileTreeW
 	}
 
 	return SAssignNew(QualityLevelMenuContents[QualityLevel], SBorder)
-		.BorderImage(FEditorStyle::Get().GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::Get().GetBrush("Menu.Background"))
 		[
 			SAssignNew(DeviceProfileTreeWidget, STreeView<TSharedPtr<FNiagaraDeviceProfileViewModel>>)
 			.TreeItemsSource(TreeToUse)
@@ -741,16 +777,24 @@ TSharedRef<ITableRow> FNiagaraPlatformSetCustomization::OnGenerateDeviceProfileT
 	TSharedPtr<SHorizontalBox> RowContainer;
 	SAssignNew(RowContainer, SHorizontalBox);
 
-	int32 ProfileMask = TargetPlatformSet->GetEffectQualityMaskForDeviceProfile(InItem->Profile);
-	FText NameTooltip = FText::Format(LOCTEXT("ProfileQLTooltipFmt", "Effects Quality: {0}"), FNiagaraPlatformSet::GetQualityLevelMaskText(ProfileMask));
+	FNiagaraPlatformSetEnabledStateDetails Details;
+	FNiagaraPlatformSetEnabledState EnabledState = TargetPlatformSet->IsEnabled(InItem->Profile, QualityLevel, false, &Details);
+
+	FText NameTooltip = FText::Format(LOCTEXT("ProfileQLTooltipFmt", "Effects Quality: {0}"), FNiagaraPlatformSet::GetQualityLevelMaskText(QualityLevel));
+
+	const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
+	check(Settings);
+
+	int32 NumQualityLevels = Settings->QualityLevels.Num();
+	
 	
 	//Top level profile. Look for a platform icon.
 	if (InItem->Profile->Parent == nullptr)
 	{
 		if (const PlatformInfo::FTargetPlatformInfo* Info = PlatformInfo::FindPlatformInfo(*InItem->Profile->DeviceType))
 		{
-			const FSlateBrush* DeviceProfileTypeIcon = FEditorStyle::GetBrush(Info->GetIconStyleName(EPlatformIconSize::Normal));
-			if (DeviceProfileTypeIcon != FEditorStyle::Get().GetDefaultBrush())
+			const FSlateBrush* DeviceProfileTypeIcon = FAppStyle::GetBrush(Info->GetIconStyleName(EPlatformIconSize::Normal));
+			if (DeviceProfileTypeIcon != FAppStyle::Get().GetDefaultBrush())
 			{
 				RowContainer->AddSlot()
 					.AutoWidth()
@@ -774,22 +818,114 @@ TSharedRef<ITableRow> FNiagaraPlatformSetCustomization::OnGenerateDeviceProfileT
 	FSlateColor TextColor(FSlateColor::UseForeground());
 	ENiagaraPlatformSelectionState CurrentState = TargetPlatformSet->GetDeviceProfileState(InItem->Profile, QualityLevel);
 	
-	if (CurrentState == ENiagaraPlatformSelectionState::Enabled)
+	FSlateColor ActiveColor = FSlateColor::UseForeground();
+	FSlateColor InactiveColor = FSlateColor::UseSubduedForeground();
+	FSlateColor DisabledColor = FSlateColor(FLinearColor(FVector4(1, 0, 0, 1)));
+	if (EnabledState.bIsActive)
 	{
-		TextStyleName = "RichTextBlock.Bold";
-		TextColor = FSlateColor(FLinearColor(FVector4(0,1,0,1)));
+		TextColor = ActiveColor;
 	}
-	else if (CurrentState == ENiagaraPlatformSelectionState::Disabled)
+	else
 	{
-		TextStyleName = "RichTextBlock.Italic";
-		TextColor = FSlateColor(FLinearColor(FVector4(1,0,0,1)));
+		if (EnabledState.bCanBeActive)
+		{
+			TextColor = InactiveColor;
+		}
+		else
+		{
+			TextColor = DisabledColor;
+		}
 	}
 
+	TSharedPtr<SVerticalBox> TooltipContentsBox = SNew(SVerticalBox);
+ 	if (EnabledState.bIsActive)
+ 	{
+		TooltipContentsBox->AddSlot()
+ 		[
+ 			SNew(STextBlock)
+ 			.TextStyle(FAppStyle::Get(), TextStyleName)
+ 			.ColorAndOpacity(ActiveColor)
+ 			.Text(LOCTEXT("DPActiveTooltip", "Active"))
+ 		];
+ 	}
+ 	else
+ 	{
+ 		if(EnabledState.bCanBeActive)
+ 		{
+			TooltipContentsBox->AddSlot()
+			[
+				SNew(STextBlock)
+				.TextStyle(FAppStyle::Get(), TextStyleName)
+				.ColorAndOpacity(InactiveColor)
+				.Text(LOCTEXT("DPInActiveTooltip", "Inactive Due To:"))
+			];
+ 			for (FText Reason : Details.ReasonsForInActive)
+ 			{			
+				TooltipContentsBox->AddSlot()
+ 				[
+ 					SNew(STextBlock)
+ 					.TextStyle(FAppStyle::Get(), TextStyleName)
+ 					.ColorAndOpacity(InactiveColor)
+ 					.Text(Reason)
+ 				];
+ 			}
+ 		}
+ 		else
+ 		{
+			TooltipContentsBox->AddSlot()
+			[
+				SNew(STextBlock)
+				.TextStyle(FAppStyle::Get(), TextStyleName)
+				.ColorAndOpacity(DisabledColor)
+				.Text(LOCTEXT("DPDisabledTooltip", "Disabled Due To:"))
+			];
+ 			for (FText Reason : Details.ReasonsForDisabled)
+ 			{			
+				TooltipContentsBox->AddSlot()
+ 				[
+ 					SNew(STextBlock)
+ 					.TextStyle(FAppStyle::Get(), TextStyleName)
+ 					.ColorAndOpacity(DisabledColor)
+ 					.Text(Reason)
+ 				];
+ 			}
+ 		}
+	}
+	
+	TooltipContentsBox->AddSlot()
+		[
+			SNew(STextBlock)
+			.TextStyle(FAppStyle::Get(), TextStyleName)
+			.ColorAndOpacity(ActiveColor)
+			.Text(LOCTEXT("QLTooltipAvailableListHeader", "Available:"))
+		];
 
-	int32 QualityLevelMask = FNiagaraPlatformSet::CreateQualityLevelMask(QualityLevel);
-	if ((ProfileMask & QualityLevelMask) == 0)
+	int32 DefaultQL = FNiagaraPlatformSet::QualityLevelFromMask(Details.DefaultQualityMask);
+	for (int32 QL = 0; QL < NumQualityLevels; ++QL)
 	{
-		TextColor = FSlateColor::UseSubduedForeground();
+		if(Details.AvailableQualityMask & (1<<QL))
+		{
+			if (DefaultQL == QL)
+			{
+				TooltipContentsBox->AddSlot()
+					[
+						SNew(STextBlock)
+						.TextStyle(FAppStyle::Get(), TextStyleName)
+						.ColorAndOpacity(ActiveColor)
+						.Text(FText::Format(LOCTEXT("QLTooltipAvailableListDefaultFmt", "{0} (Default)"), FNiagaraPlatformSet::GetQualityLevelText(QL)))
+					];
+			}
+			else
+			{
+				TooltipContentsBox->AddSlot()
+					[
+						SNew(STextBlock)
+						.TextStyle(FAppStyle::Get(), TextStyleName)
+						.ColorAndOpacity(ActiveColor)
+						.Text(FNiagaraPlatformSet::GetQualityLevelText(QL))
+					];
+			}
+		}
 	}
 
 	RowContainer->AddSlot()
@@ -798,14 +934,19 @@ TSharedRef<ITableRow> FNiagaraPlatformSetCustomization::OnGenerateDeviceProfileT
 		.VAlign(VAlign_Center)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+			.ButtonStyle(FAppStyle::Get(), "NoBorder")
 			.OnClicked(this, &FNiagaraPlatformSetCustomization::OnProfileMenuButtonClicked, InItem, QualityLevel, false)
 			.IsEnabled(this, &FNiagaraPlatformSetCustomization::GetProfileMenuItemEnabled, InItem, QualityLevel)
 			.ForegroundColor(TextColor)
-			.ToolTipText(NameTooltip)
+			.ToolTip(
+				SNew(SToolTip)
+				[
+					TooltipContentsBox.ToSharedRef()
+				]
+			)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), TextStyleName)
+				.TextStyle(FAppStyle::Get(), TextStyleName)
 				.Text(FText::FromString(InItem->Profile->GetName()))
 			]
 		];
@@ -817,7 +958,7 @@ TSharedRef<ITableRow> FNiagaraPlatformSetCustomization::OnGenerateDeviceProfileT
 		.VAlign(VAlign_Center)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Fill)
 			.Visibility(this, &FNiagaraPlatformSetCustomization::GetProfileMenuButtonVisibility, InItem, QualityLevel)
@@ -853,7 +994,7 @@ enum class EProfileButtonMode
 
 static EProfileButtonMode GetProfileMenuButtonMode(FNiagaraPlatformSet* PlatformSet, TSharedPtr<FNiagaraDeviceProfileViewModel> Item, int32 QualityLevel)
 {
-	int32 Mask = PlatformSet->GetEffectQualityMaskForDeviceProfile(Item->Profile);
+	int32 Mask = PlatformSet->GetAvailableQualityMaskForDeviceProfile(Item->Profile);
 	int32 QLMask = FNiagaraPlatformSet::CreateQualityLevelMask(QualityLevel);
 
 	if ((Mask & QLMask) == 0)
@@ -864,6 +1005,7 @@ static EProfileButtonMode GetProfileMenuButtonMode(FNiagaraPlatformSet* Platform
 	ENiagaraPlatformSelectionState CurrentState = PlatformSet->GetDeviceProfileState(Item->Profile, QualityLevel);
 
 	bool bQualityEnabled = PlatformSet->IsEffectQualityEnabled(QualityLevel);
+	//FNiagaraPlatformSetEnabledState Enabled = PlatformSet->IsEnabled(Item->Profile, QualityLevel);
 	bool bIsDefault = CurrentState == ENiagaraPlatformSelectionState::Default;
 
 	if (bIsDefault && bQualityEnabled)
@@ -931,7 +1073,7 @@ const FSlateBrush* FNiagaraPlatformSetCustomization::GetProfileMenuButtonImage(T
 			return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.PlatformSet.Remove");
 	}
 
-	return FEditorStyle::GetBrush("NoBrush");
+	return FAppStyle::GetBrush("NoBrush");
 }
 
 FReply FNiagaraPlatformSetCustomization::OnProfileMenuButtonClicked(TSharedPtr<FNiagaraDeviceProfileViewModel> Item, int32 QualityLevel, bool bReopenMenu)
@@ -972,7 +1114,6 @@ FReply FNiagaraPlatformSetCustomization::OnProfileMenuButtonClicked(TSharedPtr<F
 
 void FNiagaraPlatformSetCustomization::OnGetDeviceProfileTreeChildren(TSharedPtr<FNiagaraDeviceProfileViewModel> InItem, TArray< TSharedPtr<FNiagaraDeviceProfileViewModel> >& OutChildren, int32 QualityLevel)
 {
-	if (TargetPlatformSet->GetDeviceProfileState(InItem->Profile, QualityLevel) == ENiagaraPlatformSelectionState::Default)
 	{
 		OutChildren = InItem->Children;
 	}
@@ -998,8 +1139,8 @@ void FNiagaraPlatformSetCustomization::QLCheckStateChanged(ECheckBoxState CheckS
 
 void FNiagaraPlatformSetCustomization::OnPropertyValueChanged()
 {
-	GenerateQualityLevelSelectionWidgets();
 	UpdateCachedConflicts();
+	GenerateQualityLevelSelectionWidgets();
 	TargetPlatformSet->OnChanged();
 }
 
@@ -1057,6 +1198,9 @@ protected:
 
 	// e.g. Tab or Key_Up
 	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& KeyEvent) override;
+
+	/** Handles entering in a command */
+	FText GetTooltipText()const;
 
 	/** Handles entering in a command */
 	void OnTextCommitted(const FText& InText, ETextCommit::Type CommitInfo);
@@ -1173,6 +1317,7 @@ static const TCHAR* NiagaraCVarHistoryKey = TEXT("NiagaraCVarHistory");
 SNiagaraConsoleInputBox::SNiagaraConsoleInputBox()
 	: bIgnoreUIUpdate(false)
 	, bHasTicked(false)
+	, bConsumeTab(false)
 {
 }
 
@@ -1195,6 +1340,7 @@ void SNiagaraConsoleInputBox::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot()
 			[
 				SAssignNew(InputText, SMultiLineEditableTextBox)
+				.ToolTipText_Raw(this, &SNiagaraConsoleInputBox::GetTooltipText)
 				.AllowMultiLine(false)
 				.ClearTextSelectionOnFocusLoss(true)
 				.SelectAllTextWhenFocused(true)
@@ -1211,7 +1357,7 @@ void SNiagaraConsoleInputBox::Construct(const FArguments& InArgs)
 	.MenuContent
 	(
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		.Padding(FMargin(2))
 		[
 			SNew(SBox)
@@ -1298,12 +1444,15 @@ TSharedRef<ITableRow> SNiagaraConsoleInputBox::MakeSuggestionListItemWidget(TSha
 	SanitizedText.ReplaceInline(TEXT("\r"), TEXT(" "), ESearchCase::CaseSensitive);
 	SanitizedText.ReplaceInline(TEXT("\n"), TEXT(" "), ESearchCase::CaseSensitive);
 
+	IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*SanitizedText);
+	
 	return
 		SNew(STableRow< TSharedPtr<FString> >, OwnerTable)
 		[
 			SNew(STextBlock)
 			.Text(FText::FromString(SanitizedText))
-			.TextStyle(FEditorStyle::Get(), "Log.Normal")
+			.ToolTipText(CVar ? FText::FromString(CVar->GetHelp()) : FText::GetEmpty())
+			.TextStyle(FAppStyle::Get(), "Log.Normal")
 			.HighlightText(Suggestions.SuggestionsHighlight)
 		];
 }
@@ -1377,15 +1526,21 @@ void SNiagaraConsoleInputBox::OnTextChanged(const FText& InText)
 	}
 }
 
+FText SNiagaraConsoleInputBox::GetTooltipText()const
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*WorkingText.ToString()))
+	{
+		return FText::FromString(CVar->GetHelp());
+	}
+	return FText::GetEmpty();
+}
+
 void SNiagaraConsoleInputBox::OnTextCommitted(const FText& InText, ETextCommit::Type CommitInfo)
 {
-	if (!WorkingText.EqualTo(InText))
-	{
-		WorkingText = InText;
-		IConsoleManager::Get().AddConsoleHistoryEntry(NiagaraCVarHistoryKey, *InText.ToString());
-		OnTextCommittedEvent.ExecuteIfBound(InText);
-		SuggestionBox->SetIsOpen(false);
-	}
+	WorkingText = InText;
+	IConsoleManager::Get().AddConsoleHistoryEntry(NiagaraCVarHistoryKey, *InText.ToString());
+	OnTextCommittedEvent.ExecuteIfBound(InText);
+	SuggestionBox->SetIsOpen(false);
 }
 
 FReply SNiagaraConsoleInputBox::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& KeyEvent)
@@ -1606,6 +1761,11 @@ void FNiagaraPlatformSetCVarConditionCustomization::CustomizeChildren(TSharedRef
 	ChildBuilder.AddProperty(MinFloatHandle.ToSharedRef()).Visibility(FloatVisAttr);
 	MaxFloatHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraPlatformSetCVarCondition, MaxFloat));
 	ChildBuilder.AddProperty(MaxFloatHandle.ToSharedRef()).Visibility(FloatVisAttr);
+
+	TSharedPtr<IPropertyHandle> PassHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraPlatformSetCVarCondition, PassResponse));
+	ChildBuilder.AddProperty(PassHandle.ToSharedRef());
+	TSharedPtr<IPropertyHandle> FailHandle = StructPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FNiagaraPlatformSetCVarCondition, FailResponse));
+	ChildBuilder.AddProperty(FailHandle.ToSharedRef());
 }
 
 EVisibility FNiagaraPlatformSetCVarConditionCustomization::BoolPropertyVisibility() const
@@ -1665,20 +1825,22 @@ void FNiagaraPlatformSetCVarConditionCustomization::OnTextCommitted(const FText&
 
 FNiagaraPlatformSetCVarCondition* FNiagaraPlatformSetCVarConditionCustomization::GetTargetCondition()const
 {
-	TArray<UObject*> Objects;
-	PropertyHandle->GetOuterObjects(Objects);
-	int32 Index = 0;
-	return (FNiagaraPlatformSetCVarCondition*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[Index]);
+	if (uint8* BaseAddress = GetBaseAddress(PropertyHandle.ToSharedRef()))
+	{
+		return reinterpret_cast<FNiagaraPlatformSetCVarCondition*>(PropertyHandle->GetValueBaseAddress(BaseAddress));
+	}
+	return nullptr;
 }
 
 FNiagaraPlatformSet* FNiagaraPlatformSetCVarConditionCustomization::GetTargetPlatformSet()const
 {
-	TArray<UObject*> Objects;
 	check(PropertyHandle && PropertyHandle->GetParentHandle());
 	TSharedPtr<IPropertyHandle> ParentHandle = PropertyHandle->GetParentHandle();
-	ParentHandle->GetOuterObjects(Objects);
-	int32 Index = 0;
-	return (FNiagaraPlatformSet*)ParentHandle->GetValueBaseAddress((uint8*)Objects[Index]);
+	if (uint8* BaseAddress = GetBaseAddress(ParentHandle.ToSharedRef()))
+	{
+		return reinterpret_cast<FNiagaraPlatformSet*>(ParentHandle->GetValueBaseAddress(BaseAddress));
+	}
+	return nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

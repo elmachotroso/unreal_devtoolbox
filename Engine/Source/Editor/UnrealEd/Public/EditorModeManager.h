@@ -594,6 +594,8 @@ protected:
 	/** Scale Factor for Widget*/
 	float WidgetScale;
 
+	UModeManagerInteractiveToolsContext* InteractiveToolsContext;
+
 private:
 
 	/** The coordinate system the widget is operating within. */
@@ -611,7 +613,8 @@ private:
 	/** Flag set between calls to StartTracking() and EndTracking() */
 	bool bIsTracking;
 
-	UModeManagerInteractiveToolsContext* InteractiveToolsContext;
+	/** Guard to prevent modes from entering as part of their exit routine */
+	bool bIsExitingModesDuringTick = false;
 
 	FEditorViewportClient* HoveredViewportClient = nullptr;
 	FEditorViewportClient* FocusedViewportClient = nullptr;

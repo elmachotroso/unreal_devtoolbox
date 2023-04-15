@@ -5,7 +5,6 @@
 #include "HeadlessChaos.h"
 #include "HeadlessChaosTestUtility.h"
 #include "Modules/ModuleManager.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDPositionConstraints.h"
 #include "Chaos/PBDRigidParticles.h"
@@ -15,7 +14,6 @@
 #include "Chaos/Utilities.h"
 #include "Chaos/PBDRigidsEvolutionGBF.h"
 #include "Chaos/PBDPositionConstraints.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDSuspensionConstraints.h"
 
@@ -35,12 +33,13 @@ namespace ChaosTest {
 			THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 			TEvolution Evolution(Particles, PhysicalMaterials);
 			TArray<FPBDRigidParticleHandle*> Dynamics = Evolution.CreateDynamicParticles(1);
+			Evolution.EnableParticle(Dynamics[0]);
+
 			TArray<FVec3> Positions = { FVec3(0) };
 			FPBDPositionConstraints PositionConstraints(MoveTemp(Positions), MoveTemp(Dynamics), 1.f);
-			TPBDConstraintIslandRule<FPBDPositionConstraints> ConstraintRule(PositionConstraints);
 			InitEvolutionSettings(Evolution);
 
-			Evolution.AddConstraintRule(&ConstraintRule);
+			Evolution.AddConstraintContainer(PositionConstraints);
 			Evolution.AdvanceOneTimeStep(0.1);
 			Evolution.EndFrame(0.1);
 			EXPECT_LT(Evolution.GetParticleHandles().Handle(0)->X().SizeSquared(), SMALL_NUMBER);
@@ -53,15 +52,15 @@ namespace ChaosTest {
 			InitEvolutionSettings(Evolution);
 			TArray<FPBDRigidParticleHandle*> Dynamics = Evolution.CreateDynamicParticles(1);
 			Dynamics[0]->SetGravityEnabled(false);
+			Evolution.EnableParticle(Dynamics[0]);
 
 			TArray<FVec3> Positions = { FVec3(1) };
 			FPBDPositionConstraints PositionConstraints(MoveTemp(Positions), MoveTemp(Dynamics), 0.5f);
-			TPBDConstraintIslandRule<FPBDPositionConstraints> ConstraintRule(PositionConstraints);
-			Evolution.AddConstraintRule(&ConstraintRule);
+			Evolution.AddConstraintContainer(PositionConstraints);
 
 			// The effect of stiffness parameter (which is set to 0.5 above) is iteration depeendent
-			Evolution.SetNumIterations(1);
-			Evolution.SetNumPushOutIterations(1);
+			Evolution.SetNumPositionIterations(1);
+			Evolution.SetNumVelocityIterations(1);
 
 			Evolution.AdvanceOneTimeStep(0.1);
 			Evolution.EndFrame(0.1);
@@ -96,21 +95,22 @@ namespace ChaosTest {
 		TArray<FPBDRigidParticleHandle*> Dynamics = Evolution.CreateDynamicParticles(2);
 		TArray<FVec3> PositionConstraintPositions = { FVec3(0, 0, 0) };
 
-		Evolution.SetNumIterations(Iterations);
+		Evolution.SetNumPositionIterations(Iterations);
 
 		Dynamics[1]->X() = FVec3(500, 0, 0);
 		FVec3 JointConstraintPosition = FVec3(0, 0, 0);
 
 		TArray<FPBDRigidParticleHandle*> PositionParticles = { Dynamics[0] };
 		FPBDPositionConstraints PositionConstraints(MoveTemp(PositionConstraintPositions), MoveTemp(PositionParticles), 1.f);
-		TPBDConstraintIslandRule<FPBDPositionConstraints> PositionConstraintRule(PositionConstraints);
-		Evolution.AddConstraintRule(&PositionConstraintRule);
+		Evolution.AddConstraintContainer(PositionConstraints);
 
 		TVec2<TGeometryParticleHandle<FReal, 3>*> JointParticles = { Dynamics[0], Dynamics[1] };
 		FPBDJointConstraints JointConstraints;
 		JointConstraints.AddConstraint(JointParticles, FRigidTransform3(JointConstraintPosition, FRotation3::FromIdentity()));
-		TPBDConstraintIslandRule<FPBDJointConstraints> JointConstraintRule(JointConstraints);
-		Evolution.AddConstraintRule(&JointConstraintRule);
+		Evolution.AddConstraintContainer(JointConstraints);
+
+		Evolution.EnableParticle(Dynamics[0]);
+		Evolution.EnableParticle(Dynamics[1]);
 
 		FReal Dt = 0.1f;
 		for (int32 TimeIndex = 0; TimeIndex < 100; ++TimeIndex)
@@ -172,13 +172,8 @@ namespace ChaosTest {
 			// hard-stop will activate because 9 breaks the min suspension limit, anything greater than 8 will do this
 			SuspensionConstraints.AddConstraint(DynamicParticle, SuspensionLocalLocationA, SuspensionSettings);
 
-			//auto* Constraint = SuspensionConstraints.GetConstraintHandle(0);
-			//Constraint->
-			//
-			//FPBDSuspensionConstraintHandle 
-
-			TPBDConstraintIslandRule<FPBDSuspensionConstraints> ConstraintRule(SuspensionConstraints);
-			Evolution.AddConstraintRule(&ConstraintRule);
+			Evolution.AddConstraintContainer(SuspensionConstraints);
+			Evolution.EnableParticle(DynamicParticle);
 
 			Evolution.AdvanceOneTimeStep(0.1);
 			Evolution.EndFrame(0.1);
@@ -228,8 +223,8 @@ namespace ChaosTest {
 			SuspensionSettings.Target = FVec3(45, 10, 9);
 			SuspensionConstraints.AddConstraint(DynamicParticle, SuspensionLocalLocationB, SuspensionSettings);
 
-			TPBDConstraintIslandRule<FPBDSuspensionConstraints> ConstraintRule(SuspensionConstraints);
-			Evolution.AddConstraintRule(&ConstraintRule);
+			Evolution.AddConstraintContainer(SuspensionConstraints);
+			Evolution.EnableParticle(DynamicParticle);
 
 			const FVec3& Pos = Evolution.GetParticleHandles().Handle(0)->X();
 			const FRotation3& Rot = Evolution.GetParticleHandles().Handle(0)->R();
@@ -262,8 +257,8 @@ namespace ChaosTest {
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
-		Evolution.SetNumIterations(1);
-		Evolution.SetNumPushOutIterations(1);
+		Evolution.SetNumPositionIterations(1);
+		Evolution.SetNumVelocityIterations(1);
 
 		// disable gravity
 		Evolution.GetGravityForces().SetAcceleration(FVec3(0, 0, -980.f));
@@ -305,8 +300,8 @@ namespace ChaosTest {
 			SuspensionConstraints.AddConstraint(DynamicParticle, SusLocalOffset[SusIndex], SuspensionSettings);
 		}
 
-		TPBDConstraintIslandRule<FPBDSuspensionConstraints> ConstraintRule(SuspensionConstraints);
-		Evolution.AddConstraintRule(&ConstraintRule);
+		Evolution.AddConstraintContainer(SuspensionConstraints);
+		Evolution.EnableParticle(DynamicParticle);
 
 		const FVec3& Pos = Evolution.GetParticleHandles().Handle(0)->X();
 		const FRotation3& Rot = Evolution.GetParticleHandles().Handle(0)->R();

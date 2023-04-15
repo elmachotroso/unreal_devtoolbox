@@ -1,71 +1,77 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
+using EpicGames.Perforce;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+
+#nullable enable
 
 namespace UnrealGameSync
 {
 	partial class OpenProjectWindow : Form
 	{
-		string ServerAndPortOverride;
-		string UserNameOverride;
-		DetectProjectSettingsTask DetectedProjectSettings;
-		string DataFolder;
-		string CacheFolder;
-		PerforceConnection DefaultConnection;
-		TextWriter Log;
-		UserSettings Settings;
+		string? _serverAndPortOverride;
+		string? _userNameOverride;
+		OpenProjectInfo? _openProjectInfo;
+		IPerforceSettings _defaultSettings;
+		IServiceProvider _serviceProvider;
+		UserSettings _settings;
+		ILogger _logger;
 
-		private OpenProjectWindow(UserSelectedProjectSettings Project, UserSettings Settings, string DataFolder, string CacheFolder, PerforceConnection DefaultConnection, TextWriter Log)
+		private OpenProjectWindow(UserSelectedProjectSettings? project, UserSettings settings, IPerforceSettings defaultSettings, IServiceProvider serviceProvider, ILogger logger)
 		{
 			InitializeComponent();
 
-			this.Settings = Settings;
-			this.DetectedProjectSettings = null;
-			this.DataFolder = DataFolder;
-			this.CacheFolder = CacheFolder;
-			this.DefaultConnection = DefaultConnection;
-			this.Log = Log;
+			this._settings = settings;
+			this._openProjectInfo = null;
+			this._defaultSettings = defaultSettings;
+			this._serviceProvider = serviceProvider;
+			this._logger = logger;
 
-			if(Project == null)
+			if (project == null)
 			{
 				LocalFileRadioBtn.Checked = true;
 			}
 			else
 			{
-				if(!String.IsNullOrWhiteSpace(Project.ServerAndPort))
+				if(!String.IsNullOrWhiteSpace(project.ServerAndPort))
 				{
-					ServerAndPortOverride = Project.ServerAndPort;
+					_serverAndPortOverride = project.ServerAndPort;
 				}
-				if(!String.IsNullOrWhiteSpace(Project.UserName))
+				if(!String.IsNullOrWhiteSpace(project.UserName))
 				{
-					UserNameOverride = Project.UserName;
+					_userNameOverride = project.UserName;
 				}
 
-				if(Project.ClientPath != null && Project.ClientPath.StartsWith("//"))
+				if(project.ClientPath != null && project.ClientPath.StartsWith("//"))
 				{
-					int SlashIdx = Project.ClientPath.IndexOf('/', 2);
-					if(SlashIdx != -1)
+					int slashIdx = project.ClientPath.IndexOf('/', 2);
+					if(slashIdx != -1)
 					{
-						WorkspaceNameTextBox.Text = Project.ClientPath.Substring(2, SlashIdx - 2);
-						WorkspacePathTextBox.Text = Project.ClientPath.Substring(SlashIdx);
+						WorkspaceNameTextBox.Text = project.ClientPath.Substring(2, slashIdx - 2);
+						WorkspacePathTextBox.Text = project.ClientPath.Substring(slashIdx);
 					}
 				}
 
-				if(Project.LocalPath != null)
+				if(project.LocalPath != null)
 				{
-					LocalFileTextBox.Text = Project.LocalPath;
+					LocalFileTextBox.Text = project.LocalPath;
 				}
 
-				if(Project.Type == UserSelectedProjectType.Client)
+				if(project.Type == UserSelectedProjectType.Client)
 				{
 					WorkspaceRadioBtn.Checked = true;
 				}
@@ -81,100 +87,98 @@ namespace UnrealGameSync
 			UpdateOkButton();
 		}
 
-		private PerforceConnection Perforce
+		private IPerforceSettings Perforce
 		{
-			get { return Utility.OverridePerforceSettings(DefaultConnection, ServerAndPortOverride, UserNameOverride); }
+			get => Utility.OverridePerforceSettings(_defaultSettings, _serverAndPortOverride, _userNameOverride);
 		}
 
-		public static bool ShowModal(IWin32Window Owner, UserSelectedProjectSettings Project, out DetectProjectSettingsTask NewDetectedProjectSettings, UserSettings Settings, string DataFolder, string CacheFolder, PerforceConnection DefaultConnection, TextWriter Log)
+		public static OpenProjectInfo? ShowModal(IWin32Window owner, UserSelectedProjectSettings? project, UserSettings settings, DirectoryReference dataFolder, DirectoryReference cacheFolder, IPerforceSettings defaultPerforceSettings, IServiceProvider serviceProvider, ILogger logger)
 		{
-			OpenProjectWindow Window = new OpenProjectWindow(Project, Settings, DataFolder, CacheFolder, DefaultConnection, Log);
-			if(Window.ShowDialog(Owner) == DialogResult.OK)
+			OpenProjectWindow window = new OpenProjectWindow(project, settings, defaultPerforceSettings, serviceProvider, logger);
+			if(window.ShowDialog(owner) == DialogResult.OK)
 			{
-				NewDetectedProjectSettings = Window.DetectedProjectSettings;
-				return true;
+				return window._openProjectInfo;
 			}
 			else
 			{
-				NewDetectedProjectSettings = null;
-				return false;
+				return null;
 			}
 		}
 
 		private void UpdateEnabledControls()
 		{
-			Color WorkspaceTextColor = WorkspaceRadioBtn.Checked? SystemColors.ControlText : SystemColors.GrayText;
-			WorkspaceNameLabel.ForeColor = WorkspaceTextColor;
-			WorkspaceNameTextBox.ForeColor = WorkspaceTextColor;
-			WorkspaceNameNewBtn.ForeColor = WorkspaceTextColor;
-			WorkspaceNameBrowseBtn.ForeColor = WorkspaceTextColor;
-			WorkspacePathLabel.ForeColor = WorkspaceTextColor;
-			WorkspacePathTextBox.ForeColor = WorkspaceTextColor;
-			WorkspacePathBrowseBtn.ForeColor = WorkspaceTextColor;
+			Color workspaceTextColor = WorkspaceRadioBtn.Checked? SystemColors.ControlText : SystemColors.GrayText;
+			WorkspaceNameLabel.ForeColor = workspaceTextColor;
+			WorkspaceNameTextBox.ForeColor = workspaceTextColor;
+			WorkspaceNameNewBtn.ForeColor = workspaceTextColor;
+			WorkspaceNameBrowseBtn.ForeColor = workspaceTextColor;
+			WorkspacePathLabel.ForeColor = workspaceTextColor;
+			WorkspacePathTextBox.ForeColor = workspaceTextColor;
+			WorkspacePathBrowseBtn.ForeColor = workspaceTextColor;
 
-			Color LocalFileTextColor = LocalFileRadioBtn.Checked? SystemColors.ControlText : SystemColors.GrayText;
-			LocalFileLabel.ForeColor = LocalFileTextColor;
-			LocalFileTextBox.ForeColor = LocalFileTextColor;
-			LocalFileBrowseBtn.ForeColor = LocalFileTextColor;
+			Color localFileTextColor = LocalFileRadioBtn.Checked? SystemColors.ControlText : SystemColors.GrayText;
+			LocalFileLabel.ForeColor = localFileTextColor;
+			LocalFileTextBox.ForeColor = localFileTextColor;
+			LocalFileBrowseBtn.ForeColor = localFileTextColor;
 
 			UpdateWorkspacePathBrowseButton();
 		}
 
-		public static string GetServerLabelText(PerforceConnection DefaultConnection, string ServerAndPort, string UserName)
+		public static string GetServerLabelText(IPerforceSettings defaultSettings, string? serverAndPort, string? userName)
 		{
-			if(ServerAndPort == null && UserName == null)
+			if(serverAndPort == null && userName == null)
 			{
-				return String.Format("Using default connection settings (user '{0}' on server '{1}').", DefaultConnection.UserName, DefaultConnection.ServerAndPort);
+				return String.Format("Using default connection settings (user '{0}' on server '{1}').", defaultSettings.UserName, defaultSettings.ServerAndPort);
 			}
 			else
 			{
-				StringBuilder Text = new StringBuilder("Connecting as ");
-				if(UserName == null)
+				StringBuilder text = new StringBuilder("Connecting as ");
+				if(userName == null)
 				{
-					Text.Append("default user");
+					text.Append("default user");
 				}
 				else
 				{
-					Text.AppendFormat("user '{0}'", UserName);
+					text.AppendFormat("user '{0}'", userName);
 				}
-				Text.Append(" on ");
-				if(ServerAndPort == null)
+				text.Append(" on ");
+				if(serverAndPort == null)
 				{
-					Text.Append("default server.");
+					text.Append("default server.");
 				}
 				else
 				{
-					Text.AppendFormat("server '{0}'.", ServerAndPort);
+					text.AppendFormat("server '{0}'.", serverAndPort);
 				}
-				return Text.ToString();
+				return text.ToString();
 			}
 		}
 
 		private void UpdateServerLabel()
 		{
-			ServerLabel.Text = GetServerLabelText(DefaultConnection, ServerAndPortOverride, UserNameOverride);
+			ServerLabel.Text = GetServerLabelText(_defaultSettings, _serverAndPortOverride, _userNameOverride);
 		}
 
 		private void UpdateWorkspacePathBrowseButton()
 		{
-			string WorkspaceName;
-			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out WorkspaceName);
+			string? workspaceName;
+			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out workspaceName);
 		}
 
 		private void UpdateOkButton()
 		{
-			string ProjectPath;
-			OkBtn.Enabled = WorkspaceRadioBtn.Checked? TryGetClientPath(out ProjectPath) : TryGetLocalPath(out ProjectPath);
+			string? projectPath;
+			OkBtn.Enabled = WorkspaceRadioBtn.Checked? TryGetClientPath(out projectPath) : TryGetLocalPath(out projectPath);
 		}
 
 		private void WorkspaceNewBtn_Click(object sender, EventArgs e)
 		{
 			WorkspaceRadioBtn.Checked = true;
 			
-			string WorkspaceName;
-			if(NewWorkspaceWindow.ShowModal(this, Perforce, null, WorkspaceNameTextBox.Text, Log, out WorkspaceName))
+			string? workspaceName;
+			if(NewWorkspaceWindow.ShowModal(this, Perforce, null, WorkspaceNameTextBox.Text, _serviceProvider, out workspaceName))
 			{
-				WorkspaceNameTextBox.Text = WorkspaceName;
+				WorkspaceNameTextBox.Text = workspaceName;
 				UpdateOkButton();
 			}
 		}
@@ -183,10 +187,10 @@ namespace UnrealGameSync
 		{
 			WorkspaceRadioBtn.Checked = true;
 
-			string WorkspaceName = WorkspaceNameTextBox.Text;
-			if(SelectWorkspaceWindow.ShowModal(this, Perforce, WorkspaceName, Log, out WorkspaceName))
+			string? workspaceName = WorkspaceNameTextBox.Text;
+			if(SelectWorkspaceWindow.ShowModal(this, Perforce, workspaceName, _serviceProvider, out workspaceName))
 			{
-				WorkspaceNameTextBox.Text = WorkspaceName;
+				WorkspaceNameTextBox.Text = workspaceName;
 			}
 		}
 
@@ -194,126 +198,125 @@ namespace UnrealGameSync
 		{
 			WorkspaceRadioBtn.Checked = true;
 
-			string WorkspaceName;
-			if(TryGetWorkspaceName(out WorkspaceName))
+			string? workspaceName;
+			if(TryGetWorkspaceName(out workspaceName))
 			{
-				string WorkspacePath = WorkspacePathTextBox.Text.Trim();
-				if(SelectProjectFromWorkspaceWindow.ShowModal(this, Perforce, WorkspaceName, WorkspacePath, Log, out WorkspacePath))
+				string? workspacePath = WorkspacePathTextBox.Text.Trim();
+				if(SelectProjectFromWorkspaceWindow.ShowModal(this, Perforce, workspaceName, workspacePath, _serviceProvider, out workspacePath))
 				{
-					WorkspacePathTextBox.Text = WorkspacePath;
+					WorkspacePathTextBox.Text = workspacePath;
 					UpdateOkButton();
 				}
 			}
 		}
 
-		private bool TryGetWorkspaceName(out string WorkspaceName)
+		private bool TryGetWorkspaceName([NotNullWhen(true)] out string? workspaceName)
 		{
-			string Text = WorkspaceNameTextBox.Text.Trim();
-			if(Text.Length == 0)
+			string text = WorkspaceNameTextBox.Text.Trim();
+			if(text.Length == 0)
 			{
-				WorkspaceName = null;
+				workspaceName = null;
 				return false;
 			}
 
-			WorkspaceName = Text;
+			workspaceName = text;
 			return true;
 		}
 
-		private bool TryGetClientPath(out string ClientPath)
+		private bool TryGetClientPath([NotNullWhen(true)] out string? clientPath)
 		{
-			string WorkspaceName;
-			if(!TryGetWorkspaceName(out WorkspaceName))
+			string? workspaceName;
+			if(!TryGetWorkspaceName(out workspaceName))
 			{
-				ClientPath = null;
+				clientPath = null;
 				return false;
 			}
 
-			string WorkspacePath = WorkspacePathTextBox.Text.Trim();
-			if(WorkspacePath.Length == 0 || WorkspacePath[0] != '/')
+			string workspacePath = WorkspacePathTextBox.Text.Trim();
+			if(workspacePath.Length == 0 || workspacePath[0] != '/')
 			{
-				ClientPath = null;
+				clientPath = null;
 				return false;
 			}
 
-			ClientPath = String.Format("//{0}{1}", WorkspaceName, WorkspacePath);
+			clientPath = String.Format("//{0}{1}", workspaceName, workspacePath);
 			return true;
 		}
 
-		private bool TryGetLocalPath(out string LocalPath)
+		private bool TryGetLocalPath(out string? localPath)
 		{
-			string LocalFile = LocalFileTextBox.Text.Trim();
-			if(LocalFile.Length == 0)
+			string localFile = LocalFileTextBox.Text.Trim();
+			if(localFile.Length == 0)
 			{
-				LocalPath = null;
+				localPath = null;
 				return false;
 			}
 
-			LocalPath = Path.GetFullPath(LocalFile);
+			localPath = Path.GetFullPath(localFile);
 			return true;
 		}
 
-		private bool TryGetSelectedProject(out UserSelectedProjectSettings Project)
+		private bool TryGetSelectedProject([NotNullWhen(true)] out UserSelectedProjectSettings? project)
 		{
 			if(WorkspaceRadioBtn.Checked)
 			{
-				string ClientPath;
-				if(TryGetClientPath(out ClientPath))
+				string? clientPath;
+				if(TryGetClientPath(out clientPath))
 				{
-					Project = new UserSelectedProjectSettings(ServerAndPortOverride, UserNameOverride, UserSelectedProjectType.Client, ClientPath, null);
+					project = new UserSelectedProjectSettings(_serverAndPortOverride, _userNameOverride, UserSelectedProjectType.Client, clientPath, null);
 					return true;
 				}
 			}
 			else
 			{
-				string LocalPath;
-				if(TryGetLocalPath(out LocalPath))
+				string? localPath;
+				if(TryGetLocalPath(out localPath))
 				{
-					Project = new UserSelectedProjectSettings(ServerAndPortOverride, UserNameOverride, UserSelectedProjectType.Local, null, LocalPath);
+					project = new UserSelectedProjectSettings(_serverAndPortOverride, _userNameOverride, UserSelectedProjectType.Local, null, localPath);
 					return true;
 				}
 			}
 
-			Project = null;
+			project = null;
 			return false;
 		}
 
 		private void OkBtn_Click(object sender, EventArgs e)
 		{
-			UserSelectedProjectSettings SelectedProject;
-			if(TryGetSelectedProject(out SelectedProject))
+			UserSelectedProjectSettings? selectedProject;
+			if(TryGetSelectedProject(out selectedProject))
 			{
-				DetectProjectSettingsTask NewDetectedProjectSettings = new DetectProjectSettingsTask(SelectedProject, DataFolder, CacheFolder, Log);
-				try
-				{
-					string ErrorMessage;
-					if(PerforceModalTask.Execute(this, Perforce, NewDetectedProjectSettings, "Opening Project", "Opening project, please wait...", Log, out ErrorMessage) != ModalTaskResult.Succeeded)
-					{
-						if(!String.IsNullOrEmpty(ErrorMessage))
-						{
-							MessageBox.Show(ErrorMessage);
-						}
-						return;
-					}
+				ILogger<OpenProjectInfo> logger = _serviceProvider.GetRequiredService<ILogger<OpenProjectInfo>>();
 
-					DetectedProjectSettings = NewDetectedProjectSettings;
-					NewDetectedProjectSettings = null;
+				PerforceSettings newPerforceSettings = Utility.OverridePerforceSettings(Perforce, selectedProject.ServerAndPort, selectedProject.UserName);
+
+				ModalTask<OpenProjectInfo>? newOpenProjectInfo = PerforceModalTask.Execute(this, "Opening project", "Opening project, please wait...", newPerforceSettings, (x, y) => DetectSettingsAsync(x, selectedProject, _settings, logger, y), logger);
+				if (newOpenProjectInfo != null && newOpenProjectInfo.Succeeded)
+				{
+					_openProjectInfo = newOpenProjectInfo.Result;
 					DialogResult = DialogResult.OK;
 					Close();
-				}
-				finally
-				{
-					if(NewDetectedProjectSettings != null)
-					{
-						NewDetectedProjectSettings.Dispose();
-						NewDetectedProjectSettings = null;
-					}
 				}
 			}
 		}
 
+		public static async Task<OpenProjectInfo> DetectSettingsAsync(IPerforceConnection perforce, UserSelectedProjectSettings selectedProject, UserSettings userSettings, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
+		{
+			OpenProjectInfo settings = await OpenProjectInfo.CreateAsync(perforce, selectedProject, userSettings, logger, cancellationToken);
+			if (DeploymentSettings.OnDetectProjectSettings != null)
+			{
+				string? message;
+				if (!DeploymentSettings.OnDetectProjectSettings(settings, logger, out message))
+				{
+					throw new UserErrorException(message);
+				}
+			}
+			return settings;
+		}
+
 		private void ChangeLink_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
 		{
-			if(ConnectWindow.ShowModal(this, DefaultConnection, ref ServerAndPortOverride, ref UserNameOverride, Log))
+			if(ConnectWindow.ShowModal(this, _defaultSettings, ref _serverAndPortOverride, ref _userNameOverride, _serviceProvider))
 			{
 				UpdateServerLabel();
 			}
@@ -323,29 +326,29 @@ namespace UnrealGameSync
 		{
 			LocalFileRadioBtn.Checked = true;
 
-			OpenFileDialog Dialog = new OpenFileDialog();
-			Dialog.Filter = "Project files (*.uproject)|*.uproject|Project directory lists (*.uprojectdirs)|*.uprojectdirs|All supported files (*.uproject;*.uprojectdirs)|*.uproject;*.uprojectdirs|All files (*.*)|*.*" ;
-			Dialog.FilterIndex = Settings.FilterIndex;
+			OpenFileDialog dialog = new OpenFileDialog();
+			dialog.Filter = "Project files (*.uproject)|*.uproject|Project directory lists (*.uprojectdirs)|*.uprojectdirs|All supported files (*.uproject;*.uprojectdirs)|*.uproject;*.uprojectdirs|All files (*.*)|*.*" ;
+			dialog.FilterIndex = _settings.FilterIndex;
 			
 			if(!String.IsNullOrEmpty(LocalFileTextBox.Text))
 			{
 				try
 				{
-					Dialog.InitialDirectory = Path.GetDirectoryName(LocalFileTextBox.Text);
+					dialog.InitialDirectory = Path.GetDirectoryName(LocalFileTextBox.Text);
 				}
 				catch
 				{
 				}
 			}
 
-			if(Dialog.ShowDialog(this) == System.Windows.Forms.DialogResult.OK)
+			if (dialog.ShowDialog(this) == DialogResult.OK)
 			{
-				string FullName = Path.GetFullPath(Dialog.FileName);
+				string fullName = Path.GetFullPath(dialog.FileName);
 
-				Settings.FilterIndex = Dialog.FilterIndex;
-				Settings.Save();
+				_settings.FilterIndex = dialog.FilterIndex;
+				_settings.Save(_logger);
 
-				LocalFileTextBox.Text = FullName;
+				LocalFileTextBox.Text = fullName;
 				UpdateOkButton();
 			}
 		}

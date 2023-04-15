@@ -8,18 +8,14 @@
 #include "D3D12RootSignatureDefinitions.h"
 #include "RayTracingBuiltInResources.h"
 
-#if D3D12_RHI_RAYTRACING
-#include "D3D12RayTracingRootSignature.h"
-#endif // D3D12_RHI_RAYTRACING
-
 #ifndef FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE
 #define FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE D3D12_ROOT_SIGNATURE_FLAG_NONE
 #endif
 
 #if !PLATFORM_CPU_ARM_FAMILY && (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
-#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Microsoft/AllowMicrosoftPlatformTypes.h"
 #include "amd_ags.h"
-#include "Windows/HideWindowsPlatformTypes.h"
+#include "Microsoft/HideMicrosoftPlatformTypes.h"
 #endif
 
 // Allows to automatically bind UEDiagnosticBuffer UAV, available to all shaders.
@@ -174,10 +170,12 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 		//          FHitGroupSystemRootConstants:
 		// 4 bytes: index/vertex fetch configuration as root constant (bitfield defining index and vertex formats)
 		// 4 bytes: index buffer offset in bytes
+		// 4 bytes: first primitive of the segment (as set in FRayTracingGeometrySegment)
 		// 4 bytes: hit group user data
+		// 4 bytes: index of the first instance that belongs to the current batch.
 		// 4 bytes: unused padding to ensure the next parameter is aligned to 8-byte boundary
 		// -----------
-		// 32 bytes
+		// 40 bytes
 
 		check(RootParameterCount == 0 && RootParametersSize == 0); // We expect system RT parameters to come first
 
@@ -309,7 +307,7 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 	}
 	else if(QBSS.RootSignatureType == RS_RayTracingGlobal)
 	{
-		Flags = FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE;
+		Flags |= FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE;
 	}
 	else if (QBSS.RootSignatureType == RS_Raster)
 #endif // D3D12_RHI_RAYTRACING
@@ -388,111 +386,35 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 
 }
 
-const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& FD3D12RootSignatureDesc::GetStaticGraphicsRootSignatureDesc()
+void FD3D12RootSignature::InitStaticGraphicsRootSignature(ED3D12RootSignatureFlags InFlags)
 {
-	// TODO: Support vendor extensions for static root signatures?
-	static struct
-	{
-		D3D12_SHADER_VISIBILITY Vis;
-		D3D12_DESCRIPTOR_RANGE_TYPE Type;
-		uint32 Count;
-		uint32 BaseShaderReg;
-		D3D12_DESCRIPTOR_RANGE_FLAGS Flags;
-	} RangeDesc[] =
-	{
-		{ D3D12_SHADER_VISIBILITY_PIXEL, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_PIXEL, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_PIXEL, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags },
-
-		{ D3D12_SHADER_VISIBILITY_VERTEX, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_VERTEX, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_VERTEX, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags },
-
-		{ D3D12_SHADER_VISIBILITY_GEOMETRY, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_GEOMETRY, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_GEOMETRY, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags },
-
-#if PLATFORM_SUPPORTS_MESH_SHADERS
-		{ D3D12_SHADER_VISIBILITY_MESH, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_MESH, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_MESH, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags },
-
-		{ D3D12_SHADER_VISIBILITY_AMPLIFICATION, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_AMPLIFICATION, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags },
-		{ D3D12_SHADER_VISIBILITY_AMPLIFICATION, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags },
-#endif // PLATFORM_SUPPORTS_MESH_SHADERS
-
-		{ D3D12_SHADER_VISIBILITY_ALL, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, MAX_UAVS, 0, D3D12ShaderUtils::StaticRootSignatureConstants::UAVDescriptorRangeFlags },
-	};
-
-	static const uint32 DescriptorTableCount = UE_ARRAY_COUNT(RangeDesc);
-	static CD3DX12_ROOT_PARAMETER1 TableSlots[DescriptorTableCount];
-	static CD3DX12_DESCRIPTOR_RANGE1 DescriptorRanges[DescriptorTableCount];
-
-	for (uint32 i = 0; i < DescriptorTableCount; i++)
-	{
-		DescriptorRanges[i].Init(
-			RangeDesc[i].Type,
-			RangeDesc[i].Count,
-			RangeDesc[i].BaseShaderReg,
-			0u,
-			RangeDesc[i].Flags
-		);
-
-		TableSlots[i].InitAsDescriptorTable(1, &DescriptorRanges[i], RangeDesc[i].Vis);
-	}
-
-	static CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc(DescriptorTableCount, TableSlots, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-	return RootDesc;
+	D3D12ShaderUtils::FBinaryRootSignatureCreator Creator;
+	D3D12ShaderUtils::CreateGfxRootSignature(Creator, InFlags);
+	Init(Creator.Finalize());
 }
 
-const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& FD3D12RootSignatureDesc::GetStaticComputeRootSignatureDesc()
+void FD3D12RootSignature::InitStaticComputeRootSignatureDesc(ED3D12RootSignatureFlags InFlags)
 {
-	// TODO: Support vendor extensions for static root signatures?
-
-	static const uint32 DescriptorTableCount = 4;
-	static CD3DX12_ROOT_PARAMETER1 TableSlots[DescriptorTableCount];
-	static CD3DX12_DESCRIPTOR_RANGE1 DescriptorRanges[DescriptorTableCount];
-
-	uint32 RangeIndex = 0;
-	DescriptorRanges[RangeIndex].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, MAX_SRVS, 0, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SRVDescriptorRangeFlags);
-	TableSlots[RangeIndex].InitAsDescriptorTable(1, &DescriptorRanges[RangeIndex], D3D12_SHADER_VISIBILITY_ALL);
-	++RangeIndex;
-	DescriptorRanges[RangeIndex].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, MAX_CBS, 0, 0, D3D12ShaderUtils::StaticRootSignatureConstants::CBVDescriptorRangeFlags);
-	TableSlots[RangeIndex].InitAsDescriptorTable(1, &DescriptorRanges[RangeIndex], D3D12_SHADER_VISIBILITY_ALL);
-	++RangeIndex;
-	DescriptorRanges[RangeIndex].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, MAX_SAMPLERS, 0, 0, D3D12ShaderUtils::StaticRootSignatureConstants::SamplerDescriptorRangeFlags);
-	TableSlots[RangeIndex].InitAsDescriptorTable(1, &DescriptorRanges[RangeIndex], D3D12_SHADER_VISIBILITY_ALL);
-	++RangeIndex;
-	DescriptorRanges[RangeIndex].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, MAX_UAVS, 0, 0, D3D12ShaderUtils::StaticRootSignatureConstants::UAVDescriptorRangeFlags);
-	TableSlots[RangeIndex].InitAsDescriptorTable(1, &DescriptorRanges[RangeIndex], D3D12_SHADER_VISIBILITY_ALL);
-	++RangeIndex;
-
-	static CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc(RangeIndex, TableSlots, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
-	return RootDesc;
+	D3D12ShaderUtils::FBinaryRootSignatureCreator Creator;
+	D3D12ShaderUtils::CreateComputeRootSignature(Creator, InFlags);
+	Init(Creator.Finalize());
 }
 
-const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& FD3D12RootSignatureDesc::GetStaticRayTracingGlobalRootSignatureDesc()
-{
 #if D3D12_RHI_RAYTRACING
-	return D3D12ShaderUtils::GetStaticRayTracingRootSignatureDesc<false, FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE>();
-#else // D3D12_RHI_RAYTRACING
-	checkNoEntry();
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC Desc = {};
-	return Desc;
-#endif // D3D12_RHI_RAYTRACING
+void FD3D12RootSignature::InitStaticRayTracingGlobalRootSignatureDesc(ED3D12RootSignatureFlags InFlags)
+{
+	D3D12ShaderUtils::FBinaryRootSignatureCreator Creator;
+	D3D12ShaderUtils::CreateRayTracingSignature(Creator, false, FD3D12_ROOT_SIGNATURE_FLAG_GLOBAL_ROOT_SIGNATURE, InFlags);
+	Init(Creator.Finalize(), RAY_TRACING_REGISTER_SPACE_GLOBAL);
 }
 
-const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& FD3D12RootSignatureDesc::GetStaticRayTracingLocalRootSignatureDesc()
+void FD3D12RootSignature::InitStaticRayTracingLocalRootSignatureDesc()
 {
-#if D3D12_RHI_RAYTRACING
-	return D3D12ShaderUtils::GetStaticRayTracingRootSignatureDesc<true, D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE>();
-#else // D3D12_RHI_RAYTRACING
-	checkNoEntry();
-	static const D3D12_VERSIONED_ROOT_SIGNATURE_DESC Desc = {};
-	return Desc;
-#endif // D3D12_RHI_RAYTRACING
+	D3D12ShaderUtils::FBinaryRootSignatureCreator Creator;
+	D3D12ShaderUtils::CreateRayTracingSignature(Creator, true, D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE, ED3D12RootSignatureFlags::None);
+	Init(Creator.Finalize(), RAY_TRACING_REGISTER_SPACE_LOCAL);
 }
+#endif // D3D12_RHI_RAYTRACING
 
 void FD3D12RootSignature::Init(const FD3D12QuantizedBoundShaderState& InQBSS)
 {
@@ -541,27 +463,6 @@ void FD3D12RootSignature::Init(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& InDesc
 	// TODO: Analyze vendor extension space?
 }
 
-void FD3D12RootSignature::Init(ID3DBlob* const InBlob, uint32 BindingSpace)
-{
-	ID3D12Device* Device = GetParentAdapter()->GetD3DDevice();
-
-	// Save the blob
-	RootSignatureBlob = InBlob;
-
-	// Deserialize to get the desc.
-	TRefCountPtr<ID3D12VersionedRootSignatureDeserializer> Deserializer;
-	VERIFYD3D12RESULT(D3D12CreateVersionedRootSignatureDeserializer(RootSignatureBlob->GetBufferPointer(), RootSignatureBlob->GetBufferSize(), IID_PPV_ARGS(Deserializer.GetInitReference())));
-
-	// Create and analyze the root signature.
-	VERIFYD3D12RESULT(Device->CreateRootSignature(FRHIGPUMask::All().GetNative(),
-		RootSignatureBlob->GetBufferPointer(),
-		RootSignatureBlob->GetBufferSize(),
-		IID_PPV_ARGS(RootSignature.GetInitReference())));
-
-	AnalyzeSignature(*Deserializer->GetUnconvertedRootSignatureDesc(), BindingSpace);
-	// TODO: Analyze vendor extension space?
-}
-
 void FD3D12RootSignature::AnalyzeSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& Desc, uint32 BindingSpace)
 {
 	switch (Desc.Version)
@@ -589,13 +490,14 @@ void FD3D12RootSignature::InternalAnalyzeSignature(const RootSignatureDescType& 
 		bHasUAVs = false;
 		bHasSRVs = false;
 		bHasCBVs = false;
-		bHasRDTCBVs = false;
-		bHasRDCBVs = false;
 		bHasSamplers = false;
 
 		FMemory::Memset(BindSlotOffsetsInDWORDs, 0, sizeof(BindSlotOffsetsInDWORDs));
 		TotalRootSignatureSizeInDWORDs = 0;
 	}
+
+	bUsesDynamicResources = (Desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) != 0;
+	bUsesDynamicSamplers = (Desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED) != 0;
 
 	const bool bDenyVS = (Desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS) != 0;
 	const bool bDenyGS = (Desc.Flags & D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS) != 0;

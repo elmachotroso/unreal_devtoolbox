@@ -5,7 +5,7 @@
 #include "Editor.h"
 #include "AssetToolsModule.h"
 #include "ObjectTools.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IDirectoryWatcher.h"
 #include "DirectoryWatcherModule.h"
 #include "EditorUtilityBlueprint.h"
@@ -15,10 +15,15 @@
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "Logging/MessageLog.h"
 #include "Misc/ScopedSlowTask.h"
-#include "AssetData.h"
+#include "Misc/DataValidation.h"
+#include "AssetRegistry/AssetData.h"
 #include "ISourceControlModule.h"
 #include "DataValidationChangelist.h"
 #include "DataValidationModule.h"
+#include "Engine/Level.h"
+#include "Editor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorValidatorSubsystem)
 
 #define LOCTEXT_NAMESPACE "EditorValidationSubsystem"
 
@@ -85,7 +90,7 @@ void UEditorValidatorSubsystem::RegisterBlueprintValidators()
 		// Locate all validators (include unloaded)
 		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		TArray<FAssetData> AllBPsAssetData;
-		AssetRegistryModule.Get().GetAssetsByClass(UEditorUtilityBlueprint::StaticClass()->GetFName(), AllBPsAssetData, true);
+		AssetRegistryModule.Get().GetAssetsByClass(UEditorUtilityBlueprint::StaticClass()->GetClassPathName(), AllBPsAssetData, true);
 
 		for (FAssetData& BPAssetData : AllBPsAssetData)
 		{
@@ -100,8 +105,8 @@ void UEditorValidatorSubsystem::RegisterBlueprintValidators()
 			{
 				UObject* Outer = nullptr;
 				ResolveName(Outer, ParentClassName, false, false);
-				ParentClass = FindObject<UClass>(ANY_PACKAGE, *ParentClassName);
-				if (!ParentClass->IsChildOf(UEditorValidatorBase::StaticClass()))
+				ParentClass = FindObject<UClass>(Outer, *ParentClassName);
+				if (!ParentClass || !ParentClass->IsChildOf(UEditorValidatorBase::StaticClass()))
 				{
 					continue;
 				}
@@ -154,7 +159,10 @@ EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject
 	if (ensure(InObject))
 	{
 		// First check the class level validation
-		Result = InObject->IsDataValid(ValidationErrors);
+		FDataValidationContext Context;
+		Result = InObject->IsDataValid(Context);
+		Context.SplitIssues(ValidationWarnings, ValidationErrors);
+
 		// If the asset is still valid or there wasn't a class-level validation, keep validating with custom validators
 		if (Result != EDataValidationResult::Invalid)
 		{
@@ -186,7 +194,7 @@ EDataValidationResult UEditorValidatorSubsystem::IsAssetValid(const FAssetData& 
 {
 	if (AssetData.IsValid())
 	{
-		UObject* Obj = AssetData.GetAsset();
+		UObject* Obj = AssetData.GetAsset({ ULevel::LoadAllExternalObjectsTag });
 		if (Obj)
 		{
 			return IsObjectValid(Obj, ValidationErrors, ValidationWarnings, InValidationUsecase);
@@ -211,11 +219,14 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 int32 UEditorValidatorSubsystem::ValidateAssetsWithSettings(const TArray<FAssetData>& AssetDataList, const FValidateAssetsSettings& InSettings, FValidateAssetsResults& OutResults) const
 {
 	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ValidatingDataTask", "Validating Data..."));
-	SlowTask.Visibility = InSettings.bShowIfNoFailures ? ESlowTaskVisibility::ForceVisible : ESlowTaskVisibility::Invisible;
-	
-	if (InSettings.bShowIfNoFailures)
+	SlowTask.Visibility = ESlowTaskVisibility::ForceVisible;
+	SlowTask.MakeDialogDelayed(.1f);
+
+	// Broadcast the Editor event before we start validating. This lets other systems (such as Sequencer) restore the state
+	// of the level to what is actually saved on disk before performing validation.
+	if (FEditorDelegates::OnPreAssetValidation.IsBound())
 	{
-		SlowTask.MakeDialogDelayed(.1f);
+		FEditorDelegates::OnPreAssetValidation.Broadcast();
 	}
 
 	FMessageLog DataValidationLog("AssetCheck");
@@ -267,6 +278,13 @@ int32 UEditorValidatorSubsystem::ValidateAssetsWithSettings(const TArray<FAssetD
 
 		// Check exclusion path
 		if (InSettings.bSkipExcludedDirectories && IsPathExcludedFromValidation(Data.PackageName.ToString()))
+		{
+			++NumFilesSkipped;
+			continue;
+		}
+
+		const bool bLoadAsset = false;
+		if (!InSettings.bLoadAssetsForValidation && !Data.FastGetAsset(bLoadAsset))
 		{
 			++NumFilesSkipped;
 			continue;
@@ -343,6 +361,12 @@ int32 UEditorValidatorSubsystem::ValidateAssetsWithSettings(const TArray<FAssetD
 		DataValidationLog.Open(EMessageSeverity::Info, true);
 	}
 
+	// Broadcast now that we're complete so other systems can go back to their previous state.
+	if (FEditorDelegates::OnPostAssetValidation.IsBound())
+	{
+		FEditorDelegates::OnPostAssetValidation.Broadcast();
+	}
+
 	return NumInvalidFiles + NumFilesWithWarnings;
 }
 
@@ -374,6 +398,7 @@ void UEditorValidatorSubsystem::ValidateOnSave(TArray<FAssetData> AssetDataList,
 	Settings.bSkipExcludedDirectories = true;
 	Settings.bShowIfNoFailures = false;
 	Settings.ValidationUsecase = EDataValidationUsecase::Save;
+	Settings.bLoadAssetsForValidation = false;
 
 	if (ValidateAssetsWithSettings(AssetDataList, Settings, Results) > 0)
 	{
@@ -472,3 +497,4 @@ void UEditorValidatorSubsystem::ValidateChangelistPreSubmit(FSourceControlChange
 }
 
 #undef LOCTEXT_NAMESPACE
+

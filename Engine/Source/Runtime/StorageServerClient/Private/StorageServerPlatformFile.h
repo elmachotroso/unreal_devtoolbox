@@ -96,6 +96,7 @@ public:
 	virtual IFileHandle* OpenWrite(const TCHAR* Filename, bool bAppend = false, bool bAllowRead = false) override;
 	virtual bool CreateDirectory(const TCHAR* Directory) override;
 	virtual bool DeleteDirectory(const TCHAR* Directory) override;
+	virtual FString ConvertToAbsolutePathForExternalAppForRead(const TCHAR* Filename) override;
 	virtual bool SendMessageToServer(const TCHAR* Message, IPlatformFile::IFileServerMessageHandler* Handler) override;
 
 private:
@@ -116,7 +117,7 @@ private:
 	FStringView ServerProjectDirView = FStringView(TEXT("/{project}/"));
 	TUniquePtr<FStorageServerConnection> Connection;
 #if WITH_COTF
-	TUniquePtr<UE::Cook::ICookOnTheFlyServerConnection> CookOnTheFlyServerConnection;
+	TSharedPtr<UE::Cook::ICookOnTheFlyServerConnection> CookOnTheFlyServerConnection;
 #endif
 	FStorageServerFileSystemTOC ServerToc;
 	FString ServerProject;

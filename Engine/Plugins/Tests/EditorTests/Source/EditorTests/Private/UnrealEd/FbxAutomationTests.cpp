@@ -11,7 +11,7 @@
 #include "Engine/StaticMesh.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "EditorReimportHandler.h"
@@ -33,13 +33,14 @@
 #include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimSequence.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ObjectTools.h"
 #include "StaticMeshResources.h"
 
 #include "FbxMeshUtils.h"
 #include "Tests/FbxAutomationCommon.h"
 
+#include "Editor/Transactor.h"
 #include "Editor/EditorEngine.h"
 extern UNREALED_API UEditorEngine* GEditor;
 
@@ -236,16 +237,6 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 	FString ImportAssetPath = PackagePath + TEXT("/") + BaseFilename;
 	//Read the fbx options from the .json file and fill the ImportUI
 	FbxAutomationTestsAPI::ReadFbxOptions(FileOptionAndResult, TestPlanArray);
-
-	static const auto CVarDistanceField = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
-	int32 OriginalCVarDistanceFieldValue = CVarDistanceField->GetValueOnGameThread();
-	IConsoleVariable* CVarDistanceFieldInterface = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GenerateMeshDistanceFields"));
-	//Avoid building the distance field when we do fbx automation test
-	if (OriginalCVarDistanceFieldValue != 0 && CVarDistanceFieldInterface)
-	{
-		//Hack we change the distance field user console variable to control the build, but we put back the value after the first build
-		CVarDistanceFieldInterface->SetWithCurrentPriority(0);
-	}
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 	bool CurTestSuccessful = (TestPlanArray.Num() > 0);
@@ -580,7 +571,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					FScopedSkeletalMeshPostEditChange ScopedPostEditChange(ExistingSkeletalMesh);
 					const FName ProfileName(TEXT("Alternate"));
 					const int32 LodIndexZero = 0;
-					const bool bResult = FSkinWeightsUtilities::ImportAlternateSkinWeight(ExistingSkeletalMesh, AltFile, LodIndexZero, ProfileName);
+					const bool bResult = FSkinWeightsUtilities::ImportAlternateSkinWeight(ExistingSkeletalMesh, AltFile, LodIndexZero, ProfileName, false);
 					if (!bResult)
 					{
 						ExecutionInfo.AddError(FString::Printf(TEXT("%s: Error adding alternate skinning file %s."), *CleanFilename, *AltFile));
@@ -699,7 +690,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 				int32 MaterialNumber = 0;
 				for (FAssetData AssetData : CreatedAssets)
 				{
-					if (AssetData.AssetClass == UMaterial::StaticClass()->GetFName() || AssetData.AssetClass == UMaterialInstanceConstant::StaticClass()->GetFName())
+					if (AssetData.AssetClassPath == UMaterial::StaticClass()->GetClassPathName() || AssetData.AssetClassPath == UMaterialInstanceConstant::StaticClass()->GetClassPathName())
 					{
 						MaterialNumber++;
 					}
@@ -2022,12 +2013,6 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 		}
 	}
 	
-	//Put back the distance field value
-	if (OriginalCVarDistanceFieldValue != 0 && CVarDistanceFieldInterface)
-	{
-		CVarDistanceFieldInterface->SetWithCurrentPriority(OriginalCVarDistanceFieldValue);
-	}
-
 	return CurTestSuccessful;
 }
 

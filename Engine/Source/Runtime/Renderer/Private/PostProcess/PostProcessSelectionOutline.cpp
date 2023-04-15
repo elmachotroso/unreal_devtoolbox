@@ -4,12 +4,13 @@
 
 #include "PostProcess/PostProcessSelectionOutline.h"
 #include "PostProcess/PostProcessCompositeEditorPrimitives.h"
+#include "EditorPrimitivesRendering.h"
 #include "SceneTextureParameters.h"
 #include "CanvasTypes.h"
 #include "RenderTargetTemp.h"
 #include "ClearQuad.h"
 #include "ScenePrivate.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 
 namespace
 {
@@ -57,8 +58,9 @@ FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FVie
 	const bool bNaniteEnabled = NaniteRasterResults != nullptr;
 
 	RDG_EVENT_SCOPE(GraphBuilder, "EditorSelectionOutlines");
+	RDG_GPU_STAT_SCOPE(GraphBuilder, EditorPrimitives);
 
-	const uint32 NumSamples = GetEditorPrimitiveNumSamples();
+	const uint32 NumSamples = View.GetSceneTexturesConfig().NumSamples;
 
 	// Patch uniform buffers with updated state for rendering the outline mesh draw commands.
 	const FViewInfo* EditorView = CreateEditorPrimitiveView(View, Inputs.SceneColor.ViewRect, NumSamples);

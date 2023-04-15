@@ -23,6 +23,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"MediaAssets",
 					"MediaIOCore",
+					"RHI",
 					"TimeManagement",
 					"RenderCore"
 				});

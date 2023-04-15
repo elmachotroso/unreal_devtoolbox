@@ -23,21 +23,17 @@ UMLAdapterActuator_Camera::UMLAdapterActuator_Camera(const FObjectInitializer& O
 {
 	bVectorMode = true;
 	bConsumeData = true;
-	bDeltaMode = true;
 }
 
 void UMLAdapterActuator_Camera::Configure(const TMap<FName, FString>& Params)
 {
-	const FName NAME_Mode = TEXT("mode");
-
 	Super::Configure(Params);
 
-	for (auto KeyValue : Params)
+	const FName NAME_Mode = TEXT("mode");
+	const FString* ModeValue = Params.Find(NAME_Mode);
+	if (ModeValue != nullptr)
 	{
-		if (KeyValue.Key == NAME_Mode)
-		{
-			bVectorMode = (KeyValue.Value.Find(TEXT("vector")) != INDEX_NONE);
-		}
+		bVectorMode = (ModeValue->Find(TEXT("vector")) != INDEX_NONE);
 	}
 
 	UpdateSpaceDef();
@@ -88,11 +84,17 @@ void UMLAdapterActuator_Camera::DigestInputData(FMLAdapterMemoryReader& ValueStr
 	FScopeLock Lock(&ActionCS);
 	if (bVectorMode)
 	{
-		ValueStream << HeadingVector;
+		FVector3f HeadingVector3f;
+		ValueStream << HeadingVector3f;
+		HeadingVector = FVector(HeadingVector3f);
 	}
 	else
 	{
-		ValueStream << HeadingRotator.Pitch << HeadingRotator.Yaw;
+		float Pitch;
+		float Yaw;
+		ValueStream << Pitch << Yaw;
+		HeadingRotator.Pitch = Pitch;
+		HeadingRotator.Yaw = Yaw;
 	}
 }
 

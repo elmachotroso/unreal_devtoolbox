@@ -15,7 +15,7 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SSpacer.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "GameMapsSettings.h"
 #include "GameFramework/PlayerController.h"
@@ -34,6 +34,7 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "LevelSequenceActor.h"
+#include "LevelSequence.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "ISettingsCategory.h"
 #include "ISettingsContainer.h"
@@ -53,7 +54,6 @@
 #include "LauncherPlatformModule.h"
 #include "Misc/ScopedSlowTask.h"
 #include "MaterialShaderQualitySettings.h"
-#include "RHIShaderPlatformDefinitions.inl"
 #include "LevelEditorMenuContext.h"
 #include "ToolMenus.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -660,8 +660,8 @@ void LevelEditorActionHelpers::GetBlueprintSettingsSubMenu(UToolMenu* Menu, FBlu
 {
 #define LOCTEXT_NAMESPACE "LevelToolBarViewMenu"
 
-	FSlateIcon EditBPIcon(FEditorStyle::Get().GetStyleSetName(), TEXT("Icons.Edit"));
-	FSlateIcon NewBPIcon(FEditorStyle::Get().GetStyleSetName(), TEXT("Icons.PlusCircle"));
+	FSlateIcon EditBPIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.Edit"));
+	FSlateIcon NewBPIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.PlusCircle"));
 	FText RootClassName = FText::FromString(InSettingsData.RootClass->GetName());
 
 	// If there is currently a valid GameMode Blueprint, offer to edit the Blueprint
@@ -709,7 +709,7 @@ void LevelEditorActionHelpers::GetBlueprintSettingsSubMenu(UToolMenu* Menu, FBlu
 
 		TAttribute<FText> CheckOutTooltip;
 		CheckOutTooltip.BindStatic(&GetCheckOutTooltip);
-		Section.AddMenuEntry(FLevelEditorCommands::Get().CheckOutProjectSettingsConfig, CheckOutLabel, CheckOutTooltip, FSlateIcon(FEditorStyle::Get().GetStyleSetName(), TEXT("Icons.Error")));
+		Section.AddMenuEntry(FLevelEditorCommands::Get().CheckOutProjectSettingsConfig, CheckOutLabel, CheckOutTooltip, FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("Icons.Error")));
 	}
 
 	auto CannotCreateSelectNativeProjectGameMode = [](bool bInIsProjectSettings) -> bool
@@ -737,7 +737,7 @@ void LevelEditorActionHelpers::GetBlueprintSettingsSubMenu(UToolMenu* Menu, FBlu
 		EUserInterfaceActionType::Button, false, NewBPIcon
 	);
 
-	// Select a game mode, this is always available so the user can switch his selection
+	// Select a game mode, this is always available so the user can switch their selection
 	FFormatNamedArguments Args;
 	Args.Add(TEXT("RootClass"), RootClassName);
 	Section.AddSubMenu("SelectGameModeClass", FText::Format(LOCTEXT("SelectGameModeClass", "Select {RootClass} Class"), Args),
@@ -1217,7 +1217,7 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 				FLevelEditorCommands::Get().Save,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetEditor.SaveAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveAsset"),
 				NAME_None,
 				FName("SaveAllLevels")
 			));
@@ -1384,8 +1384,6 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 			);
 			CinematicsEntry.StyleNameOverride = "AssetEditorToolbar";
 			Section.AddEntry(CinematicsEntry);
-
-			Section.AddEntry(FToolMenuEntry::InitToolBarButton(FLevelEditorCommands::Get().ToggleVR, LOCTEXT("ToggleVR", "VR Mode")));
 		}
 
 	}
@@ -1403,22 +1401,22 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 			{
 				const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
 					{
-						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat;
+						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
 					});
 				return Item ? Item->IconText : FText();
 			}
 
 			static FText GetPreviewModeTooltip()
 			{
-				EShaderPlatform PreviewShaderPlatform = GEditor->PreviewPlatform.PreviewShaderFormatName != NAME_None ?
-					ShaderFormatToLegacyShaderPlatform(GEditor->PreviewPlatform.PreviewShaderFormatName) :
+				EShaderPlatform PreviewShaderPlatform = GEditor->PreviewPlatform.PreviewShaderPlatformName != NAME_None ?
+					FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName) :
 					GetFeatureLevelShaderPlatform(GEditor->PreviewPlatform.PreviewFeatureLevel);
 
 				EShaderPlatform MaxRHIFeatureLevelPlatform = GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel);
 
 				{
-					const FText& RenderingAsPlatformName = GetFriendlyShaderPlatformName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? PreviewShaderPlatform : MaxRHIFeatureLevelPlatform);
-                    const FText& SwitchToPlatformName = GetFriendlyShaderPlatformName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? MaxRHIFeatureLevelPlatform : PreviewShaderPlatform);
+					const FText& RenderingAsPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? PreviewShaderPlatform : MaxRHIFeatureLevelPlatform);
+                    const FText& SwitchToPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? MaxRHIFeatureLevelPlatform : PreviewShaderPlatform);
 					if (PreviewShaderPlatform == MaxRHIFeatureLevelPlatform)
 					{
 						return FText::Format(LOCTEXT("PreviewModeViewingAs", "Viewing {0}."), RenderingAsPlatformName);
@@ -1438,14 +1436,14 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 			{
 				const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
 					{
-						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat;
+						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
 					});
 				if(Item)
 				{
-					return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? Item->ActiveIconName : Item->InactiveIconName);
+					return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? Item->ActiveIconName : Item->InactiveIconName);
 				}
 
-				EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(GEditor->PreviewPlatform.PreviewShaderFormatName);
+				EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName);
 
 				if (ShaderPlatform == SP_NumPlatforms)
 				{
@@ -1455,11 +1453,11 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 				{
 					case ERHIFeatureLevel::ES3_1:
 					{
-						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
+						return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
 					}
 					default:
 					{
-						return FSlateIcon(FEditorStyle::GetStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
+						return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
 					}
 				}
 			}
@@ -1493,7 +1491,7 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 				FOnGetContent::CreateStatic(&FLevelEditorToolBar::GenerateQuickSettingsMenu, InCommandList, TWeakPtr<SLevelEditor>(InLevelEditor)),
 				LOCTEXT("QuickSettingsCombo", "Settings"),
 				LOCTEXT("QuickSettingsCombo_ToolTip", "Project and Editor settings"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.GameSettings"),
 				false,
 				"LevelToolbarQuickSettings");
 		SettingsEntry.StyleNameOverride = "CalloutToolbar";
@@ -1679,7 +1677,7 @@ void FLevelEditorToolBar::RegisterQuickSettingsMenu()
 			"ProjectSettings",
 			LOCTEXT("ProjectSettingsMenuLabel", "Project Settings..."),
 			LOCTEXT("ProjectSettingsMenuToolTip", "Change the settings of the currently loaded project"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ProjectSettings.TabIcon"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ProjectSettings.TabIcon"),
 			FUIAction(FExecuteAction::CreateStatic(&Local::OpenSettings, FName("Project"), FName("Project"), FName("General")))
 			);
 
@@ -1827,7 +1825,7 @@ void FLevelEditorToolBar::RegisterOpenBlueprintMenu()
 			ULevelEditorMenuContext* Context = InMenu->FindContext<ULevelEditorMenuContext>();
 			if (Context && Context->LevelEditor.IsValid())
 			{
-				FSlateIcon EditBP(FEditorStyle::Get().GetStyleSetName(), TEXT("LevelEditor.OpenLevelBlueprint"));
+				FSlateIcon EditBP(FAppStyle::Get().GetStyleSetName(), TEXT("LevelEditor.OpenLevelBlueprint"));
 
 				{
 					FToolMenuSection& Section = InMenu->AddSection("SubLevels", LOCTEXT("SubLevelsHeading", "Sub-Level Blueprints"));
@@ -1871,7 +1869,7 @@ void FLevelEditorToolBar::RegisterOpenBlueprintMenu()
 
 			// Configure filter for asset picker
 			FAssetPickerConfig Config;
-			Config.Filter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
+			Config.Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 			Config.InitialAssetViewType = EAssetViewType::List;
 			Config.OnAssetSelected = FOnAssetSelected::CreateStatic(&FBlueprintMenus::OnBPSelected);
 			Config.bAllowDragging = false;
@@ -1904,7 +1902,7 @@ void FLevelEditorToolBar::RegisterOpenBlueprintMenu()
 		Section.AddMenuEntry(FLevelEditorCommands::Get().ConvertSelectionToBlueprint);
 
 		// Open an existing Blueprint Class...
-		FSlateIcon OpenBPIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.OpenClassBlueprint");
+		FSlateIcon OpenBPIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.OpenClassBlueprint");
 		Section.AddSubMenu(
 			"OpenBlueprintClass",
 			LOCTEXT("OpenBlueprintClassSubMenu", "Open Blueprint Class..."),
@@ -1932,7 +1930,7 @@ void FLevelEditorToolBar::RegisterOpenBlueprintMenu()
 						LOCTEXT("SubLevelsSubMenu", "Sub-Levels"),
 						LOCTEXT("SubLevelsSubMenu_ToolTip", "Shows available sub-level Blueprints that can be edited."),
 						FNewToolMenuDelegate::CreateStatic(&FBlueprintMenus::MakeSubLevelsMenu),
-						FUIAction(), EUserInterfaceActionType::Button, false, FSlateIcon(FEditorStyle::Get().GetStyleSetName(), TEXT("LevelEditor.OpenLevelBlueprint")));
+						FUIAction(), EUserInterfaceActionType::Button, false, FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("LevelEditor.OpenLevelBlueprint")));
 				}
 			}
 		}));
@@ -2053,7 +2051,7 @@ void FLevelEditorToolBar::RegisterCinematicsMenu()
 
 			// Only display MovieScene actors
 			auto ActorFilter = [&](const AActor* Actor) {
-				return Actor->IsA(ALevelSequenceActor::StaticClass());
+				return Actor && Actor->IsA(ALevelSequenceActor::StaticClass());
 			};
 			InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateLambda(ActorFilter));
 		}
@@ -2084,21 +2082,28 @@ void FLevelEditorToolBar::RegisterCinematicsMenu()
 
 void FLevelEditorToolBar::OnCinematicsActorPicked( AActor* Actor )
 {
-	//The matinee editor will not tick unless the editor viewport is in realtime mode.
+	//The sequencer editor will not tick unless the editor viewport is in realtime mode.
 	//the scene outliner eats input, so we must close any popups manually.
 	FSlateApplication::Get().DismissAllMenus();
 
 	// Make sure we dismiss the menus before we open this
 	if (ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(Actor))
 	{
-		FScopedSlowTask SlowTask(1.f, NSLOCTEXT("LevelToolBarCinematicsMenu", "LoadSequenceSlowTask", "Loading Level Sequence..."));
-		SlowTask.MakeDialog();
-		SlowTask.EnterProgressFrame();
-		UObject* Asset = LevelSequenceActor->GetSequence();
-
-		if (Asset != nullptr)
+		if (LevelSequenceActor->GetSequence())
 		{
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset);
+			FScopedSlowTask SlowTask(1.f, NSLOCTEXT("LevelToolBarCinematicsMenu", "LoadSequenceSlowTask", "Loading Level Sequence..."));
+			SlowTask.MakeDialog();
+			SlowTask.EnterProgressFrame();
+			UObject* Asset = LevelSequenceActor->GetSequence();
+
+			if (Asset != nullptr)
+			{
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset);
+			}
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Type::Ok, NSLOCTEXT("LevelToolBarCinematicsMenu", "LoadSequenceNotValid", "This Level Sequence actor does not have a Sequence asset assigned in the Details panel and cannot be opened."));
 		}
 	}
 }

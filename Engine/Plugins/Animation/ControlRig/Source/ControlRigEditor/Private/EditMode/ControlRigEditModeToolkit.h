@@ -8,8 +8,10 @@
 #include "EditorModes.h"
 #include "Toolkits/BaseToolkit.h"
 #include "EditorModeManager.h"
-#include "SControlRigEditModeTools.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/SControlRigEditModeTools.h"
+#include "EditMode/ControlRigEditMode.h"
+
+class SControlRigTweenWidget;
 
 class FControlRigEditModeToolkit : public FModeToolkit
 {
@@ -48,7 +50,14 @@ public:
 	virtual void OnToolPaletteChanged(FName PaletteName) override;
 
 	void TryInvokeToolkitUI(const FName InName);
+	bool IsToolkitUIActive(const FName InName) const;
 
+	/** For updating tween values via hot keys*/
+	void GetToNextActiveSlider();
+	bool CanChangeAnimSliderTool() const;
+	void DragAnimSliderTool(double Val);
+	void ResetAnimSlider();
+	void StartAnimSliderTool();
 public:
 	static const FName PoseTabName;
 	static const FName MotionTrailTabName;
@@ -81,7 +90,10 @@ private:
 private:
 	/** The edit mode we are bound to */
 	FControlRigEditMode& EditMode;
-	TSharedPtr<SWidget> TweenWidget;
+	TSharedPtr<SWidget> TweenWidgetParent;
+	TSharedPtr<SControlRigTweenWidget> TweenWidget;
+
+
 	FVector2D InViewportTweenWidgetLocation;
 	/** The tools widget */
 	TSharedPtr<SControlRigEditModeTools> ModeTools;

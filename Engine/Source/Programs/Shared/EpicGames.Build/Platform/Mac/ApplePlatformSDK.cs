@@ -3,10 +3,11 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
-using Microsoft.VisualBasic.CompilerServices;
+using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 
 namespace UnrealBuildBase
@@ -15,17 +16,60 @@ namespace UnrealBuildBase
 	{
 		public static readonly string? InstalledSDKVersion = GetInstalledSDKVersion();
 
-		private static string? GetInstalledSDKVersion()
+		public static bool TryConvertVersionToInt(string? StringValue, out UInt64 OutValue)
 		{
-			// get xcode version on Mac
-			if (RuntimePlatform.IsMac)
+			OutValue = 0;
+
+			if (StringValue == null)
 			{
-				string Output = RunLocalProcessAndReturnStdOut("sh", "-c 'xcodebuild -version'");
-				Match Result = Regex.Match(Output, @"Xcode (\S*)");
-				return Result.Success ? Result.Groups[1].Value : null;
+				return false;
 			}
 
-			if (RuntimePlatform.IsWindows)
+			// 8 bits per component, with high getting extra from high 32
+			Match Result = Regex.Match(StringValue, @"^(\d+).(\d+)(.(\d+))?(.(\d+))?(.(\d+))?$");
+			if (Result.Success)
+			{
+				OutValue = UInt64.Parse(Result.Groups[1].Value) << 24 | UInt64.Parse(Result.Groups[2].Value) << 16;
+				if (Result.Groups[4].Success)
+				{
+					OutValue |= UInt64.Parse(Result.Groups[4].Value) << 8;
+				}
+				if (Result.Groups[6].Success)
+				{
+					OutValue |= UInt64.Parse(Result.Groups[6].Value) << 0;
+				}
+				return true;
+			}
+
+			return false;
+		}
+
+		private static string? GetInstalledSDKVersion()
+		{
+			// get Xcode version on Mac
+			if (OperatingSystem.IsMacOS())
+			{
+				int ExitCode = 0;
+				string Output = RunLocalProcessAndReturnStdOut("sh", "-c 'xcodebuild -version'", out ExitCode);
+
+				// For macOS, only an ExitCode of 0 means there was no issues running the local process
+				if (ExitCode == 0)
+				{
+					Match Result = Regex.Match(Output, @"Xcode (\S*)");
+
+					// If Xcode is not installed (or xcode-select is pointing to an invalid dir), "Output" can return random text
+					// (generally an error message with the word "Xcode " within it that can successfully Regex match), 
+					// so verify we got back an Int that is in String format.
+					if (Result.Success && TryConvertVersionToInt(Result.Groups[1].Value, out _))
+					{
+						return Result.Groups[1].Value;
+					}
+				}
+
+				return null;
+			}
+
+			if (OperatingSystem.IsWindows())
 			{
 				// otherwise, get iTunes "Version"
 				string? DllPath =
@@ -56,20 +100,26 @@ namespace UnrealBuildBase
 
 				if (!string.IsNullOrEmpty(DllPath) && File.Exists(DllPath))
 				{
-					return FileVersionInfo.GetVersionInfo(DllPath).FileVersion;
+					string? DllVersion = FileVersionInfo.GetVersionInfo(DllPath).FileVersion;
+					// Only return the DLL version as the SDK version if we can correctly parse it
+					if (TryConvertVersionToInt(DllVersion, out _))
+					{
+						return DllVersion;
+					}
 				}
 			}
 
 			return null;
 		}
 
+		[SupportedOSPlatform("windows")]
 		private static string? FindWindowsStoreITunesDLL()
 		{
 			string? InstallPath = null;
 
 			string PackagesKeyName = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\PackageRepository\\Packages";
 
-			RegistryKey PackagesKey = Registry.LocalMachine.OpenSubKey(PackagesKeyName);
+			RegistryKey? PackagesKey = Registry.LocalMachine.OpenSubKey(PackagesKeyName);
 			if (PackagesKey != null)
 			{
 				string[] PackageSubKeyNames = PackagesKey.GetSubKeyNames();
@@ -80,10 +130,14 @@ namespace UnrealBuildBase
 					{
 						string FullPackageSubKeyName = PackagesKeyName + "\\" + PackageSubKeyName;
 
-						RegistryKey iTunesKey = Registry.LocalMachine.OpenSubKey(FullPackageSubKeyName);
+						RegistryKey? iTunesKey = Registry.LocalMachine.OpenSubKey(FullPackageSubKeyName);
 						if (iTunesKey != null)
 						{
-							InstallPath = (string)iTunesKey.GetValue("Path") + "\\AMDS32\\MobileDevice.dll";
+							object? Value = iTunesKey.GetValue("Path");
+							if (Value != null)
+							{
+								InstallPath = (string)Value + "\\AMDS32\\MobileDevice.dll";
+							}
 							break;
 						}
 					}
@@ -99,10 +153,10 @@ namespace UnrealBuildBase
 		/// <returns>The entire StdOut generated from the process as a single trimmed string</returns>
 		/// <param name="Command">Command to run</param>
 		/// <param name="Args">Arguments to Command</param>
-		private static string RunLocalProcessAndReturnStdOut(string Command, string Args)
+		/// <param name="Logger">Logger for output</param>
+		private static string RunLocalProcessAndReturnStdOut(string Command, string Args, ILogger? Logger = null)
 		{
-			int ExitCode;
-			return RunLocalProcessAndReturnStdOut(Command, Args, out ExitCode);	
+			return RunLocalProcessAndReturnStdOut(Command, Args, out _, Logger);	
 		}
 
 		/// <summary>
@@ -112,8 +166,8 @@ namespace UnrealBuildBase
 		/// <param name="Command">Command to run</param>
 		/// <param name="Args">Arguments to Command</param>
 		/// <param name="ExitCode">The return code from the process after it exits</param>
-		/// <param name="LogOutput">Whether to also log standard output and standard error</param>
-		private static string RunLocalProcessAndReturnStdOut(string Command, string? Args, out int ExitCode, bool LogOutput = false)
+		/// <param name="Logger">Whether to also log standard output and standard error</param>
+		private static string RunLocalProcessAndReturnStdOut(string Command, string? Args, out int ExitCode, ILogger? Logger = null)
 		{
 			// Process Arguments follow windows conventions in .NET Core
 			// Which means single quotes ' are not considered quotes.
@@ -122,7 +176,7 @@ namespace UnrealBuildBase
 			// for rules see https://docs.microsoft.com/en-us/cpp/cpp/main-function-command-line-args
 			Args = Args?.Replace('\'', '\"');
 
-			ProcessStartInfo StartInfo = new ProcessStartInfo(Command, Args);
+			ProcessStartInfo StartInfo = Args != null ? new ProcessStartInfo(Command, Args) : new ProcessStartInfo(Command);
 			StartInfo.UseShellExecute = false;
 			StartInfo.RedirectStandardInput = true;
 			StartInfo.RedirectStandardOutput = true;
@@ -132,30 +186,37 @@ namespace UnrealBuildBase
 
 			string FullOutput = "";
 			string ErrorOutput = "";
-			using (Process LocalProcess = Process.Start(StartInfo))
+			using (Process? LocalProcess = Process.Start(StartInfo))
 			{
-				StreamReader OutputReader = LocalProcess.StandardOutput;
-				// trim off any extraneous new lines, helpful for those one-line outputs
-				FullOutput = OutputReader.ReadToEnd().Trim();
-
-				StreamReader ErrorReader = LocalProcess.StandardError;
-				// trim off any extraneous new lines, helpful for those one-line outputs
-				ErrorOutput = ErrorReader.ReadToEnd().Trim();
-				if (LogOutput)
+				if (LocalProcess != null)
 				{
-					if(FullOutput.Length > 0)
+					StreamReader OutputReader = LocalProcess.StandardOutput;
+					// trim off any extraneous new lines, helpful for those one-line outputs
+					FullOutput = OutputReader.ReadToEnd().Trim();
+
+					StreamReader ErrorReader = LocalProcess.StandardError;
+					// trim off any extraneous new lines, helpful for those one-line outputs
+					ErrorOutput = ErrorReader.ReadToEnd().Trim();
+					if (Logger != null)
 					{
-						Log.TraceInformation(FullOutput);
+						if (FullOutput.Length > 0)
+						{
+							Logger.LogInformation("{Message}", FullOutput);
+						}
+
+						if (ErrorOutput.Length > 0)
+						{
+							Logger.LogError("{Message}", ErrorOutput);
+						}
 					}
 
-					if (ErrorOutput.Length > 0)
-					{
-						Log.TraceError(ErrorOutput);
-					}
+					LocalProcess.WaitForExit();
+					ExitCode = LocalProcess.ExitCode;
 				}
-
-				LocalProcess.WaitForExit();
-				ExitCode = LocalProcess.ExitCode;
+				else
+				{
+					ExitCode = -1; 
+				}
 			}
 
 			// trim off any extraneous new lines, helpful for those one-line outputs

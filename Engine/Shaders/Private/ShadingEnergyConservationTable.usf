@@ -14,6 +14,8 @@
 // "Energy" here refers to the directional albedo. Energy loss is simply 1-Energy since we assume the raw BxDF should reflect all
 // incoming light.
 
+// Number of samples used for integrating directional albedo 
+uint NumSamples;
 // x: directional albedo for rough diffuse
 RWTexture2D<float>  Output1Texture2D;
 // x: directional albedo of pure GGX lobe
@@ -40,7 +42,8 @@ void BuildEnergyTableCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	RandomSequence RandSequence;
 	float2 Result = 0;
-	const int NumSamples = 1 << 14; // use plenty of samples -- this is computed on startup once and at fairly low resolution
+	// use plenty of samples -- this is computed on startup once and at fairly low resolution
+	LOOP
 	for (int Sample = 0; Sample < NumSamples; Sample++)
 	{
 		// draw a random sample
@@ -91,8 +94,14 @@ void BuildEnergyTableCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float NoL = L.z;
 		const float3 H = normalize(V + L);
 		const float NoH = H.z;
+#if STRATA_ENABLED
+		const float DCloth = D_Charlie(Roughness, NoH);
+		const float VCloth = Vis_Ashikhmin(NoV, NoL);
+#else
 		const float DCloth = D_InvGGX(Alpha.x * Alpha.y, NoH);
-		const float ClothWeight = NoL > 0 && NoV > 0 ? (PI * DCloth * Vis_Cloth(NoV, NoL)) : 0.0;
+		const float VCloth = Vis_Cloth(NoV, NoL);
+#endif
+		const float ClothWeight = NoL > 0 && NoV > 0 ? (PI * DCloth * VCloth) : 0.0;
 
 		Weight = float2(ClothWeight, ClothWeight * Pow5(1 - dot(V, H)));
 #elif BUILD_ENERGY_TABLE == 3
@@ -102,7 +111,7 @@ void BuildEnergyTableCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float3 H = normalize(V + L);
 		const float VoH = dot(V, H);
 		const float NoH = H.z;
-		const float DiffuseWeight = NoL > 0 && NoV > 0 ? PI * Diffuse_Chan(float3(1, 1, 1), Alpha.x, NoV, NoL, VoH, NoH, 1.0f) : 0.0f;
+		const float DiffuseWeight = NoL > 0 && NoV > 0 ? PI * Diffuse_Chan(float3(1, 1, 1), Alpha.x, NoV, NoL, VoH, NoH, 1.0f).x : 0.0f;
 
 		Weight = float2(DiffuseWeight, 1.f);
 #endif

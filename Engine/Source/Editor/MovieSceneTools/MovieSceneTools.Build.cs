@@ -8,14 +8,9 @@ public class MovieSceneTools : ModuleRules
 	{
 		PrivateIncludePaths.AddRange(
             new string[] {
-                "Editor/MovieSceneTools/Private",
-                "Editor/MovieSceneTools/Private/CurveKeyEditors",
-                "Editor/MovieSceneTools/Private/TrackEditors",
-				"Editor/MovieSceneTools/Private/TrackEditors/PropertyTrackEditors",
-                "Editor/MovieSceneTools/Private/TrackEditorThumbnail",
-				"Editor/MovieSceneTools/Private/Sections",
-                "Editor/UnrealEd/Private",	//compatibility for FBX importer
-            }
+				System.IO.Path.Combine(GetModuleDirectory("UnrealEd"), "Private"), //compatibility for FBX importer
+				System.IO.Path.Combine(GetModuleDirectory("SceneOutliner"), "Private"),
+			}
         );
 
 		OverridePackageType = PackageOverrideType.EngineDeveloper;
@@ -30,6 +25,8 @@ public class MovieSceneTools : ModuleRules
 				"UnrealEd",
 				"Sequencer",
                 "EditorWidgets",
+				"SequencerCore",
+				"Constraints"
             }
         );
 
@@ -39,6 +36,7 @@ public class MovieSceneTools : ModuleRules
 				"AnimationBlueprintLibrary",
 				"AppFramework",
 				"CinematicCamera",
+				"ClassViewer",
 				"DataLayerEditor",
                 "CurveEditor",
                 "DesktopPlatform",

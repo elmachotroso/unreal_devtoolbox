@@ -8,7 +8,7 @@
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -31,6 +31,7 @@ enum class EAssetSearchDatabaseVersion
 	IndexingAssetIdsAssetPathsUnique,
 	IntroducingFileHashing,
 	MovingFileInfoIntoAnotherDatabase,
+	ClassPathIsNowFullPath,
 
 	// -----<new versions can be added above this line>-------------------------------------------------
 	VersionPlusOne,
@@ -118,7 +119,7 @@ public:
 	public: bool IsAssetUpToDate(const FAssetData& InAssetData, const FString& IndexedJsonHash)
 	{
 		FString OutIndexedJsonHash;
-		if (Statement_IsAssetUpToDate.BindAndExecuteSingle(InAssetData.ObjectPath.ToString(), OutIndexedJsonHash))
+		if (Statement_IsAssetUpToDate.BindAndExecuteSingle(InAssetData.GetObjectPathString(), OutIndexedJsonHash))
 		{
 			return OutIndexedJsonHash.Equals(IndexedJsonHash, ESearchCase::CaseSensitive);
 		}
@@ -152,7 +153,7 @@ public:
 	public: int64 GetAssetIdForAsset(const FAssetData& InAssetData)
 	{
 		int64 OutAssetId = INDEX_NONE;
-		if (Statement_GetAssetIdForAssetPath.BindAndExecuteSingle(InAssetData.ObjectPath.ToString(), OutAssetId))
+		if (Statement_GetAssetIdForAssetPath.BindAndExecuteSingle(InAssetData.GetObjectPathString(), OutAssetId))
 		{
 			return OutAssetId;
 		}
@@ -176,8 +177,8 @@ public:
 	private: FAddAssetPropertiesFromJson Statement_AddAssetProperty;
 	public: bool AddSearchRecord(const FAssetData& InAssetData, const FString& IndexedJson, const FString& IndexedJsonHash)
 	{
-		FString AssetObjectPath = InAssetData.ObjectPath.ToString();
-		if (Statement_AddAssetToAssetTable.BindAndExecute(InAssetData.AssetName.ToString(), InAssetData.AssetClass.ToString(), AssetObjectPath, IndexedJsonHash))
+		FString AssetObjectPath = InAssetData.GetObjectPathString();
+		if (Statement_AddAssetToAssetTable.BindAndExecute(InAssetData.AssetName.ToString(), InAssetData.AssetClassPath.ToString(), AssetObjectPath, IndexedJsonHash))
 		{
 			int64 AssetId = Database.GetLastInsertRowId();
 
@@ -303,7 +304,7 @@ public:
 	private: FDeleteEntriesForAsset Statement_DeleteEntriesForAsset;
 	public: bool DeleteEntriesForAsset(const FAssetData& InAssetData)
 	{
-		return DeleteEntriesForAsset(InAssetData.ObjectPath.ToString());
+		return DeleteEntriesForAsset(InAssetData.GetObjectPathString());
 	}
 	public: bool DeleteEntriesForAsset(const FString& InAssetObjectPath)
 	{
@@ -333,8 +334,10 @@ public:
 		return Statement_SearchAssets.BindAndExecute(Q, [QueryText, &InCallback](const FSearchAssets& InStatement)
 		{
 			FSearchRecord Result;
-			if (InStatement.GetColumnValues(Result.AssetName, Result.AssetClass, Result.AssetPath))
+			FString ResultClassPath;
+			if (InStatement.GetColumnValues(Result.AssetName, ResultClassPath, Result.AssetPath))
 			{
+				Result.AssetClass.TrySetPath(ResultClassPath);
 				const float WorstCase = Result.AssetName.Len() + QueryText.Len();
 				Result.Score = -50.0f * (1.0f - (Algo::LevenshteinDistance(Result.AssetName.ToLower(), QueryText.ToLower()) / WorstCase));
 				
@@ -372,13 +375,15 @@ public:
 		return Statement_SearchAssetPropertiesFTS.BindAndExecute(Q, [&InCallback](const FSearchAssetPropertiesFTS& InStatement)
 		{
 			FSearchRecord Result;
+			FString ResultClassPath;
 			if (InStatement.GetColumnValues(
-				Result.AssetName, Result.AssetClass, Result.AssetPath,
+				Result.AssetName, ResultClassPath, Result.AssetPath,
 				Result.object_name, Result.object_path, Result.object_native_class,
 				Result.property_name, Result.property_field, Result.property_class,
 				Result.value_text, Result.value_hidden,
 				Result.Score))
 			{
+				Result.AssetClass.TrySetPath(ResultClassPath);
 				return InCallback(MoveTemp(Result));
 			}
 			return ESQLitePreparedStatementExecuteRowResult::Error;
@@ -802,7 +807,7 @@ void FAssetSearchDatabase::RemoveAssetsNotInThisSet(const TArray<FAssetData>& In
 			continue;
 		}
 
-		InAssetPaths.Add(InAsset.ObjectPath.ToString());
+		InAssetPaths.Add(InAsset.GetObjectPathString());
 	}
 
 	TArray<FString> MissingAssets;

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "IControlRigEditor.h"
-#include "ControlRigEditorEditMode.h"
+#include "Editor/ControlRigEditorEditMode.h"
 #include "AssetEditorModeManager.h"
 #include "DragAndDrop/GraphNodeDragDropOp.h"
 #include "ControlRigDefines.h"
@@ -20,7 +20,7 @@
 #include "ScopedTransaction.h"
 #include "Graph/ControlRigGraphNode.h"
 #include "RigVMModel/RigVMController.h"
-#include "DetailsViewWrapperObject.h"
+#include "Editor/DetailsViewWrapperObject.h"
 
 class UControlRigBlueprint;
 class IPersonaToolkit;
@@ -32,25 +32,6 @@ class UToolMenu;
 class FControlRigEditor;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FControlRigEditorClosed, const FControlRigEditor*, UControlRigBlueprint*);
-
-UENUM()
-enum class EControlRigEditorEventQueue : uint8
-{
-	/** Setup Event */
-	Setup,
-
-	/** Update Event */
-	Update,
-
-	/** Inverse Event */
-	Inverse,
-
-	/** Inverse -> Update */
-	InverseAndUpdate,
-
-	/** MAX - invalid */
-	Max UMETA(Hidden),
-};
 
 struct FControlRigEditorModes
 {
@@ -92,6 +73,7 @@ public:
 
 	// FBlueprintEditor interface
 	virtual UBlueprint* GetBlueprintObj() const override;
+	virtual TSubclassOf<UEdGraphSchema> GetDefaultSchemaClass() const override;
 
 	int32 GetRigHierarchyTabCount() const { return RigHierarchyTabCount; }
 
@@ -143,6 +125,8 @@ public:
 
 	virtual void PostTransaction(bool bSuccess, const FTransaction* Transaction, bool bIsRedo);
 
+	virtual void JumpToHyperlink(const UObject* ObjectReference, bool bRequestRename = false) override;
+
 	void EnsureValidRigElementsInDetailPanel();
 
 	virtual void OnStartWatchingPin();
@@ -162,6 +146,9 @@ public:
 	// Gets the Control Rig Blueprint being edited/viewed
 	UControlRigBlueprint* GetControlRigBlueprint() const;
 
+	// returns the hierarchy being debugged
+	URigHierarchy* GetHierarchyBeingDebugged() const;
+
 	void SetDetailObjects(const TArray<UObject*>& InObjects);
 	void SetDetailObjects(const TArray<UObject*>& InObjects, bool bChangeUISelectionState);
 	void SetDetailViewForRigElements();
@@ -174,7 +161,6 @@ public:
 	bool DetailViewShowsLocalVariable() const;
 	bool DetailViewShowsStruct(UScriptStruct* InStruct) const;
 	bool DetailViewShowsRigElement(FRigElementKey InKey) const;
-	bool DetailViewShowsRigUnit(URigVMNode* InNode) const;
 
 	void ClearDetailObject(bool bChangeUISelectionState = true);
 
@@ -247,11 +233,12 @@ protected:
 	virtual void OnActiveTabChanged( TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated ) override;
 	virtual void OnSelectedNodesChangedImpl(const TSet<class UObject*>& NewSelection) override;
 	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled) override;
+	virtual void RefreshEditors(ERefreshBlueprintEditorReason::Type Reason = ERefreshBlueprintEditorReason::UnknownReason) override;
 	virtual void SetupGraphEditorEvents(UEdGraph* InGraph, SGraphEditor::FGraphEditorEvents& InEvents) override;
 	virtual void FocusInspectorOnGraphSelection(const TSet<class UObject*>& NewSelection, bool bForceRefresh = false) override;
 
 	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
-	void HandleVMCompiledEvent(UBlueprint* InBlueprint, URigVM* InVM);
+	void HandleVMCompiledEvent(UObject* InCompiledObject, URigVM* InVM);
 	void HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
 	void HandleControlRigExecutionHalted(const int32 InstructionIndex, UObject* InNode, const FName& InEntryName);
 	void SetHaltedNode(URigVMNode* Node);
@@ -281,11 +268,12 @@ private:
 	/** Fill the toolbar with content */
 	void FillToolbar(FToolBarBuilder& ToolbarBuilder);
 
-	EControlRigEditorEventQueue GetEventQueue() const;
-	void SetEventQueue(EControlRigEditorEventQueue InEventQueue);
+	TArray<FName> GetEventQueue() const;
+	void SetEventQueue(TArray<FName> InEventQueue);
+	void SetEventQueue(TArray<FName> InEventQueue, bool bCompile);
 	int32 GetEventQueueComboValue() const;
 	FText GetEventQueueLabel() const;
-	static FSlateIcon GetEventQueueIcon(EControlRigEditorEventQueue InEventQueue);
+	static FSlateIcon GetEventQueueIcon(const TArray<FName>& InEventQueue);
 	FSlateIcon GetEventQueueIcon() const;
 
 	enum EControlRigExecutionModeType
@@ -319,8 +307,6 @@ private:
 	void OnToolbarDrawAxesOnSelectionChanged(ECheckBoxState InNewValue);
 	TOptional<float> GetToolbarAxesScale() const;
 	void OnToolbarAxesScaleChanged(float InValue);
-	TOptional<float> GetToolbarBoneRadius() const;
-	void OnToolbarBoneRadiusChanged(float InValue);
 
 		/** Handle switching skeletal meshes */
 	void HandlePreviewMeshChanged(USkeletalMesh* InOldSkeletalMesh, USkeletalMesh* InNewSkeletalMesh);
@@ -435,10 +421,13 @@ protected:
 	virtual void NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override;
 	/** delegate for changing property */
 	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override;
+	void OnPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent);
 	void OnWrappedPropertyChangedChainEvent(UDetailsViewWrapperObject* InWrapperObject, const FString& InPropertyPath, FPropertyChangedChainEvent& InPropertyChangedChainEvent);
 	void OnRequestLocalizeFunctionDialog(URigVMLibraryNode* InFunction, UControlRigBlueprint* InTargetBlueprint, bool bForce);
 	FRigVMController_BulkEditResult OnRequestBulkEditDialog(UControlRigBlueprint* InBlueprint, URigVMController* InController, URigVMLibraryNode* InFunction, ERigVMControllerBulkEditType InEditType);
-	void UpdateDefaultValueForVariable(FBPVariableDescription& InVariable, bool bUseCDO);
+	bool OnRequestBreakLinksDialog(TArray<URigVMLink*> InLinks);
+	void HandleJumpToHyperlink(const UObject* InSubject);
+	bool UpdateDefaultValueForVariable(FBPVariableDescription& InVariable, bool bUseCDO);
 
 	URigVMGraph* GetFocusedModel() const;
 	URigVMController* GetFocusedController() const;
@@ -465,8 +454,8 @@ protected:
 
 	void OnAnimInitialized();
 
-	/** Are we currently in setup mode */
-	bool bSetupModeEnabled;
+	/** Are we currently compiling through the user interface */
+	bool bIsCompilingThroughUI;
 
 	FPreviewControlRigUpdated PreviewControlRigUpdated;
 
@@ -478,11 +467,11 @@ protected:
 	void SetPinControlNameListText(const FText& NewTypeInValue, ETextCommit::Type /*CommitInfo*/);
 	void OnPinControlNameListChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo);
 	void OnPinControlNameListComboBox(const TArray<TSharedPtr<FString>>* InNameList);
-	void ToggleSetupMode();
+	bool IsConstructionModeEnabled() const;
 
 	bool bAnyErrorsLeft;
 
-	EControlRigEditorEventQueue LastEventQueue;
+	TArray<FName> LastEventQueue;
 	EControlRigExecutionModeType ExecutionMode;
 	FString LastDebuggedRig;
 	int32 RigHierarchyTabCount;
@@ -494,7 +483,20 @@ protected:
 
 	TArray<TStrongObjectPtr<UDetailsViewWrapperObject>> WrapperObjects;
 	TWeakObjectPtr<AStaticMeshActor> WeakGroundActorPtr;
-	
+
+	FDelegateHandle PropertyChangedHandle;
+
+	void OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+	void OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+
+	bool bIsConstructionEventRunning;
+	uint32 LastHierarchyHash;
+
+	static const TArray<FName> ForwardsSolveEventQueue;
+	static const TArray<FName> BackwardsSolveEventQueue;
+	static const TArray<FName> ConstructionEventQueue;
+	static const TArray<FName> BackwardsAndForwardsSolveEventQueue;
+
 	friend class FControlRigEditorMode;
 	friend class SControlRigStackView;
 	friend class SRigHierarchy;

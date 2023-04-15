@@ -1,21 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "CoreMinimal.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "EditorStyleSet.h"
-#include "GameFramework/Actor.h"
-#include "Engine/Blueprint.h"
-#include "Engine/Selection.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Editor.h"
-
-#include "Kismet2/KismetEditorUtilities.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
 #include "CreateBlueprintFromActorDialog.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Selection.h"
+#include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class FUICommandList;
 
 DEFINE_LOG_CATEGORY_STATIC(LogViewportBlueprintMenu, Log, All);
 
@@ -200,7 +217,7 @@ void FillBlueprintOptions(FMenuBuilder& MenuBuilder, TArray<AActor*> SelectedAct
 		{
 			AActor* ActorOverride = nullptr;
 			FUIAction CreateBlueprintAction( FExecuteAction::CreateStatic( &FCreateBlueprintFromActorDialog::OpenDialog, ECreateBlueprintFromActorMode::Harvest, ActorOverride, true ) );
-			MenuBuilder.AddMenuEntry(LOCTEXT("CreateBlueprint", "Create Blueprint..."), LOCTEXT("CreateBlueprint_Tooltip", "Harvest Components from Selected Actors and create Blueprint"), FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.HarvestBlueprintFromActors"), CreateBlueprintAction);
+			MenuBuilder.AddMenuEntry(LOCTEXT("CreateBlueprint", "Create Blueprint..."), LOCTEXT("CreateBlueprint_Tooltip", "Harvest Components from Selected Actors and create Blueprint"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.HarvestBlueprintFromActors"), CreateBlueprintAction);
 		}
 	}
 	

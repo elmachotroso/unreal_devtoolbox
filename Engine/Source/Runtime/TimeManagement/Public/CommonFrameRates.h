@@ -2,8 +2,11 @@
 
 #pragma once
 
-#include "Misc/FrameRate.h"
 #include "Containers/ArrayView.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/FrameRate.h"
 
 enum class ECommonFrameRate : uint8
 {
@@ -67,7 +70,7 @@ struct TIMEMANAGEMENT_API FCommonFrameRates
 	 *  @param Tolerance: Numerical tolerance to use when searching for a frame rate match.
 	 *  @return: a pointer to the matching common frame rate if a match was found, or nullptr otherwise.
 	 */
-	static const FCommonFrameRateInfo* Find(const double InFrameRateAsDecimal, const double Tolerance = DOUBLE_KINDA_SMALL_NUMBER);
+	static const FCommonFrameRateInfo* Find(const double InFrameRateAsDecimal, const double Tolerance = UE_DOUBLE_KINDA_SMALL_NUMBER);
 
 private:
 	static const FCommonFrameRateInfo AllFrameRates[(int32)ECommonFrameRate::Private_Num];

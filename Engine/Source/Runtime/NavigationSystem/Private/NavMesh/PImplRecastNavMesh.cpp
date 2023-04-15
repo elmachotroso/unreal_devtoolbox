@@ -476,115 +476,13 @@ void FPImplRecastNavMesh::ReleaseDetourNavMesh()
 #endif
 }
 
-// LWC_TODO_AI: Remove prior to UE5 5.0 Release.
-// Currenlty floats are serialized as doubles for the navigation data so it can be loaded in LWC and non LWC builds (mainly used for regression testing).
-class FSerializeFloatAsDoubleHack
-{
-public:
-	FSerializeFloatAsDoubleHack(FArchive& InArchive)
-		: Archive(InArchive)
-	{}
-
-	/** Returns true if this archive is for loading data. */
-	FORCEINLINE bool IsLoading() const
-	{
-		return Archive.IsLoading();
-	}
-
-	/** Returns true if this archive is for saving data, this can also be a pre-save preparation archive. */
-	FORCEINLINE bool IsSaving() const
-	{
-		return Archive.IsSaving();
-	}
-
-	operator FArchive&() const { return Archive; }
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, uint8& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, int8& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, uint16& Value)
-	{
-		 Ar.Archive << Value;
-		 return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, int16& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, uint32& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, bool& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, int32& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, float& Value)
-	{
-		double DoubleValue = Value;
-		Ar.Archive << DoubleValue;
-		Value = DoubleValue;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, double& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	FORCEINLINE friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, uint64& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	friend FSerializeFloatAsDoubleHack& operator<<(FSerializeFloatAsDoubleHack& Ar, int64& Value)
-	{
-		Ar.Archive << Value;
-		return Ar;
-	}
-
-	virtual void Serialize(void* Value, int64 Length)
-	{
-		Archive.Serialize(Value, Length);
-	}
-
-protected:
-	FArchive& Archive;
-};
-
 /**
  * Serialization.
  * @param Ar - The archive with which to serialize.
  * @returns true if serialization was successful.
  */
-void FPImplRecastNavMesh::Serialize( FArchive& ArWrapped, int32 NavMeshVersion )
+void FPImplRecastNavMesh::Serialize( FArchive& Ar, int32 NavMeshVersion )
 {
-	FSerializeFloatAsDoubleHack Ar(ArWrapped); // LWC_TODO_AI: Remove prior to UE5 5.0 Release.
-
 	//@todo: How to handle loading nav meshes saved w/ recast when recast isn't present????
 
 	if (!Ar.IsLoading() && DetourNavMesh == NULL)
@@ -741,7 +639,12 @@ void FPImplRecastNavMesh::Serialize( FArchive& ArWrapped, int32 NavMeshVersion )
 				if (TileData != NULL)
 				{
 					dtMeshHeader* const TileHeader = (dtMeshHeader*)TileData;
-					DetourNavMesh->addTile(TileData, TileDataSize, DT_TILE_FREE_DATA, TileRef, NULL);
+					Status = DetourNavMesh->addTile(TileData, TileDataSize, DT_TILE_FREE_DATA, TileRef, NULL);
+					if (dtStatusDetail(Status, DT_OUT_OF_MEMORY))
+					{
+						UE_LOG(LogNavigation, Warning, TEXT("%s Failed to add tile (%d,%d:%d), %d tile limit reached in %s."),
+							ANSI_TO_TCHAR(__FUNCTION__), TileHeader->x, TileHeader->y, TileHeader->layer, DetourNavMesh->getMaxTiles(), *NavMeshOwner->GetFullName());
+					}
 
 					// Serialize compressed tile cache layer
 					uint8* ComressedTileData = nullptr;
@@ -790,12 +693,10 @@ void FPImplRecastNavMesh::Serialize( FArchive& ArWrapped, int32 NavMeshVersion )
 	}
 }
 
-void FPImplRecastNavMesh::SerializeRecastMeshTile(FArchive& ArWrapped, int32 NavMeshVersion, unsigned char*& TileData, int32& TileDataSize)
+void FPImplRecastNavMesh::SerializeRecastMeshTile(FArchive& Ar, int32 NavMeshVersion, unsigned char*& TileData, int32& TileDataSize)
 {
 	// The strategy here is to serialize the data blob that is passed into addTile()
 	// @see dtCreateNavMeshData() for details on how this data is laid out
-
-	FSerializeFloatAsDoubleHack Ar(ArWrapped); // LWC_TODO_AI: Remove prior to UE5 5.0 Release.
 
 	FDetourTileSizeInfo SizeInfo;
 
@@ -1037,10 +938,8 @@ void FPImplRecastNavMesh::SerializeRecastMeshTile(FArchive& ArWrapped, int32 Nav
 	}
 }
 
-void FPImplRecastNavMesh::SerializeCompressedTileCacheData(FArchive& ArWrapped, int32 NavMeshVersion, unsigned char*& CompressedData, int32& CompressedDataSize)
+void FPImplRecastNavMesh::SerializeCompressedTileCacheData(FArchive& Ar, int32 NavMeshVersion, unsigned char*& CompressedData, int32& CompressedDataSize)
 {
-	// LWC_TODO_AI: Remove prior to UE5 5.0 Release.
-	FSerializeFloatAsDoubleHack Ar(ArWrapped);
 	constexpr int32 EmptyDataValue = -1;
 
 	// Note when saving the CompressedDataSize is either 0 or it must be big enough to include the size of the uncompressed dtTileCacheLayerHeader.
@@ -2039,8 +1938,8 @@ bool FPImplRecastNavMesh::FindPolysAroundCircle(const FVector& CenterPos, const 
 
 		if (OutPolysCost)
 		{
-			OutPolysCost->Reset();
-			OutPolysCost->AddUninitialized(MaxSearchNodes);
+			PolysCost.Reset();
+			PolysCost.AddUninitialized(MaxSearchNodes);
 		}
 
 		FVector::FReal RecastLoc[3];
@@ -2049,7 +1948,7 @@ bool FPImplRecastNavMesh::FindPolysAroundCircle(const FVector& CenterPos, const 
 
 		if (OutPolysCost)
 		{
-			*OutPolysCost = LWC::ConvertArrayTypeClampMax<float>(PolysCost);
+			*OutPolysCost = UE::LWC::ConvertArrayTypeClampMax<float>(PolysCost);
 		}
 
 		if (dtStatusSucceed(Status))
@@ -2187,6 +2086,24 @@ bool FPImplRecastNavMesh::GetPolyVerts(NavNodeRef PolyID, TArray<FVector>& OutVe
 				OutVerts.Add( Recast2UnrVector(V) );
 			}
 
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool FPImplRecastNavMesh::GetRandomPointInPoly(NavNodeRef PolyID, FVector& OutPoint) const
+{
+	if (DetourNavMesh)
+	{
+		INITIALIZE_NAVQUERY_SIMPLE(NavQuery, RECAST_MAX_SEARCH_NODES);
+
+		FVector::FReal RandPt[3];
+		dtStatus Status = NavQuery.findRandomPointInPoly((dtPolyRef)PolyID, FMath::FRand, RandPt);
+		if (dtStatusSucceed(Status))
+		{
+			OutPoint = Recast2UnrVector(RandPt);
 			return true;
 		}
 	}
@@ -2352,6 +2269,22 @@ bool FPImplRecastNavMesh::GetPolyTileIndex(NavNodeRef PolyID, uint32& PolyIndex,
 	{
 		uint32 SaltIdx = 0;
 		DetourNavMesh->decodePolyId(PolyID, SaltIdx, TileIndex, PolyIndex);
+		return true;
+	}
+
+	return false;
+}
+
+bool FPImplRecastNavMesh::GetPolyTileRef(NavNodeRef PolyId, uint32& OutPolyIndex, FNavTileRef& OutTileRef) const
+{
+	if (DetourNavMesh && PolyId)
+	{
+		// Similar to UE::NavMesh::Private::GetTileRefFromPolyRef
+		unsigned int Salt = 0;
+		unsigned int TileIndex = 0;
+		DetourNavMesh->decodePolyId(PolyId, Salt, TileIndex, OutPolyIndex);
+		const dtTileRef TileRef = DetourNavMesh->encodePolyId(Salt, TileIndex, 0);
+		OutTileRef = FNavTileRef(TileRef);
 		return true;
 	}
 
@@ -2700,17 +2633,13 @@ uint8 GetValidEnds(const dtNavMesh& NavMesh, const dtMeshTile& Tile, const dtPol
 	return ValidEnds;
 }
 
-/** 
- * @param PolyEdges			[out] Array of worldspace vertex locations for tile edges.  Edges are pairwise verts, i.e. [0,1], [2,3], etc
- * @param NavMeshEdges		[out] Array of worldspace vertex locations for the edge of the navmesh.  Edges are pairwise verts, i.e. [0,1], [2,3], etc
- * 
- * @todo PolyEdges and NavMeshEdges could probably be Index arrays into MeshVerts and be generated in the master loop instead of separate traversals. 
- */
-void FPImplRecastNavMesh::GetDebugGeometry(FRecastDebugGeometry& OutGeometry, int32 TileIndex) const
+bool FPImplRecastNavMesh::GetDebugGeometryForTile(FRecastDebugGeometry& OutGeometry, int32 TileIndex) const
 {
+	bool bDone = false;
 	if (DetourNavMesh == nullptr || TileIndex >= DetourNavMesh->getMaxTiles())
 	{
-		return;
+		bDone = true;
+		return bDone;
 	}
 				
 	check(NavMeshOwner);
@@ -2773,6 +2702,8 @@ void FPImplRecastNavMesh::GetDebugGeometry(FRecastDebugGeometry& OutGeometry, in
 				}
 			}
 		}
+
+		bDone = true;
 	}
 	else
 	{
@@ -2809,7 +2740,14 @@ void FPImplRecastNavMesh::GetDebugGeometry(FRecastDebugGeometry& OutGeometry, in
 
 			VertBase += GetTilesDebugGeometry(Generator, *Tile, VertBase, OutGeometry, TileIdx, ForbiddenFlags);
 		}
+
+		if (TileIndex == INDEX_NONE)
+		{
+			bDone = true;
+		}
 	}
+
+	return bDone;
 }
 
 int32 FPImplRecastNavMesh::GetTilesDebugGeometry(const FRecastNavMeshGenerator* Generator, const dtMeshTile& Tile, int32 VertBase, FRecastDebugGeometry& OutGeometry, int32 TileIdx, uint16 ForbiddenFlags) const
@@ -2823,7 +2761,17 @@ int32 FPImplRecastNavMesh::GetTilesDebugGeometry(const FRecastNavMeshGenerator* 
 #endif
 
 	const bool bIsBeingBuilt = Generator != nullptr && !!NavMeshOwner->bDistinctlyDrawTilesBeingBuilt
-		&& Generator->IsTileChanged(TileIdx == INDEX_NONE ? DetourNavMesh->decodePolyIdTile(DetourNavMesh->getTileRef(&Tile)) : TileIdx);
+		&& Generator->IsTileChanged(FNavTileRef(DetourNavMesh->getTileRef(&Tile)));
+
+	UE_SUPPRESS(LogNavigation, VeryVerbose,
+	{
+		if (bIsBeingBuilt)
+		{
+			const dtTileRef TileRef = DetourNavMesh->getTileRef(&Tile);
+			UE_LOG(LogNavigation, VeryVerbose, TEXT("%s TileId: %d Salt: %d TileRef: 0x%llx bIsBeingBuilt"),
+				ANSI_TO_TCHAR(__FUNCTION__), DetourNavMesh->decodePolyIdTile(TileRef), DetourNavMesh->decodePolyIdSalt(TileRef), TileRef);	
+		}
+	});
 
 	// add all the poly verts
 	FVector::FReal* F = Tile.verts;

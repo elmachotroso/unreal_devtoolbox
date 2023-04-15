@@ -48,6 +48,8 @@ public:
 	 * Compresses the data.
 	 *
 	 * @param Quality The compression quality.
+	 * 
+	 * returns void. call SetError() in your implementation if you fail.
 	 */
 	virtual void Compress(int32 Quality) = 0;
 
@@ -61,12 +63,22 @@ public:
 	 *
 	 * @param ErrorMessage The error message to set.
 	 */
-	virtual void SetError(const TCHAR* ErrorMessage);
+	void SetError(const TCHAR* ErrorMessage);
+	
+	/**
+	 * Gets last error message.
+	 */
+	const FString & GetLastError() const
+	{
+		return LastError;
+	}
 
 	/**  
 	 * Function to uncompress our data 
 	 *
 	 * @param InFormat How we want to manipulate the RGB data
+	 * 
+	 * returns void. call SetError() in your implementation if you fail.
 	 */
 	virtual void Uncompress(const ERGBFormat InFormat, int32 InBitDepth) = 0;
 
@@ -98,47 +110,26 @@ public:
 		return Width;
 	}
 
-	virtual int32 GetNumFrames() const override
-	{
-		return NumFrames;
-	}
-	
-	virtual int32 GetFramerate() const override
-	{
-		return Framerate;
-	}
-
 	virtual bool SetCompressed(const void* InCompressedData, int64 InCompressedSize) override;
 	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow = 0) override;
-	virtual bool SetAnimationInfo(int32 InNumFrames, int32 InFramerate) override;
 
 protected:
+
+	int GetBytesPerPel() const { return GetRGBFormatBytesPerPel(Format,BitDepth); }
+	int GetBytesPerRow() const { return Width * GetBytesPerPel(); }
 
 	/** Arrays of compressed/raw data */
 	TArray64<uint8> RawData;
 	TArray64<uint8> CompressedData;
 
 	/** Format of the raw data */
-	ERGBFormat RawFormat;
-	int8 RawBitDepth;
-
-	/** Bytes per row for the raw data */
-	int32 RawBytesPerRow;
-
-	/** Format of the image */
 	ERGBFormat Format;
-
-	/** Bit depth of the image */
-	int8 BitDepth;
+	int BitDepth;
 
 	/** Width/Height of the image data */
 	int32 Width;
 	int32 Height;
 	
-	/** Animation information */
-	int32 NumFrames;
-	int32 Framerate;
-
 	/** Last Error Message. */
 	FString LastError;
 };

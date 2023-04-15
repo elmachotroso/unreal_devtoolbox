@@ -21,7 +21,7 @@ namespace Metasound
 	namespace LimiterVertexNames
 	{
 		METASOUND_PARAM(InputAudio, "Audio", "Incoming audio signal to compress.");
-		METASOUND_PARAM(InputInGainDb, "Input Gain dB", "Gain to apply to the input before limiting.");
+		METASOUND_PARAM(InputInGainDb, "Input Gain dB", "Gain to apply to the input before limiting, in decibels. Maximum 100 dB. ");
 		METASOUND_PARAM(InputThresholdDb, "Threshold dB", "Amplitude threshold above which gain will be reduced.");
 		METASOUND_PARAM(InputReleaseTime, "Release Time", "How long it takes for audio below the threshold to return to its original volume level.");
 		METASOUND_PARAM(InputKneeMode, "Knee", "Whether the limiter uses a hard or soft knee.");
@@ -50,6 +50,7 @@ namespace Metasound
 
 		static constexpr float HardKneeBandwitdh = 0.0f;
 		static constexpr float SoftKneeBandwitdh = 10.0f;
+		static constexpr float MaxInputGain = 100.0f;
 
 		FLimiterOperator(const FOperatorSettings& InSettings,
 			const FAudioBufferReadRef& InAudio,
@@ -70,7 +71,7 @@ namespace Metasound
 		{
 			Limiter.Init(InSettings.GetSampleRate(), 1);
 			Limiter.SetProcessingMode(Audio::EDynamicsProcessingMode::Limiter);
-			Limiter.SetInputGain(*InGainDb);
+			Limiter.SetInputGain(FMath::Min(*InGainDbInput, MaxInputGain));
 			Limiter.SetThreshold(*ThresholdDbInput);
 			Limiter.SetAttackTime(0.0f);
 			Limiter.SetReleaseTime(PrevReleaseTime);
@@ -123,14 +124,14 @@ namespace Metasound
 
 			static const FVertexInterface Interface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)),
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputInGainDb), 0.0f),
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputThresholdDb), 0.0f),
-					TInputDataVertexModel<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputReleaseTime), 0.1f),
-					TInputDataVertexModel<FEnumKneeMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputKneeMode))
+					TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputInGainDb), 0.0f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputThresholdDb), 0.0f),
+					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputReleaseTime), 0.1f),
+					TInputDataVertex<FEnumKneeMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputKneeMode))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudio))
+					TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudio))
 				)
 			);
 
@@ -182,7 +183,7 @@ namespace Metasound
 			/* Update parameters */
 			if (!FMath::IsNearlyEqual(*InGainDbInput, PrevInGainDb))
 			{
-				Limiter.SetInputGain(*InGainDbInput);
+				Limiter.SetInputGain(FMath::Min(*InGainDbInput, MaxInputGain));
 			}
 			if (!FMath::IsNearlyEqual(*ThresholdDbInput, PrevThresholdDb))
 			{

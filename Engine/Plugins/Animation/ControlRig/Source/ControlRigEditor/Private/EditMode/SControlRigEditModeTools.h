@@ -6,10 +6,11 @@
 #include "Widgets/SCompoundWidget.h"
 #include "IDetailKeyframeHandler.h"
 #include "RigVMModel/RigVMGraph.h"
-#include "SRigHierarchyTreeView.h"
-#include "SRigSpacePickerWidget.h"
+#include "Editor/SRigHierarchyTreeView.h"
+#include "Editor/SRigSpacePickerWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
+class SConstraintsEditionWidget;
 class FControlRigEditMode;
 class IDetailsView;
 class ISequencer;
@@ -49,7 +50,7 @@ public:
 	void SetSequencer(TWeakPtr<ISequencer> InSequencer);
 
 	/** Set The Control Rig we are using*/
-	void SetControlRig(UControlRig* ControlRig);
+	void SetControlRigs(const TArrayView<TWeakObjectPtr<UControlRig>>& InControlRigs);
 
 	/** Returns the hierarchy currently being used */
 	const URigHierarchy* GetHierarchy() const;
@@ -88,9 +89,12 @@ private:
 	TSharedPtr<SExpandableArea> PickerExpander;
 	TSharedPtr<SRigSpacePickerWidget> SpacePickerWidget;
 
-	/** Storage for both sequencer and viewport rigs */
-	TWeakObjectPtr<UControlRig> SequencerRig;
-	TWeakObjectPtr<UControlRig> ViewportRig;
+	/** Storage for control rigs */
+	TArray<TWeakObjectPtr<UControlRig>> ControlRigs;
+
+	/** Constraint edition widget. */
+	TSharedPtr<SExpandableArea> ConstraintPickerExpander = nullptr;
+	TSharedPtr<SConstraintsEditionWidget> ConstraintsEditionWidget = nullptr; 
 
 	/** Display or edit set up for property */
 	bool ShouldShowPropertyOnDetailCustomization(const struct FPropertyAndParent& InPropertyAndParent) const;
@@ -108,6 +112,8 @@ private:
 	void HandleSpaceListChanged(URigHierarchy* InHierarchy, const FRigElementKey& InControlKey, const TArray<FRigElementKey>& InSpaceList);
 	FReply HandleAddSpaceClicked();
 	FReply OnBakeControlsToNewSpaceButtonClicked();
+
+	FReply HandleAddConstraintClicked();
 
 	EVisibility GetRigOptionExpanderVisibility() const;
 

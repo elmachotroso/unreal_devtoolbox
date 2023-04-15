@@ -2,15 +2,29 @@
 
 #pragma once
 
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Views/STreeView.h"
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
 #include "CurveEditorTreeTraits.h"
 #include "CurveEditorTypes.h"
+#include "Delegates/Delegate.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
 class FCurveEditor;
 class ITableRow;
 class SHeaderRow;
 class STableViewBase;
+struct FGeometry;
+struct FKeyEvent;
 
 class CURVEEDITOR_API SCurveEditorTree : public STreeView<FCurveEditorTreeItemID>
 {
@@ -23,6 +37,7 @@ public:
 		SLATE_ARGUMENT(float, SelectColumnWidth)
 		SLATE_EVENT(FOnMouseButtonDoubleClick, OnMouseButtonDoubleClick)
 		SLATE_EVENT(FOnTableViewScrolled, OnTreeViewScrolled)
+		SLATE_EVENT(FOnContextMenuOpening, OnContextMenuOpening)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs, TSharedPtr<FCurveEditor> InCurveEditor);

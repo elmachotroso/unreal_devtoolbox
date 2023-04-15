@@ -29,6 +29,15 @@ void FStateTreeStateLinkDetails::CustomizeHeader(TSharedRef<class IPropertyHandl
 	IDProperty = StructProperty->GetChildHandle(TEXT("ID"));
 	TypeProperty = StructProperty->GetChildHandle(TEXT("Type"));
 
+	if (const FProperty* MetaDataProperty = StructProperty->GetMetaDataProperty())
+	{
+		static const FName NAME_DirectStatesOnly = "DirectStatesOnly";
+		static const FName NAME_SubtreesOnly = "SubtreesOnly";
+		
+		bDirectStatesOnly = MetaDataProperty->HasMetaData(NAME_DirectStatesOnly);
+		bSubtreesOnly = MetaDataProperty->HasMetaData(NAME_SubtreesOnly);
+	}
+	
 	CacheStates();
 
 	HeaderRow
@@ -69,8 +78,17 @@ void FStateTreeStateLinkDetails::CacheStates(const UStateTreeState* State)
 		return;
 	}
 
-	CachedNames.Add(State->Name);
-	CachedIDs.Add(State->ID);
+	bool bShouldAdd = true;
+	if (bSubtreesOnly && State->Type != EStateTreeStateType::Subtree)
+	{
+		bShouldAdd = false;
+	}
+
+	if (bShouldAdd)
+	{
+		CachedNames.Add(State->Name);
+		CachedIDs.Add(State->ID);
+	}
 
 	for (UStateTreeState* ChildState : State->Children)
 	{
@@ -143,11 +161,20 @@ TSharedRef<SWidget> FStateTreeStateLinkDetails::OnGetStateContent() const
 {
 	FMenuBuilder MenuBuilder(true, NULL);
 
-	FUIAction NextItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNextState));
-	MenuBuilder.AddMenuEntry(LOCTEXT("TransitionNextState", "Next State"), LOCTEXT("TransitionNextTooltip", "Goto next sibling State."), FSlateIcon(), NextItemAction);
+	if (!bDirectStatesOnly)
+	{
+		FUIAction NextItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNextState));
+		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionNextState", "Next State"), LOCTEXT("TransitionNextTooltip", "Goto next sibling State."), FSlateIcon(), NextItemAction);
 
-	FUIAction NotSetItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNotSet));
-	MenuBuilder.AddMenuEntry(LOCTEXT("TransitionBlock", "Block Transition"), LOCTEXT("TransitionBlockTooltip", "Will not transition to any state, but will block other transitions to trigger if the condition passes."), FSlateIcon(), NotSetItemAction);
+		FUIAction NotSetItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNotSet));
+		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionBlock", "Block Transition"), LOCTEXT("TransitionBlockTooltip", "Will not transition to any state, but will block other transitions to trigger if the condition passes."), FSlateIcon(), NotSetItemAction);
+
+		FUIAction SucceededItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboSucceeded));
+		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionTreeSucceeded", "Tree Succeeded"), LOCTEXT("TransitionTreeSuccessTooltip", "Complete tree with success."), FSlateIcon(), SucceededItemAction);
+
+		FUIAction FailedItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboFailed));
+		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionTreeFailed", "Tree Failed"), LOCTEXT("TransitionTreeFailedTooltip", "Complete tree with failure."), FSlateIcon(), FailedItemAction);
+	}
 
 	if (CachedNames.Num() > 0)
 	{
@@ -179,6 +206,14 @@ FText FStateTreeStateLinkDetails::GetCurrentStateDesc() const
 	else if (TransitionType == EStateTreeTransitionType::NextState)
 	{
 		return LOCTEXT("TransitionNextState", "Next State");
+	}
+	else if (TransitionType == EStateTreeTransitionType::Succeeded)
+	{
+		return LOCTEXT("TransitionTreeSucceeded", "Tree Succeeded");
+	}
+	else if (TransitionType == EStateTreeTransitionType::Failed)
+	{
+		return LOCTEXT("TransitionTreeFailed", "Tree Failed");
 	}
 	else if (TransitionType == EStateTreeTransitionType::GotoState)
 	{

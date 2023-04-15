@@ -6,8 +6,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/Paths.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetThumbnail.h"
+#include "AssetToolsModule.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowserFileDataSource"
 
@@ -639,6 +640,13 @@ bool IsValidName(const bool bIsDirectory, const bool bCheckUniqueName, const FSt
 		return false;
 	}
 
+	// Check custom filter set by external module
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (!AssetToolsModule.Get().IsNameAllowed(InNewName, OutErrorMsg))
+	{
+		return false;
+	}
+
 	// Is this name unique?
 	if (bCheckUniqueName)
 	{
@@ -1000,7 +1008,7 @@ bool GetFileItemAttribute(const FContentBrowserFileItemDataPayload& InFilePayloa
 	
 		if (InAttributeKey == ContentBrowserItemAttributes::ItemTypeName || InAttributeKey == NAME_Class || InAttributeKey == NAME_Type)
 		{
-			OutAttributeValue.SetValue(FileActions->TypeName);
+			OutAttributeValue.SetValue(FileActions->TypeName.ToString());
 			return true;
 		}
 	

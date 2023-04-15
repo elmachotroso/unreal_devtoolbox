@@ -6,9 +6,30 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreGlobals.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "GenericOctreePublic.h"
+#include "HAL/PlatformMisc.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Box.h"
+#include "Math/BoxSphereBounds.h"
+#include "Math/MathFwd.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/UnrealMathUtility.h"
+#include "Math/Vector.h"
+#include "Math/Vector4.h"
+#include "Math/VectorRegister.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/EnableIf.h"
 #include "Templates/Models.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Trace/Detail/Channel.h"
 
 /** A concise iteration over the children of an octree node. */
 #define FOREACH_OCTREE_CHILD_NODE(ChildRef) \
@@ -1034,7 +1055,7 @@ private:
 	template <typename Semantics>
 	typename TEnableIf<TModels<COctreeSemanticsV2, Semantics>::Value>::Type SetOctreeSemanticsElementId(const ElementType& Element, FOctreeElementId2 Id)
 	{
-		Semantics::SetElementId(*this, Element, Id);
+		Semantics::SetElementId(static_cast<typename Semantics::FOctree&>(*this), Element, Id);
 	}
 
 protected:
@@ -1795,4 +1816,6 @@ public:
 	}
 };
 
-#include "GenericOctree.inl"
+#include "Math/GenericOctree.inl" // IWYU pragma: export
+
+#include <stddef.h> // IWYU pragma: export

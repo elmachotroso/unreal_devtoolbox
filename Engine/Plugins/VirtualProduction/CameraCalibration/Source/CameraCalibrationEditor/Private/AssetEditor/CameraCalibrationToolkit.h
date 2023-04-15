@@ -70,6 +70,12 @@ private:
 
 	FCachedFIZData GetFIZData() const;
 
+	/** Binds the UI commands to delegates. */
+	void BindCommands();
+
+	/** Builds the toolbar widget for the camera calibration tools editor. */
+	void ExtendToolBar();
+
 	/** Extend Toolkit Menu */
 	void ExtendMenu();
 
@@ -84,7 +90,7 @@ private:
 	/** Camera calibration tools */
 	TSharedPtr<SWidget> CalibrationStepsTab;
 
-	/** Data displaying evaluated data based on LiveLink inputs */
+	/** Data displaying evaluated data based on evaluation inputs */
 	TSharedPtr<SLensEvaluation> LensEvaluationWidget;
 
 	/** Calibration Steps Controller */

@@ -183,11 +183,24 @@ struct FRcTileBox
 	{
 		check(TileSizeInWorldUnits > 0);
 
+		auto CalcMaxCoordExclusive = [](const FVector::FReal MaxAsFloat, const int32 MinCoord) -> int32
+		{
+			FVector::FReal UnusedIntPart;
+			// If MaxCoord falls exactly on the boundary of a tile
+			if (FMath::Modf(MaxAsFloat, &UnusedIntPart) == 0)
+			{
+				// Return the lower tile
+				return FMath::Max(FMath::FloorToInt(MaxAsFloat) - 1, MinCoord);
+			}
+			// Otherwise use default behaviour
+			return FMath::FloorToInt(MaxAsFloat);
+		};
+
 		const FBox RcAreaBounds = Unreal2RecastBox(UnrealBounds);
 		XMin = FMath::FloorToInt((RcAreaBounds.Min.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits);
-		XMax = FMath::FloorToInt((RcAreaBounds.Max.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits);
+		XMax = CalcMaxCoordExclusive((RcAreaBounds.Max.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits, XMin);
 		YMin = FMath::FloorToInt((RcAreaBounds.Min.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits);
-		YMax = FMath::FloorToInt((RcAreaBounds.Max.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits);
+		YMax = CalcMaxCoordExclusive((RcAreaBounds.Max.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits, YMin);
 	}
 
 	FORCEINLINE bool Contains(const FIntPoint& Point) const
@@ -241,6 +254,13 @@ enum class ERasterizeGeomTimeSlicedState : uint8
 	RasterizeGeometryRecast,
 };
 
+enum class EGenerateRecastFilterTimeSlicedState : uint8
+{
+	FilterLowHangingWalkableObstacles,
+	FilterLedgeSpans,
+	FilterWalkableLowHeightSpans,
+};
+
 enum class EDoWorkTimeSlicedState : uint8
 {
 	Invalid,
@@ -260,6 +280,11 @@ enum class EGenerateNavDataTimeSlicedState : uint8
 	Invalid,
 	Init,
 	GenerateLayers,
+};
+
+struct FRecastTileTimeSliceSettings
+{
+	int32 FilterLedgeSpansMaxYProcess = 13;
 };
 
 /**
@@ -282,6 +307,7 @@ public:
 
 	FORCEINLINE int32 GetTileX() const { return TileX; }
 	FORCEINLINE int32 GetTileY() const { return TileY; }
+	FORCEINLINE const FBox& GetTileBB() const { return TileBB; }
 	/** Whether specified layer was updated */
 	FORCEINLINE bool IsLayerChanged(int32 LayerIdx) const { return DirtyLayers[LayerIdx]; }
 	FORCEINLINE const TBitArray<>& GetDirtyLayersMask() const { return DirtyLayers; }
@@ -291,6 +317,8 @@ public:
 	bool HasDataToBuild() const;
 
 	const TArray<FNavMeshTileData>& GetCompressedLayers() const { return CompressedLayers; }
+
+	static FBox CalculateTileBounds(int32 X, int32 Y, const FVector& RcNavMeshOrigin, const FBox& TotalNavBounds, FVector::FReal TileSizeInWorldUnits);
 
 protected:
 	// to be used solely by FRecastNavMeshGenerator
@@ -364,6 +392,7 @@ protected:
 	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	void RasterizeGeometry(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
 	void GenerateRecastFilter(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
+	ETimeSliceWorkResult GenerateRecastFilterTimeSliced(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	bool BuildCompactHeightField(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	bool RecastErodeWalkable(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	bool RecastBuildLayers(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
@@ -423,6 +452,8 @@ protected:
 	/** Start time slicing variables */
 	ERasterizeGeomRecastTimeSlicedState RasterizeGeomRecastState;
 	ERasterizeGeomTimeSlicedState RasterizeGeomState;
+	EGenerateRecastFilterTimeSlicedState GenerateRecastFilterState;
+	int32 GenRecastFilterLedgeSpansYStart;
 	EDoWorkTimeSlicedState DoWorkTimeSlicedState;
 	EGenerateTileTimeSlicedState GenerateTileTimeSlicedState;
 
@@ -437,6 +468,8 @@ protected:
 	TUniquePtr<struct FTileCacheAllocator> GenNavDataTimeSlicedAllocator;
 	TUniquePtr<struct FTileGenerationContext> GenNavDataTimeSlicedGenerationContext;
 	TUniquePtr<struct FTileRasterizationContext> GenCompressedlayersTimeSlicedRasterContext;
+
+	FRecastTileTimeSliceSettings TileTimeSliceSettings;
 	/** End time slicing variables */
 
 	int32 TileX;
@@ -581,12 +614,12 @@ struct FRunningTileElement
 
 struct FTileTimestamp
 {
-	uint32 TileIdx;
+	FNavTileRef NavTileRef;
 	double Timestamp;
 	
 	bool operator == (const FTileTimestamp& Other) const
 	{
-		return TileIdx == Other.TileIdx;
+		return NavTileRef == Other.NavTileRef;
 	}
 };
 
@@ -643,7 +676,11 @@ public:
 	virtual int32 GetNumRunningBuildTasks() const override;
 
 	/** Checks if a given tile is being build or has just finished building */
+	UE_DEPRECATED(5.1, "Use new version with FNavTileRef")
 	bool IsTileChanged(int32 TileIdx) const;
+
+	/** Checks if a given tile is being build or has just finished building */
+	bool IsTileChanged(const FNavTileRef InTileRef) const;
 		
 	FORCEINLINE uint32 GetVersion() const { return Version; }
 
@@ -740,7 +777,10 @@ protected:
 	/** Marks all tiles overlapping with InclusionBounds dirty (via MarkDirtyTiles). */
 	bool MarkNavBoundsDirty();
 
+	UE_DEPRECATED(5.1, "Use new version with FNavTileRef")
 	void RemoveLayers(const FIntPoint& Tile, TArray<uint32>& UpdatedTiles);
+
+	void RemoveLayers(const FIntPoint& Tile, TArray<FNavTileRef>& UpdatedTiles);
 	
 	void StoreCompressedTileCacheLayers(const FRecastTileGenerator& TileGenerator, int32 TileX, int32 TileY);
 
@@ -750,27 +790,57 @@ protected:
 
 #if RECAST_ASYNC_REBUILDING
 	/** Processes pending tile generation tasks Async*/
+	UE_DEPRECATED(5.1, "Use ProcessTileTasksAsyncAndGetUpdatedTiles instead")
 	TArray<uint32> ProcessTileTasksAsync(const int32 NumTasksToProcess);
+
+	/** Processes pending tile generation tasks Async*/
+	TArray<FNavTileRef> ProcessTileTasksAsyncAndGetUpdatedTiles(const int32 NumTasksToProcess);
 #else
-	TSharedRef<FRecastTileGenerator> CreateTileGeneratorFromPendingElement(FIntPoint &OutTileLocation);
+	TSharedRef<FRecastTileGenerator> CreateTileGeneratorFromPendingElement(FIntPoint &OutTileLocation, const int32 ForcedPendingTileIdx = INDEX_NONE);
+
 	/** Processes pending tile generation tasks Sync with option for time slicing currently an experimental feature. */
-	TArray<uint32> ProcessTileTasksSyncTimeSliced();
+	UE_DEPRECATED(5.1, "Use ProcessTileTasksSyncTimeSlicedAndGetUpdatedTiles instead")
+	virtual TArray<uint32> ProcessTileTasksSyncTimeSliced();
+	UE_DEPRECATED(5.1, "Use ProcessTileTasksSyncAndGetUpdatedTiles instead")
 	TArray<uint32> ProcessTileTasksSync(const int32 NumTasksToProcess);
+
+	/** Processes pending tile generation tasks Sync with option for time slicing currently an experimental feature. */
+	virtual TArray<FNavTileRef> ProcessTileTasksSyncTimeSlicedAndGetUpdatedTiles();
+	TArray<FNavTileRef> ProcessTileTasksSyncAndGetUpdatedTiles(const int32 NumTasksToProcess);
+
+	virtual int32 GetNextPendingDirtyTileToBuild() const;
 #endif
 	/** Processes pending tile generation tasks */
+	UE_DEPRECATED(5.1, "Use ProcessTileTasksAndGetUpdatedTiles instead")
 	TArray<uint32> ProcessTileTasks(const int32 NumTasksToProcess);
+
+	/** Processes pending tile generation tasks */
+	TArray<FNavTileRef> ProcessTileTasksAndGetUpdatedTiles(const int32 NumTasksToProcess);
 
 	void ResetTimeSlicedTileGeneratorSync();
 
 public:
 	/** Adds generated tiles to NavMesh, replacing old ones, uses time slicing returns Failed if any layer failed */
+	UE_DEPRECATED(5.1, "Use new version with FNavTileRef")
 	ETimeSliceWorkResult AddGeneratedTilesTimeSliced(FRecastTileGenerator& TileGenerator, TArray<uint32>& OutResultTileIndices);
+
+	/** Adds generated tiles to NavMesh, replacing old ones, uses time slicing returns Failed if any layer failed */
+	ETimeSliceWorkResult AddGeneratedTilesTimeSliced(FRecastTileGenerator& TileGenerator, TArray<FNavTileRef>& OutResultTileRefs);
+
 	/** Adds generated tiles to NavMesh, replacing old ones */
+	UE_DEPRECATED(5.1, "Use AddGeneratedTilesAndGetUpdatedTiles instead")
 	TArray<uint32> AddGeneratedTiles(FRecastTileGenerator& TileGenerator);
+
+	/** Adds generated tiles to NavMesh, replacing old ones */
+	TArray<FNavTileRef> AddGeneratedTilesAndGetUpdatedTiles(FRecastTileGenerator& TileGenerator);
 
 public:
 	/** Removes all tiles at specified grid location */
+	UE_DEPRECATED(5.1, "Use RemoveTileLayersAndGetUpdatedTiles instead")
 	TArray<uint32> RemoveTileLayers(const int32 TileX, const int32 TileY, TMap<int32, dtPolyRef>* OldLayerTileIdMap = nullptr);
+
+	/** Removes all tiles at specified grid location */
+	TArray<FNavTileRef> RemoveTileLayersAndGetUpdatedTiles(const int32 TileX, const int32 TileY, TMap<int32, dtPolyRef>* OldLayerTileIdMap = nullptr);
 
 	void RemoveTiles(const TArray<FIntPoint>& Tiles);
 	void ReAddTiles(const TArray<FIntPoint>& Tiles);
@@ -808,8 +878,24 @@ protected:
 	//----------------------------------------------------------------------//
 	virtual uint32 LogMemUsed() const override;
 
+	UE_DEPRECATED(5.1, "Use new version with FNavTileRef")
 	void AddGeneratedTileLayer(int32 LayerIndex, FRecastTileGenerator& TileGenerator, const TMap<int32, dtPolyRef>& OldLayerTileIdMap, TArray<uint32>& OutResultTileIndices);
 
+	bool IsAllowedToAddTileLayers(const FIntPoint Tile) const;
+	void AddGeneratedTileLayer(int32 LayerIndex, FRecastTileGenerator& TileGenerator, const TMap<int32, dtPolyRef>& OldLayerTileIdMap, TArray<FNavTileRef>& OutResultTileRefs);
+
+#if !UE_BUILD_SHIPPING
+	/** Data struct used by 'LogDirtyAreas' that contains all the information regarding the areas that are being dirtied, per dirtied tile. */
+	struct FNavigationDirtyAreaPerTileDebugInformation
+	{
+		FNavigationDirtyArea DirtyArea;
+		bool bTileWasAlreadyAdded = false;
+	};
+
+	/** Used internally, when LogNavigationDirtyArea is VeryVerbose, to log the number of tiles a dirty area is requesting. */
+	void LogDirtyAreas(const TMap<FPendingTileElement, TArray<FNavigationDirtyAreaPerTileDebugInformation>>& DirtyAreasDebuggingInformation) const; 
+#endif
+	
 protected:
 	friend ARecastNavMesh;
 
@@ -856,6 +942,8 @@ protected:
 
 	/** Use this if you don't want your tiles to start at (0,0,0) */
 	FVector RcNavMeshOrigin;
+
+	double RebuildAllStartTime = 0;
 	
 	uint32 bInitialized:1;
 
@@ -874,7 +962,7 @@ protected:
 
 		double CurrentTileRegenDuration;
 		/** if we are currently using time sliced regen or not - currently an experimental feature.
-		 *  do not manipulate this value directly instead call SetNextTimeSliceRegenState()
+		 *  do not manipulate this value directly instead call SetNextTimeSliceRegenActive()
 		 */
 		bool bTimeSliceRegenActive;
 		bool bNextTimeSliceRegenActive;
@@ -883,10 +971,10 @@ protected:
 		EProcessTileTasksSyncTimeSlicedState ProcessTileTasksSyncState;
 
 		/** Used by ProcessTileTasksSyncTimeSliced */
-		TArray<uint32> UpdatedTilesCache;
+		TArray<FNavTileRef> UpdatedTilesCache;
 
 		/** Used by AddGeneratedTilesTimeSliced */
-		TArray<uint32> ResultTileIndicesCached;
+		TArray<FNavTileRef> ResultTileRefsCached;
 
 		/** Used by AddGeneratedTilesTimeSliced */
 		TMap<int32, dtPolyRef> OldLayerTileIdMapCached;

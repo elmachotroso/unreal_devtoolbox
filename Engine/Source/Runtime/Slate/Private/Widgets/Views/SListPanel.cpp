@@ -88,9 +88,23 @@ void SListPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArranged
 		else
 		{
 			// This is a normal list, arrange items in a line along the scroll axis
-			const FTableViewDimensions FirstChildDimensions(Orientation, Children[0].GetWidget()->GetDesiredSize());
-			DimensionsSoFar.ScrollAxis = -FMath::FloorToInt(FirstLineScrollOffset * FirstChildDimensions.ScrollAxis) - OverscrollAmount;
-			
+			float ScrollAxisOffset = 0.0f;
+			const int32 NumWholeWidgetsOffset = FMath::Min(FMath::Floor(FirstLineScrollOffset), Children.Num());
+			for (int32 ItemIndex = 0; ItemIndex < NumWholeWidgetsOffset; ++ItemIndex)
+			{
+				const FTableViewDimensions CurrentChildDimensions(Orientation, Children[ItemIndex].GetWidget()->GetDesiredSize());
+				ScrollAxisOffset += CurrentChildDimensions.ScrollAxis;
+			}
+
+			const int32 FractionalWidgetIndex = NumWholeWidgetsOffset;
+			if (FractionalWidgetIndex < Children.Num())
+			{
+				const FTableViewDimensions OffsetFractionChildDimensions(Orientation, Children[FractionalWidgetIndex].GetWidget()->GetDesiredSize());
+				ScrollAxisOffset += FMath::Frac(FirstLineScrollOffset) * OffsetFractionChildDimensions.ScrollAxis;
+			}
+
+			DimensionsSoFar.ScrollAxis = -FMath::FloorToInt(ScrollAxisOffset) - OverscrollAmount;
+
 			for (int32 ItemIndex = 0; ItemIndex < Children.Num(); ++ItemIndex)
 			{
 				const FTableViewDimensions WidgetDesiredDimensions(Orientation, Children[ItemIndex].GetWidget()->GetDesiredSize());
@@ -224,7 +238,8 @@ float SListPanel::GetItemPadding(const FGeometry& AllottedGeometry, const EListI
 		// Only add padding between items if we have more total items that we can fit on a single line.  Otherwise,
 		// the padding around items would continue to change proportionately with the (ample) free space along the line axis
 		const int32 NumItemsPerLine = DesiredDimensions.LineAxis > 0.f ? FMath::FloorToInt(AllottedDimensions.LineAxis / DesiredDimensions.LineAxis) : 0;
-		if (NumItemsPerLine > 0 && Children.Num() > NumItemsPerLine)
+		
+		if (NumItemsPerLine > 0 && Children.Num() >= NumItemsPerLine)
 		{
 			return (AllottedDimensions.LineAxis - FloatingPointPrecisionOffset - (NumItemsPerLine * DesiredDimensions.LineAxis)) / NumItemsPerLine;
 		}

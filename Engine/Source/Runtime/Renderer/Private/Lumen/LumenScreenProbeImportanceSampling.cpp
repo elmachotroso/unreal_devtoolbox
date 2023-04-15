@@ -82,6 +82,7 @@ class FScreenProbeComputeBRDFProbabilityDensityFunctionCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<float>, RWBRDFProbabilityDensityFunctionSH)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeParameters, ScreenProbeParameters)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -241,7 +242,8 @@ void GenerateBRDF_PDF(
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef& BRDFProbabilityDensityFunction,
 	FRDGBufferSRVRef& BRDFProbabilityDensityFunctionSH,
-	FScreenProbeParameters& ScreenProbeParameters)
+	FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
@@ -259,6 +261,7 @@ void GenerateBRDF_PDF(
 
 		{
 			FScreenProbeComputeBRDFProbabilityDensityFunctionCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeComputeBRDFProbabilityDensityFunctionCS::FParameters>();
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			PassParameters->RWBRDFProbabilityDensityFunction = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(BRDFProbabilityDensityFunction));
 			PassParameters->RWBRDFProbabilityDensityFunctionSH = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(BRDFProbabilityDensityFunctionSHBuffer, PF_R16F));
 			PassParameters->View = View.ViewUniformBuffer;
@@ -270,6 +273,7 @@ void GenerateBRDF_PDF(
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("ComputeBRDF_PDF"),
+				ComputePassFlags,
 				ComputeShader,
 				PassParameters,
 				ScreenProbeParameters.ProbeIndirectArgs,
@@ -287,7 +291,8 @@ void GenerateImportanceSamplingRays(
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	FRDGTextureRef BRDFProbabilityDensityFunction,
 	FRDGBufferSRVRef BRDFProbabilityDensityFunctionSH,
-	FScreenProbeParameters& ScreenProbeParameters)
+	FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	const uint32 MaxImportanceSamplingOctahedronResolution = ScreenProbeParameters.ScreenProbeTracingOctahedronResolution * (1 << GLumenScreenProbeImportanceSamplingNumLevels);
 	ScreenProbeParameters.ImportanceSampling.MaxImportanceSamplingOctahedronResolution = MaxImportanceSamplingOctahedronResolution;
@@ -327,7 +332,7 @@ void GenerateImportanceSamplingRays(
 				PassParameters->PrevInvPreExposure = 1.0f / View.PrevViewInfo.SceneColorPreExposure;
 				PassParameters->ProbeHistoryScreenPositionScaleBias = ScreenProbeGatherState.ProbeHistoryScreenPositionScaleBias;
 
-				const FIntPoint SceneTexturesExtent = GetSceneTextureExtent();
+				const FIntPoint SceneTexturesExtent = View.GetSceneTexturesConfig().Extent;
 				const FVector2D InvBufferSize(1.0f / SceneTexturesExtent.X, 1.0f / SceneTexturesExtent.Y);
 
 				// Pull in the max UV to exclude the region which will read outside the viewport due to bilinear filtering
@@ -355,6 +360,7 @@ void GenerateImportanceSamplingRays(
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("ComputeLightingPDF"),
+				ComputePassFlags,
 				ComputeShader,
 				PassParameters,
 				ScreenProbeParameters.ProbeIndirectArgs,
@@ -388,6 +394,7 @@ void GenerateImportanceSamplingRays(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("GenerateRays %ux%u", GenerateRaysGroupSize, GenerateRaysGroupSize),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ScreenProbeParameters.ProbeIndirectArgs,

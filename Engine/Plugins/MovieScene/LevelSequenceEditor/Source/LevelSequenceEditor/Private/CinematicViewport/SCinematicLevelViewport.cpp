@@ -11,7 +11,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/NumericTypeInterface.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "LevelSequenceEditorCommands.h"
 #include "SLevelViewport.h"
 #include "LevelViewportLayout.h"
@@ -140,7 +140,7 @@ class SCinematicPreviewViewport : public SLevelViewport
 {
 public:
 	virtual const FSlateBrush* OnGetViewportBorderBrush() const override { return nullptr; }
-	virtual EVisibility GetCurrentLevelTextVisibility() const override { return EVisibility::Collapsed; }
+	virtual bool IsActorEditorContextVisible() const { return false; }
 	virtual EVisibility GetSelectedActorsCurrentLevelTextVisibility() const override { return EVisibility::Collapsed; }
 	virtual EVisibility GetViewportControlsVisibility() const override { return EVisibility::Collapsed; }
 
@@ -217,12 +217,12 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 			SNew(SBorder)
 			.Padding(0)
 			.BorderImage(nullptr)
-			.ForegroundColor(FEditorStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle()))
+			.ForegroundColor(FAppStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle()))
 			[
 				SNew(SNonThrottledSpinBox<double>)
 				.TypeInterface(TypeInterfaceProxy)
-				.Style(FEditorStyle::Get(), "Sequencer.HyperlinkSpinBox")
-				.Font(FEditorStyle::GetFontStyle("Sequencer.FixedFont"))
+				.Style(FAppStyle::Get(), "Sequencer.HyperlinkSpinBox")
+				.Font(FAppStyle::GetFontStyle("Sequencer.FixedFont"))
 				.OnValueCommitted(this, &SCinematicLevelViewport::OnTimeCommitted)
 				.OnValueChanged(this, &SCinematicLevelViewport::SetTime)
 				.MinValue(TOptional<double>())
@@ -253,7 +253,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 		];
 
 	TSharedRef<SWidget> MainViewport = 	SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("BlackBrush"))
+		.BorderImage(FAppStyle::GetBrush("BlackBrush"))
 		.ForegroundColor(Gray)
 		.Padding(0)
 		[
@@ -372,7 +372,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 							.HAlign(HAlign_Right)
 							[
 								SNew(STextBlock)
-								.Font(FEditorStyle::GetFontStyle("Sequencer.FixedFont"))
+								.Font(FAppStyle::GetFontStyle("Sequencer.FixedFont"))
 								.ColorAndOpacity(Gray)
 								.Text_Lambda([=] { return UIData.LocalPlaybackTime; })
 								.ToolTipText(LOCTEXT("LocalPlaybackTime", "The current playback time relative to the currently evaluated sequence."))
@@ -540,7 +540,7 @@ float SCinematicLevelViewport::GetPlayTimeMinDesiredWidth() const
 		FString LowerBoundStr = Sequencer->GetNumericTypeInterface()->ToString(ViewRange.GetLowerBoundValue());
 		FString UpperBoundStr = Sequencer->GetNumericTypeInterface()->ToString(ViewRange.GetUpperBoundValue());
 
-		const FSlateFontInfo PlayTimeFont = FEditorStyle::GetFontStyle("Sequencer.FixedFont");
+		const FSlateFontInfo PlayTimeFont = FAppStyle::GetFontStyle("Sequencer.FixedFont");
 
 		const TSharedRef< FSlateFontMeasure > FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
@@ -630,7 +630,7 @@ void SCinematicLevelViewport::Setup(FLevelSequenceEditorToolkit& NewToolkit)
 
 		if (TimeRangeContainer.IsValid())
 		{
-			const bool bShowWorkingRange = true, bShowViewRange = false, bShowPlaybackRange = true;
+			const bool bShowWorkingRange = false, bShowViewRange = true, bShowPlaybackRange = true;
 			TimeRangeContainer->SetContent(Sequencer->MakeTimeRange(DecoratedTransportControls.ToSharedRef(), bShowWorkingRange, bShowViewRange, bShowPlaybackRange));
 		}
 	}

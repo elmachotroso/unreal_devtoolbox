@@ -12,6 +12,8 @@
 #include "Features/IModularFeatures.h"
 #include "XRMotionControllerBase.h" // for GetHandEnumForSourceName()
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HeadMountedDisplayFunctionLibrary)
+
 DEFINE_LOG_CATEGORY_STATIC(LogUHeadMountedDisplay, Log, All);
 
 /* UHeadMountedDisplayFunctionLibrary
@@ -218,13 +220,6 @@ void UHeadMountedDisplayFunctionLibrary::SetClippingPlanes(float Near, float Far
 	{
 		HMD->SetClippingPlanes(Near, Far);
 	}
-}
-
-/** DEPRECATED - Use GetPixelDensity */
-float UHeadMountedDisplayFunctionLibrary::GetScreenPercentage()
-{
-	static const auto ScreenPercentageTCVar = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.ScreenPercentage"));
-	return ScreenPercentageTCVar->GetValueOnGameThread();
 }
 
 float UHeadMountedDisplayFunctionLibrary::GetPixelDensity()
@@ -494,6 +489,16 @@ bool UHeadMountedDisplayFunctionLibrary::ConfigureGestures(const FXRGestureConfi
 	return false;
 }
 
+bool UHeadMountedDisplayFunctionLibrary::GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile)
+{
+	IXRTrackingSystem* TrackingSys = GEngine->XRSystem.Get();
+	if (TrackingSys)
+	{
+		return TrackingSys->GetCurrentInteractionProfile(Hand, InteractionProfile);
+	}
+
+	return false;
+}
 
 /** Connect to a remote device for Remote Debugging */
 EXRDeviceConnectionResult::Type UHeadMountedDisplayFunctionLibrary::ConnectRemoteXRDevice(const FString& IpAddress, const int32 BitRate)
@@ -592,6 +597,25 @@ FVector2D UHeadMountedDisplayFunctionLibrary::GetPlayAreaBounds(TEnumAsByte<EHMD
 	return FVector2D::ZeroVector;
 }
 
+bool UHeadMountedDisplayFunctionLibrary::GetTrackingOriginTransform(TEnumAsByte<EHMDTrackingOrigin::Type> Origin, FTransform& OutTransform)
+{
+	if (GEngine->XRSystem.IsValid())
+	{
+		return GEngine->XRSystem->GetTrackingOriginTransform(Origin, OutTransform);
+	}
+	return false;
+}
+
+bool UHeadMountedDisplayFunctionLibrary::GetPlayAreaRect(FTransform& OutTransform, FVector2D& OutRect)
+{
+	if (GEngine->XRSystem.IsValid())
+	{
+		return GEngine->XRSystem->GetPlayAreaRect(OutTransform, OutRect);
+	}
+	return false;
+}
+
+
 void UHeadMountedDisplayFunctionLibrary::BreakKey(FKey InKey, FString& InteractionProfile, EControllerHand& Hand, FName& MotionSource, FString& Indentifier, FString& Component)
 {
 	TArray<FString> Tokens;
@@ -612,3 +636,4 @@ void UHeadMountedDisplayFunctionLibrary::BreakKey(FKey InKey, FString& Interacti
 		Component.Reset();
 	}
 }
+

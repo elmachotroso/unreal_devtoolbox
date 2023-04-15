@@ -16,9 +16,9 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SSearchBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Misc/PackageName.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Internationalization/StringTable.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Internationalization/StringTableCore.h"
@@ -156,7 +156,7 @@ void STextPropertyEditableStringTableReference::Construct(const FArguments& InAr
 					.OnClicked(this, &STextPropertyEditableStringTableReference::OnUnlinkClicked)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.Delete"))
+						.Image(FAppStyle::GetBrush("Icons.Delete"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
@@ -192,38 +192,43 @@ TSharedRef<SWidget> STextPropertyEditableStringTableReference::OnGetStringTableC
 		.BorderImage(&ComboButtonStyle.MenuBorderBrush)
 		.Padding(ComboButtonStyle.MenuBorderPadding)
 		[
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SAssignNew(OptionsSearchBox, SSearchBox)
+				.OnTextChanged(this, &STextPropertyEditableStringTableReference::OnOptionsFilterTextChanged)
+			]
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
 			SNew(SWidgetSwitcher)
 			.WidgetIndex_Lambda([this]() { return StringTableComboOptions.IsEmpty() ? 0 : 1; })
 
-			+ SWidgetSwitcher::Slot() // Appears when there are no string tables with keys
-			.Padding(12)
-			[
-				SNew(STextBlock).Text(LOCTEXT("EmptyStringTableList", "No string tables available"))
-			]
-
-			+ SWidgetSwitcher::Slot() // Appears when there's a string table with at least a key
-			[
-				SNew(SBox)
-				.Padding(4)
-				.WidthOverride(280)
-				.MaxDesiredHeight(600)
+				+SWidgetSwitcher::Slot() // Appears when there are no string tables with keys
+				.Padding(12)
 				[
-					SNew(SVerticalBox)
-					+SVerticalBox::Slot()
-					.AutoHeight()
+					SNew(STextBlock).Text(LOCTEXT("EmptyStringTableList", "No string tables available"))
+				]
+
+				+SWidgetSwitcher::Slot() // Appears when there's a string table with at least a key
+				[
+					SNew(SBox)
+					.Padding(4)
+					.WidthOverride(280)
+					.MaxDesiredHeight(600)
 					[
-						SAssignNew(OptionsSearchBox, SSearchBox)
-						.OnTextChanged(this, &STextPropertyEditableStringTableReference::OnOptionsFilterTextChanged)
-					]
-					+SVerticalBox::Slot()
-					.FillHeight(1.f)
-					.Padding(0, 5, 0, 0)
-					[
-						SAssignNew(StringTableOptionsList, SListView<TSharedPtr<FAvailableStringTable>>)
-						.ListItemsSource(&StringTableComboOptions)
-						.SelectionMode(ESelectionMode::Single)
-						.OnGenerateRow(this, &STextPropertyEditableStringTableReference::OnGenerateStringTableComboOption)
-						.OnSelectionChanged(this, &STextPropertyEditableStringTableReference::OnStringTableComboChanged)
+						SNew(SVerticalBox)
+						+SVerticalBox::Slot()
+						.FillHeight(1.f)
+						.Padding(0, 5, 0, 0)
+						[
+							SAssignNew(StringTableOptionsList, SListView<TSharedPtr<FAvailableStringTable>>)
+							.ListItemsSource(&StringTableComboOptions)
+							.SelectionMode(ESelectionMode::Single)
+							.OnGenerateRow(this, &STextPropertyEditableStringTableReference::OnGenerateStringTableComboOption)
+							.OnSelectionChanged(this, &STextPropertyEditableStringTableReference::OnStringTableComboChanged)
+						]
 					]
 				]
 			]
@@ -370,13 +375,14 @@ void STextPropertyEditableStringTableReference::UpdateStringTableComboOptions()
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName);
 
 		TArray<FAssetData> StringTableAssets;
-		AssetRegistryModule.Get().GetAssetsByClass(UStringTable::StaticClass()->GetFName(), StringTableAssets);
+		AssetRegistryModule.Get().GetAssetsByClass(UStringTable::StaticClass()->GetClassPathName(), StringTableAssets);
 
 		for (const FAssetData& StringTableAsset : StringTableAssets)
 		{
+			FName StringTableId = *StringTableAsset.GetObjectPathString();
 			// Only allow string tables assets that have entries to be visible otherwise unexpected behavior happens for the user
 			bool HasEntries = false;
-			FStringTableConstPtr StringTable = FStringTableRegistry::Get().FindStringTable(StringTableAsset.ObjectPath);
+			FStringTableConstPtr StringTable = FStringTableRegistry::Get().FindStringTable(StringTableId);
 			if (StringTable.IsValid())
 			{
 				StringTable->EnumerateSourceStrings([&](const FString& InKey, const FString& InSourceString) -> bool
@@ -397,9 +403,9 @@ void STextPropertyEditableStringTableReference::UpdateStringTableComboOptions()
 			}
 
 			TSharedRef<FAvailableStringTable> AvailableStringTableEntry = MakeShared<FAvailableStringTable>();
-			AvailableStringTableEntry->TableId = StringTableAsset.ObjectPath;
+			AvailableStringTableEntry->TableId = StringTableId;
 			AvailableStringTableEntry->DisplayName = FText::FromName(StringTableAsset.AssetName);
-			if (StringTableAsset.ObjectPath == CurrentTableId)
+			if (StringTableId == CurrentTableId)
 			{
 				SelectedStringTableComboEntry = AvailableStringTableEntry;
 			}
@@ -945,16 +951,6 @@ FReply STextPropertyEditableTextBox::OnFocusReceived(const FGeometry& MyGeometry
 {
 	// Forward keyboard focus to our editable text widget
 	return FReply::Handled().SetUserFocus(PrimaryWidget.ToSharedRef(), InFocusEvent.GetCause());
-}
-
-void STextPropertyEditableTextBox::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-{
-	const float CurrentHeight = AllottedGeometry.GetLocalSize().Y;
-	if (bIsMultiLine && PreviousHeight.IsSet() && PreviousHeight.GetValue() != CurrentHeight)
-	{
-		EditableTextProperty->RequestRefresh();
-	}
-	PreviousHeight = CurrentHeight;
 }
 
 bool STextPropertyEditableTextBox::CanEdit() const

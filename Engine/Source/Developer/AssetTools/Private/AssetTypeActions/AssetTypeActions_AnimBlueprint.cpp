@@ -5,7 +5,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Animation/AnimInstance.h"
 #include "Factories/AnimBlueprintFactory.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
@@ -30,14 +30,18 @@
 
 void FAssetTypeActions_AnimBlueprint::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
-	FAssetTypeActions_Blueprint::GetActions(InObjects, Section);
-
 	TArray<TWeakObjectPtr<UAnimBlueprint>> AnimBlueprints = GetTypedWeakObjectPtrs<UAnimBlueprint>(InObjects);
 
 	if (AnimBlueprints.Num() == 1 && CanCreateNewDerivedBlueprint())
 	{
 		UAnimBlueprint* AnimBlueprint = AnimBlueprints[0].Get();
 
+		if(AnimBlueprint && AnimBlueprint->BlueprintType != BPTYPE_Interface)
+		{
+			// Call base class for the regular 'create child blueprint' option
+			FAssetTypeActions_Blueprint::GetActions(InObjects, Section);
+		}
+		
 		// Accept (non-interface) template anim BPs or anim BPs with compatible skeletons
 		if(AnimBlueprint && AnimBlueprint->BlueprintType != BPTYPE_Interface && ((AnimBlueprint->TargetSkeleton == nullptr && AnimBlueprint->bIsTemplate) || (AnimBlueprint->TargetSkeleton != nullptr && AnimBlueprint->TargetSkeleton->GetCompatibleSkeletons().Num() > 0)))
 		{
@@ -89,7 +93,7 @@ void FAssetTypeActions_AnimBlueprint::GetActions(const TArray<UObject*>& InObjec
 					AssetPickerConfig.bAllowNullSelection = false;
 					AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 					AssetPickerConfig.Filter.bRecursiveClasses = false;
-					AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+					AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 					AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([WeakAnimBlueprint](const FAssetData& AssetData)
 					{
 						if(UAnimBlueprint* LocalAnimBlueprint = WeakAnimBlueprint.Get())
@@ -129,7 +133,7 @@ void FAssetTypeActions_AnimBlueprint::GetActions(const TArray<UObject*>& InObjec
 		}
 	}
 
-	if(AreAnyNonTemplateAnimBlueprintsSelected(AnimBlueprints))
+	if(AreOnlyNonTemplateAnimBlueprintsSelected(AnimBlueprints) && AreOnlyNonInterfaceAnimBlueprintsSelected(AnimBlueprints))
 	{
 		Section.AddMenuEntry(
 			"AnimBlueprint_FindSkeleton",
@@ -141,6 +145,18 @@ void FAssetTypeActions_AnimBlueprint::GetActions(const TArray<UObject*>& InObjec
 				FCanExecuteAction()
 				)
 			);
+
+		Section.AddMenuEntry(
+			"AnimBlueprint_AssignSkeleton",
+			LOCTEXT("AnimBlueprint_AssignSkeleton", "Assign Skeleton"),
+			LOCTEXT("AnimBlueprint_AssignSkeletonTooltip", "Assigns a skeleton to the selected Animation Blueprint(s)."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.AssignSkeleton"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimBlueprint::ExecuteAssignSkeleton, AnimBlueprints),
+				FCanExecuteAction()
+			)
+		);
+
 	}
 }
 
@@ -246,17 +262,30 @@ void FAssetTypeActions_AnimBlueprint::PerformAssetDiff(UObject* Asset1, UObject*
 	SBlueprintDiff::CreateDiffWindow(WindowTitle, OldBlueprint, NewBlueprint, OldRevision, NewRevision);
 }
 
-bool FAssetTypeActions_AnimBlueprint::AreAnyNonTemplateAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const
+bool FAssetTypeActions_AnimBlueprint::AreOnlyNonTemplateAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const
 {
 	for(TWeakObjectPtr<UAnimBlueprint> WeakAnimBlueprint : Objects)
 	{
-		if(!WeakAnimBlueprint->bIsTemplate)
+		if(WeakAnimBlueprint->bIsTemplate)
 		{
-			return true; 
+			return false; 
 		}
 	}
 
-	return false;
+	return true;
+}
+
+bool FAssetTypeActions_AnimBlueprint::AreOnlyNonInterfaceAnimBlueprintsSelected(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects) const
+{
+	for(TWeakObjectPtr<UAnimBlueprint> WeakAnimBlueprint : Objects)
+	{
+		if(WeakAnimBlueprint->BlueprintType == BPTYPE_Interface)
+		{
+			return false; 
+		}
+	}
+
+	return true;
 }
 
 void FAssetTypeActions_AnimBlueprint::ExecuteFindSkeleton(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects)
@@ -286,6 +315,40 @@ void FAssetTypeActions_AnimBlueprint::ExecuteFindSkeleton(TArray<TWeakObjectPtr<
 	}
 }
 
+void FAssetTypeActions_AnimBlueprint::ExecuteAssignSkeleton(TArray<TWeakObjectPtr<UAnimBlueprint>> Objects)
+{
+	if (Objects.Num() > 0)
+	{
+		TSharedRef<SWindow> WidgetWindow = SNew(SWindow)
+			.Title(LOCTEXT("ChooseSkeletonWindowTitle", "Choose Skeleton"))
+			.ClientSize(FVector2D(400, 600));
+
+		TSharedPtr<SSkeletonSelectorWindow> SkeletonSelectorWindow;
+		WidgetWindow->SetContent
+		(
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			[
+				SAssignNew(SkeletonSelectorWindow, SSkeletonSelectorWindow)
+				.Object(Objects[0].Get())
+			.WidgetWindow(WidgetWindow)
+			]
+		);
+
+		GEditor->EditorAddModalWindow(WidgetWindow);
+		USkeleton* SelectedSkeleton = SkeletonSelectorWindow->GetSelectedSkeleton();
+
+		// only do this if not same
+		if (SelectedSkeleton)
+		{
+			for (TWeakObjectPtr<UAnimBlueprint>& AnimBP : Objects)
+			{
+				AnimBP->TargetSkeleton = SelectedSkeleton;
+			}
+		}
+	}
+}
+
 bool FAssetTypeActions_AnimBlueprint::ReplaceMissingSkeleton(TArray<UObject*> InAnimBlueprints) const
 {
 	// record anim assets that need skeleton replaced
@@ -301,7 +364,7 @@ TSharedPtr<SWidget> FAssetTypeActions_AnimBlueprint::GetThumbnailOverlay(const F
 	const FSlateBrush* Icon = FSlateIconFinder::FindIconBrushForClass(UAnimBlueprint::StaticClass());
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetNoBrush())
+		.BorderImage(FAppStyle::GetNoBrush())
 		.Visibility(EVisibility::HitTestInvisible)
 		.Padding(FMargin(0.0f, 0.0f, 0.0f, 3.0f))
 		.HAlign(HAlign_Right)
@@ -310,6 +373,22 @@ TSharedPtr<SWidget> FAssetTypeActions_AnimBlueprint::GetThumbnailOverlay(const F
 			SNew(SImage)
 			.Image(Icon)
 		];
+}
+
+FText FAssetTypeActions_AnimBlueprint::GetDisplayNameFromAssetData(const FAssetData& AssetData) const
+{
+	FString BlueprintTypeValue;
+	AssetData.GetTagValue("BlueprintType", BlueprintTypeValue);
+	if(BlueprintTypeValue.Equals(TEXT("BPTYPE_Normal")))
+	{
+		return LOCTEXT("AssetTypeActions_AnimBlueprint", "Animation Blueprint");
+	}
+	else if(BlueprintTypeValue.Equals(TEXT("BPTYPE_Interface")))
+	{
+		return LOCTEXT("AssetTypeActions_AnimLayerInterface", "Animation Layer Interface");
+	}
+
+	return GetName();
 }
 
 #undef LOCTEXT_NAMESPACE

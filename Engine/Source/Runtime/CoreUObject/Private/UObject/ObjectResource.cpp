@@ -45,12 +45,9 @@ FObjectExport::FObjectExport()
 , bNotForServer(false)
 , bNotAlwaysLoadedForEditorGame(true)
 , bIsAsset(false)
+, bIsInheritedInstance(false)
 , bGeneratePublicHash(false)
 , bExportLoadFailed(false)
-// @todo: BP2CPP_remove
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-, DynamicType(EDynamicType::NotDynamicExport)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 , bWasFiltered(false)
 , PackageFlags(0)
 , FirstExportDependency(-1)
@@ -75,12 +72,9 @@ FObjectExport::FObjectExport( UObject* InObject, bool bInNotAlwaysLoadedForEdito
 , bNotForServer(false)
 , bNotAlwaysLoadedForEditorGame(bInNotAlwaysLoadedForEditorGame)
 , bIsAsset(false)
+, bIsInheritedInstance(false)
 , bGeneratePublicHash(false)
 , bExportLoadFailed(false)
-// @todo: BP2CPP_remove
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-, DynamicType(EDynamicType::NotDynamicExport)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 , bWasFiltered(false)
 , PackageFlags(0)
 , FirstExportDependency(-1)
@@ -94,6 +88,20 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		bNotForClient = !Object->NeedsLoadForClient();
 		bNotForServer = !Object->NeedsLoadForServer();
 		bIsAsset = Object->IsAsset();
+
+		// Flag this export as an inherited instance if the object's archetype exists within the set
+		// of default subobjects owned by the object owner's archetype. This is used by the linker to
+		// determine whether or not the subobject should be instanced as an export on load. Note that
+		// if the archetype is owned by a different object, we treat it as a non-default subobject and
+		// thus exclude it from consideration. This is because an instanced subobject with a non-
+		// standard archetype won't find a matching instance in its owner's archetype subobject set,
+		// and thus wouldn't pass the instancing check on load. One example of a non-default instanced
+		// subobject is a Blueprint-added component, whose archetype is owned by the class object.
+		const UObject* Archetype = Object->GetArchetype();
+		if (Archetype->IsDefaultSubobject() && (Archetype->GetOuter() == Object->GetOuter()->GetArchetype()))
+		{
+			bIsInheritedInstance = true;
+		}
 	}
 }
 
@@ -150,28 +158,42 @@ void operator<<(FStructuredArchive::FSlot Slot, FObjectExport& E)
 		Record << SA_VALUE(TEXT("SerialOffset"), E.SerialOffset);
 	}
 
-	Record << SA_VALUE(TEXT("bForcedExport"), E.bForcedExport);
-	Record << SA_VALUE(TEXT("bNotForClient"), E.bNotForClient);
-	Record << SA_VALUE(TEXT("bNotForServer"), E.bNotForServer);
+	#define SERIALIZE_BIT_TO_RECORD(bValue) { \
+		bool b = E.bValue; \
+		Record << SA_VALUE(TEXT(#bValue), b); \
+		E.bValue = b; \
+	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	Record << SA_VALUE(TEXT("PackageGuid"), E.PackageGuid);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	SERIALIZE_BIT_TO_RECORD(bForcedExport);
+	SERIALIZE_BIT_TO_RECORD(bNotForClient);
+	SERIALIZE_BIT_TO_RECORD(bNotForServer);
+
+	if (BaseArchive.UEVer() < EUnrealEngineObjectUE5Version::REMOVE_OBJECT_EXPORT_PACKAGE_GUID)
+	{
+		FGuid DummyPackageGuid;
+		Record << SA_VALUE(TEXT("PackageGuid"), DummyPackageGuid);
+	}
+
+	if (BaseArchive.UEVer() >= EUnrealEngineObjectUE5Version::TRACK_OBJECT_EXPORT_IS_INHERITED)
+	{
+		SERIALIZE_BIT_TO_RECORD(bIsInheritedInstance);
+	}
+
 	Record << SA_VALUE(TEXT("PackageFlags"), E.PackageFlags);
 
 	if (BaseArchive.UEVer() >= VER_UE4_LOAD_FOR_EDITOR_GAME)
 	{
-		Record << SA_VALUE(TEXT("bNotAlwaysLoadedForEditorGame"), E.bNotAlwaysLoadedForEditorGame);
+		SERIALIZE_BIT_TO_RECORD(bNotAlwaysLoadedForEditorGame);
 	}
 
 	if (BaseArchive.UEVer() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
 	{
-		Record << SA_VALUE(TEXT("bIsAsset"), E.bIsAsset);
+		SERIALIZE_BIT_TO_RECORD(bIsAsset);
 	}
 
 	if (BaseArchive.UEVer() >= EUnrealEngineObjectUE5Version::OPTIONAL_RESOURCES)
 	{
-		Record << SA_VALUE(TEXT("bGeneratePublicHash"), E.bGeneratePublicHash);
+		SERIALIZE_BIT_TO_RECORD(bGeneratePublicHash);
 	}
 
 	if (BaseArchive.UEVer() >= VER_UE4_PRELOAD_DEPENDENCIES_IN_COOKED_EXPORTS)
@@ -182,6 +204,8 @@ void operator<<(FStructuredArchive::FSlot Slot, FObjectExport& E)
 		Record << SA_VALUE(TEXT("SerializationBeforeCreateDependencies"), E.SerializationBeforeCreateDependencies);
 		Record << SA_VALUE(TEXT("CreateBeforeCreateDependencies"), E.CreateBeforeCreateDependencies);
 	}	
+
+	#undef SERIALIZE_BIT_TO_RECORD
 }
 
 /*-----------------------------------------------------------------------------
@@ -236,17 +260,28 @@ void operator<<(FStructuredArchive::FSlot Slot, FObjectTextExport& E)
 		E.Export.ObjectFlags = EObjectFlags(Save & RF_Load);
 	}
 
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("bForcedExport"), E.Export.bForcedExport, false);
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("bNotForClient"), E.Export.bNotForClient, false);
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("bNotForServer"), E.Export.bNotForServer, false);
+	#define SERIALIZE_BIT_TO_SLOT(bValue) { \
+		bool b = E.Export.bValue; \
+		Slot << SA_OPTIONAL_ATTRIBUTE(TEXT(#bValue), b, false); \
+		E.Export.bValue = b; \
+	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("PackageGuid"), E.Export.PackageGuid, FGuid());
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	SERIALIZE_BIT_TO_SLOT(bForcedExport);
+	SERIALIZE_BIT_TO_SLOT(bNotForClient);
+	SERIALIZE_BIT_TO_SLOT(bNotForServer);
+
+	if (BaseArchive.UEVer() < EUnrealEngineObjectUE5Version::REMOVE_OBJECT_EXPORT_PACKAGE_GUID)
+	{
+		FGuid DummyPackageGuid;
+		Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("PackageGuid"), DummyPackageGuid, FGuid());
+	}
+
 	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("PackageFlags"), E.Export.PackageFlags, 0);
 
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("bNotAlwaysLoadedForEditorGame"), E.Export.bNotAlwaysLoadedForEditorGame, false);
-	Slot << SA_OPTIONAL_ATTRIBUTE(TEXT("bIsAsset"), E.Export.bIsAsset, false);
+	SERIALIZE_BIT_TO_SLOT(bNotAlwaysLoadedForEditorGame);
+	SERIALIZE_BIT_TO_SLOT(bIsAsset);
+
+	#undef SERIALIZE_BIT_TO_SLOT
 }
 
 /*-----------------------------------------------------------------------------

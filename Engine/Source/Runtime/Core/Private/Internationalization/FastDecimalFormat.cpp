@@ -1,9 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/FastDecimalFormat.h"
+
+#include "Containers/StringFwd.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/UnrealMemory.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/StringBuilder.h"
-#include "HAL/IConsoleManager.h"
+#include "Templates/UnrealTemplate.h"
 
 namespace FastDecimalFormat
 {
@@ -433,7 +439,7 @@ FString CultureInvariantDecimalToString(const double InVal, const TCHAR*& InBuff
 
 	// Scrape negative, apply at end
 	bool bIsNegative = false;
-	static const TCHAR EuropeanNegativePrefix = '-';
+	static const TCHAR EuropeanNegativePrefix = TEXT('-');
 	if (*InBuffer == EuropeanNegativePrefix)
 	{
 		bIsNegative = true;
@@ -445,7 +451,7 @@ FString CultureInvariantDecimalToString(const double InVal, const TCHAR*& InBuff
 	uint8 FractionalDigitsPrinted = 0;
 	while (InBuffer < InBufferEnd)
 	{
-		static const TCHAR EuropeanDecimal = '.';
+		static const TCHAR EuropeanDecimal = TEXT('.');
 		if (*InBuffer == EuropeanDecimal && InFormattingOptions.MaximumFractionalDigits > 0)
 		{
 			bParsedFractional = true;
@@ -514,7 +520,7 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 		return;
 	}
 
-	const bool bIsNegative = FMath::IsNegativeDouble(InVal);
+	const bool bIsNegative = FMath::IsNegativeOrNegativeZero(InVal);
 
 	double IntegralPart = 0.0;
 	double FractionalPart = 0.0;
@@ -529,7 +535,7 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 	// Check for float-> int overflow, fallback on regular lex if occurs
 	// if fractional part overflows then we are losing precession but the number is still valid
 	uint64 IntIntegralPart = static_cast<uint64>(IntegralPart);
-	if (IntegralPart - static_cast<double>(IntIntegralPart) > SMALL_NUMBER && bFastDecimalFormatLargeFloatSupport)
+	if (IntegralPart - static_cast<double>(IntIntegralPart) > UE_SMALL_NUMBER && bFastDecimalFormatLargeFloatSupport)
 	{
 		OutString = LexToSanitizedString(InVal);
 
@@ -551,7 +557,7 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 	int32 FractionalPartLen = 0;
 	if (FractionalPart != 0.0)
 	{
-		FractionalPartLen = IntegralToString_UInt64ToString(static_cast<uint64>(FractionalPart), false, 0, 0, ' ', InFormattingRules.DigitCharacters, 0, InFormattingOptions.MaximumFractionalDigits, FractionalPartBuffer, UE_ARRAY_COUNT(FractionalPartBuffer));
+		FractionalPartLen = IntegralToString_UInt64ToString(static_cast<uint64>(FractionalPart), false, 0, 0, TEXT(' '), InFormattingRules.DigitCharacters, 0, InFormattingOptions.MaximumFractionalDigits, FractionalPartBuffer, UE_ARRAY_COUNT(FractionalPartBuffer));
 	
 		{
 			// Pad the fractional part with any leading zeros that may have been lost when the number was split
@@ -575,7 +581,7 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 			--FractionalPartLen;
 		}
 	}
-	FractionalPartBuffer[FractionalPartLen] = 0;
+	FractionalPartBuffer[FractionalPartLen] = TCHAR('\0');
 
 	// Pad the fractional part with any zeros that may have been missed so far
 	{
@@ -584,7 +590,7 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 		{
 			FractionalPartBuffer[FractionalPartLen++] = InFormattingRules.DigitCharacters[0];
 		}
-		FractionalPartBuffer[FractionalPartLen] = 0;
+		FractionalPartBuffer[FractionalPartLen] = TCHAR('\0');
 	}
 
 	BuildFinalString(bIsNegative, InFormattingOptions.AlwaysSign, InFormattingRules, IntegralPartBuffer, IntegralPartLen, FractionalPartBuffer, FractionalPartLen, OutString);
@@ -677,7 +683,7 @@ bool StringToIntegral_StringToUInt64(const TCHAR*& InBuffer, const TCHAR* InBuff
 	const bool bTestForOverflow = EnumHasAnyFlags(InParseFlags, EDecimalNumberParseFlags::TestLimits | EDecimalNumberParseFlags::ClampValue);
 
 	// Parse the number, stopping once we find the end of the string or a decimal separator
-	static const TCHAR EuropeanNumerals[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+	static const TCHAR EuropeanNumerals[] = { TEXT('0'), TEXT('1'), TEXT('2'), TEXT('3'), TEXT('4'), TEXT('5'), TEXT('6'), TEXT('7'), TEXT('8'), TEXT('9') };
 	bool bFoundUnexpectedNonNumericCharacter = false;
 	while (InBuffer < InBufferEnd && *InBuffer != InFormattingRules.DecimalSeparatorCharacter)
 	{
@@ -846,14 +852,14 @@ bool StringToCultureInvariantDecimal(const TCHAR*& InBuffer, const TCHAR* InBuff
 	bool bIsNegative = false;
 	InSignParser.ParseLeadingSign(InBuffer, bIsNegative);
 
-	static const TCHAR InvariantNegativePrefix = '-';
+	static const TCHAR InvariantNegativePrefix = TEXT('-');
 	if (bIsNegative)
 	{
 		OutInvariantDecimal += InvariantNegativePrefix;
 	}
 
 	// Parse the number, stopping once we find the end of the string or a decimal separator
-	static const TCHAR EuropeanNumerals[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+	static const TCHAR EuropeanNumerals[] = { TEXT('0'), TEXT('1'), TEXT('2'), TEXT('3'), TEXT('4'), TEXT('5'), TEXT('6'), TEXT('7'), TEXT('8'), TEXT('9') };
 	bool bFoundUnexpectedNonNumericCharacter = false;
 	while (InBuffer < InBufferEnd)
 	{
@@ -869,7 +875,7 @@ bool StringToCultureInvariantDecimal(const TCHAR*& InBuffer, const TCHAR* InBuff
 		}
 
 		// Walk over the decimal separator
-		static const TCHAR InvariantDecimal = '.';
+		static const TCHAR InvariantDecimal = TEXT('.');
 		if (*InBuffer == InFormattingRules.DecimalSeparatorCharacter)
 		{
 			if (!EnumHasAnyFlags(InParseFlags, EDecimalNumberParseFlags::AllowDecimalSeparators))
@@ -998,8 +1004,8 @@ const FDecimalNumberFormattingRules& GetCultureAgnosticFormattingRules()
 		AgnosticFormattingRules.NegativePrefixString = TEXT("-");
 		AgnosticFormattingRules.PlusString = TEXT("+");
 		AgnosticFormattingRules.MinusString = TEXT("-");
-		AgnosticFormattingRules.GroupingSeparatorCharacter = ',';
-		AgnosticFormattingRules.DecimalSeparatorCharacter = '.';
+		AgnosticFormattingRules.GroupingSeparatorCharacter = TEXT(',');
+		AgnosticFormattingRules.DecimalSeparatorCharacter = TEXT('.');
 		AgnosticFormattingRules.PrimaryGroupingSize = 3;
 		AgnosticFormattingRules.SecondaryGroupingSize = 3;
 		return AgnosticFormattingRules;

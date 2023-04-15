@@ -43,7 +43,7 @@
 #include "WorldPartition/WorldPartitionEditorHash.h"
 #include "WorldPartition/WorldPartitionRuntimeHash.h"
 #include "WorldPartition/IWorldPartitionEditorModule.h"
-#include "Editor/WorldBrowser/Public/WorldBrowserModule.h"
+#include "WorldBrowserModule.h"
 
 #include "Elements/Framework/TypedElementSelectionSet.h"
 #include "Elements/Interfaces/TypedElementObjectInterface.h"
@@ -61,9 +61,9 @@
 #include "ContentBrowserModule.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "DlgDeltaTransform.h"
-#include "Editor/NewLevelDialog/Public/NewLevelDialogModule.h"
+#include "NewLevelDialogModule.h"
 #include "MRUFavoritesList.h"
-#include "Editor/SceneOutliner/Private/SSocketChooser.h"
+#include "SSocketChooser.h"
 #include "SnappingUtils.h"
 #include "LevelEditorViewport.h"
 #include "Layers/LayersSubsystem.h"
@@ -106,6 +106,10 @@
 #include "Misc/ScopeExit.h"
 #include "Dialogs/DlgPickPath.h"
 #include "AssetToolsModule.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
+#include "EditorModeManager.h"
 
 #include "Internationalization/Culture.h"
 
@@ -120,7 +124,7 @@ DEFINE_LOG_CATEGORY_STATIC(LevelEditorActions, Log, All);
 
 const FName HotReloadModule("HotReload");
 
-FSimpleDelegate FLevelEditorActionCallbacks::NewLevelOverride;
+FLevelEditorActionCallbacks::FNewLevelOverride FLevelEditorActionCallbacks::NewLevelOverride;
 
 namespace LevelEditorActionsHelpers
 {
@@ -187,16 +191,23 @@ void FLevelEditorActionCallbacks::BrowseViewportControls()
 	FString URL;
 	if (FUnrealEdMisc::Get().GetURL(TEXT("ViewportControlsURL"), URL))
 	{
-		// documentation URLS are now stored with placeholders for internationalization and version
-		FUnrealEdMisc::Get().ReplaceDocumentationURLWildcards(URL, FInternationalization::Get().GetCurrentCulture());
-		FPlatformProcess::LaunchURL(*URL, NULL, NULL);
+		IDocumentation::Get()->Open(URL, FDocumentationSourceInfo(TEXT("help_menu")));
 	}
 }
 
 void FLevelEditorActionCallbacks::NewLevel()
 {
-	if (NewLevelOverride.ExecuteIfBound())
+	bool bLevelCreated = false;
+	NewLevel(bLevelCreated);
+}
+
+void FLevelEditorActionCallbacks::NewLevel(bool& bOutLevelCreated)
+{
+	bOutLevelCreated = false;
+
+	if (NewLevelOverride.IsBound())
 	{
+		NewLevelOverride.Execute(bOutLevelCreated);
 		return;
 	}
 
@@ -213,45 +224,49 @@ void FLevelEditorActionCallbacks::NewLevel()
 
 	FNewLevelDialogModule& NewLevelDialogModule = FModuleManager::LoadModuleChecked<FNewLevelDialogModule>("NewLevelDialog");
 	
-	if (NewLevelDialogModule.CreateAndShowNewLevelDialog(MainFrameModule.GetParentWindow(), TemplateMapPackageName, bShowPartitionedTemplates, bOutIsPartitionedWorld))
+	if (!NewLevelDialogModule.CreateAndShowNewLevelDialog(MainFrameModule.GetParentWindow(), TemplateMapPackageName, bShowPartitionedTemplates, bOutIsPartitionedWorld))
 	{
-		// The new map screen will return a blank TemplateName if the user has selected to begin a new blank map
-		if (TemplateMapPackageName.IsEmpty())
-		{
-			GEditor->CreateNewMapForEditing(/*bPromptUserToSave=*/true, bOutIsPartitionedWorld);
-		}
-		else
-		{
-			// New map screen returned a non-empty TemplateName, so the user has selected to begin from a template map
-			bool TemplateFound = false;
+		return;
+	}
 
-			// Search all template map folders for a match with TemplateName
-			const bool bIncludeReadOnlyRoots = true;
-			if ( FPackageName::IsValidLongPackageName(TemplateMapPackageName, bIncludeReadOnlyRoots) )
+	// The new map screen will return a blank TemplateName if the user has selected to begin a new blank map
+	if (TemplateMapPackageName.IsEmpty())
+	{
+		GEditor->CreateNewMapForEditing(/*bPromptUserToSave=*/true, bOutIsPartitionedWorld);
+	}
+	else
+	{
+		// New map screen returned a non-empty TemplateName, so the user has selected to begin from a template map
+		bool TemplateFound = false;
+
+		// Search all template map folders for a match with TemplateName
+		const bool bIncludeReadOnlyRoots = true;
+		if ( FPackageName::IsValidLongPackageName(TemplateMapPackageName, bIncludeReadOnlyRoots) )
+		{
+			const FString MapPackageFilename = FPackageName::LongPackageNameToFilename(TemplateMapPackageName, FPackageName::GetMapPackageExtension());
+			if ( FPaths::FileExists(MapPackageFilename) )
 			{
-				const FString MapPackageFilename = FPackageName::LongPackageNameToFilename(TemplateMapPackageName, FPackageName::GetMapPackageExtension());
-				if ( FPaths::FileExists(MapPackageFilename) )
-				{
-					// File found because the size check came back non-zero
-					TemplateFound = true;
+				// File found because the size check came back non-zero
+				TemplateFound = true;
 
-					// If there are any unsaved changes to the current level, see if the user wants to save those first.
-					if ( FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave*/true, /*bSaveMapPackages*/true, /*bSaveContentPackages*/false) )
-					{
-						// Load the template map file - passes LoadAsTemplate==true making the
-						// level load into an untitled package that won't save over the template
-						FEditorFileUtils::LoadMap(*MapPackageFilename, /*bLoadAsTemplate=*/true);
-					}
+				// If there are any unsaved changes to the current level, see if the user wants to save those first.
+				if ( FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave*/true, /*bSaveMapPackages*/true, /*bSaveContentPackages*/false) )
+				{
+					// Load the template map file - passes LoadAsTemplate==true making the
+					// level load into an untitled package that won't save over the template
+					FEditorFileUtils::LoadMap(*MapPackageFilename, /*bLoadAsTemplate=*/true);
 				}
 			}
+		}
 
-			if (!TemplateFound)
-			{
-				UE_LOG( LevelEditorActions, Warning, TEXT("Couldn't find template map package %s"), *TemplateMapPackageName);
-				GEditor->CreateNewMapForEditing();
-			}
+		if (!TemplateFound)
+		{
+			UE_LOG( LevelEditorActions, Warning, TEXT("Couldn't find template map package %s"), *TemplateMapPackageName);
+			GEditor->CreateNewMapForEditing();
 		}
 	}
+
+	bOutLevelCreated = true;
 }
 
 bool FLevelEditorActionCallbacks::NewLevel_CanExecute()
@@ -419,12 +434,21 @@ bool FLevelEditorActionCallbacks::CanSaveUnpartitionedWorld()
 		return false;
 	}
 
-	return GetWorld() && !GetWorld()->HasSubsystem<UWorldPartitionSubsystem>();
+	return !UWorld::IsPartitionedWorld(GetWorld());
 }
 
 void FLevelEditorActionCallbacks::Save()
 {
-	FEditorFileUtils::SaveCurrentLevel();
+	// If the world is a template, go through the save current as path as it handles loading all external actors properly
+	UWorld* World = GetWorld();
+	if (FPackageName::IsTempPackage(World->GetPackage()->GetName()) && CanSaveCurrentAs())
+	{
+		SaveCurrentAs();
+	}
+	else
+	{
+		FEditorFileUtils::SaveCurrentLevel();
+	}
 }
 
 bool FLevelEditorActionCallbacks::CanSaveCurrentAs()
@@ -443,7 +467,7 @@ void FLevelEditorActionCallbacks::SaveCurrentAs()
 	{
 		CurrentStreamingLevelClass = StreamingLevel->GetClass();
 	}
-
+	
 	
 	const bool bSavedPersistentLevelAs = CurrentLevel == World->PersistentLevel;
 	FString SavedFilename;
@@ -796,6 +820,21 @@ void FLevelEditorActionCallbacks::BuildPathsOnly_Execute()
 	FEditorBuildUtils::EditorBuild( GetWorld(), FBuildOptions::BuildAIPaths );
 }
 
+bool FLevelEditorActionCallbacks::IsWorldPartitionEnabled()
+{
+	return UWorld::IsPartitionedWorld(GetWorld());
+}
+
+bool FLevelEditorActionCallbacks::IsWorldPartitionStreamingEnabled()
+{
+	if (!IsWorldPartitionEnabled())
+	{
+		return false;
+	}
+
+	return GetWorld()->GetWorldPartition()->IsStreamingEnabled();
+}
+
 void FLevelEditorActionCallbacks::BuildHLODs_Execute()
 {
 	// Build HLOD
@@ -804,8 +843,14 @@ void FLevelEditorActionCallbacks::BuildHLODs_Execute()
 
 void FLevelEditorActionCallbacks::BuildMinimap_Execute()
 {
-	// Build HLOD
+	// Build Minimap
 	FEditorBuildUtils::EditorBuild(GetWorld(), FBuildOptions::BuildMinimap);
+}
+
+void FLevelEditorActionCallbacks::BuildLandscapeSplineMeshes_Execute()
+{
+	// Build Landscape Spline Meshes
+	FEditorBuildUtils::EditorBuild(GetWorld(), FBuildOptions::BuildLandscapeSplineMeshes);
 }
 
 void FLevelEditorActionCallbacks::BuildTextureStreamingOnly_Execute()
@@ -1202,6 +1247,11 @@ bool FLevelEditorActionCallbacks::GoToCodeForActor_CanExecute()
 	return FSourceCodeNavigation::CanNavigateToClass(SelectedActorInfo.SelectionClass);
 }
 
+bool FLevelEditorActionCallbacks::GoToCodeForActor_IsVisible()
+{
+	return ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
+}
+
 void FLevelEditorActionCallbacks::GoToDocsForActor_Clicked()
 {
 	const auto& SelectedActorInfo = AssetSelectionUtils::GetSelectedActorInfo();
@@ -1210,7 +1260,8 @@ void FLevelEditorActionCallbacks::GoToDocsForActor_Clicked()
 		FString DocumentationLink = FEditorClassUtils::GetDocumentationLink(SelectedActorInfo.SelectionClass);
 		if (!DocumentationLink.IsEmpty())
 		{
-			IDocumentation::Get()->Open( DocumentationLink, FDocumentationSourceInfo(TEXT("rightclick_viewdoc")) );
+			FString DocumentationLinkBaseUrl = FEditorClassUtils::GetDocumentationLinkBaseUrl(SelectedActorInfo.SelectionClass);
+			IDocumentation::Get()->Open( DocumentationLink, FDocumentationSourceInfo(TEXT("rightclick_viewdoc")), DocumentationLinkBaseUrl);
 		}
 	}
 }
@@ -1473,12 +1524,13 @@ AActor* FLevelEditorActionCallbacks::AddActorFromClass( UClass* ActorClass )
 	return NewActor;
 }
 
+extern bool GReplaceSelectedActorsWithSelectedClassCopyProperties;
 void FLevelEditorActionCallbacks::ReplaceActors_Clicked( UActorFactory* ActorFactory, FAssetData AssetData )
 {
-	FLevelEditorActionCallbacks::ReplaceActors(ActorFactory, AssetData);
+	FLevelEditorActionCallbacks::ReplaceActors(ActorFactory, AssetData, GReplaceSelectedActorsWithSelectedClassCopyProperties);
 }
 
-AActor* FLevelEditorActionCallbacks::ReplaceActors( UActorFactory* ActorFactory, const FAssetData& AssetData )
+AActor* FLevelEditorActionCallbacks::ReplaceActors( UActorFactory* ActorFactory, const FAssetData& AssetData, bool bCopySourceProperties )
 {
 	AActor* NewActor = NULL;
 
@@ -1487,7 +1539,7 @@ AActor* FLevelEditorActionCallbacks::ReplaceActors( UActorFactory* ActorFactory,
 	if( ActorFactory->CanCreateActorFrom( AssetData, ErrorMessage ) )
 	{
 		// Replace all selected actors with actors created from the specified factory
-		GEditor->ReplaceSelectedActors( ActorFactory, AssetData );
+		GEditor->ReplaceSelectedActors( ActorFactory, AssetData, bCopySourceProperties );
 
 		if ( IPlacementModeModule::IsAvailable() )
 		{
@@ -1497,7 +1549,7 @@ AActor* FLevelEditorActionCallbacks::ReplaceActors( UActorFactory* ActorFactory,
 	else
 	{
 		FNotificationInfo ErrorNotification( ErrorMessage );
-		ErrorNotification.Image = FEditorStyle::GetBrush(TEXT("MessageLog.Error"));
+		ErrorNotification.Image = FAppStyle::GetBrush(TEXT("MessageLog.Error"));
 		ErrorNotification.bFireAndForget = true;
 		ErrorNotification.ExpireDuration = 3.0f; // Need this message to last a little longer than normal since the user may want to "Show Log"
 		ErrorNotification.bUseThrobber = true;
@@ -1537,7 +1589,7 @@ void FLevelEditorActionCallbacks::ReplaceActorsFromClass_Clicked( UClass* ActorC
 			else
 			{
 				FNotificationInfo ErrorNotification( ErrorMessage );
-				ErrorNotification.Image = FEditorStyle::GetBrush(TEXT("MessageLog.Error"));
+				ErrorNotification.Image = FAppStyle::GetBrush(TEXT("MessageLog.Error"));
 				ErrorNotification.bFireAndForget = true;
 				ErrorNotification.ExpireDuration = 3.0f; // Need this message to last a little longer than normal since the user may want to "Show Log"
 				ErrorNotification.bUseThrobber = true;
@@ -1579,7 +1631,7 @@ bool FLevelEditorActionCallbacks::Duplicate_CanExecute()
 
 		if (!bCanDuplicate)
 		{
-			if (TSharedPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditor->GetSceneOutliner())
+			if (TSharedPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditor->GetMostRecentlyUsedSceneOutliner())
 			{
 				bCanDuplicate = SceneOutlinerPtr->Copy_CanExecute(); // If we can copy, we can duplicate
 			}
@@ -1617,7 +1669,7 @@ bool FLevelEditorActionCallbacks::Delete_CanExecute()
 
 		if (!bCanDelete)
 		{
-			if (TSharedPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditor->GetSceneOutliner())
+			if (TSharedPtr<ISceneOutliner> SceneOutlinerPtr = LevelEditor->GetMostRecentlyUsedSceneOutliner())
 			{
 				bCanDelete = SceneOutlinerPtr->Delete_CanExecute();
 			}
@@ -1645,7 +1697,7 @@ void FLevelEditorActionCallbacks::Rename_Execute()
 		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
-			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
+			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				SceneOutlinerPtr->Rename_Execute();
@@ -1675,7 +1727,7 @@ bool FLevelEditorActionCallbacks::Rename_CanExecute()
 		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
-			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
+			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				bCanRename = SceneOutlinerPtr->Rename_CanExecute();
@@ -1725,7 +1777,7 @@ bool FLevelEditorActionCallbacks::Cut_CanExecute()
 		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
-			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
+			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				bCanCut = SceneOutlinerPtr->Cut_CanExecute();
@@ -1773,7 +1825,7 @@ bool FLevelEditorActionCallbacks::Copy_CanExecute()
 		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
-			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
+			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				bCanCopy = SceneOutlinerPtr->Copy_CanExecute();
@@ -1819,7 +1871,7 @@ bool FLevelEditorActionCallbacks::Paste_CanExecute()
 		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
-			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
+			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetMostRecentlyUsedSceneOutliner();
 			if (SceneOutlinerPtr.IsValid())
 			{
 				bCanPaste = SceneOutlinerPtr->Paste_CanExecute();
@@ -2020,7 +2072,7 @@ bool FLevelEditorActionCallbacks::ScaleGridSnap_IsChecked()
 	return GetDefault<ULevelEditorViewportSettings>()->SnapScaleEnabled;
 }
 
-bool FLevelEditorActionCallbacks::SaveAnimationFromSkeletalMeshComponent(AActor * EditorActor, AActor * SimActor, TArray<class USkeletalMeshComponent*> & OutEditorComponents)
+bool FLevelEditorActionCallbacks::SaveAnimationFromSkeletalMeshComponent(AActor * EditorActor, AActor * SimActor, TArray<USkeletalMeshComponent*> & OutEditorComponents)
 {
 	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( TEXT("LevelEditor") );
 
@@ -2031,8 +2083,8 @@ bool FLevelEditorActionCallbacks::SaveAnimationFromSkeletalMeshComponent(AActor 
 	}
 
 	// find all skel components
-	TInlineComponentArray<class USkeletalMeshComponent *> SimSkelComponents;
-	SimActor->GetComponents<USkeletalMeshComponent>(SimSkelComponents);
+	TInlineComponentArray<USkeletalMeshComponent*> SimSkelComponents;
+	SimActor->GetComponents(SimSkelComponents);
 
 	if(SimSkelComponents.Num() > 0)
 	{
@@ -2040,7 +2092,7 @@ bool FLevelEditorActionCallbacks::SaveAnimationFromSkeletalMeshComponent(AActor 
 		bool bSimulating = false;
 		for (auto & Comp : SimSkelComponents)
 		{
-			bSimulating |= (Comp->SkeletalMesh && Comp->SkeletalMesh->GetSkeleton() && Comp->IsSimulatingPhysics());
+			bSimulating |= (Comp->GetSkeletalMeshAsset() && Comp->GetSkeletalMeshAsset()->GetSkeleton() && Comp->IsSimulatingPhysics());
 		}
 
 		// if any of them are legitimately simulating
@@ -2054,7 +2106,7 @@ bool FLevelEditorActionCallbacks::SaveAnimationFromSkeletalMeshComponent(AActor 
 			{
 				for (auto & Comp : SimSkelComponents)
 				{
-					if (Comp->SkeletalMesh && Comp->SkeletalMesh->GetSkeleton() && Comp->IsSimulatingPhysics())
+					if (Comp->GetSkeletalMeshAsset() && Comp->GetSkeletalMeshAsset()->GetSkeleton() && Comp->IsSimulatingPhysics())
 					{
 						// now record to animation
 						class UAnimSequence* Sequence = LevelEditorModule.OnCaptureSingleFrameAnimSequence().IsBound() ? LevelEditorModule.OnCaptureSingleFrameAnimSequence().Execute(Comp) : nullptr;
@@ -2143,7 +2195,7 @@ void FLevelEditorActionCallbacks::OnKeepSimulationChanges()
 				// need to reinitialize animation
 				for (auto MeshComp : ComponentsToReinitialize)
 				{
-					if(MeshComp->SkeletalMesh)
+					if(MeshComp->GetSkeletalMeshAsset())
 					{
 						MeshComp->InitAnim(true);
 					}
@@ -2287,7 +2339,7 @@ void FLevelEditorActionCallbacks::ImportContent()
 void FLevelEditorActionCallbacks::ToggleVR()
 {
 	IVREditorModule& VREditorModule = IVREditorModule::Get();
-	VREditorModule.EnableVREditor( !VREditorModule.IsVREditorEnabled() );
+	VREditorModule.EnableVREditor( VREditorModule.GetVRMode() == nullptr );
 }
 
 
@@ -2711,6 +2763,38 @@ void FLevelEditorActionCallbacks::CopyActorFilePathtoClipboard_Clicked()
 	{
 		FPlatformApplicationMisc::ClipboardCopy(*Result);
 	}
+}
+
+void FLevelEditorActionCallbacks::SaveActor_Clicked()
+{
+	TSet<UPackage*> PackagesToSave;
+	for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
+	{
+		AActor* Actor = Cast<AActor>(*It);
+		if (Actor->IsPackageExternal())
+		{
+			PackagesToSave.Add(Actor->GetPackage());
+		}
+	}
+
+	if (PackagesToSave.Num())
+	{
+		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave.Array(), /*bCheckDirty*/false, /*bPromptToSave*/false);
+	}
+}
+
+bool FLevelEditorActionCallbacks::SaveActor_CanExecute()
+{
+	TSet<UPackage*> PackagesToSave;
+	for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
+	{
+		AActor* Actor = Cast<AActor>(*It);
+		if (Actor->IsPackageExternal())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 static TArray<FString> GetSelectedActorsPackageFullpath()
@@ -3313,7 +3397,7 @@ FLevelEditorCommands::FLevelEditorCommands()
 		"LevelEditor", // Context name for fast lookup
 		NSLOCTEXT("Contexts", "LevelEditor", "Level Editor"), // Localized context name for displaying
 		"LevelViewport", // Parent
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 {
 	AddBundle(OpenRecentFileBundle, NSLOCTEXT("LevelEditorCommands", "OpenRecentFileBundle", "Open Recent File"));
@@ -3364,7 +3448,7 @@ void FLevelEditorCommands::RegisterCommands()
 		OpenFavoriteFileCommands.Add(OpenFavoriteFile);
 	}
 
-	UI_COMMAND( ImportScene, "Import Into Level...", "Imports a scene from a FBX or T3D format into the current level", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND( ImportScene, "Import Into Level...", "Imports a scene from a FBX or OBJ format into the current level", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( ExportAll, "Export All...", "Exports the entire level to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ExportSelected, "Export Selected...", "Exports currently-selected objects to a file on disk (multiple formats are supported.)", EUserInterfaceActionType::Button, FInputChord() );
 
@@ -3379,7 +3463,8 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( BuildGeometryOnly_OnlyCurrentLevel, "Build Geometry (Current Level)", "Builds geometry, only for the current level", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildPathsOnly, "Build Paths", "Only builds paths (all levels.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildHLODs, "Build HLODs", "Builds all HLODs for the current world", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( BuildMinimap, "Build Minimap", "Builds the minimap for the curent world", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( BuildMinimap, "Build Minimap", "Builds the minimap for the current world", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( BuildLandscapeSplineMeshes, "Build Landscape Spline Meshes", "Builds landscape spline meshes for the current world", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( BuildTextureStreamingOnly, "Build Texture Streaming", "Build texture streaming data", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildVirtualTextureOnly, "Build Virtual Textures", "Build runtime virtual texture low mips streaming data", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( BuildAllLandscape, "Build All Landscape", "Build All Landscape Data(Grass, Baked Textures)", EUserInterfaceActionType::Button, FInputChord());
@@ -3415,8 +3500,9 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( SnapCameraToObject, "Snap View to Object", "Snaps the view to the selected object", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( SnapObjectToCamera, "Snap Object to View", "Snaps the selected object to the view", EUserInterfaceActionType::Button, FInputChord() );
 
-	UI_COMMAND(CopyActorFilePathtoClipboard, "Copy Actor File Path", "Copy the file path where this actor is saved", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ShowActorHistory, "Show Actor History", "Shows the history of the file containing the actor.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(CopyActorFilePathtoClipboard, "Copy Selected Actor(s) File Path", "Copy the file path of the selected actors", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(SaveActor, "Save Selected Actor(s)", "Save the selected actors", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ShowActorHistory, "Show Actor History", "Shows the history of the file containing the actor.", EUserInterfaceActionType::Button, FInputChord());	
 
 	UI_COMMAND( GoToCodeForActor, "Go to C++ Code for Actor", "Opens a code editing IDE and navigates to the source file associated with the seleced actor", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( GoToDocsForActor, "Go to Documentation for Actor", "Opens documentation for the Actor in the default web browser", EUserInterfaceActionType::Button, FInputChord() );
@@ -3630,16 +3716,33 @@ void FLevelEditorCommands::RegisterCommands()
 	// Add preview platforms
 	for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
 	{
+		FText FriendlyName;
+		if (!IsRunningCommandlet() && !GUsingNullRHI)
+		{
+			EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(Item.PreviewShaderPlatformName);
+			FriendlyName = FDataDrivenShaderPlatformInfo::GetFriendlyName(ShaderPlatform);
+		}
+
 		PreviewPlatformOverrides.Add(
 			FUICommandInfoDecl(
 				this->AsShared(),
 				FName(*FString::Printf(TEXT("PreviewPlatformOverrides_%s_%s"), *Item.PlatformName.ToString(), *Item.ShaderFormat.ToString())),
-				Item.MenuText,
+				FriendlyName,
 				Item.MenuTooltip)
 			.UserInterfaceType(EUserInterfaceActionType::Check)
 			.DefaultChord(FInputChord())
 		);
 	}
+
+	PreviewPlatformOverrides.Add(
+		FUICommandInfoDecl(
+			this->AsShared(),
+			FName(TEXT("Disable Preview Command")),
+			NSLOCTEXT("PreviewPlatform", "PreviewMenuText_DisablePreview", "Disable Preview"),
+			NSLOCTEXT("PreviewPlatform", "PreviewMenuTooltip_DisablePreview", "Disable the current Preview Shader Platform"))
+		.UserInterfaceType(EUserInterfaceActionType::Check)
+		.DefaultChord(FInputChord())
+	);
 
 	UI_COMMAND(OpenMergeActor, "Merge Actors", "Opens the Merge Actor panel", EUserInterfaceActionType::Button, FInputChord());
 }

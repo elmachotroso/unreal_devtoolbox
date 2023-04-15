@@ -9,6 +9,10 @@
 
 class URigHierarchy;
 
+// Debug define which performs a full check on the cache validity for all elements of the hierarchy.
+// This can be useful for debugging cache validity bugs.
+#define URIGHIERARCHY_ENSURE_CACHE_VALIDITY 0
+
 /* 
  * This is rig element types that we support
  * This can be used as a mask so supported as a bitfield
@@ -26,7 +30,7 @@ enum class ERigElementType : uint8
 	Reference = 0x020,
 	Last = 0x040 UMETA(Hidden),
 	All = Bone | Null | Control | Curve | RigidBody | Reference,
-	ToResetAfterSetupEvent = Bone | Control | Curve UMETA(Hidden),
+	ToResetAfterConstructionEvent = Bone | Control | Curve UMETA(Hidden),
 };
 
 UENUM(BlueprintType)
@@ -34,6 +38,37 @@ enum class ERigBoneType : uint8
 {
 	Imported,
 	User
+};
+
+/* 
+ * The type of meta data stored on an element
+ */
+UENUM(BlueprintType)
+enum class ERigMetadataType : uint8
+{
+	Bool,
+	BoolArray,
+	Float,
+	FloatArray,
+	Int32,
+	Int32Array,
+	Name,
+	NameArray,
+	Vector,
+	VectorArray,
+	Rotator,
+	RotatorArray,
+	Quat,
+	QuatArray,
+	Transform,
+	TransformArray,
+	LinearColor,
+	LinearColorArray,
+	RigElementKey,
+	RigElementKeyArray,
+
+	/** MAX - invalid */
+	Invalid UMETA(Hidden),
 };
 
 UENUM()
@@ -48,8 +83,11 @@ enum class ERigHierarchyNotification : uint8
 	HierarchyReset,
 	ControlSettingChanged,
 	ControlVisibilityChanged,
+	ControlDrivenListChanged,
 	ControlShapeTransformChanged,
 	ParentWeightsChanged,
+	InteractionBracketOpened,
+	InteractionBracketClosed,
 
 	/** MAX - invalid */
 	Max UMETA(Hidden),
@@ -63,6 +101,12 @@ enum class ERigEvent : uint8
 
 	/** Request to Auto-Key the Control in Sequencer */
 	RequestAutoKey,
+
+	/** Request to open an Undo bracket in the client */
+	OpenUndoBracket,
+
+	/** Request to close an Undo bracket in the client */
+	CloseUndoBracket,
 
 	/** MAX - invalid */
 	Max UMETA(Hidden),
@@ -93,12 +137,36 @@ enum class ERigControlType : uint8
 };
 
 UENUM(BlueprintType)
+enum class ERigControlAnimationType : uint8
+{
+	// A visible, animatable control.
+	AnimationControl,
+	// An animation channel without a 3d shape
+	AnimationChannel,
+	// A control to drive other controls,
+	// not animatable in sequencer.
+	ProxyControl,
+	// Visual feedback only - the control is
+	// neither animatable nor selectable.
+	VisualCue
+};
+
+UENUM(BlueprintType)
 enum class ERigControlValueType : uint8
 {
 	Initial,
     Current,
     Minimum,
     Maximum
+};
+
+UENUM(BlueprintType)
+enum class ERigControlVisibility : uint8
+{
+	// Visibility controlled by the graph
+	UserDefined, 
+	// Visibility Controlled by the selection of driven controls
+	BasedOnSelection 
 };
 
 UENUM(BlueprintType)
@@ -391,7 +459,16 @@ public:
 				Get<FVector3f>().X, Get<FVector3f>().Z, Get<FVector3f>().Y); break;
 			case ERigControlType::Scale: ValueStr = FString::Printf(TEXT("unreal.RigHierarchy.make_control_value_from_vector(unreal.Vector(%.6f, %.6f, %.6f))"),
 				Get<FVector3f>().X, Get<FVector3f>().Y, Get<FVector3f>().Z); break;
-			case ERigControlType::Transform:
+			case ERigControlType::Transform: ValueStr = FString::Printf(TEXT("unreal.RigHierarchy.make_control_value_from_euler_transform(unreal.EulerTransform(location=[%.6f,%.6f,%.6f],rotation=[%.6f,%.6f,%.6f],scale=[%.6f,%.6f,%.6f]))"),
+				Get<FTransform_Float>().TranslationX,
+				Get<FTransform_Float>().TranslationY,
+				Get<FTransform_Float>().TranslationZ,
+				Get<FTransform_Float>().GetRotation().Rotator().Pitch,
+				Get<FTransform_Float>().GetRotation().Rotator().Yaw,
+				Get<FTransform_Float>().GetRotation().Rotator().Roll,
+				Get<FTransform_Float>().ScaleX,
+				Get<FTransform_Float>().ScaleY,
+				Get<FTransform_Float>().ScaleZ); break;
 			case ERigControlType::EulerTransform: ValueStr = FString::Printf(TEXT("unreal.RigHierarchy.make_control_value_from_euler_transform(unreal.EulerTransform(location=[%.6f,%.6f,%.6f],rotation=[%.6f,%.6f,%.6f],scale=[%.6f,%.6f,%.6f]))"),
 				Get<FEulerTransform_Float>().TranslationX,
 				Get<FEulerTransform_Float>().TranslationY,
@@ -1310,7 +1387,7 @@ struct CONTROLRIG_API FRigControlModifiedContext
 	uint32 KeyMask;
 	float LocalTime;
 	FName EventName;
-	
+	bool bConstraintUpdate = false;
 };
 
 /*
@@ -1385,6 +1462,11 @@ public:
 	{
 		Type = ERigElementType::Curve;
 		Name = NAME_None;
+	}
+
+	FORCEINLINE bool IsTypeOf(ERigElementType InElementType) const
+	{
+		return ((uint8)InElementType & (uint8)Type) == (uint8)Type;
 	}
 
 	friend FORCEINLINE uint32 GetTypeHash(const FRigElementKey& Key)
@@ -1467,13 +1549,7 @@ public:
 		return FString();
 	}
 
-	FORCEINLINE_DEBUGGABLE FString ToPythonString() const
-	{
-		FString TypeStr = StaticEnum<ERigElementType>()->GetDisplayNameTextByIndex((int32)Type).ToUpper().ToString();
-		return FString::Printf(TEXT("unreal.RigElementKey(type=unreal.RigElementType.%s, name='%s')"),
-			*TypeStr,
-			*Name.ToString());
-	}
+	FString ToPythonString() const;
 };
 
 USTRUCT(BlueprintType)

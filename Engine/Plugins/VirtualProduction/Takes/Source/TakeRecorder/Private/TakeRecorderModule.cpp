@@ -8,6 +8,7 @@
 #include "TakeRecorderCommands.h"
 #include "TakeRecorderStyle.h"
 #include "TakePresetActions.h"
+#include "Recorder/TakeRecorder.h"
 
 #include "WorkspaceMenuStructureModule.h"
 #include "WorkspaceMenuStructure.h"
@@ -153,7 +154,7 @@ namespace
 			.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorCinematicsCategory())
 			.SetDisplayName(ITakeRecorderModule::TakesBrowserTabLabel)
 			.SetTooltipText(LOCTEXT("TakeBrowserTab_Tooltip", "Open the Take Browser UI"))
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.TabIcon"));
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.TabIcon"));
 	}
 	
 	static void ModulesChangedCallback(FName ModuleName, EModuleChangeReason ReasonForChange)
@@ -191,56 +192,58 @@ void FTakeRecorderModule::RegisterMenus()
 			return;
 		}
 
-		ULevelSequence* LevelSequence = Context->SelectedObjects.Num() == 1 ? Cast<ULevelSequence>(Context->SelectedObjects[0]) : nullptr;
-		if (LevelSequence)
+		if (Context->SelectedAssets.Num() == 1 && Context->SelectedAssets[0].IsInstanceOf(ULevelSequence::StaticClass()))
 		{
-			InSection.AddMenuEntry(
-				"OpenInTakeRecorder_Label",
-				LOCTEXT("OpenInTakeRecorder_Label", "Open in Take Recorder"),
-				LOCTEXT("OpenInTakeRecorder_Tooltip", "Opens this level sequence asset in Take Recorder by copying its contents into the pending take"),
-				FSlateIcon(FTakeRecorderStyle::StyleName, "TakeRecorder.TabIcon"),
-				FExecuteAction::CreateLambda(
-					[LevelSequence]
-					{
-						FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-						TSharedPtr<SDockTab> DockTab = LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(ITakeRecorderModule::TakeRecorderTabName);
-						if (DockTab.IsValid())
+			if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(Context->SelectedAssets[0].GetAsset()))
+			{
+				InSection.AddMenuEntry(
+					"OpenInTakeRecorder_Label",
+					LOCTEXT("OpenInTakeRecorder_Label", "Open in Take Recorder"),
+					LOCTEXT("OpenInTakeRecorder_Tooltip", "Opens this level sequence asset in Take Recorder by copying its contents into the pending take"),
+					FSlateIcon(FTakeRecorderStyle::StyleName, "TakeRecorder.TabIcon"),
+					FExecuteAction::CreateLambda(
+						[LevelSequence]
 						{
-							TSharedRef<STakeRecorderTabContent> TabContent = StaticCastSharedRef<STakeRecorderTabContent>(DockTab->GetContent());
+							FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+							TSharedPtr<SDockTab> DockTab = LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(ITakeRecorderModule::TakeRecorderTabName);
+							if (DockTab.IsValid())
+							{
+								TSharedRef<STakeRecorderTabContent> TabContent = StaticCastSharedRef<STakeRecorderTabContent>(DockTab->GetContent());
 
-							// If this sequence has already been recorded, set it up for viewing, otherwise start recording from it.
-							UTakeMetaData* TakeMetaData = LevelSequence->FindMetaData<UTakeMetaData>();
-							if (!TakeMetaData || !TakeMetaData->Recorded())
-							{
-								TabContent->SetupForRecording(LevelSequence);
-							}
-							else
-							{
-								TabContent->SetupForViewing(LevelSequence);
+								// If this sequence has already been recorded, set it up for viewing, otherwise start recording from it.
+								UTakeMetaData* TakeMetaData = LevelSequence->FindMetaData<UTakeMetaData>();
+								if (!TakeMetaData || !TakeMetaData->Recorded())
+								{
+									TabContent->SetupForRecording(LevelSequence);
+								}
+								else
+								{
+									TabContent->SetupForViewing(LevelSequence);
+								}
 							}
 						}
-					}
-				)
-			);
-			InSection.AddMenuEntry(
-				"RecordIntoTakeRecorder_Label",
-				LOCTEXT("RecordWithTakeRecorder_Label", "Record with Take Recorder"),
-				LOCTEXT("RecordWithTakeRecorder_Tooltip", "Opens this level sequence asset for recording into with Take Recorder"),
-				FSlateIcon(FTakeRecorderStyle::StyleName, "TakeRecorder.TabIcon"),
-				FExecuteAction::CreateLambda(
-					[LevelSequence]
-					{
-						FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-						TSharedPtr<SDockTab> DockTab = LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(ITakeRecorderModule::TakeRecorderTabName);
-						if (DockTab.IsValid())
+					)
+				);
+				InSection.AddMenuEntry(
+					"RecordIntoTakeRecorder_Label",
+					LOCTEXT("RecordWithTakeRecorder_Label", "Record with Take Recorder"),
+					LOCTEXT("RecordWithTakeRecorder_Tooltip", "Opens this level sequence asset for recording into with Take Recorder"),
+					FSlateIcon(FTakeRecorderStyle::StyleName, "TakeRecorder.TabIcon"),
+					FExecuteAction::CreateLambda(
+						[LevelSequence]
 						{
-							TSharedRef<STakeRecorderTabContent> TabContent = StaticCastSharedRef<STakeRecorderTabContent>(DockTab->GetContent());
+							FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+							TSharedPtr<SDockTab> DockTab = LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(ITakeRecorderModule::TakeRecorderTabName);
+							if (DockTab.IsValid())
+							{
+								TSharedRef<STakeRecorderTabContent> TabContent = StaticCastSharedRef<STakeRecorderTabContent>(DockTab->GetContent());
 
-							TabContent->SetupForRecordingInto(LevelSequence);
+								TabContent->SetupForRecordingInto(LevelSequence);
+							}
 						}
-					}
-				)
-			);
+					)
+				);
+			}
 		}
 	}));
 #endif // WITH_EDITOR
@@ -279,12 +282,30 @@ void FTakeRecorderModule::StartupModule()
 			FCoreDelegates::OnPostEngineInit.AddRaw(this, &FTakeRecorderModule::RegisterMenus);
 		}
 	}
+
+	if (GEditor)
+	{
+		GEditor->OnEditorClose().AddRaw(this, &FTakeRecorderModule::OnEditorClose);
+	}
 #endif
+}
+
+void FTakeRecorderModule::OnEditorClose()
+{
+	if (UTakeRecorder* ActiveRecorder = UTakeRecorder::GetActiveRecorder())
+	{
+		ActiveRecorder->Stop();
+	}
 }
 
 void FTakeRecorderModule::ShutdownModule()
 {
 #if WITH_EDITOR
+	if (GEditor)
+	{
+		GEditor->OnEditorClose().RemoveAll(this);
+	}
+
 	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 #endif
 

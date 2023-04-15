@@ -14,7 +14,7 @@
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Algo/Sort.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -37,8 +37,10 @@ TSharedRef<ISequencerTrackEditor> FDMXLibraryTrackEditor::CreateTrackEditor(TSha
 	return MakeShared<FDMXLibraryTrackEditor>(OwningSequencer);
 }
 
-TSharedRef<SWidget> CreateAssetPicker(FOnAssetSelected OnAssetSelected, FOnAssetEnterPressed OnAssetEnterPressed)
+TSharedRef<SWidget> CreateAssetPicker(FOnAssetSelected OnAssetSelected, FOnAssetEnterPressed OnAssetEnterPressed, TWeakPtr<ISequencer> InSequencer)
 {
+	UMovieSceneSequence* Sequence = InSequencer.IsValid() ? InSequencer.Pin()->GetFocusedMovieSceneSequence() : nullptr;
+
 	FAssetPickerConfig AssetPickerConfig;
 	{
 		AssetPickerConfig.OnAssetSelected = OnAssetSelected;
@@ -46,8 +48,9 @@ TSharedRef<SWidget> CreateAssetPicker(FOnAssetSelected OnAssetSelected, FOnAsset
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
-		AssetPickerConfig.Filter.ClassNames.Add(UDMXLibrary::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UDMXLibrary::StaticClass()->GetClassPathName());
 		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+		AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -92,7 +95,7 @@ void FDMXLibraryTrackEditor::BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UM
 
 	auto SubMenuCallback = [this, AssignAsset, AssignAssetEnterPressed](FMenuBuilder& SubMenuBuilder)
 	{
-		SubMenuBuilder.AddWidget(CreateAssetPicker(FOnAssetSelected::CreateLambda(AssignAsset), FOnAssetEnterPressed::CreateLambda(AssignAssetEnterPressed)), FText::GetEmpty(), true);
+		SubMenuBuilder.AddWidget(CreateAssetPicker(FOnAssetSelected::CreateLambda(AssignAsset), FOnAssetEnterPressed::CreateLambda(AssignAssetEnterPressed), GetSequencer()), FText::GetEmpty(), true);
 	};
 
 	MenuBuilder.AddSubMenu(
@@ -109,7 +112,8 @@ void FDMXLibraryTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 		SubMenuBuilder.AddWidget(
 			CreateAssetPicker(
 				FOnAssetSelected::CreateRaw(this, &FDMXLibraryTrackEditor::AddDMXLibraryTrackToSequence),
-				FOnAssetEnterPressed::CreateRaw(this, &FDMXLibraryTrackEditor::AddDMXLibraryTrackToSequenceEnterPressed)
+				FOnAssetEnterPressed::CreateRaw(this, &FDMXLibraryTrackEditor::AddDMXLibraryTrackToSequenceEnterPressed),
+				GetSequencer()
 			),
 			FText::GetEmpty(),
 			true);
@@ -119,9 +123,8 @@ void FDMXLibraryTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 		LOCTEXT("AddDMXTrack", "DMX Library Track"),
 		LOCTEXT("AddDMXTrackToolTip", "Adds a new track that controls a DMX Library's Patches functions."),
 		FNewMenuDelegate::CreateLambda(SubMenuCallback),
-		false//,
-		//FSlateIconFinder::FindIconForClass(UDMXLibrary::StaticClass())
-		// TODO Add DMX Library icon
+		false,
+		FSlateIconFinder::FindIconForClass(UDMXLibrary::StaticClass())
 	);
 }
 
@@ -133,8 +136,8 @@ bool FDMXLibraryTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) co
 bool FDMXLibraryTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
 	// DMX Library tracks can be added to level sequences and widget sequences
-	static UClass* LevelSequenceClass = FindObject<UClass>(ANY_PACKAGE, TEXT("LevelSequence"), true);
-	static UClass* WidgetAnimationClass = FindObject<UClass>(ANY_PACKAGE, TEXT("WidgetAnimation"), true);
+	static UClass* LevelSequenceClass = FindObject<UClass>(nullptr, TEXT("/Script/LevelSequence.LevelSequence"), true);
+	static UClass* WidgetAnimationClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetAnimation"), true);
 	return InSequence != nullptr &&
 		((LevelSequenceClass != nullptr && InSequence->GetClass()->IsChildOf(LevelSequenceClass)) ||
 		(WidgetAnimationClass != nullptr && InSequence->GetClass()->IsChildOf(WidgetAnimationClass)));

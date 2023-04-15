@@ -39,7 +39,11 @@ class FScene;
 class FSceneRenderer;
 class FViewInfo;
 class FVirtualShadowMapArrayCacheManager;
-class FVirtualShadowMapCacheEntry;
+class FVirtualShadowMapPerLightCacheEntry;
+class FLightTileIntersectionParameters;
+class FDistanceFieldCulledObjectBufferParameters;
+
+DECLARE_GPU_STAT_NAMED_EXTERN(ShadowDepths, TEXT("Shadow Depths"));
 
 /** Renders a cone with a spherical cap, used for rendering spot lights in deferred passes. */
 extern void DrawStencilingCone(const FMatrix& ConeToWorld, float ConeAngle, float SphereRadius, const FVector& PreViewTranslation);
@@ -57,8 +61,8 @@ void OverrideWithDefaultMaterialForShadowDepth(
 	ERHIFeatureLevel::Type InFeatureLevel
 	);
 
-void InitMobileSDFShadowingOutputs(FRHICommandListImmediate& RHICmdList, const FIntPoint& Extent);
-void ReleaseMobileSDFShadowingOutputs();
+void InitMobileShadowProjectionOutputs(FRHICommandListImmediate& RHICmdList, const FIntPoint& Extent);
+void ReleaseMobileShadowProjectionOutputs();
 
 enum EShadowDepthRenderMode
 {
@@ -114,18 +118,20 @@ enum class EShadowMeshSelection : uint8
 ENUM_CLASS_FLAGS(EShadowMeshSelection)
 
 
-class FShadowDepthPassMeshProcessor : public FMeshPassProcessor
+class FShadowDepthPassMeshProcessor : public FSceneRenderingAllocatorObject<FShadowDepthPassMeshProcessor>, public FMeshPassProcessor
 {
 public:
 
 	FShadowDepthPassMeshProcessor(
 		const FScene* Scene, 
+		const ERHIFeatureLevel::Type InFeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand, 
 		FShadowDepthType InShadowDepthType,
 		FMeshPassDrawListContext* InDrawListContext,
 		EMeshPass::Type InMeshPassTargetType);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
@@ -147,6 +153,31 @@ private:
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
 
+	void CollectPSOInitializersForEachShadowDepthType(
+		const FVertexFactoryType* VertexFactoryType,
+		const FMaterial& RESTRICT MaterialResource,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		bool bCastShadowAsTwoSided,
+		TArray<FPSOPrecacheData>& PSOInitializers);
+
+	void CollectPSOInitializersForEachStreamSetup(
+		const FVertexFactoryType* VertexFactoryType,
+		const FMaterial& RESTRICT MaterialResource,
+		const FShadowDepthType& InShadowDepthType,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		TArray<FPSOPrecacheData>& PSOInitializers);
+
+	void CollectPSOInitializersInternal(
+		const FVertexFactoryType* VertexFactoryType,
+		const FMaterial& RESTRICT MaterialResource,
+		const FShadowDepthType& InShadowDepthType,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		bool bSupportsPositionAndNormalOnlyStream,
+		TArray<FPSOPrecacheData>& PSOInitializers);
+
 	FShadowDepthType ShadowDepthType;
 	EMeshPass::Type MeshPassTargetType = EMeshPass::CSMShadowDepth;
 	EShadowMeshSelection MeshSelectionMask = EShadowMeshSelection::All;
@@ -167,6 +198,13 @@ inline bool IsShadowCacheModeOcclusionQueryable(EShadowDepthCacheMode CacheMode)
 	// Only one the cache modes from ComputeWholeSceneShadowCacheModes should be queryable
 	return CacheMode != SDCM_StaticPrimitivesOnly;
 }
+
+struct FTiledShadowRendering
+{
+	FRDGBufferRef		DrawIndirectParametersBuffer;
+	FRDGBufferSRVRef	TileListDataBufferSRV;
+	uint32				TileSize;
+};
 
 class FShadowMapRenderTargets
 {
@@ -221,7 +259,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FShadowDepthPassUniformParameters,)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint >, VirtualSmPageTable)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< FPackedNaniteView >, PackedNaniteViews)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint4 >, PageRectBounds)
-	SHADER_PARAMETER_RDG_TEXTURE_UAV( RWTexture2D< uint >, OutDepthBuffer )
+	SHADER_PARAMETER_RDG_TEXTURE_UAV( RWTexture2DArray< uint >, OutDepthBufferArray )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileShadowDepthPassUniformParameters, RENDERER_API)
@@ -385,13 +423,15 @@ public:
 
 	/** Whether the the shadow overlaps any nanite primitives */
 	uint32 bContainsNaniteSubjects : 1;
-
+	uint32 bShouldRenderVSM : 1;
+	
 	/** Used to fetch the correct cached static mesh draw commands */
 	EMeshPass::Type MeshPassTargetType = EMeshPass::CSMShadowDepth;
 
 	EShadowMeshSelection MeshSelectionMask = EShadowMeshSelection::All;
 	/** */
 	TArray< FVirtualShadowMap*, TInlineAllocator<6> > VirtualShadowMaps;
+	TSharedPtr<FVirtualShadowMapPerLightCacheEntry> VirtualShadowMapPerLightCacheEntry;
 
 	/** View projection matrices for each cubemap face, used by one pass point light shadows. */
 	TArray<FMatrix> OnePassShadowViewProjectionMatrices;
@@ -565,19 +605,37 @@ public:
 		bool bDoParallelDispatch,
 		bool bDoCrossGPUCopy);
 
-	void BeginRenderRayTracedDistanceFieldProjection(
+	/** Reset cached ray traced distance field shadows texture. */
+	void ResetRayTracedDistanceFieldShadow(const FViewInfo* View)
+	{
+		DistanceFieldShadowViewGPUData& SDFShadowViewGPUData = CachedDistanceFieldShadowViewGPUData.FindOrAdd(View);
+		SDFShadowViewGPUData.RayTracedShadowsTexture = nullptr;
+	}
+
+	/**
+	* Render ray traced distance field shadows into a texture.
+	* Output texture is cached per view. This is useful to support async compute.
+	* (ie: kick off distance field shadows early in the frame using async compute, and then combine result into shadow mask texture when necessary)
+	*/
+	FRDGTextureRef RenderRayTracedDistanceFieldProjection(
 		FRDGBuilder& GraphBuilder,
+		bool bAsyncCompute,
 		const FMinimalSceneTextures& SceneTextures,
 		const FViewInfo& View);
 
-	/** Renders ray traced distance field shadows. */
+	/** 
+	* Renders ray traced distance field shadows into an existing texture.
+	* Will use cached results if already calculated earlier in the frame (ie: async compute)
+	*/
 	void RenderRayTracedDistanceFieldProjection(
 		FRDGBuilder& GraphBuilder,
 		const FMinimalSceneTextures& SceneTextures,
 		FRDGTextureRef ScreenShadowMaskTexture,
 		const FViewInfo& View,
 		FIntRect ScissorRect,
-		bool bProjectingForForwardShading);
+		bool bProjectingForForwardShading,
+		bool bForceRGBModulation = false,
+		FTiledShadowRendering* TiledShadowRendering = nullptr);
 
 	/** Render one pass point light shadow projections. */
 	void RenderOnePassPointLightProjection(
@@ -597,7 +655,7 @@ public:
 	/**
 	 * Adds a primitive to the shadow's subject list.
 	 */
-	void AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bRecordShadowSubjectForMobileShading);
+	bool AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bRecordShadowSubjectForMobileShading);
 
 	uint64 AddSubjectPrimitive_AnyThread(
 		const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact,
@@ -776,8 +834,18 @@ private:
 	float ShaderSlopeDepthBias;
 	float ShaderMaxSlopeDepthBias;
 
-	/** Ray traced DF shadow intermediate output. Populated by BeginRenderRayTracedDistanceFieldProjection and consumed by RenderRayTracedDistanceFieldProjection. */
-	FRDGTextureRef RayTracedShadowsTexture;
+	/**  Cached light tile intersection parameters in case we needed to trace a distance field multiple times for a view but for different depth buffer*/
+	struct DistanceFieldShadowViewGPUData 
+	{
+		/** Ray traced DF shadow intermediate output. Populated by BeginRenderRayTracedDistanceFieldProjection and consumed by RenderRayTracedDistanceFieldProjection. */
+		FRDGTextureRef RayTracedShadowsTexture = nullptr;
+
+		FLightTileIntersectionParameters*			SDFLightTileIntersectionParameters = nullptr;
+		FDistanceFieldCulledObjectBufferParameters*	SDFCulledObjectBufferParameters = nullptr;
+		FLightTileIntersectionParameters*			HeightFieldLightTileIntersectionParameters = nullptr;
+		FDistanceFieldCulledObjectBufferParameters*	HeightFieldCulledObjectBufferParameters = nullptr;
+	};
+	TMap<const FViewInfo*, DistanceFieldShadowViewGPUData> CachedDistanceFieldShadowViewGPUData;
 
 	void CopyCachedShadowMap(
 		FRDGBuilder& GraphBuilder,
@@ -1028,11 +1096,11 @@ public:
 		// Translucency shadow projection has no depth target
 		if (ShadowInfo->RenderTargets.DepthTarget)
 		{
-			ShadowDepthTextureValue = ShadowInfo->RenderTargets.DepthTarget->GetRenderTargetItem().ShaderResourceTexture.GetReference();
+			ShadowDepthTextureValue = ShadowInfo->RenderTargets.DepthTarget->GetRHI();
 		}
 		else
 		{
-			ShadowDepthTextureValue = GSystemTextures.BlackDummy->GetRenderTargetItem().ShaderResourceTexture.GetReference();
+			ShadowDepthTextureValue = GSystemTextures.BlackDummy->GetRHI();
 		}
 			
 		FRHISamplerState* DepthSamplerState = TStaticSamplerState<SF_Point,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
@@ -1139,7 +1207,7 @@ public:
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5)
-			|| (bUseTransmission == 0 && SubPixelShadow == 0 && IsMobileDistanceFieldEnabled(Parameters.Platform));
+			|| (bUseTransmission == 0 && SubPixelShadow == 0 && MobileUsesShadowMaskTexture(Parameters.Platform));
 	}
 
 	/**
@@ -1153,7 +1221,9 @@ public:
 		OutEnvironment.SetDefine(TEXT("SUBPIXEL_SHADOW"), (uint32)(SubPixelShadow ? 1 : 0));
 		OutEnvironment.SetDefine(TEXT("USE_FADE_PLANE"), (uint32)(bUseFadePlane ? 1 : 0));
 		OutEnvironment.SetDefine(TEXT("USE_TRANSMISSION"), (uint32)(bUseTransmission ? 1 : 0));
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), (uint32)(Strata::IsStrataEnabled() ? 1 : 0));
+
+		const bool bMobileVulkanForceDepthRead = IsVulkanMobilePlatform(Parameters.Platform) && MobileUsesShadowMaskTexture(Parameters.Platform);
+		OutEnvironment.SetDefine(TEXT("FORCE_DEPTH_TEXTURE_READS"), (uint32)(bMobileVulkanForceDepthRead ? 1 : 0));
 	}
 
 	/**
@@ -1342,12 +1412,14 @@ public:
 	{
 		const FVector PreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
 
-		FRHITexture* ShadowDepthTextureValue = ShadowInfo
-			? ShadowInfo->RenderTargets.DepthTarget->GetRenderTargetItem().ShaderResourceTexture->GetTextureCube()
-			: GBlackTextureDepthCube->TextureRHI.GetReference();
-		if (!ShadowDepthTextureValue)
+		FRHITexture* ShadowDepthTextureValue = GBlackTextureDepthCube->TextureRHI;
+		
+		if (ShadowInfo)
 		{
-			ShadowDepthTextureValue = GBlackTextureDepthCube->TextureRHI.GetReference();
+			if (FRHITexture* Texture = ShadowInfo->RenderTargets.DepthTarget->GetRHI())
+			{
+				ShadowDepthTextureValue = Texture;
+			}
 		}
 
 		SetTextureParameter(
@@ -1475,7 +1547,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("SHADOW_QUALITY"), Quality);
 		OutEnvironment.SetDefine(TEXT("USE_TRANSMISSION"), (uint32)(bUseTransmission ? 1 : 0));
 		OutEnvironment.SetDefine(TEXT("SUBPIXEL_SHADOW"), (uint32)(bUseSubPixel ? 1 : 0));
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), (uint32)(Strata::IsStrataEnabled() ? 1 : 0));
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -1514,7 +1585,7 @@ public:
 
 		if (StrataGlobalParameters.IsBound())
 		{
-			TRDGUniformBufferRef<FStrataGlobalUniformParameters> StrataUniformBuffer = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			TRDGUniformBufferRef<FStrataGlobalUniformParameters> StrataUniformBuffer = Strata::BindStrataGlobalUniformParameters(View);
 			SetUniformBufferParameter(RHICmdList, ShaderRHI, StrataGlobalParameters, StrataUniformBuffer->GetRHIRef());
 		}
 

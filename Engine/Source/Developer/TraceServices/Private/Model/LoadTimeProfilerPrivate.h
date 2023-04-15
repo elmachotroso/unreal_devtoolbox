@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include "TraceServices/Model/Counters.h"
 #include "TraceServices/Model/LoadTimeProfiler.h"
-#include "TraceServices/AnalysisService.h"
 #include "Common/SlabAllocator.h"
 #include "Common/PagedArray.h"
 #include "Common/StringStore.h"
@@ -21,7 +21,7 @@ class FLoadTimeProfilerProvider
 public:
 	typedef TMonotonicTimeline<FLoadTimeProfilerCpuEvent> CpuTimelineInternal;
 
-	explicit FLoadTimeProfilerProvider(IAnalysisSession& Session, ICounterProvider& CounterProvider);
+	explicit FLoadTimeProfilerProvider(IAnalysisSession& Session, IEditableCounterProvider& EditableCounterProvider);
 	virtual ~FLoadTimeProfilerProvider() {}
 
 	virtual uint64 GetTimelineCount() const override { return CpuTimelines.Num(); }
@@ -87,6 +87,7 @@ private:
 		virtual ~FLoaderFrameCounter() {}
 
 		virtual const TCHAR* GetName() const override;
+		virtual const TCHAR* GetGroup() const override;
 		virtual const TCHAR* GetDescription() const override;
 		virtual bool IsFloatingPoint() const override;
 		virtual ECounterDisplayHint GetDisplayHint() const override;
@@ -99,7 +100,7 @@ private:
 	};
 
 	IAnalysisSession& Session;
-	ICounterProvider& CounterProvider;
+	IEditableCounterProvider& EditableCounterProvider;
 	TPagedArray<FClassInfo> ClassInfos;
 	TPagedArray<FLoadRequest> Requests;
 	TPagedArray<FPackageInfo> Packages;

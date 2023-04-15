@@ -4,6 +4,8 @@
 #include "BehaviorTree/BlackboardComponent.h"
 #include "MockAI_BT.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TestBTService_Log)
+
 UTestBTService_Log::UTestBTService_Log(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
 	NodeName = "LogService";
@@ -16,6 +18,7 @@ UTestBTService_Log::UTestBTService_Log(const FObjectInitializer& ObjectInitializ
 	LogTick = INDEX_NONE;
 	KeyNameBecomeRelevant = NAME_None;
 	KeyNameCeaseRelevant = NAME_None;
+	bToggleValue = false;
 
 	// Force the service to tick every frame
 	Interval = 0.0f;
@@ -28,7 +31,7 @@ void UTestBTService_Log::OnBecomeRelevant(UBehaviorTreeComponent& OwnerComp, uin
 
 	if (KeyNameBecomeRelevant != NAME_None)
 	{
-		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameBecomeRelevant, true);
+		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameBecomeRelevant, bToggleValue ? !OwnerComp.GetBlackboardComponent()->GetValueAsBool(KeyNameBecomeRelevant) : true);
 	}
 
 	if (LogActivation >= 0)
@@ -43,7 +46,7 @@ void UTestBTService_Log::OnCeaseRelevant(UBehaviorTreeComponent& OwnerComp, uint
 
 	if (KeyNameCeaseRelevant != NAME_None)
 	{
-		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameCeaseRelevant, true);
+		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameCeaseRelevant, bToggleValue ? !OwnerComp.GetBlackboardComponent()->GetValueAsBool(KeyNameCeaseRelevant) : true);
 	}
 
 	if (LogDeactivation >= 0)
@@ -58,7 +61,7 @@ void UTestBTService_Log::TickNode(UBehaviorTreeComponent& OwnerComp, uint8* Node
 
 	if (KeyNameTick != NAME_None)
 	{
-		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameTick, true);
+		OwnerComp.GetBlackboardComponent()->SetValueAsBool(KeyNameTick, bToggleValue ? !OwnerComp.GetBlackboardComponent()->GetValueAsBool(KeyNameTick) : true);
 	}
 
 	if (LogTick >= 0)
@@ -72,3 +75,4 @@ void UTestBTService_Log::SetFlagOnTick(FName InKeyNameTick, bool bInCallTickOnSe
 	KeyNameTick = InKeyNameTick;
 	bCallTickOnSearchStart = bInCallTickOnSearchStart;
 }
+

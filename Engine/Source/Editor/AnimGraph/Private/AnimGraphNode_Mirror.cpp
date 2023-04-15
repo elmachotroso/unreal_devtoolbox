@@ -3,8 +3,8 @@
 #include "AnimGraphNode_Mirror.h"
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/MirrorDataTable.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BlueprintActionFilter.h"
 #include "BlueprintActionFilter.h"
 #include "BlueprintActionDatabaseRegistrar.h"
@@ -40,7 +40,7 @@ FText UAnimGraphNode_Mirror::GetNodeTitle(ENodeTitleType::Type TitleType) const
 
 FText UAnimGraphNode_Mirror::GetMenuCategory() const
 {
-	return LOCTEXT("NodeCategory", "Mirroring");
+	return LOCTEXT("NodeCategory", "Animation|Misc.");
 }
 
 void UAnimGraphNode_Mirror::GetOutputLinkAttributes(FNodeAttributeArray& OutAttributes) const
@@ -165,7 +165,7 @@ void UAnimGraphNode_Mirror::GetMenuActions(FBlueprintActionDatabaseRegistrar& Ac
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		// define a filter to help in pulling UMirrrorDataTable asset data from the registry
 		FARFilter Filter;
-		Filter.ClassNames.Add(UMirrorDataTable::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UMirrorDataTable::StaticClass()->GetClassPathName());
 
 		Filter.bRecursiveClasses = true;
 		// Find matching assets and add an entry for each one
@@ -209,7 +209,7 @@ void UAnimGraphNode_Mirror::GetMenuActions(FBlueprintActionDatabaseRegistrar& Ac
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		FARFilter Filter;
-		Filter.ClassNames.Add(UMirrorDataTable::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UMirrorDataTable::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 		// Find matching assets and add an entry for each one
 		TArray<FAssetData> MirrorDataTableList;
@@ -227,7 +227,7 @@ void UAnimGraphNode_Mirror::GetMenuActions(FBlueprintActionDatabaseRegistrar& Ac
 			NodeSpawner->CustomizeNodeDelegate = UBlueprintNodeSpawner::FCustomizeNodeDelegate::CreateStatic(UnloadedAssetSetup, Asset);
 
 			NodeSpawner->DefaultMenuSignature.MenuName = GetTitleGivenAssetInfo(FText::FromName(Asset.AssetName));
-			NodeSpawner->DefaultMenuSignature.Tooltip = GetTitleGivenAssetInfo(FText::FromName(Asset.ObjectPath));
+			NodeSpawner->DefaultMenuSignature.Tooltip = GetTitleGivenAssetInfo(FText::FromString(Asset.GetObjectPathString()));
 			ActionRegistrar.AddBlueprintAction(Asset, NodeSpawner);
 		}
 	}
@@ -248,7 +248,7 @@ bool UAnimGraphNode_Mirror::HasMirrorDataTableForBlueprints(const TArray<UBluepr
 	// check to see if any mirror data table is available for the blueprint
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	FARFilter Filter;
-	Filter.ClassNames.Add(UMirrorDataTable::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UMirrorDataTable::StaticClass()->GetClassPathName());
 
 	Filter.bRecursiveClasses = true;
 	TArray<FAssetData> MirrorDataTableList;

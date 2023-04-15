@@ -23,7 +23,8 @@ public class StageMonitorCommon : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"GameplayTags",
-				"VPUtilities"
+				"VPRoles",
+				"VPUtilities",
 			}
 		);
 	}

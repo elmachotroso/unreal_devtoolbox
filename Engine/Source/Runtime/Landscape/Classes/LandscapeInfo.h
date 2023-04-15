@@ -44,6 +44,21 @@ struct FLandscapeAddCollision
 };
 #endif // WITH_EDITORONLY_DATA
 
+class ULandscapeInfo;
+
+#if WITH_EDITOR
+struct FLandscapeDirtyOnlyInModeScope
+{
+	FLandscapeDirtyOnlyInModeScope() = delete;
+	FLandscapeDirtyOnlyInModeScope(ULandscapeInfo* InLandscapeInfo);
+	~FLandscapeDirtyOnlyInModeScope();
+
+private:
+	ULandscapeInfo* LandscapeInfo;
+	bool bDirtyOnlyInModePrevious;
+};
+#endif
+
 USTRUCT()
 struct FLandscapeInfoLayerSettings
 {
@@ -142,18 +157,30 @@ public:
 	TMap<FIntPoint, FLandscapeAddCollision> XYtoAddCollisionMap;
 #endif // WITH_EDITORONLY_DATA
 
-	UPROPERTY()
+	UE_DEPRECATED(5.1, "This property has been deprecated, please use the StreamingProxies property instead")
 	TArray<TObjectPtr<ALandscapeStreamingProxy>> Proxies;
+
+	UPROPERTY()
+	TArray<TWeakObjectPtr<ALandscapeStreamingProxy>> StreamingProxies;
 
 private:
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TArray<TScriptInterface<ILandscapeSplineInterface>> SplineActors;
+
+	// Not a property since this shouldn't be modified through transactions (no undo/redo)
+	TSet<TWeakObjectPtr<UPackage>> ModifiedPackages;
+
+	bool bDirtyOnlyInMode;
+
+	friend struct FLandscapeDirtyOnlyInModeScope;
 #endif // WITH_EDITORONLY_DATA
 
 	TSet<ULandscapeComponent*> SelectedComponents;
 
 	TSet<ULandscapeComponent*> SelectedRegionComponents;
+
+	FIntRect XYComponentBounds;
 
 public:
 	TMap<FIntPoint,float> SelectedRegion;
@@ -179,6 +206,7 @@ public:
 	LANDSCAPE_API bool GetLandscapeExtent(ALandscapeProxy* Proxy, FIntRect& ProxyExtent) const;
 	LANDSCAPE_API bool GetLandscapeExtent(FIntRect& LandscapeExtent) const;
 	LANDSCAPE_API bool GetLandscapeExtent(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY) const;
+	LANDSCAPE_API bool GetLandscapeXYComponentBounds(FIntRect& OutXYComponentBounds) const;
 	LANDSCAPE_API void ForAllLandscapeComponents(TFunctionRef<void(ULandscapeComponent*)> Fn) const;
 	LANDSCAPE_API void ExportHeightmap(const FString& Filename);
 	LANDSCAPE_API void ExportHeightmap(const FString& Filename, const FIntRect& ExportRegion);
@@ -222,6 +250,15 @@ public:
 	 */
 	LANDSCAPE_API ALandscapeProxy* GetLandscapeProxyForLevel(ULevel* Level) const;
 
+	LANDSCAPE_API static bool IsDirtyOnlyInModeEnabled();
+
+	LANDSCAPE_API void OnModifiedPackageSaved(UPackage* InPackage);
+	LANDSCAPE_API int32 GetModifiedPackageCount() const;
+	LANDSCAPE_API TArray<UPackage*> GetModifiedPackages() const;
+	LANDSCAPE_API void MarkModifiedPackagesAsDirty();
+
+	LANDSCAPE_API void ModifyObject(UObject* InObject, bool bAlwaysMarkDirty = true);
+	LANDSCAPE_API void MarkObjectDirty(UObject* InObject);
 #endif //WITH_EDITOR
 
 	/**
@@ -300,6 +337,9 @@ public:
 
 	/** Returns LandscapeStreamingProxy Cell Size in WorldPartition */
 	LANDSCAPE_API uint32 GetGridSize(uint32 InGridSizeInComponents) const;
+
+	/** Returns true if new Landscape actors should be spatially loaded in WorldPartition (LandscapeStreamingProxy & LandscapeSplineActor) */
+	LANDSCAPE_API bool AreNewLandscapeActorsSpatiallyLoaded() const;
 #endif
 	LANDSCAPE_API static ULandscapeInfo* Find(UWorld* InWorld, const FGuid& LandscapeGuid);
 	LANDSCAPE_API static ULandscapeInfo* FindOrCreate(UWorld* InWorld, const FGuid& LandscapeGuid);
@@ -321,7 +361,7 @@ public:
  *  @param	Proxy		Landscape actor to register
  *  @param  bMapCheck	Whether to warn about landscape errors
  */
-	LANDSCAPE_API void RegisterActor(ALandscapeProxy* Proxy, bool bMapCheck = false);
+	LANDSCAPE_API void RegisterActor(ALandscapeProxy* Proxy, bool bMapCheck = false, bool bUpdateAllAddCollisions = true);
 
 	/** Deassociates passed actor with this info object*/
 	LANDSCAPE_API void UnregisterActor(ALandscapeProxy* Proxy);
@@ -338,6 +378,18 @@ public:
 	/** Server doesn't have ULandscapeComponent use CollisionComponents instead to get height on landscape */
 	LANDSCAPE_API void RegisterCollisionComponent(ULandscapeHeightfieldCollisionComponent* Component);
 	LANDSCAPE_API void UnregisterCollisionComponent(ULandscapeHeightfieldCollisionComponent* Component);
+
+	/**
+	 * Retrieve the components currently loaded that overlap with a given "window" area
+	 * @param InAreaWorldTransform : transform of the requested area (at the center)
+	 * @param InAreaExtents : extents of requested area (i.e. around the center)
+	 * @param OutOverlappedComponents : loaded components that overlap this area (key = xy index of the component, value = component)
+	 * @param OutComponentIndicesBoundingRect : bounding rectangle of the overlapped components, in component index space, with
+	 *  the max being exclusive. For instance a rectangle with min=(0,0) and max=(2,1) includes components (0,0) and (1,0).
+	 * 
+	 * @return true if at least one overlapped component
+	 */
+	LANDSCAPE_API bool GetOverlappedComponents(const FTransform& InAreaWorldTransform, const FBox2D& InAreaExtents, TMap<FIntPoint, ULandscapeComponent*>& OutOverlappedComponents, FIntRect& OutComponentIndicesBoundingRect);
 
 #if WITH_EDITOR
 	LANDSCAPE_API ALandscapeSplineActor* CreateSplineActor(const FVector& Location);

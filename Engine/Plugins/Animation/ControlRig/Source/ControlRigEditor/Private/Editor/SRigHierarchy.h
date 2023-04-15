@@ -6,7 +6,8 @@
 #include "EditorUndoClient.h"
 #include "DragAndDrop/GraphNodeDragDropOp.h"
 #include "Engine/SkeletalMesh.h"
-#include "SRigHierarchyTreeView.h"
+#include "Editor/SRigHierarchyTreeView.h"
+#include "Units/RigUnitContext.h"
 #include "SRigHierarchy.generated.h"
 
 class SRigHierarchy;
@@ -104,7 +105,7 @@ private:
 	void HandleDeleteItem();
 
 	/** Create a new item */
-	void HandleNewItem(ERigElementType InElementType);
+	void HandleNewItem(ERigElementType InElementType, bool bIsAnimationChannel);
 
 	/** Check whether we can deleting the selected item(s) */
 	bool CanDuplicateItem() const;
@@ -179,17 +180,19 @@ private:
 	/** Command list we bind to */
 	TSharedPtr<FUICommandList> CommandList;
 
-	bool IsMultiSelected() const;
-	bool IsSingleSelected() const;
-	bool IsSingleBoneSelected() const;
-	bool IsSingleNullSelected() const;
-	bool IsControlSelected() const;
-	bool IsControlOrNullSelected() const;
+	bool IsMultiSelected(bool bIncludeProcedural) const;
+	bool IsSingleSelected(bool bIncludeProcedural) const;
+	bool IsSingleBoneSelected(bool bIncludeProcedural) const;
+	bool IsSingleNullSelected(bool bIncludeProcedural) const;
+	bool IsControlSelected(bool bIncludeProcedural) const;
+	bool IsControlOrNullSelected(bool bIncludeProcedural) const;
+	bool IsProceduralElementSelected() const;
+	bool IsNonProceduralElementSelected() const;
 
 	URigHierarchy* GetHierarchy() const;
-	URigHierarchy* GetDebuggedHierarchy() const;
-	const URigHierarchy* GetHierarchyForTopology() const;
-
+	URigHierarchy* GetDefaultHierarchy() const;
+	const URigHierarchy* GetHierarchyForTreeView() const { return GetHierarchy(); }
+	
 	void ImportHierarchy(const FAssetData& InAssetData);
 	void CreateImportMenu(FMenuBuilder& MenuBuilder);
 	void CreateRefreshMenu(FMenuBuilder& MenuBuilder);
@@ -220,6 +223,12 @@ private:
 	void OnHierarchyModified_AnyThread(ERigHierarchyNotification InNotif, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
 	void HandleRefreshEditorFromBlueprint(UControlRigBlueprint* InBlueprint);
 	void HandleSetObjectBeingDebugged(UObject* InObject);
+	void OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+	void OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+
+	bool bIsConstructionEventRunning;
+	uint32 LastHierarchyHash;
+	TArray<FRigElementKey> SelectionBeforeConstruction;
 
 public:
 	FName HandleRenameElement(const FRigElementKey& OldKey, const FString& NewName);

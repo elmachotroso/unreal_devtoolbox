@@ -107,11 +107,11 @@ struct FWaterQuadTree
 		FVector PreViewTranslation = FVector::ZeroVector;
 		FConvexVolume Frustum;
 		bool bLODMorphingEnabled = true;
+		FBox2D TessellatedWaterMeshBounds = FBox2D(ForceInit);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		// Debug
-		bool DebugShowTile = false;
-		bool DebugShowTypeColor = true;
+		int32 DebugShowTile = 0;
 		class FPrimitiveDrawInterface* DebugPDI = nullptr;
 #endif
 	};
@@ -176,10 +176,10 @@ struct FWaterQuadTree
 	const TArray<FMaterialRenderProxy*>& GetWaterMaterials() const { return WaterMaterials; }
 
 	/** Calculate the world distance to a LOD */
-	static float GetLODDistance(int32 InLODLevel, float InLODScale)
-	{
-		return FMath::Pow(2.0f, (float)(InLODLevel + 1)) * InLODScale;
-	}
+	static float GetLODDistance(int32 InLODLevel, float InLODScale) { return FMath::Pow(2.0f, (float)(InLODLevel + 1)) * InLODScale; }
+
+	/** Total memory dynamically allocated by this object */
+	uint32 GetAllocatedSize() const { return NodeData.GetAllocatedSize() + WaterMaterials.GetAllocatedSize() + FarMeshData.GetAllocatedSize(); }
 
 #if WITH_WATER_SELECTION_SUPPORT
 	/** Obtain all possible hit proxies (proxies of all the water bodies) */
@@ -198,7 +198,7 @@ private:
 	struct FNode
 	{
 
-		FNode() : WaterBodyIndex(0), TransitionWaterBodyIndex(0), ParentIndex(INVALID_PARENT), HasCompleteSubtree(1), IsSubtreeSameWaterBody(1) {}
+		FNode() : WaterBodyIndex(0), TransitionWaterBodyIndex(0), ParentIndex(INVALID_PARENT), HasCompleteSubtree(1), IsSubtreeSameWaterBody(1), HasMaterial(0) {}
 
 		/** If this node is allowed to be rendered, it means it can be rendered in place of all leaf nodes in its subtree. */
 		bool CanRender(int32 InDensityLevel, int32 InForceCollapseDensityLevel, const FWaterBodyRenderData& InWaterBodyRenderData) const;
@@ -211,6 +211,9 @@ private:
 
 		/** Recursive function to select nodes visible from the current point of view */
 		void SelectLOD(const FNodeData& InNodeData, int32 InLODLevel, const FTraversalDesc& InTraversalDesc, FTraversalOutput& Output) const;
+
+		/** Recursive function to select nodes visible from the current point of view within an active bounding box */
+		void SelectLODWithinBounds(const FNodeData& InNodeData, int32 InLODLevel, const FTraversalDesc& InTraversalDesc, FTraversalOutput& Output) const;
 
 		/** Recursive function to query the height(prior to any displacement) at a given location, return false if no height could be found */
 		bool QueryBaseHeightAtLocation(const FNodeData& InNodeData, const FVector2D& InWorldLocationXY, float& OutHeight) const;
@@ -242,7 +245,10 @@ private:
 		/** If all descendant nodes are from the same waterbody. We can safely collapse this even if HasCompleteSubtree is false */
 		uint32 IsSubtreeSameWaterBody : 1;
 
-		// 2 spare bits here in the bit field with ParentIndex
+		/** Cached value to avoid having to visit this node's FWaterBodyRenderData */
+		uint32 HasMaterial : 1;
+
+		// 1 spare bits here in the bit field with ParentIndex
 
 		/** Children, 0 means invalid */
 		uint32 Children[4] = { 0, 0, 0, 0 };
@@ -268,6 +274,9 @@ private:
 
 		/** Render data for all water bodies in this tree, indexed by the nodes */
 		TArray<FWaterBodyRenderData> WaterBodyRenderData;
+
+		/** Total memory dynamically allocated by this object */
+		uint32 GetAllocatedSize() const { return Nodes.GetAllocatedSize() + WaterBodyRenderData.GetAllocatedSize(); }
 	} NodeData;
 
 	TArray<FMaterialRenderProxy*> WaterMaterials;
@@ -287,15 +296,18 @@ private:
 		/** Material for the Far Distance Mesh, its material render proxy will be cached in WaterMaterials when BuildMaterialIndices is called */
 		const UMaterialInterface* Material = nullptr;
 
-		/** Cached material index */
-		int16 MaterialIndex = INDEX_NONE;
-
 		void Clear()
 		{
 			InstanceData.Empty();
 			Material = nullptr;
 			MaterialIndex = INDEX_NONE;
 		}
+
+		/** Total memory dynamically allocated by this object */
+		uint32 GetAllocatedSize() const { return InstanceData.GetAllocatedSize(); }
+
+		/** Cached material index */
+		int16 MaterialIndex = INDEX_NONE;
 
 	} FarMeshData;
 

@@ -2,12 +2,21 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/LargeWorldCoordinatesSerializer.h"
-#include "Math/UnrealMathUtility.h"
+#include "Containers/Array.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Math/UnrealMathUtility.h"
 #include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/LargeWorldCoordinates.h"
+#include "Misc/LargeWorldCoordinatesSerializer.h"
+#include "Serialization/Archive.h"
+#include "Templates/IsUECoreType.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+template <typename T> struct TIsPODType;
 
 /**
  * Implements a rectangular 2D Box.
@@ -88,14 +97,26 @@ public:
 	}
 
 	/**
-	* Compares two boxes for inequality.
-	*
-	* @param Other The other box to compare with.
-	* @return true if the boxes are not equal, false otherwise.
-	*/
-	bool operator!=(const TBox2<T>& Other) const
+	 * Compares two boxes for inequality.
+	 *
+	 * @param Other The other box to compare with.
+	 * @return true if the boxes are not equal, false otherwise.
+	 */
+	bool operator!=( const TBox2<T>& Other ) const
 	{
 		return !(*this == Other);
+	}
+
+	/**
+	 * Checks for equality with error-tolerant comparison.
+	 *
+	 * @param Other The box to compare.
+	 * @param Tolerance Error tolerance.
+	 * @return true if the boxes are equal within specified tolerance, otherwise false.
+	 */
+	bool Equals( const TBox2<T>& Other, T Tolerance = UE_KINDA_SMALL_NUMBER ) const
+	{
+		return Min.Equals(Other.Min, Tolerance) && Max.Equals(Other.Max, Tolerance);
 	}
 
 	/**
@@ -197,6 +218,17 @@ public:
 	TBox2<T> ExpandBy( const T W ) const
 	{
 		return TBox2<T>(Min - TVector2<T>(W, W), Max + TVector2<T>(W, W));
+	}
+
+	/**
+     * Returns a box of increased size.
+     *
+     * @param V The size to increase the volume by.
+     * @return A new bounding box.
+     */
+	TBox2<T> ExpandBy(const TVector2<T>& V) const
+	{
+		return TBox2<T>(Min - V, Max + V);
 	}
 
 	/**
@@ -302,6 +334,18 @@ public:
 		return ((TestPoint.X > Min.X) && (TestPoint.X < Max.X) && (TestPoint.Y > Min.Y) && (TestPoint.Y < Max.Y));
 	}
 
+	/**
+	 * Checks whether the given point is inside or on this box.
+	 *
+	 * @param Point The point to test.
+	 * @return true if point is inside or on this box, otherwise false.
+	 * @see IsInside
+	 */
+	bool IsInsideOrOn( const TVector2<T>& TestPoint ) const
+	{
+		return ((TestPoint.X >= Min.X) && (TestPoint.X <= Max.X) && (TestPoint.Y >= Min.Y) && (TestPoint.Y <= Max.Y));
+	}
+
 	/** 
 	 * Checks whether the given box is fully encapsulated by this box.
 	 * 
@@ -321,6 +365,18 @@ public:
 	 */
 	TBox2<T> ShiftBy( const TVector2<T>& Offset ) const
 	{
+		return TBox2<T>(Min + Offset, Max + Offset);
+	}
+
+	/**
+	 * Returns a box with its center moved to the new destination.
+	 *
+	 * @param Destination The destination point to move center of box to.
+	 * @return A new bounding box.
+	 */
+	TBox2<T> MoveTo(const TVector2<T>& Destination) const
+	{
+		const TVector2<T> Offset = Destination - GetCenter();
 		return TBox2<T>(Min + Offset, Max + Offset);
 	}
 

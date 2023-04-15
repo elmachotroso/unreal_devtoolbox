@@ -5,7 +5,7 @@
 #include "CADKernel/Topo/TopologicalEntity.h"
 #include "CADKernel/Topo/TopologicalLink.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 class FModelMesh;
@@ -81,13 +81,22 @@ public:
 		TopologicalLink = FEntity::MakeShared<LinkType>((EntityType&)(*this));
 	}
 
-	bool IsLinkedTo(TSharedRef<EntityType> Entity) const
+	bool IsLinkedTo(const TSharedRef<EntityType>& Entity) const
 	{
 		if (this == &*Entity)
 		{
 			return true;
 		}
 		return (Entity->TopologicalLink == TopologicalLink);
+	}
+
+	bool IsLinkedTo(const EntityType& Entity) const
+	{
+		if (this == &Entity)
+		{
+			return true;
+		}
+		return (Entity.TopologicalLink == TopologicalLink);
 	}
 
 	int32 GetTwinEntityCount() const
@@ -111,7 +120,7 @@ public:
 	{
 		ensureCADKernel(TopologicalLink.IsValid());
 		TopologicalLink->RemoveEntity((EntityType&)*this);
-		TopologicalLink.Reset();
+		ResetTopologicalLink();
 	}
 
 	/**
@@ -175,5 +184,5 @@ protected:
 	}
 };
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

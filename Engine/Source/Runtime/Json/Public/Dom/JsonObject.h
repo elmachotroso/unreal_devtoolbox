@@ -2,10 +2,18 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "JsonGlobals.h"
-#include "Serialization/JsonTypes.h"
 #include "Dom/JsonValue.h"
+#include "HAL/Platform.h"
+#include "JsonGlobals.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Serialization/JsonTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
 
 /**
  * A Json Object is a structure holding an unordered set of name/value pairs.
@@ -229,5 +237,6 @@ public:
 	/** Set an ObjectField named FieldName and value of JsonObject */
 	void SetObjectField( const FString& FieldName, const TSharedPtr<FJsonObject>& JsonObject );
 
+	static void Duplicate(const TSharedPtr<const FJsonObject>& Source, const TSharedPtr<FJsonObject>& Dest);
 	static void Duplicate(const TSharedPtr<FJsonObject>& Source, TSharedPtr<FJsonObject>& Dest);
 };

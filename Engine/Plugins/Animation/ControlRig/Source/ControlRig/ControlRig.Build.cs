@@ -6,9 +6,6 @@ namespace UnrealBuildTool.Rules
     {
         public ControlRig(ReadOnlyTargetRules Target) : base(Target)
         {
-            PrivateIncludePaths.Add("ControlRig/Private");
-            PrivateIncludePaths.Add("ControlRig/Private/Sequencer");
-            PrivateIncludePaths.Add("ControlRig/Private/Units");
             PrivateIncludePaths.Add("ControlRig/ThirdParty/AHEasing");
 
             PrivateDependencyModuleNames.AddRange(
@@ -33,6 +30,7 @@ namespace UnrealBuildTool.Rules
                     "LevelSequence",
                     "RigVM",
                     "RHI",
+                    "Constraints"
                 }
             );
 
@@ -43,7 +41,6 @@ namespace UnrealBuildTool.Rules
 					{
 						"Slate",
 						"SlateCore",
-						"EditorStyle",
 						"RigVMDeveloper",
                         "AnimGraph",
                         "Json",

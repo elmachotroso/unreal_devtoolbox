@@ -1,21 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetImportDataCustomization.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SEditableText.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorReimportHandler.h"
-#include "EditorFramework/AssetImportData.h"
-#include "PropertyHandle.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
 
+#include "Containers/UnrealString.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "EditorFramework/AssetImportData.h"
+#include "EditorReimportHandler.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/DateTime.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "PropertyHandle.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "AssetImportDataCustomization"
 
@@ -90,12 +105,12 @@ void FAssetImportDataCustomization::CustomizeChildren( TSharedRef<IPropertyHandl
 					SNew(SButton)
 					.VAlign(VAlign_Center)
 					.HAlign(HAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.OnClicked(this, &FAssetImportDataCustomization::OnClearPathClicked, Index)
 					.ToolTipText(LOCTEXT("ClearPath_Tooltip", "Clear this source file information from the asset"))
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Cross"))
+						.Image(FAppStyle::GetBrush("Cross"))
 					]
 				]
 			];
@@ -123,13 +138,13 @@ void FAssetImportDataCustomization::CustomizeChildren( TSharedRef<IPropertyHandl
 						SNew(SButton)
 						.VAlign(VAlign_Center)
 						.HAlign(HAlign_Center)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.IsEnabled(this, &FAssetImportDataCustomization::IsPropagateFromAbovePathEnable, Index)
 						.OnClicked(this, &FAssetImportDataCustomization::OnPropagateFromAbovePathClicked, Index)
 						.ToolTipText(LOCTEXT("PropagateFromAbovePath_Tooltip", "Use the above source path to set this path."))
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("ArrowDown"))
+							.Image(FAppStyle::GetBrush("ArrowDown"))
 						]
 					]
 					+ SHorizontalBox::Slot()
@@ -140,13 +155,13 @@ void FAssetImportDataCustomization::CustomizeChildren( TSharedRef<IPropertyHandl
 						SNew(SButton)
 						.VAlign(VAlign_Center)
 						.HAlign(HAlign_Center)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.IsEnabled(this, &FAssetImportDataCustomization::IsPropagateFromBelowPathEnable, Index)
 						.OnClicked(this, &FAssetImportDataCustomization::OnPropagateFromBelowPathClicked, Index)
 						.ToolTipText(LOCTEXT("PropagateFromBelowPath_Tooltip", "Use the below source path to set this path."))
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("ArrowUp"))
+							.Image(FAppStyle::GetBrush("ArrowUp"))
 						]
 					]
 				];
@@ -167,12 +182,12 @@ void FAssetImportDataCustomization::CustomizeChildren( TSharedRef<IPropertyHandl
 				SNew(SButton)
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Center)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &FAssetImportDataCustomization::OnClearAllPathsClicked)
 				.ToolTipText(LOCTEXT("ClearAllSourceData_Tooltip", "Clear all the source file information from the asset."))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Cross"))
+					.Image(FAppStyle::GetBrush("Cross"))
 				]
 			];
 	}

@@ -2,15 +2,28 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/Crc.h"
-#include "Math/UnrealMathUtility.h"
+#include "Containers/Array.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PreprocessorHelpers.h"
+#include "Math/MathFwd.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Crc.h"
 #include "Misc/Parse.h"
-#include "Serialization/StructuredArchive.h"
+#include "Serialization/Archive.h"
 #include "Serialization/MemoryLayout.h"
+#include "Serialization/StructuredArchive.h"
+#include "Serialization/StructuredArchiveNameHelpers.h"
+#include "Serialization/StructuredArchiveSlots.h"
 
 class FFloat16Color;
+class FMemoryImageWriter;
+class FMemoryUnfreezeContent;
+class FPointerTableBase;
+class FSHA1;
+struct FColor;
+template <typename T> struct TIsPODType;
 
 /**
  * Enum for the different kinds of gamma spaces we expect to need to convert from/to.
@@ -23,6 +36,8 @@ enum class EGammaSpace : uint8
 	Pow22,
 	/** Use the standard sRGB conversion. */
 	sRGB,
+
+	Invalid
 };
 
 
@@ -31,16 +46,25 @@ enum class EGammaSpace : uint8
  */
 struct FLinearColor
 {
-	float	R,
-			G,
-			B,
-			A;
+	union
+	{
+		struct 
+		{
+			float	R,
+					G,
+					B,
+					A;
+		};
+
+		UE_DEPRECATED(all, "For internal use only.")
+		float RGBA[4];
+	};
 
 	/** Static lookup table used for FColor -> FLinearColor conversion. Pow(2.2) */
 	static float Pow22OneOver255Table[256];
 
 	/** Static lookup table used for FColor -> FLinearColor conversion. sRGB */
-	static float sRGBToLinearTable[256];
+	static CORE_API float sRGBToLinearTable[256];
 
 	FORCEINLINE FLinearColor() {}
 	FORCEINLINE explicit FLinearColor(EForceInit)
@@ -53,7 +77,7 @@ struct FLinearColor
 	 * @param Color The sRGB color that needs to be converted into linear space.
 	 * to get direct conversion use ReinterpretAsLinear
 	 */
-	CORE_API FLinearColor(const FColor& Color);
+	FORCEINLINE FLinearColor(const FColor& Color);
 
 	CORE_API FLinearColor(const FVector3f& Vector);
 	CORE_API explicit FLinearColor(const FVector3d& Vector); // Warning: keep this explicit, or FVector4f will be implicitly created from FVector3d via FLinearColor
@@ -85,7 +109,7 @@ struct FLinearColor
 	 * Converts an FColor coming from an observed sRGB output, into a linear color.
 	 * @param Color The sRGB color that needs to be converted into linear space.
 	 */
-	CORE_API static FLinearColor FromSRGBColor(const FColor& Color)
+	FORCEINLINE static FLinearColor FromSRGBColor(const FColor& Color)
 	{
 		return FLinearColor(Color);
 	}
@@ -100,12 +124,16 @@ struct FLinearColor
 
 	FORCEINLINE float& Component(int32 Index)
 	{
-		return (&R)[Index];
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return RGBA[Index];
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FORCEINLINE const float& Component(int32 Index) const
 	{
-		return (&R)[Index];
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return RGBA[Index];
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FORCEINLINE FLinearColor operator+(const FLinearColor& ColorB) const
@@ -243,7 +271,7 @@ struct FLinearColor
 	}
 
 	// Error-tolerant comparison.
-	FORCEINLINE bool Equals(const FLinearColor& ColorB, float Tolerance=KINDA_SMALL_NUMBER) const
+	FORCEINLINE bool Equals(const FLinearColor& ColorB, float Tolerance=UE_KINDA_SMALL_NUMBER) const
 	{
 		return FMath::Abs(this->R - ColorB.R) < Tolerance && FMath::Abs(this->G - ColorB.G) < Tolerance && FMath::Abs(this->B - ColorB.B) < Tolerance && FMath::Abs(this->A - ColorB.A) < Tolerance;
 	}
@@ -272,6 +300,11 @@ struct FLinearColor
 	* Converts temperature in Kelvins of a black body radiator to RGB chromaticity.
 	*/
 	static CORE_API FLinearColor MakeFromColorTemperature( float Temp );
+
+	/**
+	* Makes a random color based on a seed.
+	*/
+	static CORE_API FLinearColor MakeRandomSeededColor(int32 Seed);
 
 	/**
 	 * Euclidean distance between two points.
@@ -311,22 +344,22 @@ struct FLinearColor
 
 	/** Quantizes the linear color with rounding and returns the result as a FColor.  This bypasses the SRGB conversion. 
 	* QuantizeRound can be dequantized back to linear with FColor::ReinterpretAsLinear (just /255.f)
-	* this matches the GPU U8<->float conversion spec and should be preferred
+	* this matches the GPU UNORM<->float conversion spec and should be preferred
 	*/
-	CORE_API FColor QuantizeRound() const;
+	FORCEINLINE FColor QuantizeRound() const;
 	
 	/** Quantizes the linear color and returns the result as a FColor.  This bypasses the SRGB conversion.
 	* Uses floor quantization, which does not match the GPU standard conversion.
 	* Restoration to float should be done with a +0.5 bias to restore to centered buckets.
 	* Do NOT use this for graphics or textures or images, use QuantizeRound instead.
 	*/
-	CORE_API FColor QuantizeFloor() const;
+	FORCEINLINE FColor QuantizeFloor() const;
 
 	/** backwards compatible Quantize function name, does QuantizeFloor.
 	* @todo deprecate me
 	*/
-	UE_DEPRECATED(5.0,"Most callers of Quantize should have been calling QuantizeRound; to match old behavior use QuantizeFloor")
-	CORE_API FColor Quantize() const;
+	UE_DEPRECATED(5.0, "Most callers of Quantize should have been calling QuantizeRound; to match old behavior use QuantizeFloor")
+	FORCEINLINE FColor Quantize() const;
 
 	/** Quantizes the linear color and returns the result as a FColor with optional sRGB conversion. 
 	* Clamps in [0,1] range before conversion.
@@ -363,7 +396,7 @@ struct FLinearColor
 	/** useful to detect if a light contribution needs to be rendered */
 	bool IsAlmostBlack() const
 	{
-		return FMath::Square(R) < DELTA && FMath::Square(G) < DELTA && FMath::Square(B) < DELTA;
+		return FMath::Square(R) < UE_DELTA && FMath::Square(G) < UE_DELTA && FMath::Square(B) < UE_DELTA;
 	}
 
 	/**
@@ -400,6 +433,21 @@ struct FLinearColor
 		FParse::Value( *InSourceString, TEXT("A="), A );
 		
 		return bSuccessful;
+	}
+
+	/**
+	 * Helper for pixel format conversions. Clamps to [0,1], mapping NaNs to 0,
+	 * for consistency with GPU conversions.
+	 * 
+	 * @param InValue The input value.
+	 * @return InValue clamped to [0,1]. NaNs map to 0.
+	 */
+	static FORCEINLINE float Clamp01NansTo0(float InValue)
+	{
+		// Write this explicitly instead of using FMath::Clamp because we're particular
+		// about what happens with NaNs here.
+		const float ClampedLo = (InValue > 0.0f) ? InValue : 0.0f; // Also turns NaNs into 0.
+		return (ClampedLo < 1.0f) ? ClampedLo : 1.0f;
 	}
 
 	// Common colors.	
@@ -537,6 +585,11 @@ public:
 	* Converts temperature in Kelvins of a black body radiator to RGB chromaticity.
 	*/
 	static CORE_API FColor MakeFromColorTemperature( float Temp );
+
+	/**
+	* Makes a random color based on a seed.
+	*/
+	static CORE_API FColor MakeRandomSeededColor(int32 Seed);
 
 	/**
 	* Conversions to/from GPU UNorm floats, U8, U16
@@ -738,6 +791,39 @@ private:
 };
 DECLARE_INTRINSIC_TYPE_LAYOUT(FColor);
 
+FORCEINLINE FLinearColor::FLinearColor(const FColor& Color)
+{
+	R = sRGBToLinearTable[Color.R];
+	G = sRGBToLinearTable[Color.G];
+	B = sRGBToLinearTable[Color.B];
+	A = float(Color.A) * (1.0f / 255.0f);
+}
+
+FORCEINLINE FColor FLinearColor::QuantizeRound() const
+{
+	// Avoid FMath::RoundToInt because it calls floor()
+	return FColor(
+		(uint8)(0.5f + Clamp01NansTo0(R) * 255.f),
+		(uint8)(0.5f + Clamp01NansTo0(G) * 255.f),
+		(uint8)(0.5f + Clamp01NansTo0(B) * 255.f),
+		(uint8)(0.5f + Clamp01NansTo0(A) * 255.f)
+	);
+}
+
+FORCEINLINE FColor FLinearColor::QuantizeFloor() const
+{
+	return FColor(
+		(uint8)(Clamp01NansTo0(R) * 255.f),
+		(uint8)(Clamp01NansTo0(G) * 255.f),
+		(uint8)(Clamp01NansTo0(B) * 255.f),
+		(uint8)(Clamp01NansTo0(A) * 255.f)
+	);
+}
+
+FORCEINLINE FColor FLinearColor::Quantize() const
+{
+	return QuantizeFloor();
+}
 
 FORCEINLINE FColor FLinearColor::ToFColor(const bool bSRGB) const
 {
@@ -766,6 +852,9 @@ FORCEINLINE uint32 GetTypeHash( const FLinearColor& LinearColor )
 
 /** Computes a brightness and a fixed point color from a floating point color. */
 extern CORE_API void ComputeAndFixedColorAndIntensity(const FLinearColor& InLinearColor,FColor& OutColor,float& OutIntensity);
+
+/** Convert multiple FLinearColors to sRGB FColor; array version of FLinearColor::ToFColorSRGB. */
+extern CORE_API void ConvertFLinearColorsToFColorSRGB(const FLinearColor* InLinearColors, FColor* OutColorsSRGB, int64 InCount);
 
 // These act like a POD
 template <> struct TIsPODType<FColor> { enum { Value = true }; };

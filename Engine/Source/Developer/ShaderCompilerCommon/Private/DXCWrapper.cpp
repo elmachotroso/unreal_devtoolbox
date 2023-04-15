@@ -69,19 +69,6 @@ FDllHandle::~FDllHandle()
 	}
 }
 
-// Temporary remap to workaround shader recompilation in 5.0.2
-static uint64_t RemapHashes(uint64_t Input)
-{
-	static const TMap<uint64_t, uint64_t> RemapTable = { {14690836071931036613ull, 4369229118148868965ull}, // dxcompiler.dll
-														 {4506195790215923016ull, 17754123032741257827ull} }; // ShaderConductor.dll
-
-	if (RemapTable.Contains(Input))
-	{
-		return RemapTable[Input];
-	}
-
-	return Input;
-}
 
 FDxcModuleWrapper::FDxcModuleWrapper()
 {
@@ -96,7 +83,7 @@ FDxcModuleWrapper::FDxcModuleWrapper()
 		GDxcHandle->AddRef();
 	}
 
-	static uint64 DxcVersion = RemapHashes(GetLoadedModuleVersion(TEXT("dxcompiler.dll")));
+	static uint64 DxcVersion = GetLoadedModuleVersion(TEXT("dxcompiler.dll"));
 
 	// If dxil.dll is present, it's automatically loaded by dxcompiler.dll and used for validation and signing.
 	// If dxil.dll is not present, shaders will silently be unsigned and will fail to load outside of development environment.
@@ -124,7 +111,7 @@ FShaderConductorModuleWrapper::FShaderConductorModuleWrapper()
 		GShaderConductorHandle->AddRef();
 	}
 
-	static uint64 DllVersion = RemapHashes(GetLoadedModuleVersion(TEXT("ShaderConductor.dll")));
+	static uint64 DllVersion = GetLoadedModuleVersion(TEXT("ShaderConductor.dll"));
 
 	ModuleVersionHash = HashCombine(GetTypeHash(DllVersion), FDxcModuleWrapper::GetModuleVersionHash());
 }

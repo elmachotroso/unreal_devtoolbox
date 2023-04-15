@@ -4,8 +4,13 @@
 
 #include "ScopedTransaction.h"
 #include "Algo/LevenshteinDistance.h"
+#include "Engine/AssetManager.h"
 #include "Engine/SkeletalMesh.h"
+#include "RetargetEditor/IKRetargetEditorController.h"
 #include "Retargeter/IKRetargeter.h"
+#include "RigEditor/IKRigController.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRetargeterController)
 
 #define LOCTEXT_NAMESPACE "IKRetargeterController"
 
@@ -25,10 +30,6 @@ UIKRetargeterController* UIKRetargeterController::GetController(UIKRetargeter* I
 	}
 
 	UIKRetargeterController* Controller = Cast<UIKRetargeterController>(InRetargeterAsset->Controller);
-	// clean the asset before editing
-	Controller->CleanChainMapping();
-	Controller->CleanPoseList();
-	
 	return Controller;
 }
 
@@ -40,47 +41,86 @@ UIKRetargeter* UIKRetargeterController::GetAsset() const
 void UIKRetargeterController::SetSourceIKRig(UIKRigDefinition* SourceIKRig)
 {
 	Asset->SourceIKRigAsset = SourceIKRig;
+	Asset->SourcePreviewMesh = Asset->SourceIKRigAsset->PreviewSkeletalMesh;
 }
 
-void UIKRetargeterController::SetTargetIKRig(UIKRigDefinition* TargetIKRig)
-{
-	CleanChainMapping();
-	AutoMapChains();
-}
-
-USkeletalMesh* UIKRetargeterController::GetTargetPreviewMesh()
+USkeletalMesh* UIKRetargeterController::GetPreviewMesh(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
 	// can't preview anything if target IK Rig is null
-	if (!Asset->GetTargetIKRig())
+	const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget);
+	if (!IKRig)
 	{
 		return nullptr;
 	}
 
 	// optionally prefer override if one is provided
-	if (IsValid(Asset->TargetPreviewMesh))
+	const TSoftObjectPtr<USkeletalMesh> OverrideMesh = SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->SourcePreviewMesh : Asset->TargetPreviewMesh;
+	if (!OverrideMesh.IsNull())
 	{
-		return Asset->TargetPreviewMesh.Get();
+		return OverrideMesh.LoadSynchronous();
 	}
 
 	// fallback to preview mesh from IK Rig asset
-	return Asset->GetTargetIKRig()->PreviewSkeletalMesh.Get();
+	return IKRig->GetPreviewMesh();
 }
 
-FName UIKRetargeterController::GetSourceRootBone() const
+const UIKRigDefinition* UIKRetargeterController::GetIKRig(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	return IsValid(Asset->SourceIKRigAsset) ? Asset->SourceIKRigAsset->GetRetargetRoot() : FName("None");
+	return SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->GetSourceIKRig() : Asset->GetTargetIKRig();
 }
 
-FName UIKRetargeterController::GetTargetRootBone() const
+UIKRigDefinition* UIKRetargeterController::GetIKRigWriteable(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	return IsValid(Asset->TargetIKRigAsset) ? Asset->TargetIKRigAsset->GetRetargetRoot() : FName("None");
+	return SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->GetSourceIKRigWriteable() : Asset->GetTargetIKRigWriteable();
 }
 
-void UIKRetargeterController::GetTargetChainNames(TArray<FName>& OutNames) const
+void UIKRetargeterController::OnIKRigChanged(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	if (IsValid(Asset->TargetIKRigAsset))
+	if (const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget))
 	{
-		const TArray<FBoneChain>& Chains = Asset->TargetIKRigAsset->GetRetargetChains();
+		if (SourceOrTarget == ERetargetSourceOrTarget::Source)
+		{
+			Asset->SourcePreviewMesh = IKRig->PreviewSkeletalMesh;
+		}
+		else
+		{
+			Asset->TargetPreviewMesh = IKRig->PreviewSkeletalMesh;
+		}
+
+		// re-ask to fix root height for this mesh
+		SetAskedToFixRootHeightForMesh(IKRig->PreviewSkeletalMesh.Get(), false);
+	}
+}
+
+bool UIKRetargeterController::GetAskedToFixRootHeightForMesh(USkeletalMesh* Mesh) const
+{
+	return GetAsset()->MeshesAskedToFixRootHeightFor.Contains(Mesh);
+}
+
+void UIKRetargeterController::SetAskedToFixRootHeightForMesh(USkeletalMesh* Mesh, bool InAsked) const
+{
+	if (InAsked)
+	{
+		GetAsset()->MeshesAskedToFixRootHeightFor.Add(Mesh);
+	}
+	else
+	{
+		GetAsset()->MeshesAskedToFixRootHeightFor.Remove(Mesh);
+	}
+}
+
+FName UIKRetargeterController::GetRetargetRootBone(
+	const ERetargetSourceOrTarget& SourceOrTarget) const
+{
+	const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget);
+	return IKRig ? IKRig->GetRetargetRoot() : FName("None");
+}
+
+void UIKRetargeterController::GetChainNames(const ERetargetSourceOrTarget& SourceOrTarget, TArray<FName>& OutNames) const
+{
+	if (const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget))
+	{
+		const TArray<FBoneChain>& Chains = IKRig->GetRetargetChains();
 		for (const FBoneChain& Chain : Chains)
 		{
 			OutNames.Add(Chain.ChainName);
@@ -88,24 +128,12 @@ void UIKRetargeterController::GetTargetChainNames(TArray<FName>& OutNames) const
 	}
 }
 
-void UIKRetargeterController::GetSourceChainNames(TArray<FName>& OutNames) const
+void UIKRetargeterController::CleanChainMapping(const bool bForceReinitialization) const
 {
-	if (IsValid(Asset->SourceIKRigAsset))
-	{
-		const TArray<FBoneChain>& Chains = Asset->SourceIKRigAsset->GetRetargetChains();
-		for (const FBoneChain& Chain : Chains)
-		{
-			OutNames.Add(Chain.ChainName);
-		}
-	}
-}
-
-void UIKRetargeterController::CleanChainMapping()
-{
-	if (IsValid(Asset->TargetIKRigAsset))
+	if (IsValid(Asset->GetTargetIKRig()))
 	{
 		TArray<FName> TargetChainNames;
-		GetTargetChainNames(TargetChainNames);
+		GetChainNames(ERetargetSourceOrTarget::Target, TargetChainNames);
 
 		// remove all target chains that are no longer in the target IK rig asset
 		TArray<FName> TargetChainsToRemove;
@@ -140,11 +168,11 @@ void UIKRetargeterController::CleanChainMapping()
 			}
 		}
 	}
-	
-	if (IsValid(Asset->SourceIKRigAsset))
+
+	if (IsValid(Asset->GetSourceIKRig()))
 	{
 		TArray<FName> SourceChainNames;
-		GetSourceChainNames(SourceChainNames);
+		GetChainNames(ERetargetSourceOrTarget::Source,SourceChainNames);
 	
 		// reset any sources that are no longer present to "None"
 		for (URetargetChainSettings* ChainMap : Asset->ChainSettings)
@@ -159,29 +187,33 @@ void UIKRetargeterController::CleanChainMapping()
 	// enforce the chain order based on the StartBone index
 	SortChainMapping();
 
-	BroadcastNeedsReinitialized();
+	if (bForceReinitialization)
+	{
+		BroadcastNeedsReinitialized();
+	}
 }
 
-void UIKRetargeterController::CleanPoseList()
+void UIKRetargeterController::CleanPoseLists(const bool bForceReinitialization) const
 {
-	// enforce the existence of a default pose
-	const bool HasDefaultPose = Asset->RetargetPoses.Contains(Asset->DefaultPoseName);
-	if (!HasDefaultPose)
-	{
-		Asset->RetargetPoses.Emplace(Asset->DefaultPoseName);
-	}
-	
-	// use default pose unless set to something else
-	if (Asset->CurrentRetargetPose == NAME_None)
-	{
-		Asset->CurrentRetargetPose = Asset->DefaultPoseName;
-	}
+	CleanPoseList(ERetargetSourceOrTarget::Source);
+	CleanPoseList(ERetargetSourceOrTarget::Target);
 
-	// remove all bone offsets that are no longer part of the target skeleton
-	if (IsValid(Asset->TargetIKRigAsset))
+	if (bForceReinitialization)
 	{
-		const TArray<FName> AllowedBoneNames = Asset->TargetIKRigAsset->Skeleton.BoneNames;
-		for (TTuple<FName, FIKRetargetPose>& Pose : Asset->RetargetPoses)
+		BroadcastNeedsReinitialized();	
+	}
+}
+
+void UIKRetargeterController::CleanPoseList(const ERetargetSourceOrTarget& SourceOrTarget) const
+{
+	TMap<FName, FIKRetargetPose>& RetargetPoses = GetRetargetPoses(SourceOrTarget);
+
+	// remove all bone offsets that are no longer part of the skeleton
+	const UIKRigDefinition* IKRig = GetIKRig(SourceOrTarget);
+	if (IKRig)
+	{
+		const TArray<FName> AllowedBoneNames = IKRig->Skeleton.BoneNames;
+		for (TTuple<FName, FIKRetargetPose>& Pose : RetargetPoses)
 		{
 			// find bone offsets no longer in target skeleton
 			TArray<FName> BonesToRemove;
@@ -200,17 +232,15 @@ void UIKRetargeterController::CleanPoseList()
 			}
 
 			// sort the pose offset from leaf to root
-			Pose.Value.SortHierarchically(Asset->TargetIKRigAsset->Skeleton);
+			Pose.Value.SortHierarchically(IKRig->Skeleton);
 		}
 	}
-
-	BroadcastNeedsReinitialized();
 }
 
 void UIKRetargeterController::AutoMapChains() const
 {
 	TArray<FName> SourceChainNames;
-	GetSourceChainNames(SourceChainNames);
+	GetChainNames(ERetargetSourceOrTarget::Source, SourceChainNames);
 	
 	// auto-map any chains that have no value using a fuzzy string search
 	for (URetargetChainSettings* ChainMap : Asset->ChainSettings)
@@ -251,10 +281,24 @@ void UIKRetargeterController::AutoMapChains() const
 	BroadcastNeedsReinitialized();
 }
 
+void UIKRetargeterController::OnRetargetChainAdded(UIKRigDefinition* IKRig) const
+{
+	const bool bIsTargetRig = IKRig == Asset->GetTargetIKRig();
+	if (!bIsTargetRig)
+	{
+		// if a source chain is added, it will simply be available as a new option, no need to reinitialize until it's used
+		return;
+	}
+
+	// add the new chain to the mapping data
+	constexpr bool bForceReinitialization = true;
+	CleanChainMapping(bForceReinitialization);
+}
+
 void UIKRetargeterController::OnRetargetChainRenamed(UIKRigDefinition* IKRig, FName OldChainName, FName NewChainName) const
 {
-	const bool bIsSourceRig = IKRig == Asset->SourceIKRigAsset;
-	check(bIsSourceRig || IKRig == Asset->TargetIKRigAsset)
+	const bool bIsSourceRig = IKRig == Asset->GetSourceIKRig();
+	check(bIsSourceRig || IKRig == Asset->GetTargetIKRig())
 	for (URetargetChainSettings* ChainMap : Asset->ChainSettings)
 	{
 		FName& ChainNameToUpdate = bIsSourceRig ? ChainMap->SourceChain : ChainMap->TargetChain;
@@ -269,8 +313,8 @@ void UIKRetargeterController::OnRetargetChainRenamed(UIKRigDefinition* IKRig, FN
 
 void UIKRetargeterController::OnRetargetChainRemoved(UIKRigDefinition* IKRig, const FName& InChainRemoved) const
 {
-	const bool bIsSourceRig = IKRig == Asset->SourceIKRigAsset;
-	check(bIsSourceRig || IKRig == Asset->TargetIKRigAsset)
+	const bool bIsSourceRig = IKRig == Asset->GetSourceIKRig();
+	check(bIsSourceRig || IKRig == Asset->GetTargetIKRig())
 
 	// set source chain name to NONE if it has been deleted 
 	if (bIsSourceRig)
@@ -302,11 +346,12 @@ void UIKRetargeterController::OnRetargetChainRemoved(UIKRigDefinition* IKRig, co
 
 void UIKRetargeterController::SetSourceChainForTargetChain(URetargetChainSettings* ChainMap, FName SourceChainToMapTo) const
 {
-	FScopedTransaction Transaction(LOCTEXT("SetRetargetChainSource", "Set Retarget Chain Source"));
-	Asset->Modify();
-	
 	check(ChainMap)
+	
+	FScopedTransaction Transaction(LOCTEXT("SetRetargetChainSource", "Set Retarget Chain Source"));
+	ChainMap->Modify();
 	ChainMap->SourceChain = SourceChainToMapTo;
+	
 	BroadcastNeedsReinitialized();
 }
 
@@ -315,41 +360,110 @@ const TArray<TObjectPtr<URetargetChainSettings>>& UIKRetargeterController::GetCh
 	return Asset->ChainSettings;
 }
 
-USkeleton* UIKRetargeterController::GetSourceSkeletonAsset() const
+const URetargetChainSettings* UIKRetargeterController::GetChainMappingByTargetChainName(const FName& TargetChainName) const
 {
-	if (!IsValid(Asset->SourceIKRigAsset))
+	for (TObjectPtr<URetargetChainSettings> ChainMap : Asset->ChainSettings)
 	{
-		return nullptr;
+		if (ChainMap->TargetChain == TargetChainName)
+		{
+			return ChainMap;
+		}
 	}
 
-	if (!Asset->SourceIKRigAsset->PreviewSkeletalMesh)
-	{
-		return nullptr;
-	}
-
-	return Asset->SourceIKRigAsset->PreviewSkeletalMesh->GetSkeleton();
+	return nullptr;
 }
 
-void UIKRetargeterController::AddRetargetPose(FName NewPoseName) const
+FName UIKRetargeterController::GetChainGoal(const TObjectPtr<URetargetChainSettings> ChainSettings) const
+{
+	if (!ChainSettings)
+	{
+		return NAME_None;
+	}
+	
+	UIKRigDefinition* TargetIKRig = GetIKRigWriteable(ERetargetSourceOrTarget::Target);
+	if (!TargetIKRig)
+	{
+		return NAME_None;
+	}
+	
+	const UIKRigController* IKRigController = UIKRigController::GetIKRigController(TargetIKRig);
+	return IKRigController->GetRetargetChainGoal(ChainSettings->TargetChain);
+}
+
+bool UIKRetargeterController::IsChainGoalConnectedToASolver(const FName& GoalName) const
+{
+	UIKRigDefinition* TargetIKRig = GetIKRigWriteable(ERetargetSourceOrTarget::Target);
+	if (!TargetIKRig)
+	{
+		return false;
+	}
+	
+	const UIKRigController* IKRigController = UIKRigController::GetIKRigController(TargetIKRig);
+	return IKRigController->IsGoalConnectedToAnySolver(GoalName);
+}
+
+void UIKRetargeterController::AddRetargetPose(
+	const FName& NewPoseName,
+	const FIKRetargetPose* ToDuplicate,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
 {
 	FScopedTransaction Transaction(LOCTEXT("AddRetargetPose", "Add Retarget Pose"));
 	Asset->Modify();
 	
-	NewPoseName = MakePoseNameUnique(NewPoseName);
-	Asset->RetargetPoses.Add(NewPoseName);
-	Asset->CurrentRetargetPose = NewPoseName;
+	const FName UniqueNewPoseName = MakePoseNameUnique(NewPoseName.ToString(), SourceOrTarget);
+	TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	FIKRetargetPose& NewPose = Poses.Add(UniqueNewPoseName);
+	if (ToDuplicate)
+	{
+		NewPose.RootTranslationOffset = ToDuplicate->RootTranslationOffset;
+		NewPose.BoneRotationOffsets = ToDuplicate->BoneRotationOffsets;
+	}
+	
+	FName& CurrentRetargetPoseName = SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->CurrentSourceRetargetPose : Asset->CurrentTargetRetargetPose;
+	CurrentRetargetPoseName = UniqueNewPoseName;
 
 	BroadcastNeedsReinitialized();
 }
 
-void UIKRetargeterController::RemoveRetargetPose(FName PoseToRemove) const
+void UIKRetargeterController::RenameCurrentRetargetPose(
+	const FName& NewPoseName,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	if (PoseToRemove == Asset->DefaultPoseName)
+	// do we already have a retarget pose with this name?
+	
+	if (GetRetargetPoses(SourceOrTarget).Contains(NewPoseName))
+	{
+		return;
+	}
+	
+	FScopedTransaction Transaction(LOCTEXT("RenameRetargetPose", "Rename Retarget Pose"));
+	Asset->Modify();
+
+	// replace key in the map
+	TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	const FName CurrentPoseName = GetCurrentRetargetPoseName(SourceOrTarget);
+	const FIKRetargetPose CurrentPoseData = GetCurrentRetargetPose(SourceOrTarget);
+	Poses.Remove(CurrentPoseName);
+	Poses.Shrink();
+	Poses.Add(NewPoseName, CurrentPoseData);
+
+	// update current pose name
+	SetCurrentRetargetPose(NewPoseName, SourceOrTarget);
+
+	BroadcastNeedsReinitialized();
+}
+
+void UIKRetargeterController::RemoveRetargetPose(
+	const FName& PoseToRemove,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
+{
+	if (PoseToRemove == Asset->GetDefaultPoseName())
 	{
 		return; // cannot remove default pose
 	}
 
-	if (!Asset->RetargetPoses.Contains(PoseToRemove))
+	TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	if (!Poses.Contains(PoseToRemove))
 	{
 		return; // cannot remove pose that doesn't exist
 	}
@@ -357,63 +471,105 @@ void UIKRetargeterController::RemoveRetargetPose(FName PoseToRemove) const
 	FScopedTransaction Transaction(LOCTEXT("RemoveRetargetPose", "Remove Retarget Pose"));
 	Asset->Modify();
 
-	Asset->RetargetPoses.Remove(PoseToRemove);
+	Poses.Remove(PoseToRemove);
 
 	// did we remove the currently used pose?
-	if (Asset->CurrentRetargetPose == PoseToRemove)
+	if (GetCurrentRetargetPoseName(SourceOrTarget) == PoseToRemove)
 	{
-		Asset->CurrentRetargetPose = UIKRetargeter::DefaultPoseName;
+		SetCurrentRetargetPose(UIKRetargeter::GetDefaultPoseName(), SourceOrTarget);
 	}
 
 	BroadcastNeedsReinitialized();
 }
 
-void UIKRetargeterController::ResetRetargetPose(FName PoseToReset) const
+void UIKRetargeterController::ResetRetargetPose(
+	const FName& PoseToReset,
+	const TArray<FName>& BonesToReset,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	if (!Asset->RetargetPoses.Contains(PoseToReset))
+	TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	if (!Poses.Contains(PoseToReset))
 	{
 		return; // cannot reset pose that doesn't exist
 	}
+	
+	FIKRetargetPose& PoseToEdit = Poses[PoseToReset];
+	
+	if (BonesToReset.IsEmpty())
+	{
+		FScopedTransaction Transaction(LOCTEXT("ResetRetargetPose", "Reset Retarget Pose"));
+		Asset->Modify();
 
-	FScopedTransaction Transaction(LOCTEXT("ResetRetargetPose", "Reset Retarget Pose"));
-	Asset->Modify();
-	
-	Asset->RetargetPoses[PoseToReset].BoneRotationOffsets.Reset();
-	Asset->RetargetPoses[PoseToReset].RootTranslationOffset = FVector::ZeroVector;
-	
+		PoseToEdit.BoneRotationOffsets.Reset();
+		PoseToEdit.RootTranslationOffset = FVector::ZeroVector;
+	}
+	else
+	{
+		FScopedTransaction Transaction(LOCTEXT("ResetRetargetBonePose", "Reset Bone Pose"));
+		Asset->Modify();
+		
+		const FName RootBoneName = GetRetargetRootBone(SourceOrTarget);
+		for (const FName& BoneToReset : BonesToReset)
+		{
+			if (PoseToEdit.BoneRotationOffsets.Contains(BoneToReset))
+			{
+				PoseToEdit.BoneRotationOffsets.Remove(BoneToReset);
+			}
+
+			if (BoneToReset == RootBoneName)
+			{
+				PoseToEdit.RootTranslationOffset = FVector::ZeroVector;	
+			}
+		}
+	}
+
 	BroadcastNeedsReinitialized();
 }
 
-FName UIKRetargeterController::GetCurrentRetargetPoseName() const
+FName UIKRetargeterController::GetCurrentRetargetPoseName(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	return GetAsset()->CurrentRetargetPose;
+	return SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->CurrentSourceRetargetPose : GetAsset()->CurrentTargetRetargetPose;
 }
 
-void UIKRetargeterController::SetCurrentRetargetPose(FName CurrentPose) const
+void UIKRetargeterController::SetCurrentRetargetPose(FName NewCurrentPose, const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	check(Asset->RetargetPoses.Contains(CurrentPose));
+	const TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	check(Poses.Contains(NewCurrentPose));
 
 	FScopedTransaction Transaction(LOCTEXT("SetCurrentPose", "Set Current Pose"));
 	Asset->Modify();
-	Asset->CurrentRetargetPose = CurrentPose;
+	FName& CurrentPose = SourceOrTarget == ERetargetSourceOrTarget::Source ? Asset->CurrentSourceRetargetPose : Asset->CurrentTargetRetargetPose;
+	CurrentPose = NewCurrentPose;
 	
 	BroadcastNeedsReinitialized();
 }
 
-const TMap<FName, FIKRetargetPose>& UIKRetargeterController::GetRetargetPoses()
+TMap<FName, FIKRetargetPose>& UIKRetargeterController::GetRetargetPoses(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	return GetAsset()->RetargetPoses;
+	return SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->SourceRetargetPoses : GetAsset()->TargetRetargetPoses;
 }
 
-void UIKRetargeterController::SetRotationOffsetForRetargetPoseBone(FName BoneName, FQuat RotationOffset) const
+FIKRetargetPose& UIKRetargeterController::GetCurrentRetargetPose(const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	const FIKRigSkeleton& Skeleton = Asset->GetTargetIKRig()->Skeleton;
-	Asset->RetargetPoses[Asset->CurrentRetargetPose].SetBoneRotationOffset(BoneName, RotationOffset, Skeleton);
+	return GetRetargetPoses(SourceOrTarget)[GetCurrentRetargetPoseName(SourceOrTarget)];
 }
 
-FQuat UIKRetargeterController::GetRotationOffsetForRetargetPoseBone(FName BoneName) const
+void UIKRetargeterController::SetRotationOffsetForRetargetPoseBone(
+	const FName& BoneName,
+	const FQuat& RotationOffset,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	TMap<FName, FQuat>& BoneOffsets = Asset->RetargetPoses[Asset->CurrentRetargetPose].BoneRotationOffsets;
+	const UIKRigDefinition* IKRig = SourceOrTarget == ERetargetSourceOrTarget::Source ? GetAsset()->GetSourceIKRig() : GetAsset()->GetTargetIKRig();
+	FIKRetargetPose& Pose = GetCurrentRetargetPose(SourceOrTarget);
+	Pose.SetDeltaRotationForBone(BoneName, RotationOffset);
+	Pose.SortHierarchically(IKRig->Skeleton);
+}
+
+FQuat UIKRetargeterController::GetRotationOffsetForRetargetPoseBone(
+	const FName& BoneName,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
+{
+	TMap<FName, FQuat>& BoneOffsets = GetCurrentRetargetPose(SourceOrTarget).BoneRotationOffsets;
 	if (!BoneOffsets.Contains(BoneName))
 	{
 		return FQuat::Identity;
@@ -422,36 +578,24 @@ FQuat UIKRetargeterController::GetRotationOffsetForRetargetPoseBone(FName BoneNa
 	return BoneOffsets[BoneName];
 }
 
-void UIKRetargeterController::AddTranslationOffsetToRetargetRootBone(FVector TranslationOffset) const
+void UIKRetargeterController::AddTranslationOffsetToRetargetRootBone(
+	const FVector& TranslationOffset,
+	const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	Asset->RetargetPoses[Asset->CurrentRetargetPose].AddTranslationDeltaToRoot(TranslationOffset);
+	GetCurrentRetargetPose(SourceOrTarget).AddToRootTranslationDelta(TranslationOffset);
 }
 
-void UIKRetargeterController::SetEditRetargetPoseMode(bool bEditPoseMode, bool bReinitializeAfter) const
+FName UIKRetargeterController::MakePoseNameUnique(const FString& PoseName, const ERetargetSourceOrTarget& SourceOrTarget) const
 {
-	GetAsset()->bEditRetargetPoseMode = bEditPoseMode;
-	if (!bEditPoseMode && bReinitializeAfter)
-	{
-		// must reinitialize after editing the retarget pose
-		BroadcastNeedsReinitialized();
-	}
-}
-
-bool UIKRetargeterController::GetEditRetargetPoseMode() const
-{
-	return GetAsset()->bEditRetargetPoseMode;
-}
-
-FName UIKRetargeterController::MakePoseNameUnique(FName PoseName) const
-{
-	FName UniqueName = PoseName;
+	FString UniqueName = PoseName;
 	int32 Suffix = 1;
-	while (Asset->RetargetPoses.Contains(UniqueName))
+	const TMap<FName, FIKRetargetPose>& Poses = GetRetargetPoses(SourceOrTarget);
+	while (Poses.Contains(FName(UniqueName)))
 	{
-		UniqueName = FName(PoseName.ToString() + "_" + FString::FromInt(Suffix));
+		UniqueName = PoseName + "_" + FString::FromInt(Suffix);
 		++Suffix;
 	}
-	return UniqueName;
+	return FName(UniqueName);
 }
 
 URetargetChainSettings* UIKRetargeterController::GetChainMap(const FName& TargetChainName) const
@@ -469,15 +613,16 @@ URetargetChainSettings* UIKRetargeterController::GetChainMap(const FName& Target
 
 void UIKRetargeterController::SortChainMapping() const
 {
-	if (!IsValid(Asset->TargetIKRigAsset))
+	const UIKRigDefinition* TargetIKRig = Asset->GetTargetIKRig();
+	if (!IsValid(TargetIKRig))
 	{
 		return;
 	}
 	
-	Asset->ChainSettings.Sort([this](const URetargetChainSettings& A, const URetargetChainSettings& B)
+	Asset->ChainSettings.Sort([TargetIKRig](const URetargetChainSettings& A, const URetargetChainSettings& B)
 	{
-		const TArray<FBoneChain>& BoneChains = Asset->TargetIKRigAsset->GetRetargetChains();
-		const FIKRigSkeleton& TargetSkeleton = Asset->TargetIKRigAsset->Skeleton;
+		const TArray<FBoneChain>& BoneChains = TargetIKRig->GetRetargetChains();
+		const FIKRigSkeleton& TargetSkeleton = TargetIKRig->Skeleton;
 
 		// look for chains
 		const int32 IndexA = BoneChains.IndexOfByPredicate([&A](const FBoneChain& Chain)
@@ -511,3 +656,4 @@ void UIKRetargeterController::SortChainMapping() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

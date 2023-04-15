@@ -99,6 +99,25 @@ class UPhysicsConstraintTemplate : public UObject
 		}
 	}
 
+	/** 
+	 * Returns the properties associated with the named constraint profile. If the profile isn't found 
+	 * it returns the default profile properties.
+	 */
+	ENGINE_API const FConstraintProfileProperties& GetConstraintProfilePropertiesOrDefault(FName ProfileName) const
+	{
+		if (ProfileName != NAME_None)
+		{
+			for (const FPhysicsConstraintProfileHandle& Handle : ProfileHandles)
+			{
+				if (Handle.ProfileName == ProfileName)
+				{
+					return Handle.ProfileProperties;
+				}
+			}
+		}
+		return DefaultProfile;
+	}
+
 #if WITH_EDITOR
 	/** Copy constraint instance into default profile.*/
 	ENGINE_API void SetDefaultProfile(FConstraintInstance& CI)

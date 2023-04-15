@@ -10,19 +10,19 @@
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/StaticMeshSocket.h"
 #include "UnrealEdGlobals.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Editor/StaticMeshEditor/Public/IStaticMeshEditor.h"
+#include "IStaticMeshEditor.h"
 
-#include "Editor/PropertyEditor/Public/PropertyEditorModule.h"
+#include "PropertyEditorModule.h"
 
 #include "ScopedTransaction.h"
 
-#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Framework/Commands/GenericCommands.h"
@@ -74,7 +74,7 @@ public:
 		NotImportedSocketBrush = FAppStyle::Get().GetBrush("NoBrush");
 
 		auto Args = FSuperRowType::FArguments();
-			// .Style(&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
+			// .Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
 
 		SMultiColumnTableRow< TSharedPtr<SocketListItem> >::Construct(Args, InOwnerTableView);
 	}
@@ -269,7 +269,7 @@ void SSocketManager::Construct(const FArguments& InArgs)
 			.Value(.3f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -368,7 +368,7 @@ void SSocketManager::Construct(const FArguments& InArgs)
 				+ SOverlay::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
 					.Visibility(this, &SSocketManager::GetSelectSocketMessageVisibility)

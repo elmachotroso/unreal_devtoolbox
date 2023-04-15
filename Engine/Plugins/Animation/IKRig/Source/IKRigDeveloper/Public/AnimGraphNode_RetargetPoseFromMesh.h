@@ -33,7 +33,12 @@ public:
 	virtual FEditorModeID GetEditorMode() const override;
 	virtual void Draw(FPrimitiveDrawInterface* PDI, USkeletalMeshComponent* PreviewSkelMeshComp) const override;
 	virtual void CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex) const override;
+	virtual bool UsingCopyPoseFromMesh() const override { return true; };
 	// End of UAnimGraphNode_Base interface
+
+	// UK2Node interface
+	virtual UObject* GetJumpTargetForDoubleClick() const override;
+	// End of UK2Node interface
 
 	static const FName AnimModeName;
 };

@@ -24,7 +24,6 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/App.h"
 #include "Misc/Fork.h"
-#include "Containers/LockFreeFixedSizeAllocator.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/ThreadHeartBeat.h"
@@ -101,8 +100,16 @@ static FAutoConsoleVariableRef CVarForkedProcessMaxWorkerThreads(
 	TEXT("Configures the number of worker threads a forked process should spawn if it allows multithreading.")
 );
 
+CORE_API bool GTaskGraphUseDynamicPrioritization = 1;
+static FAutoConsoleVariableRef CVarTaskDynamicPrioritization(
+	TEXT("TaskGraph.UseDynamicPrioritization"),
+	GTaskGraphUseDynamicPrioritization,
+	TEXT("Adjust thread priority per-task so that higher priority tasks running on background threads can't be preempted as easily. Helps a lot under high load."),
+	ECVF_ReadOnly
+);
+
 CORE_API int32 GUseNewTaskBackend = 1;
-int32 GNumForegroundWorkers = 2;
+CORE_API int32 GNumForegroundWorkers = 2;
 static FAutoConsoleVariableRef CVarNumForegroundWorkers(
 	TEXT("TaskGraph.NumForegroundWorkers"),
 	GNumForegroundWorkers,
@@ -414,10 +421,10 @@ static ENamedThreads::Type ThreadPriorityFromChar(TCHAR InChar)
 FString FAutoConsoleTaskPriority::CreateFullHelpText(const TCHAR* Name, const TCHAR* OriginalHelp)
 {
 	return FString::Printf(
-		TEXT("%s\n")
-		TEXT("Arguments are three characters: [ThreadPriority][TaskPriority][TaskPriorityIfForcedToNormalThreadPriority] ")
-		TEXT("where ThreadPriority is 'h' or 'n' or 'b' (high/normal/background) and TaskPriority is 'h' or 'n' (high/normal). ")
-		TEXT("Example: %s bnh")
+		TEXT("%s\n"
+		     "Arguments are three characters: [ThreadPriority][TaskPriority][TaskPriorityIfForcedToNormalThreadPriority] "
+		     "where ThreadPriority is 'h' or 'n' or 'b' (high/normal/background) and TaskPriority is 'h' or 'n' (high/normal). "
+		     "Example: %s bnh")
 		, OriginalHelp, Name);
 }
 
@@ -767,7 +774,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void EnqueueFromThisThread(int32 QueueIndex, FBaseGraphTask* Task) override
 	{
 		checkThreadGraph(Task && Queue(QueueIndex).StallRestartEvent); // make sure we are started up
-		uint32 PriIndex = ENamedThreads::GetTaskPriority(Task->ThreadToExecuteOn) ? 0 : 1;
+		uint32 PriIndex = ENamedThreads::GetTaskPriority(Task->GetThreadToExecuteOn()) ? 0 : 1;
 		int32 ThreadToStart = Queue(QueueIndex).StallQueue.Push(Task, PriIndex);
 		check(ThreadToStart < 0); // if I am stalled, then how can I be queueing a task?
 	}
@@ -801,7 +808,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		TestRandomizedThreads();
 		checkThreadGraph(Task && Queue(QueueIndex).StallRestartEvent); // make sure we are started up
 
-		uint32 PriIndex = ENamedThreads::GetTaskPriority(Task->ThreadToExecuteOn) ? 0 : 1;
+		uint32 PriIndex = ENamedThreads::GetTaskPriority(Task->GetThreadToExecuteOn()) ? 0 : 1;
 		int32 ThreadToStart = Queue(QueueIndex).StallQueue.Push(Task, PriIndex);
 
 		if (ThreadToStart >= 0)
@@ -1412,15 +1419,16 @@ public:
 	{
 #if STATS
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (ENamedThreads::GetThreadIndex(Task->ThreadToExecuteOn) == ENamedThreads::StatsThread)
+		if (ENamedThreads::GetThreadIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::StatsThread)
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
-			checkf(ENamedThreads::GetQueueIndex(Task->ThreadToExecuteOn) == ENamedThreads::MainQueue, TEXT("`StatsThread_Local` is not supported and unlikely to be used intentionally. Check that `Task->ThreadToExecuteOn` value is not rubbish: %d"), Task->ThreadToExecuteOn);
+			checkf(ENamedThreads::GetQueueIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::MainQueue, TEXT("`StatsThread_Local` is not supported and unlikely to be used intentionally. Check that `Task->ThreadToExecuteOn` value is not rubbish: %d"), Task->GetThreadToExecuteOn());
 
 			extern CORE_API UE::Tasks::FPipe GStatsPipe;
 			GStatsPipe.Launch(UE_SOURCE_LOCATION,
 				[Task]
 				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(StatsPipeWork);
 					TArray<FBaseGraphTask*> Dummy;
 					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
 				}
@@ -1437,13 +1445,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	static void RedirectAudioTasksToPipe(FBaseGraphTask* Task)
 	{
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (ENamedThreads::GetThreadIndex(Task->ThreadToExecuteOn) == ENamedThreads::AudioThread)
+		if (ENamedThreads::GetThreadIndex(Task->GetThreadToExecuteOn()) == ENamedThreads::AudioThread)
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			extern CORE_API UE::Tasks::FPipe GAudioPipe;
 			GAudioPipe.Launch(UE_SOURCE_LOCATION,
 				[Task]
 				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(AudioPipeWork);
 					TArray<FBaseGraphTask*> Dummy;
 					Task->Execute(Dummy, ENamedThreads::AnyThread, true);
 				}
@@ -1478,8 +1487,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			TASKGRAPH_SCOPE_CYCLE_COUNTER(3, STAT_TaskGraph_QueueTask_AnyThread);
 			if (FTaskGraphInterface::IsMultithread())
 			{
-				uint32 TaskPriority = ENamedThreads::GetTaskPriority(Task->ThreadToExecuteOn);
-				int32 Priority = ENamedThreads::GetThreadPriorityIndex(Task->ThreadToExecuteOn);
+				uint32 TaskPriority = ENamedThreads::GetTaskPriority(Task->GetThreadToExecuteOn());
+				int32 Priority = ENamedThreads::GetThreadPriorityIndex(Task->GetThreadToExecuteOn());
 				if (Priority == (ENamedThreads::BackgroundThreadPriority >> ENamedThreads::ThreadPriorityShift) && (!bCreatedBackgroundPriorityThreads || !ENamedThreads::bHasBackgroundThreads))
 				{
 					Priority = ENamedThreads::NormalThreadPriority >> ENamedThreads::ThreadPriorityShift; // we don't have background threads, promote to normal
@@ -1532,12 +1541,21 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 
-
-	virtual	int32 GetNumWorkerThreads() final override
+	virtual int32 GetNumWorkerThreads() final override
 	{
 		int32 Result = (NumThreads - NumNamedThreads) / NumTaskThreadSets - GNumWorkerThreadsToIgnore;
 		check(Result > 0); // can't tune it to zero task threads
 		return Result;
+	}
+
+	virtual int32 GetNumForegroundThreads() final override
+	{
+		return bCreatedHiPriorityThreads ? NumTaskThreadsPerSet : 0;
+	}
+
+	virtual int32 GetNumBackgroundThreads() final override
+	{
+		return bCreatedBackgroundPriorityThreads ? NumTaskThreadsPerSet : 0;
 	}
 
 	virtual bool IsCurrentThreadKnown() final override
@@ -1576,7 +1594,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	virtual uint64 ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread) final override
 	{
-		SCOPED_NAMED_EVENT(ProcessThreadUntilIdle, FColor::Red);
 		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
 		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
 		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
@@ -1875,6 +1892,10 @@ class FTaskGraphCompatibilityImplementation final : public FTaskGraphInterface
 	int32				NumNamedThreads;
 	int32				NumWorkerThreads;
 
+	/** Individual foreground and background workers. **/
+	int32				NumBackgroundWorkers;
+	int32				NumForegroundWorkers;
+
 	TArray<FWorkerThread> NamedThreads;
 
 	FThreadSafeCounter	ReentrancyCheck;
@@ -1895,15 +1916,15 @@ public:
 				GNumForegroundWorkers = 1;
 			}
 
-			int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
-			int32 NumForegroundWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+			NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+			NumForegroundWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
 
 			LowLevelTasks::FScheduler::Get().StartWorkers(NumForegroundWorkers, NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskThreadPriority(), FPlatformAffinity::GetTaskBPThreadPriority());
 
 			check(IsInGameThread()); // otherwise we can have a race on starting reserve workers below
 			if (GConfig == nullptr)
 			{
-				// postpone starting reserve workers tillGConfig is initialized, to know if reserve workers are disabled
+				// postpone starting reserve workers until GConfig is initialized, to know if reserve workers are disabled
 				FCoreDelegates::ConfigReadyForUse.AddRaw(this, &FTaskGraphCompatibilityImplementation::StartReserveWorkers);
 			}
 			else
@@ -1986,16 +2007,16 @@ public:
 	{
 		if (FTaskGraphInterface::IsMultithread())
 		{
-			int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
-			int32 NumWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+			NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+			NumForegroundWorkers =  FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
 
 			LowLevelTasks::FScheduler::Get().StopWorkers();
-			LowLevelTasks::FScheduler::Get().StartWorkers(NumWorkers, NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, Pri, FPlatformAffinity::GetTaskBPThreadPriority());
+			LowLevelTasks::FScheduler::Get().StartWorkers(NumForegroundWorkers, NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, Pri, FPlatformAffinity::GetTaskBPThreadPriority());
 
 			if (bReserveWorkersEnabled)
 			{
 				LowLevelTasks::FReserveScheduler::Get().StopWorkers();
-				LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
+				LowLevelTasks::FReserveScheduler::Get().StartWorkers(LowLevelTasks::FScheduler::Get(), NumForegroundWorkers + NumBackgroundWorkers, FForkProcessHelper::IsForkedMultithreadInstance() ? FThread::Forkable : FThread::NonForkable, FPlatformAffinity::GetTaskBPThreadPriority());
 			}
 		}
 	}
@@ -2012,6 +2033,9 @@ private:
 
 		if (ENamedThreads::GetThreadIndex(InThreadToExecuteOn) == ENamedThreads::AnyThread)
 		{
+#if TASKGRAPH_NEW_FRONTEND
+			checkNoEntry();
+#else
 			uint32 ThreadPriority = GetThreadPriorityIndex(InThreadToExecuteOn);
 			check(ThreadPriority < uint32(ENamedThreads::NumThreadPriorities));
 			LowLevelTasks::ETaskPriority Conversion[int(ENamedThreads::NumThreadPriorities)] = { LowLevelTasks::ETaskPriority::Normal, LowLevelTasks::ETaskPriority::High, LowLevelTasks::ETaskPriority::BackgroundNormal };
@@ -2022,14 +2046,16 @@ private:
 				Priority = LowLevelTasks::ETaskPriority::BackgroundHigh;
 			}
 
-			Task->TaskHandle.Init(TEXT("TaskGraphTask"), Priority, [Task, InThreadToExecuteOn, Deleter(LowLevelTasks::TDeleter<FBaseGraphTask, &FBaseGraphTask::DeleteTask>(Task))]()
+			Task->GetTaskHandle().Init(TEXT("TaskGraphTask"), Priority, [Task, InThreadToExecuteOn, Deleter(LowLevelTasks::TDeleter<FBaseGraphTask, &FBaseGraphTask::DeleteTask>(Task))]()
 			{
 				Task->Execute(NewTasks, InThreadToExecuteOn, false);
 			});
 	
 			bWakeUpWorker |= LowLevelTasks::FSchedulerTls::IsBusyWaiting();
-			verifySlow(LowLevelTasks::TryLaunch(Task->TaskHandle, bWakeUpWorker ? LowLevelTasks::EQueuePreference::GlobalQueuePreference : LowLevelTasks::EQueuePreference::LocalQueuePreference, bWakeUpWorker));
+
+			verifySlow(LowLevelTasks::TryLaunch(Task->GetTaskHandle(), bWakeUpWorker ? LowLevelTasks::EQueuePreference::GlobalQueuePreference : LowLevelTasks::EQueuePreference::LocalQueuePreference, bWakeUpWorker));
 			return;
+#endif
 		}
 
 		ENamedThreads::Type CurrentThreadIfKnown;
@@ -2060,6 +2086,16 @@ private:
 	int32 GetNumWorkerThreads() final override
 	{
 		return LowLevelTasks::FScheduler::Get().GetNumWorkers();
+	}
+
+	virtual	int32 GetNumForegroundThreads() final override
+	{
+		return NumForegroundWorkers;
+	}
+
+	virtual	int32 GetNumBackgroundThreads() final override
+	{
+		return NumBackgroundWorkers;
 	}
 
 	bool IsCurrentThreadKnown() final override
@@ -2097,7 +2133,6 @@ private:
 
 	uint64 ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread) final override
 	{
-		SCOPED_NAMED_EVENT(ProcessThreadUntilIdle, FColor::Red);
 		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
 		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
 		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
@@ -2126,7 +2161,7 @@ private:
 	{
 		TaskTrace::FWaitingScope WaitingScope(GetTraceIds(Tasks));
 		TRACE_CPUPROFILER_EVENT_SCOPE(WaitUntilTasksComplete);
-	
+
 		ENamedThreads::Type CurrentThread = CurrentThreadIfKnown;
 		if (ENamedThreads::GetThreadIndex(CurrentThreadIfKnown) == ENamedThreads::AnyThread)
 		{
@@ -2166,8 +2201,31 @@ private:
 			// named thread process tasks while we wait
 			TGraphTask<FReturnGraphTask>::CreateTask(&Tasks, CurrentThread).ConstructAndDispatchWhenReady(CurrentThread);
 			ProcessThreadUntilRequestReturn(CurrentThread);
+			return;
 		}
-		else if (LowLevelTasks::FScheduler::Get().IsWorkerThread() || LowLevelTasks::FReserveScheduler::Get().IsWorkerThread())
+
+#if TASKGRAPH_NEW_FRONTEND
+		// use the waiting logic of the new frontend, except for named thread tasks
+		bool HasNamedThreadTasks = false;
+		for (const FGraphEventRef& Task : Tasks)
+		{
+			if (!Task->IsNamedThreadTask())
+			{
+				Task->Wait();
+			}
+			else
+			{
+				HasNamedThreadTasks = true;
+			}
+		}
+
+		if (!HasNamedThreadTasks)
+		{
+			return;
+		}
+#endif
+
+		if (LowLevelTasks::FScheduler::Get().IsWorkerThread() || LowLevelTasks::FReserveScheduler::Get().IsWorkerThread())
 		{
 			// a worker thread gets blocked, involve a reserve worker to utilise an idle core
 			bool bSuccess = false; // has a reserve worker helped?
@@ -2337,8 +2395,8 @@ private:
 			return; // once enabled, reserve workers can't be disabled
 		}
 
-		int32 NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
-		int32 NumForegroundWorkers = FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
+		NumBackgroundWorkers = FMath::Max(1, NumWorkerThreads - FMath::Min<int>(GNumForegroundWorkers, NumWorkerThreads));
+		NumForegroundWorkers = FMath::Max(1, NumWorkerThreads - NumBackgroundWorkers);
 
 		check(GConfig);
 		
@@ -2420,6 +2478,14 @@ bool FTaskGraphInterface::IsMultithread()
 	return FPlatformProcess::SupportsMultithreading() || (FForkProcessHelper::IsForkedMultithreadInstance() && GAllowTaskGraphForkMultithreading);
 }
 
+#if TASKGRAPH_NEW_FRONTEND
+
+FGraphEventImplAllocator GraphEventImplAllocator;
+
+#else
+
+// Statics and some implementations from FBaseGraphTask and FGraphEvent
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 void FBaseGraphTask::LogPossiblyInvalidSubsequentsTask(const TCHAR* TaskName)
 {
@@ -2427,17 +2493,21 @@ void FBaseGraphTask::LogPossiblyInvalidSubsequentsTask(const TCHAR* TaskName)
 }
 #endif
 
-static TLockFreeClassAllocator_TLSCache<FGraphEvent, PLATFORM_CACHE_LINE_SIZE> TheGraphEventAllocator;
+static TLockFreeClassAllocator_TLSCache<FGraphEvent, PLATFORM_CACHE_LINE_SIZE>& GetGraphEventAllocator()
+{
+	static TLockFreeClassAllocator_TLSCache<FGraphEvent, PLATFORM_CACHE_LINE_SIZE> Allocator;
+	return Allocator;
+}
 
 FGraphEventRef FGraphEvent::CreateGraphEvent()
 {
-	FGraphEvent* Instance = new(TheGraphEventAllocator.Allocate()) FGraphEvent{};
+	FGraphEvent* Instance = new(GetGraphEventAllocator().Allocate()) FGraphEvent{};
 	return Instance;
 }
 
 void FGraphEvent::Recycle(FGraphEvent* ToRecycle)
 {
-	TheGraphEventAllocator.Free(ToRecycle);
+	GetGraphEventAllocator().Free(ToRecycle);
 }
 
 void FGraphEvent::DispatchSubsequents(ENamedThreads::Type CurrentThreadIfKnown)
@@ -2495,14 +2565,14 @@ void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedT
 	}
 
 	bool bWakeUpWorker = false;
-	SubsequentList.PopAllAndClose(NewTasks);
-	for (int32 Index = NewTasks.Num() - 1; Index >= 0 ; Index--) // reverse the order since PopAll is implicitly backwards
+	TArray<FBaseGraphTask*> PoppedTasks;
+	SubsequentList.PopAllAndClose(PoppedTasks);
+	for (int32 Index = PoppedTasks.Num() - 1; Index >= 0 ; Index--) // reverse the order since PopAll is implicitly backwards
 	{
-		FBaseGraphTask* NewTask = NewTasks[Index];
+		FBaseGraphTask* NewTask = PoppedTasks[Index];
 		checkThreadGraph(NewTask);
 		NewTask->ConditionalQueueTask(CurrentThreadIfKnown, bWakeUpWorker);
 	}
-	NewTasks.Reset();
 
 	TaskTrace::Completed(GetTraceId());
 }
@@ -2516,7 +2586,11 @@ FGraphEvent::~FGraphEvent()
 	}
 #endif
 	CheckDontCompleteUntilIsEmpty(); // We should not have any wait untils outstanding
+
+	TaskTrace::Destroyed(GetTraceId());
 }
+
+#endif
 
 DECLARE_CYCLE_STAT(TEXT("FBroadcastTask"), STAT_FBroadcastTask, STATGROUP_TaskGraphTasks);
 

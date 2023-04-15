@@ -8,43 +8,69 @@
 #include "Algo/Transform.h"
 #include "Algo/Accumulate.h"
 #include "Animation/SmartName.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimDataModel)
 
 void UAnimDataModel::PostLoad()
 {
 	UObject::PostLoad();
 
-	const bool bHasBoneTracks = BoneAnimationTracks.Num() > 0;
-	if (bHasBoneTracks)
+	if (GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AnimationDataModelInterface_BackedOut &&
+		GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::BackoutAnimationDataModelInterface)
 	{
-		// Number of keys was used directly rather than Max(Value,2), as a single _frame_ animation should always have two _keys_ 
-		const int32 ActualNumKeys = BoneAnimationTracks[0].InternalTrackData.PosKeys.Num();
-		if (ActualNumKeys == 1 && NumberOfKeys == 2)
-		{
-			auto AddKey = [this](auto& Keys)
-			{
-				const auto KeyZero = Keys[0];
-				Keys.Add(KeyZero);
-				ensure(Keys.Num() == NumberOfKeys);
-			};
-				
-			for (FBoneAnimationTrack& BoneTrack : BoneAnimationTracks)
-			{
-				AddKey(BoneTrack.InternalTrackData.PosKeys);
-				AddKey(BoneTrack.InternalTrackData.RotKeys);
-				AddKey(BoneTrack.InternalTrackData.ScaleKeys);
-			}
-
-			Notify(EAnimDataModelNotifyType::TrackChanged);
-		}
+		UE_LOG(LogAnimation, Fatal, TEXT("This package was saved with a version that had to be backed out and is no longer able to be loaded."));
 	}
+
+
+	if (GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::ForceUpdateAnimationAssetCurveTangents)
+	{
+		// Forcefully AutoSetTangents to fix-up any imported sequences pre the fix for flattening first/last key leave/arrive tangents
+		Notify(EAnimDataModelNotifyType::BracketOpened);
+		for (FFloatCurve& FloatCurve : CurveData.FloatCurves)
+		{
+			FloatCurve.FloatCurve.AutoSetTangents();
+			FCurvePayload Payload;
+			Payload.Identifier = FAnimationCurveIdentifier(FloatCurve.Name.UID, ERawCurveTrackTypes::RCT_Float);
+			Notify(EAnimDataModelNotifyType::CurveChanged, Payload);
+		}
+		Notify(EAnimDataModelNotifyType::BracketClosed);
+	}
+
+	if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::SingleFrameAndKeyAnimModel)
+	{
+		const bool bHasBoneTracks = BoneAnimationTracks.Num() > 0;
+		if (bHasBoneTracks)
+		{
+			// Number of keys was used directly rather than Max(Value,2), as a single _frame_ animation should always have two _keys_ 
+			const int32 ActualNumKeys = BoneAnimationTracks[0].InternalTrackData.PosKeys.Num();
+			if (ActualNumKeys == 1 && NumberOfKeys == 2)
+			{
+				auto AddKey = [this](auto& Keys)
+				{
+					const auto KeyZero = Keys[0];
+					Keys.Add(KeyZero);
+					ensure(Keys.Num() == NumberOfKeys);
+				};
+				
+				for (FBoneAnimationTrack& BoneTrack : BoneAnimationTracks)
+				{
+					AddKey(BoneTrack.InternalTrackData.PosKeys);
+					AddKey(BoneTrack.InternalTrackData.RotKeys);
+					AddKey(BoneTrack.InternalTrackData.ScaleKeys);
+				}
+
+				Notify(EAnimDataModelNotifyType::TrackChanged);
+			}
+		}
+	}	
 }
 
 void UAnimDataModel::PostDuplicate(bool bDuplicateForPIE)
 {
 	UObject::PostDuplicate(bDuplicateForPIE);
 
-	GenerateTransientData();
 	Notify(EAnimDataModelNotifyType::Populated);
 }
 
@@ -389,72 +415,6 @@ FGuid UAnimDataModel::GenerateGuid() const
 	return Guid;
 }
 
-const TArray<FRawAnimSequenceTrack>& UAnimDataModel::GetTransientRawAnimationTracks() const
-{
-	CheckTransientData();
-	return RawAnimationTracks;
-}
-
-const TArray<FName>& UAnimDataModel::GetTransientRawAnimationTrackNames() const
-{
-	CheckTransientData();
-	return RawAnimationTrackNames;
-}
-
-const TArray<FTrackToSkeletonMap>& UAnimDataModel::GetTransientRawAnimationTrackSkeletonMappings() const
-{
-	CheckTransientData();
-	return RawAnimationTrackSkeletonMappings;
-}
-
-FRawAnimSequenceTrack& UAnimDataModel::GetNonConstRawAnimationTrackByIndex(int32 TrackIndex)
-{
-	CheckTransientData();
-	checkf(BoneAnimationTracks.IsValidIndex(TrackIndex), TEXT("Invalid track index"));
-	return BoneAnimationTracks[TrackIndex].InternalTrackData;
-}
-
-const FRawCurveTracks& UAnimDataModel::GetTransientRawCurveTracks() const
-{
-	CheckTransientData();
-	return RawCurveTracks;
-}
-
-FAnimationCurveData& UAnimDataModel::GetNonConstCurveData()
-{
-	CheckTransientData();	
-	return CurveData;	
-}
-
-void UAnimDataModel::GenerateTransientData() const
-{
-	RawAnimationTracks.Empty(BoneAnimationTracks.Num());
-	RawAnimationTrackNames.Empty(BoneAnimationTracks.Num());
-	RawAnimationTrackSkeletonMappings.Empty(BoneAnimationTracks.Num());
-
-	for (const FBoneAnimationTrack& AnimTrack : BoneAnimationTracks)
-	{
-		RawAnimationTracks.Add(AnimTrack.InternalTrackData);
-		RawAnimationTrackNames.Add(AnimTrack.Name);
-		RawAnimationTrackSkeletonMappings.Add(AnimTrack.BoneTreeIndex);
-	}
-	
-	RawCurveTracks.FloatCurves = CurveData.FloatCurves;
-#if WITH_EDITOR
-	RawCurveTracks.TransformCurves = CurveData.TransformCurves;
-#endif
-	
-	bHasTransientDataBeenGenerated = true;
-}
-
-void UAnimDataModel::CheckTransientData() const
-{
-	if(!bHasTransientDataBeenGenerated)
-	{
-		GenerateTransientData();
-	}
-}
-
 FRichCurve* UAnimDataModel::GetMutableRichCurve(const FAnimationCurveIdentifier& CurveIdentifier)
 {
 	FRichCurve* RichCurve = nullptr;
@@ -557,4 +517,5 @@ FAnimCurveBase* UAnimDataModel::FindMutableCurveById(const FAnimationCurveIdenti
 
 	return nullptr;
 }
+
 

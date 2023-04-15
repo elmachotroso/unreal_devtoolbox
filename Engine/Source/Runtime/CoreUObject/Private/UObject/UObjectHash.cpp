@@ -11,6 +11,8 @@
 #include "Misc/PackageName.h"
 #include "Async/ParallelFor.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/LowLevelMemStats.h"
+#include "UObject/AnyPackagePrivate.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUObjectHash, Log, All);
 
@@ -24,6 +26,8 @@ DECLARE_CYCLE_STAT( TEXT( "UnhashObject" ), STAT_Hash_UnhashObject, STATGROUP_UO
 #if UE_GC_TRACK_OBJ_AVAILABLE
 DEFINE_STAT( STAT_Hash_NumObjects );
 #endif
+
+LLM_DEFINE_TAG(UObjectHash, TEXT("UObject hashtables"));
 
 // Global UObject array instance
 FUObjectArray GUObjectArray;
@@ -481,7 +485,7 @@ public:
 	FORCEINLINE FHashTableLock(FUObjectHashTables& InTables)
 	{
 #if THREADSAFE_UOBJECTS
-		if (!(IsGarbageCollecting() && IsInGameThread()))
+		if (!(IsGarbageCollectingAndLockingUObjectHashTables() && IsInGameThread()))
 		{
 			Tables = &InTables;
 			InTables.Lock();
@@ -804,10 +808,123 @@ UObject* StaticFindObjectFastInternal(const UClass* ObjectClass, const UObject* 
 {
 	INC_DWORD_STAT(STAT_FindObjectFast);
 
-	check(ObjectPackage != ANY_PACKAGE); // this could never have returned anything but nullptr
+	check(ObjectPackage != ANY_PACKAGE_DEPRECATED); // this could never have returned anything but nullptr
+
 	// If they specified an outer use that during the hashing
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
-	UObject* Result = StaticFindObjectFastInternalThreadSafe(ThreadHash, ObjectClass, ObjectPackage, ObjectName, bExactClass, bAnyPackage, ExcludeFlags | RF_NewerVersionExists, ExclusiveInternalFlags);
+	UObject* Result = StaticFindObjectFastInternalThreadSafe(ThreadHash, ObjectClass, ObjectPackage, ObjectName, bExactClass, bAnyPackage, ExcludeFlags, ExclusiveInternalFlags);
+	return Result;
+}
+
+UObject* StaticFindObjectFastInternal(const UClass* ObjectClass, const UObject* ObjectPackage, FName ObjectName, bool bExactClass, EObjectFlags ExcludeFlags, EInternalObjectFlags ExclusiveInternalFlags)
+{
+	INC_DWORD_STAT(STAT_FindObjectFast);
+
+	check(ObjectPackage != ANY_PACKAGE_DEPRECATED); // this could never have returned anything but nullptr
+
+	// If they specified an outer use that during the hashing
+	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
+	UObject* Result = StaticFindObjectFastInternalThreadSafe(ThreadHash, ObjectClass, ObjectPackage, ObjectName, bExactClass, /*bAnyPackage =*/ false, ExcludeFlags, ExclusiveInternalFlags);
+	return Result;
+}
+
+// Approximate search for finding unused object names
+bool DoesObjectPossiblyExist(const UObject* InOuter, FName ObjectName)
+{
+	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
+	check(InOuter != nullptr);
+	int32 Hash = GetObjectOuterHash(ObjectName, (PTRINT)InOuter);
+	FHashTableLock HashLock(ThreadHash);
+	// We don't need to iterate the multimap here as we are happy with false positives.
+	return ThreadHash.HashOuter.Contains(Hash);
+}
+
+bool StaticFindAllObjectsFastInternal(TArray<UObject*>& OutFoundObjects, const UClass* ObjectClass, FName ObjectName, bool bExactClass, EObjectFlags ExcludeFlags, EInternalObjectFlags ExclusiveInternalFlags)
+{
+	INC_DWORD_STAT(STAT_FindObjectFast);
+
+	ExclusiveInternalFlags |= EInternalObjectFlags::Unreachable;
+
+	FObjectSearchPath SearchPath(ObjectName);
+	const int32 Hash = GetObjectHash(SearchPath.Inner);
+	uint32 NumFoundObjects = 0; // Keeping track of the number of objects foundn. We allow OutFoundObjects to not be empty
+
+	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
+	FHashTableLock HashLock(ThreadHash);
+
+	FHashBucket* Bucket = ThreadHash.Hash.Find(Hash);
+	if (Bucket)
+	{
+		for (FHashBucketIterator It(*Bucket); It; ++It)
+		{
+			UObject* Object = (UObject*)*It;
+
+			if
+				((Object->GetFName() == SearchPath.Inner)
+
+					/* Don't return objects that have any of the exclusive flags set */
+					&& !Object->HasAnyFlags(ExcludeFlags)
+
+					/** If a class was specified, check that the object is of the correct class */
+					&& (ObjectClass == nullptr || (bExactClass ? Object->GetClass() == ObjectClass : Object->IsA(ObjectClass)))
+
+					/** Include (or not) pending kill objects */
+					&& !Object->HasAnyInternalFlags(ExclusiveInternalFlags)
+
+					/** Ensure that the partial path provided matches the object found */
+					&& SearchPath.MatchOuterNames(Object->GetOuter()))
+			{
+				checkf(!Object->IsUnreachable(), TEXT("%s"), *Object->GetFullName());
+				OutFoundObjects.Add(Object);
+				NumFoundObjects++;
+			}
+		}
+	}
+	return !!NumFoundObjects;
+}
+
+UObject* StaticFindFirstObjectFastInternal(const UClass* ObjectClass, FName ObjectName, bool bExactClass, EObjectFlags ExcludeFlags, EInternalObjectFlags ExclusiveInternalFlags)
+{
+	INC_DWORD_STAT(STAT_FindObjectFast);
+
+	ExclusiveInternalFlags |= EInternalObjectFlags::Unreachable;
+
+	UObject* Result = nullptr;
+	FObjectSearchPath SearchPath(ObjectName);
+	const int32 Hash = GetObjectHash(SearchPath.Inner);
+	uint32 NumFoundObjects = 0; // Keeping track of the number of objects found. We allow OutFoundObjects to not be empty
+
+	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
+	FHashTableLock HashLock(ThreadHash);
+
+	FHashBucket* Bucket = ThreadHash.Hash.Find(Hash);
+	if (Bucket)
+	{
+		for (FHashBucketIterator It(*Bucket); It; ++It)
+		{
+			UObject* Object = (UObject*)*It;
+
+			if
+				((Object->GetFName() == SearchPath.Inner)
+
+					/* Don't return objects that have any of the exclusive flags set */
+					&& !Object->HasAnyFlags(ExcludeFlags)
+
+					/** If a class was specified, check that the object is of the correct class */
+					&& (ObjectClass == nullptr || (bExactClass ? Object->GetClass() == ObjectClass : Object->IsA(ObjectClass)))
+
+					/** Include (or not) pending kill objects */
+					&& !Object->HasAnyInternalFlags(ExclusiveInternalFlags)
+
+					/** Ensure that the partial path provided matches the object found */
+					&& SearchPath.MatchOuterNames(Object->GetOuter()))
+			{
+				checkf(!Object->IsUnreachable(), TEXT("%s"), *Object->GetFullName());
+				Result = Object;
+				break;
+			}
+		}
+	}
 	return Result;
 }
 
@@ -942,6 +1059,7 @@ FORCEINLINE static UPackage* UnassignExternalPackageFromObject(FUObjectHashTable
 
 void ShrinkUObjectHashTables()
 {
+	LLM_SCOPE_BYTAG(UObjectHash);
 	TRACE_CPUPROFILER_EVENT_SCOPE(ShrinkUObjectHashTables);
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
@@ -1094,7 +1212,7 @@ UObjectBase* FindObjectWithOuter(const class UObjectBase* Outer, const class UCl
 
 	if( NameToLookFor != NAME_None )
 	{
-		Result = StaticFindObjectFastInternal(ClassToLookFor, static_cast<const UObject*>(Outer), NameToLookFor, false, false, RF_NoFlags, ExclusionInternalFlags);
+		Result = StaticFindObjectFastInternal(ClassToLookFor, static_cast<const UObject*>(Outer), NameToLookFor, false, RF_NoFlags, ExclusionInternalFlags);
 	}
 	else
 	{
@@ -1356,6 +1474,7 @@ void HashObject(UObjectBase* Object)
 	FName Name = Object->GetFName();
 	if (Name != NAME_None)
 	{
+		LLM_SCOPE_BYTAG(UObjectHash);
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 		SCOPE_CYCLE_COUNTER(STAT_Hash_HashObject);
 #endif
@@ -1398,6 +1517,7 @@ void UnhashObject(UObjectBase* Object)
 	FName Name = Object->GetFName();
 	if (Name != NAME_None)
 	{
+		LLM_SCOPE_BYTAG(UObjectHash);
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 		SCOPE_CYCLE_COUNTER(STAT_Hash_UnhashObject);
 #endif
@@ -1430,6 +1550,7 @@ void UnhashObject(UObjectBase* Object)
 
 void HashObjectExternalPackage(UObjectBase* Object, UPackage* Package)
 {
+	LLM_SCOPE_BYTAG(UObjectHash);
 	if (Package)
 	{
 		FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
@@ -1452,6 +1573,7 @@ void HashObjectExternalPackage(UObjectBase* Object, UPackage* Package)
 
 void UnhashObjectExternalPackage(class UObjectBase* Object)
 {
+	LLM_SCOPE_BYTAG(UObjectHash);
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock LockHash(ThreadHash);
 	UPackage* Package = UnassignExternalPackageFromObject(ThreadHash, Object);

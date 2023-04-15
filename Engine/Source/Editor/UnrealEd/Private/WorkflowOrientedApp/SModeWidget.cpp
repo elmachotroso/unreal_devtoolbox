@@ -1,15 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorkflowOrientedApp/SModeWidget.h"
-#include "Misc/Paths.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
+
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 //////////////////////////////////////////////////////////////////////////
 // SModeWidget
@@ -24,9 +28,9 @@ void SModeWidget::Construct(const FArguments& InArgs, const FText& InText, const
 	OnSetActiveMode = InArgs._OnSetActiveMode;
 
 	// Load resources
-	InactiveModeBorderImage = FEditorStyle::GetBrush("ModeSelector.ToggleButton.Normal");
-	ActiveModeBorderImage = FEditorStyle::GetBrush("ModeSelector.ToggleButton.Pressed");
-	HoverBorderImage = FEditorStyle::GetBrush("ModeSelector.ToggleButton.Hovered");
+	InactiveModeBorderImage = FAppStyle::GetBrush("ModeSelector.ToggleButton.Normal");
+	ActiveModeBorderImage = FAppStyle::GetBrush("ModeSelector.ToggleButton.Pressed");
+	HoverBorderImage = FAppStyle::GetBrush("ModeSelector.ToggleButton.Hovered");
 	
 	TSharedRef<SHorizontalBox> InnerRow = SNew(SHorizontalBox);
 

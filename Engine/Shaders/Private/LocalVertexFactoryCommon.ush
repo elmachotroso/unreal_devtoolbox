@@ -13,8 +13,8 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
 #if USE_INSTANCING || USE_INSTANCE_CULLING
-	// x = per-instance random, y = per-instance fade out amount, z = hide/show flag, w dither fade cutoff
-	float4  PerInstanceParams : COLOR1;
+	// x = per-instance fade out amount, y = hide/show flag, z dither fade cutoff, w - CustomData index
+	nointerpolation float4  PerInstanceParams : COLOR1;
 #endif
 
 #if NUM_TEX_COORD_INTERPOLATORS
@@ -35,7 +35,16 @@ struct FVertexFactoryInterpolantsVSToPS
 	#if NEEDS_LIGHTMAP_COORDINATE
 		nointerpolation uint LightmapDataIndex : LIGHTMAP_ID;
 	#endif
+	#if USES_PER_INSTANCE_CUSTOM_DATA
+		nointerpolation uint CustomDataOffset : CUSTOM_DATA_OFFSET;
+		nointerpolation uint CustomDataCount : CUSTOM_DATA_COUNT;
+	#endif
+	#if USES_PER_INSTANCE_RANDOM
+		nointerpolation float PerInstanceRandom : PER_INSTANCE_RANDOM;
+	#endif
 #endif
+
+
 #if HAIR_STRAND_MESH_FACTORY
 		nointerpolation uint HairPrimitiveId		: HAIR_PRIMITIVE_ID;	// Control point ID
 		float2 HairPrimitiveUV						: HAIR_PRIMITIVE_UV;	// U: parameteric distance between the two surrounding control points. V: parametric distance along the width.
@@ -49,10 +58,10 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
 #if HAS_INSTANCE_LOCAL_TO_WORLD_PS
-	nointerpolation float4 InstanceLocalToWorld[3] : INSTANCE_LOCAL_TO_WORLD;
+	nointerpolation float3x4 InstanceLocalToWorld : INSTANCE_LOCAL_TO_WORLD;
 #endif
 #if HAS_INSTANCE_WORLD_TO_LOCAL_PS
-	nointerpolation float4 InstanceWorldToLocal[3] : INSTANCE_WORLD_TO_LOCAL;
+	nointerpolation float3x4 InstanceWorldToLocal : INSTANCE_WORLD_TO_LOCAL;
 #endif
 };
 

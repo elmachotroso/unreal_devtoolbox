@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace UnrealBuildBase
@@ -16,19 +17,19 @@ namespace UnrealBuildBase
 		{
 			if (LocationOverride.RootDirectory != null)
 			{
-				return LocationOverride.RootDirectory;
+				return DirectoryReference.FindCorrectCase(LocationOverride.RootDirectory);
 			}
 
 			// This base library may be used - and so be launched - from more than one location (at time of writing, UnrealBuildTool and AutomationTool)
 			// Programs that use this assembly must be located under "Engine/Binaries/DotNET" and so we look for that sequence of directories in that path of the executing assembly
-			
+
 			// Use the EntryAssembly (the application path), rather than the ExecutingAssembly (the library path)
 			string AssemblyLocation = Assembly.GetEntryAssembly()!.GetOriginalLocation();
 
 			DirectoryReference? FoundRootDirectory = DirectoryReference.FindCorrectCase(DirectoryReference.FromString(AssemblyLocation)!);
 
 			// Search up through the directory tree for the deepest instance of the sub-path "Engine/Binaries/DotNET"
-			while(FoundRootDirectory != null)
+			while (FoundRootDirectory != null)
 			{
 				if (String.Equals("DotNET", FoundRootDirectory.GetDirectoryName()))
 				{
@@ -63,43 +64,54 @@ namespace UnrealBuildBase
 			return FoundRootDirectory;
 		}
 
-		private static FileReference FindUnrealBuildTool()
+		private static FileReference FindUnrealBuildToolDll()
 		{
-			// todo: use UnrealBuildTool.dll (same on all platforms). Will require changes wherever UnrealBuildTool is invoked.
-			string UBTName = "UnrealBuildTool" + RuntimePlatform.ExeExtension;
+			// UnrealBuildTool.dll is assumed to be located under {RootDirectory}/Engine/Binaries/DotNET/UnrealBuildTool/
+			FileReference UnrealBuildToolDllPath = FileReference.Combine(EngineDirectory, "Binaries", "DotNET", "UnrealBuildTool", "UnrealBuildTool.dll");
 
-			// the UnrealBuildTool executable is assumed to be located under {RootDirectory}/Engine/Binaries/DotNET/UnrealBuildTool/
-			FileReference UnrealBuildToolPath = FileReference.Combine(EngineDirectory, "Binaries", "DotNET", "UnrealBuildTool", UBTName);
+			UnrealBuildToolDllPath = FileReference.FindCorrectCase(UnrealBuildToolDllPath);
 
-			UnrealBuildToolPath = FileReference.FindCorrectCase(UnrealBuildToolPath);
-
-			if (!FileReference.Exists(UnrealBuildToolPath))
+			if (!FileReference.Exists(UnrealBuildToolDllPath))
 			{
-				// if there's no exe found, use the dll as a fallback
-				UnrealBuildToolPath = FileReference.FindCorrectCase(UnrealBuildToolPath.ChangeExtension(".dll"));
+				throw new Exception($"Unable to find UnrealBuildTool.dll in the expected location at {UnrealBuildToolDllPath.FullName}");
 			}
 
-			if (!FileReference.Exists(UnrealBuildToolPath))
-			{
-				throw new Exception($"Unable to find UnrealBuildTool in the expected location at {UnrealBuildToolPath.FullName}");
-			}
-
-			return UnrealBuildToolPath;
+			return UnrealBuildToolDllPath;
 		}
 
-		static private DirectoryReference FindDotnetDirectory()
+		static private string DotnetVersionDirectory = "6.0.302";
+
+		static private string FindRelativeDotnetDirectory(RuntimePlatform.Type HostPlatform)
 		{
 			string HostDotNetDirectoryName;
-			switch (RuntimePlatform.Current)
+			switch (HostPlatform)
 			{
-				case RuntimePlatform.Type.Windows: HostDotNetDirectoryName = "Windows"; break;
-				case RuntimePlatform.Type.Mac:     HostDotNetDirectoryName = "Mac"; break;
-				case RuntimePlatform.Type.Linux:   HostDotNetDirectoryName = "Linux"; break;
+				case RuntimePlatform.Type.Windows: HostDotNetDirectoryName = "windows"; break;
+				case RuntimePlatform.Type.Mac:
+					{
+						HostDotNetDirectoryName = "mac-x64";
+						if (RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+						{
+							HostDotNetDirectoryName = "mac-arm64";
+						}
+						break;
+					}
+				case RuntimePlatform.Type.Linux: HostDotNetDirectoryName = "linux"; break;
 				default: throw new Exception("Unknown host platform");
 			}
 
-			return DirectoryReference.Combine(EngineDirectory, "Binaries", "ThirdParty", "DotNet", HostDotNetDirectoryName);
+			return Path.Combine("Binaries", "ThirdParty", "DotNet", DotnetVersionDirectory, HostDotNetDirectoryName);
 		}
+
+		static private string FindRelativeDotnetDirectory() => FindRelativeDotnetDirectory(RuntimePlatform.Current);
+
+		/// <summary>
+		/// Relative path to the dotnet executable from EngineDir
+		/// </summary>
+		/// <returns></returns>
+		static public string RelativeDotnetDirectory = FindRelativeDotnetDirectory();
+
+		static private DirectoryReference FindDotnetDirectory() => DirectoryReference.Combine(EngineDirectory, RelativeDotnetDirectory);
 
 		/// <summary>
 		/// The full name of the root UE directory
@@ -112,14 +124,20 @@ namespace UnrealBuildBase
 		public static readonly DirectoryReference EngineDirectory = DirectoryReference.Combine(RootDirectory, "Engine");
 
 		/// <summary>
-		/// The path to UBT
+		/// The full name of the Engine/Source directory
 		/// </summary>
-		public static readonly FileReference UnrealBuildToolPath = FindUnrealBuildTool();
+		public static readonly DirectoryReference EngineSourceDirectory = DirectoryReference.Combine(EngineDirectory, "Source");
 
 		/// <summary>
 		/// The path to UBT
 		/// </summary>
-		public static readonly FileReference UnrealBuildToolDllPath = FindUnrealBuildTool().ChangeExtension(".dll");
+		[Obsolete("Deprecated in UE5.1; to launch UnrealBuildTool, use this dll as the first argument with DonetPath")]
+		public static readonly FileReference UnrealBuildToolPath = FindUnrealBuildToolDll().ChangeExtension(RuntimePlatform.ExeExtension);
+
+		/// <summary>
+		/// The path to UBT
+		/// </summary>
+		public static readonly FileReference UnrealBuildToolDllPath = FindUnrealBuildToolDll();
 
 		/// <summary>
 		/// The directory containing the bundled .NET installation
@@ -137,6 +155,16 @@ namespace UnrealBuildBase
 		static private bool? bIsEngineInstalled;
 
 		/// <summary>
+		/// Returns where another platform's Dotnet is located
+		/// </summary>
+		/// <param name="HostPlatform"></param>
+		/// <returns></returns>
+		static public DirectoryReference FindDotnetDirectoryForPlatform(RuntimePlatform.Type HostPlatform)
+		{
+			return DirectoryReference.Combine(EngineDirectory, FindRelativeDotnetDirectory(HostPlatform));
+		}
+
+		/// <summary>
 		/// Returns true if UnrealBuildTool is running using installed Engine components
 		/// </summary>
 		/// <returns>True if running using installed Engine components</returns>
@@ -149,7 +177,7 @@ namespace UnrealBuildBase
 			return bIsEngineInstalled.Value;
 		}
 
-		public static class LocationOverride 
+		public static class LocationOverride
 		{
 			/// <summary>
 			/// If set, this value will be used to populate Unreal.RootDirectory
@@ -209,7 +237,7 @@ namespace UnrealBuildBase
 		/// <param name="bIncludeRestrictedDirectories">If true, restricted (NotForLicensees, NoRedist) subdirectories are included</param>
 		/// <param name="bIncludeBaseDirectory">If true, BaseDir is included</param>
 		/// <returns>List of extension directories, including the given base directory</returns>
-		public static List<DirectoryReference> GetExtensionDirs(DirectoryReference BaseDir, bool bIncludePlatformDirectories=true, bool bIncludeRestrictedDirectories=true, bool bIncludeBaseDirectory=true)
+		public static List<DirectoryReference> GetExtensionDirs(DirectoryReference BaseDir, bool bIncludePlatformDirectories = true, bool bIncludeRestrictedDirectories = true, bool bIncludeBaseDirectory = true)
 		{
 			Tuple<List<DirectoryReference>, List<DirectoryReference>>? CachedDirs;
 			if (!CachedExtensionDirectories.TryGetValue(BaseDir, out CachedDirs))
@@ -275,7 +303,7 @@ namespace UnrealBuildBase
 		/// <param name="bIncludeRestrictedDirectories">If true, restricted (NotForLicensees, NoRedist) subdirectories are included</param>
 		/// <param name="bIncludeBaseDirectory">If true, BaseDir is included</param>
 		/// <returns>List of extension directories, including the given base directory</returns>
-		public static List<DirectoryReference> GetExtensionDirs(DirectoryReference BaseDir, string SubDir, bool bIncludePlatformDirectories=true, bool bIncludeRestrictedDirectories=true, bool bIncludeBaseDirectory=true)
+		public static List<DirectoryReference> GetExtensionDirs(DirectoryReference BaseDir, string SubDir, bool bIncludePlatformDirectories = true, bool bIncludeRestrictedDirectories = true, bool bIncludeBaseDirectory = true)
 		{
 			return GetExtensionDirs(BaseDir, bIncludePlatformDirectories, bIncludeRestrictedDirectories, bIncludeBaseDirectory).Select(x => DirectoryReference.Combine(x, SubDir)).Where(x => DirectoryReference.Exists(x)).ToList();
 		}

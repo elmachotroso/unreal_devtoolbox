@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "DatasmithMaxWriter.h"
 
+#include "DatasmithMaxDirectLink.h"
+
 #include "DatasmithSceneFactory.h"
 #include "DatasmithSceneExporter.h"
 #include "DatasmithMaxSceneParser.h"
@@ -160,7 +162,9 @@ FString GetActualBitmapNameImpl(T* InBitmap)
 	}
 
 	float Gamma = FDatasmithMaxMatHelper::GetBitmapGamma(InBitmap);
-	FString ActualBitmapName = FDatasmithUtils::SanitizeObjectName(FPaths::GetBaseFilename(ActualBitmapPath)) + TEXT("_") + FString::SanitizeFloat(Gamma).Replace(TEXT("."), TEXT("_")) + FDatasmithMaxMatWriter::TextureSuffix;
+
+	// note: call SanitizeObjectName for stringified float - converted floating point can contain invalid character too(e.g. when decimal symbol is invalid in the locale)
+	FString ActualBitmapName = FDatasmithUtils::SanitizeObjectName(FPaths::GetBaseFilename(ActualBitmapPath) + TEXT("_") + FDatasmithUtils::SanitizeObjectName(FString::SanitizeFloat(Gamma)) + FDatasmithMaxMatWriter::TextureSuffix);
 
 	return ActualBitmapName;
 }
@@ -452,84 +456,6 @@ FString FDatasmithMaxMatWriter::DumpAutodeskBitmap(TSharedPtr<IDatasmithComposit
 	return ActualBitmapName;
 }
 
-void FDatasmithMaxMatWriter::GetRegularTexmap(TSharedRef< IDatasmithScene > DatasmithScene, BitmapTex* InBitmapTex)
-{
-	if (!InBitmapTex)
-	{
-		return;
-	}
-
-	FString Path = FDatasmithMaxMatWriter::GetActualBitmapPath(InBitmapTex);
-	FString ActualBitmapName = FDatasmithMaxMatWriter::GetActualBitmapName(InBitmapTex);
-
-	for (int i = 0; i < DatasmithScene->GetTexturesCount(); i++)
-	{
-		if (DatasmithScene->GetTexture(i)->GetFile() == Path && DatasmithScene->GetTexture(i)->GetName() == ActualBitmapName)
-		{
-			return;
-		}
-	}
-
-	TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*ActualBitmapName);
-	if (gammaMgr.IsEnabled())
-	{
-		const float Gamma = FDatasmithMaxMatHelper::GetBitmapGamma(InBitmapTex);
-
-		if (FDatasmithMaxMatHelper::IsSRGB(*InBitmapTex))
-		{
-			TextureElement->SetRGBCurve(Gamma / 2.2f);
-		}
-		else
-		{
-			TextureElement->SetRGBCurve(Gamma);
-		}
-	}
-
-	TextureElement->SetFile(*Path);
-	DatasmithScene->AddTexture(TextureElement);
-}
-
-void FDatasmithMaxMatWriter::GetAutodeskTexmap(TSharedRef< IDatasmithScene > DatasmithScene, Texmap* InTexMap)
-{
-	if (PBBitmap* BitmapSourceFile = DatasmithMaxTexmapParser::ParseAutodeskBitmap(InTexMap).SourceFile)
-	{
-		FScopedBitMapPtr ActualBitmap(BitmapSourceFile->bi, BitmapSourceFile->bm);
-		if (!ActualBitmap.Map)
-		{
-			return;
-		}
-
-		FString Path = FDatasmithMaxMatWriter::GetActualBitmapPath(&ActualBitmap.MapInfo);
-		FString ActualBitmapName = FDatasmithMaxMatWriter::GetActualBitmapName(&ActualBitmap.MapInfo);
-
-		for (int i = 0; i < DatasmithScene->GetTexturesCount(); i++)
-		{
-			if (DatasmithScene->GetTexture(i)->GetFile() == Path && DatasmithScene->GetTexture(i)->GetName() == ActualBitmapName)
-			{
-				return;
-			}
-		}
-
-		TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*ActualBitmapName);
-		if (gammaMgr.IsEnabled())
-		{
-			const float Gamma = FDatasmithMaxMatHelper::GetBitmapGamma(&ActualBitmap.MapInfo);
-
-			if (FDatasmithMaxMatHelper::IsSRGB(*ActualBitmap.Map))
-			{
-				TextureElement->SetRGBCurve(Gamma / 2.2f);
-			}
-			else
-			{
-				TextureElement->SetRGBCurve(Gamma);
-			}
-		}
-
-		TextureElement->SetFile(*Path);
-		DatasmithScene->AddTexture(TextureElement);
-	}
-}
-
 
 enum class EScanlineMaterialMaps
 {
@@ -635,7 +561,6 @@ void FDatasmithMaxMatWriter::ExportStandardMaterial(TSharedRef< IDatasmithScene 
 				{
 					bBumpTexEnable = false;
 				}
-
 			}
 
 			if (FCString::Stricmp(ParamDefinition.int_name, TEXT("mapAmounts")) == 0)
@@ -1209,82 +1134,6 @@ FString FDatasmithMaxMatWriter::DumpFalloff(TSharedRef< IDatasmithScene > Datasm
 	}
 
 	return Result;
-}
-
-void GetBakeableMaximumSize(Texmap* InTexmap, int &Width, int &Height)
-{
-	if (InTexmap == NULL)
-	{
-		return;
-	}	
-	if (InTexmap->ClassID() == RBITMAPCLASS)
-	{
-		BitmapTex* BitmapTexture = (BitmapTex*)InTexmap;
-		Bitmap* ActualBitmap = ((BitmapTex*)InTexmap)->GetBitmap(GetCOREInterface()->GetTime());
-		if (ActualBitmap != NULL)
-		{
-			Width = FMath::Min(Width, ActualBitmap->Width());
-			Height = FMath::Min(Height, ActualBitmap->Height());
-		}
-	}
-
-	for (int SubTexmap = 0; SubTexmap < InTexmap->NumSubTexmaps(); SubTexmap++)
-	{
-		GetBakeableMaximumSize(InTexmap->GetSubTexmap(SubTexmap), Width, Height);
-	}
-}
-
-TSharedPtr< IDatasmithTextureElement > FDatasmithMaxMatWriter::AddBakeable(TSharedRef< IDatasmithScene > DatasmithScene, Texmap* InTexmap, const TCHAR* AssetsPath)
-{
-	if ( !InTexmap )
-	{
-		return TSharedPtr< IDatasmithTextureElement >();
-	}
-
-	MSTR ClassName;
-	InTexmap->GetClassName(ClassName);
-	FString FileName = FString(InTexmap->GetName().data()) + FString(ClassName.data()) + FString::FromInt(InTexmap->GetHandleByAnim(InTexmap));
-	FileName = FDatasmithUtils::SanitizeFileName(FileName);
-
-	FString Path = FPaths::Combine(AssetsPath, FileName + TextureBakeFormat);
-
-	for (int i = 0; i < DatasmithScene->GetTexturesCount(); i++)
-	{
-		if (DatasmithScene->GetTexture(i)->GetFile() == Path)
-		{
-			return DatasmithScene->GetTexture(i);
-		}
-	}
-
-	int BakeWidth = FDatasmithExportOptions::MaxTextureSize;
-	int BakeHeight = FDatasmithExportOptions::MaxTextureSize;
-	GetBakeableMaximumSize(InTexmap, BakeWidth, BakeHeight);
-
-	BitmapInfo BitmapInformation;
-	BitmapInformation.SetType(BMM_TRUE_32);
-
-	BitmapInformation.SetWidth(BakeWidth);
-	BitmapInformation.SetHeight(BakeHeight);
-	BitmapInformation.SetGamma(2.2f);
-
-	BitmapInformation.SetName(*Path);
-
-	Bitmap* NewBitmap = TheManager->Create(&BitmapInformation);
-	InTexmap->RenderBitmap(GetCOREInterface()->GetTime(), NewBitmap, 1.0f, 1);
-	
-	NewBitmap->OpenOutput(&BitmapInformation);
-	NewBitmap->Write(&BitmapInformation);
-	NewBitmap->Close(&BitmapInformation);
-	NewBitmap->DeleteThis();
-
-	FString BaseName = FPaths::GetBaseFilename(Path);
-	FString Base = BaseName + TextureSuffix;
-	TSharedPtr< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture(*Base);
-	TextureElement->SetRGBCurve(1.0f);
-	TextureElement->SetFile(*Path);
-	DatasmithScene->AddTexture(TextureElement);
-
-	return TextureElement;
 }
 
 FString FDatasmithMaxMatWriter::DumpBakeable(TSharedPtr<IDatasmithCompositeTexture>& CompTex, Texmap* InTexmap, const TCHAR* Prefix, bool bForceInvert, bool bIsGrayscale)

@@ -29,8 +29,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SViewport.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
 #include "Engine/EngineTypes.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "GameFramework/Actor.h"
@@ -53,9 +52,11 @@
 #include "Components/AudioComponent.h"
 #include "Engine/Note.h"
 #include "Engine/Selection.h"
+#include "Engine/NetDriver.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "LevelEditorViewport.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
@@ -70,7 +71,6 @@
 #include "Slate/SceneViewport.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "RHIShaderPlatformDefinitions.inl"
 
 
 #include "LevelEditor.h"
@@ -95,7 +95,7 @@
 #include "Slate/SGameLayerManager.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Widgets/Input/SHyperlink.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SCustomDialog.h"
 
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
@@ -118,6 +118,8 @@
 #include "IAssetViewport.h"
 #include "IPIEAuthorizer.h"
 #include "Features/IModularFeatures.h"
+#include "Containers/DepletableMpscQueue.h"
+#include "TickableEditorObject.h"
 
 DEFINE_LOG_CATEGORY(LogPlayLevel);
 
@@ -126,10 +128,11 @@ DEFINE_LOG_CATEGORY(LogPlayLevel);
 const static FName NAME_CategoryPIE("PIE");
 
 // Forward declare local utility functions
-FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex, const float FixedTick);
+FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex, const int32 InViewportIndex, const float FixedTick, const bool bVRPreview);
+bool IsPrimaryPIEClient(const FRequestPlaySessionParams& InPlaySessionParams, const int32 InClientIndex);
 
 // This class listens to output log messages, and forwards warnings and errors to the message log
-class FOutputLogErrorsToMessageLogProxy : public FOutputDevice
+class FOutputLogErrorsToMessageLogProxy final : public FOutputDevice, public FTickableEditorObject
 {
 public:
 	FOutputLogErrorsToMessageLogProxy()
@@ -138,33 +141,78 @@ public:
 	}
 
 	~FOutputLogErrorsToMessageLogProxy()
-{
+	{
+		GLog->FlushThreadedLogs();
 		GLog->RemoveOutputDevice(this);
-}
+		Tick(0.0f);
+	}
 
-	// FOutputDevice interface
+	// FOutputDevice Interface
+
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
 	{
-		//@TODO: Remove IsInGameThread() once the message log is thread safe
-		if ((Verbosity <= ELogVerbosity::Warning) && IsInGameThread())
+		if (Verbosity <= ELogVerbosity::Warning)
 		{
-			const FText Message = FText::Format(LOCTEXT("OutputLogToMessageLog", "{0}: {1}"), FText::FromName(Category), FText::AsCultureInvariant(FString(V)));
-
-			switch (Verbosity)
+			FLine Line;
+			Line.Message = FText::Format(LOCTEXT("OutputLogToMessageLog", "{0}: {1}"), FText::FromName(Category), FText::AsCultureInvariant(FString(V)));
+			Line.Verbosity = Verbosity;
+			if (IsInGameThread())
 			{
-			case ELogVerbosity::Warning:
-				FMessageLog(NAME_CategoryPIE).SuppressLoggingToOutputLog(true).Warning(Message);
-				break;
-			case ELogVerbosity::Error:
-				FMessageLog(NAME_CategoryPIE).SuppressLoggingToOutputLog(true).Error(Message);
-				break;
-			case ELogVerbosity::Fatal:
-				FMessageLog(NAME_CategoryPIE).SuppressLoggingToOutputLog(true).CriticalError(Message);
-				break;
+				LogLine(Line);
+			}
+			else
+			{
+				QueuedLines.Enqueue(MoveTemp(Line));
 			}
 		}
 	}
-	// End of FOutputDevice interface
+
+	virtual bool CanBeUsedOnMultipleThreads() const final
+	{
+		return true;
+	}
+
+	// FTickableEditorObject Interface
+
+	virtual void Tick(float DeltaTime) final
+	{
+		QueuedLines.Deplete(LogLine);
+	}
+
+	virtual ETickableTickType GetTickableTickType() const final
+	{
+		return ETickableTickType::Always;
+	}
+
+	virtual TStatId GetStatId() const final
+	{
+		RETURN_QUICK_DECLARE_CYCLE_STAT(FOutputLogErrorsToMessageLogProxy, STATGROUP_Tickables);
+	}
+
+private:
+	struct FLine
+	{
+		FText Message;
+		ELogVerbosity::Type Verbosity;
+	};
+
+	static void LogLine(const FLine& Line)
+	{
+		switch (Line.Verbosity)
+		{
+		case ELogVerbosity::Warning:
+			FMessageLog(NAME_CategoryPIE).SuppressLoggingToOutputLog(true).Warning(Line.Message);
+			break;
+		case ELogVerbosity::Error:
+			FMessageLog(NAME_CategoryPIE).SuppressLoggingToOutputLog(true).Error(Line.Message);
+			break;
+		case ELogVerbosity::Fatal:
+			checkf(false, *Line.Message.ToString());
+			break;
+		}
+	}
+
+	UE::TDepletableMpscQueue<FLine> QueuedLines;
 };
 
 void UEditorEngine::EndPlayMap()
@@ -180,6 +228,17 @@ void UEditorEngine::EndPlayMap()
 
 	FEditorDelegates::PrePIEEnded.Broadcast( bIsSimulatingInEditor );
 
+	// Restore optionally minimized windows.
+	// We always restore no matter what the setting is since it could be toggled during PIE.
+	for (TWeakPtr<SWindow>& Window : MinimizedWindowsDuringPIE)
+	{
+		if (Window.IsValid())
+		{
+			Window.Pin()->Restore();
+		}
+	}
+	MinimizedWindowsDuringPIE.Empty();
+		
 	// Clean up Soft Object Path remaps
 	FSoftObjectPath::ClearPIEPackageNames();
 
@@ -412,30 +471,70 @@ void UEditorEngine::EndPlayMap()
 	}
 
 	// Make sure that all objects in the temp levels were entirely garbage collected.
+	TSet<UObject*> LeakedObjectsSet;
+	TSet<UPackage*> LeakedPackages;
 	for(FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt )
 	{
 		UObject* Object = *ObjectIt;
-		if( Object->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+		UPackage* ObjectPackage = Object->GetOutermost();
+		if (ObjectPackage->HasAnyPackageFlags(PKG_PlayInEditor))
 		{
-			UWorld* TheWorld = UWorld::FindWorldInPackage(Object->GetOutermost());
-			if ( TheWorld )
+			LeakedPackages.Add(ObjectPackage);
+			if (UWorld* TheWorld = UWorld::FindWorldInPackage(ObjectPackage))
 			{
-				StaticExec(nullptr, *FString::Printf(TEXT("OBJ REFS CLASS=WORLD NAME=%s"), *TheWorld->GetPathName()));
+				LeakedObjectsSet.Add(TheWorld);
 			}
 			else
 			{
-				UE_LOG(LogPlayLevel, Error, TEXT("No PIE world was found when attempting to gather references after GC."));
+				LeakedObjectsSet.Add(ObjectPackage);
 			}
+		}
+	}
 
-			FReferenceChainSearch RefChainSearch(Object, EReferenceChainSearchMode::Shortest);
+	TArray<UObject*> LeakedObjects = LeakedObjectsSet.Array();
+	TArray<FString> Paths;
+	if (LeakedObjects.Num() > 0)
+	{
+		Paths = FindAndPrintStaleReferencesToObjects(LeakedObjects, EPrintStaleReferencesOptions::Ensure);
+	}
+	for (int32 i = 0; i < LeakedObjects.Num(); ++i)
+	{
+		const FString& Path = Paths[i];
+		UObject* Object = LeakedObjects[i];
 
-			FFormatNamedArguments Arguments;
-			Arguments.Add(TEXT("Path"), FText::FromString(RefChainSearch.GetRootPath()));
-				
-			// We cannot safely recover from this.
-			FMessageLog(NAME_CategoryPIE).CriticalError()
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("Path"), FText::FromString(Paths[i]));
+		Arguments.Add(TEXT("Object"), FText::FromString(Object->GetFullName()));
+
+		// We cannot safely recover from this.
+		if (UObjectBaseUtility::IsPendingKillEnabled())
+		{
+			checkf(false, *FText::Format(
+				LOCTEXT("PIEObjectStillReferenced", "Object '{Object}' from PIE level still referenced. Shortest path from root: {Path}"), Arguments).ToString());
+		}
+		else
+		{
+			// Nonfatal error, we will rename objects to try and recover. 
+			FText ErrorMessage = FText::Format(
+				LOCTEXT("PIEAnObjectStillReferenced", "Object '{Object}' from PIE level still referenced. Shortest path from root: {Path}"), Arguments);
+			FMessageLog(NAME_CategoryPIE).Error()
 				->AddToken(FUObjectToken::Create(Object, FText::FromString(Object->GetFullName())))
-				->AddToken(FTextToken::Create(FText::Format(LOCTEXT("PIEObjectStillReferenced", "Object from PIE level still referenced. Shortest path from root: {Path}"), Arguments)));
+				->AddToken(FTextToken::Create(ErrorMessage));
+		}
+	}
+
+	// Try and recover by renaming leaked packages 
+	if (!UObjectBaseUtility::IsPendingKillEnabled())
+	{
+		for (UPackage* ObjectPackage : LeakedPackages)
+		{
+			ObjectPackage->ClearPackageFlags(PKG_PlayInEditor);
+			ObjectPackage->ClearFlags(RF_Standalone);
+			// We let it leak but it needs to be renamed to not collide with future attempts at creating the same object(s)
+			FName NewName = MakeUniqueObjectName(nullptr, UPackage::StaticClass());
+			UE_LOG(LogTemp, Log, TEXT("Renaming PIE package from '%s' to '%s' to prevent future name collisions."),
+				*ObjectPackage->GetName(), *NewName.ToString());
+			ObjectPackage->Rename(*NewName.ToString(), nullptr, REN_ForceNoResetLoaders | REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional);
 		}
 	}
 
@@ -506,11 +605,11 @@ void UEditorEngine::EndPlayMap()
 				PlaySettingsConfig->MultipleInstancePositions.Add(PlayInEditorSessionInfo->CachedWindowInfo[WindowIndex].Position);
 			}
 
-			// Update the position where the first PIE window will be opened (this also updates its displayed value in "Editor Preferences" --> "Level Editor" --> "Play" --> "New Window Position")
-			if (WindowIndex == 0)
+			// Update the position where the primary PIE window will be opened (this also updates its displayed value in "Editor Preferences" --> "Level Editor" --> "Play" --> "New Window Position")
+			if (IsPrimaryPIEClient(PlayInEditorSessionInfo->OriginalRequestParams, WindowIndex))
 			{
 				// Remember last known size
-				PlaySettingsConfig->LastSize = PlayInEditorSessionInfo->CachedWindowInfo[0].Size;
+				PlaySettingsConfig->LastSize = PlayInEditorSessionInfo->CachedWindowInfo[WindowIndex].Size;
 
 				// Only update it if "Always center window to screen" is disabled, and the size was not 0 (which means it is attached to the editor rather than being an standalone window)
 				if (!PlaySettingsConfig->CenterNewWindow && PlaySettingsConfig->LastSize.X > 0 && PlaySettingsConfig->LastSize.Y > 0)
@@ -678,7 +777,7 @@ void UEditorEngine::TeardownPlaySession(FWorldContext& PieWorldContext)
 		AudioDevice->Flush(PlayWorld);
 		AudioDevice->ResetInterpolation();
 		AudioDevice->OnEndPIE(false); // TODO: Should this have been bWasSimulatingInEditor?
-		AudioDevice->SetTransientMasterVolume(1.0f);
+		AudioDevice->SetTransientPrimaryVolume(1.0f);
 		// Reset solo audio
 		if (PlayInEditorSessionInfo.IsSet())
 		{
@@ -687,7 +786,7 @@ void UEditorEngine::TeardownPlaySession(FWorldContext& PieWorldContext)
 			{
 				if (FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(PlayWorld))
 				{
-					if (WorldContext->PIEInstance == 0)
+					if (WorldContext->bIsPrimaryPIEInstance)
 					{
 						if (FAudioDeviceManager* DeviceManager = AudioDevice->GetAudioDeviceManager())
 						{
@@ -979,10 +1078,13 @@ bool UEditorEngine::SaveMapsForPlaySession()
 	}
 
 	// Also save dirty packages, this is required because we're going to be launching a session outside of our normal process
-	const bool bPromptUserToSave = true;
-	const bool bSaveMapPackages = true;
-	const bool bSaveContentPackages = true;
-	if (!FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages))
+	const bool bPromptUserToSave      = true;
+	const bool bSaveMapPackages       = true;
+	const bool bSaveContentPackages   = true;
+	const bool bFastSave              = false;
+	const bool bNotifyNoPackagesSaved = false;
+	const bool bCanBeDeclined         = false;
+	if (!FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages, bFastSave, bNotifyNoPackagesSaved, bCanBeDeclined))
 	{
 		return false;
 	}
@@ -1486,7 +1588,7 @@ static bool ShowBlueprintErrorDialog( TArray<UBlueprint*> ErroredBlueprints )
 			.HAlign(HAlign_Left)
 			[
 				SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "Common.GotoBlueprintHyperlink")
+				.Style(FAppStyle::Get(), "Common.GotoBlueprintHyperlink")
 				.OnNavigate(FSimpleDelegate::CreateLambda([BlueprintPtr, &CustomDialog]() { Local::OnHyperlinkClicked(BlueprintPtr, CustomDialog); }))
 				.Text(FText::FromString(Blueprint->GetName()))
 				.ToolTipText(NSLOCTEXT("SourceHyperlink", "EditBlueprint_ToolTip", "Click to edit the blueprint"))
@@ -1501,7 +1603,7 @@ static bool ShowBlueprintErrorDialog( TArray<UBlueprint*> ErroredBlueprints )
 			.HAlign(HAlign_Left)
 			[
 				SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "Common.GotoBlueprintHyperlink")
+				.Style(FAppStyle::Get(), "Common.GotoBlueprintHyperlink")
 				.OnNavigate(FSimpleDelegate::CreateLambda([&ErroredBlueprints, &CustomDialog]() { Local::OnOpenAllLinkClicked(ErroredBlueprints, CustomDialog); }))
 				.Text(NSLOCTEXT("SourceHyperlink", "EditAllErroredBlueprints", "Open all errored blueprints"))
 				.ToolTipText(NSLOCTEXT("SourceHyperlink", "EditAllErroredBlueprints_ToolTip", "Opens all the errored blueprint in the editor"))
@@ -1515,8 +1617,11 @@ static bool ShowBlueprintErrorDialog( TArray<UBlueprint*> ErroredBlueprints )
 
 	CustomDialog = SNew(SCustomDialog)
 		.Title(DialogTitle)
-		.IconBrush("NotificationList.DefaultMessage")
-		.DialogContent(DialogContents)
+		.Icon(FAppStyle::Get().GetBrush("NotificationList.DefaultMessage"))
+		.Content()
+		[
+			DialogContents
+		]
 		.Buttons( { SCustomDialog::FButton(OKText), SCustomDialog::FButton(CancelText) } );
 
 	const int32 ButtonPressed = CustomDialog->ShowModal();
@@ -1765,6 +1870,7 @@ void UEditorEngine::CreateNewPlayInEditorInstance(FRequestPlaySessionParams &InR
 		GameInstancePIEParameters.WorldFeatureLevel = PreviewPlatform.GetEffectivePreviewFeatureLevel();
 		GameInstancePIEParameters.NetMode = InNetMode;
 		GameInstancePIEParameters.OverrideMapURL = InRequestParams.GlobalMapOverride;
+		GameInstancePIEParameters.bIsPrimaryPIEClient = !bInDedicatedInstance && IsPrimaryPIEClient(InRequestParams, PlayInEditorSessionInfo->NumClientInstancesCreated);
 
 		PIELoginInfo.GameInstancePIEParameters = GameInstancePIEParameters;
 
@@ -2275,7 +2381,8 @@ UWorld* UEditorEngine::CreatePIEWorldByDuplication(FWorldContext &WorldContext, 
 	UE_LOG( LogPlayLevel, Log, TEXT("Creating play world package: %s"),  *PlayWorldMapName );	
 
 	UPackage* PlayWorldPackage = CreatePackage(*PlayWorldMapName);
-	PlayWorldPackage->SetPackageFlags(PKG_PlayInEditor);
+	// Add PKG_NewlyCreated flag to this package so we don't try to resolve its linker as it is unsaved duplicated world package
+	PlayWorldPackage->SetPackageFlags(PKG_PlayInEditor | PKG_NewlyCreated);
 	PlayWorldPackage->SetPIEInstanceID(WorldContext.PIEInstance);
 	PlayWorldPackage->SetLoadedPath(InPackage->GetLoadedPath());
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -2456,7 +2563,7 @@ void UEditorEngine::ResetPIEAudioSetting(UWorld *CurrentPieWorld)
 	{
 		if (FAudioDevice* AudioDevice = CurrentPieWorld->GetAudioDeviceRaw())
 		{
-			AudioDevice->SetTransientMasterVolume(0.0f);
+			AudioDevice->SetTransientPrimaryVolume(0.0f);
 		}
 	}
 }
@@ -2606,9 +2713,9 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 	}
 
 	// Register for log processing so we can promote errors/warnings to the message log
-	if (GetDefault<UEditorStyleSettings>()->bPromoteOutputLogWarningsDuringPIE)
+	if (GetDefault<ULevelEditorPlaySettings>()->bPromoteOutputLogWarningsDuringPIE)
 	{
-		OutputLogErrorsToMessageLogProxyPtr = MakeShareable(new FOutputLogErrorsToMessageLogProxy());
+		OutputLogErrorsToMessageLogProxyPtr = MakeShared<FOutputLogErrorsToMessageLogProxy>();
 	}
 
 	// Notify the XRSystem that it needs to BeginPlay.
@@ -2671,6 +2778,8 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 	// If they need to use the online services, validate that they have provided 
 	// enough pie credentials to launch the desired number of clients.
 	bool bUseOnlineSubsystemForLogin = false;
+	bool bRequestAllowsOnlineSubsystem = InRequestParams.bAllowOnlineSubsystem;
+	if(bRequestAllowsOnlineSubsystem)
 	{
 		int32 DesiredNumberOfClients;
 		EditorPlaySettings->GetPlayNumberOfClients(DesiredNumberOfClients);
@@ -2689,13 +2798,47 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 				FMessageLog(NAME_CategoryPIE).Warning(ErrorMsg);
 			}
 		}
-
-		UOnlineEngineInterface::Get()->SetShouldTryOnlinePIE(bUseOnlineSubsystemForLogin);
 	}
+	UOnlineEngineInterface::Get()->SetShouldTryOnlinePIE(bUseOnlineSubsystemForLogin);
 
 	PlayInEditorSessionInfo->bUsingOnlinePlatform = bUseOnlineSubsystemForLogin;
 	PlayInEditorSessionInfo->bAnyBlueprintErrors = ErroredBlueprints.Num() > 0;
 
+	// Optionally minimize all extra windows for precious framerate.
+	if (InRequestParams.EditorPlaySettings->bShouldMinimizeEditorOnNonVRPIE
+		&& !bIsSimulatingInEditor
+		&& InRequestParams.DestinationSlateViewport.IsSet())
+	{
+		TArray<TSharedRef<SWindow>> Windows;
+		FSlateApplication::Get().GetAllVisibleWindowsOrdered(Windows);
+		if (Windows.Num() > 0)
+		{
+			TSharedRef<SWindow> RootWindow = Windows[0];
+			if (TSharedPtr<IAssetViewport> DestinationViewport = InRequestParams.DestinationSlateViewport.GetValue().Pin())
+			{
+				TSharedPtr<SWindow> DestinationWindow = FSlateApplication::Get().FindWidgetWindow(DestinationViewport->AsWidget());
+			
+				for (TSharedRef<SWindow>& Window : Windows)
+				{
+					// Don't minimize the root,
+					// Don't minimize any free floating windows like other PIE windows.
+					// Don't minimize the viewport that is being targeted.
+					// Don't minimize already minimized windows.
+					if (Window == RootWindow
+						|| Window == DestinationWindow
+						|| Window->GetParentWindow() != RootWindow
+						|| Window->IsWindowMinimized())
+					{
+						continue;
+					}
+					
+					Window->Minimize();
+					MinimizedWindowsDuringPIE.Add(Window);
+				}
+			}
+		}
+	}
+	
 	// Now that we've gotten all of the editor house-keeping out of the way we can finally
 	// start creating world instances and multi player clients!
 	{
@@ -2798,6 +2941,21 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 			if (!PlayInEditorSessionInfo.IsSet())
 			{
 				return;
+			}
+
+			if (bClientIsServer)
+			{
+				// Grab New Created PIE Server Instance and set PlaySettings to Server's actual Port so Clients Connect To Correct Server
+				const FWorldContext *const PIEServerWorldContext = GetWorldContextFromPIEInstance(PlayInEditorSessionInfo->PIEInstanceCount - 1);
+				const UWorld *const PIEServerWorld = PIEServerWorldContext->World();
+				if (PIEServerWorld)
+				{
+					UNetDriver *const NetDriver = PIEServerWorld->GetNetDriver();
+					if (NetDriver && NetDriver->GetLocalAddr().IsValid())
+					{
+						EditorPlaySettings->SetServerPort(NetDriver->GetLocalAddr()->GetPort());
+					}
+				}
 			}
 		}
 
@@ -2906,7 +3064,7 @@ UGameInstance* UEditorEngine::CreateInnerProcessPIEGameInstance(FRequestPlaySess
 		{
 			if (FAudioDeviceHandle GameInstanceAudioDevice = GameInstance->GetWorld()->GetAudioDevice())
 			{
-				GameInstanceAudioDevice->SetTransientMasterVolume(0.0f);
+				GameInstanceAudioDevice->SetTransientPrimaryVolume(0.0f);
 			}
 		}
 		if (InParams.EditorPlaySettings->SoloAudioInFirstPIEClient)
@@ -3074,7 +3232,7 @@ UGameInstance* UEditorEngine::CreateInnerProcessPIEGameInstance(FRequestPlaySess
 	return GameInstance;
 }
 
-FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex, const float FixedTick)
+FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex, const float FixedTick, const bool bVRPreview)
 {
 #if PLATFORM_64BITS
 	const FString PlatformBitsString(TEXT("64"));
@@ -3087,7 +3245,7 @@ FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFea
 	FFormatNamedArguments Args;
 	Args.Add(TEXT("GameName"), FText::FromString(FString(WindowTitleOverride.IsEmpty() ? FApp::GetProjectName() : WindowTitleOverride.ToString())));
 	Args.Add(TEXT("PlatformBits"), FText::FromString(PlatformBitsString));
-	Args.Add(TEXT("RHIName"), GetFriendlyShaderPlatformName(GetFeatureLevelShaderPlatform(InFeatureLevel)));
+	Args.Add(TEXT("RHIName"), FDataDrivenShaderPlatformInfo::GetFriendlyName(GetFeatureLevelShaderPlatform(InFeatureLevel)));
 	
 	if (InNetMode == PIE_Client)
 	{
@@ -3095,15 +3253,14 @@ FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFea
 	}
 	else if (InNetMode == PIE_ListenServer)
 	{
-		Args.Add(TEXT("NetMode"), FText::FromString(TEXT("Server")));
+		Args.Add(TEXT("NetMode"), FText::FromString(FString::Printf(TEXT("Server %d"), ClientIndex)));
 	}
 	else
 	{
-		Args.Add(TEXT("NetMode"), FText::FromString(TEXT("Standalone")));
+		Args.Add(TEXT("NetMode"), FText::FromString(FString::Printf(TEXT("Standalone %d"), ClientIndex)));
 	}
 
-	if (GEngine->StereoRenderingDevice && GEngine->StereoRenderingDevice.IsValid() && InSessionParams.SessionPreviewTypeOverride == EPlaySessionPreviewType::VRPreview &&
-		GEngine->XRSystem && GEngine->XRSystem.IsValid())
+	if (bVRPreview)
 	{
 		Args.Add(TEXT("XRSystemName"), FText::FromName(GEngine->XRSystem->GetSystemName()));
 		Args.Add(TEXT("XRRuntimeVersion"), FText::FromString(GEngine->XRSystem->GetVersionString()));
@@ -3172,11 +3329,11 @@ void UEditorEngine::TransferEditorSelectionToPlayInstances(const bool bInSelectI
 TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequestPlaySessionParams& InSessionParams, int32 InViewportIndex, const FWorldContext& InWorldContext, EPlayNetMode InNetMode, UGameViewportClient* InViewportClient, FSlatePlayInEditorInfo& InSlateInfo)
 {
 	FIntPoint WindowSize, WindowPosition;
-	GetWindowSizeAndPositionForInstanceIndex(*InSessionParams.EditorPlaySettings, InViewportIndex, WindowSize, WindowPosition);
+	GetWindowSizeAndPositionForInstanceIndex(*InSessionParams.EditorPlaySettings, InViewportIndex, InWorldContext, WindowSize, WindowPosition);
 	bool bCenterNewWindowOverride = false;
 	
 	// VR Preview overrides window location.
-	const bool bVRPreview = InSessionParams.SessionPreviewTypeOverride.Get(EPlaySessionPreviewType::NoPreview) == EPlaySessionPreviewType::VRPreview;
+	const bool bVRPreview = InWorldContext.bIsPrimaryPIEInstance && InSessionParams.SessionPreviewTypeOverride.Get(EPlaySessionPreviewType::NoPreview) == EPlaySessionPreviewType::VRPreview;
 	bool bUseOSWndBorder = bVRPreview;
 	if (bVRPreview)
 	{
@@ -3190,7 +3347,7 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 	// If they haven't provided a Slate Window (common), we will create one.
 	if (!bHasCustomWindow)
 	{
-		FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, PreviewPlatform.GetEffectivePreviewFeatureLevel(), InSessionParams, InWorldContext.PIEInstance, InWorldContext.PIEFixedTickSeconds);
+		FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, PreviewPlatform.GetEffectivePreviewFeatureLevel(), InSessionParams, InWorldContext.PIEInstance, InWorldContext.PIEFixedTickSeconds, bVRPreview);
 		PieWindow = SNew(SWindow)
 			.Title(ViewportName)
 			.Tag("PIEWindow")
@@ -3237,7 +3394,7 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 
 
 	bool bRenderDirectlyToWindow = bVRPreview;
-	bool bEnableStereoRendering = bVRPreview && (/* only first PIE instance can be VR */ InViewportIndex == 0);
+	bool bEnableStereoRendering = bVRPreview;
 
 	static const auto CVarPropagateAlpha = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
 	const EAlphaChannelMode::Type PropagateAlpha = EAlphaChannelMode::FromInt(CVarPropagateAlpha->GetValueOnGameThread());
@@ -3270,7 +3427,8 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 	InViewportClient->SetViewportOverlayWidget(PieWindow, ViewportOverlayWidgetRef);
 	InViewportClient->SetGameLayerManager(GameLayerManagerRef);
 
-	bool bShouldMinimizeRootWindow = bVRPreview && GEngine->XRSystem.IsValid() && InSessionParams.EditorPlaySettings->ShouldMinimizeEditorOnVRPIE;
+	const bool bShouldMinimizeRootWindowForVRPreview = bVRPreview && GEngine->XRSystem.IsValid() && InSessionParams.EditorPlaySettings->ShouldMinimizeEditorOnVRPIE;
+	const bool bShouldMinimizeRootWindowForNonVRPreview = !bVRPreview && InSessionParams.EditorPlaySettings->bShouldMinimizeEditorOnNonVRPIE;
 	// Set up a notification when the window is closed so we can clean up PIE
 	{
 		struct FLocal
@@ -3321,11 +3479,11 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 			}
 		};
 
-		FDelegateHandle PreviewFeatureLevelChangedHandle = OnPreviewFeatureLevelChanged().AddLambda([PieWindow, bHasCustomWindow, InViewportClient, InNetMode, InSessionParams, InWorldContext](ERHIFeatureLevel::Type NewFeatureLevel)
+		FDelegateHandle PreviewFeatureLevelChangedHandle = OnPreviewFeatureLevelChanged().AddLambda([PieWindow, bHasCustomWindow, InViewportClient, InNetMode, InSessionParams, InWorldContext, bVRPreview](ERHIFeatureLevel::Type NewFeatureLevel)
 			{
 				if (!bHasCustomWindow)
 				{
-					FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, NewFeatureLevel, InSessionParams, InWorldContext.PIEInstance, InWorldContext.PIEFixedTickSeconds);
+					FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, NewFeatureLevel, InSessionParams, InWorldContext.PIEInstance, InWorldContext.PIEFixedTickSeconds, bVRPreview);
 					PieWindow->SetTitle(ViewportName);
 				}
 				InViewportClient->GetWorld()->ChangeFeatureLevel(NewFeatureLevel);
@@ -3333,7 +3491,7 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 
 		PieWindow->SetRequestDestroyWindowOverride(FRequestDestroyWindowOverride::CreateStatic(&FLocal::RequestDestroyPIEWindowOverride, TWeakObjectPtr<UEditorEngine>(this)));
 		PieWindow->SetOnWindowClosed(FOnWindowClosed::CreateStatic(&FLocal::OnPIEWindowClosed, TWeakPtr<SViewport>(PieViewportWidget), TWeakObjectPtr<UEditorEngine>(this),
-			InViewportIndex, bShouldMinimizeRootWindow, PreviewFeatureLevelChangedHandle));
+			InViewportIndex, bShouldMinimizeRootWindowForVRPreview || bShouldMinimizeRootWindowForNonVRPreview, PreviewFeatureLevelChangedHandle));
 	}
 
 	// Create a new viewport that the viewport widget will use to render the game
@@ -3357,18 +3515,18 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 
 	// Change the system resolution to match our window, to make sure game and slate window are kept synchronized
 	FSystemResolution::RequestResolutionChange(WindowSize.X, WindowSize.Y, EWindowMode::Windowed);
-
+	
 	const bool bHMDIsReady = (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDConnected());
 	if (bVRPreview && bHMDIsReady)
 	{
 		GEngine->StereoRenderingDevice->EnableStereo(true);
+	}
 
-		// minimize the root window to provide max performance for the preview.
-		TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
-		if (RootWindow.IsValid() && bShouldMinimizeRootWindow)
-		{
-			RootWindow->Minimize();
-		}
+	// minimize the root window to provide max performance for the preview.
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+	if (RootWindow.IsValid() && (bShouldMinimizeRootWindowForVRPreview || bShouldMinimizeRootWindowForNonVRPreview))
+	{
+		RootWindow->Minimize();
 	}
 
 	return PieViewportWidget;
@@ -3430,7 +3588,35 @@ void FitWindowPositionToWorkArea(FIntPoint &WinPos, FIntPoint &WinSize, const FM
 	WinPos.Y = FMath::Clamp(WinPos.Y, (int32)PreferredWorkArea.Top, (int32)PreferredWorkArea.Bottom);
 }
 
-void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySettings& InEditorPlaySettings, const int32 InInstanceIndex, FIntPoint& OutSize, FIntPoint& OutPosition)
+bool IsPrimaryPIEClient(const FRequestPlaySessionParams& InPlaySessionParams, const int32 InClientIndex)
+{
+	// Note: the InClientIndex here is the index of the pie clinet instances, meaning instances with pie windows, created not the pie instance index. These may differ, for example it is possible that pie instance 0 is a windowless dedicated server in netmode 'play as client'.
+
+	const ULevelEditorPlaySettings& EditorPlaySettings = InPlaySessionParams.EditorPlaySettings ? *InPlaySessionParams.EditorPlaySettings : *GetDefault<ULevelEditorPlaySettings>();
+
+	if (InClientIndex == EditorPlaySettings.GetPrimaryPIEClientIndex())
+	{
+		return true;
+	}
+
+	int32 ClientCount;
+	if (!EditorPlaySettings.GetPlayNumberOfClients(ClientCount))
+	{
+		return InClientIndex == 0;  // If we aren't doing 'number of clients' just primary the first client.
+	}
+
+	if ((EditorPlaySettings.GetPrimaryPIEClientIndex() >= ClientCount) && (InClientIndex == ClientCount - 1))
+	{
+		// If the number is set too high use the last client.  This could easily happen if the user reduces the number of clients and forgets to update this setting. We won't assume they are intentionally avoiding having a 'primary' in this way.
+		return true;
+	}
+
+	// Note any negative value returned by GetPrimaryPIEClientIndex() would result in no primary client at all.
+	return false;
+
+}
+
+void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySettings& InEditorPlaySettings, const int32 InViewportIndex, const FWorldContext& InWorldContext, FIntPoint& OutSize, FIntPoint& OutPosition)
 {
 	if (!ensureMsgf(PlayInEditorSessionInfo.IsSet(), TEXT("Cannot get saved Window Size/Position if a session has not been started.")))
 	{
@@ -3448,8 +3634,8 @@ void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySet
 	}
 
 	// Alright, they don't have a saved position or don't want to load from the saved position. First, figure out
-	// how big the window should be. If it is the first client, it uses a different resolution source than additional.
-	if (InInstanceIndex == 0)
+	// how big the window should be. If it is the primary client, it uses a different resolution source than additional.
+	if (InWorldContext.bIsPrimaryPIEInstance)
 	{
 		OutSize = FIntPoint(InEditorPlaySettings.NewWindowWidth, InEditorPlaySettings.NewWindowHeight);
 	}
@@ -3477,7 +3663,7 @@ void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySet
 
 
 	// Now we can position the window. If it is the first window, we can respect the center window flag.
-	if (InInstanceIndex == 0)
+	if (InWorldContext.bIsPrimaryPIEInstance)
 	{
 		// Center window if CenterNewWindow checked or if NewWindowPosition is FIntPoint::NoneValue (-1,-1)
 		if (InEditorPlaySettings.CenterNewWindow || InEditorPlaySettings.NewWindowPosition == FIntPoint::NoneValue)
@@ -3494,9 +3680,9 @@ void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySet
 	}
 	else
 	{
-		if (InInstanceIndex < PlayInEditorSessionInfo->CachedWindowInfo.Num())
+		if (InViewportIndex < PlayInEditorSessionInfo->CachedWindowInfo.Num())
 		{
-			OutPosition = PlayInEditorSessionInfo->CachedWindowInfo[InInstanceIndex].Position;
+			OutPosition = PlayInEditorSessionInfo->CachedWindowInfo[InViewportIndex].Position;
 			FitWindowPositionToWorkArea(OutPosition, OutSize, WindowBorderSize);
 		}
 		// Add a new entry.
@@ -3514,21 +3700,27 @@ void UEditorEngine::GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySet
 		}
 	}
 	// Store this Size/Position for this duration
-	StoreWindowSizeAndPositionForInstanceIndex(InInstanceIndex, OutSize, OutPosition);
+	StoreWindowSizeAndPositionForInstanceIndex(InViewportIndex, OutSize, OutPosition);
 }
-void UEditorEngine::StoreWindowSizeAndPositionForInstanceIndex(const int32 InInstanceIndex, const FIntPoint& InSize, const FIntPoint& InPosition)
+void UEditorEngine::StoreWindowSizeAndPositionForInstanceIndex(const int32 InViewportIndex, const FIntPoint& InSize, const FIntPoint& InPosition)
 {
 	// Overwrite an existing one if we have it
-	if (InInstanceIndex < PlayInEditorSessionInfo->CachedWindowInfo.Num())
+	if (InViewportIndex < PlayInEditorSessionInfo->CachedWindowInfo.Num())
 	{
-		PlayInEditorSessionInfo->CachedWindowInfo[InInstanceIndex].Size = InSize;
-		PlayInEditorSessionInfo->CachedWindowInfo[InInstanceIndex].Position = InPosition;
+		PlayInEditorSessionInfo->CachedWindowInfo[InViewportIndex].Size = InSize;
+		PlayInEditorSessionInfo->CachedWindowInfo[InViewportIndex].Position = InPosition;
 	}
 	else
 	{
-		FPlayInEditorSessionInfo::FWindowSizeAndPos& NewInfo = PlayInEditorSessionInfo->CachedWindowInfo.Add_GetRef(FPlayInEditorSessionInfo::FWindowSizeAndPos());
-		NewInfo.Size = InSize;
-		NewInfo.Position = InPosition;
+		// It is possible for PIE to play in viewports which are not independent and for which we do not want to cache window size/position information.  For example "Selected Viewport" will use a docked editor viewport for PIE.
+		// Appending as many as we need to get to our proper index.  These cache entries may be overwritten later, or they may be left with what must be at least a plausible size/pos.
+		while (PlayInEditorSessionInfo->CachedWindowInfo.Num() < InViewportIndex + 1)
+		{
+			FPlayInEditorSessionInfo::FWindowSizeAndPos& NewInfo = PlayInEditorSessionInfo->CachedWindowInfo.Add_GetRef(FPlayInEditorSessionInfo::FWindowSizeAndPos());
+			NewInfo.Size = InSize;
+			NewInfo.Position = InPosition;
+		}
+		check(PlayInEditorSessionInfo->CachedWindowInfo.Num() == InViewportIndex + 1); 
 	}
 }
 

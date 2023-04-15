@@ -10,8 +10,10 @@
 #include "Rendering/SlateRenderTransform.h"
 #include "GenericPlatform/ICursor.h"
 #include "Types/ISlateMetaData.h"
+#include "Trace/SlateMemoryTags.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Accessibility/SlateWidgetAccessibleTypes.h"
+#include "Templates/Identity.h"
 
 class IToolTip;
 class SUserWidget;
@@ -125,7 +127,7 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
 		/* Bind attribute with delegate to a global function
 		 * NOTE: We use a template here to avoid 'typename' issues when hosting attributes inside templated classes */ \
 		template< typename... VarTypes > \
-		WidgetArgsType& AttrName##_Static( typename TAttribute< AttrType >::FGetter::template FStaticDelegate<VarTypes...>::FFuncPtr InFunc, VarTypes... Vars )	\
+		WidgetArgsType& AttrName##_Static( TIdentity_T< typename TAttribute< AttrType >::FGetter::template TFuncPtr<VarTypes...> > InFunc, VarTypes... Vars )	\
 		{ \
 			_##AttrName = TAttribute< AttrType >::Create( TAttribute< AttrType >::FGetter::CreateStatic( InFunc, Vars... ) ); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
@@ -199,6 +201,14 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
 		SLATE_PRIVATE_ARGUMENT_FUNCTION ( ArgType, ArgName )
 
 /**
+ * Use when an argument used to be declared SLATE_ARGUMENT and it should no longer be used
+ */
+#define SLATE_ARGUMENT_DEPRECATED( ArgType, ArgName, DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_ARGUMENT_VARIABLE( ArgType, ArgName ); \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_ARGUMENT_FUNCTION ( ArgType, ArgName )
+
+/**
  * Like SLATE_ARGUMENT, but support a default value. e.g.
  * 
  * SLATE_ARGUMENT_DEFAULT(float, WheelScrollMultiplier) { 1.0f };
@@ -207,55 +217,88 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
 	SLATE_PRIVATE_ARGUMENT_FUNCTION(ArgType, ArgName) \
 	SLATE_PRIVATE_ARGUMENT_VARIABLE(ArgType, ArgName)
 
-/**
- * Use this macro to declare a slate argument.
- * Arguments differ from attributes in that they can only be values
- */
-#define SLATE_STYLE_ARGUMENT( ArgType, ArgName ) \
+#define SLATE_PRIVATE_STYLE_ARGUMENT_VARIABLE( ArgType, ArgName ) \
 		const ArgType* _##ArgName; \
+
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_ARGTYPE_PTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const ArgType* InArg ) \
 		{ \
 			_##ArgName = InArg; \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		}\
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_PTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const class USlateWidgetStyleAsset* const InSlateStyleAsset ) \
 		{ \
 			_##ArgName = InSlateStyleAsset->GetStyleChecked< ArgType >(); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		}\
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_WEAKPTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const TWeakObjectPtr< const class USlateWidgetStyleAsset >& InSlateStyleAsset ) \
 		{ \
 			_##ArgName = InSlateStyleAsset.Get()->GetStyleChecked< ArgType >(); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		}\
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_PTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const class ISlateStyle* InSlateStyle, const FName& StyleName, const ANSICHAR* Specifier = nullptr ) \
 		{ \
 			check( InSlateStyle != nullptr ); \
 			_##ArgName = &InSlateStyle->GetWidgetStyle< ArgType >( StyleName, Specifier ); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		}\
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_REF( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const class ISlateStyle& InSlateStyle, const FName& StyleName, const ANSICHAR* Specifier = nullptr ) \
 		{ \
 			_##ArgName = &InSlateStyle.GetWidgetStyle< ArgType >( StyleName, Specifier ); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		}\
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_WEAKPTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const TWeakObjectPtr< const class ISlateStyle >& InSlateStyle, const FName& StyleName, const ANSICHAR* Specifier = nullptr ) \
 		{ \
 			_##ArgName = &InSlateStyle.Get()->GetWidgetStyle< ArgType >( StyleName, Specifier ); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
-		} \
-		\
+		}
+#define SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_SHAREDPTR( ArgType, ArgName ) \
 		WidgetArgsType& ArgName( const TSharedPtr< const class ISlateStyle >& InSlateStyle, const FName& StyleName, const ANSICHAR* Specifier = nullptr ) \
 		{ \
 			_##ArgName = &InSlateStyle->GetWidgetStyle< ArgType >( StyleName, Specifier ); \
 			return static_cast<WidgetArgsType*>(this)->Me(); \
 		} 
 
+ /**
+  * Use this macro to declare a slate style argument.
+  * Arguments differ from attributes in that they can only be values
+  */
+#define SLATE_STYLE_ARGUMENT( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_VARIABLE( ArgType, ArgName ); \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_ARGTYPE_PTR( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_PTR( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_WEAKPTR( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_PTR( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_REF( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_WEAKPTR( ArgType, ArgName ) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_SHAREDPTR( ArgType, ArgName )
+
+ /**
+  * Use when a style argument used to be declared SLATE_STYLE_ARGUMENT and it should no longer be used
+  */
+#define SLATE_STYLE_ARGUMENT_DEPRECATED( ArgType, ArgName, DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_VARIABLE( ArgType, ArgName ); \
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS\
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_ARGTYPE_PTR( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_PTR( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_WIDGETSTYLE_WEAKPTR( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_PTR( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_REF( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_WEAKPTR( ArgType, ArgName ) \
+	UE_DEPRECATED(DeprecationVersion, DeprecationMessage) \
+	SLATE_PRIVATE_STYLE_ARGUMENT_FUNCTION_SLATESTYLE_SHAREDPTR( ArgType, ArgName )\
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
  * Use this macro between SLATE_BEGIN_ARGS and SLATE_END_ARGS
@@ -939,5 +982,6 @@ struct TSlateDecl
 template<typename WidgetType, typename RequiredArgsPayloadType>
 TSlateDecl<WidgetType, RequiredArgsPayloadType> MakeTDecl( const ANSICHAR* InType, const ANSICHAR* InFile, int32 OnLine, RequiredArgsPayloadType&& InRequiredArgs )
 {
+	LLM_SCOPE_BYTAG(UI_Slate);
 	return TSlateDecl<WidgetType, RequiredArgsPayloadType>(InType, InFile, OnLine, Forward<RequiredArgsPayloadType>(InRequiredArgs));
 }

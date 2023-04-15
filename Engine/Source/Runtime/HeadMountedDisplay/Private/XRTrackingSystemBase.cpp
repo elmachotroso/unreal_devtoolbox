@@ -13,6 +13,7 @@
 
 // Tracking system delegates
 FXRTrackingSystemDelegates::FXRTrackingOriginChanged FXRTrackingSystemDelegates::OnXRTrackingOriginChanged;
+FXRTrackingSystemDelegates::FXRPlayAreaChanged FXRTrackingSystemDelegates::OnXRPlayAreaChanged;
 
 
 
@@ -163,6 +164,13 @@ void FXRTrackingSystemBase::GetMotionControllerData(UObject* WorldContext, const
 	}
 }
 
+bool FXRTrackingSystemBase::GetCurrentInteractionProfile(const EControllerHand Hand, FString& InteractionProfile)
+{
+	UE_LOG(LogHMD, Warning, TEXT("GetCurrentInteractionProfile for %i failed because the current VR tracking system does not support it!"), Hand);
+
+	return false;
+}
+
 
 class IXRLoadingScreen* FXRTrackingSystemBase::GetLoadingScreen()
 {
@@ -227,7 +235,7 @@ FTransform FXRTrackingSystemBase::ComputeTrackingToWorldTransform(FWorldContext&
 				if (bUsesImplicitHMDPositioning)
 				{
 					TArray<UCameraComponent*> CameraComponents;
-					PlayerViewTarget->GetComponents<UCameraComponent>(CameraComponents);
+					PlayerViewTarget->GetComponents(CameraComponents);
 
 					UCameraComponent* PlayerCamera = nullptr;
 					for (UCameraComponent* Cam : CameraComponents)

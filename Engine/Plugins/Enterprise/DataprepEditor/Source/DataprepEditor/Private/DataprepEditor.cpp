@@ -30,7 +30,7 @@
 #include "ActorEditorUtils.h"
 #include "ActorTreeItem.h"
 #include "AssetDeleteModel.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BlueprintNodeSpawner.h"
 #include "ComponentTreeItem.h"
 #include "DesktopPlatformModule.h"
@@ -38,7 +38,7 @@
 #include "Dialogs/DlgPickPath.h"
 #include "Editor.h"
 #include "EditorDirectories.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
@@ -411,17 +411,17 @@ void FDataprepEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& I
 	InTabManager->RegisterTabSpawner(DetailsTabId, FOnSpawnTab::CreateSP(this, &FDataprepEditor::SpawnTabDetails))
 		.SetDisplayName(LOCTEXT("DetailsTab", "Details"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(DataprepAssetTabId, FOnSpawnTab::CreateSP(this, &FDataprepEditor::SpawnTabDataprep))
 		.SetDisplayName(LOCTEXT("DataprepAssetTab", "Dataprep"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(DataprepStatisticsTabId, FOnSpawnTab::CreateSP(this, &FDataprepEditor::SpawnTabStatistics))
 		.SetDisplayName(LOCTEXT("StatisticsTab", "Statistics"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.StatsViewer"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.StatsViewer"));
 
 	// Do not register tabs which are not pertinent to Dataprep instance
 	if(!bIsDataprepInstance)
@@ -429,12 +429,12 @@ void FDataprepEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& I
 		InTabManager->RegisterTabSpawner(PaletteTabId, FOnSpawnTab::CreateSP(this, &FDataprepEditor::SpawnTabPalette))
 			.SetDisplayName(LOCTEXT("PaletteTab", "Palette"))
 			.SetGroup(WorkspaceMenuCategoryRef)
-			.SetIcon( FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.Palette"));
+			.SetIcon( FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.Tabs.Palette"));
 
 		InTabManager->RegisterTabSpawner(DataprepGraphEditorTabId, FOnSpawnTab::CreateSP(this, &FDataprepEditor::SpawnTabGraphEditor))
 			.SetDisplayName(LOCTEXT("GraphEditorTab", "Recipe Graph"))
 			.SetGroup(WorkspaceMenuCategoryRef)
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "GraphEditor.EventGraph_16x"));
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "GraphEditor.EventGraph_16x"));
 		
 	}
 }
@@ -934,7 +934,7 @@ void FDataprepEditor::OnCommitWorld()
 	if( bIsFirstRun && DataprepAssetInterfacePtr->HasActions())
 	{
 		const FText Title( LOCTEXT( "DataprepEditor_ProceedWithCommit", "Proceed with commit" ) );
-		const FText Message( LOCTEXT( "DataprepEditor_ConfirmCommitPipelineNotExecuted", "The action pipeline has not been executed.\nDo you want to proceeed with the commit anyway?" ) );
+		const FText Message( LOCTEXT( "DataprepEditor_ConfirmCommitPipelineNotExecuted", "The action pipeline has not been executed.\nDo you want to proceed with the commit anyway?" ) );
 
 		if( FMessageDialog::Open( EAppMsgType::YesNo, Message, &Title ) != EAppReturnType::Yes )
 		{
@@ -945,7 +945,7 @@ void FDataprepEditor::OnCommitWorld()
 	else if( !bIsFirstRun && bPipelineChanged )
 	{
 		const FText Title( LOCTEXT( "DataprepEditor_ProceedWithCommit", "Proceed with commit" ) );
-		const FText Message( LOCTEXT( "DataprepEditor_ConfirmCommitPipelineChanged", "The action pipeline has changed since last execution.\nDo you want to proceeed with the commit anyway?" ) );
+		const FText Message( LOCTEXT( "DataprepEditor_ConfirmCommitPipelineChanged", "The action pipeline has changed since last execution.\nDo you want to proceed with the commit anyway?" ) );
 
 		if( FMessageDialog::Open( EAppMsgType::YesNo, Message, &Title ) != EAppReturnType::Yes )
 		{
@@ -1074,7 +1074,7 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabAssetPreview(const FSpawnTabArgs &
 		[
 			SNew(SBorder)
 			.Padding(2.f)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				AssetPreviewView.ToSharedRef()
 			]
@@ -1269,7 +1269,7 @@ TSharedRef<SDockTab> FDataprepEditor::SpawnTabDataprep(const FSpawnTabArgs & Arg
 	[
 		SNew(SBorder)
 		.Padding(2.f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			DataprepAssetView.ToSharedRef()
 		]
@@ -1571,7 +1571,13 @@ bool FDataprepEditor::OnRequestClose()
 		const FText Title( LOCTEXT( "DataprepEditor_ProceedWithClose", "Proceed with close") );
 		const FText Message( LOCTEXT( "DataprepEditor_ConfirmClose", "Imported data was not committed! Closing the editor will discard imported data.\nDo you want to close anyway?" ) );
 
-		return ( FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes );
+		if (FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes)
+		{
+			ResetBuildWorld();
+			return true;
+		}
+		
+		return false;
 	}
 	return !bIgnoreCloseRequest;
 }

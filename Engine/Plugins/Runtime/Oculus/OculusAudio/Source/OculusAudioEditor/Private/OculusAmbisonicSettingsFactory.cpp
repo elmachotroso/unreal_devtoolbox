@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusAmbisonicSettingsFactory.h"
-#include "OculusAmbisonicsSettings.h"
 #include "AssetTypeCategories.h"
+#include "AudioAnalytics.h"
+#include "OculusAmbisonicsSettings.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 
@@ -51,6 +52,7 @@ UOculusAmbisonicsSettingsFactory::UOculusAmbisonicsSettingsFactory(const FObject
 UObject* UOculusAmbisonicsSettingsFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context,
 	FFeedbackContext* Warn)
 {
+	Audio::Analytics::RecordEvent_Usage(TEXT("OculusAudio.AmbisonicsSettingsCreated"));
 	return NewObject<UOculusAudioSoundfieldSettings>(InParent, Name, Flags);
 }
 

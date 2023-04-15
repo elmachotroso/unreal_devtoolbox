@@ -38,52 +38,43 @@ void FDisplayClusterViewportResource::ImplInitDynamicRHI_RenderTargetResource2D(
 		NumMips = ViewportResourceSettings.NumMips;
 	}
 
-	FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterViewportRenderTargetResource"), FClearValueBinding::Black);
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("DisplayClusterViewportRenderTargetResource"))
+		.SetExtent(GetSizeX(), GetSizeY())
+		.SetFormat(ViewportResourceSettings.Format)
+		.SetNumMips(NumMips)
+		.SetFlags(CreateFlags | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::SRVMask)
+		.SetClearValue(FClearValueBinding::Black);
 
-	RHICreateTargetableShaderResource2D(
-		GetSizeX(),
-		GetSizeY(),
-		ViewportResourceSettings.Format,
-		NumMips,
-		CreateFlags,
-		TexCreate_RenderTargetable,
-		false,
-		CreateInfo,
-		OutRenderTargetTextureRHI,
-		OutTextureRHI
-	);
+	OutRenderTargetTextureRHI = OutTextureRHI = RHICreateTexture(Desc);
 }
 
 void FDisplayClusterViewportResource::ImplInitDynamicRHI_TextureResource2D(FTexture2DRHIRef& OutTextureRHI)
 {
-	ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_ShaderResource;
-
-	// -- we will be manually copying this cross GPU, tell render graph not to
-	CreateFlags |= TexCreate_MultiGPUGraphIgnore;
+	FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("DisplayClusterViewportTextureResource"), GetSizeX(), GetSizeY(), ViewportResourceSettings.Format)
+		.SetClearValue(FClearValueBinding::Black)
+		.SetFlags(ETextureCreateFlags::Dynamic | ETextureCreateFlags::ShaderResource)
+		// -- we will be manually copying this cross GPU, tell render graph not to
+		.AddFlags(ETextureCreateFlags::MultiGPUGraphIgnore)
+		.SetInitialState(ERHIAccess::SRVMask);
 
 	// reflect srgb from settings
 	if (bSRGB)
 	{
-		CreateFlags |= TexCreate_SRGB;
+		Desc.AddFlags(ETextureCreateFlags::SRGB);
+	}
+	if (ViewportResourceSettings.bIsRenderTargetable)
+	{
+		Desc.AddFlags(ETextureCreateFlags::RenderTargetable);
+	}
+	else
+	{
+		Desc.AddFlags(ETextureCreateFlags::ResolveTargetable);
 	}
 
-	uint32 NumMips = 1;
-	uint32 NumSamples = 1;
-
-	CreateFlags |= ViewportResourceSettings.bIsRenderTargetable ? TexCreate_RenderTargetable : TexCreate_ResolveTargetable;
-
-	FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterViewportTextureResource"), FClearValueBinding::Black);
-
-	OutTextureRHI = RHICreateTexture2D(
-		GetSizeX(),
-		GetSizeY(),
-		ViewportResourceSettings.Format,
-		NumMips,
-		NumSamples,
-		CreateFlags,
-		ERHIAccess::SRVMask,
-		CreateInfo
-	);
+	OutTextureRHI = RHICreateTexture(Desc);
 }
 
 //------------------------------------------------------------------------------------------------

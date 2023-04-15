@@ -5,6 +5,8 @@
 
 #if STEAMVR_SUPPORTED_PLATFORMS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 #include "HeadMountedDisplay.h"
 #include "HeadMountedDisplayBase.h"
 #include "SteamVRFunctionLibrary.h"
@@ -24,7 +26,7 @@
 #endif
 
 #if !PLATFORM_MAC // No OpenGL on Mac anymore
-#include "OpenGLDrv.h"
+#include "IOpenGLDynamicRHI.h"
 #endif
 
 #include "SceneViewExtension.h"
@@ -156,8 +158,8 @@ public:
 	virtual void OnBeginRendering_GameThread() override;
 	virtual void OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily) override;
 
-	virtual float GetPixelDenity() const override { return PixelDensity; }
-	virtual void SetPixelDensity(const float NewDensity) override { PixelDensity = NewDensity; }
+	virtual float GetPixelDenity() const override;
+	virtual void SetPixelDensity(const float NewDensity) override;
 	virtual FIntPoint GetIdealRenderTargetSize() const override { return IdealRenderTargetSize; }
 
 	/** IStereoRendering interface */
@@ -166,7 +168,7 @@ public:
 	virtual void AdjustViewRect(int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
 	virtual void CalculateStereoViewOffset(const int32 ViewIndex, FRotator& ViewRotation, const float MetersToWorld, FVector& ViewLocation) override;
 	virtual FMatrix GetStereoProjectionMatrix(const int32 ViewIndex) const override;
-	virtual void RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* BackBuffer, FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
+	virtual void RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* BackBuffer, FRHITexture* SrcTexture, FVector2D WindowSize) const override;
 	virtual void GetEyeRenderParams_RenderThread(const FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 	virtual IStereoLayers* GetStereoLayers() override;
@@ -192,9 +194,9 @@ public:
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {};
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override {}
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override {}
-	virtual void PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override {}
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override {}
+	virtual void PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
 
 	// FHMDSceneViewExtension interface
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
@@ -473,6 +475,7 @@ private:
 
 		/** World units (UU) to Meters scale.  Read from the level, and used to transform positional tracking data */
 		float WorldToMetersScale;
+		float PixelDensity;
 
 		vr::HmdMatrix34_t RawPoses[vr::k_unMaxTrackedDeviceCount];
 
@@ -480,6 +483,7 @@ private:
 			: FrameNumber(0)
 			, bHaveVisionTracking(false)
 			, WorldToMetersScale(100.0f)
+			, PixelDensity(1.0f)
 		{
 			const uint32 MaxDevices = vr::k_unMaxTrackedDeviceCount;
 
@@ -554,7 +558,6 @@ private:
 	uint32 WindowMirrorBoundsHeight;
 
 	FIntPoint IdealRenderTargetSize;
-	float PixelDensity;
 
 	/** How far the HMD has to move before it's considered to be worn */
 	float HMDWornMovementThreshold;
@@ -593,5 +596,6 @@ public:
 	friend class FSteamSplashTicker;
 };
 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif //STEAMVR_SUPPORTED_PLATFORMS

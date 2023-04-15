@@ -39,6 +39,30 @@
 	#define UE_SERVER					0
 #endif
 
+/**
+ *   Whether compiling for a trusted dedicated server or not.
+ */
+#ifndef UE_SERVER_TRUSTED
+	#define UE_SERVER_TRUSTED			0
+#endif
+
+/**
+ *   Whether compiling for an untrusted dedicated server or not.
+ */
+#ifndef UE_SERVER_UNTRUSTED
+	#define UE_SERVER_UNTRUSTED			0
+#endif
+
+#if UE_SERVER
+	#if UE_SERVER_TRUSTED + UE_SERVER_UNTRUSTED != 1
+		#error Exactly one of [UE_SERVER_TRUSTED UE_SERVER_UNTRUSTED] should be defined to be 1 when UE_SERVER=1
+	#endif
+#else
+	#if UE_SERVER_TRUSTED || UE_SERVER_UNTRUSTED
+		#error All of [UE_SERVER_TRUSTED UE_SERVER_UNTRUSTED] should be defined to be 0 when UE_SERVER=0
+	#endif
+#endif
+
 // Ensure that we have one, and only one build config coming from UBT
 #if UE_BUILD_DEBUG + UE_BUILD_DEVELOPMENT + UE_BUILD_TEST + UE_BUILD_SHIPPING != 1
 	#error Exactly one of [UE_BUILD_DEBUG UE_BUILD_DEVELOPMENT UE_BUILD_TEST UE_BUILD_SHIPPING] should be defined to be 1
@@ -452,6 +476,11 @@
 #define WITH_IOSTORE_IN_EDITOR UE_IS_COOKED_EDITOR
 #endif
 
+// Controls whether Iris networking code is compiled in or not; should normally be defined by UBT
+#ifndef UE_WITH_IRIS
+	#define UE_WITH_IRIS 0
+#endif
+
 // Controls whether or not to make a global object to load COnfig.bin as soon as possible
 #ifndef PRELOAD_BINARY_CONFIG
 	#define PRELOAD_BINARY_CONFIG 1
@@ -463,3 +492,8 @@
 
 // Controls if the config system can stores configs for other platforms than the running one
 #define ALLOW_OTHER_PLATFORM_CONFIG		WITH_UNREAL_DEVELOPER_TOOLS
+
+// Controls whether or not process will control OS scheduler priority
+#ifndef WITH_PROCESS_PRIORITY_CONTROL
+	#define WITH_PROCESS_PRIORITY_CONTROL 0
+#endif

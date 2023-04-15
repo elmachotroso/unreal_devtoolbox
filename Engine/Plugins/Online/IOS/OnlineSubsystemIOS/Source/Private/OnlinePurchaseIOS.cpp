@@ -153,6 +153,12 @@ void FOnlinePurchaseIOS::Checkout(const FUniqueNetId& UserId, const FPurchaseChe
 	}
 }
 
+void FOnlinePurchaseIOS::Checkout(const FUniqueNetId& UserId, const FPurchaseCheckoutRequest& CheckoutRequest, const FOnPurchaseReceiptlessCheckoutComplete& Delegate)
+{
+	UE_LOG_ONLINE(Error, TEXT("FOnlinePurchaseIOS::Checkout (receiptless) is not currently supported"));
+	Delegate.ExecuteIfBound(FOnlineError(EOnlineErrorResult::NotImplemented));
+}
+
 void FOnlinePurchaseIOS::FinalizePurchase(const FUniqueNetId& UserId, const FString& ReceiptId)
 {
 	UE_LOG_ONLINE_PURCHASE(Log, TEXT("FOnlinePurchaseIOS::FinalizePurchase %s %s"), *UserId.ToString(), *ReceiptId);
@@ -217,7 +223,8 @@ void FOnlinePurchaseIOS::GetReceipts(const FUniqueNetId& UserId, TArray<FPurchas
 	OutReceipts.Empty();
 
 	// Add the cached list of user purchases
-	const TArray<TSharedRef<FPurchaseReceipt>>* UserCompletedTransactions = CompletedTransactions.Find(UserId.ToString());
+    const FString UserIdStr = IOSUSER;
+	const TArray<TSharedRef<FPurchaseReceipt>>* UserCompletedTransactions = CompletedTransactions.Find(UserIdStr);
 	if (UserCompletedTransactions != nullptr)
 	{
 		for (int32 Idx = 0; Idx < UserCompletedTransactions->Num(); Idx++)

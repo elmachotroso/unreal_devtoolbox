@@ -2,8 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "IndexTypes.h"
+#include "Math/Ray.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
 #include "Spatial/MeshAABBTree3.h"
 #include "Spatial/SpatialInterfaces.h"
+#include "Templates/Function.h"
+#include "VectorUtil.h"
 
 namespace UE
 {
@@ -93,7 +101,28 @@ public:
 
 	// spatial APIs
 
-	TMeshAABBTree3<FColliderMesh>& GetAABBTree();
+	/**
+	 * @param HitTriangleIDOut TriangleID on collider mesh - use GetSourceTriangleID() to map back to source mesh
+	 * @return true if a triangle was hit and Out parameters are initialized
+	 */
+	bool FindNearestHitTriangle( const FRay3d& Ray, double& RayParameterOut, int& HitTriangleIDOut, FVector3d& BaryCoordsOut ) const;
+
+	/**
+	 * Find the TriangleID closest to P on the collider mesh, and distance to it, within distance MaxDist, or return InvalidID.
+	 * Use GetSourceTriangleID() to map the TriangleID back to the source mesh.
+	 * Use MeshQueries.TriangleDistance() to get more information.
+	 */
+	int FindNearestTriangle( const FVector3d& Point, double& NearestDistSqrOut, const IMeshSpatial::FQueryOptions& Options = IMeshSpatial::FQueryOptions() ) const;
+
+
+	/**
+	 * Direct access to the AABBTree pointer inside the ColliderMesh. 
+	 * @warning this function should be avoided if possible, and may be removed in the future. 
+	 */
+	TMeshAABBTree3<FColliderMesh>* GetRawAABBTreeUnsafe();
+
+
+
 
 protected:
 	// For large meshes it might be better to optionally use TDynamicVector here (but keeping the TArray for

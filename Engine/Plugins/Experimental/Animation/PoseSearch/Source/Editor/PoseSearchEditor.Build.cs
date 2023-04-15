@@ -12,11 +12,13 @@ public class PoseSearchEditor : ModuleRules
 			new string[]
 			{
 				"AnimGraph",
+				"AnimGraphRuntime",
 				"AnimationCore",
 				"Core",
 				"CoreUObject",
 				"Engine",
 				"PoseSearch",
+				"GameplayTags",
 				
 				// Trace-related dependencies
 				"TraceLog",
@@ -30,7 +32,6 @@ public class PoseSearchEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"RewindDebuggerInterface",
-				"EditorStyle",
 				"UnrealEd",
 				"InputCore"
 			}
@@ -39,7 +40,15 @@ public class PoseSearchEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"BlueprintGraph"
+				"BlueprintGraph",
+				"PropertyEditor",
+				"SlateCore",
+				"Slate",
+				"EditorStyle",
+				"DetailCustomizations",
+				"AdvancedPreviewScene",
+				"EditorFramework",
+				"ToolWidgets"
 			}
 		);
 	}

@@ -3,14 +3,17 @@
 #include "CameraAnimationSequencePlayer.h"
 #include "CineCameraComponent.h"
 #include "Engine/World.h"
+#include "EntitySystem/MovieSceneEntitySystemRunner.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
-#include "EntitySystem/MovieScenePropertySystemTypes.inl"
+#include "EntitySystem/MovieScenePropertyComponentHandler.h"
 #include "GameFramework/WorldSettings.h"
 #include "CameraAnimationSequenceSubsystem.h"
 #include "MovieSceneTimeHelpers.h"
 #include "MovieSceneTracksComponentTypes.h"
 #include "TemplateSequence.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraAnimationSequencePlayer)
 
 namespace UE
 {
@@ -67,6 +70,8 @@ void UpdateInitialPropertyValues(UMovieSceneEntitySystemLinker* Linker, const TP
 
 }
 }
+
+bool UCameraAnimationSequenceCameraStandIn::bRegistered(false);
 
 UCameraAnimationSequenceCameraStandIn::UCameraAnimationSequenceCameraStandIn(const FObjectInitializer& ObjInit) 
 	: Super(ObjInit) 
@@ -210,13 +215,25 @@ void UCameraAnimationSequenceCameraStandIn::RegisterCameraStandIn()
 {
 	using namespace UE::MovieScene;
 
-	static bool bHasRegistered = false;
-	if (!bHasRegistered)
+	if (ensure(!bRegistered))
 	{
 		FMovieSceneTracksComponentTypes* TracksComponentTypes = FMovieSceneTracksComponentTypes::Get();
 		TracksComponentTypes->Accessors.ComponentTransform.Add(UCameraAnimationSequenceCameraStandIn::StaticClass(), TEXT("Transform"), &GetCameraStandInTransform, &SetCameraStandInTransform);
 
-		bHasRegistered = true;
+		bRegistered = true;
+	}
+}
+
+void UCameraAnimationSequenceCameraStandIn::UnregisterCameraStandIn()
+{
+	using namespace UE::MovieScene;
+
+	if (ensure(bRegistered))
+	{
+		FMovieSceneTracksComponentTypes* TracksComponentTypes = FMovieSceneTracksComponentTypes::Get();
+		TracksComponentTypes->Accessors.ComponentTransform.RemoveAll(UCameraAnimationSequenceCameraStandIn::StaticClass());
+
+		bRegistered = false;
 	}
 }
 
@@ -250,7 +267,8 @@ UMovieSceneEntitySystemLinker* UCameraAnimationSequencePlayer::ConstructEntitySy
 			return Linker;
 		}
 	}
-	return NewObject<UMovieSceneEntitySystemLinker>(GetTransientPackage());
+	UMovieSceneEntitySystemLinker* NewLinker = UCameraAnimationSequenceSubsystem::CreateLinker(GetTransientPackage(), TEXT("StandaloneCameraAnimationLinker"));
+	return NewLinker;
 }
 
 EMovieScenePlayerStatus::Type UCameraAnimationSequencePlayer::GetPlaybackStatus() const
@@ -310,7 +328,11 @@ void UCameraAnimationSequencePlayer::Initialize(UMovieSceneSequence* InSequence)
 
 	PlayPosition.Reset(StartFrame);
 
-	RootTemplateInstance.Initialize(*Sequence, *this, nullptr);
+	UCameraAnimationSequenceSubsystem* Subsystem = UCameraAnimationSequenceSubsystem::GetCameraAnimationSequenceSubsystem(GetWorld());
+	ensureMsgf(Subsystem, TEXT("Unable to locate a valid camera animation sub-system. Camera anim sequences will not play."));
+
+	TSharedPtr<FMovieSceneEntitySystemRunner> Runner = Subsystem ? Subsystem->GetRunner() : nullptr;
+	RootTemplateInstance.Initialize(*Sequence, *this, nullptr, Runner);
 }
 
 void UCameraAnimationSequencePlayer::Play(bool bLoop, bool bRandomStartTime)
@@ -369,9 +391,16 @@ void UCameraAnimationSequencePlayer::Update(FFrameTime NewPosition)
 		}
 	}
 
-	const FMovieSceneEvaluationRange Range = PlayPosition.PlayTo(NewPosition);
-	const FMovieSceneContext Context(Range, Status);
-	RootTemplateInstance.Evaluate(Context, *this);
+	if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = RootTemplateInstance.GetRunner())
+	{
+		const FMovieSceneEvaluationRange Range = PlayPosition.PlayTo(NewPosition);
+		const FMovieSceneContext Context(Range, Status);
+
+		Runner->QueueUpdate(Context, RootTemplateInstance.GetRootInstanceHandle());
+
+		// @todo: we should really only call flush _once_ for all camera anim sequences
+		Runner->Flush();
+	}
 
 	if (bShouldStop)
 	{
@@ -390,9 +419,13 @@ void UCameraAnimationSequencePlayer::Stop()
 
 	PlayPosition.Reset(StartFrame);
 
-	if (RootTemplateInstance.IsValid())
+	if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = RootTemplateInstance.GetRunner())
 	{
-		RootTemplateInstance.Finish(*this);
+		if (Runner->QueueFinalUpdate(RootTemplateInstance.GetRootInstanceHandle()))
+		{
+			// @todo: we should really only call flush _once_ for all camera anim sequences
+			Runner->Flush();
+		}
 	}
 }
 
@@ -407,4 +440,5 @@ void UCameraAnimationSequencePlayer::EndScrubbing()
 	ensure(Status == EMovieScenePlayerStatus::Scrubbing);
 	Status = EMovieScenePlayerStatus::Playing;
 }
+
 

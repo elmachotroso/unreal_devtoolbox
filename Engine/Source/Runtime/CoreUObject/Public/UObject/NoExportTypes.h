@@ -6,6 +6,11 @@
 
 #pragma once
 
+// Help intellisense to avoid interpreting this file's declaration of FVector etc as it assumes !CPP by default
+#ifndef CPP
+#define CPP 1
+#endif
+
 #if CPP
 
 // Include the real definitions of the noexport classes below to allow the generated cpp file to compile.
@@ -17,6 +22,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/Timespan.h"
 
+#include "UObject/TopLevelAssetPath.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/PropertyAccessUtil.h"
 
@@ -117,6 +123,32 @@ namespace EAxis
 		X,
 		Y,
 		Z
+	};
+}
+
+/** Generic axis list enum (mirrored for native use in Axis.h). */
+UENUM()
+namespace EAxisList
+{
+	enum Type
+	{
+		None = 0,
+		X = 1,
+		Y = 2,
+		Z = 4,
+
+		Screen = 8,
+		XY = X | Y,
+		XZ = X | Z,
+		YZ = Y | Z,
+		XYZ = X | Y | Z,
+		All = XYZ | Screen,
+
+		/** alias over Axis YZ since it isn't used when the z-rotation widget is being used */
+		ZRotation = YZ,
+
+		/** alias over Screen since it isn't used when the 2d translate rotate widget is being used */
+		Rotate2D = Screen,
 	};
 }
 
@@ -255,6 +287,7 @@ enum EPixelFormat
 	PF_R32G32B32F,
 	PF_R8_SINT,
 	PF_R64_UINT,
+	PF_R9G9B9EXP5,
 	PF_MAX,
 };
 
@@ -414,13 +447,13 @@ namespace EAppMsgType
 /**
  * A struct used as stub for deleted ones. 
  */
-USTRUCT(noexport)
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults)
 struct FFallbackStruct
 {
 };
 
 /** A globally unique identifier (mirrored from Guid.h) */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults)
 struct FGuid
 {
 	UPROPERTY(EditAnywhere, SaveGame, Category=Guid)
@@ -440,7 +473,7 @@ struct FGuid
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeBreak = "Engine.KismetMathLibrary.BreakVector3f"))
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector3f"))
 struct FVector3f
 {
 	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
@@ -457,7 +490,7 @@ struct FVector3f
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FVector3d
 {
 	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
@@ -474,7 +507,7 @@ struct FVector3d
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector"))
 struct FVector
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Vector, SaveGame)
@@ -492,7 +525,7 @@ struct FVector
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FVector4f
 {
 	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
@@ -512,7 +545,7 @@ struct FVector4f
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FVector4d
 {
 	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
@@ -533,7 +566,7 @@ struct FVector4d
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector4"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector4"))
 struct FVector4
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
@@ -554,7 +587,7 @@ struct FVector4
 * A vector in 2-D space composed of components (X, Y) with floating point precision.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
 */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FVector2f
 {
 	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
@@ -569,7 +602,7 @@ struct FVector2f
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
 */
 // LWC_TODO: CRITICAL! Name collision in UHT with FVector2D due to case insensitive FNames!
-// USTRUCT(immutable, noexport)
+// USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 // struct FVector2d
 // {
 // 	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
@@ -583,7 +616,7 @@ struct FVector2f
  * A vector in 2-D space composed of components (X, Y) with floating point precision.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeVector2D", HasNativeBreak="Engine.KismetMathLibrary.BreakVector2D"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeVector2D", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakVector2D"))
 struct FVector2D
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
@@ -594,7 +627,7 @@ struct FVector2D
 };
 
 /** A pair of 3D vectors (mirrored from TwoVectors.h). */
-USTRUCT(immutable, BlueprintType, noexport)
+USTRUCT(immutable, BlueprintType, noexport, IsAlwaysAccessible, HasDefaults)
 struct FTwoVectors
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TwoVectors, SaveGame)
@@ -608,7 +641,7 @@ struct FTwoVectors
  * A plane definition in 3D space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FPlane4f : public FVector3f
 {
 	UPROPERTY(EditAnywhere, Category=Plane, SaveGame)
@@ -619,7 +652,7 @@ struct FPlane4f : public FVector3f
  * A plane definition in 3D space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FPlane4d : public FVector3d
 {
 	UPROPERTY(EditAnywhere, Category = Plane, SaveGame)
@@ -630,7 +663,7 @@ struct FPlane4d : public FVector3d
  * A plane definition in 3D space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FPlane : public FVector
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Plane, SaveGame)
@@ -642,7 +675,7 @@ struct FPlane : public FVector
  * An orthogonal rotation in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FRotator3f
 {
 	/** Pitch (degrees) around Y axis */
@@ -662,7 +695,7 @@ struct FRotator3f
  * An orthogonal rotation in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FRotator3d
 {
 	/** Pitch (degrees) around Y axis */
@@ -682,7 +715,7 @@ struct FRotator3d
  * An orthogonal rotation in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeRotator", HasNativeBreak="Engine.KismetMathLibrary.BreakRotator"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeRotator", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakRotator"))
 struct FRotator
 {
 	/** Pitch (degrees) around Y axis */
@@ -702,7 +735,7 @@ struct FRotator
  * Quaternion.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FQuat4f
 {
 	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
@@ -724,7 +757,7 @@ struct FQuat4f
  * Quaternion.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FQuat4d
 {
 	UPROPERTY(EditAnywhere, Category = Quat, SaveGame)
@@ -746,7 +779,7 @@ struct FQuat4d
  * Quaternion.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake ="Engine.KismetMathLibrary.MakeQuat", HasNativeBreak="Engine.KismetMathLibrary.BreakQuat"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake ="/Script/Engine.KismetMathLibrary.MakeQuat", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakQuat"))
 struct FQuat
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Quat, SaveGame)
@@ -813,7 +846,7 @@ struct FPackedRGBA16N
  * Screen coordinates.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntPoint.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FIntPoint
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=IntPoint, SaveGame)
@@ -821,14 +854,186 @@ struct FIntPoint
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=IntPoint, SaveGame)
 	int32 Y;
+};
 
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt32Point
+{
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 Y;
+};
+
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt64Point
+{
+	UPROPERTY(EditAnywhere, Category=IntPoint, SaveGame)
+	int64 X;
+
+	UPROPERTY(EditAnywhere, Category=IntPoint, SaveGame)
+	int64 Y;
+};
+
+/**
+ * Screen coordinates.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntPoint.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUintPoint
+{
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 Y;
+};
+
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint32Point
+{
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int32 Y;
+};
+
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint64Point
+{
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntPoint, SaveGame)
+	int64 Y;
 };
 
 /**
  * An integer vector in 3D space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt32Vector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Y;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt64Vector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 Y;
+};
+
+/**
+ * An integer vector in 4D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FIntVector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Y;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint32Vector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Y;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint64Vector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 Y;
+};
+
+/**
+ * An integer vector in 4D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUintVector2
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Y;
+};
+
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt32Vector
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Z;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt64Vector
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 Z;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FIntVector
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=IntVector, SaveGame)
@@ -841,11 +1046,185 @@ struct FIntVector
 	int32 Z;
 };
 
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint32Vector
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Z;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint64Vector
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 Z;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUintVector
+{
+	UPROPERTY(EditAnywhere, Category=IntVector, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category=IntVector, SaveGame)
+	uint32 Y;
+
+	UPROPERTY(EditAnywhere, Category=IntVector, SaveGame)
+	uint32 Z;
+};
+
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt32Vector4
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 Z;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int32 W;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FInt64Vector4
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 Z;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	int64 W;
+};
+
+/**
+ * An integer vector in 4D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FIntVector4
+{
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IntVector4, SaveGame)
+	int32 X;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IntVector4, SaveGame)
+	int32 Y;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IntVector4, SaveGame)
+	int32 Z;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IntVector4, SaveGame)
+	int32 W;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint32Vector4
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 Z;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint32 W;
+};
+
+/**
+ * An integer vector in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUint64Vector4
+{
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 Z;
+
+	UPROPERTY(EditAnywhere, Category = IntVector, SaveGame)
+	uint64 W;
+};
+
+/**
+ * An integer vector in 4D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\IntVector.h
+ */
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+struct FUintVector4
+{
+	UPROPERTY(EditAnywhere, Category = IntVector4, SaveGame)
+	uint32 X;
+
+	UPROPERTY(EditAnywhere, Category = IntVector4, SaveGame)
+	uint32 Y;
+
+	UPROPERTY(EditAnywhere, Category = IntVector4, SaveGame)
+	uint32 Z;
+
+	UPROPERTY(EditAnywhere, Category = IntVector4, SaveGame)
+	uint32 W;
+};
+
+
 /**
  * Stores a color with 8 bits of precision per channel. (BGRA).
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Color.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FColor
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Color, SaveGame, meta=(ClampMin="0", ClampMax="255"))
@@ -866,7 +1245,7 @@ struct FColor
  * A linear, 32-bit/component floating point RGBA color.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Color.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FLinearColor
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LinearColor, SaveGame)
@@ -887,7 +1266,7 @@ struct FLinearColor
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox3f
 {
 	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
@@ -905,7 +1284,7 @@ struct FBox3f
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox3d
 {
 	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
@@ -922,7 +1301,7 @@ struct FBox3d
  * A bounding box.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeBox"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeBox"))
 struct FBox
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box, SaveGame)
@@ -939,7 +1318,7 @@ struct FBox
  * A rectangular 2D Box.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBox2f
 {
 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
@@ -957,7 +1336,7 @@ struct FBox2f
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
 */
 // LWC_TODO: CRITICAL! Name collision in UHT with FBox2D due to case insensitive FNames!
-// USTRUCT(immutable, noexport)
+// USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 // struct FBox2d
 // {
 // 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
@@ -974,7 +1353,7 @@ struct FBox2f
 * A rectangular 2D Box.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
 */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeBox2D"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeBox2D"))
 struct FBox2D
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Box2D, SaveGame)
@@ -991,7 +1370,7 @@ struct FBox2D
  * A bounding box and bounding sphere with the same origin.
  * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
  */
-USTRUCT(noexport)
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBoxSphereBounds3f
 {
 	/** Holds the origin of the bounding box and sphere. */
@@ -1011,7 +1390,7 @@ struct FBoxSphereBounds3f
  * A bounding box and bounding sphere with the same origin.
  * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
  */
-USTRUCT(noexport)
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FBoxSphereBounds3d
 {
 	/** Holds the origin of the bounding box and sphere. */
@@ -1031,7 +1410,7 @@ struct FBoxSphereBounds3d
  * A bounding box and bounding sphere with the same origin.
  * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
  */
-USTRUCT(noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeBoxSphereBounds", HasNativeBreak = "Engine.KismetMathLibrary.BreakBoxSphereBounds"))
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeBoxSphereBounds", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakBoxSphereBounds"))
 struct FBoxSphereBounds
 {
 	/** Holds the origin of the bounding box and sphere. */
@@ -1051,7 +1430,7 @@ struct FBoxSphereBounds
  * Structure for arbitrarily oriented boxes (i.e. not necessarily axis-aligned).
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\OrientedBox.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults)
 struct FOrientedBox
 {
 	/** Holds the center of the box. */
@@ -1087,7 +1466,7 @@ struct FOrientedBox
  * A 4x4 matrix.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Matrix.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FMatrix44f
 {
 	UPROPERTY(EditAnywhere, Category=Matrix, SaveGame)
@@ -1108,7 +1487,7 @@ struct FMatrix44f
  * A 4x4 matrix.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Matrix.h
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FMatrix44d
 {
 	UPROPERTY(EditAnywhere, Category = Matrix, SaveGame)
@@ -1129,7 +1508,7 @@ struct FMatrix44d
  * A 4x4 matrix.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Matrix.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport, BlueprintType, HasDefaults, HasNoOpConstructor, IsCoreType)
 struct FMatrix
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Matrix, SaveGame)
@@ -1150,7 +1529,7 @@ struct FMatrix
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<float>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointFloat
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1199,7 +1578,7 @@ struct FInterpCurveFloat
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<FVector2D>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointVector2D
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1247,7 +1626,7 @@ struct FInterpCurveVector2D
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<FVector>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointVector
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1295,7 +1674,7 @@ struct FInterpCurveVector
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<FQuat>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointQuat
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1343,7 +1722,7 @@ struct FInterpCurveQuat
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<FTwoVectors>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointTwoVectors
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1391,7 +1770,7 @@ struct FInterpCurveTwoVectors
  * Describes one specific point on an interpolation curve.
  * @note This is a mirror of TInterpCurvePoint<FLinearColor>, defined in InterpCurvePoint.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor)
 struct FInterpCurvePointLinearColor
 {
 	/** Float input value that corresponds to this key (eg. time). */
@@ -1439,7 +1818,7 @@ struct FInterpCurveLinearColor
  * Transform composed of Quat/Translation/Scale.
  * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, IsCoreType)
 struct FTransform3f
 {
 	/** Rotation of this transformation, as a quaternion. */
@@ -1459,7 +1838,7 @@ struct FTransform3f
  * Transform composed of Quat/Translation/Scale.
  * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
  */
-USTRUCT(immutable, noexport)
+USTRUCT(immutable, noexport, IsAlwaysAccessible, HasDefaults, IsCoreType)
 struct FTransform3d
 {
 	/** Rotation of this transformation, as a quaternion. */
@@ -1479,7 +1858,7 @@ struct FTransform3d
  * Transform composed of Quat/Translation/Scale.
  * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
  */
-USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeTransform", HasNativeBreak="Engine.KismetMathLibrary.BreakTransform"))
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, IsCoreType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeTransform", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakTransform"))
 struct FTransform
 {
 	/** Rotation of this transformation, as a quaternion. */
@@ -1499,7 +1878,7 @@ struct FTransform
  * Thread-safe random number generator that can be manually seeded.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\RandomStream.h
  */
-USTRUCT(noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeRandomStream", HasNativeBreak = "Engine.KismetMathLibrary.BreakRandomStream"))
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeRandomStream", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakRandomStream"))
 struct FRandomStream
 {
 public:
@@ -1516,7 +1895,7 @@ public:
  * A value representing a specific point date and time over a wide range of years.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Misc\DateTime.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeDateTime", HasNativeBreak="Engine.KismetMathLibrary.BreakDateTime"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeDateTime", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakDateTime"))
 struct FDateTime
 {
 	int64 Ticks;
@@ -1526,7 +1905,7 @@ struct FDateTime
  * A frame number value, representing discrete frames since the start of timing.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Misc\FrameNumber.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults)
 struct FFrameNumber
 {
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=FrameNumber)
@@ -1537,7 +1916,7 @@ struct FFrameNumber
  * A frame rate represented as a fraction comprising 2 integers: a numerator (number of frames), and a denominator (per second).
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Misc\FrameRate.h
  */
-USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeFrameRate", HasNativeBreak="Engine.KismetMathLibrary.BreakFrameRate"))
+USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeFrameRate", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakFrameRate"))
 struct FFrameRate
 {
 	/** The numerator of the framerate represented as a number of frames per second (e.g. 60 for 60 fps) */
@@ -1571,7 +1950,7 @@ private:
  * A frame time qualified by a frame rate context.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Misc\QualifiedFrameTime.h
  */
-USTRUCT(noexport, BlueprintType, meta=(ScriptName="QualifiedTime", HasNativeMake="Engine.KismetMathLibrary.MakeQualifiedFrameTime", HasNativeBreak="Engine.KismetMathLibrary.BreakQualifiedFrameTime"))
+USTRUCT(noexport, BlueprintType, meta=(ScriptName="QualifiedTime", HasNativeMake="/Script/Engine.KismetMathLibrary.MakeQualifiedFrameTime", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakQualifiedFrameTime"))
 struct FQualifiedFrameTime
 {
 	/** The frame time */
@@ -1611,22 +1990,38 @@ struct FTimecode
  * A time span value, which is the difference between two dates and times.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Misc\Timespan.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeTimespan", HasNativeBreak="Engine.KismetMathLibrary.BreakTimespan"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, meta=(HasNativeMake="/Script/Engine.KismetMathLibrary.MakeTimespan", HasNativeBreak="/Script/Engine.KismetMathLibrary.BreakTimespan"))
 struct FTimespan
 {
 	int64 Ticks;
+};
+
+/**
+ * A struct that can reference a top level asset such as '/Path/To/Package.AssetName'
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\TopLevelAssetPath.h
+ */
+USTRUCT(noexport, BlueprintType)
+struct FTopLevelAssetPath
+{
+private:
+	/** Name of the package containing the asset e.g. /Path/To/Package */
+	UPROPERTY(EditAnywhere, SaveGame, BlueprintReadWrite, Category = TopLevelAssetPath, meta = (AllowPrivateAccess = "true"))
+	FName PackageName;
+	/** Name of the asset within the package e.g. 'AssetName' */
+	UPROPERTY(EditAnywhere, SaveGame, BlueprintReadWrite, Category = TopLevelAssetPath, meta = (AllowPrivateAccess = "true"))
+	FName AssetName;
 };
 
 /** 
  * A struct that contains a string reference to an object, either a top level asset or a subobject.
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\SoftObjectPath.h
  */
-USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetSystemLibrary.MakeSoftObjectPath", HasNativeBreak="Engine.KismetSystemLibrary.BreakSoftObjectPath"))
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, meta=(HasNativeMake="/Script/Engine.KismetSystemLibrary.MakeSoftObjectPath", HasNativeBreak="/Script/Engine.KismetSystemLibrary.BreakSoftObjectPath"))
 struct FSoftObjectPath
 {
 	/** Asset path, patch to a top level object in a package */
 	UPROPERTY()
-	FName AssetPathName;
+	FTopLevelAssetPath AssetPath;
 
 	/** Optional FString for subobject within an asset */
 	UPROPERTY()
@@ -1637,7 +2032,7 @@ struct FSoftObjectPath
  * A struct that contains a string reference to a class, can be used to make soft references to classes.
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\SoftObjectPath.h
  */
-USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetSystemLibrary.MakeSoftClassPath", HasNativeBreak="Engine.KismetSystemLibrary.BreakSoftClassPath"))
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, meta=(HasNativeMake="/Script/Engine.KismetSystemLibrary.MakeSoftClassPath", HasNativeBreak="/Script/Engine.KismetSystemLibrary.BreakSoftClassPath"))
 struct FSoftClassPath : public FSoftObjectPath
 {
 };
@@ -1646,7 +2041,7 @@ struct FSoftClassPath : public FSoftObjectPath
  * A type of primary asset, used by the Asset Manager system.
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\PrimaryAssetId.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults)
 struct FPrimaryAssetType
 {
 	/** The Type of this object, by default its base class's name */
@@ -1658,7 +2053,7 @@ struct FPrimaryAssetType
  * This identifies an object as a "primary" asset that can be searched for by the AssetManager and used in various tools
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\PrimaryAssetId.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults)
 struct FPrimaryAssetId
 {
 	/** The Type of this object, by default its base class's name */
@@ -1727,6 +2122,43 @@ private:
 	/** Holds the range's upper bound. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Range, meta=(AllowPrivateAccess="true"))
 	FFloatRangeBound UpperBound;
+};
+
+
+/**
+ * Defines a single bound for a range of values.
+ * @note This is a mirror of TRangeBound<double>, defined in RangeBound.h
+ * @note Fields are private to match the C++ declaration in the header above.
+ */
+USTRUCT(noexport, BlueprintType)
+struct FDoubleRangeBound
+{
+private:
+	/** Holds the type of the bound. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Range, meta=(AllowPrivateAccess="true"))
+	TEnumAsByte<ERangeBoundTypes::Type> Type;
+
+	/** Holds the bound's value. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Range, meta=(AllowPrivateAccess="true"))
+	double Value;
+};
+
+/**
+ * A contiguous set of doubles described by lower and upper bound values.
+ * @note This is a mirror of TRange<double>, defined in Range.h
+ * @note Fields are private to match the C++ declaration in the header above.
+ */
+USTRUCT(noexport, BlueprintType)
+struct FDoubleRange
+{
+private:
+	/** Holds the range's lower bound. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Range, meta=(AllowPrivateAccess="true"))
+	FDoubleRangeBound LowerBound;
+
+	/** Holds the range's upper bound. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Range, meta=(AllowPrivateAccess="true"))
+	FDoubleRangeBound UpperBound;
 };
 
 /**
@@ -1944,6 +2376,77 @@ struct FAutomationExecutionEntry
 	FDateTime Timestamp;
 };
 
+
+/**
+ * Represents a single input device such as a gamepad, keyboard, or mouse.
+ *
+ * Has a globally unique identifier.
+ * 
+ * Opaque struct for the FInputDeviceId struct defined in CoreMiscDefines.h
+ */
+USTRUCT(noexport, BlueprintType)
+struct FInputDeviceId
+{
+	GENERATED_BODY()
+private:
+	
+	UPROPERTY(VisibleAnywhere, Category = "PlatformInputDevice")
+	int32 InternalId = -1;
+};
+
+/**
+ * Handle that defines a local user on this platform.
+ * This used to be just a typedef int32 that was used interchangeably as ControllerId and LocalUserIndex.
+ * Moving forward these will be allocated by the platform application layer.
+ *
+ * Opaque struct for the FPlatformUserId struct defined in CoreMiscDefines.h
+ */
+USTRUCT(noexport, BlueprintType)
+struct FPlatformUserId
+{
+	GENERATED_BODY()
+private:
+	
+	UPROPERTY(VisibleAnywhere, Category = "PlatformInputDevice")
+	int32 InternalId = -1;
+};
+
+/**
+ * Represents the connection status of a given FInputDeviceId
+ */
+UENUM(BlueprintType)
+enum class EInputDeviceConnectionState : uint8
+{
+	/** This is not a valid input device */
+	Invalid,
+
+	/** It is not known if this device is connected or not */
+	Unknown,
+
+	/** Device is definitely connected */
+	Disconnected,
+
+	/** Definitely connected and powered on */
+	Connected
+};
+
+/**
+ * Data about an input device's current state
+ */
+USTRUCT(noexport, BlueprintType)
+struct FPlatformInputDeviceState
+{
+	GENERATED_BODY()
+
+	/** The platform user that this input device belongs to */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "PlatformInputDevice")
+	FPlatformUserId OwningPlatformUser = PLATFORMUSERID_NONE;
+
+	/** The connection state of this input device */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "PlatformInputDevice")
+	EInputDeviceConnectionState ConnectionState = EInputDeviceConnectionState::Invalid;
+};
+
 /** Enum used by DataValidation plugin to see if an asset has been validated for correctness (mirrored in UObjectGlobals.h)*/
 UENUM(BlueprintType)
 enum class EDataValidationResult : uint8
@@ -1956,7 +2459,10 @@ enum class EDataValidationResult : uint8
 	NotValidated
 };
 
-USTRUCT(noexport, BlueprintType)
+/**
+ * A struct to serve as a filter for Asset Registry queries. (mirrored in ARFilter.h)
+ */
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, meta = (HasNativeMake = "/Script/Engine.KismetSystemLibrary.MakeARFilter", HasNativeBreak = "/Script/Engine.KismetSystemLibrary.BreakARFilter"))
 struct FARFilter
 {
 	/** The filter component for package names */
@@ -1967,20 +2473,34 @@ struct FARFilter
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
 	TArray<FName> PackagePaths;
 
+#if WITH_EDITORONLY_DATA
+	/** The filter component containing specific object paths. Deprecated. */
+	UPROPERTY()
+	TArray<FName> ObjectPaths;
+#endif
+
 	/** The filter component containing specific object paths */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
-	TArray<FName> ObjectPaths;
+	TArray<FSoftObjectPath> SoftObjectPaths;
 
-	/** The filter component for class names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
+	/** [DEPRECATED] - Class names are now represented by path names. Please use ClassPaths instead. */
+	UPROPERTY(BlueprintReadWrite, Category = AssetRegistry, meta=(DeprecatedProperty, DeprecationMessage="Short asset class names must be converted to full asset pathnames. Use ClassPaths instead."))
 	TArray<FName> ClassNames;
+
+	/** The filter component for class path names. Instances of the specified classes, but not subclasses (by default), will be included. Derived classes will be included only if bRecursiveClasses is true. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
+	TArray<FTopLevelAssetPath> ClassPaths;
 
 	/** The filter component for properties marked with the AssetRegistrySearchable flag */
 	TMultiMap<FName, TOptional<FString>> TagsAndValues;
 
+	/** [DEPRECATED] - Class names are now represented by path names. Please use RecursiveClassPathsExclusionSet instead. */
+	UPROPERTY(BlueprintReadWrite, Category = AssetRegistry, meta=(DeprecatedProperty, DeprecationMessage="Short asset class names must be converted to full asset pathnames. Use RecursiveClassPathsExclusionSet instead."))
+	TSet<FName> RecursiveClassesExclusionSet;
+
 	/** Only if bRecursiveClasses is true, the results will exclude classes (and subclasses) in this list */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
-	TSet<FName> RecursiveClassesExclusionSet;
+	TSet<FTopLevelAssetPath> RecursiveClassPathsExclusionSet;
 
 	/** If true, PackagePath components will be recursive */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = AssetRegistry)
@@ -2008,13 +2528,18 @@ struct COREUOBJECT_API FAssetBundleEntry
 	UPROPERTY()
 	FName BundleName;
 
+#if WITH_EDITORONLY_DATA
 	/** List of string assets contained in this bundle */
-	UPROPERTY()
+	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage="Asset bundles may only contain top level asset paths which are referenced through the AssetPaths property."))
 	TArray<FSoftObjectPath> BundleAssets;
+#endif
+
+	UPROPERTY()
+	TArray<FTopLevelAssetPath> AssetPaths;
 };
 
 /** A struct with a list of asset bundle entries. If one of these is inside a UObject it will get automatically exported as the asset registry tag AssetBundleData */
-USTRUCT(noexport)
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults)
 struct COREUOBJECT_API FAssetBundleData
 {
 	/** List of bundles defined */
@@ -2026,12 +2551,13 @@ struct COREUOBJECT_API FAssetBundleData
  * A struct to hold important information about an assets found by the Asset Registry
  * This struct is transient and should never be serialized
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport, BlueprintType, IsAlwaysAccessible, HasDefaults)
 struct FAssetData
 {
-	/** The object path for the asset in the form PackageName.AssetName. Only top level objects in a package can have AssetData */
-	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
 	FName ObjectPath;
+#endif
 	/** The name of the package in which the asset is found, this is the full long package name such as /Game/Path/Package */
 	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
 	FName PackageName;
@@ -2042,18 +2568,28 @@ struct FAssetData
 	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
 	FName AssetName;
 	/** The name of the asset's class */
-	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
+	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient, meta=(DeprecatedProperty, DeprecationMessage="Short asset class name must be converted to full asset pathname. Use AssetClassPath instead."))
 	FName AssetClass;
+	/** The path name of the asset's class */
+	UPROPERTY(BlueprintReadOnly, Category = AssetData, transient)
+	FTopLevelAssetPath AssetClassPath;
+
+	/** Asset package flags */
+	uint32 PackageFlags = 0;
+	
+#if WITH_EDITORONLY_DATA
+	/** If the outer of this object is not PackageName, it is the object specified by this path. Not exposed to blueprints except through 'To Soft Object Path'. */
+	FName OptionalOuterPath;
+#endif
+
 	/** The map of values for properties that were marked AssetRegistrySearchable or added by GetAssetRegistryTags */
 	FAssetDataTagMapSharedView TagsAndValues;
 	TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> TaggedAssetBundles;
 	/** The IDs of the pakchunks this asset is located in for streaming install.  Empty if not assigned to a chunk */
 	TArray<int32, TInlineAllocator<2>> ChunkIDs;
-	/** Asset package flags */
-	uint32 PackageFlags = 0;
 };
 
-USTRUCT(noexport)
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults)
 struct FTestUninitializedScriptStructMembersTest
 {
 	UPROPERTY(Transient)
@@ -2070,7 +2606,7 @@ struct FTestUninitializedScriptStructMembersTest
  * Direct base class for all UE objects
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\Object.h
  */
-UCLASS(abstract, noexport)
+UCLASS(abstract, noexport, MatchedSerializers)
 class UObject
 {
 	GENERATED_BODY()
@@ -2078,6 +2614,7 @@ public:
 
 	UObject(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 	UObject(FVTableHelper& Helper);
+	~UObject();
 	
 	/**
 	 * Executes some portion of the ubergraph.
@@ -2088,6 +2625,382 @@ public:
 	void ExecuteUbergraph(int32 EntryPoint);
 };
 
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\Class.h
+ */
+
+UCLASS(abstract, noexport, intrinsic, Config = Engine)
+class UField : public UObject
+{
+	GENERATED_BODY()
+public:
+	UField(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UEnum : public UField
+{
+	GENERATED_BODY()
+public:
+	UEnum(const FObjectInitializer& ObjectInitialzer);
+};
+
+UCLASS(noexport, intrinsic, MatchedSerializers, Config = Engine)
+class UStruct : public UField
+{
+	GENERATED_BODY()
+public:
+	UStruct(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, MatchedSerializers, Config = Engine)
+class UScriptStruct : public UStruct
+{
+	GENERATED_BODY()
+public:
+	UScriptStruct(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UFunction : public UStruct
+{
+	GENERATED_BODY()
+public:
+	UFunction(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, within=Package, Config = Engine)
+class UClass : public UStruct
+{
+	GENERATED_BODY()
+public:
+	UClass(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\Interface.h
+ */
+
+UCLASS(abstract, noexport, intrinsic, interface, Config = Engine)
+class UInterface : public UObject
+{
+	GENERATED_BODY()
+public:
+	UInterface(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+class IInterface
+{
+	GENERATED_BODY()
+};
+
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\Package.h
+ */
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UPackage : public UObject
+{
+	GENERATED_BODY()
+};
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\CoreNet.h
+ */
+
+UCLASS(noexport, intrinsic, abstract, transient, Config = Engine)
+class UPackageMap : public UObject
+{
+	GENERATED_BODY()
+public:
+	UPackageMap(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\MetaData.h
+ */
+
+UCLASS(noexport, intrinsic, MatchedSerializers, Config = Engine)
+class UMetaData : public UObject
+{
+	GENERATED_BODY()
+public:
+	UMetaData(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\UnrealTypePrivate.h
+ */
+
+UCLASS(noexport, intrinsic, abstract, Config = Engine)
+class UProperty : public UField
+{
+	GENERATED_BODY()
+public:
+	UProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UStructProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UStructProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UEnumProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UEnumProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UBoolProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UBoolProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(abstract, noexport, intrinsic, Config = Engine)
+class UNumericProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UNumericProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UIntProperty : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UIntProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UInt8Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UInt8Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UInt16Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UInt16Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UInt64Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UInt64Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UByteProperty : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UByteProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UUint16Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UUint16Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UUint32Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UUint32Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UUint64Property : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UUint64Property(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UFloatProperty : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UFloatProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UDoubleProperty : public UNumericProperty
+{
+	GENERATED_BODY()
+public:
+	UDoubleProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(abstract, noexport, intrinsic, Config = Engine)
+class UObjectPropertyBase : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UObjectPropertyBase(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UObjectProperty : public UObjectPropertyBase
+{
+	GENERATED_BODY()
+public:
+	UObjectProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UClassProperty : public UObjectProperty
+{
+	GENERATED_BODY()
+public:
+	UClassProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class USoftObjectProperty : public UObjectPropertyBase
+{
+	GENERATED_BODY()
+public:
+	USoftObjectProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class USoftClassProperty : public USoftObjectProperty
+{
+	GENERATED_BODY()
+public:
+	USoftClassProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UWeakObjectProperty : public UObjectPropertyBase
+{
+	GENERATED_BODY()
+public:
+	UWeakObjectProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class ULazyObjectProperty : public UObjectPropertyBase
+{
+	GENERATED_BODY()
+public:
+	ULazyObjectProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UInterfaceProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UInterfaceProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UDelegateProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UDelegateProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(abstract, noexport, intrinsic, Config = Engine)
+class UMulticastDelegateProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UMulticastDelegateProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UMulticastInlineDelegateProperty : public UMulticastDelegateProperty
+{
+	GENERATED_BODY()
+public:
+	UMulticastInlineDelegateProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UMulticastSparseDelegateProperty : public UMulticastDelegateProperty
+{
+	GENERATED_BODY()
+public:
+	UMulticastSparseDelegateProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UNameProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UNameProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UStrProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UStrProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UTextProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UTextProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UArrayProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UArrayProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class USetProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	USetProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+UCLASS(noexport, intrinsic, Config = Engine)
+class UMapProperty : public UProperty
+{
+	GENERATED_BODY()
+public:
+	UMapProperty(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+};
+
+/**
+ * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\SoftObjectPath.h
+ */
+
 /** Structure for file paths that are displayed in the editor with a picker UI. */
 USTRUCT(noexport, BlueprintType)
 struct FFilePath
@@ -2095,8 +3008,8 @@ struct FFilePath
 	GENERATED_BODY()
 
 	/**
-		* The path to the file.
-		*/
+	* The path to the file.
+	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = FilePath)
 	FString FilePath;
 };
@@ -2108,15 +3021,25 @@ struct FDirectoryPath
 	GENERATED_BODY()
 
 	/**
-		* The path to the directory.
-		*/
+	* The path to the directory.
+	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Path)
 	FString Path;
 };
 
+/** Structure for templated strings that are displayed in the editor with a allowed args. */
+USTRUCT(noexport, BlueprintType)
+struct FTemplateString
+{
+	GENERATED_BODY()
 
+	/**
+	* The format string.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Template)
+	FString Template;
+};
 
 /// @endcond
 
 #endif
-

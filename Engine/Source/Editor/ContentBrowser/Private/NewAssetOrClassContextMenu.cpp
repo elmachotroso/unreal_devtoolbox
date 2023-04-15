@@ -1,24 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NewAssetOrClassContextMenu.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
-#include "Textures/SlateIcon.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
-#include "Settings/ContentBrowserSettings.h"
-#include "ContentBrowserUtils.h"
-#include "Widgets/SToolTip.h"
-#include "ToolMenus.h"
-#include "IContentBrowserDataModule.h"
-#include "ContentBrowserDataSubsystem.h"
+
 #include "ContentBrowserDataMenuContexts.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "Framework/Commands/UIAction.h"
+#include "IContentBrowserDataModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Settings/ContentBrowserSettings.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
+#include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -55,7 +51,7 @@ void FNewAssetOrClassContextMenu::MakeContextMenu(
 				"GetContent",
 				LOCTEXT( "GetContentText", "Add Feature or Content Pack..." ),
 				LOCTEXT( "GetContentTooltip", "Add features and content packs to the project." ),
-				FSlateIcon( FEditorStyle::GetStyleSetName(), "ContentBrowser.AddContent" ),
+				FSlateIcon( FAppStyle::GetAppStyleSetName(), "ContentBrowser.AddContent" ),
 				FUIAction( FExecuteAction::CreateStatic( &FNewAssetOrClassContextMenu::ExecuteGetContent, InOnGetContentRequested ) )
 				);
 		}
@@ -93,7 +89,7 @@ void FNewAssetOrClassContextMenu::MakeContextMenu(
 				"NewFolder",
 				LOCTEXT("NewFolderLabel", "New Folder"),
 				NewFolderToolTip,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.NewFolderIcon"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.NewFolderIcon"),
 				FUIAction(
 					FExecuteAction::CreateStatic(&FNewAssetOrClassContextMenu::ExecuteNewFolder, FirstSelectedPath, InOnNewFolderRequested),
 					CanExecuteFolderActionsDelegate

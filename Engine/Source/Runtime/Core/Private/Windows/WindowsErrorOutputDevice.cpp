@@ -33,14 +33,17 @@ void FWindowsErrorOutputDevice::Serialize( const TCHAR* Msg, ELogVerbosity::Type
    
 	if( !GIsCriticalError )
 	{   
-		const int32 LastError = ::GetLastError();
-
 		// First appError.
 		GIsCriticalError = 1;
-		TCHAR ErrorBuffer[1024];
-		ErrorBuffer[0] = 0;
+
+		// There is a bit of ambiguity around which SEH __except is to call HandleError or LogFormattedMessageWithCallstack
+		// We print it here so that the message, at very least, is always included with the logs
+		UE_LOG(LogWindows, Error, TEXT("appError called: %s"), Msg);
 
 		// Windows error.
+		const int32 LastError = ::GetLastError();
+		TCHAR ErrorBuffer[1024];
+		ErrorBuffer[0] = TCHAR('\0');
 		if (LastError == 0)
 		{
 			UE_LOG(LogWindows, Log, TEXT("Windows GetLastError: %s (%i)"), FPlatformMisc::GetSystemErrorMessage(ErrorBuffer, 1024, LastError), LastError);
@@ -50,8 +53,13 @@ void FWindowsErrorOutputDevice::Serialize( const TCHAR* Msg, ELogVerbosity::Type
 			UE_LOG(LogWindows, Error, TEXT("Windows GetLastError: %s (%i)"), FPlatformMisc::GetSystemErrorMessage(ErrorBuffer, 1024, LastError), LastError);
 		}
 
-		FCString::Strncpy(GErrorHist, Msg, UE_ARRAY_COUNT(GErrorHist) - 5);
-		FCString::Strncat(GErrorHist, TEXT("\r\n\r\n"), UE_ARRAY_COUNT(GErrorHist) - 1);
+		// CheckVerifyFailedImpl writes GErrorHist including a callstack and then calls GError->Logf with only the
+		// assertion expression and description. Keep GErrorHist intact if it begins with Msg.
+		if (FCString::Strncmp(GErrorHist, Msg, FMath::Min<int32>(UE_ARRAY_COUNT(GErrorHist), FCString::Strlen(Msg))))
+		{
+			FCString::Strncpy(GErrorHist, Msg, UE_ARRAY_COUNT(GErrorHist) - 5);
+			FCString::Strncat(GErrorHist, TEXT("\r\n\r\n"), UE_ARRAY_COUNT(GErrorHist) - 1);
+		}
 	}
 	else
 	{
@@ -97,17 +105,17 @@ void FWindowsErrorOutputDevice::HandleError()
 	GIsRunning				= 0;
 	GIsCriticalError		= 1;
 	GLogConsole				= NULL;
-	GErrorHist[UE_ARRAY_COUNT(GErrorHist)-1]=0;
+	GErrorHist[UE_ARRAY_COUNT(GErrorHist) - 1] = TCHAR('\0');
 
 	// Trigger the OnSystemFailure hook if it exists
 	// make sure it happens after GIsGuarded is set to 0 in case this hook crashes
 	FCoreDelegates::OnHandleSystemError.Broadcast();
 
-	// Dump the error and flush the log.
+	// Dump the error and flush the log. If you change behavior here, you should probably update RenderingThread's __except block in FRenderingThread::Run
 #if !NO_LOGGING
 	FDebug::LogFormattedMessageWithCallstack(LogWindows.GetCategoryName(), __FILE__, __LINE__, TEXT("=== Critical error: ==="), GErrorHist, ELogVerbosity::Error);
 #endif
-	GLog->PanicFlushThreadedLogs();
+	GLog->Panic();
 
 	HandleErrorRestoreUI();
 

@@ -4,6 +4,8 @@
 #include "Units/RigUnitContext.h"
 #include "HelperUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_ApplyFK)
+
 FRigUnit_ApplyFK_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -52,6 +54,12 @@ FRigUnit_ApplyFK_Execute()
 			}
 		}
 	}
+}
+
+FRigVMStructUpgradeInfo FRigUnit_ApplyFK::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

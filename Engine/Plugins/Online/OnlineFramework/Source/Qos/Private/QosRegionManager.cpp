@@ -3,11 +3,14 @@
 #include "QosRegionManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/TrackedActivity.h"
 #include "QosInterface.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
 #include "QosEvaluator.h"
 #include "QosModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(QosRegionManager)
 
 #define LAST_REGION_EVALUATION 3
 
@@ -186,6 +189,9 @@ UQosRegionManager::UQosRegionManager(const FObjectInitializer& ObjectInitializer
 	{
 		ForceRegionId.ToUpperInline();
 	}
+
+	// Will add an info entry to the console
+	static FTrackedActivity Ta(TEXT("McpRegion"), *ForceRegionId, FTrackedActivity::ELight::None, FTrackedActivity::EType::Info);
 }
 
 void UQosRegionManager::PostReloadConfig(FProperty* PropertyThatWasLoaded)
@@ -712,9 +718,13 @@ bool UQosRegionManager::SetSelectedRegion(const FString& InRegionId, bool bForce
 			{
 				if (RegionInfo.IsUsable())
 				{
-					UE_LOG(LogQos, Verbose, TEXT("[UQosRegionManager::SetSelectedRegion] Old: \"%s\"  New: \"%s\"  (force? %s)"),
-						*SelectedRegionId, *RegionId, *LexToString(bForce));
+					FString OldRegionId(SelectedRegionId);
 					SelectedRegionId = MoveTemp(RegionId);
+
+					UE_LOG(LogQos, Verbose, TEXT("[UQosRegionManager::SetSelectedRegion] Old: \"%s\"  New: \"%s\"  (force? %s)"),
+						*OldRegionId, *SelectedRegionId, *LexToString(bForce));
+
+					OnQosRegionIdChanged().Broadcast(OldRegionId, SelectedRegionId);
 					return true;
 				}
 				else
@@ -1308,3 +1318,4 @@ FRegionQosInstance UQosRegionManager::TestCreateExampleRegionResult()
 }
 
 #endif // DEBUG_SUBCOMPARE_BY_SUBSPACE
+

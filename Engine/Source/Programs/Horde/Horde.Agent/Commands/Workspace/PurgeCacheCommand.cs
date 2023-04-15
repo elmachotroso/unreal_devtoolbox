@@ -1,32 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Perforce.Managed;
-using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using EpicGames.Perforce;
+using EpicGames.Perforce.Managed;
+using Microsoft.Extensions.Logging;
 
-namespace HordeAgent.Commands.Workspace
+namespace Horde.Agent.Commands.Workspace
 {
 	[Command("Workspace", "PurgeCache", "Shrink the size of the cache to the given size")]
 	class PurgeCacheCommand : WorkspaceCommand
 	{
 		[CommandLine("-Size=")]
-		string? SizeParam = null;
+		string? SizeParam { get; set; } = null;
 
-		protected override Task ExecuteAsync(ManagedWorkspace Repo, ILogger Logger)
+		protected override Task ExecuteAsync(IPerforceConnection perforce, ManagedWorkspace repo, ILogger logger)
 		{
-			long Size = 0;
+			long size = 0;
 			if (SizeParam != null)
 			{
-				Size = ParseSize(SizeParam);
+				size = ParseSize(SizeParam);
 			}
 
-			return Repo.PurgeAsync(Size, CancellationToken.None);
+			return repo.PurgeAsync(size, CancellationToken.None);
 		}
 	}
 }

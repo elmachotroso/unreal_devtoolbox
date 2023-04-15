@@ -422,6 +422,17 @@ enum class UE_DEPRECATED(5.0, "Blueprint Nativization has been removed as a supp
 	ExplicitlyEnabled
 };
 
+UENUM()
+enum class EShouldCookBlueprintPropertyGuids
+{
+	/** Don't cook the property GUIDs for this Blueprint */
+	No,
+	/** Cook the property GUIDs for this Blueprint (see UCookerSettings::BlueprintPropertyGuidsCookingMethod) */
+	Yes,
+	/** Inherit whether to cook the property GUIDs for this Blueprint from the parent Blueprint (behaves like 'No' if there is no parent Blueprint) */
+	Inherit,
+};
+
 #if WITH_EDITOR
 /** Control flags for current object/world accessor methods */
 enum class EGetObjectOrWorldBeingDebuggedFlags
@@ -442,7 +453,7 @@ ENUM_CLASS_FLAGS(EGetObjectOrWorldBeingDebuggedFlags);
  * within Unreal Editor without ever needing to write a line of code.
  */
 UCLASS(config=Engine)
-class ENGINE_API UBlueprint : public UBlueprintCore
+class ENGINE_API UBlueprint : public UBlueprintCore, public IBlueprintPropertyGuidProvider
 {
 	GENERATED_UCLASS_BODY()
 
@@ -527,6 +538,15 @@ class ENGINE_API UBlueprint : public UBlueprintCore
 	 */
 	UPROPERTY()
 	mutable uint8 bDuplicatingReadOnly:1;
+
+	/**
+	 * Whether to include the property GUIDs for the generated class in a cooked build.
+	 * @note This option may slightly increase memory usage in a cooked build, but can avoid needing to add CoreRedirect data for Blueprint classes stored within SaveGame archives.
+	 */
+	UPROPERTY(EditAnywhere, Category=ClassOptions, AdvancedDisplay, meta=(DisplayName="Should Cook Property Guids?"))
+	EShouldCookBlueprintPropertyGuids ShouldCookPropertyGuidsValue = EShouldCookBlueprintPropertyGuids::Inherit;
+
+	bool ShouldCookPropertyGuids() const;
 
 public:
 	/** When exclusive nativization is enabled, then this asset will be nativized. All super classes must be also nativized. */
@@ -621,6 +641,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	TObjectPtr<class UInheritableComponentHandler> InheritableComponentHandler;
 
 #if WITH_EDITORONLY_DATA
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnExtensionAdded, UBlueprintExtension*);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnExtensionRemoved, UBlueprintExtension*);
+
 	/** Array of new variables to be added to generated class */
 	UPROPERTY()
 	TArray<struct FBPVariableDescription> NewVariables;
@@ -669,9 +692,15 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	TMap<FName, FName> OldToNewComponentTemplateNames;
 
 	/** Array of extensions for this blueprint */
+	UE_DEPRECATED(5.1, "Please do not access this member directly; Instead use: UBlueprint::GetExtensions / UBlueprint::AddExtension / UBlueprint::RemoveExtension[At].")
 	UPROPERTY()
 	TArray<TObjectPtr<UBlueprintExtension>> Extensions;
 
+	/** Fires whenever BP extension added */
+	FOnExtensionAdded OnExtensionAdded;
+
+	/** Fires whenever BP extension removed */
+	FOnExtensionRemoved OnExtensionRemoved;
 #endif // WITH_EDITORONLY_DATA
 
 public:
@@ -688,7 +717,38 @@ public:
 	DECLARE_EVENT_OneParam(UBlueprint, FCompiledEvent, class UBlueprint*);
 	FCompiledEvent& OnCompiled() { return CompiledEvent; }
 	void BroadcastCompiled() { CompiledEvent.Broadcast(this); }
-#endif
+
+	/** Gives const access to extensions. */
+	TArrayView<const TObjectPtr<UBlueprintExtension>> GetExtensions() const;
+
+	/** Adds given extension, broadcasting on add. */
+	int32 AddExtension(const TObjectPtr<UBlueprintExtension>& InExtension);
+
+	/** Removes given extension, broadcasting on remove. */
+	int32 RemoveExtension(const TObjectPtr<UBlueprintExtension>& InExtension);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	/** Removes all extensions matching the predicate, broadcasting on remove if one exists. */
+	template <class PREDICATE_CLASS>
+	int32 RemoveAllExtension(const PREDICATE_CLASS& Predicate)
+	{
+		auto BroadcastRemovePredicate = [&Predicate, this](UBlueprintExtension* InExtension)
+		{
+			bool NotMatch = !::Invoke(Predicate, InExtension); // use a ! to guarantee it can't be anything other than zero or one
+
+			if (!NotMatch)
+			{
+				OnExtensionRemoved.Broadcast(InExtension);
+			}
+
+			return !NotMatch;
+		};
+
+		return Extensions.RemoveAll(BroadcastRemovePredicate);
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+#endif // WITH_EDITOR
 
 	/** Whether or not this blueprint can be considered for a bytecode only compile */
 	virtual bool IsValidForBytecodeOnlyRecompile() const { return true; }
@@ -769,15 +829,20 @@ public:
 	UPROPERTY(transient, duplicatetransient)
 	TSet<TWeakObjectPtr<UStruct>> CachedUDSDependencies;
 
-	enum class EIsBPNonReducible : uint8
+	// @todo: BP2CPP_remove
+	enum class UE_DEPRECATED(5.1, "Blueprint Nativization has been removed as a supported feature. This type will eventually be removed.") EIsBPNonReducible : uint8
 	{
 		Unkown,
 		Yes,
 		No,
 	};
 
+	// @todo: BP2CPP_remove
 	// Cached information if the BP contains any non-reducible functions (that can benefit from nativization).
+	UE_DEPRECATED(5.1, "Blueprint Nativization has been removed as a supported feature. This member will eventually be removed.")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	EIsBPNonReducible bHasAnyNonReducibleFunction;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// If this BP is just a duplicate created for a specific compilation, the reference to original GeneratedClass is needed
 	UPROPERTY(transient, duplicatetransient)
@@ -913,8 +978,16 @@ public:
 	virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
 	virtual UClass* RegenerateClass(UClass* ClassToRegenerate, UObject* PreviousCDO) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+#if WITH_EDITOR
+	virtual void GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* TargetPlatform, TArray<FAssetRegistryTag>& OutTags) const override;
+#endif
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+	static void PostLoadBlueprintAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate);
 	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
 	virtual bool IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform) override;
@@ -966,6 +1039,11 @@ public:
 	void ConformNativeComponents();
 #endif	//#if WITH_EDITOR
 
+	//~ Begin IBlueprintPropertyGuidProvider interface
+	virtual FName FindBlueprintPropertyNameFromGuid(const FGuid& PropertyGuid) const override final;
+	virtual FGuid FindBlueprintPropertyGuidFromName(const FName PropertyName) const override final;
+	//~ End IBlueprintPropertyGuidProvider interface
+
 	//~ Begin UObject Interface
 #if WITH_EDITORONLY_DATA
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
@@ -1005,31 +1083,37 @@ public:
 	 * @return						true if there were no status errors in any of the parent blueprints, otherwise false
 	 */
 	static bool GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UBlueprintGeneratedClass*>& OutBlueprintParents);
-	
+
+private:
+	/**
+	 * Gets an array of all IBlueprintPropertyGuidProviders for this class and its parents.  0th elements is the IBlueprintPropertyGuidProvider for InClass
+	 *
+	 * @param InClass				The class to get the blueprint lineage for
+	 * @param OutBlueprintParents	Array of IBlueprintPropertyGuidProviders for this class and its parents.  0th = this, Nth = least derived BP-based parent
+	 * @return						true if there were no status errors in any of the parent blueprints, otherwise false
+	 */
+	static bool GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<IBlueprintPropertyGuidProvider*>& OutBlueprintParents);
+
+public:
 #if WITH_EDITOR
 	/** returns true if the class hierarchy is error free */
 	static bool IsBlueprintHierarchyErrorFree(const UClass* InClass);
 #endif
 
-#if WITH_EDITOR
 	template<class TFieldType>
 	static FName GetFieldNameFromClassByGuid(const UClass* InClass, const FGuid VarGuid)
 	{
 		FProperty* AssertPropertyType = (TFieldType*)0;
 
-		TArray<UBlueprint*> Blueprints;
-		UBlueprint::GetBlueprintHierarchyFromClass(InClass, Blueprints);
+		TArray<IBlueprintPropertyGuidProvider*> BlueprintPropertyGuidProviders;
+		UBlueprint::GetBlueprintHierarchyFromClass(InClass, BlueprintPropertyGuidProviders);
 
-		for (int32 BPIndex = 0; BPIndex < Blueprints.Num(); ++BPIndex)
+		for (IBlueprintPropertyGuidProvider* BlueprintPropertyGuidProvider : BlueprintPropertyGuidProviders)
 		{
-			UBlueprint* Blueprint = Blueprints[BPIndex];
-			for (int32 VarIndex = 0; VarIndex < Blueprint->NewVariables.Num(); ++VarIndex)
+			const FName FoundPropertyName = BlueprintPropertyGuidProvider->FindBlueprintPropertyNameFromGuid(VarGuid);
+			if (FoundPropertyName != NAME_None)
 			{
-				const FBPVariableDescription& BPVarDesc = Blueprint->NewVariables[VarIndex];
-				if (BPVarDesc.VarGuid == VarGuid)
-				{
-					return BPVarDesc.VarName;
-				}
+				return FoundPropertyName;
 			}
 		}
 
@@ -1041,26 +1125,23 @@ public:
 	{
 		FProperty* AssertPropertyType = (TFieldType*)0;
 
-		TArray<UBlueprint*> Blueprints;
-		UBlueprint::GetBlueprintHierarchyFromClass(InClass, Blueprints);
+		TArray<IBlueprintPropertyGuidProvider*> BlueprintPropertyGuidProviders;
+		UBlueprint::GetBlueprintHierarchyFromClass(InClass, BlueprintPropertyGuidProviders);
 
-		for (int32 BPIndex = 0; BPIndex < Blueprints.Num(); ++BPIndex)
+		for (IBlueprintPropertyGuidProvider* BlueprintPropertyGuidProvider : BlueprintPropertyGuidProviders)
 		{
-			UBlueprint* Blueprint = Blueprints[BPIndex];
-			for (int32 VarIndex = 0; VarIndex < Blueprint->NewVariables.Num(); ++VarIndex)
+			const FGuid FoundPropertyGuid = BlueprintPropertyGuidProvider->FindBlueprintPropertyGuidFromName(VarName);
+			if (FoundPropertyGuid.IsValid())
 			{
-				const FBPVariableDescription& BPVarDesc = Blueprint->NewVariables[VarIndex];
-				if (BPVarDesc.VarName == VarName)
-				{
-					VarGuid = BPVarDesc.VarGuid;
-					return true;
-				}
+				VarGuid = FoundPropertyGuid;
+				return true;
 			}
 		}
 
 		return false;
 	}
 
+#if WITH_EDITOR
 	static FName GetFunctionNameFromClassByGuid(const UClass* InClass, const FGuid FunctionGuid);
 	static bool GetFunctionGuidFromClassByFieldName(const UClass* InClass, const FName FunctionName, FGuid& FunctionGuid);
 
@@ -1166,6 +1247,11 @@ public:
 	virtual bool SupportsFunctions() const { return true; }
 
 	/**
+	 * Returns true if this blueprints allows the given function to be overridden
+	 */
+	virtual bool AllowFunctionOverride(const UFunction* const InFunction) const { return true; }
+		
+	/**
 	 * Returns true if this blueprint supports macros
 	 */
 	virtual bool SupportsMacros() const { return true; }
@@ -1183,7 +1269,7 @@ public:
 	/**
 	 * Returns true if this blueprint supports animation layers
 	 */
-	virtual bool SupportsAnimLayers() const { return true; }
+	virtual bool SupportsAnimLayers() const { return false; }
 
 	/**
 	 * Copies a given graph into a text buffer. Returns true if successful.
@@ -1206,17 +1292,22 @@ public:
 };
 
 
-#if WITH_EDITOR
 template<>
 inline FName UBlueprint::GetFieldNameFromClassByGuid<UFunction>(const UClass* InClass, const FGuid FunctionGuid)
 {
+#if WITH_EDITOR
 	return GetFunctionNameFromClassByGuid(InClass, FunctionGuid);
+#else	// WITH_EDITOR
+	return NAME_None;
+#endif	// WITH_EDITOR
 }
 
 template<>
 inline bool UBlueprint::GetGuidFromClassByFieldName<UFunction>(const UClass* InClass, const FName FunctionName, FGuid& FunctionGuid)
 {
+#if WITH_EDITOR
 	return GetFunctionGuidFromClassByFieldName(InClass, FunctionName, FunctionGuid);
+#else	// WITH_EDITOR
+	return false;
+#endif	// WITH_EDITOR
 }
-
-#endif // #if WITH_EDITOR

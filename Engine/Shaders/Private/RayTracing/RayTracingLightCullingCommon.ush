@@ -6,9 +6,6 @@
 
 #pragma once
 
-#define CULL_VOLUME_STRUCTURED_BUFFER 1
-
-
 // *************** LIGHT CULLING *********************************
 // Use view-centered, world-aligned volume to store references to lights impacting cells
 // Volume cells store light indices directly if space permits, otherwise indirect into
@@ -23,12 +20,12 @@ struct FCulledLightList
 	static const uint PackedLightMask = (1u << PackedLightBits) - 1;
 	static const uint PackedLightsMax = 11;
 
-	static FCulledLightList Create(float3 WorldPos)
+	static FCulledLightList Create(float3 TranslatedWorldPosition)
 	{
 		FCulledLightList Result = (FCulledLightList)0;
 
 		// volume is centered on the viewer
-		float3 Position = WorldPos - LWCHackToFloat(PrimaryView.WorldViewOrigin);
+		float3 Position = TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin;
 
 		const float Scale = 100.0f;
 		const int Dim = RaytracingLightsDataPacked.CellCount;
@@ -67,11 +64,14 @@ struct FCulledLightList
 		return Result;
 	}
 
+	bool IsPacked()
+	{
+		return (LightCellData[0] & (1 << 31)) > 0;
+	}
+
 	uint NumLights()
 	{
-		const bool bPacked = (LightCellData[0] & (1 << 31)) > 0;
-
-		return bPacked ? (LightCellData[3] >> (PackedLightBits * 2)) & PackedLightMask : LightCellData.x;
+		return IsPacked() ? (LightCellData[3] >> (PackedLightBits * 2)) & PackedLightMask : LightCellData.x;
 	}
 
 	uint GetLightIndex(int LightNum, out uint Valid)
@@ -81,8 +81,7 @@ struct FCulledLightList
 
 		const uint LightCount = NumLights();
 
-		const bool bPacked = (LightCellData[0] & (1 << 31)) > 0;
-		if (bPacked)
+		if (IsPacked())
 		{
 			// packed lights 
 			uint Shift = (LightNum % PackedLightsPerComponent) * PackedLightBits;

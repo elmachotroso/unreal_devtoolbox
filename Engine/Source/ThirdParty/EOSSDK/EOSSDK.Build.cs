@@ -87,7 +87,7 @@ public class EOSSDK : ModuleRules
 			{
 				return Path.Combine(SDKBinariesDir, "lib" + LibraryLinkNameBase + ".dylib");
 			}
-			else if(Target.Platform.IsInGroup(UnrealPlatformGroup.Unix))
+			else if(Target.Platform == UnrealTargetPlatform.Linux)
 			{
 				return Path.Combine(SDKBinariesDir, "lib" + LibraryLinkNameBase + ".so");
 			}
@@ -115,7 +115,7 @@ public class EOSSDK : ModuleRules
 				return LibraryLinkNameBase + ".framework";
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Android ||
-				Target.Platform.IsInGroup(UnrealPlatformGroup.Unix))
+				Target.Platform == UnrealTargetPlatform.Linux)
 			{
 				return "lib" + LibraryLinkNameBase + ".so";
 			}
@@ -148,7 +148,7 @@ public class EOSSDK : ModuleRules
 		PublicDefinitions.Add(String.Format("EOSSDK_RUNTIME_LOAD_REQUIRED={0}", bRequiresRuntimeLoad ? 1 : 0));
 		PublicDefinitions.Add(String.Format("EOSSDK_RUNTIME_LIBRARY_NAME=\"{0}\"", RuntimeLibraryFileName));
 
-		bool bUseProjectBinary = Target.GlobalDefinitions.Contains("EOSSDK_USE_PROJECT_BINARY=1");
+		bool bUseProjectBinary = Target.LinkType == TargetLinkType.Monolithic && Target.GlobalDefinitions.Contains("EOSSDK_USE_PROJECT_BINARY=1");
 
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
@@ -156,8 +156,8 @@ public class EOSSDK : ModuleRules
 
 			if (!bUseProjectBinary)
 			{
-				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "armeabi-v7a", RuntimeLibraryFileName));
-				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "arm64-v8a", RuntimeLibraryFileName));
+				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "static-stdc++", "libs", "armeabi-v7a", RuntimeLibraryFileName));
+				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "static-stdc++", "libs", "arm64-v8a", RuntimeLibraryFileName));
 
 				string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
 				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "EOSSDK_UPL.xml"));

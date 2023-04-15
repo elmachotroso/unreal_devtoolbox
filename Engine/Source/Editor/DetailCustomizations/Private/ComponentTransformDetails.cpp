@@ -1,40 +1,75 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ComponentTransformDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Textures/SlateIcon.h"
-#include "EditorStyleSet.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
-#include "UObject/UnrealType.h"
-#include "Components/SceneComponent.h"
-#include "GameFramework/Actor.h"
-#include "Misc/ConfigCacheIni.h"
-#include "SlateOptMacros.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Editor/UnrealEdEngine.h"
-#include "Kismet2/ComponentEditorUtils.h"
-#include "Editor.h"
-#include "UnrealEdGlobals.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "Widgets/Input/SVectorInputBox.h"
-#include "Widgets/Input/SRotatorInputBox.h"
-#include "ScopedTransaction.h"
-#include "IPropertyUtilities.h"
-#include "Math/UnitConversion.h"
-#include "Widgets/Input/NumericUnitTypeInterface.inl"
-#include "Settings/EditorProjectSettings.h"
-#include "HAL/PlatformApplicationMisc.h"
+
 #include "Algo/Transform.h"
+#include "Components/SceneComponent.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
+#include "IPropertyUtilities.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/ComponentEditorUtils.h"
+#include "Layout/Margin.h"
+#include "Math/Quat.h"
+#include "Math/Transform.h"
+#include "Math/UnitConversion.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/NotifyHook.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "Settings/EditorProjectSettings.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UnrealEdGlobals.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/NumericUnitTypeInterface.inl"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SRotatorInputBox.h"
+#include "Widgets/Input/SVectorInputBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+#include <utility>
+
+class SWidget;
+class UWorld;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "FComponentTransformDetails"
 
@@ -194,7 +229,7 @@ TSharedRef<SWidget> FComponentTransformDetails::BuildTransformFieldLabel( ETrans
 				.IsChecked(this, &FComponentTransformDetails::IsPreserveScaleRatioChecked)
 				.IsEnabled(this, &FComponentTransformDetails::GetIsEnabled)
 				.OnCheckStateChanged(this, &FComponentTransformDetails::OnPreserveScaleRatioToggled)
-				.Style(FEditorStyle::Get(), "TransparentCheckBox")
+				.Style(FAppStyle::Get(), "TransparentCheckBox")
 				.ToolTipText(LOCTEXT("PreserveScaleToolTip", "When locked, scales uniformly based on the current xyz scale values so the object maintains its shape in each direction when scaled"))
 				[
 					SNew(SImage)
@@ -547,7 +582,7 @@ bool FComponentTransformDetails::GetIsEnabled() const
 
 const FSlateBrush* FComponentTransformDetails::GetPreserveScaleRatioImage() const
 {
-	return bPreserveScaleRatio ? FEditorStyle::GetBrush( TEXT("Icons.Lock") ) : FEditorStyle::GetBrush( TEXT("Icons.Unlock") ) ;
+	return bPreserveScaleRatio ? FAppStyle::GetBrush( TEXT("Icons.Lock") ) : FAppStyle::GetBrush( TEXT("Icons.Unlock") ) ;
 }
 
 ECheckBoxState FComponentTransformDetails::IsPreserveScaleRatioChecked() const

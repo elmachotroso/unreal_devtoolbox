@@ -25,6 +25,8 @@ void FGroomEditorCommands::RegisterCommands()
 	UI_COMMAND(PauseSimulation,		"Pause",	"Pause the running hair simulation",	EUserInterfaceActionType::Button,	FInputChord());
 	UI_COMMAND(PlaySimulation,		"Play",		"Play the hair simulation",				EUserInterfaceActionType::Button,	FInputChord());
 
+	UI_COMMAND(PlayAnimation,		"Play",		"Play animation",						EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(StopAnimation,		"Stop",		"Stop animation",						EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND(ViewMode_Lit,			"Lit",				"Default",						EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewMode_Guide,			"Guide",			"View guide (only available if the groom has simulation enabled)",					EUserInterfaceActionType::Button, FInputChord());
@@ -56,7 +58,7 @@ FGroomViewportLODCommands::FGroomViewportLODCommands() :
 		TEXT("GroomViewportLODCmd"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "GroomViewportLODCmd", "Groom Viewport LOD Command"), // Localized context name for displaying
 		NAME_None, // Parent context name. 
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 		)
 {
 }

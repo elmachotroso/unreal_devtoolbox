@@ -16,6 +16,8 @@
 #include "ModelingToolTargetUtil.h"
 #include "Materials/MaterialInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditMeshMaterialsTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UEditMeshMaterialsTool"
@@ -308,6 +310,18 @@ void UEditMeshMaterialsTool::OnMaterialSetChanged()
 	MaterialProps->UpdateFromMaterialsList();
 
 	bHaveModifiedMaterials = true;
+
+	if (MaterialProps->Materials.Num() == 0)
+	{
+		GetToolManager()->DisplayMessage(LOCTEXT("NoMaterialsMessage", "Material Set must contain at least one Material"), EToolMessageLevel::UserWarning);
+		bShowingMaterialSetError = true;
+	}
+	else if (bShowingMaterialSetError)
+	{
+		GetToolManager()->DisplayMessage({}, EToolMessageLevel::UserWarning);
+		bShowingMaterialSetError = false;
+	}
+
 }
 
 
@@ -322,6 +336,13 @@ void UEditMeshMaterialsTool::ExternalUpdateMaterialSet(const TArray<UMaterialInt
 	CurrentMaterials = MaterialProps->Materials;
 }
 
+
+
+bool UEditMeshMaterialsTool::CanAccept() const
+{ 
+	return  (CurrentMaterials.Num() > 0) &&
+		    (UMeshSelectionTool::CanAccept() || bHaveModifiedMaterials); 
+}
 
 
 void UEditMeshMaterialsTool::ApplyShutdownAction(EToolShutdownType ShutdownType)
@@ -401,3 +422,4 @@ FString FEditMeshMaterials_MaterialSetChange::ToString() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

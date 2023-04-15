@@ -38,8 +38,10 @@
 #include "Misc/MapErrors.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/NetDriver.h"
+#include "Engine/DemoNetDriver.h"
 #include "Engine/Player.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Net/Core/PropertyConditions/PropertyConditions.h"
 
 #include "Components/BoxComponent.h"
 #include "GameFramework/MovementComponent.h"
@@ -690,6 +692,11 @@ AActor* UWorld::SpawnActor( UClass* Class, FTransform const* UserTransformPtr, c
 		FActorParentComponentSetter::Set(Actor, SpawnParameters.OverrideParentComponent);
 	}
 
+	if (SpawnParameters.CustomPreSpawnInitalization)
+	{
+		SpawnParameters.CustomPreSpawnInitalization(Actor);
+	}
+
 	if ( GUndo )
 	{
 		ModifyLevel( LevelToSpawnIn );
@@ -733,7 +740,7 @@ AActor* UWorld::SpawnActor( UClass* Class, FTransform const* UserTransformPtr, c
 #if WITH_EDITOR
 	if (GIsEditor)
 	{
-		if (Actor->IsAsset())
+		if (Actor->IsAsset() && Actor->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
 		{
 			FAssetRegistryModule::AssetCreated(Actor);
 		}
@@ -859,6 +866,8 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 	// Notify the texture streaming manager about the destruction of this actor.
 	IStreamingManager::Get().NotifyActorDestroyed( ThisActor );
 
+	OnActorDestroyed.Broadcast(ThisActor);
+
 	// Tell this actor it's about to be destroyed.
 	ThisActor->Destroyed();
 
@@ -919,13 +928,29 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 		ThisActor->SetOwner(NULL);
 	}
 
-	ULevel* const ActorLevel = ThisActor->GetLevel();
-	if (ActorLevel)
+	if (ULevel* const ActorLevel = ThisActor->GetLevel())
 	{
-		ActorLevel->CreateReplicatedDestructionInfo(ThisActor);
+		UDemoNetDriver* DemoDriver = nullptr;
+
+		if (const FLevelCollection* LevelCollection = ActorLevel->GetCachedLevelCollection())
+		{
+			DemoDriver = LevelCollection->GetDemoNetDriver();
+		}
+
+		if (!DemoDriver)
+		{
+			DemoDriver = GetDemoNetDriver();
+		}
+
+		if (!DemoDriver || !DemoDriver->IsPlaying())
+		{
+			ActorLevel->CreateReplicatedDestructionInfo(ThisActor);
+		}
 	}
 
-	// Notify net drivers that this guy has been destroyed.
+	UE::Net::Private::FNetPropertyConditionManager::Get().NotifyObjectDestroyed(ThisActor);
+
+	// Notify net drivers that this actor has been destroyed.
 	if (FWorldContext* Context = GEngine->GetWorldContextFromWorld(this))
 	{
 		for (FNamedNetDriver& Driver : Context->ActiveNetDrivers)
@@ -1091,7 +1116,7 @@ bool UWorld::FindTeleportSpot(const AActor* TestActor, FVector& TestLocation, FR
 	}
 
 	// first do only Z
-	const FVector::FReal ZeroThreshold = KINDA_SMALL_NUMBER;
+	const FVector::FReal ZeroThreshold = UE_KINDA_SMALL_NUMBER;
 	const bool bZeroZ = FMath::IsNearlyZero(Adjust.Z, ZeroThreshold);
 	if (!bZeroZ)
 	{

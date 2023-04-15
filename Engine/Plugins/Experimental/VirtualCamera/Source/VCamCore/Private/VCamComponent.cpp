@@ -10,6 +10,12 @@
 #include "Roles/LiveLinkTransformRole.h"
 #include "GameDelegates.h"
 #include "Engine/GameEngine.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/InputDelegateBinding.h"
+#include "InputMappingContext.h"
+
+#include "GameFramework/InputSettings.h"
 
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
@@ -24,32 +30,40 @@
 #include "IConcertSyncClient.h"
 #include "IMultiUserClientModule.h"
 
+#include "EnhancedInputEditorSubsystem.h"
+
 #include "VPSettings.h"
+#include "VPRolesSubsystem.h"
 #endif
+
 
 DEFINE_LOG_CATEGORY(LogVCamComponent);
 
-namespace VCamComponent
+namespace UE::VCamCore::VCamComponent::Private
 {
 	static const FName LevelEditorName(TEXT("LevelEditor"));
-}
 
-struct FVCamPrivate
-{
-	static bool ShouldUpdateOutputProviders(UVCamComponent* Component)
+	static bool IsArchetype(const UVCamComponent& Component)
 	{
-		// We should only update output providers in 3 situations
-		// - We're not in Multi User
-		// - We have the virtual camera role
-		// - We have explicitly set that we want to run Output Providers even when not in the camera role
-		return !Component->IsMultiUserSession() || Component->IsCameraInVPRole() || !Component->bDisableOutputOnMultiUserReceiver;
+		// Flags explained:
+		// 1. The Blueprint editor has two objects:
+		//	1.1 The "real" one which saves the property data - this one is RF_ArchetypeObject
+		//	1.2 The preview one (which I assume is displayed in the viewport) - this one is RF_Transient.
+		// 2. When you drag-create an actor, level editor creates a RF_Transient template actor. After you release the mouse, a real one is created (not RF_Transient).
+		const bool bHasDefaultFlags = Component.HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_Transient);
+		// The above flags do not always cover the Blueprint editor world
+		const bool bIsInBlueprintEditor = !Component.GetWorld() || Component.GetWorld()->WorldType == EWorldType::EditorPreview;
+	
+		return bHasDefaultFlags || bIsInBlueprintEditor;
 	}
-};
+}
 
 UVCamComponent::UVCamComponent()
 {
-	// Don't run on CDO
-	if (!HasAnyFlags(RF_ClassDefaultObject))
+	using namespace UE::VCamCore::VCamComponent::Private;
+	
+	// For temporary objects, the InputComponent should not be created and neither should we subscribe to global callbacks
+	if (!IsArchetype(*this) && !GIsCookerLoadingPackage)
 	{
 		// Hook into the Live Link Client for our Tick
 		IModularFeatures& ModularFeatures = IModularFeatures::Get();
@@ -66,7 +80,7 @@ UVCamComponent::UVCamComponent()
 
 #if WITH_EDITOR
 		// Add the necessary event listeners so we can start/end properly
-		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(LevelEditorName))
 		{
 			LevelEditorModule->OnMapChanged().AddUObject(this, &UVCamComponent::OnMapChanged);
 		}
@@ -77,6 +91,16 @@ UVCamComponent::UVCamComponent()
 		MultiUserStartup();
 		FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &UVCamComponent::HandleObjectReplaced);
 #endif
+
+		// Setup Input
+		InputComponent = NewObject<UInputComponent>(this, UInputSettings::GetDefaultInputComponentClass(), TEXT("VCamInput0"), RF_Transient);
+
+		// Apply the Default Input profile if possible
+		if (const UVCamInputSettings* VCamInputSettings = GetDefault<UVCamInputSettings>())
+		{
+			SetInputProfileFromName(VCamInputSettings->DefaultInputProfile);
+		}
+		
 	}
 }
 
@@ -93,9 +117,25 @@ void UVCamComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 		}
 	}
 
+	for (FModifierStackEntry& ModifierEntry : ModifierStack)
+	{
+		TObjectPtr<UVCamModifier>& Modifier = ModifierEntry.GeneratedModifier;
+		if (Modifier && !Modifier->DoesRequireInitialization())
+		{
+			Modifier->Deinitialize();
+		}
+	}
+	
+	// Hotfix 5.1.1. Remove if you find this on any other version and instead remove ~FModifierStackEntry!
+	// Fix for 5.1 only (in 5.2 just remove the destructor)... ~FModifierStackEntry can cause a crash set to nullptr so it is skipped
+	ModifierStack.Empty();
+	SavedModifierStack.Empty();
+
+	UnregisterInputComponent();
+
 #if WITH_EDITOR
 	// Remove all event listeners
-	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+	if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(UE::VCamCore::VCamComponent::Private::LevelEditorName))
 	{
 		LevelEditorModule->OnMapChanged().RemoveAll(this);
 	}
@@ -137,8 +177,93 @@ void UVCamComponent::NotifyComponentWasReplaced(UVCamComponent* ReplacementCompo
 	ReplacementComponent->OnComponentReplaced = OnComponentReplaced;
 
 	OnComponentReplaced.Clear();
+	// Ensure all modifiers and output providers get deinitialized
+	SetEnabled(false);
 
+	// Refresh the enabled state on the new component to prevent any stale state from the replacement
+	if (ReplacementComponent->IsEnabled())
+	{
+		ReplacementComponent->SetEnabled(false);
+		ReplacementComponent->SetEnabled(true);
+	}
+
+	// There's a current issue where FKeys will be nulled when the component reconstructs so we'll explicitly
+	// pass the Input Profile to the new component to avoid this
+	ReplacementComponent->InputProfile = InputProfile;
+	ReplacementComponent->ApplyInputProfile();
+	
 	DestroyComponent();
+}
+
+IEnhancedInputSubsystemInterface* UVCamComponent::GetEnhancedInputSubsystemInterface() const
+{
+	if (const UWorld* World = GetWorld(); IsValid(World) && World->IsGameWorld())
+	{
+		
+		if (const ULocalPlayer* FirstLocalPlayer = World->GetFirstLocalPlayerFromController())
+		{
+			return ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(FirstLocalPlayer);
+		}
+	}
+#if WITH_EDITOR
+	else if (GEditor)
+	{
+		return GEditor->GetEditorSubsystem<UEnhancedInputEditorSubsystem>();
+	}
+#endif
+	return nullptr;
+}
+
+void UVCamComponent::RegisterInputComponent()
+{
+	// Ensure we start from a clean slate
+	UnregisterInputComponent();
+	
+	if (const UWorld* World = GetWorld(); IsValid(World) && World->IsGameWorld())
+	{
+		if (APlayerController* PC = World->GetFirstPlayerController())
+		{
+			PC->PushInputComponent(InputComponent);
+			bIsInputRegistered = true;
+		}
+	}
+#if WITH_EDITOR
+	else if (GEditor)
+	{
+		if (UEnhancedInputEditorSubsystem* EditorInputSubsystem = GEditor->GetEditorSubsystem<UEnhancedInputEditorSubsystem>())
+		{
+			EditorInputSubsystem->PushInputComponent(InputComponent);
+			EditorInputSubsystem->StartConsumingInput();
+			bIsInputRegistered = true;
+		}
+	}
+#endif
+}
+
+void UVCamComponent::UnregisterInputComponent()
+{
+	// Removes the component from both editor and runtime input systems if possible
+	//
+	// Note: Despite the functions being called "Pop" it's actually just removing our specific input component from
+	// the stack rather than blindly popping the top component
+	if (const UWorld* World = GetWorld(); IsValid(World) && World->IsGameWorld())
+	{
+		if (APlayerController* PC = World->GetFirstPlayerController())
+		{
+			PC->PopInputComponent(InputComponent);
+		}
+	}
+#if WITH_EDITOR
+	if (GEditor)
+	{
+		if (UEnhancedInputEditorSubsystem* EditorInputSubsystem = GEditor->GetEditorSubsystem<UEnhancedInputEditorSubsystem>())
+		{
+			EditorInputSubsystem->PopInputComponent(InputComponent);
+		}
+	}
+#endif
+	AppliedInputContexts.Reset();
+	bIsInputRegistered = false;
 }
 
 bool UVCamComponent::CanUpdate() const
@@ -146,10 +271,10 @@ bool UVCamComponent::CanUpdate() const
 	UWorld* World = GetWorld();
 	if (bEnabled && IsValid(this) && !bIsEditorObjectButPIEIsRunning && World)
 	{
-		// Check for an Inactive type of world which means nothing should ever execute on this object
-		// @TODO: This is far from optimal as it means a zombie object has been created that never gets GC'ed
-		// Apparently, we should be using OnRegister/OnUnregister() instead of doing everything in the constructor, but it was throwing GC errors when trying that
-		if (World->WorldType != EWorldType::Inactive)
+		// Check that we only update in a valid world type
+		// This prevents us updating in asset editors or invalid worlds
+		constexpr int ValidWorldTypes = EWorldType::Game | EWorldType::PIE | EWorldType::Editor;
+		if ((World->WorldType & ValidWorldTypes) != EWorldType::None)
 		{
 			if (const USceneComponent* ParentComponent = GetAttachParent())
 			{
@@ -196,6 +321,14 @@ void UVCamComponent::OnAttachmentChanged()
 #endif
 }
 
+void UVCamComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	// Ensure the input profile is applied when this component is loaded
+	ApplyInputProfile();
+}
+
 #if WITH_EDITOR
 
 void UVCamComponent::CheckForErrors()
@@ -213,53 +346,60 @@ void UVCamComponent::CheckForErrors()
 
 void UVCamComponent::PreEditChange(FProperty* PropertyThatWillChange)
 {
+	Super::PreEditChange(PropertyThatWillChange);
+}
+
+void UVCamComponent::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
+{
+	FProperty* MemberProperty = PropertyAboutToChange.GetActiveMemberNode()->GetValue();
 	// Copy the property that is going to be changed so we can use it in PostEditChange if needed (for ArrayClear, ArrayRemove, etc.)
-	if (PropertyThatWillChange)
+	if (MemberProperty)
 	{
 		static FName NAME_OutputProviders = GET_MEMBER_NAME_CHECKED(UVCamComponent, OutputProviders);
 		static FName NAME_ModifierStack = GET_MEMBER_NAME_CHECKED(UVCamComponent, ModifierStack);
-		// Name property withing the Modifier Stack Entry struct. Possible collision due to just being called "Name"
-		static FName NAME_ModifierStackEntryName = GET_MEMBER_NAME_CHECKED(FModifierStackEntry, Name);
 		static FName NAME_Enabled = GET_MEMBER_NAME_CHECKED(UVCamComponent, bEnabled);
 
-		const FName PropertyThatWillChangeName = PropertyThatWillChange->GetFName();
+		const FName MemberPropertyName = MemberProperty->GetFName();
 
-		if (PropertyThatWillChangeName == NAME_OutputProviders)
+		if (MemberPropertyName == NAME_OutputProviders)
 		{
 			SavedOutputProviders.Empty();
 			SavedOutputProviders = OutputProviders;
 		}
-		else if (PropertyThatWillChangeName == NAME_ModifierStack || PropertyThatWillChangeName == NAME_ModifierStackEntryName)
+		else if (MemberPropertyName == NAME_ModifierStack)
 		{
 			SavedModifierStack = ModifierStack;
 		}
-		else if (PropertyThatWillChangeName == NAME_Enabled)
+		else if (MemberPropertyName == NAME_Enabled
+			// No enabling archetypes
+			&& !UE::VCamCore::VCamComponent::Private::IsArchetype(*this))
 		{
-			// If the property's owner is a struct (like FModifierStackEntry), act on it in PostEditChangeProperty(), not here
-			if (PropertyThatWillChange->GetOwner<UClass>())
-			{
-				void* PropertyData = PropertyThatWillChange->ContainerPtrToValuePtr<void>(this);
-				bool bWasEnabled = false;
-				PropertyThatWillChange->CopySingleValue(&bWasEnabled, PropertyData);
-
-				// Changing the enabled state needs to be done here instead of PostEditChange
-				SetEnabled(!bWasEnabled);
-			}
+			// Changing the enabled state needs to be done here instead of PostEditChange
+			// So we need to grab the value from the FProperty directly before using it
+			void* PropertyData = MemberProperty->ContainerPtrToValuePtr<void>(this);
+			bool bWasEnabled = false;
+			MemberProperty->CopySingleValue(&bWasEnabled, PropertyData);
+			
+			SetEnabled(!bWasEnabled);
 		}
 	}
-
-	Super::PreEditChange(PropertyThatWillChange);
+	
+	UObject::PreEditChange(PropertyAboutToChange);
 }
 
 void UVCamComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FProperty* Property = PropertyChangedEvent.MemberProperty;
-	if (Property && PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	// No enabling archetypes
+	if (!UE::VCamCore::VCamComponent::Private::IsArchetype(*this)
+		&& Property
+		&& PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		static FName NAME_LockViewportToCamera = GET_MEMBER_NAME_CHECKED(UVCamComponent, bLockViewportToCamera);
 		static FName NAME_Enabled = GET_MEMBER_NAME_CHECKED(UVCamComponent, bEnabled);
 		static FName NAME_ModifierStack = GET_MEMBER_NAME_CHECKED(UVCamComponent, ModifierStack);
 		static FName NAME_TargetViewport = GET_MEMBER_NAME_CHECKED(UVCamComponent, TargetViewport);
+		static FName NAME_InputProfile = GET_MEMBER_NAME_CHECKED(UVCamComponent, InputProfile);
 
 		const FName PropertyName = Property->GetFName();
 
@@ -277,7 +417,8 @@ void UVCamComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 		}
 		else if (PropertyName == NAME_ModifierStack)
 		{
-			EnforceModifierStackNameUniqueness();
+			ValidateModifierStack();
+			SavedModifierStack.Reset();
 		}
 		else if (PropertyName == NAME_TargetViewport)
 		{
@@ -291,6 +432,18 @@ void UVCamComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 					SetActorLock(false);
 					SetActorLock(true);
 				}
+			}
+		}
+		else if (PropertyName == NAME_InputProfile)
+		{
+			ApplyInputProfile();
+		}
+
+		for (const UVCamOutputProviderBase* OutputProvider : OutputProviders)
+		{
+			if (IsValid(OutputProvider))
+			{
+				OutputProvider->NotifyWidgetOfComponentChange();
 			}
 		}
 	}
@@ -323,7 +476,10 @@ void UVCamComponent::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 							DestroyOutputProvider(SavedOutputProviders[ChangedIndex]);
 						}
 
-						if (ChangedProvider && FVCamPrivate::ShouldUpdateOutputProviders(this))
+						// We only Initialize a provider if they're able to be updated
+						// If they later become able to be updated then they will be
+						// Initialized inside the Update() loop
+						if (ChangedProvider && ShouldUpdateOutputProviders())
 						{
 							ChangedProvider->Initialize();
 						}
@@ -354,12 +510,181 @@ void UVCamComponent::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 }
 #endif // WITH_EDITOR
 
+void UVCamComponent::AddInputMappingContext(const UVCamModifier* Modifier)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		const int32 InputPriority = Modifier->InputContextPriority;
+		const UInputMappingContext* IMC = Modifier->InputMappingContext;
+		if (IsValid(IMC))
+		{
+			if (!EnhancedInputSubsystemInterface->HasMappingContext(IMC))
+			{
+				EnhancedInputSubsystemInterface->AddMappingContext(IMC, InputPriority);
+			}
+			// Ensure we store the IMC even if it's already in the system as it could have been registered from outside the VCam 
+			AppliedInputContexts.AddUnique(IMC);
+		}
+	}
+}
+
+void UVCamComponent::RemoveInputMappingContext(const UVCamModifier* Modifier)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		const UInputMappingContext* IMC = Modifier->InputMappingContext;
+		if (IsValid(IMC))
+		{
+			EnhancedInputSubsystemInterface->RemoveMappingContext(IMC);
+			AppliedInputContexts.Remove(IMC);
+		}
+	}
+}
+
+void UVCamComponent::AddInputMappingContext(UInputMappingContext* Context, int32 Priority)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		if (IsValid(Context))
+		{
+			EnhancedInputSubsystemInterface->AddMappingContext(Context, Priority);
+			AppliedInputContexts.AddUnique(Context);
+		}
+	}
+}
+
+void UVCamComponent::RemoveInputMappingContext(UInputMappingContext* Context)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		if (IsValid(Context))
+		{
+			EnhancedInputSubsystemInterface->RemoveMappingContext(Context);
+			AppliedInputContexts.Remove(Context);
+		}
+	}
+}
+
+bool UVCamComponent::SetInputProfileFromName(const FName ProfileName)
+{
+	if (const UVCamInputSettings* VCamInputSettings = GetDefault<UVCamInputSettings>())
+	{
+		if (const FVCamInputProfile* NewInputProfile = VCamInputSettings->InputProfiles.Find(ProfileName))
+		{
+			InputProfile = *NewInputProfile;
+			ApplyInputProfile();
+		}
+	}
+	return false;
+}
+
+bool UVCamComponent::AddInputProfileWithCurrentlyActiveMappings(const FName ProfileName, bool bUpdateIfProfileAlreadyExists)
+{
+	UVCamInputSettings* VCamInputSettings = GetMutableDefault<UVCamInputSettings>();
+
+	// If we don't have a valid settings object then early out
+	if (!VCamInputSettings)
+	{
+		return false;
+	}
+	
+	FVCamInputProfile* TargetInputProfile = VCamInputSettings->InputProfiles.Find(ProfileName);
+
+	// An Input Profile with this name already exists
+	if (TargetInputProfile)
+	{
+		if (!bUpdateIfProfileAlreadyExists)
+		{
+			return false;
+		}
+	}
+	else
+	{
+		TargetInputProfile = &VCamInputSettings->InputProfiles.Add(ProfileName);
+	}
+
+	if (const IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		TArray<FEnhancedActionKeyMapping> PlayerMappableActionKeyMappings;
+		for (const UInputMappingContext* MappingContext : AppliedInputContexts)
+		{
+			if (!IsValid(MappingContext))
+			{
+				continue;
+			}
+			for (const FEnhancedActionKeyMapping& Mapping : MappingContext->GetMappings())
+			{
+				if (Mapping.bIsPlayerMappable)
+				{
+					const FName MappingName = Mapping.PlayerMappableOptions.Name;
+
+					// Prefer to use the current mapped key but fallback to the default if no key is mapped
+					FKey CurrentKey = EnhancedInputSubsystemInterface->GetPlayerMappedKey(MappingName);
+					if (!CurrentKey.IsValid())
+					{
+						CurrentKey = Mapping.Key;
+					}
+
+					if (!TargetInputProfile->MappableKeyOverrides.Contains(MappingName))
+					{
+						TargetInputProfile->MappableKeyOverrides.Add(MappingName, CurrentKey);
+					}
+				}
+			}
+		}
+	}
+	
+	VCamInputSettings->SaveConfig();
+	return true;
+}
+
+bool UVCamComponent::SaveCurrentInputProfileToSettings(const FName ProfileName) const
+{
+	UVCamInputSettings* VCamInputSettings = GetMutableDefault<UVCamInputSettings>();
+
+	// If we don't have a valid settings object then early out
+	if (!VCamInputSettings)
+	{
+		return false;
+	}
+
+	FVCamInputProfile& SettingsInputProfile = VCamInputSettings->InputProfiles.FindOrAdd(ProfileName);
+	SettingsInputProfile = InputProfile;
+	VCamInputSettings->SaveConfig();
+
+	return true;
+}
+
+TArray<FEnhancedActionKeyMapping> UVCamComponent::GetAllPlayerMappableActionKeyMappings() const
+{
+	if (const IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		return EnhancedInputSubsystemInterface->GetAllPlayerMappableActionKeyMappings();
+	}
+	return TArray<FEnhancedActionKeyMapping>();
+}
+
+FKey UVCamComponent::GetPlayerMappedKey(const FName MappingName) const
+{
+	if (const IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		return EnhancedInputSubsystemInterface->GetPlayerMappedKey(MappingName);
+	}
+	return EKeys::Invalid;
+}
+
 
 void UVCamComponent::Update()
 {
 	if (!CanUpdate())
 	{
 		return;
+	}
+
+	// Ensure we register for input if we've not previously registered
+	if (!bIsInputRegistered)
+	{
+		RegisterInputComponent();
 	}
 
 	// If requested then disable the component if we're spawned by sequencer
@@ -401,27 +726,34 @@ void UVCamComponent::Update()
 
 		for (FModifierStackEntry& ModifierStackEntry : ModifierStack)
 		{
-			if (!ModifierStackEntry.bEnabled)
+			if (UVCamModifier* Modifier = ModifierStackEntry.GeneratedModifier; IsValid(Modifier))
 			{
-				continue;
-			}
-
-			if (UVCamModifier* Modifier = ModifierStackEntry.GeneratedModifier)
-			{
-				// Initialize the Modifier if required
-				if (Modifier->DoesRequireInitialization())
+				if (ModifierStackEntry.bEnabled)
 				{
-					Modifier->Initialize(ModifierContext);
-				}
+					// Initialize the Modifier if required
+					if (Modifier->DoesRequireInitialization())
+					{
+						Modifier->Initialize(ModifierContext, InputComponent);
+						AddInputMappingContext(Modifier);
+					}
 
-				Modifier->Apply(ModifierContext, CameraComponent, DeltaTime);
+					Modifier->Apply(ModifierContext, CameraComponent, DeltaTime);
+				}
+				else
+				{
+					// If the modifier is initialized but not enabled then we deinitialize it
+					if (!Modifier->DoesRequireInitialization())
+					{
+						Modifier->Deinitialize();
+					}
+				}
 			}
 		}
 
 		SendCameraDataViaMultiUser();
 	}
 
-	if (FVCamPrivate::ShouldUpdateOutputProviders(this))
+	if (ShouldUpdateOutputProviders())
 	{
 		for (UVCamOutputProviderBase* Provider : OutputProviders)
 		{
@@ -441,15 +773,25 @@ void UVCamComponent::Update()
 
 void UVCamComponent::SetEnabled(bool bNewEnabled)
 {
-	// Disable all outputs if we're no longer enabled
+	// Disable all outputs and modifiers if we're no longer enabled
 	// NOTE this must be done BEFORE setting the actual bEnabled variable because OutputProviderBase now checks the component enabled state
 	if (!bNewEnabled)
 	{
 		for (UVCamOutputProviderBase* Provider : OutputProviders)
 		{
-			if (Provider)
+			if (IsValid(Provider))
 			{
 				Provider->Deinitialize();
+			}
+		}
+
+		// There's no need to call Initialize if we are being enabled as they'll get automatically intialized
+		// the next time that the stack is evaluated
+		for (FModifierStackEntry& ModifierEntry : ModifierStack)
+		{
+			if (IsValid(ModifierEntry.GeneratedModifier))
+			{
+				ModifierEntry.GeneratedModifier->Deinitialize();
 			}
 		}
 	}
@@ -458,15 +800,21 @@ void UVCamComponent::SetEnabled(bool bNewEnabled)
 
 	// Enable any outputs that are set to active
 	// NOTE this must be done AFTER setting the actual bEnabled variable because OutputProviderBase now checks the component enabled state
-	if (bNewEnabled && FVCamPrivate::ShouldUpdateOutputProviders(this))
+	if (bNewEnabled)
 	{
-		for (UVCamOutputProviderBase* Provider : OutputProviders)
+		if (ShouldUpdateOutputProviders() && CanUpdate())
 		{
-			if (Provider)
+			for (UVCamOutputProviderBase* Provider : OutputProviders)
 			{
-				Provider->Initialize();
+				if (IsValid(Provider))
+				{
+					Provider->Initialize();
+				}
 			}
 		}
+
+		// Register the input component now we're enabled
+		RegisterInputComponent();
 	}
 }
 
@@ -764,6 +1112,12 @@ void UVCamComponent::GetOutputProvidersByClass(TSubclassOf<UVCamOutputProviderBa
 	}
 }
 
+void UVCamComponent::SetInputProfile(const FVCamInputProfile& NewInputProfile)
+{
+	InputProfile = NewInputProfile;
+	ApplyInputProfile();
+}
+
 void UVCamComponent::GetLiveLinkDataForCurrentFrame(FLiveLinkCameraBlueprintData& LiveLinkData)
 {
 	IModularFeatures& ModularFeatures = IModularFeatures::Get();
@@ -794,6 +1148,68 @@ void UVCamComponent::GetLiveLinkDataForCurrentFrame(FLiveLinkCameraBlueprintData
 				{
 					LiveLinkData.FrameData.Transform = EvaluatedFrame.FrameData.Cast<FLiveLinkTransformFrameData>()->Transform;
 				}
+			}
+		}
+	}
+}
+
+void UVCamComponent::RegisterObjectForInput(UObject* Object)
+{
+	if (IsValid(InputComponent) && IsValid(Object))
+	{
+		InputComponent->ClearBindingsForObject(Object);
+		UInputDelegateBinding::BindInputDelegates(Object->GetClass(), InputComponent, Object);
+	}
+}
+
+void UVCamComponent::UnregisterObjectForInput(UObject* Object) const
+{
+	if (IsValid(InputComponent) && Object)
+	{
+		InputComponent->ClearBindingsForObject(Object);
+	}
+}
+
+TArray<FEnhancedActionKeyMapping> UVCamComponent::GetPlayerMappableKeys() const
+{
+	if (const IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		return EnhancedInputSubsystemInterface->GetAllPlayerMappableActionKeyMappings();
+	}
+	return {};
+}
+
+void UVCamComponent::InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		EnhancedInputSubsystemInterface->InjectInputForAction( Action, RawValue, Modifiers, Triggers);
+	}
+}
+
+void UVCamComponent::InjectInputVectorForAction(const UInputAction* Action, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	if (IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface())
+	{
+		EnhancedInputSubsystemInterface->InjectInputVectorForAction(Action, Value, Modifiers, Triggers);
+	}
+}
+
+void UVCamComponent::ApplyInputProfile()
+{
+	IEnhancedInputSubsystemInterface* EnhancedInputSubsystemInterface = GetEnhancedInputSubsystemInterface();
+	if (EnhancedInputSubsystemInterface)
+	{
+		EnhancedInputSubsystemInterface->RemoveAllPlayerMappedKeys();
+		for (const TPair<FName, FKey>& MappableKeyOverride : InputProfile.MappableKeyOverrides)
+		{
+			const FName& MappingName = MappableKeyOverride.Key;
+			const FKey& NewKey = MappableKeyOverride.Value;
+			
+			// Ensure we have a valid name to map
+			if (MappingName != NAME_None)
+			{
+				EnhancedInputSubsystemInterface->AddPlayerMappedKey(MappingName, NewKey);
 			}
 		}
 	}
@@ -911,7 +1327,7 @@ void UVCamComponent::DestroyOutputProvider(UVCamOutputProviderBase* Provider)
 {
 	if (Provider)
 	{
-		Provider->Deinitialize();
+		// Begin Destroy will deinitialize if needed
 		Provider->ConditionalBeginDestroy();
 		Provider = nullptr;
 	}
@@ -929,7 +1345,7 @@ void UVCamComponent::ResetAllOutputProviders()
 			// We only Initialize a provider if they're able to be updated
 			// If they later become able to be updated then they will be
 			// Initialized inside the Update() loop
-			if (FVCamPrivate::ShouldUpdateOutputProviders(this))
+			if (ShouldUpdateOutputProviders())
 			{
 				Provider->Initialize();
 			}
@@ -937,7 +1353,7 @@ void UVCamComponent::ResetAllOutputProviders()
 	}
 }
 
-void UVCamComponent::EnforceModifierStackNameUniqueness(const FString BaseName /*= "NewModifier"*/)
+void UVCamComponent::ValidateModifierStack(const FString BaseName /*= "NewModifier"*/)
 {
 	int32 ModifiedStackIndex;
 	bool bIsNewEntry;
@@ -996,6 +1412,15 @@ void UVCamComponent::EnforceModifierStackNameUniqueness(const FString BaseName /
 				*NewModifierName.ToString(),
 				*SavedModifierStack[ModifiedStackIndex].Name.ToString());
 		}
+
+		// Check if the generated modifier was changed and if so ensure we deinitialize the old modifier
+		UVCamModifier* OldModifier = SavedModifierStack[ModifiedStackIndex].GeneratedModifier;
+		const UVCamModifier* NewModifier = ModifierStack[ModifiedStackIndex].GeneratedModifier;
+		if (OldModifier != NewModifier && IsValid(OldModifier))
+		{
+			OldModifier->Deinitialize();
+		}
+			
 	}	
 }
 
@@ -1165,7 +1590,7 @@ TSharedPtr<SLevelViewport> UVCamComponent::GetTargetLevelViewport() const
 
 	if (TargetViewport == EVCamTargetViewportID::CurrentlySelected)
 	{
-		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(VCamComponent::LevelEditorName))
+		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>(UE::VCamCore::VCamComponent::Private::LevelEditorName))
 		{
 			OutLevelViewport = LevelEditorModule->GetFirstActiveLevelViewport();
 		}
@@ -1275,7 +1700,10 @@ void UVCamComponent::SessionShutdown(TSharedRef<IConcertClientSession> /*InSessi
 		Session->UnregisterCustomEventHandler<FMultiUserVCamCameraComponentEvent>(this);
 		for (UVCamOutputProviderBase* Provider : OutputProviders)
 		{
-			Provider->RestoreOutput();
+			if (IsValid(Provider))
+			{
+				Provider->RestoreOutput();
+			}
 		}
 	}
 
@@ -1385,7 +1813,8 @@ bool UVCamComponent::IsCameraInVPRole() const
 	// We are in a valid camera role if the user has not assigned a role or the current VPSettings role matches the
 	// assigned role.
 	//
-	return !Role.IsValid() || Settings->GetRoles().HasTag(Role);
+	UVirtualProductionRolesSubsystem* VPRolesSubsystem = GEngine->GetEngineSubsystem<UVirtualProductionRolesSubsystem>();
+	return !Role.IsValid() || (VPRolesSubsystem && VPRolesSubsystem->HasActiveRole(Role));
 #else
 	return true;
 #endif
@@ -1394,6 +1823,15 @@ bool UVCamComponent::IsCameraInVPRole() const
 bool UVCamComponent::CanEvaluateModifierStack() const
 {
 	return !IsMultiUserSession() || (IsMultiUserSession() && IsCameraInVPRole());
+}
+
+bool UVCamComponent::ShouldUpdateOutputProviders() const
+{
+	// We should only update output providers in 3 situations
+	// - We're not in Multi User
+	// - We have the virtual camera role
+	// - We have explicitly set that we want to run Output Providers even when not in the camera role
+	return !IsMultiUserSession() || IsCameraInVPRole() || !bDisableOutputOnMultiUserReceiver;
 }
 
 bool UVCamComponent::IsMultiUserSession() const

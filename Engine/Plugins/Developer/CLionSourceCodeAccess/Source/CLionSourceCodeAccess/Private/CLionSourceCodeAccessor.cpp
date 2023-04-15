@@ -179,6 +179,30 @@ bool FCLionSourceCodeAccessor::SaveAllOpenDocuments() const
 	return false;
 }
 
+#if PLATFORM_LINUX
+
+// Returns true if a valid Exec path was found therefore OutExecPath is correctly set
+static bool GetExecPathFromDesktopFile(const FString& DesktopFilePath, FString& OutExecPath)
+{
+	if (!FPaths::FileExists(DesktopFilePath))
+	{
+		return false;
+	}
+	
+	FString DesktopFileContents;
+	FFileHelper::LoadFileToString(DesktopFileContents, *DesktopFilePath);
+
+	const bool Result = FParse::Value(*DesktopFileContents, TEXT("Exec="), OutExecPath);
+	if (!FPaths::FileExists(OutExecPath))
+	{
+		return false;
+	}
+	
+	return Result;
+}
+
+#endif
+
 FString FCLionSourceCodeAccessor::FindExecutablePath()
 {
 #if PLATFORM_WINDOWS
@@ -270,12 +294,45 @@ FString FCLionSourceCodeAccessor::FindExecutablePath()
 	}
 
 #else
-
-	// Linux Default Install
-	if(FPaths::FileExists(TEXT("/opt/clion/bin/clion.sh")))
+	
+	// Potential executable location
+	if (FPaths::FileExists(TEXT("/opt/clion/bin/clion.sh")))
 	{
 		return TEXT("/opt/clion/bin/clion.sh");
 	}
+	
+	FString ClionPath;
+	
+	// First potential .desktop file location
+	FString DesktopFilePath = TEXT("/usr/share/applications/jetbrains-clion.desktop");
+	if (GetExecPathFromDesktopFile(DesktopFilePath, ClionPath))
+	{
+		return ClionPath;
+	}
+	
+	// Second potential .desktop file location
+	DesktopFilePath = FPaths::Combine(FPlatformMisc::GetEnvironmentVariable(TEXT("HOME")), TEXT("/.local/share/applications/jetbrains-clion.desktop"));
+	if (GetExecPathFromDesktopFile(DesktopFilePath, ClionPath))
+	{
+		return ClionPath;
+	}
+	
+	// Check to see if CLion is in the $PATH
+	TArray<FString> PathArray;
+	FPlatformMisc::GetEnvironmentVariable(TEXT("PATH")).ParseIntoArray(PathArray, FPlatformMisc::GetPathVarDelimiter());
+	
+	for (const FString& Path : PathArray)
+	{
+		if (Path.Contains("CLion"))
+		{
+			ClionPath = FPaths::Combine(Path, TEXT("clion.sh"));
+			if (FPaths::FileExists(ClionPath))
+			{
+				return ClionPath;
+			}
+		}
+	}
+
 #endif
 
 	// Nothing was found, return nothing as well

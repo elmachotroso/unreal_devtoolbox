@@ -6,8 +6,6 @@ public class LocalizationService : ModuleRules
 {
 	public LocalizationService(ReadOnlyTargetRules Target) : base(Target)
 	{
-        PrivateIncludePaths.Add("Developer/LocalizationService/Private");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -23,7 +21,6 @@ public class LocalizationService : ModuleRules
                 new string[] {
                     "Slate",
                     "SlateCore",
-                    "EditorStyle"
                 }
             );
         }

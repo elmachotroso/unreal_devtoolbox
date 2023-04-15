@@ -28,10 +28,10 @@ struct COMMONCONVERSATIONRUNTIME_API FNetSerializeScriptStructCache_ConvVersion
 	bool NetSerialize(FArchive& Ar, UScriptStruct*& Struct);
 
 	UPROPERTY()
-	TMap<UScriptStruct*, int32> ScriptStructsToIndex;
+	TMap<TObjectPtr<UScriptStruct>, int32> ScriptStructsToIndex;
 
 	UPROPERTY()
-	TArray<UScriptStruct*> IndexToScriptStructs;
+	TArray<TObjectPtr<UScriptStruct>> IndexToScriptStructs;
 };
 
 /**
@@ -107,9 +107,9 @@ private:
 
 	void GameFeatureStateModified();
 
-	virtual void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData) override;
+	virtual void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData, const FString& PluginURL) override;
 
-	virtual void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context) override;
+	virtual void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context, const FString& PluginURL) override;
 
 private:
 	TMap<FSoftObjectPath, TArray<FSoftObjectPath>> RuntimeDependencyGraph;

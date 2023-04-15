@@ -11,6 +11,10 @@ class UStaticMesh;
 class FStaticMeshRenderData;
 class FStaticMeshLODGroup;
 class USkeletalMesh;
+struct FOverlappingCorners;
+struct FMeshDescription;
+struct FMeshBuildSettings;
+
 
 class MESHBUILDER_API FStaticMeshBuilder : public FMeshBuilder
 {
@@ -18,7 +22,12 @@ public:
 	FStaticMeshBuilder();
 	virtual ~FStaticMeshBuilder() {}
 
-	virtual bool Build(FStaticMeshRenderData& OutRenderData, UStaticMesh* StaticMesh, const FStaticMeshLODGroup& LODGroup, bool bGenerateCoarseMeshStreamingLODs) override;
+	virtual bool Build(
+		FStaticMeshRenderData& OutRenderData,
+		UStaticMesh* StaticMesh,
+		const FStaticMeshLODGroup& LODGroup,
+		bool bGenerateCoarseMeshStreamingLODs,
+		bool bAllowNanite) override;
 
 	//No support for skeletal mesh build in this class
 	virtual bool Build(const struct FSkeletalMeshBuildParameters& SkeletalMeshBuildParameters) override
@@ -42,3 +51,24 @@ private:
 	TSharedPtr<class FStaticMeshComponentRecreateRenderStateContext> RecreateRenderStateContext;
 };
 
+namespace UE::Private::StaticMeshBuilder
+{
+	MESHBUILDER_API void BuildVertexBuffer(
+		UStaticMesh* StaticMesh,
+		const FMeshDescription& MeshDescription,
+		const FMeshBuildSettings& BuildSettings,
+		TArray<int32>& OutWedgeMap,
+		FStaticMeshSectionArray& OutSections,
+		TArray<TArray<uint32>>& OutPerSectionIndices,
+		TArray<FStaticMeshBuildVertex>& StaticMeshBuildVertices,
+		const FOverlappingCorners& OverlappingCorners,
+		TArray<int32>& RemapVerts,
+		bool bNeedTangents
+	);
+
+	MESHBUILDER_API void BuildCombinedSectionIndices(
+		const TArray<TArray<uint32>>& PerSectionIndices,
+		FStaticMeshSectionArray& SectionsOut,
+		TArray<uint32>& CombinedIndicesOut,
+		bool& bNeeds32BitIndicesOut);
+}

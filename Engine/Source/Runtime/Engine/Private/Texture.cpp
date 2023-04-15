@@ -14,6 +14,7 @@
 #include "UObject/ObjectSaveContext.h"
 #include "TextureResource.h"
 #include "Engine/Texture2D.h"
+#include "Engine/VolumeTexture.h"
 #include "Streaming/TextureMipDataProvider.h"
 #include "Engine/TextureMipDataProviderFactory.h"
 #include "ContentStreaming.h"
@@ -36,6 +37,9 @@
 #include "Engine/TextureCube.h"
 #include "Engine/RendererSettings.h"
 #include "ColorSpace.h"
+#include "ImageCoreUtils.h"
+#include "ImageUtils.h"
+#include "Algo/Unique.h"
 
 #if WITH_EDITOR
 #include "DerivedDataBuildVersion.h"
@@ -67,6 +71,7 @@ static TAutoConsoleVariable<int32> CVarVirtualTexturesAutoImport(
 	ECVF_Default);
 
 DEFINE_LOG_CATEGORY(LogTexture);
+DEFINE_LOG_CATEGORY(LogTextureUpload);
 
 #if STATS
 DECLARE_STATS_GROUP(TEXT("Texture Group"), STATGROUP_TextureGroup, STATCAT_Advanced);
@@ -108,6 +113,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 	Filter = TF_Default;
 	MipLoadOptions = ETextureMipLoadOptions::Default;
 #if WITH_EDITORONLY_DATA
+	LoadedMainStreamObjectVersion = FUE5MainStreamObjectVersion::LatestVersion;
 	SourceColorSettings = FTextureSourceColorSettings();
 	AdjustBrightness = 1.0f;
 	AdjustBrightnessCurve = 1.0f;
@@ -117,15 +123,25 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 	AdjustHue = 0.0f;
 	AdjustMinAlpha = 0.0f;
 	AdjustMaxAlpha = 1.0f;
+	CompressionNoAlpha = 0;
+	CompressionForceAlpha = 0;
+	CompressionNone = 0;
+	CompressFinal = 0;
+	DeferCompression = 0;
+	CompressionCacheId = FGuid(0, 0, 0, 0);
+	LossyCompressionAmount = TLCA_Default;
 	MaxTextureSize = 0; // means no limitation
 	MipGenSettings = TMGS_FromTextureGroup;
 	CompositeTextureMode = CTM_NormalRoughnessToAlpha;
+	// this should have defaulted to CTM_Disabled
+	//	but it's hard to change now because of UPROPERTY writing deltas to default
 	CompositePower = 1.0f;
 	bUseLegacyGamma = false;
 	bIsImporting = false;
 	bCustomPropertiesImported = false;
 	bDoScaleMipsForAlphaCoverage = false;
 	AlphaCoverageThresholds = FVector4(0, 0, 0, 0);
+	bUseNewMipFilter = false;
 	PaddingColor = FColor::Black;
 	ChromaKeyColor = FColorList::Magenta;
 	ChromaKeyThreshold = 1.0f / 255.0f;
@@ -133,6 +149,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 	CompressionYCoCg = 0;
 	Downscale = 0.f;
 	DownscaleOptions = ETextureDownscaleOptions::Default;
+	Source.SetOwner(this);
 #endif // #if WITH_EDITORONLY_DATA
 
 	if (FApp::CanEverRender() && !IsTemplate())
@@ -143,7 +160,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 
 const FTextureResource* UTexture::GetResource() const
 {
-	if (IsInParallelGameThread() || IsInGameThread() || IsInSlateThread())
+	if (IsInParallelGameThread() || IsInGameThread() || IsInSlateThread() || IsInAsyncLoadingThread())
 	{
 		return PrivateResource;
 	}
@@ -158,7 +175,7 @@ const FTextureResource* UTexture::GetResource() const
 
 FTextureResource* UTexture::GetResource()
 {
-	if (IsInParallelGameThread() || IsInGameThread() || IsInSlateThread())
+	if (IsInParallelGameThread() || IsInGameThread() || IsInSlateThread() || IsInAsyncLoadingThread())
 	{
 		return PrivateResource;
 	}
@@ -194,7 +211,7 @@ void UTexture::ReleaseResource()
 
 		// When using PlatformData, the resource shouldn't be released before it is initialized to prevent threading issues
 		// where the platform data could be updated at the same time InitRHI is reading it on the renderthread.
-		if (GetRunningPlatformData())
+		if (GetRunningPlatformData() && *GetRunningPlatformData())
 		{
 			WaitForPendingInitOrStreaming();
 		}
@@ -323,12 +340,7 @@ bool UTexture::CanEditChange(const FProperty* InProperty) const
 	if (InProperty)
 	{
 		const FName PropertyName = InProperty->GetFName();
-
-		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UTexture, AdjustVibrance))
-		{
-			return !HasHDRSource();
-		}
-		
+				
 		// Only enable chromatic adapation method when the white points differ.
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(FTextureSourceColorSettings, ChromaticAdaptationMethod))
 		{
@@ -352,13 +364,164 @@ bool UTexture::CanEditChange(const FProperty* InProperty) const
 	return true;
 }
 
+// we're in WITH_EDITOR but not sure that's right, maybe move out?
+// Beware: while ValidateSettingsAfterImportOrEdit should have been called on all Textures,
+//	 it is not called on load at runtime
+//   and it is not always called from dynamically generated textures
+//	so you must not rely on the rules it sets up being true!
+void UTexture::ValidateSettingsAfterImportOrEdit(bool * pRequiresNotifyMaterials)
+{
+	bool bRequiresNotifyMaterialsDummy = false;
+	bool & bRequiresNotifyMaterials = pRequiresNotifyMaterials ? *pRequiresNotifyMaterials : bRequiresNotifyMaterialsDummy;
+
+	// calling ValidateSettingsAfterImportOrEdit if all settings are already valid should be a nop
+	// if you call ValidateSettingsAfterImportOrEdit twice, the second should do nothing
+
+	// this will be called by PostEditChange() with no arg
+		
+#if WITH_EDITORONLY_DATA
+
+	if (Source.IsValid()) // we can have an empty source if the last source in a texture2d array is removed via the editor.
+	{
+		if ( MipGenSettings == TMGS_LeaveExistingMips && PowerOfTwoMode != ETexturePowerOfTwoSetting::None )
+		{
+			// power of 2 pads not allowed with LeaveExistingMips
+			UE_LOG(LogTexture, Display, TEXT("Power of 2 padding cannot be used with LeaveExistingMips, disabled. (%s)"), *GetName());
+
+			PowerOfTwoMode = ETexturePowerOfTwoSetting::None;
+		}
+
+		// IsPowerOfTwo only checks XY :
+		bool bIsPowerOfTwo = Source.IsPowerOfTwo();
+		if ( ! FMath::IsPowerOfTwo(Source.GetVolumeSizeZ()) )
+		{
+			bIsPowerOfTwo = false;
+		}
+		if ( PowerOfTwoMode != ETexturePowerOfTwoSetting::None )
+		{
+			bIsPowerOfTwo = true;
+		}
+
+		// Downscale can violate IsPow2, but it only acts when NoMipMaps, so it's moot
+
+		if ( ! bIsPowerOfTwo )
+		{
+			// streaming only supports power of 2 mips
+			// due to failure to compensate for the GPU row pitch
+			// it only works for mips that naturally have the required 256 pitch
+			// so mip levels >= 256 and power of 2 only
+			// (this used to be in Texture2D.cpp)
+			// see WarnRequiresTightPackedMip
+			// there are other issues with streaming non-pow2
+			//  all streamable levels must be valid textures, so block-of-4 alignment for BCN
+			//  is easiest to guarantee if the source is pow2
+			NeverStream = true;	
+		}
+	
+		int32 MaxDimension = FMath::Max( Source.GetSizeX() , Source.GetSizeY() );
+		bool bLargeTextureMustBeVT = MaxDimension > GetMaximumDimensionOfNonVT();
+
+		if ( bLargeTextureMustBeVT && ! VirtualTextureStreaming && MaxTextureSize == 0 )
+		{
+			static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures"));
+			check( CVarVirtualTexturesEnabled != nullptr );
+
+			if ( CVarVirtualTexturesEnabled->GetValueOnAnyThread() )
+			{
+				if ( GetTextureClass() == ETextureClass::TwoD )
+				{
+				UE_LOG(LogTexture, Display, TEXT("Large Texture %s Dimension=%d changed to VT; to disable VT set MaxTextureSize first"), *GetName(),MaxDimension);
+					VirtualTextureStreaming = true;
+					bRequiresNotifyMaterials = true;
+				}
+				else
+				{
+					UE_LOG(LogTexture, Warning, TEXT("Large Texture %s Dimension=%d needs to be VT but is not 2d, changing MaxTextureSize"), *GetName(),MaxDimension);
+				
+					// GetMaximumDimension is the max size for this texture type on the current RHI
+					MaxTextureSize = GetMaximumDimension();
+				}
+			}
+			else
+			{
+				UE_LOG(LogTexture, Warning, TEXT("Large Texture %s Dimension=%d must be VT but VirtualTextures are disabled, changing MaxTextureSize"), *GetName(),MaxDimension);
+
+				// GetMaximumDimension is the max size for this texture type on the current RHI
+				MaxTextureSize = GetMaximumDimension();
+			}
+		}
+	
+		if (VirtualTextureStreaming)
+		{
+			if (!bIsPowerOfTwo)
+			{
+				if ( bLargeTextureMustBeVT )
+				{
+					UE_LOG(LogTexture, Warning, TEXT("Large VT \"%s\", must be padded to power-of-2 for VT support (%dx%d)"), *GetName(), Source.GetSizeX(),Source.GetSizeY());
+					// VT nonpow2 will fail to build
+					// force it into a state that will succeed? or just let it fail?
+					// you can either pad to pow2 or set MaxTextureSize and turn off VT
+				PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;
+				}
+				else
+				{
+					UE_LOG(LogTexture, Warning, TEXT("VirtualTextureStreaming not supported for \"%s\", texture size is not a power-of-2"), *GetName());
+					VirtualTextureStreaming = false;
+					bRequiresNotifyMaterials = true;
+				}
+			}
+		}
+
+		// Make sure settings are correct for LUT textures.
+		if(LODGroup == TEXTUREGROUP_ColorLookupTable)
+		{
+			if ( MipGenSettings != TMGS_NoMipmaps || SRGB != false )
+			{
+				MipGenSettings = TMGS_NoMipmaps;
+				SRGB = false;
+				bRequiresNotifyMaterials = true;
+			}
+		}
+	} // end if valid source
+#endif // #if WITH_EDITORONLY_DATA
+
+	// check TC_ CompressionSettings that should have SRGB off
+	const bool bPreventSRGB = CompressionSettings == TC_Alpha || CompressionSettings == TC_Normalmap || CompressionSettings == TC_Masks || 
+		UE::TextureDefines::IsHDR(CompressionSettings);
+	if (bPreventSRGB && SRGB == true)
+	{
+		SRGB = false;
+		bRequiresNotifyMaterials = true;
+	}
+
+#if WITH_EDITORONLY_DATA
+	if ( ! SRGB )
+	{
+		// bUseLegacyGamma will be ignored if SRGB is off
+		// go ahead and switch it off
+		bUseLegacyGamma = false;
+	}
+
+	if (MaxTextureSize <= 0)
+	{
+		MaxTextureSize = 0;
+	}
+	else
+	{
+		// note : GetMaximumDimension is the max dim for this texture type in the current RHI
+		MaxTextureSize = FMath::Min<int32>(FMath::RoundUpToPowerOfTwo(MaxTextureSize), GetMaximumDimension());
+	}
+#endif
+	
+	NumCinematicMipLevels = FMath::Max<int32>( NumCinematicMipLevels, 0 );
+}
+
 void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UTexture_PostEditChangeProperty);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-#if WITH_EDITOR
 	ON_SCOPE_EXIT
 	{
 		// PostEditChange is the last step in the import sequence (PreEditChange/PostEditImport/PostEditChange, called twice : see further details) so reset the import-related flags here:
@@ -372,8 +535,8 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 	{
 		return;
 	}
-#endif // WITH_EDITOR
 
+	// assume there was a change that needs a new lighting guid :
 	SetLightingGuid();
 
 	// Determine whether any property that requires recompression of the texture, or notification to Materials has changed.
@@ -382,6 +545,17 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 	bool bInvalidatesMaterialShaders = true;	// too conservative, but as to not change the current behavior
 
 	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	
+	ValidateSettingsAfterImportOrEdit(&RequiresNotifyMaterials);
+
+	if ( PropertyThatChanged == nullptr && RequiresNotifyMaterials )
+	{
+		// if RequiresNotifyMaterials was turned on by Validate
+		// for a PostEditChange() with no Property
+		// no need to Notify
+		RequiresNotifyMaterials = false;
+	}
+
 	if( PropertyThatChanged )
 	{
 		static const FName CompressionSettingsName = GET_MEMBER_NAME_CHECKED(UTexture, CompressionSettings);
@@ -391,7 +565,6 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		static const FName VirtualTextureStreamingName = GET_MEMBER_NAME_CHECKED(UTexture, VirtualTextureStreaming);
 #if WITH_EDITORONLY_DATA
 		static const FName SourceColorSpaceName = GET_MEMBER_NAME_CHECKED(FTextureSourceColorSettings, ColorSpace);
-		static const FName MaxTextureSizeName = GET_MEMBER_NAME_CHECKED(UTexture, MaxTextureSize);
 		static const FName CompressionQualityName = GET_MEMBER_NAME_CHECKED(UTexture, CompressionQuality);
 		static const FName OodleTextureSdkVersionName = GET_MEMBER_NAME_CHECKED(UTexture, OodleTextureSdkVersion);
 #endif //WITH_EDITORONLY_DATA
@@ -403,9 +576,10 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 			(PropertyName == SrgbName))
 		{
 			RequiresNotifyMaterials = true;
-
+			
 			if (PropertyName == LODGroupName)
 			{
+				// should this be in Validate ? or only when switching to this LODGroup ? (allowing change after)
 				if (LODGroup == TEXTUREGROUP_8BitData)
 				{
 					CompressionSettings = TC_VectorDisplacementmap;
@@ -441,17 +615,6 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 			RequiresNotifyMaterials = true;
 			bInvalidatesMaterialShaders = false;
 		}
-		else if (PropertyName == MaxTextureSizeName)
-		{
-			if (MaxTextureSize <= 0)
-			{
-				MaxTextureSize = 0;
-			}
-			else
-			{
-				MaxTextureSize = FMath::Min<int32>(FMath::RoundUpToPowerOfTwo(MaxTextureSize), GetMaximumDimension());
-			}
-		}
 		else if (PropertyName == VirtualTextureStreamingName)
 		{
 			RequiresNotifyMaterials = true;
@@ -469,12 +632,7 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 #endif //WITH_EDITORONLY_DATA
 	}
 
-	const bool bPreventSRGB = (CompressionSettings == TC_Alpha || CompressionSettings == TC_Normalmap || CompressionSettings == TC_Masks || CompressionSettings == TC_HDR || CompressionSettings == TC_HDR_Compressed || CompressionSettings == TC_HalfFloat);
-	if (bPreventSRGB && SRGB == true)
-	{
-		SRGB = false;
-	}
-
+	// PostEditChange() with no property is called at load time , which goes in here
 	if (!PropertyThatChanged && !GDisableAutomaticTextureMaterialUpdateDependencies)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(UpdateDependentMaterials);
@@ -482,6 +640,7 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		// Update any material that uses this texture and must force a recompile of cache resource
 		TArray<UMaterial*> MaterialsToUpdate;
 		TSet<UMaterial*> BaseMaterialsThatUseThisTexture;
+		// this walks all Materials in the world
 		for (TObjectIterator<UMaterialInterface> It; It; ++It)
 		{
 			UMaterialInterface* MaterialInterface = *It;
@@ -512,11 +671,12 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		}
 	}
 
-	NumCinematicMipLevels = FMath::Max<int32>( NumCinematicMipLevels, 0 );
-
-	// Don't update the texture resource if we've turned "DeferCompression" on, as this 
-	// would cause it to immediately update as an uncompressed texture
-	if( !DeferCompressionWasEnabled && (PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) == 0 )
+	// Don't update the texture resource if we've turned "DeferCompression" on, as this would cause
+	// it to immediately update as an uncompressed texture.  If it's a render target, we always need
+	// to update the resource, to avoid an assert when rendering to it, due to a mismatch between the
+	// render target and scene render.
+	if( !DeferCompressionWasEnabled &&
+		((PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) == 0 || GetTextureClass() == ETextureClass::RenderTarget))
 	{
 		// Update the texture resource. This will recache derived data if necessary
 		// which may involve recompressing the texture.
@@ -536,15 +696,16 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 
 		TArray<UTexture*> TexturesThatUseThisTexture;
 
-		for (TObjectIterator<UTexture> It; It; ++It)
+		for (TObjectIterator<UTexture> It; It; ++It) // walk all textures in the world
 		{
 			UTexture* Tex = *It;
-
+			
 			if(Tex != this && Tex->CompositeTexture == this && Tex->CompositeTextureMode != CTM_Disabled)
 			{
 				TexturesThatUseThisTexture.Add(Tex);
 			}
 		}
+		// there is a potential infinite loop here if two textures depend on each other (or in a ring)
 		for (int32 i = 0; i < TexturesThatUseThisTexture.Num(); ++i)
 		{
 			TexturesThatUseThisTexture[i]->PostEditChange();
@@ -560,7 +721,16 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		}
 	}
 }
+
 #endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+static bool IsEnableLegacyAlphaCoverageThresholdScaling()
+{
+	static bool bConfigBool = GConfig->GetBoolOrDefault(TEXT("Texture"), TEXT("EnableLegacyAlphaCoverageThresholdScaling"), false, GEditorIni);
+	return bConfigBool;
+}
+#endif
 
 void UTexture::Serialize(FArchive& Ar)
 {
@@ -572,42 +742,52 @@ void UTexture::Serialize(FArchive& Ar)
 
 	/** Legacy serialization. */
 #if WITH_EDITORONLY_DATA
+
+	if (Ar.IsLoading())
+	{
+		LoadedMainStreamObjectVersion = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID);
+	}
+
+	// When new mip filter is ready to be enabled:
+	// * change "bUseNewMipFilter = false;" to true in UTexture constructor above
+	// * change "bool bUseNewMipFilter = false;" member to true in "UTexture" class, in "Texture.h" file
+	// * change "bool bUseNewMipFilter = false;" member to true in "UTextureFactory" class, in "TextureFactory.h" file
+	// * change "bUseNewMipFilter(false) to true in "FTextureBuildSettings" constructor, in "TextureCompressorModule.h" file
+	// * change "ExistingbUseNewMipFilter = false" to true in UTextureFactory::FactoryCreateBinary method, in "EditorFactories.cpp" file
+	// * add "TextureUseNewMipFilter" value in "FUE5MainStreamObjectVersion" enum, in "UE5MainStreamObjectVersion.h" file
+	// * uncomment if statement below
+
+	//if (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::TextureUseNewMipFilter)
+	//{
+	//	// Old textures should not use new mip filter for maintaining exacty the same output as before (to not increase patch size)
+	//	bUseNewMipFilter = false;
+	//}
+
+	if (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::TextureDoScaleMipsForAlphaCoverage)
+	{
+		// bDoScaleMipsForAlphaCoverage was not transmitted in old versions
+		//	and AlphaCoverageThresholds was being incorrectly set to (0,0,0,1)
+		check( bDoScaleMipsForAlphaCoverage == false );
+	
+		if ( AlphaCoverageThresholds != FVector4(0,0,0,0) && AlphaCoverageThresholds != FVector4(0,0,0,1) )
+		{
+			// AlphaCoverageThresholds is a non-default value, assume that means they wanted it on
+			bDoScaleMipsForAlphaCoverage = true;
+		}
+		else if ( AlphaCoverageThresholds == FVector4(0,0,0,1) )
+		{
+			// if value is (0,0,0,1)
+			//	that was previously incorrectly being set by default and enabling alpha coverage processing
+			// we don't want that, but to optionally preserve old behavior you can set a config option
+			bDoScaleMipsForAlphaCoverage = IsEnableLegacyAlphaCoverageThresholdScaling();
+		}
+	}
+
 	if (!StripFlags.IsEditorDataStripped())
 	{
 #if WITH_EDITOR
 		FWriteScopeLock BulkDataExclusiveScope(Source.BulkDataLock.Get());
 #endif
-
-		if (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::TextureDoScaleMipsForAlphaCoverage)
-		{
-			// bDoScaleMipsForAlphaCoverage was not transmitted in old versions
-			//	and AlphaCoverageThresholds was being incorrectly set to (0,0,0,1)
-			check( bDoScaleMipsForAlphaCoverage == false );
-	
-			if ( AlphaCoverageThresholds != FVector4(0,0,0,0) && AlphaCoverageThresholds != FVector4(0,0,0,1) )
-			{
-				// AlphaCoverageThresholds is a non-default value, assume that means they wanted it on
-				bDoScaleMipsForAlphaCoverage = true;
-			}
-			else if ( AlphaCoverageThresholds == FVector4(0,0,0,1) )
-			{
-				// if value is (0,0,0,1)
-				//	that was previously incorrectly being set by default and enabling alpha coverage processing
-				// we don't want that, but to optionally preserve old behavior you can set a config option :
-
-				static struct ReadConfigOnce
-				{
-					bool bBool;
-					ReadConfigOnce()
-					{
-						bBool = false;
-						GConfig->GetBool(TEXT("Texture"), TEXT("EnableLegacyAlphaCoverageThresholdScaling"), bBool, GEditorIni);
-					}
-				} ConfigValue;
-
-				bDoScaleMipsForAlphaCoverage = ConfigValue.bBool;
-			}
-		}
 
 		if (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::VirtualizedBulkDataHaveUniqueGuids)
 		{
@@ -636,11 +816,11 @@ void UTexture::Serialize(FArchive& Ar)
 	{
 		// Could potentially guard this with a new custom version, but overhead of just checking on every load should be very small
 		Source.EnsureBlocksAreSorted();
-	}
 
-	if ( GetLinkerUEVersion() < VER_UE4_TEXTURE_LEGACY_GAMMA )
-	{
-		bUseLegacyGamma = true;
+		if (Ar.UEVer() < VER_UE4_TEXTURE_LEGACY_GAMMA)
+		{
+			bUseLegacyGamma = true;
+		}
 	}
 
 	if (Ar.IsCooking() && VirtualTextureStreaming)
@@ -650,9 +830,92 @@ void UTexture::Serialize(FArchive& Ar)
 			UE_LOG(LogTexture, Display, TEXT("%s is marked for virtual streaming but virtual texture streaming is not available."), *GetPathName());
 		}
 	}
+	
+	if (Ar.IsLoading())
+	{
+		// bPNGCompressed is now deprecated and CompressionFormat should be used to detect PNG compression
+		// update old assets that did not have CompressionFormat set
+		// 
+		// - In old versions, CompressionFormat did not exist (so it will load in as None), and bPNGCompressed is used
+		//   as the source to set CompressionFormat
+		// - In new versions, bPNGCompressed is deprecated, never written (so will load as false), and CompressionFormat
+		//   is the authoritative source on whether something is a PNG or not.
+		// - In between, for a while after CompressionFormat was introduced, a bug meant that textures that were flagged 
+		//   as !bPNGCompressed, had their compression format set to PNG, but did not actually contain compressed data. Fix these up.
+		//   this bug only existed up to version TextureSourceVirtualization, but it could be carried forward to later asset versions
+		//   until this fixup was added
+		//
+		// Now, the separate bPNGCompressed is gone (to avoid further desyncs like this) and we make sure
+		// that CompressionFormat always matches the contents.	
 
+		if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::VolumetricCloudReflectionSampleCountDefaultUpdate
+			&& !Source.bPNGCompressed_DEPRECATED
+			&& Source.CompressionFormat == TSCF_PNG)
+		{
+			UE_LOG(LogTexture, Display, TEXT("Texture \"%s\" has CompressionFormat=PNG but not bPNGCompressed, assuming texture is actually uncompressed."), *GetPathName());
+			Source.CompressionFormat = TSCF_None;
+		}
+
+		if ( Source.bPNGCompressed_DEPRECATED && Source.CompressionFormat != TSCF_PNG )
+		{
+			// loaded with deprecated "bPNGCompressed" (but not the newer CompressionFormat)
+			// change to CompressionFormat PNG
+			// this is expected on assets older than the CompressionFormat field
+			check( Source.CompressionFormat == TSCF_None );
+			Source.CompressionFormat = TSCF_PNG;
+		}
+		
+		// bPNGCompressed_DEPRECATED is not kept in sync with CompressionFormat any more, do not check it after this point
+
+		if ( Source.GetFormat() == TSF_RGBA8_DEPRECATED
+			|| Source.GetFormat() == TSF_RGBE8_DEPRECATED )
+		{
+			// ensure that later code doesn't ever see the _DEPRECATED formats
+
+			// needs RB swap
+			// force BulkData to become resident
+			// do the swap on the bits
+			// change format to swapped version
+			// these formats are incredibly rare and old
+			// just warn and change the enum but don't swap the bits
+			// will appear RB swapped until reimported
+			UE_LOG(LogTexture, Warning, TEXT("TextureSource is a deprecated RB swapped format, needs reimport!: %s"), *GetPathName());
+		
+			for(int i=0;i<Source.LayerFormat.Num();i++)
+			{
+				if ( Source.LayerFormat[i] == TSF_RGBA8_DEPRECATED )
+				{
+					Source.LayerFormat[i] = TSF_BGRA8;
+				}
+				else if ( Source.LayerFormat[i] == TSF_RGBE8_DEPRECATED )
+				{
+					Source.LayerFormat[i] = TSF_BGRE8;
+				}
+			}
+		}
+
+		// CTM_MAX is mis-named, it's actually one higher than the maximum valid value
+		if ( (uint32)CompositeTextureMode >= (uint32)CTM_MAX )
+		{
+			UE_LOG(LogTexture, Warning, TEXT("CompositeTextureMode was invalid in uasset, disabled.  Fix content and re-save : %s"), *GetPathName());
+			
+			CompositeTextureMode = CTM_Disabled;
+		}
+	}
 #endif // #if WITH_EDITORONLY_DATA
 }
+
+#if WITH_EDITORONLY_DATA
+void UTexture::AppendToClassSchema(FAppendToClassSchemaContext& Context)
+{
+	Super::AppendToClassSchema(Context);
+
+	// IsEnableLegacyAlphaCoverageThresholdScaling affects upgrades executed in Serialize, so include it in the ClassSchema
+	uint8 LegacyScalingBool = IsEnableLegacyAlphaCoverageThresholdScaling();
+	Context.Update(&LegacyScalingBool, sizeof(LegacyScalingBool));
+}
+#endif
+
 
 void UTexture::PostInitProperties()
 {
@@ -685,6 +948,7 @@ void UTexture::PostLoad()
 		Info.Insert(FAssetImportInfo::FSourceFile(SourceFilePath_DEPRECATED));
 		AssetImportData->SourceData = MoveTemp(Info);
 	}
+
 #endif
 
 	if( !IsTemplate() )
@@ -975,12 +1239,12 @@ void UTexture::SetDeterministicLightingGuid()
 UEnum* UTexture::GetPixelFormatEnum()
 {
 	// Lookup the pixel format enum so that the pixel format can be serialized by name.
-	static FName PixelFormatUnknownName(TEXT("PF_Unknown"));
-	static UEnum* PixelFormatEnum = NULL;
-	if (PixelFormatEnum == NULL)
+	static UEnum* PixelFormatEnum = nullptr;
+	if (PixelFormatEnum == nullptr)
 	{
+		FTopLevelAssetPath PixelFormatEnumPath(TEXT("/Script/CoreUObject"), TEXT("EPixelFormat"));
 		check(IsInGameThread());
-		UEnum::LookupEnumName(PixelFormatUnknownName, &PixelFormatEnum);
+		PixelFormatEnum = FindObject<UEnum>(PixelFormatEnumPath);
 		check(PixelFormatEnum);
 	}
 	return PixelFormatEnum;
@@ -1060,21 +1324,69 @@ const TArray<UAssetUserData*>* UTexture::GetAssetUserDataArray() const
 	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }
 
+
+bool UTexture::IsPossibleToStream() const
+{
+	if ( NeverStream || LODGroup == TEXTUREGROUP_UI )
+	{
+		return false;
+	}
+
+	#if WITH_EDITORONLY_DATA
+	if ( MipGenSettings == TMGS_NoMipmaps )
+	{
+		return false;
+	}
+
+	// VirtualTextureStreaming can be true here and we will still stream if VT is disabled
+	
+	if ( Source.IsValid() )
+	{
+		// should have set NeverStream for nonpow2
+		// note: this is not the case for all old textures
+		// ValidateSettingsAfterImportOrEdit makes sure this is true
+		//check( Source.IsPowerOfTwo() || PowerOfTwoMode != ETexturePowerOfTwoSetting::None )
+		
+		// duplicate the checks done for NeverStream :
+
+		// IsPowerOfTwo only checks XY :
+		bool bIsPowerOfTwo = Source.IsPowerOfTwo();
+		if ( ! FMath::IsPowerOfTwo(Source.GetVolumeSizeZ()) )
+		{
+			bIsPowerOfTwo = false;
+		}
+		if ( PowerOfTwoMode != ETexturePowerOfTwoSetting::None )
+		{
+			bIsPowerOfTwo = true;
+		}
+		if ( ! bIsPowerOfTwo )
+		{
+			// NeverStream should have been set
+			return false;
+		}
+	}
+	#endif
+
+	return true;
+}
+
 #if WITH_EDITOR
 // Based on target platform, returns wether texture is candidate to be streamed.
 // This method is used to decide if PrimitiveComponent's bHasNoStreamableTextures flag can be set to true.
 // See ULevel::MarkNoStreamableTexturesPrimitiveComponents for details.
-bool UTexture::IsCandidateForTextureStreaming(const ITargetPlatform* InTargetPlatform) const
+bool UTexture::IsCandidateForTextureStreamingOnPlatformDuringCook(const ITargetPlatform* InTargetPlatform) const
 {
 	const bool bIsVirtualTextureStreaming = InTargetPlatform->SupportsFeature(ETargetPlatformFeatures::VirtualTextureStreaming) ? VirtualTextureStreaming : false;
 	const bool bIsCandidateForTextureStreaming = InTargetPlatform->SupportsFeature(ETargetPlatformFeatures::TextureStreaming) && !bIsVirtualTextureStreaming;
 
 	if (bIsCandidateForTextureStreaming &&
-		!NeverStream &&
-		LODGroup != TEXTUREGROUP_UI &&
-		MipGenSettings != TMGS_NoMipmaps)
+		IsPossibleToStream())
 	{
 		// If bCookedIsStreamable flag was previously computed, use it.
+		// This is computed _after_ the derived data is cached. It's only Reset() and used in the SerializeCookedPlatformData
+		// path.. but not the BeginCacheForCookedPlatformData path. Need to know what happens if you do
+		// one, then the other, as the flag will be set. Also note that this is an OR when multiple platforms
+		// are cooked... so this can be true for a non-streaming platform if it gets cooked with a streaming platform!
 		if (bCookedIsStreamable.IsSet())
 		{
 			return *bCookedIsStreamable;
@@ -1102,50 +1414,75 @@ FStreamableRenderResourceState UTexture::GetResourcePostInitState(const FTexture
 			return FMath::Min<int32>(PlatformData->Mips.Num() - ExpectedAssetLODBias, MaxRuntimeMipCount);
 		}
 	}();
+	
+	bool bTextureIsStreamable = IsPossibleToStream();
 
 	const int32 NumOfNonOptionalMips = FMath::Min<int32>(NumMips, PlatformData->GetNumNonOptionalMips());
-	const int32 NumOfNonStreamingMips = FMath::Min<int32>(NumMips, PlatformData->GetNumNonStreamingMips());
-	const int32 AssetMipIdxForResourceFirstMip = FMath::Max<int32>(0, PlatformData->Mips.Num() - NumMips);
+	const int32 NumOfNonStreamingMips = FMath::Min<int32>(NumMips, PlatformData->GetNumNonStreamingMips(bTextureIsStreamable));
+	// Optional mips must be streaming mips :
+	check( NumOfNonOptionalMips >= NumOfNonStreamingMips );
 
-	bool bMakeStreamble = false;
-	int32 NumRequestedMips = 0;
-
-#if PLATFORM_SUPPORTS_TEXTURE_STREAMING
-	bool bWillProvideMipDataWithoutDisk = false;
-
-	// Check if any of the CustomMipData providers associated with this texture can provide mip data even without DDC or disk,
-	// if so, enable streaming for this texture
-	for (UAssetUserData* UserData : AssetUserData)
+	if ( NumOfNonStreamingMips == NumMips )
 	{
-		UTextureMipDataProviderFactory* CustomMipDataProviderFactory = Cast<UTextureMipDataProviderFactory>(UserData);
-		if (CustomMipDataProviderFactory)
-		{
-			bWillProvideMipDataWithoutDisk = CustomMipDataProviderFactory->WillProvideMipDataWithoutDisk();
-			if (bWillProvideMipDataWithoutDisk)
-			{
-				break;
-			}
-		}
+		bTextureIsStreamable = false;
 	}
 
-	if (!NeverStream && 
-		NumOfNonStreamingMips < NumMips && 
-		LODGroup != TEXTUREGROUP_UI && 
-		bAllowStreaming &&
-		(bSkipCanBeLoaded || PlatformData->CanBeLoaded() || bWillProvideMipDataWithoutDisk))
+	const int32 AssetMipIdxForResourceFirstMip = FMath::Max<int32>(0, PlatformData->Mips.Num() - NumMips);
+
+	bool bMakeStreamable = false;
+	int32 NumRequestedMips = 0;
+	
+#if PLATFORM_SUPPORTS_TEXTURE_STREAMING
+	if ( bTextureIsStreamable )
 	{
-		bMakeStreamble  = true;
+		bool bWillProvideMipDataWithoutDisk = false;
+
+		// Check if any of the CustomMipData providers associated with this texture can provide mip data even without DDC or disk,
+		// if so, enable streaming for this texture
+		for (UAssetUserData* UserData : AssetUserData)
+		{
+			UTextureMipDataProviderFactory* CustomMipDataProviderFactory = Cast<UTextureMipDataProviderFactory>(UserData);
+			if (CustomMipDataProviderFactory)
+			{
+				bWillProvideMipDataWithoutDisk = CustomMipDataProviderFactory->WillProvideMipDataWithoutDisk();
+				if (bWillProvideMipDataWithoutDisk)
+				{
+					break;
+				}
+			}
+		}
+
+		if (bAllowStreaming &&
+			(bSkipCanBeLoaded || PlatformData->CanBeLoaded() || bWillProvideMipDataWithoutDisk))
+		{
+			bMakeStreamable  = true;
+		}
 	}
 #endif
 
-	if (bMakeStreamble && IStreamingManager::Get().IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::Texture))
+	if ( ! bTextureIsStreamable )
+	{
+		// in Editor , NumOfNonStreamingMips may not be all mips
+		// but once we cook it will be
+		// so check this early to make behavior consistent
+		NumRequestedMips = NumMips;
+	}
+	else if (bMakeStreamable && IStreamingManager::Get().IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::Texture))
 	{
 		NumRequestedMips = NumOfNonStreamingMips;
 	}
 	else
 	{
+		// we are not streaming (bMakeStreamable is false)
+		// but this may select a mip below the top mip
+		// (due to cinematic lod bias)
+		// but only if the texture itself is streamable
+
 		// Adjust CachedLODBias so that it takes into account FStreamableRenderResourceState::AssetLODBias.
 		const int32 ResourceLODBias = FMath::Max<int32>(0, GetCachedLODBias() - AssetMipIdxForResourceFirstMip);
+		//  ResourceLODBias almost always = NumCinematicMipLevels
+		//check( ResourceLODBias == NumCinematicMipLevels ); // this will be true unless you hit the MaxRuntimeMipCount clamp in NumMips
+		// if ResourceLODBias == 0 , this always selects NumRequestedMips = NumMips
 
 		// Ensure NumMipsInTail is within valid range to safeguard on the above expressions. 
 		const int32 NumMipsInTail = FMath::Clamp<int32>(PlatformData->GetNumMipsInTail(), 1, NumMips);
@@ -1158,15 +1495,22 @@ FStreamableRenderResourceState UTexture::GetResourcePostInitState(const FTexture
 		{
 			NumRequestedMips = NumOfNonOptionalMips;
 		}
+
+		// Ensure we don't request a top mip in the NonStreamingMips
+		NumRequestedMips = FMath::Max(NumRequestedMips,NumOfNonStreamingMips);
 	}
 
+	// @todo Oodle : this looks like a bug; did it mean to be MinRequestMipCount <= NumMips
+	// typically MinRequestMipCount == 0
+	// the only place it's not zero is from UTexture2D::CreateResource from existing resource mem, where it is == NumMips
+	// but in that case it is ignored here because it is == NumMips, not <
 	if (NumRequestedMips < MinRequestMipCount && MinRequestMipCount < NumMips)
 	{
 		NumRequestedMips = MinRequestMipCount;
 	}
 
 	FStreamableRenderResourceState PostInitState;
-	PostInitState.bSupportsStreaming = bMakeStreamble;
+	PostInitState.bSupportsStreaming = bMakeStreamable;
 	PostInitState.NumNonStreamingLODs = (uint8)NumOfNonStreamingMips;
 	PostInitState.NumNonOptionalLODs = (uint8)NumOfNonOptionalMips;
 	PostInitState.MaxNumLODs = (uint8)NumMips;
@@ -1182,7 +1526,13 @@ FStreamableRenderResourceState UTexture::GetResourcePostInitState(const FTexture
 ------------------------------------------------------------------------------*/
 
 FTextureSource::FTextureSource()
-	: NumLockedMips(0u)
+	: 
+#if WITH_EDITOR
+	  Owner(nullptr),
+	  TornOffTextureClass(ETextureClass::Invalid),
+	  TornOffGammaSpace(EGammaSpace::Invalid),
+#endif
+	  NumLockedMips(0u)
 	, LockState(ELockState::None)
 #if WITH_EDITOR
 	, bHasHadBulkDataCleared(false)
@@ -1195,7 +1545,7 @@ FTextureSource::FTextureSource()
 	, NumSlices(0)
 	, NumMips(0)
 	, NumLayers(1) // Default to 1 so old data has the correct value
-	, bPNGCompressed(false)
+	, bPNGCompressed_DEPRECATED(false)
 	, bLongLatCubemap(false)
 	, CompressionFormat(TSCF_None)
 	, bGuidIsHash(false)
@@ -1216,21 +1566,75 @@ FTextureSourceBlock::FTextureSourceBlock()
 
 int32 FTextureSource::GetBytesPerPixel(ETextureSourceFormat Format)
 {
-	int32 BytesPerPixel = 0;
-	switch (Format)
-	{
-	case TSF_G8:		BytesPerPixel = 1; break;
-	case TSF_G16:		BytesPerPixel = 2; break;
-	case TSF_BGRA8:		BytesPerPixel = 4; break;
-	case TSF_BGRE8:		BytesPerPixel = 4; break;
-	case TSF_RGBA16:	BytesPerPixel = 8; break;
-	case TSF_RGBA16F:	BytesPerPixel = 8; break;
-	default:			BytesPerPixel = 0; break;
-	}
-	return BytesPerPixel;
+	ERawImageFormat::Type RawFormat = FImageCoreUtils::ConvertToRawImageFormat(Format);
+	return ERawImageFormat::GetBytesPerPixel(RawFormat);
 }
 
 #if WITH_EDITOR
+
+bool FTextureSource::IsCubeOrCubeArray() const
+{
+	ETextureClass TextureClass = GetTextureClass();
+	return TextureClass == ETextureClass::Cube || TextureClass == ETextureClass::CubeArray;
+}
+
+bool FTextureSource::IsVolume() const
+{
+	ETextureClass TextureClass = GetTextureClass();
+	return TextureClass == ETextureClass::Volume;
+}
+
+bool FTextureSource::IsLongLatCubemap() const
+{
+	if ( IsCubeOrCubeArray() )
+	{
+		check( NumLayers == 1 );
+
+		// bLongLatCubemap is sometimes set for LongLat Cube Arrays but not always
+		if ( bLongLatCubemap )
+		{
+			return true;
+		}
+		else
+		{
+			// if NumSlices is not a multiple of 6, must be longlat !?
+			return (NumSlices % 6) != 0;
+		}
+	}
+	else
+	{
+		check( ! bLongLatCubemap );
+		return false;
+	}
+}
+
+// returns volume depth, or 1 if not a volume
+int FTextureSource::GetVolumeSizeZ() const
+{
+	if ( IsVolume() )
+	{
+		check( NumLayers == 1 );
+		return NumSlices;
+	}
+	else
+	{
+		return 1;
+	}
+}
+
+static int GetFullMipCount(int32 SizeX,int32 SizeY,int32 SizeZ = 1)
+{
+	if ( SizeX == 0 || SizeY == 0 || SizeZ == 0 )
+	{
+		return 0;
+	}
+	
+	int MaxDim = FMath::Max3(SizeX,SizeY,SizeZ);
+
+	int32 MipCount = FMath::FloorLog2(MaxDim) + 1;
+
+	return MipCount;
+}
 
 void FTextureSource::InitBlocked(const ETextureSourceFormat* InLayerFormats,
 	const FTextureSourceBlock* InBlocks,
@@ -1240,11 +1644,7 @@ void FTextureSource::InitBlocked(const ETextureSourceFormat* InLayerFormats,
 {
 	InitBlockedImpl(InLayerFormats, InBlocks, InNumLayers, InNumBlocks);
 
-	int64 TotalBytes = 0;
-	for (int i = 0; i < InNumBlocks; ++i)
-	{
-		TotalBytes += CalcBlockSize(i);
-	}
+	int64 TotalBytes = CalcTotalSize();
 
 	FUniqueBuffer Buffer = FUniqueBuffer::Alloc(TotalBytes);
 	uint8* DataPtr = (uint8*)Buffer.GetData();
@@ -1262,7 +1662,7 @@ void FTextureSource::InitBlocked(const ETextureSourceFormat* InLayerFormats,
 		}
 	}
 
-	BulkData.UpdatePayload(Buffer.MoveToShared());
+	BulkData.UpdatePayload(Buffer.MoveToShared(), Owner);
 	BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
 }
 
@@ -1274,7 +1674,7 @@ void FTextureSource::InitBlocked(const ETextureSourceFormat* InLayerFormats,
 {
 	InitBlockedImpl(InLayerFormats, InBlocks, InNumLayers, InNumBlocks);
 
-	BulkData.UpdatePayload(MoveTemp(NewData));
+	BulkData.UpdatePayload(MoveTemp(NewData), Owner);
 	BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
 }
 
@@ -1302,16 +1702,14 @@ void FTextureSource::InitLayered(
 		TotalBytes += CalcLayerSize(0, i);
 	}
 
-	// TODO: Allocating an empty buffer if there is no data to copy from seems like an odd choice but the 
-	// code logic has been doing this for almost a decade so I don't want to change it until I am sure that
-	// it serves no purpose. Given a choice I'd assert on NewData == nullptr instead.
+	// Init with NewData == null is used to allocate space, which is then filled with LockMip
 	if (NewData != nullptr)
 	{
-		BulkData.UpdatePayload(FSharedBuffer::Clone(NewData, TotalBytes));
+		BulkData.UpdatePayload(FSharedBuffer::Clone(NewData, TotalBytes), Owner);
 	}
 	else
 	{
-		BulkData.UpdatePayload(FUniqueBuffer::Alloc(TotalBytes).MoveToShared());
+		BulkData.UpdatePayload(FUniqueBuffer::Alloc(TotalBytes).MoveToShared(), Owner);
 	}
 
 	BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
@@ -1335,7 +1733,7 @@ void FTextureSource::InitLayered(
 		NewLayerFormat
 	);
 
-	BulkData.UpdatePayload(MoveTemp(NewData));
+	BulkData.UpdatePayload(MoveTemp(NewData), Owner);
 	BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
 }
 
@@ -1349,6 +1747,16 @@ void FTextureSource::Init(
 		)
 {
 	InitLayered(NewSizeX, NewSizeY, NewNumSlices, 1, NewNumMips, &NewFormat, NewData);
+}
+
+void FTextureSource::Init(const FImageView & Image)
+{
+	ETextureSourceFormat SourceFormat = FImageCoreUtils::ConvertToTextureSourceFormat(Image.Format);
+
+	// FImageView has gamma information too that is lost
+	// TextureSource does not store gamma information (it's in the owning Texture)
+
+	Init(Image.SizeX,Image.SizeY,Image.NumSlices,1,SourceFormat,(const uint8 *)Image.RawData);
 }
 
 void FTextureSource::Init(
@@ -1369,7 +1777,7 @@ void FTextureSource::Init2DWithMipChain(
 	ETextureSourceFormat NewFormat
 	)
 {
-	int32 NewMipCount = FMath::Max(FMath::CeilLogTwo(NewSizeX),FMath::CeilLogTwo(NewSizeY)) + 1;
+	int32 NewMipCount = GetFullMipCount(NewSizeX,NewSizeY);
 	Init(NewSizeX, NewSizeY, 1, NewMipCount, NewFormat);
 }
 
@@ -1379,7 +1787,7 @@ void FTextureSource::InitLayered2DWithMipChain(
 	int32 NewNumLayers,
 	const ETextureSourceFormat* NewFormat)
 {
-	int32 NewMipCount = FMath::Max(FMath::CeilLogTwo(NewSizeX), FMath::CeilLogTwo(NewSizeY)) + 1;
+	int32 NewMipCount = GetFullMipCount(NewSizeX,NewSizeY);
 	InitLayered(NewSizeX, NewSizeY, 1, NewNumLayers, NewMipCount, NewFormat);
 }
 
@@ -1389,7 +1797,7 @@ void FTextureSource::InitCubeWithMipChain(
 	ETextureSourceFormat NewFormat
 	)
 {
-	int32 NewMipCount = FMath::Max(FMath::CeilLogTwo(NewSizeX),FMath::CeilLogTwo(NewSizeY)) + 1;
+	int32 NewMipCount = GetFullMipCount(NewSizeX,NewSizeY);
 	Init(NewSizeX, NewSizeY, 6, NewMipCount, NewFormat);
 }
 
@@ -1402,27 +1810,54 @@ void FTextureSource::InitWithCompressedSourceData(
 	ETextureSourceCompressionFormat NewSourceFormat
 )
 {
-	RemoveSourceData();
-
-	SizeX = NewSizeX;
-	SizeY = NewSizeY;
-
-	NumLayers = 1;
-	NumSlices = 1;
-	NumMips = NewNumMips;
-
-	Format = NewFormat;
-	LayerFormat.SetNum(1, true);
-	LayerFormat[0] = NewFormat;
+	const int32 NewNumSlice = 1;
+	const int32 NewNumLayer = 1;
+	InitLayeredImpl(
+		NewSizeX,
+		NewSizeY,
+		NewNumSlice,
+		NewNumLayer,
+		NewNumMips,
+		&NewFormat
+		);
 
 	CompressionFormat = NewSourceFormat;
 
-	BlockDataOffsets.Add(0);
+	BulkData.UpdatePayload(FSharedBuffer::Clone(NewData.GetData(), NewData.Num()), Owner);
+	// Disable the internal bulkdata compression if the source data is already compressed
+	if (CompressionFormat == TSCF_None)
+	{
+		BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
+	}
+	else
+	{
+		BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Disabled);
+	}
+}
 
-	checkf(LockState == ELockState::None, TEXT("InitWithCompressedSourceData shouldn't be called in-between LockMip/UnlockMip"));
+void FTextureSource::InitWithCompressedSourceData(
+	int32 NewSizeX,
+	int32 NewSizeY,
+	int32 NewNumMips,
+	ETextureSourceFormat NewFormat,
+	UE::Serialization::FEditorBulkData::FSharedBufferWithID NewSourceData,
+	ETextureSourceCompressionFormat NewSourceFormat
+)
+{
+	const int32 NewNumSlice = 1;
+	const int32 NewNumLayer = 1;
+	InitLayeredImpl(
+		NewSizeX,
+		NewSizeY,
+		NewNumSlice,
+		NewNumLayer,
+		NewNumMips,
+		&NewFormat
+	);
 
-	BulkData.UpdatePayload(FSharedBuffer::Clone(NewData.GetData(), NewData.Num()));
+	CompressionFormat = NewSourceFormat;
 
+	BulkData.UpdatePayload(MoveTemp(NewSourceData), Owner);
 	// Disable the internal bulkdata compression if the source data is already compressed
 	if (CompressionFormat == TSCF_None)
 	{
@@ -1441,6 +1876,11 @@ FTextureSource FTextureSource::CopyTornOff() const
 	Result.BulkData.TearOff();
 	// Use the default copy constructor to copy all the fields without having to write them manually
 	Result = *this;
+	Result.Owner = nullptr; // TornOffs don't count as belonging to the same owner
+	// Result can't talk to Owner any more, so save info we need :
+	check( Owner != nullptr );
+	Result.TornOffGammaSpace = Owner->GetGammaSpace();
+	Result.TornOffTextureClass = Owner->GetTextureClass();
 	return Result;
 }
 
@@ -1456,7 +1896,7 @@ void FTextureSource::Compress()
 	//	should be faster to load and also smaller files (than traditional PNG+zlib)
 	bool bUseOodleOnPNGz0 = true;
 
-	// may already have bPNGCompressed or "CompressionFormat" set
+	// may already have "CompressionFormat" set
 
 	if (CanPNGCompress()) // Note that this will return false if the data is already a compressed PNG
 	{
@@ -1464,31 +1904,50 @@ void FTextureSource::Compress()
 
 		IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>( FName("ImageWrapper") );
 		TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper( EImageFormat::PNG );
-		// TODO: TSF_BGRA8 is stored as RGBA, so the R and B channels are swapped in the internal png. Should we fix this?
-		ERGBFormat RawFormat = (Format == TSF_G8 || Format == TSF_G16) ? ERGBFormat::Gray : ERGBFormat::RGBA;
-		int RawBitsPerChannel = (Format == TSF_G16 || Format == TSF_RGBA16) ? 16 : 8;
-		if ( ImageWrapper.IsValid() && ImageWrapper->SetRaw(Payload.GetData(), Payload.GetSize(), SizeX, SizeY, RawFormat, RawBitsPerChannel ) )
+		
+		ERGBFormat RGBFormat;
+		int BitsPerChannel;
+		switch(Format)
 		{
-			int32 PngQuality = (int32)EImageCompressionQuality::Default; // 0 means default 
+		case TSF_G8:
+			RGBFormat = ERGBFormat::Gray;
+			BitsPerChannel = 8;
+			break;
+		case TSF_G16:
+			RGBFormat = ERGBFormat::Gray;
+			BitsPerChannel = 16;
+			break;
+		case TSF_BGRA8:
+		// Legacy bug, must be matched in Compress & Decompress
+		// TODO: TSF_BGRA8 is stored as RGBA, so the R and B channels are swapped in the internal png. Should we fix this?
+			// should have been ERGBFormat::BGRA
+			RGBFormat = ERGBFormat::RGBA;
+			BitsPerChannel = 8;
+			break;
+		case TSF_RGBA16:
+			RGBFormat = ERGBFormat::RGBA;
+			BitsPerChannel = 16;
+			break;
+		default:
+			check(0); // should not get here because we already checked CanPNGCompress()
+			return;
+		}
+
+		if ( ImageWrapper.IsValid() && ImageWrapper->SetRaw(Payload.GetData(), Payload.GetSize(), SizeX, SizeY, RGBFormat, BitsPerChannel ) )
+		{
+			EImageCompressionQuality PngQuality = EImageCompressionQuality::Default; // 0 means default 
 			if ( bUseOodleOnPNGz0 )
 			{
-				PngQuality = (int32)EImageCompressionQuality::Uncompressed; // turn off zlib
+				PngQuality = EImageCompressionQuality::Uncompressed; // turn off zlib
 			}
-			TArray64<uint8> CompressedData = ImageWrapper->GetCompressed(PngQuality);
+			TArray64<uint8> CompressedData = ImageWrapper->GetCompressed((int32)PngQuality);
 			if ( CompressedData.Num() > 0 )
 			{
-				BulkData.UpdatePayload(MakeSharedBufferFromArray(MoveTemp(CompressedData)));
+				BulkData.UpdatePayload(MakeSharedBufferFromArray(MoveTemp(CompressedData)), Owner);
 
-				bPNGCompressed = true;
 				CompressionFormat = TSCF_PNG;
 			}
 		}
-	}
-
-	// Fix up for packages that were saved before CompressionFormat was introduced. Can removed this when we deprecate bPNGCompressed!
-	if (bPNGCompressed)
-	{
-		CompressionFormat = TSCF_PNG;
 	}
 
 	if ( ( CompressionFormat == TSCF_PNG && bUseOodleOnPNGz0 ) ||
@@ -1502,21 +1961,96 @@ void FTextureSource::Compress()
 	}
 }
 
-FSharedBuffer FTextureSource::Decompress(IImageWrapperModule* ImageWrapperModule) const
+FSharedBuffer FTextureSource::Decompress(IImageWrapperModule* ) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureSource::Decompress);
+	
+	// ImageWrapperModule argument ignored, not drilled through DecompressImage
 
-	if (CompressionFormat == TSCF_JPEG)
+	int64 ExpectedTotalSize = CalcTotalSize();
+
+	FSharedBuffer Buffer;
+
+	if (CompressionFormat != TSCF_None )
 	{
-		return TryDecompressJpegData(ImageWrapperModule);
-	}
-	else if (bPNGCompressed) // Change to CompressionFormat == TSCF_PNG once bPNGCompressed is deprecated
-	{
-		return TryDecompressPngData(ImageWrapperModule);
+		Buffer = TryDecompressData();
 	}
 	else
 	{
-		return BulkData.GetPayload().Get();
+		Buffer = BulkData.GetPayload().Get();
+	}
+	
+	// validate the size of the FSharedBuffer
+	if ( Buffer.GetSize() != ExpectedTotalSize )
+	{
+		UE_LOG(LogTexture,Warning,TEXT("Decompressed buffer does not match expected size : %lld != %lld"),
+			Buffer.GetSize(),ExpectedTotalSize);
+	}
+
+	return Buffer;
+}
+
+// constructor locks the mip (can fail, pointer will be null)
+FTextureSource::FMipLock::FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InBlockIndex, int32 InLayerIndex, int32 InMipIndex)
+:
+	LockState(InLockState),
+	TextureSource(InTextureSource),
+	BlockIndex(InBlockIndex),
+	LayerIndex(InLayerIndex),
+	MipIndex(InMipIndex)
+{
+	void * Locked = TextureSource->LockMipInternal(BlockIndex, LayerIndex, MipIndex, LockState);
+	if ( Locked )
+	{	
+		FTextureSourceBlock Block;
+		TextureSource->GetBlock(BlockIndex, Block);
+		check(MipIndex < Block.NumMips);
+
+		Image.RawData = Locked;
+		Image.SizeX = FMath::Max(Block.SizeX >> MipIndex, 1);
+		Image.SizeY = FMath::Max(Block.SizeY >> MipIndex, 1);
+		Image.NumSlices = TextureSource->GetMippedNumSlices(Block.NumSlices,MipIndex);
+		Image.Format = FImageCoreUtils::ConvertToRawImageFormat(TextureSource->GetFormat(LayerIndex));
+		Image.GammaSpace = TextureSource->GetGammaSpace(LayerIndex);
+		
+		const int64 MipSizeBytes = TextureSource->CalcMipSize(BlockIndex, LayerIndex, MipIndex);
+
+		check( Image.GetImageSizeBytes() == MipSizeBytes );		
+		check( IsValid() );
+	}
+	else
+	{
+		LockState = ELockState::None;
+	}
+}
+
+FTextureSource::FMipLock::FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InMipIndex) :
+	FMipLock(InLockState,InTextureSource,0,0,InMipIndex)
+{
+}
+
+// move constructor :
+FTextureSource::FMipLock::FMipLock(FMipLock&& RHS) :
+	LockState(RHS.LockState),
+	TextureSource(RHS.TextureSource),
+	BlockIndex(RHS.BlockIndex),
+	LayerIndex(RHS.LayerIndex),
+	MipIndex(RHS.MipIndex),
+	Image(RHS.Image)
+{
+	// blank out RHS so it doesn't try to unlock :
+	RHS.LockState = ELockState::None;
+	RHS.Image = FImageView();
+	check( ! RHS.IsValid() );
+}
+
+FTextureSource::FMipLock::~FMipLock()
+{
+	if ( IsValid() )
+	{
+		TextureSource->UnlockMip(BlockIndex,LayerIndex,MipIndex);
+		LockState = ELockState::None;
+		Image.RawData = nullptr;
 	}
 }
 
@@ -1554,8 +2088,23 @@ uint8* FTextureSource::LockMipInternal(int32 BlockIndex, int32 LayerIndex, int32
 		{
 			MipData = LockedMipData.GetDataReadWrite();
 		}
+
+		if ( MipData == nullptr )
+		{
+			// no data, you did not get the lock, do not call Unlock
+			return nullptr;
+		}
 		
-		MipData += CalcMipOffset(BlockIndex, LayerIndex, MipIndex);
+		int64 MipOffset = CalcMipOffset(BlockIndex, LayerIndex, MipIndex);
+		int64 MipSize = CalcMipSize(BlockIndex,LayerIndex,MipIndex);
+		if ( MipOffset + MipSize > LockedMipData.GetSize() )
+		{
+			UE_LOG(LogTexture,Error,TEXT("Mip Data is too small : %lld < %lld+%lld"), LockedMipData.GetSize(),MipOffset,MipSize); 
+			LockedMipData.Reset();
+			return nullptr;
+		}
+
+		MipData += MipOffset;
 
 		if (NumLockedMips == 0)
 		{
@@ -1592,10 +2141,9 @@ void FTextureSource::UnlockMip(int32 BlockIndex, int32 LayerIndex, int32 MipInde
 		{
 			UE_CLOG(CompressionFormat == TSCF_JPEG, LogTexture, Warning, TEXT("Call to FTextureSource::UnlockMip will cause texture source to lose it's jpeg storage format"));
 
-			BulkData.UpdatePayload(LockedMipData.Release());
+			BulkData.UpdatePayload(LockedMipData.Release(), Owner);
 			BulkData.SetCompressionOptions(UE::Serialization::ECompressionOptions::Default);
 
-			bPNGCompressed = false;
 			CompressionFormat = TSCF_None;
 
 			// Need to unlock before calling UseHashAsGuid
@@ -1608,7 +2156,33 @@ void FTextureSource::UnlockMip(int32 BlockIndex, int32 LayerIndex, int32 MipInde
 	}
 }
 
-bool FTextureSource::GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex, IImageWrapperModule* ImageWrapperModule)
+bool FTextureSource::GetMipImage(FImage & OutImage, int32 BlockIndex, int32 LayerIndex, int32 MipIndex)
+{
+	TArray64<uint8> MipData;
+	if ( ! GetMipData(MipData,BlockIndex,LayerIndex,MipIndex) )
+	{
+		return false;
+	}
+	
+	const int64 MipSizeBytes = CalcMipSize(BlockIndex, LayerIndex, MipIndex);
+	check( MipData.Num() == MipSizeBytes );
+	
+	FTextureSourceBlock Block;
+	GetBlock(BlockIndex, Block);
+	check(MipIndex < Block.NumMips);
+
+	OutImage.RawData = MoveTemp(MipData);
+	OutImage.SizeX = FMath::Max(Block.SizeX >> MipIndex, 1);
+	OutImage.SizeY = FMath::Max(Block.SizeY >> MipIndex, 1);
+	OutImage.NumSlices = GetMippedNumSlices(Block.NumSlices,MipIndex);
+	OutImage.Format = FImageCoreUtils::ConvertToRawImageFormat(GetFormat(LayerIndex));
+	OutImage.GammaSpace = GetGammaSpace(LayerIndex);
+
+	check( OutImage.GetImageSizeBytes() == MipSizeBytes );
+	return true;
+}
+
+bool FTextureSource::GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex, IImageWrapperModule* )
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureSource::GetMipData (TArray64));
 
@@ -1627,7 +2201,7 @@ bool FTextureSource::GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, i
 		// by the one above. If it fires then it indicates that there is a lock/unlock mismatch as well as invalid access!
 		checkf(LockedMipData.IsNull(), TEXT("Attempting to access mip data while locked mip data is still allocated"));
 
-		FSharedBuffer DecompressedData = Decompress(ImageWrapperModule);
+		FSharedBuffer DecompressedData = Decompress();
 
 		if (!DecompressedData.IsNull())
 		{
@@ -1652,7 +2226,7 @@ bool FTextureSource::GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, i
 	return bSuccess;
 }
 
-FTextureSource::FMipData FTextureSource::GetMipData(IImageWrapperModule* ImageWrapperModule)
+FTextureSource::FMipData FTextureSource::GetMipData(IImageWrapperModule* )
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureSource::GetMipData (FMipData));
 
@@ -1665,7 +2239,7 @@ FTextureSource::FMipData FTextureSource::GetMipData(IImageWrapperModule* ImageWr
 	FReadScopeLock _(BulkDataLock.Get());
 #endif //WITH_EDITOR
 
-	FSharedBuffer DecompressedData = Decompress(ImageWrapperModule);
+	FSharedBuffer DecompressedData = Decompress();
 	return FMipData(*this, DecompressedData);
 }
 
@@ -1677,8 +2251,10 @@ int64 FTextureSource::CalcMipSize(int32 BlockIndex, int32 LayerIndex, int32 MipI
 
 	const int64 MipSizeX = FMath::Max(Block.SizeX >> MipIndex, 1);
 	const int64 MipSizeY = FMath::Max(Block.SizeY >> MipIndex, 1);
+	const int64 MipSlices = GetMippedNumSlices(Block.NumSlices,MipIndex);
+
 	const int64 BytesPerPixel = GetBytesPerPixel(LayerIndex);
-	return MipSizeX * MipSizeY * Block.NumSlices * BytesPerPixel;
+	return MipSizeX * MipSizeY * MipSlices * BytesPerPixel;
 }
 
 int32 FTextureSource::GetBytesPerPixel(int32 LayerIndex) const
@@ -1761,16 +2337,69 @@ FString FTextureSource::GetIdString() const
 	return GuidString;
 }
 
-ETextureSourceCompressionFormat FTextureSource::GetSourceCompression() const
+int FTextureSource::GetMippedNumSlices(int InNumSlices,int InMipIndex) const
 {
-	// Until we deprecate bPNGCompressed it might not be 100% in sync with CompressionFormat
-	// so if it is set we should use that rather than the enum.
-	if (bPNGCompressed)
+	// old behavior was to not mip down NumSlices in TextureSource for volume SizeZ
+	//return InNumSlices;
+
+	// what to do with NumSlices on the mip ?
+	// if this is an Array, it should stay the same
+	// if this is a Volume, it should mip down
+
+	// TextureSource does not know if it's a volume or not
+	// need to check type of Owner Texture
+
+	check( InNumSlices > 0 );
+	// fast path short cut : 1 slice is always 1 slice
+	if ( InNumSlices == 1 )
 	{
-		return ETextureSourceCompressionFormat::TSCF_PNG;
+		return 1;
 	}
 
-	return CompressionFormat;
+	if ( IsVolume() )
+	{
+		return FMath::Max(InNumSlices >> InMipIndex, 1);
+	}
+	else
+	{
+		return InNumSlices;
+	}	
+}
+
+ETextureClass FTextureSource::GetTextureClass() const
+{
+	// TextureSource does not know its own class, but its owning Texture does :
+	if ( Owner != nullptr )
+	{
+		return Owner->GetTextureClass();
+	}
+	else
+	{
+		// torn off, should have saved TornOffTextureClass
+		check( TornOffTextureClass != ETextureClass::Invalid );
+		return TornOffTextureClass;
+	}
+}
+
+EGammaSpace FTextureSource::GetGammaSpace(int LayerIndex) const
+{
+	// Texture->GetGammaSpace does not validate against format, but I do? a bit weird, fix that
+	if ( ! ERawImageFormat::GetFormatNeedsGammaSpace( FImageCoreUtils::ConvertToRawImageFormat(GetFormat(LayerIndex)) ) )
+	{
+		return EGammaSpace::Linear;
+	}
+
+	// TextureSource does not know its own gamma, but its owning Texture does :
+	if ( Owner != nullptr )
+	{
+		return Owner->GetGammaSpace();
+	}
+	else
+	{
+		// torn off, should have saved TornOffGammaSpace
+		check( TornOffGammaSpace != EGammaSpace::Invalid );
+		return TornOffGammaSpace;
+	}
 }
 
 FString FTextureSource::GetSourceCompressionAsString() const
@@ -1778,84 +2407,66 @@ FString FTextureSource::GetSourceCompressionAsString() const
 	return StaticEnum<ETextureSourceCompressionFormat>()->GetDisplayNameTextByValue(GetSourceCompression()).ToString();
 }
 
-FSharedBuffer FTextureSource::TryDecompressPngData(IImageWrapperModule* ImageWrapperModule) const
-{
-	bool bCanPngCompressFormat = (Format == TSF_G8 || Format == TSF_G16 || Format == TSF_RGBA8 || Format == TSF_BGRA8 || Format == TSF_RGBA16);
-	check(Blocks.Num() == 0 && NumLayers == 1 && NumSlices == 1 && bCanPngCompressFormat);
-
-	FSharedBuffer Payload = BulkData.GetPayload().Get();
-
-	if (ImageWrapperModule == nullptr) // Optional if called from the gamethread, see FModuleManager::WarnIfItWasntSafeToLoadHere()
-	{
-		ImageWrapperModule = &FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	}
-
-	TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule->CreateImageWrapper(EImageFormat::PNG);
-	if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(Payload.GetData(), Payload.GetSize()))
-	{
-		Payload.Reset(); // Image wrapper takes a copy so we can discard the payload now
-
-		check(ImageWrapper->GetWidth() == SizeX);
-		check(ImageWrapper->GetHeight() == SizeY);
-
-		TArray64<uint8> RawData;
-		// TODO: TSF_BGRA8 is stored as RGBA, so the R and B channels are swapped in the internal png. Should we fix this?
-		ERGBFormat RawFormat = (Format == TSF_G8 || Format == TSF_G16) ? ERGBFormat::Gray : ERGBFormat::RGBA;
-		if (ImageWrapper->GetRaw(RawFormat, (Format == TSF_G16 || Format == TSF_RGBA16) ? 16 : 8, RawData) && RawData.Num() > 0)
-		{		
-			return MakeSharedBufferFromArray(MoveTemp(RawData));
-		}
-		else
-		{
-			UE_LOG(LogTexture, Warning, TEXT("PNG decompression of source art failed"));
-			return FSharedBuffer();
-		}
-	}
-	else
-	{
-		UE_LOG(LogTexture, Log, TEXT("Only pngs are supported"));
-		return FSharedBuffer();
-	}
-}
-
-FSharedBuffer FTextureSource::TryDecompressJpegData(IImageWrapperModule* ImageWrapperModule) const
+FSharedBuffer FTextureSource::TryDecompressData() const
 {
 	if (NumLayers == 1 && NumSlices == 1 && Blocks.Num() == 0)
 	{
-		if (!ImageWrapperModule)
-		{
-			ImageWrapperModule = &FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-		}
-
 		FSharedBuffer Payload = BulkData.GetPayload().Get();
 
-		TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule->CreateImageWrapper(EImageFormat::JPEG);
-		if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(Payload.GetData(), Payload.GetSize()))
+		FImage Image;
+		if ( ! FImageUtils::DecompressImage(Payload.GetData(), Payload.GetSize(), Image) )
 		{
-			Payload.Reset(); // Image wrapper takes a copy so we can discard the payload now
+			int64 LayerSize = CalcLayerSize(0,0);
+			int64 PayloadSize = Payload.GetSize();
+			
+			UE_LOG(LogTexture, Display, TEXT("TryDecompressData failed: LayerSize = %lld PayloadSize = %lld"),LayerSize,PayloadSize);
+			UE_LOG(LogTexture, Display, TEXT("TryDecompressData failed: LoadedMainStreamObjectVersion = %d, TextureSourceVirtualization = %d, VolumetricCloudReflectionSampleCountDefaultUpdate = %d"),
+				Owner ? Owner->LoadedMainStreamObjectVersion : 0,
+				FUE5MainStreamObjectVersion::TextureSourceVirtualization,
+				FUE5MainStreamObjectVersion::VolumetricCloudReflectionSampleCountDefaultUpdate);
 
-			TArray64<uint8> RawData;
-			// The two formats we support for JPEG imports, see UTextureFactory::ImportImage
-			const ERGBFormat JpegFormat = Format == TSF_G8 ? ERGBFormat::Gray : ERGBFormat::BGRA;
-			if (ImageWrapper->GetRaw(JpegFormat, 8, RawData))
+			if ( LayerSize == PayloadSize )
 			{
-				return MakeSharedBufferFromArray(MoveTemp(RawData));
+				// this is most likely from the bug where data is marked TSCF_PNG but is actually uncompressed
+				// fix CompressionFormat for the future :
+				check( CompressionFormat == TSCF_PNG );
+				const_cast<FTextureSource *>(this)->CompressionFormat = TSCF_None;
+
+				UE_LOG(LogTexture, Warning, TEXT("TryDecompressData data marked compressed appears to be uncompressed?"));
+				return Payload;
 			}
 			else
 			{
-				UE_LOG(LogTexture, Warning, TEXT("JPEG decompression of source art failed to return uncompressed data"));
+				UE_LOG(LogTexture, Error, TEXT("TryDecompressData failed to return uncompressed data"));
 				return FSharedBuffer();
 			}
 		}
-		else
+
+		// we got data in Image.Format
+		// we expect data in TSF "Format"
+		ERawImageFormat::Type RawFormat = FImageCoreUtils::ConvertToRawImageFormat(Format);
+
+		if ( Image.Format != RawFormat )
 		{
-			UE_LOG(LogTexture, Warning, TEXT("JPEG decompression of source art failed initialization"));
-			return FSharedBuffer();
+			// this shouldn't ever happen currently
+			UE_LOG(LogTexture, Warning, TEXT("TryDecompressData unexpected format conversion?"));
+
+			Image.ChangeFormat(RawFormat, GetGammaSpace(0));
 		}
+			
+		if ( CompressionFormat == TSCF_PNG && Format == TSF_BGRA8 )
+		{
+			// Legacy bug, must be matched in Compress & Decompress
+			// see FTextureSource::Compress
+			// TODO: TSF_BGRA8 is stored as RGBA, so the R and B channels are swapped in the internal png. Should we fix this?
+			FImageCore::TransposeImageRGBABGRA(Image);
+		}
+
+		return MakeSharedBufferFromArray(MoveTemp(Image.RawData));
 	}
 	else
 	{
-		UE_LOG(LogTexture, Warning, TEXT("JPEG compressed source art is in an invalid format NumLayers:(%d) NumSlices:(%d) NumBlocks:(%d)"),
+		UE_LOG(LogTexture, Warning, TEXT("Compressed source art is in an invalid format NumLayers:(%d) NumSlices:(%d) NumBlocks:(%d)"),
 			NumLayers, NumSlices, Blocks.Num());
 		return FSharedBuffer();
 	}	
@@ -1930,7 +2541,7 @@ void FTextureSource::ImportCustomProperties(const TCHAR* SourceText, FFeedbackCo
 			
 			if (bSuccess)
 			{
-				BulkData.UpdatePayload(Buffer.MoveToShared());
+				BulkData.UpdatePayload(Buffer.MoveToShared(), Owner);
 			}
 		}
 
@@ -1954,9 +2565,9 @@ void FTextureSource::ImportCustomProperties(const TCHAR* SourceText, FFeedbackCo
 
 bool FTextureSource::CanPNGCompress() const
 {
-	bool bCanPngCompressFormat = (Format == TSF_G8 || Format == TSF_G16 || Format == TSF_RGBA8 || Format == TSF_BGRA8 || Format == TSF_RGBA16);
+	bool bCanPngCompressFormat = (Format == TSF_G8 || Format == TSF_G16 || Format == TSF_BGRA8 || Format == TSF_RGBA16 );
 
-	if (!bPNGCompressed &&
+	if (
 		NumLayers == 1 &&
 		NumMips == 1 &&
 		NumSlices == 1 &&
@@ -1995,7 +2606,6 @@ void FTextureSource::RemoveSourceData()
 	LayerFormat.Empty();
 	Blocks.Empty();
 	BlockDataOffsets.Empty();
-	bPNGCompressed = false;
 	CompressionFormat = TSCF_None;
 	LockedMipData.Reset();
 	NumLockedMips = 0u;
@@ -2004,6 +2614,17 @@ void FTextureSource::RemoveSourceData()
 	BulkData.UnloadData();
 
 	ForceGenerateGuid();
+}
+
+int64 FTextureSource::CalcTotalSize() const
+{
+	int NumBlocks = GetNumBlocks();
+	int64 TotalBytes = 0;
+	for (int i = 0; i < NumBlocks; ++i)
+	{
+		TotalBytes += CalcBlockSize(i);
+	}
+	return TotalBytes;
 }
 
 int64 FTextureSource::CalcBlockSize(int32 BlockIndex) const
@@ -2033,24 +2654,24 @@ int64 FTextureSource::CalcBlockSize(const FTextureSourceBlock& Block) const
 int64 FTextureSource::CalcLayerSize(const FTextureSourceBlock& Block, int32 LayerIndex) const
 {
 	int64 BytesPerPixel = GetBytesPerPixel(LayerIndex);
-	int64 MipSizeX = Block.SizeX;
-	int64 MipSizeY = Block.SizeY;
 
 	int64 TotalSize = 0;
 	for (int32 MipIndex = 0; MipIndex < Block.NumMips; ++MipIndex)
 	{
-		TotalSize += MipSizeX * MipSizeY * BytesPerPixel * Block.NumSlices;
-		MipSizeX = FMath::Max<int64>(MipSizeX >> 1, 1);
-		MipSizeY = FMath::Max<int64>(MipSizeY >> 1, 1);
+		int32 MipSizeX = FMath::Max<int32>(Block.SizeX >> MipIndex, 1);
+		int32 MipSizeY = FMath::Max<int32>(Block.SizeY >> MipIndex, 1);
+		int32 MipSizeZ = GetMippedNumSlices(Block.NumSlices,MipIndex);
+
+		TotalSize += MipSizeX * MipSizeY * MipSizeZ * BytesPerPixel;
 	}
 	return TotalSize;
 }
 
-int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const
+int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 OffsetToMipIndex) const
 {
 	FTextureSourceBlock Block;
 	GetBlock(BlockIndex, Block);
-	check(MipIndex < Block.NumMips);
+	check(OffsetToMipIndex < Block.NumMips);
 
 	int64 MipOffset = BlockDataOffsets[BlockIndex];
 
@@ -2061,14 +2682,14 @@ int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 Mi
 	}
 
 	int64 BytesPerPixel = GetBytesPerPixel(LayerIndex);
-	int64 MipSizeX = Block.SizeX;
-	int64 MipSizeY = Block.SizeY;
 
-	while (MipIndex-- > 0)
+	for (int32 MipIndex = 0; MipIndex < OffsetToMipIndex; ++MipIndex)
 	{
-		MipOffset += MipSizeX * MipSizeY * BytesPerPixel * Block.NumSlices;
-		MipSizeX = FMath::Max<int64>(MipSizeX >> 1, 1);
-		MipSizeY = FMath::Max<int64>(MipSizeY >> 1, 1);
+		int32 MipSizeX = FMath::Max<int32>(Block.SizeX >> MipIndex, 1);
+		int32 MipSizeY = FMath::Max<int32>(Block.SizeY >> MipIndex, 1);
+		int32 MipSizeZ = GetMippedNumSlices(Block.NumSlices,MipIndex);
+
+		MipOffset += MipSizeX * MipSizeY * MipSizeZ * BytesPerPixel;
 	}
 
 	return MipOffset;
@@ -2089,31 +2710,60 @@ void FTextureSource::UseHashAsGuid()
 	}
 }
 
+template <typename ArrayType>
+static SIZE_T ArraySizeBytes(const ArrayType & Array)
+{
+	return (SIZE_T)( Array.Num() * Array.GetTypeSize() );
+}
+
 FGuid FTextureSource::GetId() const
 {
 	if (!bGuidIsHash)
 	{
 		return Id;
 	}
-
+	
 	UE::DerivedData::FBuildVersionBuilder IdBuilder;
-	IdBuilder << BaseBlockX;
 	IdBuilder << BaseBlockX;
 	IdBuilder << BaseBlockY;
 	IdBuilder << SizeX;
-	IdBuilder << SizeY;
+	IdBuilder << SizeY;	
 	IdBuilder << NumSlices;
 	IdBuilder << NumMips;
-	IdBuilder << NumLayers;
-	IdBuilder << bPNGCompressed;
+	IdBuilder << NumLayers;	
 	IdBuilder << bLongLatCubemap;
 	IdBuilder << CompressionFormat;
-	IdBuilder << bGuidIsHash;
+	IdBuilder << bGuidIsHash; // always true here
 	IdBuilder << static_cast<uint8>(Format.GetValue());
-	IdBuilder.Serialize(const_cast<void*>(static_cast<const void*>(LayerFormat.GetData())), LayerFormat.Num());
-	IdBuilder.Serialize(const_cast<void*>(static_cast<const void*>(Blocks.GetData())), Blocks.Num());
-	IdBuilder.Serialize(const_cast<void*>(static_cast<const void*>(BlockDataOffsets.GetData())), BlockDataOffsets.Num());
+	
+	if ( GetNumLayers() == 1 && GetNumBlocks() == 1 )
+	{
+		// preserve broken code for common case so Ids don't change :
+		// was serializing using array Num (element count) instead of byte count
+		// the broken serialize here only takes 1 byte from these arrays
+		// but that's benign because they don't really need to be hashed anyway (they are redundant in this case)
+		
+		IdBuilder.Serialize((void *)LayerFormat.GetData(), LayerFormat.Num());
+		IdBuilder.Serialize((void *)Blocks.GetData(), Blocks.Num());
+		IdBuilder.Serialize((void *)BlockDataOffsets.GetData(), BlockDataOffsets.Num());
+	}
+	else
+	{
+		// better version :
+
+		if ( GetNumLayers() > 1 )
+		{
+			IdBuilder.Serialize((void *)LayerFormat.GetData(), ArraySizeBytes(LayerFormat));
+		}
+		if ( GetNumBlocks() > 1 )
+		{
+			IdBuilder.Serialize((void *)Blocks.GetData(), ArraySizeBytes(Blocks));
+			IdBuilder.Serialize((void *)BlockDataOffsets.GetData(), ArraySizeBytes(BlockDataOffsets));
+		}
+	}
+
 	IdBuilder << const_cast<FGuid&>(Id);
+
 	return IdBuilder.Build();
 }
 
@@ -2135,8 +2785,22 @@ void FTextureSource::SetId(const FGuid& InId, bool bInGuidIsHash)
 	bGuidIsHash = bInGuidIsHash;
 }
 
+// GetMaximumDimensionOfNonVT is static
+// not for current texture type, not for current RHI
+
+int32 UTexture::GetMaximumDimensionOfNonVT()
+{
+	// 16384 limit ; larger must be VT
+	check( MAX_TEXTURE_MIP_COUNT == 15 );
+	// GMaxTextureMipCount is for the current RHI and GMaxTextureMipCount <= MAX_TEXTURE_MIP_COUNT
+	return 16384;
+}
+
+// GetMaximumDimension is for current texture type (cube/2d/vol)
+// and on the current RHI
 uint32 UTexture::GetMaximumDimension() const
 {
+	// just assume anyone who doesn't implement this virtual is 2d
 	return GetMax2DTextureDimension();
 }
 
@@ -2145,6 +2809,7 @@ void UTexture::GetDefaultFormatSettings(FTextureFormatSettings& OutSettings) con
 	OutSettings.CompressionSettings = CompressionSettings;
 	OutSettings.CompressionNone = CompressionNone;
 	OutSettings.CompressionNoAlpha = CompressionNoAlpha;
+	OutSettings.CompressionForceAlpha = CompressionForceAlpha;
 	OutSettings.CompressionYCoCg = CompressionYCoCg;
 	OutSettings.SRGB = SRGB;
 }
@@ -2171,6 +2836,7 @@ void UTexture::SetLayerFormatSettings(int32 LayerIndex, const FTextureFormatSett
 		CompressionSettings = InSettings.CompressionSettings;
 		CompressionNone = InSettings.CompressionNone;
 		CompressionNoAlpha = InSettings.CompressionNoAlpha;
+		CompressionForceAlpha = InSettings.CompressionForceAlpha;
 		CompressionYCoCg = InSettings.CompressionYCoCg;
 		SRGB = InSettings.SRGB;
 	}
@@ -2192,28 +2858,9 @@ void UTexture::SetLayerFormatSettings(int32 LayerIndex, const FTextureFormatSett
 
 int64 UTexture::GetBuildRequiredMemory() const
 {
-	// If you improve this estimate, please update EstimateTextureBuildMemoryUsage() as well
+	// DEPRECATED use GetBuildRequiredMemoryEstimate
 
-	// Compute the memory it should take to uncompress the bulkdata in memory
-	int64 MemoryEstimate = 0;
-
-	// Compute the amount of memory necessary to uncompress the bulkdata in memory
-	for (int32 BlockIndex = 0; BlockIndex < Source.GetNumBlocks(); ++BlockIndex)
-	{
-		FTextureSourceBlock SourceBlock;
-		Source.GetBlock(BlockIndex, SourceBlock);
-
-		for (int32 LayerIndex = 0; LayerIndex < Source.GetNumLayers(); ++LayerIndex)
-		{
-			for (int32 MipIndex = 0; MipIndex < SourceBlock.NumMips; ++MipIndex)
-			{
-				MemoryEstimate += Source.CalcMipSize(BlockIndex, LayerIndex, MipIndex);
-			}
-		}
-	}
-
-	// Account for the multiple copies that are currently carried over during the compression phase
-	return MemoryEstimate <= 0 ? -1 /* Unknown */ : MemoryEstimate * 5;
+	return -1; /* Unknown */
 }
 
 #endif // #if WITH_EDITOR
@@ -2238,9 +2885,12 @@ static FName GetLatestOodleTextureSdkVersion()
 	{
 		ITextureFormat* TextureFormat = TextureFormatModule->GetTextureFormat();
 					
+		if ( TextureFormat )
+		{	
 		FName LatestSdkVersion = TextureFormat->GetLatestSdkVersion();
 			
 		return LatestSdkVersion;
+	}
 	}
 #endif
 
@@ -2265,8 +2915,11 @@ static FName ConditionalGetPrefixedFormat(FName TextureFormatName, const ITarget
 {
 #if WITH_EDITOR
 
-	// Prepend a texture format to allow a module to override the compression (Ex: this allows you to replace TextureFormatDXT with a different compressor)
-
+	// "TextureCompressionFormat" specifies the Oodle Texture plugin to use for textures with OodleTextureSdkVersion == None
+	//		versioned textures always use TFO
+	//		TextureCompressionFormat can specify a pre-TFO plugin if desired
+	// 
+	// if you want Oodle Texture encoding,
 	// TextureCompressionFormat is required, TextureCompressionFormatWithVersion is optional
 
 	FString TextureCompressionFormat;
@@ -2275,10 +2928,9 @@ static FName ConditionalGetPrefixedFormat(FName TextureFormatName, const ITarget
 	
 	if ( bHasFormat )
 	{
-		//	new (optional) pref : TextureCompressionFormatWithVersion
-		//	 if TextureCompressionFormatWithVersion is not set, TextureCompressionFormat is used for both cases (with version & without)
 		if ( ! bOodleTextureSdkVersionIsNone )
 		{
+			//	new (optional) pref : TextureCompressionFormatWithVersion
 			FString TextureCompressionFormatWithVersion;
 			bool bHasFormatWithVersion = TargetPlatform->GetConfigSystem()->GetString(TEXT("AlternateTextureCompression"), TEXT("TextureCompressionFormatWithVersion"), TextureCompressionFormatWithVersion, GEngineIni);
 			bHasFormatWithVersion = bHasFormatWithVersion && ! TextureCompressionFormatWithVersion.IsEmpty();
@@ -2294,13 +2946,9 @@ static FName ConditionalGetPrefixedFormat(FName TextureFormatName, const ITarget
 
 				TextureCompressionFormat = TEXT("TextureFormatOodle");
 
-				static bool LogOnce = true;
-				// not a thread-safe atomic ONCE but no big deal here
-				if ( LogOnce )
-				{
-					LogOnce = false;
+				UE_CALL_ONCE( [&](){
 					UE_LOG(LogTexture, Verbose, TEXT("AlternateTextureCompression/TextureCompressionFormatWithVersion not specified, using %s."), *TextureCompressionFormat);
-				}
+				} );
 			}
 		}
 
@@ -2310,6 +2958,8 @@ static FName ConditionalGetPrefixedFormat(FName TextureFormatName, const ITarget
 		{
 			ITextureFormat* TextureFormat = TextureFormatModule->GetTextureFormat();
 					
+			if ( TextureFormat )
+			{
 			FString FormatPrefix = TextureFormat->GetAlternateTextureFormatPrefix();
 			check( ! FormatPrefix.IsEmpty() );
 			
@@ -2323,25 +2973,38 @@ static FName ConditionalGetPrefixedFormat(FName TextureFormatName, const ITarget
 				return NewFormatName;
 			}
 		}
+		else
+		{
+			UE_CALL_ONCE( [&](){
+					UE_LOG(LogTexture, Warning, TEXT("AlternateTextureCompression specified, Module found, but no TextureFormat : %s."), *TextureCompressionFormat);
+				} );
+			}
+		}
+		else
+		{
+			UE_CALL_ONCE( [&](){
+				UE_LOG(LogTexture, Warning, TEXT("AlternateTextureCompression specified but Module not found: %s."), *TextureCompressionFormat);
+			} );
+		}
 	}
 #endif
 
 	return TextureFormatName;
 }
 
-FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const UTexture* Texture, int32 LayerIndex, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture, int32 BlockSize )
+FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const UTexture* Texture, int32 LayerIndex, 
+	bool bSupportCompressedVolumeTexture, int32 Unused_BlockSize, bool bSupportFilteredFloat32Textures )
 {
 	FName TextureFormatName = NAME_None;
 	bool bOodleTextureSdkVersionIsNone = true;
 
 	/**
-	 * IF you add a format to this function don't forget to update GetAllDefaultTextureFormatNames 
+	 * IF you add a format to this function don't forget to update GetAllDefaultTextureFormats 
 	 */
 
 #if WITH_EDITOR
 	// Supported texture format names.
 	static FName NameDXT1(TEXT("DXT1"));
-	static FName NameDXT3(TEXT("DXT3"));
 	static FName NameDXT5(TEXT("DXT5"));
 	static FName NameDXT5n(TEXT("DXT5n"));
 	static FName NameAutoDXT(TEXT("AutoDXT"));
@@ -2353,7 +3016,9 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	static FName NameG16(TEXT("G16"));
 	static FName NameVU8(TEXT("VU8"));
 	static FName NameRGBA16F(TEXT("RGBA16F"));
+	static FName NameRGBA32F(TEXT("RGBA32F"));
 	static FName NameR16F(TEXT("R16F"));
+	static FName NameR32F(TEXT("R32F"));
 	static FName NameBC6H(TEXT("BC6H"));
 	static FName NameBC7(TEXT("BC7"));
 	static FName NameR5G6B5(TEXT("R5G6B5"));
@@ -2368,27 +3033,102 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	FTextureFormatSettings FormatSettings;
 	Texture->GetLayerFormatSettings(LayerIndex, FormatSettings);
 
+	const ETextureSourceFormat SourceFormat = Texture->Source.GetFormat(LayerIndex);
+
+	// Determine the pixel format of the (un/)compressed texture
+	
+	// Identify TC groups that will map to uncompressed :		
+	bool bIsTCThatMapsToUncompressed = UE::TextureDefines::IsUncompressed(FormatSettings.CompressionSettings);
+
+	// see if compression needs to be forced off even if requested :
 	bool bNoCompression = FormatSettings.CompressionNone				// Code wants the texture uncompressed.
 		|| (TargetPlatform->HasEditorOnlyData() && Texture->DeferCompression)	// The user wishes to defer compression, this is ok for the Editor only.
-		|| (FormatSettings.CompressionSettings == TC_EditorIcon)
+		|| (FormatSettings.CompressionSettings == TC_EditorIcon) // TC_EditorIcon is "UserInterface2D"
 		|| (Texture->LODGroup == TEXTUREGROUP_ColorLookupTable)	// Textures in certain LOD groups should remain uncompressed.
 		|| (Texture->LODGroup == TEXTUREGROUP_Bokeh)
 		|| (Texture->LODGroup == TEXTUREGROUP_IESLightProfile)
-		|| (Texture->GetMaterialType() == MCT_VolumeTexture && !bSupportCompressedVolumeTexture)
+		|| ((Texture->GetMaterialType() == MCT_VolumeTexture) && !bSupportCompressedVolumeTexture)
 		|| FormatSettings.CompressionSettings == TC_EncodedReflectionCapture;
 
-	if (!bNoCompression && Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
+	// note that bNoCompression is not the same as bIsTCThatMapsToUncompressed
+	// bIsTCThatMapsToUncompressed is a TC_ that will map to an uncompressed format
+	//	 but does not set bNoCompression
+	// bNoCompression does different mappings than bIsTCThatMapsToUncompressed
+
+	if (!bNoCompression)
 	{
-		uint32 SizeX = Texture->Source.GetSizeX();
-		uint32 SizeY = Texture->Source.GetSizeY();
+		int32 SizeX = Texture->Source.GetSizeX();
+		int32 SizeY = Texture->Source.GetSizeY();
+
+		if (Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::PadToPowerOfTwo || Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::PadToSquarePowerOfTwo)
+		{
+			SizeX = FMath::RoundUpToPowerOfTwo(SizeX);
+			SizeY = FMath::RoundUpToPowerOfTwo(SizeY);
+
+			if (Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::PadToSquarePowerOfTwo)
+			{
+				SizeX = SizeY = FMath::Max(SizeX, SizeY);
+			}
+		}
+		else
+		{
+			checkf(Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None, TEXT("Unknown entry in ETexturePowerOfTwoSetting::Type"));
+		}
+
+		if (Texture->Source.IsLongLatCubemap())
+		{
+			// this should be kept in sync with ComputeLongLatCubemapExtents()
+			SizeX = SizeY = FMath::Max(1 << FMath::FloorLog2(SizeX / 2), 32);
+		}
+
+		//we need to really have the actual top mip size of output platformdata
+		//	(hence the LODBias check below)
+		// trying to reproduce here exactly what TextureCompressor + serialization will do = brittle
+
+		if ( Texture->MaxTextureSize != 0 )
+		{
+			while( SizeX > Texture->MaxTextureSize || SizeY > Texture->MaxTextureSize )
+			{
+				SizeX = FMath::Max(SizeX>>1,1);
+				SizeY = FMath::Max(SizeY>>1,1);
+			}
+		}
+
 #if WITH_EDITORONLY_DATA
 		const UTextureLODSettings& LODSettings = TargetPlatform->GetTextureLODSettings();
  		const uint32 LODBiasNoCinematics = FMath::Max<uint32>(LODSettings.CalculateLODBias(SizeX, SizeY, Texture->MaxTextureSize, Texture->LODGroup, Texture->LODBias, 0, Texture->MipGenSettings, bVirtualTextureStreaming), 0);
-		SizeX = FMath::Max<uint32>(SizeX >> LODBiasNoCinematics, 1);
-		SizeY = FMath::Max<uint32>(SizeY >> LODBiasNoCinematics, 1);
+		SizeX = FMath::Max<int32>(SizeX >> LODBiasNoCinematics, 1);
+		SizeY = FMath::Max<int32>(SizeY >> LODBiasNoCinematics, 1);
 #endif
 		// Don't compress textures smaller than the DXT block size.
-		bNoCompression |= (SizeX < 4) || (SizeY < 4) || (SizeX % 4 != 0) || (SizeY % 4 != 0);
+		// Also force uncompressed if size of top mip is not a multiple of 4
+		// note that even if top mip is a multiple of 4, lower may not be
+		// we can only choose compression if it's supported by all platforms/RHI's (else check TargetPlatform->SupportsFeature)
+		// note: does not use the passed-in "BlockSize" parameter, hard coded to 4
+		if ( (SizeX < 4) || (SizeY < 4) || (SizeX % 4 != 0) || (SizeY % 4 != 0) )
+		{
+			// don't log if TC was going to map to uncompressed anyway
+			if ( ! bIsTCThatMapsToUncompressed )
+			{
+				// this means TC_ or TEXTUREGROUP_ was set wrong
+				// usually it means UI textures that were just left with TC_Default
+				// they should be TEXTUREGROUP_ColorLookupTable or TC_EditorIcon "UserInterface2D"
+
+				// NOTE: this function is called like 10 times for each texture
+				//	it makes any log here a bit annoying
+
+				UE_LOG(LogTexture, Verbose, TEXT("Texture forced to uncompressed because size is not a multiple of 4 : %dx%d: was %s : %s"), SizeX,SizeY, 
+					*(StaticEnum<TextureCompressionSettings>()->GetNameStringByValue(FormatSettings.CompressionSettings)),
+					*Texture->GetPathName());
+			}
+
+			// note if bIsTCThatMapsToUncompressed , this might change the mapping :
+			// @todo Oodle : should not do this if bIsTCThatMapsToUncompressed already
+			bNoCompression = true;
+		}
+
+		// @todo Oodle : the conditions that trigger bNoCompression should be detected earlier
+		//   and shown in the GUI so the artist can see it
 	}
 
 	bool bUseDXT5NormalMap = false;
@@ -2400,17 +3140,59 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		bUseDXT5NormalMap = FCString::ToBool(*UseDXT5NormalMapsString);
 	}
 
-	const ETextureSourceFormat SourceFormat = Texture->Source.GetFormat(LayerIndex);
-
 	// Determine the pixel format of the (un/)compressed texture
+
+	// bNoCompression overrides TC format mapping
+	// even if bIsTCThatMapsToUncompressed would map us to uncompressed anyway
 	if (bNoCompression)
 	{
+		// TC_EditorIcon & TC_EncodedReflectionCapture set bNoCompression
+
+		// NOTE: strange change in behavior from bNoCompression vs bIsTCThatMapsToUncompressed
+		// does not look for TC_HDR , goes to HasHDRSource
+		// others go straight to SourceFormat, ignore TC_
+		// eg. if you were in bIsTCThatMapsToUncompressed , and for some reason you get bNoCompression set
+		//	 then your output format can change from one uncompressed format to another
+
+		// someday: if this was redone, I would make two changes
+		// 1. first of all detect if you already have a TC that maps to uncompressed with a specific format,
+		//		and if so, stick to that
+		//		eg. currently if you choose TC_HDR and your source image is G8 you will get RGBA16F output
+		//		but if the source image is not a multiple of 4, bNoCompression turns on, and you get G8 output
+		//		this can be fixed by putting the bNoCompression check after the standard TC maps
+		// 2. second if you do the bNoCompression, fix TSF formats not mapping to the closest possible
+		//		uncompressed renderable format
+
 		if (Texture->HasHDRSource(LayerIndex))
 		{
+			// if CompressionSettings was already an uncompressed HDR format, use it
+			//  this is a conservative/partial fix of the more general problem of bIsTCThatMapsToUncompressed (see 1. above)
+			if (FormatSettings.CompressionSettings == TC_HDR)
+			{
+				TextureFormatName = NameRGBA16F;
+			}
+			else if (FormatSettings.CompressionSettings == TC_HDR_F32)
+			{
+				TextureFormatName = NameRGBA32F;
+			}
+			else if (FormatSettings.CompressionSettings == TC_HalfFloat)
+			{
+				TextureFormatName = NameR16F;
+			}
+			else if (FormatSettings.CompressionSettings == TC_SingleFloat)
+			{
+				TextureFormatName = NameR32F;
+			}
+			else
+			{
+				// @todo Oodle : this is not the best possible selection of output format from SourceFormat
+			// R16F and R32F is available but not used here even if their TC_ would have chosen them!
 			TextureFormatName = NameRGBA16F;
+		}
 		}
 		else if (SourceFormat == TSF_G16)
 		{
+			// maps G16 but not RGBA16, it will go to BGRA8
 			TextureFormatName = NameG16;
 		}
 		else if (SourceFormat == TSF_G8 || FormatSettings.CompressionSettings == TC_Grayscale)
@@ -2419,10 +3201,12 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		}
 		else if (FormatSettings.CompressionSettings == TC_Normalmap && bUseDXT5NormalMap)
 		{
+			// move R to A like we do for DXT5 normal maps :
 			TextureFormatName = NameXGXR8;
 		}
 		else
 		{
+			// note CompressionNoAlpha no longer kills alpha if it's forced to uncompressed (eg. because size is not multiple of 4)
 			TextureFormatName = NameBGRA8;
 		}
 	}
@@ -2442,27 +3226,23 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	{
 		TextureFormatName = NameRGBA16F;
 	}
+	else if (FormatSettings.CompressionSettings == TC_HDR_F32)
+	{
+		TextureFormatName = NameRGBA32F;
+	}
 	else if (FormatSettings.CompressionSettings == TC_Normalmap)
 	{
 		TextureFormatName = bUseDXT5NormalMap ? NameDXT5n : NameBC5;
-	}
-	else if (FormatSettings.CompressionSettings == TC_Displacementmap)
-	{
-		if (SourceFormat == TSF_G16)
-		{
-			TextureFormatName = NameG16;
-		}
-		else
-		{
-			TextureFormatName = NameG8;
-		}
 	}
 	else if (FormatSettings.CompressionSettings == TC_VectorDisplacementmap)
 	{
 		TextureFormatName = NameBGRA8;
 	}
-	else if (FormatSettings.CompressionSettings == TC_Grayscale)
+	else if (FormatSettings.CompressionSettings == TC_Grayscale || 
+		FormatSettings.CompressionSettings == TC_Displacementmap)
 	{
+		// @todo Oodle : this is not the best possible selection of output format from SourceFormat
+		// eg. doesn't use G16 if source is RGBA16 or float
 		if (SourceFormat == TSF_G16)
 		{
 			TextureFormatName = NameG16;
@@ -2492,61 +3272,93 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	{
 		TextureFormatName = NameR16F;
 	}
-	else if (FormatSettings.CompressionNoAlpha)
+	else if (FormatSettings.CompressionSettings == TC_SingleFloat)
 	{
-		TextureFormatName = NameDXT1;
-	}
-	else if (Texture->bDitherMipMapAlpha)
-	{
-		TextureFormatName = NameDXT5;
+		TextureFormatName = NameR32F;
 	}
 	else
 	{
-		TextureFormatName = NameAutoDXT;
+		check( FormatSettings.CompressionSettings == TC_Default ||
+			FormatSettings.CompressionSettings == TC_Masks ); 
+
+		if (FormatSettings.CompressionNoAlpha)
+		{
+			// CompressionNoAlpha changes AutoDXT to DXT1 early
+			//	this is unnecessary/redundant, I believe
+			//  the later handling of AutoDXT would make this same mapping
+			TextureFormatName = NameDXT1;
+		}
+		else
+		{
+			// CompressionForceAlpha is applied later, where the bHasAlpha/DetectAlpha check is done and AutoDXT is resolved
+			// alternatively it could be mapped immediately to NameDXT5 here.
+
+			TextureFormatName = NameAutoDXT;
+		}
 	}
 
 	// Some PC GPUs don't support sRGB read from G8 textures (e.g. AMD DX10 cards on ShaderModel3.0)
 	// This solution requires 4x more memory but a lot of PC HW emulate the format anyway
+	// note: GrayscaleSRGB is off on all targetplatforms currently
+	// someday: I think this could use G16 instead and be half the size
+	//	 (that's doing the gamma->linear in the G8->G16 conversion)
 	if ((TextureFormatName == NameG8) && FormatSettings.SRGB && !TargetPlatform->SupportsFeature(ETargetPlatformFeatures::GrayscaleSRGB))
 	{
 		TextureFormatName = NameBGRA8;
 	}
-
-	// fallback to non-DX11 formats if one was chosen, but we can't use it
-	if (!bSupportDX11TextureFormats)
+	
+	// remap 32F to 16F if not supported :
+	if ( !bSupportFilteredFloat32Textures &&
+		( TextureFormatName == NameR32F || TextureFormatName == NameRGBA32F ) )
 	{
-		if (TextureFormatName == NameBC6H)
+		// Texture::Filter can be manually set to TF_Nearest , if it's Default it comes from LOD Group
+		//   eg. Nearest for TEXTUREGROUP_ColorLookupTable and TEXTUREGROUP_Pixels2D
+		const UTextureLODSettings& LODSettings = TargetPlatform->GetTextureLODSettings();
+		ETextureSamplerFilter Filter = LODSettings.GetSamplerFilter(Texture);
+
+		if ( Filter != ETextureSamplerFilter::Point )
 		{
-			TextureFormatName = NameRGBA16F;
-		}
-		else if (TextureFormatName == NameBC7)
-		{
-			TextureFormatName = NameBGRA8;
+			// non-Point filters require remap
+
+			UE_LOG(LogTexture, Display, TEXT("32 bit float texture changed to 16F because Filter is not Nearest and !bSupportFilteredFloat32Textures : %s"), *Texture->GetPathName());
+
+			if (TextureFormatName == NameR32F)
+			{
+				TextureFormatName = NameR16F;
+			}
+			else 
+			{
+				check(TextureFormatName == NameRGBA32F);
+
+				TextureFormatName = NameRGBA16F;
+			}			
 		}
 	}
-	
-	bOodleTextureSdkVersionIsNone = Texture->OodleTextureSdkVersion == NAME_None;
+
+	bOodleTextureSdkVersionIsNone = Texture->OodleTextureSdkVersion.IsNone();
 #endif //WITH_EDITOR
 
 	return ConditionalGetPrefixedFormat(TextureFormatName, TargetPlatform, bOodleTextureSdkVersionIsNone);
 }
 
-void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture, int32 BlockSize)
+void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, 
+	bool bSupportCompressedVolumeTexture, int32 Unused_BlockSize, bool bSupportFilteredFloat32Textures )
 {
 #if WITH_EDITOR
 	OutFormatNames.Reserve(Texture->Source.GetNumLayers());
 	for (int32 LayerIndex = 0; LayerIndex < Texture->Source.GetNumLayers(); ++LayerIndex)
 	{
-		OutFormatNames.Add(GetDefaultTextureFormatName(TargetPlatform, Texture, LayerIndex, bSupportDX11TextureFormats, bSupportCompressedVolumeTexture, BlockSize));
+		OutFormatNames.Add(GetDefaultTextureFormatName(TargetPlatform, Texture, LayerIndex, bSupportCompressedVolumeTexture, Unused_BlockSize, bSupportFilteredFloat32Textures));
 	}
 #endif // WITH_EDITOR
 }
 
-void GetAllDefaultTextureFormats(const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats, bool bSupportDX11TextureFormats)
+void GetAllDefaultTextureFormats(const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats)
 {
+	// this is only used by CookOnTheFlyServer, it could be removed entirely
+
 #if WITH_EDITOR
 	static FName NameDXT1(TEXT("DXT1"));
-	static FName NameDXT3(TEXT("DXT3"));
 	static FName NameDXT5(TEXT("DXT5"));
 	static FName NameDXT5n(TEXT("DXT5n"));
 	static FName NameAutoDXT(TEXT("AutoDXT"));
@@ -2558,12 +3370,13 @@ void GetAllDefaultTextureFormats(const class ITargetPlatform* TargetPlatform, TA
 	static FName NameG16(TEXT("G16"));
 	static FName NameVU8(TEXT("VU8"));
 	static FName NameRGBA16F(TEXT("RGBA16F"));
+	static FName NameRGBA32F(TEXT("RGBA32F"));
 	static FName NameR16F(TEXT("R16F"));
+	static FName NameR32F(TEXT("R32F"));
 	static FName NameBC6H(TEXT("BC6H"));
 	static FName NameBC7(TEXT("BC7"));
 
 	OutFormats.Add(NameDXT1);
-	OutFormats.Add(NameDXT3);
 	OutFormats.Add(NameDXT5);
 	OutFormats.Add(NameDXT5n);
 	OutFormats.Add(NameAutoDXT);
@@ -2575,20 +3388,26 @@ void GetAllDefaultTextureFormats(const class ITargetPlatform* TargetPlatform, TA
 	OutFormats.Add(NameG16);
 	OutFormats.Add(NameVU8);
 	OutFormats.Add(NameRGBA16F);
+	OutFormats.Add(NameRGBA32F);
 	OutFormats.Add(NameR16F);
-	if (bSupportDX11TextureFormats)
-	{
-		OutFormats.Add(NameBC6H);
-		OutFormats.Add(NameBC7);
-	}
+	OutFormats.Add(NameR32F);
+	OutFormats.Add(NameBC6H);
+	OutFormats.Add(NameBC7);
+	// is there any drawback to just adding the 32F textures here even if we don't want them? -> no.
+	//	what is this list even used for?
+	//  AFAICT it's only used by CookOnTheFlyServer for GetVersionFormatNumbersForIniVersionStrings
 
 	// go over the original base formats only, and possibly add on to the end of the array if there is a prefix needed
 	int NumBaseFormats = OutFormats.Num();
 	for (int Index = 0; Index < NumBaseFormats; Index++)
 	{
-		OutFormats.AddUnique(ConditionalGetPrefixedFormat(OutFormats[Index], TargetPlatform, true));
-		OutFormats.AddUnique(ConditionalGetPrefixedFormat(OutFormats[Index], TargetPlatform, false));
+		OutFormats.Add(ConditionalGetPrefixedFormat(OutFormats[Index], TargetPlatform, true));
+		OutFormats.Add(ConditionalGetPrefixedFormat(OutFormats[Index], TargetPlatform, false));
 	}
+	
+	// make unique:		
+	OutFormats.Sort( FNameFastLess() );
+	OutFormats.SetNum( Algo::Unique( OutFormats ) );
 #endif
 }
 
@@ -2638,6 +3457,11 @@ void UTexture::NotifyMaterials(const ENotifyMaterialsEffectOnShaders EffectOnSha
 
 #endif //WITH_EDITOR
 
+int64 UTexture::Blueprint_GetMemorySize() const
+{
+	return CalcTextureMemorySizeEnum(TMC_ResidentMips);
+}
+
 #if WITH_EDITOR
 
 FTextureSource::FMipData::FMipData(const FTextureSource& InSource, FSharedBuffer InData)
@@ -2662,14 +3486,12 @@ bool FTextureSource::FMipData::GetMipData(TArray64<uint8>& OutMipData, int32 Blo
 				(const uint8*)MipData.GetData() + MipOffset,
 				MipSize
 			);
-		}
 
-		return true;
+			return true;
+		}
 	}
-	else
-	{
-		return false;
-	}
+
+	return false;
 }
 
 #endif //WITH_EDITOR
@@ -2749,6 +3571,13 @@ void FTextureSource::InitLayeredImpl(
 	NumLayers = NewNumLayers;
 	NumSlices = NewNumSlices;
 	NumMips = NewNumMips;
+	
+	// VT can exceed the size limit of MAX_TEXTURE_MIP_COUNT
+	//  but doesn't have all those mips
+	check( NewNumMips <= MAX_TEXTURE_MIP_COUNT );
+	// NumSlices could be volume size Z or not
+	check( NewNumMips <= GetFullMipCount(SizeX,SizeY,GetVolumeSizeZ()) );
+
 	Format = NewLayerFormat[0];
 	LayerFormat.SetNum(NewNumLayers, true);
 	for (int i = 0; i < NewNumLayers; ++i)
@@ -2777,16 +3606,20 @@ void FTextureSource::InitBlockedImpl(const ETextureSourceFormat* InLayerFormats,
 	SizeY = InBlocks[0].SizeY;
 	NumSlices = InBlocks[0].NumSlices;
 	NumMips = InBlocks[0].NumMips;
+	
+	check( NumMips <= GetFullMipCount(SizeX,SizeY) );
 
 	NumLayers = InNumLayers;
 	Format = InLayerFormats[0];
 
+	// Blocks is of size NumBlocks-1 , and 0th block is in the TextureSource
 	Blocks.Reserve(InNumBlocks - 1);
 	for (int32 BlockIndex = 1; BlockIndex < InNumBlocks; ++BlockIndex)
 	{
 		Blocks.Add(InBlocks[BlockIndex]);
 	}
 
+	// LayerFormat is of size NumLayers, and Format == LayerFormat[0]
 	LayerFormat.SetNum(InNumLayers, true);
 	for (int i = 0; i < InNumLayers; ++i)
 	{
@@ -2815,6 +3648,8 @@ inline bool operator<(const FSortedTextureSourceBlock& Lhs, const FSortedTexture
 
 bool FTextureSource::EnsureBlocksAreSorted()
 {
+	// BlockDataOffsets is of size NumBlocks, even when NumBlocks==1
+	// and BlockDataOffsets[0] == 0
 	const int32 NumBlocks = GetNumBlocks();
 	if (BlockDataOffsets.Num() == NumBlocks)
 	{
@@ -2862,5 +3697,5 @@ bool FTextureSource::EnsureBlocksAreSorted()
 
 	return true;
 }
-
 #endif //WITH_EDITOR
+

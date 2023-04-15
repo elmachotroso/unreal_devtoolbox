@@ -1,14 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigSkeletalMeshComponent.h"
+#include "Editor/ControlRigSkeletalMeshComponent.h"
 #include "Sequencer/ControlRigLayerInstance.h" 
 #include "SkeletalDebugRendering.h"
 #include "ControlRig.h"
 #include "AnimPreviewInstance.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSkeletalMeshComponent)
+
 UControlRigSkeletalMeshComponent::UControlRigSkeletalMeshComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, DebugDrawSkeleton(false)
+	, HierarchyInteractionBracket(0)
+	, bRebuildDebugDrawSkeletonRequired(false)
 {
 	SetDisablePostProcessBlueprint(true);
 }
@@ -29,11 +33,16 @@ void UControlRigSkeletalMeshComponent::InitAnim(bool bForceReinit)
 	Super::InitAnim(bForceReinit);
 
 	// The preview instance or anim instance might have been created in Super::InitAnim, in which case
-	// the source animation instance must be set now
-	if (AnimInstance != GetAnimInstance() || LastPreviewInstance != PreviewInstance)
+	// the source animation instance must be set now.
+	// we also must ensure that the anim instance is linked as InitAnim can reset the linked instances
+	ControlRigInstance = Cast<UControlRigLayerInstance>(GetAnimInstance());
+	if (ControlRigInstance)
 	{
-		ControlRigInstance = Cast<UControlRigLayerInstance>(GetAnimInstance());
-		if (ControlRigInstance)
+		const bool bHaveInstancesChanged = (AnimInstance != GetAnimInstance()) || (LastPreviewInstance != PreviewInstance);
+
+		const USkeletalMeshComponent* MeshComponent = ControlRigInstance->GetOwningComponent();
+		const bool bIsAnimInstanceLinked = PreviewInstance && MeshComponent && MeshComponent->GetLinkedAnimInstances().Contains(PreviewInstance);
+		if (bHaveInstancesChanged || !bIsAnimInstanceLinked)
 		{
 			ControlRigInstance->SetSourceAnimInstance(PreviewInstance);
 		}
@@ -54,6 +63,8 @@ void UControlRigSkeletalMeshComponent::SetCustomDefaultPose()
 
 void UControlRigSkeletalMeshComponent::RebuildDebugDrawSkeleton()
 {
+	bRebuildDebugDrawSkeletonRequired = false;
+ 
 	UControlRigLayerInstance* ControlRigInstance = Cast<UControlRigLayerInstance>(GetAnimInstance());
 
 	if (ControlRigInstance)
@@ -61,6 +72,14 @@ void UControlRigSkeletalMeshComponent::RebuildDebugDrawSkeleton()
 		UControlRig* ControlRig = ControlRigInstance->GetFirstAvailableControlRig();
 		if (ControlRig)
 		{
+			// we are trying to poke into running instances of Control Rigs
+			// on the anim thread and query data, using a lock here to make sure
+			// we don't get an inconsistent view of the rig at some
+			// intermediate stage of evaluation, for example, during evaluate, we can have a call
+			// to copy hierarchy, which empties the hierarchy for a short period of time.
+			// if we did not have this lock and try to grab it, we could get an empty bone array
+			FScopeLock EvaluateLock(&ControlRig->GetEvaluateMutex());
+			
 			// just copy it because this is not thread safe
 			URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
 
@@ -186,7 +205,28 @@ void UControlRigSkeletalMeshComponent::OnHierarchyModified(ERigHierarchyNotifica
 		case ERigHierarchyNotification::ParentChanged:
 		case ERigHierarchyNotification::HierarchyReset:
 		{
-			RebuildDebugDrawSkeleton();
+			bRebuildDebugDrawSkeletonRequired = true;
+			if(HierarchyInteractionBracket == 0)
+			{
+				RebuildDebugDrawSkeleton();
+			}
+			break;
+		}
+		case ERigHierarchyNotification::InteractionBracketOpened:
+		{
+			HierarchyInteractionBracket++;
+			break;
+		}
+		case ERigHierarchyNotification::InteractionBracketClosed:
+		{
+			HierarchyInteractionBracket = FMath::Max(HierarchyInteractionBracket - 1, 0);
+			if(HierarchyInteractionBracket == 0)
+			{
+				if(bRebuildDebugDrawSkeletonRequired)
+				{
+					RebuildDebugDrawSkeleton();
+				}
+			}
 			break;
 		}
 		default:
@@ -218,3 +258,4 @@ void UControlRigSkeletalMeshComponent::OnHierarchyModified_AnyThread(ERigHierarc
 		
     }, TStatId(), NULL, ENamedThreads::GameThread);
 }
+

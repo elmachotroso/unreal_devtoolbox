@@ -4,7 +4,7 @@
 #include "SDetailsView.h"
 
 #include "CategoryPropertyNode.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "DetailCategoryBuilderImpl.h"
 #include "DetailLayoutBuilderImpl.h"
 #include "DetailsViewGenericObjectFilter.h"
@@ -19,6 +19,7 @@
 #include "PropertyEditorHelpers.h"
 #include "SDetailNameArea.h"
 #include "Styling/StyleColors.h"
+#include "Templates/UnrealTemplate.h"
 #include "UserInterface/PropertyDetails/PropertyDetailsUtilities.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Images/SImage.h"
@@ -27,6 +28,7 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/Images/SLayeredImage.h"
 
 #define LOCTEXT_NAMESPACE "SDetailsView"
 
@@ -73,6 +75,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 	SetClassViewerFilters(InDetailsViewArgs.ClassViewerFilters);
 
 	bViewingClassDefaultObject = false;
+	bIsRefreshing = false;
 
 	PropertyUtilities = MakeShareable( new FPropertyDetailsUtilities( *this ) );
 	PropertyGenerationUtilities = MakeShareable( new FDetailsViewPropertyGenerationUtilities(*this) );
@@ -273,8 +276,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 			.OnTextCommitted(this, &SDetailsView::OnFilterTextCommitted)
 			.AddMetaData<FTagMetaData>(TEXT("Details.Search"))
 		];
-
-	if (DetailsViewArgs.bShowPropertyMatrixButton)
+	
 	{
 		FilterRowHBox->AddSlot()
 			.Padding(0)
@@ -287,6 +289,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 				.ButtonStyle( FAppStyle::Get(), "SimpleButton" )
 				.OnClicked(this, &SDetailsView::OnOpenRawPropertyEditorClicked)
 				.IsEnabled(this, &SDetailsView::CanOpenRawPropertyEditor)
+				.Visibility(this, &SDetailsView::CanShowRawPropertyEditorButton, DetailsViewArgs.bShowPropertyMatrixButton)
 				.ToolTipText(LOCTEXT("RawPropertyEditorButtonLabel", "Open Selection in Property Matrix"))
 				[
 					SNew(SImage)
@@ -319,6 +322,13 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 
 	if (DetailsViewArgs.bShowOptions)
 	{
+		TSharedPtr<SLayeredImage> FilterImage = SNew(SLayeredImage)
+		 .Image(FAppStyle::Get().GetBrush("DetailsView.ViewOptions"))
+		 .ColorAndOpacity(FSlateColor::UseForeground());
+
+		// Badge the filter icon if there are filters active
+		FilterImage->AddLayer(TAttribute<const FSlateBrush*>(this, &SDetailsView::GetViewOptionsBadgeIcon));
+		
 		FilterRowHBox->AddSlot()
 			.Padding(0)
 			.HAlign(HAlign_Right)
@@ -337,9 +347,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 				]
 				.ButtonContent()
 				[
-					SNew(SImage)
-					.ColorAndOpacity(FSlateColor::UseForeground())
-					.Image(FAppStyle::Get().GetBrush("DetailsView.ViewOptions"))
+					FilterImage.ToSharedRef()
 				]
 			];
 	}
@@ -408,7 +416,7 @@ void SDetailsView::Construct(const FArguments& InArgs, const FDetailsViewArgs& I
 		+ SOverlay::Slot()
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("Searching.SearchActiveBorder"))
+			.Image(FAppStyle::GetBrush("Searching.SearchActiveBorder"))
 			.Visibility_Lambda([this]() { return (this->GetFilterBoxVisibility() == EVisibility::Visible) && this->HasActiveSearch() ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
 		]
 	];
@@ -430,6 +438,7 @@ TSharedRef<SDetailTree> SDetailsView::ConstructTreeView( TSharedRef<SScrollBar>&
 		.OnGetChildren(this, &SDetailsView::OnGetChildrenForDetailTree)
 		.OnSetExpansionRecursive(this, &SDetailsView::SetNodeExpansionStateRecursive)
 		.OnGenerateRow(this, &SDetailsView::OnGenerateRowForDetailTree)
+		.OnRowReleased(this, &SDetailsView::OnRowReleasedForDetailTree)
 		.OnExpansionChanged(this, &SDetailsView::OnItemExpansionChanged)
 		.SelectionMode(ESelectionMode::None)
 		.HandleDirectionalNavigation(false)
@@ -440,6 +449,12 @@ TSharedRef<SDetailTree> SDetailsView::ConstructTreeView( TSharedRef<SScrollBar>&
 bool SDetailsView::CanOpenRawPropertyEditor() const
 {
 	return SelectedObjects.Num() > 0 && IsPropertyEditingEnabled();
+}
+
+EVisibility SDetailsView::CanShowRawPropertyEditorButton(const bool bAllowedByDetailsViewArgs) const
+{
+	const bool bShowPropertyMatrixOverride =  FModuleManager::LoadModuleChecked<FPropertyEditorModule>( "PropertyEditor" ).GetCanUsePropertyMatrix();
+	return (DetailsViewArgs.bShowPropertyMatrixButton && bShowPropertyMatrixOverride) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SDetailsView::OnOpenRawPropertyEditorClicked()
@@ -675,6 +690,14 @@ int32 SDetailsView::GetNumObjects() const
 
 void SDetailsView::SetObjectArrayPrivate(const TArray<UObject*>& InObjects)
 {
+	if (bIsRefreshing)
+	{
+		// SetObjectArrayPrivate can not be performed while in the middle of a previous refresh
+		return;
+	}
+
+	TGuardValue<bool> RefreshGuard(bIsRefreshing, true);
+
 	double StartTime = FPlatformTime::Seconds();
 
 	const TArray<FDetailsViewObjectRoot> Roots = ObjectFilter->FilterObjects(InObjects);
@@ -987,11 +1010,11 @@ const FSlateBrush* SDetailsView::OnGetLockButtonImageResource() const
 {
 	if (bIsLocked)
 	{
-		return FEditorStyle::GetBrush(TEXT("PropertyWindow.Locked"));
+		return FAppStyle::GetBrush(TEXT("PropertyWindow.Locked"));
 	}
 	else
 	{
-		return FEditorStyle::GetBrush(TEXT("PropertyWindow.Unlocked"));
+		return FAppStyle::GetBrush(TEXT("PropertyWindow.Unlocked"));
 	}
 }
 
@@ -1017,7 +1040,7 @@ void SDetailsView::OnShowHiddenPropertiesWhilePlayingClicked()
 		SaveViewConfig();
 	}
 
-	GConfig->SetBool(TEXT("/Script/EditorStyle.EditorStyleSettings"), TEXT("bShowHiddenPropertiesWhilePlaying"), bNewValue, GEditorPerProjectIni);
+	GConfig->SetBool(TEXT("/Script/UnrealEd.EditorStyleSettings"), TEXT("bShowHiddenPropertiesWhilePlaying"), bNewValue, GEditorPerProjectIni);
 
 	// Force a refresh of the whole details panel, as the entire set of visible properties may be different
 	ForceRefresh();
@@ -1222,7 +1245,8 @@ void SDetailsView::RebuildSectionSelector()
 	const TMap<FName, FText> AllSections = GetAllSections();
 	if (AllSections.IsEmpty())
 	{
-		// we've selected something that has no sections - rather than show just "All", hide the box
+		// we've selected something that has no sections - rather than show just "All", hide the box and clear visible sections
+		CurrentFilter.VisibleSections.Reset();
 		return;
 	}
 
@@ -1230,6 +1254,7 @@ void SDetailsView::RebuildSectionSelector()
 		-> TSharedRef<SWidget>
 	{
 		return SNew(SBox)
+			.Padding(FMargin(0))
 			[
 				SNew(SCheckBox)
 				.Style(FAppStyle::Get(), "DetailsView.SectionButton")
@@ -1402,6 +1427,17 @@ TMap<FName, FText> SDetailsView::GetAllSections() const
 	}
 
 	return MoveTemp(AllSections);
+}
+
+const FSlateBrush* SDetailsView::GetViewOptionsBadgeIcon() const
+{
+	// Badge the icon if any view option that narrows down the results is checked
+	bool bHasBadge = (DetailsViewArgs.bShowModifiedPropertiesOption && IsShowOnlyModifiedChecked() )
+					|| (DetailsViewArgs.bShowDifferingPropertiesOption && IsShowOnlyAllowedChecked() )
+					|| (DetailsViewArgs.bShowKeyablePropertiesOption && IsShowKeyableChecked() )
+					|| (DetailsViewArgs.bShowAnimatedPropertiesOption && IsShowAnimatedChecked() );
+
+	return bHasBadge ? FAppStyle::Get().GetBrush("Icons.BadgeModified") : nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -7,8 +7,10 @@
 #include "Delegates/DelegateCombinations.h"
 #include "SmartObjectTypes.h"
 #include "SmartObjectDefinition.h"
-#include "SmartObjectOctree.h"
 #include "SmartObjectRuntime.generated.h"
+
+/** Delegate fired when a given tag is added or removed. Tags on smart object are not using reference counting so count will be 0 or 1 */
+DECLARE_DELEGATE_TwoParams(FOnSmartObjectTagChanged, const FGameplayTag, int32);
 
 /**
  * Enumeration to represent the runtime state of a slot
@@ -17,9 +19,14 @@ UENUM()
 enum class ESmartObjectSlotState : uint8
 {
 	Invalid,
+	/** Slot is available */
 	Free,
+	/** Slot is claimed but interaction is not active yet */
 	Claimed,
-	Occupied
+	/** Slot is claimed and interaction is active */
+	Occupied,
+	/** Slot can no longer be claimed or used since the parent object and its slot are disabled (e.g. instance tags) */
+	Disabled
 };
 
 /**
@@ -39,8 +46,7 @@ struct SMARTOBJECTSMODULE_API FSmartObjectClaimHandle
 
 	bool operator==(const FSmartObjectClaimHandle& Other) const
 	{
-		return IsValid() && Other.IsValid()
-			&& SmartObjectHandle == Other.SmartObjectHandle
+		return SmartObjectHandle == Other.SmartObjectHandle
 			&& SlotHandle == Other.SlotHandle
 			&& UserHandle == Other.UserHandle;
 	}
@@ -56,6 +62,12 @@ struct SMARTOBJECTSMODULE_API FSmartObjectClaimHandle
 	}
 
 	void Invalidate() { *this = InvalidHandle; }
+
+	/**
+	 * Indicates that the handle was properly assigned by a call to 'Claim' but doesn't guarantee that the associated
+	 * object and slot are still registered in the simulation.
+	 * This information requires a call to `USmartObjectSubsystem::IsClaimedObjectValid` using the handle.
+	 */
 	bool IsValid() const
 	{
 		return SmartObjectHandle.IsValid()
@@ -112,13 +124,15 @@ public:
 
 	ESmartObjectSlotState GetState() const { return State; }
 
+	bool CanBeClaimed() const { return State == ESmartObjectSlotState::Free; }
+
 protected:
 	/** Struct could have been nested inside the subsystem but not possible with USTRUCT */
 	friend class USmartObjectSubsystem;
 	friend struct FSmartObjectRuntime;
 
 	bool Claim(const FSmartObjectUserHandle& InUser);
-	bool Release(const FSmartObjectClaimHandle& ClaimHandle, const bool bAborted);
+	bool Release(const FSmartObjectClaimHandle& ClaimHandle, const ESmartObjectSlotState NewState, const bool bAborted);
 	
 	friend FString LexToString(const FSmartObjectSlotClaimState& ClaimState)
 	{
@@ -144,13 +158,22 @@ struct FSmartObjectRuntime
 	GENERATED_BODY()
 
 public:
-	const FSmartObjectHandle& GetRegisteredID() const { return RegisteredHandle; }
+	FSmartObjectHandle GetRegisteredHandle() const { return RegisteredHandle; }
 	const FTransform& GetTransform() const { return Transform; }
 	const USmartObjectDefinition& GetDefinition() const { checkf(Definition != nullptr, TEXT("Initialized from a valid reference from the constructor")); return *Definition; }
+	
+	/** Returns all tags assigned to the smart object instance */
+	const FGameplayTagContainer& GetTags() const { return Tags; }
+
+	/** Returns delegate that is invoked whenever a tag is added or removed */
+	FOnSmartObjectTagChanged& GetTagChangedDelegate() { return OnTagChangedDelegate; }
+
+	/** Indicates that this instance is still part of the simulation (space partition) but should not be considered valid by queries */
+	uint32 IsDisabled() const { return bDisabledByTags; }
 
 	/* Provide default constructor to be able to compile template instantiation 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>' */
 	/* Also public to pass void 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>::ConstructForTests(void *)' */
-	FSmartObjectRuntime() : SharedOctreeID(MakeShareable(new FSmartObjectOctreeID())) {}
+	FSmartObjectRuntime() {}
 
 private:
 	/** Struct could have been nested inside the subsystem but not possible with USTRUCT */
@@ -158,28 +181,16 @@ private:
 
 	explicit FSmartObjectRuntime(const USmartObjectDefinition& Definition);
 
-	const FGameplayTagContainer& GetTags() const { return Tags; }
-
 	void SetTransform(const FTransform& Value) { Transform = Value; }
 
-	void SetRegisteredID(const FSmartObjectHandle Value) { RegisteredHandle = Value; }
-
-	const FSmartObjectOctreeIDSharedRef& GetSharedOctreeID() const { return SharedOctreeID; }
-	void SetOctreeID(const FSmartObjectOctreeIDSharedRef Value) { SharedOctreeID = Value; }
-
-	friend FString LexToString(const FSmartObjectRuntime& Runtime)
-	{
-		return FString::Printf(TEXT("Instance using defintion \'%s\' Reg: %s"),
-			*LexToString(Runtime.GetDefinition()),
-			*LexToString(Runtime.SharedOctreeID->ID.IsValidId()));
-	}
+	void SetRegisteredHandle(const FSmartObjectHandle Value) { RegisteredHandle = Value; }
 
 	/** Runtime SlotHandles associated to each defined slot */
 	TArray<FSmartObjectSlotHandle> SlotHandles;
 
 	/** Associated smart object definition */
 	UPROPERTY()
-	const USmartObjectDefinition* Definition = nullptr;
+	TObjectPtr<const USmartObjectDefinition> Definition = nullptr;
 
 	/** Instance specific transform */
 	FTransform Transform;
@@ -187,11 +198,22 @@ private:
 	/** Tags applied to the current instance */
 	FGameplayTagContainer Tags;
 
+	/** Delegate fired whenever a new tag is added or an existing one gets removed */
+	FOnSmartObjectTagChanged OnTagChangedDelegate;
+
 	/** RegisteredHandle != FSmartObjectHandle::Invalid when registered with SmartObjectSubsystem */
 	FSmartObjectHandle RegisteredHandle;
 
-	/** Reference to the associated octree node ID */
-	FSmartObjectOctreeIDSharedRef SharedOctreeID;
+	/** Spatial representation data associated to the current instance */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", meta = (BaseStruct = "/Script/SmartObjectsModule.SmartObjectSpatialEntryData", ExcludeBaseStruct))
+	FInstancedStruct SpatialEntryData;
+
+#if UE_ENABLE_DEBUG_DRAWING
+	FBox Bounds = FBox(EForceInit::ForceInit);
+#endif
+
+	/** Each slot has its own disable state but keeping it also in the parent instance allow faster validation in some cases. */
+	bool bDisabledByTags = false;
 };
 
 USTRUCT()
@@ -201,6 +223,8 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotView
 
 public:
 	FSmartObjectSlotView() = default;
+
+	bool IsValid() const { return EntityView.IsSet(); }
 
 	FSmartObjectSlotHandle GetSlotHandle() const { return EntityView.GetEntity(); }
 
@@ -231,6 +255,18 @@ public:
 	}
 
 	/**
+	 * Returns a reference to the definition of the slot's parent object.
+	 * Method will fail a check if called on an invalid SlotView.
+	 * @note The definition fragment is always created and assigned when creating an entity associated to a slot
+	 * so a valid SlotView is guaranteed to be able to provide it.
+	 */
+	const USmartObjectDefinition& GetSmartObjectDefinition() const
+	{
+		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
+		return *(EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>().SmartObjectDefinition);
+	}
+
+	/**
 	 * Returns a reference to the main definition of the slot.
 	 * Method will fail a check if called on an invalid SlotView.
 	 */
@@ -238,6 +274,20 @@ public:
 	{
 		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
 		return *(EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>().SlotDefinition);
+	}
+
+	/**
+	 * Fills the provided GameplayTagContainer with the activity tags associated to the slot according to the tag filtering policy.
+	 * Method will fail a check if called on an invalid SlotView.
+	 */
+	void GetActivityTags(FGameplayTagContainer& OutActivityTags) const
+	{
+		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
+		const FSmartObjectSlotDefinitionFragment& DefinitionFragment = EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>();
+		checkf(DefinitionFragment.SmartObjectDefinition != nullptr, TEXT("SmartObjectDefinition should always be valid in a valid SlotView"));
+		checkf(DefinitionFragment.SlotDefinition != nullptr, TEXT("SlotDefinition should always be valid in a valid SlotView"));
+
+		DefinitionFragment.SmartObjectDefinition->GetSlotActivityTags(*DefinitionFragment.SlotDefinition, OutActivityTags);
 	}
 
 	/**
@@ -287,9 +337,9 @@ public:
 private:
 	friend class USmartObjectSubsystem;
 
-	FSmartObjectSlotView(const UMassEntitySubsystem& EntitySubsystem, const FSmartObjectSlotHandle SlotHandle) : EntityView(EntitySubsystem, SlotHandle.EntityHandle)
-	{
-	}
+	FSmartObjectSlotView(const FMassEntityManager& EntityManager, const FSmartObjectSlotHandle SlotHandle) 
+		: EntityView(EntityManager, SlotHandle.EntityHandle)
+	{}
 
 	FMassEntityView EntityView;
 };

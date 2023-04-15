@@ -20,6 +20,9 @@ IMPLEMENT_TYPE_LAYOUT(FMemoryImageString);
 IMPLEMENT_TYPE_LAYOUT(FPlatformTypeLayoutParameters);
 IMPLEMENT_TYPE_LAYOUT(FHashedName);
 
+// Guid for versioning format changes/bug fixes to memory images
+#define MEMORYIMAGE_DERIVEDDATA_VER_ANSI		"B6A0A753ED62499D8F30931E61FCAB05"
+
 static const uint32 NumTypeLayoutDescHashBuckets = 4357u;
 static const FTypeLayoutDesc* GTypeLayoutHashBuckets[NumTypeLayoutDescHashBuckets] = { nullptr };
 static uint32 GNumTypeLayoutsRegistered = 0u;
@@ -62,7 +65,6 @@ void FPlatformTypeLayoutParameters::InitializeForPlatform(const FString& Platfor
 
 	Flags = Flag_Initialized;
 	if (bHasEditorOnlyData) Flags |= Flag_WithEditorOnly;
-	if (PlatformInfo.Freezing_bWithRayTracing) Flags |= Flag_WithRaytracing;
 	if (PlatformInfo.Freezing_b32Bit) Flags |= Flag_Is32Bit;
 	if (PlatformInfo.Freezing_bAlignBases) Flags |= Flag_AlignBases;
 
@@ -73,7 +75,6 @@ void FPlatformTypeLayoutParameters::InitializeForCurrent()
 {
 	Flags = Flag_Initialized;
 	if (WITH_EDITORONLY_DATA) Flags |= Flag_WithEditorOnly;
-	if (WITH_RAYTRACING) Flags |= Flag_WithRaytracing;
 	if (PLATFORM_32BITS) Flags |= Flag_Is32Bit;
 
 	check(GetRawPointerSize() == sizeof(void*));
@@ -108,7 +109,7 @@ FArchive& FPlatformTypeLayoutParameters::Serialize(FArchive& Ar)
 
 void FPlatformTypeLayoutParameters::AppendKeyString(FString& KeyString) const
 {
-	KeyString += FString::Printf(TEXT("FL_%08x_MFA_%08x_"), Flags, MaxFieldAlignment);
+	KeyString += FString::Printf(TEXT("FL_%08x_MFA_%08x_V_" MEMORYIMAGE_DERIVEDDATA_VER_ANSI), Flags, MaxFieldAlignment);
 }
 
 // evaluated during static-initialization, so logging from regular check() macros won't work correctly
@@ -343,13 +344,8 @@ void Freeze::ExtractBitFieldValue(const void* Value, uint32 SrcBitOffset, uint32
 bool Freeze::IncludeField(const FFieldLayoutDesc* FieldDesc, const FPlatformTypeLayoutParameters& LayoutParams)
 {
 	const bool bIsEditorOnly = (FieldDesc->Flags & EFieldLayoutFlags::WithEditorOnly) != 0u;
-	const bool bIsRayTracing = (FieldDesc->Flags & EFieldLayoutFlags::WithRayTracing) != 0u;
 
 	if (bIsEditorOnly && !LayoutParams.WithEditorOnly())
-	{
-		return false;
-	}
-	if (bIsRayTracing && !LayoutParams.WithRaytracing())
 	{
 		return false;
 	}
@@ -1183,7 +1179,7 @@ FHashedName::FHashedName(const FName& InName)
 			{
 				UpperNameBuffer.Wide[i] = FChar::ToUpper(NameBuffer.Wide[i]);
 			}
-			UpperNameBuffer.Wide[NameLength] = 0;
+			UpperNameBuffer.Wide[NameLength] = TEXT('\0');
 			const FTCHARToUTF8 UpperNameUTF8(UpperNameBuffer.Wide);
 			Hash = CityHash64WithSeed((const char*)UpperNameUTF8.Get(), UpperNameUTF8.Length(), InternalNumber);
 #if WITH_EDITORONLY_DATA
@@ -1311,7 +1307,7 @@ int32 FPointerTableBase::AddTypeDependency(const FTypeLayoutDesc& TypeDesc)
 	{
 		for (int32 Index = 0; Index < TypeDependencies.Num(); ++Index)
 		{
-			if (TypeDependencies[Index]->NameHash == TypeDesc.NameHash)
+			if (TypeDependencies[Index] != nullptr && TypeDependencies[Index]->NameHash == TypeDesc.NameHash)
 			{
 				return Index;
 			}
@@ -1357,7 +1353,7 @@ static void CountNumNames(const TArray<FMemoryImageNamePointer>& Names, TArray<u
 	uint32 CurrentNumPatches = 0u;
 	for (const FMemoryImageNamePointer& Patch : Names)
 	{
-		if (Patch.Name != CurrentName)
+		if (Patch.Name.Compare(CurrentName) != 0)
 		{
 			if (CurrentNumPatches > 0u)
 			{
@@ -1386,7 +1382,7 @@ static void SerializeNames(const TArray<FMemoryImageNamePointer>& Names, const T
 		for (uint32 i = 0; i < Num; ++i)
 		{
 			const FMemoryImageNamePointer& Patch = Names[NameIndex++];
-			check(Patch.Name == Name);
+			check(Patch.Name.Compare(Name) == 0);
 
 			uint32 Offset = Patch.Offset;
 			Ar << Offset;
@@ -1403,6 +1399,7 @@ void FMemoryImageResult::SaveToArchive(FArchive& Ar) const
 	Ar << const_cast<FMemoryImageResult*>(this)->TargetLayoutParameters;
 
 	Ar << FrozenSize;
+	int64 FrozenObjectOffset = Ar.Tell();
 	Ar.Serialize(FrozenObject, FrozenSize);
 
 	PointerTable->SaveToArchive(Ar, TargetLayoutParameters, FrozenObject);
@@ -1432,16 +1429,16 @@ void FMemoryImageResult::SaveToArchive(FArchive& Ar) const
 
 
 	TArray<uint32> ScriptNameCounts;
-	TArray<uint32> MinimalNameCounts;
+	TArray<uint32> MemoryImageNameCounts;
 	CountNumNames(ScriptNames, ScriptNameCounts);
-	CountNumNames(MinimalNames, MinimalNameCounts);
+	CountNumNames(MemoryImageNames, MemoryImageNameCounts);
 
 	uint32 NumVTables = VTableCounts.Num();
 	uint32 NumScriptNames = ScriptNameCounts.Num();
-	uint32 NumMinimalNames = MinimalNameCounts.Num();
+	uint32 NumMemoryImageNames = MemoryImageNameCounts.Num();
 	Ar << NumVTables;
 	Ar << NumScriptNames;
-	Ar << NumMinimalNames;
+	Ar << NumMemoryImageNames;
 
 	{
 		int32 VTableIndex = 0;
@@ -1466,7 +1463,49 @@ void FMemoryImageResult::SaveToArchive(FArchive& Ar) const
 	}
 	
 	SerializeNames(ScriptNames, ScriptNameCounts, Ar);
-	SerializeNames(MinimalNames, MinimalNameCounts, Ar);
+	SerializeNames(MemoryImageNames, MemoryImageNameCounts, Ar);
+
+	int64 EndOffset = Ar.Tell();
+
+	// Replace patchable values with zeroes for determinism. 
+	// We can't do this when we flatten an object because we may still want to read that object on the current platform. 
+	for (const FMemoryImageVTablePointer& Patch : VTables)
+	{
+		Ar.Seek(FrozenObjectOffset + Patch.Offset);
+		if (TargetLayoutParameters.Is32Bit())
+		{
+			int32 Zero = 0;
+			Ar.Serialize(&Zero, sizeof(Zero));
+		}
+		else
+		{
+			int64 Zero = 0;
+			Ar.Serialize(&Zero, sizeof(Zero));
+		}
+	}
+
+	for (const FMemoryImageNamePointer& Patch : ScriptNames)
+	{
+		Ar.Seek(FrozenObjectOffset + Patch.Offset);
+		FScriptName NullName;
+		Ar.Serialize(&NullName, sizeof(FScriptName));
+	}
+
+	for (const FMemoryImageNamePointer& Patch : MemoryImageNames)
+	{
+		Ar.Seek(FrozenObjectOffset + Patch.Offset);
+		int32 Zeroes[3] = {0, 0, 0};
+		if (TargetLayoutParameters.WithCasePreservingFName())
+		{
+			Ar.Serialize(Zeroes, sizeof(int32) * 3);
+		}
+		else
+		{
+			Ar.Serialize(Zeroes, sizeof(int32) * 2);
+		}
+	}
+
+	Ar.Seek(EndOffset);
 }
 
 static inline void ApplyVTablePatch(void* FrozenObject, const FTypeLayoutDesc& DerivedType, uint32 VTableOffset, uint32 Offset)
@@ -1482,10 +1521,17 @@ static inline void ApplyScriptNamePatch(void* FrozenObject, const FScriptName& N
 	new(NameDst) FScriptName(Name);
 }
 
-static inline void ApplyMinimalNamePatch(void* FrozenObject, const FMinimalName& Name, uint32 Offset)
+static inline void ApplyMemoryImageNamePatch(void* FrozenObject, const FMemoryImageName& Name, uint32 Offset, const FPlatformTypeLayoutParameters& LayoutParameters)
 {
 	void* NameDst = (uint8*)FrozenObject + Offset;
-	new(NameDst) FMinimalName(Name);
+	if (LayoutParameters.IsCurrentPlatform())
+	{
+		new(NameDst) FMemoryImageName(Name);
+	}
+	else
+	{
+		Freeze::ApplyMemoryImageNamePatch(NameDst, Name, LayoutParameters);
+	}
 }
 
 void FMemoryImageResult::ApplyPatches(void* FrozenObject) const
@@ -1502,9 +1548,9 @@ void FMemoryImageResult::ApplyPatches(void* FrozenObject) const
 		ApplyScriptNamePatch(FrozenObject, NameToScriptName(Patch.Name), Patch.Offset);
 	}
 
-	for (const FMemoryImageNamePointer& Patch : MinimalNames)
+	for (const FMemoryImageNamePointer& Patch : MemoryImageNames)
 	{
-		ApplyMinimalNamePatch(FrozenObject, NameToMinimalName(Patch.Name), Patch.Offset);
+		ApplyMemoryImageNamePatch(FrozenObject, FMemoryImageName(Patch.Name), Patch.Offset, TargetLayoutParameters);
 	}
 }
 
@@ -1523,10 +1569,10 @@ FMemoryImageObject FMemoryImageResult::LoadFromArchive(FArchive& Ar, const FType
 
 	uint32 NumVTables = 0u;
 	uint32 NumScriptNames = 0u;
-	uint32 NumMinimalNames = 0u;
+	uint32 NumMemoryImageNames = 0u;
 	Ar << NumVTables;
 	Ar << NumScriptNames;
-	Ar << NumMinimalNames;
+	Ar << NumMemoryImageNames;
 
 	for (uint32 i = 0u; i < NumVTables; ++i)
 	{
@@ -1563,7 +1609,7 @@ FMemoryImageObject FMemoryImageResult::LoadFromArchive(FArchive& Ar, const FType
 		}
 	}
 
-	for (uint32 i = 0u; i < NumMinimalNames; ++i)
+	for (uint32 i = 0u; i < NumMemoryImageNames; ++i)
 	{
 		FName Name;
 		uint32 NumPatches = 0u;
@@ -1574,7 +1620,7 @@ FMemoryImageObject FMemoryImageResult::LoadFromArchive(FArchive& Ar, const FType
 		{
 			uint32 Offset = 0u;
 			Ar << Offset;
-			ApplyMinimalNamePatch(FrozenObject, NameToMinimalName(Name), Offset);
+			ApplyMemoryImageNamePatch(FrozenObject, FMemoryImageName(Name), Offset, LayoutParameters);
 		}
 	}
 
@@ -1664,9 +1710,9 @@ FMemoryImageSection* FMemoryImageSection::WritePointer(const FTypeLayoutDesc& St
 
 	checkf(OutOffsetToBase || bStaticTypeMatchesDerived, TEXT("Must consider OffsetToBase if static/derived types are different, %s/%s"), DerivedTypeDesc.Name, StaticTypeDesc.Name);
 	checkf(TypeDependencyIndex != INDEX_NONE || bStaticTypeMatchesDerived,
-		TEXT("Unable to store pointer to derived type %s, different from static type %s\n")
-		TEXT("Ensure UE_MEMORYIMAGE_TRACK_TYPE_DEPENDENCIES is set\n")
-		TEXT("Make sure derived type is not declared using DECLARE_INLINE_TYPE_LAYOUT()"),
+		TEXT("Unable to store pointer to derived type %s, different from static type %s\n"
+		     "Ensure UE_MEMORYIMAGE_TRACK_TYPE_DEPENDENCIES is set\n"
+		     "Make sure derived type is not declared using DECLARE_INLINE_TYPE_LAYOUT()"),
 		DerivedTypeDesc.Name, StaticTypeDesc.Name);
 
 	FFrozenMemoryImagePtr FrozenPtr;
@@ -1704,26 +1750,13 @@ uint32 FMemoryImageSection::WriteVTable(const FTypeLayoutDesc& TypeDesc, const F
 	return VTablePointer.Offset;
 }
 
-uint32 FMemoryImageSection::WriteFName(const FName& Name)
+uint32 FMemoryImageSection::WriteFMemoryImageName(int32 NumBytes, const FName& Name)
 {
-	const FPlatformTypeLayoutParameters& TargetLayoutParameters = ParentImage->TargetLayoutParameters;
-	if (!TargetLayoutParameters.WithCasePreservingFName())
-	{
-		return WriteFMinimalName(NameToMinimalName(Name));
-	}
-	else
-	{
-		return WriteFScriptName(NameToScriptName(Name));
-	}
-}
-
-uint32 FMemoryImageSection::WriteFMinimalName(const FMinimalName& Name)
-{
-	const uint32 Offset = WriteBytes(FMinimalName());
+	const uint32 Offset = WriteZeroBytes(NumBytes);
 	if (!Name.IsNone())
 	{
-		FMemoryImageNamePointer& NamePointer = MinimalNames.AddDefaulted_GetRef();
-		NamePointer.Name = MinimalNameToName(Name);
+		FMemoryImageNamePointer& NamePointer = MemoryImageNames.AddDefaulted_GetRef();
+		NamePointer.Name = Name;
 		NamePointer.Offset = Offset;
 	}
 	return Offset;
@@ -1731,7 +1764,7 @@ uint32 FMemoryImageSection::WriteFMinimalName(const FMinimalName& Name)
 
 uint32 FMemoryImageSection::WriteFScriptName(const FScriptName& Name)
 {
-	const uint32 Offset = WriteBytes(FScriptName());
+	const uint32 Offset = WriteZeroBytes(sizeof(Name));
 	if (!Name.IsNone())
 	{
 		FMemoryImageNamePointer& NamePointer = ScriptNames.AddDefaulted_GetRef();
@@ -1762,10 +1795,10 @@ uint32 FMemoryImageSection::Flatten(FMemoryImageResult& OutResult) const
 		ResultName->Offset += AlignedOffset;
 	}
 
-	OutResult.MinimalNames.Reserve(OutResult.MinimalNames.Num() + MinimalNames.Num());
-	for (const FMemoryImageNamePointer& Name : MinimalNames)
+	OutResult.MemoryImageNames.Reserve(OutResult.MemoryImageNames.Num() + MemoryImageNames.Num());
+	for (const FMemoryImageNamePointer& Name : MemoryImageNames)
 	{
-		FMemoryImageNamePointer* ResultName = new(OutResult.MinimalNames) FMemoryImageNamePointer(Name);
+		FMemoryImageNamePointer* ResultName = new(OutResult.MemoryImageNames) FMemoryImageNamePointer(Name);
 		ResultName->Offset += AlignedOffset;
 	}
 
@@ -1776,7 +1809,7 @@ static void UpdateHashNamePatches(const TArray< FMemoryImageNamePointer>& Names,
 {
 	for (const FMemoryImageNamePointer& NamePatch : Names)
 	{
-		const FNameEntry* NameEntry = NamePatch.Name.GetComparisonNameEntry();
+		const FNameEntry* NameEntry = NamePatch.Name.GetDisplayNameEntry();
 		TCHAR NameBuffer[NAME_SIZE];
 		NameEntry->GetName(NameBuffer);
 		const int32 Number = NamePatch.Name.GetNumber();
@@ -1793,7 +1826,7 @@ void FMemoryImageSection::ComputeHash()
 	HashState.Update((uint8*)Pointers.GetData(), Pointers.Num() * Pointers.GetTypeSize());
 	HashState.Update((uint8*)VTables.GetData(), VTables.Num() * VTables.GetTypeSize());
 	UpdateHashNamePatches(ScriptNames, HashState);
-	UpdateHashNamePatches(MinimalNames, HashState);
+	UpdateHashNamePatches(MemoryImageNames, HashState);
 	HashState.Final();
 	HashState.GetHash(Hash.Hash);
 }
@@ -1870,7 +1903,7 @@ void FMemoryImage::Flatten(FMemoryImageResult& OutResult, bool bMergeDuplicateSe
 	// Sort to group runs of the same FName/VTable
 	OutResult.VTables.Sort();
 	OutResult.ScriptNames.Sort();
-	OutResult.MinimalNames.Sort();
+	OutResult.MemoryImageNames.Sort();
 }
 
 FMemoryImageWriter::FMemoryImageWriter(FMemoryImage& InImage) : Section(InImage.AllocateSection()) {}
@@ -1965,14 +1998,9 @@ uint32 FMemoryImageWriter::WriteVTable(const FTypeLayoutDesc& TypeDesc, const FT
 	return Section->WriteVTable(TypeDesc, DerivedTypeDesc);
 }
 
-uint32 FMemoryImageWriter::WriteFName(const FName& Name)
+uint32 FMemoryImageWriter::WriteFMemoryImageName(int32 NumBytes, const FName& Name)
 {
-	return Section->WriteFName(Name);
-}
-
-uint32 FMemoryImageWriter::WriteFMinimalName(const FMinimalName& Name)
-{
-	return Section->WriteFMinimalName(Name);
+	return Section->WriteFMemoryImageName(NumBytes, Name);
 }
 
 uint32 FMemoryImageWriter::WriteFScriptName(const FScriptName& Name)
@@ -2011,7 +2039,7 @@ uint8 Freeze::FindFieldNameLength(const TCHAR* Name)
 
 		if (Ch == TEXT('_'))
 		{
-			static TCHAR DeprecatedName[] = TEXT("DEPRECATED");
+			static const TCHAR* DeprecatedName = TEXT("DEPRECATED");
 
 			const TCHAR* DepIter = DeprecatedName;
 			for (;;)

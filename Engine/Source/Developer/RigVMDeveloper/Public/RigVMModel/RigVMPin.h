@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "RigVMCore/RigVMRegistry.h"
 #include "RigVMCore/RigVMByteCode.h"
+#include "RigVMCore/RigVMTemplate.h"
 #include "RigVMCompiler/RigVMASTProxy.h"
 #include "RigVMPin.generated.h"
 
@@ -56,6 +57,16 @@ public:
 	// Returns the pin of this injected node.
 	UFUNCTION(BlueprintCallable, Category = RigVMInjectionInfo)
 	URigVMPin* GetPin() const;
+
+	struct FWeakInfo
+	{
+		TWeakObjectPtr<URigVMNode> Node;
+		bool bInjectedAsInput;
+		FName InputPinName;
+		FName OutputPinName;
+	};
+
+	FWeakInfo GetWeakInfo() const;
 };
 
 /**
@@ -86,6 +97,12 @@ public:
 
 		FPinOverrideValue(URigVMPin* InPin)
 			: DefaultValue(InPin->GetDefaultValue())
+			, BoundVariablePath(InPin->GetBoundVariablePath())
+		{
+		}
+
+		FPinOverrideValue(URigVMPin* InPin, const TPair<FRigVMASTProxy, const TMap<FRigVMASTProxy, FPinOverrideValue>&>& InOverride)
+			: DefaultValue(InPin->GetDefaultValue(InOverride))
 			, BoundVariablePath(InPin->GetBoundVariablePath())
 		{
 		}
@@ -123,10 +140,18 @@ public:
 	// Default constructor
 	URigVMPin();
 
+	// returns true if the name of this pin matches a given name
+	bool NameEquals(const FString& InName, bool bFollowCoreRedirectors = false) const;
+
 	// Returns a . separated path containing all names of the pin and its owners,
 	// this includes the node name, for example "Node.Color.R"
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	FString GetPinPath(bool bUseNodePath = false) const;
+
+	// Returns a . separated path containing all names of the pin and its owners
+	// until we hit the provided parent pin.
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	FString GetSubPinPath(const URigVMPin* InParentPin, bool bIncludeParentPinName = false) const;
 
 	// Returns a . separated path containing all names of the pin within its main
 	// memory owner / storage. This is typically used to create an offset pointer
@@ -161,6 +186,10 @@ public:
 	// Returns true if the pin should be watched
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool RequiresWatch(const bool bCheckExposedPinChain = false) const;
+	
+	// Returns true if the data type of the Pin is a enum
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsEnum() const;
 
 	// Returns true if the data type of the Pin is a struct
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -173,6 +202,10 @@ public:
 	// Returns true if the data type of the Pin is a uobject
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsUObject() const;
+
+	// Returns true if the data type of the Pin is a interface
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsInterface() const;
 
 	// Returns true if the data type of the Pin is an array
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -194,6 +227,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	int32 GetPinIndex() const;
 
+	// Returns the absolute index of the Pin within the node / parent Pin
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	int32 GetAbsolutePinIndex() const;
+
 	// Returns the number of elements within an array Pin
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	int32 GetArraySize() const;
@@ -206,6 +243,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	FString GetArrayElementCppType() const;
 
+	// Returns the argument type this pin would represent within a template
+	FRigVMTemplateArgumentType GetTemplateArgumentType() const;
+
+	// Returns the argument type index this pin would represent within a template
+	TRigVMTypeIndex GetTypeIndex() const;
+
 	// Returns true if the C++ data type is FString or FName
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsStringType() const;
@@ -216,7 +259,11 @@ public:
 
 	// Returns true if the C++ data type is unknown
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
-	bool IsUnknownType() const;
+	bool IsWildCard() const;
+
+	// Returns true if any of the subpins is a wildcard
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool ContainsWildCardSubPin() const;
 
 	// Returns the default value of the Pin as a string.
 	// Note that this value is computed based on the Pin's
@@ -280,6 +327,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	URigVMPin* GetPinForLink() const;
 
+	// Returns the link that represents the connection
+	// between this pin and InOtherPin. nullptr is returned
+	// if the pins are not connected.
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	URigVMLink* FindLinkForPin(const URigVMPin* InOtherPin) const;
+
 	// Returns the original pin for a pin on an injected
 	// node. This can be used to determine where a link
 	// should go in the user interface
@@ -297,6 +350,9 @@ public:
 	// Returns true if this Pin is linked to another Pin
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsLinkedTo(URigVMPin* InPin) const;
+
+	// Returns true if the pin has any link
+	bool IsLinked(bool bRecursive = false) const;
 
 	// Returns all of the links linked to this Pin.
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
@@ -332,7 +388,7 @@ public:
 
 	// Returns true is the two provided source and target Pins
 	// can be linked to one another.
-	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode);
+	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection = ERigVMPinDirection::IO, bool bInAllowWildcard = false);
 
 	// Returns true if this pin has injected nodes
 	bool HasInjectedNodes() const { return InjectionInfos.Num() > 0; }
@@ -369,13 +425,8 @@ public:
 	// Returns true if this pin is bound to an input argument
 	bool IsBoundToInputArgument() const;
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	// Returns true if the pin can be bound to a given variable
-	bool CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FRigVMRegisterOffset& InOffset = FRigVMRegisterOffset()) const;
-#else
 	// Returns true if the pin can be bound to a given variable
 	bool CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FString& InSegmentPath = FString()) const;
-#endif
 
 	// helper function to retrieve an object from a path
 	static UObject* FindObjectFromCPPTypeObjectPath(const FString& InObjectPath);
@@ -398,6 +449,7 @@ private:
 
 	void UpdateTypeInformationIfRequired() const;
 	void SetNameFromIndex();
+	void SetDisplayName(const FName& InDisplayName);
 
 	void GetExposedPinChainImpl(TArray<const URigVMPin*>& OutExposedPins, TArray<const URigVMPin*>& VisitedPins) const;
 
@@ -464,6 +516,9 @@ private:
 	UPROPERTY()
 	FString BoundVariablePath_DEPRECATED;
 
+	mutable FString LastKnownCPPType;
+	mutable TRigVMTypeIndex LastKnownTypeIndex;
+
 	static const FString OrphanPinPrefix;
 
 	friend class URigVMController;
@@ -471,4 +526,22 @@ private:
 	friend class URigVMGraph;
 	friend class URigVMNode;
 	friend class FRigVMParserAST;
+};
+
+class RIGVMDEVELOPER_API FRigVMPinDefaultValueImportErrorContext : public FOutputDevice
+{
+public:
+
+	int32 NumErrors;
+
+	FRigVMPinDefaultValueImportErrorContext()
+		: FOutputDevice()
+		, NumErrors(0)
+	{
+	}
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	{
+		NumErrors++;
+	}
 };

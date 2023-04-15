@@ -6,27 +6,27 @@ public class SceneOutliner : ModuleRules
 {
 	public SceneOutliner(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePathModuleNames.AddRange(
-			new string[] {
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
-			new string[] {
-				"Core", 
+			new string[]
+			{
+				"Core",
 				"CoreUObject",
 				"Engine",
-                "ApplicationCore",
-                "InputCore",
-				"Slate", 
+				"ApplicationCore",
+				"InputCore",
+				"Slate",
 				"SlateCore",
-				"EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"ToolMenus",
 				"SourceControl",
-				"EditorConfig"
+				"EditorConfig",
+				"SourceControlWindows",
+				"UncontrolledChangelists",
+				"EditorWidgets",
+				"ToolWidgets",
 			}
 		);
+		
 	}
 }

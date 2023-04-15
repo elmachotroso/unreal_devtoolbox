@@ -5,8 +5,11 @@
 #include "DesktopPlatformModule.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
 #include "Internationalization/Text.h"
 #include "IPAddress.h"
+#include "Misc/MessageDialog.h"
 #include "SlateOptMacros.h"
 #include "SocketSubsystem.h"
 #include "Styling/AppStyle.h"
@@ -30,8 +33,8 @@
 
 #if WITH_EDITOR
 	#include "EngineAnalytics.h"
-	#include "Runtime/Analytics/Analytics/Public/AnalyticsEventAttribute.h"
-	#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+	#include "AnalyticsEventAttribute.h"
+	#include "Interfaces/IAnalyticsProvider.h"
 #endif // WITH_EDITOR
 
 // Insights
@@ -75,70 +78,102 @@ public:
 
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override
 	{
-		if (ColumnName == FName(TEXT("Name")))
+		if (ColumnName == TraceStoreColumns::Name)
 		{
-			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+			TSharedPtr<SEditableTextBox> RenameTextBox;
+
+			TSharedRef<SWidget> Widget = SNew(SBox)
+				.Padding(FMargin(4.0f, 0.0f))
 				[
-					SNew(STextBlock)
-					.Text(this, &STraceListRow::GetTraceName)
-					.ToolTip(STraceListRow::GetTraceTooltip())
+					SNew(SOverlay)
+
+					+ SOverlay::Slot()
+					[
+						SNew(STextBlock)
+						.Visibility_Lambda([this]() { return IsRenaming() ? EVisibility::Collapsed : EVisibility::Visible; })
+						.Text(this, &STraceListRow::GetTraceName)
+						.HighlightText(this, &STraceListRow::GetTraceNameHighlightText)
+						.HighlightColor(FLinearColor(0.75f, 0.75f, 0.75f, 1.0f))
+						.HighlightShape(FInsightsStyle::Get().GetBrush("DarkGreenBrush"))
+						.ToolTip(STraceListRow::GetTraceTooltip())
+					]
+
+					+ SOverlay::Slot()
+					[
+						SAssignNew(RenameTextBox, SEditableTextBox)
+						.Padding(FMargin(-1.0f, 0.0f, 0.0f, 0.0f))
+						.Visibility_Lambda([this]() { return IsRenaming() ? EVisibility::Visible : EVisibility::Collapsed; })
+						.Text(this, &STraceListRow::GetTraceName)
+						.ClearKeyboardFocusOnCommit(true)
+						.OnTextCommitted(this, &STraceListRow::RenameTextBox_OnValueCommitted)
+						.ToolTip(STraceListRow::GetTraceTooltip())
+					]
 				];
+
+			TSharedPtr<FTraceViewModel> TracePin = WeakTrace.Pin();
+			if (TracePin.IsValid())
+			{
+				// A weak reference is stored in the view model in order to focus the text box
+				// when starts renaming.
+				TracePin->RenameTextBox = RenameTextBox;
+			}
+
+			return Widget;
 		}
-		else if (ColumnName == FName(TEXT("Uri")))
+		else if (ColumnName == TraceStoreColumns::Uri)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceUri)
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("Platform")))
+		else if (ColumnName == TraceStoreColumns::Platform)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTracePlatform)
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("AppName")))
+		else if (ColumnName == TraceStoreColumns::AppName)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceAppName)
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("BuildConfig")))
+		else if (ColumnName == TraceStoreColumns::BuildConfig)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceBuildConfiguration)
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("BuildTarget")))
+		else if (ColumnName == TraceStoreColumns::BuildTarget)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceBuildTarget)
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("Size")))
+		else if (ColumnName == TraceStoreColumns::Size)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceSize)
@@ -146,10 +181,10 @@ public:
 					.ToolTip(STraceListRow::GetTraceTooltip())
 				];
 		}
-		else if (ColumnName == FName(TEXT("Status")))
+		else if (ColumnName == TraceStoreColumns::Status)
 		{
 			return SNew(SBox)
-				.Padding(FMargin(4.0, 0.0))
+				.Padding(FMargin(4.0f, 0.0f))
 				[
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceStatus)
@@ -160,6 +195,106 @@ public:
 		{
 			return SNew(STextBlock).Text(LOCTEXT("UnknownColumn", "Unknown Column"));
 		}
+	}
+
+	bool IsRenaming() const
+	{
+		TSharedPtr<FTraceViewModel> TracePin = WeakTrace.Pin();
+		if (TracePin.IsValid())
+		{
+			return TracePin->bIsRenaming;
+		}
+		return false;
+	}
+
+	void RenameTextBox_OnValueCommitted(const FText& InText, ETextCommit::Type InCommitType)
+	{
+		TSharedPtr<FTraceViewModel> TracePin = WeakTrace.Pin();
+		if (TracePin.IsValid())
+		{
+			if (InCommitType != ETextCommit::OnCleared)
+			{
+				Rename(*TracePin, InText);
+			}
+			TracePin->bIsRenaming = false;
+		}
+	}
+
+	void Rename(FTraceViewModel& Trace, const FText& InText)
+	{
+		const FString TraceName = Trace.Name.ToString();
+		const FString NewTraceName = InText.ToString().TrimStartAndEnd();
+
+		if (NewTraceName == TraceName)
+		{
+			return;
+		}
+
+		if (Trace.bIsLive)
+		{
+			FText Message = LOCTEXT("RenameLive", "Cannot rename a live session!");
+			WeakParentWidget.Pin()->ShowFailMessage(Message);
+			return;
+		}
+
+		UE_LOG(TraceInsights, Log, TEXT("[TraceStore] Renaming \"%s\" to \"%s\"..."), *TraceName, *NewTraceName);
+
+		const FString TraceFile = Trace.Uri.ToString();
+		const FString NewTraceFile = FPaths::Combine(FPaths::GetPath(TraceFile), NewTraceName + TEXT(".utrace"));
+
+		FText Reason;
+		bool bHasReservedCharacters = false;
+		for (const TCHAR* P = *NewTraceName; *P; ++P)
+		{
+			if (*P == TEXT('/') || *P == TEXT('\\'))
+			{
+				bHasReservedCharacters = true;
+				Reason = LOCTEXT("RenameReservedCharacters", "Name may not contain / or \\ characters.");
+				break;
+			}
+		}
+		if (bHasReservedCharacters || !FPaths::ValidatePath(NewTraceFile, &Reason))
+		{
+			FText Message = FText::Format(LOCTEXT("RenameFailFmt3", "Failed to rename \"{0}\" to \"{1}\"!\n{2}"), Trace.Name, FText::FromString(NewTraceName), Reason);
+			WeakParentWidget.Pin()->ShowFailMessage(Message);
+			return;
+		}
+
+		if (FPaths::FileExists(NewTraceFile))
+		{
+			UE_LOG(TraceInsights, Warning, TEXT("[TraceStore] Failed to rename \"%s\" to \"%s\"! File already exists."), *TraceName, *NewTraceName);
+
+			FText Message = FText::Format(LOCTEXT("RenameFailFmt1", "Failed to rename \"{0}\" to \"{1}\"!\nFile already exists."), Trace.Name, FText::FromString(NewTraceName));
+			WeakParentWidget.Pin()->ShowFailMessage(Message);
+			return;
+		}
+
+		if (!FPaths::FileExists(TraceFile) ||
+			!IFileManager::Get().Move(*NewTraceFile, *TraceFile, false))
+		{
+			UE_LOG(TraceInsights, Warning, TEXT("[TraceStore] Failed to rename \"%s\" to \"%s\"!"), *TraceName, *NewTraceName);
+
+			FText Message = FText::Format(LOCTEXT("RenameFailFmt2", "Failed to rename \"{0}\" to \"{1}\"!"), Trace.Name, FText::FromString(NewTraceName));
+			WeakParentWidget.Pin()->ShowFailMessage(Message);
+			return;
+		}
+
+		UE_LOG(TraceInsights, Verbose, TEXT("[TraceStore] Renamed utrace file (\"%s\")."), *NewTraceFile);
+		Trace.Name = FText::FromString(NewTraceName);
+		Trace.Uri = FText::FromString(NewTraceFile);
+
+		const FString CacheFile = FPaths::ChangeExtension(TraceFile, TEXT("ucache"));
+		if (FPaths::FileExists(CacheFile))
+		{
+			const FString NewCacheFile = FPaths::Combine(FPaths::GetPath(CacheFile), NewTraceName + TEXT(".ucache"));
+			if (IFileManager::Get().Move(*NewCacheFile, *CacheFile, true))
+			{
+				UE_LOG(TraceInsights, Verbose, TEXT("[TraceStore] Renamed ucache file (\"%s\")."), *NewCacheFile);
+			}
+		}
+
+		FText Message = FText::Format(LOCTEXT("RenameSuccessFmt", "Renamed \"{0}\" to \"{1}\"."), Trace.Name, FText::FromString(NewTraceName));
+		WeakParentWidget.Pin()->ShowSuccessMessage(Message);
 	}
 
 	FText GetTraceIndexAndId() const
@@ -187,6 +322,29 @@ public:
 		{
 			return FText::GetEmpty();
 		}
+	}
+
+	FText GetTraceNameHighlightText() const
+	{
+		TSharedPtr<STraceStoreWindow> ParentWidgetPin = WeakParentWidget.Pin();
+		if (ParentWidgetPin.IsValid())
+		{
+			if (!ParentWidgetPin->bSearchByCommandLine && ParentWidgetPin->FilterByNameSearchBox.IsValid())
+			{
+				const FText SearchText = ParentWidgetPin->FilterByNameSearchBox->GetText();
+				bool bQuotesRemoved = false;
+				const FString SearchString = SearchText.ToString().TrimQuotes(&bQuotesRemoved);
+				if (bQuotesRemoved)
+				{
+					return FText::FromString(SearchString);
+				}
+				else
+				{
+					return SearchText;
+				}
+			}
+		}
+		return FText::GetEmpty();
 	}
 
 	FText GetTraceUri() const
@@ -239,6 +397,29 @@ public:
 		{
 			return FText::GetEmpty();
 		}
+	}
+
+	FText GetTraceCommandLineHighlightText() const
+	{
+		TSharedPtr<STraceStoreWindow> ParentWidgetPin = WeakParentWidget.Pin();
+		if (ParentWidgetPin.IsValid())
+		{
+			if (ParentWidgetPin->bSearchByCommandLine && ParentWidgetPin->FilterByNameSearchBox.IsValid())
+			{
+				const FText SearchText = ParentWidgetPin->FilterByNameSearchBox->GetText();
+				bool bQuotesRemoved = false;
+				const FString SearchString = SearchText.ToString().TrimQuotes(&bQuotesRemoved);
+				if (bQuotesRemoved)
+				{
+					return FText::FromString(SearchString);
+				}
+				else
+				{
+					return SearchText;
+				}
+			}
+		}
+		return FText::GetEmpty();
 	}
 
 	FText GetTraceBranch() const
@@ -540,10 +721,10 @@ public:
 			int32 Row = 0;
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_Platform", "Platform:"), &STraceListRow::GetTracePlatform);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_AppName", "App Name:"), &STraceListRow::GetTraceAppName);
-			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_CommandLine", "Command Line:"), &STraceListRow::GetTraceCommandLine);
+			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_CommandLine", "Command Line:"), &STraceListRow::GetTraceCommandLine, &STraceListRow::GetTraceCommandLineHighlightText);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_Branch", "Branch:"), &STraceListRow::GetTraceBranch);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_BuildVersion", "Build Version:"), &STraceListRow::GetTraceBuildVersion);
-			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_Changelist", "Changelist:"), &STraceListRow::GetTraceChangelist, &STraceListRow::TraceChangelistVisibility);
+			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_Changelist", "Changelist:"), &STraceListRow::GetTraceChangelist, nullptr, &STraceListRow::TraceChangelistVisibility);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_BuildConfig", "Build Config:"), &STraceListRow::GetTraceBuildConfiguration);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_BuildTarget", "Build Target:"), &STraceListRow::GetTraceBuildTarget);
 			AddGridPanelRow(GridPanel, Row++, LOCTEXT("TraceTooltip_Timestamp", "Timestamp:"), &STraceListRow::GetTraceTimestampForTooltip);
@@ -568,6 +749,7 @@ public:
 private:
 	void AddGridPanelRow(TSharedPtr<SGridPanel> Grid, int32 Row, const FText& InHeaderText,
 		typename TAttribute<FText>::FGetter::template TConstMethodPtr<STraceListRow> InValueTextFn,
+		typename TAttribute<FText>::FGetter::template TConstMethodPtr<STraceListRow> InHighlightTextFn = nullptr,
 		typename TAttribute<EVisibility>::FGetter::template TConstMethodPtr<STraceListRow> InVisibilityFn = nullptr) const
 	{
 		SGridPanel::FSlot* Slot0 = nullptr;
@@ -582,17 +764,37 @@ private:
 			];
 
 		SGridPanel::FSlot* Slot1 = nullptr;
-		Grid->AddSlot(1, Row)
-			.Expose(Slot1)
-			.Padding(2.0f)
-			.HAlign(HAlign_Left)
-			[
-				SNew(STextBlock)
-				.Text(this, InValueTextFn)
-				.WrapTextAt(1024.0f)
-				.WrappingPolicy(ETextWrappingPolicy::AllowPerCharacterWrapping)
-				.ColorAndOpacity(FSlateColor(EStyleColor::Foreground))
-			];
+
+		if (InHighlightTextFn)
+		{
+			Grid->AddSlot(1, Row)
+				.Expose(Slot1)
+				.Padding(2.0f)
+				.HAlign(HAlign_Left)
+				[
+					SNew(STextBlock)
+					.Text(this, InValueTextFn)
+					.HighlightText(this, InHighlightTextFn)
+					.HighlightShape(FInsightsStyle::Get().GetBrush("DarkGreenBrush"))
+					.WrapTextAt(1024.0f)
+					.WrappingPolicy(ETextWrappingPolicy::AllowPerCharacterWrapping)
+					.ColorAndOpacity(FSlateColor(EStyleColor::Foreground))
+				];
+		}
+		else
+		{
+			Grid->AddSlot(1, Row)
+				.Expose(Slot1)
+				.Padding(2.0f)
+				.HAlign(HAlign_Left)
+				[
+					SNew(STextBlock)
+					.Text(this, InValueTextFn)
+					.WrapTextAt(1024.0f)
+					.WrappingPolicy(ETextWrappingPolicy::AllowPerCharacterWrapping)
+					.ColorAndOpacity(FSlateColor(EStyleColor::Foreground))
+				];
+		}
 
 		if (InVisibilityFn)
 		{
@@ -618,24 +820,37 @@ private:
 
 STraceStoreWindow::STraceStoreWindow()
 	: NotificationList()
-	, ActiveNotifications()
 	, OverlaySettingsSlot(nullptr)
 	, DurationActive(0.0f)
 	, ActiveTimerHandle()
 	, MainContentPanel()
-	, LiveSessionCount(0)
+	, StoreBrowser(new Insights::FStoreBrowser())
+	, TracesChangeSerial(0)
+	, TraceViewModels()
+	, FilteredTraceViewModels()
+	, TraceViewModelMap()
+	, TraceListView()
+	, SelectedTrace()
+	, bIsUserSelectedTrace(false)
+	, Filters()
+	, bSearchByCommandLine(false)
+	, FilterByNameSearchBox()
+	, FilterByName()
+	, FilterByPlatform()
+	, FilterByAppName()
+	, FilterByBuildConfig()
+	, FilterByBuildTarget()
+	, FilterByBranch()
+	, bFilterStatsTextIsDirty(true)
+	, FilterStatsText()
+	, SortColumn(TraceStoreColumns::Date)
+	, SortMode(EColumnSortMode::Ascending)
 	, bAutoStartAnalysisForLiveSessions(false)
 	, AutoStartedSessions()
 	, AutoStartPlatformFilter()
 	, AutoStartAppNameFilter()
 	, AutoStartConfigurationTypeFilter(EBuildConfiguration::Unknown)
 	, AutoStartTargetTypeFilter(EBuildTargetType::Unknown)
-	, StoreBrowser(new Insights::FStoreBrowser())
-	, TracesChangeSerial(0)
-	, TraceViewModels()
-	, TraceViewModelMap()
-	, TraceListView()
-	, SelectedTrace()
 	, SplashScreenOverlayFadeTime(0.0f)
 {
 }
@@ -700,7 +915,7 @@ void STraceStoreWindow::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot()
 			.HAlign(HAlign_Fill)
 			.AutoHeight()
-			.Padding(12.0f, 8.0f, 12.0f, 4.0f)
+			.Padding(12.0f, 8.0f, 12.0f, 0.0f)
 			[
 				ConstructTraceStoreDirectoryPanel()
 			]
@@ -708,8 +923,17 @@ void STraceStoreWindow::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot()
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
+			.AutoHeight()
+			.Padding(0.0f, 0.0f, 0.0f, 0.0f)
+			[
+				ConstructFiltersToolbar()
+			]
+
+			+ SVerticalBox::Slot()
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
 			.FillHeight(1.0f)
-			.Padding(3.0f, 4.0f)
+			.Padding(3.0f, 0.0f, 3.0f, 4.0f)
 			[
 				ConstructSessionsPanel()
 			]
@@ -769,6 +993,8 @@ void STraceStoreWindow::Construct(const FArguments& InArgs)
 		.Expose(OverlaySettingsSlot)
 	];
 
+	CreateFilters();
+
 	RefreshTraceList();
 
 	FSlateApplication::Get().SetKeyboardFocus(TraceListView);
@@ -776,6 +1002,142 @@ void STraceStoreWindow::Construct(const FArguments& InArgs)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::ConstructFiltersToolbar()
+{
+	FSlimHorizontalToolBarBuilder ToolbarBuilder(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None);
+	ToolbarBuilder.SetStyle(&FInsightsStyle::Get(), "SecondaryToolbar");
+
+	ToolbarBuilder.BeginSection("Filters");
+	{
+		// Toggle between filtering the list of trace sessions by name or by command line
+		ToolbarBuilder.AddWidget(
+			SNew(SCheckBox)
+			.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+			.HAlign(HAlign_Center)
+			.Padding(3.0f)
+			.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState) { bSearchByCommandLine = (NewState == ECheckBoxState::Checked); OnFilterChanged(); })
+			.IsChecked_Lambda([this]() { return bSearchByCommandLine ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.ToolTipText(LOCTEXT("ToggleNameFilter_Tooltip", "Toggle between filtering the list of trace sessions by name or by command line."))
+			[
+				SNew(SImage)
+				.Image(FInsightsStyle::Get().GetBrush("Icons.Console"))
+			]);
+
+		// Text Filter (Search Box)
+		ToolbarBuilder.AddWidget(
+			SNew(SBox)
+			.MaxDesiredWidth(400.0f)
+			[
+				SAssignNew(FilterByNameSearchBox, SSearchBox)
+				.MinDesiredWidth(150.0f)
+				.HintText_Lambda([this]()
+					{
+						return bSearchByCommandLine ?
+							LOCTEXT("CmdLineFilter_Hint", "Command Line") :
+							LOCTEXT("NameFilter_Hint", "Name");
+					})
+				.ToolTipText_Lambda([this]()
+					{
+						return bSearchByCommandLine ?
+							LOCTEXT("CmdLineFilter_Tooltip", "Type here to filter the list of trace sessions by command line.") :
+							LOCTEXT("NameFilter_Tooltip", "Type here to filter the list of trace sessions by name.");
+					})
+				.IsEnabled_Lambda([this]() { return TraceViewModels.Num() > 0; })
+				.OnTextChanged(this, &STraceStoreWindow::FilterByNameSearchBox_OnTextChanged)
+				.DelayChangeNotificationsWhileTyping(true)
+			]
+		);
+
+		// Filter by Platform
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &STraceStoreWindow::MakePlatformFilterMenu),
+			LOCTEXT("FilterByPlatformText", "Platform"),
+			LOCTEXT("FilterByPlatformToolTip", "Filters the list of trace sessions by platform."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Filter.ToolBar"),
+			false
+		);
+
+		// Filter by AppName
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &STraceStoreWindow::MakeAppNameFilterMenu),
+			LOCTEXT("FilterByAppNameText", "App Name"),
+			LOCTEXT("FilterByAppNameToolTip", "Filters the list of trace sessions by application name."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Filter.ToolBar"),
+			false
+		);
+
+		// Filter by Build Config
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &STraceStoreWindow::MakeBuildConfigFilterMenu),
+			LOCTEXT("FilterByBuildConfigText", "Config"),
+			LOCTEXT("FilterByBuildConfigToolTip", "Filters the list of trace sessions by build configuration."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Filter.ToolBar"),
+			false
+		);
+
+		// Filter by Build Target
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &STraceStoreWindow::MakeBuildTargetFilterMenu),
+			LOCTEXT("FilterByBuildTargetText", "Target"),
+			LOCTEXT("FilterByBuildTargetToolTip", "Filters the list of trace sessions by build target."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Filter.ToolBar"),
+			false
+		);
+
+		// Filter by Branch
+		ToolbarBuilder.AddComboButton(
+			FUIAction(),
+			FOnGetContent::CreateSP(this, &STraceStoreWindow::MakeBranchFilterMenu),
+			LOCTEXT("FilterByBranchText", "Branch"),
+			LOCTEXT("FilterByBranchToolTip", "Filters the list of trace sessions by branch."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Filter.ToolBar"),
+			false
+		);
+	}
+	ToolbarBuilder.EndSection();
+
+	FSlimHorizontalToolBarBuilder RightSideToolbarBuilder(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None);
+	RightSideToolbarBuilder.SetStyle(&FInsightsStyle::Get(), "PrimaryToolbar");
+	RightSideToolbarBuilder.BeginSection("FilterStats");
+	{
+		// Filter Stats Text (number and size of filtered trace sessions)
+		RightSideToolbarBuilder.AddWidget(
+			SNew(SBox)
+			.VAlign(VAlign_Bottom)
+			.Padding(FMargin(4.0f, 0.0f, 4.0f, 0.0f))
+			[
+				SNew(STextBlock)
+				.Text(this, &STraceStoreWindow::GetFilterStatsText)
+			]
+		);
+	}
+	RightSideToolbarBuilder.EndSection();
+
+	return SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Fill)
+		.VAlign(VAlign_Center)
+		.FillWidth(1.0f)
+		.Padding(0.0f)
+		[
+			ToolbarBuilder.MakeWidget()
+		]
+
+	+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Right)
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		.Padding(0.0f)
+		[
+			RightSideToolbarBuilder.MakeWidget()
+		];
+}
 
 TSharedRef<SWidget> STraceStoreWindow::ConstructSessionsPanel()
 {
@@ -785,45 +1147,110 @@ TSharedRef<SWidget> STraceStoreWindow::ConstructSessionsPanel()
 		.SelectionMode(ESelectionMode::Single)
 		.OnSelectionChanged(this, &STraceStoreWindow::TraceList_OnSelectionChanged)
 		.OnMouseButtonDoubleClick(this, &STraceStoreWindow::TraceList_OnMouseButtonDoubleClick)
-		.ListItemsSource(&TraceViewModels)
+		.ListItemsSource(&FilteredTraceViewModels)
 		.OnGenerateRow(this, &STraceStoreWindow::TraceList_OnGenerateRow)
 		.ConsumeMouseWheel(EConsumeMouseWheel::Always)
-		//.OnContextMenuOpening(FOnContextMenuOpening::CreateSP(this, &STraceStoreWindow::TraceList_GetContextMenu))
+		.OnContextMenuOpening(FOnContextMenuOpening::CreateSP(this, &STraceStoreWindow::TraceList_GetMenuContent))
 		.HeaderRow
 		(
 			SNew(SHeaderRow)
 
-			+ SHeaderRow::Column(FName(TEXT("Name")))
+			+ SHeaderRow::Column(TraceStoreColumns::Name)
 			.FillWidth(0.25f)
-			.DefaultLabel(LOCTEXT("NameColumn", "Name"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::Name)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
+			[
+				SNew(SBox)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NameColumn", "Name"))
+					.ColorAndOpacity_Lambda([this] { return FilterByName->GetRawFilterText().IsEmpty() ? FLinearColor(0.5f, 0.5f, 0.5f, 1.0f) : FLinearColor(0.3f, 0.75f, 1.0f, 1.0f); })
+				]
+			]
 
-			+ SHeaderRow::Column(FName(TEXT("Platform")))
+			+ SHeaderRow::Column(TraceStoreColumns::Platform)
 			.FillWidth(0.1f)
-			.DefaultLabel(LOCTEXT("PlatformColumn", "Platform"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::Platform)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
+			.OnGetMenuContent(this, &STraceStoreWindow::MakePlatformColumnHeaderMenu)
+			[
+				SNew(SBox)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("PlatformColumn", "Platform"))
+					.ColorAndOpacity_Lambda([this] { return FilterByPlatform->IsEmpty() ? FLinearColor(0.5f, 0.5f, 0.5f, 1.0f) : FLinearColor(0.3f, 0.75f, 1.0f, 1.0f); })
+				]
+			]
 
-			+ SHeaderRow::Column(FName(TEXT("AppName")))
+			+ SHeaderRow::Column(TraceStoreColumns::AppName)
 			.FillWidth(0.1f)
-			.DefaultLabel(LOCTEXT("AppNameColumn", "App Name"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::AppName)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
+			.OnGetMenuContent(this, &STraceStoreWindow::MakeAppNameColumnHeaderMenu)
+			[
+				SNew(SBox)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("AppNameColumn", "App Name"))
+					.ColorAndOpacity_Lambda([this] { return FilterByAppName->IsEmpty() ? FLinearColor(0.5f, 0.5f, 0.5f, 1.0f) : FLinearColor(0.3f, 0.75f, 1.0f, 1.0f); })
+				]
+			]
 
-			+ SHeaderRow::Column(FName(TEXT("BuildConfig")))
+			+ SHeaderRow::Column(TraceStoreColumns::BuildConfig)
 			.FillWidth(0.1f)
-			.DefaultLabel(LOCTEXT("BuildConfigColumn", "Build Config"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::BuildConfig)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
+			.OnGetMenuContent(this, &STraceStoreWindow::MakeBuildConfigColumnHeaderMenu)
+			[
+				SNew(SBox)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("BuildConfigColumn", "Build Config"))
+					.ColorAndOpacity_Lambda([this] { return FilterByBuildConfig->IsEmpty() ? FLinearColor(0.5f, 0.5f, 0.5f, 1.0f) : FLinearColor(0.3f, 0.75f, 1.0f, 1.0f); })
+				]
+			]
 
-			+ SHeaderRow::Column(FName(TEXT("BuildTarget")))
+			+ SHeaderRow::Column(TraceStoreColumns::BuildTarget)
 			.FillWidth(0.1f)
-			.DefaultLabel(LOCTEXT("BuildTargetColumn", "Build Target"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::BuildTarget)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
+			.OnGetMenuContent(this, &STraceStoreWindow::MakeBuildTargetColumnHeaderMenu)
+			[
+				SNew(SBox)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("BuildTargetColumn", "Build Target"))
+					.ColorAndOpacity_Lambda([this] { return FilterByBuildTarget->IsEmpty() ? FLinearColor(0.5f, 0.5f, 0.5f, 1.0f) : FLinearColor(0.3f, 0.75f, 1.0f, 1.0f); })
+				]
+			]
 
-			+ SHeaderRow::Column(FName(TEXT("Size")))
+			+ SHeaderRow::Column(TraceStoreColumns::Size)
+			.DefaultLabel(LOCTEXT("SizeColumn", "File Size"))
 			.FixedWidth(100.0f)
 			.HAlignHeader(HAlign_Right)
 			.HAlignCell(HAlign_Right)
-			.DefaultLabel(LOCTEXT("SizeColumn", "File Size"))
+			.InitialSortMode(EColumnSortMode::Descending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::Size)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
 
-			+ SHeaderRow::Column(FName(TEXT("Status")))
+			+ SHeaderRow::Column(TraceStoreColumns::Status)
+			.DefaultLabel(LOCTEXT("StatusColumn", "Status"))
 			.FixedWidth(60.0f)
 			.HAlignHeader(HAlign_Right)
 			.HAlignCell(HAlign_Right)
-			.DefaultLabel(LOCTEXT("StatusColumn", "Status"))
+			.InitialSortMode(EColumnSortMode::Ascending)
+			.SortMode(this, &STraceStoreWindow::GetSortModeForColumn, TraceStoreColumns::Status)
+			.OnSort(this, &STraceStoreWindow::OnSortModeChanged)
 		);
 
 	return Widget;
@@ -955,9 +1382,13 @@ TSharedRef<SWidget> STraceStoreWindow::ConstructAutoStartPanel()
 	.HAlign(HAlign_Left)
 	.VAlign(VAlign_Center)
 	[
-		SAssignNew(AutoStartPlatformFilter, SSearchBox)
-		.HintText(LOCTEXT("AutoStartPlatformFilter_Hint", "Platform"))
-		.ToolTipText(LOCTEXT("AutoStartPlatformFilter_Tooltip", "Type here to specify the Platform filter.\nAuto-start analysis will be enabled only for live trace sessions with this specified Platform."))
+		SNew(SBox)
+		.MaxDesiredWidth(200.0f)
+		[
+			SAssignNew(AutoStartPlatformFilter, SSearchBox)
+			.HintText(LOCTEXT("AutoStartPlatformFilter_Hint", "Platform"))
+			.ToolTipText(LOCTEXT("AutoStartPlatformFilter_Tooltip", "Type here to specify the Platform filter.\nAuto-start analysis will be enabled only for live trace sessions with this specified Platform."))
+		]
 	]
 
 	+ SHorizontalBox::Slot()
@@ -966,9 +1397,13 @@ TSharedRef<SWidget> STraceStoreWindow::ConstructAutoStartPanel()
 	.HAlign(HAlign_Left)
 	.VAlign(VAlign_Center)
 	[
-		SAssignNew(AutoStartAppNameFilter, SSearchBox)
-		.HintText(LOCTEXT("AutoStartAppNameFilter_Hint", "AppName"))
-		.ToolTipText(LOCTEXT("AutoStartAppNameFilter_Tooltip", "Type here to specify the AppName filter.\nAuto-start analysis will be enabled only for live trace sessions with this specified AppName."))
+		SNew(SBox)
+		.MaxDesiredWidth(200.0f)
+		[
+			SAssignNew(AutoStartAppNameFilter, SSearchBox)
+			.HintText(LOCTEXT("AutoStartAppNameFilter_Hint", "AppName"))
+			.ToolTipText(LOCTEXT("AutoStartAppNameFilter_Tooltip", "Type here to specify the AppName filter.\nAuto-start analysis will be enabled only for live trace sessions with this specified AppName."))
+		]
 	];
 
 	return Widget;
@@ -982,6 +1417,129 @@ TSharedRef<ITableRow> STraceStoreWindow::TraceList_OnGenerateRow(TSharedPtr<FTra
 }
 
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedPtr<SWidget> STraceStoreWindow::TraceList_GetMenuContent()
+{
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, NULL);
+
+	MenuBuilder.BeginSection("Misc");
+	{
+		FUIAction Action_Rename
+		(
+			FExecuteAction::CreateSP(this, &STraceStoreWindow::RenameTraceFile),
+			FCanExecuteAction::CreateSP(this, &STraceStoreWindow::CanEditTraceFile)
+		);
+		MenuBuilder.AddMenuEntry
+		(
+			LOCTEXT("ContextMenu_Rename", "Rename... \t\tF2"),
+			LOCTEXT("ContextMenu_Rename_ToolTip", "Rename the selected utrace file."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Rename"),
+			Action_Rename,
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+
+		FUIAction Action_Delete
+		(
+			FExecuteAction::CreateSP(this, &STraceStoreWindow::DeleteTraceFile),
+			FCanExecuteAction::CreateSP(this, &STraceStoreWindow::CanEditTraceFile)
+		);
+		MenuBuilder.AddMenuEntry
+		(
+			LOCTEXT("ContextMenu_Delete", "Delete \t\t\tDel"),
+			LOCTEXT("ContextMenu_Delete_ToolTip", "Delete the selected utrace file."),
+			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Delete"),
+			Action_Delete,
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+	}
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool STraceStoreWindow::CanEditTraceFile() const
+{
+	return SelectedTrace.IsValid() && !SelectedTrace->bIsLive;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::RenameTraceFile()
+{
+	if (SelectedTrace.IsValid() && !SelectedTrace->bIsLive)
+	{
+		SelectedTrace->bIsRenaming = true;
+
+		FSlateApplication::Get().CloseToolTip();
+
+		TSharedPtr<SEditableTextBox> RenameTextBox = SelectedTrace->RenameTextBox.Pin();
+		if (RenameTextBox.IsValid())
+		{
+			FSlateApplication::Get().SetKeyboardFocus(RenameTextBox.ToSharedRef(), EFocusCause::SetDirectly);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::DeleteTraceFile()
+{
+	if (!SelectedTrace.IsValid() || SelectedTrace->bIsLive)
+	{
+		return;
+	}
+
+	FSlateApplication::Get().CloseToolTip();
+
+	FString TraceFile = SelectedTrace->Uri.ToString();
+
+	//TODO: Make a custom OkCancel modal dialog. See FSlateApplication::Get().AddModalWindow(..).
+	FText Title = LOCTEXT("ConfirmToDeleteTraceFile_Title", "Unreal Insights");
+	FText ConfirmMessage = FText::Format(LOCTEXT("ConfirmToDeleteTraceFile", "You are about to delete the utrace file:\n{0}\n\nPress Ok to continue."),
+		FText::FromString(TraceFile));
+	EAppReturnType::Type OkToDelete = FMessageDialog::Open(EAppMsgType::OkCancel, ConfirmMessage, &Title);
+	if (OkToDelete == EAppReturnType::Cancel)
+	{
+		return;
+	}
+
+	FString TraceName = SelectedTrace->Name.ToString();
+	UE_LOG(TraceInsights, Log, TEXT("[TraceStore] Deleting \"%s\"..."), *TraceName);
+
+	if (FPaths::FileExists(TraceFile) && IFileManager::Get().Delete(*TraceFile))
+	{
+		UE_LOG(TraceInsights, Verbose, TEXT("[TraceStore] Deleted utrace file (\"%s\")."), *TraceFile);
+
+		FString CacheFile = FPaths::ChangeExtension(TraceFile, TEXT("ucache"));
+		if (FPaths::FileExists(CacheFile))
+		{
+			if (IFileManager::Get().Delete(*CacheFile))
+			{
+				UE_LOG(TraceInsights, Verbose, TEXT("[TraceStore] Deleted ucache file (\"%s\")."), *CacheFile);
+			}
+		}
+
+		TraceViewModels.Remove(SelectedTrace);
+		TraceViewModelMap.Remove(SelectedTrace->TraceId);
+		OnTraceListChanged();
+
+		FText Message = FText::Format(LOCTEXT("DeleteSuccessFmt", "Deleted \"{0}\"."), FText::FromString(TraceName));
+		ShowSuccessMessage(Message);
+	}
+	else
+	{
+		UE_LOG(TraceInsights, Warning, TEXT("[TraceStore] Failed to delete utrace file (\"%s\")!"), *TraceFile);
+
+		FText Message = FText::Format(LOCTEXT("DeleteFailFmt", "Failed to delete \"{0}\"!"), FText::FromString(TraceName));
+		ShowFailMessage(Message);
+	}
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1058,12 +1616,6 @@ FReply STraceStoreWindow::RefreshTraces_OnClicked()
 
 void STraceStoreWindow::RefreshTraceList()
 {
-	UE::Trace::FStoreClient* StoreClient = FInsightsManager::Get()->GetStoreClient();
-	if (StoreClient == nullptr)
-	{
-		return;
-	}
-
 	FStopwatch StopwatchTotal;
 	StopwatchTotal.Start();
 
@@ -1126,7 +1678,9 @@ void STraceStoreWindow::RefreshTraceList()
 					FTraceViewModel& Trace = *TracePtr;
 					Trace.TraceId = SourceTrace.TraceId;
 					Trace.Name = FText::FromString(SourceTrace.Name);
-					Trace.Uri = FText::FromString(FInsightsManager::Get()->GetStoreDir() + TEXT("/") + SourceTrace.Name + TEXT(".utrace"));
+					FString Uri = FInsightsManager::Get()->GetStoreDir() + TEXT("/") + SourceTrace.Name + TEXT(".utrace");
+					FPaths::NormalizeFilename(Uri);
+					Trace.Uri = FText::FromString(Uri);
 					UpdateTrace(Trace, SourceTrace);
 					TraceViewModels.Add(TracePtr);
 					TraceViewModelMap.Add(SourceTrace.TraceId, TracePtr);
@@ -1171,7 +1725,7 @@ void STraceStoreWindow::UpdateTrace(FTraceViewModel& InOutTrace, const Insights:
 	InOutTrace.IpAddress = InSourceTrace.IpAddress;
 
 	// Is metadata updated?
-	if (!InOutTrace.bIsMetadataUpdated && InSourceTrace.bIsMetadataUpdated)
+	if (!InOutTrace.bIsMetadataUpdated && InSourceTrace.MetadataUpdateCount == 0)
 	{
 		InOutTrace.bIsMetadataUpdated = true;
 		InOutTrace.Platform = FText::FromString(InSourceTrace.Platform);
@@ -1201,7 +1755,7 @@ void STraceStoreWindow::UpdateTrace(FTraceViewModel& InOutTrace, const Insights:
 		{
 			UE_LOG(TraceInsights, Log, TEXT("[TraceStore] Auto starting analysis for trace with id 0x%08X..."), InOutTrace.TraceId);
 			AutoStartedSessions.Add(InOutTrace.TraceId);
-			LoadTrace(InOutTrace.TraceId);
+			OpenTraceSession(InOutTrace.TraceId);
 		}
 	}
 }
@@ -1210,14 +1764,22 @@ void STraceStoreWindow::UpdateTrace(FTraceViewModel& InOutTrace, const Insights:
 
 void STraceStoreWindow::OnTraceListChanged()
 {
-	Algo::SortBy(TraceViewModels, &FTraceViewModel::Timestamp);
+	UpdateFiltering();
+	UpdateSorting();
+	UpdateTraceListView();
+}
 
-	//////////////////////////////////////////////////
-	// TraceViewModels array has changed.
-	// Now we need to rebuild the list in the ListView.
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::UpdateTraceListView()
+{
+	if (!TraceListView)
+	{
+		return;
+	}
 
 	TSharedPtr<FTraceViewModel> NewSelectedTrace;
-	if (SelectedTrace)
+	if (bIsUserSelectedTrace && SelectedTrace)
 	{
 		// Identify the previously selected trace (if stil available) to ensure selection remains unchanged.
 		TSharedPtr<FTraceViewModel>* TracePtrPtr = TraceViewModelMap.Find(SelectedTrace->TraceId);
@@ -1226,17 +1788,30 @@ void STraceStoreWindow::OnTraceListChanged()
 
 	TraceListView->RebuildList();
 
-	// If no selection, auto select the last (newest) trace.
-	if (!NewSelectedTrace.IsValid() && TraceViewModels.Num() > 0)
+	if ((SortColumn == TraceStoreColumns::Date && SortMode == EColumnSortMode::Ascending) ||
+		(SortColumn == TraceStoreColumns::Status && SortMode == EColumnSortMode::Ascending))
 	{
-		NewSelectedTrace = TraceViewModels.Last();
-	}
+		// If no selection, auto select the last (newest) trace.
+		if (!NewSelectedTrace.IsValid() && FilteredTraceViewModels.Num() > 0)
+		{
+			NewSelectedTrace = FilteredTraceViewModels.Last();
+		}
 
-	TraceListView->ScrollToBottom();
+		TraceListView->ScrollToBottom();
+	}
+	else
+	{
+		// If no selection, auto select the first trace.
+		if (!NewSelectedTrace.IsValid() && FilteredTraceViewModels.Num() > 0)
+		{
+			NewSelectedTrace = FilteredTraceViewModels[0];
+		}
+	}
 
 	// Restore selection and ensure it is visible.
 	if (NewSelectedTrace.IsValid())
 	{
+		TraceListView->ClearSelection();
 		TraceListView->SetItemSelection(NewSelectedTrace, true);
 		TraceListView->RequestScrollIntoView(NewSelectedTrace);
 	}
@@ -1246,6 +1821,10 @@ void STraceStoreWindow::OnTraceListChanged()
 
 void STraceStoreWindow::TraceList_OnSelectionChanged(TSharedPtr<FTraceViewModel> TraceSession, ESelectInfo::Type SelectInfo)
 {
+	if (SelectInfo != ESelectInfo::Direct)
+	{
+		bIsUserSelectedTrace = true;
+	}
 	SelectedTrace = TraceSession;
 }
 
@@ -1253,7 +1832,7 @@ void STraceStoreWindow::TraceList_OnSelectionChanged(TSharedPtr<FTraceViewModel>
 
 void STraceStoreWindow::TraceList_OnMouseButtonDoubleClick(TSharedPtr<FTraceViewModel> TraceSession)
 {
-	LoadTraceSession(TraceSession);
+	OpenTraceSession(TraceSession);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1282,6 +1861,11 @@ void STraceStoreWindow::Tick(const FGeometry& AllottedGeometry, const double InC
 		const uint64 WaitTime = static_cast<uint64>(0.5 / FPlatformTime::GetSecondsPerCycle64()); // 500ms
 		NextTimestamp = Time + WaitTime;
 		RefreshTraceList();
+
+		if (bFilterStatsTextIsDirty)
+		{
+			UpdateFilterStatsText();
+		}
 	}
 
 	TickSplashScreenOverlay(InDeltaTime);
@@ -1326,7 +1910,31 @@ void STraceStoreWindow::OnMouseLeave(const FPointerEvent& MouseEvent)
 
 FReply STraceStoreWindow::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
-	return FReply::Unhandled();
+	//TODO: Make commands for Rename and Delete.
+	//return GetCommandList()->ProcessCommandBindings(InKeyEvent) ? FReply::Handled() : FReply::Unhandled();
+
+	if (InKeyEvent.GetKey() == EKeys::F5) // refresh metadata for all trace sessions
+	{
+		StoreBrowser->Refresh();
+
+		TracesChangeSerial = 0;
+		TraceViewModels.Reset();
+		TraceViewModelMap.Reset();
+		OnTraceListChanged();
+		return FReply::Handled();
+	}
+	else if (InKeyEvent.GetKey() == EKeys::F2)
+	{
+		RenameTraceFile();
+		return FReply::Handled();
+	}
+	else if (InKeyEvent.GetKey() == EKeys::Delete)
+	{
+		DeleteTraceFile();
+		return FReply::Handled();
+	}
+
+	return SCompoundWidget::OnKeyDown(MyGeometry, InKeyEvent);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1369,7 +1977,7 @@ FReply STraceStoreWindow::OnDrop(const FGeometry& MyGeometry, const FDragDropEve
 				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
 				if (DraggedFileExtension == TEXT(".utrace"))
 				{
-					LoadTraceFile(Files[0]);
+					OpenTraceFile(Files[0]);
 					return FReply::Handled();
 				}
 			}
@@ -1383,69 +1991,33 @@ FReply STraceStoreWindow::OnDrop(const FGeometry& MyGeometry, const FDragDropEve
 
 bool STraceStoreWindow::Open_IsEnabled() const
 {
-	return TraceViewModels.Num() > 0;
+	return FilteredTraceViewModels.Num() > 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FReply STraceStoreWindow::Open_OnClicked()
 {
-	LoadTraceSession(SelectedTrace);
+	OpenTraceSession(SelectedTrace);
 	return FReply::Handled();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void STraceStoreWindow::OpenFileDialog()
+void STraceStoreWindow::OpenTraceFile()
 {
-	const FString ProfilingDirectory(FPaths::ConvertRelativePathToFull(FInsightsManager::Get()->GetStoreDir()));
-
-	TArray<FString> OutFiles;
-	bool bOpened = false;
-
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	if (DesktopPlatform != nullptr)
+	FString TraceFile;
+	if (FInsightsManager::Get()->ShowOpenTraceFileDialog(TraceFile))
 	{
-		FSlateApplication::Get().CloseToolTip();
-
-		bOpened = DesktopPlatform->OpenFileDialog
-		(
-			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-			LOCTEXT("LoadTrace_FileDesc", "Open trace file...").ToString(),
-			ProfilingDirectory,
-			TEXT(""),
-			LOCTEXT("LoadTrace_FileFilter", "Trace files (*.utrace)|*.utrace|All files (*.*)|*.*").ToString(),
-			EFileDialogFlags::None,
-			OutFiles
-		);
-	}
-
-	if (bOpened == true)
-	{
-		if (OutFiles.Num() == 1)
-		{
-			LoadTraceFile(OutFiles[0]);
-		}
+		OpenTraceFile(TraceFile);
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void STraceStoreWindow::LoadTraceSession(TSharedPtr<FTraceViewModel> InTraceSession)
-{
-	if (InTraceSession.IsValid())
-	{
-		LoadTrace(InTraceSession->TraceId);
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void STraceStoreWindow::LoadTraceFile(const FString& InTraceFile)
+void STraceStoreWindow::OpenTraceFile(const FString& InTraceFile)
 {
 	UE_LOG(TraceInsights, Log, TEXT("[TraceStore] Start analysis (in separate process) for trace file: \"%s\""), *InTraceFile);
-
-	const TCHAR* ExecutablePath = FPlatformProcess::ExecutablePath();
 
 	FString CmdLine = TEXT("-OpenTraceFile=\"") + InTraceFile + TEXT("\"");
 
@@ -1453,22 +2025,7 @@ void STraceStoreWindow::LoadTraceFile(const FString& InTraceFile)
 	GetExtraCommandLineParams(ExtraCmdParams);
 	CmdLine += ExtraCmdParams;
 
-	constexpr bool bLaunchDetached = true;
-	constexpr bool bLaunchHidden = false;
-	constexpr bool bLaunchReallyHidden = false;
-
-	uint32 ProcessID = 0;
-	const int32 PriorityModifier = 0;
-	const TCHAR* OptionalWorkingDirectory = nullptr;
-
-	void* PipeWriteChild = nullptr;
-	void* PipeReadChild = nullptr;
-
-	FProcHandle Handle = FPlatformProcess::CreateProc(ExecutablePath, *CmdLine, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, &ProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeReadChild);
-	if (Handle.IsValid())
-	{
-		FPlatformProcess::CloseProc(Handle);
-	}
+	FInsightsManager::Get()->OpenUnrealInsights(*CmdLine);
 
 	SplashScreenOverlayTraceFile = FPaths::GetBaseFilename(InTraceFile);
 	ShowSplashScreenOverlay();
@@ -1476,35 +2033,38 @@ void STraceStoreWindow::LoadTraceFile(const FString& InTraceFile)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void STraceStoreWindow::LoadTrace(uint32 InTraceId)
+void STraceStoreWindow::OpenTraceSession(TSharedPtr<FTraceViewModel> InTraceSession)
+{
+	if (InTraceSession.IsValid())
+	{
+		OpenTraceSession(InTraceSession->TraceId);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::OpenTraceSession(uint32 InTraceId)
 {
 	UE_LOG(TraceInsights, Log, TEXT("[TraceStore] Start analysis (in separate process) for trace id: 0x%08X"), InTraceId);
 
-	const TCHAR* ExecutablePath = FPlatformProcess::ExecutablePath();
+	UE::Trace::FStoreClient* StoreClient = FInsightsManager::Get()->GetStoreClient();
+	if (!StoreClient)
+	{
+		return;
+	}
 
-	const uint32 StorePort = FInsightsManager::Get()->GetStoreClient()->GetStorePort();
+	uint32 StorePort = 0;
+	{
+		FScopeLock StoreClientLock(&FInsightsManager::Get()->GetStoreClientCriticalSection());
+		StorePort = StoreClient->GetStorePort();
+	}
 	FString CmdLine = FString::Printf(TEXT("-OpenTraceId=%d -StorePort=%d"), InTraceId, StorePort);
 
 	FString ExtraCmdParams;
 	GetExtraCommandLineParams(ExtraCmdParams);
 	CmdLine += ExtraCmdParams;
 
-	constexpr bool bLaunchDetached = true;
-	constexpr bool bLaunchHidden = false;
-	constexpr bool bLaunchReallyHidden = false;
-
-	uint32 ProcessID = 0;
-	const int32 PriorityModifier = 0;
-	const TCHAR* OptionalWorkingDirectory = nullptr;
-
-	void* PipeWriteChild = nullptr;
-	void* PipeReadChild = nullptr;
-
-	FProcHandle Handle = FPlatformProcess::CreateProc(ExecutablePath, *CmdLine, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, &ProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeReadChild);
-	if (Handle.IsValid())
-	{
-		FPlatformProcess::CloseProc(Handle);
-	}
+	FInsightsManager::Get()->OpenUnrealInsights(*CmdLine);
 
 	TSharedPtr<FTraceViewModel>* TraceSessionPtrPtr = TraceViewModelMap.Find(InTraceId);
 	if (TraceSessionPtrPtr)
@@ -1519,6 +2079,8 @@ void STraceStoreWindow::LoadTrace(uint32 InTraceId)
 
 TSharedRef<SWidget> STraceStoreWindow::MakeTraceListMenu()
 {
+	FSlateApplication::Get().CloseToolTip();
+
 	RefreshTraceList();
 
 	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
@@ -1529,7 +2091,7 @@ TSharedRef<SWidget> STraceStoreWindow::MakeTraceListMenu()
 			LOCTEXT("OpenFileButtonLabel", "Open File..."),
 			LOCTEXT("OpenFileButtonTooltip", "Start analysis for a specified trace file."),
 			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.FolderOpen"),
-			FUIAction(FExecuteAction::CreateSP(this, &STraceStoreWindow::OpenFileDialog)),
+			FUIAction(FExecuteAction::CreateSP(this, &STraceStoreWindow::OpenTraceFile)),
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
@@ -1538,35 +2100,31 @@ TSharedRef<SWidget> STraceStoreWindow::MakeTraceListMenu()
 
 	MenuBuilder.BeginSection("AvailableTraces", LOCTEXT("TraceListMenu_Section_AvailableTraces", "Top Most Recently Created Traces"));
 	{
-		UE::Trace::FStoreClient* StoreClient = FInsightsManager::Get()->GetStoreClient();
-		if (StoreClient != nullptr)
+		// Make a copy of the trace list (to allow list view to be sorted by other criteria).
+		TArray<TSharedPtr<FTraceViewModel>> SortedTraces(TraceViewModels);
+		Algo::SortBy(SortedTraces, &FTraceViewModel::Timestamp);
+
+		int32 TraceCountLimit = 10; // top 10
+
+		// Iterate in reverse order as we want most recently created traces first.
+		for (int32 TraceIndex = SortedTraces.Num() - 1; TraceIndex >= 0 && TraceCountLimit > 0; --TraceIndex, --TraceCountLimit)
 		{
-			// Make a copy of the trace list (to allow list view to be sorted by other criteria).
-			TArray<TSharedPtr<FTraceViewModel>> SortedTraces(TraceViewModels);
-			Algo::SortBy(SortedTraces, &FTraceViewModel::Timestamp);
+			const FTraceViewModel& Trace = *SortedTraces[TraceIndex];
 
-			int32 TraceCountLimit = 10; // top 10
-
-			// Iterate in reverse order as we want most recently created traces first.
-			for (int32 TraceIndex = SortedTraces.Num() - 1; TraceIndex >= 0 && TraceCountLimit > 0; --TraceIndex, --TraceCountLimit)
+			FText Label = Trace.Name;
+			if (Trace.bIsLive)
 			{
-				const FTraceViewModel& Trace = *SortedTraces[TraceIndex];
-
-				FText Label = Trace.Name;
-				if (Trace.bIsLive)
-				{
-					Label = FText::Format(LOCTEXT("LiveTraceTextFmt", "{0} (LIVE!)"), Label);
-				}
-
-				MenuBuilder.AddMenuEntry(
-					Label,
-					TAttribute<FText>(), // no tooltip
-					FSlateIcon(),
-					FUIAction(FExecuteAction::CreateSP(this, &STraceStoreWindow::LoadTrace, Trace.TraceId)),
-					NAME_None,
-					EUserInterfaceActionType::Button
-				);
+				Label = FText::Format(LOCTEXT("LiveTraceTextFmt", "{0} (LIVE!)"), Label);
 			}
+
+			MenuBuilder.AddMenuEntry(
+				Label,
+				TAttribute<FText>(), // no tooltip
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &STraceStoreWindow::OpenTraceSession, Trace.TraceId)),
+				NAME_None,
+				EUserInterfaceActionType::Button
+			);
 		}
 	}
 	MenuBuilder.EndSection();
@@ -1644,6 +2202,176 @@ TSharedRef<SWidget> STraceStoreWindow::MakeTraceListMenu()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+TSharedRef<SWidget> STraceStoreWindow::MakePlatformColumnHeaderMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_PlatformFilter", "Platform Filter"));
+	BuildPlatformFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakePlatformFilterMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_PlatformFilter", "Platform Filter"));
+	BuildPlatformFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::BuildPlatformFilterSubMenu(FMenuBuilder& InMenuBuilder)
+{
+	FilterByPlatform->BuildMenu(InMenuBuilder, *this);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeAppNameColumnHeaderMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_AppNameFilter", "App Name Filter"));
+	BuildAppNameFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeAppNameFilterMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_AppNameFilter", "App Name Filter"));
+	BuildAppNameFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::BuildAppNameFilterSubMenu(FMenuBuilder& InMenuBuilder)
+{
+	FilterByAppName->BuildMenu(InMenuBuilder, *this);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeBuildConfigColumnHeaderMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_BuildConfigFilter", "Build Config Filter"));
+	BuildBuildConfigFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeBuildConfigFilterMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_BuildConfigFilter", "Build Config Filter"));
+	BuildBuildConfigFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::BuildBuildConfigFilterSubMenu(FMenuBuilder& InMenuBuilder)
+{
+	FilterByBuildConfig->BuildMenu(InMenuBuilder, *this);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeBuildTargetColumnHeaderMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_BuildTargetFilter", "Build Target Filter"));
+	BuildBuildTargetFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeBuildTargetFilterMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_BuildTargetFilter", "Build Target Filter"));
+	BuildBuildTargetFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::BuildBuildTargetFilterSubMenu(FMenuBuilder& InMenuBuilder)
+{
+	FilterByBuildTarget->BuildMenu(InMenuBuilder, *this);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STraceStoreWindow::MakeBranchFilterMenu()
+{
+	FSlateApplication::Get().CloseToolTip();
+
+	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+	MenuBuilder.BeginSection("Filter", LOCTEXT("MenuSection_BranchFilter", "Branch Filter"));
+	BuildBranchFilterSubMenu(MenuBuilder);
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::BuildBranchFilterSubMenu(FMenuBuilder& InMenuBuilder)
+{
+	FilterByBranch->BuildMenu(InMenuBuilder, *this);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 FText STraceStoreWindow::GetTraceStoreDirectory() const
 {
 	return FText::FromString(FPaths::ConvertRelativePathToFull(FInsightsManager::Get()->GetStoreDir()));
@@ -1707,6 +2435,470 @@ void STraceStoreWindow::GetExtraCommandLineParams(FString& OutParams) const
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// TTraceSetFilter
+
+template<typename TSetType>
+void TTraceSetFilter<TSetType>::BuildMenu(FMenuBuilder& InMenuBuilder, STraceStoreWindow& Window)
+{
+	// Show/Hide All
+	{
+		FUIAction Action;
+		Action.ExecuteAction = FExecuteAction::CreateLambda([this, &Window]()
+			{
+				if (FilterSet.IsEmpty())
+				{
+					FilterSet.Reset();
+					for (const TSharedPtr<FTraceViewModel>& Trace : Window.GetAllAvailableTraces())
+					{
+						FilterSet.Add(GetFilterValueForTrace(*Trace));
+					}
+				}
+				else
+				{
+					FilterSet.Reset();
+				}
+				Window.OnFilterChanged();
+			});
+		Action.GetActionCheckState = FGetActionCheckState::CreateLambda([this]()
+			{
+				return FilterSet.IsEmpty() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			});
+
+		InMenuBuilder.AddMenuEntry(
+			ToggleAllActionLabel,
+			ToggleAllActionTooltip.IsEmpty() ? TAttribute<FText>() : ToggleAllActionTooltip,
+			FSlateIcon(),
+			Action,
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+
+	InMenuBuilder.AddSeparator();
+
+	TMap<TSetType, uint32> AllUniqueValues;
+	for (const TSharedPtr<FTraceViewModel>& Trace : Window.GetAllAvailableTraces())
+	{
+		TSetType Value = GetFilterValueForTrace(*Trace);
+		if (AllUniqueValues.Contains(Value))
+		{
+			AllUniqueValues[Value]++;
+		}
+		else
+		{
+			AllUniqueValues.Add(Value, 1);
+		}
+	}
+	AllUniqueValues.KeySort([](const TSetType& A, const TSetType& B) { return A < B; });
+
+	for (const auto& Pair : AllUniqueValues)
+	{
+		const TSetType& Value = Pair.Key;
+		FUIAction Action;
+		Action.ExecuteAction = FExecuteAction::CreateLambda([this, Value, &Window]()
+			{
+				if (FilterSet.Contains(Value))
+				{
+					FilterSet.Remove(Value);
+				}
+				else
+				{
+					FilterSet.Add(Value);
+				}
+				Window.OnFilterChanged();
+			});
+		Action.GetActionCheckState = FGetActionCheckState::CreateLambda([this, Value]()
+			{
+				return FilterSet.Contains(Value) ? ECheckBoxState::Unchecked : ECheckBoxState::Checked;
+			});
+
+		InMenuBuilder.AddMenuEntry(
+			FText::Format(LOCTEXT("FilterValue_Fmt", "{0} ({1})"), ValueToText(Value), FText::AsNumber(Pair.Value)),
+			TAttribute<FText>(), // no tooltip
+			FSlateIcon(),
+			Action,
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+}
+
+template<typename TSetType>
+TTraceSetFilter<TSetType>::TTraceSetFilter()
+{
+	ToggleAllActionLabel = LOCTEXT("ToggleAll_Label", "Show/Hide All");
+	UndefinedValueLabel = LOCTEXT("UndefinedValueLabel", "N/A");
+}
+
+FTraceFilterByPlatform::FTraceFilterByPlatform()
+{
+	ToggleAllActionTooltip = LOCTEXT("FilterByPlatform_ToggleAll_Tooltip", "Shows or hides traces for all platforms.");
+}
+
+FTraceFilterByAppName::FTraceFilterByAppName()
+{
+	ToggleAllActionTooltip = LOCTEXT("FilterByAppName_ToggleAll_Tooltip", "Shows or hides traces for all app names.");
+}
+
+FTraceFilterByBuildConfig::FTraceFilterByBuildConfig()
+{
+	ToggleAllActionTooltip = LOCTEXT("FilterByBuildConfig_ToggleAll_Tooltip", "Shows or hides traces for all build configurations.");
+}
+
+FTraceFilterByBuildTarget::FTraceFilterByBuildTarget()
+{
+	ToggleAllActionTooltip = LOCTEXT("FilterByBuildTarget_ToggleAll_Tooltip", "Shows or hides traces for all build targets.");
+}
+
+FTraceFilterByBranch::FTraceFilterByBranch()
+{
+	ToggleAllActionTooltip = LOCTEXT("FilterByBranch_ToggleAll_Tooltip", "Shows or hides traces for all branches.");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::FilterByNameSearchBox_OnTextChanged(const FText& InFilterText)
+{
+	FilterByName->SetRawFilterText(InFilterText);
+	FilterByNameSearchBox->SetError(FilterByName->GetFilterErrorText());
+	OnFilterChanged();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::OnFilterChanged()
+{
+	UpdateFiltering();
+	UpdateSorting();
+	UpdateTraceListView();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const TArray<TSharedPtr<FTraceViewModel>>& STraceStoreWindow::GetAllAvailableTraces() const
+{
+	return TraceViewModels;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::CreateFilters()
+{
+	Filters = MakeShared<FTraceViewModelFilterCollection>();
+
+	FilterByName = MakeShared<FTraceTextFilter>(FTraceTextFilter::FItemToStringArray::CreateSP(this, &STraceStoreWindow::HandleItemToStringArray));
+	Filters->Add(FilterByName);
+
+	FilterByPlatform = MakeShared<FTraceFilterByPlatform>();
+	Filters->Add(FilterByPlatform);
+
+	FilterByAppName = MakeShared<FTraceFilterByAppName>();
+	Filters->Add(FilterByAppName);
+
+	FilterByBuildConfig = MakeShared<FTraceFilterByBuildConfig>();
+	Filters->Add(FilterByBuildConfig);
+
+	FilterByBuildTarget = MakeShared<FTraceFilterByBuildTarget>();
+	Filters->Add(FilterByBuildTarget);
+
+	FilterByBranch = MakeShared<FTraceFilterByBranch>();
+	Filters->Add(FilterByBranch);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::HandleItemToStringArray(const FTraceViewModel& InTrace, TArray<FString>& OutSearchStrings) const
+{
+	if (bSearchByCommandLine)
+	{
+		OutSearchStrings.Add(InTrace.CommandLine.ToString());
+	}
+	else
+	{
+		OutSearchStrings.Add(InTrace.Name.ToString());
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::UpdateFiltering()
+{
+	FilteredTraceViewModels.Reset();
+
+	if (FilterByName->GetRawFilterText().IsEmpty() &&
+		FilterByPlatform->IsEmpty() &&
+		FilterByAppName->IsEmpty() &&
+		FilterByBuildConfig->IsEmpty() &&
+		FilterByBuildTarget->IsEmpty() &&
+		FilterByBranch->IsEmpty())
+	{
+		// No filtering.
+		FilteredTraceViewModels = TraceViewModels;
+	}
+	else
+	{
+		for (const TSharedPtr<FTraceViewModel>& Trace : TraceViewModels)
+		{
+			const bool bIsTraceVisible = Filters->PassesAllFilters(*Trace.Get());
+			if (bIsTraceVisible)
+			{
+				FilteredTraceViewModels.Add(Trace);
+			}
+		}
+	}
+
+	UpdateFilterStatsText();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::UpdateFilterStatsText()
+{
+	bFilterStatsTextIsDirty = false;
+
+	uint64 FilterdTotalSize = 0;
+	for (const TSharedPtr<FTraceViewModel>& Trace : FilteredTraceViewModels)
+	{
+		FilterdTotalSize += Trace->Size;
+		if (Trace->bIsLive)
+		{
+			bFilterStatsTextIsDirty = true;
+		}
+	}
+
+	// When having live sessions, but too many traces, do not further update the stats text on Tick().
+	if (FilteredTraceViewModels.Num() > 1000)
+	{
+		bFilterStatsTextIsDirty = false;
+	}
+
+	FNumberFormattingOptions FormattingOptionsSize;
+	FormattingOptionsSize.MaximumFractionalDigits = 1;
+
+	if (FilteredTraceViewModels.Num() == TraceViewModels.Num())
+	{
+		FilterStatsText = FText::Format(LOCTEXT("FilterStatsText_Fmt1", "{0} trace sessions ({1})"),
+			FText::AsNumber(TraceViewModels.Num()),
+			FText::AsMemory(FilterdTotalSize, &FormattingOptionsSize));
+	}
+	else
+	{
+		FilterStatsText = FText::Format(LOCTEXT("FilterStatsText_Fmt2", "{0} / {1} trace sessions ({2})"),
+			FText::AsNumber(FilteredTraceViewModels.Num()),
+			FText::AsNumber(TraceViewModels.Num()),
+			FText::AsMemory(FilterdTotalSize, &FormattingOptionsSize));
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+EColumnSortMode::Type STraceStoreWindow::GetSortModeForColumn(const FName ColumnId) const
+{
+	return ColumnId == SortColumn ? SortMode : EColumnSortMode::None;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::OnSortModeChanged(const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type InSortMode)
+{
+	SortColumn = ColumnId;
+	SortMode = InSortMode;
+	UpdateSorting();
+	UpdateTraceListView();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::UpdateSorting()
+{
+	if (SortColumn == TraceStoreColumns::Date)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Timestamp < B->Timestamp; });
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Timestamp > B->Timestamp; });
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::Name)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Name.CompareTo(B->Name) < 0; });
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return B->Name.CompareTo(A->Name) < 0; });
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::Uri)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Uri.CompareTo(B->Uri) < 0; });
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return B->Uri.CompareTo(A->Uri) < 0; });
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::Platform)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					int32 CompareResult = A->Platform.CompareTo(B->Platform);
+					return CompareResult == 0 ? A->Timestamp < B->Timestamp : CompareResult < 0;
+				});
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					int32 CompareResult = B->Platform.CompareTo(A->Platform);
+					return CompareResult == 0 ? A->Timestamp < B->Timestamp : CompareResult < 0;
+				});
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::AppName)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					int32 CompareResult = A->AppName.CompareTo(B->AppName);
+					return CompareResult == 0 ? A->Timestamp < B->Timestamp : CompareResult < 0;
+				});
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					int32 CompareResult = B->AppName.CompareTo(A->AppName);
+					return CompareResult == 0 ? A->Timestamp < B->Timestamp : CompareResult < 0;
+				});
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::BuildConfig)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->ConfigurationType == B->ConfigurationType ?
+						A->Timestamp < B->Timestamp :
+						A->ConfigurationType < B->ConfigurationType;
+				});
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->ConfigurationType == B->ConfigurationType ?
+						A->Timestamp < B->Timestamp :
+						A->ConfigurationType > B->ConfigurationType;
+				});
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::BuildTarget)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->TargetType == B->TargetType ?
+						A->Timestamp < B->Timestamp :
+						A->TargetType < B->TargetType;
+				});
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->TargetType == B->TargetType ?
+						A->Timestamp < B->Timestamp :
+						A->TargetType > B->TargetType;
+				});
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::Size)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Size < B->Size; });
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{ return A->Size > B->Size; });
+		}
+	}
+	else if (SortColumn == TraceStoreColumns::Status)
+	{
+		if (SortMode == EColumnSortMode::Ascending)
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->bIsLive == B->bIsLive ?
+						A->Timestamp < B->Timestamp :
+						B->bIsLive;
+				});
+		}
+		else
+		{
+			FilteredTraceViewModels.Sort([](const TSharedPtr<FTraceViewModel>& A, const TSharedPtr<FTraceViewModel>& B)
+				{
+					return A->bIsLive == B->bIsLive ?
+						A->Timestamp < B->Timestamp :
+						A->bIsLive;
+				});
+		}
+	}
+	else
+	{
+		Algo::SortBy(FilteredTraceViewModels, &FTraceViewModel::Timestamp);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::ShowSuccessMessage(FText& InMessage)
+{
+	FNotificationInfo NotificationInfo(InMessage);
+	NotificationInfo.bFireAndForget = false;
+	NotificationInfo.bUseLargeFont = false;
+	NotificationInfo.bUseSuccessFailIcons = true;
+	NotificationInfo.ExpireDuration = 3.0f;
+	SNotificationItemRef NotificationItem = NotificationList->AddNotification(NotificationInfo);
+	NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+	NotificationItem->ExpireAndFadeout();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STraceStoreWindow::ShowFailMessage(FText& InMessage)
+{
+	FNotificationInfo NotificationInfo(InMessage);
+	NotificationInfo.bFireAndForget = false;
+	NotificationInfo.bUseLargeFont = false;
+	NotificationInfo.bUseSuccessFailIcons = true;
+	NotificationInfo.ExpireDuration = 3.0f;
+	SNotificationItemRef NotificationItem = NotificationList->AddNotification(NotificationInfo);
+	NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+	NotificationItem->ExpireAndFadeout();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
 #define LOCTEXT_NAMESPACE "SConnectionWindow"
@@ -1717,7 +2909,6 @@ void STraceStoreWindow::GetExtraCommandLineParams(FString& OutParams) const
 
 SConnectionWindow::SConnectionWindow()
 : NotificationList()
-, ActiveNotifications()
 , ConnectTask()
 , bIsConnecting(false)
 , bIsConnectedSuccessfully(false)
@@ -1916,7 +3107,7 @@ TSharedRef<SWidget> SConnectionWindow::ConstructConnectPanel()
 				SNew(SButton)
 				.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("PrimaryButton"))
 				.Text(LOCTEXT("Connect", "Connect"))
-				.ToolTipText(LOCTEXT("ConnectToolTip", "Connect the running instance at specified ip with the local trace recorder."))
+				.ToolTipText(LOCTEXT("ConnectToolTip", "Connect the running instance at specified address with the trace recorder."))
 				.OnClicked(this, &SConnectionWindow::Connect_OnClicked)
 				.IsEnabled_Lambda([this]() { return !bIsConnecting; })
 			]
@@ -2023,10 +3214,9 @@ FReply SConnectionWindow::Connect_OnClicked()
 				NotificationInfo.bUseLargeFont = false;
 				NotificationInfo.bUseSuccessFailIcons = true;
 				NotificationInfo.ExpireDuration = 10.0f;
-				SNotificationItemWeak NotificationItem = NotificationList->AddNotification(NotificationInfo);
-				NotificationItem.Pin()->SetCompletionState(SNotificationItem::CS_Success);
-				NotificationItem.Pin()->ExpireAndFadeout();
-				ActiveNotifications.Add(TEXT("ConnectSuccess"), NotificationItem);
+				SNotificationItemRef NotificationItem = NotificationList->AddNotification(NotificationInfo);
+				NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+				NotificationItem->ExpireAndFadeout();
 			}
 			else
 			{
@@ -2037,10 +3227,9 @@ FReply SConnectionWindow::Connect_OnClicked()
 				NotificationInfo.bUseLargeFont = false;
 				NotificationInfo.bUseSuccessFailIcons = true;
 				NotificationInfo.ExpireDuration = 10.0f;
-				SNotificationItemWeak NotificationItem = NotificationList->AddNotification(NotificationInfo);
-				NotificationItem.Pin()->SetCompletionState(SNotificationItem::CS_Fail);
-				NotificationItem.Pin()->ExpireAndFadeout();
-				ActiveNotifications.Add(TEXT("ConnectFailed"), NotificationItem);
+				SNotificationItemRef NotificationItem = NotificationList->AddNotification(NotificationInfo);
+				NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+				NotificationItem->ExpireAndFadeout();
 			}
 
 			bIsConnecting = false;

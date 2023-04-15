@@ -12,6 +12,7 @@
 #include "Annotations/ZoneGraphDisturbanceAnnotation.h"
 #include "VisualLogger/VisualLogger.h"
 #include "MassSimulationLOD.h"
+#include "MassSignalSubsystem.h"
 
 //----------------------------------------------------------------------//
 // UMassCrowdLaneTrackingSignalProcessor
@@ -26,27 +27,22 @@ void UMassCrowdLaneTrackingSignalProcessor::ConfigureQueries()
 	EntityQuery.AddTagRequirement<FMassCrowdTag>(EMassFragmentPresence::All);
 	EntityQuery.AddRequirement<FMassCrowdLaneTrackingFragment>(EMassFragmentAccess::ReadWrite);
 	EntityQuery.AddRequirement<FMassZoneGraphLaneLocationFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.AddSubsystemRequirement<UMassCrowdSubsystem>(EMassFragmentAccess::ReadWrite);
 }
 
 void UMassCrowdLaneTrackingSignalProcessor::Initialize(UObject& Owner)
 {
 	Super::Initialize(Owner);
 	
-	MassCrowdSubsystem = UWorld::GetSubsystem<UMassCrowdSubsystem>(Owner.GetWorld());
-	checkf(MassCrowdSubsystem != nullptr, TEXT("UMassCrowdSubsystem is mandatory when using this processor."));
-
-	SubscribeToSignal(UE::Mass::Signals::CurrentLaneChanged);
+	UMassSignalSubsystem* SignalSubsystem = UWorld::GetSubsystem<UMassSignalSubsystem>(Owner.GetWorld());
+	SubscribeToSignal(*SignalSubsystem, UE::Mass::Signals::CurrentLaneChanged);
 }
 
-void UMassCrowdLaneTrackingSignalProcessor::SignalEntities(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals)
+void UMassCrowdLaneTrackingSignalProcessor::SignalEntities(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals)
 {
-	if (!MassCrowdSubsystem)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
 	{
-		return;
-	}
-
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
-	{
+		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>(World);
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FMassZoneGraphLaneLocationFragment> LaneLocationList = Context.GetFragmentView<FMassZoneGraphLaneLocationFragment>();
 		const TArrayView<FMassCrowdLaneTrackingFragment> LaneTrackingList = Context.GetMutableFragmentView<FMassCrowdLaneTrackingFragment>();
@@ -57,7 +53,7 @@ void UMassCrowdLaneTrackingSignalProcessor::SignalEntities(UMassEntitySubsystem&
 			FMassCrowdLaneTrackingFragment& LaneTracking = LaneTrackingList[EntityIndex];
 			if (LaneTracking.TrackedLaneHandle != LaneLocation.LaneHandle)
 			{
-				MassCrowdSubsystem->OnEntityLaneChanged(Context.GetEntity(EntityIndex), LaneTracking.TrackedLaneHandle, LaneLocation.LaneHandle);
+				MassCrowdSubsystem.OnEntityLaneChanged(Context.GetEntity(EntityIndex), LaneTracking.TrackedLaneHandle, LaneLocation.LaneHandle);
 				LaneTracking.TrackedLaneHandle = LaneLocation.LaneHandle;
 			}
 		}
@@ -68,29 +64,25 @@ void UMassCrowdLaneTrackingSignalProcessor::SignalEntities(UMassEntitySubsystem&
 // UMassCrowdLaneTrackingDestructor
 //----------------------------------------------------------------------//
 UMassCrowdLaneTrackingDestructor::UMassCrowdLaneTrackingDestructor()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	ObservedType = FMassCrowdLaneTrackingFragment::StaticStruct();
 	Operation = EMassObservedOperation::Remove;
 }
 
-void UMassCrowdLaneTrackingDestructor::Initialize(UObject& Owner)
-{
-	Super::Initialize(Owner);
-	MassCrowdSubsystem = UWorld::GetSubsystem<UMassCrowdSubsystem>(Owner.GetWorld());
-	checkf(MassCrowdSubsystem != nullptr, TEXT("UMassCrowdSubsystem is mandatory when using this processor."));
-}
-
 void UMassCrowdLaneTrackingDestructor::ConfigureQueries()
 {
 	EntityQuery.AddTagRequirement<FMassCrowdTag>(EMassFragmentPresence::All);
 	EntityQuery.AddRequirement<FMassCrowdLaneTrackingFragment>(EMassFragmentAccess::ReadOnly);
+	EntityQuery.AddSubsystemRequirement<UMassCrowdSubsystem>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassCrowdLaneTrackingDestructor::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassCrowdLaneTrackingDestructor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](const FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this, World = EntityManager.GetWorld()](FMassExecutionContext& Context)
 	{
+		UMassCrowdSubsystem& MassCrowdSubsystem = Context.GetMutableSubsystemChecked<UMassCrowdSubsystem>(World);
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FMassCrowdLaneTrackingFragment> LaneTrackingList = Context.GetFragmentView<FMassCrowdLaneTrackingFragment>();
 
@@ -99,9 +91,8 @@ void UMassCrowdLaneTrackingDestructor::Execute(UMassEntitySubsystem& EntitySubsy
 			const FMassCrowdLaneTrackingFragment& LaneTracking = LaneTrackingList[EntityIndex];
 			if (LaneTracking.TrackedLaneHandle.IsValid())
 			{
-				MassCrowdSubsystem->OnEntityLaneChanged(Context.GetEntity(EntityIndex), LaneTracking.TrackedLaneHandle, FZoneGraphLaneHandle());
+				MassCrowdSubsystem.OnEntityLaneChanged(Context.GetEntity(EntityIndex), LaneTracking.TrackedLaneHandle, FZoneGraphLaneHandle());
 			}
-
 		}
 	});
 }
@@ -111,6 +102,7 @@ void UMassCrowdLaneTrackingDestructor::Execute(UMassEntitySubsystem& EntitySubsy
 //----------------------------------------------------------------------//
 
 UMassCrowdDynamicObstacleProcessor::UMassCrowdDynamicObstacleProcessor()
+	: EntityQuery_Conditional(*this)
 {
 	bAutoRegisterWithProcessingPhases = true;
 
@@ -136,13 +128,13 @@ void UMassCrowdDynamicObstacleProcessor::ConfigureQueries()
 	EntityQuery_Conditional.SetChunkFilter(&FMassSimulationVariableTickChunkFragment::ShouldTickChunkThisFrame);
 }
 
-void UMassCrowdDynamicObstacleProcessor::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassCrowdDynamicObstacleProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	UWorld* World = EntitySubsystem.GetWorld();
+	UWorld* World = EntityManager.GetWorld();
 	const UMassCrowdSettings* CrowdSettings = GetDefault<UMassCrowdSettings>();
 	checkf(CrowdSettings, TEXT("Settings default object is always expected to be valid"));
 
-	EntityQuery_Conditional.ForEachEntityChunk(EntitySubsystem, Context, [this, World, CrowdSettings](FMassExecutionContext& Context)
+	EntityQuery_Conditional.ForEachEntityChunk(EntityManager, Context, [this, World, CrowdSettings](FMassExecutionContext& Context)
 	{
 		const int32 NumEntities = Context.GetNumEntities();
 
@@ -234,6 +226,7 @@ void UMassCrowdDynamicObstacleProcessor::Execute(UMassEntitySubsystem& EntitySub
 // UMassCrowdDynamicObstacleInitializer
 //----------------------------------------------------------------------//
 UMassCrowdDynamicObstacleInitializer::UMassCrowdDynamicObstacleInitializer()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	ObservedType = FMassCrowdObstacleFragment::StaticStruct();
@@ -246,11 +239,11 @@ void UMassCrowdDynamicObstacleInitializer::ConfigureQueries()
 	EntityQuery.AddRequirement<FMassCrowdObstacleFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassCrowdDynamicObstacleInitializer::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassCrowdDynamicObstacleInitializer::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	UWorld* World = EntitySubsystem.GetWorld();
+	UWorld* World = EntityManager.GetWorld();
 	
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [World](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [World](FMassExecutionContext& Context)
 	{
 		const int32 NumEntities = Context.GetNumEntities();
 		const TConstArrayView<FTransformFragment> LocationList = Context.GetFragmentView<FTransformFragment>();
@@ -273,6 +266,7 @@ void UMassCrowdDynamicObstacleInitializer::Execute(UMassEntitySubsystem& EntityS
 // UMassCrowdDynamicObstacleDeinitializer
 //----------------------------------------------------------------------//
 UMassCrowdDynamicObstacleDeinitializer::UMassCrowdDynamicObstacleDeinitializer()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)(EProcessorExecutionFlags::Standalone | EProcessorExecutionFlags::Server);
 	ObservedType = FMassCrowdObstacleFragment::StaticStruct();
@@ -292,9 +286,9 @@ void UMassCrowdDynamicObstacleDeinitializer::ConfigureQueries()
 	EntityQuery.AddRequirement<FMassCrowdObstacleFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassCrowdDynamicObstacleDeinitializer::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassCrowdDynamicObstacleDeinitializer::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](FMassExecutionContext& Context)
 	{
 		const int32 NumEntities = Context.GetNumEntities();
 		const TArrayView<FMassCrowdObstacleFragment> ObstacleDataList = Context.GetMutableFragmentView<FMassCrowdObstacleFragment>();

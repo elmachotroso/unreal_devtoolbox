@@ -4,6 +4,7 @@
 #include "Misc/LazySingleton.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraTypes.h"
+#include "NiagaraDebugVis.h"
 #include "NiagaraEvents.h"
 #include "NiagaraSettings.h"
 #include "NiagaraDataInterfaceCurlNoise.h"
@@ -28,6 +29,10 @@
 #include "Particles/FXBudget.h"
 #include "Engine/StaticMesh.h"
 #include "UObject/UObjectGlobals.h"
+
+#if PLATFORM_WINDOWS
+#include "NiagaraOpenVDB.h"
+#endif
 
 IMPLEMENT_MODULE(INiagaraModule, Niagara);
 
@@ -85,6 +90,17 @@ void INiagaraModule::OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable)
 		//FFXBudget::SetEnabled(true);
 		UE_LOG(LogNiagara, Warning, TEXT("Niagara has enabled fx.Niagara.UseGlobalFXBudget but fx.Budget.Enabled is false so global FX budgetting will still be disabled. Consider also enabling fx.Budget.Enabled."));
 	}
+}
+
+// these two globals are intended to help ensure that a global variable is accessible to natvis (as defined in Niagara.natvis)
+// while debugging.  GCoreTypeRegistrySingletonPtr is the pointer to the actual data stored within the TLazySingleton<FNiagaraTypeRegistry>
+// while GTypeRegistrySingletonPtr can be declared in each module to ensure that it can be accessed while debugging any Niagara
+// module.  See UE4_VISUALIZERS_HELPERS.  Note that currently it seems like we can effectively debug NiagaraEditor/NiagaraShader without
+// further declarations, which is nice, so will be leaving it as it is.
+namespace NiagaraDebugVisHelper
+{
+	const FNiagaraTypeRegistry* GCoreTypeRegistrySingletonPtr = nullptr;
+	const FNiagaraTypeRegistry*& GTypeRegistrySingletonPtr = GCoreTypeRegistrySingletonPtr;
 }
 
 FNiagaraVariable INiagaraModule::Engine_DeltaTime;
@@ -194,8 +210,27 @@ FNiagaraVariable INiagaraModule::Translator_CallID;
 void INiagaraModule::StartupModule()
 {
 	VectorVM::Init();
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
+	InitVectorVM();
+#endif
+	LLM_SCOPE(ELLMTag::Niagara);
 	FNiagaraTypeDefinition::Init();
 	FNiagaraRenderViewDataManager::Init();
+
+	
+#if PLATFORM_WINDOWS
+	// Global registration of  the vdb types.
+	openvdb::initialize();
+	if (!Vec4SGrid::isRegistered())
+	{
+		Vec4SGrid::registerGrid();
+	}
+	
+	if (!Vec4HGrid::isRegistered())
+	{
+		Vec4HGrid::registerGrid();
+	}
+#endif
 
 	FNiagaraWorldManager::OnStartup();
 
@@ -356,6 +391,9 @@ void INiagaraModule::StartupModule()
 	FCoreDelegates::OnPreExit.AddRaw(this, &INiagaraModule::OnPreExit);
 	FWorldDelegates::OnWorldBeginTearDown.AddRaw(this, &INiagaraModule::OnWorldBeginTearDown);
 	FWorldDelegates::OnWorldTickStart.AddRaw(this, &INiagaraModule::OnWorldTickStart);
+
+	FCoreDelegates::OnBeginFrame.AddRaw(this, &INiagaraModule::OnBeginFrame);
+	FCoreUObjectDelegates::GetPostGarbageCollect().AddRaw(this, &INiagaraModule::OnPostGarbageCollect);
 }
 
 void INiagaraModule::OnPostEngineInit()
@@ -366,6 +404,14 @@ void INiagaraModule::OnPostEngineInit()
 		BaselineHandler = MakeUnique<FNiagaraPerfBaselineHandler>();
 	}
 #endif
+
+	IConsoleManager& CMan = IConsoleManager::Get();
+	OnCVarUnregisteredHandle = CMan.OnCVarUnregistered().AddLambda(
+		[](IConsoleVariable* CVar)
+		{
+			FNiagaraPlatformSet::OnCVarUnregistered(CVar);
+		}
+	);
 }
 
 void INiagaraModule::OnPreExit()
@@ -380,6 +426,9 @@ void INiagaraModule::OnPreExit()
 #if WITH_NIAGARA_DEBUGGER
 	DebuggerClient.Reset();
 #endif
+
+	IConsoleManager& CMan = IConsoleManager::Get();
+	CMan.OnCVarUnregistered().Remove(OnCVarUnregisteredHandle);
 }
 
 #if WITH_EDITOR
@@ -412,6 +461,16 @@ void INiagaraModule::OnWorldTickStart(UWorld* World, ELevelTick TickType, float 
 #endif
 }
 
+void INiagaraModule::OnPostGarbageCollect()
+{
+	FNiagaraTypeHelper::TickTypeRemap();
+}
+
+void INiagaraModule::OnBeginFrame()
+{
+	FNiagaraPlatformSet::RefreshScalability();
+}
+
 void INiagaraModule::OnWorldBeginTearDown(UWorld* World)
 {
 #if NIAGARA_PERF_BASELINES
@@ -433,6 +492,7 @@ void INiagaraModule::ShutdownModule()
 {
 	FWorldDelegates::OnWorldBeginTearDown.RemoveAll(this);
 	FWorldDelegates::OnWorldTickStart.RemoveAll(this);
+	FCoreDelegates::OnBeginFrame.RemoveAll(this);
 
 	FNiagaraWorldManager::OnShutdown();
 
@@ -687,6 +747,7 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::UMaterialDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UTextureDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UTextureRenderTargetDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UStaticMeshDef;
+FNiagaraTypeDefinition FNiagaraTypeDefinition::USimCacheClassDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::WildcardDef;
 
 TSet<UScriptStruct*> FNiagaraTypeDefinition::NumericStructs;
@@ -763,6 +824,7 @@ void FNiagaraTypeDefinition::Init()
 	UTextureDef = FNiagaraTypeDefinition(UTextureClass);
 	UTextureRenderTargetDef = FNiagaraTypeDefinition(UTextureRenderTargetClass);
 	UStaticMeshDef = FNiagaraTypeDefinition(UStaticMesh::StaticClass());
+	USimCacheClassDef = FNiagaraTypeDefinition(UNiagaraSimCache::StaticClass());
 
 	CollisionEventDef = FNiagaraTypeDefinition(FNiagaraCollisionEventPayload::StaticStruct());
 	NumericStructs.Add(NumericStruct);
@@ -837,23 +899,18 @@ bool FNiagaraTypeDefinition::AppendCompileHash(FNiagaraCompileHashVisitor* InVis
 		return false;
 	}
 
-	UStruct* TDStruct = GetStruct();
-	UClass* TDClass = GetClass();
-	UEnum* TDEnum = GetEnum();
-
 	TStringBuilder<128> PathName;
-	if (TDEnum)
+	if (UEnum* TDEnum = GetEnum())
 	{
 		// Do we need to enumerate all the enum values and rebuild if that changes or are we ok with just knowing that there are the same  count of enum entries?
 		// For now, am just going to be ok with the number of entries. The actual string values don't matter so much.
-		FString CppType = TDEnum->CppType;
 		PathName.Reset();
 		TDEnum->GetPathName(nullptr, PathName);
 		InVisitor->UpdateString(TEXT("\tEnumPath"), PathName);
-		InVisitor->UpdateString(TEXT("\tEnumCppType"), CppType);
+		InVisitor->UpdateString(TEXT("\tEnumCppType"), TDEnum->CppType);
 		InVisitor->UpdatePOD(TEXT("\t\tNumEnums"),TDEnum->NumEnums());
 	}
-	else if (TDClass)
+	else if (UClass* TDClass = GetClass())
 	{
 		// For data interfaces, get the default object and the compile version so that we can properly update when code changes.
 		check(IsInGameThread());
@@ -875,7 +932,7 @@ bool FNiagaraTypeDefinition::AppendCompileHash(FNiagaraCompileHashVisitor* InVis
 			}
 		}
 	}
-	else if (TDStruct)
+	else if (UStruct* TDStruct = GetStruct())
 	{
 		PathName.Reset();
 		TDStruct->GetPathName(nullptr, PathName);
@@ -982,12 +1039,13 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 	FNiagaraTypeRegistry::Register(UTextureDef, VarFlags);
 	FNiagaraTypeRegistry::Register(UTextureRenderTargetDef, VarFlags);
 	FNiagaraTypeRegistry::Register(UStaticMeshDef, VarFlags);
+	FNiagaraTypeRegistry::Register(USimCacheClassDef, VarFlags);
 	FNiagaraTypeRegistry::Register(StaticEnum<ENiagaraLegacyTrailWidthMode>(), ParamFlags);
 
 	
 	if (!IsRunningCommandlet())
 	{
-		TArray<FString> DenyList;
+		TArray<FSoftObjectPath> DenyList;
 		DenyList.Emplace(TEXT("/Niagara/Enums/ENiagaraCoordinateSpace.ENiagaraCoordinateSpace"));
 		DenyList.Emplace(TEXT("/Niagara/Enums/ENiagaraOrientationAxis.ENiagaraOrientationAxis"));
 		
@@ -1006,9 +1064,9 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 
 		for (FSoftObjectPath AssetRef : TotalStructAssets)
 		{
-			FName AssetRefPathNamePreResolve = AssetRef.GetAssetPathName();
+			FSoftObjectPath AssetRefPathNamePreResolve = AssetRef;
 
-			if (DenyList.Contains(AssetRefPathNamePreResolve.ToString()))
+			if (DenyList.Contains(AssetRefPathNamePreResolve))
 			{
 				continue;
 			}
@@ -1055,10 +1113,10 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 		
 		for (FSoftObjectPath AssetRef : Settings->AdditionalParameterEnums)
 		{
-			FName AssetRefPathNamePreResolve = AssetRef.GetAssetPathName();
+			FSoftObjectPath AssetRefPathNamePreResolve = AssetRef;
 			UObject* Obj = AssetRef.ResolveObject();
 
-			if (DenyList.Contains(AssetRefPathNamePreResolve.ToString()))
+			if (DenyList.Contains(AssetRefPathNamePreResolve))
 			{
 				continue;
 			}
@@ -1234,40 +1292,83 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(const TArray
 bool FNiagaraTypeDefinition::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FNiagaraCustomVersion::GUID);
-	return false;
-}
 
-void FNiagaraTypeDefinition::PostSerialize(const FArchive& Ar)
-{
+	UScriptStruct* StructToResetOnExit = nullptr;
+	ON_SCOPE_EXIT
+	{
+		if (StructToResetOnExit)
+		{
+			ClassStructOrEnum = StructToResetOnExit;
+			Flags &= ~TF_SerializedAsLWC;
+		}
+	};
+
+	if (Ar.IsSaving())
+	{
+		if (UScriptStruct* StructDef = GetScriptStruct())
+		{
+			// if the struct is a transient package then we look for the source struct that was used
+			if (StructDef->GetOutermost() == GetTransientPackage())
+			{
+				Flags |= TF_SerializedAsLWC;
+
+				StructToResetOnExit = StructDef;
+				ClassStructOrEnum = FNiagaraTypeHelper::GetLWCStruct(StructDef);
+				check(ClassStructOrEnum);
+				check(ClassStructOrEnum->GetOutermost() != GetTransientPackage());
+			}
+		}
+	}
+
+	if (Ar.IsLoading() || Ar.IsSaving())
+	{
+		UScriptStruct* Struct = FNiagaraTypeDefinition::StaticStruct();
+		Struct->SerializeTaggedProperties(Ar, (uint8*)this, Struct, nullptr);
+	}
+
+	if (Ar.IsLoading())
+	{
 #if WITH_EDITORONLY_DATA
-	if (Ar.IsLoading() && Ar.CustomVer(FNiagaraCustomVersion::GUID) < FNiagaraCustomVersion::MemorySaving)
-	{
-		if (Enum_DEPRECATED != nullptr)
+		if (Ar.CustomVer(FNiagaraCustomVersion::GUID) < FNiagaraCustomVersion::MemorySaving)
 		{
-			UnderlyingType = UT_Enum;
-			ClassStructOrEnum = Enum_DEPRECATED;
-			Enum_DEPRECATED = nullptr;
+			if (Enum_DEPRECATED != nullptr)
+			{
+				UnderlyingType = UT_Enum;
+				ClassStructOrEnum = Enum_DEPRECATED;
+				Enum_DEPRECATED = nullptr;
+			}
+			else if (Struct_DEPRECATED != nullptr)
+			{
+				UnderlyingType = Struct_DEPRECATED->IsA<UClass>() ? UT_Class : UT_Struct;
+				ClassStructOrEnum = Struct_DEPRECATED;
+				Struct_DEPRECATED = nullptr;
+			}
+			else
+			{
+				UnderlyingType = UT_None;
+				ClassStructOrEnum = nullptr;
+			}
 		}
-		else if (Struct_DEPRECATED != nullptr)
-		{
-			UnderlyingType = Struct_DEPRECATED->IsA<UClass>() ? UT_Class : UT_Struct;
-			ClassStructOrEnum = Struct_DEPRECATED;
-			Struct_DEPRECATED = nullptr;
-		}
-		else
-		{
-			UnderlyingType = UT_None;
-			ClassStructOrEnum = nullptr;
-		}
-	}
-	if (Ar.IsLoading() && ClassStructOrEnum != nullptr)
-	{
-		if (ClassStructOrEnum.GetClass()->IsChildOf(UScriptStruct::StaticClass()))
-		{
-			ClassStructOrEnum = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(static_cast<UScriptStruct*>(ClassStructOrEnum), ENiagaraStructConversion::UserFacing);
-		}
-	}
 #endif
+
+		if (UScriptStruct* StructDef = GetScriptStruct())
+		{
+			if (Flags & TF_SerializedAsLWC)
+			{
+				ClassStructOrEnum = FNiagaraTypeHelper::GetSWCStruct(StructDef);
+
+				Flags &= ~TF_SerializedAsLWC;
+			}
+#if WITH_EDITORONLY_DATA
+			else
+			{
+				ClassStructOrEnum = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(static_cast<UScriptStruct*>(ClassStructOrEnum), ENiagaraStructConversion::UserFacing);
+			}
+#endif
+		}
+	}
+
+	return true;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1331,6 +1432,17 @@ void FNiagaraTypeRegistry::AddReferencedObjects(FReferenceCollector& Collector)
 FString FNiagaraTypeRegistry::GetReferencerName() const
 {
 	return TEXT("FNiagaraTypeRegistry");
+}
+
+FNiagaraTypeRegistry::FNiagaraTypeRegistry()
+{
+	NiagaraDebugVisHelper::GCoreTypeRegistrySingletonPtr = this;
+
+}
+
+FNiagaraTypeRegistry::~FNiagaraTypeRegistry()
+{
+	NiagaraDebugVisHelper::GCoreTypeRegistrySingletonPtr = nullptr;
 }
 
 FNiagaraTypeRegistry& FNiagaraTypeRegistry::Get()
@@ -1436,6 +1548,12 @@ void FNiagaraVariableBase::PostSerialize(const FArchive& Ar)
 }
 #endif
 
+bool FNiagaraVariableBase::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	return InVisitor->UpdateName(TEXT("NiagaraVariable.Name"), Name)
+		&& TypeDefHandle->AppendCompileHash(InVisitor);
+}
+
 bool FNiagaraVariable::Serialize(FArchive& Ar)
 {
 	FNiagaraVariableBase::Serialize(Ar);
@@ -1508,6 +1626,14 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 
 const TArray<FNiagaraVariable>& FNiagaraOwnerParameters::GetVariables()
 {
+	static const FName NAME_NiagaraStructPadding0 = "Engine.Owner.PaddingInt32_0";
+	static const FName NAME_NiagaraStructPadding1 = "Engine.Owner.PaddingInt32_1";
+	static const FName NAME_NiagaraStructPadding2 = "Engine.Owner.PaddingInt32_2";
+	static const FName NAME_NiagaraStructPadding3 = "Engine.Owner.PaddingInt32_3";
+	static const FName NAME_NiagaraStructPadding4 = "Engine.Owner.PaddingInt32_4";
+	static const FName NAME_NiagaraStructPadding5 = "Engine.Owner.PaddingInt32_5";
+	static const FName NAME_NiagaraStructPadding6 = "Engine.Owner.PaddingInt32_6";
+
 	static const TArray<FNiagaraVariable> Variables =
 	{
 		SYS_PARAM_ENGINE_LOCAL_TO_WORLD,
@@ -1518,11 +1644,17 @@ const TArray<FNiagaraVariable>& FNiagaraOwnerParameters::GetVariables()
 		SYS_PARAM_ENGINE_WORLD_TO_LOCAL_NO_SCALE,
 		SYS_PARAM_ENGINE_ROTATION,
 		SYS_PARAM_ENGINE_POSITION,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding0),
 		SYS_PARAM_ENGINE_VELOCITY,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding1),
 		SYS_PARAM_ENGINE_X_AXIS,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding2),
 		SYS_PARAM_ENGINE_Y_AXIS,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding3),
 		SYS_PARAM_ENGINE_Z_AXIS,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding4),
 		SYS_PARAM_ENGINE_SCALE,
+		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding5),
 		SYS_PARAM_ENGINE_LWC_TILE,
 	};
 
@@ -1549,6 +1681,7 @@ const TArray<FNiagaraVariable>& FNiagaraEmitterParameters::GetVariables()
 
 	return Variables;
 }
+
 #endif
 
 #if NIAGARA_PERF_BASELINES

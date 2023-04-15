@@ -1,22 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterMeshComponent.h"
-#include "WaterBodyActor.h"
-#include "WaterSplineComponent.h"
-#include "EngineUtils.h"
+#include "Algo/Transform.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/Engine.h"
+#include "EngineUtils.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
+#include "Math/NumericLimits.h"
 #include "PhysicsEngine/AggregateGeom.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "Engine/Classes/Materials/MaterialInstanceDynamic.h"
-#include "Engine/Classes/Materials/MaterialParameterCollection.h"
-#include "Engine/Classes/Materials/MaterialParameterCollectionInstance.h"
-#include "Engine/Engine.h"
+#include "WaterBodyActor.h"
 #include "WaterMeshSceneProxy.h"
-#include "WaterSubsystem.h"
 #include "WaterModule.h"
+#include "WaterSplineComponent.h"
+#include "WaterSubsystem.h"
 #include "WaterUtils.h"
-#include "Math/NumericLimits.h"
-#include "Algo/Transform.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterMeshComponent)
 
 /** Scalability CVars*/
 static TAutoConsoleVariable<int32> CVarWaterMeshLODCountBias(
@@ -74,6 +76,33 @@ void UWaterMeshComponent::PostLoad()
 	Super::PostLoad();
 }
 
+void UWaterMeshComponent::PrecachePSOs()
+{
+	if (!FApp::CanEverRender())
+	{
+		return;
+	}
+
+	if (IsComponentPSOPrecachingEnabled())
+	{
+		FPSOPrecacheParams PrecachePSOParams;
+		SetupPrecachePSOParams(PrecachePSOParams);
+
+		const FVertexFactoryType* WaterVertexFactoryType = GetWaterVertexFactoryType(/*bWithWaterSelectionSupport = */ false);
+		if (FarDistanceMaterial)
+		{
+			FarDistanceMaterial->PrecachePSOs(WaterVertexFactoryType, PrecachePSOParams);
+		}
+		for (UMaterialInterface* MaterialInterface : UsedMaterials)
+		{
+			if (MaterialInterface)
+			{
+				MaterialInterface->PrecachePSOs(WaterVertexFactoryType, PrecachePSOParams);
+			}
+		}
+	}
+}
+
 void UWaterMeshComponent::PostInitProperties()
 {
 	Super::PostInitProperties();
@@ -109,20 +138,34 @@ void UWaterMeshComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Ma
 	UE_LOG(LogWater, Warning, TEXT("SetMaterial is not compatible with UWaterMeshComponent since all materials on this component are auto-populated from the Water Bodies contained within it."));
 }
 
+#if WITH_EDITOR
+
 bool UWaterMeshComponent::ShouldRenderSelected() const
 {
 	if (bSelectable)
 	{
-		for (TActorIterator<AWaterBody> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+		bool bShouldRender = Super::ShouldRenderSelected();
+		if (!bShouldRender)
 		{
-			if (ActorItr->IsSelected())
+			if (AWaterZone* Owner = GetOwner<AWaterZone>())
 			{
-				return true;
+				Owner->ForEachWaterBodyComponent([&bShouldRender](UWaterBodyComponent* WaterBodyComponent)
+				{
+					check(WaterBodyComponent);
+					bShouldRender |= WaterBodyComponent->ShouldRenderSelected();
+
+					// Stop iterating over water body components by returning false as soon as one component says it should be "render selected" :
+					return !bShouldRender;
+				});
 			}
 		}
+
+		return bShouldRender;
 	}
 	return false;
 }
+
+#endif // WITH_EDITOR
 
 FMaterialRelevance UWaterMeshComponent::GetWaterMaterialRelevance(ERHIFeatureLevel::Type InFeatureLevel) const
 {
@@ -134,6 +177,14 @@ FMaterialRelevance UWaterMeshComponent::GetWaterMaterialRelevance(ERHIFeatureLev
 	}
 
 	return Result;
+}
+
+void UWaterMeshComponent::PushTessellatedWaterMeshBoundsToPoxy(const FBox2D& TessellatedWaterMeshBounds)
+{
+	if (SceneProxy)
+	{
+		static_cast<FWaterMeshSceneProxy*>(SceneProxy)->OnTessellatedWaterMeshBoundsChanged_GameThread(TessellatedWaterMeshBounds);
+	}
 }
 
 void UWaterMeshComponent::SetExtentInTiles(FIntPoint NewExtentInTiles)
@@ -198,7 +249,9 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 	const bool bIsFlooded = OceanFlood > 0.0f;
 
 	// Go through all water body actors to figure out bounds and water tiles
-	UWaterSubsystem::ForEachWaterBodyComponent(GetWorld(), [this, WaterWorldBox, bIsFlooded, GlobalOceanHeight, OceanFlood, &FarMeshHeight](UWaterBodyComponent* WaterBodyComponent)
+	AWaterZone* OwningZone = GetOwner<AWaterZone>();
+	check(OwningZone);
+	OwningZone->ForEachWaterBodyComponent([this, WaterWorldBox, bIsFlooded, GlobalOceanHeight, OceanFlood, &FarMeshHeight](UWaterBodyComponent* WaterBodyComponent)
 	{
 		check(WaterBodyComponent);
 		AActor* Actor = WaterBodyComponent->GetOwner();
@@ -244,19 +297,23 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		// Assign material instance
 		UMaterialInstanceDynamic* WaterMaterial = WaterBodyComponent->GetWaterMaterialInstance();
 		RenderData.Material = WaterMaterial;
-		if (!IsMaterialUsedWithWater(RenderData.Material))
+
+		if (RenderData.Material)
 		{
-			RenderData.Material = UMaterial::GetDefaultMaterial(MD_Surface);
-		}
-		else
-		{
-			// Add ocean height as a scalar parameter
-			WaterBodyComponent->SetDynamicParametersOnMID(WaterMaterial);
+			if (!IsMaterialUsedWithWater(RenderData.Material))
+			{
+				RenderData.Material = UMaterial::GetDefaultMaterial(MD_Surface);
+			}
+			else
+			{
+				// Add ocean height as a scalar parameter
+				WaterBodyComponent->SetDynamicParametersOnMID(WaterMaterial);
+			}
+
+			// Add material so that the component keeps track of all potential materials used
+			UsedMaterials.Add(RenderData.Material);
 		}
 
-		// Add material so that the component keeps track of all potential materials used
-		UsedMaterials.Add(RenderData.Material);
-		
 		// Min and max user defined priority range. (Input also clamped on OverlapMaterialPriority in AWaterBody)
 		const int32 MinPriority = -8192;
 		const int32 MaxPriority = 8191;
@@ -361,7 +418,7 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 			const int32 NumOriginalSplinePoints = SplineComp->GetNumberOfSplinePoints();
 			float ConstantZ = SplineComp->GetLocationAtDistanceAlongSpline(0.0f, ESplineCoordinateSpace::World).Z;
 
-			FBox LakeBounds = Actor->GetComponentsBoundingBox();
+			FBox LakeBounds = Actor->GetComponentsBoundingBox(/* bNonColliding = */true);
 			LakeBounds.Max.Z += WaterBodyComponent->GetMaxWaveHeight();
 
 			// Skip lakes with less than 3 spline points
@@ -539,14 +596,9 @@ void UWaterMeshComponent::Update()
 		LODScaleBiasScalability = NewLODScaleBias;
 		const float LODCountBiasFactor = FMath::Pow(2.0f, (float)LODCountBiasScalability);
 		RebuildWaterMesh(TileSize / LODCountBiasFactor, FIntPoint(FMath::CeilToInt(ExtentInTiles.X * LODCountBiasFactor), FMath::CeilToInt(ExtentInTiles.Y * LODCountBiasFactor)));
+		PrecachePSOs();
 		bNeedsRebuild = false;
 	}
-}
-
-void UWaterMeshComponent::SetLandscapeInfo(const FVector& InRTWorldLocation, const FVector& InRTWorldSizeVector)
-{
-	RTWorldLocation = InRTWorldLocation;
-	RTWorldSizeVector = InRTWorldSizeVector;
 }
 
 #if WITH_EDITOR
@@ -558,6 +610,18 @@ void UWaterMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Property
 	if (PropertyThatChanged)
 	{
 		const FName PropertyName = PropertyThatChanged->GetFName();
+
+		// Properties that require water body geometry to be rebuilt since they depend on the mesh grid layout
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, TileSize)
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, ExtentInTiles)
+			|| PropertyName == TEXT("RelativeScale3D")
+			|| PropertyName == TEXT("RelativeLocation")
+			|| PropertyName == TEXT("RelativeRotation"))
+		{
+			AWaterZone* WaterZone = GetOwner<AWaterZone>();
+			check(WaterZone);
+			WaterZone->MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterBodyLODSections);
+		}
 
 		// Properties that needs the scene proxy to be rebuilt
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, LODScale)
@@ -573,4 +637,15 @@ void UWaterMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Property
 		}
 	}
 }
+
+void UWaterMeshComponent::PostEditComponentMove(bool bFinished)
+{
+	if (bFinished)
+	{
+		AWaterZone* WaterZone = GetOwner<AWaterZone>();
+		check(WaterZone);
+		WaterZone->MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterBodyLODSections);
+	}
+}
 #endif
+

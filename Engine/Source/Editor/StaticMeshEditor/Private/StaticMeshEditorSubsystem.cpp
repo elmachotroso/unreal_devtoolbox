@@ -3,7 +3,7 @@
 #include "StaticMeshEditorSubsystem.h"
 
 #include "ActorEditorUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Components/MeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
@@ -36,7 +36,7 @@
 #include "Misc/FeedbackContext.h"
 
 #include "UnrealEdGlobals.h"
-#include "UnrealEd/Private/GeomFitUtils.h"
+#include "GeomFitUtils.h"
 #include "ConvexDecompTool.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Subsystems/UnrealEditorSubsystem.h"
@@ -292,7 +292,7 @@ namespace InternalEditorMeshLibrary
 				PivotLocation += MeshActor->GetActorLocation();
 
 				TInlineComponentArray<UStaticMeshComponent*> ComponentArray;
-				MeshActor->GetComponents<UStaticMeshComponent>(ComponentArray);
+				MeshActor->GetComponents(ComponentArray);
 
 				bool bActorIsValid = false;
 				for (UStaticMeshComponent* MeshCmp : ComponentArray)
@@ -1017,13 +1017,107 @@ TArray<float> UStaticMeshEditorSubsystem::GetLodScreenSizes(UStaticMesh* StaticM
 
 }
 
+bool UStaticMeshEditorSubsystem::SetLodScreenSizes(UStaticMesh* StaticMesh, const TArray<float>& ScreenSizes)
+{
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	if (!EditorScriptingHelpers::CheckIfInEditorAndPIE())
+	{
+		return false;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogStaticMeshEditorSubsystem, Error, TEXT("SetLodScreenSizes: Input StaticMesh is null."));
+		return false;
+	}
+
+	FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
+	if (RenderData == nullptr || (StaticMesh->GetNumLODs() == 0))
+	{
+		UE_LOG(LogStaticMeshEditorSubsystem, Error, TEXT("SetLodScreenSizes: Input StaticMesh is invalid (missing RenderData or meshes)."));
+		return false;
+	}
+
+	if (ScreenSizes.Num() == 0)
+	{
+		UE_LOG(LogStaticMeshEditorSubsystem, Error, TEXT("SetLodScreenSizes: Input ScreenSizes array is empty."));
+		return false;
+	}
+
+	// If not enough screen sizes, we set remainder to arbitrary monotonically decreasing defaults, and also ensure consecutive
+	// values are monotonically decreasing, similar to what the user interface does when editing the values manually.
+	if (ScreenSizes.Num() < StaticMesh->GetNumLODs())
+	{
+		UE_LOG(LogStaticMeshEditorSubsystem, Warning, TEXT("SetLodScreenSizes: Only %d of %d ScreenSizes provided, remainder will be set to arbitrary defaults."),
+			ScreenSizes.Num(), StaticMesh->GetNumLODs());
+	}
+
+	const float MonotonicDifference = 0.0001f;		// This difference value matches the user interface
+	bool bSanitizationRequired = false;
+
+	// Disable automatic screen size calculation, since we're providing manually overriden values
+	StaticMesh->bAutoComputeLODScreenSize = 0;
+
+	// Arbitrarily set this to a value that won't affect the monotonic clamping on the first iteration of the loop
+	float LastScreenSize = 1.0f + 2.0f * MonotonicDifference;
+
+	for (int i = 0; i < StaticMesh->GetNumLODs(); i++)
+	{
+		float ScreenSizeForLOD;
+		if (i < ScreenSizes.Num())
+		{
+			ScreenSizeForLOD = FMath::Min(ScreenSizes[i], LastScreenSize - MonotonicDifference);
+		}
+		else
+		{
+			ScreenSizeForLOD = LastScreenSize - MonotonicDifference;
+		}
+
+		ScreenSizeForLOD = FMath::Clamp(ScreenSizeForLOD, 0.0f, 1.0f);
+
+		// Track if the input values needed to be sanitized in any way, so we can warn the user this happened.
+		if (i < ScreenSizes.Num() && ScreenSizeForLOD != ScreenSizes[i])
+		{
+			bSanitizationRequired = true;
+		}
+
+		RenderData->ScreenSize[i].Default = ScreenSizeForLOD;
+		StaticMesh->GetSourceModel(i).ScreenSize = ScreenSizeForLOD;
+
+		LastScreenSize = ScreenSizeForLOD;
+	}
+
+	if (bSanitizationRequired)
+	{
+		UE_LOG(LogStaticMeshEditorSubsystem, Warning, TEXT("SetLodScreenSizes: Some input values were sanitized to be monotonic."));
+	}
+
+	return true;
+}
+
+
 FMeshNaniteSettings UStaticMeshEditorSubsystem::GetNaniteSettings(UStaticMesh* StaticMesh)
 {
-	return StaticMesh->NaniteSettings;
+	if (StaticMesh)
+	{
+		return StaticMesh->NaniteSettings;
+	}
+	else
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call GetNaniteSettings without a static mesh"), ELogVerbosity::Error);
+		return FMeshNaniteSettings();
+	}
 }
 
 void UStaticMeshEditorSubsystem::SetNaniteSettings(UStaticMesh* StaticMesh, FMeshNaniteSettings NaniteSettings, bool bApplyChanges)
 {
+	if (!StaticMesh)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot call SetNaniteSettings without a static mesh"), ELogVerbosity::Error);
+		return;
+	}
+
 	// Close the mesh editor to prevent crashing. Reopen it after the mesh has been built.
 	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
 	bool bStaticMeshIsEdited = false;
@@ -1033,6 +1127,7 @@ void UStaticMeshEditorSubsystem::SetNaniteSettings(UStaticMesh* StaticMesh, FMes
 		bStaticMeshIsEdited = true;
 	}
 	
+	StaticMesh->Modify();
 	StaticMesh->NaniteSettings = NaniteSettings;
 
 	if (bApplyChanges)
@@ -1297,13 +1392,13 @@ bool UStaticMeshEditorSubsystem::BulkSetConvexDecompositionCollisionsWithNotific
 
 	uint32 LastProcessed = 0;
 	const FText ProgressText = LOCTEXT("ComputingConvexCollision", "Computing convex collision for static mesh {0}/{1} ...");
-	FScopedSlowTask Progress(StaticMeshes.Num(), FText::Format(ProgressText, LastProcessed, StaticMeshes.Num()));
+	FScopedSlowTask Progress(static_cast<float>(StaticMeshes.Num()), FText::Format(ProgressText, LastProcessed, StaticMeshes.Num()));
 	Progress.MakeDialog();
 
 	while (!Result.WaitFor(FTimespan::FromMilliseconds(33.0)))
 	{
 		uint32 LocalProcessed = Processed.Load(EMemoryOrder::Relaxed);
-		Progress.EnterProgressFrame(LocalProcessed - LastProcessed, FText::Format(ProgressText, LocalProcessed, StaticMeshes.Num()));
+		Progress.EnterProgressFrame(static_cast<float>(LocalProcessed - LastProcessed), FText::Format(ProgressText, LocalProcessed, StaticMeshes.Num()));
 		LastProcessed = LocalProcessed;
 	}
 

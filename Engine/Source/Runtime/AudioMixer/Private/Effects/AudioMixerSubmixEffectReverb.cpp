@@ -6,9 +6,12 @@
 #include "Audio.h"
 #include "AudioMixer.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "DSP/ReverbFast.h"
 #include "DSP/Amp.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioMixerSubmixEffectReverb)
 
 // Link to "Audio" profiling category
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
@@ -158,7 +161,7 @@ void FSubmixEffectReverb::OnProcessAudio(const FSoundEffectSubmixInputData& InDa
 	{
 		// Wet level is applied to input audio to preserve reverb tail when changing wet level
 		WetInputBuffer.AddZeroed(InData.AudioBuffer->Num());
-		Audio::MixInBufferFast(*InData.AudioBuffer, WetInputBuffer, LastWet, CurrentWetDry.WetLevel);
+		Audio::ArrayMixIn(*InData.AudioBuffer, WetInputBuffer, LastWet, CurrentWetDry.WetLevel);
 	}
 
 	PlateReverb->ProcessAudio(WetInputBuffer, InData.NumChannels, *OutData.AudioBuffer, OutData.NumChannels);
@@ -281,3 +284,4 @@ void USubmixEffectReverbPreset::SetSettings(const FSubmixEffectReverbSettings& I
 {
 	UpdateSettings(InSettings);
 }
+

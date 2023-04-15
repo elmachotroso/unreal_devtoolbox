@@ -1,12 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequenceRecorderCommands.h"
-#include "EditorStyleSet.h"
+
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "SequenceRecorderCommands"
 
 FSequenceRecorderCommands::FSequenceRecorderCommands()
-	: TCommands<FSequenceRecorderCommands>("SequenceRecorder.Common", LOCTEXT("SequenceRecorderCommandsLabel", "Sequence Recorder"), NAME_None, FEditorStyle::GetStyleSetName())
+	: TCommands<FSequenceRecorderCommands>("SequenceRecorder.Common", LOCTEXT("SequenceRecorderCommandsLabel", "Sequence Recorder"), NAME_None, FAppStyle::GetAppStyleSetName())
 {
 }
 

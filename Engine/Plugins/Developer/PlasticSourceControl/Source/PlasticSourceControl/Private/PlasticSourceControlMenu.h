@@ -5,8 +5,7 @@
 #include "CoreMinimal.h"
 #include "ISourceControlProvider.h"
 
-class FToolBarBuilder;
-class FMenuBuilder;
+struct FToolMenuSection;
 
 /** Plastic SCM extension of the Source Control toolbar menu */
 class FPlasticSourceControlMenu
@@ -20,6 +19,11 @@ public:
 	void RevertUnchangedClicked();
 	void RevertAllClicked();
 	void RefreshClicked();
+	void ShowSourceControlEditorPreferences() const;
+	void ShowSourceControlProjectSettings() const;
+	void ShowSourceControlPlasticScmProjectSettings() const;
+	void VisitDocsURLClicked() const;
+	void VisitSupportURLClicked() const;
 
 private:
 	bool IsSourceControlConnected() const;
@@ -29,7 +33,7 @@ private:
 	TArray<UPackage*>	UnlinkPackages(const TArray<FString>& InPackageNames);
 	void				ReloadPackages(TArray<UPackage*>& InPackagesToReload);
 
-	void AddMenuExtension(FMenuBuilder& Builder);
+	void AddMenuExtension(FToolMenuSection& Builder);
 
 	TSharedRef<class FExtender> OnExtendLevelEditorViewMenu(const TSharedRef<class FUICommandList> CommandList);
 
@@ -39,7 +43,6 @@ private:
 	void DisplayFailureNotification(const FName& InOperationName);
 
 private:
-	FDelegateHandle ViewMenuExtenderHandle;
 
 	/** Loaded packages to reload after a Sync or Revert operation */
 	TArray<UPackage*> PackagesToReload;

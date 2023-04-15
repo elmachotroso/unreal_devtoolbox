@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Common.ush"
 
-// Reroute MobileSceneTextures uniform buffer references to the base pass uniform buffer
+// Reroute MobileSceneTextures uniform buffer references to the base pass uniform buffer 
 #define MobileSceneTextures MobileBasePass.SceneTextures
 #define FogStruct MobileBasePass.Fog
 
@@ -49,15 +49,16 @@ void MobileFogPS(
 	if (ResolvedView.SkyAtmosphereApplyCameraAerialPerspectiveVolume > 0.0f)
 	{
 		float3 WorldPosition = WorldPositionRelativeToCamera + ResolvedView.TranslatedWorldCameraOrigin - LWCHackToFloat(ResolvedView.PreViewTranslation);
-		float4 NDCPosition = LWCMultiply(MakeLWCVector4(WorldPosition, 1.0f), ResolvedView.WorldToClip);
-				
+
+	//	float4 NDCPosition = LWCMultiply(MakeLWCVector4(WorldPosition, 1.0f), PrimaryView.WorldToClip);		// LWC_TODO: MakeLWCVector4 seems broken
+		float4 NDCPosition = LWCMultiply(LWCPromote(float4(WorldPosition, 1.0f)), PrimaryView.WorldToClip);	// Using LWCPromote make the math work as expected.
+
 		// Sample the aerial perspective (AP). It is also blended under the VertexFog parameter.
 		FinalFog = GetAerialPerspectiveLuminanceTransmittanceWithFogOver(
 			ResolvedView.RealTimeReflectionCapture, 
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
 			NDCPosition, 
-			WorldPosition.xyz*CM_TO_SKY_UNIT, 
-			ResolvedView.TranslatedWorldCameraOrigin*CM_TO_SKY_UNIT,
+			(WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin) * CM_TO_SKY_UNIT,
 			View.CameraAerialPerspectiveVolume, 
 			View.CameraAerialPerspectiveVolumeSampler,
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolutionInv,

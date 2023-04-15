@@ -18,7 +18,7 @@ class UMaterialExpressionGenericConstant : public UMaterialExpression
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual FString GetDescription() const override;
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif // WITH_EDITOR
 
 	//~ End UMaterialExpression Interface
@@ -29,7 +29,7 @@ class UMaterialExpressionConstantDouble : public UMaterialExpressionGenericConst
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionConstant)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialExpressionConstant, meta = (ShowAsInputPin = "Primary"))
 	double Value;
 
 	virtual UE::Shader::FValue GetConstantValue() const override { return Value; }

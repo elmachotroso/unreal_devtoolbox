@@ -10,7 +10,10 @@
 #include "UObject/Package.h"
 #include "Async/ParallelFor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimBoneCompressionSettings)
+
 #define DEBUG_DUMP_ANIM_COMPRESSION_STATS 0
+
 
 UAnimBoneCompressionSettings::UAnimBoneCompressionSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -271,6 +274,80 @@ bool UAnimBoneCompressionSettings::Compress(const FCompressibleAnimData& AnimSeq
 	return Success;
 }
 
+void UAnimBoneCompressionSettings::PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar)
+{
+	Ar << ErrorThreshold;
+	Ar << bForceBelowThreshold;
+
+	int32 NumValidCodecs = 0;
+	for (UAnimBoneCompressionCodec* Codec : Codecs)
+	{
+		if (Codec != nullptr)
+		{
+			const int64 ArchiveOffset = Ar.Tell();
+			Codec->PopulateDDCKey(KeyArgs, Ar);
+
+			if (ArchiveOffset == Ar.Tell())
+			{
+				// If nothing was written, perhaps the codec implements the old deprecated API, call it just in case
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				Codec->PopulateDDCKey(KeyArgs.AnimSequence, Ar);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+				// Again, If nothing was written, call the older deprecated API
+				if (ArchiveOffset == Ar.Tell())
+				{
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
+					Codec->PopulateDDCKey(Ar);
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				}
+			}
+
+			NumValidCodecs++;
+		}
+	}
+
+	if (NumValidCodecs == 0)
+	{
+		static FString NoCodecString(TEXT("<Missing Codec>"));
+		Ar << NoCodecString;
+	}
+}
+
+void UAnimBoneCompressionSettings::PopulateDDCKey(const UAnimSequenceBase& AnimSeq, FArchive& Ar)
+{
+	Ar << ErrorThreshold;
+	Ar << bForceBelowThreshold;
+
+	int32 NumValidCodecs = 0;
+	for (UAnimBoneCompressionCodec* Codec : Codecs)
+	{
+		if (Codec != nullptr)
+		{
+			const int64 ArchiveOffset = Ar.Tell();
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			Codec->PopulateDDCKey(AnimSeq, Ar);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			// If nothing was written, perhaps the codec implements the old deprecated API, call it just in case
+			if (ArchiveOffset == Ar.Tell())
+			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				Codec->PopulateDDCKey(Ar);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
+
+			NumValidCodecs++;
+		}
+	}
+
+	if (NumValidCodecs == 0)
+	{
+		static FString NoCodecString(TEXT("<Missing Codec>"));
+		Ar << NoCodecString;
+	}
+}
+
 void UAnimBoneCompressionSettings::PopulateDDCKey(FArchive& Ar)
 {
 	Ar << ErrorThreshold;
@@ -281,7 +358,12 @@ void UAnimBoneCompressionSettings::PopulateDDCKey(FArchive& Ar)
 	{
 		if (Codec != nullptr)
 		{
+			// We have no choice but to call the deprecated version, might not work correctly with newer codecs
+			// that leverage the new argument
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			Codec->PopulateDDCKey(Ar);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 			NumValidCodecs++;
 		}
 	}
@@ -293,3 +375,4 @@ void UAnimBoneCompressionSettings::PopulateDDCKey(FArchive& Ar)
 	}
 }
 #endif
+

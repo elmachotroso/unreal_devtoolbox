@@ -24,7 +24,7 @@
 #include "ContentBrowserMenuContexts.h"
 #include "ContentBrowserDataSource.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorReimportHandler.h"
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
@@ -37,12 +37,13 @@
 #include "Settings/EditorExperimentalSettings.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "FileHelpers.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "AssetViewUtils.h"
 #include "Dialogs/Dialogs.h"
 #include "SMetaDataView.h"
+#include "Algo/Transform.h"
 
 #include "ObjectTools.h"
 #include "PackageTools.h"
@@ -453,25 +454,22 @@ void FAssetFileContextMenu::MakeAssetActionsSubMenu(UToolMenu* Menu)
 		);
 
 		// Replace References
-		if (CanExecuteConsolidate())
-		{
-			Section.AddMenuEntry(
-				"ReplaceReferences",
-				LOCTEXT("ReplaceReferences", "Replace References"),
-				LOCTEXT("ConsolidateTooltip", "Replace references to the selected assets."),
-				FSlateIcon(),
-				FUIAction(
-				FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteConsolidate)
-				)
-				);
-		}
+		Section.AddMenuEntry(
+			"ReplaceReferences",
+			LOCTEXT("ReplaceReferences", "Replace References"),
+			LOCTEXT("ConsolidateTooltip", "Replace references to the selected assets."),
+			FSlateIcon(),
+			FUIAction(
+			FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteConsolidate)
+			)
+		);
 
 		// Property Matrix
-		bool bCanUsePropertyMatrix = true;
+		bool bCanUsePropertyMatrix = FModuleManager::LoadModuleChecked<FPropertyEditorModule>( "PropertyEditor" ).GetCanUsePropertyMatrix();
 		// Materials can't be bulk edited currently as they require very special handling because of their dependencies with the rendering thread, and we'd have to hack the property matrix too much.
 		for (auto& Asset : SelectedAssets)
 		{
-			if (Asset.AssetClass == UMaterial::StaticClass()->GetFName() || Asset.AssetClass == UMaterialInstanceConstant::StaticClass()->GetFName() || Asset.AssetClass == UMaterialFunction::StaticClass()->GetFName() || Asset.AssetClass == UMaterialFunctionInstance::StaticClass()->GetFName())
+			if (Asset.AssetClassPath == UMaterial::StaticClass()->GetClassPathName() || Asset.AssetClassPath == UMaterialInstanceConstant::StaticClass()->GetClassPathName() || Asset.AssetClassPath == UMaterialFunction::StaticClass()->GetClassPathName() || Asset.AssetClassPath == UMaterialFunctionInstance::StaticClass()->GetClassPathName())
 			{
 				bCanUsePropertyMatrix = false;
 				break;
@@ -665,7 +663,7 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 
 		for (const FAssetData& Asset : SelectedAssets)
 		{
-			const FString AssetPath = Asset.ObjectPath.ToString();
+			const FString AssetPath = Asset.GetObjectPathString();
 
 			if (AssetViewUtils::IsEngineFolder(AssetPath))
 			{
@@ -744,19 +742,19 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 				continue;
 			}
 
-			const FString ObjectPath = Asset.ObjectPath.ToString();
+			const FString ObjectPath = Asset.GetObjectPathString();
 			if (FPackageName::IsLocalizedPackage(ObjectPath))
 			{
 				// Get the source path for this asset
 				FString SourceObjectPath;
 				if (FPackageLocalizationUtil::ConvertLocalizedToSource(ObjectPath, SourceObjectPath))
 				{
-					SourceAssetsState.CurrentAssets.Add(*SourceObjectPath);
+					SourceAssetsState.CurrentAssets.Add(FSoftObjectPath(SourceObjectPath));
 				}
 			}
 			else
 			{
-				SourceAssetsState.SelectedAssets.Add(Asset.ObjectPath);
+				SourceAssetsState.SelectedAssets.Add(Asset.GetSoftObjectPath());
 
 				// Get the localized path for this asset and culture
 				FString LocalizedObjectPath;
@@ -764,15 +762,15 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 				{
 					// Does this localized asset already exist?
 					FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-					FAssetData LocalizedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*LocalizedObjectPath);
+					FAssetData LocalizedAssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(LocalizedObjectPath));
 
 					if (LocalizedAssetData.IsValid())
 					{
-						LocalizedAssetsStateForCulture.CurrentAssets.Add(*LocalizedObjectPath);
+						LocalizedAssetsStateForCulture.CurrentAssets.Add(FSoftObjectPath(LocalizedObjectPath));
 					}
 					else
 					{
-						LocalizedAssetsStateForCulture.NewAssets.Add(*LocalizedObjectPath);
+						LocalizedAssetsStateForCulture.NewAssets.Add(FSoftObjectPath(LocalizedObjectPath));
 					}
 				}
 			}
@@ -839,7 +837,9 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 				LOCTEXT("ShowSourceAsset", "Show Source Asset"),
 				LOCTEXT("ShowSourceAssetTooltip", "Show the source asset in the Content Browser."),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteFindInAssetTree, SourceAssetsState.CurrentAssets.Array()))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				);
 
 			Section.AddMenuEntry(
@@ -847,7 +847,9 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 				LOCTEXT("EditSourceAsset", "Edit Source Asset"),
 				LOCTEXT("EditSourceAssetTooltip", "Edit the source asset."),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.Edit"),
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteOpenEditorsForAssets, SourceAssetsState.CurrentAssets.Array()))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				);
 		}
 	}
@@ -896,7 +898,7 @@ void FAssetFileContextMenu::MakeAssetLocalizationSubMenu(UToolMenu* Menu)
 	}
 }
 
-void FAssetFileContextMenu::MakeCreateLocalizedAssetSubMenu(UToolMenu* Menu, TSet<FName> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState)
+void FAssetFileContextMenu::MakeCreateLocalizedAssetSubMenu(UToolMenu* Menu, TSet<FSoftObjectPath> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState)
 {
 	FToolMenuSection& Section = Menu->AddSection("Section");
 
@@ -929,7 +931,9 @@ void FAssetFileContextMenu::MakeShowLocalizedAssetSubMenu(UToolMenu* Menu, TArra
 				FText::FromString(LocalizedAssetsStateForCulture.Culture->GetDisplayName()),
 				FText::GetEmpty(),
 				FSlateIcon(),
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteFindInAssetTree, LocalizedAssetsStateForCulture.CurrentAssets.Array()))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				);
 		}
 	}
@@ -948,26 +952,28 @@ void FAssetFileContextMenu::MakeEditLocalizedAssetSubMenu(UToolMenu* Menu, TArra
 				FText::FromString(LocalizedAssetsStateForCulture.Culture->GetDisplayName()),
 				FText::GetEmpty(),
 				FSlateIcon(),
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetFileContextMenu::ExecuteOpenEditorsForAssets, LocalizedAssetsStateForCulture.CurrentAssets.Array()))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				);
 		}
 	}
 }
 
-void FAssetFileContextMenu::ExecuteCreateLocalizedAsset(TSet<FName> InSelectedSourceAssets, FLocalizedAssetsState InLocalizedAssetsStateForCulture)
+void FAssetFileContextMenu::ExecuteCreateLocalizedAsset(TSet<FSoftObjectPath> InSelectedSourceAssets, FLocalizedAssetsState InLocalizedAssetsStateForCulture)
 {
 	TArray<UPackage*> PackagesToSave;
 	TArray<FAssetData> NewObjects;
 
-	for (const FName& SourceAssetName : InSelectedSourceAssets)
+	for (const FSoftObjectPath& SourceAsset: InSelectedSourceAssets)
 	{
-		if (InLocalizedAssetsStateForCulture.CurrentAssets.Contains(SourceAssetName))
+		if (InLocalizedAssetsStateForCulture.CurrentAssets.Contains(SourceAsset))
 		{
 			// Asset is already localized
 			continue;
 		}
 
-		UObject* SourceAssetObject = LoadObject<UObject>(nullptr, *SourceAssetName.ToString());
+		UObject* SourceAssetObject = LoadObject<UObject>(nullptr, *SourceAsset.ToString());
 		if (!SourceAssetObject)
 		{
 			// Source object cannot be loaded
@@ -1001,12 +1007,12 @@ void FAssetFileContextMenu::ExecuteCreateLocalizedAsset(TSet<FName> InSelectedSo
 	OnShowAssetsInPathsView.ExecuteIfBound(NewObjects);
 }
 
-void FAssetFileContextMenu::ExecuteFindInAssetTree(TArray<FName> InAssets)
+void FAssetFileContextMenu::ExecuteFindInAssetTree(TArray<FSoftObjectPath> InAssets)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	FARFilter ARFilter;
-	ARFilter.ObjectPaths = MoveTemp(InAssets);
+	ARFilter.SoftObjectPaths = InAssets;
 	
 	TArray<FAssetData> FoundLocalizedAssetData;
 	AssetRegistryModule.Get().GetAssets(ARFilter, FoundLocalizedAssetData);
@@ -1014,7 +1020,7 @@ void FAssetFileContextMenu::ExecuteFindInAssetTree(TArray<FName> InAssets)
 	OnShowAssetsInPathsView.ExecuteIfBound(FoundLocalizedAssetData);
 }
 
-void FAssetFileContextMenu::ExecuteOpenEditorsForAssets(TArray<FName> InAssets)
+void FAssetFileContextMenu::ExecuteOpenEditorsForAssets(TArray<FSoftObjectPath> InAssets)
 {
 	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(InAssets);
 }
@@ -1520,15 +1526,13 @@ void FAssetFileContextMenu::GetSelectedAssets(TArray<UObject*>& Assets, bool Ski
 {
 	for (int32 AssetIdx = 0; AssetIdx < SelectedAssets.Num(); ++AssetIdx)
 	{
-		if (SkipRedirectors && (SelectedAssets[AssetIdx].AssetClass == UObjectRedirector::StaticClass()->GetFName()))
+		if (SkipRedirectors && (SelectedAssets[AssetIdx].AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName()))
 		{
 			// Don't operate on Redirectors
 			continue;
 		}
 
-		UObject* Object = SelectedAssets[AssetIdx].FastGetAsset();
-
-		if (Object)
+		if (UObject* Object = SelectedAssets[AssetIdx].GetAsset())
 		{
 			Assets.Add(Object);
 		}
@@ -1710,7 +1714,7 @@ void FAssetFileContextMenu::ExecuteShowAssetMetaData()
 					[
 						SNew(SBorder)
 						.Padding(4.f)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 						[
 							SNew(SMetaDataView, *TagValues)
 						]
@@ -1782,13 +1786,13 @@ void FAssetFileContextMenu::ExecuteReload()
 		{
 			const FAssetData& AssetData = *AssetIt;
 
-			if (AssetData.AssetClass == UObjectRedirector::StaticClass()->GetFName())
+			if (AssetData.AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName())
 			{
 				// Don't operate on Redirectors
 				continue;
 			}
 
-			if (AssetData.AssetClass == UUserDefinedStruct::StaticClass()->GetFName())
+			if (AssetData.AssetClassPath == UUserDefinedStruct::StaticClass()->GetClassPathName())
 			{
 				FNotificationInfo Notification(LOCTEXT("CannotReloadUserStruct", "User created structures cannot be safely reloaded."));
 				Notification.ExpireDuration = 3.0f;
@@ -1796,7 +1800,7 @@ void FAssetFileContextMenu::ExecuteReload()
 				continue;
 			}
 
-			if (AssetData.AssetClass == UUserDefinedEnum::StaticClass()->GetFName())
+			if (AssetData.AssetClassPath == UUserDefinedEnum::StaticClass()->GetClassPathName())
 			{
 				FNotificationInfo Notification(LOCTEXT("CannotReloadUserEnum", "User created enumerations cannot be safely reloaded."));
 				Notification.ExpireDuration = 3.0f;
@@ -1890,7 +1894,8 @@ void FAssetFileContextMenu::ExecuteGoToDocsForAsset(UClass* SelectedClass, const
 		FString DocumentationLink = FEditorClassUtils::GetDocumentationLink(SelectedClass, ExcerptSection);
 		if (!DocumentationLink.IsEmpty())
 		{
-			IDocumentation::Get()->Open(DocumentationLink, FDocumentationSourceInfo(TEXT("cb_docs")));
+			FString DocumentationLinkBaseUrl = FEditorClassUtils::GetDocumentationLinkBaseUrl(SelectedClass);
+			IDocumentation::Get()->Open(DocumentationLink, FDocumentationSourceInfo(TEXT("cb_docs")), DocumentationLinkBaseUrl);
 		}
 	}
 }
@@ -2139,9 +2144,11 @@ void FAssetFileContextMenu::ExecuteSCCCheckIn()
 		GetSelectedPackageNames(PackageNames);
 
 		const bool bUseSourceControlStateCache = true;
-		const bool bCheckinGood = FSourceControlWindows::PromptForCheckin(bUseSourceControlStateCache, PackageNames);
 
-		if (!bCheckinGood)
+		FCheckinResultInfo ResultInfo;
+		FSourceControlWindows::PromptForCheckin(ResultInfo, PackageNames, TArray<FString>(), TArray<FString>(), bUseSourceControlStateCache);
+
+		if ( ResultInfo.Result == ECommandResult::Failed )
 		{
 			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "SCC_Checkin_Failed", "Check-in failed as a result of save failure."));
 		}
@@ -2334,7 +2341,15 @@ bool FAssetFileContextMenu::CanExecuteSCCOpenForAdd() const
 
 bool FAssetFileContextMenu::CanExecuteSCCCheckIn() const
 {
-	return bCanExecuteSCCCheckIn;
+	bool bUsesFileRevisions = true;
+
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	if (ISourceControlModule::Get().IsEnabled())
+	{
+		bUsesFileRevisions = SourceControlProvider.UsesFileRevisions();
+	}
+	
+	return bCanExecuteSCCCheckIn && bUsesFileRevisions;
 }
 
 bool FAssetFileContextMenu::CanExecuteSCCHistory() const
@@ -2357,32 +2372,6 @@ bool FAssetFileContextMenu::CanExecuteSCCSync() const
 	return bCanExecuteSCCSync;
 }
 
-bool FAssetFileContextMenu::CanExecuteConsolidate() const
-{
-	TArray<UObject*> ProposedObjects;
-	for (int32 AssetIdx = 0; AssetIdx < SelectedAssets.Num(); ++AssetIdx)
-	{
-		// Don't load assets here. Only operate on already loaded assets.
-		if ( SelectedAssets[AssetIdx].IsAssetLoaded() )
-		{
-			UObject* Object = SelectedAssets[AssetIdx].GetAsset();
-
-			if ( Object )
-			{
-				ProposedObjects.Add(Object);
-			}
-		}
-	}
-	
-	if ( ProposedObjects.Num() > 0 )
-	{
-		TArray<UObject*> CompatibleObjects;
-		return FConsolidateToolWindow::DetermineAssetCompatibility(ProposedObjects, CompatibleObjects);
-	}
-
-	return false;
-}
-
 bool FAssetFileContextMenu::CanExecuteDiffSelected() const
 {
 	bool bCanDiffSelected = false;
@@ -2391,7 +2380,7 @@ bool FAssetFileContextMenu::CanExecuteDiffSelected() const
 		FAssetData const& FirstSelection = SelectedAssets[0];
 		FAssetData const& SecondSelection = SelectedAssets[1];
 
-		bCanDiffSelected = FirstSelection.AssetClass == SecondSelection.AssetClass;
+		bCanDiffSelected = FirstSelection.AssetClassPath == SecondSelection.AssetClassPath;
 	}
 
 	return bCanDiffSelected;
@@ -2434,7 +2423,7 @@ void FAssetFileContextMenu::CacheCanExecuteVars()
 			continue;
 		}
 
-		if ( !bAtLeastOneNonRedirectorSelected && AssetData.AssetClass != UObjectRedirector::StaticClass()->GetFName() )
+		if ( !bAtLeastOneNonRedirectorSelected && AssetData.AssetClassPath != UObjectRedirector::StaticClass()->GetClassPathName() )
 		{
 			bAtLeastOneNonRedirectorSelected = true;
 		}
@@ -2465,7 +2454,7 @@ void FAssetFileContextMenu::CacheCanExecuteVars()
 					bCanExecuteSCCHistory = true;
 				}
 
-				if(!SourceControlState->IsCurrent())
+				if(!SourceControlState->IsCurrent() && SourceControlProvider.UsesFileRevisions())
 				{
 					bCanExecuteSCCSync = true;
 				}

@@ -68,6 +68,14 @@ class ENGINE_API UKismetStringLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To String (Object)", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities|String")
 	static FString Conv_ObjectToString(class UObject* InObj);
 
+	/** Converts a InputDeviceId value to a string */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To String (InputDeviceId)", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities|String")
+	static FString Conv_InputDeviceIdToString(FInputDeviceId InDeviceId);
+
+	/** Converts a PlatformUserId value to a string */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To String (PlatformUserId)", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities|String")
+	static FString Conv_PlatformUserIdToString(FPlatformUserId InPlatformUserId);
+
 	/** Converts a linear color value to a string, in the form '(R=,G=,B=,A=)' */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "To String (LinearColor)", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities|String")
 	static FString Conv_ColorToString(FLinearColor InColor);
@@ -87,6 +95,10 @@ class ENGINE_API UKismetStringLibrary : public UBlueprintFunctionLibrary
 	/** Converts a string to a int value */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "String To Integer", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities|String")
 	static int32 Conv_StringToInt(const FString& InString);
+
+	/** Converts a string to a int value */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "String To Integer64", CompactNodeTitle = "->", BlueprintAutocast), Category = "Utilities|String")
+	static int64 Conv_StringToInt64(const FString& InString);
 
 	/** Converts a string to a float value */
 	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Please use LexFromString instead.")

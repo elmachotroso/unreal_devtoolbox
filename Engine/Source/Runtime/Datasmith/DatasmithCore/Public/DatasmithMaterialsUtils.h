@@ -4,6 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "DatasmithDefinitions.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
 
 class IDatasmithMaterialExpression;
 class IDatasmithMaterialExpressionTexture;
@@ -68,4 +74,6 @@ namespace DatasmithMaterialsUtils
 	 * @return						Material expression that outputs a Color or Scalar interpolated with Expression; nullptr if no Color, Scalar or Expression are given
 	 */
 	DATASMITHCORE_API IDatasmithMaterialExpression* CreateWeightedMaterialExpression( const TSharedRef< IDatasmithUEPbrMaterialElement >& MaterialElement, const TCHAR* ParameterName, TOptional< FLinearColor > Color, TOptional< float > Scalar, IDatasmithMaterialExpression* Expression, float Weight, EDatasmithTextureMode TextureMode = EDatasmithTextureMode::Diffuse );
+
+	DATASMITHCORE_API FLinearColor TemperatureToColor(float Kelvin);
 }

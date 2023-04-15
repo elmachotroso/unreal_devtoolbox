@@ -9,7 +9,7 @@
 //----------------------------------------------------------------------//
 //  UMassVelocityRandomizerTrait
 //----------------------------------------------------------------------//
-void UMassVelocityRandomizerTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+void UMassVelocityRandomizerTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
 	FMassVelocityFragment& VelocityTemplate = BuildContext.AddFragment_GetRef<FMassVelocityFragment>();
 	// This is a small @hack to support sending parameters to initializer.
@@ -23,6 +23,7 @@ void UMassVelocityRandomizerTrait::BuildTemplate(FMassEntityTemplateBuildContext
 //  UMassRandomVelocityInitializer
 //----------------------------------------------------------------------//
 UMassRandomVelocityInitializer::UMassRandomVelocityInitializer()
+	: EntityQuery(*this)
 {
 	ObservedType = FMassVelocityFragment::StaticStruct();
 	Operation = EMassObservedOperation::Add;
@@ -33,10 +34,10 @@ void UMassRandomVelocityInitializer::ConfigureQueries()
 	EntityQuery.AddRequirement<FMassVelocityFragment>(EMassFragmentAccess::ReadWrite);
 }
 
-void UMassRandomVelocityInitializer::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassRandomVelocityInitializer::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
 	// note: the author is aware that the vectors produced below are not distributed uniformly, but it's good enough
-	EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, ([this](FMassExecutionContext& Context)
+	EntityQuery.ForEachEntityChunk(EntityManager, Context, ([this](FMassExecutionContext& Context)
 		{
 			const TArrayView<FMassVelocityFragment> VelocitiesList = Context.GetMutableFragmentView<FMassVelocityFragment>();
 			for (FMassVelocityFragment& VelocityFragment : VelocitiesList)

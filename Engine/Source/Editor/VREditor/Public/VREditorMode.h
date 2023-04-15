@@ -35,7 +35,7 @@ namespace VRActionTypes
 {
 	static const FName Touch( "Touch" );
 	static const FName Modifier( "Modifier" );
-	static const FName Modifier2( "Modifier2" ); //Only used by Oculus
+	static const FName Modifier2( "Modifier2" );
 	static const FName ConfirmRadialSelection( "ConfirmRadialSelection" );
 	static const FName TrackpadPositionX( "TrackpadPosition_X" );
 	static const FName TrackpadPositionY( "TrackpadPosition_Y" );
@@ -49,7 +49,7 @@ namespace VRActionTypes
 /**
  * VR Editor Mode. Extends editor viewports with functionality for VR controls and object manipulation
  */
-UCLASS( BlueprintType, Transient )
+UCLASS( Abstract, BlueprintType, Blueprintable, Transient )
 class VREDITOR_API UVREditorMode : public UEditorWorldExtension
 {
 	GENERATED_BODY()
@@ -59,14 +59,32 @@ public:
 	/** Default constructor */
 	UVREditorMode();
 
+	/** Overrides the HMD device type, which is otherwise derived from the XR system name. */
+	void SetHMDDeviceTypeOverride( FName InOverrideType );
+
+	//~ Begin UEditorWorldExtension interface
+
 	/** Initialize the VREditor */
 	virtual void Init() override;
 
 	/** Shutdown the VREditor */
 	virtual void Shutdown() override;
 
+protected:
+	virtual void TransitionWorld(UWorld* NewWorld, EEditorWorldExtensionTransitionState TransitionState) override;
+
+	//~ End UEditorWorldExtension interface
+
+public:
+	virtual bool NeedsSyntheticDpad()
+	{
+		return false;
+	}
+
+	virtual bool ShouldDisplayExperimentalWarningOnEntry() const { return true; }
+
 	/** When the user actually enters the VR Editor mode */
-	void Enter();
+	virtual void Enter();
 
 	/** When the user leaves the VR Editor mode */
 	void Exit( const bool bShouldDisableStereo );
@@ -189,6 +207,14 @@ public:
 	/** Mutable version of above. */
 	class SLevelViewport& GetLevelViewportPossessedForVR();
 
+	/** Display the scene more closely to how it would appear at runtime (as opposed to edit time). */
+	UFUNCTION(BlueprintCallable, Category="VREditorMode")
+	void SetGameView(bool bGameView);
+
+	/** Returns whether game view is currently active. */
+	UFUNCTION(BlueprintCallable, Category="VREditorMode")
+	bool IsInGameView() const;
+
 	/** Gets the world scale factor, which can be multiplied by a scale vector to convert to room space */
 	UFUNCTION( BlueprintCallable, Category = "VREditorMode" )
 	float GetWorldScaleFactor() const;
@@ -307,14 +333,14 @@ public:
 	DECLARE_EVENT_OneParam(UVREditorMode, FOnToggleVRModeDebug, bool);
 	FOnToggleVRModeDebug& OnToggleDebugMode() { return OnToggleDebugModeEvent; };
 
+	/** Delegate to be called when async VR mode entry has been completed. */
+	DECLARE_EVENT(UVREditorMode, FOnVRModeEntryComplete);
+	FOnVRModeEntryComplete& OnVRModeEntryComplete() { return OnVRModeEntryCompleteEvent; }
+
 	const TArray<UVREditorInteractor*> GetVRInteractors() const
 	{
 		return Interactors;
 	}
-
-protected:
-
-	virtual void TransitionWorld(UWorld* NewWorld, EEditorWorldExtensionTransitionState TransitionState) override;
 
 private:
 
@@ -339,6 +365,10 @@ protected:
 	//
 	// Startup/Shutdown
 	//
+
+	void BeginEntry();
+	void SetupSubsystems();
+	void FinishEntry();
 
 	/** The VR editor window, if it's open right now */
 	TWeakPtr< class SWindow > VREditorWindowWeakPtr;
@@ -479,6 +509,14 @@ public:
 	/** The asset container path */
 	static const TCHAR* AssetContainerPath;
 
+	/** The controller to use when UnrealEd is in VR mode. Use VREditorInteractor get default editor behavior, or select a custom controller for special behavior */
+	UPROPERTY( EditAnywhere, BlueprintReadWrite, NoClear, Category="Classes" )
+	TSoftClassPtr<UVREditorInteractor> InteractorClass;
+
+	/** The teleporter to use when UnrealEd is in VR mode. Use VREditorTeleporter to get default editor behavior, or select a custom teleporter */
+	UPROPERTY( EditAnywhere, BlueprintReadWrite, NoClear, Category="Classes" )
+	TSoftClassPtr<AVREditorTeleporter> TeleporterClass;
+
 private:
 
 	// All the colors for this mode
@@ -500,4 +538,10 @@ private:
 
 	/** Event that gets broadcasted when debug mode is toggled. */
 	FOnToggleVRModeDebug OnToggleDebugModeEvent;
+
+	/** Overridden HMD device type. If NAME_None, HMD device type is derived from the XR system name. */
+	FName HMDDeviceTypeOverride = NAME_None;
+
+	/** Event that gets broadcast when async VR mode entry is completed. */
+	FOnVRModeEntryComplete OnVRModeEntryCompleteEvent;
 };

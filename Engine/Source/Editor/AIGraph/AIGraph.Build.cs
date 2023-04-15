@@ -10,9 +10,9 @@ public class AIGraph : ModuleRules
 
 		PrivateIncludePaths.AddRange(
             new string[] {
-				"Editor/GraphEditor/Private",
-				"Editor/Kismet/Private",
-				"Editor/AIGraph/Private",
+				System.IO.Path.Combine(GetModuleDirectory("AIGraph"), "Private"),
+				System.IO.Path.Combine(GetModuleDirectory("GraphEditor"), "Private"),
+				System.IO.Path.Combine(GetModuleDirectory("Kismet"), "Private"),
 			}
         );
 
@@ -34,7 +34,7 @@ public class AIGraph : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
+                
 				"EditorFramework",
 				"UnrealEd", 
 				"MessageLog", 

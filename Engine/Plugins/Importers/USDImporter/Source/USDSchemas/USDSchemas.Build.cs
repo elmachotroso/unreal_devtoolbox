@@ -20,6 +20,9 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"GeometryCache",
+					"LiveLinkAnimationCore",
+					"LiveLinkComponents",
+					"LiveLinkInterface",
 					"MeshDescription",
 					"RenderCore",
 					"RHI", // For FMaterialUpdateContext and the right way of updating material instance constants
@@ -32,15 +35,27 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
+			PublicDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"HairStrandsCore",
+				}
+			);
+
 			if (Target.bBuildEditor)
 			{
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"BlueprintGraph",
 						"GeometryCacheUSD",
+						"HairStrandsEditor",
+						"Kismet",
+						"LiveLinkGraphNode",
 						"MaterialEditor",
 						"MDLImporter",
 						"MeshUtilities",
+						"PhysicsUtilities", // For generating UPhysicsAssets for SkeletalMeshes
 						"PropertyEditor",
 						"UnrealEd",
 					}

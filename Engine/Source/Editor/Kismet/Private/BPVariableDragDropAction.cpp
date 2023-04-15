@@ -1,19 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BPVariableDragDropAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+
+#include "BlueprintEditor.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphSchema_K2_Actions.h"
+#include "Engine/Blueprint.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GenericPlatform/GenericApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
-
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/AssertionMacros.h"
 #include "ScopedTransaction.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
+class SWidget;
+struct FSlateBrush;
+struct FSlateColor;
 
 #define LOCTEXT_NAMESPACE "VariableDragDropAction"
 
@@ -174,9 +197,23 @@ void FKismetVariableDragDropAction::HoverTargetChanged()
 				Schema->ConvertPropertyToPinType(VariableProperty, VariablePinType);
 				const bool bTypeMatch = Schema->ArePinTypesCompatible(VariablePinType, PinUnderCursor->PinType) || bIsExecPin;
 
+				FName DummyName;
+				UClass* DummyClass;
+				UK2Node* DummyNode;
+				const bool bCanAutoConvert = Schema->FindSpecializedConversionNode(VariablePinType, PinUnderCursor, false, /* out */ DummyNode);
+				bool bCanAutocast = false;
+				if (PinUnderCursor->Direction == EGPD_Output)
+				{
+					bCanAutocast = Schema->SearchForAutocastFunction(PinUnderCursor->PinType, VariablePinType, /*out*/ DummyName, DummyClass);
+				}
+				else
+				{
+					bCanAutocast = Schema->SearchForAutocastFunction(VariablePinType, PinUnderCursor->PinType, /*out*/ DummyName, DummyClass);
+				}
+				
 				Args.Add(TEXT("PinUnderCursor"), FText::FromName(PinUnderCursor->PinName));
 
-				if (bTypeMatch && bCanWriteIfNeeded)
+				if ((bTypeMatch  || bCanAutocast || bCanAutoConvert) && bCanWriteIfNeeded)
 				{
 					SetFeedbackMessageOK(bIsRead ?
 						FText::Format(LOCTEXT("MakeThisEqualThat_PinEqualVariableName", "Make {PinUnderCursor} = {VariableName}"), Args) :
@@ -284,8 +321,22 @@ FReply FKismetVariableDragDropAction::DroppedOnPin(FVector2D ScreenPosition, FVe
 					FEdGraphPinType VariablePinType;
 					Schema->ConvertPropertyToPinType(VariableProperty, VariablePinType);
 					const bool bTypeMatch = Schema->ArePinTypesCompatible(VariablePinType, TargetPin->PinType) || bIsExecPin;
-
-					if (bTypeMatch && bCanWriteIfNeeded)
+					
+					FName DummyName;
+					UClass* DummyClass;
+					UK2Node* DummyNode;
+					const bool bCanAutoConvert = Schema->FindSpecializedConversionNode(VariablePinType, TargetPin, false, /* out */ DummyNode);
+					bool bCanAutocast = false;
+					if (TargetPin->Direction == EGPD_Output)
+					{
+						bCanAutocast = Schema->SearchForAutocastFunction(TargetPin->PinType, VariablePinType, /*out*/ DummyName, DummyClass);
+					}
+					else
+					{
+						bCanAutocast = Schema->SearchForAutocastFunction(VariablePinType, TargetPin->PinType, /*out*/ DummyName, DummyClass);
+					}
+					
+					if ((bTypeMatch || bCanAutocast || bCanAutoConvert) && bCanWriteIfNeeded)
 					{
 						FEdGraphSchemaAction_K2NewNode Action;
 
@@ -448,7 +499,7 @@ FReply FKismetVariableDragDropAction::DroppedOnPanel( const TSharedRef< SWidget 
 			// call analytics
 			AnalyticCallback.ExecuteIfBound();
 
-			// Take into account current state of modifier keys in case the user changed his mind
+			// Take into account current state of modifier keys in case the user changed their mind
 			FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
 			const bool bModifiedKeysActive = ModifierKeys.IsControlDown() || ModifierKeys.IsAltDown();
 			const bool bAutoCreateGetter = bModifiedKeysActive ? ModifierKeys.IsControlDown() : bControlDrag;

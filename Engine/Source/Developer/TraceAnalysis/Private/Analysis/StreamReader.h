@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "HAL/UnrealMemory.h"
+#include "Templates/UnrealTemplate.h"
 
 namespace UE {
 namespace Trace {
@@ -11,7 +13,6 @@ namespace Trace {
 class FStreamReader
 {
 public:
-								~FStreamReader();
 	template <typename Type>
 	Type const*					GetPointer();
 	template <typename Type>
@@ -21,6 +22,7 @@ public:
 	void						Advance(uint32 Size);
 	bool						IsEmpty() const;
 	int32						GetRemaining() const;
+	bool						CanMeetDemand() const;
 	bool						Backtrack(const uint8* To);
 	struct FMark*				SaveMark() const;
 	void						RestoreMark(struct FMark* Mark);
@@ -59,6 +61,13 @@ class FStreamBuffer
 	: public FStreamReader
 {
 public:
+								FStreamBuffer() = default;
+								FStreamBuffer(uint32_t InitalBufferSize);
+								~FStreamBuffer();
+								FStreamBuffer(FStreamBuffer&& Rhs) noexcept;
+								FStreamBuffer(const FStreamBuffer&)	= default;
+	FStreamBuffer&				operator = (FStreamBuffer&& Rhs) noexcept;
+	FStreamBuffer&				operator = (const FStreamBuffer&)	= delete;
 	template <typename Lambda>
 	int32						Fill(Lambda&& Source);
 	void						Append(const uint8* Data, uint32 Size);
@@ -68,6 +77,33 @@ protected:
 	void						Consolidate();
 	uint32						BufferSize = 0;
 };
+
+////////////////////////////////////////////////////////////////////////////////
+inline FStreamBuffer::~FStreamBuffer()
+{
+	FMemory::Free(Buffer);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+inline FStreamBuffer::FStreamBuffer(FStreamBuffer&& Rhs) noexcept
+{
+	Swap(BufferSize, Rhs.BufferSize);
+	Swap(Buffer, Rhs.Buffer);
+	Swap(Cursor, Rhs.Cursor);
+	Swap(End, Rhs.End);
+	Swap(DemandHint, Rhs.DemandHint);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+inline FStreamBuffer& FStreamBuffer::operator = (FStreamBuffer&& Rhs) noexcept
+{
+	Swap(BufferSize, Rhs.BufferSize);
+	Swap(Buffer, Rhs.Buffer);
+	Swap(Cursor, Rhs.Cursor);
+	Swap(End, Rhs.End);
+	Swap(DemandHint, Rhs.DemandHint);
+	return *this;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 template <typename Lambda>

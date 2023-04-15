@@ -2,78 +2,84 @@
 
 using EpicGames.Core;
 using System;
-using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Linq.Expressions;
-using System.Reflection;
-using System.Reflection.Emit;
 
 namespace EpicGames.Serialization.Converters
 {
 	/// <summary>
 	/// Converter for dictionary types
 	/// </summary>
-	class CbDictionaryConverter<TKey, TValue> : CbConverter<Dictionary<TKey, TValue>> where TKey : notnull
+	class CbDictionaryConverter<TKey, TValue> : CbConverterBase<Dictionary<TKey, TValue>> where TKey : notnull
 	{
 		/// <inheritdoc/>
-		public override Dictionary<TKey, TValue> Read(CbField Field)
+		public override Dictionary<TKey, TValue> Read(CbField field)
 		{
-			Dictionary<TKey, TValue> Dictionary = new Dictionary<TKey, TValue>();
-			foreach (CbField Element in Field)
+			if (field.IsNull())
 			{
-				IEnumerator<CbField> Enumerator = Element.AsArray().GetEnumerator();
+				return null!;
+			}
 
-				if (!Enumerator.MoveNext())
+			Dictionary<TKey, TValue> dictionary = new Dictionary<TKey, TValue>();
+			foreach (CbField element in field)
+			{
+				IEnumerator<CbField> enumerator = element.AsArray().GetEnumerator();
+
+				if (!enumerator.MoveNext())
 				{
 					throw new CbException("Missing key for dictionary entry");
 				}
-				TKey Key = CbSerializer.Deserialize<TKey>(Enumerator.Current);
+				TKey key = CbSerializer.Deserialize<TKey>(enumerator.Current);
 
-				if (!Enumerator.MoveNext())
+				if (!enumerator.MoveNext())
 				{
 					throw new CbException("Missing value for dictionary entry");
 				}
-				TValue Value = CbSerializer.Deserialize<TValue>(Enumerator.Current);
+				TValue value = CbSerializer.Deserialize<TValue>(enumerator.Current);
 
-				Dictionary.Add(Key, Value);
+				dictionary.Add(key, value);
 			}
-			return Dictionary;
+			return dictionary;
 		}
 
 		/// <inheritdoc/>
-		public override void Write(CbWriter Writer, Dictionary<TKey, TValue> Value)
+		public override void Write(CbWriter writer, Dictionary<TKey, TValue> value)
 		{
-			if (Value.Count > 0)
+			if (value == null)
 			{
-				Writer.BeginUniformArray(CbFieldType.Array);
-				foreach (KeyValuePair<TKey, TValue> Pair in Value)
+				writer.WriteNullValue();
+			}
+			else
+			{
+				writer.BeginUniformArray(CbFieldType.Array);
+				foreach (KeyValuePair<TKey, TValue> pair in value)
 				{
-					Writer.BeginArray();
-					CbSerializer.Serialize(Writer, Pair.Key);
-					CbSerializer.Serialize(Writer, Pair.Value);
-					Writer.EndArray();
+					writer.BeginArray();
+					CbSerializer.Serialize(writer, pair.Key);
+					CbSerializer.Serialize(writer, pair.Value);
+					writer.EndArray();
 				}
-				Writer.EndUniformArray();
+				writer.EndUniformArray();
 			}
 		}
 
 		/// <inheritdoc/>
-		public override void WriteNamed(CbWriter Writer, Utf8String Name, Dictionary<TKey, TValue> Value)
+		public override void WriteNamed(CbWriter writer, Utf8String name, Dictionary<TKey, TValue> value)
 		{
-			if (Value.Count > 0)
+			if (value == null)
 			{
-				Writer.BeginUniformArray(Name, CbFieldType.Array);
-				foreach (KeyValuePair<TKey, TValue> Pair in Value)
+				writer.WriteNull(name);
+			}
+			else if (value.Count > 0)
+			{
+				writer.BeginUniformArray(name, CbFieldType.Array);
+				foreach (KeyValuePair<TKey, TValue> pair in value)
 				{
-					Writer.BeginArray();
-					CbSerializer.Serialize(Writer, Pair.Key);
-					CbSerializer.Serialize(Writer, Pair.Value);
-					Writer.EndArray();
+					writer.BeginArray();
+					CbSerializer.Serialize(writer, pair.Key);
+					CbSerializer.Serialize(writer, pair.Value);
+					writer.EndArray();
 				}
-				Writer.EndUniformArray();
+				writer.EndUniformArray();
 			}
 		}
 	}
@@ -84,12 +90,12 @@ namespace EpicGames.Serialization.Converters
 	class CbDictionaryConverterFactory : CbConverterFactory
 	{
 		/// <inheritdoc/>
-		public override CbConverter? CreateConverter(Type Type)
+		public override ICbConverter? CreateConverter(Type type)
 		{
-			if (Type.IsGenericType && Type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
+			if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
 			{
-				Type ConverterType = typeof(CbDictionaryConverter<,>).MakeGenericType(Type.GenericTypeArguments);
-				return (CbConverter)Activator.CreateInstance(ConverterType)!;
+				Type converterType = typeof(CbDictionaryConverter<,>).MakeGenericType(type.GenericTypeArguments);
+				return (ICbConverter)Activator.CreateInstance(converterType)!;
 			}
 			return null;
 		}

@@ -2,6 +2,13 @@
 
 #pragma once
 
+#include "CoreMinimal.h"
+
+#include "EngineUtils.h"
+#include "ScreenRendering.h"
+#include "SceneView.h"
+#include "Templates/SharedPointer.h"
+
 #include "Render/Viewport/IDisplayClusterViewportProxy.h"
 #include "Render/Viewport/Containers/DisplayClusterViewport_OverscanSettings.h"
 
@@ -18,9 +25,10 @@ class FDisplayClusterViewportReadPixelsData;
 
 class FDisplayClusterViewportProxy
 	: public IDisplayClusterViewportProxy
+	, public TSharedFromThis<FDisplayClusterViewportProxy, ESPMode::ThreadSafe>
 {
 public:
-	FDisplayClusterViewportProxy(const FDisplayClusterViewportManagerProxy& Owner, const FDisplayClusterViewport& RenderViewport);
+	FDisplayClusterViewportProxy(const FDisplayClusterViewport& RenderViewport);
 	virtual ~FDisplayClusterViewportProxy();
 
 public:
@@ -90,16 +98,21 @@ public:
 	virtual bool GetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutRects) const override;
 
 	// Resolve resource contexts
-	virtual bool ResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const override;
+	virtual bool ResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType, const int32 InContextNum = INDEX_NONE) const override;
 
 	virtual EDisplayClusterViewportResourceType GetOutputResourceType_RenderThread() const override;
 
 	virtual const IDisplayClusterViewportManagerProxy& GetOwner_RenderThread() const override;
 
+	virtual void OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures, const FDisplayClusterViewportProxy_Context& InProxyContext) override;
+	virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& InGraphBuilder, class FSceneViewFamily& InViewFamily, const class FSceneView& InSceneView, const FDisplayClusterViewportProxy_Context& InProxyContext) override;
 
 	///////////////////////////////
 	// ~IDisplayClusterViewportProxy
 	///////////////////////////////
+
+	// Release internal resource refs
+	void HandleResourceDelete_RenderThread(class FDisplayClusterViewportResource* InDeletedResourcePtr);
 
 	void PostResolveViewport_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 
@@ -127,6 +140,8 @@ public:
 		return false;
 	}
 
+	FIntRect GetFinalContextRect(const EDisplayClusterViewportResourceType InputResourceType, const FIntRect& InRect) const;
+
 private:
 	bool ImplGetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutResourceRects, const int32 InRecursionDepth) const;
 	bool ImplGetResources_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, const int32 InRecursionDepth) const;
@@ -134,8 +149,7 @@ private:
 	void ImplViewportRemap_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 	void ImplPreviewReadPixels_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 
-	bool ImplResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, FDisplayClusterViewportProxy const* SourceProxy, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const;
-
+	bool ImplResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, FDisplayClusterViewportProxy const* SourceProxy, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType, const int32 InContextNum) const;
 	bool IsShouldOverrideViewportResource(const EDisplayClusterViewportResourceType InResourceType) const;
 
 protected:
@@ -163,6 +177,9 @@ protected:
 	// Viewport contexts (left/center/right eyes)
 	mutable TArray<FDisplayClusterViewport_Context> Contexts;
 
+	/** The GPU nodes on which to render this view. */
+	TArray<FRHIGPUMask> GPUMask;
+
 	// View family render to this resources
 	TArray<FDisplayClusterViewportRenderTargetResource*> RenderTargets;
 
@@ -183,7 +200,7 @@ protected:
 	TArray<FDisplayClusterViewportTextureResource*> AdditionalTargetableResources;
 	TArray<FDisplayClusterViewportTextureResource*> MipsShaderResources;
 
-	const FDisplayClusterViewportManagerProxy& Owner;
+	const TSharedRef<FDisplayClusterViewportManagerProxy, ESPMode::ThreadSafe> Owner;
 	IDisplayClusterShaders& ShadersAPI;
 };
 

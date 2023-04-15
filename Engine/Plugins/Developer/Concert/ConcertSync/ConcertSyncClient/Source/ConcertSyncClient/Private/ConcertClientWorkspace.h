@@ -10,6 +10,7 @@
 #include "ConcertSyncSessionFlags.h"
 #include "ConcertWorkspaceMessages.h"
 #include "ConcertClientWorkspaceData.h"
+#include "Delegates/Delegate.h"
 
 class IConcertClientSession;
 class IConcertClientPackageBridge;
@@ -24,6 +25,8 @@ class ISourceControlProvider;
 class FConcertClientDataStore;
 
 struct FScopedSlowTask;
+
+DECLARE_MULTICAST_DELEGATE(FOnWorkspaceEndFrameCompleted);
 
 class FConcertClientWorkspace : public IConcertClientWorkspace
 {
@@ -41,16 +44,18 @@ public:
 	virtual bool HasSessionChanges() const override;
 	virtual TArray<FName> GatherSessionChanges(bool IgnorePersisted = true) override;
 	virtual TOptional<FString> GetValidPackageSessionPath(FName PackageName) const override;
-	virtual bool PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons = nullptr) override;
+	virtual FPersistResult PersistSessionChanges(FPersistParameters InParam) override;
 	virtual bool HasLiveTransactionSupport(UPackage* InPackage) const override;
 	virtual bool ShouldIgnorePackageDirtyEvent(class UPackage* InPackage) const override;
 	virtual bool FindTransactionEvent(const int64 TransactionEventId, FConcertSyncTransactionEvent& OutTransactionEvent, const bool bMetaDataOnly) const override;
 	virtual TFuture<TOptional<FConcertSyncTransactionEvent>> FindOrRequestTransactionEvent(const int64 TransactionEventId, const bool bMetaDataOnly) override;
 	virtual bool FindPackageEvent(const int64 PackageEventId, FConcertSyncPackageEventMetaData& OutPackageEvent) const override;
-	virtual void GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertClientSessionActivity>& OutActivities) const override;
+	virtual void GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertSessionActivity>& OutActivities) const override;
 	virtual int64 GetLastActivityId() const override;
 	virtual FOnActivityAddedOrUpdated& OnActivityAddedOrUpdated() override;
 	virtual FOnWorkspaceSynchronized& OnWorkspaceSynchronized() override;
+	virtual FOnFinalizeWorkspaceSyncCompleted& OnFinalizeWorkspaceSyncCompleted() override;
+
 	virtual IConcertClientDataStore& GetDataStore() override;
 	virtual bool IsAssetModifiedByOtherClients(const FName& AssetName, int32* OutOtherClientsWithModifNum, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo, int32 OtherClientsWithModifMaxFetchNum) const override;
 	virtual void SetIgnoreOnRestoreFlagForEmittedActivities(bool bIgnore) override;
@@ -68,6 +73,9 @@ public:
 
 	/** Indicates if we can finalize activity sync. */
 	bool CanFinalize() const;
+
+	/** Gets the delegate called after the workspace has completed its handling at the end of an engine frame. */
+	FOnWorkspaceEndFrameCompleted& OnWorkspaceEndFrameCompleted();
 
 private:
 
@@ -232,7 +240,13 @@ private:
 
 	/** The delegate called every time the workspace is synced. */
 	FOnWorkspaceSynchronized OnWorkspaceSyncedDelegate;
-	
+
+	/** The delegate called after the workspace has been synced and finalized. */
+	FOnFinalizeWorkspaceSyncCompleted OnFinalizeWorkspaceSyncCompletedDelegate;
+
+	/** The delegate called after the workspace has completed its handling at the end of an engine frame. */
+	FOnWorkspaceEndFrameCompleted OnWorkspaceEndFrameCompletedDelegate;
+
 	/** The session key/value store proxy. The real store is held by the server and shared across all clients. */
 	TUniquePtr<FConcertClientDataStore> DataStore;
 

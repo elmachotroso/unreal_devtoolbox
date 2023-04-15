@@ -15,16 +15,17 @@
 class UMaterialInterface;
 class UGeometryCollectionCache;
 class FGeometryCollection;
-class FManagedArrayCollection;
+struct FManagedArrayCollection;
 struct FGeometryCollectionSection;
 struct FSharedSimulationParameters;
+class UDataflow;
 
 USTRUCT(BlueprintType)
 struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSource
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", meta=(AllowedClasses="StaticMesh, SkeletalMesh, GeometryCollection"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource", meta=(AllowedClasses="/Script/Engine.StaticMesh, /Script/Engine.SkeletalMesh, /Script/GeometryCollectionEngine.GeometryCollection"))
 	FSoftObjectPath SourceGeometryObject;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
@@ -32,6 +33,28 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionSource
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
 	TArray<TObjectPtr<UMaterialInterface>> SourceMaterial;
+
+	/** Whether source materials should be duplicated to create slots for internal materials. Does not apply if the source is a GeometryCollection. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
+	bool bAddInternalMaterials = true;
+
+	/** Whether individual source mesh components should be split into separate pieces of geometry based on mesh connectivity. If checked, triangles that are not topologically connected will be assigned separate bones. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
+	bool bSplitComponents = false;
+
+	// TODO: add primtive custom data
+};
+
+USTRUCT(BlueprintType)
+struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionAutoInstanceMesh
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "AutoInstance", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
+	FSoftObjectPath StaticMesh;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "AutoInstance")
+	TArray<TObjectPtr<UMaterialInterface>> Materials;
 };
 
 USTRUCT(BlueprintType)
@@ -53,7 +76,7 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionEmbeddedExemplar
 		, InstanceCount(0)
 	{ }
 
-	UPROPERTY(EditAnywhere, Category = "EmbeddedExemplar", meta = (AllowedClasses = "StaticMesh"))
+	UPROPERTY(EditAnywhere, Category = "EmbeddedExemplar", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
 	FSoftObjectPath StaticMeshExemplar;
 
 	UPROPERTY(EditAnywhere, Category = "EmbeddedExemplar")
@@ -292,6 +315,26 @@ private:
 	bool bIsInitialized = false;
 };
 
+
+USTRUCT(BlueprintType)
+struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionDamagePropagationData
+{
+public:
+	GENERATED_BODY()
+
+	/** Whether or not damage propagation is enabled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
+	bool bEnabled = true;
+
+	/** factor of the remaining strain propagated through the connection graph after a piece breaks. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
+	float BreakDamagePropagationFactor = 1.0f;
+
+	/** factor of the received strain propagated throug the connection graph if the piece did not break. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
+	float ShockDamagePropagationFactor = 0.0f;
+};
+
 /**
 * UGeometryCollectionObject (UObject)
 *
@@ -316,9 +359,12 @@ public:
 	/** End UObject Interface */
 
 	void Serialize(FArchive& Ar);
+#if WITH_EDITORONLY_DATA
+	void PostSerialize(const FArchive& Ar);
+#endif
 
 #if WITH_EDITOR
-	void EnsureDataIsCooked(bool bInitResources = true);
+	void EnsureDataIsCooked(bool bInitResources = true, bool bIsTransacting = false);
 #endif
 
 	/** Accessors for internal geometry collection */
@@ -384,6 +430,15 @@ public:
 	/** Remove embedded geometry exemplars with indices matching the sorted removal list. */
 	void RemoveExemplars(const TArray<int32>& SortedRemovalIndices);
 
+	/** find or add a auto instance mesh and return its index */
+	const FGeometryCollectionAutoInstanceMesh& GetAutoInstanceMesh(int32 AutoInstanceMeshIndex) const;
+
+	/**  find or add a auto instance mesh from another one and return its index */
+	int32 FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanecMesh);
+
+	/** find or add a auto instance mesh from a mesh and alist of material and return its index */
+	int32 FindOrAddAutoInstanceMesh(const UStaticMesh& StaticMesh, const TArray<UMaterialInterface*>& Materials);
+
 	/** Produce a deep copy of GeometryCollection member, stripped of data unecessary for gameplay. */
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GenerateMinimalGeometryCollection() const;
 
@@ -403,7 +458,6 @@ public:
 
 	/** Fills params struct with parameters used for precomputing content. */
 	void GetSharedSimulationParams(FSharedSimulationParameters& OutParams) const;
-	void FixupRemoveOnFractureMaterials(FSharedSimulationParameters& SharedParms) const;
 
 	/** Accessors for the two guids used to identify this collection */
 	FGuid GetIdGuid() const;
@@ -424,12 +478,29 @@ public:
 	int32 MaxClusterLevel;
 
 	/** Damage threshold for clusters at different levels. */
-	UPROPERTY(EditAnywhere, Category = "Clustering")
+	UPROPERTY(EditAnywhere, Category = "Damage", meta = (EditCondition = "!bUseSizeSpecificDamageThreshold"))
 	TArray<float> DamageThreshold;
+
+	/** whether to use size specific damage threshold instead of level based ones ( see Size Specific Data array ). */
+	UPROPERTY(EditAnywhere, Category = "Damage")
+	bool bUseSizeSpecificDamageThreshold;
+
+	/** compatibility check, when true, only cluster compute damage from parameters and propagate to direct children
+	 *  when false, each child will compute it's damage threshold allowing for more precise and intuitive destruction behavior
+	 */
+	UPROPERTY(EditAnywhere, Category = "Compatibility")
+	bool PerClusterOnlyDamageThreshold;
+
+	/** Data about how damage propagation shoudl behave. */
+	UPROPERTY(EditAnywhere, Category = "Damage")
+	FGeometryCollectionDamagePropagationData DamagePropagationData;
 
 	/** */
 	UPROPERTY(EditAnywhere, Category = "Clustering")
 	EClusterConnectionTypeEnum ClusterConnectionType;
+
+	UPROPERTY(EditAnywhere, Category = "Clustering")
+	float ConnectionGraphBoundsFilteringMargin;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "GeometrySource")
@@ -446,6 +517,14 @@ public:
 	/** Whether to use full precision UVs when rendering this geometry. (Does not apply to Nanite rendering) */
 	UPROPERTY(EditAnywhere, Category = "Rendering")
 	bool bUseFullPrecisionUVs = false;
+
+	/** list of unique static mesh / materials pairs for auto instancing*/
+	UPROPERTY(EditAnywhere, Category = "Rendering")
+	TArray<FGeometryCollectionAutoInstanceMesh> AutoInstanceMeshes;
+
+	/** static mesh to use as a proxy for rendering until the geometry collection is broken */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Rendering", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
+	FSoftObjectPath RootProxy;
 
 	/**
 	 * Strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
@@ -521,6 +600,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
 	float MinimumMassClamp;
 
+	/**
+	* whether to import collision from the source asset
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
+	bool bImportCollisionFromSource;
+	
 #if WITH_EDITORONLY_DATA
 	/**
 	 * Number of particles on the triangulated surface to use for collisions.
@@ -536,17 +621,25 @@ public:
 #endif
 
 	/** Remove particle from simulation and dissolve rendered geometry once sleep threshold has been exceeded. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "RemoveOnMaxSleep"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Remove on Sleep"))
 	bool bRemoveOnMaxSleep;
 	
 	/** How long may the particle sleep before initiating removal (in seconds). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, DisplayName = "Sleep Min Max")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Sleep Min Max", EditCondition="bRemoveOnMaxSleep"))
 	FVector2D MaximumSleepTime;
 
 	/** How long does the removal process take (in seconds). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Removal Duration", EditCondition="bRemoveOnMaxSleep"))
 	FVector2D RemovalDuration;
 
+	/** when on non-sleeping, slow moving pieces will be considered as sleeping, this helps removal of jittery but not really moving objects. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Slow-Moving as sleeping", EditCondition="bRemoveOnMaxSleep"))
+	bool bSlowMovingAsSleeping;
+
+	/** When slow moving detection is on, this defines the linear velocity thresholds in cm/s to consider the object as sleeping . */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Removal, meta = (DisplayName = "Slow-Moving Velocity Threshold", EditCondition="bRemoveOnMaxSleep && bSlowMovingAsSleeping"))
+	float SlowMovingVelocityThreshold;
+	
 	/*
 	* Size Specfic Data reflects the default geometry to bind to rigid bodies smaller
 	* than the max size volume. This can also be empty to reflect no collision geometry
@@ -563,14 +656,14 @@ public:
 	/**
 	* Enable remove pieces on fracture
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fracture")
-	bool EnableRemovePiecesOnFracture;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use remove on break feature instead ( Fracture editor tools )."))
+	bool EnableRemovePiecesOnFracture_DEPRECATED;
 
 	/**
 	* Materials relating to remove on fracture
 	*/
-	UPROPERTY(EditAnywhere, Category = "Fracture")
-	TArray<TObjectPtr<UMaterialInterface>> RemoveOnFractureMaterials;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use remove on break feature instead ( Fracture editor tools )."))
+	TArray<TObjectPtr<UMaterialInterface>> RemoveOnFractureMaterials_DEPRECATED;
 
 	FORCEINLINE const int32 GetBoneSelectedMaterialIndex() const { return BoneSelectedMaterialIndex; }
 
@@ -587,6 +680,13 @@ public:
 	* Update the convex geometry on the collection.
 	*/
 	void UpdateConvexGeometry();
+
+
+	//
+	// Dataflow
+	//
+	UPROPERTY(EditAnywhere, Category = "Procedural")
+	TObjectPtr<UDataflow> Dataflow;
 
 private:
 #if WITH_EDITOR

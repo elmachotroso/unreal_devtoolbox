@@ -1,15 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MotoSynthSourceAsset.h"
+
 #include "MotoSynthModule.h"
 #include "MotoSynthDataManager.h"
 
 #if WITH_EDITOR
+#include "AudioDeviceManager.h"
+#include "AudioDevice.h"
 #include "DSP/Filter.h"
 #include "DSP/DynamicsProcessor.h"
 #include "DSP/Dsp.h"
+#include "DSP/FloatArrayMath.h"
 #include "DSP/SampleRateConverter.h"
 #endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MotoSynthSourceAsset)
 
 ///////////////////////////////////////////////////////////
 // RPM estimation implementation
@@ -382,7 +388,7 @@ void UMotoSynthSource::NormalizeForAnalysis()
 		// If we found one, which we should, use to normalize the signal
 		if (MaxSample > 0.0f)
 		{
-			Audio::MultiplyBufferByConstantInPlace(AnalysisBuffer, 1.0f / MaxSample);
+			Audio::ArrayMultiplyByConstantInPlace(AnalysisBuffer, 1.0f / MaxSample);
 		}
 	}
 }
@@ -682,3 +688,4 @@ float UMotoSynthSource::GetRuntimeMemoryUsageMB() const
 	// SourceData isn't loaded so no memory usage
 	return 0.0f;
 }
+

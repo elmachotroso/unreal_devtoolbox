@@ -3,7 +3,7 @@
 #include "WorldPartition/WorldPartition.h"
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/PlayerController.h"
-#include "SceneOutliner/Public/ISceneOutliner.h"
+#include "ISceneOutliner.h"
 #include "LevelEditorViewport.h"
 #include "LevelEditor.h"
 #include "Editor.h"
@@ -18,11 +18,9 @@ void SWorldPartitionEditorGrid::Construct(const FArguments& InArgs)
 	World = InArgs._InWorld;
 	WorldPartition = World ? World->GetWorldPartition() : nullptr;
 
-	if (!WorldPartition || !WorldPartition->bEnableStreaming)
+	if (IsDisabled())
 	{
-		const FText Message = WorldPartition ? 
-			LOCTEXT("WorldPartitionHasStreamingDisabled", "World Partition streaming is not enabled for this map") : 
-			LOCTEXT("WorldPartitionMustBeEnabled", "World Partition is not enabled for this map");
+		const FText Message = LOCTEXT("WorldPartitionIsDisabled", "World Partition is disabled for this map");
 
 		ChildSlot
 		.VAlign(VAlign_Center)
@@ -96,17 +94,21 @@ void SWorldPartitionEditorGrid::Refresh()
 	TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 	if (LevelEditor.IsValid())
 	{
-		TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
-		if (SceneOutlinerPtr)
+		TArray<TWeakPtr<class ISceneOutliner>> SceneOutlinerPtrs = LevelEditor.Pin()->GetAllSceneOutliners();
+
+		for (TWeakPtr<class ISceneOutliner> SceneOutlinerPtr : SceneOutlinerPtrs)
 		{
-			SceneOutlinerPtr->FullRefresh();
+			if (TSharedPtr<class ISceneOutliner> SceneOutlinerPin = SceneOutlinerPtr.Pin())
+			{
+				SceneOutlinerPin->FullRefresh();
+			}
 		}
 	}
 }
 
 bool SWorldPartitionEditorGrid::IsDisabled() const
 {
-	return !WorldPartition || !WorldPartition->bEnableStreaming;
+	return !WorldPartition;
 }
 
 #undef LOCTEXT_NAMESPACE

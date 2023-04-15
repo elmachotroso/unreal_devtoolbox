@@ -304,7 +304,7 @@ void FSkeletonTreeBuilder::AddSockets(FSkeletonTreeBuilderOutput& Output)
 	if (PreviewScenePtr.IsValid())
 	{
 		UDebugSkelMeshComponent* PreviewMeshComponent = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-		if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->SkeletalMesh)
+		if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->GetSkeletalMeshAsset())
 		{
 			AddSocketsFromData(SkeletalMesh->GetMeshOnlySocketList(), ESocketParentType::Mesh, Output);
 		}
@@ -319,7 +319,7 @@ void FSkeletonTreeBuilder::AddAttachedAssets(FSkeletonTreeBuilderOutput& Output)
 	if (PreviewScenePtr.IsValid())
 	{
 		UDebugSkelMeshComponent* PreviewMeshComponent = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-		if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->SkeletalMesh)
+		if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->GetSkeletalMeshAsset())
 		{
 			AddAttachedAssetContainer(SkeletalMesh->GetPreviewAttachedAssetContainer(), Output);
 		}
@@ -348,14 +348,14 @@ void FSkeletonTreeBuilder::AddSocketsFromData(const TArray< USkeletalMeshSocket*
 			if (PreviewScenePtr.IsValid())
 			{
 				UDebugSkelMeshComponent* PreviewMeshComponent = PreviewScenePtr.Pin()->GetPreviewMeshComponent();
-				if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->SkeletalMesh)
+				if (USkeletalMesh* const SkeletalMesh = PreviewMeshComponent->GetSkeletalMeshAsset())
 				{
 					bIsCustomized = EditableSkeletonPtr.Pin()->DoesSocketAlreadyExist(nullptr, FText::FromName(Socket->SocketName), ESocketParentType::Mesh, SkeletalMesh);
 				}
 			}
 		}
 
-		Output.Add(CreateSocketTreeItem(Socket, ParentType, bIsCustomized), Socket->BoneName, FSkeletonTreeBoneItem::GetTypeId());
+		Output.Add(CreateSocketTreeItem(Socket, ParentType, bIsCustomized), Socket->BoneName, FSkeletonTreeBoneItem::GetTypeId(), /*bAddToHead*/ true);
 	}
 }
 
@@ -365,7 +365,7 @@ void FSkeletonTreeBuilder::AddAttachedAssetContainer(const FPreviewAssetAttachCo
 	{
 		const FPreviewAttachedObjectPair& Pair = (*Iter);
 
-		Output.Add(CreateAttachedAssetTreeItem(Pair.GetAttachedObject(), Pair.AttachedTo), Pair.AttachedTo, { FSkeletonTreeBoneItem::GetTypeId(), FSkeletonTreeSocketItem::GetTypeId() });
+		Output.Add(CreateAttachedAssetTreeItem(Pair.GetAttachedObject(), Pair.AttachedTo), Pair.AttachedTo, { FSkeletonTreeBoneItem::GetTypeId(), FSkeletonTreeSocketItem::GetTypeId() }, /*bAddToHead*/ true);
 	}
 }
 
@@ -374,7 +374,7 @@ void FSkeletonTreeBuilder::AddVirtualBones(FSkeletonTreeBuilderOutput& Output)
 	const TArray<FVirtualBone>& VirtualBones = EditableSkeletonPtr.Pin()->GetSkeleton().GetVirtualBones();
 	for (const FVirtualBone& VirtualBone : VirtualBones)
 	{
-		Output.Add(CreateVirtualBoneTreeItem(VirtualBone.VirtualBoneName), VirtualBone.SourceBoneName, { FSkeletonTreeBoneItem::GetTypeId(), FSkeletonTreeVirtualBoneItem::GetTypeId() });
+		Output.Add(CreateVirtualBoneTreeItem(VirtualBone.VirtualBoneName), VirtualBone.SourceBoneName, { FSkeletonTreeBoneItem::GetTypeId(), FSkeletonTreeVirtualBoneItem::GetTypeId() }, /*bAddToHead*/ true);
 	}
 }
 

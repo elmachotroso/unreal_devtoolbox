@@ -266,7 +266,7 @@ void FSequencerTrailHierarchy::UpdateControlRig(const TArray<FFrameNumber> &Fram
 
 					FMovieSceneContext Context = FMovieSceneContext(FMovieSceneEvaluationRange(GlobalTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
 
-					Player->GetEvaluationTemplate().Evaluate(Context, *Player);
+					Player->GetEvaluationTemplate().EvaluateSynchronousBlocking(Context, *Player);
 					ControlRig->Evaluate_AnyThread();
 					for (FTrailControlTransforms& TrailControlTransform : TrailControlTransforms)
 					{
@@ -293,7 +293,7 @@ void FSequencerTrailHierarchy::UpdateControlRig(const TArray<FFrameNumber> &Fram
 			FFrameTime StartTime = Sequencer->GetLocalTime().Time;
 			StartTime = StartTime * RootToLocalTransform.InverseLinearOnly(); //player evals in root time so need to go back to it.
 			FMovieSceneContext Context = FMovieSceneContext(FMovieSceneEvaluationRange(StartTime, TickResolution), Player->GetPlaybackStatus()).SetHasJumped(true);
-			Player->GetEvaluationTemplate().Evaluate(Context, *Player);
+			Player->GetEvaluationTemplate().EvaluateSynchronousBlocking(Context, *Player);
 			ControlRig->Evaluate_AnyThread();
 		}
 	}
@@ -412,7 +412,7 @@ void FSequencerTrailHierarchy::OnBoneVisibilityChanged(class USkeleton* Skeleton
 				BoundComponent = BoundActor->FindComponentByClass<USkeletalMeshComponent>();
 			}
 
-			if (!BoundComponent || !BoundComponent->SkeletalMesh || !BoundComponent->SkeletalMesh->GetSkeleton() || !(BoundComponent->SkeletalMesh->GetSkeleton() == Skeleton) || !BonesTracked.Contains(BoundComponent))
+			if (!BoundComponent || !BoundComponent->GetSkeletalMeshAsset() || !BoundComponent->GetSkeletalMeshAsset()->GetSkeleton() || !(BoundComponent->GetSkeletalMeshAsset()->GetSkeleton() == Skeleton) || !BonesTracked.Contains(BoundComponent))
 			{
 				continue;
 			}
@@ -534,7 +534,7 @@ void FSequencerTrailHierarchy::UpdateSequencerBindings(const TArray<FGuid>& Sequ
 					BoundComponent = BoundActor->FindComponentByClass<USkeletalMeshComponent>();
 				}
 
-				if (!BoundComponent || !BoundComponent->SkeletalMesh || !BoundComponent->SkeletalMesh->GetSkeleton())
+				if (!BoundComponent || !BoundComponent->GetSkeletalMeshAsset() || !BoundComponent->GetSkeletalMeshAsset()->GetSkeleton())
 				{
 					continue;
 				}
@@ -586,7 +586,7 @@ void FSequencerTrailHierarchy::UpdateSequencerBindings(const TArray<FGuid>& Sequ
 					BoundComponent = BoundActor->FindComponentByClass<USkeletalMeshComponent>();
 				}
 
-				if (!BoundComponent || !BoundComponent->SkeletalMesh || !BoundComponent->SkeletalMesh->GetSkeleton())
+				if (!BoundComponent || !BoundComponent->GetSkeletalMeshAsset() || !BoundComponent->GetSkeletalMeshAsset()->GetSkeleton())
 				{
 					continue;
 				};
@@ -676,7 +676,7 @@ void FSequencerTrailHierarchy::AddSkeletonToHierarchy(class USkeletalMeshCompone
 	TSharedPtr<FAnimTrajectoryCache> AnimTrajectoryCache = MakeShared<FAnimTrajectoryCache>(CompToAdd, Sequencer);
 	TMap<FName, FGuid>& BoneMap = BonesTracked.Add(CompToAdd, TMap<FName, FGuid>());
 	
-	USkeleton* MySkeleton = CompToAdd->SkeletalMesh->GetSkeleton();
+	USkeleton* MySkeleton = CompToAdd->GetSkeletalMeshAsset()->GetSkeleton();
 	const int32 NumBones = MySkeleton->GetReferenceSkeleton().GetNum();
 	for (int32 BoneIdx = 0; BoneIdx < NumBones; BoneIdx++)
 	{

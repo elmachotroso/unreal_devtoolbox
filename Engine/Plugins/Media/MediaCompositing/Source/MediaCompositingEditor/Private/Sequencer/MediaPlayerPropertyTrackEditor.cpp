@@ -3,7 +3,7 @@
 #include "MediaPlayerPropertyTrackEditor.h"
 
 #include "ContentBrowserModule.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IContentBrowserSingleton.h"
@@ -17,7 +17,7 @@
 #include "MediaSource.h"
 #include "LevelSequence.h"
 
-#include "MediaThumbnailSection.h"
+#include "Sequencer/MediaThumbnailSection.h"
 
 #define LOCTEXT_NAMESPACE "FMediaPlayerPropertyTrackEditor"
 
@@ -35,7 +35,7 @@ struct FMediaPlayerPropertySection : FSequencerSection
 
 	virtual float GetSectionHeight() const override
 	{
-		const float InnerHeight = FEditorStyle::GetFontStyle("NormalFont").Size + 8.f;
+		const float InnerHeight = FAppStyle::GetFontStyle("NormalFont").Size + 8.f;
 		return InnerHeight + 2 * 9.0f; // make space for the film border
 	}
 
@@ -60,7 +60,7 @@ struct FMediaPlayerPropertySection : FSequencerSection
 		
 		InPainter.DrawElements.PushClip(ClippingZone);
 		{
-			static const FSlateBrush* FilmBorder = FEditorStyle::GetBrush("Sequencer.Section.FilmBorder");
+			static const FSlateBrush* FilmBorder = FAppStyle::GetBrush("Sequencer.Section.FilmBorder");
 
 			// draw top film border
 			FSlateDrawElement::MakeBox(
@@ -147,6 +147,8 @@ TSharedPtr<SWidget> FMediaPlayerPropertyTrackEditor::BuildOutlinerEditWidget(con
 
 	auto CreatePicker = [this, MediaTrack]
 	{
+		UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 		FAssetPickerConfig AssetPickerConfig;
 		{
 			AssetPickerConfig.OnAssetSelected     = FOnAssetSelected::CreateRaw(this,     &FMediaPlayerPropertyTrackEditor::AddNewSection,             MediaTrack);
@@ -154,8 +156,9 @@ TSharedPtr<SWidget> FMediaPlayerPropertyTrackEditor::BuildOutlinerEditWidget(con
 			AssetPickerConfig.bAllowNullSelection = false;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
-			AssetPickerConfig.Filter.ClassNames.Add(UMediaSource::StaticClass()->GetFName());
+			AssetPickerConfig.Filter.ClassPaths.Add(UMediaSource::StaticClass()->GetClassPathName());
 			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+			AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 		}
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -187,13 +190,17 @@ TSharedRef<ISequencerSection> FMediaPlayerPropertyTrackEditor::MakeSectionInterf
 
 bool FMediaPlayerPropertyTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneMediaPlayerPropertyTrack::StaticClass()) : ETrackSupport::NotSupported;    
-	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported; 
+	if (InSequence && InSequence->IsTrackSupported(UMovieSceneMediaPlayerPropertyTrack::StaticClass()) == ETrackSupport::NotSupported)
+	{
+		return false;
+	}
+
+	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
 }
 
 const FSlateBrush* FMediaPlayerPropertyTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Media");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Media");
 }
 
 void FMediaPlayerPropertyTrackEditor::AddNewSection(const FAssetData& AssetData, UMovieSceneMediaPlayerPropertyTrack* MediaTrack)

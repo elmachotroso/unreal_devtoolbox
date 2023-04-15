@@ -9,9 +9,9 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ToolMenus.h"
 #include "EngineGlobals.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/Engine.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
 #include "Framework/Application/SlateApplication.h"
@@ -52,6 +52,7 @@
 #include "IContentBrowserSingleton.h"
 #include "Animation/MirrorDataTable.h"
 #include "ScopedTransaction.h"
+#include "SNameComboBox.h"
 
 #define LOCTEXT_NAMESPACE "AnimViewportToolBar"
 
@@ -81,7 +82,7 @@ public:
 				.WidthOverride(100.0f)
 				[
 					SNew(SNumericEntryBox<float>)
-					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
 					.ToolTipText(LOCTEXT("WindStrength_ToolTip", "Change wind strength"))
 					.MinValue(0)
 					.AllowSpin(true)
@@ -132,7 +133,7 @@ public:
 				.WidthOverride(100.0f)
 				[
 					SNew(SSpinBox<float>)
-					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
 					.ToolTipText(LOCTEXT("GravityScale_ToolTip", "Change gravity scale"))
 					.MinValue(0)
 					.MaxValue(4)
@@ -156,6 +157,46 @@ protected:
 		const float DeltaValue = 0.025f;
 		AnimViewportPtr.Pin()->SetGravityScale( AnimViewportPtr.Pin()->GetGravityScaleSliderValue() + DeltaValue );
 		return FReply::Handled();
+	}
+
+protected:
+	TWeakPtr<SAnimationEditorViewportTabBody> AnimViewportPtr;
+};
+
+//Class definition which represents widget to modify Bone Draw Size in viewport
+class SBoneDrawSizeSetting : public SCompoundWidget
+{
+	
+public:
+
+	SLATE_BEGIN_ARGS(SBoneDrawSizeSetting) {}
+	SLATE_ARGUMENT(TWeakPtr<SAnimationEditorViewportTabBody>, AnimEditorViewport)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs )
+	{
+		AnimViewportPtr = InArgs._AnimEditorViewport;
+
+		this->ChildSlot
+		[
+			SNew(SBox)
+			.HAlign(HAlign_Right)
+			[
+				SNew(SBox)
+				.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
+				.WidthOverride(100.0f)
+				[
+					SNew(SSpinBox<float>)
+					.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.ToolTipText(LOCTEXT("BoneDrawSize_ToolTip", "Change bone size in viewport."))
+					.MinValue(0)
+					.MaxSliderValue(10)
+					.SupportDynamicSliderMaxValue(true)
+					.Value(AnimViewportPtr.Pin().ToSharedRef(), &SAnimationEditorViewportTabBody::GetBoneDrawSize)
+					.OnValueChanged(SSpinBox<float>::FOnValueChanged::CreateSP(AnimViewportPtr.Pin().ToSharedRef(), &SAnimationEditorViewportTabBody::SetBoneDrawSize))
+				]
+			]
+		];
 	}
 
 protected:
@@ -276,7 +317,7 @@ void SAnimViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class 
 			.ToolTipText(LOCTEXT("PlaybackSpeedMenuTooltip", "Playback Speed Options. Control the time dilation of the scene's update.\nShift-clicking items will 'pin' them to the toolbar."))
 			.ParentToolBar(SharedThis(this))
 			.Label(this, &SAnimViewportToolBar::GetPlaybackMenuLabel)
-			.LabelIcon(FEditorStyle::GetBrush("AnimViewportMenu.PlayBackSpeed"))
+			.LabelIcon(FAppStyle::GetBrush("AnimViewportMenu.PlayBackSpeed"))
 			.OnGetMenuContent(this, &SAnimViewportToolBar::GeneratePlaybackMenu)
 		]
 		+ SHorizontalBox::Slot()
@@ -297,7 +338,7 @@ void SAnimViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class 
 	// Create our pinned commands before we bind commands
 	IPinnedCommandListModule& PinnedCommandListModule = FModuleManager::LoadModuleChecked<IPinnedCommandListModule>(TEXT("PinnedCommandList"));
 	PinnedCommands = PinnedCommandListModule.CreatePinnedCommandList((InArgs._ContextName != NAME_None) ? InArgs._ContextName : TEXT("PersonaViewport"));
-	PinnedCommands->SetStyle(&FEditorStyle::Get(), TEXT("ViewportPinnedCommandList"));
+	PinnedCommands->SetStyle(&FAppStyle::Get(), TEXT("ViewportPinnedCommandList"));
 
 	ChildSlot
 	[
@@ -322,9 +363,9 @@ void SAnimViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class 
 		[
 			// Display text (e.g., item being previewed)
 			SNew(SRichTextBlock)
-			.DecoratorStyleSet(&FEditorStyle::Get())
+			.DecoratorStyleSet(&FAppStyle::Get())
 			.Text(InViewport.Get(), &SAnimationEditorViewportTabBody::GetDisplayString)
-			.TextStyle(&FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimViewport.MessageText"))
+			.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimViewport.MessageText"))
 		]
 	];
 	
@@ -333,11 +374,10 @@ void SAnimViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class 
 	// Register all the custom widgets we can use here
 	PinnedCommands->RegisterCustomWidget(IPinnedCommandList::FOnGenerateCustomWidget::CreateSP(this, &SAnimViewportToolBar::MakeFloorOffsetWidget), TEXT("FloorOffsetWidget"), LOCTEXT("FloorHeightOffset", "Floor Height Offset"));
 	PinnedCommands->RegisterCustomWidget(IPinnedCommandList::FOnGenerateCustomWidget::CreateSP(this, &SAnimViewportToolBar::MakeFOVWidget), TEXT("FOVWidget"), LOCTEXT("Viewport_FOVLabel", "Field Of View"));
-	PinnedCommands->RegisterCustomWidget(IPinnedCommandList::FOnGenerateCustomWidget::CreateSP(this, &SAnimViewportToolBar::MakeFollowBoneComboWidget), TEXT("FollowBoneWidget"), LOCTEXT("FollowBoneMenuTitle", "Follow Bone"), FMargin(2.0f, 1.0f, 2.0f, 0.0f), false);
 
 	PinnedCommands->BindCommandList(InViewport->GetCommandList().ToSharedRef());
 
-	// We assign the viewport pointer her rather that initially, as SViewportToolbar::Construct 
+	// We assign the viewport pointer here rather than initially, as SViewportToolbar::Construct 
 	// ends up calling through and attempting to perform operations on the not-yet-full-constructed viewport
 	Viewport = InViewport;
 }
@@ -358,7 +398,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::MakeFloorOffsetWidget() const
 			.WidthOverride(100.0f)
 			[
 				SNew(SSpinBox<float>)
-				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+				.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
 				.MinSliderValue(-100.0f)
 				.MaxSliderValue(100.0f)
 				.Value(this, &SAnimViewportToolBar::OnGetFloorOffset)
@@ -384,7 +424,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::MakeFOVWidget() const
 			.WidthOverride(100.0f)
 			[
 				SNew(SNumericEntryBox<float>)
-				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+				.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
 				.AllowSpin(true)
 				.MinValue(FOVMin)
 				.MaxValue(FOVMax)
@@ -400,12 +440,12 @@ TSharedRef<SWidget> SAnimViewportToolBar::MakeFOVWidget() const
 TSharedRef<SWidget> SAnimViewportToolBar::MakeFollowBoneComboWidget() const
 {
 	TSharedRef<SComboButton> ComboButton = SNew(SComboButton)
-		.ComboButtonStyle(FEditorStyle::Get(), "ViewportPinnedCommandList.ComboButton")
+		.ComboButtonStyle(FAppStyle::Get(), "ViewportPinnedCommandList.ComboButton")
 		.ContentPadding(0.0f)
 		.ButtonContent()
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "ViewportPinnedCommandList.Label")
+			.TextStyle(FAppStyle::Get(), "ViewportPinnedCommandList.Label")
 			.Text_Lambda([this]()
 			{ 
 				const FName BoneName = Viewport.Pin()->GetCameraFollowBoneName();
@@ -415,7 +455,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::MakeFollowBoneComboWidget() const
 				}
 				else
 				{
-					return LOCTEXT("FollowBoneMenuTitle", "Follow Bone");
+					return LOCTEXT("FollowBoneMenuTitle", "Focus On Bone");
 				}
 			})
 		];
@@ -440,7 +480,6 @@ TSharedRef<SWidget> SAnimViewportToolBar::MakeFollowBoneWidget(TWeakPtr<SComboBu
 		.MaxDesiredHeight(400.0f)
 		[
 			SAssignNew(BoneTreeMenu, SBoneTreeMenu)
-			.Title(FAnimViewportMenuCommands::Get().CameraFollowBone->GetLabel())
 			.bShowVirtualBones(true)
 			.OnBoneSelectionChanged_Lambda([this](FName InBoneName)
 			{
@@ -505,7 +544,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateViewMenu() const
 				LOCTEXT("TurnTableTooltip", "Set up auto-rotation of preview."),
 				FNewMenuDelegate::CreateRaw(this, &SAnimViewportToolBar::GenerateTurnTableMenu),
 				false,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "AnimViewportMenu.TurnTableSpeed")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "AnimViewportMenu.TurnTableSpeed")
 				);
 		}
 	}
@@ -514,9 +553,11 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateViewMenu() const
 	InMenuBuilder.BeginSection("AnimViewportCamera", LOCTEXT("ViewMenu_CameraLabel", "Camera"));
 	{
 		InMenuBuilder.AddMenuEntry(FEditorViewportCommands::Get().FocusViewportToSelection);
+		InMenuBuilder.AddWidget(MakeFOVWidget(), LOCTEXT("Viewport_FOVLabel", "Field Of View"));
+		InMenuBuilder.AddMenuEntry(FAnimViewportMenuCommands::Get().TogglePauseAnimationOnCameraMove);
 
 		InMenuBuilder.AddSubMenu(
-			LOCTEXT("CameraFollowModeLabel", "Camera Follow Mode"),
+			LOCTEXT("CameraFollowModeLabel", "Follow Mode"),
 			LOCTEXT("CameraFollowModeTooltip", "Set various camera follow modes"),
 			FNewMenuDelegate::CreateLambda([this](FMenuBuilder& InSubMenuBuilder)
 			{
@@ -525,23 +566,57 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateViewMenu() const
 					InSubMenuBuilder.PushCommandList(Viewport.Pin()->GetCommandList().ToSharedRef());
 
 					InSubMenuBuilder.AddMenuEntry(FAnimViewportMenuCommands::Get().CameraFollowNone);
+					InSubMenuBuilder.AddMenuEntry(FAnimViewportMenuCommands::Get().CameraFollowRoot);
 					InSubMenuBuilder.AddMenuEntry(FAnimViewportMenuCommands::Get().CameraFollowBounds);
-
+					InSubMenuBuilder.AddSubMenu(
+						LOCTEXT("CameraFollowBone_DisplayName", "Orbit Bone"),
+						LOCTEXT("CameraFollowBone_ToolTip", "Select a bone for the camera to follow and orbit around"),
+						FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder)
+						{
+							SubMenuBuilder.BeginSection("CameraFollowModeBoneSubmenu", LOCTEXT("CameraFollowModeBoneSubmenu_Label", "Follow Bone Options"));
+							SubMenuBuilder.AddWidget(MakeFollowBoneWidget(), FText());
+							SubMenuBuilder.AddMenuEntry(
+								LOCTEXT("LockRotation_DisplayName", "Lock Rotation"),
+								LOCTEXT("LockRotation_ToolTip", "Keep viewport camera rotation aligned to the orbited bone."),
+								FSlateIcon(),
+								FUIAction(
+									FExecuteAction::CreateLambda([this]() {
+										Viewport.Pin()->ToggleRotateCameraToFollowBone();
+									}),
+									FCanExecuteAction(),
+									FIsActionChecked::CreateLambda([this]()
+									{
+										return Viewport.Pin()->GetShouldRotateCameraToFollowBone();
+									})
+								),
+								NAME_None,
+								EUserInterfaceActionType::ToggleButton
+							);
+							SubMenuBuilder.EndSection();
+						}),
+						FUIAction(
+							FExecuteAction(),
+							FCanExecuteAction::CreateLambda([this]()
+							{
+								return Viewport.Pin()->CanChangeCameraMode();
+							}),
+							FIsActionChecked::CreateLambda([this]()
+							{
+								return Viewport.Pin()->IsCameraFollowEnabled(EAnimationViewportCameraFollowMode::Bone);
+							})
+						),
+						"CameraFollowBone",
+						EUserInterfaceActionType::RadioButton,
+						/* bInOpenSubMenuOnClick = */ false,
+						FSlateIcon()
+					);
 					InSubMenuBuilder.PopCommandList();
-				}
-				InSubMenuBuilder.EndSection();
-		
-				InSubMenuBuilder.BeginSection("AnimViewportCameraFollowBone", FText());
-				{
-					InSubMenuBuilder.AddWidget(MakeFollowBoneWidget(), FText(), true);
 				}
 				InSubMenuBuilder.EndSection();
 			}),
 			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "AnimViewportMenu.CameraFollow")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "AnimViewportMenu.CameraFollow")
 			);
-
-		InMenuBuilder.AddWidget(MakeFOVWidget(), LOCTEXT("Viewport_FOVLabel", "Field Of View"));
 	}
 	InMenuBuilder.EndSection();
 
@@ -694,7 +769,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateCharacterMenu() const
 			InMenuBuilder.AddSubMenu(
 				LOCTEXT("CharacterMenu_BoneDrawSubMenu", "Bones"),
 				LOCTEXT("CharacterMenu_BoneDrawSubMenuToolTip", "Bone Drawing Options"),
-				FNewMenuDelegate::CreateLambda([](FMenuBuilder& SubMenuBuilder)
+				FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenuBuilder)
 				{
 					SubMenuBuilder.BeginSection("BonesAndSockets", LOCTEXT("CharacterMenu_BonesAndSocketsLabel", "Show"));
 					{
@@ -706,6 +781,8 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateCharacterMenu() const
 
 					SubMenuBuilder.BeginSection("AnimViewportPreviewHierarchyBoneDraw", LOCTEXT("CharacterMenu_Actions_BoneDrawing", "Bone Drawing"));
 					{
+						TSharedPtr<SWidget> BoneSizeWidget = SNew(SBoneDrawSizeSetting).AnimEditorViewport(Viewport);
+						SubMenuBuilder.AddWidget(BoneSizeWidget.ToSharedRef(), LOCTEXT("CharacterMenu_Actions_BoneDrawSize", "Bone Draw Size:"));
 						SubMenuBuilder.AddMenuEntry(FAnimViewportShowCommands::Get().ShowBoneDrawAll);
 						SubMenuBuilder.AddMenuEntry(FAnimViewportShowCommands::Get().ShowBoneDrawSelected);
 						SubMenuBuilder.AddMenuEntry(FAnimViewportShowCommands::Get().ShowBoneDrawSelectedAndParents);
@@ -717,7 +794,6 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateCharacterMenu() const
 				})
 				);
 
-#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 			UDebugSkelMeshComponent* PreviewComp = Viewport.Pin()->GetPreviewScene()->GetPreviewMeshComponent();
 
 			if(PreviewComp)
@@ -727,7 +803,6 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateCharacterMenu() const
 					LOCTEXT("CharacterMenu_ClothingSubMenuToolTip", "Options relating to clothing"),
 					FNewMenuDelegate::CreateRaw(const_cast<SAnimViewportToolBar*>(this), &SAnimViewportToolBar::FillCharacterClothingMenu));
 			}
-#endif // #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 		}
 
 		InMenuBuilder.AddSubMenu(
@@ -797,13 +872,13 @@ void SAnimViewportToolBar::FillCharacterMirrorMenu(FMenuBuilder& MenuBuilder) co
 {
 	FAssetPickerConfig AssetPickerConfig;
 	UDebugSkelMeshComponent* PreviewComp = Viewport.Pin()->GetPreviewScene()->GetPreviewMeshComponent();
-	USkeletalMesh* Mesh = PreviewComp->SkeletalMesh;
+	USkeletalMesh* Mesh = PreviewComp->GetSkeletalMeshAsset();
 	UAnimPreviewInstance* PreviewInstance = PreviewComp->PreviewInstance; 
 	if (Mesh && PreviewInstance)
 	{
 		USkeleton* Skeleton = Mesh->GetSkeleton();
 	
-		AssetPickerConfig.Filter.ClassNames.Add(*UMirrorDataTable::StaticClass()->GetName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UMirrorDataTable::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = false;
 		AssetPickerConfig.bAllowNullSelection = true;
 		AssetPickerConfig.Filter.TagsAndValues.Add(TEXT("Skeleton"), FAssetData(Skeleton).GetExportTextName());
@@ -828,7 +903,7 @@ void SAnimViewportToolBar::OnMirrorDataTableSelected(const FAssetData& SelectedM
 	if (Viewport.Pin().IsValid())
 	{
 		UDebugSkelMeshComponent* PreviewComp = Viewport.Pin()->GetPreviewScene()->GetPreviewMeshComponent();
-		USkeletalMesh* Mesh = PreviewComp->SkeletalMesh;
+		USkeletalMesh* Mesh = PreviewComp->GetSkeletalMeshAsset();
 		UAnimPreviewInstance* PreviewInstance = PreviewComp->PreviewInstance; 
 		if (Mesh && PreviewInstance)
 		{
@@ -839,7 +914,6 @@ void SAnimViewportToolBar::OnMirrorDataTableSelected(const FAssetData& SelectedM
 
 void SAnimViewportToolBar::FillCharacterClothingMenu(FMenuBuilder& MenuBuilder)
 {
-#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 	const FAnimViewportShowCommands& Actions = FAnimViewportShowCommands::Get();
 
 	MenuBuilder.BeginSection("ClothPreview", LOCTEXT("ClothPreview_Label", "Simulation"));
@@ -882,7 +956,6 @@ void SAnimViewportToolBar::FillCharacterClothingMenu(FMenuBuilder& MenuBuilder)
 		}
 	}
 
-#endif // #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 }
 
 TSharedRef<SWidget> SAnimViewportToolBar::GenerateShowMenu() const
@@ -1014,7 +1087,7 @@ TSharedRef<SWidget> SAnimViewportToolBar::GenerateViewportTypeMenu() const
 
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder InMenuBuilder(bInShouldCloseWindowAfterMenuSelection, CommandList, MenuExtender);
-	InMenuBuilder.SetStyle(&FEditorStyle::Get(), "Menu");
+	InMenuBuilder.SetStyle(&FAppStyle::Get(), "Menu");
 	InMenuBuilder.PushCommandList(CommandList.ToSharedRef());
 	InMenuBuilder.PushExtender(MenuExtender.ToSharedRef());
 
@@ -1269,17 +1342,36 @@ void SAnimViewportToolBar::AddMenuExtender(FName MenuToExtend, FMenuExtensionDel
 TSharedRef<FExtender> SAnimViewportToolBar::GetViewMenuExtender(TSharedPtr<class SEditorViewport> InRealViewport)
 {
 	TSharedRef<FExtender> Extender(new FExtender());
+
 	Extender->AddMenuExtension(
 		TEXT("ViewMode"),
 		EExtensionHook::After,
 		InRealViewport->GetCommandList(),
-		FMenuExtensionDelegate::CreateLambda([](FMenuBuilder& InMenuBuilder)
+		FMenuExtensionDelegate::CreateLambda([this](FMenuBuilder& InMenuBuilder)
 		{
-			InMenuBuilder.AddSubMenu(LOCTEXT("VisualizeBufferViewModeDisplayName", "Buffer Visualization"),
+			InMenuBuilder.AddSubMenu(
+				LOCTEXT("VisualizeBufferViewModeDisplayName", "Buffer Visualization"),
 				LOCTEXT("BufferVisualizationMenu_ToolTip", "Select a mode for buffer visualization"),
 				FNewMenuDelegate::CreateStatic(&FBufferVisualizationMenuCommands::BuildVisualisationSubMenu),
-				false,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeBufferMode"));
+				FUIAction(
+					FExecuteAction(),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([this]()
+					{
+						const TSharedPtr<SAnimationEditorViewportTabBody> ViewportPtr = Viewport.Pin();
+						if (ViewportPtr.IsValid())
+						{
+							const FEditorViewportClient& ViewportClient = ViewportPtr->GetViewportClient();
+							return ViewportClient.IsViewModeEnabled(VMI_VisualizeBuffer);
+						}
+						return false;
+					})
+				),
+				"VisualizeBufferViewMode",
+				EUserInterfaceActionType::RadioButton,
+				/* bInOpenSubMenuOnClick = */ false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.VisualizeBufferMode")
+				);
 		}));
 
 	return Extender;

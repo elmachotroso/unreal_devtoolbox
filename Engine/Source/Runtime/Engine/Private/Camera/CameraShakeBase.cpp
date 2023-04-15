@@ -7,6 +7,8 @@
 #include "IXRTrackingSystem.h"
 #include "Misc/EnumClassFlags.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CameraShakeBase)
+
 DECLARE_CYCLE_STAT(TEXT("CameraShakeStartShake"), STAT_StartShake, STATGROUP_Game);
 DECLARE_CYCLE_STAT(TEXT("CameraShakeUpdateShake"), STAT_UpdateShake, STATGROUP_Game);
 
@@ -226,6 +228,7 @@ void UCameraShakeBase::StartShake(APlayerCameraManager* Camera, float Scale, ECa
 void UCameraShakeBase::UpdateAndApplyCameraShake(float DeltaTime, float Alpha, FMinimalViewInfo& InOutPOV)
 {
 	SCOPE_CYCLE_COUNTER(STAT_UpdateShake);
+	SCOPE_CYCLE_UOBJECT(This, this);
 
 	checkf(State.IsActive(), TEXT("Updating a camera shake that wasn't started with a call to StartShake!"));
 
@@ -267,6 +270,7 @@ void UCameraShakeBase::ScrubAndApplyCameraShake(float AbsoluteTime, float Alpha,
 	// on the state manager and root pattern instead of the update method.
 	
 	SCOPE_CYCLE_COUNTER(STAT_UpdateShake);
+	SCOPE_CYCLE_UOBJECT(This, this);
 
 	checkf(State.IsActive(), TEXT("Updating a camera shake that wasn't started with a call to StartShake!"));
 
@@ -499,4 +503,5 @@ void UCameraShakePattern::TeardownShakePattern()
 {
 	TeardownShakePatternImpl();
 }
+
 

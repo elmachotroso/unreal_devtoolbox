@@ -2,16 +2,22 @@
 
 
 #include "ConfigEditorModule.h"
-#include "UObject/UnrealType.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "SConfigEditor.h"
 
+#include "Delegates/Delegate.h"
+#include "Framework/Docking/TabManager.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogMacros.h"
+#include "Modules/ModuleManager.h"
+#include "SConfigEditor.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
 
 DEFINE_LOG_CATEGORY_STATIC(ConfigEditor, Log, All);
 
@@ -30,7 +36,7 @@ void FConfigEditorModule::StartupModule()
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(ConfigEditorModule::ConfigEditorId, FOnSpawnTab::CreateRaw(this, &FConfigEditorModule::SpawnConfigEditorTab))
 		.SetDisplayName(NSLOCTEXT("ConfigEditorModule", "TabTitle", "Config Editor"))
 		.SetTooltipText(NSLOCTEXT("ConfigEditorModule", "TooltipText", "Open the Config Editor tab."))
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ConfigEditor.TabIcon"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ConfigEditor.TabIcon"));
 }
 
 

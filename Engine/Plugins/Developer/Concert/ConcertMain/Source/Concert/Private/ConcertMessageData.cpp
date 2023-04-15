@@ -12,6 +12,10 @@
 #include "Backends/CborStructSerializerBackend.h"
 #include "Backends/CborStructDeserializerBackend.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ConcertMessageData)
+
+LLM_DEFINE_TAG(Concert_ConcertClientInfo);
+
 void FConcertInstanceInfo::Initialize()
 {
 	InstanceId = FApp::GetInstanceId();
@@ -77,6 +81,7 @@ FText FConcertServerInfo::ToDisplayString() const
 
 void FConcertClientInfo::Initialize()
 {
+	LLM_SCOPE_BYTAG(Concert_ConcertClientInfo);
 	InstanceInfo.Initialize();
 	DeviceName = FPlatformProcess::ComputerName();
 	PlatformName = FPlatformProperties::PlatformName();
@@ -332,12 +337,14 @@ bool FConcertSessionSerializedPayload::GetPayload(FStructOnScope& OutPayload) co
 bool FConcertSessionSerializedPayload::GetPayload(const UScriptStruct* InPayloadType, void* InOutPayloadData) const
 {
 	check(InPayloadType && InOutPayloadData);
-	const UStruct* PayloadType = FindObject<UStruct>(nullptr, *PayloadTypeName.ToString());
-	if (PayloadType)
-	{
-		check(InPayloadType->IsChildOf(PayloadType));
-		return PayloadDetail::DeserializePreChecks((UScriptStruct*)InPayloadType, InOutPayloadData, *this)
-			&& PayloadDetail::DeserializeAndDecompress((UScriptStruct*)InPayloadType, InOutPayloadData, *this);
-	}
-	return false;
+	return IsTypeChildOf(InPayloadType)
+		&& PayloadDetail::DeserializePreChecks((UScriptStruct*)InPayloadType, InOutPayloadData, *this)
+		&& PayloadDetail::DeserializeAndDecompress((UScriptStruct*)InPayloadType, InOutPayloadData, *this);
 }
+
+bool FConcertSessionSerializedPayload::IsTypeChildOf(const UScriptStruct* InPayloadType) const
+{
+	const UStruct* PayloadType = FindObject<UStruct>(nullptr, *PayloadTypeName.ToString());
+	return PayloadType && InPayloadType->IsChildOf(PayloadType);
+}
+

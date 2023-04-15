@@ -2,6 +2,7 @@
 
 #include "TakeWorldObjectSnapshotArchive.h"
 
+#include "LevelSnapshotsLog.h"
 #include "ObjectSnapshotData.h"
 #include "WorldSnapshotData.h"
 
@@ -18,9 +19,13 @@ void UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::TakeSnapshot(
 }
 
 UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
-	:
-	Super(InObjectData, InSharedData, false, InOriginalObject)
-{}
+	: Super(InObjectData, InSharedData, false, InOriginalObject)
+	, Archetype(InOriginalObject->GetArchetype())
+{
+#if UE_BUILD_DEBUG
+	UE_LOG(LogLevelSnapshots, VeryVerbose, TEXT("FTakeWorldObjectSnapshotArchive: %s (%s)"), *InOriginalObject->GetPathName(), *InOriginalObject->GetClass()->GetPathName());
+#endif
+}
 
 bool UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::ShouldSkipProperty(const FProperty* InProperty) const
 {
@@ -37,18 +42,12 @@ bool UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::ShouldSkipPro
 		{
 			// We are within a struct property and we have already checked that the struct property does not have equal values
 			// Simply allow all properties but only ones which are not deprecated.
-			// TODO: We could save more disk space here by checking this property but let's test this first...
+			// TODO: We could save more disk space here by checking the subproperties
 			return InProperty->HasAnyPropertyFlags(CPF_Deprecated | CPF_Transient);
-		}
-
-		// Always save object properties regardless whether different from CDO or not ... this makes restoring easier: see FApplySnapshotDataArchiveV2::ApplyToExistingWorldObject
-		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty))
-		{
-			return false;
 		}
 		
 		UObject* OriginalContainer = GetSerializedObject();
-		UObject* ClassDefaultContainer = OriginalContainer->GetClass()->GetDefaultObject(); 
+		UObject* ClassDefaultContainer = Archetype;
 		for (int32 ArrayDim = 0; ArrayDim < InProperty->ArrayDim; ++ArrayDim)
 		{
 			if (!InProperty->Identical_InContainer(OriginalContainer, ClassDefaultContainer, ArrayDim))

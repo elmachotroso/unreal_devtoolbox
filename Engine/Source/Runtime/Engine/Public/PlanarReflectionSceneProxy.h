@@ -26,11 +26,6 @@ public:
 		Size(InSize)
 	{}
 
-	virtual const FTexture2DRHIRef& GetRenderTargetTexture() const 
-	{
-		return (const FTexture2DRHIRef&)TextureRHI;
-	}
-
 	virtual void InitDynamicRHI()
 	{
 		// Create the sampler state RHI resource.
@@ -43,22 +38,15 @@ public:
 		);
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
 
-		FTexture2DRHIRef Texture2DRHI;
-		FRHIResourceCreateInfo CreateInfo = { TEXT("FPlanarReflectionRenderTarget"), FClearValueBinding(FLinearColor::Black) };
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FPlanarReflectionRenderTarget"))
+			.SetExtent(GetSizeXY())
+			.SetFormat(PF_FloatRGBA)
+			.SetClearValue(FClearValueBinding::Black)
+			.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+			.SetInitialState(ERHIAccess::SRVMask);
 
-		RHICreateTargetableShaderResource2D(
-			GetSizeX(), 
-			GetSizeY(), 
-			PF_FloatRGBA,
-			1,
-			TexCreate_None,
-			TexCreate_RenderTargetable,
-			false,
-			CreateInfo,
-			RenderTargetTextureRHI,
-			Texture2DRHI
-			);
-		TextureRHI = (FTextureRHIRef&)Texture2DRHI;
+		RenderTargetTextureRHI = TextureRHI = RHICreateTexture(Desc);
 	}
 
 	virtual FIntPoint GetSizeXY() const { return Size; }
@@ -116,11 +104,11 @@ public:
 
 		const FVector XAxis = NewTransform.TransformVector(FVector(1, 0, 0));
 		const FVector::FReal XAxisLength = XAxis.Size();
-		PlanarReflectionXAxis = FVector4(XAxis / FMath::Max(XAxisLength, DELTA), XAxisLength * MeshExtent);
+		PlanarReflectionXAxis = FVector4(XAxis / FMath::Max(XAxisLength, UE_DELTA), XAxisLength * MeshExtent);
 
 		const FVector YAxis = NewTransform.TransformVector(FVector(0, 1, 0));
 		const FVector::FReal YAxisLength = YAxis.Size();
-		PlanarReflectionYAxis = FVector4(YAxis / FMath::Max(YAxisLength, DELTA), YAxisLength * MeshExtent);
+		PlanarReflectionYAxis = FVector4(YAxis / FMath::Max(YAxisLength, UE_DELTA), YAxisLength * MeshExtent);
 
 		const FMirrorMatrix MirrorMatrix(ReflectionPlane);
 		// Using TransposeAdjoint instead of full inverse because we only care about transforming normals

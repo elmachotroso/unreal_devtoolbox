@@ -2,28 +2,29 @@
 
 #include "Data/LevelSnapshot.h"
 
-#include "CustomSerialization/CustomSerializationDataManager.h"
-#include "Data/SnapshotCustomVersion.h"
 #include "Data/Util/ActorHashUtil.h"
 #include "Data/Util/EquivalenceUtil.h"
 #include "Data/Util/SnapshotUtil.h"
-#include "Data/Util/Restoration/ActorUtil.h"
+#include "Data/Util/WorldData/ActorUtil.h"
+#include "Data/Util/WorldData/WorldDataUtil.h"
 #include "LevelSnapshotsSettings.h"
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
 #include "Restorability/SnapshotRestorability.h"
+#include "SnapshotCustomVersion.h"
 #include "SnapshotConsoleVariables.h"
 #include "Util/SortedScopedLog.h"
-#include "Util/Restoration/WorldDataUtil.h"
 
 #include "Algo/Accumulate.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
+#include "Algo/IndexOf.h"
 #include "HAL/IConsoleManager.h"
 #include "GameFramework/Actor.h"
 #include "Misc/ScopeExit.h"
 #include "Stats/StatsMisc.h"
 #include "UObject/Package.h"
+#include "Util/WorldData/ClassDataUtil.h"
 #if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #include "Logging/MessageLog.h"
 #endif
@@ -31,7 +32,7 @@
 void ULevelSnapshot::ApplySnapshotToWorld(UWorld* TargetWorld, const FPropertySelectionMap& SelectionSet)
 {
 	SCOPED_SNAPSHOT_CORE_TRACE(ApplyToWorld);
-	if (TargetWorld == nullptr)
+	if (TargetWorld == nullptr || !ensure(IsInGameThread()))
 	{
 		return;
 	}
@@ -44,7 +45,10 @@ void ULevelSnapshot::ApplySnapshotToWorld(UWorld* TargetWorld, const FPropertySe
 	};
 	
 	EnsureWorldInitialised();
+	
+	OnPreApplySnapshotDelegate.Broadcast();
 	UE::LevelSnapshots::Private::ApplyToWorld(SerializedData, Cache, TargetWorld, GetPackage(), SelectionSet);
+	OnPostApplySnapshotDelegate.Broadcast();
 }
 
 bool ULevelSnapshot::SnapshotWorld(UWorld* TargetWorld)
@@ -78,10 +82,14 @@ bool ULevelSnapshot::SnapshotWorld(UWorld* TargetWorld)
 	}
 	Module.OnPreTakeSnapshot().Broadcast({this});
 
-	EnsureWorldInitialised();
 	MapPath = TargetWorld;
 	CaptureTime = FDateTime::UtcNow();
 	SerializedData = UE::LevelSnapshots::Private::SnapshotWorld(TargetWorld);
+	// Existing snapshot world actors are now invalid - clear previous cached data
+	RecreateSnapshotWorld();
+	ClearCache();
+	Cache.InitFor(SerializedData);
+	// Should we delete preexisting actors from the snapshot world?
 
 	Module.OnPostTakeSnapshot().Broadcast({ this });
 
@@ -100,33 +108,40 @@ bool ULevelSnapshot::HasChangedSinceSnapshotWasTaken(AActor* WorldActor)
 		return false;
 	}
 
-#if WITH_EDITOR
+	// Address issue where unsupported actor were saved. This should be checked regardless though in case project settings were changes since the snapshot was taken.
+	if (!UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(WorldActor))
+	{
+		return false;
+	}
+
 	ECachedDiffResult& CachedDiffResult = CachedDiffedActors.FindOrAdd(WorldActor);
-	if (CachedDiffResult != ECachedDiffResult::NotInitialised)
+	if (CachedDiffResult != ECachedDiffResult::NotInitialized
+#if !WITH_EDITOR
+		&& bIsDiffCacheEnabled
+#endif
+	)
 	{
 		return CachedDiffResult == ECachedDiffResult::HadChanges;
 	}
-#endif
 
 	const bool bHasChanged = [&]()
 	{
 		// Do not slow down old snapshots by computing hash if they had none saved
-		const bool bHasHashInfo = SerializedData.SnapshotVersionInfo.GetSnapshotCustomVersion() >= UE::LevelSnapshots::Private::FSnapshotCustomVersion::ActorHash;
+		const bool bHasHashInfo = SerializedData.SnapshotVersionInfo.GetSnapshotCustomVersion() >= UE::LevelSnapshots::FSnapshotCustomVersion::ActorHash;
 		// If the object is already loaded, there is no point in wasting time and computing the hash
-		const bool bNeedsHash = Cache.ActorCache.Find(WorldActor) != nullptr;
+		const bool bNeedsHash = Cache.ActorCache.Find(WorldActor) == nullptr;
 		
 		if (!bHasHashInfo || !bNeedsHash || !UE::LevelSnapshots::Private::HasMatchingHash(SavedActorData->Hash, WorldActor))
 		{
-			TOptional<TNonNullPtr<AActor>> DeserializedActor = GetDeserializedActor(WorldActor);
-			return HasOriginalChangedPropertiesSinceSnapshotWasTaken(DeserializedActor.GetValue(), WorldActor);
+			const TOptional<TNonNullPtr<AActor>> DeserializedActor = GetDeserializedActor(WorldActor);
+			UE_CLOG(!DeserializedActor, LogLevelSnapshots, Warning, TEXT("Failed to load snapshot actor %s. Actor will not be restored."), *WorldActor->GetPathName());
+			return DeserializedActor && HasOriginalChangedPropertiesSinceSnapshotWasTaken(DeserializedActor.GetValue(), WorldActor);
 		}
 
 		return false;
 	}();
 
-#if WITH_EDITOR
 	CachedDiffResult = bHasChanged ? ECachedDiffResult::HadChanges : ECachedDiffResult::HadNoChanges;
-#endif
 	return bHasChanged;
 }
 
@@ -161,15 +176,7 @@ int32 ULevelSnapshot::GetNumSavedActors() const
 
 namespace UE::LevelSnapshots::Private::Internal
 {
-	FSoftObjectPath ExtractPathWithoutSubobjects(UObject* Object)
-	{
-		int32 ColonIndex;
-		const FString Path = Object->GetPathName();
-		Path.FindChar(':', ColonIndex);
-		return Path.Left(ColonIndex);
-	}
-
-	void ConditionBreakOnActor(const FString& NameToSearchFor, const FSoftObjectPath& ActorPath)
+	void ConditionalBreakOnActor(const FString& NameToSearchFor, const FSoftObjectPath& ActorPath)
 	{
 		if (!NameToSearchFor.IsEmpty() && ActorPath.ToString().Contains(NameToSearchFor))
 		{
@@ -178,7 +185,12 @@ namespace UE::LevelSnapshots::Private::Internal
 	}
 }
 
-void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedActor, FActorPathConsumer HandleRemovedActor, FActorConsumer HandleAddedActor) const
+void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedActor, FActorPathConsumer HandleRemovedActor, FActorConsumer HandleAddedActor)
+{
+	DiffWorld(World, FActorConsumer::CreateLambda([&HandleMatchedActor](AActor* Actor){ HandleMatchedActor.Execute(Actor); }), HandleRemovedActor, HandleAddedActor);
+}
+
+void ULevelSnapshot::DiffWorld(UWorld* World, FActorConsumer HandleMatchedActor, FActorPathConsumer HandleRemovedActor, FActorConsumer HandleAddedActor)
 {
 	SCOPED_SNAPSHOT_CORE_TRACE(DiffWorld);
 	
@@ -192,6 +204,7 @@ void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedAc
 		UE_LOG(LogLevelSnapshots, Log, TEXT("Finished diffing snapshot"));
 	};
 
+	const FString DebugActorName = UE::LevelSnapshots::ConsoleVariables::CVarBreakOnDiffMatchedActor.GetValueOnAnyThread();
 
 	// Find actors that are not present in the snapshot
 	TSet<AActor*> AllActors;
@@ -199,18 +212,25 @@ void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedAc
 	{
 		SCOPED_SNAPSHOT_CORE_TRACE(DiffWorld_FindAllActors);
 
+		
 		const int32 NumActorsInWorld = Algo::Accumulate(World->GetLevels(), 0, [](int64 Size, const ULevel* Level){ return Size + Level->Actors.Num(); });
 		AllActors.Reserve(NumActorsInWorld);
 		for (ULevel* Level : World->GetLevels())
 		{
-			LoadedLevels.Add(UE::LevelSnapshots::Private::Internal::ExtractPathWithoutSubobjects(Level));
+			LoadedLevels.Add(UE::LevelSnapshots::Private::ExtractPathWithoutSubobjects(Level));
 			
 			for (AActor* ActorInLevel : Level->Actors)
 			{
 				AllActors.Add(ActorInLevel);
-			
+
 				// Warning: ActorInLevel can be null, e.g. when an actor was just removed from the world (and still in undo buffer)
-				if (IsValid(ActorInLevel) && !SerializedData.HasMatchingSavedActor(ActorInLevel) && UE::LevelSnapshots::Restorability::ShouldConsiderNewActorForRemoval(ActorInLevel))
+				if (!IsValid(ActorInLevel))
+				{
+					continue;
+				}
+			
+				UE::LevelSnapshots::Private::Internal::ConditionalBreakOnActor(DebugActorName, ActorInLevel);
+				if (!SerializedData.HasMatchingSavedActor(ActorInLevel) && UE::LevelSnapshots::Restorability::ShouldConsiderNewActorForRemoval(ActorInLevel))
 				{
 					HandleAddedActor.Execute(ActorInLevel);
 				}
@@ -226,10 +246,9 @@ void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedAc
 		ULevelSnapshotsSettings* Settings = GetMutableDefault<ULevelSnapshotsSettings>();
 		
 		const bool bShouldLogDiffWorldTimes = UE::LevelSnapshots::ConsoleVariables::CVarLogTimeDiffingMatchedActors.GetValueOnAnyThread();
-		const FString DebugActorName = UE::LevelSnapshots::ConsoleVariables::CVarBreakOnDiffMatchedActor.GetValueOnAnyThread();
 		FConditionalSortedScopedLog SortedItems(bShouldLogDiffWorldTimes);
 		
-		SerializedData.ForEachOriginalActor([&HandleMatchedActor, &HandleRemovedActor, &HandleAddedActor, &AllActors, &LoadedLevels, Settings, &DebugActorName, &SortedItems](const FSoftObjectPath& OriginalActorPath, const FActorSnapshotData& SavedData)
+		SerializedData.ForEachOriginalActor([this, World, &HandleMatchedActor, &HandleRemovedActor, &HandleAddedActor, &AllActors, &LoadedLevels, Settings, &DebugActorName, &SortedItems](const FSoftObjectPath& OriginalActorPath, const FActorSnapshotData& SavedData)
 		{
 			const FSoftObjectPath LevelPath = OriginalActorPath.GetAssetPathString();
 			if (!LoadedLevels.Contains(LevelPath))
@@ -238,20 +257,25 @@ void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedAc
 				return;
 			}
 			
+			const FSoftClassPath ClassPath = UE::LevelSnapshots::Private::GetClass(SavedData, SerializedData);
+			UClass* const ActorClass = ClassPath.TryLoadClass<AActor>();
+			if (!ActorClass)
+			{
+				UE_LOG(LogLevel, Warning, TEXT("Cannot find class %s. Saved actor %s will not be restored."), *ClassPath.ToString(), *OriginalActorPath.ToString());
+				return;
+			}
+			
 			UObject* ResolvedActor = OriginalActorPath.ResolveObject();
 			// OriginalActorPath may still resolve to a live actor if it was just removed. We need to check the ULevel::Actors to see whether it was removed.
 			const bool bWasRemovedFromWorld = ResolvedActor == nullptr || !AllActors.Contains(Cast<AActor>(ResolvedActor));
-			// We do not need to call IsActorDesirableForCapture: it was already called when we took this snapshot
 			if (bWasRemovedFromWorld)
 			{
-				HandleRemovedActor.Execute(OriginalActorPath);
-				return;
-			}
-
-			UClass* ActorClass = SavedData.ActorClass.TryLoadClass<AActor>();
-			if (!ActorClass)
-			{
-				UE_LOG(LogLevel, Warning, TEXT("Cannot find class %s. Saved actor %s will not be restored."), *SavedData.ActorClass.ToString(), *OriginalActorPath.ToString());
+				auto GetDeserializedActorFunc = [this, &OriginalActorPath](){ return GetDeserializedActor(OriginalActorPath); };
+				const UE::LevelSnapshots::FCanRecreateActorParams Params{ World, ActorClass, OriginalActorPath, SavedData.SerializedActorData.GetObjectFlags(), SerializedData, GetDeserializedActorFunc };
+				if (UE::LevelSnapshots::Restorability::ShouldConsiderRemovedActorForRecreation(Params))
+				{
+					HandleRemovedActor.Execute(OriginalActorPath);
+				}
 				return;
 			}
 			if (Settings->SkippedClasses.SkippedClasses.Contains(ActorClass))
@@ -268,10 +292,11 @@ void ULevelSnapshot::DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedAc
 			else
 			{
 				const FScopedLogItem Log = SortedItems.AddScopedLogItem(OriginalActorPath.ToString());
-				UE::LevelSnapshots::Private::Internal::ConditionBreakOnActor(DebugActorName, OriginalActorPath);
+				UE::LevelSnapshots::Private::Internal::ConditionalBreakOnActor(DebugActorName, OriginalActorPath);
 				SCOPED_SNAPSHOT_CORE_TRACE(HandleMatchedActor)
 				
-				HandleMatchedActor.Execute(OriginalActorPath);
+				UE_LOG(LogLevelSnapshots, VeryVerbose, TEXT("Matched actor %s"), *OriginalActorPath.ToString());
+				HandleMatchedActor.Execute(Cast<AActor>(ResolvedActor));
 			}
 		});
 	}
@@ -289,7 +314,7 @@ void ULevelSnapshot::SetSnapshotDescription(const FString& InSnapshotDescription
 
 void ULevelSnapshot::BeginDestroy()
 {
-	if (SnapshotContainerWorld)
+	if (RootSnapshotWorld)
 	{
 		DestroyWorld();
 	}
@@ -305,28 +330,32 @@ FString ULevelSnapshot::GenerateDebugLogInfo() const
 	return FString::Printf(TEXT("CaptureTime: %s. SnapshotVersionInfo: %s. Current engine version: %s."), *CaptureTime.ToString(), *GetSerializedData().SnapshotVersionInfo.ToString(), *Current.ToString());
 }
 
+namespace UE::LevelSnapshots::Private
+{
+	static UWorld* CreateWorld(UObject* Outer, FName WorldName);
+	static TSet<FName> ExtractLevelNames(const FWorldSnapshotData& WorldData);
+}
+
 void ULevelSnapshot::EnsureWorldInitialised()
 {
-	if (SnapshotContainerWorld == nullptr)
+	using namespace UE::LevelSnapshots::Private;
+	
+	if (RootSnapshotWorld == nullptr)
 	{
-		SnapshotContainerWorld = NewObject<UWorld>(GetTransientPackage(), NAME_None);
-		SnapshotContainerWorld->WorldType = EWorldType::EditorPreview;
-
-		// Note: Do NOT create a FWorldContext for this world.
-		// If you do, the render thread will send render commands every tick (and crash cuz we do not init the scene below).
-		SnapshotContainerWorld->InitializeNewWorld(UWorld::InitializationValues()
-			.InitializeScenes(false)		// This is memory only world: no rendering
-            .AllowAudioPlayback(false)
-            .RequiresHitProxies(false)		
-            .CreatePhysicsScene(false)
-            .CreateNavigation(false)
-            .CreateAISystem(false)
-            .ShouldSimulatePhysics(false)
-			.EnableTraceCollision(false)
-            .SetTransactional(false)
-            .CreateFXSystem(false)
-            );
-
+		TransientWorldPackage = CreatePackage(*FString::Printf(TEXT("/Temp/LevelSnapshots/%s/%s"), *GetName(), *FGuid::NewGuid().ToString()));
+		TransientWorldPackage->SetFlags(RF_Transient);
+		
+		const FName RootWorldName = *ExtractPathWithoutSubobjects(MapPath).GetAssetName();
+		RootSnapshotWorld = CreateWorld(TransientWorldPackage, RootWorldName);
+		
+		TSet<FName> Sublevels = ExtractLevelNames(SerializedData);
+		Sublevels.Remove(RootWorldName);
+		SnapshotSublevels.Reserve(Sublevels.Num());
+		for (const FName& SublevelName : Sublevels)
+		{
+			SnapshotSublevels.Add(CreateWorld(TransientWorldPackage, SublevelName));
+		}
+		
 		// Destroy our temporary world when the editor (or game) world is destroyed. Reasons:
 		// 1. After unloading a map checks for world GC leaks; it would fatally crash if we did not clear here.
 		// 2. Our temp map stores a "copy" of actors from the original world: the original world is no longer relevant, so neither is our temp world.
@@ -341,50 +370,126 @@ void ULevelSnapshot::EnsureWorldInitialised()
 	            }
 	        });
 		}
+		
+		Cache.InitFor(SerializedData);
 #if WITH_EDITOR
-		FCoreUObjectDelegates::OnObjectModified.AddUObject(this, &ULevelSnapshot::ClearCachedDiffFlag);
+		FCoreUObjectDelegates::OnObjectModified.AddUObject(this, &ULevelSnapshot::ResetDiffCacheToUninitialized);
 #endif
 	}
 
-	SerializedData.SnapshotWorld = SnapshotContainerWorld;
+	SerializedData.SnapshotWorld = RootSnapshotWorld;
+	SerializedData.SnapshotSublevels = SnapshotSublevels;
+}
+
+namespace UE::LevelSnapshots::Private
+{
+	static void InitializeWorld(UWorld* World)
+	{
+		World->InitializeNewWorld(UWorld::InitializationValues()
+			.InitializeScenes(false)		// This is memory only world: no rendering
+			.AllowAudioPlayback(false)
+			.RequiresHitProxies(false)		
+			.CreatePhysicsScene(false)
+			.CreateNavigation(false)
+			.CreateAISystem(false)
+			.ShouldSimulatePhysics(false)
+			.EnableTraceCollision(false)
+			.SetTransactional(false)
+			.CreateFXSystem(false)
+			);
+	}
+	
+	static UWorld* CreateWorld(UObject* Outer, FName WorldName)
+	{
+		UWorld* World = NewObject<UWorld>(Outer, WorldName);
+		World->WorldType = EWorldType::Inactive;
+
+		// Note: Do NOT create a FWorldContext for this world.
+		// If you do, the render thread will send render commands every tick (and crash cuz we do not init the scene below).
+		InitializeWorld(World);
+		return World;
+	}
+
+	static TSet<FName> ExtractLevelNames(const FWorldSnapshotData& WorldData)
+	{
+		TSet<FName> Result;
+		for (auto SavedActorIt = WorldData.ActorData.CreateConstIterator(); SavedActorIt; ++SavedActorIt)
+		{
+			const FName WorldName = *ExtractPathWithoutSubobjects(SavedActorIt->Key).GetAssetName();
+			Result.Add(WorldName);
+		}
+		return Result;
+	}
 }
 
 void ULevelSnapshot::DestroyWorld()
 {
-	if (ensureAlwaysMsgf(SnapshotContainerWorld, TEXT("World was already destroyed.")))
+	if (ensureAlwaysMsgf(RootSnapshotWorld, TEXT("World was already destroyed.")))
 	{
 		if (ensure(GEngine))
 		{
 			GEngine->OnWorldDestroyed().Remove(Handle);
 			Handle.Reset();
 		}
-				
-		SerializedData.SnapshotWorld.Reset();
-		ClearCache();
-	
-		SnapshotContainerWorld->CleanupWorld();
-		SnapshotContainerWorld = nullptr;
+		
+		CleanUpWorld();
+		TransientWorldPackage = nullptr;
+		RootSnapshotWorld = nullptr;
+		SnapshotSublevels.Reset();
 	}
 }
 
-void ULevelSnapshot::ClearCache()
+void ULevelSnapshot::CleanUpWorld()
 {
-	Cache.ActorCache.Reset();
-	Cache.SubobjectCache.Reset();
-	Cache.ClassDefaultCache.Reset();
+	SerializedData.SnapshotWorld.Reset();
+	SerializedData.SnapshotSublevels.Reset();
+	ClearCache();
+
+	// Cleanup world clears RF_Standalone flag...
+	const bool bWasStandalone = HasAnyFlags(RF_Standalone);
+	RootSnapshotWorld->CleanupWorld();
+	for (UWorld* Sublevel : SnapshotSublevels)
+	{
+		Sublevel->CleanupWorld();
+	}
 	
-#if WITH_EDITOR
-	CachedDiffedActors.Reset();
-#endif
+	if (bWasStandalone)
+	{
+		SetFlags(RF_Standalone);
+	}
+}
+
+void ULevelSnapshot::ClearCache() 
+{
+	Cache.Reset();
+	CachedDiffedActors.Reset(); 
+}
+
+void ULevelSnapshot::RecreateSnapshotWorld()
+{
+	if (RootSnapshotWorld)
+	{
+		DestroyWorld();
+	}
+	EnsureWorldInitialised();
 }
 
 #if WITH_EDITOR
-void ULevelSnapshot::ClearCachedDiffFlag(UObject* ModifiedObject)
+void ULevelSnapshot::ResetDiffCacheToUninitialized(TArrayView<AActor*> ModifiedActors)
+{
+	CachedDiffedActors.Reserve(ModifiedActors.Num());
+	for (AActor* ModifiedActor : ModifiedActors)
+	{
+		CachedDiffedActors.FindOrAdd(ModifiedActor) = ECachedDiffResult::NotInitialized;
+	}
+}
+
+void ULevelSnapshot::ResetDiffCacheToUninitialized(UObject* ModifiedObject)
 {
 	AActor* AsActor = ModifiedObject->IsA<AActor>() ? Cast<AActor>(ModifiedObject) : ModifiedObject->GetTypedOuter<AActor>(); 
 	if (AsActor && SerializedData.HasMatchingSavedActor(AsActor))
 	{
-		CachedDiffedActors.FindOrAdd(AsActor) = ECachedDiffResult::NotInitialised;
+		CachedDiffedActors.FindOrAdd(AsActor) = ECachedDiffResult::NotInitialized;
 	}
 }
 #endif

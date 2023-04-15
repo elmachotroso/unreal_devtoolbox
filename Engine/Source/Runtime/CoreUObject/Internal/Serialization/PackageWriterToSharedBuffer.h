@@ -57,7 +57,7 @@ public:
 
 		/** Always valid during CommitPackageInternal */
 		IPackageWriter::FBeginPackageInfo Begin;
-		/** Always valid during CommitPackageInternal if Info.bSucceeded */
+		/** Always valid during CommitPackageInternal if Info.Status == Success */
 		TArray<FWritePackage> Packages;
 		TArray<FBulkData> BulkDatas;
 		TArray<FAdditionalFile> AdditionalFiles;
@@ -117,16 +117,15 @@ public:
 	{
 		Records.WriteLinkerAdditionalData(Info, Data, FileRegions);
 	}
-	virtual TFuture<FMD5Hash> CommitPackage(IPackageWriter::FCommitPackageInfo&& Info) override
+	virtual void CommitPackage(IPackageWriter::FCommitPackageInfo&& Info) override
 	{
 		TUniquePtr<FPackageRecord> Record = Records.FindAndRemoveRecordChecked(Info.PackageName);
 		ValidateCommit(*Record, Info);
-		TFuture<FMD5Hash> CookedHash = CommitPackageInternal(MoveTemp(*Record), Info);
-		return CookedHash;
+		CommitPackageInternal(MoveTemp(*Record), Info);
 	}
 
 protected:
-	virtual TFuture<FMD5Hash> CommitPackageInternal(FPackageRecord&& Record,
+	virtual void CommitPackageInternal(FPackageRecord&& Record,
 		const IPackageWriter::FCommitPackageInfo& Info) = 0;
 
 protected:

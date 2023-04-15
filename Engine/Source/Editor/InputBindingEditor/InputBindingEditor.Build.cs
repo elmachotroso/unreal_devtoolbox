@@ -10,7 +10,6 @@ public class InputBindingEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"EditorStyle",
 				"Core",
 				"CoreUObject",
 				"Slate",
@@ -29,14 +28,6 @@ public class InputBindingEditor : ModuleRules
 			new string[]
 			{
 				"SettingsEditor",
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				"Editor/InputBindingEditor/Private",
-				"Editor/InputBindingEditor/Private/Widgets",
 			}
 		);
 	}

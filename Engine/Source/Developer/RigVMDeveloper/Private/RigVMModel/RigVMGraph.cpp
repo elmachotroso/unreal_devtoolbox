@@ -9,10 +9,14 @@
 #include "UObject/Package.h"
 #include "RigVMTypeUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMGraph)
+
 URigVMGraph::URigVMGraph()
 : DiagnosticsAST(nullptr)
 , RuntimeAST(nullptr)
+, bEditable(true)
 {
+	SetExecuteContextStruct(FRigVMExecuteContext::StaticStruct());
 }
 
 const TArray<URigVMNode*>& URigVMGraph::GetNodes() const
@@ -102,26 +106,15 @@ TArray<FRigVMGraphVariableDescription> URigVMGraph::GetVariableDescriptions() co
 	return Variables;
 }
 
-TArray<FRigVMGraphParameterDescription> URigVMGraph::GetParameterDescriptions() const
-{
-	TArray<FRigVMGraphParameterDescription> Parameters;
-	for (URigVMNode* Node : Nodes)
-	{
-		if (URigVMParameterNode* ParameterNode = Cast<URigVMParameterNode>(Node))
-		{
-			Parameters.AddUnique(ParameterNode->GetParameterDescription());
-		}
-	}
-	return Parameters;
-}
-
 FString URigVMGraph::GetNodePath() const
 {
 	if (URigVMCollapseNode* CollapseNode = Cast<URigVMCollapseNode>(GetOuter()))
 	{
 		return CollapseNode->GetNodePath(true /* recursive */);
 	}
-	return FString();
+
+	static constexpr TCHAR NodePathFormat[] = TEXT("%s::");
+	return FString::Printf(NodePathFormat, *GetName());
 }
 
 FString URigVMGraph::GetGraphName() const
@@ -130,7 +123,7 @@ FString URigVMGraph::GetGraphName() const
 	{
 		return CollapseNode->GetNodePath(false /* recursive */);
 	}
-	return FString();
+	return GetName();
 }
 
 URigVMNode* URigVMGraph::FindNodeByName(const FName& InNodeName) const
@@ -158,15 +151,13 @@ URigVMNode* URigVMGraph::FindNode(const FString& InNodePath) const
 	}
 
 	FString Path = InNodePath;
-	if (Path.StartsWith(TEXT("FunctionLibrary::|")))
+
+	if(IsRootGraph())
 	{
-		if (GetRootGraph()->IsA<URigVMFunctionLibrary>())
+		const FString MyNodePath = GetNodePath();
+		if(Path.StartsWith(MyNodePath))
 		{
-			Path.RightChopInline(18);
-		}
-		else
-		{
-			return nullptr;
+			Path.RightChopInline(MyNodePath.Len() + 1);
 		}
 	}
 
@@ -272,18 +263,8 @@ TArray<FRigVMExternalVariable> URigVMGraph::GetExternalVariables() const
 		}
 		else if(URigVMVariableNode* VariableNode = Cast<URigVMVariableNode>(Node))
 		{
-			// Make sure it is not a local variable
-			bool bFoundLocalVariable = false;
-			for (FRigVMGraphVariableDescription& LocalVariable : Node->GetGraph()->LocalVariables)
-			{
-				if (LocalVariable.Name == VariableNode->GetVariableName())
-				{
-					bFoundLocalVariable = true;
-					break;
-				}
-			}
-
-			if (!bFoundLocalVariable)
+			// Make sure it is not a local variable or input argument
+			if (VariableNode->IsExternalVariable())
 			{
 				FRigVMExternalVariable::MergeExternalVariable(Variables, VariableNode->GetVariableDescription().ToExternalVariable());
 			}
@@ -345,6 +326,22 @@ FRigVMGraphModifiedEvent& URigVMGraph::OnModified()
 	return ModifiedEvent;
 }
 
+void URigVMGraph::SetExecuteContextStruct(UScriptStruct* InExecuteContextStruct)
+{
+	check(InExecuteContextStruct);
+	ensure(InExecuteContextStruct->IsChildOf(FRigVMExecuteContext::StaticStruct()));
+	ExecuteContextStruct = InExecuteContextStruct;
+}
+
+UScriptStruct* URigVMGraph::GetExecuteContextStruct() const
+{
+	if (URigVMGraph* RootGraph = GetRootGraph())
+	{
+		return RootGraph->ExecuteContextStruct.Get();
+	}
+	return nullptr;
+}
+
 void URigVMGraph::Notify(ERigVMGraphNotifType InNotifType, UObject* InSubject)
 {
 	ModifiedEvent.Broadcast(InNotifType, this, InSubject);
@@ -377,7 +374,7 @@ TSharedPtr<FRigVMParserAST> URigVMGraph::GetDiagnosticsAST(bool bForceRefresh, T
 	{
 		FRigVMParserASTSettings Settings = FRigVMParserASTSettings::Fast();
 		Settings.LinksToSkip = InLinksToSkip;
-		DiagnosticsAST = MakeShareable(new FRigVMParserAST(this, nullptr, Settings));
+		DiagnosticsAST = MakeShareable(new FRigVMParserAST({this}, nullptr, Settings));
 	}
 	return DiagnosticsAST;
 }
@@ -386,7 +383,7 @@ TSharedPtr<FRigVMParserAST> URigVMGraph::GetRuntimeAST(const FRigVMParserASTSett
 {
 	if (RuntimeAST == nullptr || bForceRefresh)
 	{
-		RuntimeAST = MakeShareable(new FRigVMParserAST(this, nullptr, InSettings));
+		RuntimeAST = MakeShareable(new FRigVMParserAST({this}, nullptr, InSettings));
 	}
 	return RuntimeAST;
 }
@@ -426,12 +423,13 @@ void URigVMGraph::PrepareCycleChecking(URigVMPin* InPin, bool bAsInput)
 	GetDiagnosticsAST(false, LinksToSkip)->PrepareCycleChecking(InPin);
 }
 
-bool URigVMGraph::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode)
+bool URigVMGraph::CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection)
 {
-	if (!URigVMPin::CanLink(InSourcePin, InTargetPin, OutFailureReason, InByteCode))
+	if (!URigVMPin::CanLink(InSourcePin, InTargetPin, OutFailureReason, InByteCode, InUserLinkDirection))
 	{
 		return false;
 	}
 	return GetDiagnosticsAST()->CanLink(InSourcePin, InTargetPin, OutFailureReason);
 }
+
 

@@ -1,17 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_InputTouch.h"
-#include "GraphEditorSettings.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraphSchema_K2_Actions.h"
+#include "EditorCategoryUtils.h"
+#include "Engine/Blueprint.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/MemberReference.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_AssignmentStatement.h"
+#include "K2Node_InputTouchEvent.h"
 #include "K2Node_TemporaryVariable.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "K2Node_InputTouchEvent.h"
 #include "KismetCompiler.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
-#include "BlueprintActionDatabaseRegistrar.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 UK2Node_InputTouch::UK2Node_InputTouch(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -33,11 +56,11 @@ void UK2Node_InputTouch::PostLoad()
 
 UEnum* UK2Node_InputTouch::GetTouchIndexEnum()
 {
-	static UEnum* TouchIndexEnum = NULL;
-	if(NULL == TouchIndexEnum)
+	static UEnum* TouchIndexEnum = nullptr;
+	if (nullptr == TouchIndexEnum)
 	{
-		FName TouchIndexEnumName(TEXT("ETouchIndex::Touch1"));
-		UEnum::LookupEnumName(TouchIndexEnumName, &TouchIndexEnum);
+		FTopLevelAssetPath TouchIndexEnumPath(TEXT("/Script/InputCore"), TEXT("ETouchIndex"));
+		TouchIndexEnum = FindObject<UEnum>(TouchIndexEnumPath);
 		check(TouchIndexEnum);
 	}
 	return TouchIndexEnum;
@@ -79,7 +102,7 @@ FText UK2Node_InputTouch::GetTooltipText() const
 
 FSlateIcon UK2Node_InputTouch::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.TouchEvent_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.TouchEvent_16x");
 	return Icon;
 }
 

@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodyTypes.h"
+#include "LandscapeHeightfieldCollisionComponent.h"
+#include "LandscapeInfo.h"
+#include "LandscapeProxy.h"
 #include "WaterBodyActor.h"
-#include "WaterSubsystem.h"
 #include "WaterSplineComponent.h"
-#include "Landscape/Classes/LandscapeHeightfieldCollisionComponent.h"
-#include "Landscape/Classes/LandscapeInfo.h"
-#include "Landscape/Classes/LandscapeProxy.h"
+#include "WaterSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyTypes)
 
 float FWaterBodyQueryResult::LazilyComputeSplineKey(const UWaterBodyComponent& InWaterBodyComponent, const FVector& InWorldLocation)
 {
@@ -556,3 +558,4 @@ FWaterSplineMetadataPhysics& FWaterSplineMetadataPhysics::operator=(const UWater
 	}
 	return *this;
 }
+

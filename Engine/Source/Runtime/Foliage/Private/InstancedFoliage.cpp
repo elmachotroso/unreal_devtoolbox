@@ -55,6 +55,7 @@ InstancedFoliage.cpp: Instanced foliage implementation.
 #include "Algo/Transform.h"
 #include "ActorPartition/ActorPartitionSubsystem.h"
 #include "Misc/CoreMisc.h"
+#include "Engine/DamageEvents.h"
 
 #define LOCTEXT_NAMESPACE "InstancedFoliage"
 
@@ -310,8 +311,28 @@ static void ConvertDeprecated2FoliageMeshes(
 #if WITH_EDITORONLY_DATA	
 	for (auto Pair : FoliageMeshesDeprecated)
 	{
+		UFoliageType* FoliageType = Pair.Key;
+		TUniqueObj<FFoliageMeshInfo_Deprecated2>& FoliageMeshDeprecated = Pair.Value;
+		
+		if (!FoliageType)
+		{
+			FMessageLog("MapCheck").Warning()
+				->AddToken(FUObjectToken::Create(IFA))
+				->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_FoliageMissingFoliageType", "Foliage instances for a missing foliage type have been removed.")))
+				->AddToken(FMapErrorToken::Create(FMapErrors::FoliageMissingStaticMesh));
+
+			if (FoliageMeshDeprecated->Component)
+			{
+				FoliageMeshDeprecated->Component->SetFlags(RF_Transactional);
+				FoliageMeshDeprecated->Component->Modify();
+				FoliageMeshDeprecated->Component->DestroyComponent();
+				FoliageMeshDeprecated->Component = nullptr;
+			}
+
+			continue;
+		}
+
 		auto& FoliageMesh = IFA->AddFoliageInfo(Pair.Key);
-		const auto& FoliageMeshDeprecated = Pair.Value;
 
 		// Old Foliage mesh is always static mesh (no actors)
 		FoliageMesh->Type = EFoliageImplType::StaticMesh;
@@ -530,7 +551,7 @@ UFoliageType::UFoliageType(const FObjectInitializer& ObjectInitializer)
 	bCastDynamicShadow = true;
 	bCastStaticShadow = true;
 	bCastContactShadow = true;
-	bAffectDynamicIndirectLighting = false;
+	bAffectDynamicIndirectLighting = true;
 	// Most of the high instance count foliage like grass causes performance problems with distance field lighting
 	bAffectDistanceFieldLighting = false;
 	bCastShadowAsTwoSided = false;
@@ -542,7 +563,8 @@ UFoliageType::UFoliageType(const FObjectInitializer& ObjectInitializer)
 	OverriddenLightMapRes = 8;
 	bUseAsOccluder = false;
 	bVisibleInRayTracing = true;
-	bEvaluateWorldPositionOffset = false;
+	bEvaluateWorldPositionOffset = true;
+	WorldPositionOffsetDisableDistance = 0;
 
 	BodyInstance.SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 
@@ -1623,6 +1645,16 @@ void FFoliageStaticMesh::UpdateComponentSettings(const UFoliageType_InstancedSta
 		if (Component->bEvaluateWorldPositionOffset != FoliageType->bEvaluateWorldPositionOffset)
 		{
 			Component->bEvaluateWorldPositionOffset = FoliageType->bEvaluateWorldPositionOffset;
+			bNeedsMarkRenderStateDirty = true;
+		}
+		if (Component->bEvaluateWorldPositionOffsetInRayTracing != FoliageType->bEvaluateWorldPositionOffset)
+		{
+			Component->bEvaluateWorldPositionOffsetInRayTracing = FoliageType->bEvaluateWorldPositionOffset;
+			bNeedsMarkRenderStateDirty = true;
+		}
+		if (Component->WorldPositionOffsetDisableDistance != FoliageType->WorldPositionOffsetDisableDistance)
+		{
+			Component->WorldPositionOffsetDisableDistance = FoliageType->WorldPositionOffsetDisableDistance;
 			bNeedsMarkRenderStateDirty = true;
 		}
 
@@ -3107,6 +3139,62 @@ void AInstancedFoliageActor::MoveInstancesForMovedOwnedActors(AActor* InActor)
 	}
 }
 
+namespace FoliagePartitioningUtils
+{
+	static void Update(AInstancedFoliageActor* SourceIFA, FFoliageInfo& FoliageInfo, TFunctionRef<TSet<int32>* ()> GetInstanceSet)
+	{
+		UActorPartitionSubsystem* ActorPartitionSubsystem = SourceIFA->GetWorld()->GetSubsystem<UActorPartitionSubsystem>();
+		if (FoliageInfo.Type == EFoliageImplType::Actor && ActorPartitionSubsystem->IsLevelPartition())
+		{
+			return; // Actors are handled through the Partitioning code
+		}
+
+		bool bMovedInstances = true;
+		AInstancedFoliageActor* TargetIFA = nullptr;
+
+		TSet<int32>* InstanceSet = GetInstanceSet();
+		while (InstanceSet && InstanceSet->Num() > 0 && bMovedInstances)
+		{
+			TargetIFA = nullptr;
+			bMovedInstances = false;
+			TSet<int32> InstancesToMove;
+
+			for (int32 InstanceIdx : *InstanceSet)
+			{
+				FFoliageInstance& Instance = FoliageInfo.Instances[InstanceIdx];
+				AInstancedFoliageActor* NewIFA = AInstancedFoliageActor::Get(SourceIFA->GetWorld(), true, SourceIFA->GetLevel(), Instance.Location);
+				if ((TargetIFA == nullptr || TargetIFA == NewIFA) && NewIFA != SourceIFA)
+				{
+					TargetIFA = NewIFA;
+					InstancesToMove.Add(InstanceIdx);
+				}
+			}
+
+			if (InstancesToMove.Num())
+			{
+				// TargetIFA can be null (if target is unloaded cell). Meaning instances will be deleted.
+				FoliageInfo.MoveInstances(TargetIFA, InstancesToMove, true);
+				bMovedInstances = true;
+			}
+
+			InstanceSet = GetInstanceSet();
+		}
+	}
+}
+
+void AInstancedFoliageActor::UpdateInstancePartitioning(UWorld* InWorld)
+{
+	for (TActorIterator<AInstancedFoliageActor> It(InWorld); It; ++It)
+	{
+		AInstancedFoliageActor* IFA = *It;
+		IFA->ForEachFoliageInfo([IFA](UFoliageType* FoliageType, FFoliageInfo& FoliageInfo)
+        {
+			FoliagePartitioningUtils::Update(IFA, FoliageInfo, [&]() { return &FoliageInfo.SelectedIndices; });
+			return true; // continue iteration
+        });
+	}
+}
+
 void AInstancedFoliageActor::MoveInstancesForMovedComponent(UActorComponent* InComponent)
 {
 	// We don't want to handle this case when applying level transform
@@ -3179,6 +3267,8 @@ void AInstancedFoliageActor::MoveInstancesForMovedComponent(UActorComponent* InC
 
 			Info.Implementation->EndUpdate();
 			Info.Refresh(true, false);
+
+			FoliagePartitioningUtils::Update(this, Info, [&]() { return Info.ComponentHash.Find(BaseId); });
 		}
 	}
 }
@@ -3233,9 +3323,9 @@ void AInstancedFoliageActor::DeleteInstancesForComponent(UWorld* InWorld, UActor
 	}
 }
 
-void AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponent(const UProceduralFoliageComponent* ProceduralFoliageComponent, bool InRebuildTree)
+bool AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponentInternal(const FGuid& InProceduralGuid, bool bInRebuildTree, bool bInDeleteAll)
 {
-	const FGuid& ProceduralGuid = ProceduralFoliageComponent->GetProceduralGuid();
+	bool bRemovedInstances = false;
 	BeginUpdate();
 	for (auto& Pair : FoliageInfos)
 	{
@@ -3243,7 +3333,7 @@ void AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponent(const 
 		TArray<int32> InstancesToRemove;
 		for (int32 InstanceIdx = 0; InstanceIdx < Info.Instances.Num(); InstanceIdx++)
 		{
-			if (Info.Instances[InstanceIdx].ProceduralGuid == ProceduralGuid)
+			if ((Info.Instances[InstanceIdx].ProceduralGuid == InProceduralGuid) || (bInDeleteAll && Info.Instances[InstanceIdx].ProceduralGuid.IsValid()))
 			{
 				InstancesToRemove.Add(InstanceIdx);
 			}
@@ -3251,24 +3341,46 @@ void AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponent(const 
 
 		if (InstancesToRemove.Num())
 		{
-			Info.RemoveInstances(InstancesToRemove, InRebuildTree);
+			Info.RemoveInstances(InstancesToRemove, bInRebuildTree);
+			bRemovedInstances = true;
 		}
 	}
 	EndUpdate();
 	// Clean up dead cross-level references
 	FFoliageInstanceBaseCache::CompactInstanceBaseCache(this);
+
+	return bRemovedInstances;
 }
 
-bool AInstancedFoliageActor::ContainsInstancesFromProceduralFoliageComponent(const UProceduralFoliageComponent* ProceduralFoliageComponent)
+bool AInstancedFoliageActor::DeleteInstancesForAllProceduralFoliageComponents(bool bInRebuildTree)
 {
-	const FGuid& ProceduralGuid = ProceduralFoliageComponent->GetProceduralGuid();
+	return DeleteInstancesForProceduralFoliageComponentInternal(FGuid(), bInRebuildTree, true);
+}
+
+bool AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponent(const UProceduralFoliageComponent* InProceduralFoliageComponent, bool bInRebuildTree)
+{
+	return DeleteInstancesForProceduralFoliageComponent(InProceduralFoliageComponent->GetProceduralGuid(), bInRebuildTree);
+}
+
+bool AInstancedFoliageActor::DeleteInstancesForProceduralFoliageComponent(const FGuid& InProceduralGuid, bool bInRebuildTree)
+{
+	return DeleteInstancesForProceduralFoliageComponentInternal(InProceduralGuid, bInRebuildTree, false);
+}
+
+bool AInstancedFoliageActor::ContainsInstancesFromProceduralFoliageComponent(const UProceduralFoliageComponent* InProceduralFoliageComponent)
+{
+	return ContainsInstancesFromProceduralFoliageComponent(InProceduralFoliageComponent->GetProceduralGuid());
+}
+
+bool AInstancedFoliageActor::ContainsInstancesFromProceduralFoliageComponent(const FGuid& InProceduralGuid)
+{
 	for (auto& Pair : FoliageInfos)
 	{
 		FFoliageInfo& Info = *Pair.Value;
 		TArray<int32> InstancesToRemove;
 		for (int32 InstanceIdx = 0; InstanceIdx < Info.Instances.Num(); InstanceIdx++)
 		{
-			if (Info.Instances[InstanceIdx].ProceduralGuid == ProceduralGuid)
+			if (Info.Instances[InstanceIdx].ProceduralGuid == InProceduralGuid)
 			{
 				// The procedural component is responsible for an instance
 				return true;
@@ -3987,6 +4099,17 @@ bool AInstancedFoliageActor::ShouldImport(FString* ActorPropString, bool IsMovin
 	return false;
 }
 
+FBox AInstancedFoliageActor::GetStreamingBounds() const
+{
+	if (UWorld* World = GetWorld(); World && World->IsPartitionedWorld())
+	{
+		const float HalfGridSize = GridSize * 0.5f;
+		return FBox(GetActorLocation() - HalfGridSize, GetActorLocation() + HalfGridSize);
+	}
+
+	return Super::GetStreamingBounds();
+}
+
 void AInstancedFoliageActor::ApplySelection(bool bApply)
 {
 	for (auto& Pair : FoliageInfos)
@@ -4129,6 +4252,7 @@ FArchive& operator<<(FArchive& Ar, FFoliageMeshInfo_Old& MeshInfo)
 
 void AInstancedFoliageActor::Serialize(FArchive& Ar)
 {
+	LLM_SCOPE_BYNAME(TEXT("Foliage"));
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FFoliageCustomVersion::GUID);
@@ -4296,6 +4420,13 @@ void AInstancedFoliageActor::BeginDestroy()
 		FoliageInfos.Empty();
 	}
 }
+
+bool AInstancedFoliageActor::IsListedInSceneOutliner() const
+{
+	// In World Partition the AInstancedFoliageActor::GetDefault creates a transient foliage actor to store unpainted foliage types.
+	return !HasAnyFlags(RF_Transient);
+}
+
 #endif
 
 void AInstancedFoliageActor::PostLoad()
@@ -4306,7 +4437,7 @@ void AInstancedFoliageActor::PostLoad()
 	// We can't check the ActorPartitionSubsystem here because World is not initialized yet. So we fallback on the bIsPartitioned
 	// to know if multiple InstanceFoliageActors is valid or not.
 	// For levels that are World Partition runtime cells. Having multiple IFAs is valid so skip validation.
-	if (OwningLevel && !OwningLevel->bIsPartitioned && !OwningLevel->bIsWorldPartitionRuntimeCell)
+	if (OwningLevel && !OwningLevel->bIsPartitioned && !OwningLevel->IsWorldPartitionRuntimeCell())
 	{
 		if (!OwningLevel->InstancedFoliageActor.IsValid())
 		{
@@ -4344,17 +4475,21 @@ void AInstancedFoliageActor::PostLoad()
 		}
 			   
 		{
-			bool bContainsNull = FoliageInfos.Remove(nullptr) > 0;
-			if (bContainsNull)
+			if (FoliageInfos.Contains(nullptr))
 			{
 				FMessageLog("MapCheck").Warning()
 					->AddToken(FUObjectToken::Create(this))
 					->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_FoliageMissingStaticMesh", "Foliage instances for a missing static mesh have been removed.")))
 					->AddToken(FMapErrorToken::Create(FMapErrors::FoliageMissingStaticMesh));
-				while (bContainsNull)
+								
+				TUniqueObj<FFoliageInfo> FoliageInfo;
+				while (FoliageInfos.RemoveAndCopyValue(nullptr, FoliageInfo))
 				{
-					bContainsNull = FoliageInfos.Remove(nullptr) > 0;
-				}
+					if (FoliageInfo->IsInitialized())
+					{
+						FoliageInfo->Uninitialize();
+					}
+				}				
 			}
 		}
 
@@ -4636,7 +4771,7 @@ void AInstancedFoliageActor::PostLoad()
 		if (bHasISMFoliage)
 		{
 			TArray<UFoliageInstancedStaticMeshComponent*> FoliageComponents;
-			GetComponents<UFoliageInstancedStaticMeshComponent>(FoliageComponents);
+			GetComponents(FoliageComponents);
 			for (UFoliageInstancedStaticMeshComponent* FoliageComponent : FoliageComponents)
 			{
 				if (FoliageComponent && FoliageComponent->bEnableDiscardOnLoad)
@@ -4963,7 +5098,7 @@ uint32 AInstancedFoliageActor::GetDefaultGridSize(UWorld* InWorld) const
 	return InWorld->GetWorldSettings()->InstancedFoliageGridSize;
 }
 
-bool AInstancedFoliageActor::ShouldIncludeGridSizeInName(UWorld* InWorld) const
+bool AInstancedFoliageActor::ShouldIncludeGridSizeInName(UWorld* InWorld, const FActorPartitionIdentifier& InIdentifier) const
 {
 	return InWorld->GetWorldSettings()->bIncludeGridSizeInNameForFoliageActors;
 }
@@ -5635,6 +5770,8 @@ UFoliageInstancedStaticMeshComponent::UFoliageInstancedStaticMeshComponent(const
 #if WITH_EDITORONLY_DATA
 	bEnableAutoLODGeneration = false;
 #endif
+
+	ViewRelevanceType = EHISMViewRelevanceType::Foliage;
 }
 
 void UFoliageInstancedStaticMeshComponent::ReceiveComponentDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)

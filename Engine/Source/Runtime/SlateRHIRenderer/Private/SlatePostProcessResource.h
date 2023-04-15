@@ -22,7 +22,7 @@ public:
 	}
 
 	/** Performs per frame updates to this resource */
-	void Update(const FIntPoint& NewSize);
+	void Update(const FIntPoint& NewSize, EPixelFormat RequestedPixelFormat);
 
 	void CleanUp();
 
@@ -35,10 +35,10 @@ public:
 	virtual uint32 GetHeight() const override { return RenderTargetSize.Y; }
 	virtual ESlateShaderResource::Type GetType() const override { return ESlateShaderResource::PostProcess; }
 
-
+	EPixelFormat GetPixelFormat() const { return PixelFormat; }
 private:
 	/** Resizes targets to the new size */
-	void ResizeTargets(const FIntPoint& NewSize);
+	void ResizeTargets(const FIntPoint& NewSize, EPixelFormat RequestedPixelFormat);
 
 private:
 	TArray<FTexture2DRHIRef, TInlineAllocator<2>> RenderTargets;

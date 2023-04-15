@@ -1,16 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "CADKernel/Core/CADKernelArchive.h"
+#include "CADKernel/Core/Entity.h"
 #include "CADKernel/Core/OrientedEntity.h"
-#include "CADKernel/Geo/Curves/CompositeCurve.h"
 #include "CADKernel/Geo/GeoEnum.h"
+#include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Topo/TopologicalEdge.h"
 #include "CADKernel/Topo/TopologicalEntity.h"
 #include "CADKernel/Topo/TopologicalVertex.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
+class FDatabase;
+class FPoint2D;
 class FTopologicalFace;
 class FTopologicalVertex;
 
@@ -45,7 +49,6 @@ class CADKERNEL_API FTopologicalLoop : public FTopologicalEntity
 	friend class FTopologicalFace;
 	friend class FTopologicalFace;
 	friend class FTopologicalEdge;
-	friend class FGrid;
 
 public:
 	FSurfacicBoundary Boundary;
@@ -54,9 +57,9 @@ protected:
 	TArray<FOrientedEdge> Edges;
 
 	FTopologicalFace* Face;
-	bool bExternalLoop;
+	bool bIsExternal;
 
-	FTopologicalLoop(const TArray<TSharedPtr<FTopologicalEdge>>& Edges, const TArray<EOrientation>& EdgeDirections);
+	FTopologicalLoop(const TArray<TSharedPtr<FTopologicalEdge>>& Edges, const TArray<EOrientation>& EdgeDirections, const bool bIsEternalLoop);
 
 	FTopologicalLoop() = default;
 
@@ -76,7 +79,7 @@ public:
 
 	~FTopologicalLoop() = default;
 
-	static TSharedPtr<FTopologicalLoop> Make(const TArray<TSharedPtr<FTopologicalEdge>>& EdgeList, const TArray<EOrientation>& EdgeDirections, const double GeometricTolerance);
+	static TSharedPtr<FTopologicalLoop> Make(const TArray<TSharedPtr<FTopologicalEdge>>& EdgeList, const TArray<EOrientation>& EdgeDirections, const bool bIsExternalLoop, const double GeometricTolerance);
 
 	void DeleteLoopEdges();
 
@@ -85,7 +88,7 @@ public:
 		FTopologicalEntity::Serialize(Ar);
 		SerializeIdents(Ar, (TArray<TOrientedEntity<FEntity>>&) Edges);
 		SerializeIdent(Ar, &Face);
-		Ar << bExternalLoop;
+		Ar << bIsExternal;
 	}
 
 	virtual void SpawnIdent(FDatabase& Database) override
@@ -162,16 +165,26 @@ public:
 		return Face;
 	}
 
+	bool IsExternal() const 
+	{
+		return bIsExternal;
+	}
+
+	void SetExternal()
+	{
+		bIsExternal = true;
+	}
+
+	void SetInternal()
+	{
+		bIsExternal = false;
+	}
+
 	/*
 	 * @return false if the orientation is doubtful
 	 */
 	bool Orient();
 	void SwapOrientation();
-
-	void SetAsInnerBoundary()
-	{
-		bExternalLoop = false;
-	}
 
 	void ReplaceEdge(TSharedPtr<FTopologicalEdge>& OldEdge, TSharedPtr<FTopologicalEdge>& NewEdge);
 	void ReplaceEdge(TSharedPtr<FTopologicalEdge>& Edge, TArray<TSharedPtr<FTopologicalEdge>>& NewEdges);
@@ -211,7 +224,7 @@ public:
 		return -1;
 	}
 
-	void Get2DSampling(TArray<FPoint2D>& LoopSampling);
+	void Get2DSampling(TArray<FPoint2D>& LoopSampling) const;
 
 	/**
 	 * The idea is to remove degenerated edges of the loop i.e. where the surface is degenerated
@@ -220,7 +233,7 @@ public:
 	 * - so where the sampling could be in self-intersecting
 	 * @return false if the loop is degenerated
 	 */
-	bool Get2DSamplingWithoutDegeneratedEdges(TArray<FPoint2D>& LoopSampling);
+	bool Get2DSamplingWithoutDegeneratedEdges(TArray<FPoint2D>& LoopSampling) const;
 
 	void FindSurfaceCorners(TArray<TSharedPtr<FTopologicalVertex>>& OutCorners, TArray<int32>& OutStartSideIndex) const;
 	void FindBreaks(TArray<TSharedPtr<FTopologicalVertex>>& Ruptures, TArray<int32>& OutStartSideIndex, TArray<double>& RuptureValues) const;
@@ -232,6 +245,9 @@ public:
 	void CheckEdgesOrientation();
 	void CheckLoopWithTwoEdgesOrientation();
 	void RemoveDegeneratedEdges();
+
+	bool IsInside(const FTopologicalLoop& Other) const;
+
 };
 
 }

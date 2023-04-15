@@ -73,7 +73,7 @@ namespace ImmediatePhysics_Chaos
 			const FVector& AngularAcc);
 
 		void SetSimulationSpaceSettings(
-			const FReal MasterAlpha, 
+			const FReal Alpha, 
 			const FVector& ExternalLinearEtherDrag);
 
 		/** Set settings. Invalid (negative) values with leave that value unchanged from defaults */
@@ -81,28 +81,23 @@ namespace ImmediatePhysics_Chaos
 			const FReal FixedDt,
 			const FReal CullDistance,
 			const FReal MaxDepenetrationVelocity,
+			const int32 UseLinearJointSolver,
 			const int32 PositionIts,
 			const int32 VelocityIts,
 			const int32 ProjectionIts);
-
-		/** Set iteration counts for the legacy solver. A negative value with leave that iteration count unchanged */
-		void SetLegacySolverSettings(
-			const int32 SolverIts,
-			const int32 JointIts,
-			const int32 CollisionIts,
-			const int32 SolverPushOutIts,
-			const int32 JointPushOutIts,
-			const int32 CollisionPushOutIts);
 
 		/** Explicit debug draw path if the use case needs it to happen at a point outside of the simulation **/
 		void DebugDraw();
 
 	private:
 		void RemoveFromCollidingPairs(FActorHandle* ActorHandle);
+		void UpdateInertiaConditioning(const FVector& Gravity);
 		void PackCollidingPairs();
 		void UpdateActivePotentiallyCollidingPairs();
+		void EnableDisableJoints();
 		FReal UpdateStepTime(const FReal DeltaTime, const FReal MaxStepTime);
 
+		void UpdateStatCounters();
 		void DebugDrawStaticParticles();
 		void DebugDrawKinematicParticles();
 		void DebugDrawDynamicParticles();

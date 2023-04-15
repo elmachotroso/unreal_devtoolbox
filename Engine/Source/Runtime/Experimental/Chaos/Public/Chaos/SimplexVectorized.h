@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#if PLATFORM_ENABLE_VECTORINTRINSICS_NEON || PLATFORM_ENABLE_VECTORINTRINSICS
 #include "Math/VectorRegister.h"
 #include "Chaos/VectorUtility.h"
 
@@ -64,7 +63,7 @@ namespace Chaos
 	// Based on an algorithm in Real Time Collision Detection - Ericson (very close to that)
 	// Using the same variable name conventions for easy reference
 	template <bool CalculatExtraInformation>
-	FORCEINLINE VectorRegister4Float  TriangleSimplexFindOriginFast(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT As, VectorRegister4Float* RESTRICT Bs)
+	FORCEINLINE_DEBUGGABLE VectorRegister4Float  TriangleSimplexFindOriginFast(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT As, VectorRegister4Float* RESTRICT Bs)
 	{
 		const VectorRegister4Float& A = Simplex[0];
 		const VectorRegister4Float& B = Simplex[1];
@@ -230,13 +229,13 @@ namespace Chaos
 
 		if (VectorMaskBits(IsBC))
 		{
-			const VectorRegister4Float w = VectorDivide(d4MinusD3, NormalizationDenominatorBC);
 			constexpr VectorRegister4Int two = MakeVectorRegisterIntConstant(2, 2, 2, 2);
 			NumVerts = two;
-			const VectorRegister4Float OneMinusW = VectorSubtract(GlobalVectorConstants::FloatOne, w);
-			// b0	a1	a2	a3
+			const VectorRegister4Float w = VectorDivide(d4MinusD3, NormalizationDenominatorBC);
 			if (CalculatExtraInformation)
 			{
+				const VectorRegister4Float OneMinusW = VectorSubtract(GlobalVectorConstants::FloatOne, w);
+				// b0	a1	a2	a3
 				OutBarycentric = VectorUnpackLo(OneMinusW, w);
 			}
 			const VectorRegister4Float CMinusB = VectorSubtract(C, B);
@@ -260,12 +259,12 @@ namespace Chaos
 		constexpr VectorRegister4Int three = MakeVectorRegisterIntConstant(3, 3, 3, 3);
 		NumVerts = three;
 
-		const VectorRegister4Float OneMinusVMinusW = VectorSubtract(VectorSubtract(GlobalVectorConstants::FloatOne, v), w);
-		// b0	a1	a2	a3
-		const VectorRegister4Float OneMinusVMinusW_W = VectorUnpackLo(OneMinusVMinusW, w);
-		// a0	b0	a1	b1
 		if (CalculatExtraInformation)
 		{
+			const VectorRegister4Float OneMinusVMinusW = VectorSubtract(VectorSubtract(GlobalVectorConstants::FloatOne, v), w);
+			// b0	a1	a2	a3
+			const VectorRegister4Float OneMinusVMinusW_W = VectorUnpackLo(OneMinusVMinusW, w);
+			// a0	b0	a1	b1
 			OutBarycentric = VectorUnpackLo(OneMinusVMinusW_W, v);
 		}
 
@@ -292,7 +291,7 @@ namespace Chaos
 	}
 
 	template <bool CalculatExtraInformation>
-	FORCEINLINE VectorRegister4Float VectorTetrahedronSimplexFindOrigin(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT A, VectorRegister4Float* RESTRICT B)
+	FORCEINLINE_DEBUGGABLE VectorRegister4Float VectorTetrahedronSimplexFindOrigin(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT A, VectorRegister4Float* RESTRICT B)
 	{
 		const VectorRegister4Float& X0 = Simplex[0];
 		const VectorRegister4Float& X1 = Simplex[1];
@@ -348,6 +347,8 @@ namespace Chaos
 													MakeVectorRegisterIntConstant(3, 3, 3, 3)
 		};
 
+		VectorRegister4Float Eps = VectorMultiply(GlobalVectorConstants::KindaSmallNumber, VectorDivide(DetM, VectorSet1(4.0f)));
+
 		bool bInside = true;
 		for (int Idx = 0; Idx < 4; ++Idx)
 		{
@@ -372,19 +373,18 @@ namespace Chaos
 
 		if (bInside)
 		{
-			VectorRegister4Float OutBarycentricVectors[4];
-			const VectorRegister4Float  InvDetM = VectorDivide(GlobalVectorConstants::FloatOne, DetM);
-			OutBarycentricVectors[0] = VectorDivide(Cofactors[0], InvDetM);
-			OutBarycentricVectors[1] = VectorDivide(Cofactors[1], InvDetM);
-			OutBarycentricVectors[2] = VectorDivide(Cofactors[2], InvDetM);
-			OutBarycentricVectors[3] = VectorDivide(Cofactors[3], InvDetM);
-
-			// a0	b0	a1	b1
-			const VectorRegister4Float OutBarycentric0101 = VectorUnpackLo(OutBarycentricVectors[0], OutBarycentricVectors[1]);
-			const VectorRegister4Float OutBarycentric2323 = VectorUnpackLo(OutBarycentricVectors[2], OutBarycentricVectors[3]);
-			// a0	a1	b0	b1
 			if (CalculatExtraInformation)
 			{
+				VectorRegister4Float OutBarycentricVectors[4];
+				const VectorRegister4Float  InvDetM = VectorDivide(GlobalVectorConstants::FloatOne, DetM);
+				OutBarycentricVectors[0] = VectorMultiply(Cofactors[0], InvDetM);
+				OutBarycentricVectors[1] = VectorMultiply(Cofactors[1], InvDetM);
+				OutBarycentricVectors[2] = VectorMultiply(Cofactors[2], InvDetM);
+				OutBarycentricVectors[3] = VectorMultiply(Cofactors[3], InvDetM);
+				// a0	b0	a1	b1
+				const VectorRegister4Float OutBarycentric0101 = VectorUnpackLo(OutBarycentricVectors[0], OutBarycentricVectors[1]);
+				const VectorRegister4Float OutBarycentric2323 = VectorUnpackLo(OutBarycentricVectors[2], OutBarycentricVectors[3]);
+				// a0	a1	b0	b1
 				OutBarycentric = VectorMoveLh(OutBarycentric0101, OutBarycentric2323);
 			}
 
@@ -416,7 +416,7 @@ namespace Chaos
 
 	// CalculatExtraHitInformation : Should we calculate the BaryCentric coordinates, As and Bs?
 	template <bool CalculatExtraInformation = true>
-	FORCEINLINE VectorRegister4Float VectorSimplexFindClosestToOrigin(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT A, VectorRegister4Float* RESTRICT B)
+	FORCEINLINE_DEBUGGABLE VectorRegister4Float VectorSimplexFindClosestToOrigin(VectorRegister4Float* RESTRICT Simplex, VectorRegister4Int& RESTRICT NumVerts, VectorRegister4Float& RESTRICT OutBarycentric, VectorRegister4Float* RESTRICT A, VectorRegister4Float* RESTRICT B)
 	{
 		VectorRegister4Float ClosestPoint;
 		alignas(16) int32 NumVertsInt[4];
@@ -453,5 +453,3 @@ namespace Chaos
 		return ClosestPoint;
 	}
 }
-
-#endif

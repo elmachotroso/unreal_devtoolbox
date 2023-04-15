@@ -60,6 +60,8 @@ public:
 	QUADRICMESHREDUCTION_API float	Simplify(
 		uint32 TargetNumVerts, uint32 TargetNumTris, float TargetError,
 		uint32 LimitNumVerts, uint32 LimitNumTris, float LimitError );
+	QUADRICMESHREDUCTION_API void	PreserveSurfaceArea();
+	QUADRICMESHREDUCTION_API void	DumpOBJ( const char* Filename );
 	QUADRICMESHREDUCTION_API void	Compact();
 
 	uint32		GetRemainingNumVerts() const	{ return RemainingNumVerts; }
@@ -94,6 +96,14 @@ protected:
 	TArray< uint32 >	VertRefCount;
 	TArray< uint8 >		CornerFlags;
 	TBitArray<>			TriRemoved;
+
+	struct FPerMaterialDeltas
+	{
+		float	SurfaceArea;
+		int32	NumTris;
+		int32	NumDisjoint;
+	};
+	TArray< FPerMaterialDeltas >	PerMaterialDeltas;
 
 	struct FPair
 	{
@@ -178,7 +188,7 @@ FORCEINLINE float* FMeshSimplifier::GetAttributes( uint32 VertIndex )
 
 FORCEINLINE FQuadricAttr& FMeshSimplifier::GetTriQuadric( uint32 TriIndex )
 {
-	const uint32 QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
+	const SIZE_T QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
 	return *reinterpret_cast< FQuadricAttr* >( &TriQuadrics[ TriIndex * QuadricSize ] );
 }
 

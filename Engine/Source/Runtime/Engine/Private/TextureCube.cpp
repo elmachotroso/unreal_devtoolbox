@@ -14,8 +14,10 @@
 #include "TextureCompiler.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/StrongObjectPtr.h"
-#include "Engine/Public/ImageUtils.h"
+#include "ImageUtils.h"
 #include "UObject/ReleaseObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TextureCube)
 
 #define LOCTEXT_NAMESPACE "UTextureCube"
 
@@ -35,6 +37,8 @@ UTextureCube* UTextureCube::CreateTransient(int32 InSizeX, int32 InSizeY, EPixel
 		NewTexture->SetPlatformData(new FTexturePlatformData());
 		NewTexture->GetPlatformData()->SizeX = InSizeX;
 		NewTexture->GetPlatformData()->SizeY = InSizeY;
+		NewTexture->GetPlatformData()->SetIsCubemap(true);
+		NewTexture->GetPlatformData()->SetNumSlices(6);
 		NewTexture->GetPlatformData()->PixelFormat = InFormat;
 
 		// Allocate first mipmap.
@@ -44,8 +48,9 @@ UTextureCube* UTextureCube::CreateTransient(int32 InSizeX, int32 InSizeY, EPixel
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
 		Mip->SizeX = InSizeX;
 		Mip->SizeY = InSizeY;
+		Mip->SizeZ = 1;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
-		Mip->BulkData.Realloc(6 * NumBlocksX * NumBlocksY * GPixelFormats[InFormat].BlockBytes);
+		Mip->BulkData.Realloc((int64)6 * NumBlocksX * NumBlocksY * GPixelFormats[InFormat].BlockBytes);
 		Mip->BulkData.Unlock();
 	}
 	else
@@ -104,7 +109,7 @@ const FTexturePlatformData* UTextureCube::GetPlatformData() const
 		TRACE_CPUPROFILER_EVENT_SCOPE(UTextureCube::GetPlatformDataStall);
 		UE_LOG(LogTexture, Log, TEXT("Call to GetPlatformData() is forcing a wait on data that is not yet ready."));
 
-		FText Msg = FText::Format(LOCTEXT("WaitOnTextureCompilation", "Waiting on texture compilation (%s) ..."), FText::FromString(GetName()));
+		FText Msg = FText::Format(LOCTEXT("WaitOnTextureCompilation", "Waiting on texture compilation {0} ..."), FText::FromString(GetName()));
 		FScopedSlowTask Progress(1.f, Msg, true);
 		Progress.MakeDialog(true);
 		PrivatePlatformData->FinishCache();
@@ -143,16 +148,9 @@ void UTextureCube::Serialize(FArchive& Ar)
 		// Previously default maximum resolution for cubemaps generated from long-lat sources was set to 512 pixels in the texture building code.
 		// This value is now explicitly set for cubemaps loaded from earlier versions of the stream in order to avoid texture rebuild.
 		MaxTextureSize = 512;
-		UE_LOG(LogTexture, Log, TEXT("Default maximum texture size for cubemaps generated from long-lat sources has been changed from 512 to unlimited. In order to preserve old behaiour for '%s', its maximum texture size has been explicitly set to 512."), *GetPathName());
+		UE_LOG(LogTexture, Log, TEXT("Default maximum texture size for cubemaps generated from long-lat sources has been changed from 512 to unlimited. In order to preserve old behavior for '%s', its maximum texture size has been explicitly set to 512."), *GetPathName());
 	}
 #endif // #if WITH_EDITORONLY_DATA
-
-#if WITH_EDITOR
-	if (Ar.IsLoading() && !Ar.IsTransacting() && !bCooked)
-	{
-		BeginCachePlatformData();
-	}
-#endif // #if WITH_EDITOR
 }
 
 void UTextureCube::PostLoad()
@@ -162,11 +160,7 @@ void UTextureCube::PostLoad()
 	{
 		if (FTextureCompilingManager::Get().IsAsyncCompilationAllowed(this))
 		{
-			// Might already have been triggered during serialization
-			if (!PrivatePlatformData)
-			{
 				BeginCachePlatformData();
-			}
 		}
 		else
 		{
@@ -176,6 +170,8 @@ void UTextureCube::PostLoad()
 #endif // #if WITH_EDITOR
 
 	Super::PostLoad();
+
+	// note UTexture::PostLoad casts to UTextureCube:: and calls ->UpdateResource  (should just do that here instead))
 }
 
 void UTextureCube::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -224,6 +220,13 @@ FString UTextureCube::GetDesc()
 
 uint32 UTextureCube::CalcTextureMemorySize( int32 MipCount ) const
 {
+#if WITH_EDITOR
+	if (IsDefaultTexture())
+	{
+		return GetDefaultTextureCube(this)->CalcTextureMemorySize(MipCount);
+	}
+#endif
+
 	uint32 Size = 0;
 	if (GetPlatformData())
 	{
@@ -438,11 +441,19 @@ public:
 		INC_DWORD_STAT_FNAME_BY( LODGroupStatName, TextureSize );
 
 		// Create the RHI texture.
-		ETextureCreateFlags TexCreateFlags = (Owner->SRGB ? TexCreate_SRGB : TexCreate_None)  | (Owner->bNotOfflineProcessed ? TexCreate_None : TexCreate_OfflineProcessed);
-		FString Name = Owner->GetPathName();
-		FRHIResourceCreateInfo CreateInfo(*Name);
-		CreateInfo.ExtData = Owner->GetPlatformData() ? Owner->GetPlatformData()->GetExtData() : 0;
-		TextureCubeRHI = RHICreateTextureCube( Owner->GetSizeX(), Owner->GetPixelFormat(), Owner->GetNumMips(), TexCreateFlags, CreateInfo );
+		const ETextureCreateFlags TexCreateFlags = (Owner->SRGB ? TexCreate_SRGB : TexCreate_None)  | (Owner->bNotOfflineProcessed ? TexCreate_None : TexCreate_OfflineProcessed);
+		const FString Name = Owner->GetPathName();
+
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::CreateCube(*Name)
+			.SetExtent(Owner->GetSizeX())
+			.SetFormat(Owner->GetPixelFormat())
+			.SetNumMips(Owner->GetNumMips())
+			.SetFlags(TexCreateFlags)
+			.SetExtData(Owner->GetPlatformData() ? Owner->GetPlatformData()->GetExtData() : 0);
+
+		TextureCubeRHI = RHICreateTexture(Desc);
+
 		TextureRHI = TextureCubeRHI;
 		TextureRHI->SetName(Owner->GetFName());
 		RHIBindDebugLabelName(TextureRHI, *Name);
@@ -476,8 +487,7 @@ public:
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
 
 		// Set the greyscale format flag appropriately.
-		EPixelFormat PixelFormat = Owner->GetPixelFormat();
-		bGreyScaleFormat = (PixelFormat == PF_G8) || (PixelFormat == PF_BC4);
+		bGreyScaleFormat = ( Owner->CompressionSettings == TC_Grayscale || Owner->CompressionSettings == TC_Alpha );
 	}
 
 	virtual void ReleaseRHI() override
@@ -601,11 +611,20 @@ private:
 FTextureResource* UTextureCube::CreateResource()
 {
 #if WITH_EDITOR
-	if (!IsAsyncCacheComplete())
+	if (PrivatePlatformData)
 	{
-		FTextureCompilingManager::Get().AddTextures({ this });
-
-		return new FTextureCubeResource(this, (const FTextureCubeResource*)GetDefaultTextureCube(this)->GetResource());
+		if (PrivatePlatformData->IsAsyncWorkComplete())
+		{
+			// Make sure AsyncData has been destroyed in case it still exists to avoid
+			// IsDefaultTexture thinking platform data is still being computed.
+			PrivatePlatformData->FinishCache();
+		}
+		else
+		{
+			FTextureCompilingManager::Get().AddTextures({ this });
+			UnlinkStreaming();
+			return new FTextureCubeResource(this, (const FTextureCubeResource*)GetDefaultTextureCube(this)->GetResource());
+		}
 	}
 #endif
 
@@ -661,3 +680,4 @@ uint32 UTextureCube::GetMaximumDimension() const
 #endif // #if WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE
+

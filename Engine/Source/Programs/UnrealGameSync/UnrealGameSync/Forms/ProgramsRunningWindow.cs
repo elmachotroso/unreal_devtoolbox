@@ -1,5 +1,6 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -15,44 +16,45 @@ namespace UnrealGameSync
 {
 	public partial class ProgramsRunningWindow : Form
 	{
-		object SyncObject = new object();
-		string[] Programs;
-		Func<string[]> EnumeratePrograms;
-		ManualResetEvent TerminateEvent;
-		Thread BackgroundThread;
+		object _syncObject = new object();
+		FileReference[] _programs;
+		Func<FileReference[]> _enumeratePrograms;
+		ManualResetEvent? _terminateEvent;
+		Thread? _backgroundThread;
 
-		public ProgramsRunningWindow(Func<string[]> EnumeratePrograms, string[] Programs)
+		public ProgramsRunningWindow(Func<FileReference[]> enumeratePrograms, FileReference[] programs)
 		{
 			InitializeComponent();
 
-			this.Programs = Programs.OrderBy(x => x).ToArray();
-			this.EnumeratePrograms = EnumeratePrograms;
-			this.ProgramListBox.Items.AddRange(Programs);
+			this._programs = programs.OrderBy(x => x).ToArray();
+			this._enumeratePrograms = enumeratePrograms;
+			this.ProgramListBox.Items.AddRange(programs);
 		}
 
 		private void ProgramsRunningWindow_Load(object sender, EventArgs e)
 		{
-			TerminateEvent = new ManualResetEvent(false);
+			_terminateEvent = new ManualResetEvent(false);
 
-			BackgroundThread = new Thread(() => ExecuteBackgroundWork());
-			BackgroundThread.Start();
+			_backgroundThread = new Thread(() => ExecuteBackgroundWork());
+			_backgroundThread.IsBackground = true;
+			_backgroundThread.Start();
 		}
 
 		private void ExecuteBackgroundWork()
 		{
 			for(;;)
 			{
-				if(TerminateEvent.WaitOne(TimeSpan.FromSeconds(2.0)))
+				if(_terminateEvent!.WaitOne(TimeSpan.FromSeconds(2.0)))
 				{
 					break;
 				}
 
-				string[] NewPrograms = EnumeratePrograms().OrderBy(x => x).ToArray();
-				lock(SyncObject)
+				FileReference[] newPrograms = _enumeratePrograms().OrderBy(x => x).ToArray();
+				lock(_syncObject)
 				{
-					if(!Enumerable.SequenceEqual(Programs, NewPrograms))
+					if(!Enumerable.SequenceEqual(_programs, newPrograms))
 					{
-						Programs = NewPrograms;
+						_programs = newPrograms;
 						BeginInvoke(new MethodInvoker(() => UpdatePrograms()));
 					}
 				}
@@ -62,9 +64,9 @@ namespace UnrealGameSync
 		private void UpdatePrograms()
 		{
 			ProgramListBox.Items.Clear();
-			ProgramListBox.Items.AddRange(Programs);
+			ProgramListBox.Items.AddRange(_programs);
 
-			if(Programs.Length == 0)
+			if(_programs.Length == 0)
 			{
 				DialogResult = DialogResult.OK;
 				Close();
@@ -73,15 +75,15 @@ namespace UnrealGameSync
 
 		private void ProgramsRunningWindow_FormClosed(object sender, FormClosedEventArgs e)
 		{
-			if(BackgroundThread != null)
+			if(_backgroundThread != null)
 			{
-				TerminateEvent.Set();
+				_terminateEvent!.Set();
 
-				BackgroundThread.Join();
-				BackgroundThread = null;
+				_backgroundThread.Join();
+				_backgroundThread = null;
 
-				TerminateEvent.Dispose();
-				TerminateEvent = null;
+				_terminateEvent.Dispose();
+				_terminateEvent = null;
 			}
 		}
 	}

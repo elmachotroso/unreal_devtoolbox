@@ -1,11 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CameraShakeTrackEditorBase.h"
-#include "CommonMovieSceneTools.h"
-#include "EditorStyleSet.h"
+#include "TrackEditors/CameraShakeTrackEditorBase.h"
+
+#include "Camera/CameraShakeBase.h"
+#include "Containers/Array.h"
+#include "HAL/PlatformCrt.h"
+#include "ISequencer.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Geometry.h"
+#include "Math/Color.h"
+#include "Math/Range.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
+#include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "MovieSceneTimeHelpers.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateLayoutTransform.h"
 #include "SequencerSectionPainter.h"
+#include "Styling/AppStyle.h"
+#include "TimeToPixel.h"
+#include "UObject/Class.h"
+
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "CameraShakeTrackEditorBase"
 
@@ -82,7 +102,7 @@ bool FCameraShakeSectionBase::IsReadOnly() const
 
 int32 FCameraShakeSectionBase::OnPaintSection(FSequencerSectionPainter& Painter) const
 {
-	static const FSlateBrush* GenericDivider = FEditorStyle::GetBrush("Sequencer.GenericDivider");
+	static const FSlateBrush* GenericDivider = FAppStyle::GetBrush("Sequencer.GenericDivider");
 
 	Painter.LayerId = Painter.PaintSectionBackground();
 
@@ -152,7 +172,7 @@ int32 FCameraShakeSectionBase::OnPaintSection(FSequencerSectionPainter& Painter)
 							FVector2D(OverflowSizeInPixels, Painter.SectionGeometry.Size.Y),
 							FSlateLayoutTransform(FVector2D(OffsetPixel, 0))
 						).ToPaintGeometry(),
-						FEditorStyle::GetBrush("WhiteBrush"),
+						FAppStyle::GetBrush("WhiteBrush"),
 						ESlateDrawEffect::None,
 						FLinearColor::Black.CopyWithNewOpacity(0.5f)
 				);
@@ -219,7 +239,7 @@ int32 FCameraShakeSectionBase::OnPaintSection(FSequencerSectionPainter& Painter)
 						FVector2D(SectionDurationInPixels, Painter.SectionGeometry.Size.Y),
 						FSlateLayoutTransform(FVector2D(SectionStartTimeInPixels, 0))
 					).ToPaintGeometry(),
-					FEditorStyle::GetBrush("WhiteBrush"),
+					FAppStyle::GetBrush("WhiteBrush"),
 					ESlateDrawEffect::None,
 					FLinearColor(1.f, 0.5f, 0.f, 0.5f)
 			);
@@ -235,7 +255,7 @@ int32 FCameraShakeSectionBase::OnPaintSection(FSequencerSectionPainter& Painter)
 					FVector2D(SectionDurationInPixels, Painter.SectionGeometry.Size.Y),
 					FSlateLayoutTransform(FVector2D(SectionStartTimeInPixels, 0))
 					).ToPaintGeometry(),
-				FEditorStyle::GetBrush("WhiteBrush"),
+				FAppStyle::GetBrush("WhiteBrush"),
 				ESlateDrawEffect::None,
 				FLinearColor::Red.CopyWithNewOpacity(0.5f)
 				);

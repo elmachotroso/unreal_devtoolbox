@@ -28,10 +28,6 @@ public class Core : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				"Runtime/SynthBenchmark/Public",
-				"Runtime/Core/Private",
-				"Runtime/Core/Private/Misc",
-				"Runtime/Core/Private/Internationalization",
-				"Runtime/Core/Private/Internationalization/Cultures",
 				"Runtime/Engine/Public",
 			}
 			);
@@ -65,7 +61,7 @@ public class Core : ModuleRules
 				);
 
 			// We do not want the static analyzer to run on thirdparty code
-			if (Target.WindowsPlatform.StaticAnalyzer == WindowsStaticAnalyzer.None) 
+			if (Target.StaticAnalyzer == StaticAnalyzer.None) 
 			{
 				PublicSystemIncludePaths.Add(Path.Combine(Target.UEThirdPartySourceDirectory, "mimalloc/include"));
 				PrivateDefinitions.Add("PLATFORM_BUILDS_MIMALLOC=1");
@@ -93,17 +89,6 @@ public class Core : ModuleRules
 				PublicDefinitions.Add("UE_MEMORY_TAGS_TRACE_ENABLED=1");
 			}
 		}
-		else if ((Target.Platform == UnrealTargetPlatform.HoloLens))
-		{
-			PublicIncludePaths.Add("Runtime/Core/Public/HoloLens");
-			AddEngineThirdPartyPrivateStaticDependencies(Target,
-				"zlib");
-
-			AddEngineThirdPartyPrivateStaticDependencies(Target,
-				"IntelTBB",
-				"XInput"
-				);
-		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
@@ -118,8 +103,8 @@ public class Core : ModuleRules
 
 			if (Target.bBuildEditor == true)
 			{
-				string SDKROOT = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcrun", "--sdk macosx --show-sdk-path");
-				PublicAdditionalLibraries.Add(SDKROOT + "/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport.tbd");
+				string XcodeRoot = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcode-select", "--print-path");
+				PublicAdditionalLibraries.Add(XcodeRoot + "/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport.tbd");
 			}
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
@@ -213,11 +198,6 @@ public class Core : ModuleRules
 			}
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.HoloLens)
-		{
-			PublicDefinitions.Add("WITH_VS_PERF_PROFILER=0");
-		}
-
 		// Superluminal instrumentation support, if one has it installed
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
@@ -234,9 +214,16 @@ public class Core : ModuleRules
 			if (Target.Configuration != UnrealTargetConfiguration.Shipping &&
 				File.Exists(Path.Combine(SuperluminalApiDir, "include/Superluminal/PerformanceAPI_capi.h")))
 			{
+				if (Target.bDebugBuildsActuallyUseDebugCRT == true && Target.Configuration == UnrealTargetConfiguration.Debug)
+				{
+					PublicAdditionalLibraries.Add(Path.Combine(SuperluminalLibDir, "PerformanceAPI_MDd.lib"));
+				}
+				else
+				{
+					PublicAdditionalLibraries.Add(Path.Combine(SuperluminalLibDir, "PerformanceAPI_MD.lib"));
+				}
+				PublicDefinitions.Add("WITH_SUPERLUMINAL_PROFILER=1");					  
 				PublicSystemIncludePaths.Add(Path.Combine(SuperluminalApiDir, "include/"));
-				PublicAdditionalLibraries.Add(Path.Combine(SuperluminalLibDir, "PerformanceAPI_MD.lib"));
-				PublicDefinitions.Add("WITH_SUPERLUMINAL_PROFILER=1");
 			}
 			else
 			{
@@ -279,7 +266,7 @@ public class Core : ModuleRules
 		}
 
 		if ((Target.Platform == UnrealTargetPlatform.Mac) || (Target.Platform == UnrealTargetPlatform.IOS) || (Target.Platform == UnrealTargetPlatform.TVOS) 
-			|| (Target.Platform == UnrealTargetPlatform.HoloLens) || (Target.Platform == UnrealTargetPlatform.Android))
+			|| (Target.Platform == UnrealTargetPlatform.Android))
 		{
 			PublicDefinitions.Add("IS_RUNNING_GAMETHREAD_ON_EXTERNAL_THREAD=1");
 		}
@@ -294,6 +281,16 @@ public class Core : ModuleRules
 			PrivateDefinitions.Add("IS_CLIENT_TARGET=0");
 		}
 
+		// Setup definitions to include / exclude Iris modifications to UObject Note: Only the definition is required as we do not depend on Iris in any way.
+		if (Target.bUseIris == true)
+		{
+			PublicDefinitions.Add("UE_WITH_IRIS=1");
+		}
+		else
+		{
+			PublicDefinitions.Add("UE_WITH_IRIS=0");
+		}
+		
 		if (Target.Platform == UnrealTargetPlatform.Win64
 			&& Target.Configuration != UnrealTargetConfiguration.Shipping)
 		{
@@ -313,7 +310,9 @@ public class Core : ModuleRules
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_PG=" + (Target.bPGOOptimize ? "1" : "0"));
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING=" + (Target.bPGOProfile ? "1" : "0"));
 
-		UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+		PrivateDefinitions.Add("UE_DEFINE_LEGACY_MATH_CONSTANT_MACRO_NAMES=0");
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 	}
 
 	protected virtual bool SupportsBinaryConfig(ReadOnlyTargetRules Target)

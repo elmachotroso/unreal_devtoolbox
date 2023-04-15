@@ -48,7 +48,7 @@ FAutoConsoleVariableRef GVarLumenReflectionHierarchicalScreenTraceRelativeDepthT
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-float GLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness = .1f;
+float GLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness = .01f;
 FAutoConsoleVariableRef GVarLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness(
 	TEXT("r.Lumen.Reflections.HierarchicalScreenTraces.HistoryDepthTestRelativeThickness"),
 	GLumenReflectionHierarchicalScreenTraceHistoryDepthTestRelativeThickness,
@@ -96,6 +96,7 @@ class FReflectionClearTracesCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -117,7 +118,7 @@ class FReflectionTraceScreenTexturesCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FReflectionTraceScreenTexturesCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenCardTracingParameters, TracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHZBScreenTraceParameters, HZBScreenTraceParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER(float, MaxHierarchicalScreenTraceIterations)
@@ -128,6 +129,7 @@ class FReflectionTraceScreenTexturesCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenIndirectTracingParameters, IndirectTracingParameters)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
 
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_SCREEN");
@@ -168,6 +170,7 @@ class FSetupCompactionIndirectArgsCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FSetupCompactionIndirectArgsCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWCompactedTraceTexelAllocator)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWReflectionCompactionIndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, ReflectionTracingTileIndirectArgs)
@@ -192,6 +195,8 @@ class FReflectionCompactTracesCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenCardTracingParameters, TracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
+		SHADER_PARAMETER(uint32, CullByDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionTracingEndDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionMaxTraceDistance)
 		SHADER_PARAMETER(float, RayTracingCullingRadius)
@@ -268,6 +273,7 @@ class FSetupReflectionCompactedTracesIndirectArgsCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWReflectionCompactRayTraceDispatchIndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CompactedTraceTexelAllocator)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -290,16 +296,37 @@ class FReflectionTraceMeshSDFsCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenIndirectTracingParameters, IndirectTracingParameters)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualVoxelParameters, HairStrandsVoxel)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCompactedReflectionTraceParameters, CompactedTraceParameters)
 	END_SHADER_PARAMETER_STRUCT()
 		
+	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FTraceMeshSDFs : SHADER_PERMUTATION_BOOL("SCENE_TRACE_MESH_SDFS");
 	class FTraceHeightfields : SHADER_PERMUTATION_BOOL("SCENE_TRACE_HEIGHTFIELDS");
-	using FPermutationDomain = TShaderPermutationDomain<FHairStrands, FTraceMeshSDFs, FTraceHeightfields>;
+	class FOffsetDataStructure : SHADER_PERMUTATION_INT("OFFSET_DATA_STRUCT", 3);
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FHairStrands, FTraceMeshSDFs, FTraceHeightfields, FOffsetDataStructure>;
+
+	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
+	{
+		// FOffsetDataStructure is only used for mesh SDFs
+		if (!PermutationVector.Get<FTraceMeshSDFs>())
+		{
+			PermutationVector.Set<FOffsetDataStructure>(0);
+		}
+
+		return PermutationVector;
+	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (RemapPermutation(PermutationVector) != PermutationVector)
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
@@ -324,14 +351,16 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenIndirectTracingParameters, IndirectTracingParameters)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualVoxelParameters, HairStrandsVoxel)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCompactedReflectionTraceParameters, CompactedTraceParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
 	END_SHADER_PARAMETER_STRUCT()
 
+	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("TRACE_GLOBAL_SDF");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("RADIANCE_CACHE");
-	using FPermutationDomain = TShaderPermutationDomain<FTraceGlobalSDF, FHairStrands, FRadianceCache>;
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FHairStrands, FRadianceCache>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -347,14 +376,23 @@ class FReflectionTraceVoxelsCS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FReflectionTraceVoxelsCS, "/Engine/Private/Lumen/LumenReflectionTracing.usf", "ReflectionTraceVoxelsCS", SF_Compute);
 
+enum class ECompactedReflectionTracingIndirectArgs
+{
+	NumTracesDiv64 = 0 * sizeof(FRHIDispatchIndirectParameters),
+	NumTracesDiv32 = 1 * sizeof(FRHIDispatchIndirectParameters),
+	MAX = 2,
+};
+
 FCompactedReflectionTraceParameters CompactTraces(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View, 
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenCardTracingInputs& TracingInputs,
+	bool bCullByDistanceFromCamera,
 	float CompactionTracingEndDistanceFromCamera,
-	float CompactionMaxTraceDistance)
+	float CompactionMaxTraceDistance,
+	ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute)
 {
 	FRDGBufferRef CompactedTraceTexelAllocator = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), 1), TEXT("Lumen.Reflections.CompactedTraceTexelAllocator"));
 	const int32 NumCompactedTraceTexelDataElements = ReflectionTracingParameters.ReflectionTracingBufferSize.X * ReflectionTracingParameters.ReflectionTracingBufferSize.Y;
@@ -371,12 +409,14 @@ FCompactedReflectionTraceParameters CompactTraces(
 		PassParameters->RWReflectionCompactionIndirectArgs = GraphBuilder.CreateUAV(ReflectionCompactionIndirectArgs, PF_R32_UINT);
 		PassParameters->ReflectionTracingTileIndirectArgs = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ReflectionTileParameters.TracingIndirectArgs, PF_R32_UINT));
 		PassParameters->CompactionThreadGroupSize = CompactionThreadGroupSize;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 		auto ComputeShader = View.ShaderMap->GetShader<FSetupCompactionIndirectArgsCS>(0);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("SetupCompactionIndirectArgs"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FIntVector(1, 1, 1));
@@ -384,16 +424,18 @@ FCompactedReflectionTraceParameters CompactTraces(
 
 	{
 		FReflectionCompactTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionCompactTracesCS::FParameters>();
-		GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+		GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 		PassParameters->ReflectionTileParameters = ReflectionTileParameters;
 		PassParameters->RWCompactedTraceTexelAllocator = GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT);
 		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(CompactedTraceTexelData, PF_R32G32_UINT);
 		PassParameters->ReflectionTracingTileIndirectArgs = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ReflectionTileParameters.TracingIndirectArgs, PF_R32_UINT));
+		PassParameters->CullByDistanceFromCamera = bCullByDistanceFromCamera ? 1 : 0;
 		PassParameters->CompactionTracingEndDistanceFromCamera = CompactionTracingEndDistanceFromCamera;
 		PassParameters->CompactionMaxTraceDistance = CompactionMaxTraceDistance;
 		PassParameters->RayTracingCullingRadius = GetRayTracingCullingRadius();
-		PassParameters->DitheredStartDistanceFactor = Lumen::GetFarFieldDitheredStartDistanceFactor();
+		PassParameters->DitheredStartDistanceFactor = LumenReflections::UseFarFieldForReflections(*View.Family) ? Lumen::GetFarFieldDitheredStartDistanceFactor() : 1.0f;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		PassParameters->IndirectArgs = ReflectionCompactionIndirectArgs;
 
 		FReflectionCompactTracesCS::FPermutationDomain PermutationVector;
@@ -405,6 +447,7 @@ FCompactedReflectionTraceParameters CompactTraces(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			bWaveOps ? RDG_EVENT_NAME("CompactTracesOrderedWaveOps %u", CompactionThreadGroupSize) : RDG_EVENT_NAME("CompactTraces"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ReflectionCompactionIndirectArgs,
@@ -413,7 +456,7 @@ FCompactedReflectionTraceParameters CompactTraces(
 
 	FCompactedReflectionTraceParameters CompactedTraceParameters;
 
-	CompactedTraceParameters.IndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.Reflections.CompactTracingIndirectArgs"));
+	CompactedTraceParameters.IndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>((int32)ECompactedReflectionTracingIndirectArgs::MAX), TEXT("Lumen.Reflections.CompactTracingIndirectArgs"));
 	CompactedTraceParameters.RayTraceDispatchIndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.Reflections.CompactRayTraceDispatchIndirectArgs"));
 
 	{
@@ -422,12 +465,14 @@ FCompactedReflectionTraceParameters CompactTraces(
 		PassParameters->RWReflectionCompactTracingIndirectArgs = GraphBuilder.CreateUAV(CompactedTraceParameters.IndirectArgs, PF_R32_UINT);
 		PassParameters->RWReflectionCompactRayTraceDispatchIndirectArgs = GraphBuilder.CreateUAV(CompactedTraceParameters.RayTraceDispatchIndirectArgs, PF_R32_UINT);
 		PassParameters->CompactedTraceTexelAllocator = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelAllocator, PF_R32_UINT));
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 		auto ComputeShader = View.ShaderMap->GetShader<FSetupReflectionCompactedTracesIndirectArgsCS>(0);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("SetupCompactedTracesIndirectArgs"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FIntVector(1, 1, 1));
@@ -443,7 +488,6 @@ void SetupIndirectTracingParametersForReflections(const FViewInfo& View, FLumenI
 {
 	//@todo - cleanup
 	OutParameters.StepFactor = 1.0f;
-	OutParameters.VoxelStepFactor = 1.0f;
 	extern float GDiffuseCardTraceEndDistanceFromCamera;
 	OutParameters.CardTraceEndDistanceFromCamera = GDiffuseCardTraceEndDistanceFromCamera;
 	OutParameters.MinSampleRadius = 0.0f;
@@ -478,20 +522,6 @@ FLumenHZBScreenTraceParameters SetupHZBScreenTraceParameters(
 		ViewportOffset = View.PrevViewInfo.CustomSSRInput.ViewportRect.Min;
 		ViewportExtent = View.PrevViewInfo.CustomSSRInput.ViewportRect.Size();
 		PrevColorBufferSize = InputColor->Desc.Extent;
-	}
-	else if (View.PrevViewInfo.TSRHistory.IsValid())
-	{
-		InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TSRHistory.LowFrequency);
-		ViewportOffset = View.PrevViewInfo.TSRHistory.OutputViewportRect.Min;
-		ViewportExtent = View.PrevViewInfo.TSRHistory.OutputViewportRect.Size();
-		PrevColorBufferSize = InputColor->Desc.Extent;
-	}
-	else if (View.PrevViewInfo.TemporalAAHistory.IsValid())
-	{
-		InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
-		ViewportOffset = View.PrevViewInfo.TemporalAAHistory.ViewportRect.Min;
-		ViewportExtent = View.PrevViewInfo.TemporalAAHistory.ViewportRect.Size();
-		PrevColorBufferSize = View.PrevViewInfo.TemporalAAHistory.ReferenceBufferSize;
 	}
 	else if (View.PrevViewInfo.ScreenSpaceRayTracingInput.IsValid())
 	{
@@ -561,6 +591,7 @@ void TraceReflections(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
 	const FSceneTextures& SceneTextures,
 	const FLumenCardTracingInputs& TracingInputs,
@@ -568,18 +599,21 @@ void TraceReflections(
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
 	const FLumenMeshSDFGridParameters& InMeshSDFGridParameters,
 	bool bUseRadianceCache,
-	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters)
+	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	{
 		FReflectionClearTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionClearTracesCS::FParameters>();
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 		PassParameters->ReflectionTileParameters = ReflectionTileParameters;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 		auto ComputeShader = View.ShaderMap->GetShader<FReflectionClearTracesCS>(0);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("ClearTraces"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ReflectionTileParameters.TracingIndirectArgs,
@@ -598,7 +632,7 @@ void TraceReflections(
 		FReflectionTraceScreenTexturesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceScreenTexturesCS::FParameters>();
 
 		PassParameters->HZBScreenTraceParameters = SetupHZBScreenTraceParameters(GraphBuilder, View, SceneTextures);
-		PassParameters->View = View.ViewUniformBuffer;
+		GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 		
 		PassParameters->SceneTextures = SceneTextureParameters;
 
@@ -621,6 +655,7 @@ void TraceReflections(
 		{
 			PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
 		}
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 		const bool bTerminateOnLowOccupancy = GLumenReflectionScreenTracesMinimumOccupancy > 0
 			&& GRHISupportsWaveOperations 
@@ -635,6 +670,7 @@ void TraceReflections(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("TraceScreen(%s)", bHasHairStrands ? TEXT("Scene, HairStrands") : TEXT("Scene")),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ReflectionTileParameters.TracingIndirectArgs,
@@ -643,7 +679,7 @@ void TraceReflections(
 	
 	bool bNeedTraceHairVoxel = HairStrands::HasViewHairStrandsVoxelData(View) && GLumenReflectionHairStrands_VoxelTrace > 0;
 
-	if (Lumen::UseHardwareRayTracedReflections())
+	if (Lumen::UseHardwareRayTracedReflections(*View.Family))
 	{
 		FCompactedReflectionTraceParameters CompactedTraceParameters = CompactTraces(
 			GraphBuilder,
@@ -651,7 +687,8 @@ void TraceReflections(
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
 			TracingInputs,
-			Lumen::MaxTracingEndDistanceFromCamera,
+			false,
+			0.0f,
 			IndirectTracingParameters.MaxTraceDistance);
 
 		RenderLumenHardwareRayTracingReflections(
@@ -677,14 +714,17 @@ void TraceReflections(
 			{
 				CullForCardTracing(
 					GraphBuilder,
-					Scene, View,
+					Scene, 
+					View,
+					FrameTemporaries,
 					TracingInputs,
 					IndirectTracingParameters,
-					/* out */ MeshSDFGridParameters);
+					/* out */ MeshSDFGridParameters,
+					ComputePassFlags);
 			}
 
 			const bool bTraceMeshSDFs = MeshSDFGridParameters.TracingParameters.DistanceFieldObjectBuffers.NumSceneObjects > 0;
-			const bool bTraceHeightfields = Lumen::UseHeightfieldTracing(*View.Family, *Scene->LumenSceneData);
+			const bool bTraceHeightfields = Lumen::UseHeightfieldTracing(*View.Family, *Scene->GetLumenSceneData(View));
 
 			if (bTraceMeshSDFs || bTraceHeightfields)
 			{
@@ -694,12 +734,14 @@ void TraceReflections(
 					ReflectionTracingParameters,
 					ReflectionTileParameters,
 					TracingInputs,
+					true,
 					IndirectTracingParameters.CardTraceEndDistanceFromCamera,
-					IndirectTracingParameters.MaxMeshSDFTraceDistance);
+					IndirectTracingParameters.MaxMeshSDFTraceDistance,
+					ComputePassFlags);
 
 				{
 					FReflectionTraceMeshSDFsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceMeshSDFsCS::FParameters>();
-					GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+					GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 					PassParameters->MeshSDFGridParameters = MeshSDFGridParameters;
 					PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 					PassParameters->IndirectTracingParameters = IndirectTracingParameters;
@@ -709,20 +751,26 @@ void TraceReflections(
 					{
 						PassParameters->HairStrandsVoxel = HairStrands::BindHairStrandsVoxelUniformParameters(View);
 					}
+					PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 
 					FReflectionTraceMeshSDFsCS::FPermutationDomain PermutationVector;
+					PermutationVector.Set< FReflectionTraceMeshSDFsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
 					PermutationVector.Set< FReflectionTraceMeshSDFsCS::FHairStrands >(bNeedTraceHairVoxel);
 					PermutationVector.Set< FReflectionTraceMeshSDFsCS::FTraceMeshSDFs >(bTraceMeshSDFs);
 					PermutationVector.Set< FReflectionTraceMeshSDFsCS::FTraceHeightfields >(bTraceHeightfields);
+					extern int32 GDistanceFieldOffsetDataStructure;
+					PermutationVector.Set< FReflectionTraceMeshSDFsCS::FOffsetDataStructure >(GDistanceFieldOffsetDataStructure);
+					PermutationVector = FReflectionTraceMeshSDFsCS::RemapPermutation(PermutationVector);
 					auto ComputeShader = View.ShaderMap->GetShader<FReflectionTraceMeshSDFsCS>(PermutationVector);
 
 					FComputeShaderUtils::AddPass(
 						GraphBuilder,
 						RDG_EVENT_NAME("TraceMeshSDFs(%s)", bNeedTraceHairVoxel ? TEXT("Scene, HairStrands") : TEXT("Scene")),
+						ComputePassFlags,
 						ComputeShader,
 						PassParameters,
 						CompactedTraceParameters.IndirectArgs,
-						0);
+						(int32)(Lumen::UseThreadGroupSize32() ? ECompactedReflectionTracingIndirectArgs::NumTracesDiv32 : ECompactedReflectionTracingIndirectArgs::NumTracesDiv64));
 					bNeedTraceHairVoxel = false;
 				}
 			}
@@ -734,23 +782,27 @@ void TraceReflections(
 			ReflectionTracingParameters,
 			ReflectionTileParameters,
 			TracingInputs,
-			Lumen::MaxTracingEndDistanceFromCamera,
-			IndirectTracingParameters.MaxTraceDistance);
+			false,
+			0.0f,
+			IndirectTracingParameters.MaxTraceDistance,
+			ComputePassFlags);
 
 		{
 			FReflectionTraceVoxelsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FReflectionTraceVoxelsCS::FParameters>();
-			GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+			GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 			PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 			PassParameters->IndirectTracingParameters = IndirectTracingParameters;
 			PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
 			PassParameters->CompactedTraceParameters = CompactedTraceParameters;
 			PassParameters->RadianceCacheParameters = RadianceCacheParameters;
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			if (bNeedTraceHairVoxel)
 			{
 				PassParameters->HairStrandsVoxel = HairStrands::BindHairStrandsVoxelUniformParameters(View);
 			}
 
 			FReflectionTraceVoxelsCS::FPermutationDomain PermutationVector;
+			PermutationVector.Set< FReflectionTraceVoxelsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FTraceGlobalSDF >(Lumen::UseGlobalSDFTracing(*View.Family));
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FHairStrands >(bNeedTraceHairVoxel);
 			PermutationVector.Set< FReflectionTraceVoxelsCS::FRadianceCache >(bUseRadianceCache);
@@ -759,10 +811,11 @@ void TraceReflections(
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("TraceVoxels(%s)", bNeedTraceHairVoxel ? TEXT("Scene, HairStrands") : TEXT("Scene")),
+				ComputePassFlags,
 				ComputeShader,
 				PassParameters,
 				CompactedTraceParameters.IndirectArgs,
-				0);
+				(int32)(Lumen::UseThreadGroupSize32() ? ECompactedReflectionTracingIndirectArgs::NumTracesDiv32 : ECompactedReflectionTracingIndirectArgs::NumTracesDiv64));
 			bNeedTraceHairVoxel = false;
 		}
 	}

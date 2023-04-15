@@ -3,15 +3,15 @@
 #include "LiveLinkClientPanelToolbar.h"
 
 #include "Algo/StableSort.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "ClassViewerFilter.h"
 #include "ClassViewerModule.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "FileHelpers.h"
 #include "IContentBrowserSingleton.h"
 #include "ILiveLinkSource.h"
@@ -93,7 +93,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 			[
 				SNew(SBox)
 				[
@@ -144,7 +144,7 @@ public:
 					.FillHeight(1.0)
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 						.Content()
 						[
 							SAssignNew(RoleClassPicker, SVerticalBox)
@@ -159,14 +159,14 @@ public:
 					.Padding(8)
 					[
 						SNew(SUniformGridPanel)
-						.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-						.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-						.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+						.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+						.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+						.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 						+ SUniformGridPanel::Slot(0, 0)
 						[
 							SNew(SButton)
 							.HAlign(HAlign_Center)
-							.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+							.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 							.OnClicked(this, &SVirtualSubjectCreateDialog::OkClicked)
 							.Text(LOCTEXT("AddVirtualSubjectAdd", "Add"))
 							.IsEnabled(this, &SVirtualSubjectCreateDialog::IsVirtualSubjectClassSelected)
@@ -175,7 +175,7 @@ public:
 						[
 							SNew(SButton)
 							.HAlign(HAlign_Center)
-							.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+							.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 							.OnClicked(this, &SVirtualSubjectCreateDialog::CancelClicked)
 							.Text(LOCTEXT("AddVirtualSubjectCancel", "Cancel"))
 						]
@@ -437,7 +437,7 @@ void SLiveLinkClientPanelToolbar::Construct(const FArguments& Args, FLiveLinkCli
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(2.0f)
 		[
 			SNew(SHorizontalBox)
@@ -489,12 +489,12 @@ void SLiveLinkClientPanelToolbar::Construct(const FArguments& Args, FLiveLinkCli
 				//.ContentPadding(FMargin(8.f, 0.f, 0.f, 0.f))
 				.ToolTipText(LOCTEXT("RevertChanges_Text", "Revert all changes made to this take back its original state (either its original preset, or an empty preset)."))
 				.ForegroundColor(FSlateColor::UseForeground())
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &SLiveLinkClientPanelToolbar::OnRevertChanges)
 				.IsEnabled(this, &SLiveLinkClientPanelToolbar::HasLoadedLiveLinkPreset)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 					.Text(FEditorFontGlyphs::Undo)
 				]
 			]
@@ -516,13 +516,13 @@ void SLiveLinkClientPanelToolbar::Construct(const FArguments& Args, FLiveLinkCli
 					SNew(SCheckBox)
 					.Padding(4.f)
 					.ToolTipText(LOCTEXT("ShowUserSettings_Tip", "Show/Hide the general user settings for LiveLink"))
-					.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+					.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 					.ForegroundColor(FSlateColor::UseForeground())
 					.IsChecked_Lambda([]() { return ECheckBoxState::Unchecked; })
 					.OnCheckStateChanged_Lambda([](ECheckBoxState CheckState){ FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Plugins", "LiveLink"); })
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 						.Text(FEditorFontGlyphs::Cogs)
 					]
 				]
@@ -732,7 +732,7 @@ TSharedRef<SWidget> SLiveLinkClientPanelToolbar::OnPresetGeneratePresetsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsPreset_Text", "Save As Preset"),
 		LOCTEXT("SaveAsPreset_Tip", "Save the current setup as a new preset that can be imported at a later date"),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &SLiveLinkClientPanelToolbar::OnSaveAsPreset)
 		)
@@ -753,7 +753,7 @@ TSharedRef<SWidget> SLiveLinkClientPanelToolbar::OnPresetGeneratePresetsMenu()
 		AssetPickerConfig.bSortByPathInColumnView = false;
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoPresets_Warning", "No Presets Found");
-		AssetPickerConfig.Filter.ClassNames.Add(ULiveLinkPreset::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(ULiveLinkPreset::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SLiveLinkClientPanelToolbar::OnImportPreset);
 	}
 
@@ -779,7 +779,7 @@ static bool OpenSaveDialog(const FString& InDefaultPath, const FString& InNewNam
 	{
 		SaveAssetDialogConfig.DefaultPath = InDefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = InNewNameSuggestion;
-		SaveAssetDialogConfig.AssetClassNames.Add(ULiveLinkPreset::StaticClass()->GetFName());
+		SaveAssetDialogConfig.AssetClassNames.Add(ULiveLinkPreset::StaticClass()->GetClassPathName());
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveLiveLinkPresetDialogTitle", "Save LiveLink Preset");
 	}
@@ -798,7 +798,7 @@ static bool OpenSaveDialog(const FString& InDefaultPath, const FString& InNewNam
 
 bool GetSavePresetPackageName(FString& OutName)
 {
-	ULiveLinkSettings* ConfigSettings = GetMutableDefault<ULiveLinkSettings>();
+	ULiveLinkUserSettings* ConfigSettings = GetMutableDefault<ULiveLinkUserSettings>();
 
 	FDateTime Today = FDateTime::Now();
 

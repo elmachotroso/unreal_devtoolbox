@@ -3,6 +3,8 @@
 #include "Units/Control/RigUnit_Control.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_Control)
+
 FRigUnit_Control_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -70,3 +72,9 @@ FEulerTransform FRigUnit_Control::StaticGetFilteredTransform(const FEulerTransfo
 	InFilter.FilterTransform(FilteredTransform);
 	return FilteredTransform;
 }
+
+FRigVMStructUpgradeInfo FRigUnit_Control::GetUpgradeInfo() const
+{
+	return FRigUnit::GetUpgradeInfo();
+}
+

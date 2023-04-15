@@ -50,7 +50,7 @@
 #include "Kismet2/KismetDebugUtilities.h"
 #include "FbxLibs.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EngineAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
@@ -562,7 +562,15 @@ FString FUnrealEdMisc::FindMapFileFromPartialName(const FString& PartialMapName)
 		
 			if (ShortMapName == PartialMapName)
 			{
-				if (FPaths::FileExists(RelativeFileName))
+				// Verify both that the file exists and that it's actually
+				// mounted. This ensures that we don't use a stale cache
+				// entry to an unmounted file in case a previously opened
+				// map was copied to a different location on disk and is
+				// now being mounted from there, but the original file still
+				// exists.
+				FString PackageName;
+				if (FPaths::FileExists(RelativeFileName) &&
+					FPackageName::TryConvertFilenameToLongPackageName(RelativeFileName, PackageName))
 				{
 					FoundMapFile = RelativeFileName;
 					break;
@@ -824,26 +832,26 @@ void FUnrealEdMisc::TickAssetAnalytics()
 			TArray< FAnalyticsEventAttribute > AssetAttributes;
 			int32 NumMapFiles = 0;
 			TSet< FName > PackageNames;
-			TMap< FName, int32 > ClassInstanceCounts;
+			TMap< FTopLevelAssetPath, int32 > ClassInstanceCounts;
 
 			for( auto AssetIter = AssetData.CreateConstIterator(); AssetIter; ++AssetIter )
 			{
 				PackageNames.Add( AssetIter->PackageName );
-				if( AssetIter->AssetClass == UWorld::StaticClass()->GetFName()  )
+				if( AssetIter->AssetClassPath == UWorld::StaticClass()->GetClassPathName()  )
 				{
 					NumMapFiles++;
 				}
 
-				if( AssetIter->AssetClass != NAME_None )
+				if (!AssetIter->AssetClassPath.IsNull())
 				{
-					int32* ExistingClassCount = ClassInstanceCounts.Find( AssetIter->AssetClass );
+					int32* ExistingClassCount = ClassInstanceCounts.Find( AssetIter->AssetClassPath);
 					if( ExistingClassCount )
 					{
 						++(*ExistingClassCount);
 					}
 					else
 					{
-						ClassInstanceCounts.Add( AssetIter->AssetClass, 1 );
+						ClassInstanceCounts.Add( AssetIter->AssetClassPath, 1 );
 					}
 				}
 			}
@@ -1623,26 +1631,20 @@ void FUnrealEdMisc::OnGotoAsset(const FString& InAssetPath) const
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryName);
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( *InAssetPath );
+	FAssetData AssetData = AssetRegistry.GetAssetByObjectPath( FSoftObjectPath(InAssetPath) );
 	if ( AssetData.IsValid() )
 	{
 		TArray<FAssetData> AssetDataToSync;
 
 		// if its a package, sync the browser to the assets inside the package
-		if(AssetData.GetClass() == UPackage::StaticClass())
+		if(AssetData.GetClass() == UPackage::StaticClass() && !AssetData.HasAnyPackageFlags(PKG_ContainsMapData | PKG_ContainsNoAsset))
 		{
-			TArray<UPackage*> Packages;
-			Packages.Add(CastChecked<UPackage>(AssetData.GetAsset()));
-			TArray<UObject*> ObjectsInPackages;
-			UPackageTools::GetObjectsInPackages(&Packages, ObjectsInPackages);
-
-			for(auto It(ObjectsInPackages.CreateConstIterator()); It; ++It)
+			TArray<FAssetData> AssetsInPackage;
+			if (AssetRegistry.GetAssetsByPackageName(AssetData.PackageName, AssetsInPackage))
 			{
-				UObject* ObjectInPackage = *It;
-				if(ObjectInPackage->IsAsset())
+				for (const FAssetData& SubAssetData : AssetsInPackage)
 				{
-					FAssetData SubAssetData(ObjectInPackage);
-					if(SubAssetData.IsValid())
+					if (SubAssetData.IsValid() && SubAssetData.IsUAsset())
 					{
 						AssetDataToSync.Add(SubAssetData);
 					}
@@ -1901,11 +1903,12 @@ bool FUnrealEdMisc::GetURL( const TCHAR* InKey, FString& OutURL, const bool bChe
 	return bFound;
 }
 
-void FUnrealEdMisc::ReplaceDocumentationURLWildcards(FString& Url, const FCultureRef& Culture)
+void FUnrealEdMisc::ReplaceDocumentationURLWildcards(FString& Url, const FCultureRef& Culture, const FString& PageId)
 {
 	static FString Version = FString::FromInt(FEngineVersion::Current().GetMajor()) + TEXT(".") + FString::FromInt(FEngineVersion::Current().GetMinor());
 	Url.ReplaceInline(TEXT("{VERSION}"), *Version);
 	Url.ReplaceInline(TEXT("{I18N}"), *(Culture->GetName()));
+	Url.ReplaceInline(TEXT("{PAGEID}"), *PageId);
 }
 
 FString FUnrealEdMisc::GetExecutableForCommandlets() const

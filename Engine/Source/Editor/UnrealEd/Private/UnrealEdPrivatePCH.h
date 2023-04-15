@@ -209,7 +209,6 @@
 #include "Misc/Paths.h"
 #include "Misc/CoreStats.h"
 #include "Templates/ScopedCallback.h"
-#include "Misc/ITransaction.h"
 #include "Serialization/CustomVersion.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
@@ -397,7 +396,6 @@
 #include "Framework/Text/ShapedTextCacheFwd.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/MenuStack.h"
-#include "Runtime/Slate/Private/Framework/Application/Menu.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Framework/Docking/TabManager.h"
@@ -449,10 +447,10 @@
 #include "IMessageContext.h"
 
 // From AssetRegistry:
-#include "AssetData.h"
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
-#include "ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
 
 // From Internationalization:
 #include "LocTextHelper.h"
@@ -469,7 +467,6 @@
 #include "Engine/MaterialMerging.h"
 #include "Engine/Level.h"
 #include "GameFramework/Actor.h"
-#include "ComponentInstanceDataCache.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "EngineDefines.h"
@@ -606,9 +603,6 @@
 #include "Components/LightComponent.h"
 #include "Components/LightComponentBase.h"
 
-// From EditorStyle:
-#include "EditorStyleSet.h"
-
 // From BlueprintGraph:
 #include "BlueprintNodeSignature.h"
 #include "K2Node.h"
@@ -617,7 +611,6 @@
 
 // From UnrealEd:
 #include "Editor/UnrealEdTypes.h"
-#include "Editor/Transactor.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Viewports.h"
 #include "Editor/EditorEngine.h"

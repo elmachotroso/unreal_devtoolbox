@@ -31,18 +31,22 @@ void UCADKernelParametricSurfaceData::Serialize(FArchive& Ar)
 
 bool UCADKernelParametricSurfaceData::Tessellate(UStaticMesh& StaticMesh, const FDatasmithRetessellationOptions& RetessellateOptions)
 {
+	using namespace UE::CADKernel;
+
 	bool bSuccessfulTessellation = false;
 
 #if WITH_EDITOR
-	CADLibrary::FImportParameters ImportParameters((double) SceneParameters.MetricUnit, (double) SceneParameters.ScaleFactor);
+	CADLibrary::FImportParameters ImportParameters;
 	ImportParameters.SetModelCoordinateSystem((FDatasmithUtils::EModelCoordSystem) SceneParameters.ModelCoordSys);
 	ImportParameters.SetTesselationParameters(RetessellateOptions.ChordTolerance, RetessellateOptions.MaxEdgeLength, RetessellateOptions.NormalTolerance, (CADLibrary::EStitchingTechnique) RetessellateOptions.StitchingTechnique);
 
 	CADLibrary::FMeshParameters CadMeshParameters;
 	CadMeshParameters.bNeedSwapOrientation = MeshParameters.bNeedSwapOrientation;
 	CadMeshParameters.bIsSymmetric = MeshParameters.bIsSymmetric;
-	CadMeshParameters.SymmetricNormal = MeshParameters.SymmetricNormal;
-	CadMeshParameters.SymmetricOrigin = MeshParameters.SymmetricOrigin;
+	CadMeshParameters.SymmetricNormal = (FVector3f) MeshParameters.SymmetricNormal;
+	CadMeshParameters.SymmetricOrigin = (FVector3f) MeshParameters.SymmetricOrigin;
+
+	CADLibrary::FMeshConversionContext MeshConversionContext(ImportParameters, CadMeshParameters);
 
 	// Previous MeshDescription is get to be able to create a new one with the same order of PolygonGroup (the matching of color and partition is currently based on their order)
 	if (FMeshDescription* DestinationMeshDescription = StaticMesh.GetMeshDescription(0))
@@ -53,20 +57,21 @@ bool UCADKernelParametricSurfaceData::Tessellate(UStaticMesh& StaticMesh, const 
 
 		if (RetessellateOptions.RetessellationRule == EDatasmithCADRetessellationRule::SkipDeletedSurfaces)
 		{
-			CADLibrary::CopyPatchGroups(*DestinationMeshDescription, MeshDescription);
+			CADLibrary::GetExistingPatches(*DestinationMeshDescription, MeshConversionContext.PatchesToMesh);
 		}
 
-		TSharedRef<CADKernel::FSession> CADKernelSession = MakeShared<CADKernel::FSession>(0.00001 / ImportParameters.GetMetricUnit());
+		const double GeometricTolerance = 0.01; // mm
+		TSharedRef<FSession> CADKernelSession = MakeShared<FSession>(GeometricTolerance);
 		CADKernelSession->AddDatabase(RawData);
 
-		CADKernel::FModel& CADKernelModel = CADKernelSession->GetModel();
-		TArray<TSharedPtr<CADKernel::FBody>> CADKernelBodies = CADKernelModel.GetBodies();
+		FModel& CADKernelModel = CADKernelSession->GetModel();
+		TArray<TSharedPtr<FBody>> CADKernelBodies = CADKernelModel.GetBodies();
 		if (CADKernelBodies.Num() != 1)
 		{
 			return bSuccessfulTessellation;
 		}
 
-		if(CADLibrary::FCADKernelTools::Tessellate(CADKernelModel, ImportParameters, CadMeshParameters, MeshDescription))
+		if(CADLibrary::FCADKernelTools::Tessellate(CADKernelModel, MeshConversionContext, MeshDescription))
 		{
 			// To update the SectionInfoMap 
 			TPolygonGroupAttributesConstRef<FName> MaterialSlotNames = MeshDescriptionAttributes.GetPolygonGroupMaterialSlotNames();

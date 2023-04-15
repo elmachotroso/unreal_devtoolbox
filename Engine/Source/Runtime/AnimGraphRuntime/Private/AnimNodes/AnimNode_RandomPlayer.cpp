@@ -8,6 +8,8 @@
 #include "Animation/AnimTrace.h"
 #include "Animation/AnimSyncScope.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_RandomPlayer)
+
 FAnimNode_RandomPlayer::FAnimNode_RandomPlayer()
     : CurrentPlayDataIndex(0)
     , bShuffleMode(false)
@@ -49,7 +51,7 @@ void FAnimNode_RandomPlayer::Initialize_AnyThread(const FAnimationInitializeCont
 	}
 
 	NormalizedPlayChances.Empty(NormalizedPlayChances.Num());
-	NormalizedPlayChances.AddUninitialized(NumValidEntries + 1);
+	NormalizedPlayChances.AddUninitialized(NumValidEntries);
 
 	// Sanitize the data and sum up the range of the random chances so that
 	// we can normalize the individual chances below.
@@ -90,7 +92,8 @@ void FAnimNode_RandomPlayer::Initialize_AnyThread(const FAnimationInitializeCont
 			CurrentChance += ValidEntries[Idx]->ChanceToPlay / SumChances;
 			NormalizedPlayChances[Idx] = CurrentChance;
 		}
-		NormalizedPlayChances[NumValidEntries] = 1.0f;
+		// Remove rounding errors (possibly slightly padding out the chance of the last item)
+		NormalizedPlayChances[NumValidEntries - 1] = 1.0f;
 	}
 
 	// Initialize random stream and pick first entry
@@ -113,6 +116,8 @@ void FAnimNode_RandomPlayer::Initialize_AnyThread(const FAnimationInitializeCont
 
 void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	BlendWeight = Context.GetFinalBlendWeight();
+
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	GetEvaluateGraphExposedInputs().Execute(Context);
 
@@ -233,6 +238,7 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 
 	FAnimTickRecord TickRecord(CurrentData->Entry->Sequence, true, CurrentData->PlayRate, CurrentData->BlendWeight, CurrentData->CurrentPlayTime, CurrentData->MarkerTickRecord);
 	TickRecord.DeltaTimeRecord = &CurrentData->DeltaTimeRecord;
+	TickRecord.BlendSpace.bIsEvaluator = false;
 	TickRecord.GatherContextData(Context);
 
 	UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
@@ -244,6 +250,7 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 	{
 		FAnimTickRecord NextTickRecord(NextData->Entry->Sequence, true, NextData->PlayRate, NextData->BlendWeight, NextData->CurrentPlayTime, NextData->MarkerTickRecord);
 		NextTickRecord.DeltaTimeRecord = &NextData->DeltaTimeRecord;
+		NextTickRecord.BlendSpace.bIsEvaluator = false;
 		NextTickRecord.GatherContextData(Context);
 
 		SyncScope.AddTickRecord(NextTickRecord, UE::Anim::FAnimSyncParams(), UE::Anim::FAnimSyncDebugInfo(Context));
@@ -318,6 +325,63 @@ void FAnimNode_RandomPlayer::GatherDebugData(FNodeDebugData& DebugData)
 	DebugData.AddDebugItem(DebugLine, true);
 }
 
+UAnimationAsset* FAnimNode_RandomPlayer::GetAnimAsset() const
+{
+	UAnimationAsset* AnimationAsset = nullptr;
+
+	if (ValidEntries.Num() > 0)
+	{
+		const FRandomAnimPlayData& CurrentPlayData = GetPlayData(ERandomDataIndexType::Current);
+		AnimationAsset = (CurrentPlayData.Entry != nullptr) ? CurrentPlayData.Entry->Sequence : nullptr;
+	}
+
+	return AnimationAsset;
+}
+
+float FAnimNode_RandomPlayer::GetAccumulatedTime() const
+{
+	float AccumulatedTime = 0.f;
+
+	if (ValidEntries.Num() > 0)
+	{
+		const FRandomAnimPlayData& CurrentPlayData = GetPlayData(ERandomDataIndexType::Current);
+
+		return CurrentPlayData.CurrentPlayTime;
+	}
+
+	return AccumulatedTime;
+}
+
+bool FAnimNode_RandomPlayer::GetIgnoreForRelevancyTest() const
+{
+	return GET_ANIM_NODE_DATA(bool, bIgnoreForRelevancyTest);
+}
+
+bool FAnimNode_RandomPlayer::SetIgnoreForRelevancyTest(bool bInIgnoreForRelevancyTest)
+{
+#if WITH_EDITORONLY_DATA
+	bIgnoreForRelevancyTest = bInIgnoreForRelevancyTest;
+#endif
+
+	if (bool* bIgnoreForRelevancyTestPtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(bool, bIgnoreForRelevancyTest))
+	{
+		*bIgnoreForRelevancyTestPtr = bInIgnoreForRelevancyTest;
+		return true;
+	}
+
+	return false;
+}
+
+float FAnimNode_RandomPlayer::GetCachedBlendWeight() const
+{
+	return BlendWeight;
+}
+
+void FAnimNode_RandomPlayer::ClearCachedBlendWeight()
+{
+	BlendWeight = 0.f;
+}
+
 int32 FAnimNode_RandomPlayer::GetNextValidEntryIndex()
 {
 	check(ValidEntries.Num() > 0);
@@ -360,12 +424,17 @@ FRandomAnimPlayData& FAnimNode_RandomPlayer::GetPlayData(ERandomDataIndexType Ty
 	}
 }
 
-void FAnimNode_RandomPlayer::InitPlayData(FRandomAnimPlayData& Data, int32 ValidEntryIndex, float BlendWeight)
+const FRandomAnimPlayData& FAnimNode_RandomPlayer::GetPlayData(ERandomDataIndexType Type) const
 {
-	FRandomPlayerSequenceEntry* Entry = ValidEntries[ValidEntryIndex];
+	return const_cast<FAnimNode_RandomPlayer*>(this)->GetPlayData(Type);
+}
+
+void FAnimNode_RandomPlayer::InitPlayData(FRandomAnimPlayData& Data, int32 InValidEntryIndex, float InBlendWeight)
+{
+	FRandomPlayerSequenceEntry* Entry = ValidEntries[InValidEntryIndex];
 
 	Data.Entry = Entry;
-	Data.BlendWeight = BlendWeight;
+	Data.BlendWeight = InBlendWeight;
 	Data.PlayRate = RandomStream.FRandRange(Entry->MinPlayRate, Entry->MaxPlayRate);
 	Data.RemainingLoops = FMath::Clamp(RandomStream.RandRange(Entry->MinLoopCount, Entry->MaxLoopCount), 0, MAX_int32);
 
@@ -421,3 +490,4 @@ void FAnimNode_RandomPlayer::BuildShuffleList(int32 LastEntry)
 		ShuffleList.Swap(RandomStream.RandRange(0, ShuffleList.Num() - 2), ShuffleList.Num() - 1);
 	}
 }
+

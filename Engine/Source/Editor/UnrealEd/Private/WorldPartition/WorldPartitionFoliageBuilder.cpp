@@ -2,6 +2,7 @@
 
 #include "WorldPartition/WorldPartitionFoliageBuilder.h"
 
+#include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "PackageSourceControlHelper.h"
@@ -44,6 +45,15 @@ bool UWorldPartitionFoliageBuilder::RunInternal(UWorld* World, const FCellInfo& 
 		return false;
 	}
 
+	if (WorldPartition->GetActorDescContainerCount() > 1)
+	{ 
+		// @todo_ow: This commandlet is currently unsupported for worldpartitions having multiple containers.
+		// ForEachActorWithLoading below loops on all actors of all containers of a WorldPartition and saves new actors.
+		// The new actors are saved within the main container WorldPartition container. Newly saved actors coming from different actor desc container should be saved in the right container. 
+		UE_LOG(LogWorldPartitionFoliageBuilder, Error, TEXT("FoliageBuilder Commandlet is unsupported on WorldPartition using more than 1 ExternalActor Folder."));
+		return false;
+	}
+
 	UE_LOG(LogWorldPartitionFoliageBuilder, Display, TEXT("Changing Foliage Grid Size from %d to %d"), World->GetWorldSettings()->InstancedFoliageGridSize, NewGridSize);
 			
 	// Update Setting
@@ -54,14 +64,14 @@ bool UWorldPartitionFoliageBuilder::RunInternal(UWorld* World, const FCellInfo& 
 		
 	FPackageSourceControlHelper SCCHelper;
 	TArray<FGuid> ExistingActors;
-	
+			
 	// Snapshot existing ActorDescs
 	FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, AInstancedFoliageActor::StaticClass(), [&ExistingActors](const FWorldPartitionActorDesc* ActorDesc)
 	{
 		ExistingActors.Add(ActorDesc->GetGuid());
 		return true;
 	});
-		
+
 	TMap<UActorPartitionSubsystem::FCellCoord, FGuid> NewActors;
 	UActorPartitionSubsystem* ActorPartitionSubsystem = World->GetSubsystem<UActorPartitionSubsystem>();
 	int32 NumInstances = 0;
@@ -75,7 +85,11 @@ bool UWorldPartitionFoliageBuilder::RunInternal(UWorld* World, const FCellInfo& 
 	// - Save new/reload IFAs that were modified
 	// - Unload the Existing IFA and all the new IFAs
 	// - Repeat for next Existing IFA
-	FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, ExistingActors, [this, World, WorldPartition, ActorPartitionSubsystem, &SCCHelper, &NewActors, &NumInstances, &NumInstancesProcessed](const FWorldPartitionActorDesc* ActorDesc)
+	FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorWithLoadingParams;
+	ForEachActorWithLoadingParams.ActorClasses = { AInstancedFoliageActor::StaticClass() };
+	ForEachActorWithLoadingParams.ActorGuids.Append(ExistingActors);
+
+	FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, World, WorldPartition, ActorPartitionSubsystem, &SCCHelper, &NewActors, &NumInstances, &NumInstancesProcessed](const FWorldPartitionActorDesc* ActorDesc)
 	{
 		TMap<UFoliageType*, TArray<FFoliageInstance>> FoliageToAdd;
 		FBox InstanceBounds(ForceInit);
@@ -201,7 +215,7 @@ bool UWorldPartitionFoliageBuilder::RunInternal(UWorld* World, const FCellInfo& 
         }
 					
 		return true;
-	}, /*bGCPerActor=*/ false);
+	}, ForEachActorWithLoadingParams);
 
 	check(NumInstances == NumInstancesProcessed);
 

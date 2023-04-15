@@ -8463,7 +8463,8 @@ namespace FramePro
 	//------------------------------------------------------------------------
 	void Thread::WaitForThreadToTerminate(int timeout)
 	{
-		m_ThreadTerminatedEvent.Wait(timeout);
+		if (m_Created)
+			m_ThreadTerminatedEvent.Wait(timeout);
 	}
 }
 
@@ -8502,7 +8503,7 @@ namespace FramePro
 //
 
 //------------------------------------------------------------------------
-#if FRAMEPRO_LINUX_BASED_PLATFORM && !FRAMEPRO_PLATFORM_PS4 && !(FRAMEPRO_PLATFORM_UE4 && PLATFORM_PS4)
+#if FRAMEPRO_LINUX_BASED_PLATFORM && !FRAMEPRO_PLATFORM_PS4
 
 //------------------------------------------------------------------------
 #if FRAMEPRO_ENABLE_CALLSTACKS

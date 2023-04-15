@@ -2,6 +2,9 @@
 
 #include "Abilities/Tasks/AbilityTask_WaitInputRelease.h"
 #include "AbilitySystemComponent.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitInputRelease)
 
 UAbilityTask_WaitInputRelease::UAbilityTask_WaitInputRelease(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -14,23 +17,24 @@ void UAbilityTask_WaitInputRelease::OnReleaseCallback()
 {
 	float ElapsedTime = GetWorld()->GetTimeSeconds() - StartTime;
 
-	if (!Ability || !AbilitySystemComponent)
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (!Ability || !ASC)
 	{
 		return;
 	}
 
-	AbilitySystemComponent->AbilityReplicatedEventDelegate(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()).Remove(DelegateHandle);
+	ASC->AbilityReplicatedEventDelegate(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()).Remove(DelegateHandle);
 
-	FScopedPredictionWindow ScopedPrediction(AbilitySystemComponent, IsPredictingClient());
+	FScopedPredictionWindow ScopedPrediction(ASC, IsPredictingClient());
 
 	if (IsPredictingClient())
 	{
 		// Tell the server about this
-		AbilitySystemComponent->ServerSetReplicatedEvent(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey(), AbilitySystemComponent->ScopedPredictionKey);
+		ASC->ServerSetReplicatedEvent(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey(), ASC->ScopedPredictionKey);
 	}
 	else
 	{
-		AbilitySystemComponent->ConsumeGenericReplicatedEvent(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey());
+		ASC->ConsumeGenericReplicatedEvent(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey());
 	}
 
 	// We are done. Kill us so we don't keep getting broadcast messages
@@ -51,7 +55,9 @@ UAbilityTask_WaitInputRelease* UAbilityTask_WaitInputRelease::WaitInputRelease(c
 void UAbilityTask_WaitInputRelease::Activate()
 {
 	StartTime = GetWorld()->GetTimeSeconds();
-	if (Ability)
+
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (ASC && Ability)
 	{
 		if (bTestInitialState && IsLocallyControlled())
 		{
@@ -63,10 +69,10 @@ void UAbilityTask_WaitInputRelease::Activate()
 			}
 		}
 
-		DelegateHandle = AbilitySystemComponent->AbilityReplicatedEventDelegate(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()).AddUObject(this, &UAbilityTask_WaitInputRelease::OnReleaseCallback);
+		DelegateHandle = ASC->AbilityReplicatedEventDelegate(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()).AddUObject(this, &UAbilityTask_WaitInputRelease::OnReleaseCallback);
 		if (IsForRemoteClient())
 		{
-			if (!AbilitySystemComponent->CallReplicatedEventDelegateIfSet(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()))
+			if (!ASC->CallReplicatedEventDelegateIfSet(EAbilityGenericReplicatedEvent::InputReleased, GetAbilitySpecHandle(), GetActivationPredictionKey()))
 			{
 				SetWaitingOnRemotePlayerData();
 			}

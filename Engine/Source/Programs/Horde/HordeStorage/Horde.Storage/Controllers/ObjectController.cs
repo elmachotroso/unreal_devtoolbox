@@ -5,54 +5,60 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Net;
 using System.Net.Mime;
 using System.Threading.Tasks;
 using async_enumerable_dotnet;
-using Datadog.Trace;
+using EpicGames.AspNet;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 using Horde.Storage.Implementation;
 using Jupiter;
+using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Jupiter.Utils;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
+using CustomMediaTypeNames = Jupiter.CustomMediaTypeNames;
 
 namespace Horde.Storage.Controllers
 {
+    using BlobNotFoundException = Horde.Storage.Implementation.BlobNotFoundException;
+
     [ApiController]
     [Route("api/v1/objects", Order = 0)]
+    [Authorize]
     [Produces(CustomMediaTypeNames.UnrealCompactBinary, MediaTypeNames.Application.Json)]
     public class ObjectController : ControllerBase
     {
-        private readonly IBlobStore _storage;
+        private readonly IBlobService _storage;
         private readonly IDiagnosticContext _diagnosticContext;
-        private readonly IAuthorizationService _authorizationService;
+        private readonly RequestHelper _requestHelper;
         private readonly IReferenceResolver _referenceResolver;
+        private readonly BufferedPayloadFactory _bufferedPayloadFactory;
 
         private readonly ILogger _logger = Log.ForContext<ObjectController>();
 
-        public ObjectController(IBlobStore storage, IDiagnosticContext diagnosticContext, IAuthorizationService authorizationService, IReferenceResolver referenceResolver)
+        public ObjectController(IBlobService storage, IDiagnosticContext diagnosticContext, RequestHelper requestHelper, IReferenceResolver referenceResolver, BufferedPayloadFactory bufferedPayloadFactory)
         {
             _storage = storage;
             _diagnosticContext = diagnosticContext;
-            _authorizationService = authorizationService;
+            _requestHelper = requestHelper;
             _referenceResolver = referenceResolver;
+            _bufferedPayloadFactory = bufferedPayloadFactory;
         }
 
-
         [HttpGet("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Get(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             try
@@ -68,17 +74,15 @@ namespace Horde.Storage.Controllers
         }
 
         [HttpHead("{ns}/{id}")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> Head(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             bool exists = await _storage.Exists(ns, id);
@@ -92,17 +96,15 @@ namespace Horde.Storage.Controllers
         }
 
         [HttpPost("{ns}/exists")]
-        [Authorize("Storage.read")]
         [ProducesDefaultResponseType]
         public async Task<IActionResult> ExistsMultiple(
             [Required] NamespaceId ns,
             [Required] [FromQuery] List<BlobIdentifier> id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             ConcurrentBag<BlobIdentifier> missingBlobs = new ConcurrentBag<BlobIdentifier>();
@@ -110,104 +112,128 @@ namespace Horde.Storage.Controllers
             IEnumerable<Task> tasks = id.Select(async blob =>
             {
                 if (!await _storage.Exists(ns, blob))
+                {
                     missingBlobs.Add(blob);
+                }
             });
             await Task.WhenAll(tasks);
 
             return Ok(new HeadMultipleResponse {Needs = missingBlobs.ToArray()});
         }
 
+        [HttpPost("{ns}/exist")]
+        [ProducesDefaultResponseType]
+        public async Task<IActionResult> ExistsBody(
+            [Required] NamespaceId ns,
+            [FromBody] BlobIdentifier[] bodyIds)
+        {
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
+            {
+                return result;
+            }
+
+            ConcurrentBag<BlobIdentifier> missingBlobs = new ConcurrentBag<BlobIdentifier>();
+
+            IEnumerable<Task> tasks = bodyIds.Select(async blob =>
+            {
+                if (!await _storage.Exists(ns, blob))
+                {
+                    missingBlobs.Add(blob);
+                }
+            });
+            await Task.WhenAll(tasks);
+
+            return Ok(new HeadMultipleResponse { Needs = missingBlobs.ToArray() });
+        }
+
         [HttpPut("{ns}/{id}")]
-        [Authorize("Storage.write")]
         [RequiredContentType(CustomMediaTypeNames.UnrealCompactBinary)]
         public async Task<IActionResult> Put(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.WriteObject });
+            if (result != null)
             {
-                return Forbid();
-            }
-
-            byte[] blob;
-            try
-            {
-                blob = await RequestUtil.ReadRawBody(Request);
-            }
-            catch (BadHttpRequestException e)
-            {
-                const string msg = "Partial content transfer when reading request body.";
-                _logger.Warning(e, msg);
-                return BadRequest(msg);
+                return result;
             }
 
             _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
-
-            BlobIdentifier blobHash;
+            try
             {
-                using Scope _ = Tracer.Instance.StartActive("web.hash");
-                blobHash = BlobIdentifier.FromBlob(blob);
+                using IBufferedPayload payload = await _bufferedPayloadFactory.CreateFromRequest(Request);
+
+                BlobIdentifier identifier = await _storage.PutObject(ns, payload, id);
+                return Ok(new PutBlobResponse(identifier));
             }
-
-            if (!id.Equals(blobHash))
+            catch (ClientSendSlowException e)
             {
-                _logger.Debug("ID {@Id} was not the same as identifier {@Identifier} {Content}", id, blobHash,
-                    blob);
-
-                throw new ArgumentException("ID was not a hash of the content uploaded.", paramName: nameof(id));
+                return Problem(e.Message, null, (int)HttpStatusCode.RequestTimeout);
             }
-
-            await _storage.PutObject(ns, blob, blobHash);
-            BlobIdentifier identifier = blobHash;
-            return Ok(new
-            {
-                Identifier = identifier
-            });
         }
 
         [HttpGet("{ns}/{id}/references")]
-        [Authorize("Storage.read")]
         public async Task<IActionResult> ResolveReferences(
             [Required] NamespaceId ns,
-            [Required] BlobIdentifier id,
-            [FromQuery] int depth = 1)
+            [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.ReadObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
-            BlobContents blob = await _storage.GetObject(ns, id);
+            BlobContents blob;
+            try
+            {
+                blob = await _storage.GetObject(ns, id);
+            }
+            catch (BlobNotFoundException e)
+            {
+                return NotFound(new ValidationProblemDetails {Title = $"Object {e.Blob} not found"});
+            }
+           
             byte[] blobContents = await blob.Stream.ToByteArray();
-            CompactBinaryObject compactBinaryObject = CompactBinaryObject.Load(blobContents);
+            if (blobContents.Length == 0)
+            {
+                _logger.Warning("0 byte object found for {Id} {Namespace}", id, ns);
+            }
+
+            CbObject compactBinaryObject;
+            try
+            {
+                compactBinaryObject = new CbObject(blobContents);
+            }
+            catch (IndexOutOfRangeException)
+            {
+                return Problem(title: $"{id} was not a proper compact binary object.", detail: "Index out of range");
+            }
 
             try
             {
-                BlobIdentifier[] references = await _referenceResolver.ResolveReferences(ns, compactBinaryObject).ToArrayAsync();
+                BlobIdentifier[] references = await _referenceResolver.GetReferencedBlobs(ns, compactBinaryObject).ToArrayAsync();
                 return Ok(new ResolvedReferencesResult(references));
             }
             catch (PartialReferenceResolveException e)
             {
-                return BadRequest(new ValidationProblemDetails {Title = $"Object {id} is missing blobs", Detail = $"Following blobs are missing: {string.Join(",", e.UnresolvedReferences)}"});
+                return BadRequest(new ValidationProblemDetails {Title = $"Object {id} is missing content ids", Detail = $"Following content ids are invalid: {string.Join(",", e.UnresolvedReferences)}"});
+            }
+            catch (ReferenceIsMissingBlobsException e)
+            {
+                return BadRequest(new ValidationProblemDetails {Title = $"Object {id} is missing blobs", Detail = $"Following blobs are missing: {string.Join(",", e.MissingBlobs)}"});
             }
         }
 
-
         [HttpDelete("{ns}/{id}")]
-        [Authorize("Storage.delete")]
         public async Task<IActionResult> Delete(
             [Required] NamespaceId ns,
             [Required] BlobIdentifier id)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteObject });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             await _storage.DeleteObject(ns, id);
@@ -218,23 +244,36 @@ namespace Horde.Storage.Controllers
             });
         }
 
-
         [HttpDelete("{ns}")]
-        [Authorize("Admin")]
         public async Task<IActionResult> DeleteNamespace(
             [Required] NamespaceId ns)
         {
-            AuthorizationResult authorizationResult = await _authorizationService.AuthorizeAsync(User, ns, NamespaceAccessRequirement.Name);
-
-            if (!authorizationResult.Succeeded)
+            ActionResult? result = await _requestHelper.HasAccessToNamespace(User, Request, ns, new [] { AclAction.DeleteNamespace });
+            if (result != null)
             {
-                return Forbid();
+                return result;
             }
 
             await _storage.DeleteNamespace(ns);
 
             return Ok();
         }
+    }
+
+    public class PutBlobResponse
+    {
+        public PutBlobResponse()
+        {
+            Identifier = null!;
+        }
+
+        public PutBlobResponse(BlobIdentifier identifier)
+        {
+            Identifier = identifier;
+        }
+
+        [CbField("identifier")]
+        public BlobIdentifier Identifier { get; set; }
     }
 
     public class DeletedResponse
@@ -244,11 +283,17 @@ namespace Horde.Storage.Controllers
 
     public class ResolvedReferencesResult
     {
+        public ResolvedReferencesResult()
+        {
+            References = null!;
+        }
+
         public ResolvedReferencesResult(BlobIdentifier[] references)
         {
             References = references;
         }
 
+        [CbField("references")]
         public BlobIdentifier[] References { get; set; }
     }
 }

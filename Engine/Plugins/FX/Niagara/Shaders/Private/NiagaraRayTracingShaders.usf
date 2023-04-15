@@ -67,8 +67,8 @@ RAY_TRACING_ENTRY_RAYGEN(NiagaraCollisionRayTraceRG)
 
 	FNiagaraAsyncGpuTrace InputRay = Rays[RayIndex + RaysOffset];
 
-	RayDesc Ray;
-	Ray.Origin = InputRay.Origin;
+	FRayDesc Ray;
+	Ray.Origin = InputRay.Origin + LWCHackToFloat(PrimaryView.PreViewTranslation); // LWC_TODO
 	Ray.Direction = InputRay.Direction;
 	Ray.TMin = 0.0f;
 	Ray.TMax = InputRay.TFar;
@@ -93,7 +93,7 @@ RAY_TRACING_ENTRY_RAYGEN(NiagaraCollisionRayTraceRG)
 				RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex
 				RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex
 				0,      // MissShaderIndex
-				Ray,    // RayDesc
+				Ray.GetNativeDesc(),    // RayDesc
 				Payload // Payload
 			); 
 
@@ -125,7 +125,7 @@ RAY_TRACING_ENTRY_RAYGEN(NiagaraCollisionRayTraceRG)
 			RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex
 			RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex
 			0,      // MissShaderIndex
-			Ray,    // RayDesc
+			Ray.GetNativeDesc(),    // FRayDesc
 			Payload // Payload
 		);
 	}
@@ -135,21 +135,14 @@ RAY_TRACING_ENTRY_RAYGEN(NiagaraCollisionRayTraceRG)
 	CollisionOutput[OutputIndex].HitT = Payload.HitT;
 	if (Payload.IsHit())
 	{
-		CollisionOutput[OutputIndex].WorldPosition = Payload.WorldPosition;
+		CollisionOutput[OutputIndex].WorldPosition = Payload.TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation); // LWC_TODO
 		CollisionOutput[OutputIndex].WorldNormal = Payload.WorldNormal;
 	}
 }
 
-float3 GetBarycentricPosition(FDefaultAttributes Attributes, FTriangleBaseAttributes Tri)
-{
-	return (1.0f - Attributes.Barycentrics.x - Attributes.Barycentrics.y) * Tri.LocalPositions[0]
-		+ Attributes.Barycentrics.x * Tri.LocalPositions[1]
-		+ Attributes.Barycentrics.y * Tri.LocalPositions[2];
-}
-
 RAY_TRACING_ENTRY_CLOSEST_HIT(NiagaraCollisionRayTraceCH,
 	FVFXTracePayload, Payload,
-	FDefaultAttributes, Attributes)
+	FRayTracingIntersectionAttributes, Attributes)
 {
 	InitVFXTracePayloadFromHitShader(Attributes, Payload);
 }

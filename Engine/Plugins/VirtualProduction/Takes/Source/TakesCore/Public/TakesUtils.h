@@ -5,10 +5,11 @@
 #include "CoreMinimal.h"
 #include "MovieScene.h"
 #include "Modules/ModuleManager.h"
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/UObjectGlobals.h"
 #include "TakesCoreLog.h"
+#include "Misc/Paths.h"
 
 class UWorld;
 class ULevelSequence;
@@ -59,7 +60,10 @@ namespace TakesUtils
 
 		// Generate a unique level sequence name for this take if there are already assets of the same name
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-		while (AssetRegistry.GetAssetByObjectPath(*InPackageName).IsValid())
+		TArray<FAssetData> OutAssetData;
+
+		AssetRegistry.GetAssetsByPackageName(*InPackageName, OutAssetData);
+		while (OutAssetData.Num() > 0)
 		{
 			int32 TrimCount = InPackageName.Len() - BasePackageLength;
 			if (TrimCount > 0)
@@ -68,6 +72,9 @@ namespace TakesUtils
 			}
 
 			InPackageName += FString::Printf(TEXT("_%04d"), UniqueIndex++);
+
+			OutAssetData.Empty();
+			AssetRegistry.GetAssetsByPackageName(*InPackageName, OutAssetData);
 		}
 
 		// Create the asset to record into
@@ -113,12 +120,15 @@ namespace TakesUtils
 		FString AssetPath = BaseAssetPath;
 		FString AssetName = BaseAssetName;
 		AssetName = AssetName.Replace(TEXT("."), TEXT("_"));
+		AssetName = AssetName.Replace(TEXT(" "), TEXT("_"));
+
+		AssetName = FPaths::MakeValidFileName(AssetName);
 
 		AssetPath /= AssetName;
 		AssetPath += Dot + AssetName;
 
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 		// if object with same name exists, try a different name until we don't find one
 		int32 ExtensionIndex = 0;
@@ -126,7 +136,7 @@ namespace TakesUtils
 		{
 			AssetName = FString::Printf(TEXT("%s_%d"), *AssetName, ExtensionIndex);
 			AssetPath = (BaseAssetPath / AssetName) + Dot + AssetName;
-			AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+			AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 			ExtensionIndex++;
 		}

@@ -4,9 +4,11 @@
 
 #include "GlobalDistanceFieldParameters.h"
 #include "NiagaraAsyncGpuTraceHelper.h"
+#include "NiagaraDistanceFieldHelper.h"
 #include "NiagaraComponent.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuComputeDispatch.h"
+#include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraStats.h"
 #include "NiagaraTypes.h"
 #include "NiagaraWorldManager.h"
@@ -14,6 +16,8 @@
 #include "ShaderCore.h"
 #include "ShaderCompilerCore.h"
 #include "ShaderParameterUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceCollisionQuery)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceCollisionQuery"
 
@@ -79,7 +83,18 @@ bool UNiagaraDataInterfaceCollisionQuery::InitPerInstanceData(void* PerInstanceD
 	PIData->SystemInstance = InSystemInstance;
 	if (InSystemInstance)
 	{
-		PIData->CollisionBatch.Init(InSystemInstance->GetId(), InSystemInstance->GetWorld());
+		TStatId CollisionStatId = SCENE_QUERY_STAT_ONLY(NiagaraCollision);
+
+		// If we don't have stats enabled can we pull a valid stat from the asset?
+		// This will allow us to trace back to the asset when profiling
+		#if !STATS && (ENABLE_STATNAMEDEVENTS && ENABLE_STATNAMEDEVENTS_UOBJECT)
+			TStatId AssetStatId = static_cast<const UObjectBaseUtility*>(InSystemInstance->GetSystem())->GetStatID();
+			if (AssetStatId.IsValidStat())
+			{
+				CollisionStatId = AssetStatId;
+			}
+		#endif
+		PIData->CollisionBatch.Init(InSystemInstance->GetId(), InSystemInstance->GetWorld(), CollisionStatId);
 	}
 
 	return true;
@@ -104,7 +119,7 @@ void UNiagaraDataInterfaceCollisionQuery::PostInitProperties()
 	}
 }
 
-void UNiagaraDataInterfaceCollisionQuery::GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
+void UNiagaraDataInterfaceCollisionQuery::GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
 {
 #if WITH_EDITOR
 	const UNiagaraSystem* System = Cast<UNiagaraSystem>(InAsset);
@@ -120,7 +135,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetAssetTagsForContext(const UObject* 
 		Scripts.Add(System->GetSystemUpdateScript());
 		for (auto&& EmitterHandle : System->GetEmitterHandles())
 		{
-			const UNiagaraEmitter* HandleEmitter = EmitterHandle.GetInstance();
+			FVersionedNiagaraEmitterData* HandleEmitter = EmitterHandle.GetEmitterData();
 			if (HandleEmitter)
 			{
 				if (HandleEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
@@ -136,10 +151,11 @@ void UNiagaraDataInterfaceCollisionQuery::GetAssetTagsForContext(const UObject* 
 	}
 	if (Emitter)
 	{
-		if (Emitter->SimTarget != ENiagaraSimTarget::GPUComputeSim)
+		const FVersionedNiagaraEmitterData* EmitterData = Emitter->GetEmitterData(AssetVersion);
+		if (EmitterData && EmitterData->SimTarget != ENiagaraSimTarget::GPUComputeSim)
 		{
 			TArray<UNiagaraScript*> OutScripts;
-			Emitter->GetScripts(OutScripts, false);
+			EmitterData->GetScripts(OutScripts, false);
 			Scripts.Append(OutScripts);
 		}
 	}
@@ -182,8 +198,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetAssetTagsForContext(const UObject* 
 #endif
 	
 	// Make sure and get the base implementation tags
-	Super::GetAssetTagsForContext(InAsset, InProperties, NumericKeys, StringKeys);
-	
+	Super::GetAssetTagsForContext(InAsset, AssetVersion, InProperties, NumericKeys, StringKeys);
 }
 
 void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
@@ -511,11 +526,32 @@ bool UNiagaraDataInterfaceCollisionQuery::AppendCompileHash(FNiagaraCompileHashV
 	InVisitor->UpdatePOD(TEXT("NiagaraCollisionDI_DistanceField"), IsDistanceFieldEnabled());
 	InVisitor->UpdateString(TEXT("NDICollisionQueryCommonHLSLSource"), GetShaderFileHash(NDICollisionQueryLocal::CommonShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
 	InVisitor->UpdateString(TEXT("NDICollisionQueryTemplateHLSLSource"), GetShaderFileHash(NDICollisionQueryLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	InVisitor->UpdateShaderParameters<FShaderParameters>();
+	InVisitor->UpdateShaderParameters<FGlobalDistanceFieldParameters2>();
 
 	return true;
 }
 
 #endif
+
+void UNiagaraDataInterfaceCollisionQuery::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<FShaderParameters>();
+	ShaderParametersBuilder.AddIncludedStruct<FGlobalDistanceFieldParameters2>();
+}
+
+void UNiagaraDataInterfaceCollisionQuery::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<FShaderParameters>();
+	ShaderParameters->SystemLWCTile = Context.GetSystemLWCTile();	//-OPT: Seems like a lot of DIs might want tile
+
+	FGlobalDistanceFieldParameters2* ShaderGDFParameters = Context.GetParameterIncludedStruct<FGlobalDistanceFieldParameters2>();
+	if (Context.IsStructBound(ShaderGDFParameters))
+	{
+		const FGlobalDistanceFieldParameterData* GDFParameterData = static_cast<const FNiagaraGpuComputeDispatch&>(Context.GetComputeDispatchInterface()).GetGlobalDistanceFieldParameters();//-BATCHERTODO:
+		FNiagaraDistanceFieldHelper::SetGlobalDistanceFieldParameters(GDFParameterData, *ShaderGDFParameters);
+	}
+}
 
 void UNiagaraDataInterfaceCollisionQuery::PerformQuerySyncCPU(FVectorVMExternalFunctionContext & Context)
 {
@@ -646,49 +682,5 @@ bool UNiagaraDataInterfaceCollisionQuery::PerInstanceTickPostSimulate(void* PerI
 	return false;
 }
 
-//////////////////////////////////////////////////////////////////////////
-
-struct FNiagaraDataInterfaceParametersCS_CollisionQuery : public FNiagaraDataInterfaceParametersCS
-{
-	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CollisionQuery, NonVirtual);
-public:
-	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-	{
-		GlobalDistanceFieldParameters.Bind(ParameterMap);
-		SystemLWCTileParam.Bind(ParameterMap, *(NDICollisionQueryLocal::SystemLWCTileName + ParameterInfo.DataInterfaceHLSLSymbol));
-	}
-
-	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-	{
-		check(IsInRenderingThread());
-
-		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		SetShaderValue(RHICmdList, ComputeShaderRHI, SystemLWCTileParam, Context.SystemLWCTile);
-		
-		// Bind distance field parameters
-		if (GlobalDistanceFieldParameters.IsBound())
-		{
-			check(Context.ComputeDispatchInterface);
-			const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData = static_cast<const FNiagaraGpuComputeDispatch*>(Context.ComputeDispatchInterface)->GetGlobalDistanceFieldParameters();//-BATCHERTODO:
-
-			if (GlobalDistanceFieldParameterData)
-			{
-				GlobalDistanceFieldParameters.Set(RHICmdList, ComputeShaderRHI, *GlobalDistanceFieldParameterData);
-			}
-			else
-			{
-				GlobalDistanceFieldParameters.Set(RHICmdList, ComputeShaderRHI, FGlobalDistanceFieldParameterData());
-			}
-		}
-	}
-
-private:
-	LAYOUT_FIELD(FGlobalDistanceFieldParameters, GlobalDistanceFieldParameters);
-	LAYOUT_FIELD(FShaderParameter, SystemLWCTileParam);
-};
-
-IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CollisionQuery);
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceCollisionQuery, FNiagaraDataInterfaceParametersCS_CollisionQuery);
-
 #undef LOCTEXT_NAMESPACE
+

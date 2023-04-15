@@ -23,18 +23,24 @@ extern int32 CompileStrataBlendFunction(FMaterialCompiler* Compiler, const int32
 ///////////////////////////////////////////////////////////////////////////////
 // BSDF nodes
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract, DisplayName = "Strata Expression", Abstract)// STRATA_DISABLED
+// UMaterialExpressionStrataBSDF can only be used for Strata nodes ouputing StrataData that would need a preview,
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract, DisplayName = "Strata Expression")
 class UMaterialExpressionStrataBSDF : public UMaterialExpression
 {
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITOR
-		virtual int32 CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual int32 CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 #endif
+
+	float DielectricSpecularToF0(float SpecularIn)
+	{
+		return 0.08f * SpecularIn;
+	};
 };
 
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Slab", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Legacy Conversion")
 class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -94,13 +100,13 @@ class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStra
 	FExpressionInput SubSurfaceColor;
 
 	/**
-	 * Emissive color on top of the surface (type = float3, unit = luminance, default = 0)
+	 * Coverage of the clear coat layer. (type = float, unit = unitless, defaults to 0.0)
 	 */
 	UPROPERTY()
 	FExpressionInput ClearCoat;
 
 	/**
-	 * The amount of fuzz on top of the surface used to simulate cloth-like appearance.
+	 * Roughness of the top clear coat layer. (type = float, unit = unitless, defaults to 0.0)
 	 */
 	UPROPERTY()
 	FExpressionInput ClearCoatRoughness;
@@ -148,10 +154,16 @@ class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStra
 	FExpressionInput ClearCoatNormal;
 
 	/**
+	 * Take the tangent output node as input. The tangent is considered tangent or world space according to the space properties on the main material node. (type = float3, unit = unitless, defaults to vertex tangent)
+	 */
+	UPROPERTY()
+	FExpressionInput CustomTangent;
+
+	/**
 	 * Shading models
 	 */
 	UPROPERTY()
-	FExpressionInput ShadingModel;
+	FShadingModelMaterialInput ShadingModel;
 	
 	/** SubsurfaceProfile, for Screen Space Subsurface Scattering. The profile needs to be set up on both the Strata diffuse node, and the material node at the moment. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Subsurface Profile"))
@@ -164,12 +176,12 @@ class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStra
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
-	virtual int32 CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual uint32 GetOutputType(int32 OutputIndex) override;
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 	virtual FName GetInputName(int32 InputIndex) const override;
 	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -182,7 +194,7 @@ class UMaterialExpressionStrataLegacyConversion : public UMaterialExpressionStra
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Slab", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Slab")
 class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -257,13 +269,19 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	 * Chromatic mean free path . Only used when there is not any sub-surface profile provided. (type = float3, unit = centimeters, default = 0)
 	 */
 	UPROPERTY()
-	FExpressionInput SSSDMFP;
+	FExpressionInput SSSMFP;
 
 	/**
 	 * Scale the mean free path radius of the SSS profile according to a value between 0 and 1. Always used, when a subsurface profile is provided or not. (type = float, unitless, defaults to 1)
 	 */
 	UPROPERTY()
-	FExpressionInput SSSDMFPScale;
+	FExpressionInput SSSMFPScale;
+
+	/**
+	 * Phase function anisotropy. Positive value elongates the phase function along the lignt direction, causing forward scattering. Negative value elongates the phase function backward to the light direction, causing backward scattering.  (type = float, unitless, defaults to 1, valid value -1..1)
+	 */
+	UPROPERTY()
+	FExpressionInput SSSPhaseAnisotropy;
 
 	/**
 	 * Emissive color on top of the surface (type = float3, unit = luminance, default = 0)
@@ -272,16 +290,16 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	FExpressionInput EmissiveColor;
 
 	/**
-	 * Haziness controls the relative roughness of a second specular lobe. 0 means disabled and 1 means the second lobe specular lobe will lerp the current roughness to fully rough. (type = float, unitless, default = 0)
+	 * Controls the roughness of a secondary specular lobe. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse. Does not influence diffuse roughness. (type = float, unit = unitless, defaults to 0.5)
 	 */
 	UPROPERTY()
-	FExpressionInput Haziness;
+	FExpressionInput SecondRoughness;
 
 	/**
-	 * Thin film controls the thin film layer coating the current slab. 0 means disabled and 1 means a coating layer of 10 micrometer. (type = float, unitless, default = 0)
+	 * The weight of the second specular lobe using SecondRoughness. The first specular using Roughness will have a weight of (1 - SecondRoughnessWeight). (type = float, unitless, default = 0)
 	 */
 	UPROPERTY()
-	FExpressionInput ThinFilmThickness;
+	FExpressionInput SecondRoughnessWeight;
 
 	/**
 	 * The slab thickness. (type = float, centimeters, default = 0.01 centimeter = 0.1 millimeter)
@@ -309,6 +327,10 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	UPROPERTY(EditAnywhere, Category = Mode)
 	uint32 bUseMetalness : 1;
 
+	/** Whether to use light diffusion (i.e., SSS diffusion) or wrap-approximation for material with scattering behavior. */
+	UPROPERTY(EditAnywhere, Category = Mode, meta = (DisplayName = "Use Subsurface Diffusion"))
+	uint32 bUseSSSDiffusion : 1;
+
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
@@ -317,24 +339,92 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 	virtual FName GetInputName(int32 InputIndex) const override;
 	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual const TArray<FExpressionInput*> GetInputs() override;
 
 	bool HasEdgeColor() const;
-	bool HasThinFilm() const;
 	bool HasFuzz() const;
-	bool HasHaziness() const;
+	bool HasSecondRoughness() const;
 	bool HasSSS() const;
 	bool HasSSSProfile() const;
-	bool HasDMFPPluggedIn() const;
+	bool HasMFPPluggedIn() const;
 	bool HasAnisotropy() const;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Volumetric-Fog-Cloud BSDF", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Simple Clear Coat")
+class UMaterialExpressionStrataSimpleClearCoatBSDF : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * Defines the overall color of the Material. (type = float3, unit = unitless, defaults to 0.18)
+	 */
+	UPROPERTY()
+	FExpressionInput BaseColor;
+
+	/**
+	 * Controls how \"metal-like\" your surface looks like. 0 means dielectric, 1 means conductor (type = float, unit = unitless, defaults to 0)
+	 */
+	UPROPERTY()
+	FExpressionInput Metallic;
+	
+	/**
+	 * Used to scale the current amount of specularity on non-metallic surfaces and is a value between 0 and 1 (type = float, unit = unitless, defaults to plastic 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput Specular;
+
+	/**
+	 * Controls how rough the bottom layer of the material is. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse. (type = float, unit = unitless, defaults to 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput Roughness;
+
+	/**
+	 * Controls the coverage of the clear coat layer: 0 means no clear coat, 1 means coat is fully visible. (type = float, unit = unitless, defaults to 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput ClearCoatCoverage;
+
+	/**
+	 * Controls how rough the top layer of the material is. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse. (type = float, unit = unitless, defaults to 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput ClearCoatRoughness;
+
+	/**
+	 * Take the surface normal as input. The normal is considered tangent or world space according to the space properties on the main material node. (type = float3, unit = unitless, defaults to vertex normal)
+	 */
+	UPROPERTY()
+	FExpressionInput Normal;
+
+	/**
+	 * Emissive color of the medium (type = float3, unit = luminance, default = 0)
+	 */
+	UPROPERTY()
+	FExpressionInput EmissiveColor;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+	virtual FName GetInputName(int32 InputIndex) const override;
+	virtual const TArray<FExpressionInput*> GetInputs() override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Volumetric-Fog-Cloud BSDF")
 class UMaterialExpressionStrataVolumetricFogCloudBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -371,11 +461,12 @@ class UMaterialExpressionStrataVolumetricFogCloudBSDF : public UMaterialExpressi
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Unlit BSDF", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Unlit BSDF")
 class UMaterialExpressionStrataUnlitBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -400,11 +491,12 @@ class UMaterialExpressionStrataUnlitBSDF : public UMaterialExpressionStrataBSDF
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Hair BSDF", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Hair BSDF")
 class UMaterialExpressionStrataHairBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -459,11 +551,82 @@ class UMaterialExpressionStrataHairBSDF : public UMaterialExpressionStrataBSDF
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Single Layer Water BSDF", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Eye BSDF")
+class UMaterialExpressionStrataEyeBSDF : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+		
+	/**
+	 * Hair fiber base color resulting from single and multiple scattering combined. (type = float3, unit = unitless, defaults to black)
+	 */
+	UPROPERTY()
+	FExpressionInput DiffuseColor;
+		
+	/**
+	 * Controls how rough the Material is. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse (type = float, unit = unitless, defaults to 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput Roughness;
+
+	/**
+	 * Normal of the sclera and cornea (type = float3, unit = unitless, defaults to +X vector)
+	 */
+	UPROPERTY()
+	FExpressionInput CorneaNormal;
+
+	/**
+	 * Normal of the iris (type = float3, unit = unitless, defaults to +X vector)
+	 */
+	UPROPERTY()
+	FExpressionInput IrisNormal;
+
+	/**
+	 * Normal of the iris plane (type = float3, unit = unitless, defaults to +X vector)
+	 */
+	UPROPERTY()
+	FExpressionInput IrisPlaneNormal;
+
+	/**
+	 * Mask defining the iris surface (type = float, unit = unitless, defaults to 0.0)
+	 */
+	UPROPERTY()
+	FExpressionInput IrisMask;
+
+	/**
+	 * Distance from the center of the iris (type = float, unit = unitless, defaults to 0.0)
+	 */
+	UPROPERTY()
+	FExpressionInput IrisDistance;
+
+	/**
+	 * Emissive color on top of the surface (type = float3, unit = luminance, defaults to 0.0)
+	 */
+	UPROPERTY()
+	FExpressionInput EmissiveColor;
+
+	/** SubsurfaceProfile, for Subsurface Scattering diffusion. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Subsurface Profile"))
+	TObjectPtr<class USubsurfaceProfile> SubsurfaceProfile;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Single Layer Water BSDF")
 class UMaterialExpressionStrataSingleLayerWaterBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -542,6 +705,91 @@ class UMaterialExpressionStrataSingleLayerWaterBSDF : public UMaterialExpression
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Light Function")
+class UMaterialExpressionStrataLightFunction : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * The output color of the light function
+	 */
+	UPROPERTY()
+	FExpressionInput Color;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Post Process")
+class UMaterialExpressionStrataPostProcess : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * The output color of the post process: it represents a color added over the back buffer, or a color multiplied if the Strata blend mode is TransmittanceOnly.
+	 */
+	UPROPERTY()
+	FExpressionInput Color;
+
+	/**
+	 * The coverage of the post process: the more the value is high, the less the back buffer will be visible. Only used if "Output Alpha" is enabled on the root node.
+	 */
+	UPROPERTY()
+	FExpressionInput Opacity;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Convert To Decal")
+class UMaterialExpressionStrataConvertToDecal : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * The Strata material to convert to a decal.
+	 */
+	UPROPERTY()
+	FExpressionInput DecalMaterial;
+
+	/**
+	 * The coverage of the decal (default 1)
+	 */
+	UPROPERTY()
+	FExpressionInput Coverage;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
@@ -551,7 +799,7 @@ class UMaterialExpressionStrataSingleLayerWaterBSDF : public UMaterialExpression
 ///////////////////////////////////////////////////////////////////////////////
 // Operator nodes
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata BSDF Horizontal Blend", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Horizontal Blend")
 class UMaterialExpressionStrataHorizontalMixing : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -585,11 +833,12 @@ class UMaterialExpressionStrataHorizontalMixing : public UMaterialExpressionStra
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata BSDF Vertical Layer", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Vertical Layer")
 class UMaterialExpressionStrataVerticalLayering : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -617,11 +866,12 @@ class UMaterialExpressionStrataVerticalLayering : public UMaterialExpressionStra
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata BSDF Add", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Add")
 class UMaterialExpressionStrataAdd : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -649,11 +899,12 @@ class UMaterialExpressionStrataAdd : public UMaterialExpressionStrataBSDF
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata BSDF Weight", Abstract)// STRATA_DISABLED
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Coverage Weight")
 class UMaterialExpressionStrataWeight : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -678,32 +929,138 @@ class UMaterialExpressionStrataWeight : public UMaterialExpressionStrataBSDF
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Thin-Film")
+class UMaterialExpressionStrataThinFilm : public UMaterialExpressionStrataBSDF
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * Strata material
+	 */
+	UPROPERTY()
+	FExpressionInput A;
+	
+	/**
+	 * Thin film controls the thin film layer coating the current slab. 0 means disabled and 1 means a coating layer of 10 micrometer. (type = float, unitless, default = 0)
+	 */
+	UPROPERTY()
+	FExpressionInput Thickness;
+
+	/**
+	 * Thin film IOR
+	 */
+	UPROPERTY()
+	FExpressionInput IOR;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) override;
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) override;
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex) override;
 #endif
 	//~ End UMaterialExpression Interface
 };
 
 
-
 ///////////////////////////////////////////////////////////////////////////////
 // Utilities
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Transmittance-To-MeanFreePath", Abstract)// STRATA_DISABLED
-class UMaterialExpressionStrataTransmittanceToMFP : public UMaterialExpressionStrataBSDF
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract, DisplayName = "Strata Utility Base Class")
+class UMaterialExpressionStrataUtilityBase : public UMaterialExpression
+{
+	GENERATED_UCLASS_BODY()
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Transmittance-To-MeanFreePath")
+class UMaterialExpressionStrataTransmittanceToMFP : public UMaterialExpressionStrataUtilityBase
 {
 	GENERATED_UCLASS_BODY()
 
 	/**
-	* The colored transmittance for a view perpendicular to the surface. The transmittance or other view orientation will automatically deduced according to surface thickness.
+	* The colored transmittance for a view perpendicular to the surface. The transmittance for other view orientations will automatically be deduced according to surface thickness.
 	*/
 	UPROPERTY()
 	FExpressionInput TransmittanceColor;
 
 	/**
-	* The desired thickness in centimers. This can be set lower than 0.1mm (= 0.01cm) to enable the Thin lighting model on the slab node for instance.
-	* Another use case exemple: the thickenss ouput can be modulated to have simple scattering/transmittance variation of the same material before it is plugged in a slab node.
+	* The desired thickness in centimeter. This can be set lower than 0.1mm (= 0.01cm) to enable the Thin lighting model on the slab node for instance.
+	* Another use case example: this node output called thickness can be modulated before it is plugged in a slab node, this can be used to achieve simple scattering/transmittance variation of the same material.
 	*/
 	UPROPERTY()
 	FExpressionInput Thickness;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
+	virtual void GetExpressionToolTip(TArray<FString>& OutToolTip) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Metalness-To-DiffuseColorF0")
+class UMaterialExpressionStrataMetalnessToDiffuseAlbedoF0 : public UMaterialExpressionStrataUtilityBase
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	 * Defines the overall color of the Material. (type = float3, unit = unitless, defaults to 0.18)
+	 */
+	UPROPERTY()
+	FExpressionInput BaseColor;
+
+	/**
+	 * Controls how \"metal-like\" your surface looks like. 0 means dielectric, 1 means conductor (type = float, unit = unitless, defaults to 0)
+	 */
+	UPROPERTY()
+	FExpressionInput Metallic;
+
+	/**
+	 * Used to scale the current amount of specularity on non-metallic surfaces and is a value between 0 and 1 (type = float, unit = unitless, defaults to plastic 0.5)
+	 */
+	UPROPERTY()
+	FExpressionInput Specular;
+
+	//~ Begin UMaterialExpression Interface
+#if WITH_EDITOR
+	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
+	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
+	virtual uint32 GetInputType(int32 InputIndex) override;
+	virtual void GetConnectorToolTip(int32 InputIndex, int32 OutputIndex, TArray<FString>& OutToolTip) override;
+	virtual void GetExpressionToolTip(TArray<FString>& OutToolTip) override;
+#endif
+	//~ End UMaterialExpression Interface
+};
+
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, DisplayName = "Strata Haziness-To-Secondary-Roughness")
+class UMaterialExpressionStrataHazinessToSecondaryRoughness : public UMaterialExpressionStrataUtilityBase
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	* The base roughness of the surface. It represented the smoothest part of the reflection.
+	*/
+	UPROPERTY()
+	FExpressionInput BaseRoughness;
+
+	/**
+	* Haziness represent the amount of irregularity of the surface. A high value will lead to a second rough specular lobe causing the surface too look `milky`.
+	*/
+	UPROPERTY()
+	FExpressionInput Haziness;
 
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR

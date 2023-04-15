@@ -2,6 +2,8 @@
 
 #include "RigVMModel/Nodes/RigVMParameterNode.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMParameterNode)
+
 const FString URigVMParameterNode::ParameterName = TEXT("Parameter");
 const FString URigVMParameterNode::DefaultName = TEXT("Default");
 const FString URigVMParameterNode::ValueName = TEXT("Value");
@@ -58,7 +60,7 @@ UObject* URigVMParameterNode::GetCPPTypeObject() const
 FString URigVMParameterNode::GetDefaultValue() const
 {
 
-	URigVMPin* ValuePin = FindPin(ValueName);
+	URigVMPin* ValuePin = FindPin(DefaultName);
 	if (ValuePin == nullptr)
 	{
 		return FString();
@@ -76,3 +78,4 @@ FRigVMGraphParameterDescription URigVMParameterNode::GetParameterDescription() c
 	Parameter.DefaultValue = GetDefaultValue();
 	return Parameter;
 }
+

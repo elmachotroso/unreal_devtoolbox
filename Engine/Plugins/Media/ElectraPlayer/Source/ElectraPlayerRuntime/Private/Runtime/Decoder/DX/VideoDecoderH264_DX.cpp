@@ -45,7 +45,7 @@ namespace Electra {
 
 IVideoDecoderH264::FSystemConfiguration			FVideoDecoderH264::SystemConfig;
 
-#if ELECTRA_ENABLE_SWDECODE
+#ifdef ELECTRA_ENABLE_SWDECODE
 bool FVideoDecoderH264::bDidCheckHWSupport = false;
 bool FVideoDecoderH264::bIsHWSupported = false;
 #endif
@@ -284,7 +284,7 @@ void FVideoDecoderH264::StartThread()
 	ThreadSetPriority(Config.ThreadConfig.Decoder.Priority);
 	ThreadSetCoreAffinity(Config.ThreadConfig.Decoder.CoreAffinity);
 	ThreadSetStackSize(Config.ThreadConfig.Decoder.StackSize);
-	ThreadStart(Electra::MakeDelegate(this, &FVideoDecoderH264::WorkerThread));
+	ThreadStart(FMediaRunnable::FStartDelegate::CreateRaw(this, &FVideoDecoderH264::WorkerThread));
 	bThreadStarted = true;
 }
 

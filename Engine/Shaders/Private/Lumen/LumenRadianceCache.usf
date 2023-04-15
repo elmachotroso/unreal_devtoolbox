@@ -1,11 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenRadianceCache.usf
-=============================================================================*/
-
-#define CARD_TRACE_DEPTH_WEIGHTED_OIT 0
-
 #include "../Common.ush"
 #include "../MonteCarlo.ush"
 #include "../FastMath.ush"
@@ -623,7 +617,6 @@ void SortProbeTraceTilesCS(
 }
 
 float StepFactor;
-float VoxelStepFactor;
 float MinSampleRadius;
 float MaxMeshSDFTraceDistance;
 
@@ -634,18 +627,9 @@ FConeTraceResult TraceForProbeTexel(FConeTraceInput TraceInput)
 	TraceResult.Lighting = 0.0;
 	TraceResult.Transparency = 1.0;
 	TraceResult.OpaqueHitDistance = TraceInput.MaxTraceDistance;
+	TraceInput.bZeroRadianceIfRayStartsInsideGeometry = true;
 
 	ConeTraceLumenSceneVoxels(TraceInput, TraceResult);
-
-#if TRACE_DISTANT_SCENE
-	if (TraceResult.Transparency > .01f)
-	{
-		FConeTraceResult DistantTraceResult;
-		ConeTraceLumenDistantScene(TraceInput, DistantTraceResult);
-		TraceResult.Lighting += DistantTraceResult.Lighting * TraceResult.Transparency;
-		TraceResult.Transparency *= DistantTraceResult.Transparency;
-	}
-#endif
 
 #if ENABLE_DYNAMIC_SKY_LIGHT
 	if (ReflectionStruct.SkyLightParameters.y > 0)
@@ -686,6 +670,8 @@ void TraceFromProbesCS(
 		uint ProbeIndex;
 		GetProbeTraceData(ProbeTraceIndex, ProbeWorldCenter, ClipmapIndex, ProbeIndex);
 
+		const float3 ProbeTranslatedWorldCenter = ProbeWorldCenter + LWCHackToFloat(PrimaryView.PreViewTranslation); // LUMEN_LWC_TODO
+
 		if (all(ProbeTexelCoord < TraceResolution))
 		{
 			float2 ProbeTexelCenter = float2(0.5, 0.5);
@@ -709,11 +695,13 @@ void TraceFromProbesCS(
 
 			FConeTraceInput TraceInput;
 			TraceInput.Setup(
-				ProbeWorldCenter, WorldConeDirection,
+				ProbeWorldCenter, ProbeTranslatedWorldCenter, WorldConeDirection,
 				ConeHalfAngle, MinSampleRadius,
 				FinalMinTraceDistance, FinalMaxTraceDistance,
 				EffectiveStepFactor);
-			TraceInput.VoxelStepFactor = VoxelStepFactor;
+
+			TraceInput.bDitheredTransparency = true;
+			TraceInput.DitherScreenCoord = RadianceProbeResolution * uint2(ProbeIndex & ProbeAtlasResolutionModuloMask, ProbeIndex >> ProbeAtlasResolutionDivideShift) + ProbeTexelCoord;
 
 			bool bContinueCardTracing = false;
 
@@ -1213,10 +1201,10 @@ void FixupBordersAndGenerateMipsCS(
 		uint MipLevel = 1;
 		uint ParentMipSize = FinalProbeResolution >> (MipLevel - 1);
 		uint MipSize = FinalProbeResolution >> MipLevel;
-		uint ThreadgroupSizeForMip = THREADGROUP_SIZE >> MipLevel;
+		uint ThreadgroupSizeForMip = (uint)THREADGROUP_SIZE >> MipLevel;
 		uint2 MipProbeTexelCoord = GroupThreadId.xy + ThreadgroupSizeForMip * GroupId.xy;
 
-		if (all(GroupThreadId.xy < ThreadgroupSizeForMip && MipProbeTexelCoord < MipSize))
+		if (all(and(GroupThreadId.xy < ThreadgroupSizeForMip, MipProbeTexelCoord < MipSize)))
 		{
 			uint2 ParentProbeTexelCoordBase = MipProbeTexelCoord * 2;
 			float InvParentMipSize = 1.0f / ParentMipSize;
@@ -1252,10 +1240,10 @@ void FixupBordersAndGenerateMipsCS(
 		uint MipLevel = 2;
 		uint ParentMipSize = FinalProbeResolution >> (MipLevel - 1);
 		uint MipSize = FinalProbeResolution >> MipLevel;
-		uint ThreadgroupSizeForMip = THREADGROUP_SIZE >> MipLevel;
+		uint ThreadgroupSizeForMip = (uint)THREADGROUP_SIZE >> MipLevel;
 		uint2 MipProbeTexelCoord = GroupThreadId.xy + ThreadgroupSizeForMip * GroupId.xy;
 
-		if (all(GroupThreadId.xy < ThreadgroupSizeForMip && MipProbeTexelCoord < MipSize))
+		if (all(and(GroupThreadId.xy < ThreadgroupSizeForMip, MipProbeTexelCoord < MipSize)))
 		{
 			uint2 ParentProbeTexelCoordBase = MipProbeTexelCoord * 2;
 			float InvParentMipSize = 1.0f / ParentMipSize;

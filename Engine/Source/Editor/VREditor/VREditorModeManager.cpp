@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorModeManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "InputCoreTypes.h"
 #include "VREditorMode.h"
 #include "Modules/ModuleManager.h"
@@ -21,7 +22,7 @@
 #include "ProjectDescriptor.h"
 #include "Interfaces/IProjectManager.h"
 #include "UnrealEdMisc.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "VREditorInteractor.h"
 
 #define LOCTEXT_NAMESPACE "VREditor"
@@ -32,11 +33,34 @@ FVREditorModeManager::FVREditorModeManager() :
 	HMDWornState( EHMDWornState::Unknown ), 
 	bAddedViewportWorldInteractionExtension( false )
 {
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+	if (AssetRegistry.IsLoadingAssets())
+	{
+		AssetRegistry.OnFilesLoaded().AddRaw(this, &FVREditorModeManager::HandleAssetFilesLoaded);
+	}
+	else
+	{
+		HandleAssetFilesLoaded();
+	}
 }
 
 FVREditorModeManager::~FVREditorModeManager()
 {
-	CurrentVREditorMode = nullptr;
+	if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(AssetRegistryConstants::ModuleName))
+	{
+		if (IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet())
+		{
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+		}
+	}
+
+	if (IsValid(CurrentVREditorMode))
+	{
+		CurrentVREditorMode->OnVRModeEntryComplete().RemoveAll(this);
+		CurrentVREditorMode = nullptr;
+	}
 }
 
 void FVREditorModeManager::Tick( const float DeltaTime )
@@ -86,38 +110,36 @@ bool FVREditorModeManager::IsTickable() const
 void FVREditorModeManager::EnableVREditor( const bool bEnable, const bool bForceWithoutHMD )
 {
 	// Don't do anything when the current VR Editor is already in the requested state
-	if( bEnable != IsVREditorActive() )
+	const bool bIsEnabled = IsValid(CurrentVREditorMode);
+	if (bEnable != bIsEnabled)
 	{
 		if( bEnable && ( IsVREditorAvailable() || bForceWithoutHMD ))
 		{
-			UEditorStyleSettings* StyleSettings = GetMutableDefault<UEditorStyleSettings>();
-			const UVRModeSettings* VRModeSettings = GetDefault<UVRModeSettings>();
-			bool bUsingDefaultInteractors = true;
-			if (VRModeSettings)
+			// Check to see if we should warn the user and potentially early out.
+			if (IsVREditorAvailable())
 			{
-				const TSoftClassPtr<UVREditorInteractor> InteractorClassSoft = VRModeSettings->InteractorClass;
-				InteractorClassSoft.LoadSynchronous();
-
-				if (InteractorClassSoft.IsValid())
+				TSoftClassPtr<UVREditorMode> ModeClassSoft = GetDefault<UVRModeSettings>()->ModeClass;
+				check(ModeClassSoft.LoadSynchronous()); // IsVREditorAvailable() should have returned false otherwise.
+				const UVREditorMode* VRModeCDO = ModeClassSoft->GetDefaultObject<UVREditorMode>();
+				if (VRModeCDO->ShouldDisplayExperimentalWarningOnEntry())
 				{
-					bUsingDefaultInteractors = (InteractorClassSoft.Get() == UVREditorInteractor::StaticClass());
+					FSuppressableWarningDialog::FSetupInfo SetupInfo(
+						LOCTEXT("VRModeEntry_Message", "VR Mode enables you to work on your project in virtual reality using motion controllers. This feature is still under development, so you may experience bugs or crashes while using it."),
+						LOCTEXT("VRModeEntry_Title", "Entering VR Mode - Experimental"), "Warning_VRModeEntry", GEditorSettingsIni);
+
+					SetupInfo.ConfirmText = LOCTEXT("VRModeEntry_ConfirmText", "Continue");
+					SetupInfo.CancelText = LOCTEXT("VRModeEntry_CancelText", "Cancel");
+					SetupInfo.bDefaultToSuppressInTheFuture = true;
+
+					FSuppressableWarningDialog VRModeEntryWarning(SetupInfo);
+					if (VRModeEntryWarning.ShowModal() == FSuppressableWarningDialog::Cancel)
+					{
+						return;
+					}
 				}
 			}
 
-			{
-				FSuppressableWarningDialog::FSetupInfo SetupInfo(LOCTEXT("VRModeEntry_Message", "VR Mode enables you to work on your project in virtual reality using motion controllers. This feature is still under development, so you may experience bugs or crashes while using it."),
-					LOCTEXT("VRModeEntry_Title", "Entering VR Mode - Experimental"), "Warning_VRModeEntry", GEditorSettingsIni);
-
-				SetupInfo.ConfirmText = LOCTEXT("VRModeEntry_ConfirmText", "Continue");
-				SetupInfo.CancelText = LOCTEXT("VRModeEntry_CancelText", "Cancel");
-				SetupInfo.bDefaultToSuppressInTheFuture = true;
-				FSuppressableWarningDialog VRModeEntryWarning(SetupInfo);
-
-				if (VRModeEntryWarning.ShowModal() != FSuppressableWarningDialog::Cancel)
-				{
-					StartVREditorMode(bForceWithoutHMD);
-				}
-			}
+			StartVREditorMode(bForceWithoutHMD);
 		}
 		else if( !bEnable )
 		{
@@ -133,27 +155,30 @@ bool FVREditorModeManager::IsVREditorActive() const
 	return CurrentVREditorMode != nullptr && CurrentVREditorMode->IsActive();
 }
 
-const static FName WMRSytemName = FName(TEXT("WindowsMixedRealityHMD"));
-const static FName OXRSytemName = FName(TEXT("OpenXR"));
 bool FVREditorModeManager::IsVREditorAvailable() const
 {
-	if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDEnabled())
-	{
-		// TODO: UE-71871/UE-73237 Work around for avoiding starting VRMode when using WMR
-		FName SystemName = GEngine->XRSystem->GetSystemName();
-		const bool bIsWMR = SystemName == WMRSytemName || SystemName == OXRSytemName;
-		return !bIsWMR && !GEditor->IsPlayingSessionInEditor();
-	}
-	else
+	if (!GetDefault<UVRModeSettings>()->ModeClass.LoadSynchronous())
 	{
 		return false;
 	}
+
+	if (GEditor->IsPlayingSessionInEditor())
+	{
+		return false;
+	}
+
+	if (!GEngine->XRSystem.IsValid())
+	{
+		return false;
+	}
+
+	return GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDEnabled();
 }
 
 bool FVREditorModeManager::IsVREditorButtonActive() const
 {
-	const bool bHasHMDDevice = GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDEnabled();
-	return bHasHMDDevice;
+	const bool bAnyModeAvailable = CachedModeClassPaths.Num() > 0;
+	return bAnyModeAvailable;
 }
 
 
@@ -165,6 +190,15 @@ UVREditorMode* FVREditorModeManager::GetCurrentVREditorMode()
 void FVREditorModeManager::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	Collector.AddReferencedObject( CurrentVREditorMode );
+}
+
+void FVREditorModeManager::HandleModeEntryComplete()
+{
+	// Connects the mode UObject's event to the module delegate.
+	if (CurrentVREditorMode->IsActuallyUsingVR())
+	{
+		OnVREditingModeEnterHandle.Broadcast();
+	}
 }
 
 void FVREditorModeManager::StartVREditorMode( const bool bForceWithoutHMD )
@@ -193,8 +227,13 @@ void FVREditorModeManager::StartVREditorMode( const bool bForceWithoutHMD )
 			}
 
 			// Create vr editor mode.
-			VRMode = NewObject<UVREditorMode>();
+			const TSoftClassPtr<UVREditorMode> ModeClassSoft = GetDefault<UVRModeSettings>()->ModeClass;
+			ModeClassSoft.LoadSynchronous();
+			check(ModeClassSoft.IsValid());
+
+			VRMode = NewObject<UVREditorMode>(GetTransientPackage(), ModeClassSoft.Get());
 			check(VRMode != nullptr);
+			VRMode->OnVRModeEntryComplete().AddRaw(this, &FVREditorModeManager::HandleModeEntryComplete);
 			ExtensionCollection->AddExtension(VRMode);
 		}
 
@@ -208,11 +247,6 @@ void FVREditorModeManager::StartVREditorMode( const bool bForceWithoutHMD )
 		CurrentVREditorMode->SetActuallyUsingVR( !bForceWithoutHMD );
 
 		CurrentVREditorMode->Enter();
-
-		if (CurrentVREditorMode->IsActuallyUsingVR())
-		{
-			OnVREditingModeEnterHandle.Broadcast();
-		}
 	}
 }
 
@@ -249,7 +283,6 @@ void FVREditorModeManager::CloseVREditor( const bool bShouldDisableStereo )
 		}
 
 		CurrentVREditorMode = nullptr;
-
 	}
 }
 
@@ -273,6 +306,85 @@ void FVREditorModeManager::OnMapChanged( UWorld* World, EMapChangeType MapChange
 		}
 	}
 	CurrentVREditorMode = nullptr;
+}
+
+void FVREditorModeManager::GetConcreteModeClasses(TArray<UClass*>& OutModeClasses) const
+{
+	for (const FTopLevelAssetPath& ClassPath : CachedModeClassPaths)
+	{
+		if (UClass* Class = TryGetConcreteModeClass(ClassPath))
+		{
+			OutModeClasses.Add(Class);
+		}
+	}
+}
+
+UClass* FVREditorModeManager::TryGetConcreteModeClass(const FTopLevelAssetPath& ClassPath) const
+{
+	TSoftClassPtr<UVREditorMode> SoftClass = TSoftClassPtr<UVREditorMode>(FSoftObjectPath(ClassPath));
+	if (UClass* Class = SoftClass.LoadSynchronous())
+	{
+		if (!Class->HasAnyClassFlags(CLASS_Abstract) || (Class->GetAuthoritativeClass() != Class))
+		{
+			return Class;
+		}
+	}
+
+	return nullptr;
+}
+
+void FVREditorModeManager::GetModeClassPaths(TSet<FTopLevelAssetPath>& OutModeClasses) const
+{
+	TArray<FTopLevelAssetPath> BaseModeClasses;
+	BaseModeClasses.Add(UVREditorMode::StaticClass()->GetClassPathName());
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+	AssetRegistry.GetDerivedClassNames(BaseModeClasses, TSet<FTopLevelAssetPath>(), OutModeClasses);
+}
+
+void FVREditorModeManager::UpdateCachedModeClassPaths()
+{
+	TSet<FTopLevelAssetPath> UpdatedModeClassPaths;
+	GetModeClassPaths(UpdatedModeClassPaths);
+
+	// Exclude any ineligible (abstract, failed to load, etc) modes
+	for (TSet<FTopLevelAssetPath>::TIterator It = UpdatedModeClassPaths.CreateIterator(); It; ++It)
+	{
+		if (!TryGetConcreteModeClass(*It))
+		{
+			It.RemoveCurrent();
+		}
+	}
+
+	// Issue update events.
+	TSet<FTopLevelAssetPath> Union = CachedModeClassPaths.Union(UpdatedModeClassPaths);
+	for (const FTopLevelAssetPath& Path : Union)
+	{
+		if (!CachedModeClassPaths.Contains(Path))
+		{
+			OnModeClassAdded.Broadcast(Path);
+		}
+		else if (!UpdatedModeClassPaths.Contains(Path))
+		{
+			OnModeClassRemoved.Broadcast(Path);
+		}
+	}
+
+	CachedModeClassPaths = MoveTemp(UpdatedModeClassPaths);
+}
+
+void FVREditorModeManager::HandleAssetFilesLoaded()
+{
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+	AssetRegistry.OnFilesLoaded().RemoveAll(this);
+	AssetRegistry.OnAssetAdded().AddRaw(this, &FVREditorModeManager::HandleAssetAddedOrRemoved);
+	AssetRegistry.OnAssetRemoved().AddRaw(this, &FVREditorModeManager::HandleAssetAddedOrRemoved);
+	UpdateCachedModeClassPaths();
+}
+
+void FVREditorModeManager::HandleAssetAddedOrRemoved(const FAssetData& NewAssetData)
+{
+	UpdateCachedModeClassPaths();
 }
 
 #undef LOCTEXT_NAMESPACE

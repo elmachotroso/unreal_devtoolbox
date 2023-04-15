@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerTrackFilters.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/World.h"
 #include "Framework/Commands/Commands.h"
 #include "ISequencer.h"
@@ -133,7 +133,7 @@ public:
 		"FSequencerTrackFilter_Animated",
 		NSLOCTEXT("Contexts", "FSequencerTrackFilter_Animated", "FSequencerTrackFilter_Animated"),
 		NAME_None,
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 	{ }
 		
@@ -148,25 +148,23 @@ public:
 };
 
 FSequencerTrackFilter_Animated::FSequencerTrackFilter_Animated()
+	: BindingCount(0)
 {
 	FSequencerTrackFilter_AnimatedCommands::Register();	
 }
 
 FSequencerTrackFilter_Animated::~FSequencerTrackFilter_Animated()
 {
-	FSequencerTrackFilter_AnimatedCommands::Unregister();	
+	BindingCount--;
+
+	if (BindingCount < 1)
+	{
+		FSequencerTrackFilter_AnimatedCommands::Unregister();
+	}
 }
 
 FText FSequencerTrackFilter_Animated::GetToolTipText() const 
 { 
-	// When opening another sequence, FSequencer initializes the first sequence and then closes the previous sequence. 
-	// This causes the track filter commands to be initialized for the first sequence and then destroyed when the subsequence 
-	// sequence is opened. For now, register the commands before calling Get()
-	if (!FSequencerTrackFilter_AnimatedCommands::IsRegistered())
-	{
-		FSequencerTrackFilter_AnimatedCommands::Register();	
-	}
-
 	const FSequencerTrackFilter_AnimatedCommands& Commands = FSequencerTrackFilter_AnimatedCommands::Get();
 
 	const TSharedRef<const FInputChord> FirstActiveChord = Commands.ToggleAnimatedTracks->GetFirstValidChord();
@@ -180,21 +178,17 @@ FText FSequencerTrackFilter_Animated::GetToolTipText() const
 	return Tooltip;
 }
 
-void FSequencerTrackFilter_Animated::BindCommands(TSharedRef<FUICommandList> CommandBindings, TWeakPtr<ISequencer> Sequencer)
+void FSequencerTrackFilter_Animated::BindCommands(TSharedRef<FUICommandList> SequencerBindings, TSharedRef<FUICommandList> CurveEditorBindings, TWeakPtr<ISequencer> Sequencer)
 {
-	// See comment above
-	if (!FSequencerTrackFilter_AnimatedCommands::IsRegistered())
-	{
-		FSequencerTrackFilter_AnimatedCommands::Register();	
-	}
-
 	const FSequencerTrackFilter_AnimatedCommands& Commands = FSequencerTrackFilter_AnimatedCommands::Get();
 
-	CommandBindings->MapAction(
+	SequencerBindings->MapAction(
 		Commands.ToggleAnimatedTracks,
 		FExecuteAction::CreateLambda( [this, Sequencer]{ Sequencer.Pin()->SetTrackFilterEnabled(GetDisplayName(), !Sequencer.Pin()->IsTrackFilterEnabled(GetDisplayName())); } ),
 		FCanExecuteAction::CreateLambda( [this, Sequencer]{ return true; } ),
 		FIsActionChecked::CreateLambda( [this, Sequencer]{ return Sequencer.Pin()->IsTrackFilterEnabled(GetDisplayName()); } ) );
+
+	CurveEditorBindings->MapAction(Commands.ToggleAnimatedTracks, *SequencerBindings->GetActionForCommand(Commands.ToggleAnimatedTracks));
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -197,8 +197,10 @@ namespace UE
 		{
 			/** Standard cotangent weights */
 			Default = 0,
-			/** magnitude of matrix entries clamped to [-1e5,1e5], scaled by area weight   */
-			ClampedMagnitude = 1
+			/** Magnitude of matrix entries clamped to [-1e5,1e5], scaled by area weight */
+			ClampedMagnitude = 1,
+			/** Divide cotangent weights by the area of the triangle */
+			TriangleArea = 2
 		};
 
 
@@ -726,7 +728,8 @@ void UE::MeshDeformation::ConstructIDTCotangentLaplacian(const FDynamicMesh3& Dy
 			{
 				continue;
 			}
-			EdgeCotanWeights[EdgeId] = IntrinsicMesh.EdgeCotanWeight(EdgeId);
+			const double CTWeight = IntrinsicMesh.EdgeCotanWeight(EdgeId);
+			EdgeCotanWeights[EdgeId] = FMathd::Max(0., CTWeight);  // roundoff errors can produce very, very small negative values when the angles opposite the edge are each 90-degrees. 
 		}
 	}
 
@@ -744,11 +747,12 @@ void UE::MeshDeformation::ConstructIDTCotangentLaplacian(const FDynamicMesh3& Dy
 		{
 			for (int32 EdgeId : IntrinsicMesh.VtxEdgesItr(IVertId))
 			{
+
 				const double EdgeLength = IntrinsicMesh.GetEdgeLength(EdgeId);
 				const double CTWeight = EdgeCotanWeights[EdgeId];
 				const double CTWeightLSqr = CTWeight * EdgeLength * EdgeLength;
 				
-				if (Uncorrected.Contains(EdgeId) || CTWeightLSqr < 1.e-1)
+				if (Uncorrected.Contains(EdgeId)) // this part of the intrinsic mesh is not Delaunay.
 				{
 					bUseUniform = true; 
 				}
@@ -756,7 +760,7 @@ void UE::MeshDeformation::ConstructIDTCotangentLaplacian(const FDynamicMesh3& Dy
 				WeightArea += CTWeightLSqr;
 			}
 			WeightArea *= 0.25;
-			WeightArea = FMath::Max(WeightArea, 1.e-5);
+			WeightArea = FMathd::Max(WeightArea, 1.e-5);
 		}		
 
 		double WeightII = 0.; // accumulate to equal and opposite the sum of the neighbor weights
@@ -890,10 +894,21 @@ void UE::MeshDeformation::ConstructFullCotangentLaplacian(const FDynamicMesh3& M
 			// Get the cotangents for this edge.
 			const int32 Tri0Idx = ToTriIdx[Edge.Tri[0]];
 			const CotanTriangleData& Tri0Data = CotangentTriangleDataArray[Tri0Idx];
-			const double CotanAlpha = Tri0Data.GetOpposingCotangent(EdgeId);
+			double CotanAlpha = Tri0Data.GetOpposingCotangent(EdgeId);
 
 			// The second triangle will be invalid if this is an edge!
-			const double CotanBeta = (Edge.Tri[1] != FDynamicMesh3::InvalidID) ? CotangentTriangleDataArray[ToTriIdx[Edge.Tri[1]]].GetOpposingCotangent(EdgeId) : 0.0;
+			double CotanBeta = (Edge.Tri[1] != FDynamicMesh3::InvalidID) ? CotangentTriangleDataArray[ToTriIdx[Edge.Tri[1]]].GetOpposingCotangent(EdgeId) : 0.0;
+
+			if (WeightMode == ECotangentWeightMode::TriangleArea) 
+			{
+				CotanAlpha /= Tri0Data.Area;
+
+				if (Edge.Tri[1] != FDynamicMesh3::InvalidID)
+				{
+					const CotanTriangleData& Tri1Data = CotangentTriangleDataArray[ToTriIdx[Edge.Tri[1]]];
+					CotanBeta /= Tri1Data.Area; 
+				}
+			}
 
 			// do not need to multiply by 0.5 here...
 			//double WeightIJ = 0.5 * (CotanAlpha + CotanBeta);

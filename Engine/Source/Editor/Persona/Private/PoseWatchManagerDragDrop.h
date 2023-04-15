@@ -2,13 +2,25 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PoseWatchManagerFwd.h"
-#include "Layout/Visibility.h"
-#include "Input/DragAndDrop.h"
+#include "Containers/UnrealString.h"
 #include "DragAndDrop/CompositeDragDropOp.h"
-#include "IPoseWatchManagerTreeItem.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 #include "Engine/PoseWatch.h"
+#include "HAL/PlatformMath.h"
+#include "Input/DragAndDrop.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class SWidget;
+class UClass;
+struct FSlateBrush;
+struct IPoseWatchManagerTreeItem;
 
 /** Enum to describe the compatibility of a drag drop operation */
 enum class EPoseWatchManagerDropCompatibility : uint8
@@ -114,7 +126,7 @@ public:
 
 		// Set text and icon
 		UClass* CommonSelClass = NULL;
-		CurrentIconBrush = FEditorStyle::Get().GetBrush(TEXT("ClassIcon.PoseAsset"));
+		CurrentIconBrush = FAppStyle::Get().GetBrush(TEXT("ClassIcon.PoseAsset"));
 		CurrentHoverText = PoseWatch->GetLabel();
 
 		SetupDefaults();
@@ -133,7 +145,7 @@ public:
 	{
 		PoseWatchFolder = InPoseWatchFolder;
 
-		CurrentIconBrush = FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+		CurrentIconBrush = FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		CurrentHoverText = PoseWatchFolder->GetLabel();
 
 

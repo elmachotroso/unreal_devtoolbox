@@ -2,15 +2,28 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Containers/UnrealString.h"
-#include "Containers/Map.h"
 #include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
 #include "Misc/Guid.h"
 #include "UObject/NameTypes.h"
-#include "Internationalization/Text.h"
+#include "UObject/UnrealNames.h"
+
+class FConfigFile;
 
 #define DDPI_HAS_EXTENDED_PLATFORMINFO_DATA (WITH_EDITOR || IS_PROGRAM)
+
+enum class EPlatformInfoType : uint8
+{
+	/** Only return "real" platforms (no groups or fake platforms) */
+	TruePlatformsOnly,
+
+	/** All known platforms/groups/etc that have a DDPI.ini file */
+	AllPlatformInfos,
+};
 
 #if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA
 
@@ -42,7 +55,7 @@ enum class EPlatformIconSize : uint8
 // 	NotInstalled,
 // };
 
-/** Information about where to find the platform icons (for use by FEditorStyle) */
+/** Information about where to find the platform icons (for use by FAppStyle) */
 struct FPlatformIconPaths
 {
 	FPlatformIconPaths()
@@ -86,11 +99,13 @@ struct FPreviewPlatformMenuItem
 {
 	FName PlatformName;
 	FName ShaderFormat;
+	FName ShaderPlatformToPreview;
+	FName PreviewShaderPlatformName;
 	FString ActiveIconPath;
 	FName ActiveIconName;
 	FString InactiveIconPath;
 	FName InactiveIconName;
-	FText MenuText;
+	FText OptionalFriendlyNameOverride;
 	FText MenuTooltip;
 	FText IconText;
 	FName DeviceProfileName;
@@ -128,7 +143,6 @@ struct FDataDrivenPlatformInfo
 	bool Freezing_b32Bit = false;
 	bool Freezing_bForce64BitMemoryImagePointers = false;
 	bool Freezing_bAlignBases = false;
-	bool Freezing_bWithRayTracing = false;
 
 	// True if this platform has a non-generic gamepad specifically associated with it
 	bool bHasDedicatedGamepad = false;
@@ -158,7 +172,7 @@ public:
 	// setting moved from PlatformInfo::FTargetPlatformInfo
 
 
-	/** Information about where to find the platform icons (for use by FEditorStyle) */
+	/** Information about where to find the platform icons (for use by FAppStyle) */
 	FPlatformIconPaths IconPaths;
 
 	/** Path under CarefullyRedist for the SDK.  FString so case sensitive platforms don't get messed up by a pre-existing FName of a different casing. */
@@ -194,7 +208,7 @@ public:
 
 
 
-	/** Get the icon name (for FEditorStyle) used by the given icon type for this platform */
+	/** Get the icon name (for FAppStyle) used by the given icon type for this platform */
 	FName GetIconStyleName(const EPlatformIconSize InIconSize) const
 	{
 		switch (InIconSize)
@@ -211,7 +225,7 @@ public:
 		return NAME_None;
 	}
 
-	/** Get the path to the icon on disk (for FEditorStyle) for the given icon type for this platform */
+	/** Get the path to the icon on disk (for FAppStyle) for the given icon type for this platform */
 	const FString& GetIconPath(const EPlatformIconSize InIconSize) const
 	{
 		switch (InIconSize)
@@ -259,9 +273,22 @@ struct CORE_API FDataDrivenPlatformInfoRegistry
 	static const FDataDrivenPlatformInfo& GetPlatformInfo(const char* PlatformName);
 
 
-	// get just names or just infos, 
-	static const TArray<FName> GetSortedPlatformNames();
-	static const TArray<const FDataDrivenPlatformInfo*>& GetSortedPlatformInfos();
+	/**
+	 * Get sorted platorm infos or names. PlatformType is used to choose between true platforms and platform groups (or other fake platforms)
+	 */
+	static const TArray<FName> GetSortedPlatformNames(EPlatformInfoType PlatformType);
+	static const TArray<const FDataDrivenPlatformInfo*>& GetSortedPlatformInfos(EPlatformInfoType PlatformType);
+
+	UE_DEPRECATED(5.1, "Use GetSoprtedPlatformNames that takes a PlatformType parameter")
+	static const TArray<FName> GetSortedPlatformNames()
+	{
+		return GetSortedPlatformNames(EPlatformInfoType::AllPlatformInfos);
+	}
+	UE_DEPRECATED(5.1, "Use GetSortedPlatformInfos that takes a PlatformType parameter")
+	static const TArray<const FDataDrivenPlatformInfo*>& GetSortedPlatformInfos()
+	{
+		return GetSortedPlatformInfos(EPlatformInfoType::AllPlatformInfos);
+	}
 
 	/**
 	 * Gets a list of all known confidential platforms (note these are just the platforms you have access to, so, for example PS4 won't be

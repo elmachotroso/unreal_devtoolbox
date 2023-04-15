@@ -1,34 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using UnrealBuildTool;
 using System.IO;
-public class LowLevelTestsRunner: ModuleRules
+
+namespace UnrealBuildTool.Rules
 {
-	public LowLevelTestsRunner(ReadOnlyTargetRules Target) : base(Target)
+	public class LowLevelTestsRunner : ModuleRules
 	{
-		PCHUsage = PCHUsageMode.NoPCHs;
-		PrecompileForTargets = PrecompileTargetsType.None;
-		bUseUnity = false;
-		bRequiresImplementModule = false;
+		public LowLevelTestsRunner(ReadOnlyTargetRules Target) : base(Target)
+		{
+			PCHUsage = PCHUsageMode.NoPCHs;
+			PrecompileForTargets = PrecompileTargetsType.None;
+			bUseUnity = false;
+			bRequiresImplementModule = false;
 
-		PublicIncludePaths.AddRange(
-			new string[]
-			{
-				Path.Combine(ModuleDirectory, "Public"),
-				Path.Combine(Target.UEThirdPartySourceDirectory, "Catch2")
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				Path.Combine(ModuleDirectory, "Private")
-			}
-		);
-
-		PublicIncludePathModuleNames.AddRange(
-				new string[] {
-					"Core"
+			PublicIncludePaths.AddRange(
+				new string[]
+				{
+				"Runtime/Launch/Public",
+				Path.Combine(Target.UEThirdPartySourceDirectory, "Catch2", "v3.0.1", "src")
 				}
-		);
+			);
+
+			PrivateIncludePaths.AddRange(
+				new string[] {
+				"Runtime/Launch/Private"
+				}
+			);
+
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+				"Core",
+				"Projects"
+				}
+			);
+		}
 	}
 }

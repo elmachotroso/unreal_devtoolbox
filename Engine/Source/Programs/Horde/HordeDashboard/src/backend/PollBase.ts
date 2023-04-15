@@ -10,7 +10,7 @@ export abstract class PollBase {
         this.pollTime = pollTime;
     }
 
-    clear() {
+    stop() {
 
         clearTimeout(this.timeoutId);
         this.timeoutId = undefined;
@@ -85,9 +85,9 @@ export abstract class PollBase {
 
     updating = false;
 
-    private timeoutId: any;
+    protected timeoutId: any;
 
-    private pollTime: number;
+    protected pollTime: number;
 
     private canceled = new Set<number>();
     private cancelId = 0;

@@ -12,9 +12,6 @@
 #include "Hash/Blake3.h"
 #include "IO/IoHash.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 static inline void PreloadInnerStructMembers(FStructProperty* StructProperty)
 {
 	if (UseCircularDependencyLoadDeferring())
@@ -54,10 +51,29 @@ FStructProperty::FStructProperty(FFieldVariant InOwner, const FName& InName, EOb
 }
 
 FStructProperty::FStructProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UScriptStruct* InStruct)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: FProperty(InOwner, InName, InObjectFlags, InOffset, InStruct->GetCppStructOps() ? InStruct->GetCppStructOps()->GetComputedPropertyFlags() | InFlags : InFlags)
-	,	Struct( InStruct )
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	, Struct( InStruct )
 {
 	ElementSize = Struct->PropertiesSize;
+}
+
+static EPropertyFlags GetStructComputedPropertyFlags(const UECodeGen_Private::FStructPropertyParams& Prop)
+{
+	EPropertyFlags ComputedPropertyFlags = CPF_None;
+	UScriptStruct* Struct = Prop.ScriptStructFunc ? Prop.ScriptStructFunc() : nullptr;
+	if (Struct && Struct->GetCppStructOps())
+	{
+		ComputedPropertyFlags = Struct->GetCppStructOps()->GetComputedPropertyFlags();
+	}
+	return ComputedPropertyFlags;
+}
+
+FStructProperty::FStructProperty(FFieldVariant InOwner, const UECodeGen_Private::FStructPropertyParams& Prop)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop, GetStructComputedPropertyFlags(Prop))
+{
+	Struct = Prop.ScriptStructFunc ? Prop.ScriptStructFunc() : nullptr;
 }
 
 #if WITH_EDITORONLY_DATA
@@ -247,7 +263,7 @@ bool FStructProperty::HasNoOpConstructor() const
 
 FString FStructProperty::GetCPPType( FString* ExtendedTypeText/*=NULL*/, uint32 CPPExportFlags/*=0*/ ) const
 {
-	return Struct->GetStructCPPName();
+	return Struct->GetStructCPPName(CPPExportFlags);
 }
 
 FString FStructProperty::GetCPPTypeForwardDeclaration() const
@@ -267,12 +283,32 @@ FString FStructProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	return TEXT("STRUCT");
 }
 
-void FStructProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FStructProperty::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
-	Struct->ExportText(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags, ExportRootScope, true);
+	void* StructData = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		int32 RequiredAllocSize = Struct->GetStructureSize();
+		StructData = FMemory::Malloc(RequiredAllocSize);
+		Struct->InitializeStruct(StructData);
+		GetValue_InContainer(PropertyValueOrContainer, StructData);
+	}
+	else
+	{
+		StructData = PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType);
+	}
+
+	Struct->ExportText(ValueStr, StructData, DefaultValue, Parent, PortFlags, ExportRootScope, true);
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		Struct->DestroyStruct(StructData);
+		FMemory::Free(StructData);
+		StructData = nullptr;
+	}
 }
 
-const TCHAR* FStructProperty::ImportText_Internal(const TCHAR* InBuffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FStructProperty::ImportText_Internal(const TCHAR* InBuffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	FScopedPlaceholderPropertyTracker ImportPropertyTracker(this);
@@ -291,13 +327,34 @@ const TCHAR* FStructProperty::ImportText_Internal(const TCHAR* InBuffer, void* D
 		StructLinker->LoadFlags |= OldFlags | PropagatedLoadFlags;
 	}
 #endif 
-	const TCHAR* Result = Struct->ImportText(InBuffer, Data, Parent, PortFlags, ErrorText, [this]() { return GetName(); }, true);
+	void* StructData = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		int32 RequiredAllocSize = Struct->GetStructureSize();
+		StructData = FMemory::Malloc(RequiredAllocSize);
+		Struct->InitializeStruct(StructData);
+		GetValue_InContainer(ContainerOrPropertyPtr, StructData);
+	}
+	else
+	{
+		StructData = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+	}
+
+	const TCHAR* Result = Struct->ImportText(InBuffer, StructData, Parent, PortFlags, ErrorText, [this]() { return GetName(); }, true);
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		SetValue_InContainer(ContainerOrPropertyPtr, StructData);
+		Struct->DestroyStruct(StructData);
+		FMemory::Free(StructData);
+		StructData = nullptr;
+	}
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	if (StructLinker)
 	{
 		StructLinker->LoadFlags = OldFlags;
-}
+	}
 #endif
 
 	return Result;
@@ -418,6 +475,3 @@ void FStructProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) c
 	}
 }
 #endif
-
-
-#include "UObject/DefineUPropertyMacros.h"

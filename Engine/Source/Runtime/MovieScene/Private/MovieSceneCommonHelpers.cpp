@@ -16,6 +16,23 @@
 #include "Sound/SoundNodeWavePlayer.h"
 #include "MovieSceneTrack.h"
 #include "Engine/Engine.h"
+#include "UObject/Package.h"
+
+bool MovieSceneHelpers::IsSectionKeyable(const UMovieSceneSection* Section)
+{
+	if (!Section)
+	{
+		return false;
+	}
+
+	UMovieSceneTrack* Track = Section->GetTypedOuter<UMovieSceneTrack>();
+	if (!Track)
+	{
+		return false;
+	}
+
+	return !Track->IsRowEvalDisabled(Section->GetRowIndex()) && !Track->IsEvalDisabled() && Section->IsActive();
+}
 
 UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( TArrayView<UMovieSceneSection* const> Sections, FFrameNumber Time )
 {
@@ -24,7 +41,7 @@ UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( TArrayView<UMovieScene
 		UMovieSceneSection* Section = Sections[SectionIndex];
 
 		//@todo sequencer: There can be multiple sections overlapping in time. Returning instantly does not account for that.
-		if( Section->IsTimeWithinSection( Time ) && Section->IsActive() )
+		if( Section->IsTimeWithinSection( Time ) && IsSectionKeyable(Section) )
 		{
 			return Section;
 		}
@@ -38,13 +55,16 @@ UMovieSceneSection* MovieSceneHelpers::FindNearestSectionAtTime( TArrayView<UMov
 	TArray<UMovieSceneSection*> OverlappingSections, NonOverlappingSections;
 	for (UMovieSceneSection* Section : Sections)
 	{
-		if (Section->GetRange().Contains(Time))
+		if (IsSectionKeyable(Section))
 		{
-			OverlappingSections.Add(Section);
-		}
-		else
-		{
-			NonOverlappingSections.Add(Section);
+			if (Section->GetRange().Contains(Time))
+			{
+				OverlappingSections.Add(Section);
+			}
+			else
+			{
+				NonOverlappingSections.Add(Section);
+			}
 		}
 	}
 
@@ -348,6 +368,26 @@ void MovieSceneHelpers::GetDescendantMovieScenes(UMovieSceneSequence* InSequence
 	}
 }
 
+void MovieSceneHelpers::GetDescendantSubSections(const UMovieScene* InMovieScene, TArray<UMovieSceneSubSection*>& InSubSections)
+{
+	if (!IsValid(InMovieScene))
+	{
+		return;
+	}
+
+	for (UMovieSceneSection* Section : InMovieScene->GetAllSections())
+	{
+		if (UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(Section))
+		{
+			InSubSections.Add(SubSection);
+			
+			if (const UMovieSceneSequence* SubSequence = SubSection->GetSequence())
+			{
+				GetDescendantSubSections(SubSequence->GetMovieScene(), InSubSections);
+			}
+		}
+	}
+}
 
 USceneComponent* MovieSceneHelpers::SceneComponentFromRuntimeObject(UObject* Object)
 {
@@ -370,7 +410,7 @@ USceneComponent* MovieSceneHelpers::SceneComponentFromRuntimeObject(UObject* Obj
 UCameraComponent* MovieSceneHelpers::CameraComponentFromActor(const AActor* InActor)
 {
 	TArray<UCameraComponent*> CameraComponents;
-	InActor->GetComponents<UCameraComponent>(CameraComponents);
+	InActor->GetComponents(CameraComponents);
 
 	// If there's a camera component that's active, return that one
 	for (UCameraComponent* CameraComponent : CameraComponents)
@@ -395,14 +435,14 @@ UCameraComponent* MovieSceneHelpers::CameraComponentFromRuntimeObject(UObject* R
 	if (RuntimeObject)
 	{
 		// find camera we want to control
-		UCameraComponent* const CameraComponent = dynamic_cast<UCameraComponent*>(RuntimeObject);
+		UCameraComponent* const CameraComponent = Cast<UCameraComponent>(RuntimeObject);
 		if (CameraComponent)
 		{
 			return CameraComponent;
 		}
 
 		// see if it's an actor that has a camera component
-		AActor* const Actor = dynamic_cast<AActor*>(RuntimeObject);
+		AActor* const Actor = Cast<AActor>(RuntimeObject);
 		if (Actor)
 		{
 			return CameraComponentFromActor(Actor);
@@ -438,7 +478,7 @@ float MovieSceneHelpers::CalculateWeightForBlending(UMovieSceneSection* SectionT
 			TArray<UMovieSceneSection*, TInlineAllocator<4>> OverlappingSections;
 			for (UMovieSceneSection* Section : Sections)
 			{
-				if (Section->GetRange().Contains(Time))
+				if (MovieSceneHelpers::IsSectionKeyable(Section) && Section->GetRange().Contains(Time))
 				{
 					OverlappingSections.Add(Section);
 				}
@@ -510,6 +550,24 @@ UObject* MovieSceneHelpers::MakeSpawnableTemplateFromInstance(UObject& InSourceO
 	}
 
 	return NewInstance;
+}
+
+
+MovieSceneHelpers::FMovieSceneScopedPackageDirtyGuard::FMovieSceneScopedPackageDirtyGuard(USceneComponent* InComponent)
+{
+	Component = InComponent;
+	if (Component && Component->GetPackage())
+	{
+		bPackageWasDirty = Component->GetPackage()->IsDirty();
+	}
+}
+
+MovieSceneHelpers::FMovieSceneScopedPackageDirtyGuard::~FMovieSceneScopedPackageDirtyGuard()
+{
+	if (Component && Component->GetPackage())
+	{
+		Component->GetPackage()->SetDirtyFlag(bPackageWasDirty);
+	}
 }
 
 FTrackInstancePropertyBindings::FTrackInstancePropertyBindings( FName InPropertyName, const FString& InPropertyPath )
@@ -641,7 +699,7 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 				}
 			}
 		}
-		else
+		else if (PropertyAndIndex.Property)
 		{
 			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *PropertyAndIndex.Property->GetName(), *FArrayProperty::StaticClass()->GetName());
 		}
@@ -691,25 +749,28 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 void FTrackInstancePropertyBindings::CallFunctionForEnum( UObject& InRuntimeObject, int64 PropertyValue )
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
+
+	FProperty* Property = GetProperty(InRuntimeObject);
+	if (Property && Property->HasSetter())
+	{
+		Property->CallSetter(&InRuntimeObject, &PropertyValue);
+	}
+	else if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
 		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	else if (Property && Property->IsA(FEnumProperty::StaticClass()))
 	{
-		if (Property->IsA(FEnumProperty::StaticClass()))
+		if (FEnumProperty* EnumProperty = CastFieldChecked<FEnumProperty>(Property))
 		{
-			if (FEnumProperty* EnumProperty = CastFieldChecked<FEnumProperty>(Property))
-			{
-				FNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
-				void* ValueAddr = EnumProperty->ContainerPtrToValuePtr<void>(PropAndFunction.PropertyAddress.Address);
-				UnderlyingProperty->SetIntPropertyValue(ValueAddr, PropertyValue);
-			}
+			FNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
+			void* ValueAddr = EnumProperty->ContainerPtrToValuePtr<void>(PropAndFunction.PropertyAddress.Address);
+			UnderlyingProperty->SetIntPropertyValue(ValueAddr, PropertyValue);
 		}
-		else
-		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FEnumProperty::StaticClass()->GetName());
-		}
+	}
+	else if (Property)
+	{
+		UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FEnumProperty::StaticClass()->GetName());
 	}
 
 	if (UFunction* NotifyFunction = PropAndFunction.NotifyFunction.Get())
@@ -779,24 +840,27 @@ int64 FTrackInstancePropertyBindings::GetCurrentValueForEnum(const UObject& Obje
 template<> void FTrackInstancePropertyBindings::CallFunction<bool>(UObject& InRuntimeObject, TCallTraits<bool>::ParamType PropertyValue)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
+
+	FProperty* Property = GetProperty(InRuntimeObject);
+	if (Property && Property->HasSetter())
+	{
+		Property->CallSetter(&InRuntimeObject, &PropertyValue);
+	}
+	else if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
 		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	else if (Property && Property->IsA(FBoolProperty::StaticClass()))
 	{
-		if (Property->IsA(FBoolProperty::StaticClass()))
+		if (FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property))
 		{
-			if (FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property))
-			{
-				uint8* ValuePtr = BoolProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
-				BoolProperty->SetPropertyValue(ValuePtr, PropertyValue);
-			}
+			uint8* ValuePtr = BoolProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
+			BoolProperty->SetPropertyValue(ValuePtr, PropertyValue);
 		}
-		else
-		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FBoolProperty::StaticClass()->GetName());
-		}
+	}
+	else if (Property)
+	{
+		UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FBoolProperty::StaticClass()->GetName());
 	}
 
 	if (UFunction* NotifyFunction = PropAndFunction.NotifyFunction.Get())
@@ -849,14 +913,27 @@ template<> void FTrackInstancePropertyBindings::SetCurrentValue<bool>(UObject& O
 template<> void FTrackInstancePropertyBindings::CallFunction<UObject*>(UObject& InRuntimeObject, UObject* PropertyValue)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
+
+	FProperty* Property = GetProperty(InRuntimeObject);
+	if (Property && Property->HasSetter())
+	{
+		Property->CallSetter(&InRuntimeObject, &PropertyValue);
+	}
+	else if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
 		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
+	else if (Property && Property->IsA(FObjectPropertyBase::StaticClass()))
 	{
-		uint8* ValuePtr = ObjectProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
-		ObjectProperty->SetObjectPropertyValue(ValuePtr, PropertyValue);
+		if (FObjectPropertyBase* ObjectProperty = CastFieldChecked<FObjectPropertyBase>(Property))
+		{
+			uint8* ValuePtr = ObjectProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
+			ObjectProperty->SetObjectPropertyValue(ValuePtr, PropertyValue);
+		}
+	}
+	else if (Property)
+	{
+		UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FObjectPropertyBase::StaticClass()->GetName());
 	}
 
 	if (UFunction* NotifyFunction = PropAndFunction.NotifyFunction.Get())

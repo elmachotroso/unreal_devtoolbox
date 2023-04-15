@@ -2,13 +2,13 @@
 
 #include "RemoteControlWebSocketServer.h"
 #include "Containers/Ticker.h"
+#include "WebRemoteControlInternalUtils.h"
 #include "IPAddress.h"
 #include "IRemoteControlModule.h"
 #include "IWebSocketNetworkingModule.h"
 #include "RemoteControlRequest.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
-#include "WebRemoteControlUtils.h"
 #include "WebSocketNetworkingDelegates.h"
 
 #define LOCTEXT_NAMESPACE "RCWebSocketServer"
@@ -21,7 +21,7 @@ namespace RemoteControlWebSocketServer
 	TOptional<FRemoteControlWebSocketMessage> ParseWebsocketMessage(TArrayView<uint8> InPayload)
 	{
 		FRCWebSocketRequest Request;
-		bool bSuccess = WebRemoteControlUtils::DeserializeRequestPayload(InPayload, nullptr, Request);
+		bool bSuccess = WebRemoteControlInternalUtils::DeserializeRequestPayload(InPayload, nullptr, Request);
 
 		FString ErrorText;
 		if (Request.MessageName.IsEmpty())
@@ -50,7 +50,7 @@ namespace RemoteControlWebSocketServer
 			}
 			if (!Request.Passphrase.IsEmpty())
 			{
-				Message.Header.FindOrAdd(WebRemoteControlUtils::PassphraseHeader) = TArray<FString>({Request.Passphrase});
+				Message.Header.FindOrAdd(WebRemoteControlInternalUtils::PassphraseHeader) = TArray<FString>({Request.Passphrase});
 			}
 			Message.MessageName = MoveTemp(Request.MessageName);
 			ParsedMessage = MoveTemp(Message);
@@ -71,6 +71,16 @@ void FWebsocketMessageRouter::Dispatch(const FRemoteControlWebSocketMessage& Mes
 void FWebsocketMessageRouter::AddPreDispatch(TFunction<bool(const FRemoteControlWebSocketMessage& Message)> WebsocketPreprocessor)
 {
 	DispatchPreProcessor.Add(WebsocketPreprocessor);
+}
+
+void FWebsocketMessageRouter::AttemptDispatch(const struct FRemoteControlWebSocketMessage& Message)
+{
+	if (!PreDispatch(Message))
+	{
+		return;
+	}
+
+	Dispatch(Message);
 }
 
 bool FWebsocketMessageRouter::PreDispatch(const FRemoteControlWebSocketMessage& Message) const
@@ -200,6 +210,7 @@ void FRCWebSocketServer::OnWebSocketClientConnected(INetworkingWebSocket* Socket
 		CloseCallback.BindRaw(this, &FRCWebSocketServer::OnSocketClose, Socket);
 		Socket->SetSocketClosedCallBack(CloseCallback);
 
+		OnConnectionOpened().Broadcast(Connection.Id);
 		Connections.Add(MoveTemp(Connection));
 	}
 }
@@ -219,13 +230,7 @@ void FRCWebSocketServer::ReceivedRawPacket(void* Data, int32 Size, FGuid ClientI
 	if (TOptional<FRemoteControlWebSocketMessage> Message = RemoteControlWebSocketServer::ParseWebsocketMessage(Payload))
 	{
 		Message->ClientId = ClientId;
-		
-		if (!Router->PreDispatch(*Message))
-		{
-			return;
-		}
-	
-		Router->Dispatch(*Message);
+		Router->AttemptDispatch(*Message);
 	}
 }
 

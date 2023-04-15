@@ -10,6 +10,7 @@
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/SharedPointer.h"
 #include "Engine/EngineTypes.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/ScriptMacros.h"
@@ -21,10 +22,7 @@
 #include "Interfaces/Interface_AssetUserData.h"
 #include "MaterialSceneTextureId.h"
 #include "Materials/MaterialRelevance.h"
-#include "MaterialCachedData.h"
-#if WITH_CHAOS
 #include "Physics/PhysicsInterfaceCore.h"
-#endif
 #include "MaterialShared.h"
 #include "MaterialInterface.generated.h"
 
@@ -39,6 +37,12 @@ class UTexture;
 class UMaterialInstance;
 struct FMaterialParameterInfo;
 struct FMaterialResourceLocOnDisk;
+class FMaterialCachedData;
+struct FMaterialCachedExpressionData;
+struct FMaterialCachedExpressionEditorOnlyData;
+#if WITH_EDITOR
+class FMaterialCachedHLSLTree;
+#endif
 #if WITH_EDITORONLY_DATA
 struct FParameterChannelNames;
 #endif
@@ -189,11 +193,47 @@ struct FMaterialInheritanceChain
 	inline const FMaterialCachedExpressionData& GetCachedExpressionData() const { checkSlow(CachedExpressionData); return *CachedExpressionData; }
 };
 
+UCLASS(Optional)
+class UMaterialInterfaceEditorOnlyData : public UObject
+{
+	GENERATED_BODY()
+public:
+	UMaterialInterfaceEditorOnlyData();
+	UMaterialInterfaceEditorOnlyData(FVTableHelper& Helper);
+	ENGINE_API virtual ~UMaterialInterfaceEditorOnlyData();
+
+	//~ Begin UObject Interface.
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	//~ End UObject Interface.
+
+	TSharedPtr<FMaterialCachedExpressionEditorOnlyData> CachedExpressionData;
+
+	/** Set if CachedExpressionData was loaded from disk, should typically be true when running with cooked data, and false in the editor */
+	bool bLoadedCachedExpressionData = false;
+};
+
 UCLASS(abstract, BlueprintType, MinimalAPI, HideCategories = (Thumbnail))
 class UMaterialInterface : public UObject, public IBlendableInterface, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
 
+#if WITH_EDITORONLY_DATA
+protected:
+	friend class UMaterialInterfaceEditorOnlyData;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterfaceEditorOnlyData> EditorOnlyData;
+
+	ENGINE_API virtual const UClass* GetEditorOnlyDataClass() const;
+	ENGINE_API UMaterialInterfaceEditorOnlyData* CreateEditorOnlyData();
+
+public:
+	virtual UMaterialInterfaceEditorOnlyData* GetEditorOnlyData() { return EditorOnlyData; }
+	virtual const UMaterialInterfaceEditorOnlyData* GetEditorOnlyData() const { return EditorOnlyData; }
+	bool IsEditorOnlyDataValid() const { return EditorOnlyData != nullptr; }
+#endif // WITH_EDITORONLY_DATA
+
+public:
 	/** SubsurfaceProfile, for Screen Space Subsurface Scattering */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Material, meta = (DisplayName = "Subsurface Profile"))
 	TObjectPtr<class USubsurfaceProfile> SubsurfaceProfile;
@@ -231,6 +271,10 @@ private:
 
 public:
 
+	ENGINE_API UMaterialInterface();
+	ENGINE_API UMaterialInterface(FVTableHelper& Helper);
+	ENGINE_API virtual ~UMaterialInterface();
+
 	//~ Begin IInterface_AssetUserData Interface
 	ENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
 	ENGINE_API virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
@@ -243,7 +287,7 @@ public:
 	TArray<FMaterialTextureInfo> TextureStreamingDataMissingEntries;
 
 	/** The mesh used by the material editor to preview the material.*/
-	UPROPERTY(EditAnywhere, Category=Previewing, meta=(AllowedClasses="StaticMesh,SkeletalMesh", ExactClass="true"))
+	UPROPERTY(EditAnywhere, Category=Previewing, meta=(AllowedClasses="/Script/Engine.StaticMesh,/Script/Engine.SkeletalMesh", ExactClass="true"))
 	FSoftObjectPath PreviewMesh;
 
 	/** Information for thumbnail rendering */
@@ -281,10 +325,16 @@ public:
 	ENGINE_API virtual void BeginDestroy() override;
 	ENGINE_API virtual void FinishDestroy() override;
 	ENGINE_API virtual bool IsReadyForFinishDestroy() override;
+	ENGINE_API virtual void PostInitProperties() override;
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 	ENGINE_API virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	ENGINE_API static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 	ENGINE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	ENGINE_API virtual void PostCDOContruct() override;
+	ENGINE_API virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
 	ENGINE_API static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 #if WITH_EDITOR
@@ -320,6 +370,13 @@ public:
 	virtual void GetMaterialInheritanceChain(FMaterialInheritanceChain& OutChain) const PURE_VIRTUAL(UMaterialInterface::GetMaterialInheritanceChain, return;);
 
 	ENGINE_API virtual const FMaterialCachedExpressionData& GetCachedExpressionData(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const;
+
+#if WITH_EDITOR
+	ENGINE_API virtual const FMaterialCachedHLSLTree& GetCachedHLSLTree(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const;
+#endif
+
+	ENGINE_API bool IsUsingNewHLSLGenerator() const;
+	ENGINE_API bool IsUsingControlFlow() const;
 
 	/**
 	* Test this material for dependency on a given material.
@@ -446,6 +503,21 @@ public:
 	 */
 	virtual bool GetMaterialLayers(FMaterialLayersFunctions& OutLayers, TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const PURE_VIRTUAL(UMaterialInterface::GetMaterialLayers, return false;);
 
+	/**
+	 * Get the associated nanite override material
+	 * @return - nanite override, will be this material if none was set
+	 */
+	virtual UMaterialInterface* GetNaniteOverride(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) PURE_VIRTUAL(UMaterialInterface::GetNaniteOverride, return nullptr;);
+
+	/**
+	 * Precache PSOs which can be used for this material for the given vertex factory type and material paramaters
+	 */
+	virtual FGraphEventArray PrecachePSOs(const FVertexFactoryType* VertexFactoryType, const struct FPSOPrecacheParams& PreCacheParams)
+	{
+		return PrecachePSOs(MakeArrayView(&VertexFactoryType, 1), PreCacheParams);
+	}
+	virtual FGraphEventArray PrecachePSOs(const TConstArrayView<const FVertexFactoryType*>& VertexFactoryTypes, const struct FPSOPrecacheParams& PreCacheParams) { return FGraphEventArray(); }
+
 #if WITH_EDITORONLY_DATA
 
 	/**
@@ -492,6 +564,7 @@ public:
 	ENGINE_API virtual void GetAllParametersOfType(EMaterialParameterType Type, TMap<FMaterialParameterInfo, FMaterialParameterMetadata>& OutParameters) const;
 	ENGINE_API void GetAllScalarParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
 	ENGINE_API void GetAllVectorParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
+	ENGINE_API void GetAllDoubleVectorParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
 	ENGINE_API void GetAllTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
 	ENGINE_API void GetAllRuntimeVirtualTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
 	ENGINE_API void GetAllFontParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const;
@@ -509,6 +582,7 @@ public:
 	ENGINE_API bool GetParameterDefaultValue(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo, FMaterialParameterMetadata& OutValue) const;
 	ENGINE_API bool GetScalarParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue) const;
 	ENGINE_API bool GetVectorParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue) const;
+	ENGINE_API bool GetDoubleVectorParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, FVector4d& OutValue) const;
 	ENGINE_API bool GetTextureParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue) const;
 	ENGINE_API bool GetRuntimeVirtualTextureParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue) const;
 	ENGINE_API bool GetFontParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage) const;
@@ -542,6 +616,8 @@ public:
 	 */
 	ENGINE_API virtual void LogMaterialsAndTextures(FOutputDevice& Ar, int32 Indent) const {}
 #endif
+
+	ENGINE_API virtual void DumpDebugInfo(FOutputDevice& OutputDevice) const {}
 
 private:
 	// might get called from game or render thread
@@ -718,6 +794,11 @@ public:
 	ENGINE_API bool IsVectorParameterUsedAsChannelMask(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue) const;
 	ENGINE_API bool GetVectorParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const;
 #endif
+	ENGINE_API bool GetDoubleVectorParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, FVector4d& OutValue, bool bOveriddenOnly = false) const;
+#if WITH_EDITOR
+	ENGINE_API bool IsDoubleVectorParameterUsedAsChannelMask(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue) const;
+	ENGINE_API bool GetDoubleVectorParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const;
+#endif // WITH_EDITOR
 	ENGINE_API bool GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly = false) const;
 	ENGINE_API bool GetRuntimeVirtualTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bOveriddenOnly = false) const;
 #if WITH_EDITOR
@@ -731,7 +812,9 @@ public:
 	*/
 	ENGINE_API virtual float GetOpacityMaskClipValue() const;
 	ENGINE_API virtual bool GetCastDynamicShadowAsMasked() const;
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
 	ENGINE_API virtual EBlendMode GetBlendMode() const;
+	ENGINE_API virtual EStrataBlendMode GetStrataBlendMode() const;
 	ENGINE_API virtual FMaterialShadingModelField GetShadingModels() const;
 	ENGINE_API virtual bool IsShadingModelFromMaterialExpression() const;
 	ENGINE_API virtual bool IsTwoSided() const;
@@ -767,6 +850,28 @@ public:
 	ENGINE_API static void RecacheAllMaterialUniformExpressions(bool bRecreateUniformBuffer);
 
 	/**
+	 * @brief Submits shaders to be compiled for all the materials in the world.
+	 *
+	 * This function will submit any remaining shaders to be compiled for all the materials in the passed in world.  By default
+	 * these shader compilation jobs will be compiled in the background so if you need the results immediately you can call
+	 * FinishAllCompilation() to block on the results.
+	 *
+	 * If the world is nullptr this will submit remaining shaders to be compiled for all the loaded materials.
+	 *
+	 * @code
+	 * GShaderCompilingManager->SubmitRemainingJobsForWorld(World);
+	 * GShaderCompilingManager->FinishAllCompilation();
+	 * @endcode
+	 *
+	 * @param World Only compile shaders for materials that are used on primitives in this world.
+	 * @param CompileMode Controls whether or not we block on the shader compile results.
+	 *
+	 * @note This will only submit shader compile jobs for missing shaders on each material.  Calling this multiple times on the same world
+	 * will result in a no-op.
+	 */
+	ENGINE_API static void SubmitRemainingJobsForWorld(UWorld* World, EMaterialShaderPrecompileMode CompileMode = EMaterialShaderPrecompileMode::Default);
+
+	/**
 	 * Re-caches uniform expressions for this material interface                   
 	 * Set bRecreateUniformBuffer to true if uniform buffer layout will change (e.g. FMaterial is being recompiled).
 	 * In that case calling needs to use FMaterialUpdateContext to recreate the rendering state of primitives using this material.
@@ -774,6 +879,42 @@ public:
 	 * @param bRecreateUniformBuffer - true forces uniform buffer recreation.
 	 */
 	virtual void RecacheUniformExpressions(bool bRecreateUniformBuffer) const {}
+
+	/** @brief Submits remaining shaders for recompilation.
+	*
+	* This function will submit any remaining shaders to be compiled for the given material.  By default
+	* these shader compilation jobs will be compiled in the background.
+	*
+	* @param CompileMode Controls whether or not we block on the shader compile results.
+	*/
+	ENGINE_API virtual void CacheShaders(EMaterialShaderPrecompileMode CompileMode = EMaterialShaderPrecompileMode::Default) {}
+
+#if WITH_EDITOR
+	ENGINE_API virtual void CacheGivenTypesForCooking(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const TArray<const FVertexFactoryType*>& VFTypes, const TArray<const FShaderPipelineType*> PipelineTypes, const TArray<const FShaderType*>& ShaderTypes) {}
+#endif
+
+	/** @brief Checks to see if this material has all its shaders cached.
+	*
+	* Materials are not guaranteed to have all their shaders compiled after loading.  It can be useful to
+	* check for completeness in order to cache remaining shaders.
+	* 
+	* @return Whether or not all shaders for this material exist.
+	*
+	* @see CacheShaders
+	* @note This function will return true if the resources are not cache for this material yet.
+	*/
+	ENGINE_API virtual bool IsComplete() const { return true; }
+
+	/** @brief Checks to see if this material has all its shaders cached and if not, will perform a synchronous compilation of those.
+	*
+	* Materials are not guaranteed to have all their shaders compiled after loading and using this function before a draw will ensure that the material will not render until it's 
+	* ready to (and use a fallback material instead). This needs to be avoided in the common render path but can be useful in critical tools (e.g. landscape) that rely on the 
+	* material and cannot afford a fallback material. 
+	* In the editor, it will display a toast when waiting for the shaders to compile.
+	*
+	* @see CacheShaders
+	*/
+	ENGINE_API void EnsureIsComplete();
 
 #if WITH_EDITOR
 	/** Clears the shader cache and recompiles the shader for rendering. */
@@ -903,6 +1044,9 @@ protected:
 
 	void UpdateMaterialRenderProxy(FMaterialRenderProxy& Proxy);
 
+	/** Filter out ShadingModels field to a shader platform settings */
+	static void FilterOutPlatformShadingModels(const FStaticShaderPlatform Platform, FMaterialShadingModelField& ShadingModels);
+
 	/**
 	 * Cached data generated from the material's expressions, may be nullptr
 	 * UMaterials should always have cached data
@@ -913,6 +1057,9 @@ protected:
 	/** Set if CachedExpressionData was loaded from disk, should typically be true when running with cooked data, and false in the editor */
 	bool bLoadedCachedExpressionData = false;
 
+#if WITH_EDITOR
+	TUniquePtr<FMaterialCachedHLSLTree> CachedHLSLTree;
+#endif // WITH_EDITOR
 private:
 	/**
 	 * Post loads all default materials.

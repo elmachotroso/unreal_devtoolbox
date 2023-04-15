@@ -57,7 +57,7 @@ static FAutoConsoleVariableRef CVarHairStrandsBindingBuilderWarningEnable(TEXT("
 FString FGroomBindingBuilder::GetVersion()
 {
 	// Important to update the version when groom building changes
-	return TEXT("2e");
+	return TEXT("2gc");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -101,6 +101,17 @@ float FHairStrandsRootUtils::PackUVsToFloat(const FVector2f& UV)
 	uint32 Encoded = PackUVs(UV);
 	return *((float*)(&Encoded));
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Intermediate data struct
+
+/** Binding data */
+struct FHairRootGroupData
+{
+	FHairStrandsRootData			SimRootData;
+	FHairStrandsRootData			RenRootData;
+	TArray<FHairStrandsRootData>	CardsRootData;
+};
 
 namespace
 {
@@ -456,29 +467,8 @@ private:
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // RBF weighting
 
-#if WITH_EDITORONLY_DATA
 namespace GroomBinding_RBFWeighting
 {
-	struct FPointsSampler
-	{
-		FPointsSampler(TArray<bool>& ValidPoints, const FVector3f* PointPositions, const int32 NumSamples);
-
-		/** Build the sample position from the sample indices */
-		void BuildPositions(const FVector3f* PointPositions);
-
-		/** Compute the furthest point */
-		void FurthestPoint(const int32 NumPoints, const FVector3f* PointPositions, const uint32 SampleIndex, TArray<bool>& ValidPoints, TArray<float>& PointsDistance);
-
-		/** Compute the starting point */
-		int32 StartingPoint(const TArray<bool>& ValidPoints, int32& NumPoints) const;
-
-		/** List of sampled points */
-		TArray<uint32> SampleIndices;
-
-		/** List of sampled positions */
-		TArray<FVector3f> SamplePositions;
-	};
-
 	int32 FPointsSampler::StartingPoint(const TArray<bool>& ValidPoints, int32& NumPoints) const
 	{
 		int32 StartIndex = -1;
@@ -548,7 +538,10 @@ namespace GroomBinding_RBFWeighting
 			BuildPositions(PointPositions);
 		}
 	}
-
+}
+#if WITH_EDITORONLY_DATA
+namespace GroomBinding_RBFWeighting
+{
 	struct FWeightsBuilder
 	{
 		FWeightsBuilder(const uint32 NumRows, const uint32 NumColumns,
@@ -665,20 +658,18 @@ namespace GroomBinding_RBFWeighting
 
 		const bool ValidSection = (TargetSection >= 0 && TargetSection < MeshLODData.GetNumSections());
 
-		const TArray<uint32>& RootBuffers = ProjectionLOD.RootTriangleIndexBuffer;
-		for (int32 RootIt = 0; RootIt < RootBuffers.Num(); ++RootIt)
+		for (uint32 EncodedTriangleId : ProjectionLOD.UniqueTriangleIndexBuffer)
 		{
-			uint32 SectionIndex  = 0;
+			uint32 SectionIndex = 0;
 			uint32 TriangleIndex = 0;
-			FHairStrandsRootUtils::DecodeTriangleIndex(RootBuffers[RootIt], TriangleIndex, SectionIndex);
-			if (!ValidSection || (ValidSection && (SectionIndex == TargetSection) ) )
+			FHairStrandsRootUtils::DecodeTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
+			if (!ValidSection || (ValidSection && (SectionIndex == TargetSection)))
 			{
 				const IMeshSectionData& Section = MeshLODData.GetSection(SectionIndex);
 				for (uint32 VertexIt = 0; VertexIt < 3; ++VertexIt)
 				{
 					const uint32 VertexIndex = TriangleIndices[Section.GetBaseIndex() + 3 * TriangleIndex + VertexIt];
-					ValidPoints[VertexIndex] = (VertexIndex >= Section.GetBaseVertexIndex()) && (VertexIndex < 
-						Section.GetBaseVertexIndex() + Section.GetNumVertices());
+					ValidPoints[VertexIndex] = (VertexIndex >= Section.GetBaseVertexIndex()) && (VertexIndex < Section.GetBaseVertexIndex() + Section.GetNumVertices());
 				}
 			}
 		}
@@ -1227,27 +1218,39 @@ namespace GroomBinding_RootProjection
 				return false;
 			}
 
-			OutRootData.MeshProjectionLODs[LODIt].RootTriangleIndexBuffer.SetNum(CurveCount);
-			OutRootData.MeshProjectionLODs[LODIt].RootTriangleBarycentricBuffer.SetNum(CurveCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition0Buffer.SetNum(CurveCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition1Buffer.SetNum(CurveCount);
-			OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition2Buffer.SetNum(CurveCount);
+			OutRootData.MeshProjectionLODs[LODIt].RootBarycentricBuffer.SetNum(CurveCount);
+			OutRootData.MeshProjectionLODs[LODIt].RootToUniqueTriangleIndexBuffer.SetNum(CurveCount);
 
 			// 2.3. Compute the closest triangle for each root
 			//InMeshRenderData->LODRenderData[LODIt].GetNumVertices();
-#if BINDING_PARALLEL_BUILDING
+
+			TArray<FHairStrandsUniqueTriangleIndexFormat::Type> RootTriangleIndexBuffer;
+			RootTriangleIndexBuffer.SetNum(CurveCount);
+
+			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition0Buffer;
+			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition1Buffer;
+			TArray<FHairStrandsMeshTrianglePositionFormat::Type> RestRootTrianglePosition2Buffer;
+			RestRootTrianglePosition0Buffer.SetNum(CurveCount);
+			RestRootTrianglePosition1Buffer.SetNum(CurveCount);
+			RestRootTrianglePosition2Buffer.SetNum(CurveCount);
+
+		#if BINDING_PARALLEL_BUILDING
 			TAtomic<uint32> bIsValid(1);
 			ParallelFor(CurveCount,
 				[
 					LODIt,
 					&InStrandsData,
 					&Grid,
+					&RootTriangleIndexBuffer,
+					&RestRootTrianglePosition0Buffer,
+					&RestRootTrianglePosition1Buffer,
+					&RestRootTrianglePosition2Buffer,
 					&OutRootData,
 					&bIsValid
 				] (uint32 CurveIndex)
-#else
+		#else
 			for (uint32 CurveIndex = 0; CurveIndex < CurveCount; ++CurveIndex)
-#endif
+		#endif
 			{
 				const uint32 Offset = InStrandsData.StrandsCurves.CurvesOffset[CurveIndex];
 				const FVector& RootP = (FVector)InStrandsData.StrandsPoints.PointsPosition[Offset];
@@ -1255,11 +1258,11 @@ namespace GroomBinding_RootProjection
 
 				if (Cells.Num() == 0)
 				{
-#if BINDING_PARALLEL_BUILDING
+				#if BINDING_PARALLEL_BUILDING
 					bIsValid = 0; return;
-#else
+				#else
 					return false;
-#endif
+				#endif
 				}
 
 				float ClosestDistance = FLT_MAX;
@@ -1281,41 +1284,94 @@ namespace GroomBinding_RootProjection
 				}
 				check(ClosestDistance < FLT_MAX);
 
+				// Record closest triangle and the root's barycentrics
 				const uint32 EncodedBarycentrics = FHairStrandsRootUtils::EncodeBarycentrics(FVector2f(ClosestBarycentrics));	// LWC_TODO: Precision loss
 				const uint32 EncodedTriangleIndex = FHairStrandsRootUtils::EncodeTriangleIndex(ClosestTriangle.TriangleIndex, ClosestTriangle.SectionIndex);
-				OutRootData.MeshProjectionLODs[LODIt].RootTriangleIndexBuffer[CurveIndex] = EncodedTriangleIndex;
-				OutRootData.MeshProjectionLODs[LODIt].RootTriangleBarycentricBuffer[CurveIndex] = EncodedBarycentrics;
-				OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition0Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P0, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV0)));	// LWC_TODO: Precision loss
-				OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition1Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P1, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV1)));	// LWC_TODO: Precision loss
-				OutRootData.MeshProjectionLODs[LODIt].RestRootTrianglePosition2Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P2, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV2)));	// LWC_TODO: Precision loss
+				OutRootData.MeshProjectionLODs[LODIt].RootBarycentricBuffer[CurveIndex] = EncodedBarycentrics;
+
+				RootTriangleIndexBuffer[CurveIndex] = EncodedTriangleIndex;
+				RestRootTrianglePosition0Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P0, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV0)));	// LWC_TODO: Precision loss
+				RestRootTrianglePosition1Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P1, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV1)));	// LWC_TODO: Precision loss
+				RestRootTrianglePosition2Buffer[CurveIndex] = FVector4f((FVector3f)ClosestTriangle.P2, FHairStrandsRootUtils::PackUVsToFloat(FVector2f(ClosestTriangle.UV2)));	// LWC_TODO: Precision loss
 			}
-#if BINDING_PARALLEL_BUILDING
+		#if BINDING_PARALLEL_BUILDING
 			);
 			if (bIsValid == 0)
 			{
 				return false;
 			}
-#endif
+		#endif
 
-			// Update the valid & unique sections IDs
-			FGroomBindingBuilder::BuildUniqueSections(OutRootData.MeshProjectionLODs[LODIt]);
+			// Build list of unique triangles
+			TArray<uint32> UniqueSectionId;
+			TArray<uint32> UniqueTriangleToRootList;
+			TMap<uint32, TArray<uint32>> UniqueTriangleToRootMap;
+			for (uint32 CurveIndex = 0; CurveIndex < CurveCount; ++CurveIndex)
+			{
+				const uint32 EncodedTriangleId = RootTriangleIndexBuffer[CurveIndex];
+				if (TArray<uint32>* CurvesList = UniqueTriangleToRootMap.Find(EncodedTriangleId))
+				{
+					CurvesList->Add(CurveIndex);
+				}
+				else
+				{
+					// Add unique section
+					uint32 TriangleIndex;
+					uint32 SectionIndex;
+					FHairStrandsRootUtils::DecodeTriangleIndex(EncodedTriangleId, TriangleIndex, SectionIndex);
+					UniqueSectionId.AddUnique(SectionIndex);
+
+					// Add unique triangle
+					UniqueTriangleToRootList.Add(EncodedTriangleId);
+					TArray<uint32>& NewCurvesList = UniqueTriangleToRootMap.Add(EncodedTriangleId);
+					NewCurvesList.Add(CurveIndex);
+				}
+			}
+
+			// Sort unique triangle per section and triangle ID (encoded triangle ID stores section ID in high bits)
+			UniqueTriangleToRootList.Sort();
+			UniqueSectionId.Sort();
+
+			// Build final unique triangle list and the root-to-unique-triangle mapping
+			const uint32 UniqueTriangleCount = UniqueTriangleToRootList.Num();
+			OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Reserve(UniqueTriangleCount);
+			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Reserve(UniqueTriangleCount);
+			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Reserve(UniqueTriangleCount);
+			OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Reserve(UniqueTriangleCount);
+			for (uint32 EncodedTriangleId : UniqueTriangleToRootList)
+			{
+				auto It = UniqueTriangleToRootMap.Find(EncodedTriangleId);
+				check(It);
+
+				OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Add(EncodedTriangleId);
+
+				const uint32 FirstCurveIndex = (*It)[0];
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Add(RestRootTrianglePosition0Buffer[FirstCurveIndex]);
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Add(RestRootTrianglePosition1Buffer[FirstCurveIndex]);
+				OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Add(RestRootTrianglePosition2Buffer[FirstCurveIndex]);
+
+				// Write for each root, the index of the triangle
+				const uint32 UniqueTriangleIndex = OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Num()-1;
+				for (uint32 CurveIndex : *It)
+				{
+					OutRootData.MeshProjectionLODs[LODIt].RootToUniqueTriangleIndexBuffer[CurveIndex] = UniqueTriangleIndex;
+				}
+			}
+
+			// Sanity check
+			check(OutRootData.MeshProjectionLODs[LODIt].RootToUniqueTriangleIndexBuffer.Num() == CurveCount);
+			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition0Buffer.Num() == UniqueTriangleCount);
+			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition1Buffer.Num() == UniqueTriangleCount);
+			check(OutRootData.MeshProjectionLODs[LODIt].RestUniqueTrianglePosition2Buffer.Num() == UniqueTriangleCount);
+			check(OutRootData.MeshProjectionLODs[LODIt].UniqueTriangleIndexBuffer.Num() == UniqueTriangleCount);
+
+			// Update the root mesh projection data with unique valid mesh section IDs, based on the projection data
+			OutRootData.MeshProjectionLODs[LODIt].UniqueSectionIds = UniqueSectionId;
 		}
 
 		return true;
 	}
 }// namespace GroomBinding_Project
-
-void FGroomBindingBuilder::BuildUniqueSections(FHairStrandsRootData::FMeshProjectionLOD& LOD)
-{
-	LOD.ValidSectionIndices.Empty();
-	for (const FHairStrandsCurveTriangleIndexFormat::Type& Tri : LOD.RootTriangleIndexBuffer)
-	{
-		uint32 TriangleIndex;
-		uint32 SectionIndex;
-		FHairStrandsRootUtils::DecodeTriangleIndex(Tri, TriangleIndex, SectionIndex);
-		LOD.ValidSectionIndices.AddUnique(SectionIndex);
-	}
-}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Mesh transfer
@@ -1862,15 +1918,17 @@ static void BuildRootBulkData(
 
 		Out.MeshProjectionLODs[MeshLODIt].LODIndex = In.MeshProjectionLODs[MeshLODIt].LODIndex;
 		Out.MeshProjectionLODs[MeshLODIt].SampleCount = bHasValidSamples ? In.MeshProjectionLODs[MeshLODIt].SampleCount : 0u;
+		Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleCount = In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer.Num();
 
-		CopyToBulkData<FHairStrandsCurveTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootTriangleIndexBuffer);
-		CopyToBulkData<FHairStrandsCurveTriangleBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootTriangleBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootTriangleBarycentricBuffer);
+		CopyToBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer);
+		CopyToBulkData<FHairStrandsRootBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer);
+		CopyToBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
 
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition0Buffer);
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition1Buffer);
-		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition2Buffer);
+		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer);
+		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer);
+		CopyToBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer);
 
-		Out.MeshProjectionLODs[MeshLODIt].ValidSectionIndices = In.MeshProjectionLODs[MeshLODIt].ValidSectionIndices;
+		Out.MeshProjectionLODs[MeshLODIt].UniqueSectionIndices = In.MeshProjectionLODs[MeshLODIt].UniqueSectionIds;
 
 		if (bHasValidSamples)
 		{
@@ -1906,14 +1964,15 @@ static void BuildRootData(
 		Out.MeshProjectionLODs[MeshLODIt].LODIndex = In.MeshProjectionLODs[MeshLODIt].LODIndex;
 		Out.MeshProjectionLODs[MeshLODIt].SampleCount = bHasValidSamples ? In.MeshProjectionLODs[MeshLODIt].SampleCount : 0u;
 
-		CopyFromBulkData<FHairStrandsCurveTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootTriangleIndexBuffer);
-		CopyFromBulkData<FHairStrandsCurveTriangleBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootTriangleBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootTriangleBarycentricBuffer);
+		CopyFromBulkData<FHairStrandsUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].UniqueTriangleIndexBuffer);
+		CopyFromBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(Out.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer, In.MeshProjectionLODs[MeshLODIt].RootToUniqueTriangleIndexBuffer);
+		CopyFromBulkData<FHairStrandsRootBarycentricFormat>(Out.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer, In.MeshProjectionLODs[MeshLODIt].RootBarycentricBuffer);
 
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition0Buffer);
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition1Buffer);
-		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestRootTrianglePosition2Buffer);
+		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition0Buffer);
+		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition1Buffer);
+		CopyFromBulkData<FHairStrandsMeshTrianglePositionFormat>(Out.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer, In.MeshProjectionLODs[MeshLODIt].RestUniqueTrianglePosition2Buffer);
 
-		Out.MeshProjectionLODs[MeshLODIt].ValidSectionIndices = In.MeshProjectionLODs[MeshLODIt].ValidSectionIndices;
+		Out.MeshProjectionLODs[MeshLODIt].UniqueSectionIds = In.MeshProjectionLODs[MeshLODIt].UniqueSectionIndices;
 
 		if (bHasValidSamples)
 		{
@@ -2028,8 +2087,10 @@ static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, bool bIni
 				{
 					FHairStrandsDatas LODGuidesData;
 					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(GroupIndex, CardsLODIt, LODGuidesData);
-					check(bIsValid);
-					InitHairStrandsRootData(OutData.CardsRootData[CardsLODIt], &LODGuidesData, MeshLODCount, NumInterpolationPoints);
+					if (bIsValid)
+					{
+						InitHairStrandsRootData(OutData.CardsRootData[CardsLODIt], &LODGuidesData, MeshLODCount, NumInterpolationPoints);
+					}
 				}
 			}
 			++GroupIndex;
@@ -2106,25 +2167,26 @@ static bool InternalBuildBinding_CPU(UGroomBindingAsset* BindingAsset, bool bIni
 				{
 					FHairStrandsDatas LODGuidesData;
 					const bool bIsValid = GroomAsset->GetHairCardsGuidesDatas(GroupIt, CardsLODIt, LODGuidesData);
-					check(bIsValid);
-				
-					bSucceed = GroomBinding_RootProjection::Project(
-						LODGuidesData,
-						TargetMeshData.Get(),
-						TransferredPositions,
-						OutHairGroupDatas[GroupIt].CardsRootData[CardsLODIt]);
-
-					if (!bSucceed) 
+					if (bIsValid)
 					{
-						UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some cards guide roots are not close enough to the target mesh to be projected onto it."));
-						return false; 
+						bSucceed = GroomBinding_RootProjection::Project(
+							LODGuidesData,
+							TargetMeshData.Get(),
+							TransferredPositions,
+							OutHairGroupDatas[GroupIt].CardsRootData[CardsLODIt]);
+
+						if (!bSucceed) 
+						{
+							UE_LOG(LogHairStrands, Error, TEXT("[Groom] Binding asset could not be built. Some cards guide roots are not close enough to the target mesh to be projected onto it."));
+							return false; 
+						}
 					}
 				}
 
 				SlowTask.EnterProgressFrame();
 			}
 		}
-
+		
 		GroomBinding_RBFWeighting::ComputeInterpolationWeights(OutHairGroupDatas, BindingAsset->NumInterpolationPoints, BindingAsset->MatchingSection, TargetMeshData.Get(), TransferredPositions);
 		SlowTask.EnterProgressFrame();
 	}

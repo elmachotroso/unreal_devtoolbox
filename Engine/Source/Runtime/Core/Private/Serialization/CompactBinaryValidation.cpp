@@ -2,31 +2,22 @@
 
 #include "Serialization/CompactBinaryValidation.h"
 
+#include "Algo/Sort.h"
 #include "Compression/CompressedBuffer.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringFwd.h"
+#include "Containers/StringView.h"
+#include "HAL/PlatformMemory.h"
 #include "IO/IoHash.h"
+#include "Memory/MemoryView.h"
+#include "Memory/SharedBuffer.h"
 #include "Misc/ByteSwap.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryPackage.h"
 #include "Serialization/VarInt.h"
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-namespace CompactBinaryValidationPrivate
-{
-
-template <typename T>
-static constexpr FORCEINLINE T ReadUnaligned(const void* const Memory)
-{
-#if PLATFORM_SUPPORTS_UNALIGNED_LOADS
-	return *static_cast<const T*>(Memory);
-#else
-	T Value;
-	FMemory::Memcpy(&Value, Memory, sizeof(Value));
-	return Value;
-#endif
-}
-
-}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -112,7 +103,7 @@ static void ValidateCbFloat64(FMemoryView& View, ECbValidateMode Mode, ECbValida
 	{
 		if (EnumHasAnyFlags(Mode, ECbValidateMode::Format))
 		{
-			const uint64 RawValue = NETWORK_ORDER64(CompactBinaryValidationPrivate::ReadUnaligned<uint64>(View.GetData()));
+			const uint64 RawValue = NETWORK_ORDER64(FPlatformMemory::ReadUnaligned<uint64>(View.GetData()));
 			const double Value = reinterpret_cast<const double&>(RawValue);
 			if (Value == double(float(Value)))
 			{

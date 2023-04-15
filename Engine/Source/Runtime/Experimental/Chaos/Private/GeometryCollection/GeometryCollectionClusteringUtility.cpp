@@ -6,6 +6,9 @@
 #include "Containers/Set.h"
 #include "Async/ParallelFor.h"
 
+static int32 ChaosValidateResultsOfEditOperations = 0;
+static FAutoConsoleVariableRef CVarChaosStillCheckDistanceThreshold(TEXT("p.fracture.ValidateResultsOfEditOperations"), ChaosValidateResultsOfEditOperations, TEXT("When on this will enable result validation for fracture tool edit operations (can be slow for large geometry collection) [def:0]"));
+
 void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCollection* GeometryCollection, const int32 InsertAtIndex, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
 {
 	check(GeometryCollection);
@@ -74,7 +77,7 @@ void FGeometryCollectionClusteringUtility::ClusterAllBonesUnderNewRoot(FGeometry
 
 	if (GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
 	{
-		TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+		TManagedArray<int32>& Levels = GeometryCollection->ModifyAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 		// all bones shifted down one in hierarchy
 		for (int ChildIndex = 0; ChildIndex < NumElements; ChildIndex++)
@@ -95,8 +98,8 @@ void FGeometryCollectionClusteringUtility::ClusterAllBonesUnderNewRoot(FGeometry
 		GeometryCollection->HasAttribute("ExplodedTransform", FGeometryCollection::TransformGroup) )
 	{
 
-		TManagedArray<FVector3f>& ExplodedVectors = GeometryCollection->GetAttribute<FVector3f>("ExplodedVector", FGeometryCollection::TransformGroup);
-		TManagedArray<FTransform>& ExplodedTransforms = GeometryCollection->GetAttribute<FTransform>("ExplodedTransform", FGeometryCollection::TransformGroup);
+		TManagedArray<FVector3f>& ExplodedVectors = GeometryCollection->ModifyAttribute<FVector3f>("ExplodedVector", FGeometryCollection::TransformGroup);
+		TManagedArray<FTransform>& ExplodedTransforms = GeometryCollection->ModifyAttribute<FTransform>("ExplodedTransform", FGeometryCollection::TransformGroup);
 
 		FVector3f SumOfOffsets(0, 0, 0);
 		for (int32 ChildBoneIndex : ChildBones)
@@ -130,7 +133,7 @@ void FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingRoot(FGeomet
 	check(GeometryCollection);
 	bool CalcNewLocalTransform = true;
 
-	TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+	TManagedArray<int32>& Levels = GeometryCollection->ModifyAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 	TManagedArray<FTransform>& Transforms = GeometryCollection->Transform;
 	TManagedArray<FString>& BoneNames = GeometryCollection->BoneName;
@@ -299,7 +302,7 @@ void FGeometryCollectionClusteringUtility::CollapseHierarchyOneLevel(FGeometryCo
 	TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 	TManagedArray<FTransform>& Transforms = GeometryCollection->Transform;
 	TManagedArray<FString>& BoneNames = GeometryCollection->BoneName;
-	TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+	TManagedArray<int32>& Levels = GeometryCollection->ModifyAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 	for (int32 SourceElement : SourceElements)
 	{
@@ -367,6 +370,10 @@ void FGeometryCollectionClusteringUtility::RenameBone(FGeometryCollection* Geome
 
 int32 FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(const FGeometryCollection* GeometryCollection, const TArray<int32>& SourceElements)
 {
+	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	{
+		return -1;
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 
@@ -463,6 +470,10 @@ void FGeometryCollectionClusteringUtility::GetClusteredBonesWithCommonParent(con
 void FGeometryCollectionClusteringUtility::GetChildBonesFromLevel(const FGeometryCollection* GeometryCollection, int32 SourceBone, int32 Level, TArray<int32>& BonesOut)
 {
 	check(GeometryCollection);
+	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	{
+		return;
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<int32>& Parents = GeometryCollection->Parent;
 	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
@@ -486,7 +497,11 @@ void FGeometryCollectionClusteringUtility::GetChildBonesFromLevel(const FGeometr
 void FGeometryCollectionClusteringUtility::GetBonesToLevel(const FGeometryCollection* GeometryCollection, int32 Level, TArray<int32>& BonesOut, bool bOnlyClusteredOrRigid, bool bSkipFiltered)
 {
 	check(GeometryCollection);
-
+	
+	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	{
+		return;
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<int32>& SimType = GeometryCollection->SimulationType;
 
@@ -523,6 +538,10 @@ void FGeometryCollectionClusteringUtility::GetChildBonesAtLevel(const FGeometryC
 	}
 	else
 	{
+		if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+		{
+			return;
+		}
 		const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 		const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 		if (Levels[SourceBone] == Level)
@@ -553,6 +572,10 @@ int32 FGeometryCollectionClusteringUtility::GetParentOfBoneAtSpecifiedLevel(cons
 {
 	check(GeometryCollection);
 	const TManagedArray<int32>& Parents = GeometryCollection->Parent;
+	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	{
+		return -1;
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<int32>& SimTypes = GeometryCollection->SimulationType;
 
@@ -631,9 +654,9 @@ void FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FGeome
 {
 	if (!GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
 	{
-		GeometryCollection->AddAttribute<int32>("Level", FGeometryCollection::TransformGroup, FManagedArrayCollection::FConstructionParameters(FName(),  false));
+		GeometryCollection->AddAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	}
-	TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+	TManagedArray<int32>& Levels = GeometryCollection->ModifyAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 	check(ParentElement < Levels.Num());
 	check(ParentElement < Children.Num());
@@ -669,6 +692,10 @@ void FGeometryCollectionClusteringUtility::CollapseLevelHierarchy(int8 Level, FG
 {
 	check(GeometryCollection);
 
+	if (!GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
+	{
+		UpdateHierarchyLevelOfChildren(GeometryCollection, -1);
+	}
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 	TArray<int32> Elements;
@@ -710,7 +737,11 @@ void FGeometryCollectionClusteringUtility::CollapseLevelHierarchy(int8 Level, FG
 void FGeometryCollectionClusteringUtility::CollapseSelectedHierarchy(int8 Level, const TArray<int32>& SelectedBones, FGeometryCollection* GeometryCollection)
 {
 	check(GeometryCollection);
-	TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+	if (!GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
+	{
+		UpdateHierarchyLevelOfChildren(GeometryCollection, -1);
+	}
+	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 
 	// can't collapse root node away and doesn't make sense to operate when AllLevels selected
@@ -738,23 +769,26 @@ void FGeometryCollectionClusteringUtility::CollapseSelectedHierarchy(int8 Level,
 
 void FGeometryCollectionClusteringUtility::ValidateResults(FGeometryCollection* GeometryCollection)
 {
-	const TManagedArray<int32>& Parents = GeometryCollection->Parent;
-	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
-	const TManagedArray<FString>& BoneNames = GeometryCollection->BoneName;
-
-	// there should only ever be one root node
-	int NumRootNodes = 0;
-	for (int i = 0; i < Parents.Num(); i++)
+	if (ChaosValidateResultsOfEditOperations)
 	{
-		if (Parents[i] == FGeometryCollection::Invalid)
-		{
-			NumRootNodes++;
-		}
-	}
-	check(NumRootNodes == 1);
+		const TManagedArray<int32>& Parents = GeometryCollection->Parent;
+		const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
+		const TManagedArray<FString>& BoneNames = GeometryCollection->BoneName;
 
-	ensure(GeometryCollection->HasContiguousFaces());
-	ensure(GeometryCollection->HasContiguousVertices());
+		// there should only ever be one root node
+		int NumRootNodes = 0;
+		for (int i = 0; i < Parents.Num(); i++)
+		{
+			if (Parents[i] == FGeometryCollection::Invalid)
+			{
+				NumRootNodes++;
+			}
+		}
+		check(NumRootNodes == 1);
+
+		ensure(GeometryCollection->HasContiguousFaces());
+		ensure(GeometryCollection->HasContiguousVertices());
+	}
 }
 
 void FGeometryCollectionClusteringUtility::GetLeafBones(const FGeometryCollection* GeometryCollection, int BoneIndex, bool bOnlyRigids, TArray<int32>& LeafBonesOut)
@@ -862,7 +896,48 @@ int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(FGeometryCo
 	return INDEX_NONE;
 }
 
-void FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryCollection* GeometryCollection)
+bool FGeometryCollectionClusteringUtility::RemoveClustersOfOnlyOneChild(FGeometryCollection* GeometryCollection)
+{
+	check(GeometryCollection);
+
+	bool bRemovedAny = false;
+
+	TArray<int32> DeletionList;
+	do
+	{
+		DeletionList.Reset();
+
+		for (int32 Idx = 0, Num = GeometryCollection->Transform.Num(); Idx < Num; ++Idx)
+		{
+			int32 ParentIdx = GeometryCollection->Parent[Idx];
+			if (ParentIdx != INDEX_NONE && GeometryCollection->IsClustered(Idx))
+			{
+				if (GeometryCollection->Children[Idx].Num() == 1)
+				{
+					DeletionList.Add(Idx);
+					GeometryCollectionAlgo::ParentTransforms(GeometryCollection, ParentIdx, GeometryCollection->Children[Idx].Array());
+					UpdateHierarchyLevelOfChildren(GeometryCollection, ParentIdx);
+					RecursivelyUpdateChildBoneNames(ParentIdx, GeometryCollection->Children, GeometryCollection->BoneName);
+				}
+			}
+		}
+
+		if (DeletionList.Num())
+		{
+			// Note: List is ordered by construction, so do not need to Sort()
+			FManagedArrayCollection::FProcessingParameters Params;
+			Params.bDoValidation = false; // for perf reasons
+			GeometryCollection->RemoveElements(FGeometryCollection::TransformGroup, DeletionList, Params);
+			bRemovedAny = true;
+		}
+
+		// Need to repeat until an iteration doesn't remove any nodes, to fully collapse any chains of single-child clusters
+	} while (DeletionList.Num());
+
+	return bRemovedAny;
+}
+
+bool FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryCollection* GeometryCollection)
 {
 	check(GeometryCollection);
 
@@ -886,9 +961,14 @@ void FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryColle
 
 	if (DeletionList.Num())
 	{
-		DeletionList.Sort();
-		GeometryCollection->RemoveElements(FGeometryCollection::TransformGroup, DeletionList);
+		// Note: List is ordered by construction, so do not need to Sort()
+		FManagedArrayCollection::FProcessingParameters Params;
+		Params.bDoValidation = false; // for perf reasons
+		GeometryCollection->RemoveElements(FGeometryCollection::TransformGroup, DeletionList, Params);
+		return true;
 	}
+
+	return false;
 }
 
 

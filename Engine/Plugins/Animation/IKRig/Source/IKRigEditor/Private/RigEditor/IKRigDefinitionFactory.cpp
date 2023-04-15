@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigEditor/IKRigDefinitionFactory.h"
+#include "IKRigEditor.h"
 #include "IKRigDefinition.h"
 #include "AssetTypeCategories.h"
 #include "ContentBrowserModule.h"
@@ -9,6 +10,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "RigEditor/IKRigController.h"
 #include "Widgets/SWindow.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IKRigDefinitionFactory)
 
 #define LOCTEXT_NAMESPACE "IKRigDefinitionFactory"
 
@@ -30,7 +33,7 @@ UObject* UIKRigDefinitionFactory::FactoryCreateNew(
 {
 	if (!SkeletalMesh.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Unable to create IK Rig. No Skeletal Mesh asset supplied."));
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Unable to create IK Rig. No Skeletal Mesh asset supplied."));
 		return nullptr;
 	}
 	
@@ -65,7 +68,7 @@ bool UIKRigDefinitionFactory::ConfigureProperties()
 	FAssetPickerConfig AssetPickerConfig;
 
 	/** The asset picker will only show skeletal meshes */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 
 	/** The delegate that fires when an asset was selected */
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateUObject(this, &UIKRigDefinitionFactory::OnSkeletalMeshSelected);
@@ -79,7 +82,7 @@ bool UIKRigDefinitionFactory::ConfigureProperties()
 	.SupportsMinimize(false) .SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]
@@ -111,3 +114,4 @@ FString UIKRigDefinitionFactory::GetDefaultNewAssetName() const
 	return FString(TEXT("NewIKRig"));
 }
 #undef LOCTEXT_NAMESPACE
+

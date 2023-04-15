@@ -2,25 +2,38 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Queue.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "HAL/UnrealMemory.h"
+#include "IPAddress.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleInterface.h"
+#include "Net/Common/Packets/PacketTraits.h"
+#include "Net/Common/Packets/PacketView.h"
+#include "Serialization/Archive.h"
 #include "Serialization/BitReader.h"
 #include "Serialization/BitWriter.h"
-#include "Modules/ModuleInterface.h"
-#include "Containers/Queue.h"
-#include "Net/Common/Packets/PacketTraits.h"
-#include "IPAddress.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
 
 PACKETHANDLER_API DECLARE_LOG_CATEGORY_EXTERN(PacketHandlerLog, Log, All);
 
-
+class FInternetAddr;
+class FDDoSDetection;
+class FEncryptionComponent;
+class FNetAnalyticsAggregator;
 // Forward declarations
 class HandlerComponent;
-class FEncryptionComponent;
-class ReliabilityHandlerComponent;
-class FDDoSDetection;
 class IAnalyticsProvider;
-class FNetAnalyticsAggregator;
 class PacketHandler;
+class ReliabilityHandlerComponent;
 
 namespace UE
 {
@@ -30,6 +43,9 @@ namespace UE
 	}
 }
 
+#if !UE_BUILD_SHIPPING
+extern PACKETHANDLER_API bool GPacketHandlerDiscardTimeguardMeasurement;
+#endif
 
 /**
  * Delegates
@@ -786,11 +802,6 @@ public:
 	 * @param Traits	Traits for the packet, passed down through the packet pipeline (likely from the NetConnection)
 	 */
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
-	{
-	}
-
-	UE_DEPRECATED(4.26, "Remove this function (no longer pure virtual, same with OutgoingConnectionless), or use the version which takes FReceivedPacketView.")
-	virtual void IncomingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitReader& Packet)
 	{
 	}
 

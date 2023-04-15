@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompositionLighting/PostProcessDeferredDecals.h"
+#include "CompositionLighting/PostProcessAmbientOcclusion.h"
 
 #include "ClearQuad.h"
 #include "DBufferTextures.h"
@@ -65,7 +66,7 @@ FDeferredDecalPassTextures GetDeferredDecalPassTextures(
 
 	auto* Parameters = GraphBuilder.AllocParameters<FDecalPassUniformParameters>();
 	const ESceneTextureSetupMode TextureReadAccess = ESceneTextureSetupMode::GBufferA | ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::CustomDepth;
-	SetupSceneTextureUniformParameters(GraphBuilder, View.FeatureLevel, TextureReadAccess, Parameters->SceneTextures);
+	SetupSceneTextureUniformParameters(GraphBuilder, &SceneTextures, View.FeatureLevel, TextureReadAccess, Parameters->SceneTextures);
 	Parameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
 	PassTextures.DecalPassUniformBuffer = GraphBuilder.CreateUniformBuffer(Parameters);
 
@@ -78,6 +79,59 @@ FDeferredDecalPassTextures GetDeferredDecalPassTextures(
 	PassTextures.DBufferTextures = DBufferTextures;
 
 	return PassTextures;
+}
+
+void GetDeferredDecalRenderTargetsInfo(
+	const FSceneTexturesConfig& Config,
+	EShaderPlatform ShaderPlatform,
+	EDecalRenderTargetMode RenderTargetMode,
+	FGraphicsPipelineRenderTargetsInfo& RenderTargetsInfo)
+{
+	const FGBufferBindings& Bindings = Config.GBufferBindings[GBL_Default];
+	switch (RenderTargetMode)
+	{
+	case EDecalRenderTargetMode::SceneColorAndGBuffer:
+		AddRenderTargetInfo(Config.ColorFormat, Config.ColorCreateFlags, RenderTargetsInfo);
+		AddRenderTargetInfo(Bindings.GBufferA.Format, Bindings.GBufferA.Flags, RenderTargetsInfo);
+		AddRenderTargetInfo(Bindings.GBufferB.Format, Bindings.GBufferB.Flags, RenderTargetsInfo);
+		AddRenderTargetInfo(Bindings.GBufferC.Format, Bindings.GBufferC.Flags, RenderTargetsInfo);
+		break;
+	case EDecalRenderTargetMode::SceneColorAndGBufferNoNormal:
+		AddRenderTargetInfo(Config.ColorFormat, Config.ColorCreateFlags, RenderTargetsInfo);
+		AddRenderTargetInfo(Bindings.GBufferB.Format, Bindings.GBufferB.Flags, RenderTargetsInfo);
+		AddRenderTargetInfo(Bindings.GBufferC.Format, Bindings.GBufferC.Flags, RenderTargetsInfo);
+		break;
+	case EDecalRenderTargetMode::SceneColor:
+		AddRenderTargetInfo(Config.ColorFormat, Config.ColorCreateFlags, RenderTargetsInfo);
+		break;
+
+	case EDecalRenderTargetMode::DBuffer:
+	{
+		const FDBufferTexturesDesc DBufferTexturesDesc = GetDBufferTexturesDesc(Config.Extent, ShaderPlatform);
+
+		AddRenderTargetInfo(DBufferTexturesDesc.DBufferADesc.Format, DBufferTexturesDesc.DBufferADesc.Flags, RenderTargetsInfo);
+		AddRenderTargetInfo(DBufferTexturesDesc.DBufferBDesc.Format, DBufferTexturesDesc.DBufferBDesc.Flags, RenderTargetsInfo);
+		AddRenderTargetInfo(DBufferTexturesDesc.DBufferCDesc.Format, DBufferTexturesDesc.DBufferCDesc.Flags, RenderTargetsInfo);
+
+		if (DBufferTexturesDesc.DBufferMaskDesc.Format != PF_Unknown)
+		{
+			AddRenderTargetInfo(DBufferTexturesDesc.DBufferMaskDesc.Format, DBufferTexturesDesc.DBufferMaskDesc.Flags, RenderTargetsInfo);
+		}
+		break;
+	}
+	case EDecalRenderTargetMode::AmbientOcclusion:
+	{		
+		const FRDGTextureDesc AOTextureDesc = GetScreenSpaceAOTextureDesc(Config.Extent);
+		AddRenderTargetInfo(AOTextureDesc.Format, AOTextureDesc.Flags, RenderTargetsInfo);
+		break;
+	}
+
+	default:
+		checkNoEntry();
+	}
+
+	SetupDepthStencilInfo(PF_DepthStencil, Config.DepthCreateFlags, ERenderTargetLoadAction::ELoad,
+		ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite, RenderTargetsInfo);
 }
 
 void GetDeferredDecalPassParameters(
@@ -456,6 +510,12 @@ void AddDeferredDecalPass(
 
 	const auto RenderDecals = [&](uint32 DecalIndexBegin, uint32 DecalIndexEnd, EDecalRenderTargetMode RenderTargetMode)
 	{
+		// Sanity check - Strata only support DBuffer, SceneColor, or AO decals
+		if (Strata::IsStrataEnabled())
+		{
+			check(RenderTargetMode == EDecalRenderTargetMode::DBuffer || RenderTargetMode == EDecalRenderTargetMode::SceneColor || RenderTargetMode == EDecalRenderTargetMode::AmbientOcclusion);
+		}
+
 		auto* PassParameters = GraphBuilder.AllocParameters<FDeferredDecalPassParameters>();
 		GetDeferredDecalPassParameters(GraphBuilder, View, PassTextures, RenderTargetMode, *PassParameters);
 
@@ -470,7 +530,7 @@ void AddDeferredDecalPass(
 			for (uint32 DecalIndex = DecalIndexBegin; DecalIndex < DecalIndexEnd; ++DecalIndex)
 			{
 				const FTransientDecalRenderData& DecalData = (*SortedDecals)[DecalIndex];
-				const FDeferredDecalProxy& DecalProxy = *DecalData.DecalProxy;
+				const FDeferredDecalProxy& DecalProxy = DecalData.Proxy;
 				const FMatrix ComponentToWorldMatrix = DecalProxy.ComponentTrans.ToMatrixWithScale();
 				const FMatrix FrustumComponentToClip = DecalRendering::ComputeComponentToClipMatrix(View, ComponentToWorldMatrix);
 				const bool bStencilThisDecal = IsStencilOptimizationAvailable(DecalRenderStage);
@@ -502,7 +562,7 @@ void AddDeferredDecalPass(
 					GraphicsPSOInit.DepthStencilState = GetDecalDepthState(StencilRef, DecalDepthState);
 				}
 
-				GraphicsPSOInit.BlendState = DecalRendering::GetDecalBlendState(DecalData.DecalBlendDesc, DecalRenderStage, RenderTargetMode);
+				GraphicsPSOInit.BlendState = DecalRendering::GetDecalBlendState(DecalData.BlendDesc, DecalRenderStage, RenderTargetMode);
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 				DecalRendering::SetShader(RHICmdList, GraphicsPSOInit, StencilRef, View, DecalData, DecalRenderStage, FrustumComponentToClip);
@@ -526,11 +586,11 @@ void AddDeferredDecalPass(
 
 			uint32 SortedDecalIndex = 1;
 			uint32 LastSortedDecalIndex = 0;
-			EDecalRenderTargetMode LastRenderTargetMode = DecalRendering::GetRenderTargetMode((*SortedDecals)[0].DecalBlendDesc, DecalRenderStage);
+			EDecalRenderTargetMode LastRenderTargetMode = DecalRendering::GetRenderTargetMode((*SortedDecals)[0].BlendDesc, DecalRenderStage);
 
 			for (; SortedDecalIndex < SortedDecalCount; ++SortedDecalIndex)
 			{
-				const EDecalRenderTargetMode RenderTargetMode = DecalRendering::GetRenderTargetMode((*SortedDecals)[SortedDecalIndex].DecalBlendDesc, DecalRenderStage);
+				const EDecalRenderTargetMode RenderTargetMode = DecalRendering::GetRenderTargetMode((*SortedDecals)[SortedDecalIndex].BlendDesc, DecalRenderStage);
 
 				if (LastRenderTargetMode != RenderTargetMode)
 				{

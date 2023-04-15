@@ -2,13 +2,18 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/SecureHash.h"
+#include "Serialization/Archive.h"
+#include "UObject/NameTypes.h"
 
 /**
  * FArchive adapter for FMD5
  */
-class FArchiveMD5 : public FArchive
+class CORE_API FArchiveMD5 : public FArchive
 {
 public:
 	inline FArchiveMD5()
@@ -18,10 +23,7 @@ public:
 		SetIsPersistent(false);
 	}
 
-	virtual FString GetArchiveName() const
-	{
-		return TEXT("FArchiveMD5");
-	}
+	virtual FString GetArchiveName() const;
 
 	void Serialize(void* Data, int64 Num) override
 	{

@@ -9,6 +9,8 @@
 #include "UObject/PropertyPortFlags.h"
 
 struct FAssetData;
+class FPropertyRestriction;
+class FResetToDefaultOverride;
 class IPropertyHandleArray;
 class IPropertyHandleMap;
 class IPropertyHandleSet;
@@ -223,11 +225,25 @@ public:
 	virtual void SetOnPropertyValueChanged( const FSimpleDelegate& InOnPropertyValueChanged ) = 0;
 	
 	/**
+	 * Sets a delegate to call when the value of the property is changed including the property changed event as parameter
+	 * 
+	 * @param InOnPropertyValueChanged The delegate to call. Needs to be of type void with a const FPropertyChangedEvent& parameter
+	 */
+	virtual void SetOnPropertyValueChangedWithData( const TDelegate<void(const FPropertyChangedEvent&)>& InOnPropertyValueChanged ) = 0;
+
+	/**
 	 * Sets a delegate to call when the value of the property of a child is changed
 	 * 
 	 * @param InOnChildPropertyValueChanged	The delegate to call
 	 */
 	virtual void SetOnChildPropertyValueChanged( const FSimpleDelegate& InOnChildPropertyValueChanged ) = 0;
+	
+	/**
+	 * Sets a delegate to call when the value of the property of a child is changed including the property changed event as parameter
+	 * 
+	 * @param InOnPropertyValueChanged The delegate to call. Needs to be of type void with a const FPropertyChangedEvent& parameter
+	 */
+	virtual void SetOnChildPropertyValueChangedWithData( const TDelegate<void(const FPropertyChangedEvent&)>& InOnPropertyValueChanged ) = 0;
 
 	/**
 	 * Sets a delegate to call when the value of the property is about to be changed
@@ -468,17 +484,17 @@ public:
 	 *
 	 * @return the handle as an array if it is an array (static or dynamic)
 	 */
-	virtual TSharedPtr<class IPropertyHandleArray> AsArray() = 0;
+	virtual TSharedPtr<IPropertyHandleArray> AsArray() = 0;
 
 	/**
 	 * @return This handle as a set if possible
 	 */
-	virtual TSharedPtr<class IPropertyHandleSet> AsSet() = 0;
+	virtual TSharedPtr<IPropertyHandleSet> AsSet() = 0;
 
 	/**
 	 * @return This handle as a map if possible
 	 */
-	virtual TSharedPtr<class IPropertyHandleMap> AsMap() = 0;
+	virtual TSharedPtr<IPropertyHandleMap> AsMap() = 0;
 
 	/**
 	 * @return The display name of the property
@@ -551,8 +567,15 @@ public:
 	 * @param bDisplayThumbnail			Whether or not to display the thumbnail for the property (if any)
 	 * @return the name widget for this property
 	 */
-	virtual TSharedRef<SWidget> CreatePropertyNameWidget( const FText& NameOverride = FText::GetEmpty(), const FText& ToolTipOverride = FText::GetEmpty(), bool bDisplayResetToDefault = false, bool bDisplayText = true, bool bDisplayThumbnail = true ) const = 0;
+	UE_DEPRECATED(5.0, "CreatePropertyNameWidget no longer supports bDisplayResetToDefault, bDisplayText or bDisplayThumbnail.")
+	virtual TSharedRef<SWidget> CreatePropertyNameWidget( const FText& NameOverride, const FText& ToolTipOverride, bool bDisplayResetToDefault, bool bDisplayText = true, bool bDisplayThumbnail = true ) const = 0;
 
+	/**
+	 * Creates a name widget for this property
+	 * @param NameOverride				The name override to use instead of the property name
+	 * @param ToolTipOverride			The tooltip override to use instead of the property name
+	 */
+	virtual TSharedRef<SWidget> CreatePropertyNameWidget(const FText& NameOverride = FText::GetEmpty(), const FText& ToolTipOverride = FText::GetEmpty()) const = 0;
 	/**
 	 * Creates a value widget for this property
 
@@ -577,7 +600,7 @@ public:
 	 * Adds a restriction to the possible values for this property.
 	 * @param Restriction	The restriction being added to this property.
 	 */
-	virtual void AddRestriction( TSharedRef<const class FPropertyRestriction> Restriction ) = 0;
+	virtual void AddRestriction( TSharedRef<const FPropertyRestriction> Restriction ) = 0;
 
 	/**
 	* Tests if a value is restricted for this property
@@ -656,7 +679,7 @@ public:
 	/**
 	 * Sets an override for this property's reset to default behavior
 	 */
-	virtual void ExecuteCustomResetToDefault(const class FResetToDefaultOverride& OnCustomResetToDefault) = 0;
+	virtual void ExecuteCustomResetToDefault(const FResetToDefaultOverride& OnCustomResetToDefault) = 0;
 
 	/**
 	 * Gets the category FName that a property is in at the default location defined by the class the property is in
@@ -721,7 +744,7 @@ public:
 	virtual FPropertyAccess::Result GetNumElements( uint32& OutNumItems ) const = 0;
 
 	/**
-	 * @return a handle to the element at the specified index                                                              
+	 * @return a handle to the element at the specified index
 	 */
 	virtual TSharedRef<IPropertyHandle> GetElement( int32 Index ) const = 0;
 
@@ -733,7 +756,7 @@ public:
 
 
 	/**
-	 * Sets a delegate to call when the number of elements changes                                                  
+	 * Sets a delegate to call when the number of elements changes
 	 */
 	virtual void SetOnNumElementsChanged( FSimpleDelegate& InOnNumElementsChanged ) = 0;
 };
@@ -773,6 +796,12 @@ public:
 	 * @return The number of elements in the set
 	 */
 	virtual FPropertyAccess::Result GetNumElements(uint32& OutNumElements) = 0;
+
+	/**
+	 * @return a handle to the element at the specified index
+	 */
+	virtual TSharedRef<IPropertyHandle> GetElement(int32 Index) const = 0;
+
 
 	/**
 	 * Sets a delegate to call when the number of elements changes

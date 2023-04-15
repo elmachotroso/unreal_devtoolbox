@@ -8,6 +8,7 @@
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntitySystemTask.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedObjectGroupManager.h"
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
@@ -18,6 +19,8 @@
 
 #include "Components/SceneComponent.h"
 #include "Evaluation/MovieSceneTemplateCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneComponentMobilitySystem)
 
 namespace UE
 {
@@ -83,7 +86,7 @@ static void GetFlattenedHierarchy(USceneComponent* SceneComponent, TArray<UScene
 
 FPreAnimatedStateEntry FPreAnimatedComponentMobilityStorage::MakeEntry(USceneComponent* InSceneComponent)
 {
-	FPreAnimatedStorageGroupHandle GroupHandle  = ObjectGroupManager->MakeGroupForKey(InSceneComponent);
+	FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.ObjectGroupManager->MakeGroupForKey(InSceneComponent);
 	FPreAnimatedStorageIndex       StorageIndex = GetOrCreateStorageIndex(InSceneComponent);
 
 	return FPreAnimatedStateEntry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ StorageID, StorageIndex } };
@@ -114,7 +117,7 @@ UMovieSceneComponentMobilitySystem::UMovieSceneComponentMobilitySystem(const FOb
 {
 	using namespace UE::MovieScene;
 
-	SystemExclusionContext |= EEntitySystemContext::Interrogation;
+	SystemCategories |= FSystemInterrogator::GetExcludedFromInterrogationCategory();
 
 	FBuiltInComponentTypes*          BuiltInComponents = FBuiltInComponentTypes::Get();
 	FMovieSceneTracksComponentTypes* TrackComponents   = FMovieSceneTracksComponentTypes::Get();
@@ -138,7 +141,7 @@ bool UMovieSceneComponentMobilitySystem::IsRelevantImpl(UMovieSceneEntitySystemL
 
 void UMovieSceneComponentMobilitySystem::OnLink()
 {
-	Linker->Events.TagGarbage.AddUObject(this, &UMovieSceneComponentMobilitySystem::TagGarbage);
+	MobilityTracker.Initialize(this);
 }
 
 void UMovieSceneComponentMobilitySystem::OnUnlink()
@@ -163,23 +166,13 @@ void UMovieSceneComponentMobilitySystem::OnRun(FSystemTaskPrerequisites& InPrere
 	MobilityTracker.ProcessInvalidatedOutputs(Linker, FMobilityCacheHandler(this));
 }
 
-void UMovieSceneComponentMobilitySystem::TagGarbage(UMovieSceneEntitySystemLinker*)
-{
-	MobilityTracker.CleanupGarbage();
-}
-
-void UMovieSceneComponentMobilitySystem::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
-{
-	CastChecked<UMovieSceneComponentMobilitySystem>(InThis)->MobilityTracker.AddReferencedObjects(Collector);
-}
-
 void UMovieSceneComponentMobilitySystem::SavePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
 	using namespace UE::MovieScene;
 
 	FPreAnimatedStateExtension* Extension = InParameters.CacheExtension;
 
-	auto IterNewObjects = [Extension](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
+	auto IterNewObjects = [Extension](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
 	{
 		TSharedPtr<FPreAnimatedComponentMobilityStorage> ComponentMobilityStorage
 			= Extension->GetOrCreateStorage<FPreAnimatedComponentMobilityStorage>();
@@ -201,7 +194,7 @@ void UMovieSceneComponentMobilitySystem::SavePreAnimatedState(const FPreAnimatio
 			}
 
 			FMovieSceneEntityID EntityID       = EntityIDs[Index];
-			FInstanceHandle     InstanceHandle = InstanceHandles[Index];
+			FRootInstanceHandle InstanceHandle = InstanceHandles[Index];
 
 			TArray<USceneComponent*, TInlineAllocator<4>> FlatHierarchy;
 			GetFlattenedHierarchy(SceneComponent, FlatHierarchy);
@@ -227,7 +220,7 @@ void UMovieSceneComponentMobilitySystem::SavePreAnimatedState(const FPreAnimatio
 
 	FEntityTaskBuilder()
 	.ReadEntityIDs()
-	.Read(BuiltInComponents->InstanceHandle)
+	.Read(BuiltInComponents->RootInstanceHandle)
 	.Read(BuiltInComponents->BoundObject)
 	.FilterAll(RestrictiveMask)
 	.FilterAny({ TrackComponents->ComponentTransform.PropertyTag, TrackComponents->AttachParent })
@@ -238,3 +231,4 @@ void UMovieSceneComponentMobilitySystem::RestorePreAnimatedState(const FPreAnima
 {
 
 }
+

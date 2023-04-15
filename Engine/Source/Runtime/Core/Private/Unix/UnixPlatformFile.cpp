@@ -7,7 +7,9 @@
 #include "Containers/LruCache.h"
 #include "Logging/LogMacros.h"
 #include "Misc/Paths.h"
+#include "Async/MappedFileHandle.h"
 #include <sys/file.h>
+#include <sys/mman.h>
 
 #include "HAL/PlatformFileCommon.h"
 #include "HAL/PlatformFileManager.h"
@@ -32,9 +34,9 @@ namespace
 		}
 
 		return FFileStatData(
-			UnixEpoch + FTimespan::FromSeconds(FileInfo.st_ctime), 
-			UnixEpoch + FTimespan::FromSeconds(FileInfo.st_atime), 
-			UnixEpoch + FTimespan::FromSeconds(FileInfo.st_mtime), 
+			UnixEpoch + FTimespan::FromSeconds(static_cast<double>(FileInfo.st_ctime)),
+			UnixEpoch + FTimespan::FromSeconds(static_cast<double>(FileInfo.st_atime)),
+			UnixEpoch + FTimespan::FromSeconds(static_cast<double>(FileInfo.st_mtime)),
 			FileSize,
 			bIsDirectory,
 			!(FileInfo.st_mode & S_IWUSR)
@@ -312,7 +314,6 @@ private:
 	// track if file is open for write
 	bool FileOpenAsWrite;
 
-	friend class FReadaheadCache;
 	friend class FUnixFileRegistry;
 };
 
@@ -684,6 +685,98 @@ public:
 
 FUnixFileMapper GCaseInsensMapper;
 
+class FUnixMappedFileRegion final : public IMappedFileRegion
+{
+public:
+	class FUnixMappedFileHandle* Parent;
+	const uint8* AlignedPtr;
+	uint64 AlignedSize;
+	FUnixMappedFileRegion(const uint8* InMappedPtr, const uint8* InAlignedPtr, size_t InMappedSize, uint64 InAlignedSize, const FString& InDebugFilename, size_t InDebugOffsetIntoFile, FUnixMappedFileHandle* InParent)
+		: IMappedFileRegion(InMappedPtr, InMappedSize, InDebugFilename, InDebugOffsetIntoFile)
+		, Parent(InParent)
+		, AlignedPtr(InAlignedPtr)
+		, AlignedSize(InAlignedSize)
+	{
+	}
+
+	virtual ~FUnixMappedFileRegion();
+};
+
+static SIZE_T FileMappingAlignment = FPlatformMemory::GetConstants().PageSize;
+
+class FUnixMappedFileHandle final : public IMappedFileHandle
+{
+public:
+	FUnixMappedFileHandle(int InFileHandle, int64 FileSize, const FString& InFilename)
+		: IMappedFileHandle(FileSize)
+		, MappedPtr(nullptr)
+		, Filename(InFilename)
+		, NumOutstandingRegions(0)
+		, FileHandle(InFileHandle)
+	{
+	}
+
+	virtual ~FUnixMappedFileHandle() override
+	{
+		check(!NumOutstandingRegions); // can't delete the file before you delete all outstanding regions
+		close(FileHandle);
+	}
+
+	virtual IMappedFileRegion* MapRegion(int64 Offset = 0, int64 BytesToMap = MAX_int64, bool bPreloadHint = false) override
+	{
+		LLM_PLATFORM_SCOPE(ELLMTag::PlatformMMIO);
+		check(Offset < GetFileSize()); // don't map zero bytes and don't map off the end of the file
+		BytesToMap = FMath::Min<int64>(BytesToMap, GetFileSize() - Offset);
+		check(BytesToMap > 0); // don't map zero bytes
+
+		const int64 AlignedOffset = AlignDown(Offset, FileMappingAlignment);
+		//File mapping can extend beyond file size. It's OK, kernel will just fill any leftover page data with zeros
+		const int64 AlignedSize = Align(BytesToMap + Offset - AlignedOffset, FileMappingAlignment);
+
+		int Flags = MAP_PRIVATE;
+		if (bPreloadHint)
+		{
+			Flags |= MAP_POPULATE;
+		}
+
+		const uint8* AlignedMapPtr = static_cast<const uint8*>(mmap(nullptr, AlignedSize, PROT_READ, Flags, FileHandle, AlignedOffset));
+		if (AlignedMapPtr == MAP_FAILED || AlignedMapPtr == nullptr)
+		{
+			UE_LOG(LogUnixPlatformFile, Warning, TEXT("Failed to map memory %s, error is %d"), *Filename, errno);
+			return nullptr;
+		}
+		LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Platform, AlignedMapPtr, AlignedSize));
+
+		// create a mapping for this range
+		const uint8* MapPtr = AlignedMapPtr + Offset - AlignedOffset;
+		FUnixMappedFileRegion* Result = new FUnixMappedFileRegion(MapPtr, AlignedMapPtr, BytesToMap, AlignedSize, Filename, Offset, this);
+		NumOutstandingRegions++;
+		return Result;
+	}
+
+	void UnMap(const FUnixMappedFileRegion* Region)
+	{
+		LLM_PLATFORM_SCOPE(ELLMTag::PlatformMMIO);
+		check(NumOutstandingRegions > 0);
+		NumOutstandingRegions--;
+
+		LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Platform, Region->AlignedPtr));
+		const int Res = munmap(const_cast<uint8*>(Region->AlignedPtr), Region->AlignedSize);
+		checkf(Res == 0, TEXT("Failed to unmap, error is %d, errno is %d [params: %x, %d]"), Res, errno, MappedPtr, GetFileSize());
+	}
+
+private:
+	const uint8* MappedPtr;
+	FString Filename;
+	int32 NumOutstandingRegions;
+	int FileHandle;
+};
+
+FUnixMappedFileRegion::~FUnixMappedFileRegion()
+{
+	Parent->UnMap(this);
+}
+
 /**
  * Unix File I/O implementation
 **/
@@ -886,7 +979,7 @@ void FUnixPlatformFile::SetTimeStamp(const TCHAR* Filename, const FDateTime Date
 	// change the modification time only
 	struct utimbuf Times;
 	Times.actime = FileInfo.st_atime;
-	Times.modtime = (DateTime - UnixEpoch).GetTotalSeconds();
+	Times.modtime = static_cast<__time_t>((DateTime - UnixEpoch).GetTotalSeconds());
 	utime(TCHAR_TO_UTF8(*CaseSensitiveFilename), &Times);
 }
 
@@ -996,9 +1089,37 @@ IFileHandle* FUnixPlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, b
 		return FileHandleUnix;
 	}
 
-	int ErrNo = errno;
+	const int ErrNo = errno;
 	UE_LOG_UNIX_FILE(Warning, TEXT( "open('%s', Flags=0x%08X) failed: errno=%d (%s)" ), *NormalizeFilename(Filename, true), Flags, ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
 	return nullptr;
+}
+
+IMappedFileHandle* FUnixPlatformFile::OpenMapped(const TCHAR* Filename)
+{
+	const FString NormalizedFilename = NormalizeFilename(Filename, false);
+
+	constexpr int Flags = O_RDONLY;
+	const int32 Handle = open(TCHAR_TO_UTF8(*NormalizedFilename), Flags);
+	if (Handle == -1)
+	{
+		const int ErrNo = errno;
+		UE_LOG_UNIX_FILE(Warning, TEXT("open('%s', Flags=0x%08X) failed: errno=%d (%s)"), *NormalizedFilename, Flags, ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+
+		return nullptr;
+	}
+	
+	struct stat FileInfo;
+	FileInfo.st_size = -1;
+	const int StatResult = fstat(Handle, &FileInfo);
+	if (StatResult == -1)
+	{
+		const int ErrNo = errno;
+		UE_LOG_UNIX_FILE(Warning, TEXT("stat('%s', Flags=0x%08X) failed: errno=%d (%s)"), *NormalizedFilename, Flags, ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+
+		return nullptr;
+	}
+	
+	return new FUnixMappedFileHandle(Handle, FileInfo.st_size, NormalizedFilename); 
 }
 
 bool FUnixPlatformFile::DirectoryExists(const TCHAR* Directory)
@@ -1140,7 +1261,7 @@ bool FUnixPlatformFile::IterateDirectoryCommon(const TCHAR* Directory, const TFu
 	{
 		Result = true;
 		struct dirent* Entry;
-		while ((Entry = readdir(Handle)) != NULL)
+		while (Result && (Entry = readdir(Handle)) != NULL)
 		{
 			if (FCString::Strcmp(UTF8_TO_TCHAR(Entry->d_name), TEXT(".")) && FCString::Strcmp(UTF8_TO_TCHAR(Entry->d_name), TEXT("..")))
 			{

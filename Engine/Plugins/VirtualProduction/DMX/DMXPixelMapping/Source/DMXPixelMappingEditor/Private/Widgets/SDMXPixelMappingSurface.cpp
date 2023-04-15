@@ -67,7 +67,7 @@ struct FFixedZoomLevelsContainerDesignSurface : public FZoomLevelsContainer
 		ZoomLevels.Add(FZoomLevelEntry(10.000f, FText::FromString("+17"), EGraphRenderingLOD::FullyZoomedIn));
 		ZoomLevels.Add(FZoomLevelEntry(11.000f, FText::FromString("+18"), EGraphRenderingLOD::FullyZoomedIn));
 		ZoomLevels.Add(FZoomLevelEntry(12.000f, FText::FromString("+19"), EGraphRenderingLOD::FullyZoomedIn));
-		ZoomLevels.Add(FZoomLevelEntry(13.000f, FText::FromString("+20"), EGraphRenderingLOD::FullyZoomedIn));
+				ZoomLevels.Add(FZoomLevelEntry(13.000f, FText::FromString("+20"), EGraphRenderingLOD::FullyZoomedIn));
 		ZoomLevels.Add(FZoomLevelEntry(14.000f, FText::FromString("+21"), EGraphRenderingLOD::FullyZoomedIn));
 		ZoomLevels.Add(FZoomLevelEntry(15.000f, FText::FromString("+22"), EGraphRenderingLOD::FullyZoomedIn));
 		ZoomLevels.Add(FZoomLevelEntry(16.000f, FText::FromString("+23"), EGraphRenderingLOD::FullyZoomedIn));
@@ -172,6 +172,8 @@ void SDMXPixelMappingSurface::Construct(const FArguments& InArgs, const TSharedP
 		[
 			InArgs._Content.Widget
 		];
+
+	InitialBounds = ComputeAreaBounds();
 }
 
 EActiveTimerReturnType SDMXPixelMappingSurface::HandleZoomToFit(double InCurrentTime, float InDeltaTime)
@@ -209,7 +211,7 @@ void SDMXPixelMappingSurface::Tick(const FGeometry& AllottedGeometry, const doub
 		}
 	}
 
-	if (!bRecenteredOnFirstTick)
+	if (!bRecenteredOnFirstTick && InitialBounds != ComputeAreaBounds())
 	{
 		ZoomToFit(true);
 		bRecenteredOnFirstTick = true;
@@ -237,7 +239,7 @@ int32 SDMXPixelMappingSurface::OnPaint(const FPaintArgs& Args, const FGeometry& 
 
 void SDMXPixelMappingSurface::OnPaintBackground(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 {
-	const FSlateBrush* BackgroundImage = FEditorStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
+	const FSlateBrush* BackgroundImage = FAppStyle::GetBrush(TEXT("Graph.Panel.SolidBackground"));
 	PaintBackgroundAsLines(BackgroundImage, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId);
 }
 
@@ -568,7 +570,7 @@ FVector2D SDMXPixelMappingSurface::PanelCoordToGraphCoord(const FVector2D& Panel
 
 int32 SDMXPixelMappingSurface::GetGraphRulePeriod() const
 {
-	return (int32)FEditorStyle::GetFloat("Graph.Panel.GridRulePeriod");
+	return (int32)FAppStyle::GetFloat("Graph.Panel.GridRulePeriod");
 }
 
 float SDMXPixelMappingSurface::GetGridScaleAmount() const
@@ -583,9 +585,9 @@ void SDMXPixelMappingSurface::PaintBackgroundAsLines(const FSlateBrush* Backgrou
 	const int32 RulePeriod = GetGraphRulePeriod();
 	check(RulePeriod > 0);
 
-	const FLinearColor RegularColor(FEditorStyle::GetColor("Graph.Panel.GridLineColor"));
-	const FLinearColor RuleColor(FEditorStyle::GetColor("Graph.Panel.GridRuleColor"));
-	const FLinearColor CenterColor(FEditorStyle::GetColor("Graph.Panel.GridCenterColor"));
+	const FLinearColor RegularColor(FAppStyle::GetColor("Graph.Panel.GridLineColor"));
+	const FLinearColor RuleColor(FAppStyle::GetColor("Graph.Panel.GridRuleColor"));
+	const FLinearColor CenterColor(FAppStyle::GetColor("Graph.Panel.GridCenterColor"));
 	const float GraphSmallestGridSize = 8.0f;
 	const float RawZoomFactor = GetZoomAmount();
 	const float NominalGridSize = GetSnapGridSize() * GetGridScaleAmount();

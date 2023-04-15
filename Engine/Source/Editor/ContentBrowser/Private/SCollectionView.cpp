@@ -1,35 +1,73 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCollectionView.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SOverlay.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Images/SImage.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "ISourceControlProvider.h"
-#include "ISourceControlModule.h"
-#include "CollectionManagerModule.h"
-#include "ContentBrowserUtils.h"
-#include "HistoryManager.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "CollectionAssetManagement.h"
 #include "CollectionContextMenu.h"
+#include "CollectionManagerModule.h"
+#include "CollectionViewTypes.h"
 #include "CollectionViewUtils.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserModule.h"
+#include "ContentBrowserPluginFilters.h"
+#include "ContentBrowserUtils.h"
+#include "CoreGlobals.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "DragAndDrop/CollectionDragDropOp.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/SlateDelegates.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GenericPlatform/ICursor.h"
+#include "HistoryManager.h"
+#include "ICollectionManager.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "ISourceControlState.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/CString.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/TextFilterUtils.h"
+#include "Modules/ModuleManager.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "SAssetTagItem.h"
+#include "SlotBase.h"
+#include "SourcesData.h"
 #include "SourcesSearch.h"
 #include "SourcesViewWidgets.h"
-#include "ContentBrowserModule.h"
-#include "Widgets/Layout/SExpandableArea.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Tuple.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Views/ITableRow.h"
+#include "Widgets/Views/STableRow.h"
+
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -97,8 +135,8 @@ void SCollectionView::Construct( const FArguments& InArgs )
 	CollectionManagerModule.Get().OnCollectionReparented().AddSP( this, &SCollectionView::HandleCollectionReparented );
 	CollectionManagerModule.Get().OnCollectionDestroyed().AddSP( this, &SCollectionView::HandleCollectionDestroyed );
 	CollectionManagerModule.Get().OnCollectionUpdated().AddSP( this, &SCollectionView::HandleCollectionUpdated );
-	CollectionManagerModule.Get().OnAssetsAdded().AddSP( this, &SCollectionView::HandleAssetsAddedToCollection );
-	CollectionManagerModule.Get().OnAssetsRemoved().AddSP( this, &SCollectionView::HandleAssetsRemovedFromCollection );
+	CollectionManagerModule.Get().OnAssetsAddedToCollection().AddSP( this, &SCollectionView::HandleAssetsAddedToCollection );
+	CollectionManagerModule.Get().OnAssetsRemovedFromCollection().AddSP( this, &SCollectionView::HandleAssetsRemovedFromCollection );
 
 	ISourceControlModule::Get().RegisterProviderChanged(FSourceControlProviderChanged::FDelegate::CreateSP(this, &SCollectionView::HandleSourceControlProviderChanged));
 	SourceControlStateChangedDelegateHandle = ISourceControlModule::Get().GetProvider().RegisterSourceControlStateChanged_Handle(FSourceControlStateChanged::FDelegate::CreateSP(this, &SCollectionView::HandleSourceControlStateChanged));
@@ -150,7 +188,7 @@ void SCollectionView::Construct( const FArguments& InArgs )
 			.Padding(2.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 				.ToolTipText(LOCTEXT("AddCollectionButtonTooltip", "Add a collection."))
 				.OnClicked(this, &SCollectionView::OnAddCollectionClicked)
 				.ContentPadding( FMargin(2, 2) )
@@ -259,12 +297,12 @@ void SCollectionView::HandleCollectionUpdated( const FCollectionNameType& Collec
 	}
 }
 
-void SCollectionView::HandleAssetsAddedToCollection( const FCollectionNameType& Collection, const TArray<FName>& AssetsAdded )
+void SCollectionView::HandleAssetsAddedToCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsAdded )
 {
 	HandleCollectionUpdated(Collection);
 }
 
-void SCollectionView::HandleAssetsRemovedFromCollection( const FCollectionNameType& Collection, const TArray<FName>& AssetsRemoved )
+void SCollectionView::HandleAssetsRemovedFromCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsRemoved )
 {
 	HandleCollectionUpdated(Collection);
 }
@@ -280,6 +318,8 @@ void SCollectionView::HandleSourceControlProviderChanged(ISourceControlProvider&
 
 void SCollectionView::HandleSourceControlStateChanged()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SCollectionView::HandleSourceControlStateChanged);
+
 	// Update the status of each collection
 	for (const auto& AvailableCollectionInfo : AvailableCollections)
 	{
@@ -289,6 +329,8 @@ void SCollectionView::HandleSourceControlStateChanged()
 
 void SCollectionView::UpdateCollectionItemStatus( const TSharedRef<FCollectionItem>& CollectionItem )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SCollectionView::UpdateCollectionItemStatus);
+
 	int32 NewObjectCount = 0;
 	TOptional<ECollectionItemStatus> NewStatus;
 
@@ -592,7 +634,7 @@ TArray<FCollectionNameType> SCollectionView::GetSelectedCollections() const
 	return RetArray;
 }
 
-void SCollectionView::SetSelectedAssetPaths(const TArray<FName>& SelectedAssets)
+void SCollectionView::SetSelectedAssetPaths(const TArray<FSoftObjectPath>& SelectedAssets)
 {
 	if ( QuickAssetManagement.IsValid() )
 	{
@@ -777,7 +819,7 @@ FReply SCollectionView::OnDrop( const FGeometry& MyGeometry, const FDragDropEven
 	return FReply::Unhandled();
 }
 
-void SCollectionView::MakeSaveDynamicCollectionMenu(FText InQueryString)
+void SCollectionView::MakeSaveDynamicCollectionMenu(FText InQueryString, FSimpleDelegate OnSaveSearchClicked)
 {
 	// Get all menu extenders for this context menu from the content browser module
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::GetModuleChecked<FContentBrowserModule>( TEXT("ContentBrowser") );
@@ -797,6 +839,11 @@ void SCollectionView::MakeSaveDynamicCollectionMenu(FText InQueryString)
 
 	CollectionContextMenu->UpdateProjectSourceControl();
 
+	if(OnSaveSearchClicked.IsBound())
+	{
+		MakeSaveSearchMenu(MenuBuilder, OnSaveSearchClicked);
+	}
+
 	CollectionContextMenu->MakeSaveDynamicCollectionSubMenu(MenuBuilder, InQueryString);
 
 	FWidgetPath WidgetPath;
@@ -810,6 +857,20 @@ void SCollectionView::MakeSaveDynamicCollectionMenu(FText InQueryString)
 			FPopupTransitionEffect(FPopupTransitionEffect::TopMenu)
 		);
 	}
+}
+
+void SCollectionView::MakeSaveSearchMenu(FMenuBuilder& InMenuBuilder, FSimpleDelegate OnSaveSearchClicked) const
+{
+	InMenuBuilder.BeginSection("ContentBrowserSaveSearch", LOCTEXT("ContentBrowserCreateFilterMenuHeading", "Create Filter"));
+
+	InMenuBuilder.AddMenuEntry(
+		LOCTEXT("ContentBrowserSaveAsCustomFilter", "Save as Custom Filter"),
+		LOCTEXT("ContentBrowserSaveAsCustomFilterTooltip", "Save the current search text as a custom filter in the filter bar"),
+		FSlateIcon(),
+		FUIAction(OnSaveSearchClicked)
+	);
+	
+	InMenuBuilder.EndSection();
 }
 
 FReply SCollectionView::OnAddCollectionClicked()
@@ -1046,7 +1107,7 @@ EVisibility SCollectionView::GetHeaderVisibility() const
 
 const FSlateBrush* SCollectionView::GetCollectionViewDropTargetBorder() const
 {
-	return bDraggedOver ? FEditorStyle::GetBrush("ContentBrowser.CollectionTreeDragDropBorder") : FEditorStyle::GetBrush("NoBorder");
+	return bDraggedOver ? FAppStyle::GetBrush("ContentBrowser.CollectionTreeDragDropBorder") : FAppStyle::GetBrush("NoBorder");
 }
 
 TSharedRef<ITableRow> SCollectionView::GenerateCollectionRow( TSharedPtr<FCollectionItem> CollectionItem, const TSharedRef<STableViewBase>& OwnerTable )
@@ -1209,7 +1270,7 @@ bool SCollectionView::ValidateDragDropOnCollectionItem(TSharedRef<FCollectionIte
 
 			if (!bIsValidDrag)
 			{
-				DragDropOp->SetToolTip(CollectionManagerModule.Get().GetLastError(), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+				DragDropOp->SetToolTip(CollectionManagerModule.Get().GetLastError(), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 				break;
 			}
 		}
@@ -1268,16 +1329,18 @@ FReply SCollectionView::HandleDragDropOnCollectionItem(TSharedRef<FCollectionIte
 		TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>(Operation);
 		const TArray<FAssetData>& DroppedAssets = DragDropOp->GetAssets();
 
-		TArray<FName> ObjectPaths;
+		TArray<FSoftObjectPath> ObjectPaths;
 		ObjectPaths.Reserve(DroppedAssets.Num());
 		for (const FAssetData& AssetData : DroppedAssets)
 		{
-			ObjectPaths.Add(AssetData.ObjectPath);
+			ObjectPaths.Add(AssetData.GetSoftObjectPath());
 		}
 
 		int32 NumAdded = 0;
 		FText Message;
-		if (CollectionManagerModule.Get().AddToCollection(CollectionItem->CollectionName, CollectionItem->CollectionType, ObjectPaths, &NumAdded))
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (CollectionManagerModule.Get().AddToCollection(CollectionItem->CollectionName, CollectionItem->CollectionType, UE::SoftObjectPath::Private::ConvertSoftObjectPaths(ObjectPaths), &NumAdded))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			if (DroppedAssets.Num() == 1)
 			{

@@ -2,6 +2,9 @@
 
 #include "Units/Highlevel/Harmonics/RigUnit_ChainHarmonics.h"
 #include "Units/RigUnitContext.h"
+#include "Math/ControlRigMathLibrary.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_ChainHarmonics)
 
 FRigUnit_ChainHarmonics_Execute()
 {
@@ -18,6 +21,23 @@ FRigUnit_ChainHarmonics_Execute()
 		WorkData,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_ChainHarmonics::GetUpgradeInfo() const
+{
+	FRigUnit_ChainHarmonicsPerItem NewNode;
+	NewNode.ChainRoot = FRigElementKey(ChainRoot, ERigElementType::Bone);
+	NewNode.Speed = Speed;
+	NewNode.Reach = Reach;
+	NewNode.Wave = Wave;
+	NewNode.WaveCurve = WaveCurve;
+	NewNode.Pendulum = Pendulum;
+	NewNode.bDrawDebug = bDrawDebug;
+	NewNode.DrawWorldOffset = DrawWorldOffset;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("ChainRoot"), TEXT("ChainRoot.Name"));
+	return Info;
 }
 
 FRigUnit_ChainHarmonicsPerItem_Execute()
@@ -122,7 +142,7 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 			FVector ReachDirection = (Reach.ReachTarget - GlobalTransform.GetLocation()).GetSafeNormal();
 			ReachDirection = FMath::Lerp<FVector>(Axis, ReachDirection, Ease);
 
-			FQuat ReachRotation = FQuat::FindBetween(Axis, ReachDirection);
+			FQuat ReachRotation = FControlRigMathLibrary::FindQuatBetweenVectors(Axis, ReachDirection);
 			Rotation = (ReachRotation * Rotation).GetNormalized();
 		}
 
@@ -184,14 +204,14 @@ FRigUnit_ChainHarmonicsPerItem_Execute()
 			VelocityLines[Index * 2 + 0] = PendulumPosition[Index];
 			VelocityLines[Index * 2 + 1] = PendulumPosition[Index] + PendulumVelocity[Index] * 0.1f;
 
-			FQuat PendulumRotation = FQuat::FindBetween(Rotation.RotateVector(LocalTip[Index]), PendulumPosition[Index] - GlobalTransform.GetLocation());
+			FQuat PendulumRotation = FControlRigMathLibrary::FindQuatBetweenVectors(Rotation.RotateVector(LocalTip[Index]), PendulumPosition[Index] - GlobalTransform.GetLocation());
 			Rotation = (PendulumRotation * Rotation).GetNormalized();
 
 			float Unwind = FMath::Lerp<float>(Pendulum.UnwindMinimum, Pendulum.UnwindMaximum, Ratio[Index]);
 			FVector CurrentUpvector = Rotation.RotateVector(Pendulum.UnwindAxis);
 			CurrentUpvector = CurrentUpvector - FVector::DotProduct(CurrentUpvector, Rotation.RotateVector(LocalTip[Index]).GetSafeNormal());
 			CurrentUpvector = FMath::Lerp<FVector>(Upvector, CurrentUpvector, Unwind);
-			FQuat UnwindRotation = FQuat::FindBetween(CurrentUpvector, Upvector);
+			FQuat UnwindRotation = FControlRigMathLibrary::FindQuatBetweenVectors(CurrentUpvector, Upvector);
 			Rotation = (UnwindRotation * Rotation).GetNormalized();
 
 			Rotation = FQuat::Slerp(NonSimulatedRotation, Rotation, FMath::Clamp<float>(Ease, 0.f, 1.f));

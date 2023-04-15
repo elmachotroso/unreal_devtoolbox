@@ -14,6 +14,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"DeveloperSettings",
 					"Engine",
+					"LiveLinkComponents",
 					"RenderCore",
 					"RHI",
 					"Slate",
@@ -25,6 +26,7 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
                 {
+					"LiveLinkInterface",
                     "Projects",
 				}
 			);
@@ -38,8 +40,8 @@ namespace UnrealBuildTool.Rules
 				new string[] 
 				{
             		//required for ScreenPass
-            		"../../../../Source/Runtime/Renderer/Private",
-            	}
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+				}
 			);
 		}
 	}

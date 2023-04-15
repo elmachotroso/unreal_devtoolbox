@@ -13,6 +13,7 @@
 #include "Player/AdaptiveStreamingPlayerABR.h"
 #include "Player/mp4/ManifestMP4.h"
 #include "Player/mp4/StreamReaderMP4.h"
+#include "Player/mp4/OptionKeynamesMP4.h"
 #include "Player/PlayerSessionServices.h"
 #include "Player/PlayerStreamFilter.h"
 
@@ -60,7 +61,7 @@ EStreamType FStreamSegmentRequestMP4::GetType() const
 	return  PrimaryStreamType;
 }
 
-void FStreamSegmentRequestMP4::SetExecutionDelay(const FTimeValue& ExecutionDelay)
+void FStreamSegmentRequestMP4::SetExecutionDelay(const FTimeValue& UTCNow, const FTimeValue& ExecutionDelay)
 {
 	// No op for mp4.
 }
@@ -163,7 +164,7 @@ UEMediaError FStreamReaderMP4::Create(IPlayerSessionServices* InPlayerSessionSer
 	bIsStarted = true;
 
 	ThreadSetName("ElectraPlayer::MP4 streamer");
-	ThreadStart(Electra::MakeDelegate(this, &FStreamReaderMP4::WorkerThread));
+	ThreadStart(FMediaRunnable::FStartDelegate::CreateRaw(this, &FStreamReaderMP4::WorkerThread));
 
 	return UEMEDIA_ERROR_OK;
 }
@@ -378,56 +379,37 @@ void FStreamReaderMP4::HandleRequest()
 	ds.TimeToDownload      = 0.0;
 	ds.ByteSize 		   = -1;
 	ds.NumBytesDownloaded  = 0;
-	ds.ThroughputBps	   = 0;
 	ds.bInsertedFillerData = false;
 	ds.URL  			   = TimelineAsset->GetMediaURL();
 	ds.bIsMissingSegment   = false;
 	ds.bParseFailure	   = false;
 	ds.RetryNumber  	   = Request->NumOverallRetries;
-	ds.ABRState.Reset();
 
 	Parameters.EventListener->OnFragmentOpen(Request);
 
 	TSharedPtrTS<IElectraHttpManager::FProgressListener>	ProgressListener;
 	ProgressListener = MakeSharedTS<IElectraHttpManager::FProgressListener>();
-	ProgressListener->CompletionDelegate = Electra::MakeDelegate(this, &FStreamReaderMP4::HTTPCompletionCallback);
-	ProgressListener->ProgressDelegate   = Electra::MakeDelegate(this, &FStreamReaderMP4::HTTPProgressCallback);
+	ProgressListener->CompletionDelegate = IElectraHttpManager::FProgressListener::FCompletionDelegate::CreateRaw(this, &FStreamReaderMP4::HTTPCompletionCallback);
+	ProgressListener->ProgressDelegate   = IElectraHttpManager::FProgressListener::FProgressDelegate::CreateRaw(this, &FStreamReaderMP4::HTTPProgressCallback);
 
 	ReadBuffer.Reset();
 	ReadBuffer.ReceiveBuffer = MakeSharedTS<IElectraHttpManager::FReceiveBuffer>();
-	// Set the receive buffer to an okay-ish size. Too small and the file I/O may block too often and get too slow.
-	ReadBuffer.ReceiveBuffer->Buffer.Reserve(4 << 20);
-	ReadBuffer.ReceiveBuffer->bEnableRingbuffer = true;
 	ReadBuffer.SetCurrentPos(Request->FileStartOffset);
+
+	const FParamDict& Options = PlayerSessionServices->GetOptions();
+
 	TSharedPtrTS<IElectraHttpManager::FRequest> HTTP(new IElectraHttpManager::FRequest);
 	HTTP->Parameters.URL				= TimelineAsset->GetMediaURL();
 	HTTP->Parameters.Range.Start		= Request->FileStartOffset;
 	HTTP->Parameters.Range.EndIncluding = Request->FileEndOffset;
+	// No compression as this would not yield much with already compressed video/audio data.
+	HTTP->Parameters.AcceptEncoding.Set(TEXT("identity"));
+	// Timeouts
+	HTTP->Parameters.ConnectTimeout = Options.GetValue(MP4::OptionKeyMP4LoadConnectTimeout).SafeGetTimeValue(FTimeValue().SetFromMilliseconds(1000 * 8));
+	HTTP->Parameters.NoDataTimeout = Options.GetValue(MP4::OptionKeyMP4LoadNoDataTimeout).SafeGetTimeValue(FTimeValue().SetFromMilliseconds(1000 * 6));
+
 	// Explicit range?
 	int64 NumRequestedBytes = HTTP->Parameters.Range.GetNumberOfBytes();
-	int32 SubRequestSize = 0;
-	if (NumRequestedBytes > 0)
-	{
-		if (Request->bIsFirstSegment && !Request->bIsLastSegment)
-		{
-			SubRequestSize = 512 << 10;
-		}
-		else if (Request->bIsFirstSegment && Request->bIsLastSegment)
-		{
-			SubRequestSize = 2 << 20;
-		}
-	}
-	else
-	{
-		if (Request->SegmentInternalSize < 0)
-		{
-			SubRequestSize = 2 << 20;
-		}
-	}
-	if (SubRequestSize)
-	{
-		HTTP->Parameters.SubRangeRequestSize = SubRequestSize;
-	}
 
 	HTTP->ReceiveBuffer = ReadBuffer.ReceiveBuffer;
 	HTTP->ProgressListener = ProgressListener;
@@ -453,15 +435,26 @@ void FStreamReaderMP4::HandleRequest()
 		bHasErrored = true;
 	}
 
+	uint32 PlaybackSequenceID = Request->GetPlaybackSequenceID();
 	while(!bDone && !HasErrored() && !HasBeenAborted() && !bTerminate)
 	{
-		auto UpdateSelectedTrack = [&SelectedTrackMap](const IParserISO14496_12::ITrackIterator* trkIt, TMap<uint32, FSelectedTrackData>& ActiveTrks) -> FSelectedTrackData&
+		auto UpdateSelectedTrack = [&SelectedTrackMap, &PlaybackSequenceID](const IParserISO14496_12::ITrackIterator* trkIt, TMap<uint32, FSelectedTrackData>& ActiveTrks) -> FSelectedTrackData&
 		{
 			const IParserISO14496_12::ITrack* Track = trkIt->GetTrack();
 			uint32 tkid = Track->GetID();
 
 			// Check if this track ID is already in our map of active tracks.
 			FSelectedTrackData& st = ActiveTrks.FindOrAdd(tkid);
+			if (!st.CSD.IsValid())
+			{
+				TSharedPtrTS<FAccessUnit::CodecData> CSD(new FAccessUnit::CodecData);
+				CSD->CodecSpecificData = Track->GetCodecSpecificData();
+				CSD->RawCSD			   = Track->GetCodecSpecificDataRAW();
+				CSD->ParsedInfo		   = Track->GetCodecInformation();
+				// Set information not necessarily available on the CSD.
+				CSD->ParsedInfo.SetBitrate(st.Bitrate);
+				st.CSD = MoveTemp(CSD);
+			}
 			if (!st.BufferSourceInfo.IsValid())
 			{
 				auto meta = MakeShared<FBufferSourceInfo, ESPMode::ThreadSafe>();
@@ -475,20 +468,13 @@ void FStreamReaderMP4::HandleRequest()
 					st.Bitrate = SelectedTrackMetadata->Bitrate;
 					meta->Kind = SelectedTrackMetadata->Kind;
 					meta->Language = SelectedTrackMetadata->Language;
+					meta->Codec = st.CSD.IsValid() ? st.CSD->ParsedInfo.GetCodecName() : FString();
+					meta->PeriodID = SelectedTrackMetadata->PeriodID;
 					meta->PeriodAdaptationSetID = SelectedTrackMetadata->PeriodID + TEXT(".") + SelectedTrackMetadata->AdaptationSetID;
 					meta->HardIndex = SelectedTrackMetadata->Index;
+					meta->PlaybackSequenceID = PlaybackSequenceID;
 				}
 				st.BufferSourceInfo = MoveTemp(meta);
-			}
-			if (!st.CSD.IsValid())
-			{
-				TSharedPtrTS<FAccessUnit::CodecData> CSD(new FAccessUnit::CodecData);
-				CSD->CodecSpecificData = Track->GetCodecSpecificData();
-				CSD->RawCSD			   = Track->GetCodecSpecificDataRAW();
-				CSD->ParsedInfo		   = Track->GetCodecInformation();
-				// Set information not necessarily available on the CSD.
-				CSD->ParsedInfo.SetBitrate(st.Bitrate);
-				st.CSD = MoveTemp(CSD);
 			}
 			return st;
 		};
@@ -607,7 +593,7 @@ void FStreamReaderMP4::HandleRequest()
 
 					SelectedTrack.bIsFirstInSequence = false;
 
-					int64 nr = ReadBuffer.ReadTo(AccessUnit->AUData, (int32)SampleSize);
+					int64 nr = ReadBuffer.ReadTo(AccessUnit->AUData, SampleSize);
 					if (nr == SampleSize)
 					{
 						SelectedTrack.DurationSuccessfullyRead += AccessUnit->Duration;
@@ -727,11 +713,6 @@ void FStreamReaderMP4::HandleRequest()
 	ds.TimeToDownload     = (Request->ConnectionInfo.RequestEndTime - Request->ConnectionInfo.RequestStartTime).GetAsSeconds();
 	ds.ByteSize 		  = Request->ConnectionInfo.ContentLength;
 	ds.NumBytesDownloaded = Request->ConnectionInfo.BytesReadSoFar;
-	ds.ThroughputBps	  = Request->ConnectionInfo.Throughput.GetThroughput();
-	if (ds.ThroughputBps == 0)
-	{
-		ds.ThroughputBps = ds.TimeToDownload > 0.0 ? 8 * ds.NumBytesDownloaded / ds.TimeToDownload : 0;
-	}
 	ds.bIsCachedResponse = Request->ConnectionInfo.bIsCachedResponse;
 
 	ActiveTrackMap.Reset();
@@ -761,60 +742,44 @@ void FStreamReaderMP4::WorkerThread()
 }
 
 
-int32 FStreamReaderMP4::FReadBuffer::ReadTo(void* ToBuffer, int32 NumBytes)
+int32 FStreamReaderMP4::FReadBuffer::ReadTo(void* IntoBuffer, int64 NumBytesToRead)
 {
-	FPODRingbuffer& SourceBuffer = ReceiveBuffer->Buffer;
-
-	uint8* OutputBuffer = (uint8*)ToBuffer;
-	// Do we have enough data in the ringbuffer to satisfy the read?
-	if (SourceBuffer.Num() >= NumBytes)
+	FWaitableBuffer& SourceBuffer = ReceiveBuffer->Buffer;
+	// Make sure the buffer will have the amount of data we need.
+	while(1)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_MP4_StreamReader);
-		CSV_SCOPED_TIMING_STAT(ElectraPlayer, MP4_StreamReader);
-
-		// Yes. Get the data and return.
-		int32 NumGot = SourceBuffer.PopData(OutputBuffer, NumBytes);
-		check(NumGot == NumBytes);
-		CurrentPos += NumBytes;
-		return NumBytes;
-	}
-	else
-	{
-		// Do not have enough data yet or we want to read more than the ringbuffer can hold.
-		int32 NumBytesToGo = NumBytes;
-		while(NumBytesToGo > 0)
+		if (!SourceBuffer.WaitUntilSizeAvailable(ParsePos + NumBytesToRead, 1000 * 100))
 		{
 			if (bHasErrored || SourceBuffer.WasAborted() || bAbort)
 			{
 				return -1;
 			}
-			// EOD?
-			if (SourceBuffer.IsEndOfData())
+		}
+		else
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_MP4_StreamReader);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, MP4_StreamReader);
+			SourceBuffer.Lock();
+			if (SourceBuffer.Num() >= ParsePos + NumBytesToRead)
 			{
-				return 0;
-			}
-
-			// Get whatever amount of data is currently available to free up the buffer for receiving more data.
-			int32 NumGot;
-			{
-				SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_MP4_StreamReader);
-				CSV_SCOPED_TIMING_STAT(ElectraPlayer, MP4_StreamReader);
-				NumGot = SourceBuffer.PopData(OutputBuffer, NumBytesToGo);
-			}
-			if ((NumBytesToGo -= NumGot) > 0)
-			{
-				if (OutputBuffer)
+				if (IntoBuffer)
 				{
-					OutputBuffer += NumGot;
+					FMemory::Memcpy(IntoBuffer, SourceBuffer.GetLinearReadData() + ParsePos, NumBytesToRead);
 				}
-				// Wait for data to arrive in the ringbuffer.
-				int32 WaitForBytes = NumBytesToGo > SourceBuffer.Capacity() ? SourceBuffer.Capacity() : NumBytesToGo;
-				SourceBuffer.WaitUntilSizeAvailable(WaitForBytes, 1000 * 100);
+				SourceBuffer.Unlock();
+				ParsePos += NumBytesToRead;
+				CurrentPos += NumBytesToRead;
+				return NumBytesToRead;
+			}
+			else
+			{
+				// Return 0 at EOF and -1 on error.
+				SourceBuffer.Unlock();
+				return bHasErrored ? -1 : 0;
 			}
 		}
-		CurrentPos += NumBytes;
-		return NumBytes;
 	}
+	return -1;
 }
 
 

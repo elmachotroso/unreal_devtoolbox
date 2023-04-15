@@ -1,32 +1,70 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBlueprintSubPalette.h"
-#include "Widgets/SOverlay.h"
-#include "Framework/Commands/InputChord.h"
-#include "Framework/Commands/Commands.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Images/SImage.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/SToolTip.h"
-#include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node.h"
-#include "EdGraphSchema_K2_Actions.h"
-#include "K2Node_Event.h"
-#include "K2Node_CallFunction.h"
-#include "K2Node_SpawnActor.h"
-#include "K2Node_SpawnActorFromClass.h"
-#include "SBlueprintPalette.h"
+
+#include "BPDelegateDragDropAction.h"
 #include "BPFunctionDragDropAction.h"
 #include "BPVariableDragDropAction.h"
-#include "BPDelegateDragDropAction.h"
-#include "Engine/LevelScriptBlueprint.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "SBlueprintActionMenu.h"
-#include "BlueprintDragDropMenuItem.h"
 #include "BlueprintActionDatabase.h"
 #include "BlueprintActionMenuUtils.h"
+#include "BlueprintDragDropMenuItem.h"
+#include "BlueprintEditor.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "EdGraphSchema_K2_Actions.h"
+#include "Engine/Blueprint.h"
+#include "Engine/LevelScriptBlueprint.h"
+#include "Engine/MemberReference.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_Event.h"
+#include "K2Node_SpawnActor.h"
+#include "K2Node_SpawnActorFromClass.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "SBlueprintActionMenu.h"
+#include "SBlueprintPalette.h"
+#include "SGraphActionMenu.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SExpanderArrow.h"
+
+class FDragDropOperation;
+class SWidget;
+struct FPointerEvent;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "BlueprintSubPalette"
 
@@ -176,7 +214,7 @@ public:
 		( "BlueprintPalette"
 		, LOCTEXT("PaletteContext", "Palette")
 		, NAME_None
-		, FEditorStyle::GetStyleSetName() )
+		, FAppStyle::GetAppStyleSetName() )
 	{
 	}
 
@@ -230,7 +268,7 @@ void SBlueprintSubPalette::Construct(FArguments const& InArgs, TWeakPtr<FBluepri
  	[
 		SNew(SBorder)
 		.Padding(2.f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew( SVerticalBox )
 			+SVerticalBox::Slot()
@@ -485,7 +523,7 @@ TSharedRef<SVerticalBox> SBlueprintSubPalette::ConstructHeadingWidget(FSlateBrus
 			SNew(SBorder)
 			// use the border's padding to actually create the horizontal line
 			.Padding(1.f)
-			.BorderImage(FEditorStyle::GetBrush(TEXT("Menu.Separator")))
+			.BorderImage(FAppStyle::GetBrush(TEXT("Menu.Separator")))
 		];	
 }
 

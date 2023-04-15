@@ -2,12 +2,18 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "GeometryBase.h"
 #include "MeshDescription.h"
+#include "MeshTypes.h"
 
 // predeclare tangents template
 PREDECLARE_GEOMETRY(template<typename RealType> class TMeshTangents);
+namespace UE { namespace Geometry { class FDynamicMesh3; } }
+struct FMeshDescription;
+
 using UE::Geometry::FDynamicMesh3;
 
 /**
@@ -33,6 +39,8 @@ public:
 	/** Ignore all mesh attributes (e.g. UV/Normal layers, color layer, material groups) */
 	bool bDisableAttributes = false;
 
+	/** Should Vertex Colors of MeshDescription be transformed from Linear to SRGB */
+	bool bTransformVertexColorsLinearToSRGB = true;
 
 	/** map from DynamicMesh triangle ID to MeshDescription FTriangleID*/
 	TArray<FTriangleID> TriIDMap;
@@ -79,4 +87,16 @@ public:
 	 * @warning Convert() must have been used to create the TargetMesh before calling this function
 	 */
 	void CopyTangents(const FMeshDescription* SourceMesh, const FDynamicMesh3* TargetMesh, UE::Geometry::TMeshTangents<double>* TangentsOut);
+
+protected:
+	/**
+	 * Applies an optional Linear-to-sRGB color transform on the input. The color transform
+	 * is controlled by bTransformVtxColorsLinearToSRGB.
+	 *
+	 * This is the counterpart to DynamicMeshToMeshDescription::ApplyVertexColorTransform to
+	 * undo an applied sRGB-to-Linear transformation when the MeshDescription was built.
+	 *
+	 * @param Color color to transform
+	 */
+	void ApplyVertexColorTransform(FVector4f& Color) const;
 };

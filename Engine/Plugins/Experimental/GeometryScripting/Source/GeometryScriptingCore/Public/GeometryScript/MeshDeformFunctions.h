@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GeometryScript/GeometryScriptTypes.h"
+#include "GeometryScript/GeometryScriptSelectionTypes.h"
 #include "MeshDeformFunctions.generated.h"
 
 class UDynamicMesh;
@@ -16,7 +17,7 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptBendWarpOptions
 	GENERATED_BODY()
 public:
 	/** Symmetric extents are [-BendExtent,BendExtent], if disabled, then [-LowerExtent,BendExtent] is used  */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bSymmetricExtents = true;
 
 	/** Lower extent used when bSymmetricExtents = false */
@@ -24,7 +25,7 @@ public:
 	float LowerExtent = 10;
 
 	/** If true, the Bend is "centered" at the Origin, ie the regions on either side of the extents are rigidly transformed. If false, the Bend begins at the start of the Lower Extents, and the "lower" region is not affected. */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bBidirectional = true;
 };
 
@@ -36,7 +37,7 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptTwistWarpOptions
 	GENERATED_BODY()
 public:
 	/** Symmetric extents are [-BendExtent,BendExtent], if disabled, then [-LowerExtent,BendExtent] is used  */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bSymmetricExtents = true;
 
 	/** Lower extent used when bSymmetricExtents = false */
@@ -44,7 +45,7 @@ public:
 	float LowerExtent = 10;
 
 	/** If true, the Twist is "centered" at the Origin, ie the regions on either side of the extents are rigidly transformed. If false, the Twist begins at the start of the Lower Extents, and the "lower" region is not affected. */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bBidirectional = true;
 };
 
@@ -67,7 +68,7 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptFlareWarpOptions
 	GENERATED_BODY()
 public:
 	/** Symmetric extents are [-BendExtent,BendExtent], if disabled, then [-LowerExtent,BendExtent] is used  */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bSymmetricExtents = true;
 
 	/** Lower extent used when bSymmetricExtents = false */
@@ -75,7 +76,7 @@ public:
 	float LowerExtent = 10;
 
 	/** Determines the profile used as a displacement */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptFlareType FlareType = EGeometryScriptFlareType::SinMode;
 };
 
@@ -86,16 +87,16 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPerlinNoiseLayerOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Magnitude = 5.0;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Frequency = 0.25;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FVector FrequencyShift = FVector::Zero();
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	int RandomSeed = 0;
 };
 
@@ -115,13 +116,13 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptMathWarpOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Magnitude = 5.0f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Frequency = 0.25f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float FrequencyShift = 0.0;
 };
 
@@ -133,11 +134,15 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPerlinNoiseOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FGeometryScriptPerlinNoiseLayerOptions BaseLayer;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bApplyAlongNormal = true;
+
+	/** EmptyBehavior Defines how an empty input selection should be interpreted */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	EGeometryScriptEmptySelectionBehavior EmptyBehavior = EGeometryScriptEmptySelectionBehavior::FullMeshSelection;
 };
 
 
@@ -146,11 +151,15 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptIterativeMeshSmoothingOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	int NumIterations = 10;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Alpha = 0.2;
+
+	/** EmptyBehavior Defines how an empty input selection should be interpreted */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	EGeometryScriptEmptySelectionBehavior EmptyBehavior = EGeometryScriptEmptySelectionBehavior::FullMeshSelection;
 };
 
 
@@ -161,20 +170,24 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptDisplaceFromTextureOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Magnitude = 1.0f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FVector2D UVScale = FVector2D(1,1);
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FVector2D UVOffset = FVector2D(0,0);
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Center = 0.5;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	int ImageChannel = 0;
+
+	/** EmptyBehavior Defines how an empty input selection should be interpreted */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	EGeometryScriptEmptySelectionBehavior EmptyBehavior = EGeometryScriptEmptySelectionBehavior::FullMeshSelection;
 };
 
 
@@ -233,6 +246,7 @@ public:
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	ApplyPerlinNoiseToMesh(  
 		UDynamicMesh* TargetMesh, 
+		FGeometryScriptMeshSelection Selection,
 		FGeometryScriptPerlinNoiseOptions Options,
 		UGeometryScriptDebug* Debug = nullptr);
 
@@ -240,6 +254,7 @@ public:
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	ApplyIterativeSmoothingToMesh(  
 		UDynamicMesh* TargetMesh, 
+		FGeometryScriptMeshSelection Selection,
 		FGeometryScriptIterativeMeshSmoothingOptions Options,
 		UGeometryScriptDebug* Debug = nullptr);
 
@@ -249,9 +264,23 @@ public:
 	ApplyDisplaceFromTextureMap(  
 		UDynamicMesh* TargetMesh, 
 		UTexture2D* Texture,
+		FGeometryScriptMeshSelection Selection,
 		FGeometryScriptDisplaceFromTextureOptions Options,
 		int32 UVLayer = 0,
 		UGeometryScriptDebug* Debug = nullptr);
 
-	
+	/**
+	 * Add the vectors in VectorList, scaled by Magnitude, to the vertex positions in TargetMesh.
+	 * VectorList Length must be >= the as TargetMesh MaxVertexID.
+	 * @param Selection if non-empty, only the vertices identified by the selection will be displaced. The VectorList must still be the same size as the whole mesh, this is just a filter on which vertices are updated.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Deformations", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	ApplyDisplaceFromPerVertexVectors(  
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptMeshSelection Selection,
+		const FGeometryScriptVectorList& VectorList, 
+		float Magnitude = 5.0,
+		UGeometryScriptDebug* Debug = nullptr);
+
 };

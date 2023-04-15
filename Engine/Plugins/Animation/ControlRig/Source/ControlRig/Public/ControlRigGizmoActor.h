@@ -9,6 +9,7 @@
 #include "Rigs/RigControlHierarchy.h"
 #include "ControlRigGizmoActor.generated.h"
 
+class UControlRig;
 struct FActorSpawnParameters;
 
 USTRUCT()
@@ -19,7 +20,9 @@ struct FControlShapeActorCreationParam
 	FControlShapeActorCreationParam()
 		: ManipObj(nullptr)
 		, ControlRigIndex(INDEX_NONE)
+		, ControlRig(nullptr)
 		, ControlName(NAME_None)
+		, ShapeName(NAME_None)
 		, SpawnTransform(FTransform::Identity)
 		, ShapeTransform(FTransform::Identity)
 		, MeshTransform(FTransform::Identity)
@@ -33,7 +36,9 @@ struct FControlShapeActorCreationParam
 
 	UObject*	ManipObj;
 	int32		ControlRigIndex;
+	UControlRig* ControlRig;
 	FName		ControlName;
+	FName		ShapeName;
 	FTransform	SpawnTransform;
 	FTransform  ShapeTransform;
 	FTransform  MeshTransform;
@@ -65,21 +70,31 @@ public:
 	UPROPERTY()
 	uint32 ControlRigIndex;
 
+	//  control rig this actor is referencing we can have multiple control rig's visible
+	UPROPERTY()
+	TWeakObjectPtr<UControlRig> ControlRig;
+
 	// the name of the control this actor is referencing
 	UPROPERTY()
 	FName ControlName;
+
+	// the name of the shape to use on this actor
+   	UPROPERTY()
+   	FName ShapeName;
 
 	// the name of the color parameter on the material
 	UPROPERTY()
 	FName ColorParameterName;
 
+	FLinearColor OverrideColor;
+
 	UFUNCTION(BlueprintSetter)
 	/** Set the control to be enabled/disabled */
-	virtual void SetEnabled(bool bInEnabled);
+	virtual void SetEnabled(bool bInEnabled) { SetSelectable(bInEnabled); }
 
 	UFUNCTION(BlueprintGetter)
 	/** Get whether the control is enabled/disabled */
-	virtual bool IsEnabled() const;
+	virtual bool IsEnabled() const { return IsSelectable(); }
 
 	UFUNCTION(BlueprintSetter)
 	/** Set the control to be selected/unselected */
@@ -90,7 +105,7 @@ public:
 	virtual bool IsSelectedInEditor() const;
 
 	/** Get wether the control is selectable/unselectable */
-	virtual bool IsSelectable() const { return bSelectable; }
+	virtual bool IsSelectable() const;
 
 	UFUNCTION(BlueprintSetter)
 	/** Set the control to be selected/unselected */
@@ -103,6 +118,9 @@ public:
 	UFUNCTION(BlueprintGetter)
 	/** Get whether the control is hovered */
 	virtual bool IsHovered() const;
+
+	/* Returns the key of the control element this shape actor represents */
+	FRigElementKey GetElementKey() const { return FRigElementKey(ControlName, ERigElementType::Control); }
 
 	/** Called from the edit mode each tick */
 	virtual void TickControl() {};
@@ -137,18 +155,20 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "ControlRig|Shape")
 	FTransform GetGlobalTransform() const;
+
+	// try to update the actor with the latest settings
+	bool UpdateControlSettings(
+		ERigHierarchyNotification InNotif,
+		UControlRig* InControlRig,
+		const FRigControlElement* InControlElement,
+		bool bHideManipulators,
+		bool bIsInLevelEditor);
+	
 private:
-	/** Whether this control is enabled */
-	UPROPERTY(BlueprintGetter = IsEnabled, BlueprintSetter= SetEnabled, Category = "ControlRig|Shape")
-	uint8 bEnabled : 1;
 
 	/** Whether this control is selected */
 	UPROPERTY(BlueprintGetter = IsSelectedInEditor, BlueprintSetter = SetSelected, Category = "ControlRig|Shape")
 	uint8 bSelected : 1;
-
-	/** Whether this control can be selected */
-	UPROPERTY(BlueprintGetter = IsSelectable, BlueprintSetter = SetSelectable, Category = "ControlRig|Shape")
-	uint8 bSelectable : 1;
 
 	/** Whether this control is hovered */
 	UPROPERTY(BlueprintGetter = IsHovered, BlueprintSetter = SetHovered, Category = "ControlRig|Shape")

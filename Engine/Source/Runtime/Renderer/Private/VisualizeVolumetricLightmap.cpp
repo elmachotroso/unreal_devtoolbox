@@ -22,7 +22,7 @@
 #include "ClearQuad.h"
 #include "ScenePrivate.h"
 #include "SpriteIndexBuffer.h"
-#include "SceneFilterRendering.h"
+#include "PostProcess/SceneFilterRendering.h"
 #include "PrecomputedVolumetricLightmap.h"
 
 float GVolumetricLightmapVisualizationRadiusScale = .01f;
@@ -101,9 +101,7 @@ void FDeferredShadingSceneRenderer::VisualizeVolumetricLightmap(
 		return;
 	}
 
-	const FPrecomputedVolumetricLightmap* VolumetricLightmap = Scene->VolumetricLightmapSceneData.GetLevelVolumetricLightmap();
-
-	if (!VolumetricLightmap)
+	if (!Scene->VolumetricLightmapSceneData.HasData())
 	{
 		return;
 	}

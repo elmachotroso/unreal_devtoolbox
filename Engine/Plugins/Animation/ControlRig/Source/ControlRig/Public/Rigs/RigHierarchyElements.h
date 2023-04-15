@@ -4,12 +4,17 @@
 
 #include "CoreMinimal.h"
 #include "RigHierarchyDefines.h"
+#include "RigHierarchyMetadata.h"
 #include "RigHierarchyElements.generated.h"
 
 struct FRigUnitContext;
 struct FRigBaseElement;
+struct FRigControlElement;
 class URigHierarchy;
 
+DECLARE_DELEGATE_RetVal_ThreeParams(FTransform, FRigReferenceGetWorldTransformDelegate, const FRigUnitContext*, const FRigElementKey& /* Key */, bool /* bInitial */);
+DECLARE_DELEGATE_TwoParams(FRigElementMetadataChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Name */);
+DECLARE_DELEGATE_ThreeParams(FRigElementMetadataTagChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Tag */, bool /* AddedOrRemoved */);
 DECLARE_DELEGATE_RetVal_ThreeParams(FTransform, FRigReferenceGetWorldTransformDelegate, const FRigUnitContext*, const FRigElementKey& /* Key */, bool /* bInitial */);
 
 #define DECLARE_RIG_ELEMENT_METHODS(ElementType) \
@@ -396,11 +401,105 @@ struct CONTROLRIG_API FRigCurrentAndInitialTransform
 	FRigLocalAndGlobalTransform Initial;
 };
 
+USTRUCT(BlueprintType)
+struct CONTROLRIG_API FRigPreferredEulerAngles
+{
+	GENERATED_BODY()
+
+	static constexpr EEulerRotationOrder DefaultRotationOrder = EEulerRotationOrder::YZX;
+
+	FRigPreferredEulerAngles()
+	: RotationOrder(DefaultRotationOrder) // default for rotator
+	, Current(FVector::ZeroVector)
+	, Initial(FVector::ZeroVector)
+	{}
+
+	void Save(FArchive& Ar);
+	void Load(FArchive& Ar);
+
+	FORCEINLINE bool operator == (const FRigPreferredEulerAngles& Other) const
+	{
+		return RotationOrder == Other.RotationOrder &&
+			Current == Other.Current &&
+			Initial == Other.Initial;
+	}
+
+	void Reset();
+	FORCEINLINE FVector& Get(bool bInitial = false) { return bInitial ? Initial : Current; }
+	FORCEINLINE const FVector& Get(bool bInitial = false) const { return bInitial ? Initial : Current; }
+	FRotator GetRotator(bool bInitial = false) const;
+	FRotator SetRotator(const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false);
+	FVector GetAngles(bool bInitial = false, EEulerRotationOrder InRotationOrder = DefaultRotationOrder) const;
+	void SetAngles(const FVector& InValue, bool bInitial = false, EEulerRotationOrder InRotationOrder = DefaultRotationOrder);
+
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
+	EEulerRotationOrder RotationOrder;
+
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
+	FVector Current;
+
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Pose")
+	FVector Initial;
+};
+
+
 struct FRigBaseElement;
 //typedef TArray<FRigBaseElement*> FRigBaseElementChildrenArray;
 typedef TArray<FRigBaseElement*, TInlineAllocator<3>> FRigBaseElementChildrenArray;
 //typedef TArray<FRigBaseElement*> FRigBaseElementParentArray;
 typedef TArray<FRigBaseElement*, TInlineAllocator<1>> FRigBaseElementParentArray;
+
+struct CONTROLRIG_API FRigElementHandle
+{
+public:
+
+	FRigElementHandle()
+		: Hierarchy(nullptr)
+		, Key()
+	{}
+
+	FRigElementHandle(URigHierarchy* InHierarchy, const FRigElementKey& InKey);
+	FRigElementHandle(URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
+
+	bool IsValid() const { return Get() != nullptr; }
+	operator bool() const { return IsValid(); }
+	
+	const URigHierarchy* GetHierarchy() const { return Hierarchy.Get(); }
+	URigHierarchy* GetHierarchy() { return Hierarchy.Get(); }
+	const FRigElementKey& GetKey() const { return Key; }
+
+	const FRigBaseElement* Get() const;
+	FRigBaseElement* Get();
+
+	template<typename T>
+	T* Get()
+	{
+		return Cast<T>(Get());
+	}
+
+	template<typename T>
+	const T* Get() const
+	{
+		return Cast<T>(Get());
+	}
+
+	template<typename T>
+	T* GetChecked()
+	{
+		return CastChecked<T>(Get());
+	}
+
+	template<typename T>
+	const T* GetChecked() const
+	{
+		return CastChecked<T>(Get());
+	}
+
+private:
+
+	TWeakObjectPtr<URigHierarchy> Hierarchy;
+	FRigElementKey Key;
+};
 
 USTRUCT(BlueprintType)
 struct CONTROLRIG_API FRigBaseElement
@@ -411,14 +510,20 @@ public:
 
 	FRigBaseElement()
     : Key()
+	, NameString()
     , Index(INDEX_NONE)
 	, SubIndex(INDEX_NONE)
 	, bSelected(false)
+	, CreatedAtInstructionIndex(INDEX_NONE)
 	, TopologyVersion(0)
+	, MetadataVersion(0)
 	, OwnedInstances(0)
 	{}
 
-	virtual ~FRigBaseElement(){}
+	FRigBaseElement(const FRigBaseElement& InOther);
+	FRigBaseElement& operator= (const FRigBaseElement& InOther);
+
+	virtual ~FRigBaseElement();
 
 	enum ESerializationPhase
 	{
@@ -431,6 +536,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = RigElement, meta = (AllowPrivateAccess = "true"))
 	FRigElementKey Key;
 
+	UPROPERTY(transient)
+	FString NameString;
+
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = RigElement, meta = (AllowPrivateAccess = "true"))
 	int32 Index;
 
@@ -439,6 +547,12 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
 	bool bSelected;
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = RigElement, meta = (AllowPrivateAccess = "true"))
+	int32 CreatedAtInstructionIndex;
+
+	TArray<FRigBaseMetadata*> Metadata;
+	TMap<FName,int32> MetadataNameToIndex;
 
 	FORCEINLINE static bool IsClassOf(const FRigBaseElement* InElement)
 	{
@@ -453,19 +567,56 @@ public:
 	virtual void Load(FArchive& Ar, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase);
 
 	FORCEINLINE const FName& GetName() const { return Key.Name; }
+	FORCEINLINE const FString& GetNameString() const { return NameString; }
 	FORCEINLINE virtual const FName& GetDisplayName() const { return GetName(); }
 	FORCEINLINE ERigElementType GetType() const { return Key.Type; }
 	FORCEINLINE const FRigElementKey& GetKey() const { return Key; }
 	FORCEINLINE int32 GetIndex() const { return Index; }
 	FORCEINLINE int32 GetSubIndex() const { return SubIndex; }
 	FORCEINLINE bool IsSelected() const { return bSelected; }
+	FORCEINLINE int32 GetCreatedAtInstructionIndex() const { return CreatedAtInstructionIndex; }
+	FORCEINLINE bool IsProcedural() const { return CreatedAtInstructionIndex != INDEX_NONE; }
+	FORCEINLINE int32 GetMetadataVersion() const { return MetadataVersion; }
+
+	FORCEINLINE int32 NumMetadata() const { return Metadata.Num(); }
+	FORCEINLINE FRigBaseMetadata* GetMetadata(int32 InIndex) const { return Metadata[InIndex]; }
+	FORCEINLINE FRigBaseMetadata* GetMetadata(const FName& InName) const
+	{
+		if(const int32* MetadataIndex = MetadataNameToIndex.Find(InName))
+		{
+			return GetMetadata(*MetadataIndex);
+		}
+		return nullptr;
+	}
+	FORCEINLINE FRigBaseMetadata* GetMetadata(const FName& InName, ERigMetadataType InType) const
+	{
+		if(const int32* MetadataIndex = MetadataNameToIndex.Find(InName))
+		{
+			FRigBaseMetadata* Md = GetMetadata(*MetadataIndex);
+			if(Md->GetType() == InType)
+			{
+				return Md;
+			}
+		}
+		return nullptr;
+	}
+	FORCEINLINE bool SetMetaData(const FName& InName, ERigMetadataType InType, const void* InData, int32 InSize)
+	{
+		if(FRigBaseMetadata* Md = SetupValidMetadata(InName, InType))
+		{
+			return Md->SetValueData(InData, InSize);
+		}
+		return false;
+	}
+	bool RemoveMetadata(const FName& InName);
+	bool RemoveAllMetadata();
 
 	template<typename T>
 	FORCEINLINE bool IsA() const { return T::IsClassOf(this); }
 
 	FORCEINLINE bool IsTypeOf(ERigElementType InElementType) const
 	{
-		return ((uint8)InElementType & (uint8)Key.Type) == (uint8)Key.Type;
+		return Key.IsTypeOf(InElementType);
 	}
 
 	template<typename T>
@@ -510,21 +661,35 @@ public:
 		return Element;
 	}
 
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) {}
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) {}
 
 protected:
 
 	// helper function to be called as part of URigHierarchy::CopyHierarchy
-	virtual void  CopyFrom(URigHierarchy* InHierarchy, FRigBaseElement* InOther, URigHierarchy* InOtherHierarchy) {}
+	virtual void CopyFrom(URigHierarchy* InHierarchy, FRigBaseElement* InOther, URigHierarchy* InOtherHierarchy);
+	
+	// sets up the metadata and ensures the right type
+	FRigBaseMetadata* SetupValidMetadata(const FName& InName, ERigMetadataType InType);
+
+	void NotifyMetadataChanged(const FName& InName);
+	void NotifyMetadataTagChanged(const FName& InTag, bool bAdded);
 
 	mutable uint16 TopologyVersion;
+	mutable uint16 MetadataVersion;
 	mutable FRigBaseElementChildrenArray CachedChildren;
 
 	// used for constructing / destructing the memory. typically == 1
 	int32 OwnedInstances;
 
+	FRigElementMetadataChangedDelegate MetadataChangedDelegate;
+	FRigElementMetadataTagChangedDelegate MetadataTagChangedDelegate;
+
 	friend class URigHierarchy;
 	friend class URigHierarchyController;
+	friend struct FRigDispatch_SetMetadata;
+	friend struct FRigUnit_SetMetadataTag;
+	friend struct FRigUnit_SetMetadataTagArray;
+	friend struct FRigUnit_RemoveMetadataTag;
 };
 
 USTRUCT(BlueprintType)
@@ -586,7 +751,7 @@ protected:
 
 public:
 	
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) override;
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) override;
 	
 protected:
 
@@ -726,10 +891,26 @@ public:
 	{
 		return bInitial ? InitialWeight : Weight;
 	}
+
+	FORCEINLINE void CopyPose(const FRigElementParentConstraint& InOther, bool bCurrent, bool bInitial)
+	{
+		if(bCurrent)
+		{
+			Weight = InOther.Weight;
+		}
+		if(bInitial)
+		{
+			InitialWeight = InOther.InitialWeight;
+		}
+		Cache.bDirty = true;
+	}
 };
 
-//typedef TArray<FRigElementParentConstraint> FRigElementParentConstraintArray;
+#if URIGHIERARCHY_ENSURE_CACHE_VALIDITY
+typedef TArray<FRigElementParentConstraint, TInlineAllocator<8>> FRigElementParentConstraintArray;
+#else
 typedef TArray<FRigElementParentConstraint, TInlineAllocator<1>> FRigElementParentConstraintArray;
+#endif
 
 USTRUCT(BlueprintType)
 struct CONTROLRIG_API FRigMultiParentElement : public FRigTransformElement
@@ -748,9 +929,6 @@ public:
 	virtual void Save(FArchive& A, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
 	virtual void Load(FArchive& Ar, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
 	
-	UPROPERTY(BlueprintReadOnly, Category = RigElement)
-	FRigCurrentAndInitialTransform Parent;
-
 	FRigElementParentConstraintArray ParentConstraints;
 	TMap<FRigElementKey, int32> IndexLookup;
 
@@ -766,7 +944,7 @@ protected:
 
 public:
 	
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) override;
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) override;
 
 protected:
 	
@@ -857,7 +1035,12 @@ struct CONTROLRIG_API FRigControlSettings
 	void Save(FArchive& Ar);
 	void Load(FArchive& Ar);
 
+	friend uint32 GetTypeHash(const FRigControlSettings& Settings);
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Control)
+	ERigControlAnimationType AnimationType;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Control, meta=(DisplayName="Value Type"))
 	ERigControlType ControlType;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Control)
@@ -870,10 +1053,6 @@ struct CONTROLRIG_API FRigControlSettings
 	/** If Created from a Curve  Container*/
 	UPROPERTY(transient)
 	bool bIsCurve;
-
-	/** If the control is animatable in sequencer */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Control)
-	bool bAnimatable;
 
 	/** True if the control has limits. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Limits)
@@ -894,19 +1073,19 @@ struct CONTROLRIG_API FRigControlSettings
 	UPROPERTY(BlueprintReadWrite, Category = Limits)
 	FRigControlValue MaximumValue;
 
-	/** Set to true if the shape is enabled in 3d */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Gizmo)
-	bool bShapeEnabled;
-
 	/** Set to true if the shape is currently visible in 3d */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape, meta = (EditCondition = "bShapeEnabled"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape)
 	bool bShapeVisible;
 
+	/** Defines how the shape visibility should be changed */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape)
+	ERigControlVisibility ShapeVisibility;
+
 	/* This is optional UI setting - this doesn't mean this is always used, but it is optional for manipulation layer to use this*/
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape, meta = (EditCondition = "bShapeEnabled"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape)
 	FName ShapeName;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape, meta = (EditCondition = "bShapeEnabled"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Shape)
 	FLinearColor ShapeColor;
 
 	/** If the control is transient and only visible in the control rig editor */
@@ -924,6 +1103,32 @@ struct CONTROLRIG_API FRigControlSettings
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation, meta = (DisplayName = "Customization"))
 	FRigControlElementCustomization Customization;
 
+	/**
+	 * The list of driven controls for this proxy control.
+	 */
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation)
+	TArray<FRigElementKey> DrivenControls;
+
+	/**
+	 * The list of previously driven controls - prior to a procedural change
+	 */
+	TArray<FRigElementKey> PreviouslyDrivenControls;
+
+	/**
+	 * If set to true the animation channel will be grouped with the parent control in sequencer
+	 */
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = Animation)
+	bool bGroupWithParentControl;
+
+	/**
+	 * Deprecated properties.
+	 */
+	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage = "Use animation_type instead."))
+	bool bAnimatable_DEPRECATED = true;
+	
+	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage = "Use animation_type or shape_visible instead."))
+	bool bShapeEnabled_DEPRECATED = true;
+	
 	/** Applies the limits expressed by these settings to a value */
 	FORCEINLINE void ApplyLimits(FRigControlValue& InOutValue) const
 	{
@@ -954,6 +1159,78 @@ struct CONTROLRIG_API FRigControlSettings
 	}
 
 	void SetupLimitArrayForType(bool bLimitTranslation = false, bool bLimitRotation = false, bool bLimitScale = false);
+
+	FORCEINLINE bool IsAnimatable() const
+	{
+		return (AnimationType == ERigControlAnimationType::AnimationControl) ||
+			(AnimationType == ERigControlAnimationType::AnimationChannel);
+	}
+
+	FORCEINLINE bool ShouldBeGrouped() const
+	{
+		return IsAnimatable() && bGroupWithParentControl;
+	}
+
+	FORCEINLINE bool SupportsShape() const
+	{
+		return (AnimationType != ERigControlAnimationType::AnimationChannel) &&
+			(ControlType != ERigControlType::Bool);
+	}
+
+	FORCEINLINE bool IsVisible() const
+	{
+		return SupportsShape() && bShapeVisible;
+	}
+	
+	FORCEINLINE bool SetVisible(bool bVisible, bool bForce = false)
+	{
+		if(!bForce)
+		{
+			if(AnimationType == ERigControlAnimationType::ProxyControl)
+			{
+				if(ShapeVisibility == ERigControlVisibility::BasedOnSelection)
+				{
+					return false;
+				}
+			}
+		}
+		
+		if(SupportsShape())
+		{
+			if(bShapeVisible == bVisible)
+			{
+				return false;
+			}
+			bShapeVisible = bVisible;
+		}
+		return SupportsShape();
+	}
+
+	FORCEINLINE bool IsSelectable(bool bRespectVisibility = true) const
+	{
+		return (AnimationType == ERigControlAnimationType::AnimationControl ||
+			AnimationType == ERigControlAnimationType::ProxyControl) &&
+			(IsVisible() || !bRespectVisibility);
+	}
+
+	FORCEINLINE void SetAnimationTypeFromDeprecatedData(bool bAnimatable, bool bShapeEnabled)
+	{
+		if(bAnimatable)
+		{
+			if(bShapeEnabled && (ControlType != ERigControlType::Bool))
+			{
+				AnimationType = ERigControlAnimationType::AnimationControl;
+			}
+			else
+			{
+				AnimationType = ERigControlAnimationType::AnimationChannel;
+			}
+		}
+		else
+		{
+			AnimationType = ERigControlAnimationType::ProxyControl;
+		}
+	}
 };
 
 USTRUCT(BlueprintType)
@@ -981,6 +1258,8 @@ struct CONTROLRIG_API FRigControlElement : public FRigMultiParentElement
 		return FRigMultiParentElement::GetDisplayName();
 	}
 
+	FORCEINLINE bool IsAnimationChannel() const { return Settings.AnimationType == ERigControlAnimationType::AnimationChannel; }
+
 	virtual void Save(FArchive& A, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
 	virtual void Load(FArchive& Ar, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
 
@@ -1000,6 +1279,9 @@ public:
 	FRigCurrentAndInitialTransform Shape;
 
 protected:
+
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = RigElement)
+	FRigPreferredEulerAngles PreferredEulerAngles;
 	
 	FORCEINLINE static bool IsClassOf(const FRigBaseElement* InElement)
 	{
@@ -1008,11 +1290,12 @@ protected:
 
 public:
 	
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) override;
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) override;
 
 protected:
 
 	friend struct FRigBaseElement;
+	friend class URigHierarchy;
 };
 
 USTRUCT(BlueprintType)
@@ -1025,12 +1308,13 @@ public:
 
 	FRigCurveElement()
 		: FRigBaseElement()
+		, bIsValueSet(true)
 		, Value(0.f)
 	{
 		Key.Type = ERigElementType::Curve;
 	}
 
-	virtual ~FRigCurveElement(){}
+	virtual ~FRigCurveElement() override {}
 
 	virtual void Save(FArchive& A, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
 	virtual void Load(FArchive& Ar, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase) override;
@@ -1040,9 +1324,12 @@ private:
 	virtual void CopyFrom(URigHierarchy* InHierarchy, FRigBaseElement* InOther, URigHierarchy* InOtherHierarchy) override;
 
 public:
+	// Set to true if the value was actually set. Used to carry back and forth blend curve
+	// value validity state.
+	bool bIsValueSet;
 	
 	float Value;
-	
+
 	FORCEINLINE static bool IsClassOf(const FRigBaseElement* InElement)
 	{
 		return InElement->GetType() == ERigElementType::Curve;
@@ -1050,7 +1337,7 @@ public:
 
 public:
 	
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) override;
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) override;
 
 protected:
 	
@@ -1131,7 +1418,7 @@ public:
 
 	FTransform GetReferenceWorldTransform(const FRigUnitContext* InContext, bool bInitial) const;
 
-	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial) override;
+	virtual void CopyPose(FRigBaseElement* InOther, bool bCurrent, bool bInitial, bool bWeights) override;
 
 protected:
 

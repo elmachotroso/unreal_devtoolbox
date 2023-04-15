@@ -2,11 +2,19 @@
 
 #pragma once
 
-// Includes
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UObject/Class.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/EnableIf.h"
+#include "Templates/IsEnum.h"
 #include "Templates/PimplPtr.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 
 namespace UE
@@ -371,7 +379,7 @@ public:
 
 		for (FConstIterator It(*this); It; ++It)
 		{
-			const TCHAR* ResultLex = LexToString(static_cast<ResultEnum>(It->Result));
+			const TCHAR* ResultLex = ToCStr(LexToString(static_cast<ResultEnum>(It->Result)));
 
 			if (ConversionType == ENetResultString::ResultEnumOnly)
 			{
@@ -472,7 +480,7 @@ private:
 	/** Default ErrorContext based on ResultEnum */
 	static const TCHAR* DefaultErrorContext(ResultEnum InResult)
 	{
-		return (InResult == ResultEnum::Success ? TEXT("") : LexToString(InResult));
+		return (InResult == ResultEnum::Success ? TEXT("") : ToCStr(LexToString(InResult)));
 	}
 };
 

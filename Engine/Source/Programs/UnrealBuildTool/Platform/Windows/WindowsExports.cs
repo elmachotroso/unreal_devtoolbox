@@ -4,9 +4,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -22,16 +24,17 @@ namespace UnrealBuildTool
 		/// <returns>True if successful</returns>
 		public static IEnumerable<DirectoryReference>? TryGetVSInstallDirs(WindowsCompiler Compiler)
 		{
-			return WindowsPlatform.TryGetVSInstallDirs(Compiler);
+			return WindowsPlatform.TryGetVSInstallDirs(Compiler, Log.Logger);
 		}
 
 		/// <summary>
 		/// Gets the path to MSBuild.exe
 		/// </summary>
 		/// <returns>Path to MSBuild.exe</returns>
+		[SupportedOSPlatform("windows")]
 		public static string GetMSBuildToolPath()
 		{
-			return WindowsPlatform.GetMsBuildToolPath().FullName;
+			return MicrosoftPlatformSDK.GetMsBuildToolPath(Log.Logger).FullName;
 		}
 
 		/// <summary>
@@ -51,10 +54,11 @@ namespace UnrealBuildTool
 		/// <param name="OutSdkVersion">Version of SDK</param>
 		/// <param name="OutSdkDir">Path to SDK root folder</param>
 		/// <returns>String with the name</returns>
+		[SupportedOSPlatform("windows")]
 		public static bool TryGetWindowsSdkDir(string DesiredVersion, [NotNullWhen(true)] out Version? OutSdkVersion, [NotNullWhen(true)] out DirectoryReference? OutSdkDir)
 		{
 			VersionNumber? vn;
-			if(WindowsPlatform.TryGetWindowsSdkDir(DesiredVersion, out vn, out OutSdkDir))
+			if(WindowsPlatform.TryGetWindowsSdkDir(DesiredVersion, Log.Logger, out vn, out OutSdkDir))
 			{
 				OutSdkVersion = new Version(vn.ToString());
 				return true;
@@ -67,6 +71,7 @@ namespace UnrealBuildTool
 		/// Gets a list of Windows Sdk installation directories, ordered by preference
 		/// </summary>
 		/// <returns>String with the name</returns>
+		[SupportedOSPlatform("windows")]
 		public static List<KeyValuePair<string, DirectoryReference>> GetWindowsSdkDirs()
 		{
 			List<KeyValuePair<string, DirectoryReference>> WindowsSdkDirs = new List<KeyValuePair<string, DirectoryReference>>();
@@ -74,13 +79,13 @@ namespace UnrealBuildTool
 			// Add the default directory first
 			VersionNumber? Version;
 			DirectoryReference? DefaultWindowsSdkDir;
-			if (WindowsPlatform.TryGetWindowsSdkDir(null, out Version, out DefaultWindowsSdkDir))
+			if (WindowsPlatform.TryGetWindowsSdkDir(null, Log.Logger, out Version, out DefaultWindowsSdkDir))
 			{
 				WindowsSdkDirs.Add(new KeyValuePair<string, DirectoryReference>(Version.ToString(), DefaultWindowsSdkDir));
 			}
 
 			// Add all the other directories sorted in reverse order
-			IReadOnlyDictionary<VersionNumber, DirectoryReference> WindowsSdkDirPairs = MicrosoftPlatformSDK.FindWindowsSdkDirs();
+			IReadOnlyDictionary<VersionNumber, DirectoryReference> WindowsSdkDirPairs = MicrosoftPlatformSDK.FindWindowsSdkDirs(Log.Logger);
 			foreach(KeyValuePair<VersionNumber, DirectoryReference> Pair in WindowsSdkDirPairs.OrderByDescending(x => x.Key))
 			{
 				if(!WindowsSdkDirs.Any(x => x.Value == Pair.Value))
@@ -91,5 +96,17 @@ namespace UnrealBuildTool
 
 			return WindowsSdkDirs;
 		}
+
+		/// <summary>
+		/// Enumerates all the Windows 10 SDK root directories
+		/// </summary>
+		/// <param name="RootDirs">Receives all the Windows 10 sdk root directories</param>
+		/// <param name="Logger">Logger for output</param>
+		[SupportedOSPlatform("windows")]
+		public static void EnumerateSdkRootDirs(List<DirectoryReference> RootDirs, ILogger Logger)
+		{
+			MicrosoftPlatformSDK.EnumerateSdkRootDirs(RootDirs, Logger);
+		}
+
 	}
 }

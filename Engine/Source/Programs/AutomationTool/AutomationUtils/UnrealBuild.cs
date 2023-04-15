@@ -82,10 +82,15 @@ namespace AutomationTool
 		}
 		
 		private void PrepareUBT()
-		{			
-			if (CommandUtils.FileExists(UBTExecutable) == false)
+		{
+			if (!FileReference.Exists(UnrealBuildToolDll))
 			{
-				throw new UnrealBuildException("UBT does not exist in {0}.", UBTExecutable);
+				throw new UnrealBuildException($"UnrealBuildTool.dll does not exist at {UnrealBuildToolDll}");
+			}
+
+			if (!FileReference.Exists(Unreal.DotnetPath))
+			{
+				throw new UnrealBuildException($"dotnet executable does not exist at {Unreal.DotnetPath}");
 			}
 		}
 
@@ -120,7 +125,7 @@ namespace AutomationTool
 
 			string UHTArg = this.AlwaysBuildUHT ? "" : "-nobuilduht";
 
-			CommandUtils.RunUBT(CommandUtils.CmdEnv, UBTExecutable: UBTExecutable, Project: UprojectPath, Target: TargetName, Platform: Platform, Config: Config, AdditionalArgs: String.Format("-Manifest={0} {1} -NoHotReload -xgeexport {2}", CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFile.FullName), UHTArg, AddArgs));
+			CommandUtils.RunUBT(CommandUtils.CmdEnv, UnrealBuildToolDll: UnrealBuildToolDll, Project: UprojectPath, Target: TargetName, Platform: Platform, Config: Config, AdditionalArgs: String.Format("-Manifest={0} {1} -NoHotReload -xgeexport {2}", CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFile.FullName), UHTArg, AddArgs));
 
 			XGEItem Result = new XGEItem();
 			Result.Platform = Platform;
@@ -163,7 +168,7 @@ namespace AutomationTool
 			// run the deployment steps, if necessary
 			foreach(string DeployTargetFile in Item.Manifest.DeployTargetFiles)
 			{
-				CommandUtils.RunUBT(CommandUtils.CmdEnv, UBTExecutable, String.Format("-Mode=Deploy -Receipt=\"{0}\"", DeployTargetFile));
+				CommandUtils.RunUBT(CommandUtils.CmdEnv, UnrealBuildToolDll, String.Format("-Mode=Deploy -Receipt=\"{0}\"", DeployTargetFile));
 			}
 
 			foreach (string ManifestItem in Item.Manifest.BuildProducts)
@@ -176,7 +181,7 @@ namespace AutomationTool
 			}
 		}
 
-		void CleanWithUBT(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Config, FileReference UprojectPath, string InAddArgs = "")
+		public void CleanWithUBT(string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Config, FileReference UprojectPath, string InAddArgs = "")
 		{
 			string AddArgs = "";
 			if (UprojectPath != null)
@@ -196,11 +201,11 @@ namespace AutomationTool
 				Scope.Span.SetTag("target", TargetName);
 				Scope.Span.SetTag("platform", Platform.ToString());
 				Scope.Span.SetTag("config", Config.ToString());
-				CommandUtils.RunUBT(CommandUtils.CmdEnv, UBTExecutable: UBTExecutable, Project: UprojectPath, Target: TargetName, Platform: Platform, Config: Config, AdditionalArgs: "-Clean -NoHotReload" + AddArgs);
+				CommandUtils.RunUBT(CommandUtils.CmdEnv, UnrealBuildToolDll: UnrealBuildToolDll, Project: UprojectPath, Target: TargetName, Platform: Platform, Config: Config, AdditionalArgs: "-Clean -NoHotReload" + AddArgs);
 			}
         }
 
-		BuildManifest BuildWithUBT(string TargetName, UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration Config, FileReference UprojectPath, bool ForceFlushMac = false, bool DisableXGE = false, string InAddArgs = "")
+		BuildManifest BuildWithUBT(string TargetName, UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration Config, FileReference UprojectPath, bool ForceFlushMac = false, bool DisableXGE = false, bool AllCores = false, string InAddArgs = "")
 		{
 			string AddArgs = "";
 			if (UprojectPath != null)
@@ -217,13 +222,17 @@ namespace AutomationTool
 			{
 				AddArgs += " -noxge";
 			}
+			if (AllCores)
+			{
+				AddArgs += " -allcores";
+			}
 
 			PrepareUBT();
 
 			FileReference ManifestFile = GetManifestFile(UprojectPath);
 			CommandUtils.DeleteFile(ManifestFile);
 
-			CommandUtils.RunUBT(CommandUtils.CmdEnv, UBTExecutable: UBTExecutable, Project: UprojectPath, Target: TargetName, Platform: TargetPlatform, Config: Config, AdditionalArgs: String.Format("{0} -Manifest={1} -NoHotReload", AddArgs, CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFile.FullName)));
+			CommandUtils.RunUBT(CommandUtils.CmdEnv, UnrealBuildToolDll: UnrealBuildToolDll, Project: UprojectPath, Target: TargetName, Platform: TargetPlatform, Config: Config, AdditionalArgs: String.Format("{0} -Manifest={1} -NoHotReload", AddArgs, CommandUtils.MakePathSafeToUseWithCommandLine(ManifestFile.FullName)));
 
 			BuildManifest Manifest = AddBuildProductsFromManifest(ManifestFile);
 			CommandUtils.DeleteFile(ManifestFile);
@@ -522,7 +531,7 @@ namespace AutomationTool
 			return Result;
 		}
 
-		public bool ProcessXGEItems(List<XGEItem> Actions, string XGETool, string Args, string TaskFilePath, bool ShowProgress)
+		public bool ProcessXGEItems(List<XGEItem> Actions, string XGETool, string Args, string TaskFilePath, bool ShowProgress, bool AllCores)
 		{
 			IScope CombineXGEScope = GlobalTracer.Instance.BuildSpan("CombineXGEItemFiles").WithTag("xgeTool", Path.GetFileNameWithoutExtension(XGETool)).StartActive();
 
@@ -578,7 +587,7 @@ namespace AutomationTool
 					CommandUtils.PushDir(CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, @"\Engine\Source"));
 					try
 					{
-						int ExitCode = ParallelExecutor.Execute(TaskFilePath, OwnerCommand.ParseParam("StopOnErrors"));
+						int ExitCode = ParallelExecutor.Execute(TaskFilePath, OwnerCommand.ParseParam("StopOnErrors"), AllCores);
 						if(ExitCode != 0)
 						{
 							return false;
@@ -946,12 +955,12 @@ namespace AutomationTool
 
 		public bool CanUseXGE(UnrealTargetPlatform Platform)
 		{
-			return PlatformExports.CanUseXGE(Platform);
+			return PlatformExports.CanUseXGE(Platform, Log.Logger);
 		}
 
 		public bool CanUseParallelExecutor(UnrealTargetPlatform Platform)
 		{
-			return PlatformExports.CanUseParallelExecutor(Platform);
+			return PlatformExports.CanUseParallelExecutor(Platform, Log.Logger);
 		}
 
 		private bool ParseParam(string Name)
@@ -977,7 +986,8 @@ namespace AutomationTool
 		/// <param name="InUpdateVersionFiles">True if the version files are to be updated </param>
 		/// <param name="InForceNoXGE">If true will force XGE off</param>
 		/// <param name="InUseParallelExecutor">If true AND XGE not present or not being used then use ParallelExecutor</param>
-		public void Build(BuildAgenda Agenda, bool? InDeleteBuildProducts = null, bool InUpdateVersionFiles = true, bool InForceNoXGE = false, bool InUseParallelExecutor = false, bool InShowProgress = false, int? InChangelistNumberOverride = null, Dictionary<BuildTarget, BuildManifest> InTargetToManifest = null)
+		/// <param name="InAllCores">If true AND XGE not present or not being used then ensure UBT uses all available cores</param>
+		public void Build(BuildAgenda Agenda, bool? InDeleteBuildProducts = null, bool InUpdateVersionFiles = true, bool InForceNoXGE = false, bool InUseParallelExecutor = false, bool InShowProgress = false, bool InAllCores = false, int? InChangelistNumberOverride = null, Dictionary<BuildTarget, BuildManifest> InTargetToManifest = null)
 		{
 			if (!CommandUtils.CmdEnv.HasCapabilityToCompile)
 			{
@@ -1071,7 +1081,7 @@ namespace AutomationTool
 			{
 				// When building a target for Mac or iOS, use UBT's -flushmac option to clean up the remote builder
 				bool bForceFlushMac = DeleteBuildProducts && (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.IOS);
-				BuildManifest Manifest = BuildWithUBT(Target.TargetName, Target.Platform, Target.Config, Target.UprojectPath, bForceFlushMac, bDisableXGE, Target.UBTArgs);
+				BuildManifest Manifest = BuildWithUBT(Target.TargetName, Target.Platform, Target.Config, Target.UprojectPath, bForceFlushMac, bDisableXGE, InAllCores, Target.UBTArgs);
 				if(InTargetToManifest != null)
 				{
 					InTargetToManifest[Target] = Manifest;
@@ -1081,17 +1091,17 @@ namespace AutomationTool
 			// Execute all the XGE targets
 			if(ParallelXgeTargets.Count > 0)
 			{
-				BuildParallelTargets(ParallelXgeTargets, InShowProgress, XGEConsole, InTargetToManifest);
+				BuildParallelTargets(ParallelXgeTargets, InShowProgress, InAllCores, XGEConsole, InTargetToManifest);
 			}
 
 			// Execute all the parallel targets
 			if(ParallelTargets.Count > 0)
 			{
-				BuildParallelTargets(ParallelTargets, InShowProgress, null, InTargetToManifest);
+				BuildParallelTargets(ParallelTargets, InShowProgress, InAllCores, null, InTargetToManifest);
 			}
 		}
 
-		private void BuildParallelTargets(List<BuildTarget> ParallelTargets, bool InShowProgress, string XGETool, Dictionary<BuildTarget, BuildManifest> InTargetToManifest)
+		private void BuildParallelTargets(List<BuildTarget> ParallelTargets, bool InShowProgress, bool InAllCores, string XGETool, Dictionary<BuildTarget, BuildManifest> InTargetToManifest)
 		{
 			string TaskFilePath = CommandUtils.CombinePaths(CommandUtils.CmdEnv.LogFolder, @"UAT_XGE.xml");
 
@@ -1111,6 +1121,8 @@ namespace AutomationTool
 			string Args = null;
 			if (XGETool != null) 
 			{
+				Debug.Assert(OperatingSystem.IsWindows());
+
 				Args = "\"" + TaskFilePath + "\" /Rebuild /NoLogo /ShowAgent /ShowTime";
 				if (ParseParam("StopOnErrors"))
 				{
@@ -1131,7 +1143,7 @@ namespace AutomationTool
 			}
 
 			CommandUtils.LogSetProgress(InShowProgress, "Building...");
-			if (!ProcessXGEItems(XGEItems, XGETool, Args, TaskFilePath, InShowProgress))
+			if (!ProcessXGEItems(XGEItems, XGETool, Args, TaskFilePath, InShowProgress, InAllCores))
 			{
 				throw new UnrealBuildException("{0} failed, retries not enabled:", XGETool);
 			}
@@ -1225,20 +1237,13 @@ namespace AutomationTool
 		/// </summary>
 		public void AddUBTFilesToBuildProducts()
 		{
-			var UBTLocation = Path.GetDirectoryName(GetUBTExecutable());
-			var UBTFiles = new List<string>(new string[] 
-					{
-						"UnrealBuildTool.exe",
-					});
+			string UBTLocation = UnrealBuildToolDll.Directory.FullName;
+			// copy all the files from the UBT output directory
+			string[] UBTFiles = CommandUtils.FindFiles_NoExceptions("*.*", true, UBTLocation);
 
-			foreach (var UBTFile in UBTFiles)
+			foreach (string UBTFile in UBTFiles)
 			{
-				var UBTProduct = CommandUtils.CombinePaths(UBTLocation, UBTFile);
-				if (!CommandUtils.FileExists_NoExceptions(UBTProduct))
-				{
-					throw new UnrealBuildException("Cannot add UBT to the build products because {0} does not exist.", UBTProduct);
-				}
-				AddBuildProduct(UBTProduct);
+				AddBuildProduct(UBTFile);
 			}
 		}
 
@@ -1272,11 +1277,13 @@ namespace AutomationTool
 			}
 		}
 
+		[Obsolete("Deprecated in UE5.1; use UnrealBuildToolDll")]
 		public static string GetUBTExecutable()
 		{
 			return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, @"Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool" + (RuntimePlatform.IsWindows ? ".exe" : ""));
 		}
 
+		[Obsolete("Deprecated in UE5.1; use UnrealBuildToolDll")]
 		public string UBTExecutable
 		{
 			get
@@ -1285,17 +1292,10 @@ namespace AutomationTool
 			}
 		}
 
+		public static FileReference UnrealBuildToolDll => 
+			FileReference.FromString(CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, "Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll"));
+
 		// List of everything we built so far
 		public readonly HashSet<string> BuildProductFiles = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-	}
-
-	[Obsolete("Deprecated in 5.0. Use UnrealBuild")]
-	public class UE4Build : UnrealBuild
-	{
-		public UE4Build(BuildCommand Command) : base(Command)
-		{
-		}
-
-
 	}
 }

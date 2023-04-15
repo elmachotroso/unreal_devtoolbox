@@ -16,6 +16,8 @@
 #include "NavLinkHostInterface.h"
 #include "NavMesh/RecastNavMesh.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavLinkRenderingComponent)
+
 //----------------------------------------------------------------------//
 // UNavLinkRenderingComponent
 //----------------------------------------------------------------------//
@@ -86,13 +88,13 @@ FPrimitiveSceneProxy* UNavLinkRenderingComponent::CreateSceneProxy()
 }
 
 #if WITH_EDITOR
-bool UNavLinkRenderingComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UNavLinkRenderingComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	// NavLink rendering components not treated as 'selectable' in editor
 	return false;
 }
 
-bool UNavLinkRenderingComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
+bool UNavLinkRenderingComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	// NavLink rendering components not treated as 'selectable' in editor
 	return false;
@@ -206,7 +208,7 @@ void FNavLinkRenderingProxy::GetDynamicMeshElements(const TArray<const FSceneVie
 		}
 
 		static const FColor RadiusColor(150, 160, 150, 48);
-		FMaterialRenderProxy* const MeshColorInstance = new(FMemStack::Get()) FColoredMaterialRenderProxy(GEngine->DebugMeshMaterial->GetRenderProxy(), RadiusColor);
+		FMaterialRenderProxy* const MeshColorInstance = &Collector.AllocateOneFrameResource<FColoredMaterialRenderProxy>(GEngine->DebugMeshMaterial->GetRenderProxy(), RadiusColor);
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
@@ -457,3 +459,4 @@ uint32 FNavLinkRenderingProxy::GetAllocatedSize( void ) const
 { 
 	return(FPrimitiveSceneProxy::GetAllocatedSize() + OffMeshPointLinks.GetAllocatedSize() + OffMeshSegmentLinks.GetAllocatedSize());
 }
+

@@ -7,12 +7,14 @@
 #include "DynamicMesh/DynamicMeshChangeTracker.h"
 #include "InteractiveToolManager.h"
 #include "MeshOpPreviewHelpers.h" // UMeshOpPreviewWithBackgroundCompute
-#include "ParameterizationOps/UVLayoutOp.h"
-#include "Properties/UVLayoutProperties.h"
+#include "Operators/UVEditorUVLayoutOp.h"
 #include "ToolTargets/UVEditorToolMeshInput.h"
-#include "UVToolContextObjects.h"
+#include "ContextObjects/UVToolContextObjects.h"
 #include "EngineAnalytics.h"
 #include "UVEditorToolAnalyticsUtils.h"
+#include "UVEditorUXSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVEditorLayoutTool)
 
 using namespace UE::Geometry;
 
@@ -43,32 +45,65 @@ void UUVEditorLayoutTool::Setup()
 
 	UInteractiveTool::Setup();
 
-	Settings = NewObject<UUVLayoutProperties>(this);
+	Settings = NewObject<UUVEditorUVLayoutProperties>(this);
 	Settings->RestoreProperties(this);
+	Settings->bUDIMCVAREnabled = (FUVEditorUXSettings::CVarEnablePrototypeUDIMSupport.GetValueOnGameThread() > 0);
 	AddToolPropertySource(Settings);
 
-	Factories.SetNum(Targets.Num());
-	for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+	UContextObjectStore* ContextStore = GetToolManager()->GetContextObjectStore();
+	UVToolSelectionAPI = ContextStore->FindContext<UUVToolSelectionAPI>();
+
+	UUVToolSelectionAPI::FHighlightOptions HighlightOptions;
+	HighlightOptions.bBaseHighlightOnPreviews = true;
+	HighlightOptions.bAutoUpdateUnwrap = true;
+	UVToolSelectionAPI->SetHighlightOptions(HighlightOptions);
+	UVToolSelectionAPI->SetHighlightVisible(true, false, true);
+
+	auto SetupOpFactory = [this](UUVEditorToolMeshInput& Target, const FUVToolSelection* Selection)
 	{
-		TObjectPtr<UUVEditorToolMeshInput> Target = Targets[TargetIndex];
-		Factories[TargetIndex] = NewObject<UUVLayoutOperatorFactory>();
-		Factories[TargetIndex]->TargetTransform = Target->AppliedPreview->PreviewMesh->GetTransform();
-		Factories[TargetIndex]->Settings = Settings;
-		Factories[TargetIndex]->OriginalMesh = Target->AppliedCanonical;
-		Factories[TargetIndex]->GetSelectedUVChannel = [Target]() { return Target->UVLayerIndex; };
+		TObjectPtr<UUVEditorUVLayoutOperatorFactory> Factory = NewObject<UUVEditorUVLayoutOperatorFactory>();
+		Factory->TargetTransform = Target.AppliedPreview->PreviewMesh->GetTransform();
+		Factory->Settings = Settings;
+		Factory->OriginalMesh = Target.AppliedCanonical;
+		Factory->GetSelectedUVChannel = [&Target]() { return Target.UVLayerIndex; };
+		if (Selection)
+		{
+			Factory->Selection.Emplace(Selection->GetConvertedSelection(*Selection->Target->UnwrapCanonical,
+				                                                        UE::Geometry::FUVToolSelection::EType::Triangle).SelectedIDs);
+		}
 
-		Target->AppliedPreview->ChangeOpFactory(Factories[TargetIndex]);
-		Target->AppliedPreview->OnMeshUpdated.AddWeakLambda(this, [Target](UMeshOpPreviewWithBackgroundCompute* Preview) {
-			Target->UpdateUnwrapPreviewFromAppliedPreview();
-		});
+		Target.AppliedPreview->ChangeOpFactory(Factory);
+		Target.AppliedPreview->OnMeshUpdated.AddWeakLambda(this, [this, &Target](UMeshOpPreviewWithBackgroundCompute* Preview) {
+			Target.UpdateUnwrapPreviewFromAppliedPreview();
 
-		Target->AppliedPreview->InvalidateResult();
+			this->UVToolSelectionAPI->RebuildUnwrapHighlight(Preview->PreviewMesh->GetTransform());
+			});
+
+		Target.AppliedPreview->InvalidateResult();
+		return Factory;
+	};
+
+	if (UVToolSelectionAPI->HaveSelections())
+	{
+		Factories.Reserve(UVToolSelectionAPI->GetSelections().Num());
+		for (FUVToolSelection Selection : UVToolSelectionAPI->GetSelections())
+		{
+			Factories.Add(SetupOpFactory(*Selection.Target, &Selection));
+		}
+	}
+	else
+	{
+		Factories.Reserve(Targets.Num());
+		for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+		{
+			Factories.Add(SetupOpFactory(*Targets[TargetIndex], nullptr));
+		}
 	}
 
 	SetToolDisplayName(LOCTEXT("ToolName", "UV Layout"));
 	GetToolManager()->DisplayMessage(LOCTEXT("OnStartUVLayoutTool", "Translate, rotate or scale existing UV Charts using various strategies"),
 		EToolMessageLevel::UserNotification);
-
+	
 	// Analytics
 	InputTargetAnalytics = UVEditorAnalytics::CollectTargetAnalytics(Targets);
 }
@@ -214,3 +249,4 @@ void UUVEditorLayoutTool::RecordAnalytics()
 }
 
 #undef LOCTEXT_NAMESPACE
+

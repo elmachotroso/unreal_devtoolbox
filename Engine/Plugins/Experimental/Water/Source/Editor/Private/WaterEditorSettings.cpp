@@ -6,9 +6,12 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialInterface.h"
 #include "WaterLandscapeBrush.h"
+#include "WaterZoneActor.h"
 #include "WaterWaves.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Curves/CurveFloat.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterEditorSettings)
 
 FWaterBrushActorDefaults::FWaterBrushActorDefaults()
 {
@@ -31,12 +34,18 @@ UMaterialInterface* FWaterZoneActorDefaults::GetFarDistanceMaterial() const
 
 FWaterBodyDefaults::FWaterBodyDefaults()
 	: WaterMaterial(FSoftObjectPath(TEXT("/Water/Materials/WaterSurface/Water_Material.Water_Material")))
+	, WaterHLODMaterial(FSoftObjectPath(TEXT("/Water/Materials/HLOD/HLODWater.HLODWater")))
 	, UnderwaterPostProcessMaterial(FSoftObjectPath(TEXT("/Water/Materials/PostProcessing/M_UnderWater_PostProcess_Volume.M_UnderWater_PostProcess_Volume")))
 {}
 
 UMaterialInterface* FWaterBodyDefaults::GetWaterMaterial() const
 {
 	return WaterMaterial.LoadSynchronous();
+}
+
+UMaterialInterface* FWaterBodyDefaults::GetWaterHLODMaterial() const
+{
+	return WaterHLODMaterial.LoadSynchronous();
 }
 
 UMaterialInterface* FWaterBodyDefaults::GetUnderwaterPostProcessMaterial() const
@@ -127,6 +136,7 @@ UWaterEditorSettings::UWaterEditorSettings()
 	: TextureGroupForGeneratedTextures(TEXTUREGROUP_World)
 	, MaxWaterVelocityAndHeightTextureSize(2048)
 	, LandscapeMaterialParameterCollection(FSoftObjectPath(TEXT("/Landmass/Landscape/BlueprintBrushes/MPC/MPC_Landscape.MPC_Landscape")))
+	, WaterZoneClassPath(TEXT("/Script/Water.WaterZone"))
 	, WaterManagerClassPath(TEXT("/Script/WaterEditor.WaterBrushManager"))
 	, DefaultBrushAngleFalloffMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/MeshBrush_Angle.MeshBrush_Angle")))
 	, DefaultBrushIslandFalloffMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/MeshBrush_Island.MeshBrush_Island")))
@@ -134,7 +144,6 @@ UWaterEditorSettings::UWaterEditorSettings()
 	, DefaultBrushWeightmapMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/MeshBrush_Weightmap.MeshBrush_Weightmap")))
 	, DefaultCacheDistanceFieldCacheMaterial(FSoftObjectPath(TEXT("/Landmass/Landscape/BlueprintBrushes/Materials/CacheDistanceField.CacheDistanceField")))
 	, DefaultCompositeWaterBodyTextureMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/CompositeWaterBodyTexture.CompositeWaterBodyTexture")))
-	, DefaultFinalizeVelocityHeightMaterial(FSoftObjectPath(TEXT("/Water/Materials/Brushes/FinalizeWaterTexture.FinalizeWaterTexture")))
 	, DefaultJumpFloodStepMaterial(FSoftObjectPath(TEXT("/Landmass/DistanceFields/Materials/JumpFloodStep.JumpFloodStep")))
 	, DefaultBlurEdgesMaterial(FSoftObjectPath(TEXT("/Landmass/DistanceFields/Materials/BlurEdges.BlurEdges")))
 	, DefaultFindEdgesMaterial(FSoftObjectPath(TEXT("/Landmass/DistanceFields/Materials/DetectEdges.DetectEdges")))
@@ -157,6 +166,11 @@ UWaterEditorSettings::UWaterEditorSettings()
 		WaterWavesRef->SetWaterWavesAsset(WaterWavesAssetRef.Object);
 		WaterBodyOceanDefaults.WaterWaves = WaterWavesRef;
 	}
+}
+
+TSubclassOf<AWaterZone> UWaterEditorSettings::GetWaterZoneClass() const
+{
+	return WaterZoneClassPath.TryLoadClass<AWaterZone>();
 }
 
 TSubclassOf<AWaterLandscapeBrush> UWaterEditorSettings::GetWaterManagerClass() const
@@ -194,11 +208,6 @@ UMaterialInterface* UWaterEditorSettings::GetDefaultCompositeWaterBodyTextureMat
 	return DefaultCompositeWaterBodyTextureMaterial.LoadSynchronous();
 }
 
-UMaterialInterface* UWaterEditorSettings::GetDefaultFinalizeVelocityHeightMaterial() const
-{
-	return DefaultFinalizeVelocityHeightMaterial.LoadSynchronous();
-}
-
 UMaterialInterface* UWaterEditorSettings::GetDefaultJumpFloodStepMaterial() const
 {
 	return DefaultJumpFloodStepMaterial.LoadSynchronous();
@@ -223,3 +232,4 @@ UMaterialInterface* UWaterEditorSettings::GetDefaultRenderRiverSplineDepthsMater
 {
 	return DefaultRenderRiverSplineDepthsMaterial.LoadSynchronous();
 }
+

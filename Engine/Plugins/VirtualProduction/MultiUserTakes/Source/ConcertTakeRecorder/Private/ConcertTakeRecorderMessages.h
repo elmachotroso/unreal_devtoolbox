@@ -32,7 +32,7 @@ struct FTakeRecordSettings
 	bool bRecordOnClient = true;
 
 	UPROPERTY(config,EditAnywhere,Category="Multi-user Client Record Settings")
-	bool bTransactSources = false;
+	bool bTransactSources = true;
 };
 
 USTRUCT()
@@ -116,6 +116,15 @@ struct FConcertRecordingFinishedEvent
 
 	UPROPERTY()
 	FString TakeName;
+};
+
+USTRUCT()
+struct FConcertRecordingNamedLevelSequenceEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString LevelSequencePath;
 };
 
 USTRUCT()

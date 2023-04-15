@@ -6,6 +6,8 @@
 #include "NavMesh/RecastNavMesh.h"
 #include "NavMesh/RecastQueryFilter.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EnvQueryTest_PathfindingBatch)
+
 #define LOCTEXT_NAMESPACE "EnvQueryGenerator"
 
 UEnvQueryTest_PathfindingBatch::UEnvQueryTest_PathfindingBatch(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
@@ -91,8 +93,10 @@ void UEnvQueryTest_PathfindingBatch::RunTest(FEnvQueryInstance& QueryInstance) c
 	TArray<float> CollectDistanceSq;
 	CollectDistanceSq.Init(0.0f, ContextLocations.Num());
 
-	FSharedNavQueryFilter NavigationFilterCopy = FilterClass ?
-		UNavigationQueryFilter::GetQueryFilter(*NavMeshData, QueryOwner, FilterClass)->GetCopy() :
+	TSubclassOf<UNavigationQueryFilter> NavFilterToUse = GetNavFilterClass(QueryInstance);
+
+	FSharedNavQueryFilter NavigationFilterCopy = NavFilterToUse ?
+		UNavigationQueryFilter::GetQueryFilter(*NavMeshData, QueryOwner, NavFilterToUse)->GetCopy() :
 		NavMeshData->GetDefaultQueryFilter()->GetCopy();
 
 	NavigationFilterCopy->SetBacktrackingEnabled(!bPathToItem);
@@ -186,3 +190,4 @@ FText UEnvQueryTest_PathfindingBatch::GetDescriptionTitle() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

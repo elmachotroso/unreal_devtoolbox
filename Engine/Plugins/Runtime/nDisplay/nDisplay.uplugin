@@ -12,7 +12,7 @@
 	"SupportURL": "",
 	"EnabledByDefault": false,
 	"CanContainContent": true,
-	"IsBetaVersion": true,
+	"IsBetaVersion": false,
 	"Installed": false,
 		"SupportedTargetPlatforms": [
 			"Win64",
@@ -73,7 +73,52 @@
 			]
 		},
 		{
+			"Name": "DisplayClusterOperator",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
 			"Name": "DisplayClusterConfigurator",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterLightCardEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterLightCardEditorShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterScenePreview",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterColorGrading",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
 			"PlatformAllowList": [
@@ -99,21 +144,73 @@
 			]
 		},
 		{
+			"Name": "DisplayClusterMedia",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
 			"Name": "DisplayClusterMultiUser",
 			"Type": "UncookedOnly",
 			"LoadingPhase": "PostEngineInit",
 			"PlatformAllowList": [
 				"Win64"
 			]
+		},
+		{
+			"Name": "DisplayClusterTests",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterMoviePipeline",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
+		},
+		{
+			"Name": "DisplayClusterMoviePipelineEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux"
+			]
 		}
 	],
 	"Plugins": [
+		{
+			"Name": "ColorCorrectRegions",
+			"Enabled": true
+		},
 		{
 			"Name": "Composure",
 			"Enabled": true
 		},
 		{
-			"Name": "ProceduralMeshComponent",
+			"Name": "ConcertSyncClient",
+			"Enabled": true
+		},
+		{
+			"Name": "MediaIOFramework",
+			"Enabled": true
+		},
+		{
+			"Name": "nDisplayModularFeatures",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenCV",
 			"Enabled": true
 		},
 		{
@@ -125,11 +222,11 @@
 			"Enabled": true
 		},
 		{
-			"Name": "ConcertSyncClient",
+			"Name": "VirtualProductionUtilities",
 			"Enabled": true
 		},
 		{
-			"Name": "VirtualProductionUtilities",
+			"Name": "MovieRenderPipeline",
 			"Enabled": true
 		}
 	]

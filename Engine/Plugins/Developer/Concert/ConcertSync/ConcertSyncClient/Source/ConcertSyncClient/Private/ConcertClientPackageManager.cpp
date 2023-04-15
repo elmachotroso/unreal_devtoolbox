@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientPackageManager.h"
+
 #include "IConcertSession.h"
 #include "IConcertFileSharingService.h"
 #include "ConcertSyncClientLiveSession.h"
@@ -367,24 +368,24 @@ TOptional<FString> FConcertClientPackageManager::GetDeletedPackagePath(FName Pac
 	return {};
 }
 
-bool FConcertClientPackageManager::PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons)
+FPersistResult FConcertClientPackageManager::PersistSessionChanges(FPersistParameters InParam)
 {
 #if WITH_EDITOR
 	if (SandboxPlatformFile)
 	{
 		// Transform all the package names into actual filenames
 		TArray<FString, TInlineAllocator<8>> FilesToPersist;
-		for (const FName& PackageName : InPackagesToPersist)
+		for (const FName& PackageName : InParam.PackagesToPersist)
 		{
 			if (TOptional<FString> ValidPath = GetValidPackageSessionPath(PackageName))
 			{
 				FilesToPersist.Add(MoveTemp(ValidPath.GetValue()));
 			}
 		}
-		return SandboxPlatformFile->PersistSandbox(FilesToPersist, SourceControlProvider, OutFailureReasons);
+		return SandboxPlatformFile->PersistSandbox(FilesToPersist, MoveTemp(InParam));
 	}
 #endif
-	return false;
+	return {};
 }
 
 bool FConcertClientPackageManager::ApplyPackageFilters(const FConcertPackageInfo& InPackageInfo) const
@@ -506,8 +507,9 @@ void FConcertClientPackageManager::HandleLocalPackageEvent(const FConcertPackage
 	// if the package filter passes, send the event
 	if (ApplyPackageFilters(PackageInfo))
 	{
-		FConcertPackageUpdateEvent Event;
-		Event.Package.Info = PackageInfo;
+		FConcertPackageUpdateEvent PackageEvent;
+		PackageEvent.TransmissionId = FGuid::NewGuid();
+		PackageEvent.Package.Info = PackageInfo;
 
 		// Copy or link the package data to the Concert event.
 		int64 PackageFileSize = PackagePathname.IsEmpty() ? -1 : IFileManager::Get().FileSize(*PackagePathname); // EConcertPackageUpdateType::Delete is emitted with an empty pathname.
@@ -516,7 +518,7 @@ void FConcertClientPackageManager::HandleLocalPackageEvent(const FConcertPackage
 			if (CanExchangePackageDataAsByteArray(static_cast<uint64>(PackageFileSize)))
 			{
 				// Embed the package data directly in the event.
-				if (!FFileHelper::LoadFileToArray(Event.Package.PackageData.Bytes, *PackagePathname))
+				if (!FFileHelper::LoadFileToArray(PackageEvent.Package.PackageData.Bytes, *PackagePathname))
 				{
 					UE_LOG(LogConcert, Error, TEXT("Failed to load file data '%s' in memory"), *PackagePathname);
 					return;
@@ -525,7 +527,7 @@ void FConcertClientPackageManager::HandleLocalPackageEvent(const FConcertPackage
 			else if (FileSharingService && EnumHasAnyFlags(LiveSession->GetSessionFlags(), EConcertSyncSessionFlags::EnableFileSharing))
 			{
 				// Publish a copy of the package data in the sharing service and set the corresponding file ID in the event.
-				if (!FileSharingService->Publish(PackagePathname, Event.Package.FileId))
+				if (!FileSharingService->Publish(PackagePathname, PackageEvent.Package.FileId))
 				{
 					UE_LOG(LogConcert, Error, TEXT("Failed to share a copy of package file '%s'"), *PackagePathname);
 					return;
@@ -535,17 +537,22 @@ void FConcertClientPackageManager::HandleLocalPackageEvent(const FConcertPackage
 			{
 				// Notify the client about the file being too large to be emitted.
 				UE_LOG(LogConcert, Error, TEXT("Failed to handle local package file '%s'. The file is too big to be sent over the network."), *PackagePathname);
-				OnConcertClientPackageTooLargeError().Broadcast(Event.Package.Info, PackageFileSize, FConcertPackage::GetMaxPackageDataSizeEmbeddableAsByteArray());
+				OnConcertClientPackageTooLargeError().Broadcast(PackageEvent.Package.Info, PackageFileSize, FConcertPackage::GetMaxPackageDataSizeEmbeddableAsByteArray());
 			}
 		}
 
-		LiveSession->GetSessionDatabase().GetTransactionMaxEventId(Event.Package.Info.TransactionEventIdAtSave);
-		LiveSession->GetSession().SendCustomEvent(Event, LiveSession->GetSession().GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
+		LiveSession->GetSessionDatabase().GetTransactionMaxEventId(PackageEvent.Package.Info.TransactionEventIdAtSave);
+		if (PackageEvent.Package.HasPackageData())
+		{
+			const FConcertPackageTransmissionStartEvent AnnouncementEvent{ PackageEvent.TransmissionId, PackageEvent.Package.Info, static_cast<uint64>(PackageFileSize) };
+			LiveSession->GetSession().SendCustomEvent(AnnouncementEvent, LiveSession->GetSession().GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
+		}
+		LiveSession->GetSession().SendCustomEvent(PackageEvent, LiveSession->GetSession().GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 	}
 	// if the package data has been filtered out of the session persist it immediately from the sandbox
 	else
 	{
-		PersistSessionChanges(MakeArrayView(&PackageInfo.PackageName, 1), &ISourceControlModule::Get().GetProvider());
+		PersistSessionChanges({MakeArrayView(&PackageInfo.PackageName, 1), &ISourceControlModule::Get().GetProvider()});
 	}
 }
 

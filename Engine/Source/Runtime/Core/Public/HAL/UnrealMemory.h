@@ -3,9 +3,10 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Templates/IsPointer.h"
-#include "HAL/PlatformMemory.h"
+#include "GenericPlatform/GenericPlatformMemory.h"
 #include "HAL/MemoryBase.h"
+#include "HAL/PlatformMemory.h"
+#include "Templates/IsPointer.h"
 
 #ifndef UE_USE_VERYLARGEPAGEALLOCATOR
 #define UE_USE_VERYLARGEPAGEALLOCATOR 0
@@ -32,7 +33,7 @@ FORCEINLINE void DoGamethreadHook(int32 Index)
 }
 #endif
 
-#define TIME_MALLOC (0 && PLATFORM_PS4)
+#define TIME_MALLOC (0)
 
 #if TIME_MALLOC
 
@@ -277,7 +278,7 @@ private:
 	#endif
 
 	#define FMEMORY_INLINE_FUNCTION_DECORATOR FORCEINLINE
-	#include "FMemory.inl"
+	#include "FMemory.inl" // IWYU pragma: export
 #endif
 
 #if PLATFORM_USES_FIXED_GMalloc_CLASS && !FORCE_ANSI_ALLOCATOR && USE_MALLOC_BINNED2

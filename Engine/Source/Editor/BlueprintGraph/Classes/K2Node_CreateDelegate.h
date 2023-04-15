@@ -1,16 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Misc/Guid.h"
+#include "EdGraph/EdGraphNode.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
+#include "KismetCompilerMisc.h"
+#include "Misc/Guid.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_CreateDelegate.generated.h"
 
 class FBlueprintActionDatabaseRegistrar;
+class FString;
 class UBlueprint;
+class UClass;
 class UEdGraph;
 class UEdGraphPin;
+class UFunction;
+class UObject;
 
 UCLASS(MinimalAPI)
 class UK2Node_CreateDelegate : public UK2Node
@@ -44,7 +56,7 @@ public:
 	virtual ERedirectType DoPinsMatchForReconstruction(const UEdGraphPin* NewPin, int32 NewPinIndex, const UEdGraphPin* OldPin, int32 OldPinIndex) const override;
 	// End of UK2Node interface
 
-	bool IsValid(FString* OutMsg = NULL, bool bDontUseSkeletalClassForSelf = false) const;
+	bool IsValid(FString* OutMsg = nullptr, bool bDontUseSkeletalClassForSelf = false) const;
 
 	/** Set new Function name (Without notifying about the change) */
 	BLUEPRINTGRAPH_API void SetFunction(FName Name);
@@ -62,5 +74,5 @@ public:
 	BLUEPRINTGRAPH_API void ValidationAfterFunctionsAreCreated(class FCompilerResultsLog& MessageLog, bool bFullCompile) const;
 
 	// return Graph and Blueprint, when they should be notified about change. It allows to call BroadcastChanged only once per blueprint.
-	BLUEPRINTGRAPH_API void HandleAnyChange(UEdGraph* & OutGraph, UBlueprint* & OutBlueprint);
+	BLUEPRINTGRAPH_API void HandleAnyChange(UEdGraph*& OutGraph, UBlueprint*& OutBlueprint);
 };

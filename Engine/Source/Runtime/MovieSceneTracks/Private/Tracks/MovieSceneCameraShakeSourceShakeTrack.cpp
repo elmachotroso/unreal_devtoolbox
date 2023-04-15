@@ -5,6 +5,9 @@
 #include "Compilation/MovieSceneCompilerRules.h"
 #include "Sections/MovieSceneCameraShakeSourceShakeSection.h"
 #include "Evaluation/MovieSceneCameraShakeSourceShakeTemplate.h"
+#include "MovieScene.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCameraShakeSourceShakeTrack)
 
 #define LOCTEXT_NAMESPACE "MovieSceneCameraShakeSourceShakeTrack"
 
@@ -109,4 +112,5 @@ FMovieSceneEvalTemplatePtr UMovieSceneCameraShakeSourceShakeTrack::CreateTemplat
 }
 
 #undef LOCTEXT_NAMESPACE
+
 

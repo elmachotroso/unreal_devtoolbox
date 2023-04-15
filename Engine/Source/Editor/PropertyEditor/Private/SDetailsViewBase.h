@@ -4,39 +4,46 @@
 
 #include "CoreMinimal.h"
 #include "AssetThumbnail.h"
-#include "IDetailsView.h"
-#include "IDetailsViewPrivate.h"
-#include "IPropertyUtilities.h"
+#include "DetailColumnSizeData.h"
 #include "DetailFilter.h"
 #include "DetailTreeNode.h"
 #include "DetailsViewConfig.h"
+#include "Framework/Commands/UICommandList.h"
+#include "IDetailsView.h"
+#include "IDetailsViewPrivate.h"
+#include "IPropertyUtilities.h"
+#include "Input/Reply.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
 #include "PropertyNode.h"
 #include "PropertyPath.h"
 #include "PropertyRowGenerator.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Input/Reply.h"
-#include "Layout/Visibility.h"
-#include "Misc/Attribute.h"
-#include "Widgets/SWindow.h"
 #include "Widgets/Layout/SSplitter.h"
-#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/SWindow.h"
 #include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STreeView.h"
 
+class FAssetThumbnailPool;
 class FDetailCategoryImpl;
 class FDetailLayoutBuilderImpl;
+class FDetailTreeNode;
 class FNotifyHook;
+class FPropertyEditor;
+class FUICommandList;
+class IClassViewerFilter;
 class IDetailCustomization;
 class IDetailKeyframeHandler;
 class IDetailPropertyExtensionHandler;
-class SDetailNameArea;
 class IPropertyGenerationUtilities;
+class IPropertyUtilities;
+class SDetailNameArea;
 class SSearchBox;
 struct FDetailsViewObjectRoot;
 
-typedef STreeView< TSharedRef<class FDetailTreeNode> > SDetailTree;
+typedef STreeView< TSharedRef<FDetailTreeNode> > SDetailTree;
 
 class SDetailsViewBase : public IDetailsViewPrivate
 {
@@ -93,9 +100,9 @@ public:
 	virtual void SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled IsPropertyEditingEnabled) override;
 	virtual FIsPropertyEditingEnabled& GetIsPropertyEditingEnabledDelegate() override { return IsPropertyEditingEnabledDelegate; }
 	virtual bool IsPropertyEditingEnabled() const override;
-	virtual void SetKeyframeHandler(TSharedPtr<class IDetailKeyframeHandler> InKeyframeHandler) override;
+	virtual void SetKeyframeHandler(TSharedPtr<IDetailKeyframeHandler> InKeyframeHandler) override;
 	virtual TSharedPtr<IDetailKeyframeHandler> GetKeyframeHandler() const override { return KeyframeHandler; }
-	virtual void SetExtensionHandler(TSharedPtr<class IDetailPropertyExtensionHandler> InExtensionHandler) override;
+	virtual void SetExtensionHandler(TSharedPtr<IDetailPropertyExtensionHandler> InExtensionHandler) override;
 	virtual TSharedPtr<IDetailPropertyExtensionHandler> GetExtensionHandler() const override { return ExtensionHandler; }
 	virtual bool IsPropertyVisible(const struct FPropertyAndParent& PropertyAndParent) const override;
 	virtual bool IsPropertyReadOnly(const struct FPropertyAndParent& PropertyAndParent) const override;
@@ -116,15 +123,15 @@ public:
 	}
 	/** IDetailsViewPrivate interface */
 	virtual void RerunCurrentFilter() override;
-	void SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bIsItemExpanded, bool bRecursive) override;
+	void SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bExpand, bool bRecursive) override;
 	void SaveCustomExpansionState(const FString& NodePath, bool bIsExpanded) override;
 	bool GetCustomSavedExpansionState(const FString& NodePath) const override;
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override;
 	void RefreshTree() override;
-	TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const override;
-	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const override;
+	TSharedPtr<FAssetThumbnailPool> GetThumbnailPool() const override;
+	virtual const TArray<TSharedRef<IClassViewerFilter>>& GetClassViewerFilters() const override;
 	TSharedPtr<IPropertyUtilities> GetPropertyUtilities() override;
-	void CreateColorPickerWindow(const TSharedRef< class FPropertyEditor >& PropertyEditor, bool bUseAlpha) override;
+	void CreateColorPickerWindow(const TSharedRef<FPropertyEditor>& PropertyEditor, bool bUseAlpha) override;
 	virtual void UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> InRootPropertyNode, FDetailLayoutData& LayoutData, bool bIsExternal) override;
 	virtual FNotifyHook* GetNotifyHook() const override { return DetailsViewArgs.NotifyHook; }
 	virtual const FCustomPropertyTypeLayoutMap& GetCustomPropertyTypeLayoutMap() const { return InstancedTypeToLayoutMap; }
@@ -227,6 +234,9 @@ protected:
 	 */
 	TSharedRef<ITableRow> OnGenerateRowForDetailTree( TSharedRef<FDetailTreeNode> InTreeNode, const TSharedRef<STableViewBase>& OwnerTable );
 
+	/** Clear focus when the row is scrolled out of view. */
+	void OnRowReleasedForDetailTree(const TSharedRef<ITableRow>& TableRow);
+
 	/** @return true if show only modified is checked */
 	bool IsShowOnlyModifiedChecked() const { return CurrentFilter.bShowOnlyModified; }
 
@@ -269,9 +279,10 @@ protected:
 	/** Called when show animated is clicked */
 	void OnShowAnimatedClicked();
 
-	/**
-	* Updates the details with the passed in filter
-	*/
+	/** Apply the CurrentFilter to the given root node. */
+	void FilterRootNode(const TSharedPtr<FComplexPropertyNode>& RootNode);
+
+	/** Updates the details with the CurrentFilter */
 	void UpdateFilteredDetails();
 
 	/** Called when the filter text changes.  This filters specific property nodes out of view */
@@ -281,12 +292,12 @@ protected:
 	void OnFilterTextCommitted(const FText& InSearchText, ETextCommit::Type InCommitType);
 
 	/** Called when the list of currently differing properties changes */
-	virtual void UpdatePropertyAllowList(const TSet<FPropertyPath> InAllowedProperties) override { CurrentFilter.PropertyAllowList = InAllowedProperties; }
+	virtual void UpdatePropertyAllowList(const TSet<FPropertyPath>& InAllowedProperties) override { CurrentFilter.PropertyAllowList = InAllowedProperties; }
 
 	virtual TSharedPtr<SWidget> GetNameAreaWidget() override;
 	virtual void SetNameAreaCustomContent(TSharedRef<SWidget>& InCustomContent) override;
 	virtual TSharedPtr<SWidget> GetFilterAreaWidget() override;
-	virtual TSharedPtr<class FUICommandList> GetHostCommandList() const override;
+	virtual TSharedPtr<FUICommandList> GetHostCommandList() const override;
 	virtual TSharedPtr<FTabManager> GetHostTabManager() const override;
 	virtual void SetHostTabManager(TSharedPtr<FTabManager> InTabManager) override;
 
@@ -390,11 +401,11 @@ protected:
 	/** Whether or not this instance of the details view opened a color picker and it is not closed yet */
 	bool bHasOpenColorPicker;
 	/** Settings for this view */
-	TSharedPtr<class IPropertyUtilities> PropertyUtilities;
+	TSharedPtr<IPropertyUtilities> PropertyUtilities;
 	/** Gets internal utilities for generating property layouts. */
 	TSharedPtr<IPropertyGenerationUtilities> PropertyGenerationUtilities;
 	/** The name area which is not recreated when selection changes */
-	TSharedPtr<class SDetailNameArea> NameArea;
+	TSharedPtr<SDetailNameArea> NameArea;
 	/** The current filter */
 	FDetailFilter CurrentFilter;
 	/** Delegate called to get generic details not specific to an object being viewed */
@@ -443,7 +454,7 @@ protected:
 	mutable TSharedPtr<FEditConditionParser> EditConditionParser;
 	
 	/** Optional custom filter(s) to be applied when selecting values for class properties */
-	TArray<TSharedRef<class IClassViewerFilter>> ClassViewerFilters;
+	TArray<TSharedRef<IClassViewerFilter>> ClassViewerFilters;
 
 	/** The EnsureDataIsValid function can be skipped with this member, if set. Useful if your implementation doesn't require this kind of validation each Tick. */
 	FOnValidateDetailsViewPropertyNodes CustomValidatePropertyNodesFunction;

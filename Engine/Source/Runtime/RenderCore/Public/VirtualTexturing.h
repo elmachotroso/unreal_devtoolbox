@@ -2,17 +2,28 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RHIDefinitions.h"
-#include "Templates/RefCounting.h"
-#include "Stats/Stats.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Containers/EnumAsByte.h"
+#include "CoreMinimal.h"
+#include "Logging/LogMacros.h"
+#include "Math/Color.h"
+#include "Math/IntVector.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "PixelFormat.h"
+#include "RHIDefinitions.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/RefCounting.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
 
+class FRDGBuilder;
 class FRHICommandListImmediate;
 class FRHIShaderResourceView;
 class FRHITexture;
 class FRHIUnorderedAccessView;
-class FRDGBuilder;
 
 union FVirtualTextureProducerHandle
 {
@@ -133,6 +144,7 @@ struct FVTProducerDescription
 	
 	bool bPersistentHighestMip = true;
 	bool bContinuousUpdate = false;
+	bool bNotifyCompleted = false; /** Producer will receive OnRequestsCompleted() callbacks every frame when enabled. */
 	
 	uint32 TileSize = 0u;
 	uint32 TileBorderSize = 0u;
@@ -228,9 +240,16 @@ struct FVTRequestPageResult
 /** Describes a location to write a single layer of a VT tile */
 struct FVTProduceTargetLayer
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FVTProduceTargetLayer() = default;
+	FVTProduceTargetLayer(const FVTProduceTargetLayer&) = default;
+	FVTProduceTargetLayer& operator=(const FVTProduceTargetLayer&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** The texture to write to. */
 	FRHITexture* TextureRHI = nullptr;
-	/** The UAV to write to. This may be nullptr if no suitable UAV can be created for the texture format.  */
+	
+	UE_DEPRECATED(5.1, "UnorderedAccessViewRHI is deprecated. Register the pooled render target with RDG instead.")
 	FRHIUnorderedAccessView* UnorderedAccessViewRHI = nullptr;
 	/**
 	 * Pooled render target. For FRDGBuilder::RegisterExternalTexture() which only accepts pooled render targets.
@@ -239,7 +258,7 @@ struct FVTProduceTargetLayer
 	 */
 	struct IPooledRenderTarget* PooledRenderTarget = nullptr;
 	/** Location within the texture to write */
-	FIntVector pPageLocation;
+	FIntVector pPageLocation = FIntVector::ZeroValue;
 };
 
 /**
@@ -307,6 +326,9 @@ public:
 
 	/** Dump any type specific debug info. */
 	virtual void DumpToConsole(bool verbose) {}
+
+	/** Called on every virtual texture system update once all requests are completed, if bNotifyCompleted is enabled. */
+	virtual void OnRequestsCompleted() {}
 };
 
 enum class EVTPageTableFormat : uint8

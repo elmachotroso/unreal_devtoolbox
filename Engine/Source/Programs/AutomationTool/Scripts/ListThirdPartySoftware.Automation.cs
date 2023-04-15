@@ -33,7 +33,7 @@ class ListThirdPartySoftware : BuildCommand
 
 			IProcessResult Result;
 
-			Result = Run(UnrealBuild.GetUBTExecutable(), String.Format("{0} {1} -Mode=JsonExport -OutputFile=\"{2}\"", Target.Replace('|', ' '),  ProjectPath, OutputFile.FullName), Options: ERunOptions.Default);
+			Result = Run(Unreal.DotnetPath.FullName, $"\"{UnrealBuild.UnrealBuildToolDll}\" {Target.Replace('|', ' ')} {ProjectPath} -Mode=JsonExport -OutputFile=\"{OutputFile.FullName}\"", Options: ERunOptions.Default);
 
 			if (Result.ExitCode != 0)
 			{
@@ -94,7 +94,7 @@ class ListThirdPartySoftware : BuildCommand
 
 			// Get the platforms to exclude
 			List<UnrealTargetPlatform> SupportedPlatforms = new List<UnrealTargetPlatform> { UnrealTargetPlatform.Parse(Object.GetStringField("Platform")) };
-			string[] ExcludePlatformNames = Utils.MakeListOfUnsupportedPlatforms(SupportedPlatforms, bIncludeUnbuildablePlatforms: true).ToArray();
+			string[] ExcludePlatformNames = Utils.MakeListOfUnsupportedPlatforms(SupportedPlatforms, bIncludeUnbuildablePlatforms: true, Log.Logger).ToArray();
 
 			// Find all the TPS files under the engine directory which match
 			foreach(DirectoryReference DirectoryToScan in SortedDirectoriesToScan)

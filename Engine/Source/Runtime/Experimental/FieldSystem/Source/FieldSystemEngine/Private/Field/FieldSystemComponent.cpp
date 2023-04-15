@@ -14,6 +14,8 @@
 #include "PhysicsProxy/PerSolverFieldSystem.h"
 #include "PBDRigidsSolver.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FieldSystemComponent)
+
 DEFINE_LOG_CATEGORY_STATIC(FSC_Log, NoLogging, All);
 
 UFieldSystemComponent::UFieldSystemComponent(const FObjectInitializer& ObjectInitializer)
@@ -55,7 +57,6 @@ TSet<FPhysScene_Chaos*> UFieldSystemComponent::GetPhysicsScenes() const
 	}
 	else
 	{
-#if INCLUDE_CHAOS
 		if (ensure(GetOwner()) && ensure(GetOwner()->GetWorld()))
 		{
 			Scenes.Add(GetOwner()->GetWorld()->GetPhysicsScene());
@@ -65,7 +66,6 @@ TSet<FPhysScene_Chaos*> UFieldSystemComponent::GetPhysicsScenes() const
 			check(GWorld);
 			Scenes.Add(GWorld->GetPhysicsScene());
 		}
-#endif
 	}
 	return Scenes;
 }
@@ -87,7 +87,18 @@ TArray<Chaos::FPhysicsSolverBase*> UFieldSystemComponent::GetPhysicsSolvers() co
 		}
 	}
 
-	const TArray<Chaos::FPhysicsSolverBase*>& WorldSolvers = ChaosModule->GetAllSolvers();
+	TArray<Chaos::FPhysicsSolverBase*> WorldSolvers;
+
+	//Need to only grab solvers that are owned by our world. In multi-client PIE this avoids solvers for other clients
+	UWorld* World = GetWorld();
+	FPhysScene* PhysScene = World ? World->GetPhysicsScene() : nullptr;
+	if(PhysScene)
+	{
+		WorldSolvers.Add(PhysScene->GetSolver());
+		ChaosModule->GetSolversMutable(World, WorldSolvers);
+	}
+
+	
 	const int32 NumFilterSolvers = FilterSolvers.Num();
 
 	for (Chaos::FPhysicsSolverBase* Solver : WorldSolvers)
@@ -383,6 +394,7 @@ void UFieldSystemComponent::ResetFieldSystem()
 	ConstructionCommands.ResetFieldCommands();
 	BufferCommands.ResetFieldCommands();
 }
+
 
 
 

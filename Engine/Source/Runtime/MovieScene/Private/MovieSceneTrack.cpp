@@ -20,6 +20,8 @@
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Channels/MovieSceneChannel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneTrack)
+
 int32 GMovieSceneRemoveMutedTracksOnCook = 0;
 static FAutoConsoleVariableRef CVarMovieSceneRemoveMutedTracksOnCook(
 	TEXT("MovieScene.RemoveMutedTracksOnCook"),
@@ -265,6 +267,13 @@ bool UMovieSceneTrack::FixRowIndices()
 				++NewIndex;
 			}
 		}
+
+		// If there aren't multiple rows (ie. max row is 0), there shouldn't be any disabled rows either
+		if (GetMaxRowIndex() == 0 && !RowsDisabled.IsEmpty())
+		{
+			Modify();
+			RowsDisabled.Empty();
+		}
 	}
 	else
 	{
@@ -503,3 +512,4 @@ void UMovieSceneTrack::UpdateEvaluationTree()
 	EvaluationFieldVersion = GetEvaluationFieldVersion();
 #endif
 }
+

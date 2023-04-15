@@ -8,6 +8,8 @@
 //#include "PrimitiveViewRelevance.h"
 #include "SceneManagement.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FuncTestRenderingComponent)
+
 //----------------------------------------------------------------------//
 // FFTestRenderingSceneProxy
 //----------------------------------------------------------------------//
@@ -70,7 +72,7 @@ public:
 	}
 
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
-	uint32 GetAllocatedSize( void ) const { return FPrimitiveSceneProxy::GetAllocatedSize() + Locations.GetAllocatedSize(); }
+	SIZE_T GetAllocatedSize( void ) const { return FPrimitiveSceneProxy::GetAllocatedSize() + Locations.GetAllocatedSize(); }
 
 protected:
 	AFunctionalTest* OwningTest;
@@ -122,3 +124,4 @@ FBoxSphereBounds UFuncTestRenderingComponent::CalcBounds(const FTransform& Local
 
 	return FBoxSphereBounds(ForceInitToZero);
 }
+

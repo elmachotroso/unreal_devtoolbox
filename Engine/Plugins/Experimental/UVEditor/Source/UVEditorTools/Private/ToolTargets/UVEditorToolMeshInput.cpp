@@ -14,6 +14,8 @@
 #include "TargetInterfaces/MaterialProvider.h"
 #include "ToolSetupUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVEditorToolMeshInput)
+
 using namespace UE::Geometry;
 
 namespace UVEditorToolMeshInputLocals
@@ -59,13 +61,22 @@ namespace UVEditorToolMeshInputLocals
 
 const TArray<int32>* const UUVEditorToolMeshInput::NONE_CHANGED_ARG = &UVEditorToolMeshInputLocals::EmptyArray;
 
+bool UUVEditorToolMeshInput::AreMeshesValid() const
+{
+	return UnwrapPreview && UnwrapPreview->IsValidLowLevel()
+		&& AppliedPreview && AppliedPreview->IsValidLowLevel()
+		&& UnwrapCanonical && AppliedCanonical;
+}
+
+bool UUVEditorToolMeshInput::IsToolTargetValid() const
+{
+	return SourceTarget && SourceTarget->IsValid();
+}
+
 bool UUVEditorToolMeshInput::IsValid() const
 {
-	return UnwrapCanonical
-		&& UnwrapPreview && UnwrapPreview->IsValidLowLevel()
-		&& AppliedCanonical
-		&& AppliedPreview && AppliedPreview->IsValidLowLevel()
-		&& SourceTarget && SourceTarget->IsValid()
+	return AreMeshesValid()
+		&& IsToolTargetValid()
 		&& UVLayerIndex >= 0;
 }
 

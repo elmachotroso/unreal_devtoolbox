@@ -3,7 +3,9 @@
 #include "CommonListView.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "SCommonButtonTableRow.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonListView)
 
 //////////////////////////////////////////////////////////////////////////
 // UCommonListView
@@ -12,7 +14,7 @@
 UCommonListView::UCommonListView(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Visibility = ESlateVisibility::Visible;
+	SetVisibilityInternal(ESlateVisibility::Visible);
 	bEnableScrollAnimation = true;
 }
 

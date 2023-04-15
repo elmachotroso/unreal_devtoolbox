@@ -401,6 +401,19 @@ struct FBaseBlendedCurve
 		}
 	}
 
+	/** Invalidate value of InUID */
+	void InvalidateCurveWeight(USkeleton::AnimCurveUID InUid)
+	{
+		check(bInitialized);
+
+		int32 ArrayIndex = GetArrayIndexByUID(InUid);
+		if (ArrayIndex != INDEX_NONE)
+		{
+			CurveWeights[ArrayIndex] = 0.f;
+			ValidCurveWeights[ArrayIndex] = false;
+		}
+	}
+
 	/** Set value of InUID to InValue */
 	void Set(USkeleton::AnimCurveUID InUid, float InValue)
 	{
@@ -834,7 +847,7 @@ struct FRawCurveTracks
 	* Add new float curve from the given UID if not existing and add the key with time/value
 	*/
 	ENGINE_API void AddFloatCurveKey(const FSmartName& NewCurve, int32 CurveFlags, float Time, float Value);
-	ENGINE_API void RemoveRedundantKeys();
+	ENGINE_API void RemoveRedundantKeys(float Tolerance = UE_SMALL_NUMBER, FFrameRate SampleRate = FFrameRate(0,0));
 
 #endif // WITH_EDITOR
 	/**

@@ -5,11 +5,8 @@
 #include "CameraCalibrationStepsController.h"
 #include "EngineUtils.h"
 #include "Features/IModularFeatures.h"
-#include "ILiveLinkClient.h"
+#include "LensComponent.h"
 #include "LensFile.h"
-#include "LiveLinkCameraController.h"
-#include "Roles/LiveLinkCameraRole.h"
-#include "Roles/LiveLinkCameraTypes.h"
 #include "UI/CameraCalibrationEditorStyle.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SGridPanel.h"
@@ -85,64 +82,58 @@ void SLensEvaluation::Construct(const FArguments& InArgs, TWeakPtr<FCameraCalibr
 
 void SLensEvaluation::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	//Cache LiveLink data every tick to be sure we have the right one for the frame during calibration
-	CacheLiveLinkData();
+	//Cache LensFile evaluation data every tick to be sure we have the right one for the frame during calibration
+	CacheLensFileEvaluationInputs();
 	CacheLensFileData();
 
 	Super::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
-void SLensEvaluation::CacheLiveLinkData()
+void SLensEvaluation::CacheLensFileEvaluationInputs()
 {
 	//Start clean
-	CachedLiveLinkData.RawFocus.Reset();
-	CachedLiveLinkData.RawIris.Reset();
-	CachedLiveLinkData.RawZoom.Reset();
-	CachedLiveLinkData.EvaluatedFocus.Reset();
-	CachedLiveLinkData.EvaluatedIris.Reset();
-	CachedLiveLinkData.EvaluatedZoom.Reset();
+	CachedFIZData.RawFocus.Reset();
+	CachedFIZData.RawIris.Reset();
+	CachedFIZData.RawZoom.Reset();
+	CachedFIZData.EvaluatedFocus.Reset();
+	CachedFIZData.EvaluatedIris.Reset();
+	CachedFIZData.EvaluatedZoom.Reset();
 
-	if (ULiveLinkCameraController* CameraController = WeakStepsController.Pin()->FindLiveLinkCameraController())
+	if (TSharedPtr<FCameraCalibrationStepsController> StepsController = WeakStepsController.Pin())
 	{
-		bCameraControllerExists = true;
+		const FLensFileEvaluationInputs EvalInputs = StepsController->GetLensFileEvaluationInputs();
+		if (!EvalInputs.bIsValid)
+		{
+			return;
+		}
 
-		const FLensFileEvalData& LensFileEvalData = CameraController->GetLensFileEvalDataRef();
+		CachedFIZData.RawFocus = EvalInputs.Focus;
+		if (LensFile->HasFocusEncoderMapping())
 		{
-			CachedLiveLinkData.RawFocus = LensFileEvalData.Input.Focus;
-			if (LensFile->HasFocusEncoderMapping())
-			{
-				CachedLiveLinkData.EvaluatedFocus = LensFile->EvaluateNormalizedFocus(LensFileEvalData.Input.Focus);
-			}
+			CachedFIZData.EvaluatedFocus = LensFile->EvaluateNormalizedFocus(EvalInputs.Focus);
 		}
-		{
-			CachedLiveLinkData.RawIris = LensFileEvalData.Input.Iris;
-			if (LensFile->HasIrisEncoderMapping())
-			{
-				CachedLiveLinkData.EvaluatedIris = LensFile->EvaluateNormalizedIris(LensFileEvalData.Input.Iris);
-			}
-		}
-		{
-			CachedLiveLinkData.RawZoom = LensFileEvalData.Input.Zoom;
 
-			FFocalLengthInfo FocalLength;
-			if (LensFile->EvaluateFocalLength(LensFileEvalData.Input.Focus, LensFileEvalData.Input.Zoom, FocalLength))
-			{
-				CachedLiveLinkData.EvaluatedZoom = FocalLength.FxFy.X * LensFile->LensInfo.SensorDimensions.X;
-			}
+		CachedFIZData.RawIris = EvalInputs.Iris;
+		if (LensFile->HasIrisEncoderMapping())
+		{
+			CachedFIZData.EvaluatedIris = LensFile->EvaluateNormalizedIris(EvalInputs.Iris);
 		}
-	}
-	else
-	{
-		bCameraControllerExists = false;
+
+		CachedFIZData.RawZoom = EvalInputs.Zoom;
+		FFocalLengthInfo FocalLength;
+		if (LensFile->EvaluateFocalLength(EvalInputs.Focus, EvalInputs.Zoom, FocalLength))
+		{
+			CachedFIZData.EvaluatedZoom = FocalLength.FxFy.X * LensFile->LensInfo.SensorDimensions.X;
+		}
 	}
 }
 
 void SLensEvaluation::CacheLensFileData()
 {
-	//Evaluate LensFile independantly of valid FZ pair. Use default 0.0f like LiveLinkCamera if it's not present
+	//Evaluate LensFile independently of valid FZ pair. Use default 0.0f if it's not present
 	{
-		const float Focus = CachedLiveLinkData.RawFocus.IsSet() ? CachedLiveLinkData.RawFocus.GetValue() : 0.0f;
-		const float Zoom = CachedLiveLinkData.RawZoom.IsSet() ? CachedLiveLinkData.RawZoom.GetValue() : 0.0f;
+		const float Focus = CachedFIZData.RawFocus.IsSet() ? CachedFIZData.RawFocus.GetValue() : 0.0f;
+		const float Zoom = CachedFIZData.RawZoom.IsSet() ? CachedFIZData.RawZoom.GetValue() : 0.0f;
 		bCouldEvaluateDistortion = LensFile->EvaluateDistortionParameters(Focus, Zoom, CachedDistortionInfo);
 		bCouldEvaluateFocalLength = LensFile->EvaluateFocalLength(Focus, Zoom, CachedFocalLengthInfo);
 		bCouldEvaluateImageCenter = LensFile->EvaluateImageCenterParameters(Focus, Zoom, CachedImageCenter);
@@ -164,7 +155,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeTrackingWidget()
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("TrackedCameraLabelSection", "Tracked Camera"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 				.ShadowOffset(FVector2D(1.0f, 1.0f))
 			]
 			+ SGridPanel::Slot(0, 1)
@@ -178,15 +169,15 @@ TSharedRef<SWidget> SLensEvaluation::MakeTrackingWidget()
 			.Padding(0.0f, 15.0f, 0.0f, 5.0f)
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("LiveLinkLabelSection", "Selected LiveLink Subject"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Text(LOCTEXT("LensComponentLabelSection", "Lens Component"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 				.ShadowOffset(FVector2D(1.0f, 1.0f))
 			]
 			+ SGridPanel::Slot(0, 3)
 			[
 				SNew(STextBlock)
-				.Text(this, &SLensEvaluation::GetLiveLinkCameraControllerLabel)
-				.ColorAndOpacity(this, &SLensEvaluation::GetLiveLinkCameraControllerLabelColor)
+				.Text(this, &SLensEvaluation::GetLensComponentLabel)
+				.ColorAndOpacity(this, &SLensEvaluation::GetLensComponentLabelColor)
 				.AutoWrapText(true)
 			]
 		];
@@ -217,23 +208,23 @@ FSlateColor SLensEvaluation::GetTrackedCameraLabelColor() const
 }
 
 
-FText SLensEvaluation::GetLiveLinkCameraControllerLabel() const
+FText SLensEvaluation::GetLensComponentLabel() const
 {
 	if (WeakStepsController.IsValid())
 	{
-		if (ULiveLinkCameraController* CameraController = WeakStepsController.Pin()->FindLiveLinkCameraController())
+		if (ULensComponent* LensComponent = WeakStepsController.Pin()->FindLensComponent())
 		{
-			return FText::FromName(CameraController->GetSelectedSubject().Subject.Name);
+			return FText::FromName(LensComponent->GetFName());
 		}
 	}
-	return LOCTEXT("NoLiveLinkSubject", "The tracked camera does not have a LiveLink camera controller, or the controller's LensFile does not match this one.");
+	return LOCTEXT("NoLensComponent", "The tracked camera does not have a Lens Component, or the LensFile assigned in that Lens Component does not match this one.");
 }
 
-FSlateColor SLensEvaluation::GetLiveLinkCameraControllerLabelColor() const
+FSlateColor SLensEvaluation::GetLensComponentLabelColor() const
 {
 	if (WeakStepsController.IsValid())
 	{
-		if (ULiveLinkCameraController* CameraController = WeakStepsController.Pin()->FindLiveLinkCameraController())
+		if (ULensComponent* LensComponent = WeakStepsController.Pin()->FindLensComponent())
 		{
 			return FLinearColor::White;
 		}
@@ -252,7 +243,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeRawInputFIZWidget() const
 			SNew(STextBlock)
 			.Text(LOCTEXT("FIZ Section", "Raw FIZ Input"))
 			.ToolTipText(LOCTEXT("FIZSectionTooltip", "The raw values for Focus/Iris/Zoom (FIZ) used to evaluate the lens file"))
-			.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+			.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			.ShadowOffset(FVector2D(1.0f, 1.0f))
 		]
 		+ SVerticalBox::Slot()
@@ -266,19 +257,19 @@ TSharedRef<SWidget> SLensEvaluation::MakeRawInputFIZWidget() const
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("FocusLabel", "Focus"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(0, 1)
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("IrisLabel", "Iris"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(0, 2)
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("ZoomLabel", "Zoom"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 
 			+ SGridPanel::Slot(1, 0)
@@ -286,15 +277,15 @@ TSharedRef<SWidget> SLensEvaluation::MakeRawInputFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawFocus.IsSet())
+					if (CachedFIZData.RawFocus.IsSet())
 					{
-						return FText::AsNumber(CachedLiveLinkData.RawFocus.GetValue());
+						return FText::AsNumber(CachedFIZData.RawFocus.GetValue());
 					}
-					return LOCTEXT("NoRawFocus", "No Focus From LiveLink");
+					return LOCTEXT("NoRawFocus", "No Focus Input");
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawFocus.IsSet())
+					if (CachedFIZData.RawFocus.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -306,15 +297,15 @@ TSharedRef<SWidget> SLensEvaluation::MakeRawInputFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawIris.IsSet())
+					if (CachedFIZData.RawIris.IsSet())
 					{
-						return FText::AsNumber(CachedLiveLinkData.RawIris.GetValue());
+						return FText::AsNumber(CachedFIZData.RawIris.GetValue());
 					}
-					return LOCTEXT("NoRawIris", "No Iris From LiveLink");
+					return LOCTEXT("NoRawIris", "No Iris Input");
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawIris.IsSet())
+					if (CachedFIZData.RawIris.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -326,15 +317,15 @@ TSharedRef<SWidget> SLensEvaluation::MakeRawInputFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawZoom.IsSet())
+					if (CachedFIZData.RawZoom.IsSet())
 					{
-						return FText::AsNumber(CachedLiveLinkData.RawZoom.GetValue());
+						return FText::AsNumber(CachedFIZData.RawZoom.GetValue());
 					}
-					return LOCTEXT("NoRawZoom", "No Zoom From LiveLink");
+					return LOCTEXT("NoRawZoom", "No Zoom Input");
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.RawZoom.IsSet())
+					if (CachedFIZData.RawZoom.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -359,7 +350,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 			SNew(STextBlock)
 			.Text(LOCTEXT("EvaluatedFIZSection", "Evaluated Camera Settings"))
 			.ToolTipText(LOCTEXT("EvaluatedFIZSectionTooltip", "Camera settings that were evaluated from the lens file using the raw input FIZ data"))
-			.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+			.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			.ShadowOffset(FVector2D(1.0f, 1.0f))
 		]
 		+ SVerticalBox::Slot()
@@ -371,28 +362,28 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				SNew(STextBlock)
 				.MinDesiredWidth(100.0f)
 				.Text(LOCTEXT("FocusDistanceLabel", "Focus Distance"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(0, 1)
 			[
 				SNew(STextBlock)
 				.MinDesiredWidth(100.0f)
 				.Text(LOCTEXT("ApertureLabel", "Aperture"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(0, 2)
 			[
 				SNew(STextBlock)
 				.MinDesiredWidth(100.0f)
 				.Text(LOCTEXT("FocalLengthLabel", "Focal Length"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(0, 3)
 			[
 				SNew(STextBlock)
 				.MinDesiredWidth(100.0f)
 				.Text(LOCTEXT("FOVLabel", "Horizontal FOV"))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 
 			+ SGridPanel::Slot(1, 0)
@@ -400,14 +391,10 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this, FloatOptions]
 				{
-					if (CachedLiveLinkData.EvaluatedFocus.IsSet())
+					if (CachedFIZData.EvaluatedFocus.IsSet())
 					{
-						const FText ValueText = FText::AsNumber(CachedLiveLinkData.EvaluatedFocus.GetValue(), &FloatOptions);
+						const FText ValueText = FText::AsNumber(CachedFIZData.EvaluatedFocus.GetValue(), &FloatOptions);
 						return FText::Format(LOCTEXT("PhysicalUnitsFocusValue", "{0} cm"), ValueText);
-					}
-					else if (!bCameraControllerExists)
-					{
-						return LOCTEXT("UndefinedValue", "N/A");
 					}
 					else if (!LensFile->HasSamples(ELensDataCategory::Focus))
 					{
@@ -417,11 +404,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.EvaluatedFocus.IsSet())
-					{
-						return FSlateColor(FLinearColor::White);
-					}
-					else if (!bCameraControllerExists)
+					if (CachedFIZData.EvaluatedFocus.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -437,17 +420,13 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.EvaluatedIris.IsSet())
+					if (CachedFIZData.EvaluatedIris.IsSet())
 					{
 						FNumberFormattingOptions IrisOptions;
 						IrisOptions.MinimumFractionalDigits = 1;
 						IrisOptions.MaximumFractionalDigits = 1;
-						const FText ValueText = FText::AsNumber(CachedLiveLinkData.EvaluatedIris.GetValue(), &IrisOptions);
+						const FText ValueText = FText::AsNumber(CachedFIZData.EvaluatedIris.GetValue(), &IrisOptions);
 						return FText::Format(LOCTEXT("PhysicalUnitsIrisValue", "{0} F-Stop"), ValueText);
-					}
-					else if (!bCameraControllerExists)
-					{
-						return LOCTEXT("UndefinedValue", "N/A");
 					}
 					else if (!LensFile->HasSamples(ELensDataCategory::Iris))
 					{
@@ -457,11 +436,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.EvaluatedIris.IsSet())
-					{
-						return FSlateColor(FLinearColor::White);
-					}
-					else if (!bCameraControllerExists)
+					if (CachedFIZData.EvaluatedIris.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -477,14 +452,10 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this, FloatOptions]
 				{
-					if (CachedLiveLinkData.EvaluatedZoom.IsSet())
+					if (CachedFIZData.EvaluatedZoom.IsSet())
 					{
-						const FText ValueText = FText::AsNumber(CachedLiveLinkData.EvaluatedZoom.GetValue(), &FloatOptions);
+						const FText ValueText = FText::AsNumber(CachedFIZData.EvaluatedZoom.GetValue(), &FloatOptions);
 						return FText::Format(LOCTEXT("PhysicalUnitsZoomValue", "{0} mm"), ValueText);
-					}
-					else if (!bCameraControllerExists)
-					{
-						return LOCTEXT("UndefinedValue", "N/A");
 					}
 					else if (!LensFile->HasSamples(ELensDataCategory::Zoom))
 					{
@@ -494,11 +465,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				}))
 				.ColorAndOpacity(MakeAttributeLambda([this]
 				{
-					if (CachedLiveLinkData.EvaluatedZoom.IsSet())
-					{
-						return FSlateColor(FLinearColor::White);
-					}
-					else if (!bCameraControllerExists)
+					if (CachedFIZData.EvaluatedZoom.IsSet())
 					{
 						return FSlateColor(FLinearColor::White);
 					}
@@ -514,9 +481,9 @@ TSharedRef<SWidget> SLensEvaluation::MakeEvaluatedFIZWidget() const
 				SNew(STextBlock)
 				.Text(MakeAttributeLambda([this, FloatOptions]
 				{
-					if (CachedLiveLinkData.EvaluatedZoom.IsSet())
+					if (CachedFIZData.EvaluatedZoom.IsSet())
 					{
-						const float FOV = FMath::RadiansToDegrees(2.f * FMath::Atan(LensFile->LensInfo.SensorDimensions.X / (2.f * CachedLiveLinkData.EvaluatedZoom.GetValue())));
+						const float FOV = FMath::RadiansToDegrees(2.f * FMath::Atan(LensFile->LensInfo.SensorDimensions.X / (2.f * CachedFIZData.EvaluatedZoom.GetValue())));
 						const FText ValueText = FText::AsNumber(FOV, &FloatOptions);
 						return FText::Format(LOCTEXT("PhysicalUnitsFOVValue", "{0} deg"), ValueText);
 					}
@@ -538,7 +505,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeDistortionWidget() const
 	const TSharedRef<SWidget> Title = SNew(STextBlock)
 		.Text(LOCTEXT("DistortionSection", "Distortion Parameters"))
 		.ToolTipText(LOCTEXT("DistortionSectionTooltip", "Coefficients associated with the distortion equation of the selected lens model"))
-		.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+		.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 		.ShadowOffset(FVector2D(1.0f, 1.0f));
 
 	//if there are no parameters, create a simpler widget
@@ -581,7 +548,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeDistortionWidget() const
 						return LOCTEXT("InvalidParam", "Invalid");
 					}
 				}))
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			];
 
 		ParameterGrid->AddSlot(1, Index)
@@ -630,7 +597,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeIntrinsicsWidget() const
 			SNew(STextBlock)
 			.Text(LOCTEXT("IntrinsicsSection", "Normalized Camera Intrinsics"))
 			.ToolTipText(LOCTEXT("IntrinsicsSectionTooltip", "Normalized values from the camera intrinsic matrix"))
-			.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+			.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			.ShadowOffset(FVector2D(1.0f, 1.0f))
 		]
 		+ SVerticalBox::Slot()
@@ -645,7 +612,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeIntrinsicsWidget() const
 				.Text(LOCTEXT("ImageCenterLabel", "Image Center"))
 				.ToolTipText(LOCTEXT("ImageCenterTooltip", "Normalized Center in the range [0, 1], with (0, 0) representing the top left corner of the image"))
 				.MinDesiredWidth(100.0f)
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(1, 0)
 			[
@@ -667,7 +634,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeIntrinsicsWidget() const
 				.Text(LOCTEXT("FxFyLabel", "FxFy"))
 				.ToolTipText(LOCTEXT("FxFyTooltip", "Normalized values representing the camera focal length divided by the sensor/image size. The ratio of Fx to Fy should roughly equal the camera's aspect ratio"))
 				.MinDesiredWidth(100.0f)
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(1, 1)
 			[
@@ -704,7 +671,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeNodalOffsetWidget() const
 			SNew(STextBlock)
 			.Text(LOCTEXT("NodalOffsetSection", "Nodal Point Offset"))
 			.ToolTipText(LOCTEXT("NodalOffsetTooltip", "The offset required to go from the tracked camera transform to the nodal point of the physical lens"))
-			.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+			.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			.ShadowOffset(FVector2D(1.0f, 1.0f))
 		]
 		+ SVerticalBox::Slot()
@@ -718,7 +685,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeNodalOffsetWidget() const
 				SNew(STextBlock)
 				.Text(LOCTEXT("LocationOffsetLabel", "Location"))
 				.MinDesiredWidth(75.0f)
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(1, 0)
 			[
@@ -742,7 +709,7 @@ TSharedRef<SWidget> SLensEvaluation::MakeNodalOffsetWidget() const
 				SNew(STextBlock)
 				.Text(LOCTEXT("RotationOffsetLabel", "Rotation"))
 				.MinDesiredWidth(75.0f)
-				.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 			]
 			+ SGridPanel::Slot(1, 1)
 			[

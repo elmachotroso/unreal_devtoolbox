@@ -16,6 +16,7 @@ struct FSceneWithoutWaterTextures
 		FVector4f MinMaxUV;
 	};
 
+	FRDGTextureRef SeparatedMainDirLightTexture = nullptr;
 	FRDGTextureRef ColorTexture = nullptr;
 	FRDGTextureRef DepthTexture = nullptr;
 	TArray<FView> Views;
@@ -24,6 +25,8 @@ struct FSceneWithoutWaterTextures
 
 bool ShouldRenderSingleLayerWater(TArrayView<const FViewInfo> Views);
 bool ShouldRenderSingleLayerWaterSkippedRenderEditorNotification(TArrayView<const FViewInfo> Views);
+bool ShouldRenderSingleLayerWaterDepthPrepass(TArrayView<const FViewInfo> Views);
+bool ShouldUseBilinearSamplerForDepthWithoutSingleLayerWater(EPixelFormat DepthTextureFormat);
 
 class FWaterTileVS : public FGlobalShader
 {
@@ -56,16 +59,16 @@ void SingleLayerWaterAddTiledFullscreenPass(
 	TPassParameters* PassParameters,
 	const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
 	const FIntRect& Viewport,
-	FTiledScreenSpaceReflection* TiledScreenSpaceReflection = nullptr,
+	FTiledReflection* TiledScreenSpaceReflection = nullptr,
 	FRHIBlendState* BlendState = nullptr,
 	FRHIRasterizerState* RasterizerState = nullptr,
 	FRHIDepthStencilState* DepthStencilState = nullptr,
 	uint32 StencilRef = 0)
 {
-	PassParameters->IndirectDrawParameter = TiledScreenSpaceReflection ? TiledScreenSpaceReflection->DispatchIndirectParametersBuffer : nullptr;
+	PassParameters->IndirectDrawParameter = TiledScreenSpaceReflection ? TiledScreenSpaceReflection->DrawIndirectParametersBuffer : nullptr;
 
 	PassParameters->VS.ViewUniformBuffer = ViewUniformBuffer;
-	PassParameters->VS.TileListData = TiledScreenSpaceReflection ? TiledScreenSpaceReflection->TileListStructureBufferSRV : nullptr;
+	PassParameters->VS.TileListData = TiledScreenSpaceReflection ? TiledScreenSpaceReflection->TileListDataBufferSRV : nullptr;
 
 	ValidateShaderParameters(PixelShader, PassParameters->PS);
 	ClearUnusedGraphResources(PixelShader, &PassParameters->PS);

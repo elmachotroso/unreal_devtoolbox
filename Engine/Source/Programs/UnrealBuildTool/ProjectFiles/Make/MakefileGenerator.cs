@@ -7,6 +7,7 @@ using System.IO;
 using EpicGames.Core;
 using UnrealBuildBase;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -48,13 +49,13 @@ namespace UnrealBuildTool
 			}
 		}
 
-		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
 			bool bSuccess = true;
 			return bSuccess;
 		}
 
-		private bool WriteMakefile()
+		private bool WriteMakefile(ILogger Logger)
 		{
 			string GameProjectFile = "";
 			string BuildCommand = "";
@@ -64,11 +65,14 @@ namespace UnrealBuildTool
 
 			string UnrealRootPath = Unreal.RootDirectory.FullName;
 
+			string EditorTarget = "UnrealEditor";
+
 			if (!String.IsNullOrEmpty(GameProjectName))
 			{
 				GameProjectFile = OnlyGameProject!.FullName;
 				MakeGameProjectFile = "GAMEPROJECTFILE =" + GameProjectFile + "\n";
-				ProjectBuildCommand = "PROJECTBUILD = bash \"$(UNREALROOTPATH)/Engine/Build/BatchFiles/Linux/RunMono.sh\" \"$(UNREALROOTPATH)/Engine/Binaries/DotNET/UnrealBuildTool.exe\"\n";
+				ProjectBuildCommand = $"PROJECTBUILD = \"$(UNREALROOTPATH)/Engine/{Unreal.RelativeDotnetDirectory}/dotnet\" \"$(UNREALROOTPATH)/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll\"\n";
+				EditorTarget = GameProjectName + "Editor";
 			}
 
 			BuildCommand = "BUILD = bash \"$(UNREALROOTPATH)/Engine/Build/BatchFiles/Linux/Build.sh\"\n";
@@ -115,8 +119,8 @@ namespace UnrealBuildTool
 			MakefileContent.Append("\n\n" + BuildCommand + ProjectBuildCommand + "\n" +
 				"all: StandardSet\n\n" +
 				"RequiredTools: CrashReportClient-Linux-Shipping CrashReportClientEditor-Linux-Shipping ShaderCompileWorker UnrealLightmass EpicWebHelper-Linux-Shipping\n\n" +
-				"StandardSet: RequiredTools UnrealFrontend UnrealEditor UnrealInsights\n\n" +
-				"DebugSet: RequiredTools UnrealFrontend-Linux-Debug UnrealEditor-Linux-Debug\n\n"
+				$"StandardSet: RequiredTools UnrealFrontend {EditorTarget} UnrealInsights\n\n" +
+				$"DebugSet: RequiredTools UnrealFrontend-Linux-Debug {EditorTarget}-Linux-Debug\n\n"
 			);
 
 			foreach (ProjectFile Project in GeneratedProjectFiles)
@@ -181,14 +185,14 @@ namespace UnrealBuildTool
 
 			MakefileContent.Append("\n.PHONY: $(TARGETS)\n");
 			FileReference FullFileName = FileReference.Combine(PrimaryProjectPath, FileName);
-			return WriteFileIfChanged(FullFileName.FullName, MakefileContent.ToString());
+			return WriteFileIfChanged(FullFileName.FullName, MakefileContent.ToString(), Logger);
 		}
 
 		/// ProjectFileGenerator interface
 		//protected override bool WritePrimaryProjectFile( ProjectFile UBTProject )
-		protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
-			return WriteMakefile();
+			return WriteMakefile(Logger);
 		}
 
 		/// ProjectFileGenerator interface
@@ -204,7 +208,7 @@ namespace UnrealBuildTool
 		}
 
 		/// ProjectFileGenerator interface
-		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesDirectory)
+		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesDirectory, ILogger Logger)
 		{
 		}
 	}

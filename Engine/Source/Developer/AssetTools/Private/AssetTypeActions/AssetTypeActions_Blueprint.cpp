@@ -5,7 +5,7 @@
 #include "GameFramework/Actor.h"
 #include "Misc/PackageName.h"
 #include "Misc/MessageDialog.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Factories/BlueprintFactory.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -297,7 +297,7 @@ TWeakPtr<IClassTypeActions> FAssetTypeActions_Blueprint::GetClassTypeActions(con
 	{
 		UObject* Outer = nullptr;
 		ResolveName(Outer, ParentClassName, false, false);
-		ParentClass = FindObject<UClass>(ANY_PACKAGE, *ParentClassName);
+		ParentClass = FindObject<UClass>(Outer, *ParentClassName);
 	}
 
 	if(ParentClass)

@@ -15,6 +15,7 @@
 #include "OpenGLDrv.h"
 #include "OpenGLDrvPrivate.h"
 #include "RenderUtils.h"
+#include "RHICoreShader.h"
 
 /*
 #define DECLARE_ISBOUNDSHADER(ShaderType) template <typename TShaderType> inline void ValidateBoundShader(TRefCountPtr<FOpenGLBoundShaderState> InBoundShaderState, FRHIGraphicsShader* GfxShader, TShaderType* ShaderTypeRHI) \
@@ -95,12 +96,6 @@ namespace OpenGLConsoleVariables
 		TEXT("If true, it will use persistent mapping for the Staging Buffer."),
 		ECVF_ReadOnly
 	);
-
-	static TAutoConsoleVariable<int32> CVarUseSeparateShaderObjects(
-		TEXT("OpenGL.UseSeparateShaderObjects"),
-		0,
-		TEXT("If set to 1, use OpenGL's separate shader objects to eliminate expensive program linking"),
-		ECVF_ReadOnly|ECVF_RenderThreadSafe);
 
 	int32 GOpenGLForceBilinear = 0;
 	static FAutoConsoleVariableRef CVarOpenGLForceBilinearSampling(
@@ -271,6 +266,19 @@ void FOpenGLDynamicRHI::UpdateRasterizerStateInOpenGLContext( FOpenGLContextStat
 		ContextState.RasterizerState.CullMode = PendingState.RasterizerState.CullMode;
 	}
 
+	if (FOpenGL::SupportsDepthClamp() && ContextState.RasterizerState.DepthClipMode != PendingState.RasterizerState.DepthClipMode)
+	{
+		if (PendingState.RasterizerState.DepthClipMode == ERasterizerDepthClipMode::DepthClamp)
+		{
+			glEnable(GL_DEPTH_CLAMP);
+		}
+		else
+		{
+			glDisable(GL_DEPTH_CLAMP);
+		}
+		ContextState.RasterizerState.DepthClipMode = PendingState.RasterizerState.DepthClipMode;
+	}
+
 	// Convert our platform independent depth bias into an OpenGL depth bias.
 	const float BiasScale = float((1<<24)-1);	// Warning: this assumes depth bits == 24, and won't be correct with 32.
 	float DepthBias = PendingState.RasterizerState.DepthBias * BiasScale;
@@ -435,7 +443,7 @@ void FOpenGLDynamicRHI::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI,u
 	check(0);
 }
 
-void FOpenGLDynamicRHI::InternalSetShaderTexture(FOpenGLTextureBase* Texture, FOpenGLShaderResourceView* SRV, GLint TextureIndex, GLenum Target, GLuint Resource, int NumMips, int LimitMip)
+void FOpenGLDynamicRHI::InternalSetShaderTexture(FOpenGLTexture* Texture, FOpenGLShaderResourceView* SRV, GLint TextureIndex, GLenum Target, GLuint Resource, int NumMips, int LimitMip)
 {
 	auto& PendingTextureState = PendingState.Textures[TextureIndex];
 	PendingTextureState.Texture = Texture;
@@ -484,9 +492,8 @@ void FOpenGLDynamicRHI::CachedSetupTextureStageInner(FOpenGLContextState& Contex
 	}
 	
 	// Use the texture SRV's LimitMip value to specify the mip available for sampling
-	// This requires SupportsTextureBaseLevel & is a fallback for SupportsTextureView
-	// which should be preferred.
-	if(Target != GL_NONE && Target != GL_TEXTURE_BUFFER && Target != GL_TEXTURE_EXTERNAL_OES && !FOpenGL::SupportsTextureView())
+	// This requires SupportsTextureBaseLevel & is a fallback for TextureView
+	if (Target != GL_NONE && Target != GL_TEXTURE_BUFFER && Target != GL_TEXTURE_EXTERNAL_OES)
 	{
 		TPair<GLenum, GLenum>* MipLimits;
 		
@@ -504,22 +511,49 @@ void FOpenGLDynamicRHI::CachedSetupTextureStageInner(FOpenGLContextState& Contex
 		if (!bSameLimitMip || !bSameNumMips)
 		{
 			DETAILED_QUICK_SCOPE_CYCLE_COUNTER(STAT_CachedSetupTextureStage_TexParameter);
-			if (!bSameLimitMip)
+			
+			bool bBoundAsRenderTarget = false;
+			for (uint32 RenderTargetIndex = 0; RenderTargetIndex < MaxSimultaneousRenderTargets; ++RenderTargetIndex)
 			{
-				FOpenGL::TexParameter(Target, GL_TEXTURE_BASE_LEVEL, BaseMip);
+				if (PendingState.RenderTargets[RenderTargetIndex] == 0)
+				{
+					break;
+				}
+				else
+				{
+					if (PendingState.RenderTargets[RenderTargetIndex]->GetResource() == Resource)
+					{
+						bBoundAsRenderTarget = true;
+						break;
+					}
+				}
 			}
-			if (!bSameNumMips)
+
+			// If a SRV is bound as render target, skip the BASE_LEVEL and MAX_LEVEL settings because it would cause crash on some android devices.
+			if (!bBoundAsRenderTarget)
 			{
-				FOpenGL::TexParameter(Target, GL_TEXTURE_MAX_LEVEL, MaxMip);
-			}
-			if (MipLimits)
-			{
-				MipLimits->Key = BaseMip;
-				MipLimits->Value = MaxMip;
+				if (!bSameLimitMip)
+				{
+					FOpenGL::TexParameter(Target, GL_TEXTURE_BASE_LEVEL, BaseMip);
+				}
+				if (!bSameNumMips)
+				{
+					FOpenGL::TexParameter(Target, GL_TEXTURE_MAX_LEVEL, MaxMip);
+				}
+				if (MipLimits)
+				{
+					MipLimits->Key = BaseMip;
+					MipLimits->Value = MaxMip;
+				}
+				else
+				{
+					TextureMipLimits.Add(Resource, TPair<GLenum, GLenum>(BaseMip, MaxMip));
+				}
 			}
 			else
 			{
-				TextureMipLimits.Add(Resource, TPair<GLenum, GLenum>(BaseMip, MaxMip));
+				LimitMip = 0;
+				NumMips = 0;
 			}
 		}
 	}
@@ -624,9 +658,7 @@ void FOpenGLDynamicRHI::SetupTexturesForDraw( FOpenGLContextState& ContextState,
 			
 #if UE_BUILD_DEBUG
 			// Use the texture SRV's LimitMip value to specify the mip available for sampling
-			// This requires SupportsTextureBaseLevel & is a fallback for SupportsTextureView
-			// which should be preferred.
-			if(!FOpenGL::SupportsTextureView())
+			// This requires SupportsTextureBaseLevel & is a fallback for TextureView
 			{
 				// When trying to limit the mip available for sampling (as part of texture SRV)
 				// ensure that the texture is bound to only one sampler, or that all samplers
@@ -882,22 +914,22 @@ void FOpenGLDynamicRHI::UpdateSRV(FOpenGLShaderResourceView* SRV)
 	check(SRV);
 	// For Depth/Stencil textures whose Stencil component we wish to sample we must blit the stencil component out to an intermediate texture when we 'Store' the texture.
 #if PLATFORM_DESKTOP
-	if (FOpenGL::GetFeatureLevel() >= ERHIFeatureLevel::SM5 && IsValidRef(SRV->Texture2D))
+	if (FOpenGL::GetFeatureLevel() >= ERHIFeatureLevel::SM5 && IsValidRef(SRV->Texture))
 	{
-		FOpenGLTexture2D* Texture2D = ResourceCast(SRV->Texture2D.GetReference());
+		FOpenGLTexture* Texture = SRV->Texture;
 		
 		uint32 ArrayIndices = 0;
 		uint32 MipmapLevels = 0;
 		
-		GLuint SourceFBO = GetOpenGLFramebuffer(0, nullptr, &ArrayIndices, &MipmapLevels, (FOpenGLTextureBase*)Texture2D);
+		GLuint SourceFBO = GetOpenGLFramebuffer(0, nullptr, &ArrayIndices, &MipmapLevels, Texture);
 		
 		glBindFramebuffer(GL_FRAMEBUFFER, SourceFBO);
 		
-		uint32 SizeX = Texture2D->GetSizeX();
-		uint32 SizeY = Texture2D->GetSizeY();
+		uint32 SizeX = Texture->GetSizeX();
+		uint32 SizeY = Texture->GetSizeY();
 		
 		uint32 MipBytes = SizeX * SizeY;
-		TRefCountPtr<FOpenGLPixelBuffer> PixelBuffer = new FOpenGLPixelBuffer(GL_PIXEL_UNPACK_BUFFER, 0, MipBytes, BUF_Dynamic, nullptr);
+		TRefCountPtr<FOpenGLPixelBuffer> PixelBuffer = new FOpenGLPixelBuffer(nullptr, GL_PIXEL_UNPACK_BUFFER, 0, MipBytes, BUF_Dynamic, nullptr);
 		
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, 0 );
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, PixelBuffer->Resource );
@@ -999,7 +1031,7 @@ void FOpenGLDynamicRHI::RHISetShaderResourceViewParameter(FRHIComputeShader* Com
 void FOpenGLDynamicRHI::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI,uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
 	VERIFY_GL_SCOPE();
-	FOpenGLTextureBase* NewTexture = GetOpenGLTextureFromRHITexture(NewTextureRHI);
+	FOpenGLTexture* NewTexture = GetOpenGLTextureFromRHITexture(NewTextureRHI);
 
 	GLint Index = 0;
 	GLint MaxUnits = 0;
@@ -1031,7 +1063,7 @@ void FOpenGLDynamicRHI::RHISetShaderSampler(FRHIGraphicsShader* ShaderRHI,uint32
 void FOpenGLDynamicRHI::RHISetShaderTexture(FRHIComputeShader* ComputeShaderRHI,uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
 	VERIFY_GL_SCOPE();
-	FOpenGLTextureBase* NewTexture = GetOpenGLTextureFromRHITexture(NewTextureRHI);
+	FOpenGLTexture* NewTexture = GetOpenGLTextureFromRHITexture(NewTextureRHI);
 	ensureMsgf((int32)TextureIndex < FOpenGL::GetMaxComputeTextureImageUnits(), TEXT("Using more compute texture units (%d) than allowed (%d)!"), TextureIndex, FOpenGL::GetMaxComputeTextureImageUnits());
 	if (NewTexture)
 	{
@@ -1062,6 +1094,11 @@ void FOpenGLDynamicRHI::RHISetShaderUniformBuffer(FRHIGraphicsShader* ShaderRHI,
 		PendingState.BoundUniformBuffers[Stage][BufferIndex] = BufferRHI;
 		PendingState.DirtyUniformBuffers[Stage] |= 1 << BufferIndex;
 		PendingState.bAnyDirtyGraphicsUniformBuffers = true;
+		
+		if (!GUseEmulatedUniformBuffers || !((FOpenGLUniformBuffer*)BufferRHI)->bIsEmulatedUniformBuffer)
+		{
+			PendingState.bAnyDirtyRealUniformBuffers[Stage] = true;
+		}
 	}
 }
 
@@ -1077,6 +1114,11 @@ void FOpenGLDynamicRHI::RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShad
 	VERIFY_GL_SCOPE();
 	PendingState.BoundUniformBuffers[SF_Compute][BufferIndex] = BufferRHI;
 	PendingState.DirtyUniformBuffers[SF_Compute] |= 1 << BufferIndex;
+
+	if (!GUseEmulatedUniformBuffers || !((FOpenGLUniformBuffer*)BufferRHI)->bIsEmulatedUniformBuffer)
+	{
+		PendingState.bAnyDirtyRealUniformBuffers[SF_Compute] = true;
+	}
 }
 
 void FOpenGLDynamicRHI::RHISetShaderParameter(FRHIGraphicsShader* ShaderRHI,uint32 BufferIndex,uint32 BaseIndex,uint32 NumBytes,const void* NewValue)
@@ -1267,8 +1309,8 @@ void FOpenGLDynamicRHI::SetPendingBlendStateForActiveRenderTargets( FOpenGLConte
 		}
 		else if (RenderTargetIndex == 0)
 		{
-			FOpenGLTexture2D* RenderTarget2D = (FOpenGLTexture2D*)PendingState.RenderTargets[RenderTargetIndex];
-			bMSAAEnabled = RenderTarget2D->GetNumSamples() > 1 || RenderTarget2D->GetNumSamplesTileMem() > 1;
+			FOpenGLTexture* RenderTarget2D = PendingState.RenderTargets[RenderTargetIndex];
+			bMSAAEnabled = PendingState.NumRenderingSamples > 1 || RenderTarget2D->IsMultisampled();
 		}
 
 		const FOpenGLBlendStateData::FRenderTarget& RenderTargetBlendState = PendingState.BlendState.RenderTargets[RenderTargetIndex];
@@ -1505,12 +1547,12 @@ void FOpenGLDynamicRHI::SetRenderTargets(
 		}
 	}
 
-	FOpenGLTextureBase* NewDepthStencilRT = GetOpenGLTextureFromRHITexture(NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->Texture : nullptr);
+	FOpenGLTexture* NewDepthStencilRT = GetOpenGLTextureFromRHITexture(NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->Texture : nullptr);
 	
 	PendingState.DepthStencil = NewDepthStencilRT;
 	PendingState.StencilStoreAction = NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->GetStencilStoreAction() : ERenderTargetStoreAction::ENoAction;
-	PendingState.DepthTargetWidth = NewDepthStencilTargetRHI ? GetOpenGLTextureSizeXFromRHITexture(NewDepthStencilTargetRHI->Texture) : 0u;
-	PendingState.DepthTargetHeight = NewDepthStencilTargetRHI ? GetOpenGLTextureSizeYFromRHITexture(NewDepthStencilTargetRHI->Texture) : 0u;
+	PendingState.DepthTargetWidth   = NewDepthStencilRT ? NewDepthStencilRT->GetDesc().Extent.X : 0u;
+	PendingState.DepthTargetHeight  = NewDepthStencilRT ? NewDepthStencilRT->GetDesc().Extent.Y : 0u;
 	
 	if (PendingState.FirstNonzeroRenderTarget == -1 && !PendingState.DepthStencil)
 	{
@@ -1521,7 +1563,7 @@ void FOpenGLDynamicRHI::SetRenderTargets(
 		return;
 	}
 
-	PendingState.Framebuffer = GetOpenGLFramebuffer(NumSimultaneousRenderTargets, PendingState.RenderTargets, PendingState.RenderTargetArrayIndex, PendingState.RenderTargetMipmapLevels, PendingState.DepthStencil);
+	PendingState.Framebuffer = GetOpenGLFramebuffer(NumSimultaneousRenderTargets, PendingState.RenderTargets, PendingState.RenderTargetArrayIndex, PendingState.RenderTargetMipmapLevels, PendingState.DepthStencil, PendingState.NumRenderingSamples);
 	PendingState.bFramebufferSetupInvalid = false;
 
 	if (PendingState.FirstNonzeroRenderTarget != -1)
@@ -1530,63 +1572,22 @@ void FOpenGLDynamicRHI::SetRenderTargets(
 		PendingState.Viewport.Min.X = 0;
 		PendingState.Viewport.Min.Y = 0;
 
-		uint32 Width = 0;
-		uint32 Height = 0;
+		const FRHITextureDesc& Desc = NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].Texture->GetDesc();
 
-		FOpenGLTexture2D* NewRenderTarget2D = (FOpenGLTexture2D*)NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].Texture->GetTexture2D();
-		if(NewRenderTarget2D)
-		{
-			Width = NewRenderTarget2D->GetSizeX();
-			Height = NewRenderTarget2D->GetSizeY();
-		}
-		else
-		{
-			FOpenGLTextureCube* NewRenderTargetCube = (FOpenGLTextureCube*)NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].Texture->GetTextureCube();
-			if(NewRenderTargetCube)
-			{
-				Width = NewRenderTargetCube->GetSize();
-				Height = NewRenderTargetCube->GetSize();
-			}
-			else
-			{
-				FOpenGLTexture3D* NewRenderTarget3D = (FOpenGLTexture3D*)NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].Texture->GetTexture3D();
-				if(NewRenderTarget3D)
-				{
-					Width = NewRenderTarget3D->GetSizeX();
-					Height = NewRenderTarget3D->GetSizeY();
-				}
-				else
-				{
-					FOpenGLTexture2DArray* NewRenderTarget2DArray = (FOpenGLTexture2DArray*)NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].Texture->GetTexture2DArray();
-					if(NewRenderTarget2DArray)
-					{
-						Width = NewRenderTarget2DArray->GetSizeX();
-						Height = NewRenderTarget2DArray->GetSizeY();
-					}
-					else
-					{
-						check(0);
-					}
-				}
-			}
-		}
-
-		{
-			uint32 MipIndex = NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].MipIndex;
-			Width = FMath::Max<uint32>(1,(Width >> MipIndex));
-			Height = FMath::Max<uint32>(1,(Height >> MipIndex));
-		}
+		uint32 MipIndex = NewRenderTargetsRHI[PendingState.FirstNonzeroRenderTarget].MipIndex;
+		uint32 Width    = FMath::Max<uint32>(1, Desc.Extent.X >> MipIndex);
+		uint32 Height   = FMath::Max<uint32>(1, Desc.Extent.Y >> MipIndex);
 
 		PendingState.Viewport.Max.X = PendingState.RenderTargetWidth = Width;
 		PendingState.Viewport.Max.Y = PendingState.RenderTargetHeight = Height;
 	}
-	else if( NewDepthStencilTargetRHI )
+	else if (NewDepthStencilTargetRHI)
 	{
 		// Set viewport size to new depth target size.
 		PendingState.Viewport.Min.X = 0;
 		PendingState.Viewport.Min.Y = 0;
-		PendingState.Viewport.Max.X = GetOpenGLTextureSizeXFromRHITexture(NewDepthStencilTargetRHI->Texture);
-		PendingState.Viewport.Max.Y = GetOpenGLTextureSizeYFromRHITexture(NewDepthStencilTargetRHI->Texture);
+		PendingState.Viewport.Max.X = NewDepthStencilTargetRHI->Texture->GetDesc().Extent.X;
+		PendingState.Viewport.Max.Y = NewDepthStencilTargetRHI->Texture->GetDesc().Extent.Y;
 	}
 }
 
@@ -2026,63 +2027,35 @@ void FOpenGLDynamicRHI::OnUniformBufferDeletion( GLuint UniformBufferResource, u
 	}
 }
 
-FORCEINLINE void FOpenGLDynamicRHI::CommitNonComputeShaderConstants()
-{
-	if (GUseEmulatedUniformBuffers)
-	{
-		CommitNonComputeShaderConstantsSlowPath();
-	}
-	else
-	{
-		FOpenGLLinkedProgram* LinkedProgram = PendingState.BoundShaderState->LinkedProgram;
-		if (LinkedProgram == PendingState.LinkedProgramAndDirtyFlag)
-		{
-			return;
-		}
-		CommitNonComputeShaderConstantsFastPath(LinkedProgram);
-		PendingState.LinkedProgramAndDirtyFlag = LinkedProgram;
-	}
-}
-
-
-void FOpenGLDynamicRHI::CommitNonComputeShaderConstantsSlowPath()
+void FOpenGLDynamicRHI::CommitNonComputeShaderConstants()
 {
 	VERIFY_GL_SCOPE();
-	PendingState.LinkedProgramAndDirtyFlag = nullptr;
 
 	FOpenGLLinkedProgram* LinkedProgram = PendingState.BoundShaderState->LinkedProgram;
 	if (GUseEmulatedUniformBuffers)
 	{
 		PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_VERTEX].CommitPackedUniformBuffers(LinkedProgram, CrossCompiler::SHADER_STAGE_VERTEX, PendingState.BoundUniformBuffers[SF_Vertex], PendingState.BoundShaderState->GetVertexShader()->UniformBuffersCopyInfo);
-	}
-	PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_VERTEX].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_VERTEX);
-
-	if (GUseEmulatedUniformBuffers)
-	{
 		PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_PIXEL].CommitPackedUniformBuffers(LinkedProgram, CrossCompiler::SHADER_STAGE_PIXEL, PendingState.BoundUniformBuffers[SF_Pixel], PendingState.BoundShaderState->GetPixelShader()->UniformBuffersCopyInfo);
-	}
-	PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_PIXEL].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_PIXEL);
-
-	if (PendingState.BoundShaderState->GetGeometryShader())
-	{
-		if (GUseEmulatedUniformBuffers)
+		if (PendingState.BoundShaderState->GetGeometryShader())
 		{
 			PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_GEOMETRY].CommitPackedUniformBuffers(LinkedProgram, CrossCompiler::SHADER_STAGE_GEOMETRY, PendingState.BoundUniformBuffers[SF_Geometry], PendingState.BoundShaderState->GetGeometryShader()->UniformBuffersCopyInfo);
 		}
-		PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_GEOMETRY].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_GEOMETRY);
 	}
-}
-
-void FOpenGLDynamicRHI::CommitNonComputeShaderConstantsFastPath(FOpenGLLinkedProgram* LinkedProgram)
-{
-	VERIFY_GL_SCOPE();
+	
+	if (LinkedProgram == PendingState.LinkedProgramAndDirtyFlag)
+	{
+		return;
+	}
+	
+	// commit packed global only if current program has changed or any global parameter has changed (RHISetShaderParameter)
 	PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_VERTEX].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_VERTEX);
 	PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_PIXEL].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_PIXEL);
-
 	if (PendingState.BoundShaderState->GetGeometryShader())
 	{
 		PendingState.ShaderParameters[CrossCompiler::SHADER_STAGE_GEOMETRY].CommitPackedGlobals(LinkedProgram, CrossCompiler::SHADER_STAGE_GEOMETRY);
 	}
+
+	PendingState.LinkedProgramAndDirtyFlag = LinkedProgram;
 }
 
 void FOpenGLDynamicRHI::CommitComputeShaderConstants(FOpenGLComputeShader* ComputeShader)
@@ -2092,10 +2065,7 @@ void FOpenGLDynamicRHI::CommitComputeShaderConstants(FOpenGLComputeShader* Compu
 	const int32 Stage = CrossCompiler::SHADER_STAGE_COMPUTE;
 	FOpenGLShaderParameterCache& StageShaderParameters = PendingState.ShaderParameters[Stage];
 
-	if (GUseEmulatedUniformBuffers)
-	{
-		StageShaderParameters.CommitPackedUniformBuffers(ComputeShader->LinkedProgram, Stage, PendingState.BoundUniformBuffers[Stage], ComputeShader->UniformBuffersCopyInfo);
-	}
+	StageShaderParameters.CommitPackedUniformBuffers(ComputeShader->LinkedProgram, Stage, PendingState.BoundUniformBuffers[Stage], ComputeShader->UniformBuffersCopyInfo);
 	StageShaderParameters.CommitPackedGlobals(ComputeShader->LinkedProgram, Stage);
 	PendingState.LinkedProgramAndDirtyFlag = nullptr;
 }
@@ -2131,14 +2101,14 @@ template <> FORCEINLINE uint32 GetNumUAVUnits<SF_Vertex>()	{ return FOpenGL::Get
 template <EShaderFrequency Frequency>
 void SetResource(FOpenGLDynamicRHI* RESTRICT OpenGLRHI, uint32 BindIndex, FRHITexture* RESTRICT TextureRHI)
 {
-	FOpenGLTextureBase* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
+	FOpenGLTexture* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 	ensureMsgf(BindIndex < GetNumTextureUnits<Frequency>(), TEXT("Using more %s texture units (%d) than allowed (%d) on a shader unit!"), GetShaderFrequencyString(Frequency, false), BindIndex, GetNumTextureUnits<Frequency>());
 #endif
 	if (Texture)
 	{
 		TextureRHI->SetLastRenderTime(FApp::GetCurrentTime());
-		OpenGLRHI->InternalSetShaderTexture(Texture, nullptr, GetFirstTextureUnit<Frequency>() + BindIndex, Texture->Target, Texture->GetResource(), Texture->NumMips, -1);
+		OpenGLRHI->InternalSetShaderTexture(Texture, nullptr, GetFirstTextureUnit<Frequency>() + BindIndex, Texture->Target, Texture->GetResource(), Texture->GetNumMips(), -1);
 	}
 	else
 	{
@@ -2291,44 +2261,6 @@ void FOpenGLDynamicRHI::CommitComputeResourceTables(FOpenGLComputeShader* Comput
 	PendingState.DirtyUniformBuffers[SF_Compute] = 0;
 }
 
-#if DEBUG_GL_SHADERS
-static void VerifyProgramPipeline()
-{
-	if (FOpenGL::SupportsSeparateShaderObjects())
-	{
-		VERIFY_GL_SCOPE();
-		GLint ProgramPipeline = 0;
-		glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING, &ProgramPipeline);
-		if(ProgramPipeline)
-		{
-			FOpenGL::ValidateProgramPipeline(ProgramPipeline);
-			GLint LinkStatus = GL_FALSE;
-			FOpenGL::GetProgramPipelineiv(ProgramPipeline, GL_VALIDATE_STATUS, &LinkStatus);
-			if(LinkStatus == GL_FALSE)
-			{
-				GLint LogLength = 0;
-				FOpenGL::GetProgramPipelineiv(ProgramPipeline, GL_INFO_LOG_LENGTH, &LogLength);
-				ANSICHAR DefaultLog[] = "No log";
-				ANSICHAR *CompileLog = DefaultLog;
-				if (LogLength > 1)
-				{
-					CompileLog = (ANSICHAR *)FMemory::Malloc(LogLength);
-					FOpenGL::GetProgramPipelineInfoLog(ProgramPipeline, LogLength, NULL, CompileLog);
-				}
-				
-				UE_LOG(LogRHI,Error,TEXT("Failed to validate pipeline %d. Compile log:\n%s"), ProgramPipeline,
-					   ANSI_TO_TCHAR(CompileLog));
-				
-				if (LogLength > 1)
-				{
-					FMemory::Free(CompileLog);
-				}
-			}
-		}
-	}
-}
-#endif
-
 void FOpenGLDynamicRHI::RHIDrawPrimitive(uint32 BaseVertexIndex,uint32 NumPrimitives,uint32 NumInstances)
 {
 	SCOPE_CYCLE_COUNTER_DETAILED(STAT_OpenGLDrawPrimitiveTime);
@@ -2355,10 +2287,6 @@ void FOpenGLDynamicRHI::RHIDrawPrimitive(uint32 BaseVertexIndex,uint32 NumPrimit
 	GLsizei NumElements = 0;
 	GLint PatchSize = 0;
 	FindPrimitiveType(PrimitiveType, NumPrimitives, DrawMode, NumElements, PatchSize);
-
-#if DEBUG_GL_SHADERS
-	VerifyProgramPipeline();
-#endif
 
 	GPUProfilingData.RegisterGPUWork(NumPrimitives * NumInstances, VertexCount * NumInstances);
 	if (NumInstances == 1)
@@ -2549,10 +2477,6 @@ void FOpenGLDynamicRHI::RHIDrawIndexedPrimitive(FRHIBuffer* IndexBufferRHI, int3
 
 	GLenum IndexType = IndexBuffer->GetStride() == sizeof(uint32) ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
 	StartIndex *= IndexBuffer->GetStride() == sizeof(uint32) ? sizeof(uint32) : sizeof(uint16);
-
-#if DEBUG_GL_SHADERS
-	VerifyProgramPipeline();
-#endif
 
 	GPUProfilingData.RegisterGPUWork(NumPrimitives * NumInstances, NumElements * NumInstances);
 	if (NumInstances > 1)
@@ -2797,6 +2721,51 @@ uint32 FOpenGLDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
 	return GGPUFrameTime;
 }
 
+template <typename TRHIShader, typename TRHIProxyShader>
+void FOpenGLDynamicRHI::ApplyStaticUniformBuffers(TRHIShader* Shader, TRHIProxyShader* ProxyShader)
+{
+	if (ProxyShader)
+	{
+		check(Shader);
+		UE::RHICore::ApplyStaticUniformBuffers(this, Shader, ProxyShader->StaticSlots, ProxyShader->Bindings.ShaderResourceTable.ResourceTableLayoutHashes, GlobalUniformBuffers);
+	}
+}
+
+void FOpenGLDynamicRHI::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState)
+{
+	FRHIGraphicsPipelineStateFallBack* FallbackGraphicsState = static_cast<FRHIGraphicsPipelineStateFallBack*>(GraphicsState);
+
+	auto& PsoInit = FallbackGraphicsState->Initializer;
+
+	RHISetBoundShaderState(
+		RHICreateBoundShaderState_internal(
+			PsoInit.BoundShaderState.VertexDeclarationRHI,
+			PsoInit.BoundShaderState.VertexShaderRHI,
+			PsoInit.BoundShaderState.PixelShaderRHI,
+			PsoInit.BoundShaderState.GetGeometryShader(),
+			PsoInit.bFromPSOFileCache
+		).GetReference()
+	);
+
+	RHISetDepthStencilState(FallbackGraphicsState->Initializer.DepthStencilState, StencilRef);
+	RHISetRasterizerState(FallbackGraphicsState->Initializer.RasterizerState);
+	RHISetBlendState(FallbackGraphicsState->Initializer.BlendState, FLinearColor(1.0f, 1.0f, 1.0f));
+	if (GSupportsDepthBoundsTest)
+	{
+		RHIEnableDepthBoundsTest(FallbackGraphicsState->Initializer.bDepthBounds);
+	}
+
+	if (bApplyAdditionalState)
+	{
+		ApplyStaticUniformBuffers(PsoInit.BoundShaderState.VertexShaderRHI, ResourceCast(PsoInit.BoundShaderState.VertexShaderRHI));
+		ApplyStaticUniformBuffers(PsoInit.BoundShaderState.GetGeometryShader(), ResourceCast(PsoInit.BoundShaderState.GetGeometryShader()));
+		ApplyStaticUniformBuffers(PsoInit.BoundShaderState.PixelShaderRHI, ResourceCast(PsoInit.BoundShaderState.PixelShaderRHI));
+	}
+
+	// Store the PSO's primitive (after since IRHICommandContext::RHISetGraphicsPipelineState sets the BSS)
+	PrimitiveType = PsoInit.PrimitiveType;
+}
+
 void FOpenGLDynamicRHI::RHISetComputeShader(FRHIComputeShader* ComputeShaderRHI)
 {
 	if (OpenGLConsoleVariables::bSkipCompute)
@@ -2924,9 +2893,24 @@ IRHICommandContext* FOpenGLDynamicRHI::RHIGetDefaultContext()
 	return this;
 }
 
-IRHICommandContextContainer* FOpenGLDynamicRHI::RHIGetCommandContextContainer(int32 Index, int32 Num)
+IRHIComputeContext* FOpenGLDynamicRHI::RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask)
 {
+	UE_LOG(LogRHI, Fatal, TEXT("FOpenGLDynamicRHI::RHIGetCommandContext should never be called. OpenGL RHI does not implement parallel command list execution."));
 	return nullptr;
+}
+
+IRHIPlatformCommandList* FOpenGLDynamicRHI::RHIFinalizeContext(IRHIComputeContext* Context)
+{
+	// "Context" will always be the default context, since we don't implement parallel execution.
+	// OpenGL uses an immediate context, so there's nothing to do here. Executed commands will have already reached the driver.
+
+	// Returning nullptr indicates that we don't want RHISubmitCommandLists to be called.
+	return nullptr;
+}
+
+void FOpenGLDynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("FOpenGLDynamicRHI::RHISubmitCommandLists should never be called. OpenGL RHI does not implement parallel command list execution."));
 }
 
 void FOpenGLDynamicRHI::RHIInvalidateCachedState()

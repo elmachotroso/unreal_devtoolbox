@@ -37,6 +37,7 @@ struct FTimeMarkerTextInfo
 	FLinearColor Color;
 	FString Category; // truncated Category string
 	FString Message; // truncated Message string
+	uint64 LogIndex;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -68,6 +69,9 @@ public:
 	void SetBookmarksTrack() { SetBookmarksTrackFlag(true); SetDirtyFlag(); }
 	void SetLogsTrack() { SetBookmarksTrackFlag(false); SetDirtyFlag(); }
 
+	bool SaveScreenshot_CanExecute();
+	void SaveScreenshot_Execute();
+
 	// Stats
 	int32 GetNumLogMessages() const { return NumLogMessages; }
 	int32 GetNumBoxes() const { return TimeMarkerBoxes.Num(); }
@@ -82,6 +86,8 @@ public:
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void BuildContextMenu(FMenuBuilder& MenuBuilder) override;
+	virtual const TSharedPtr<const ITimingEvent> GetEvent(float InPosX, float InPosY, const FTimingTrackViewport& Viewport) const override;
+	virtual void InitTooltip(FTooltipDrawState& InOutTooltip, const ITimingEvent& InTooltipEvent) const override;
 
 	double Snap(double Time, double SnapTolerance);
 
@@ -95,7 +101,9 @@ private:
 	void UpdateTrackNameAndHeight();
 	void UpdateDrawState(const ITimingTrackUpdateContext& Context);
 
-	void UpdateBookmarkCategory();
+	void UpdateCategory(const TraceServices::FLogCategoryInfo*& InOutCategory, const TCHAR* CategoryName);
+
+	bool TryGetHoveredEventScreenshotId(uint32& OutScreenshotId);
 
 private:
 	TArray<FTimeMarkerBoxInfo> TimeMarkerBoxes;
@@ -103,6 +111,7 @@ private:
 
 	bool bUseOnlyBookmarks; // If true, uses only bookmarks; otherwise it uses all log messages.
 	const TraceServices::FLogCategoryInfo* BookmarkCategory;
+	const TraceServices::FLogCategoryInfo* ScreenshotCategory;
 
 	FTrackHeader Header;
 
@@ -114,6 +123,7 @@ private:
 	// Slate resources
 	const FSlateBrush* WhiteBrush;
 	const FSlateFontInfo Font;
+	uint32 LastScreenshotId;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

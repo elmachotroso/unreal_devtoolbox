@@ -110,6 +110,22 @@
 			]
 		},
 		{
+			"Name": "DatasmithWireTranslator2023_0",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64"
+			]
+		},
+		{
+			"Name": "DatasmithWireTranslator2023_1",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64"
+			]
+		},
+		{
 			"Name": "ParametricSurfaceExtension",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
@@ -137,25 +153,22 @@
 			]
 		},
 		{
-			"Name": "CoreTechSurface",
-			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"PlatformAllowList": [
-				"Win64"
-			]
-		},
-		{
 			"Name": "DatasmithPLMXMLTranslator",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
 			"PlatformAllowList": [
-				"Win64"
+				"Win64",
+				"Linux"
 			]
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "DatasmithImporter",
+			"Enabled": true
+		},
+		{
+			"Name": "GeometryProcessing",
 			"Enabled": true
 		}
 	]

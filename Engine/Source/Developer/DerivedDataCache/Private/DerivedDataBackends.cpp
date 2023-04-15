@@ -3,7 +3,9 @@
 #include "CoreTypes.h"
 #include "Containers/StringView.h"
 #include "DerivedDataBackendInterface.h"
+#include "DerivedDataCacheMethod.h"
 #include "DerivedDataCachePrivate.h"
+#include "DerivedDataCacheReplay.h"
 #include "DerivedDataCacheStore.h"
 #include "DerivedDataCacheUsageStats.h"
 #include "DerivedDataRequestOwner.h"
@@ -28,9 +30,12 @@
 #include "PakFileCacheStore.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "Serialization/CompactBinaryPackage.h"
+#include "String/Find.h"
 #include <atomic>
 
 DEFINE_LOG_CATEGORY(LogDerivedDataCache);
+LLM_DEFINE_TAG(UntaggedDDCResult);
+LLM_DEFINE_TAG(DDCBackend);
 
 #define MAX_BACKEND_KEY_LENGTH (120)
 #define LOCTEXT_NAMESPACE "DerivedDataBackendGraph"
@@ -41,6 +46,18 @@ static TAutoConsoleVariable<FString> GDerivedDataCacheGraphName(
 	TEXT("Name of the graph to use for the Derived Data Cache."),
 	ECVF_ReadOnly);
 
+namespace UE::DerivedData::Private
+{
+
+static std::atomic<int32> GAsyncTaskCounter;
+
+int32 AddToAsyncTaskCounter(int32 Addend)
+{
+	return GAsyncTaskCounter.fetch_add(Addend);
+}
+
+} // UE::DerivedData::Private
+
 namespace UE::DerivedData
 {
 
@@ -49,21 +66,12 @@ ILegacyCacheStore* CreateCacheStoreHierarchy(ICacheStoreOwner*& OutOwner, IMemor
 ILegacyCacheStore* CreateCacheStoreThrottle(ILegacyCacheStore* InnerCache, uint32 LatencyMS, uint32 MaxBytesPerSecond);
 ILegacyCacheStore* CreateCacheStoreVerify(ILegacyCacheStore* InnerCache, bool bPutOnError);
 ILegacyCacheStore* CreateFileSystemCacheStore(const TCHAR* CacheDirectory, const TCHAR* Params, const TCHAR* AccessLogFileName, ECacheStoreFlags& OutFlags);
-ILegacyCacheStore* CreateHttpCacheStore(
-	const TCHAR* NodeName,
-	const TCHAR* ServiceUrl,
-	const TCHAR* Namespace,
-	const TCHAR* StructuredNamespace,
-	const TCHAR* OAuthProvider,
-	const TCHAR* OAuthClientId,
-	const TCHAR* OAuthData, 
-	const FDerivedDataBackendInterface::ESpeedClass* ForceSpeedClass,
-	EBackendLegacyMode LegacyMode,
-	bool bReadOnly);
+TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateHttpCacheStore(const TCHAR* NodeName, const TCHAR* Config);
 IMemoryCacheStore* CreateMemoryCacheStore(const TCHAR* Name, int64 MaxCacheSize, bool bCanBeDisabled);
 IPakFileCacheStore* CreatePakFileCacheStore(const TCHAR* Filename, bool bWriting, bool bCompressed);
 ILegacyCacheStore* CreateS3CacheStore(const TCHAR* RootManifestPath, const TCHAR* BaseUrl, const TCHAR* Region, const TCHAR* CanaryObjectKey, const TCHAR* CachePath);
-ILegacyCacheStore* CreateZenCacheStore(const TCHAR* NodeName, const TCHAR* ServiceUrl, const TCHAR* Namespace);
+TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateZenCacheStore(const TCHAR* NodeName, const TCHAR* Config);
+ILegacyCacheStore* TryCreateCacheStoreReplay(ILegacyCacheStore* InnerCache);
 
 /**
  * This class is used to create a singleton that represents the derived data cache hierarchy and all of the wrappers necessary
@@ -84,6 +92,7 @@ public:
 		, BootCache(nullptr)
 		, WritePakCache(nullptr)
 		, AsyncNode(nullptr)
+		, VerifyNode(nullptr)
 		, Hierarchy(nullptr)
 		, bUsingSharedDDC(false)
 		, bIsShuttingDown(false)
@@ -91,16 +100,23 @@ public:
 			TEXT("DDC.MountPak"),
 			*LOCTEXT("CommandText_DDCMountPak", "Mounts read-only pak file").ToString(),
 			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FDerivedDataBackendGraph::MountPakCommandHandler))
-		, UnountPakCommand(
+		, UnmountPakCommand(
 			TEXT("DDC.UnmountPak"),
 			*LOCTEXT("CommandText_DDCUnmountPak", "Unmounts read-only pak file").ToString(),
 			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FDerivedDataBackendGraph::UnmountPakCommandHandler))
+		, LoadReplayCommand(
+			TEXT("DDC.LoadReplay"),
+			*LOCTEXT("CommandText_DDCLoadReplay", "Loads a cache replay file created by -DDC-ReplaySave=<Path>").ToString(),
+			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FDerivedDataBackendGraph::LoadReplayCommandHandler))
 	{
 		check(!StaticGraph);
 		StaticGraph = this;
 
 		check(IsInGameThread()); // we pretty much need this to be initialized from the main thread...it uses GConfig, etc
 		check(GConfig && GConfig->IsReadyForUse());
+
+		bHasDefaultDebugOptions = FBackendDebugOptions::ParseFromTokens(DefaultDebugOptions, TEXT("All"), FCommandLine::Get());
+
 		RootCache = nullptr;
 		FParsedNodeMap ParsedNodes;
 
@@ -113,24 +129,33 @@ public:
 			GraphName = GDerivedDataCacheGraphName.GetValueOnGameThread();
 		}
 
+		// A DDC graph of "None" is used by build worker programs that use the DDC build code paths but avoid use of the DDC cache
+		// code paths. Unfortunately the cache must currently be instantiated as part of initializing the build code, so we have
+		// to disable the cache portion by injecting "-DDC=None" to the commandline args during process startup. This mode is not
+		// compatible with use in the editor/commandlets which is not written to operate with a non-functional cache layer. This
+		// can lead to confusion when people attempt to use "-DDC=None" in the editor expecting it to behave like "-DDC=Cold".
+		// To avoid this confusion (and until we can use the build without the cache) it is restricted to use in programs only
+		// and not the editor.
+#if IS_PROGRAM
 		if (GraphName == TEXT("None"))
 		{
 			UE_LOG(LogDerivedDataCache, Display, TEXT("Requested cache graph of 'None'. Every cache operation will fail."));
 		}
 		else
+#endif
 		{
+			const TCHAR* const RootName = TEXT("Root");
+
 			if (!GraphName.IsEmpty() && GraphName != TEXT("Default"))
 			{
-				RootNode = ParseNode(TEXT("Root"), GEngineIni, *GraphName, ParsedNodes);
-
+				RootNode = ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes);
 				if (!RootNode.Key)
 				{
 					// Destroy any cache stores that have been created.
 					ParsedNodes.Empty();
 					DestroyCreatedBackends();
 					UE_LOG(LogDerivedDataCache, Warning,
-						TEXT("Unable to create cache graph using the requested graph settings (%s). "),
-						TEXT("Reverting to the default graph."), *GraphName);
+						TEXT("Unable to create cache graph '%s'. Reverting to the default graph."), *GraphName);
 				}
 			}
 
@@ -138,20 +163,28 @@ public:
 			{
 				// Try to use the default graph.
 				GraphName = FApp::IsEngineInstalled() ? TEXT("InstalledDerivedDataBackendGraph") : TEXT("DerivedDataBackendGraph");
-				FString Entry;
-				if (!GConfig->GetString(*GraphName, TEXT("Root"), Entry, GEngineIni) || !Entry.Len())
-				{
-					UE_LOG(LogDerivedDataCache, Fatal,
-						TEXT("Unable to create cache graph using the default graph settings (%s) ini=%s."),
-						*GraphName, *GEngineIni);
-				}
-				RootNode = ParseNode(TEXT("Root"), GEngineIni, *GraphName, ParsedNodes);
+				RootNode = ParseNode(RootName, GEngineIni, *GraphName, ParsedNodes);
 				if (!RootNode.Key)
 				{
-					UE_LOG(LogDerivedDataCache, Fatal,
-						TEXT("Unable to create cache graph using the default graph settings (%s) ini=%s. ")
-						TEXT("At least one cache store in the graph must be available."),
-						*GraphName, *GEngineIni);
+					FString Entry;
+					if (!GConfig->DoesSectionExist(*GraphName, GEngineIni))
+					{
+						UE_LOG(LogDerivedDataCache, Fatal,
+							TEXT("Unable to create default cache graph '%s' because its config section is missing in the '%s' config."),
+							*GraphName, *GEngineIni);
+					}
+					else if (!GConfig->GetString(*GraphName, RootName, Entry, GEngineIni) || !Entry.Len())
+					{
+						UE_LOG(LogDerivedDataCache, Fatal,
+							TEXT("Unable to create default cache graph '%s' because the root node '%s' is missing."),
+							*GraphName, RootName);
+					}
+					else
+					{
+						UE_LOG(LogDerivedDataCache, Fatal,
+							TEXT("Unable to create default cache graph '%s' because no cache store was available."),
+							*GraphName);
+					}
 				}
 			}
 		}
@@ -174,6 +207,26 @@ public:
 			AsyncNode = CreateCacheStoreAsync(RootNode.Key, RootNode.Value, GetMemoryCache());
 			CreatedNodes.AddUnique(AsyncNode);
 			RootNode.Key = AsyncNode;
+		}
+
+		// Create a Verify node when using -DDC-Verify[=Type1[@Rate2][+Type2[@Rate2]...]].
+		if (!VerifyNode)
+		{
+			FString VerifyArg;
+			if (FParse::Value(FCommandLine::Get(), TEXT("-DDC-Verify="), VerifyArg) ||
+				FParse::Param(FCommandLine::Get(), TEXT("DDC-Verify")))
+			{
+				VerifyNode = CreateCacheStoreVerify(RootNode.Key, /*bPutOnError*/ false);
+				CreatedNodes.AddUnique(VerifyNode);
+				RootNode.Key = VerifyNode;
+			}
+		}
+
+		// Create a Replay node when requested on the command line.
+		if (ILegacyCacheStore* ReplayNode = TryCreateCacheStoreReplay(RootNode.Key))
+		{
+			CreatedNodes.AddUnique(ReplayNode);
+			RootNode.Key = ReplayNode;
 		}
 
 		if (MaxKeyLength == 0)
@@ -272,7 +325,15 @@ public:
 				}
 				else if (NodeType == TEXT("Verify"))
 				{
-					ParsedNode = ParseVerify(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
+					if (VerifyNode == nullptr)
+					{
+						ParsedNode = ParseVerify(*NodeName, *Entry, IniFilename, IniSection, InParsedNodes);
+						VerifyNode = ParsedNode.Key;
+					}
+					else
+					{
+						UE_LOG(LogDerivedDataCache, Warning, TEXT("Unable to create %s Verify because only one Verify node is supported."), *NodeName);
+					}
 				}
 				else if (NodeType == TEXT("ReadPak"))
 				{
@@ -288,11 +349,11 @@ public:
 				}
 				else if (NodeType == TEXT("Http"))
 				{
-					ParsedNode = ParseHttpCache(*NodeName, *Entry, IniFilename, IniSection);
+					ParsedNode = CreateHttpCacheStore(*NodeName, *Entry);
 				}
 				else if (NodeType == TEXT("Zen"))
 				{
-					ParsedNode = MakeTuple(ParseZenCache(*NodeName, *Entry), ECacheStoreFlags::Local | ECacheStoreFlags::Remote | ECacheStoreFlags::Query | ECacheStoreFlags::Store);
+					ParsedNode = CreateZenCacheStore(*NodeName, *Entry);
 				}
 				
 				if (ParsedNode.Key)
@@ -321,12 +382,19 @@ public:
 			CreatedNodes.AddUnique(ParsedNode.Key);
 
 			// Parse any debug options for this node. E.g. -DDC-<Name>-MissRate
-			FDerivedDataBackendInterface::FBackendDebugOptions DebugOptions;
-			if (FDerivedDataBackendInterface::FBackendDebugOptions::ParseFromTokens(DebugOptions, *NodeName, FCommandLine::Get()))
+			FBackendDebugOptions DebugOptions;
+			if (FBackendDebugOptions::ParseFromTokens(DebugOptions, *NodeName, FCommandLine::Get()))
 			{
 				if (!ParsedNode.Key->LegacyDebugOptions(DebugOptions))
 				{
-					UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is ignoring one or more -DDC-<NodeName>-Option debug options"), *NodeName);
+					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-%s-<Option> debug options."), *NodeName, *NodeName);
+				}
+			}
+			else if (bHasDefaultDebugOptions)
+			{
+				if (!ParsedNode.Key->LegacyDebugOptions(DefaultDebugOptions))
+				{
+					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Node is ignoring one or more -DDC-All-<Option> debug options."), *NodeName);
 				}
 			}
 		}
@@ -351,7 +419,7 @@ public:
 
 		if( !PakFilename.Len() )
 		{
-			UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph:  %s pak cache Filename not found in *engine.ini, will not use a pak cache."), NodeName );
+			UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache Filename not found in *engine.ini, will not use a pak cache."), NodeName );
 		}
 		else
 		{
@@ -376,7 +444,7 @@ public:
 				}
 				else
 				{
-					UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph:  %s pak cache file %s not found, will not use a pak cache."), NodeName, *PakFilename );
+					UE_LOG( LogDerivedDataCache, Log, TEXT("FDerivedDataBackendGraph: %s pak cache file %s not found, will not use a pak cache."), NodeName, *PakFilename );
 				}
 			}
 		}
@@ -538,8 +606,8 @@ public:
 
 		if (Hierarchy)
 		{
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is disabled because there may be only one hierarchy node. ")
-				TEXT("Confirm there is only one hierarchy in the cache graph and that it is inside of any async node."), NodeName);
+			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is disabled because there may be only one hierarchy node. "
+				"Confirm there is only one hierarchy in the cache graph and that it is inside of any async node."), NodeName);
 			return MakeTuple(nullptr, ECacheStoreFlags::None);
 		}
 
@@ -762,195 +830,6 @@ public:
 		return nullptr;
 	}
 
-	void ParseHttpCacheParams(
-		const TCHAR* NodeName,
-		const TCHAR* Entry,
-		const FString& IniFilename,
-		const TCHAR* IniSection,
-		FString& Host,
-		FString& Namespace,
-		FString& StructuredNamespace,
-		FString& OAuthProvider,
-		FString& OAuthClientId,
-		FString& OAuthSecret,
-		EBackendLegacyMode& LegacyMode,
-		bool& bReadOnly)
-	{
-		FString ServerId;
-		if (FParse::Value(Entry, TEXT("ServerID="), ServerId))
-		{
-			FString ServerEntry;
-			const TCHAR* ServerSection = TEXT("HordeStorageServers");
-			if (GConfig->GetString(ServerSection, *ServerId, ServerEntry, IniFilename))
-			{
-				ParseHttpCacheParams(NodeName, *ServerEntry, IniFilename, IniSection, Host, Namespace, StructuredNamespace, OAuthProvider, OAuthClientId, OAuthSecret, LegacyMode, bReadOnly);
-			}
-			else
-			{
-				UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s is using ServerID=%s which was not found in [%s]"), NodeName, *ServerId, ServerSection);
-			}
-		}
-
-		FParse::Value(Entry, TEXT("Host="), Host);
-
-		FString EnvHostOverride;
-		if (FParse::Value(Entry, TEXT("EnvHostOverride="), EnvHostOverride))
-		{
-			FString HostEnv = FPlatformMisc::GetEnvironmentVariable(*EnvHostOverride);
-			if (!HostEnv.IsEmpty())
-			{
-				Host = HostEnv;
-				UE_LOG(LogDerivedDataCache, Log, TEXT("Node %s found environment variable for Host %s=%s"), NodeName, *EnvHostOverride, *Host);
-			}
-		}
-
-		FString CommandLineOverride;
-		if (FParse::Value(Entry, TEXT("CommandLineHostOverride="), CommandLineOverride))
-		{
-			if (FParse::Value(FCommandLine::Get(), *(CommandLineOverride + TEXT("=")), Host))
-			{
-				UE_LOG(LogDerivedDataCache, Log, TEXT("Node %s found command line override for Host %s=%s"), NodeName, *CommandLineOverride, *Host);
-			}
-		}
-
-		FParse::Value(Entry, TEXT("Namespace="), Namespace);
-		FParse::Value(Entry, TEXT("StructuredNamespace="), StructuredNamespace);
-		FParse::Value(Entry, TEXT("OAuthProvider="), OAuthProvider);
-		FParse::Value(Entry, TEXT("OAuthClientId="), OAuthClientId);
-		FParse::Value(Entry, TEXT("OAuthSecret="), OAuthSecret);
-		FParse::Bool(Entry, TEXT("ReadOnly="), bReadOnly);
-
-		if (FString LegacyModeString; FParse::Value(Entry, TEXT("LegacyMode="), LegacyModeString))
-		{
-			if (!TryLexFromString(LegacyMode, LegacyModeString))
-			{
-				UE_LOG(LogDerivedDataCache, Warning, TEXT("%s: Ignoring unrecognized legacy mode '%s'"), NodeName, *LegacyModeString);
-			}
-		}
-	}
-
-	/**
-	 * Creates a HTTP data cache interface.
-	 */
-	FParsedNode ParseHttpCache(
-		const TCHAR* NodeName,
-		const TCHAR* Entry,
-		const FString& IniFilename,
-		const TCHAR* IniSection)
-	{
-		FString Host;
-		FString Namespace;
-		FString StructuredNamespace;
-		FString OAuthProvider;
-		FString OAuthClientId;
-		FString OAuthSecret;
-		EBackendLegacyMode LegacyMode = EBackendLegacyMode::ValueOnly;
-		bool bReadOnly = false;
-
-		ParseHttpCacheParams(NodeName, Entry, IniFilename, IniSection, Host, Namespace, StructuredNamespace, OAuthProvider, OAuthClientId, OAuthSecret, LegacyMode, bReadOnly);
-
-		if (Host.IsEmpty())
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'Host'"), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		if (Host == TEXT("None"))
-		{
-			UE_LOG(LogDerivedDataCache, Log, TEXT("Node %s is disabled because Host is set to 'None'"), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		if (Namespace.IsEmpty())
-		{
-			Namespace = FApp::GetProjectName();
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s does not specify 'Namespace', falling back to '%s'"), NodeName, *Namespace);
-		}
-
-		if (StructuredNamespace.IsEmpty())
-		{
-			StructuredNamespace = Namespace;
-		}
-
-		if (OAuthProvider.IsEmpty())
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'OAuthProvider'"), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		if (OAuthClientId.IsEmpty())
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'OAuthClientId'"), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		if (OAuthSecret.IsEmpty())
-		{
-			UE_LOG(LogDerivedDataCache, Error, TEXT("Node %s does not specify 'OAuthSecret'"), NodeName);
-			return MakeTuple(nullptr, ECacheStoreFlags::None);
-		}
-
-		FDerivedDataBackendInterface::ESpeedClass ForceSpeedClass = FDerivedDataBackendInterface::ESpeedClass::Unknown;
-		FString ForceSpeedClassValue;
-		if (FParse::Value(FCommandLine::Get(), TEXT("HttpForceSpeedClass="), ForceSpeedClassValue))
-		{
-			if (ForceSpeedClassValue == TEXT("Slow"))
-			{
-				ForceSpeedClass = FDerivedDataBackendInterface::ESpeedClass::Slow;
-			}
-			else if (ForceSpeedClassValue == TEXT("Ok"))
-			{
-				ForceSpeedClass = FDerivedDataBackendInterface::ESpeedClass::Ok;
-			}
-			else if (ForceSpeedClassValue == TEXT("Fast"))
-			{
-				ForceSpeedClass = FDerivedDataBackendInterface::ESpeedClass::Fast;
-			}
-			else if (ForceSpeedClassValue == TEXT("Local"))
-			{
-				ForceSpeedClass = FDerivedDataBackendInterface::ESpeedClass::Local;
-			}
-			else
-			{
-				UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s found unknown speed class override HttpForceSpeedClass=%s"), NodeName, *ForceSpeedClassValue);
-			}
-		}
-
-		if (ForceSpeedClass != FDerivedDataBackendInterface::ESpeedClass::Unknown)
-		{
-			UE_LOG(LogDerivedDataCache, Log, TEXT("Node %s found speed class override ForceSpeedClass=%s"), NodeName, *ForceSpeedClassValue);
-		}
-
-		return MakeTuple(CreateHttpCacheStore(
-			NodeName, *Host, *Namespace, *StructuredNamespace, *OAuthProvider, *OAuthClientId, *OAuthSecret,
-			ForceSpeedClass == FDerivedDataBackendInterface::ESpeedClass::Unknown ? nullptr : &ForceSpeedClass, LegacyMode, bReadOnly),
-			ECacheStoreFlags::Remote | ECacheStoreFlags::Query | (bReadOnly ? ECacheStoreFlags::None : ECacheStoreFlags::Store));
-	}
-
-	/**
-	 * Creates a Zen structured data cache interface
-	 */
-	ILegacyCacheStore* ParseZenCache(const TCHAR* NodeName, const TCHAR* Entry)
-	{
-		FString ServiceUrl;
-		FParse::Value(Entry, TEXT("Host="), ServiceUrl);
-
-		FString Namespace;
-		if (!FParse::Value(Entry, TEXT("Namespace="), Namespace))
-		{
-			Namespace = FApp::GetProjectName();
-			UE_LOG(LogDerivedDataCache, Warning, TEXT("Node %s does not specify 'Namespace', falling back to '%s'"), NodeName, *Namespace);
-		}
-
-		if (ILegacyCacheStore* Backend = CreateZenCacheStore(NodeName, *ServiceUrl, *Namespace))
-		{
-			return Backend;
-		}
-		
-		UE_LOG(LogDerivedDataCache, Warning, TEXT("Zen backend is not yet supported in the current build configuration."));
-		return nullptr;
-	}
-
 	/**
 	 * Creates Boot data cache interface from ini settings.
 	 *
@@ -1013,6 +892,7 @@ public:
 	virtual ~FDerivedDataBackendGraph()
 	{
 		check(StaticGraph == this);
+		Replays.Empty();
 		RootCache = nullptr;
 		DestroyCreatedBackends();
 		StaticGraph = nullptr;
@@ -1048,9 +928,9 @@ public:
 			bIsShuttingDown.store(true, std::memory_order_relaxed);
 		}
 
-		while (AsyncCompletionCounter.GetValue())
+		while (const int32 AsyncCompletionCounter = Private::AddToAsyncTaskCounter(0))
 		{
-			check(AsyncCompletionCounter.GetValue() >= 0);
+			check(AsyncCompletionCounter > 0);
 			FPlatformProcess::Sleep(0.1f);
 			if (FPlatformTime::Seconds() - LastPrint > 5.0)
 			{
@@ -1129,13 +1009,12 @@ public:
 
 	virtual void AddToAsyncCompletionCounter(int32 Addend) override
 	{
-		AsyncCompletionCounter.Add(Addend);
-		check(AsyncCompletionCounter.GetValue() >= 0);
+		verify(Private::AddToAsyncTaskCounter(Addend) + Addend >= 0);
 	}
 
 	virtual bool AnyAsyncRequestsRemaining() override
 	{
-		return AsyncCompletionCounter.GetValue() > 0;
+		return Private::AddToAsyncTaskCounter(0) > 0;
 	}
 
 	virtual bool IsShuttingDown() override
@@ -1154,7 +1033,7 @@ public:
 		return *StaticGraph;
 	}
 
-	virtual FDerivedDataBackendInterface* MountPakFile(const TCHAR* PakFilename) override
+	virtual ILegacyCacheStore* MountPakFile(const TCHAR* PakFilename) override
 	{
 		// Assumptions: there's at least one read-only pak backend in the hierarchy
 		// and its parent is a hierarchical backend.
@@ -1242,9 +1121,92 @@ private:
 		MountPakFile(*Args[0]);
 	}
 
+	void LoadReplayCommandHandler(const TArray<FString>& Args)
+	{
+		if (Args.Num() < 1)
+		{
+			UE_LOG(LogDerivedDataCache, Log, TEXT("Usage: DDC.LoadReplay ReplayPath"
+				" [Methods=Get+GetValue+GetChunks]"
+				" [Rate=<0-100>]"
+				" [Types=Type1[@Rate1][+Type2[@Rate2]]..."
+				" [Salt=PositiveInt32]"
+				" [Priority=<Lowest-Blocking>]"
+				" [AddPolicy=Query,SkipData]"
+				" [RemovePolicy=SkipMeta]"));
+			return;
+		}
+
+		TStringBuilder<512> JoinedArgs;
+		JoinedArgs.Join(MakeArrayView(Args).RightChop(1), TEXT(' '));
+
+		FCacheReplayReader Replay(RootCache);
+
+		// Parse Key Filter
+		const bool bDefaultMatch = String::FindFirst(*JoinedArgs, TEXT("Types="), ESearchCase::IgnoreCase) == INDEX_NONE;
+		float DefaultRate = bDefaultMatch ? 100.0f : 0.0f;
+		FParse::Value(*JoinedArgs, TEXT("Rate="), DefaultRate);
+
+		FCacheKeyFilter KeyFilter = FCacheKeyFilter::Parse(*JoinedArgs, TEXT("Types="), DefaultRate);
+
+		if (KeyFilter)
+		{
+			uint32 Salt;
+			if (FParse::Value(*JoinedArgs, TEXT("Salt="), Salt))
+			{
+				if (Salt == 0)
+				{
+					UE_LOG(LogDerivedDataCache, Warning,
+						TEXT("Replay: Ignoring salt of 0. The salt must be a positive integer."));
+				}
+				else
+				{
+					KeyFilter.SetSalt(Salt);
+				}
+			}
+
+			UE_LOG(LogDerivedDataCache, Display,
+				TEXT("Replay: Using salt %u to filter cache keys to replay."), KeyFilter.GetSalt());
+		}
+
+		Replay.SetKeyFilter(MoveTemp(KeyFilter));
+
+		// Parse Method Filter
+		FString MethodNames;
+		if (FParse::Value(*JoinedArgs, TEXT("Methods="), MethodNames))
+		{
+			Replay.SetMethodFilter(FCacheMethodFilter::Parse(MethodNames));
+		}
+
+		// Parse Policy Transform
+		ECachePolicy FlagsToAdd = ECachePolicy::None;
+		FString FlagNamesToAdd;
+		if (FParse::Value(*JoinedArgs, TEXT("AddPolicy="), FlagNamesToAdd))
+		{
+			TryLexFromString(FlagsToAdd, FlagNamesToAdd);
+		}
+		ECachePolicy FlagsToRemove = ECachePolicy::None;
+		FString FlagNamesToRemove;
+		if (FParse::Value(*JoinedArgs, TEXT("RemovePolicy="), FlagNamesToRemove))
+		{
+			TryLexFromString(FlagsToRemove, FlagNamesToRemove);
+		}
+		Replay.SetPolicyTransform(FlagsToAdd, FlagsToRemove);
+
+		// Parse Priority Override
+		EPriority Priority{};
+		FString PriorityName;
+		if (FParse::Value(*JoinedArgs, TEXT("Priority="), PriorityName) &&
+			TryLexFromString(Priority, PriorityName))
+		{
+			Replay.SetPriorityOverride(Priority);
+		}
+
+		Replay.ReadFromFileAsync(*Args[0]);
+		Replays.Add(MoveTemp(Replay));
+	}
+
 	static inline FDerivedDataBackendGraph*			StaticGraph;
 
-	FThreadSafeCounter								AsyncCompletionCounter;
 	FString											GraphName;
 	FString											ReadPakFilename;
 	FString											WritePakFilename;
@@ -1260,6 +1222,7 @@ private:
 	IMemoryCacheStore*	BootCache;
 	IPakFileCacheStore* WritePakCache;
 	ILegacyCacheStore*	AsyncNode;
+	ILegacyCacheStore*	VerifyNode;
 	ICacheStoreOwner* Hierarchy;
 	/** Support for multiple read only pak files. */
 	TArray<IPakFileCacheStore*> ReadPakCache;
@@ -1267,7 +1230,11 @@ private:
 	/** List of directories used by the DDC */
 	TArray<FString> Directories;
 
+	FBackendDebugOptions DefaultDebugOptions;
+
 	int32 MaxKeyLength = 0;
+
+	bool bHasDefaultDebugOptions = false;
 
 	/** Whether a shared cache is in use */
 	bool bUsingSharedDDC;
@@ -1278,192 +1245,16 @@ private:
 	/** MountPak console command */
 	FAutoConsoleCommand MountPakCommand;
 	/** UnmountPak console command */
-	FAutoConsoleCommand UnountPakCommand;
+	FAutoConsoleCommand UnmountPakCommand;
+
+	FAutoConsoleCommand LoadReplayCommand;
+	TArray<FCacheReplayReader> Replays;
 };
 
 } // UE::DerivedData
 
 namespace UE::DerivedData
 {
-
-void FDerivedDataBackendInterface::LegacyPut(
-	const TConstArrayView<FLegacyCachePutRequest> Requests,
-	IRequestOwner& Owner,
-	FOnLegacyCachePutComplete&& OnComplete)
-{
-	if (GetLegacyMode() != EBackendLegacyMode::LegacyOnly)
-	{
-		return ILegacyCacheStore::LegacyPut(Requests, Owner, MoveTemp(OnComplete));
-	}
-
-	for (const FLegacyCachePutRequest& Request : Requests)
-	{
-		FCompositeBuffer CompositeValue = Request.Value.GetRawData();
-		Request.Key.WriteValueTrailer(CompositeValue);
-
-		checkf(CompositeValue.GetSize() < MAX_int32,
-			TEXT("Value is 2 GiB or greater, which is not supported for put of '%s' from '%s'"),
-			*Request.Key.GetFullKey(), *Request.Name);
-	
-		UE_CLOG(Request.Key.HasShortKey(), LogDerivedDataCache, VeryVerbose,
-			TEXT("ShortenKey %s -> %s"), *Request.Key.GetFullKey(), *Request.Key.GetShortKey());
-
-		FSharedBuffer Value = MoveTemp(CompositeValue).ToShared();
-		const TArrayView<const uint8> Data(MakeArrayView(static_cast<const uint8*>(Value.GetData()), int32(Value.GetSize())));
-		const EPutStatus Status = PutCachedData(*Request.Key.GetShortKey(), Data, /*bPutEvenIfExists*/ false);
-		OnComplete({Request.Name, Request.Key, Request.UserData, Status == EPutStatus::Cached ? EStatus::Ok : EStatus::Error});
-	}
-}
-
-void FDerivedDataBackendInterface::LegacyGet(
-	TConstArrayView<FLegacyCacheGetRequest> Requests,
-	IRequestOwner& Owner,
-	FOnLegacyCacheGetComplete&& OnComplete)
-{
-	const EBackendLegacyMode LegacyMode = GetLegacyMode();
-	if (LegacyMode == EBackendLegacyMode::ValueOnly)
-	{
-		return ILegacyCacheStore::LegacyGet(Requests, Owner, MoveTemp(OnComplete));
-	}
-
-	// Make a blocking query to the value cache and fall back to the legacy cache for requests with errors.
-
-	TArray<FLegacyCacheGetRequest> LegacyRequests;
-	if (LegacyMode == EBackendLegacyMode::ValueWithLegacyFallback)
-	{
-		TArray<FLegacyCacheGetRequest, TInlineAllocator<8>> ValueRequests;
-		ValueRequests.Reserve(Requests.Num());
-		uint64 RequestIndex = 0;
-		for (const FLegacyCacheGetRequest& Request : Requests)
-		{
-			ValueRequests.Add_GetRef(Request).UserData = RequestIndex++;
-		}
-
-		FRequestOwner BlockingOwner(EPriority::Blocking);
-		ILegacyCacheStore::LegacyGet(ValueRequests, BlockingOwner, [this, &OnComplete, &Requests, &ValueRequests](FLegacyCacheGetResponse&& Response)
-		{
-			if (Response.Status != EStatus::Error)
-			{
-				const int32 Index = int32(Response.UserData);
-				Response.UserData = Requests[Index].UserData;
-				ValueRequests[Index].UserData = MAX_uint64;
-				OnComplete(MoveTemp(Response));
-			}
-		});
-		BlockingOwner.Wait();
-
-		for (const FLegacyCacheGetRequest& Request : ValueRequests)
-		{
-			if (Request.UserData != MAX_uint64)
-			{
-				LegacyRequests.Add(Requests[int32(Request.UserData)]);
-			}
-		}
-		if (LegacyRequests.IsEmpty())
-		{
-			return;
-		}
-		Requests = LegacyRequests;
-	}
-
-	// Query the legacy cache by translating the requests to legacy cache functions.
-
-	FRequestOwner AsyncOwner(FPlatformMath::Min(Owner.GetPriority(), EPriority::Highest));
-	FRequestBarrier Barrier(AsyncOwner);
-	AsyncOwner.KeepAlive();
-
-	TArray<FString, TInlineAllocator<8>> ExistsKeys;
-	TArray<const FLegacyCacheGetRequest*, TInlineAllocator<8>> ExistsRequests;
-
-	TArray<FString, TInlineAllocator<8>> PrefetchKeys;
-	TArray<const FLegacyCacheGetRequest*, TInlineAllocator<8>> PrefetchRequests;
-
-	for (const FLegacyCacheGetRequest& Request : Requests)
-	{
-		if (!EnumHasAnyFlags(Request.Policy, ECachePolicy::Query))
-		{
-			OnComplete({Request.Name, Request.Key, {}, Request.UserData, EStatus::Error});
-		}
-		else if (EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData))
-		{
-			const bool bExists = !EnumHasAnyFlags(Request.Policy, ECachePolicy::Store);
-			(bExists ? ExistsKeys : PrefetchKeys).Emplace(Request.Key.GetShortKey());
-			(bExists ? ExistsRequests : PrefetchRequests).Add(&Request);
-		}
-		else
-		{
-			FSharedBuffer Value;
-			TArray<uint8> Data;
-			if (const bool bGetOk = GetCachedData(*Request.Key.GetShortKey(), Data))
-			{
-				FCompositeBuffer CompositeValue(MakeSharedBufferFromArray(MoveTemp(Data)));
-				if (const bool bKeyOk = Request.Key.ReadValueTrailer(CompositeValue))
-				{
-					Value = MoveTemp(CompositeValue).ToShared();
-				}
-			}
-			const EStatus Status = Value ? EStatus::Ok : EStatus::Error;
-			FLegacyCacheValue LegacyValue(FCompositeBuffer(MoveTemp(Value)));
-			if (LegacyValue.HasData() && LegacyMode == EBackendLegacyMode::ValueWithLegacyFallback)
-			{
-				Private::ExecuteInCacheThreadPool(AsyncOwner, [this, Request, LegacyValue](IRequestOwner& AsyncOwner, bool bCancel)
-				{
-					ILegacyCacheStore::LegacyPut({{Request.Name, Request.Key, LegacyValue}}, AsyncOwner, [](auto&&){});
-				});
-			}
-			OnComplete({Request.Name, Request.Key, MoveTemp(LegacyValue), Request.UserData, Status});
-		}
-	}
-
-	if (!PrefetchKeys.IsEmpty())
-	{
-		int32 Index = 0;
-		const TBitArray<> Exists = TryToPrefetch(PrefetchKeys);
-		for (const FLegacyCacheGetRequest* const Request : PrefetchRequests)
-		{
-			OnComplete({Request->Name, Request->Key, {}, Request->UserData, Exists[Index] ? EStatus::Ok : EStatus::Error});
-			++Index;
-		}
-	}
-
-	if (!ExistsKeys.IsEmpty())
-	{
-		int32 Index = 0;
-		const TBitArray<> Exists = CachedDataProbablyExistsBatch(ExistsKeys);
-		for (const FLegacyCacheGetRequest* const Request : ExistsRequests)
-		{
-			OnComplete({Request->Name, Request->Key, {}, Request->UserData, Exists[Index] ? EStatus::Ok : EStatus::Error});
-			++Index;
-		}
-	}
-}
-
-void FDerivedDataBackendInterface::LegacyDelete(
-	const TConstArrayView<FLegacyCacheDeleteRequest> Requests,
-	IRequestOwner& Owner,
-	FOnLegacyCacheDeleteComplete&& OnComplete)
-{
-	if (GetLegacyMode() != EBackendLegacyMode::LegacyOnly)
-	{
-		return ILegacyCacheStore::LegacyDelete(Requests, Owner, MoveTemp(OnComplete));
-	}
-
-	for (const FLegacyCacheDeleteRequest& Request : Requests)
-	{
-		RemoveCachedData(*Request.Key.GetShortKey(), Request.bTransient);
-		OnComplete({Request.Name, Request.Key, Request.UserData, EStatus::Ok});
-	}
-}
-
-void FDerivedDataBackendInterface::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
-{
-	OutNode = MoveTemp(GatherUsageStats().Get());
-}
-
-bool FDerivedDataBackendInterface::LegacyDebugOptions(FBackendDebugOptions& Options)
-{
-	return ApplyDebugOptions(Options);
-}
 
 FDerivedDataBackend* FDerivedDataBackend::Create()
 {
@@ -1488,12 +1279,10 @@ struct Private::FBackendDebugMissState
 {
 	FCriticalSection Lock;
 	TMap<FCacheKey, EBackendDebugKeyState> Keys;
-	TMap<FName, EBackendDebugKeyState> LegacyKeys;
 };
 
 FBackendDebugOptions::FBackendDebugOptions()
-	: RandomMissRate(0)
-	, SpeedClass(EBackendSpeedClass::Unknown)
+	: SpeedClass(EBackendSpeedClass::Unknown)
 {
 	SimulateMissState.Get() = MakePimpl<Private::FBackendDebugMissState>();
 }
@@ -1501,100 +1290,59 @@ FBackendDebugOptions::FBackendDebugOptions()
 /**
  * Parse debug options for the provided node name. Returns true if any options were specified
  */
-bool FBackendDebugOptions::ParseFromTokens(FDerivedDataBackendInterface::FBackendDebugOptions& OutOptions, const TCHAR* InNodeName, const TCHAR* InInputTokens)
+bool FBackendDebugOptions::ParseFromTokens(FBackendDebugOptions& OutOptions, const TCHAR* InNodeName, const TCHAR* InInputTokens)
 {
-	// check if the input stream has any ddc options for this node
-	FString PrefixKey = FString(TEXT("-ddc-")) + InNodeName;
-
-	if (FCString::Stristr(InInputTokens, *PrefixKey) == nullptr)
+	// Check if the input stream has any DDC options for this node.
+	TStringBuilder<64> Prefix;
+	Prefix.Append(TEXTVIEW("-DDC-")).Append(InNodeName).Append(TEXTVIEW("-"));
+	if (UE::String::FindFirst(InInputTokens, Prefix, ESearchCase::IgnoreCase) == INDEX_NONE)
 	{
-		// check if it has any -ddc-all- args
-		PrefixKey = FString(TEXT("-ddc-all"));
-
-		if (FCString::Stristr(InInputTokens, *PrefixKey) == nullptr)
-		{
-			return false;
-		}
+		return false;
 	}
 
-	// turn -arg= into arg= for parsing
-	PrefixKey.RightChopInline(1);
+	const int32 PrefixLen = Prefix.Len();
 
-	/** types that can be set to ignored (-ddc-<name>-misstypes="foo+bar" etc) */
-	// look for -ddc-local-misstype=AnimSeq+Audio -ddc-shared-misstype=AnimSeq+Audio 
-	FString ArgName = FString::Printf(TEXT("%s-misstypes="), *PrefixKey);
-
-	FString TempArg;
-	FParse::Value(InInputTokens, *ArgName, TempArg);
-	TempArg.ParseIntoArray(OutOptions.SimulateMissTypes, TEXT("+"), true);
-
-	// look for -ddc-local-missrate=, -ddc-shared-missrate= etc
-	ArgName = FString::Printf(TEXT("%s-missrate="), *PrefixKey);
-	int MissRate = 0;
-	FParse::Value(InInputTokens, *ArgName, OutOptions.RandomMissRate);
-
-	// look for -ddc-local-speed=, -ddc-shared-speed= etc
-	ArgName = FString::Printf(TEXT("%s-speed="), *PrefixKey);
-	if (FParse::Value(InInputTokens, *ArgName, TempArg))
+	// Look for -DDC-Local-Speed=, -DDC-Shared-Speed=, etc.
+	Prefix.Append(TEXTVIEW("Speed="));
+	FString SpeedClass;
+	if (FParse::Value(InInputTokens, *Prefix, SpeedClass))
 	{
-		if (!TempArg.IsEmpty())
-		{
-			LexFromString(OutOptions.SpeedClass, *TempArg);
-		}
+		LexFromString(OutOptions.SpeedClass, *SpeedClass);
 	}
+	Prefix.RemoveAt(PrefixLen, Prefix.Len() - PrefixLen);
+
+	// Look for -DDC-Local-MissRate=, -DDC-Shared-MissRate=, etc.
+	float MissRate = 0.0f;
+	Prefix.Append(TEXTVIEW("MissRate="));
+	FParse::Value(InInputTokens, *Prefix, MissRate);
+	Prefix.RemoveAt(PrefixLen, Prefix.Len() - PrefixLen);
+
+	// Look for -DDC-Local-MissTypes=AnimSeq+Audio, -DDC-Shared-MissType=AnimSeq+Audio, etc.
+	Prefix.Append(TEXTVIEW("MissTypes="));
+	OutOptions.SimulateMissFilter = FCacheKeyFilter::Parse(InInputTokens, *Prefix, MissRate);
+	Prefix.RemoveAt(PrefixLen, Prefix.Len() - PrefixLen);
+
+	// Look for -DDC-Local-MissSalt=, -DDC-Shared-MissSalt=, etc.
+	uint32 Salt = 0;
+	Prefix.Append(TEXTVIEW("MissSalt="));
+	if (FParse::Value(InInputTokens, *Prefix, Salt))
+	{
+		OutOptions.SimulateMissFilter.SetSalt(Salt);
+	}
+	if (OutOptions.SimulateMissFilter)
+	{
+		UE_LOG(LogDerivedDataCache, Display,
+			TEXT("%s: Using salt %s%u to filter cache keys to simulate misses on."),
+			InNodeName, *Prefix, OutOptions.SimulateMissFilter.GetSalt());
+	}
+	Prefix.RemoveAt(PrefixLen, Prefix.Len() - PrefixLen);
 
 	return true;
 }
 
-bool FBackendDebugOptions::ShouldSimulatePutMiss(const TCHAR* LegacyKey)
-{
-	if (RandomMissRate == 0 && SimulateMissTypes.IsEmpty())
-	{
-		return false;
-	}
-
-	const FName Key(LegacyKey);
-
-	Private::FBackendDebugMissState& State = *SimulateMissState.Get();
-	const uint32 KeyHash = GetTypeHash(Key);
-
-	FScopeLock Lock(&State.Lock);
-	State.LegacyKeys.AddByHash(KeyHash, Key, EBackendDebugKeyState::HitGet);
-	return false;
-}
-
-bool FBackendDebugOptions::ShouldSimulateGetMiss(const TCHAR* LegacyKey)
-{
-	if (RandomMissRate == 0 && SimulateMissTypes.IsEmpty())
-	{
-		return false;
-	}
-
-	const FStringView KeyView(LegacyKey);
-	const FName Key(KeyView);
-
-	bool bMiss = (RandomMissRate >= 100);
-	if (!bMiss && !SimulateMissTypes.IsEmpty())
-	{
-		const FStringView Bucket = KeyView.Left(KeyView.Find(TEXT("_")));
-		bMiss = SimulateMissTypes.Contains(Bucket);
-	}
-	if (!bMiss && RandomMissRate > 0)
-	{
-		bMiss = FMath::RandHelper(100) < RandomMissRate;
-	}
-
-	Private::FBackendDebugMissState& State = *SimulateMissState.Get();
-	const uint32 KeyHash = GetTypeHash(Key);
-
-	FScopeLock Lock(&State.Lock);
-	const EBackendDebugKeyState KeyState = bMiss ? EBackendDebugKeyState::MissGet : EBackendDebugKeyState::HitGet;
-	return State.LegacyKeys.FindOrAddByHash(KeyHash, Key, KeyState) == EBackendDebugKeyState::MissGet;
-}
-
 bool FBackendDebugOptions::ShouldSimulatePutMiss(const FCacheKey& Key)
 {
-	if (RandomMissRate == 0 && SimulateMissTypes.IsEmpty())
+	if (!SimulateMissFilter.IsMatch(Key))
 	{
 		return false;
 	}
@@ -1609,33 +1357,16 @@ bool FBackendDebugOptions::ShouldSimulatePutMiss(const FCacheKey& Key)
 
 bool FBackendDebugOptions::ShouldSimulateGetMiss(const FCacheKey& Key)
 {
-	if (RandomMissRate == 0 && SimulateMissTypes.IsEmpty())
+	if (!SimulateMissFilter.IsMatch(Key))
 	{
 		return false;
-	}
-
-	bool bMiss = (RandomMissRate >= 100);
-	if (!bMiss && !SimulateMissTypes.IsEmpty())
-	{
-		TStringBuilder<256> Bucket;
-		Bucket << Key.Bucket;
-		if (Bucket.ToView().StartsWith(TEXTVIEW("Legacy")))
-		{
-			Bucket.RemoveAt(0, TEXTVIEW("Legacy").Len());
-		}
-		bMiss = SimulateMissTypes.Contains(Bucket.ToView());
-	}
-	if (!bMiss && RandomMissRate > 0)
-	{
-		bMiss = FMath::RandHelper(100) < RandomMissRate;
 	}
 
 	Private::FBackendDebugMissState& State = *SimulateMissState.Get();
 	const uint32 KeyHash = GetTypeHash(Key);
 
 	FScopeLock Lock(&State.Lock);
-	const EBackendDebugKeyState KeyState = bMiss ? EBackendDebugKeyState::MissGet : EBackendDebugKeyState::HitGet;
-	return State.Keys.FindOrAddByHash(KeyHash, Key, KeyState) == EBackendDebugKeyState::MissGet;
+	return State.Keys.FindOrAddByHash(KeyHash, Key, EBackendDebugKeyState::MissGet) == EBackendDebugKeyState::MissGet;
 }
 
 } // UE::DerivedData

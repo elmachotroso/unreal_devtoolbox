@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "HAL/CriticalSection.h"
-#include "HAL/PlatformTLS.h"
-#include "HAL/MemoryBase.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HAL/MemoryBase.h"
+#include "HAL/PlatformTLS.h"
 #include "Misc/Crc.h"
+
+struct FGenericMemoryStats;
 
 class CORE_API FMallocCallstackHandler : public FMalloc
 {
@@ -129,6 +131,21 @@ public:
 	virtual const TCHAR* GetDescriptiveName() override
 	{
 		return UsedMalloc->GetDescriptiveName();
+	}
+		
+	virtual void OnMallocInitialized() override
+	{
+		UsedMalloc->OnMallocInitialized();
+	}
+
+	virtual void OnPreFork() override
+	{
+		UsedMalloc->OnPreFork();
+	}
+
+	virtual void OnPostFork() override
+	{
+		UsedMalloc->OnPostFork();
 	}
 
 	static constexpr SIZE_T MaxCallStackDepth = 64;

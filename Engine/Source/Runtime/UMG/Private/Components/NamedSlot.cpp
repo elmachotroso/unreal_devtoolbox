@@ -5,6 +5,9 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NamedSlot)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -15,7 +18,7 @@ UNamedSlot::UNamedSlot(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = true;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UNamedSlot::ReleaseSlateResources(bool bReleaseChildren)
@@ -95,6 +98,29 @@ const FText UNamedSlot::GetPaletteCategory()
 
 #endif
 
+void UNamedSlot::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+}
+
+void UNamedSlot::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	const int32 FortniteMainBranchObjectVersion = GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+
+	if (FortniteMainBranchObjectVersion < FFortniteMainBranchObjectVersion::WidgetInheritedNamedSlots)
+	{
+		bExposeOnInstanceOnly = true;
+	}
+#endif
+}
+
+
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

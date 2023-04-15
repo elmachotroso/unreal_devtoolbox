@@ -4,11 +4,11 @@
 #include "Systems/MovieScenePiecewiseBoolBlenderSystem.h"
 #include "MovieSceneTracksComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBoolPropertySystem)
+
 UMovieSceneBoolPropertySystem::UMovieSceneBoolPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->Bool);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
@@ -23,4 +23,5 @@ void UMovieSceneBoolPropertySystem::OnRun(FSystemTaskPrerequisites& InPrerequisi
 {
 	Super::OnRun(InPrerequisites, Subsequents);
 }
+
 

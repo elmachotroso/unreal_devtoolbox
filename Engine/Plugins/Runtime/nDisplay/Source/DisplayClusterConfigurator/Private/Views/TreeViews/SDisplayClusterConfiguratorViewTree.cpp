@@ -3,9 +3,9 @@
 #include "Views/TreeViews/SDisplayClusterConfiguratorViewTree.h"
 
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeBuilder.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
-#include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorTreeBuilder.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
+#include "Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 #include "Views/TreeViews/DisplayClusterConfiguratorTreeViewCommands.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -192,7 +192,7 @@ void SDisplayClusterConfiguratorViewTree::Construct(const FArguments& InArgs,
 							.AutoWidth()
 							.VAlign(VAlign_Center)
 							[
-								SNew(SImage).Image(FAppStyle::Get().GetBrush("GenericViewButton"))
+								SNew(SImage).Image(FAppStyle::GetBrush("GenericViewButton"))
 							]
 
 							+ SHorizontalBox::Slot()

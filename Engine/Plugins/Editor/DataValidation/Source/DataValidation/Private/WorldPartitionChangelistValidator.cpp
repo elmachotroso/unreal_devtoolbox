@@ -3,16 +3,21 @@
 #include "WorldPartitionChangelistValidator.h"
 #include "DataValidationChangelist.h"
 
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
 
 #include "Engine/World.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/WorldPartitionActorDescUtils.h"
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionChangelistValidator)
 
 #define LOCTEXT_NAMESPACE "WorldPartitionChangelistValidation"
 
@@ -29,11 +34,11 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateLoadedAsset_Im
 	
 	Errors = &ValidationErrors;
 	
-	EDataValidationResult Result = ValidateActorsListFromChangeList(ChangeList);
+	EDataValidationResult Result = ValidateActorsAndDataLayersFromChangeList(ChangeList);
 
 	if (Result == EDataValidationResult::Invalid)
 	{
-		AssetFails(InAsset, LOCTEXT("WorldPartitionValidationFail", "This changelist contains modifications that aren't valid at the World Partition level. Please see Source Control log and correct the errors."), ValidationErrors);
+		AssetFails(InAsset, LOCTEXT("WorldPartitionValidationFail", "This changelist contains modifications that aren't valid at the world partition level. Please see source control log and correct the errors."), ValidationErrors);
 	}
 	else
 	{
@@ -45,7 +50,7 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateLoadedAsset_Im
 
 FString GetPrettyPackageName(const FWorldPartitionActorDescView& Desc)
 {
-	FString AssetPath = Desc.GetActorPath().ToString();
+	FString AssetPath = Desc.GetActorSoftPath().ToString();
 	
 	int32 LastDot = -1;
 	if (AssetPath.FindLastChar('.', LastDot))
@@ -66,14 +71,45 @@ FString GetPrettyPackageName(const FWorldPartitionActorDescView& Desc)
 // Extract all Actors/Map from Changelist (in OFPA this should be one Actor per Package, and we'll discard all Actors from non WorldPartition maps)
 // and add them to a Map of World->Files[] so that we can do one validation per world. Once Worlds are identified, we either the UActorDescContainer 
 // from memory (if loaded) or request it to be loaded, we then build a Set of objects that interest us from the Actors in the CL 
-EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsListFromChangeList(UDataValidationChangelist* Changelist)
+EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsAndDataLayersFromChangeList(UDataValidationChangelist* Changelist)
 {
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	FSourceControlChangelistStatePtr ChangelistState = SourceControlProvider.GetState(Changelist->Changelist->AsShared(), EStateCacheUsage::Use);
-		 	
-	// Figure out which world(s) those assets are in and split the files per world
-	TMap<FName, TArray<FAssetData>>	MapToFiles;
 
+	// Figure out which world(s) these actors are in and split the files per world, and return the actor's native class
+	TMap<FTopLevelAssetPath, TSet<FAssetData>> MapToActorsFiles;
+	auto TryAssociateActorToMap = [&MapToActorsFiles](const FAssetData& AssetData) -> UClass*
+	{
+		// Check that the asset is an actor
+		if (FWorldPartitionActorDescUtils::IsValidActorDescriptorFromAssetData(AssetData))
+		{
+			// WorldPartition actors are all in OFPA mode so they're external
+			// Extract the MapName from the ObjectPath (<PathToPackage>.<MapName>:<Level>.<ActorName>)
+			FSoftObjectPath ActorPath = AssetData.GetSoftObjectPath();
+			FTopLevelAssetPath MapAssetName = ActorPath.GetAssetPath();
+
+			TSet<FAssetData>* ActorFiles = MapToActorsFiles.Find(MapAssetName);
+
+			if (!ActorFiles)
+			{
+				if (ULevel::GetIsLevelPartitionedFromPackage(ActorPath.GetLongPackageFName()))
+				{
+					ActorFiles = &MapToActorsFiles.Add(MapAssetName);
+				}
+			}
+
+			if (ActorFiles)	// A null Files indicates a World not using World Partition and OFPA 
+			{
+				ActorFiles->Add(AssetData);
+				return FWorldPartitionActorDescUtils::GetActorNativeClassFromAssetData(AssetData);;
+			}
+		}
+
+		return nullptr;
+	};
+	
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	for (const FSourceControlStateRef& File : ChangelistState->GetFilesStates())
 	{		
 		// Skip deleted files since we're not validating references in this validator 
@@ -85,34 +121,43 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsListFrom
 		FString PackageName;
 		if (FPackageName::TryConvertFilenameToLongPackageName(File->GetFilename(), PackageName))
 		{						
-			// Extract Actor & Map from package
 			TArray<FAssetData> PackageAssetsData;
 			USourceControlHelpers::GetAssetDataFromPackage(PackageName, PackageAssetsData);
 			
 			for (FAssetData& AssetData : PackageAssetsData)
 			{
-				// Check that the asset is an actor
-				static FName NAME_ActorMetaDataClass(TEXT("ActorMetaDataClass"));
-				if (AssetData.TagsAndValues.Contains(NAME_ActorMetaDataClass)) // Could check AssetData.GetClass()->IsChildOf<AActor>() but this doesn't handle blueprints, all OFPA/WP Actors will have this tag
+				if (UClass* ActorNativeClass = TryAssociateActorToMap(AssetData))
 				{
-					// WorldPartition actors are all in OFPA mode so they're external
-					// Extract the MapName from the ObjectPath (<PathToPackage>.<mapName>:<level>.<actorName>)
-					FSoftObjectPath ActorPath = FSoftObjectPath(AssetData.ObjectPath);
-					FName MapAssetName = ActorPath.GetAssetPathName();
-
-					TArray<FAssetData>* Files = MapToFiles.Find(MapAssetName);
-
-					if (!Files)
+					SubmittingWorldDataLayers = ActorNativeClass->IsChildOf<AWorldDataLayers>();
+				}
+				else if (UClass* AssetClass = AssetData.GetClass())
+				{
+					if (AssetClass->IsChildOf<UDataLayerAsset>())
 					{
-						if (ULevel::GetIsLevelPartitionedFromPackage(ActorPath.GetLongPackageFName()))
+						TArray<FName> ReferencerNames;
+						AssetRegistry.GetReferencers(AssetData.PackageName, ReferencerNames, UE::AssetRegistry::EDependencyCategory::All);
+			
+						FARFilter Filter;
+						Filter.bIncludeOnlyOnDiskAssets = true;
+						Filter.PackageNames = MoveTemp(ReferencerNames);
+						Filter.ClassPaths.Add(AWorldDataLayers::StaticClass()->GetClassPathName());
+
+						TArray<FAssetData> DataLayerReferencers;
+						AssetRegistry.GetAssets(Filter, DataLayerReferencers);
+
+						for (const FAssetData& DataLayerReferencer : DataLayerReferencers)
 						{
-							Files = &MapToFiles.Add(MapAssetName);
+							TryAssociateActorToMap(DataLayerReferencer);
 						}
+			
+						RelevantDataLayerAssets.Add(AssetData.PackageName.ToString());
 					}
-
-					if (Files)	// A null Files indicates a World not using World Partition and OFPA 
+					else if (AssetClass->IsChildOf<UWorld>())
 					{
-						Files->Add(AssetData);
+						if (ULevel::GetIsLevelPartitionedFromPackage(*PackageName))
+						{
+							MapToActorsFiles.FindOrAdd(AssetData.GetSoftObjectPath().GetAssetPath());
+						}
 					}
 				}
 			}
@@ -120,31 +165,32 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsListFrom
 	}
 
 	// For Each world 
-	for (TTuple<FName, TArray<FAssetData>>& It : MapToFiles)
+	for (TTuple<FTopLevelAssetPath, TSet<FAssetData>>& It : MapToActorsFiles)
 	{
-		const FName& MapName = It.Get<0>();
-		const TArray<FAssetData>& ActorsData = It.Get<1>();
+		const FTopLevelAssetPath& MapPath = It.Get<0>();
+		const TSet<FAssetData>& ActorsData = It.Get<1>();
 
 		// Find/Load the ActorDescContainer
-		UWorld* World = FindObject<UWorld>(nullptr, *MapName.ToString(), true);
+		UWorld* World = FindObject<UWorld>(nullptr, *MapPath.ToString(), true);
 
 		UActorDescContainer* ActorDescContainer = nullptr;
 		
 		if (World != nullptr)
 		{
 			// World is Loaded reuse the ActorDescContainer of the World
-			ActorDescContainer = World->GetWorldPartition();
+			ActorDescContainer = World->GetWorldPartition()->GetActorDescContainer();
 		}
-		else
+		
+		// Even if world is valid, its world partition is not necessarily initialized
+		if (!ActorDescContainer)
 		{
 			// Find in memory failed, load the ActorDescContainer
-			FSoftObjectPath MapPath = FSoftObjectPath(MapName);
-
 			ActorDescContainer = NewObject<UActorDescContainer>();
-			ActorDescContainer->Initialize(nullptr, MapPath.GetLongPackageFName());
+			ActorDescContainer->Initialize({ nullptr, MapPath.GetPackageName() });
 		}
 
 		// Build a set of Relevant Actor Guids to scope error messages to what's contained in the CL 
+		RelevantMap = MapPath;
 		RelevantActorGuids.Reset();
 
 		for (const FAssetData& ActorData : ActorsData)
@@ -159,7 +205,9 @@ EDataValidationResult UWorldPartitionChangelistValidator::ValidateActorsListFrom
 		}
 
 		// Invoke static WorldPartition Validation from the ActorDescContainer
-		UWorldPartition::CheckForErrors(this, ActorDescContainer);		
+		const bool bIsStreamingDisabled = ULevel::GetIsStreamingDisabledFromPackage(MapPath.GetPackageName());
+		const bool bIsChangelistValidation = true;
+		UWorldPartition::CheckForErrors(this, ActorDescContainer, !bIsStreamingDisabled, bIsChangelistValidation);
 	}
 
 	if (Errors->Num())
@@ -178,14 +226,26 @@ bool UWorldPartitionChangelistValidator::Filter(const FWorldPartitionActorDescVi
 		return true;
 	}
 
+	if (!RelevantMap.IsNull())
+	{
+		FSoftObjectPath ActorPath = ActorDescView.GetActorSoftPath();
+		return ActorPath.GetAssetPath() == RelevantMap;
+	}
+
 	return false;
+}
+
+bool UWorldPartitionChangelistValidator::Filter(const UDataLayerInstance* InDataLayerInstance)
+{
+	const UDataLayerInstanceWithAsset* DataLayerWithAsset = Cast<UDataLayerInstanceWithAsset>(InDataLayerInstance);
+	return DataLayerWithAsset != nullptr && DataLayerWithAsset->GetAsset() != nullptr && RelevantDataLayerAssets.Contains(DataLayerWithAsset->GetAsset()->GetPathName());
 }
 
 void UWorldPartitionChangelistValidator::OnInvalidReference(const FWorldPartitionActorDescView& ActorDescView, const FGuid& ReferenceGuid)
 {
 	if (Filter(ActorDescView))
 	{
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReference", "Actor {0} has a missing reference to %s"),
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReference", "Actor {0} has a missing reference to {1}"),
 											FText::FromString(GetPrettyPackageName(ActorDescView)), 
 											FText::FromString(ReferenceGuid.ToString()));
 
@@ -198,16 +258,20 @@ void UWorldPartitionChangelistValidator::OnInvalidReferenceGridPlacement(const F
 {
 	if (Filter(ActorDescView) || Filter(ReferenceActorDescView))
 	{
-		const FString SpatiallyLoadedActor(TEXT("Spatially loaded actor"));
-		const FString NonSpatiallyLoadedActor(TEXT("Non-spatially loaded loaded actor"));
+		// Only report errors for non-spatially loaded actor referencing a spatially loaded actor
+		if (!ActorDescView.GetIsSpatiallyLoaded())
+		{
+			const FString SpatiallyLoadedActor(TEXT("Spatially loaded actor"));
+			const FString NonSpatiallyLoadedActor(TEXT("Non-spatially loaded loaded actor"));
 
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceGridPlacement", "{0} {1} is referencing {2} {3}."),
-											FText::FromString(ActorDescView.GetIsSpatiallyLoaded() ? *SpatiallyLoadedActor : *NonSpatiallyLoadedActor),
-											FText::FromString(GetPrettyPackageName(ActorDescView)),
-											FText::FromString(ReferenceActorDescView.GetIsSpatiallyLoaded() ? *SpatiallyLoadedActor : *NonSpatiallyLoadedActor),
-											FText::FromString(GetPrettyPackageName(ReferenceActorDescView)));
+			FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceGridPlacement", "{0} {1} is referencing {2} {3}."),
+												FText::FromString(ActorDescView.GetIsSpatiallyLoaded() ? *SpatiallyLoadedActor : *NonSpatiallyLoadedActor),
+												FText::FromString(GetPrettyPackageName(ActorDescView)),
+												FText::FromString(ReferenceActorDescView.GetIsSpatiallyLoaded() ? *SpatiallyLoadedActor : *NonSpatiallyLoadedActor),
+												FText::FromString(GetPrettyPackageName(ReferenceActorDescView)));
 
-		Errors->Add(CurrentError);
+			Errors->Add(CurrentError);
+		}
 	}
 }
 
@@ -215,7 +279,7 @@ void UWorldPartitionChangelistValidator::OnInvalidReferenceDataLayers(const FWor
 {	
 	if (Filter(ActorDescView) || Filter(ReferenceActorDescView))
 	{
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.DataLayerError", "{0} is referencing {1} but both Actors are using a different set of DataLayers."),
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.DataLayerError", "{0} is referencing {1} but both actors are using a different set of runtime data layers."),
 											FText::FromString(GetPrettyPackageName(ActorDescView)),
 											FText::FromString(GetPrettyPackageName(ReferenceActorDescView)));
 
@@ -227,7 +291,7 @@ void UWorldPartitionChangelistValidator::OnInvalidReferenceRuntimeGrid(const FWo
 {
 	if (Filter(ActorDescView) || Filter(ReferenceActorDescView))
 	{
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.RuntimeGridError", "{0} is referencing {1} but both Actors are using a different Runtime Grid."),
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.RuntimeGridError", "{0} is referencing {1} but both actors are using a different runtime grid."),
 			FText::FromString(GetPrettyPackageName(ActorDescView)),
 			FText::FromString(GetPrettyPackageName(ReferenceActorDescView)));
 
@@ -239,7 +303,7 @@ void UWorldPartitionChangelistValidator::OnInvalidReferenceLevelScriptStreamed(c
 {
 	if (Filter(ActorDescView))
 	{		
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceLevelScriptStreamed", "Level Script Blueprint references streamed actor {0}."),
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceLevelScriptStreamed", "Level script blueprint references streamed actor {0}."),
 											FText::FromString(GetPrettyPackageName(ActorDescView)));
 		
 		Errors->Add(CurrentError);
@@ -250,13 +314,74 @@ void UWorldPartitionChangelistValidator::OnInvalidReferenceLevelScriptDataLayers
 {
 	if (Filter(ActorDescView))
 	{
-		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceLevelScriptDataLayers", "Level Script Blueprint references streamed actor {0} with a non empty set of data layers"),
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidReferenceLevelScriptDataLayers", "Level script blueprint references streamed actor {0} with a non empty set of data layers."),
 											FText::FromString(GetPrettyPackageName(ActorDescView)));
 
 		Errors->Add(CurrentError);
 	}
 }
 
+void UWorldPartitionChangelistValidator::OnInvalidReferenceDataLayerAsset(const UDataLayerInstanceWithAsset* DataLayerInstance)
+{
+	if (SubmittingWorldDataLayers)
+	{
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.InvalidDataLayerAsset", "Data layer {0} has no data layer asset."),
+			FText::FromName(DataLayerInstance->GetDataLayerFName()));
 
+		Errors->Add(CurrentError);
+	}
+}
+
+void UWorldPartitionChangelistValidator::OnDataLayerHierarchyTypeMismatch(const UDataLayerInstance* DataLayerInstance, const UDataLayerInstance* Parent)
+{
+	if (Filter(DataLayerInstance)
+		|| Filter(Parent)
+		|| SubmittingWorldDataLayers)
+	{
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.DataLayerHierarchyTypeMismatch", "Data layer {0} is of type {1} and its parent {2} is of type {3}."),
+			FText::FromString(DataLayerInstance->GetDataLayerFullName()),
+			UEnum::GetDisplayValueAsText(DataLayerInstance->GetType()),
+			FText::FromString(Parent->GetDataLayerFullName()),
+			UEnum::GetDisplayValueAsText(Parent->GetType()));
+	
+		Errors->Add(CurrentError);
+	}
+}
+
+void UWorldPartitionChangelistValidator::OnDataLayerAssetConflict(const UDataLayerInstanceWithAsset* DataLayerInstance, const UDataLayerInstanceWithAsset* ConflictingDataLayerInstance)
+{
+	if (Filter(DataLayerInstance)
+		|| Filter(ConflictingDataLayerInstance)
+		|| SubmittingWorldDataLayers)
+	{
+		FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.DataLayerAssetConflict", "Data layer instance {0} and data layer instance {1} are both referencing data layer asset {2}."),
+			FText::FromName(DataLayerInstance->GetDataLayerFName()),
+			FText::FromName(ConflictingDataLayerInstance->GetDataLayerFName()),
+			FText::FromString(DataLayerInstance->GetAsset()->GetFullName()));
+
+		Errors->Add(CurrentError);
+	}
+}
+
+void UWorldPartitionChangelistValidator::OnActorNeedsResave(const FWorldPartitionActorDescView& ActorDescView)
+{
+	// Changelist validation already ensures that dirty actors must be part of the changelist
+}
+
+void UWorldPartitionChangelistValidator::OnLevelInstanceInvalidWorldAsset(const FWorldPartitionActorDescView& ActorDescView, FName WorldAsset, ELevelInstanceInvalidReason Reason)
+{
+	if (Filter(ActorDescView))
+	{
+		if (Reason == ELevelInstanceInvalidReason::WorldAssetNotFound)
+		{
+			FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.WorldPartition.LevelInstanceInvalidWorldAsset", "Level instance {0} has an invalid world asset {1}."),
+				FText::FromString(GetPrettyPackageName(ActorDescView)), 
+				FText::FromName(WorldAsset));
+
+			Errors->Add(CurrentError);
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE
+

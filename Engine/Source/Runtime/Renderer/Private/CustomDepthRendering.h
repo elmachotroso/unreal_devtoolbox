@@ -31,9 +31,6 @@ enum class ECustomDepthMode : uint32
 // The custom depth mode currently configured.
 extern ECustomDepthMode GetCustomDepthMode();
 
-// Returns the requested downsample factor for custom depth textures.
-extern uint32 GetCustomDepthDownsampleFactor(ERHIFeatureLevel::Type InFeatureLevel);
-
 inline bool IsCustomDepthPassEnabled()
 {
 	return GetCustomDepthMode() != ECustomDepthMode::Disabled;
@@ -41,7 +38,7 @@ inline bool IsCustomDepthPassEnabled()
 
 struct FCustomDepthTextures
 {
-	static FCustomDepthTextures Create(FRDGBuilder& GraphBuilder, FIntPoint Extent, ERHIFeatureLevel::Type FeatureLevel, uint32 DownsampleFactor);
+	static FCustomDepthTextures Create(FRDGBuilder& GraphBuilder, FIntPoint CustomDepthExtent);
 
 	bool IsValid() const
 	{
@@ -51,12 +48,7 @@ struct FCustomDepthTextures
 	FRDGTextureRef Depth{};
 	FRDGTextureSRVRef Stencil{};
 
-	FRDGTextureRef MobileDepth{};
-	FRDGTextureRef MobileStencil{};
-
 	// Actions to use when initially rendering to custom depth / stencil.
 	ERenderTargetLoadAction DepthAction = ERenderTargetLoadAction::EClear;
 	ERenderTargetLoadAction StencilAction = ERenderTargetLoadAction::EClear;
-
-	uint32 DownsampleFactor = 1;
 };

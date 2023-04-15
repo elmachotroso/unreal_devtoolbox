@@ -1,16 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KismetNodes/SGraphNodeK2Copy.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SWrapBox.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "GraphEditorSettings.h"
-#include "SGraphPin.h"
-#include "K2Node.h"
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "GenericPlatform/ICursor.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Text.h"
+#include "K2Node.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SGraphPin.h"
 // Pin stuff
 #include "SLevelOfDetailBranchNode.h"
+#include "SNodePanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/Notifications/SErrorText.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
+class UEdGraphSchema;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SGraphNodeK2Copy"
 
@@ -63,7 +89,7 @@ public:
 		static const FName NAME_NoBorder("NoBorder");
 		TSharedRef<SWidget> PinStatusIndicator =
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), NAME_NoBorder)
+			.ButtonStyle(FAppStyle::Get(), NAME_NoBorder)
 			.Visibility(this, &SCopyNodeGraphPin::GetPinStatusIconVisibility)
 			.ContentPadding(0)
 			.OnClicked(this, &SCopyNodeGraphPin::ClickedOnPinStatusIcon)
@@ -151,22 +177,22 @@ public:
 		{
 			if (IsConnected())
 			{
-				return FEditorStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinLeft_Connected"));
+				return FAppStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinLeft_Connected"));
 			}
 			else
 			{
-				return FEditorStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinLeft_Disconnected"));
+				return FAppStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinLeft_Disconnected"));
 			}
 		}
 		else
 		{
 			if (IsConnected())
 			{
-				return FEditorStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinRight_Connected"));
+				return FAppStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinRight_Connected"));
 			}
 			else
 			{
-				return FEditorStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinRight_Disconnected"));
+				return FAppStyle::GetBrush(TEXT("Graph.Pin.CopyNodePinRight_Disconnected"));
 			}
 		}
 	}
@@ -286,7 +312,7 @@ TSharedPtr<SGraphPin> SGraphNodeK2Copy::CreatePinWidget(UEdGraphPin* Pin) const
 
 const FSlateBrush* SGraphNodeK2Copy::GetShadowBrush(bool bSelected) const
 {
-	return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FEditorStyle::GetNoBrush();
+	return bSelected ? FAppStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FAppStyle::GetNoBrush();
 }
 
 #undef LOCTEXT_NAMESPACE

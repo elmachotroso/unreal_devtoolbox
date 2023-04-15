@@ -4,6 +4,8 @@
 #include "Animation/AnimInstance.h"
 #include "Kismet2/CompilerResultsLog.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimGraphNode_RetargetPoseFromMesh)
+
 #define LOCTEXT_NAMESPACE "AnimGraphNode_IKRig"
 const FName UAnimGraphNode_RetargetPoseFromMesh::AnimModeName(TEXT("IKRig.IKRigEditor.IKRigEditMode"));
 
@@ -31,6 +33,11 @@ void UAnimGraphNode_RetargetPoseFromMesh::CustomizePinData(UEdGraphPin* Pin, FNa
 	Super::CustomizePinData(Pin, SourcePropertyName, ArrayIndex);
 }
 
+UObject* UAnimGraphNode_RetargetPoseFromMesh::GetJumpTargetForDoubleClick() const
+{
+	return Node.IKRetargeterAsset;
+}
+
 void UAnimGraphNode_RetargetPoseFromMesh::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const FName PropertyName = (PropertyChangedEvent.Property ? PropertyChangedEvent.Property->GetFName() : NAME_None);
@@ -47,7 +54,9 @@ void UAnimGraphNode_RetargetPoseFromMesh::ValidateAnimNodeDuringCompilation(USke
 	// validate source mesh component is not null
 	if (!Node.bUseAttachedParent)
 	{
-		if (!IsPinExposedAndLinked(GET_MEMBER_NAME_STRING_CHECKED(FAnimNode_RetargetPoseFromMesh, SourceMeshComponent)))
+		const bool bIsLinked = IsPinExposedAndLinked(GET_MEMBER_NAME_STRING_CHECKED(FAnimNode_RetargetPoseFromMesh, SourceMeshComponent));
+		const bool bIsBound = IsPinExposedAndBound(GET_MEMBER_NAME_STRING_CHECKED(FAnimNode_RetargetPoseFromMesh, SourceMeshComponent));
+		if (!(bIsLinked || bIsBound))
 		{
 			MessageLog.Error(TEXT("@@ is missing a Source Skeletal Mesh Component reference."), this);
 			return;
@@ -57,25 +66,68 @@ void UAnimGraphNode_RetargetPoseFromMesh::ValidateAnimNodeDuringCompilation(USke
 	// validate IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset)
 	{
-		MessageLog.Error(TEXT("@@ is missing an IKRetargeter asset."), this);
+		UEdGraphPin* Pin = FindPin(GET_MEMBER_NAME_STRING_CHECKED(FAnimNode_RetargetPoseFromMesh, IKRetargeterAsset));
+		if (Pin == nullptr)
+		{
+			// retarget asset unassigned
+			MessageLog.Error(TEXT("@@ does not have an IK Retargeter asset assigned."), this);
+		}
 		return;
 	}
 
 	// validate SOURCE IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset->GetSourceIKRig())
 	{
-		MessageLog.Error(TEXT("@@ has IK Retargeter that is missing a source IK Rig asset."), this);
+		MessageLog.Warning(TEXT("@@ has IK Retargeter that is missing a source IK Rig asset."), this);
 	}
 
 	// validate TARGET IK Rig asset has been assigned
 	if (!Node.IKRetargeterAsset->GetTargetIKRig())
 	{
-		MessageLog.Error(TEXT("@@ has IK Retargeter that is missing a target IK Rig asset."), this);
+		MessageLog.Warning(TEXT("@@ has IK Retargeter that is missing a target IK Rig asset."), this);
 	}
 
 	if (!(Node.IKRetargeterAsset->GetSourceIKRig() && Node.IKRetargeterAsset->GetTargetIKRig()))
 	{
 		return;
+	}
+
+	// pull messages out of the processor's log
+	if (!Node.bSuppressWarnings)
+	{
+		if (const UIKRetargetProcessor* Processor = Node.GetRetargetProcessor())
+		{
+			const TArray<FText>& Warnings = Processor->Log.GetWarnings();
+			for (const FText& Warning : Warnings)
+			{
+				MessageLog.Warning(*Warning.ToString());
+			}
+		
+			const TArray<FText>& Errors = Processor->Log.GetErrors();
+			for (const FText& Error : Errors)
+			{
+				MessageLog.Error(*Error.ToString());
+			}
+		}
+	}
+
+	if (ForSkeleton && !Node.bSuppressWarnings)
+	{
+		// validate that target bone chains exist on this skeleton
+		const FReferenceSkeleton &RefSkel = ForSkeleton->GetReferenceSkeleton();
+		const TArray<FBoneChain> &TargetBoneChains = Node.IKRetargeterAsset->GetTargetIKRig()->GetRetargetChains();
+		for (const FBoneChain &Chain : TargetBoneChains)
+		{
+			if (RefSkel.FindBoneIndex(Chain.StartBone.BoneName) == INDEX_NONE)
+			{
+				MessageLog.Warning(*FText::Format(LOCTEXT("StartBoneNotFound", "@@ - Start Bone '{0}' in target IK Rig Bone Chain not found."), FText::FromName(Chain.StartBone.BoneName)).ToString(), this);
+			}
+
+			if (RefSkel.FindBoneIndex(Chain.EndBone.BoneName) == INDEX_NONE)
+			{
+				MessageLog.Warning(*FText::Format(LOCTEXT("EndBoneNotFound", "@@ - End Bone '{0}' in target IK Rig Bone Chain not found."), FText::FromName(Chain.EndBone.BoneName)).ToString(), this);
+			}
+		}
 	}
 }
 
@@ -92,3 +144,4 @@ void UAnimGraphNode_RetargetPoseFromMesh::PreloadRequiredAssets()
 }
 
 #undef LOCTEXT_NAMESPACE
+

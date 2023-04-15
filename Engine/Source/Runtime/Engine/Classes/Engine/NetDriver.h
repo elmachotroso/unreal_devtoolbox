@@ -18,7 +18,10 @@
 #include "IPAddress.h"
 #include "Net/NetAnalyticsTypes.h"
 #include "Net/NetConnectionIdHandler.h"
-
+#include "HAL/LowLevelMemTracker.h"
+#if UE_WITH_IRIS
+#include "Templates/PimplPtr.h"
+#endif
 #include "NetDriver.generated.h"
 
 /**
@@ -313,6 +316,8 @@
  *
  */
 
+LLM_DECLARE_TAG_API(NetDriver, ENGINE_API);
+
 class Error;
 class FNetGUIDCache;
 struct FNetSyncLoadReport;
@@ -333,6 +338,16 @@ class FNetAnalyticsAggregator;
 class UNetDriver;
 
 enum class ECreateReplicationChangelistMgrFlags;
+enum class EEngineNetworkRuntimeFeatures : uint16;
+#if UE_WITH_IRIS
+class UReplicationSystem;
+class UReplicationBridge;
+namespace UE::Net
+{
+	typedef uint16 FNetObjectGroupHandle;
+}
+#endif // UE_WITH_IRIS
+
 
 using FConnectionMap = TMap<TSharedRef<const FInternetAddr>, UNetConnection*, FDefaultSetAllocator, FInternetAddrConstKeyMapFuncs<UNetConnection*>>;
 
@@ -379,6 +394,9 @@ DECLARE_DELEGATE_RetVal(bool, FShouldSkipRepNotifies);
 //
 #define DO_ENABLE_NET_TEST !(UE_BUILD_SHIPPING)
 
+#ifndef NET_DEBUG_RELEVANT_ACTORS
+#define NET_DEBUG_RELEVANT_ACTORS !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif 
 
 /** Holds the packet simulation settings in one place */
 USTRUCT()
@@ -609,19 +627,19 @@ struct ENGINE_API FChannelDefinition
 	int32 StaticChannelIndex;	// Channel always uses this index, INDEX_NONE if dynamically chosen
 
 	UPROPERTY()
-	bool bTickOnCreate;			// Whether to immediately begin ticking the channel after creation
+	uint8 bTickOnCreate : 1;			// Whether to immediately begin ticking the channel after creation
 
 	UPROPERTY()
-	bool bServerOpen;			// Channel opened by the server
+	uint8 bServerOpen : 1;			// Channel opened by the server
 
 	UPROPERTY()
-	bool bClientOpen;			// Channel opened by the client
+	uint8 bClientOpen : 1;			// Channel opened by the client
 
 	UPROPERTY()
-	bool bInitialServer;		// Channel created on server when connection is established
+	uint8 bInitialServer : 1;		// Channel created on server when connection is established
 
 	UPROPERTY()
-	bool bInitialClient;		// Channel created on client before connecting
+	uint8 bInitialClient : 1;		// Channel created on client before connecting
 
 	FChannelDefinition() : 
 		ChannelName(NAME_None),
@@ -696,7 +714,9 @@ private:
 public:
 
 	/** Destructor */
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	ENGINE_API virtual ~UNetDriver() {};
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Used to specify the class to use for connections */
 	UPROPERTY(Config)
@@ -704,6 +724,10 @@ public:
 
 	UPROPERTY(Config)
 	FString ReplicationDriverClassName;
+
+	/** Used to specify the class to use for ReplicationBridge */
+	UPROPERTY(Config)
+	FString ReplicationBridgeClassName;
 
 	/** @todo document */
 	UPROPERTY(Config)
@@ -765,19 +789,6 @@ public:
 	UPROPERTY(Config)
 	float TimeoutMultiplierForUnoptimizedBuilds;
 
-	/**
-	 * If true, ignore timeouts completely.  Should be used only in development
-	 */
-	UPROPERTY(Config)
-	bool bNoTimeouts;
-
-	/**
-	 * If true this NetDriver will not apply the network emulation settings that simulate
-	 * latency and packet loss in non-shippable builds
-	 */
-	UPROPERTY(Config)
-	bool bNeverApplyNetworkEmulationSettings;
-
 	/** Connection to the server (this net driver is a client) */
 	UPROPERTY()
 	TObjectPtr<class UNetConnection> ServerConnection;
@@ -831,6 +842,9 @@ public:
 	UPROPERTY()
 	TObjectPtr<UClass> ReplicationDriverClass;
 
+	UPROPERTY(transient)
+	TObjectPtr<UClass> ReplicationBridgeClass;
+
 	/** @todo document */
 	FProperty* RoleProperty;
 	
@@ -867,7 +881,15 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<UChannel>> ActorChannelPool;
 
+	/** Name of net driver definition used to create this driver */
+	FName NetDriverDefinition;
+
+	/** Cached copy of MaxChannelsOverride from the net driver definition to avoid extra lookups */
+	int32 MaxChannelsOverride;
+
 public:
+	/** Get the value of MaxChannelsOverride cached from the net driver definition */
+	int32 GetMaxChannelsOverride() const { return MaxChannelsOverride; }
 
 	/** Creates a new channel of the specified type name. If the type is pooled, it will return a pre-created channel */
 	UChannel* GetOrCreateChannelByName(const FName& ChName);
@@ -877,6 +899,19 @@ public:
 
 	/** Change the NetDriver's NetDriverName. This will also reinit packet simulation settings so that settings can be qualified to a specific driver. */
 	void SetNetDriverName(FName NewNetDriverNamed);
+
+	/** Set the NetDriver's NetDriverDefintion. */
+	void SetNetDriverDefinition(FName NewNetDriverDefinition);
+
+	UE_DEPRECATED(5.1, "Use GetNetDriverDefinition instead.")
+	FName GetNetDriverDefintion() const { return NetDriverDefinition; }
+
+	/** Get the NetDriver's NetDriverDefintion. */
+	FName GetNetDriverDefinition() const { return NetDriverDefinition; }
+
+	/** Callback after the engine created the NetDriver and set our name for the first time */
+	void PostCreation(bool bInitializeWithIris);
+
 
 	void InitPacketSimulationSettings();
 
@@ -898,23 +933,58 @@ public:
 
 private:
 	double						ElapsedTime;
-	
 
 	/** Whether or not the NetDriver is ticking */
 	bool bInTick;
 
-	bool bPendingDestruction;
+	uint8 bPendingDestruction : 1;
+
+#if DO_ENABLE_NET_TEST
+	/** Dont load packet settings from config or cmdline when true*/
+	uint8 bForcedPacketSettings : 1;
+#endif 
+
+	uint8 bDidHitchLastFrame : 1;
+
+	/** cache whether or not we have a replay connection, updated when a connection is added or removed */
+	uint8 bHasReplayConnection : 1;
+
+protected:
+	uint8 bMaySendProperties : 1;
+
+	uint8 bSkipServerReplicateActors : 1;
+
+	uint8 bSkipClearVoicePackets : 1;
 
 public:
-	/** Last realtime a tick dispatch occurred. Used currently to try and diagnose timeout issues */
-	double						LastTickDispatchRealtime;
+	/**
+	 * If true, ignore timeouts completely.  Should be used only in development
+	 */
+	UPROPERTY(Config)
+	uint8 bNoTimeouts : 1;
+
+	/**
+	 * If true this NetDriver will not apply the network emulation settings that simulate
+	 * latency and packet loss in non-shippable builds
+	 */
+	UPROPERTY(Config)
+	uint8 bNeverApplyNetworkEmulationSettings : 1;
 
 	/** If true then client connections are to other client peers */
-	bool						bIsPeer;
+	uint8						bIsPeer : 1;
 	/** @todo document */
-	bool						ProfileStats;
+	uint8						ProfileStats : 1;
 	/** If true, it assumes the stats are being set by server data */
-	bool						bSkipLocalStats;
+	uint8						bSkipLocalStats : 1;
+	/** Collect net stats even if not FThreadStats::IsCollectingData(). */
+	uint8 bCollectNetStats : 1;
+	/** Used to determine if checking for standby cheats should occur */
+	uint8						bIsStandbyCheckingEnabled : 1;
+	/** Used to determine whether we've already caught a cheat or not */
+	uint8						bHasStandbyCheatTriggered : 1;
+
+	/** Last realtime a tick dispatch occurred. Used currently to try and diagnose timeout issues */
+	double						LastTickDispatchRealtime;
 	/** Timings for Socket::SendTo() */
 	int32						SendCycles;
 	/** Stats for network perf */
@@ -982,14 +1052,8 @@ public:
 	/** Total acks sent since the net driver's creation  */
 	uint32						OutTotalAcks;
 
-	/** Collect net stats even if not FThreadStats::IsCollectingData(). */
-	bool bCollectNetStats;
 	/** Time of last netdriver cleanup pass */
 	double						LastCleanupTime;
-	/** Used to determine if checking for standby cheats should occur */
-	bool						bIsStandbyCheckingEnabled;
-	/** Used to determine whether we've already caught a cheat or not */
-	bool						bHasStandbyCheatTriggered;
 	/** The amount of time without packets before triggering the cheat code */
 	float						StandbyRxCheatTime;
 	/** todo document */
@@ -1005,6 +1069,8 @@ public:
 	float						JoinInProgressStandbyWaitTime;
 	/** Used to track whether a given actor was replicated by the net driver recently */
 	int32						NetTag;
+
+#if NET_DEBUG_RELEVANT_ACTORS
 	/** Dumps next net update's relevant actors when true*/
 	bool						DebugRelevantActors;
 
@@ -1015,6 +1081,7 @@ public:
 	TArray< TWeakObjectPtr<AActor> >	LastNonRelevantActors;
 
 	void						PrintDebugRelevantActors();
+#endif // NET_DEBUG_RELEVANT_ACTORS
 	
 	/** The server adds an entry into this map for every actor that is destroyed that join-in-progress
 	 *  clients need to know about, that is, startup actors. Also, individual UNetConnections
@@ -1024,12 +1091,22 @@ public:
 	 */
 	TMap<FNetworkGUID, TUniquePtr<FActorDestructionInfo>>	DestroyedStartupOrDormantActors;
 
+private:
+	/** Tracks the network guids in DestroyedStartupOrDormantActors above, but keyed on the streaming level name. */
+	TMap<FName, TSet<FNetworkGUID>> DestroyedStartupOrDormantActorsByLevel;
+
+public:
+	const TSet<FNetworkGUID>& GetDestroyedStartupOrDormantActors(const FName& LevelName)
+	{
+		return DestroyedStartupOrDormantActorsByLevel.FindOrAdd(LevelName);
+	}
+
 	/** The server adds an entry into this map for every startup actor that has been renamed, and will
 	 *  always map from current name to original name
 	 */
 	TMap<FName, FName>	RenamedStartupActors;
 
-	class FRepChangedPropertyTrackerWrapper
+	class UE_DEPRECATED(5.1, "No longer used.") FRepChangedPropertyTrackerWrapper
 	{
 	public:
 		FRepChangedPropertyTrackerWrapper(UObject* Obj, const TSharedPtr<FRepChangedPropertyTracker>& InRepChangedPropertyTracker) : RepChangedPropertyTracker(InRepChangedPropertyTracker), WeakObjectPtr(Obj) {}
@@ -1052,8 +1129,13 @@ public:
 	private:
 		TWeakObjectPtr<UObject> WeakObjectPtr;
 	};
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Maps FRepChangedPropertyTracker to active objects that are replicating properties */
+	UE_DEPRECATED(5.1, "Property trackers have been moved to the NetCore module")
 	TMap<UObject*, FRepChangedPropertyTrackerWrapper>	RepChangedPropertyTrackerMap;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** Used to invalidate properties marked "unchanged" in FRepChangedPropertyTracker's */
 	uint32																		ReplicationFrame;
 
@@ -1236,13 +1318,16 @@ public:
 	 */
 	ENGINE_API virtual void FlushHandler();
 
-
 	/** Initializes the net connection class to use for new connections */
 	ENGINE_API virtual bool InitConnectionClass(void);
 
 	/** Initialized the replication driver class to use for this driver */
 	ENGINE_API virtual bool InitReplicationDriverClass();
 
+#if UE_WITH_IRIS
+	/** Initialized the replication bridge class to use for this driver if using iris replication*/
+	ENGINE_API virtual bool InitReplicationBridgeClass();
+#endif
 	/** Shutdown all connections managed by this net driver */
 	ENGINE_API virtual void Shutdown();
 
@@ -1407,6 +1492,7 @@ public:
 	bool HandleDumpSubObjectsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleDumpRepLayoutFlagsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandlePushModelMemCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandlePropertyConditionsMemCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 #endif
 
 	void HandlePacketLossBurstCommand( int32 DurationInMilliseconds );
@@ -1441,6 +1527,8 @@ public:
 
 	/** Called when a spawned actor is destroyed. */
 	ENGINE_API virtual void NotifyActorDestroyed( AActor* Actor, bool IsSeamlessTravel=false );
+
+	void NotifySubObjectDestroyed(UObject* SubObject);
 
 	/** Called when an actor is renamed. */
 	ENGINE_API virtual void NotifyActorRenamed(AActor* Actor, FName PreviousName);
@@ -1519,6 +1607,9 @@ public:
 	*/
 	TSharedPtr<FRepChangedPropertyTracker> FindOrCreateRepChangedPropertyTracker(UObject *Obj);
 
+	/** Finds a FRepChangedPropertyTracker associated with an object. */
+	TSharedPtr<FRepChangedPropertyTracker> FindRepChangedPropertyTracker(UObject* Obj);
+
 	/** Returns true if the client should destroy immediately any actor that becomes torn-off */
 	ENGINE_API virtual bool ShouldClientDestroyTearOffActors() const { return false; }
 
@@ -1585,8 +1676,36 @@ public:
 
 	ENGINE_API UReplicationDriver* GetReplicationDriver() const { return ReplicationDriver; }
 
+	/** Returns if this netdriver is initialized to replicate using the Iris replication system or the Legacy replication system. */
+	FORCEINLINE bool IsUsingIrisReplication() const
+	{
+#if UE_WITH_IRIS
+		return bIsUsingIris;
+#else
+		return false;
+#endif //UE_WITH_IRIS
+	}
+
+	/** Returns the bitflag telling which network features are activated for this NetDriver. */
+	ENGINE_API EEngineNetworkRuntimeFeatures GetNetworkRuntimeFeatures() const;
+	
+#if UE_WITH_IRIS
+	/** Remove references to the Iris bridge and system without deleting it */
+	ENGINE_API void ClearIrisSystem();
+
+	/** Set a previously initialized IrisSystem into this NetDriver */
+	ENGINE_API void RestoreIrisSystem(UReplicationSystem* InReplicationSystem);
+#endif // UE_WITH_IRIS
+
 	template<class T>
 	T* GetReplicationDriver() const { return Cast<T>(ReplicationDriver); }
+
+#if UE_WITH_IRIS
+	inline UReplicationSystem* GetReplicationSystem() { return ReplicationSystem; }
+	inline UReplicationSystem* GetReplicationSystem() const { return ReplicationSystem; }
+
+	void UpdateGroupFilterStatusForLevel(const ULevel* Level, UE::Net::FNetObjectGroupHandle LevelGroupHandle);
+#endif // UE_WITH_IRIS
 
 	void RemoveClientConnection(UNetConnection* ClientConnectionToRemove);
 
@@ -1628,6 +1747,9 @@ public:
 	/** Called on clients when an actor channel is closed because it went dormant. */
 	ENGINE_API virtual void ClientSetActorDormant(AActor* Actor);
 
+	/** Called on clients when an actor is torn off. */
+	ENGINE_API virtual void ClientSetActorTornOff(AActor* Actor);
+
 	/**
 	 * Returns the current delinquency analytics and resets them.
 	 * This would be similar to calls to Get and Reset separately, except that the caller
@@ -1655,6 +1777,8 @@ public:
 
 protected:
 
+	void SetIsInTick(bool bIsInTick) { bInTick = bIsInTick; }
+
 	/** Register all TickDispatch, TickFlush, PostTickFlush to tick in World */
 	ENGINE_API void RegisterTickEvents(class UWorld* InWorld);
 	/** Unregister all TickDispatch, TickFlush, PostTickFlush to tick in World */
@@ -1663,13 +1787,16 @@ protected:
 	/** Subclasses may override this to customize channel creation. Called by GetOrCreateChannel if the pool is exhausted and a new channel must be allocated. */
 	ENGINE_API virtual UChannel* InternalCreateChannelByName(const FName& ChName);
 
+	/** Update stats related to networking. */
+	void UpdateNetworkStats();
+
 #if WITH_SERVER_CODE
 	/**
 	* Helper functions for ServerReplicateActors
 	*/
 	int32 ServerReplicateActors_PrepConnections( const float DeltaSeconds );
 	void ServerReplicateActors_BuildConsiderList( TArray<FNetworkObjectInfo*>& OutConsiderList, const float ServerTickTime );
-	int32 ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*> ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors );
+	int32 ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*>& ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors );
 	int32 ServerReplicateActors_ProcessPrioritizedActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, FActorPriority** PriorityActors, const int32 FinalSortedCount, int32& OutUpdated );
 #endif
 
@@ -1783,6 +1910,11 @@ public:
 		TotalOutOfOrderPacketsDuplicate += Count;
 	}
 
+	uint32 GetCachedGlobalNetTravelCount() const
+	{
+		return CachedGlobalNetTravelCount;
+	}
+
 	bool DidHitchLastFrame() const;
 
 	static bool IsDormInitialStartupActor(AActor* Actor);
@@ -1793,11 +1925,24 @@ public:
 	/** Whether or not this driver has an IsReplay() connection, updated in Add/RemoveClientConnection */
 	bool HasReplayConnection() const { return bHasReplayConnection; }
 
+	/**
+	 * Whether or not this NetDriver supports encryption. Does not signify that encryption is actually enabled, nor setup by the PacketHandler.
+	 *
+	 * @return		Whether or not this NetDriver supports encryption.
+	 */
+	ENGINE_API virtual bool DoesSupportEncryption() const
+	{
+		return true;
+	}
+
+	/**
+	 * Whether or not this NetDriver requires encryption. Does signify that encryption is enabled, but does not signify that it's setup properly.
+	 *
+	 * @return		Whether or not encryption is presently required for connections.
+	 */
+	ENGINE_API virtual bool IsEncryptionRequired() const;
+
 protected:
-
-	bool bMaySendProperties;
-
-	bool bSkipServerReplicateActors = false;
 	
 	/** Stream of random numbers to be used by this instance of UNetDriver */
 	FRandomStream UpdateDelayRandomStream;
@@ -1812,9 +1957,9 @@ private:
 	FDelegateHandle PostGarbageCollectHandle;
 	void PostGarbageCollect();
 
-	FActorDestructionInfo* CreateDestructionInfo(UNetDriver* NetDriver, AActor* ThisActor, FActorDestructionInfo *DestructionInfo);
+	FActorDestructionInfo* CreateDestructionInfo(AActor* ThisActor, FActorDestructionInfo *DestructionInfo);
 
-	void CreateReplicatedStaticActorDestructionInfo(UNetDriver* NetDriver, ULevel* Level, const FReplicatedStaticActorDestructionInfo& Info);
+	void CreateReplicatedStaticActorDestructionInfo(ULevel* Level, const FReplicatedStaticActorDestructionInfo& Info);
 
 	void FlushActorDormancyInternal(AActor *Actor);
 
@@ -1825,11 +1970,35 @@ private:
 
 	void UpdateCrashContext();
 
+	void RemoveDestroyedGuidsByLevel(const ULevel* Level, const TArray<FNetworkGUID>& RemovedGUIDs);
+
 	/** Handle to FNetDelegates::OnSyncLoadDetected delegate */
 	FDelegateHandle ReportSyncLoadDelegateHandle;
 
+#if UE_WITH_IRIS
+	void InitIrisSettings(FName NewDriverName);
+	void SetReplicationSystem(UReplicationSystem* ReplicationSystem);
+	void UpdateReplicationViews() const;
+	void SendClientMoveAdjustments();
+#endif
+
+	void InitNetTraceId();
+
 	UPROPERTY(transient)
 	TObjectPtr<UReplicationDriver> ReplicationDriver;
+
+#if UE_WITH_IRIS
+	UReplicationSystem* ReplicationSystem = nullptr;
+
+	/** When set this will skip registering all the network relevant actors when setting the World */
+	bool bSkipBeginReplicationForWorld = false;
+
+	/** True when the NetDriver has been configured to run with the Iris replication system.*/
+	bool bIsUsingIris = false;
+
+	// For FindOrAddNetworkObjectInfo
+	TPimplPtr<FNetworkObjectInfo> DummyNetworkObjectInfo;
+#endif
 
 	/** Stores the list of objects to replicate into the replay stream. This should be a TUniquePtr, but it appears the generated.cpp file needs the full definition of the pointed-to type. */
 	TSharedPtr<FNetworkObjectList> NetworkObjects;
@@ -1850,17 +2019,7 @@ private:
 	FNetConnectionIdHandler ConnectionIdHandler;
 
 	/** Unique id used by NetTrace to identify driver */
-	uint32 NetTraceId = 0;
-
-#if DO_ENABLE_NET_TEST
-	/** Dont load packet settings from config or cmdline when true*/
-	bool bForcedPacketSettings;
-#endif 
-
-	bool bDidHitchLastFrame = false;
-
-	/** cache whether or not we have a replay connection, updated when a connection is added or removed */
-	bool bHasReplayConnection;
+	uint32 NetTraceId;
 
 	/** Stat tracking for the total number of out of order packets lost */
 	int32 TotalOutOfOrderPacketsLost = 0;
@@ -1870,4 +2029,8 @@ private:
 
 	/** Stat tracking for the total number of out of order packets that were duplicates */
 	int32 TotalOutOfOrderPacketsDuplicate = 0;
+
+
+	/** Cached value for UEngine.GlobalNetTravelCount, at the time of NetDriver initialization */
+	uint32 CachedGlobalNetTravelCount = 0;
 };

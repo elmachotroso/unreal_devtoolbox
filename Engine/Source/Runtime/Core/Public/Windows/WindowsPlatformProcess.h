@@ -162,6 +162,9 @@ public:
 	static void WaitForProc( FProcHandle & ProcessHandle );
 	static void CloseProc( FProcHandle & ProcessHandle );
 	static void TerminateProc( FProcHandle & ProcessHandle, bool KillTree = false );
+	static void TerminateProcTreeWithPredicate(
+			FProcHandle& ProcessHandle,
+			TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate);
 	static bool GetProcReturnCode( FProcHandle & ProcHandle, int32* ReturnCode );
 	static bool GetApplicationMemoryUsage(uint32 ProcessId, SIZE_T* OutMemoryUsage);
 	static bool GetPerFrameProcessorUsage(uint32 ProcessId, float& ProcessUsageFraction, float& IdleUsageFraction);
@@ -194,6 +197,13 @@ public:
 	static void SetupGameThread();
 	static void SetupAudioThread();
 	static void TeardownAudioThread();
+	static bool IsFirstInstance();
+
+	/**
+	 * @brief Releases locks that we held for IsFirstInstance check
+	 */
+	static void CeaseBeingFirstInstance();
+
 protected:
 
 	/**

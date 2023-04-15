@@ -11,7 +11,7 @@
 #include "IAssetTools.h"
 #include "EditorUtilitySubsystem.h"
 #include "Kismet/KismetSystemLibrary.h"
-
+#include "Templates/SubclassOf.h"
 
 #define LOCTEXT_NAMESPACE "BlutilityLevelEditorExtensions"
 
@@ -20,7 +20,7 @@ UEditorUtilityBlueprintAsyncActionBase::UEditorUtilityBlueprintAsyncActionBase(c
 {
 }
 
-void UEditorUtilityBlueprintAsyncActionBase::RegisterWithGameInstance(UObject* WorldContextObject)
+void UEditorUtilityBlueprintAsyncActionBase::RegisterWithGameInstance(const UObject* WorldContextObject)
 {
 	UEditorUtilitySubsystem* EditorUtilitySubsystem = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
 	EditorUtilitySubsystem->RegisterReferencedObject(this);
@@ -234,7 +234,7 @@ void UEditorUtilityLibrary::GetSelectionBounds(FVector& Origin, FVector& BoxExte
 
 	Origin = Extents.Origin;
 	BoxExtent = Extents.BoxExtent;
-	SphereRadius = Extents.SphereRadius;
+	SphereRadius = (float)Extents.SphereRadius; // TODO: LWC: should be double, but need to deprecate function and replace for old C++ references to continue working.
 }
 
 TArray<UObject*> UEditorUtilityLibrary::GetSelectedAssets()
@@ -263,9 +263,12 @@ TArray<UClass*> UEditorUtilityLibrary::GetSelectedBlueprintClasses()
 	TArray<UClass*> Result;
 	for (FAssetData& AssetData : SelectedAssets)
 	{
-		if (UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset()))
+		if (TSubclassOf<UBlueprint> AssetClass = AssetData.GetClass())
 		{
-			Result.Add(Blueprint->GeneratedClass);
+			if (UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset()))
+			{
+				Result.Add(Blueprint->GeneratedClass);
+			}
 		}
 	}
 
@@ -314,6 +317,20 @@ bool UEditorUtilityLibrary::GetCurrentContentBrowserPath(FString& OutPath)
 	{
 		return false;
 	}
+}
+
+TArray<FString> UEditorUtilityLibrary::GetSelectedFolderPaths()
+{
+	IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+	TArray<FString> Paths;
+	ContentBrowser.GetSelectedFolders(Paths);
+	return Paths;
+}
+
+void UEditorUtilityLibrary::SyncBrowserToFolders(const TArray<FString>& FolderList)
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	ContentBrowserModule.Get().SyncBrowserToFolders( FolderList, false, true );
 }
 
 #endif

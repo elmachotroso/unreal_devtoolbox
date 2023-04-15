@@ -11,12 +11,13 @@
 #include "ScopedTransaction.h"
 #include "EdGraphUtilities.h"
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "NiagaraClipboard.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraNodeReroute.h"
 #include "NiagaraScriptVariable.h"
 
+#include "Misc/Base64.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Widgets/SNiagaraParameterName.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -37,7 +38,7 @@ FNiagaraScriptGraphViewModel::FNiagaraScriptGraphViewModel(TAttribute<FText> InD
 		GEditor->RegisterForUndo(this);
 	}
 
-	ErrorColor = FEditorStyle::GetColor("ErrorReporting.BackgroundColor");
+	ErrorColor = FAppStyle::GetColor("ErrorReporting.BackgroundColor");
 }
 
 FNiagaraScriptGraphViewModel::~FNiagaraScriptGraphViewModel()
@@ -295,9 +296,16 @@ void FNiagaraScriptGraphViewModel::CopySelectedNodes()
 	for(FNiagaraVariable& Var : Variables)
 	{
 		UNiagaraScriptVariable* ScriptVariable = GetGraph()->GetScriptVariable(Var);
-		ensureAlwaysMsgf(ScriptVariable != nullptr, TEXT("Script variable should already exist when we copy nodes referencing them!"));
-		UNiagaraScriptVariable* CopiedVariable = Cast<UNiagaraScriptVariable>(StaticDuplicateObject(ScriptVariable, ClipboardContent));
-		ClipboardContent->ScriptVariables.AddUnique({*CopiedVariable});
+
+		if(ScriptVariable)
+		{
+			UNiagaraScriptVariable* CopiedVariable = Cast<UNiagaraScriptVariable>(StaticDuplicateObject(ScriptVariable, ClipboardContent));
+			ClipboardContent->ScriptVariables.AddUnique({*CopiedVariable});
+		}
+		else
+		{
+			UE_LOG(LogNiagaraEditor, Log, TEXT("Variable %s was encountered as parameter during a copy nodes operation, but the corresponding script variable could not be found."), *(Var.GetName().ToString()));
+		}
 	}
 	
 	FNiagaraEditorModule::Get().GetClipboard().SetClipboardContent(ClipboardContent);
@@ -385,7 +393,7 @@ void FNiagaraScriptGraphViewModel::PasteNodes()
 			continue;
 		}
 		
-		// we make sure here that we only copy over script variables if they didn't exist before. We inform the user so he knows.
+		// we make sure here that we only copy over script variables if they didn't exist before. We inform the user so they know.
 		if(UNiagaraScriptVariable* ExistingScriptVariable = NiagaraGraph->GetScriptVariable(ScriptVariable->Variable))
 		{
 			// if we have the variable already exists and change IDs are the same, we assume we are pasting the same content multiple times.

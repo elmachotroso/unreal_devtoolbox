@@ -5,6 +5,7 @@
 #include "NiagaraCollision.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraShared.h"
+#include "ShaderParameterMacros.h"
 #include "VectorVM.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceCollisionQuery.generated.h"
@@ -25,10 +26,12 @@ UCLASS(EditInlineNew, Category = "Collision", meta = (DisplayName = "Collision Q
 class NIAGARA_API UNiagaraDataInterfaceCollisionQuery : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(FVector3f,	SystemLWCTile)
+	END_SHADER_PARAMETER_STRUCT()
+
 public:
-
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	//UObject Interface
 	virtual void PostInitProperties() override;
 	//UObject Interface End
@@ -45,7 +48,7 @@ public:
 	
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
-	virtual void GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const override;
+	virtual void GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const override;
 
 	// VM functions
 	void PerformQuerySyncCPU(FVectorVMExternalFunctionContext& Context);
@@ -62,6 +65,9 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
 #if WITH_EDITOR	
 	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors) override;

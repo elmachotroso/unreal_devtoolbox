@@ -1,17 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AttenuationSettingsCustomizations.h"
-#include "Widgets/Text/STextBlock.h"
-#include "PropertyRestriction.h"
-#include "Engine/Attenuation.h"
-#include "Audio.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailLayoutBuilder.h"
+
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Engine/Attenuation.h"
+#include "Fonts/SlateFontInfo.h"
+#include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h"
-#include "AudioDevice.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "PropertyHandle.h"
+#include "PropertyRestriction.h"
 #include "Sound/AudioSettings.h"
+#include "Sound/SoundAttenuation.h"
+#include "Templates/ChooseClass.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "AttenuationSettings"
 
@@ -117,15 +133,10 @@ TSharedRef<IPropertyTypeCustomization> FForceFeedbackAttenuationSettingsCustomiz
 
 void FBaseAttenuationSettingsCustomization::CustomizeHeader(TSharedRef<class IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
-	// We'll set up reset to default ourselves
-	const bool bDisplayResetToDefault = false;
-	const FText DisplayNameOverride = FText::GetEmpty();
-	const FText DisplayToolTipOverride = FText::GetEmpty();
-
 	HeaderRow
 		.NameContent()
 		[
-			StructPropertyHandle->CreatePropertyNameWidget(DisplayNameOverride, DisplayToolTipOverride, bDisplayResetToDefault)
+			StructPropertyHandle->CreatePropertyNameWidget()
 		];
 }
 
@@ -429,6 +440,7 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 	bIsPriorityAttenuationEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnablePriorityAttenuation)).ToSharedRef();
 	bIsSubmixSendAttenuationEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSubmixSends)).ToSharedRef();
 	bIsSourceDataOverrideEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSourceDataOverride)).ToSharedRef();
+	bIsSendToAudioLinkEnabledHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSendToAudioLink)).ToSharedRef();
 	ReverbSendMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, ReverbSendMethod)).ToSharedRef();
 	PriorityAttenuationMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, PriorityAttenuationMethod)).ToSharedRef();
 	AbsorptionMethodHandle = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, AbsorptionMethod)).ToSharedRef();
@@ -670,6 +682,14 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 		.Visibility(IsAttenuationOverriddenVisibleAttribute())
 		.EditCondition(IsAttenuationOverriddenAttribute(), nullptr);
 
+	LayoutBuilder.AddPropertyToCategory(PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, bEnableSendToAudioLink)))
+		.Visibility(IsAttenuationOverriddenVisibleAttribute())
+		.EditCondition(IsAttenuationOverriddenAttribute(), nullptr);
+
+	LayoutBuilder.AddPropertyToCategory(PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, AudioLinkSettingsOverride)))
+		.Visibility(IsAttenuationOverriddenVisibleAttribute())
+		.EditCondition(IsAttenuationOverriddenAttribute(), nullptr);
+
 	if (bIsAudioMixerEnabled)
 	{
 		TSharedPtr<IPropertyHandle> PluginProperty = PropertyHandles.FindChecked(GET_MEMBER_NAME_CHECKED(FSoundAttenuationSettings, PluginSettings));
@@ -694,9 +714,10 @@ void FSoundAttenuationSettingsCustomization::CustomizeChildren(TSharedRef<IPrope
 	LayoutBuilder.EditCategory("AttenuationAirAbsorption", LOCTEXT("AttenuationAirAbsorption", "Attenuation (Air Absorption)"));
 	LayoutBuilder.EditCategory("AttenuationPluginSettings", LOCTEXT("AttenuationPluginSettings", "Attenuation (Plugin Settings)"));
 	LayoutBuilder.EditCategory("AttenuationSourceDataOverride", LOCTEXT("AttenuationSourceDataOverride", "Attenuation (Source Data Override)"));
+	LayoutBuilder.EditCategory("AttenuationAudioLink", LOCTEXT("AttenuationAudioLink", "Attenuation (AudioLink)"));
 	LayoutBuilder.SortCategories(AttenuationSettingsUtils::SortCategories);
 
-	if (PropertyHandles.Num() != 66)
+	if (PropertyHandles.Num() != 68)
 	{
 		ensureMsgf(false, TEXT("Unexpected property handle(s) customizing FSoundAttenuationSettings. %d handles found"), PropertyHandles.Num());
 	}

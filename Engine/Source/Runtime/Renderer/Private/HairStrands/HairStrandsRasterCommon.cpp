@@ -207,8 +207,8 @@ bool FHairRasterMeshProcessor::TryAddMeshBatch(
 		&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain()))
 	{
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = RasterPassType == EHairStrandsRasterPassType::FrontDepth ? ComputeMeshCullMode(MeshBatch, Material, OverrideSettings) : CM_None;
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+		const ERasterizerCullMode MeshCullMode = RasterPassType == EHairStrandsRasterPassType::FrontDepth ? ComputeMeshCullMode(Material, OverrideSettings) : CM_None;
 
 		if (RasterPassType == EHairStrandsRasterPassType::FrontDepth)
 			return Process<FDeepShadowDepthMeshVS, FDeepShadowDepthMeshPS>(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
@@ -286,7 +286,7 @@ FHairRasterMeshProcessor::FHairRasterMeshProcessor(
 	const FMeshPassProcessorRenderState& InPassDrawRenderState,
 	FDynamicPassMeshDrawListContext* InDrawListContext,
 	const EHairStrandsRasterPassType PType)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::Num, Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 	, RasterPassType(PType)
 	, PassDrawRenderState(InPassDrawRenderState)
 {
@@ -355,10 +355,16 @@ void AddHairStrandsRasterPass(
 
 		for (const FHairStrandsMacroGroupData::PrimitiveInfo& PrimitiveInfo : PrimitiveSceneInfos)
 		{
-			const bool bCullingEnable = PrimitiveInfo.IsCullingEnable();
-			const FMeshBatch& MeshBatch = *PrimitiveInfo.Mesh;
-			const uint64 BatchElementMask = ~0ull;
-			HairRasterMeshProcessor.AddMeshBatch(MeshBatch, BatchElementMask, PrimitiveInfo.PrimitiveSceneProxy, -1 , bCullingEnable);
+			// Ensure that we submit only primitive with valid MeshBatch data. Non-visible groom casting 
+			// deep shadow map, will be skipped. This will be fixed once we remove mesh processor to replace 
+			// it with a global shader
+			if (PrimitiveInfo.Mesh != nullptr)
+			{
+				const bool bCullingEnable = PrimitiveInfo.IsCullingEnable();
+				const FMeshBatch& MeshBatch = *PrimitiveInfo.Mesh;
+				const uint64 BatchElementMask = ~0ull;
+				HairRasterMeshProcessor.AddMeshBatch(MeshBatch, BatchElementMask, PrimitiveInfo.PrimitiveSceneProxy, -1 , bCullingEnable);
+			}
 		}
 	});
 }

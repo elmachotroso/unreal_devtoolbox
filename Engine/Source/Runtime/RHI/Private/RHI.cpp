@@ -375,6 +375,7 @@ uint32 GetTypeHash(const FRasterizerStateInitializerRHI& Initializer)
 	Hash = HashCombine(Hash, GetTypeHash(Initializer.CullMode));
 	Hash = HashCombine(Hash, GetTypeHash(Initializer.DepthBias));
 	Hash = HashCombine(Hash, GetTypeHash(Initializer.SlopeScaleDepthBias));
+	Hash = HashCombine(Hash, GetTypeHash(Initializer.DepthClipMode));
 	Hash = HashCombine(Hash, GetTypeHash(Initializer.bAllowMSAA));
 	Hash = HashCombine(Hash, GetTypeHash(Initializer.bEnableLineAA));
 	return Hash;
@@ -386,7 +387,8 @@ bool operator== (const FRasterizerStateInitializerRHI& A, const FRasterizerState
 		A.FillMode == B.FillMode && 
 		A.CullMode == B.CullMode && 
 		A.DepthBias == B.DepthBias && 
-		A.SlopeScaleDepthBias == B.SlopeScaleDepthBias && 
+		A.SlopeScaleDepthBias == B.SlopeScaleDepthBias &&
+		A.DepthClipMode == B.DepthClipMode &&
 		A.bAllowMSAA == B.bAllowMSAA && 
 		A.bEnableLineAA == B.bEnableLineAA;
 	return bSame;
@@ -743,7 +745,7 @@ static ERHIResourceType RHIResourceTypeFromString(const FString& InString)
 	return RRT_None;
 }
 
-static const TCHAR* StringFromRHIResourceType(ERHIResourceType ResourceType)
+const TCHAR* StringFromRHIResourceType(ERHIResourceType ResourceType)
 {
 	for (const auto& TypeName : GRHIResourceTypeNames)
 	{
@@ -827,62 +829,13 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceCountsCmd
 	BufferedOutput.RedirectTo(OutputDevice);
 }));
 
-static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd(
-	TEXT("rhi.DumpResourceMemory"),
-	TEXT("Dumps RHI resource memory stats to the log\n")
-	TEXT("Usage: rhi.DumpResourceMemory [<Number To Show>] [all] [summary] [Name=<Filter Text>] [Type=<RHI Resource Type>] [Transient=<no, yes, or all> [csv]"),
-	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic([](const TArray<FString>& Args, UWorld*, FOutputDevice& OutputDevice)
-{
-	FString NameFilter;
-	ERHIResourceType TypeFilter = RRT_None;
-	EBooleanFilter TransientFilter = EBooleanFilter::No;
-	int32 NumberOfResourcesToShow = 50;
-	bool bUseCSVOutput = false;
-	bool bSummaryOutput = false;
-
-	for (const FString& Argument : Args)
+void RHIDumpResourceMemory(const FString& NameFilter, ERHIResourceType TypeFilter, EBooleanFilter TransientFilter, int32 NumberOfResourcesToShow, bool bUseCSVOutput, bool bSummaryOutput, bool bOutputToCSVFile, FBufferedOutputDevice& BufferedOutput)
+{	
+	FArchive* CSVFile{ nullptr };
+	if (bOutputToCSVFile)
 	{
-		if (Argument.Equals(TEXT("all"), ESearchCase::IgnoreCase))
-		{
-			NumberOfResourcesToShow = -1;
-		}
-		else if (Argument.Equals(TEXT("-csv"), ESearchCase::IgnoreCase))
-		{
-			bUseCSVOutput = true;
-		}
-		else if (Argument.StartsWith(TEXT("Name="), ESearchCase::IgnoreCase))
-		{
-			NameFilter = Argument.RightChop(5);
-		}
-		else if (Argument.StartsWith(TEXT("Type="), ESearchCase::IgnoreCase))
-		{
-			TypeFilter = RHIResourceTypeFromString(Argument.RightChop(5));
-		}
-		else if (Argument.StartsWith(TEXT("Transient="), ESearchCase::IgnoreCase))
-		{
-			TransientFilter = ParseBooleanFilter(Argument.RightChop(10));
-		}
-		else if (FCString::IsNumeric(*Argument))
-		{
-			LexFromString(NumberOfResourcesToShow, *Argument);
-		}
-		else if (Argument.Equals(TEXT("summary"), ESearchCase::IgnoreCase))
-		{
-			// Respects name, type and transient filters but only reports total sizes.
-			// Does not report a list of individual resources.
-			bSummaryOutput = true;
-			NumberOfResourcesToShow = -1;
-		}
-		else
-		{
-			NameFilter = Argument;
-		}
-	}
-
-	// Summary output and csv are mutually exclusive.  So if both are on, summary takes precedence
-	if (bSummaryOutput && bUseCSVOutput)
-	{
-		bUseCSVOutput = false;
+		const FString Filename = FString::Printf(TEXT("%srhiDumpResourceMemory-%s.csv"), *FPaths::ProfilingDir(), *FDateTime::Now().ToString());
+		CSVFile = IFileManager::Get().CreateFileWriter(*Filename, FILEWRITE_AllowRead);
 	}
 
 	TCHAR ResourceNameBuffer[FName::StringBufferSize];
@@ -946,6 +899,8 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 		{
 			if (Resource && Resource->GetResourceInfo(ResourceInfo))
 			{
+				ResourceInfo.bValid = Resource->IsValid();
+
 				if (ShouldIncludeResource(Resource, ResourceInfo))
 				{
 					Resources.Emplace(FLocalResourceEntry{ Resource, ResourceInfo });
@@ -975,12 +930,16 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 		return EntryA.ResourceInfo.VRamAllocation.AllocationSize > EntryB.ResourceInfo.VRamAllocation.AllocationSize;
 	});
 
-	FBufferedOutputDevice BufferedOutput;
 	FName CategoryName(TEXT("RHIResources"));
 
-	if (bUseCSVOutput)
+	if (bOutputToCSVFile)
 	{
-		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\""));
+		const TCHAR* Header = TEXT("Name,Type,Size,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\"\n");
+		CSVFile->Serialize(TCHAR_TO_ANSI(Header), FPlatformString::Strlen(Header));
+	}
+	else if (bUseCSVOutput)
+	{
+		BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("Name,Type,Size,MarkedForDelete,Transient,Streaming,RenderTarget,UAV,\"Raytracing Acceleration Structure\""));
 	}
 	else
 	{
@@ -1007,6 +966,7 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 			const TCHAR* ResourceType = StringFromRHIResourceType(ResourceInfo.Type);
 			const int64 SizeInBytes = ResourceInfo.VRamAllocation.AllocationSize;
 
+			bool bMarkedForDelete = !ResourceInfo.bValid;
 			bool bTransient = ResourceInfo.IsTransient;
 			bool bStreaming = false;
 			bool bRT = false;
@@ -1014,7 +974,8 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 			bool bUAV = false;
 			bool bRTAS = false;
 
-			bool bIsTexture = ResourceInfo.Type == RRT_Texture2D ||
+			bool bIsTexture = ResourceInfo.Type == RRT_Texture ||
+				ResourceInfo.Type == RRT_Texture2D ||
 				ResourceInfo.Type == RRT_Texture2DArray ||
 				ResourceInfo.Type == RRT_Texture3D ||
 				ResourceInfo.Type == RRT_TextureCube;
@@ -1035,12 +996,28 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 
 			if (bSummaryOutput == false)
 			{
-				if (bUseCSVOutput)
-				{
-					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s"),
+				if (bOutputToCSVFile)
+				{					
+					const FString Row = FString::Printf(TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s\n"),
 						ResourceNameBuffer,
 						ResourceType,
 						SizeInBytes / double(1 << 20),
+						bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
+						bTransient ? TEXT("Yes") : TEXT("No"),
+						bStreaming ? TEXT("Yes") : TEXT("No"),
+						(bRT || bDS) ? TEXT("Yes") : TEXT("No"),
+						bUAV ? TEXT("Yes") : TEXT("No"),
+						bRTAS ? TEXT("Yes") : TEXT("No"));
+
+					CSVFile->Serialize(TCHAR_TO_ANSI(*Row), Row.Len());
+				}
+				else if (bUseCSVOutput)
+				{
+					BufferedOutput.CategorizedLogf(CategoryName, ELogVerbosity::Log, TEXT("%s,%s,%.9f,%s,%s,%s,%s,%s,%s"),
+						ResourceNameBuffer,
+						ResourceType,
+						SizeInBytes / double(1 << 20),
+						bMarkedForDelete ? TEXT("Yes") : TEXT("No"),
 						bTransient ? TEXT("Yes") : TEXT("No"),
 						bStreaming ? TEXT("Yes") : TEXT("No"),
 						(bRT || bDS) ? TEXT("Yes") : TEXT("No"),
@@ -1095,7 +1072,12 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 		}
 	}
 
-	if (!bUseCSVOutput)
+	if (bOutputToCSVFile)
+	{
+		delete CSVFile;
+		CSVFile = nullptr;
+	}
+	else if (!bUseCSVOutput)
 	{
 		const double TotalNonTransientSizeF = TotalTrackedResourceSize / double(1 << 20);
 		const double TotalTransientSizeF = TotalTrackedTransientResourceSize / double(1 << 20);
@@ -1142,9 +1124,83 @@ static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd
 			}
 		}
 	}
+}
 
+static FAutoConsoleCommandWithWorldArgsAndOutputDevice GDumpRHIResourceMemoryCmd(
+	TEXT("rhi.DumpResourceMemory"),
+	TEXT("Dumps RHI resource memory stats to the log\n")
+	TEXT("Usage: rhi.DumpResourceMemory [<Number To Show>] [all] [summary] [Name=<Filter Text>] [Type=<RHI Resource Type>] [Transient=<no, yes, or all> [csv]"),
+	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic([](const TArray<FString>& Args, UWorld*, FOutputDevice& OutputDevice)
+{
+	FString NameFilter;
+	ERHIResourceType TypeFilter = RRT_None;
+	EBooleanFilter TransientFilter = EBooleanFilter::No;
+	int32 NumberOfResourcesToShow = 50;
+	bool bUseCSVOutput = false;
+	bool bSummaryOutput = false;
+	bool bOutputToCSVFile = false;
+
+	for (const FString& Argument : Args)
+	{
+		if (Argument.Equals(TEXT("all"), ESearchCase::IgnoreCase))
+		{
+			NumberOfResourcesToShow = -1;
+		}
+		else if (Argument.Equals(TEXT("-csv"), ESearchCase::IgnoreCase))
+		{
+			bUseCSVOutput = true;
+		}
+		else if (Argument.Equals(TEXT("-csvfile"), ESearchCase::IgnoreCase))
+		{
+			bOutputToCSVFile = true;
+		}
+		else if (Argument.StartsWith(TEXT("Name="), ESearchCase::IgnoreCase))
+		{
+			NameFilter = Argument.RightChop(5);
+		}
+		else if (Argument.StartsWith(TEXT("Type="), ESearchCase::IgnoreCase))
+		{
+			TypeFilter = RHIResourceTypeFromString(Argument.RightChop(5));
+		}
+		else if (Argument.StartsWith(TEXT("Transient="), ESearchCase::IgnoreCase))
+		{
+			TransientFilter = ParseBooleanFilter(Argument.RightChop(10));
+		}
+		else if (FCString::IsNumeric(*Argument))
+		{
+			LexFromString(NumberOfResourcesToShow, *Argument);
+		}
+		else if (Argument.Equals(TEXT("summary"), ESearchCase::IgnoreCase))
+		{
+			// Respects name, type and transient filters but only reports total sizes.
+			// Does not report a list of individual resources.
+			bSummaryOutput = true;
+			NumberOfResourcesToShow = -1;
+		}
+		else
+		{
+			NameFilter = Argument;
+		}
+	}
+
+	FBufferedOutputDevice BufferedOutput;
+	RHIDumpResourceMemory(NameFilter, TypeFilter, TransientFilter, NumberOfResourcesToShow, bUseCSVOutput, bSummaryOutput, bOutputToCSVFile, BufferedOutput);
 	BufferedOutput.RedirectTo(OutputDevice);
 }));
+
+void RHIDumpResourceMemoryToCSV()
+{
+	FString NameFilter;
+	ERHIResourceType TypeFilter = RRT_None;
+	EBooleanFilter TransientFilter = EBooleanFilter::No;
+	int32 NumberOfResourcesToShow = -1;
+	bool bUseCSVOutput = false;
+	bool bSummaryOutput = false;
+	bool bOutputToCSVFile = true;
+
+	FBufferedOutputDevice BufferedOutput;
+	RHIDumpResourceMemory(NameFilter, TypeFilter, TransientFilter, NumberOfResourcesToShow, bUseCSVOutput, bSummaryOutput, bOutputToCSVFile, BufferedOutput);
+}
 
 #endif // RHI_ENABLE_RESOURCE_INFO
 
@@ -1160,15 +1216,6 @@ int32 FRHIResource::FlushPendingDeletes(FRHICommandListImmediate& RHICmdList)
 	SCOPE_CYCLE_COUNTER(STAT_DeleteResources);
 
 	check(IsInRenderingThread());
-
-#if ENABLE_RHI_VALIDATION
-	if (GDynamicRHI)
-	{
-		// Submit all remaining work to the GPU. This also ensures that validation RHI barrier tracking
-		// operations have been flushed before we delete any resources they could be referring to.
-		RHICmdList.SubmitCommandsHint();
-	}
-#endif
 
 	TArray<FRHIResource*> DeletedResources;
 	TClosableMpscQueue<FRHIResource*>* PendingDeletesPtr = PendingDeletes.exchange(new TClosableMpscQueue<FRHIResource*>());
@@ -1298,6 +1345,43 @@ static FAutoConsoleVariableRef CVarEnableAttachmentVariableRateShading(
 	TEXT("Toggle to enable image-based Variable Rate Shading."),
 	ECVF_RenderThreadSafe);
 
+
+int32 GRHIBindlessResourceConfiguration = 0;
+static FAutoConsoleVariableRef CVarEnableBindlessResources(
+	TEXT("rhi.Bindless.Resources"),
+	GRHIBindlessResourceConfiguration,
+	TEXT("Set to 1 to enable for all shader types. Set to 2 to restrict to Raytracing shaders."),
+	ECVF_ReadOnly
+);
+
+int32 GRHIBindlessSamplerConfiguration = 0;
+static FAutoConsoleVariableRef CVarEnableBindlessSamplers(
+	TEXT("rhi.Bindless.Samplers"),
+	GRHIBindlessSamplerConfiguration,
+	TEXT("Set to 1 to enable for all shader types. Set to 2 to restrict to Raytracing shaders."),
+	ECVF_ReadOnly
+);
+
+static ERHIBindlessConfiguration DetermineBindlessConfiguration(EShaderPlatform Platform, int32 BindlessConfigSetting)
+{
+	if (!RHISupportsBindless(Platform) || BindlessConfigSetting == 0)
+	{
+		return ERHIBindlessConfiguration::Disabled;
+	}
+
+	return BindlessConfigSetting == 2 ? ERHIBindlessConfiguration::RayTracingShaders : ERHIBindlessConfiguration::AllShaders;
+}
+
+ERHIBindlessConfiguration RHIGetBindlessResourcesConfiguration(EShaderPlatform Platform)
+{
+	return DetermineBindlessConfiguration(Platform, GRHIBindlessResourceConfiguration);
+}
+
+ERHIBindlessConfiguration RHIGetBindlessSamplersConfiguration(EShaderPlatform Platform)
+{
+	return DetermineBindlessConfiguration(Platform, GRHIBindlessSamplerConfiguration);
+}
+
 namespace RHIConfig
 {
 	bool ShouldSaveScreenshotAfterProfilingGPU()
@@ -1323,7 +1407,6 @@ namespace RHIConfig
 bool GIsRHIInitialized = false;
 int32 GRHIPersistentThreadGroupCount = 0;
 int32 GMaxTextureMipCount = MAX_TEXTURE_MIP_COUNT;
-bool GRHISupportsCopyToTextureMultipleMips = false;
 bool GSupportsQuadBufferStereo = false;
 FString GRHIAdapterName;
 FString GRHIAdapterInternalDriverVersion;
@@ -1379,10 +1462,12 @@ TRHIGlobal<int32> GMaxShadowDepthBufferSizeX(2048);
 TRHIGlobal<int32> GMaxShadowDepthBufferSizeY(2048);
 TRHIGlobal<int32> GMaxTextureDimensions(2048);
 TRHIGlobal<int64> GMaxBufferDimensions(1<<27);
+TRHIGlobal<int64> GRHIMaxConstantBufferByteSize(1<<27);
 TRHIGlobal<int64> GMaxComputeSharedMemory(1<<15);
 TRHIGlobal<int32> GMaxVolumeTextureDimensions(2048);
 TRHIGlobal<int32> GMaxCubeTextureDimensions(2048);
 TRHIGlobal<int32> GMaxWorkGroupInvocations(1024);
+bool GRHISupportsRawViewsForAnyBuffer = false;
 bool GRHISupportsRWTextureBuffers = true;
 bool GRHISupportsVRS = false;
 bool GRHISupportsLateVRSUpdate = false;
@@ -1422,9 +1507,9 @@ bool GRHIRequiresRenderTargetForPixelShaderUAVs = false;
 bool GRHISupportsUAVFormatAliasing = false;
 bool GRHISupportsDirectGPUMemoryLock = false;
 bool GRHISupportsMultithreadedShaderCreation = true;
+bool GRHISupportsMultithreadedResources = false;
 
 bool GRHISupportsMSAADepthSampleAccess = false;
-bool GRHISupportsResolveCubemapFaces = false;
 
 bool GRHISupportsBackBufferWithCustomDepthStencil = true;
 
@@ -1434,6 +1519,7 @@ bool GRHISupportsHDROutput = false;
 bool GRHIVariableRateShadingEnabled = true;
 bool GRHIAttachmentVariableRateShadingEnabled = true;
 bool GRHISupportsPipelineVariableRateShading = false;
+bool GRHISupportsLargerVariableRateShadingSizes = false;
 bool GRHISupportsAttachmentVariableRateShading = false;
 bool GRHISupportsComplexVariableRateShadingCombinerOps = false;
 bool GRHISupportsVariableRateShadingAttachmentArrayTextures = false;
@@ -1471,7 +1557,13 @@ bool GRHISupportsShaderTimestamp = false;
 
 bool GRHISupportsEfficientUploadOnResourceCreation = false;
 
+bool GRHISupportsAsyncPipelinePrecompile = true;
+
 bool GRHISupportsMapWriteNoOverwrite = false;
+
+bool GRHISupportsSeparateDepthStencilCopyAccess = true;
+
+bool GRHISupportsBindless = false;
 
 FVertexElementTypeSupportInfo GVertexElementTypeSupport;
 
@@ -1489,7 +1581,7 @@ RHI_API EShaderPlatform GShaderPlatformForFeatureLevel[ERHIFeatureLevel::Num] = 
 // GCurrentNumDrawCallsRHIPtr points to the drawcall counter to increment
 RHI_API int32 GCurrentNumDrawCallsRHI[MAX_NUM_GPUS] = {};
 RHI_API int32 GNumDrawCallsRHI[MAX_NUM_GPUS] = {};
-RHI_API int32(*GCurrentNumDrawCallsRHIPtr)[MAX_NUM_GPUS] = &GCurrentNumDrawCallsRHI;
+thread_local FRHIDrawCallsStatPtr GCurrentNumDrawCallsRHIPtr = &GCurrentNumDrawCallsRHI;
 RHI_API int32 GCurrentNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
 RHI_API int32 GNumPrimitivesDrawnRHI[MAX_NUM_GPUS] = {};
 
@@ -1499,8 +1591,8 @@ RHI_API uint64 GRHITransitionPrivateData_AlignInBytes = 0;
 // By default, read only states and UAV states are allowed to participate in state merging.
 ERHIAccess GRHIMergeableAccessMask = ERHIAccess::ReadOnlyMask | ERHIAccess::UAVMask;
 
-// By default, no multi-pipe states are allowed. Each platform must opt-in.
-ERHIAccess GRHIMultiPipelineMergeableAccessMask = ERHIAccess::Unknown;
+// By default, only exclusively read only accesses are allowed.
+ERHIAccess GRHIMultiPipelineMergeableAccessMask = ERHIAccess::ReadOnlyExclusiveMask;
 
 /** Called once per frame only from within an RHI. */
 void RHIPrivateBeginFrame()
@@ -1674,7 +1766,6 @@ RHI_API void GetShadingPathName(ERHIShadingPath::Type InShadingPath, FName& OutN
 }
 
 static FName NAME_PLATFORM_WINDOWS(TEXT("Windows"));
-static FName NAME_PLATFORM_XBOXONE(TEXT("XboxOne"));
 static FName NAME_PLATFORM_ANDROID(TEXT("Android"));
 static FName NAME_PLATFORM_IOS(TEXT("IOS"));
 static FName NAME_PLATFORM_MAC(TEXT("Mac"));
@@ -1725,7 +1816,7 @@ FName ShaderPlatformToPlatformName(EShaderPlatform Platform)
 
 FName LegacyShaderPlatformToShaderFormat(EShaderPlatform Platform)
 {
-	return ShaderPlatformToShaderFormatName(Platform);
+	return  FDataDrivenShaderPlatformInfo::GetShaderFormat(Platform);
 }
 
 EShaderPlatform ShaderFormatToLegacyShaderPlatform(FName ShaderFormat)
@@ -1913,14 +2004,6 @@ void FRHIRenderPassInfo::ConvertToRenderTargetsInfo(FRHISetRenderTargetsInfo& Ou
 	OutRTInfo.MultiViewCount = MultiViewCount;
 }
 
-void FRHIRenderPassInfo::OnVerifyNumUAVsFailed(int32 InNumUAVs)
-{
-	bTooManyUAVs = true;
-	UE_LOG(LogRHI, Warning, TEXT("NumUAVs is %d which is greater the max %d. Trailing UAVs will be dropped"), InNumUAVs, MaxSimultaneousUAVs);
-	// Trigger an ensure to get callstack in dev builds
-	ensure(InNumUAVs <= MaxSimultaneousUAVs);
-}
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 void FRHIRenderPassInfo::Validate() const
 {
@@ -2022,7 +2105,7 @@ void FRHIRenderPassInfo::Validate() const
 }
 #endif
 
-#define ValidateTextureDesc(expr, format, ...) \
+#define ValidateResourceDesc(expr, format, ...) \
 	if (bFatal) \
 	{ \
 		checkf(expr, format, ##__VA_ARGS__); \
@@ -2033,13 +2116,13 @@ void FRHIRenderPassInfo::Validate() const
 	} \
 
 // static
-bool FRHITextureCreateInfo::Validate(const FRHITextureCreateInfo& Desc, const TCHAR* Name, bool bFatal)
+bool FRHITextureDesc::Validate(const FRHITextureCreateInfo& Desc, const TCHAR* Name, bool bFatal)
 {
 	// Validate texture's pixel format.
 	{
-		ValidateTextureDesc(Desc.Format != PF_Unknown, TEXT("Illegal to create texture %s with an invalid pixel format."), Name);
-		ValidateTextureDesc(Desc.Format < PF_MAX, TEXT("Illegal to create texture %s with an invalid pixel format."), Name);
-		ValidateTextureDesc(GPixelFormats[Desc.Format].Supported,
+		ValidateResourceDesc(Desc.Format != PF_Unknown, TEXT("Illegal to create texture %s with an invalid pixel format."), Name);
+		ValidateResourceDesc(Desc.Format < PF_MAX, TEXT("Illegal to create texture %s with an invalid pixel format."), Name);
+		ValidateResourceDesc(GPixelFormats[Desc.Format].Supported,
 			TEXT("Failed to create texture %s with pixel format %s because it is not supported."),
 			Name,
 			GPixelFormats[Desc.Format].Name);
@@ -2049,60 +2132,165 @@ bool FRHITextureCreateInfo::Validate(const FRHITextureCreateInfo& Desc, const TC
 	{
 		int32 MaxDimension = (Desc.Dimension == ETextureDimension::TextureCube || Desc.Dimension == ETextureDimension::TextureCubeArray) ? GMaxCubeTextureDimensions : GMaxTextureDimensions;
 
-		ValidateTextureDesc(Desc.Extent.X > 0, TEXT("Texture %s's Extent.X=%d is invalid."), Name, Desc.Extent.X);
-		ValidateTextureDesc(Desc.Extent.X <= MaxDimension, TEXT("Texture %s's Extent.X=%d is too large."), Name, Desc.Extent.X);
+		ValidateResourceDesc(Desc.Extent.X > 0, TEXT("Texture %s's Extent.X=%d is invalid."), Name, Desc.Extent.X);
+		ValidateResourceDesc(Desc.Extent.X <= MaxDimension, TEXT("Texture %s's Extent.X=%d is too large."), Name, Desc.Extent.X);
 
-		ValidateTextureDesc(Desc.Extent.Y > 0, TEXT("Texture %s's Extent.Y=%d is invalid."), Name, Desc.Extent.Y);
-		ValidateTextureDesc(Desc.Extent.Y <= MaxDimension, TEXT("Texture %s's Extent.Y=%d is too large."), Name, Desc.Extent.Y);
+		ValidateResourceDesc(Desc.Extent.Y > 0, TEXT("Texture %s's Extent.Y=%d is invalid."), Name, Desc.Extent.Y);
+		ValidateResourceDesc(Desc.Extent.Y <= MaxDimension, TEXT("Texture %s's Extent.Y=%d is too large."), Name, Desc.Extent.Y);
 	}
 
 	// Validate texture's depth
 	if (Desc.Dimension == ETextureDimension::Texture3D)
 	{
-		ValidateTextureDesc(Desc.Depth > 0, TEXT("Texture %s's Depth=%d is invalid."), Name, int32(Desc.Depth));
-		ValidateTextureDesc(Desc.Depth <= GMaxTextureDimensions, TEXT("Texture %s's Extent.Depth=%d is too large."), Name, Desc.Depth);
+		ValidateResourceDesc(Desc.Depth > 0, TEXT("Texture %s's Depth=%d is invalid."), Name, int32(Desc.Depth));
+		ValidateResourceDesc(Desc.Depth <= GMaxTextureDimensions, TEXT("Texture %s's Extent.Depth=%d is too large."), Name, Desc.Depth);
 	}
 	else
 	{
-		ValidateTextureDesc(Desc.Depth == 1, TEXT("Texture %s's Depth=%d is invalid for Dimension=%s."), Name, int32(Desc.Depth), GetTextureDimensionString(Desc.Dimension));
+		ValidateResourceDesc(Desc.Depth == 1, TEXT("Texture %s's Depth=%d is invalid for Dimension=%s."), Name, int32(Desc.Depth), GetTextureDimensionString(Desc.Dimension));
 	}
 
 	// Validate texture's array size
 	if (Desc.Dimension == ETextureDimension::Texture2DArray || Desc.Dimension == ETextureDimension::TextureCubeArray)
 	{
-		ValidateTextureDesc(Desc.ArraySize > 0, TEXT("Texture %s's ArraySize=%d is invalid."), Name, Desc.ArraySize);
-		ValidateTextureDesc(Desc.ArraySize <= GMaxTextureArrayLayers, TEXT("Texture %s's Extent.ArraySize=%d is too large."), Name, int32(Desc.ArraySize));
+		ValidateResourceDesc(Desc.ArraySize > 0, TEXT("Texture %s's ArraySize=%d is invalid."), Name, Desc.ArraySize);
+		ValidateResourceDesc(Desc.ArraySize <= GMaxTextureArrayLayers, TEXT("Texture %s's Extent.ArraySize=%d is too large."), Name, int32(Desc.ArraySize));
 	}
 	else
-		{
-		ValidateTextureDesc(Desc.ArraySize == 1, TEXT("Texture %s's ArraySize=%d is invalid for Dimension=%s."), Name, Desc.ArraySize,  GetTextureDimensionString(Desc.Dimension));
-		}
+	{
+		ValidateResourceDesc(Desc.ArraySize == 1, TEXT("Texture %s's ArraySize=%d is invalid for Dimension=%s."), Name, Desc.ArraySize,  GetTextureDimensionString(Desc.Dimension));
+	}
 
 	// Validate texture's samples count.
 	if (Desc.Dimension == ETextureDimension::Texture2D || Desc.Dimension == ETextureDimension::Texture2DArray)
 	{
-		ValidateTextureDesc(Desc.NumSamples > 0, TEXT("Texture %s's NumSamples=%d is invalid."), Name, Desc.NumSamples);
+		ValidateResourceDesc(Desc.NumSamples > 0, TEXT("Texture %s's NumSamples=%d is invalid."), Name, Desc.NumSamples);
 	}
 	else
 	{
-		ValidateTextureDesc(Desc.NumSamples == 1, TEXT("Texture %s's NumSamples=%d is invalid for Dimension=%s."), Name, Desc.NumSamples, GetTextureDimensionString(Desc.Dimension));
+		ValidateResourceDesc(Desc.NumSamples == 1, TEXT("Texture %s's NumSamples=%d is invalid for Dimension=%s."), Name, Desc.NumSamples, GetTextureDimensionString(Desc.Dimension));
 	}
 
 	// Validate texture's mips.
 	if (Desc.IsMultisample())
 	{
-		ValidateTextureDesc(Desc.NumMips == 1, TEXT("MSAA Texture %s's can only have one mip."), Name);
+		ValidateResourceDesc(Desc.NumMips == 1, TEXT("MSAA Texture %s's can only have one mip."), Name);
 	}
 	else
 	{
-		ValidateTextureDesc(Desc.NumMips > 0, TEXT("Texture %s's NumMips=%d is invalid."), Name, Desc.NumMips);
-		ValidateTextureDesc(Desc.NumMips <= GMaxTextureMipCount, TEXT("Texture %s's NumMips=%d is too large."), Name, Desc.NumMips);
+		ValidateResourceDesc(Desc.NumMips > 0, TEXT("Texture %s's NumMips=%d is invalid."), Name, Desc.NumMips);
+		ValidateResourceDesc(Desc.NumMips <= GMaxTextureMipCount, TEXT("Texture %s's NumMips=%d is too large."), Name, Desc.NumMips);
 	}
 
 	return true;
 }
 
-#undef ValidateTextureDesc
+// static
+bool FRHITextureSRVCreateInfo::Validate(const FRHITextureDesc& TextureDesc, const FRHITextureSRVCreateInfo& TextureSRVDesc, const TCHAR* TextureName, bool bFatal)
+{
+	if (TextureName == nullptr)
+	{
+		TextureName = TEXT("UnnamedTexture");
+	}
+
+	ValidateResourceDesc(TextureDesc.Flags & TexCreate_ShaderResource,
+		TEXT("Attempted to create SRV from texture %s which was not created with TexCreate_ShaderResource"),
+		TextureName);
+
+	// Validate the pixel format if overridden by the SRV's descriptor.
+	if (TextureSRVDesc.Format == PF_X24_G8)
+	{
+		// PF_X24_G8 is a bit of mess in the RHI, used to read the stencil, but have varying BlockBytes.
+		ValidateResourceDesc(TextureDesc.Format == PF_DepthStencil,
+			TEXT("PF_X24_G8 is only to read stencil from a PF_DepthStencil texture"));
+	}
+	else if (TextureSRVDesc.Format != PF_Unknown)
+	{
+		ValidateResourceDesc(TextureSRVDesc.Format < PF_MAX,
+			TEXT("Illegal to create SRV for texture %s with invalid FPooledRenderTargetDesc::Format."),
+			TextureName);
+		ValidateResourceDesc(GPixelFormats[TextureSRVDesc.Format].Supported,
+			TEXT("Failed to create SRV for texture %s with pixel format %s because it is not supported."),
+			TextureName, GPixelFormats[TextureSRVDesc.Format].Name);
+
+		EPixelFormat ResourcePixelFormat = TextureDesc.Format;
+
+		ValidateResourceDesc(
+			GPixelFormats[TextureSRVDesc.Format].BlockBytes == GPixelFormats[ResourcePixelFormat].BlockBytes &&
+			GPixelFormats[TextureSRVDesc.Format].BlockSizeX == GPixelFormats[ResourcePixelFormat].BlockSizeX &&
+			GPixelFormats[TextureSRVDesc.Format].BlockSizeY == GPixelFormats[ResourcePixelFormat].BlockSizeY &&
+			GPixelFormats[TextureSRVDesc.Format].BlockSizeZ == GPixelFormats[ResourcePixelFormat].BlockSizeZ,
+			TEXT("Failed to create SRV for texture %s with pixel format %s because it does not match the byte size of the texture's pixel format %s."),
+			TextureName, GPixelFormats[TextureSRVDesc.Format].Name, GPixelFormats[ResourcePixelFormat].Name);
+	}
+
+	ValidateResourceDesc((TextureSRVDesc.MipLevel + TextureSRVDesc.NumMipLevels) <= TextureDesc.NumMips,
+		TEXT("Failed to create SRV at mips %d-%d: the texture %s has only %d mip levels."),
+		TextureSRVDesc.MipLevel, (TextureSRVDesc.MipLevel + TextureSRVDesc.NumMipLevels), TextureName, TextureDesc.NumMips);
+
+	// Validate the array sloces
+	if (TextureDesc.IsTextureArray())
+	{
+		ValidateResourceDesc((TextureSRVDesc.FirstArraySlice + TextureSRVDesc.NumArraySlices) <= TextureDesc.ArraySize,
+			TEXT("Failed to create SRV at array slices %d-%d: the texture array %s has only %d slices."),
+			TextureSRVDesc.FirstArraySlice,
+			(TextureSRVDesc.FirstArraySlice + TextureSRVDesc.NumArraySlices),
+			TextureName,
+			TextureDesc.ArraySize);
+	}
+	else
+	{
+		ValidateResourceDesc(TextureSRVDesc.FirstArraySlice == 0,
+			TEXT("Failed to create SRV with FirstArraySlice=%d: the texture %s is not a texture array."),
+			TextureSRVDesc.FirstArraySlice, TextureName);
+		ValidateResourceDesc(TextureSRVDesc.NumArraySlices == 0,
+			TEXT("Failed to create SRV with NumArraySlices=%d: the texture %s is not a texture array."),
+			TextureSRVDesc.NumArraySlices, TextureName);
+	}
+
+	ValidateResourceDesc(TextureSRVDesc.MetaData != ERHITextureMetaDataAccess::FMask || GRHISupportsExplicitFMask,
+		TEXT("Failed to create FMask SRV for texture %s because the current RHI doesn't support it. Be sure to gate the call with GRHISupportsExplicitFMask."),
+		TextureName);
+
+	ValidateResourceDesc(TextureSRVDesc.MetaData != ERHITextureMetaDataAccess::HTile || GRHISupportsExplicitHTile,
+		TEXT("Failed to create HTile SRV for texture %s because the current RHI doesn't support it. Be sure to gate the call with GRHISupportsExplicitHTile."),
+		TextureName);
+
+	return true;
+}
+
+#undef ValidateResourceDesc
+
+uint64 FRHITextureDesc::CalcMemorySizeEstimate(uint32 FirstMipIndex, uint32 LastMipIndex) const
+{
+#if DO_CHECK
+	Validate(*this, TEXT("CalcMemorySizeEstimate"), /* bFatal = */true);
+#endif
+	check(FirstMipIndex < NumMips && FirstMipIndex <= LastMipIndex && LastMipIndex < NumMips);
+
+	uint64 MemorySize = 0;
+	for (uint32 MipIndex = FirstMipIndex; MipIndex <= LastMipIndex; ++MipIndex)
+	{
+		FIntVector MipSizeInBlocks = FIntVector(
+			FMath::DivideAndRoundUp(FMath::Max(Extent.X >> MipIndex, 1), GPixelFormats[Format].BlockSizeX),
+			FMath::DivideAndRoundUp(FMath::Max(Extent.Y >> MipIndex, 1), GPixelFormats[Format].BlockSizeY),
+			FMath::DivideAndRoundUp(FMath::Max(Depth    >> MipIndex, 1), GPixelFormats[Format].BlockSizeZ)
+		);
+
+		uint32 NumBlocksInMip = MipSizeInBlocks.X * MipSizeInBlocks.Y * MipSizeInBlocks.Z;
+		MemorySize += NumBlocksInMip * GPixelFormats[Format].BlockBytes;
+	}
+
+	MemorySize *= ArraySize;
+	MemorySize *= NumSamples;
+
+	if (IsTextureCube())
+	{
+		MemorySize *= 6;
+	}
+
+	return MemorySize;
+}
 
 static FRHIPanicEvent RHIPanicEvent;
 FRHIPanicEvent& RHIGetPanicDelegate()
@@ -2133,11 +2321,17 @@ FString LexToString(EShaderPlatform Platform, bool bError)
 	case SP_VULKAN_SM5: return TEXT("VULKAN_SM5");
 	case SP_VULKAN_SM5_ANDROID: return TEXT("VULKAN_SM5_ANDROID");
 	case SP_D3D_ES3_1_HOLOLENS: return TEXT("D3D_ES3_1_HOLOLENS");
+	case SP_CUSTOM_PLATFORM_FIRST: return TEXT("SP_CUSTOM_PLATFORM_FIRST");
+	case SP_CUSTOM_PLATFORM_LAST: return TEXT("SP_CUSTOM_PLATFORM_LAST");
 
 	default:
 		if (FStaticShaderPlatformNames::IsStaticPlatform(Platform))
 		{
 			return FStaticShaderPlatformNames::Get().GetShaderPlatform(Platform).ToString();
+		}
+		else if (Platform > SP_CUSTOM_PLATFORM_FIRST && Platform < SP_CUSTOM_PLATFORM_LAST)
+		{
+			return FString::Printf(TEXT("SP_CUSTOM_PLATFORM_%d"), Platform - SP_CUSTOM_PLATFORM_FIRST);
 		}
 		else
 		{
@@ -2157,7 +2351,7 @@ void LexFromString(EShaderPlatform& Value, const TCHAR* String)
 {
 	Value = EShaderPlatform::SP_NumPlatforms;
 
-	for (uint8 i = 0; i < (uint8)EShaderPlatform::SP_NumPlatforms; ++i)
+	for (int i = 0; i < (int)EShaderPlatform::SP_NumPlatforms; ++i)
 	{
 		if (LexToString((EShaderPlatform)i, false).Equals(String, ESearchCase::IgnoreCase))
 		{
@@ -2185,6 +2379,18 @@ FString LexToString(ERHIFeatureLevel::Type Level)
 			break;
 	}
 	return TEXT("UnknownFeatureLevel");
+}
+
+const TCHAR* LexToString(ERHIDescriptorHeapType InHeapType)
+{
+	switch (InHeapType)
+	{
+	default: checkNoEntry();                   return TEXT("UnknownDescriptorHeapType");
+	case ERHIDescriptorHeapType::Standard:     return TEXT("Standard");
+	case ERHIDescriptorHeapType::RenderTarget: return TEXT("RenderTarget");
+	case ERHIDescriptorHeapType::DepthStencil: return TEXT("DepthStencil");
+	case ERHIDescriptorHeapType::Sampler:      return TEXT("Sampler");
+	}
 }
 
 const FName LANGUAGE_D3D("D3D");
@@ -2230,30 +2436,88 @@ static inline uint32 GetSectionUint(const FConfigSection& Section, FName Key, ui
 	}
 }
 
+// Gets an integer from a section.  It returns the original value if the setting does not exist
+static inline uint32 GetSectionFeatureSupport(const FConfigSection& Section, FName Key, uint32 OriginalValue)
+{
+	const FConfigValue* ConfigValue = Section.Find(Key);
+	if (ConfigValue != nullptr)
+	{
+		FString Value = ConfigValue->GetValue();
+		if (Value == TEXT("Unsupported"))
+		{
+			return uint32(ERHIFeatureSupport::Unsupported);
+		}
+		if (Value == TEXT("RuntimeDependent"))
+		{
+			return uint32(ERHIFeatureSupport::RuntimeDependent);
+		}
+		else if (Value == TEXT("RuntimeGuaranteed"))
+		{
+			return uint32(ERHIFeatureSupport::RuntimeGuaranteed);
+		}
+		else
+		{
+			checkf(false, TEXT("Unknown ERHIFeatureSupport value \"%s\" for %s"), *Value, *Key.ToString());
+		}
+	}
+
+	return OriginalValue;
+}
+
+FRHIViewableResource* GetViewableResource(const FRHITransitionInfo& Info)
+{
+	switch (Info.Type)
+	{
+	case FRHITransitionInfo::EType::Buffer:
+	case FRHITransitionInfo::EType::Texture:
+		return Info.ViewableResource;
+
+	case FRHITransitionInfo::EType::UAV:
+		return Info.UAV ? Info.UAV->GetParentResource() : nullptr;
+	}
+
+	return nullptr;
+}
+
 void FGenericDataDrivenShaderPlatformInfo::SetDefaultValues()
 {
 	MaxFeatureLevel = ERHIFeatureLevel::Num;
 	bSupportsMSAA = true;
-
-	bNeedsToSwitchVerticalAxisOnMobileOpenGL = true;
 	bSupportsDOFHybridScattering = true;
 	bSupportsHZBOcclusion = true;
 	bSupportsWaterIndirectDraw = true;
 	bSupportsAsyncPipelineCompilation = true;
-	bSupportsGPUSkinCache = true;
 	bSupportsManualVertexFetch = true;
 	bSupportsVolumeTextureAtomics = true;
+	PreviewShaderPlatformParent = EShaderPlatform::SP_NumPlatforms;
 }
 
 void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConfigSection& Section, FGenericDataDrivenShaderPlatformInfo& Info)
 {
 	Info.Language = *GetSectionString(Section, "Language");
+	Info.ShaderFormat = *GetSectionString(Section, "ShaderFormat");
+	checkf(!Info.ShaderFormat.IsNone(), TEXT("Missing ShaderFormat for ShaderPlatform %s  ShaderFormat %s"), *Info.Name.ToString(), *Info.ShaderFormat.ToString());
+
 	GetFeatureLevelFromName(*GetSectionString(Section, "MaxFeatureLevel"), Info.MaxFeatureLevel);
 
+	Info.ShaderPropertiesHash = 0;
+	FString ShaderPropertiesString = Info.Name.GetPlainNameString();
+
+#define ADD_TO_PROPERTIES_STRING(SettingName, SettingValue) \
+	ShaderPropertiesString += TEXT(#SettingName); \
+	ShaderPropertiesString += FString::Printf(TEXT("_%d"), SettingValue);
+
 #define GET_SECTION_BOOL_HELPER(SettingName)	\
-	Info.SettingName = GetSectionBool(Section, #SettingName, Info.SettingName)
+	Info.SettingName = GetSectionBool(Section, #SettingName, Info.SettingName);	\
+	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
+
 #define GET_SECTION_INT_HELPER(SettingName)	\
-	Info.SettingName = GetSectionUint(Section, #SettingName, Info.SettingName)
+	Info.SettingName = GetSectionUint(Section, #SettingName, Info.SettingName); \
+	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
+
+#define GET_SECTION_SUPPORT_HELPER(SettingName)	\
+	Info.SettingName = GetSectionFeatureSupport(Section, #SettingName, Info.SettingName); \
+	ADD_TO_PROPERTIES_STRING(SettingName, Info.SettingName)
 
 	GET_SECTION_BOOL_HELPER(bIsMobile);
 	GET_SECTION_BOOL_HELPER(bIsMetalMRT);
@@ -2271,18 +2535,19 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	GET_SECTION_BOOL_HELPER(bSupportsVolumetricFog);
 	GET_SECTION_BOOL_HELPER(bSupportsIndexBufferUAVs);
 	GET_SECTION_BOOL_HELPER(bSupportsInstancedStereo);
-	GET_SECTION_BOOL_HELPER(bSupportsMultiView);
+	GET_SECTION_SUPPORT_HELPER(SupportsMultiViewport);
 	GET_SECTION_BOOL_HELPER(bSupportsMSAA);
 	GET_SECTION_BOOL_HELPER(bSupports4ComponentUAVReadWrite);
 	GET_SECTION_BOOL_HELPER(bSupportsRenderTargetWriteMask);
 	GET_SECTION_BOOL_HELPER(bSupportsRayTracing);
 	GET_SECTION_BOOL_HELPER(bSupportsRayTracingShaders);
 	GET_SECTION_BOOL_HELPER(bSupportsInlineRayTracing);
+	GET_SECTION_BOOL_HELPER(bSupportsRayTracingCallableShaders);
 	GET_SECTION_BOOL_HELPER(bSupportsRayTracingProceduralPrimitive);
+	GET_SECTION_BOOL_HELPER(bSupportsRayTracingTraversalStatistics);
 	GET_SECTION_BOOL_HELPER(bSupportsRayTracingIndirectInstanceData);
 	GET_SECTION_BOOL_HELPER(bSupportsPathTracing);
 	GET_SECTION_BOOL_HELPER(bSupportsHighEndRayTracingReflections);
-	GET_SECTION_BOOL_HELPER(bSupportsGPUSkinCache);
 	GET_SECTION_BOOL_HELPER(bSupportsByteBufferComputeShaders);
 	GET_SECTION_BOOL_HELPER(bSupportsGPUScene);
 	GET_SECTION_BOOL_HELPER(bSupportsPrimitiveShaders);
@@ -2295,7 +2560,9 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	GET_SECTION_BOOL_HELPER(bSupportsRTIndexFromVS);
 	GET_SECTION_BOOL_HELPER(bSupportsIntrinsicWaveOnce);
 	GET_SECTION_BOOL_HELPER(bSupportsConservativeRasterization);
-	GET_SECTION_BOOL_HELPER(bSupportsWaveOperations);
+	GET_SECTION_SUPPORT_HELPER(bSupportsWaveOperations);
+	GET_SECTION_INT_HELPER(MinimumWaveSize);
+	GET_SECTION_INT_HELPER(MaximumWaveSize);
 	GET_SECTION_BOOL_HELPER(bRequiresExplicit128bitRT);
 	GET_SECTION_BOOL_HELPER(bSupportsGen5TemporalAA);
 	GET_SECTION_BOOL_HELPER(bTargetsTiledGPU);
@@ -2314,10 +2581,10 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	GET_SECTION_BOOL_HELPER(bIsHlslcc);
 	GET_SECTION_BOOL_HELPER(bSupportsDxc);
 	GET_SECTION_BOOL_HELPER(bSupportsVariableRateShading);
+	GET_SECTION_BOOL_HELPER(bIsSPIRV);
 	GET_SECTION_INT_HELPER(NumberOfComputeThreads);
 
 	GET_SECTION_BOOL_HELPER(bWaterUsesSimpleForwardShading);
-	GET_SECTION_BOOL_HELPER(bNeedsToSwitchVerticalAxisOnMobileOpenGL);
 	GET_SECTION_BOOL_HELPER(bSupportsHairStrandGeometry);
 	GET_SECTION_BOOL_HELPER(bSupportsDOFHybridScattering);
 	GET_SECTION_BOOL_HELPER(bNeedsExtraMobileFrames);
@@ -2330,10 +2597,20 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	GET_SECTION_BOOL_HELPER(bSupportsMobileDistanceField);
 	GET_SECTION_BOOL_HELPER(bSupportsFFTBloom);
 	GET_SECTION_BOOL_HELPER(bSupportsVertexShaderLayer);
+	GET_SECTION_BOOL_HELPER(bSupportsBindless);
 	GET_SECTION_BOOL_HELPER(bSupportsVolumeTextureAtomics);
+	GET_SECTION_BOOL_HELPER(bSupportsROV);
+	GET_SECTION_BOOL_HELPER(bSupportsOIT);
+	GET_SECTION_SUPPORT_HELPER(bSupportsRealTypes);
+	GET_SECTION_INT_HELPER(EnablesHLSL2021ByDefault);
+	GET_SECTION_BOOL_HELPER(bSupportsSceneDataCompressedTransforms);
+	GET_SECTION_BOOL_HELPER(bSupportsSwapchainUAVs);
 #undef GET_SECTION_BOOL_HELPER
 #undef GET_SECTION_INT_HELPER
+#undef GET_SECTION_SUPPORT_HELPER
+#undef ADD_TO_PROPERTIES_STRING
 
+	Info.ShaderPropertiesHash = GetTypeHash(ShaderPropertiesString);
 #if WITH_EDITOR
 	FTextStringHelper::ReadFromBuffer(*GetSectionString(Section, FName("FriendlyName")), Info.FriendlyName);
 #endif
@@ -2349,6 +2626,14 @@ void FGenericDataDrivenShaderPlatformInfo::Initialize()
 
 	// look for the standard DataDriven ini files
 	int32 NumDDInfoFiles = FDataDrivenPlatformInfoRegistry::GetNumDataDrivenIniFiles();
+	int32 CustomShaderPlatform = EShaderPlatform::SP_CUSTOM_PLATFORM_FIRST;
+
+	struct PlatformInfoAndPlatformEnum
+	{
+		FGenericDataDrivenShaderPlatformInfo Info;
+		EShaderPlatform ShaderPlatform;
+	};
+
 	for (int32 Index = 0; Index < NumDDInfoFiles; Index++)
 	{
 		FConfigFile IniFile;
@@ -2368,18 +2653,109 @@ void FGenericDataDrivenShaderPlatformInfo::Initialize()
 				LexFromString(ShaderPlatform, *SectionName.Mid(15));
 				if (ShaderPlatform == EShaderPlatform::SP_NumPlatforms)
 				{
-					UE_LOG(LogRHI, Warning, TEXT("Found an unknown shader platform %s in a DataDriven ini file"), *SectionName.Mid(15));
+#if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA
+					const bool bIsEnabled = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).bEnabledForUse;
+#else
+					const bool bIsEnabled = true;
+#endif
+					UE_CLOG(bIsEnabled, LogRHI, Warning, TEXT("Found an unknown shader platform %s in a DataDriven ini file"), *SectionName.Mid(15));
 					continue;
 				}
 				
 				// at this point, we can start pulling information out
+				Infos[ShaderPlatform].Name = *SectionName.Mid(15);
 				ParseDataDrivenShaderInfo(Section.Value, Infos[ShaderPlatform]);	
+				Infos[ShaderPlatform].bContainsValidPlatformInfo = true;
+
+#if WITH_EDITOR
+				for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
+				{
+					FName PreviewPlatformName = *(Infos[ShaderPlatform].Name).ToString();
+					if (Item.ShaderPlatformToPreview == PreviewPlatformName)
+					{
+						EShaderPlatform PreviewShaderPlatform = EShaderPlatform(CustomShaderPlatform++);
+						ParseDataDrivenShaderInfo(Section.Value, Infos[PreviewShaderPlatform]);
+						if (!Item.OptionalFriendlyNameOverride.IsEmpty())
+						{
+							Infos[PreviewShaderPlatform].FriendlyName = Item.OptionalFriendlyNameOverride;
+						}
+						Infos[PreviewShaderPlatform].Name = Item.PreviewShaderPlatformName;
+						Infos[PreviewShaderPlatform].PreviewShaderPlatformParent = ShaderPlatform;
+						Infos[PreviewShaderPlatform].bIsPreviewPlatform = true;
+						Infos[PreviewShaderPlatform].bContainsValidPlatformInfo = true;
+					}
+				}
+#endif
+			}
+		}
+	}
+	bInitialized = true;
+}
+
+void FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms()
+{
+	for (int i = 0; i < EShaderPlatform::SP_NumPlatforms; ++i)
+	{
+		EShaderPlatform ShaderPlatform = EShaderPlatform(i);
+		if (IsValid(ShaderPlatform))
+		{
+			ERHIFeatureLevel::Type PreviewSPMaxFeatureLevel = Infos[ShaderPlatform].MaxFeatureLevel;
+			EShaderPlatform EditorSPForPreviewMaxFeatureLevel = GShaderPlatformForFeatureLevel[PreviewSPMaxFeatureLevel];
+			if (Infos[ShaderPlatform].bIsPreviewPlatform && EditorSPForPreviewMaxFeatureLevel < EShaderPlatform::SP_NumPlatforms)
+			{
+				Infos[ShaderPlatform].ShaderFormat = Infos[EditorSPForPreviewMaxFeatureLevel].ShaderFormat;
+				Infos[ShaderPlatform].Language = Infos[EditorSPForPreviewMaxFeatureLevel].Language;
+				Infos[ShaderPlatform].bIsHlslcc = Infos[EditorSPForPreviewMaxFeatureLevel].bIsHlslcc;
+				Infos[ShaderPlatform].bSupportsDxc = Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsDxc;
+				Infos[ShaderPlatform].bSupportsGPUScene &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsGPUScene;
+				Infos[ShaderPlatform].bIsPC = true;
+				Infos[ShaderPlatform].bIsConsole = false;
+				Infos[ShaderPlatform].bSupportsSceneDataCompressedTransforms = Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsSceneDataCompressedTransforms;
+				Infos[ShaderPlatform].bSupportsNanite &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsNanite;
+				Infos[ShaderPlatform].bSupportsLumenGI &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsLumenGI;
+				Infos[ShaderPlatform].bSupportsUInt64ImageAtomics &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsUInt64ImageAtomics;
+				Infos[ShaderPlatform].bSupportsGen5TemporalAA &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsGen5TemporalAA;
+				Infos[ShaderPlatform].bSupportsMobileMultiView &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsMobileMultiView;
+				Infos[ShaderPlatform].bSupportsInstancedStereo &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsInstancedStereo;
+				Infos[ShaderPlatform].bSupportsManualVertexFetch &= Infos[EditorSPForPreviewMaxFeatureLevel].bSupportsManualVertexFetch;
+				Infos[ShaderPlatform].bSupportsRenderTargetWriteMask = false;
+				Infos[ShaderPlatform].bSupportsIntrinsicWaveOnce = false;
+				Infos[ShaderPlatform].bSupportsDOFHybridScattering = false;
+				Infos[ShaderPlatform].bSupports4ComponentUAVReadWrite = false;
 				Infos[ShaderPlatform].bContainsValidPlatformInfo = true;
 			}
 		}
 	}
+}
 
-	bInitialized = true;
+#if WITH_EDITOR
+FText FGenericDataDrivenShaderPlatformInfo::GetFriendlyName(const FStaticShaderPlatform Platform)
+{
+	if (IsRunningCommandlet() || GUsingNullRHI)
+	{
+		return FText();
+	}
+	check(IsValid(Platform));
+	return Infos[Platform].FriendlyName;
+}
+#endif
+
+const EShaderPlatform FGenericDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(const FName ShaderPlatformName)
+{
+	for (int32 i = 0; i < SP_NumPlatforms; ++i)
+	{
+		const EShaderPlatform Platform = static_cast<EShaderPlatform>(i);
+		if (!Infos[Platform].bContainsValidPlatformInfo)
+		{
+			continue;
+		}
+
+		if (Infos[Platform].Name == ShaderPlatformName)
+		{
+			return Platform;
+		}
+	}
+	return SP_NumPlatforms;
 }
 
 //
@@ -2438,137 +2814,6 @@ int32 CalculateMSAASampleArrayIndex(int32 NumSamples, int32 SampleIndex)
 	return NumSamples - 1 + SampleIndex;
 }
 
-//
-//	Pixel format information.
-//
-
-FPixelFormatInfo::FPixelFormatInfo(
-	EPixelFormat InUnrealFormat,
-	const TCHAR* InName,
-	int32 InBlockSizeX,
-	int32 InBlockSizeY,
-	int32 InBlockSizeZ,
-	int32 InBlockBytes,
-	int32 InNumComponents,
-	bool  InSupported)
-	: Name(InName)
-	, UnrealFormat(InUnrealFormat)
-	, BlockSizeX(InBlockSizeX)
-	, BlockSizeY(InBlockSizeY)
-	, BlockSizeZ(InBlockSizeZ)
-	, BlockBytes(InBlockBytes)
-	, NumComponents(InNumComponents)
-	, Supported(InSupported)
-{
-}
-
-FPixelFormatInfo    GPixelFormats[PF_MAX] =
-{
-	//               UnrealFormat                 Name                 BlockSizeX  BlockSizeY  BlockSizeZ  BlockBytes  NumComponents    Supported
-
-	FPixelFormatInfo(PF_Unknown,            TEXT("unknown"),               0,          0,          0,          0,          0,              0),
-	FPixelFormatInfo(PF_A32B32G32R32F,      TEXT("A32B32G32R32F"),         1,          1,          1,          16,         4,              1),
-	FPixelFormatInfo(PF_B8G8R8A8,           TEXT("B8G8R8A8"),              1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_G8,                 TEXT("G8"),                    1,          1,          1,          1,          1,              1),
-	FPixelFormatInfo(PF_G16,                TEXT("G16"),                   1,          1,          1,          2,          1,              1),
-	FPixelFormatInfo(PF_DXT1,               TEXT("DXT1"),                  4,          4,          1,          8,          3,              1),
-	FPixelFormatInfo(PF_DXT3,               TEXT("DXT3"),                  4,          4,          1,          16,         4,              1),
-	FPixelFormatInfo(PF_DXT5,               TEXT("DXT5"),                  4,          4,          1,          16,         4,              1),
-	FPixelFormatInfo(PF_UYVY,               TEXT("UYVY"),                  2,          1,          1,          4,          4,              0),
-	FPixelFormatInfo(PF_FloatRGB,           TEXT("FloatRGB"),              1,          1,          1,          4,          3,              1),
-	FPixelFormatInfo(PF_FloatRGBA,          TEXT("FloatRGBA"),             1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_DepthStencil,       TEXT("DepthStencil"),          1,          1,          1,          4,          1,              0),
-	FPixelFormatInfo(PF_ShadowDepth,        TEXT("ShadowDepth"),           1,          1,          1,          4,          1,              0),
-	FPixelFormatInfo(PF_R32_FLOAT,          TEXT("R32_FLOAT"),             1,          1,          1,          4,          1,              1),
-	FPixelFormatInfo(PF_G16R16,             TEXT("G16R16"),                1,          1,          1,          4,          2,              1),
-	FPixelFormatInfo(PF_G16R16F,            TEXT("G16R16F"),               1,          1,          1,          4,          2,              1),
-	FPixelFormatInfo(PF_G16R16F_FILTER,     TEXT("G16R16F_FILTER"),        1,          1,          1,          4,          2,              1),
-	FPixelFormatInfo(PF_G32R32F,            TEXT("G32R32F"),               1,          1,          1,          8,          2,              1),
-	FPixelFormatInfo(PF_A2B10G10R10,        TEXT("A2B10G10R10"),           1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_A16B16G16R16,       TEXT("A16B16G16R16"),          1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_D24,                TEXT("D24"),                   1,          1,          1,          4,          1,              1),
-	FPixelFormatInfo(PF_R16F,               TEXT("PF_R16F"),               1,          1,          1,          2,          1,              1),
-	FPixelFormatInfo(PF_R16F_FILTER,        TEXT("PF_R16F_FILTER"),        1,          1,          1,          2,          1,              1),
-	FPixelFormatInfo(PF_BC5,                TEXT("BC5"),                   4,          4,          1,          16,         2,              1),
-	FPixelFormatInfo(PF_V8U8,               TEXT("V8U8"),                  1,          1,          1,          2,          2,              1),
-	FPixelFormatInfo(PF_A1,                 TEXT("A1"),                    1,          1,          1,          1,          1,              0),
-	FPixelFormatInfo(PF_FloatR11G11B10,     TEXT("FloatR11G11B10"),        1,          1,          1,          4,          3,              0),
-	FPixelFormatInfo(PF_A8,                 TEXT("A8"),                    1,          1,          1,          1,          1,              1),
-	FPixelFormatInfo(PF_R32_UINT,           TEXT("R32_UINT"),              1,          1,          1,          4,          1,              1),
-	FPixelFormatInfo(PF_R32_SINT,           TEXT("R32_SINT"),              1,          1,          1,          4,          1,              1),
-
-	// IOS Support
-	FPixelFormatInfo(PF_PVRTC2,             TEXT("PVRTC2"),                8,          4,          1,          8,          4,              0),
-	FPixelFormatInfo(PF_PVRTC4,             TEXT("PVRTC4"),                4,          4,          1,          8,          4,              0),
-
-	FPixelFormatInfo(PF_R16_UINT,           TEXT("R16_UINT"),              1,          1,          1,          2,          1,              1),
-	FPixelFormatInfo(PF_R16_SINT,           TEXT("R16_SINT"),              1,          1,          1,          2,          1,              1),
-	FPixelFormatInfo(PF_R16G16B16A16_UINT,  TEXT("R16G16B16A16_UINT"),     1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_R16G16B16A16_SINT,  TEXT("R16G16B16A16_SINT"),     1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_R5G6B5_UNORM,       TEXT("R5G6B5_UNORM"),          1,          1,          1,          2,          3,              0),
-	FPixelFormatInfo(PF_R8G8B8A8,           TEXT("R8G8B8A8"),              1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_A8R8G8B8,           TEXT("A8R8G8B8"),              1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_BC4,                TEXT("BC4"),                   4,          4,          1,          8,          1,              1),
-	FPixelFormatInfo(PF_R8G8,               TEXT("R8G8"),                  1,          1,          1,          2,          2,              1),
-
-	FPixelFormatInfo(PF_ATC_RGB,            TEXT("ATC_RGB"),               4,          4,          1,          8,          3,              0),
-	FPixelFormatInfo(PF_ATC_RGBA_E,         TEXT("ATC_RGBA_E"),            4,          4,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ATC_RGBA_I,         TEXT("ATC_RGBA_I"),            4,          4,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_X24_G8,             TEXT("X24_G8"),                1,          1,          1,          1,          1,              0),
-	FPixelFormatInfo(PF_ETC1,               TEXT("ETC1"),                  4,          4,          1,          8,          3,              0),
-	FPixelFormatInfo(PF_ETC2_RGB,           TEXT("ETC2_RGB"),              4,          4,          1,          8,          3,              0),
-	FPixelFormatInfo(PF_ETC2_RGBA,          TEXT("ETC2_RGBA"),             4,          4,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_R32G32B32A32_UINT,  TEXT("PF_R32G32B32A32_UINT"),  1,          1,          1,          16,         4,              1),
-	FPixelFormatInfo(PF_R16G16_UINT,        TEXT("PF_R16G16_UINT"),        1,          1,          1,          4,          4,              1),
-
-	// ASTC support
-	FPixelFormatInfo(PF_ASTC_4x4,           TEXT("ASTC_4x4"),              4,          4,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_6x6,           TEXT("ASTC_6x6"),              6,          6,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_8x8,           TEXT("ASTC_8x8"),              8,          8,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_10x10,         TEXT("ASTC_10x10"),            10,         10,         1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_12x12,         TEXT("ASTC_12x12"),            12,         12,         1,          16,         4,              0),
-	
-	FPixelFormatInfo(PF_BC6H,               TEXT("BC6H"),                  4,          4,          1,          16,         3,              1),
-	FPixelFormatInfo(PF_BC7,                TEXT("BC7"),                   4,          4,          1,          16,         4,              1),
-	FPixelFormatInfo(PF_R8_UINT,            TEXT("R8_UINT"),               1,          1,          1,          1,          1,              1),
-	FPixelFormatInfo(PF_L8,                 TEXT("L8"),                    1,          1,          1,          1,          1,              0),
-	FPixelFormatInfo(PF_XGXR8,              TEXT("XGXR8"),                 1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_R8G8B8A8_UINT,      TEXT("R8G8B8A8_UINT"),         1,          1,          1,          4,          4,              1),
-	FPixelFormatInfo(PF_R8G8B8A8_SNORM,     TEXT("R8G8B8A8_SNORM"),        1,          1,          1,          4,          4,              1),
-
-	FPixelFormatInfo(PF_R16G16B16A16_UNORM, TEXT("R16G16B16A16_UINT"),     1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_R16G16B16A16_SNORM, TEXT("R16G16B16A16_SINT"),     1,          1,          1,          8,          4,              1),
-	FPixelFormatInfo(PF_PLATFORM_HDR_0,     TEXT("PLATFORM_HDR_0"),        0,          0,          0,          0,          0,              0),
-	FPixelFormatInfo(PF_PLATFORM_HDR_1,     TEXT("PLATFORM_HDR_1"),        0,          0,          0,          0,          0,              0),
-	FPixelFormatInfo(PF_PLATFORM_HDR_2,     TEXT("PLATFORM_HDR_2"),        0,          0,          0,          0,          0,              0),
-
-	// NV12 contains 2 textures: R8 luminance plane followed by R8G8 1/4 size chrominance plane.
-	// BlockSize/BlockBytes/NumComponents values don't make much sense for this format, so set them all to one.
-	FPixelFormatInfo(PF_NV12,               TEXT("NV12"),                  1,          1,          1,          1,          1,              0),
-
-	FPixelFormatInfo(PF_R32G32_UINT,        TEXT("PF_R32G32_UINT"),        1,          1,          1,          8,          2,              1),
-
-	FPixelFormatInfo(PF_ETC2_R11_EAC,       TEXT("PF_ETC2_R11_EAC"),       4,          4,          1,          8,          1,              0),
-	FPixelFormatInfo(PF_ETC2_RG11_EAC,      TEXT("PF_ETC2_RG11_EAC"),      4,          4,          1,          16,         2,              0),
-	FPixelFormatInfo(PF_R8,                 TEXT("R8"),                    1,          1,          1,          1,          1,              1),
-    FPixelFormatInfo(PF_B5G5R5A1_UNORM,     TEXT("B5G5R5A1_UNORM"),        1,          1,          1,          2,          4,              0),
-
-	// ASTC HDR support
-	FPixelFormatInfo(PF_ASTC_4x4_HDR,           TEXT("ASTC_4x4_HDR"),      4,          4,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_6x6_HDR,           TEXT("ASTC_6x6_HDR"),      6,          6,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_8x8_HDR,           TEXT("ASTC_8x8_HDR"),      8,          8,          1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_10x10_HDR,         TEXT("ASTC_10x10_HDR"),    10,         10,         1,          16,         4,              0),
-	FPixelFormatInfo(PF_ASTC_12x12_HDR,         TEXT("ASTC_12x12_HDR"),    12,         12,         1,          16,         4,              0),
-
-	FPixelFormatInfo(PF_G16R16_SNORM,       TEXT("G16R16_SNORM"),       1,          1,          1,          4,          2,              1),
-	FPixelFormatInfo(PF_R8G8_UINT,          TEXT("R8G8_UINT"),          1,          1,          1,          2,          2,              1),
-	FPixelFormatInfo(PF_R32G32B32_UINT,     TEXT("R32G32B32_UINT"),     1,          1,          1,          12,         3,              1),
-	FPixelFormatInfo(PF_R32G32B32_SINT,     TEXT("R32G32B32_SINT"),     1,          1,          1,          12,         3,              1),
-	FPixelFormatInfo(PF_R32G32B32F,         TEXT("R32G32B32F"),         1,          1,          1,          12,         3,              1),
-	FPixelFormatInfo(PF_R8_SINT,            TEXT("R8_SINT"),            1,          1,          1,          1,          1,              1),
-	FPixelFormatInfo(PF_R64_UINT,			TEXT("R64_UINT"),              1,          1,          1,          8,          1,              0),
-};
-
 void RHIInitDefaultPixelFormatCapabilities()
 {
 	for (FPixelFormatInfo& Info : GPixelFormats)
@@ -2593,18 +2838,6 @@ void RHIInitDefaultPixelFormatCapabilities()
 	}
 }
 
-static struct FValidatePixelFormats
-{
-	FValidatePixelFormats()
-	{
-		for (int32 Index = 0; Index < UE_ARRAY_COUNT(GPixelFormats); ++Index)
-		{
-			// Make sure GPixelFormats has an entry for every unreal format
-			checkf((EPixelFormat)Index == GPixelFormats[Index].UnrealFormat, TEXT("Missing entry for EPixelFormat %d"), (int32)Index);
-		}
-	}
-} ValidatePixelFormats;
-
 //
 //	CalculateImageBytes
 //
@@ -2612,19 +2845,19 @@ static struct FValidatePixelFormats
 SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format)
 {
 	if ( Format == PF_A1 )
-	{
+	{		
 		// The number of bytes needed to store all 1 bit pixels in a line is the width of the image divided by the number of bits in a byte
-		uint32 BytesPerLine = SizeX / 8;
+		uint32 BytesPerLine = (SizeX + 7) / 8;
 		// The number of actual bytes in a 1 bit image is the bytes per line of pixels times the number of lines
 		return sizeof(uint8) * BytesPerLine * SizeY;
 	}
 	else if( SizeZ > 0 )
 	{
-		return static_cast<SIZE_T>(SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * (SizeZ / GPixelFormats[Format].BlockSizeZ) * GPixelFormats[Format].BlockBytes;
+		return GPixelFormats[Format].Get3DImageSizeInBytes(SizeX, SizeY, SizeZ);
 	}
 	else
 	{
-		return static_cast<SIZE_T>(SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * GPixelFormats[Format].BlockBytes;
+		return GPixelFormats[Format].Get2DImageSizeInBytes(SizeX, SizeY);
 	}
 }
 
@@ -2809,4 +3042,65 @@ void FRHITransientBuffer::Acquire(const TCHAR* InName, uint32 InPassIndex, uint6
 	ViewCache.SetDebugName(InName);
 
 	// TODO: Add method to rename a buffer.
+}
+
+FDebugName::FDebugName()
+	: Name()
+	, Number(NAME_NO_NUMBER_INTERNAL)
+{
+}
+
+FDebugName::FDebugName(FName InName)
+	: Name(InName)
+	, Number(NAME_NO_NUMBER_INTERNAL)
+{
+}
+
+FDebugName::FDebugName(FName InName, int32 InNumber)
+	: Name(InName)
+	, Number(InNumber)
+{
+}
+
+FDebugName::FDebugName(FMemoryImageName InName, int32 InNumber)
+	: Name(InName)
+	, Number(InNumber)
+{
+}
+
+FDebugName& FDebugName::operator=(FName Other)
+{
+	Name = FMemoryImageName(Other);
+	Number = NAME_NO_NUMBER_INTERNAL;
+	return *this;
+}
+
+FString FDebugName::ToString() const
+{
+	FString Out;
+	FName(Name).AppendString(Out);
+	if (Number != NAME_NO_NUMBER_INTERNAL)
+	{
+		Out.Appendf(TEXT("_%u"), Number);
+	}
+	return Out;
+}
+
+void FDebugName::AppendString(FStringBuilderBase& Builder) const
+{
+	FName(Name).AppendString(Builder);
+	if (Number != NAME_NO_NUMBER_INTERNAL)
+	{
+		Builder << '_' << Number;
+	}
+}
+
+RHI_API void RHISetCurrentNumDrawCallPtr(FRHIDrawCallsStatPtr InNumDrawCallsRHIPtr)
+{
+	GCurrentNumDrawCallsRHIPtr = InNumDrawCallsRHIPtr;
+}
+
+RHI_API void RHIIncCurrentNumDrawCallPtr(uint32 GPUIndex)
+{
+	FPlatformAtomics::InterlockedIncrement(&(*GCurrentNumDrawCallsRHIPtr)[GPUIndex]);
 }

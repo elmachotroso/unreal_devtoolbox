@@ -11,6 +11,8 @@ class USkeletalMesh;
 class UAnimBlueprint;
 class UAnimationAsset;
 class IPersonaPreviewScene;
+struct FPersonaPreviewSceneDetailsOptions;
+class IDetailLayoutBuilder;
 
 /**
  * Reusable 'Persona' features for asset editors concerned with USkeleton-related assets
@@ -51,7 +53,7 @@ public:
 	/**
 	 * Get the preview mesh, according to context (mesh, skeleton or animation etc.).
 	 * Note that this returns the preview mesh that is set for the asset currently being edited, which may be different
-	 * from the one displayed int he viewport.
+	 * from the one displayed in the viewport.
 	 */
 	virtual USkeletalMesh* GetPreviewMesh() const = 0;
 
@@ -81,6 +83,8 @@ public:
 	 */
 	virtual void SetCustomData(const int32 Key, const int32 CustomData) {}
 
+	/** Callback to customize the Preview Scene Settings details tab. Different asset types require unique options. */
+	virtual void CustomizeSceneSettings(IDetailLayoutBuilder& DetailBuilder) {};
 	
 	/** Get the context in which this toolkit is being used (usually the class name of the asset) */
 	virtual FName GetContext() const = 0;

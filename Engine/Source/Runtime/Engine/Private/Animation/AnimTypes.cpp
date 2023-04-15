@@ -8,7 +8,7 @@
 #include "Animation/MirrorDataTable.h"
 #include "UObject/AnimObjectVersion.h"
 
-#define NOTIFY_TRIGGER_OFFSET KINDA_SMALL_NUMBER;
+#define NOTIFY_TRIGGER_OFFSET UE_KINDA_SMALL_NUMBER
 
 float GetTriggerTimeOffsetForType(EAnimEventTriggerOffsets::Type OffsetType)
 {
@@ -109,7 +109,6 @@ bool FAnimNotifyEvent::IsBranchingPoint() const
 {
 	return GetLinkedMontage() && ((MontageTickType == EMontageNotifyTickType::BranchingPoint) || (Notify && Notify->bIsNativeBranchingPoint) || (NotifyStateClass && NotifyStateClass->bIsNativeBranchingPoint));
 }
-
 
 void FAnimNotifyEvent::SetTime(float NewTime, EAnimLinkMethod::Type ReferenceFrame /*= EAnimLinkMethod::Absolute*/)
 {

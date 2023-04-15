@@ -2,15 +2,16 @@
 
 #include "RemoteControlUIModule.h"
 
-#include "AssetToolsModule.h"
+#include "AssetEditor/RemoteControlPresetEditorToolkit.h"
 #include "AssetTools/RemoteControlPresetActions.h"
+#include "AssetToolsModule.h"
 #include "Commands/RemoteControlCommands.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "EditorStyleSet.h"
-#include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "IRemoteControlModule.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Kismet2/ComponentEditorUtils.h"
 #include "MaterialEditor/DEditorParameterValue.h"
@@ -21,37 +22,38 @@
 #include "RemoteControlInstanceMaterial.h"
 #include "RemoteControlPreset.h"
 #include "RemoteControlSettings.h"
-#include "AssetEditor/RemoteControlPresetEditorToolkit.h"
 #include "ScopedTransaction.h"
 #include "Styling/AppStyle.h"
+#include "Styling/AppStyle.h"
 #include "Textures/SlateIcon.h"
+#include "UI/Action/SRCActionPanel.h"
+#include "UI/Behaviour/Builtin/Conditional/SRCBehaviourConditional.h"
+#include "UI/Behaviour/SRCBehaviourPanel.h"
 #include "UI/Customizations/FPassphraseCustomization.h"
 #include "UI/Customizations/RemoteControlEntityCustomization.h"
-#include "UI/SRCPanelExposedField.h"
-#include "UI/SRCPanelExposedActor.h"
 #include "UI/RemoteControlPanelStyle.h"
+#include "UI/SRCPanelExposedActor.h"
 #include "UI/SRCPanelExposedEntitiesList.h"
+#include "UI/SRCPanelExposedField.h"
 #include "UI/SRemoteControlPanel.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
 #define LOCTEXT_NAMESPACE "RemoteControlUI"
 
-const FName FRemoteControlUIModule::EntityDetailsTabName = "RemoteControl_EntityDetails";
 const FName FRemoteControlUIModule::RemoteControlPanelTabName = "RemoteControl_RemoteControlPanel";
+const FString IRemoteControlUIModule::SettingsIniSection = TEXT("RemoteControl");
 
-static const FName DetailsTabIdentifiers[] = {
+static const FName DetailsTabIdentifiers_LevelEditor[] = {
 	"LevelEditorSelectionDetails",
 	"LevelEditorSelectionDetails2",
 	"LevelEditorSelectionDetails3",
 	"LevelEditorSelectionDetails4"
 };
 
+static const int32 DetailsTabIdentifiers_LevelEditor_Count = 4;
+
 FRCExposesPropertyArgs::FRCExposesPropertyArgs()
-	: PropertyHandle(nullptr)
-	, OwnerObject(nullptr)
-	, PropertyPath(TEXT(""))
-	, Property(nullptr)
-	, Id(FGuid::NewGuid())
+	: Id(FGuid::NewGuid())
 {
 }
 
@@ -93,7 +95,7 @@ FRCExposesPropertyArgs::EType FRCExposesPropertyArgs::GetType() const
 	{
 		return EType::E_Handle;
 	}
-	if (OwnerObject && !PropertyPath.IsEmpty() && Property)
+	if (OwnerObject.IsValid() && !PropertyPath.IsEmpty() && Property.IsValid())
 	{
 		return EType::E_OwnerObject;
 	}
@@ -117,7 +119,7 @@ FProperty* FRCExposesPropertyArgs::GetProperty() const
 	}
 	else
 	{
-		return Property;
+		return Property.Get();
 	}
 
 	return nullptr;
@@ -172,7 +174,7 @@ namespace RemoteControlUIModule
 		}
 
 		FRCFieldPathInfo RCFieldPathInfo(InPropertyArgs.PropertyPath);
-		RCFieldPathInfo.Resolve(InPropertyArgs.OwnerObject);
+		RCFieldPathInfo.Resolve(InPropertyArgs.OwnerObject.Get());
 		FRCFieldResolvedData ResolvedData = RCFieldPathInfo.GetResolvedData();
 		return CastField<FObjectProperty>(InPropertyArgs.GetProperty());
 	}
@@ -212,7 +214,33 @@ namespace RemoteControlUIModule
 
 	bool IsTransientObjectAllowListed(UObject* Object)
 	{
-		return Object && Object->IsA<UDEditorParameterValue>();
+		if (!Object)
+		{
+			return false;
+		}
+
+		if (Object->IsA<UDEditorParameterValue>())
+		{
+			return true;
+		}
+
+		 // Embedded preset worlds may be part of a transient package.
+		if (UWorld* ObjectWorld = Object->GetWorld())
+		{
+			IRemoteControlModule& RCModule = IRemoteControlModule::Get();
+			TArray<TWeakObjectPtr<URemoteControlPreset>> EmbeddedPresets;
+			RCModule.GetEmbeddedPresets(EmbeddedPresets);
+
+			for (TWeakObjectPtr<URemoteControlPreset> RCPreset : EmbeddedPresets)
+			{
+				if (RCPreset.IsValid() && RCPreset->GetEmbeddedWorld() == ObjectWorld)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 }
 
@@ -239,6 +267,10 @@ void FRemoteControlUIModule::ShutdownModule()
 	UnregisterAssetTools();
 	UnbindRemoteControlCommands();
 	FRemoteControlPanelStyle::Shutdown();
+	SRemoteControlPanel::Shutdown();
+	SRCActionPanel::Shutdown();
+	SRCBehaviourPanel::Shutdown();
+	SRCBehaviourConditional::Shutdown();
 }
 
 FDelegateHandle FRemoteControlUIModule::AddPropertyFilter(FOnDisplayExposeIcon OnDisplayExposeIcon)
@@ -265,34 +297,44 @@ void FRemoteControlUIModule::UnregisterMetadataCustomization(FName MetadataKey)
 
 TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel(URemoteControlPreset* Preset, const TSharedPtr<IToolkitHost>& ToolkitHost)
 {
+	constexpr bool bIsInLiveMode = true;
+
 	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
 	{
-		Panel->SetEditMode(false);
+		Panel->SetLiveMode(bIsInLiveMode);
 	}
 
 	TSharedRef<SRemoteControlPanel> PanelRef = SAssignNew(WeakActivePanel, SRemoteControlPanel, Preset, ToolkitHost)
-		.OnEditModeChange_Lambda(
-			[this](TSharedPtr<SRemoteControlPanel> Panel, bool bEditMode) 
+		.OnLiveModeChange_Lambda(
+			[this](TSharedPtr<SRemoteControlPanel> Panel, bool bLiveMode) 
 			{
-				// Activating the edit mode on a panel sets it as the active panel 
-				if (bEditMode)
+				// Activating the live mode on a panel sets it as the active panel 
+				if (bLiveMode)
 				{
 					if (TSharedPtr<SRemoteControlPanel> ActivePanel = WeakActivePanel.Pin())
 					{
 						if (ActivePanel != Panel)
 						{
-							ActivePanel->SetEditMode(false);
+							ActivePanel->SetLiveMode(true);
 						}
 					}
 					WeakActivePanel = MoveTemp(Panel);
 				}
 			});
 
+	RegisteredRemoteControlPanels.Add(TWeakPtr<SRemoteControlPanel>(PanelRef));
+
 	// NOTE : Reregister the module with the detail panel when this panel is created.
 
 	if (!SharedDetailsPanel.IsValid())
 	{
 		FPropertyEditorModule& PropertyEditor = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		TArray<FName> DetailsTabIdentifiers = Preset->GetDetailsTabIdentifierOverrides();
+
+		if (DetailsTabIdentifiers.Num() == 0)
+		{
+			DetailsTabIdentifiers.Append(DetailsTabIdentifiers_LevelEditor, DetailsTabIdentifiers_LevelEditor_Count);
+		}
 
 		for (const FName& DetailsTabIdentifier : DetailsTabIdentifiers)
 		{
@@ -357,42 +399,26 @@ void FRemoteControlUIModule::UnregisterEvents()
 	FEditorDelegates::PostUndoRedo.RemoveAll(this);
 }
 
-void FRemoteControlUIModule::ToggleEditMode()
-{
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin()) // Check whether the panel is active.
-	{
-		Panel->SetEditMode(Panel->IsInEditMode() ? false : true);
-	}
-}
-
-bool FRemoteControlUIModule::CanToggleEditMode() const
-{
-	return WeakActivePanel.IsValid();
-}
-
-bool FRemoteControlUIModule::IsInEditMode() const
-{
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin()) // Check whether the panel is active.
-	{
-		return Panel->IsInEditMode();
-	}
-
-	return false;
-}
-
 URemoteControlPreset* FRemoteControlUIModule::GetActivePreset() const
 {
-	if (const TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (const TSharedPtr<SRemoteControlPanel> Panel = GetPanelForObject(nullptr))
 	{
 		return Panel->GetPreset();
 	}
 	return nullptr;
 }
 
+uint32 FRemoteControlUIModule::GetRemoteControlAssetCategory() const
+{
+	return RemoteControlAssetCategoryBit;
+}
+
 void FRemoteControlUIModule::RegisterAssetTools()
 {
 	if (FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools"))
 	{
+		RemoteControlAssetCategoryBit = AssetToolsModule->Get().RegisterAdvancedAssetCategory(FName(TEXT("Remote Control")), LOCTEXT("RemoteControlAssetCategory", "Remote Control"));
+
 		RemoteControlPresetActions = MakeShared<FRemoteControlPresetActions>(FRemoteControlPanelStyle::Get().ToSharedRef());
 		AssetToolsModule->Get().RegisterAssetTypeActions(RemoteControlPresetActions.ToSharedRef());
 	}
@@ -410,33 +436,29 @@ void FRemoteControlUIModule::UnregisterAssetTools()
 void FRemoteControlUIModule::BindRemoteControlCommands()
 {
 	FRemoteControlCommands::Register();
-
-	const FRemoteControlCommands& Commands = FRemoteControlCommands::Get();
-
-	IMainFrameModule& MainFrame = FModuleManager::Get().LoadModuleChecked<IMainFrameModule>("MainFrame");
-
-	FUICommandList& ActionList = *MainFrame.GetMainFrameCommandBindings();
-
-	// Toggle Edit Mode
-
-	ActionList.MapAction(Commands.ToggleEditMode,
-		FExecuteAction::CreateRaw(this, &FRemoteControlUIModule::ToggleEditMode),
-		FCanExecuteAction::CreateRaw(this, &FRemoteControlUIModule::CanToggleEditMode),
-		FIsActionChecked::CreateRaw(this, &FRemoteControlUIModule::IsInEditMode),
-		FIsActionButtonVisible::CreateRaw(this, &FRemoteControlUIModule::CanToggleEditMode)
-	);
 }
 
 void FRemoteControlUIModule::UnbindRemoteControlCommands()
 {
-	const FRemoteControlCommands& Commands = FRemoteControlCommands::Get();
+	if (FModuleManager::Get().IsModuleLoaded("MainFrame"))
+	{
+		const FRemoteControlCommands& Commands = FRemoteControlCommands::Get();
 
-	IMainFrameModule& MainFrame = FModuleManager::Get().LoadModuleChecked<IMainFrameModule>("MainFrame");
+		IMainFrameModule& MainFrame = FModuleManager::Get().LoadModuleChecked<IMainFrameModule>("MainFrame");
 
-	FUICommandList& ActionList = *MainFrame.GetMainFrameCommandBindings();
+		FUICommandList& ActionList = *MainFrame.GetMainFrameCommandBindings();
 
-	ActionList.UnmapAction(Commands.ToggleEditMode);
-
+		ActionList.UnmapAction(Commands.SavePreset);
+		ActionList.UnmapAction(Commands.FindPresetInContentBrowser);
+		ActionList.UnmapAction(Commands.ToggleProtocolMappings);
+		ActionList.UnmapAction(Commands.ToggleLogicEditor);
+		ActionList.UnmapAction(Commands.DeleteEntity);
+		ActionList.UnmapAction(Commands.RenameEntity);
+		ActionList.UnmapAction(Commands.CopyItem);
+		ActionList.UnmapAction(Commands.PasteItem);
+		ActionList.UnmapAction(Commands.DuplicateItem);
+	}
+	
 	FRemoteControlCommands::Unregister();
 }
 
@@ -486,11 +508,68 @@ void FRemoteControlUIModule::HandleCreatePropertyRowExtension(const FOnGenerateG
 	WeakDetailsTreeNode = InArgs.OwnerTreeNode;
 }
 
+TSharedPtr<SRemoteControlPanel> FRemoteControlUIModule::GetPanelForObject(const UObject* Object) const
+{
+	if (Object)
+	{
+		if (UWorld* OwnerWorld = Object->GetWorld())
+		{
+			for (const TWeakPtr<SRemoteControlPanel>& RegisteredPanelWeak : RegisteredRemoteControlPanels)
+			{
+				if (RegisteredPanelWeak.IsValid())
+				{
+					TSharedPtr<SRemoteControlPanel> RegisteredPanel = RegisteredPanelWeak.Pin();
+					const URemoteControlPreset* Preset = RegisteredPanel->GetPreset();
+
+					if (Preset && Preset->IsEmbeddedPreset() && Preset->GetEmbeddedWorld() == OwnerWorld)
+					{
+						return RegisteredPanel;
+					}
+				}
+			}
+		}
+	}
+
+	return WeakActivePanel.Pin();
+}
+
+TSharedPtr<SRemoteControlPanel> FRemoteControlUIModule::GetPanelForProperty(const FRCExposesPropertyArgs& InPropertyArgs) const
+{
+	const FRCExposesPropertyArgs::EType ExtensionArgsType = InPropertyArgs.GetType();
+
+	if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_Handle)
+	{
+		TArray<UObject*> OuterObjects;
+		InPropertyArgs.PropertyHandle->GetOuterObjects(OuterObjects);
+
+		if (OuterObjects.Num() > 0)
+		{
+			return GetPanelForObject(OuterObjects[0]);
+		}		
+	}
+	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
+	{
+		return GetPanelForObject(InPropertyArgs.OwnerObject.Get());
+	}
+
+	return GetPanelForObject(nullptr);
+}
+
+TSharedPtr<SRemoteControlPanel> FRemoteControlUIModule::GetPanelForPropertyChangeEvent(const FPropertyChangedEvent& InPropertyChangeEvent) const
+{
+	if (InPropertyChangeEvent.GetNumObjectsBeingEdited() > 0)
+	{
+		return GetPanelForObject(InPropertyChangeEvent.GetObjectBeingEdited(0));
+	}
+
+	return GetPanelForObject(nullptr);
+}
+
 FSlateIcon FRemoteControlUIModule::OnGetExposedIcon(const FRCExposesPropertyArgs& InPropertyArgs) const
 {
 	FName BrushName("NoBrush");
 
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs))
 	{
 		if (Panel->GetPreset())
 		{
@@ -511,7 +590,7 @@ FSlateIcon FRemoteControlUIModule::OnGetExposedIcon(const FRCExposesPropertyArgs
 
 bool FRemoteControlUIModule::CanToggleExposeProperty(const FRCExposesPropertyArgs InPropertyArgs) const
 {
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs))
 	{
 		return InPropertyArgs.IsValid() && ShouldDisplayExposeIcon(InPropertyArgs);
 	}
@@ -522,7 +601,7 @@ bool FRemoteControlUIModule::CanToggleExposeProperty(const FRCExposesPropertyArg
 
 ECheckBoxState FRemoteControlUIModule::GetPropertyExposedCheckState(const FRCExposesPropertyArgs InPropertyArgs) const
 {
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs))
 	{
 		if (Panel->GetPreset())
 		{
@@ -544,7 +623,7 @@ void FRemoteControlUIModule::OnToggleExposeProperty(const FRCExposesPropertyArgs
 		return;
 	}
 
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs))
 	{
 		Panel->ToggleProperty(InPropertyArgs);
 	}
@@ -554,7 +633,7 @@ FRemoteControlUIModule::EPropertyExposeStatus FRemoteControlUIModule::GetPropert
 {
 	if (InPropertyArgs.IsValid())
 	{
-		if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+		if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs))
 		{
 			return Panel->IsExposed(InPropertyArgs) ? EPropertyExposeStatus::Exposed : EPropertyExposeStatus::Unexposed;
 		}
@@ -579,7 +658,7 @@ FSlateIcon FRemoteControlUIModule::OnGetOverrideMaterialsIcon(const FRCExposesPr
 
 bool FRemoteControlUIModule::IsStaticOrSkeletalMaterialProperty(const FRCExposesPropertyArgs InPropertyArgs) const
 {
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin()) // Check whether the panel is active.
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForProperty(InPropertyArgs)) // Check whether the panel is active.
 	{
 		if (Panel->GetPreset() && InPropertyArgs.IsValid()) // Ensure that we have a valid preset and handle.
 		{
@@ -653,7 +732,7 @@ bool FRemoteControlUIModule::ShouldDisplayExposeIcon(const FRCExposesPropertyArg
 	}
 	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
 	{
-		if (!IsAllowedOwnerObjects({ InPropertyArgs.OwnerObject }))
+		if (!IsAllowedOwnerObjects({ InPropertyArgs.OwnerObject.Get()}))
 		{
 			return false;
 		}
@@ -689,7 +768,6 @@ bool FRemoteControlUIModule::ShouldSkipOwnPanelProperty(const FRCExposesProperty
 			return false;
 		}
 
-
 		// Don't display an expose icon for RCEntities since they're only displayed in the Remote Control Panel.
 		if (InProp->GetOwnerStruct() && InProp->GetOwnerStruct()->IsChildOf(FRemoteControlEntity::StaticStruct()))
 		{
@@ -710,7 +788,7 @@ bool FRemoteControlUIModule::ShouldSkipOwnPanelProperty(const FRCExposesProperty
 	}
 	else if (ArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
 	{
-		return CheckOwnProperty(InPropertyArgs.Property);
+		return CheckOwnProperty(InPropertyArgs.Property.Get());
 	}
 
 	return false;
@@ -778,14 +856,14 @@ void FRemoteControlUIModule::UnregisterSettings()
 	}
 }
 
-void FRemoteControlUIModule::OnSettingsModified(UObject*, FPropertyChangedEvent&)
+void FRemoteControlUIModule::OnSettingsModified(UObject*, FPropertyChangedEvent& InPropertyChangeEvent)
 {
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForPropertyChangeEvent(InPropertyChangeEvent))
 	{
 		if (TSharedPtr<SRCPanelExposedEntitiesList> EntityList = Panel->GetEntityList())
 		{
 			EntityList->Refresh();
-		}	
+		}
 	}
 }
 
@@ -858,9 +936,9 @@ void FRemoteControlUIModule::TryOverridingMaterials(const FRCExposesPropertyArgs
 	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
 	{
 		FRCFieldPathInfo RCFieldPathInfo(InPropertyArgs.PropertyPath);
-		RCFieldPathInfo.Resolve(InPropertyArgs.OwnerObject);
+		RCFieldPathInfo.Resolve(InPropertyArgs.OwnerObject.Get());
 		const FRCFieldResolvedData ResolvedData = RCFieldPathInfo.GetResolvedData();
-		FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InPropertyArgs.Property);
+		FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InPropertyArgs.Property.Get());
 
 		if (!ObjectProperty)
 		{
@@ -872,9 +950,9 @@ void FRemoteControlUIModule::TryOverridingMaterials(const FRCExposesPropertyArgs
 		OriginalMaterial = OriginalMaterial ? OriginalMaterial : UMaterial::GetDefaultMaterial(MD_Surface);
 		if (OriginalMaterial)
 		{
-			if (UMeshComponent* MeshComponentToBeModified = GetSelectedMeshComponentToBeModified(InPropertyArgs.OwnerObject, OriginalMaterial))
+			if (UMeshComponent* MeshComponentToBeModified = GetSelectedMeshComponentToBeModified(InPropertyArgs.OwnerObject.Get(), OriginalMaterial))
 			{
-				const int32 NumStaticMaterials = RemoteControlUIModule::GetNumStaticMaterials(InPropertyArgs.OwnerObject);
+				const int32 NumStaticMaterials = RemoteControlUIModule::GetNumStaticMaterials(InPropertyArgs.OwnerObject.Get());
 				if (NumStaticMaterials > 0)
 				{
 					FScopedTransaction Transaction(LOCTEXT("OverrideMaterial", "Override Material"));
@@ -928,7 +1006,7 @@ UMeshComponent* FRemoteControlUIModule::GetSelectedMeshComponentToBeModified(UOb
 		}
 		else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InMeshComponent))
 		{
-			if (SkeletalMeshComponent->SkeletalMesh == InOwnerObject)
+			if (SkeletalMeshComponent->GetSkeletalMeshAsset() == InOwnerObject)
 			{
 				ModifinedComponent = InMeshComponent;
 			}
@@ -993,7 +1071,7 @@ void FRemoteControlUIModule::RefreshPanels()
 		SharedDetailsPanel->ForceRefresh();
 	}
 
-	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	if (TSharedPtr<SRemoteControlPanel> Panel = GetPanelForObject(nullptr))
 	{
 		Panel->Refresh();
 	}
@@ -1012,6 +1090,23 @@ TSharedPtr<SRCPanelTreeNode> FRemoteControlUIModule::GenerateEntityWidget(const 
 	}
 
 	return nullptr;
+}
+
+void FRemoteControlUIModule::UnregisterRemoteControlPanel(SRemoteControlPanel* Panel)
+{
+	if (!Panel)
+	{
+		return;
+	}
+
+	for (int32 PanelIndex = 0; PanelIndex < RegisteredRemoteControlPanels.Num(); ++PanelIndex)
+	{
+		if (RegisteredRemoteControlPanels[PanelIndex].HasSameObject(Panel))
+		{
+			RegisteredRemoteControlPanels.RemoveAt(PanelIndex);
+			return;
+		}
+	}
 }
 
 IMPLEMENT_MODULE(FRemoteControlUIModule, RemoteControlUI);

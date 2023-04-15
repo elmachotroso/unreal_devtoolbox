@@ -12,6 +12,8 @@
 #include "Misc/App.h"
 #include "GameplayTagsManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistry)
+
 #define LOCTEXT_NAMESPACE "DataRegistryEditor"
 
 UDataRegistry::UDataRegistry()
@@ -424,7 +426,7 @@ bool UDataRegistry::ResolveDataRegistryId(FDataRegistryLookup& OutLookup, const 
 		}
 		
 		FName ResolvedName = MapIdToResolvedName(ItemId, Source);
-		EDataRegistryAvailability Availability = Source->GetItemAvailability(ResolvedName, PrecachedDataPtr);
+		EDataRegistryAvailability Availability = ResolvedName == NAME_None ? EDataRegistryAvailability::DoesNotExist : Source->GetItemAvailability(ResolvedName, PrecachedDataPtr);
 
 		// If we know it doesn't exist, don't add this to the lookup
 		if (Availability != EDataRegistryAvailability::DoesNotExist)
@@ -921,6 +923,10 @@ void UDataRegistry::RefreshRuntimeSources()
 		{
 			if (IsInitialized() && !Source->IsInitialized())
 			{
+				if (GUObjectArray.IsDisregardForGC(this))
+				{
+					Source->AddToRoot();
+				}
 				Source->Initialize();
 			}
 
@@ -936,6 +942,10 @@ void UDataRegistry::RefreshRuntimeSources()
 		if (OldSource && OldSource->IsInitialized() && !RuntimeSources.Contains(OldSource))
 		{
 			OldSource->Deinitialize();
+			if (GUObjectArray.IsDisregardForGC(this))
+			{
+				OldSource->RemoveFromRoot();
+			}
 		}
 	}
 
@@ -1190,3 +1200,4 @@ class FTimerManager* UDataRegistry::GetTimerManager()
 }
 
 #undef LOCTEXT_NAMESPACE
+

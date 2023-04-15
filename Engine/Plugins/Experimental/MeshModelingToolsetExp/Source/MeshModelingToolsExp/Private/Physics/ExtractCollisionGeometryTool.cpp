@@ -21,6 +21,7 @@
 
 #include "Physics/PhysicsDataCollection.h"
 #include "Physics/CollisionGeometryVisualization.h"
+#include "Physics/ComponentCollisionUtil.h"
 
 // physics data
 #include "PhysicsEngine/BodySetup.h"
@@ -29,6 +30,8 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "TargetInterfaces/PhysicsDataSource.h"
 #include "ModelingToolTargetUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ExtractCollisionGeometryTool)
 
 using namespace UE::Geometry;
 
@@ -89,6 +92,8 @@ void UExtractCollisionGeometryTool::Setup()
 	AddToolPropertySource(VizSettings);
 	VizSettings->WatchProperty(VizSettings->LineThickness, [this](float NewValue) { bVisualizationDirty = true; });
 	VizSettings->WatchProperty(VizSettings->Color, [this](FColor NewValue) { bVisualizationDirty = true; });
+	VizSettings->WatchProperty(VizSettings->bRandomColors, [this](bool bNewValue) { bVisualizationDirty = true; });
+	VizSettings->WatchProperty(VizSettings->bShowHidden, [this](bool bNewValue) { bVisualizationDirty = true; });
 
 	UBodySetup* BodySetup = UE::ToolTarget::GetPhysicsBodySetup(Target);
 	if (BodySetup)
@@ -103,7 +108,7 @@ void UExtractCollisionGeometryTool::Setup()
 		PreviewElements->CreateInWorld(UE::ToolTarget::GetTargetActor(Target)->GetWorld(), TargetTransform);
 		
 		UE::PhysicsTools::InitializePreviewGeometryLines(*PhysicsInfo, PreviewElements,
-			VizSettings->Color, VizSettings->LineThickness, 0.0f, 16);
+			VizSettings->Color, VizSettings->LineThickness, 0.0f, 16, VizSettings->bRandomColors);
 
 		ObjectProps = NewObject<UPhysicsObjectToolPropertySet>(this);
 		UE::PhysicsTools::InitializePhysicsToolObjectPropertySet(PhysicsInfo.Get(), ObjectProps);
@@ -222,10 +227,11 @@ void UExtractCollisionGeometryTool::UpdateVisualization()
 {
 	float UseThickness = VizSettings->LineThickness;
 	FColor UseColor = VizSettings->Color;
+	int32 ColorIdx = 0;
 	PreviewElements->UpdateAllLineSets([&](ULineSetComponent* LineSet)
 		{
 			LineSet->SetAllLinesThickness(UseThickness);
-			LineSet->SetAllLinesColor(UseColor);
+			LineSet->SetAllLinesColor(VizSettings->bRandomColors ? LinearColors::SelectFColor(ColorIdx++) : UseColor);
 		});
 	
 	UMaterialInterface* LineMaterial = ToolSetupUtil::GetDefaultLineComponentMaterial(GetToolManager(), !VizSettings->bShowHidden);
@@ -243,97 +249,18 @@ void UExtractCollisionGeometryTool::RecalculateMesh_Simple()
 
 	CurrentMeshParts.Reset();
 
-	FDynamicMeshEditor Editor(&CurrentMesh);
-
 	const FKAggregateGeom& AggGeom = PhysicsInfo->AggGeom;
-
-	for (const FKSphereElem& Sphere : AggGeom.SphereElems)
-	{
-		FSphereGenerator SphereGen;
-		SphereGen.Radius = Sphere.Radius;
-		SphereGen.NumPhi = SphereGen.NumTheta = SphereResolution;
-		SphereGen.bPolygroupPerQuad = false;
-		SphereGen.Generate();
-		FDynamicMesh3 SphereMesh(&SphereGen);
-
-		MeshTransforms::Translate(SphereMesh, FVector3d(Sphere.Center));
-
-		FMeshIndexMappings Mappings;
-		Editor.AppendMesh(&SphereMesh, Mappings);
-		CurrentMeshParts.Add(MakeShared<FDynamicMesh3>(MoveTemp(SphereMesh)));
-	}
-
-
-	for (const FKBoxElem& Box : AggGeom.BoxElems)
-	{
-		FMinimalBoxMeshGenerator BoxGen;
-		BoxGen.Box = UE::Geometry::FOrientedBox3d(
-			FFrame3d(FVector3d(Box.Center), FQuaterniond(Box.Rotation.Quaternion())),
-			0.5*FVector3d(Box.X, Box.Y, Box.Z));
-		BoxGen.Generate();
-		FDynamicMesh3 BoxMesh(&BoxGen);
-
-		// transform not applied because it is just the Center/Rotation
-
-		FMeshIndexMappings Mappings;
-		Editor.AppendMesh(&BoxMesh, Mappings);
-		CurrentMeshParts.Add(MakeShared<FDynamicMesh3>(MoveTemp(BoxMesh)));
-	}
-
-
-	for (const FKSphylElem& Capsule: AggGeom.SphylElems)
-	{
-		FCapsuleGenerator CapsuleGen;
-		CapsuleGen.Radius = Capsule.Radius;
-		CapsuleGen.SegmentLength = Capsule.Length;
-		CapsuleGen.NumHemisphereArcSteps = SphereResolution/4+1;
-		CapsuleGen.NumCircleSteps = SphereResolution;
-		CapsuleGen.bPolygroupPerQuad = false;
-		CapsuleGen.Generate();
-		FDynamicMesh3 CapsuleMesh(&CapsuleGen);
-
-		MeshTransforms::Translate(CapsuleMesh, FVector3d(0,0,-0.5*Capsule.Length) );
-
-		FTransformSRT3d Transform(Capsule.GetTransform());
-		MeshTransforms::ApplyTransform(CapsuleMesh, Transform);
-
-		FMeshIndexMappings Mappings;
-		Editor.AppendMesh(&CapsuleMesh, Mappings);
-		CurrentMeshParts.Add(MakeShared<FDynamicMesh3>(MoveTemp(CapsuleMesh)));
-	}
-
-
-	for (const FKConvexElem& Convex : AggGeom.ConvexElems)
-	{
-		FTransformSRT3d ElemTransform(Convex.GetTransform());
-		FDynamicMesh3 ConvexMesh(EMeshComponents::None);
-		int32 NumVertices = Convex.VertexData.Num();
-		for (int32 k = 0; k < NumVertices; ++k)
-		{
-			ConvexMesh.AppendVertex( FVector3d(Convex.VertexData[k]) );
-		}
-		int32 NumTriangles = Convex.IndexData.Num() / 3;
-		for (int32 k = 0; k < NumTriangles; ++k)
-		{
-			ConvexMesh.AppendTriangle(Convex.IndexData[3*k], Convex.IndexData[3*k+1], Convex.IndexData[3*k+2]);
-		}
-
-		ConvexMesh.ReverseOrientation();
-		ConvexMesh.EnableTriangleGroups(0);
-		ConvexMesh.EnableAttributes();
-		FDynamicMeshUVEditor UVEditor(&ConvexMesh, 0, true);
-		UVEditor.SetPerTriangleUVs();
-		FMeshIndexMappings Mappings;
-		Editor.AppendMesh(&ConvexMesh, Mappings);
-		CurrentMeshParts.Add(MakeShared<FDynamicMesh3>(MoveTemp(ConvexMesh)));
-	}
+	UE::Geometry::ConvertSimpleCollisionToMeshes(AggGeom, CurrentMesh,
+		FTransformSequence3d(), SphereResolution, true, true,
+		[&](int32 ElemType, const FDynamicMesh3& ElemMesh) {
+			CurrentMeshParts.Add(MakeShared<FDynamicMesh3>(ElemMesh));
+		});
 
 	for ( int32 k = 0; k < CurrentMeshParts.Num(); ++k)
 	{
 		FDynamicMesh3& MeshPart = *CurrentMeshParts[k];
 		FMeshNormals::InitializeMeshToPerTriangleNormals(&MeshPart);
 	}
-	FMeshNormals::InitializeMeshToPerTriangleNormals(&CurrentMesh);
 
 	PreviewMesh->UpdatePreview(&CurrentMesh);
 
@@ -354,43 +281,10 @@ void UExtractCollisionGeometryTool::RecalculateMesh_Complex()
 	bool bMeshErrors = false;
 
 	IInterface_CollisionDataProvider* CollisionProvider = UE::ToolTarget::GetPhysicsCollisionDataProvider(Target);
-	if (CollisionProvider && CollisionProvider->ContainsPhysicsTriMeshData(true))
+	if (CollisionProvider)
 	{
-		FTriMeshCollisionData CollisionData;
-		if (CollisionProvider->GetPhysicsTriMeshData(&CollisionData, true))
-		{
-			TArray<int32> VertexIDMap;
-			for (int32 k = 0; k < CollisionData.Vertices.Num(); ++k)
-			{
-				int32 vid = CurrentMesh.AppendVertex((FVector)CollisionData.Vertices[k]);
-				VertexIDMap.Add(vid);
-			}
-			for (const FTriIndices& TriIndices : CollisionData.Indices)
-			{
-				FIndex3i Triangle(TriIndices.v0, TriIndices.v1, TriIndices.v2);
-				int32 tid = CurrentMesh.AppendTriangle(Triangle);
-				if (tid < 0)
-				{
-					bMeshErrors = true;
-				}
-			}
-
-			if (Settings->bWeldEdges)
-			{
-				FMergeCoincidentMeshEdges Weld(&CurrentMesh);
-				Weld.OnlyUniquePairs = true;
-				Weld.Apply();
-				Weld.OnlyUniquePairs = false;
-				Weld.Apply();
-			}
-
-			if (!CollisionData.bFlipNormals)		// collision mesh has reversed orientation
-			{
-				CurrentMesh.ReverseOrientation(false);
-			}
-
-			FMeshNormals::InitializeMeshToPerTriangleNormals(&CurrentMesh);
-		}
+		FTransformSequence3d Transform;
+		UE::Geometry::ConvertComplexCollisionToMeshes(CollisionProvider, CurrentMesh, FTransformSequence3d(), bMeshErrors, true, true);
 	}
 
 	PreviewMesh->UpdatePreview(&CurrentMesh);

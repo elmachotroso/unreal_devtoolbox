@@ -8,6 +8,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/SkeletalMesh.h"
 #include "Components/SceneComponent.h"
 #include "Interfaces/Interface_AsyncCompilation.h"
 #include "Engine/TextureStreamingTypes.h"
@@ -15,6 +16,7 @@
 #include "Containers/SortedMap.h"
 #include "LODSyncInterface.h"
 #include "BoneContainer.h"
+#include "Rendering/MorphTargetVertexInfoBuffers.h"
 #include "SkinnedMeshComponent.generated.h"
 
 enum class ESkinCacheUsage : uint8;
@@ -28,6 +30,8 @@ struct FSkelMeshRenderSection;
 class FPositionVertexBuffer;
 class UMeshDeformer;
 class UMeshDeformerInstance;
+class UMeshDeformerInstanceSettings;
+class USkinnedAsset;
 
 DECLARE_DELEGATE_OneParam(FOnAnimUpdateRateParamsCreated, FAnimUpdateRateParameters*)
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnTickPose, USkinnedMeshComponent* /*SkinnedMeshComponent*/, float /*DeltaTime*/, bool /*bNeedsValidRootMotion*/)
@@ -108,38 +112,65 @@ namespace EBoneSpaces
 	};
 }
 
-/** Struct used to indicate one active morph target that should be applied to this USkeletalMesh when rendered. */
-struct FActiveMorphTarget
+/** WeightIndex is an into the MorphTargetWeights array */
+using FMorphTargetWeightMap = TMap<const UMorphTarget* /* MorphTarget */, int32 /* WeightIndex */>;
+
+/** An external morph target set. External morph targets are managed by systems outside of the skinned meshes. */
+struct ENGINE_API FExternalMorphSet
 {
-	/** The Morph Target that we want to apply. */
-	class UMorphTarget* MorphTarget;
+	/** A name for this set, useful for debugging. */
+	FName Name = FName(TEXT("Unknown"));
 
-	/** Index into the array of weights for the Morph target, between 0.0 and 1.0. */
-	int32 WeightIndex;
+	/** The GPU compressed morph buffers. */
+	FMorphTargetVertexInfoBuffers MorphBuffers;
+};
 
-	FActiveMorphTarget()
-		: MorphTarget(nullptr)
-		, WeightIndex(-1)
-	{
-	}
+/** The map of external morph sets registered on the skinned mesh component. */
+using FExternalMorphSets = TMap<int32, TSharedPtr<FExternalMorphSet>>;
 
-	FActiveMorphTarget(class UMorphTarget* InTarget, int32 InWeightIndex)
-	:	MorphTarget(InTarget)
-	,	WeightIndex(InWeightIndex)
-	{
-	}
+/** The weight data for a specific external morph set. */
+struct ENGINE_API FExternalMorphSetWeights
+{
+	/** Update the number of active morph targets. */
+	void UpdateNumActiveMorphTargets();
 
-	bool operator==(const FActiveMorphTarget& Other) const
-	{
-		// if target is same, we consider same 
-		// any equal operator to check if it's same, 
-		// we just check if this is same anim
-		return MorphTarget == Other.MorphTarget;
-	}
+	/** Set all weights to 0. Optionally set the NumActiveMorphTargets to zero as well. */
+	void ZeroWeights(bool bZeroNumActiveMorphTargets=true);
+
+	/** The debug name. */
+	FName Name = FName(TEXT("Unknown ExternalMorphSetWeights"));
+
+	/** The weights, which can also be negative and go beyond 1.0 or -1.0. */
+	TArray<float> Weights;
+
+	/** The number of active morph targets. */
+	int32 NumActiveMorphTargets = 0;
+
+	/** The treshold used to determine if a morph target is active or not. Any weight equal to or above this value is seen as active morph target. */
+	float ActiveWeightThreshold = 0.001f;
+};
+
+/** The morph target weight data for all external morph target sets. */
+struct ENGINE_API FExternalMorphWeightData
+{
+	/** Update the number of active morph targets for all sets. */
+	void UpdateNumActiveMorphTargets();
+
+	/** Reset the morph target sets. */
+	void Reset() { MorphSets.Reset(); NumActiveMorphTargets = 0; }
+
+	/** Check if we have active morph targets or not. */
+	bool HasActiveMorphs() const { return (NumActiveMorphTargets > 0); }
+
+	/** The map with a collection of morph sets. Each set can contains multiple morph targets. */
+	TMap<int32, FExternalMorphSetWeights> MorphSets;
+
+	/** The number of active morph targets. */
+	int32 NumActiveMorphTargets = 0;
 };
 
 /** Vertex skin weight info supplied for a component override. */
-USTRUCT(BlueprintType, meta = (HasNativeMake = "Engine.KismetRenderingLibrary.MakeSkinWeightInfo", HasNativeBreak = "Engine.KismetRenderingLibrary.BreakSkinWeightInfo"))
+USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/Engine.KismetRenderingLibrary.MakeSkinWeightInfo", HasNativeBreak = "/Script/Engine.KismetRenderingLibrary.BreakSkinWeightInfo"))
 struct FSkelMeshSkinWeightInfo
 {
 	GENERATED_USTRUCT_BODY()
@@ -192,7 +223,7 @@ struct FVertexOffsetUsage
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (Bitmask, BitmaskEnum = EVertexOffsetUsageType))
+	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (Bitmask, BitmaskEnum = "/Script/Engine.EVertexOffsetUsageType"))
 	int32 Usage = 0;
 };
 
@@ -203,7 +234,6 @@ struct FVertexOffsetUsage
  *
  * @see USkeletalMeshComponent
 */
-
 UCLASS(hidecategories=Object, config=Engine, editinlinenew, abstract)
 class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncInterface
 {
@@ -213,20 +243,33 @@ class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncI
 	friend class FSkinnedMeshComponentRecreateRenderStateContext;
 
 	/** The skeletal mesh used by this component. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Mesh", meta = (DisallowedClasses = "DestructibleMesh"))
+	UE_DEPRECATED(5.1, "Replaced by SkinnedAsset. Use GetSkinnedAsset()/SetSkinnedAsset() instead, or GetSkeletalMeshAsset/SetSkeletalMeshAsset() when called from a USkeletalMeshComponent.")
+	UPROPERTY(EditAnywhere, Setter = SetSkeletalMesh_DEPRECATED, BlueprintGetter = GetSkeletalMesh_DEPRECATED, Category = "Mesh|SkeletalAsset", meta = (DisallowedClasses = "/Script/ApexDestruction.DestructibleMesh", DeprecatedProperty, DeprecationMessage = "Use USkeletalMeshComponent::GetSkeletalMeshAsset() or GetSkinnedAsset() instead."))
 	TObjectPtr<class USkeletalMesh> SkeletalMesh;
 
+private:
+	/** The skinned asset used by this component. */
+	UE_DEPRECATED(5.1, "This property isn't deprecated, but getter and setter must be used instead in order to preserve backward compatibility with the SkeletalMesh pointer.")
+	UPROPERTY(BlueprintGetter = GetSkinnedAsset, Category = "Mesh")
+	TObjectPtr<class USkinnedAsset> SkinnedAsset;
+
+public:
 	//
-	// MasterPoseComponent.
+	// LeaderPoseComponent.
 	//
 	
 	/**
 	 *	If set, this SkeletalMeshComponent will not use its SpaceBase for bone transform, but will
-	 *	use the component space transforms from the MasterPoseComponent. This is used when constructing a character using multiple skeletal meshes sharing the same
+	 *	use the component space transforms from the LeaderPoseComponent. This is used when constructing a character using multiple skeletal meshes sharing the same
 	 *	skeleton within the same Actor.
 	 */
-	UPROPERTY(BlueprintReadOnly, Category="Mesh")
+	UPROPERTY(BlueprintReadOnly, Category = "Mesh")
+	TWeakObjectPtr<USkinnedMeshComponent> LeaderPoseComponent;
+
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "This property is deprecated. Please use LeaderPoseComponent instead")
 	TWeakObjectPtr<USkinnedMeshComponent> MasterPoseComponent;
+#endif // WITH_EDITORONLY_DATA
 
 	/**
 	 * How this Component's LOD uses the skin cache feature. Auto will defer to the asset's (SkeletalMesh) option. If Ray Tracing is enabled, will imply Enabled
@@ -234,13 +277,29 @@ class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncI
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mesh")
 	TArray<ESkinCacheUsage> SkinCacheUsage;
 
-	/** If set then the MeshDeformer will be used instead of the fixed animation pipeline. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer")
+protected:
+	/** If true, MeshDeformer will be used. If false, use the default mesh deformer on the SkeletalMesh. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer", meta = (InlineEditConditionToggle))
+	bool bSetMeshDeformer = false;
+
+	/** The mesh deformer to use. If no mesh deformer is set from here or the SkeletalMesh, then we fall back to the fixed function deformation. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer", meta = (editcondition = "bSetMeshDeformer"))
 	TObjectPtr<UMeshDeformer> MeshDeformer;
 
+	/** Get the currently active MeshDeformer. This may come from the SkeletalMesh default or the Component override. */
+	UMeshDeformer* GetActiveMeshDeformer() const;
+
+	/** Object containing instance settings for the bound MeshDeformer. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Instanced, Category = "Deformer", meta = (DisplayName = "Deformer Settings", EditCondition = "MeshDeformerInstanceSettings!=nullptr", ShowOnlyInnerProperties))
+	TObjectPtr<UMeshDeformerInstanceSettings> MeshDeformerInstanceSettings;
+
 	/** Object containing state for the bound MeshDeformer. */
-	UPROPERTY(Transient)
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Deformer")
 	TObjectPtr<UMeshDeformerInstance> MeshDeformerInstance;
+
+public:
+	/** Get the currently active MeshDeformer Instance. */
+	UMeshDeformerInstance const* GetMeshDeformerInstance() const { return MeshDeformerInstance; }
 
 	/** const getters for previous transform idea */
 	const TArray<uint8>& GetPreviousBoneVisibilityStates() const
@@ -255,8 +314,8 @@ class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncI
 
 	uint32 GetBoneTransformRevisionNumber() const 
 	{
-		const USkinnedMeshComponent* MasterPoseComponentPtr = MasterPoseComponent.Get();
-		return (MasterPoseComponentPtr ? MasterPoseComponentPtr->CurrentBoneTransformRevisionNumber : CurrentBoneTransformRevisionNumber);
+		const USkinnedMeshComponent* LeaderPoseComponentPtr = LeaderPoseComponent.Get();
+		return (LeaderPoseComponentPtr ? LeaderPoseComponentPtr->CurrentBoneTransformRevisionNumber : CurrentBoneTransformRevisionNumber);
 	}
 
 	/* this update renderer with new revision number twice so to clear bone velocity for motion blur or temporal AA */
@@ -279,6 +338,9 @@ protected:
 	TArray<FTransform> PreviousComponentSpaceTransformsArray;
 
 protected:
+	/** The bounds radius at the point we last notified the streamer of a bounds radius change */
+	float LastStreamerUpdateBoundsRadius;
+
 	/** The index for the ComponentSpaceTransforms buffer we can currently write to */
 	int32 CurrentEditableComponentTransforms;
 
@@ -288,49 +350,49 @@ protected:
 	/** current bone transform revision number */
 	uint32 CurrentBoneTransformRevisionNumber;
 
-	/** Incremented every time the master bone map changes. Used to keep in sync with any duplicate data needed by other threads */
-	int32 MasterBoneMapCacheCount;
+	/** Incremented every time the leader bone map changes. Used to keep in sync with any duplicate data needed by other threads */
+	int32 LeaderBoneMapCacheCount;
 
 	/** 
-	 * If set, this component has slave pose components that are associated with this 
+	 * If set, this component has follower pose components that are associated with this 
 	 * Note this is weak object ptr, so it will go away unless you have other strong reference
 	 */
-	TArray< TWeakObjectPtr<USkinnedMeshComponent> > SlavePoseComponents;
+	TArray< TWeakObjectPtr<USkinnedMeshComponent> > FollowerPoseComponents;
 
 	/**
-	 *	Mapping between bone indices in this component and the parent one. Each element is the index of the bone in the MasterPoseComponent.
+	 *	Mapping between bone indices in this component and the parent one. Each element is the index of the bone in the LeaderPoseComponent.
 	 *	Size should be the same as USkeletalMesh.RefSkeleton size (ie number of bones in this skeleton).
 	 */
-	TArray<int32> MasterBoneMap;
+	TArray<int32> LeaderBoneMap;
 
-	/** Cached relative transform for slave bones that are missing in the master */
-	struct FMissingMasterBoneCacheEntry
+	/** Cached relative transform for follower bones that are missing in the leader */
+	struct FMissingLeaderBoneCacheEntry
 	{
-		FMissingMasterBoneCacheEntry()
+		FMissingLeaderBoneCacheEntry()
 			: RelativeTransform(FTransform::Identity)
 			, CommonAncestorBoneIndex(INDEX_NONE)
 		{}
 
-		FMissingMasterBoneCacheEntry(const FTransform& InRelativeTransform, int32 InCommonAncestorBoneIndex)
+		FMissingLeaderBoneCacheEntry(const FTransform& InRelativeTransform, int32 InCommonAncestorBoneIndex)
 			: RelativeTransform(InRelativeTransform)
 			, CommonAncestorBoneIndex(InCommonAncestorBoneIndex)
 		{}
 
 		/** 
 		 * Relative transform of the missing bone's ref pose, based on the earliest common ancestor 
-		 * this will be equivalent to the component space transform of the bone had it existed in the master. 
+		 * this will be equivalent to the component space transform of the bone had it existed in the leader. 
 		 */
 		FTransform RelativeTransform;
 
-		/** The index of the earliest common ancestor of the master mesh. Index is the bone index in *this* mesh. */
+		/** The index of the earliest common ancestor of the leader mesh. Index is the bone index in *this* mesh. */
 		int32 CommonAncestorBoneIndex;
 	};
 
 	/**  
 	 * Map of missing bone indices->transforms so that calls to GetBoneTransform() succeed when bones are not
-	 * present in a master mesh when using master-pose. Index key is the bone index of *this* mesh.
+	 * present in a leader mesh when using leader-pose. Index key is the bone index of *this* mesh.
 	 */
-	TMap<int32, FMissingMasterBoneCacheEntry> MissingMasterBoneMap;
+	TMap<int32, FMissingLeaderBoneCacheEntry> MissingLeaderBoneMap;
 
 	/**
 	*	Mapping for socket overrides, key is the Source socket name and the value is the override socket name
@@ -356,8 +418,41 @@ protected:
 	TSharedPtr<FSkelMeshRefPoseOverride> RefPoseOverride;
 
 public:
+	const TArray<int32>& GetLeaderBoneMap() const { return LeaderBoneMap; }
 
-	const TArray<int32>& GetMasterBoneMap() const { return MasterBoneMap; }
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use the GetLeaderBoneMap.")
+	const TArray<int32>& GetMasterBoneMap() const { return GetLeaderBoneMap(); }
+
+	/** Get the weights in read-only mode for a given external morph target set at a specific LOD. */
+	const FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD) const { return ExternalMorphWeightData[LOD]; }
+
+	/** Get the weights for a given external morph target set at a specific LOD. */
+	FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD) { return ExternalMorphWeightData[LOD]; }
+
+	/**
+	 * Register an external set of GPU compressed morph targets.
+	 * These compressed morph targets are GPU only morph targets that will not appear inside the UI and are owned by external systems.
+	 * Every set of these morph targets has some unique ID.
+	 * @param LOD The LOD index.
+	 * @param ID The unique ID for this set of morph targets.
+	 * @param MorphSet A shared pointer to a morph set, which basically contains a GPU friendly morph buffer. This buffer should be owned by an external system that calls this method.
+	 */
+	void AddExternalMorphSet(int32 LOD, int32 ID, TSharedPtr<FExternalMorphSet> MorphSet);
+
+	/** Remove a given set of external GPU based morph targets. */
+	void RemoveExternalMorphSet(int32 LOD, int32 ID);
+
+	/** Clear all externally registered morph target buffers. */
+	void ClearExternalMorphSets(int32 LOD);
+
+	/** Do we have a given set of external morph targets? */
+	bool HasExternalMorphSet(int32 LOD, int32 ID) const;
+
+	/** Get the external morph sets for a given LOD. */
+	const FExternalMorphSets& GetExternalMorphSets(int32 LOD) const { return ExternalMorphSets[LOD]; }
+
+	/** Get the array of external morph target sets. It is an array, one entry for each LOD. */
+	const TArray<FExternalMorphSets>& GetExternalMorphSetsArray() const { return ExternalMorphSets; }
 
 	/** 
 	 * Get CPU skinned vertices for the specified LOD level. Includes morph targets if they are enabled.
@@ -383,11 +478,22 @@ public:
 	void SetDebugDrawColor(const FLinearColor& InColor) { DebugDrawColor = InColor; }
 #endif
 
-	/** Array indicating all active morph targets. This array is updated inside RefreshBoneTransforms based on the Anim Blueprint. */
-	TArray<FActiveMorphTarget> ActiveMorphTargets;
+	/** Array indicating all active morph targets. This map is updated inside RefreshBoneTransforms based on the Anim Blueprint. */
+	FMorphTargetWeightMap ActiveMorphTargets;
 
 	/** Array of weights for all morph targets. This array is updated inside RefreshBoneTransforms based on the Anim Blueprint. */
 	TArray<float> MorphTargetWeights;
+
+	/** The external morph target set weight data, for each LOD. This data is (re)initialized by RefreshExternalMorphTargetWeights(). */
+	TArray<FExternalMorphWeightData> ExternalMorphWeightData;
+
+	/**
+	 * External GPU based morph target buffers, for each LOD.
+	 * This contains an additional set of GPU only morphs that come from external other systems that generate morph targets.
+	 * These morph targets can only be updated on the GPU, will not be serialized as part of the Skeletal Mesh, and will not show up in the editors morph target list.
+	 * Every set of external morph targets has some given ID. Each LOD level has a map indexed by LOD number.
+	 */
+	TArray<FExternalMorphSets> ExternalMorphSets;
 
 #if WITH_EDITORONLY_DATA
 private:
@@ -503,12 +609,17 @@ public:
 	uint8 bOverrideMinLod:1;
 
 	/** 
-	 * When true, we will just using the bounds from our MasterPoseComponent.  This is useful for when we have a Mesh Parented
+	 * When true, we will just using the bounds from our LeaderPoseComponent.  This is useful for when we have a Mesh Parented
 	 * to the main SkelMesh (e.g. outline mesh or a full body overdraw effect that is toggled) that is always going to be the same
 	 * bounds as parent.  We want to do no calculations in that case.
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = SkeletalMesh)
-	uint8 bUseBoundsFromMasterPoseComponent:1;
+	uint8 bUseBoundsFromLeaderPoseComponent : 1;
+
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "This property is deprecated. Please use bUseBoundsFromLeaderPoseComponent instead")
+	uint8 bUseBoundsFromMasterPoseComponent : 1;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Forces the mesh to draw in wireframe mode. */
 	UPROPERTY()
@@ -595,9 +706,14 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Optimization)
 	uint8 bRenderStatic:1;
 
-	/** Flag that when set will ensure UpdateLODStatus will not take the MasterPoseComponent's current LOD in consideration when determining the correct LOD level (this requires MasterPoseComponent's LOD to always be >= determined LOD otherwise bone transforms could be missing */
+	/** Flag that when set will ensure UpdateLODStatus will not take the LeaderPoseComponent's current LOD in consideration when determining the correct LOD level (this requires LeaderPoseComponent's LOD to always be >= determined LOD otherwise bone transforms could be missing */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = LOD)
+	uint8 bIgnoreLeaderPoseComponentLOD : 1;
+
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "This property is deprecated. Please use bIgnoreLeaderPoseComponentLOD instead")
 	uint8 bIgnoreMasterPoseComponentLOD : 1;
+#endif // WITH_EDITORONLY_DATA
 
 protected:
 	/** Are we using double buffered ComponentSpaceTransforms */
@@ -638,6 +754,10 @@ protected:
 
 	/** Whether mip callbacks have been registered and need to be removed on destroy */
 	uint8 bMipLevelCallbackRegistered:1;
+
+	/** If false, Follower components ShouldTickPose function will return false (default) */
+	UPROPERTY(Transient)
+	uint8 bFollowerShouldTickPose : 1;
 
 #if UE_ENABLE_DEBUG_DRAWING
 private:
@@ -789,8 +909,46 @@ public:
 	 * @param NewMesh New mesh to set for this component
 	 * @param bReinitPose Whether we should keep current pose or reinitialize.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Components|SkinnedMesh")
+	UE_DEPRECATED(5.1, "Use USkeletalMeshComponent::SetSkeletalMesh() or SetSkinnedAssetAndUpdate() instead.")
 	virtual void SetSkeletalMesh(class USkeletalMesh* NewMesh, bool bReinitPose = true);
+
+	/**
+	 * Get the SkeletalMesh rendered for this mesh.
+	 * This function is not technically deprecated but shouldn't be used other than for Blueprint backward compatibility purposes.
+	 * It is used to access the correct SkinnedAsset pointer value through the deprecated SkeletalMesh property in blueprints.
+	 * 
+	 * @return the SkeletalMesh set to this mesh.
+	 */
+	UE_DEPRECATED(5.1, "Use USkeletalMeshComponent::GetSkeletalMeshAsset() or GetSkinnedAsset() instead.")
+	UFUNCTION(BlueprintPure, Category = "Components|SkinnedMesh", DisplayName = "Get Skeletal Mesh", meta = (DeprecatedFunction, DeprecationMessage = "Use USkeletalMeshComponent::GetSkeletalMeshAsset() or GetSkinnedAsset() instead."))
+	class USkeletalMesh* GetSkeletalMesh_DEPRECATED() const;
+
+	UE_DEPRECATED(5.1, "Use USkeletalMeshComponent::SetSkinnedAssetAndUpdate() instead.")
+	void SetSkeletalMesh_DEPRECATED(USkeletalMesh* NewMesh) { SetSkinnedAssetAndUpdate(Cast<USkinnedAsset>(NewMesh)); }
+
+	/**
+	 * Change the SkinnedAsset that is rendered for this Component. Will re-initialize the animation tree etc.
+	 *
+	 * @param NewMesh New mesh to set for this component
+	 * @param bReinitPose Whether we should keep current pose or reinitialize.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	virtual void SetSkinnedAssetAndUpdate(class USkinnedAsset* NewMesh, bool bReinitPose = true);
+
+	/**
+	 * Change the SkinnedAsset that is rendered without reinitializing this Component.
+	 *
+	 * @param InSkinnedAsset New mesh to set for this component
+	 */
+	void SetSkinnedAsset(class USkinnedAsset* InSkinnedAsset);
+
+	/**
+	 * Get the SkinnedAsset rendered for this mesh.
+	 *
+	 * @return the SkinnedAsset set to this mesh.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Components|SkinnedMesh")
+	USkinnedAsset* GetSkinnedAsset() const;
 
 	/**
 	 * Change the MeshDeformer that is used for this Component.
@@ -839,7 +997,7 @@ public:
 
 	bool IsSkinCacheAllowed(int32 LodIdx) const;
 
-	bool HasMeshDeformer() const { return MeshDeformer != nullptr; }
+	bool HasMeshDeformer() const { return GetActiveMeshDeformer() != nullptr; }
 
 	/**
 	 *	Compute SkeletalMesh MinLOD that will be used by this component
@@ -850,17 +1008,19 @@ public:
 	//~ Begin UObject Interface
 	virtual void BeginDestroy() override;
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual FString GetDetailedInfoInternal() const override;
 #if WITH_EDITOR
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
-	//~ End UObject Interface
 
 protected:
 	//~ Begin UActorComponent Interface
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
+	virtual void BeginPlay() override;
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void SendRenderDynamicData_Concurrent() override;
 	virtual void DestroyRenderState_Concurrent() override;
@@ -875,6 +1035,7 @@ public:
 	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
 #endif // WITH_EDITOR
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
+	virtual void UpdateBounds() override;
 	virtual FTransform GetSocketTransform(FName InSocketName, ERelativeTransformSpace TransformSpace = RTS_World) const override;
 	virtual bool DoesSocketExist(FName InSocketName) const override;
 	virtual bool HasAnySockets() const override;
@@ -892,6 +1053,7 @@ public:
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const override;
 	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
 	virtual int32 GetNumMaterials() const override;
+	virtual float GetStreamingScale() const override { return GetComponentTransform().GetMaximumAxisScale(); }
 	//~ End UPrimitiveComponent Interface
 
 	//~ Begin UMeshComponent Interface
@@ -901,6 +1063,12 @@ public:
 	/** Get the pre-skinning local space bounds for this component. */
 	void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const;
 
+	/** Resize the morph target sets array to the number of LODs. */
+	void ResizeExternalMorphTargetSets();
+
+	/** Refresh the external morph target weight buffers. This makes sure the amount of morph sets and number of weights are valid. */
+	void RefreshExternalMorphTargetWeights();
+
 	/**
 	 *	Sets the value of the bForceWireframe flag and reattaches the component as necessary.
 	 *
@@ -908,6 +1076,9 @@ public:
 	 */
 	void SetForceWireframe(bool InForceWireframe);
 
+	/** Precache all PSOs which can be used by the component */
+	virtual void PrecachePSOs() override;
+	
 #if WITH_EDITOR
 	/** Return value of SectionIndexPreview  */
 	int32 GetSectionPreview() const { return SectionIndexPreview;  }
@@ -996,7 +1167,7 @@ public:
 
 	FORCEINLINE	const USkinnedMeshComponent* GetBaseComponent()const
 	{
-		return MasterPoseComponent.IsValid() ? MasterPoseComponent.Get() : this;
+		return LeaderPoseComponent.IsValid() ? LeaderPoseComponent.Get() : this;
 	}
 
 	/**
@@ -1115,8 +1286,8 @@ protected:
 	 */
 	virtual void DispatchParallelTickPose(FActorComponentTickFunction* TickFunction) {}
 
-	/** Helper function for UpdateLODStatus, called with a valid index for InMasterPoseComponentPredictedLODLevel when updating LOD status for slave components */
-	bool UpdateLODStatus_Internal(int32 InMasterPoseComponentPredictedLODLevel, bool bRequestedByMasterPoseComponent = false);
+	/** Helper function for UpdateLODStatus, called with a valid index for InLeaderPoseComponentPredictedLODLevel when updating LOD status for follower components */
+	bool UpdateLODStatus_Internal(int32 InLeaderPoseComponentPredictedLODLevel, bool bRequestedByLeaderPoseComponent = false);
 
 public:
 	/**
@@ -1135,10 +1306,13 @@ public:
 	FOnTickPose OnTickPose;
 
 	/** 
-	 * Update Slave Component. This gets called when MasterPoseComponent!=NULL
+	 * Update Follower Component. This gets called when LeaderPoseComponent!=NULL
 	 * 
 	 */
-	virtual void UpdateSlaveComponent();
+	virtual void UpdateFollowerComponent();
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use UpdateFollowerComponent instead.")
+	virtual void UpdateSlaveComponent() { UpdateFollowerComponent(); }
 
 	/** 
 	 * Update the PredictedLODLevel and MaxDistanceFactor in the component from its MeshObject. 
@@ -1148,6 +1322,7 @@ public:
 	virtual bool UpdateLODStatus();
 
 	/** Get predicted LOD level. This value is usually calculated in UpdateLODStatus, but can be modified by skeletal mesh streaming. */
+	UFUNCTION(BlueprintPure, Category = "Components|SkinnedMesh")
 	int32 GetPredictedLODLevel() const
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -1292,7 +1467,7 @@ protected:
 	/** Update Mesh Bound information based on input
 	 * 
 	 * @param RootOffset	: Root Bone offset from mesh location
-	 *						  If MasterPoseComponent exists, it will applied to MasterPoseComponent's bound
+	 *						  If LeaderPoseComponent exists, it will applied to LeaderPoseComponent's bound
 	 * @param UsePhysicsAsset	: Whether or not to use PhysicsAsset for calculating bound of mesh
 	 */
 	FBoxSphereBounds CalcMeshBound(const FVector3f& RootOffset, bool UsePhysicsAsset, const FTransform& Transform) const;
@@ -1316,33 +1491,55 @@ private:
 	
 public:
 	/**
-	 * Set MasterPoseComponent for this component
+	 * Set LeaderPoseComponent for this component
 	 *
-	 * @param NewMasterBoneComponent New MasterPoseComponent
+	 * @param NewLeaderBoneComponent New LeaderPoseComponent
+	 * @param bForceUpdate If false, the function will be skipped if NewLeaderBoneComponent is the same as currently setup (default)
+	 * @param bInFollowerShouldTickPose If false, Follower components will not execute TickPose (default)
 	 */
-	UFUNCTION(BlueprintCallable, Category="Components|SkinnedMesh")
-	void SetMasterPoseComponent(USkinnedMeshComponent* NewMasterBoneComponent, bool bForceUpdate = false);
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	void SetLeaderPoseComponent(USkinnedMeshComponent* NewLeaderBoneComponent, bool bForceUpdate = false, bool bInFollowerShouldTickPose = false);
 
-	/** Return current active list of slave components */
-	const TArray< TWeakObjectPtr<USkinnedMeshComponent> >& GetSlavePoseComponents() const;
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use SetLeaderPoseComponent instead.")
+	void SetMasterPoseComponent(USkinnedMeshComponent* NewMasterBoneComponent, bool bForceUpdate = false) { SetLeaderPoseComponent(NewMasterBoneComponent, bForceUpdate); }
+
+	/** Return current active list of follower components */
+	const TArray< TWeakObjectPtr<USkinnedMeshComponent> >& GetFollowerPoseComponents() const;
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use GetFollowerPoseComponents instead.")
+	const TArray< TWeakObjectPtr<USkinnedMeshComponent> >& GetSlavePoseComponents() const { return GetFollowerPoseComponents(); }
+
 protected:
-	/** Add a slave component to the SlavePoseComponents array */
-	virtual void AddSlavePoseComponent(USkinnedMeshComponent* SkinnedMeshComponent);
-	/** Remove a slave component from the SlavePoseComponents array */
-	virtual void RemoveSlavePoseComponent(USkinnedMeshComponent* SkinnedMeshComponent);
+	/** Add a follower component to the FollowerPoseComponents array */
+	virtual void AddFollowerPoseComponent(USkinnedMeshComponent* SkinnedMeshComponent);
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use AddFollowerPoseComponent instead.")
+	virtual void AddSlavePoseComponent(USkinnedMeshComponent* SkinnedMeshComponent) { AddFollowerPoseComponent(SkinnedMeshComponent); }
+
+	/** Remove a follower component from the FollowerPoseComponents array */
+	virtual void RemoveFollowerPoseComponent(USkinnedMeshComponent* SkinnedMeshComponent);
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use RemoveFollowerPoseComponent instead.")
+	virtual void RemoveSlavePoseComponent(USkinnedMeshComponent* SkinnedMeshComponent) { RemoveFollowerPoseComponent(SkinnedMeshComponent); }
 
 public:
 	/** 
-	 * Refresh Slave Components if exists
+	 * Refresh Follower Components if exists
 	 * 
 	 * This isn't necessary in any other case except in editor where you need to mark them as dirty for rendering
 	 */
-	void RefreshSlaveComponents();
+	void RefreshFollowerComponents();
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use RefreshFollowerComponents instead.")
+	void RefreshSlaveComponents() { RefreshFollowerComponents(); }
 
 	/**
-	 * Update MasterBoneMap for MasterPoseComponent and this component
+	 * Update LeaderBoneMap for LeaderPoseComponent and this component
 	 */
-	void UpdateMasterBoneMap();
+	void UpdateLeaderBoneMap();
+
+	UE_DEPRECATED(5.1, "This method has been deprecated. Please use UpdateLeaderBoneMap instead.")
+	void UpdateMasterBoneMap() { UpdateLeaderBoneMap(); }
 
 	/**
 	 * @param InSocketName	The name of the socket to find
@@ -1605,10 +1802,10 @@ private:
 	virtual void RefreshMorphTargets() {};
 
 	/**  
-	 * When bones are not resent in a master mesh when using master-pose, we call this to evaluate 
+	 * When bones are not resent in a leader mesh when using leader-pose, we call this to evaluate 
 	 * relative transforms.
 	 */
-	bool GetMissingMasterBoneRelativeTransform(int32 InBoneIndex, FMissingMasterBoneCacheEntry& OutInfo) const;
+	bool GetMissingLeaderBoneRelativeTransform(int32 InBoneIndex, FMissingLeaderBoneCacheEntry& OutInfo) const;
 
 	// BEGIN ILODSyncComponent
 	virtual int32 GetDesiredSyncLOD() const override;

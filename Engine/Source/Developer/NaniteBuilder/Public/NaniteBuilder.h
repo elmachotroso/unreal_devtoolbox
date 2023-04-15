@@ -58,8 +58,9 @@ public:
 	{
 		TArray<FStaticMeshBuildVertex> Vertices;
 		TArray<uint32> TriangleIndices;
-		TArray<FStaticMeshSection, TInlineAllocator<1>> Sections;
+		FStaticMeshSectionArray Sections;
 		float PercentTriangles;
+		float MaxDeviation;
 	};
 
 	virtual bool Build(

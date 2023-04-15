@@ -2,13 +2,25 @@
 
 
 #include "SFilterableObjectList.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
 
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Misc/Attribute.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
 
 #define LOCTEXT_NAMESPACE "SFilterableObjectList"
 
@@ -97,7 +109,7 @@ void SFilterableObjectList::InternalConstruct()
 				.OnClicked( this, &SFilterableObjectList::OnRefreshButtonClicked )
 				[
 					SNew(SImage)
-						.Image( FEditorStyle::GetBrush(TEXT("AnimEditor.RefreshButton")) )
+						.Image( FAppStyle::GetBrush(TEXT("AnimEditor.RefreshButton")) )
 				]
 			]
 		]
@@ -114,7 +126,7 @@ void SFilterableObjectList::InternalConstruct()
 		// The (possibly filtered) list of items
 		+SVerticalBox::Slot()
 			.FillHeight(1)
-			.Padding(2)
+			.Padding(2.0f)
 		[
 			SNew(SBorder)
 			[

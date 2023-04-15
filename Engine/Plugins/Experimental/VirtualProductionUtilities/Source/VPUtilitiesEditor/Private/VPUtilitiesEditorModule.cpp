@@ -5,6 +5,7 @@
 #include "Framework/Docking/WorkspaceItem.h"
 #include "GameplayTagContainer.h"
 #include "Editor.h"
+#include "Engine/Engine.h"
 #include "EditorUtilitySubsystem.h"
 #include "HAL/IConsoleManager.h"
 #include "LevelEditor.h"
@@ -18,13 +19,14 @@
 #include "SGenlockProviderTab.h"
 #include "STimecodeProviderTab.h"
 #include "Textures/SlateIcon.h"
+#include "VPRolesSubsystem.h"
 #include "VPSettings.h"
 #include "VPUtilitiesEditorSettings.h"
 #include "VPUtilitiesEditorStyle.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 
-
+LLM_DEFINE_TAG(VirtualProductionUtilities_VPUtilitiesEditor);
 #define LOCTEXT_NAMESPACE "VPUtilitiesEditor"
 
 DEFINE_LOG_CATEGORY(LogVPUtilitiesEditor);
@@ -34,6 +36,8 @@ const FName FVPUtilitiesEditorModule::PlacementModeCategoryHandle = TEXT("Virtua
 
 void FVPUtilitiesEditorModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(VirtualProductionUtilities_VPUtilitiesEditor);
+
 	FVPUtilitiesEditorStyle::Register();
 
 	CustomUIHandler.Reset(NewObject<UVPCustomUIHandler>());
@@ -52,6 +56,8 @@ void FVPUtilitiesEditorModule::StartupModule()
 
 void FVPUtilitiesEditorModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(VirtualProductionUtilities_VPUtilitiesEditor);
+
 	UnregisterSettings();
 	STimecodeProviderTab::UnregisterNomadTabSpawner();
 	SGenlockProviderTab::UnregisterNomadTabSpawner();
@@ -125,7 +131,7 @@ void FVPUtilitiesEditorModule::RegisterSettings()
 	{
 		FLevelEditorModule::FTitleBarItem Item;
 		Item.Label = LOCTEXT("VPRolesLabel", "VP Roles: ");
-		Item.Value = MakeAttributeLambda([]() { return FText::FromString(GetMutableDefault<UVPSettings>()->GetRoles().ToStringSimple()); });
+		Item.Value = MakeAttributeLambda([]() { return FText::FromString(GEngine->GetEngineSubsystem<UVirtualProductionRolesSubsystem>()->GetActiveRolesString()); });
 		Item.Visibility = MakeAttributeLambda([]() { return GetMutableDefault<UVPSettings>()->bShowRoleInEditor ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; });
 		LevelEditorModule->AddTitleBarItem(VPRoleNotificationBarIdentifier, Item);
 	}

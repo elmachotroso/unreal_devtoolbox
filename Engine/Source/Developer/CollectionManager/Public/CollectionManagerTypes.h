@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/SoftObjectPath.h"
 #include "ISourceControlState.h"
 
 struct ECollectionStorageMode
@@ -186,7 +187,7 @@ struct ECollectionShareType
 /** Controls how the collections manager will recurse when performing work against a given collection */
 struct ECollectionRecursionFlags
 {
-	typedef uint8 Flags;
+	typedef uint32 Flags;
 	enum Flag
 	{
 		/** Include the current collection when performing work */
@@ -260,5 +261,5 @@ public:
 	virtual ~ICollectionRedirectorFollower() {}
 
 	/** Given an object path, will see if it needs to follow any redirectors, and if so, will populate OutNewObjectPath with the new name and return true */
-	virtual bool FixupObject(const FName& InObjectPath, FName& OutNewObjectPath) = 0;
+	virtual bool FixupObject(const FSoftObjectPath& InObjectPath, FSoftObjectPath& OutNewObjectPath) = 0;
 };

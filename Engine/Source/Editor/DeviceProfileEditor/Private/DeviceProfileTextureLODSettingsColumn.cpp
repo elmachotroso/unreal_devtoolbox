@@ -2,16 +2,38 @@
 
 // Module includes
 #include "DeviceProfileTextureLODSettingsColumn.h"
-#include "UObject/UnrealType.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "IPropertyTableCellPresenter.h"
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "HAL/PlatformMath.h"
 // Property table includes
 #include "IPropertyTable.h"
 #include "IPropertyTableCell.h"
+#include "IPropertyTableCellPresenter.h"
+#include "IPropertyTableColumn.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "PropertyHandle.h"
+#include "PropertyPath.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SNullWidget.h"
+
+class IPropertyTableUtilities;
+class SWidget;
+class UObject;
 
 // Misc includes
 
@@ -105,7 +127,7 @@ TSharedRef<class SWidget> FTextureLODSettingsCellPresenter::ConstructDisplayWidg
 	.Padding(0.0f)
 	.VAlign(VAlign_Center)
 	.HAlign(HAlign_Center)
-	.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+	.BorderImage(FAppStyle::GetBrush("NoBorder"))
 	.Content()
 	[
 		SNew(SButton)
@@ -114,7 +136,7 @@ TSharedRef<class SWidget> FTextureLODSettingsCellPresenter::ConstructDisplayWidg
 		.ButtonStyle(FAppStyle::Get(), "DeviceDetails.EditButton")
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("Icons.Edit"))
+			.Image(FAppStyle::GetBrush("Icons.Edit"))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];

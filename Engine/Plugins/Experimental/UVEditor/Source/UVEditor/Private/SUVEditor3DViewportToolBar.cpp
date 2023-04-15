@@ -2,16 +2,16 @@
 
 #include "SUVEditor3DViewportToolBar.h"
 
-#include "UVEditorCommands.h"
 #include "EditorViewportCommands.h"
-#include "EditorStyleSet.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "SEditorViewportToolBarMenu.h"
+#include "SEditorViewportViewMenu.h"
+#include "SUVEditor3DViewport.h"
+#include "Styling/AppStyle.h"
+#include "UVEditorCommands.h"
 #include "UVEditorStyle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
-#include "Editor/UnrealEd/Public/SEditorViewportToolBarMenu.h"
-#include "SEditorViewportViewMenu.h"
-#include "SUVEditor3DViewport.h"
 
 #define LOCTEXT_NAMESPACE "SUVEditor3DViewportToolBar"
 
@@ -71,7 +71,7 @@ TSharedRef<SWidget> SUVEditor3DViewportToolBar::MakeToolBar(const TSharedPtr<FEx
 
 	//// Use a custom style
 	FName ToolBarStyle = "EditorViewportToolBar";
-	ToolbarBuilder.SetStyle(&FEditorStyle::Get(), ToolBarStyle);
+	ToolbarBuilder.SetStyle(&FAppStyle::Get(), ToolBarStyle);
 	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
 
 	ToolbarBuilder.BeginSection("OrbitFlyToggle");
@@ -90,6 +90,15 @@ TSharedRef<SWidget> SUVEditor3DViewportToolBar::MakeToolBar(const TSharedPtr<FEx
 		static FName FlyCameraName = FName(TEXT("FlyCamera"));
 		ToolbarBuilder.AddToolBarButton(FUVEditorCommands::Get().EnableFlyCamera, NAME_None, TAttribute<FText>(), TAttribute<FText>(),
 			TAttribute<FSlateIcon>(FSlateIcon(FUVEditorStyle::Get().GetStyleSetName(), "UVEditor.FlyCamera")), FlyCameraName);
+
+		ToolbarBuilder.EndBlockGroup();
+
+		ToolbarBuilder.BeginBlockGroup();
+
+		// Focus Camera
+		static FName FocusCameraName = FName(TEXT("FocusCamera"));
+		ToolbarBuilder.AddToolBarButton(FUVEditorCommands::Get().SetFocusCamera, NAME_None, TAttribute<FText>(), TAttribute<FText>(),
+			TAttribute<FSlateIcon>(FSlateIcon(FUVEditorStyle::Get().GetStyleSetName(), "UVEditor.FocusCamera")), FocusCameraName);
 
 		ToolbarBuilder.EndBlockGroup();
 	}

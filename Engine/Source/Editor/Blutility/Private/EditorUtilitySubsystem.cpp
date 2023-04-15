@@ -1,18 +1,49 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorUtilitySubsystem.h"
+
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "CoreGlobals.h"
+#include "Editor.h"
 #include "EditorUtilityCommon.h"
-#include "Interfaces/IMainFrameModule.h"
-#include "Engine/Blueprint.h"
-#include "EditorUtilityWidgetBlueprint.h"
-#include "LevelEditor.h"
-#include "IBlutilityModule.h"
-#include "EditorUtilityWidget.h"
-#include "ScopedTransaction.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
 #include "EditorUtilityTask.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintCore.h"
+#include "Framework/Docking/TabManager.h"
+#include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IBlutilityModule.h"
+#include "Interfaces/IMainFrameModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "LevelEditor.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Script.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectBaseUtility.h"
+#include "Widgets/Docking/SDockTab.h"
+
+class FOutputDevice;
+class FSubsystemCollectionBase;
+class UWorld;
 
 #define LOCTEXT_NAMESPACE "EditorUtilitySubsystem"
 
@@ -183,12 +214,17 @@ UEditorUtilityWidget* UEditorUtilitySubsystem::SpawnAndRegisterTab(class UEditor
 	return SpawnAndRegisterTabAndGetID(InBlueprint, InTabID);
 }
 
+UEditorUtilityWidget* UEditorUtilitySubsystem::SpawnAndRegisterTabWithId(class UEditorUtilityWidgetBlueprint* InBlueprint, FName InTabID)
+{
+	return SpawnAndRegisterTabAndGetID(InBlueprint, InTabID);;
+}
+
 void UEditorUtilitySubsystem::RegisterTabAndGetID(class UEditorUtilityWidgetBlueprint* InBlueprint, FName& NewTabID)
 {
 	if (InBlueprint && !IsRunningCommandlet())
 	{
-		FName RegistrationName = FName(*(InBlueprint->GetPathName() + LOCTEXT("ActiveTabSuffix", "_ActiveTab").ToString()));
-		FText DisplayName = FText::FromString(InBlueprint->GetName());
+		FName RegistrationName = NewTabID.IsNone() ? FName(*(InBlueprint->GetPathName() + LOCTEXT("ActiveTabSuffix", "_ActiveTab").ToString())) : FName(*(InBlueprint->GetPathName() + NewTabID.ToString()));
+		FText DisplayName = FText::FromString(FName::NameToDisplayString(InBlueprint->GetName(), false));
 		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 		if (!LevelEditorTabManager->HasTabSpawner(RegistrationName))
@@ -258,6 +294,12 @@ bool UEditorUtilitySubsystem::CloseTabByID(FName NewTabID)
 
 UEditorUtilityWidget* UEditorUtilitySubsystem::FindUtilityWidgetFromBlueprint(class UEditorUtilityWidgetBlueprint* InBlueprint)
 {
+	if (!IsValid(InBlueprint))
+	{ 
+		UE_LOG(LogEditorUtilityBlueprint, Error, TEXT("Found Invalid Blueprint in FindUtilityWidgetFromBlueprint"));
+		return nullptr; 
+	}
+
 	return InBlueprint->GetCreatedWidget();
 }
 
@@ -434,14 +476,7 @@ UClass* UEditorUtilitySubsystem::FindClassByName(const FString& RawTargetName)
 	UClass* ResultClass = nullptr;
 	if (bIsValidClassName)
 	{
-		if (FPackageName::IsShortPackageName(TargetName))
-		{
-			ResultClass = FindObject<UClass>(ANY_PACKAGE, *TargetName);
-		}
-		else
-		{
-			ResultClass = FindObject<UClass>(nullptr, *TargetName);
-		}
+		ResultClass = UClass::TryFindTypeSlow<UClass>(TargetName);
 	}
 
 	// If we still haven't found anything yet, try the asset registry for blueprints that match the requirements
@@ -467,14 +502,14 @@ UClass* UEditorUtilitySubsystem::FindBlueprintClass(const FString& TargetNameRaw
 
 	FARFilter Filter;
 	Filter.bRecursiveClasses = true;
-	Filter.ClassNames.Add(UBlueprintCore::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UBlueprintCore::StaticClass()->GetClassPathName());
 
 	// We enumerate all assets to find any blueprints who inherit from native classes directly - or
 	// from other blueprints.
 	UClass* FoundClass = nullptr;
 	AssetRegistry.EnumerateAssets(Filter, [&FoundClass, TargetName](const FAssetData& AssetData)
 	{
-		if ((AssetData.AssetName.ToString() == TargetName) || (AssetData.ObjectPath.ToString() == TargetName))
+		if ((AssetData.AssetName.ToString() == TargetName) || (AssetData.GetObjectPathString() == TargetName))
 		{
 			if (UBlueprint* BP = Cast<UBlueprint>(AssetData.GetAsset()))
 			{

@@ -59,32 +59,22 @@ private:
 	TArray<FPrimitiveSceneProxy*, SceneRenderingAllocator> Prims;
 };
 
-
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FDistortionPassUniformParameters, RENDERER_API)
-	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER(FVector4f, DistortionParams)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
-
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileDistortionPassUniformParameters, RENDERER_API)
-	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER(FVector4f, DistortionParams)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
-
-
 extern void SetupDistortionParams(FVector4f& DistortionParams, const FViewInfo& View);
 
-class FDistortionMeshProcessor : public FMeshPassProcessor
+class FDistortionMeshProcessor : public FSceneRenderingAllocatorObject<FDistortionMeshProcessor>, public FMeshPassProcessor
 {
 public:
 
 	FDistortionMeshProcessor(
 		const FScene* Scene, 
+		ERHIFeatureLevel::Type FeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand, 
 		const FMeshPassProcessorRenderState& InPassDrawRenderState, 
 		const FMeshPassProcessorRenderState& InDistortionPassStateNoDepthTest,
 		FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 	FMeshPassProcessorRenderState PassDrawRenderStateNoDepthTest;

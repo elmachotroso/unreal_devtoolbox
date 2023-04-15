@@ -4,7 +4,7 @@
 
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 FName FTakeRecorderStyle::StyleName("TakeRecorderStyle");
 
@@ -41,7 +41,7 @@ FTakeRecorderStyle::FTakeRecorderStyle()
 		.SetNormalPadding( FMargin(0,0,0,1) )
 		.SetPressedPadding( FMargin(0,1,0,0) );
 
-	FButtonStyle FlatButton = FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("FlatButton.Success");
+	FButtonStyle FlatButton = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("FlatButton.Success");
 	FlatButton.SetNormalPadding(FMargin(0,0,0,1));
 	FlatButton.SetNormalPadding(FMargin(0,1,0,0));
 
@@ -92,6 +92,7 @@ FTakeRecorderStyle::FTakeRecorderStyle()
 		.SetColorAndOpacity(AlmostWhite);
 
 	FEditableTextBoxStyle EditableTextStyle = FEditableTextBoxStyle()
+		.SetTextStyle(FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
 		.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 		.SetBackgroundImageNormal(FSlateNoResource())
 		.SetBackgroundImageHovered(FSlateNoResource())
@@ -206,7 +207,7 @@ FTakeRecorderStyle::FTakeRecorderStyle()
 	Set("TakeRecorder.TakePresetEditorBorder", new FSlateBoxBrush(RootToContentDir(TEXT("TakePresetEditorBorder.png")), FMargin(4.0f / 16.0f)));
 	Set("TakeRecorder.TakeRecorderReviewBorder", new FSlateBoxBrush(RootToContentDir(TEXT("TakeRecorderReviewBorder.png")), FMargin(4.0f / 16.0f)));
 
-	Set("FontAwesome.28", FSlateFontInfo(FEditorStyle::Get().GetFontStyle("FontAwesome.16").CompositeFont, 28));
+	Set("FontAwesome.28", FSlateFontInfo(FAppStyle::Get().GetFontStyle("FontAwesome.16").CompositeFont, 28));
 
 	FSlateStyleRegistry::RegisterSlateStyle(*this);
 }

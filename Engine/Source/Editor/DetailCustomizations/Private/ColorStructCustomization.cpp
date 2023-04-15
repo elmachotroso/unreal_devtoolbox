@@ -1,19 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/ColorStructCustomization.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Text/STextBlock.h"
-#include "EngineGlobals.h"
-#include "Engine/Engine.h"
-#include "Editor.h"
-#include "ScopedTransaction.h"
-#include "Widgets/Colors/SColorBlock.h"
-#include "DetailWidgetRow.h"
+
+#include "Customizations/MathStructCustomizations.h"
+#include "Delegates/Delegate.h"
 #include "DetailLayoutBuilder.h"
-#include "IPropertyUtilities.h"
-#include "Widgets/Colors/SColorPicker.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IPropertyTypeCustomization.h"
+#include "IPropertyUtilities.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Vector2D.h"
+#include "Math/Vector4.h"
+#include "Misc/Attribute.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+struct FGeometry;
 
 
 #define LOCTEXT_NAMESPACE "FColorStructCustomization"
@@ -46,11 +79,6 @@ void FColorStructCustomization::CustomizeHeader(TSharedRef<class IPropertyHandle
 
 void FColorStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>& InStructPropertyHandle, FDetailWidgetRow& Row)
 {
-	// We'll set up reset to default ourselves
-	const bool bDisplayResetToDefault = false;
-	const FText DisplayNameOverride = FText::GetEmpty();
-	const FText DisplayToolTipOverride = FText::GetEmpty();
-	
 	TSharedPtr<SWidget> ColorWidget;
 	float ContentWidth = 125.0f;
 
@@ -68,7 +96,7 @@ void FColorStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>&
 
 	Row.NameContent()
 	[
-		StructPropertyHandle->CreatePropertyNameWidget(DisplayNameOverride, DisplayToolTipOverride, bDisplayResetToDefault)
+		StructPropertyHandle->CreatePropertyNameWidget()
 	]
 	.ValueContent()
 	.MinDesiredWidth(ContentWidth)
@@ -181,13 +209,11 @@ void FColorStructCustomization::CreateColorPicker(bool bUseAlpha)
 {
 	GEditor->BeginTransaction(FText::Format(LOCTEXT("SetColorProperty", "Edit {0}"), StructPropertyHandle->GetPropertyDisplayName()));
 
-	int32 NumObjects = StructPropertyHandle->GetNumOuterObjects();
-
 	SavedPreColorPickerColors.Empty();
 	TArray<FString> PerObjectValues;
 	StructPropertyHandle->GetPerObjectValues(PerObjectValues);
 
-	for (int32 ObjectIndex = 0; ObjectIndex < NumObjects; ++ObjectIndex)
+	for (int32 ObjectIndex = 0; ObjectIndex < PerObjectValues.Num(); ++ObjectIndex)
 	{
 		if (bIsLinearColor)
 		{
@@ -239,13 +265,11 @@ TSharedRef<SColorPicker> FColorStructCustomization::CreateInlineColorPicker(TWea
 {
 	GEditor->BeginTransaction(FText::Format(LOCTEXT("SetColorProperty", "Edit {0}"), StructPropertyHandle->GetPropertyDisplayName()));
 
-	int32 NumObjects = StructPropertyHandle->GetNumOuterObjects();
-
 	SavedPreColorPickerColors.Empty();
 	TArray<FString> PerObjectValues;
 	StructPropertyHandle->GetPerObjectValues(PerObjectValues);
 
-	for (int32 ObjectIndex = 0; ObjectIndex < NumObjects; ++ObjectIndex)
+	for (int32 ObjectIndex = 0; ObjectIndex < PerObjectValues.Num(); ++ObjectIndex)
 	{
 		if (bIsLinearColor)
 		{

@@ -2,12 +2,14 @@
 
 #include "SOutlinerTreeView.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISceneOutlinerColumn.h"
+#include "ISceneOutlinerMode.h"
 #include "SceneOutlinerPublicTypes.h"
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "SceneOutlinerDragDrop.h"
 #include "SSceneOutliner.h"
+#include "Styling/StyleColors.h"
 
 #include "FolderTreeItem.h"
 
@@ -15,7 +17,7 @@
 
 static void UpdateOperationDecorator(const FDragDropEvent& Event, const FSceneOutlinerDragValidationInfo& ValidationInfo)
 {
-	const FSlateBrush* Icon = ValidationInfo.IsValid() ? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+	const FSlateBrush* Icon = ValidationInfo.IsValid() ? FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 
 	FDragDropOperation* Operation = Event.GetOperation().Get();
 	if (Operation && Operation->IsOfType<FDecoratedDragDropOp>())
@@ -46,7 +48,7 @@ static FReply HandleOnDragDetected( const FGeometry& MyGeometry, const FPointerE
 	auto TablePtr = Table.Pin();
 	if (TablePtr.IsValid() && MouseEvent.IsMouseButtonDown( EKeys::LeftMouseButton ))
 	{
-		auto Operation = TablePtr->GetOutlinerPtr().Pin()->CreateDragDropOperation(TablePtr->GetSelectedItems());
+		auto Operation = TablePtr->GetOutlinerPtr().Pin()->CreateDragDropOperation(MouseEvent, TablePtr->GetSelectedItems());
 
 		if (Operation.IsValid())
 		{
@@ -100,8 +102,12 @@ FReply HandleDrop(TSharedPtr<SSceneOutliner> SceneOutlinerPtr, const FDragDropEv
 	return FReply::Handled();
 }
 
-FReply HandleDropFromWeak(TWeakPtr<SSceneOutliner> SceneOutlinerWeak, const FDragDropEvent& DragDropEvent, ISceneOutlinerTreeItem& DropTarget, FSceneOutlinerDragValidationInfo& ValidationInfo, bool bApplyDrop = false)
+FReply HandleDropFromWeak(TWeakPtr<SSceneOutliner> SceneOutlinerWeak, const FDragDropEvent& DragDropEvent, FSceneOutlinerDragValidationInfo& ValidationInfo, bool bApplyDrop = false)
 {
+	const ISceneOutlinerMode* Mode = SceneOutlinerWeak.IsValid() ? SceneOutlinerWeak.Pin()->GetMode() : nullptr;
+	FFolder::FRootObject RootObject = Mode ? Mode->GetRootObject() : FFolder::GetInvalidRootObject();
+	FFolder RootFolder(RootObject);
+	FFolderTreeItem DropTarget(RootFolder);
 	return HandleDrop(SceneOutlinerWeak.Pin(), DragDropEvent, DropTarget, ValidationInfo, bApplyDrop);
 }
 
@@ -123,9 +129,7 @@ void SSceneOutlinerTreeView::FlashHighlightOnItem( FSceneOutlinerTreeItemPtr Fla
 FReply SSceneOutlinerTreeView::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
 	FSceneOutlinerDragValidationInfo ValidationInfo = FSceneOutlinerDragValidationInfo::Invalid();
-	FFolderTreeItem DropTarget(FFolder(FFolder::GetEmptyPath(), nullptr));
-
-	auto Reply = HandleDropFromWeak(SceneOutlinerWeak, DragDropEvent, DropTarget, ValidationInfo);
+	auto Reply = HandleDropFromWeak(SceneOutlinerWeak, DragDropEvent, ValidationInfo);
 	if (Reply.IsEventHandled())
 	{
 		UpdateOperationDecorator(DragDropEvent, ValidationInfo);
@@ -145,9 +149,23 @@ void SSceneOutlinerTreeView::OnDragLeave(const FDragDropEvent& DragDropEvent)
 FReply SSceneOutlinerTreeView::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
 	FSceneOutlinerDragValidationInfo ValidationInfo = FSceneOutlinerDragValidationInfo::Invalid();
-	FFolderTreeItem DropTarget(FFolder(FFolder::GetEmptyPath(), nullptr));
+	return HandleDropFromWeak(SceneOutlinerWeak, DragDropEvent, ValidationInfo, true);
+}
 
-	return HandleDropFromWeak(SceneOutlinerWeak, DragDropEvent, DropTarget, ValidationInfo, true);
+void SSceneOutlinerTreeView::Private_UpdateParentHighlights()
+{
+	this->ClearHighlightedItems();
+
+	// For the Outliner, we want to highlight parent items even if the current selection is not visible (i.e collapsed)
+	for( typename TItemSet::TConstIterator SelectedItemIt(SelectedItems); SelectedItemIt; ++SelectedItemIt )
+	{
+		auto Parent = (*SelectedItemIt)->GetParent();
+		while (Parent.IsValid())
+		{
+			Private_SetItemHighlighted(Parent, true);
+			Parent = Parent->GetParent();
+		}
+	}
 }
 
 FReply SSceneOutlinerTreeRow::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent )
@@ -235,6 +253,18 @@ FReply SSceneOutlinerTreeRow::OnMouseButtonUp(const FGeometry& MyGeometry, const
 	return FReply::Handled();
 }
 
+FReply SSceneOutlinerTreeRow::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	auto ItemPtr = Item.Pin();
+	// We don't want to act on double click on an item that can't be interacted with
+	if (ItemPtr.IsValid() && ItemPtr->CanInteract())
+	{
+		return SMultiColumnTableRow<FSceneOutlinerTreeItemPtr>::OnMouseButtonDoubleClick(MyGeometry, MouseEvent);
+	}
+
+	return FReply::Handled();
+}
+
 TSharedRef<SWidget> SSceneOutlinerTreeRow::GenerateWidgetForColumn( const FName& ColumnName )
 {
 	auto ItemPtr = Item.Pin();
@@ -292,7 +322,7 @@ void SSceneOutlinerTreeRow::Construct( const FArguments& InArgs, const TSharedRe
 	LastHighlightInteractionTime = 0.0;
 
 	auto Args = FSuperRowType::FArguments()
-		.Style(&FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
+		.Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
 
 
 	Args.OnDragDetected_Static(HandleOnDragDetected, TWeakPtr<SSceneOutlinerTreeView>(OutlinerTreeView));
@@ -383,7 +413,7 @@ int32 SSceneOutlinerTreeRow::OnPaint( const FPaintArgs& Args, const FGeometry& A
 		const FVector2D DrawPosition = FVector2D( HighlightLeftX, HighlightTopY );
 		const FVector2D DrawSize = FVector2D( HighlightRightX - HighlightLeftX, HighlightBottomY - HighlightTopY );
 
-		const FSlateBrush* StyleInfo = FEditorStyle::GetBrush("SceneOutliner.ChangedItemHighlight");
+		const FSlateBrush* StyleInfo = FAppStyle::GetBrush("SceneOutliner.ChangedItemHighlight");
 
 		// NOTE: We rely on scissor clipping for the highlight rectangle
 		FSlateDrawElement::MakeBox(
@@ -396,6 +426,151 @@ int32 SSceneOutlinerTreeRow::OnPaint( const FPaintArgs& Args, const FGeometry& A
 	}
 
 	return FMath::Max(StartLayer, LayerId + TextLayer);
+}
+
+void SSceneOutlinerPinnedTreeRow::Construct(const FArguments& InArgs, const TSharedRef<SSceneOutlinerTreeView>& OutlinerTreeView, TSharedRef<SSceneOutliner> SceneOutliner)
+{
+	Item = InArgs._Item->AsShared();
+	SceneOutlinerWeak = SceneOutliner;
+	OutlinerTreeViewWeak = OutlinerTreeView;
+
+	FSuperRowType::FArguments Args = FSuperRowType::FArguments()
+		.Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SceneOutliner.TableViewRow"));
+
+	Args.OnDragDetected_Static(HandleOnDragDetected, TWeakPtr<SSceneOutlinerTreeView>(OutlinerTreeView));
+
+	SMultiColumnTableRow<FSceneOutlinerTreeItemPtr>::Construct(Args, OutlinerTreeView);
+
+}
+
+TSharedRef<SWidget> SSceneOutlinerPinnedTreeRow::GenerateWidgetForColumn(const FName& ColumnName)
+{
+	TSharedPtr<ISceneOutlinerTreeItem> ItemPtr = Item.Pin();
+	if (!ItemPtr.IsValid())
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	TSharedPtr<SSceneOutliner> Outliner = SceneOutlinerWeak.Pin();
+	check(Outliner.IsValid());
+
+	// Create the widget for this item
+	TSharedRef<SWidget> NewItemWidget = SNullWidget::NullWidget;
+
+	TSharedPtr<ISceneOutlinerColumn> Column = Outliner->GetColumns().FindRef(ColumnName);
+
+	if (Column.IsValid())
+	{
+		// Construct the actual column widget first
+		TSharedRef<SWidget> ActualWidget = Column->ConstructRowWidget(ItemPtr.ToSharedRef(), *this);
+
+		if (ColumnName == FSceneOutlinerBuiltInColumnTypes::Label())
+		{
+			// We add space for the expander arrow for the label widget to make sure the spacing/indentation is consistent with non-pinned rows
+			NewItemWidget = SNew(SBox)
+				.MinDesiredHeight(FSceneOutlinerDefaultTreeItemMetrics::RowHeight())
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(6, 0, 0, 0)
+					[
+						SNew(SExpanderArrow, SharedThis(this)).IndentAmount(12)
+						.Visibility(EVisibility::Hidden) // Hidden SExpanderArrow to occupy the same space as non-pinned rows
+					]
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					[
+						ActualWidget
+					]
+				];
+		}
+		else
+		{
+			if (ActualWidget != SNullWidget::NullWidget)
+			{
+				// Get the sorted column IDs from the outliner
+				TArray<FName> SortedColumnIDs;
+				Outliner->GetSortedColumnIDs(SortedColumnIDs);
+
+				// Get the current column and label column index to compare
+				int32 ColumnIndex = SortedColumnIDs.Find(ColumnName);
+				int32 LabelColumnIndex = SortedColumnIDs.Find(FSceneOutlinerBuiltInColumnTypes::Label());
+
+				// If either of the columns don't exist, this widget does not need to occupy space
+				if (ColumnIndex == INDEX_NONE || LabelColumnIndex == INDEX_NONE)
+				{
+					ActualWidget->SetVisibility(EVisibility::Collapsed);
+				}
+
+				// If this column is to the LEFT of the label column, it is hidden but occupies space to ensure proper indentation
+				if (ColumnIndex < LabelColumnIndex)
+				{
+					ActualWidget->SetVisibility(EVisibility::Hidden);
+				}
+				// If this column is to the RIGHT of the label colum, it should not occupy space
+				else
+				{
+					ActualWidget->SetVisibility(EVisibility::Collapsed);
+				}
+
+			}
+
+			NewItemWidget = ActualWidget;
+		}
+		
+	}
+
+	return NewItemWidget;
+}
+
+FReply SSceneOutlinerPinnedTreeRow::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<ISceneOutlinerTreeItem> ItemPtr = Item.Pin();
+	TSharedPtr<SSceneOutliner> SceneOutlinerPtr = SceneOutlinerWeak.Pin();
+	if (ItemPtr.IsValid() && SceneOutlinerPtr.IsValid())
+	{
+		FSceneOutlinerDragValidationInfo ValidationInfo = FSceneOutlinerDragValidationInfo::Invalid();
+		return HandleDrop(SceneOutlinerPtr, DragDropEvent, *ItemPtr, ValidationInfo, true);
+	}
+
+	return FReply::Unhandled();
+}
+
+void SSceneOutlinerPinnedTreeRow::OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<ISceneOutlinerTreeItem> ItemPtr = Item.Pin();
+	TSharedPtr<SSceneOutliner> SceneOutlinerPtr = SceneOutlinerWeak.Pin();
+	if (ItemPtr.IsValid() && SceneOutlinerPtr.IsValid())
+	{
+		FSceneOutlinerDragValidationInfo ValidationInfo = FSceneOutlinerDragValidationInfo::Invalid();
+
+		FReply Reply = HandleDrop(SceneOutlinerPtr, DragDropEvent, *ItemPtr, ValidationInfo, false);
+		if (Reply.IsEventHandled())
+		{
+			UpdateOperationDecorator(DragDropEvent, ValidationInfo);
+		}
+	}
+}
+
+void SSceneOutlinerPinnedTreeRow::OnDragLeave(const FDragDropEvent& DragDropEvent)
+{
+	ResetOperationDecorator(DragDropEvent);
+}
+
+FReply SSceneOutlinerPinnedTreeRow::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<SSceneOutliner> SceneOutlinerPtr = SceneOutlinerWeak.Pin();
+	if (SSceneOutliner* SceneOutliner = SceneOutlinerPtr.Get())
+	{
+		if (const ISceneOutlinerTreeItem* ItemPtr = Item.Pin().Get())
+		{
+			return SceneOutliner->OnDragOverItem(DragDropEvent, *ItemPtr);
+		}
+		return FReply::Unhandled();
+	}
+
+	return FReply::Handled();
 }
 
 #undef LOCTEXT_NAMESPACE

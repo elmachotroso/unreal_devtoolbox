@@ -1,27 +1,41 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneObjectBindingIDPicker.h"
-#include "IPropertyUtilities.h"
-#include "MovieSceneBindingOwnerInterface.h"
-#include "MovieSceneSequence.h"
-#include "MovieScene.h"
-#include "SequenceBindingTree.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Textures/SlateIcon.h"
-#include "EditorStyleSet.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorFontGlyphs.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/SOverlay.h"
-#include "ISequencer.h"
+
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
-#include "Evaluation/MovieSceneSequenceHierarchy.h"
-#include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ISequencer.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "MovieSceneObjectBindingID.h"
+#include "MovieSceneSequence.h"
+#include "SequenceBindingTree.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
 #include "Styling/StarshipCoreStyle.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
+
+struct FMovieSceneSequenceHierarchy;
 
 #define LOCTEXT_NAMESPACE "MovieSceneObjectBindingIDPicker"
 
@@ -154,7 +168,7 @@ TSharedRef<SWidget> FMovieSceneObjectBindingIDPicker::GetCurrentItemWidget(TShar
 			[
 				SNew(SImage)
 				.Visibility_Raw(this, &FMovieSceneObjectBindingIDPicker::GetSpawnableIconOverlayVisibility)
-				.Image(FEditorStyle::GetBrush("Sequencer.SpawnableIconOverlay"))
+				.Image(FAppStyle::GetBrush("Sequencer.SpawnableIconOverlay"))
 			]
 		]
 
@@ -172,7 +186,7 @@ TSharedRef<SWidget> FMovieSceneObjectBindingIDPicker::GetWarningWidget()
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.ContentPadding(FMargin(0))
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+		.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 		.ToolTipText(LOCTEXT("FixedBindingWarningText", "This binding is fixed to the current Master Sequence hierarchy, so will break if evaluated in a different hierarchy.\nClick here to fix this problem."))
 		.Visibility_Raw(this, &FMovieSceneObjectBindingIDPicker::GetFixedWarningVisibility)
 		.OnClicked_Raw(this, &FMovieSceneObjectBindingIDPicker::AttemptBindingFixup)

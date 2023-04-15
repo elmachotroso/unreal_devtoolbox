@@ -21,6 +21,8 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "DynamicResolutionState.h"
+#include "HAL/PlatformMemoryHelpers.h"
 
 #ifndef FPS_CHART_SUPPORT_CSV_PROFILE
 #define FPS_CHART_SUPPORT_CSV_PROFILE (CSV_PROFILER && !UE_BUILD_SHIPPING)
@@ -600,15 +602,15 @@ void FPerformanceTrackingChart::Reset(const FDateTime& InStartTime)
 	TotalRHIThreadBoundHitchCount = 0;
 	TotalGPUBoundHitchCount = 0;
 	MaxDrawCalls = 0;
-	MinDrawCalls = INT_MAX;
+	MinDrawCalls = TNumericLimits<decltype(MinDrawCalls)>::Max();
 	TotalDrawCalls = 0;
 	MaxPlayerTicks = 0;
-	MinPlayerTicks = INT_MAX;
+	MinPlayerTicks = TNumericLimits<decltype(MinPlayerTicks)>::Max();
 	TotalPlayerTicks = 0;
 	MaxVehicleTicks = 0;
 	TotalVehicleTicks = 0;
 	MaxDrawnPrimitives = 0;
-	MinDrawnPrimitives = INT_MAX;
+	MinDrawnPrimitives = TNumericLimits<decltype(MinDrawnPrimitives)>::Max();
 	TotalDrawnPrimitives = 0;
 	AccumulatedChartTime = 0.0;
 	TimeDisregarded = 0.0;
@@ -616,9 +618,9 @@ void FPerformanceTrackingChart::Reset(const FDateTime& InStartTime)
 	NumFramesAtCriticalMemoryPressure = 0;
 	MaxPhysicalMemory = 0;
 	MaxVirtualMemory = 0;
-	MinPhysicalMemory = ULONG_MAX;
-	MinVirtualMemory = ULONG_MAX;
-	MinAvailablePhysicalMemory = ULONG_MAX;
+	MinPhysicalMemory = TNumericLimits<decltype(MinPhysicalMemory)>::Max();
+	MinVirtualMemory = TNumericLimits<decltype(MinVirtualMemory)>::Max();
+	MinAvailablePhysicalMemory = TNumericLimits<decltype(MinAvailablePhysicalMemory)>::Max();
 	TotalPhysicalMemoryUsed = 0;
 	TotalVirtualMemoryUsed = 0;
 
@@ -806,7 +808,7 @@ void FPerformanceTrackingChart::ProcessFrame(const FFrameData& FrameData)
 		TotalDrawnPrimitives += GNumPrimitivesDrawnRHI[0];
 
 		// track memory
-		FPlatformMemoryStats MemoryStats = FPlatformMemory::GetStats();
+		FPlatformMemoryStats MemoryStats = PlatformMemoryHelpers::GetFrameMemoryStats();
 		MaxPhysicalMemory = FMath::Max(MaxPhysicalMemory, static_cast<uint64>(MemoryStats.UsedPhysical));
 		MaxVirtualMemory = FMath::Max(MaxVirtualMemory, static_cast<uint64>(MemoryStats.UsedVirtual));
 		MinPhysicalMemory = FMath::Min(MinPhysicalMemory, static_cast<uint64>(MemoryStats.UsedPhysical));
@@ -925,7 +927,7 @@ void FPerformanceTrackingChart::DumpChartToAnalyticsParams(const FString& InMapN
 			// Dump some extra non-chart-based stats
 
 			// Get the system memory stats
-			FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+			FPlatformMemoryStats Stats = PlatformMemoryHelpers::GetFrameMemoryStats();
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("TotalPhysical"), static_cast<uint64>(Stats.TotalPhysical)));
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("TotalVirtual"), static_cast<uint64>(Stats.TotalVirtual)));
 			InParamArray.Add(FAnalyticsEventAttribute(TEXT("PeakPhysical"), static_cast<uint64>(Stats.PeakUsedPhysical)));
@@ -1361,7 +1363,7 @@ IPerformanceDataConsumer::FFrameData FPerformanceTrackingSystem::AnalyzeFrame(fl
 
 		if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Enabled || DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::DebugForceEnabled)
 		{
-			FrameData.DynamicResolutionScreenPercentage = DynamicResolutionStateInfos.ResolutionFractionApproximation * 100.0f;
+			FrameData.DynamicResolutionScreenPercentage = DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] * 100.0f;
 		}
 	}
 
@@ -1423,6 +1425,19 @@ void UEngine::TickPerformanceMonitoring(float DeltaSeconds)
 		{
 			Consumer->ProcessFrame(FrameData);
 		}
+
+#if CSV_PROFILER && CSV_PROFILER_USE_CUSTOM_FRAME_TIMINGS
+		// When custom timings are enabled and there are data consumers then
+		// UFortEngine::TickCSVProfilerFrameTimings() expects the data consumer
+		// code to handle EndFrame / BeginFrame calls. We do this after the
+		// ProcessFrame calls for deterministic behavior and to handle the case
+		// where none of the consumers call EndFrame / BeginFrame.
+		// If CSV_PROFILER_USE_CUSTOM_FRAME_TIMINGS isn't set, then
+		// Csv EndFrame is handled by FCoreDelegates::OnBegin/EndFrame calls in
+		// the FCsvProfiler constructor.
+		FCsvProfiler::Get()->EndFrame();
+		FCsvProfiler::Get()->BeginFrame();
+#endif
 	}
 }
 
@@ -1437,6 +1452,8 @@ void UEngine::AddPerformanceDataConsumer(TSharedPtr<IPerformanceDataConsumer> Co
 	}
 
 	Consumer->StartCharting();
+
+	UE_LOG(LogChartCreation, Verbose, TEXT("AddPerformanceDataConsumer DataConsumers Count:%d"), ActivePerformanceDataConsumers.Num());
 }
 
 void UEngine::RemovePerformanceDataConsumer(TSharedPtr<IPerformanceDataConsumer> Consumer)
@@ -1449,6 +1466,8 @@ void UEngine::RemovePerformanceDataConsumer(TSharedPtr<IPerformanceDataConsumer>
 	{
 		GPerformanceTrackingSystem.StopCharting();
 	}
+
+	UE_LOG(LogChartCreation, Verbose, TEXT("RemovePerformanceDataConsumer DataConsumers Count:%d"), ActivePerformanceDataConsumers.Num());
 }
 
 

@@ -33,6 +33,15 @@ public:
 	/** Override to initialize a template with array of sound waves from SoundCueFactory */
 	virtual void AddSoundWaves(TArray<TWeakObjectPtr<USoundWave>>& Waves) {}
 
+	/** Override to load template default settings from SoundCueTemplateFactory */
+	virtual void LoadTemplateDefaultSettings() {}
+
+	/** Override to provide a default new asset name prefix from SoundCueTemplateFactory */
+	virtual FString GenerateDefaultNewAssetName(const TArray<TWeakObjectPtr<USoundWave>>& Waves) const { return FString(); }
+
+	UFUNCTION(BlueprintCallable, Category = Config)
+	void AddSoundWavesToTemplate(const TArray<UObject*>& SelectedObjects);
+
 protected:
 	/**
 	 * Function to override that uses internal editor-data only properties to re-build node
@@ -44,34 +53,22 @@ protected:
 	/**
 	 * Node width offset between nodes in the SoundCueEditor.
 	 */
-	static float GetNodeWidthOffset()
-	{
-		return 500.0f;
-	}
+	static float GetNodeWidthOffset();
 
 	/**
 	 * Initial width offset of first node in the SoundCueEditor.
 	 */
-	static float GetInitialWidthOffset()
-	{
-		return 300.0f;
-	}
+	static float GetInitialWidthOffset();
 
 	/**
 	 * Node height offset between nodes in the SoundCueEditor.
 	 */
-	static float GetNodeHeightOffset()
-	{
-		return 200.0f;
-	}
+	static float GetNodeHeightOffset();
 
 	/**
 	 * Initial height offset of first node in the SoundCueEditor.
 	 */
-	static float GetInitialHeightOffset()
-	{
-		return 0.0f;
-	}
+	static float GetInitialHeightOffset();
 
 	/**
 	 * Sets the provided node's position to the location on the template's grid

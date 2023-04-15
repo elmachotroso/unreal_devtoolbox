@@ -94,11 +94,14 @@ FStreamableTextureResource::FStreamableTextureResource(UTexture* InOwner, const 
 	, PixelFormat(InPlatformData->PixelFormat)
 {
 	// HDR images are stored in linear but still require gamma correction to display correctly.
-	bIgnoreGammaConversions = !InOwner->SRGB && InOwner->CompressionSettings != TC_HDR && InOwner->CompressionSettings != TC_HDR_Compressed && InOwner->CompressionSettings != TC_HalfFloat;
+	bIgnoreGammaConversions = !InOwner->SRGB && !IsHDR(PixelFormat);
 	bSRGB = InOwner->SRGB;
-	bGreyScaleFormat = (PixelFormat == PF_G8) || (PixelFormat == PF_BC4);
+	bGreyScaleFormat = ( InOwner->CompressionSettings == TC_Grayscale || InOwner->CompressionSettings == TC_Alpha );
 
 	Filter = (ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(InOwner);
+	AddressU = InOwner->GetTextureAddressX() == TA_Wrap ? AM_Wrap : (InOwner->GetTextureAddressX() == TA_Clamp ? AM_Clamp : AM_Mirror);
+	AddressV = InOwner->GetTextureAddressY() == TA_Wrap ? AM_Wrap : (InOwner->GetTextureAddressY() == TA_Clamp ? AM_Clamp : AM_Mirror);
+	AddressW = InOwner->GetTextureAddressZ() == TA_Wrap ? AM_Wrap : (InOwner->GetTextureAddressZ() == TA_Clamp ? AM_Clamp : AM_Mirror);
 
 	// Get the biggest mips size, might be different from the actual resolution (depending on NumOfResidentLODs).
 	const FTexture2DMipMap& Mip0 = PlatformData->Mips[State.AssetLODBias];

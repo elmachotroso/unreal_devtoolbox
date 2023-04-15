@@ -12,13 +12,13 @@ struct FConstSharedStruct;
  * FInstancedStruct works similarly as instanced UObject* property but is USTRUCTs.
  * Example:
  *
- *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "TestStructBase"))
+ *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "/Script/ModuleName.TestStructBase"))
  *	FInstancedStruct Test;
  *
- *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "TestStructBase"))
+ *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "/Script/ModuleName.TestStructBase"))
  *	TArray<FInstancedStruct> TestArray;
  */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct STRUCTUTILS_API FInstancedStruct
 {
 	GENERATED_BODY()
@@ -79,13 +79,28 @@ public:
 	{
 		UE::StructUtils::CheckStructType<T>();
 
-		Reset();
+		const UScriptStruct* Struct = TBaseStructure<T>::Get();
+		uint8* Memory = nullptr;
 
-		const UScriptStruct* Struct = T::StaticStruct();
-		const int32 RequiredSize = Struct->GetStructureSize();
-		uint8* Memory = (uint8*)FMemory::Malloc(FMath::Max(1, RequiredSize));
-		SetStructData(Struct, Memory);
+		const UScriptStruct* CurrentScriptStruct = GetScriptStruct();
+		if (Struct == CurrentScriptStruct)
+		{
+			// Struct type already matches; return the struct memory to a destroyed state so we can placement new over it
+			Memory = GetMutableMemory();
+			((T*)Memory)->~T();
+		}
+		else
+		{
+			// Struct type mismatch; reset and reinitialize
+			Reset();
 
+			const int32 MinAlignment = Struct->GetMinAlignment();
+			const int32 RequiredSize = Struct->GetStructureSize();
+			Memory = (uint8*)FMemory::Malloc(FMath::Max(1, RequiredSize), MinAlignment);
+			SetStructData(Struct, Memory);
+		}
+
+		check(Memory);
 		new (Memory) T(Forward<TArgs>(InArgs)...);
 	}
 
@@ -96,7 +111,7 @@ public:
 		UE::StructUtils::CheckStructType<T>();
 
 		FInstancedStruct InstancedStruct;
-		InstancedStruct.InitializeAs(T::StaticStruct(), nullptr);
+		InstancedStruct.InitializeAs(TBaseStructure<T>::Get(), nullptr);
 		return InstancedStruct;
 	}
 
@@ -107,7 +122,7 @@ public:
 		UE::StructUtils::CheckStructType<T>();
 
 		FInstancedStruct InstancedStruct;
-		InstancedStruct.InitializeAs(T::StaticStruct(), reinterpret_cast<const uint8*>(&Struct));
+		InstancedStruct.InitializeAs(TBaseStructure<T>::Get(), reinterpret_cast<const uint8*>(&Struct));
 		return InstancedStruct;
 	}
 
@@ -154,7 +169,7 @@ public:
 		const UScriptStruct* Struct = GetScriptStruct();
 		check(Memory != nullptr);
 		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
+		check(Struct->IsChildOf(TBaseStructure<T>::Get()));
 		return *((T*)Memory);
 	}
 
@@ -164,7 +179,7 @@ public:
 	{
 		const uint8* Memory = GetMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
-		if (Memory != nullptr && Struct && Struct->IsChildOf(T::StaticStruct()))
+		if (Memory != nullptr && Struct && Struct->IsChildOf(TBaseStructure<T>::Get()))
 		{
 			return ((T*)Memory);
 		}
@@ -186,7 +201,7 @@ public:
 		const UScriptStruct* Struct = GetScriptStruct();
 		check(Memory != nullptr);
 		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
+		check(Struct->IsChildOf(TBaseStructure<T>::Get()));
 		return *((T*)Memory);
 	}
 
@@ -196,7 +211,7 @@ public:
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
-		if (Memory != nullptr && Struct && Struct->IsChildOf(T::StaticStruct()))
+		if (Memory != nullptr && Struct && Struct->IsChildOf(TBaseStructure<T>::Get()))
 		{
 			return ((T*)Memory);
 		}
@@ -238,9 +253,6 @@ public:
 	}
 
 protected:
-
-	/** Initializes for new struct type (does nothing if same type) and returns mutable struct. */
-	UScriptStruct* ReinitializeAs(const UScriptStruct* InScriptStruct);
 
 	void DestroyScriptStruct() const
 	{

@@ -1,32 +1,98 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Debugging/SKismetDebugTreeView.h"
+
+#include "Algo/Reverse.h"
+#include "AssetThumbnail.h"
+#include "BlueprintDebugger.h"
+#include "BlueprintEditor.h"
+#include "BlueprintEditorModule.h"
+#include "BlueprintEditorTabs.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
 #include "Debugging/SKismetDebuggingView.h"
-#include "GenericPlatform/GenericPlatformApplicationMisc.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Engine.h"
+#include "Engine/LatentActionManager.h"
+#include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GameFramework/Actor.h"
+#include "GraphEditorSettings.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "PropertyInfoViewStyle.h"
-#include "Widgets/Input/SHyperlink.h"
-#include "Widgets/Images/SLayeredImage.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/Breakpoint.h"
-#include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/KismetDebugUtilities.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/WatchedPin.h"
-#include "BlueprintEditor.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Color.h"
+#include "Math/NumericLimits.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyInfoViewStyle.h"
+#include "SlotBase.h"
+#include "SourceCodeNavigation.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
 #include "Styling/SlateColor.h"
 #include "Styling/SlateIconFinder.h"
 #include "Styling/StyleColors.h"
-#include "GraphEditorSettings.h"
-#include "SourceCodeNavigation.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Commands/UIAction.h"
-#include "Editor/EditorEngine.h"
-#include "EditorStyleSet.h"
-#include "BlueprintEditorTabs.h"
-#include "BlueprintDebugger.h"
-#include "AssetThumbnail.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Textures/SlateIcon.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/FieldPath.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UnrealEngine.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Images/SLayeredImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SHyperlink.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "DebugViewUI"
 
@@ -390,13 +456,13 @@ bool FDebugLineItem::HasChildren() const
 
 TSharedRef<SWidget> FDebugLineItem::GetNameIcon()
 {
-	static const FSlateBrush* CachedBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	static const FSlateBrush* CachedBrush = FAppStyle::GetBrush(TEXT("NoBrush"));
 	return SNew(SImage).Image(CachedBrush);
 }
 
 TSharedRef<SWidget> FDebugLineItem::GetValueIcon()
 {
-	static const FSlateBrush* CachedBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	static const FSlateBrush* CachedBrush = FAppStyle::GetBrush(TEXT("NoBrush"));
 	return SNew(SImage).Image(CachedBrush);
 }
 
@@ -765,7 +831,7 @@ TSharedRef<SWidget> FLatentActionLineItem::GenerateNameWidget(TSharedPtr<FString
 		.HighlightText(this, &FLatentActionLineItem::GetHighlightText, InSearchString)
 		[
 			SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+				.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				.OnNavigate(this, &FLatentActionLineItem::OnNavigateToLatentNode)
 				.Text(this, &FLatentActionLineItem::GetDisplayName)
 				.ToolTipText(LOCTEXT("NavLatentActionLoc_Tooltip", "Navigate to the latent action location"))
@@ -775,7 +841,7 @@ TSharedRef<SWidget> FLatentActionLineItem::GenerateNameWidget(TSharedPtr<FString
 TSharedRef<SWidget> FLatentActionLineItem::GetNameIcon()
 {
 	return SNew(SImage)
-		.Image(FEditorStyle::GetBrush(TEXT("Kismet.LatentActionIcon")));
+		.Image(FAppStyle::GetBrush(TEXT("Kismet.LatentActionIcon")));
 }
 
 UEdGraphNode* FLatentActionLineItem::FindAssociatedNode() const
@@ -908,7 +974,7 @@ public:
 		// make the icon a button so the user can open the asset in editor if there is one
 		TSharedRef<SWidget> NameIcon = SNew(SButton)
 			.OnClicked(this, &FWatchChildLineItem::OnFocusAsset)
-			.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+			.ButtonStyle(FAppStyle::Get(), "NoBorder")
 			.ContentPadding(0.0f)
 			.OnHovered_Lambda(
 				[&bIconHovered = bIconHovered]() {bIconHovered = true; }
@@ -930,7 +996,7 @@ public:
 				.HAlign(HAlign_Left)
 				[
 					SNew(SImage)
-						.Image(FEditorStyle::GetBrush(TEXT("Kismet.WatchIcon")))
+						.Image(FAppStyle::GetBrush(TEXT("Kismet.WatchIcon")))
 						.Visibility(this, &FWatchChildLineItem::GetWatchIconVisibility)
 				]
 			];
@@ -960,7 +1026,7 @@ public:
 				return SNew(SButton)
 					.OnClicked(this, &FWatchChildLineItem::OnFocusAsset)
 					.ToolTipText(this, &FWatchChildLineItem::IconTooltipText)
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 					[
 						SNew(SBox)
 						.MaxDesiredHeight(ThumbnailIconSize)
@@ -1191,7 +1257,7 @@ public:
 	virtual TSharedRef<SWidget> GetNameIcon() override
 	{
 		return SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("Kismet.WatchIcon")));
+			.Image(FAppStyle::GetBrush(TEXT("Kismet.WatchIcon")));
 	}
 
 protected:
@@ -1599,7 +1665,7 @@ TSharedRef<SWidget> FWatchLineItem::GenerateNameWidget(TSharedPtr<FString> InSea
 		.HighlightText(this, &FWatchLineItem::GetHighlightText, InSearchString)
 		[
 			SNew(SHyperlink)
-				.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+				.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				.OnNavigate(this, &FWatchLineItem::OnNavigateToWatchLocation)
 				.Text(this, &FWatchLineItem::GetDisplayName)
 				.ToolTipText(ToolTipText)
@@ -1633,7 +1699,7 @@ TSharedRef<SWidget> FWatchLineItem::GetValueIcon()
 				return SNew(SButton)
 					.OnClicked(this, &FWatchLineItem::OpenEditorForAsset)
 					.ToolTipText(this, &FWatchLineItem::GetAssetThumbnailTooltip)
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 					[
 						SNew(SBox)
 						.MaxDesiredHeight(ThumbnailIconSize)
@@ -1654,7 +1720,7 @@ TSharedRef<SWidget> FWatchLineItem::GetNameIcon()
 {
 	TSharedPtr<SLayeredImage> LayeredImage;
 	TSharedRef<SWidget> NameIcon = SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+		.ButtonStyle(FAppStyle::Get(), "NoBorder")
 		.ToolTipText(this, &FWatchLineItem::GetIconTooltipText)
 		.OnClicked(this, &FWatchLineItem::OpenEditorForType)
 		[
@@ -1671,7 +1737,7 @@ TSharedRef<SWidget> FWatchLineItem::GetNameIcon()
 			.HAlign(HAlign_Left)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush(TEXT("Kismet.WatchIcon")))
+				.Image(FAppStyle::GetBrush(TEXT("Kismet.WatchIcon")))
 				.Visibility(this, &FWatchLineItem::GetWatchIconVisibility)
 			]
 		];
@@ -1702,7 +1768,7 @@ const FSlateBrush* FWatchLineItem::GetPinIcon() const
 		return Icon;
 	}
 
-	return FEditorStyle::GetBrush(TEXT("NoBrush"));
+	return FAppStyle::GetBrush(TEXT("NoBrush"));
 }
 
 const FSlateBrush* FWatchLineItem::GetSecondaryPinIcon() const
@@ -1723,7 +1789,7 @@ const FSlateBrush* FWatchLineItem::GetSecondaryPinIcon() const
 		return SecondaryIcon;
 	}
 
-	return FEditorStyle::GetBrush(TEXT("NoBrush"));
+	return FAppStyle::GetBrush(TEXT("NoBrush"));
 }
 
 FSlateColor FWatchLineItem::GetPinIconColor() const
@@ -2016,7 +2082,7 @@ public:
 			.HighlightText(this, &FBreakpointLineItem::GetHighlightText, InSearchString)
 			[
 				SNew(SHyperlink)
-					.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+					.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 					.Text(this, &FBreakpointLineItem::GetDisplayName)
 					.ToolTipText(LOCTEXT("NavBreakpointLoc", "Navigate to the breakpoint location"))
 					.OnNavigate(this, &FBreakpointLineItem::OnNavigateToBreakpointLocation)
@@ -2081,7 +2147,7 @@ public:
 		return SNew(SButton)
 			.OnClicked(this, &FBreakpointLineItem::OnUserToggledEnabled)
 			.ToolTipText(LOCTEXT("ToggleBreakpointButton_ToolTip", "Toggle this breakpoint"))
-			.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+			.ButtonStyle(FAppStyle::Get(), "NoBorder")
 			.ContentPadding(0.0f)
 			[
 				SNew(SImage)
@@ -2180,15 +2246,15 @@ const FSlateBrush* FBreakpointLineItem::GetStatusImage() const
 	{
 		if (MyBreakpoint->IsEnabledByUser())
 		{
-			return FEditorStyle::GetBrush(FKismetDebugUtilities::IsBreakpointValid(*MyBreakpoint) ? TEXT("Kismet.Breakpoint.EnabledAndValid") : TEXT("Kismet.Breakpoint.EnabledAndInvalid"));
+			return FAppStyle::GetBrush(FKismetDebugUtilities::IsBreakpointValid(*MyBreakpoint) ? TEXT("Kismet.Breakpoint.EnabledAndValid") : TEXT("Kismet.Breakpoint.EnabledAndInvalid"));
 		}
 		else
 		{
-			return FEditorStyle::GetBrush(TEXT("Kismet.Breakpoint.Disabled"));
+			return FAppStyle::GetBrush(TEXT("Kismet.Breakpoint.Disabled"));
 		}
 	}
 
-	return FEditorStyle::GetDefaultBrush();
+	return FAppStyle::GetDefaultBrush();
 }
 
 FText FBreakpointLineItem::GetStatusTooltip() const
@@ -2476,13 +2542,13 @@ public:
 	{
 		if (SKismetDebuggingView::CurrentActiveObject == ObjectRef)
 		{
-			return FEditorStyle::GetBrush(TEXT("Kismet.Trace.CurrentIndex"));
+			return FAppStyle::GetBrush(TEXT("Kismet.Trace.CurrentIndex"));
 		}
 		if (ObjectRef.IsValid())
 		{
 			return FSlateIconFinder::FindIconBrushForClass(ObjectRef->GetClass());
 		}
-		return FEditorStyle::GetBrush(TEXT("None"));
+		return FAppStyle::GetBrush(TEXT("None"));
 	}
 
 	FSlateColor GetStatusColor() const
@@ -2571,34 +2637,7 @@ private:
 		{
 			if (UWorld* World = Object->GetTypedOuter<UWorld>())
 			{
-				ENetMode NetMode = World->GetNetMode();
-
-				FText WorldName;
-
-				switch (NetMode)
-				{
-				case NM_Standalone:
-					WorldName = LOCTEXT("DebugWorldStandalone", "Standalone");
-					break;
-
-				case NM_ListenServer:
-					WorldName = LOCTEXT("DebugWorldListenServer", "Listen Server");
-					break;
-
-				case NM_DedicatedServer:
-					WorldName = LOCTEXT("DebugWorldDedicatedServer", "Dedicated Server");
-					break;
-
-				case NM_Client:
-					if (FWorldContext* PieContext = GEngine->GetWorldContextFromWorld(World))
-					{
-						WorldName = FText::Format(LOCTEXT("DebugWorldClient", "Client {0}"), PieContext->PIEInstance - 1);
-						break;
-					}
-					[[fallthrough]];
-				default:
-					WorldName = LOCTEXT("UnknownWorldMode", "[Unknown]");
-				};
+				FText WorldName = FText::FromString(GetDebugStringForWorld(World));
 
 				return FText::FormatNamed(LOCTEXT("ParentLineTooltip", "{ObjectFullPath}\nWorld: {WorldFullPath}\nWorld Type: {WorldType}"),
 					TEXT("ObjectFullPath"), FText::FromString(Object->GetPathName()),
@@ -2632,7 +2671,7 @@ public:
 			[
 				SNew(SHyperlink)
 					.Text(this, &FTraceStackChildItem::GetDisplayName)
-					.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+					.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 					.ToolTipText(LOCTEXT("NavigateToDebugTraceLocationHyperlink_ToolTip", "Navigate to the trace location"))
 					.OnNavigate(this, &FTraceStackChildItem::OnNavigateToNode)
 			];
@@ -2651,7 +2690,7 @@ public:
 					[
 						SNew(SHyperlink)
 							.Text(this, &FTraceStackChildItem::GetContextObjectName)
-							.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
+							.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 							.ToolTipText(LOCTEXT("SelectActor_Tooltip", "Select this actor"))
 							.OnNavigate(this, &FTraceStackChildItem::OnSelectContextObject)
 					]
@@ -2667,7 +2706,7 @@ public:
 	virtual TSharedRef<SWidget> GetNameIcon() override
 	{
 		return SNew(SImage)
-			.Image(FEditorStyle::GetBrush(
+			.Image(FAppStyle::GetBrush(
 				(StackIndex > 0) ?
 				TEXT("Kismet.Trace.PreviousIndex") :
 				TEXT("Kismet.Trace.CurrentIndex"))
@@ -2953,7 +2992,7 @@ protected:
 
 		if (NameWidget && ValWidget)
 		{
-			return FMath::Max((*NameWidget)->GetDesiredSize(), (*ValWidget)->GetDesiredSize()) * FVector2D(2.0f, 1.0f);
+			return FVector2D::Max((*NameWidget)->GetDesiredSize(), (*ValWidget)->GetDesiredSize()) * FVector2D(2.0f, 1.0f);
 		}
 
 		return STableRow<FDebugTreeItemPtr>::ComputeDesiredSize(LayoutScaleMultiplier);

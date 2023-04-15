@@ -518,8 +518,14 @@ public:
 	*/
 	ENGINE_API bool GetSamplesFromBlendInput(const FVector &BlendInput, TArray<FBlendSampleData> & OutSampleDataList, int32& InOutCachedTriangulationIndex, bool bCombineAnimations) const;
 
-	/** Initialize BlendSpace filtering for runtime. **/
-	ENGINE_API void InitializeFilter(FBlendFilter* Filter) const;
+	/** Utility function to calculate animation length from sample data list **/
+	ENGINE_API float GetAnimationLengthFromSampleData(const TArray<FBlendSampleData>& SampleDataList) const;
+
+	/** 
+	 * Initialize BlendSpace filtering for runtime. Filtering supports multiple dimensions, defaulting to
+	 * two (since we don't have 3D BlendSpaces yet) 
+	**/
+	ENGINE_API void InitializeFilter(FBlendFilter* Filter, int NumDimensions = 2) const;
 
 	/** Update BlendSpace filtering parameters - values that don't require a full initialization **/
 	ENGINE_API void UpdateFilterParams(FBlendFilter* Filter) const;
@@ -535,7 +541,13 @@ public:
 	 * @param	InDeltaTime				The tick time for this update
 	 */
 	ENGINE_API bool UpdateBlendSamples(const FVector& InBlendSpacePosition, float InDeltaTime, TArray<FBlendSampleData>& InOutSampleDataCache, int32& InOutCachedTriangulationIndex) const;
-
+	
+	/**
+	 * Allows the user to iterate through all the data samples available in the blend space.
+	 * @param Func The function to run for each blend sample
+	 */
+	ENGINE_API void ForEachImmutableSample(const TFunctionRef<void(const FBlendSample&)> Func) const;
+	
 	/** Interpolate BlendInput based on Filter data **/
 	ENGINE_API FVector FilterInput(FBlendFilter* Filter, const FVector& BlendInput, float DeltaTime) const;
 
@@ -642,9 +654,6 @@ protected:
 
 	void TickFollowerSamples(TArray<FBlendSampleData> &SampleDataList, const int32 HighestWeightIndex, FAnimAssetTickContext &Context, bool bResetMarkerDataOnFollowers, const UMirrorDataTable* MirrorDataTable = nullptr) const;
 
-	/** Utility function to calculate animation length from sample data list **/
-	float GetAnimationLengthFromSampleData(const TArray<FBlendSampleData> & SampleDataList) const;
-
 	/** Returns the blend input clamped to the valid range, unless that axis has been set to wrap in which case no clamping is done **/
 	FVector GetClampedBlendInput(const FVector& BlendInput) const;
 	
@@ -681,12 +690,14 @@ private:
 	bool UpdateBlendSamples_Internal(const FVector& InBlendSpacePosition, float InDeltaTime, TArray<FBlendSampleData>& InOutOldSampleDataList, TArray<FBlendSampleData>& InOutSampleDataCache, int32& InOutCachedTriangulationIndex) const;
 
 public:
-	/**
-	* When you use per bone sample smoothing, this makes blending happen in mesh space and can happen if this 
-	* contains additive animation samples. This is more performance intensive than blending in local space.
-	*/
+#if WITH_EDITORONLY_DATA
+	UE_DEPRECATED(5.1, "This property is deprecated. Please use/see bContainsRotationOffsetMeshSpaceSamples instead")
+	bool bRotationBlendInMeshSpace_DEPRECATED;
+#endif
+
+	/** Indicates whether any samples have the flag to apply rotation offsets in mesh space */
 	UPROPERTY()
-	bool bRotationBlendInMeshSpace;
+	bool bContainsRotationOffsetMeshSpaceSamples;
 
 	/** Input Smoothing parameters for each input axis */
 	UPROPERTY(EditAnywhere, Category = InputInterpolation)
@@ -728,6 +739,29 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName = "Smoothing"))
 	bool bTargetWeightInterpolationEaseInOut = true;
+
+	/**
+	 * If set then blending is performed in mesh space if there are per-bone sample smoothing overrides.
+	 * 
+	 * Note that mesh space blending is significantly more expensive (slower) than normal blending when the 
+	 * samples are regular animations (i.e. not additive animations that are already set to apply in mesh 
+	 * space), and is typically only useful if you want some parts of the skeleton to achieve a pose 
+	 * in mesh space faster or slower than others - for example to make the head move faster than the 
+	 * body/arms when aiming, so the character looks at the target slightly before aiming at it.
+	 * 
+	 * Note also that blend space assets with additive/mesh space samples will always blend in mesh space, and 
+	 * also that enabling this option with blend space graphs producing additive/mesh space samples may cause
+	 * undesired results.
+	 */
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing)
+	bool bAllowMeshSpaceBlending = false;
+
+	/** 
+	* The default looping behavior of this blend space.
+	* Asset players can override this
+	*/
+	UPROPERTY(EditAnywhere, Category=Animation)
+	bool bLoop = true;
 
 #if WITH_EDITORONLY_DATA
 	/** Preview Base pose for additive BlendSpace **/

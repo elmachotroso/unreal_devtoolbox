@@ -2,22 +2,44 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "EdGraph/EdGraphNode.h"
-#include "UObject/LinkerLoad.h"
+#include "BlueprintActionFilter.h"
 #include "BlueprintNodeSignature.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/LinkerLoad.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node.generated.h"
 
 class AActor;
+class FArchive;
 class FBlueprintActionDatabaseRegistrar;
+class FKismetCompilerContext;
+class FProperty;
 class UActorComponent;
 class UBlueprint;
+class UClass;
 class UDynamicBlueprintBinding;
 class UEdGraph;
 class UEdGraphPin;
 class UEdGraphSchema;
+class UFunction;
+class UK2Node;
+class UStruct;
 struct FMemberReference;
+template <typename KeyType, typename ValueType> struct TKeyValuePair;
 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnUserDefinedPinRenamed, UK2Node*, FName, FName);
 
@@ -216,12 +238,6 @@ public:
 	/** Returns whether this node is considered 'pure' by the compiler */
 	virtual bool IsNodePure() const { return false; }
 
-	/** 
-	 * Returns whether or not this node has dependencies on an external structure 
-	 * If OptionalOutput isn't null, it should be filled with the known dependencies objects (Classes, Structures, Functions, etc).
-	 */
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput = nullptr) const { return false; }
-
 	/** Returns whether this node can have breakpoints placed on it in the debugger */
 	BLUEPRINTGRAPH_API virtual bool CanPlaceBreakpoints() const;
 
@@ -254,7 +270,7 @@ public:
 	/** Return whether the node's properties display in the blueprint details panel */
 	virtual bool ShouldShowNodeProperties() const { return false; }
 
-	/** Return whether the node's execution pins should support the remove execution pin action */
+	/** Return whether the node's execution pins should support the insert execution pin action */
 	virtual bool CanEverInsertExecutionPin() const { return false; }
 
 	/** Return whether the node's execution pins should support the remove execution pin action */
@@ -308,8 +324,11 @@ public:
 	/** Get the Blueprint object to which this node belongs */
 	BLUEPRINTGRAPH_API UBlueprint* GetBlueprint() const;
 
-	/** Get the input execution pin if this node is impure (will return NULL when IsNodePure() returns true) */
+	/** Get the input execution pin of this node (if one exists)*/
 	BLUEPRINTGRAPH_API UEdGraphPin* GetExecPin() const;
+
+	/** Get the output then pin of this node (if one exists)*/
+	BLUEPRINTGRAPH_API UEdGraphPin* GetThenPin() const;
 
 	/**
 	 * If this node references an actor in the level that should be selectable by "Find Actors In Level," this will return a reference to that actor

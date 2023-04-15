@@ -9,6 +9,8 @@
 #include "Engine/NetConnection.h"
 #include "OnlineSubsystemNames.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineEngineInterfaceImpl)
+
 UOnlineEngineInterfaceImpl::UOnlineEngineInterfaceImpl(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, VoiceSubsystemNameOverride(NAME_None)
@@ -123,7 +125,7 @@ FUniqueNetIdWrapper UOnlineEngineInterfaceImpl::CreateUniquePlayerIdWrapper(cons
 	{
 		// No UWorld here, but ok since this is just a factory
 		UWorld* World = nullptr;
-		IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World, bIsPrimaryLoaded ? Type : *MappedUniqueNetIdType);
+		IOnlineIdentityPtr IdentityInt = Online::GetIdentityInterface(World, bIsMappedUniqueNetIdTypeLoaded ? *MappedUniqueNetIdType : Type);
 		if (IdentityInt.IsValid())
 		{
 			UniqueId = IdentityInt->CreateUniquePlayerId(Str);
@@ -681,3 +683,4 @@ void UOnlineEngineInterfaceImpl::OnPIELoginComplete(int32 LocalUserNum, bool bWa
 }
 
 #endif
+

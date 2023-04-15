@@ -151,11 +151,11 @@ struct FManifestHLSInternal
 	};
 
 
-	struct FBlacklist
+	struct FDenylist
 	{
 		TSharedPtrTS<HTTP::FRetryInfo>					PreviousAttempts;
 		FTimeValue										BecomesAvailableAgainAtUTC;
-		IAdaptiveStreamSelector::FBlacklistedStream		AssetIDs;
+		IAdaptiveStreamSelector::FDenylistedStream		AssetIDs;
 	};
 
 
@@ -182,7 +182,7 @@ struct FManifestHLSInternal
 			FInternal() : LoadState(ELoadState::NotLoaded), UniqueID(0), bReloadTriggered(false), bNewlySelected(true), bHasVideo(false), bHasAudio(false) {}
 			FPlaylistLoadRequestHLS			PlaylistLoadRequest;
 			TSharedPtrTS<FMediaStream>		MediaStream;
-			TSharedPtrTS<FBlacklist>		Blacklisted;
+			TSharedPtrTS<FDenylist>		Denylisted;
 			FTimeValue						ExpiresAtTime;							//!< Synchronized UTC time (from session service GetSynchronizedUTCTime()) at which this list expires. Set to infinite if it does not.
 			ELoadState						LoadState;
 			uint32							UniqueID;
@@ -433,12 +433,12 @@ public:
 	 *                 Failed request for which an alterative shall be returned.
 	 * @param ConnectionInfo
 	 * @param PreviousAttempts
-	 * @param BlacklistUntilUTC
+	 * @param DenylistUntilUTC
 	 * @param Manifest
 	 *
 	 * @return UEMEDIA_ERROR_OK if an alternative was found or UEMEDIA_ERROR_END_OF_STREAM if no further alternatives exist.
 	 */
-	virtual UEMediaError UpdateFailedInitialPlaylistLoadRequest(FPlaylistLoadRequestHLS& InOutFailedRequest, const HTTP::FConnectionInfo* ConnectionInfo, TSharedPtrTS<HTTP::FRetryInfo> PreviousAttempts, const FTimeValue& BlacklistUntilUTC, TSharedPtrTS<FManifestHLSInternal> Manifest) = 0;
+	virtual UEMediaError UpdateFailedInitialPlaylistLoadRequest(FPlaylistLoadRequestHLS& InOutFailedRequest, const HTTP::FConnectionInfo* ConnectionInfo, TSharedPtrTS<HTTP::FRetryInfo> PreviousAttempts, const FTimeValue& DenylistUntilUTC, TSharedPtrTS<FManifestHLSInternal> Manifest) = 0;
 
 
 	/**
@@ -462,9 +462,9 @@ public:
 	 * @param SourceRequest
 	 * @param ConnectionInfo
 	 * @param PreviousAttempts
-	 * @param BlacklistUntilUTC
+	 * @param DenylistUntilUTC
 	 */
-	virtual void SetVariantPlaylistFailure(TSharedPtrTS<FManifestHLSInternal> InHLSPlaylist, const FPlaylistLoadRequestHLS& SourceRequest, const HTTP::FConnectionInfo* ConnectionInfo, TSharedPtrTS<HTTP::FRetryInfo> PreviousAttempts, const FTimeValue& BlacklistUntilUTC) = 0;
+	virtual void SetVariantPlaylistFailure(TSharedPtrTS<FManifestHLSInternal> InHLSPlaylist, const FPlaylistLoadRequestHLS& SourceRequest, const HTTP::FConnectionInfo* ConnectionInfo, TSharedPtrTS<HTTP::FRetryInfo> PreviousAttempts, const FTimeValue& DenylistUntilUTC) = 0;
 };
 
 
@@ -476,23 +476,23 @@ public:
 	{ }
 	virtual ~FPlaybackAssetRepresentationHLS()
 	{ }
-	virtual FString GetUniqueIdentifier() const override
+	FString GetUniqueIdentifier() const override
 	{
 		return UniqueIdentifier;
 	}
-	virtual const FStreamCodecInformation& GetCodecInformation() const override
+	const FStreamCodecInformation& GetCodecInformation() const override
 	{
 		return CodecInformation;
 	}
-	virtual int32 GetBitrate() const override
+	int32 GetBitrate() const override
 	{
 		return Bitrate;
 	}
-	virtual int32 GetQualityIndex() const override
+	int32 GetQualityIndex() const override
 	{ 
 		return QualityIndex;
 	}
-	virtual bool CanBePlayed() const override
+	bool CanBePlayed() const override
 	{
 		return true;
 	}
@@ -508,23 +508,27 @@ public:
 	virtual ~FPlaybackAssetAdaptationSetHLS()
 	{
 	}
-	virtual FString GetUniqueIdentifier() const override
+	FString GetUniqueIdentifier() const override
 	{
 		return UniqueIdentifier;
 	}
-	virtual FString GetListOfCodecs() const override
+	FString GetListOfCodecs() const override
 	{
 		return Codecs;
 	}
-	virtual FString GetLanguage() const override
+	FString GetLanguage() const override
 	{
 		return Language;
 	}
-	virtual int32 GetNumberOfRepresentations() const override
+	int32 GetNumberOfRepresentations() const override
 	{
 		return Representations.Num();
 	}
-	virtual TSharedPtrTS<IPlaybackAssetRepresentation> GetRepresentationByIndex(int32 RepresentationIndex) const override
+	bool IsLowLatencyEnabled() const override
+	{
+		return false;
+	}
+	TSharedPtrTS<IPlaybackAssetRepresentation> GetRepresentationByIndex(int32 RepresentationIndex) const override
 	{
 		check(RepresentationIndex < Representations.Num());
 		if (RepresentationIndex < Representations.Num())
@@ -533,7 +537,7 @@ public:
 		}
 		return TSharedPtrTS<IPlaybackAssetRepresentation>();
 	}
-	virtual TSharedPtrTS<IPlaybackAssetRepresentation> GetRepresentationByUniqueIdentifier(const FString& InUniqueIdentifier) const override
+	TSharedPtrTS<IPlaybackAssetRepresentation> GetRepresentationByUniqueIdentifier(const FString& InUniqueIdentifier) const override
 	{
 		for(int32 i=0, iMax=Representations.Num(); i<iMax; ++i)
 		{
@@ -559,23 +563,23 @@ public:
 	virtual ~FTimelineMediaAssetHLS()
 	{
 	}
-	virtual FTimeRange GetTimeRange() const override
+	FTimeRange GetTimeRange() const override
 	{
 		return TimeRange;
 	}
-	virtual FTimeValue GetDuration() const override
+	FTimeValue GetDuration() const override
 	{
 		return Duration;
 	}
-	virtual FString GetAssetIdentifier() const override
+	FString GetAssetIdentifier() const override
 	{
 		return AssetIdentifier;
 	}
-	virtual FString GetUniqueIdentifier() const override
+	FString GetUniqueIdentifier() const override
 	{
 		return UniqueIdentifier;
 	}
-	virtual int32 GetNumberOfAdaptationSets(EStreamType OfStreamType) const override
+	int32 GetNumberOfAdaptationSets(EStreamType OfStreamType) const override
 	{
 		switch(OfStreamType)
 		{
@@ -587,7 +591,7 @@ public:
 				return 0;
 		}
 	}
-	virtual TSharedPtrTS<IPlaybackAssetAdaptationSet> GetAdaptationSetByTypeAndIndex(EStreamType OfStreamType, int32 AdaptationSetIndex) const override
+	TSharedPtrTS<IPlaybackAssetAdaptationSet> GetAdaptationSetByTypeAndIndex(EStreamType OfStreamType, int32 AdaptationSetIndex) const override
 	{
 		switch(OfStreamType)
 		{
@@ -608,7 +612,7 @@ public:
 		}
 	}
 
-	virtual void GetMetaData(TArray<FTrackMetadata>& OutMetadata, EStreamType OfStreamType) const override
+	void GetMetaData(TArray<FTrackMetadata>& OutMetadata, EStreamType OfStreamType) const override
 	{
 		switch(OfStreamType)
 		{

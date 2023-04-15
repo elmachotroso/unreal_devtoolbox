@@ -17,6 +17,8 @@
 #include "ILevelSequenceEditorToolkit.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderWorldSource)
+
 UTakeRecorderWorldSourceSettings::UTakeRecorderWorldSourceSettings(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 	, bRecordWorldSettings(true)
@@ -196,7 +198,7 @@ void UTakeRecorderWorldSource::AutotrackActors(class ULevelSequence* InSequence,
 	{
 		FolderToUse = NewObject<UMovieSceneFolder>(MovieScene, NAME_None, RF_Transactional);
 		FolderToUse->SetFolderName(AutotrackedFolderName);
-		MovieScene->GetRootFolders().Add(FolderToUse);
+		MovieScene->AddRootFolder(FolderToUse);
 	}
 
 	for (FGuid AddedGuid : AddedGuids)

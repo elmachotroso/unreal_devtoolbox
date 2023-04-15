@@ -129,40 +129,11 @@ typedef FOnProductsRequestResponse::FDelegate FOnProductsRequestResponseDelegate
 
 @end
 
-/** 
- * Helper class, which allows us to manage IAP product information requests, AND transactions
- * (legacy version, used by OnlineStoreInterface.h, mutually exclusive with FStoreKitHelperV2)
- */
-@interface FStoreKitHelper : NSObject<SKProductsRequestDelegate, SKRequestDelegate, FPaymentTransactionObserverEventReceivedDelegate>
-{
-};
-
-/** Store kit request object, holds information about the products we are purchasing, or querying. */
-@property (nonatomic, strong) SKRequest *Request;
-/** collection of available products attaced through a store kit request */
-@property (nonatomic, strong) NSArray *AvailableProducts;
-
-/** Pump any events that are enqueued on the observer. */
--(void)pumpObserverEventQueue;
-
-/** Helper fn to start a store kit purchase request */
--(void)makePurchase:(NSMutableSet*)productIDs;
-
-/** Helper fn to start a store kit purchase information query request */
--(void)requestProductData:(NSMutableSet*)productIDs;
-
-/** Helper fn to direct a product request response back to our store interface */
--(void)productsRequest:(SKProductsRequest *)request didReceiveResponse : (SKProductsResponse *)response;
-
-/** Helper fn to restore previously purchased products */
--(void)restorePurchases;
-@end
-
 /**
  * Helper class, which allows us to manage IAP product information requests, AND transactions
  * (version used by OnlineStoreIOS.h and OnlinePurchaseIOS.h)
  */
-@interface FStoreKitHelperV2 : FStoreKitHelper
+@interface FStoreKitHelperV2 : NSObject<SKProductsRequestDelegate, SKRequestDelegate, FPaymentTransactionObserverEventReceivedDelegate>
 {
 	/** delegate fired when a product request completes */
 	FOnProductsRequestResponse _OnProductRequestResponse;
@@ -180,6 +151,14 @@ typedef FOnProductsRequestResponse::FDelegate FOnProductsRequestResponseDelegate
 
 /** list of known pending transactions that are in the queue but not marked as redeemed by the app */
 @property (nonatomic, strong) NSMutableSet* PendingTransactions;
+
+/** Store kit request object, holds information about the products we are purchasing, or querying. */
+@property (nonatomic, strong) SKRequest *Request;
+/** collection of available products attaced through a store kit request */
+@property (nonatomic, strong) NSArray *AvailableProducts;
+
+/** Pump any events that are enqueued on the observer. */
+-(void)pumpObserverEventQueue;
 
 -(FDelegateHandle)AddOnProductRequestResponse: (const FOnProductsRequestResponseDelegate&) Delegate;
 -(FDelegateHandle)AddOnTransactionComplete: (const FOnTransactionCompleteIOSDelegate&) Delegate;
@@ -209,6 +188,16 @@ typedef FOnProductsRequestResponse::FDelegate FOnProductsRequestResponseDelegate
  * @param userId hashed and opaque representation of platform user id
  */
 -(void)makePurchase:(NSArray*)products WithUserId: (const FString&) userId SimulateAskToBuy: (bool) bAskToBuy;
+
+/** Helper fn to start a store kit purchase request */
+-(void)makePurchase:(NSMutableSet*)productIDs;
+
+/** Helper fn to start a store kit purchase information query request */
+-(void)requestProductData:(NSMutableSet*)productIDs;
+
+/** Helper fn to restore previously purchased products */
+-(void)restorePurchases;
+
 
 /**
  * Make a request for product information

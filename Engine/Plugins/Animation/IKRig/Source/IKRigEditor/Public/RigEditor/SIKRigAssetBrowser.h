@@ -20,13 +20,14 @@ public:
 
 private:
 
-	void AddAssetBrowser();
+	void RefreshView();
 
 	void OnPathChange(const FString& NewPath);
 	
 	void OnAssetDoubleClicked(const FAssetData& AssetData);
 	bool OnShouldFilterAsset(const struct FAssetData& AssetData);
-
+	TSharedPtr<SWidget> OnGetAssetContextMenu(const TArray<FAssetData>& SelectedAssets) const;
+	
 	/** Used to get the currently selected assets */
 	FGetCurrentSelectionDelegate GetCurrentSelectionDelegate;
 		

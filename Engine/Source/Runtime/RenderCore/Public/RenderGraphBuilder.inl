@@ -2,20 +2,38 @@
 
 #pragma once
 
-inline FRDGTextureRef FRDGBuilder::FindExternalTexture(FRHITexture* ExternalTexture) const
+inline FRDGTexture* FRDGBuilder::FindExternalTexture(FRHITexture* ExternalTexture) const
 {
-	if (const FRDGTextureRef* FoundTexturePtr = ExternalTextures.Find(ExternalTexture))
+	if (FRDGTexture* const* FoundTexturePtr = ExternalTextures.Find(ExternalTexture))
 	{
 		return *FoundTexturePtr;
 	}
 	return nullptr;
 }
 
-inline FRDGTextureRef FRDGBuilder::FindExternalTexture(IPooledRenderTarget* ExternalTexture) const
+inline FRDGTexture* FRDGBuilder::FindExternalTexture(IPooledRenderTarget* ExternalTexture) const
 {
 	if (ExternalTexture)
 	{
 		return FindExternalTexture(ExternalTexture->GetRHI());
+	}
+	return nullptr;
+}
+
+inline FRDGBuffer* FRDGBuilder::FindExternalBuffer(FRHIBuffer* ExternalBuffer) const
+{
+	if (FRDGBuffer* const* FoundBufferPtr = ExternalBuffers.Find(ExternalBuffer))
+	{
+		return *FoundBufferPtr;
+	}
+	return nullptr;
+}
+
+inline FRDGBuffer* FRDGBuilder::FindExternalBuffer(FRDGPooledBuffer* ExternalBuffer) const
+{
+	if (ExternalBuffer)
+	{
+		return FindExternalBuffer(ExternalBuffer->GetRHI());
 	}
 	return nullptr;
 }
@@ -96,7 +114,6 @@ inline FRDGTextureUAVRef FRDGBuilder::CreateUAV(const FRDGTextureUAVDesc& Desc, 
 {
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUAV(Desc));
 	FRDGTextureUAVRef UAV = Views.Allocate<FRDGTextureUAV>(Allocator, Desc.Texture->Name, Desc, InFlags);
-	Desc.Texture->bUAVAccessed = true;
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUAV(UAV));
 	return UAV;
 }
@@ -105,7 +122,6 @@ inline FRDGBufferUAVRef FRDGBuilder::CreateUAV(const FRDGBufferUAVDesc& Desc, ER
 {
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUAV(Desc));
 	FRDGBufferUAVRef UAV = Views.Allocate<FRDGBufferUAV>(Allocator, Desc.Buffer->Name, Desc, InFlags);
-	Desc.Buffer->bUAVAccessed = true;
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUAV(UAV));
 	return UAV;
 }
@@ -133,10 +149,64 @@ FORCEINLINE ObjectType* FRDGBuilder::AllocObject(TArgs&&... Args)
 	return Allocator.Alloc<ObjectType>(Forward<TArgs&&>(Args)...);
 }
 
+template <typename ObjectType>
+FORCEINLINE TArray<ObjectType, FRDGArrayAllocator>& FRDGBuilder::AllocArray()
+{
+	return *Allocator.Alloc<TArray<ObjectType, FRDGArrayAllocator>>();
+}
+
 template <typename ParameterStructType>
 FORCEINLINE ParameterStructType* FRDGBuilder::AllocParameters()
 {
 	return Allocator.Alloc<ParameterStructType>();
+}
+
+template <typename ParameterStructType>
+FORCEINLINE ParameterStructType* FRDGBuilder::AllocParameters(ParameterStructType* StructToCopy)
+{
+	ParameterStructType* Struct = Allocator.Alloc<ParameterStructType>();
+	*Struct = *StructToCopy;
+	return Struct;
+}
+
+template <typename BaseParameterStructType>
+BaseParameterStructType* FRDGBuilder::AllocParameters(const FShaderParametersMetadata* ParametersMetadata)
+{
+	return &AllocParameters<BaseParameterStructType>(ParametersMetadata, 1)[0];
+}
+
+template <typename BaseParameterStructType>
+TStridedView<BaseParameterStructType> FRDGBuilder::AllocParameters(const FShaderParametersMetadata* ParametersMetadata, uint32 NumStructs)
+{
+	// NOTE: Contents are always zero! This might differ if shader parameters have a non-zero default initializer.
+	const int32 Stride = ParametersMetadata->GetSize();
+	BaseParameterStructType* Contents = reinterpret_cast<BaseParameterStructType*>(Allocator.Alloc(Stride * NumStructs, SHADER_PARAMETER_STRUCT_ALIGNMENT));
+	FMemory::Memset(Contents, 0, Stride * NumStructs);
+	TStridedView<BaseParameterStructType> ParameterArray(Stride, Contents, NumStructs);
+
+	struct FClearUniformBuffers
+	{
+	public:
+		FClearUniformBuffers(TStridedView<BaseParameterStructType> InParameterArray, const FRHIUniformBufferLayout& InLayout)
+			: ParameterArray(InParameterArray)
+			, Layout(&InLayout)
+		{}
+
+		~FClearUniformBuffers()
+		{
+			for (BaseParameterStructType& ParameterStruct : ParameterArray)
+			{
+				FRDGParameterStruct::ClearUniformBuffers(&ParameterStruct, Layout);
+			}
+		}
+
+	private:
+		TStridedView<BaseParameterStructType> ParameterArray;
+		const FRHIUniformBufferLayout* Layout;
+	};
+
+	AllocObject<FClearUniformBuffers>(ParameterArray, ParametersMetadata->GetLayout());
+	return ParameterArray;
 }
 
 FORCEINLINE FRDGSubresourceState* FRDGBuilder::AllocSubresource(const FRDGSubresourceState& Other)
@@ -165,6 +235,8 @@ FRDGPassRef FRDGBuilder::AddPass(
 
 	Flags |= ERDGPassFlags::NeverCull;
 
+	FlushAccessModeQueue();
+
 	LambdaPassType* Pass = Passes.Allocate<LambdaPassType>(Allocator, MoveTemp(Name), Flags, MoveTemp(ExecuteLambda));
 	SetupEmptyPass(Pass);
 	return Pass;
@@ -182,6 +254,8 @@ FRDGPassRef FRDGBuilder::AddPassInternal(
 
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateAddPass(ParameterStruct, ParametersMetadata, Name, Flags));
 
+	FlushAccessModeQueue();
+
 	FRDGPass* Pass = Allocator.AllocNoDestruct<LambdaPassType>(
 		MoveTemp(Name),
 		ParametersMetadata,
@@ -191,7 +265,7 @@ FRDGPassRef FRDGBuilder::AddPassInternal(
 
 	IF_RDG_ENABLE_DEBUG(ClobberPassOutputs(Pass));
 	Passes.Insert(Pass);
-	SetupPass(Pass);
+	SetupParameterPass(Pass);
 	return Pass;
 }
 
@@ -220,12 +294,7 @@ inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, const void* Ini
 {
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateUploadBuffer(Buffer, InitialData, InitialDataSize));
 
-	if (InitialDataSize == 0)
-	{
-		return;
-	}
-
-	if (!EnumHasAnyFlags(InitialDataFlags, ERDGInitialDataFlags::NoCopy))
+	if (InitialDataSize > 0 && !EnumHasAnyFlags(InitialDataFlags, ERDGInitialDataFlags::NoCopy))
 	{
 		void* InitialDataCopy = Alloc(InitialDataSize, 16);
 		FMemory::Memcpy(InitialDataCopy, InitialData, InitialDataSize);
@@ -234,6 +303,7 @@ inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, const void* Ini
 
 	UploadedBuffers.Emplace(Buffer, InitialData, InitialDataSize);
 	Buffer->bQueuedForUpload = 1;
+	Buffer->bForceNonTransient = 1;
 }
 
 inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, const void* InitialData, uint64 InitialDataSize, FRDGBufferInitialDataFreeCallback&& InitialDataFreeCallback)
@@ -247,6 +317,7 @@ inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, const void* Ini
 
 	UploadedBuffers.Emplace(Buffer, InitialData, InitialDataSize, MoveTemp(InitialDataFreeCallback));
 	Buffer->bQueuedForUpload = 1;
+	Buffer->bForceNonTransient = 1;
 }
 
 inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, FRDGBufferInitialDataCallback&& InitialDataCallback, FRDGBufferInitialDataSizeCallback&& InitialDataSizeCallback)
@@ -255,6 +326,7 @@ inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, FRDGBufferIniti
 
 	UploadedBuffers.Emplace(Buffer, MoveTemp(InitialDataCallback), MoveTemp(InitialDataSizeCallback));
 	Buffer->bQueuedForUpload = 1;
+	Buffer->bForceNonTransient = 1;
 }
 
 inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, FRDGBufferInitialDataCallback&& InitialDataCallback, FRDGBufferInitialDataSizeCallback&& InitialDataSizeCallback, FRDGBufferInitialDataFreeCallback&& InitialDataFreeCallback)
@@ -263,6 +335,7 @@ inline void FRDGBuilder::QueueBufferUpload(FRDGBufferRef Buffer, FRDGBufferIniti
 
 	UploadedBuffers.Emplace(Buffer, MoveTemp(InitialDataCallback), MoveTemp(InitialDataSizeCallback), MoveTemp(InitialDataFreeCallback));
 	Buffer->bQueuedForUpload = 1;
+	Buffer->bForceNonTransient = 1;
 }
 
 inline void FRDGBuilder::QueueTextureExtraction(FRDGTextureRef Texture, TRefCountPtr<IPooledRenderTarget>* OutTexturePtr, ERHIAccess AccessFinal, ERDGResourceExtractionFlags Flags)
@@ -277,9 +350,7 @@ inline void FRDGBuilder::QueueTextureExtraction(FRDGTextureRef Texture, TRefCoun
 
 	*OutTexturePtr = nullptr;
 
-	Texture->ReferenceCount++;
 	Texture->bExtracted = true;
-	Texture->bCulled = false;
 
 	if (EnumHasAnyFlags(Flags, ERDGResourceExtractionFlags::AllowTransient))
 	{
@@ -294,11 +365,6 @@ inline void FRDGBuilder::QueueTextureExtraction(FRDGTextureRef Texture, TRefCoun
 	}
 
 	ExtractedTextures.Emplace(Texture, OutTexturePtr);
-
-	if (Texture->AccessFinal == ERHIAccess::Unknown)
-	{
-		Texture->AccessFinal = kDefaultAccessFinal;
-	}
 }
 
 inline void FRDGBuilder::QueueBufferExtraction(FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>* OutBufferPtr)
@@ -307,16 +373,9 @@ inline void FRDGBuilder::QueueBufferExtraction(FRDGBufferRef Buffer, TRefCountPt
 
 	*OutBufferPtr = nullptr;
 
-	Buffer->ReferenceCount++;
 	Buffer->bExtracted = true;
-	Buffer->bCulled = false;
 	Buffer->bForceNonTransient = true;
 	ExtractedBuffers.Emplace(Buffer, OutBufferPtr);
-
-	if (Buffer->AccessFinal == ERHIAccess::Unknown)
-	{
-		Buffer->AccessFinal = kDefaultAccessFinal;
-	}
 }
 
 inline void FRDGBuilder::QueueBufferExtraction(FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>* OutBufferPtr, ERHIAccess AccessFinal)
@@ -335,7 +394,51 @@ inline void FRDGBuilder::SetCommandListStat(TStatId StatId)
 
 inline void FRDGBuilder::AddDispatchHint()
 {
-	bDispatchHint = true;
+	if (Passes.Num() > 0)
+	{
+		Passes[Passes.Last()]->bDispatchAfterExecute = 1;
+	}
+}
+
+template <typename TaskLambda>
+void FRDGBuilder::AddSetupTask(TaskLambda&& Task)
+{
+	if (bParallelExecuteEnabled)
+	{
+		ParallelSetupEvents.Emplace(UE::Tasks::Launch(TEXT("FRDGBuilder::AddSetupTask"), [Task = MoveTemp(Task)]
+		{
+			FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+			Task();
+		}));
+	}
+	else
+	{
+		Task();
+	}
+}
+
+template <typename TaskLambda>
+void FRDGBuilder::AddCommandListSetupTask(TaskLambda&& Task)
+{
+	if (bParallelExecuteEnabled)
+	{
+		FRHICommandList* RHICmdListTask = new FRHICommandList(FRHIGPUMask::All());
+
+		ParallelSetupEvents.Emplace(UE::Tasks::Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), [Task = MoveTemp(Task), RHICmdListTask]
+		{
+			FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+			Task(*RHICmdListTask);
+
+			RHICmdListTask->FinishRecording();
+
+		}));
+
+		RHICmdList.QueueAsyncCommandListSubmit(RHICmdListTask);
+	}
+	else
+	{
+		Task(RHICmdList);
+	}
 }
 
 inline const TRefCountPtr<IPooledRenderTarget>& FRDGBuilder::GetPooledTexture(FRDGTextureRef Texture) const
@@ -353,13 +456,13 @@ inline const TRefCountPtr<FRDGPooledBuffer>& FRDGBuilder::GetPooledBuffer(FRDGBu
 inline void FRDGBuilder::SetTextureAccessFinal(FRDGTextureRef Texture, ERHIAccess AccessFinal)
 {
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateSetAccessFinal(Texture, AccessFinal));
-	Texture->AccessFinal = AccessFinal;
+	Texture->EpilogueAccess = AccessFinal;
 }
 
 inline void FRDGBuilder::SetBufferAccessFinal(FRDGBufferRef Buffer, ERHIAccess AccessFinal)
 {
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateSetAccessFinal(Buffer, AccessFinal));
-	Buffer->AccessFinal = AccessFinal;
+	Buffer->EpilogueAccess = AccessFinal;
 }
 
 inline void FRDGBuilder::RemoveUnusedTextureWarning(FRDGTextureRef Texture)
@@ -374,14 +477,14 @@ inline void FRDGBuilder::RemoveUnusedBufferWarning(FRDGBufferRef Buffer)
 
 inline void FRDGBuilder::BeginEventScope(FRDGEventName&& ScopeName)
 {
-#if RDG_GPU_SCOPES
+#if RDG_GPU_DEBUG_SCOPES
 	GPUScopeStacks.BeginEventScope(MoveTemp(ScopeName), RHICmdList.GetGPUMask());
 #endif
 }
 
 inline void FRDGBuilder::EndEventScope()
 {
-#if RDG_GPU_SCOPES
+#if RDG_GPU_DEBUG_SCOPES
 	GPUScopeStacks.EndEventScope();
 #endif
 }

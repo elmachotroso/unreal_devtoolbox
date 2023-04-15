@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -12,12 +12,6 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"Runtime/AIModule/Public",
 					ModuleDirectory + "/Public",
-				}
-			);
-
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
 				}
 			);
 
@@ -38,7 +32,8 @@ namespace UnrealBuildTool.Rules
 					"StructUtils",
 					"ZoneGraph",
 					"ZoneGraphAnnotations",
-					"DeveloperSettings"
+					"DeveloperSettings",
+					"MassGameplayExternalTraits"
 				}
 			);
 

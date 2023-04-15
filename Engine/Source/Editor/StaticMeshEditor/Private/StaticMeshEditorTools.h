@@ -393,6 +393,9 @@ private:
 	ECheckBoxState IsSectionVisibleInRayTracing(int32 SectionIndex) const;
 	void OnSectionVisibleInRayTracingChanged(ECheckBoxState NewState, int32 SectionIndex);
 
+	ECheckBoxState DoesSectionAffectDistanceFieldLighting(int32 SectionIndex) const;
+	void OnSectionAffectDistanceFieldLightingChanged(ECheckBoxState NewState, int32 SectionIndex);
+
 	ECheckBoxState IsSectionOpaque(int32 SectionIndex) const;
 	void OnSectionForceOpaqueFlagChanged(ECheckBoxState NewState, int32 SectionIndex);
 	
@@ -549,6 +552,7 @@ private:
 	void OnMinLODChanged(int32 NewValue, FName Platform);
 	void OnMinLODCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName Platform);
 	int32 GetMinLOD(FName Platform) const;
+	FPerPlatformInt GetMinLOD() const;
 	TSharedRef<SWidget> GetMinLODWidget(FName PlatformGroupName) const;
 	bool AddMinLODPlatformOverride(FName PlatformGroupName);
 	bool RemoveMinLODPlatformOverride(FName PlatformGroupName);
@@ -561,6 +565,7 @@ private:
 	bool AddMinLODQualityLevelOverride(FName QualityLevelName);
 	bool RemoveMinLODQualityLevelOverride(FName QualityLevelName);
 	TArray<FName> GetMinQualityLevelLODOverrideNames() const;
+	FReply ResetToDefault();
 
 	void OnNoRefStreamingLODBiasChanged(int32 NewValue, FName QualityLevel);
 	void OnNoRefStreamingLODBiasCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel);
@@ -659,6 +664,8 @@ private:
 	IDetailCategoryBuilder* LodCustomCategory;
 
 	bool DetailDisplayLODs[MAX_STATIC_MESH_LODS];
+
+	FDelegateHandle OnAssetPostLODImportDelegateHandle;
 };
 
 /**
@@ -708,6 +715,9 @@ private:
 	ECheckBoxState IsEnabledChecked() const;
 	void OnEnabledChanged(ECheckBoxState NewState);
 
+	ECheckBoxState IsPreserveAreaChecked() const;
+	void OnPreserveAreaChanged(ECheckBoxState NewState);
+
 	void OnPositionPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
 	void OnResidencyChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo);
 
@@ -724,6 +734,17 @@ private:
 
 	float GetFallbackRelativeError() const;
 	void OnFallbackRelativeErrorChanged(float NewValue);
+
+	FString GetHiResSourceFilename() const;
+	void SetHiResSourceFilename(const FString& NewSourceFile);
+
+	bool DoesHiResDataExists() const;
+	bool IsHiResDataEmpty() const;
+	
+	FReply OnImportHiRes();
+	FReply OnRemoveHiRes();
+	FReply OnReimportHiRes();
+	FReply OnReimportHiResWithNewFile();
 
 private:
 	/** The Static Mesh Editor this tool is associated with. */

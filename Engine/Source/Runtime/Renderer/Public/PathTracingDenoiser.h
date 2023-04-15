@@ -4,9 +4,28 @@
 
 #include "MultiGPU.h"
 
-class FRHITexture2D;
+class FRHITexture;
 class FRHICommandListImmediate;
 
-using PathTracingDenoiserFunction = void(FRHICommandListImmediate& RHICmdList, FRHITexture2D* ColorTex, FRHITexture2D* AlbedoTex, FRHITexture2D* NormalTex, FRHITexture2D* OutputTex, FRHIGPUMask GPUMask);
+// Spatial denoiser only Plugin
+using PathTracingDenoiserFunction = void(FRHICommandListImmediate& RHICmdList, FRHITexture* ColorTex, FRHITexture* AlbedoTex, FRHITexture* NormalTex, FRHITexture* OutputTex, FRHIGPUMask GPUMask);
 
 extern RENDERER_API PathTracingDenoiserFunction* GPathTracingDenoiserFunc;
+
+struct FDenoisingArgumentsExt
+{
+	FRHITexture* FlowTex;
+	FRHITexture* PreviousOutputTex;
+
+	int Width;
+	int Height;
+	int DenoisingFrameId;
+	bool bForceSpatialDenoiserOnly;
+};
+
+// Spatial-temporal denoiser plugin
+using PathTracingSpatialTemporalDenoiserFunction = void(FRHICommandListImmediate& RHICmdList, FRHITexture* ColorTex, FRHITexture* AlbedoTex, FRHITexture* NormalTex, FRHITexture* OutputTex, const FDenoisingArgumentsExt* DenoisingArgumentExt, FRHIGPUMask GPUMask);
+using PathTracingMotionVectorFunction = void(FRHICommandListImmediate& RHICmdList, FRHITexture* InputFrameTex, FRHITexture* ReferenceFrameTex, FRHITexture* FlowTex, float PreExposure, FRHIGPUMask GPUMask);
+
+extern RENDERER_API PathTracingSpatialTemporalDenoiserFunction* GPathTracingSpatialTemporalDenoiserFunc;
+extern RENDERER_API PathTracingMotionVectorFunction* GPathTracingMotionVectorFunc;

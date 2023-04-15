@@ -23,6 +23,7 @@
 #include "BodySetupDetails.h"
 #include "BoundsCopyComponentDetails.h"
 #include "BrushDetails.h"
+#include "CameraCropSettingsCustomization.h"
 #include "CameraDetails.h"
 #include "CameraFilmbackSettingsCustomization.h"
 #include "CameraFocusSettingsCustomization.h"
@@ -37,16 +38,18 @@
 #include "CurveColorCustomization.h"
 #include "CurveStructCustomization.h"
 #include "CurveVectorCustomization.h"
+#include "CustomPrimitiveDataCustomization.h"
 #include "Customizations/ColorStructCustomization.h"
 #include "Customizations/CurveTableCustomization.h"
 #include "Customizations/MathStructCustomizations.h"
+#include "Customizations/MathStructProxyCustomizations.h"
 #include "Customizations/SlateBrushCustomization.h"
 #include "Customizations/SlateFontInfoCustomization.h"
-#include "CustomPrimitiveDataCustomization.h"
 #include "DataTableCategoryCustomization.h"
 #include "DataTableCustomization.h"
 #include "DateTimeStructCustomization.h"
 #include "DebugCameraControllerSettingsCustomization.h"
+#include "Delegates/Delegate.h"
 #include "DeviceProfileDetails.h"
 #include "DialogueStructsCustomizations.h"
 #include "DialogueWaveDetails.h"
@@ -54,6 +57,7 @@
 #include "DirectoryPathStructCustomization.h"
 #include "DistanceDatumStructCustomization.h"
 #include "DocumentationActorDetails.h"
+#include "EdGraphUtilities.h"
 #include "EnvQueryParamInstanceCustomization.h"
 #include "FbxImportUIDetails.h"
 #include "FbxSceneImportDataDetails.h"
@@ -61,13 +65,14 @@
 #include "FrameRateCustomization.h"
 #include "GeneralProjectSettingsDetails.h"
 #include "GuidStructCustomization.h"
+#include "HAL/Platform.h"
 #include "HardwareTargetingSettingsDetails.h"
 #include "HierarchicalSimplificationCustomizations.h"
 #include "ImportantToggleSettingCustomization.h"
 #include "InputSettingsDetails.h"
 #include "InputStructCustomization.h"
 #include "InstancedStaticMeshComponentDetails.h"
-#include "InternationalizationSettingsModelDetails.h"
+#include "Internationalization/Internationalization.h"
 #include "IntervalStructCustomization.h"
 #include "KeyStructCustomization.h"
 #include "LandscapeProxyUIDetails.h"
@@ -75,6 +80,7 @@
 #include "LevelSequenceActorDetails.h"
 #include "LevelSequenceBurnInOptionsCustomization.h"
 #include "LightComponentDetails.h"
+#include "LightingChannelsCustomization.h"
 #include "LinuxTargetSettingsDetails.h"
 #include "LocalLightComponentDetails.h"
 #include "MacTargetSettingsDetails.h"
@@ -85,10 +91,13 @@
 #include "MaterialInstanceDynamicDetails.h"
 #include "MaterialProxySettingsCustomizations.h"
 #include "MaterialShadingModelCustomization.h"
-#include "MathStructProxyCustomizations.h"
+#include "Math/Matrix.h"
+#include "Math/Quat.h"
+#include "Math/Transform.h"
 #include "MeshComponentDetails.h"
 #include "MeshMergingSettingsCustomization.h"
 #include "MeshProxySettingsCustomizations.h"
+#include "Misc/AssertionMacros.h"
 #include "Modules/ModuleManager.h"
 #include "MotionControllerDetails.h"
 #include "MotionControllerPinFactory.h"
@@ -105,6 +114,7 @@
 #include "ParticleSysParamStructCustomization.h"
 #include "ParticleSystemComponentDetails.h"
 #include "PerPlatformPropertyCustomization.h"
+#include "PerQualityLevelPropertyCustomization.h"
 #include "PhysicsConstraintComponentDetails.h"
 #include "PhysicsSettingsDetails.h"
 #include "PoseAssetDetails.h"
@@ -137,16 +147,23 @@
 #include "SplineComponentDetails.h"
 #include "StaticMeshActorDetails.h"
 #include "StaticMeshComponentDetails.h"
-#include "SubmixDetailsCustomization.h"
 #include "SupportedRangeTypes.h"	// StructsSupportingRangeVisibility
+#include "TemplateStringStructCustomization.h"
+#include "Templates/ChooseClass.h"
 #include "Templates/SharedPointer.h"
 #include "TextCustomization.h"
 #include "TimecodeDetailsCustomization.h"
 #include "TimespanStructCustomization.h"
+#include "UObject/UnrealNames.h"
 #include "Vector4StructCustomization.h"
 #include "VectorStructCustomization.h"
 #include "WindowsTargetSettingsDetails.h"
 #include "WorldSettingsDetails.h"
+
+struct FPerPlatformBool;
+struct FPerPlatformFloat;
+struct FPerPlatformInt;
+struct FPerQualityLevelInt;
 
 IMPLEMENT_MODULE( FDetailCustomizationsModule, DetailCustomizations );
 
@@ -208,7 +225,12 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector, &FVectorStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector3f, &FVectorStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector3d, &FVectorStructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION("IntVector", &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_IntVector, &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int32Vector, &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int64Vector, &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_UintVector, &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint32Vector, &FVectorStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint64Vector, &FVectorStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector4, &FVector4StructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector4f, &FVector4StructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector4d, &FVector4StructCustomization::MakeInstance);
@@ -216,6 +238,23 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector2f, &FMathStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector2d, &FMathStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_IntPoint, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int32Point, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int64Point, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_UintPoint, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint32Point, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint64Point, &FMathStructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_IntVector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int32Vector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int64Vector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_UintVector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint32Vector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint64Vector2, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_IntVector4, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int32Vector4, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Int64Vector4, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_UintVector4, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint32Vector4, &FVector4StructCustomization::MakeInstance);
+	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Uint64Vector4, &FVector4StructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Rotator, &FRotatorStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Rotator3f, &FRotatorStructCustomization::MakeInstance);
 	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Rotator3d, &FRotatorStructCustomization::MakeInstance);
@@ -242,8 +281,10 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("Guid", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGuidStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("Key", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FKeyStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("FloatRange", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRangeStructCustomization<float>::MakeInstance));
+	RegisterCustomPropertyTypeLayout("DoubleRange", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRangeStructCustomization<double>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("Int32Range", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRangeStructCustomization<int32>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("FloatInterval", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FIntervalStructCustomization<float>::MakeInstance));
+	RegisterCustomPropertyTypeLayout("DoubleInterval", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FIntervalStructCustomization<double>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("Int32Interval", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FIntervalStructCustomization<int32>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("DateTime", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDateTimeStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("Timespan", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FTimespanStructCustomization::MakeInstance));
@@ -285,6 +326,7 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("CompositeReroute", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCompositeRerouteCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CameraFilmbackSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCameraFilmbackSettingsCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CameraLensSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCameraLensSettingsCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout("PlateCropSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCameraCropSettingsCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CameraFocusSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCameraFocusSettingsCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("MovieSceneSequenceLoopCount", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMovieSceneSequenceLoopCountCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("MovieSceneBindingOverrideData", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMovieSceneBindingOverrideDataCustomization::MakeInstance));
@@ -299,12 +341,15 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("PerPlatformInt", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPerPlatformPropertyCustomization<FPerPlatformInt>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("PerPlatformFloat", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPerPlatformPropertyCustomization<FPerPlatformFloat>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("PerPlatformBool", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPerPlatformPropertyCustomization<FPerPlatformBool>::MakeInstance));
+	RegisterCustomPropertyTypeLayout("PerQualityLevelInt", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPerQualityLevelPropertyCustomization<FPerQualityLevelInt>::MakeInstance));
 	RegisterCustomPropertyTypeLayout("SkeletalMeshOptimizationSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSkeletalMeshReductionSettingsDetails::MakeInstance));
 	RegisterCustomPropertyTypeLayout("GrassInput", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMaterialExpressionLandscapeGrassInputCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("ComponentReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FComponentReferenceCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("EMaterialShadingModel", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMaterialShadingModelCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("DebugCameraControllerSettingsViewModeIndex", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDebugCameraControllerSettingsViewModeIndexCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CustomPrimitiveData", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCustomPrimitiveDataCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout("TemplateString", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FTemplateStringStructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout("LightingChannels", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FLightingChannelsCustomization::MakeInstance));
 }
 
 #undef REGISTER_UIMINMAX_CUSTOMIZATION
@@ -456,6 +501,7 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 		{
 			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("Actor", "Streaming", LOCTEXT("Streaming", "Streaming"));
 			Section->AddCategory("World Partition");
+			Section->AddCategory("Data Layers");
 			Section->AddCategory("HLOD");
 		}
 	}
@@ -476,12 +522,6 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 			Section->AddCategory("Asset User Data");
 			Section->AddCategory("Cooking");
 			Section->AddCategory("Tags");
-		}
-
-		{
-			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("ActorComponent", "Streaming", LOCTEXT("Streaming", "Streaming"));
-			Section->AddCategory("World Partition");
-			Section->AddCategory("Data Layers");
 		}
 	}
 
@@ -659,7 +699,7 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("SkeletalMeshComponent", "Animation", LOCTEXT("Animation", "Animation"));
 			Section->AddCategory("Animation");
 			Section->AddCategory("Animation Rig");
-			Section->AddCategory("Master Pose Component");
+			Section->AddCategory("Leader Pose Component");
 		}
 
 		{
@@ -751,6 +791,14 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 		{
 			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("WorldSettings", "Streaming", LOCTEXT("Streaming", "Streaming"));
 			Section->AddCategory("Foliage");
+		}
+	}
+
+	// Geometry Collections
+	{
+		{
+			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("GeometryCollectionComponent", "GC", LOCTEXT("GC", "GC"));
+			Section->AddCategory("ChaosPhysics");
 		}
 	}
 }

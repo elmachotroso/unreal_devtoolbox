@@ -21,7 +21,7 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 private:
 	FMassEntityQuery EntityQuery_Conditional;
@@ -41,7 +41,7 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 private:
 	FMassEntityQuery EntityQuery;
@@ -59,7 +59,7 @@ public:
 	
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery InitializerQuery;
 };
@@ -75,11 +75,9 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Initialize(UObject& Owner) override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 private:
-	TObjectPtr<UMassNavigationSubsystem> NavigationSubsystem;
 	FMassEntityQuery AddToGridEntityQuery;
 	FMassEntityQuery UpdateGridEntityQuery;
 	FMassEntityQuery RemoveFromGridEntityQuery;
@@ -92,12 +90,10 @@ class MASSNAVIGATION_API UMassNavigationObstacleRemoverProcessor : public UMassO
 	GENERATED_BODY()
 
 	UMassNavigationObstacleRemoverProcessor();
-	TObjectPtr<UMassNavigationSubsystem> NavigationSubsystem;
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Initialize(UObject& Owner) override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 };

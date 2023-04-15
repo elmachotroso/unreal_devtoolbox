@@ -21,6 +21,8 @@ GeometryCollectionActor.cpp: AGeometryCollectionActor methods.
 #include "PhysicsSolver.h"
 #include "GeometryCollection/GeometryCollectionDebugDrawComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionActor)
+
 
 DEFINE_LOG_CATEGORY_STATIC(AGeometryCollectionActorLogging, Log, All);
 
@@ -38,6 +40,7 @@ AGeometryCollectionActor::AGeometryCollectionActor(const FObjectInitializer& Obj
 	SetActorTickEnabled(true);
 
 	bReplicates = true;
+	NetDormancy = DORM_Initial;
 }
 
 
@@ -56,11 +59,7 @@ void AGeometryCollectionActor::Tick(float DeltaTime)
 
 const Chaos::FPhysicsSolver* GetSolver(const AGeometryCollectionActor& GeomCollectionActor)
 {
-#if INCLUDE_CHAOS
 	return GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor != nullptr ? GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor->GetSolver() : GeomCollectionActor.GetWorld()->PhysicsScene_Chaos->GetSolver();
-#else
-	return nullptr;
-#endif
 }
 
 
@@ -147,3 +146,4 @@ bool AGeometryCollectionActor::GetReferencedContentObjects(TArray<UObject*>& Obj
 	return true;
 }
 #endif
+

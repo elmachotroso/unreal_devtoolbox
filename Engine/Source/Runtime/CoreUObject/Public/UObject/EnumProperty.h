@@ -2,12 +2,29 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/UnrealType.h"
+#include "HAL/PlatformMath.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/StructuredArchive.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/UnrealType.h"
 
-class UEnum;
+class FArchive;
+class FBlake3;
 class FNumericProperty;
+class FOutputDevice;
+class FReferenceCollector;
+class UEnum;
+class UField;
+class UObject;
+class UPackageMap;
+class UStruct;
+namespace UECodeGen_Private { struct FEnumPropertyParams; }
+struct FPropertyTag;
 
 class COREUOBJECT_API FEnumProperty : public FProperty
 {
@@ -17,6 +34,14 @@ public:
 	FEnumProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
 	FEnumProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, UEnum* InEnum);
 	FEnumProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UEnum* InEnum);
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param Prop Pointer to the compiled in structure describing the property
+	 **/
+	FEnumProperty(FFieldVariant InOwner, const UECodeGen_Private::FEnumPropertyParams& Prop);
+
 #if WITH_EDITORONLY_DATA
 	explicit FEnumProperty(UField* InField);
 #endif // WITH_EDITORONLY_DATA
@@ -45,8 +70,8 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 	virtual int32 GetMinAlignment() const override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;

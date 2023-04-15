@@ -729,6 +729,12 @@ struct FPartyInvitationRecipient
 		: Id(InId.AsShared())
 	{}
 
+	/** Constructor */
+	FPartyInvitationRecipient(const FUniqueNetId& InId, const FString& InMetaData)
+		: Id(InId.AsShared())
+		, PlatformData(InMetaData)
+	{}
+
 	/** Id of the user to send the invitation to */
 	FUniqueNetIdRef Id;
 	/** Additional data to provide context for the invitee */
@@ -854,6 +860,7 @@ DECLARE_DELEGATE_FourParams(FOnJoinPartyComplete, const FUniqueNetId& /*LocalUse
  * @param Result - result of the operation
  * @param NotApprovedReason - client defined value describing why you were not approved
  */
+UE_DEPRECATED(5.1, "Use FOnQueryPartyJoinabilityCompleteEx")
 DECLARE_DELEGATE_FourParams(FOnQueryPartyJoinabilityComplete, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const EJoinPartyCompletionResult /*Result*/, const int32 /*NotApprovedReason*/);
 /**
  * Party query joinability async task completed callback
@@ -896,6 +903,15 @@ DECLARE_DELEGATE_ThreeParams(FOnRequestPartyInvitationComplete, const FUniqueNet
  * @param Result - result of the send operation
  */
 DECLARE_DELEGATE_FourParams(FOnSendPartyInvitationComplete, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*RecipientId*/, const ESendPartyInvitationCompletionResult /*Result*/);
+/**
+ * Party invitation cancel completed callback
+ *
+ * @param SenderUserId - id of user that initiated the request
+ * @param PartyId - id associated with the party
+ * @param TargetUserId - user invite was sent to
+ * @param Result - result of the cancel operation
+ */
+DECLARE_DELEGATE_FourParams(FOnCancelPartyInvitationComplete, const FUniqueNetId& /*SenderUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*TargetUserId*/, const FOnlineError& /*Result*/);
 /**
  * Accepting an invite to a user to join party async task completed callback
  *
@@ -983,8 +999,10 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyStateChanged);
 * @param DeniedResultCode - descriptive reason for a failure to join
 */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyJIP), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, bool /*Success*/);
-PARTY_DECLARE_DELEGATETYPE(OnPartyJIP);
+UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
+typedef FOnPartyJIP::FDelegate FOnPartyJIPDelegate;
 DECLARE_MULTICAST_DELEGATE_FourParams(F_PREFIX(OnPartyJIPResponse), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, bool /*Success*/, int32 /*DeniedResultCode*/);
+UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
 PARTY_DECLARE_DELEGATETYPE(OnPartyJIPResponse);
 
 /**
@@ -1005,9 +1023,6 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyPromotionLockoutChanged);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyConfigChanged), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FPartyConfiguration& /*PartyConfig*/);
 PARTY_DECLARE_DELEGATETYPE(OnPartyConfigChanged);
 
-UE_DEPRECATED(4.26, "Use OnPartyConfigChangedDelegate instead of OnPartyConfigChangedConstDelegate")
-typedef FOnPartyConfigChangedDelegate FOnPartyConfigChangedConstDelegate;
-
 /**
  * Notification when party data is updated
  * Deprecated - Use OnPartyDataReceived
@@ -1016,7 +1031,8 @@ typedef FOnPartyConfigChangedDelegate FOnPartyConfigChangedConstDelegate;
  * @param PartyData - party data that was updated
  */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyDataReceivedConst), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FOnlinePartyData& /*PartyData*/);
-PARTY_DECLARE_DELEGATETYPE(OnPartyDataReceivedConst);
+UE_DEPRECATED(5.1, "Use OnPartyDataReceived instead of OnPartyDataReceivedConst")
+typedef FOnPartyDataReceivedConst::FDelegate FOnPartyDataReceivedConstDelegate;
 
 /**
  * Notification when party data is updated
@@ -1065,7 +1081,8 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyMemberJoined);
  * @param PartyMemberData - party member data that was updated
  */
 DECLARE_MULTICAST_DELEGATE_FourParams(F_PREFIX(OnPartyMemberDataReceivedConst), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*MemberId*/, const FOnlinePartyData& /*PartyMemberData*/);
-PARTY_DECLARE_DELEGATETYPE(OnPartyMemberDataReceivedConst);
+UE_DEPRECATED(5.1, "Use OnPartyMemberDataReceived instead of OnPartyMemberDataReceivedConst")
+typedef FOnPartyMemberDataReceivedConst::FDelegate FOnPartyMemberDataReceivedConstDelegate;
 
 /**
  * Notification when party member data is updated
@@ -1103,7 +1120,8 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyInviteRequestReceived);
  * @param SenderId id of member that sent the invite
  */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyInviteReceived), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/);
-PARTY_DECLARE_DELEGATETYPE(OnPartyInviteReceived);
+UE_DEPRECATED(5.1, "Use OnPartyInviteReceivedEx instead of OnPartyInviteReceived")
+typedef FOnPartyInviteReceived::FDelegate FOnPartyInviteReceivedDelegate;
 
 /**
  * Notification when a new invite is received
@@ -1122,7 +1140,8 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyInviteReceivedEx);
  * @param Reason reason the invite has been removed
  */
 DECLARE_MULTICAST_DELEGATE_FourParams(F_PREFIX(OnPartyInviteRemoved), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/, EPartyInvitationRemovedReason /*Reason*/);
-PARTY_DECLARE_DELEGATETYPE(OnPartyInviteRemoved);
+UE_DEPRECATED(5.1, "Use OnPartyInviteRemovedEx instead of OnPartyInviteRemoved")
+typedef FOnPartyInviteRemoved::FDelegate FOnPartyInviteRemovedDelegate;
 
 /**
  * Notification when an invite has been removed
@@ -1152,9 +1171,6 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyInviteResponseReceived);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyJoinRequestReceived), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const IOnlinePartyPendingJoinRequestInfo& /*JoinRequestInfo*/);
 PARTY_DECLARE_DELEGATETYPE(OnPartyJoinRequestReceived);
 
-UE_DEPRECATED(4.26, "Use OnPartyJoinRequestReceived instead of OnPartyGroupJoinRequestReceived")
-typedef FOnPartyJoinRequestReceivedDelegate FOnPartyGroupJoinRequestReceivedDelegate;
-
 /**
  * Notification when a new reservation request is received
  * @param LocalUserId - id associated with this notification
@@ -1164,6 +1180,7 @@ typedef FOnPartyJoinRequestReceivedDelegate FOnPartyGroupJoinRequestReceivedDele
  * @param PartyData - data provided by the sender for the leader to use to determine joinability
  */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnPartyJIPRequestReceived), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/);
+UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
 PARTY_DECLARE_DELEGATETYPE(OnPartyJIPRequestReceived);
 
 /**
@@ -1174,9 +1191,6 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyJIPRequestReceived);
  */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(F_PREFIX(OnQueryPartyJoinabilityReceived), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const IOnlinePartyPendingJoinRequestInfo& /*JoinRequestInfo*/);
 PARTY_DECLARE_DELEGATETYPE(OnQueryPartyJoinabilityReceived);
-
-UE_DEPRECATED(4.26, "Use FOnQueryPartyJoinabilityReceivedDelegate instead of OnQueryPartyJoinabilityGroupReceived")
-typedef FOnQueryPartyJoinabilityReceivedDelegate FOnQueryPartyJoinabilityGroupReceivedDelegate;
 
 /**
  * Request for the game to fill in data to be sent with the join request for the leader to make an informed decision based on the joiner's state
@@ -1223,6 +1237,18 @@ PARTY_DECLARE_DELEGATETYPE(OnPartyRequestToJoinReceived);
  */
 DECLARE_MULTICAST_DELEGATE_FiveParams(F_PREFIX(OnPartyRequestToJoinRemoved), const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*RequesterId*/, const IOnlinePartyRequestToJoinInfo& /*Request*/, EPartyRequestToJoinRemovedReason /*Reason*/);
 PARTY_DECLARE_DELEGATETYPE(OnPartyRequestToJoinRemoved);
+
+#define DEFINE_DEPRECATED_PARTY_DELEGATE(DeprecatedDelegateName, DelegateName) \
+	virtual void Clear##DeprecatedDelegateName##Delegate_Handle(FDelegateHandle& Handle) \
+	{ \
+		DelegateName##Delegates.Remove(Handle); \
+		Handle.Reset(); \
+	} \
+	virtual void Clear##DeprecatedDelegateName##Delegates(void* Object) \
+	{ \
+		DelegateName##Delegates.RemoveAll(Object); \
+	}
+
 
 /**
  * Interface definition for the online party services 
@@ -1323,7 +1349,8 @@ public:
 	*
 	* @return true if task was started
 	*/
-	virtual bool JIPFromWithinParty(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& PartyLeaderId) = 0;
+	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
+	virtual bool JIPFromWithinParty(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& PartyLeaderId) { return false; }
 
 	/**
 	 * Query a party to check it's current joinability
@@ -1334,7 +1361,10 @@ public:
 	 * @param OnlinePartyJoinInfo - join information containing data such as party id, leader id
 	 * @param Delegate - called on completion
 	 */
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress deprecation warning for FOnQueryPartyJoinabilityComplete
+	UE_DEPRECATED(5.1, "Use QueryPartyJoinability with the FOnQueryPartyJoinabilityCompleteEx delegate instead")
 	virtual void QueryPartyJoinability(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& OnlinePartyJoinInfo, const FOnQueryPartyJoinabilityComplete& Delegate);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Query a party to check it's current joinability
@@ -1409,7 +1439,8 @@ public:
 	*
 	* @return true if task was started
 	*/
-	virtual bool ApproveJIPRequest(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bIsApproved, int32 DeniedResultCode = 0) = 0;
+	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
+	virtual bool ApproveJIPRequest(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bIsApproved, int32 DeniedResultCode = 0) { return false; }
 
 	/**
 	 * Respond to a query joinability request.  This reflects the current party's joinability state and can change from moment to moment, and therefore does not guarantee a successful join.
@@ -1422,8 +1453,6 @@ public:
 	 * @param PartyData - data to send back to the querying user
 	 */
 	virtual void RespondToQueryJoinability(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bCanJoin, int32 DeniedResultCode, FOnlinePartyDataConstPtr PartyData) = 0;
-	UE_DEPRECATED(4.26, "Use RespondToQueryJoinability with PartyData")
-	virtual void RespondToQueryJoinability(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RecipientId, bool bCanJoin, int32 DeniedResultCode = 0);
 
 	/**
 	 * sends an invitation to a user that could not otherwise join a party
@@ -1437,6 +1466,16 @@ public:
 	 * @return true if task was started
 	 */
 	virtual bool SendInvitation(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FPartyInvitationRecipient& Recipient, const FOnSendPartyInvitationComplete& Delegate = FOnSendPartyInvitationComplete()) = 0;
+
+	/**
+	 * Cancel an invitation sent to a user
+	 *
+	 * @param LocalUserId - user making the cancellation
+	 * @param TargetUserId - previously invited user
+	 * @param PartyId - id of an existing party
+	 * @param Delegate - called on completion
+	 */
+	virtual void CancelInvitation(const FUniqueNetId& LocalUserId, const FUniqueNetId& TargetUserId, const FOnlinePartyId& PartyId, const FOnCancelPartyInvitationComplete& Delegate = FOnCancelPartyInvitationComplete()) = 0;
 
 	/**
 	 * Reject an invite to a party
@@ -1492,21 +1531,6 @@ public:
 	 *
 	 * @param LocalUserId - user making the request
 	 * @param PartyId - id of an existing party
-	 * @param PartyData - data to send to all party members
-	 * @param Delegate - called on completion
-	 *
-	 * @return true if task was started
-	 */
-	UE_DEPRECATED(4.26, "Party data is separated by namespace. Use UpdatePartyData that has a Namespace parameter.")
-	virtual bool UpdatePartyData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyData& PartyData) { return UpdatePartyData(LocalUserId, PartyId, DefaultPartyDataNamespace, PartyData); }
-
-	/**
-	 * Set party data and broadcast to all members
-	 * Only current data can be set and no history of past party data is preserved
-	 * Party members notified of new data (see FOnPartyDataReceived)
-	 *
-	 * @param LocalUserId - user making the request
-	 * @param PartyId - id of an existing party
 	 * @param Namespace - namespace for the data
 	 * @param PartyData - data to send to all party members
 	 * @param Delegate - called on completion
@@ -1514,21 +1538,6 @@ public:
 	 * @return true if task was started
 	 */
 	virtual bool UpdatePartyData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FName& Namespace, const FOnlinePartyData& PartyData) = 0;
-
-	/**
-	 * Set party data for a single party member and broadcast to all members
-	 * Only current data can be set and no history of past party member data is preserved
-	 * Party members notified of new data (see FOnPartyMemberDataReceived)
-	 *
-	 * @param LocalUserId - user making the request
-	 * @param PartyId - id of an existing party
-	 * @param PartyMemberData - member data to send to all party members
-	 * @param Delegate - called on completion
-	 *
-	 * @return true if task was started
-	 */
-	UE_DEPRECATED(4.26, "Party data is separated by namespace. Use UpdatePartyMemberData that has a Namespace parameter.")
-	virtual bool UpdatePartyMemberData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyData& PartyMemberData)  { return UpdatePartyMemberData(LocalUserId, PartyId, DefaultPartyDataNamespace, PartyMemberData); }
 
 	/**
 	 * Set party data for a single party member and broadcast to all members
@@ -1601,36 +1610,11 @@ public:
 	 *
 	 * @param LocalUserId - user making the request
 	 * @param PartyId     - id of an existing party
-	 *
-	 * @return party data or nullptr if not found
-	 */
-	UE_DEPRECATED(4.26, "Party data is separated by namespace. Use GetPartyData that has a Namespace parameter.")
-	virtual FOnlinePartyDataConstPtr GetPartyData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId) const { return GetPartyData(LocalUserId, PartyId, DefaultPartyDataNamespace); }
-
-	/**
-	 * Get current cached data associated with a party
-	 * FOnPartyDataReceived notification called whenever this data changes
-	 *
-	 * @param LocalUserId - user making the request
-	 * @param PartyId     - id of an existing party
 	 * @param Namespace   - namespace of data
 	 *
 	 * @return party data or nullptr if not found
 	 */
 	virtual FOnlinePartyDataConstPtr GetPartyData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FName& Namespace) const = 0;
-
-	/**
-	 * Get current cached data associated with a party member
-	 * FOnPartyMemberDataReceived notification called whenever this data changes
-	 *
-	 * @param LocalUserId - user making the request
-	 * @param PartyId     - id of an existing party
-	 * @param MemberId    - id of member to find data for
-	 *
-	 * @return party member data or nullptr if not found
-	 */
-	UE_DEPRECATED(4.26, "Party data is separated by namespace. Use GetPartyMemberData that has a Namespace parameter.")
-	virtual FOnlinePartyDataConstPtr GetPartyMemberData(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId) const { return GetPartyMemberData(LocalUserId, PartyId, MemberId, DefaultPartyDataNamespace); }
 
 	/**
 	 * Get current cached data associated with a party member
@@ -1787,9 +1771,7 @@ public:
 	 * OnPartyMemberDataReceived
 	 * OnPartyInvitesChanged
 	 * OnPartyInviteRequestReceived
-	 * OnPartyInviteReceived
 	 * OnPartyInviteReceivedEx
-	 * OnPartyInviteRemoved
 	 * OnPartyInviteRemovedEx
 	 * OnPartyInviteResponseReceived
 	 * OnPartyJoinRequestReceived
@@ -1831,9 +1813,9 @@ public:
 	* @param Success - whether the join in progress action succeeded
 	* @param DeniedResultCode - descriptive reason for a failure to join
 	*/
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	DEFINE_ONLINE_DELEGATE_FOUR_PARAM(OnPartyJIPResponse, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, bool /*Success*/, int32 /*DeniedResultCode*/);
-	UE_DEPRECATED(5.0, "Use OnPartyJIPResponse instead of OnPartyJIP")
-	virtual FDelegateHandle AddOnPartyJIPDelegate_Handle(const FOnPartyJIPDelegate& Delegate);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Notification when player promotion is locked out.
@@ -1859,8 +1841,6 @@ public:
 	 * @param PartyData - party data that was updated
 	 */
 	DEFINE_ONLINE_DELEGATE_FOUR_PARAM(OnPartyDataReceived, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FName& /*Namespace*/, const FOnlinePartyData& /*PartyData*/);
-	UE_DEPRECATED(4.26, "Use OnPartyDataReceived instead of OnPartyDataReceivedConst")
-	virtual FDelegateHandle AddOnPartyDataReceivedDelegate_Handle(const FOnPartyDataReceivedConstDelegate& Delegate); // Deprecated method that only forwards PartyData for the default namespace
 
 	/**
 	* Notification when a member is promoted in a party
@@ -1896,8 +1876,6 @@ public:
 	 * @param PartyMemberData - party member data that was updated
 	 */
 	DEFINE_ONLINE_DELEGATE_FIVE_PARAM(OnPartyMemberDataReceived, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*MemberId*/, const FName& /*Namespace*/, const FOnlinePartyData& /*PartyData*/);
-	UE_DEPRECATED(4.26, "Use OnPartyMemberDataReceived instead of OnPartyMemberDataReceivedConst")
-	virtual FDelegateHandle AddOnPartyMemberDataReceivedDelegate_Handle(const FOnPartyMemberDataReceivedConstDelegate& Delegate);
 
 	/**
 	 * Notification when an invite list has changed for a party
@@ -1916,29 +1894,15 @@ public:
 
 	/**
 	 * Notification when a new invite is received
-	 * Deprecated - use OnPartyInviteReceivedEx
-	 * @param LocalUserId - id associated with this notification
-	 * @param PartyId - id associated with the party
-	 * @param SenderId - id of member that sent the invite
-	 */
-	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnPartyInviteReceived, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/);
-
-	/**
-	 * Notification when a new invite is received
 	 * @param LocalUserId - id associated with this notification
 	 * @param Invitation - the invitation that was received
 	 */
 	DEFINE_ONLINE_DELEGATE_TWO_PARAM(OnPartyInviteReceivedEx, const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/);
-
-	/**
-	 * Notification when an invite has been removed
-	 * Deprecated Use OnPartyInviteRemovedEx
-	 * @param LocalUserId id associated with this notification
-	 * @param PartyId id associated with the party
-	 * @param SenderId id of member that sent the invite
-	 * @param Reason reason the invitation was removed
-	 */
-	DEFINE_ONLINE_DELEGATE_FOUR_PARAM(OnPartyInviteRemoved, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/, EPartyInvitationRemovedReason /*Reason*/);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress deprecation warning for FOnPartyInviteReceivedDelegate
+	UE_DEPRECATED(5.1, "Use OnPartyInviteReceivedEx instead of OnPartyInviteReceived")
+	virtual FDelegateHandle AddOnPartyInviteReceivedDelegate_Handle(const FOnPartyInviteReceivedDelegate& Delegate);
+	DEFINE_DEPRECATED_PARTY_DELEGATE(OnPartyInviteReceived, OnPartyInviteReceivedEx);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Notification when an invite has been removed
@@ -1947,6 +1911,11 @@ public:
 	 * @param Reason reason the invitation was removed
 	 */
 	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnPartyInviteRemovedEx, const FUniqueNetId& /*LocalUserId*/, const IOnlinePartyJoinInfo& /*Invitation*/, EPartyInvitationRemovedReason /*Reason*/);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress deprecation warning for FOnPartyInviteRemovedDelegate
+	UE_DEPRECATED(5.1, "Use OnPartyInviteRemovedEx instead of OnPartyInviteRemoved")
+	virtual FDelegateHandle AddOnPartyInviteRemovedDelegate_Handle(const FOnPartyInviteRemovedDelegate& Delegate);
+	DEFINE_DEPRECATED_PARTY_DELEGATE(OnPartyInviteRemoved, OnPartyInviteRemovedEx);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Notification when an invitation response is received
@@ -1975,7 +1944,9 @@ public:
 	* @param Platform - platform of member that sent the request
 	* @param PartyData - data provided by the sender for the leader to use to determine joinability
 	*/
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	DEFINE_ONLINE_DELEGATE_THREE_PARAM(OnPartyJIPRequestReceived, const FUniqueNetId& /*LocalUserId*/, const FOnlinePartyId& /*PartyId*/, const FUniqueNetId& /*SenderId*/);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Notification when a player wants to know if the party is in a joinable state

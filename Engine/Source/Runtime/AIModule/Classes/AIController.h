@@ -256,6 +256,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AI")
 	virtual bool RunBehaviorTree(UBehaviorTree* BTAsset);
 
+protected:
+	virtual void CleanupBrainComponent();
+
+public:
 	/**
 	 * Makes AI use the specified Blackboard asset & creates a Blackboard Component if one does not already exist.
 	 * @param	BlackboardAsset			The Blackboard asset to use.
@@ -442,7 +446,7 @@ public:
 	const UBlackboardComponent* GetBlackboardComponent() const { return Blackboard; }
 	UBlackboardComponent* GetBlackboardComponent() { return Blackboard; }
 
-	/** Note that his function does not do any pathfollowing state transfer. 
+	/** Note that this function does not do any pathfollowing state transfer. 
 	 *	Intended to be called as part of initialization/setup process */
 	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")
 	void SetPathFollowingComponent(UPathFollowingComponent* NewPFComponent);

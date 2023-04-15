@@ -2,6 +2,7 @@
 
 #include "Sections/MovieSceneFloatSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
+#include "Channels/MovieSceneSectionChannelOverrideRegistry.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
 #include "EntitySystem/MovieSceneEntityManager.h"
@@ -13,6 +14,8 @@
 #include "Tracks/MovieSceneFloatTrack.h"
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "UObject/SequencerObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneFloatSection)
 
 UMovieSceneFloatSection::UMovieSceneFloatSection( const FObjectInitializer& ObjectInitializer )
 	: Super( ObjectInitializer )
@@ -29,13 +32,15 @@ UMovieSceneFloatSection::UMovieSceneFloatSection( const FObjectInitializer& Obje
 
 EMovieSceneChannelProxyType UMovieSceneFloatSection::CacheChannelProxy()
 {
+	using namespace UE::MovieScene;
+
 #if WITH_EDITOR
 
-	ChannelProxy = MakeShared<FMovieSceneChannelProxy>(FloatCurve, FMovieSceneChannelMetaData(), TMovieSceneExternalValue<float>::Make());
+	ChannelProxy = MakeChannelProxy(OverrideRegistry, FloatCurve, FMovieSceneChannelMetaData(), TMovieSceneExternalValue<float>::Make());
 
 #else
 
-	ChannelProxy = MakeShared<FMovieSceneChannelProxy>(FloatCurve);
+	ChannelProxy = MakeChannelProxy(OverrideRegistry, FloatCurve);
 
 #endif
 
@@ -52,7 +57,7 @@ void UMovieSceneFloatSection::ImportEntityImpl(UMovieSceneEntitySystemLinker* En
 {
 	using namespace UE::MovieScene;
 
-	if (!FloatCurve.HasAnyData())
+	if (!FloatCurve.HasAnyData() && (!OverrideRegistry || OverrideRegistry->NumChannels() == 0))
 	{
 		return;
 	}
@@ -60,7 +65,31 @@ void UMovieSceneFloatSection::ImportEntityImpl(UMovieSceneEntitySystemLinker* En
 	const FBuiltInComponentTypes* Components = FBuiltInComponentTypes::Get();
 	const FMovieSceneTracksComponentTypes* TracksComponents = FMovieSceneTracksComponentTypes::Get();
 
-	FPropertyTrackEntityImportHelper(TracksComponents->Float)
-		.Add(Components->FloatChannel[0], &FloatCurve)
+	FPropertyTrackWithOverridableChannelsEntityImportHelper(TracksComponents->Float, this)
+		.Add(Components->FloatChannel[0], &FloatCurve,
+			// NAME_None below because we don't specify any names in CacheChannelProxy
+			FChannelOverrideEntityImportParams{ NAME_None, Components->DoubleResult[0] })
 		.Commit(this, Params, OutImportedEntity);
 }
+
+UMovieSceneSectionChannelOverrideRegistry* UMovieSceneFloatSection::GetChannelOverrideRegistry(bool bCreateIfMissing)
+{
+	if (bCreateIfMissing && OverrideRegistry == nullptr)
+	{
+		OverrideRegistry = NewObject<UMovieSceneSectionChannelOverrideRegistry>(this);
+	}
+	return OverrideRegistry;
+}
+
+UE::MovieScene::FChannelOverrideProviderTraitsHandle UMovieSceneFloatSection::GetChannelOverrideProviderTraits() const
+{
+	// NAME_None because we don't specify any names in CacheChannelProxy
+	UE::MovieScene::TSingleChannelOverrideProviderTraits<FMovieSceneFloatChannel> Traits(NAME_None);
+	return UE::MovieScene::FChannelOverrideProviderTraitsHandle(Traits);
+}
+
+void UMovieSceneFloatSection::OnChannelOverridesChanged()
+{
+	ChannelProxy = nullptr;
+}
+

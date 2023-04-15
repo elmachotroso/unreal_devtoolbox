@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IContentBrowserSingleton.h"
 #include "Input/Reply.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWidget.h"
@@ -15,8 +16,8 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
-#include "AssetData.h"
+#include "Styling/AppStyle.h"
+#include "AssetRegistry/AssetData.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "PreviewScene.h"
 #include "EditorViewportClient.h"
@@ -121,6 +122,8 @@ class SSkeletonListWidget : public SSkeletonWidget
 {
 public:
 	SLATE_BEGIN_ARGS( SSkeletonListWidget ){}
+		SLATE_ARGUMENT(bool, ShowBones)
+		SLATE_ARGUMENT(EAssetViewType::Type, InitialViewType)
 	SLATE_END_ARGS()
 public:
 	// WIDGETS
@@ -153,6 +156,8 @@ public:
 	}
 
 private:
+	bool bShowBones = true;
+	EAssetViewType::Type InitialViewType = EAssetViewType::Column;
 	SVerticalBox::FSlot* BoneListSlot;
 	TArray< TSharedPtr<FName> > BoneList;
 };
@@ -205,6 +210,8 @@ public:
 
 	void ConstructWindowFromMesh(USkeletalMesh* InSkeletalMesh);
 
+	void ConstructWindowFromAnimBlueprint(UAnimBlueprint* AnimBlueprint);
+
 	void ConstructWindow();
 
 	void ConstructButtons(TSharedRef<SVerticalBox> ParentBox)
@@ -215,15 +222,15 @@ public:
 		.VAlign(VAlign_Bottom)
 		[
 			SNew(SUniformGridPanel)
-			.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-			.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-			.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+			.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+			.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 			+SUniformGridPanel::Slot(0,0)
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("Accept", "Accept"))
 				.HAlign(HAlign_Center)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.OnClicked_Raw( this, &SSkeletonSelectorWindow::OnAccept )
 			]
 			+SUniformGridPanel::Slot(1,0)
@@ -231,7 +238,7 @@ public:
 				SNew(SButton)
 				.Text(LOCTEXT("Cancel", "Cancel"))
 				.HAlign(HAlign_Center)
-				.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 				.OnClicked_Raw( this, &SSkeletonSelectorWindow::OnCancel )
 			]
 		];

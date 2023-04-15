@@ -5,15 +5,15 @@
 #include "AudioParameterControllerInterface.h"
 #include "IAudioParameterInterfaceRegistry.h"
 #include "IAudioParameterTransmitter.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "MetasoundEngineArchetypes.h"
 #include "MetasoundFrontendDataTypeRegistry.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundFrontendTransform.h"
 #include "MetasoundLog.h"
-#include "MetasoundOutputFormatInterfaces.h"
+#include "Interfaces/MetasoundFrontendOutputFormatInterfaces.h"
 #include "MetasoundParameterTransmitter.h"
 #include "MetasoundSource.h"
-#include "MetasoundSourceInterface.h"
 #include "MetasoundUObjectRegistry.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
@@ -227,7 +227,7 @@ namespace Metasound
 			{
 				constexpr bool bIsDefault = true;
 				constexpr bool bEditorCanAddOrRemove = false;
-				RegisterInterface<UMetaSound>(MetasoundV1_0::GetInterface(), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
+				RegisterInterface<UMetaSoundPatch>(MetasoundV1_0::GetInterface(), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 
 				RegisterInterface(SourceInterface::CreateInterface(*UMetaSoundSource::StaticClass()), MakeUnique<SourceInterface::FUpdateInterface>(), bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 				RegisterInterface(OutputFormatMonoInterface::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
@@ -243,8 +243,8 @@ namespace Metasound
 				// Added for upgrading old metasounds
 				RegisterInterface(SourceInterfaceV1_0::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 
-				// Set default interface with unset version to use base UMetaSound class implementation (legacy requirement for 5.0 alpha).
-				RegisterInterface<UMetaSound>(FMetasoundFrontendInterface(), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
+				// Set default interface with unset version to use base UMetaSoundPatch class implementation (legacy requirement for 5.0 alpha).
+				RegisterInterface<UMetaSoundPatch>(FMetasoundFrontendInterface(), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 
 				RegisterInterface<UMetaSoundSource>(MetasoundOutputFormatStereoV1_0::GetInterface(), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 				RegisterInterface<UMetaSoundSource>(MetasoundOutputFormatStereoV1_1::GetInterface(), MakeUnique<MetasoundOutputFormatStereoV1_1::FUpdateInterface>(), bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
@@ -255,6 +255,9 @@ namespace Metasound
 				RegisterInterface<UMetaSoundSource>(MetasoundOutputFormatMonoV1_2::GetInterface(), MakeUnique<MetasoundOutputFormatMonoV1_2::FUpdateInterface>(), bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);
 
 				RegisterInterface(OutputFormatStereoInterface::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);			
+				RegisterInterface(OutputFormatQuadInterface::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);			
+				RegisterInterface(OutputFormatFiveDotOneInterface::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);			
+				RegisterInterface(OutputFormatSevenDotOneInterface::CreateInterface(*UMetaSoundSource::StaticClass()), nullptr, bIsDefault, bEditorCanAddOrRemove, IDataReference::RouterName);			
 			}
 
 			// Register External Interfaces (Interfaces defined externally & can be managed directly by end-user).

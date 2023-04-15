@@ -6,39 +6,74 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
 #include "Concepts/GetTypeHashable.h"
-#include "Containers/List.h"
+#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
-#include "Serialization/SerializedPropertyScope.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/List.h"
+#include "Containers/Map.h"
+#include "Containers/ScriptArray.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreMinimal.h"
+#include "HAL/MemoryBase.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/UnrealMemory.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Serialization/Archive.h"
 #include "Serialization/MemoryImage.h"
+#include "Serialization/SerializedPropertyScope.h"
+#include "Serialization/StructuredArchive.h"
 #include "Templates/Casts.h"
+#include "Templates/EnableIf.h"
 #include "Templates/Greater.h"
 #include "Templates/IsFloatingPoint.h"
 #include "Templates/IsIntegral.h"
+#include "Templates/IsPODType.h"
 #include "Templates/IsSigned.h"
+#include "Templates/IsTriviallyDestructible.h"
+#include "Templates/IsUEnumClass.h"
+#include "Templates/MemoryOps.h"
 #include "Templates/Models.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Trace/Detail/Channel.h"
 #include "UObject/Class.h"
 #include "UObject/CoreNetTypes.h"
+#include "UObject/Field.h"
 #include "UObject/LazyObjectPtr.h"
+#include "UObject/NameTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ObjectPtr.h"
+#include "UObject/PersistentObjectPtr.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/PropertyTag.h"
+#include "UObject/ScriptDelegates.h"
 #include "UObject/ScriptInterface.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/SparseDelegate.h"
+#include "UObject/TopLevelAssetPath.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
 #include "UObject/WeakObjectPtr.h"
-#include "UObject/Field.h"
-
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
 
 class FBlake3;
+class FOutputDevice;
+class UPackageMap;
 class UPropertyWrapper;
+struct CGetTypeHashable;
+struct FUObjectSerializeContext;
+template <typename FuncType> class TFunctionRef;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogType, Log, All);
 
@@ -172,6 +207,13 @@ public:
 	}
 };
 
+/** Type of pointer provided for property API functions */
+enum class EPropertyPointerType
+{
+	Direct = 0, /** Raw property access */
+	Container = 1, /** Property access through its owner container */
+};
+
 //
 // An UnrealScript variable.
 //
@@ -198,7 +240,7 @@ public:
 	FProperty*	PropertyLinkNext;
 	/** In memory only: Linked list of object reference properties from most-derived to base **/
 	FProperty*  NextRef;
-	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed byt he native destructor **/
+	/** In memory only: Linked list of properties requiring destruction. Note this does not include things that will be destroyed by the native destructor **/
 	FProperty*	DestructorLinkNext;
 	/** In memory only: Linked list of properties requiring post constructor initialization.**/
 	FProperty*	PostConstructLinkNext;
@@ -206,7 +248,24 @@ public:
 public:
 	// Constructors.
 	FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
+
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags);
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithoutOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
+
 #if WITH_EDITORONLY_DATA
 	explicit FProperty(UField* InField);
 #endif // WITH_EDITORONLY_DATA
@@ -264,6 +323,41 @@ public:
 	/** Gets the wrapper object for this property or creates one if it doesn't exist yet */
 	UPropertyWrapper* GetUPropertyWrapper();
 #endif
+
+	/** Checks if this property as a native setter function */
+	virtual bool HasSetter() const
+	{
+		return false;
+	}
+	/** Checks if this property as a native getter function */
+	virtual bool HasGetter() const
+	{
+		return false;
+	}
+	/** Checks if this property as a native setter or getter function */
+	virtual bool HasSetterOrGetter() const
+	{
+		return false;
+	}
+	/** 
+	 * Calls the native setter function for this property
+	 * @param Container Pointer to the owner of this property (either UObject or struct)
+	 * @param InValue Pointer to the new value
+	 */
+	virtual void CallSetter(void* Container, const void* InValue) const 
+	{
+		checkf(HasSetter(), TEXT("Calling a setter on %s but it doesn't have one"), *GetFullName());
+	}
+	/**
+	 * Calls the native getter function for this property
+	 * @param Container Pointer to the owner of this property (either UObject or struct)
+	 * @param OutValue Pointer to the value where the existing property value will be copied to
+	 */
+	virtual void CallGetter(const void* Container, void* OutValue) const 
+	{
+		checkf(HasGetter(), TEXT("Calling a getter on %s but it doesn't have one"), *GetFullName());
+	}
+
 private:
 	/** Set the alignment offset for this property 
 	 * @return the size of the structure including this newly added property
@@ -417,16 +511,135 @@ public:
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults = NULL) const PURE_VIRTUAL(FProperty::SerializeItem, );
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const;
 	virtual bool SupportsNetSharedSerialization() const;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = NULL ) const PURE_VIRTUAL(FProperty::ExportTextItem,);
+
+	UE_DEPRECATED(5.1, "Please use ExportTextItem_InContainer or ExportTextItem_Direct instead.")
+	virtual void ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
+	{
+		ExportTextItem_Direct(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags, ExportRootScope);
+	}	
+
+	void ExportTextItem_Direct(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
+	{
+		ExportText_Internal(ValueStr, PropertyValue, EPropertyPointerType::Direct, DefaultValue, Parent, PortFlags, ExportRootScope);
+	}
+
+	void ExportTextItem_InContainer(FString& ValueStr, const void* Container, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
+	{
+		ExportText_Internal(ValueStr, Container, EPropertyPointerType::Container, DefaultValue, Parent, PortFlags, ExportRootScope);
+	}
+
+	UE_DEPRECATED(5.1, "ImportText that takes a direct property pointer is deprecated.  Please use ImportText_Direct or ImportText_InContainer instead.")
 	const TCHAR* ImportText( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText = (FOutputDevice*)GWarn ) const
 	{
-		if ( !ValidateImportFlags(PortFlags,ErrorText) || Buffer == NULL )
+		return ImportText_Direct(Buffer, Data, OwnerObject, PortFlags, ErrorText);
+	}
+
+	/**
+	 * Import a text value
+	 * @param Buffer		Text representing the property value
+	 * @param Container	Pointer to the container that owns this property (either UObject pointer or a struct pointer)
+	 * @param OwnerObject	Object that owns the property container (if the container is an UObject then Container is also OwnerObject)
+	 * @param PortFlags	Flags controlling the behavior when importing the value
+	 * @param ErrorText	Output device for throwing warnings or errors on import
+	 * @returns Buffer pointer advanced by the number of characters consumed when reading the text value
+	 */
+	const TCHAR* ImportText_InContainer(const TCHAR* Buffer, void* Container, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText = (FOutputDevice*)GWarn) const
+	{
+		if (!ValidateImportFlags(PortFlags, ErrorText) || Buffer == nullptr)
+		{
+			return nullptr;
+		}
+		PortFlags |= EPropertyPortFlags::PPF_UseDeprecatedProperties; // Imports should always process deprecated properties
+		return ImportText_Internal(Buffer, Container, EPropertyPointerType::Container, OwnerObject, PortFlags, ErrorText);
+	}
+
+	/**
+	 * Import a text value
+	 * @param Buffer		Text representing the property value
+	 * @param PropertyPtr	Pointer to property value
+	 * @param OwnerObject	Object that owns the property
+	 * @param PortFlags	Flags controlling the behavior when importing the value
+	 * @param ErrorText	Output device for throwing warnings or errors on import
+	 * @returns Buffer pointer advanced by the number of characters consumed when reading the text value
+	 */
+	const TCHAR* ImportText_Direct(const TCHAR* Buffer, void* PropertyPtr, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText = (FOutputDevice*)GWarn) const
+	{
+		if (!ValidateImportFlags(PortFlags, ErrorText) || Buffer == NULL)
 		{
 			return NULL;
 		}
 		PortFlags |= EPropertyPortFlags::PPF_UseDeprecatedProperties; // Imports should always process deprecated properties
-		return ImportText_Internal( Buffer, Data, PortFlags, OwnerObject, ErrorText );
+		return ImportText_Internal(Buffer, PropertyPtr, EPropertyPointerType::Direct, OwnerObject, PortFlags, ErrorText);
 	}
+
+	FORCEINLINE void SetValue_InContainer(void* InContainer, const void* InValue) const
+	{
+		if (!HasSetter())
+		{
+			CopyCompleteValue(ContainerVoidPtrToValuePtrInternal(InContainer, 0), InValue);
+		}
+		else
+		{
+			CallSetter(InContainer, InValue);
+		}
+	}
+	FORCEINLINE void GetValue_InContainer(void const* InContainer, void* OutValue) const
+	{
+		if (!HasGetter())
+		{
+			CopyCompleteValue(OutValue, ContainerVoidPtrToValuePtrInternal((void*)InContainer, 0));
+		}
+		else
+		{
+			CallGetter(InContainer, OutValue);
+		}
+	}
+
+	/**
+	* Copies a single value to the property even if the property represents a static array of values
+	* @param InContainer Instance owner of the property
+	* @param InValue Pointer to the memory that the value will be copied from. Must be at least ElementSize big
+	* @param ArrayIndex Index into the static array to copy the value from. If the property is not a static array it should be 0
+	*/
+	void SetSingleValue_InContainer(void* InContainer, const void* InValue, int32 ArrayIndex) const;
+
+	/**
+	* Copies a single value to OutValue even if the property represents a static array of values
+	* @param InContainer Instance owner of the property
+	* @param OutValue Pointer to the memory that the value will be copied to. Must be at least ElementSize big
+	* @param ArrayIndex Index into the static array to copy the value from. If the property is not a static array it should be 0
+	*/
+	void GetSingleValue_InContainer(const void* InContainer, void* OutValue, int32 ArrayIndex) const;
+
+	/** Allocates and initializes memory to hold a value this property represents */
+	void* AllocateAndInitializeValue() const;
+
+	/** Destroys and frees memory with a value this property represents */
+	void DestroyAndFreeValue(void* InMemory) const;
+
+	/**
+	 * Helper function for setting container / struct property value and performing operation directly on the value memory
+	 * @param InContainer Pointer to the container that owns the property. Can be null but then setters and getters will not be used.
+	 * @param DirectPropertyAddress Direct property value address. Can be null only if InContainer is a valid pointer.
+	 * @param DirectValueAccessFunc Function that manipulates directly on property value address. The value address can be different than the passed in DirectPropertyAddress if setters and getters are present and InContainer pointer is valid.
+	 */
+	void PerformOperationWithSetter(void* InContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const;
+
+	/**
+	 * Helper function for getting container / struct property value and performing operation directly on the value memory
+	 * @param InContainer Pointer to the container that owns the property. Can be null but then setters and getters will not be used.
+	 * @param DirectPropertyAddress Direct property value address. Can be null only if InContainer is a valid pointer.
+	 * @param DirectValueAccessFunc Function that manipulates directly on property value address. The value address can be different than the passed in DirectPropertyAddress if setters and getters are present and InContainer pointer is valid.
+	 */
+	void PerformOperationWithGetter(void* InContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const;
+
+	/** 
+	 * Gets value address at given index inside of a static array or container
+	 * @param InValueAddress address of the value represented by this property
+	 * @param Index into the static array or container
+	 * @returns address of the value at given index
+	 */
+	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const;
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -443,11 +656,14 @@ public:
 	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const;
 #endif
 protected:
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const PURE_VIRTUAL(FProperty::ImportText,return NULL;);
+
+	virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const PURE_VIRTUAL(FProperty::ExportText, );
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const PURE_VIRTUAL(FProperty::ImportText, return nullptr;);
+
 public:
 	
-	bool ExportText_Direct( FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = NULL ) const;
-	FORCEINLINE bool ExportText_InContainer( int32 Index, FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = NULL ) const
+	bool ExportText_Direct(FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const;
+	FORCEINLINE bool ExportText_InContainer(int32 Index, FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
 	{
 		return ExportText_Direct(ValueStr, ContainerPtrToValuePtr<void>(Data, Index), ContainerPtrToValuePtrForDefaults<void>(NULL, Delta, Index), Parent, PortFlags, ExportRootScope);
 	}
@@ -493,6 +709,20 @@ private:
 		}
 
 		return (uint8*)ContainerPtr + Offset_Internal + ElementSize * ArrayIndex;
+	}
+
+protected:
+
+	FORCEINLINE void* PointerToValuePtr(void const* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, int32 ArrayIndex = 0) const
+	{
+		if (PropertyPointerType == EPropertyPointerType::Container)
+		{
+			return (uint8*)ContainerOrPropertyPtr + Offset_Internal + ElementSize * ArrayIndex;
+		}
+		else
+		{
+			return (void*)ContainerOrPropertyPtr;
+		}
 	}
 
 public:
@@ -1142,11 +1372,28 @@ public:
 		SetElementSize();
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	TProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags | TTypeFundamentals::GetComputedFlagsPropertyFlags())
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		SetElementSize();
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	template <typename PropertyParamsType>
+	TProperty(FFieldVariant InOwner, PropertyParamsType& Prop)
+		: Super(InOwner, Prop, TTypeFundamentals::GetComputedFlagsPropertyFlags())
+	{
+		SetElementSize();
+	}
+
+public:
 
 #if WITH_EDITORONLY_DATA
 	explicit TProperty(UField* InField)
@@ -1231,6 +1478,16 @@ public:
 		*GetPropertyValuePtr_InContainer(A, ArrayIndex) = Value;
 	}
 
+	FORCEINLINE void SetValue_InContainer(void* InContainer, const TCppType& InValue) const
+	{
+		TInPropertyBaseClass::SetValue_InContainer(InContainer, &InValue);
+	}
+
+	FORCEINLINE void GetValue_InContainer(void const* InContainer, TCppType* OutValue) const
+	{
+		TInPropertyBaseClass::GetValue_InContainer(InContainer, OutValue);
+	}
+
 protected:
 	FORCEINLINE void SetElementSize()
 	{
@@ -1240,7 +1497,7 @@ protected:
 };
 
 template<typename InTCppType, class TInPropertyBaseClass>
-class COREUOBJECT_API TProperty_WithEqualityAndSerializer : public TProperty<InTCppType, TInPropertyBaseClass>
+class TProperty_WithEqualityAndSerializer : public TProperty<InTCppType, TInPropertyBaseClass>
 {
 
 public:
@@ -1258,8 +1515,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	TProperty_WithEqualityAndSerializer(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	{
+	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	TProperty_WithEqualityAndSerializer(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop)
+		: Super(InOwner, Prop)
 	{
 	}
 
@@ -1269,9 +1539,6 @@ public:
 	{
 	}
 #endif // WITH_EDITORONLY_DATA
-
-	/** DO NOT USE. This constructor is for internal usage only for hot-reload purposes. */
-	TProperty_WithEqualityAndSerializer(FVTableHelper& Helper) : Super(Helper) {};
 
 	// FProperty interface.
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags=0 ) const override
@@ -1293,11 +1560,23 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 
 	FNumericProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
 		: FProperty(InOwner, InName, InObjectFlags)
-	{}
+	{
+	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FNumericProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FProperty(InOwner, InName, InObjectFlags, InOffset, InFlags)
-	{}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	{
+	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FNumericProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
 
 #if WITH_EDITORONLY_DATA
 	explicit FNumericProperty(UField* InField)
@@ -1307,9 +1586,8 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 #endif // WITH_EDITORONLY_DATA
 
 	// FProperty interface.
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const override;
-
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const override;
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	// End of FProperty interface
 
 	// FNumericProperty interface.
@@ -1323,7 +1601,7 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 	template <typename T>
 	bool CanHoldValue(T Value) const
 	{
-		if (!TIsFloatingPoint<T>::Value)
+		if (TIsFloatingPoint<T>::Value)
 		{
 			//@TODO: FLOATPRECISION: This feels wrong, it might be losing precision before it tests to see if it's going to lose precision...
 			return CanHoldDoubleValueInternal((double)Value);
@@ -1375,6 +1653,7 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 	 * CAUTION: This routine does not do enum name conversion
 	**/
 	virtual void SetNumericPropertyValueFromString(void* Data, TCHAR const* Value) const;
+	virtual void SetNumericPropertyValueFromString_InContainer(void* Container, TCHAR const* Value) const;
 
 	/** 
 	 * Gets the value of a signed integral property type
@@ -1382,6 +1661,7 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 	 * @return Data as a signed int
 	**/
 	virtual int64 GetSignedIntPropertyValue(void const* Data) const;
+	virtual int64 GetSignedIntPropertyValue_InContainer(void const* Container) const;
 
 	/** 
 	 * Gets the value of an unsigned integral property type
@@ -1389,6 +1669,7 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 	 * @return Data as an unsigned int
 	**/
 	virtual uint64 GetUnsignedIntPropertyValue(void const* Data) const;
+	virtual uint64 GetUnsignedIntPropertyValue_InContainer(void const* Container) const;
 
 	/** 
 	 * Gets the value of an floating point property type
@@ -1404,6 +1685,7 @@ class COREUOBJECT_API FNumericProperty : public FProperty
 	 * CAUTION: This routine does not do enum name conversion
 	**/
 	virtual FString GetNumericPropertyValueToString(void const* Data) const;
+	virtual FString GetNumericPropertyValueToString_InContainer(void const* Container) const;
 	// End of FNumericProperty interface
 
 	static int64 ReadEnumAsInt64(FStructuredArchive::FSlot Slot, UStruct* DefaultsStruct, const FPropertyTag& Tag);
@@ -1432,8 +1714,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	TProperty_Numeric(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	{
+	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	TProperty_Numeric(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop)
+		: Super(InOwner, Prop)
 	{
 	}
 
@@ -1560,6 +1855,10 @@ public:
 				ConvertFromArithmeticValue<double>(Slot, Data, Tag);
 				return EConvertFromTypeResult::Converted;
 
+			case NAME_BoolProperty:
+				this->SetPropertyValue_InContainer(Data, (TCppType)Tag.BoolVal, Tag.ArrayIndex);
+				return EConvertFromTypeResult::Converted;
+
 			default:
 				// We didn't convert it
 				break;
@@ -1598,19 +1897,45 @@ public:
 	{
 		LexFromString(*TTypeFundamentals::GetPropertyValuePtr(Data), Value);
 	}
+	virtual void SetNumericPropertyValueFromString_InContainer(void* Container, TCHAR const* Value) const override
+	{
+		TCppType LocalValue{};
+		LexFromString(LocalValue, Value);
+		FNumericProperty::SetValue_InContainer(Container, &LocalValue);
+	}
 	virtual FString GetNumericPropertyValueToString(void const* Data) const override
 	{
 		return LexToString(TTypeFundamentals::GetPropertyValue(Data));
+	}
+	virtual FString GetNumericPropertyValueToString_InContainer(void const* Container) const override
+	{
+		TCppType LocalValue{};
+		FNumericProperty::GetValue_InContainer(Container, &LocalValue);
+		return LexToString(LocalValue);
 	}
 	virtual int64 GetSignedIntPropertyValue(void const* Data) const override
 	{
 		check(TIsIntegral<TCppType>::Value);
 		return (int64)TTypeFundamentals::GetPropertyValue(Data);
 	}
+	virtual int64 GetSignedIntPropertyValue_InContainer(void const* Container) const override
+	{
+		check(TIsIntegral<TCppType>::Value);
+		TCppType LocalValue{};
+		FNumericProperty::GetValue_InContainer(Container, &LocalValue);
+		return (int64)LocalValue;
+	}
 	virtual uint64 GetUnsignedIntPropertyValue(void const* Data) const override
 	{
 		check(TIsIntegral<TCppType>::Value);
 		return (uint64)TTypeFundamentals::GetPropertyValue(Data);
+	}
+	virtual uint64 GetUnsignedIntPropertyValue_InContainer(void const* Container) const override
+	{
+		check(TIsIntegral<TCppType>::Value);
+		TCppType LocalValue{};
+		FNumericProperty::GetValue_InContainer(Container, &LocalValue);
+		return (uint64)LocalValue;
 	}
 	virtual double GetFloatingPointPropertyValue(void const* Data) const override
 	{
@@ -1656,11 +1981,21 @@ class COREUOBJECT_API FByteProperty : public TProperty_Numeric<uint8>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FByteProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UEnum* InEnum = nullptr)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	,	Enum( InEnum )
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FByteProperty(FFieldVariant InOwner, const UECodeGen_Private::FBytePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FByteProperty(UField* InField);
@@ -1682,8 +2017,10 @@ class COREUOBJECT_API FByteProperty : public TProperty_Numeric<uint8>
 	// FProperty interface.
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 #if WITH_EDITORONLY_DATA
 	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
@@ -1714,10 +2051,20 @@ class COREUOBJECT_API FInt8Property : public TProperty_Numeric<int8>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FInt8Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FInt8Property(FFieldVariant InOwner, const UECodeGen_Private::FInt8PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FInt8Property(UField* InField)
@@ -1743,10 +2090,20 @@ class COREUOBJECT_API FInt16Property : public TProperty_Numeric<int16>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FInt16Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FInt16Property(FFieldVariant InOwner, const UECodeGen_Private::FInt16PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FInt16Property(UField* InField)
@@ -1773,10 +2130,20 @@ class COREUOBJECT_API FIntProperty : public TProperty_Numeric<int32>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FIntProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FIntProperty(FFieldVariant InOwner, const UECodeGen_Private::FIntPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FIntProperty(UField* InField)
@@ -1802,10 +2169,20 @@ class COREUOBJECT_API FInt64Property : public TProperty_Numeric<int64>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FInt64Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FInt64Property(FFieldVariant InOwner, const UECodeGen_Private::FInt64PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FInt64Property(UField* InField)
@@ -1831,10 +2208,20 @@ class COREUOBJECT_API FUInt16Property : public TProperty_Numeric<uint16>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FUInt16Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FUInt16Property(FFieldVariant InOwner, const UECodeGen_Private::FFInt16PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FUInt16Property(UField* InField)
@@ -1860,10 +2247,20 @@ class COREUOBJECT_API FUInt32Property : public TProperty_Numeric<uint32>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FUInt32Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	:	TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FUInt32Property(FFieldVariant InOwner, const UECodeGen_Private::FUInt32PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FUInt32Property(UField* InField)
@@ -1889,10 +2286,20 @@ class COREUOBJECT_API FUInt64Property : public TProperty_Numeric<uint64>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FUInt64Property(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FUInt64Property(FFieldVariant InOwner, const UECodeGen_Private::FUnsizedIntPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FUInt64Property(UField* InField)
@@ -1941,10 +2348,20 @@ class COREUOBJECT_API FFloatProperty : public TProperty_Numeric<float>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FFloatProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FFloatProperty(FFieldVariant InOwner, const UECodeGen_Private::FFloatPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FFloatProperty(UField* InField)
@@ -1954,7 +2371,8 @@ class COREUOBJECT_API FFloatProperty : public TProperty_Numeric<float>
 #endif // WITH_EDITORONLY_DATA
 
 	// FProperty interface
-	virtual void ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
+protected:
+	virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
 	// End of FProperty interface
 };
 
@@ -1974,10 +2392,20 @@ class COREUOBJECT_API FDoubleProperty : public TProperty_Numeric<double>
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FDoubleProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_Numeric(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FDoubleProperty(FFieldVariant InOwner, const UECodeGen_Private::FDoublePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FDoubleProperty(UField* InField)
@@ -2036,7 +2464,15 @@ public:
 	 * @param InElementSize Sizeof of the boolean type this property represents.
 	 * @param bIsNativeBool true if this property represents C++ bool type.
 	 */
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FBoolProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool);
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FBoolProperty(FFieldVariant InOwner, const UECodeGen_Private::FBoolPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FBoolProperty(UField* InField);
@@ -2060,8 +2496,10 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual void CopyValuesInternal( void* Dest, void const* Src, int32 Count ) const override;
 	virtual void ClearValueInternal( void* Data ) const override;
 	virtual void InitializeValueInternal( void* Dest ) const override;
@@ -2155,10 +2593,21 @@ public:
 		, PropertyClass(nullptr)
 	{}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FObjectPropertyBase(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass = NULL)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FProperty(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, PropertyClass(InClass)
 	{}
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParams& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
+	FObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParamsWithoutClass& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
 
 #if WITH_EDITORONLY_DATA
 	explicit FObjectPropertyBase(UField* InField);
@@ -2177,8 +2626,10 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
 	virtual bool SupportsNetSharedSerialization() const override { return false; }
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual FName GetID() const override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
@@ -2250,8 +2701,23 @@ public:
 	static bool ParseObjectPropertyValue( const FProperty* Property, UObject* OwnerObject, UClass* RequiredMetaClass, uint32 PortFlags, const TCHAR*& Buffer, UObject*& out_ResolvedValue, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
 	static UObject* FindImportedObject( const FProperty* Property, UObject* OwnerObject, UClass* ObjectClass, UClass* RequiredMetaClass, const TCHAR* Text, uint32 PortFlags = 0, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
 	
-	// Returns the qualified export path for a given object, parent, and export root scope
-	static FString GetExportPath(const UObject* Object, const UObject* Parent, const UObject* ExportRootScope, const uint32 PortFlags);
+	/**
+	 * Returns the qualified export path for a given object, parent, and export root scope
+	 * @param Object Object to get the export path for
+	 * @param Parent Outer of the Object used as a root object for generating the Objects path name
+	 * @param ExportRootScope Similar to Parent but used when exporting from one package or graph to another package or graph
+	 * @param PortFlags Property port flags
+	 * @return A string representing the export path of an object, usually in the form of /ClassPackage.ClassName'/Package/Path.Object'
+	 */
+	static FString GetExportPath(const TObjectPtr<const UObject>& Object, const UObject* Parent = nullptr, const UObject* ExportRootScope = nullptr, const uint32 PortFlags = PPF_None);
+
+	/**
+	 * Returns the qualified export path given a class path name and object path name
+	 * @param ClassPathName Class path name
+	 * @param ObjectPathName of the Object used as a root object for generating the Objects path name
+	 * @return A string representing the export path of an object in the form of /ClassPackage.ClassName'/Package/Path.Object'
+	 */
+	static FString GetExportPath(FTopLevelAssetPath ClassPathName, const FString& ObjectPathName);
 
 	// Helper method for sharing code with FObjectPtrProperty even though one doesn't inherit from the other
 	static bool StaticIdentical(UObject* A, UObject* B, uint32 PortFlags);
@@ -2264,16 +2730,12 @@ public:
 	{
 		return LoadObjectPropertyValue(ContainerPtrToValuePtr<void>(PropertyValueAddress, ArrayIndex));
 	}
+
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const;
-	FORCEINLINE UObject* GetObjectPropertyValue_InContainer(const void* PropertyValueAddress, int32 ArrayIndex = 0) const
-	{
-		return GetObjectPropertyValue(ContainerPtrToValuePtr<void>(PropertyValueAddress, ArrayIndex));
-	}
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const;
-	FORCEINLINE void SetObjectPropertyValue_InContainer(void* PropertyValueAddress, UObject* Value, int32 ArrayIndex = 0) const
-	{
-		SetObjectPropertyValue(ContainerPtrToValuePtr<void>(PropertyValueAddress, ArrayIndex), Value);
-	}
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const;
 
 	/**
 	 * Setter function for this property's PropertyClass member. Favor this 
@@ -2290,12 +2752,71 @@ public:
 	FORCEINLINE void SetPropertyClass(UClass* NewPropertyClass) { PropertyClass = NewPropertyClass; }
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
-	virtual void CheckValidObject(void* Value) const;
+	virtual void CheckValidObject(void* ValueAddress, UObject* OldValue) const;
 
 protected:
 	virtual bool AllowCrossLevel() const;
 	virtual bool AllowObjectTypeReinterpretationTo(const FObjectPropertyBase* Other) const;
 	// End of FObjectPropertyBase interface
+
+	/* Helper functions for UObject property types that wrap the object pointer in a smart pointer */
+	template <typename T>
+	UObject* GetWrappedObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
+	{
+		if (!HasGetter())
+		{
+			// Fast path - direct memory access
+			return GetObjectPropertyValue(ContainerPtrToValuePtr<void>(ContainerAddress, ArrayIndex));
+		}
+		else
+		{
+			T Value;
+			if (ArrayDim == 1)
+			{
+				// Slower but no mallocs. We can copy the value directly to the resulting param
+				GetValue_InContainer(ContainerAddress, &Value);
+			}
+			else
+			{
+				// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
+				T* ValueArray = (T*)AllocateAndInitializeValue();
+				FProperty::GetValue_InContainer(ContainerAddress, ValueArray);
+				// Grab the item we care about and free the temp array
+				Value = ValueArray[ArrayIndex];
+				DestroyAndFreeValue(ValueArray);
+			}
+			return Value.Get();
+		}
+	}
+	template <typename T>
+	void SetWrappedObjectPropertyValue_InContainer(void* ContainerAddress, UObject* InValue, int32 ArrayIndex) const
+	{
+		if (!HasSetter())
+		{
+			// Fast path - direct memory access
+			SetObjectPropertyValue(ContainerPtrToValuePtr<void>(ContainerAddress, ArrayIndex), InValue);
+		}
+		else
+		{			
+			if (ArrayDim == 1)
+			{
+				// Slower but no mallocs. We can copy a local wrapped value directly to the resulting param
+				T WrappedValue(InValue);
+				SetValue_InContainer(ContainerAddress, &WrappedValue);
+			}
+			else
+			{
+				// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
+				T* ValueArray = (T*)AllocateAndInitializeValue();
+				FProperty::GetValue_InContainer(ContainerAddress, ValueArray);
+				// Replace the item we care about
+				ValueArray[ArrayIndex] = InValue;
+				// Now copy the entire array back to the property using a setter
+				SetValue_InContainer(ContainerAddress, ValueArray);
+				DestroyAndFreeValue(ValueArray);
+			}
+		}
+	}
 };
 
 template<typename InTCppType>
@@ -2317,12 +2838,37 @@ public:
 		this->PropertyClass = nullptr;
 	}
 
-
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	TFObjectPropertyBase(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		this->PropertyClass = InClass;
 	}
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param Prop Pointer to the compiled in structure describing the property
+	 **/
+	TFObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParams& Prop)
+		: Super(InOwner, Prop)
+	{
+		this->PropertyClass = Prop.ClassFunc ? Prop.ClassFunc() : nullptr;
+	}
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param Prop Pointer to the compiled in structure describing the property
+	 * @param InClass Class of the object this property represents
+	 **/
+	TFObjectPropertyBase(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParamsWithoutClass& Prop, UClass* InClass)
+		: Super(InOwner, Prop)
+	{
+		this->PropertyClass = InClass;
+	}
+	
 
 #if WITH_EDITORONLY_DATA
 	explicit TFObjectPropertyBase(UField* InField)
@@ -2352,19 +2898,29 @@ public:
 //
 // Describes a reference variable to another object which may be nil.
 //
-class COREUOBJECT_API FObjectProperty : public TFObjectPropertyBase<UObject*>
+class COREUOBJECT_API FObjectProperty : public TFObjectPropertyBase<TObjectPtr<UObject>>
 {
-	DECLARE_FIELD(FObjectProperty, TFObjectPropertyBase<UObject*>, CASTCLASS_FObjectProperty)
+	DECLARE_FIELD(FObjectProperty, TFObjectPropertyBase<TObjectPtr<UObject>>, CASTCLASS_FObjectProperty)
 
 	FObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags)
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags, InOffset, InFlags, InClass)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FObjectProperty(UField* InField)
@@ -2381,7 +2937,7 @@ class COREUOBJECT_API FObjectProperty : public TFObjectPropertyBase<UObject*>
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 
 private:
@@ -2390,10 +2946,23 @@ public:
 	// End of FProperty interface
 
 	// FObjectPropertyBase interface
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	virtual FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const override;
 	// End of FObjectPropertyBase interface
+	
+	inline TObjectPtr<UObject>* GetObjectPtrPropertyValuePtr(const void* PropertyValueAddress) const
+	{
+		return reinterpret_cast<TObjectPtr<UObject>*>(const_cast<void*>(PropertyValueAddress));
+	}
+
+	inline TObjectPtr<UObject>& GetObjectPtrPropertyValueRef(const void* PropertyValueAddress) const
+	{
+		return *reinterpret_cast<TObjectPtr<UObject>*>(const_cast<void*>(PropertyValueAddress));
+	}
 };
 
 //
@@ -2426,9 +2995,17 @@ class COREUOBJECT_API FObjectPtrProperty : public FObjectProperty
 	// Helper method for sharing code with FClassPtrProperty even though one doesn't inherit from the other
 	static void StaticSerializeItem(const FObjectPropertyBase* ObjectProperty, FStructuredArchive::FSlot Slot, void* Value, void const* Defaults);
 
+	/// @brief Get the property value as FObjectPtr
+	/// @param PropertyValueAddress address of the property
+	/// @return reference to the FObjectPtr value
+	FObjectPtr& GetObjectPropertyValueAsPtr(const void* PropertyValueAddress) const;
+
 	// FObjectProperty interface
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	virtual bool AllowCrossLevel() const override;
 	virtual bool AllowObjectTypeReinterpretationTo(const FObjectPropertyBase* Other) const override;
 private:
@@ -2449,11 +3026,21 @@ class COREUOBJECT_API FWeakObjectProperty : public TFObjectPropertyBase<FWeakObj
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FWeakObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags, InOffset, InFlags, InClass)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
 	
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FWeakObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FWeakObjectPropertyParams& Prop);
+
 #if WITH_EDITORONLY_DATA
 	explicit FWeakObjectProperty(UField* InField)
 		: TFObjectPropertyBase(InField)
@@ -2471,14 +3058,19 @@ class COREUOBJECT_API FWeakObjectProperty : public TFObjectPropertyBase<FWeakObj
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+protected:
+	virtual void LinkInternal(FArchive& Ar) override;
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
 	// End of FProperty interface
 
 	// FObjectProperty interface
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	// End of FObjectProperty interface
 };
 
@@ -2494,10 +3086,20 @@ class COREUOBJECT_API FLazyObjectProperty : public TFObjectPropertyBase<FLazyObj
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FLazyObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags, InOffset, InFlags, InClass)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FLazyObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FLazyObjectPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FLazyObjectProperty(UField* InField)
@@ -2522,8 +3124,11 @@ class COREUOBJECT_API FLazyObjectProperty : public TFObjectPropertyBase<FLazyObj
 	// End of FProperty interface
 
 	// FObjectProperty interface
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	virtual bool AllowCrossLevel() const override;
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
@@ -2540,11 +3145,31 @@ class COREUOBJECT_API FSoftObjectProperty : public TFObjectPropertyBase<FSoftObj
 
 	FSoftObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags)
-	{}
+	{
+	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FSoftObjectProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TFObjectPropertyBase(InOwner, InName, InObjectFlags, InOffset, InFlags, InClass)
-	{}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	{
+	}
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FSoftObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FSoftObjectPropertyParams& Prop);
+
+	/**
+	 * Constructor used for constructing compiled-in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 * @param Class Class of the object this property represents
+	 **/
+	FSoftObjectProperty(FFieldVariant InOwner, const UECodeGen_Private::FObjectPropertyParamsWithoutClass& Prop, UClass* InClass);
 
 #if WITH_EDITORONLY_DATA
 	explicit FSoftObjectProperty(UField* InField)
@@ -2563,16 +3188,22 @@ class COREUOBJECT_API FSoftObjectProperty : public TFObjectPropertyBase<FSoftObj
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem(FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void LinkInternal(FArchive& Ar) override;
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	// End of FProperty interface
 
 	// FObjectProperty interface
 	virtual UObject* LoadObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual TObjectPtr<UObject> GetObjectPtrPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	virtual bool AllowCrossLevel() const override;
 	virtual FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const override;
 
@@ -2622,11 +3253,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FClassProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InMetaClass, UClass* InClassType)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FObjectProperty(InOwner, InName, InObjectFlags, InOffset, InFlags, InClassType ? InClassType : UClass::StaticClass())
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, MetaClass(InMetaClass)
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FClassProperty(FFieldVariant InOwner, const UECodeGen_Private::FClassPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FClassProperty(UField* InField);
@@ -2648,7 +3289,7 @@ public:
 	// End of UHT interface
 
 	// FProperty interface
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 #if WITH_EDITORONLY_DATA
@@ -2703,7 +3344,9 @@ class COREUOBJECT_API FClassPtrProperty : public FClassProperty
 
 	// FObjectProperty interface
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
@@ -2730,10 +3373,20 @@ public:
 		, MetaClass(nullptr)
 	{}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FSoftClassProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InMetaClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags, UClass::StaticClass())
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, MetaClass(InMetaClass)
 	{}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FSoftClassProperty(FFieldVariant InOwner, const UECodeGen_Private::FSoftClassPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FSoftClassProperty(UField* InField);
@@ -2804,11 +3457,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FInterfaceProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UClass* InInterfaceClass)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FInterfaceProperty_Super(InOwner, InName, InObjectFlags, InOffset, (InFlags & ~CPF_InterfaceClearMask))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, InterfaceClass(InInterfaceClass)
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FInterfaceProperty(FFieldVariant InOwner, const UECodeGen_Private::FInterfacePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FInterfaceProperty(UField* InField);
@@ -2829,8 +3492,10 @@ public:
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
 	virtual bool SupportsNetSharedSerialization() const override { return false; }
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
 	virtual bool SameType(const FProperty* Other) const override;
 #if WITH_EDITORONLY_DATA
@@ -2884,10 +3549,20 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FNameProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FNameProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FNameProperty(FFieldVariant InOwner, const UECodeGen_Private::FNamePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FNameProperty(UField* InField)
@@ -2897,8 +3572,10 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 	// FProperty interface
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 	virtual FString GetCPPTypeForwardDeclaration() const override;
 	uint32 GetValueTypeHashInternal(const void* Src) const override;
@@ -2928,10 +3605,20 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FStrProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FStrProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FStrProperty(FFieldVariant InOwner, const UECodeGen_Private::FStrPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FStrProperty(UField* InField)
@@ -2941,8 +3628,10 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 	// FProperty interface
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 	virtual FString GetCPPTypeForwardDeclaration() const override;
 	uint32 GetValueTypeHashInternal(const void* Src) const override;
@@ -2999,13 +3688,23 @@ public:
 		SetElementSize();
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FArrayProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, EArrayPropertyFlags InArrayPropertyFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FArrayProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, Inner(nullptr)
 	{
 		ArrayFlags = InArrayPropertyFlags;
 		SetElementSize();
 	}
+
+	/** 
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FArrayProperty(FFieldVariant InOwner, const UECodeGen_Private::FArrayPropertyParams& Prop);
 
 	virtual ~FArrayProperty();
 
@@ -3037,8 +3736,10 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual void InitializeValueInternal(void* Dest) const override
 	{
 		if (EnumHasAnyFlags(ArrayFlags, EArrayPropertyFlags::UsesMemoryImageAllocator))
@@ -3073,11 +3774,13 @@ public:
 		// This is the same as alignof(FFreezableScriptArray)
 		return alignof(FScriptArray);
 	}
+
+	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const override;
 	// End of FProperty interface
 
 	FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerTypeText, const FString& InInnerExtendedTypeText) const;
 
-	/** Called by ExportTextItem, but can also be used by a non-ArrayProperty whose ArrayDim is > 1. */
+	/** Called by ExportText_Internal, but can also be used by a non-ArrayProperty whose ArrayDim is > 1. */
 	static void ExportTextInnerItem(FString& ValueStr, const FProperty* Inner, const void* PropertyValue, int32 PropertySize, const void* DefaultValue, int32 DefaultSize, UObject* Parent = nullptr, int32 PortFlags = 0, UObject* ExportRootScope = nullptr);
 
 	/** Called by ImportTextItem, but can also be used by a non-ArrayProperty whose ArrayDim is > 1. ArrayHelper should be supplied by ArrayProperties and nullptr for fixed-size arrays. */
@@ -3129,7 +3832,16 @@ public:
 	typedef TTypeFundamentals::TCppType TCppType;
 
 	FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, EMapPropertyFlags InMapFlags=EMapPropertyFlags::None);
+
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, EMapPropertyFlags InMapFlags);
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FMapProperty(FFieldVariant InOwner, const UECodeGen_Private::FMapPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FMapProperty(UField* InField);
@@ -3160,8 +3872,10 @@ public:
 	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem(FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL) const override;
-	virtual void ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
+protected:
+	virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual void InitializeValueInternal(void* Dest) const override
 	{
 		if (EnumHasAnyFlags(MapFlags, EMapPropertyFlags::UsesMemoryImageAllocator))
@@ -3190,6 +3904,7 @@ public:
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const override;
 	// End of FProperty interface
 
 	FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& KeyTypeText, const FString& InKeyExtendedTypeText, const FString& ValueTypeText, const FString& InValueExtendedTypeText) const;
@@ -3260,7 +3975,16 @@ public:
 	typedef TTypeFundamentals::TCppType TCppType;
 
 	FSetProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
+
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FSetProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags);
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FSetProperty(FFieldVariant InOwner, const UECodeGen_Private::FSetPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FSetProperty(UField* InField);
@@ -3291,8 +4015,10 @@ public:
 	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem(FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL) const override;
-	virtual void ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
+protected:
+	virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual void CopyValuesInternal(void* Dest, void const* Src, int32 Count) const override;
 	virtual void ClearValueInternal(void* Data) const override;
 	virtual void DestroyValueInternal(void* Dest) const override;
@@ -3302,6 +4028,7 @@ public:
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const override;
 	// End of FProperty interface
 
 	FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& ElementTypeText, const FString& InElementExtendedTypeText) const;
@@ -4033,7 +4760,7 @@ public:
 	/** 
 	 * Maps have gaps in their indices, so this function translates a logical index (ie. Nth element) 
 	 * to an internal index that can be used for the other functions in this class.
-	 * NOTE: This is slow, do not use this for iteration!
+	 * NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
 	 */
 	int32 FindInternalIndex(int32 LogicalIdx) const
 	{
@@ -4726,7 +5453,7 @@ public:
 	/**
 	 * Maps have gaps in their indices, so this function translates a logical index (ie. Nth element)
 	 * to an internal index that can be used for the other functions in this class.
-	 * NOTE: This is slow, do not use this for iteration!
+	 * NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
 	 */
 	int32 FindInternalIndex(int32 LogicalIdx) const
 	{
@@ -5089,7 +5816,16 @@ class COREUOBJECT_API FStructProperty : public FProperty
 	class UScriptStruct* Struct;
 public:
 	FStructProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
+
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FStructProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UScriptStruct* InStruct);
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FStructProperty(FFieldVariant InOwner, const UECodeGen_Private::FStructPropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FStructProperty(UField* InField);
@@ -5113,8 +5849,10 @@ public:
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
 	virtual bool SupportsNetSharedSerialization() const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual void CopyValuesInternal( void* Dest, void const* Src, int32 Count  ) const override;
 	virtual void ClearValueInternal( void* Data ) const override;
 	virtual void DestroyValueInternal( void* Dest ) const override;
@@ -5175,11 +5913,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FDelegateProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UFunction* InSignatureFunction = NULL)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FDelegateProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, SignatureFunction(InSignatureFunction)
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FDelegatePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FDelegateProperty(UField* InField);
@@ -5200,8 +5948,10 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
-	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
+public:
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
@@ -5235,11 +5985,21 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FMulticastDelegateProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UFunction* InSignatureFunction = NULL)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FProperty(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		, SignatureFunction(InSignatureFunction)
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FMulticastDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
 
 #if WITH_EDITORONLY_DATA
 	explicit FMulticastDelegateProperty(UField* InField);
@@ -5259,7 +6019,9 @@ public:
 	virtual FString GetCPPTypeForwardDeclaration() const override;
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
-	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+protected:
+	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
+public:
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
 	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
@@ -5306,8 +6068,11 @@ public:
 		this->SignatureFunction = nullptr;
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	TProperty_MulticastDelegate(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UFunction* InSignatureFunction = nullptr)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		this->SignatureFunction = InSignatureFunction;
 	}
@@ -5315,6 +6080,17 @@ public:
 	TProperty_MulticastDelegate(EInternal InInernal, FFieldClass* InClass)
 		: Super(EC_InternalUseOnlyConstructor, InClass)
 	{
+	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	TProperty_MulticastDelegate(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop)
+		: Super(InOwner, Prop)
+	{
+		this->SignatureFunction = Prop.SignatureFunctionFunc ? Prop.SignatureFunctionFunc() : nullptr;
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -5343,10 +6119,20 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FMulticastInlineDelegateProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UFunction* InSignatureFunction = nullptr)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_MulticastDelegate(InOwner, InName, InObjectFlags, InOffset, InFlags, InSignatureFunction)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FMulticastInlineDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FMulticastInlineDelegateProperty(UField* InField)
@@ -5357,7 +6143,7 @@ public:
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 	// End of FProperty interface
 
 	// FMulticastDelegateProperty interface
@@ -5384,10 +6170,20 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
 	FMulticastSparseDelegateProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, UFunction* InSignatureFunction = nullptr)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: TProperty_MulticastDelegate(InOwner, InName, InObjectFlags, InOffset, InFlags, InSignatureFunction)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 	}
+
+	/**
+	 * Constructor used for constructing compiled in properties
+	 * @param InOwner Owner of the property
+	 * @param PropBase Pointer to the compiled in structure describing the property
+	 **/
+	FMulticastSparseDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FMulticastSparseDelegateProperty(UField* InField)
@@ -5398,7 +6194,7 @@ public:
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
+	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 	// End of FProperty interface
 
 	// FMulticastDelegateProperty interface
@@ -5559,21 +6355,23 @@ namespace EPropertyChangeType
 	typedef uint32 Type;
 
 	//default value.  Add new enums to add new functionality.
-	const Type Unspecified = 1 << 0;
+	const Type Unspecified		= 1 << 0;
 	//Array Add
-	const Type ArrayAdd = 1 << 1;
+	const Type ArrayAdd			= 1 << 1;
 	//Array Remove
-	const Type ArrayRemove = 1 << 2;
+	const Type ArrayRemove		= 1 << 2;
 	//Array Clear
-	const Type ArrayClear = 1 << 3;
+	const Type ArrayClear		= 1 << 3;
 	//Value Set
-	const Type ValueSet = 1 << 4;
+	const Type ValueSet			= 1 << 4;
 	//Duplicate
-	const Type Duplicate = 1 << 5;
+	const Type Duplicate		= 1 << 5;
 	//Interactive, e.g. dragging a slider. Will be followed by a ValueSet when finished.
-	const Type Interactive = 1 << 6;
+	const Type Interactive		= 1 << 6;
 	//Redirected.  Used when property references are updated due to content hot-reloading, or an asset being replaced during asset deletion (aka, asset consolidation).
-	const Type Redirected = 1 << 7;
+	const Type Redirected		= 1 << 7;
+	// Array Item Moved Within the Array
+	const Type ArrayMove		= 1 << 8;
 };
 
 /**
@@ -5632,7 +6430,7 @@ struct FPropertyChangedEvent
 	 * Gets the Array Index of the "current object" based on a particular name
 	 * InName - Name of the property to find the array index for
 	 */
-	int32 GetArrayIndex(const FString& InName)
+	int32 GetArrayIndex(const FString& InName) const
 	{
 		//default to unknown index
 		int32 Retval = -1;
@@ -5675,6 +6473,14 @@ struct FPropertyChangedEvent
 	FName GetPropertyName() const
 	{
 		return (Property != nullptr) ? Property->GetFName() : NAME_None;
+	}
+
+	/**
+	 * Simple utility to get the name of the object's member property and takes care of the possible null property.
+	 */
+	FName GetMemberPropertyName() const
+	{
+		return (MemberProperty != nullptr) ? MemberProperty->GetFName() : NAME_None;
 	}
 
 	/**
@@ -6070,6 +6876,30 @@ inline FFieldVariant FindUFieldOrFProperty(const UStruct* Owner, const TCHAR* Fi
 	return FindUFieldOrFProperty(Owner, Name, IterationFlags);
 }
 
+template <class T>
+typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUFieldOrFProperty(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
+{
+	return FindUField<T>(Owner, FieldName, IterationFlags);
+}
+
+template <class T>
+typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUFieldOrFProperty(const UStruct* Owner, const TCHAR* FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
+{
+	return FindUField<T>(Owner, FieldName, IterationFlags);
+}
+
+template <class T>
+typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindUFieldOrFProperty(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
+{
+	return FindFProperty<T>(Owner, FieldName, IterationFlags);
+}
+
+template <class T>
+typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindUFieldOrFProperty(const UStruct* Owner, const TCHAR* FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
+{
+	return FindFProperty<T>(Owner, FieldName, IterationFlags);
+}
+
 /**
  * Search for the named field within the specified scope, including any Outer classes; assert on failure.
  *
@@ -6203,9 +7033,25 @@ public:
 	 */
 	COREUOBJECT_API void GetPropertyChain(TArray<const FProperty*>& PropertyChain) const;
 
+	/**
+	 * Returns a string of the property chain in a form that makes reading it easy.  The format may change over time,
+	 * do not depend on this being in a specific Unreal path format.  It's primary intention is to aid in debugging
+	 * and in reporting paths to the end developer in an editor environment.
+	 *
+	 * Now for the implementation details, normally paths involving an array, will do things like print the array
+	 * name twice, since an array in the path is actually 2 properties, one for the array and another for the index.
+	 * Maps are similar.  The end result is stuff like seeing, ActionsArray.ActionsArray.ActionIfo.ActionPower.
+	 *
+	 * What this function does is tries to make this stuff a lot more human readable, by printing,
+	 * ActionsArray[3].ActionIfo.ActionPower, so that you know the index it comes from.  Similarly Maps would print
+	 * ActionMap["Action Name"].ActionIfo.ActionPower, so that you know the index it comes from.  Similarly Maps would print
+	 */
+	COREUOBJECT_API FString GetPropertyPathDebugString() const;
+
 private:
-	enum EPropertyValueFlags : uint8
+	enum class EPropertyValueFlags : uint8
 	{
+		None = 0x0,
 		IsMatch = 0x01,
 
 		ContainerMask = 0xF0,
@@ -6214,6 +7060,7 @@ private:
 		IsSet = 0x40,
 		IsStruct = 0x80,
 	};
+	FRIEND_ENUM_CLASS_FLAGS(EPropertyValueFlags)
 
 	struct FPropertyValueStackEntry
 	{
@@ -6221,7 +7068,7 @@ private:
 		const void* Owner = nullptr;
 		
 		/** List of current root property+value pairs for the current top level FProperty */
-		typedef TPair<BasePairType, uint8> BasePairAndFlags;
+		typedef TPair<BasePairType, EPropertyValueFlags> BasePairAndFlags;
 		typedef TArray<BasePairAndFlags, TInlineAllocator<8>> FValueArrayType;
 		FValueArrayType ValueArray;
 
@@ -6270,7 +7117,7 @@ private:
 	bool bMatchAll = false;
 
 	/** Returns EPropertyValueFlags to describe if this Property is a match and/or a container/struct */
-	uint8 GetPropertyValueFlags(const FProperty* Property);
+	EPropertyValueFlags GetPropertyValueFlags(const FProperty* Property) const;
 
 	/** Fills the Entry.ValueArray with all relevant properties found in Struct */
 	void FillStructProperties(const UStruct* Struct, FPropertyValueStackEntry& Entry);
@@ -6430,5 +7277,3 @@ class COREUOBJECT_API UMulticastInlineDelegatePropertyWrapper : public UMulticas
 {
 	DECLARE_CLASS_INTRINSIC(UMulticastInlineDelegatePropertyWrapper, UMulticastDelegatePropertyWrapper, CLASS_Transient, TEXT("/Script/CoreUObject"));
 };
-
-#include "UObject/DefineUPropertyMacros.h"

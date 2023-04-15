@@ -11,6 +11,8 @@
 #include "DMXEntityFixtureType.generated.h"
 
 class UDMXImport;
+class UDMXImportGDTF;
+
 
 UENUM(BlueprintType)
 enum class EDMXPixelMappingDistribution : uint8
@@ -43,7 +45,7 @@ struct DMXRUNTIME_API FDMXFixtureFunction
 
 	/** Constructor */
 	FDMXFixtureFunction()
-		: Attribute(FDMXNameListItem::None)
+		: Attribute()
 		, FunctionName()
 		, Description()
 		, DefaultValue(0)
@@ -57,7 +59,7 @@ struct DMXRUNTIME_API FDMXFixtureFunction
 	FORCEINLINE uint8 GetNumChannels() const { return static_cast<uint8>(DataType) + 1; }
 
 	/** Returns the last channel of the Function */
-	uint8 GetLastChannel() const;
+	int32 GetLastChannel() const;
 
 	/**
 	 * The Attribute name to map this Function to.
@@ -114,7 +116,7 @@ struct DMXRUNTIME_API FDMXFixtureCellAttribute
 
 	/** Constructor */
 	FDMXFixtureCellAttribute()
-		: Attribute(FDMXNameListItem::None)
+		: Attribute()
 		, Description()
 		, DefaultValue(0)
 		, DataType(EDMXFixtureSignalFormat::E8Bit)
@@ -188,10 +190,10 @@ struct DMXRUNTIME_API FDMXFixtureMatrix
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "20", DisplayName = "First Cell Channel", ClampMin = "1", ClampMax = "512"), Category = "Mode Settings")
 	int32 FirstCellChannel = 1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "30", DisplayName = "X Cells", ClampMin = "1"), Category = "Mode Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "30", DisplayName = "X Cells", ClampMin = "1", ClampMax = "512", UIMin = "1", UIMax = "512"), Category = "Mode Settings")
 	int32 XCells = 1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "40", DisplayName = "Y Cells", ClampMin = "1"), Category = "Mode Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "40", DisplayName = "Y Cells", ClampMin = "1", ClampMax = "512", UIMin = "1", UIMax = "512"), Category = "Mode Settings")
 	int32 YCells = 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayPriority = "50", DisplayName = "PixelMapping Distribution"), Category = "Mode Settings")
@@ -262,7 +264,7 @@ struct DMXRUNTIME_API FDMXEntityFixtureTypeConstructionParams
 
 	/** The DMX Library in which the Fixture Type will be constructed */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fixture Type")
-	UDMXLibrary* ParentDMXLibrary = nullptr;
+	TObjectPtr<UDMXLibrary> ParentDMXLibrary = nullptr;
 
 	/** The Category of the Fixture, useful for Filtering */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fixture Type")
@@ -300,9 +302,7 @@ public:
 	static void RemoveFixtureTypeFromLibrary(FDMXEntityFixtureTypeRef FixtureTypeRef);
 
 	//~ Begin UObject interface
-protected:
 	virtual void Serialize(FArchive& Ar) override;
-public:
 #if WITH_EDITOR
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -311,20 +311,19 @@ public:
 #endif
 	//~ End UObject interface
 
-
 public:
 #if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = "Fixture Settings")
 	void SetModesFromDMXImport(UDMXImport* DMXImportAsset);
 #endif // WITH_EDITOR
-	
+
 	/** Returns a delegate that is and should be broadcast whenever a Fixture Type changed */
 	static FDMXOnFixtureTypeChangedDelegate& GetOnFixtureTypeChanged();
 
 	/** The GDTF file from which the Fixture Type was setup */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Settings")
-	UDMXImport* DMXImport;
-	
+	TObjectPtr<UDMXImport> DMXImport;
+
 	/** The Category of the Fixture, useful for Filtering */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Settings", meta = (DisplayName = "DMX Category"))
 	FDMXFixtureCategory DMXCategory;
@@ -337,7 +336,7 @@ public:
 	 * NOTE: Modulators only affect the patch's normalized values! Untouched values are still available when accesing raw values. 
 	 */
 	UPROPERTY(EditAnywhere, Instanced, Category = "Mode Settings", meta = (DisplayPriority = "50"))
-	TArray<UDMXModulator*> InputModulators;
+	TArray<TObjectPtr<UDMXModulator>> InputModulators;
 
 private:
 	/** Delegate that should be broadcast whenever a fixture type changed */
@@ -351,10 +350,12 @@ private:
 public:
 	/**
 	 * Adds a Mode to the Modes Array
+	 * 
+	 * @param(optional)						The Base Mode Name when generating a name
 	 *
 	 * @return								The Index of the newly added Mode.
 	 */	
-	int32 AddMode();
+	int32 AddMode(FString BaseModeName = FString("Mode"));
 
 	/** 
 	 * Duplicates the Modes at specified Indices 
@@ -389,6 +390,8 @@ public:
 	 */
 	void UpdateChannelSpan(int32 ModeIndex);
 
+	/** Aligns alls channels of the functions in the Mode to be consecutive */
+	void AlignFunctionChannels(int32 InModeIndex);
 
 	// Fixture Function related
 public:
@@ -547,13 +550,13 @@ public:
 	UE_DEPRECATED(4.27, "Use MakeValid instead.")
 	void UpdateModeChannelProperties(FDMXFixtureMode& Mode);
 
-	UE_DEPRECATED(5.0, "Deprecated in favor of UDMXEntityFixtureType::UpdateChannelSpan.")
+	UE_DEPRECATED(5.0, "Deprecated in favor of UDMXEntityFixtureType::UpdateChannelSpan(int32 ModeIndex).")
 	void UpdateChannelSpan(FDMXFixtureMode& Mode);
 
-	UE_DEPRECATED(5.0, "Deprecated  in favor of UDMXEntityFixtureType::UpdateYCellsFromXCells.")
+	UE_DEPRECATED(5.0, "Deprecated  in favor of UDMXEntityFixtureType::UpdateYCellsFromXCells(int32 ModeIndex).")
 	void UpdateYCellsFromXCells(FDMXFixtureMode& Mode);
 
-	UE_DEPRECATED(5.0, "Deprecated to in favor of UDMXEntityFixtureType::UpdateXCellsFromYCells.")
+	UE_DEPRECATED(5.0, "Deprecated to in favor of UDMXEntityFixtureType::UpdateXCellsFromYCells(int32 ModeIndex).")
 	void UpdateXCellsFromYCells(FDMXFixtureMode& Mode);
 #endif // WITH_EDITOR
 

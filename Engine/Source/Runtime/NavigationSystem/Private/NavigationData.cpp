@@ -11,10 +11,18 @@
 #include "AI/Navigation/NavAreaBase.h"
 #include "VisualLogger/VisualLogger.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavigationData)
+
 // set to NAVMESHVER_LANDSCAPE_HEIGHT at the moment of refactoring navigation
 // code out of the engine module. No point in using RecastNavMesh versioning 
 // for NavigationData
 #define NAVDATAVER_LATEST 13	
+
+static TAutoConsoleVariable<int32> CVarDestroyNavDataInCleanUpAndMarkPendingKill(
+	TEXT("ai.DestroyNavDataInCleanUpAndMarkPendingKill"),
+	1,
+	TEXT("If set to 1 NavData will be destroyed in CleanUpAndMarkPendingKill rather than being marked as garbage.\n"),
+	ECVF_Default);
 
 //----------------------------------------------------------------------//
 // FPathFindingQuery
@@ -366,12 +374,14 @@ void ANavigationData::TickActor(float DeltaTime, enum ELevelTick TickType, FActo
 	}
 }
 
+#if WITH_EDITOR
 void ANavigationData::RerunConstructionScripts()
 {
 	Super::RerunConstructionScripts();
 
 	InstantiateAndRegisterRenderingComponent();
 }
+#endif
 
 void ANavigationData::OnRegistered() 
 { 
@@ -423,12 +433,12 @@ void ANavigationData::PurgeUnusedPaths()
 	FScopeLock PathLock(&ActivePathsLock);
 
 	const int32 Count = ActivePaths.Num();
-	FNavPathWeakPtr* WeakPathPtr = (ActivePaths.GetData() + Count - 1);
-	for (int32 i = Count - 1; i >= 0; --i, --WeakPathPtr)
+	for (int32 PathIndex = Count - 1; PathIndex >= 0; --PathIndex)
 	{
+		FNavPathWeakPtr* WeakPathPtr = &ActivePaths[PathIndex];
 		if (WeakPathPtr->IsValid() == false)
 		{
-			ActivePaths.RemoveAtSwap(i, 1, /*bAllowShrinking=*/false);
+			ActivePaths.RemoveAtSwap(PathIndex, 1, /*bAllowShrinking=*/false);
 		}
 	}
 }
@@ -500,12 +510,24 @@ void ANavigationData::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift
 void ANavigationData::CleanUpAndMarkPendingKill()
 {
 	CleanUp();
-	SetActorHiddenInGame(true);
 
-	// do NOT destroy here! it can be called from PostLoad and will crash in DestroyActor()
-	GetWorld()->RemoveNetworkActor(this);
-	MarkAsGarbage();
-	MarkComponentsAsPendingKill();
+	/* Need to check if the world is valid since, when this is called from Serialize, the World won't be set and Destroy will do nothing, 
+	 * in which case it will crash when it tries to register with the NavSystem in UNavigationSystemV1::ProcessRegistrationCandidates. */
+	if (CVarDestroyNavDataInCleanUpAndMarkPendingKill.GetValueOnGameThread() && IsValid(GetWorld()))
+	{
+		Destroy();
+	}
+	else
+	{
+		SetActorHiddenInGame(true);
+
+		if (UWorld* World = GetWorld())
+		{
+			World->RemoveNetworkActor(this);
+		}
+		MarkAsGarbage();
+		MarkComponentsAsPendingKill();
+	}
 }
 
 bool ANavigationData::SupportsRuntimeGeneration() const
@@ -524,6 +546,10 @@ void ANavigationData::ConditionalConstructGenerator()
 
 void ANavigationData::RebuildAll()
 {
+	const double LoadTime = FPlatformTime::Seconds();
+	LoadBeforeGeneratorRebuild();
+	UE_LOG(LogNavigationDataBuild, Display, TEXT("   %s load time: %.2fs"), ANSI_TO_TCHAR(__FUNCTION__), (FPlatformTime::Seconds() - LoadTime));
+	
 	ConditionalConstructGenerator(); //recreate generator
 	
 	if (NavDataGenerator.IsValid())
@@ -674,7 +700,7 @@ void ANavigationData::OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentInde
 		{
 			SupportedAreas[i].AreaClass = NavAreaClass;
 			AreaClassToIdMap.Add(NavAreaClass, SupportedAreas[i].AreaID);
-			UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s updated area %s with ID %d"), *GetName(), *AreaClassName, SupportedAreas[i].AreaID);
+			UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s: updated area %s with ID %d"), *GetFullName(), *AreaClassName, SupportedAreas[i].AreaID);
 			return;
 		}
 	}
@@ -852,3 +878,4 @@ void ANavigationData::DrawDebugPath(FNavigationPath* Path, FColor PathColor, UCa
 {
 	DrawDebugPath(Path, PathColor, Canvas, bPersistent, -1.f, NextPathPointIndex);
 }
+

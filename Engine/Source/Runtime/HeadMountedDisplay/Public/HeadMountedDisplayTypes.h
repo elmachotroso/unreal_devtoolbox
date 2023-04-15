@@ -2,16 +2,33 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Delegates/Delegate.h"
 #include "IMotionController.h"
-#include "RHI.h"
-#include "RHIResources.h"
 #include "InputCoreTypes.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/IntRect.h"
+#include "Math/Quat.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Math/Vector2D.h"
+#include "Misc/Guid.h"
+#include "RHI.h"
+#include "RHIResources.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "HeadMountedDisplayTypes.generated.h"
 
+class FRHICommandListImmediate;
+class UObject;
 struct FFilterVertex;
+struct FFrame;
 
 class HEADMOUNTEDDISPLAY_API FHMDViewMesh
 {
@@ -195,12 +212,12 @@ struct FSpectatorScreenModeTexturePlusEyeLayout
 
 	FIntRect GetScaledEyeRect(int SizeX, int SizeY) const
 	{
-		return FIntRect(EyeRectMin.X * SizeX, EyeRectMin.Y * SizeY, EyeRectMax.X * SizeX, EyeRectMax.Y * SizeY);
+		return FIntRect(FIntRect::IntType(EyeRectMin.X * SizeX), FIntRect::IntType(EyeRectMin.Y * SizeY), FIntRect::IntType(EyeRectMax.X * SizeX), FIntRect::IntType(EyeRectMax.Y * SizeY));
 	}
 
 	FIntRect GetScaledTextureRect(int SizeX, int SizeY) const
 	{
-		return FIntRect(TextureRectMin.X * SizeX, TextureRectMin.Y * SizeY, TextureRectMax.X * SizeX, TextureRectMax.Y * SizeY);
+		return FIntRect(FIntRect::IntType(TextureRectMin.X * SizeX), FIntRect::IntType(TextureRectMin.Y * SizeY), FIntRect::IntType(TextureRectMax.X * SizeX), FIntRect::IntType(TextureRectMax.Y * SizeY));
 	}
 
 	FVector2D EyeRectMin;

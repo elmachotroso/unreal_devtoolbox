@@ -1,19 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNamespaceHelper.h"
-#include "Engine/Blueprint.h"
-#include "BlueprintEditor.h"
+
 #include "BlueprintEditorSettings.h"
-#include "Settings/BlueprintEditorProjectSettings.h"
-#include "Toolkits/ToolkitManager.h"
-#include "EdGraph/EdGraphPin.h"
-#include "EdGraphSchema_K2.h"
-#include "SPinTypeSelector.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Text/STextBlock.h"
-#include "ClassViewerFilter.h"
 #include "BlueprintNamespacePathTree.h"
 #include "BlueprintNamespaceUtilities.h"
+#include "ClassViewerFilter.h"
+#include "Containers/Set.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "SPinTypeSelector.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class FClassViewerInitializationOptions;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "BlueprintNamespaceHelper"
 
@@ -64,7 +74,7 @@ public:
 			return true;
 		}
 
-		FSoftObjectPath ClassPath(InBlueprint->GetClassPath());
+		FSoftObjectPath ClassPath(InBlueprint->GetClassPathName().ToString());
 		return CachedNamespaceHelper->IsImportedObject(ClassPath);
 	}
 
@@ -120,46 +130,15 @@ private:
 
 // ---
 
-FBlueprintNamespaceHelper::FBlueprintNamespaceHelper(const UBlueprint* InBlueprint)
+FBlueprintNamespaceHelper::FBlueprintNamespaceHelper()
 {
 	// Instance the path tree used to store/retrieve namespaces.
 	NamespacePathTree = MakeUnique<FBlueprintNamespacePathTree>();
 
-	// Add the default namespace paths implicitly imported by every Blueprint.
-	AddNamespaces(GetDefault<UBlueprintEditorSettings>()->NamespacesToAlwaysInclude);
-	AddNamespaces(GetDefault<UBlueprintEditorProjectSettings>()->NamespacesToAlwaysInclude);
-
-	if (InBlueprint)
-	{
-		// Add the namespace for the given Blueprint.
-		AddNamespace(FBlueprintNamespaceUtilities::GetObjectNamespace(InBlueprint));
-
-		// Also add the namespace for the Blueprint's parent class.
-		AddNamespace(FBlueprintNamespaceUtilities::GetObjectNamespace(InBlueprint->ParentClass));
-
-		// Additional namespaces that are explicitly imported by this Blueprint.
-		AddNamespaces(InBlueprint->ImportedNamespaces);
-
-		// If enabled, also inherit namespaces that are explicitly imported by all ancestor BPs.
-		const bool bAddParentClassNamespaces = CVarBPImportParentClassNamespaces.GetValueOnGameThread();
-		if(bAddParentClassNamespaces)
-		{
-			const UClass* ParentClass = InBlueprint->ParentClass;
-			while (ParentClass)
-			{
-				if (const UBlueprint* ParentClassBlueprint = UBlueprint::GetBlueprintFromClass(ParentClass))
-				{
-					AddNamespaces(ParentClassBlueprint->ImportedNamespaces);
-				}
-				else
-				{
-					break;
-				}
-
-				ParentClass = ParentClass->GetSuperClass();
-			}
-		}
-	}
+	// Add global namespace paths implicitly imported by every Blueprint.
+	TSet<FString> GlobalImports;
+	FBlueprintNamespaceUtilities::GetSharedGlobalImports(GlobalImports);
+	AddNamespaces(GlobalImports);
 
 	// Instance the filters that can be used with type pickers, etc.
 	ClassViewerFilter = MakeShared<FClassViewerNamespaceFilter>(this);
@@ -170,12 +149,37 @@ FBlueprintNamespaceHelper::~FBlueprintNamespaceHelper()
 {
 }
 
+void FBlueprintNamespaceHelper::AddBlueprint(const UBlueprint* InBlueprint)
+{
+	if (!InBlueprint)
+	{
+		return;
+	}
+
+	// Add the default import set for the given Blueprint.
+	TSet<FString> DefaultImports;
+	FBlueprintNamespaceUtilities::GetDefaultImportsForObject(InBlueprint, DefaultImports);
+	AddNamespaces(DefaultImports);
+
+	// Additional namespaces that are explicitly imported by this Blueprint.
+	AddNamespaces(InBlueprint->ImportedNamespaces);
+}
+
 void FBlueprintNamespaceHelper::AddNamespace(const FString& Namespace)
 {
 	if (!Namespace.IsEmpty())
 	{
 		// Add the path corresponding to the given namespace identifier.
 		NamespacePathTree->AddPath(Namespace);
+	}
+}
+
+void FBlueprintNamespaceHelper::RemoveNamespace(const FString& Namespace)
+{
+	if (!Namespace.IsEmpty())
+	{
+		// Remove the path corresponding to the given namespace identifier.
+		NamespacePathTree->RemovePath(Namespace);
 	}
 }
 
@@ -259,6 +263,7 @@ void FBlueprintNamespaceHelper::RefreshEditorFeatureConsoleFlags()
 
 		InitCVarFlag(CVarBPEnableNamespaceFilteringFeatures.AsVariable(), BlueprintEditorSettings->bEnableNamespaceFilteringFeatures);
 		InitCVarFlag(CVarBPEnableNamespaceImportingFeatures.AsVariable(), BlueprintEditorSettings->bEnableNamespaceImportingFeatures);
+		InitCVarFlag(CVarBPImportParentClassNamespaces.AsVariable(), BlueprintEditorSettings->bInheritImportedNamespacesFromParentBP);
 
 		bIsInitialized = true;
 	}
@@ -276,6 +281,7 @@ void FBlueprintNamespaceHelper::RefreshEditorFeatureConsoleFlags()
 
 		SetCVarFlag(CVarBPEnableNamespaceFilteringFeatures.AsVariable(), BlueprintEditorSettings->bEnableNamespaceFilteringFeatures);
 		SetCVarFlag(CVarBPEnableNamespaceImportingFeatures.AsVariable(), BlueprintEditorSettings->bEnableNamespaceImportingFeatures);
+		SetCVarFlag(CVarBPImportParentClassNamespaces.AsVariable(), BlueprintEditorSettings->bInheritImportedNamespacesFromParentBP);
 	}
 }
 

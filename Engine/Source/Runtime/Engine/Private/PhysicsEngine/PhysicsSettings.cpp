@@ -11,6 +11,8 @@
 
 #include "ChaosSolversModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsSettings)
+
 UPhysicsSettings::UPhysicsSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, LockedAxis_DEPRECATED(ESettingsLockedAxis::Invalid)
@@ -19,7 +21,7 @@ UPhysicsSettings::UPhysicsSettings(const FObjectInitializer& ObjectInitializer)
 	, bEnableEnhancedDeterminism(false)
 	, AnimPhysicsMinDeltaTime(0.f)
 	, bSimulateAnimPhysicsAfterReset(false)
-	, MinPhysicsDeltaTime(SMALL_NUMBER)
+	, MinPhysicsDeltaTime(UE_SMALL_NUMBER)
 	, MaxPhysicsDeltaTime(1.f / 30.f)
 	, bSubstepping(false)
 	, bTickPhysicsAsync(false)
@@ -180,3 +182,4 @@ void FChaosPhysicsSettings::OnSettingsUpdated()
 {
 
 }
+

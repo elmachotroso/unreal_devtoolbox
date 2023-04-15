@@ -9,10 +9,10 @@
 
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "Math/Color.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 
 #ifndef CADKERNEL_DEV
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "TechSoftInterfaceUtils.inl"
 #endif
 
@@ -23,12 +23,10 @@ namespace CADLibrary
 
 namespace TechSoftUtils
 {
-// to avoid changing a public header in 5.0.1. Cleaned in 5.1
-CADINTERFACES_API void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
 
 #ifdef USE_TECHSOFT_SDK
 TSharedPtr<FJsonObject> GetJsonObject(A3DAsmProductOccurrence* ProductOcccurence);
-
+void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, CADLibrary::FBodyMesh& BodyMesh);
 void SaveModelFileToPrcFile(void* ModelFile, const FString& Filename);
 A3DUns32 CreateRGBColor(FColor& Color);
 void SetRootOccurenceAttributes(A3DEntity* Entity);
@@ -169,7 +167,7 @@ bool FillBodyMesh(void* BodyPtr, const FImportParameters& ImportParameters, doub
 
 	TessellationParameters->m_eTessellationLevelOfDetail = kA3DTessLODUserDefined; // Enum to specify predefined values for some following members.
 	TessellationParameters->m_bUseHeightInsteadOfRatio = A3D_TRUE;
-	TessellationParameters->m_dMaxChordHeight = ImportParameters.GetChordTolerance(); // cm to mm
+	TessellationParameters->m_dMaxChordHeight = ImportParameters.GetChordTolerance();
 	if (!FMath::IsNearlyZero(BodyUnit))
 	{
 		TessellationParameters->m_dMaxChordHeight /= BodyUnit;
@@ -264,7 +262,7 @@ void BuildCADMaterial(uint32 MaterialIndex, const A3DGraphStyleData& GraphStyleD
 #endif
 
 // Replicates the logic in FTechSoftFileParser::ExtractGraphStyleProperties
-void GetMaterialValues(uint32 StyleIndex, FCADUUID& OutColorName, FCADUUID& OutMaterialName)
+void GetMaterialValues(uint32 StyleIndex, FMaterialUId& OutColorName, FMaterialUId& OutMaterialName)
 {
 #if defined USE_TECHSOFT_SDK && !defined CADKERNEL_DEV
 	TUniqueTSObjFromIndex<A3DGraphStyleData> GraphStyleData(StyleIndex);
@@ -277,7 +275,7 @@ void GetMaterialValues(uint32 StyleIndex, FCADUUID& OutColorName, FCADUUID& OutM
 
 			BuildCADMaterial(GraphStyleData->m_uiRgbColorIndex, *GraphStyleData, Material);
 
-			OutMaterialName = BuildMaterialName(Material);
+			OutMaterialName = BuildMaterialUId(Material);
 		}
 		else
 		{
@@ -288,7 +286,7 @@ void GetMaterialValues(uint32 StyleIndex, FCADUUID& OutColorName, FCADUUID& OutM
 				const uint8 Alpha = GraphStyleData->m_bIsTransparencyDefined ? (255 - GraphStyleData->m_ucTransparency) : 255;
 				const FColor ColorValue((uint8)(ColorData->m_dRed * 255), (uint8)(ColorData->m_dGreen * 255), (uint8)(ColorData->m_dBlue * 255), Alpha);
 
-				OutColorName = BuildColorName(ColorValue);
+				OutColorName = BuildColorUId(ColorValue);
 			}
 		}
 	}
@@ -297,11 +295,13 @@ void GetMaterialValues(uint32 StyleIndex, FCADUUID& OutColorName, FCADUUID& OutM
 
 void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, FBodyMesh& BodyMesh)
 {
-	FCADUUID DefaultColorName = 0;
-	FCADUUID DefaultMaterialName = 0;
+	FMaterialUId DefaultColorName = 0;
+	FMaterialUId DefaultMaterialName = 0;
 
+#ifndef CADKERNEL_DEV
 	DefaultValues->TryGetNumberField(JSON_ENTRY_COLOR_NAME, DefaultColorName);
 	DefaultValues->TryGetNumberField(JSON_ENTRY_MATERIAL_NAME, DefaultMaterialName);
+#endif
 
 	BodyMesh.MaterialSet.Empty();
 	BodyMesh.ColorSet.Empty();
@@ -309,24 +309,24 @@ void RestoreMaterials(const TSharedPtr<FJsonObject>& DefaultValues, FBodyMesh& B
 	for (FTessellationData& Tessellation : BodyMesh.Faces)
 	{
 		// Extract proper color or material based on style index
-		uint32 CachedStyleIndex = Tessellation.MaterialName;
-		Tessellation.MaterialName = 0;
+		uint32 CachedStyleIndex = Tessellation.MaterialUId;
+		Tessellation.MaterialUId = 0;
 
-		FCADUUID ColorName = DefaultColorName;
-		FCADUUID MaterialName = DefaultMaterialName;
+		FMaterialUId ColorUId = DefaultColorName;
+		FMaterialUId MaterialUId = DefaultMaterialName;
 
-		GetMaterialValues(CachedStyleIndex, ColorName, MaterialName);
+		GetMaterialValues(CachedStyleIndex, ColorUId, MaterialUId);
 
-		if (ColorName)
+		if (ColorUId)
 		{
-			Tessellation.ColorName = ColorName;
-			BodyMesh.ColorSet.Add(ColorName);
+			Tessellation.ColorUId = ColorUId;
+			BodyMesh.ColorSet.Add(ColorUId);
 		}
 
-		if (MaterialName)
+		if (MaterialUId)
 		{
-			Tessellation.MaterialName = MaterialName;
-			BodyMesh.MaterialSet.Add(MaterialName);
+			Tessellation.MaterialUId = MaterialUId;
+			BodyMesh.MaterialSet.Add(MaterialUId);
 		}
 	}
 }
@@ -665,7 +665,7 @@ void ExtractAttribute(const A3DMiscAttributeData& AttributeData, TMap<FString, F
 }
 #endif
 
-FString CleanSdkName(const FString& Name)
+FString CleanLabel(const FString& Name)
 {
 	int32 Index;
 	if (Name.FindLastChar(TEXT('['), Index))
@@ -675,7 +675,7 @@ FString CleanSdkName(const FString& Name)
 	return Name;
 }
 
-FString CleanCatiaInstanceSdkName(const FString& Name)
+FString CleanCatiaInstanceLabel(const FString& Name)
 {
 	int32 Index;
 	if (Name.FindChar(TEXT('('), Index))
@@ -690,9 +690,9 @@ FString CleanCatiaInstanceSdkName(const FString& Name)
 	return Name;
 }
 
-FString Clean3dxmlInstanceSdkName(const FString& Name)
+FString Clean3dxmlInstanceLabel(const FString& Name)
 {
-	FString NewName = CleanCatiaInstanceSdkName(Name);
+	FString NewName = CleanCatiaInstanceLabel(Name);
 
 	int32 Index = NewName.Find(TEXT("_InstanceRep"));
 	if (Index != INDEX_NONE)
@@ -703,7 +703,7 @@ FString Clean3dxmlInstanceSdkName(const FString& Name)
 	return NewName;
 }
 
-FString Clean3dxmlReferenceSdkName(const FString& Name)
+FString Clean3dxmlReferenceLabel(const FString& Name)
 {
 	int32 Index;
 	if (Name.FindChar(TEXT('('), Index))
@@ -722,7 +722,7 @@ FString Clean3dxmlReferenceSdkName(const FString& Name)
 	return Name;
 }
 
-FString CleanSwInstanceSdkName(const FString& Name)
+FString CleanSwInstanceLabel(const FString& Name)
 {
 	int32 Position;
 	if (Name.FindLastChar(TEXT('-'), Position))
@@ -733,7 +733,7 @@ FString CleanSwInstanceSdkName(const FString& Name)
 	return Name;
 }
 
-FString CleanSwReferenceSdkName(const FString& Name)
+FString CleanSwReferenceLabel(const FString& Name)
 {
 	int32 Position;
 	if (Name.FindLastChar(TEXT('-'), Position))
@@ -744,7 +744,7 @@ FString CleanSwReferenceSdkName(const FString& Name)
 	return Name;
 }
 
-FString CleanCatiaReferenceName(const FString& Name)
+FString CleanCatiaReferenceLabel(const FString& Name)
 {
 	int32 Position;
 	if (Name.FindLastChar(TEXT('.'), Position))
@@ -758,7 +758,7 @@ FString CleanCatiaReferenceName(const FString& Name)
 	}
 	return Name;
 }
-FString CleanNameByRemoving_prt(const FString& Name)
+FString CleanCreoLabel(const FString& Name)
 {
 	int32 Position;
 	if (Name.FindLastChar(TEXT('.'), Position))
@@ -772,27 +772,6 @@ FString CleanNameByRemoving_prt(const FString& Name)
 	}
 	return Name;
 }
-bool CheckIfNameExists(TMap<FString, FString>& MetaData)
-{
-	FString* NamePtr = MetaData.Find(TEXT("Name"));
-	if (NamePtr != nullptr)
-	{
-		return true;
-	}
-	return false;
-}
-bool ReplaceOrAddNameValue(TMap<FString, FString>& MetaData, const TCHAR* Key)
-{
-	FString* NamePtr = MetaData.Find(Key);
-	if (NamePtr != nullptr)
-	{
-		FString& Name = MetaData.FindOrAdd(TEXT("Name"));
-		Name = *NamePtr;
-		return true;
-	}
-	return false;
-}
-
 
 } // NS TechSoftUtils
 

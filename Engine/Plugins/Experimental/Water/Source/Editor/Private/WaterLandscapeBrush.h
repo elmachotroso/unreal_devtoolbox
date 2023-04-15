@@ -25,6 +25,8 @@ public:
 	virtual void PostInitProperties() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginDestroy() override;
+	virtual void PostRegisterAllComponents() override;
+	virtual void UnregisterAllComponents(bool bForReregister) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 	UFUNCTION(BlueprintCallable, Category = "Water", meta = (DeterminesOutputType = "WaterBodyClass", DynamicOutputParam = "OutWaterBodies"))
@@ -46,14 +48,17 @@ public:
 	void BlueprintWaterBodyChanged(AActor* Actor);
 	virtual void BlueprintWaterBodyChanged_Native(AActor* Actor) {}
 
+	UE_DEPRECATED(4.27, "Use SetActorCache instead")
 	UFUNCTION(BlueprintCallable, Category = "Cache", meta = (DeprecatedFunction, DeprecationMessage="Use SetActorCache instead"))
-	void SetWaterBodyCache(AWaterBody* WaterBody, UObject* Cache);
+	void SetWaterBodyCache(AWaterBody* WaterBody, UObject* InCache) {}
 	
+	UE_DEPRECATED(4.27, "Use GetActorCache instead")
 	UFUNCTION(BlueprintCallable, Category = "Cache", meta = (DeterminesOutputType = "CacheClass", DeprecatedFunction, DeprecationMessage = "Use GetActorCache instead"))
-	UObject* GetWaterBodyCache(AWaterBody* WaterBody, TSubclassOf<UObject> CacheClass) const;
+	UObject* GetWaterBodyCache(AWaterBody* WaterBody, TSubclassOf<UObject> CacheClass) const { return nullptr; }
 
+	UE_DEPRECATED(4.27, "Use ClearActorCache instead")
 	UFUNCTION(BlueprintCallable, Category = "Cache", meta = (DeprecatedFunction, DeprecationMessage = "Use ClearActorCache instead"))
-	void ClearWaterBodyCache(AWaterBody* WaterBody);
+	void ClearWaterBodyCache(AWaterBody* WaterBody) {}
 
 	UFUNCTION(BlueprintCallable, Category = "Cache")
 	void SetActorCache(AActor* InActor, UObject* InCache);
@@ -64,15 +69,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Cache")
 	void ClearActorCache(AActor* InActor);
 
-	UFUNCTION(BlueprintNativeEvent, Category = "Cache", meta = (CallInEditor = "true"))
+	UFUNCTION(BlueprintNativeEvent, Category = "Cache", meta = (CallInEditor = "true", DeprecatedFunction, DeprecationMessage = "This event isn't called anymore, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)."))
 	void BlueprintGetRenderTargets(UTextureRenderTarget2D* InHeightRenderTarget, UTextureRenderTarget2D*& OutVelocityRenderTarget);
+	UE_DEPRECATED(5.1, "This function isn't called anymore, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)")
 	virtual void BlueprintGetRenderTargets_Native(UTextureRenderTarget2D* InHeightRenderTarget, UTextureRenderTarget2D*& OutVelocityRenderTarget) {}
 
-	UFUNCTION(BlueprintNativeEvent, Category = "Cache", meta = (CallInEditor = "true"))
+	UFUNCTION(BlueprintNativeEvent, Category = "Cache", meta = (CallInEditor = "true", DeprecatedFunction, DeprecationMessage = "This event isn't called anymore, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)."))
 	void BlueprintOnRenderTargetTexturesUpdated(UTexture2D* VelocityTexture);
+	UE_DEPRECATED(5.1, "This function isn't called anymore, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)")
 	virtual void BlueprintOnRenderTargetTexturesUpdated_Native(UTexture2D* VelocityTexture) {}
 
-	UFUNCTION(BlueprintCallable, Category = "Cache")
+	UE_DEPRECATED(5.1, "This function is now useless, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone).")
+	UFUNCTION(BlueprintCallable, Category = "Cache", meta = (CallInEditor = "true", DeprecatedFunction, DeprecationMessage = "This function is now useless, the WaterVelocityTexture is now regenerated at runtime (WaterInfoTexture in AWaterZone)."))
 	void ForceWaterTextureUpdate();
 
 	void SetTargetLandscape(ALandscape* InTargetLandscape);
@@ -96,15 +104,9 @@ public:
 	virtual void CheckForErrors() override;
 	
 	void UpdateActorIcon();
+
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif // WITH_EDITOR
-
-#if WITH_EDITORONLY_DATA
-	UPROPERTY(Transient)
-	UBillboardComponent* ActorIcon;
-#endif // WITH_EDITORONLY_DATA
-
-protected:
-	void MarkRenderTargetsDirty();
 
 private:
 	template<class T>
@@ -119,11 +121,17 @@ private:
 
 	void OnFullHeightmapRenderDone(UTextureRenderTarget2D* HeightmapRenderTarget);
 	void OnWaterBrushActorChanged(const IWaterBrushActorInterface::FWaterBrushActorChangedEventParams& InParams);
-	void OnActorChanged(AActor* Actor, bool bWeightmapSettingsChanged, bool bRebuildMesh);
 	void OnActorsAffectingLandscapeChanged();
 	void OnLevelActorAdded(AActor* InActor);
 	void OnLevelActorRemoved(AActor* InActor);
 
+public:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(Transient)
+	TObjectPtr<UBillboardComponent> ActorIcon;
+#endif // WITH_EDITORONLY_DATA
+
+private:
 	TArray<TWeakInterfacePtr<IWaterBrushActorInterface>> ActorsAffectingLandscape;
 	FDelegateHandle OnWorldPostInitHandle;
 	FDelegateHandle OnLevelAddedToWorldHandle;
@@ -137,7 +145,5 @@ private:
 #endif // WITH_EDITOR
 
 	UPROPERTY(Transient, DuplicateTransient, VisibleAnywhere, AdvancedDisplay, meta = (Category = "Debug"))
-	TMap<TWeakObjectPtr<AActor>, UObject*> Cache;
-
-	bool bRenderTargetsDirty = false;
+	TMap<TWeakObjectPtr<AActor>, TObjectPtr<UObject>> Cache;
 };

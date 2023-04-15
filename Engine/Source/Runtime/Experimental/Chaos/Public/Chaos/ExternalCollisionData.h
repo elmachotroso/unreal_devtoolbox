@@ -30,12 +30,18 @@ namespace Chaos
 			, Mass1((FReal)0.0)
 			, Mass2((FReal)0.0)
 			, PenetrationDepth((FReal)0.0)
+			, Mat1(FMaterialHandle())
+			, Mat2(FMaterialHandle())
+			, bProbe(false)
 			, Proxy1(nullptr)
 			, Proxy2(nullptr)
+			, ShapeIndex1(INDEX_NONE)
+			, ShapeIndex2(INDEX_NONE)
 		{}
 
 		FCollidingData(FVec3 InLocation, FVec3 InAccumulatedImpulse, FVec3 InNormal, FVec3 InVelocity1, FVec3 InVelocity2, FVec3 InDeltaVelocity1, FVec3 InDeltaVelocity2
-			, FVec3 InAngularVelocity1, FVec3 InAngularVelocity2, FReal InMass1,FReal InMass2,  FReal InPenetrationDepth, IPhysicsProxyBase* InProxy1, IPhysicsProxyBase* InProxy2)
+			, FVec3 InAngularVelocity1, FVec3 InAngularVelocity2, FReal InMass1,FReal InMass2,  FReal InPenetrationDepth, IPhysicsProxyBase* InProxy1, IPhysicsProxyBase* InProxy2
+			, int32 InShapeIndex1, int32 InShapeIndex2)
 			: Location(InLocation)
 			, AccumulatedImpulse(InAccumulatedImpulse)
 			, Normal(InNormal)
@@ -48,8 +54,13 @@ namespace Chaos
 			, Mass1(InMass1)
 			, Mass2(InMass2)
 			, PenetrationDepth(InPenetrationDepth)
+			, Mat1(FMaterialHandle())
+			, Mat2(FMaterialHandle())
+			, bProbe(false)
 			, Proxy1(InProxy1)
 			, Proxy2(InProxy2)
+			, ShapeIndex1(InShapeIndex1)
+			, ShapeIndex2(InShapeIndex2)
 		{}
 
 		FVec3 Location;
@@ -66,6 +77,7 @@ namespace Chaos
 		FReal PenetrationDepth;
 		FMaterialHandle Mat1;
 		FMaterialHandle Mat2;
+		bool bProbe;
 
 		// The pointers to the proxies should be used with caution on the Game Thread.
 		// Ideally we only ever use these as table keys when acquiring related structures.
@@ -75,6 +87,9 @@ namespace Chaos
 		// If either Proxy is nullptr, the structure is invalid.
 		IPhysicsProxyBase* Proxy1;
 		IPhysicsProxyBase* Proxy2;
+
+		int32 ShapeIndex1;
+		int32 ShapeIndex2;
 	};
 
 	/*
@@ -179,6 +194,49 @@ namespace Chaos
 		int32 TransformGroupIndex;
 	};
 
+	/*
+	CrumblingData passed from the physics solver to subsystems
+	*/
+	struct FCrumblingData
+	{
+		FCrumblingData()
+			: Proxy(nullptr)
+			, Location(FVec3::ZeroVector)
+			, Orientation(FRotation3::Identity)
+			, LinearVelocity(FVec3::ZeroVector)
+			, AngularVelocity(FVec3::ZeroVector)
+			, Mass((FReal)0.0)
+			, LocalBounds(FAABB3(FVec3((FReal)0.0), FVec3((FReal)0.0)))
+		{}
+
+		FCrumblingData(const FCrumblingData& Other)
+			: Proxy(Other.Proxy)
+			, Location(Other.Location)
+			, Orientation(Other.Orientation)
+			, LinearVelocity(Other.LinearVelocity)
+			, AngularVelocity(Other.AngularVelocity)
+			, Mass(Other.Mass)
+			, LocalBounds(Other.LocalBounds)
+			, Children(Other.Children)
+		{}
+		
+		// The pointer to the proxy should be used with caution on the Game Thread.
+		// Ideally we only ever use this as a table key when acquiring related structures.
+		// If we genuinely need to dereference the pointer for any reason, test if it is deleted (nullptr) or
+		// pending deletion: if a call to FPhysScene_Chaos::GetOwningComponent<UPrimitiveComponent>() returns
+		// nullptr, the proxy should not be used.
+		IPhysicsProxyBase* Proxy;
+		
+		FVec3 Location;
+		FRotation3 Orientation;
+		FVec3 LinearVelocity;
+		FVec3 AngularVelocity;
+		FReal Mass;
+		FAABB3 LocalBounds;
+		// optional ( see proxy options )
+		TArray<int32> Children;
+	};
+	
 	/*
 	BreakingData used in the subsystems
 	*/

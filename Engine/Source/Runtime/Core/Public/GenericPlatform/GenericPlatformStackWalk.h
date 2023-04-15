@@ -2,15 +2,16 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
 #include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "UObject/NameTypes.h"
 
+class FName;
 struct FGenericCrashContext;
-struct FProgramCounterSymbolInfoEx;
 struct FProcHandle;
+struct FProgramCounterSymbolInfoEx;
 
 /**
  * This is used to capture all of the module information needed to load pdb's.
@@ -233,7 +234,7 @@ struct CORE_API FGenericPlatformStackWalk
 	 * @param	IgnoreCount			Number of stack entries to ignore (some are guaranteed to be in the stack walking code)
 	 * @param	Context				Optional thread context information
 	 */ 
-	static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, void* Context = nullptr );
+	FORCENOINLINE static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, void* Context = nullptr );  // FORCENOINLINE so it can be counted during StackTrace
 
 	/**
 	 * Walks the stack and appends the human readable string to the passed in one.

@@ -22,10 +22,12 @@
 #include "Templates/Invoke.h"
 #include "Templates/IsValidVariadicFunctionArg.h"
 #include "Templates/AndOrNot.h"
-#include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
 #include "Templates/TypeHash.h"
 #include "Templates/IsFloatingPoint.h"
 #include "Traits/IsCharType.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
+#include "Traits/IsCharEncodingSimplyConvertibleTo.h"
 
 struct FStringFormatArg;
 template<typename InKeyType,typename InValueType,typename SetAllocator ,typename KeyFuncs > class TMap;
@@ -44,7 +46,7 @@ int32        GetNum(const FString& String);
  *
  * - Do not use the u8"..." prefix (gives the wrong array type until C++20).
  * - Use UTF8TEXT("...") for array literals (type is const UTF8CHAR[n]).
- * - Use "..."_U8SV for string view literals (type is FUtf8StringView).
+ * - Use UTF8TEXTVIEW("...") for string view literals (type is FUtf8StringView).
  * - Use \uxxxx or \Uxxxxxxxx escape sequences rather than \x to specify Unicode code points.
  */
 class CORE_API FString
@@ -398,12 +400,28 @@ public:
 
 	/** Append a string and return a reference to this */
 	template <typename StrType>
-	FORCEINLINE FString& operator+=(StrType&& Str)	{ return Append(Forward<StrType>(Str)); }
+	FORCEINLINE auto operator+=(StrType&& Str) -> decltype(Append(Forward<StrType>(Str)))
+	{
+		return Append(Forward<StrType>(Str));
+	}
 
 	/** Append a single character and return a reference to this */
-	FORCEINLINE FString& operator+=(ANSICHAR Char)	{ return AppendChar(Char); }
-	FORCEINLINE FString& operator+=(WIDECHAR Char)	{ return AppendChar(Char); }
-	FORCEINLINE FString& operator+=(UCS2CHAR Char)	{ return AppendChar(Char); }
+	template <
+		typename AppendedCharType,
+		std::enable_if_t<TIsCharType<AppendedCharType>::Value>* = nullptr
+	>
+	FORCEINLINE FString& operator+=(AppendedCharType Char)
+	{
+		if constexpr (TIsCharEncodingSimplyConvertibleTo_V<AppendedCharType, TCHAR>)
+		{
+			return AppendChar((TCHAR)Char);
+		}
+		else
+		{
+			AppendChars(&Char, 1);
+			return *this;
+		}
+	}
 
 	void InsertAt(int32 Index, TCHAR Character);
 	void InsertAt(int32 Index, const FString& Characters);
@@ -1220,10 +1238,10 @@ public:
 	template <typename FmtType, typename... Types>
 	UE_NODISCARD static FString Printf(const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FString::Printf");
 
-		return PrintfImpl(Fmt, Args...);
+		return PrintfImpl((const TCHAR*)Fmt, Args...);
 	}
 
 	/**
@@ -1233,10 +1251,10 @@ public:
 	template <typename FmtType, typename... Types>
 	FString& Appendf(const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FString::Appendf");
 
-		AppendfImpl(*this, Fmt, Args...);
+		AppendfImpl(*this, (const TCHAR*)Fmt, Args...);
 		return *this;
 	}
 
@@ -1901,9 +1919,9 @@ UE_NODISCARD inline TCHAR NibbleToTChar(uint8 Num)
 {
 	if (Num > 9)
 	{
-		return TEXT('A') + TCHAR(Num - 10);
+		return (TCHAR)('A' + (Num - 10));
 	}
-	return TEXT('0') + TCHAR(Num);
+	return (TCHAR)('0' + Num);
 }
 
 /** 
@@ -1917,23 +1935,25 @@ inline void ByteToHex(uint8 In, FString& Result)
 	Result += NibbleToTChar(In & 15);
 }
 
-/** 
- * Convert an array of bytes to hex
- * @param In byte array values to convert
- * @param Count number of bytes to convert
- * @return Hex value in string.
- */
-UE_NODISCARD inline FString BytesToHex(const uint8* In, int32 Count)
-{
-	FString Result;
-	Result.Empty(Count * 2);
+/** Append bytes as uppercase hex string */
+CORE_API void BytesToHex(const uint8* Bytes, int32 NumBytes, FString& Out);
+/** Append bytes as lowercase hex string */
+CORE_API void BytesToHexLower(const uint8* Bytes, int32 NumBytes, FString& Out);
 
-	while (Count)
-	{
-		ByteToHex(*In++, Result);
-		Count--;
-	}
-	return Result;
+/** Convert bytes to uppercase hex string */
+UE_NODISCARD inline FString BytesToHex(const uint8* Bytes, int32 NumBytes)
+{
+	FString Out;
+	BytesToHex(Bytes, NumBytes, Out);
+	return Out;
+}
+
+/** Convert bytes to lowercase hex string */
+UE_NODISCARD inline FString BytesToHexLower(const uint8* Bytes, int32 NumBytes)
+{
+	FString Out;
+	BytesToHexLower(Bytes, NumBytes, Out);
+	return Out;
 }
 
 /**
@@ -2226,7 +2246,7 @@ public:
 	 */
 	virtual FStringOutputDeviceCountLines& operator+=(const FStringOutputDeviceCountLines& Other)
 	{
-		FString::operator+=(Other);
+		FString::operator+=(static_cast<const FString&>(Other));
 
 		LineCount += Other.GetLineCount();
 

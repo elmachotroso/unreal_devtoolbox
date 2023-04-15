@@ -4,14 +4,14 @@
 #include "Modules/ModuleManager.h"
 #include "Widgets/SOverlay.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Materials/MaterialFunction.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
 
 #include "Materials/MaterialExpressionComment.h"
 
 #include "EditorWidgetsModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "MaterialEditor.h"
 #include "MaterialEditorActions.h"
 #include "Widgets/Input/STextComboBox.h"
@@ -42,7 +42,7 @@ void SMaterialPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetForA
 	}
 
 	// Find icons
-	const FSlateBrush* IconBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	const FSlateBrush* IconBrush = FAppStyle::GetBrush(TEXT("NoBrush"));
 	FSlateColor IconColor = FSlateColor::UseForeground();
 	FText IconToolTip = GraphAction->GetTooltipDescription();
 	bool bIsReadOnly = false;
@@ -113,7 +113,7 @@ void SMaterialPalette::Construct(const FArguments& InArgs, TWeakPtr<FMaterialEdi
 	[
 		SNew(SBorder)
 		.Padding(2.0f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
@@ -232,10 +232,7 @@ void SMaterialPalette::RenameAssetFromRegistry(const FAssetData& InAddedAssetDat
 
 void SMaterialPalette::RefreshAssetInRegistry(const FAssetData& InAddedAssetData)
 {
-	// Grab the asset class, it will be checked for being a material function.
-	UClass* Asset = FindObject<UClass>(ANY_PACKAGE, *InAddedAssetData.AssetClass.ToString());
-
-	if (Asset->IsChildOf(UMaterialFunction::StaticClass()))
+	if (InAddedAssetData.IsInstanceOf(UMaterialFunction::StaticClass()))
 	{
 		RefreshActionsList(true);
 	}

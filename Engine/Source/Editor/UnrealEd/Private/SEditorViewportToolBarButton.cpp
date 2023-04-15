@@ -2,12 +2,22 @@
 
 
 #include "SEditorViewportToolBarButton.h"
+
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateColor.h"
 #include "Styling/SlateTypes.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SNullWidget.h"
+
+class SWidget;
 
 
 void SEditorViewportToolBarButton::Construct( const FArguments& Declaration)
@@ -27,7 +37,7 @@ void SEditorViewportToolBarButton::Construct( const FArguments& Declaration)
 
 	if( ButtonType == EUserInterfaceActionType::Button )
 	{
-		const FSlateBrush* Brush = FEditorStyle::GetBrush( ImageStyleName );
+		const FSlateBrush* Brush = FAppStyle::GetBrush( ImageStyleName );
 
 		ButtonWidget =
 			SNew( SButton )
@@ -46,8 +56,8 @@ void SEditorViewportToolBarButton::Construct( const FArguments& Declaration)
 	else
 	{
 		// Cache off checked/unchecked image states
-		NormalBrush = FEditorStyle::GetBrush( ImageStyleName, ".Normal" );
-		CheckedBrush = FEditorStyle::GetBrush( ImageStyleName, ".Checked" );
+		NormalBrush = FAppStyle::GetBrush( ImageStyleName, ".Normal" );
+		CheckedBrush = FAppStyle::GetBrush( ImageStyleName, ".Checked" );
 
 		if( CheckedBrush->GetResourceName() == FName("Default") )
 		{

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformFile.h"
+#include "Algo/Accumulate.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformMisc.h"
@@ -201,9 +202,9 @@ static int32 GCacheHandleForPakFilesOnly = 1;
 static FAutoConsoleVariableRef CVarCacheHandleForPakFilesOnly(
 	TEXT("AsyncReadFile.CacheHandleForPakFilesOnly"),
 	GCacheHandleForPakFilesOnly,
-	TEXT("Control how Async read handle caches the underlying platform handle for files.\n")
-	TEXT("0: Cache the underlying platform handles for all files.\n")
-	TEXT("1: Cache the underlying platform handle for .pak files only (default).\n"),
+	TEXT("Control how Async read handle caches the underlying platform handle for files.\n"
+	     "0: Cache the underlying platform handles for all files.\n"
+	     "1: Cache the underlying platform handle for .pak files only (default).\n"),
 	ECVF_Default
 );
 
@@ -560,13 +561,10 @@ bool IPlatformFile::IterateDirectoryRecursively(const TCHAR* Directory, FDirecto
 	class FRecurse : public FDirectoryVisitor
 	{
 	public:
-		IPlatformFile&      PlatformFile;
 		FDirectoryVisitor&  Visitor;
-		FRWLock             DirectoriesLock;
 		TArray<FString>&    Directories;
-		FRecurse(IPlatformFile&	InPlatformFile, FDirectoryVisitor& InVisitor, TArray<FString>& InDirectories)
+		FRecurse(FDirectoryVisitor& InVisitor, TArray<FString>& InDirectories)
 			: FDirectoryVisitor(InVisitor.DirectoryVisitorFlags)
-			, PlatformFile(InPlatformFile)
 			, Visitor(InVisitor)
 			, Directories(InDirectories)
 		{
@@ -576,34 +574,40 @@ bool IPlatformFile::IterateDirectoryRecursively(const TCHAR* Directory, FDirecto
 			bool bResult = Visitor.Visit(FilenameOrDirectory, bIsDirectory);
 			if (bResult && bIsDirectory)
 			{
-				FString Directory(FilenameOrDirectory);
-				FRWScopeLock ScopeLock(DirectoriesLock, SLT_Write);
-				Directories.Emplace(MoveTemp(Directory));
+				Directories.Emplace(FilenameOrDirectory);
 			}
 			return bResult;
 		}
 	};
 
-	TArray<FString> DirectoriesToVisitNext;
-	DirectoriesToVisitNext.Add(Directory);
+	TArray<FString> DirectoriesToVisit;
+	DirectoriesToVisit.Add(Directory);
 
-	const bool IsTaskGraphReady = FTaskGraphInterface::IsRunning();
-	TAtomic<bool> bResult(true);
-	FRecurse Recurse(*this, Visitor, DirectoriesToVisitNext);
-	while (bResult && DirectoriesToVisitNext.Num() > 0)
+	constexpr int32 MinBatchSize = 1;
+	const EParallelForFlags ParallelForFlags = FTaskGraphInterface::IsRunning() && Visitor.IsThreadSafe()
+		? EParallelForFlags::Unbalanced : EParallelForFlags::ForceSingleThread;
+	std::atomic<bool> bResult{true};
+	TArray<TArray<FString>> DirectoriesToVisitNext;
+	while (bResult && DirectoriesToVisit.Num() > 0)
 	{
-		TArray<FString> DirectoriesToVisit = MoveTemp(DirectoriesToVisitNext);
-		ParallelFor(
+		ParallelForWithTaskContext(TEXT("IterateDirectoryRecursively.PF"),
+			DirectoriesToVisitNext,
 			DirectoriesToVisit.Num(),
-			[this, &DirectoriesToVisit, &Recurse, &bResult](int32 Index)
+			MinBatchSize,
+			[this, &Visitor, &DirectoriesToVisit, &bResult](TArray<FString>& Directories, int32 Index)
 			{
-				if (bResult && !IterateDirectory(*DirectoriesToVisit[Index], Recurse))
+				FRecurse Recurse(Visitor, Directories);
+				if (bResult.load(std::memory_order_relaxed) && !IterateDirectory(*DirectoriesToVisit[Index], Recurse))
 				{
-					bResult = false;
+					bResult.store(false, std::memory_order_relaxed);
 				}
 			},
-			(IsTaskGraphReady && Visitor.IsThreadSafe()) ? EParallelForFlags::Unbalanced : EParallelForFlags::ForceSingleThread
-		);
+			ParallelForFlags);
+		DirectoriesToVisit.Reset(Algo::TransformAccumulate(DirectoriesToVisitNext, &TArray<FString>::Num, 0));
+		for (TArray<FString>& Directories : DirectoriesToVisitNext)
+		{
+			DirectoriesToVisit.Append(MoveTemp(Directories));
+		}
 	}
 
 	return bResult;

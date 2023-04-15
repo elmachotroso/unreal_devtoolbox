@@ -7,6 +7,8 @@
 #include "Widgets/SCompoundWidget.h"
 
 class UMediaPlayer;
+class UMediaSoundComponent;
+class UMediaTexture;
 
 
 class SMediaPlayerEditorViewport
@@ -29,9 +31,18 @@ public:
 	 *
 	 * @param InArgs The declaration data for this widget.
 	 * @param InMediaPlayer The UMediaPlayer asset to show the details for.
+	 * @param InMediaTexture The UMediaTexture asset to output video to. If nullptr then use our own.
 	 * @param InStyleSet The style set to use.
+	 * @param bInIsSoundEnabled If true then produce sound.
 	 */
-	void Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer, const TSharedRef<ISlateStyle>& InStyle);
+	void Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer,
+		UMediaTexture* InMediaTexture, const TSharedRef<ISlateStyle>& InStyle,
+		bool bInIsSoundEnabled);
+
+	/**
+	 * Enables/disables using the mouse to control the viewport.
+	 */
+	void EnableMouseControl(bool bIsEnabled) { bIsMouseControlEnabled = bIsEnabled; }
 
 public:
 
@@ -67,4 +78,7 @@ private:
 
 	/** The style set to use for this widget. */
 	TSharedPtr<ISlateStyle> Style;
+	
+	/** True if the mouse can control things. */
+	bool bIsMouseControlEnabled;
 };

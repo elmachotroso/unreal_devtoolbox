@@ -4,6 +4,7 @@
 
 #include "LightmapTilePool.h"
 #include "RHIGPUReadback.h"
+#include "GPULightmassSettings.h"
 // TBB suffers from extreme fragmentation problem in editor
 #include "Core/Private/HAL/Allocators/AnsiAllocator.h"
 
@@ -60,13 +61,14 @@ struct FLightmapReadbackGroup
 	TUniquePtr<FRHIGPUTextureReadback> StagingHQLayer0Readback;
 	TUniquePtr<FRHIGPUTextureReadback> StagingHQLayer1Readback;
 	TUniquePtr<FRHIGPUTextureReadback> StagingShadowMaskReadback;
+	TUniquePtr<FRHIGPUTextureReadback> StagingSkyOcclusionReadback;
 
 	struct FTextureData
 	{
 		// Duplicate some metadata so the async thread doesn't need to access FLightmapReadbackGroup
 		FIntPoint SizeInTiles;
-		int32 RowPitchInPixels[3];
-		TArray<FLinearColor, FAnsiAllocator> Texture[3];
+		int32 RowPitchInPixels[4];
+		TArray<FLinearColor> Texture[4];
 
 		volatile int32 bDenoisingFinished = 0;
 	};
@@ -84,7 +86,7 @@ struct FLightmapTileDenoiseGroup
 
 	struct FTextureData
 	{
-		TArray<FLinearColor, FAnsiAllocator> Texture[2];
+		TArray<FLinearColor> Texture[4];
 
 		volatile int32 bDenoisingFinished = 0;
 	};
@@ -98,6 +100,7 @@ class FLightmapTileDenoiseAsyncTask : public IQueuedWork
 public:
 	FIntPoint Size;
 	TSharedPtr<FLightmapTileDenoiseGroup::FTextureData, ESPMode::ThreadSafe> TextureData;
+	EGPULightmassDenoiser Denoiser;
 
 	virtual void DoThreadedWork();
 	virtual void Abandon() {}
@@ -114,7 +117,7 @@ public:
 		FRHICommandList& RHICmdList,
 		const FSceneView* View,
 		int32 GPUScenePrimitiveId,
-		TArray<FMeshBatch>& MeshBatches,
+		TArray<FMeshBatch> MeshBatches,
 		FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias,
 		int32 RenderPassIndex,
 		FIntPoint ScratchTilePoolOffset);
@@ -130,8 +133,7 @@ public:
 
 	int32 FrameNumber = 0;
 
-	bool bUseFirstBounceRayGuiding = false;
-	int32 NumFirstBounceRayGuidingTrialSamples = 0;
+	int32 NumTotalPassesToRender = 0;
 
 	bool bDenoiseDuringInteractiveBake = false;
 	bool bOnlyBakeWhatYouSee = false;

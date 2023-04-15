@@ -1,17 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 #include "IAudioModulation.h"
 #include "SoundModulationParameter.h"
-#include "SoundModulationTransform.h"
-#include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectSaveContext.h"
+#include "WaveTableTransform.h"
 
 #include "SoundModulationPatch.generated.h"
 
 // Forward Declarations
 class USoundControlBus;
+
+
+USTRUCT(BlueprintType)
+struct AUDIOMODULATION_API FSoundModulationTransform : public FWaveTableTransform
+{
+	GENERATED_USTRUCT_BODY()
+};
 
 
 USTRUCT(BlueprintType)
@@ -31,7 +38,7 @@ struct AUDIOMODULATION_API FSoundControlModulationInput
 
 	/** The input bus */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Input)
-	USoundControlBus* Bus = nullptr;
+	TObjectPtr<USoundControlBus> Bus = nullptr;
 
 	const USoundControlBus* GetBus() const;
 	const USoundControlBus& GetBusChecked() const;
@@ -47,12 +54,11 @@ struct AUDIOMODULATION_API FSoundControlModulationPatch
 	bool bBypass = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Output, meta = (DisplayName = "Parameter"))
-	USoundModulationParameter* OutputParameter = nullptr;
+	TObjectPtr<USoundModulationParameter> OutputParameter = nullptr;
 
 	/** Modulation inputs */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Inputs)
 	TArray<FSoundControlModulationInput> Inputs;
-
 };
 
 UCLASS(config = Engine, editinlinenew, BlueprintType)
@@ -70,7 +76,9 @@ public:
 
 	virtual TUniquePtr<Audio::IModulatorSettings> CreateProxySettings() const override;
 
+
 #if WITH_EDITOR
+	virtual void PreSave(FObjectPreSaveContext InSaveContext) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& InPropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& InPropertyChangedEvent) override;
 #endif // WITH_EDITOR

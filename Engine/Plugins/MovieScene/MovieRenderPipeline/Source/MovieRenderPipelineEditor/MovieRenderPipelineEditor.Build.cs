@@ -34,6 +34,7 @@ public class MovieRenderPipelineEditor : ModuleRules
 				"PropertyEditor",
 				"EditorWidgets",
 				"EditorSubsystem",
+				"FunctionalTesting",
             }
         );
 
@@ -51,13 +52,18 @@ public class MovieRenderPipelineEditor : ModuleRules
                 "LevelSequence",
 				"EditorFramework",
                 "UnrealEd",
-                "WorkspaceMenuStructure",
-				"EditorStyle",
+                "WorkspaceMenuStructure",				
 				"LevelSequenceEditor",
 				"DeveloperSettings",
 				"MessageLog",
 				"Sequencer",
-				"ToolMenus"
+				"ToolMenus",
+				"EditorStyle",
+				"Json",
+				"JsonUtilities",
+				"ScreenShotComparisonTools",
+				"AutomationMessages",
+				"ToolWidgets"
 			}
         );
 

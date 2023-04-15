@@ -3,36 +3,24 @@
 #include "PoseSearchTraceLogger.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Trace/Trace.inl"
+#include "Animation/AnimNodeBase.h"
 
-#if UE_POSE_SEARCH_TRACE_ENABLED
 
 UE_TRACE_CHANNEL_DEFINE(PoseSearchChannel);
 
 UE_TRACE_EVENT_BEGIN(PoseSearch, MotionMatchingState)
-	UE_TRACE_EVENT_FIELD(uint64, Cycle)
-	UE_TRACE_EVENT_FIELD(uint16, FrameCounter)
-	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
-	UE_TRACE_EVENT_FIELD(uint64, SkeletalMeshComponentId)
-	UE_TRACE_EVENT_FIELD(int32, NodeId)
-	UE_TRACE_EVENT_FIELD(float, ElapsedPoseJumpTime)
-	UE_TRACE_EVENT_FIELD(uint32, Flags)
-	UE_TRACE_EVENT_FIELD(uint64, DatabaseId)
-	UE_TRACE_EVENT_FIELD(int32, DbPoseIdx)
-	UE_TRACE_EVENT_FIELD(float[], QueryVector)
-	UE_TRACE_EVENT_FIELD(float[], QueryVectorNormalized)
-	UE_TRACE_EVENT_FIELD(float[], ChannelWeightScales)
-	UE_TRACE_EVENT_FIELD(float[], HistoryWeightScales)
-	UE_TRACE_EVENT_FIELD(float[], PredictionWeightScales)
-	UE_TRACE_EVENT_FIELD(bool, DebugDisableWeights)
+	UE_TRACE_EVENT_FIELD(uint8[], Data)
 UE_TRACE_EVENT_END()
 
-namespace UE { namespace PoseSearch {
+namespace UE::PoseSearch
+{
 
 const FName FTraceLogger::Name("PoseSearch");
 const FName FTraceMotionMatchingState::Name("MotionMatchingState");
 
-static bool ShouldTrace(const FAnimationBaseContext& InContext)
+bool IsTracing(const FAnimationBaseContext& InContext)
 {
+#if UE_POSE_SEARCH_TRACE_ENABLED
 	const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(PoseSearchChannel);
 	if (!bChannelEnabled)
 	{
@@ -46,53 +34,111 @@ static bool ShouldTrace(const FAnimationBaseContext& InContext)
 
 	check(InContext.AnimInstanceProxy);
 	return !CANNOT_TRACE_OBJECT(InContext.AnimInstanceProxy->GetSkelMeshComponent());
+#else
+	return false;
+#endif
 }
 
-void FTraceMotionMatchingState::Output(const FAnimationBaseContext& InContext, const FTraceMotionMatchingState& State)
+FArchive& operator<<(FArchive& Ar, FTraceMessage& State)
 {
-	if (!ShouldTrace(InContext))
+	Ar << State.Cycle;
+	Ar << State.AnimInstanceId;
+	Ar << State.SkeletalMeshComponentId;
+	Ar << State.NodeId;
+	Ar << State.FrameCounter;
+	return Ar;
+}
+
+FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingStatePoseEntry& Entry)
+{
+	Ar << Entry.DbPoseIdx;
+	FPoseSearchCost::StaticStruct()->SerializeItem(Ar, &Entry.Cost, nullptr);
+	Ar << Entry.PoseCandidateFlags;
+	return Ar;
+}
+
+FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingStateDatabaseEntry& Entry)
+{
+	Ar << Entry.DatabaseId;
+	Ar << Entry.QueryVector;
+	Ar << Entry.PoseEntries;
+	return Ar;
+}
+
+FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingState& State)
+{
+	Ar << State.SearchableAssetId;
+	Ar << State.ElapsedPoseJumpTime;
+	Ar << State.Flags;
+	Ar << State.AssetPlayerTime;
+	Ar << State.DeltaTime;
+	Ar << State.SimLinearVelocity;
+	Ar << State.SimAngularVelocity;
+	Ar << State.AnimLinearVelocity;
+	Ar << State.AnimAngularVelocity;
+	Ar << State.DatabaseEntries;
+	Ar << State.CurrentDbEntryIdx;
+	Ar << State.CurrentPoseEntryIdx;
+	return Ar;
+}
+
+void FTraceMotionMatchingState::Output(const FAnimationBaseContext& InContext)
+{
+#if OBJECT_TRACE_ENABLED
+	if (!IsTracing(InContext))
 	{
 		return;
 	}
+
+	TArray<uint8> ArchiveData;
+	FMemoryWriter Archive(ArchiveData);
 
 	UObject* AnimInstance = InContext.AnimInstanceProxy->GetAnimInstanceObject();
 	TRACE_OBJECT(AnimInstance);
 	UObject* SkeletalMeshComponent = AnimInstance->GetOuter();
 
-	float ChannelWeightScales[] =
-	{
-		State.Weights.PoseDynamicWeights.ChannelWeightScale,
-		State.Weights.TrajectoryDynamicWeights.ChannelWeightScale
-	};
+	FTraceMessage TraceMessage;
+	TraceMessage.Cycle = FPlatformTime::Cycles64();
+	TraceMessage.AnimInstanceId = FObjectTrace::GetObjectId(AnimInstance);
+	TraceMessage.SkeletalMeshComponentId = FObjectTrace::GetObjectId(SkeletalMeshComponent);
+	TraceMessage.NodeId = InContext.GetCurrentNodeId();
+	TraceMessage.FrameCounter = FObjectTrace::GetObjectWorldTickCounter(AnimInstance);
 
-	float HistoryWeightScales[] =
-	{
-		State.Weights.PoseDynamicWeights.HistoryWeightScale,
-		State.Weights.TrajectoryDynamicWeights.HistoryWeightScale
-	};
-	float PredictionWeightScales[] =
-	{
-		State.Weights.PoseDynamicWeights.PredictionWeightScale,
-		State.Weights.TrajectoryDynamicWeights.PredictionWeightScale
-	};
+	Archive << TraceMessage;
+	Archive << *this;
 
 	UE_TRACE_LOG(PoseSearch, MotionMatchingState, PoseSearchChannel)
-		<< MotionMatchingState.Cycle(FPlatformTime::Cycles64())
-		<< MotionMatchingState.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
-		<< MotionMatchingState.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< MotionMatchingState.SkeletalMeshComponentId(FObjectTrace::GetObjectId(SkeletalMeshComponent))
-		<< MotionMatchingState.NodeId(InContext.GetCurrentNodeId())
-		<< MotionMatchingState.ElapsedPoseJumpTime(State.ElapsedPoseJumpTime)
-		<< MotionMatchingState.Flags(static_cast<uint32>(State.Flags))
-		<< MotionMatchingState.DatabaseId(State.DatabaseId)
-		<< MotionMatchingState.DbPoseIdx(State.DbPoseIdx)
-		<< MotionMatchingState.QueryVector(State.QueryVector.GetData(), State.QueryVector.Num())
-		<< MotionMatchingState.QueryVectorNormalized(State.QueryVectorNormalized.GetData(), State.QueryVectorNormalized.Num())
-		<< MotionMatchingState.ChannelWeightScales(ChannelWeightScales, UE_ARRAY_COUNT(ChannelWeightScales))
-		<< MotionMatchingState.HistoryWeightScales(HistoryWeightScales, UE_ARRAY_COUNT(HistoryWeightScales))
-		<< MotionMatchingState.PredictionWeightScales(PredictionWeightScales, UE_ARRAY_COUNT(PredictionWeightScales))
-		<< MotionMatchingState.DebugDisableWeights(State.Weights.bDebugDisableWeights);
+		<< MotionMatchingState.Data(ArchiveData.GetData(), ArchiveData.Num());
+#endif
 }
 
-}}
-#endif // UE_POSE_SEARCH_TRACE_ENABLED
+const UPoseSearchDatabase* FTraceMotionMatchingState::GetCurrentDatabase() const
+{
+	if (CurrentDbEntryIdx == INDEX_NONE)
+	{
+		return nullptr;
+	}
+
+	const FTraceMotionMatchingStateDatabaseEntry& DbEntry = DatabaseEntries[CurrentDbEntryIdx];
+	const UPoseSearchDatabase* Database = GetObjectFromId<UPoseSearchDatabase>(DbEntry.DatabaseId);
+	return Database;
+}
+
+int32 FTraceMotionMatchingState::GetCurrentDatabasePoseIndex() const
+{
+	const FTraceMotionMatchingStatePoseEntry* PoseEntry = GetCurrentPoseEntry();
+	return PoseEntry ? PoseEntry->DbPoseIdx : INDEX_NONE;
+}
+
+const FTraceMotionMatchingStatePoseEntry* FTraceMotionMatchingState::GetCurrentPoseEntry() const
+{
+	if ((CurrentDbEntryIdx == INDEX_NONE) || (CurrentPoseEntryIdx == INDEX_NONE))
+	{
+		return nullptr;
+	}
+
+	const FTraceMotionMatchingStateDatabaseEntry& DbEntry = DatabaseEntries[CurrentDbEntryIdx];
+	return &DbEntry.PoseEntries[CurrentPoseEntryIdx];
+}
+
+} // namespace UE::PoseSearch

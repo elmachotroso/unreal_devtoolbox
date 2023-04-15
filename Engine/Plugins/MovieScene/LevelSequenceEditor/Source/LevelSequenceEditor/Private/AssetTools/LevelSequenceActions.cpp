@@ -12,8 +12,9 @@
 /* FLevelSequenceActions constructors
  *****************************************************************************/
 
-FLevelSequenceActions::FLevelSequenceActions( const TSharedRef<ISlateStyle>& InStyle )
+FLevelSequenceActions::FLevelSequenceActions( const TSharedRef<ISlateStyle>& InStyle, const EAssetTypeCategories::Type InCategory)
 	: Style(InStyle)
+	, AssetCategory(InCategory)
 { }
 
 
@@ -22,7 +23,7 @@ FLevelSequenceActions::FLevelSequenceActions( const TSharedRef<ISlateStyle>& InS
 
 uint32 FLevelSequenceActions::GetCategories()
 {
-	return EAssetTypeCategories::Animation;
+	return AssetCategory;
 }
 
 

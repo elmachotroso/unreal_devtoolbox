@@ -32,7 +32,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/Level.h"
@@ -129,11 +129,15 @@
 #include "Engine/TextureLightProfile.h"
 #include "SoundCueGraph/SoundCueGraphNode.h"
 #include "Exporters/TextureCubeExporterHDR.h"
+#include "Exporters/TextureExporterGeneric.h"
+#include "Exporters/TextureExporterDDS.h"
 #include "Exporters/TextureExporterBMP.h"
 #include "Exporters/TextureExporterHDR.h"
 #include "Exporters/RenderTargetExporterHDR.h"
 #include "Exporters/TextureExporterPCX.h"
 #include "Exporters/TextureExporterTGA.h"
+#include "Exporters/TextureExporterPNG.h"
+#include "Exporters/TextureExporterEXR.h"
 #include "EngineGlobals.h"
 #include "GameFramework/ForceFeedbackEffect.h"
 #include "Engine/StaticMesh.h"
@@ -146,7 +150,6 @@
 #include "Engine/LevelScriptActor.h"
 #include "Engine/DataAsset.h"
 #include "Engine/BlueprintGeneratedClass.h"
-#include "Camera/CameraAnim.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveVector.h"
 #include "Engine/DataTable.h"
@@ -163,9 +166,9 @@
 #include "Sound/SoundCue.h"
 #include "Sound/SoundMix.h"
 #include "Engine/TextureCube.h"
-#include "Engine/VolumeTexture.h"
 #include "Engine/Texture2DArray.h"
 #include "Engine/VolumeTexture.h"
+#include "Engine/TextureCubeArray.h"
 #include "Engine/TextureRenderTarget.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/TextureRenderTarget2DArray.h"
@@ -185,7 +188,6 @@
 #include "NormalMapIdentification.h"
 #include "AudioDeviceManager.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "BmpImageSupport.h"
 #include "ScopedTransaction.h"
 #include "BSPOps.h"
 #include "LevelUtils.h"
@@ -194,18 +196,18 @@
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 
-#include "DDSLoader.h"
-#include "Formats/HdrImageWrapper.h"
-#include "Factories/TIFFLoader.h"
+#include "DDSFile.h"
 #include "IESConverter.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "TgaImageSupport.h"
+#include "ImageCore.h"
+#include "ImageCoreUtils.h"
 
 #include "FbxImporter.h"
 #include "Misc/FbxErrors.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "ClassViewerModule.h"
@@ -222,17 +224,7 @@
 #include "VT/VirtualTexture.h"
 #include "VT/VirtualTextureBuilder.h"
 
-#if PLATFORM_WINDOWS
-	// Needed for DDS support.
-	#include "Windows/WindowsHWrapper.h"
-	#include "Windows/AllowWindowsPlatformTypes.h"
-		#include <ddraw.h>
-	#include "Windows/HideWindowsPlatformTypes.h"
-#endif
-
-#if WITH_EDITOR
-	#include "CubemapUnwrapUtils.h"
-#endif
+#include "CubemapUnwrapUtils.h"
 
 #include "Components/BrushComponent.h"
 #include "EngineUtils.h"
@@ -279,7 +271,9 @@
 #include "ObjectTools.h"
 
 #include "SkinWeightsUtilities.h"
+#include "TextureImportUtils.h"
 #include "UDIMUtilities.h"
+#include "FileHelpers.h"
 
 DEFINE_LOG_CATEGORY(LogEditorFactories);
 
@@ -358,6 +352,7 @@ public:
 	virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
 	{
 		bool bAllowed= !InClass->HasAnyClassFlags(DisallowedClassFlags)
+			&& InClass->CanCreateAssetOfClass()
 			&& InFilterFuncs->IfInChildOfClassesSet(AllowedChildrenOfClasses, InClass) != EFilterReturn::Failed;
 
 		if (bAllowed && bDisallowBlueprintBase)
@@ -418,12 +413,15 @@ UObject* UTexture2DFactoryNew::FactoryCreateNew( UClass* InClass, UObject* InPar
 	//Set the source art to be white as default.
 	if( Object->Source.IsValid() )
 	{
-		TArray64<uint8> TexturePixels;
-		Object->Source.GetMipData( TexturePixels, 0 );
+		// scope MipLock
+		{
+			FTextureSource::FMipLock MipLock(FTextureSource::ELockState::ReadWrite,&Object->Source,0);
 
-		uint8* DestData = Object->Source.LockMip(0);
-		FMemory::Memset(DestData, 255, TexturePixels.Num() * sizeof(uint8));
-		Object->Source.UnlockMip(0);
+			if ( MipLock.IsValid() )
+			{
+				FMemory::Memset(MipLock.Image.RawData, 255, MipLock.Image.GetImageSizeBytes());
+			}
+		}
 
 		Object->PostEditChange();
 	}
@@ -486,12 +484,14 @@ UObject* UMaterialFactoryNew::FactoryCreateNew(UClass* Class,UObject* InParent,F
 			TextureSampler->AutoSetSampleType();
 		}
 
-		NewMaterial->Expressions.Add(TextureSampler);
+		NewMaterial->GetExpressionCollection().AddExpression(TextureSampler);
+
+		UMaterialEditorOnlyData* NewMaterialEditorOnly = NewMaterial->GetEditorOnlyData();
 
 		FExpressionOutput& Output = TextureSampler->GetOutputs()[0];
 		FExpressionInput& Input = (TextureSampler->SamplerType == SAMPLERTYPE_Normal)
-			? (FExpressionInput&)NewMaterial->Normal
-			: (FExpressionInput&)NewMaterial->BaseColor;
+			? (FExpressionInput&)NewMaterialEditorOnly->Normal
+			: (FExpressionInput&)NewMaterialEditorOnly->BaseColor;
 
 		Input.Expression = TextureSampler;
 		Input.Mask = Output.Mask;
@@ -581,7 +581,7 @@ UObject* UMaterialFunctionInstanceFactory::FactoryCreateNew(UClass* Class,UObjec
 {
 	auto MFI = NewObject<UMaterialFunctionInstance>(InParent, Class, Name, Flags);
 
-	if (MFI)
+	if (MFI && InitialParent)
 	{
 		MFI->SetParent(InitialParent);
 	}
@@ -604,7 +604,7 @@ UObject* UMaterialFunctionMaterialLayerInstanceFactory::FactoryCreateNew(UClass*
 {
 	auto MFI = NewObject<UMaterialFunctionMaterialLayerInstance>(InParent, Class, Name, Flags);
 
-	if (MFI)
+	if (MFI && InitialParent)
 	{
 		MFI->SetParent(InitialParent);
 	}
@@ -627,7 +627,7 @@ UObject* UMaterialFunctionMaterialLayerBlendInstanceFactory::FactoryCreateNew(UC
 {
 	auto MFI = NewObject<UMaterialFunctionMaterialLayerBlendInstance>(InParent, Class, Name, Flags);
 
-	if (MFI)
+	if (MFI && InitialParent) 
 	{
 		MFI->SetParent(InitialParent);
 	}
@@ -823,7 +823,7 @@ UObject* ULevelFactory::FactoryCreateText
 			{
 				// get the name
 				FString LevelName;
-				// if there is no name, that means we are pasting, so just put this guy into the CurrentLevel - don't make a new one
+				// if there is no name, that means we are pasting, so just put this object into the CurrentLevel - don't make a new one
 				if (FParse::Value(Str, TEXT("NAME="), LevelName))
 				{
 					// create a new named level
@@ -842,20 +842,14 @@ UObject* ULevelFactory::FactoryCreateText
 		else if( GetBEGIN(&Str,TEXT("ACTOR")) )
 		{
 			UClass* TempClass;
-			if( ParseObject<UClass>( Str, TEXT("CLASS="), TempClass, ANY_PACKAGE ) )
+			if( ParseObject<UClass>( Str, TEXT("CLASS="), TempClass, nullptr ) )
 			{
 				// Get actor name.
 				FName ActorUniqueName(NAME_None);
 				FName ActorSourceName(NAME_None);
 				FParse::Value( Str, TEXT("NAME="), ActorSourceName );
 				ActorUniqueName = ActorSourceName;
-
-				AActor* Found=nullptr;
-				if( ActorUniqueName!=NAME_None )
-				{
-					// look in the current level for the same named actor
-					Found = FindObject<AActor>( World->GetCurrentLevel(), *ActorUniqueName.ToString() );
-				}
+				AActor* Found = nullptr;
 
 				// Make sure this name is unique. We need to do this upfront because we also want to potentially create the Associated BP class using the same name.
 				bool bNeedGloballyUniqueName = World->GetCurrentLevel()->IsUsingExternalActors() && CastChecked<AActor>(TempClass->GetDefaultObject())->SupportsExternalPackaging();
@@ -880,13 +874,13 @@ UObject* ULevelFactory::FactoryCreateText
 					if ( FPackageName::ParseExportTextPath(ArchetypeName, &ObjectClass, &ObjectPath) )
 					{
 						// find the class
-						UClass* ArchetypeClass = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *ObjectClass);
+						UClass* ArchetypeClass = UClass::TryFindTypeSlow<UClass>(ObjectClass, EFindFirstObjectOptions::EnsureIfAmbiguous);
 						if ( ArchetypeClass )
 						{
 							if ( ArchetypeClass->IsChildOf(AActor::StaticClass()) )
 							{
 								// if we had the class, find the archetype
-								Archetype = Cast<AActor>(StaticFindObject(ArchetypeClass, ANY_PACKAGE, *ObjectPath));
+								Archetype = Cast<AActor>(StaticFindObject(ArchetypeClass, nullptr, *ObjectPath));
 							}
 							else
 							{
@@ -990,6 +984,30 @@ UObject* ULevelFactory::FactoryCreateText
 								{
 									check(CopyPasteId != INDEX_NONE);
 									NewActor->CopyPasteId = CopyPasteId;
+
+									// Use ActorSourceName + CopyPasteId to find matching source actor
+									if (ActorSourceName != NAME_None)
+									{
+										for (ULevel* Level : World->GetLevels())
+										{
+											if (Level && IsValid(Level))
+											{
+												if (AActor* Potential = FindObject<AActor>(Level, *ActorSourceName.ToString()))
+												{
+													if (Potential->CopyPasteId == CopyPasteId)
+													{
+														Found = Potential;
+														break;
+													}
+												}
+											}
+										}
+									}
+								}
+								else if(ActorSourceName != NAME_None)
+								{
+									// look in the current level for the same named actor
+									Found = FindObject<AActor>(World->GetCurrentLevel(), *ActorSourceName.ToString());
 								}
 
 								// Does the group exist?
@@ -1172,7 +1190,7 @@ UObject* ULevelFactory::FactoryCreateText
 							const bool bOnlyRefreshSurfaceMaterials = false;
 							if (GWorld == World)
 							{
-								GEditor->polyUpdateMaster(CurrentLevel->Model, i, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
+								GEditor->polyUpdateBrush(CurrentLevel->Model, i, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
 							}
 						}
 					}
@@ -1229,6 +1247,7 @@ UObject* ULevelFactory::FactoryCreateText
 		else // This actor is new, but rejected to import its properties, so just delete...
 		{
 			Actor->Destroy();
+			continue;
 		}
 
 		// If this is a newly imported brush, validate it.  If it's a newly imported dynamic brush, rebuild it first.
@@ -1422,13 +1441,13 @@ UObject* UPackageFactory::FactoryCreateText( UClass* Class, UObject* InParent, F
 		{
 			//Begin TopLevelPackage Class=Package Name=ExportTest_ORIG Archetype=Package'Core.Default__Package'
 			UClass* TempClass;
-			if( ParseObject<UClass>( Str, TEXT("CLASS="), TempClass, ANY_PACKAGE ) )
+			if( ParseObject<UClass>( Str, TEXT("CLASS="), TempClass, nullptr ) )
 			{
 				// Get actor name.
 				FName PackageName(NAME_None);
 				FParse::Value( Str, TEXT("NAME="), PackageName );
 
-				if (FindObject<UPackage>(ANY_PACKAGE, *(PackageName.ToString())))
+				if (FindObject<UPackage>(nullptr, *(PackageName.ToString())))
 				{
 					UE_LOG(LogEditorFactories, Warning, TEXT("Package factory can only handle the map package or new packages!"));
 					return nullptr;
@@ -1450,7 +1469,7 @@ UObject* UPackageFactory::FactoryCreateText( UClass* Class, UObject* InParent, F
 			FString ParentPackageName;
 			FParse::Value(Str, TEXT("PARENTPACKAGE="), ParentPackageName);
 			UClass* PkgClass;
-			if (ParseObject<UClass>(Str, TEXT("CLASS="), PkgClass, ANY_PACKAGE))
+			if (ParseObject<UClass>(Str, TEXT("CLASS="), PkgClass, nullptr))
 			{
 				// Get the name of the object.
 				FName NewPackageName(NAME_None);
@@ -1467,13 +1486,13 @@ UObject* UPackageFactory::FactoryCreateText( UClass* Class, UObject* InParent, F
 					if ( FPackageName::ParseExportTextPath(ArchetypeName, &ObjectClass, &ObjectPath) )
 					{
 						// find the class
-						UClass* ArchetypeClass = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *ObjectClass);
+						UClass* ArchetypeClass = UClass::TryFindTypeSlow<UClass>(ObjectClass, EFindFirstObjectOptions::EnsureIfAmbiguous);
 						if (ArchetypeClass)
 						{
 							if (ArchetypeClass->IsChildOf(UPackage::StaticClass()))
 							{
 								// if we had the class, find the archetype
-								Archetype = Cast<UPackage>(StaticFindObject(ArchetypeClass, ANY_PACKAGE, *ObjectPath));
+								Archetype = Cast<UPackage>(StaticFindObject(ArchetypeClass, nullptr, *ObjectPath));
 							}
 							else
 							{
@@ -1759,7 +1778,7 @@ UObject* UPolysFactory::FactoryCreateText
 			// only load the texture if it was present
 			if (FParse::Value( Str, TEXT("TEXTURE="), TextureName ))
 			{
-				Poly.Material = Cast<UMaterialInterface>(StaticFindObject( UMaterialInterface::StaticClass(), ANY_PACKAGE, *TextureName ) );
+				Poly.Material = FindFirstObject<UMaterialInterface>( *TextureName, EFindFirstObjectOptions::EnsureIfAmbiguous );
 /***
 				if (Poly.Material == nullptr)
 				{
@@ -2211,12 +2230,13 @@ UObject* UCurveLinearColorAtlasFactory::FactoryCreateNew(UClass* Class, UObject*
 	const int32 TextureDataSize = Object->Source.CalcMipSize(0);
 	Object->SrcData.AddUninitialized(TextureDataSize);
 	uint32* TextureData = (uint32*)Object->Source.LockMip(0);
+	FFloat16Color InitColor(FLinearColor::White);
 	for (uint32 y = 0; y < Object->TextureSize; y++)
 	{
 		// Create base mip for the texture we created.
 		for (uint32 x = 0; x < Object->TextureSize; x++)
 		{
-			Object->SrcData[x*Object->TextureSize + y] = FLinearColor::White;
+			Object->SrcData[x*Object->TextureSize + y] = InitColor;
 		}
 	}
 	FMemory::Memcpy(TextureData, Object->SrcData.GetData(), TextureDataSize);
@@ -2513,14 +2533,15 @@ static bool psd_ReadData( uint8* pOut, const uint8*& pBuffer, FPSDFileHeader& In
 			{
 				if (Info.nChannels == 1)
 				{
-					Dest[Pixel].R = pCur[NPixels + Pixel];
-					Dest[Pixel].G = pCur[NPixels + Pixel];
-					Dest[Pixel].B = pCur[NPixels + Pixel];
+					Dest[Pixel].R = pCur[Pixel];
+					Dest[Pixel].G = pCur[Pixel];
+					Dest[Pixel].B = pCur[Pixel];
 				}
 				else
 				{
-					Dest[Pixel].R = pCur[NPixels * 0 + Pixel];
-					Dest[Pixel].G = pCur[NPixels * 1 + Pixel];
+					// Each channel live in a separate plane
+					Dest[Pixel].R = pCur[Pixel];
+					Dest[Pixel].G = pCur[NPixels + Pixel];
 					Dest[Pixel].B = pCur[NPixels * 2 + Pixel];
 					if (Info.nChannels == 4)
 					{
@@ -2707,15 +2728,17 @@ UTextureFactory::UTextureFactory(const FObjectInitializer& ObjectInitializer)
 	Formats.Add( TEXT( "bmp;Texture" ) );
 	Formats.Add( TEXT( "pcx;Texture" ) );
 	Formats.Add( TEXT( "tga;Texture" ) );
-	Formats.Add( TEXT( "float;Texture" ) );
+	//Formats.Add( TEXT( "float;Texture" ) ); // no such thing?
 	Formats.Add( TEXT( "psd;Texture" ) );
 	Formats.Add( TEXT( "dds;Texture (Cubemap or 2D)" ) );
-	Formats.Add( TEXT( "hdr;Cubemap Texture (LongLat unwrap)" ) );
+	Formats.Add( TEXT( "hdr;Texture (HDR) (LongLat unwrap or 2D)" ) );
 	Formats.Add( TEXT( "ies;IES Texture (Standard light profiles)" ) );
 	Formats.Add( TEXT( "png;Texture" ) );
 	Formats.Add( TEXT( "jpg;Texture" ) );
 	Formats.Add( TEXT( "jpeg;Texture" ) );
-	Formats.Add( TEXT( "exr;Texture (HDR)" ) );
+	// note: conflicts with .exr ImgMedia import in the import dialog
+	// alphabetic order affects the select when you enter "*.exr" in the import dialog box
+	Formats.Add( TEXT( "exr;EXR image HDR Texture2d" ) );
 	Formats.Add( TEXT( "tif;Texture (TIFF)" ) );
 	Formats.Add( TEXT( "tiff;Texture (TIFF)" ) );
 
@@ -2744,6 +2767,7 @@ void UTextureFactory::PostInitProperties()
 {
 	Super::PostInitProperties();
 	MipGenSettings = TextureMipGenSettings(0);
+	check( MipGenSettings == TMGS_FromTextureGroup );
 	bool bFlipNormalMapGreenChannelSetting = false;
 	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorEngine"), TEXT("FlipNormalMapGreenChannel"), bFlipNormalMapGreenChannelSetting, GEngineIni);
 	bFlipNormalMapGreenChannel = bFlipNormalMapGreenChannelSetting;
@@ -2780,163 +2804,6 @@ void UTextureFactory::SuppressImportOverwriteDialog(bool bOverwriteExistingSetti
     bForceOverwriteExistingSettings = bOverwriteExistingSettings;
 }
 
-/**
- * This fills any pixels of a texture with have an alpha value of zero,
- * with an RGB from the nearest neighboring pixel which has non-zero alpha.
-*/
-template<typename PixelDataType, typename ColorDataType, int32 RIdx, int32 GIdx, int32 BIdx, int32 AIdx> class PNGDataFill
-{
-public:
-
-	PNGDataFill( int32 SizeX, int32 SizeY, uint8* SourceTextureData )
-		: SourceData( reinterpret_cast<PixelDataType*>(SourceTextureData) )
-		, TextureWidth(SizeX)
-		, TextureHeight(SizeY)
-	{
-	}
-
-	void ProcessData()
-	{
-		int32 NumZeroedTopRowsToProcess = 0;
-		int32 FillColorRow = -1;
-		for (int32 Y = 0; Y < TextureHeight; ++Y)
-		{
-			if (!ProcessHorizontalRow(Y))
-			{
-				if (FillColorRow != -1)
-				{
-					FillRowColorPixels(FillColorRow, Y);
-				}
-				else
-				{
-					NumZeroedTopRowsToProcess = Y;
-				}
-			}
-			else
-			{
-				FillColorRow = Y;
-			}
-		}
-
-		// Can only fill upwards if image not fully zeroed
-		if (NumZeroedTopRowsToProcess > 0 && NumZeroedTopRowsToProcess + 1 < TextureHeight)
-		{
-			for (int32 Y = 0; Y <= NumZeroedTopRowsToProcess; ++Y)
-			{
-				FillRowColorPixels(NumZeroedTopRowsToProcess + 1, Y);
-			}
-		}
-	}
-
-	/* returns False if requires further processing because entire row is filled with zeroed alpha values */
-	bool ProcessHorizontalRow(int32 Y)
-	{
-		// only wipe out colors that are affected by png turning valid colors white if alpha = 0
-		const uint32 WhiteWithZeroAlpha = FColor(255, 255, 255, 0).DWColor();
-
-		// Left -> Right
-		int32 NumLeftmostZerosToProcess = 0;
-		const PixelDataType* FillColor = nullptr;
-		for (int32 X = 0; X < TextureWidth; ++X)
-		{
-			PixelDataType* PixelData = SourceData + (Y * TextureWidth + X) * 4;
-			ColorDataType* ColorData = reinterpret_cast<ColorDataType*>(PixelData);
-
-			if (*ColorData == WhiteWithZeroAlpha)
-			{
-				if (FillColor)
-				{
-					PixelData[RIdx] = FillColor[RIdx];
-					PixelData[GIdx] = FillColor[GIdx];
-					PixelData[BIdx] = FillColor[BIdx];
-				}
-				else
-				{
-					// Mark pixel as needing fill
-					*ColorData = 0;
-
-					// Keep track of how many pixels to fill starting at beginning of row
-					NumLeftmostZerosToProcess = X;
-				}
-			}
-			else
-			{
-				FillColor = PixelData;
-			}
-		}
-
-		if (NumLeftmostZerosToProcess == 0)
-		{
-			// No pixels left that are zero
-			return true;
-		}
-
-		if (NumLeftmostZerosToProcess + 1 >= TextureWidth)
-		{
-			// All pixels in this row are zero and must be filled using rows above or below
-			return false;
-		}
-
-		// Fill using non zero pixel immediately to the right of the beginning series of zeros
-		FillColor = SourceData + (Y * TextureWidth + NumLeftmostZerosToProcess + 1) * 4;
-
-		// Fill zero pixels found at beginning of row that could not be filled during the Left to Right pass
-		for (int32 X = 0; X <= NumLeftmostZerosToProcess; ++X)
-		{
-			PixelDataType* PixelData = SourceData + (Y * TextureWidth + X) * 4;
-			PixelData[RIdx] = FillColor[RIdx];
-			PixelData[GIdx] = FillColor[GIdx];
-			PixelData[BIdx] = FillColor[BIdx];
-		}
-
-		return true;
-	}
-
-	void FillRowColorPixels(int32 FillColorRow, int32 Y)
-	{
-		for (int32 X = 0; X < TextureWidth; ++X)
-		{
-			const PixelDataType* FillColor = SourceData + (FillColorRow * TextureWidth + X) * 4;
-			PixelDataType* PixelData = SourceData + (Y * TextureWidth + X) * 4;
-			PixelData[RIdx] = FillColor[RIdx];
-			PixelData[GIdx] = FillColor[GIdx];
-			PixelData[BIdx] = FillColor[BIdx];
-		}
-	}
-
-	PixelDataType* SourceData;
-	int32 TextureWidth;
-	int32 TextureHeight;
-};
-
-/**
- * For PNG texture importing, this ensures that any pixels with an alpha value of zero have an RGB
- * assigned to them from a neighboring pixel which has non-zero alpha.
- * This is needed as PNG exporters tend to turn pixels that are RGBA = (x,x,x,0) to (1,1,1,0)
- * and this produces artifacts when drawing the texture with bilinear filtering. 
- *
- * @param TextureSource - The source texture
- * @param SourceData - The source texture data
-*/
-void FillZeroAlphaPNGData( int32 SizeX, int32 SizeY, ETextureSourceFormat SourceFormat, uint8* SourceData )
-{
-	switch( SourceFormat )
-	{
-		case TSF_BGRA8:
-		{
-			PNGDataFill<uint8, uint32, 2, 1, 0, 3> PNGFill(SizeX, SizeY, SourceData );
-			PNGFill.ProcessData();
-			break;
-		}
-
-		case TSF_RGBA16:
-		{
-			PNGDataFill<uint16, uint64, 0, 1, 2, 3> PNGFill(SizeX, SizeY, SourceData );
-			PNGFill.ProcessData();
-			break;
-		}
-	}
-}
 
 extern ENGINE_API bool GUseBilinearLightmaps;
 
@@ -3001,7 +2868,7 @@ void* FImportImage::GetMipData(int32 InMipIndex)
 	return &RawData[Offset];
 }
 
-bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackContext* Warn, EImageImportFlags Flags, FImportImage& OutImage)
+bool UTextureFactory::ImportImage(const uint8* Buffer, int64 Length, FFeedbackContext* Warn, EImageImportFlags Flags, FImportImage& OutImage)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UTextureFactory::ImportImage)
 
@@ -3010,71 +2877,91 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
 
 	// Use the magic bytes when possible to avoid calling inefficient code to check if the image is of the right format
-	EImageFormat ImageFormat = ImageWrapperModule.DetectImageFormat(Buffer, int64(Length));
+	EImageFormat ImageFormat = ImageWrapperModule.DetectImageFormat(Buffer, Length);
 
-	//
-	// PNG
-	//
-	if (ImageFormat == EImageFormat::PNG)
+	if ( ImageFormat != EImageFormat::Invalid )
 	{
-		TSharedPtr<IImageWrapper> PngImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-		if (PngImageWrapper.IsValid() && PngImageWrapper->SetCompressed(Buffer, Length))
+		// Generic ImageWrapper loader :
+		// for PNG,EXR,BMP,TGA :
+		FImage LoadedImage;
+		if ( ImageWrapperModule.DecompressImage(Buffer, Length,LoadedImage) )
 		{
-			if (!IsImportResolutionValid(PngImageWrapper->GetWidth(), PngImageWrapper->GetHeight(), bAllowNonPowerOfTwo, Warn))
+			if (!IsImportResolutionValid(LoadedImage.SizeX, LoadedImage.SizeY, bAllowNonPowerOfTwo, Warn))
 			{
 				return false;
 			}
-
-			// Select the texture's source format
-			ETextureSourceFormat TextureFormat = TSF_Invalid;
-			int32 BitDepth = PngImageWrapper->GetBitDepth();
-			ERGBFormat Format = PngImageWrapper->GetFormat();
-
-			if (Format == ERGBFormat::Gray)
+		
+			// branch for JPEG, if retaining the jpeg compressed data
+			// this is inside the DecompressImage branch even though we don't use the LoadedImage at all
+			//	 just to ensure that the jpeg will decode successfully
+			if (ImageFormat == EImageFormat::JPEG)
 			{
-				if (BitDepth <= 8)
+				// unusual loader, retains jpeg
+				bool bRetainJpegFormat = false;
+				if (EnumHasAllFlags(Flags, EImageImportFlags::AllowReturnOfCompressedData))
 				{
-					TextureFormat = TSF_G8;
-					Format = ERGBFormat::Gray;
-					BitDepth = 8;
+					// For now this option is opt in via the config files once there is no technical risk this will become the default path.
+					GConfig->GetBool(TEXT("TextureImporter"), TEXT("RetainJpegFormat"), bRetainJpegFormat, GEditorIni);
 				}
-				else if (BitDepth == 16)
+				if ( bRetainJpegFormat)
 				{
-					TextureFormat = TSF_G16;
-					Format = ERGBFormat::Gray;
-					BitDepth = 16;
+					// does not decode jpeg, just to get width/height :
+					TSharedPtr<IImageWrapper> JpegImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::JPEG);
+					if (JpegImageWrapper.IsValid() && JpegImageWrapper->SetCompressed(Buffer, Length))
+					{
+						check( JpegImageWrapper->GetWidth() == LoadedImage.SizeX );
+						check( JpegImageWrapper->GetHeight() == LoadedImage.SizeY );
+
+						ERawImageFormat::Type RawFormat = JpegImageWrapper->GetClosestRawImageFormat();
+						check( RawFormat != ERawImageFormat::Invalid );
+						ETextureSourceFormat TextureFormat = FImageCoreUtils::ConvertToTextureSourceFormat(RawFormat);
+						bool bSRGB = JpegImageWrapper->GetSRGB();
+
+						OutImage.Init2DWithParams(
+							JpegImageWrapper->GetWidth(),
+							JpegImageWrapper->GetHeight(),
+							TextureFormat,
+							bSRGB
+						);
+
+						OutImage.RawData.Append(Buffer, Length);
+						OutImage.RawDataCompressionFormat = ETextureSourceCompressionFormat::TSCF_JPEG;
+
+						UE_LOG(LogEditorFactories,Display,TEXT("JPEG imported and retained as JPEG in uasset."));
+
+						return true;
+					}
 				}
-			}
-			else if (Format == ERGBFormat::RGBA || Format == ERGBFormat::BGRA)
-			{
-				if (BitDepth <= 8)
-				{
-					TextureFormat = TSF_BGRA8;
-					Format = ERGBFormat::BGRA;
-					BitDepth = 8;
-				}
-				else if (BitDepth == 16)
-				{
-					TextureFormat = TSF_RGBA16;
-					Format = ERGBFormat::RGBA;
-					BitDepth = 16;
-				}
+				// if not bRetainJpegFormat , jpeg will continue with generic loader
 			}
 
-			if (TextureFormat == TSF_Invalid)
+			if ( UE::TextureUtilitiesCommon::AutoDetectAndChangeGrayScale(LoadedImage) )
 			{
-				Warn->Logf(ELogVerbosity::Error, TEXT("PNG file contains data in an unsupported format."));
-				return false;
+				UE_LOG(LogEditorFactories,Display,TEXT("Auto-detected grayscale, image changed to G8"));
 			}
+
+			ETextureSourceFormat TextureFormat = FImageCoreUtils::ConvertToTextureSourceFormat(LoadedImage.Format);
+			bool bSRGB = LoadedImage.GammaSpace != EGammaSpace::Linear;
 
 			OutImage.Init2DWithParams(
-				PngImageWrapper->GetWidth(),
-				PngImageWrapper->GetHeight(),
+				LoadedImage.SizeX,
+				LoadedImage.SizeY,
 				TextureFormat,
-				BitDepth < 16
+				bSRGB
 			);
 
-			if (PngImageWrapper->GetRaw(Format, BitDepth, OutImage.RawData))
+			// move LoadedImage bits to OutImage :
+			Swap(OutImage.RawData,LoadedImage.RawData);
+		
+			if ( ERawImageFormat::IsHDR(LoadedImage.Format) )
+			{
+				OutImage.CompressionSettings = TC_HDR;
+				check( bSRGB == false );
+			}
+
+			// do per-format processing to match legacy behavior :
+
+			if ( ImageFormat == EImageFormat::PNG )
 			{
 				bool bFillPNGZeroAlpha = true;
 				GConfig->GetBool(TEXT("TextureImporter"), TEXT("FillPNGZeroAlpha"), bFillPNGZeroAlpha, GEditorIni);
@@ -3082,213 +2969,52 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 				if (bFillPNGZeroAlpha)
 				{
 					// Replace the pixels with 0.0 alpha with a color value from the nearest neighboring color which has a non-zero alpha
-					FillZeroAlphaPNGData(OutImage.SizeX, OutImage.SizeY, OutImage.Format, OutImage.RawData.GetData());
+					UE::TextureUtilitiesCommon::FillZeroAlphaPNGData(OutImage.SizeX, OutImage.SizeY, OutImage.Format, OutImage.RawData.GetData());
 				}
 			}
-			else
+			else if ( ImageFormat == EImageFormat::TGA )
 			{
-				Warn->Logf(ELogVerbosity::Error, TEXT("Failed to decode PNG."));
-				return false;
+				const FTGAFileHeader* TGA = (FTGAFileHeader*)Buffer;
+
+				if (TGA->ColorMapType == 1 && TGA->ImageTypeCode == 1 && TGA->BitsPerPixel == 8)
+				{
+					// Notes: The Scaleform GFx exporter (dll) strips all font glyphs into a single 8-bit texture.
+					// The targa format uses this for a palette index; GFx uses a palette of (i,i,i,i) so the index
+					// is also the alpha value.
+					//
+					// We store the image as PF_G8, where it will be used as alpha in the Glyph shader.
+				
+					// ?? check or convert? or neither?
+					//check( TextureFormat == TSF_G8 );
+
+					OutImage.CompressionSettings = TC_Grayscale;
+				}
+				else if(TGA->ColorMapType == 0 && TGA->ImageTypeCode == 3 && TGA->BitsPerPixel == 8)
+				{
+					// standard grayscale images
+				
+					// ?? check or convert? or neither?
+					//check( TextureFormat == TSF_G8 );
+
+					OutImage.CompressionSettings = TC_Grayscale;
+				}
+
+				if ( OutImage.CompressionSettings == TC_Grayscale && TGA->ImageTypeCode == 3)
+				{
+					// default grayscales to linear as they wont get compression otherwise and are commonly used as masks
+					OutImage.SRGB = false;
+				}
 			}
 
 			return true;
 		}
-	}
-
-	//
-	// JPEG
-	//
-	if (ImageFormat == EImageFormat::JPEG)
-	{
-		TSharedPtr<IImageWrapper> JpegImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::JPEG);
-		if (JpegImageWrapper.IsValid() && JpegImageWrapper->SetCompressed(Buffer, Length))
+		else
 		{
-			if (!IsImportResolutionValid(JpegImageWrapper->GetWidth(), JpegImageWrapper->GetHeight(), bAllowNonPowerOfTwo, Warn))
-			{
-				return false;
-			}
-
-			// Select the texture's source format
-			ETextureSourceFormat TextureFormat = TSF_Invalid;
-			int32 BitDepth = JpegImageWrapper->GetBitDepth();
-			ERGBFormat Format = JpegImageWrapper->GetFormat();
-
-			if (Format == ERGBFormat::Gray)
-			{
-				if (BitDepth <= 8)
-				{
-					TextureFormat = TSF_G8;
-					Format = ERGBFormat::Gray;
-					BitDepth = 8;
-				}
-			}
-			else if (Format == ERGBFormat::RGBA)
-			{
-				if (BitDepth <= 8)
-				{
-					TextureFormat = TSF_BGRA8;
-					Format = ERGBFormat::BGRA;
-					BitDepth = 8;
-				}
-			}
-
-			if (TextureFormat == TSF_Invalid)
-			{
-				Warn->Logf(ELogVerbosity::Error, TEXT("JPEG file contains data in an unsupported format."));
-				return false;
-			}
-
-			OutImage.Init2DWithParams(
-				JpegImageWrapper->GetWidth(),
-				JpegImageWrapper->GetHeight(),
-				TextureFormat,
-				BitDepth < 16
-			);
-
-			bool bRetainJpegFormat = false;
-			if (EnumHasAllFlags(Flags, EImageImportFlags::AllowReturnOfCompressedData))
-			{
-				// For now this option is opt in via the config files once there is no technical risk this will become the default path.
-				GConfig->GetBool(TEXT("TextureImporter"), TEXT("RetainJpegFormat"), bRetainJpegFormat, GEditorIni);
-			}
-
-			if (bRetainJpegFormat)
-			{
-				OutImage.RawData.Append(Buffer, Length);
-				OutImage.RawDataCompressionFormat = ETextureSourceCompressionFormat::TSCF_JPEG;
-			}
-			else if (!JpegImageWrapper->GetRaw(Format, BitDepth, OutImage.RawData))
-			{
-				Warn->Logf(ELogVerbosity::Error, TEXT("Failed to decode JPEG."));
-				return false;
-			}
-
-			return true;
+			Warn->Logf(ELogVerbosity::Error, TEXT("Image Import failed."));
+			// do not return false, let loaders below try
 		}
 	}
 
-	//
-	// EXR
-	//
-	if (ImageFormat == EImageFormat::EXR)
-	{
-		TSharedPtr<IImageWrapper> ExrImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::EXR);
-		if (ExrImageWrapper.IsValid() && ExrImageWrapper->SetCompressed(Buffer, Length))
-		{
-			int32 Width = ExrImageWrapper->GetWidth();
-			int32 Height = ExrImageWrapper->GetHeight();
-
-			if (!IsImportResolutionValid(Width, Height, bAllowNonPowerOfTwo, Warn))
-			{
-				return false;
-			}
-
-			// Currently the only texture source format compatible with EXR image formats is TSF_RGBA16F.
-			// EXR decoder automatically converts imported image channels into the requested float format.
-			// In case if the imported image is a gray scale image, its content will be stored in the green channel of the created texture.
-			ETextureSourceFormat TextureFormat = TSF_RGBA16F;
-			ERGBFormat Format = ERGBFormat::RGBAF;
-			int32 BitDepth = 16;
-
-			OutImage.Init2DWithParams(
-				Width,
-				Height,
-				TextureFormat,
-				false
-			);
-			OutImage.CompressionSettings = TC_HDR;
-
-			if (!ExrImageWrapper->GetRaw(Format, BitDepth, OutImage.RawData))
-			{
-				Warn->Logf(ELogVerbosity::Error, TEXT("Failed to decode EXR."));
-				return false;
-			}
-
-			return true;
-		}
-	}
-
-	//
-	// BMP
-	//
-	if (ImageFormat == EImageFormat::BMP)
-	{
-		TSharedPtr<IImageWrapper> BmpImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::BMP);
-		if (BmpImageWrapper.IsValid() && BmpImageWrapper->SetCompressed(Buffer, Length))
-		{
-			// Check the resolution of the imported texture to ensure validity
-			if (!IsImportResolutionValid(BmpImageWrapper->GetWidth(), BmpImageWrapper->GetHeight(), bAllowNonPowerOfTwo, Warn))
-			{
-				return false;
-			}
-
-			OutImage.Init2DWithParams(
-				BmpImageWrapper->GetWidth(),
-				BmpImageWrapper->GetHeight(),
-				TSF_BGRA8,
-				false
-			);
-
-			return BmpImageWrapper->GetRaw(BmpImageWrapper->GetFormat(), BmpImageWrapper->GetBitDepth(), OutImage.RawData);
-		}
-	}
-
-	//
-	// TIFF
-	//
-	if (ImageFormat == EImageFormat::TIFF)
-	{
-		TSharedPtr<IImageWrapper> TiffImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::TIFF);
-		if (TiffImageWrapper.IsValid())
-		{
-			if (TiffImageWrapper->SetCompressed(Buffer, Length))
-			{ 
-				// Check the resolution of the imported texture to ensure validity
-				if (!IsImportResolutionValid(TiffImageWrapper->GetWidth(), TiffImageWrapper->GetHeight(), bAllowNonPowerOfTwo, Warn))
-				{
-					return false;
-				}
-
-				ETextureSourceFormat SourceFormat = TSF_Invalid;
-				ERGBFormat TiffFormat = TiffImageWrapper->GetFormat();
-				const int32 BitDepth = TiffImageWrapper->GetBitDepth();
-				bool bIsSRGB = false;
-
-				if (TiffFormat == ERGBFormat::BGRA)
-				{
-					SourceFormat = TSF_BGRA8;
-					bIsSRGB = true;
-				}
-				else if (TiffFormat == ERGBFormat::RGBA)
-				{
-					SourceFormat = TSF_RGBA16;
-				}
-				else if (TiffFormat == ERGBFormat::RGBAF)
-				{
-					SourceFormat = TSF_RGBA16F;
-				}
-				else if (TiffFormat == ERGBFormat::Gray)
-				{
-					SourceFormat = TSF_G8;
-					if (BitDepth == 16)
-					{
-						SourceFormat = TSF_G16;
-					}
-				}
-
-				OutImage.Init2DWithParams(
-					TiffImageWrapper->GetWidth(),
-					TiffImageWrapper->GetHeight(),
-					SourceFormat,
-					bIsSRGB
-				);
-
-				return TiffImageWrapper->GetRaw(TiffFormat, BitDepth, OutImage.RawData);
-			}
-
-			return false;
-		}
-	}
 
 	//
 	// PCX
@@ -3407,82 +3133,6 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 	}
 
 	//
-	// TGA
-	//
-	TSharedPtr<IImageWrapper> TgaImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::TGA);
-	if (TgaImageWrapper.IsValid() && TgaImageWrapper->SetCompressed(Buffer, Length))
-	{
-		// Check the resolution of the imported texture to ensure validity
-		if (!IsImportResolutionValid(TgaImageWrapper->GetWidth(), TgaImageWrapper->GetHeight(), bAllowNonPowerOfTwo, Warn))
-		{
-			return false;
-		}
-
-		const FTGAFileHeader* TGA = (FTGAFileHeader*)Buffer;
-
-		if (TGA->ColorMapType == 1 && TGA->ImageTypeCode == 1 && TGA->BitsPerPixel == 8)
-		{
-			// Notes: The Scaleform GFx exporter (dll) strips all font glyphs into a single 8-bit texture.
-			// The targa format uses this for a palette index; GFx uses a palette of (i,i,i,i) so the index
-			// is also the alpha value.
-			//
-			// We store the image as PF_G8, where it will be used as alpha in the Glyph shader.
-			OutImage.Init2DWithOneMip(
-				TGA->Width,
-				TGA->Height,
-				TSF_G8);
-			OutImage.CompressionSettings = TC_Grayscale;
-		}
-		else if(TGA->ColorMapType == 0 && TGA->ImageTypeCode == 3 && TGA->BitsPerPixel == 8)
-		{
-			// standard grayscale images
-			OutImage.Init2DWithOneMip(
-				TGA->Width,
-				TGA->Height,
-				TSF_G8);
-			OutImage.CompressionSettings = TC_Grayscale;
-		}
-		else
-		{
-			if(TGA->ImageTypeCode == 10) // 10 = RLE compressed 
-			{
-				if( TGA->BitsPerPixel != 32 &&
-					TGA->BitsPerPixel != 24 &&
-					TGA->BitsPerPixel != 16 )
-				{
-					Warn->Logf(ELogVerbosity::Error, TEXT("TGA uses an unsupported rle-compressed bit-depth: %u"),TGA->BitsPerPixel);
-					return false;
-				}
-			}
-			else
-			{
-				if( TGA->BitsPerPixel != 32 &&
-					TGA->BitsPerPixel != 16 &&
-					TGA->BitsPerPixel != 24)
-				{
-					Warn->Logf(ELogVerbosity::Error, TEXT("TGA uses an unsupported bit-depth: %u"),TGA->BitsPerPixel);
-					return false;
-				}
-			}
-
-			OutImage.Init2DWithOneMip(
-				TGA->Width,
-				TGA->Height,
-				TSF_BGRA8);
-		}
-
-		const bool bResult = TgaImageWrapper->GetRaw( TgaImageWrapper->GetFormat(), TgaImageWrapper->GetBitDepth(), OutImage.RawData );
-
-		if (bResult && OutImage.CompressionSettings == TC_Grayscale && TGA->ImageTypeCode == 3)
-		{
-			// default grayscales to linear as they wont get compression otherwise and are commonly used as masks
-			OutImage.SRGB = false;
-		}
-
-		return bResult;
-	}
-
-	//
 	// PSD File
 	//
 	FPSDFileHeader			 psdhdr;
@@ -3537,78 +3187,6 @@ bool UTextureFactory::ImportImage(const uint8* Buffer, uint32 Length, FFeedbackC
 		return true;
 	}
 	
-	//
-	// DDS Texture
-	//
-	FDDSLoadHelper  DDSLoadHelper(Buffer, Length);
-	if (DDSLoadHelper.IsValid2DTexture())
-	{
-		// DDS 2d texture
-		if (!IsImportResolutionValid(DDSLoadHelper.DDSHeader->dwWidth, DDSLoadHelper.DDSHeader->dwHeight, bAllowNonPowerOfTwo, Warn))
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS has invalid dimensions."));
-			return false;
-		}
-
-		ETextureSourceFormat SourceFormat = DDSLoadHelper.ComputeSourceFormat();
-
-		// Invalid DDS format
-		if (SourceFormat == TSF_Invalid)
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS uses an unsupported format."));
-			return false;
-		}
-
-		uint32 MipMapCount = DDSLoadHelper.ComputeMipMapCount();
-		if (SourceFormat != TSF_Invalid && MipMapCount > 0)
-		{
-			OutImage.Init2DWithMips(
-				DDSLoadHelper.DDSHeader->dwWidth,
-				DDSLoadHelper.DDSHeader->dwHeight,
-				MipMapCount,
-				SourceFormat,
-				DDSLoadHelper.GetDDSDataPointer()
-			);
-
-			if (MipMapCount > 1)
-			{
-				// if the source has mips we keep the mips by default, unless the user changes that
-				MipGenSettings = TMGS_LeaveExistingMips;
-			}
-
-			if (FTextureSource::IsHDR(SourceFormat))
-			{
-				// the loader can suggest a compression setting
-				OutImage.CompressionSettings = TC_HDR;
-				OutImage.SRGB = false;
-			}
-
-			return true;
-		}
-	}
-
-
-	//
-	// Legacy TIFF import (for the platforms that doesn't have libtiff)
-	//
-	FTiffLoadHelper TiffLoaderHelper;
-	if (TiffLoaderHelper.IsValid())
-	{
-		if (TiffLoaderHelper.Load(Buffer, Length))
-		{
-			OutImage.Init2DWithOneMip(
-				TiffLoaderHelper.Width,
-				TiffLoaderHelper.Height,
-				TiffLoaderHelper.TextureSourceFormat,
-				TiffLoaderHelper.RawData.GetData()
-			);
-
-			OutImage.SRGB = TiffLoaderHelper.bSRGB;
-			OutImage.CompressionSettings = TiffLoaderHelper.CompressionSettings;
-			return true;
-		}
-	}
-
 	return false;
 }
 
@@ -3628,6 +3206,8 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 	
 	// UDIM requires each page to be power-of-2 and be uncompressed
 	const EImageImportFlags ImportFlags = EImageImportFlags::None;
+
+	bool bMismatchedFormats = false;
 
 	for (const auto& It : UDIMIndexToFile)
 	{
@@ -3649,31 +3229,58 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 					TCSettings = Image.CompressionSettings;
 				}
 
-				// Deal with mismatched formats somehow?  convert?
-				if (ensure(Format == Image.Format && bSRGB == Image.SRGB))
+				if ( Format != Image.Format )
 				{
-					const int32 UDIMIndex = It.Key;
-					FTextureSourceBlock* Block = new(SourceBlocks) FTextureSourceBlock();
-					UE::TextureUtilitiesCommon::ExtractUDIMCoordinates(UDIMIndex, Block->BlockX, Block->BlockY);
-					Block->SizeX = Image.SizeX;
-					Block->SizeY = Image.SizeY;
-					Block->NumSlices = 1;
-					Block->NumMips = Image.NumMips;
+					bMismatchedFormats = true;
+				}
 
-					SourceImages.Emplace(MoveTemp(Image));
-					SourceFileNames.Add(TexturePath);
-				}
-				else
-				{
-					Warn->Logf(ELogVerbosity::Warning, TEXT("Mismatched UDIM image formats, skipping file \"%s\""), *TexturePath);
-				}
+				const int32 UDIMIndex = It.Key;
+				FTextureSourceBlock* Block = new(SourceBlocks) FTextureSourceBlock();
+				UE::TextureUtilitiesCommon::ExtractUDIMCoordinates(UDIMIndex, Block->BlockX, Block->BlockY);
+				Block->SizeX = Image.SizeX;
+				Block->SizeY = Image.SizeY;
+				Block->NumSlices = 1;
+				Block->NumMips = Image.NumMips;
+
+				SourceImages.Emplace(MoveTemp(Image));
+				SourceFileNames.Add(TexturePath);
 			}
 		}
 	}
 
-	if (SourceImages.Num() < 2)
+	if (SourceImages.Num() < 1)
 	{
 		return nullptr;
+	}
+
+	if ( bMismatchedFormats )
+	{
+		Warn->Logf(ELogVerbosity::Warning, TEXT("Mismatched UDIM image formats, converting all to BGRA8 or RGBA16F ..."));
+		
+		if ( FTextureSource::IsHDR(Format) )
+		{
+			Format = TSF_RGBA16F;
+			bSRGB = false;
+		}
+		else
+		{
+			Format = TSF_BGRA8;
+			bSRGB = true;
+		}
+
+		for( FImportImage & Image : SourceImages )
+		{
+			if ( Image.Format != Format )
+			{
+				ERawImageFormat::Type ImageRawFormat = FImageCoreUtils::ConvertToRawImageFormat( Image.Format );
+				FImageView SourceImage( Image.RawData.GetData(), Image.SizeX, Image.SizeY, ImageRawFormat );
+				FImage DestImage( Image.SizeX, Image.SizeY, FImageCoreUtils::ConvertToRawImageFormat(Format) );
+				FImageCore::CopyImage(SourceImage,DestImage);
+
+				Image.RawData = MoveTemp(DestImage.RawData);
+				Image.Format = Format;
+			}				
+		}
 	}
 
 	TArray<const uint8*> SourceImageData;
@@ -3695,8 +3302,9 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 	{
 		Texture->SRGB = false;
 	}
-	else if (ColorSpaceMode == ETextureSourceColorSpace::SRGB)
+	else 
 	{
+		check(ColorSpaceMode == ETextureSourceColorSpace::SRGB);
 		Texture->SRGB = true;
 	}
 
@@ -3708,13 +3316,204 @@ UTexture* UTextureFactory::ImportTextureUDIM(UClass* Class, UObject* InParent, F
 	return Texture;
 }
 
+UTexture * UTextureFactory::ImportDDS(const uint8* Buffer,int64 Length,UObject* InParent,FName Name, EObjectFlags Flags,EImageImportFlags ImportFlags,FFeedbackContext* Warn)
+{
+	UE::DDS::EDDSError Error;
+	UE::DDS::FDDSFile* DDS = UE::DDS::FDDSFile::CreateFromDDSInMemory(Buffer,Length,&Error);
+	if ( DDS == nullptr )
+	{
+		// NotADds is okay/expected , we try this on all image buffers
+		// IoError means buffer is too small to be a DDS
+		check( Error != UE::DDS::EDDSError::OK ); 
+		if ( Error != UE::DDS::EDDSError::NotADds && Error != UE::DDS::EDDSError::IoError )
+		{
+			UE_LOG(LogEditorFactories,Warning,TEXT("Failed to load DDS (Error=%d)"),(int)Error);			
+		}
+		return nullptr;
+	}
+
+	// delete DDS at scope exit :
+	TUniquePtr<UE::DDS::FDDSFile> DDSPtr(DDS);
+
+	if (!IsImportResolutionValid(DDS->Width, DDS->Height, !!(ImportFlags & EImageImportFlags::AllowNonPowerOfTwo), Warn))
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("DDS resolution not supported"));
+		return nullptr;
+	}
+
+	// change X8 formats to A8 :	
+	DDS->ConvertRGBXtoRGBA();
+	// change RGBA8 to BGRA8 before DXGIFormatGetClosestRawFormat :
+	DDS->ConvertChannelOrder(UE::DDS::EChannelOrder::BGRA);
+
+	// map format to RawFormat and ETextureSourceFormat
+	ERawImageFormat::Type RawFormat = UE::DDS::DXGIFormatGetClosestRawFormat(DDS->DXGIFormat);
+	if ( RawFormat == ERawImageFormat::Invalid )
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("DDS DXGIFormat not supported : %d : %s"), (int)DDS->DXGIFormat, UE::DDS::DXGIFormatGetName(DDS->DXGIFormat) );
+		return nullptr;
+	}
+
+	UTexture * Texture;
+	int NumSlices;
+	if ( DDS->IsValidTexture2D() )
+	{
+		Texture = CreateTexture2D(InParent, Name, Flags);
+		NumSlices = 1;
+
+		UE_LOG(LogEditorFactories,Display,TEXT("DDS imported as 2d Texture"));
+	}
+	else if ( DDS->IsValidTextureCube() )
+	{
+		if ( DDS->ArraySize > 6 )
+		{
+			UObject* NewObject = CreateOrOverwriteAsset(UTextureCubeArray::StaticClass(), InParent, Name, Flags);
+			Texture = NewObject ? CastChecked<UTextureCubeArray>(NewObject) : nullptr;
+			
+			UE_LOG(LogEditorFactories,Display,TEXT("DDS imported as Cube Texture Array"));
+		}
+		else
+		{
+			Texture = CreateTextureCube(InParent, Name, Flags);
+			
+			UE_LOG(LogEditorFactories,Display,TEXT("DDS imported as Cube Texture"));
+		}
+
+		NumSlices = DDS->ArraySize;
+	}
+	else if ( DDS->IsValidTextureArray() )
+	{
+		Texture = CreateTexture2DArray(InParent, Name, Flags);
+		NumSlices = DDS->ArraySize;
+
+		UE_LOG(LogEditorFactories,Display,TEXT("DDS imported as Texture Array"));
+	}
+	else if ( DDS->IsValidTextureVolume() )
+	{
+		UObject* NewObject = CreateOrOverwriteAsset(UVolumeTexture::StaticClass(), InParent, Name, Flags);
+		Texture = NewObject ? CastChecked<UVolumeTexture>(NewObject) : nullptr;
+		NumSlices = DDS->Depth;
+
+		UE_LOG(LogEditorFactories,Display,TEXT("DDS imported as Volume"));
+	}
+	else
+	{
+		UE_LOG(LogEditorFactories,Error,TEXT("DDS is not a valid Unreal type"));
+		return nullptr;
+	}
+	if ( Texture == nullptr )
+	{
+		UE_LOG(LogEditorFactories,Error,TEXT("DDS could not create texture"));
+		return nullptr;
+	}
+
+	ETextureSourceFormat TSFormat = FImageCoreUtils::ConvertToTextureSourceFormat(RawFormat);
+
+	int MipCount = (int)DDS->MipCount;
+
+	if ( MipCount > MAX_TEXTURE_MIP_COUNT )
+	{
+		// resolution can be above MAX_TEXTURE_MIP_COUNT for VT
+		UE_LOG(LogEditorFactories,Warning,TEXT("DDS exceeds MAX_TEXTURE_MIP_COUNT"));
+		MipCount = MAX_TEXTURE_MIP_COUNT;
+	}
+
+	Texture->Source.Init(DDS->Width,DDS->Height,NumSlices,MipCount,TSFormat);
+
+	for(int MipIndex=0;MipIndex<MipCount;MipIndex++)
+	{
+		FTextureSource::FMipLock MipLock(FTextureSource::ELockState::ReadWrite,&(Texture->Source),MipIndex);
+
+		if ( DDS->Dimension == 3 )
+		{
+			check( DDS->Mips.Num() == DDS->MipCount );
+			check( DDS->Mips[MipIndex].Depth == MipLock.Image.NumSlices );
+
+			if ( ! DDS->GetMipImage( MipLock.Image, MipIndex ) )
+			{
+				// Texture is not returned; it will be deleted by GC
+				Texture->MarkAsGarbage();
+				UE_LOG(LogEditorFactories,Error,TEXT("DDS could not convert pixel format"));
+				return nullptr;
+			}
+		}
+		else
+		{
+			// DDS->Mips[] contains both mips and arrays
+			check( DDS->Mips.Num() == DDS->MipCount * NumSlices );
+
+			for(int SliceIndex=0;SliceIndex<NumSlices;SliceIndex++)
+			{
+				FImageView DestSlice = MipLock.Image.GetSlice(SliceIndex);
+				
+				// DDS Mips[] array has whole mip chain of each slice, then next slice
+				// we have the opposite (all slices of top mip first, then next mip)
+				int DDSMipIndex = SliceIndex * DDS->MipCount + MipIndex;
+
+				if ( ! DDS->GetMipImage( DestSlice, DDSMipIndex ) )
+				{
+					// Texture is not returned; it will be deleted by GC
+					Texture->MarkAsGarbage();
+					UE_LOG(LogEditorFactories,Error,TEXT("DDS could not convert pixel format"));
+					return nullptr;
+				}
+			}
+		}
+	}
+
+	bool bSRGB = false;
+
+	if ( ERawImageFormat::GetFormatNeedsGammaSpace(RawFormat) )
+	{
+		if ( DDS->CreateFlags & UE::DDS::FDDSFile::CREATE_FLAG_WAS_D3D9 )
+		{
+			// no SRGB info in Dx9 format
+			// assume SRGB yes
+			bSRGB = true;
+		}
+		else if ( UE::DDS::DXGIFormatHasLinearAndSRGBForm(DDS->DXGIFormat) )
+		{
+			// Dx10 file with format that has linear/srgb pair
+			//	( _UNORM when _UNORM_SRGB)
+			bSRGB = UE::DDS::DXGIFormatIsSRGB(DDS->DXGIFormat);
+		}
+		else
+		{
+			// Dx10 format that doesn't have linear/srgb pairs
+			
+			// R8G8_UNORM and R8_UNORM have no _SRGB pair
+			// so no way to clearly indicate SRGB or Linear for them
+			// assume SRGB yes
+			bSRGB = true;
+		}
+	}
+
+	if ( ERawImageFormat::IsHDR(RawFormat) )
+	{
+		Texture->CompressionSettings = TC_HDR;
+		check( bSRGB == false );
+	}
+
+	Texture->SRGB = bSRGB;
+	
+	if ( MipCount > 1)
+	{
+		// if the source has mips we keep the mips by default, unless the user changes that
+		Texture->MipGenSettings = TMGS_LeaveExistingMips;
+	}
+	
+	return Texture;
+}
+
 UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, const TCHAR* Type, const uint8*& Buffer, const uint8* BufferEnd, FFeedbackContext* Warn)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ImportTexture);
+
 	bool bAllowNonPowerOfTwo = false;
 	GConfig->GetBool( TEXT("TextureImporter"), TEXT("AllowNonPowerOfTwoTextures"), bAllowNonPowerOfTwo, GEditorIni );
 
 	// Validate it.
-	const int32 Length = BufferEnd - Buffer;
+	const int64 Length = BufferEnd - Buffer;
 
 	// We want to allow certain texture types to potentially return the compressed data rather than raw uncompressed
 	EImageImportFlags ImportFlags = EImageImportFlags::AllowReturnOfCompressedData;
@@ -3723,15 +3522,176 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 		ImportFlags |= EImageImportFlags::AllowNonPowerOfTwo;
 	}
 
+	// Do unusual loaders first before Generic
+
+	UTexture * DDSTexture = ImportDDS(Buffer,Length,InParent,Name,Flags,ImportFlags,Warn);
+	if ( DDSTexture != nullptr )
+	{
+		return DDSTexture;
+	}
+
+	//
+	// HDR File -> longlat cube map
+	//
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	if (ImageWrapperModule.DetectImageFormat(Buffer, Length) == EImageFormat::HDR)
+	{
+		// do longlat or 2d or ask ?
+		
+		// note: HDRImportShouldBeLongLatCubeMap member variable is not preserved across imports
+		// because the TextureFactory is reconstructed each time
+		// it is saved across multiple files in a single import
+		
+		// if we don't have an All answer, pop the question :
+		if ( HDRImportShouldBeLongLatCubeMap != EAppReturnType::YesAll &&
+			HDRImportShouldBeLongLatCubeMap != EAppReturnType::NoAll )
+		{
+			// trinary bool
+			// 0 = no
+			// 1 = yes
+			// other = ask
+			int LoadHdrAsLongLatCubemap = 2;
+			GConfig->GetInt(TEXT("TextureImporter"), TEXT("LoadHdrAsLongLatCubemap"), LoadHdrAsLongLatCubemap, GEditorIni);
+			if ( LoadHdrAsLongLatCubemap == 0 )
+			{
+				HDRImportShouldBeLongLatCubeMap = EAppReturnType::NoAll;
+			}
+			else if ( LoadHdrAsLongLatCubemap == 1 )
+			{
+				HDRImportShouldBeLongLatCubeMap = EAppReturnType::YesAll;
+			}
+			else
+			{
+				// ask
+
+				if ( GIsRunningUnattendedScript )
+				{
+					// not allowed to messagebox
+					// just default to legacy behavior = yes latlong cubemap
+					HDRImportShouldBeLongLatCubeMap = EAppReturnType::Yes;
+				}
+				else
+				{
+					HDRImportShouldBeLongLatCubeMap = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, NSLOCTEXT("UnrealEd", "Import_HDRLongLat", "Should HDR texture be imported as longlat cubemap instead of 2d texture?"));
+				}
+			}
+		}
+
+		// branch if they want longlat cubemap :
+		if (HDRImportShouldBeLongLatCubeMap == EAppReturnType::Yes ||
+			HDRImportShouldBeLongLatCubeMap == EAppReturnType::YesAll)
+		{
+			if (Class && !UTextureCube::StaticClass()->IsChildOf(Class))
+			{
+				//The source use to import this texture is not compatible with the
+				//existing texture type.
+				Warn->Logf(ELogVerbosity::Error, TEXT("Cannot import/reimport a [%s] with a UTextureCube source file"), *Class->GetName());
+				return nullptr;
+			}
+
+			TSharedPtr<IImageWrapper> HdrImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::HDR);
+			if (HdrImageWrapper->SetCompressed(Buffer, Length))
+			{
+				TArray64<uint8> UnCompressedData;
+				if (HdrImageWrapper->GetRaw(ERGBFormat::BGRE, 8, UnCompressedData))
+				{
+					// create the cube texture
+					UTextureCube* TextureCube = CreateTextureCube(InParent, Name, Flags);
+					if ( TextureCube )
+					{
+						TextureCube->Source.Init(
+							HdrImageWrapper->GetWidth(),
+							HdrImageWrapper->GetHeight(),
+							/*NumSlices=*/ 1,
+							/*NumMips=*/ 1,
+							TSF_BGRE8,
+							UnCompressedData.GetData()
+							);
+						// the loader can suggest a compression setting
+						TextureCube->CompressionSettings = TC_HDR;
+						TextureCube->SRGB = false;
+						
+						UE_LOG(LogEditorFactories,Display,TEXT("HDR Image imported as LongLat cube map.") );
+
+						return TextureCube;
+					}
+				}
+			}
+
+			Warn->Log(ELogVerbosity::Error, TEXT("HDR import failed"));
+			return nullptr;
+		}
+		// else didn't want cubemap
+		// will fall down to generic importer and make a 2d texture
+	}
+
+	//
+	// IES File (usually measured real world light profiles)
+	//
+	if( FCString::Stricmp(Type, TEXT("ies")) == 0)
+	{
+		// checks for .IES extension to avoid wasting loading large assets just to reject them during header parsing
+		FIESConverter IESConverter(Buffer, Length);
+
+		if(IESConverter.IsValid())
+		{
+			if (Class && !UTextureLightProfile::StaticClass()->IsChildOf(Class))
+			{
+				//The source use to import this texture is not compatible with the
+				//existing texture type.
+				Warn->Logf(ELogVerbosity::Error, TEXT("Cannot import/reimport a [%s] with a UTextureLightProfile source file"), *Class->GetName());
+				return nullptr;
+			}
+
+			UTextureLightProfile* Texture = Cast<UTextureLightProfile>( CreateOrOverwriteAsset(UTextureLightProfile::StaticClass(), InParent, Name, Flags) );
+			if ( Texture )
+			{
+				Texture->Source.Init(
+					IESConverter.GetWidth(),
+					IESConverter.GetHeight(),
+					/*NumSlices=*/ 1,
+					1,
+					TSF_RGBA16F,
+					IESConverter.GetRawData().GetData()
+					);
+
+				Texture->AddressX = TA_Clamp;
+				Texture->AddressY = TA_Clamp;
+				Texture->CompressionSettings = TC_HDR;
+				Texture->SRGB = false;
+				MipGenSettings = TMGS_NoMipmaps;
+				Texture->Brightness = IESConverter.GetBrightness();
+				Texture->TextureMultiplier = IESConverter.GetMultiplier();
+			}
+
+			return Texture;
+		}
+		else
+		{
+			Warn->Log(ELogVerbosity::Error, TEXT("IES import failed"));
+			return nullptr;
+		}
+	}
+
 	//
 	// Generic 2D Image
 	//
 	FImportImage Image;
 	if (ImportImage(Buffer, Length, Warn, ImportFlags, Image))
 	{
+		if (Class && !UTexture2D::StaticClass()->IsChildOf(Class))
+		{
+			//The source use to import this texture is not compatible with the
+			//existing texture type.
+			Warn->Logf(ELogVerbosity::Error, TEXT("Cannot import/reimport a [%s] with a UTexture2D source file"), *Class->GetName());
+			return nullptr;
+		}
+
 		UTexture2D* Texture = CreateTexture2D(InParent, Name, Flags);
 		if (Texture)
 		{
+			UE_LOG(LogEditorFactories,Display,TEXT("Image imported as : %s"), *(StaticEnum<ETextureSourceFormat>()->GetDisplayNameTextByValue(Image.Format).ToString()) );
+
 			if (Image.RawDataCompressionFormat == ETextureSourceCompressionFormat::TSCF_None)
 			{
 				Texture->Source.Init(
@@ -3757,236 +3717,32 @@ UTexture* UTextureFactory::ImportTexture(UClass* Class, UObject* InParent, FName
 
 			Texture->CompressionSettings = Image.CompressionSettings;
 
-			if (ColorSpaceMode == ETextureSourceColorSpace::Auto)
+			// check Texture Format before setting SRGB
+			if ( ERawImageFormat::GetFormatNeedsGammaSpace( FImageCoreUtils::ConvertToRawImageFormat(Image.Format) ) )
 			{
-				Texture->SRGB = Image.SRGB;
+				if (ColorSpaceMode == ETextureSourceColorSpace::Auto)
+				{
+					Texture->SRGB = Image.SRGB;
+				}
+				else if (ColorSpaceMode == ETextureSourceColorSpace::Linear)
+				{
+					Texture->SRGB = false;
+				}
+				else if (ColorSpaceMode == ETextureSourceColorSpace::SRGB)
+				{
+					Texture->SRGB = true;
+				}
+				else
+				{
+					check(0);
+				}
 			}
-			else if (ColorSpaceMode == ETextureSourceColorSpace::Linear)
+			else
 			{
 				Texture->SRGB = false;
-			}
-			else if (ColorSpaceMode == ETextureSourceColorSpace::SRGB)
-			{
-				Texture->SRGB = true;
 			}
 		}
 		return Texture;
-	}
-
-	//
-	// DDS Cubemap
-	//
-	FDDSLoadHelper DDSLoadHelper(Buffer, Length);
-	if(DDSLoadHelper.IsValidCubemapTexture())
-	{
-		if(!IsImportResolutionValid(DDSLoadHelper.DDSHeader->dwWidth, DDSLoadHelper.DDSHeader->dwHeight, bAllowNonPowerOfTwo, Warn))
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS uses an unsupported format"));
-			return nullptr;
-		}
-
-		int32 NumMips = DDSLoadHelper.ComputeMipMapCount();
-		ETextureSourceFormat Format = DDSLoadHelper.ComputeSourceFormat();
-		if (Format == TSF_Invalid)
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS file contains data in an unsupported format."));
-			return nullptr;
-		}
-
-		if (NumMips > MAX_TEXTURE_MIP_COUNT)
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS file contains an unsupported number of mipmap levels."));
-			return nullptr;
-		}
-
-		// create the cube texture
-		UTextureCube* TextureCube = CreateTextureCube( InParent, Name, Flags );
-
-		if ( TextureCube )
-		{
-			TextureCube->Source.Init(
-				DDSLoadHelper.GetSizeX(),
-				DDSLoadHelper.GetSizeY(),
-				DDSLoadHelper.GetSliceCount(),
-				NumMips,
-				Format
-				);
-			if(Format == TSF_RGBA16F)
-			{
-				TextureCube->CompressionSettings = TC_HDR;
-				TextureCube->SRGB = false;
-			}
-
-			uint8* DestMipData[MAX_TEXTURE_MIP_COUNT] = {0};
-			int32 MipSize[MAX_TEXTURE_MIP_COUNT] = {0};
-			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-			{
-				DestMipData[MipIndex] = TextureCube->Source.LockMip(MipIndex);
-				MipSize[MipIndex] = TextureCube->Source.CalcMipSize(MipIndex) / 6;
-			}
-
-			for (int32 SliceIndex = 0; SliceIndex < 6; ++SliceIndex)
-			{
-				const uint8* SrcMipData = DDSLoadHelper.GetDDSDataPointer((ECubeFace)SliceIndex);
-				for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-				{
-					FMemory::Memcpy(DestMipData[MipIndex] + MipSize[MipIndex] * SliceIndex, SrcMipData, MipSize[MipIndex]);
-					SrcMipData += MipSize[MipIndex];
-				}
-			}
-
-			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-			{
-				TextureCube->Source.UnlockMip(MipIndex);
-			}
-
-			if (NumMips > 1)
-			{
-				TextureCube->MipGenSettings = TMGS_LeaveExistingMips;
-			}
-		}
-
-		return TextureCube;
-	}
-	
-	// DDS Texture array.
-	if (DDSLoadHelper.IsValidArrayTexture())
-	{
-		if (!IsImportResolutionValid(DDSLoadHelper.DDSHeader->dwWidth, DDSLoadHelper.DDSHeader->dwHeight, bAllowNonPowerOfTwo, Warn))
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS uses an unsupported format"));
-			return nullptr;
-		}
-
-		int32 NumMips = DDSLoadHelper.ComputeMipMapCount();
-		ETextureSourceFormat Format = DDSLoadHelper.ComputeSourceFormat();
-		if (Format == TSF_Invalid)
-		{
-			Warn->Logf(ELogVerbosity::Error, TEXT("DDS file contains data in an unsupported format."));
-			return nullptr;
-		}
-
-		// Create the array texture
-		UTexture2DArray* TextureArray = CreateTexture2DArray(InParent, Name, Flags);
-
-		if (TextureArray)
-		{
-			TextureArray->Source.Init(
-				DDSLoadHelper.GetSizeX(),
-				DDSLoadHelper.GetSizeY(),
-				DDSLoadHelper.GetSliceCount(),
-				NumMips,
-				Format
-			);
-			if (Format == TSF_RGBA16F)
-			{
-				TextureArray->CompressionSettings = TC_HDR;
-				TextureArray->SRGB = false;
-			}
-
-			uint8* DestMipData[MAX_TEXTURE_MIP_COUNT] = { 0 };
-			int32 MipSize[MAX_TEXTURE_MIP_COUNT] = { 0 };
-			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-			{
-				DestMipData[MipIndex] = TextureArray->Source.LockMip(MipIndex);
-				MipSize[MipIndex] = TextureArray->Source.CalcMipSize(MipIndex) / DDSLoadHelper.GetSliceCount();
-			}
-
-			for (uint32 SliceIndex = 0; SliceIndex < DDSLoadHelper.GetSliceCount(); ++SliceIndex)
-			{
-				const uint8* SrcMipData = DDSLoadHelper.GetDDSDataPointer((ECubeFace)SliceIndex);
-				for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-				{
-					FMemory::Memcpy(DestMipData[MipIndex] + MipSize[MipIndex] * SliceIndex, SrcMipData, MipSize[MipIndex]);
-					SrcMipData += MipSize[MipIndex];
-				}
-			}
-
-			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
-			{
-				TextureArray->Source.UnlockMip(MipIndex);
-			}
-
-			if (NumMips > 1)
-			{
-				// If the source has mips we keep the mips by default, unless the user changes that
-				MipGenSettings = TMGS_LeaveExistingMips;
-			}
-		}
-
-		return TextureArray;
-	}
-
-	//
-	// HDR File
-	//
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	if (ImageWrapperModule.DetectImageFormat(Buffer, Length) == EImageFormat::HDR)
-	{
-		FHdrImageWrapper HdrImageWrapper;
-		if (HdrImageWrapper.SetCompressedFromView(TArrayView64<const uint8>(Buffer, Length)))
-		{
-			TArray64<uint8> UnCompressedData;
-			if (HdrImageWrapper.GetRaw(ERGBFormat::BGRE, 8, UnCompressedData))
-			{
-				// create the cube texture
-				UTextureCube* TextureCube = CreateTextureCube(InParent, Name, Flags);
-				if ( TextureCube )
-				{
-					TextureCube->Source.Init(
-						HdrImageWrapper.GetWidth(),
-						HdrImageWrapper.GetHeight(),
-						/*NumSlices=*/ 1,
-						/*NumMips=*/ 1,
-						TSF_BGRE8,
-						UnCompressedData.GetData()
-						);
-					// the loader can suggest a compression setting
-					TextureCube->CompressionSettings = TC_HDR;
-					TextureCube->SRGB = false;
-
-					return TextureCube;
-				}
-			}
-		}
-
-		Warn->Log(ELogVerbosity::Error, HdrImageWrapper.GetErrorMessage().ToString());
-		
-	}
-
-	//
-	// IES File (usually measured real world light profiles)
-	//
-	if(!FCString::Stricmp(Type, TEXT("ies")))
-	{
-		// checks for .IES extension to avoid wasting loading large assets just to reject them during header parsing
-		FIESConverter IESConverter(Buffer, Length);
-
-		if(IESConverter.IsValid())
-		{
-			UTextureLightProfile* Texture = Cast<UTextureLightProfile>( CreateOrOverwriteAsset(UTextureLightProfile::StaticClass(), InParent, Name, Flags) );
-			if ( Texture )
-			{
-				Texture->Source.Init(
-					IESConverter.GetWidth(),
-					IESConverter.GetHeight(),
-					/*NumSlices=*/ 1,
-					1,
-					TSF_RGBA16F,
-					IESConverter.GetRawData().GetData()
-					);
-
-				Texture->AddressX = TA_Clamp;
-				Texture->AddressY = TA_Clamp;
-				Texture->CompressionSettings = TC_HDR;
-				Texture->SRGB = false;
-				MipGenSettings = TMGS_NoMipmaps;
-				Texture->Brightness = IESConverter.GetBrightness();
-				Texture->TextureMultiplier = IESConverter.GetMultiplier();
-			}
-
-			return Texture;
-		}
 	}
 
 	return nullptr;
@@ -4010,6 +3766,7 @@ UObject* UTextureFactory::FactoryCreateBinary
 	FFeedbackContext*	Warn
 )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FactoryCreateBinary);
 	check(Type);
 
 	FName TextureName = Name;
@@ -4138,7 +3895,9 @@ UObject* UTextureFactory::FactoryCreateBinary
 	float								ExistingAdjustMaxAlpha = 1.0f;
 	bool								ExistingbDoScaleMipsForAlphaCoverage = false;
 	FVector4							ExistingAlphaCoverageThresholds = FVector4(0, 0, 0, 0);
+	bool								ExistingbUseNewMipFilter = false;
 	TextureMipGenSettings				ExistingMipGenSettings = TextureMipGenSettings(0);
+	check( ExistingMipGenSettings == TMGS_FromTextureGroup );
 	bool								ExistingVirtualTextureStreaming = false;
 
 	if (bForceOverwriteExistingSettings)
@@ -4225,9 +3984,9 @@ UObject* UTextureFactory::FactoryCreateBinary
 		ExistingNoAlpha = ExistingTexture->CompressionNoAlpha;
 		ExistingDeferCompression = ExistingTexture->DeferCompression;
 		ExistingFlipGreenChannel = ExistingTexture->bFlipGreenChannel;
-		ExistingDitherMipMapAlpha = ExistingTexture->bDitherMipMapAlpha;
 		ExistingbDoScaleMipsForAlphaCoverage = ExistingTexture->bDoScaleMipsForAlphaCoverage;
 		ExistingAlphaCoverageThresholds = ExistingTexture->AlphaCoverageThresholds;
+		ExistingbUseNewMipFilter = ExistingTexture->bUseNewMipFilter;
 		ExistingAdjustBrightness = ExistingTexture->AdjustBrightness;
 		ExistingAdjustBrightnessCurve = ExistingTexture->AdjustBrightnessCurve;
 		ExistingAdjustVibrance = ExistingTexture->AdjustVibrance;
@@ -4300,6 +4059,10 @@ UObject* UTextureFactory::FactoryCreateBinary
 	// Start with the value that the loader suggests.
 	CompressionSettings = Texture->CompressionSettings;
 
+	// note: LODGroup is a member var on TextureFactory not pulled from Texture->LODGroup ?
+	//	notice above that CompressionSettings is primed from Texture->CompressionSettings
+	//	but LODGroup is not pulled from Texture->LODGroup
+
 	// Figure out whether we're using a normal map LOD group.
 	bool bIsNormalMapLODGroup = false;
 	if( LODGroup == TEXTUREGROUP_WorldNormalMap 
@@ -4315,9 +4078,6 @@ UObject* UTextureFactory::FactoryCreateBinary
 		bIsNormalMapLODGroup = true;
 	}
 
-	// Propagate options.
-	Texture->CompressionSettings	= CompressionSettings;
-
 	// Packed normal map
 	if( Texture->IsNormalMap() )
 	{
@@ -4332,7 +4092,9 @@ UObject* UTextureFactory::FactoryCreateBinary
 	{
 		LODGroup = TEXTUREGROUP_IESLightProfile;
 	}
-
+	
+	// Propagate options.
+	Texture->CompressionSettings	= CompressionSettings;
 	Texture->LODGroup				= LODGroup;
 
 	// Revert the LODGroup to the default if it was forcibly set by the texture being a normal map.
@@ -4343,13 +4105,13 @@ UObject* UTextureFactory::FactoryCreateBinary
 		LODGroup = TEXTUREGROUP_World;
 	}
 
-	Texture->CompressionNone		= NoCompression;
-	Texture->CompressionNoAlpha		= NoAlpha;
-	Texture->DeferCompression		= bDeferCompression;
-	Texture->bDitherMipMapAlpha		= bDitherMipMapAlpha;
-	Texture->bDoScaleMipsForAlphaCoverage = bDoScaleMipsForAlphaCoverage;
-	Texture->AlphaCoverageThresholds = AlphaCoverageThresholds;
-	
+	Texture->CompressionNone				= NoCompression;
+	Texture->CompressionNoAlpha				= NoAlpha;
+	Texture->DeferCompression				= bDeferCompression;
+	Texture->bDoScaleMipsForAlphaCoverage	= bDoScaleMipsForAlphaCoverage;
+	Texture->AlphaCoverageThresholds		= AlphaCoverageThresholds;
+	Texture->bUseNewMipFilter				= bUseNewMipFilter;
+
 	if(Texture->MipGenSettings == TMGS_FromTextureGroup)
 	{
 		// unless the loader suggest a different setting
@@ -4358,36 +4120,88 @@ UObject* UTextureFactory::FactoryCreateBinary
 	
 	Texture->bPreserveBorder		= bPreserveBorder;
 
-	UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
-
-	if (Texture2D)
+	if ( ! Texture->Source.IsPowerOfTwo() )
 	{
-		// If the texture is larger than a certain threshold make it VT.
-		// Note that previously for re-imports we still checked size and potentially changed the VT status.
-		// But that was unintuitive for many users so now for re-imports we will end up ignoring this and respecting the existing setting below.
-		static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures"));
-		check(CVarVirtualTexturesEnabled);
-		static const auto CVarVirtualTexturesAutoImportEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VT.EnableAutoImport"));
-		check(CVarVirtualTexturesAutoImportEnabled);
+		// try to set some better default options for non-pow2 textures
 
-		if (CVarVirtualTexturesEnabled->GetValueOnAnyThread() && CVarVirtualTexturesAutoImportEnabled->GetValueOnAnyThread())
+		// if Texture is not pow2 , change to TMGS_NoMipMaps (if it was default)
+		//   this used to be done by Texture2d.cpp ; it is now optional
+		//	 you can set it back to having mips if you want
+		if ( Texture->MipGenSettings == TMGS_FromTextureGroup )
 		{
-			const int32 VirtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
-			const int32 VirtualTextureAutoEnableThresholdPixels = VirtualTextureAutoEnableThreshold * VirtualTextureAutoEnableThreshold;
-
-			// We do this in pixels so a 8192 x 128 texture won't get VT enabled 
-			// We use the Source size instead of simple Texture2D->GetSizeX() as this uses the size of the platform data
-			// however for a new texture platform data may not be generated yet, and for an reimport of a texture this is the size of the
-			// old texture. 
-			// Using source size gives one small caveat. It looks at the size before mipmap power of two padding adjustment.
-			// Textures with more than 1 block (UDIM textures) must be imported as VT
-			if (Texture->Source.GetNumBlocks() > 1 ||
-				Texture2D->Source.GetSizeX() * Texture2D->Source.GetSizeY() >= VirtualTextureAutoEnableThresholdPixels)
+			Texture->MipGenSettings = TMGS_NoMipmaps;		
+		}
+		
+		// if Texture is not multiple of 4, change TC to EditorIcon ("UserInterface2D")
+		//	if you do not do this, you might see "Texture forced to uncompressed because size is not a multiple of 4"
+		//  this needs to match the logic in Texture.cpp : GetDefaultTextureFormatName
+		int32 SizeX = Texture->Source.GetSizeX();
+		int32 SizeY = Texture->Source.GetSizeY();
+		if ( (SizeX&3) != 0 || (SizeY&3) != 0 )
+		{
+			if ( Texture->CompressionSettings == TC_Default ) // AutoDXT/BC1
 			{
-				Texture2D->VirtualTextureStreaming = true;
+				Texture->CompressionSettings = TC_EditorIcon; // "UserInterface2D"
 			}
 		}
 	}
+			
+	static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures"));
+	check(CVarVirtualTexturesEnabled);
+	
+	// If the texture is larger than a certain threshold make it VT.
+	// Note that previously for re-imports we still checked size and potentially changed the VT status.
+	// But that was unintuitive for many users so now for re-imports we will end up ignoring this and respecting the existing setting below.
+
+	static const auto CVarVirtualTexturesAutoImportEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VT.EnableAutoImport"));
+	check(CVarVirtualTexturesAutoImportEnabled);
+
+	if (CVarVirtualTexturesEnabled->GetValueOnAnyThread() && CVarVirtualTexturesAutoImportEnabled->GetValueOnAnyThread())
+	{
+		const int64 VirtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
+		const int64 VirtualTextureAutoEnableThresholdPixels = VirtualTextureAutoEnableThreshold * VirtualTextureAutoEnableThreshold;
+
+		// We do this in pixels so a 8192 x 128 texture won't get VT enabled 
+		// We use the Source size instead of simple Texture2D->GetSizeX() as this uses the size of the platform data
+		// however for a new texture platform data may not be generated yet, and for an reimport of a texture this is the size of the
+		// old texture. 
+		// Using source size gives one small caveat. It looks at the size before mipmap power of two padding adjustment.
+		// Textures with more than 1 block (UDIM textures) must be imported as VT
+		if (Texture->Source.GetNumBlocks() > 1 ||
+			( (int64) Texture->Source.GetSizeX() * Texture->Source.GetSizeY() ) >= VirtualTextureAutoEnableThresholdPixels ||
+			Texture->Source.GetSizeX() > UTexture::GetMaximumDimensionOfNonVT() ||
+			Texture->Source.GetSizeY() > UTexture::GetMaximumDimensionOfNonVT() )
+		{
+			// only UTexture2D can be VT
+			if ( Texture->GetTextureClass() == ETextureClass::TwoD )
+			{
+				Texture->VirtualTextureStreaming = true;
+			}
+			else
+			{
+				UE_LOG(LogEditorFactories, Warning, TEXT("Texture is too large for non-VT (%d x %d) but is not a UTexture2D."),
+					Texture->Source.GetSizeX() , Texture->Source.GetSizeY());
+			}
+		}
+	}
+
+	// if Texture is too large and should be VT but VT is not enabled, warn about that	
+	if ( ! CVarVirtualTexturesEnabled->GetValueOnAnyThread() )
+	{
+		int32 MaxDimension = FMath::Max( Texture->Source.GetSizeX() , Texture->Source.GetSizeY() );
+		bool bLargeTextureMustBeVT = MaxDimension > UTexture::GetMaximumDimensionOfNonVT();
+		if ( bLargeTextureMustBeVT )
+		{
+			UE_LOG(LogEditorFactories, Warning, TEXT("Texture is too large for non-VT (%d x %d) but VT is not enabled in this project."),
+				Texture->Source.GetSizeX() , Texture->Source.GetSizeY());
+		}
+		else if ( Texture->Source.GetNumBlocks() > 1 )
+		{
+			UE_LOG(LogEditorFactories, Warning, TEXT("Texture has blocks which requires VT but VT is not enabled in this project."));
+		}
+	}
+
+	UTexture2D * Texture2D = Cast<UTexture2D>(Texture);
 
 	// Restore user set options
 	if (ExistingTexture && bUsingExistingSettings)
@@ -4409,9 +4223,9 @@ UObject* UTextureFactory::FactoryCreateBinary
 		Texture->CompressionNone = ExistingNoCompression;
 		Texture->CompressionNoAlpha = ExistingNoAlpha;
 		Texture->DeferCompression = ExistingDeferCompression;
-		Texture->bDitherMipMapAlpha = ExistingDitherMipMapAlpha;
 		Texture->bDoScaleMipsForAlphaCoverage = ExistingbDoScaleMipsForAlphaCoverage;
 		Texture->AlphaCoverageThresholds = ExistingAlphaCoverageThresholds;
+		Texture->bUseNewMipFilter = ExistingbUseNewMipFilter;
 		Texture->bFlipGreenChannel = ExistingFlipGreenChannel;
 		Texture->AdjustBrightness = ExistingAdjustBrightness;
 		Texture->AdjustBrightnessCurve = ExistingAdjustBrightnessCurve;
@@ -4437,6 +4251,8 @@ UObject* UTextureFactory::FactoryCreateBinary
 	{
 		if (UE::NormalMapIdentification::HandleAssetPostImport(Texture))
 		{
+			UE_LOG(LogEditorFactories,Display,TEXT("Auto-detected normal map"));
+
 			Texture->bFlipGreenChannel = bFlipNormalMapGreenChannel;
 		}
 	}
@@ -4450,12 +4266,14 @@ UObject* UTextureFactory::FactoryCreateBinary
 
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, Texture);
 
+	// PostEditChange calls ValidateSettingsAfterImportOrEdit();
+
 	// Invalidate any materials using the newly imported texture. (occurs if you import over an existing texture)
 	Texture->PostEditChange();
 
-	// Invalidate any volume texture that was built on this texture.
 	if (Texture2D)
 	{
+		// Invalidate any volume texture that was built on this texture.
 		for (TObjectIterator<UVolumeTexture> It; It; ++It)
 		{
 			UVolumeTexture* VolumeTexture = *It;
@@ -4465,11 +4283,8 @@ UObject* UTextureFactory::FactoryCreateBinary
 				VolumeTexture->UpdateResource();
 			}
 		}
-	}
 
-	// Invalidate any Texture2DArrays that use the updated texture.
-	if (Texture2D) 
-	{
+		// Invalidate any Texture2DArrays that use the updated texture.
 		for (TObjectIterator<UTexture2DArray> It; It; ++It) 
 		{
 			UTexture2DArray* TextureArray = *It;
@@ -4481,6 +4296,28 @@ UObject* UTextureFactory::FactoryCreateBinary
 					{
 						// Update the entire texture array.
 						TextureArray->UpdateSourceFromSourceTextures(false);
+						// UpdateSourceFromSourceTextures calls UpdateResource
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	{
+		// Invalidate any TextureCubeArrays that use the updated texture.
+		for (TObjectIterator<UTextureCubeArray> It; It; ++It) 
+		{
+			UTextureCubeArray* TextureArray = *It;
+			if (TextureArray) 
+			{
+				for (int32 SourceIndex = 0; SourceIndex < TextureArray->SourceTextures.Num(); ++SourceIndex) 
+				{
+					if (TextureArray->SourceTextures[SourceIndex] == Texture) 
+					{
+						// Update the entire texture array.
+						TextureArray->UpdateSourceFromSourceTextures(false);
+						// UpdateSourceFromSourceTextures calls UpdateResource
 						break;
 					}
 				}
@@ -4504,9 +4341,11 @@ UObject* UTextureFactory::FactoryCreateBinary
 		// Notify the asset registry
 		FAssetRegistryModule::AssetCreated(Material);
 
+		UMaterialEditorOnlyData* MaterialEditorOnly = Material->GetEditorOnlyData();
+
 		// Create a texture reference for the texture we just imported and hook it up to the diffuse channel
 		UMaterialExpression* Expression = NewObject<UMaterialExpression>(Material, UMaterialExpressionTextureSample::StaticClass());
-		Material->Expressions.Add( Expression );
+		Material->GetExpressionCollection().AddExpression( Expression );
 		TArray<FExpressionOutput> Outputs;
 
 		// If the user hasn't turned on any of the link checkboxes, default "bRGBToBaseColor" to being on.
@@ -4518,86 +4357,86 @@ UObject* UTextureFactory::FactoryCreateBinary
 		// Set up the links the user asked for
 		if( bRGBToBaseColor )
 		{
-			Material->BaseColor.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->BaseColor.Expression)->Texture = Texture;
+			MaterialEditorOnly->BaseColor.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->BaseColor.Expression)->Texture = Texture;
 
-			Outputs = Material->BaseColor.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->BaseColor.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->BaseColor.Mask = Output->Mask;
-			Material->BaseColor.MaskR = Output->MaskR;
-			Material->BaseColor.MaskG = Output->MaskG;
-			Material->BaseColor.MaskB = Output->MaskB;
-			Material->BaseColor.MaskA = Output->MaskA;
+			MaterialEditorOnly->BaseColor.Mask = Output->Mask;
+			MaterialEditorOnly->BaseColor.MaskR = Output->MaskR;
+			MaterialEditorOnly->BaseColor.MaskG = Output->MaskG;
+			MaterialEditorOnly->BaseColor.MaskB = Output->MaskB;
+			MaterialEditorOnly->BaseColor.MaskA = Output->MaskA;
 		}
 
 		if( bRGBToEmissive )
 		{
-			Material->EmissiveColor.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->EmissiveColor.Expression)->Texture = Texture;
+			MaterialEditorOnly->EmissiveColor.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->EmissiveColor.Expression)->Texture = Texture;
 
-			Outputs = Material->EmissiveColor.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->EmissiveColor.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->EmissiveColor.Mask = Output->Mask;
-			Material->EmissiveColor.MaskR = Output->MaskR;
-			Material->EmissiveColor.MaskG = Output->MaskG;
-			Material->EmissiveColor.MaskB = Output->MaskB;
-			Material->EmissiveColor.MaskA = Output->MaskA;
+			MaterialEditorOnly->EmissiveColor.Mask = Output->Mask;
+			MaterialEditorOnly->EmissiveColor.MaskR = Output->MaskR;
+			MaterialEditorOnly->EmissiveColor.MaskG = Output->MaskG;
+			MaterialEditorOnly->EmissiveColor.MaskB = Output->MaskB;
+			MaterialEditorOnly->EmissiveColor.MaskA = Output->MaskA;
 		}
 
 		if( bAlphaToRoughness )
 		{
-			Material->Roughness.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->Roughness.Expression)->Texture = Texture;
+			MaterialEditorOnly->Roughness.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->Roughness.Expression)->Texture = Texture;
 
-			Outputs = Material->Roughness.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->Roughness.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->Roughness.Mask = Output->Mask;
-			Material->Roughness.MaskR = 0;
-			Material->Roughness.MaskG = 0;
-			Material->Roughness.MaskB = 0;
-			Material->Roughness.MaskA = 1;
+			MaterialEditorOnly->Roughness.Mask = Output->Mask;
+			MaterialEditorOnly->Roughness.MaskR = 0;
+			MaterialEditorOnly->Roughness.MaskG = 0;
+			MaterialEditorOnly->Roughness.MaskB = 0;
+			MaterialEditorOnly->Roughness.MaskA = 1;
 		}
 
 		if( bAlphaToEmissive )
 		{
-			Material->EmissiveColor.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->EmissiveColor.Expression)->Texture = Texture;
+			MaterialEditorOnly->EmissiveColor.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->EmissiveColor.Expression)->Texture = Texture;
 
-			Outputs = Material->EmissiveColor.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->EmissiveColor.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->EmissiveColor.Mask = Output->Mask;
-			Material->EmissiveColor.MaskR = 0;
-			Material->EmissiveColor.MaskG = 0;
-			Material->EmissiveColor.MaskB = 0;
-			Material->EmissiveColor.MaskA = 1;
+			MaterialEditorOnly->EmissiveColor.Mask = Output->Mask;
+			MaterialEditorOnly->EmissiveColor.MaskR = 0;
+			MaterialEditorOnly->EmissiveColor.MaskG = 0;
+			MaterialEditorOnly->EmissiveColor.MaskB = 0;
+			MaterialEditorOnly->EmissiveColor.MaskA = 1;
 		}
 
 		if( bAlphaToOpacity )
 		{
-			Material->Opacity.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->Opacity.Expression)->Texture = Texture;
+			MaterialEditorOnly->Opacity.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->Opacity.Expression)->Texture = Texture;
 
-			Outputs = Material->Opacity.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->Opacity.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->Opacity.Mask = Output->Mask;
-			Material->Opacity.MaskR = 0;
-			Material->Opacity.MaskG = 0;
-			Material->Opacity.MaskB = 0;
-			Material->Opacity.MaskA = 1;
+			MaterialEditorOnly->Opacity.Mask = Output->Mask;
+			MaterialEditorOnly->Opacity.MaskR = 0;
+			MaterialEditorOnly->Opacity.MaskG = 0;
+			MaterialEditorOnly->Opacity.MaskB = 0;
+			MaterialEditorOnly->Opacity.MaskA = 1;
 		}
 
 		if( bAlphaToOpacityMask )
 		{
-			Material->OpacityMask.Expression = Expression;
-			((UMaterialExpressionTextureSample*)Material->OpacityMask.Expression)->Texture = Texture;
+			MaterialEditorOnly->OpacityMask.Expression = Expression;
+			((UMaterialExpressionTextureSample*)MaterialEditorOnly->OpacityMask.Expression)->Texture = Texture;
 
-			Outputs = Material->OpacityMask.Expression->GetOutputs();
+			Outputs = MaterialEditorOnly->OpacityMask.Expression->GetOutputs();
 			FExpressionOutput* Output = Outputs.GetData();
-			Material->OpacityMask.Mask = Output->Mask;
-			Material->OpacityMask.MaskR = 0;
-			Material->OpacityMask.MaskG = 0;
-			Material->OpacityMask.MaskB = 0;
-			Material->OpacityMask.MaskA = 1;
+			MaterialEditorOnly->OpacityMask.Mask = Output->Mask;
+			MaterialEditorOnly->OpacityMask.MaskR = 0;
+			MaterialEditorOnly->OpacityMask.MaskG = 0;
+			MaterialEditorOnly->OpacityMask.MaskB = 0;
+			MaterialEditorOnly->OpacityMask.MaskA = 1;
 		}
 
 		Material->TwoSided	= bTwoSided;
@@ -4617,47 +4456,87 @@ void UTextureFactory::ApplyAutoImportSettings(UTexture* Texture)
 	}
 }
 
-bool UTextureFactory::IsImportResolutionValid(int32 Width, int32 Height, bool bAllowNonPowerOfTwo, FFeedbackContext* Warn)
+bool UTextureFactory::IsImportResolutionValid(int64 Width, int64 Height, bool bAllowNonPowerOfTwo, FFeedbackContext* Warn)
 {
 	static const auto CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures")); check(CVarVirtualTexturesEnabled);
 
-	// In theory this value could be much higher, but various UE image code currently uses 32bit size/offset values
-	const int32 MaximumSupportedVirtualTextureResolution = 16 * 1024;
+	// VT res is currently limited by pixel count fitting in int32
+	const int64 MaximumSupportedVirtualTextureResolution = 32768;
+	
+	// Get the non-VT size limit :
+	int64 MaximumSupportedResolutionNonVT = (int64)UTexture::GetMaximumDimensionOfNonVT();
+	
+	// limit on current rendering RHI : == GetMax2DTextureDimension()
+	const int64 CurrentRHIMaxResolution = int64(1)<<(GMaxTextureMipCount-1);
 
-	// Calculate the maximum supported resolution utilizing the global max texture mip count
-	// (Note, have to subtract 1 because 1x1 is a valid mip-size; this means a GMaxTextureMipCount of 4 means a max resolution of 8x8, not 2^4 = 16x16)
-	const int32 MaximumSupportedResolution = CVarVirtualTexturesEnabled->GetValueOnAnyThread() ? MaximumSupportedVirtualTextureResolution : (1 << (GMaxTextureMipCount - 1));
+	// MaximumSupportedResolutionNonVT is only a popup/warning , not a hard limit
+	MaximumSupportedResolutionNonVT = FMath::Min(MaximumSupportedResolutionNonVT,CurrentRHIMaxResolution);
 
-	bool bValid = true;
-
-	// Check if the texture is above the supported resolution and prompt the user if they wish to continue if it is
-	if ( Width > MaximumSupportedResolution || Height > MaximumSupportedResolution )
+	// No zero-size textures :
+	if (Width == 0 || Height == 0 )
 	{
-		if (Width * Height < 0)
+		Warn->Log(ELogVerbosity::Error, *FText::Format(
+			NSLOCTEXT("UnrealEd", "Warning_TextureSizeZero", "Texture has zero width or height"),
+			FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+			).ToString());
+
+		return false;
+	}
+
+	// Dimensions must fit in signed int32
+	//  could be negative here if it was over 2G and int32 was used earlier
+	if (Width < 0 || Height < 0 || Width > MAX_int32 || Height > MAX_int32)
+	{
+		Warn->Log(ELogVerbosity::Error, *FText::Format(
+			NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximum is {0} pixels"),
+			FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+			).ToString());
+
+		return false;
+	}
+
+	// pixel count must fit in int32 :
+	//  mip surface could still be larger than 2 GB, that's allowed
+	//	eg. 16k RGBA float = 4 GB
+	if ( Width * Height > MAX_int32)
+	{
+		Warn->Log(ELogVerbosity::Error, *FText::Format(
+			NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximum is {0} pixels"),
+			FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+			).ToString());
+
+		return false;
+	}
+	
+	if ( (Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
+	{
+		Warn->Log(ELogVerbosity::Error, *FText::Format(
+			NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximum is {0} pixels"),
+			FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
+			).ToString());
+
+		return false;
+	}
+
+	if ( Width > MaximumSupportedResolutionNonVT || Height > MaximumSupportedResolutionNonVT )
+	{
+
+		// we're larger than MaximumSupportedResolution
+		// but not larger than MaximumSupportedVirtualTextureResolution
+		// so this texture can still work, but only as VT
+		// prompt about this :
+
+		// check if VT is allowed & show extra message if not :
+
+		check(CVarVirtualTexturesEnabled != nullptr );
+		const FText VTMessage = CVarVirtualTexturesEnabled->GetValueOnAnyThread() ? FText() :
+			NSLOCTEXT("UnrealEd","Warning_LargeTextureVTDisabled", "\nWarning: Virtual Textures are disabled in this project.");
+
+		if ( EAppReturnType::Yes != FMessageDialog::Open( EAppMsgType::YesNo, EAppReturnType::Yes, FText::Format(
+				NSLOCTEXT("UnrealEd", "Warning_LargeTextureImport", "Attempting to import {0} x {1} texture, proceed?\nLargest supported non-VT texture size: {2} x {3}{4}"),
+				FText::AsNumber(Width), FText::AsNumber(Height), FText::AsNumber(MaximumSupportedResolutionNonVT), FText::AsNumber(MaximumSupportedResolutionNonVT), VTMessage) ) )
 		{
-			Warn->Log(ELogVerbosity::Error, *FText::Format(
-				NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLargeOrInvalid", "Texture is too large to import or it has an invalid resolution. The current maximun is {0} pixels"),
-				FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
-				).ToString());
-
-			bValid = false;
-		}
-
-		if ( bValid && (Width * Height) > FMath::Square(MaximumSupportedVirtualTextureResolution))
-		{
-			Warn->Log(ELogVerbosity::Error, *FText::Format(
-				NSLOCTEXT("UnrealEd", "Warning_TextureSizeTooLarge", "Texture is too large to import. The current maximun is {0} pixels"),
-				FText::AsNumber(FMath::Square(MaximumSupportedVirtualTextureResolution))
-				).ToString());
-
-			bValid = false;
-		}
-
-		if ( bValid && EAppReturnType::Yes != FMessageDialog::Open( EAppMsgType::YesNo, FText::Format(
-				NSLOCTEXT("UnrealEd", "Warning_LargeTextureImport", "Attempting to import {0} x {1} texture, proceed?\nLargest supported texture size: {2} x {3}"),
-				FText::AsNumber(Width), FText::AsNumber(Height), FText::AsNumber(MaximumSupportedResolution), FText::AsNumber(MaximumSupportedResolution)) ) )
-		{
-			bValid = false;
+			return false;
 		}
 	}
 
@@ -4666,10 +4545,10 @@ bool UTextureFactory::IsImportResolutionValid(int32 Width, int32 Height, bool bA
 	if ( !bAllowNonPowerOfTwo && !bIsPowerOfTwo )
 	{
 		Warn->Log(ELogVerbosity::Error, *NSLOCTEXT("UnrealEd", "Warning_TextureNotAPowerOfTwo", "Cannot import texture with non-power of two dimensions").ToString() );
-		bValid = false;
+		return false;
 	}
 	
-	return bValid;
+	return true;
 }
 
 IImportSettingsParser* UTextureFactory::GetImportSettingsParser()
@@ -4769,198 +4648,452 @@ bool UTextureExporterPCX::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 	return true;
 }
 
+
 /*------------------------------------------------------------------------------
-	UTextureExporterBMP implementation.
+	UTextureExporterDDS implementation.
+
 ------------------------------------------------------------------------------*/
-UTextureExporterBMP::UTextureExporterBMP(const FObjectInitializer& ObjectInitializer)
+
+UTextureExporterDDS::UTextureExporterDDS(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	// note UTexture not UTexture2D , picks up cube etc.
+	SupportedClass = UTexture::StaticClass();
+	PreferredFormatIndex = 0;
+	FormatExtension.Add(TEXT("DDS"));
+	FormatDescription.Add(TEXT("DDS DirectDraw Surface"));
+}
+
+bool UTextureExporterDDS::SupportsObject(UObject* Object) const
+{
+	// don't call Super (UTextureExporterGeneric), skip to UExporter
+	// this checks we are "SupportedClass"
+	if ( ! UExporter::SupportsObject(Object) )
+	{
+		return false;
+	}
+
+	UTexture * Texture = GetExportTexture( Object );
+	if ( Texture == nullptr )
+	{
+		return false;
+	}
+	
+	if ( !Texture->Source.IsValid() )
+	{
+		return false;
+	}
+
+	if ( Texture->Source.GetFormat() == TSF_BGRE8 )
+	{
+		// exclude BGRE export from DDS, use HDR files if possible
+		if ( Texture->Source.GetNumSlices() == 1 )
+		{
+			// HDR can handle it, say I won't
+			return false;
+		}
+		// BGRE format, but something HDR can't handle, so I'll do it...
+	}
+	
+	return true;
+}
+
+bool UTextureExporterDDS::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
+{
+	UTexture * Texture = GetExportTexture( Object );
+	check( Texture != nullptr );
+	
+	// FileIndex for layers for VT :
+	
+	int NumBlocks = Texture->Source.GetNumBlocks();
+	int NumLayers = Texture->Source.GetNumLayers();
+
+	int NumFiles = NumBlocks * NumLayers;
+	check( FileIndex < NumFiles );
+	int BlockIndex = FileIndex / NumLayers;
+	int LayerIndex = FileIndex % NumLayers; 
+
+	UE_LOG(LogEditorFactories, Display, TEXT("Exporting DDS from Layer %d/%d Block %d/%d"), LayerIndex,NumLayers, BlockIndex,NumBlocks);
+
+	// Type == Image extension
+	
+	TArray64<uint8> OutArray;
+	if ( ! FImageUtils::ExportTextureSourceToDDS(OutArray,Texture,BlockIndex,LayerIndex) )
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("ExportTextureSourceToDDS failed"));
+		return false;
+	}
+
+	Ar.Serialize(OutArray.GetData(),OutArray.Num());
+
+	return true;
+}
+
+UVirtualTextureBuilderExporterDDS::UVirtualTextureBuilderExporterDDS(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterDDS(ObjectInitializer)
+{
+	SupportedClass = UVirtualTextureBuilder::StaticClass();
+}
+
+/*------------------------------------------------------------------------------
+	UTextureExporterGeneric implementation.
+
+	UTextureExporterGeneric base class for all standard 2d texture exporters
+------------------------------------------------------------------------------*/
+
+static bool ExportTextureSourceGeneric( UObject* Object,FArchive& Ar, const TCHAR * ImageFormat, FFeedbackContext* Warn, int FileIndex=0)
+{
+	// supports export of the source texture for Texture2D and TextureCube generated from long-lat image
+	if (!Object->IsA(UTexture2D::StaticClass()) && !(Object->IsA(UTextureCube::StaticClass()) && Cast<UTextureCube>(Object)->Source.IsLongLatCubemap()))
+	{
+		return false;
+	}
+	UTexture* Texture = CastChecked<UTexture>( Object );
+	if ( Texture == nullptr )
+	{
+		return false;
+	}
+
+	if ( !Texture->Source.IsValid() )
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("ExportTexture failed : source not valid"));
+		return false;
+	}
+	
+	int NumBlocks = Texture->Source.GetNumBlocks();
+	int NumLayers = Texture->Source.GetNumLayers();
+
+	int NumFiles = NumBlocks * NumLayers;
+	check( FileIndex < NumFiles );
+	int BlockIndex = FileIndex / NumLayers;
+	int LayerIndex = FileIndex % NumLayers; 
+
+	UE_LOG(LogEditorFactories, Display, TEXT("Exporting Texture as %s Layer %d/%d Block %d/%d"), ImageFormat, LayerIndex,NumLayers, BlockIndex,NumBlocks);
+
+	FImage Image;
+	if ( ! Texture->Source.GetMipImage(Image,BlockIndex,LayerIndex,0) )
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("ExportTexture failed : could not GetMipImage"));
+		return false;
+	}
+	
+	TArray64<uint8> OutArray;
+	if ( ! FImageUtils::CompressImage(OutArray,ImageFormat,Image) )
+	{
+		Warn->Logf(ELogVerbosity::Error, TEXT("ExportTexture failed : could not CompressImage to format %s"),ImageFormat);
+		return false;
+	}
+
+	Ar.Serialize(OutArray.GetData(),OutArray.Num());
+
+	return true;
+}
+
+UTextureExporterGeneric::UTextureExporterGeneric(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	SupportedClass = UTexture2D::StaticClass();
 	PreferredFormatIndex = 0;
-	FormatExtension.Add(TEXT("BMP"));
-	FormatDescription.Add(TEXT("Windows Bitmap"));
-
 }
 
-UTexture2D* UTextureExporterBMP::GetExportTexture(UObject* Object) const
+UTexture* UTextureExporterGeneric::GetExportTexture(UObject* Object) const
 {
+	// for UVirtualTextureBuilderExporter
 	UVirtualTextureBuilder* VirtualTextureBuilder = Cast<UVirtualTextureBuilder>(Object);
 	if (VirtualTextureBuilder != nullptr)
 	{
 		return VirtualTextureBuilder->Texture;
 	}
-	return Cast<UTexture2D>(Object);
+	return Cast<UTexture>(Object);
 }
 
-bool UTextureExporterBMP::SupportsObject(UObject* Object) const
+// note that UTextureExporterGeneric will actually be registered as an exporter itself
+// but will return false for SupportsObject because it has SupportsTexture == false
+
+bool UTextureExporterGeneric::SupportsObject(UObject* Object) const
 {
 	bool bSupportsObject = false;
 	if (Super::SupportsObject(Object))
 	{
-		UTexture2D* Texture = GetExportTexture(Object);
-		bSupportsObject = Texture != nullptr && (Texture->Source.GetFormat() == TSF_BGRA8 || Texture->Source.GetFormat() == TSF_RGBA16 || Texture->Source.GetFormat() == TSF_G8 || Texture->Source.GetFormat() == TSF_G16);
-	}
-	return bSupportsObject;
-}
-
-int32 UTextureExporterBMP::GetFileCount(UObject* Object) const
-{
-	UTexture2D* Texture = GetExportTexture(Object);
-	return (Texture != nullptr) ? Texture->Source.GetNumLayers() : 1;
-}
-
-FString UTextureExporterBMP::GetUniqueFilename(const TCHAR* Filename, int32 FileIndex, int32 FileCount)
-{
-	return (FileCount == 1) ? Filename : FString::Printf(TEXT("%s%d%s"), *FPaths::GetBaseFilename(Filename, false), FileIndex, *FPaths::GetExtension(Filename, true));
-}
-
-bool UTextureExporterBMP::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
-{
-	UTexture2D* Texture = GetExportTexture(Object);
-	if(Texture == nullptr)
-	{
-		return false;
-	}
-
-	const int32 LayerIndex = FileIndex;
-	ETextureSourceFormat Format = Texture->Source.IsValid() ? Texture->Source.GetFormat(LayerIndex) : TSF_Invalid;
-	if (Format != TSF_BGRA8 && Format != TSF_RGBA16 && Format != TSF_G16 && Format != TSF_G8)
-	{
-		return false;
-	}
-
-	const bool bIsRGBA16 = Format == TSF_RGBA16;
-	const bool bIsG16 = Format == TSF_G16;
-	const bool bIsG8 = Format == TSF_G8;
-	const int32 SourceBytesPerPixel = bIsRGBA16 ? 8 : (bIsG16 ? 2 : (bIsG8 ? 1 : 4));
-
-	if (bIsRGBA16)
-	{
-		FMessageLog ExportWarning("EditorErrors");
-		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("Name"), FText::FromString(Texture->GetName()));
-		ExportWarning.Warning(FText::Format(LOCTEXT("BitDepthBMPWarning", "{Name}: Texture is RGBA16 and cannot be represented at such high bit depth in .bmp. Color will be scaled to RGBA8."), Arguments));
-		ExportWarning.Open(EMessageSeverity::Warning);
-	}
-
-	if (bIsG16)
-	{
-		FMessageLog ExportWarning("EditorErrors");
-		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("Name"), FText::FromString(Texture->GetName()));
-		ExportWarning.Warning(FText::Format(LOCTEXT("BitDepthBMPWarningG16", "{Name}: Texture is G16 and cannot be represented at such high bit depth in .bmp. Color will be split across two channels of RGBA8."), Arguments));
-		ExportWarning.Open(EMessageSeverity::Warning);
-	}
-
-	int32 SizeX = Texture->Source.GetSizeX();
-	int32 SizeY = Texture->Source.GetSizeY();
-	TArray64<uint8> RawData;
-	Texture->Source.GetMipData(RawData, 0, LayerIndex, 0);
-
-	FBitmapFileHeader bmf;
-	FBitmapInfoHeader bmhdr;
-
-	// File header.
-	bmf.bfType      = 'B' + (256*(int32)'M');
-	bmf.bfReserved1 = 0;
-	bmf.bfReserved2 = 0;
-	int32 biSizeImage = SizeX * SizeY * 3;
-	bmf.bfOffBits   = sizeof(FBitmapFileHeader) + sizeof(FBitmapInfoHeader);
-	bmhdr.biBitCount = 24;
-
-	bmf.bfSize		= bmf.bfOffBits + biSizeImage;
-	Ar << bmf;
-
-	// Info header.
-	bmhdr.biSize          = sizeof(FBitmapInfoHeader);
-	bmhdr.biWidth         = SizeX;
-	bmhdr.biHeight        = SizeY;
-	bmhdr.biPlanes        = 1;
-	bmhdr.biCompression   = BCBI_RGB;
-	bmhdr.biSizeImage     = biSizeImage;
-	bmhdr.biXPelsPerMeter = 0;
-	bmhdr.biYPelsPerMeter = 0;
-	bmhdr.biClrUsed       = 0;
-	bmhdr.biClrImportant  = 0;
-	Ar << bmhdr;
-
-
-	// Upside-down scanlines.
-	for( int32 i=SizeY-1; i>=0; i-- )
-	{
-		uint8* ScreenPtr = &RawData[i*SizeX*SourceBytesPerPixel];
-		for( int32 j=SizeX; j>0; j-- )
+		UTexture* Texture = GetExportTexture(Object);
+		// only Texture2D's for generic :
+		UTexture2D * Texture2D = Cast<UTexture2D>(Texture);
+		if ( Texture2D != nullptr )
 		{
-			if (bIsRGBA16)
+			if ( ! Texture->Source.IsValid() )
 			{
-				Ar << ScreenPtr[1];
-				Ar << ScreenPtr[3];
-				Ar << ScreenPtr[5];
-				ScreenPtr += 8;
+				// should not get here
+				check(0);
+				return false;
 			}
-			if (bIsG16)
-			{
-				uint8 DummyZero = 0;
-				Ar << DummyZero;
-				Ar << ScreenPtr[0];
-				Ar << ScreenPtr[1];
-				ScreenPtr += 2;
-			}
-			else if (bIsG8)
-			{
-				Ar << ScreenPtr[0];
-				Ar << ScreenPtr[0];
-				Ar << ScreenPtr[0];
-				ScreenPtr += 1;
-			}
-			else
-			{
-				Ar << ScreenPtr[0];
-				Ar << ScreenPtr[1];
-				Ar << ScreenPtr[2];
-				ScreenPtr += 4;
-			}
+
+			return SupportsTexture(Texture);
 		}
 	}
-	return true;
+	return false;
 }
 
-UVirtualTextureBuilderExporterBMP::UVirtualTextureBuilderExporterBMP(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
+int32 UTextureExporterGeneric::GetFileCount(UObject* Object) const
 {
-	SupportedClass = UVirtualTextureBuilder::StaticClass();
-	PreferredFormatIndex = 0;
+	UTexture* Texture = GetExportTexture(Object);
+	check(Texture != nullptr);
+
+	// standard textures will have NumBlocks == NumLayers == 1
+	// VT can have them > 1
+	// UDIM gives you NumBlocks
+	int NumBlocks = Texture->Source.GetNumBlocks();
+	int NumLayers = Texture->Source.GetNumLayers();
+	int FileCount = NumBlocks * NumLayers;
+	check( FileCount > 0 );
+	return FileCount;
+}
+
+FString UTextureExporterGeneric::GetUniqueFilename( UObject* Object, const TCHAR* Filename, int32 FileIndex, int32 FileCount ) const
+{
+	check( FileCount > 0 );
+	if ( FileCount == 1 )
+	{
+		// standard single texture
+		return Filename;
+	}
+	else
+	{
+		//	for VT with layers/blocks
+
+		UTexture* Texture = GetExportTexture(Object);
+		check( Texture != nullptr );
+		
+		int NumBlocks = Texture->Source.GetNumBlocks();
+		int NumLayers = Texture->Source.GetNumLayers();
+		check( FileCount == NumBlocks * NumLayers );
+		
+		// this must match ExportTexture2DGeneric :
+		int BlockIndex = FileIndex / NumLayers;
+		int LayerIndex = FileIndex % NumLayers; 
+		
+		// make a UDIM name like MyTexture.1001.png
+
+		FString OutName = FPaths::GetBaseFilename(Filename, false);
+		// if Filename already has a .1001 in it, remove it
+		OutName.RemoveFromEnd( FString(TEXT(".1001")) );
+
+		if ( NumLayers > 1 )
+		{
+			OutName += FString::Printf(TEXT(".L%d"), LayerIndex);
+		}
+
+		if ( NumBlocks > 1 )
+		{
+			FTextureSourceBlock Block;
+			Texture->Source.GetBlock(BlockIndex,Block);
+			int UDIMCoordinate = 1001 + Block.BlockX + Block.BlockY*10;
+			OutName += FString::Printf(TEXT(".%d"), UDIMCoordinate);
+		}
+
+		OutName += FPaths::GetExtension(Filename, true);
+
+		return OutName;
+	}
+}
+
+bool UTextureExporterGeneric::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
+{
+	UTexture* Texture = GetExportTexture(Object);
+	check( Texture != nullptr );
+		
+	UTexture2D * Texture2D = Cast<UTexture2D>(Texture);
+	check( Texture2D != nullptr );
+	check( SupportsTexture(Texture) );
+	
+	// FileIndex is for layers for VT
+	// Type == Image extension
+	return ExportTextureSourceGeneric(Texture2D,Ar,Type,Warn,FileIndex);
+}
+
+//===========================================================
+// formats derived from UTextureExporterGeneric
+// just need to add their FormatExtension
+// and implement SupportsTexture
+
+UTextureExporterBMP::UTextureExporterBMP(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterGeneric(ObjectInitializer)
+{
 	FormatExtension.Add(TEXT("BMP"));
 	FormatDescription.Add(TEXT("Windows Bitmap"));
 }
+
+bool UTextureExporterBMP::SupportsTexture(UTexture* Texture) const
+{
+	// U8 formats only :
+	return Texture->Source.GetFormat() == TSF_BGRA8 || Texture->Source.GetFormat() == TSF_G8;
+}
+
+UVirtualTextureBuilderExporterBMP::UVirtualTextureBuilderExporterBMP(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterBMP(ObjectInitializer)
+{
+	SupportedClass = UVirtualTextureBuilder::StaticClass();
+}
+
+//========================================================
+
+UTextureExporterHDR::UTextureExporterHDR(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterGeneric(ObjectInitializer)
+{
+	FormatExtension.Add(TEXT("HDR"));
+	FormatDescription.Add(TEXT("HDR Radiance RGBE texture"));
+}
+
+bool UTextureExporterHDR::SupportsTexture(UTexture* Texture) const
+{
+	// only BGRE is allowed to go out to HDR now (lossless)
+	bool bSupportsObject = Texture->Source.GetFormat() == TSF_BGRE8;
+	return bSupportsObject;
+}
+
+UVirtualTextureBuilderExporterHDR::UVirtualTextureBuilderExporterHDR(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterHDR(ObjectInitializer)
+{
+	SupportedClass = UVirtualTextureBuilder::StaticClass();
+}
+
+//========================================================
+
+UTextureExporterPNG::UTextureExporterPNG(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterGeneric(ObjectInitializer)
+{
+	FormatExtension.Add(TEXT("PNG"));
+	FormatDescription.Add(TEXT("PNG"));
+}
+
+bool UTextureExporterPNG::SupportsTexture(UTexture* Texture) const
+{
+	ETextureSourceFormat TSF = Texture->Source.GetFormat();
+	ERawImageFormat::Type RawFormat = FImageCoreUtils::ConvertToRawImageFormat(TSF);
+	// supports all non-HDR formats :
+	return ! ERawImageFormat::IsHDR(RawFormat);
+}
+
+UVirtualTextureBuilderExporterPNG::UVirtualTextureBuilderExporterPNG(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterPNG(ObjectInitializer)
+{
+	SupportedClass = UVirtualTextureBuilder::StaticClass();
+}
+
+//========================================================
+
+UTextureExporterEXR::UTextureExporterEXR(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterGeneric(ObjectInitializer)
+{
+	FormatExtension.Add(TEXT("EXR"));
+	FormatDescription.Add(TEXT("EXR HDR float texture"));
+}
+
+bool UTextureExporterEXR::SupportsTexture(UTexture* Texture) const
+{
+	ETextureSourceFormat TSF = Texture->Source.GetFormat();
+	ERawImageFormat::Type RawFormat = FImageCoreUtils::ConvertToRawImageFormat(TSF);
+	// supports all HDR formats :
+	return ERawImageFormat::IsHDR(RawFormat);
+}
+
+UVirtualTextureBuilderExporterEXR::UVirtualTextureBuilderExporterEXR(const FObjectInitializer& ObjectInitializer)
+	: UTextureExporterEXR(ObjectInitializer)
+{
+	SupportedClass = UVirtualTextureBuilder::StaticClass();
+}
+
 
 /*------------------------------------------------------------------------------
 	URenderTargetExporterHDR implementation.
 	Exports render targets.
 ------------------------------------------------------------------------------*/
-URenderTargetExporterHDR::URenderTargetExporterHDR(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-	SupportedClass = UTextureRenderTarget::StaticClass();
-	PreferredFormatIndex = 0;
-	FormatExtension.Add(TEXT("HDR"));
-	FormatDescription.Add(TEXT("HDR"));
-}
+// This is not for screenshots it's for "rendertarget" assets in levels
+//	when you do asset action export on them
 
-bool URenderTargetExporterHDR::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags)
+static bool ExportRenderTarget2DGeneric(UObject* Object, FArchive& Ar, const TCHAR * ImageExtension)
 {
 	UTextureRenderTarget2D* TexRT2D = Cast<UTextureRenderTarget2D>(Object);
-	UTextureRenderTargetCube* TexRTCube = Cast<UTextureRenderTargetCube>(Object);
 
-	if (TexRT2D != nullptr)
+	if (TexRT2D == nullptr)
 	{
-		return FImageUtils::ExportRenderTarget2DAsHDR(TexRT2D, Ar);
+		return false;
 	}
-	else if (TexRTCube != nullptr)
+	
+	FImage Image;
+	if ( ! FImageUtils::GetRenderTargetImage(TexRT2D,Image) )
 	{
-		return FImageUtils::ExportRenderTargetCubeAsHDR(TexRTCube, Ar);
+		return false;
+	}
+
+	TArray64<uint8> CompressedData;
+	if ( ! FImageUtils::CompressImage(CompressedData,ImageExtension,Image) )
+	{
+		return false;
+	}
+
+	Ar.Serialize((void*)CompressedData.GetData(), CompressedData.GetAllocatedSize());
+
+	return true;
+}
+
+URenderTargetExporterPNG::URenderTargetExporterPNG(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	SupportedClass = UTextureRenderTarget2D::StaticClass();
+	PreferredFormatIndex = 0;
+	FormatExtension.Add(TEXT("PNG"));
+	FormatDescription.Add(TEXT("PNG"));
+}
+
+bool URenderTargetExporterPNG::SupportsObject(UObject* Object) const
+{
+	if (Super::SupportsObject(Object))
+	{
+		UTextureRenderTarget2D* TexRT2D = Cast<UTextureRenderTarget2D>(Object);
+
+		if (TexRT2D)
+		{
+			EPixelFormat PixelFormat = TexRT2D->GetFormat();
+
+			return PixelFormat == PF_B8G8R8A8;
+		}
 	}
 	return false;
+}
+
+bool URenderTargetExporterPNG::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags)
+{
+	return ExportRenderTarget2DGeneric(Object,Ar,TEXT("PNG"));
+}
+
+URenderTargetExporterEXR::URenderTargetExporterEXR(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	SupportedClass = UTextureRenderTarget2D::StaticClass();
+	PreferredFormatIndex = 0;
+	FormatExtension.Add(TEXT("EXR"));
+	FormatDescription.Add(TEXT("EXR HDR float rendertarget"));
+}
+
+bool URenderTargetExporterEXR::SupportsObject(UObject* Object) const
+{
+	if (Super::SupportsObject(Object))
+	{
+		UTextureRenderTarget2D* TexRT2D = Cast<UTextureRenderTarget2D>(Object);
+
+		if (TexRT2D)
+		{
+			EPixelFormat PixelFormat = TexRT2D->GetFormat();
+
+			return PixelFormat == PF_FloatRGBA;
+		}
+	}
+	return false;
+}
+
+bool URenderTargetExporterEXR::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags)
+{
+	return ExportRenderTarget2DGeneric(Object,Ar,TEXT("EXR"));
 }
 
 /*------------------------------------------------------------------------------
@@ -4973,57 +5106,98 @@ UTextureCubeExporterHDR::UTextureCubeExporterHDR(const FObjectInitializer& Objec
 	SupportedClass = UTextureCube::StaticClass();
 	PreferredFormatIndex = 0;
 	FormatExtension.Add(TEXT("HDR"));
-	FormatDescription.Add(TEXT("HDR"));
+	FormatDescription.Add(TEXT("HDR cube LongLat"));
+	
+	// this is the only exporter registered for UTextureCube
+	// this does GenerateLongLatUnwrap
 }
 
 bool UTextureCubeExporterHDR::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags)
 {
 	UTextureCube* TexCube = Cast<UTextureCube>(Object);
+	// for URenderTargetCubeExporterHDR
+	UTextureRenderTargetCube* TexRTCube = Cast<UTextureRenderTargetCube>(Object);
 
 	if (TexCube != nullptr)
 	{
-		return FImageUtils::ExportTextureCubeAsHDR(TexCube, Ar);
+		if (TexCube->Source.IsLongLatCubemap() && TexCube->Source.GetFormat() == TSF_BGRE8)
+		{
+			// export the source HDR long-lat texture if available
+			return ExportTextureSourceGeneric(TexCube, Ar, Type, Warn, FileIndex);
+		}
+		else
+		{
+			// this does GenerateLongLatUnwrap
+			return FImageUtils::ExportTextureCubeAsHDR(TexCube, Ar);
+		}
 	}
+	else if (TexRTCube != nullptr)
+	{
+		// -> this can continue to use HDR for the longlat unwraps
+		// this does GenerateLongLatUnwrap
+		return FImageUtils::ExportRenderTargetCubeAsHDR(TexRTCube, Ar);
+	}
+
 	return false;
 }
 
-/*------------------------------------------------------------------------------
-	UTextureExporterHDR implementation.
-	Export UTexture2D as .HDR
-------------------------------------------------------------------------------*/
-UTextureExporterHDR::UTextureExporterHDR(const FObjectInitializer& ObjectInitializer)
+URenderTargetCubeExporterHDR::URenderTargetCubeExporterHDR(const FObjectInitializer& ObjectInitializer)
+	: UTextureCubeExporterHDR(ObjectInitializer)
+{
+	SupportedClass = UTextureRenderTargetCube::StaticClass();
+}
+
+UTextureExporterJPEG::UTextureExporterJPEG(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	SupportedClass = UTexture2D::StaticClass();
 	PreferredFormatIndex = 0;
-	FormatExtension.Add(TEXT("HDR"));
-	FormatDescription.Add(TEXT("HDR"));
+	FormatExtension.Add(TEXT("JPG"));
+	FormatDescription.Add(TEXT("JPEG original imported into uasset"));
 }
 
-bool UTextureExporterHDR::SupportsObject(UObject* Object) const
+bool UTextureExporterJPEG::SupportsObject(UObject* Object) const
 {
-	bool bSupportsObject = false;
 	if (Super::SupportsObject(Object))
 	{
 		UTexture2D* Texture = Cast<UTexture2D>(Object);
 
 		if (Texture)
 		{
-			bSupportsObject = Texture->Source.GetFormat() == TSF_BGRA8 || Texture->Source.GetFormat() == TSF_RGBA16F;
+			// we do NOT do lossy recompression
+
+			// Check it has JPEG BulkData :
+			if ( Texture->Source.GetSourceCompression() == TSCF_JPEG &&
+				Texture->Source.GetSizeOnDisk() > 0 )
+			{
+				ETextureSourceFormat TSF = Texture->Source.GetFormat();
+				ERawImageFormat::Type RawFormat = FImageCoreUtils::ConvertToRawImageFormat(TSF);
+				check( RawFormat == ERawImageFormat::G8 || RawFormat == ERawImageFormat::BGRA8 );
+
+				return true;
+			}
 		}
 	}
-	return bSupportsObject;
+	return false;
 }
 
-bool UTextureExporterHDR::ExportBinary(UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags)
+bool UTextureExporterJPEG::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
 {
 	UTexture2D* Texture = Cast<UTexture2D>(Object);
+	check( Texture != nullptr );
 
-	if (Texture != nullptr)
-	{
-		return FImageUtils::ExportTexture2DAsHDR(Texture, Ar);
-	}
-	return false;
+	check( Texture->Source.GetSourceCompression() == TSCF_JPEG &&
+			Texture->Source.GetSizeOnDisk() > 0 );
+
+	// just write the JPEG data we already have :
+	
+	UE_LOG(LogEditorFactories, Display, TEXT("Exporting Texture as JPEG stored bits (no lossy decompress or recompress)."));
+
+	Texture->Source.OperateOnLoadedBulkData( [&](const FSharedBuffer& BulkDataBuffer) {
+		Ar.Serialize( const_cast<void *>(BulkDataBuffer.GetData()), BulkDataBuffer.GetSize());
+	} );
+
+	return true;
 }
 
 /*------------------------------------------------------------------------------
@@ -5032,7 +5206,6 @@ bool UTextureExporterHDR::ExportBinary(UObject* Object, const TCHAR* Type, FArch
 UTextureExporterTGA::UTextureExporterTGA(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	SupportedClass = UTexture2D::StaticClass();
 	PreferredFormatIndex = 0;
 	FormatExtension.Add(TEXT("TGA"));
@@ -5048,7 +5221,7 @@ bool UTextureExporterTGA::SupportsObject(UObject* Object) const
 
 		if (Texture)
 		{
-			bSupportsObject = Texture->Source.GetFormat() == TSF_BGRA8 || Texture->Source.GetFormat() == TSF_RGBA16;
+			bSupportsObject = Texture->Source.GetFormat() == TSF_BGRA8;
 		}
 	}
 	return bSupportsObject;
@@ -5058,11 +5231,16 @@ bool UTextureExporterTGA::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 {
 	UTexture2D* Texture = CastChecked<UTexture2D>( Object );
 
+	// could move to TGAImageWrapper and use generic exporter instead
+	//	maybe just leave this as-is
+
 	if (!Texture->Source.IsValid() || (Texture->Source.GetFormat() != TSF_BGRA8 && Texture->Source.GetFormat() != TSF_RGBA16))
 	{
 		return false;
 	}
 
+	// legacy code would claim to support 16 bit, but then just drop the bottom 8 bits
+	// this is no longer used
 	const bool bIsRGBA16 = Texture->Source.GetFormat() == TSF_RGBA16;
 
 	if (bIsRGBA16)
@@ -5076,6 +5254,9 @@ bool UTextureExporterTGA::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 
 	const int32 BytesPerPixel = bIsRGBA16 ? 8 : 4;
 
+	// Detects alpha channel
+	// writes either 24 or 32 bit
+
 	int32 SizeX = Texture->Source.GetSizeX();
 	int32 SizeY = Texture->Source.GetSizeY();
 	TArray64<uint8> RawData;
@@ -5083,7 +5264,9 @@ bool UTextureExporterTGA::ExportBinary( UObject* Object, const TCHAR* Type, FArc
 
 	// If we should export the file with no alpha info.  
 	// If the texture is compressed with no alpha we should definitely not export an alpha channel
-	bool bExportWithAlpha = !Texture->CompressionNoAlpha;
+	//  Umm what
+	//bool bExportWithAlpha = !Texture->CompressionNoAlpha;
+	bool bExportWithAlpha = true;
 	if( bExportWithAlpha )
 	{
 		// If the texture isn't compressed with no alpha scan the texture to see if the alpha values are all 255 which means we can skip exporting it.
@@ -5429,7 +5612,7 @@ void FCustomizableTextObjectFactory::ProcessBuffer(UObject* InParent, EObjectFla
 			}
 
 			UClass* ObjClass;
-			if( ParseObject<UClass>( Str, TEXT("CLASS="), ObjClass, ANY_PACKAGE ) )
+			if( ParseObject<UClass>( Str, TEXT("CLASS="), ObjClass, nullptr ) )
 			{
 				bool bOmitSubObjects = false;
 				if (!CanCreateClass(ObjClass, bOmitSubObjects))
@@ -5555,7 +5738,7 @@ bool FCustomizableTextObjectFactory::CanCreateObjectsFromText( const FString& Te
 			}
 
 			UClass* ObjClass;
-			if (ParseObject<UClass>(Str, TEXT("CLASS="), ObjClass, ANY_PACKAGE))
+			if (ParseObject<UClass>(Str, TEXT("CLASS="), ObjClass, nullptr))
 			{
 				bool bOmitSubObjects = false;;
 				if (CanCreateClass(ObjClass, bOmitSubObjects))
@@ -5594,10 +5777,12 @@ UReimportTextureFactory.
 UReimportTextureFactory::UReimportTextureFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	SupportedClass = UTexture::StaticClass();
 
 	bCreateNew = false;
+	
+	// Required to allow texture factory to take priority when importing new image files
+	ImportPriority = DefaultImportPriority - 1;
 }
 
 UTexture2D* UReimportTextureFactory::CreateTexture2D( UObject* InParent, FName Name, EObjectFlags Flags )
@@ -5834,6 +6019,7 @@ void UReimportFbxStaticMeshFactory::SetReimportPaths( UObject* Obj, const TArray
 		Mesh->Modify();
 		UFbxStaticMeshImportData* ImportData = UFbxStaticMeshImportData::GetImportDataForStaticMesh(Mesh, ImportUI->StaticMeshImportData);
 
+		check( ImportData != nullptr );
 		ImportData->UpdateFilenameOnly(NewReimportPaths[0]);
 	}
 }
@@ -5887,6 +6073,8 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 	{
 		// An existing import data object was not found, make one here and show the options dialog
 		ImportData = UFbxStaticMeshImportData::GetImportDataForStaticMesh(Mesh, ImportUI->StaticMeshImportData);
+		check( ImportData != nullptr );
+
 		Mesh->AssetImportData = ImportData;
 	}
 
@@ -5912,8 +6100,8 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 	}
 	CurrentFilename = Filename;
 
-
-	if( ImportData  && !ShowImportDialogAtReimport)
+	check( ImportData != nullptr );
+	if( !ShowImportDialogAtReimport)
 	{
 		// Import data already exists, apply it to the fbx import options
 		ReimportUI->StaticMeshImportData = ImportData;
@@ -5925,9 +6113,10 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 		ReimportUI->ReimportMesh = Mesh;
 
 		//Make sure the outer is the ImportUI, because there is some logic in the meta data needing this outer
-		UObject* OriginalOuter = ImportData != nullptr ? ImportData->GetOuter() : nullptr;
+		check( ImportData != nullptr );
+		UObject* OriginalOuter = ImportData->GetOuter();
 		ReimportUI->StaticMeshImportData = ImportData;
-		if (ReimportUI->StaticMeshImportData && OriginalOuter)
+		if ( OriginalOuter)
 		{
 			ReimportUI->StaticMeshImportData->Rename(nullptr, ReimportUI);
 		}
@@ -5949,13 +6138,14 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 		GetImportOptions( FFbxImporter, ReimportUI, bShowOptionDialog, bIsAutomated, Obj->GetPathName(), bOperationCanceled, bOutImportAll, bIsObjFormat, Filename, bForceImportType, FBXIT_StaticMesh);
 		
 		//Put back the original bAutoGenerateCollision settings since the user cancel the re-import
-		if (ReimportUI->StaticMeshImportData && bOperationCanceled && Mesh->bCustomizedCollision)
+		check( ReimportUI->StaticMeshImportData != nullptr );
+		if ( bOperationCanceled && Mesh->bCustomizedCollision)
 		{
 			ReimportUI->StaticMeshImportData->bAutoGenerateCollision = bOldAutoGenerateCollision;
 		}
 
 		//Put back the original SM outer
-		if (ReimportUI->StaticMeshImportData && OriginalOuter)
+		if ( OriginalOuter)
 		{
 			ReimportUI->StaticMeshImportData->Rename(nullptr, OriginalOuter);
 		}
@@ -6128,8 +6318,10 @@ bool UReimportFbxSkeletalMeshFactory::CanReimport( UObject* Obj, TArray<FString>
 				//This skeletal mesh was import with a scene import, we cannot reimport it here
 				return false;
 			}
-			else if (FPaths::GetExtension(AssetImportData->GetFirstFilename()) == TEXT("abc"))
+			else if (FPaths::GetExtension(AssetImportData->GetFirstFilename()) != TEXT("fbx")
+				  && FPaths::GetExtension(AssetImportData->GetFirstFilename()) != TEXT("obj"))
 			{
+				//Fbx factory only support fbx and obj files
 				return false;
 			}
 			AssetImportData->ExtractFilenames(OutFilenames);
@@ -6443,6 +6635,17 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 
 	if (!bOperationCanceled)
 	{
+		// Replacing the skeleton requires setting up a fresh editor
+		const bool bReplacingSkeleton = ImportOptions->SkeletonForAnimation != SkeletalMesh->GetSkeleton();
+		bool bShouldReopenAsset = false;
+		if (bReplacingSkeleton)
+		{
+			if (UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+			{
+				bShouldReopenAsset = AssetEditorSubsystem->CloseAllEditorsForAsset(SkeletalMesh) != 0;
+			}
+		}
+		
 		FScopedSuspendAlternateSkinWeightPreview ScopedSuspendAlternateSkinWeightPreview(SkeletalMesh);
 		{
 			FScopedSkeletalMeshPostEditChange ScopedPostEditChange(SkeletalMesh);
@@ -6505,6 +6708,15 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 				TArray<FSkinWeightProfileInfo>&SkinWeightsProfile = SkeletalMesh->GetSkinWeightProfiles();
 				SkinWeightsProfile = ExistingSkinWeightProfileInfos;
 				FSkinWeightsUtilities::ReimportAlternateSkinWeight(SkeletalMesh, 0);
+			}
+
+			// Reopen asset if it was open previously
+			if (bShouldReopenAsset)
+			{
+				if (UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+				{
+					AssetEditorSubsystem->OpenEditorForAsset(SkeletalMesh);
+				}
 			}
 
 			// Reimporting can have dangerous effects if the mesh is still in the transaction buffer.  Reset the transaction buffer if this is the case
@@ -6584,7 +6796,8 @@ bool UReimportFbxAnimSequenceFactory::CanReimport( UObject* Obj, TArray<FString>
 				//This mesh was import with a scene import, we cannot reimport it
 				return false;
 			}
-			else if (FPaths::GetExtension(AnimSequence->AssetImportData->GetFirstFilename()) == TEXT("abc"))
+			else if (FPaths::GetExtension(AnimSequence->AssetImportData->GetFirstFilename()) != TEXT("fbx")
+				&& FPaths::GetExtension(AnimSequence->AssetImportData->GetFirstFilename()) != TEXT("obj"))
 			{
 				return false;
 			}
@@ -6799,7 +7012,7 @@ bool UBlueprintFactory::ConfigureProperties()
 	// Prevent creating blueprints of classes that require special setup (they'll be allowed in the corresponding factories / via other means)
 	TSharedPtr<FBlueprintParentFilter> Filter = MakeShareable(new FBlueprintParentFilter);
 	Options.ClassFilters.Add(Filter.ToSharedRef());
-	if (!IsMacroFactory())
+	if (BlueprintType == EBlueprintType::BPTYPE_MacroLibrary)
 	{
 		Filter->DisallowedChildrenOfClasses.Add(ALevelScriptActor::StaticClass());
 		Filter->DisallowedChildrenOfClasses.Add(UAnimInstance::StaticClass());
@@ -6845,7 +7058,7 @@ UObject* UBlueprintFactory::FactoryCreateNew(UClass* Class, UObject* InParent, F
 		IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
 		KismetCompilerModule.GetBlueprintTypesForClass(ParentClass, BlueprintClass, BlueprintGeneratedClass);
 
-		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BPTYPE_Normal, BlueprintClass, BlueprintGeneratedClass, CallingContext);
+		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BlueprintType, BlueprintClass, BlueprintGeneratedClass, CallingContext);
 	}
 }
 
@@ -6861,11 +7074,11 @@ UObject* UBlueprintFactory::FactoryCreateNew(UClass* Class, UObject* InParent, F
 UBlueprintMacroFactory::UBlueprintMacroFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	
 	bCreateNew = true;
 	bEditAfterNew = true;
 	SupportedClass = UBlueprint::StaticClass();
 	ParentClass = AActor::StaticClass();
+	BlueprintType = BPTYPE_MacroLibrary;
 }
 
 FText UBlueprintMacroFactory::GetDisplayName() const
@@ -6907,7 +7120,7 @@ UObject* UBlueprintMacroFactory::FactoryCreateNew(UClass* Class, UObject* InPare
 	}
 	else
 	{
-		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BPTYPE_MacroLibrary, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
+		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BlueprintType, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
 	}
 }
 
@@ -6928,6 +7141,7 @@ UBlueprintFunctionLibraryFactory::UBlueprintFunctionLibraryFactory(const FObject
 	bEditAfterNew = true;
 	SupportedClass = UBlueprint::StaticClass();
 	ParentClass = UBlueprintFunctionLibrary::StaticClass();
+	BlueprintType = BPTYPE_FunctionLibrary;
 }
 
 FText UBlueprintFunctionLibraryFactory::GetDisplayName() const
@@ -6969,7 +7183,7 @@ UObject* UBlueprintFunctionLibraryFactory::FactoryCreateNew(UClass* Class, UObje
 	}
 	else
 	{
-		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BPTYPE_FunctionLibrary, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
+		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BlueprintType, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
 	}
 }
 
@@ -6989,10 +7203,11 @@ FString UBlueprintFunctionLibraryFactory::GetDefaultNewAssetName() const
 UBlueprintInterfaceFactory::UBlueprintInterfaceFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	bCreateNew = true;
 	bEditAfterNew = true;
 	SupportedClass = UBlueprint::StaticClass();
+	ParentClass = UInterface::StaticClass();
+	BlueprintType = BPTYPE_Interface;
 }
 
 FText UBlueprintInterfaceFactory::GetDisplayName() const
@@ -7025,9 +7240,6 @@ UObject* UBlueprintInterfaceFactory::FactoryCreateNew(UClass* Class, UObject* In
 	// Make sure we are trying to factory a blueprint, then create and init one
 	check(Class->IsChildOf(UBlueprint::StaticClass()));
 
-	// Force the parent class to be UInterface as per original code
-	UClass* ParentClass = UInterface::StaticClass();
-
 	if ((ParentClass == nullptr) || !FKismetEditorUtilities::CanCreateBlueprintOfClass(ParentClass))
 	{
 		FFormatNamedArguments Args;
@@ -7037,13 +7249,13 @@ UObject* UBlueprintInterfaceFactory::FactoryCreateNew(UClass* Class, UObject* In
 	}
 	else
 	{
-		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BPTYPE_Interface, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
+		return FKismetEditorUtilities::CreateBlueprint(ParentClass, InParent, Name, BlueprintType, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass(), CallingContext);
 	}
 }
 
-UObject* UBlueprintInterfaceFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+bool UBlueprintInterfaceFactory::ConfigureProperties()
 {
-	return FactoryCreateNew(Class, InParent, Name, Flags, Context, Warn, NAME_None);
+	return true;
 }
 
 FString UBlueprintInterfaceFactory::GetDefaultNewAssetName() const
@@ -7350,7 +7562,7 @@ bool UBlendSpaceFactoryNew::ConfigureProperties()
 	FAssetPickerConfig AssetPickerConfig;
 
 	/** The asset picker will only show skeletal meshes */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 
 	/** The delegate that fires when an asset was selected */
@@ -7366,7 +7578,7 @@ bool UBlendSpaceFactoryNew::ConfigureProperties()
 	.SupportsMinimize(false) .SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]
@@ -7425,7 +7637,7 @@ bool UBlendSpaceFactory1D::ConfigureProperties()
 	FAssetPickerConfig AssetPickerConfig;
 
 	/** The asset picker will only show skeletal meshes */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 
 	/** The delegate that fires when an asset was selected */
@@ -7440,7 +7652,7 @@ bool UBlendSpaceFactory1D::ConfigureProperties()
 	.SupportsMinimize(false) .SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]
@@ -7691,6 +7903,12 @@ UObject* USubsurfaceProfileFactory::FactoryCreateNew(UClass* InClass, UObject* I
 	// the profiles loaded from files to be converted into burley if they
 	// are separable.
 	Object->Settings.bEnableBurley = true;
+
+	// Enable smooth upgrading from DMFP to MFP. This flag change allows
+	// all newly created subsurface profile in MFP, while allowing old profiles
+	// loaded from files to be automatically converted to MFP.
+	Object->Settings.bEnableMeanFreePath = true;
+
 	return Object;
 }
 
@@ -7773,6 +7991,227 @@ UObject* UPreviewMeshCollectionFactory::FactoryCreateNew(UClass* Class, UObject*
 	NewCollection->Skeleton = CurrentSkeleton.Get();
 
 	return NewCollection;
+}
+
+UUDIMTextureFunctionLibrary::UUDIMTextureFunctionLibrary(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{}
+
+struct FScopedTextureSourceExtracts
+{
+	const TArray<UTexture2D*>& Textures;
+	TArray<const uint8*> DataArray;
+	TArray<FTextureSourceBlock> Blocks;
+	ETextureSourceFormat Format;
+
+	FScopedTextureSourceExtracts(const TArray<UTexture2D*>& InTextures, const TArray<FIntPoint>& BlockCoords)
+		: Textures(InTextures)
+		, Format(TSF_Invalid)
+	{
+		bool bMismatchedFormat = false;
+
+		DataArray.Reserve(Textures.Num());
+		Blocks.Reserve(Textures.Num());
+
+		for (int32 TextureIndex = 0; TextureIndex < Textures.Num(); ++TextureIndex)
+		{
+			UTexture2D* Texture = Textures[TextureIndex];
+			const FIntPoint& BlockXY = BlockCoords[TextureIndex];
+
+			if (Texture)
+			{
+				check(Texture->Source.GetNumLayers() == 1 && Texture->Source.GetNumBlocks() == 1);
+
+				if (Format == TSF_Invalid)
+				{
+					Format = Texture->Source.GetFormat();
+				}
+
+				if (Format != Texture->Source.GetFormat())
+				{
+					bMismatchedFormat = true;
+				}
+
+				const uint8* DataPtr = Texture->Source.LockMipReadOnly(0);
+				if (DataPtr)
+				{
+					DataArray.Add(DataPtr);
+					Blocks.AddDefaulted();
+
+					FTextureSourceBlock& Block = Blocks.Last();
+					Block.BlockX = BlockXY.X;
+					Block.BlockY = BlockXY.Y;
+					Block.SizeX = Texture->Source.GetSizeX();
+					Block.SizeY = Texture->Source.GetSizeY();
+					Block.NumSlices = 1;
+					Block.NumMips = Texture->Source.GetNumMips();
+				}
+			}
+		}
+
+		if (bMismatchedFormat)
+		{
+			UE_LOG(LogBlueprintUserMessages, Error, TEXT("Cannot create a UDIM texture from Texture2Ds with different formats."));
+			DataArray.Empty();
+			Blocks.Empty();
+		}
+	}
+
+	~FScopedTextureSourceExtracts()
+	{
+		for (int32 TextureIndex = 0; TextureIndex < Textures.Num(); ++TextureIndex)
+		{
+			UTexture2D* Texture = Textures[TextureIndex];
+			if (Texture)
+			{
+				Texture->Source.UnlockMip(0);
+			}
+		}
+	}
+
+	bool IsValid() const
+	{
+		return DataArray.Num() > 0 && Blocks.Num() > 0;
+	}
+};
+
+UTexture2D* UUDIMTextureFunctionLibrary::MakeUDIMVirtualTextureFromTexture2Ds(FString OutputPathName, const TArray<UTexture2D*>& SourceTextures, const TArray<FIntPoint>& BlockCoords, bool bKeepExistingSettings, bool bCheckOutAndSave)
+{
+	static const TConsoleVariableData<int32>* CVarVirtualTexturesEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures"));
+	check(CVarVirtualTexturesEnabled);
+
+	if (!CVarVirtualTexturesEnabled || !CVarVirtualTexturesEnabled->GetValueOnAnyThread())
+	{
+		UE_LOG(LogBlueprintUserMessages, Error, TEXT("Cannot create virtual textures when virtual texture support (r.VirtualTextures) is disabled."));
+		return nullptr;
+	}
+	if (SourceTextures.Num() <= 1)
+	{
+		UE_LOG(LogBlueprintUserMessages, Error, TEXT("Not enough source textures to create a UDIM texture."));
+		return nullptr;
+	}
+	if (SourceTextures.Num() != BlockCoords.Num())
+	{
+		UE_LOG(LogBlueprintUserMessages, Error, TEXT("The numbers of source textures and block coordinates don't match."));
+		return nullptr;
+	}
+#if DO_CHECK
+	for (int32 Index = 0; Index < SourceTextures.Num(); ++Index)
+	{
+		UTexture2D* Texture = SourceTextures[Index];
+		const FIntPoint& Coords = BlockCoords[Index];
+		if (Texture && (Coords.X < 0 || Coords.Y < 0))
+		{
+			UE_LOG(LogBlueprintUserMessages, Error, TEXT("BlockCoords[%d] contains negative coordinate(s)."), Index);
+			return nullptr;
+		}
+	}
+#endif
+
+	OutputPathName = UPackageTools::SanitizePackageName(OutputPathName);
+
+	FName TextureName;
+	{
+		int32 SlashIndex;
+		int32 BackSlashIndex;
+		OutputPathName.FindLastChar(TEXT('/'), SlashIndex);
+		OutputPathName.FindLastChar(TEXT('\\'), BackSlashIndex);
+		const int32 TextureNameStart = FMath::Max(SlashIndex, BackSlashIndex) + 1;
+		TextureName = *OutputPathName.RightChop(TextureNameStart);
+	}
+
+	UTexture2D* ExistingTexture = LoadObject<UTexture2D>(nullptr, *OutputPathName, nullptr, LOAD_Quiet | LOAD_NoWarn);
+	UPackage* TexturePackage;
+
+	if (!ExistingTexture)
+	{
+		TexturePackage = CreatePackage(*OutputPathName);
+	}
+	else
+	{
+		TexturePackage = ExistingTexture->GetOutermost();
+	}
+
+	FScopedTextureSourceExtracts SourceExtracts(SourceTextures, BlockCoords);
+	UTextureFactory* TextureFactory = NewObject<UTextureFactory>();
+
+	if (!SourceExtracts.IsValid() || !TextureFactory)
+	{
+		return nullptr;
+	}
+
+	TextureFactory->AddToRoot();
+	TextureFactory->SuppressImportOverwriteDialog();
+
+	UTexture2D* NewTexture = TextureFactory->CreateTexture2D(TexturePackage, TextureName, RF_Public | RF_Standalone);
+
+	TextureFactory->RemoveFromRoot();
+
+	if (!NewTexture)
+	{
+		return nullptr;
+	}
+
+	ETextureSourceFormat Format = SourceExtracts.Format;
+	NewTexture->Source.InitBlocked(&Format, SourceExtracts.Blocks.GetData(), 1, SourceExtracts.Blocks.Num(), SourceExtracts.DataArray.GetData());
+
+	UTexture2D* FirstSourceTexture = SourceTextures[0];
+	UTexture2D* SettingsSource = ExistingTexture && bKeepExistingSettings ? ExistingTexture : FirstSourceTexture;
+
+	NewTexture->AddressX = SettingsSource->AddressX;
+	NewTexture->AddressY = SettingsSource->AddressY;
+	NewTexture->Filter = SettingsSource->Filter;
+	NewTexture->LODGroup = SettingsSource->LODGroup;
+	NewTexture->CompressionSettings = SettingsSource->CompressionSettings;
+	NewTexture->LODBias = SettingsSource->LODBias;
+	NewTexture->NumCinematicMipLevels = SettingsSource->NumCinematicMipLevels;
+	NewTexture->NeverStream = SettingsSource->NeverStream;
+	NewTexture->SRGB = SettingsSource->SRGB;
+	NewTexture->bPreserveBorder = SettingsSource->bPreserveBorder;
+	NewTexture->CompressionNone = SettingsSource->CompressionNone;
+	NewTexture->CompressionNoAlpha = SettingsSource->CompressionNoAlpha;
+	NewTexture->DeferCompression = SettingsSource->DeferCompression;
+	NewTexture->bFlipGreenChannel = SettingsSource->bFlipGreenChannel;
+	NewTexture->bDoScaleMipsForAlphaCoverage = SettingsSource->bDoScaleMipsForAlphaCoverage;
+	NewTexture->AlphaCoverageThresholds = SettingsSource->AlphaCoverageThresholds;
+	NewTexture->bUseNewMipFilter = SettingsSource->bUseNewMipFilter;
+	NewTexture->AdjustBrightness = SettingsSource->AdjustBrightness;
+	NewTexture->AdjustBrightnessCurve = SettingsSource->AdjustBrightnessCurve;
+	NewTexture->AdjustVibrance = SettingsSource->AdjustVibrance;
+	NewTexture->AdjustSaturation = SettingsSource->AdjustSaturation;
+	NewTexture->AdjustRGBCurve = SettingsSource->AdjustRGBCurve;
+	NewTexture->AdjustHue = SettingsSource->AdjustHue;
+	NewTexture->AdjustMinAlpha = SettingsSource->AdjustMinAlpha;
+	NewTexture->AdjustMaxAlpha = SettingsSource->AdjustMaxAlpha;
+	NewTexture->MipGenSettings = SettingsSource->MipGenSettings;
+	NewTexture->VirtualTextureStreaming = true;
+
+	if (ExistingTexture)
+	{
+		// Disable streaming
+		ExistingTexture->UpdateResource();
+		// Wait for InitRHI() to complete before the FTextureReferenceReplacer calls ReleaseRHI() to follow the workflow.
+		// Static texture needs to avoid having pending InitRHI() before enqueuing ReleaseRHI() to safely track access of the PlatformData on the renderthread.
+		ExistingTexture->WaitForPendingInitOrStreaming();
+	}
+
+	FTextureReferenceReplacer(ExistingTexture).Replace(NewTexture);
+
+	// Invalidate any materials using the new texture. (occurs if overwriting an existing texture)
+	NewTexture->PostEditChange();
+
+	FAssetRegistryModule::AssetCreated(NewTexture);
+
+	TexturePackage->MarkPackageDirty();
+
+	if (bCheckOutAndSave)
+	{
+		TArray<UPackage*> PackagesToSave;
+		PackagesToSave.Add(TexturePackage);
+		UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, true);
+	}
+
+	return NewTexture;
 }
 
 #undef LOCTEXT_NAMESPACE

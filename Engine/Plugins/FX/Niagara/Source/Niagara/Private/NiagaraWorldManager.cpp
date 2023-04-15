@@ -25,6 +25,10 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraCullProxyComponent.h"
 #include "GameDelegates.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/LocalPlayer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraWorldManager)
 
 #if WITH_EDITORONLY_DATA
 #include "EditorViewportClient.h"
@@ -195,6 +199,39 @@ FAutoConsoleCommandWithWorldAndArgs GCmdNiagaraPlaybackRate(
 	)
 );
 
+FAutoConsoleCommandWithWorldAndArgs GCmdNiagaraScalabilityCullingMode(
+	TEXT("fx.Niagara.Scalability.CullingMode"),
+	TEXT("Set scalability culling mode\n")
+	TEXT("0 - Enabled. Culling is enabled as normal.\n")
+	TEXT("1 - Paused. No culling will occur but FX will still be tracked internally so culling can be resumed correctly later.\n")
+	TEXT("2 - Disabled. No culling will occur and no FX will be tracked. Culling may not work correctly for some FX if enabled again after this.\n"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World))
+			{
+				if (Args.Num() != 1 || Args[0].IsNumeric() == false)
+				{
+					UE_LOG(LogNiagara, Log, TEXT("fx.Niagara.ScalabililityCullingMode %d"), (int32)WorldManager->GetScalabilityCullingMode());
+					UE_LOG(LogNiagara, Log, TEXT("Set scalability culling mode"));
+					UE_LOG(LogNiagara, Log, TEXT("0 - Enabled. Culling is enabled as normal."));
+					UE_LOG(LogNiagara, Log, TEXT("1 - Paused. No culling will occur but FX will still be tracked internally so culling can be resumed correctly later."));
+					UE_LOG(LogNiagara, Log, TEXT("2 - Disabled. No culling will occur and no FX will be tracked. Culling may not work correctly for some FX if enabled again after this."));
+				}
+				else
+				{
+					const ENiagaraScalabilityCullingMode CullingMode = FMath::Clamp((ENiagaraScalabilityCullingMode)FCString::Atoi(*Args[0]), ENiagaraScalabilityCullingMode::Enabled, ENiagaraScalabilityCullingMode::Disabled);
+					WorldManager->SetScalabilityCullingMode(CullingMode);
+				}
+			}
+			else
+			{
+				UE_LOG(LogNiagara, Warning, TEXT("Cannot set Niagara Scalability Culling Mode on a null world."));
+			}
+		}
+	)
+);
+
 FDelegateHandle FNiagaraWorldManager::OnWorldInitHandle;
 FDelegateHandle FNiagaraWorldManager::OnWorldCleanupHandle;
 FDelegateHandle FNiagaraWorldManager::OnPostWorldCleanupHandle;
@@ -228,7 +265,7 @@ void FNiagaraWorldManagerTickFunction::ExecuteTick(float DeltaTime, enum ELevelT
 
 FString FNiagaraWorldManagerTickFunction::DiagnosticMessage()
 {
-	static const UEnum* EnumType = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ETickingGroup"));
+	static const UEnum* EnumType = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ETickingGroup"));
 
 	return TEXT("FParticleSystemManager::Tick(") + EnumType->GetNameStringByIndex(static_cast<uint32>(TickGroup)) + TEXT(")");
 }
@@ -262,13 +299,23 @@ void FNiagaraWorldManager::SetScalabilityCullingMode(ENiagaraScalabilityCullingM
 FNiagaraWorldManager::FNiagaraWorldManager()
 	: World(nullptr)
 	, ActiveNiagaraTickGroup(-1)
-	, CachedEffectsQuality(INDEX_NONE)
 	, bAppHasFocus(true)
 {
 }
 
 void FNiagaraWorldManager::Init(UWorld* InWorld)
 {
+	// Reset variables that are not reset during OnWorldCleanup; Init/OnWorldCleanup can be called multiple times
+	ComponentPool = nullptr; // Discard the existing ComponentPool
+	bPoolIsPrimed = false;
+	ActiveNiagaraTickGroup = -1;
+	bAppHasFocus = true;
+	bIsTearingDown = false;
+	WorldLoopTime = 0.0f;
+	RequestedDebugPlaybackMode = ENiagaraDebugPlaybackMode::Play;
+	DebugPlaybackMode = ENiagaraDebugPlaybackMode::Play;
+	DebugPlaybackRate = 1.0f;
+
 	World = InWorld;
 	for (int32 TickGroup = 0; TickGroup < NiagaraNumTickGroups; ++TickGroup)
 	{
@@ -289,7 +336,7 @@ void FNiagaraWorldManager::Init(UWorld* InWorld)
 	//Possibly a later hook we can use.
 	//PrimePoolForAllSystems();
 
-#if !UE_BUILD_SHIPPING
+#if WITH_NIAGARA_DEBUGGER
 	NiagaraDebugHud.Reset(new FNiagaraDebugHud(World));
 #endif
 }
@@ -438,7 +485,7 @@ UNiagaraCullProxyComponent* FNiagaraWorldManager::GetCullProxy(UNiagaraComponent
 
 UNiagaraParameterCollectionInstance* FNiagaraWorldManager::GetParameterCollection(UNiagaraParameterCollection* Collection)
 {
-	if (!Collection)
+	if (!Collection || bIsTearingDown)
 	{
 		return nullptr;
 	}
@@ -557,6 +604,7 @@ void FNiagaraWorldManager::OnComputeDispatchInterfaceDestroyed_Internal(FNiagara
 
 void FNiagaraWorldManager::OnWorldCleanup(bool bSessionEnded, bool bCleanupResources)
 {
+	DeferredMethods.ExecuteAndClear();
 	ComponentPool->Cleanup(World);
 
 	for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
@@ -580,6 +628,7 @@ void FNiagaraWorldManager::OnWorldCleanup(bool bSessionEnded, bool bCleanupResou
 	ScalabilityManagers.Empty();
 
 	CullProxyMap.Empty();
+	DIGeneratedData.Empty();
 }
 
 void FNiagaraWorldManager::OnPostWorldCleanup(bool bSessionEnded, bool bCleanupResources)
@@ -654,9 +703,11 @@ void FNiagaraWorldManager::RefreshOwnerAllowsScalability()
 
 void FNiagaraWorldManager::OnWorldInit(UWorld* World, const UWorld::InitializationValues IVS)
 {
-	check(WorldManagers.Find(World) == nullptr);
-	FNiagaraWorldManager*& NewManager = WorldManagers.Add(World);
-	NewManager = new FNiagaraWorldManager();
+	FNiagaraWorldManager*& NewManager = WorldManagers.FindOrAdd(World);
+	if (!NewManager)
+	{
+		NewManager = new FNiagaraWorldManager();
+	}
 	NewManager->Init(World);
 }
 
@@ -692,6 +743,11 @@ void FNiagaraWorldManager::OnPreWorldFinishDestroy(UWorld* World)
 
 void FNiagaraWorldManager::OnWorldBeginTearDown(UWorld* World)
 {
+	FNiagaraWorldManager** Manager = WorldManagers.Find(World);
+	if (Manager)
+	{
+		(*Manager)->bIsTearingDown = true;
+	}
 // 	FNiagaraWorldManager** Manager = WorldManagers.Find(World);
 // 	if (Manager)
 // 	{
@@ -828,8 +884,7 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 	}
 
 	// Clear cached player view location list, it should never be used outside of the world tick
-	bCachedPlayerViewLocationsValid = false;
-	CachedPlayerViewLocations.Reset();
+	CachedViewInfo.Reset();
 
 	// Delete any instances that were pending deletion
 	//-TODO: This could be done after each system sim has run
@@ -841,11 +896,13 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 		TickFunc.EndTickGroup = GNiagaraAllowAsyncWorkToEndOfFrame ? TG_LastDemotable : (ETickingGroup)TickFunc.TickGroup;
 	}
 
+#if WITH_NIAGARA_DEBUGGER
 	// Tick debug HUD for the world
 	if (NiagaraDebugHud != nullptr)
 	{
 		NiagaraDebugHud->GatherSystemInfo();
 	}
+#endif
 
 	if ( DebugPlaybackMode == ENiagaraDebugPlaybackMode::Step )
 	{
@@ -914,7 +971,8 @@ void FNiagaraWorldManager::PreSendAllEndOfFrameUpdates()
 				Simulation->WaitForInstancesTickComplete();
 			}
 		}
-		SimulationsWithPostActorWork.Reset();
+		// Note: We do not clear the SimulationsWithPostActorWork array as we just want to safely wait for any async work,
+		//       they still require additional processing, i.e. Tick Group Changes / Spawning
 	}
 
 	for (const auto& Simulation : SimulationsWithEndOfFrameWait)
@@ -945,6 +1003,33 @@ void FNiagaraWorldManager::MarkSimulationsForEndOfFrameWait(FNiagaraSystemSimula
 	{
 		SimulationsWithEndOfFrameWait.Add(SystemSimulation->AsShared());
 	}
+}
+
+bool FNiagaraWorldManager::PrepareCachedViewInfo(const APlayerController* PlayerController, FNiagaraCachedViewInfo& OutViewInfo)
+{
+	const ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (PlayerController && LocalPlayer && LocalPlayer->ViewportClient)
+	{
+		FSceneViewProjectionData ProjectionData;
+		if (LocalPlayer->GetProjectionData(LocalPlayer->ViewportClient->Viewport, /*out*/ ProjectionData))
+		{
+			FVector POVLoc;
+			FRotator POVRotation;
+			PlayerController->GetPlayerViewPoint(POVLoc, POVRotation);
+			FRotationTranslationMatrix ViewToWorld(POVRotation, POVLoc);
+
+			FWorldCachedViewInfo WorldViewInfo;
+			WorldViewInfo.ViewMatrix = FTranslationMatrix(-ProjectionData.ViewOrigin) * ProjectionData.ViewRotationMatrix;
+			WorldViewInfo.ProjectionMatrix = ProjectionData.ProjectionMatrix;
+			WorldViewInfo.ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
+			WorldViewInfo.ViewToWorld = ViewToWorld;
+
+			OutViewInfo.Init(WorldViewInfo);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
@@ -1011,39 +1096,42 @@ void FNiagaraWorldManager::Tick(ETickingGroup TickGroup, float DeltaSeconds, ELe
 			return;
 		}
 
-		// Cache player view locations for all system instances to access
+		bool bUseWorldCachedViews = !World->GetPlayerControllerIterator();
+#if WITH_EDITOR
+		if (GCurrentLevelEditingViewportClient && (GCurrentLevelEditingViewportClient->GetWorld() == World))
+		{
+			bUseWorldCachedViews = true;
+		}
+#endif
+		// Cache player view info for all system instances to access
 		//-TODO: Do we need to do this per tick group?
-		bCachedPlayerViewLocationsValid = true;
-		if (World->GetPlayerControllerIterator())
+		if (bUseWorldCachedViews)
+		{
+			for (int32 i = 0; i < World->CachedViewInfoRenderedLastFrame.Num(); ++i)
+			{
+				FWorldCachedViewInfo& WorldViewInfo = World->CachedViewInfoRenderedLastFrame[i];
+
+				FNiagaraCachedViewInfo& ViewInfo = CachedViewInfo.AddDefaulted_GetRef();
+				ViewInfo.Init(WorldViewInfo);
+			}
+		}
+		else
 		{
 			for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
 			{
 				APlayerController* PlayerController = Iterator->Get();
 				if (PlayerController && PlayerController->IsLocalPlayerController())
 				{
-					FVector* POVLoc = new(CachedPlayerViewLocations) FVector;
-					FRotator POVRotation;
-					PlayerController->GetPlayerViewPoint(*POVLoc, POVRotation);
+					FNiagaraCachedViewInfo& ViewInfo = CachedViewInfo.AddDefaulted_GetRef();
+					
+					const bool bIsValid = PrepareCachedViewInfo(PlayerController, ViewInfo);
+					if (!bIsValid)
+					{
+						CachedViewInfo.RemoveAt(CachedViewInfo.Num() - 1);
+					}
 				}
 			}
-		}
-		else
-		{
-			CachedPlayerViewLocations.Append(World->ViewLocationsRenderedLastFrame);
-		}
-		
-		if (CachedPlayerViewLocations.Num() == 0)
-		{
-			bCachedPlayerViewLocationsValid = false;
-		}
-
-#if WITH_EDITORONLY_DATA
-		if (GCurrentLevelEditingViewportClient && (GCurrentLevelEditingViewportClient->GetWorld() == World))
-		{
-			const FViewportCameraTransform& ViewTransform = GCurrentLevelEditingViewportClient->GetViewTransform();
-			CachedPlayerViewLocations.Add(ViewTransform.GetLocation());
-		}
-#endif
+		}		
 
 		UpdateScalabilityManagers(DeltaSeconds, false);
 
@@ -1117,7 +1205,7 @@ void FNiagaraWorldManager::DumpDetails(FOutputDevice& Ar)
 {
 	Ar.Logf(TEXT("=== FNiagaraWorldManager Dumping Detailed Information"));
 
-	static const UEnum* TickingGroupEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ETickingGroup"));
+	static const UEnum* TickingGroupEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ETickingGroup"));
 
 	for ( int TG=0; TG < NiagaraNumTickGroups; ++TG )
 	{
@@ -1170,7 +1258,7 @@ void FNiagaraWorldManager::UpdateScalabilityManagers(float DeltaSeconds, bool bN
 	}
 }
 
-void FNiagaraWorldManager::RegisterWithScalabilityManager(UNiagaraComponent* Component)
+void FNiagaraWorldManager::RegisterWithScalabilityManager(UNiagaraComponent* Component, UNiagaraEffectType* EffectType)
 {
 	if (GetScalabilityCullingMode() == ENiagaraScalabilityCullingMode::Disabled)
 	{
@@ -1178,7 +1266,7 @@ void FNiagaraWorldManager::RegisterWithScalabilityManager(UNiagaraComponent* Com
 	}
 
 	check(Component);
-	if (UNiagaraEffectType* EffectType = Component->GetAsset()->GetEffectType())
+	if ( EffectType )
 	{
 		FNiagaraScalabilityManager* ScalabilityManager = ScalabilityManagers.Find(EffectType);
 
@@ -1192,10 +1280,10 @@ void FNiagaraWorldManager::RegisterWithScalabilityManager(UNiagaraComponent* Com
 	}
 }
 
-void FNiagaraWorldManager::UnregisterWithScalabilityManager(UNiagaraComponent* Component)
+void FNiagaraWorldManager::UnregisterWithScalabilityManager(UNiagaraComponent* Component, UNiagaraEffectType* EffectType)
 {
 	check(Component);
-	if (UNiagaraEffectType* EffectType = Component->GetAsset()->GetEffectType())
+	if ( EffectType )
 	{
 		//Possibly the manager has been GCd.
 		if (FNiagaraScalabilityManager* ScalabilityManager = ScalabilityManagers.Find(EffectType))
@@ -1258,6 +1346,17 @@ void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, con
 
 	DistanceCull(EffectType, ScalabilitySettings, Location, OutState);
 
+	if (GEnableNiagaraVisCulling)
+	{
+		if (System->bFixedBounds)//We have no component in this path so we require fixed bounds for view based checks.
+		{
+			FBoxSphereBounds Bounds(System->GetFixedBounds());
+			Bounds.Origin = Location;
+			float TimeSinceRendered = 0.0f;
+			ViewBasedCulling(EffectType, ScalabilitySettings, Bounds.GetSphere(), TimeSinceRendered, bIsPreCull, OutState);
+		}
+	}
+
 	//If we have no significance handler there is no concept of relative significance for these systems so we can just pre cull if we go over the instance count.
 	if (GEnableNiagaraInstanceCountCulling && bIsPreCull && EffectType->GetSignificanceHandler() == nullptr)
 	{
@@ -1274,6 +1373,7 @@ void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, con
 	//TODO: More progressive scalability options?
 }
 
+extern float GLastRenderTimeSafetyBias;
 void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, UNiagaraComponent* Component, bool bIsPreCull, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState)
 {
 	if (GetScalabilityCullingMode() == ENiagaraScalabilityCullingMode::Disabled)
@@ -1285,9 +1385,26 @@ void FNiagaraWorldManager::CalculateScalabilityState(UNiagaraSystem* System, con
 
 	DistanceCull(EffectType, ScalabilitySettings, Component, OutState);
 	
-	if ((GbAllowVisibilityCullingForDynamicBounds || System->bFixedBounds) && bAppHasFocus && GEnableNiagaraVisCulling)
+	if (GEnableNiagaraVisCulling)
 	{
-		VisibilityCull(EffectType, ScalabilitySettings, Component, OutState);
+		FBoxSphereBounds Bounds = Component->CalcBounds(Component->GetComponentToWorld());		
+
+		float TimeSinceRendered = FMath::Max(0.0f, GetWorld()->LastRenderTime - Component->GetLastRenderTime() - World->GetDeltaSeconds() - GLastRenderTimeSafetyBias);		
+
+		if(bIsPreCull)
+		{
+			if (System->bFixedBounds)//We need valid bounds for view based culling so if we're preculling, restrict to systems with fixed bounds.
+			{
+				ViewBasedCulling(EffectType, ScalabilitySettings, Bounds.GetSphere(), TimeSinceRendered, bIsPreCull, OutState);
+			}
+		}
+		else
+		{
+			if (GbAllowVisibilityCullingForDynamicBounds || System->bFixedBounds)
+			{
+				ViewBasedCulling(EffectType, ScalabilitySettings, Bounds.GetSphere(), TimeSinceRendered, bIsPreCull, OutState);
+			}
+		}
 	}
 
 	//Only apply hard instance count cull limit for precull if we have no significance handler.
@@ -1369,15 +1486,71 @@ void FNiagaraWorldManager::SortedSignificanceCull(UNiagaraEffectType* EffectType
 #endif
 }
 
-void FNiagaraWorldManager::VisibilityCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraComponent* Component, FNiagaraScalabilityState& OutState)
+void FNiagaraWorldManager::ViewBasedCulling(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, FSphere BoundingSphere, float ComponentTimeSinceRendered, bool bIsPrecull, FNiagaraScalabilityState& OutState)
 {
 	if (GetScalabilityCullingMode() != ENiagaraScalabilityCullingMode::Enabled)
 	{
 		return;
 	}
 
-	float TimeSinceRendered = Component->GetSafeTimeSinceRendered(World->TimeSeconds);
-	bool bCull = Component->GetLastRenderTime() >= 0.0f && ScalabilitySettings.bCullByMaxTimeWithoutRender && TimeSinceRendered > ScalabilitySettings.MaxTimeWithoutRender;
+	bool bInsideAnyView = !ScalabilitySettings.VisibilityCulling.bCullByViewFrustum;
+
+	//Iterator over all views to calculate and check the bounds against the view frustum.
+	if (ScalabilitySettings.VisibilityCulling.bCullByViewFrustum)
+	{
+		for (FNiagaraCachedViewInfo& ViewInfo : CachedViewInfo)
+		{
+			//First check the view frustums to see if any part of the sphere is inside.
+			bool bInsideThisView = true;
+			if (bInsideAnyView == false)//If we already know we're in any view (or not doing frustum checks) then we can skip the rest.
+			{
+				for (FPlane& FrustumPlane : ViewInfo.FrutumPlanes)
+				{
+					if (FrustumPlane.IsValid())
+					{
+						//((dot(Plane, BSphere.xyz) - Plane.w) > BSphere.w);
+						bool bInside = FrustumPlane.PlaneDot(BoundingSphere.Center) <= BoundingSphere.W;
+						if (!bInside)
+						{
+							bInsideThisView = false;
+							break;
+						}
+					}
+				}
+			}
+
+			if (bInsideThisView)
+			{
+				bInsideAnyView = true;
+			}
+		}
+
+		// If we have no CachedViewInfo this can mean one of two things, we have no views or we are outside of the main loop (i.e. reregister context) so start the sim anyway
+		bInsideAnyView |= CachedViewInfo.Num() == 0;
+	}
+
+	float TimeSinceInsideView = 0.0f;
+	if (bInsideAnyView)
+	{
+		OutState.LastVisibleTime = World->GetTimeSeconds();
+	}
+	else
+	{
+		TimeSinceInsideView = World->GetTimeSeconds() - OutState.LastVisibleTime;
+	}
+
+	bool bCullByOutsideViewFrustum = ScalabilitySettings.VisibilityCulling.bCullByViewFrustum &&
+		(!bIsPrecull || ScalabilitySettings.VisibilityCulling.bAllowPreCullingByViewFrustum) &&
+		OutState.LastVisibleTime > ScalabilitySettings.VisibilityCulling.MaxTimeOutsideViewFrustum;
+
+	//Check for the component having been rendered recently. If the app doesn't have focus we skip this to avoid issues when alt-tabbing away from the game/editor.
+	float TimeSinceWorldRendered = World->GetTimeSeconds() - World->LastRenderTime;	
+	bool bCullByNotRendered =	bAppHasFocus && 
+								ScalabilitySettings.VisibilityCulling.bCullWhenNotRendered && 
+		ComponentTimeSinceRendered > ScalabilitySettings.VisibilityCulling.MaxTimeWithoutRender;
+
+	//TODO: Pull screen size out into it's own debug flag in the scalability state.
+	bool bCull = bCullByNotRendered || !bInsideAnyView;
 
 	OutState.bCulled |= bCull;
 #if DEBUG_SCALABILITY_STATE
@@ -1443,13 +1616,13 @@ void FNiagaraWorldManager::DistanceCull(UNiagaraEffectType* EffectType, const FN
 	{
 		LODDistance = Component->PreviewLODDistance;
 	}
-	else if(bCachedPlayerViewLocationsValid)
+	else if(GetCachedViewInfo().Num() > 0)
 	{
 		float ClosestDistSq = FLT_MAX;
 		FVector Location = Component->GetComponentLocation();
-		for (FVector ViewLocation : CachedPlayerViewLocations)
+		for (const FNiagaraCachedViewInfo& ViewInfo : GetCachedViewInfo())
 		{
-			ClosestDistSq = FMath::Min(ClosestDistSq, FVector::DistSquared(ViewLocation, Location));
+			ClosestDistSq = FMath::Min(ClosestDistSq, FVector::DistSquared(ViewInfo.ViewToWorld.GetOrigin(), Location));
 		}
 
 		LODDistance = FMath::Sqrt(ClosestDistSq);
@@ -1495,12 +1668,12 @@ void FNiagaraWorldManager::DistanceCull(UNiagaraEffectType* EffectType, const FN
 
 void FNiagaraWorldManager::DistanceCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, FVector Location, FNiagaraScalabilityState& OutState)
 {
-	if (GetScalabilityCullingMode() == ENiagaraScalabilityCullingMode::Enabled && bCachedPlayerViewLocationsValid)
+	if (GetScalabilityCullingMode() == ENiagaraScalabilityCullingMode::Enabled && GetCachedViewInfo().Num() > 0)
 	{
 		float ClosestDistSq = FLT_MAX;
-		for (FVector ViewLocation : CachedPlayerViewLocations)
+		for (const FNiagaraCachedViewInfo& ViewInfo : GetCachedViewInfo())
 		{
-			ClosestDistSq = FMath::Min(ClosestDistSq, FVector::DistSquared(ViewLocation, Location));
+			ClosestDistSq = FMath::Min(ClosestDistSq, FVector::DistSquared(ViewInfo.ViewToWorld.GetOrigin(), Location));
 		}
 
 		if (GEnableNiagaraDistanceCulling && ScalabilitySettings.bCullByDistance)
@@ -1690,3 +1863,38 @@ FAutoConsoleCommandWithWorld GDumpNiagaraScalabilityData(
 }));
 
 #endif
+
+void FNiagaraCachedViewInfo::Init(const FWorldCachedViewInfo& WorldViewInfo)
+{
+	ViewMat = WorldViewInfo.ViewMatrix;
+	ProjectionMat = WorldViewInfo.ProjectionMatrix;
+	ViewToWorld = WorldViewInfo.ViewToWorld;
+	ViewProjMat = WorldViewInfo.ViewProjectionMatrix;
+
+	FrutumPlanes.SetNumUninitialized(6);
+	if (!ViewProjMat.GetFrustumNearPlane(FrutumPlanes[0]))
+	{
+		FrutumPlanes[0] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	if (!ViewProjMat.GetFrustumFarPlane(FrutumPlanes[1]))
+	{
+		FrutumPlanes[1] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	if (!ViewProjMat.GetFrustumTopPlane(FrutumPlanes[2]))
+	{
+		FrutumPlanes[2] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	if (!ViewProjMat.GetFrustumBottomPlane(FrutumPlanes[3]))
+	{
+		FrutumPlanes[3] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	if (!ViewProjMat.GetFrustumLeftPlane(FrutumPlanes[4]))
+	{
+		FrutumPlanes[4] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+	if (!ViewProjMat.GetFrustumRightPlane(FrutumPlanes[5]))
+	{
+		FrutumPlanes[5] = FPlane(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+}
+

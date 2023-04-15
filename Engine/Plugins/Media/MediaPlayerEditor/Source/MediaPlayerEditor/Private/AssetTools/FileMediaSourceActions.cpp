@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTools/FileMediaSourceActions.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "FileMediaSource.h"
 
 

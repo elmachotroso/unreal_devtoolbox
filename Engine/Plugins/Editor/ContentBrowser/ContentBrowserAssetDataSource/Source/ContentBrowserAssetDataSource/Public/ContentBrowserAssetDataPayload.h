@@ -4,8 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "ContentBrowserItemData.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "UObject/GCObject.h"
+#include "Containers/Set.h"
 
 class IAssetTypeActions;
 class FAssetThumbnail;
@@ -46,11 +47,13 @@ public:
 
 	UPackage* GetPackage(const bool bTryRecacheIfNull = false) const;
 
-	UPackage* LoadPackage() const;
+	// LoadTags(optional) allows passing specific tags to the linker when loading the asset package (@see ULevel::LoadAllExternalObjectsTag for an example usage)
+	UPackage* LoadPackage(TSet<FName> LoadTags = {}) const;
 
 	UObject* GetAsset(const bool bTryRecacheIfNull = false) const;
 
-	UObject* LoadAsset() const;
+	//  LoadTags (optional) allows passing specific tags to the linker when loading the asset (@see ULevel::LoadAllExternalObjectsTag for an example usage)
+	UObject* LoadAsset(TSet<FName> LoadTags = {}) const;
 
 	TSharedPtr<IAssetTypeActions> GetAssetTypeActions() const;
 
@@ -72,6 +75,8 @@ private:
 
 	mutable bool bHasCachedFilename = false;
 	mutable FString CachedFilename;
+
+	void FlushCaches() const;
 };
 
 class CONTENTBROWSERASSETDATASOURCE_API FContentBrowserAssetFileItemDataPayload_Creation : public FContentBrowserAssetFileItemDataPayload, public FGCObject

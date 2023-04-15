@@ -66,47 +66,43 @@ private:
 /**
  * Simple pixel shader reads from a cube map texture and unwraps it in the LongitudeLatitude form.
  */
-template<bool bHDROutput>
 class FCubemapTexturePropertiesPS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FCubemapTexturePropertiesPS,Global);
+
+	class FHDROutput : SHADER_PERMUTATION_BOOL("HDR_OUTPUT");
+	class FCubeArray : SHADER_PERMUTATION_BOOL("TEXTURECUBE_ARRAY");
+	using FPermutationDomain = TShaderPermutationDomain<FHDROutput, FCubeArray>;
+
 public:
+	FCubemapTexturePropertiesPS() = default;
+	FCubemapTexturePropertiesPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsPCPlatform(Parameters.Platform);}
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
+	void SetParameters(FRHICommandList& RHICmdList, const FTexture* InTexture, const FMatrix& InColorWeightsValue, float InMipLevel, float InSliceIndex, bool bInIsTextureCubeArray, const FMatrix44f& InViewMatrix, bool bInShowLongLatUnwrap, float InGammaValue);
 
-	FCubemapTexturePropertiesPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader(Initializer)
-	{
-		CubeTexture.Bind(Initializer.ParameterMap,TEXT("CubeTexture"));
-		CubeTextureSampler.Bind(Initializer.ParameterMap,TEXT("CubeTextureSampler"));
-		ColorWeights.Bind(Initializer.ParameterMap,TEXT("ColorWeights"));
-		PackedProperties0.Bind(Initializer.ParameterMap,TEXT("PackedProperties0"));
-		Gamma.Bind(Initializer.ParameterMap,TEXT("Gamma"));
-	}
-	FCubemapTexturePropertiesPS() {}
-
-	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture, const FMatrix& ColorWeightsValue, float MipLevel, float GammaValue);
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("HDR_OUTPUT"), bHDROutput ? TEXT("1") : TEXT("0"));
-	}
 private:
 	LAYOUT_FIELD(FShaderResourceParameter, CubeTexture);
 	LAYOUT_FIELD(FShaderResourceParameter, CubeTextureSampler);
 	LAYOUT_FIELD(FShaderParameter, PackedProperties0);
 	LAYOUT_FIELD(FShaderParameter, ColorWeights);
 	LAYOUT_FIELD(FShaderParameter, Gamma);
+	LAYOUT_FIELD(FShaderParameter, NumSlices);
+	LAYOUT_FIELD(FShaderParameter, SliceIndex);
+	LAYOUT_FIELD(FShaderParameter, ViewMatrix);
 };
 
 
 class ENGINE_API FMipLevelBatchedElementParameters : public FBatchedElementParameters
 {
 public:
-	FMipLevelBatchedElementParameters(float InMipLevel, bool bInHDROutput = false)
+	FMipLevelBatchedElementParameters(float InMipLevel, float InSliceIndex, bool bInIsTextureCubeArray, const FMatrix44f& InViewMatrix, bool bInShowLongLatUnwrap, bool bInHDROutput)
 		: bHDROutput(bInHDROutput)
 		, MipLevel(InMipLevel)
+		, SliceIndex(InSliceIndex)
+		, ViewMatrix(InViewMatrix)
+		, bShowLongLatUnwrap(bInShowLongLatUnwrap)
+		, bIsTextureCubeArray(bInIsTextureCubeArray)
 	{
 	}
 
@@ -114,11 +110,16 @@ public:
 	virtual void BindShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, ERHIFeatureLevel::Type InFeatureLevel, const FMatrix& InTransform, const float InGamma, const FMatrix& ColorWeights, const FTexture* Texture) override;
 
 private:
-	template<typename TPixelShader> void BindShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, ERHIFeatureLevel::Type InFeatureLevel, const FMatrix& InTransform, const float InGamma, const FMatrix& ColorWeights, const FTexture* Texture);
-
 	bool bHDROutput;
+
 	/** Parameters that need to be passed to the shader */
 	float MipLevel;
+	float SliceIndex;
+	FMatrix44f ViewMatrix;
+	bool bShowLongLatUnwrap;
+
+	/** Parameters that are used to select a shader permutation */
+	bool bIsTextureCubeArray;
 };
 
 

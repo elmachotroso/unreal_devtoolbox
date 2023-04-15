@@ -3,6 +3,21 @@
 #include "Common.ush"
 #include "SceneData.ush"
 
+//
+// Functions to get instanced stereo properties from a VF. They have to be macros as hlslcc does not support member functions (as of May 2022 it is still used for a couple platforms),
+// whereas defining them as overloaded functions (taking VF as parameter) doesn't work as some VFs can be identical for typeless HLSL overloading rules.
+//
+#if INSTANCED_STEREO
+	#define GetInstanceIdFromVF(VFInput)				(VFInput.InstanceId)
+	#define GetEyeIndexFromVF(VFInput)					(IsInstancedStereo() ? (GetInstanceIdFromVF(VFInput) & 1) : 0)
+	#define ResolveViewFromVF(VFInput)					(ResolveView(GetEyeIndexFromVF(VFInput)))
+#else
+	#define GetInstanceIdFromVF(VFInput)				(0)
+	#define GetEyeIndexFromVF(VFInput)					(0)
+	#define ResolveViewFromVF(VFInput)					(ResolveView())
+#endif // INSTANCED_STEREO
+
+
 //  
 // Required VF inputs to support dynamic instancing 
 //
@@ -22,10 +37,15 @@
 	#define VF_GPUSCENE_GET_SHADOWMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) \
 		GetLightmapData(LightmapDataIndex).ShadowMapCoordinateScaleBias
 
+	// GPUCULL_TODO: Makes use of DynamicDraw workaround, should instead refactor VF interfaces and provide the instance ID data directly.
 	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_) \
 		_VFInputOut_.InstanceIdOffset = (_PrimitiveId_) | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;	\
 		_VFInputOut_.DrawInstanceId = _DrawInstanceId_;
 
+	#define VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+
+	#undef GetInstanceIdFromVF
+	#define GetInstanceIdFromVF(VFInput)				(VFInput.DrawInstanceId)
 
 #elif (VF_USE_PRIMITIVE_SCENE_DATA == 2)	
 	#define VF_GPUSCENE_DECLARE_INPUT_BLOCK(Attr0) \
@@ -53,19 +73,48 @@
 
 	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_)
 
+	#define VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+
+	#undef GetInstanceIdFromVF
+	#define GetInstanceIdFromVF(VFInput)				(VFInput.DrawInstanceId)
+
 #else
 	#define VF_GPUSCENE_DECLARE_INPUT_BLOCK(Attr0) 
 	#define VF_GPUSCENE_GET_INTERMEDIATES(VFInput) GetSceneDataIntermediates()
 	#define VF_GPUSCENE_GET_LIGHTMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) PrecomputedLightingBuffer.LightMapCoordinateScaleBias
 	#define VF_GPUSCENE_GET_SHADOWMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) PrecomputedLightingBuffer.ShadowMapCoordinateScaleBias
 	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_)
+
+	#if INSTANCED_STEREO
+		#define VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK() \
+			uint InstanceId : SV_InstanceID;
+	#else
+		#define VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+	#endif 
+
+#endif
+
+// In case other paths in the above #if miss the declaration, catch this early
+#if !defined(VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK)
+	#error VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK() should be defined for a vertex factory
+#endif
+
+#if !defined(GetInstanceIdFromVF)
+	#error GetInstanceIdFromVF() should be defined.
+#endif
+
+#if !defined(GetEyeIndexFromVF)
+	#error GetEyeIndexFromVF() should be defined.
+#endif
+
+#if !defined(ResolveViewFromVF)
+	#error ResolveViewFromVF() should be defined.
 #endif
 
 
 FLWCVector3 TransformLocalToWorld(float3 LocalPosition, FLWCMatrix LocalToWorld)
 {
-	//invariant code!
-	return LWCInvariantMultiply(LocalPosition, LocalToWorld);
+	return LWCMultiply(LocalPosition, LocalToWorld);
 }
 
 FLWCVector3 TransformLocalToWorld(float3 LocalPosition)
@@ -75,14 +124,28 @@ FLWCVector3 TransformLocalToWorld(float3 LocalPosition)
 
 float4 TransformLocalToTranslatedWorld(float3 LocalPosition, FLWCMatrix LocalToWorld)
 {
-	FLWCVector3 WorldPosition = LWCMultiply(LocalPosition, LocalToWorld);
-	FLWCVector3 TranslatedWorldPosition = LWCAdd(WorldPosition, ResolvedView.PreViewTranslation);
-	return float4(LWCToFloat(TranslatedWorldPosition), 1.0f);
+	// Multiply local position with LocalToWorld 3x3 first for high precision rotation and scale, then move the world position part to translated world before adding it  
+	float3 RotatedScaledPosition = (LocalPosition.xxx * LocalToWorld.M[0].xyz + LocalPosition.yyy * LocalToWorld.M[1].xyz + LocalPosition.zzz * LocalToWorld.M[2].xyz);
+	FLWCVector3 TranslatedWorldPositionOrigin = LWCAdd(LWCGetOrigin(LocalToWorld), ResolvedView.PreViewTranslation);
+	return float4(RotatedScaledPosition + LWCToFloat(TranslatedWorldPositionOrigin), 1.0f);
 }
 
 float4 TransformLocalToTranslatedWorld(float3 LocalPosition, float4x4 LocalToWorld)
 {
 	return TransformLocalToTranslatedWorld(LocalPosition, LWCPromote(LocalToWorld));
+}
+
+float4 TransformPreviousLocalPositionToTranslatedWorld(float3 PrevLocalPosition, FLWCMatrix PrevLocalToWorld)
+{
+	// Multiply local position with PrevLocalToWorld 3x3 first for high precision rotation and scale, then move the world position part to translated world before adding it  
+	float3 RotatedScaledPosition = (PrevLocalPosition.xxx * PrevLocalToWorld.M[0].xyz + PrevLocalPosition.yyy * PrevLocalToWorld.M[1].xyz + PrevLocalPosition.zzz * PrevLocalToWorld.M[2].xyz);
+	FLWCVector3 TranslatedPreviousWorldPositionOrigin = LWCAdd(LWCGetOrigin(PrevLocalToWorld), ResolvedView.PrevPreViewTranslation);
+	return float4(RotatedScaledPosition + LWCToFloat(TranslatedPreviousWorldPositionOrigin), 1.0f);
+}
+
+float4 TransformPreviousLocalPositionToTranslatedWorld(float3 PrevLocalPosition, float4x4 PrevLocalToWorld)
+{
+	return TransformPreviousLocalPositionToTranslatedWorld(PrevLocalPosition, LWCPromote(PrevLocalToWorld));
 }
 
 float3 RotateLocalToWorld(float3 LocalDirection, float3x3 LocalToWorld, float3 InvScale)
@@ -146,7 +209,7 @@ float2 UnitToOct( float3 N )
 	N.xy /= dot( 1, abs(N) );
 	if( N.z <= 0 )
 	{
-		N.xy = ( 1 - abs(N.yx) ) * ( N.xy >= 0 ? float2(1,1) : float2(-1,-1) );
+		N.xy = ( 1 - abs(N.yx) ) * select( N.xy >= 0, float2(1,1), float2(-1,-1) );
 	}
 	return N.xy;
 }
@@ -156,31 +219,7 @@ float3 OctToUnit( float2 Oct )
 	float3 N = float3( Oct, 1 - dot( 1, abs(Oct) ) );
 	if( N.z < 0 )
 	{
-		N.xy = ( 1 - abs(N.yx) ) * ( N.xy >= 0 ? float2(1,1) : float2(-1,-1) );
+		N.xy = ( 1 - abs(N.yx) ) * select( N.xy >= 0, float2(1,1), float2(-1,-1) );
 	}
 	return normalize(N);
 }
-
-#if ODS_CAPTURE
-/*
-	Apply omni-directional stereo displacement to a stereo cube map render.
-	This can later be reconstructed into a stereo lat-long by ODSCapture.usf
-	See: https://developers.google.com/vr/jump/rendering-ods-content.pdf
-*/
-float3 OffsetODS(float3 WorldPosition, float3 WorldCameraPosition, float IPD)
-{
-	float3 CamOffset = WorldPosition.xyz - WorldCameraPosition.xyz;
-	
-	float4 D = float4(CamOffset.xyz, dot(CamOffset.xyz, CamOffset.xyz));
-	D *= rsqrt(D.w);
-	
-	float3 WorldUp = float3(0.0, 0.0, 1.0);
-	float3 T = normalize(cross(D.xyz, WorldUp.xyz));
-
-	float A = IPD * IPD / D.w;
-	float B = IPD / D.w * sqrt(D.w * D.w - IPD * IPD);
-	
-	return -A * D + B * T;
-}
-#endif
-

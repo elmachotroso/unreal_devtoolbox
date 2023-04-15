@@ -1,29 +1,50 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataLayerPropertyTypeCustomization.h"
-#include "DataLayer/DataLayerPropertyTypeCustomizationHelper.h"
+
+#include "Containers/Array.h"
+#include "CoreTypes.h"
+#include "DataLayer/DataLayerAction.h"
 #include "DataLayer/DataLayerDragDropOp.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
+#include "DataLayer/DataLayerPropertyTypeCustomizationHelper.h"
 #include "DataLayerEditorModule.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "DragAndDrop/CompositeDragDropOp.h"
-#include "Algo/Accumulate.h"
-#include "Modules/ModuleManager.h"
-#include "PropertyHandle.h"
+#include "Delegates/Delegate.h"
 #include "DetailWidgetRow.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
+#include "DragAndDrop/CompositeDragDropOp.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Docking/TabManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Reply.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "LevelEditor.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyHandle.h"
+#include "SDropTarget.h"
+#include "SceneOutlinerStandaloneTypes.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
-#include "SDropTarget.h"
-#include "Editor.h"
-#include "LevelEditor.h"
-#include "EditorFontGlyphs.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
-#include "SceneOutlinerStandaloneTypes.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
@@ -64,12 +85,12 @@ void FDataLayerPropertyTypeCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 				.IsEnabled_Lambda([this]
 				{
 					FPropertyAccess::Result PropertyAccessResult;
-					const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
+					const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
 					return (!DataLayer || !DataLayer->IsLocked());
 				})
 				.ToolTipText(LOCTEXT("ComboButtonTip", "Drag and drop a Data Layer onto this property, or choose one from the drop down."))
 				.OnGetMenuContent(this, &FDataLayerPropertyTypeCustomization::OnGetDataLayerMenu)
-				.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+				.ButtonStyle(FAppStyle::Get(), "NoBorder")
 				.ForegroundColor(FSlateColor::UseForeground())
 				.ContentPadding(FMargin(0))
 				.ButtonContent()
@@ -88,11 +109,11 @@ void FDataLayerPropertyTypeCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 				.Visibility_Lambda([this] 
 				{
 					FPropertyAccess::Result PropertyAccessResult;
-					const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
+					const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
 					return (DataLayer && DataLayer->IsLocked()) ? EVisibility::Visible : EVisibility::Collapsed;
 				})
 				.ColorAndOpacity(this, &FDataLayerPropertyTypeCustomization::GetForegroundColor)
-				.Image(FEditorStyle::GetBrush(TEXT("PropertyWindow.Locked")))
+				.Image(FAppStyle::GetBrush(TEXT("PropertyWindow.Locked")))
 				.ToolTipText(LOCTEXT("LockedRuntimeDataLayerEditing", "Locked editing. (To allow editing, in Data Layer Outliner, go to Advanced -> Allow Runtime Data Layer Editing)"))
 			]
 
@@ -102,7 +123,7 @@ void FDataLayerPropertyTypeCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 			.AutoWidth()
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ToolTipText(LOCTEXT("SelectTip", "Select all actors in this Data Layer"))
 				.OnClicked(this, &FDataLayerPropertyTypeCustomization::OnSelectDataLayer)
 				.Visibility(this, &FDataLayerPropertyTypeCustomization::GetSelectDataLayerVisibility)
@@ -124,7 +145,7 @@ void FDataLayerPropertyTypeCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 void FDataLayerPropertyTypeCustomization::OnBrowse()
 {
 	FPropertyAccess::Result PropertyAccessResult;
-	if (const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult))
+	if (const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult))
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 		LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(FTabId("LevelEditorDataLayerBrowser"));
@@ -134,7 +155,7 @@ void FDataLayerPropertyTypeCustomization::OnBrowse()
 	}
 }
 
-UDataLayer* FDataLayerPropertyTypeCustomization::GetDataLayerFromPropertyHandle(FPropertyAccess::Result* OutPropertyAccessResult) const
+UDataLayerInstance* FDataLayerPropertyTypeCustomization::GetDataLayerFromPropertyHandle(FPropertyAccess::Result* OutPropertyAccessResult) const
 {
 	FName DataLayerName;
 	FPropertyAccess::Result Result = PropertyHandle->GetValue(DataLayerName);
@@ -144,8 +165,8 @@ UDataLayer* FDataLayerPropertyTypeCustomization::GetDataLayerFromPropertyHandle(
 	}
 	if (Result == FPropertyAccess::Success)
 	{
-		UDataLayer* DataLayer = UDataLayerEditorSubsystem::Get()->GetDataLayerFromName(DataLayerName);
-		return DataLayer;
+		UDataLayerInstance* DataLayerInstance = UDataLayerEditorSubsystem::Get()->GetDataLayerInstance(DataLayerName);
+		return DataLayerInstance;
 	}
 	return nullptr;
 }
@@ -153,33 +174,33 @@ UDataLayer* FDataLayerPropertyTypeCustomization::GetDataLayerFromPropertyHandle(
 const FSlateBrush* FDataLayerPropertyTypeCustomization::GetDataLayerIcon() const
 {
 	FPropertyAccess::Result PropertyAccessResult;
-	const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
+	const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
 	if (!DataLayer)
 	{
-		return FEditorStyle::GetBrush(TEXT("DataLayer.Editor"));
+		return FAppStyle::GetBrush(TEXT("DataLayer.Editor"));
 	}
 	if (PropertyAccessResult == FPropertyAccess::MultipleValues)
 	{
-		return FEditorStyle::GetBrush(TEXT("LevelEditor.Tabs.DataLayers"));
+		return FAppStyle::GetBrush(TEXT("LevelEditor.Tabs.DataLayers"));
 	}
-	return FEditorStyle::GetBrush(DataLayer->GetDataLayerIconName());
+	return FAppStyle::GetBrush(DataLayer->GetDataLayerIconName());
 }
 
 FText FDataLayerPropertyTypeCustomization::GetDataLayerText() const
 {
 	FPropertyAccess::Result PropertyAccessResult;
-	const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
+	const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
 	if (PropertyAccessResult == FPropertyAccess::MultipleValues)
 	{
 		return NSLOCTEXT("PropertyEditor", "MultipleValues", "Multiple Values");
 	}
-	return UDataLayer::GetDataLayerText(DataLayer);
+	return UDataLayerInstance::GetDataLayerText(DataLayer);
 }
 
 FSlateColor FDataLayerPropertyTypeCustomization::GetForegroundColor() const
 {
 	FPropertyAccess::Result PropertyAccessResult;
-	const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
+	const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle(&PropertyAccessResult);
 	if (DataLayer && DataLayer->IsLocked())
 	{
 		return FSceneOutlinerCommonLabelData::DarkColor;
@@ -189,18 +210,18 @@ FSlateColor FDataLayerPropertyTypeCustomization::GetForegroundColor() const
 
 TSharedRef<SWidget> FDataLayerPropertyTypeCustomization::OnGetDataLayerMenu()
 {
-	return FDataLayerPropertyTypeCustomizationHelper::CreateDataLayerMenu([this](const UDataLayer* DataLayer) { AssignDataLayer(DataLayer); });
+	return FDataLayerPropertyTypeCustomizationHelper::CreateDataLayerMenu([this](const UDataLayerInstance* DataLayer) { AssignDataLayer(DataLayer); });
 }
 
 EVisibility FDataLayerPropertyTypeCustomization::GetSelectDataLayerVisibility() const
 {
-	const UDataLayer* DataLayer = GetDataLayerFromPropertyHandle();
+	const UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle();
 	return DataLayer ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply FDataLayerPropertyTypeCustomization::OnSelectDataLayer()
 {
-	if (UDataLayer* DataLayer = GetDataLayerFromPropertyHandle())
+	if (UDataLayerInstance* DataLayer = GetDataLayerFromPropertyHandle())
 	{
 		GEditor->SelectNone(true, true);
 		UDataLayerEditorSubsystem::Get()->SelectActorsInDataLayer(DataLayer, true, true);
@@ -208,11 +229,11 @@ FReply FDataLayerPropertyTypeCustomization::OnSelectDataLayer()
 	return FReply::Handled();
 }
 
-void FDataLayerPropertyTypeCustomization::AssignDataLayer(const UDataLayer* InDataLayer)
+void FDataLayerPropertyTypeCustomization::AssignDataLayer(const UDataLayerInstance* InDataLayerInstance)
 {
-	if (GetDataLayerFromPropertyHandle() != InDataLayer)
+	if (GetDataLayerFromPropertyHandle() != InDataLayerInstance)
 	{
-		PropertyHandle->SetValue(InDataLayer ? InDataLayer->GetFName() : NAME_None);
+		PropertyHandle->SetValue(InDataLayerInstance ? InDataLayerInstance->GetDataLayerFName() : NAME_None);
 		UDataLayerEditorSubsystem::Get()->OnDataLayerChanged().Broadcast(EDataLayerAction::Reset, NULL, NAME_None);
 	}
 }
@@ -222,10 +243,10 @@ FReply FDataLayerPropertyTypeCustomization::OnDrop(const FGeometry& InGeometry, 
 	TSharedPtr<const FDataLayerDragDropOp> DataLayerDragDropOp = GetDataLayerDragDropOp(InDragDropEvent.GetOperation());
 	if (DataLayerDragDropOp.IsValid())
 	{
-		const TArray<FName>& DataLayerLabels = DataLayerDragDropOp->DataLayerLabels;
-		if (ensure(DataLayerLabels.Num() == 1))
+		const TArray<FDataLayerDragDropOp::FDragDropInfo>& DragDropInfos = DataLayerDragDropOp->DataLayerDragDropInfos;
+		if (ensure(DragDropInfos.Num() == 1))
 		{
-			if (const UDataLayer* DataLayerPtr = UDataLayerEditorSubsystem::Get()->GetDataLayerFromLabel(DataLayerLabels[0]))
+			if (const UDataLayerInstance* DataLayerPtr = UDataLayerEditorSubsystem::Get()->GetDataLayerInstance(DragDropInfos[0].DataLayerInstanceName))
 			{
 				AssignDataLayer(DataLayerPtr);
 			}
@@ -237,7 +258,7 @@ FReply FDataLayerPropertyTypeCustomization::OnDrop(const FGeometry& InGeometry, 
 bool FDataLayerPropertyTypeCustomization::OnVerifyDrag(TSharedPtr<FDragDropOperation> InDragDrop)
 {
 	TSharedPtr<const FDataLayerDragDropOp> DataLayerDragDropOp = GetDataLayerDragDropOp(InDragDrop);
-	return DataLayerDragDropOp.IsValid() && DataLayerDragDropOp->DataLayerLabels.Num() == 1;
+	return DataLayerDragDropOp.IsValid() && DataLayerDragDropOp->DataLayerDragDropInfos.Num() == 1;
 }
 
 TSharedPtr<const FDataLayerDragDropOp> FDataLayerPropertyTypeCustomization::GetDataLayerDragDropOp(TSharedPtr<FDragDropOperation> InDragDrop)

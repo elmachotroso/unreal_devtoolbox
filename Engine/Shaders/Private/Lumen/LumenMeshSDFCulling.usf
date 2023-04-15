@@ -1,14 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenMeshSDFCulling.usf
-=============================================================================*/
-
 #include "../Common.ush"
 #include "../DistanceFieldLightingShared.ush"
 #include "../HybridIndirectLighting.ush"
 #include "LumenCardCommon.ush"
-#include "ProbeHierarchy/LumenProbeTracing.ush"
 #include "../MeshDistanceFieldCommon.ush"
 
 uint ObjectBoundingGeometryIndexCount;
@@ -209,12 +204,14 @@ void CullMeshSDFObjectsForViewCS(
 	if (ObjectIndex < NumSceneObjects)
 	{
 		FDFObjectBounds DFObjectBounds = LoadDFObjectBounds(ObjectIndex);
+		const float3 TranslatedCenter = LWCToFloat(LWCAdd(DFObjectBounds.Center, PrimaryView.PreViewTranslation));
 
-		float DistanceToViewSq = LengthSq(LWCHackToFloat(PrimaryView.WorldCameraOrigin) - DFObjectBounds.Center);
+		float DistanceToViewSq = LengthSq(PrimaryView.TranslatedWorldCameraOrigin - TranslatedCenter);
 
-		if (DistanceToViewSq < Square(CardTraceEndDistanceFromCamera + DFObjectBounds.SphereRadius)
+		if ((DFObjectBounds.bVisible || DFObjectBounds.bAffectIndirectLightingWhileHidden)
+			&& DistanceToViewSq < Square(CardTraceEndDistanceFromCamera + DFObjectBounds.SphereRadius)
 			&& (DFObjectBounds.SphereRadius > MeshSDFRadiusThreshold || DFObjectBounds.bEmissiveLightSource)
-			&& ViewFrustumIntersectSphere(DFObjectBounds.Center, DFObjectBounds.SphereRadius + MaxMeshSDFInfluenceRadius)) 
+			&& ViewFrustumIntersectSphere(LWCHackToFloat(DFObjectBounds.Center), DFObjectBounds.SphereRadius + MaxMeshSDFInfluenceRadius)) 
 		{
 			FDFObjectData DFObjectData = LoadDFObjectData(ObjectIndex);
 
@@ -297,7 +294,7 @@ void MeshSDFObjectCullVS(
 	if (ObjectType == CULL_MESH_TYPE_SDF)
 	{
 		FDFObjectBounds DFObjectBounds = LoadDFObjectBounds(ObjectIndex);
-		ObjectWorldOrigin = DFObjectBounds.Center;
+		ObjectWorldOrigin = LWCHackToFloat(DFObjectBounds.Center);
 		ObjectWorldRadius = DFObjectBounds.SphereRadius;
 	}
 	#endif // CULL_MESH_SDF
@@ -314,7 +311,7 @@ void MeshSDFObjectCullVS(
 			ObjectWorldOrigin = LumenCardData.Origin;
 			ObjectWorldRadius = length(LumenCardData.LocalExtent);
 #else
-			ObjectWorldOrigin = LumenHeightfield.BoundsCenter;
+			ObjectWorldOrigin = LWCHackToFloat(LumenHeightfield.BoundsCenter); // LWC_TODO:
 			ObjectWorldRadius = length(LumenHeightfield.BoundsExtent);
 #endif
 		}
@@ -402,7 +399,7 @@ void MeshSDFObjectCullPS(
 	if (ObjectType == CULL_MESH_TYPE_SDF)
 	{
 		FDFObjectData DFObjectData = LoadDFObjectData(ObjectIndex);
-		WorldObjectExtent = mul(DFObjectData.VolumePositionExtent, abs(((float3x3)DFObjectData.VolumeToWorld)));
+		WorldObjectExtent = mul(DFObjectData.VolumePositionExtent, abs(((float3x3)DFObjectData.VolumeToWorld.M)));
 	}
 	#endif // CULL_MESH_SDF
 
@@ -421,7 +418,7 @@ void MeshSDFObjectCullPS(
 		WorldObjectPosition = LumenCardData.Origin;
 		WorldObjectExtent = mul(abs(LumenCardData.WorldToLocalRotation), LumenCardData.LocalExtent);
 #else
-		WorldObjectPosition = LumenHeightfield.BoundsCenter;
+		WorldObjectPosition = LWCHackToFloat(LumenHeightfield.BoundsCenter); // LWC_TODO:
 		WorldObjectExtent = LumenHeightfield.BoundsExtent;
 #endif
 	}
@@ -434,7 +431,7 @@ void MeshSDFObjectCullPS(
 	float4 FrustumPlanes[6];
 	{
 		// Setup tile frustum planes
-		float2 TileScale = -float2(View.ViewSizeAndInvSize.zw - View.ViewSizeAndInvSize.xy) * rcp(2 * (1u << CardGridPixelSizeShift));
+		float2 TileScale = View.ViewSizeAndInvSize.xy * rcp(2 * (1u << CardGridPixelSizeShift));
 		float2 TileBias = TileScale - PixelPos - 0.5;
 
 		float4 C1 = float4(View.ViewToClip._11 * TileScale.x, 0.0f, View.ViewToClip._31 * TileScale.x + TileBias.x, 0.0f);
@@ -503,7 +500,7 @@ void MeshSDFObjectCullPS(
 #if INTERSECT_FROXEL_WITH_SDF
 		if (ObjectType == CULL_MESH_TYPE_SDF && bTileIntersectsObject)
 		{
-			float3 WorldTileCenterPosition = ComputeCellWorldPosition(FroxelGridCoordinate, .5f);
+			float3 WorldTileCenterPosition = ComputeCellWorldPosition(FroxelGridCoordinate, .5f); // LWC_TODO
 
 			float3 WorldTileCornerVector = (ComputeCellWorldPosition(FroxelGridCoordinate, float3(1, 1, 1)) - WorldTileCenterPosition);
 			float CornerLength = length(WorldTileCornerVector);
@@ -512,7 +509,7 @@ void MeshSDFObjectCullPS(
 			CornerLength = max(length(WorldTileCornerVector), CornerLength);
 
 			float TileBoundingSphereRadius = CornerLength + MaxMeshSDFInfluenceRadius;
-			float DistanceToSurface = DistanceToNearestSurfaceForObject(ObjectIndex, WorldTileCenterPosition, TileBoundingSphereRadius);
+			float DistanceToSurface = DistanceToNearestSurfaceForObject(ObjectIndex, LWCPromote(WorldTileCenterPosition), TileBoundingSphereRadius);
 			bTileIntersectsObject = DistanceToSurface < TileBoundingSphereRadius;
 		}
 #endif
@@ -538,84 +535,6 @@ void MeshSDFObjectCullPS(
 			{
 				RWCulledObjectsToCompactArray[CulledObjectToCompactIndex * CULLED_OBJECT_TO_COMPACT_STRIDE + 0] = PackObjectData(ObjectData);
 				RWCulledObjectsToCompactArray[CulledObjectToCompactIndex * CULLED_OBJECT_TO_COMPACT_STRIDE + 1] = GridIndex;
-			}
-		}
-	}
-}
-
-uint ProbeHierarchyLevelIndex;
-Texture2D<uint> ProbeListPerEmitTile;
-
-void MeshSDFObjectCullForProbesPS(
-	FObjectCullVertexOutput Input, 
-	in float4 SVPos : SV_POSITION)
-{
-	uint2 PixelCoord = SVPos.xy;
-	uint2 ProbeTileCoord = PixelCoord;
-
-	FObjectData ObjectData = UnpackObjectData(Input.ObjectIndex);
-	FDFObjectData DFObjectData = LoadDFObjectData(ObjectData.Index);
-
-	float3 WorldObjectPosition = Input.PositionAndRadius.xyz;
-	float3 WorldObjectExtent = mul(DFObjectData.VolumePositionExtent, abs((float3x3) DFObjectData.VolumeToWorld));
-
-	for (uint ProbeIndexInTile = 0; ProbeIndexInTile < PROBE_HIERARCHY_MAX_EMIT_PER_TILE; ++ProbeIndexInTile)
-	{
-		uint2 ProbeStorageCoord = EmitTileCoordToProbeStorageCoord(ProbeTileCoord, ProbeIndexInTile);
-
-		uint ProbeIndex = ProbeListPerEmitTile[ProbeStorageCoord];
-
-		if (ProbeIndex != PROBE_INVALID_INDEX)
-		{
-			FProbeInfo ProbeInfo = ReadProbeInfo(ProbeIndex);
-
-			float ProbeTMin;
-			float ProbeTMax;
-			GetProbeTracingRange(ProbeInfo, ProbeHierarchyLevelIndex, ProbeTMin, ProbeTMax);
-
-			ProbeTMax = min(MaxMeshSDFInfluenceRadius, ProbeTMax);
-
-			float3 ProbeWorldPosition = ProbeInfo.TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation);
-
-			float DistanceToViewSq = LengthSq(LWCHackToFloat(PrimaryView.WorldCameraOrigin) - ProbeWorldPosition);
-
-			if (DistanceToViewSq < Pow2(CardTraceEndDistanceFromCamera)
-				&& ProbeTMin < ProbeTMax)
-			{
-				bool bProbeIntersectsObject = true;
-
-				// Check bounds
-				if (bProbeIntersectsObject)
-				{
-					float DistanceFromObjectToProbeCenterSq = ComputeSquaredDistanceFromBoxToPoint(WorldObjectPosition, WorldObjectExtent, ProbeWorldPosition);
-
-					if (DistanceFromObjectToProbeCenterSq > Pow2(ProbeTMax))
-					{
-						bProbeIntersectsObject = false;
-					}
-				}
-
-				// Check distance to SDF
-				if (bProbeIntersectsObject)
-				{
-					float DistanceToSurface = DistanceToNearestSurfaceForObject(ObjectData.Index, ProbeWorldPosition, MaxMeshSDFInfluenceRadius);
-					bProbeIntersectsObject = DistanceToSurface < MaxMeshSDFInfluenceRadius;
-				}
-
-				if (bProbeIntersectsObject)
-				{
-					InterlockedAdd(RWNumGridCulledMeshSDFObjects[ProbeIndex], 1);
-
-					// Write out object index with a corresponding grid index
-					uint CulledObjectToCompactIndex;
-					InterlockedAdd(RWNumCulledObjectsToCompact[0], 1, CulledObjectToCompactIndex);
-
-					if (CulledObjectToCompactIndex < MaxNumberOfCulledObjects)
-					{
-						RWCulledObjectsToCompactArray[CulledObjectToCompactIndex * CULLED_OBJECT_TO_COMPACT_STRIDE + 0] = PackObjectData(CreateObjectData(ObjectData.Index, CULL_MESH_TYPE_SDF));
-						RWCulledObjectsToCompactArray[CulledObjectToCompactIndex * CULLED_OBJECT_TO_COMPACT_STRIDE + 1] = ProbeIndex;
-					}
-				}
 			}
 		}
 	}

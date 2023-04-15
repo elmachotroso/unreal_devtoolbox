@@ -17,10 +17,11 @@
 #include "Framework/Application/SlateUser.h"
 #include "Slate/SlateTextures.h"
 #include "Slate/DebugCanvas.h"
-
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "StereoRenderTargetManager.h"
+#include "HDRHelper.h"
 
 DEFINE_LOG_CATEGORY(LogViewport);
 
@@ -49,12 +50,15 @@ FSceneViewport::FSceneViewport( FViewportClient* InViewportClient, TSharedPtr<SV
 	, bForceViewportSize(false)
 	, bPlayInEditorIsSimulate( false )
 	, bCursorHiddenDueToCapture( false )
+	, bHDRViewport(false)
 	, MousePosBeforeHiddenDueToCapture( -1, -1 )
 	, RTTSize( 0, 0 )
 	, NumBufferedFrames(1)
 	, CurrentBufferedTargetIndex(0)
 	, NextBufferedTargetIndex(0)
 	, NumTouches(0)
+	, DisplayColorGamut(EDisplayColorGamut::sRGB_D65)
+	, DisplayOutputFormat(EDisplayOutputFormat::SDR_sRGB)
 {
 	bIsSlateViewport = true;
 	ViewportType = NAME_SceneViewport;
@@ -215,11 +219,12 @@ void FSceneViewport::ProcessInput( float DeltaTime )
 
 void FSceneViewport::UpdateCachedCursorPos( const FGeometry& InGeometry, const FPointerEvent& InMouseEvent )
 {
-	if (InMouseEvent.GetUserIndex() == FSlateApplication::CursorUserIndex)
+	const FPlatformUserId UserId = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(InMouseEvent.GetInputDeviceId());
+	if (UserId == FSlateApplication::SlateAppPrimaryPlatformUser)
 	{
 		FVector2D LocalPixelMousePos = InGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
-		LocalPixelMousePos.X *= CachedGeometry.Scale;
-		LocalPixelMousePos.Y *= CachedGeometry.Scale;
+		LocalPixelMousePos.X = FMath::Clamp(LocalPixelMousePos.X * CachedGeometry.Scale, (double)TNumericLimits<int32>::Min(), (double)TNumericLimits<int32>::Max());
+		LocalPixelMousePos.Y = FMath::Clamp(LocalPixelMousePos.Y * CachedGeometry.Scale, (double)TNumericLimits<int32>::Min(), (double)TNumericLimits<int32>::Max());
 
 		CachedCursorPos = LocalPixelMousePos.IntPoint();
 	}
@@ -293,8 +298,9 @@ void FSceneViewport::ProcessAccumulatedPointerInput()
 	if (NumMouseSamplesX > 0 || NumMouseSamplesY > 0)
 	{
 		const float DeltaTime = FApp::GetDeltaTime();
-		ViewportClient->InputAxis( this, 0, EKeys::MouseX, MouseDelta.X, DeltaTime, NumMouseSamplesX );
-		ViewportClient->InputAxis( this, 0, EKeys::MouseY, MouseDelta.Y, DeltaTime, NumMouseSamplesY );
+		FInputDeviceId DefaultInputDevice = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+		ViewportClient->InputAxis( this, DefaultInputDevice, EKeys::MouseX, MouseDelta.X, DeltaTime, NumMouseSamplesX );
+		ViewportClient->InputAxis( this, DefaultInputDevice, EKeys::MouseY, MouseDelta.Y, DeltaTime, NumMouseSamplesY );
 	}
 
 	if ( bCursorHiddenDueToCapture )
@@ -351,6 +357,29 @@ FIntPoint FSceneViewport::ViewportToVirtualDesktopPixel(FVector2D ViewportCoordi
 	return FIntPoint( FMath::TruncToInt(TransformedPoint.X / CachedGeometry.Scale), FMath::TruncToInt(TransformedPoint.Y / CachedGeometry.Scale) );
 }
 
+IStereoRenderTargetManager* RetrieveStereoRenderTargetManager(bool bIsStereoRenderingAllowed)
+{
+	return (bIsStereoRenderingAllowed && GEngine->StereoRenderingDevice.IsValid() && GEngine->StereoRenderingDevice->IsStereoEnabledOnNextFrame())
+		   ? GEngine->StereoRenderingDevice->GetRenderTargetManager()
+		   : nullptr;
+
+}
+
+void ComputeSceneViewportHDRMetaData(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported, const FVector2D& WindowTopLeft, const FVector2D& WindowBottomRight, void* OSWindow, bool bIsStereoRenderingAllowed)
+{
+	// @todo vreditor switch: This code needs to be called when switching between stereo/non when going immersive.  Seems to always work out that way anyway though? (Probably due to resize)
+	IStereoRenderTargetManager* const StereoRenderTargetManager = RetrieveStereoRenderTargetManager(bIsStereoRenderingAllowed);
+	if (StereoRenderTargetManager != nullptr)
+	{
+		if (StereoRenderTargetManager->HDRGetMetaDataForStereo(OutDisplayOutputFormat, OutDisplayColorGamut, OutbHDRSupported))
+		{
+			return;
+		}
+	}
+	
+	HDRGetMetaData(OutDisplayOutputFormat, OutDisplayColorGamut, OutbHDRSupported, WindowTopLeft, WindowBottomRight, OSWindow);
+}
+
 void FSceneViewport::OnDrawViewport( const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled )
 {
 	// Switch to the viewport clients world before resizing
@@ -360,14 +389,37 @@ void FSceneViewport::OnDrawViewport( const FGeometry& AllottedGeometry, const FS
 	if (!bForceViewportSize)
 	{
 		FIntPoint DrawSize = FIntPoint( FMath::RoundToInt( AllottedGeometry.GetDrawSize().X ), FMath::RoundToInt( AllottedGeometry.GetDrawSize().Y ) );
-		if( GetSizeXY() != DrawSize )
+		bool bIsHDREnabled = IsHDREnabled();
+
+		SWindow* PaintWindow = OutDrawElements.GetPaintWindow();
+		bool bHDRStale = (bIsHDREnabled != bHDRViewport);
+		if (PaintWindow)
 		{
-			TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow( ViewportWidget.Pin().ToSharedRef() );
-			if ( Window.IsValid() )
+			bool bNewHDREnabled;
+			EDisplayColorGamut NewDisplayColorGamut;
+			EDisplayOutputFormat NewDisplayOutputFormat;
+			ComputeSceneViewportHDRMetaData(NewDisplayOutputFormat, NewDisplayColorGamut, bNewHDREnabled, PaintWindow->GetPositionInScreen(), PaintWindow->GetPositionInScreen() + PaintWindow->GetSizeInScreen(), PaintWindow->GetNativeWindow()->GetOSWindowHandle(), IsStereoRenderingAllowed());
+			// if we manage to get data for the window, we can ignore the global toggle IsHDREnabled since HDRGetMetaData will take both the global flag and the monitor properties
+			bHDRStale = DisplayOutputFormat != NewDisplayOutputFormat;
+			bHDRStale |= DisplayColorGamut != NewDisplayColorGamut;
+			bHDRStale |= bHDRViewport != bNewHDREnabled;
+		}
+
+	    if (GetSizeXY() != DrawSize || bHDRStale)
+		{
+			TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(ViewportWidget.Pin().ToSharedRef());
+			if (Window.IsValid())
 			{
 				//@HACK VREDITOR
 				//check(Window.IsValid());
-				if ( Window->IsViewportSizeDrivenByWindow() )
+                // This makes sure that by the time when we call HDRGetMetaData again in UpdateViewportRHI, we still provide the same inputs so we don't re-create the swapchain on a per-frame basis
+				ensure(PaintWindow == Window.Get());
+
+				// In the stereo case, the HMD display size drives the base RT size, separate from the PIE mirror window
+				const bool bResizeTargetValid = Window->IsViewportSizeDrivenByWindow() || 
+					(GIsEditor && IsStereoRenderingAllowed());
+
+				if (bResizeTargetValid)
 				{
 					if (ViewportWidget.Pin()->ShouldRenderDirectly())
 					{
@@ -725,7 +777,7 @@ FReply FSceneViewport::OnMouseWheel( const FGeometry& InGeometry, const FPointer
 		// Pressed and released should be sent
 		ViewportClient->InputKey(FInputKeyEventArgs(this, InMouseEvent.GetUserIndex(), ViewportClientKey, IE_Pressed, 1.0f, InMouseEvent.IsTouchEvent()));
 		ViewportClient->InputKey(FInputKeyEventArgs(this, InMouseEvent.GetUserIndex(), ViewportClientKey, IE_Released, 1.0f, InMouseEvent.IsTouchEvent()));
-		ViewportClient->InputAxis(this, InMouseEvent.GetUserIndex(), EKeys::MouseWheelAxis, InMouseEvent.GetWheelDelta(), FApp::GetDeltaTime());
+		ViewportClient->InputAxis(this, InMouseEvent.GetInputDeviceId(), EKeys::MouseWheelAxis, InMouseEvent.GetWheelDelta(), FApp::GetDeltaTime());
 	}
 	return CurrentReplyState;
 }
@@ -1003,7 +1055,7 @@ FReply FSceneViewport::OnKeyDown( const FGeometry& InGeometry, const FKeyEvent& 
 			// Switch to the viewport clients world before processing input
 			FScopedConditionalWorldSwitcher WorldSwitcher(ViewportClient);
 
-			if (!ViewportClient->InputKey(FInputKeyEventArgs(this, InKeyEvent.GetUserIndex(), Key, InKeyEvent.IsRepeat() ? IE_Repeat : IE_Pressed, 1.0f, false)))
+			if (!ViewportClient->InputKey(FInputKeyEventArgs(this, InKeyEvent.GetInputDeviceId(), Key, InKeyEvent.IsRepeat() ? IE_Repeat : IE_Pressed, 1.0f, false)))
 			{
 				CurrentReplyState = FReply::Unhandled();
 			}
@@ -1031,7 +1083,7 @@ FReply FSceneViewport::OnKeyUp( const FGeometry& InGeometry, const FKeyEvent& In
 			// Switch to the viewport clients world before processing input
 			FScopedConditionalWorldSwitcher WorldSwitcher(ViewportClient);
 
-			if (!ViewportClient->InputKey(FInputKeyEventArgs(this, InKeyEvent.GetUserIndex(), Key, IE_Released, 1.0f, false)))
+			if (!ViewportClient->InputKey(FInputKeyEventArgs(this, InKeyEvent.GetInputDeviceId(), Key, IE_Released, 1.0f, false)))
 			{
 				CurrentReplyState = FReply::Unhandled();
 			}
@@ -1060,7 +1112,7 @@ FReply FSceneViewport::OnAnalogValueChanged(const FGeometry& MyGeometry, const F
 			// Switch to the viewport clients world before processing input
 			FScopedConditionalWorldSwitcher WorldSwitcher(ViewportClient);
 
-			if (!ViewportClient->InputAxis(this, InAnalogInputEvent.GetUserIndex(), Key, Key == EKeys::Gamepad_RightY ? -InAnalogInputEvent.GetAnalogValue() : InAnalogInputEvent.GetAnalogValue(), FApp::GetDeltaTime(), 1, Key.IsGamepadKey()))
+			if (!ViewportClient->InputAxis(this, InAnalogInputEvent.GetInputDeviceId(), Key, Key == EKeys::Gamepad_RightY ? -InAnalogInputEvent.GetAnalogValue() : InAnalogInputEvent.GetAnalogValue(), FApp::GetDeltaTime(), 1, Key.IsGamepadKey()))
 			{
 				CurrentReplyState = FReply::Unhandled();
 			}
@@ -1207,6 +1259,21 @@ FReply FSceneViewport::OnViewportActivated(const FWindowActivateEvent& InActivat
 	return FReply::Unhandled();
 }
 
+EDisplayColorGamut FSceneViewport::GetDisplayColorGamut() const
+{
+	return DisplayColorGamut;
+}
+
+EDisplayOutputFormat FSceneViewport::GetDisplayOutputFormat() const
+{
+	return DisplayOutputFormat;
+}
+
+bool FSceneViewport::GetSceneHDREnabled() const
+{
+	return bHDRViewport;
+}
+
 void FSceneViewport::OnViewportDeactivated(const FWindowActivateEvent& InActivateEvent)
 {
 	// We backup if we have capture for us on activation, however we also maintain "true" if it's already true!
@@ -1325,7 +1392,7 @@ void FSceneViewport::ResizeFrame(uint32 NewWindowSizeX, uint32 NewWindowSizeY, E
 				else
 				{
 					FDisplayMetrics DisplayMetrics;
-					FSlateApplication::Get().GetInitialDisplayMetrics(DisplayMetrics);
+					FSlateApplication::Get().GetCachedDisplayMetrics(DisplayMetrics);
 
 					if (DisplayMetrics.MonitorInfo.Num() > 0)
 					{
@@ -1629,7 +1696,7 @@ void FSceneViewport::SetRenderTargetTextureRenderThread(FTexture2DRHIRef& RT)
 void FSceneViewport::UpdateViewportRHI(bool bDestroyed, uint32 NewSizeX, uint32 NewSizeY, EWindowMode::Type NewWindowMode, EPixelFormat PreferredPixelFormat)
 {
 	{
-		SCOPED_SUSPEND_RENDERING_THREAD(true);
+		check(IsInGameThread());
 
 		// Update the viewport attributes.
 		// This is done AFTER the command flush done by UpdateViewportRHI, to avoid disrupting rendering thread accesses to the old viewport size.
@@ -1639,16 +1706,55 @@ void FSceneViewport::UpdateViewportRHI(bool bDestroyed, uint32 NewSizeX, uint32 
 
 		// Release the viewport's resources.
 		BeginReleaseResource(this);
+		FlushRenderingCommands();
 
 		if( !bDestroyed )
 		{
+			TSharedPtr<SWidget> PinnedViewport = ViewportWidget.Pin();
+			void* OSWindow = nullptr;
+			FVector2D WindowTopLeft = FVector2D(0.0f, 0.0f);
+			FVector2D WindowBottomRight = FVector2D(0.0f, 0.0f);
+			if (PinnedViewport.IsValid())
+			{
+				TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(PinnedViewport.ToSharedRef());
+				if (Window.IsValid())
+				{
+					OSWindow = Window->GetNativeWindow()->GetOSWindowHandle();
+					WindowTopLeft = Window->GetPositionInScreen();
+					WindowBottomRight = Window->GetPositionInScreen() + Window->GetSizeInScreen();
+				}
+			}
+			ComputeSceneViewportHDRMetaData(DisplayOutputFormat, DisplayColorGamut, bHDRViewport, WindowTopLeft, WindowBottomRight, OSWindow, IsStereoRenderingAllowed());
+
 			BeginInitResource(this);
-				
+			
+			FRenderCommandFence InitResourceFence;
+			InitResourceFence.BeginFence();
+			InitResourceFence.Wait();
+
+			FSlateRenderer* Renderer = FSlateApplication::Get().GetRenderer();
+
+			if (PinnedViewport.IsValid())
+			{
+				TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(PinnedViewport.ToSharedRef());
+
+				WindowRenderTargetUpdate(Renderer, Window.Get());
+				if (UseSeparateRenderTarget())
+				{
+					uint32 TexSizeX = SizeX, TexSizeY = SizeY;
+					{
+						IStereoRenderTargetManager* const StereoRenderTargetManager = RetrieveStereoRenderTargetManager(IsStereoRenderingAllowed());
+						if (StereoRenderTargetManager)
+						{
+							StereoRenderTargetManager->CalculateRenderTargetSize(*this, TexSizeX, TexSizeY);
+						}
+					}
+					RTTSize = FIntPoint(TexSizeX, TexSizeY);
+				}
+			}
+
 			if( !UseSeparateRenderTarget() )
 			{
-				// Get the viewport for this window from the renderer so we can render directly to the backbuffer
-				FSlateRenderer* Renderer = FSlateApplication::Get().GetRenderer();
-
 				TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(ViewportWidget.Pin().ToSharedRef());
 				void* ViewportResource = Renderer->GetViewportResource(*Window);
 				if( ViewportResource )
@@ -1663,21 +1769,19 @@ void FSceneViewport::UpdateViewportRHI(bool bDestroyed, uint32 NewSizeX, uint32 
 		else
 		{
 			// Enqueue a render command to delete the handle.  It must be deleted on the render thread after the resource is released
-			FSlateRenderTargetRHI** RenderThreadSlateTexturePtr = &RenderThreadSlateTexture;
-			TArray<FSlateRenderTargetRHI*>* BufferedSlateHandlesPtr = &BufferedSlateHandles;
+			FSlateRenderTargetRHI* RenderThreadSlateTexturePtr = RenderThreadSlateTexture;
+			RenderThreadSlateTexture = nullptr;
+
 			ENQUEUE_RENDER_COMMAND(DeleteSlateRenderTarget)(
-				[BufferedSlateHandlesPtr, RenderThreadSlateTexturePtr](FRHICommandListImmediate& RHICmdList)
+				[BufferedSlateHandles = MoveTemp(BufferedSlateHandles), RenderThreadSlateTexturePtr](FRHICommandListImmediate& RHICmdList)
 				{
-					for (int32 i = 0; i < BufferedSlateHandlesPtr->Num(); ++i)
+					for (int32 i = 0; i < BufferedSlateHandles.Num(); ++i)
 					{
-						delete (*BufferedSlateHandlesPtr)[i];
-						(*BufferedSlateHandlesPtr)[i] = nullptr;
+						delete BufferedSlateHandles[i];
 					}
 
-					delete *RenderThreadSlateTexturePtr;
-					*RenderThreadSlateTexturePtr = nullptr;
+					delete RenderThreadSlateTexturePtr;
 				});
-
 		}
 	}
 }
@@ -1773,8 +1877,8 @@ void FSceneViewport::EndRenderFrame(FRHICommandListImmediate& RHICmdList, bool b
 	if (UseSeparateRenderTarget())
 	{
 		if (BufferedSlateHandles[CurrentBufferedTargetIndex])
-		{			
-			RHICmdList.CopyToResolveTarget(RenderTargetTextureRenderThreadRHI, RenderTargetTextureRenderThreadRHI, FResolveParams());
+		{
+			RHICmdList.Transition(FRHITransitionInfo(RenderTargetTextureRenderThreadRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask));
 		}
 	}
 	else
@@ -1944,18 +2048,13 @@ void FSceneViewport::InitDynamicRHI()
 	}
 	RTTSize = FIntPoint(0, 0);
 
-	FSlateRenderer* Renderer = FSlateApplication::Get().GetRenderer();
 	uint32 TexSizeX = SizeX, TexSizeY = SizeY;
 	if (UseSeparateRenderTarget())
 	{
 		NumBufferedFrames = 1;
 		
 		// @todo vreditor switch: This code needs to be called when switching between stereo/non when going immersive.  Seems to always work out that way anyway though? (Probably due to resize)
-		IStereoRenderTargetManager * const StereoRenderTargetManager = 
-			(IsStereoRenderingAllowed() && GEngine->StereoRenderingDevice.IsValid() && GEngine->StereoRenderingDevice->IsStereoEnabledOnNextFrame())
-				? GEngine->StereoRenderingDevice->GetRenderTargetManager() 
-				: nullptr;
-
+		IStereoRenderTargetManager* const StereoRenderTargetManager = RetrieveStereoRenderTargetManager(IsStereoRenderingAllowed());
 		if (StereoRenderTargetManager != nullptr)
 		{
 			StereoRenderTargetManager->CalculateRenderTargetSize(*this, TexSizeX, TexSizeY);
@@ -1997,25 +2096,27 @@ void FSceneViewport::InitDynamicRHI()
 		EPixelFormat SceneTargetFormat = EDefaultBackBufferPixelFormat::Convert2PixelFormat(EDefaultBackBufferPixelFormat::FromInt(CVarDefaultBackBufferPixelFormat->GetValueOnRenderThread()));
 		SceneTargetFormat = RHIPreferredPixelFormatHint(SceneTargetFormat);
 	
-#if WITH_EDITOR
-		// HDR Editor needs to be in float format if running with HDR
-		static auto CVarHDREnable = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.HDRSupport"));
-		if(CVarHDREnable && (CVarHDREnable->GetInt() != 0))
+		if (bHDRViewport)
 		{
-			SceneTargetFormat = PF_FloatRGBA;
+			SceneTargetFormat = GRHIHDRDisplayOutputFormat;
 		}
-#endif
 
-		FRHIResourceCreateInfo CreateInfo(TEXT("BufferedRT"));
-		FTexture2DRHIRef BufferedRTRHI;
-		FTexture2DRHIRef BufferedSRVRHI;
+		FTextureRHIRef BufferedRTRHI;
+		FTextureRHIRef BufferedSRVRHI;
 
 		for (int32 i = 0; i < NumBufferedFrames; ++i)
 		{
 			// try to allocate texture via StereoRenderingDevice; if not successful, use the default way
 			if (StereoRenderTargetManager == nullptr || !StereoRenderTargetManager->AllocateRenderTargetTexture(i, TexSizeX, TexSizeY, SceneTargetFormat, 1, TexCreate_None, TexCreate_RenderTargetable, BufferedRTRHI, BufferedSRVRHI))
 			{
-				RHICreateTargetableShaderResource2D(TexSizeX, TexSizeY, SceneTargetFormat, 1, TexCreate_None, TexCreate_RenderTargetable, false, CreateInfo, BufferedRTRHI, BufferedSRVRHI);
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("BufferedRT"))
+					.SetExtent(TexSizeX, TexSizeY)
+					.SetFormat(SceneTargetFormat)
+					.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+					.SetInitialState(ERHIAccess::SRVMask);
+
+				BufferedRTRHI = BufferedSRVRHI = RHICreateTexture(Desc);
 			}
 			BufferedRenderTargetsRHI[i] = BufferedRTRHI;
 			BufferedShaderResourceTexturesRHI[i] = BufferedSRVRHI;
@@ -2054,20 +2155,6 @@ void FSceneViewport::InitDynamicRHI()
 
 		RenderTargetTextureRHI = nullptr;		
 		CurrentBufferedTargetIndex = NextBufferedTargetIndex = 0;
-	}
-
-	//how is this useful at all?  Pinning a weakptr to get a non-threadsafe shared ptr?  Pinning a weakptr is supposed to be protecting me from my weakptr dying underneath me...
-	TSharedPtr<SWidget> PinnedViewport = ViewportWidget.Pin();
-	if (PinnedViewport.IsValid())
-	{
-
-		TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(PinnedViewport.ToSharedRef());
-		
-		WindowRenderTargetUpdate(Renderer, Window.Get());
-		if (UseSeparateRenderTarget())
-		{
-			RTTSize = FIntPoint(TexSizeX, TexSizeY);
-		}
 	}
 }
 

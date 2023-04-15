@@ -86,7 +86,6 @@ int32 FDatasmithMeshElementImpl::GetMaterialSlotCount() const
 	return MaterialSlots.Num();
 }
 
-
 TSharedPtr<const IDatasmithMaterialIDElement> FDatasmithMeshElementImpl::GetMaterialSlotAt(int32 Index) const
 {
 	if (MaterialSlots.IsValidIndex(Index))
@@ -107,13 +106,19 @@ TSharedPtr<IDatasmithMaterialIDElement> FDatasmithMeshElementImpl::GetMaterialSl
 	return InvalidMaterialID;
 }
 
+FDatasmithClothElementImpl::FDatasmithClothElementImpl(const TCHAR* InName)
+	: FDatasmithElementImpl(InName, EDatasmithElementType::Cloth)
+{
+	Store.RegisterParameter(File, "File");
+}
+
 TSharedPtr< IDatasmithKeyValueProperty > FDatasmithKeyValuePropertyImpl::NullPropertyPtr;
 
 FDatasmithKeyValuePropertyImpl::FDatasmithKeyValuePropertyImpl(const TCHAR* InName)
 	: FDatasmithElementImpl(InName, EDatasmithElementType::KeyValueProperty)
 	, PropertyType(EDatasmithKeyValuePropertyType::String)
-	, Value(InName)
 {
+	FDatasmithKeyValuePropertyImpl::SetName(InName);
 	Store.RegisterParameter(Value, "Value");
 	Store.RegisterParameter(PropertyType, "PropertyType");
 }
@@ -372,10 +377,10 @@ const TSharedPtr< IDatasmithShaderElement >& FDatasmithMaterialElementImpl::GetS
 	return Shaders[InIndex];
 }
 
-FDatasmithMasterMaterialElementImpl::FDatasmithMasterMaterialElementImpl(const TCHAR* InName)
-	: FDatasmithBaseMaterialElementImpl(InName, EDatasmithElementType::MasterMaterial)
-	, MaterialType( EDatasmithMasterMaterialType::Auto )
-	, Quality( EDatasmithMasterMaterialQuality::High )
+FDatasmithMaterialIntanceElementImpl::FDatasmithMaterialIntanceElementImpl(const TCHAR* InName)
+	: FDatasmithBaseMaterialElementImpl(InName, EDatasmithElementType::MaterialInstance)
+	, MaterialType( EDatasmithReferenceMaterialType::Auto )
+	, Quality( EDatasmithReferenceMaterialQuality::High )
 {
 	RegisterReferenceProxy(Properties, "Properties");
 
@@ -384,12 +389,12 @@ FDatasmithMasterMaterialElementImpl::FDatasmithMasterMaterialElementImpl(const T
 	Store.RegisterParameter(CustomMaterialPathName, "CustomMaterialPathName");
 }
 
-const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMasterMaterialElementImpl::GetProperty( int32 InIndex ) const
+const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMaterialIntanceElementImpl::GetProperty( int32 InIndex ) const
 {
 	return Properties.IsValidIndex( InIndex ) ? Properties[InIndex] : FDatasmithKeyValuePropertyImpl::NullPropertyPtr;
 }
 
-const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMasterMaterialElementImpl::GetPropertyByName( const TCHAR* InName ) const
+const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMaterialIntanceElementImpl::GetPropertyByName( const TCHAR* InName ) const
 {
 	int32 Index = Properties.View().IndexOfByPredicate([InName](const TSharedPtr<IDatasmithKeyValueProperty>& Property){
 		return Property.IsValid() && FCString::Stricmp(Property->GetName(), InName) == 0;
@@ -397,7 +402,7 @@ const TSharedPtr< IDatasmithKeyValueProperty >& FDatasmithMasterMaterialElementI
 	return GetProperty(Index);
 }
 
-void FDatasmithMasterMaterialElementImpl::AddProperty( const TSharedPtr< IDatasmithKeyValueProperty >& InProperty )
+void FDatasmithMaterialIntanceElementImpl::AddProperty( const TSharedPtr< IDatasmithKeyValueProperty >& InProperty )
 {
 	if (!InProperty.IsValid())
 	{
@@ -415,7 +420,7 @@ void FDatasmithMasterMaterialElementImpl::AddProperty( const TSharedPtr< IDatasm
 	}
 }
 
-FMD5Hash FDatasmithMasterMaterialElementImpl::CalculateElementHash(bool bForce)
+FMD5Hash FDatasmithMaterialIntanceElementImpl::CalculateElementHash(bool bForce)
 {
 	if (ElementHash.IsValid() && !bForce)
 	{
@@ -1046,7 +1051,6 @@ FDatasmithSceneImpl::FDatasmithSceneImpl(const TCHAR * InName)
 	RegisterReferenceProxy(LevelVariantSets, "LevelVariantSets" );
 	RegisterReferenceProxy(PostProcess,      "PostProcess"      );
 
-	Store.RegisterParameter(LODScreenSizes,     "LODScreenSizes"     );
 	Store.RegisterParameter(Hostname,           "Hostname"           );
 	Store.RegisterParameter(ExporterVersion,    "ExporterVersion"    );
 	Store.RegisterParameter(ExporterSDKVersion, "ExporterSDKVersion" );
@@ -1070,7 +1074,6 @@ void FDatasmithSceneImpl::Reset()
 	MetaData.Empty();
 	LevelSequences.Empty();
 	LevelVariantSets.Empty();
-	LODScreenSizes.Get().Reset();
 	PostProcess.Inner.Reset();
 	ElementToMetaDataMap.Empty();
 
@@ -1099,7 +1102,6 @@ void FDatasmithSceneImpl::SetHost(const TCHAR* InHostname)
 	Hostname = InHostname;
 }
 
-static const TSharedPtr< IDatasmithMeshElement > InvalidMeshElement;
 
 TSharedPtr< IDatasmithMeshElement > FDatasmithSceneImpl::GetMesh(int32 InIndex)
 {
@@ -1121,6 +1123,7 @@ const TSharedPtr< IDatasmithMeshElement >& FDatasmithSceneImpl::GetMesh(int32 In
 	}
 	else
 	{
+		static const TSharedPtr< IDatasmithMeshElement > InvalidMeshElement;
 		return InvalidMeshElement;
 	}
 }
@@ -1131,6 +1134,53 @@ void FDatasmithSceneImpl::RemoveMeshAt(int32 InIndex)
 	{
 		Meshes.RemoveAt(InIndex);
 	}
+}
+
+void FDatasmithSceneImpl::AddCloth(const TSharedPtr< IDatasmithClothElement >& InElement)
+{
+	Clothes.Add(InElement);
+}
+
+int32 FDatasmithSceneImpl::GetClothesCount() const
+{
+	return Clothes.Num();
+}
+
+TSharedPtr< IDatasmithClothElement > FDatasmithSceneImpl::GetCloth(int32 InIndex)
+{
+	if ( Clothes.IsValidIndex( InIndex ) )
+	{
+		return Clothes[InIndex];
+	}
+	return {};
+}
+
+const TSharedPtr< IDatasmithClothElement >& FDatasmithSceneImpl::GetCloth(int32 InIndex) const
+{
+	if ( Clothes.IsValidIndex( InIndex ) )
+	{
+		return Clothes[InIndex];
+	}
+	static TSharedPtr< IDatasmithClothElement > NullCloth;
+	return NullCloth;
+}
+
+void FDatasmithSceneImpl::RemoveCloth(const TSharedPtr< IDatasmithClothElement >& InElement)
+{
+	Clothes.Remove(InElement);
+}
+
+void FDatasmithSceneImpl::RemoveClothAt(int32 InIndex)
+{
+	if (Clothes.IsValidIndex(InIndex))
+	{
+		Clothes.RemoveAt(InIndex);
+	}
+}
+
+void FDatasmithSceneImpl::EmptyClothes()
+{
+	Clothes.Empty();
 }
 
 static const TSharedPtr< IDatasmithMetaDataElement > InvalidMetaData;
@@ -1267,8 +1317,11 @@ namespace DatasmithSceneImplInternal
 					for (int32 ChildIndex = InActor->GetChildrenCount() - 1; ChildIndex >= 0; --ChildIndex)
 					{
 						const TSharedPtr< IDatasmithActorElement > Child = InActor->GetChild(ChildIndex);
-						InActor->RemoveChild(Child);
-						SceneImpl->AddActor(Child);
+						if (!Child->IsAComponent())
+						{
+							InActor->RemoveChild(Child);
+							SceneImpl->AddActor(Child);
+						}
 					}
 				}
 				else
@@ -1286,8 +1339,11 @@ namespace DatasmithSceneImplInternal
 					for (int32 ChildIndex = InActor->GetChildrenCount() - 1; ChildIndex >= 0; --ChildIndex)
 					{
 						const TSharedPtr< IDatasmithActorElement > Child = InActor->GetChild(ChildIndex);
-						InActor->RemoveChild(Child);
-						FoundHierarchy.Last()->AddChild(Child);
+						if (!Child->IsAComponent())
+						{
+							InActor->RemoveChild(Child);
+							FoundHierarchy.Last()->AddChild(Child);
+						}
 					}
 				}
 				else
@@ -1452,4 +1508,10 @@ void FDatasmithSceneImpl::AttachActorToSceneRoot(const TSharedPtr< IDatasmithAct
 	{
 		DatasmithSceneImplInternal::AttachActorToSceneRoot(this, Child, AttachmentRule, FoundChildHierarchy);
 	}
+}
+
+FDatasmithClothActorElementImpl::FDatasmithClothActorElementImpl(const TCHAR* InName)
+	: FDatasmithActorElementImpl<IDatasmithClothActorElement>(InName, EDatasmithElementType::ClothActor)
+{
+	Store.RegisterParameter(Cloth, "Cloth");
 }

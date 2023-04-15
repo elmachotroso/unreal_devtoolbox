@@ -13,7 +13,6 @@
 #include "Shader.h"
 #include "RenderResource.h"
 #include "RenderGraphResources.h"
-#include "ShaderDebug.h"
 #include "ShaderPrintParameters.h"
 
 class UTexture2D;
@@ -144,8 +143,10 @@ struct RENDERER_API FHairStrandsInstance
 	uint32 AddRef() const;
 	uint32 Release() const;
 	int32 RegisteredIndex = -1;
-	virtual const FBoxSphereBounds* GetBounds() const { return nullptr; }
+	virtual const FBoxSphereBounds& GetBounds() const = 0;
+	virtual const FBoxSphereBounds& GetLocalBounds() const = 0;
 	virtual const FHairGroupPublicData* GetHairData() const { return nullptr; }
+	virtual const EHairGeometryType GetHairGeometry() const { return EHairGeometryType::NoneGeometry; }
 protected:
 	mutable uint32 RefCount = 0;
 };
@@ -242,6 +243,13 @@ public:
 	bool GetLODVisibility() const { return bLODVisibility; }
 
 	uint32 GetClusterCount() const { return ClusterCount;  }
+
+	uint32 GetActiveStrandsVertexStart(uint32 InVertexCount) const;
+	uint32 GetActiveStrandsVertexCount(uint32 InVertexCount, float ScreenSize) const;
+	float GetActiveStrandsSampleWeight(bool bUseTemporalWeight, float ScreenSize) const;
+
+	void UpdateTemporalIndex();
+
 	struct FVertexFactoryInput 
 	{
 		struct FStrands
@@ -254,6 +262,15 @@ public:
 			FRDGImportedBuffer Attribute1Buffer;
 			FRDGImportedBuffer PositionOffsetBuffer;
 			FRDGImportedBuffer PrevPositionOffsetBuffer;
+
+			FRDGExternalBuffer PositionBufferExternal;
+			FRDGExternalBuffer PrevPositionBufferExternal;
+			FRDGExternalBuffer TangentBufferExternal;
+			FRDGExternalBuffer MaterialBufferExternal;
+			FRDGExternalBuffer Attribute0BufferExternal;
+			FRDGExternalBuffer Attribute1BufferExternal;
+			FRDGExternalBuffer PositionOffsetBufferExternal;
+			FRDGExternalBuffer PrevPositionOffsetBufferExternal;
 
 			FShaderResourceViewRHIRef PositionBufferRHISRV				= nullptr;
 			FShaderResourceViewRHIRef PrevPositionBufferRHISRV			= nullptr;
@@ -332,6 +349,7 @@ public:
 	TArray<float>LODScreenSizes;
 	TArray<bool> LODSimulations;
 	TArray<bool> LODGlobalInterpolations;
+	bool bIsDeformationEnable;
 	TArray<EHairGeometryType> LODGeometryTypes;
 
 	TArray<EHairBindingType> BindingTypes;
@@ -341,6 +359,10 @@ public:
 	float LODIndex = -1;		// Current LOD used for all views
 	float LODBias = 0;			// Current LOD bias
 	bool bLODVisibility = true; // Enable/disable hair rendering for this component
+
+	FBoxSphereBounds ContinuousLODBounds; 	//used by Continuous LOD
+	float MaxScreenSize = 0.f; 				//used by Continuous LOD
+	uint32 TemporalIndex = 0; 				//used by Temporal Layering
 
 	// Debug
 	bool  bDebugDrawLODInfo = false; // Enable/disable hair LOD info
@@ -416,6 +438,15 @@ RENDERER_API bool IsHairStrandsSimulationEnable();
 // Return true if hair binding is enabled (i.e., hair can be attached to skeletal mesh)
 RENDERER_API bool IsHairStrandsBindingEnable();
 
+// Return true if strand reordering for compute raster continuous LOD is enabled
+RENDERER_API bool IsHairStrandContinuousDecimationReorderingEnabled();
+
+// Return true if continuous LOD is enabled - implies computer raster and continuous decimation reordering is true
+RENDERER_API bool IsHairVisibilityComputeRasterContinuousLODEnabled();
+
+// Return true if temporal layering is enabled - implies computer raster and continuous decimation reordering is true
+RENDERER_API bool IsHairVisibilityComputeRasterTemporalLayeringEnabled();
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 typedef TArray<FRHIUnorderedAccessView*> FBufferTransitionQueue;
@@ -441,10 +472,15 @@ enum class EHairStrandsBookmark : uint8
 	ProcessEndOfFrame
 };
 
+enum EHairInstanceCount : uint8
+{
+	HairInstanceCount_StrandsPrimaryView = 0,
+	HairInstanceCount_StrandsShadowView = 1,
+	HairInstanceCount_CardsOrMeshes = 2,
+};
+
 struct FHairStrandsBookmarkParameters
 {
-	class FGPUSkinCache* SkinCache = nullptr;
-	FShaderDrawDebugData* ShaderDebugData = nullptr;
 	FShaderPrintData* ShaderPrintData = nullptr;
 	class FGlobalShaderMap* ShaderMap = nullptr;
 
@@ -456,6 +492,8 @@ struct FHairStrandsBookmarkParameters
 	TArray<const FSceneView*> AllViews;
 	FRDGTextureRef SceneColorTexture = nullptr;
 	FRDGTextureRef SceneDepthTexture = nullptr; 
+
+	FUintVector4 InstanceCountPerType = FUintVector4(0);
 
 	bool bHzbRequest = false;
 	uint32 FrameIndex = ~0;

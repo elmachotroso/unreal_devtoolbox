@@ -8,8 +8,8 @@
 
 #include "CoreMinimal.h"
 #include "SceneRendering.h"
-#include "PostProcessDeferredDecals.h"
-#include "PostProcessAmbientOcclusion.h"
+#include "CompositionLighting/PostProcessDeferredDecals.h"
+#include "CompositionLighting/PostProcessAmbientOcclusion.h"
 
 /**
  * The center for all screen space processing activities (e.g. G-buffer manipulation, lighting).
@@ -23,7 +23,14 @@ public:
 
 	void ProcessBeforeBasePass(FRDGBuilder& GraphBuilder, FDBufferTextures& DBufferTextures);
 
-	void ProcessAfterBasePass(FRDGBuilder& GraphBuilder);
+	enum class EProcessAfterBasePassMode
+	{
+		OnlyBeforeLightingDecals,
+		SkipBeforeLightingDecals,
+		All
+	};
+
+	void ProcessAfterBasePass(FRDGBuilder& GraphBuilder, EProcessAfterBasePassMode Mode);
 
 private:
 	void TryInit();
@@ -56,4 +63,4 @@ private:
 	bool bInitialized = false;
 };
 
-extern bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View);
+extern bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View, bool bLumenWantsSSAO);

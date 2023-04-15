@@ -3,6 +3,7 @@
 #include "ChaosCloth/ChaosClothModule.h"
 #include "ChaosCloth/ChaosClothPrivate.h"
 #include "ChaosCloth/ChaosClothingSimulationFactory.h"
+#include "ChaosCloth/SkeletalMeshComponentCacheAdapter.h"
 #include "Features/IModularFeatures.h"
 #include "Modules/ModuleManager.h"
 
@@ -15,25 +16,26 @@ class FChaosClothModule : public IChaosClothModuleInterface, public IClothingSim
     virtual void StartupModule() override
     {
         check(GConfig);
-#if WITH_CHAOS
 		IModularFeatures::Get().RegisterModularFeature(IClothingSimulationFactoryClassProvider::FeatureName, this);
-#endif
+
+    	SkeletalMeshAdapter = MakeUnique<Chaos::FSkeletalMeshCacheAdapter>();
+    	Chaos::RegisterAdapter(SkeletalMeshAdapter.Get());
     }
 
     virtual void ShutdownModule() override
     {
-#if WITH_CHAOS
 		IModularFeatures::Get().UnregisterModularFeature(IClothingSimulationFactoryClassProvider::FeatureName, this);
-#endif
+
+    	UnregisterAdapter(SkeletalMeshAdapter.Get());
+    	SkeletalMeshAdapter = nullptr;
     }
 
 	TSubclassOf<UClothingSimulationFactory> GetClothingSimulationFactoryClass() const override
 	{
-#if WITH_CHAOS
 		return UChaosClothingSimulationFactory::StaticClass();
-#endif
-		return nullptr;
 	}
+private:
+	TUniquePtr<Chaos::FSkeletalMeshCacheAdapter> SkeletalMeshAdapter;
 };
 
 //////////////////////////////////////////////////////////////////////////

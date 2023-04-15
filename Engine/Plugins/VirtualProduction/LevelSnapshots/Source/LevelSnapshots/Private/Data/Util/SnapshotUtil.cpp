@@ -9,6 +9,16 @@
 #include "GameFramework/Actor.h"
 #include "Misc/ScopeExit.h"
 
+FSoftObjectPath UE::LevelSnapshots::Private::ExtractPathWithoutSubobjects(const FSoftObjectPath& ObjectPath)
+{
+	int32 ColonIndex = INDEX_NONE;
+	const FString Path = ObjectPath.ToString();
+	Path.FindChar(':', ColonIndex);
+	return ColonIndex == INDEX_NONE
+		? Path
+		: Path.Left(ColonIndex);
+}
+
 FString UE::LevelSnapshots::Private::ExtractLastSubobjectName(const FSoftObjectPath& ObjectPath)
 {
 	const FString& SubPathString = ObjectPath.GetSubPathString();
@@ -43,7 +53,13 @@ TOptional<FSoftObjectPath> UE::LevelSnapshots::Private::ExtractActorFromPath(con
 		OriginalObjectPath
 		:
 		// Converts /Game/MapName.MapName:PersistentLevel.StaticMeshActor_42.StaticMeshComponent to /Game/MapName.MapName:PersistentLevel.StaticMeshActor_42
-		FSoftObjectPath(OriginalObjectPath.GetAssetPathName(), SubPathString.Left(DotAfterActorNameIndex));
+		FSoftObjectPath(OriginalObjectPath.GetAssetPath(), SubPathString.Left(DotAfterActorNameIndex));
+}
+
+bool UE::LevelSnapshots::Private::IsPathToWorldObject(const FSoftObjectPath& OriginalObjectPath)
+{
+	bool bDummy;
+	return ExtractActorFromPath(OriginalObjectPath, bDummy).IsSet();
 }
 
 TOptional<int32> UE::LevelSnapshots::Private::FindDotAfterActorName(const FSoftObjectPath& OriginalObjectPath)
@@ -97,5 +113,5 @@ FSoftObjectPath UE::LevelSnapshots::Private::SetActorInPath(AActor* NewActor, co
 	const FSoftObjectPath PathToNewActor(NewActor);
 	// PersistentLevel.StaticMeshActor_42.StaticMeshComponent becomes .StaticMeshComponent
 	const FString PathAfterOriginalActor = SubPathString.Right(SubPathString.Len() - DotAfterActorNameIndex); 
-	return FSoftObjectPath(PathToNewActor.GetAssetPathName(), PathToNewActor.GetSubPathString() + PathAfterOriginalActor);
+	return FSoftObjectPath(PathToNewActor.GetAssetPath(), PathToNewActor.GetSubPathString() + PathAfterOriginalActor);
 }

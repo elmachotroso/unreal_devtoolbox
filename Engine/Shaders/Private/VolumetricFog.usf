@@ -10,11 +10,12 @@
 #include "HeightFogCommon.ush"
 #include "SHCommon.ush"
 #include "DistanceFieldAOShared.ush"
-#include "GlobalDistanceFieldShared.ush"
+#include "DistanceField/GlobalDistanceFieldShared.ush"
 #include "VolumeLightingCommon.ush"
 #include "VolumetricLightmapShared.ush"
 #include "ForwardShadowingCommon.ush"
 #include "ParticipatingMediaCommon.ush"
+#define FrontLayerTranslucencyReflectionsStruct LumenGIVolumeStruct
 #include "Lumen/LumenTranslucencyVolumeShared.ush"
 #include "Random.ush"
 
@@ -303,8 +304,6 @@ void InjectShadowedLocalLightPS(
 		LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
 		LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
 
-		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
-
 		float VolumetricScatteringIntensity = DeferredLightUniforms.VolumetricScatteringIntensity;
 
 		float3 L = 0;
@@ -349,7 +348,7 @@ void InjectShadowedLocalLightPS(
 			{
 				FRect Rect = GetRect(ToLight, LightData);
 
-				Lighting = IntegrateLight(Rect, RectTexture);
+				Lighting = IntegrateLight(Rect);
 			}
 			else
 			{
@@ -387,7 +386,8 @@ void InjectShadowedLocalLightPS(
 			//OutScattering.rgb += DeferredLightUniforms.Color * .0000001f;
 		}
 
-		OutScattering.rgb /= (float)NumSuperSamples;
+		// We pre-expose the buffer containing shadowed local lights luminance contribution. This helps maintaining details and color at high exposure for very bright scenes.
+		OutScattering.rgb *= View.PreExposure / (float)NumSuperSamples;
 	}
 }
 
@@ -397,26 +397,11 @@ uint UseEmissive;
 
 Texture3D<float4> LightScatteringHistory;
 SamplerState LightScatteringHistorySampler;
+float2 LightScatteringHistoryPreExposureAndInv;
 
 Texture3D<float4> LocalShadowedLightScattering;
 
 RWTexture3D<float4> RWLightScattering;
-
-float4 EncodeHDR(float4 Color)
-{
-	return Color;
-
-	//float Exposure = 1;
-	//return float4(Color.rgb * rcp((Color.r*0.299 + Color.g*0.587 + Color.b*0.114) * Exposure + 1.0), Color.a);
-}
-
-float4 DecodeHDR(float4 Color)
-{
-	return Color;
-
-	//float Exposure = 1;
-	//return float4(Color.rgb * rcp((Color.r*(-0.299) + Color.g*(-0.587) + Color.b*(-0.114)) * Exposure + 1.0), Color.a);
-}
 
 float HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(
 	uniform uint ClipmapIndex,
@@ -694,7 +679,6 @@ void LightScatteringCS(
 		// Bias the inverse squared light falloff based on voxel size to prevent aliasing near the light source
 		float DistanceBiasSqr = max(CellRadius * InverseSquaredLightDistanceBiasScale, 1);
 		DistanceBiasSqr *= DistanceBiasSqr;
-		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
 
 		// Forward lighting of unshadowed point and spot lights
 		LOOP
@@ -718,8 +702,12 @@ void LightScatteringCS(
 				LightData.Tangent = LocalLight.LightTangentAndSoftSourceRadius.xyz;
 				LightData.SoftSourceRadius = LocalLight.LightTangentAndSoftSourceRadius.w;
 				LightData.bInverseSquared = LightData.FalloffExponent == 0;
-				LightData.RectLightBarnCosAngle = LocalLight.RectBarnDoorAndVirtualShadowMapId.x;
-				LightData.RectLightBarnLength = LocalLight.RectBarnDoorAndVirtualShadowMapId.y;
+				LightData.RectLightBarnCosAngle = LocalLight.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.x;
+				LightData.RectLightBarnLength = LocalLight.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.y;
+				LightData.RectLightAtlasUVOffset = 0;
+				LightData.RectLightAtlasUVScale  = 0;
+				LightData.RectLightAtlasMaxLevel = MAX_RECT_ATLAS_MIP;
+
 				LightData.bRadialLight = true;
 				LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
 				LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
@@ -735,7 +723,7 @@ void LightScatteringCS(
 				{
 					FRect Rect = GetRect( ToLight, LightData );
 
-					Lighting = IntegrateLight(Rect, RectTexture);
+					Lighting = IntegrateLight(Rect);
 				}
 				else
 				{
@@ -757,8 +745,9 @@ void LightScatteringCS(
 
 	LightScattering /= (float)NumSuperSamples;
 
-	// Shadowed point and spot lights were computed earlier
-	LightScattering += LocalShadowedLightScattering[GridCoordinate].xyz;
+	// Shadowed point and spot lights were computed earlier. 
+	// Note: this texture was pre-exposed from InjectShadowedLocalLightPS, se we revert pre-exposure.
+	LightScattering += View.OneOverPreExposure * LocalShadowedLightScattering[GridCoordinate].xyz;
 
 	float4 MaterialScatteringAndAbsorption = VBufferA[GridCoordinate];
 	float Extinction = MaterialScatteringAndAbsorption.w + Luminance(MaterialScatteringAndAbsorption.xyz);
@@ -768,27 +757,30 @@ void LightScatteringCS(
 	{
 		MaterialEmissive = VBufferB[GridCoordinate].xyz;
 	}
-	float4 ScatteringAndExtinction = EncodeHDR(float4(LightScattering * MaterialScatteringAndAbsorption.xyz + MaterialEmissive, Extinction));
+	float4 PreExposedScatteringAndExtinction = float4(View.PreExposure * (LightScattering * MaterialScatteringAndAbsorption.xyz + MaterialEmissive), Extinction);
 
 #if USE_TEMPORAL_REPROJECTION
 	BRANCH
 	if (HistoryAlpha > 0)
 	{
-		float4 HistoryScatteringAndExtinction = Texture3DSampleLevel(LightScatteringHistory, LightScatteringHistorySampler, HistoryUV, 0);
-		ScatteringAndExtinction = lerp(ScatteringAndExtinction, HistoryScatteringAndExtinction, HistoryAlpha);
+		float4 PreExposedHistoryScatteringAndExtinction = Texture3DSampleLevel(LightScatteringHistory, LightScatteringHistorySampler, HistoryUV, 0);
+		PreExposedHistoryScatteringAndExtinction *= LightScatteringHistoryPreExposureAndInv.y * View.PreExposure; // Bring previous frame pre exposed history luminance as current frame pre exposed luminance.
+		PreExposedScatteringAndExtinction = lerp(PreExposedScatteringAndExtinction, PreExposedHistoryScatteringAndExtinction, HistoryAlpha);
 	}
 	
 #endif
 
 	if (all(int3(GridCoordinate) < VolumetricFog.GridSizeInt))
 	{
-		ScatteringAndExtinction = MakePositiveFinite(ScatteringAndExtinction);
-		RWLightScattering[GridCoordinate] = ScatteringAndExtinction;
+		PreExposedScatteringAndExtinction = MakePositiveFinite(PreExposedScatteringAndExtinction);
+		RWLightScattering[GridCoordinate] = PreExposedScatteringAndExtinction;
 	}
 }
 
 Texture3D<float4> LightScattering;
 RWTexture3D<float4> RWIntegratedLightScattering;
+
+float VolumetricFogNearFadeInDistanceInv;
 
 [numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
 void FinalIntegrationCS(
@@ -800,29 +792,34 @@ void FinalIntegrationCS(
 
 	float3 AccumulatedLighting = 0;
 	float AccumulatedTransmittance = 1.0f;
-	float3 PreviousSliceTranslatedWorldPosition = PrimaryView.TranslatedWorldCameraOrigin;
-
+	float3 PreviousSliceTranslatedWorldPosition = ComputeCellTranslatedWorldPosition(uint3(GridCoordinate.xy, 0), float3(0.5f, 0.5f, 0.0f));
+	float AccumulatedDepth = 0.0;
 	for (int LayerIndex = 0; LayerIndex < VolumetricFog.GridSizeInt.z; LayerIndex++)
 	{
 		uint3 LayerCoordinate = uint3(GridCoordinate.xy, LayerIndex);
-		float4 ScatteringAndExtinction = DecodeHDR(LightScattering[LayerCoordinate]);
+		float4 PreExposedScatteringAndExtinction = LightScattering[LayerCoordinate];
 
 		float3 LayerTranslatedWorldPosition = ComputeCellTranslatedWorldPosition(LayerCoordinate, .5f);
 		float StepLength = length(LayerTranslatedWorldPosition - PreviousSliceTranslatedWorldPosition);
 		PreviousSliceTranslatedWorldPosition = LayerTranslatedWorldPosition;
 
-		float Transmittance = exp(-ScatteringAndExtinction.w * StepLength);
+		float Transmittance = exp(-PreExposedScatteringAndExtinction.w * StepLength);
+
+		AccumulatedDepth += StepLength;
+
+		// Fade in as a function of depth
+		float FadeInLerpValue = saturate(AccumulatedDepth * VolumetricFogNearFadeInDistanceInv);
 
 		// See "Physically Based and Unified Volumetric Rendering in Frostbite"
 		#define ENERGY_CONSERVING_INTEGRATION 1
 		#if ENERGY_CONSERVING_INTEGRATION
-			float3 ScatteringIntegratedOverSlice = (ScatteringAndExtinction.rgb - ScatteringAndExtinction.rgb * Transmittance) / max(ScatteringAndExtinction.w, .00001f);
+			float3 ScatteringIntegratedOverSlice = FadeInLerpValue * (PreExposedScatteringAndExtinction.rgb - PreExposedScatteringAndExtinction.rgb * Transmittance) / max(PreExposedScatteringAndExtinction.w, .00001f);
 			AccumulatedLighting += ScatteringIntegratedOverSlice * AccumulatedTransmittance;
 		#else
-			AccumulatedLighting += ScatteringAndExtinction.rgb * AccumulatedTransmittance * StepLength;
+			AccumulatedLighting += FadeInLerpValue * PreExposedScatteringAndExtinction.rgb * AccumulatedTransmittance * StepLength;
 		#endif
 		
-		AccumulatedTransmittance *= Transmittance;
+		AccumulatedTransmittance *= lerp(1.0f, Transmittance, FadeInLerpValue);
 
 		RWIntegratedLightScattering[LayerCoordinate] = float4(AccumulatedLighting, AccumulatedTransmittance);
 	}

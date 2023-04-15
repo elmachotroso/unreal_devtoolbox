@@ -12,7 +12,7 @@
 #include "Widgets/SWidget.h"
 #include "EdGraph/EdGraph.h"
 #include "K2Node_EditablePinBase.h"
-#include "Editor/ClassViewer/Public/ClassViewerModule.h"
+#include "ClassViewerModule.h"
 #include "EdGraphSchema_K2.h"
 
 class AActor;
@@ -34,6 +34,7 @@ class UAnimGraphNode_Root;
 class UBlueprint;
 struct FBPInterfaceDescription;
 class UFunction;
+class UK2Node_CallFunction;
 
 /** 
   * Flags describing how to handle graph removal
@@ -1098,10 +1099,10 @@ public:
 	static void SetBlueprintPropertyReadOnlyFlag(UBlueprint* Blueprint, const FName& VarName, const bool bVariableReadOnly);
 
 	/**
-	 * Sets the Interp flag on the variable with the specified name to make available to matinee
+	 * Sets the Interp flag on the variable with the specified name to make available to sequencer
 	 *
 	 * @param	VarName				Name of the var to set the flag on
-	 * @param	bInterp	true to make variable available to Matinee, false otherwise
+	 * @param	bInterp	true to make variable available to sequencer, false otherwise
 	 */
 	static void SetInterpFlag(UBlueprint* Blueprint, const FName& VarName, const bool bInterp);
 
@@ -1418,11 +1419,19 @@ public:
 	static FGuid FindInterfaceFunctionGuid(const UFunction* Function, const UClass* InterfaceClass);
 
 	/** Add a new interface, and member function graphs to the blueprint */
+	UE_DEPRECATED(5.1, "Short class names are no longer supported. Use a version of this function that takes FTopLevelAssetPath.")
 	static bool ImplementNewInterface(UBlueprint* Blueprint, const FName& InterfaceClassName);
 
+	/** Add a new interface, and member function graphs to the blueprint */
+	static bool ImplementNewInterface(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName);
+
 	/** Remove an implemented interface, and its associated member function graphs.  If bPreserveFunctions is true, then the interface will move its functions to be normal implemented blueprint functions */
+	UE_DEPRECATED(5.1, "Short class names are no longer supported. Use a version of this function that takes FTopLevelAssetPath.")
 	static void RemoveInterface(UBlueprint* Blueprint, const FName& InterfaceClassName, bool bPreserveFunctions = false);
 	
+	/** Remove an implemented interface, and its associated member function graphs.  If bPreserveFunctions is true, then the interface will move its functions to be normal implemented blueprint functions */
+	static void RemoveInterface(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName, bool bPreserveFunctions = false);
+
 	/**
 	* Attempt to remove a function from an interfaces list of function graphs.
 	* Note that this will NOT remove interface events (i.e. functions with no outputs)
@@ -1440,7 +1449,11 @@ public:
 	static void PromoteGraphFromInterfaceOverride(UBlueprint* InBlueprint, UEdGraph* InInterfaceGraph);
 
 	/** Gets the graphs currently in the blueprint associated with the specified interface */
+	UE_DEPRECATED(5.1, "Short class names are no longer supported. Use a version of this function that takes FTopLevelAssetPath.")
 	static void GetInterfaceGraphs(UBlueprint* Blueprint, const FName& InterfaceClassName, TArray<UEdGraph*>& ChildGraphs);
+
+	/** Gets the graphs currently in the blueprint associated with the specified interface */
+	static void GetInterfaceGraphs(UBlueprint* Blueprint, FTopLevelAssetPath InterfaceClassPathName, TArray<UEdGraph*>& ChildGraphs);
 
 	/**
 	* Checks if the given function is a part of an interface on this blueprint
@@ -1521,12 +1534,6 @@ public:
 
 	/** Finds a unique and valid name for a custom event */
 	static FName FindUniqueCustomEventName(const UBlueprint* Blueprint);
-
-	//////////////////////////////////////////////////////////////////////////
-	// Scoping
-
-	/** Add a new namespace to the blueprint's import list. Will return false if already imported. */
-	static bool AddNamespaceToImportList(UBlueprint* Blueprint, const FString& Namespace);
 
 	//////////////////////////////////////////////////////////////////////////
 	// Timeline

@@ -5,7 +5,6 @@
 #include "Party/PartyTypes.h"
 #include "Party/PartyDataReplicator.h"
 
-#include "PartyPackage.h"
 #include "PartyMember.generated.h"
 
 class USocialUser;
@@ -40,6 +39,81 @@ public:
 	FString SessionId;
 };
 
+/** Join in progress request. Represents a request from a local party member to a remote party member to acquire a reservation for the session the remote party member is in. */
+USTRUCT()
+struct FPartyMemberJoinInProgressRequest
+{
+	GENERATED_BODY()
+
+public:
+	bool operator==(const FPartyMemberJoinInProgressRequest& Other) const { return Target == Other.Target && Time == Other.Time; }
+	bool operator!=(const FPartyMemberJoinInProgressRequest& Other) const { return !operator==(Other); }
+
+	/** Remote member we want to join. */
+	UPROPERTY()
+	FUniqueNetIdRepl Target;
+
+	/** Time the request was made. */
+	UPROPERTY()
+	int64 Time = 0;
+};
+
+/** Join in progress response. Represents a response from a local party member to a remote party member that requested to join in progress. */
+USTRUCT()
+struct FPartyMemberJoinInProgressResponse
+{
+	GENERATED_BODY()
+
+public:
+	bool operator==(const FPartyMemberJoinInProgressResponse& Other) const
+	{
+		return Requester == Other.Requester &&
+			RequestTime == Other.RequestTime &&
+			ResponseTime == Other.ResponseTime &&
+			DenialReason == Other.DenialReason;
+	}
+	bool operator!=(const FPartyMemberJoinInProgressResponse& Other) const { return !operator==(Other); }
+
+	/** Remote member that this response is for. */
+	UPROPERTY()
+	FUniqueNetIdRepl Requester;
+
+	/** Time the request was made. Matches FPartyMemberJoinInProgressRequest::Time */
+	UPROPERTY()
+	int64 RequestTime = 0;
+
+	/** Time the response was made. */
+	UPROPERTY()
+	int64 ResponseTime = 0;
+
+	/**
+	 * Result of session reservation attempt.
+	 * @see EPartyJoinDenialReason
+	 */
+	UPROPERTY()
+	uint8 DenialReason = 0;
+};
+
+/** Join in progress data. Holds the current request and any responses. Requests and responses are expected to be cleared in a short amount of time. Combined into one field to reduce field count. */
+USTRUCT()
+struct FPartyMemberJoinInProgressData
+{
+	GENERATED_BODY()
+
+public:
+
+	bool operator==(const FPartyMemberJoinInProgressData& Other) const { return Request == Other.Request && Responses == Other.Responses; }
+	bool operator!=(const FPartyMemberJoinInProgressData& Other) const { return !operator==(Other); }
+
+	/** Current request for the local member. */
+	UPROPERTY()
+	FPartyMemberJoinInProgressRequest Request;
+
+	/** List of responses for other members who requested a reservation. */
+	UPROPERTY()
+	TArray<FPartyMemberJoinInProgressResponse> Responses;
+};
+
 /** Base struct used to replicate data about the state of a single party member to all members. */
 USTRUCT()
 struct PARTY_API FPartyMemberRepData : public FOnlinePartyRepDataBase
@@ -70,15 +144,29 @@ private:
 	UPROPERTY()
 	ECrossplayPreference CrossplayPreference = ECrossplayPreference::NoSelection;
 	EXPOSE_REP_DATA_PROPERTY(FPartyMemberRepData, ECrossplayPreference, CrossplayPreference);
+
+	/** Method used to join the party */
+	UPROPERTY()
+	FString JoinMethod;
+	EXPOSE_REP_DATA_PROPERTY(FPartyMemberRepData, FString, JoinMethod);
+
+	/** Data used for join in progress flow. */
+	UPROPERTY()
+	FPartyMemberJoinInProgressData JoinInProgressData;
+	EXPOSE_USTRUCT_REP_DATA_PROPERTY(FPartyMemberRepData, FPartyMemberJoinInProgressRequest, JoinInProgressData, Request);
+	EXPOSE_USTRUCT_REP_DATA_PROPERTY(FPartyMemberRepData, TArray<FPartyMemberJoinInProgressResponse>, JoinInProgressData, Responses);
 };
 
-using FPartyMemberDataReplicator = TPartyDataReplicator<FPartyMemberRepData>;
+using FPartyMemberDataReplicator = TPartyDataReplicator<FPartyMemberRepData, UPartyMember>;
 
 UCLASS(Abstract, config = Game, Within = SocialParty, Transient)
 class PARTY_API UPartyMember : public UObject
 {
 	GENERATED_BODY()
 
+	friend class FPartyPlatformSessionMonitor;
+	friend class USocialManager;
+	friend USocialParty;
 public:
 	UPartyMember();
 
@@ -108,13 +196,14 @@ public:
 	FOnPartyMemberStateChanged& OnPromotedToLeader() const { return OnPromotedToLeaderEvent; }
 	FOnPartyMemberStateChanged& OnDemoted() const { return OnDemotedEvent; }
 	FOnPartyMemberStateChanged& OnMemberConnectionStatusChanged() const { return OnMemberConnectionStatusChangedEvent; }
+	FOnPartyMemberStateChanged& OnDisplayNameChanged() const { return OnDisplayNameChangedEvent; }
 
 	DECLARE_EVENT_OneParam(UPartyMember, FOnPartyMemberLeft, EMemberExitedReason)
 	FOnPartyMemberLeft& OnLeftParty() const { return OnLeftPartyEvent; }
 
 	FString ToDebugString(bool bIncludePartyId = true) const;
 
-PACKAGE_SCOPE:
+protected:
 	void InitializePartyMember(const FOnlinePartyMemberConstRef& OssMember, const FSimpleDelegate& OnInitComplete);
 
 	FPartyMemberRepData& GetMutableRepData() { return *MemberDataReplicator; }
@@ -140,14 +229,16 @@ protected:
 private:
 	void HandleSocialUserInitialized(USocialUser& InitializedUser);
 	void HandleMemberConnectionStatusChanged(const FUniqueNetId& ChangedUserId, const EMemberConnectionStatus NewMemberConnectionStatus, const EMemberConnectionStatus PreviousMemberConnectionStatus);
+	void HandleMemberAttributeChanged(const FUniqueNetId& ChangedUserId, const FString& Attribute, const FString& NewValue, const FString& OldValue);
 
 	FOnlinePartyMemberConstPtr OssPartyMember;
 
 	UPROPERTY()
-	USocialUser* SocialUser = nullptr;
+	TObjectPtr<USocialUser> SocialUser = nullptr;
 
 	bool bHasReceivedInitialData = false;
 	mutable FOnPartyMemberStateChanged OnMemberConnectionStatusChangedEvent;
+	mutable FOnPartyMemberStateChanged OnDisplayNameChangedEvent;
 	mutable FOnPartyMemberStateChanged OnMemberInitializedEvent;
 	mutable FOnPartyMemberStateChanged OnPromotedToLeaderEvent;
 	mutable FOnPartyMemberStateChanged OnDemotedEvent;

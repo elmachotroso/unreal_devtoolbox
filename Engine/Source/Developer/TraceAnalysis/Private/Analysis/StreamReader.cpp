@@ -1,17 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StreamReader.h"
-#include "HAL/UnrealMemory.h"
 #include "Math/UnrealMath.h"
 
 namespace UE {
 namespace Trace {
-
-////////////////////////////////////////////////////////////////////////////////
-FStreamReader::~FStreamReader()
-{
-	FMemory::Free(Buffer);
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 const uint8* FStreamReader::GetPointer(uint32 Size)
@@ -35,6 +28,12 @@ void FStreamReader::Advance(uint32 Size)
 int32 FStreamReader::GetRemaining() const
 {
 	return int32(PTRINT(End - Cursor));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FStreamReader::CanMeetDemand() const
+{
+	return (GetRemaining() >= int32(DemandHint));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -73,6 +72,13 @@ void FStreamReader::RestoreMark(struct FMark* Mark)
 }
 
 
+
+////////////////////////////////////////////////////////////////////////////////
+FStreamBuffer::FStreamBuffer(uint32 InitialBufferSize)
+: BufferSize(InitialBufferSize)
+{
+	Buffer = (uint8*)FMemory::Malloc(BufferSize);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 void FStreamBuffer::Append(const uint8* Data, uint32 Size)

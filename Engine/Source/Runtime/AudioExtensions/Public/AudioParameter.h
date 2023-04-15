@@ -2,12 +2,20 @@
 #pragma once
 
 #include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "IAudioProxyInitializer.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/Interface.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
 
 #include "AudioParameter.generated.h"
+
+class UObject;
 
 
 #define AUDIO_PARAMETER_NAMESPACE_PATH_DELIMITER "."
@@ -35,8 +43,8 @@ enum class EAudioParameterType : uint8
 	// 'Default' results in behavior that is resolved
 	// based on the system interpreting it.  To support
 	// legacy implementation, SoundCues cache all typed values
-	// associated with a given parameter name, whereas MetaSounds
-	// only use the last typed value set.
+	// associated with a given parameter name. 
+	// For MetaSounds, use a specific Type instead of this one. 
 	None UMETA(DisplayName = "Default"),
 
 	// Boolean value

@@ -4,6 +4,9 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Layout/SGridPanel.h"
 #include "Components/GridSlot.h"
+#include "Editor/WidgetCompilerLog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GridPanel)
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -14,7 +17,7 @@ UGridPanel::UGridPanel(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UGridPanel::ReleaseSlateResources(bool bReleaseChildren)
@@ -111,17 +114,17 @@ void UGridPanel::SetColumnFill(int32 ColumnIndex, float Coefficient)
 	}
 }
 
-void UGridPanel::SetRowFill(int32 ColumnIndex, float Coefficient)
+void UGridPanel::SetRowFill(int32 RowIndex, float Coefficient)
 {
-	while (RowFill.Num() <= ColumnIndex)
+	while (RowFill.Num() <= RowIndex)
 	{
 		RowFill.Emplace(0);
 	}
-	RowFill[ColumnIndex] = Coefficient;
+	RowFill[RowIndex] = Coefficient;
 
 	if (MyGridPanel.IsValid())
 	{
-		MyGridPanel->SetRowFill(ColumnIndex, Coefficient);
+		MyGridPanel->SetRowFill(RowIndex, Coefficient);
 	}
 }
 
@@ -137,3 +140,4 @@ const FText UGridPanel::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -4,14 +4,12 @@
 #include "Misc/MessageDialog.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
 #include "Editor.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "IDetailPropertyRow.h"
 #include "DetailCategoryBuilder.h"
 #include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Input/STextComboBox.h"
 
 #define LOCTEXT_NAMESPACE "FTextureDetails"
 
@@ -37,7 +35,6 @@ void FTextureDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	DetailBuilder.EditCategory("File Path");
 
 	MaxTextureSizePropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UTexture, MaxTextureSize));
-	PowerOfTwoModePropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UTexture, PowerOfTwoMode));
 	VirtualTextureStreamingPropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UTexture, VirtualTextureStreaming));
 
 	// Customize MaxTextureSize
@@ -54,6 +51,7 @@ void FTextureDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 
 		if (UTexture* Texture = Cast<UTexture>(TextureBeingCustomized.Get()))
 		{
+			// GetMaximumDimension is for current RHI and texture type
 			MaxTextureSize = Texture->GetMaximumDimension();
 		}
 
@@ -84,47 +82,6 @@ void FTextureDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 			];
 	}
 
-	// Customize PowerOfTwoMode
-	if( PowerOfTwoModePropertyHandle->IsValidHandle() )
-	{
-		IDetailCategoryBuilder& TextureCategory = DetailBuilder.EditCategory("Texture");
-		IDetailPropertyRow& PowerOfTwoModePropertyRow = TextureCategory.AddProperty(GET_MEMBER_NAME_CHECKED(UTexture, PowerOfTwoMode));
-
-		PowerOfTwoModePropertyHandle->SetOnPropertyResetToDefault(FSimpleDelegate::CreateSP(this, &FTextureDetails::OnPropertyResetToDefault));
-
-		// Generate a list of enum values for the combo box
-		TArray<FText> PowerOfTwoModeComboBoxToolTips;
-		TArray<bool> RestrictedList;
-		PowerOfTwoModePropertyHandle->GeneratePossibleValues(PowerOfTwoModeComboBoxList, PowerOfTwoModeComboBoxToolTips, RestrictedList);
-
-		uint8 PowerOfTwoMode;
-		ensure(PowerOfTwoModePropertyHandle->GetValue(PowerOfTwoMode) == FPropertyAccess::Success);
-
-		TSharedPtr<SWidget> NameWidget;
-		TSharedPtr<SWidget> ValueWidget;
-		FDetailWidgetRow Row;
-		PowerOfTwoModePropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
-
-		const bool bShowChildren = true;
-		PowerOfTwoModePropertyRow.CustomWidget(bShowChildren)
-			.NameContent()
-			.MinDesiredWidth(Row.NameWidget.MinWidth)
-			.MaxDesiredWidth(Row.NameWidget.MaxWidth)
-			[
-				NameWidget.ToSharedRef()
-			]
-			.ValueContent()
-			.MinDesiredWidth(Row.ValueWidget.MinWidth)
-			.MaxDesiredWidth(Row.ValueWidget.MaxWidth)
-			[
-				SAssignNew(TextComboBox, STextComboBox)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.OptionsSource(&PowerOfTwoModeComboBoxList)
-				.InitiallySelectedItem(PowerOfTwoModeComboBoxList[PowerOfTwoMode])
-				.OnSelectionChanged(this, &FTextureDetails::OnPowerOfTwoModeChanged)
-			];
-	}
-
 	// Hide the option to enable VT streaming, if VT is disabled for the project
 	if (VirtualTextureStreamingPropertyHandle.IsValid())
 	{
@@ -135,25 +92,6 @@ void FTextureDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 			DetailBuilder.HideProperty(VirtualTextureStreamingPropertyHandle);
 		}
 	}
-}
-
-bool FTextureDetails::CanEditMaxTextureSize() const
-{
-	if (UTexture2D* Texture2D = Cast<UTexture2D>(TextureBeingCustomized.Get()))
-	{
-		if (!Texture2D->Source.IsPowerOfTwo() && Texture2D->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-void FTextureDetails::CreateMaxTextureSizeMessage() const
-{
-	FMessageDialog::Open(EAppMsgType::Ok,
-		LOCTEXT("CannotEditMaxTextureSize", "Maximum Texture Size cannot be changed for this texture as it is a non power of two size. Change the Power of Two Mode to allow it to be padded to a power of two."));
 }
 
 /** @return The value or unset if properties with multiple values are viewed */
@@ -171,11 +109,6 @@ TOptional<int32> FTextureDetails::OnGetMaxTextureSize() const
 
 void FTextureDetails::OnMaxTextureSizeChanged(int32 NewValue)
 {
-	if (!CanEditMaxTextureSize())
-	{
-		return;
-	}
-
 	if (bIsUsingSlider)
 	{
 		int32 OrgValue(0);
@@ -196,15 +129,6 @@ void FTextureDetails::OnMaxTextureSizeChanged(int32 NewValue)
 
 void FTextureDetails::OnMaxTextureSizeCommitted(int32 NewValue, ETextCommit::Type CommitInfo)
 {
-	if (!CanEditMaxTextureSize())
-	{
-		if (CommitInfo == ETextCommit::OnEnter)
-		{
-			CreateMaxTextureSizeMessage();
-		}
-		return;
-	}
-
 	MaxTextureSizePropertyHandle->SetValue(NewValue);
 }
 
@@ -213,11 +137,6 @@ void FTextureDetails::OnMaxTextureSizeCommitted(int32 NewValue, ETextCommit::Typ
  */
 void FTextureDetails::OnBeginSliderMovement()
 {
-	if (!CanEditMaxTextureSize())
-	{
-		return;
-	}
-
 	bIsUsingSlider = true;
 
 	GEditor->BeginTransaction(TEXT("TextureDetails"), LOCTEXT("SetMaximumTextureSize", "Edit Maximum Texture Size"), nullptr /* MaxTextureSizePropertyHandle->GetProperty() */ );
@@ -229,58 +148,10 @@ void FTextureDetails::OnBeginSliderMovement()
  */
 void FTextureDetails::OnEndSliderMovement(int32 NewValue)
 {
-	if (!CanEditMaxTextureSize())
-	{
-		return;
-	}
-
 	bIsUsingSlider = false;
 
 	GEditor->EndTransaction();
 }
 
-bool FTextureDetails::CanEditPowerOfTwoMode(int32 NewPowerOfTwoMode) const
-{
-	if (UTexture2D* Texture2D = Cast<UTexture2D>(TextureBeingCustomized.Get()))
-	{
-		if (!Texture2D->Source.IsPowerOfTwo() && Texture2D->MaxTextureSize > 0 && NewPowerOfTwoMode == ETexturePowerOfTwoSetting::None)
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-void FTextureDetails::CreatePowerOfTwoModeMessage() const
-{
-	FMessageDialog::Open(EAppMsgType::Ok,
-						 LOCTEXT("CannotEditPowerOfTwoMode", "Power of Two Mode cannot be changed to None for this texture as it is a non power of two size and has a Maximum Texture Size override. Change the Maximum Texture Size to 0 before attempting to change the Power of Two Mode."));
-}
-
-void FTextureDetails::OnPropertyResetToDefault() const
-{
-	uint8 CurrentPowerOfTwoMode;
-	ensure(PowerOfTwoModePropertyHandle->GetValue(CurrentPowerOfTwoMode) == FPropertyAccess::Success);
-	TextComboBox->SetSelectedItem(PowerOfTwoModeComboBoxList[CurrentPowerOfTwoMode]);
-}
-
-void FTextureDetails::OnPowerOfTwoModeChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
-{
-	int32 NewPowerOfTwoMode = PowerOfTwoModeComboBoxList.Find(NewValue);
-	check(NewPowerOfTwoMode != INDEX_NONE);
-	if (!CanEditPowerOfTwoMode(NewPowerOfTwoMode))
-	{
-		CreatePowerOfTwoModeMessage();
-		uint8 CurrentPowerOfTwoMode;
-		ensure(PowerOfTwoModePropertyHandle->GetValue(CurrentPowerOfTwoMode) == FPropertyAccess::Success);
-		TextComboBox->SetSelectedItem(PowerOfTwoModeComboBoxList[CurrentPowerOfTwoMode]);
-		return;
-	}
-
-	int32 PowerOfTwoMode = PowerOfTwoModeComboBoxList.Find(NewValue);
-	check(PowerOfTwoMode != INDEX_NONE);
-	ensure(PowerOfTwoModePropertyHandle->SetValue(static_cast<uint8>(PowerOfTwoMode)) == FPropertyAccess::Success);
-}
 
 #undef LOCTEXT_NAMESPACE

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using IncludeTool.Support;
+using EpicGames.Core;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -196,19 +197,23 @@ namespace IncludeTool
 			{
 				return true;
 			}
-			if(NormalizedPath.StartsWith("/engine/plugins/experimental/phya/source/phya/private/phyalib/"))
+			if (NormalizedPath.StartsWith("/engine/plugins/experimental/phya/source/phya/private/phyalib/"))
 			{
 				return true;
 			}
-			if(NormalizedPath.StartsWith("/engine/plugins/runtime/leapmotion/thirdparty/"))
+			if (NormalizedPath.StartsWith("/engine/plugins/runtime/leapmotion/thirdparty/"))
 			{
 				return true;
 			}
-			if(NormalizedPath.EndsWith("/recastmesh.cpp") || NormalizedPath.EndsWith("/recastfilter.cpp") || NormalizedPath.EndsWith("/recastcontour.cpp") || NormalizedPath.EndsWith("/framepro.h") || NormalizedPath.EndsWith("/framepro.cpp") || NormalizedPath.EndsWith("/frameproue4.h") || NormalizedPath.EndsWith("/frameproue4.cpp") || NormalizedPath.EndsWith("/sqlite3.h") || NormalizedPath.EndsWith("/sqlite3.inl") || NormalizedPath.EndsWith("/vorbis_stream_encoder.h") || NormalizedPath.EndsWith("/integral_types.h"))
+			if (NormalizedPath.Contains("/rev.runtime/"))
 			{
 				return true;
 			}
-			if(NormalizedPath.Contains("/thirdparty/rapidjson/"))
+			if (NormalizedPath.EndsWith("/recastmesh.cpp") || NormalizedPath.EndsWith("/recastfilter.cpp") || NormalizedPath.EndsWith("/recastcontour.cpp") || NormalizedPath.EndsWith("/framepro.h") || NormalizedPath.EndsWith("/framepro.cpp") || NormalizedPath.EndsWith("/frameproue4.h") || NormalizedPath.EndsWith("/frameproue4.cpp") || NormalizedPath.EndsWith("/sqlite3.h") || NormalizedPath.EndsWith("/sqlite3.inl") || NormalizedPath.EndsWith("/vorbis_stream_encoder.h") || NormalizedPath.EndsWith("/integral_types.h"))
+			{
+				return true;
+			}
+			if (NormalizedPath.Contains("/thirdparty/rapidjson/"))
 			{
 				return true;
 			}
@@ -418,8 +423,8 @@ namespace IncludeTool
 			"/Engine/Source/Runtime/SlateCore/Public/Fonts/ShapedTextFwd.h", // Typedef isn't a forward declaration
 			"/Engine/Source/Runtime/Slate/Public/Framework/Text/ShapedTextCacheFwd.h", // Typedef isn't a forward declaration
 			"/Engine/Source/Runtime/MovieScene/Public/MovieSceneFwd.h",
-			"/Engine/Source/Runtime/Core/Public/CoreFwd.h",	// invalid forward declaration - UE_DECLARE_LWC_TYPE macro (emitting typedefs and namespaces)
-			"/Engine/Source/Runtime/Core/Public/Math/MathFwd.h", // invalid forward declaration - UE_DECLARE_LWC_TYPE macro (emitting typedefs and namespaces)
+            "/Engine/Source/Editor/SequencerCore/Public/SequencerCoreFwd.h", // invalid forward declaration - 'namespace UE'
+            "/Engine/Source/Runtime/Core/Public/Math/MathFwd.h", // invalid forward declaration - 'namespace UE::Math'
 			"/Engine/Source/Runtime/Core/Public/Containers/ContainersFwd.h", // invalid forward declaration - 'template<> struct TIsContiguousContainer<Type> { static constexpr bool Value = true; };'
 			"/Engine/Source/Runtime/Core/Public/Containers/StringFwd.h", // invalid forward declaration - 'template<> struct TIsContiguousContainer<Type> { static constexpr bool Value = true; };'
 			"/Engine/Source/Runtime/Core/Public/Internationalization/StringTableCoreFwd.h", // Typedef isn't a forward declaration
@@ -430,7 +435,9 @@ namespace IncludeTool
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/PBDSoftsEvolutionFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/JointConstraintProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/SingleParticlePhysicsProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
-			"/Engine/Source/Runtime/Experimental/Interchange/Engine/Public/InterchangeEngineFwd.h", // invalid forward declaration - 'namespace UE'
+			"/Engine/Source/Runtime/Interchange/Engine/Public/InterchangeEngineFwd.h", // invalid forward declaration - 'namespace UE'
+			"/Engine/Plugins/Experimental/GameFeatures/Source/GameFeatures/Public/GameFeatureTypesFwd.h", //  invalid forward declaration - 'namespace GameFeaturePluginStatePrivate'
+			"/Engine/Source/Runtime/Core/Public/Containers/VersePathFwd.h", // invalid forward declaration - 'namespace UE::Core'
 		};
 
 		/// <summary>
@@ -449,7 +456,8 @@ namespace IncludeTool
 			SourceFileFlags Flags = SourceFileFlags.Standalone;
 			if(NormalizedPath.EndsWith(".inl") || NormalizedPath.EndsWith(".inc") || NormalizedPath.EndsWith(".generated.h"))
 			{
-				Flags = (Flags | SourceFileFlags.Pinned) & ~SourceFileFlags.Standalone;
+				Flags &= ~SourceFileFlags.Standalone;
+				Flags |= SourceFileFlags.Pinned;
 			}
 			if(NormalizedPath.IndexOf("/public/") != -1 || NormalizedPath.IndexOf("/classes/") != -1)
 			{
@@ -468,6 +476,11 @@ namespace IncludeTool
 				else if(NormalizedPath.EndsWith("classes.h"))
 				{
 					Flags |= SourceFileFlags.GeneratedClassesHeader | SourceFileFlags.Public;
+				}
+				else if(NormalizedPath.EndsWith(".gen.h") && NormalizedPath.IndexOf("/vni/") != -1)
+				{
+					Flags &= ~SourceFileFlags.Standalone;
+					Flags |= SourceFileFlags.Pinned | SourceFileFlags.GeneratedHeader | SourceFileFlags.Public | SourceFileFlags.AllowMultipleFragments;
 				}
 			}
 			if(NormalizedPath.EndsWith(".cpp") || NormalizedPath.IndexOf("/windows/") != -1 || NormalizedPath.IndexOf("/linux/") != -1)
@@ -555,7 +568,8 @@ namespace IncludeTool
 			if(Markup.Type == PreprocessorMarkupType.Define && Markup.Tokens[0].Text == "ONLINE_LOG_PREFIX")
 			{
 				return true;
-			}			if(Markup.Type == PreprocessorMarkupType.Define && (Markup.Tokens[0].Text == "UE_DEPRECATED_FORGAME" || Markup.Tokens[0].Text == "DEPRECATED_FORGAME"))
+			}			
+			if(Markup.Type == PreprocessorMarkupType.Define && (Markup.Tokens[0].Text == "UE_DEPRECATED_FORGAME" || Markup.Tokens[0].Text == "DEPRECATED_FORGAME"))
 			{
 				return true;
 			}
@@ -575,34 +589,52 @@ namespace IncludeTool
 			{
 				return true;
 			}
+			if((File.Flags & SourceFileFlags.External) != 0)
+			{
+				return true;
+			}
 			return false;
 		}
+
+		static readonly string[] PathsToIgnoreForOldStyleHeaders = new string[] {
+			"/Engine/Source/Runtime/Navmesh/Public/DebugUtils/",
+			"/Engine/Source/Runtime/Navmesh/Public/Detour/",
+			"/Engine/Source/Runtime/Navmesh/Public/DetourCrowd/",
+			"/Engine/Source/Runtime/Navmesh/Public/DetourTileCache/",
+			"/Engine/Source/Runtime/Navmesh/Public/Recast/",
+
+			"/Engine/Plugins/Compression/OodleNetwork/",
+			"/Engine/Plugins/Developer/TextureFormatOodle/",
+			"/Engine/Plugins/Media/BinkMedia/Source/",
+			"/Engine/Source/Runtime/OodleDataCompression/Sdks/",
+
+			"/Engine/Plugins/Animation/ControlRigSpline/Source/ControlRigSpline/ThirdParty/",
+			"/Engine/Plugins/Runtime/nDisplay/ThirdParty/",
+			"/Engine/Plugins/Runtime/ResonanceAudio/Source/ResonanceAudio/Private/ResonanceAudioLibrary/",
+			"/Engine/Source/Runtime/Experimental/Voronoi/",
+
+			"/Engine/Plugins/Animation/ControlRig/Source/ControlRig/ThirdParty/AHEasing/AHEasing/easing.h",
+			"/Engine/Plugins/Animation/RigLogic/Source/RigLogicLib/Private/dna/utils/Extd.h",
+			"/Engine/Plugins/Animation/RigLogic/Source/RigLogicLib/Private/riglogic/utils/Extd.h",
+			"/Engine/Plugins/Animation/RigLogic/Source/RigLogicLib/Public/dna/types/ArrayView.h",
+			"/Engine/Source/Runtime/Core/Public/Experimental/Containers/FAAArrayQueue.h",
+			"/Engine/Source/Runtime/Core/Public/Hash/CityHash.h",
+			"/Engine/Source/Runtime/Core/Public/MemPro/MemPro.h",
+			"/Engine/Source/Runtime/CUDA/Source/Public/CudaWrapper.h",
+			"/Engine/Plugins/Runtime/GeometryProcessing/Source/GeometryAlgorithms/Private/ThirdParty/xatlas/xatlas.h",
+
+			"/Engine/Restricted/",
+		};
 
 		/// <summary>
 		/// Whether to ignore old-style header guards
 		/// </summary>
-		/// <param name="RootDir">Root directory for the branch</param>
-		/// <param name="Location">Path to the file</param>
+		/// <param name="NormalizedPath">Path to the file</param>
 		/// <returns>True to ignore the different derivations</returns>
-		public static bool IgnoreOldStyleHeaderGuards(string NormalizedPath)
+		public static bool IgnoreOldStyleHeaderGuards(FileReference Location)
 		{
-			if(NormalizedPath.StartsWith("/engine/source/runtime/navmesh/public/detour/"))
-			{
-				return true;
-			}
-			if(NormalizedPath.StartsWith("/engine/source/runtime/navmesh/public/detourcrowd/"))
-			{
-				return true;
-			}
-			if(NormalizedPath.StartsWith("/engine/source/runtime/navmesh/public/recast/"))
-			{
-				return true;
-			}
-			if(NormalizedPath.StartsWith("/engine/source/runtime/navmesh/public/debugutils/"))
-			{
-				return true;
-			}
-			return false;
+			string LocationString = Location.ToString().Replace("\\", "/");
+			return PathsToIgnoreForOldStyleHeaders.Any(x => LocationString.Contains(x));
 		}
 
         /// <summary>

@@ -2,36 +2,64 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "Misc/Guid.h"
-#include "Layout/Visibility.h"
-#include "Layout/SlateRect.h"
-#include "Layout/Geometry.h"
-#include "Input/CursorReply.h"
-#include "Input/Reply.h"
-#include "Styling/SlateColor.h"
-#include "Layout/ArrangedWidget.h"
-#include "Layout/Margin.h"
 #include "Animation/CurveSequence.h"
-#include "SlotBase.h"
-#include "Layout/Children.h"
-#include "Widgets/SPanel.h"
-#include "Styling/CoreStyle.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "DiffResults.h"
 #include "Framework/Commands/InputChord.h"
 #include "GraphEditor.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/CursorReply.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
 #include "Layout/ArrangedChildren.h"
-#include "Types/PaintArgs.h"
-#include "EditorStyleSet.h"
+#include "Layout/ArrangedWidget.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/ChildrenBase.h"
+#include "Layout/Geometry.h"
 #include "Layout/LayoutUtils.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "Layout/Visibility.h"
 #include "MarqueeOperation.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/PaintArgs.h"
+#include "Types/SlateEnums.h"
+#include "Types/WidgetMouseEventsDelegate.h"
 #include "UObject/GCObject.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SPanel.h"
+#include "Widgets/SWidget.h"
 
 class FActiveTimerHandle;
+class FReferenceCollector;
 class FScopedTransaction;
 class FSlateWindowElementList;
+class FWidgetStyle;
+class UObject;
+struct FCaptureLostEvent;
+struct FDiffSingleResult;
+struct FFocusEvent;
+struct FKeyEvent;
 struct FMarqueeOperation;
+struct FPointerEvent;
+struct FSlateBrush;
 struct Rect;
 
 //@TODO: Too generic of a name to expose at this scope
@@ -564,7 +592,23 @@ public:
 		/** @return The brush to use for drawing the shadow for this node */
 		virtual const FSlateBrush* GetShadowBrush(bool bSelected) const
 		{
-			return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FEditorStyle::GetBrush(TEXT("Graph.Node.Shadow"));
+			return bSelected ? FAppStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FAppStyle::GetBrush(TEXT("Graph.Node.Shadow"));
+		}
+
+		struct DiffHighlightInfo
+		{
+			const FSlateBrush* Brush;
+			const FLinearColor Tint;
+		};
+		
+		/** @return Collection of brushes layered to outline node with the DiffResult color */
+		TArray<SNodePanel::SNode::DiffHighlightInfo> GetDiffHighlights(const FDiffSingleResult& DiffResult) const;
+
+		/** used by GetDiffHighlights to generate outlines for diffed nodes */
+		virtual void GetDiffHighlightBrushes(const FSlateBrush*& BackgroundOut, const FSlateBrush*& ForegroundOut) const
+		{
+			BackgroundOut = FAppStyle::GetBrush(TEXT("Graph.Node.DiffHighlight"));
+			ForegroundOut = FAppStyle::GetBrush(TEXT("Graph.Node.DiffHighlightShading"));
 		}
 
 		/** Populate the brushes array with any overlay brushes to render */
@@ -636,7 +680,7 @@ public:
 	protected:
 		SNode()
 		: BorderImage( FCoreStyle::Get().GetBrush( "NoBorder" ) )
-		, BorderBackgroundColor( FEditorStyle::GetColor("Graph.ForegroundColor"))
+		, BorderBackgroundColor( FAppStyle::GetColor("Graph.ForegroundColor"))
 		, DesiredSizeScale(FVector2D(1,1))
 		, Children(this)
 		{
@@ -721,6 +765,14 @@ public:
 	/** @return the view offset in graph space */
 	FVector2D GetViewOffset() const;
 
+	/** 
+	 * when a panel is scrolling/zooming to a target, this can be called to get it's destination
+	 * @param TopLeft top left corner of the destination
+	 * @param BottomRight bottom right corner of the destination
+	 * @return true if there's a scrolling/zooming target and false if there is no destination
+	 */
+	bool GetZoomTargetRect(FVector2D& TopLeft, FVector2D& BottomRight) const;
+
 	/** @return the current view bookmark ID */
 	const FGuid& GetViewBookmarkId() const { return CurrentBookmarkGuid; }
 
@@ -731,7 +783,7 @@ public:
 	void RestoreViewSettings(const FVector2D& InViewOffset, float InZoomAmount, const FGuid& InBookmarkGuid = FGuid());
 
 	/** Get the grid snap size */
-	static float GetSnapGridSize();
+	static uint32 GetSnapGridSize();
 
 	/** 
 	 * Zooms out to fit either all nodes or only the selected ones.
@@ -751,6 +803,9 @@ public:
 
 	/** If it is focusing on a particular object */
 	bool HasDeferredObjectFocus() const;
+
+	/** Query whether this graph is about to start panning/zooming towards a destination */
+	bool HasDeferredZoomDestination() const;
 
 	/** Commit transactions for any node movements */
 	void FinalizeNodeMovements();

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/NetDriver.h"
 #include "HAL/Runnable.h"
@@ -14,6 +13,8 @@
 #include "Containers/CircularQueue.h"
 #include "SocketTypes.h"
 #include "SocketSubsystem.h"
+#include "Templates/PimplPtr.h"
+#include "Containers/SpscQueue.h"
 #include "IpNetDriver.generated.h"
 
 
@@ -24,11 +25,38 @@ class FNetworkNotify;
 class FSocket;
 struct FRecvMulti;
 
+namespace UE::Net::Private
+{
+	class FNetDriverAddressResolution;
+}
+
 
 // CVars
 #if !UE_BUILD_SHIPPING
 extern TSharedPtr<FInternetAddr> GCurrentDuplicateIP;
 #endif
+
+
+namespace UE::Net
+{
+	/** Results for UIpNetDriver::RecreateSocket */
+	enum class ERecreateSocketResult : uint8
+	{
+		NoAction,			// No action taken - this is either a replay, called on the server, or the NetDriver doesn't support socket recreation
+		NotReady,			// Net Address Resolution is in the middle of resolving, so no socket recreation can take place
+		AlreadyInProgress,	// Socket recreation is already in progress
+		BeganRecreate,		// Socket recreation was successfully kicked off
+		Error				// There was an error
+	};
+
+	const TCHAR* LexToString(ERecreateSocketResult Value);
+}
+
+namespace UE::Net::Private
+{
+	/** Callback triggered when setting a new socket has completed (which may not return immediately, due to multithreading) */
+	using FSetSocketComplete = TUniqueFunction<void()>;
+}
 
 
 UCLASS(transient, config=Engine)
@@ -50,10 +78,6 @@ public:
 	/** Number of ports which will be tried if current one is not available for binding (i.e. if told to bind to port N, will try from N to N+MaxPortCountToTry inclusive) */
 	UPROPERTY(Config)
 	uint32 MaxPortCountToTry;
-
-	/** Underlying socket communication */
-	UE_DEPRECATED(4.25, "Socket access is now controlled through the getter/setter combo: GetSocket and SetSocketAndLocalAddress")
-	FSocket* Socket;
 
 	/** If pausing socket receives, the time at which this should end */
 	float PauseReceiveEnd;
@@ -77,30 +101,6 @@ public:
 	}
 	//~ End UNetDriver Interface
 
-	/**
-	 * Processes packets not associated with a NetConnection, performing any handshaking and NetConnection creation or remapping, as necessary.
-	 *
-	 * @param Address			The address the packet came from
-	 * @param Data				The packet data (may be modified)
-	 * @param CountBytesRef		The packet size (may be modified)
-	 * @return					If a new NetConnection is created, returns the net connection
-	 */
-	UE_DEPRECATED(4.24, "ProcessConnectionlessPacket has a new API, and will become private soon.")
-	UNetConnection* ProcessConnectionlessPacket(const TSharedRef<FInternetAddr>& Address, uint8* Data, int32& CountBytesRef)
-	{
-		FReceivedPacketView PacketView;
-
-		PacketView.DataView = {Data, CountBytesRef, ECountUnits::Bytes};
-		PacketView.Address = Address;
-		PacketView.Error = SE_NO_ERROR;
-
-		UNetConnection* ReturnVal = ProcessConnectionlessPacket(PacketView, { Data, MAX_PACKET_SIZE } );
-
-		CountBytesRef = PacketView.DataView.NumBytes();
-
-		return ReturnVal;
-	}
-
 private:
 	/**
 	 * Process packets not associated with a NetConnection, performing handshaking and NetConnection creation or remapping as necessary.
@@ -118,14 +118,6 @@ public:
 	//~ Begin UIpNetDriver Interface.
 
 	/**
-	 * Creates a socket to be used for network communications. Uses the LocalAddr (if set) to determine protocol flags
-	 *
-	 * @return an FSocket if creation succeeded, nullptr if creation failed.
-	 */
-	UE_DEPRECATED(4.25, "Socket creation is now restricted to subclasses and done through CreateSocketForProtocol or CreateAndBindSocket")
-	virtual FSocket* CreateSocket();
-	
-	/**
 	 * Returns the current FSocket to be used with this NetDriver. This is useful in the cases of resolution as it will always point to the Socket that's currently being
 	 * used with the current resolution attempt.
 	 *
@@ -134,20 +126,19 @@ public:
 	virtual FSocket* GetSocket();
 
 	/**
-	 * Set the current NetDriver's socket to the given socket and takes ownership of it (the driver will handle destroying it).
-	 * This is typically done after resolution completes successfully. 
-	 * This will also set the LocalAddr for the netdriver automatically.
-	 *
-	 * @param NewSocket the socket pointer to set this netdriver's socket to
-	 */
+	* Set the current NetDriver's Socket/LocalAddr to the given socket (typically after Net Address Resolution).
+	* This will automatically pass the socket back through all NetConnection's, and trigger safe/deferred cleanup of the old socket.
+	*
+	* @param NewSocket	The socket pointer to set this NetDriver's socket to
+	*/
+	UE_DEPRECATED(5.1, "Use the version of SetSocketAndLocalAddress which takes a TSharedPtr")
 	void SetSocketAndLocalAddress(FSocket* NewSocket);
 
 	/**
-	* Set the current NetDriver's socket to the given socket.
-	* This is typically done after resolution completes successfully. 
-	* This will also set the LocalAddr for the netdriver automatically.
+	* Set the current NetDriver's Socket/LocalAddr to the given socket (typically after Net Address Resolution).
+	* This will automatically pass the socket back through all NetConnection's, and trigger safe/deferred cleanup of the old socket.
 	*
-	* @param NewSocket the socket pointer to set this netdriver's socket to
+	* @param NewSocket	The socket pointer to set this NetDriver's socket to
 	*/
 	void SetSocketAndLocalAddress(const TSharedPtr<FSocket>& SharedSocket);
 
@@ -159,6 +150,22 @@ public:
 	 * @return The port number to use for client sockets. Base implementation returns 0.
 	 */
 	virtual int GetClientPort();
+
+	/**
+	 * Creates a new Socket for the NetDriver/NetConnection's, based on the address/binding of the existing socket, with a new ephemeral port.
+	 * Used to attempt recovery for 'half-broken' connections, where (for whatever reason) only one side of the connection is receiving packets.
+	 *
+	 * Also usable to test the 'restart handshake' feature, using the 'net RecreateSocket' command.
+	 *
+	 * @return	Returns the action taken (e.g. successfully kicked off recreation, or whether this failed or is already in progress etc.)
+	 */
+	UE::Net::ERecreateSocketResult RecreateSocket();
+
+	/** Returns the last time socket recreation was kicked off or completed */
+	double GetLastRecreateSocketTime() const
+	{
+		return LastRecreateSocketTime;
+	}
 
 protected:
 	/**
@@ -184,6 +191,12 @@ protected:
 	virtual FUniqueSocket CreateAndBindSocket(TSharedRef<FInternetAddr> BindAddr, int32 Port, bool bReuseAddressAndPort, int32 DesiredRecvSize, int32 DesiredSendSize, FString& Error);
 	//~ End UIpNetDriver Interface.
 
+	/** Called by NetDriver subclasses, to specify whether or not they support recreating the active socket */
+	void SetSupportsRecreateSocket(bool bInSupportsRecreateSocket)
+	{
+		bSupportsRecreateSocket = bInSupportsRecreateSocket;
+	}
+
 public:
 	//~ Begin FExec Interface
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog ) override;
@@ -194,6 +207,7 @@ public:
 
 	bool HandleSocketsCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
 	bool HandlePauseReceiveCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
+	bool HandleRecreateSocketCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
 
 #if !UE_BUILD_SHIPPING
 	/**
@@ -221,6 +235,66 @@ private:
 		// SE_ECONNABORTED is for LAN cable pulls on some platforms, SE_ENETDOWN is to prevent a hang on another platform
 		return Error == SE_NO_ERROR || Error == SE_EWOULDBLOCK || Error == SE_ECONNABORTED || Error == SE_ENETDOWN;
 	};
+
+	/**
+	 * When a new pre-connection IP is encountered, do rate-limited logging/tracking for it.
+	 *
+	 * @param InAddr	The IP address to log/track
+	 */
+	void TrackAndLogNewIP(const FInternetAddr& InAddr);
+
+	/**
+	 * Removes an IP from new IP tracking, after successful connection.
+	 *
+	 * @param InAddr	The IP address to remove from tracking
+	 */
+	void RemoveFromNewIPTracking(const FInternetAddr& InAddr);
+
+	/**
+	 * Resets new pre-connection IP tracking and timers.
+	 */
+	void ResetNewIPTracking();
+
+	/**
+	 * When new pre-connection IP tracking is enabled, ticks the tracking
+	 *
+	 * @param DeltaTime		The time since the last global tick
+	 */
+	void TickNewIPTracking(float DeltaTime);
+
+
+	/**
+	 * The current state of the NetDriver socket
+	 */
+	enum class ESocketState : uint8
+	{
+		None,
+		Resolving,		// Net Address Resolution is in the middle of resolving a working socket
+		Recreating,		// Socket Recreation is in the middle of creating a new socket
+		Ready,			// The current socket is fully ready to use
+		Error			// The current socket is in an error state
+	};
+
+
+	/** Returns the current state of the NetDriver socket */
+	ESocketState GetSocketState() const
+	{
+		return SocketState;
+	}
+
+	/**
+	 * Triggered when socket recreation completes (which may occur after a delay, due to e.g. updating the Receive Thread socket)
+	 */
+	void OnRecreateSocketComplete();
+
+	/**
+	 * Internal function for setting a socket and propagating it to all NetConnection's and the Receive Thread etc..
+	 *
+	 * @param InSocket			The new socket
+	 * @param InSetCallback		Callback triggered when the new socket is fully set
+	 */
+	void SetSocket_Internal(const TSharedPtr<FSocket>& InSocket, UE::Net::Private::FSetSocketComplete InSetCallback=nullptr);
+
 
 public:
 	// Callback for platform handling when networking is taking a long time in a single frame (by default over 1 second).
@@ -287,6 +361,20 @@ private:
 
 		virtual uint32 Run() override;
 
+		/**
+		 * Execute commands in OwnerEventQueue on the Game Thread
+		 */
+		void PumpOwnerEventQueue();
+
+		/**
+		 * Sets the socket for the Receive Thread, and triggers a callback (if specified) on the Game Thread when this is complete.
+		 *
+		 * @param InGameThreadSocket		The socket specified by the Game Thread
+		 * @param InGameThreadSetCallback	The callback to trigger on the Game Thread when the socket is set
+		 */
+		void SetSocket(const TSharedPtr<FSocket>& InGameThreadSocket, UE::Net::Private::FSetSocketComplete InGameThreadSetCallback=nullptr);
+
+	public:
 		/** Thread-safe queue of received packets. The Run() function is the producer, UIpNetDriver::TickDispatch on the game thread is the consumer. */
 		TCircularQueue<FReceivedPacket> ReceiveQueue;
 
@@ -296,9 +384,34 @@ private:
 	private:
 		bool DispatchPacket(FReceivedPacket&& IncomingPacket, int32 NbBytesRead);
 
+		/**
+		 * Execute commands in CommandQueue on the Receive Thread
+		 */
+		void PumpCommandQueue();
+
+		/** Receive Thread implementation for 'SetSocket' */
+		void SetSocketImpl(const TSharedPtr<FSocket>& InGameThreadSocket, UE::Net::Private::FSetSocketComplete InGameThreadSetCallback=nullptr);
+
+		/**
+		 * Clears the Receive Thread socket, and resets the shared socket pointer on the Game Thread.
+		 */
+		void ClearSocket();
+
 	private:
+		/** Command queue from Game Thread to Receive Thread */
+		TSpscQueue<TUniqueFunction<void()>> CommandQueue;
+
+		/** Event queue from the Receive Thread to the Game Thread (may be generalized to 'Owning' thread in future) */
+		TSpscQueue<TUniqueFunction<void()>> OwnerEventQueue;
+
+		/** The NetDriver which owns the receive thread */
 		UIpNetDriver* OwningNetDriver;
+
+		/** The socket subsystem used by the receive thread */
 		ISocketSubsystem* SocketSubsystem;
+
+		/** Shared pointer for the socket, owned by the Game Thread */
+		TSharedPtr<FSocket> Socket;
 	};
 
 	/** Receive thread runnable object. */
@@ -310,12 +423,44 @@ private:
 	/** The preallocated state/buffers, for efficiently executing RecvMulti */
 	TUniquePtr<FRecvMulti> RecvMultiState;
 
-	/** 
-	 * An array sockets created for every binding address a machine has in use for performing address resolution. 
-	 * This array empties after connections have been spun up.
-	 */
-	TArray<TSharedPtr<FSocket>> BoundSockets;
-
 	/** Underlying socket communication */
 	TSharedPtr<FSocket> SocketPrivate;
+
+	/** The state of the NetDriver socket (e.g. ready, resolving, recreating etc.) */
+	ESocketState SocketState = ESocketState::None;
+
+	/** Whether or not this NetDriver supports recreating the socket */
+	bool bSupportsRecreateSocket = true;
+
+	/** The last time socket recreation was kicked off or completed. */
+	double LastRecreateSocketTime = 0.0;
+
+
+	/** New IP aggregated logging entry */
+	struct FAggregatedIP
+	{
+		/** Hash of the IP */
+		uint32 IPHash;
+
+		/** IP:Port converted to string */
+		FString IPStr;
+	};
+
+	/** Hashes for new pre-connection IP's that are being tracked */
+	TArray<uint32> NewIPHashes;
+
+	/** Number of times each 'NewIPHashes' IP was encountered, in the current tracking period */
+	TArray<uint32> NewIPHitCount;
+
+	/** List of IP's queued for aggregated logging */
+	TArray<FAggregatedIP> AggregatedIPsToLog;
+
+	/** Whether or not IP hash tracking or aggregated IP limits have been reached. Disables all further IP logging, for the current tracking period */
+	bool bExceededIPAggregationLimit = false;
+
+	/** Countdown timer for the current IP aggregation tracking period */
+	double NextAggregateIPLogCountdown = 0.0;
+
+	/** NetConnection specific address resolution */
+	TPimplPtr<UE::Net::Private::FNetDriverAddressResolution> Resolver;
 };

@@ -3,6 +3,8 @@
 #include "GameFeaturesSubsystemSettings.h"
 #include "Misc/Paths.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeaturesSubsystemSettings)
+
 const FName UGameFeaturesSubsystemSettings::LoadStateClient(TEXT("Client"));
 const FName UGameFeaturesSubsystemSettings::LoadStateServer(TEXT("Server"));
 
@@ -18,9 +20,16 @@ bool UGameFeaturesSubsystemSettings::IsValidGameFeaturePlugin(const FString& Plu
 	// Build the cache of game feature plugin folders the first time this is called
 	if (BuiltInGameFeaturePluginsFolders.IsEmpty())
 	{
+		// Get all the existing game feature paths
 		BuiltInGameFeaturePluginsFolders.Append(
 			FPaths::GetExtensionDirs(FPaths::ProjectDir(), FPaths::Combine(TEXT("Plugins"), TEXT("GameFeatures")))
 		);
+
+		// The base directory may not exist yet, add it if empty
+		if (BuiltInGameFeaturePluginsFolders.IsEmpty())
+		{
+			BuiltInGameFeaturePluginsFolders.Add(FPaths::Combine(FPaths::ProjectDir(), TEXT("Plugins"), TEXT("GameFeatures")));
+		}
 
 		for (FString& BuiltInFolder : BuiltInGameFeaturePluginsFolders)
 		{
@@ -39,3 +48,4 @@ bool UGameFeaturesSubsystemSettings::IsValidGameFeaturePlugin(const FString& Plu
 
 	return false;
 }
+

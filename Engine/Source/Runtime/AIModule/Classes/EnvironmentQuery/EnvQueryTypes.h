@@ -546,9 +546,25 @@ public:
 	AActor* GetItemAsActor(int32 Index) const;
 	FVector GetItemAsLocation(int32 Index) const;
 
+	template<typename TItemType>
+	const typename TItemType::FValueType& GetItemAsTypeChecked(const int32 Index) const
+	{
+		check(Items.IsValidIndex(Index) 
+			&& ItemType.Get()
+			&& ItemType->IsChildOf(TItemType::StaticClass()));
+
+		return TItemType::template GetValueFromMemory<typename TItemType::FValueType>(GetItemRawMemory(Index));
+	}
+
 	/** note that this function does not strip out the null-actors to not mess up results of GetItemScore(Index) calls*/
 	void GetAllAsActors(TArray<AActor*>& OutActors) const;
 	void GetAllAsLocations(TArray<FVector>& OutLocations) const;
+
+	const uint8* GetItemRawMemory(const int32 Index) const
+	{
+		check(Items.IsValidIndex(Index));
+		return RawData.GetData() + Items[Index].DataOffset;
+	}
 
 	FEnvQueryResult() : ItemType(NULL), Status(EEnvQueryStatus::Processing), OptionIndex(0), QueryID(0) {}
 	FEnvQueryResult(const EEnvQueryStatus::Type& InStatus) : ItemType(NULL), Status(InStatus), OptionIndex(0), QueryID(0) {}
@@ -1221,7 +1237,8 @@ public:
 				}
 				break;
 			case EEnvTestScoreOperator::Multiply:
-				ItemScore *= Score;
+				// ItemScore defaults to 0, so for first test we need to initialize the score, otherwise we end up constantly multiplying by 0
+				ItemScore = (NumTestsForItem == 0) ? Score : (ItemScore * Score);
 				break;
 			}
 		}

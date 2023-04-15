@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "CookTypes.h"
+#include "CoreTypes.h"
 #include "ShaderCompiler.h"
 
 struct FODSCRequestPayload;
@@ -12,8 +12,6 @@ class ITargetPlatform;
 
 namespace UE { namespace Cook
 {
-
-using FCookRequestCompletedCallback = TFunction<void(const ECookResult)>;
 
 using FRecompileShaderCompletedCallback = TFunction<void()>;
 
@@ -29,7 +27,7 @@ struct FCookPackageRequest
 	/* Asset filename to cook. */
 	FString Filename;
 	/** Completion callback. */
-	FCookRequestCompletedCallback CompletionCallback;
+	FCompletionCallback CompletionCallback;
 };
 
 /**
@@ -54,13 +52,6 @@ public:
 	/** Returns the cooker sandbox directory path. */
 	virtual FString GetSandboxDirectory() const = 0;
 	
-	/**
-	 * Add platform to the cook-on-the-fly session.
-	 *
-	 * @param PlatformName The platform name.
-	 */
-	virtual const ITargetPlatform* AddPlatform(const FName& PlatformName) = 0;
-
 	/**
 	 * Remove platform from the cook-on-the-fly session.
 	 *
@@ -89,24 +80,12 @@ public:
 	 */
 	virtual bool EnqueueCookRequest(FCookPackageRequest CookPackageRequest) = 0;
 
-	/**
-	 * Enqueue a new shader compile request.
-	 *
-	 * @param RecompileShaderRequest Recompile shader request parameters.
-	 */
-	virtual bool EnqueueRecompileShaderRequest(FRecompileShaderRequest RecompileShaderRequest) = 0;
+	virtual void MarkPackageDirty(const FName& PackageName) = 0;
 
 	/**
 	 * Returns the package store writer for the specified platform.
 	 */
 	virtual ICookedPackageWriter& GetPackageWriter(const ITargetPlatform* TargetPlatform) = 0;
-
-	/**
-	 * Wait until any pending flush request is completed.
-	 *
-	 * @return Duration in seconds.
-	 */
-	virtual double WaitForPendingFlush() = 0;
 };
 
 /**
@@ -122,8 +101,16 @@ public:
 	/** Initialze the request manager. */
 	virtual bool Initialize() = 0;
 
+	virtual void Tick() = 0;
+
 	/** Shutdown the reques tmanager. */
 	virtual void Shutdown() = 0;
+
+	/** Called when a new package is generated */
+	virtual void OnPackageGenerated(const FName& PackageName) = 0;
+
+	/** Returns true if the cooker should use package discovery and urgency to schedule requests */
+	virtual bool ShouldUseLegacyScheduling() = 0;
 };
 
 }} // namespace UE::Cook

@@ -2,23 +2,21 @@
 
 #include "BlueprintModes/WidgetBlueprintApplicationModes.h"
 
+#include "Internationalization/Internationalization.h"
+
 // Mode constants
 const FName FWidgetBlueprintApplicationModes::DesignerMode("DesignerName");
 const FName FWidgetBlueprintApplicationModes::GraphMode("GraphName");
 
 FText FWidgetBlueprintApplicationModes::GetLocalizedMode(const FName InMode)
 {
-	static TMap< FName, FText > LocModes;
-
-	if ( LocModes.Num() == 0 )
+	if (InMode == FWidgetBlueprintApplicationModes::DesignerMode)
 	{
-		LocModes.Add(DesignerMode, NSLOCTEXT("WidgetBlueprintModes", "DesignerMode", "Designer"));
-		LocModes.Add(GraphMode, NSLOCTEXT("WidgetBlueprintModes", "GraphMode", "Graph"));
+		return NSLOCTEXT("WidgetBlueprintModes", "DesignerMode", "Designer");
 	}
-
-	check(InMode != NAME_None);
-	const FText* OutDesc = LocModes.Find(InMode);
-	check(OutDesc);
-
-	return *OutDesc;
+	else if (InMode == FWidgetBlueprintApplicationModes::GraphMode)
+	{
+		return NSLOCTEXT("WidgetBlueprintModes", "GraphMode", "Graph");
+	}
+	return FText::GetEmpty();
 }

@@ -1,10 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -18,61 +23,39 @@ namespace UnrealGameSyncLauncher
 	static class Program
 	{
 		[STAThread]
-		static int Main(string[] Args)
+		static int Main(string[] args)
 		{
 			Application.EnableVisualStyles();
 			Application.SetCompatibleTextRenderingDefault(false);
 
-			bool bFirstInstance;
-			using(Mutex InstanceMutex = new Mutex(true, "UnrealGameSyncRunning", out bFirstInstance))
+			bool firstInstance;
+			using(Mutex instanceMutex = new Mutex(true, "UnrealGameSyncRunning", out firstInstance))
 			{
-				if(!bFirstInstance)
+				if(!firstInstance)
 				{
-					using(EventWaitHandle ActivateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "ActivateUnrealGameSync"))
+					using(EventWaitHandle activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "ActivateUnrealGameSync"))
 					{
-						ActivateEvent.Set();
+						activateEvent.Set();
 					}
 					return 0;
 				}
 
-				// Try to find Perforce in the path
-				string PerforceFileName = null;
-				foreach(string PathDirectoryName in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(new char[]{ Path.PathSeparator }, StringSplitOptions.RemoveEmptyEntries))
-				{
-					try
-					{
-						string PossibleFileName = Path.Combine(PathDirectoryName, "p4.exe");
-						if(File.Exists(PossibleFileName))
-						{
-							PerforceFileName = PossibleFileName;
-							break;
-						}
-					}
-					catch { }
-				}
-
-				// If it doesn't exist, don't continue
-				if(PerforceFileName == null)
-				{
-					MessageBox.Show("UnrealGameSync requires the Perforce command-line tools. Please download and install from http://www.perforce.com/.");
-					return 1;
-				}
-
 				// Figure out if we should sync the unstable build by default
-				bool bUnstable = Args.Contains("-unstable", StringComparer.InvariantCultureIgnoreCase);
+				bool preview = args.Contains("-unstable", StringComparer.InvariantCultureIgnoreCase) || args.Contains("-preview", StringComparer.InvariantCultureIgnoreCase);
 
 				// Read the settings
-				string ServerAndPort = null;
-				string UserName = null;
-				string DepotPath = DeploymentSettings.DefaultDepotPath;
-				Utility.ReadGlobalPerforceSettings(ref ServerAndPort, ref UserName, ref DepotPath);
+				string? serverAndPort = null;
+				string? userName = null;
+				string? depotPath = DeploymentSettings.DefaultDepotPath;
+				GlobalPerforceSettings.ReadGlobalPerforceSettings(ref serverAndPort, ref userName, ref depotPath, ref preview);
 
 				// If the shift key is held down, immediately show the settings window
-				if((Control.ModifierKeys & Keys.Shift) != 0)
+				SettingsWindow.SyncAndRunDelegate syncAndRunWrapper = (perforce, depotParam, previewParam, logWriter, cancellationToken) => SyncAndRun(perforce, depotParam, previewParam, args, instanceMutex, logWriter, cancellationToken);
+				if ((Control.ModifierKeys & Keys.Shift) != 0)
 				{
 					// Show the settings window immediately
-					SettingsWindow UpdateError = new SettingsWindow(null, null, ServerAndPort, UserName, DepotPath, bUnstable, (Perforce, DepotParam, bUnstableParam, LogWriter) => SyncAndRun(Perforce, DepotParam, bUnstableParam, Args, InstanceMutex, LogWriter));
-					if(UpdateError.ShowDialog() == DialogResult.OK)
+					SettingsWindow updateError = new SettingsWindow(null, null, serverAndPort, userName, depotPath, preview, syncAndRunWrapper);
+					if(updateError.ShowDialog() == DialogResult.OK)
 					{
 						return 0;
 					}
@@ -80,17 +63,22 @@ namespace UnrealGameSyncLauncher
 				else
 				{
 					// Try to do a sync with the current settings first
-					StringWriter Log = new StringWriter();
-					SyncAndRunPerforceTask SyncApplication = new SyncAndRunPerforceTask((Perforce, LogWriter) => SyncAndRun(Perforce, DepotPath, bUnstable, Args, InstanceMutex, LogWriter));
+					CaptureLogger logger = new CaptureLogger();
 
-					string ErrorMessage;
-					if(PerforceModalTask.Execute(null, new PerforceConnection(UserName, null, ServerAndPort), SyncApplication, "Updating", "Checking for updates, please wait...", Log, out ErrorMessage) == ModalTaskResult.Succeeded)
+					IPerforceSettings settings = new PerforceSettings(PerforceSettings.Default) { PreferNativeClient = true }.MergeWith(newServerAndPort: serverAndPort, newUserName: userName);
+
+					ModalTask? task = PerforceModalTask.Execute(null, "Updating", "Checking for updates, please wait...", settings, (p, c) => SyncAndRun(p, depotPath, preview, args, instanceMutex, logger, c), logger);
+					if (task == null)
+					{
+						logger.LogInformation("Canceled by user");
+					}
+					else if (task.Succeeded)
 					{
 						return 0;
 					}
 
-					SettingsWindow UpdateError = new SettingsWindow("Unable to update UnrealGameSync from Perforce. Verify that your connection settings are correct.", Log.ToString(), ServerAndPort, UserName, DepotPath, bUnstable, (Perforce, DepotParam, bUnstableParam, LogWriter) => SyncAndRun(Perforce, DepotParam, bUnstableParam, Args, InstanceMutex, LogWriter));
-					if(UpdateError.ShowDialog() == DialogResult.OK)
+					SettingsWindow updateError = new SettingsWindow("Unable to update UnrealGameSync from Perforce. Verify that your connection settings are correct.", logger.Render(Environment.NewLine), serverAndPort, userName, depotPath, preview, syncAndRunWrapper);
+					if(updateError.ShowDialog() == DialogResult.OK)
 					{
 						return 0;
 					}
@@ -99,181 +87,188 @@ namespace UnrealGameSyncLauncher
 			return 1;
 		}
 
-		public static bool SyncAndRun(PerforceConnection Perforce, string BaseDepotPath, bool bUnstable, string[] Args, Mutex InstanceMutex, TextWriter LogWriter)
+		public static async Task SyncAndRun(IPerforceConnection perforce, string? baseDepotPath, bool preview, string[] args, Mutex instanceMutex, ILogger logger, CancellationToken cancellationToken)
 		{
 			try
 			{
-				string SyncPath = BaseDepotPath.TrimEnd('/') + (bUnstable? "/UnstableRelease/..." : "/Release/...");
-				LogWriter.WriteLine("Syncing from {0}", SyncPath);
-
-				// Create the target folder
-				string ApplicationFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnrealGameSync", "Latest");
-				if(!SafeCreateDirectory(ApplicationFolder))
+				if (String.IsNullOrEmpty(baseDepotPath))
 				{
-					LogWriter.WriteLine("Couldn't create directory: {0}", ApplicationFolder);
-					return false;
+					throw new UserErrorException($"Invalid setting for sync path");
 				}
+
+				string baseDepotPathPrefix = baseDepotPath.TrimEnd('/');
 
 				// Find the most recent changelist
-				List<PerforceChangeSummary> Changes;
-				if(!Perforce.FindChanges(SyncPath, 1, out Changes, LogWriter) || Changes.Count < 1)
+				string syncPath = baseDepotPathPrefix + (preview ? "/UnstableRelease.zip" : "/Release.zip");
+				List<ChangesRecord> changes = await perforce.GetChangesAsync(ChangesOptions.None, 1, ChangeStatus.Submitted, syncPath, cancellationToken);
+				if (changes.Count == 0)
 				{
-					LogWriter.WriteLine("Couldn't find last changelist");
-					return false;
+					syncPath = baseDepotPathPrefix + (preview ? "/UnstableRelease/..." : "/Release/...");
+					changes = await perforce.GetChangesAsync(ChangesOptions.None, 1, ChangeStatus.Submitted, syncPath, cancellationToken);
+					if (changes.Count == 0)
+					{
+						throw new UserErrorException($"Unable to find any UGS binaries under {syncPath}");
+					}
 				}
 
-				// Take the first changelist number
-				int RequiredChangeNumber = Changes[0].Number;
+				int requiredChangeNumber = changes[0].Number;
+				logger.LogInformation("Syncing from {SyncPath}", syncPath);
+
+				// Create the target folder
+				string applicationFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnrealGameSync", "Latest");
+				if (!SafeCreateDirectory(applicationFolder))
+				{
+					throw new UserErrorException($"Couldn't create directory: {applicationFolder}");
+				}
 
 				// Read the current version
-				string SyncVersionFile = Path.Combine(ApplicationFolder, "SyncVersion.txt");
-				string RequiredSyncText = String.Format("{0}\n{1}@{2}", Perforce.ServerAndPort ?? "", SyncPath, RequiredChangeNumber);
+				string syncVersionFile = Path.Combine(applicationFolder, "SyncVersion.txt");
+				string requiredSyncText = String.Format("{0}\n{1}@{2}", perforce.Settings.ServerAndPort ?? "", syncPath, requiredChangeNumber);
 
 				// Check the application exists
-				string ApplicationExe = Path.Combine(ApplicationFolder, "UnrealGameSync.exe");
+				string applicationExe = Path.Combine(applicationFolder, "UnrealGameSync.exe");
 
 				// Check if the version has changed
-				string SyncText;
-				if(!File.Exists(SyncVersionFile) || !File.Exists(ApplicationExe) || !TryReadAllText(SyncVersionFile, out SyncText) || SyncText != RequiredSyncText)
+				string? syncText;
+				if (!File.Exists(syncVersionFile) || !File.Exists(applicationExe) || !TryReadAllText(syncVersionFile, out syncText) || syncText != requiredSyncText)
 				{
 					// Try to delete the directory contents. Retry for a while, in case we've been spawned by an application in this folder to do an update.
-					for(int NumRetries = 0; !SafeDeleteDirectoryContents(ApplicationFolder); NumRetries++)
+					for (int numRetries = 0; !SafeDeleteDirectoryContents(applicationFolder); numRetries++)
 					{
-						if(NumRetries > 20)
+						if (numRetries > 20)
 						{
-							LogWriter.WriteLine("Couldn't delete contents of {0} (retried {1} times).", ApplicationFolder, NumRetries);
-							return false;
+							throw new UserErrorException($"Couldn't delete contents of {applicationFolder} (retried {numRetries} times).");
 						}
 						Thread.Sleep(500);
 					}
-				
+
 					// Find all the files in the sync path at this changelist
-					List<PerforceFileRecord> FileRecords;
-					if(!Perforce.Stat(String.Format("{0}@{1}", SyncPath, RequiredChangeNumber), out FileRecords, LogWriter))
+					List<FStatRecord> fileRecords = await perforce.FStatAsync(FStatOptions.None, $"{syncPath}@{requiredChangeNumber}", cancellationToken).ToListAsync(cancellationToken);
+					if (fileRecords.Count == 0)
 					{
-						LogWriter.WriteLine("Couldn't find matching files.");
-						return false;
+						throw new UserErrorException($"Couldn't find any matching files for {syncPath}@{requiredChangeNumber}");
 					}
 
 					// Sync all the files in this list to the same directory structure under the application folder
-					string DepotPathPrefix = SyncPath.Substring(0, SyncPath.LastIndexOf('/') + 1);
-					foreach(PerforceFileRecord FileRecord in FileRecords)
+					string depotPathPrefix = syncPath.Substring(0, syncPath.LastIndexOf('/') + 1);
+					foreach (FStatRecord fileRecord in fileRecords)
 					{
-						string LocalPath = Path.Combine(ApplicationFolder, FileRecord.DepotPath.Substring(DepotPathPrefix.Length).Replace('/', Path.DirectorySeparatorChar));
-						if(!SafeCreateDirectory(Path.GetDirectoryName(LocalPath)))
+						if (fileRecord.DepotFile == null)
 						{
-							LogWriter.WriteLine("Couldn't create folder {0}", Path.GetDirectoryName(LocalPath));
-							return false;
+							throw new UserErrorException("Missing depot path for returned file");
 						}
-						if(!Perforce.PrintToFile(FileRecord.DepotPath, LocalPath, LogWriter))
+
+						string localPath = Path.Combine(applicationFolder, fileRecord.DepotFile.Substring(depotPathPrefix.Length).Replace('/', Path.DirectorySeparatorChar));
+						if (!SafeCreateDirectory(Path.GetDirectoryName(localPath)!))
 						{
-							LogWriter.WriteLine("Couldn't sync {0} to {1}", FileRecord.DepotPath, LocalPath);
-							return false;
+							throw new UserErrorException($"Couldn't create folder {Path.GetDirectoryName(localPath)}");
 						}
+
+						await perforce.PrintAsync(localPath, fileRecord.DepotFile, cancellationToken);
+					}
+
+					// If it was a zip file, extract it
+					if (syncPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+					{
+						string localPath = Path.Combine(applicationFolder, syncPath.Substring(depotPathPrefix.Length).Replace('/', Path.DirectorySeparatorChar));
+						ZipFile.ExtractToDirectory(localPath, applicationFolder);
 					}
 
 					// Check the application exists
-					if(!File.Exists(ApplicationExe))
+					if (!File.Exists(applicationExe))
 					{
-						LogWriter.WriteLine("Application was not synced from Perforce. Check that UnrealGameSync exists at {0}/UnrealGameSync.exe, and you have access to it.", SyncPath);
-						return false;
+						throw new UserErrorException($"Application was not synced from Perforce. Check that UnrealGameSync exists at {syncPath}/UnrealGameSync.exe, and you have access to it.");
 					}
 
 					// Update the version
-					if(!TryWriteAllText(SyncVersionFile, RequiredSyncText))
+					if (!TryWriteAllText(syncVersionFile, requiredSyncText))
 					{
-						LogWriter.WriteLine("Couldn't write sync text to {0}", SyncVersionFile);
-						return false;
+						throw new UserErrorException("Couldn't write sync text to {SyncVersionFile}");
 					}
 				}
-				LogWriter.WriteLine();
+				logger.LogInformation("");
 
 				// Build the command line for the synced application, including the sync path to monitor for updates
-				StringBuilder NewCommandLine = new StringBuilder(String.Format("-updatepath=\"{0}@>{1}\" -updatespawn=\"{2}\"{3}", SyncPath, RequiredChangeNumber, Assembly.GetEntryAssembly().Location, bUnstable? " -unstable" : ""));
-				if(!String.IsNullOrEmpty(Perforce.ServerAndPort))
+				string originalExecutable = Assembly.GetEntryAssembly()!.Location;
+                if (Path.GetExtension(originalExecutable).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    string newExecutable = Path.ChangeExtension(originalExecutable, ".exe");
+                    if (File.Exists(newExecutable))
+                    {
+                        originalExecutable = newExecutable;
+                    }
+                }
+
+				StringBuilder newCommandLine = new StringBuilder(String.Format("-updatepath=\"{0}@>{1}\" -updatespawn=\"{2}\"{3}", syncPath, requiredChangeNumber, originalExecutable, preview ? " -unstable" : ""));
+				foreach (string arg in args)
 				{
-					NewCommandLine.AppendFormat(" -p4port={0}", QuoteArgument(Perforce.ServerAndPort));
-				}
-				if(!String.IsNullOrEmpty(Perforce.UserName))
-				{
-					NewCommandLine.AppendFormat(" -p4user={0}", QuoteArgument(Perforce.UserName));
-				}
-				foreach(string Arg in Args)
-				{
-					NewCommandLine.AppendFormat(" {0}", QuoteArgument(Arg));
+					newCommandLine.AppendFormat(" {0}", QuoteArgument(arg));
 				}
 
 				// Release the mutex now so that the new application can start up
-				InstanceMutex.Close();
+				instanceMutex.Close();
 
 				// Spawn the application
-				LogWriter.WriteLine("Spawning {0} with command line: {1}", ApplicationExe, NewCommandLine.ToString());
-				using(Process ChildProcess = new Process())
+				logger.LogInformation("Spawning {App} with command line: {CmdLine}", applicationExe, newCommandLine.ToString());
+				using (Process childProcess = new Process())
 				{
-					ChildProcess.StartInfo.FileName = ApplicationExe;
-					ChildProcess.StartInfo.Arguments = NewCommandLine.ToString();
-					ChildProcess.StartInfo.UseShellExecute = false;
-					ChildProcess.StartInfo.CreateNoWindow = false;
-					if(!ChildProcess.Start())
+					childProcess.StartInfo.FileName = applicationExe;
+					childProcess.StartInfo.Arguments = newCommandLine.ToString();
+					childProcess.StartInfo.UseShellExecute = false;
+					childProcess.StartInfo.CreateNoWindow = false;
+					if (!childProcess.Start())
 					{
-						LogWriter.WriteLine("Failed to start process");
-						return false;
+						throw new UserErrorException("Failed to start process");
 					}
 				}
-
-				return true;
 			}
-			catch(Exception Ex)
+			catch (UserErrorException ex)
 			{
-				LogWriter.WriteLine(Ex.ToString());
-				return false;
+				logger.LogError("{Message}", ex.Message);
+				throw;
+			}
+			catch (Exception ex)
+			{
+				logger.LogError(ex, "Error while syncing application.");
+				foreach (string line in ex.ToString().Split('\n'))
+				{
+					logger.LogError("{Line}", line);
+				}
+				throw;
 			}
 		}
 
-		static string QuoteArgument(string Arg)
+		static string QuoteArgument(string arg)
 		{
-			if(Arg.IndexOf(' ') != -1 && !Arg.StartsWith("\""))
+			if(arg.IndexOf(' ') != -1 && !arg.StartsWith("\""))
 			{
-				return String.Format("\"{0}\"", Arg);
+				return String.Format("\"{0}\"", arg);
 			}
 			else
 			{
-				return Arg;
+				return arg;
 			}
 		}
 
-		static bool TryReadAllText(string FileName, out string Text)
+		static bool TryReadAllText(string fileName, [NotNullWhen(true)] out string? text)
 		{
 			try
 			{
-				Text = File.ReadAllText(FileName);
+				text = File.ReadAllText(fileName);
 				return true;
 			}
 			catch(Exception)
 			{
-				Text = null;
+				text = null;
 				return false;
 			}
 		}
 
-		static bool TryWriteAllText(string FileName, string Text)
+		static bool TryWriteAllText(string fileName, string text)
 		{
 			try
 			{
-				File.WriteAllText(FileName, Text);
-				return true;
-			}
-			catch(Exception)
-			{
-				return false;
-			}
-		}
-
-		static bool SafeCreateDirectory(string DirectoryName)
-		{
-			try
-			{
-				Directory.CreateDirectory(DirectoryName);
+				File.WriteAllText(fileName, text);
 				return true;
 			}
 			catch(Exception)
@@ -282,11 +277,11 @@ namespace UnrealGameSyncLauncher
 			}
 		}
 
-		static bool SafeDeleteDirectory(string DirectoryName)
+		static bool SafeCreateDirectory(string directoryName)
 		{
 			try
 			{
-				Directory.Delete(DirectoryName, true);
+				Directory.CreateDirectory(directoryName);
 				return true;
 			}
 			catch(Exception)
@@ -295,19 +290,32 @@ namespace UnrealGameSyncLauncher
 			}
 		}
 
-		static bool SafeDeleteDirectoryContents(string DirectoryName)
+		static bool SafeDeleteDirectory(string directoryName)
 		{
 			try
 			{
-				DirectoryInfo Directory = new DirectoryInfo(DirectoryName);
-				foreach(FileInfo ChildFile in Directory.EnumerateFiles("*", SearchOption.AllDirectories))
+				Directory.Delete(directoryName, true);
+				return true;
+			}
+			catch(Exception)
+			{
+				return false;
+			}
+		}
+
+		static bool SafeDeleteDirectoryContents(string directoryName)
+		{
+			try
+			{
+				DirectoryInfo directory = new DirectoryInfo(directoryName);
+				foreach(FileInfo childFile in directory.EnumerateFiles("*", SearchOption.AllDirectories))
 				{
-					ChildFile.Attributes = ChildFile.Attributes & ~FileAttributes.ReadOnly;
-					ChildFile.Delete();
+					childFile.Attributes = childFile.Attributes & ~FileAttributes.ReadOnly;
+					childFile.Delete();
 				}
-				foreach(DirectoryInfo ChildDirectory in Directory.EnumerateDirectories())
+				foreach(DirectoryInfo childDirectory in directory.EnumerateDirectories())
 				{
-					SafeDeleteDirectory(ChildDirectory.FullName);
+					SafeDeleteDirectory(childDirectory.FullName);
 				}
 				return true;
 			}

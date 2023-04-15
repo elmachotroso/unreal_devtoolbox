@@ -1,8 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Logging/LogCategory.h"
+
+#include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
+#include "HAL/PlatformMisc.h"
 #include "Logging/LogSuppressionInterface.h"
+#include "Logging/LogTrace.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDeviceRedirector.h"
 

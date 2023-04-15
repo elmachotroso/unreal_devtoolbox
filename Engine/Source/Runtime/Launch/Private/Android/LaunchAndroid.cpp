@@ -30,6 +30,7 @@
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformAffinity.h"
 #include "HAL/PlatformInput.h"
+#include "HAL/ThreadHeartBeat.h"
 #include "Modules/ModuleManager.h"
 #include "IMessagingModule.h"
 #include "Android/AndroidStats.h"
@@ -130,13 +131,13 @@ extern "C"
 }
 #endif
 
-int32 GAndroidEnableNativeResizeEvent = 0;
+int32 GAndroidEnableNativeResizeEvent = 1;
 static FAutoConsoleVariableRef CVarEnableResizeNativeEvent(
 	TEXT("Android.EnableNativeResizeEvent"),
 	GAndroidEnableNativeResizeEvent,
 	TEXT("Whether native resize event is enabled on Android.\n")
-	TEXT(" 0: disabled (default)\n")
-	TEXT(" 1: enabled"),
+	TEXT(" 0: disabled\n")
+	TEXT(" 1: enabled (default)"),
 	ECVF_ReadOnly);
 
 int32 GAndroidEnableMouse = 0;
@@ -315,6 +316,8 @@ static void InitCommandLine()
 
 	if(CommandLineFile)
 	{
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Using override commandline file: %s"), *CommandLineFilePath);
+
 		char CommandLine[CMD_LINE_MAX];
 		fgets(CommandLine, UE_ARRAY_COUNT(CommandLine) - 1, CommandLineFile);
 
@@ -358,6 +361,36 @@ static void OnNativeWindowResized(ANativeActivity* activity, ANativeWindow* wind
 	static int8_t cmd = APP_CMD_WINDOW_RESIZED;
 	struct android_app* app = (struct android_app *)activity->instance;
 	write(app->msgwrite, &cmd, sizeof(cmd));
+}
+
+static void ApplyAndroidCompatConfigRules()
+{
+	TArray<FString> AndroidCompatCVars;
+	if (GConfig->GetArray(TEXT("AndroidCompatCVars"), TEXT("CVars"), AndroidCompatCVars, GEngineIni))
+	{
+		TSet<FString> AllowedCompatCVars(AndroidCompatCVars);
+		for (const TTuple<FString, FString>& Pair : FAndroidMisc::GetConfigRulesTMap())
+		{
+			const FString& Key = Pair.Key;
+			const FString& Value = Pair.Value;
+			static const TCHAR AndroidCompat[] = TEXT("AndroidCompat.");
+			if (Key.StartsWith(AndroidCompat))
+			{
+				FString CVarName = Key.Mid(UE_ARRAY_COUNT(AndroidCompat)-1);
+				if (AllowedCompatCVars.Contains(CVarName))
+				{
+					auto* CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName);
+					if (CVar)
+					{
+						// set with current priority means that DPs etc can still override anything set here.
+						// e.g. -dpcvars= is expected to work.
+						CVar->SetWithCurrentPriority(*Value); 
+						UE_LOG(LogAndroid, Log, TEXT("Compat Setting %s = %s"), *CVarName, *Value);
+					}
+				}
+			}
+		}
+	}
 }
 
 //Main function called from the android entry point
@@ -450,6 +483,16 @@ int32 AndroidMain(struct android_app* state)
 	InitCommandLine();
 	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Final commandline: %s\n"), FCommandLine::Get());
 
+#if !(UE_BUILD_SHIPPING)
+	// If "-waitforattach" or "-WaitForDebugger" was specified, halt startup and wait for a debugger to attach before continuing
+	if (FParse::Param(FCommandLine::Get(), TEXT("waitforattach")) || FParse::Param(FCommandLine::Get(), TEXT("WaitForDebugger")))
+	{
+		FPlatformMisc::LowLevelOutputDebugString(TEXT("Waiting for debugger to attach...\n"));
+		while (!FPlatformMisc::IsDebuggerPresent());
+		UE_DEBUG_BREAK();
+	}
+#endif
+
 	EventHandlerEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	FPlatformMisc::LowLevelOutputDebugString(TEXT("Created sync event\n"));
 	FAppEventManager::GetInstance()->SetEventHandlerEvent(EventHandlerEvent);
@@ -474,8 +517,12 @@ int32 AndroidMain(struct android_app* state)
 		GAndroidWindowLock.Lock();
 	}
 
+	FDelegateHandle ConfigReadyHandle = FCoreDelegates::ConfigReadyForUse.AddStatic(&ApplyAndroidCompatConfigRules);
+
 	// initialize the engine
 	int32 PreInitResult = GEngineLoop.PreInit(0, NULL, FCommandLine::Get());
+
+	FCoreDelegates::ConfigReadyForUse.Remove(ConfigReadyHandle);
 
 	if (PreInitResult != 0)
 	{
@@ -497,7 +544,7 @@ int32 AndroidMain(struct android_app* state)
 
 	UE_LOG(LogAndroid, Display, TEXT("Passed PreInit()"));
 
-	GLog->SetCurrentThreadAsMasterThread();
+	GLog->SetCurrentThreadAsPrimaryThread();
 
 	FAppEventManager::GetInstance()->SetEmptyQueueHandlerEvent(FPlatformProcess::GetSynchEventFromPool(false));
 
@@ -1213,6 +1260,8 @@ static void ActivateApp_EventThread()
 		EventHandlerEvent->Trigger();
 	}
 
+	FThreadHeartBeat::Get().ResumeHeartBeat(true);
+
 	FPreLoadScreenManager::EnableRendering(true);
 
 	extern void AndroidThunkCpp_ShowHiddenAlertDialog();
@@ -1263,6 +1312,8 @@ static void SuspendApp_EventThread()
 	FEmbeddedCommunication::WakeGameThread();
 
 	FPreLoadScreenManager::EnableRendering(false);
+
+	FThreadHeartBeat::Get().SuspendHeartBeat(true);
 
 	// wait for a period of time before blocking rendering
 	UE_LOG(LogAndroid, Log, TEXT("AndroidEGL::  SuspendApp_EventThread, waiting for event manager to process. tid: %d"), FPlatformTLS::GetCurrentThreadId());

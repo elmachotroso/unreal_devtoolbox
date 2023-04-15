@@ -1,16 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationPins/SGraphPinPose.h"
-#include "AnimGraphNode_Base.h"
-#include "Preferences/PersonaOptions.h"
+
+#include "Algo/Sort.h"
 #include "AnimGraphAttributes.h"
+#include "AnimGraphNode_Base.h"
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Engine/Blueprint.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Widgets/Layout/SWrapBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/SBoxPanel.h"
+#include "Layout/Children.h"
+#include "Layout/Visibility.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
+#include "SGraphNode.h"
 #include "SGraphPanel.h"
+#include "SNodePanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SWrapBox.h"
+#include "Widgets/SCompoundWidget.h"
+
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SGraphPinPose"
 
@@ -21,10 +47,10 @@ void SGraphPinPose::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
 {
 	SGraphPin::Construct(SGraphPin::FArguments(), InPin);
 
-	CachedImg_Pin_ConnectedHovered = FEditorStyle::GetBrush(TEXT("Graph.PosePin.ConnectedHovered"));
-	CachedImg_Pin_Connected = FEditorStyle::GetBrush(TEXT("Graph.PosePin.Connected"));
-	CachedImg_Pin_DisconnectedHovered = FEditorStyle::GetBrush(TEXT("Graph.PosePin.DisconnectedHovered"));
-	CachedImg_Pin_Disconnected = FEditorStyle::GetBrush(TEXT("Graph.PosePin.Disconnected"));
+	CachedImg_Pin_ConnectedHovered = FAppStyle::GetBrush(TEXT("Graph.PosePin.ConnectedHovered"));
+	CachedImg_Pin_Connected = FAppStyle::GetBrush(TEXT("Graph.PosePin.Connected"));
+	CachedImg_Pin_DisconnectedHovered = FAppStyle::GetBrush(TEXT("Graph.PosePin.DisconnectedHovered"));
+	CachedImg_Pin_Disconnected = FAppStyle::GetBrush(TEXT("Graph.PosePin.Disconnected"));
 
 	ReconfigureWidgetForAttributes();
 }
@@ -210,7 +236,7 @@ void SGraphPinPose::ReconfigureWidgetForAttributes()
 			AnimGraphNode->GetOutputLinkAttributes(NodeAttributes);
 
 			// Unlinked pins display attributes if they are inputs and the node takes them as inputs
-			if(GraphPinObj->LinkedTo.Num() == 0)
+			if(GraphPinObj->LinkedTo.Num() == 0 || AnimBlueprintClass == nullptr)
 			{
 				AddAttributes(TArrayView<const FName>(), PinAttributes, TArrayView<const FName>());
 			}

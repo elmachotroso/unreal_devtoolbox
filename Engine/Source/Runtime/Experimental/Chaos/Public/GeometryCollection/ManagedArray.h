@@ -6,8 +6,13 @@
 #include "Templates/UnrealTemplate.h"
 #include "Chaos/ChaosArchive.h"
 #include "UObject/DestructionObjectVersion.h"
+//
+#include "ChaosLog.h"
+#include "Chaos/ParticleHandle.h"
+#include "Chaos/BVHParticles.h"
+#include "Math/Vector.h"
 
-class FManagedArrayCollection;
+struct FManagedArrayCollection;
 DEFINE_LOG_CATEGORY_STATIC(UManagedArrayLogging, NoLogging, All);
 
 template <typename T>
@@ -62,6 +67,16 @@ inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<uint8>
 	Array.BulkSerialize(Ar);
 }
 
+inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FIntVector2>& Array)
+{
+	Array.BulkSerialize(Ar);
+}
+
+inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FIntVector4>& Array)
+{
+	Array.BulkSerialize(Ar);
+}
+
 /***
 *  Managed Array Base
 *
@@ -104,9 +119,27 @@ protected:
 	virtual void Init(const FManagedArrayBase& ) {};
 
 public:
-
+	FManagedArrayBase()
+	{
+		ClearDirtyFlag();
+	}
+	
 	virtual ~FManagedArrayBase() {}
 
+	FORCEINLINE void ClearDirtyFlag()
+	{
+		bIsDirty = false;
+	}
+	
+	FORCEINLINE_DEBUGGABLE void MarkDirty()
+	{
+		bIsDirty = true;
+	}
+	
+	FORCEINLINE bool IsDirty() const
+	{
+		return bIsDirty;
+	}
 	
 	//todo(ocohen): these should all be private with friend access to managed collection
 	
@@ -117,13 +150,6 @@ public:
 	virtual void RemoveElements(const TArray<int32>& SortedDeletionList)
 	{
 		check(false);
-	}
-
-	/** Return unmanaged copy of array with input indices. */
-	virtual FManagedArrayBase * NewCopy(const TArray<int32> & DeletionList)
-	{
-		check(false);
-		return nullptr;
 	}
 
 	/** The length of the array.*/
@@ -155,7 +181,7 @@ public:
 	*   Offsets is the size of the dependent group;
 	*   Final is post resize of dependent group used for bounds checking on remapped indices.
 	*/
-	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList) { }
+	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList, const TSet<int32> & DeletionSet) { }
 
 #if 0 //not needed until per instance serialization
 	/** Swap elements*/
@@ -167,7 +193,8 @@ public:
 	{
 		check(false);
 	}
-
+private:
+	bool bIsDirty;
 };
 
 template <typename T>
@@ -226,11 +253,16 @@ public:
 	*/
 	FORCEINLINE TManagedArrayBase& operator=(TManagedArrayBase<ElementType>&& Other)
 	{
-		Array = MoveTemp(Other.Array);
-		return *this;
+		return this->operator=(MoveTemp(Other.Array));
 	}
 
-
+	FORCEINLINE TManagedArrayBase& operator=(TArray<ElementType>&& Other)
+	{
+		// ryan - is it okay to check that the size matches?
+		ensureMsgf(Array.Num() == 0 || Array.Num() == Other.Num(), TEXT("TManagedArrayBase<T>::operator=(TArray<T>&&) : Invalid array size."));
+		Array = MoveTemp(Other);
+		return *this;
+	}
 
 	/**
 	* Virtual Destructor 
@@ -323,6 +355,21 @@ public:
 		return Array[Index];
 	}
 
+	/**
+	* Helper function for returning the internal const array
+	*
+	* @returns const array of all the elements
+	*/
+	FORCEINLINE const TArray<ElementType>& GetConstArray()
+	{
+		return Array;
+	}
+
+	FORCEINLINE const TArray<ElementType>& GetConstArray() const
+	{
+		return Array;
+	}
+	
 	/**
 	* Helper function for returning a typed pointer to the first array entry.
 	*
@@ -494,9 +541,31 @@ void InitHelper(TArray<T>& Array, const TManagedArrayBase<T>& NewTypedArray, int
 template <typename T>
 void InitHelper(TArray<TUniquePtr<T>>& Array, const TManagedArrayBase<TUniquePtr<T>>& NewTypedArray, int32 Size)
 {
-	check(false);	//Cannot make copies of a managed array with unique pointers. Typically used for shared data
+	for (int32 Index = 0; Index < Size; Index++)
+	{
+		if (NewTypedArray[Index])
+		{
+			Array[Index].Reset((T*)NewTypedArray[Index]->Copy().Release());
+		}
+	}
 }
 
+//
+//
+//
+#define UNSUPPORTED_UNIQUE_ARRAY_COPIES(TYPE, NAME) \
+template<> inline void InitHelper(TArray<TYPE>& Array, const TManagedArrayBase<TYPE>& NewTypedArray, int32 Size) { \
+	UE_LOG(LogChaos,Warning, TEXT("Cannot make a copy of unique array of type (%s) within the managed array collection. Regenerate unique pointer attributes if needed."), NAME); \
+}
+
+typedef TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>> LOCAL_MA_UniqueTGeometryParticle;
+UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTGeometryParticle, TEXT("Chaos::TGeometryParticle"));
+
+typedef TUniquePtr<Chaos::FBVHParticles, TDefaultDelete<Chaos::FBVHParticles>> LOCAL_MA_UniqueTBVHParticles;
+UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTBVHParticles, TEXT("Chaos::FBVHParticles"));
+
+typedef TUniquePtr<TArray<UE::Math::TVector<float>>> LOCAL_MA_UniqueTArrayTVector;
+UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTArrayTVector, TEXT("TArray<UE::Math::TVector<float>>"));
 
 template<class InElementType>
 class TManagedArray : public TManagedArrayBase<InElementType>
@@ -552,10 +621,10 @@ public:
 	virtual ~TManagedArray()
 	{}
 
-	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList) override
+	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList, const TSet<int32>& DeletionSet) override
 	{
 		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<int32>[%p]::Reindex()"),this);
-	
+
 		int32 ArraySize = Num(), MaskSize = Offsets.Num();
 		for (int32 Index = 0; Index < ArraySize; Index++)
 		{
@@ -563,14 +632,14 @@ public:
 			if (0 <= RemapVal)
 			{
 				ensure(RemapVal < MaskSize);
-				this->operator[](Index) -= Offsets[RemapVal];
-
-				// #todo Reindexing is currently incorrect in a few cases where it leaves dangling indices that
-				// should be set to INDEX_NONE.
-				// This ensure is currently suppressed to handle the dangling index problem specifically 
-				// in the ConvexGroup case (GeometryCollectionConvexUtility::RemoveConvexHulls) but should be reinstated 
-				// once we have a better solution in place for Reindexing.
-				//ensure(-1 <= this->operator[](Index) && this->operator[](Index) < FinalSize);
+				if (DeletionSet.Contains(this->operator[](Index)))
+				{
+					this->operator[](Index) = INDEX_NONE;
+				}
+				else
+				{
+					this->operator[](Index) -= Offsets[RemapVal];
+				}
 				ensure(-1 <= this->operator[](Index));
 			}
 		}
@@ -614,12 +683,11 @@ public:
 	virtual ~TManagedArray()
 	{}
 	
-	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList) override
+	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList, const TSet<int32>& DeletionSet) override
 	{
 		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<TArray<int32>>[%p]::Reindex()"), this);
 		
 		int32 ArraySize = Num(), MaskSize = Offsets.Num();
-		TSet<int32> SortedDeletionSet(SortedDeletionList);
 
 		for (int32 Index = 0; Index < ArraySize; Index++)
 		{
@@ -684,7 +752,7 @@ public:
 	virtual ~TManagedArray()
 	{}
 
-	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList) override
+	virtual void Reindex(const TArray<int32> & Offsets, const int32 & FinalSize, const TArray<int32> & SortedDeletionList, const TSet<int32>& DeletionSet) override
 	{
 		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<FIntVector>[%p]::Reindex()"), this);
 		int32 ArraySize = Num(), MaskSize = Offsets.Num();
@@ -696,7 +764,14 @@ public:
 				if (0 <= RemapVal[i])
 				{
 					ensure(RemapVal[i] < MaskSize);
-					this->operator[](Index)[i] -= Offsets[RemapVal[i]];
+					if (DeletionSet.Contains(this->operator[](Index)[i]))
+					{
+						this->operator[](Index)[i] = INDEX_NONE;
+					}
+					else
+					{
+						this->operator[](Index)[i] -= Offsets[RemapVal[i]];
+					}
 					ensure(-1 <= this->operator[](Index)[i] && this->operator[](Index)[i] <= FinalSize);
 				}
 			}
@@ -720,3 +795,274 @@ public:
 	}
 };
 
+template<>
+class TManagedArray<FIntVector2> : public TManagedArrayBase<FIntVector2>
+{
+public:
+	using TManagedArrayBase<FIntVector2>::Num;
+
+	FORCEINLINE TManagedArray()
+	{}
+
+	FORCEINLINE TManagedArray(const TArray<FIntVector2>& Other)
+		: TManagedArrayBase<FIntVector2>(Other)
+	{}
+
+	FORCEINLINE TManagedArray(const TManagedArray<FIntVector2>& Other) = delete;
+	FORCEINLINE TManagedArray(TManagedArray<FIntVector2>&& Other) = default;
+	FORCEINLINE TManagedArray(TArray<FIntVector2>&& Other)
+		: TManagedArrayBase<FIntVector2>(MoveTemp(Other))
+	{}
+	FORCEINLINE TManagedArray& operator=(TManagedArray<FIntVector2>&& Other) = default;
+
+	virtual ~TManagedArray()
+	{}
+
+	virtual void Reindex(const TArray<int32>& Offsets, const int32& FinalSize, const TArray<int32>& SortedDeletionList, const TSet<int32>& DeletionSet) override
+	{
+		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<FIntVector>[%p]::Reindex()"), this);
+		int32 ArraySize = Num(), MaskSize = Offsets.Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			const FIntVector2& RemapVal = this->operator[](Index);
+			for (int i = 0; i < 2; i++)
+			{
+				if (0 <= RemapVal[i])
+				{
+					ensure(RemapVal[i] < MaskSize);
+					if (DeletionSet.Contains(this->operator[](Index)[i]))
+					{
+						this->operator[](Index)[i] = INDEX_NONE;
+					}
+					else
+					{
+						this->operator[](Index)[i] -= Offsets[RemapVal[i]];
+					}
+					ensure(-1 <= this->operator[](Index)[i] && this->operator[](Index)[i] <= FinalSize);
+				}
+			}
+		}
+	}
+
+	virtual void ReindexFromLookup(const TArray<int32>& InverseNewOrder) override
+	{
+		int32 ArraySize = Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			FIntVector2& RemapVal = this->operator[](Index);
+			for (int i = 0; i < 2; i++)
+			{
+				if (RemapVal[i] >= 0)
+				{
+					RemapVal[i] = InverseNewOrder[RemapVal[i]];
+				}
+			}
+		}
+	}
+};
+
+template<>
+class TManagedArray<TArray<FIntVector2>> : public TManagedArrayBase<TArray<FIntVector2>>
+{
+public:
+	using TManagedArrayBase<TArray<FIntVector2>>::Num;
+
+	FORCEINLINE TManagedArray()
+	{}
+
+	FORCEINLINE TManagedArray(const TArray<TArray<FIntVector2>>& Other)
+		: TManagedArrayBase<TArray<FIntVector2>>(Other)
+	{}
+
+	FORCEINLINE TManagedArray(const TManagedArray<TArray<FIntVector2>>& Other) = delete;
+	FORCEINLINE TManagedArray(TManagedArray<TArray<FIntVector2>>&& Other) = default;
+	FORCEINLINE TManagedArray(TArray<TArray<FIntVector2>>&& Other)
+		: TManagedArrayBase<TArray<FIntVector2>>(MoveTemp(Other))
+	{}
+	FORCEINLINE TManagedArray& operator=(TManagedArray<TArray<FIntVector2>>&& Other) = default;
+
+	virtual ~TManagedArray()
+	{}
+
+	virtual void Reindex(const TArray<int32>& Offsets, const int32& FinalSize, const TArray<int32>& SortedDeletionList, const TSet<int32>& DeletionSet) override
+	{
+		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<FIntVector>[%p]::Reindex()"), this);
+		int32 ArraySize = Num(), MaskSize = Offsets.Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			const TArray<FIntVector2>& RemapValArray = this->operator[](Index);
+			for (int32 ArrayIndex = 0; ArrayIndex < RemapValArray.Num(); ArrayIndex++)
+			{
+				const FIntVector2& RemapVal = RemapValArray[ArrayIndex];
+				for (int i = 0; i < 2; i++)
+				{
+					if (0 <= RemapVal[i])
+					{
+						ensure(RemapVal[i] < MaskSize);
+						if (DeletionSet.Contains(this->operator[](Index)[ArrayIndex][i]))
+						{
+							this->operator[](Index)[ArrayIndex][i] = INDEX_NONE;
+						}
+						else
+						{
+							this->operator[](Index)[ArrayIndex][i] -= Offsets[RemapVal[i]];
+						}
+						ensure(-1 <= this->operator[](Index)[ArrayIndex][i] && this->operator[](Index)[ArrayIndex][i] <= FinalSize);
+					}
+				}
+			}
+		}
+	}
+
+	virtual void ReindexFromLookup(const TArray<int32>& InverseNewOrder) override
+	{
+		int32 ArraySize = Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			TArray<FIntVector2>& RemapValArray = this->operator[](Index);
+			for (int32 ArrayIndex = 0; ArrayIndex < RemapValArray.Num(); ArrayIndex++)
+			{
+				FIntVector2& RemapVal = RemapValArray[ArrayIndex];
+				for (int i = 0; i < 2; i++)
+				{
+					if (RemapVal[i] >= 0)
+					{
+						RemapVal[i] = InverseNewOrder[RemapVal[i]];
+					}
+				}
+			}
+		}
+	}
+};
+
+template<>
+class TManagedArray<FIntVector4> : public TManagedArrayBase<FIntVector4>
+{
+public:
+	using TManagedArrayBase<FIntVector4>::Num;
+
+	FORCEINLINE TManagedArray()
+	{}
+
+	FORCEINLINE TManagedArray(const TArray<FIntVector4>& Other)
+		: TManagedArrayBase<FIntVector4>(Other)
+	{}
+
+	FORCEINLINE TManagedArray(const TManagedArray<FIntVector4>& Other) = delete;
+	FORCEINLINE TManagedArray(TManagedArray<FIntVector4>&& Other) = default;
+	FORCEINLINE TManagedArray(TArray<FIntVector4>&& Other)
+		: TManagedArrayBase<FIntVector4>(MoveTemp(Other))
+	{}
+	FORCEINLINE TManagedArray& operator=(TManagedArray<FIntVector4>&& Other) = default;
+
+	virtual ~TManagedArray()
+	{}
+
+	virtual void Reindex(const TArray<int32>& Offsets, const int32& FinalSize, const TArray<int32>& SortedDeletionList, const TSet<int32>& DeletionSet) override
+	{
+		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<FIntVector>[%p]::Reindex()"), this);
+		int32 ArraySize = Num(), MaskSize = Offsets.Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			const FIntVector4& RemapVal = this->operator[](Index);
+			for (int i = 0; i < 4; i++)
+			{
+				if (0 <= RemapVal[i])
+				{
+					ensure(RemapVal[i] < MaskSize);
+					if (DeletionSet.Contains(this->operator[](Index)[i]))
+					{
+						this->operator[](Index)[i] = INDEX_NONE;
+					}
+					else
+					{
+						this->operator[](Index)[i] -= Offsets[RemapVal[i]];
+					}
+					ensure(-1 <= this->operator[](Index)[i] && this->operator[](Index)[i] <= FinalSize);
+				}
+			}
+		}
+	}
+
+	virtual void ReindexFromLookup(const TArray<int32>& InverseNewOrder) override
+	{
+		int32 ArraySize = Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			FIntVector4& RemapVal = this->operator[](Index);
+			for (int i = 0; i < 4; i++)
+			{
+				if (RemapVal[i] >= 0)
+				{
+					RemapVal[i] = InverseNewOrder[RemapVal[i]];
+				}
+			}
+		}
+	}
+};
+
+template<>
+class TManagedArray<TArray<int32>> : public TManagedArrayBase<TArray<int32>>
+{
+public:
+	using TManagedArrayBase<TArray<int32>>::Num;
+
+	FORCEINLINE TManagedArray()
+	{}
+
+	FORCEINLINE TManagedArray(const TArray<TArray<int32>>& Other)
+		: TManagedArrayBase<TArray<int32>>(Other)
+	{}
+
+	FORCEINLINE TManagedArray(const TManagedArray<TArray<int32>>& Other) = delete;
+	FORCEINLINE TManagedArray(TManagedArray<TArray<int32>>&& Other) = default;
+	FORCEINLINE TManagedArray(TArray<TArray<int32>>&& Other)
+		: TManagedArrayBase<TArray<int32>>(MoveTemp(Other))
+	{}
+	FORCEINLINE TManagedArray& operator=(TManagedArray<TArray<int32>>&& Other) = default;
+
+	virtual ~TManagedArray()
+	{}
+
+	virtual void Reindex(const TArray<int32>& Offsets, const int32& FinalSize, const TArray<int32>& SortedDeletionList, const TSet<int32>& DeletionSet) override
+	{
+		UE_LOG(UManagedArrayLogging, Log, TEXT("TManagedArray<FIntVector>[%p]::Reindex()"), this);
+		int32 ArraySize = Num(), MaskSize = Offsets.Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			const TArray<int32>& RemapValArray = this->operator[](Index);
+			for (int32 ArrayIndex = 0; ArrayIndex < RemapValArray.Num(); ArrayIndex++)
+			{
+				if (0 <= RemapValArray[ArrayIndex])
+				{
+					ensure(RemapValArray[ArrayIndex] < MaskSize);
+					if (DeletionSet.Contains(this->operator[](Index)[ArrayIndex]))
+					{
+						this->operator[](Index)[ArrayIndex] = INDEX_NONE;
+					}
+					else
+					{
+						this->operator[](Index)[ArrayIndex] -= Offsets[RemapValArray[ArrayIndex]];
+					}
+					ensure(-1 <= this->operator[](Index)[ArrayIndex] && this->operator[](Index)[ArrayIndex] <= FinalSize);
+				}
+			}
+		}
+	}
+
+	virtual void ReindexFromLookup(const TArray<int32>& InverseNewOrder) override
+	{
+		int32 ArraySize = Num();
+		for (int32 Index = 0; Index < ArraySize; Index++)
+		{
+			TArray<int32>& RemapValArray = this->operator[](Index);
+			for (int32 ArrayIndex = 0; ArrayIndex < RemapValArray.Num(); ArrayIndex++)
+			{
+				if (RemapValArray[ArrayIndex] >= 0)
+				{
+					RemapValArray[ArrayIndex] = InverseNewOrder[RemapValArray[ArrayIndex]];
+				}
+			}
+		}
+	}
+};

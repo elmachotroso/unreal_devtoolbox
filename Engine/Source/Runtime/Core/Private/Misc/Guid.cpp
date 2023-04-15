@@ -1,13 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/Guid.h"
+
 #include "Algo/Replace.h"
 #include "Containers/ArrayView.h"
-#include "Misc/Parse.h"
+#include "Containers/StaticArray.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformString.h"
 #include "Math/Int128.h"
-#include "UObject/PropertyPortFlags.h"
 #include "Misc/Base64.h"
+#include "Misc/ByteSwap.h"
+#include "Misc/CString.h"
+#include "Misc/Char.h"
+#include "Misc/Parse.h"
 #include "Misc/StringBuilder.h"
+#include "Serialization/StructuredArchiveNameHelpers.h"
+#include "Serialization/StructuredArchiveSlots.h"
+#include "UObject/PropertyPortFlags.h"
 
 
 /* FGuid interface
@@ -44,41 +53,50 @@ bool FGuid::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UObject*
 }
 
 
-FString FGuid::ToString(EGuidFormats Format) const
+void FGuid::AppendString(FString& Out, EGuidFormats Format) const
 {
 	switch (Format)
 	{
 	case EGuidFormats::DigitsWithHyphens:
-		return FString::Printf(TEXT("%08X-%04X-%04X-%04X-%04X%08X"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		Out.Appendf(TEXT("%08X-%04X-%04X-%04X-%04X%08X"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		return;
 
 	case EGuidFormats::DigitsWithHyphensLower:
-		return FString::Printf(TEXT("%08x-%04x-%04x-%04x-%04x%08x"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		Out.Appendf(TEXT("%08x-%04x-%04x-%04x-%04x%08x"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		return;
 
 	case EGuidFormats::DigitsWithHyphensInBraces:
-		return FString::Printf(TEXT("{%08X-%04X-%04X-%04X-%04X%08X}"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		Out.Appendf(TEXT("{%08X-%04X-%04X-%04X-%04X%08X}"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		return;
 
 	case EGuidFormats::DigitsWithHyphensInParentheses:
-		return FString::Printf(TEXT("(%08X-%04X-%04X-%04X-%04X%08X)"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		Out.Appendf(TEXT("(%08X-%04X-%04X-%04X-%04X%08X)"), A, B >> 16, B & 0xFFFF, C >> 16, C & 0xFFFF, D);
+		return;
 
 	case EGuidFormats::HexValuesInBraces:
-		return FString::Printf(TEXT("{0x%08X,0x%04X,0x%04X,{0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X}}"), A, B >> 16, B & 0xFFFF, C >> 24, (C >> 16) & 0xFF, (C >> 8) & 0xFF, C & 0XFF, D >> 24, (D >> 16) & 0XFF, (D >> 8) & 0XFF, D & 0XFF);
+		Out.Appendf(TEXT("{0x%08X,0x%04X,0x%04X,{0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X,0x%02X}}"), A, B >> 16, B & 0xFFFF, C >> 24, (C >> 16) & 0xFF, (C >> 8) & 0xFF, C & 0XFF, D >> 24, (D >> 16) & 0XFF, (D >> 8) & 0XFF, D & 0XFF);
+		return;
 
 	case EGuidFormats::UniqueObjectGuid:
-		return FString::Printf(TEXT("%08X-%08X-%08X-%08X"), A, B, C, D);
+		Out.Appendf(TEXT("%08X-%08X-%08X-%08X"), A, B, C, D);
+		return;
 
 	case EGuidFormats::Short:
 	{
-		const uint32 Data[] = {A,B,C,D};
-		FString Result = FBase64::Encode(reinterpret_cast<const uint8*>(&Data), sizeof(Data));
-
-		Result.ReplaceCharInline(TEXT('+'), TEXT('-'), ESearchCase::CaseSensitive);
-		Result.ReplaceCharInline(TEXT('/'), TEXT('_'), ESearchCase::CaseSensitive);
+		uint32 Bytes[4] = { NETWORK_ORDER32(A), NETWORK_ORDER32(B), NETWORK_ORDER32(C), NETWORK_ORDER32(D) };
+		TCHAR Buffer[25];
+		int32 Len = FBase64::Encode(reinterpret_cast<const uint8*>(Bytes), sizeof(Bytes), Buffer);
+		TArrayView<TCHAR> Result(Buffer, Len);
+		
+		Algo::Replace(Result, '+', '-');
+		Algo::Replace(Result, '/', '_');
 
 		// Remove trailing '=' base64 padding
-		check(Result.Len() == 24);
-		Result.RemoveAt(22, 2, false);
+		check(Len == 24);
+		Result.LeftChopInline(2);
 
-		return Result;
+		Out.Append(Result);
+		return;
 	}
 
 	case EGuidFormats::Base36Encoded:
@@ -92,30 +110,28 @@ FString FGuid::ToString(EGuidFormats Format) const
 
 		FUInt128 Value(A, B, C, D);
 
-		FString Result;
-		Result.Reserve(26);
-		TArray<TCHAR, FString::AllocatorType>& OutCharArray = Result.GetCharArray();
-
-		while(Value > 0)
+		TStaticArray<TCHAR, 25> Result;
+		for (int32 I = 24; I >= 0; --I)
 		{
 			uint32 Remainder;
 			Value = Value.Divide(36, Remainder);
-			OutCharArray.Add(Alphabet[Remainder]);
+			Result[I] = Alphabet[Remainder];
 		}
 
-		for(int32 i=OutCharArray.Num(); i<25; i++)
-		{
-			OutCharArray.Add('0');
-		}
-
-		OutCharArray.Add(0);
-
-		check(Result.Len() == 25);
-		return Result.Reverse();
+		Out.Append(Result);
+		return;
 	}
 
+	case EGuidFormats::DigitsLower:
+		Out.Appendf(TEXT("%08x%08x%08x%08x"), A, B, C, D);
+		return;
+
 	default:
-		return FString::Printf(TEXT("%08X%08X%08X%08X"), A, B, C, D);
+	{
+		uint32 Bytes[4] = { NETWORK_ORDER32(A), NETWORK_ORDER32(B), NETWORK_ORDER32(C), NETWORK_ORDER32(D) };
+		BytesToHex(reinterpret_cast<const uint8*>(Bytes), sizeof(Bytes), Out);
+		return;
+	}
 	}
 }
 
@@ -150,10 +166,10 @@ void FGuid::AppendString(FAnsiStringBuilderBase& Builder, EGuidFormats Format) c
 
 	case EGuidFormats::Short:
 	{
-		const uint32 Data[] = {A,B,C,D};
+		uint32 Bytes[4] = { NETWORK_ORDER32(A), NETWORK_ORDER32(B), NETWORK_ORDER32(C), NETWORK_ORDER32(D) };
 		int32 Index = Builder.AddUninitialized(24);
 		TArrayView<ANSICHAR> Result(Builder.GetData() + Index, 24);
-		int32 Len = FBase64::Encode(reinterpret_cast<const uint8*>(&Data), sizeof(Data), Result.GetData());
+		int32 Len = FBase64::Encode(reinterpret_cast<const uint8*>(Bytes), sizeof(Bytes), Result.GetData());
 
 		Algo::Replace(Result, '+', '-');
 		Algo::Replace(Result, '/', '_');
@@ -187,6 +203,10 @@ void FGuid::AppendString(FAnsiStringBuilderBase& Builder, EGuidFormats Format) c
 
 		return;
 	}
+
+	case EGuidFormats::DigitsLower:
+		Builder.Appendf("%08x%08x%08x%08x", A, B, C, D);
+		return;
 
 	default:
 		Builder.Appendf("%08X%08X%08X%08X", A, B, C, D);
@@ -293,10 +313,10 @@ bool FGuid::ParseExact(const FString& GuidString, EGuidFormats Format, FGuid& Ou
 			return false;
 		}
 
-		OutGuid = FGuid(Data[0],
-						Data[1],
-						Data[2],
-						Data[3]);
+		OutGuid = FGuid(NETWORK_ORDER32(Data[0]),
+						NETWORK_ORDER32(Data[1]),
+						NETWORK_ORDER32(Data[2]),
+						NETWORK_ORDER32(Data[3]));
 		return true;
 	}
 
@@ -337,7 +357,7 @@ bool FGuid::ParseExact(const FString& GuidString, EGuidFormats Format, FGuid& Ou
 
 	NormalizedGuidString.Empty(32);
 
-	if (Format == EGuidFormats::Digits)
+	if (Format == EGuidFormats::Digits || Format == EGuidFormats::DigitsLower)
 	{
 		NormalizedGuidString = GuidString;
 	}

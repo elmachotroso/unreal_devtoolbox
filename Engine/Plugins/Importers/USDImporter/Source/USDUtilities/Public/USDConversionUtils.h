@@ -10,6 +10,7 @@
 #include "USDMemory.h"
 #include "UsdWrappers/ForwardDeclarations.h"
 #include "UsdWrappers/SdfLayer.h"
+#include "UsdWrappers/SdfPath.h"
 
 #if USE_USD_SDK
 #include "USDIncludesStart.h"
@@ -33,19 +34,23 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 	class UsdStage;
 	template< typename T > class TfRefPtr;
-
 	using UsdStageRefPtr = TfRefPtr< UsdStage >;
+
+	class SdfPrimSpec;
+	template <class T> class SdfHandle;
+	using SdfPrimSpecHandle = SdfHandle< SdfPrimSpec >;
 PXR_NAMESPACE_CLOSE_SCOPE
 
 #endif // #if USE_USD_SDK
 
-class UUsdAssetImportData;
 class USceneComponent;
+class UUsdAssetImportData;
+enum class EUsdDuplicateType : uint8;
 enum class EUsdUpAxis : uint8;
+struct FUsdUnrealAssetInfo;
 namespace UE
 {
 	class FUsdPrim;
-	class FSdfPath;
 }
 namespace UsdUtils
 {
@@ -98,7 +103,10 @@ namespace UsdUtils
 	USDUTILITIES_API float GetUsdStageMetersPerUnit( const pxr::UsdStageRefPtr& Stage );
 	USDUTILITIES_API void SetUsdStageMetersPerUnit( const pxr::UsdStageRefPtr& Stage, float MetersPerUnit );
 
+	USDUTILITIES_API int32 GetUsdStageNumFrames( const pxr::UsdStageRefPtr& Stage );
+
 	USDUTILITIES_API bool HasCompositionArcs( const pxr::UsdPrim& Prim );
+	USDUTILITIES_API bool HasCompositionArcs( const pxr::SdfPrimSpecHandle& PrimSpec );
 
 	USDUTILITIES_API UClass* GetActorTypeForPrim( const pxr::UsdPrim& Prim );
 	USDUTILITIES_API UClass* GetComponentTypeForPrim( const pxr::UsdPrim& Prim );
@@ -146,15 +154,31 @@ namespace UsdUtils
 	 * @param MaterialToPrimvarsUVSetNames - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates, and which UVIndex the imported material will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). These are supposed to be the materials used by the mesh, and we do this because it helps identify which primvars are valid/used as texture coordinates, as the user may have these named as 'myUvSet2' and still expect it to work
 	 * @param UsdMeshMaterialAssignmentInfo - Result of calling GetPrimMaterialAssignments on UsdMesh's Prim. This can be provided or will be retrieved on-demand using RenderContext
 	 * @param RenderContext - Render context to use when traversing through material shaders looking for used primvars
+	 * @param MaterialPurpose - Specific material purpose to use when parsing the UsdMesh's material bindings
 	 * @return Array where each index gives the primvar that should be used for that UV index
 	 */
-	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext );
+	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars(
+		const pxr::UsdGeomMesh& UsdMesh,
+		const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
+		const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext,
+		const pxr::TfToken& MaterialPurpose = pxr::UsdShadeTokens->allPurpose
+	);
 	USDUTILITIES_API TArray< TUsdStore< pxr::UsdGeomPrimvar > > GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const UsdUtils::FUsdPrimMaterialAssignmentInfo& UsdMeshMaterialAssignmentInfo );
 
 	USDUTILITIES_API bool IsAnimated( const pxr::UsdPrim& Prim );
+	USDUTILITIES_API bool HasAnimatedVisibility( const pxr::UsdPrim& Prim );
 
 	/** Returns whether Prim belongs to any of the default kinds, or a kind derived from them. The result can be a union of different kinds. */
 	USDUTILITIES_API EUsdDefaultKind GetDefaultKind( const pxr::UsdPrim& Prim );
+
+	/**
+	 * Sets the prim kind for Prim to the provided NewKind.
+	 * Differs from IUsdPrim::SetKind in that we don't have to provide the USD token.
+	 * @param NewKind - New kind to set. Must be a single flag, and not a combination of multiple plags
+	 * @param Prim - Prim to receive the new Kind
+	 * @return Whether we managed to set the kind or not.
+	 */
+	USDUTILITIES_API bool SetDefaultKind( pxr::UsdPrim& Prim, EUsdDefaultKind NewKind );
 
 	/**
 	 * Returns all prims of type SchemaType (or a descendant type) in the subtree of prims rooted at StartPrim.
@@ -178,10 +202,10 @@ namespace UsdUtils
 	USDUTILITIES_API UUsdAssetImportData* GetAssetImportData( UObject* Asset );
 
 	/** Adds a reference on Prim to the layer at AbsoluteFilePath */
-	USDUTILITIES_API void AddReference( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath );
+	USDUTILITIES_API void AddReference( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath, const UE::FSdfPath& TargetPrimPath = {}, double TimeCodeOffset = 0.0, double TimeCodeScale = 1.0 );
 
 	/** Adds a payload on Prim pointing at the default prim of the layer at AbsoluteFilePath */
-	USDUTILITIES_API void AddPayload( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath );
+	USDUTILITIES_API void AddPayload( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath, const UE::FSdfPath& TargetPrimPath = {}, double TimeCodeOffset = 0.0, double TimeCodeScale = 1.0 );
 
 	/**
 	 * Renames a single prim to a new name
@@ -209,6 +233,14 @@ namespace UsdUtils
 	 * @return Modified Name so that it doesn't match anything in UsedNames (e.g. "MyName" again, or "MyName_0" or "MyName_423")
 	 */
 	USDUTILITIES_API FString GetUniqueName( FString Name, const TSet<FString>& UsedNames );
+
+#if USE_USD_SDK
+	/**
+	 * Returns a sanitized, valid version of 'InName' that can be used as the name for a child prim of 'ParentPrim'.
+	 * Returns the empty string in case of an error.
+	 */
+	USDUTILITIES_API FString GetValidChildName( FString InName, const pxr::UsdPrim& ParentPrim );
+#endif // #if USE_USD_SDK
 
 	/**
 	 * Returns a modified version of InIdentifier that can be used as a USD prim or property name.
@@ -251,7 +283,7 @@ namespace UsdUtils
 	USDUTILITIES_API UE::FSdfPath GetPrimSpecPathForLayer( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer );
 
 	/**
-	 * Removes all the prim specs for Prim on the given Layer.
+	 * Removes all the prim specs for Prim on the given Layer, if the layer belongs to the stage's local layer stack.
 	 *
 	 * This function is useful in case the prim is inside a variant set: In that case, just calling FUsdStage::RemovePrim()
 	 * will attempt to remove the "/Root/Example/Child", which wouldn't remove the "/Root{Varset=Var}Example/Child" spec,
@@ -263,6 +295,71 @@ namespace UsdUtils
 	 * @param Layer - Layer to remove prim specs from. This can be left with the invalid layer (default) in order to remove all
 	 *				  specs from the entire stage's local layer stack.
 	 */
-	USDUTILITIES_API void RemoveAllPrimSpecs( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer = UE::FSdfLayer{} );
+	USDUTILITIES_API void RemoveAllLocalPrimSpecs( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer = UE::FSdfLayer{} );
+
+	/**
+	 * Copies flattened versions of the input prims onto the clipboard stage and removes all the prim specs for Prims from their stages.
+	 * These cut prims can then be pasted with PastePrims.
+	 *
+	 * @param Prims - Prims to cut
+	 * @return True if we managed to cut
+	 */
+	USDUTILITIES_API bool CutPrims( const TArray<UE::FUsdPrim>& Prims );
+
+	/**
+	 * Copies flattened versions of the input prims onto the clipboard stage.
+	 * These copied prims can then be pasted with PastePrims.
+	 *
+	 * @param Prims - Prims to copy
+	 * @return True if we managed to copy
+	 */
+	USDUTILITIES_API bool CopyPrims( const TArray<UE::FUsdPrim>& Prims );
+
+	/**
+	 * Pastes the prims from the clipboard stage as children of ParentPrim.
+	 *
+	 * The pasted prims may be renamed in order to have valid names for the target location, which is why this function
+	 * returns the pasted prim paths.
+	 * This function returns just paths instead of actual prims because USD needs to respond to the notices about
+	 * the created prim specs before the prims are fully created, which means we wouldn't be able to return the
+	 * created prims yet, in case this function was called from within an SdfChangeBlock.
+	 *
+	 * @param ParentPrim - Prim that will become parent to the pasted prims
+	 * @return Paths to the pasted prim specs, after they were added as children of ParentPrim
+	 */
+	USDUTILITIES_API TArray<UE::FSdfPath> PastePrims( const UE::FUsdPrim& ParentPrim );
+
+	/** Returns true if we have prims that we can paste within our clipboard stage */
+	USDUTILITIES_API bool CanPastePrims();
+
+	/** Clears all prims from our clipboard stage */
+	USDUTILITIES_API void ClearPrimClipboard();
+
+	/**
+	 * Duplicates all provided Prims one-by-one, performing the requested DuplicateType.
+	 * See the documentation on EUsdDuplicateType for the different operation types.
+	 *
+	 * The duplicated prims may be renamed in order to have valid names for the target location, which is why this
+	 * function returns the pasted prim paths.
+	 * This function returns just paths instead of actual prims because USD needs to respond to the notices about
+	 * the created prim specs before the prims are fully created, which means we wouldn't be able to return the
+	 * created prims yet, in case this function was called from within an SdfChangeBlock.
+	 *
+	 * @param Prims - Prims to duplicate
+	 * @param DuplicateType - Type of prim duplication to perform
+	 * @param TargetLayer - Target layer to use when duplicating, if relevant for that duplication type
+	 * @return Paths to the duplicated prim specs, after they were added as children of ParentPrim.
+	 */
+	USDUTILITIES_API TArray<UE::FSdfPath> DuplicatePrims(
+		const TArray<UE::FUsdPrim>& Prims,
+		EUsdDuplicateType DuplicateType,
+		const UE::FSdfLayer& TargetLayer = UE::FSdfLayer{}
+	);
+
+	/** Adds to Prim the assetInfo metadata the values described in Info */
+	USDUTILITIES_API void SetPrimAssetInfo( UE::FUsdPrim& Prim, const FUsdUnrealAssetInfo& Info );
+
+	/** Retrieves from Prim the assetInfo metadata values that we use as export metadata, when exporting Unreal assets */
+	USDUTILITIES_API FUsdUnrealAssetInfo GetPrimAssetInfo( const UE::FUsdPrim& Prim );
 }
 

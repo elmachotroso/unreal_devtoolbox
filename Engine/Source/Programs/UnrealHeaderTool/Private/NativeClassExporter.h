@@ -58,6 +58,7 @@ enum class EExportClassOutFlags
 {
 	None = 0x0,
 	NeedsPushModelHeaders = 0x1 << 0,
+	NeedsFastArrayHeaders = NeedsPushModelHeaders << 1,
 };
 ENUM_CLASS_FLAGS(EExportClassOutFlags);
 
@@ -380,12 +381,12 @@ private:
 	/**
 	 * After all of the dependency checking, but before actually exporting the class, set up the generated code
 	 */
-	static bool WriteHeader(FGeneratedFileInfo& FileInfo, const FString& InBodyText, const TSet<FString>& InAdditionalHeaders, const TSet<FString>& ForwardDeclarations);
+	static bool WriteHeader(FGeneratedCPP& FileInfo, const FString& InBodyText, const TSet<FString>& InAdditionalHeaders, const TSet<FString>& ForwardDeclarations);
 
 	/**
 	 * Write the body of a source file using a standard format
 	 */
-	static bool WriteSource(const FManifestModule& Module, FGeneratedFileInfo& FileInfo, const FString& InBodyText, FUnrealSourceFile* InSourceFile, const TSet<FString>& InCrossModuleReferences);
+	static bool WriteSource(const FManifestModule& Module, FGeneratedFileInfo& FileInfo, const FString& InBodyText, FUnrealSourceFile* InSourceFile, const TSet<FString>& InCrossModuleReferences, const EExportClassOutFlags& ExportFlags);
 
 	/**
 	 * Returns a string in the format CLASS_Something|CLASS_Something which represents all class flags that are set for the specified
@@ -415,7 +416,7 @@ private:
 	 * @param	Out				output device
 	 * @param	Struct			The struct to export
 	 */
-	void ExportGeneratedStructBodyMacros(FOutputDevice& OutGeneratedHeaderText, FOutputDevice& Out, FReferenceGatherers& OutReferenceGatherers, const FUnrealSourceFile& SourceFile, FUnrealScriptStructDefinitionInfo& ScriptStructDef) const;
+	void ExportGeneratedStructBodyMacros(FOutputDevice& OutGeneratedHeaderText, FOutputDevice& Out, FReferenceGatherers& OutReferenceGatherers, const FUnrealSourceFile& SourceFile, FUnrealScriptStructDefinitionInfo& ScriptStructDef, EExportClassOutFlags& OutFlags) const;
 
 	/**
 	 * Exports a local mirror of the specified struct; used to get offsets
@@ -532,6 +533,18 @@ private:
 	 */
 	void ExportFunctionThunk(FUHTStringBuilder& RPCWrappers, FReferenceGatherers& OutReferenceGatherers, FUnrealFunctionDefinitionInfo& FunctionDef, const TArray<FUnrealPropertyDefinitionInfo*>& ParameterDefs, FUnrealPropertyDefinitionInfo* ReturnDef) const;
 
+	/** 
+	 * Export the declaration for FFieldNotificationClassDescriptor.
+	 * 
+	 * @param OutGeneratedHeaderText Output device for writing in the generated header file.
+	 * @param OutGeneratedCPPText Output device for writing in the generated cpp file.
+	 * @param StandardUObjectConstructorsMacroCall The destination to write standard constructor macros to.
+	 * @param EnhancedUObjectConstructorsMacroCall The destination to write enhanced constructor macros to.
+	 * @param ConstructorsMacroPrefix Prefix for constructors macro.
+	 * @param Class Class for which to export macros.
+	 */
+	void ExportFieldNotify(FOutputDevice& OutGeneratedHeaderText, FOutputDevice& OutGeneratedCPPText, FOutputDevice& StandardUObjectConstructorsMacroCall, FOutputDevice& EnhancedUObjectConstructorsMacroCall, const FString& ConstructorsMacroPrefix, FUnrealClassDefinitionInfo& ClassDef) const;
+
 	/** Exports the native function registration code for the given class. */
 	static void ExportNatives(FOutputDevice& Out, FUnrealClassDefinitionInfo& ClassDef);
 
@@ -560,7 +573,7 @@ private:
 	 * @param	Out			The destination to write to.
 	 * @param	Package		Package to export code for.
 	**/
-	void ExportGeneratedPackageInitCode(FOutputDevice& Out, const TCHAR* InDeclarations, uint32 CRC);
+	void ExportGeneratedPackageInitCode(FOutputDevice& Out, const TCHAR* InDeclarations, const TArray<FGeneratedCPP*>& ExportedSorted, uint32 CRC);
 
 	/**
 	 * Function to output the C++ code necessary to set up the given array of properties

@@ -51,6 +51,30 @@ struct CONTROLRIG_API FControlRigObjectVersion
 		// Switch limit control over to per channel limits 
 		PerChannelLimits,
 
+		// Removed the parent cache for multi parent elements 
+		RemovedMultiParentParentCache,
+
+		// Deprecation of parameters
+		RemoveParameters,
+
+		// Added rig curve element value state flag
+		CurveElementValueStateFlag,
+
+		// Added the notion of a per control animation type
+		ControlAnimationType,
+
+		// Added preferred permutation for templates
+		TemplatesPreferredPermutatation,
+
+		// Added preferred euler angles to controls
+		PreferredEulerAnglesForControls,
+
+		// Added rig hierarchy element metadata
+		HierarchyElementMetadata,
+
+		// Converted library nodes to templates
+		LibraryNodeTemplates,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

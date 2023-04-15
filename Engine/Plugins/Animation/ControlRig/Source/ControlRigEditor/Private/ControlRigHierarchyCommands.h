@@ -24,6 +24,9 @@ public:
 	/** Add Item at origin */
 	TSharedPtr< FUICommandInfo > AddControlItem;
 
+	/** Add an animation channel */
+	TSharedPtr< FUICommandInfo > AddAnimationChannelItem;
+
 	/** Add Item at origin */
 	TSharedPtr< FUICommandInfo > AddNullItem;
 
@@ -104,9 +107,6 @@ public:
 
 	/* Show references */
 	TSharedPtr< FUICommandInfo > ShowReferences;
-
-	/* Show dynamic hierarchy */
-	TSharedPtr< FUICommandInfo > ShowDynamicHierarchy;
 
 	/** Toggle Shape Transform Edit*/
 	TSharedPtr< FUICommandInfo > ToggleControlShapeTransformEdit;

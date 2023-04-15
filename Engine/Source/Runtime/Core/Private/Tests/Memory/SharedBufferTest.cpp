@@ -273,11 +273,11 @@ bool FSharedBufferTest::RunTest(const FString& Parameters)
 	{
 		bool bDeleted = false;
 		constexpr uint64 Size = 64;
-		const void* Data = new uint8[Size];
+		uint8 Data[Size]{};
 		FSharedBuffer Buffer = FSharedBuffer::TakeOwnership(Data, Size, [&bDeleted](void*, uint64) { bDeleted = true; });
 		TestTrue(TEXT("FSharedBuffer::TakeOwnership().IsOwned()"), Buffer.IsOwned());
 		TestEqual(TEXT("FSharedBuffer::TakeOwnership().GetSize()"), Buffer.GetSize(), Size);
-		TestEqual(TEXT("FSharedBuffer::TakeOwnership().GetData()"), Buffer.GetData(), Data);
+		TestEqual(TEXT("FSharedBuffer::TakeOwnership().GetData()"), Buffer.GetData(), static_cast<const void*>(Data));
 		Buffer.Reset();
 		TestTrue(TEXT("FSharedBuffer::TakeOwnership() Deleted"), bDeleted);
 	}
@@ -462,6 +462,20 @@ bool FBufferOwnerTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("FSharedBuffer(BufferOwner)->Reset(!Materialized)->!Materialized"), bMaterialized);
 	TestTrue(TEXT("FSharedBuffer(BufferOwner)->Reset(!Materialized)->Freed"), bFreed);
 	TestTrue(TEXT("FSharedBuffer(BufferOwner)->Reset(!Materialized)->Deleted"), bDeleted);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUniqueBufferFromArrayTest, "System.Core.Memory.UniqueBufferFromArray", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::SmokeFilter)
+bool FUniqueBufferFromArrayTest::RunTest(const FString& Parameters)
+{
+	TArray<uint16> Array{ 1, 2, 3, 4, 5, 6, 7, 8 };
+	const void* const ExpectedData = Array.GetData();
+	const uint64 ExpectedSize = Array.Num() * sizeof(uint16);
+	const FUniqueBuffer Buffer = MakeUniqueBufferFromArray(MoveTemp(Array));
+	TestTrue(TEXT("MakeUniqueBufferFromArray -> Array.IsEmpty"), Array.IsEmpty());
+	TestEqual(TEXT("MakeUniqueBufferFromArray -> Buffer.GetData()"), Buffer.GetData(), ExpectedData);
+	TestEqual(TEXT("MakeUniqueBufferFromArray -> Buffer.GetSize()"), Buffer.GetSize(), ExpectedSize);
 
 	return true;
 }

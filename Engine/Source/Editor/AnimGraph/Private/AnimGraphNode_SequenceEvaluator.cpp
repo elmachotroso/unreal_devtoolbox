@@ -55,7 +55,7 @@ void UAnimGraphNode_SequenceEvaluator::ReplaceReferredAnimations(const TMap<UAni
 
 FText UAnimGraphNode_SequenceEvaluator::GetMenuCategory() const
 {
-	return FEditorCategoryUtils::GetCommonCategory(FCommonEditorCategory::Animation);
+	return LOCTEXT("MenuCategory", "Animation|Sequences");
 }
 
 FText UAnimGraphNode_SequenceEvaluator::GetNodeTitle(ENodeTitleType::Type TitleType) const
@@ -66,7 +66,7 @@ FText UAnimGraphNode_SequenceEvaluator::GetNodeTitle(ENodeTitleType::Type TitleT
 
 FSlateIcon UAnimGraphNode_SequenceEvaluator::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", "ClassIcon.AnimSequence");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.AnimSequence");
 }
 
 void UAnimGraphNode_SequenceEvaluator::GetMenuActions(FBlueprintActionDatabaseRegistrar& InActionRegistrar) const
@@ -102,11 +102,11 @@ void UAnimGraphNode_SequenceEvaluator::GetMenuActions(FBlueprintActionDatabaseRe
 				const FString TagValue = InAssetData.GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UAnimSequence, AdditiveAnimType));
 				if(const bool bKnownToBeAdditive = (!TagValue.IsEmpty() && !TagValue.Equals(TEXT("AAT_None"))))
 				{
-					return FText::Format(LOCTEXT("MenuDescTooltipFormat_EvaluateAdditive", "Evaluate (additive)\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+					return FText::Format(LOCTEXT("MenuDescTooltipFormat_EvaluateAdditive", "Evaluate (additive)\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 				}
 				else
 				{
-					return FText::Format(LOCTEXT("MenuDescTooltipFormat_Evaluate", "Evaluate\n'{0}'"), FText::FromName(InAssetData.ObjectPath));
+					return FText::Format(LOCTEXT("MenuDescTooltipFormat_Evaluate", "Evaluate\n'{0}'"), FText::FromString(InAssetData.GetObjectPathString()));
 				}
 			}
 			else
@@ -125,6 +125,14 @@ void UAnimGraphNode_SequenceEvaluator::SetAnimationAsset(UAnimationAsset* Asset)
 	if (UAnimSequenceBase* Seq =  Cast<UAnimSequence>(Asset))
 	{
 		Node.SetSequence(Seq);
+	}
+}
+
+void UAnimGraphNode_SequenceEvaluator::CopySettingsFromAnimationAsset(UAnimationAsset* Asset)
+{
+	if (UAnimSequenceBase* Seq = Cast<UAnimSequence>(Asset))
+	{
+		Node.SetShouldLoop(Seq->bLoop);
 	}
 }
 

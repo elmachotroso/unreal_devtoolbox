@@ -4,8 +4,10 @@
 
 #include "GameFramework/Actor.h"
 #include "Misc/SecureHash.h"
+#include "Misc/ITransaction.h"
 #include "Templates/Function.h"
 
+#include "USDInfoCache.h"
 #include "USDLevelSequenceHelper.h"
 #include "USDListener.h"
 #include "USDPrimTwin.h"
@@ -51,19 +53,43 @@ public:
 	 * Whether to try to combine individual assets and components of the same type on a kind-per-kind basis,
 	 * like multiple Mesh prims into a single Static Mesh
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum=EUsdDefaultKind))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum="/Script/UnrealUSDWrapper.EUsdDefaultKind"))
 	int32 KindsToCollapse;
 
+	/**
+	 * If enabled, when multiple mesh prims are collapsed into a single static mesh, identical material slots are merged into one slot.
+	 * Otherwise, materials slots are simply appended to the list.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD")
+	bool bMergeIdenticalMaterialSlots;
+
+	/**
+	 * If true, will cause us to collapse any point instancer prim into a single static mesh and static mesh component.
+	 * If false, will cause us to use HierarchicalInstancedStaticMeshComponents to replicate the instancing behavior.
+	 * Point instancers inside other point instancer prototypes are *always* collapsed into the prototype's static mesh.
+	 */
+	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD" )
+	bool bCollapseTopLevelPointInstancers;
+
 	/* Only load prims with these specific purposes from the USD file */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum=EUsdPurpose))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum="/Script/UnrealUSDWrapper.EUsdPurpose"))
 	int32 PurposesToLoad;
 
 	/** Try enabling Nanite for static meshes that are generated with at least this many triangles */
 	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD", meta = ( NoSpinbox = "true", UIMin = "0", ClampMin = "0" ))
 	int32 NaniteTriangleThreshold;
 
+	/** Specifies which set of shaders to use when parsing USD materials, in addition to the universal render context. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD")
 	FName RenderContext;
+
+	/** Specifies which material purbose to use when parsing USD material bindings, in addition to the "allPurpose" fallback. */
+	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD" )
+	FName MaterialPurpose;
+
+	// Describes what to add to the root bone animation within generated AnimSequences, if anything
+	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD" )
+	EUsdRootMotionHandling RootMotionHandling = EUsdRootMotionHandling::NoAdditionalRootMotion;
 
 public:
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
@@ -78,6 +104,12 @@ public:
 	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
 	USDSTAGE_API void SetKindsToCollapse( int32 NewKindsToCollapse );
 
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetMergeIdenticalMaterialSlots( bool bMerge );
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetCollapseTopLevelPointInstancers( bool bCollapse );
+
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetPurposesToLoad( int32 NewPurposesToLoad );
 
@@ -86,6 +118,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetRenderContext( const FName& NewRenderContext );
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetMaterialPurpose( const FName& NewMaterialPurpose );
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetRootMotionHandling( EUsdRootMotionHandling NewHandlingStrategy );
 
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API float GetTime() const { return Time; }
@@ -123,29 +161,21 @@ public:
 
 private:
 	UPROPERTY(Category = UsdStageActor, VisibleAnywhere, BlueprintReadOnly, meta = (ExposeFunctionCategories = "Mesh,Rendering,Physics,Components|StaticMesh", AllowPrivateAccess = "true"))
-	class USceneComponent* SceneComponent;
+	TObjectPtr<class USceneComponent> SceneComponent;
 
 	/* TimeCode to evaluate the USD stage at */
 	UPROPERTY(EditAnywhere, Category = "USD")
 	float Time;
 
-	UPROPERTY()
-	float StartTimeCode_DEPRECATED;
-
-	UPROPERTY()
-	float EndTimeCode_DEPRECATED;
-
-	UPROPERTY()
-	float TimeCodesPerSecond_DEPRECATED;
-
 	UPROPERTY(VisibleAnywhere, Category = "USD", Transient)
-	ULevelSequence* LevelSequence;
+	TObjectPtr<ULevelSequence> LevelSequence;
 
 public:
 	DECLARE_EVENT_OneParam( AUsdStageActor, FOnActorLoaded, AUsdStageActor* );
 	USDSTAGE_API static FOnActorLoaded OnActorLoaded;
 
 	DECLARE_EVENT( AUsdStageActor, FOnStageActorEvent );
+	FOnStageActorEvent OnPreStageChanged;
 	FOnStageActorEvent OnStageChanged;
 	FOnStageActorEvent OnActorDestroyed;
 
@@ -158,12 +188,19 @@ public:
 public:
 	AUsdStageActor();
 
+	// Creates a brand new, memory-only USD stage and opens it
+	USDSTAGE_API void NewStage();
+
+	USDSTAGE_API void IsolateLayer( const UE::FSdfLayer& Layer );
+
 	USDSTAGE_API void Reset() override;
 	void Refresh() const;
 	void ReloadAnimations();
 	float GetTime() { return Time; }
 	UUsdAssetCache* GetAssetCache() { return AssetCache; }
+	TSharedPtr<FUsdInfoCache> GetInfoCache() { return InfoCache; }
 	TMap< FString, TMap< FString, int32 > > GetMaterialToPrimvarToUVIndex() { return MaterialToPrimvarToUVIndex; }
+	const UsdUtils::FBlendShapeMap& GetBlendShapeMap() { return BlendShapesByPath; }
 
 public:
 #if WITH_EDITOR
@@ -181,6 +218,7 @@ public:
 	virtual void BeginDestroy() override;
 
 	virtual void PostRegisterAllComponents() override;
+	virtual void UnregisterAllComponents( bool bForReregister = false ) override;
 	virtual void PostUnregisterAllComponents() override;
 
 	void OnPreUsdImport( FString FilePath );
@@ -210,41 +248,38 @@ private:
 	void OnObjectPropertyChanged( UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent );
 	void HandlePropertyChangedEvent( FPropertyChangedEvent& PropertyChangedEvent );
 	bool HasAuthorityOverStage() const;
+	void OnSkelAnimationBaked( const FString& SkelRootPrimPath );
 
 private:
 	// Note: This cannot be instanced: Read the comment in the constructor
 	UPROPERTY( Transient )
-	UUsdPrimTwin* RootUsdTwin;
+	TObjectPtr<UUsdPrimTwin> RootUsdTwin;
 
 	UPROPERTY( Transient )
 	TSet< FString > PrimsToAnimate;
 
 	UPROPERTY( Transient )
-	TMap< UObject*, FString > ObjectsToWatch;
+	TMap< TObjectPtr<UObject>, FString > ObjectsToWatch;
 
 	UPROPERTY( VisibleAnywhere, Category = "USD", AdvancedDisplay )
-	UUsdAssetCache* AssetCache;
+	TObjectPtr<UUsdAssetCache> AssetCache;
 
-private:
 	UPROPERTY( Transient )
-	UUsdTransactor* Transactor;
-
-	/** Keep track of blend shapes so that we can map 'inbetween shapes' to their separate morph targets when animating */
-	UsdUtils::FBlendShapeMap BlendShapesByPath;
-
-	/**
-	 * When parsing materials, we keep track of which primvar we mapped to which UV channel.
-	 * When parsing meshes later, we use this data to place the correct primvar values in each UV channel.
-	 * We keep this here as these are generated when the materials stored in AssetsCache are parsed, so it should accompany them
-	 */
-	TMap< FString, TMap< FString, int32 > > MaterialToPrimvarToUVIndex;
+	TObjectPtr<UUsdTransactor> Transactor;
 
 public:
-	UE_DEPRECATED( 4.27, "Use the const version if you don't wish to load the stage on-demand, or use GetOrLoadUsdStage if you do" )
-	USDSTAGE_API UE::FUsdStage& GetUsdStage();
-
+	// Loads the stage with RootLayer if its not loaded already, and returns the either the isolated stage (if any) or
+	// the base stage
 	USDSTAGE_API UE::FUsdStage& GetOrLoadUsdStage();
+
+	// Returns either the isolated stage (if any) or the base stage
 	USDSTAGE_API const UE::FUsdStage& GetUsdStage() const;
+
+	// Always returns the base stage, regardless of whether we have an isolated stage or not
+	USDSTAGE_API const UE::FUsdStage& GetBaseUsdStage() const;
+
+	// Always returns the isolated stage, being an invalid stage in case we're not isolating anything
+	USDSTAGE_API const UE::FUsdStage& GetIsolatedUsdStage() const;
 
 	FUsdListener& GetUsdListener() { return UsdListener; }
 	const FUsdListener& GetUsdListener() const { return UsdListener; }
@@ -273,7 +308,25 @@ protected:
 	void AnimatePrims();
 
 private:
+	/** Caches various information about prims that are expensive to query */
+	TSharedPtr<FUsdInfoCache> InfoCache;
+
+	/** Keep track of blend shapes so that we can map 'inbetween shapes' to their separate morph targets when animating */
+	UsdUtils::FBlendShapeMap BlendShapesByPath;
+
+	/**
+	 * When parsing materials, we keep track of which primvar we mapped to which UV channel.
+	 * When parsing meshes later, we use this data to place the correct primvar values in each UV channel.
+	 * We keep this here as these are generated when the materials stored in AssetsCache are parsed, so it should accompany them
+	 */
+	TMap< FString, TMap< FString, int32 > > MaterialToPrimvarToUVIndex;
+
+	// The main UsdStage that is currently opened
 	UE::FUsdStage UsdStage;
+
+	// Another stage that has as root layer one of the non-root local layers of UsdStage. This is the stage we'll
+	// be displaying if it is valid, otherwise we'll be displaying UsdStage directly.
+	UE::FUsdStage IsolatedStage;
 
 	/**
 	 * We use PostRegisterAllComponents and PostUnregisterAllComponents as main entry points to decide when to load/unload

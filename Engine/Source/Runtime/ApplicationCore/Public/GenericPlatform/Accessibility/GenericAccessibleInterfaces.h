@@ -2,10 +2,21 @@
 
 #pragma once
 
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "Logging/LogMacros.h"
+#include "Math/Box2D.h"
 #include "Misc/Variant.h"
 #include "Stats/Stats.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "Stats/Stats2.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
 
 /** Whether a widget should be included in accessibility, and if so, how its text should be retrieved. */
 enum class EAccessibleBehavior : uint8
@@ -86,6 +97,138 @@ enum class EAccessibleEvent : uint8
 	WidgetRemoved
 };
 
+/** An index that uniquely identifies every registered accessible user in the application. */
+typedef int32 FAccessibleUserIndex;
+
+/**
+ * An accessible user is an input source that can interact with the application and needs to provide accessibility services such as a screen reader.
+ * This base class provides the basic information all accessible users need to implement to ensure accessibility services function properly.
+ * Users should subclass this class to provide additional functionality for their custom accessible users.
+ * All accessible users must be registered with an FGenericAccessibleUserRegistry for the users to be retrieved and interacted with.
+ * @see FGenericAccessibleUserRegistry
+ */
+class APPLICATIONCORE_API FGenericAccessibleUser
+{
+	friend class FGenericAccessibleUserRegistry;
+public:
+	FGenericAccessibleUser(const FAccessibleUserIndex InUserIndex)
+		: UserIndex(InUserIndex)
+	{
+		
+	}
+	virtual ~FGenericAccessibleUser() = default;
+	/** Returns the unique index that identifies this accessible user.*/
+	FAccessibleUserIndex GetIndex() const
+	{
+		return UserIndex;
+	}
+	/**
+	 * Returns the accessible widget the accessible user is currently focused on. If no accessible widget is focused, nullptr is returned.
+	 * @see IAccessibleWidget
+	 */
+	TSharedPtr<IAccessibleWidget> GetFocusedAccessibleWidget() const
+	{
+		return FocusedAccessibleWidget.IsValid() ? FocusedAccessibleWidget.Pin() : nullptr;
+	}
+	/**
+	 * Sets which accessible widget the accessible user is currently focused on.
+	 *
+	 * Note: This function is meant to directly set the widget an accessible user is focused on, bypassing all of the focus change accessible events.
+	 * This should only be used by FGenericAccessibleMessageHandler and its subclasses to update the  the accessible focus for an accessible user.
+	 * Most of the time, you want to use IAccessibleWidget::SetUserFocus to request an accessible widget be focused on by a user. It raises the appropriate accessible events
+	 * so listeners for accessible events can do the appropriate event handling for the focus change event.
+	 * @param InWidget The widget this accessible user will be focused on.
+	 * @return True if the passed in widget was successfully set. Else returns false.
+	 */
+	bool SetFocusedAccessibleWidget(const TSharedRef<IAccessibleWidget>& InWidget)
+	{
+		FocusedAccessibleWidget = InWidget;
+		return true;
+	}
+	/** Clear the accessible focused widget. */
+	void ClearFocusedAccessibleWidget()
+	{
+		FocusedAccessibleWidget.Reset();
+	}
+protected:
+	/**
+	 * Called by FGenericAccessibleUserRegistry::RegisterUser.
+	 * @see FGenericAccessibleUserRegistry
+	 */
+	virtual void OnRegistered() {}
+	/**
+	 * Called by FGenericAccessibleUserRegistry::UnregisterUser.
+	 * @see FGenericAccessibleUserRegistry
+	 */
+	virtual void OnUnregistered() {}
+	
+private:
+	/** The unique index for this accessible user */
+	FAccessibleUserIndex UserIndex;
+	/** The focused accessible widget widget associated with this user. */
+	TWeakPtr<IAccessibleWidget> FocusedAccessibleWidget;
+};
+
+/**
+ * The base class for an accessible user registry that all accessible users must register with.
+ * The registry controls the lifetime of all accessible users.
+ * All created accessible users must be registered with an accessible user registry. This should be the only means
+ * of retrieving and interacting with accessible users in other parts of the application.
+ * Users can subclass this class to provide additional functionality for their custom use cases.
+ * @see FGenericAccessibleUser, FGenericAccessibleMessageHandler
+ */
+class APPLICATIONCORE_API FGenericAccessibleUserRegistry
+{
+public:
+	virtual ~FGenericAccessibleUserRegistry() = default;
+	/**
+	 * Registers an accessible user with the accessible registry.
+	 * It is up to the caller to ensure that the passed in user has the correct user index.
+	 * The passed in user will not be registered if another user with the same user index has already been registered.
+	 * This function calls FGenericAccessibleUser::OnRegistered if the passed in user is successfully registered.
+	 * Once an accessible user has been successfully registered, it can be retrieved and interacted with by the rest of the application.
+	 * @param User An accessible user you want to register with the accessible user registry.
+	 * @return True if the passed in user was successfully registered. Else, returns false.
+	 */
+	bool RegisterUser(const TSharedRef<FGenericAccessibleUser>& User);
+	/**
+	 * Unregisters an accessible user from the accessible registry.
+	 * If the passed in user index is not associated with a registered accessible user, nothing will happen.
+	 * This function calls FGenericAccessibleUser::OnUnregistered if the passed in user is successfully unregistered.
+	 * Once an accessible user has been unregistered, the rest of the application should have no way of retrieving or interacting with the accessible user.
+	 * @param UserIndex The index of the accessible user you want to unregister.
+	 * @return True if the accessible user with the associated user index is successfully unregistered. Else, returns false.
+	 */
+	bool UnregisterUser(const FAccessibleUserIndex UserIndex);
+	/**
+	 * Unregisters all accessible users from the accessible registry.
+	 * This function calls FGenericAccessibleUser::OnUnregistered when each registered user is successfully unregistered.
+	 */
+	void UnregisterAllUsers();
+	/** Returns true if the passed in user index is associated with a registered accessible user. Else, returns false. */
+	bool IsUserRegistered(const FAccessibleUserIndex UserIndex) const;
+	/** Returns the accessible user associated with the passed in user index. If the passed in user index is not associated with any accessible user, nullptr is returned. */
+	TSharedPtr<FGenericAccessibleUser> GetUser(const FAccessibleUserIndex UserIndex) const;
+	/** Returns the number of accessible users registered with the accessible user registry. */
+	int32 GetNumberofUsers() const;
+	/** Returns an array of all accessible users that are currently registered with the accessible registry. */
+	TArray<TSharedRef<FGenericAccessibleUser>> GetAllUsers() const;
+	/**
+	 * Returns the index of the primary accessible user.
+	 * The primary accessible user should correspond to the default input source that every application should have. This user should also be the primary cursor user.
+	 * E.g On desktop platforms, that would correspond to the keyboard user.
+	 */
+	static FAccessibleUserIndex GetPrimaryUserIndex()
+	{
+		// @TODOAccessibility: Consider allowing remapping of primary user index
+		static const FAccessibleUserIndex PrimaryUserIndex = 0;
+		return PrimaryUserIndex;
+	}
+protected:
+	/** A map of accessible user indices to their associated accessible users. */
+	TMap<FAccessibleUserIndex, TSharedRef<FGenericAccessibleUser>> UsersMap;
+};
+
 /**
  * An accessible window corresponds to a native OS window. Fake windows that are embedded
  * within other widgets that simply look and feel like windows are not IAccessibleWindows.
@@ -120,11 +263,13 @@ public:
 	 */
 	virtual TSharedPtr<IAccessibleWidget> GetChildAtPosition(int32 X, int32 Y) = 0;
 	/**
-	 * Retrieves the currently accessibilit focused widget
+	 * Retrieves the focused accessible widget for a user.
+	 * If the passed in user index is not registered with an accessible user registry, nullptr will be returned.
 	 *
-	 * @return The widget that has accessibility focus.
+	 * @param UserIndex The user index of the accessible user to query for its accessible focus widget.
+	 * @return The accessible widget that is focused by the accessible user. Returns nullptr if the accessible user index does not correspond to a registered accessible user.
 	 */
-	virtual TSharedPtr<IAccessibleWidget> GetFocusedWidget() const = 0;
+	virtual TSharedPtr<IAccessibleWidget> GetUserFocusedWidget(const FAccessibleUserIndex UserIndex) const = 0;
 	/**
 	 * Request that the window closes itself. This may not happen immediately.
 	 */
@@ -368,17 +513,157 @@ public:
 	 */
 	virtual TSharedPtr<IAccessibleWidget> GetParent() = 0;
 	/**
+	 * Returns the first instance of an ancestor from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any ancestors or if there are no ancestors that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first instance of an ancestor from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForAncestorFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		TSharedPtr<IAccessibleWidget> Ancestor = Source->GetParent();
+		while (Ancestor)
+		{
+			if (Predicate(Ancestor.ToSharedRef()))
+			{
+				return Ancestor;
+			}
+			Ancestor = Ancestor->GetNextSibling();
+		}
+		return nullptr;
+	}
+	/**
 	 * Retrieves the widget after this one in the parent's list of children. This should return nullptr for the last widget.
 	 *
 	 * @return The next widget on the same level of the UI hierarchy.
 	 */
 	virtual TSharedPtr<IAccessibleWidget> GetNextSibling() = 0;
 	/**
+	 * Returns the first instance of a next sibling from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any next siblings or if there are no next siblings that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first instance of a next sibling from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForNextSiblingFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		TSharedPtr<IAccessibleWidget> NextSibling = Source->GetNextSibling();
+		while (NextSibling)
+		{
+			if (Predicate(NextSibling.ToSharedRef()))
+			{
+				return NextSibling;
+			}
+			NextSibling = NextSibling->GetNextSibling();
+		}
+		return nullptr;
+	}
+	/**
 	 * Retrieves the widget before this one in the parent's list of children. This should return nullptr for the first widget.
 	 *
 	 * @return The previous widget on the same level of the UI hierarchy.
 	 */
 	virtual TSharedPtr<IAccessibleWidget> GetPreviousSibling() = 0;
+	/**
+	 * Returns the first instance of a previous sibling from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any previous siblings or if there are no previous siblings that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first instance of a previous sibling from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForPreviousSiblingFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		TSharedPtr<IAccessibleWidget> PreviousSibling = Source->GetPreviousSibling();
+		while(PreviousSibling)
+		{
+			if (Predicate(PreviousSibling.ToSharedRef()))
+			{
+				return PreviousSibling;
+			}
+			PreviousSibling = PreviousSibling->GetPreviousSibling();
+		}
+		return nullptr;
+	}
+	/**
+	 * Retrieves the logical next widget in the accessible widget hierarchy from this widget.
+	 * This is conceptually similar to tab navigation with the keyboard.
+	 * This is primarily used for mobile devices to simulate the right swipe gesture for IOS Voiceover or Android Talkback.
+	 * An example algorithm to find the next widget in the accessible hierarchy is as follows:
+	 * 1. If the current widget has children, return the first child.
+	 * 2. If the current widget has no children, return the sibling of the current widget.
+	 * 3. If the current widget has no next sibling, search for the first ancestor from the current widget with a next sibling. Return that ancestor's next sibling.
+	 *
+	 * @return The logical next widget in the accessible widget hierarchy.
+	 */
+	virtual TSharedPtr<IAccessibleWidget> GetNextWidgetInHierarchy() = 0;
+	/**
+	 * Returns the first instance of a next widget in the accessible hierarchy from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any next widgets or if there are no next widgets that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first instance of a next widget from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForNextWidgetInHierarchyFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		TSharedPtr<IAccessibleWidget> NextWidget = Source->GetNextWidgetInHierarchy();
+		while(NextWidget)
+		{
+			if (Predicate(NextWidget.ToSharedRef()))
+			{
+				return NextWidget;
+			}
+			NextWidget = NextWidget->GetNextWidgetInHierarchy();
+		}
+		return nullptr;
+	}
+	/**
+	 * Retrieves the logical previous widget in the accessible widget hierarchy from this current widget.
+	 * This is conceptually similar to shift tab navigation with the keyboard.
+	 * This is primarily used for mobile devices to simulate the left swipe gesture for IOS Voiceover or Android Talkback.
+	 * An example algorithm to find the previous widget in the hierarchy is as follows:
+	 * 1. Find the previous sibling of the current widget and check if it has children.
+	 * 2. If the previous sibling has children, we will call the last child of the previous sibling C. Recursively take the last child from C until a leaf is found. Return the leaf.
+	 * 3. If the previous sibling has no children, return the previous sibling.
+	 * 4. If the current widget has no previous sibling, we return the parent of the current widget.
+	 *
+	 * @return The logical previous widget in the accessible widget hierarchy.
+	 */
+	virtual TSharedPtr<IAccessibleWidget> GetPreviousWidgetInHierarchy() = 0;
+	/**
+	 * Returns the first instance of a previous widget in the accessible hierarchy from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any previous widgets or if there are no previous widgets that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first instance of a previous widget from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForPreviousWidgetInHierarchyFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		TSharedPtr<IAccessibleWidget> PreviousWidget = Source->GetPreviousWidgetInHierarchy();
+		while(PreviousWidget)
+		{
+			if (Predicate(PreviousWidget.ToSharedRef()))
+			{
+				return PreviousWidget;
+			}
+			PreviousWidget = PreviousWidget->GetPreviousWidgetInHierarchy();
+		}
+		return nullptr;
+	}
 	/**
 	 * Retrieves the accessible child widget at a certain index. This should return nullptr if Index < 0 or Index >= GetNumberOfChildren().
 	 *
@@ -392,6 +677,34 @@ public:
 	 * @return The number of accessible children that exist for this widget.
 	 */
 	virtual int32 GetNumberOfChildren() = 0;
+	/**
+	 * Returns the first instance of a child from a source widget that satisfies a search criteria.
+	 * If the passed in source widget does not have any children or if there are no children that satisfy the search criteria, nullptr is returned.
+	 * The search criteria can be either a functor or lambda that acts as a predicate. It must return a bool and take in a const TSharedRef<IAccessibleWidget>& as an argument.
+	 *
+	 * @param Source The accessible widget to start searching from.
+	 * @param SearchCriteria A predicate that takes a const TSharedRef<IAccessibleWidget>& as an argument and returns true if the passed in widget satisfies the search criteria. When an accessible widget that satisfies the SearchCriteria is found, it is returned by the function.
+	 * @return The first child from the source widget that satisfies the search criteria.
+	 */
+	template<typename PredicateType>
+	static TSharedPtr<IAccessibleWidget> SearchForFirstChildFrom(const TSharedRef<IAccessibleWidget>& Source, PredicateType Predicate)
+	{
+		if (Source->GetNumberOfChildren() == 0)
+		{
+			return nullptr;
+		}
+		TSharedPtr<IAccessibleWidget> Child = nullptr;
+		int32 NumChildren = Source->GetNumberOfChildren();
+		for (int32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
+		{
+			Child = Source->GetChildAt(ChildIndex);
+			if (Child && Predicate(Child.ToSharedRef()))
+			{
+				return Child;
+			}
+		}
+		return nullptr;
+	}
 	/**
 	 * What type of accessible widget the underlying widget should be treated as. A widget may be capable of presenting itself
 	 * as multiple different types of widgets, but only one can be reported back to the platform.
@@ -418,6 +731,13 @@ public:
 	 * @return A more-detailed description of what the widget is or how its used.
 	 */
 	virtual FString GetHelpText() const = 0;
+	/** Returns a string representation of this widget. Primarily used for debugging. */
+	virtual FString ToString() const
+	{
+		TStringBuilder<256> Builder;
+		Builder.Appendf(TEXT("Label: %s. Role: %s."), *GetWidgetName(), *GetClassName());
+		return Builder.ToString();
+	}
 
 	/**
 	 * Whether the widget is enabled and can be interacted with.
@@ -432,21 +752,37 @@ public:
 	 */
 	virtual bool IsHidden() const = 0;
 	/**
-	 * Whether the widget supports accessibility focus or not.
+	 * Whether the widget can ever support keyboard/gamepad focus.
 	 *
-	 * @return true if the widget can receive accessibility focus.
+	 * @return true if the widget can ever receive keyboard/gamepad focus. Else, returns false.
 	 */
 	virtual bool SupportsFocus() const = 0;
 	/**
-	 * Whether the widget has accessibility focus or not.
+	 * Whether the widget can ever support accessible focus.
 	 *
-	 * @return true if the widget currently has accessibility focus.
+	 * @return true if the widget can ever receive accessible focus. Else, returns false.
 	 */
-	virtual bool HasFocus() const = 0;
-	/** Assign keyboard/gamepad focus to this widget, if it supports it. If not, focus should not be affected. 
-	* Note: For widgets that support accessibility focus but not keyboard/gamepad focus, this should NOT repreplace the widget with accessibility focus. 
+	virtual bool SupportsAccessibleFocus() const = 0;
+	/**
+	 * Whether the widget can currently support accessible focus.
+	 *
+	 * @return true if the widget can currently receive accessible focus. Else, returns false.
+	 */
+	virtual bool CanCurrentlyAcceptAccessibleFocus() const = 0;
+	/**
+	 * Whether the widget has accessible focus or not by a particular user .
+	 *
+	 * @param UserIndex The user index associated with the accessible user to query if this accessible widget is currently being focused.
+	 * @return true if the widget currently has accessible focus by the user. Else, returns false.
+	 */
+	virtual bool HasUserFocus(const FAccessibleUserIndex UserIndex) const = 0;
+	/**
+	 * Assign accessible focus to the widget. Also sets keyboard/gamepad focus if the widget supports it.
+	*
+	 * @param UserIndex The user index associated with the accessible user that requested focus for this accessible widget.
+	 * @return True if focus was successfully set to this widget for the requested user. Else false.
 	*/
-	virtual void SetFocus() = 0;
+	virtual bool SetUserFocus(const FAccessibleUserIndex UserIndex) = 0;
 
 	/**
 	 * Attempt to cast this to an IAccessibleWindow
@@ -489,34 +825,58 @@ public:
 };
 
 /**
+ * The arguments for an accessible event that is raised by accessible widgets to be
+ * passed to an accessibility event handler such as a native OS.
+ * It is up to the client to create an instance of this struct and fill in the appropriate data members.
+ * @see FGenericAccessibleMessageHandler::RaiseEvent
+ */
+struct APPLICATIONCORE_API FAccessibleEventArgs
+{
+	FAccessibleEventArgs(TSharedRef<IAccessibleWidget> InWidget, EAccessibleEvent InEvent, FVariant InOldValue = FVariant(), FVariant InNewValue = FVariant(), FAccessibleUserIndex InUserIndex = 0)
+		: Widget(InWidget)
+		, Event(InEvent)
+		, OldValue(InOldValue)
+		, NewValue(InNewValue)
+		, UserIndex(InUserIndex)
+	{}
+	
+	/** The accessible widget that generated the event */
+	TSharedRef<IAccessibleWidget> Widget;
+	/** The type of event generated */
+	EAccessibleEvent Event;
+	/** If this was a property changed event, the 'before' value */
+	FVariant OldValue;
+	/** If this was a property changed event, the 'after' value. This may also be set for other events such as Notification. */
+	FVariant NewValue;
+	/** The Id of the user this event is intended for. Think of a hardware device such as a controller or keyboard/mouse. */
+	FAccessibleUserIndex UserIndex;
+};
+
+/**
  * Platform and application-agnostic messaging system for accessible events. The message handler
  * lives in GenericApplication and any subclass that wishes to support accessibility should subclass
  * this and use GenericAppliation::SetAccessibleMessageHandler to enable functionality.
  *
- * GetAccessibleWindow() is tne entry point to all accessible widgets. Once the window is retrieved, it
+ * GetAccessibleWindow() is the entry point to all accessible widgets. Once the window is retrieved, it
  * can be queried for children in various ways. RaiseEvent() allows messages to bubble back up to the
  * native OS through anything bound to the AccessibleEventDelegate.
  *
  * Callers can use ApplicationIsAccessible() to see if accessibility is supported or not. Alternatively,
  * calling GetAccessibleWindow and seeing if the result is valid should provide the same information.
+ *
+ * Callers should also use GetAccessibleUserRegistry() to register and interact with accessible users. Accessible users must be registered
+ * with the set accessible user registry for the rest of the application to be able to retrieve and interact with the accessible users.
  */
-class FGenericAccessibleMessageHandler
+class APPLICATIONCORE_API FGenericAccessibleMessageHandler
 {
 public:
-	/** A widget raised an event to pass to the native OS implementation. */
-	DECLARE_DELEGATE_FourParams(
-		FAccessibleEvent,
-		/** The accessible widget that generated the event */
-		TSharedRef<IAccessibleWidget>,
-		/** The type of event generated */
-		EAccessibleEvent,
-		/** If this was a property changed event, the 'before' value */
-		FVariant,
-		/** If this was a property changed event, the 'after' value. This may also be set for other events such as Notification. */
-		FVariant);
+	/**
+	 * A delegate accessible event handlers such as platform accessibility APIs can
+	 * listen for accessibility events raised by widgets.  .
+	 */
+	DECLARE_DELEGATE_OneParam(FAccessibleEvent, const FAccessibleEventArgs&);
 
-	FGenericAccessibleMessageHandler() : bApplicationIsAccessible(false), bIsActive(false) {}
-
+	FGenericAccessibleMessageHandler();
 	virtual ~FGenericAccessibleMessageHandler()
 	{
 		UnbindAccessibleEventDelegate();
@@ -573,14 +933,12 @@ public:
 	/**
 	 * Push an event from an accessible widget back to the platform layer.
 	 *
-	 * @param Widget The widget raising the event
-	 * @param Event The type of event being raised
-	 * @param OldValue See EAccessibleEvent documentation for more details.
-	 * @param NewValue See EAccessibleEvent documentation for more details.
+	 * @param Args The arguments to be passed to the accessible event delegate.
+	 * @see FAccessibleEventArgs
 	 */
-	void RaiseEvent(TSharedRef<IAccessibleWidget> Widget, EAccessibleEvent Event, FVariant OldValue = FVariant(), FVariant NewValue = FVariant())
+	void RaiseEvent(const FAccessibleEventArgs& Args)
 	{
-		AccessibleEventDelegate.ExecuteIfBound(Widget, Event, OldValue, NewValue);
+		AccessibleEventDelegate.ExecuteIfBound(Args);
 	}
 
 	/**
@@ -617,12 +975,37 @@ public:
 	 * earlier announcement requests will get stomped by later announcements on certain platforms.
 	 */
 	virtual void MakeAccessibleAnnouncement(const FString& AnnouncementString) { }
+
+	/**
+	 * Retrieves the accessible user registry. This is the means of retrieving, registering and interacting with accessible useres in the rest of the application.
+	 */
+	FGenericAccessibleUserRegistry& GetAccessibleUserRegistry()
+	{
+		return *AccessibleUserRegistry;
+	}
+	/**
+	 * Retrieves the accessible user registry. This is the means of retrieving, registering and interacting with accessible useres in the rest of the application.
+	 */
+	const FGenericAccessibleUserRegistry& GetAccessibleUserRegistry() const
+	{
+		return *AccessibleUserRegistry;
+	}
+	/**
+	 * Sets a new accessible user registry for the application.
+	 * Note: As of now, none of the registered users will carry over to the new accessible user manager. It is up to the caller to unregister all currently registered users and
+	 * register them with the new accessible user registry.   .
+	 */
+	void SetAccessibleUserRegistry(const TSharedRef<FGenericAccessibleUserRegistry>& InAccessibleUserRegistry)
+	{
+		// @TODOAccessibility: Have some means of storing a default manager
+		AccessibleUserRegistry = InAccessibleUserRegistry;
+	}
 protected:
 	/** Triggered when bIsActive changes from false to true. */
 	virtual void OnActivate() {}
 	/** Triggered when bIsActive changes from true to false. */
 	virtual void OnDeactivate() {}
-
+	
 	/** Subclasses should override this to indicate that they support accessibility. */
 	bool bApplicationIsAccessible;
 
@@ -631,6 +1014,11 @@ private:
 	bool bIsActive;
 	/** Delegate for the platform layer to listen to widget events */
 	FAccessibleEvent AccessibleEventDelegate;
+	/**
+	 * Registry for all accessible users in the application.
+	 * Accessible users must be registered with the accessible user registry to allow other parts of the application to retrieve and interact with the accessible users.
+	 */
+	TSharedRef<FGenericAccessibleUserRegistry> AccessibleUserRegistry;
 };
 
 #endif

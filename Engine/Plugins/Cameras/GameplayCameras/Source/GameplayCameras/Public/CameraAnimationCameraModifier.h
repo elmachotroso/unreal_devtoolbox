@@ -9,6 +9,7 @@
 #include "Camera/CameraTypes.h"
 #include "Camera/CameraModifier.h"
 #include "Containers/SparseArray.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "CameraAnimationCameraModifier.generated.h"
 
 class UCameraAnimationSequence;
@@ -260,6 +261,26 @@ protected:
 
 	/** Next serial number to use for a camera animation instance */
 	UPROPERTY()
-	uint16 InstanceSerialNumber;
+	uint16 NextInstanceSerialNumber;
+};
+
+/**
+ * Blueprint function library for autocasting a player camera manager into the camera animation camera modifier.
+ * This prevents breaking Blueprints now that APlayerCameraManager::StartCameraShake returns the base class.
+ */
+UCLASS()
+class GAMEPLAYCAMERAS_API UGameplayCamerasFunctionLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintPure, Category="Camera Animation", meta=(BlueprintAutocast))
+	static UCameraAnimationCameraModifier* Conv_CameraAnimationCameraModifier(APlayerCameraManager* PlayerCameraManager);
+
+	UFUNCTION(BlueprintPure, Category = "Camera Animation", meta = (BlueprintAutocast))
+	static ECameraShakePlaySpace Conv_CameraShakePlaySpace(ECameraAnimationPlaySpace CameraAnimationPlaySpace);
+
+	UFUNCTION(BlueprintPure, Category = "Camera Animation", meta = (BlueprintAutocast))
+	static ECameraAnimationPlaySpace Conv_CameraAnimationPlaySpace(ECameraShakePlaySpace CameraShakePlaySpace);
 };
 

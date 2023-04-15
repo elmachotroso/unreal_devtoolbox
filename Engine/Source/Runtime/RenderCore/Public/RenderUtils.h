@@ -348,6 +348,8 @@ enum EConstructTextureFlags
 /**
  * Calculates the amount of memory used for a single mip-map of a texture 3D.
  *
+ * Use GPixelFormats[Format].Get3DTextureMipSizeInBytes() instead.
+ * 
  * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
  * @param TextureSizeY		Number of vertical texels (for the base mip-level)
  * @param TextureSizeZ		Number of slices (for the base mip-level)
@@ -359,6 +361,8 @@ RENDERCORE_API SIZE_T CalcTextureMipMapSize3D( uint32 TextureSizeX, uint32 Textu
 /**
  * Calculates the extent of a mip.
  *
+ * Incorrectly forces min mip size to be block dimensions: UE-159189
+ * 
  * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
  * @param TextureSizeY		Number of vertical texels (for the base mip-level)
  * @param TextureSizeZ		Number of depth texels (for the base mip-level)
@@ -373,6 +377,8 @@ RENDERCORE_API void CalcMipMapExtent3D( uint32 TextureSizeX, uint32 TextureSizeY
 /**
  * Calculates the extent of a mip.
  *
+ * Incorrectly forces min mip size to be block dimensions: UE-159189
+ * 
  * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
  * @param TextureSizeY		Number of vertical texels (for the base mip-level)
  * @param Format	Texture format
@@ -387,6 +393,7 @@ RENDERCORE_API FIntPoint CalcMipMapExtent( uint32 TextureSizeX, uint32 TextureSi
  * @param Format			Texture format
  * @param MipIndex			The index of the mip-map to compute the size of.
  */
+UE_DEPRECATED(5.1, "See GPixelFormats in PixelFormat.h for analogous functions")
 RENDERCORE_API SIZE_T CalcTextureMipWidthInBlocks(uint32 TextureSizeX, EPixelFormat Format, uint32 MipIndex);
 
 /**
@@ -396,10 +403,13 @@ RENDERCORE_API SIZE_T CalcTextureMipWidthInBlocks(uint32 TextureSizeX, EPixelFor
  * @param Format			Texture format
  * @param MipIndex			The index of the mip-map to compute the size of.
  */
+UE_DEPRECATED(5.1, "See GPixelFormats in PixelFormat.h for analogous functions")
 RENDERCORE_API SIZE_T CalcTextureMipHeightInBlocks(uint32 TextureSizeY, EPixelFormat Format, uint32 MipIndex);
 
 /**
  * Calculates the amount of memory used for a single mip-map of a texture.
+ * 
+ * Use GPixelFormats[Format].Get2DTextureMipSizeInBytes() instead.
  *
  * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
  * @param TextureSizeY		Number of vertical texels (for the base mip-level)
@@ -411,6 +421,8 @@ RENDERCORE_API SIZE_T CalcTextureMipMapSize( uint32 TextureSizeX, uint32 Texture
 /**
  * Calculates the amount of memory used for a texture.
  *
+ * Use GPixelFormats[Format].Get2DTextureSizeInBytes() instead.
+ * 
  * @param SizeX		Number of horizontal texels (for the base mip-level)
  * @param SizeY		Number of vertical texels (for the base mip-level)
  * @param Format	Texture format
@@ -421,6 +433,8 @@ RENDERCORE_API SIZE_T CalcTextureSize( uint32 SizeX, uint32 SizeY, EPixelFormat 
 /**
  * Calculates the amount of memory used for a texture.
  *
+ * Use GPixelFormats[Format].Get3DTextureSizeInBytes() instead.
+ * 
  * @param SizeX		Number of horizontal texels (for the base mip-level)
  * @param SizeY		Number of vertical texels (for the base mip-level)
  * @param SizeY		Number of depth texels (for the base mip-level)
@@ -439,19 +453,6 @@ RENDERCORE_API SIZE_T CalcTextureSize3D( uint32 SizeX, uint32 SizeY, uint32 Size
  * @param DestStride   - The stride of the destination buffer.
  */
 RENDERCORE_API void CopyTextureData2D(const void* Source,void* Dest,uint32 SizeY,EPixelFormat Format,uint32 SourceStride,uint32 DestStride);
-
-/**
- * enum to string
- *
- * @return e.g. "PF_B8G8R8A8"
- */
-RENDERCORE_API const TCHAR* GetPixelFormatString(EPixelFormat InPixelFormat);
-/**
- * string to enum (not case sensitive)
- *
- * @param InPixelFormatStr e.g. "PF_B8G8R8A8", must not not be 0
- */
-RENDERCORE_API EPixelFormat GetPixelFormatFromString(const TCHAR* InPixelFormatStr);
 
 /**
  *  Returns the valid channels for this pixel format
@@ -481,10 +482,6 @@ RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector3();
 
 RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector2();
 
-RENDERCORE_API bool PlatformSupportsSimpleForwardShading(const FStaticShaderPlatform Platform);
-
-RENDERCORE_API bool IsSimpleForwardShadingEnabled(const FStaticShaderPlatform Platform);
-
 RENDERCORE_API bool MobileSupportsGPUScene();
 
 RENDERCORE_API bool IsMobileDeferredShadingEnabled(const FStaticShaderPlatform Platform);
@@ -499,9 +496,23 @@ RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool AllowPerPixelShadingModels(const FStaticShaderPlatform Platform);
 
-RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform);
+RENDERCORE_API uint32 GetPlatformShadingModelsMask(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool IsMobileAmbientOcclusionEnabled(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool IsMobileMovableSpotlightShadowsEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileForwardEnableLocalLights(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileForwardEnableClusteredReflections(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileUsesShadowMaskTexture(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileUsesExtenedGBuffer(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileUsesGBufferCustomData(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool MobileBasePassAlwaysUsesCSM(const FStaticShaderPlatform Platform);
 
@@ -529,17 +540,28 @@ struct RENDERCORE_API FShaderPlatformCachedIniValue
 
 	Type Get(EShaderPlatform ShaderPlatform)
 	{
+		EShaderPlatform ActualShaderPlatform = ShaderPlatform;
 		Type Value{};
 
-		FName IniPlatformName = ShaderPlatformToPlatformName(ShaderPlatform);
+		if (GIsEditor)
+		{
+			if (FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(ActualShaderPlatform))
+			{
+				ActualShaderPlatform = FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(ActualShaderPlatform);
+			}
+		}
+
+		FName IniPlatformName = ShaderPlatformToPlatformName(ActualShaderPlatform);
 		// find the cvar if needed
 		if (CVar == nullptr)
 		{
 			CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName);
 		}
 
-		// if we are looking up our own platform, just use the current value
-		if (IniPlatformName == FPlatformProperties::IniPlatformName())
+		// if we are looking up our own platform, just use the current value, however
+		// ShaderPlatformToPlatformName can return the wrong platform than expected - for instance, Linux Vulkan will return Windows
+		// so instead of hitting an asser below, we detect that the request SP is the current SP, and use the CVar value that is set currently
+		if (IniPlatformName == FPlatformProperties::IniPlatformName() || ActualShaderPlatform == GMaxRHIShaderPlatform)
 		{
 			checkf(CVar != nullptr, TEXT("Failed to find CVar %s when getting current value for FShaderPlatformCachedIniValue"));
 
@@ -581,16 +603,10 @@ private:
 /** Returns if ForwardShading is enabled. Only valid for the current platform (otherwise call ITargetPlatform::UsesForwardShading()). */
 inline bool IsForwardShadingEnabled(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint64 GForwardShadingPlatformMask;
-	return !!(GForwardShadingPlatformMask & (1ull << Platform))
+	extern RENDERCORE_API ShaderPlatformMaskType GForwardShadingPlatformMask;
+	return (GForwardShadingPlatformMask[(int)Platform])
 		// Culling uses compute shader
 		&& GetMaxSupportedFeatureLevel(Platform) >= ERHIFeatureLevel::SM5;
-}
-
-/** Returns if ForwardShading or SimpleForwardShading is enabled. Only valid for the current platform. */
-inline bool IsAnyForwardShadingEnabled(const FStaticShaderPlatform Platform)
-{
-	return IsForwardShadingEnabled(Platform) || IsSimpleForwardShadingEnabled(Platform);
 }
 
 /** Returns if the GBuffer is used. Only valid for the current platform. */
@@ -602,29 +618,34 @@ inline bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
 	}
 	else
 	{
-		return !IsAnyForwardShadingEnabled(Platform);
+		return !IsForwardShadingEnabled(Platform);
 	}
 }
 
 /** Returns whether the base pass should output to the velocity buffer is enabled for a given shader platform */
-inline bool IsUsingBasePassVelocity(const FStaticShaderPlatform Platform)
-{
-	extern RENDERCORE_API uint64 GBasePassVelocityPlatformMask;
-	return !!(GBasePassVelocityPlatformMask & (1ull << Platform));
-}
+RENDERCORE_API bool IsUsingBasePassVelocity(const FStaticShaderPlatform Platform);
 
 /** Returns whether the base pass should use selective outputs for a given shader platform */
 inline bool IsUsingSelectiveBasePassOutputs(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint64 GSelectiveBasePassOutputsPlatformMask;
-	return !!(GSelectiveBasePassOutputsPlatformMask & (1ull << Platform));
+	extern RENDERCORE_API ShaderPlatformMaskType GSelectiveBasePassOutputsPlatformMask;
+	return (GSelectiveBasePassOutputsPlatformMask[(int)Platform]);
 }
 
 /** Returns whether distance fields are enabled for a given shader platform */
 inline bool IsUsingDistanceFields(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint64 GDistanceFieldsPlatformMask;
-	return !!(GDistanceFieldsPlatformMask & (1ull << Platform));
+	extern RENDERCORE_API ShaderPlatformMaskType GDistanceFieldsPlatformMask;
+	return (GDistanceFieldsPlatformMask[(int)Platform]);
+}
+
+/** Returns if water should render distance field shadow a second time for the water surface. This is for a platofrm so can be used at cook time. */
+inline bool IsWaterDistanceFieldShadowEnabled(const FStaticShaderPlatform Platform)
+{
+	// Only deferred support such a feature. It is not possible to do that for water without a water depth pre-pass.
+	static const auto CVarWaterSingleLayerShaderSupportDistanceFieldShadow = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.ShadersSupportDistanceFieldShadow"));
+	const bool bWaterSingleLayerShaderSupportDistanceFieldShadow = CVarWaterSingleLayerShaderSupportDistanceFieldShadow && (CVarWaterSingleLayerShaderSupportDistanceFieldShadow->GetInt() > 0);
+	return !IsForwardShadingEnabled(Platform) && IsUsingDistanceFields(Platform) && bWaterSingleLayerShaderSupportDistanceFieldShadow;
 }
 
 inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
@@ -652,14 +673,14 @@ inline bool UseGPUScene(const FStaticShaderPlatform Platform)
 
 inline bool ForceSimpleSkyDiffuse(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint64 GSimpleSkyDiffusePlatformMask;
-	return !!(GSimpleSkyDiffusePlatformMask & (1ull << Platform));
+	extern RENDERCORE_API ShaderPlatformMaskType GSimpleSkyDiffusePlatformMask;
+	return (GSimpleSkyDiffusePlatformMask[(int)Platform]);
 }
 
 inline bool VelocityEncodeDepth(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint64 GVelocityEncodeDepthPlatformMask;
-	return !!(GVelocityEncodeDepthPlatformMask & (1ull << Platform));
+	extern RENDERCORE_API ShaderPlatformMaskType GVelocityEncodeDepthPlatformMask;
+	return (GVelocityEncodeDepthPlatformMask[(int)Platform]);
 }
 
 /** Unit cube vertex buffer (VertexDeclarationFVector4) */
@@ -667,6 +688,11 @@ RENDERCORE_API FBufferRHIRef& GetUnitCubeVertexBuffer();
 
 /** Unit cube index buffer */
 RENDERCORE_API FBufferRHIRef& GetUnitCubeIndexBuffer();
+
+#if RHI_RAYTRACING
+/** Unit cube AABB vertex buffer (useful to create procedural raytracing geometry) */
+RENDERCORE_API FBufferRHIRef& GetUnitCubeAABBVertexBuffer();
+#endif
 
 /**
 * Takes the requested buffer size and quantizes it to an appropriate size for the rest of the
@@ -676,10 +702,11 @@ RENDERCORE_API FBufferRHIRef& GetUnitCubeIndexBuffer();
 RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntPoint& OutBufferSize);
 
 /**
-*	Checks if virtual texturing enabled and supported
+* Checks if virtual texturing enabled and supported
+* todo: Deprecate the version of the function that takes FStaticFeatureLevel
 */
+RENDERCORE_API bool UseVirtualTexturing(const EShaderPlatform InShaderPlatform, const class ITargetPlatform* TargetPlatform = nullptr);
 RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
-
 
 RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting = true);
 
@@ -689,9 +716,10 @@ inline bool NaniteAtomicsSupported()
 	bool bAtomicsSupported = GRHISupportsAtomicUInt64;
 
 #if PLATFORM_WINDOWS
-	static const bool bIsDx11 = FCString::Stristr(GDynamicRHI->GetName(), TEXT("D3D11")) != nullptr; // Also covers -rhivalidation => D3D11_Validation
-	static const bool bIsDx12 = FCString::Stristr(GDynamicRHI->GetName(), TEXT("D3D12")) != nullptr; // Also covers -rhivalidation => D3D12_Validation
-	
+	const ERHIInterfaceType RHIInterface = RHIGetInterfaceType();
+	const bool bIsDx11 = RHIInterface == ERHIInterfaceType::D3D11;
+	const bool bIsDx12 = RHIInterface == ERHIInterfaceType::D3D12;
+
 	static const auto NaniteRequireDX12CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.RequireDX12"));
 	static const uint32 NaniteRequireDX12 = (NaniteRequireDX12CVar != nullptr) ? NaniteRequireDX12CVar->GetInt() : 1;
 	
@@ -743,12 +771,30 @@ inline bool UseVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFe
 {
 	static const auto EnableVirtualSMCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Enable"));
 	const bool bVirtualShadowMapsEnabled = EnableVirtualSMCVar ? (EnableVirtualSMCVar->GetInt() != 0) : false;
-	return bVirtualShadowMapsEnabled && DoesRuntimeSupportNanite(ShaderPlatform, true /* check for atomics */, true /* check project setting */);
+	return bVirtualShadowMapsEnabled && DoesRuntimeSupportNanite(ShaderPlatform, true /* check for atomics */, false /* check project setting */);
 }
 
 /**
-* Returns true if non-Nanite virtual shadow maps are enabled by CVar r.Shadow.Virtual.NonNaniteVSM 
-* and UseVirtualShadowMaps is true for the given platform and feature level.
+* Returns true if Virtual Shadow Mapsare supported for the given shader platform.
+* Note: Virtual Shadow Maps require Nanite platform support.
+*/
+inline bool DoesPlatformSupportVirtualShadowMaps(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportNanite(Platform, false /* check project setting */);
+}
+
+/**
+* Returns true if non-Nanite virtual shadow maps are enabled by CVar r.Shadow.Virtual.NonNaniteVSM
+* and the runtime supports Nanite/virtual shadow maps.
+*/
+inline bool DoesPlatformSupportNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform)
+{
+	static const auto EnableCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.NonNaniteVSM"));	
+	return EnableCVar->GetInt() != 0 && DoesPlatformSupportNanite(ShaderPlatform, false /* check project setting */);
+}
+
+/**
+* Similar to DoesPlatformSupportNonNaniteVirtualShadowMaps, but checks if nanite and virtual shadow maps are enabled (at runtime).
 */
 inline bool UseNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFeatureLevel FeatureLevel)
 {
@@ -757,9 +803,29 @@ inline bool UseNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform, const 
 }
 
 /**
+*	(Non-runtime) Checks if the depth prepass for single layer water is enabled. This also depends on virtual shadow maps to be supported on the platform.
+*/
+inline bool IsSingleLayerWaterDepthPrepassEnabled(const FStaticShaderPlatform& Platform, const FStaticFeatureLevel& FeatureLevel)
+{
+	static const auto CVarWaterSingleLayerDepthPrepass = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.DepthPrepass"));
+	const bool bPrepassEnabled = CVarWaterSingleLayerDepthPrepass && CVarWaterSingleLayerDepthPrepass->GetInt() > 0;
+	// Currently VSM is the only feature dependent on the depth prepass which is why we only enable it if VSM could also be enabled.
+	// VSM can be toggled at runtime, but we need a compile time value here, so we fall back to DoesRuntimeSupportNanite() to check if
+	// VSM *could* be enabled.
+	const bool bVSMSupported = DoesPlatformSupportNanite(Platform, false /* check project setting */);
+
+	return bPrepassEnabled && bVSMSupported;
+}
+
+/**
 *	Checks if virtual texturing lightmap enabled and supported
 */
 RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
+
+/**
+*	Checks if platform uses a Nanite landscape mesh
+*/
+RENDERCORE_API bool UseNaniteLandscapeMesh(EShaderPlatform ShaderPlatform);
 
 /**
  *  Checks if the non-pipeline shaders will not be compild and ones from FShaderPipeline used instead.
@@ -777,3 +843,7 @@ RENDERCORE_API bool AreSkinCacheShadersEnabled(EShaderPlatform Platform);
  */
 RENDERCORE_API bool DoesRuntimeSupportOnePassPointLightShadows(EShaderPlatform Platform);
 
+/**
+ * Read-only switch to check if translucency per object shadows are enabled.
+ */
+RENDERCORE_API bool AllowTranslucencyPerObjectShadows(const FStaticShaderPlatform &Platform);

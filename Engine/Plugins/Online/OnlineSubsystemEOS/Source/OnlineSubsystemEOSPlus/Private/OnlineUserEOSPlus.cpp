@@ -5,6 +5,8 @@
 #include "OnlineSubsystemEOSPlus.h"
 #include "EOSSettings.h"
 
+#define EOSPLUS_ID_SEPARATOR TEXT("_+_")
+
 enum class EOSSValue : uint8
 {
 	Null,
@@ -72,7 +74,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 inline FString BuildEOSPlusStringId(FUniqueNetIdPtr InBaseUniqueNetId, FUniqueNetIdPtr InEOSUniqueNetId)
 {
 	FString StrId = InBaseUniqueNetId.IsValid() ? InBaseUniqueNetId->ToString() : TEXT("");
-	StrId += TEXT("_+_");
+	StrId += EOSPLUS_ID_SEPARATOR;
 	StrId += InEOSUniqueNetId.IsValid() ? InEOSUniqueNetId->ToString() : TEXT("");
 	return StrId;
 }
@@ -322,7 +324,7 @@ bool FOnlineUserEOSPlus::QueryUserInfo(int32 LocalUserNum, const TArray<FUniqueN
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("[FOnlineUserEOSPlus::QueryUserInfo] Unable to call method in base interface. Base interface not valid."));
+		UE_LOG_ONLINE_ONCE(Warning, TEXT("[FOnlineUserEOSPlus::QueryUserInfo] Unable to call method in base interface. Base interface not valid."));
 	}
 
 	EOSPlus->ExecuteNextTick([this, LocalUserNum, BaseUserIds]() {
@@ -349,7 +351,7 @@ bool FOnlineUserEOSPlus::GetAllUserInfo(int32 LocalUserNum, TArray<TSharedRef<FO
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("[FOnlineUserEOSPlus::GetAllUserInfo] Unable to call method in base interface. Base interface not valid."));
+		UE_LOG_ONLINE_ONCE(Warning, TEXT("[FOnlineUserEOSPlus::GetAllUserInfo] Unable to call method in base interface. Base interface not valid."));
 	}
 
 	return bResult;
@@ -451,7 +453,7 @@ void FOnlineUserEOSPlus::GetExternalIdMappings(const FExternalIdQueryOptions& Qu
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("[FOnlineUserEOSPlus::GetExternalIdMappings] Unable to call method in base interface. Base interface not valid."));
+		UE_LOG_ONLINE_ONCE(Warning, TEXT("[FOnlineUserEOSPlus::GetExternalIdMappings] Unable to call method in base interface. Base interface not valid."));
 	}
 }
 
@@ -466,7 +468,7 @@ FUniqueNetIdPtr FOnlineUserEOSPlus::GetExternalIdMapping(const FExternalIdQueryO
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("[FOnlineUserEOSPlus::GetExternalIdMapping] Unable to call method in base interface. Base interface not valid."));
+		UE_LOG_ONLINE_ONCE(Warning, TEXT("[FOnlineUserEOSPlus::GetExternalIdMapping] Unable to call method in base interface. Base interface not valid."));
 	}
 
 	return Result;
@@ -614,10 +616,20 @@ FUniqueNetIdEOSPlusPtr FOnlineUserEOSPlus::AddRemotePlayer(FUniqueNetIdPtr BaseN
 {
 	FUniqueNetIdEOSPlusPtr PlusNetId = FUniqueNetIdEOSPlus::Create(BaseNetId, EOSNetId);
 
-	BaseNetIdToNetIdPlus.Add(BaseNetId->ToString(), PlusNetId);
-	EOSNetIdToNetIdPlus.Add(EOSNetId->ToString(), PlusNetId);
-	NetIdPlusToBaseNetId.Add(PlusNetId->ToString(), BaseNetId);
-	NetIdPlusToEOSNetId.Add(PlusNetId->ToString(), EOSNetId);
+	// BaseNetId may not be valid for EOS friends
+	if (BaseNetId.IsValid())
+	{
+		BaseNetIdToNetIdPlus.Add(BaseNetId->ToString(), PlusNetId);
+		NetIdPlusToBaseNetId.Add(PlusNetId->ToString(), BaseNetId);
+	}
+
+	// EOSNetId may not be valid for platform friends
+	if (EOSNetId.IsValid())
+	{
+		EOSNetIdToNetIdPlus.Add(EOSNetId->ToString(), PlusNetId);
+		NetIdPlusToEOSNetId.Add(PlusNetId->ToString(), EOSNetId);
+	}
+
 	NetIdPlusToNetIdPlus.Add(PlusNetId->ToString(), PlusNetId);
 
 	return PlusNetId;
@@ -701,28 +713,29 @@ FUniqueNetIdPtr FOnlineUserEOSPlus::CreateUniquePlayerId(uint8* Bytes, int32 Siz
 		UE_LOG_ONLINE(Error, TEXT("Invalid size (%d) passed to FOnlineUserEOSPlus::CreateUniquePlayerId()"), Size);
 		return nullptr;
 	}
-	// We know that the first EOS_NETID_BYTE_SIZE bytes are the EOS ids, so the rest is the platform id
+
+	// We know that the first EOS_NETID_BYTE_SIZE bytes are the EOS ids
 	FUniqueNetIdPtr EOSNetId = EOSIdentityInterface->CreateUniquePlayerId(Bytes, EOS_NETID_BYTE_SIZE);
+
+	// The rest is the platform id, which might be missing if the passed bytes is from an EOS id.
 	int32 BaseByteOffset = EOS_NETID_BYTE_SIZE;
 	int32 PlatformIdSize = Size - BaseByteOffset - BASE_NETID_TYPE_SIZE;
-	if (PlatformIdSize < 0)
-	{
-		UE_LOG_ONLINE(Error, TEXT("Invalid size (%d) passed to FOnlineUserEOSPlus::CreateUniquePlayerId()"), Size);
-		return nullptr;
-	}
-	uint8 OSSType = *(Bytes + BaseByteOffset);
-	BaseByteOffset += BASE_NETID_TYPE_SIZE;
-	FName OSSName = ToOSSName((EOSSValue)OSSType);
-	FName BaseOSSName = EOSPlus->BaseOSS->GetSubsystemName();
 	FUniqueNetIdPtr BaseNetId = nullptr;
-	if (BaseOSSName == OSSName)
-	{
-		BaseNetId = BaseIdentityInterface->CreateUniquePlayerId(Bytes + BaseByteOffset, PlatformIdSize);
-	}
-	else
-	{
-		// Just create the pass through version that holds the other platform data but doesn't interpret it
-		BaseNetId = FUniqueNetIdBinary::Create(Bytes + BaseByteOffset, PlatformIdSize, OSSName);
+	if (PlatformIdSize > 0)
+	{	
+		uint8 OSSType = *(Bytes + BaseByteOffset);
+		BaseByteOffset += BASE_NETID_TYPE_SIZE;
+		FName OSSName = ToOSSName((EOSSValue)OSSType);
+		FName BaseOSSName = EOSPlus->BaseOSS->GetSubsystemName();
+		if (BaseOSSName == OSSName)
+		{
+			BaseNetId = BaseIdentityInterface->CreateUniquePlayerId(Bytes + BaseByteOffset, PlatformIdSize);
+		}
+		else
+		{
+			// Just create the pass through version that holds the other platform data but doesn't interpret it
+			BaseNetId = FUniqueNetIdBinary::Create(Bytes + BaseByteOffset, PlatformIdSize, OSSName);
+		}
 	}
 	
 	return AddRemotePlayer(BaseNetId, EOSNetId);
@@ -730,16 +743,28 @@ FUniqueNetIdPtr FOnlineUserEOSPlus::CreateUniquePlayerId(uint8* Bytes, int32 Siz
 
 FUniqueNetIdPtr FOnlineUserEOSPlus::CreateUniquePlayerId(const FString& Str)
 {
-	// Split <id>_+_<id2> into two strings
-	int32 FoundAt = Str.Find(TEXT("_+_"));
-	if (FoundAt == -1)
+	// Split <platformid>_+_<eas|eos> into two strings
+	FString BaseNetIdStr;
+	FString EOSNetIdStr;
+	if (!Str.Split(EOSPLUS_ID_SEPARATOR, &BaseNetIdStr, &EOSNetIdStr))
 	{
-		UE_LOG_ONLINE(Error, TEXT("Couldn't parse string (%s) passed to FOnlineUserEOSPlus::CreateUniquePlayerId()"), *Str);
-		return nullptr;
+		// If we couldn't find the EOSPlus separator, this must be an EOS net id
+		EOSNetIdStr = Str;
 	}
 
-	FUniqueNetIdPtr BaseNetId = BaseIdentityInterface->CreateUniquePlayerId(Str.Left(FoundAt));
-	FUniqueNetIdPtr EOSNetId = EOSIdentityInterface->CreateUniquePlayerId(Str.Right(Str.Len() - FoundAt - 3));
+	// BaseNetId will only be valid for platform friends
+	FUniqueNetIdPtr BaseNetId = nullptr;
+	if (!BaseNetIdStr.IsEmpty())
+	{
+		BaseNetId = BaseIdentityInterface->CreateUniquePlayerId(BaseNetIdStr);
+	}
+
+	// EOSNetId will only be valid for EOS friends
+	FUniqueNetIdPtr EOSNetId = nullptr;
+	if (!EOSNetIdStr.IsEmpty())
+	{
+		EOSNetId = EOSIdentityInterface->CreateUniquePlayerId(EOSNetIdStr);
+	}
 
 	return AddRemotePlayer(BaseNetId, EOSNetId);
 }
@@ -933,6 +958,18 @@ void FOnlineUserEOSPlus::OnFriendRemoved(const FUniqueNetId& UserId, const FUniq
 	TriggerOnFriendRemovedDelegates(*NetIdPlus, *FriendNetIdPlus);
 }
 
+void FOnlineUserEOSPlus::CacheFriendListNetIds(int32 LocalUserNum, const FString& ListName)
+{
+	TArray<TSharedRef<FOnlineFriend>> Friends;
+	GetFriendsList(LocalUserNum, ListName, Friends);
+
+	for (const TSharedRef<FOnlineFriend>& Friend : Friends)
+	{
+		// This call will add the friends as remote players, caching their NetIds for later use
+		CreateUniquePlayerId(Friend->GetUserId()->ToString());
+	}
+}
+
 bool FOnlineUserEOSPlus::ReadFriendsList(int32 LocalUserNum, const FString& ListName, const FOnReadFriendsListComplete& Delegate)
 {
 	if (BaseFriendsInterface.IsValid())
@@ -943,6 +980,8 @@ bool FOnlineUserEOSPlus::ReadFriendsList(int32 LocalUserNum, const FString& List
 			// Skip reading EAS if not in use and if we errored at the platform level
 			if (!UEOSSettings::GetSettings().bUseEAS || !bWasSuccessful)
 			{
+				CacheFriendListNetIds(LocalUserNum, ListName);
+
 				IntermediateComplete.ExecuteIfBound(LocalUserNum, bWasSuccessful, ListName, ErrorStr);
 				return;
 			}
@@ -950,6 +989,8 @@ bool FOnlineUserEOSPlus::ReadFriendsList(int32 LocalUserNum, const FString& List
 			EOSFriendsInterface->ReadFriendsList(LocalUserNum, ListName,
 				FOnReadFriendsListComplete::CreateLambda([this, OnComplete = FOnReadFriendsListComplete(IntermediateComplete)](int32 LocalUserNum, bool bWasSuccessful, const FString& ListName, const FString& ErrorStr)
 			{
+				CacheFriendListNetIds(LocalUserNum, ListName);
+
 				OnComplete.ExecuteIfBound(LocalUserNum, bWasSuccessful, ListName, ErrorStr);
 			}));
 		}));
@@ -969,6 +1010,8 @@ bool FOnlineUserEOSPlus::ReadFriendsList(int32 LocalUserNum, const FString& List
 		return EOSFriendsInterface->ReadFriendsList(LocalUserNum, ListName,
 			FOnReadFriendsListComplete::CreateLambda([this, OnComplete = FOnReadFriendsListComplete(Delegate)](int32 LocalUserNum, bool bWasSuccessful, const FString& ListName, const FString& ErrorStr)
 		{
+			CacheFriendListNetIds(LocalUserNum, ListName);
+
 			OnComplete.ExecuteIfBound(LocalUserNum, bWasSuccessful, ListName, ErrorStr);
 		}));
 	}

@@ -9,11 +9,13 @@
 #include "Misc/NetworkGuid.h"
 #include "Misc/NetworkVersion.h"
 #include "Net/Common/Packets/PacketTraits.h"
+#include "Net/ReplayResult.h"
 #include "IPAddress.h"
 #include "Serialization/BitReader.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 #include "ReplayTypes.generated.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogDemo, Log, All);
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogDemo, Log, All);
 
 class UNetConnection;
 
@@ -25,6 +27,9 @@ enum class EReplayHeaderFlags : uint32
 	DeltaCheckpoints = (1 << 2),
 	GameSpecificFrameData = (1 << 3),
 	ReplayConnection = (1 << 4),
+	ActorPrioritizationEnabled = (1 << 5),
+	NetRelevancyEnabled = (1 << 6),
+	AsyncRecorded = (1 << 7),
 };
 
 ENUM_CLASS_FLAGS(EReplayHeaderFlags);
@@ -104,17 +109,16 @@ enum ENetworkVersionHistory
 	HISTORY_GUID_NAMETABLE = 15,				// Added a string table for exported guids
 	HISTORY_GUIDCACHE_CHECKSUMS = 16,			// Removing guid export checksums from saved data, they are ignored during playback
 	HISTORY_SAVE_PACKAGE_VERSION_UE = 17,		// Save engine and licensee package version as well, in case serialization functions need them for compatibility
+	HISTORY_RECORDING_METADATA = 18,			// Adding additional record-time information to the header
 
 	// -----<new versions can be added before this line>-------------------------------------------------
 	HISTORY_PLUS_ONE,
 	HISTORY_LATEST = HISTORY_PLUS_ONE - 1
 };
 
-static const uint32 MIN_SUPPORTED_VERSION = HISTORY_EXTRA_VERSION;
-
 static const uint32 NETWORK_DEMO_MAGIC = 0x2CF5A13D;
 static const uint32 NETWORK_DEMO_VERSION = HISTORY_LATEST;
-static const uint32 MIN_NETWORK_DEMO_VERSION = HISTORY_EXTRA_VERSION;
+static const uint32 MIN_NETWORK_DEMO_VERSION = HISTORY_CHARACTER_MOVEMENT;
 
 static const uint32 NETWORK_DEMO_METADATA_MAGIC = 0x3D06B24E;
 static const uint32 NETWORK_DEMO_METADATA_VERSION = 0;
@@ -127,6 +131,15 @@ struct FNetworkDemoHeader
 	uint32	EngineNetworkProtocolVersion;			// Version of the engine internal network format
 	uint32	GameNetworkProtocolVersion;				// Version of the game internal network format
 	FGuid	Guid;									// Unique identifier
+
+	float MinRecordHz;
+	float MaxRecordHz;
+	float FrameLimitInMS;
+	float CheckpointLimitInMS;
+
+	FString Platform;
+	EBuildConfiguration BuildConfig;
+	EBuildTargetType BuildTarget;
 
 	FEngineVersion EngineVersion;					// Full engine version on which the replay was recorded
 	EReplayHeaderFlags HeaderFlags;					// Replay flags
@@ -142,6 +155,12 @@ struct FNetworkDemoHeader
 		EngineNetworkProtocolVersion(FNetworkVersion::GetEngineNetworkProtocolVersion()),
 		GameNetworkProtocolVersion(FNetworkVersion::GetGameNetworkProtocolVersion()),
 		Guid(),
+		MinRecordHz(0.0f),
+		MaxRecordHz(0.0f),
+		FrameLimitInMS(0.0f),
+		CheckpointLimitInMS(0.0f),
+		BuildConfig(EBuildConfiguration::Unknown),
+		BuildTarget(EBuildTargetType::Unknown),
 		EngineVersion(FEngineVersion::Current()),
 		HeaderFlags(EReplayHeaderFlags::None),
 		PackageVersionUE(GPackageFileUEVersion),
@@ -174,28 +193,8 @@ struct FNetworkDemoHeader
 		Ar << Header.NetworkChecksum;
 		Ar << Header.EngineNetworkProtocolVersion;
 		Ar << Header.GameNetworkProtocolVersion;
-
-		if (Header.Version >= HISTORY_HEADER_GUID)
-		{
-			Ar << Header.Guid;
-		}
-
-		if (Header.Version >= HISTORY_SAVE_FULL_ENGINE_VERSION)
-		{
-			Ar << Header.EngineVersion;
-		}
-		else
-		{
-			// Previous versions only stored the changelist
-			uint32 Changelist = 0;
-			Ar << Changelist;
-
-			if (Ar.IsLoading())
-			{
-				// We don't have any valid information except the changelist.
-				Header.EngineVersion.Set(0, 0, 0, Changelist, FString());
-			}
-		}
+		Ar << Header.Guid;
+		Ar << Header.EngineVersion;
 
 		if (Header.Version >= HISTORY_SAVE_PACKAGE_VERSION_UE)
 		{
@@ -229,33 +228,22 @@ struct FNetworkDemoHeader
 			}
 		}
 
-		if (Header.Version < HISTORY_MULTIPLE_LEVELS)
-		{
-			FString LevelName;
-			Ar << LevelName;
-			Header.LevelNamesAndTimes.Add(FLevelNameAndTime(LevelName, 0));
-		}
-		else if (Header.Version == HISTORY_MULTIPLE_LEVELS)
-		{
-			TArray<FString> LevelNames;
-			Ar << LevelNames;
-
-			for (const FString& LevelName : LevelNames)
-			{
-				Header.LevelNamesAndTimes.Add(FLevelNameAndTime(LevelName, 0));
-			}
-		}
-		else
-		{
-			Ar << Header.LevelNamesAndTimes;
-		}
-
-		if (Header.Version >= HISTORY_HEADER_FLAGS)
-		{
-			Ar << Header.HeaderFlags;
-		}
-
+		Ar << Header.LevelNamesAndTimes;
+		Ar << Header.HeaderFlags;
 		Ar << Header.GameSpecificData;
+
+		if (Header.Version >= HISTORY_RECORDING_METADATA)
+		{
+			Ar << Header.MinRecordHz;
+			Ar << Header.MaxRecordHz;
+
+			Ar << Header.FrameLimitInMS;
+			Ar << Header.CheckpointLimitInMS;
+
+			Ar << Header.Platform;
+			Ar << Header.BuildConfig;
+			Ar << Header.BuildTarget;
+		}
 
 		return Ar;
 	}
@@ -291,13 +279,7 @@ struct FDeltaCheckpointData
 	/** Channels closed that were open in the previous checkpoint, and the reason why */
 	TMap<FNetworkGUID, EChannelCloseReason> ChannelsToClose;
 
-	void CountBytes(FArchive& Ar) const
-	{
-		RecordingDeletedNetStartupActors.CountBytes(Ar);
-		DestroyedNetStartupActors.CountBytes(Ar);
-		DestroyedDynamicActors.CountBytes(Ar);
-		ChannelsToClose.CountBytes(Ar);
-	}
+	void CountBytes(FArchive& Ar) const;
 };
 
 class FRepActorsCheckpointParams
@@ -479,7 +461,7 @@ public:
 private:
 	void EnableFastStringSerialization()
 	{
-		if (FPlatformString::IsCharEncodingCompatibleWith<WIDECHAR, TCHAR>())
+		if constexpr (TIsCharEncodingCompatibleWith<WIDECHAR, TCHAR>::Value)
 		{
 			Archive.SetForceUnicode(true);
 		}
@@ -487,7 +469,7 @@ private:
 
 	void RestoreStringSerialization()
 	{
-		if (FPlatformString::IsCharEncodingCompatibleWith<WIDECHAR, TCHAR>())
+		if constexpr (TIsCharEncodingCompatibleWith<WIDECHAR, TCHAR>::Value)
 		{
 			Archive.SetForceUnicode(bWasUnicode);
 		}
@@ -542,9 +524,10 @@ public:
 	{
 	}
 
-	FReplayExternalData(FBitReader&& InReader, const float InTimeSeconds) : TimeSeconds(InTimeSeconds)
+	FReplayExternalData(FBitReader&& InReader, const float InTimeSeconds) 
+		: Reader(MoveTemp(InReader))
+		, TimeSeconds(InTimeSeconds)
 	{
-		Reader = MoveTemp(InReader);
 	}
 
 	FBitReader	Reader;
@@ -558,3 +541,38 @@ public:
 
 // Using an indirect array here since FReplayExternalData stores an FBitReader, and it's not safe to store an FArchive directly in a TArray.
 typedef TIndirectArray<FReplayExternalData> FReplayExternalDataArray;
+
+
+// Can be used to override Version Data in a Replay's Header either Right Before Writing a Replay Header or Right After Reading a Replay Header.
+struct FOverridableReplayVersionData
+{
+public:
+	uint32 Version;                       // Version number to detect version mismatches.
+	uint32 EngineNetworkProtocolVersion;  // Version of the engine internal network format
+	uint32 GameNetworkProtocolVersion;    // Version of the game internal network format
+	FEngineVersion EngineVersion;         // Full engine version on which the replay was recorded
+	FPackageFileVersion PackageVersionUE; // Engine package version on which the replay was recorded
+	int32 PackageVersionLicenseeUE;       // Licensee package version on which the replay was recorded
+
+	// Init with Demo Header Version Data
+	FOverridableReplayVersionData(const FNetworkDemoHeader& DemoHeader)
+		: Version                     (DemoHeader.Version)
+		, EngineNetworkProtocolVersion(DemoHeader.EngineNetworkProtocolVersion)
+		, GameNetworkProtocolVersion  (DemoHeader.GameNetworkProtocolVersion)
+		, EngineVersion               (DemoHeader.EngineVersion)
+		, PackageVersionUE            (DemoHeader.PackageVersionUE)
+		, PackageVersionLicenseeUE    (DemoHeader.PackageVersionLicenseeUE)
+	{
+	}
+
+	// Apply Version Data to Demo Header Passed In
+	void ApplyVersionDataToDemoHeader(FNetworkDemoHeader& DemoHeader)
+	{
+		DemoHeader.Version                      = Version;
+		DemoHeader.EngineNetworkProtocolVersion = EngineNetworkProtocolVersion;
+		DemoHeader.GameNetworkProtocolVersion   = GameNetworkProtocolVersion;
+		DemoHeader.EngineVersion                = EngineVersion;
+		DemoHeader.PackageVersionUE             = PackageVersionUE;
+		DemoHeader.PackageVersionLicenseeUE     = PackageVersionLicenseeUE;
+	}
+};

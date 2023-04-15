@@ -49,9 +49,10 @@ static FAutoConsoleVariableRef CVarDistanceFieldAOTraverseMips(
 
 int32 GConeTraceDownsampleFactor = 4;
 
-FIntPoint GetBufferSizeForConeTracing()
+FIntPoint GetBufferSizeForConeTracing(const FViewInfo& View)
 {
-	return FIntPoint::DivideAndRoundDown(GetBufferSizeForAO(), GConeTraceDownsampleFactor);
+	const FIntPoint ConeTracingBufferSize = FIntPoint::DivideAndRoundDown(GetBufferSizeForAO(View), GConeTraceDownsampleFactor);
+	return FIntPoint(FMath::Max(ConeTracingBufferSize.X, 1), FMath::Max(ConeTracingBufferSize.Y, 1));
 }
 
 FVector2f JitterOffsets[4] = 
@@ -63,13 +64,13 @@ FVector2f JitterOffsets[4] =
 };
 
 extern float GAOConeHalfAngle;
-extern int32 GAOUseHistory;
+extern bool DistanceFieldAOUseHistory(const FViewInfo& View);
 
-FVector2f GetJitterOffset(int32 SampleIndex)
+FVector2f GetJitterOffset(const FViewInfo& View)
 {
-	if (GAOUseJitter && GAOUseHistory)
+	if (GAOUseJitter && DistanceFieldAOUseHistory(View))
 	{
-		return JitterOffsets[SampleIndex] * GConeTraceDownsampleFactor;
+		return JitterOffsets[View.GetDistanceFieldTemporalSampleIndex()] * GConeTraceDownsampleFactor;
 	}
 
 	return FVector2f(0, 0);
@@ -116,13 +117,13 @@ END_SHADER_PARAMETER_STRUCT()
 
 static FScreenGridParameters SetupScreenGridParameters(const FViewInfo& View, FRDGTextureRef DistanceFieldNormal)
 {
-	const FIntPoint DownsampledBufferSize = GetBufferSizeForAO();
+	const FIntPoint DownsampledBufferSize = GetBufferSizeForAO(View);
 
 	FScreenGridParameters ShaderParameters;
 	ShaderParameters.DistanceFieldNormalTexture = DistanceFieldNormal;
 	ShaderParameters.DistanceFieldNormalSampler = TStaticSamplerState<SF_Point, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 	ShaderParameters.BaseLevelTexelSize = FVector2f(1.0f / DownsampledBufferSize.X, 1.0f / DownsampledBufferSize.Y);
-	ShaderParameters.JitterOffset = GetJitterOffset(View.GetDistanceFieldTemporalSampleIndex());
+	ShaderParameters.JitterOffset = GetJitterOffset(View);
 
 	return ShaderParameters;
 }
@@ -294,7 +295,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 	const bool bUseGlobalDistanceField = UseGlobalDistanceField(Parameters) && Scene->DistanceFieldSceneData.NumObjectsInBuffer > 0;
 	const bool bUseObjectDistanceField = UseAOObjectDistanceField();
 
-	const FIntPoint ConeTraceBufferSize = GetBufferSizeForConeTracing();
+	const FIntPoint ConeTraceBufferSize = GetBufferSizeForConeTracing(View);
 	const FIntPoint TileListGroupSize = GetTileListGroupSizeForView(View);
 
 	FAOScreenGridParameters AOScreenGridParameters;
@@ -323,7 +324,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 		auto* PassParameters = GraphBuilder.AllocParameters<FConeTraceScreenGridGlobalOcclusionCS::FParameters>();
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(DistanceFieldSceneData);
+		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, DistanceFieldSceneData);
 		PassParameters->AOScreenGridParameters = AOScreenGridParameters;
 		PassParameters->AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 		PassParameters->ScreenGridParameters = SetupScreenGridParameters(View, DistanceFieldNormal);
@@ -351,9 +352,9 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FConeTraceScreenGridObjectOcclusionCS::FParameters>();
 		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(DistanceFieldSceneData);
+		PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(GraphBuilder, DistanceFieldSceneData);
 		PassParameters->DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(DistanceFieldSceneData);
+		PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, DistanceFieldSceneData);
 		PassParameters->TileIntersectionParameters = TileIntersectionParameters;
 		PassParameters->AOScreenGridParameters = AOScreenGridParameters;
 		PassParameters->AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
@@ -387,7 +388,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 		const uint32 GroupSizeX = FMath::DivideAndRoundUp(ConeTraceBufferSize.X, GCombineConesSizeX);
 		const uint32 GroupSizeY = FMath::DivideAndRoundUp(ConeTraceBufferSize.Y, GCombineConesSizeX);
 
-		const FIntPoint DFNormalBufferSize = GetBufferSizeForAO();
+		const FIntPoint DFNormalBufferSize = GetBufferSizeForAO(View);
 		const FVector2f DFNormalBufferUVMaxValue(
 			(View.ViewRect.Width() / GAODownsampleFactor - 0.5f) / DFNormalBufferSize.X,
 			(View.ViewRect.Height() / GAODownsampleFactor - 0.5f) / DFNormalBufferSize.Y);

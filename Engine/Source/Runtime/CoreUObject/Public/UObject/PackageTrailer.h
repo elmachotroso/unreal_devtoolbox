@@ -3,9 +3,16 @@
 #pragma once
 
 #include "Compression/CompressedBuffer.h"
+#include "Containers/Array.h"
 #include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "IO/IoHash.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/Function.h"
+#include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
+#include "Virtualization/VirtualizationTypes.h"
 
 class FArchive;
 class FLinkerSave;
@@ -62,11 +69,11 @@ namespace UE
  * |____________________________________________________________________________________________________________________________________________|
  */
 
- /** Used to filter requests to a specific type of payload */
-enum class EPayloadFilter
+ /** Used to filter requests based on how a payload is stored*/
+enum class EPayloadStorageType : uint8
 {
-	/** All payload types. */
-	All,
+	/** All payload regardless of type. */
+	Any,
 	/** All payloads stored locally in the package trailer. */
 	Local,
 	/** All payloads that are a reference to payloads stored in the workspace domain trailer*/
@@ -74,6 +81,15 @@ enum class EPayloadFilter
 	/** All payloads stored in a virtualized backend. */
 	Virtualized
 };
+
+/** Used to filter requests based on how a payload can function */
+enum class EPayloadFilter
+{
+	/** All payloads that are stored locally and do not have virtualization disabled */
+	CanVirtualize
+};
+
+// TODO: Could consider merging EPayloadStorageType and EPayloadStatus, only difference is Any vs NotFound
 
 /** Used to show the status of a payload */
 enum class EPayloadStatus
@@ -100,11 +116,13 @@ enum class EPayloadAccessMode : uint8
 };
 
 /** Flags that can be set on payloads in a payload trailer */
-enum class EPayloadFlags : uint32
+enum class EPayloadFlags : uint16
 {
 	/** No flags are set */
-	None
+	None = 0,
 };
+
+ENUM_CLASS_FLAGS(EPayloadFlags);
 
 enum class EPackageTrailerVersion : uint32;
 
@@ -126,6 +144,16 @@ struct FLookupTableEntry
 
 	void Serialize(FArchive& Ar, EPackageTrailerVersion PackageTrailerVersion);
 	
+	[[nodiscard]] bool IsLocal() const
+	{
+		return AccessMode == EPayloadAccessMode::Local;
+	}
+
+	[[nodiscard]] bool IsReferenced() const
+	{
+		return AccessMode == EPayloadAccessMode::Referenced;
+	}
+
 	[[nodiscard]] bool IsVirtualized() const
 	{
 		return AccessMode == EPayloadAccessMode::Virtualized;
@@ -141,11 +169,26 @@ struct FLookupTableEntry
 	uint64 RawSize = INDEX_NONE;
 	/** Bitfield of flags, see @UE::EPayloadFlags */
 	EPayloadFlags Flags = EPayloadFlags::None;
+	/** Bitfield of flags showing if the payload allowed to be virtualized or the reason why it cannot be virtualized, see @UE::EPayloadFilterReason */
+	Virtualization::EPayloadFilterReason FilterFlags = Virtualization::EPayloadFilterReason::None;
 
 	EPayloadAccessMode AccessMode = EPayloadAccessMode::Local;
 };
 
 } // namespace Private
+
+//** Info about a payload stored in the trailer
+struct FPayloadInfo
+{
+	int64 OffsetInFile = INDEX_NONE;
+
+	uint64 CompressedSize = INDEX_NONE;
+	uint64 RawSize = INDEX_NONE;
+
+	EPayloadAccessMode AccessMode = EPayloadAccessMode::Local;
+	EPayloadFlags Flags = EPayloadFlags::None;
+	Virtualization::EPayloadFilterReason FilterFlags = Virtualization::EPayloadFilterReason::None;
+};
 
 /** 
  * This class is used to build a FPackageTrailer and write it disk.
@@ -165,9 +208,15 @@ public:
 	 * 
 	 * @param Trailer		The trailer to create the builder from
 	 * @param Ar			An archive that the trailer can use to load payloads from 
-	 * @param PackageName	The name of the package that owns the trailer. Used for error messages.
+	 * @param DebugContext	The name or path of the of the file that owns the trailer. Used for error messages.
 	 */
-	[[nodiscard]] static FPackageTrailerBuilder CreateFromTrailer(const class FPackageTrailer& Trailer, FArchive& Ar, const FName& PackageName);
+	[[nodiscard]] static FPackageTrailerBuilder CreateFromTrailer(const class FPackageTrailer& Trailer, FArchive& Ar, FString DebugContext);
+
+	UE_DEPRECATED(5.1, "Use the overload that takes a FString instead of an FName for the last parameter")
+	static FPackageTrailerBuilder CreateFromTrailer(const class FPackageTrailer& Trailer, FArchive& Ar, const FName& PackageName)
+	{
+		return FPackageTrailerBuilder::CreateFromTrailer(Trailer, Ar, PackageName.ToString());
+	}
 
 	/**
 	 * Creates a builder from a pre-existing FPackageTrailer that will will reference the local payloads of the
@@ -175,12 +224,20 @@ public:
 	 * This means that there is no need to load the payloads.
 	 *
 	 * @param Trailer		The trailer to create the reference from.
-	 * @param PackageName	The name of the package that owns the trailer. Used for error messages.
+	 * @param DebugContext	The name or path of the of the file that owns the trailer. Used for error messages.
 	 */
-	[[nodiscard]] static TUniquePtr<UE::FPackageTrailerBuilder> CreateReferenceToTrailer(const class FPackageTrailer& Trailer, const FName& PackageName);
+	[[nodiscard]] static TUniquePtr<UE::FPackageTrailerBuilder> CreateReferenceToTrailer(const class FPackageTrailer& Trailer, FString DebugContext);
+	
+	UE_DEPRECATED(5.1, "Use the overload that takes a FString instead of an FName for the last parameter")
+	static TUniquePtr<UE::FPackageTrailerBuilder> CreateReferenceToTrailer(const class FPackageTrailer& Trailer, const FName& PackageName)
+	{
+		return FPackageTrailerBuilder::CreateReferenceToTrailer(Trailer, PackageName.ToString());
+	}
 
-	FPackageTrailerBuilder() = delete;
+	FPackageTrailerBuilder() = default;
+	UE_DEPRECATED(5.1, "Use the overload that takes a FString instead of an FName")
 	FPackageTrailerBuilder(const FName& InPackageName);
+	FPackageTrailerBuilder(FString&& DebugContext);
 	~FPackageTrailerBuilder() = default;
 
 	// Methods that can be called while building the trailer
@@ -191,9 +248,10 @@ public:
 	 * 
 	 * @param Identifier	The identifier of the payload
 	 * @param Payload		The payload data
+	 * @param Flags			The custom flags to be applied to the payload
 	 * @param Callback		This callback will be invoked once the FPackageTrailer has been built and appended to disk.
 	 */
-	void AddPayload(const FIoHash& Identifier, FCompressedBuffer Payload, AdditionalDataCallback&& Callback);
+	void AddPayload(const FIoHash& Identifier, FCompressedBuffer Payload, UE::Virtualization::EPayloadFilterReason Filter, AdditionalDataCallback&& Callback);
 
 	/**
 	 * Adds an already virtualized payload to the builder to be written to the trailer. When the trailer is written
@@ -205,6 +263,17 @@ public:
 	 * @param RawSize		The size of the payload (in bytes) when uncompressed
 	 */
 	void AddVirtualizedPayload(const FIoHash& Identifier, int64 RawSize);
+
+	/** 
+	 * Allows the caller to replace a payload in the builder that is already marked as virtualized and replace it
+	 * with one that will be stored locally.
+	 * 
+	 * @param Identifier	The identifier of the payload
+	 * @param Payload		The content of the payload
+	 * 
+	 * @return true if a virtualized payload was replaced, false if the payload was not in the builder at all
+	 */
+	bool UpdatePayloadAsLocal(const FIoHash& Identifier, FCompressedBuffer Payload);
 	
 	/**
 	 * @param ExportsArchive	The linker associated with the package being written to disk.
@@ -220,6 +289,14 @@ public:
 	[[nodiscard]] bool IsReferencedPayloadEntry(const FIoHash& Identifier) const;
 	[[nodiscard]] bool IsVirtualizedPayloadEntry(const FIoHash& Identifier) const;
 
+	/** 
+	 * Returns the length of the trailer (in bytes) that the builder would currently create.
+	 * 
+	 * NOTE: At the moment this is not const as we need to check for and remove duplicate
+	 * payload entries as we do this before building the trailer not when gathering the entry info.
+	 */
+	[[nodiscard]] uint64 CalculateTrailerLength();
+
 	/** Returns the total number of payload entries in the builder */
 	[[nodiscard]] int32 GetNumPayloads() const;
 	
@@ -230,20 +307,28 @@ public:
 	/** Returns the number of payload entries in the builder with the access mode EPayloadAccessMode::Virtualized */
 	[[nodiscard]] int32 GetNumVirtualizedPayloads() const;
 
+	/** Returns the debug context associated with the builder, used for adding further description to error messages */
+	[[nodiscard]] const FString& GetDebugContext() const
+	{
+		return DebugContext;
+	}
+
 private:
 	
 	/** All of the data required to add a payload that is stored locally within the trailer */
 	struct LocalEntry
 	{
 		LocalEntry() = default;
-		LocalEntry(FCompressedBuffer&& InPayload)
+		LocalEntry(FCompressedBuffer&& InPayload, Virtualization::EPayloadFilterReason InFilterFlags)
 			: Payload(InPayload)
+			, FilterFlags(InFilterFlags)
 		{
 
 		}
 		~LocalEntry() = default;
 
 		FCompressedBuffer Payload;
+		Virtualization::EPayloadFilterReason FilterFlags = Virtualization::EPayloadFilterReason::None;
 	};
 
 	/** All of the data required to add a reference to a payload stored in another trailer */
@@ -279,10 +364,17 @@ private:
 		int64 RawSize = INDEX_NONE;
 	};
 
+	/** Returns the total length of the header if we were to build a trailer right now */
+	uint32 CalculatePotentialHeaderSize() const;
+	/** Returns the total length of all payloads combined if we were to build a trailer right now */
+	uint64 CalculatePotentialPayloadSize() const;
+
+	void RemoveDuplicateEntries();
+
 	// Members used when building the trailer
 
-	/** Name of the package the trailer is being built for, used to give meaningful error messages */
-	FName PackageName;
+	/** Context used when giving error messages so that the user can identify the cause of problems */
+	FString DebugContext;
 
 	/** Payloads that will be stored locally when the trailer is written to disk */
 	TMap<FIoHash, LocalEntry> LocalEntries;
@@ -312,6 +404,12 @@ public:
 
 	/** Try to load a trailer from a given package path. Note that it will always try to load the trailer from the workspace domain */
 	[[nodiscard]] static bool TryLoadFromPackage(const FPackagePath& PackagePath, FPackageTrailer& OutTrailer);
+
+	/** Try to load a trailer from a given file path. */
+	[[nodiscard]] static bool TryLoadFromFile(const FString& Path, FPackageTrailer& OutTrailer);
+
+	/** Try to load a trailer from a given archive. Assumes that the trailer is at the end of the archive */
+	[[nodiscard]] static bool TryLoadFromArchive(FArchive& Ar, FPackageTrailer& OutTrailer);
 
 	FPackageTrailer() = default;
 	~FPackageTrailer() = default;
@@ -366,14 +464,25 @@ public:
 	/** Returns the absolute offset of the payload in the package file, invalid and virtualized payloads will return INDEX_NONE */
 	[[nodiscard]] int64 FindPayloadOffsetInFile(const FIoHash& Id) const;
 
+	/** Returns the size of the payload on as stored on disk, invalid and virtualized payloads will return INDEX_NONE */
+	[[nodiscard]] int64 FindPayloadSizeOnDisk(const FIoHash& Id) const;
+
 	/** Returns the total size of the of the trailer on disk in bytes */
 	[[nodiscard]] int64 GetTrailerLength() const;
 
-	/** Returns an array of the payloads that match the given filter type. @See EPayloadType */
-	[[nodiscard]] TArray<FIoHash> GetPayloads(EPayloadFilter Type) const;
+	[[nodiscard]] FPayloadInfo GetPayloadInfo(const FIoHash& Id) const;
 
-	/** Returns the number of payloads that the trailer owns that match the given filter type. @See EPayloadType */
-	[[nodiscard]] int32 GetNumPayloads(EPayloadFilter Type) const;
+	/** Returns an array of the payloads with the given storage type. @See EPayloadStoragetype */
+	[[nodiscard]] TArray<FIoHash> GetPayloads(EPayloadStorageType StorageType) const;
+
+	/** Returns the number of payloads that the trailer owns with the given storage type. @See EPayloadStoragetype */
+	[[nodiscard]] int32 GetNumPayloads(EPayloadStorageType Type) const;
+
+	/** Returns an array of the payloads that match the given filter type. @See EPayloadFilter */
+	[[nodiscard]] TArray<FIoHash> GetPayloads(EPayloadFilter Filter) const;
+
+	/** Returns the number of payloads that the trailer owns that match the given filter type. @See EPayloadFilter */
+	[[nodiscard]] int32 GetNumPayloads(EPayloadFilter Filter) const;
 
 	struct FHeader
 	{
@@ -452,6 +561,8 @@ private:
  *
  * @return 				True if the package was parsed successfully (although it might not have contained any payloads) and false if opening or parsing the package file failed.
  */
-[[nodiscard]] COREUOBJECT_API bool FindPayloadsInPackageFile(const FPackagePath& PackagePath, EPayloadFilter Filter, TArray<FIoHash>& OutPayloadIds);
+[[nodiscard]] COREUOBJECT_API bool FindPayloadsInPackageFile(const FPackagePath& PackagePath, EPayloadStorageType Filter, TArray<FIoHash>& OutPayloadIds);
 
 } //namespace UE
+
+[[nodiscard]] COREUOBJECT_API FString LexToString(UE::Virtualization::EPayloadFilterReason FilterFlags);

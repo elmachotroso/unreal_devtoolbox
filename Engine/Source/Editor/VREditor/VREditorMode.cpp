@@ -15,13 +15,13 @@
 #include "DrawDebugHelpers.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
-#include "VREditorUISystem.h"
+#include "UI/VREditorUISystem.h"
 #include "VIBaseTransformGizmo.h"
 #include "ViewportWorldInteraction.h"
 #include "VREditorPlacement.h"
 #include "VREditorAvatarActor.h"
-#include "VREditorTeleporter.h"
-#include "VREditorAutoScaler.h"
+#include "Teleporter/VREditorTeleporter.h"
+#include "Teleporter/VREditorAutoScaler.h"
 #include "VREditorStyle.h"
 #include "VREditorAssetContainer.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -54,7 +54,7 @@
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "XRMotionControllerBase.h" // for FXRMotionControllerBase::Left/RightHandSourceId
-#include "VREditorFloatingUI.h"
+#include "UI/VREditorFloatingUI.h"
 #include "AssetEditorViewportLayout.h"
 
 #define LOCTEXT_NAMESPACE "VREditorMode"
@@ -96,9 +96,18 @@ UVREditorMode::UVREditorMode() :
 	TeleportActor( nullptr ),
 	AutoScalerSystem( nullptr ),
 	WorldInteraction( nullptr ),
+	InteractorClass( UVREditorInteractor::StaticClass() ),
+	TeleporterClass( AVREditorTeleporter::StaticClass() ),
 	bFirstTick( true ),
 	AssetContainer( nullptr )
-{ 
+{
+	SetActive(false);
+}
+
+void UVREditorMode::SetHMDDeviceTypeOverride( FName InOverrideType )
+{
+	ensureMsgf(!IsActive(), TEXT("HMD device type override should be specified before VR editor mode is entered."));
+	HMDDeviceTypeOverride = InOverrideType;
 }
 
 void UVREditorMode::Init()
@@ -183,13 +192,12 @@ void UVREditorMode::AllocateInteractors()
 	class UVREditorInteractor* LeftHandInteractor = nullptr;
 	class UVREditorInteractor* RightHandInteractor = nullptr;
 
-	const TSoftClassPtr<UVREditorInteractor> InteractorClassSoft = GetDefault<UVRModeSettings>()->InteractorClass;
-	InteractorClassSoft.LoadSynchronous();
+	InteractorClass.LoadSynchronous();
 
-	if (InteractorClassSoft.IsValid())
+	if (InteractorClass.IsValid())
 	{
-		LeftHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClassSoft.Get());
-		RightHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClassSoft.Get());
+		LeftHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClass.Get());
+		RightHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClass.Get());
 	}
 
 	if (LeftHandInteractor == nullptr)
@@ -222,11 +230,18 @@ void UVREditorMode::AllocateInteractors()
 
 void UVREditorMode::Enter()
 {
+	BeginEntry();
+	SetupSubsystems();
+	FinishEntry();
+}
+
+void UVREditorMode::BeginEntry()
+{
 	bWantsToExitMode = false;
 
 	{
-		WorldInteraction->OnPreWorldInteractionTick().AddUObject( this, &UVREditorMode::PreTick );
-		WorldInteraction->OnPostWorldInteractionTick().AddUObject( this, &UVREditorMode::PostTick );
+		WorldInteraction->OnPreWorldInteractionTick().AddUObject(this, &UVREditorMode::PreTick);
+		WorldInteraction->OnPostWorldInteractionTick().AddUObject(this, &UVREditorMode::PostTick);
 	}
 
 
@@ -242,7 +257,7 @@ void UVREditorMode::Enter()
 		TSharedPtr<SLevelViewport> ExistingActiveLevelViewport;
 		{
 			TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
-			if(ActiveLevelViewport.IsValid())
+			if (ActiveLevelViewport.IsValid())
 			{
 				ExistingActiveLevelViewport = StaticCastSharedRef< SLevelViewport >(ActiveLevelViewport->AsWidget());
 				ExistingActiveLevelViewport->RemoveAllPreviews(true);
@@ -251,12 +266,12 @@ void UVREditorMode::Enter()
 
 		StartViewport(ExistingActiveLevelViewport);
 
-		if( bActuallyUsingVR )
+		if (bActuallyUsingVR)
 		{
 			// Tell Slate to require a larger pixel distance threshold before the drag starts.  This is important for things
 			// like Content Browser drag and drop.
 			SavedEditorState.DragTriggerDistance = FSlateApplication::Get().GetDragTriggerDistance();
-			FSlateApplication::Get().SetDragTriggerDistance( VREd::SlateDragDistanceOverride->GetFloat() );
+			FSlateApplication::Get().SetDragTriggerDistance(VREd::SlateDragDistanceOverride->GetFloat());
 
 			// When actually in VR, make sure the transform gizmo is big!
 			SavedEditorState.TransformGizmoScale = WorldInteraction->GetTransformGizmoScale();
@@ -285,6 +300,7 @@ void UVREditorMode::Enter()
 			SequencerTab->RequestCloseTab();
 		}
 	}
+
 	// Setup our avatar
 	if (AvatarActor == nullptr)
 	{
@@ -292,74 +308,76 @@ void UVREditorMode::Enter()
 		AvatarActor = SpawnTransientSceneActor<AVREditorAvatarActor>(TEXT("AvatarActor"), bWithSceneComponent);
 		AvatarActor->Init(this);
 
-		WorldInteraction->AddActorToExcludeFromHitTests( AvatarActor );	
+		WorldInteraction->AddActorToExcludeFromHitTests(AvatarActor);
 	}
 
 	// If we're actually using VR, go ahead and disable notifications.  We won't be able to see them in VR
 	// currently, and they can introduce performance issues if they pop up on the desktop
-	if( bActuallyUsingVR )
+	if (bActuallyUsingVR)
 	{
-		FSlateNotificationManager::Get().SetAllowNotifications( false );
+		FSlateNotificationManager::Get().SetAllowNotifications(false);
 	}
-
-	// Setup sub systems
-	{
-		// Setup world interaction
-		// We need input preprocessing for VR so that we can receive motion controller input without any viewports having 
-		// to be focused.  This is mainly because Slate UI injected into the 3D world can cause focus to be lost unexpectedly,
-		// but we need the user to still be able to interact with UI.
-		WorldInteraction->SetUseInputPreprocessor( true );
-
-		// Motion controllers
-		AllocateInteractors();
-
-		if( bActuallyUsingVR )
-		{
-			// When actually using VR devices, we don't want a mouse cursor interactor
-			WorldInteraction->ReleaseMouseCursorInteractor();
-		}
-
-		// Setup the UI system
-		UISystem = NewObject<UVREditorUISystem>();
-		UISystem->Init(this);
-
-		PlacementSystem = NewObject<UVREditorPlacement>();
-		PlacementSystem->Init(this);
-
-		// Setup teleporter
-		const TSoftClassPtr<AVREditorTeleporter> TeleporterClassSoft = GetDefault<UVRModeSettings>()->TeleporterClass;
-		TeleporterClassSoft.LoadSynchronous();
-
-		if (TeleporterClassSoft.IsValid())
-		{
-			TeleportActor = CastChecked<AVREditorTeleporter>( SpawnTransientSceneActor(TeleporterClassSoft.Get(), TEXT( "Teleporter" ), true ) );
-		}
-
-		if( !TeleportActor )
-		{
-			TeleportActor = SpawnTransientSceneActor<AVREditorTeleporter>( TEXT( "Teleporter" ), true );
-		}
-
-		check( TeleportActor );
-		TeleportActor->Init( this );
-		WorldInteraction->AddActorToExcludeFromHitTests( TeleportActor );
-
-		// Setup autoscaler
-		AutoScalerSystem = NewObject<UVREditorAutoScaler>();
-		AutoScalerSystem->Init( this );
-
-		for (UVREditorInteractor* Interactor : Interactors)
-		{
-			Interactor->SetupComponent( AvatarActor );
-		}
-	}
-
 
 	/** This will make sure this is not ticking after the editor has been closed. */
-	GEditor->OnEditorClose().AddUObject( this, &UVREditorMode::OnEditorClosed );
+	GEditor->OnEditorClose().AddUObject(this, &UVREditorMode::OnEditorClosed);
+}
 
+void UVREditorMode::SetupSubsystems()
+{
+	// Setup world interaction
+	// We need input preprocessing for VR so that we can receive motion controller input without any viewports having 
+	// to be focused.  This is mainly because Slate UI injected into the 3D world can cause focus to be lost unexpectedly,
+	// but we need the user to still be able to interact with UI.
+	WorldInteraction->SetUseInputPreprocessor( true );
+
+	// Motion controllers
+	AllocateInteractors();
+
+	if( bActuallyUsingVR )
+	{
+		// When actually using VR devices, we don't want a mouse cursor interactor
+		WorldInteraction->ReleaseMouseCursorInteractor();
+	}
+
+	// Setup the UI system
+	UISystem = NewObject<UVREditorUISystem>();
+	UISystem->Init(this);
+
+	PlacementSystem = NewObject<UVREditorPlacement>();
+	PlacementSystem->Init(this);
+
+	// Setup teleporter
+	TeleporterClass.LoadSynchronous();
+
+	if (TeleporterClass.IsValid())
+	{
+		TeleportActor = CastChecked<AVREditorTeleporter>( SpawnTransientSceneActor(TeleporterClass.Get(), TEXT( "Teleporter" ), true ) );
+	}
+
+	if( !TeleportActor )
+	{
+		TeleportActor = SpawnTransientSceneActor<AVREditorTeleporter>( TEXT( "Teleporter" ), true );
+	}
+
+	check( TeleportActor );
+	TeleportActor->Init( this );
+	WorldInteraction->AddActorToExcludeFromHitTests( TeleportActor );
+
+	// Setup autoscaler
+	AutoScalerSystem = NewObject<UVREditorAutoScaler>();
+	AutoScalerSystem->Init( this );
+
+	for (UVREditorInteractor* Interactor : Interactors)
+	{
+		Interactor->SetupComponent( AvatarActor );
+	}
+}
+
+void UVREditorMode::FinishEntry()
+{
 	bFirstTick = true;
 	SetActive(true);
+	OnVRModeEntryCompleteEvent.Broadcast();
 }
 
 void UVREditorMode::Exit(const bool bShouldDisableStereo)
@@ -675,6 +693,28 @@ SLevelViewport& UVREditorMode::GetLevelViewportPossessedForVR()
 	return *VREditorLevelViewportWeakPtr.Pin();
 }
 
+void UVREditorMode::SetGameView(bool bGameView)
+{
+	if (TSharedPtr<SLevelViewport> Viewport = VREditorLevelViewportWeakPtr.Pin())
+	{
+		// We can't actually set the viewport to game view, because AVREditorAvatarActor::IsEditorOnly is
+		// overridden to return true, and so its owned components (including the interactors) get hidden.
+		// However, clearing the "editor" flag turns out to get us close to what we'd want.
+		FLevelEditorViewportClient& ViewportClient = Viewport->GetLevelViewportClient();
+		ViewportClient.EngineShowFlags.SetEditor(!bGameView);
+	}
+}
+
+bool UVREditorMode::IsInGameView() const
+{
+	if (TSharedPtr<SLevelViewport> Viewport = VREditorLevelViewportWeakPtr.Pin())
+	{
+		FLevelEditorViewportClient& ViewportClient = Viewport->GetLevelViewportClient();
+		return ViewportClient.EngineShowFlags.Editor == 0;
+	}
+
+	return false;
+}
 
 float UVREditorMode::GetWorldScaleFactor() const
 {
@@ -723,6 +763,11 @@ void UVREditorMode::CycleTransformGizmoHandleType()
 
 FName UVREditorMode::GetHMDDeviceType() const
 {
+	if (HMDDeviceTypeOverride != NAME_None)
+	{
+		return HMDDeviceTypeOverride;
+	}
+
 	return GEngine->XRSystem.IsValid() ? GEngine->XRSystem->GetSystemName() : FName();
 }
 

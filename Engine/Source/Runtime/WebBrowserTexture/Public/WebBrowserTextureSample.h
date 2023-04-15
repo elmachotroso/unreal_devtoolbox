@@ -59,8 +59,6 @@ public:
 	*/
 	bool Initialize(const FIntPoint& InDim)
 	{
-		BufferSize = 0;
-
 		if (InDim.GetMin() <= 0)
 		{ 
 			return false;
@@ -127,23 +125,14 @@ public:
 			return Texture;
 		}
 
-		const ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FWebBrowserTextureSample"))
+			.SetExtent(Dim)
+			.SetFormat(PF_B8G8R8A8)
+			.SetFlags(ETextureCreateFlags::Dynamic | ETextureCreateFlags::SRGB | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+			.SetInitialState(ERHIAccess::SRVMask);
 
-		TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
-		FRHIResourceCreateInfo CreateInfo(TEXT("FWebBrowserTextureSample"));
-
-		RHICreateTargetableShaderResource2D(
-			Dim.X,
-			Dim.Y,
-			PF_B8G8R8A8,
-			1,
-			CreateFlags,
-			TexCreate_RenderTargetable,
-			false,
-			CreateInfo,
-			Texture,
-			DummyTexture2DRHI
-		);
+		Texture = RHICreateTexture(Desc);
 
 		return Texture;
 	}

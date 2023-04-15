@@ -10,7 +10,6 @@
 #include "Interfaces/OnlinePresenceInterface.h"
 #include "Containers/Ticker.h"
 
-#include "PartyPackage.h"
 #include "SocialToolkit.generated.h"
 
 class ULocalPlayer;
@@ -31,6 +30,10 @@ namespace FriendInviteFailureReason
 	const FString InviteFailReason_AddingBlockedFail = TEXT("AddingBlockedFail");
 	const FString InviteFailReason_AlreadyFriends = TEXT("AlreadyFriends");
 }
+namespace FriendAcceptFailureReason
+{
+	const FString AcceptFailReason_NotPendingInbound = TEXT("NotPendingInbound");
+}
 
 DECLARE_DELEGATE_OneParam(FUserDependentAction, USocialUser&);
 
@@ -39,6 +42,10 @@ UCLASS(Within = SocialManager)
 class PARTY_API USocialToolkit : public UObject, public FExec
 {
 	GENERATED_BODY()
+
+	friend class FPartyPlatformSessionManager;
+	friend USocialChatManager;
+	friend USocialUser;
 
 public:
 	template <typename ToolkitT = USocialToolkit>
@@ -88,7 +95,7 @@ public:
 	 */
 	void QueueUserDependentAction(const FUniqueNetIdRepl& UserId, TFunction<void(USocialUser&)>&& UserActionFunc, bool bExecutePostInit = true);
 	void QueueUserDependentAction(const FUniqueNetIdRepl& SubsystemId, FUserDependentAction UserActionDelegate);
-
+	
 	/**
 	 * Attempts to send a friend invite to another user based on display name or email.
 	 * Only necessary to use this path when you do not have a known USocialUser for this user already.
@@ -135,19 +142,25 @@ public:
 	virtual void NotifyPartyInviteReceived(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite);
 	virtual void NotifyPartyInviteRemoved(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite);
 
+	/**
+	 * Can we automatically re-create a persistent party, for example on party join failure or on party kick?
+	 * Typically you will want to, so the user always has a party, but there may be scenarios where you want to delay
+	 * creating a new party until the client is in a better state.
+	 * @return true if we can automatically recreate a persistent party
+	 */
+	virtual bool CanAutoRecreatePersistentParty() const { return IsOwnerLoggedIn(); }
+
 #if WITH_EDITOR
 	bool Debug_IsRandomlyChangingPresence() const { return bDebug_IsRandomlyChangingUserPresence; }
 #endif
 
-PACKAGE_SCOPE:
+protected:
 	void NotifySubsystemIdEstablished(USocialUser& SocialUser, ESocialSubsystem SubsystemType, const FUniqueNetIdRepl& SubsystemId);
 	TSubclassOf<USocialChatManager> GetChatManagerClass() { return ChatManagerClass; }
-
+	
 	bool TrySendFriendInvite(USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
 
 	bool AcceptFriendInvite(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
-
-	void RequestToJoinParty(USocialUser& SocialUser);
 
 	void HandleUserInvalidated(USocialUser& InvalidUser);
 
@@ -156,6 +169,10 @@ PACKAGE_SCOPE:
 #endif
 
 protected:
+	/** only handles sending a friend request via the friends interface, assumes all checks are handled previously **/
+	virtual bool SendFriendInviteInternal(USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
+	/** only handles accepting a friend request via the friends interface, assumes all checks are handled previously **/
+	virtual bool AcceptFriendInviteInternal(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
 
 	virtual void OnOwnerLoggedIn();
 	virtual void OnOwnerLoggedOut();
@@ -168,8 +185,12 @@ protected:
 	virtual void OnDeleteFriendComplete(int32 LocalPlayer, bool bWasSuccessful, const FUniqueNetId& FormerFriendId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	virtual void OnBlockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& BlockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	virtual void OnUnblockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UnblockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
+	
+public:
+	UE_DEPRECATED(5.1, "This function is deprecated and will be removed; please use USocialUser::HandlePartyRequestToJoinSent.")
 	virtual void OnRequestToJoinPartyComplete(const FUniqueNetId& PartyLeaderId, ERequestToJoinPartyCompletionResult Result) {}
 
+protected:
 	/** Called when a Friend's presence did change */
 	virtual void OnFriendPresenceDidChange(const USocialUser& FriendSocialUser, const TSharedRef<FOnlineUserPresence>& NewPresence, ESocialSubsystem SubsystemType) {}
 
@@ -180,7 +201,12 @@ protected:
 	virtual void OnQueryFriendsListSuccess(ESocialSubsystem SubsystemType, const TArray<TSharedRef<FOnlineFriend>>& FriendsList) {}
 	virtual void OnQueryBlockedPlayersSuccess(ESocialSubsystem SubsystemType, const TArray<TSharedRef<FOnlineBlockedPlayer>>& BlockedPlayers) {}
 	virtual void OnQueryRecentPlayersSuccess(ESocialSubsystem SubsystemType, const TArray<TSharedRef<FOnlineRecentPlayer>>& FriendsList) {}
-	
+
+	/** handle result of TrySendFriendInviteInternal **/
+	void HandleSendFriendInviteComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InvitedUserId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType, FString DisplayName);
+	/** handle result of AcceptFriendInvite **/
+	void HandleAcceptFriendInviteComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InviterUserId, const FString& ListName, const FString& ErrorStr);
+
 	/** The type of SocialUser to create to represent known users */
 	TSubclassOf<USocialUser> SocialUserClass;
 
@@ -198,6 +224,9 @@ protected:
 	bool bQueryFriendsOnStartup = true;
 	bool bQueryBlockedPlayersOnStartup = true;
 	bool bQueryRecentPlayersOnStartup = true;
+
+	/** Whether we allow other users to send us invites */
+	virtual const bool IsInviteAllowedFromUser(const USocialUser& User, const TSharedRef<const IOnlinePartyJoinInfo>& InviteRef) const;
 
 private:
 	void QueueUserDependentActionInternal(const FUniqueNetIdRepl& SubsystemId, ESocialSubsystem SubsystemType, TFunction<void(USocialUser&)>&& UserActionFunc, bool bExecutePostInit = true);
@@ -237,12 +266,10 @@ private:	// Handlers
 	void HandleFriendInviteReceived(const FUniqueNetId& LocalUserId, const FUniqueNetId& SenderId, ESocialSubsystem SubsystemType);
 	void HandleFriendInviteAccepted(const FUniqueNetId& LocalUserId, const FUniqueNetId& NewFriendId, ESocialSubsystem SubsystemType);
 	void HandleFriendInviteRejected(const FUniqueNetId& LocalUserId, const FUniqueNetId& RejecterId, ESocialSubsystem SubsystemType);
-	void HandleFriendInviteSent(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InvitedUserId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType, FString DisplayName);
 	void HandleFriendRemoved(const FUniqueNetId& LocalUserId, const FUniqueNetId& FormerFriendId, ESocialSubsystem SubsystemType);
 
 	void HandleDeleteFriendComplete(int32 LocalPlayer, bool bWasSuccessful, const FUniqueNetId& FormerFriendId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType);
-	void HandleAcceptFriendInviteComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& InviterUserId, const FString& ListName, const FString& ErrorStr);
-
+	
 	void HandlePartyInviteReceived(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& Invite);
 	void HandlePartyInviteRemoved(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& Invite, EPartyInvitationRemovedReason Reason);
 #if PARTY_PLATFORM_INVITE_PERMISSIONS
@@ -259,7 +286,6 @@ private:	// Handlers
 
 	void HandleExistingPartyInvites(ESocialSubsystem SubsystemType);
 
-	void HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result);
 	void HandlePartyRequestToJoinReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request);
 	void HandlePartyRequestToJoinRemoved(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason);
 
@@ -277,17 +303,17 @@ private:
 	static TMap<TWeakObjectPtr<const ULocalPlayer>, TWeakObjectPtr<USocialToolkit>> AllToolkitsByOwningPlayer;
 
 	UPROPERTY()
-	USocialUser* LocalUser;
+	TObjectPtr<USocialUser> LocalUser;
 
 	UPROPERTY()
-	TArray<USocialUser*> AllUsers;
+	TArray<TObjectPtr<USocialUser>> AllUsers;
 	TMap<FUniqueNetIdRepl, TWeakObjectPtr<USocialUser>> UsersBySubsystemIds;
 
 	UPROPERTY()
-	ULocalPlayer* LocalPlayerOwner = nullptr;
+	TWeakObjectPtr<ULocalPlayer> LocalPlayerOwner = nullptr;
 
 	UPROPERTY()
-	USocialChatManager* SocialChatManager;
+	TObjectPtr<USocialChatManager> SocialChatManager;
 
 	TSet<IOnlinePartyJoinInfoConstRef> PartyInvitations;
 	mutable TArray<TWeakPtr<FSocialUserList>> CachedSocialUserLists;

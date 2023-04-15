@@ -2,9 +2,16 @@
 
 #pragma once
 
-#include <atomic>
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/Set.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "Engine/ICookInfo.h"
+#include "HAL/Event.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "Containers/Array.h"
-#include "Containers/ArrayView.h"
 #include "Containers/Map.h"
 #include "Containers/MpscQueue.h"
 #include "Containers/RingBuffer.h"
@@ -14,9 +21,11 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
 
+#include <atomic>
+
 class IAssetRegistry;
+class ICookedPackageWriter;
 class ITargetPlatform;
-class FEvent;
 class UCookOnTheFlyServer;
 namespace UE::Cook { class FRequestQueue; }
 namespace UE::Cook { struct FFilePlatformRequest; }
@@ -25,6 +34,7 @@ namespace UE::Cook { struct FPackageTracker; }
 
 namespace UE::Cook
 {
+struct FPackageData;
 
 /**
  * A group of external requests sent to CookOnTheFlyServer's tick loop. Transitive dependencies are found and all of the
@@ -67,7 +77,8 @@ public:
 	 * If called before Process sets bOutComplete=true, all packages are put in OutRequestToLoad and are unsorted.
 	 */
 	void ClearAndDetachOwnedPackageDatas(TArray<FPackageData*>& OutRequestsToLoad,
-		TArray<FPackageData*>& OutRequestsToDemote);
+		TArray<TPair<FPackageData*, ESuppressCookReason>>& OutRequestsToDemote,
+		TMap<FPackageData*, TArray<FPackageData*>>& OutRequestGraph);
 
 	/**
 	 * Create clusters(s) for all the given name or packagedata requests and append them to OutClusters.
@@ -130,6 +141,8 @@ private:
 		bool bCookable;
 		/** True if dependencies should be explored, based on other properties of the VertexData. */
 		bool bExploreDependencies;
+		/** The reason it is not cookable if !bCookable, or ESuppressCookReason::InvalidSuppressCookReason if bCookable. */
+		ESuppressCookReason SuppressCookReason;
 	};
 
 	/**
@@ -295,19 +308,22 @@ private:
 	void StartAsync(const FCookerTimer& CookerTimer, bool& bOutComplete);
 	bool TryTakeOwnership(FPackageData& PackageData, bool bUrgent, FCompletionCallback&& CompletionCallback,
 		const FInstigator& InInstigator);
-	bool IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData);
+	bool IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData, ESuppressCookReason& OutReason);
 	static bool IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData,
 		FPackageDatas& InPackageDatas, FPackageTracker& InPackageTracker,
-		FStringView InDLCPath, bool bInErrorOnEngineContentUse, TConstArrayView<const ITargetPlatform*> RequestPlatforms);
+		FStringView InDLCPath, bool bInErrorOnEngineContentUse, bool bInAllowUncookedAssetReferences,
+		TConstArrayView<const ITargetPlatform*> RequestPlatforms, ESuppressCookReason& OutReason);
 
 	TArray<FFileNameRequest> InRequests;
 	TArray<FPackageData*> Requests;
-	TArray<FPackageData*> RequestsToDemote;
+	TArray<TPair<FPackageData*, ESuppressCookReason>> RequestsToDemote;
 	TArray<const ITargetPlatform*> Platforms;
 	TArray<ICookedPackageWriter*> PackageWriters;
 	FPackageDataSet OwnedPackageDatas;
+	TMap<FPackageData*, TArray<FPackageData*>> RequestGraph;
 	FString DLCPath;
 	TUniquePtr<FGraphSearch> GraphSearch; // Needs to be dynamic-allocated because of large alignment
+	UCookOnTheFlyServer& COTFS;
 	FPackageDatas& PackageDatas;
 	IAssetRegistry& AssetRegistry;
 	FPackageTracker& PackageTracker;
@@ -315,9 +331,9 @@ private:
 	int32 NextRequest = 0;
 	bool bAllowHardDependencies = true;
 	bool bAllowSoftDependencies = true;
-	bool bPreexploreDependenciesEnabled = true;
 	bool bHybridIterativeEnabled = true;
 	bool bErrorOnEngineContentUse = false;
+	bool bAllowUncookedAssetReferences = false;
 	bool bPackageNamesComplete = false;
 	bool bDependenciesComplete = false;
 	bool bStartAsyncComplete = false;

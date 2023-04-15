@@ -9,7 +9,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IContentBrowserSingleton.h"
 
 #define LOCTEXT_NAMESPACE "SDisplayClusterConfiguratorNewBlueprintDialog"
@@ -47,7 +47,7 @@ TOptional<FAssetData> SDisplayClusterConfiguratorNewBlueprintDialog::GetSelected
 	TArray<FAssetData> SelectedSystemAssets;
 	for (const FAssetData& SelectedAsset : AllSelectedAssets)
 	{
-		if (SelectedAsset.AssetClass == UDisplayClusterBlueprint::StaticClass()->GetFName())
+		if (SelectedAsset.AssetClassPath == UDisplayClusterBlueprint::StaticClass()->GetClassPathName())
 		{
 			SelectedSystemAssets.Add(SelectedAsset);
 		}

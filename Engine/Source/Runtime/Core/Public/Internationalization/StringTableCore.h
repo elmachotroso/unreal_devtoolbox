@@ -1,13 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Internationalization/StringTableCoreFwd.h"
 #include "Containers/Map.h"
-#include "UObject/NameTypes.h"
+#include "Containers/SparseArray.h"
 #include "Containers/UnrealString.h"
-#include "Internationalization/Text.h"
-#include "Internationalization/LocKeyFuncs.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
 #include "Internationalization/Internationalization.h"
+#include "Internationalization/LocKeyFuncs.h"
+#include "Internationalization/LocalizedTextSourceTypes.h"
+#include "Internationalization/StringTableCoreFwd.h"
+#include "Internationalization/Text.h"
+#include "Internationalization/TextKey.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Serialization/StructuredArchive.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+
+#include <atomic>
+
+class FStringTable;
+class UStringTable;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogStringTable, Log, All);
 
@@ -172,6 +189,24 @@ class CORE_API IStringTableEngineBridge
 {
 public:
 	/**
+	 * Scope object used to temporarily defer String Table find/load (eg, during module load).
+	 */
+	struct FScopedDeferFindOrLoad
+	{
+		FScopedDeferFindOrLoad()
+		{
+			++DeferFindOrLoad;
+		}
+
+		~FScopedDeferFindOrLoad()
+		{
+			--DeferFindOrLoad;
+		}
+
+		UE_NONCOPYABLE(FScopedDeferFindOrLoad);
+	};
+
+	/**
 	 * Callback used when loading string table assets.
 	 * @param The name of the table we were asked to load.
 	 * @param The name of the table we actually loaded (may be different if redirected; will be empty if the load failed).
@@ -185,6 +220,7 @@ public:
 	static bool CanFindOrLoadStringTableAsset()
 	{
 		return FInternationalization::IsAvailable()
+			&& DeferFindOrLoad.load(std::memory_order::memory_order_relaxed) <= 0
 			&& (!InstancePtr || InstancePtr->CanFindOrLoadStringTableAssetImpl());
 	}
 
@@ -269,6 +305,9 @@ protected:
 
 	/** Singleton instance, populated by the derived type */
 	static IStringTableEngineBridge* InstancePtr;
+
+	/** Whether String Table find/load is currently deferred (eg, during module load) */
+	static std::atomic<int8> DeferFindOrLoad;
 };
 
 /** String table redirect utils */

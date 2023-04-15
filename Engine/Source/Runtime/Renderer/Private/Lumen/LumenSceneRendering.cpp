@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenSceneRendering.cpp
-=============================================================================*/
-
 #include "LumenSceneRendering.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
@@ -15,12 +11,14 @@
 #include "GPUScene.h"
 #include "Rendering/NaniteResources.h"
 #include "Nanite/Nanite.h"
+#include "NaniteSceneProxy.h"
 #include "PixelShaderUtils.h"
 #include "Lumen.h"
 #include "LumenMeshCards.h"
 #include "LumenSurfaceCacheFeedback.h"
 #include "LumenSceneLighting.h"
 #include "LumenTracingUtils.h"
+#include "GlobalDistanceField.h"
 #include "DistanceFieldAmbientOcclusion.h"
 #include "HAL/LowLevelMemStats.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -101,7 +99,7 @@ int32 GLumenSceneSurfaceCacheResetEveryNthFrame = 0;
 FAutoConsoleVariableRef CVarLumenSceneSurfaceCacheResetEveryNthFrame(
 	TEXT("r.LumenScene.SurfaceCache.ResetEveryNthFrame"),
 	GLumenSceneSurfaceCacheResetEveryNthFrame,
-	TEXT("Continuosly reset all atlases and captured cards every N-th frame.\n"),
+	TEXT("Continuously reset all atlases and captured cards every N-th frame.\n"),
 	ECVF_RenderThreadSafe
 );
 
@@ -126,6 +124,13 @@ TAutoConsoleVariable<float> CVarLumenSceneCardCaptureRefreshFraction(
 	0.125f,
 	TEXT("Fraction of card capture budget allowed to be spent on re-capturing existing pages in order to refresh surface cache materials.\n")
 	TEXT("0 disables card refresh."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+TAutoConsoleVariable<int32> CVarLumenSceneCardCaptureEnableInvalidation(
+	TEXT("r.LumenScene.SurfaceCache.CardCaptureEnableInvalidation"),
+	1,
+	TEXT("Whether to enable manual card recapture through InvalidateSurfaceCacheForPrimitive().\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
@@ -201,35 +206,11 @@ FAutoConsoleVariableRef CVarLumenGIRecaptureLumenSceneEveryFrame(
 	ECVF_RenderThreadSafe
 );
 
-int32 GLumenSceneNaniteMultiViewRaster = 1;
-FAutoConsoleVariableRef CVarLumenSceneNaniteMultiViewRaster(
-	TEXT("r.LumenScene.SurfaceCache.NaniteMultiViewRaster"),
-	GLumenSceneNaniteMultiViewRaster,
-	TEXT("Toggle multi view Lumen Nanite Card rasterization for debugging."),
-	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
-		{
-			Lumen::DebugResetSurfaceCache();
-		}),
-	ECVF_RenderThreadSafe
-);
-
-int32 GLumenSceneNaniteMultiViewCapture = 1;
-FAutoConsoleVariableRef CVarLumenSceneNaniteMultiViewCapture(
-	TEXT("r.LumenScene.SurfaceCache.NaniteMultiViewCapture"),
-	GLumenSceneNaniteMultiViewCapture,
-	TEXT("Toggle multi view Lumen Nanite Card capture for debugging."),
-	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
-		{
-			Lumen::DebugResetSurfaceCache();
-		}),
-	ECVF_RenderThreadSafe
-);
-
-int32 GLumenSceneGlobalDFResolution = 224;
+int32 GLumenSceneGlobalDFResolution = 252;
 FAutoConsoleVariableRef CVarLumenSceneGlobalDFResolution(
 	TEXT("r.LumenScene.GlobalSDF.Resolution"),
 	GLumenSceneGlobalDFResolution,
-	TEXT(""),
+	TEXT("Global Distance Field resolution when Lumen is enabled."),
 	ECVF_RenderThreadSafe
 );
 
@@ -237,7 +218,7 @@ float GLumenSceneGlobalDFClipmapExtent = 2500.0f;
 FAutoConsoleVariableRef CVarLumenSceneGlobalDFClipmapExtent(
 	TEXT("r.LumenScene.GlobalSDF.ClipmapExtent"),
 	GLumenSceneGlobalDFClipmapExtent,
-	TEXT(""),
+	TEXT("Global Distance Field first clipmap extent when Lumen is enabled."),
 	ECVF_RenderThreadSafe
 );
 
@@ -273,6 +254,45 @@ FAutoConsoleVariableRef CVarLumenSceneSurfaceCacheResampleLighting(
 	TEXT("Whether to resample card lighting when cards are reallocated.  This is needed for Radiosity temporal accumulation but can be disabled for debugging."),
 	ECVF_RenderThreadSafe
 );
+
+static TAutoConsoleVariable<float> GLumenSceneSurfaceCacheCaptureMeshTargetScreenSize(
+	TEXT("r.LumenScene.SurfaceCache.Capture.MeshTargetScreenSize"),
+	0.15f,
+	TEXT("Controls which LOD level will be used to capture static meshes into surface cache."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+		{
+			Lumen::DebugResetSurfaceCache();
+		}),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> GLumenSceneSurfaceCacheCaptureNaniteLODScaleFactor(
+	TEXT("r.LumenScene.SurfaceCache.Capture.NaniteLODScaleFactor"),
+	1.0f,
+	TEXT("Controls which LOD level will be used to capture Nanite meshes into surface cache."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+		{
+			Lumen::DebugResetSurfaceCache();
+		}),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarLumenSceneSurfaceCacheCaptureNaniteMultiView(
+	TEXT("r.LumenScene.SurfaceCache.Capture.NaniteMultiView"),
+	1,
+	TEXT("Toggle multi view Lumen Nanite Card capture for debugging."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+		{
+			Lumen::DebugResetSurfaceCache();
+		}),
+	ECVF_RenderThreadSafe);
+
+static int32 GNaniteProgrammableRasterLumen = 0; // TODO: Not working properly in all cases yet
+static FAutoConsoleVariableRef CNaniteProgrammableRasterLumen(
+	TEXT("r.Nanite.ProgrammableRaster.Lumen"),
+	GNaniteProgrammableRasterLumen,
+	TEXT("A toggle that allows Nanite programmable raster in Lumen passes.\n")
+	TEXT(" 0: Programmable raster is disabled\n")
+	TEXT(" 1: Programmable raster is enabled (default)"),
+	ECVF_RenderThreadSafe);
 
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 DECLARE_LLM_MEMORY_STAT(TEXT("Lumen"), STAT_LumenLLM, STATGROUP_LLMFULL);
@@ -321,13 +341,13 @@ namespace Lumen
 		const bool bLumenReflections = ShouldRenderLumenReflections(View);
 
 		if (bLumenGI
-			&& (UseHardwareRayTracedScreenProbeGather() || UseHardwareRayTracedRadianceCache() || UseHardwareRayTracedDirectLighting()))
+			&& (UseHardwareRayTracedScreenProbeGather(*View.Family) || UseHardwareRayTracedRadianceCache(*View.Family) || UseHardwareRayTracedDirectLighting(*View.Family)))
 		{
 			return true;
 		}
 
 		if (bLumenReflections
-			&& UseHardwareRayTracedReflections())
+			&& UseHardwareRayTracedReflections(*View.Family))
 		{
 			return true;
 		}
@@ -352,7 +372,7 @@ namespace Lumen
 			return false;
 		}
 
-		return Lumen::UseHardwareInlineRayTracing();
+		return Lumen::UseHardwareInlineRayTracing(*View.Family);
 	}
 }
 
@@ -362,15 +382,20 @@ bool Lumen::ShouldHandleSkyLight(const FScene* Scene, const FSceneViewFamily& Vi
 		&& (Scene->SkyLight->ProcessedTexture || Scene->SkyLight->bRealTimeCaptureEnabled)
 		&& ViewFamily.EngineShowFlags.SkyLighting
 		&& Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM5
-		&& !IsAnyForwardShadingEnabled(Scene->GetShaderPlatform())
+		&& !IsForwardShadingEnabled(Scene->GetShaderPlatform())
 		&& !ViewFamily.EngineShowFlags.VisualizeLightCulling;
+}
+
+bool DoesRuntimePlatformSupportLumen()
+{
+	return RHIIsTypedUAVLoadSupported(PF_R16_UINT);
 }
 
 bool ShouldRenderLumenForViewFamily(const FScene* Scene, const FSceneViewFamily& ViewFamily, bool bSkipProjectCheck)
 {
 	return Scene
-		&& Scene->LumenSceneData
-		&& ViewFamily.Views.Num() == 1
+		&& Scene->GetLumenSceneData(*ViewFamily.Views[0])
+		&& ViewFamily.Views.Num() <= MaxLumenViews
 		&& DoesPlatformSupportLumenGI(Scene->GetShaderPlatform(), bSkipProjectCheck);
 }
 
@@ -382,13 +407,35 @@ bool Lumen::IsSoftwareRayTracingSupported()
 bool Lumen::IsLumenFeatureAllowedForView(const FScene* Scene, const FSceneView& View, bool bSkipTracingDataCheck, bool bSkipProjectCheck)
 {
 	return View.Family
+		&& DoesRuntimePlatformSupportLumen()
 		&& ShouldRenderLumenForViewFamily(Scene, *View.Family, bSkipProjectCheck)
 		// Don't update scene lighting for secondary views
 		&& !View.bIsPlanarReflection
-		&& !View.bIsSceneCapture
+		&& !View.bIsSceneCaptureCube
 		&& !View.bIsReflectionCapture
 		&& View.State
-		&& (bSkipTracingDataCheck || Lumen::UseHardwareRayTracing() || IsSoftwareRayTracingSupported());
+		&& (bSkipTracingDataCheck || Lumen::UseHardwareRayTracing(*View.Family) || IsSoftwareRayTracingSupported());
+}
+
+bool Lumen::UseGlobalSDFObjectGrid(const FSceneViewFamily& ViewFamily)
+{
+	if (!Lumen::IsSoftwareRayTracingSupported())
+	{
+		return false;
+	}
+
+	// All features use Hardware RayTracing, no need to update voxel lighting
+	if (Lumen::UseHardwareRayTracedSceneLighting(ViewFamily)
+		&& Lumen::UseHardwareRayTracedScreenProbeGather(ViewFamily)
+		&& Lumen::UseHardwareRayTracedReflections(ViewFamily)
+		&& Lumen::UseHardwareRayTracedRadianceCache(ViewFamily)
+		&& Lumen::UseHardwareRayTracedTranslucencyVolume(ViewFamily)
+		&& Lumen::UseHardwareRayTracedVisualize(ViewFamily))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 int32 Lumen::GetGlobalDFResolution()
@@ -396,9 +443,14 @@ int32 Lumen::GetGlobalDFResolution()
 	return GLumenSceneGlobalDFResolution;
 }
 
-float Lumen::GetGlobalDFClipmapExtent()
+float Lumen::GetGlobalDFClipmapExtent(int32 ClipmapIndex)
 {
-	return GLumenSceneGlobalDFClipmapExtent;
+	return GLumenSceneGlobalDFClipmapExtent * FMath::Pow(2.0f, ClipmapIndex);
+}
+
+int32 Lumen::GetNumGlobalDFClipmaps(const FSceneView& View)
+{
+	return GlobalDistanceField::GetNumGlobalDistanceFieldClipmaps(/*bLumenEnabled*/ true, View.FinalPostProcessSettings.LumenSceneViewDistance);
 }
 
 float GetCardCameraDistanceTexelDensityScale()
@@ -513,26 +565,60 @@ public:
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("LUMEN_MULTI_VIEW_CAPTURE"), bMultiViewCapture);
+		OutEnvironment.SetDefine(TEXT("STRATA_INLINE_SHADING"), 1);
 	}
 };
+
+void SetupCardCaptureRenderTargetsInfo(FGraphicsPipelineRenderTargetsInfo& RenderTargetsInfo)
+{
+	RenderTargetsInfo.NumSamples = 1;
+	RenderTargetsInfo.RenderTargetsEnabled = 3;
+
+	// Albedo
+	RenderTargetsInfo.RenderTargetFormats[0] = PF_R8G8B8A8;
+	RenderTargetsInfo.RenderTargetFlags[0] = TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear;
+
+	// Normal
+	RenderTargetsInfo.RenderTargetFormats[1] = PF_R8G8B8A8;
+	RenderTargetsInfo.RenderTargetFlags[1] = TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear;
+
+	// Emissive
+	RenderTargetsInfo.RenderTargetFormats[2] = PF_FloatR11G11B10;
+	RenderTargetsInfo.RenderTargetFlags[2] = TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear;
+
+	// Setup depth stencil state
+	RenderTargetsInfo.DepthStencilTargetFormat = PF_DepthStencil;
+	RenderTargetsInfo.DepthStencilTargetFlag = TexCreate_ShaderResource | TexCreate_DepthStencilTargetable | TexCreate_NoFastClear;
+
+	// See setup of FDeferredShadingSceneRenderer::UpdateLumenScene (needs to be shared)
+	RenderTargetsInfo.DepthTargetLoadAction = ERenderTargetLoadAction::ELoad;
+	RenderTargetsInfo.StencilTargetLoadAction = ERenderTargetLoadAction::ENoAction;
+	RenderTargetsInfo.DepthStencilAccess = FExclusiveDepthStencil::DepthWrite_StencilNop;
+
+	// Derive store actions
+	const ERenderTargetStoreAction StoreAction = EnumHasAnyFlags(RenderTargetsInfo.DepthStencilTargetFlag, TexCreate_Memoryless) ? ERenderTargetStoreAction::ENoAction : ERenderTargetStoreAction::EStore;
+	RenderTargetsInfo.DepthTargetStoreAction = RenderTargetsInfo.DepthStencilAccess.IsUsingDepth() ? StoreAction : ERenderTargetStoreAction::ENoAction;
+	RenderTargetsInfo.StencilTargetStoreAction = RenderTargetsInfo.DepthStencilAccess.IsUsingStencil() ? StoreAction : ERenderTargetStoreAction::ENoAction;
+}
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FLumenCardPS<false>, TEXT("/Engine/Private/Lumen/LumenCardPixelShader.usf"), TEXT("Main"), SF_Pixel);
 IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FLumenCardPS<true>, TEXT("/Engine/Private/Lumen/LumenCardPixelShader.usf"), TEXT("Main"), SF_Pixel);
 
-class FLumenCardMeshProcessor : public FMeshPassProcessor
+class FLumenCardMeshProcessor : public FSceneRenderingAllocatorObject<FLumenCardMeshProcessor>, public FMeshPassProcessor
 {
 public:
 
-	FLumenCardMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
+	FLumenCardMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
 
 bool GetLumenCardShaders(
 	const FMaterial& Material,
-	FVertexFactoryType* VertexFactoryType,
+	const FVertexFactoryType* VertexFactoryType,
 	TShaderRef<FLumenCardVS>& VertexShader,
 	TShaderRef<FLumenCardPS<false>>& PixelShader)
 {
@@ -571,8 +657,8 @@ void FLumenCardMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 					const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
 					const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
 					const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-					const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-					const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+					const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+					const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 
 					if (!bIsTranslucent
 						&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain()))
@@ -628,12 +714,64 @@ void FLumenCardMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 	}
 }
 
-FLumenCardMeshProcessor::FLumenCardMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+{
+	LLM_SCOPE_BYTAG(Lumen);
+
+	if (!PreCacheParams.bRenderInMainPass || !PreCacheParams.bAffectDynamicIndirectLighting ||
+		!DoesPlatformSupportLumenGI(GetFeatureLevelShaderPlatform(FeatureLevel)))
+	{
+		return;
+	}
+
+	const EBlendMode BlendMode = Material.GetBlendMode();
+	const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
+	const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
+
+	if (!bIsTranslucent
+		&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain()))
+	{
+		constexpr bool bMultiViewCapture = false;
+
+		TMeshProcessorShaders<
+			FLumenCardVS,
+			FLumenCardPS<bMultiViewCapture>> PassShaders;
+
+		if (!GetLumenCardShaders(
+			Material,
+			VertexFactoryType,
+			PassShaders.VertexShader,
+			PassShaders.PixelShader))
+		{
+			return;
+		}
+
+		FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+		SetupCardCaptureRenderTargetsInfo(RenderTargetsInfo);
+
+		AddGraphicsPipelineStateInitializer(
+			VertexFactoryType,
+			Material,
+			PassDrawRenderState,
+			RenderTargetsInfo,
+			PassShaders,
+			MeshFillMode,
+			MeshCullMode,
+			(EPrimitiveType)PreCacheParams.PrimitiveType,
+			EMeshPassFeatures::Default, 
+			PSOInitializers);
+	}
+}
+
+FLumenCardMeshProcessor::FLumenCardMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::LumenCardCapture, Scene, FeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InPassDrawRenderState)
 {}
 
-FMeshPassProcessor* CreateLumenCardCapturePassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateLumenCardCapturePassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
@@ -644,18 +782,19 @@ FMeshPassProcessor* CreateLumenCardCapturePassProcessor(const FScene* Scene, con
 
 	PassState.SetBlendState(TStaticBlendState<>::GetRHI());
 
-	return new(FMemStack::Get()) FLumenCardMeshProcessor(Scene, InViewIfDynamicMeshCommand, PassState, InDrawListContext);
+	return new FLumenCardMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, PassState, InDrawListContext);
 }
 
-FRegisterPassProcessorCreateFunction RegisterLumenCardCapturePass(&CreateLumenCardCapturePassProcessor, EShadingPath::Deferred, EMeshPass::LumenCardCapture, EMeshPassFlags::CachedMeshCommands);
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(LumenCardCapturePass, CreateLumenCardCapturePassProcessor, EShadingPath::Deferred, EMeshPass::LumenCardCapture, EMeshPassFlags::CachedMeshCommands);
 
 class FLumenCardNaniteMeshProcessor : public FMeshPassProcessor
 {
 public:
 
-	FLumenCardNaniteMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
+	FLumenCardNaniteMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
@@ -671,11 +810,12 @@ private:
 
 FLumenCardNaniteMeshProcessor::FLumenCardNaniteMeshProcessor(
 	const FScene* InScene,
+	ERHIFeatureLevel::Type FeatureLevel,
 	const FSceneView* InViewIfDynamicMeshCommand,
 	const FMeshPassProcessorRenderState& InDrawRenderState,
 	FMeshPassDrawListContext* InDrawListContext
 ) :
-	FMeshPassProcessor(InScene, InScene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext),
+	FMeshPassProcessor(EMeshPass::LumenCardNanite, InScene, FeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext),
 	PassDrawRenderState(InDrawRenderState)
 {
 }
@@ -719,9 +859,8 @@ bool FLumenCardNaniteMeshProcessor::TryAddMeshBatch(
 	const FMaterial& Material)
 {
 	const EBlendMode BlendMode = Material.GetBlendMode();
-
-	check(BlendMode == BLEND_Opaque);
-	check(Material.GetMaterialDomain() == MD_Surface);
+	check(Nanite::IsSupportedBlendMode(BlendMode));
+	check(Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain()));
 
 	TShaderMapRef<FNaniteMultiViewMaterialVS> VertexShader(GetGlobalShaderMap(FeatureLevel));
 
@@ -764,7 +903,64 @@ bool FLumenCardNaniteMeshProcessor::TryAddMeshBatch(
 	return true;
 }
 
+void FLumenCardNaniteMeshProcessor::CollectPSOInitializers(
+	const FSceneTexturesConfig& SceneTexturesConfig,
+	const FMaterial& Material, 
+	const FVertexFactoryType* VertexFactoryType, 
+	const FPSOPrecacheParams& PreCacheParams,
+	TArray<FPSOPrecacheData>& PSOInitializers)
+{
+	// Make sure nanite rendering is supported
+	if (!SupportsNaniteRendering(VertexFactoryType, Material, FeatureLevel))
+	{
+		return;
+	}
+
+	const EBlendMode BlendMode = Material.GetBlendMode();
+	if (!Nanite::IsSupportedBlendMode(BlendMode) || Material.GetMaterialDomain())
+	{
+		return;
+	}
+
+	const ERasterizerFillMode MeshFillMode = FM_Solid;
+	const ERasterizerCullMode MeshCullMode = CM_None;
+
+	TShaderMapRef<FNaniteMultiViewMaterialVS> VertexShader(GetGlobalShaderMap(FeatureLevel));
+
+	FLumenCardNanitePassShaders PassShaders;
+	PassShaders.VertexShader = VertexShader;
+
+	constexpr bool bMultiViewCapture = true;
+
+	FMaterialShaderTypes ShaderTypes;
+	ShaderTypes.AddShaderType<FLumenCardPS<bMultiViewCapture>>();
+
+	FMaterialShaders Shaders;
+	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+	{
+		return;
+	}
+
+	Shaders.TryGetPixelShader(PassShaders.PixelShader);
+
+	FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+	SetupCardCaptureRenderTargetsInfo(RenderTargetsInfo);
+
+	AddGraphicsPipelineStateInitializer(
+		VertexFactoryType,
+		Material,
+		PassDrawRenderState,
+		RenderTargetsInfo,
+		PassShaders,
+		MeshFillMode,
+		MeshCullMode,
+		(EPrimitiveType)PreCacheParams.PrimitiveType,
+		EMeshPassFeatures::Default,
+		PSOInitializers);
+}
+
 FMeshPassProcessor* CreateLumenCardNaniteMeshProcessor(
+	ERHIFeatureLevel::Type FeatureLevel,
 	const FScene* Scene,
 	const FSceneView* InViewIfDynamicMeshCommand,
 	FMeshPassDrawListContext* InDrawListContext)
@@ -772,17 +968,18 @@ FMeshPassProcessor* CreateLumenCardNaniteMeshProcessor(
 	LLM_SCOPE_BYTAG(Lumen);
 
 	FMeshPassProcessorRenderState PassState;
-	PassState.SetNaniteUniformBuffer(Scene->UniformBuffers.NaniteUniformBuffer);
-
 	PassState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Equal, true, CF_Equal>::GetRHI());
 	PassState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilRead);
 	PassState.SetStencilRef(STENCIL_SANDBOX_MASK);
 	PassState.SetBlendState(TStaticBlendState<>::GetRHI());
 
-	return new(FMemStack::Get()) FLumenCardNaniteMeshProcessor(Scene, InViewIfDynamicMeshCommand, PassState, InDrawListContext);
+	return new FLumenCardNaniteMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, PassState, InDrawListContext);
 }
 
-FCardPageRenderData::FCardPageRenderData(const FViewInfo& InMainView,
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(LumenCardNanitePass, CreateLumenCardNaniteMeshProcessor, EShadingPath::Deferred, EMeshPass::LumenCardNanite, EMeshPassFlags::None);
+
+FCardPageRenderData::FCardPageRenderData(
+	const FViewInfo& InMainView,
 	const FLumenCard& InLumenCard,
 	FVector4f InCardUVRect,
 	FIntRect InCardCaptureAtlasRect,
@@ -802,6 +999,8 @@ FCardPageRenderData::FCardPageRenderData(const FViewInfo& InMainView,
 	, bResampleLastLighting(bInResampleLastLighting)
 {
 	ensure(CardIndex >= 0 && PageTableIndex >= 0);
+
+	NaniteLODScaleFactor = GLumenSceneSurfaceCacheCaptureNaniteLODScaleFactor.GetValueOnRenderThread();
 
 	if (InLumenCard.bDistantScene)
 	{
@@ -826,7 +1025,7 @@ void FCardPageRenderData::UpdateViewMatrices(const FViewInfo& MainView)
 	ViewLocation += FVector(FaceLocalExtent.Z * CardWorldOBB.AxisZ);
 
 	const float NearPlane = 0.0f;
-	const float FarPlane = NearPlane + FaceLocalExtent.Z * 2.0f;
+	const float FarPlane = FaceLocalExtent.Z * 2.0f;
 
 	const float ZScale = 1.0f / (FarPlane - NearPlane);
 	const float ZOffset = -NearPlane;
@@ -862,7 +1061,7 @@ void FCardPageRenderData::UpdateViewMatrices(const FViewInfo& MainView)
 	ViewMatrices = FViewMatrices(Initializer);
 }
 
-void FCardPageRenderData::PatchView(FRHICommandList& RHICmdList, const FScene* Scene, FViewInfo* View) const
+void FCardPageRenderData::PatchView(const FScene* Scene, FViewInfo* View) const
 {
 	View->ProjectionMatrixUnadjustedForRHI = ProjectionMatrixUnadjustedForRHI;
 	View->ViewMatrices = ViewMatrices;
@@ -880,7 +1079,6 @@ void FCardPageRenderData::PatchView(FRHICommandList& RHICmdList, const FScene* S
 }
 
 void AddCardCaptureDraws(const FScene* Scene,
-	FRHICommandListImmediate& RHICmdList,
 	FCardPageRenderData& CardPageRenderData,
 	const FLumenPrimitiveGroup& PrimitiveGroup,
 	TConstArrayView<const FPrimitiveSceneInfo*> SceneInfoPrimitives,
@@ -936,27 +1134,36 @@ void AddCardCaptureDraws(const FScene* Scene,
 			}
 			else
 			{
-				FLODMask LODToRender;
+				int32 LODToRender = 0;
 
 				if (PrimitiveGroup.bHeightfield)
 				{
 					// Landscape can't use last LOD, as it's a single quad with only 4 distinct heightfield values
 					// Also selected LOD needs to to match FLandscapeSectionLODUniformParameters uniform buffers
-					LODToRender.SetLOD(LumenLandscape::CardCaptureLOD);
+					LODToRender = LumenLandscape::CardCaptureLOD;
 				}
 				else
 				{
-					int32 MaxLOD = 0;
+					const float TargetScreenSize = GLumenSceneSurfaceCacheCaptureMeshTargetScreenSize.GetValueOnRenderThread();
+
+					int32 PrevLODToRender = INT_MAX;
+					int32 NextLODToRender = -1;
 					for (int32 MeshIndex = 0; MeshIndex < PrimitiveSceneInfo->StaticMeshRelevances.Num(); ++MeshIndex)
 					{
 						const FStaticMeshBatchRelevance& Mesh = PrimitiveSceneInfo->StaticMeshRelevances[MeshIndex];
-						if (Mesh.ScreenSize > 0.0f)
+						if (Mesh.ScreenSize >= TargetScreenSize)
 						{
-							//todo DynamicGI artist control - last LOD is sometimes billboard
-							MaxLOD = FMath::Max(MaxLOD, (int32)Mesh.LODIndex);
+							NextLODToRender = FMath::Max(NextLODToRender, (int32)Mesh.LODIndex);
+						}
+						else
+						{
+							PrevLODToRender = FMath::Min(PrevLODToRender, (int32)Mesh.LODIndex);
 						}
 					}
-					LODToRender.SetLOD(MaxLOD);
+
+					LODToRender = NextLODToRender >= 0 ? NextLODToRender : PrevLODToRender;
+					const int32 CurFirstLODIdx = (int32)PrimitiveSceneInfo->Proxy->GetCurrentFirstLODIdx_RenderThread();
+					LODToRender = FMath::Max(LODToRender, CurFirstLODIdx);
 				}
 
 				FMeshDrawCommandPrimitiveIdInfo IdInfo(PrimitiveSceneInfo->GetIndex(), PrimitiveSceneInfo->GetInstanceSceneDataOffset());
@@ -966,7 +1173,7 @@ void AddCardCaptureDraws(const FScene* Scene,
 					const FStaticMeshBatchRelevance& StaticMeshRelevance = PrimitiveSceneInfo->StaticMeshRelevances[MeshIndex];
 					const FStaticMeshBatch& StaticMesh = PrimitiveSceneInfo->StaticMeshes[MeshIndex];
 
-					if (StaticMeshRelevance.bUseForMaterial && LODToRender.ContainsLOD(StaticMeshRelevance.LODIndex))
+					if (StaticMeshRelevance.bUseForMaterial && StaticMeshRelevance.LODIndex == LODToRender)
 					{
 						const int32 StaticMeshCommandInfoIndex = StaticMeshRelevance.GetStaticMeshCommandInfoIndex(MeshPass);
 						if (StaticMeshCommandInfoIndex >= 0)
@@ -1084,7 +1291,7 @@ public:
 				{
 					DistanceSquared = FMath::Min(DistanceSquared, ComputeSquaredDistanceFromBoxToPoint(FVector(PrimitiveGroup.WorldSpaceBoundingBox.Min), FVector(PrimitiveGroup.WorldSpaceBoundingBox.Max), ViewOrigin));
 				}
-
+				
 				const float MaxCardExtent = PrimitiveGroup.WorldSpaceBoundingBox.GetExtent().GetMax();
 				float MaxCardResolution = (TexelDensityScale * MaxCardExtent) / FMath::Sqrt(FMath::Max(DistanceSquared, 1.0f)) + 0.01f;
 
@@ -1143,6 +1350,7 @@ public:
 		const TSparseSpanArray<FLumenMeshCards>& InLumenMeshCards,
 		const TSparseSpanArray<FLumenCard>& InLumenCards,
 		const TArray<FVector, TInlineAllocator<2>>& InViewOrigins,
+		float InSurfaceCacheResolution,
 		float InLumenSceneDetail,
 		float InMaxDistanceFromCamera,
 		int32 InFirstMeshCardsIndex,
@@ -1154,7 +1362,7 @@ public:
 		, FirstMeshCardsIndex(InFirstMeshCardsIndex)
 		, NumMeshCardsPerPacket(InNumMeshCardsPerPacket)
 		, MaxDistanceFromCamera(InMaxDistanceFromCamera)
-		, TexelDensityScale(GetCardCameraDistanceTexelDensityScale())
+		, TexelDensityScale(GetCardCameraDistanceTexelDensityScale() * InSurfaceCacheResolution)
 		, MaxTexelDensity(GLumenSceneCardMaxTexelDensity)
 	{
 	}
@@ -1247,21 +1455,15 @@ public:
 	float MaxTexelDensity;
 };
 
-float ComputeMaxCardUpdateDistanceFromCamera(float LumenSceneViewDistance)
+float ComputeMaxCardUpdateDistanceFromCamera(const FViewInfo& View)
 {
-	float MaxCardDistanceFromCamera = 0.0f;
-	
-	// Limit to voxel clipmap range
-	extern int32 GLumenSceneClipmapResolution;
-	if (GetNumLumenVoxelClipmaps(LumenSceneViewDistance) > 0 && GLumenSceneClipmapResolution > 0)
-	{
-		const float LastClipmapExtent = Lumen::GetFirstClipmapWorldExtent() * (float)(1 << (GetNumLumenVoxelClipmaps(LumenSceneViewDistance) - 1));
-		MaxCardDistanceFromCamera = LastClipmapExtent;
-	}
+	// Limit to global distance field range
+	const float LastClipmapExtent = Lumen::GetGlobalDFClipmapExtent(Lumen::GetNumGlobalDFClipmaps(View) - 1);
+	float MaxCardDistanceFromCamera = LastClipmapExtent;
 
 #if RHI_RAYTRACING
 	// Limit to ray tracing culling radius if ray tracing is used
-	if (Lumen::UseHardwareRayTracing() && GetRayTracingCulling() != 0)
+	if (Lumen::UseHardwareRayTracing(*View.Family) && GetRayTracingCulling() != 0)
 	{
 		MaxCardDistanceFromCamera = GetRayTracingCullingRadius();
 	}
@@ -1303,6 +1505,43 @@ bool UpdateStaticMeshes(FLumenPrimitiveGroup& PrimitiveGroup)
 	}
 
 	return bReadyToRender;
+}
+
+bool FLumenSceneData::RecaptureCardPage(const FViewInfo& MainView, FLumenCardRenderer& LumenCardRenderer, FLumenSurfaceCacheAllocator& CaptureAtlasAllocator, FRHIGPUMask GPUMask, int32 PageTableIndex)
+{
+	TArray<FCardPageRenderData, SceneRenderingAllocator>& CardPagesToRender = LumenCardRenderer.CardPagesToRender;
+	FLumenPageTableEntry& PageTableEntry = GetPageTableEntry(PageTableIndex);
+	const FLumenCard& Card = Cards[PageTableEntry.CardIndex];
+	const FLumenMeshCards& MeshCardsElement = MeshCards[Card.MeshCardsIndex];
+
+	// Can we fit this card into the temporary card capture allocator?
+	if (CaptureAtlasAllocator.IsSpaceAvailable(Card, PageTableEntry.ResLevel, /*bSinglePage*/ true))
+	{
+		// Allocate space in temporary allocation atlas
+		FLumenSurfaceCacheAllocator::FAllocation CardCaptureAllocation;
+		CaptureAtlasAllocator.Allocate(PageTableEntry, CardCaptureAllocation);
+		check(CardCaptureAllocation.PhysicalPageCoord.X >= 0);
+
+		CardPagesToRender.Add(FCardPageRenderData(
+			MainView,
+			Card,
+			PageTableEntry.CardUVRect,
+			CardCaptureAllocation.PhysicalAtlasRect,
+			PageTableEntry.PhysicalAtlasRect,
+			MeshCardsElement.PrimitiveGroupIndex,
+			PageTableEntry.CardIndex,
+			PageTableIndex,
+			/*bResampleLastLighting*/ true));
+
+		for (uint32 GPUIndex : GPUMask)
+		{
+			LastCapturedPageHeap[GPUIndex].Update(GetSurfaceCacheUpdateFrameIndex(), PageTableIndex);
+		}
+		LumenCardRenderer.NumCardTexelsToCapture += PageTableEntry.PhysicalAtlasRect.Area();
+		return true;
+	}
+
+	return false;
 }
 
 /**
@@ -1369,12 +1608,6 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 				const FLumenMeshCards& MeshCardsElement = MeshCards[Card.MeshCardsIndex];
 				if (bCanAlloc && UpdateStaticMeshes(PrimitiveGroups[MeshCardsElement.PrimitiveGroupIndex]))
 				{
-					// Landscape traces card representation, so need to invalidate voxel vis buffer when it's ready for the first time
-					if (MeshCardsElement.bHeightfield && Card.DesiredLockedResLevel == 0)
-					{
-						PrimitiveModifiedBounds.Add(MeshCardsElement.GetWorldSpaceBounds());
-					}
-
 					Card.bVisible = true;
 					Card.DesiredLockedResLevel = Request.ResLevel;
 
@@ -1521,6 +1754,33 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 		}
 	}
 
+	// Process any surface cache page invalidation requests
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SceneCardCaptureInvalidation);
+
+		if (CVarLumenSceneCardCaptureEnableInvalidation.GetValueOnRenderThread() == 0)
+		{
+			for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
+			{
+				PagesToRecaptureHeap[GPUIndex].Clear();
+			}
+		}
+
+		FBinaryHeap<uint32, uint32>& PageHeap = PagesToRecaptureHeap[GPUMask.GetFirstIndex()];
+		while (PageHeap.Num() > 0)
+		{
+			const uint32 PageTableIndex = PageHeap.Top();
+			if (RecaptureCardPage(MainView, LumenCardRenderer, CaptureAtlasAllocator, GPUMask, PageTableIndex))
+			{
+				PageHeap.Pop();
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+
 	// Finally process card refresh to capture any material updates, or render cards that need to be initialized for the first time on
 	// a given GPU in multi-GPU scenarios.  Uninitialized cards on a particular GPU will have a zero captured frame index set when the
 	// card was allocated.  A zero frame index otherwise can't occur on a card, because the constructor sets SurfaceCacheUpdateFrameIndex
@@ -1544,10 +1804,6 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 			const int32 FramesSinceLastUpdated = GetSurfaceCacheUpdateFrameIndex() - CapturedSurfaceCacheFrameIndex;
 			if (FramesSinceLastUpdated > 0)
 			{
-				FLumenPageTableEntry& PageTableEntry = GetPageTableEntry(PageTableIndex);
-				const FLumenCard& Card = Cards[PageTableEntry.CardIndex];
-				const FLumenMeshCards& MeshCardsElement = MeshCards[Card.MeshCardsIndex];
-
 #if WITH_MGPU
 				// Limit number of re-captured texels and pages per frame, except always allow captures of uninitialized
 				// cards where the captured frame index is zero (don't count them against the throttled limits).
@@ -1557,6 +1813,8 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 				if ((CapturedSurfaceCacheFrameIndex != 0) || (GNumExplicitGPUsForRendering == 1))
 #endif
 				{
+					FLumenPageTableEntry& PageTableEntry = GetPageTableEntry(PageTableIndex);
+					const FLumenCard& Card = Cards[PageTableEntry.CardIndex];
 					FLumenMipMapDesc MipMapDesc;
 					Card.GetMipMapDesc(PageTableEntry.ResLevel, MipMapDesc);
 					NumTexelsLeftToRefresh -= MipMapDesc.PageResolution.X * MipMapDesc.PageResolution.Y;
@@ -1565,32 +1823,7 @@ void FLumenSceneData::ProcessLumenSurfaceCacheRequests(
 
 				if (NumTexelsLeftToRefresh >= 0 && NumPagesLeftToRefesh >= 0)
 				{
-					// Can we fit this card into the temporary card capture allocator?
-					if (CaptureAtlasAllocator.IsSpaceAvailable(Card, PageTableEntry.ResLevel, /*bSinglePage*/ true))
-					{
-						// Allocate space in temporary allocation atlas
-						FLumenSurfaceCacheAllocator::FAllocation CardCaptureAllocation;
-						CaptureAtlasAllocator.Allocate(PageTableEntry, CardCaptureAllocation);
-						check(CardCaptureAllocation.PhysicalPageCoord.X >= 0);
-
-						CardPagesToRender.Add(FCardPageRenderData(
-							MainView,
-							Card,
-							PageTableEntry.CardUVRect,
-							CardCaptureAllocation.PhysicalAtlasRect,
-							PageTableEntry.PhysicalAtlasRect,
-							MeshCardsElement.PrimitiveGroupIndex,
-							PageTableEntry.CardIndex,
-							PageTableIndex,
-							/*bResampleLastLighting*/ true));
-
-						for (uint32 GPUIndex : GPUMask)
-						{
-							LastCapturedPageHeap[GPUIndex].Update(GetSurfaceCacheUpdateFrameIndex(), PageTableIndex);
-						}
-						LumenCardRenderer.NumCardTexelsToCapture += PageTableEntry.PhysicalAtlasRect.Area();
-						bCanCapture = true;
-					}
+					bCanCapture = RecaptureCardPage(MainView, LumenCardRenderer, CaptureAtlasAllocator, GPUMask, PageTableIndex);
 				}
 			}
 		}
@@ -1703,7 +1936,8 @@ void UpdateSurfaceCacheMeshCards(
 	const TArray<FVector, TInlineAllocator<2>>& LumenSceneCameraOrigins,
 	float LumenSceneDetail,
 	float MaxCardUpdateDistanceFromCamera,
-	TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& SurfaceCacheRequests)
+	TArray<FSurfaceCacheRequest, SceneRenderingAllocator>& SurfaceCacheRequests,
+	const FViewFamilyInfo& ViewFamily)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UpdateMeshCards);
 
@@ -1719,6 +1953,7 @@ void UpdateSurfaceCacheMeshCards(
 			LumenSceneData.MeshCards,
 			LumenSceneData.Cards,
 			LumenSceneCameraOrigins,
+			LumenSceneData.SurfaceCacheResolution,
 			LumenSceneDetail,
 			MaxCardUpdateDistanceFromCamera,
 			TaskIndex * NumMeshCardsPerTask,
@@ -1761,7 +1996,7 @@ void UpdateSurfaceCacheMeshCards(
 		}
 	}
 
-	LumenSceneData.UpdateSurfaceCacheFeedback(LumenSceneCameraOrigins, SurfaceCacheRequests);
+	LumenSceneData.UpdateSurfaceCacheFeedback(LumenSceneCameraOrigins, SurfaceCacheRequests, ViewFamily);
 
 	if (SurfaceCacheRequests.Num() > 0)
 	{
@@ -1779,7 +2014,7 @@ void UpdateSurfaceCacheMeshCards(
 	}
 }
 
-extern void UpdateLumenScenePrimitives(FScene* Scene);
+extern void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene);
 
 void AllocateResampledCardCaptureAtlas(FRDGBuilder& GraphBuilder, FIntPoint CardCaptureAtlasSize, FResampledCardCaptureAtlas& CardCaptureAtlas)
 {
@@ -1818,7 +2053,6 @@ class FResampleLightingHistoryToCardCaptureAtlasPS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenCardScene, LumenCardScene)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, OpacityAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DirectLightingAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, IndirectLightingAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RadiosityNumFramesAccumulatedAtlas)
@@ -1841,73 +2075,21 @@ BEGIN_SHADER_PARAMETER_STRUCT(FResampleLightingHistoryToCardCaptureParameters, )
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
-void FLumenSceneData::CopyBuffersForResample(FRDGBuilder& GraphBuilder, FShaderResourceViewRHIRef& LastCardBufferForResampleSRV, FShaderResourceViewRHIRef& LastPageTableBufferForResampleSRV)
-{
-	if (LastPageTableBufferForResample.NumBytes != PageTableBuffer.NumBytes)
-	{
-		LastPageTableBufferForResample.Initialize(TEXT("Lumen.LastPageBufferForResample"), PageTableBuffer.NumBytes, BUF_Static);
-	}
-
-	{
-		GraphBuilder.RHICmdList.Transition(FRHITransitionInfo(LastPageTableBufferForResample.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-
-		FMemcpyResourceParams MemcpyParams;
-		MemcpyParams.Count = PageTableBuffer.NumBytes / sizeof(uint32);
-		MemcpyParams.SrcOffset = 0;
-		MemcpyParams.DstOffset = 0;
-		MemcpyResource(GraphBuilder.RHICmdList, LastPageTableBufferForResample, PageTableBuffer, MemcpyParams);
-	}
-
-	const int32 NumBytesPerElement = sizeof(FVector4f);
-
-	if (LastCardBufferForResample.NumBytes != CardBuffer.NumBytes)
-	{
-		LastCardBufferForResample.Initialize(TEXT("Lumen.LastCardsForResample"), NumBytesPerElement, CardBuffer.NumBytes / NumBytesPerElement, BUF_Static);
-	}
-	else
-	{
-		GraphBuilder.RHICmdList.Transition(FRHITransitionInfo(LastCardBufferForResample.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	}
-
-	//@todo - copy just the needed cards, instead of the entire scene
-	{
-		FMemcpyResourceParams MemcpyParams;
-		MemcpyParams.Count = CardBuffer.NumBytes / NumBytesPerElement;
-		MemcpyParams.SrcOffset = 0;
-		MemcpyParams.DstOffset = 0;
-		MemcpyResource(GraphBuilder.RHICmdList, LastCardBufferForResample, CardBuffer, MemcpyParams);
-	}
-
-	FRHITransitionInfo Transitions[2] =
-	{
-		FRHITransitionInfo(LastPageTableBufferForResample.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask),
-		FRHITransitionInfo(LastCardBufferForResample.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask)
-	};
-	GraphBuilder.RHICmdList.Transition(Transitions);
-
-	LastCardBufferForResampleSRV = LastCardBufferForResample.SRV;
-	LastPageTableBufferForResampleSRV = LastPageTableBufferForResample.SRV;
-}
-
 // Try to resample direct lighting and indirect lighting (radiosity) from existing surface cache to new captured cards
 void ResampleLightingHistory(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FScene* Scene,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	const TArray<FCardPageRenderData, SceneRenderingAllocator>& CardPagesToRender,
 	FLumenSceneData& LumenSceneData,
 	FResampledCardCaptureAtlas& CardCaptureAtlas)
 {
 	if (GLumenSceneSurfaceCacheResampleLighting
-		&& LumenSceneData.GetPageTableBufferSRV()
-		&& LumenSceneData.CardBuffer.SRV)
+		&& FrameTemporaries.PageTableBufferSRV
+		&& FrameTemporaries.CardBufferSRV)
 	{
 		AllocateResampledCardCaptureAtlas(GraphBuilder, LumenSceneData.GetCardCaptureAtlasSize(), CardCaptureAtlas);
-
-		// Because LumenSceneData.UploadPageTable will not be deferred by RDG, we have to make a copy of the old buffers for our pass which will be deferred by RDG
-		FShaderResourceViewRHIRef LastCardBufferForResampleSRV;
-		FShaderResourceViewRHIRef LastPageTableBufferForResampleSRV;
-		LumenSceneData.CopyBuffersForResample(GraphBuilder, LastCardBufferForResampleSRV, LastPageTableBufferForResampleSRV);
 
 		FRDGUploadData<FUintVector4> CardCaptureRectArray(GraphBuilder, CardPagesToRender.Num());
 		FRDGUploadData<FUintVector4> CardPageResampleDataArray(GraphBuilder, CardPagesToRender.Num() * 2);
@@ -1951,19 +2133,10 @@ void ResampleLightingHistory(
 			PassParameters->RenderTargets[2] = FRenderTargetBinding(CardCaptureAtlas.NumFramesAccumulated, ERenderTargetLoadAction::ENoAction);
 
 			PassParameters->PS.View = View.ViewUniformBuffer;
-
-			{
-				FLumenCardScene* LumenCardSceneParameters = GraphBuilder.AllocParameters<FLumenCardScene>();
-				SetupLumenCardSceneParameters(GraphBuilder, Scene, *LumenCardSceneParameters);
-				LumenCardSceneParameters->CardData = LastCardBufferForResampleSRV;
-				LumenCardSceneParameters->PageTableBuffer = LastPageTableBufferForResampleSRV;
-				PassParameters->PS.LumenCardScene = GraphBuilder.CreateUniformBuffer(LumenCardSceneParameters);
-			}
-
-			PassParameters->PS.OpacityAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.OpacityAtlas);
-			PassParameters->PS.DirectLightingAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.DirectLightingAtlas);
-			PassParameters->PS.IndirectLightingAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.IndirectLightingAtlas);
-			PassParameters->PS.RadiosityNumFramesAccumulatedAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.RadiosityNumFramesAccumulatedAtlas);
+			PassParameters->PS.LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
+			PassParameters->PS.DirectLightingAtlas = FrameTemporaries.DirectLightingAtlas;
+			PassParameters->PS.IndirectLightingAtlas = FrameTemporaries.IndirectLightingAtlas;
+			PassParameters->PS.RadiosityNumFramesAccumulatedAtlas = FrameTemporaries.RadiosityNumFramesAccumulatedAtlas;
 			PassParameters->PS.NewCardPageResampleData = NewCardPageResampleDataSRV;
 
 			FResampleLightingHistoryToCardCaptureAtlasPS::FPermutationDomain PermutationVector;
@@ -1985,12 +2158,52 @@ void ResampleLightingHistory(
 	}
 }
 
-void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& GraphBuilder)
+void FLumenSceneData::FillFrameTemporaries(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries)
+{
+	const auto FillBuffer = [&](FRDGBufferSRV*& OutSRV, const TRefCountPtr<FRDGPooledBuffer>& InBuffer)
+	{
+		if (!OutSRV && InBuffer)
+		{
+			OutSRV = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(InBuffer));
+		}
+	};
+
+	FillBuffer(FrameTemporaries.CardBufferSRV, CardBuffer);
+	FillBuffer(FrameTemporaries.MeshCardsBufferSRV, MeshCardsBuffer);
+	FillBuffer(FrameTemporaries.HeightfieldBufferSRV, HeightfieldBuffer);
+	FillBuffer(FrameTemporaries.SceneInstanceIndexToMeshCardsIndexBufferSRV, SceneInstanceIndexToMeshCardsIndexBuffer);
+	FillBuffer(FrameTemporaries.PageTableBufferSRV, PageTableBuffer);
+	FillBuffer(FrameTemporaries.CardPageBufferSRV, CardPageBuffer);
+
+	const auto FillTexture = [&](FRDGTexture*& OutTexture, const TRefCountPtr<IPooledRenderTarget>& InTexture)
+	{
+		if (!OutTexture && InTexture)
+		{
+			OutTexture = GraphBuilder.RegisterExternalTexture(InTexture);
+		}
+	};
+
+	FillTexture(FrameTemporaries.AlbedoAtlas, AlbedoAtlas);
+	FillTexture(FrameTemporaries.OpacityAtlas, OpacityAtlas);
+	FillTexture(FrameTemporaries.NormalAtlas, NormalAtlas);
+	FillTexture(FrameTemporaries.EmissiveAtlas, EmissiveAtlas);
+	FillTexture(FrameTemporaries.DepthAtlas, DepthAtlas);
+	FillTexture(FrameTemporaries.DirectLightingAtlas, DirectLightingAtlas);
+	FillTexture(FrameTemporaries.IndirectLightingAtlas, IndirectLightingAtlas);
+	FillTexture(FrameTemporaries.RadiosityNumFramesAccumulatedAtlas, RadiosityNumFramesAccumulatedAtlas);
+	FillTexture(FrameTemporaries.FinalLightingAtlas, FinalLightingAtlas);
+}
+
+void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
-	const FViewInfo& View = Views[0];
-	const bool bAnyLumenActive = ShouldRenderLumenDiffuseGI(Scene, View) || ShouldRenderLumenReflections(View);
+	bool bAnyLumenActive = false;
+
+	for (const FViewInfo& View : Views)
+	{
+		bAnyLumenActive = bAnyLumenActive || ShouldRenderLumenDiffuseGI(Scene, View) || ShouldRenderLumenReflections(View);
+	}
 
 	LumenCardRenderer.Reset();
 
@@ -2000,13 +2213,13 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 		SCOPED_NAMED_EVENT(FDeferredShadingSceneRenderer_BeginUpdateLumenSceneTasks, FColor::Emerald);
 		QUICK_SCOPE_CYCLE_COUNTER(BeginUpdateLumenSceneTasks);
 
-		FLumenSceneData& LumenSceneData = *Scene->LumenSceneData;
+		FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
 		LumenSceneData.bDebugClearAllCachedState = GLumenSceneRecaptureLumenSceneEveryFrame != 0;
 		const bool bReallocateAtlas = LumenSceneData.UpdateAtlasSize();
 
 		// Surface cache reset for debugging
 		if ((GLumenSceneSurfaceCacheReset != 0)
-			|| (GLumenSceneSurfaceCacheResetEveryNthFrame > 0 && (View.Family->FrameNumber % (uint32)GLumenSceneSurfaceCacheResetEveryNthFrame == 0)))
+			|| (GLumenSceneSurfaceCacheResetEveryNthFrame > 0 && (ViewFamily.FrameNumber % (uint32)GLumenSceneSurfaceCacheResetEveryNthFrame == 0)))
 		{
 			LumenSceneData.bDebugClearAllCachedState = true;
 			GLumenSceneSurfaceCacheReset = 0;
@@ -2022,7 +2235,7 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 		LumenSceneData.NumLockedCardsToUpdate = 0;
 		LumenSceneData.NumHiResPagesToAdd = 0;
 
-		UpdateLumenScenePrimitives(Scene);
+		UpdateLumenScenePrimitives(GraphBuilder.RHICmdList.GetGPUMask(), Scene);
 		UpdateDistantScene(Scene, Views[0]);
 
 		if (LumenSceneData.bDebugClearAllCachedState || bReallocateAtlas)
@@ -2031,16 +2244,15 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 		}
 
 		TArray<FVector, TInlineAllocator<2>> LumenSceneCameraOrigins;
+		float MaxCardUpdateDistanceFromCamera = 0.0f;
+		float LumenSceneDetail = 0.0f;
 
-		LumenSceneCameraOrigins.Add(GetLumenSceneViewOrigin(View, GetNumLumenVoxelClipmaps(View.FinalPostProcessSettings.LumenSceneViewDistance) - 1));
-		const float MaxCardUpdateDistanceFromCamera = ComputeMaxCardUpdateDistanceFromCamera(View.FinalPostProcessSettings.LumenSceneViewDistance);
-
-#if WITH_MGPU
-		for (const FVector& MultiViewOrigin : MultiViewFamilyOrigins)
+		for (const FViewInfo& View : Views)
 		{
-			LumenSceneCameraOrigins.Add(MultiViewOrigin);
+			LumenSceneCameraOrigins.Add(Lumen::GetLumenSceneViewOrigin(View, Lumen::GetNumGlobalDFClipmaps(View) - 1));
+			MaxCardUpdateDistanceFromCamera = FMath::Max(MaxCardUpdateDistanceFromCamera, ComputeMaxCardUpdateDistanceFromCamera(View));
+			LumenSceneDetail = FMath::Max(LumenSceneDetail, FMath::Clamp<float>(View.FinalPostProcessSettings.LumenSceneDetail, .125f, 8.0f));
 		}
-#endif
 
 		const int32 MaxTileCapturesPerFrame = GetMaxTileCapturesPerFrame();
 
@@ -2049,8 +2261,6 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 			QUICK_SCOPE_CYCLE_COUNTER(FillCardPagesToRender);
 
 			TArray<FSurfaceCacheRequest, SceneRenderingAllocator> SurfaceCacheRequests;
-
-			const float LumenSceneDetail = FMath::Clamp<float>(View.FinalPostProcessSettings.LumenSceneDetail, .125f, 8.0f);
 
 			UpdateSurfaceCachePrimitives(
 				LumenSceneData,
@@ -2064,10 +2274,11 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 				LumenSceneCameraOrigins,
 				LumenSceneDetail,
 				MaxCardUpdateDistanceFromCamera,
-				SurfaceCacheRequests);
+				SurfaceCacheRequests,
+				ViewFamily);
 
 			LumenSceneData.ProcessLumenSurfaceCacheRequests(
-				View,
+				Views[0],
 				MaxCardUpdateDistanceFromCamera,
 				MaxTileCapturesPerFrame,
 				LumenCardRenderer,
@@ -2076,89 +2287,95 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 		}
 
 		// Atlas reallocation
+		if (bReallocateAtlas || !LumenSceneData.AlbedoAtlas)
 		{
-			if (bReallocateAtlas || !LumenSceneData.AlbedoAtlas)
-			{
-				LumenSceneData.AllocateCardAtlases(GraphBuilder, View);
-			}
+			LumenSceneData.AllocateCardAtlases(GraphBuilder, FrameTemporaries);
+			ClearLumenSurfaceCacheAtlas(GraphBuilder, FrameTemporaries, Views[0].ShaderMap);
+		}
 
-			if (LumenSceneData.bDebugClearAllCachedState)
-			{
-				ClearLumenSurfaceCacheAtlas(GraphBuilder, View);
-			}
+		LumenSceneData.FillFrameTemporaries(GraphBuilder, FrameTemporaries);
+
+		if (LumenSceneData.bDebugClearAllCachedState)
+		{
+			ClearLumenSurfaceCacheAtlas(GraphBuilder, FrameTemporaries, Views[0].ShaderMap);
 		}
 
 		TArray<FCardPageRenderData, SceneRenderingAllocator>& CardPagesToRender = LumenCardRenderer.CardPagesToRender;
 
 		if (CardPagesToRender.Num())
 		{
+			UpdateLumenCardSceneUniformBuffer(GraphBuilder, Scene, *Scene->GetLumenSceneData(Views[0]), FrameTemporaries);
+
 			// Before we update the GPU page table, read from the persistent atlases for the card pages we are reallocating, and write it to the card capture atlas
 			// This is a resample operation, as the original data may have been at a different mip level, or didn't exist at all
-			ResampleLightingHistory(GraphBuilder, View, Scene, CardPagesToRender, LumenSceneData, LumenCardRenderer.ResampledCardCaptureAtlas);
+			ResampleLightingHistory(
+				GraphBuilder,
+				Views[0],
+				Scene,
+				FrameTemporaries,
+				CardPagesToRender,
+				LumenSceneData,
+				LumenCardRenderer.ResampledCardCaptureAtlas);
 		}
 
-		LumenSceneData.UploadPageTable(GraphBuilder);
-		
+		LumenSceneData.UploadPageTable(GraphBuilder, FrameTemporaries);
+
 		if (CardPagesToRender.Num() > 0)
 		{
+			QUICK_SCOPE_CYCLE_COUNTER(MeshPassSetup);
+
+		#if (UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT) && STATS
+			if (GLumenSceneSurfaceCacheLogUpdates != 0)
 			{
-				QUICK_SCOPE_CYCLE_COUNTER(MeshPassSetup);
+				UE_LOG(LogRenderer, Log, TEXT("Surface Cache Updates: %d"), CardPagesToRender.Num());
 
-				#if (UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT) && STATS
-				if (GLumenSceneSurfaceCacheLogUpdates != 0)
-				{
-					UE_LOG(LogRenderer, Log, TEXT("Surface Cache Updates: %d"), CardPagesToRender.Num());
+				if (GLumenSceneSurfaceCacheLogUpdates > 1)
+				{ 
+					for (const FCardPageRenderData& CardPageRenderData : CardPagesToRender)
+					{
+						const FLumenPrimitiveGroup& LumenPrimitiveGroup = LumenSceneData.PrimitiveGroups[CardPageRenderData.PrimitiveGroupIndex];
 
-					if (GLumenSceneSurfaceCacheLogUpdates > 1)
-					{ 
-						for (FCardPageRenderData& CardPageRenderData : CardPagesToRender)
-						{
-							const FLumenPrimitiveGroup& LumenPrimitiveGroup = LumenSceneData.PrimitiveGroups[CardPageRenderData.PrimitiveGroupIndex];
-
-							UE_LOG(LogRenderer, Log, TEXT("%s Instance:%d NumPrimsInGroup: %d"),
-								*LumenPrimitiveGroup.Primitives[0]->Proxy->GetStatId().GetName().ToString(),
-								LumenPrimitiveGroup.PrimitiveInstanceIndex,
-								LumenPrimitiveGroup.Primitives.Num());
-						}
+						UE_LOG(LogRenderer, Log, TEXT("%s Instance:%d NumPrimsInGroup: %d"),
+							*LumenPrimitiveGroup.Primitives[0]->Proxy->GetStatId().GetName().ToString(),
+							LumenPrimitiveGroup.PrimitiveInstanceIndex,
+							LumenPrimitiveGroup.Primitives.Num());
 					}
 				}
-				#endif
+			}
+		#endif
 
-				for (FCardPageRenderData& CardPageRenderData : CardPagesToRender)
+			for (FCardPageRenderData& CardPageRenderData : CardPagesToRender)
+			{
+				CardPageRenderData.StartMeshDrawCommandIndex = LumenCardRenderer.MeshDrawCommands.Num();
+				CardPageRenderData.NumMeshDrawCommands = 0;
+				int32 NumNanitePrimitives = 0;
+
+				const FLumenPrimitiveGroup& PrimitiveGroup = LumenSceneData.PrimitiveGroups[CardPageRenderData.PrimitiveGroupIndex];
+				const FLumenCard& Card = LumenSceneData.Cards[CardPageRenderData.CardIndex];
+				ensure(Card.bVisible);
+
+				if (PrimitiveGroup.bHeightfield)
 				{
-					CardPageRenderData.StartMeshDrawCommandIndex = LumenCardRenderer.MeshDrawCommands.Num();
-					CardPageRenderData.NumMeshDrawCommands = 0;
-					int32 NumNanitePrimitives = 0;
-
-					const FLumenPrimitiveGroup& PrimitiveGroup = LumenSceneData.PrimitiveGroups[CardPageRenderData.PrimitiveGroupIndex];
-					const FLumenCard& Card = LumenSceneData.Cards[CardPageRenderData.CardIndex];
-					ensure(Card.bVisible);
-
-					if (PrimitiveGroup.bHeightfield)
-					{
-						AddCardCaptureDraws(
-							Scene,
-							GraphBuilder.RHICmdList,
-							CardPageRenderData,
-							PrimitiveGroup,
-							LumenCardRenderer.LandscapePrimitivesInRange,
-							LumenCardRenderer.MeshDrawCommands,
-							LumenCardRenderer.MeshDrawPrimitiveIds);
-					}
-					else
-					{
-						AddCardCaptureDraws(
-							Scene,
-							GraphBuilder.RHICmdList,
-							CardPageRenderData,
-							PrimitiveGroup,
-							PrimitiveGroup.Primitives,
-							LumenCardRenderer.MeshDrawCommands,
-							LumenCardRenderer.MeshDrawPrimitiveIds);
-					}
-
-					CardPageRenderData.NumMeshDrawCommands = LumenCardRenderer.MeshDrawCommands.Num() - CardPageRenderData.StartMeshDrawCommandIndex;
+					AddCardCaptureDraws(
+						Scene,
+						CardPageRenderData,
+						PrimitiveGroup,
+						LumenCardRenderer.LandscapePrimitivesInRange,
+						LumenCardRenderer.MeshDrawCommands,
+						LumenCardRenderer.MeshDrawPrimitiveIds);
 				}
+				else
+				{
+					AddCardCaptureDraws(
+						Scene,
+						CardPageRenderData,
+						PrimitiveGroup,
+						PrimitiveGroup.Primitives,
+						LumenCardRenderer.MeshDrawCommands,
+						LumenCardRenderer.MeshDrawPrimitiveIds);
+				}
+
+				CardPageRenderData.NumMeshDrawCommands = LumenCardRenderer.MeshDrawCommands.Num() - CardPageRenderData.StartMeshDrawCommandIndex;
 			}
 		}
 	}
@@ -2166,58 +2383,51 @@ void FDeferredShadingSceneRenderer::BeginUpdateLumenSceneTasks(FRDGBuilder& Grap
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLumenCardScene, "LumenCardScene");
 
-void SetupLumenCardSceneParameters(FRDGBuilder& GraphBuilder, const FScene* Scene, FLumenCardScene& OutParameters)
+void UpdateLumenCardSceneUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	FScene* Scene,
+	const FLumenSceneData& LumenSceneData,
+	FLumenSceneFrameTemporaries& FrameTemporaries)
 {
-	FLumenSceneData& LumenSceneData = *Scene->LumenSceneData;
-
-	OutParameters.NumCards = LumenSceneData.Cards.Num();
-	OutParameters.NumMeshCards = LumenSceneData.MeshCards.Num();
-	OutParameters.NumCardPages = LumenSceneData.GetNumCardPages();
-	OutParameters.MaxConeSteps = GLumenGIMaxConeSteps;	
-	OutParameters.PhysicalAtlasSize = LumenSceneData.GetPhysicalAtlasSize();
-	OutParameters.InvPhysicalAtlasSize = FVector2f(1.0f) / OutParameters.PhysicalAtlasSize;
-	OutParameters.IndirectLightingAtlasDownsampleFactor = Lumen::GetRadiosityAtlasDownsampleFactor();
-	OutParameters.NumDistantCards = LumenSceneData.DistantCardIndices.Num();
+	FLumenCardScene* UniformParameters = GraphBuilder.AllocParameters<FLumenCardScene>();
+	UniformParameters->NumCards = LumenSceneData.Cards.Num();
+	UniformParameters->NumMeshCards = LumenSceneData.MeshCards.Num();
+	UniformParameters->NumCardPages = LumenSceneData.GetNumCardPages();
+	UniformParameters->MaxConeSteps = GLumenGIMaxConeSteps;	
+	UniformParameters->PhysicalAtlasSize = LumenSceneData.GetPhysicalAtlasSize();
+	UniformParameters->InvPhysicalAtlasSize = FVector2f(1.0f) / UniformParameters->PhysicalAtlasSize;
+	UniformParameters->IndirectLightingAtlasDownsampleFactor = Lumen::GetRadiosityAtlasDownsampleFactor();
+	UniformParameters->NumDistantCards = LumenSceneData.DistantCardIndices.Num();
 	extern float GLumenDistantSceneMaxTraceDistance;
-	OutParameters.DistantSceneMaxTraceDistance = GLumenDistantSceneMaxTraceDistance;
-	OutParameters.DistantSceneDirection = FVector3f::ZeroVector;
+	UniformParameters->DistantSceneMaxTraceDistance = GLumenDistantSceneMaxTraceDistance;
+	UniformParameters->DistantSceneDirection = FVector3f::ZeroVector;
 
 	if (Scene->DirectionalLights.Num() > 0)
 	{
-		OutParameters.DistantSceneDirection = (FVector3f)-Scene->DirectionalLights[0]->Proxy->GetDirection();
+		UniformParameters->DistantSceneDirection = (FVector3f)-Scene->DirectionalLights[0]->Proxy->GetDirection();
 	}
 	
 	for (int32 i = 0; i < LumenSceneData.DistantCardIndices.Num(); i++)
 	{
-		GET_SCALAR_ARRAY_ELEMENT(OutParameters.DistantCardIndices, i) = LumenSceneData.DistantCardIndices[i];
+		GET_SCALAR_ARRAY_ELEMENT(UniformParameters->DistantCardIndices, i) = LumenSceneData.DistantCardIndices[i];
 	}
 
-	OutParameters.CardData = LumenSceneData.CardBuffer.SRV;
-	OutParameters.MeshCardsData = LumenSceneData.MeshCardsBuffer.SRV;
-	OutParameters.CardPageData = LumenSceneData.CardPageBuffer.SRV;
-	OutParameters.PageTableBuffer = LumenSceneData.GetPageTableBufferSRV();
-	OutParameters.SceneInstanceIndexToMeshCardsIndexBuffer = LumenSceneData.SceneInstanceIndexToMeshCardsIndexBuffer.SRV;
+	UniformParameters->CardData = FrameTemporaries.CardBufferSRV;
+	UniformParameters->MeshCardsData = FrameTemporaries.MeshCardsBufferSRV;
+	UniformParameters->HeightfieldData = FrameTemporaries.HeightfieldBufferSRV;
+	UniformParameters->SceneInstanceIndexToMeshCardsIndexBuffer = FrameTemporaries.SceneInstanceIndexToMeshCardsIndexBufferSRV;
+	UniformParameters->PageTableBuffer = FrameTemporaries.PageTableBufferSRV;
+	UniformParameters->CardPageData = FrameTemporaries.CardPageBufferSRV;
 
-	OutParameters.HeightfieldData = LumenSceneData.HeightfieldBuffer.SRV;
-	OutParameters.NumHeightfields = LumenSceneData.Heightfields.Num();
+	UniformParameters->NumHeightfields = LumenSceneData.Heightfields.Num();
 
-	if (LumenSceneData.AlbedoAtlas.IsValid())
-	{
-		OutParameters.OpacityAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.OpacityAtlas, TEXT("Lumen.SceneOpacity"));
-		OutParameters.AlbedoAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.AlbedoAtlas, TEXT("Lumen.SceneAlbedo"));
-		OutParameters.NormalAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.NormalAtlas, TEXT("Lumen.SceneNormal"));
-		OutParameters.EmissiveAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.EmissiveAtlas, TEXT("Lumen.SceneEmissive"));
-		OutParameters.DepthAtlas = GraphBuilder.RegisterExternalTexture(LumenSceneData.DepthAtlas, TEXT("Lumen.SceneDepth"));
-	}
-	else
-	{
-		FRDGTextureRef BlackDummyTextureRef = GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy, TEXT("Lumen.BlackDummy"));
-		OutParameters.OpacityAtlas = BlackDummyTextureRef;
-		OutParameters.AlbedoAtlas = BlackDummyTextureRef;
-		OutParameters.NormalAtlas = BlackDummyTextureRef;
-		OutParameters.EmissiveAtlas = BlackDummyTextureRef;
-		OutParameters.DepthAtlas = BlackDummyTextureRef;
-	}
+	UniformParameters->AlbedoAtlas = FrameTemporaries.AlbedoAtlas;
+	UniformParameters->OpacityAtlas = FrameTemporaries.OpacityAtlas;
+	UniformParameters->NormalAtlas = FrameTemporaries.NormalAtlas;
+	UniformParameters->EmissiveAtlas = FrameTemporaries.EmissiveAtlas;
+	UniformParameters->DepthAtlas = FrameTemporaries.DepthAtlas;
+
+	FrameTemporaries.LumenCardSceneUniformBuffer = GraphBuilder.CreateUniformBuffer(UniformParameters);
 }
 
 DECLARE_GPU_STAT(UpdateCardSceneBuffer);
@@ -2248,7 +2458,7 @@ END_SHADER_PARAMETER_STRUCT()
 
 void ClearLumenCardCapture(
 	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
+	const FGlobalShaderMap* GlobalShaderMap,
 	const FCardCaptureAtlas& Atlas,
 	FRDGBufferSRVRef RectCoordBufferSRV,
 	uint32 NumRects)
@@ -2260,11 +2470,11 @@ void ClearLumenCardCapture(
 	PassParameters->RenderTargets[2] = FRenderTargetBinding(Atlas.Emissive, ERenderTargetLoadAction::ELoad);
 	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(Atlas.DepthStencil, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilWrite);
 
-	auto PixelShader = View.ShaderMap->GetShader<FClearLumenCardCapturePS>();
+	auto PixelShader = GlobalShaderMap->GetShader<FClearLumenCardCapturePS>();
 
 	FPixelShaderUtils::AddRasterizeToRectsPass<FClearLumenCardCapturePS>(
 		GraphBuilder,
-		View.ShaderMap,
+		GlobalShaderMap,
 		RDG_EVENT_NAME("ClearCardCapture"),
 		PixelShader,
 		PassParameters,
@@ -2280,7 +2490,8 @@ void ClearLumenCardCapture(
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardPassParameters, )
-	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	// An RDG View uniform buffer is used as an optimization to move creation off the render thread.
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FViewUniformShaderParameters, View)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenCardPassUniformParameters, CardPass)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 	RENDER_TARGET_BINDING_SLOTS()
@@ -2328,30 +2539,35 @@ uint32 FLumenSceneData::GetCardCaptureRefreshNumPages() const
 
 void AllocateCardCaptureAtlas(FRDGBuilder& GraphBuilder, FIntPoint CardCaptureAtlasSize, FCardCaptureAtlas& CardCaptureAtlas)
 {
+	// Collect info from SetupCardCaptureRenderTargetsInfo
+	FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+	SetupCardCaptureRenderTargetsInfo(RenderTargetsInfo);
+	check(RenderTargetsInfo.RenderTargetsEnabled == 3);
+
 	CardCaptureAtlas.Size = CardCaptureAtlasSize;
 
 	CardCaptureAtlas.Albedo = GraphBuilder.CreateTexture(
 		FRDGTextureDesc::Create2D(
 			CardCaptureAtlasSize,
-			PF_R8G8B8A8,
-			FClearValueBinding::Green,
-			TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear),
+			(EPixelFormat)RenderTargetsInfo.RenderTargetFormats[0],
+			FClearValueBinding::Black,
+			RenderTargetsInfo.RenderTargetFlags[0]),
 		TEXT("Lumen.CardCaptureAlbedoAtlas"));
 
 	CardCaptureAtlas.Normal = GraphBuilder.CreateTexture(
 		FRDGTextureDesc::Create2D(
 			CardCaptureAtlasSize,
-			PF_R8G8,
-			FClearValueBinding::Green,
-			TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear),
+			(EPixelFormat)RenderTargetsInfo.RenderTargetFormats[1],
+			FClearValueBinding::Black,
+			RenderTargetsInfo.RenderTargetFlags[1]),
 		TEXT("Lumen.CardCaptureNormalAtlas"));
 
 	CardCaptureAtlas.Emissive = GraphBuilder.CreateTexture(
 		FRDGTextureDesc::Create2D(
 			CardCaptureAtlasSize,
-			PF_FloatR11G11B10,
-			FClearValueBinding::Green,
-			TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_NoFastClear),
+			(EPixelFormat)RenderTargetsInfo.RenderTargetFormats[2],
+			FClearValueBinding::Black,
+			RenderTargetsInfo.RenderTargetFlags[2]),
 		TEXT("Lumen.CardCaptureEmissiveAtlas"));
 
 	CardCaptureAtlas.DepthStencil = GraphBuilder.CreateTexture(
@@ -2359,15 +2575,15 @@ void AllocateCardCaptureAtlas(FRDGBuilder& GraphBuilder, FIntPoint CardCaptureAt
 			CardCaptureAtlasSize,
 			PF_DepthStencil,
 			FClearValueBinding::DepthZero,
-			TexCreate_ShaderResource | TexCreate_DepthStencilTargetable | TexCreate_NoFastClear),
+			RenderTargetsInfo.DepthStencilTargetFlag),
 		TEXT("Lumen.CardCaptureDepthStencilAtlas"));
 }
 
-void UpdateGlobalLightingState(const FScene* Scene, FViewInfo& View, FLumenSceneData& LumenSceneData)
+bool UpdateGlobalLightingState(const FScene* Scene, const FViewInfo& View, FLumenSceneData& LumenSceneData)
 {
 	FLumenGlobalLightingState& GlobalLightingState = LumenSceneData.GlobalLightingState;
 
-	bool bModifySceneStateVersion = false;
+	bool bPropagateGlobalLightingChange = false;
 	const FLightSceneInfo* DirectionalLightSceneInfo = nullptr;
 
 	for (const FLightSceneInfo* LightSceneInfo : Scene->DirectionalLights)
@@ -2381,15 +2597,14 @@ void UpdateGlobalLightingState(const FScene* Scene, FViewInfo& View, FLumenScene
 		}
 	}
 
-	if (DirectionalLightSceneInfo && GlobalLightingState.bDirectionalLightValid)
 	{
-		const float OldMax = GlobalLightingState.DirectionalLightColor.GetMax();
-		const float NewMax = DirectionalLightSceneInfo->Proxy->GetColor().GetMax();
-		const float Ratio = OldMax / FMath::Max(NewMax, .00001f);
+		const float OldMax = GlobalLightingState.bDirectionalLightValid ? GlobalLightingState.DirectionalLightColor.GetMax() : 0.0f;
+		const float NewMax = DirectionalLightSceneInfo ? DirectionalLightSceneInfo->Proxy->GetColor().GetMax() : 0.0f;
+		const float Ratio = FMath::Max(OldMax, .00001f) / FMath::Max(NewMax, .00001f);
 
 		if (Ratio > 4.0f || Ratio < .25f)
 		{
-			bModifySceneStateVersion = true;
+			bPropagateGlobalLightingChange = true;
 		}
 	}
 
@@ -2406,15 +2621,14 @@ void UpdateGlobalLightingState(const FScene* Scene, FViewInfo& View, FLumenScene
 
 	const FSkyLightSceneProxy* SkyLightProxy = Scene->SkyLight;
 
-	if (SkyLightProxy && GlobalLightingState.bSkyLightValid)
 	{
-		const float OldMax = GlobalLightingState.SkyLightColor.GetMax();
-		const float NewMax = SkyLightProxy->GetEffectiveLightColor().GetMax();
-		const float Ratio = OldMax / FMath::Max(NewMax, .00001f);
+		const float OldMax = GlobalLightingState.bSkyLightValid ? GlobalLightingState.SkyLightColor.GetMax() : 0.0f;
+		const float NewMax = SkyLightProxy ? SkyLightProxy->GetEffectiveLightColor().GetMax() : 0.0f;
+		const float Ratio = FMath::Max(OldMax, .00001f) / FMath::Max(NewMax, .00001f);
 
 		if (Ratio > 4.0f || Ratio < .25f)
 		{
-			bModifySceneStateVersion = true;
+			bPropagateGlobalLightingChange = true;
 		}
 	}
 
@@ -2429,29 +2643,63 @@ void UpdateGlobalLightingState(const FScene* Scene, FViewInfo& View, FLumenScene
 		GlobalLightingState.bSkyLightValid = false;
 	}
 
-	if (bModifySceneStateVersion)
-	{
-		View.bLumenPropagateGlobalLightingChange = true;
-	}
+	return bPropagateGlobalLightingChange;
 }
 
-void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
+void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDeferredShadingSceneRenderer::UpdateLumenScene);
 
-	FViewInfo& View = Views[0];
-	const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
-	const bool bAnyLumenActive = ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen;
+	bool bAnyLumenActive = false;
 
-	if (bAnyLumenActive
-		// Don't update scene lighting for secondary views
-		&& !View.bIsPlanarReflection 
-		&& !View.bIsSceneCapture
-		&& !View.bIsReflectionCapture
-		&& View.ViewState)
+	for (FViewInfo& View : Views)
 	{
-		FLumenSceneData& LumenSceneData = *Scene->LumenSceneData;
+		const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
+		bool bLumenActive =
+			((ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen)
+				// Don't update scene lighting for secondary views
+				&& !View.bIsPlanarReflection 
+				&& !View.bIsSceneCaptureCube
+				&& !View.bIsReflectionCapture
+				&& View.ViewState);
+
+		bAnyLumenActive = bAnyLumenActive || bLumenActive;
+
+		// Cache LumenSceneData pointer per view for efficient lookup of the view specific Lumen scene (also nice for debugging)
+		View.ViewLumenSceneData = Scene->FindLumenSceneData(View.ViewState ? View.ViewState->GetViewKey() : 0, View.GPUMask.GetFirstIndex());
+
+#if WITH_MGPU
+		if (bLumenActive)
+		{
+			if (View.ViewLumenSceneData->bViewSpecific)
+			{
+				// Update view specific scene data if the GPU mask changed (copies resources cross GPU so CPU and GPU data are coherent)
+				View.ViewLumenSceneData->UpdateGPUMask(GraphBuilder, FrameTemporaries, View.ViewState->Lumen, View.GPUMask);
+			}
+			else if (View.GPUMask.GetFirstIndex() != 0)
+			{
+				// Otherwise, if this view is on a different GPU, we need to allocate GPU specific scene data (if not already allocated)
+				if (View.ViewLumenSceneData == Scene->DefaultLumenSceneData)
+				{
+					View.ViewLumenSceneData = new FLumenSceneData(Scene->DefaultLumenSceneData->bTrackAllPrimitives);
+
+					View.ViewLumenSceneData->CopyInitialData(*Scene->DefaultLumenSceneData);
+
+					// Key shouldn't already exist in Scene, because "FindLumenSceneData" above should have found it
+					FLumenSceneDataKey ByGPUIndex = { 0, View.GPUMask.GetFirstIndex() };
+					check(Scene->PerViewOrGPULumenSceneData.Find(ByGPUIndex) == nullptr);
+
+					Scene->PerViewOrGPULumenSceneData.Emplace(ByGPUIndex, View.ViewLumenSceneData);
+				}
+			}
+		}
+#endif  // WITH_MGPU
+	}
+
+	if (bAnyLumenActive)
+	{
+		FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
 		TArray<FCardPageRenderData, SceneRenderingAllocator>& CardPagesToRender = LumenCardRenderer.CardPagesToRender;
 
 		QUICK_SCOPE_CYCLE_COUNTER(UpdateLumenScene);
@@ -2459,9 +2707,9 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 		RDG_GPU_STAT_SCOPE(GraphBuilder, LumenSceneUpdate);
 		RDG_EVENT_SCOPE(GraphBuilder, "LumenSceneUpdate: %u card captures %.3fM texels", CardPagesToRender.Num(), LumenCardRenderer.NumCardTexelsToCapture / (1024.0f * 1024.0f));
 
-		UpdateGlobalLightingState(Scene, View, LumenSceneData);
+		LumenCardRenderer.bPropagateGlobalLightingChange = UpdateGlobalLightingState(Scene, Views[0], LumenSceneData);
 
-		Lumen::UpdateCardSceneBuffer(GraphBuilder, ViewFamily, Scene);
+		Lumen::UpdateCardSceneBuffer(GraphBuilder, FrameTemporaries, ViewFamily, Scene);
 
 		// Init transient render targets for capturing cards
 		FCardCaptureAtlas CardCaptureAtlas;
@@ -2471,10 +2719,10 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 		{
 			FRHIBuffer* PrimitiveIdVertexBuffer = nullptr;
 			FInstanceCullingResult InstanceCullingResult;
-			TUniquePtr<FInstanceCullingContext> InstanceCullingContext;
+			FInstanceCullingContext* InstanceCullingContext = nullptr;
 			if (Scene->GPUScene.IsEnabled())
 			{
-				InstanceCullingContext = MakeUnique<FInstanceCullingContext>(View.GetFeatureLevel(), nullptr, TArrayView<const int32>(&View.GPUSceneViewId, 1), nullptr);
+				InstanceCullingContext = GraphBuilder.AllocObject<FInstanceCullingContext>(Views[0].GetFeatureLevel(), nullptr, TArrayView<const int32>(&Views[0].GPUSceneViewId, 1), nullptr);
 				
 				int32 MaxInstances = 0;
 				int32 VisibleMeshDrawCommandsNum = 0;
@@ -2484,7 +2732,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				// Not supposed to do any compaction here.
 				ensure(VisibleMeshDrawCommandsNum == LumenCardRenderer.MeshDrawCommands.Num());
 
-				InstanceCullingContext->BuildRenderingCommands(GraphBuilder, Scene->GPUScene, View.DynamicPrimitiveCollector.GetInstanceSceneDataOffset(), View.DynamicPrimitiveCollector.NumInstances(), InstanceCullingResult);
+				InstanceCullingContext->BuildRenderingCommands(GraphBuilder, Scene->GPUScene, Views[0].DynamicPrimitiveCollector.GetInstanceSceneDataOffset(), Views[0].DynamicPrimitiveCollector.NumInstances(), InstanceCullingResult);
 			}
 			else
 			{
@@ -2493,7 +2741,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				{
 					const uint32 PrimitiveIdBufferDataSize = LumenCardRenderer.MeshDrawPrimitiveIds.Num() * sizeof(int32);
 
-					FPrimitiveIdVertexBufferPoolEntry Entry = GPrimitiveIdVertexBufferPool.Allocate(PrimitiveIdBufferDataSize);
+					FPrimitiveIdVertexBufferPoolEntry Entry = GPrimitiveIdVertexBufferPool.Allocate(GraphBuilder.RHICmdList, PrimitiveIdBufferDataSize);
 					PrimitiveIdVertexBuffer = Entry.BufferRHI;
 
 					void* RESTRICT Data = RHILockBuffer(PrimitiveIdVertexBuffer, 0, PrimitiveIdBufferDataSize, RLM_WriteOnly);
@@ -2527,10 +2775,10 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 						CardCaptureRectArray);
 				CardCaptureRectBufferSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CardCaptureRectBuffer, PF_R32G32B32A32_UINT));
 
-				ClearLumenCardCapture(GraphBuilder, View, CardCaptureAtlas, CardCaptureRectBufferSRV, CardPagesToRender.Num());
+				ClearLumenCardCapture(GraphBuilder, Views[0].ShaderMap, CardCaptureAtlas, CardCaptureRectBufferSRV, CardPagesToRender.Num());
 			}
 
-			FViewInfo* SharedView = View.CreateSnapshot();
+			FViewInfo* SharedView = Views[0].CreateSnapshot();
 			{
 				SharedView->DynamicPrimitiveCollector = FGPUScenePrimitiveCollector(&GetGPUSceneDynamicContext());
 				SharedView->StereoPass = EStereoscopicPass::eSSP_FULL;
@@ -2543,30 +2791,20 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				FPlatformMemory::Memcpy(&SharedView->PrevViewInfo.HZB, &NullRef, sizeof(SharedView->PrevViewInfo.HZB));
 
 				SharedView->CachedViewUniformShaderParameters = MakeUnique<FViewUniformShaderParameters>();
-				SharedView->CachedViewUniformShaderParameters->PrimitiveSceneData = Scene->GPUScene.PrimitiveBuffer.SRV;
-				SharedView->CachedViewUniformShaderParameters->InstanceSceneData = Scene->GPUScene.InstanceSceneDataBuffer.SRV;
-				SharedView->CachedViewUniformShaderParameters->InstancePayloadData = Scene->GPUScene.InstancePayloadDataBuffer.SRV;
-				SharedView->CachedViewUniformShaderParameters->LightmapSceneData = Scene->GPUScene.LightmapDataBuffer.SRV;
+				SharedView->CachedViewUniformShaderParameters->PrimitiveSceneData = Scene->GPUScene.PrimitiveBuffer->GetSRV();
+				SharedView->CachedViewUniformShaderParameters->InstanceSceneData = Scene->GPUScene.InstanceSceneDataBuffer->GetSRV();
+				SharedView->CachedViewUniformShaderParameters->InstancePayloadData = Scene->GPUScene.InstancePayloadDataBuffer->GetSRV();
+				SharedView->CachedViewUniformShaderParameters->LightmapSceneData = Scene->GPUScene.LightmapDataBuffer->GetSRV();
 				SharedView->CachedViewUniformShaderParameters->InstanceSceneDataSOAStride = Scene->GPUScene.InstanceSceneDataSOAStride;
 
 				SharedView->ViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*SharedView->CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
 			}
 
 			FLumenCardPassUniformParameters* PassUniformParameters = GraphBuilder.AllocParameters<FLumenCardPassUniformParameters>();
-			SetupSceneTextureUniformParameters(GraphBuilder, Scene->GetFeatureLevel(), /*SceneTextureSetupMode*/ ESceneTextureSetupMode::None, PassUniformParameters->SceneTextures);
-			PassUniformParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+			SetupSceneTextureUniformParameters(GraphBuilder, &GetActiveSceneTextures(), Scene->GetFeatureLevel(), /*SceneTextureSetupMode*/ ESceneTextureSetupMode::None, PassUniformParameters->SceneTextures);
+			PassUniformParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, Views[0]);
 
 			{
-				FLumenCardPassParameters* PassParameters = GraphBuilder.AllocParameters<FLumenCardPassParameters>();
-				PassParameters->View = Scene->UniformBuffers.LumenCardCaptureViewUniformBuffer;
-				PassParameters->CardPass = GraphBuilder.CreateUniformBuffer(PassUniformParameters);
-				PassParameters->RenderTargets[0] = FRenderTargetBinding(CardCaptureAtlas.Albedo, ERenderTargetLoadAction::ELoad);
-				PassParameters->RenderTargets[1] = FRenderTargetBinding(CardCaptureAtlas.Normal, ERenderTargetLoadAction::ELoad);
-				PassParameters->RenderTargets[2] = FRenderTargetBinding(CardCaptureAtlas.Emissive, ERenderTargetLoadAction::ELoad);
-				PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(CardCaptureAtlas.DepthStencil, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilNop);
-
-				InstanceCullingResult.GetDrawParameters(PassParameters->InstanceCullingDrawParams);
-
 				uint32 NumPages = 0;
 				uint32 NumDraws = 0;
 				uint32 NumInstances = 0;
@@ -2612,56 +2850,70 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				}
 				#endif
 
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("MeshCardCapture Pages:%u Draws:%u Instances:%u Tris:%u", NumPages, NumDraws, NumInstances, NumTris),
-					PassParameters,
-					ERDGPassFlags::Raster,
-					[this, Scene = Scene, PrimitiveIdVertexBuffer, SharedView, &CardPagesToRender, PassParameters, InstanceCullingContext = MoveTemp(InstanceCullingContext)](FRHICommandListImmediate& RHICmdList)
+				TRACE_CPUPROFILER_EVENT_SCOPE(CardPageRenderPasses);
+
+				FLumenCardPassParameters* CommonPassParameters = GraphBuilder.AllocParameters<FLumenCardPassParameters>();
+				CommonPassParameters->CardPass = GraphBuilder.CreateUniformBuffer(PassUniformParameters);
+				CommonPassParameters->RenderTargets[0] = FRenderTargetBinding(CardCaptureAtlas.Albedo, ERenderTargetLoadAction::ELoad);
+				CommonPassParameters->RenderTargets[1] = FRenderTargetBinding(CardCaptureAtlas.Normal, ERenderTargetLoadAction::ELoad);
+				CommonPassParameters->RenderTargets[2] = FRenderTargetBinding(CardCaptureAtlas.Emissive, ERenderTargetLoadAction::ELoad);
+				CommonPassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(CardCaptureAtlas.DepthStencil, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilNop);
+
+				InstanceCullingResult.GetDrawParameters(CommonPassParameters->InstanceCullingDrawParams);
+
+				for (FCardPageRenderData& CardPageRenderData : CardPagesToRender)
+				{
+					RDG_EVENT_SCOPE(GraphBuilder, "MeshCardCapture Pages:%u Draws:%u Instances:%u Tris:%u", NumPages, NumDraws, NumInstances, NumTris);
+
+					if (CardPageRenderData.NumMeshDrawCommands > 0)
 					{
-						QUICK_SCOPE_CYCLE_COUNTER(MeshPass);
+						CardPageRenderData.PatchView(Scene, SharedView);
 
-						for (FCardPageRenderData& CardPageRenderData : CardPagesToRender)
+						FLumenCardPassParameters* PassParameters = GraphBuilder.AllocParameters<FLumenCardPassParameters>(CommonPassParameters);
+						PassParameters->View = GraphBuilder.CreateUniformBuffer(GraphBuilder.AllocParameters(SharedView->CachedViewUniformShaderParameters.Get()));
+
+						GraphBuilder.AddPass(
+							RDG_EVENT_NAME("CardPage Commands:%u", CardPageRenderData.NumMeshDrawCommands),
+							PassParameters,
+							ERDGPassFlags::Raster,
+							[this, Scene = Scene, PrimitiveIdVertexBuffer, &CardPageRenderData, PassParameters, InstanceCullingContext](FRHICommandList& RHICmdList)
 						{
-							if (CardPageRenderData.NumMeshDrawCommands > 0)
+							QUICK_SCOPE_CYCLE_COUNTER(MeshPass);
+
+							const FIntRect ViewRect = CardPageRenderData.CardCaptureAtlasRect;
+							RHICmdList.SetViewport(ViewRect.Min.X, ViewRect.Min.Y, 0.0f, ViewRect.Max.X, ViewRect.Max.Y, 1.0f);
+
+							FGraphicsMinimalPipelineStateSet GraphicsMinimalPipelineStateSet;
+							if (Scene->GPUScene.IsEnabled())
 							{
-								const FIntRect ViewRect = CardPageRenderData.CardCaptureAtlasRect;
-								RHICmdList.SetViewport(ViewRect.Min.X, ViewRect.Min.Y, 0.0f, ViewRect.Max.X, ViewRect.Max.Y, 1.0f);
+								FInstanceCullingDrawParams& InstanceCullingDrawParams = PassParameters->InstanceCullingDrawParams;
 
-								CardPageRenderData.PatchView(RHICmdList, Scene, SharedView);
-								Scene->UniformBuffers.LumenCardCaptureViewUniformBuffer.UpdateUniformBufferImmediate(*SharedView->CachedViewUniformShaderParameters);
-
-								FGraphicsMinimalPipelineStateSet GraphicsMinimalPipelineStateSet;
-								if (Scene->GPUScene.IsEnabled())
-								{
-									FInstanceCullingDrawParams& InstanceCullingDrawParams = PassParameters->InstanceCullingDrawParams;
-
-									InstanceCullingContext->SubmitDrawCommands(
-										LumenCardRenderer.MeshDrawCommands,
-										GraphicsMinimalPipelineStateSet,
-										GetMeshDrawCommandOverrideArgs(PassParameters->InstanceCullingDrawParams),
-										CardPageRenderData.StartMeshDrawCommandIndex,
-										CardPageRenderData.NumMeshDrawCommands,
-										1,
-										RHICmdList);
-								}
-								else
-								{
-									SubmitMeshDrawCommandsRange(
-										LumenCardRenderer.MeshDrawCommands,
-										GraphicsMinimalPipelineStateSet,
-										PrimitiveIdVertexBuffer,
-										FInstanceCullingContext::GetInstanceIdBufferStride(Scene->GetFeatureLevel()),
-										0,
-										false,
-										CardPageRenderData.StartMeshDrawCommandIndex,
-										CardPageRenderData.NumMeshDrawCommands,
-										1,
-										RHICmdList);
-								}
+								InstanceCullingContext->SubmitDrawCommands(
+									LumenCardRenderer.MeshDrawCommands,
+									GraphicsMinimalPipelineStateSet,
+									GetMeshDrawCommandOverrideArgs(PassParameters->InstanceCullingDrawParams),
+									CardPageRenderData.StartMeshDrawCommandIndex,
+									CardPageRenderData.NumMeshDrawCommands,
+									1,
+									RHICmdList);
 							}
-						}
+							else
+							{
+								SubmitMeshDrawCommandsRange(
+									LumenCardRenderer.MeshDrawCommands,
+									GraphicsMinimalPipelineStateSet,
+									PrimitiveIdVertexBuffer,
+									FInstanceCullingContext::GetInstanceIdBufferStride(Scene->GetFeatureLevel()),
+									0,
+									false,
+									CardPageRenderData.StartMeshDrawCommandIndex,
+									CardPageRenderData.NumMeshDrawCommands,
+									1,
+									RHICmdList);
+							}
+						});
 					}
-				);
+				}
 			}
 
 			bool bAnyNaniteMeshes = false;
@@ -2703,6 +2955,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				CullingConfig.bForceHWRaster			= RasterContext.RasterScheduling == Nanite::ERasterScheduling::HardwareOnly;
 				CullingConfig.SetViewFlags(*SharedView);
 				CullingConfig.bIsLumenCapture = true;
+				CullingConfig.bProgrammableRaster = GNaniteProgrammableRasterLumen != 0;
 
 				Nanite::FCullingContext CullingContext = Nanite::InitCullingContext(
 					GraphBuilder,
@@ -2713,89 +2966,57 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 					CullingConfig
 				);
 
-				if (GLumenSceneNaniteMultiViewRaster != 0)
+				FNaniteVisibilityResults VisibilityResults; // No material visibility culling for Lumen at this time
+
+				const uint32 NumCardPagesToRender = CardPagesToRender.Num();
+
+				uint32 NextCardIndex = 0;
+				while(NextCardIndex < NumCardPagesToRender)
 				{
-					// Multi-view rendering path
-					const uint32 NumCardPagesToRender = CardPagesToRender.Num();
+					TArray<Nanite::FPackedView, SceneRenderingAllocator> NaniteViews;
+					TArray<Nanite::FInstanceDraw, SceneRenderingAllocator> NaniteInstanceDraws;
 
-					uint32 NextCardIndex = 0;
-					while(NextCardIndex < NumCardPagesToRender)
+					while(NextCardIndex < NumCardPagesToRender && NaniteViews.Num() < NANITE_MAX_VIEWS_PER_CULL_RASTERIZE_PASS)
 					{
-						TArray<Nanite::FPackedView, SceneRenderingAllocator> NaniteViews;
-						TArray<Nanite::FInstanceDraw, SceneRenderingAllocator> NaniteInstanceDraws;
+						const FCardPageRenderData& CardPageRenderData = CardPagesToRender[NextCardIndex];
 
-						while(NextCardIndex < NumCardPagesToRender && NaniteViews.Num() < NANITE_MAX_VIEWS_PER_CULL_RASTERIZE_PASS)
-						{
-							const FCardPageRenderData& CardPageRenderData = CardPagesToRender[NextCardIndex];
-
-							if(CardPageRenderData.NaniteInstanceIds.Num() > 0)
-							{
-								for(uint32 InstanceID : CardPageRenderData.NaniteInstanceIds)
-								{
-									NaniteInstanceDraws.Add(Nanite::FInstanceDraw { InstanceID, (uint32)NaniteViews.Num() });
-								}
-
-								Nanite::FPackedViewParams Params;
-								Params.ViewMatrices = CardPageRenderData.ViewMatrices;
-								Params.PrevViewMatrices = CardPageRenderData.ViewMatrices;
-								Params.ViewRect = CardPageRenderData.CardCaptureAtlasRect;
-								Params.RasterContextSize = DepthStencilAtlasSize;
-								Params.LODScaleFactor = CardPageRenderData.NaniteLODScaleFactor;
-								NaniteViews.Add(Nanite::CreatePackedView(Params));
-							}
-
-							NextCardIndex++;
-						}
-
-						if (NaniteInstanceDraws.Num() > 0)
-						{
-							RDG_EVENT_SCOPE(GraphBuilder, "Nanite::RasterizeLumenCards");
-
-							Nanite::FRasterState RasterState;
-							Nanite::CullRasterize(
-								GraphBuilder,
-								*Scene,
-								*SharedView,
-								NaniteViews,
-								SharedContext,
-								CullingContext,
-								RasterContext,
-								RasterState,
-								&NaniteInstanceDraws
-							);
-						}
-					}
-				}
-				else
-				{
-					RDG_EVENT_SCOPE(GraphBuilder, "RenderLumenCardsWithNanite");
-
-					// One draw call per view
-					for(FCardPageRenderData& CardPageRenderData : CardPagesToRender)
-					{
 						if(CardPageRenderData.NaniteInstanceIds.Num() > 0)
-						{						
-							TArray<Nanite::FInstanceDraw, SceneRenderingAllocator> NaniteInstanceDraws;
-							for( uint32 InstanceID : CardPageRenderData.NaniteInstanceIds )
+						{
+							for(uint32 InstanceID : CardPageRenderData.NaniteInstanceIds)
 							{
-								NaniteInstanceDraws.Add( Nanite::FInstanceDraw { InstanceID, 0u } );
+								NaniteInstanceDraws.Add(Nanite::FInstanceDraw { InstanceID, (uint32)NaniteViews.Num() });
 							}
-						
-							CardPageRenderData.PatchView(GraphBuilder.RHICmdList, Scene, SharedView);
-							Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(*SharedView, DepthStencilAtlasSize, 0);
 
-							Nanite::CullRasterize(
-								GraphBuilder,
-								*Scene,
-								*SharedView,
-								{ PackedView },
-								SharedContext,
-								CullingContext,
-								RasterContext,
-								Nanite::FRasterState(),
-								&NaniteInstanceDraws
-							);
+							Nanite::FPackedViewParams Params;
+							Params.ViewMatrices = CardPageRenderData.ViewMatrices;
+							Params.PrevViewMatrices = CardPageRenderData.ViewMatrices;
+							Params.ViewRect = CardPageRenderData.CardCaptureAtlasRect;
+							Params.RasterContextSize = DepthStencilAtlasSize;
+							Params.LODScaleFactor = CardPageRenderData.NaniteLODScaleFactor;
+							NaniteViews.Add(Nanite::CreatePackedView(Params));
 						}
+
+						NextCardIndex++;
+					}
+
+					if (NaniteInstanceDraws.Num() > 0)
+					{
+						RDG_EVENT_SCOPE(GraphBuilder, "Nanite::RasterizeLumenCards");
+
+						Nanite::FRasterState RasterState;
+						Nanite::CullRasterize(
+							GraphBuilder,
+							Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
+							VisibilityResults,
+							*Scene,
+							*SharedView,
+							NaniteViews,
+							SharedContext,
+							CullingContext,
+							RasterContext,
+							RasterState,
+							&NaniteInstanceDraws
+						);
 					}
 				}
 
@@ -2807,19 +3028,20 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 					if (CardPageRenderData.bDistantScene)
 					{
 						Nanite::FRasterState RasterState;
-						RasterState.bNearClip = false;
 
-						CardPageRenderData.PatchView(GraphBuilder.RHICmdList, Scene, SharedView);
+						CardPageRenderData.PatchView(Scene, SharedView);
 						Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(
 							*SharedView,
 							DepthStencilAtlasSize,
-							/*Flags*/ 0,
+							/* Flags */ 0u, // Near clip is intentionally disabled here
 							/*StreamingPriorityCategory*/ 0,
 							GLumenDistantSceneMinInstanceBoundsRadius,
 							Lumen::GetDistanceSceneNaniteLODScaleFactor());
 
 						Nanite::CullRasterize(
 							GraphBuilder,
+							Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
+							VisibilityResults,
 							*Scene,
 							*SharedView,
 							{ PackedView },
@@ -2830,7 +3052,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 					}
 				}
 
-				if (GLumenSceneNaniteMultiViewCapture != 0)
+				if (CVarLumenSceneSurfaceCacheCaptureNaniteMultiView.GetValueOnRenderThread() != 0)
 				{
 					Nanite::DrawLumenMeshCapturePass(
 						GraphBuilder,
@@ -2877,12 +3099,21 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 				}
 			}
 
-			UpdateLumenSurfaceCacheAtlas(GraphBuilder, View, CardPagesToRender, CardCaptureRectBufferSRV, CardCaptureAtlas, LumenCardRenderer.ResampledCardCaptureAtlas);
+			UpdateLumenSurfaceCacheAtlas(
+				GraphBuilder,
+				Views[0],
+				FrameTemporaries,
+				CardPagesToRender,
+				CardCaptureRectBufferSRV,
+				CardCaptureAtlas,
+				LumenCardRenderer.ResampledCardCaptureAtlas);
 		}
 	}
 
+	UpdateLumenCardSceneUniformBuffer(GraphBuilder, Scene, *Scene->GetLumenSceneData(Views[0]), FrameTemporaries);
+
 	// Reset arrays, but keep allocated memory for 1024 elements
-	FLumenSceneData& LumenSceneData = *Scene->LumenSceneData;
+	FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
 	LumenSceneData.CardIndicesToUpdateInBuffer.Empty(1024);
 	LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Empty(1024);
 }

@@ -18,6 +18,7 @@ class UMovieScene;
 class UMovieSceneSection;
 class UMovieSceneEventSectionBase;
 class IMovieSceneToolsTrackImporter;
+class ULevelSequence;
 
 class IMovieSceneToolsTakeData
 {
@@ -78,6 +79,8 @@ private:
 	static bool UpgradeLegacyEventEndpointForSection(UMovieSceneEventSectionBase* Section);
 	static void PostDuplicateEventSection(UMovieSceneEventSectionBase* Section);
 	static void RemoveForCookEventSection(UMovieSceneEventSectionBase* Section);
+	static bool IsTrackClassAllowed(UClass* InClass);
+	static void PostDuplicateEvent(ULevelSequence* LevelSequence);
 
 private:
 
@@ -114,12 +117,14 @@ private:
 	FDelegateHandle SpawnTrackCreateEditorHandle;
 	FDelegateHandle LevelVisibilityTrackCreateEditorHandle;
 	FDelegateHandle DataLayerTrackCreateEditorHandle;
-	FDelegateHandle CameraAnimTrackCreateEditorHandle;
 	FDelegateHandle CameraShakeTrackCreateEditorHandle;
 	FDelegateHandle MPCTrackCreateEditorHandle;
 	FDelegateHandle PrimitiveMaterialCreateEditorHandle;
 	FDelegateHandle CameraShakeSourceShakeCreateEditorHandle;
 	FDelegateHandle CVarTrackCreateEditorHandle;
+
+	FDelegateHandle CameraCutTrackModelHandle;
+	FDelegateHandle CinematicShotTrackModelHandle;
 
 	FDelegateHandle GenerateEventEntryPointsHandle;
 	FDelegateHandle FixupPayloadParameterNameHandle;

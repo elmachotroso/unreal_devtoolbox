@@ -7,6 +7,7 @@
 #include "Editor.h"
 #include "LandscapeEditorModule.h"
 #include "LandscapeEditorObject.h"
+#include "LandscapeUtils.h"
 #include "SLandscapeEditor.h"
 
 #include "IDetailChildrenBuilder.h"
@@ -58,13 +59,13 @@ void FLandscapeEditorStructCustomization_FLandscapeImportLayer::CustomizeChildre
 	
 	PropertyHandle_SourceFilePath->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([PropertyHandle_SourceFilePath]()
 	{
-		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_SourceFilePath);
+		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_SourceFilePath, /*bForExport = */false);
 		FLandscapeEditorStructCustomization_FLandscapeImportLayer::OnImportWeightmapFilenameChanged();
 	}));
 
 	PropertyHandle_ExportFilePath->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([PropertyHandle_ExportFilePath]()
 	{
-		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ExportFilePath);
+		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ExportFilePath, /*bForExport = */true);
 	}));
 
 	FName LayerName;
@@ -169,13 +170,14 @@ void FLandscapeEditorStructCustomization_FLandscapeImportLayer::CustomizeChildre
 					.AllowedClass(ULandscapeLayerInfoObject::StaticClass())
 					.PropertyHandle(PropertyHandle_LayerInfo)
 					.OnShouldFilterAsset_Static(&ShouldFilterLayerInfo, LayerName)
+					.AllowCreate(false)
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
 					SNew(SComboButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.HasDownArrow(false)
 					.ContentPadding(4.0f)
 					.ForegroundColor(FSlateColor::UseForeground())
@@ -186,7 +188,7 @@ void FLandscapeEditorStructCustomization_FLandscapeImportLayer::CustomizeChildre
 					.ButtonContent()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("LandscapeEditor.Target_Create"))
+						.Image(FAppStyle::GetBrush("LandscapeEditor.Target_Create"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
@@ -328,13 +330,8 @@ void FLandscapeEditorStructCustomization_FLandscapeImportLayer::OnImportLayerCre
 	ULevel* Level = LandscapeEdMode->CurrentGizmoActor->GetWorld()->GetCurrentLevel();
 
 	// Build default layer object name and package name
-	FName LayerObjectName = FName(*FString::Printf(TEXT("%s_LayerInfo"), *LayerName.ToString()));
-	FString Path = Level->GetOutermost()->GetName() + TEXT("_sharedassets/");
-	if (Path.StartsWith("/Temp/"))
-	{
-		Path = FString("/Game/") + Path.RightChop(FString("/Temp/").Len());
-	}
-	FString PackageName = Path + LayerObjectName.ToString();
+	FName LayerObjectName;
+	FString PackageName = UE::Landscape::GetLayerInfoObjectPackageName(Level, LayerName, LayerObjectName);
 
 	TSharedRef<SDlgPickAssetPath> NewLayerDlg =
 		SNew(SDlgPickAssetPath)

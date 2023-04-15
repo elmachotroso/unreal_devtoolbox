@@ -5,6 +5,8 @@
 #include "ControlRigObjectVersion.h"
 #include "ControlRig.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigBlueprintGeneratedClass)
+
 UControlRigBlueprintGeneratedClass::UControlRigBlueprintGeneratedClass(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -20,7 +22,7 @@ uint8* UControlRigBlueprintGeneratedClass::GetPersistentUberGraphFrame(UObject* 
 	return Super::GetPersistentUberGraphFrame(Obj, FuncToCheck);
 }
 
-void UControlRigBlueprintGeneratedClass::PostInitInstance(UObject* InObj)
+void UControlRigBlueprintGeneratedClass::PostInitInstance(UObject* InObj, FObjectInstancingGraph* InstanceGraph)
 {
 	UControlRig* ControlRig = Cast<UControlRig>(InObj);
 	check(ControlRig);
@@ -67,3 +69,4 @@ void UControlRigBlueprintGeneratedClass::Serialize(FArchive& Ar)
 		}
 	}
 }
+

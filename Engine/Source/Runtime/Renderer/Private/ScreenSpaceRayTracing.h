@@ -5,7 +5,6 @@
 #include "RenderGraph.h"
 #include "ScreenSpaceDenoise.h"
 #include "IndirectLightRendering.h"
-#include "Lumen/LumenProbeHierarchy.h"
 
 class FViewInfo;
 class FSceneTextureParameters;
@@ -23,13 +22,11 @@ enum class ESSRQuality
 	MAX
 };
 
-struct FTiledScreenSpaceReflection
+struct FTiledReflection
 {
-	FRDGBufferRef TileListDataBuffer;
+	FRDGBufferRef DrawIndirectParametersBuffer;
 	FRDGBufferRef DispatchIndirectParametersBuffer;
-	FRDGBufferUAVRef DispatchIndirectParametersBufferUAV;
-	FRDGBufferUAVRef TileListStructureBufferUAV;
-	FRDGBufferSRVRef TileListStructureBufferSRV;
+	FRDGBufferSRVRef TileListDataBufferSRV;
 	uint32 TileSize;
 };
 
@@ -102,7 +99,7 @@ void RenderScreenSpaceReflections(
 	bool bDenoiser,
 	IScreenSpaceDenoiser::FReflectionsInputs* DenoiserInputs,
 	bool bSingleLayerWater = false,
-	FTiledScreenSpaceReflection* TiledScreenSpaceReflection = nullptr);
+	FTiledReflection* TiledScreenSpaceReflection = nullptr);
 
 bool IsScreenSpaceDiffuseIndirectSupported(const FViewInfo& View);
 
@@ -111,21 +108,6 @@ IScreenSpaceDenoiser::FDiffuseIndirectInputs CastStandaloneDiffuseIndirectRays(
 	const HybridIndirectLighting::FCommonParameters& CommonParameters,
 	const FPrevSceneColorMip& PrevSceneColor,
 	const FViewInfo& View);
-
-void TraceProbe(
-	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
-	const FSceneTextureParameters& SceneTextures,
-	const FPrevSceneColorMip& PrevSceneColor,
-	const LumenProbeHierarchy::FHierarchyParameters& HierarchyParameters,
-	const LumenProbeHierarchy::FIndirectLightingAtlasParameters& IndirectLightingAtlasParameters);
-
-void TraceIndirectProbeOcclusion(
-	FRDGBuilder& GraphBuilder,
-	const HybridIndirectLighting::FCommonParameters& CommonParameters,
-	const FPrevSceneColorMip& PrevSceneColor,
-	const FViewInfo& View,
-	const LumenProbeHierarchy::FIndirectLightingProbeOcclusionParameters& ProbeOcclusionParameters);
 
 void SetupCommonScreenSpaceRayParameters(
 	FRDGBuilder& GraphBuilder,

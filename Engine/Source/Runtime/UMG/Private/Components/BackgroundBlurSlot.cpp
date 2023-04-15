@@ -5,16 +5,20 @@
 #include "Widgets/Layout/SBackgroundBlur.h"
 #include "Components/BackgroundBlur.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BackgroundBlurSlot)
+
 /////////////////////////////////////////////////////
 // UBackgroundBlurSlot
 
 UBackgroundBlurSlot::UBackgroundBlurSlot(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Padding = FMargin(4, 2);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Padding = FMargin(4.f, 2.f);
 
 	HorizontalAlignment = HAlign_Fill;
 	VerticalAlignment = VAlign_Fill;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UBackgroundBlurSlot::ReleaseSlateResources(bool bReleaseChildren)
@@ -28,36 +32,60 @@ void UBackgroundBlurSlot::BuildSlot(TSharedRef<SBackgroundBlur> InBackgroundBlur
 {
 	BackgroundBlur = InBackgroundBlur;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	BackgroundBlur->SetPadding(Padding);
 	BackgroundBlur->SetHAlign(HorizontalAlignment);
 	BackgroundBlur->SetVAlign(VerticalAlignment);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	BackgroundBlur->SetContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FMargin UBackgroundBlurSlot::GetPadding() const
+{
+	return Padding;
+}
+
 void UBackgroundBlurSlot::SetPadding(FMargin InPadding)
 {
+	Padding = InPadding;
 	CastChecked<UBackgroundBlur>(Parent)->SetPadding(InPadding);
+}
+
+EHorizontalAlignment UBackgroundBlurSlot::GetHorizontalAlignment() const
+{
+	return HorizontalAlignment;
 }
 
 void UBackgroundBlurSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlignment)
 {
+	HorizontalAlignment = InHorizontalAlignment;
 	CastChecked<UBackgroundBlur>(Parent)->SetHorizontalAlignment(InHorizontalAlignment);
+}
+
+EVerticalAlignment UBackgroundBlurSlot::GetVerticalAlignment() const
+{
+	return VerticalAlignment;
 }
 
 void UBackgroundBlurSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignment)
 {
+	VerticalAlignment = InVerticalAlignment;
 	CastChecked<UBackgroundBlur>(Parent)->SetVerticalAlignment(InVerticalAlignment);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UBackgroundBlurSlot::SynchronizeProperties()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if ( BackgroundBlur.IsValid() )
 	{
 		SetPadding(Padding);
 		SetHorizontalAlignment(HorizontalAlignment);
 		SetVerticalAlignment(VerticalAlignment);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 #if WITH_EDITOR
@@ -102,3 +130,4 @@ void UBackgroundBlurSlot::PostEditChangeProperty(FPropertyChangedEvent& Property
 }
 
 #endif
+

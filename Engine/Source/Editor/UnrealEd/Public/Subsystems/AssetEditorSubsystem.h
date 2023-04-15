@@ -8,6 +8,7 @@
 
 #include "Containers/Ticker.h"
 #include "Tools/Modes.h"
+#include "Misc/NamePermissionList.h"
 #include "AssetEditorSubsystem.generated.h"
 
 class UAssetEditor;
@@ -69,14 +70,23 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 
+	bool IsAssetEditable(const UObject* Asset);
+
 	/** Opens an asset by path */
-	void OpenEditorForAsset(const FString& AssetPathName);
+	void OpenEditorForAsset(const FString& AssetPath);
+	void OpenEditorForAsset(const FSoftObjectPath& AssetPath);
 
 	/**
 	 * Tries to open an editor for the specified asset.  Returns true if the asset is open in an editor.
 	 * If the file is already open in an editor, it will not create another editor window but instead bring it to front
 	 */
 	bool OpenEditorForAsset(UObject* Asset, const EToolkitMode::Type ToolkitMode = EToolkitMode::Standalone, TSharedPtr<IToolkitHost> OpenedFromLevelEditor = TSharedPtr<IToolkitHost>(), const bool bShowProgressWindow = true);
+	
+	template<typename ObjectType>
+	bool OpenEditorForAsset(TObjectPtr<ObjectType> Asset, const EToolkitMode::Type ToolkitMode = EToolkitMode::Standalone, TSharedPtr<IToolkitHost> OpenedFromLevelEditor = TSharedPtr<IToolkitHost>(), const bool bShowProgressWindow = true)
+	{
+		return OpenEditorForAsset(ToRawPtr(Asset), ToolkitMode, OpenedFromLevelEditor, bShowProgressWindow);
+	}
 
 	/**
 	 * Tries to open an editor for all of the specified assets.
@@ -90,6 +100,7 @@ public:
 	/** Opens editors for the supplied assets (via OpenEditorForAsset) */
 	void OpenEditorsForAssets(const TArray<FString>& AssetsToOpen);
 	void OpenEditorsForAssets(const TArray<FName>& AssetsToOpen);
+	void OpenEditorsForAssets(const TArray<FSoftObjectPath>& AssetsToOpen);
 
 	/** Returns the primary editor if one is already open for the specified asset.
 	 * If there is one open and bFocusIfOpen is true, that editor will be brought to the foreground and focused if possible.
@@ -198,6 +209,9 @@ public:
 	 */
 	FOnModeUnregistered& OnEditorModeUnregistered();
 
+	/** Get the permission list that controls which editor modes are exposed */
+	FNamePermissionList& GetAllowedEditorModes();
+
 private:
 
 	/** Handles FAssetEditorRequestOpenAsset messages. */
@@ -250,6 +264,8 @@ private:
 	void UnregisterEditorModes();
 	void OnSMInstanceElementsEnabled();
 
+	bool IsEditorModeAllowed(const FName ModeId) const;
+
 private:
 
 	/** struct used by OpenedEditorTimes map to store editor names and times */
@@ -272,11 +288,36 @@ private:
 		}
 	};
 
+	/**
+	 * Utility struct for assets book keeping.
+	 * We'll index assets using the raw pointer, as it should be possible to clear an entry after an asset has been garbage collected
+	 * but any access to the UObject should go through the weak object pointer.
+	 */
+	struct FAssetEntry
+	{
+		// Implicit constructor
+		FAssetEntry(UObject* InRawPtr)
+			: RawPtr(InRawPtr)
+			, ObjectPtr(InRawPtr)
+		{
+		}
+
+		UObject* RawPtr;
+		FWeakObjectPtr ObjectPtr;
+
+		bool operator==(const FAssetEntry& Other) const { return RawPtr == Other.RawPtr; }
+
+		inline friend uint32 GetTypeHash(const FAssetEntry& AssetEntry)
+		{
+			return GetTypeHash(AssetEntry.RawPtr);
+		}
+	};
+
 	/** Holds the opened assets. */
-	TMultiMap<UObject*, IAssetEditorInstance*> OpenedAssets;
+	TMultiMap<FAssetEntry, IAssetEditorInstance*> OpenedAssets;
 
 	/** Holds the opened editors. */
-	TMultiMap<IAssetEditorInstance*, UObject*> OpenedEditors;
+	TMultiMap<IAssetEditorInstance*, FAssetEntry> OpenedEditors;
 
 	/** Holds the times that editors were opened. */
 	TMap<IAssetEditorInstance*, FOpenedEditorTime> OpenedEditorTimes;
@@ -334,4 +375,10 @@ private:
 
 	/** Event that is triggered whenever a mode is unregistered */
 	FOnModeUnregistered OnEditorModeUnregisteredEvent;
+	
+	/**
+	 * Which FEditorModeInfo data should be returned when queried, filtered by the mode's ID.
+	 * Note that this does not disable or unregister disallowed modes, it simply removes them from the query results.
+	 */
+	FNamePermissionList AllowedEditorModes;
 };

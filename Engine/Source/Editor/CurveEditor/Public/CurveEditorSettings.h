@@ -2,10 +2,20 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "HAL/Platform.h"
+#include "Math/Color.h"
+#include "Misc/Optional.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "CurveEditorSettings.generated.h"
+
+class UClass;
 
 /** Defines visibility states for the tangents in the curve editor. */
 UENUM()
@@ -70,6 +80,8 @@ class CURVEEDITOR_API UCurveEditorSettings : public UObject
 public:
 	GENERATED_BODY()
 
+	DECLARE_MULTICAST_DELEGATE(FOnCustomColorsChanged);
+
 	UCurveEditorSettings();
 
 	/** Gets whether or not the curve editor auto frames the selected curves. */
@@ -87,6 +99,11 @@ public:
 	/** Sets the number of pixels to pad output framing */
 	void SetFrameOutputPadding(int32 InFrameOutputPadding);
 
+	/** Gets whether or not to show buffered curves in the curve editor. */
+	bool GetShowBufferedCurves() const;
+	/** Sets whether or not to show buffered curves in the curve editor. */
+	void SetShowBufferedCurves(bool InbShowBufferedCurves);
+
 	/** Gets whether or not to show curve tool tips in the curve editor. */
 	bool GetShowCurveEditorCurveToolTips() const;
 	/** Sets whether or not to show curve tool tips in the curve editor. */
@@ -102,12 +119,25 @@ public:
 	/** Set zoom in/out position (mouse position or current time). */
 	void SetZoomPosition(ECurveEditorZoomPosition InZoomPosition);
 
+	/** Get whether to snap the time to the currently selected key. */
+	bool GetSnapTimeToSelection() const;
+	/** Set whether to snap the time to the currently selected key. */
+	void SetSnapTimeToSelection(bool bInSnapTimeToSelection);
+
+	/** Set the selection color. */
+	void SetSelectionColor(const FLinearColor& InColor);
+	/** Get the selection color. */
+	FLinearColor GetSelectionColor() const;
+
 	/** Get custom color for object and property if it exists, if it doesn't the optional won't be set */
 	TOptional<FLinearColor> GetCustomColor(UClass* InClass, const FString& InPropertyName) const;
 	/** Set Custom Color for the specified parameters. */
 	void SetCustomColor(UClass* InClass, const FString& InPropertyName, FLinearColor InColor);
 	/** Delete Custom Color for the specified parameters. */
 	void DeleteCustomColor(UClass* InClass, const FString& InPropertyName);
+	
+	/** Gets the multicast delegate which is run whenever custom colors have changed. */
+	FOnCustomColorsChanged& GetOnCustomColorsChanged() { return OnCustomColorsChangedEvent; }
 
 	/** Get custom color for space name. Parent and World are reserved names and will be used instead of the specified control name. */
 	TOptional<FLinearColor> GetSpaceSwitchColor(const FString& InControlName) const;
@@ -120,6 +150,9 @@ public:
 	static FLinearColor GetNextRandomColor();
 
 protected:
+
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
 	UPROPERTY( config, EditAnywhere, Category="Curve Editor" )
 	bool bAutoFrameCurveEditor;
 
@@ -132,6 +165,9 @@ protected:
 	int32 FrameOutputPadding;
 
 	UPROPERTY( config, EditAnywhere, Category="Curve Editor" )
+	bool bShowBufferedCurves;
+
+	UPROPERTY( config, EditAnywhere, Category="Curve Editor" )
 	bool bShowCurveEditorCurveToolTips;
 
 	UPROPERTY( config, EditAnywhere, Category="Curve Editor" )
@@ -139,6 +175,12 @@ protected:
 
 	UPROPERTY( config, EditAnywhere, Category="Curve Editor")
 	ECurveEditorZoomPosition ZoomPosition;
+
+	UPROPERTY( config, EditAnywhere, Category="Curve Editor")
+	bool bSnapTimeToSelection;
+
+	UPROPERTY(config, EditAnywhere, Category = "Curve Editor")
+	FLinearColor SelectionColor;
 
 	UPROPERTY(config, EditAnywhere, Category="Curve Editor")
 	TArray<FCustomColorForChannel> CustomColors;
@@ -151,4 +193,7 @@ protected:
 
 	UPROPERTY(config, EditAnywhere, Category = "Curve Editor")
 	TArray<FCustomColorForSpaceSwitch> ControlSpaceCustomColors;
+
+private:
+	FOnCustomColorsChanged OnCustomColorsChangedEvent;
 };

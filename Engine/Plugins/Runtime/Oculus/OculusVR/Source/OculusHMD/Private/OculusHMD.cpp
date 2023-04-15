@@ -9,7 +9,6 @@
 #include "Slate/SceneViewport.h"
 #include "PostProcess/PostProcessHMD.h"
 #include "PostProcess/SceneRenderTargets.h"
-#include "HardwareInfo.h"
 #include "ScreenRendering.h"
 #include "GameFramework/PlayerController.h"
 #include "Math/UnrealMathUtility.h"
@@ -34,8 +33,6 @@
 
 #if PLATFORM_ANDROID
 #include "Android/AndroidJNI.h"
-#include "Android/AndroidEGL.h"
-#include "Android/AndroidOpenGL.h"
 #include "Android/AndroidApplication.h"
 #include "HAL/IConsoleManager.h"
 #endif
@@ -53,6 +50,8 @@
 #endif
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 static TAutoConsoleVariable<int32> CVarOculusEnableSubsampledLayout(
 	TEXT("r.Mobile.Oculus.EnableSubsampled"),
@@ -1241,8 +1240,14 @@ namespace OculusHMD
 
 	float FOculusHMD::GetPixelDenity() const
 	{
-		CheckInGameThread();
-		return Settings->PixelDensity;
+		if (IsInGameThread())
+		{
+			return Settings.IsValid() ? Settings->PixelDensity : 1.0f;
+		}
+		else
+		{
+			return Settings_RenderThread.IsValid() ? Settings_RenderThread->PixelDensity : 1.0f;
+		}
 	}
 
 	void FOculusHMD::SetPixelDensity(const float NewPixelDensity)
@@ -1253,8 +1258,14 @@ namespace OculusHMD
 
 	FIntPoint FOculusHMD::GetIdealRenderTargetSize() const
 	{
-		CheckInGameThread();
-		return Settings->RenderTargetSize;
+		if (IsInGameThread())
+		{
+			return Settings.IsValid() ? Settings->RenderTargetSize : 1.0f;
+		}
+		else
+		{
+			return Settings_RenderThread.IsValid() ? Settings_RenderThread->RenderTargetSize : 1.0f;
+		}
 	}
 
 	bool FOculusHMD::IsStereoEnabled() const
@@ -1375,7 +1386,7 @@ namespace OculusHMD
 
 
 
-	void FOculusHMD::RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture, FVector2D WindowSize) const
+	void FOculusHMD::RenderTexture_RenderThread(class FRHICommandListImmediate& RHICmdList, class FRHITexture* BackBuffer, class FRHITexture* SrcTexture, FVector2D WindowSize) const
 	{
 		CheckInRenderThread();
 		check(CustomPresent);
@@ -1906,7 +1917,7 @@ namespace OculusHMD
 	}
 
 
-	void FOculusHMD::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily)
+	void FOculusHMD::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& ViewFamily)
 	{
 		CheckInRenderThread();
 
@@ -1970,16 +1981,16 @@ namespace OculusHMD
 	}
 
 
-	void FOculusHMD::PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+	void FOculusHMD::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 	{
 	}
 
 
-	void FOculusHMD::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+	void FOculusHMD::PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 	{
 		CheckInRenderThread();
 
-		FinishRenderFrame_RenderThread(RHICmdList);
+		FinishRenderFrame_RenderThread(GraphBuilder);
 	}
 
 
@@ -2027,6 +2038,8 @@ namespace OculusHMD
 		SplashLayerHandle = -1;
 
 		SplashRotation = FRotator();
+
+		bIsStandaloneStereoOnlyDevice = IHeadMountedDisplayModule::IsAvailable() && IHeadMountedDisplayModule::Get().IsStandaloneStereoOnlyDevice();;
 	}
 
 
@@ -2046,47 +2059,39 @@ namespace OculusHMD
 
 		check(!CustomPresent.IsValid());
 
-		FString RHIString;
-		{
-			FString HardwareDetails = FHardwareInfo::GetHardwareDetailsString();
-			FString RHILookup = NAME_RHI.ToString() + TEXT("=");
-
-			if (!FParse::Value(*HardwareDetails, *RHILookup, RHIString))
-			{
-				return false;
-			}
-		}
+		check(GDynamicRHI);
+		const ERHIInterfaceType RHIType = RHIGetInterfaceType();
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11
-		if (RHIString == TEXT("D3D11"))
+		if (RHIType == ERHIInterfaceType::D3D11)
 		{
 			CustomPresent = CreateCustomPresent_D3D11(this);
 		}
 		else
 #endif
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
-		if (RHIString == TEXT("D3D12"))
+		if (RHIType == ERHIInterfaceType::D3D12)
 		{
 			CustomPresent = CreateCustomPresent_D3D12(this);
 		}
 		else
 #endif
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_OPENGL
-		if (RHIString == TEXT("OpenGL"))
+		if (RHIType == ERHIInterfaceType::OpenGL)
 		{
 			CustomPresent = CreateCustomPresent_OpenGL(this);
 		}
 		else
 #endif
 #if OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN
-		if (RHIString == TEXT("Vulkan"))
+		if (RHIType == ERHIInterfaceType::Vulkan)
 		{
 			CustomPresent = CreateCustomPresent_Vulkan(this);
 		}
 		else
 #endif
 		{
-			UE_LOG(LogHMD, Warning, TEXT("%s is not currently supported by OculusHMD plugin"), *RHIString);
+			UE_LOG(LogHMD, Warning, TEXT("%s is not currently supported by OculusHMD plugin"), GDynamicRHI->GetName());
 			return false;
 		}
 
@@ -2223,7 +2228,8 @@ namespace OculusHMD
 			GIsEditor ? ovrpBool_True : ovrpBool_False);
 
 #if PLATFORM_ANDROID
-		FOculusHMDModule::GetPluginWrapper().SetupDisplayObjects2(AndroidEGL::GetInstance()->GetRenderingContext()->eglContext, AndroidEGL::GetInstance()->GetDisplay(), AndroidEGL::GetInstance()->GetNativeWindow());
+		IOpenGLDynamicRHI* RHI = GetIOpenGLDynamicRHI();
+		FOculusHMDModule::GetPluginWrapper().SetupDisplayObjects2(RHI->RHIGetEGLContext(), RHI->RHIGetEGLDisplay(), RHI->RHIGetEGLNativeWindow());
 		GSupportsMobileMultiView = true;
 		if (GRHISupportsLateVariableRateShadingUpdate)
 		{
@@ -2232,7 +2238,7 @@ namespace OculusHMD
 #endif
 		int flag = ovrpDistortionWindowFlag_None;
 #if PLATFORM_ANDROID && USE_ANDROID_EGL_NO_ERROR_CONTEXT
-		if (AndroidEGL::GetInstance()->GetSupportsNoErrorContext())
+		if (RHI->RHIEGLSupportsNoErrorContext())
 		{
 			flag = ovrpDistortionWindowFlag_NoErrorContext;
 		}
@@ -3427,7 +3433,7 @@ namespace OculusHMD
 	}
 
 
-	void FOculusHMD::FinishRenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList)
+	void FOculusHMD::FinishRenderFrame_RenderThread(FRDGBuilder& GraphBuilder)
 	{
 		CheckInRenderThread();
 
@@ -3435,30 +3441,32 @@ namespace OculusHMD
 		{
 			UE_LOG(LogHMD, VeryVerbose, TEXT("FinishRenderFrame %u"), Frame_RenderThread->FrameNumber);
 
-			if (Frame_RenderThread->ShowFlags.Rendering)
+			AddPass(GraphBuilder, RDG_EVENT_NAME("FinishRenderFrame"), [this](FRHICommandListImmediate& RHICmdList)
 			{
-				for (int32 LayerIndex = 0; LayerIndex < Layers_RenderThread.Num(); LayerIndex++)
+				if (Frame_RenderThread->ShowFlags.Rendering)
 				{
-					Layers_RenderThread[LayerIndex]->UpdateTexture_RenderThread(CustomPresent, RHICmdList);
-				}
-			}
-
-			if (GRHISupportsLateVariableRateShadingUpdate && CVarOculusEnableLowLatencyVRS.GetValueOnAnyThread() == 1)
-			{
-				// late-update foveation if supported and needed
-				ExecuteOnRHIThread_DoNotWait([this]()
-				{
-					ovrpResult Result;
-					if (Frame_RHIThread && OVRP_FAILURE(Result = FOculusHMDModule::GetPluginWrapper().UpdateFoveation(Frame_RHIThread->FrameNumber)))
+					for (int32 LayerIndex = 0; LayerIndex < Layers_RenderThread.Num(); LayerIndex++)
 					{
-						UE_LOG(LogHMD, Error, TEXT("FOculusHMDModule::GetPluginWrapper().UpdateFoveation %u failed (%d)"), Frame_RHIThread->FrameNumber, Result);
+						Layers_RenderThread[LayerIndex]->UpdateTexture_RenderThread(CustomPresent, RHICmdList);
 					}
-				});
-			}
+				}
 
+				if (GRHISupportsLateVariableRateShadingUpdate && CVarOculusEnableLowLatencyVRS.GetValueOnAnyThread() == 1)
+				{
+					// late-update foveation if supported and needed
+					RHICmdList.EnqueueLambda([this](FRHICommandListImmediate&)
+					{
+						ovrpResult Result;
+						if (Frame_RHIThread && OVRP_FAILURE(Result = FOculusHMDModule::GetPluginWrapper().UpdateFoveation(Frame_RHIThread->FrameNumber)))
+						{
+							UE_LOG(LogHMD, Error, TEXT("FOculusHMDModule::GetPluginWrapper().UpdateFoveation %u failed (%d)"), Frame_RHIThread->FrameNumber, Result);
+						}
+					});
+				}
+
+				Frame_RenderThread.Reset();
+			});
 		}
-
-		Frame_RenderThread.Reset();
 	}
 
 
@@ -3685,7 +3693,7 @@ namespace OculusHMD
 
 	void FOculusHMD::LoadFromSettings()
 	{
-		UOculusHMDRuntimeSettings* HMDSettings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+		UDEPRECATED_UOculusHMDRuntimeSettings* HMDSettings = GetMutableDefault<UDEPRECATED_UOculusHMDRuntimeSettings>();
 		check(HMDSettings);
 
 		Settings->Flags.bSupportsDash = HMDSettings->bSupportsDash;
@@ -3698,7 +3706,6 @@ namespace OculusHMD
 		Settings->ColorSpace = HMDSettings->ColorSpace;
 		Settings->bLateLatching = HMDSettings->bLateLatching;
 		Settings->bPhaseSync = HMDSettings->bPhaseSync;
-
 
 		// Set FFR level and dynamic from rendering settings
 		UEnum* FFREnum = StaticEnum<EFixedFoveatedRenderingLevel>();
@@ -3713,5 +3720,7 @@ namespace OculusHMD
 	/// @endcond
 
 } // namespace OculusHMD
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif //OCULUS_HMD_SUPPORTED_PLATFORMS

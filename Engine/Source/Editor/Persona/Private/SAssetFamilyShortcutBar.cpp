@@ -14,11 +14,11 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Layout/SSeparator.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IAssetFamily.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "WorkflowOrientedApp/WorkflowCentricApplication.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Images/SImage.h"
@@ -26,6 +26,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Styling/ToolBarStyle.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
 
 #define LOCTEXT_NAMESPACE "SAssetFamilyShortcutBar"
 
@@ -68,7 +70,7 @@ public:
 		bMultipleAssetsExist = Assets.Num() > 1;
 		AssetDirtyBrush = FAppStyle::Get().GetBrush("Icons.DirtyBadge");
 
-		const FToolBarStyle& ToolBarStyle = FEditorStyle::Get().GetWidgetStyle<FToolBarStyle>("ToolBar");
+		const FToolBarStyle& ToolBarStyle = FAppStyle::Get().GetWidgetStyle<FToolBarStyle>("ToolBar");
 
 		ChildSlot
 		[
@@ -178,11 +180,14 @@ public:
 	{
 		if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 		{
-			FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			AssetRegistryModule.Get().OnFilesLoaded().RemoveAll(this);
-			AssetRegistryModule.Get().OnAssetAdded().RemoveAll(this);
-			AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
-			AssetRegistryModule.Get().OnAssetRenamed().RemoveAll(this);
+			IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+			if (AssetRegistry)
+			{
+				AssetRegistry->OnFilesLoaded().RemoveAll(this);
+				AssetRegistry->OnAssetAdded().RemoveAll(this);
+				AssetRegistry->OnAssetRemoved().RemoveAll(this);
+				AssetRegistry->OnAssetRenamed().RemoveAll(this);
+			}
 		}
 
 		AssetFamily->GetOnAssetOpened().RemoveAll(this);
@@ -202,7 +207,7 @@ public:
 			}
 			else
 			{
-				UE_LOG(LogAnimation, Error, TEXT("Asset cannot be opened: %s"), *AssetData.ObjectPath.ToString());
+				UE_LOG(LogAnimation, Error, TEXT("Asset cannot be opened: %s"), *AssetData.GetObjectPathString());
 			}
 		}
 	}
@@ -235,7 +240,7 @@ public:
 			{
 				for (UObject* Object : *Objects)
 				{
-					if (Object->GetPathName().Compare(AssetData.ObjectPath.ToString(), ESearchCase::IgnoreCase) == 0)
+					if (Object->GetPathName().Compare(AssetData.GetObjectPathString(), ESearchCase::IgnoreCase) == 0)
 					{
 						return ECheckBoxState::Checked;
 					}
@@ -248,7 +253,7 @@ public:
 	FSlateColor GetAssetTextColor() const
 	{
 		static const FName InvertedForeground("InvertedForeground");
-		return GetCheckState() == ECheckBoxState::Checked || CheckBox->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForeground) : FSlateColor::UseForeground();
+		return GetCheckState() == ECheckBoxState::Checked || CheckBox->IsHovered() ? FAppStyle::GetSlateColor(InvertedForeground) : FSlateColor::UseForeground();
 	}
 
 	TSharedRef<SWidget> HandleGetMenuContent()
@@ -263,7 +268,7 @@ public:
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("ShowInContentBrowser", "Show In Content Browser"),
 				LOCTEXT("ShowInContentBrowser_ToolTip", "Show this asset in the content browser."),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.Search"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Search"),
 				FUIAction(FExecuteAction::CreateSP(this, &SAssetShortcut::HandleShowInContentBrowser)));
 		}
 		MenuBuilder.EndSection();
@@ -277,7 +282,7 @@ public:
 				UClass* FilterClass = AssetFamily->GetAssetFamilyClass(AssetData.GetClass());
 				if (FilterClass != nullptr)
 				{
-					AssetPickerConfig.Filter.ClassNames.Add(FilterClass->GetFName());
+					AssetPickerConfig.Filter.ClassPaths.Add(FilterClass->GetClassPathName());
 					AssetPickerConfig.Filter.bRecursiveClasses = true;
 				}
 
@@ -366,7 +371,7 @@ public:
 	{
 		if (AssetFamily->IsAssetCompatible(InAssetData))
 		{
-			if(InOldObjectPath == AssetData.ObjectPath.ToString())
+			if (InOldObjectPath == AssetData.GetObjectPathString())
 			{
 				AssetData = InAssetData;
 
@@ -520,7 +525,6 @@ void SAssetFamilyShortcutBar::Construct(const FArguments& InArgs, const TSharedR
 	TArray<UClass*> AssetTypes;
 	InAssetFamily->GetAssetTypes(AssetTypes);
 
-	int32 AssetTypeIndex = 0;
 	for (UClass* Class : AssetTypes)
 	{
 		FAssetData AssetData = InAssetFamily->FindAssetOfType(Class);
@@ -529,9 +533,12 @@ void SAssetFamilyShortcutBar::Construct(const FArguments& InArgs, const TSharedR
 		.Padding(0.0f, 4.0f, 16.0f, 4.0f)
 		[
 			SNew(SAssetShortcut, InHostingApp, InAssetFamily, AssetData, ThumbnailPool.ToSharedRef())
+			.Visibility_Lambda([Class]()
+			{
+				IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+				return AssetTools.IsAssetClassSupported(Class) ? EVisibility::Visible : EVisibility::Collapsed;
+			})
 		];
-
-		AssetTypeIndex++;
 	}
 
 	ChildSlot

@@ -28,6 +28,11 @@ const TCHAR* FLoadTimeProfilerProvider::FLoaderFrameCounter::GetName() const
 	return TEXT("");
 }
 
+const TCHAR* FLoadTimeProfilerProvider::FLoaderFrameCounter::GetGroup() const
+{
+	return nullptr;
+}
+
 const TCHAR* FLoadTimeProfilerProvider::FLoaderFrameCounter::GetDescription() const
 {
 	return TEXT("N/A");
@@ -87,9 +92,9 @@ void FLoadTimeProfilerProvider::FLoaderFrameCounter::EnumerateFloatValues(double
 	}
 }
 
-FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession, ICounterProvider& InCounterProvider)
+FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession, IEditableCounterProvider& InEditableCounterProvider)
 	: Session(InSession)
-	, CounterProvider(InCounterProvider)
+	, EditableCounterProvider(InEditableCounterProvider)
 	, ClassInfos(Session.GetLinearAllocator(), 16384)
 	, Requests(Session.GetLinearAllocator(), 16384)
 	, Packages(Session.GetLinearAllocator(), 16384)
@@ -394,7 +399,7 @@ FPackageInfo& FLoadTimeProfilerProvider::CreatePackage()
 {
 	Session.WriteAccessCheck();
 
-	uint32 PackageId = Packages.Num();
+	uint32 PackageId = static_cast<uint32>(Packages.Num());
 	FPackageInfo& Package = Packages.PushBack();
 	Package.Id = PackageId;
 	return Package;
@@ -518,7 +523,7 @@ FPackageExportInfo& FLoadTimeProfilerProvider::CreateExport()
 {
 	Session.WriteAccessCheck();
 
-	uint32 ExportId = Exports.Num();
+	uint32 ExportId = static_cast<uint32>(Exports.Num());
 	FPackageExportInfo& Export = Exports.PushBack();
 	Export.Id = ExportId;
 	return Export;
@@ -563,20 +568,20 @@ void FLoadTimeProfilerProvider::CreateCounters()
 	{
 		for (int32 CounterType = 0; CounterType < FLoaderFrameCounter::LoaderFrameCounterType_Count; ++CounterType)
 		{
-			CounterProvider.AddCounter(new FLoaderFrameCounter(FLoaderFrameCounter::ELoaderFrameCounterType(CounterType), Frames));
+			EditableCounterProvider.AddCounter(new FLoaderFrameCounter(FLoaderFrameCounter::ELoaderFrameCounterType(CounterType), Frames));
 		}
 
-		ActiveIoDispatcherBatchesCounter = CounterProvider.CreateCounter();
+		ActiveIoDispatcherBatchesCounter = EditableCounterProvider.CreateEditableCounter();
 		ActiveIoDispatcherBatchesCounter->SetName(TEXT("AssetLoading/IoDispatcher/ActiveBatches"));
 
-		TotalIoDispatcherBytesReadCounter = CounterProvider.CreateCounter();
+		TotalIoDispatcherBytesReadCounter = EditableCounterProvider.CreateEditableCounter();
 		TotalIoDispatcherBytesReadCounter->SetName(TEXT("AssetLoading/IoDispatcher/TotalBytesRead"));
 		TotalIoDispatcherBytesReadCounter->SetDisplayHint(CounterDisplayHint_Memory);
 
-		LoadingPackagesCounter = CounterProvider.CreateCounter();
+		LoadingPackagesCounter = EditableCounterProvider.CreateEditableCounter();
 		LoadingPackagesCounter->SetName(TEXT("AssetLoading/AsyncLoading/ActiveLoadingPackages"));
 
-		TotalLoaderBytesLoadedCounter = CounterProvider.CreateCounter();
+		TotalLoaderBytesLoadedCounter = EditableCounterProvider.CreateEditableCounter();
 		TotalLoaderBytesLoadedCounter->SetName(TEXT("AssetLoading/AsyncLoading/TotalBytesLoaded"));
 		TotalLoaderBytesLoadedCounter->SetDisplayHint(CounterDisplayHint_Memory);
 

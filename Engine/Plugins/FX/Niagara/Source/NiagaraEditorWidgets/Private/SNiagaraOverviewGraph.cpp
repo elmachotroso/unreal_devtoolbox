@@ -1,36 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNiagaraOverviewGraph.h"
-#include "NiagaraOverviewGraphNodeFactory.h"
-#include "SNiagaraStack.h"
-#include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/NiagaraEmitterHandleViewModel.h"
-#include "ViewModels/NiagaraOverviewGraphViewModel.h"
-#include "ViewModels/Stack/NiagaraStackViewModel.h"
-#include "NiagaraSystem.h"
-#include "NiagaraOverviewNode.h"
-#include "NiagaraSystemEditorData.h"
-#include "NiagaraObjectSelection.h"
-#include "ViewModels/NiagaraOverviewGraphViewModel.h"
-#include "EdGraphSchema_Niagara.h"
-#include "GraphEditAction.h"
-#include "NiagaraEditorCommands.h"
-#include "NiagaraEditorModule.h"
-#include "GraphEditorActions.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ScopedTransaction.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Templates/SharedPointer.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_Niagara.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "NiagaraEditor/Private/SNiagaraAssetPickerList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GraphEditAction.h"
+#include "GraphEditorActions.h"
+#include "NiagaraEditorCommands.h"
+#include "NiagaraEditorModule.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraEditorWidgetsStyle.h"
+#include "NiagaraObjectSelection.h"
+#include "NiagaraOverviewGraphNodeFactory.h"
+#include "NiagaraOverviewNode.h"
+#include "NiagaraSystem.h"
+#include "NiagaraSystemEditorData.h"
+#include "SNiagaraAssetPickerList.h"
+#include "SNiagaraOverviewGraphTitleBar.h"
+#include "SNiagaraStack.h"
+#include "ScopedTransaction.h"
+#include "Templates/SharedPointer.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraOverviewGraphViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
 #include "Widgets/SItemSelector.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraOverviewGraph"
 
-void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagaraOverviewGraphViewModel> InViewModel)
+void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagaraOverviewGraphViewModel> InViewModel, const FAssetData& InEditedAsset)
 {
 	ViewModel = InViewModel;
 	ViewModel->GetNodeSelection()->OnSelectedObjectsChanged().AddSP(this, &SNiagaraOverviewGraph::ViewModelSelectionChanged);
@@ -62,15 +62,7 @@ void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiag
 		AppearanceInfo.CornerText = LOCTEXT("NiagaraOverview_AppearanceCornerTextGeneric", "NIAGARA");
 	}
 	
-	TSharedRef<SWidget> TitleBarWidget = SNew(SBorder)
-	.BorderImage(FEditorStyle::GetBrush(TEXT("Graph.TitleBackground")))
-	.HAlign(HAlign_Fill)
-	[
-		SNew(STextBlock)
-		.Text(ViewModel.ToSharedRef(), &FNiagaraOverviewGraphViewModel::GetDisplayName)
-		.TextStyle(FEditorStyle::Get(), TEXT("GraphBreadcrumbButtonText"))
-		.Justification(ETextJustify::Center)
-	];
+	TSharedRef<SWidget> TitleBarWidget = SNew(SNiagaraOverviewGraphTitleBar, ViewModel->GetSystemViewModel(), InEditedAsset).Visibility(EVisibility::SelfHitTestInvisible);
 
 	TSharedRef<FUICommandList> Commands = ViewModel->GetCommands();
 	Commands->MapAction(
@@ -110,6 +102,20 @@ void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiag
 		FIsActionChecked(),
 		FIsActionButtonVisible::CreateSP(this, &SNiagaraOverviewGraph::CanAddEmitters)
 	);
+
+	Commands->MapAction(
+		FNiagaraEditorCommands::Get().HideDisabledModules,
+		FExecuteAction::CreateLambda([=]()
+		{
+			UNiagaraStackEditorData& EditorData = ViewModel->GetSystemViewModel()->GetEditorData().GetStackEditorData();
+			EditorData.bHideDisabledModules = !EditorData.bHideDisabledModules;
+		}),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([=]()
+		{
+			UNiagaraStackEditorData& EditorData = ViewModel->GetSystemViewModel()->GetEditorData().GetStackEditorData();
+			return EditorData.bHideDisabledModules;
+		}));
 	
 	GraphEditor = SNew(SGraphEditor)
 		.AdditionalCommands(Commands)
@@ -122,9 +128,10 @@ void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiag
 	GraphEditor->SetNodeFactory(MakeShared<FNiagaraOverviewGraphNodeFactory>());
 
 	GraphEditor->GetCurrentGraph()->AddOnGraphChangedHandler(FOnGraphChanged::FDelegate::CreateSP(this, &SNiagaraOverviewGraph::OnNodesCreated));
-	
+
+	const UNiagaraEditorSettings* NiagaraSettings = GetDefault<UNiagaraEditorSettings>();
 	FNiagaraGraphViewSettings ViewSettings = ViewModel->GetViewSettings();
-	if (ViewSettings.IsValid())
+	if (NiagaraSettings->bAlwaysZoomToFitSystemGraph == false && ViewSettings.IsValid())
 	{
 		GraphEditor->SetViewLocation(ViewSettings.GetLocation(), ViewSettings.GetZoom());
 		ZoomToFitFrameDelay = 0;
@@ -136,6 +143,8 @@ void SNiagaraOverviewGraph::Construct(const FArguments& InArgs, TSharedRef<FNiag
 		// counter here instead of a simple bool.
 		ZoomToFitFrameDelay = 2;
 	}
+
+	GraphEditor->GetCurrentGraph()->AddOnGraphChangedHandler(FOnGraphChanged::FDelegate::CreateSP(this, &SNiagaraOverviewGraph::OnNodesCreated));
 
 	ChildSlot
 	[
@@ -203,7 +212,7 @@ void SNiagaraOverviewGraph::PreClose()
 }
 
 void SNiagaraOverviewGraph::OpenAddEmitterMenu()
-{
+{	
 	FNiagaraAssetPickerListViewOptions ViewOptions;
 	ViewOptions.SetCategorizeUserDefinedCategory(true);
 	ViewOptions.SetCategorizeLibraryAssets(true);
@@ -213,17 +222,15 @@ void SNiagaraOverviewGraph::OpenAddEmitterMenu()
 	TabOptions.ChangeTabState(ENiagaraScriptTemplateSpecification::None, true);
 	TabOptions.ChangeTabState(ENiagaraScriptTemplateSpecification::Behavior, true);	
 
-	TSharedPtr<SNiagaraAssetPickerList> AssetPickerList;
-	
-	SAssignNew(AssetPickerList, SNiagaraAssetPickerList, UNiagaraEmitter::StaticClass())
+	TSharedPtr<SNiagaraAssetPickerList> AssetPickerList = SNew(SNiagaraAssetPickerList, UNiagaraEmitter::StaticClass())
 	.ClickActivateMode(EItemSelectorClickActivateMode::SingleClick)
 	.ViewOptions(ViewOptions)
 	.TabOptions(TabOptions)
 	.OnTemplateAssetActivated_Lambda([this](const FAssetData& AssetData) {
+		TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel = ViewModel->GetSystemViewModel()->AddEmitterFromAssetData(AssetData);
 		FSlateApplication::Get().DismissAllMenus();
-		ViewModel->GetSystemViewModel()->AddEmitterFromAssetData(AssetData);
 	});
-	
+    
 	TSharedRef<SWidget> EmitterAddSubMenu =
 		SNew(SBorder)
 		.BorderImage(FNiagaraEditorStyle::Get().GetBrush("GraphActionMenu.Background"))
@@ -236,9 +243,11 @@ void SNiagaraOverviewGraph::OpenAddEmitterMenu()
 				AssetPickerList.ToSharedRef()
 			]
 		];
-
+	
 	FSlateApplication::Get().PushMenu(SharedThis(this), FWidgetPath(), EmitterAddSubMenu, FSlateApplication::Get().GetCursorPos(), FPopupTransitionEffect::None);
 
+	// we need to set the keyboard focus for next tick instead of immediately
+	// if we open the menu via shortcut, we'd type the shortcut key into the search box
 	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([AssetPickerList]()
 	{
 		FSlateApplication::Get().SetKeyboardFocus(AssetPickerList->GetSearchBox());
@@ -254,15 +263,19 @@ FActionMenuContent SNiagaraOverviewGraph::OnCreateGraphActionMenu(UEdGraph* InGr
 {
 	if (ViewModel->GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
 	{
-		FMenuBuilder MenuBuilder(true, ViewModel->GetCommands());
-
+		FMenuBuilder MenuBuilder(true, ViewModel->GetCommands(), TSharedPtr<FExtender>(), false, &FAppStyle::Get(), false);
+		
 		MenuBuilder.BeginSection(TEXT("NiagaraOverview_EditGraph"), LOCTEXT("EditGraph", "Edit Graph"));
 		{
 			MenuBuilder.AddMenuEntry(FNiagaraEditorCommands::Get().OpenAddEmitterMenu);
-
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("EmptyEmitterLabel", "Add empty emitter"),
+				LOCTEXT("AddEmitterToolTip", "Adds an empty emitter without any modules or renderers."),
+				FSlateIcon(),
+				FExecuteAction::CreateSP(this, &SNiagaraOverviewGraph::OnCreateEmptyEmitter));
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("CommentsLabel", "Add Comment"),
-				LOCTEXT("CommentsToolTip", "Add a comment box"),
+				LOCTEXT("AddCommentBoxToolTip", "Add a comment box"),
 				FSlateIcon(),
 				FExecuteAction::CreateSP(this, &SNiagaraOverviewGraph::OnCreateComment));
 
@@ -294,10 +307,19 @@ FActionMenuContent SNiagaraOverviewGraph::OnCreateGraphActionMenu(UEdGraph* InGr
 	return FActionMenuContent(SNullWidget::NullWidget, SNullWidget::NullWidget);
 }
 
+void SNiagaraOverviewGraph::OnCreateEmptyEmitter()
+{
+	ViewModel->GetSystemViewModel()->AddEmptyEmitter();
+}
+
 void SNiagaraOverviewGraph::OnCreateComment()
 {
-	FNiagaraSchemaAction_NewComment CommentAction = FNiagaraSchemaAction_NewComment(GraphEditor);
-	CommentAction.PerformAction(ViewModel->GetGraph(), nullptr, GraphEditor->GetPasteLocation(), false);
+	// Emitter assets have a transient overview graph, so any created comments would also be transient. We skip creating these comments instead.
+	if (ViewModel->GetSystemViewModel()->GetEditMode() != ENiagaraSystemViewModelEditMode::EmitterAsset)
+	{
+		FNiagaraSchemaAction_NewComment CommentAction = FNiagaraSchemaAction_NewComment(GraphEditor);
+		CommentAction.PerformAction(ViewModel->GetGraph(), nullptr, GraphEditor->GetPasteLocation(), false);
+	}
 }
 
 void SNiagaraOverviewGraph::OnClearIsolated()

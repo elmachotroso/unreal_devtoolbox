@@ -3,8 +3,11 @@
 #pragma once
 #include "GameFramework/RootMotionSource.h"
 #include "Chaos/SimCallbackObject.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/SceneComponent.h"
+#include "Engine/OverlapInfo.h"
 #include "CharacterMovementComponentAsync.generated.h"
-
 
 struct FCharacterMovementComponentAsyncOutput;
 struct FCharacterMovementComponentAsyncInput;
@@ -207,6 +210,7 @@ public:
 	bool bHasRequestedVelocity;
 	bool bRequestedMoveWithMaxSpeed;
 	FVector RequestedVelocity;
+	FVector LastUpdateRequestedVelocity;
 	int32 NumJumpApexAttempts;
 	FVector AnimRootMotionVelocity;
 	bool bShouldApplyDeltaToMeshPhysicsTransforms; // See UpdateBasedMovement

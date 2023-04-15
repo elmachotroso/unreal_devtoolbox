@@ -1,15 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonWidgetCarousel.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "Containers/Ticker.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonWidgetCarousel)
 
 UCommonWidgetCarousel::UCommonWidgetCarousel(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = true;
-	Clipping = EWidgetClipping::ClipToBounds;
+	SetClipping(EWidgetClipping::ClipToBounds);
 }
 
 void UCommonWidgetCarousel::ReleaseSlateResources(bool bReleaseChildren)

@@ -12,11 +12,13 @@
 #include "UObject/CoreNet.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
-#include "ComponentInstanceDataCache.h"
+#include "PropertyPairsMap.h"
 #include "Components/ChildActorComponent.h"
 #include "RenderCommandFence.h"
-#include "Misc/ITransaction.h"
 #include "Engine/Level.h"
+#include "Net/Core/Misc/NetSubObjectRegistry.h"
+#include "Engine/HitResult.h"
+#include "Engine/ReplicatedState.h"
 
 #if WITH_EDITOR
 #include "WorldPartition/DataLayer/ActorDataLayer.h"
@@ -38,8 +40,15 @@ class UPrimitiveComponent;
 struct FAttachedActorInfo;
 struct FNetViewer;
 struct FNetworkObjectInfo;
-class UDataLayer;
+class FActorTransactionAnnotation;
+class FComponentInstanceDataCache;
+class UDEPRECATED_DataLayer;
+class UDataLayerAsset;
+class UDataLayerInstance;
 class AWorldDataLayers;
+#if UE_WITH_IRIS
+struct FActorBeginReplicationParams;
+#endif // UE_WITH_IRIS
 class UActorFolder;
 
 // By default, debug and development builds (even cooked) will keep actor labels. Manually define this if you want to make a local build
@@ -177,7 +186,10 @@ private:
 
 public:
 	/** Returns the properties used for network replication, this needs to be overridden by all actor classes with native replicated properties */
-	void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/** Called when this actor begins replicating to initialize the state of custom property conditions */
+	virtual void GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const override;
 
 	/**
 	 * Primary Actor tick function, which calls TickActor().
@@ -193,7 +205,6 @@ public:
 	uint8 bNetTemporary:1;
 
 	/** If true, this actor was loaded directly from the map, and for networking purposes can be addressed by its full path name */
-	UPROPERTY()
 	uint8 bNetStartup:1;
 
 	/** If true, this actor is only relevant to its owner. If this flag is changed during play, all non-owner channels would need to be explicitly closed. */
@@ -218,17 +229,17 @@ private:
 	UPROPERTY(ReplicatedUsing=OnRep_ReplicateMovement, Category=Replication, EditDefaultsOnly)
 	uint8 bReplicateMovement:1;    
 
-	UPROPERTY(EditDefaultsOnly, Category = Replication)
+	UPROPERTY(EditDefaultsOnly, Category = Replication, AdvancedDisplay)
 	uint8 bCallPreReplication:1;
 
-	UPROPERTY(EditDefaultsOnly, Category = Replication)
+	UPROPERTY(EditDefaultsOnly, Category = Replication, AdvancedDisplay)
 	uint8 bCallPreReplicationForReplay:1;
 
 	/**
 	 * Allows us to only see this Actor in the Editor, and not in the actual game.
 	 * @see SetActorHiddenInGame()
 	 */
-	UPROPERTY(Interp, EditAnywhere, Category=Rendering, BlueprintReadOnly, Replicated, meta=(AllowPrivateAccess="true", DisplayName="Actor Hidden In Game", SequencerTrackClass="MovieSceneVisibilityTrack"))
+	UPROPERTY(Interp, EditAnywhere, Category=Rendering, BlueprintReadOnly, Replicated, meta=(AllowPrivateAccess="true", DisplayName="Actor Hidden In Game", SequencerTrackClass="/Script/MovieSceneTracks.MovieSceneVisibilityTrack"))
 	uint8 bHidden:1;
 
 	UPROPERTY(Replicated)
@@ -308,7 +319,7 @@ public:
 	 * Otherwise, RewindForReplay will be called if we detect the actor needs to be reset.
 	 * Note, this Actor must not be destroyed by gamecode, and RollbackViaDeletion may not be used. 
 	 */
-	UPROPERTY(Category=Replication, EditDefaultsOnly)
+	UPROPERTY(Category=Replication, EditDefaultsOnly, AdvancedDisplay)
 	uint8 bReplayRewindable:1;
 
 	/**
@@ -417,7 +428,16 @@ protected:
 	/** Flag indicating we have checked initial simulating physics state to sync networked proxies to the server. */
 	uint8 bNetCheckedInitialPhysicsState : 1;
 
+	/**
+	* When true the replication system will only replicate the registered subobjects and the replicated actor components list
+	* When false the replication system will instead call the virtual ReplicateSubobjects() function where the subobjects and actor components need to be manually replicated.
+	*/
+	UPROPERTY(Config, EditDefaultsOnly, BlueprintReadOnly, Category=Replication, AdvancedDisplay)
+	uint8 bReplicateUsingRegisteredSubObjectList : 1;
+
 private:
+	friend class FActorDeferredScriptManager;
+
 	/** Whether FinishSpawning has been called for this Actor.  If it has not, the Actor is in a malformed state */
 	uint8 bHasFinishedSpawning:1;
 
@@ -438,6 +458,9 @@ private:
 
 	/** True if this actor is currently running user construction script (used to defer component registration) */
 	uint8 bRunningUserConstructionScript:1;
+
+	/** Set true just before PostRegisterAllComponents() is called and false just before PostUnregisterAllComponents() is called */
+	uint8 bHasRegisteredAllComponents:1;
 
 	/**
 	 * Enables any collision on this actor.
@@ -467,10 +490,17 @@ private:
 	 */
 	EActorBeginPlayState ActorHasBegunPlay:2;
 
+	/** Set while actor is being constructed. Used to ensure that construction is not re-entrant. */
+	uint8 bActorIsBeingConstructed : 1;
+
 	static uint32 BeginPlayCallDepth;
 
 protected:
-
+		
+	/** Whether to use use the async physics tick with this actor. */
+	UPROPERTY(EditAnywhere, Category=Physics)
+	uint8 bAsyncPhysicsTickEnabled : 1;
+	
 	/**
 	 * Condition for calling UpdateOverlaps() to initialize overlap state when loaded in during level streaming.
 	 * If set to 'UseConfigDefault', the default specified in ini (displayed in 'DefaultUpdateOverlapsMethodDuringLevelStreaming') will be used.
@@ -516,11 +546,6 @@ private:
 	/** Internal helper to update Overlaps during Actor initialization/BeginPlay correctly based on the UpdateOverlapsMethodDuringLevelStreaming and bGenerateOverlapEventsDuringLevelStreaming settings. */
 	void UpdateInitialOverlaps(bool bFromLevelStreaming);
 
-	/** Describes how much control the remote machine has over the actor. */
-	UPROPERTY(Replicated, Transient)
-	TEnumAsByte<enum ENetRole> RemoteRole;	
-
-
 public:
 	/**
 	 * Set whether this actor replicates to network clients. When this actor is spawned on the server it will be sent to clients as well.
@@ -559,11 +584,6 @@ public:
 	 */
 	void SetNetAddressable();
 
-private:
-	/** Used for replication of our RootComponent's position and velocity */
-	UPROPERTY(EditDefaultsOnly, ReplicatedUsing=OnRep_ReplicatedMovement, Category=Replication, AdvancedDisplay)
-	struct FRepMovement ReplicatedMovement;
-
 public:
 	/** How long this Actor lives before dying, 0=forever. Note this is the INITIAL value and should not be modified once play has begun. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Actor)
@@ -572,12 +592,15 @@ public:
 	/** Allow each actor to run at a different time speed. The DeltaTime for a frame is multiplied by the global TimeDilation (in WorldSettings) and this CustomTimeDilation for this actor's tick.  */
 	UPROPERTY(BlueprintReadWrite, AdvancedDisplay, Category=Actor)
 	float CustomTimeDilation;
+	
+private:
+	/** Describes how much control the remote machine has over the actor. */
+	UPROPERTY(Replicated, Transient, VisibleInstanceOnly, Category=Networking)
+	TEnumAsByte<enum ENetRole> RemoteRole;
 
-	/**
-	 * The time this actor was created, relative to World->GetTimeSeconds().
-	 * @see UWorld::GetTimeSeconds()
-	 */
-	float CreationTime;
+	/** The RayTracingGroupId this actor and its components belong to. (For components that did not specify any) */
+	UPROPERTY()
+	int32 RayTracingGroupId;
 
 protected:
 #if WITH_EDITORONLY_DATA
@@ -602,6 +625,12 @@ protected:
 	UPROPERTY(Transient, ReplicatedUsing=OnRep_AttachmentReplication)
 	struct FRepAttachment AttachmentReplication;
 
+private:
+	/** Used for replication of our RootComponent's position and velocity */
+	UPROPERTY(EditDefaultsOnly, ReplicatedUsing=OnRep_ReplicatedMovement, Category=Replication, AdvancedDisplay)
+	struct FRepMovement ReplicatedMovement;
+
+public:
 	/**
 	 * Owner of this Actor, used primarily for replication (bNetUseOwnerRelevancy & bOnlyRelevantToOwner) and visibility (PrimitiveComponent bOwnerNoSee and bOnlyOwnerSee)
 	 * @see SetOwner(), GetOwner()
@@ -631,7 +660,7 @@ public:
 
 private:
 	/** Describes how much control the local machine has over the actor. */
-	UPROPERTY(Replicated)
+	UPROPERTY(Replicated, VisibleInstanceOnly, Category=Networking)
 	TEnumAsByte<enum ENetRole> Role;
 
 public:
@@ -656,6 +685,12 @@ public:
 	/** The priority of this input component when pushed in to the stack. */
 	UPROPERTY(EditAnywhere, Category=Input)
 	int32 InputPriority;
+	
+	/**
+	 * The time this actor was created, relative to World->GetTimeSeconds().
+	 * @see UWorld::GetTimeSeconds()
+	 */
+	float CreationTime;
 
 	/** Component that handles input for this actor, if input is enabled. */
 	UPROPERTY(DuplicateTransient)
@@ -701,7 +736,18 @@ public:
 	/** Returns name of the net driver associated with this actor (all RPCs will go out via this connection) */
 	FName GetNetDriverName() const { return NetDriverName; }
 
-	/** Method that allows an actor to replicate subobjects on its actor channel */
+	/** 
+    * Returns true if this actor is replicating SubObjects & ActorComponents via the registration list.
+    * Returns false when it replicates them via the virtual ReplicateSubobjects method. 
+    */
+	bool IsUsingRegisteredSubObjectList() const { return bReplicateUsingRegisteredSubObjectList; }
+
+	/** 
+	* Method that allows an actor to replicate subobjects on its actor channel. 
+	* Must return true if any data was serialized into the bunch.
+	* This method is used only when bReplicateUsingRegisteredSubObjectList is false.
+	* Otherwise this function is not called and only the ReplicatedSubObjects list is used.
+	*/
 	virtual bool ReplicateSubobjects(class UActorChannel *Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags);
 
 	/** Called on the actor when a new subobject is dynamically created via replication */
@@ -786,10 +832,6 @@ private:
 	TObjectPtr<class UHLODLayer> HLODLayer;
 #endif
 
-	/** The RayTracingGroupId this actor and its components belong to. (For components that did not specify any) */
-	UPROPERTY()
-	int32 RayTracingGroupId;
-
 public:
 	/** Return the value of bAllowReceiveTickEventOnDedicatedServer, indicating whether the Blueprint ReceiveTick() event will occur on dedicated servers. */
 	FORCEINLINE bool AllowReceiveTickEventOnDedicatedServer() const { return bAllowReceiveTickEventOnDedicatedServer; }
@@ -823,11 +865,20 @@ protected:
 	UPROPERTY(BluePrintReadOnly, AdvancedDisplay, Category=Actor, NonPIEDuplicateTransient, TextExportTransient, NonTransactional)
 	FGuid ActorGuid;
 
+	/**
+	 * The GUID for this actor's content bundle.
+	 */
+	UPROPERTY(BluePrintReadOnly, AdvancedDisplay, Category=Actor, TextExportTransient, NonTransactional)
+	FGuid ContentBundleGuid;
+
 	/** DataLayers the actor belongs to.*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = DataLayers)
+	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category = DataLayers)
 	TArray<FActorDataLayer> DataLayers;
 
-	TArray<FActorDataLayer> PreEditChangeDataLayers;
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = DataLayers)
+	TArray<TObjectPtr<const UDataLayerAsset>> DataLayerAssets;
+
+	TArray<TObjectPtr<const UDataLayerAsset>> PreEditChangeDataLayers;
 
 public:
 	/** The copy/paste id used to remap actors during copy operations */
@@ -862,7 +913,6 @@ public:
 
 	FActorOnPackagingModeChanged OnPackagingModeChanged;
 
-
 	/** Returns this actor's current target runtime grid. */
 	virtual FName GetRuntimeGrid() const { return RuntimeGrid; }
 
@@ -872,8 +922,11 @@ public:
 	/** Gets the property name for RuntimeGrid. */
 	static const FName GetRuntimeGridPropertyName()	{ return GET_MEMBER_NAME_CHECKED(AActor, RuntimeGrid); }
 
-	/** Returns this actor's current Guid. Actor Guids are only available in development builds. */
+	/** Returns this actor's Guid. Actor Guids are only available in editor builds. */
 	inline const FGuid& GetActorGuid() const { return ActorGuid; }
+
+	/** Returns this actor's content bundle Guid. */
+	inline const FGuid& GetContentBundleGuid() const { return ContentBundleGuid; }
 
 	/** Returns true if actor location should be locked. */
 	virtual bool IsLockLocation() const { return bLockLocation; }
@@ -898,6 +951,11 @@ public:
 	TUniquePtr<class FWorldPartitionActorDesc> CreateActorDesc() const;
 
 	/**
+	 * Add properties to the actor desc.
+	 */
+	virtual void GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const;
+
+	/**
 	 * Creates an uninitialized actor descriptor from a specific class.
 	 */
 	static TUniquePtr<class FWorldPartitionActorDesc> StaticCreateClassActorDesc(const TSubclassOf<AActor>& ActorClass);
@@ -910,7 +968,7 @@ private:
 	 * and call AActor::SetActorLabel() or FActorLabelUtilities::SetActorLabelUnique() to change the label.  Never set the label directly.
 	 */
 	UPROPERTY()
-	mutable FString ActorLabel;
+	FString ActorLabel;
 #endif
 
 #if !WITH_EDITOR && ACTOR_HAS_LABELS
@@ -940,7 +998,7 @@ private:
 	FName FolderPath;
 
 	/** If the actor's level uses the actor folder objects feature, contains the actor folder unique identifier (invalid=root). */
-	UPROPERTY()
+	UPROPERTY(TextExportTransient)
 	FGuid FolderGuid;
 
 public:
@@ -1007,9 +1065,6 @@ private:
 	UPROPERTY(Transient)
 	uint8 bForceExternalActorLevelReferenceForPIE : 1;
 #endif // WITH_EDITORONLY_DATA
-
-	/** Set while actor is being constructed. Used to ensure that construction is not re-entrant. */
-	uint8 bActorIsBeingConstructed : 1;
 
 public:
 	/** Array of tags that can be used for grouping and categorizing. */
@@ -1141,30 +1196,74 @@ public:
 		return Cast<T>(GetInstigatorController());
 	}
 
-#if WITH_EDITOR
 	//~=============================================================================
 	// DataLayers functions.
-	bool AddDataLayer(const UDataLayer* DataLayer);
-	bool RemoveDataLayer(const UDataLayer* DataLayer);
+#if WITH_EDITOR
+private:
+	virtual bool ActorTypeSupportsDataLayer() const { return true; }
+public:
+	bool AddDataLayer(const UDataLayerAsset* DataLayerAsset);
+	bool AddDataLayer(const UDataLayerInstance* DataLayerInstance);
+	bool RemoveDataLayer(const UDataLayerAsset* DataLayerAsset);
+	bool RemoveDataLayer(const UDataLayerInstance* DataLayerInstance);
 	bool RemoveAllDataLayers();
-	bool ContainsDataLayer(const UDataLayer* DataLayer) const;
-	virtual bool SupportsDataLayer() const { return true; }
-	bool HasDataLayers() const;
-	bool HasValidDataLayers() const;
-	bool HasAllDataLayers(const TArray<const UDataLayer*>& DataLayers) const;
-	bool HasAnyOfDataLayers(const TArray<FName>& DataLayerNames) const;
-	TArray<FName> GetDataLayerNames() const;
-	TArray<const UDataLayer*> GetDataLayerObjects() const;
-	TArray<const UDataLayer*> GetDataLayerObjects(const AWorldDataLayers* WorldDataLayers) const;
+	bool SupportsDataLayer() const;
+	
+	TArray<const UDataLayerInstance*> GetDataLayerInstancesForLevel() const;
+	TArray<FName> GetDataLayerInstanceNames() const;
 	bool IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& PropertyChangedEvent) const;
-	bool IsValidForDataLayer() const;
 	void FixupDataLayers(bool bRevertChangesOnLockedDataLayer = false);
-	static const FName GetDataLayersPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, DataLayers); }
+	static const FName GetDataLayerAssetsPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, DataLayerAssets); }
+	static const FName GetDataLayerPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, DataLayers); }
+
+	const TArray<TObjectPtr<const UDataLayerAsset>>& GetDataLayerAssets() const { return DataLayerAssets; }
+
+	//~ Begin Deprecated
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use AddDataLayer(UDataLayerInstance*)")
+	bool AddDataLayer(const UDEPRECATED_DataLayer* DataLayer);
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use RemoveDataLayer(UDataLayerInstance*)")
+	bool RemoveDataLayer(const UDEPRECATED_DataLayer* DataLayer);
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use AddDataLayer(UDataLayerAsset*)")
+	bool AddDataLayer(const FActorDataLayer& ActorDataLayer);
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use RemoveDataLayer(UDataLayerAsset*)")
+	bool RemoveDataLayer(const FActorDataLayer& ActorDataLayer);
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use ContainsDataLayer(const UDataLayerAsset*)")
+	bool ContainsDataLayer(const FActorDataLayer& ActorDataLayer) const;
+
+	UE_DEPRECATED(5.1, "Convert DataLayer using UDataLayerToAssetCommandlet and use GetDataLayerAssets() instead")
+	TArray<FActorDataLayer> const& GetActorDataLayers() const { return DataLayers; }
+
+	UE_DEPRECATED(5.1, "Use GetDataLayerInstances() with no parameters instead")
+	TArray<const UDataLayerInstance*> GetDataLayerInstances(const AWorldDataLayers* WorldDataLayers) const { return TArray<const UDataLayerInstance*>(); }
+
+	UE_DEPRECATED(5.1, "Use HasDataLayers() instead")
+	bool HasValidDataLayers() const { return HasDataLayers(); }
+
+	//~ End Deprecated
 #endif
+
+	TArray<const UDataLayerInstance*> GetDataLayerInstances() const;
+
+	bool ContainsDataLayer(const UDataLayerAsset* DataLayerAsset) const;
+	bool ContainsDataLayer(const UDataLayerInstance* DataLayerInstance) const;
+	bool HasDataLayers() const;
+
+private:
+	TArray<const UDataLayerInstance*> GetDataLayerInstancesInternal(bool bUseLevelContext, bool bIncludeParentDataLayers = true) const;
+	bool UseWorldPartitionRuntimeCellDataLayers() const;
 
 	//~=============================================================================
 	// General functions.
-
+public:
 	/**
 	 * Get the actor-to-world transform.
 	 * @return The transform that transforms from actor space to world space.
@@ -1732,6 +1831,15 @@ public:
 		return bActorIsBeingDestroyed;
 	}
 
+	/** Returns bHasRegisteredAllComponents which indicates whether this actor has registered all their components without 
+	 *	unregisatering all of them them.
+	 *	bHasRegisteredAllComponents is set true just before PostRegisterAllComponents() is called and false just before PostUnregisterAllComponents() is called.
+	 */ 
+	bool HasActorRegisteredAllComponents() const { return bHasRegisteredAllComponents; }
+
+	/** Sets bHasRegisteredAllComponents true. bHasRegisteredAllComponents must be set true just prior to calling PostRegisterAllComponents(). */
+	void SetHasActorRegisteredAllComponents() { bHasRegisteredAllComponents = true; }
+
 	/** Event when this actor takes ANY damage */
 	UFUNCTION(BlueprintImplementableEvent, BlueprintAuthorityOnly, meta=(DisplayName = "AnyDamage"), Category="Game|Damage")
 	void ReceiveAnyDamage(float Damage, const class UDamageType* DamageType, class AController* InstigatedBy, AActor* DamageCauser);
@@ -1747,6 +1855,10 @@ public:
 	/** Event called every frame, if ticking is enabled */
 	UFUNCTION(BlueprintImplementableEvent, meta=(DisplayName = "Tick"))
 	void ReceiveTick(float DeltaSeconds);
+
+	/** Event called every physics tick if bAsyncPhysicsTickEnabled is true */
+	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "Async Physics Tick"))
+	void ReceiveAsyncPhysicsTick(float DeltaSeconds, float SimSeconds);
 
 	/** 
 	 *	Event when this actor overlaps another actor, for example a player walking into a trigger.
@@ -1913,12 +2025,15 @@ public:
 	virtual void PostLoad() override;
 	virtual void PostLoadSubobjects( FObjectInstancingGraph* OuterInstanceGraph ) override;
 	virtual void BeginDestroy() override;
+#if !UE_STRIP_DEPRECATED_PROPERTIES
 	virtual bool IsReadyForFinishDestroy() override;
+#endif
 	virtual bool Rename( const TCHAR* NewName=nullptr, UObject* NewOuter=nullptr, ERenameFlags Flags=REN_None ) override;
 	virtual void PostRename( UObject* OldOuter, const FName OldName ) override;
 	virtual bool CanBeInCluster() const override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual bool IsEditorOnly() const override;
+	virtual bool IsRuntimeOnly() const { return false; }
 	virtual bool IsAsset() const override;
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
@@ -1941,7 +2056,7 @@ public:
 #if WITH_EDITOR
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
-	virtual void GetExternalActorExtendedAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	virtual void GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* TargetPlatform, TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const;
@@ -1968,74 +2083,7 @@ public:
 	virtual bool SupportsExternalPackaging() const;
 #endif
 
-	/** Internal struct used to store information about an actor's components during reconstruction */
-	struct FActorRootComponentReconstructionData
-	{
-		/** Struct to store info about attached actors */
-		struct FAttachedActorInfo
-		{
-			TWeakObjectPtr<AActor> Actor;
-			TWeakObjectPtr<USceneComponent> AttachParent;
-			FName AttachParentName;
-			FName SocketName;
-			FTransform RelativeTransform;
-
-			friend FArchive& operator<<(FArchive& Ar, FAttachedActorInfo& ActorInfo);
-		};
-
-		/** The RootComponent's transform */
-		FTransform Transform;
-
-		/** The RootComponent's relative rotation cache (enforces using the same rotator) */
-		FRotationConversionCache TransformRotationCache;
-
-		/** The Actor the RootComponent is attached to */
-		FAttachedActorInfo AttachedParentInfo;
-
-		/** Actors that are attached to this RootComponent */
-		TArray<FAttachedActorInfo> AttachedToInfo;
-
-		friend FArchive& operator<<(FArchive& Ar, FActorRootComponentReconstructionData& RootComponentData);
-	};
-
-	struct FActorTransactionAnnotationData
-	{
-		TWeakObjectPtr<const AActor> Actor;
-		FComponentInstanceDataCache ComponentInstanceData;
-
-		bool bRootComponentDataCached;
-		FActorRootComponentReconstructionData RootComponentData;
-
-		friend ENGINE_API FArchive& operator<<(FArchive& Ar, FActorTransactionAnnotationData& ActorTransactionAnnotationData);
-	};
-
 #if WITH_EDITOR
-	/** Internal struct to track currently active transactions */
-	class FActorTransactionAnnotation : public ITransactionObjectAnnotation
-	{
-	public:
-		/** Create an empty instance */
-		static TSharedRef<FActorTransactionAnnotation> Create();
-
-		/** Create an instance from the given actor, optionally caching root component data */
-		static TSharedRef<FActorTransactionAnnotation> Create(const AActor* InActor, const bool InCacheRootComponentData = true);
-
-		/** Create an instance from the given actor if required (UActorTransactionAnnotation::HasInstanceData would return true), optionally caching root component data */
-		static TSharedPtr<FActorTransactionAnnotation> CreateIfRequired(const AActor* InActor, const bool InCacheRootComponentData = true);
-
-		//~ ITransactionObjectAnnotation interface
-		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
-		virtual void Serialize(FArchive& Ar) override;
-
-		bool HasInstanceData() const;
-
-		FActorTransactionAnnotationData ActorTransactionAnnotationData;
-
-	private:
-		FActorTransactionAnnotation();
-		FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData = true);
-	};
-
 	/** Cached pointer to the transaction annotation data from PostEditUndo to be used in the next RerunConstructionScript */
 	TSharedPtr<FActorTransactionAnnotation> CurrentTransactionAnnotation;
 
@@ -2271,6 +2319,9 @@ public:
 	/** Returns true if this actor is allowed to be attached to the given actor */
 	virtual bool EditorCanAttachTo(const AActor* InParent, FText& OutReason) const;
 
+	/** Returns true if this actor is allowed to be attached from the given actor */
+	virtual bool EditorCanAttachFrom(const AActor* InChild, FText& OutReason) const;
+
 	/** Returns the actor attachement parent that should be used in editor */
 	virtual AActor* GetSceneOutlinerParent() const;
 
@@ -2284,7 +2335,7 @@ public:
 	virtual void EditorKeyPressed(FKey Key, EInputEvent Event) {}
 
 	/** Called by ReplaceSelectedActors to allow a new actor to copy properties from an old actor when it is replaced */
-	virtual void EditorReplacedActor(AActor* OldActor) {}
+	virtual void EditorReplacedActor(AActor* OldActor);
 
 	/**
 	 * Function that gets called from within Map_Check to allow this actor to check itself
@@ -2327,8 +2378,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
 	FName GetFolderPath() const;
 
-	/** Returns actor folder guid. If level is not using actor folder objects, returns an invalid guid. */
-	FGuid GetFolderGuid() const;
+	/*
+	 * Returns actor folder guid. If level is not using actor folder objects, returns an invalid guid. 
+	 * @param bDirectAccess If true, returns the raw value without testing if level uses Actor Folders.
+	 */
+	FGuid GetFolderGuid(bool bDirectAccess = false) const;
 
 	/** Returns the actor's folder root object. Null, is interpreted as the actor's world. */
 	FFolder::FRootObject GetFolderRootObject() const;
@@ -2362,6 +2416,12 @@ public:
 	 */
 	virtual bool GetReferencedContentObjects( TArray<UObject*>& Objects ) const;
 
+	/** Similar to GetReferencedContentObjects, but for soft referenced objects */
+	virtual bool GetSoftReferencedContentObjects(TArray<FSoftObjectPath>& SoftObjects) const;
+
+	/** Used to allow actor classes to open an actor specific editor */
+	virtual bool OpenAssetEditor() { return false; }
+
 	/** Returns NumUncachedStaticLightingInteractions for this actor */
 	const int32 GetNumUncachedStaticLightingInteractions() const;
 
@@ -2373,6 +2433,11 @@ public:
 	{
 		return bOptimizeBPComponentData;
 	}
+
+	/** Sets metadata on the Actor that allows it to point to a different asset than its source when browsing in the Content Browser */
+	void SetBrowseToAssetOverride(const FString& PackageName);
+	/** Gets metadata on the Actor that says which package to show in the Content Browser when browsing to it, or an empty string if there is no override */
+	const FString& GetBrowseToAssetOverride() const;
 #endif		// WITH_EDITOR
 
 	/**
@@ -2475,13 +2540,22 @@ public:
 	virtual void TickActor( float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction );
 
 	/**
+	 * Override this function to implement custom logic to be executed every physics step.
+	 * bAsyncPhysicsTick must be set to true.
+	 *	
+	 * @param DeltaTime - The physics step delta time
+	 * @param SimTime - This is the total sim time since the sim began.
+	 */
+	virtual void AsyncPhysicsTickActor(float DeltaTime, float SimTime) { ReceiveAsyncPhysicsTick(DeltaTime, SimTime); }
+
+	/**
 	 * Called when an actor is done spawning into the world (from UWorld::SpawnActor), both in the editor and during gameplay
 	 * For actors with a root component, the location and rotation will have already been set.
 	 * This is called before calling construction scripts, but after native components have been created
 	 */
 	virtual void PostActorCreated();
 
-	/** Called when the lifespan of an actor expires (if he has one). */
+	/** Called when the lifespan of an actor expires (if it has one). */
 	virtual void LifeSpanExpired();
 
 	/** Always called immediately before properties are received from the remote. */
@@ -2768,7 +2842,10 @@ public:
 	/** Called before all the components in the Components array are registered, called both in editor and during gameplay */
 	virtual void PreRegisterAllComponents();
 
-	/** Called after all the components in the Components array are registered, called both in editor and during gameplay */
+	/** 
+	 * Called after all the components in the Components array are registered, called both in editor and during gameplay.
+	 * bHasRegisteredAllComponents must be set true prior to calling this function.
+	 */
 	virtual void PostRegisterAllComponents();
 
 	/** Returns true if Actor has deferred the RegisterAllComponents() call at spawn time (e.g. pending Blueprint SCS execution to set up a scene root component). */
@@ -2788,6 +2865,9 @@ public:
 
 	/** Will reregister all components on this actor. Does a lot of work - should only really be used in editor, generally use UpdateComponentTransforms or MarkComponentsRenderStateDirty. */
 	virtual void ReregisterAllComponents();
+
+	/** Finish initializing the component and register tick functions and beginplay if it's the proper time to do so. */
+	void HandleRegisterComponentWithWorld(UActorComponent* Component);
 
 	/**
 	 * Incrementally registers components associated with this actor, used during level streaming
@@ -2937,8 +3017,10 @@ public:
 	/** Returns true if the actor's class has a non trivial user construction script. */
 	bool HasNonTrivialUserConstructionScript() const;
 
+#if WITH_EDITOR
 	/** Rerun construction scripts, destroying all autogenerated components; will attempt to preserve the root component location. */
 	virtual void RerunConstructionScripts();
+#endif
 
 	/** 
 	 * Debug helper to show the component hierarchy of this actor.
@@ -2980,6 +3062,37 @@ public:
 	/** Destroys the constructed components. */
 	void DestroyConstructedComponents();
 
+#if UE_WITH_IRIS
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+
+	/**
+	 * Called for all Actors set to replicate during BeginPlay, It will also be called if SetReplicates(true) is called and the object is not already replicating
+	 */
+	virtual void BeginReplication();
+
+	/**
+	 * Called when we want to end replication for this actor, typically called from EndPlay() for actors that should be replicated during their lifespan
+	 */
+	virtual void EndReplication(EEndPlayReason::Type EndPlayReason);
+protected:
+	/**
+	 * Pushes the owning NetConnection for the actor and all of its children to the replication system.
+	 * This information decides whether properties with owner conditionals are replicated or not.
+	 */
+	void UpdateOwningNetConnection() const;
+
+	/**
+	 * Helper to BeginReplication passing on additional parameters to the ReplicationSystem, typically called from code overriding normal BeginReplication()
+	 * @param Params Additional parameters we want to pass on
+	 */
+	void BeginReplication(const FActorBeginReplicationParams& Params);
+#endif // UE_WITH_IRIS
+
+	/**
+	 * Updates the ReplicatePhysics condition. That information needs to be pushed to the ReplicationSystem.
+	 */
+	void UpdateReplicatePhysicsCondition();
+	
 protected:
 	/**
 	 * Virtual call chain to register all tick functions for the actor class hierarchy
@@ -3175,35 +3288,6 @@ public:
 	/** Forces this actor to be net relevant if it is not already by default	 */
 	virtual void ForceNetRelevant();
 
-	/** Updates NetUpdateTime to the new value for future net relevancy checks */
-	UE_DEPRECATED(4.26, "No longer used.")
-	void SetNetUpdateTime(float NewUpdateTime);
-
-	/**
-	 *	Find the FNetworkObjectInfo struct associated with this actor (for the main NetDriver).
-	 *	If no info is found, one will be created and added to the main NetDriver.
-	 *
-	 *	@return The FNetworkObejctInfo associated with this Actor, or nullptr if one couldn't be created.
-	 */
-	UE_DEPRECATED(4.26, "Please use FindOrAddNetworkObjectInfo on the net driver instead.")
-	FNetworkObjectInfo* FindOrAddNetworkObjectInfo();
-
-	/**
-	 *	Find the FNetworkObjectInfo struct associated with this actor (for the main NetDriver).
-	 *
-	 *	@return The FNetworkObejctInfo associated with this Actor, or nullptr if none was found.
-	 */
-	UE_DEPRECATED(4.26, "Please use FindNetworkObjectInfo on the net driver instead.")
-	FNetworkObjectInfo* FindNetworkObjectInfo();
-	
-	UE_DEPRECATED(4.26, "Please use FindNetworkObjectInfo on the net driver instead..")
-	const FNetworkObjectInfo* FindNetworkObjectInfo() const
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return const_cast<AActor*>(this)->FindNetworkObjectInfo();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
 	/** Force actor to be updated to clients/demo net drivers */
 	UFUNCTION( BlueprintCallable, Category="Networking")
 	virtual void ForceNetUpdate();
@@ -3274,7 +3358,7 @@ public:
 	virtual UActorComponent* FindComponentByClass(const TSubclassOf<UActorComponent> ComponentClass) const;
 	
 	/** Searches components array and returns first encountered component of the specified class */
-	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "ActorComponent"), meta = (DeterminesOutputType = "ComponentClass"))
+	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "/Script/Engine.ActorComponent"), meta = (DeterminesOutputType = "ComponentClass"))
 	UActorComponent* GetComponentByClass(TSubclassOf<UActorComponent> ComponentClass) const;
 
 	/**
@@ -3282,13 +3366,16 @@ public:
 	 * Currently returns an array of UActorComponent which must be cast to the correct type.
 	 * This intended to only be used by blueprints. Use GetComponents() in C++.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "ActorComponent", DisplayName = "Get Components By Class", ScriptName = "GetComponentsByClass", DeterminesOutputType = "ComponentClass"))
+	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "/Script/Engine.ActorComponent", DisplayName = "Get Components By Class", ScriptName = "GetComponentsByClass", DeterminesOutputType = "ComponentClass"))
 	TArray<UActorComponent*> K2_GetComponentsByClass(TSubclassOf<UActorComponent> ComponentClass) const;
 
 	/** Gets all the components that inherit from the given class with a given tag. */
-	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "ActorComponent"), meta = (DeterminesOutputType = "ComponentClass"))
+	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "/Script/Engine.ActorComponent"), meta = (DeterminesOutputType = "ComponentClass"))
 	TArray<UActorComponent*> GetComponentsByTag(TSubclassOf<UActorComponent> ComponentClass, FName Tag) const;
 
+	/** Searches components array and returns first encountered component that implements the given interface. */
+	virtual UActorComponent* FindComponentByInterface(const TSubclassOf<UInterface> Interface) const;
+	
 	/** Gets all the components that implements the given interface. */
 	UFUNCTION(BlueprintCallable, Category = "Actor")
 	TArray<UActorComponent*> GetComponentsByInterface(TSubclassOf<UInterface> Interface) const;
@@ -3300,6 +3387,15 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<T, const UActorComponent>::Value, "'T' template parameter to FindComponentByClass must be derived from UActorComponent");
 
 		return (T*)FindComponentByClass(T::StaticClass());
+	}
+
+	/** Templatized version of FindComponentByInterface that handles casting for you */
+	template<class T>
+	T* FindComponentByInterface() const
+	{
+		static_assert(TPointerIsConvertibleFromTo<T, const UInterface>::Value, "'T' template parameter to FindComponentByInterface must be derived from UInterface");
+
+		return (T*)FindComponentByInterface(T::StaticClass());
 	}
 
 private:
@@ -3439,7 +3535,29 @@ public:
 	}
 
 	/**
-	 * Get all components derived from class 'T' and fill in the OutComponents array with the result.
+	 * Get all components derived from class 'ComponentType' and fill in the OutComponents array with the result.
+	 * It's recommended to use TArrays with a TInlineAllocator to potentially avoid memory allocation costs.
+	 * TInlineComponentArray is defined to make this easier, for example:
+	 * {
+	 * 	   TInlineComponentArray<UPrimitiveComponent*> PrimComponents(Actor);
+	 * }
+	 *
+	 * @param bIncludeFromChildActors	If true then recurse in to ChildActor components and find components of the appropriate type in those Actors as well
+	 */
+	template<class ComponentType, class AllocatorType>
+	void GetComponents(TArray<ComponentType, AllocatorType>& OutComponents, bool bIncludeFromChildActors = false) const
+	{
+		typedef TPointedToType<ComponentType> T;
+
+		OutComponents.Reset();
+		ForEachComponent_Internal<T>(T::StaticClass(), bIncludeFromChildActors, [&](T* InComp)
+		{
+			OutComponents.Add(InComp);
+		});
+	}
+
+	/**
+	 * Get all components derived from class 'ComponentType' and fill in the OutComponents array with the result.
 	 * It's recommended to use TArrays with a TInlineAllocator to potentially avoid memory allocation costs.
 	 * TInlineComponentArray is defined to make this easier, for example:
 	 * {
@@ -3451,11 +3569,35 @@ public:
 	template<class T, class AllocatorType>
 	void GetComponents(TArray<T*, AllocatorType>& OutComponents, bool bIncludeFromChildActors = false) const
 	{
+		// We should consider removing this function.  It's not really hurting anything by existing but the one above it was added so that
+		// we weren't assuming T*, preventing TObjectPtrs from working for this function.  The only downside is all the people who force the
+		// template argument with GetComponents's code suddenly not compiling with no clear error message.
+
 		OutComponents.Reset();
 		ForEachComponent_Internal<T>(T::StaticClass(), bIncludeFromChildActors, [&](T* InComp)
 		{
 			OutComponents.Add(InComp);
 		});
+	}
+
+	/**
+	 * Get all components derived from class 'T' and fill in the OutComponents array with the result.
+	 * It's recommended to use TArrays with a TInlineAllocator to potentially avoid memory allocation costs.
+	 * TInlineComponentArray is defined to make this easier, for example:
+	 * {
+	 * 	   TInlineComponentArray<UPrimitiveComponent*> PrimComponents(Actor);
+	 * }
+	 *
+	 * @param bIncludeFromChildActors	If true then recurse in to ChildActor components and find components of the appropriate type in those Actors as well
+	 */
+	template<class T, class AllocatorType>
+	void GetComponents(TArray<TObjectPtr<T>, AllocatorType>& OutComponents, bool bIncludeFromChildActors = false) const
+	{
+		OutComponents.Reset();
+		ForEachComponent_Internal<T>(T::StaticClass(), bIncludeFromChildActors, [&](T* InComp)
+			{
+				OutComponents.Add(InComp);
+			});
 	}
 
 	/**
@@ -3519,6 +3661,22 @@ public:
 	/** Completely synchronizes the replicated components array so that it contains exactly the number of replicated components currently owned */
 	void UpdateAllReplicatedComponents();
 
+	/** 
+	* Allows classes to control if a replicated component can actually be replicated or not in a specific actor class. 
+	* You can also choose a netcondition to filter to whom the component is replicated to.
+	* Called on existing replicated component right before BeginPlay() and after that on every new replicated component added to the OwnedComponent list
+    *
+	* @param ComponentToReplicate The replicated component added to the actor.
+	* @return Return COND_None if this component should be replicated to everyone, COND_Never if it should not be replicated at all or any other conditions for specific filtering.
+	*/
+	virtual ELifetimeCondition AllowActorComponentToReplicate(const UActorComponent* ComponentToReplicate) const;
+
+	/** 
+	* Change the network condition of a replicated component but only after BeginPlay. 
+	* Using a network condition can allow you to filter to which client the component gets replicated to. 
+	*/
+	void SetReplicatedComponentNetCondition(const UActorComponent* ReplicatedComponent, ELifetimeCondition NetCondition);
+
 	/** Returns whether replication is enabled or not. */
 	FORCEINLINE bool GetIsReplicated() const
 	{
@@ -3530,6 +3688,60 @@ public:
 	{ 
 		return ReplicatedComponents; 
 	}
+
+	/**
+	* Register a SubObject that will get replicated along with the actor.
+	* The subobject needs to be manually removed from the list before it gets deleted.
+	* @param SubObject The SubObject to replicate
+	* @param NetCondition Optional condition to select which type of connection we will replicate the object to.
+	*/
+	void AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition = COND_None);
+
+	/**
+	* Unregister a SubObject so it stops being replicated.
+	* @param SubObject The SubObject to remove
+	*/
+	void RemoveReplicatedSubObject(UObject* SubObject);
+
+	/**
+	* Register a SubObject that will get replicated along with the actor component owning it.
+	* The subobject needs to be manually removed from the list before it gets deleted.
+	* @param SubObject The SubObject to replicate
+	* @param NetCondition Optional condition to select which type of connection we will replicate the object to.
+	*/
+	void AddActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject, ELifetimeCondition NetCondition = COND_None);
+
+	/**
+	* Unregister a SubObject owned by an ActorComponent so it stops being replicated.
+	* @param SubObject The SubObject to remove
+	*/
+	void RemoveActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject);
+
+	/** Tells if the object has been registered as a replicated subobject of this actor */
+	bool IsReplicatedSubObjectRegistered(const UObject* SubObject) const;
+
+	/** Tells if the component has been registered as a replicated component */
+	bool IsReplicatedActorComponentRegistered(const UActorComponent* ReplicatedComponent) const;
+
+	/** Tells if an object owned by a component has been registered as a replicated subobject of the component */
+	bool IsActorComponentReplicatedSubObjectRegistered(const UActorComponent* OwnerComponent, const UObject* SubObject) const;
+
+private:
+	/** Collection of SubObjects that get replicated when this actor gets replicated. */
+	UE::Net::FSubObjectRegistry ReplicatedSubObjects;
+	friend class UE::Net::FSubObjectRegistryGetter;
+
+	/** Array of replicated components and the list of replicated subobjects they own. Replaces the deprecated ReplicatedCompoments array. */
+	TArray<UE::Net::FReplicatedComponentInfo> ReplicatedComponentsInfo;
+
+	/** Check if a new component is replicated by the actor and must be registered in the list */
+	void AddComponentForReplication(UActorComponent* Component);
+
+	/** Remove a component from the replicated list */
+	void RemoveReplicatedComponent(UActorComponent* Component);
+
+	/** Constructs the list of replicated components and their netcondition */
+	void BuildReplicatedComponentsInfo();
 
 protected:
 	/** Set of replicated components, stored as an array to save space as this is generally not very large */
@@ -3628,8 +3840,11 @@ public:
 	static FOnProcessEvent ProcessEventDelegate;
 #endif
 
+#if !UE_STRIP_DEPRECATED_PROPERTIES
 	/** A fence to track when the primitive is detached from the scene in the rendering thread. */
+	UE_DEPRECATED(5.1, "AActor::DetachFence has been deprecated. If you are relying on it for render thread synchronization in a subclass of actor, add your own fence to that class instead.")
 	FRenderCommandFence DetachFence;
+#endif
 
 private:
 	/** Helper that already assumes the Hit info is reversed, and avoids creating a temp FHitResult if possible. */
@@ -3652,6 +3867,7 @@ private:
 
 	friend struct FSetActorHiddenInSceneOutliner;
 	friend struct FSetActorGuid;
+	friend struct FSetActorContentBundleGuid;
 	friend struct FSetActorSelectable;
 #endif
 
@@ -3906,6 +4122,16 @@ private:
 	friend class UEngine;
 	friend class UExternalActorsCommandlet;
 	friend class UWorldPartitionConvertCommandlet;
+};
+
+struct FSetActorContentBundleGuid
+{
+private:
+	FSetActorContentBundleGuid(AActor* InActor, const FGuid& InContentBundleGuid)
+	{
+		InActor->ContentBundleGuid = InContentBundleGuid;
+	}
+	friend class FContentBundleEditor;
 };
 #endif
 

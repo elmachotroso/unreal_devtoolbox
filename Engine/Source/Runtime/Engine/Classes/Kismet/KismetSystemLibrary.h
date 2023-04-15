@@ -6,7 +6,10 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/EngineTypes.h"
+#endif
+#include "Engine/HitResult.h"
 #include "UObject/UnrealType.h"
 #include "UObject/ScriptMacros.h"
 #include "UObject/Interface.h"
@@ -16,6 +19,7 @@
 #include "Engine/LatentActionManager.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Engine/CollisionProfile.h"
+#include "AssetRegistry/ARFilter.h"
 #include "KismetSystemLibrary.generated.h"
 
 class AActor;
@@ -101,11 +105,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Utilities")
 	static FString GetObjectName(const UObject* Object);
 
-	// Returns the full path to the specified object.
-	UFUNCTION(BlueprintPure, Category="Utilities")
+	// Returns the full path to the specified object as a string
+	UFUNCTION(BlueprintPure, Category="Utilities", meta = (DisplayName = "Get Object Path String"))
 	static FString GetPathName(const UObject* Object);
 
-	// Returns the full system path to a UObject
+	// Returns the full path to the specified object as a Soft Object Path
+	UFUNCTION(BlueprintPure, Category = "Utilities")
+	static FSoftObjectPath GetSoftObjectPath(const UObject* Object);
+
+	// Returns the full file system path to a UObject
 	// If given a non-asset UObject, it will return an empty string
 	UFUNCTION(BlueprintPure, Category = "Utilities|Paths")
 	static FString GetSystemPath(const UObject* Object);
@@ -118,7 +126,11 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 
 	// Returns the display name of a class
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (DisplayName = "Get Class Display Name"))
-	static FString GetClassDisplayName(UClass* Class);
+	static FString GetClassDisplayName(const UClass* Class);
+
+	// Returns the full path to the specified class as a Soft Class Path (that can be used as a Soft Object Path)
+	UFUNCTION(BlueprintPure, Category = "Utilities")
+	static FSoftClassPath GetSoftClassPath(const UClass* Class);
 
 	// Returns the outer object of an object.
 	UFUNCTION(BlueprintPure, Category = "Utilities")
@@ -190,7 +202,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param WorldContextObject	World context
 	 */
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject") )
-	static float GetGameTimeInSeconds(const UObject* WorldContextObject);
+	static double GetGameTimeInSeconds(const UObject* WorldContextObject);
 
 	/** Returns the value of GFrameCounter, a running count of the number of frames that have occurred. */
 	UFUNCTION(BlueprintPure, Category = "Utilities")
@@ -229,27 +241,34 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Utilities|Platform")
 	static FString GetDeviceId();
 
-	/** Converts an object into a class */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cast To Class", CompactNodeTitle = "->", DeterminesOutputType = "Class"), Category="Utilities")
+	/** Casts from an object to a class, this will only work if the object is already a class */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cast To Class", DeterminesOutputType = "Class"), Category="Utilities")
 	static UClass* Conv_ObjectToClass(UObject* Object, TSubclassOf<UObject> Class);
 
 	/** Converts an interfance into an object */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Object (Interface)", CompactNodeTitle = "->"), Category="Utilities")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Object (Interface)", CompactNodeTitle = "->", BlueprintAutocast), Category="Utilities")
 	static UObject* Conv_InterfaceToObject(const FScriptInterface& Interface); 
 
-	/** Builds a SoftObjectPath struct. Generally you should be using Soft Object References/Ptr types instead */
-	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
+	/** Builds a Soft Object Path struct from a string that contains a full /folder/packagename.object path */
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe, BlueprintAutocast))
 	static FSoftObjectPath MakeSoftObjectPath(const FString& PathString);
 
 	/** Gets the path string out of a Soft Object Path */
-	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe, BlueprintAutocast))
 	static void BreakSoftObjectPath(FSoftObjectPath InSoftObjectPath, FString& PathString);
 
 	/** Converts a Soft Object Path into a base Soft Object Reference, this is not guaranteed to be resolvable */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Object Reference", CompactNodeTitle = "->"), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Object Reference"), Category = "Utilities")
 	static TSoftObjectPtr<UObject> Conv_SoftObjPathToSoftObjRef(const FSoftObjectPath& SoftObjectPath);
 
-	/** Builds a SoftClassPath struct. Generally you should be using Soft Class References/Ptr types instead */
+	/** Converts a Soft Object Reference into a Soft Object Path */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Object Path", CompactNodeTitle = "->", BlueprintAutocast), Category = "Utilities")
+	static FSoftObjectPath Conv_SoftObjRefToSoftObjPath(TSoftObjectPtr<UObject> SoftObjectReference);
+
+	/** 
+	 * Builds a Soft Class Path struct from a string that contains a full /folder/packagename.class path.
+	 * For blueprint classes, this needs to point to the actual class (often with _C) and not the blueprint editor asset
+	 */
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
 	static FSoftClassPath MakeSoftClassPath(const FString& PathString);
 
@@ -258,15 +277,19 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static void BreakSoftClassPath(FSoftClassPath InSoftClassPath, FString& PathString);
 
 	/** Converts a Soft Class Path into a base Soft Class Reference, this is not guaranteed to be resolvable */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Class Reference", CompactNodeTitle = "->"), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Class Reference"), Category = "Utilities")
 	static TSoftClassPtr<UObject> Conv_SoftClassPathToSoftClassRef(const FSoftClassPath& SoftClassPath);
+
+	/** Converts a Soft Object Reference into a Soft Class Path (which can be used like a Soft Object Path) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Class Path", CompactNodeTitle = "->", BlueprintAutocast), Category = "Utilities")
+	static FSoftClassPath Conv_SoftObjRefToSoftClassPath(TSoftClassPtr<UObject> SoftClassReference);
 
 	/** Returns true if the Soft Object Reference is not null */
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (BlueprintThreadSafe))
 	static bool IsValidSoftObjectReference(const TSoftObjectPtr<UObject>& SoftObjectReference);
 
-	/** Converts a Soft Object Reference to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftObjectReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
+	/** Converts a Soft Object Reference to a path string */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftObjectReference)", CompactNodeTitle = "->", BlueprintThreadSafe, BlueprintAutocast), Category = "Utilities")
 	static FString Conv_SoftObjectReferenceToString(const TSoftObjectPtr<UObject>& SoftObjectReference);
 
 	/** Returns true if the values are equal (A == B) */
@@ -285,8 +308,8 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (BlueprintThreadSafe))
 	static bool IsValidSoftClassReference(const TSoftClassPtr<UObject>& SoftClassReference);
 
-	/** Converts a Soft Class Reference to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftClassReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
+	/** Converts a Soft Class Reference to a path string */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftClassReference)", CompactNodeTitle = "->", BlueprintThreadSafe, BlueprintAutocast), Category = "Utilities")
 	static FString Conv_SoftClassReferenceToString(const TSoftClassPtr<UObject>& SoftClassReference);
 
 	/** Returns true if the values are equal (A == B) */
@@ -346,15 +369,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param	Value	value to set the float to
 	 * @return	The literal float
 	 */
-	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(BlueprintThreadSafe))
+	UE_DEPRECATED(5.1, "This method has been deprecated and will be removed.")
 	static float MakeLiteralFloat(float Value);
 
 	/**
-	 * Creates a literal double
-	 * @param	Value	value to set the double to
-	 * @return	The literal double
+	 * Creates a literal float (double-precision)
+	 * @param	Value	value to set the float (double-precision) to
+	 * @return	The literal float (double-precision)
 	 */
-	UFUNCTION(BlueprintPure, Category = "Math|Double", meta = (BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Math|Float", meta = (BlueprintThreadSafe, DisplayName = "Make Literal Float"))
 	static double MakeLiteralDouble(double Value);
 
 	/**
@@ -2003,7 +2026,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidPrimaryAssetId(FPrimaryAssetId PrimaryAssetId);
 
 	/** Converts a Primary Asset Id to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetId)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetId)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe, BlueprintAutocast), Category = "AssetManager")
 	static FString Conv_PrimaryAssetIdToString(FPrimaryAssetId PrimaryAssetId);
 
 	/** Returns true if the values are equal (A == B) */
@@ -2019,7 +2042,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidPrimaryAssetType(FPrimaryAssetType PrimaryAssetType);
 
 	/** Converts a Primary Asset Type to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetType)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetType)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe, BlueprintAutocast), Category = "AssetManager")
 	static FString Conv_PrimaryAssetTypeToString(FPrimaryAssetType PrimaryAssetType);
 
 	/** Returns true if the values are equal (A == B) */
@@ -2053,6 +2076,50 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category = "AssetManager", meta=(AutoCreateRefTerm = "ExcludedBundles, ValidTypes"))
 	static void GetPrimaryAssetsWithBundleState(const TArray<FName>& RequiredBundles, const TArray<FName>& ExcludedBundles, const TArray<FPrimaryAssetType>& ValidTypes, bool bForceCurrentState, TArray<FPrimaryAssetId>& OutPrimaryAssetIdList);
+
+	/**
+	 * Builds an ARFilter struct. You should be using ClassPaths and RecursiveClassPathsExclusionSet, ClassNames and RecursiveClassesExclusionSet are deprecated.
+	 * 
+	 * @param ClassNames [DEPRECATED] - Class names are now represented by path names. If non-empty, this input will result in a runtime warning. Please use the ClassPaths input instead.
+	 * @param RecursiveClassesExclusionSet [DEPRECATED] - Class names are now represented by path names. If non-empty, this input will result in a runtime warning. Please use the RecursiveClassPathsExclusionSet input instead.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Utilities", 
+		meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe, AdvancedDisplay = "5", 
+		AutoCreateRefTerm = "PackageNames, PackagePaths, SoftObjectPaths, ClassNames, ClassPaths, RecursiveClassPathsExclusionSet, RecursiveClassesExclusionSet"))
+	static FARFilter MakeARFilter(
+		const TArray<FName>& PackageNames, 
+		const TArray<FName>& PackagePaths, 
+		const TArray<FSoftObjectPath>& SoftObjectPaths, 
+		const TArray<FTopLevelAssetPath>& ClassPaths,
+		const TSet<FTopLevelAssetPath>& RecursiveClassPathsExclusionSet, 
+		const TArray<FName>& ClassNames, 
+		const TSet<FName>& RecursiveClassesExclusionSet, 
+		const bool bRecursivePaths = false, 
+		const bool bRecursiveClasses = false, 
+		const bool bIncludeOnlyOnDiskAssets = false
+		);
+
+	/**
+	 * Breaks an ARFilter struct into its component pieces. You should be using ClassPaths and RecursiveClassPathsExclusionSet from this node, ClassNames and RecursiveClassesExclusionSet are deprecated.
+	 *
+	 * @param ClassNames [DEPRECATED] - Class names are now represented by path names. Please use the ClassPaths output instead.
+	 * @param RecursiveClassesExclusionSet [DEPRECATED] - Class names are now represented by path names. Please use the RecursiveClassPathsExclusionSet output instead.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe, AdvancedDisplay = "6"))
+	static void BreakARFilter(
+		FARFilter InARFilter,
+		TArray<FName>& PackageNames,
+		TArray<FName>& PackagePaths,
+		TArray<FSoftObjectPath>& SoftObjectPaths,
+		TArray<FTopLevelAssetPath>& ClassPaths,
+		TSet<FTopLevelAssetPath>& RecursiveClassPathsExclusionSet,
+		TArray<FName>& ClassNames,
+		TSet<FName>& RecursiveClassesExclusionSet,
+		bool& bRecursivePaths,
+		bool& bRecursiveClasses,
+		bool& bIncludeOnlyOnDiskAssets
+		);
+
 };
 
 

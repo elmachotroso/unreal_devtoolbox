@@ -22,9 +22,10 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/SlateIconFinder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 #include "MovieRenderPipelineStyle.h"
+#include "SPrimaryButton.h"
 
 // ContentBrowser Includes
 #include "IContentBrowserSingleton.h"
@@ -32,8 +33,8 @@
 
 // UnrealEd Includes
 #include "ScopedTransaction.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "FileHelpers.h"
 #include "AssetToolsModule.h"
 #include "Misc/FileHelper.h"
@@ -101,7 +102,7 @@ void SMoviePipelineConfigPanel::Construct(const FArguments& InArgs, TSubclassOf<
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 			[
 				SNew(SHorizontalBox)
@@ -146,7 +147,7 @@ void SMoviePipelineConfigPanel::Construct(const FArguments& InArgs, TSubclassOf<
 						.AutoWidth()
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("AssetEditor.SaveAsset.Greyscale"))
+							.Image(FAppStyle::Get().GetBrush("AssetEditor.SaveAsset"))
 						]
 
 						+ SHorizontalBox::Slot()
@@ -192,7 +193,7 @@ void SMoviePipelineConfigPanel::Construct(const FArguments& InArgs, TSubclassOf<
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 			.Padding(MoviePipeline::ButtonPadding)
 			[
@@ -213,16 +214,9 @@ void SMoviePipelineConfigPanel::Construct(const FArguments& InArgs, TSubclassOf<
 				.AutoWidth()
 				[
 					SNew(SButton)
-					.ContentPadding(MoviePipeline::ButtonPadding)
+					.Text(LOCTEXT("CancelChangesButton_Text", "Cancel"))
+					.ToolTipText(LOCTEXT("CancelChangesButton_Tooltip", "Discards changes made and does not modify anything."))
 					.OnClicked(this, &SMoviePipelineConfigPanel::OnCancelChanges)
-					.Content()
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Text(LOCTEXT("CancelChangesButton_Text", "Cancel"))
-						.ToolTipText(LOCTEXT("CancelChangesButton_Tooltip", "Discards changes made and does not modify anything."))
-						.Margin(FMargin(4, 0, 4, 0))
-					]
 				]
 
 				// Accept Changes
@@ -232,19 +226,11 @@ void SMoviePipelineConfigPanel::Construct(const FArguments& InArgs, TSubclassOf<
 				.HAlign(HAlign_Right)
 				.AutoWidth()
 				[
-					SNew(SButton)
-					.ContentPadding(MoviePipeline::ButtonPadding)
-					.ButtonStyle(FMovieRenderPipelineStyle::Get(), "FlatButton.Success")
+					SNew(SPrimaryButton)
+					.Text(LOCTEXT("ConfirmChangesButton_Text", "Accept"))
+					.ToolTipText(LOCTEXT("ConfirmChangesButton_Tooltip", "Accepts the changes made and applies them to the particular job instance."))
 					.OnClicked(this, &SMoviePipelineConfigPanel::OnConfirmChanges)
 					.IsEnabled(this, &SMoviePipelineConfigPanel::CanAcceptChanges)
-					.Content()
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Text(LOCTEXT("ConfirmChangesButton_Text", "Accept"))
-						.ToolTipText(LOCTEXT("ConfirmChangesButton_Tooltip", "Accepts the changes made and applies them to the particular job instance."))
-						.Margin(FMargin(4, 0, 4, 0))
-					]
 				]
 			]
 		];
@@ -360,7 +346,7 @@ TSharedRef<SWidget> SMoviePipelineConfigPanel::OnGeneratePresetsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsPreset_Text", "Save As Preset"),
 		LOCTEXT("SaveAsPreset_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(FExecuteAction::CreateSP(this, &SMoviePipelineConfigPanel::OnSaveAsPreset))
 	);
 
@@ -381,7 +367,7 @@ TSharedRef<SWidget> SMoviePipelineConfigPanel::OnGeneratePresetsMenu()
 		AssetPickerConfig.bForceShowPluginContent = false;
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoPresets_Warning", "No Presets Found");
-		AssetPickerConfig.Filter.ClassNames.Add(ConfigAssetType->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(ConfigAssetType->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SMoviePipelineConfigPanel::OnImportPreset);
 	}
@@ -408,7 +394,7 @@ bool SMoviePipelineConfigPanel::OpenSaveDialog(const FString& InDefaultPath, con
 	{
 		SaveAssetDialogConfig.DefaultPath = InDefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = InNewNameSuggestion;
-		SaveAssetDialogConfig.AssetClassNames.Add(ConfigAssetType->GetFName());
+		SaveAssetDialogConfig.AssetClassNames.Add(ConfigAssetType->GetClassPathName());
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveConfigPresetDialogTitle", "Save Config Preset");
 	}

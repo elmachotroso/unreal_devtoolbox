@@ -74,6 +74,12 @@ public:
 				   EUserInterfaceActionType::ToggleButton,
 				   FInputChord(EKeys::S));
 
+		UI_COMMAND(Command_ShowParentTasks,
+				   "Show Transitions of Parent Tasks",
+				   "Show/hide stage transitions for the current task's parent tasks.",
+				   EUserInterfaceActionType::ToggleButton,
+				   FInputChord(EKeys::R));
+
 		UI_COMMAND(Command_ShowNestedTasks,
 				   "Show Transitions of Nested Tasks",
 				   "Show/hide stage transitions for the current task's nested tasks.",
@@ -104,6 +110,7 @@ public:
 	TSharedPtr<FUICommandInfo> Command_ShowTaskConnections;
 	TSharedPtr<FUICommandInfo> Command_ShowTaskPrerequisites;
 	TSharedPtr<FUICommandInfo> Command_ShowTaskSubsequents;
+	TSharedPtr<FUICommandInfo> Command_ShowParentTasks;
 	TSharedPtr<FUICommandInfo> Command_ShowNestedTasks;
 	TSharedPtr<FUICommandInfo> Command_ShowCriticalPath;
 	TSharedPtr<FUICommandInfo> Command_ShowTaskTrack;
@@ -289,6 +296,15 @@ void FTaskTimingSharedState::BuildTasksSubMenu(FMenuBuilder& MenuBuilder)
 
 	MenuBuilder.AddMenuEntry
 	(
+		FTaskTimingStateCommands::Get().Command_ShowParentTasks,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ShowParentTasks")
+	);
+
+	MenuBuilder.AddMenuEntry
+	(
 		FTaskTimingStateCommands::Get().Command_ShowNestedTasks,
 		NAME_None,
 		TAttribute<FText>(),
@@ -349,6 +365,12 @@ void FTaskTimingSharedState::InitCommandList()
 		FExecuteAction::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowTaskSubsequents_Execute),
 		FCanExecuteAction::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowTaskSubsequents_CanExecute),
 		FIsActionChecked::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowTaskSubsequents_IsChecked));
+
+	CommandList->MapAction(
+		FTaskTimingStateCommands::Get().Command_ShowParentTasks,
+		FExecuteAction::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowParentTasks_Execute),
+		FCanExecuteAction::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowParentTasks_CanExecute),
+		FIsActionChecked::CreateSP(this, &FTaskTimingSharedState::ContextMenu_ShowParentTasks_IsChecked));
 
 	CommandList->MapAction(
 		FTaskTimingStateCommands::Get().Command_ShowNestedTasks,
@@ -483,6 +505,34 @@ void FTaskTimingSharedState::ContextMenu_ShowTaskSubsequents_Execute()
 	if (TaskGraphManager.IsValid() && TaskGraphManager->GetIsAvailable())
 	{
 		TaskGraphManager->SetShowSubsequents(!TaskGraphManager->GetShowSubsequents());
+		OnTaskSettingsChanged();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ParentTasks
+
+bool FTaskTimingSharedState::ContextMenu_ShowParentTasks_CanExecute()
+{
+	return Insights::FTaskGraphProfilerManager::Get().IsValid() && Insights::FTaskGraphProfilerManager::Get()->GetIsAvailable();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FTaskTimingSharedState::ContextMenu_ShowParentTasks_IsChecked()
+{
+	TSharedPtr<Insights::FTaskGraphProfilerManager> TaskGraphManager = Insights::FTaskGraphProfilerManager::Get();
+	return TaskGraphManager.IsValid() && TaskGraphManager->GetIsAvailable() && TaskGraphManager->GetShowParentTasks();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTaskTimingSharedState::ContextMenu_ShowParentTasks_Execute()
+{
+	TSharedPtr<Insights::FTaskGraphProfilerManager> TaskGraphManager = Insights::FTaskGraphProfilerManager::Get();
+	if (TaskGraphManager.IsValid() && TaskGraphManager->GetIsAvailable())
+	{
+		TaskGraphManager->SetShowParentTasks(!TaskGraphManager->GetShowParentTasks());
 		OnTaskSettingsChanged();
 	}
 }
@@ -670,10 +720,8 @@ void FTaskTimingTrack::BuildDrawState(ITimingEventsTrackDrawStateBuilder& Builde
 	Builder.AddEvent(Task->LaunchedTimestamp, Task->ScheduledTimestamp, 0, TEXT("Launched"), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Launched));
 	Builder.AddEvent(Task->ScheduledTimestamp, Task->StartedTimestamp, 0, TEXT("Scheduled"), 0,  FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Scheduled));
 	Builder.AddEvent(Task->StartedTimestamp, Task->FinishedTimestamp, 0, TEXT("Executing"), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Started));
-	if (Task->CompletedTimestamp > Task->FinishedTimestamp)
-	{
-		Builder.AddEvent(Task->FinishedTimestamp, Task->CompletedTimestamp, 0, TEXT("Finished"), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Finished));
-	}
+	Builder.AddEvent(Task->FinishedTimestamp, Task->CompletedTimestamp, 0, TEXT("Finished"), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Finished));
+	Builder.AddEvent(Task->CompletedTimestamp, Task->DestroyedTimestamp, 0, TEXT("Completed"), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::Completed));
 
 	if (bShowDetailInfoOnTaskTrack)
 	{
@@ -688,6 +736,20 @@ void FTaskTimingTrack::BuildDrawState(ITimingEventsTrackDrawStateBuilder& Builde
 			if (TaskInfo)
 			{
 				Builder.AddEvent(TaskInfo->StartedTimestamp, TaskInfo->FinishedTimestamp, ++Depth, *FString::Printf(TEXT("Prerequisite Task %d Executing"), TaskInfo->Id), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::PrerequisiteStarted));
+			}
+		}
+
+		// parent tasks can overlap with prerequisites, hence they are shown under them (`Depth` is not reset)
+		for (TraceServices::FTaskInfo::FRelationInfo Relation : Task->ParentTasks)
+		{
+			if (Depth >= FTimingProfilerManager::Get()->GetEventDepthLimit() - 1)
+			{
+				break;
+			}
+			const TraceServices::FTaskInfo* TaskInfo = TasksProvider->TryGetTask(Relation.RelativeId);
+			if (TaskInfo)
+			{
+				Builder.AddEvent(TaskInfo->StartedTimestamp, TaskInfo->FinishedTimestamp, ++Depth, *FString::Printf(TEXT("Parent Task %d Executing"), TaskInfo->Id), 0, FTaskGraphProfilerManager::Get()->GetColorForTaskEventAsPackedARGB(ETaskEventType::ParentStarted));
 			}
 		}
 
@@ -785,6 +847,7 @@ void FTaskTimingTrack::OnTimingEventSelected(TSharedPtr<const ITimingEvent> InSe
 	if (Task != nullptr)
 	{
 		TaskId = Task->Id;
+		FTaskGraphProfilerManager::Get()->SelectTaskInTaskTable(TaskId);
 	}
 	else
 	{
@@ -813,7 +876,7 @@ const TSharedPtr<const ITimingEvent> FTaskTimingTrack::GetEvent(float InPosX, fl
 	if (DY >= 0 && DY < GetHeight() - 1.0f - 2 * Layout.TimelineDY)
 	{
 		const double EventTime = Viewport.SlateUnitsToTime(InPosX);
-		const int32 Depth = DY / (Layout.EventH + Layout.EventDY);
+		const int32 Depth = static_cast<int32>(DY / (Layout.EventH + Layout.EventDY));
 
 		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 		if (!Session.IsValid())
@@ -858,9 +921,14 @@ const TSharedPtr<const ITimingEvent> FTaskTimingTrack::GetEvent(float InPosX, fl
 			{
 				TimingEvent = MakeShared<FTaskTrackEvent>(SharedThis(this), Task->ScheduledTimestamp, Task->StartedTimestamp, 0, ETaskEventType::Scheduled);
 			}
+			// the unusual order of `if`s here is intended to give priority to smaller events
 			else if (IsEventTimeBetween(Task->FinishedTimestamp, Task->CompletedTimestamp))
 			{
 				TimingEvent = MakeShared<FTaskTrackEvent>(SharedThis(this), Task->FinishedTimestamp, Task->CompletedTimestamp, 0, ETaskEventType::Finished);
+			}
+			else if (IsEventTimeBetween(Task->CompletedTimestamp, Task->DestroyedTimestamp))
+			{
+				TimingEvent = MakeShared<FTaskTrackEvent>(SharedThis(this), Task->CompletedTimestamp >= Task->FinishedTimestamp ? Task->CompletedTimestamp : Task->FinishedTimestamp, Task->DestroyedTimestamp, 0, ETaskEventType::Completed);
 			}
 			else if (IsEventTimeBetween(Task->StartedTimestamp, Task->FinishedTimestamp))
 			{
@@ -872,15 +940,15 @@ const TSharedPtr<const ITimingEvent> FTaskTimingTrack::GetEvent(float InPosX, fl
 				TimingEvent->SetTaskId(Task->Id);
 			}
 		}
-		else if(bShowDetailInfoOnTaskTrack)
+		else if (bShowDetailInfoOnTaskTrack)
 		{
-			auto GetEventFromRelations = [&TasksProvider, this, EventTime, SecondsPerPixel](const TArray<TraceServices::FTaskInfo::FRelationInfo>& Relations, int32 Depth, ETaskEventType EventType) -> TSharedPtr<FTaskTrackEvent>
+			auto GetEventFromRelations = [&TasksProvider, this, EventTime, Depth, SecondsPerPixel](const TArray<TraceServices::FTaskInfo::FRelationInfo>& Relations, int32 RelationIndex, ETaskEventType EventType) -> TSharedPtr<FTaskTrackEvent>
 			{
-				if (Relations.Num() < Depth)
+				if (RelationIndex < 0 || Relations.Num() <= RelationIndex)
 				{
 					return nullptr;
 				}
-				const TraceServices::FTaskInfo::FRelationInfo& Relation = Relations[Depth - 1];
+				const TraceServices::FTaskInfo::FRelationInfo& Relation = Relations[RelationIndex];
 				{
 					const TraceServices::FTaskInfo* TaskInfo = TasksProvider->TryGetTask(Relation.RelativeId);
 					if (TaskInfo && EventTime >= TaskInfo->StartedTimestamp - 2 * SecondsPerPixel && EventTime <= TaskInfo->FinishedTimestamp + 2 * SecondsPerPixel)
@@ -894,16 +962,21 @@ const TSharedPtr<const ITimingEvent> FTaskTimingTrack::GetEvent(float InPosX, fl
 				return nullptr;
 			};
 
-			TimingEvent = GetEventFromRelations(Task->Prerequisites, Depth, ETaskEventType::PrerequisiteStarted);
+			TimingEvent = GetEventFromRelations(Task->Prerequisites, Depth - 1, ETaskEventType::PrerequisiteStarted);
 
 			if (!TimingEvent.IsValid())
 			{
-				TimingEvent = GetEventFromRelations(Task->NestedTasks, Depth, ETaskEventType::NestedStarted);
+				TimingEvent = GetEventFromRelations(Task->ParentTasks, Depth - 1 - Task->Prerequisites.Num(), ETaskEventType::ParentStarted);
 			}
 
 			if (!TimingEvent.IsValid())
 			{
-				TimingEvent = GetEventFromRelations(Task->Subsequents, Depth, ETaskEventType::SubsequentStarted);
+				TimingEvent = GetEventFromRelations(Task->NestedTasks, Depth - 1, ETaskEventType::NestedStarted);
+			}
+
+			if (!TimingEvent.IsValid())
+			{
+				TimingEvent = GetEventFromRelations(Task->Subsequents, Depth - 1, ETaskEventType::SubsequentStarted);
 			}
 		}
 	}
@@ -958,6 +1031,7 @@ void FTaskTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITimin
 	case ETaskEventType::Created:
 		break;
 	case ETaskEventType::PrerequisiteStarted:
+	case ETaskEventType::ParentStarted:
 	case ETaskEventType::NestedStarted:
 	case ETaskEventType::SubsequentStarted:
 	{
@@ -975,6 +1049,9 @@ void FTaskTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITimin
 		InOutTooltip.AddNameValueTextLine(TEXT("Nested tasks:"), FString::Printf(TEXT("%d"), Task->NestedTasks.Num()));
 		break;
 	case ETaskEventType::Finished:
+		break;
+	case ETaskEventType::Completed:
+		InOutTooltip.AddNameValueTextLine(TEXT("Parent tasks:"), FString::Printf(TEXT("%d"), Task->ParentTasks.Num()));
 		InOutTooltip.AddNameValueTextLine(TEXT("Subsequent tasks:"), FString::Printf(TEXT("%d"), Task->Subsequents.Num()));
 		break;
 	default:
@@ -991,6 +1068,7 @@ void FTaskTimingTrack::GetEventRelations(const FThreadTrackEvent& InSelectedEven
 {
 	const int32 MaxTasksToShow = 30;
 	double StartTime = InSelectedEvent.GetStartTime();
+	double EndTime = InSelectedEvent.GetEndTime();
 
 	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 	const TraceServices::ITasksProvider* TasksProvider = TraceServices::ReadTasksProvider(*Session.Get());
@@ -1027,6 +1105,17 @@ void FTaskTimingTrack::GetEventRelations(const FThreadTrackEvent& InSelectedEven
 					FTaskGraphProfilerManager::Get()->AddRelation(&InSelectedEvent, WaitedTask->CompletedTimestamp, WaitedTask->CompletedThreadId, WaitedTask->CompletedTimestamp, ThreadId, ETaskEventType::NestedCompleted);
 				}
 			}
+		}
+
+		TArray<TaskTrace::FId> ParallelForTasks = TasksProvider->TryGetParallelForTasks(Timer->Name, ThreadId, StartTime, EndTime);
+		int32 NumTasksToShow = FMath::Min(ParallelForTasks.Num(), MaxTasksToShow);
+		for (int32 TaskIndex = 0; TaskIndex != NumTasksToShow; ++TaskIndex)
+		{
+			const TraceServices::FTaskInfo* Task = TasksProvider->TryGetTask(ParallelForTasks[TaskIndex]);
+			int32 TaskExecutionDepth = FTaskGraphProfilerManager::Get()->GetDepthOfTaskExecution(Task->StartedTimestamp, Task->FinishedTimestamp, Task->StartedThreadId);
+
+			FTaskGraphProfilerManager::Get()->AddRelation(&InSelectedEvent, Task->StartedTimestamp, ThreadId, -1, Task->StartedTimestamp, Task->StartedThreadId, TaskExecutionDepth, ETaskEventType::NestedStarted);
+			FTaskGraphProfilerManager::Get()->AddRelation(&InSelectedEvent, Task->CompletedTimestamp, Task->CompletedThreadId, Task->CompletedTimestamp, ThreadId, ETaskEventType::NestedCompleted);
 		}
 	}
 }

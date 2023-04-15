@@ -6,11 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public NetworkFileSystem(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"Runtime/NetworkFileSystem/Private",
-				});
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -19,6 +14,9 @@ namespace UnrealBuildTool.Rules
 					"Projects",
 					"SandboxFile",
 					"TargetPlatform",
+					"DesktopPlatform",
+					"CookOnTheFly",
+					"CookOnTheFlyNetServer"
 				});
 
 			PublicIncludePaths.AddRange(

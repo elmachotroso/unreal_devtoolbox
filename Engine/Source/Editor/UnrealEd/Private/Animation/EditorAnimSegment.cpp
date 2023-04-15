@@ -17,7 +17,7 @@ UEditorAnimSegment::UEditorAnimSegment(const FObjectInitializer& ObjectInitializ
 	AnimSegmentIndex = 0;
 }
 
-void UEditorAnimSegment::InitAnimSegment(int AnimSlotIndexIn,int AnimSegmentIndexIn)
+void UEditorAnimSegment::InitAnimSegment(int32 AnimSlotIndexIn, int32 AnimSegmentIndexIn)
 {
 	AnimSlotIndex = AnimSlotIndexIn;
 	AnimSegmentIndex = AnimSegmentIndexIn;
@@ -30,13 +30,25 @@ void UEditorAnimSegment::InitAnimSegment(int AnimSlotIndexIn,int AnimSegmentInde
 	}
 }
 
+void UEditorAnimSegment::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimReference))
+	{
+		AnimSegment.UpdateCachedPlayLength();			
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
 bool UEditorAnimSegment::ApplyChangesToMontage()
 {
 	if(UAnimMontage* Montage = Cast<UAnimMontage>(AnimObject))
 	{
 		if(Montage->SlotAnimTracks.IsValidIndex(AnimSlotIndex) && Montage->SlotAnimTracks[AnimSlotIndex].AnimTrack.AnimSegments.IsValidIndex(AnimSegmentIndex) )
 		{
-			if (AnimSegment.AnimReference && Montage->GetSkeleton()->IsCompatible(AnimSegment.AnimReference->GetSkeleton()))
+			if (AnimSegment.GetAnimReference() && Montage->GetSkeleton()->IsCompatible(AnimSegment.GetAnimReference()->GetSkeleton()))
 			{
 				Montage->SlotAnimTracks[AnimSlotIndex].AnimTrack.AnimSegments[AnimSegmentIndex] = AnimSegment;
 				Montage->UpdateLinkableElements(AnimSlotIndex, AnimSegmentIndex);
@@ -52,7 +64,7 @@ bool UEditorAnimSegment::ApplyChangesToMontage()
 			}
 			else
 			{
-				AnimSegment.AnimReference = Montage->SlotAnimTracks[AnimSlotIndex].AnimTrack.AnimSegments[AnimSegmentIndex].AnimReference;
+				AnimSegment.SetAnimReference(Montage->SlotAnimTracks[AnimSlotIndex].AnimTrack.AnimSegments[AnimSegmentIndex].GetAnimReference());
 				return false;
 			}
 		}

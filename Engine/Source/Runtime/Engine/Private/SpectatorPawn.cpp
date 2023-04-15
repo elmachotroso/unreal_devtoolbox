@@ -6,6 +6,8 @@
 #include "GameFramework/SpectatorPawnMovement.h"
 #include "GameFramework/WorldSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SpectatorPawn)
+
 ASpectatorPawn::ASpectatorPawn(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer
 	.SetDefaultSubobjectClass<USpectatorPawnMovement>(Super::MovementComponentName)
@@ -53,7 +55,7 @@ void ASpectatorPawn::TurnAtRate(float Rate)
 	if (WorldSettings)
 	{
  		float TimeDilation = WorldSettings->GetEffectiveTimeDilation();
-		if (TimeDilation <= KINDA_SMALL_NUMBER)
+		if (TimeDilation <= UE_KINDA_SMALL_NUMBER)
 		{
 			const float DeltaTime = FApp::GetDeltaTime();
 			AddControllerYawInput(Rate * BaseTurnRate * DeltaTime * CustomTimeDilation);
@@ -71,7 +73,7 @@ void ASpectatorPawn::LookUpAtRate(float Rate)
 	if (WorldSettings)
 	{
 		float TimeDilation = WorldSettings->GetEffectiveTimeDilation();
-		if (TimeDilation <= KINDA_SMALL_NUMBER)
+		if (TimeDilation <= UE_KINDA_SMALL_NUMBER)
 		{
 			const float DeltaTime = FApp::GetDeltaTime();
 			AddControllerPitchInput(Rate * BaseLookUpRate * DeltaTime * CustomTimeDilation);
@@ -81,3 +83,4 @@ void ASpectatorPawn::LookUpAtRate(float Rate)
 
 	Super::LookUpAtRate(Rate);
 }
+

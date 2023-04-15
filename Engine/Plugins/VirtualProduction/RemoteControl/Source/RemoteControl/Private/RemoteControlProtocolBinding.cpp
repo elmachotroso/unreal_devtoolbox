@@ -3,6 +3,7 @@
 #include "RemoteControlProtocolBinding.h"
 
 #include "CborWriter.h"
+#include "Factories/IRemoteControlMaskingFactory.h"
 #include "IRemoteControlModule.h"
 #include "RemoteControlPreset.h"
 #include "RemoteControlSettings.h"
@@ -423,8 +424,9 @@ namespace EntityInterpolation
 	}
 }
 
-FRemoteControlProtocolMapping::FRemoteControlProtocolMapping(FProperty* InProperty, uint8 InRangeValueSize)
-	: Id(FGuid::NewGuid())
+// Optionally supplying the MappingId is used by the undo system
+FRemoteControlProtocolMapping::FRemoteControlProtocolMapping(FProperty* InProperty, uint8 InRangeValueSize, const FGuid& InMappingId)
+	: Id(InMappingId)
 {
 	if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(InProperty))
 	{
@@ -661,6 +663,11 @@ bool FRemoteControlProtocolEntity::ApplyProtocolValueToProperty(double InProtoco
 		return true;
 	}
 
+	if (RemoteControlProperty->GetActiveMasks() == ERCMask::NoMask)
+	{
+		return true;
+	}
+
 	FProperty* Property = RemoteControlProperty->GetProperty();
 	if (!Property)
 	{
@@ -690,6 +697,20 @@ bool FRemoteControlProtocolEntity::ApplyProtocolValueToProperty(double InProtoco
 	{
 		IRemoteControlModule::Get().ResolveObjectProperty(ObjectRef.Access, Object, ObjectRef.PropertyPathInfo, ObjectRef);
 
+		TSharedPtr<FRCMaskingOperation> MaskingOperation = MakeShared<FRCMaskingOperation>(ObjectRef.PropertyPathInfo, Object);
+
+		if (OverridenMasks == ERCMask::NoMask)
+		{
+			MaskingOperation->Masks = RemoteControlProperty->GetActiveMasks();
+		}
+		else
+		{
+			MaskingOperation->Masks = OverridenMasks;
+		}
+
+		// Cache the values.
+		IRemoteControlModule::Get().PerformMasking(MaskingOperation.ToSharedRef());
+
 		// Set properties after interpolation
 		TArray<uint8> InterpolatedBuffer;
 		if (GetInterpolatedPropertyBuffer(Property, InProtocolValue, InterpolatedBuffer))
@@ -697,6 +718,9 @@ bool FRemoteControlProtocolEntity::ApplyProtocolValueToProperty(double InProtoco
 			FMemoryReader MemoryReader(InterpolatedBuffer);
 			FCborStructDeserializerBackend CborStructDeserializerBackend(MemoryReader);
 			bSuccess &= IRemoteControlModule::Get().SetObjectProperties(ObjectRef, CborStructDeserializerBackend, ERCPayloadType::Cbor, InterpolatedBuffer);
+
+			// Apply the masked the values.
+			IRemoteControlModule::Get().PerformMasking(MaskingOperation.ToSharedRef());
 		}
 	}
 
@@ -721,6 +745,37 @@ void FRemoteControlProtocolEntity::ResetDefaultBindingState()
 {
 	BindingStatus = ERCBindingStatus::Unassigned;
 }
+
+void FRemoteControlProtocolEntity::ClearMask(ERCMask InMaskBit)
+{
+	OverridenMasks &= ~InMaskBit;
+}
+
+void FRemoteControlProtocolEntity::EnableMask(ERCMask InMaskBit)
+{
+	OverridenMasks |= InMaskBit;
+}
+
+bool FRemoteControlProtocolEntity::HasMask(ERCMask InMaskBit) const
+{
+	return (OverridenMasks & InMaskBit) != ERCMask::NoMask;
+}
+
+#if WITH_EDITOR
+
+const FName FRemoteControlProtocolEntity::GetPropertyName(const FName& ForColumnName)
+{
+	RegisterProperties();
+
+	if (const FName* PropertyName = ColumnsToProperties.Find(ForColumnName))
+	{
+		return *PropertyName;
+	}
+
+	return NAME_None;
+}
+
+#endif // WITH_EDITOR
 
 bool FRemoteControlProtocolEntity::GetInterpolatedPropertyBuffer(FProperty* InProperty, double InProtocolValue, TArray<uint8>& OutBuffer)
 {
@@ -798,8 +853,9 @@ TArray<FRemoteControlProtocolEntity::FRangeMappingData> FRemoteControlProtocolEn
 	return RangeMappingBuffers;
 }
 
-FRemoteControlProtocolBinding::FRemoteControlProtocolBinding(const FName InProtocolName, const FGuid& InPropertyId, TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InRemoteControlProtocolEntityPtr)
-	: Id(FGuid::NewGuid())
+// Optionally supplying the BindingId is used by the undo system
+FRemoteControlProtocolBinding::FRemoteControlProtocolBinding(const FName InProtocolName, const FGuid& InPropertyId, TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InRemoteControlProtocolEntityPtr, const FGuid& InBindingId)
+	: Id(InBindingId)
 	, ProtocolName(InProtocolName)
 	, PropertyId(InPropertyId)
 	, RemoteControlProtocolEntityPtr(InRemoteControlProtocolEntityPtr)

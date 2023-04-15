@@ -4,6 +4,8 @@
 
 #include "RigVMPin.h"
 #include "RigVMCore/RigVM.h"
+#include "RigVMCore/RigVMStruct.h"
+#include "RigVMCore/RigVMUserWorkflow.h"
 #include "RigVMNode.generated.h"
 
 class URigVMGraph;
@@ -140,7 +142,7 @@ public:
 	virtual bool IsMutable() const;
 
 	// Returns true if this node has an unknown type pin
-	bool HasUnknownTypePin() const;
+	bool HasWildCardPin() const;
 
 	virtual bool ContributesToResult() const { return IsMutable(); }
 
@@ -151,6 +153,10 @@ public:
 	// Returns the name of the event
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	virtual FName GetEventName() const;
+
+	// Returns true if this node can only exist once in a graph
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	virtual bool CanOnlyExistOnce() const;
 
 	// Returns true if the node has any input pins
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
@@ -201,7 +207,16 @@ public:
 	double GetInstructionMicroSeconds(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const;
 
 	// return true if this node is a loop node
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
 	virtual bool IsLoopNode() const { return false; }
+
+	// returns true if the node can be upgraded
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual bool CanBeUpgraded() const { return GetUpgradeInfo().IsValid(); }
+
+	// returns all supported workflows of the node
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	virtual TArray<FRigVMUserWorkflow> GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const;
 
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	bool HasBreakpoint() const { return bHasBreakpoint; }
@@ -214,6 +229,33 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	void SetExecutionIsHaltedAtThisNode(const bool bValue) { bHaltedAtThisNode = bValue; }
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual bool IsAggregate() const;
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual URigVMPin* GetFirstAggregatePin() const;
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual URigVMPin* GetSecondAggregatePin() const;
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual URigVMPin* GetOppositeAggregatePin() const;
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual bool IsInputAggregate() const;
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual TArray<URigVMPin*> GetAggregateInputs() const { return {}; }
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual TArray<URigVMPin*> GetAggregateOutputs() const { return {}; }
+
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	virtual FName GetNextAggregateName(const FName& InLastAggregatePinName) const { return NAME_None; }
+
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const { return FRigVMStructUpgradeInfo(); }
+
 private:
 
 	static const FString NodeColorName;
@@ -223,6 +265,7 @@ private:
 
 protected:
 
+	virtual void InvalidateCache() {}
 	virtual TArray<int32> GetInstructionsForVMImpl(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const; 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const;
 	virtual bool AllowsLinksOn(const URigVMPin* InPin) const { return true; }

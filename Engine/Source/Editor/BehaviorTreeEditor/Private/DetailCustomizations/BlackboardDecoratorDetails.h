@@ -2,30 +2,44 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "DetailCustomizations/BehaviorDecoratorDetails.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/EnumEditorUtils.h"
+#include "Layout/Visibility.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/SubclassOf.h"
 #include "UObject/WeakObjectPtr.h"
-#include "Layout/Visibility.h"
-#include "IDetailCustomization.h"
-#include "DetailCustomizations/BehaviorDecoratorDetails.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
+class IDetailCustomization;
 class IDetailLayoutBuilder;
 class IPropertyHandle;
 class SWidget;
 class UBlackboardData;
+class UEnum;
+class UUserDefinedEnum;
 
-class FBlackboardDecoratorDetails : public FBehaviorDecoratorDetails
+class FBlackboardDecoratorDetails : public FBehaviorDecoratorDetails, public FEnumEditorUtils::INotifyOnEnumChanged
 {
 public:
 	/** Makes a new instance of this detail layout class for a specific detail view requesting it */
 	static TSharedRef<IDetailCustomization> MakeInstance();
 
+protected:
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails( IDetailLayoutBuilder& DetailLayout ) override;
+
+	/** INotifyOnEnumChanged interface */
+	virtual void PreChange(const UUserDefinedEnum* Changed, FEnumEditorUtils::EEnumEditorChangeInfo ChangedType) override;
+	virtual void PostChange(const UUserDefinedEnum* Changed, FEnumEditorUtils::EEnumEditorChangeInfo ChangedType) override;
 
 private:
 
 	void CacheBlackboardData(IDetailLayoutBuilder& DetailLayout);
+	void RefreshEnumPropertyValues();
 
 	EVisibility GetIntValueVisibility() const;
 	EVisibility GetFloatValueVisibility() const;
@@ -41,7 +55,7 @@ private:
 	TSharedRef<SWidget> OnGetEnumValueContent() const;
 	FText GetCurrentEnumValueDesc() const;
 
-	TSharedPtr<IPropertyHandle> IntValueProperty;
+	TSharedPtr<IPropertyHandle> StringValueProperty;
 	TSharedPtr<IPropertyHandle> KeyIDProperty;
 	TSharedPtr<IPropertyHandle> NotifyObserverProperty;
 	

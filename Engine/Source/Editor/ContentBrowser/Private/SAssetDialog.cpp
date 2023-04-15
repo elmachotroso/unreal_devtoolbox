@@ -1,45 +1,80 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAssetDialog.h"
-#include "Misc/MessageDialog.h"
-#include "Widgets/SBoxPanel.h"
-#include "Layout/WidgetPath.h"
-#include "SlateOptMacros.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Styling/AppStyle.h"
-#include "EditorStyleSet.h"
-#include "AssetRegistryModule.h"
-#include "ContentBrowserSingleton.h"
-#include "ContentBrowserUtils.h"
 
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetViewUtils.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
 #include "ContentBrowserCommands.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "SPathPicker.h"
-#include "SAssetPicker.h"
-#include "AssetViewTypes.h"
-#include "ObjectTools.h"
-
-#include "SPathView.h"
-#include "SAssetView.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Editor/EditorEngine.h"
-#include "HAL/FileManager.h"
-#include "CoreMinimal.h"
-#include "SourceCodeNavigation.h"
-#include "Editor.h"
-
-#include "IContentBrowserDataModule.h"
 #include "ContentBrowserDataSource.h"
 #include "ContentBrowserDataSubsystem.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "ContentBrowserPluginFilters.h"
+#include "ContentBrowserSingleton.h"
+#include "ContentBrowserUtils.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Framework/SlateDelegates.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformProcess.h"
+#include "IContentBrowserDataModule.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Layout/Children.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "SAssetPicker.h"
+#include "SAssetView.h"
+#include "SPathPicker.h"
+#include "SPathView.h"
 #include "SPrimaryButton.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "SourcesData.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateStructs.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/TopLevelAssetPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FExtender;
+class SWidget;
+struct FGeometry;
+struct FWorldContext;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -81,7 +116,7 @@ void SAssetDialog::Construct(const FArguments& InArgs, const FSharedAssetDialogC
 	PathPickerConfig.bOnPathSelectedPassesVirtualPaths = true;
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Append(AssetClassNames);
+	AssetPickerConfig.Filter.ClassPaths.Append(AssetClassNames);
 	AssetPickerConfig.bAllowDragging = false;
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::Tile;
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SAssetDialog::OnAssetSelected);
@@ -202,7 +237,7 @@ void SAssetDialog::Construct(const FArguments& InArgs, const FSharedAssetDialogC
 			.Value(0.25f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					PathPicker.ToSharedRef()
 				]
@@ -212,7 +247,7 @@ void SAssetDialog::Construct(const FArguments& InArgs, const FSharedAssetDialogC
 			.Value(0.75f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					AssetPicker.ToSharedRef()
 				]
@@ -231,7 +266,7 @@ void SAssetDialog::Construct(const FArguments& InArgs, const FSharedAssetDialogC
 			[
 				SNew(SBorder)
 				.Visibility( this, &SAssetDialog::GetNameErrorLabelVisibility )
-				.BorderImage( FEditorStyle::GetBrush("AssetDialog.ErrorLabelBorder") )
+				.BorderImage( FAppStyle::GetBrush("AssetDialog.ErrorLabelBorder") )
 				.Content()
 				[
 					SNew(STextBlock)
@@ -677,8 +712,8 @@ void SAssetDialog::SetupContextMenuContent(FMenuBuilder& MenuBuilder, const TArr
 
 	MenuBuilder.BeginSection("AssetDialogOptions", LOCTEXT("AssetDialogMenuHeading", "Options"));
 
-	MenuBuilder.AddMenuEntry(FContentBrowserCommands::Get().CreateNewFolder, NAME_None, LOCTEXT("NewFolder", "New Folder"), NewFolderToolTip, FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.NewFolderIcon"));
-	MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename, NAME_None, LOCTEXT("RenameFolder", "Rename"), LOCTEXT("RenameFolderTooltip", "Rename the selected folder."), FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Rename"));
+	MenuBuilder.AddMenuEntry(FContentBrowserCommands::Get().CreateNewFolder, NAME_None, LOCTEXT("NewFolder", "New Folder"), NewFolderToolTip, FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.NewFolderIcon"));
+	MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename, NAME_None, LOCTEXT("RenameFolder", "Rename"), LOCTEXT("RenameFolderTooltip", "Rename the selected folder."), FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.Rename"));
 	MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete, NAME_None, LOCTEXT("DeleteFolder", "Delete"), LOCTEXT("DeleteFolderTooltip", "Removes this folder and all assets it contains."));
 
 	MenuBuilder.EndSection();
@@ -688,7 +723,7 @@ void SAssetDialog::SetupContextMenuContent(FMenuBuilder& MenuBuilder, const TArr
 		MenuBuilder.BeginSection("AssetDialogExplore", LOCTEXT("AssetDialogExploreHeading", "Explore"));
 		MenuBuilder.AddMenuEntry(ContentBrowserUtils::GetExploreFolderText(),
 			LOCTEXT("ExploreTooltip", "Finds this folder on disk."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
 			FUIAction(FExecuteAction::CreateSP(this, &SAssetDialog::ExecuteExplore)));
 		MenuBuilder.EndSection();
 	}
@@ -765,7 +800,7 @@ void SAssetDialog::HandlePathSelected(const FString& NewPath)
 
 	FARFilter NewFilter;
 
-	NewFilter.ClassNames.Append(AssetClassNames);
+	NewFilter.ClassPaths.Append(AssetClassNames);
 	NewFilter.PackagePaths.Add(*NewPath);
 
 	SetCurrentlySelectedPath(ConvertedPath.ToString(), ConvertedPathType);
@@ -947,8 +982,8 @@ void SAssetDialog::UpdateInputValidity()
 			FText ErrorMessage;
 			const bool bAllowExistingAsset = (ExistingAssetPolicy == ESaveAssetDialogExistingAssetPolicy::AllowButWarn);
 
-			FName AssetClassName = AssetClassNames.Num() == 1 ? AssetClassNames[0] : NAME_None;
-			UClass* AssetClass = AssetClassName != NAME_None ? FindObject<UClass>(ANY_PACKAGE, *AssetClassName.ToString(), true) : nullptr;
+			FTopLevelAssetPath AssetClassName = AssetClassNames.Num() == 1 ? AssetClassNames[0] : FTopLevelAssetPath();
+			UClass* AssetClass = !AssetClassName.IsNull() ? FindObject<UClass>(AssetClassName, true) : nullptr;
 
 			if ( !ContentBrowserUtils::IsValidObjectPathForCreate(ObjectPath, AssetClass, ErrorMessage, bAllowExistingAsset) )
 			{
@@ -958,11 +993,11 @@ void SAssetDialog::UpdateInputValidity()
 			else if(bAllowExistingAsset && AssetClassNames.Num() > 1) // If for some reason we have multiple names, perform additional logic here...
 			{
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-				FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*ObjectPath));
-				if (ExistingAsset.IsValid() && !AssetClassNames.Contains(ExistingAsset.AssetClass))
+				FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPath));
+				if (ExistingAsset.IsValid() && !AssetClassNames.Contains(ExistingAsset.AssetClassPath))
 				{
 					const FString ObjectName = FPackageName::ObjectPathToObjectName(ObjectPath);
-					LastInputValidityErrorText = FText::Format(LOCTEXT("AssetDialog_AssetAlreadyExists", "An asset of type '{0}' already exists at this location with the name '{1}'."), FText::FromName(ExistingAsset.AssetClass), FText::FromString(ObjectName));
+					LastInputValidityErrorText = FText::Format(LOCTEXT("AssetDialog_AssetAlreadyExists", "An asset of type '{0}' already exists at this location with the name '{1}'."), FText::FromString(ExistingAsset.AssetClassPath.ToString()), FText::FromString(ObjectName));
 					bLastInputValidityCheckSuccessful = false;
 				}
 			}
@@ -1030,8 +1065,8 @@ void SAssetDialog::CommitObjectPathForSave()
 			if ( ExistingAssetPolicy == ESaveAssetDialogExistingAssetPolicy::AllowButWarn )
 			{
 				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-				FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*ObjectPath));
-				if ( ExistingAsset.IsValid() && AssetClassNames.Contains(ExistingAsset.AssetClass) )
+				FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPath));
+				if ( ExistingAsset.IsValid() && AssetClassNames.Contains(ExistingAsset.AssetClassPath) )
 				{
 					EAppReturnType::Type ShouldReplace = FMessageDialog::Open( EAppMsgType::YesNo, FText::Format(LOCTEXT("ReplaceAssetMessage", "{0} already exists. Do you want to replace it?"), FText::FromString(CurrentlyEnteredAssetName)) );
 					bProceedWithSave = (ShouldReplace == EAppReturnType::Yes);

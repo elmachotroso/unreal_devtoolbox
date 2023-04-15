@@ -165,6 +165,7 @@ void FDefaultGameMoviePlayer::Initialize(FSlateRenderer& InSlateRenderer, TShare
 		return;
 	}
 
+	LLM_SCOPE_BYNAME(TEXT("SlateMoviePlayer"));
 	UE_LOG(LogMoviePlayer, Log, TEXT("Initializing movie player"));
 
 	FDefaultGameMoviePlayer* InMoviePlayer = this;
@@ -460,19 +461,15 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 			LoadingIsDone.Set(1);
 		}
 		
-        if (MainWindow.IsValid())
+        if (TSharedPtr<SWindow> MainWindowPtr = MainWindow.Pin())
         {
             // Transfer the content to the main window
-            MainWindow.Pin()->SetContent(LoadingScreenContents.ToSharedRef());
+			MainWindowPtr->SetContent(LoadingScreenContents.ToSharedRef());
         }
         if (VirtualRenderWindow.IsValid())
         {
             VirtualRenderWindow->SetContent(SNullWidget::NullWidget);
         }
-		if (UserWidgetHolder.IsValid())
-		{
-			UserWidgetHolder->SetContent(SNullWidget::NullWidget);
-		}
 
 		const bool bAutoCompleteWhenLoadingCompletes = LoadingScreenAttributes.bAutoCompleteWhenLoadingCompletes;
 		const bool bWaitForManualStop = LoadingScreenAttributes.bWaitForManualStop;
@@ -572,6 +569,10 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 			}
 		}
 
+		if (UserWidgetHolder.IsValid())
+		{
+			UserWidgetHolder->SetContent(SNullWidget::NullWidget);
+		}
 		LoadingIsDone.Set(1);
 		IsMoviePlaying = false;
 		FCoreDelegates::OnAsyncLoadingFlushUpdate.Remove(OnAsyncLoadingFlushUpdateDelegateHandle);
@@ -1004,29 +1005,30 @@ void FMoviePlayerWidgetRenderer::DrawWindow(float DeltaTime)
 	HittestGrid->SetHittestArea(VirtualRenderWindow->GetPositionInScreen(), VirtualRenderWindow->GetViewportSize());
 	HittestGrid->Clear();
 
-	// Get the free buffer & add our virtual window
-	FSlateDrawBuffer& DrawBuffer = SlateRenderer->GetDrawBuffer();
-	FSlateWindowElementList& WindowElementList = DrawBuffer.AddWindowElementList(VirtualRenderWindow);
-
-	WindowElementList.SetRenderTargetWindow(MainWindow);
-
-	int32 MaxLayerId = 0;
 	{
-		FPaintArgs PaintArgs(nullptr, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
+		// Get the free buffer & add our virtual window
+		FSlateRenderer::FScopedAcquireDrawBuffer ScopedDrawBuffer{ *SlateRenderer };
+		FSlateWindowElementList& WindowElementList = ScopedDrawBuffer.GetDrawBuffer().AddWindowElementList(VirtualRenderWindow);
 
-		// Paint the window
-		MaxLayerId = VirtualRenderWindow->Paint(
-			PaintArgs,
-			WindowGeometry, ClipRect,
-			WindowElementList,
-			0,
-			FWidgetStyle(),
-			VirtualRenderWindow->IsEnabled());
+		WindowElementList.SetRenderTargetWindow(MainWindow);
+
+		int32 MaxLayerId = 0;
+		{
+			FPaintArgs PaintArgs(nullptr, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
+
+			// Paint the window
+			MaxLayerId = VirtualRenderWindow->Paint(
+				PaintArgs,
+				WindowGeometry, ClipRect,
+				WindowElementList,
+				0,
+				FWidgetStyle(),
+				VirtualRenderWindow->IsEnabled());
+		}
+
+		SlateRenderer->DrawWindows(ScopedDrawBuffer.GetDrawBuffer());
+		ScopedDrawBuffer.GetDrawBuffer().ViewOffset = FVector2D::ZeroVector;
 	}
-
-	SlateRenderer->DrawWindows(DrawBuffer);
-
-	DrawBuffer.ViewOffset = FVector2D::ZeroVector;
 }
 
 float FDefaultGameMoviePlayer::GetViewportDPIScale() const

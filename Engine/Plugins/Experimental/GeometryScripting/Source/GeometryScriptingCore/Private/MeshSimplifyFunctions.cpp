@@ -15,6 +15,8 @@
 
 #include "UDynamicMesh.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshSimplifyFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshSimplifyFunctions"
@@ -39,6 +41,11 @@ UDynamicMesh* UGeometryScriptLibrary_MeshSimplifyFunctions::ApplySimplifyToPlana
 
 		Simplifier.CollapseMode = FQEMSimplification::ESimplificationCollapseModes::AverageVertexPosition;
 		Simplifier.SimplifyToMinimalPlanar( FMath::Max(0.00001, Options.AngleThreshold) );
+
+		if (Options.bAutoCompact)
+		{
+			EditMesh.CompactInPlace();
+		}
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 
@@ -81,6 +88,11 @@ UDynamicMesh* UGeometryScriptLibrary_MeshSimplifyFunctions::ApplySimplifyToPolyg
 		FPolygroupRemesh Simplifier(&EditMesh, Topo.Get(), ConstrainedDelaunayTriangulate<double>);
 		Simplifier.SimplificationAngleTolerance = Options.AngleThreshold;
 		Simplifier.Compute();
+
+		if (Options.bAutoCompact)
+		{
+			EditMesh.CompactInPlace();
+		}
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 
@@ -143,6 +155,11 @@ void DoSimplifyMesh(
 	else
 	{
 		Simplifier.SimplifyToVertexCount( FMath::Max(1,TargetCount) );
+	}
+
+	if (Options.bAutoCompact)
+	{
+		EditMesh.CompactInPlace();
 	}
 }
 

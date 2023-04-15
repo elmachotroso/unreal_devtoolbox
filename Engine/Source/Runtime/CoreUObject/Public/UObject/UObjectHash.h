@@ -6,10 +6,25 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/Function.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectArray.h"
+#include "UObject/UnrealNames.h"
+
+class FOutputDevice;
+class UClass;
+class UObject;
+class UPackage;
 
 DECLARE_STATS_GROUP_VERBOSE(TEXT("UObject Hash"), STATGROUP_UObjectHash, STATCAT_Advanced);
 
@@ -29,7 +44,46 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("NumObjects"), STAT_Hash_NumObjects, STAT
  * @param	ExclusiveInternalFlags	Ignores objects that contain any of the specified internal exclusive flags
  * @return	Returns a pointer to the found object or NULL if none could be found
  */
-UObject* StaticFindObjectFastInternal(const UClass* Class, const UObject* InOuter, FName InName, bool ExactClass = false, bool AnyPackage = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+UE_DEPRECATED(5.1, "Support for searching for objects in ANY_PACKAGE has been deprecated. Please provide the actual Outer of an object you want to find.")
+COREUOBJECT_API UObject* StaticFindObjectFastInternal(const UClass* Class, const UObject* InOuter, FName InName, bool ExactClass, bool AnyPackage, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Private internal version of StaticFindObjectFast that allows using 0 exclusion flags.
+ *
+ * @param	Class			The to be found object's class
+ * @param	InOuter			The to be found object's outer
+ * @param	InName			The to be found object's class
+ * @param	ExactClass		Whether to require an exact match with the passed in class
+ * @param	ExclusiveFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags	Ignores objects that contain any of the specified internal exclusive flags
+ * @return	Returns a pointer to the found object or NULL if none could be found
+ */
+COREUOBJECT_API UObject* StaticFindObjectFastInternal(const UClass* Class, const UObject* InOuter, FName InName, bool ExactClass = false, EObjectFlags ExclusiveFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Private internal version of StaticFindAllObjectsFast that allows using 0 exclusion flags.
+ *
+ * @param	OutFoundObjects	Array of objects matching the specified search parameters
+ * @param	ObjectClass		The to be found object's class
+ * @param	ObjectName		The to be found object's name
+ * @param	bExactClass		Whether to require an exact match with the passed in class
+ * @param	ExcludeFlags	Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags	Ignores objects that contain any of the specified internal exclusive flags
+ * @return	Returns true if any objects were found, false otherwise
+ */
+COREUOBJECT_API bool StaticFindAllObjectsFastInternal(TArray<UObject*>& OutFoundObjects, const UClass* ObjectClass, FName ObjectName, bool bExactClass, EObjectFlags ExcludeFlags = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
+
+/**
+ * Private internal version of StaticFindFirstObject that allows using 0 exclusion flags.
+ *
+ * @param	ObjectClass		The to be found object's class
+ * @param	ObjectName		The to be found object's name
+ * @param	bExactClass		Whether to require an exact match with the passed in class
+ * @param	ExcludeFlag		Ignores objects that contain any of the specified exclusive flags
+ * @param	ExclusiveInternalFlags	Ignores objects that contain any of the specified internal exclusive flags
+ * @return	Returns first object with the specified name and class, null if not found
+ */
+COREUOBJECT_API UObject* StaticFindFirstObjectFastInternal(const UClass* ObjectClass, FName ObjectName, bool bExactClass, EObjectFlags ExcludeFlag = RF_NoFlags, EInternalObjectFlags ExclusiveInternalFlags = EInternalObjectFlags::None);
 
 /**
  * Variation of StaticFindObjectFast that uses explicit path.

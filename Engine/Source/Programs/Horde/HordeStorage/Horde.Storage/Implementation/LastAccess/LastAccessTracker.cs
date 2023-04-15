@@ -6,19 +6,55 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Datadog.Trace;
+using EpicGames.Horde.Storage;
+using Jupiter.Implementation;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace Horde.Storage.Implementation
 {
     public class LastAccessTrackerRefRecord : LastAccessTracker<RefRecord>
     {
+        public LastAccessTrackerRefRecord(IOptionsMonitor<HordeStorageSettings> settings) : base(settings)
+        {
+        }
+
         protected override string BuildCacheKey(RefRecord record)
         {
             return $"{record.Namespace}.{record.Bucket}.{record.RefName}";
         }
     }
+
+    public class LastAccessRecord
+    {
+        public LastAccessRecord(NamespaceId ns, BucketId bucket, IoHashKey key)
+        {
+            Namespace = ns;
+            Bucket = bucket;
+            Key = key;
+        }
+
+        public NamespaceId Namespace { get; set; }
+        public BucketId Bucket { get; set; }
+        public IoHashKey Key { get; set; }
+    }
+
+    public class LastAccessTrackerReference : LastAccessTracker<LastAccessRecord>
+    {
+        public LastAccessTrackerReference(IOptionsMonitor<HordeStorageSettings> settings) : base(settings)
+        {
+        }
+
+        protected override string BuildCacheKey(LastAccessRecord record)
+        {
+            return $"{record.Namespace}.{record.Bucket}.{record.Key}";
+        }
+    }
+
     public abstract class LastAccessTracker<T> : ILastAccessTracker<T>, ILastAccessCache<T>
     {
+        private readonly IOptionsMonitor<HordeStorageSettings> _settings;
         private readonly ILogger _logger = Log.ForContext<LastAccessTracker<T>>();
 
         private ConcurrentDictionary<string, LastAccessRecord> _cache = new ConcurrentDictionary<string, LastAccessRecord>();
@@ -26,13 +62,23 @@ namespace Horde.Storage.Implementation
         // we will exchange the refs dictionary when fetching the records and use a rw lock to make sure no-one is trying to add things at the same time
         private readonly ReaderWriterLock _rwLock = new ReaderWriterLock();
 
+        protected LastAccessTracker(IOptionsMonitor<HordeStorageSettings> settings)
+        {
+            _settings = settings;
+        }
 
         protected abstract string BuildCacheKey(T record);
 
         public Task TrackUsed(T record)
         {
+            if (!_settings.CurrentValue.EnableLastAccessTracking)
+            {
+                return Task.CompletedTask;
+            }
+
             return Task.Run(() =>
             {
+                using IScope _ = Tracer.Instance.StartActive("lastAccessTracker.track");
                 try
                 {
                     _rwLock.AcquireReaderLock(-1);
@@ -90,5 +136,4 @@ namespace Horde.Storage.Implementation
             }
         }
     }
-
 }

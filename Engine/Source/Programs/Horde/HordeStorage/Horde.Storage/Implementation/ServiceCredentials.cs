@@ -1,9 +1,6 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using Jupiter.Common.Implementation;
 using Jupiter.Implementation;
 using Microsoft.Extensions.Options;
@@ -16,24 +13,33 @@ namespace Horde.Storage.Implementation
         IAuthenticator? GetAuthenticator();
 
         string? GetToken();
+
+        string GetAuthenticationScheme();
     }
 
     public class ServiceCredentials : IServiceCredentials
     {
         private readonly ClientCredentialOAuthAuthenticator? _authenticator;
+        private readonly IOptionsMonitor<ServiceCredentialSettings> _settings;
 
-        public ServiceCredentials(IOptionsMonitor<ServiceCredentialSettings> settingsMonitor, ISecretResolver secretResolver)
+        public ServiceCredentials(IOptionsMonitor<ServiceCredentialSettings> settings, ISecretResolver secretResolver)
         {
-            ServiceCredentialSettings settings = settingsMonitor.CurrentValue;
-            if (!string.IsNullOrEmpty(settings.OAuthLoginUrl))
+            _settings = settings;
+            if (settings.CurrentValue.OAuthLoginUrl != null)
             {
-                string? clientId = secretResolver.Resolve(settings.OAuthClientId);
+                string? clientId = secretResolver.Resolve(settings.CurrentValue.OAuthClientId);
                 if (string.IsNullOrEmpty(clientId))
+                {
                     throw new ArgumentException("ClientId must be set when using a service credential");
-                string? clientSecret = secretResolver.Resolve(settings.OAuthClientSecret);
+                }
+
+                string? clientSecret = secretResolver.Resolve(settings.CurrentValue.OAuthClientSecret);
                 if (string.IsNullOrEmpty(clientSecret))
+                {
                     throw new ArgumentException("ClientSecret must be set when using a service credential");
-                _authenticator = new ClientCredentialOAuthAuthenticator(settings.OAuthLoginUrl, clientId, clientSecret, settings.OAuthScope);
+                }
+
+                _authenticator = new ClientCredentialOAuthAuthenticator(settings.CurrentValue.OAuthLoginUrl, clientId, clientSecret, settings.CurrentValue.OAuthScope, settings.CurrentValue.SchemeName);
             }
         }
 
@@ -46,6 +52,10 @@ namespace Horde.Storage.Implementation
         {
             return _authenticator?.Authenticate();
         }
-    }
 
+        public string GetAuthenticationScheme()
+        {
+            return _settings.CurrentValue.SchemeName;
+        }
+    }
 }

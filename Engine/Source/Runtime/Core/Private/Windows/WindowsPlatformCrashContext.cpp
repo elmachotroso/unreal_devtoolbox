@@ -23,21 +23,24 @@
 #include "Misc/OutputDeviceFile.h"
 #include "Serialization/Archive.h"
 #include "Windows/WindowsPlatformStackWalk.h"
-#include "Windows/WindowsHWrapper.h"
-#include "Windows/AllowWindowsPlatformTypes.h"
 #include "Templates/UniquePtr.h"
 #include "Templates/UnrealTemplate.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
 #include "HAL/ThreadManager.h"
 #include "BuildSettings.h"
 #include "CoreGlobals.h"
+#include <atomic>
+#include <signal.h>
+
+#include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #include <strsafe.h>
 #include <dbghelp.h>
 #include <Shlwapi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <shellapi.h>
-#include <atomic>
+// Windows platform types intentionall not hidden til later
 
 #ifndef UE_LOG_CRASH_CALLSTACK
 	#define UE_LOG_CRASH_CALLSTACK 1
@@ -49,6 +52,14 @@
 
 #ifndef NOINITCRASHREPORTER
 #define NOINITCRASHREPORTER 0
+#endif
+
+#ifndef DISABLE_CRC_SUBMIT_AND_RESTART_BUTTON
+#define DISABLE_CRC_SUBMIT_AND_RESTART_BUTTON 0
+#endif
+
+#ifndef HANDLE_ABORT_SIGNALS
+#define HANDLE_ABORT_SIGNALS 1
 #endif
 
 #define CR_CLIENT_MAX_PATH_LEN 265
@@ -125,7 +136,7 @@ namespace {
 			MinidumpType = (MINIDUMP_TYPE)(MiniDumpWithFullMemory | MiniDumpWithFullMemoryInfo | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
 		}
 
-		const BOOL Result = MiniDumpWriteDump(Process, GetProcessId(Process), FileHandle, MinidumpType, &DumpExceptionInfo, &CrashContextStreamInformation, NULL);
+		const BOOL Result = MiniDumpWriteDump(Process, GetProcessId(Process), FileHandle, MinidumpType, ExceptionInfo ? &DumpExceptionInfo : NULL, &CrashContextStreamInformation, NULL);
 		CloseHandle(FileHandle);
 
 		return Result == TRUE;
@@ -168,157 +179,12 @@ void FGenericCrashContext::CleanupPlatformSpecificFiles()
 	IFileManager::Get().Delete(*GPUMiniDumpPath);
 }
 
-
-void FWindowsPlatformCrashContext::GetProcModuleHandles(const FProcHandle& ProcessHandle, FModuleHandleArray& OutHandles)
-{
-	// Get all the module handles for the current process. Each module handle is its base address.
-	for (;;)
-	{
-		DWORD BufferSize = OutHandles.Num() * sizeof(HMODULE);
-		DWORD RequiredBufferSize = 0;
-		if (!EnumProcessModulesEx(ProcessHandle.IsValid() ? ProcessHandle.Get() : GetCurrentProcess(), (HMODULE*)OutHandles.GetData(), BufferSize, &RequiredBufferSize, LIST_MODULES_ALL))
-		{
-			// We do not want partial set of modules in case this fails.
-			OutHandles.Empty();
-			return;
-		}
-		if (RequiredBufferSize <= BufferSize)
-		{
-			break;
-		}
-		OutHandles.SetNum(RequiredBufferSize / sizeof(HMODULE));
-	}
-	// Sort the handles by address. This allows us to do a binary search for the module containing an address.
-	Algo::Sort(OutHandles);
-}
-
-void FWindowsPlatformCrashContext::ConvertProgramCountersToStackFrames(
-	const FProcHandle& ProcessHandle,
-	const FModuleHandleArray& SortedModuleHandles,
-	const uint64* ProgramCounters,
-	int32 NumPCs,
-	TArray<FCrashStackFrame>& OutStackFrames)
-{
-	// Prepare the callstack buffer
-	OutStackFrames.Reset(NumPCs);
-
-	// Create the crash context
-	for (int32 Idx = 0; Idx < NumPCs; ++Idx)
-	{
-		int32 ModuleIdx = Algo::UpperBound(SortedModuleHandles, (void*)ProgramCounters[Idx]) - 1;
-		if (ModuleIdx < 0 || ModuleIdx >= SortedModuleHandles.Num())
-		{
-			OutStackFrames.Add(FCrashStackFrame(TEXT("Unknown"), 0, ProgramCounters[Idx]));
-		}
-		else
-		{
-			TCHAR ModuleName[MAX_PATH];
-			if (GetModuleFileNameExW(ProcessHandle.IsValid() ? ProcessHandle.Get() : GetCurrentProcess(), (HMODULE)SortedModuleHandles[ModuleIdx], ModuleName, MAX_PATH) != 0)
-			{
-				TCHAR* ModuleNameEnd = FCString::Strrchr(ModuleName, '\\');
-				if (ModuleNameEnd != nullptr)
-				{
-					FMemory::Memmove(ModuleName, ModuleNameEnd + 1, (FCString::Strlen(ModuleNameEnd + 1) + 1) * sizeof(TCHAR));
-				}
-
-				TCHAR* ModuleNameExt = FCString::Strrchr(ModuleName, '.');
-				if (ModuleNameExt != nullptr)
-				{
-					*ModuleNameExt = 0;
-				}
-			}
-			else
-			{
-				const DWORD Err = GetLastError();
-				FCString::Strcpy(ModuleName, TEXT("Unknown"));
-			}
-
-			uint64 BaseAddress = (uint64)SortedModuleHandles[ModuleIdx];
-			uint64 Offset = ProgramCounters[Idx] - BaseAddress;
-			OutStackFrames.Add(FCrashStackFrame(ModuleName, BaseAddress, Offset));
-		}
-	}
-}
-
-void FWindowsPlatformCrashContext::SetPortableCallStack(const uint64* StackTrace, int32 StackTraceDepth)
-{
-	FModuleHandleArray ProcessModuleHandles;
-	GetProcModuleHandles(ProcessHandle, ProcessModuleHandles);
-	ConvertProgramCountersToStackFrames(ProcessHandle, ProcessModuleHandles, StackTrace, StackTraceDepth, CallStack);
-}
-
 void FWindowsPlatformCrashContext::AddPlatformSpecificProperties() const
 {
 	AddCrashProperty(TEXT("PlatformIsRunningWindows"), 1);
 	AddCrashProperty(TEXT("IsRunningOnBattery"), FPlatformMisc::IsRunningOnBattery());
 }
 
-bool FWindowsPlatformCrashContext::GetPlatformAllThreadContextsString(FString& OutStr) const
-{
-	for (const FThreadStackFrames& Thread : ThreadCallStacks)
-	{
-		AddThreadContextString(
-			CrashedThreadId, 
-			Thread.ThreadId, 
-			Thread.ThreadName, 
-			Thread.StackFrames,
-			OutStr
-		);
-	}
-	return !OutStr.IsEmpty();
-}
-
-void FWindowsPlatformCrashContext::AddThreadContextString(
-	uint32 CrashedThreadId,
-	uint32 ThreadId,
-	const FString& ThreadName,
-	const TArray<FCrashStackFrame>& StackFrames,
-	FString& OutStr)
-{
-	OutStr += TEXT("<Thread>");
-	{
-		OutStr += TEXT("<CallStack>");
-
-		int32 MaxModuleNameLen = 0;
-		for (const FCrashStackFrame& StFrame : StackFrames)
-		{
-			MaxModuleNameLen = FMath::Max(MaxModuleNameLen, StFrame.ModuleName.Len());
-		}
-
-		FString CallstackStr;
-		for (const FCrashStackFrame& StFrame : StackFrames)
-		{
-			CallstackStr += FString::Printf(TEXT("%-*s 0x%016llx + %-16llx"), MaxModuleNameLen + 1, *StFrame.ModuleName, StFrame.BaseAddress, StFrame.Offset);
-			CallstackStr += LINE_TERMINATOR;
-		}
-		AppendEscapedXMLString(OutStr, *CallstackStr);
-		OutStr += TEXT("</CallStack>");
-		OutStr += LINE_TERMINATOR;
-	}
-	OutStr += FString::Printf(TEXT("<IsCrashed>%s</IsCrashed>"), ThreadId == CrashedThreadId ? TEXT("true") : TEXT("false"));
-	OutStr += LINE_TERMINATOR;
-	// TODO: do we need thread register states?
-	OutStr += TEXT("<Registers></Registers>");
-	OutStr += LINE_TERMINATOR;
-	OutStr += FString::Printf(TEXT("<ThreadID>%d</ThreadID>"), ThreadId);
-	OutStr += LINE_TERMINATOR;
-	OutStr += FString::Printf(TEXT("<ThreadName>%s</ThreadName>"), *ThreadName);
-	OutStr += LINE_TERMINATOR;
-	OutStr += TEXT("</Thread>");
-	OutStr += LINE_TERMINATOR;
-}
-
-void FWindowsPlatformCrashContext::AddPortableThreadCallStack(uint32 ThreadId, const TCHAR* ThreadName, const uint64* StackFrames, int32 NumStackFrames)
-{
-	FModuleHandleArray ProcModuleHandles;
-	GetProcModuleHandles(ProcessHandle, ProcModuleHandles);
-
-	FThreadStackFrames Thread;
-	Thread.ThreadId = ThreadId;
-	Thread.ThreadName = FString(ThreadName);
-	ConvertProgramCountersToStackFrames(ProcessHandle, ProcModuleHandles, StackFrames, NumStackFrames, Thread.StackFrames);
-	ThreadCallStacks.Push(Thread);
-}
 
 void FWindowsPlatformCrashContext::CopyPlatformSpecificFiles(const TCHAR* OutputDirectory, void* Context)
 {
@@ -326,11 +192,8 @@ void FWindowsPlatformCrashContext::CopyPlatformSpecificFiles(const TCHAR* Output
 
 	// Save minidump
 	LPEXCEPTION_POINTERS ExceptionInfo = (LPEXCEPTION_POINTERS)Context;
-	if (ExceptionInfo != nullptr)
-	{
-		const FString MinidumpFileName = FPaths::Combine(OutputDirectory, FGenericCrashContext::UEMinidumpName);
-		WriteMinidump(ProcessHandle.Get(), CrashedThreadId, *this, *MinidumpFileName, ExceptionInfo);
-	}
+	const FString MinidumpFileName = FPaths::Combine(OutputDirectory, FGenericCrashContext::UEMinidumpName);
+	WriteMinidump(ProcessHandle.Get(), CrashedThreadId, *this, *MinidumpFileName, ExceptionInfo);
 
 	// If present, include the crash video
 	const FString CrashVideoPath = FPaths::ProjectLogDir() / TEXT("CrashVideo.avi");
@@ -349,17 +212,6 @@ void FWindowsPlatformCrashContext::CopyPlatformSpecificFiles(const TCHAR* Output
 		const FString GPUMiniDumpDstAbsolute = FPaths::Combine(OutputDirectory, *GPUMiniDumpFilename);
 		static_cast<void>(IFileManager::Get().Copy(*GPUMiniDumpDstAbsolute, *GPUMiniDumpPath));	// best effort, so don't care about result: couldn't copy -> tough, no video
 	}
-}
-
-void FWindowsPlatformCrashContext::CaptureAllThreadContexts()
-{
-	TArray<typename FThreadManager::FThreadStackBackTrace> StackTraces;
-	FThreadManager::Get().GetAllThreadStackBackTraces(StackTraces);
-
-	for (const FThreadManager::FThreadStackBackTrace& Thread : StackTraces)
-	{
-		AddPortableThreadCallStack(Thread.ThreadId, *Thread.ThreadName, Thread.ProgramCounters.GetData(), Thread.ProgramCounters.Num());
-	}	
 }
 
 
@@ -397,7 +249,7 @@ bool CreateCrashReportClientPath(TCHAR* OutClientPath, int32 MaxLength)
 		const TCHAR* BinariesDir = FPlatformProcess::GetBinariesSubdirectory();
 
 		// Find the path to crash reporter binary. Avoid creating FStrings.
-		*OutClientPath = 0;
+		*OutClientPath = TCHAR('\0');
 		FCString::Strncat(OutClientPath, EngineDir, MaxLength);
 		FCString::Strncat(OutClientPath, TEXT("Binaries/"), MaxLength);
 		FCString::Strncat(OutClientPath, BinariesDir, MaxLength);
@@ -409,13 +261,13 @@ bool CreateCrashReportClientPath(TCHAR* OutClientPath, int32 MaxLength)
 	};
 
 #if WITH_EDITOR
-	const TCHAR CrashReportClientShippingName[] = TEXT("CrashReportClientEditor.exe");
-	const TCHAR CrashReportClientDevelopmentName[] = TEXT("CrashReportClientEditor-Win64-Development.exe");
-	const TCHAR CrashReportClientDebugName[] = TEXT("CrashReportClientEditor-Win64-Debug.exe");
+	const TCHAR* CrashReportClientShippingName = TEXT("CrashReportClientEditor.exe");
+	const TCHAR* CrashReportClientDevelopmentName = TEXT("CrashReportClientEditor-Win64-Development.exe");
+	const TCHAR* CrashReportClientDebugName = TEXT("CrashReportClientEditor-Win64-Debug.exe");
 #else
-	const TCHAR CrashReportClientShippingName[] = TEXT("CrashReportClient.exe");
-	const TCHAR CrashReportClientDevelopmentName[] = TEXT("CrashReportClient-Win64-Development.exe");
-	const TCHAR CrashReportClientDebugName[] = TEXT("CrashReportClient-Win64-Debug.exe");
+	const TCHAR* CrashReportClientShippingName = TEXT("CrashReportClient.exe");
+	const TCHAR* CrashReportClientDevelopmentName = TEXT("CrashReportClient-Win64-Development.exe");
+	const TCHAR* CrashReportClientDebugName = TEXT("CrashReportClient-Win64-Debug.exe");
 #endif
 
 	if (CreateCrashReportClientPathImpl(CrashReportClientShippingName))
@@ -485,6 +337,11 @@ FProcHandle LaunchCrashReportClient(void** OutWritePipe, void** OutReadPipe, uin
 		FCString::Sprintf(AnalyticsSummaryGuid, TEXT(" -ProcessGroupId=%s"), *FApp::GetInstanceId().ToString(EGuidFormats::Digits));
 		FCString::Strncat(CrashReporterClientArgs, AnalyticsSummaryGuid, CR_CLIENT_MAX_ARGS_LEN);
 	}
+
+#if DISABLE_CRC_SUBMIT_AND_RESTART_BUTTON
+	// Prevent showing the button if the application cannot be restarted.
+	FCString::Strncat(CrashReporterClientArgs, TEXT(" -HideSubmitAndRestart"), CR_CLIENT_MAX_ARGS_LEN);
+#endif
 
 	// Parse commandline arguments relevant to pass to the client. Note that since we run this from static initialization
 	// FCommandline has not yet been initialized, instead we need to use the OS provided methods.
@@ -1008,6 +865,12 @@ int32 ReportCrashUsingCrashReportClient(FWindowsPlatformCrashContext& InContext,
 					CrashReportClientArguments += TEXT(" -waitforattach");
 				}
 #endif
+
+#if DISABLE_CRC_SUBMIT_AND_RESTART_BUTTON
+				// Prevent showing the button if the application cannot be restarted.
+				CrashReportClientArguments += TEXT(" -HideSubmitAndRestart");
+#endif
+
 				bCrashReporterRan = FPlatformProcess::CreateProc(CrashReporterClientPath, *CrashReportClientArguments, true, false, false, NULL, 0, NULL, NULL).IsValid();
 			}
 
@@ -1108,6 +971,25 @@ void CreateExceptionInfoString(EXCEPTION_RECORD* ExceptionRecord, TCHAR* OutErro
 #undef HANDLE_CASE
 }
 
+#if HANDLE_ABORT_SIGNALS
+static void AbortHandler(int Signal)
+{
+#if !PLATFORM_SEH_EXCEPTIONS_DISABLED && !NOINITCRASHREPORTER
+	__try
+	{
+		// Force an exception to invoke the crash reporter
+		FAssertInfo Info(TEXT("Abort signal received"), PLATFORM_RETURN_ADDRESS());
+		ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
+		::RaiseException(AssertExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
+	}
+	__except(ReportCrash(GetExceptionInformation()))
+	{
+		GIsCriticalError = true;
+		FPlatformMisc::RequestExit(true);
+	}
+#endif
+}
+#endif
 
 
 
@@ -1268,6 +1150,11 @@ public:
 		// Register an exception handler for exceptions that aren't handled by any vectored exception handlers or structured exception handlers (__try/__except),
 		// especially to capture crash in non-engine-wrapped threads (like native threads) that are usually not guarded with structured exception handling.
 		FCoreDelegates::GetPreMainInitDelegate().AddRaw(this, &FCrashReportingThread::RegisterUnhandledExceptionHandler);
+
+#if HANDLE_ABORT_SIGNALS
+		// Register a signal handler for abort and terminate occurrences so that abnormal or third party shutdowns can be reported.
+		FCoreDelegates::GetPreMainInitDelegate().AddRaw(this, &FCrashReportingThread::RegisterAbortSignalHandler);
+#endif
 	}
 
 	FORCENOINLINE ~FCrashReportingThread()
@@ -1305,6 +1192,22 @@ public:
 		::SetUnhandledExceptionFilter(EngineUnhandledExceptionFilter);
 #endif
 	}
+
+#if HANDLE_ABORT_SIGNALS
+	void RegisterAbortSignalHandler()
+	{
+#if !NOINITCRASHREPORTER
+		if (::signal(SIGABRT, AbortHandler) != SIG_ERR)
+		{
+			UE_LOG(LogWindows, Log, TEXT("Custom abort handler registered for crash reporting."));
+		}
+		else
+		{
+			UE_LOG(LogWindows, Error, TEXT("Unable to register custom abort handler for crash reporting."));
+		}
+#endif
+	}
+#endif
 
 	DWORD GetReporterThreadId() const
 	{
@@ -1408,13 +1311,6 @@ private:
 		// Then try run time crash processing and broadcast information about a crash.
 		FCoreDelegates::OnHandleSystemError.Broadcast();
 
-		if (GLog)
-		{
-			//Panic flush the logs to make sure there are no entries queued. This is
-			//not thread safe so it will skip for example editor log.
-			GLog->PanicFlushThreadedLogs();
-		}
-		
 		// Get the default settings for the crash context
 		ECrashContextType Type = ECrashContextType::Crash;
 		const TCHAR* ErrorMessage = TEXT("Unhandled exception");
@@ -1661,6 +1557,12 @@ int32 ReportCrash( LPEXCEPTION_POINTERS ExceptionInfo )
 	// (Can be called the first time from the RenderThread, then a second time from the MainThread.)
 	if (GCrashReportingThread)
 	{
+		if (GLog)
+		{
+			// Panic before reporting the crash to make sure that the logs are flushed as thoroughly as possible.
+			GLog->Panic();
+		}
+
 		if (FPlatformAtomics::InterlockedIncrement(&ReportCrashCallCount) == 1)
 		{
 			GCrashReportingThread->OnCrashed(ExceptionInfo);
@@ -1902,4 +1804,6 @@ namespace {
 
 
 
-
+#ifdef WINDOWS_PLATFORM_TYPES_GUARD
+	static_assert(false, "Missing HideWindowsPlatformTypes.h in " __FILE__ );
+#endif

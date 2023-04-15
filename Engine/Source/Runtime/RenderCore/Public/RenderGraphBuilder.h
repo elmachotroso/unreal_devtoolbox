@@ -2,17 +2,37 @@
 
 #pragma once
 
+#include "Async/TaskGraphInterfaces.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SortedMap.h"
+#include "Containers/UnrealString.h"
+#include "Containers/StridedView.h"
+#include "CoreTypes.h"
+#include "Misc/AssertionMacros.h"
+#include "MultiGPU.h"
+#include "PixelFormat.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "RHI.h"
+#include "RHIBreadcrumbs.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "RenderGraphAllocator.h"
+#include "RenderGraphBlackboard.h"
 #include "RenderGraphDefinitions.h"
 #include "RenderGraphEvent.h"
-#include "RenderGraphResources.h"
 #include "RenderGraphPass.h"
+#include "RenderGraphResources.h"
 #include "RenderGraphTrace.h"
 #include "RenderGraphValidation.h"
-#include "RenderGraphBlackboard.h"
+#include "RendererInterface.h"
 #include "ShaderParameterMacros.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-
-class FRDGLogFile;
+#include "Stats/Stats2.h"
+#include "Templates/RefCounting.h"
+#include "Templates/UnrealTemplate.h"
+#include "Tasks/Pipe.h"
 
 /** Use the render graph builder to build up a graph of passes and then call Execute() to process them. Resource barriers
  *  and lifetimes are derived from _RDG_ parameters in the pass parameter struct provided to each AddPass call. The resulting
@@ -28,8 +48,12 @@ public:
 	~FRDGBuilder();
 
 	/** Finds an RDG texture associated with the external texture, or returns null if none is found. */
-	FRDGTextureRef FindExternalTexture(FRHITexture* Texture) const;
-	FRDGTextureRef FindExternalTexture(IPooledRenderTarget* ExternalPooledTexture) const;
+	FRDGTexture* FindExternalTexture(FRHITexture* Texture) const;
+	FRDGTexture* FindExternalTexture(IPooledRenderTarget* ExternalPooledTexture) const;
+
+	/** Finds an RDG buffer associated with the external buffer, or returns null if none is found. */
+	FRDGBuffer* FindExternalBuffer(FRHIBuffer* Buffer) const;
+	FRDGBuffer* FindExternalBuffer(FRDGPooledBuffer* ExternalPooledBuffer) const;
 
 	/** Registers a external pooled render target texture to be tracked by the render graph. The name of the registered RDG texture is pulled from the pooled render target. */
 	FRDGTextureRef RegisterExternalTexture(
@@ -109,7 +133,7 @@ public:
 	// Allocation Methods
 
 	/** Allocates raw memory using an allocator tied to the lifetime of the graph. */
-	void* Alloc(uint64 SizeInBytes, uint32 AlignInBytes);
+	void* Alloc(uint64 SizeInBytes, uint32 AlignInBytes = 16);
 
 	/** Allocates POD memory using an allocator tied to the lifetime of the graph. Does not construct / destruct. */
 	template <typename PODType>
@@ -123,9 +147,25 @@ public:
 	template <typename ObjectType, typename... TArgs>
 	ObjectType* AllocObject(TArgs&&... Args);
 
+	/** Allocates a C++ array where both the array and the data are tied to the lifetime of the graph. The array itself is safe to pass into an RDG lambda. */
+	template <typename ObjectType>
+	TArray<ObjectType, FRDGArrayAllocator>& AllocArray();
+
 	/** Allocates a parameter struct with a lifetime tied to graph execution. */
 	template <typename ParameterStructType>
 	ParameterStructType* AllocParameters();
+
+	/** Allocates a parameter struct with a lifetime tied to graph execution, and copies contents from an existing parameters struct. */
+	template <typename ParameterStructType>
+	ParameterStructType* AllocParameters(ParameterStructType* StructToCopy);
+
+	/** Allocates a data-driven parameter struct with a lifetime tied to graph execution. */
+	template <typename BaseParameterStructType>
+	BaseParameterStructType* AllocParameters(const FShaderParametersMetadata* ParametersMetadata);
+
+	/** Allocates an array of data-driven parameter structs with a lifetime tied to graph execution. */
+	template <typename BaseParameterStructType>
+	TStridedView<BaseParameterStructType> AllocParameters(const FShaderParametersMetadata* ParametersMetadata, uint32 NumStructs);
 
 	//////////////////////////////////////////////////////////////////////////
 
@@ -173,6 +213,14 @@ public:
 
 	/** A hint to the builder to flush work to the RHI thread after the last queued pass on the execution timeline. */
 	void AddDispatchHint();
+
+	/** Launches a task that is synced prior to graph execution. If parallel execution is not enabled, the lambda is run immediately. */
+	template <typename TaskLambda>
+	void AddSetupTask(TaskLambda&& Task);
+
+	/** Launches a task that is synced prior to graph execution. If parallel execution is not enabled, the lambda is run immediately. */
+	template <typename TaskLambda>
+	void AddCommandListSetupTask(TaskLambda&& Task);
 
 	/** Tells the builder to delete unused RHI resources. The behavior of this method depends on whether RDG immediate mode is enabled:
 	 *   Deferred:  RHI resource flushes are performed prior to execution.
@@ -235,31 +283,34 @@ public:
 	/** (External | Extracted only) Sets the access to transition to after execution at the end of the graph. Overwrites any previously set final access. */
 	void SetBufferAccessFinal(FRDGBufferRef Buffer, ERHIAccess Access);
 
-	/** Finalizes the access of multiple resources so that they are immutable for the remainder of the graph. This immediately forces all resources into
-	 *  their finalized states. The resources cannot be used in any other state within the graph and must be used on the graphics pipe. This is designed
-	 *  for complex cases where resources are produced early in the graph and transitioned to a read-only state. Finalized access resources can be used
-	 *  outside of RDG pass parameters on any future pass without invoking RHI validation failures.
+	/** Configures the resource for external access for all subsequent passes, or until UseInternalAccessMode is called.
+	 *  Only read-only access states are allowed. When in external access mode, it is safe to access the underlying RHI
+	 *  resource directly in later RDG passes. This method is only allowed for registered or externally converted resources.
+	 *  The method effectively guarantees that RDG will transition the resource into the desired state for all subsequent
+	 *  passes so long as the resource remains externally accessible.
 	 */
-	void FinalizeResourceAccess(FRDGTextureAccessArray&& Textures, FRDGBufferAccessArray&& Buffers);
+	void UseExternalAccessMode(FRDGViewableResource* Resource, ERHIAccess ReadOnlyAccess, ERHIPipeline Pipelines = ERHIPipeline::Graphics);
 
-	inline void FinalizeTextureAccess(FRDGTextureAccessArray&& InTextures)
+	void UseExternalAccessMode(TArrayView<FRDGViewableResource* const> Resources, ERHIAccess ReadOnlyAccess, ERHIPipeline Pipelines = ERHIPipeline::Graphics)
 	{
-		FinalizeResourceAccess(Forward<FRDGTextureAccessArray&&>(InTextures), {});
+		for (FRDGViewableResource* Resource : Resources)
+		{
+			UseExternalAccessMode(Resource, ReadOnlyAccess, Pipelines);
+		}
 	}
 
-	inline void FinalizeBufferAccess(FRDGBufferAccessArray&& InBuffers)
-	{
-		FinalizeResourceAccess({}, Forward<FRDGBufferAccessArray&&>(InBuffers));
-	}
+	/** Use this method to resume tracking of a resource after calling UseExternalAccessMode. It is safe to call this method
+	 *  even if external access mode was not enabled (it will simply no-op). It is not valid to access the underlying RHI
+	 *  resource in any pass added after calling this method.
+	 */
+	void UseInternalAccessMode(FRDGViewableResource* Resource);
 
-	inline void FinalizeTextureAccess(FRDGTextureRef Texture, ERHIAccess Access)
+	inline void UseInternalAccessMode(TArrayView<FRDGViewableResource* const> Resources)
 	{
-		FinalizeResourceAccess({ FRDGTextureAccess(Texture, Access) }, {});
-	}
-
-	inline void FinalizeBufferAccess(FRDGBufferRef Buffer, ERHIAccess Access)
-	{
-		FinalizeResourceAccess({}, { FRDGBufferAccess(Buffer, Access) });
+		for (FRDGViewableResource* Resource : Resources)
+		{
+			UseInternalAccessMode(Resource);
+		}
 	}
 
 	/** Flag a resource that is produced by a pass but never used or extracted to not emit an 'unused' warning. */
@@ -271,6 +322,9 @@ public:
 
 	/** Manually ends the current GPU event scope. */
 	void EndEventScope();
+
+	/** Flushes all queued passes to an async task to perform setup work. */
+	void FlushSetupQueue();
 
 	/** Executes the queued passes, managing setting of render targets (RHI RenderPasses), resource transitions and queued texture extraction. */
 	void Execute();
@@ -288,7 +342,7 @@ public:
 	FRDGBlackboard Blackboard;
 
 #if RDG_DUMP_RESOURCES
-	static FString BeginResourceDump(const TArray<FString>& Args);
+	static FString BeginResourceDump(const TCHAR* Cmd);
 	static void InitResourceDump();
 	static void EndResourceDump();
 	static bool IsDumpingFrame();
@@ -352,13 +406,57 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		return FindExternalTexture(ExternalPooledTexture);
 	}
+
+	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
+	inline void FinalizeResourceAccess(FRDGTextureAccessArray&& InTextures, FRDGBufferAccessArray&& InBuffers)
+	{
+		for (FRDGTextureAccess Texture : InTextures)
+		{
+			UseExternalAccessMode(Texture.GetTexture(), Texture.GetAccess());
+		}
+
+		for (FRDGBufferAccess Buffer : InBuffers)
+		{
+			UseExternalAccessMode(Buffer.GetBuffer(), Buffer.GetAccess());
+		}
+	}
+
+	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
+	inline void FinalizeTextureAccess(FRDGTextureAccessArray&& InTextures)
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FinalizeResourceAccess(Forward<FRDGTextureAccessArray&&>(InTextures), {});
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
+	inline void FinalizeBufferAccess(FRDGBufferAccessArray&& InBuffers)
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FinalizeResourceAccess({}, Forward<FRDGBufferAccessArray&&>(InBuffers));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
+	inline void FinalizeTextureAccess(FRDGTextureRef Texture, ERHIAccess Access)
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FinalizeResourceAccess({ FRDGTextureAccess(Texture, Access) }, {});
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
+	inline void FinalizeBufferAccess(FRDGBufferRef Buffer, ERHIAccess Access)
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FinalizeResourceAccess({}, { FRDGBufferAccess(Buffer, Access) });
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
 	//////////////////////////////////////////////////////////////////////////
 
 private:
-	static const ERHIAccess kDefaultAccessFinal = ERHIAccess::SRVMask;
 	static const char* const kDefaultUnaccountedCSVStat;
-
-	FRHIAsyncComputeCommandListImmediate& RHICmdListAsyncCompute;
 
 	const FRDGEventName BuilderName;
 
@@ -374,19 +472,6 @@ private:
 
 	void AddProloguePass();
 
-	FORCEINLINE FRDGPassHandle ClampToPrologue(FRDGPassHandle PassHandle) const
-	{
-		// Preserve null inputs as outputs. Null is the highest value.
-		return ProloguePassHandle.GetIndexUnchecked() > PassHandle.GetIndexUnchecked() ? ProloguePassHandle : PassHandle;
-	}
-
-	FORCEINLINE FRDGPassHandlesByPipeline ClampToPrologue(FRDGPassHandlesByPipeline PassHandles) const
-	{
-		PassHandles[ERHIPipeline::Graphics]     = ClampToPrologue(PassHandles[ERHIPipeline::Graphics]);
-		PassHandles[ERHIPipeline::AsyncCompute] = ClampToPrologue(PassHandles[ERHIPipeline::AsyncCompute]);
-		return PassHandles;
-	}
-
 	FORCEINLINE FRDGPass* GetProloguePass() const
 	{
 		return ProloguePass;
@@ -395,7 +480,7 @@ private:
 	/** Returns the graph prologue pass handle. */
 	FORCEINLINE FRDGPassHandle GetProloguePassHandle() const
 	{
-		return ProloguePassHandle;
+		return FRDGPassHandle(0);
 	}
 
 	/** Returns the graph epilogue pass handle. */
@@ -477,11 +562,19 @@ private:
 	FRDGUniformBufferRegistry UniformBuffers;
 
 	/** Uniform buffers which were used in a pass. */
-	TArray<FRDGUniformBufferHandle, TInlineAllocator<32, FRDGArrayAllocator>> UniformBuffersToCreate;
+	TArray<FRDGUniformBufferHandle, FRDGArrayAllocator> UniformBuffersToCreate;
 
 	/** Tracks external resources to their registered render graph counterparts for de-duplication. */
 	TSortedMap<FRHITexture*, FRDGTexture*, FRDGArrayAllocator> ExternalTextures;
-	TSortedMap<const FRDGPooledBuffer*, FRDGBuffer*, FRDGArrayAllocator> ExternalBuffers;
+	TSortedMap<FRHIBuffer*, FRDGBuffer*, FRDGArrayAllocator> ExternalBuffers;
+
+	/** Tracks the latest RDG resource to own an alias of a pooled resource (multiple RDG resources can reference the same pooled resource). */
+	TMap<FRDGPooledTexture*, FRDGTexture*, FRDGSetAllocator> PooledTextureOwnershipMap;
+	TMap<FRDGPooledBuffer*, FRDGBuffer*, FRDGSetAllocator> PooledBufferOwnershipMap;
+
+	/** Array of all pooled references held during execution. */
+	TArray<TRefCountPtr<IPooledRenderTarget>, FRDGArrayAllocator> ActivePooledTextures;
+	TArray<TRefCountPtr<FRDGPooledBuffer>, FRDGArrayAllocator> ActivePooledBuffers;
 
 	/** Map of barrier batches begun from more than one pipe. */
 	TMap<FRDGBarrierBatchBeginId, FRDGBarrierBatchBegin*, FRDGSetAllocator> BarrierBatchMap;
@@ -489,13 +582,40 @@ private:
 	/** Set of all active barrier batch begin instances; used to create transitions. */
 	FRDGTransitionCreateQueue TransitionCreateQueue;
 
+	template <typename LambdaType>
+	UE::Tasks::FTask LaunchCompileTask(const TCHAR* Name, bool bCondition, LambdaType&& Lambda);
+
+	UE::Tasks::FPipe CompilePipe;
+
+	class FPassQueue
+	{
+	public:
+		void Push(FRDGPass* Pass)
+		{
+			Queue.Push(Pass);
+		}
+
+		template <typename LambdaType>
+		void Flush(UE::Tasks::FPipe& Pipe, const TCHAR* Name, LambdaType&& Lambda);
+
+		template <typename LambdaType>
+		void Flush(const TCHAR* Name, LambdaType&& Lambda);
+
+	private:
+		TLockFreePointerListFIFO<FRDGPass, PLATFORM_CACHE_LINE_SIZE> Queue;
+		UE::Tasks::FTask LastTask;
+	};
+
+	FPassQueue SetupPassQueue;
+
+	TArray<FRDGPassHandle, FRDGArrayAllocator> CullPassStack;
+
 	/** The epilogue and prologue passes are sentinels that are used to simplify graph logic around barriers
 	 *  and traversal. The prologue pass is used exclusively for barriers before the graph executes, while the
 	 *  epilogue pass is used for resource extraction barriers--a property that also makes it the main root of
 	 *  the graph for culling purposes. The epilogue pass is added to the very end of the pass array for traversal
 	 *  purposes. The prologue does not need to participate in any graph traversal behavior.
 	 */
-	FRDGPassHandle ProloguePassHandle;
 	FRDGPass* ProloguePass = nullptr;
 	FRDGPass* EpiloguePass = nullptr;
 
@@ -579,13 +699,11 @@ private:
 
 	TArray<FUploadedBuffer, FRDGArrayAllocator> UploadedBuffers;
 
-	struct FParallelPassSet
+	struct FParallelPassSet : public FRHICommandListImmediate::FQueuedCommandList
 	{
 		FParallelPassSet() = default;
 
 		TArray<FRDGPass*, FRDGArrayAllocator> Passes;
-		FGraphEventRef Event;
-		FRHICommandList* RHICmdList{};
 		IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbStateBegin{});
 		IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbStateEnd{});
 		int8 bInitialized = 0;
@@ -595,37 +713,59 @@ private:
 	TArray<FParallelPassSet, FRDGArrayAllocator> ParallelPassSets;
 
 	/** Array of all active parallel execute tasks. */
-	FGraphEventArray ParallelExecuteEvents;
+	TArray<UE::Tasks::FTask, FRDGArrayAllocator> ParallelExecuteEvents;
 
-	/** Array of all pooled references held during execution. */
-	FRDGPooledTextureArray ActivePooledTextures;
-	FRDGPooledBufferArray ActivePooledBuffers;
+	/** Array of all task events requested by the user. */
+	TArray<UE::Tasks::FTask, FRDGArrayAllocator> ParallelSetupEvents;
+
+	/** Tracks the final access used on resources in order to call SetTrackedAccess. */
+	TArray<FRHITrackedAccessInfo, FRDGArrayAllocator> EpilogueResourceAccesses;
+
+	/** Contains resources queued for either access mode change passes. */
+	TArray<FRDGViewableResource*, FRDGArrayAllocator> AccessModeQueue;
+	TSet<FRDGViewableResource*, DefaultKeyFuncs<FRDGViewableResource*>, FRDGSetAllocator> ExternalAccessResources;
 
 	/** Texture state used for intermediate operations. Held here to avoid re-allocating. */
-	FRDGTextureTransientSubresourceStateIndirect ScratchTextureState;
+	FRDGTextureSubresourceStateIndirect ScratchTextureState;
 
 	/** Current scope's async compute budget. This is passed on to every pass created. */
 	EAsyncComputeBudget AsyncComputeBudgetScope = EAsyncComputeBudget::EAll_4;
 	EAsyncComputeBudget AsyncComputeBudgetState = EAsyncComputeBudget(~0u);
 
+	/** Command list handle created by the parallel buffer upload task. */
+	FRHICommandList* RHICmdListBufferUploads = nullptr;
+
 	IF_RDG_CPU_SCOPES(FRDGCPUScopeStacks CPUScopeStacks);
-	IF_RDG_GPU_SCOPES(FRDGGPUScopeStacksByPipeline GPUScopeStacks);
+	FRDGGPUScopeStacksByPipeline GPUScopeStacks;
 	IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbState{});
 
 	IF_RDG_ENABLE_TRACE(FRDGTrace Trace);
 
-	bool bDispatchHint = false;
 	bool bFlushResourcesRHI = false;
 	bool bParallelExecuteEnabled = false;
+	bool bParallelSetupEnabled = false;
 
 #if RDG_ENABLE_DEBUG
 	FRDGUserValidation UserValidation;
 	FRDGBarrierValidation BarrierValidation;
-	FRDGLogFile LogFile;
 #endif
 
-	/** Tracks whether we are in a scope of adding passes to the builder. Used to avoid recursion. */
-	bool bInDebugPassScope = false;
+	/** Tracks stack counters of auxiliary passes to avoid calling them recursively. */
+	struct FAuxiliaryPass
+	{
+		uint8 Clobber = 0;
+		uint8 Visualize = 0;
+		uint8 Dump = 0;
+		uint8 FlushAccessModeQueue = 0;
+
+		bool IsDumpAllowed() const { return Dump == 0; }
+		bool IsVisualizeAllowed() const { return Visualize == 0; }
+		bool IsClobberAllowed() const { return Clobber == 0; }
+		bool IsFlushAccessModeQueueAllowed() const { return FlushAccessModeQueue == 0; }
+
+		bool IsActive() const { return Clobber > 0 || Visualize > 0 || Dump > 0 || FlushAccessModeQueue > 0; }
+
+	} AuxiliaryPasses;
 
 #if WITH_MGPU
 	/** Name for the temporal effect used to synchronize multi-frame resources. */
@@ -646,46 +786,64 @@ private:
 
 	IRHITransientResourceAllocator* TransientResourceAllocator = nullptr;
 
+	void MarkResourcesAsProduced(FRDGPass* Pass);
+
 	void Compile();
 	void Clear();
 
+	void SetRHI(FRDGTexture* Texture, IPooledRenderTarget* RenderTarget, FRDGPassHandle PassHandle);
+	void SetRHI(FRDGTexture* Texture, FRDGPooledTexture* PooledTexture, FRDGPassHandle PassHandle);
+	void SetRHI(FRDGTexture* Texture, FRHITransientTexture* TransientTexture, FRDGPassHandle PassHandle);
+	void SetRHI(FRDGBuffer* Buffer, FRDGPooledBuffer* PooledBuffer, FRDGPassHandle PassHandle);
+	void SetRHI(FRDGBuffer* Buffer, FRHITransientBuffer* TransientBuffer, FRDGPassHandle PassHandle);
+
 	void BeginResourcesRHI(FRDGPass* ResourcePass, FRDGPassHandle ExecutePassHandle);
 	void BeginResourceRHI(FRDGPassHandle, FRDGTexture* Texture);
-	void BeginResourceRHI(FRDGPassHandle, FRDGTextureSRV* SRV);
-	void BeginResourceRHI(FRDGPassHandle, FRDGTextureUAV* UAV);
 	void BeginResourceRHI(FRDGPassHandle, FRDGBuffer* Buffer);
-	void BeginResourceRHI(FRDGPassHandle, FRDGBufferSRV* SRV);
-	void BeginResourceRHI(FRDGPassHandle, FRDGBufferUAV* UAV);
-	void BeginResourceRHI(FRDGPassHandle, FRDGView* View);
 
 	void EndResourcesRHI(FRDGPass* ResourcePass, FRDGPassHandle ExecutePassHandle);
 	void EndResourceRHI(FRDGPassHandle, FRDGTexture* Texture, uint32 ReferenceCount);
 	void EndResourceRHI(FRDGPassHandle, FRDGBuffer* Buffer, uint32 ReferenceCount);
 
-	void SetupParallelExecute();
-	void DispatchParallelExecute(IRHICommandContext* RHICmdContext);
+	void InitRHI(FRDGView* View);
+	void InitRHI(FRDGBufferSRV* SRV);
+	void InitRHI(FRDGBufferUAV* UAV);
+	void InitRHI(FRDGTextureSRV* SRV);
+	void InitRHI(FRDGTextureUAV* UAV);
 
-	void SetupBufferUploads();
-	void SubmitBufferUploads();
+	void SetupParallelExecute();
+	void DispatchParallelExecute();
+
+	void PrepareBufferUploads();
+	UE::Tasks::FTask SubmitBufferUploads();
 	void BeginFlushResourcesRHI();
 	void EndFlushResourcesRHI();
 
-	void SetupPassInternal(FRDGPass* Pass, FRDGPassHandle PassHandle, ERHIPipeline PassPipeline, bool bEmptyParameters);
-	FRDGPass* SetupPass(FRDGPass* Pass);
+	void FlushAccessModeQueue();
+
 	FRDGPass* SetupEmptyPass(FRDGPass* Pass);
+	FRDGPass* SetupParameterPass(FRDGPass* Pass);
+
+	void SetupPassInternals(FRDGPass* Pass);
+	void SetupPassResources(FRDGPass* Pass);
+	void SetupAuxiliaryPasses(FRDGPass* Pass);
+	void SetupPassDependencies(FRDGPass* Pass);
+
 	void CompilePassOps(FRDGPass* Pass);
 	void ExecutePass(FRDGPass* Pass, FRHIComputeCommandList& RHICmdListPass);
 
 	void ExecutePassPrologue(FRHIComputeCommandList& RHICmdListPass, FRDGPass* Pass);
 	void ExecutePassEpilogue(FRHIComputeCommandList& RHICmdListPass, FRDGPass* Pass);
 
-	void CollectPassBarriers(FRDGPass* Pass, FRDGPassHandle PassHandle);
+	void CompilePassBarriers();
+	void CollectPassBarriers(FRDGPass* Pass);
+	void CreatePassBarriers(TFunctionRef<void()> PreWork);
 
-	void CreatePassBarriers();
-
-	void CreateUniformBuffers();
+	UE::Tasks::FTask CreateUniformBuffers();
 
 	void AddPassDependency(FRDGPassHandle ProducerHandle, FRDGPassHandle ConsumerHandle);
+	void AddPassDependency(FRDGPass* Producer, FRDGPass* Consumer);
+	void AddCullingDependency(FRDGProducerStatesByPipeline& LastProducers, const FRDGProducerState& NextState, ERHIPipeline NextPipeline);
 
 	void AddEpilogueTransition(FRDGTextureRef Texture);
 	void AddEpilogueTransition(FRDGBufferRef Buffer);
@@ -693,7 +851,7 @@ private:
 	void AddTransition(
 		FRDGPassHandle PassHandle,
 		FRDGTextureRef Texture,
-		const FRDGTextureTransientSubresourceStateIndirect& StateAfter);
+		FRDGTextureSubresourceStateIndirect& StateAfter);
 
 	void AddTransition(
 		FRDGPassHandle PassHandle,
@@ -701,7 +859,7 @@ private:
 		FRDGSubresourceState StateAfter);
 
 	void AddTransition(
-		FRDGParentResource* Resource,
+		FRDGViewableResource* Resource,
 		FRDGSubresourceState StateBefore,
 		FRDGSubresourceState StateAfter,
 		const FRHITransitionInfo& TransitionInfo);
@@ -709,12 +867,12 @@ private:
 	void AddAliasingTransition(
 		FRDGPassHandle BeginPassHandle,
 		FRDGPassHandle EndPassHandle,
-		FRDGParentResourceRef Resource,
+		FRDGViewableResource* Resource,
 		const FRHITransientAliasingInfo& Info);
 
 	bool IsTransient(FRDGTextureRef Texture) const;
 	bool IsTransient(FRDGBufferRef Buffer) const;
-	bool IsTransientInternal(FRDGParentResourceRef Resource, bool bFastVRAM) const;
+	bool IsTransientInternal(FRDGViewableResource* Resource, bool bFastVRAM) const;
 
 	FRHIRenderPassInfo GetRenderPassInfo(const FRDGPass* Pass) const;
 
@@ -735,6 +893,7 @@ private:
 #endif
 
 	friend FRDGTrace;
+	friend DynamicRenderScaling::FRDGScope;
 	friend FRDGEventScopeGuard;
 	friend FRDGGPUStatScopeGuard;
 	friend FRDGAsyncComputeBudgetScopeGuard;
@@ -771,4 +930,11 @@ private:
 	#define RDG_GPU_MASK_SCOPE(GraphBuilder, GPUMask)
 #endif
 
-#include "RenderGraphBuilder.inl"
+#include "RenderGraphBuilder.inl" // IWYU pragma: export
+
+class FRDGAsyncComputeBudgetScopeGuard;
+class FRHITransientBuffer;
+class FRHITransientTexture;
+class FShaderParametersMetadata;
+class IRHICommandContext;
+class IRHITransientResourceAllocator;

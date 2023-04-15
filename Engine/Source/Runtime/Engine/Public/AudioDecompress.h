@@ -233,7 +233,7 @@ public:
 protected:
 
 	/** Reads from the internal source audio buffer stream of the given data size. */
-	uint32	Read(void *Outbuffer, uint32 DataSize);
+	ENGINE_API uint32	Read(void *Outbuffer, uint32 DataSize);
 
 	/**
 	* Decompresses a frame of data to PCM buffer
@@ -276,7 +276,7 @@ protected:
 	 * @param[out] OutChunkSize the size of the chunk.
 	 * @return a pointer to the chunk if it's loaded, nullptr otherwise.
 	 */
-	const uint8* GetLoadedChunk(const FSoundWaveProxyPtr& InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize);
+	ENGINE_API const uint8* GetLoadedChunk(const FSoundWaveProxyPtr& InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize);
 
 	/** bool set before ParseHeader. Whether we are streaming a file or not. */
 	bool bIsStreaming;
@@ -330,6 +330,37 @@ protected:
 	int32 StreamSeekBlockOffset;
 };
 
+struct IAudioInfoFactory 
+{	
+	virtual ~IAudioInfoFactory() = default;
+	virtual ICompressedAudioInfo* Create() = 0;	
+};
+struct ENGINE_API IAudioInfoFactoryRegistry
+{
+	static IAudioInfoFactoryRegistry& Get();
+	virtual ~IAudioInfoFactoryRegistry() = default;
+	virtual void Register(IAudioInfoFactory*, FName) = 0;
+	virtual void Unregister(IAudioInfoFactory*, FName) = 0;
+	virtual IAudioInfoFactory* Find(FName InName) const = 0;
+};
+
+class FSimpleAudioInfoFactory : public IAudioInfoFactory
+{
+public:
+	FSimpleAudioInfoFactory(TFunction<ICompressedAudioInfo*(void)> InLambda, FName InFormatName)
+	:  CreateLamda(InLambda), FormatName(InFormatName)
+	{
+		IAudioInfoFactoryRegistry::Get().Register(this, FormatName);
+	}
+	virtual ~FSimpleAudioInfoFactory() 
+	{
+		IAudioInfoFactoryRegistry::Get().Unregister(this, FormatName);
+	}
+	virtual ICompressedAudioInfo* Create() override { return CreateLamda(); }
+private:
+	TFunction<ICompressedAudioInfo* ()> CreateLamda;
+	FName FormatName;
+};
 
 /**
  * Asynchronous audio decompression

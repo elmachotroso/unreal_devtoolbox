@@ -5,7 +5,7 @@
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/Point.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 struct FSurfacicSampling
@@ -13,7 +13,7 @@ struct FSurfacicSampling
 	bool bWithNormals = false;
 	TArray<FPoint2D> Points2D;
 	TArray<FPoint> Points3D;
-	TArray<FVector> Normals;
+	TArray<FVector3f> Normals;
 
 	int32 Count()
 	{
@@ -42,7 +42,7 @@ struct FSurfacicSampling
 
 	void NormalizeNormals()
 	{
-		for (FVector& Normal : Normals)
+		for (FVector3f& Normal : Normals)
 		{
 			Normal.Normalize();
 		}
@@ -61,4 +61,4 @@ struct FSurfacicSampling
 	}
 };
 
-} // ns CADKernel
+} // ns UE::CADKernel

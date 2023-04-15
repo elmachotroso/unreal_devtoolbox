@@ -3,26 +3,28 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/TVariant.h"
-#include "MovieSceneSequenceID.h"
-#include "Evaluation/MovieSceneEvaluationKey.h"
-#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStateTypes.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
 #include "EntitySystem/TrackInstance/MovieSceneTrackInstance.h"
+#include "Evaluation/MovieSceneEvaluationKey.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStateTypes.h"
+#include "Misc/TVariant.h"
+#include "MovieSceneSequenceID.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-struct FMovieSceneSequenceID;
-struct FMovieSceneEvaluationKey;
-
-class UObject;
-class UMovieSceneTrackInstance;
-class UMovieSceneEntitySystemLinker;
 class FMovieScenePreAnimatedState;
+class UMovieSceneEntitySystemLinker;
+class UMovieSceneTrackInstance;
+class UObject;
+struct FMovieSceneEvaluationKey;
+struct FMovieSceneSequenceID;
+struct FMovieSceneTrackInstanceInput;
 
 namespace UE
 {
 namespace MovieScene
 {
 
+struct FPreAnimatedStateExtension;
 struct FPreAnimatedStateMetaData;
 
 }
@@ -69,12 +71,14 @@ struct FScopedPreAnimatedCaptureSource
 
 private:
 
+	friend class FMovieSceneEntitySystemRunner;
+	friend struct UE::MovieScene::FPreAnimatedStateExtension;
+
 	static FScopedPreAnimatedCaptureSource*& GetCaptureSourcePtr();
 
 	void BeginTracking(const UE::MovieScene::FPreAnimatedStateMetaData& MetaData, UMovieSceneEntitySystemLinker* Linker);
-	UE::MovieScene::FInstanceHandle GetRootInstanceHandle(UMovieSceneEntitySystemLinker* Linker) const;
+	UE::MovieScene::FRootInstanceHandle GetRootInstanceHandle(UMovieSceneEntitySystemLinker* Linker) const;
 
-	friend UE::MovieScene::FPreAnimatedStateExtension;
 	struct FEvalHookType
 	{
 		const UObject* EvalHook;
@@ -83,6 +87,7 @@ private:
 	using CaptureSourceType = TVariant<FMovieSceneEvaluationKey, FEvalHookType, UMovieSceneTrackInstance*, FMovieSceneTrackInstanceInput>;
 
 	CaptureSourceType Variant;
+	TWeakObjectPtr<UMovieSceneEntitySystemLinker> WeakLinker;
 	FMovieScenePreAnimatedState* OptionalSequencePreAnimatedState;
 	FScopedPreAnimatedCaptureSource* PrevCaptureSource;
 	bool bWantsRestoreState;

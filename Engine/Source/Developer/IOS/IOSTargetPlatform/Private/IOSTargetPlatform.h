@@ -65,6 +65,8 @@ public:
 
 	virtual void GetAllTargetedShaderFormats( TArray<FName>& OutFormats ) const override;
 
+	virtual void GetPlatformSpecificProjectAnalytics( TArray<struct FAnalyticsEventAttribute>& AnalyticsParamArray ) const override;
+
 #if WITH_ENGINE
 	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override;
 
@@ -85,9 +87,6 @@ public:
 	{
 		TextureLODSettings = InTextureLODSettings;
 	}
-
-	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override;
-	virtual void GetAllWaveFormats(TArray<FName>& OutFormat) const override;
 
 #endif // WITH_ENGINE
 
@@ -114,6 +113,7 @@ public:
 	{
 		return bDistanceField;
 	}
+
 private:
 
 	// Handles received pong messages from the LauncherDaemon.
@@ -133,8 +133,14 @@ private:
 	// Holds the message endpoint used for communicating with the LaunchDaemon.
 	TSharedPtr<FMessageEndpoint, ESPMode::ThreadSafe> MessageEndpoint;
 
+	// r.Mobile.ShadingPath value
+	int32 MobileShadingPath;
+
 	// true if DistanceField is enabled
 	bool bDistanceField;
+
+	// r.Mobile.Forward.EnableClusteredReflections value
+	bool bMobileForwardEnableClusteredReflections;
 
 #if WITH_ENGINE
 	// Holds the cache of the target LOD settings.

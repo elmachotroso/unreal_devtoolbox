@@ -1,41 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CADKernel/Core/Types.h"
 #include "CADKernel/Core/System.h"
+#include "CADKernel/Core/Types.h"
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/Point.h"
 #include "CADKernel/UI/Visu.h"
 
 class FString;
-namespace CADKernel
+
+namespace UE::CADKernel
 {
 
-class FAABB;
 class FAABB2D;
+class FAABB;
 class FBody;
 class FCurve;
-class FRestrictionCurve;
-class FTopologicalEdge;
+class FEdgeMesh;
 class FEdgeMesh;
 class FEntity;
+class FFaceMesh;
+class FFaceMesh;
 class FGroup;
 class FMesh;
-
-class FVertexMesh;
-class FEdgeMesh;
-class FFaceMesh;
-class FModelMesh;
-
 class FModel;
+class FModelMesh;
+class FRestrictionCurve;
 class FShell;
 class FSurface;
-class FFaceMesh;
+class FTopologicalEdge;
 class FTopologicalFace;
 class FTopologicalLoop;
 class FTopologicalVertex;
 class FVertexMesh;
-
+class FVertexMesh;
 struct FLinearBoundary;
 
 #ifdef CADKERNEL_DEV
@@ -228,7 +226,7 @@ void DisplayOrientedPolyline(const TArray<TPoint>& Points, EVisuProperty Propert
 	Open3DDebugSegment(0);
 	for (int32 Index = 1; Index < Points.Num(); ++Index)
 	{
-		DisplaySegment(Points[Index-1], Points[Index], Index, Property, true);
+		DisplaySegment(Points[Index - 1], Points[Index], Index, Property, true);
 	}
 	Close3DDebugSegment();
 }
@@ -268,5 +266,5 @@ void DrawSegmentOrientation(const TPoint& Point1, const TPoint& Point2, EVisuPro
 CADKERNEL_API void DrawIsoCurves(const FTopologicalFace& Face);
 
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

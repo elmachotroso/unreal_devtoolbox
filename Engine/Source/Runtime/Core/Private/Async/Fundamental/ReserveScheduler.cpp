@@ -1,7 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Async/Fundamental/ReserveScheduler.h"
+
+#include "Async/Fundamental/LocalQueue.h"
+#include "Async/Fundamental/Scheduler.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/ScopeLock.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Trace/Trace.h"
+
+extern CORE_API bool GTaskGraphUseDynamicPrioritization;
 
 namespace LowLevelTasks
 {
@@ -10,30 +18,32 @@ FReserveScheduler FReserveScheduler::Singleton;
 
 TUniquePtr<FThread> FReserveScheduler::CreateWorker(FThread::EForkable IsForkable, FSchedulerTls::FLocalQueueType* WorkerLocalQueue, EThreadPriority Priority)
 {
+	FYieldedWork* ReserveEvent = new FYieldedWork;
+	ReserveEvents.Emplace(ReserveEvent);
+
 	uint32 WorkerId = NextWorkerId++;
 	return MakeUnique<FThread>
 	(
 		*FString::Printf(TEXT("Reserve Worker #%d"), WorkerId),
-		[this, WorkerLocalQueue]
+		[this, WorkerLocalQueue, ReserveEvent]
 		{
 			FSchedulerTls::ActiveScheduler = this;
 			FSchedulerTls::LocalQueue = WorkerLocalQueue;
 
-			FYieldedWork ReserveEvent;
 			while (true)
 			{
-				EventStack.Push(&ReserveEvent);
-				ReserveEvent.SleepEvent->Wait();
+				EventStack.Push(ReserveEvent);
+				ReserveEvent->SleepEvent->Wait();
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(FReserveScheduler::BusyWaitUntil);
-					FSchedulerTls::WorkerType = ReserveEvent.bPermitBackgroundWork ? FSchedulerTls::EWorkerType::Background : FSchedulerTls::EWorkerType::Foreground;
+					FSchedulerTls::WorkerType = ReserveEvent->bPermitBackgroundWork ? FSchedulerTls::EWorkerType::Background : FSchedulerTls::EWorkerType::Foreground;
 
 					if (ActiveWorkers.load(std::memory_order_relaxed) == 0)
 					{
 						break;
 					}
 
-					BusyWaitUntil(MoveTemp(ReserveEvent.CompletedDelegate), ReserveEvent.bPermitBackgroundWork);
+					BusyWaitUntil(MoveTemp(ReserveEvent->CompletedDelegate), ReserveEvent->bPermitBackgroundWork);
 				}
 			}
 			FSchedulerTls::WorkerType = EWorkerType::None;
@@ -63,6 +73,8 @@ void FReserveScheduler::StartWorkers(FScheduler& MainScheduler, uint32 NumWorker
 		NumWorkers = FMath::Min(FPlatformMisc::NumberOfWorkerThreadsToSpawn(), 64);
 	}
 
+	WorkerPriority = GTaskGraphUseDynamicPrioritization ? MainScheduler.GetWorkerPriority() : WorkerPriority;
+
 	uint32 OldActiveWorkers = ActiveWorkers.load(std::memory_order_relaxed);
 	if(OldActiveWorkers == 0 && FPlatformProcess::SupportsMultithreading() && ActiveWorkers.compare_exchange_strong(OldActiveWorkers, NumWorkers, std::memory_order_relaxed))
 	{
@@ -88,9 +100,14 @@ void FReserveScheduler::StopWorkers()
 	if(OldActiveWorkers != 0 && ActiveWorkers.compare_exchange_strong(OldActiveWorkers, 0, std::memory_order_relaxed))
 	{
 		FScopeLock Lock(&WorkerThreadsCS);
-		while (FYieldedWork* Event = EventStack.Pop()) 
+
+		for (TUniquePtr<FYieldedWork>& Event : ReserveEvents)
 		{
 			Event->SleepEvent->Trigger();
+		}
+
+		while (FYieldedWork* Event = EventStack.Pop())
+		{
 		}
 
 		for (TUniquePtr<FThread>& Thread : WorkerThreads)
@@ -100,6 +117,7 @@ void FReserveScheduler::StopWorkers()
 		NextWorkerId = 0;
 		WorkerThreads.Reset();
 		WorkerLocalQueues.Reset();
+		ReserveEvents.Reset();
 	}
 }
 

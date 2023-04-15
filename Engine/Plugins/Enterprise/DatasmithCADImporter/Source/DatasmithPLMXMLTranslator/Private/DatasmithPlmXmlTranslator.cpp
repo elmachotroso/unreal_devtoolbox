@@ -18,16 +18,21 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogDatasmithXMLPLMTranslator, Log, All)
 
-
 void FDatasmithPlmXmlTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
 #if WITH_EDITOR
 	if (GIsEditor && !GEditor->PlayWorld && !GIsPlayInEditorWorld)
 	{
-		if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Unavailable)
+		TFunction<bool()> GetCADInterfaceAvailability = []() -> bool
 		{
-			UE_LOG(LogDatasmithXMLPLMTranslator, Warning, TEXT("CAD Interface module is unavailable. Most of CAD formats (except to Rhino and Alias formats) cannot be imported."));
-		}
+			if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Unavailable)
+			{
+				UE_LOG(LogDatasmithXMLPLMTranslator, Warning, TEXT("CAD Interface module is unavailable. Most of CAD formats (except to Rhino and Alias formats) cannot be imported."));
+				return false;
+			}
+			return true;
+		};
+		static bool bIsCADInterfaceAvailable = GetCADInterfaceAvailability();
 
 		OutCapabilities.bIsEnabled = true;
 		OutCapabilities.bParallelLoadStaticMeshSupported = true;
@@ -61,7 +66,7 @@ bool FDatasmithPlmXmlTranslator::LoadScene(TSharedRef<IDatasmithScene> OutScene)
     Importer = MakeUnique<FDatasmithPlmXmlImporter>(OutScene);
 
 	const FString& FilePath = GetSource().GetSourceFile();
-	if (!Importer->OpenFile(FilePath, GetSource(), CommonTessellationOptionsPtr->Options))
+	if (!Importer->OpenFile(FilePath, GetSource(), CommonTessellationOptions))
 	{
 		return false;
 	}
@@ -88,22 +93,22 @@ bool FDatasmithPlmXmlTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshE
 	return false;
 }
 
-void FDatasmithPlmXmlTranslator::GetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithPlmXmlTranslator::GetSceneImportOptions(TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	if (!CommonTessellationOptionsPtr.IsValid())
-	{
-		CommonTessellationOptionsPtr = Datasmith::MakeOptions<UDatasmithCommonTessellationOptions>();
-	}
+	TObjectPtr<UDatasmithCommonTessellationOptions> CommonTessellationOptionsPtr = Datasmith::MakeOptionsObjectPtr<UDatasmithCommonTessellationOptions>();
+
+	CommonTessellationOptionsPtr->Options = CommonTessellationOptions;
+
 	Options.Add(CommonTessellationOptionsPtr);
 }
 
-void FDatasmithPlmXmlTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
+void FDatasmithPlmXmlTranslator::SetSceneImportOptions(const TArray<TObjectPtr<UDatasmithOptionsBase>>& Options)
 {
-	for (const TStrongObjectPtr<UDatasmithOptionsBase>& OptionPtr : Options)
+	for (const TObjectPtr<UDatasmithOptionsBase>& OptionPtr : Options)
 	{
-		if (UDatasmithCommonTessellationOptions* TessellationOptionsObject = Cast<UDatasmithCommonTessellationOptions>(OptionPtr.Get()))
+		if (UDatasmithCommonTessellationOptions* TessellationOptionsObject = Cast<UDatasmithCommonTessellationOptions>(OptionPtr))
 		{
-			CommonTessellationOptionsPtr.Reset(TessellationOptionsObject);
+			CommonTessellationOptions = TessellationOptionsObject->Options;
 		}
 	}
 }

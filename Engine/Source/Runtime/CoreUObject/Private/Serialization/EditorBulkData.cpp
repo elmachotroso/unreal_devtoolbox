@@ -9,14 +9,19 @@
 #include "Misc/PackageSegment.h"
 #include "Misc/SecureHash.h"
 #include "Misc/ScopeLock.h"
+#include "ProfilingDebugging/CountersTrace.h"
 #include "Serialization/BulkData.h"
 #include "Serialization/BulkDataRegistry.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/LinkerSave.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectSaveContext.h"
+#include "UObject/ObjectVersion.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/SavePackage.h"
 #include "Virtualization/VirtualizationSystem.h"
+#include "Virtualization/VirtualizationTypes.h"
 
 //#if WITH_EDITORONLY_DATA
 
@@ -36,9 +41,12 @@
 	#define UE_CORRUPTED_DATA_SEVERITY Error
 #endif // VBD_CORRUPTED_PAYLOAD_IS_FATAL
 
+TRACE_DECLARE_INT_COUNTER(EditorBulkData_PayloadDataLoaded, TEXT("EditorBulkData/PayloadDataLoaded"));
+TRACE_DECLARE_INT_COUNTER(EditorBulkData_PayloadDataPulled, TEXT("EditorBulkData/PayloadDatPulled"));
+
 namespace UE::Serialization
 {
-/** This console variable should only exist for testing */
+/** This is an experimental code path and is not expected to be used in production! */
 static TAutoConsoleVariable<bool> CVarShouldLoadFromSidecar(
 	TEXT("Serialization.LoadFromSidecar"),
 	false,
@@ -52,11 +60,6 @@ static TAutoConsoleVariable<bool> CVarShouldLoadFromTrailer(
 	TEXT("Serialization.LoadFromTrailer"),
 	false,
 	TEXT("When true FEditorBulkData will load payloads via the package trailer rather than the package itself"));
-
-static TAutoConsoleVariable<bool> CVarShouldValidatePayload(
-	TEXT("Serialization.ValidatePayloads"),
-	false,
-	TEXT("When true FEditorBulkData validate any payload loaded from the sidecar file"));
 
 static TAutoConsoleVariable<bool> CVarShouldAllowSidecarSyncing(
 	TEXT("Serialization.AllowSidecarSyncing"),
@@ -117,11 +120,11 @@ static void LogPackageOpenFailureMessage(const FPackagePath& PackagePath, EPacka
 	{
 		TCHAR SystemErrorMsg[2048] = { 0 };
 		FPlatformMisc::GetSystemErrorMessage(SystemErrorMsg, sizeof(SystemErrorMsg), SystemError);
-		UE_LOG(LogSerialization, Error, TEXT("Could not open the file '%s' for reading due to system error: '%s' (%d))"), *PackagePath.GetDebugNameWithExtension(PackageSegment), SystemErrorMsg, SystemError);
+		UE_LOG(LogSerialization, Error, TEXT("Could not open the file '%s' for reading due to system error: '%s' (%d))"), *PackagePath.GetLocalFullPath(PackageSegment), SystemErrorMsg, SystemError);
 	}
 	else
 	{
-		UE_LOG(LogSerialization, Error, TEXT("Could not open (%s) to read FEditorBulkData with an unknown error"), *PackagePath.GetDebugNameWithExtension(PackageSegment));
+		UE_LOG(LogSerialization, Error, TEXT("Could not open (%s) to read FEditorBulkData with an unknown error"), *PackagePath.GetLocalFullPath(PackageSegment));
 	}
 }
 
@@ -181,10 +184,8 @@ static const FPackageTrailer* GetTrailerFromOwner(UObject* Owner)
 }
 
 /** Utility for finding the package path associated with a given UObject */
-static FPackagePath GetPackagePathFromOwner(UObject* Owner, EPackageSegment& OutPackageSegment)
+static FPackagePath GetPackagePathFromOwner(UObject* Owner)
 {
-	OutPackageSegment = EPackageSegment::Header;
-
 	const FLinkerLoad* Linker = GetLinkerLoadFromOwner(Owner);
 
 	if (Linker != nullptr)
@@ -195,6 +196,46 @@ static FPackagePath GetPackagePathFromOwner(UObject* Owner, EPackageSegment& Out
 	{
 		return FPackagePath();
 	}
+}
+
+/** Utility for finding a valid debug name to print from the owning UObject */
+FString GetDebugNameFromOwner(UObject* Owner)
+{
+	if (Owner != nullptr)
+	{
+		return Owner->GetFullName();
+	}
+	else
+	{
+		return FString(TEXT("Unknown"));
+	}
+}
+
+/** 
+ * Utility to check if we need to generate a new unique identifier for the editor bulkdata or not.
+ * At the moment the instancing context (if any) can request that we generate new guids. At the time
+ * of writing the use case for this is creating a new map from a template, and the bulkdata is being
+ * loaded from the template as we don't want every map created from the template to have the same 
+ * identifiers.
+ * The second use case is if we are loading the editor bulkdata to a transient package, which can 
+ * occur when some assets duplicate a number of UObjects from a template package that will eventually
+ * be added to themselves. The duplication will load the editor bulkdata to a transient package before
+ * it is re-parented.
+ */
+bool ShouldGenerateNewIdentifier(FLinkerLoad* LinkerLoad, UObject* Owner)
+{
+	if (LinkerLoad && LinkerLoad->GetInstancingContext().ShouldRegenerateUniqueBulkDataGuids())
+	{
+		return true;
+	}
+
+	UPackage* Package = Owner != nullptr ? Owner->GetPackage() : nullptr;
+	if (Package != nullptr && Package->HasAnyFlags(RF_Transient))
+	{
+		return true;
+	}
+
+	return false;
 }
 
 /** Utility for hashing a payload, will return a default FIoHash if the payload is invalid or of zero length */
@@ -254,6 +295,31 @@ void UpdateArchiveData(FArchive& Ar, int64 DataPosition, DataType& Data)
 	Ar << Data;
 
 	Ar.Seek(OriginalPosition);
+}
+
+FArchive& operator<<(FArchive& Ar, FSharedBuffer& Buffer)
+{
+	if (Ar.IsLoading())
+	{
+		int64 BufferLength;
+		Ar << BufferLength;
+
+		FUniqueBuffer MutableBuffer = FUniqueBuffer::Alloc(BufferLength);
+
+		Ar.Serialize(MutableBuffer.GetData(), BufferLength);
+
+		Buffer = MutableBuffer.MoveToShared();
+	}
+	else if (Ar.IsSaving())
+	{
+		int64 BufferLength = (int64)Buffer.GetSize();
+		Ar << BufferLength;
+
+		// Need to remove const due to FArchive API
+		Ar.Serialize(const_cast<void*>(Buffer.GetData()), BufferLength);
+	}
+
+	return Ar;
 }
 
 /** Utility for accessing IVirtualizationSourceControlUtilities from the modular feature system. */
@@ -367,13 +433,12 @@ FEditorBulkData& FEditorBulkData::operator=(FEditorBulkData&& Other)
 	PayloadSize = MoveTemp(Other.PayloadSize);
 	OffsetInFile = MoveTemp(Other.OffsetInFile);
 	PackagePath = MoveTemp(Other.PackagePath);
-	PackageSegment = MoveTemp(Other.PackageSegment);
 	Flags = MoveTemp(Other.Flags);
 	CompressionSettings = MoveTemp(Other.CompressionSettings);
 
 	Other.Reset();
 
-	Register(nullptr);
+	Register(nullptr, TEXT("operator=(FEditorBulkData &&)"), false /* bAllowUpdateId */);
 
 	return *this;
 }
@@ -414,11 +479,10 @@ FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 	PayloadSize = Other.PayloadSize;
 	OffsetInFile = Other.OffsetInFile;
 	PackagePath = Other.PackagePath;
-	PackageSegment = Other.PackageSegment;
 	Flags = Other.Flags;
 	CompressionSettings = Other.CompressionSettings;
 
-	EnumRemoveFlags(Flags, EFlags::TransientFlags);
+	EnumRemoveFlags(Flags, TransientFlags);
 
 	if (bTornOff)
 	{
@@ -426,19 +490,20 @@ FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 	}
 	else
 	{
-		Register(nullptr);
+		Register(nullptr, TEXT("operator=(const FEditorBulkData&)"), false /* bAllowUpdateId */);
 	}
 	return *this;
 }
 
 FEditorBulkData::~FEditorBulkData()
 {
-	if (AttachedAr != nullptr)
+	if (HasAttachedArchive())
 	{
 		AttachedAr->DetachBulkData(this, false);
+		AttachedAr = nullptr;
 	}
 
-	Unregister();
+	OnExitMemory();
 }
 
 FEditorBulkData::FEditorBulkData(const FEditorBulkData& Other, ETornOff)
@@ -453,27 +518,9 @@ void FEditorBulkData::TearOff()
 	EnumAddFlags(Flags, EFlags::IsTornOff);
 }
 
-void FEditorBulkData::Register(UObject* Owner)
+void FEditorBulkData::UpdateRegistrationOwner(UObject* Owner)
 {
-#if WITH_EDITOR
-	if (BulkDataId.IsValid() && PayloadSize > 0 && !EnumHasAnyFlags(Flags, EFlags::IsTornOff))
-	{
-		IBulkDataRegistry::Get().Register(Owner ? Owner->GetPackage() : nullptr, *this);
-		EnumAddFlags(Flags, EFlags::HasRegistered);
-	}
-#endif
-}
-
-void FEditorBulkData::Unregister()
-{
-#if WITH_EDITOR
-	if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
-	{
-		check(!EnumHasAnyFlags(Flags, EFlags::IsTornOff));
-		IBulkDataRegistry::Get().OnExitMemory(*this);
-		EnumRemoveFlags(Flags, EFlags::HasRegistered);
-	}
-#endif
+	UpdateRegistrationData(Owner, TEXT("UpdateRegistrationOwner"), false /* bAllowUpdateId */);
 }
 
 static FGuid CreateUniqueGuid(const FGuid& NonUniqueGuid, const UObject* Owner, const TCHAR* DebugName)
@@ -501,19 +548,187 @@ static FGuid CreateUniqueGuid(const FGuid& NonUniqueGuid, const UObject* Owner, 
 	}
 }
 
-void FEditorBulkData::CreateFromBulkData(FUntypedBulkData& InBulkData, const FGuid& InGuid, UObject* Owner)
+void FEditorBulkData::Register(UObject* Owner, const TCHAR* ErrorLogCaller, bool bAllowUpdateId)
+{
+#if WITH_EDITOR
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::Register);
+
+	if (BulkDataId.IsValid() && PayloadSize > 0 && !EnumHasAnyFlags(Flags, EFlags::IsTornOff))
+	{
+		UPackage* OwnerPackage = Owner ? Owner->GetPackage() : nullptr;
+		UE::BulkDataRegistry::ERegisterResult Result = IBulkDataRegistry::Get().TryRegister(OwnerPackage, *this);
+		if (Result == UE::BulkDataRegistry::ERegisterResult::Success)
+		{
+			EnumAddFlags(Flags, EFlags::HasRegistered);
+		}
+		else
+		{
+			UE::BulkDataRegistry::ERegisterResult SecondResult = UE::BulkDataRegistry::ERegisterResult::InvalidResultCode;
+			if (Result == UE::BulkDataRegistry::ERegisterResult::AlreadyExists && bAllowUpdateId)
+			{
+				FGuid OldBulkDataId(BulkDataId);
+				BulkDataId = CreateUniqueGuid(OldBulkDataId, Owner, TEXT("BulkDataRegistryGuidCollision"));
+				SecondResult = IBulkDataRegistry::Get().TryRegister(OwnerPackage, *this);
+				if (SecondResult == UE::BulkDataRegistry::ERegisterResult::Success)
+				{
+					EnumAddFlags(Flags, EFlags::HasRegistered);
+					LogRegisterError(Result, Owner, OldBulkDataId, ErrorLogCaller, true/* bHandledByCreateUniqueGuid */);
+				}
+				else
+				{
+					BulkDataId = OldBulkDataId;
+				}
+			}
+			if (SecondResult != UE::BulkDataRegistry::ERegisterResult::Success)
+			{
+				LogRegisterError(Result, Owner, BulkDataId, ErrorLogCaller, false /* bHandledByCreateUniqueGuid */);
+			}
+		}
+	}
+#endif
+}
+
+void FEditorBulkData::OnExitMemory()
+{
+#if WITH_EDITOR
+	if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
+	{
+		check(!EnumHasAnyFlags(Flags, EFlags::IsTornOff));
+		IBulkDataRegistry::Get().OnExitMemory(*this);
+		EnumRemoveFlags(Flags, EFlags::HasRegistered);
+	}
+#endif
+}
+
+void FEditorBulkData::Unregister()
+{
+#if WITH_EDITOR
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::Unregister);
+
+	if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
+	{
+		check(!EnumHasAnyFlags(Flags, EFlags::IsTornOff));
+		IBulkDataRegistry::Get().Unregister(*this);
+		EnumRemoveFlags(Flags, EFlags::HasRegistered);
+	}
+#endif
+}
+
+void FEditorBulkData::UpdateRegistrationData(UObject* Owner, const TCHAR* ErrorLogCaller, bool bAllowUpdateId)
+{
+#if WITH_EDITOR
+	UPackage* OwnerPackage = Owner ? Owner->GetPackage() : nullptr;
+	bool bShouldRegister = BulkDataId.IsValid() && PayloadSize > 0 && !EnumHasAnyFlags(Flags, EFlags::IsTornOff);
+	if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
+	{
+		if (bShouldRegister)
+		{
+			IBulkDataRegistry::Get().UpdateRegistrationData(OwnerPackage, *this);
+		}
+		else
+		{
+			Unregister();
+		}
+	}
+	else
+	{
+		if (bShouldRegister)
+		{
+			Register(Owner, ErrorLogCaller, bAllowUpdateId);
+		}
+	}
+#endif
+}
+
+void FEditorBulkData::LogRegisterError(UE::BulkDataRegistry::ERegisterResult Value, UObject* Owner,
+	const FGuid& FailedBulkDataId, const TCHAR* CallerName, bool bHandledByCreateUniqueGuid) const
+{
+#if WITH_EDITOR
+	if (Value == UE::BulkDataRegistry::ERegisterResult::Success)
+	{
+		return;
+	}
+	bool bMessageLogged = false;
+	FString OwnerPathName = Owner ? Owner->GetPathName() : TEXT("<unknown>");
+	UPackage* OwnerPackage = Owner ? Owner->GetPackage() : nullptr;
+	CallerName = CallerName ? CallerName : TEXT("<unknown>");
+	if (Value == UE::BulkDataRegistry::ERegisterResult::AlreadyExists)
+	{
+		FEditorBulkData OtherBulkData;
+		FName OtherOwnerPackageFName;
+		bool bOtherExists = IBulkDataRegistry::Get().TryGetBulkData(FailedBulkDataId, &OtherBulkData, &OtherOwnerPackageFName);
+		FString OtherOwnerPackageName = !OtherOwnerPackageFName.IsNone() ? OtherOwnerPackageFName.ToString() : TEXT("<unknown>");
+
+		if (bHandledByCreateUniqueGuid)
+		{
+			if (UE::SavePackageUtilities::OnAddResaveOnDemandPackage.IsBound() && OwnerPackage)
+			{
+				static FName BulkDataDuplicatesSystemName(TEXT("BulkDataDuplicates"));
+				UE::SavePackageUtilities::OnAddResaveOnDemandPackage.Execute(BulkDataDuplicatesSystemName, OwnerPackage->GetFName());
+				UE_LOG(LogBulkDataRegistry, Display, TEXT("AddPackageToResave %s: BulkData %s collided with an ID in package %s."),
+					*OwnerPathName, *FailedBulkDataId.ToString(), *OtherOwnerPackageName);
+			}
+			else
+			{
+				FString SilenceWarningMessage;
+				if (OwnerPackage)
+				{
+					// More notes on silencing the warning:
+					// 1) Resaveondemand does not yet work for startup packages. If the warning is coming from startup packages, run ResavePackagesCommandlet with
+					// argument "-package=<PackageName>" for each warned package.
+					// 2) The guid will only be updated on resave if both packages contributing to the collision are loaded during the resave.
+					SilenceWarningMessage = FString::Printf(TEXT(" To silence this warning, run the ResavePackagesCommandlet with ")
+						TEXT("\"-autocheckout -resaveondemand=bulkdataduplicates -SaveAll -Package=%s -Package=%s\"."),
+						*FPackageName::ObjectPathToPackageName(OwnerPathName), *OtherOwnerPackageName);
+				}
+				// Suppress the warning by default for now. Once we have eliminated all sources of duplication, turn it back on, but allow
+				// projects to suppress the warning even then because they might not be able to resave packages during an integration
+				bool bSuppressWarning = true; 
+				GConfig->GetBool(TEXT("CookSettings"), TEXT("BulkDataRegistrySuppressDuplicateWarning"), bSuppressWarning, GEditorIni);
+				FString LogMessage = FString::Printf(TEXT("%s updated BulkData %s on load because it collided with an ID in package %s.%s"),
+					*OwnerPathName, *FailedBulkDataId.ToString(), *OtherOwnerPackageName, *SilenceWarningMessage);
+				if (bSuppressWarning)
+				{
+					UE_LOG(LogBulkDataRegistry, Verbose, TEXT("%s"), *LogMessage);
+				}
+				else
+				{
+					UE_LOG(LogBulkDataRegistry, Warning, TEXT("%s"), *LogMessage);
+				}
+			}
+			bMessageLogged = true;
+		}
+		else if (bOtherExists)
+		{
+			UE_LOG(LogBulkDataRegistry, Warning,
+				TEXT("%s failed to register BulkData %s from %s in the BulkDataRegistry: it already exists with owner %s.\n")
+				TEXT("            Payload: %s\n")
+				TEXT("    ExistingPayload: %s"),
+				*OwnerPathName, *FailedBulkDataId.ToString(), CallerName, *OtherOwnerPackageName,
+				*WriteToString<64>(GetPayloadId()), *WriteToString<64>(OtherBulkData.GetPayloadId()));
+			bMessageLogged = true;
+		}
+	}
+	if (!bMessageLogged)
+	{
+		UE_LOG(LogBulkDataRegistry, Warning,
+			TEXT("%s failed to register BulkData %s from %s in the BulkDataRegistry: %s."),
+			*OwnerPathName, *FailedBulkDataId.ToString(), CallerName, LexToString(Value));
+	}
+#endif
+}
+
+
+void FEditorBulkData::CreateFromBulkData(FBulkData& InBulkData, const FGuid& InGuid, UObject* Owner)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::CreateFromBulkData);
-	
-	checkf(!BulkDataId.IsValid(), 
-		TEXT("Calling ::CreateFromBulkData on a bulkdata object that already has a valid identifier! Package: '%s'"),
-		*InBulkData.GetPackagePath().GetDebugName());
 
 	Reset();
 
 #if UE_ALLOW_LINKERLOADER_ATTACHMENT
+	check(!HasAttachedArchive());
 	AttachedAr = InBulkData.AttachedAr;
-	if (AttachedAr != nullptr)
+	if (HasAttachedArchive())
 	{
 		AttachedAr->AttachBulkData(this);
 	}
@@ -523,15 +738,14 @@ void FEditorBulkData::CreateFromBulkData(FUntypedBulkData& InBulkData, const FGu
 	bool bWasKeyGuidDerived = false;
 	if (InBulkData.GetBulkDataSize() > 0)
 	{
-		BulkDataId = CreateUniqueGuid(InGuid, Owner, *InBulkData.GetPackagePath().GetDebugName());
+		BulkDataId = CreateUniqueGuid(InGuid, Owner, *InBulkData.GetDebugName());
 		PayloadContentId = GuidToIoHash(BulkDataId);
 		bWasKeyGuidDerived = true;
 	}
 	
 	PayloadSize = InBulkData.GetBulkDataSize();
 	
-	PackagePath = InBulkData.GetPackagePath();
-	PackageSegment = InBulkData.GetPackageSegment();
+	PackagePath = GetPackagePathFromOwner(Owner); 
 	
 	OffsetInFile = InBulkData.GetBulkDataOffsetInFile();
 
@@ -551,7 +765,10 @@ void FEditorBulkData::CreateFromBulkData(FUntypedBulkData& InBulkData, const FGu
 	{
 		EnumAddFlags(Flags, EFlags::LegacyKeyWasGuidDerived);
 	}
-	Register(Owner);
+	// bAllowUpdateId=true because we can encounter duplicates even with the newly
+	// created BulkDataId, if the user duplicated (before the fix for duplication) the owner
+	// of this bulkdata, without ever resaving this bulkdata's package
+	Register(Owner, TEXT("CreateFromBulkData"), true /* bAllowUpdateId */);
 }
 
 void FEditorBulkData::CreateLegacyUniqueIdentifier(UObject* Owner)
@@ -560,7 +777,10 @@ void FEditorBulkData::CreateLegacyUniqueIdentifier(UObject* Owner)
 	{
 		Unregister();
 		BulkDataId = CreateUniqueGuid(BulkDataId, Owner, TEXT("Unknown"));
-		Register(Owner);
+		// bAllowUpdateId=true because we can encounter duplicates even with the newly
+		// created BulkDataId, if the user duplicated (before the fix for duplication) the owner
+		// of this bulkdata, without ever resaving this bulkdata's package
+		Register(Owner, TEXT("CreateLegacyUniqueIdentifier"), true /* bAllowUpdateId */);
 	}
 }
 
@@ -570,24 +790,32 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 
 	if (Ar.IsTransacting())
 	{
-		// Do not process the transaction if the owner is mid loading (see FUntypedBulkData::Serialize)
+		// We've made changes to this serialization path without versioning them, because we assume
+		// IsTransacting means !IsPersistent and therefore all loaded data was saved with the current binary.
+		check(!Ar.IsPersistent()); 
+		// Do not process the transaction if the owner is mid loading (see FBulkData::Serialize)
 		bool bNeedsTransaction = Ar.IsSaving() && (!Owner || !Owner->HasAnyFlags(RF_NeedLoad));
 
 		Ar << bNeedsTransaction;
 
 		if (bNeedsTransaction)
 		{
+			EFlags FlagsToPreserve = EFlags::None;
+
 			if (Ar.IsLoading())
 			{
 				Unregister();
+
+				FlagsToPreserve = Flags & TransientFlags;
 			}
 
 			Ar << Flags;
-			Ar << BulkDataId;
+			// Transactions do not save/load the BulkDataId; it is specific to an instance and is
+			// unchanged by modifications to the payload. Allowing it to save/load would allow it to be
+			// duplicated if an editor operation plays back the transaction buffer multiple times.
 			Ar << PayloadContentId;
 			Ar << PayloadSize;
 			Ar << PackagePath;
-			Ar << PackageSegment;
 			Ar << OffsetInFile;
 
 			// TODO: We could consider compressing the payload so it takes up less space in the 
@@ -595,32 +823,40 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 			// in memory or some other caching system.
 			// Serializing full 8k texture payloads to memory on each metadata change will empty
 			// the undo stack very quickly.
-			
-			// Note that we will only serialize the payload if it is in memory. Otherwise we can
-			// continue to load the payload as needed from disk or pull from the virtualization system
-			bool bPayloadInArchive = Ar.IsSaving() ? !Payload.IsNull() : false;
-			Ar << bPayloadInArchive;
 
 			if (Ar.IsSaving())
 			{
-				if (bPayloadInArchive)
+				if (Payload.IsNull())
 				{
-					FCompressedBuffer CompressedPayload = FCompressedBuffer::Compress(Payload, ECompressedBufferCompressor::NotSet, ECompressedBufferCompressionLevel::None);
-					SerializeData(Ar, CompressedPayload, Flags);
+					// We need to serialize in FSharedBuffer form, or otherwise we'd need to support
+					// multiple code paths here. Technically a bit wasteful but for general use it 
+					// shouldn't be noticable. This will make it easier to do the real perf wins
+					// in the future.
+					Payload = GetDataInternal().Decompress();
 				}
+
+				Ar << Payload;
 			}
 			else
 			{
-				FCompressedBuffer CompressedPayload;
-				if (bPayloadInArchive)
-				{
-					SerializeData(Ar, CompressedPayload, Flags);
-				}
-				
-				Payload = CompressedPayload.Decompress();	
+				Flags |= FlagsToPreserve;
 
-				Register(Owner);
+				if (PayloadSize > 0 && !BulkDataId.IsValid())
+				{
+					BulkDataId = FGuid::NewGuid();
+				}
+
+				Ar << Payload;
+
+				Register(Owner, TEXT("Serialize/Transacting"), false /* bAllowUpdateId */);
 			}
+
+			// Try to unload the payload if possible, usually because we loaded it during the transaction in the
+			// first place and we don't want to keep it in memory anymore.
+			// This does mean if the owning asset is frequently edited we will be reloading the payload off disk
+			// a lot. But in practice this didn't show up as too much of a problem. If someone has found this to 
+			// be a perf issue, then remove the call to ::UnloadData and trade memory cost for perf gain.
+			UnloadData();
 		}
 	}
 	else if (Ar.IsPersistent() && !Ar.IsObjectReferenceCollector() && !Ar.ShouldSkipBulkData())
@@ -632,7 +868,7 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 			LinkerSave = Cast<FLinkerSave>(Ar.GetLinker());
 			// If we're doing a save that can refer to bulk data by reference, and our legacy data format supports it,
 			// keep any legacy data we have referenced rather than stored, to save space and avoid spending time loading it.
-			bKeepFileDataByReference = LinkerSave && LinkerSave->bProceduralSave && PackageSegment == EPackageSegment::Header;
+			bKeepFileDataByReference = LinkerSave != nullptr && LinkerSave->bProceduralSave && !Ar.IsCooking();
 			if (!bKeepFileDataByReference)
 			{
 				UpdateKeyIfNeeded();
@@ -660,39 +896,37 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 		Ar << Flags;
 		if (Ar.IsLoading())
 		{
-			EnumRemoveFlags(Flags, EFlags::TransientFlags);
+			EnumRemoveFlags(Flags, TransientFlags);
 		}
 
 		// TODO: Can probably remove these checks before UE5 release
-		check(!Ar.IsSaving() || GetPayloadSize() == 0 || BulkDataId.IsValid()); // Sanity check to stop us saving out bad data
-		check(!Ar.IsSaving() || GetPayloadSize() == 0 || !PayloadContentId.IsZero()); // Sanity check to stop us saving out bad data
+		check(!Ar.IsSaving() || GetPayloadSize() == 0 || BulkDataId.IsValid() || EnumHasAnyFlags(Flags, EFlags::IsCooked)); // Sanity check to stop us saving out bad data
+		check(!Ar.IsSaving() || GetPayloadSize() == 0 || !PayloadContentId.IsZero() || EnumHasAnyFlags(Flags, EFlags::IsCooked)); // Sanity check to stop us saving out bad data
 		
 		Ar << BulkDataId;
 		Ar << PayloadContentId;
 		Ar << PayloadSize;
 
 		// TODO: Can probably remove these checks before UE5 release
-		check(!Ar.IsLoading() || GetPayloadSize() == 0 || BulkDataId.IsValid()); // Sanity check to stop us loading in bad data
-		check(!Ar.IsLoading() || GetPayloadSize() == 0 || !PayloadContentId.IsZero()); // Sanity check to stop us loading in bad data
+		check(!Ar.IsLoading() || GetPayloadSize() == 0 || BulkDataId.IsValid() || EnumHasAnyFlags(Flags, EFlags::IsCooked)); // Sanity check to stop us loading in bad data
+		check(!Ar.IsLoading() || GetPayloadSize() == 0 || !PayloadContentId.IsZero() || EnumHasAnyFlags(Flags, EFlags::IsCooked)); // Sanity check to stop us loading in bad data
 
 		if (Ar.IsSaving())
 		{
-			checkf(Ar.IsCooking() == false, TEXT("FEditorBulkData::Serialize should not be called during a cook"));
-
-			const EFlags UpdatedFlags = BuildFlagsForSerialization(Ar, bKeepFileDataByReference);
-
-			// Go back in the archive and update the flags in the archive, we will only apply the updated flags to the current
-			// object later if we detect that the package saved successfully.
-			// TODO: Not a huge fan of this, might be better to find a way to build the flags during serialization and potential callbacks 
-			// later then go back and update the flags in the Ar. Applying the updated flags only if we are saving a package to disk
-			// and the save succeeds continues to make sense.
-			UpdateArchiveData(Ar, SavedFlagsPos, UpdatedFlags);
+			EFlags UpdatedFlags = BuildFlagsForSerialization(Ar, bKeepFileDataByReference);
 
 			// Write out required extra data if we're saving by reference
 			bool bWriteOutPayload = true;
-			if (IsReferencingByPackagePath(UpdatedFlags))
+				
+			if (EnumHasAnyFlags(UpdatedFlags, EFlags::IsCooked))
 			{
-				check(PackageSegment == EPackageSegment::Header); // This should have been checked before setting bKeepFileDataByReference=true
+				// If we are cooking, we currently aren't saving any payload, since they aren't supported at runtime
+				// TODO: add iostore support for editor bulkdata
+				bWriteOutPayload = false;
+			}
+			else if (IsReferencingByPackagePath(UpdatedFlags))
+			{
+				// Write out required extra data if we're saving by reference
 				if (!IsStoredInPackageTrailer(UpdatedFlags))
 				{
 					Ar << OffsetInFile;
@@ -757,29 +991,27 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 					UpdateArchiveData(Ar, OffsetPos, DataStartOffset);
 				}
 			}
-
-			// Make sure that the trailer builder is correct (if it is being used)
-			if (IsStoredInPackageTrailer(UpdatedFlags) && !PayloadContentId.IsZero())
-			{
-				check(LinkerSave != nullptr);
-				check(LinkerSave->PackageTrailerBuilder.IsValid());
-				checkf(!(IsDataVirtualized(UpdatedFlags) && IsReferencingByPackagePath(UpdatedFlags)), TEXT("Payload cannot be both virtualized and a reference"));
-
-				if (IsReferencingByPackagePath(UpdatedFlags))
-				{
-					check(LinkerSave->PackageTrailerBuilder->IsReferencedPayloadEntry(PayloadContentId));
-				}
-				else if (IsDataVirtualized(UpdatedFlags))
-				{
-					LinkerSave->PackageTrailerBuilder->AddVirtualizedPayload(PayloadContentId, PayloadSize);
-					check(LinkerSave->PackageTrailerBuilder->IsVirtualizedPayloadEntry(PayloadContentId));
-				}
-				else
-				{
-					check(LinkerSave->PackageTrailerBuilder->IsLocalPayloadEntry(PayloadContentId));
-				}
-			}
 			
+			if (IsStoredInPackageTrailer(UpdatedFlags) && IsDataVirtualized(UpdatedFlags))
+			{
+				LinkerSave->PackageTrailerBuilder->AddVirtualizedPayload(PayloadContentId, PayloadSize);
+			}
+
+			/** Beyond this point UpdatedFlags will be modified to avoid serializing some flags */
+			/** So any code actually using UpdatedFlags should come before this section of code */
+
+			ValidatePackageTrailerBuilder(LinkerSave, PayloadContentId, UpdatedFlags);
+
+			// Remove the IsVirtualized flag if we are storing the payload in a package trailer before we serialize the flags
+			// to the package export data. We will determine if a payload is virtualized or not by checking the package trailer.
+			if (IsStoredInPackageTrailer(UpdatedFlags))
+			{
+				EnumRemoveFlags(UpdatedFlags, EFlags::IsVirtualized);
+			}
+
+			// Replace the flags we wrote out earlier with the updated, final values
+			UpdateArchiveData(Ar, SavedFlagsPos, UpdatedFlags);
+
 			if (CanUnloadData())
 			{
 				this->CompressionSettings.Reset();
@@ -788,15 +1020,23 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 		}
 		else if (Ar.IsLoading())
 		{
-			if (Ar.HasAllPortFlags(PPF_Duplicate) && BulkDataId.IsValid())
+			if (BulkDataId.IsValid())
 			{
-				// When duplicating BulkDatas we need to create a new BulkDataId to respect the uniqueness contract
-				BulkDataId = CreateUniqueGuid(BulkDataId, Owner, TEXT("PPF_Duplicate serialization"));
+				FLinkerLoad* LinkerLoad = Cast<FLinkerLoad>(Ar.GetLinker());
+
+				if (ShouldGenerateNewIdentifier(LinkerLoad, Owner))
+				{
+					BulkDataId = FGuid::NewGuid();
+				}
+				else if (Ar.HasAllPortFlags(PPF_Duplicate) || (LinkerLoad && LinkerLoad->GetInstancingContext().IsInstanced()))
+				{
+					// When duplicating BulkDatas we need to create a new BulkDataId to respect the uniqueness contract
+					BulkDataId = CreateUniqueGuid(BulkDataId, Owner, TEXT("PPF_Duplicate serialization"));
+				}
 			}
 
 			OffsetInFile = INDEX_NONE;
 			PackagePath.Empty();
-			PackageSegment = EPackageSegment::Header;
 
 			const FPackageTrailer* Trailer = GetTrailerFromOwner(Owner);
 				
@@ -806,12 +1046,23 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 				// Cache the offset from the trailer (if we move the loading of the payload to the trailer 
 				// at a later point then we can skip this)
 				OffsetInFile = Trailer->FindPayloadOffsetInFile(PayloadContentId);
+
+				// Attempt to catch data that saved with the virtualization flag when it's package has a trailers.
+				// It is unlikely this will ever trigger in the wild but keeping the code path for now to be safe.
+				// TODO: Consider removing in 5.2+
+				if (IsDataVirtualized() && Trailer->FindPayloadStatus(PayloadContentId) != EPayloadStatus::StoredVirtualized)
+				{
+					UE_LOG(LogSerialization, Warning, TEXT("Payload in '%s' is was saved with an invalid flag and required fixing. Please re-save the package!"), *GetDebugNameFromOwner(Owner));
+					EnumRemoveFlags(Flags, EFlags::IsVirtualized);
+				}
 			}
 			else
 			{
-				// TODO: This check is for older virtualized formats that might be seen in older test projects.
-				UE_CLOG(IsDataVirtualized(), LogSerialization, Error, TEXT("Payload in '%s' is virtualized in an older format and should be re-saved!"), *Owner->GetName());
-				if (!IsDataVirtualized())
+				// This check is for older virtualized formats that might be seen in older test projects.
+				// But we only care if the archive has a linker! (loading from a package)
+				// TODO: Consider removing in 5.2+
+				UE_CLOG(IsDataVirtualized() && Ar.GetLinker() != nullptr, LogSerialization, Warning, TEXT("Payload in '%s' is virtualized in an older format and should be re-saved!"), *GetDebugNameFromOwner(Owner));
+				if (!IsDataVirtualized() && !EnumHasAnyFlags(Flags, EFlags::IsCooked))
 				{
 					Ar << OffsetInFile;
 				}
@@ -835,22 +1086,27 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 				FArchive* CacheableArchive = Ar.GetCacheableArchive();
 				if (Ar.IsAllowingLazyLoading() && CacheableArchive != nullptr)
 				{
-					PackagePath = GetPackagePathFromOwner(Owner, PackageSegment);
+					PackagePath = GetPackagePathFromOwner(Owner);
 				}
 				else
 				{
 					PackagePath.Empty();
-					PackageSegment = EPackageSegment::Header;
 				}
 					
 				if (!PackagePath.IsEmpty() && CacheableArchive != nullptr)
 				{
 #if UE_ALLOW_LINKERLOADER_ATTACHMENT
+					if (HasAttachedArchive())
+					{
+						// TODO: Remove this when doing UE-159339
+						AttachedAr->DetachBulkData(this, false);
+					}
+
 					AttachedAr = CacheableArchive;
 					AttachedAr->AttachBulkData(this);
 #endif //VBD_ALLOW_LINKERLOADER_ATTACHMENT
 				}
-				else
+				else if (!EnumHasAnyFlags(Flags, EFlags::IsCooked))
 				{
 					checkf(Ar.Tell() == OffsetInFile, TEXT("Attempting to load an inline payload but the offset does not match"));
 
@@ -875,7 +1131,7 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 
 			if (bAllowRegister)
 			{
-				Register(Owner);
+				Register(Owner, TEXT("Serialize/Persistent"), true /* bAllowUpdateId */);
 			}
 		}
 	}
@@ -887,13 +1143,13 @@ void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 	{
 		check(CanSaveForRegistry());
 		EFlags FlagsForSerialize = Flags;
-		EnumRemoveFlags(FlagsForSerialize, EFlags::TransientFlags);
+		EnumRemoveFlags(FlagsForSerialize, TransientFlags);
 		Ar << FlagsForSerialize;
 	}
 	else
 	{
 		Ar << Flags;
-		EnumRemoveFlags(Flags, EFlags::TransientFlags);
+		EnumRemoveFlags(Flags, TransientFlags);
 		EnumAddFlags(Flags, EFlags::IsTornOff);
 	}
 
@@ -903,7 +1159,6 @@ void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 	if (Ar.IsSaving())
 	{
 		FString PackageName = PackagePath.GetPackageName();
-		check(PackageName.IsEmpty() || PackageSegment == EPackageSegment::Header);
 		Ar << PackageName;
 	}
 	else
@@ -918,7 +1173,6 @@ void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 		{
 			ensure(FPackagePath::TryFromPackageName(PackageName, PackagePath));
 		}
-		PackageSegment = EPackageSegment::Header;
 	}
 	Ar << OffsetInFile;
 }
@@ -926,8 +1180,7 @@ void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 bool FEditorBulkData::CanSaveForRegistry() const
 {
 	return BulkDataId.IsValid() && PayloadSize > 0 && !IsMemoryOnlyPayload()
-		&& EnumHasAnyFlags(Flags, EFlags::IsTornOff) && !EnumHasAnyFlags(Flags, EFlags::HasRegistered)
-		&& (PackagePath.IsEmpty() || PackageSegment == EPackageSegment::Header);
+		&& EnumHasAnyFlags(Flags, EFlags::IsTornOff) && !EnumHasAnyFlags(Flags, EFlags::HasRegistered);
 }
 
 
@@ -944,32 +1197,49 @@ FCompressedBuffer FEditorBulkData::LoadFromDisk() const
 
 	if (HasPayloadSidecarFile() && CVarShouldLoadFromSidecar.GetValueOnAnyThread())
 	{
-		// Note that this code path is purely for debugging and not expected to be enabled by default
-		if (CVarShouldValidatePayload.GetValueOnAnyThread())
+		return LoadFromSidecarFile();
+	}
+	else if (!CanLoadDataFromDisk())
+	{
+		if (IsReferencingOldBulkData())
 		{
-			UE_LOG(LogSerialization, Verbose, TEXT("Validating payload loaded from sidecar file: '%s'"), *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
+			UE_LOG(LogSerialization, Error, 
+				TEXT("Cannot attempt to load the payload '%s' from '%s' as the package is no longer attached to the file on disk and the payload is in an old style bulkdata structure"), 
+				*LexToString(PayloadContentId), 
+				*PackagePath.GetLocalFullPath(EPackageSegment::Header));
 
-			// Load both payloads then generate a FPayloadId from them, since this identifier is a hash of the buffers content
-			// we only need to verify them against PayloadContentId to be sure that the data is correct.
-			FCompressedBuffer SidecarBuffer = LoadFromSidecarFile();
-			FCompressedBuffer AssetBuffer = LoadFromPackageFile();
+			return FCompressedBuffer();
+		}
 
-			const FIoHash SidecarId = HashPayload(SidecarBuffer.Decompress());
-			const FIoHash AssetId = HashPayload(AssetBuffer.Decompress());
+		if (!IsStoredInPackageTrailer())
+		{
+			UE_LOG(LogSerialization, Error, 
+				TEXT("Cannot attempt to load the payload '%s' from '%s' as the package is no longer attached to the file on disk and the payload is not stored in a package trailer"),
+				*LexToString(PayloadContentId),
+				*PackagePath.GetLocalFullPath(EPackageSegment::Header));
 
-			UE_CLOG(SidecarId != PayloadContentId, LogSerialization, Error, TEXT("Sidecar content did not hash correctly! Found '%s' Expected '%s'"), *LexToString(SidecarId), *LexToString(PayloadContentId));
-			UE_CLOG(AssetId != PayloadContentId, LogSerialization, Error, TEXT("Asset content did not hash correctly! Found '%s' Expected '%s'"), *LexToString(AssetId), *LexToString(PayloadContentId))
+			return FCompressedBuffer();
+		}
 
-			return SidecarBuffer;
+		FCompressedBuffer CompressedPayload = LoadFromPackageTrailer();
+		if (!CompressedPayload.IsNull())
+		{
+			return CompressedPayload;
 		}
 		else
 		{
-			return LoadFromSidecarFile();
+			UE_LOG(LogSerialization, Error,
+				TEXT("Cannot attempt to load the payload '%s' from '%s' as the package is no longer attached to the file on disk and the payload was not found in the package trailer"),
+				*LexToString(PayloadContentId),
+				*PackagePath.GetLocalFullPath(EPackageSegment::Header));
+
+			return FCompressedBuffer();
 		}
+		
 	}
 	else
 	{
-		if (CVarShouldLoadFromTrailer.GetValueOnAnyThread())
+		if (CVarShouldLoadFromTrailer.GetValueOnAnyThread() && IsStoredInPackageTrailer())
 		{
 			return LoadFromPackageTrailer();
 		}
@@ -984,13 +1254,13 @@ FCompressedBuffer FEditorBulkData::LoadFromPackageFile() const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::LoadFromPackageFile);
 
-	UE_LOG(LogSerialization, Verbose, TEXT("Attempting to load payload from the package file: '%s'"), *PackagePath.GetLocalFullPath(PackageSegment));
+	UE_LOG(LogSerialization, Verbose, TEXT("Attempting to load payload from the package file '%s'"), *PackagePath.GetLocalFullPath(EPackageSegment::Header));
 
 	// Open a reader to the file
 	TUniquePtr<FArchive> BulkArchive;
-	if (!IsReferencingByPackagePath() || PackageSegment != EPackageSegment::Header)
+	if (!IsReferencingByPackagePath())
 	{
-		FOpenPackageResult Result = IPackageResourceManager::Get().OpenReadPackage(PackagePath, PackageSegment);
+		FOpenPackageResult Result = IPackageResourceManager::Get().OpenReadPackage(PackagePath, EPackageSegment::Header);
 		if (Result.Format == EPackageFormat::Binary)
 		{
 			BulkArchive = MoveTemp(Result.Archive);
@@ -1002,17 +1272,16 @@ FCompressedBuffer FEditorBulkData::LoadFromPackageFile() const
 		// Workspace Domain file. This was only possible if PackageSegment == Header; we checked that when serializing to the EditorDomain
 		// In that case, we need to use OpenReadExternalResource to access the Workspace Domain file
 		// In the cases where *this was loaded from the WorkspaceDomain, OpenReadExternalResource and OpenReadPackage are identical.
-		BulkArchive = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile,
-			PackagePath.GetPackageName());
+		BulkArchive = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile, PackagePath.GetPackageName());
 	}
 
 	if (!BulkArchive.IsValid())
 	{
-		LogPackageOpenFailureMessage(PackagePath, PackageSegment);
+		LogPackageOpenFailureMessage(PackagePath, EPackageSegment::Header);
 		return FCompressedBuffer();
 	}
 
-	checkf(OffsetInFile != INDEX_NONE, TEXT("Attempting to load '%s' from disk with an invalid OffsetInFile!"), *PackagePath.GetDebugNameWithExtension(PackageSegment));
+	checkf(OffsetInFile != INDEX_NONE, TEXT("Attempting to load from the package file '%s' with an invalid OffsetInFile!"), *PackagePath.GetLocalFullPath(EPackageSegment::Header));
 	// Move the correct location of the data in the file
 	BulkArchive->Seek(OffsetInFile);
 
@@ -1027,15 +1296,15 @@ FCompressedBuffer FEditorBulkData::LoadFromPackageTrailer() const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::LoadFromPackageTrailer);
 
-	UE_LOG(LogSerialization, Verbose, TEXT("Attempting to load payload from the package trailer: '%s'"), *PackagePath.GetLocalFullPath(PackageSegment));
+	UE_LOG(LogSerialization, Verbose, TEXT("Attempting to load a payload via the package trailer from file '%s'"), *PackagePath.GetLocalFullPath(EPackageSegment::Header));
 
 	// TODO: Could just get the trailer from the owning FLinkerLoad if still attached
 
 	// Open a reader to the file
 	TUniquePtr<FArchive> BulkArchive;
-	if (!IsReferencingByPackagePath() || PackageSegment != EPackageSegment::Header)
+	if (!IsReferencingByPackagePath())
 	{
-		FOpenPackageResult Result = IPackageResourceManager::Get().OpenReadPackage(PackagePath, PackageSegment);
+		FOpenPackageResult Result = IPackageResourceManager::Get().OpenReadPackage(PackagePath, EPackageSegment::Header);
 		if (Result.Format == EPackageFormat::Binary)
 		{
 			BulkArchive = MoveTemp(Result.Archive);
@@ -1047,28 +1316,33 @@ FCompressedBuffer FEditorBulkData::LoadFromPackageTrailer() const
 		// Workspace Domain file. This was only possible if PackageSegment == Header; we checked that when serializing to the EditorDomain
 		// In that case, we need to use OpenReadExternalResource to access the Workspace Domain file
 		// In the cases where *this was loaded from the WorkspaceDomain, OpenReadExternalResource and OpenReadPackage are identical.
-		BulkArchive = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile,
-			PackagePath.GetPackageName());
+		BulkArchive = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile, PackagePath.GetPackageName());
 	}
 
 	if (!BulkArchive.IsValid())
 	{
-		LogPackageOpenFailureMessage(PackagePath, PackageSegment);
+		LogPackageOpenFailureMessage(PackagePath, EPackageSegment::Header);
 		return FCompressedBuffer();
 	}
 
 	BulkArchive->Seek(BulkArchive->TotalSize());
 
 	FPackageTrailer Trailer;
-	
 	if (Trailer.TryLoadBackwards(*BulkArchive))
 	{
-		return Trailer.LoadLocalPayload(PayloadContentId, *BulkArchive);
+		FCompressedBuffer CompressedPayload = Trailer.LoadLocalPayload(PayloadContentId, *BulkArchive);
+
+		UE_CLOG(CompressedPayload.IsNull(), LogSerialization, Error, TEXT("Could not find the payload '%s' in the package trailer of file '%s'"),
+			*LexToString(PayloadContentId ), 
+			*PackagePath.GetLocalFullPath(EPackageSegment::Header));
+
+		return CompressedPayload;
 	}
 	else
 	{
+		UE_LOG(LogSerialization, Error, TEXT("Could not read the package trailer from file '%s'"), *PackagePath.GetLocalFullPath(EPackageSegment::Header));
 		return FCompressedBuffer();
-	}	
+	}
 }
 
 FCompressedBuffer FEditorBulkData::LoadFromSidecarFileInternal(ErrorVerbosity Verbosity) const
@@ -1083,7 +1357,7 @@ FCompressedBuffer FEditorBulkData::LoadFromSidecarFileInternal(ErrorVerbosity Ve
 
 		if (Version != FTocEntry::PayloadSidecarFileVersion)
 		{
-			UE_CLOG(Verbosity > ErrorVerbosity::None, LogSerialization, Error, TEXT("Unknown version (%u) found in '%s'"), Version, *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
+			UE_CLOG(Verbosity > ErrorVerbosity::None, LogSerialization, Error, TEXT("Unknown payload sidecar version (%u) found in '%s'"), Version, *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
 			return FCompressedBuffer();
 		}
 
@@ -1111,12 +1385,16 @@ FCompressedBuffer FEditorBulkData::LoadFromSidecarFileInternal(ErrorVerbosity Ve
 			}
 			else if(Verbosity > ErrorVerbosity::None)
 			{
-				UE_LOG(LogSerialization, Error, TEXT("Payload '%s' in '%s' has an invalid OffsetInFile!"), *LexToString(PayloadContentId), *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
+				UE_LOG(LogSerialization, Error, TEXT("Payload '%s' in '%s' has an invalid OffsetInFile!"), 
+					*LexToString(PayloadContentId), 
+					*PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
 			}
 		}
 		else if(Verbosity > ErrorVerbosity::None)
 		{
-			UE_LOG(LogSerialization, Error, TEXT("Unable to find payload '%s' in '%s'"), *LexToString(PayloadContentId), *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
+			UE_LOG(LogSerialization, Error, TEXT("Unable to find payload '%s' in '%s'"), 
+				*LexToString(PayloadContentId), 
+				*PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
 		}
 	}
 	else if(Verbosity > ErrorVerbosity::None)
@@ -1229,7 +1507,7 @@ void FEditorBulkData::PushData(const FPackagePath& InPackagePath)
 		RecompressForSerialization(PayloadToPush, Flags);
 
 		// TODO: We could make the storage type a config option?
-		if (VirtualizationSystem.PushData(PayloadContentId, PayloadToPush, UE::Virtualization::EStorageType::Local, InPackagePath.GetPackageName()))
+		if (VirtualizationSystem.PushData(PayloadContentId, PayloadToPush, InPackagePath.GetPackageName(), UE::Virtualization::EStorageType::Cache))
 		{
 			EnumAddFlags(Flags, EFlags::IsVirtualized);
 			EnumRemoveFlags(Flags, EFlags::ReferencesLegacyFile | EFlags::ReferencesWorkspaceDomain | EFlags::LegacyFileIsCompressed);
@@ -1238,11 +1516,10 @@ void FEditorBulkData::PushData(const FPackagePath& InPackagePath)
 			// Clear members associated with non-virtualized data and release the in-memory
 			// buffer.
 			PackagePath.Empty();
-			PackageSegment = EPackageSegment::Header;
 			OffsetInFile = INDEX_NONE;
 
 			// Update our information in the registry
-			Register(nullptr);
+			UpdateRegistrationData(nullptr, TEXT("PushData"), false /* bAllowUpdateId */);
 		}
 	}	
 }
@@ -1251,23 +1528,39 @@ FCompressedBuffer FEditorBulkData::PullData() const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::PullData);
 
-	FCompressedBuffer PulledPayload = UE::Virtualization::IVirtualizationSystem::Get().PullData(PayloadContentId);
-
-	if (PulledPayload)
+	UE::Virtualization::IVirtualizationSystem& System = UE::Virtualization::IVirtualizationSystem::Get();
+	if (System.IsEnabled())
 	{
-		checkf(	PayloadSize == PulledPayload.GetRawSize(),
-				TEXT("Mismatch between serialized length (%" INT64_FMT ") and virtualized data length (%" UINT64_FMT ")"),
-				PayloadSize,
-				PulledPayload.GetRawSize());
+		FCompressedBuffer PulledPayload = UE::Virtualization::IVirtualizationSystem::Get().PullData(PayloadContentId);
+
+		checkf(!PulledPayload || PayloadSize == PulledPayload.GetRawSize(),
+			TEXT("Mismatch between serialized length (%" INT64_FMT ") and virtualized data length (%" UINT64_FMT ")"),
+			PayloadSize,
+			PulledPayload.GetRawSize());
+
+		UE_CLOG(PulledPayload.IsNull(), LogSerialization, Error, TEXT("Failed to pull payload '%s'"), *LexToString(PayloadContentId));
+
+		return PulledPayload;
 	}
-	
-	return PulledPayload;
+	else
+	{
+		UE_LOG(LogSerialization, Error, TEXT("Cannot pull payload '%s' as the virtualization system is disabled"), *LexToString(PayloadContentId));
+		return FCompressedBuffer();
+	}	
 }
 
 bool FEditorBulkData::CanUnloadData() const
 {
-	// We cannot unload the data if are unable to reload it from a file
-	return IsDataVirtualized() || (PackagePath.IsEmpty() == false && AttachedAr != nullptr);
+	// Technically if we have a valid path but are detached we can still try  to load 
+	// the payload from disk via ::LoadFromPackageTrailer but we are not guaranteed success
+	// because the package file may have changed to one without the payload in it at all.
+	// Due to this we do not allow the payload to be unloaded if we are detached.
+	return IsDataVirtualized() || CanLoadDataFromDisk();
+}
+
+bool FEditorBulkData::CanLoadDataFromDisk() const
+{
+	return !PackagePath.IsEmpty() && !EnumHasAnyFlags(Flags, EFlags::WasDetached);
 }
 
 bool FEditorBulkData::IsMemoryOnlyPayload() const
@@ -1277,19 +1570,20 @@ bool FEditorBulkData::IsMemoryOnlyPayload() const
 
 void FEditorBulkData::Reset()
 {
+	// Unregister rather than allowing the Registry to keep our record, since we are changing the payload
+	Unregister();
 	// Note that we do not reset the BulkDataId
-	if (AttachedAr != nullptr)
+	if (HasAttachedArchive())
 	{
 		AttachedAr->DetachBulkData(this, false);
+		AttachedAr = nullptr;
 	}
 
-	Unregister();
 	PayloadContentId.Reset();
 	Payload.Reset();
 	PayloadSize = 0;
 	OffsetInFile = INDEX_NONE;
 	PackagePath.Empty();
-	PackageSegment = EPackageSegment::Header;
 	Flags = EFlags::None;
 
 	CompressionSettings.Reset();
@@ -1307,34 +1601,46 @@ void FEditorBulkData::DetachFromDisk(FArchive* Ar, bool bEnsurePayloadIsLoaded)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::DetachFromDisk);
 
-	check(Ar);
-	check(Ar == AttachedAr || AttachedAr == nullptr || AttachedAr->IsProxyOf(Ar));
+	check(Ar != nullptr);
+	check(Ar == AttachedAr || HasAttachedArchive() == false || AttachedAr->IsProxyOf(Ar));
 
+	// If bEnsurePayloadIsLoaded is true, then we should assume that a change to the 
+	// package file is imminent and we should load the payload into memory if possible.
+	// If it is false then either we are not expecting a change to the package file or
+	// we are not expected that the payload will be used again and can unload the 
+	// payload. If the payload is requested later we will try to load it off disk via
+	// the package trailer, but there is no guarantee that it will be present in the
+	// package file.
 	if (!IsDataVirtualized() && !PackagePath.IsEmpty())
 	{
 		if (Payload.IsNull() && bEnsurePayloadIsLoaded)
 		{
 			FCompressedBuffer CompressedPayload = GetDataInternal();
+			TRACE_CPUPROFILER_EVENT_SCOPE(DecompressPayload);
 			Payload = CompressedPayload.Decompress();
 		}
 
-		PackagePath.Empty();
-		PackageSegment = EPackageSegment::Header;
 		OffsetInFile = INDEX_NONE;
 
-		EnumRemoveFlags(Flags, EFlags::ReferencesLegacyFile | EFlags::ReferencesWorkspaceDomain | EFlags::LegacyFileIsCompressed);
-
-		if (PayloadSize > 0)
+		if (EnumHasAnyFlags(Flags, EFlags::HasRegistered))
 		{
-			Register(nullptr);
-		}
-		else
-		{
-			Unregister();
+			if (bEnsurePayloadIsLoaded)
+			{
+				// We are e.g. renaming a package and should switch registration over to our in-memory Payload
+				UpdateRegistrationData(nullptr, TEXT("DetachFromDisk"), false /* bAllowUpdateId */);
+			}
+			else
+			{
+				// The package is unloading; we should instruct the bulkdataregistry to keep our old packagepath information,
+				// but will drop our is-registered flag
+				OnExitMemory();
+			}
 		}
 	}
 
 	AttachedAr = nullptr;	
+
+	EnumAddFlags(Flags, EFlags::WasDetached);
 }
 
 FGuid FEditorBulkData::GetIdentifier() const
@@ -1354,7 +1660,7 @@ void FEditorBulkData::SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressed
 	// The lambda is mutable so that PayloadToSerialize is not const (due to FArchive api not accepting const values)
 	auto SerializePayload = [this, OffsetPos, PayloadToSerialize, UpdatedFlags, Owner](FLinkerSave& LinkerSave, FArchive& ExportsArchive, FArchive& DataArchive, int64 DataStartOffset) mutable
 	{
-		checkf(ExportsArchive.IsCooking() == false, TEXT("FEditorBulkData::Serialize should not be called during a cook"));
+		checkf(ExportsArchive.IsCooking() == false, TEXT("FEditorBulkData payload should not be written during a cook"));
 
 		SerializeData(DataArchive, PayloadToSerialize, UpdatedFlags);
 
@@ -1381,10 +1687,15 @@ void FEditorBulkData::SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressed
 					return;
 				}
 
+				// Mark the bulkdata as detached so that we don't try to load the payload from the newly saved package
+				// or unload the current payload as under the existing system it is not safe to load from a package
+				// that we are not attached to.
+				EnumAddFlags(this->Flags, EFlags::WasDetached);
+
 				this->PackagePath = InPackagePath;
 				check(!this->PackagePath.IsEmpty()); // LinkerSave guarantees a valid PackagePath if we're updating loaded path
 				this->OffsetInFile = DataStartOffset;
-				this->Flags = UpdatedFlags;
+				this->Flags = (this->Flags & TransientFlags) | (UpdatedFlags & ~TransientFlags);
 
 				if (CanUnloadData())
 				{
@@ -1393,8 +1704,7 @@ void FEditorBulkData::SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressed
 				}
 
 				// Update our information in the registry
-				// TODO: Pass Owner into Register once the AssetRegistry has been fixed to use the updated PackageGuid from the save
-				Register(nullptr);
+				UpdateRegistrationData(Owner, TEXT("SerializeToLegacyPath"), false /* bAllowUpdateId */);
 			};
 
 			LinkerSave.PostSaveCallbacks.Add(MoveTemp(OnSavePackage));
@@ -1412,9 +1722,9 @@ void FEditorBulkData::SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressed
 
 void FEditorBulkData::SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner)
 {
-	auto OnPayloadWritten = [this, UpdatedFlags](FLinkerSave& LinkerSave, const FPackageTrailer& Trailer) mutable
+	auto OnPayloadWritten = [this, UpdatedFlags, Owner](FLinkerSave& LinkerSave, const FPackageTrailer& Trailer) mutable
 	{
-		checkf(LinkerSave.IsCooking() == false, TEXT("FEditorBulkData::Serialize should not be called during a cook"));
+		checkf(LinkerSave.IsCooking() == false, TEXT("FEditorBulkData payload should not be written to a package trailer during a cook"));
 
 		int64 PayloadOffset = Trailer.FindPayloadOffsetInFile(PayloadContentId);
 
@@ -1423,17 +1733,39 @@ void FEditorBulkData::SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompre
 		// disk so that we can update the object's members to be redirected to the saved file.
 		if (!LinkerSave.GetFilename().IsEmpty())
 		{
-			auto OnSavePackage = [this, PayloadOffset, UpdatedFlags](const FPackagePath& InPackagePath, FObjectPostSaveContext ObjectSaveContext)
+			auto OnSavePackage = [this, PayloadOffset, UpdatedFlags, Owner](const FPackagePath& InPackagePath, FObjectPostSaveContext ObjectSaveContext)
 			{
 				if (!ObjectSaveContext.IsUpdatingLoadedPath())
 				{
 					return;
 				}
 
-				this->PackagePath = InPackagePath;
-				check(!this->PackagePath.IsEmpty()); // LinkerSave guarantees a valid PackagePath if we're updating loaded path
 				this->OffsetInFile = PayloadOffset;
-				this->Flags = UpdatedFlags;
+				this->Flags = (this->Flags & TransientFlags) | (UpdatedFlags & ~TransientFlags);
+
+				// If the payload is valid we might want to fix up the package path or virtualization flags now
+				// that the package has saved.
+				if (!this->PayloadContentId.IsZero())
+				{
+					if (PayloadOffset != INDEX_NONE)
+					{
+						// Mark the bulkdata as detached so that we don't try to load the payload from the newly saved package
+						// or unload the current payload as under the existing system it is not safe to load from a package
+						// that we are not attached to.
+						EnumAddFlags(this->Flags, EFlags::WasDetached);
+
+						this->PackagePath = InPackagePath;
+						check(!this->PackagePath.IsEmpty()); // LinkerSave guarantees a valid PackagePath if we're updating loaded path
+					}
+					else
+					{
+						// If the payload offset we are given is INDEX_NONE it means that the payload was discarded as there was an identical
+						// virtualized entry and the virtualized version takes priority. Since we know that the payload is in the 
+						// virtualization system at this point we can set the virtualization flag allowing us to unload any existing payload
+						// in memory to help reduce bloat.
+						EnumAddFlags(this->Flags, EFlags::IsVirtualized);
+					}
+				}
 
 				if (CanUnloadData())
 				{
@@ -1442,31 +1774,45 @@ void FEditorBulkData::SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompre
 				}
 
 				// Update our information in the registry
-				// TODO: Pass Owner into Register once the AssetRegistry has been fixed to use the updated PackageGuid from the save
-				Register(nullptr);
+				UpdateRegistrationData(Owner, TEXT("SerializeToPackageTrailer"), false /* bAllowUpdateId */);
 			};
 
 			LinkerSave.PostSaveCallbacks.Add(MoveTemp(OnSavePackage));
 		}
 	};
 
-	LinkerSave.PackageTrailerBuilder->AddPayload(PayloadContentId, MoveTemp(PayloadToSerialize), MoveTemp(OnPayloadWritten));
+	UE::Virtualization::EPayloadFilterReason PayloadFilter = UE::Virtualization::EPayloadFilterReason::None;
+	if (UE::Virtualization::IVirtualizationSystem::IsInitialized())
+	{
+		PayloadFilter = UE::Virtualization::IVirtualizationSystem::Get().FilterPayload(Owner);
+	}
+
+#if UE_ENABLE_VIRTUALIZATION_TOGGLE
+	if (bSkipVirtualization)
+	{
+		PayloadFilter |= UE::Virtualization::EPayloadFilterReason::Asset;
+	}
+#endif //UE_ENABLE_VIRTUALIZATION_TOGGLE
+
+	LinkerSave.PackageTrailerBuilder->AddPayload(PayloadContentId, MoveTemp(PayloadToSerialize), PayloadFilter, MoveTemp(OnPayloadWritten));
 }
 
-void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID)
+void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID, UObject* Owner)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayloadImpl);
 
-	if (AttachedAr != nullptr)
+	// Unregister before calling DetachBulkData; DetachFromDisk calls OnExitMemory which is incorrect since
+	// we are changing data rather than leaving memory
+	Unregister();
+	if (HasAttachedArchive())
 	{
 		AttachedAr->DetachBulkData(this, false);
+		AttachedAr = nullptr;
 	}
-
-	check(AttachedAr == nullptr);
 
 	// We only take the payload if it has a length to avoid potentially holding onto a
 	// 0 byte allocation in the FSharedBuffer
-	if(InPayload.GetSize() > 0)
+	if (InPayload.GetSize() > 0)
 	{ 
 		Payload = MoveTemp(InPayload).MakeOwned();
 	}
@@ -1485,21 +1831,13 @@ void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InP
 							EFlags::LegacyKeyWasGuidDerived);
 
 	PackagePath.Empty();
-	PackageSegment = EPackageSegment::Header;
 	OffsetInFile = INDEX_NONE;
 
-	if (PayloadSize > 0)
+	if (PayloadSize > 0 && !BulkDataId.IsValid())
 	{
-		if (!BulkDataId.IsValid())
-		{
-			BulkDataId = FGuid::NewGuid();
-		}
-		Register(nullptr);
+		BulkDataId = FGuid::NewGuid();
 	}
-	else
-	{
-		Unregister();
-	}
+	UpdateRegistrationData(Owner, TEXT("UpdatePayloadImpl"), false /* bAllowUpdateId */);
 }
 
 FCompressedBuffer FEditorBulkData::GetDataInternal() const
@@ -1525,9 +1863,9 @@ FCompressedBuffer FEditorBulkData::GetDataInternal() const
 		
 		checkf(Payload.IsNull(), TEXT("Pulling data somehow assigned it to the bulk data object!")); //Make sure that we did not assign the buffer internally
 
-		UE_CLOG(CompressedPayload.IsNull(), LogSerialization, Error, TEXT("Failed to pull payload '%s'"), *LexToString(PayloadContentId));
 		UE_CLOG(!IsDataValid(*this, CompressedPayload), LogSerialization, UE_CORRUPTED_DATA_SEVERITY, TEXT("Virtualized payload '%s' is corrupt! Check the backend storage."), *LexToString(PayloadContentId));
 		
+		TRACE_COUNTER_ADD(EditorBulkData_PayloadDataPulled, (int64)CompressedPayload.GetCompressedSize());
 		return CompressedPayload;
 	}
 	else
@@ -1537,10 +1875,11 @@ FCompressedBuffer FEditorBulkData::GetDataInternal() const
 		check(Payload.IsNull()); //Make sure that we did not assign the buffer internally
 
 		UE_CLOG(CompressedPayload.IsNull(), LogSerialization, Error, TEXT("Failed to load payload '%s"), *LexToString(PayloadContentId));
-		UE_CLOG(!IsDataValid(*this, CompressedPayload), LogSerialization, UE_CORRUPTED_DATA_SEVERITY, TEXT("Payload '%s' loaded from '%s' is corrupt! Check the file on disk."),
+		UE_CLOG(!IsDataValid(*this, CompressedPayload), LogSerialization, UE_CORRUPTED_DATA_SEVERITY, TEXT("Payload '%s' loaded from package '%s' is corrupt! Check the package file on disk."),
 			*LexToString(PayloadContentId),
 			*PackagePath.GetDebugName());
 
+		TRACE_COUNTER_ADD(EditorBulkData_PayloadDataLoaded, (int64)CompressedPayload.GetCompressedSize());
 		return CompressedPayload;
 	}
 }
@@ -1582,11 +1921,11 @@ TFuture<FCompressedBuffer>FEditorBulkData::GetCompressedPayload() const
 	return Promise.GetFuture();
 }
 
-void FEditorBulkData::UpdatePayload(FSharedBuffer InPayload)
+void FEditorBulkData::UpdatePayload(FSharedBuffer InPayload, UObject* Owner)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayload);
 	FIoHash NewPayloadId = HashPayload(InPayload);
-	UpdatePayloadImpl(MoveTemp(InPayload), MoveTemp(NewPayloadId));
+	UpdatePayloadImpl(MoveTemp(InPayload), MoveTemp(NewPayloadId), Owner);
 }
 
 FEditorBulkData::FSharedBufferWithID::FSharedBufferWithID(FSharedBuffer InPayload)
@@ -1595,9 +1934,9 @@ FEditorBulkData::FSharedBufferWithID::FSharedBufferWithID(FSharedBuffer InPayloa
 {
 }
 
-void FEditorBulkData::UpdatePayload(FSharedBufferWithID InPayload)
+void FEditorBulkData::UpdatePayload(FSharedBufferWithID InPayload, UObject* Owner)
 {
-	UpdatePayloadImpl(MoveTemp(InPayload.Payload), MoveTemp(InPayload.PayloadId));
+	UpdatePayloadImpl(MoveTemp(InPayload.Payload), MoveTemp(InPayload.PayloadId), Owner);
 }
 
 void FEditorBulkData::SetCompressionOptions(ECompressionOptions Option)
@@ -1640,13 +1979,88 @@ void FEditorBulkData::SetCompressionOptions(ECompressedBufferCompressor Compress
 
 FCustomVersionContainer FEditorBulkData::GetCustomVersions(FArchive& InlineArchive)
 {
-	return InlineArchive.GetCustomVersions();
+	FPackageFileVersion OutUEVersion;
+	int32 OutLicenseeUEVersion;
+	FCustomVersionContainer OutCustomVersions;
+	GetBulkDataVersions(InlineArchive, OutUEVersion, OutLicenseeUEVersion, OutCustomVersions);
+	return OutCustomVersions;
+}
+
+void FEditorBulkData::GetBulkDataVersions(FArchive& InlineArchive, FPackageFileVersion& OutUEVersion,
+	int32& OutLicenseeUEVersion, FCustomVersionContainer& OutCustomVersions) const
+{
+	if (EnumHasAnyFlags(Flags, EFlags::ReferencesWorkspaceDomain))
+	{
+		// Read the version data out of the separate package file
+		TUniquePtr<FArchive> ExternalArchive = IPackageResourceManager::Get().OpenReadExternalResource(
+			EPackageExternalResource::WorkspaceDomainFile, PackagePath.GetPackageName());
+		if (ExternalArchive.IsValid())
+		{
+			FPackageFileSummary PackageFileSummary;
+			*ExternalArchive << PackageFileSummary;
+			if (PackageFileSummary.Tag == PACKAGE_FILE_TAG && !ExternalArchive->IsError())
+			{
+				OutUEVersion = PackageFileSummary.GetFileVersionUE();
+				OutLicenseeUEVersion = PackageFileSummary.GetFileVersionLicenseeUE();
+				OutCustomVersions = PackageFileSummary.GetCustomVersionContainer();
+				return;
+			}
+		}
+	}
+	OutUEVersion = InlineArchive.UEVer();
+	OutLicenseeUEVersion = InlineArchive.LicenseeUEVer();
+	OutCustomVersions = InlineArchive.GetCustomVersions();
 }
 
 void FEditorBulkData::UpdatePayloadId()
 {
 	UpdateKeyIfNeeded();
 }
+
+bool FEditorBulkData::LocationMatches(const FEditorBulkData& Other) const
+{
+	if (GetIdentifier() != Other.GetIdentifier())
+	{
+		// Different identifiers return false, even if location is the same
+		return false;
+	}
+	if (GetPayloadSize() == 0 || Other.GetPayloadSize() == 0)
+	{
+		// True if both of them have an empty payload, false if only one does
+		return GetPayloadSize() == 0 && Other.GetPayloadSize() == 0;
+	}
+	else if (IsDataVirtualized() || Other.IsDataVirtualized())
+	{
+		// Data is virtualized and will be looked up by PayloadContentId; use PayloadContentId
+		return IsDataVirtualized() && Other.IsDataVirtualized() &&
+			PayloadContentId == Other.PayloadContentId;
+	}
+	else if (!PackagePath.IsEmpty() || !Other.PackagePath.IsEmpty())
+	{
+		if (Other.PackagePath != PackagePath)
+		{
+			return false;
+		}
+		if ((HasPayloadSidecarFile() && CVarShouldLoadFromSidecar.GetValueOnAnyThread()) ||
+			CVarShouldLoadFromTrailer.GetValueOnAnyThread())
+		{
+			// Loading from the SidecarFile or PackageTrailer uses the PayloadContentId as
+			// the identifier to look up the location in the file
+			return PayloadContentId == Other.PayloadContentId;
+		}
+		else
+		{
+			// Loading from PackagePath without sidecar or trailer uses the OffsetInFile
+			return OffsetInFile == Other.OffsetInFile;
+		}
+	}
+	else
+	{
+		// BulkData is memory-only and therefore PayloadContentId is available, use PayloadContentId
+		return PayloadContentId == Other.PayloadContentId;
+	}
+}
+
 
 #if UE_ENABLE_VIRTUALIZATION_TOGGLE
 
@@ -1758,10 +2172,16 @@ FEditorBulkData::EFlags FEditorBulkData::BuildFlagsForSerialization(FArchive& Ar
 			{
 				EnumRemoveFlags(UpdatedFlags, EFlags::HasPayloadSidecarFile);
 
-				// Remove the virtualization flag if we are rehydrating packages on save unless
-				// referencing the payload data is allowed, in which case we can continue to save
-				// as virtualized.
-				if (LinkerSave != nullptr && !bKeepFileDataByReference && CVarShouldRehydrateOnSave.GetValueOnAnyThread())
+				// Check to see if we need to rehydrate the payload on save, this is true if
+				// a) We are saving to a package (LinkerSave is not null)
+				// b) Either the save package call we made with the  ESaveFlags::SAVE_RehydratePayloads flag set OR
+				// the cvar Serialization.RehydrateOnSave is true
+				// c) We are not saving a reference to a different domain. If we are saving a reference then the goal
+				// is to avoid including the payload in the current target domain if possible, rehydrating for this
+				// domain would prevent this.
+				if ( LinkerSave != nullptr && 
+					(LinkerSave->bRehydratePayloads || CVarShouldRehydrateOnSave.GetValueOnAnyThread()) &&
+					!bKeepFileDataByReference)
 				{
 					EnumRemoveFlags(UpdatedFlags, EFlags::IsVirtualized);
 				}
@@ -1771,7 +2191,7 @@ FEditorBulkData::EFlags FEditorBulkData::BuildFlagsForSerialization(FArchive& Ar
 		// Currently we do not support storing local payloads to a trailer if it is being built for reference
 		// access (i.e. for the editor domain) and if this is detected we should force the legacy serialization
 		// path for this payload.
-		const bool bForceLegacyPath = bKeepFileDataByReference && bCanKeepFileDataByReference == false;
+		const bool bForceLegacyPath = bKeepFileDataByReference && bCanKeepFileDataByReference == false && !IsDataVirtualized(UpdatedFlags);
 
 		if (ShouldUseLegacySerialization(LinkerSave) == true || bForceLegacyPath == true)
 		{
@@ -1781,6 +2201,16 @@ FEditorBulkData::EFlags FEditorBulkData::BuildFlagsForSerialization(FArchive& Ar
 		{
 			EnumAddFlags(UpdatedFlags, EFlags::StoredInPackageTrailer);
 		}
+
+		// If we are cooking add the cooked flag to the serialized stream
+		// Editor bulk data might be cooked when using editor optional data at runtime
+		if (Ar.IsCooking())
+		{
+			EnumAddFlags(UpdatedFlags, EFlags::IsCooked);
+		}
+		
+		// Transient flags are never serialized
+		EnumRemoveFlags(UpdatedFlags, TransientFlags);
 
 		return UpdatedFlags;
 	}
@@ -1830,7 +2260,7 @@ FText FEditorBulkData::GetCorruptedPayloadErrorMsgForSave(FLinkerSave* Linker) c
 	else if(!PackagePath.IsEmpty())
 	{
 		// We don't know where we are saving to, but we do know the package where the payload came from.
-		const FText PackageName = FText::FromString(PackagePath.GetPackageName());
+		const FText PackageName = FText::FromString(PackagePath.GetDebugName());
 
 		return FText::Format(	NSLOCTEXT("Core", "Serialization_InvalidPayloadFromPkg", "Attempting to save bulkdata {0} with an invalid payload from package '{1}'. The package probably needs to be reverted/recreated to fix this."),
 								GuidID, PackageName);
@@ -1843,15 +2273,31 @@ FText FEditorBulkData::GetCorruptedPayloadErrorMsgForSave(FLinkerSave* Linker) c
 	}
 }
 
+void FEditorBulkData::ValidatePackageTrailerBuilder(const FLinkerSave* LinkerSave, const FIoHash& Id, EFlags PayloadFlags)
+{
+	if (IsStoredInPackageTrailer(PayloadFlags) && !Id.IsZero())
+	{
+		check(LinkerSave != nullptr);
+		check(LinkerSave->PackageTrailerBuilder.IsValid());
+		checkf(!(IsDataVirtualized(PayloadFlags) && IsReferencingByPackagePath(PayloadFlags)), TEXT("Payload cannot be both virtualized and a reference"));
+
+		if (IsReferencingByPackagePath(PayloadFlags))
+		{
+			check(LinkerSave->PackageTrailerBuilder->IsReferencedPayloadEntry(Id));
+		}
+		else if (IsDataVirtualized(PayloadFlags))
+		{
+			check(LinkerSave->PackageTrailerBuilder->IsVirtualizedPayloadEntry(Id));
+		}
+		else
+		{
+			check(LinkerSave->PackageTrailerBuilder->IsLocalPayloadEntry(Id));
+		}
+	}
+}
+
 bool FEditorBulkData::ShouldUseLegacySerialization(const FLinkerSave* LinkerSave) const
 {
-#if UE_ENABLE_VIRTUALIZATION_TOGGLE
-	if (bSkipVirtualization == true)
-	{
-		return true;
-	}
-#endif // UE_ENABLE_VIRTUALIZATION_TOGGLE 
-
 	if (LinkerSave == nullptr)
 	{
 		return true;

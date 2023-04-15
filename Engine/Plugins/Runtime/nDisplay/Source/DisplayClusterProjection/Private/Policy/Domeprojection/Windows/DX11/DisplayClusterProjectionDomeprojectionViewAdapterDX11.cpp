@@ -7,11 +7,7 @@
 #include "DisplayClusterProjectionLog.h"
 #include "Misc/DisplayClusterHelpers.h"
 
-#include "RHI.h"
-#include "RHIResources.h"
-#include "RHIUtilities.h"
-
-#include "Windows/D3D11RHI/Private/D3D11RHIPrivate.h"
+#include "ID3D11DynamicRHI.h"
 
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
@@ -42,7 +38,7 @@ FDisplayClusterProjectionDomeprojectionViewAdapterDX11::~FDisplayClusterProjecti
 	Views.Empty();
 }
 
-bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::Initialize(class IDisplayClusterViewport* InViewport, const FString& InFile)
+bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::Initialize(IDisplayClusterViewport* InViewport, const FString& InFile)
 {
 	bool bResult = true;
 
@@ -61,9 +57,12 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::Initialize(class ID
 bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, const uint32 Channel, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
 	check(GDynamicRHI);
+	if (!GDynamicRHI)
+	{
+		return false;
+	}
 
-	FD3D11DynamicRHI* d3d11RHI = static_cast<FD3D11DynamicRHI*>(GDynamicRHI);
-	ID3D11Device* D3D11Device = d3d11RHI ? d3d11RHI->GetDevice() : nullptr;
+	ID3D11Device* D3D11Device = GetID3D11DynamicRHI()->RHIGetDevice();
 	if (!D3D11Device)
 	{
 		return false;
@@ -107,7 +106,7 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::CalculateView(IDisp
 	return true;
 }
 
-bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::GetProjectionMatrix(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, const uint32 Channel, FMatrix& OutPrjMatrix)
+bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, const uint32 Channel, FMatrix& OutPrjMatrix)
 {
 	check(Views.Num() > (int32)InContextNum);
 
@@ -125,21 +124,15 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::GetProjectionMatrix
 
 bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, uint32 InContextNum, const uint32 Channel, FRHITexture2D* InputTextures, FRHITexture2D* OutputTextures)
 {
-	if (GD3D11RHI == nullptr)
+	if (!IsRHID3D11())
 	{
 		return false;
 	}
 
-	// Prepare the textures
-	FD3D11TextureBase* SrcTextureRHI = static_cast<FD3D11TextureBase*>(InputTextures->GetTextureBaseRHI());
-	FD3D11TextureBase* DstTextureRHI = static_cast<FD3D11TextureBase*>(OutputTextures->GetTextureBaseRHI());
-	if (!(SrcTextureRHI && DstTextureRHI))
-	{
-		return false;
-	}
+	ID3D11DynamicRHI* D3D11RHI = GetID3D11DynamicRHI();
 
-	ID3D11ShaderResourceView* SrcTextureSRVD3D11 = static_cast<ID3D11ShaderResourceView*>(SrcTextureRHI->GetShaderResourceView());
-	ID3D11RenderTargetView* DstTextureRTV = DstTextureRHI->GetRenderTargetView(0, -1);
+	ID3D11ShaderResourceView* SrcTextureSRVD3D11 = D3D11RHI->RHIGetShaderResourceView(InputTextures);
+	ID3D11RenderTargetView* DstTextureRTV = D3D11RHI->RHIGetRenderTargetView(OutputTextures);
 	if (!(SrcTextureSRVD3D11 && DstTextureRTV))
 	{
 		return false;
@@ -155,8 +148,8 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ImplApplyWarpBlend_
 	RenderViewportData.TopLeftX = 0.0f;
 	RenderViewportData.TopLeftY = 0.0f;
 
-	FD3D11Device* D3D11Device = GD3D11RHI->GetDevice();
-	FD3D11DeviceContext* DeviceContext = GD3D11RHI->GetDeviceContext();
+	FD3D11Device* D3D11Device = GetID3D11DynamicRHI()->RHIGetDevice();
+	FD3D11DeviceContext* DeviceContext = GetID3D11DynamicRHI()->RHIGetDeviceContext();
 	if (D3D11Device && DeviceContext)
 	{
 		DeviceContext->RSSetViewports(1, &RenderViewportData);
@@ -184,7 +177,7 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ImplApplyWarpBlend_
 	return false;
 }
 
-bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy, const uint32 Channel)
+bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const IDisplayClusterViewportProxy* InViewportProxy, const uint32 Channel)
 {
 	check(IsInRenderingThread());
 
@@ -202,6 +195,8 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ApplyWarpBlend_Rend
 		return false;
 	}
 
+	// Get output resources with rects
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT
 	if (!InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::AdditionalTargetableResource, OutputTextures))
 	{
 		return false;
@@ -222,8 +217,8 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::ApplyWarpBlend_Rend
 		}
 	}
 
-	// resolve warp result images from temp targetable to FrameTarget
-	return InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType_RenderThread());
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT 
+	return true;
 }
 
 void FDisplayClusterProjectionDomeprojectionViewAdapterDX11::FViewData::Release(FCriticalSection& DllAccessCS)
@@ -236,7 +231,7 @@ void FDisplayClusterProjectionDomeprojectionViewAdapterDX11::FViewData::Release(
 	}
 }
 
-bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::FViewData::Initialize(class IDisplayClusterViewport* InViewport, const FString& InFile, FCriticalSection& DllAccessCS)
+bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::FViewData::Initialize(IDisplayClusterViewport* InViewport, const FString& InFile, FCriticalSection& DllAccessCS)
 {
 	// Initialize Domeprojection DLL API
 	FScopeLock lock(&DllAccessCS);
@@ -262,9 +257,8 @@ bool FDisplayClusterProjectionDomeprojectionViewAdapterDX11::FViewData::Initiali
 	}
 
 	check(GDynamicRHI);
-	FD3D11DynamicRHI* d3d11RHI = static_cast<FD3D11DynamicRHI*>(GDynamicRHI);
 
-	dpResult Result = DisplayClusterProjectionDomeprojectionLibraryDX11::dpCreateContextFunc(&Context, d3d11RHI->GetDevice(), DP_PLUGIN_ID);
+	dpResult Result = DisplayClusterProjectionDomeprojectionLibraryDX11::dpCreateContextFunc(&Context, GetID3D11DynamicRHI()->RHIGetDevice(), DP_PLUGIN_ID);
 	if (Result != dpNoError)
 	{
 		UE_LOG(LogDisplayClusterProjectionDomeprojection, Error, TEXT("Couldn't initialize Domeprojection context"));

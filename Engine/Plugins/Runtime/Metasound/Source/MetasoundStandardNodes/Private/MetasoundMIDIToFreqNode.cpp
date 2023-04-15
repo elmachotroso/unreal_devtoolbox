@@ -133,10 +133,10 @@ namespace Metasound
 
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
-				TInputDataVertexModel<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputMidi), (ValueType)60.0f)
+				TInputDataVertex<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputMidi), (ValueType)60.0f)
 			),
 			FOutputVertexInterface(
-				TOutputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputFreq))
+				TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputFreq))
 			)
 		);
 
@@ -163,6 +163,7 @@ namespace Metasound
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
 			Info.DefaultInterface = GetVertexInterface();
 			Info.CategoryHierarchy.Emplace(NodeCategories::Music);
+			Info.Keywords.Add(METASOUND_LOCTEXT("MIDIToFreqPitchKeyword", "Pitch"));
 
 			return Info;
 		};

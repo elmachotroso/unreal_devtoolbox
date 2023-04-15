@@ -9,6 +9,7 @@
 struct FGameplayTagContainer;
 class UBlackboardComponent;
 class AAIController;
+class UBTNode;
 
 UCLASS(meta = (ScriptName = "SmartObjectLibrary"))
 class SMARTOBJECTSMODULE_API USmartObjectBlueprintFunctionLibrary : public UBlueprintFunctionLibrary
@@ -24,17 +25,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SmartObject")
 	static bool IsValidSmartObjectClaimHandle(const FSmartObjectClaimHandle Handle)	{ return Handle.IsValid(); }
 
-	UFUNCTION(BlueprintCallable, Category = "SmartObject", meta = (DisplayName = "UseSmartObject"))
-	static bool K2_UseSmartObject(AActor* Avatar, AActor* SmartObject);
-
 	UFUNCTION(BlueprintCallable, Category = "SmartObject", meta = (DisplayName = "SetSmartObjectEnabled"))
 	static bool K2_SetSmartObjectEnabled(AActor* SmartObject, const bool bEnabled);
 
-	UE_DEPRECATED(5.0, "K2_AddLooseGameplayTags has been deprecated and will be removed soon. Use UAbilitySystemBlueprintLibrary::AddLooseGameplayTags instead")
-	UFUNCTION(BlueprintCallable, Category = "SmartObject", meta = (DisplayName = "DEPRECATED_AddLooseGameplayTags", DeprecatedFunction, DeprecationMessage = "Use AbilitySystemBlueprintLibrary::AddLooseGameplayTags instead"))
-	static bool K2_AddLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags);
+	UFUNCTION(BlueprintCallable, Category = "AI|BehaviorTree", meta = (HidePin = "NodeOwner", DefaultToSelf = "NodeOwner", DisplayName = "Set Blackboard Value As Smart Object Claim Handle"))
+	static void SetBlackboardValueAsSOClaimHandle(UBTNode* NodeOwner, const FBlackboardKeySelector& Key, const FSmartObjectClaimHandle& Value);
 
-	UE_DEPRECATED(5.0, "K2_AddLooseGameplayTags has been deprecated and will be removed soon. Use UAbilitySystemBlueprintLibrary::RemoveLooseGameplayTags instead")
-	UFUNCTION(BlueprintCallable, Category = "SmartObject", meta = (DisplayName = "DEPRECATED_RemoveLooseGameplayTags", DeprecatedFunction, DeprecationMessage = "Use AbilitySystemBlueprintLibrary::RemoveLooseGameplayTags instead"))
-	static bool K2_RemoveLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags);
+	UFUNCTION(BlueprintPure, Category = "AI|BehaviorTree", meta = (HidePin = "NodeOwner", DefaultToSelf = "NodeOwner", DisplayName = "Get Blackboard Value As Smart Object Claim Handle"))
+	static FSmartObjectClaimHandle GetBlackboardValueAsSOClaimHandle(UBTNode* NodeOwner, const FBlackboardKeySelector& Key);
 };

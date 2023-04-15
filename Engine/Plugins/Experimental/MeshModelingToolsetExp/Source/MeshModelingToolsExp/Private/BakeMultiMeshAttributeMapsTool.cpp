@@ -26,7 +26,9 @@
 #include "ModelingToolTargetUtil.h"
 
 // required to pass UStaticMesh asset so we can save at same location
-#include "Engine/Classes/Engine/StaticMesh.h"
+#include "Engine/StaticMesh.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BakeMultiMeshAttributeMapsTool)
 
 using namespace UE::Geometry;
 
@@ -41,7 +43,6 @@ const FToolTargetTypeRequirements& UBakeMultiMeshAttributeMapsToolBuilder::GetTa
 	static FToolTargetTypeRequirements TypeRequirements({
 		UMeshDescriptionProvider::StaticClass(),
 		UPrimitiveComponentBackedTarget::StaticClass(),
-		UStaticMeshBackedTarget::StaticClass(),			// FMeshSceneAdapter currently only supports StaticMesh targets
 		UMaterialProvider::StaticClass()
 		});
 	return TypeRequirements;
@@ -50,7 +51,25 @@ const FToolTargetTypeRequirements& UBakeMultiMeshAttributeMapsToolBuilder::GetTa
 bool UBakeMultiMeshAttributeMapsToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
 {
 	const int32 NumTargets = SceneState.TargetManager->CountSelectedAndTargetable(SceneState, GetTargetRequirements());
-	return (NumTargets > 1);
+	if (NumTargets > 1)
+	{
+		// FMeshSceneAdapter currently only supports StaticMesh targets.
+		// Restrict source targets to StaticMesh.
+		bool bValidTargets = true;
+		int TargetId = 0;
+		SceneState.TargetManager->EnumerateSelectedAndTargetableComponents(SceneState, GetTargetRequirements(),
+			[&bValidTargets, &TargetId](UActorComponent* Component)
+			{
+				if (TargetId > 0)
+				{
+					const UStaticMeshComponent* StaticMesh = Cast<UStaticMeshComponent>(Component);
+					bValidTargets = bValidTargets && StaticMesh;
+				}
+				++TargetId;
+			});
+		return bValidTargets;
+	}
+	return false;
 }
 
 UMultiSelectionMeshEditingTool* UBakeMultiMeshAttributeMapsToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
@@ -66,6 +85,7 @@ class FMeshBakerMeshSceneSampler : public IMeshBakerDetailSampler
 {
 public:
 	using FDetailTextureMap = TMap<void*, FBakeDetailTexture>;
+	using FDetailNormalMap = TMap<void*, FBakeDetailNormalTexture>;
 
 public:
 	/**
@@ -104,6 +124,11 @@ public:
 
 	virtual void SetNormalMap(const void* Mesh, const FBakeDetailTexture& Map) override
 	{
+		DetailNormalMaps[Mesh] = FBakeDetailNormalTexture(Map.Key, Map.Value, EBakeDetailNormalSpace::Tangent);
+	}
+
+	virtual void SetNormalTextureMap(const void* Mesh, const FBakeDetailNormalTexture& Map) override
+	{
 		DetailNormalMaps[Mesh] = Map;
 	}
 
@@ -113,6 +138,11 @@ public:
 	}
 	
 	virtual const FBakeDetailTexture* GetNormalMap(const void* Mesh) const override
+	{
+		return nullptr;
+	}
+
+	virtual const FBakeDetailNormalTexture* GetNormalTextureMap(const void* Mesh) const override
 	{
 		return DetailNormalMaps.Find(Mesh);
 	}
@@ -259,7 +289,7 @@ public:
 		const FVector3d NormalOut3d(NormalOut);
 		// As a stop-gap fix, transform our normal to the local space of the Base mesh here.
 		// TODO: Handle WorldToBase transformation in the evaluator.
-		NormalOut = WorldToBaseTransform.TransformNormal(FVector3f(ChildMesh->WorldTransform.TransformNormal(NormalOut3d)));
+		NormalOut = BaseToWorldTransform.InverseTransformNormal(FVector3f(ChildMesh->WorldTransform.TransformNormal(NormalOut3d)));
 		return bSuccess;
 	}
 
@@ -313,20 +343,19 @@ public:
 	}
 
 	/** Initialize the mesh to normal textures map */
-	void SetNormalMaps(const FDetailTextureMap& Map)
+	void SetNormalMaps(const FDetailNormalMap& Map)
 	{
 		DetailNormalMaps = Map;
 	}
 
 public:
 	FTransformSRT3d BaseToWorldTransform;
-	FTransformSRT3d WorldToBaseTransform;
 	TMap<UActorComponent*, const FActorAdapter*> ActorComponentMap;
 
 protected:
 	FMeshSceneAdapter* MeshScene = nullptr;
 	FDetailTextureMap DetailTextureMaps;
-	FDetailTextureMap DetailNormalMaps;
+	FDetailNormalMap DetailNormalMaps;
 };
 
 
@@ -344,6 +373,7 @@ public:
 	TUniquePtr<UE::Geometry::FMeshMapBaker> Baker;
 	UBakeMultiMeshAttributeMapsTool::FBakeSettings BakeSettings;
 	TSharedPtr<TArray<int32>, ESPMode::ThreadSafe> BaseMeshUVCharts;
+	TSharedPtr<UE::Geometry::TImageBuilder<FVector4f>> SampleFilterMask;
 
 	FTransformSRT3d BaseToWorldTransform;
 
@@ -365,6 +395,14 @@ public:
 		Baker->SetSamplesPerPixel(BakeSettings.SamplesPerPixel);
 		Baker->SetTargetMeshTangents(BaseMeshTangents);
 		Baker->SetTargetMeshUVCharts(BaseMeshUVCharts.Get());
+		if (SampleFilterMask)
+		{
+			Baker->SampleFilterF = [this](const FVector2i& ImageCoords, const FVector2d& UV, int32 TriID)
+			{
+				const FVector4f Mask = SampleFilterMask->BilinearSampleUV<float>(UV, FVector4f::One());
+				return (Mask.X + Mask.Y + Mask.Z) / 3;
+			};
+		}
 		
 		FMeshBakerMeshSceneSampler DetailSampler(DetailMeshScene.Get());
 
@@ -385,7 +423,6 @@ public:
 		};
 		DetailMeshScene->ProcessActorChildMeshes(ProcessChildMesh);
 		DetailSampler.BaseToWorldTransform = BaseToWorldTransform;
-		DetailSampler.WorldToBaseTransform = BaseToWorldTransform.Inverse();
 		Baker->SetDetailSampler(&DetailSampler);
 
 		for (const EBakeMapType MapType : ENUM_EBAKEMAPTYPE_ALL)
@@ -397,6 +434,19 @@ public:
 				TSharedPtr<FMeshNormalMapEvaluator, ESPMode::ThreadSafe> NormalEval = MakeShared<FMeshNormalMapEvaluator, ESPMode::ThreadSafe>();
 				Baker->AddEvaluator(NormalEval);
 				break;	
+			}
+			case EBakeMapType::Position:
+			{
+				TSharedPtr<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe> PropertyEval = MakeShared<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe>();
+				PropertyEval->Property = EMeshPropertyMapType::Position;
+				Baker->AddEvaluator(PropertyEval);
+				break;
+			}
+			case EBakeMapType::ObjectSpaceNormal:
+			{
+				TSharedPtr<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe> PropertyEval = MakeShared<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe>();
+				PropertyEval->Property = EMeshPropertyMapType::Normal;
+				Baker->AddEvaluator(PropertyEval);
 			}
 			case EBakeMapType::Texture:
 			{
@@ -466,11 +516,14 @@ void UBakeMultiMeshAttributeMapsTool::Setup()
 	Settings->WatchProperty(Settings->Resolution, [this](EBakeTextureResolution) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->BitDepth, [this](EBakeTextureBitDepth) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->SamplesPerPixel, [this](EBakeTextureSamplesPerPixel) { OpState |= EBakeOpState::Evaluate; });
+	Settings->WatchProperty(Settings->SampleFilterMask, [this](UTexture2D*){ OpState |= EBakeOpState::Evaluate; });
 	
 	InputMeshSettings = NewObject<UBakeMultiMeshInputToolProperties>(this);
 	InputMeshSettings->RestoreProperties(this);
 	AddToolPropertySource(InputMeshSettings);
 	InputMeshSettings->TargetStaticMesh = GetStaticMeshTarget(Target);
+	InputMeshSettings->TargetSkeletalMesh = GetSkeletalMeshTarget(Target);
+	InputMeshSettings->TargetDynamicMesh = GetDynamicMeshTarget(Target);
 	UpdateUVLayerNames(InputMeshSettings->TargetUVLayer, InputMeshSettings->TargetUVLayerNamesList, TargetMesh);
 	InputMeshSettings->WatchProperty(InputMeshSettings->TargetUVLayer, [this](FString) { OpState |= EBakeOpState::Evaluate; });
 	InputMeshSettings->WatchProperty(InputMeshSettings->ProjectionDistance, [this](float) { OpState |= EBakeOpState::Evaluate; });
@@ -553,6 +606,7 @@ TUniquePtr<UE::Geometry::TGenericDataOperator<FMeshMapBaker>> UBakeMultiMeshAttr
 	Op->BaseMeshUVCharts = TargetMeshUVCharts;
 	Op->BaseToWorldTransform = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
 	Op->BakeSettings = CachedBakeSettings;
+	Op->SampleFilterMask = CachedSampleFilterMask;
 
 	constexpr EBakeMapType RequiresTangents = EBakeMapType::TangentSpaceNormal | EBakeMapType::BentNormal;
 	if (static_cast<bool>(CachedBakeSettings.BakeMapTypes & RequiresTangents))
@@ -638,6 +692,8 @@ void UBakeMultiMeshAttributeMapsTool::UpdateResult()
 	OpState &= ~EBakeOpState::Invalid;
 
 	OpState |= UpdateResult_TargetMeshTangents(CachedBakeSettings.BakeMapTypes);
+
+	OpState |= UpdateResult_SampleFilterMask(Settings->SampleFilterMask);
 
 	// Update map type settings
 	OpState |= UpdateResult_DetailMeshes();
@@ -773,3 +829,4 @@ void UBakeMultiMeshAttributeMapsTool::GatherAnalytics(FBakeAnalytics::FMeshSetti
 
 
 #undef LOCTEXT_NAMESPACE
+

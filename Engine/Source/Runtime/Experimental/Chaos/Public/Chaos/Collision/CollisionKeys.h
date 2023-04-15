@@ -7,6 +7,9 @@
 
 namespace Chaos
 {
+	/**
+	 * Combine two hashes in an order-independent way so that Hash(A, B) == Hash(B, A)
+	 */
 	inline uint32 OrderIndependentHashCombine(const uint32 A, const uint32 B)
 	{
 		if (A < B)
@@ -20,20 +23,35 @@ namespace Chaos
 	}
 
 	/**
-	 * @brief Order particles in a consistent way for use by Broadphase and Resim
-	*/
-	inline bool ShouldSwapParticleOrder(const FGeometryParticleHandle* Particle0, const FGeometryParticleHandle* Particle1)
+	 * Return true if the particles are in the preferred order (the first one has the lower ID)
+	 */
+	inline bool AreParticlesInPreferredOrder(const FGeometryParticleHandle* Particle0, const FGeometryParticleHandle* Particle1)
 	{
-		const bool bIsParticle1Preferred = (Particle1->ParticleID() < Particle0->ParticleID());
-		const bool bSwapOrder = !FConstGenericParticleHandle(Particle0)->IsDynamic() || !bIsParticle1Preferred;
-		return bSwapOrder;
+		return (Particle1->ParticleID() < Particle0->ParticleID());
 	}
 
 	/**
-	 * @brief A key which uniquely identifes a particle pair for use by the collision detection system
+	 * Used to order particles in a consistent way in Broadphase and Resim. Returns whether the partcile order should be reversed.
+	 * We want the particle with the lower ID first, unless only one is dynamic in which case that one is first.
+	 */
+	inline bool ShouldSwapParticleOrder(const bool bIsDynamicOrSleeping0, const bool bIsDynamicOrSleeping1, const bool bIsParticle0Preferred)
+	{
+		return !bIsDynamicOrSleeping0 || (bIsDynamicOrSleeping1 && !bIsParticle0Preferred);
+	}
+	inline bool ShouldSwapParticleOrder(const FGeometryParticleHandle* Particle0, const FGeometryParticleHandle* Particle1)
+	{
+		const EObjectStateType ObjectState0 = Particle0->ObjectState();
+		const EObjectStateType ObjectState1 = Particle1->ObjectState();
+		const bool bIsDynamicOrSleeping0 = (ObjectState0 == EObjectStateType::Dynamic) || (ObjectState0 == EObjectStateType::Sleeping);
+		const bool bIsDynamicOrSleeping1 = (ObjectState1 == EObjectStateType::Dynamic) || (ObjectState1 == EObjectStateType::Sleeping);
+		return ShouldSwapParticleOrder(bIsDynamicOrSleeping0, bIsDynamicOrSleeping1, AreParticlesInPreferredOrder(Particle0, Particle1));
+	}
+
+	/**
+	 * A key which uniquely identifes a particle pair for use by the collision detection system.
 	 * This key will be the same if particles order is reversed.
 	 * @note This uses ParticleID and truncates it from 32 to 31 bits
-	*/
+	 */
 	class FCollisionParticlePairKey
 	{
 	public:
@@ -57,24 +75,28 @@ namespace Chaos
 	private:
 		void GenerateKey(const FGeometryParticleHandle* Particle0, const FGeometryParticleHandle* Particle1)
 		{
-			const bool bIsLocalID0 = Particle0->ParticleID().LocalID != INDEX_NONE;
-			const bool bIsLocalID1 = Particle1->ParticleID().LocalID != INDEX_NONE;
-			const uint32 ID0 = uint32((bIsLocalID0) ? Particle0->ParticleID().LocalID : Particle0->ParticleID().GlobalID);
-			const uint32 ID1 = uint32((bIsLocalID1) ? Particle1->ParticleID().LocalID : Particle1->ParticleID().GlobalID);
+			Key.Key64 = 0;
+			if ((Particle0 != nullptr) && (Particle1 != nullptr))
+			{
+				const bool bIsLocalID0 = Particle0->ParticleID().LocalID != INDEX_NONE;
+				const bool bIsLocalID1 = Particle1->ParticleID().LocalID != INDEX_NONE;
+				const uint32 ID0 = uint32((bIsLocalID0) ? Particle0->ParticleID().LocalID : Particle0->ParticleID().GlobalID);
+				const uint32 ID1 = uint32((bIsLocalID1) ? Particle1->ParticleID().LocalID : Particle1->ParticleID().GlobalID);
 
-			if (ID0 < ID1)
-			{
-				Key.Key32s[0].Key31 = ID0;
-				Key.Key32s[0].IsLocal = bIsLocalID0;
-				Key.Key32s[1].Key31 = ID1;
-				Key.Key32s[1].IsLocal = bIsLocalID1;
-			}
-			else
-			{
-				Key.Key32s[0].Key31 = ID1;
-				Key.Key32s[0].IsLocal = bIsLocalID1;
-				Key.Key32s[1].Key31 = ID0;
-				Key.Key32s[1].IsLocal = bIsLocalID0;
+				if (ID0 < ID1)
+				{
+					Key.Key32s[0].Key31 = ID0;
+					Key.Key32s[0].IsLocal = bIsLocalID0;
+					Key.Key32s[1].Key31 = ID1;
+					Key.Key32s[1].IsLocal = bIsLocalID1;
+				}
+				else
+				{
+					Key.Key32s[0].Key31 = ID1;
+					Key.Key32s[0].IsLocal = bIsLocalID1;
+					Key.Key32s[1].Key31 = ID0;
+					Key.Key32s[1].IsLocal = bIsLocalID0;
+				}
 			}
 		}
 
@@ -100,14 +122,14 @@ namespace Chaos
 	};
 
 	/**
-	 * @brief A key which uniquely identifes a collision constraint within a particle pair
+	 * A key which uniquely identifes a collision constraint within a particle pair
 	 * 
 	 * This key only needs to be uinque within the context of a particle pair. There is no
 	 * guarantee of global uniqueness. This key is only used by the FMultiShapePairCollisionDetector
 	 * class which is used for colliding shape pairs where each shape is actually a hierarchy
 	 * of shapes. 
 	 * 
-	*/
+	 */
 	class FCollisionParticlePairConstraintKey
 	{
 	public:

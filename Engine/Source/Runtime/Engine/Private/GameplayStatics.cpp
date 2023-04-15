@@ -45,10 +45,15 @@
 #include "ContentStreaming.h"
 #include "Async/Async.h"
 #include "Engine/SceneCapture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundWave.h"
 #include "Audio/ActorSoundParameterInterface.h"
+#include "Engine/DamageEvents.h"
+#include "HAL/PlatformMisc.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayStatics)
 
 #if WITH_ACCESSIBILITY
 #include "Framework/Application/SlateApplication.h"
@@ -56,6 +61,26 @@
 #endif
 
 #define LOCTEXT_NAMESPACE "GameplayStatics"
+
+namespace GameplayStatics
+{
+	AActor* GetActorOwnerFromWorldContextObject(UObject* WorldContextObject)
+	{
+		if (AActor* Actor = Cast<AActor>(WorldContextObject))
+		{
+			return Actor;
+		}
+		return WorldContextObject->GetTypedOuter<AActor>();
+	}
+	const AActor* GetActorOwnerFromWorldContextObject(const UObject* WorldContextObject)
+	{
+		if (const AActor* Actor = Cast<const AActor>(WorldContextObject))
+		{
+			return Actor;
+		}
+		return WorldContextObject->GetTypedOuter<AActor>();
+	}
+}
 
 static const int UE_SAVEGAME_FILE_TYPE_TAG = 0x53415647;		// "SAVG"
 
@@ -359,15 +384,20 @@ class APlayerController* UGameplayStatics::GetPlayerController(const UObject* Wo
 	return nullptr;
 }
 
-class APlayerController* UGameplayStatics::GetPlayerControllerFromID(const UObject* WorldContextObject, int32 ControllerID)
+APlayerController* UGameplayStatics::GetPlayerControllerFromID(const UObject* WorldContextObject, int32 ControllerID)
+{
+	return GetPlayerControllerFromPlatformUser(WorldContextObject, FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerID));
+}
+
+APlayerController* UGameplayStatics::GetPlayerControllerFromPlatformUser(const UObject* WorldContextObject, FPlatformUserId UserId)
 {
 	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
 	{
 		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
 		{
 			APlayerController* PlayerController = Iterator->Get();
-			int32 PlayerControllerID = GetPlayerControllerID(PlayerController);
-			if (PlayerControllerID != INDEX_NONE && PlayerControllerID == ControllerID)
+			FPlatformUserId PlayerControllerUserID = PlayerController->GetPlatformUserId();
+			if (PlayerControllerUserID.IsValid() && PlayerControllerUserID == UserId)
 			{
 				return PlayerController;
 			}
@@ -396,10 +426,15 @@ APlayerCameraManager* UGameplayStatics::GetPlayerCameraManager(const UObject* Wo
 
 APlayerController* UGameplayStatics::CreatePlayer(const UObject* WorldContextObject, int32 ControllerId, bool bSpawnPlayerController)
 {
+	return CreatePlayerFromPlatformUser(WorldContextObject, FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId), bSpawnPlayerController);
+}
+
+APlayerController* UGameplayStatics::CreatePlayerFromPlatformUser(const UObject* WorldContextObject, FPlatformUserId UserId, bool bSpawnPlayerController)
+{
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 	FString Error;
 
-	ULocalPlayer* LocalPlayer = World ? World->GetGameInstance()->CreateLocalPlayer(ControllerId, Error, bSpawnPlayerController) : nullptr;
+	ULocalPlayer* LocalPlayer = World ? World->GetGameInstance()->CreateLocalPlayer(UserId, Error, bSpawnPlayerController) : nullptr;
 
 	if (Error.Len() > 0)
 	{
@@ -429,24 +464,22 @@ void UGameplayStatics::RemovePlayer(APlayerController* PlayerController, bool bD
 
 int32 UGameplayStatics::GetPlayerControllerID(APlayerController* PlayerController)
 {
-	if (PlayerController)
-	{
-		if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
-		{
-			return LocalPlayer->GetControllerId();
-		}
-	}
-
-	return INDEX_NONE;
+	FPlatformUserId UserID = PlayerController ? PlayerController->GetPlatformUserId() : PLATFORMUSERID_NONE;
+	return FGenericPlatformMisc::GetUserIndexForPlatformUser(UserID);
 }
 
 void UGameplayStatics::SetPlayerControllerID(APlayerController* PlayerController, int32 ControllerId)
+{
+	SetPlayerPlatformUserId(PlayerController, FPlatformMisc::GetPlatformUserForUserIndex(ControllerId));
+}
+
+void UGameplayStatics::SetPlayerPlatformUserId(APlayerController* PlayerController, FPlatformUserId UserId)
 {
 	if (PlayerController)
 	{
 		if (ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer())
 		{
-			LocalPlayer->SetControllerId(ControllerId);
+			LocalPlayer->SetPlatformUserId(UserId);
 		}
 	}
 }
@@ -466,6 +499,11 @@ AGameStateBase* UGameplayStatics::GetGameState(const UObject* WorldContextObject
 class UClass* UGameplayStatics::GetObjectClass(const UObject* Object)
 {
 	return Object ? Object->GetClass() : nullptr;
+}
+
+bool UGameplayStatics::ObjectIsA(const UObject* Object, TSubclassOf<UObject> ObjectClass)
+{
+	return (Object && ObjectClass) ? Object->IsA(ObjectClass) : false;
 }
 
 float UGameplayStatics::GetGlobalTimeDilation(const UObject* WorldContextObject)
@@ -1549,8 +1587,7 @@ void UGameplayStatics::PlaySound2D(const UObject* WorldContextObject, USoundBase
 		NewActiveSound.SubtitlePriority = Sound->GetSubtitlePriority();
 
 		// If OwningActor isn't supplied to this function, derive an owner from the WorldContextObject
-		const AActor* WorldContextOwner = Cast<const AActor>(WorldContextObject);
-		const AActor* ActiveSoundOwner = OwningActor ? OwningActor : WorldContextOwner;
+		const AActor* ActiveSoundOwner = OwningActor ? OwningActor : GameplayStatics::GetActorOwnerFromWorldContextObject(WorldContextObject);
 
 		NewActiveSound.SetOwner(ActiveSoundOwner);
 
@@ -1575,8 +1612,7 @@ UAudioComponent* UGameplayStatics::CreateSound2D(const UObject* WorldContextObje
 	}
 
 	// Derive an owner from the WorldContextObject
-	UObject* MutableWorldContext = const_cast<UObject*>(WorldContextObject);
-	AActor* WorldContextOwner = Cast<AActor>(MutableWorldContext);
+	AActor* WorldContextOwner = GameplayStatics::GetActorOwnerFromWorldContextObject(const_cast<UObject*>(WorldContextObject));
 
 	FAudioDevice::FCreateComponentParams Params = bPersistAcrossLevelTransition
 		? FAudioDevice::FCreateComponentParams(ThisWorld->GetAudioDeviceRaw())
@@ -1612,7 +1648,7 @@ UAudioComponent* UGameplayStatics::SpawnSound2D(const UObject* WorldContextObjec
 	return AudioComponent;
 }
 
-void UGameplayStatics::PlaySoundAtLocation(const UObject* WorldContextObject, class USoundBase* Sound, FVector Location, FRotator Rotation, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundAttenuation* AttenuationSettings, class USoundConcurrency* ConcurrencySettings, const AActor* OwningActor, UInitialActiveSoundParams* InitialParams)
+void UGameplayStatics::PlaySoundAtLocation(const UObject* WorldContextObject, class USoundBase* Sound, FVector Location, FRotator Rotation, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundAttenuation* AttenuationSettings, class USoundConcurrency* ConcurrencySettings, const AActor* OwningActor, const UInitialActiveSoundParams* InitialParams)
 {
 	if (!Sound || !GEngine || !GEngine->UseSound())
 	{
@@ -1630,13 +1666,11 @@ void UGameplayStatics::PlaySoundAtLocation(const UObject* WorldContextObject, cl
 		TArray<FAudioParameter> Params;
 		if (InitialParams)
 		{
-			Params.Append(MoveTemp(InitialParams->AudioParams));
+			Params.Append(InitialParams->AudioParams);
 		}
 
 		// If OwningActor isn't supplied to this function, derive an owner from the WorldContextObject
-		const AActor* WorldContextOwner = Cast<const AActor>(WorldContextObject);
-		const AActor* ActiveSoundOwner = OwningActor ? OwningActor : WorldContextOwner;
-
+		const AActor* ActiveSoundOwner = OwningActor ? OwningActor : GameplayStatics::GetActorOwnerFromWorldContextObject(WorldContextObject);
 		UActorSoundParameterInterface::Fill(ActiveSoundOwner, Params);
 
 		AudioDevice->PlaySoundAtLocation(Sound, ThisWorld, VolumeMultiplier, PitchMultiplier, StartTime, Location, Rotation, AttenuationSettings, ConcurrencySettings, &Params, ActiveSoundOwner);
@@ -1659,8 +1693,7 @@ UAudioComponent* UGameplayStatics::SpawnSoundAtLocation(const UObject* WorldCont
 	const bool bIsInGameWorld = ThisWorld->IsGameWorld();
 
 	// Derive an owner from the WorldContextObject
-	UObject* MutableWorldContext = const_cast<UObject*>(WorldContextObject);
-	AActor* WorldContextOwner = Cast<AActor>(MutableWorldContext);
+	AActor* WorldContextOwner = GameplayStatics::GetActorOwnerFromWorldContextObject(const_cast<UObject*>(WorldContextObject));
 
 	FAudioDevice::FCreateComponentParams Params(ThisWorld, WorldContextOwner);
 	Params.SetLocation(Location);
@@ -1895,6 +1928,45 @@ void UGameplayStatics::PrimeSound(USoundBase* InSound)
 			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InSoundWave->CreateSoundWaveProxy(), 1, [](EAudioChunkLoadResult) {});
 		}
 	}
+}
+
+TArray<FName> UGameplayStatics::GetAvailableSpatialPluginNames(const UObject* WorldContextObject)
+{
+	if(const UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
+		{
+			return AudioDevice->GetAvailableSpatializationPluginNames();
+		}
+	}
+
+	return {};
+}
+
+FName UGameplayStatics::GetActiveSpatialPluginName(const UObject* WorldContextObject)
+{
+	if(const UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
+		{
+			return AudioDevice->GetCurrentSpatializationPluginInterfaceInfo().PluginName;
+		}
+	}
+
+	return {};
+}
+
+bool UGameplayStatics::SetActiveSpatialPluginByName(const UObject* WorldContextObject, FName InPluginName)
+{
+	if(const UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
+		{
+			return AudioDevice->SetCurrentSpatializationPlugin(InPluginName);
+		}
+	}
+
+	return {};
 }
 
 void UGameplayStatics::PrimeAllSoundsInSoundClass(class USoundClass* InSoundClass)
@@ -2274,24 +2346,24 @@ bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FSt
 
 void UGameplayStatics::AsyncSaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex, FAsyncSaveGameToSlotDelegate SavedDelegate)
 {
-	TArray<uint8> ObjectBytes;
-	if (SaveGameToMemory(SaveGameObject, ObjectBytes))
-	{
-		AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, SavedDelegate, ObjectBytes]()
-		{
-			bool bSuccess = SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
+	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
 
-			// Now schedule the callback on the game thread, but only if it was bound to anything
-			if (SavedDelegate.IsBound())
+	TSharedRef<TArray<uint8>> ObjectBytes(new TArray<uint8>());
+
+	if (SaveSystem && (SlotName.Len() > 0) && 
+		SaveGameToMemory(SaveGameObject, *ObjectBytes) && (ObjectBytes->Num() > 0) )
+	{
+		FPlatformUserId PlatformUserId = FPlatformMisc::GetPlatformUserForUserIndex(UserIndex);
+
+		SaveSystem->SaveGameAsync(false, *SlotName, PlatformUserId, ObjectBytes, 
+			[SavedDelegate, UserIndex](const FString& SlotName, FPlatformUserId PlatformUserId, bool bSuccess)
 			{
-				AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, SavedDelegate, bSuccess]()
-				{
-					SavedDelegate.ExecuteIfBound(SlotName, UserIndex, bSuccess);
-				});
+				check(IsInGameThread());
+				SavedDelegate.ExecuteIfBound(SlotName, UserIndex, bSuccess);
 			}
-		});
+		);
 	}
-	else if (SavedDelegate.IsBound())
+	else
 	{
 		SavedDelegate.ExecuteIfBound(SlotName, UserIndex, false);
 	}
@@ -2342,7 +2414,7 @@ USaveGame* UGameplayStatics::LoadGameFromMemory(const TArray<uint8>& InSaveData)
 	SaveHeader.Read(MemoryReader);
 
 	// Try and find it, and failing that, load it
-	UClass* SaveGameClass = FindObject<UClass>(ANY_PACKAGE, *SaveHeader.SaveGameClassName);
+	UClass* SaveGameClass = UClass::TryFindTypeSlow<UClass>(SaveHeader.SaveGameClassName);
 	if (SaveGameClass == nullptr)
 	{
 		SaveGameClass = LoadObject<UClass>(nullptr, *SaveHeader.SaveGameClassName);
@@ -2379,24 +2451,30 @@ bool UGameplayStatics::LoadDataFromSlot(TArray<uint8>& OutSaveData, const FStrin
 
 void UGameplayStatics::AsyncLoadGameFromSlot(const FString& SlotName, const int32 UserIndex, FAsyncLoadGameFromSlotDelegate LoadedDelegate)
 {
-	AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, LoadedDelegate]()
+	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
+	if (SaveSystem && (SlotName.Len() > 0))
 	{
-		// Do the actual I/O on the background thread
-		TArray<uint8> ObjectBytes;
-		LoadDataFromSlot(ObjectBytes, SlotName, UserIndex);
+		FPlatformUserId PlatformUserId = FPlatformMisc::GetPlatformUserForUserIndex(UserIndex);
 
-		// Now schedule the serialize and callback on the game thread
-		AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, LoadedDelegate, ObjectBytes]()
-		{
-			USaveGame* LoadedGame = nullptr;
-			if (ObjectBytes.Num() > 0)
+		SaveSystem->LoadGameAsync(false, *SlotName, PlatformUserId,
+			[LoadedDelegate, UserIndex](const FString& SlotName, FPlatformUserId PlatformUserId, bool bSuccess, const TArray<uint8>& Data)
 			{
-				LoadedGame = LoadGameFromMemory(ObjectBytes);
-			}
+				check(IsInGameThread());
 
-			LoadedDelegate.ExecuteIfBound(SlotName, UserIndex, LoadedGame);
-		});
-	});
+				USaveGame* LoadedGame = nullptr;
+				if (bSuccess)
+				{
+					LoadedGame = LoadGameFromMemory(Data);
+				}
+
+				LoadedDelegate.ExecuteIfBound(SlotName, UserIndex, LoadedGame);
+			}
+		);
+	}
+	else
+	{
+		LoadedDelegate.ExecuteIfBound(SlotName, UserIndex, nullptr);
+	}
 }
 
 USaveGame* UGameplayStatics::LoadGameFromSlot(const FString& SlotName, const int32 UserIndex)
@@ -2421,37 +2499,44 @@ FMemoryReader UGameplayStatics::StripSaveGameHeader(const TArray<uint8>& SaveDat
 	return MemoryReader;
 }
 
-float UGameplayStatics::GetWorldDeltaSeconds(const UObject* WorldContextObject)
+double UGameplayStatics::GetWorldDeltaSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetDeltaSeconds() : 0.f;
+	return World ? World->GetDeltaSeconds() : 0.0;
 }
 
-float UGameplayStatics::GetTimeSeconds(const UObject* WorldContextObject)
+double UGameplayStatics::GetTimeSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetTimeSeconds() : 0.f;
+	return World ? World->GetTimeSeconds() : 0.0;
 }
 
-float UGameplayStatics::GetUnpausedTimeSeconds(const UObject* WorldContextObject)
+double UGameplayStatics::GetUnpausedTimeSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetUnpausedTimeSeconds() : 0.f;
+	return World ? World->GetUnpausedTimeSeconds() : 0.0;
 }
 
-float UGameplayStatics::GetRealTimeSeconds(const UObject* WorldContextObject)
+double UGameplayStatics::GetRealTimeSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetRealTimeSeconds() : 0.f;
+	return World ? World->GetRealTimeSeconds() : 0.0;
 }
 
-float UGameplayStatics::GetAudioTimeSeconds(const UObject* WorldContextObject)
+double UGameplayStatics::GetAudioTimeSeconds(const UObject* WorldContextObject)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? World->GetAudioTimeSeconds() : 0.f;
+	return World ? World->GetAudioTimeSeconds() : 0.0;
 }
 
 void UGameplayStatics::GetAccurateRealTime(int32& Seconds, float& PartialSeconds)
+{
+	double TimeSeconds = FPlatformTime::Seconds() - GStartTime;
+	Seconds = floor(TimeSeconds);
+	PartialSeconds = TimeSeconds - double(Seconds);
+}
+
+void UGameplayStatics::GetAccurateRealTime(int32& Seconds, double& PartialSeconds)
 {
 	double TimeSeconds = FPlatformTime::Seconds() - GStartTime;
 	Seconds = floor(TimeSeconds);
@@ -2663,7 +2748,7 @@ bool UGameplayStatics::PredictProjectilePath(const UObject* WorldContextObject, 
 	bool bBlockingHit = false;
 
 	UWorld const* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	if (World && PredictParams.SimFrequency > KINDA_SMALL_NUMBER)
+	if (World && PredictParams.SimFrequency > UE_KINDA_SMALL_NUMBER)
 	{
 		const float SubstepDeltaTime = 1.f / PredictParams.SimFrequency;
 		const float GravityZ = FMath::IsNearlyEqual(PredictParams.OverrideGravityZ, 0.0f) ? World->GetGravityZ() : PredictParams.OverrideGravityZ;
@@ -2870,7 +2955,7 @@ bool UGameplayStatics::SuggestProjectileVelocity_CustomArc(const UObject* WorldC
 	float const StartToEndDist = StartToEnd.Size();
 
 	UWorld const* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	if (World && StartToEndDist > KINDA_SMALL_NUMBER)
+	if (World && StartToEndDist > UE_KINDA_SMALL_NUMBER)
 	{
 		const float GravityZ = FMath::IsNearlyEqual(OverrideGravityZ, 0.0f) ? World->GetGravityZ() : OverrideGravityZ;
 
@@ -2967,6 +3052,56 @@ bool UGameplayStatics::DeprojectScreenToWorld(APlayerController const* Player, c
 		{
 			FMatrix const InvViewProjMatrix = ProjectionData.ComputeViewProjectionMatrix().InverseFast();
 			FSceneView::DeprojectScreenToWorld(ScreenPosition, ProjectionData.GetConstrainedViewRect(), InvViewProjMatrix, /*out*/ WorldPosition, /*out*/ WorldDirection);
+			return true;
+		}
+	}
+
+	// something went wrong, zero things and return false
+	WorldPosition = FVector::ZeroVector;
+	WorldDirection = FVector::ZeroVector;
+	return false;
+}
+
+bool UGameplayStatics::DeprojectSceneCaptureToWorld(ASceneCapture2D const* SceneCapture2D, const FVector2D& TargetUV, FVector& WorldPosition, FVector& WorldDirection)
+{
+	if (USceneCaptureComponent2D* SceneCaptureComponent2D = SceneCapture2D->GetCaptureComponent2D())
+	{
+		if (SceneCaptureComponent2D->TextureTarget)
+		{
+			FMinimalViewInfo ViewInfo;
+			SceneCaptureComponent2D->GetCameraView(0.0f, ViewInfo);
+
+			FMatrix ProjectionMatrix;
+			if (SceneCaptureComponent2D->bUseCustomProjectionMatrix)
+			{
+				ProjectionMatrix = AdjustProjectionMatrixForRHI(SceneCaptureComponent2D->CustomProjectionMatrix);
+			}
+			else//
+			{
+				ProjectionMatrix = AdjustProjectionMatrixForRHI(ViewInfo.CalculateProjectionMatrix());
+			}
+			FMatrix InvProjectionMatrix = ProjectionMatrix.Inverse();
+
+			// A view matrix is the inverse of the viewer's matrix, so an inverse view matrix is just the viewer's matrix.
+			// To save precision, we directly compute the viewer's matrix, plus it also avoids the cost of the inverse.
+			// The matrix to convert from world coordinate space to view coordinate space also needs to be included (this
+			// is the transpose of the similar matrix used in CalculateViewProjectionMatricesFromMinimalView).
+			FMatrix InvViewMatrix = FMatrix(
+				FPlane(0, 1, 0, 0),
+				FPlane(0, 0, 1, 0),
+				FPlane(1, 0, 0, 0),
+				FPlane(0, 0, 0, 1)) * FRotationTranslationMatrix(ViewInfo.Rotation, ViewInfo.Location);
+
+			FIntPoint TargetSize = FIntPoint(SceneCaptureComponent2D->TextureTarget->SizeX, SceneCaptureComponent2D->TextureTarget->SizeY);
+
+			FSceneView::DeprojectScreenToWorld(
+				TargetUV * FVector2D(TargetSize),
+				FIntRect(FIntPoint(0, 0), TargetSize),
+				InvViewMatrix,
+				InvProjectionMatrix,
+				WorldPosition,
+				WorldDirection);
+
 			return true;
 		}
 	}
@@ -3160,3 +3295,4 @@ void UGameplayStatics::AnnounceAccessibleString(const FString& AnnouncementStrin
 }
 
 #undef LOCTEXT_NAMESPACE
+

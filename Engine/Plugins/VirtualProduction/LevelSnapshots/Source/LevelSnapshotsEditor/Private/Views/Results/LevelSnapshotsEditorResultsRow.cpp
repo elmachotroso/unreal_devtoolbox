@@ -17,6 +17,8 @@
 #include "PropertyInfoHelpers.h"
 #include "Styling/SlateIconFinder.h"
 
+#define LOCTEXT_NAMESPACE "LevelSnapshotsEditor"
+
 TWeakPtr<IPropertyRowGenerator> FRowGeneratorInfo::GetGeneratorObject() const
 {
 	return GeneratorObject;
@@ -109,20 +111,18 @@ void FLevelSnapshotsEditorResultsRow::FlushReferences()
 
 FLevelSnapshotsEditorResultsRow::FLevelSnapshotsEditorResultsRow(
 	const FText InDisplayName,                                     
-	const ELevelSnapshotsEditorResultsRowType InRowType, const ECheckBoxState StartingWidgetCheckboxState, 
-	const TWeakPtr<SLevelSnapshotsEditorResults>& InResultsView, const TWeakPtr<FLevelSnapshotsEditorResultsRow>& InDirectParentRow)
+	const ELevelSnapshotsEditorResultsRowType InRowType,
+	const ECheckBoxState StartingWidgetCheckboxState, 
+	const TWeakPtr<SLevelSnapshotsEditorResults>& InResultsView,
+	const TWeakPtr<FLevelSnapshotsEditorResultsRow>& InDirectParentRow)
+		: RowType(InRowType)
+		, DisplayName(InDisplayName)
+		, Tooltip(DisplayName)
+		, DirectParentRow(InDirectParentRow)
+		, ResultsViewPtr(InResultsView)
 {
-	check(InResultsView.IsValid());
-	ResultsViewPtr = InResultsView;
-	
-	DisplayName = InDisplayName;
-	RowType = InRowType;
+	check(ResultsViewPtr.IsValid());
 	SetWidgetCheckedState(StartingWidgetCheckboxState);
-
-	if (InDirectParentRow.IsValid())
-	{
-		DirectParentRow = InDirectParentRow;
-	}
 }
 
 void FLevelSnapshotsEditorResultsRow::InitHeaderRow(const ELevelSnapshotsEditorResultsTreeViewHeaderType InHeaderType,
@@ -142,6 +142,7 @@ void FLevelSnapshotsEditorResultsRow::InitAddedActorRow(AActor* InAddedActor)
 	WorldObject = InAddedActor;
 
 	ApplyRowStateMemoryIfAvailable();
+	InitTooltipWithObject(InAddedActor);
 }
 
 void FLevelSnapshotsEditorResultsRow::InitRemovedActorRow(const FSoftObjectPath& InRemovedActorPath)
@@ -149,6 +150,7 @@ void FLevelSnapshotsEditorResultsRow::InitRemovedActorRow(const FSoftObjectPath&
 	RemovedActorPath = InRemovedActorPath;
 
 	ApplyRowStateMemoryIfAvailable();
+	InitTooltipWithObject(InRemovedActorPath);
 }
 
 void FLevelSnapshotsEditorResultsRow::InitAddedObjectRow(UObject* InAddedObjectToRemove)
@@ -156,6 +158,7 @@ void FLevelSnapshotsEditorResultsRow::InitAddedObjectRow(UObject* InAddedObjectT
 	WorldObject = InAddedObjectToRemove;
 
 	ApplyRowStateMemoryIfAvailable();
+	InitTooltipWithObject(InAddedObjectToRemove);
 }
 
 void FLevelSnapshotsEditorResultsRow::InitRemovedObjectRow(UObject* InRemovedObjectToAdd)
@@ -163,6 +166,7 @@ void FLevelSnapshotsEditorResultsRow::InitRemovedObjectRow(UObject* InRemovedObj
 	WorldObject = InRemovedObjectToAdd;
 
 	ApplyRowStateMemoryIfAvailable();
+	InitTooltipWithObject(InRemovedObjectToAdd);
 }
 
 void FLevelSnapshotsEditorResultsRow::InitActorRow(
@@ -172,6 +176,7 @@ void FLevelSnapshotsEditorResultsRow::InitActorRow(
 	WorldObject = InWorldActor;
 
 	ApplyRowStateMemoryIfAvailable();
+	InitTooltipWithObject(InWorldActor);
 }
 
 void FLevelSnapshotsEditorResultsRow::InitObjectRow(
@@ -312,7 +317,7 @@ void FLevelSnapshotsEditorResultsRow::GenerateModifiedActorGroupChildren(FProper
 	{
 		if (WorldComponent)
 		{
-			if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetSelectedProperties(WorldComponent))
+			if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetObjectSelection(WorldComponent).GetPropertySelection())
 			{
 				// Get remaining properties after filter
 				if (PropertySelection->GetSelectedLeafProperties().Num())
@@ -343,10 +348,10 @@ void FLevelSnapshotsEditorResultsRow::GenerateModifiedActorGroupChildren(FProper
 	}
 
 	// Custom subobjects handled by external ICustomObjectSnapshotSerializer implementation
-	TMap<UObject*, UObject*> WorldToSnapshotCustomSubobjects;
-	
-	ULevelSnapshot* ActiveSnapshot = ResultsViewPtr.IsValid() && ResultsViewPtr.Pin()->GetEditorDataPtr() && ResultsViewPtr.Pin()->GetEditorDataPtr()->GetActiveSnapshot().IsSet() ? 
-		ResultsViewPtr.Pin()->GetEditorDataPtr()->GetActiveSnapshot().GetValue() : nullptr;
+	const TSharedPtr<SLevelSnapshotsEditorResults> ResultsViewPin = ResultsViewPtr.Pin();
+	ULevelSnapshot* ActiveSnapshot = ResultsViewPin && ResultsViewPin->GetEditorDataPtr()->GetActiveSnapshot()
+		? ResultsViewPtr.Pin()->GetEditorDataPtr()->GetActiveSnapshot()
+		: nullptr;
 
 	const TFunction<void(UObject* UnmatchedSnapshotSubobject)> HandleUnmatchedCustomSnapshotSubobject = [](UObject* UnmatchedCustomSnapshotSubobject)
 	{
@@ -354,6 +359,7 @@ void FLevelSnapshotsEditorResultsRow::GenerateModifiedActorGroupChildren(FProper
 		// If the row is checked when the snapshot is applied, call FPropertySelectionMap::AddCustomEditorSubobjectToRecreate
 	};
 
+	TMap<UObject*, UObject*> WorldToSnapshotCustomSubobjects;
 	const TFunction<void(UObject* SnapshotSubobject, UObject* EditorWorldSubobject)> HandleMatchedCustomSubobjectPair = [&WorldToSnapshotCustomSubobjects, ActiveSnapshot, &HandleMatchedCustomSubobjectPair, &HandleUnmatchedCustomSnapshotSubobject](UObject* SnapshotSubobject, UObject* EditorWorldSubobject)
 	{
 		check(EditorWorldSubobject);
@@ -372,7 +378,7 @@ void FLevelSnapshotsEditorResultsRow::GenerateModifiedActorGroupChildren(FProper
 	{
 		if (CustomSubObjectPair.Key && CustomSubObjectPair.Value)
 		{
-			if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetSelectedProperties(CustomSubObjectPair.Key))
+			if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetObjectSelection(CustomSubObjectPair.Key).GetPropertySelection())
 			{
 				// Get remaining properties after filter
 				if (PropertySelection->GetSelectedLeafProperties().Num())
@@ -394,7 +400,7 @@ void FLevelSnapshotsEditorResultsRow::GenerateModifiedActorGroupChildren(FProper
 	}
 
 	// Top-level Actor Properties
-	if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetSelectedProperties(GetWorldObject()))
+	if (const FPropertySelection* PropertySelection = PropertySelectionMap.GetObjectSelection(GetWorldObject()).GetPropertySelection())
 	{
 		if (PropertySelection->GetSelectedLeafProperties().Num())
 		{
@@ -581,11 +587,6 @@ FText FLevelSnapshotsEditorResultsRow::GetDisplayName() const
 	return DisplayName;
 }
 
-void FLevelSnapshotsEditorResultsRow::SetDisplayName(const FText InDisplayName)
-{
-	DisplayName = InDisplayName;
-}
-
 const FSlateBrush* FLevelSnapshotsEditorResultsRow::GetIconBrush() const
 {
 	if (RowType == ModifiedComponentGroup)
@@ -621,16 +622,6 @@ const FSlateBrush* FLevelSnapshotsEditorResultsRow::GetIconBrush() const
 const TArray<FLevelSnapshotsEditorResultsRowPtr>& FLevelSnapshotsEditorResultsRow::GetChildRows() const
 {
 	return ChildRows;
-}
-
-int32 FLevelSnapshotsEditorResultsRow::GetChildCount() const
-{
-	return ChildRows.Num();
-}
-
-void FLevelSnapshotsEditorResultsRow::SetChildRows(const TArray<FLevelSnapshotsEditorResultsRowPtr>& InChildRows)
-{
-	ChildRows = InChildRows;
 }
 
 void FLevelSnapshotsEditorResultsRow::AddToChildRows(const FLevelSnapshotsEditorResultsRowPtr& InRow)
@@ -1120,7 +1111,16 @@ bool FLevelSnapshotsEditorResultsRow::ShouldRowBeVisible() const
 {
 	const bool bShowUnselectedRows = ResultsViewPtr.IsValid() ? ResultsViewPtr.Pin()->GetShowUnselectedRows() : true;
 	const bool bShouldBeVisibleBasedOnCheckedState = bShowUnselectedRows ? true : GetWidgetCheckedState() != ECheckBoxState::Unchecked;
-	return bShouldBeVisibleBasedOnCheckedState && (GetDoesRowMatchSearchTerms() || HasVisibleChildren());
+	return bShouldBeVisibleBasedOnCheckedState && (bDoesRowMatchSearchTerms || HasVisibleChildren());
+}
+
+void FLevelSnapshotsEditorResultsRow::InitTooltipWithObject(const FSoftObjectPath& RowObject)
+{
+	Tooltip = FText::Format(
+		LOCTEXT("TooltipFmt", "{0} ({1})"),
+		DisplayName,
+		FText::FromString(RowObject.ToString())
+	);
 }
 
 bool FLevelSnapshotsEditorResultsRow::GetShouldCheckboxBeHidden() const
@@ -1151,11 +1151,6 @@ const FString& FLevelSnapshotsEditorResultsRow::GetOrCacheSearchTerms()
 void FLevelSnapshotsEditorResultsRow::SetCachedSearchTerms(const FString& InTerms)
 {
 	CachedSearchTerms = InTerms;
-}
-
-bool FLevelSnapshotsEditorResultsRow::GetDoesRowMatchSearchTerms() const
-{
-	return bDoesRowMatchSearchTerms;
 }
 
 void FLevelSnapshotsEditorResultsRow::SetDoesRowMatchSearchTerms(const bool bNewMatch)
@@ -1260,3 +1255,5 @@ void FLevelSnapshotsEditorResultsRow::EvaluateAndSetAllParentGroupCheckedStates(
 		ParentRow = PinnedParent->GetDirectParentRow();
 	}
 }
+
+#undef LOCTEXT_NAMESPACE

@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 namespace Metasound
 {
@@ -42,9 +42,6 @@ namespace Metasound
 
 			/** Adds an input to the node */
 			TSharedPtr<FUICommandInfo> AddInput;
-
-			/** Removes an input from the node */
-			TSharedPtr<FUICommandInfo> DeleteInput;
 
 			/** Shows the MetasoundSource's specific settings in the Details panel (if of respective type) */
 			TSharedPtr<FUICommandInfo> EditSourceSettings;

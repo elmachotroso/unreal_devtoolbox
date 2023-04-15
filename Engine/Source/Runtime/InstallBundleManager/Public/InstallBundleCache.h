@@ -2,7 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/SparseArray.h"
+#include "HAL/Platform.h"
 #include "InstallBundleTypes.h"
+#include "Misc/DateTime.h"
+#include "Misc/Optional.h"
+#include "Misc/Timespan.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
 class FInstallBundleCache;
 
@@ -47,7 +56,7 @@ public:
 
 	void Init(FInstallBundleCacheInitInfo InitInfo);
 
-	FName GetName() { return CacheName; }
+	FName GetName() const { return CacheName; }
 
 	// Add a bundle to the cache.  
 	void AddOrUpdateBundle(EInstallBundleSourceType Source, const FInstallBundleCacheBundleInfo& AddInfo);
@@ -70,6 +79,9 @@ public:
 	// Called from bundle manager, returns all bundles that can be evicted
 	FInstallBundleCacheFlushResult Flush(EInstallBundleSourceType* Source = nullptr);
 
+	bool Contains(FName BundleName) const;
+	bool Contains(EInstallBundleSourceType Source, FName BundleName) const;
+
 	// Called from bundle manager to make the files for this bundle eligible for eviction
 	bool Release(FName BundleName);
 
@@ -80,7 +92,7 @@ public:
 	// Hint to the cache that this bundle is requested, and we should prefer to evict non-requested bundles if possible
 	void HintRequested(FName BundleName, bool bRequested);
 
-	FInstallBundleCacheStats GetStats(bool bDumpToLog = false, bool bVerbose = false) const;
+	FInstallBundleCacheStats GetStats(EInstallBundleCacheDumpToLog DumpToLog = EInstallBundleCacheDumpToLog::None, bool bVerbose = false) const;
 
 private:
 	uint64 GetFreeSpaceInternal(uint64 UsedSize) const;

@@ -7,6 +7,27 @@
 #include "NiagaraParameterStore.h"
 #include "NiagaraDataInterfaceActorComponent.generated.h"
 
+UENUM()
+enum class ENDIActorComponentSourceMode : uint8
+{
+	/**
+	The default binding mode first we look for a valid binding on the ActorOrComponentParameter.
+	If this it no valid we then look at the SourceActor.
+	If these both fail we are bound to nothing.
+	*/
+	Default,
+	/**
+	We will first look at the attach parent.
+	If this is not valid we fallback to the Default binding mode.
+	*/
+	AttachParent,
+	/**
+	We will look for a ULocalPlayer with the provided index.
+	If this is not valid we fallback to the Default binding mode.
+	*/
+	LocalPlayer,
+};
+
 /**
 Data interface that gives you access to actor & component information.
 */
@@ -15,13 +36,26 @@ class NIAGARA_API UNiagaraDataInterfaceActorComponent : public UNiagaraDataInter
 {
 	GENERATED_UCLASS_BODY()
 
-public:
-	DECLARE_NIAGARA_DI_PARAMETER();
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(uint32,		Valid)
+		SHADER_PARAMETER(FMatrix44f,	Matrix)
+		SHADER_PARAMETER(FQuat4f,		Rotation)
+		SHADER_PARAMETER(FVector3f,		Scale)
+		SHADER_PARAMETER(FVector3f,		Velocity)
+	END_SHADER_PARAMETER_STRUCT();
 
+public:
 	/** When this option is disabled, we use the previous frame's data for the skeletal mesh and can often issue the simulation early. This greatly
 	reduces overhead and allows the game thread to run faster, but comes at a tradeoff if the dependencies might leave gaps or other visual artifacts.*/
 	UPROPERTY(EditAnywhere, Category = "Performance")
 	bool bRequireCurrentFrameData = true;
+
+	/** Controls how we find the actor / component we want to bind to. */
+	UPROPERTY(EditAnywhere, Category = "ActorComponent")
+	ENDIActorComponentSourceMode SourceMode = ENDIActorComponentSourceMode::Default;
+
+	UPROPERTY(EditAnywhere, Category = "ActorComponent", meta=(EditCondition="SourceMode==ENDIActorComponentSourceMode::LocalPlayer"))//, EditConditionHides))
+	int32 LocalPlayerIndex = 0;
 
 	/** Optional source actor to use, if the user parameter binding is valid this will be ignored. */
 	UPROPERTY(EditAnywhere, Category = "ActorComponent")
@@ -35,7 +69,7 @@ public:
 	virtual void PostInitProperties() override;
 	//UObject Interface End
 
-	class UActorComponent* ResolveComponent(const void* PerInstanceData) const;
+	class UActorComponent* ResolveComponent(FNiagaraSystemInstance* SystemInstance, const void* PerInstanceData) const;
 
 	//UNiagaraDataInterface Interface
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return true; }
@@ -48,6 +82,9 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
 	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -68,4 +105,5 @@ public:
 private:
 	void VMGetMatrix(FVectorVMExternalFunctionContext& Context);
 	void VMGetTransform(FVectorVMExternalFunctionContext& Context);
+	void VMGetPhysicsVelocity(FVectorVMExternalFunctionContext& Context);
 };

@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.IO;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using AutomationTool;
 using UnrealBuildTool;
 using EpicGames.Core;
@@ -20,6 +21,27 @@ public abstract class BaseLinuxPlatform : Platform
 	public BaseLinuxPlatform(UnrealTargetPlatform P)
 		: base(P)
 	{
+	}
+
+	public override DeviceInfo[] GetDevices()
+	{
+		List<DeviceInfo> Devices = new List<DeviceInfo>();
+
+		if (HostPlatform.Current.HostEditorPlatform == TargetPlatformType)
+		{
+			DeviceInfo LocalMachine = new DeviceInfo(TargetPlatformType, Environment.MachineName, Environment.MachineName,
+				RuntimeInformation.OSDescription, "Computer", true, true);
+
+			Devices.Add(LocalMachine);
+		}
+
+		// only add for true Linux, not Arm64, etc
+		if (PlatformType == UnrealTargetPlatform.Linux)
+		{
+			Devices.AddRange(SteamDeckSupport.GetDevices(UnrealTargetPlatform.Linux));
+		}
+
+		return Devices.ToArray();
 	}
 
 	public override void GetFilesToDeployOrStage(ProjectParams Params, DeploymentContext SC)
@@ -191,6 +213,13 @@ public abstract class BaseLinuxPlatform : Platform
 	/// <param name="SC"></param>
 	public override void Deploy(ProjectParams Params, DeploymentContext SC)
 	{
+		// We only care about deploying for SteamDeck
+		if (Params.Devices.Count == 1 && GetDevices().FirstOrDefault(x => x.Id == Params.DeviceNames[0])?.Type == "SteamDeck")
+		{
+			SteamDeckSupport.Deploy(UnrealTargetPlatform.Linux, Params, SC);
+			return;
+		}
+
 		if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Linux)
 		{
 			foreach (string DeviceAddress in Params.DeviceNames)
@@ -292,50 +321,68 @@ chmod +x {0}
 	public override void PlatformSetupParams(ref ProjectParams ProjParams)
 	{
 		if ((ProjParams.Deploy || ProjParams.Run) && BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Linux)
-		{ 
-			// Prompt for username if not already set
-			while (String.IsNullOrEmpty(ProjParams.DeviceUsername))
+		{
+			// we don't need username/password if we are only targeting steamdeck devices
+			bool bNeedsUsernameAndPassword = false;
+			foreach (string DeviceId in ProjParams.DeviceNames)
 			{
-				Console.Write("Username: ");
-				ProjParams.DeviceUsername = Console.ReadLine();
-			}
-
-			// Prompty for password if not already set
-			while (String.IsNullOrEmpty(ProjParams.DevicePassword))
-			{
-				ProjParams.DevicePassword = String.Empty;
-				Console.Write("Password: ");
-				ConsoleKeyInfo key;
-				do
+				if (SteamDeckSupport.GetDeviceInfo(UnrealTargetPlatform.Linux, ProjParams, out _, out _) == false)
 				{
-					key = Console.ReadKey(true);
-					if (key.Key != ConsoleKey.Backspace && key.Key != ConsoleKey.Enter)
-					{
-						ProjParams.DevicePassword += key.KeyChar;
-						Console.Write("*");
-					}
-					else
-					{
-						if (key.Key == ConsoleKey.Backspace && ProjParams.DevicePassword.Length > 0)
-						{
-							ProjParams.DevicePassword = ProjParams.DevicePassword.Substring(0, (ProjParams.DevicePassword.Length - 1));
-							Console.Write("\b \b");
-						}
-					}
-
-				} while (key.Key != ConsoleKey.Enter);
-				Console.WriteLine();
+					bNeedsUsernameAndPassword = true;
+				}
 			}
 
-			// try contacting the device(s) and cache the key(s)
-			foreach(string DeviceAddress in ProjParams.DeviceNames)
+			if (bNeedsUsernameAndPassword)
 			{
-				RunAndLog(CmdEnv, "cmd.exe", String.Format("/c \"echo y | {0} -P 22 -ssh -t -l {1} -pw {2} {3} echo All Ok\"", PlinkPath, ProjParams.DeviceUsername, ProjParams.DevicePassword, DeviceAddress));
+				// Prompt for username if not already set
+				while (String.IsNullOrEmpty(ProjParams.DeviceUsername))
+				{
+					Console.Write("Username: ");
+					ProjParams.DeviceUsername = Console.ReadLine();
+				}
+
+				// Prompty for password if not already set
+				while (String.IsNullOrEmpty(ProjParams.DevicePassword))
+				{
+					ProjParams.DevicePassword = String.Empty;
+					Console.Write("Password: ");
+					ConsoleKeyInfo key;
+					do
+					{
+						key = Console.ReadKey(true);
+						if (key.Key != ConsoleKey.Backspace && key.Key != ConsoleKey.Enter)
+						{
+							ProjParams.DevicePassword += key.KeyChar;
+							Console.Write("*");
+						}
+						else
+						{
+							if (key.Key == ConsoleKey.Backspace && ProjParams.DevicePassword.Length > 0)
+							{
+								ProjParams.DevicePassword = ProjParams.DevicePassword.Substring(0, (ProjParams.DevicePassword.Length - 1));
+								Console.Write("\b \b");
+							}
+						}
+
+					} while (key.Key != ConsoleKey.Enter);
+					Console.WriteLine();
+				}
+
+				// try contacting the device(s) and cache the key(s)
+				foreach (string DeviceAddress in ProjParams.DeviceNames)
+				{
+					RunAndLog(CmdEnv, "cmd.exe", String.Format("/c \"echo y | {0} -P 22 -ssh -t -l {1} -pw {2} {3} echo All Ok\"", PlinkPath, ProjParams.DeviceUsername, ProjParams.DevicePassword, DeviceAddress));
+				}
 			}
 		}
 	}
 	public override IProcessResult RunClient(ERunOptions ClientRunFlags, string ClientApp, string ClientCmdLine, ProjectParams Params)
 	{
+		if (Params.Devices.Count == 1 && GetDevices().FirstOrDefault(x => x.Id == Params.DeviceNames[0])?.Type == "SteamDeck")
+		{
+			return SteamDeckSupport.RunClient(UnrealTargetPlatform.Linux, ClientRunFlags, ClientApp, ClientCmdLine, Params);
+		}
+
 		if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Linux)
 		{
 			IProcessResult Result = null;
@@ -363,7 +410,7 @@ chmod +x {0}
 
 	public override void StripSymbols(FileReference SourceFile, FileReference TargetFile)
 	{
-		LinuxExports.StripSymbols(SourceFile, TargetFile);
+		LinuxExports.StripSymbols(SourceFile, TargetFile, Log.Logger);
 	}
 }
 

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "DSP/Dsp.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 
 #include "MetasoundAudioBuffer.h"
 #include "MetasoundExecutableOperator.h"
@@ -58,16 +59,29 @@ namespace Metasound
 					// audio channels
 					for (uint32 ChanIndex = 0; ChanIndex < NumChannels; ++ChanIndex)
 					{
-						InputInterface.Add(TInputDataVertexModel<FAudioBuffer>(GetAudioInputName(InputIndex, ChanIndex), GetAudioInputDescription(InputIndex, ChanIndex)));
+#if WITH_EDITOR
+						const FDataVertexMetadata AudioInputMetadata
+						{
+							GetAudioInputDescription(InputIndex, ChanIndex),
+							GetAudioInputDisplayName(InputIndex, ChanIndex)
+						};
+#else 
+						const FDataVertexMetadata AudioInputMetadata;
+#endif // WITH_EDITOR
+						InputInterface.Add(TInputDataVertex<FAudioBuffer>(GetAudioInputName(InputIndex, ChanIndex), AudioInputMetadata));
 					}
 
 					// gain scalar
+#if WITH_EDITOR
 					FDataVertexMetadata GainPinMetaData
 					{
 						GetGainInputDescription(InputIndex),
 						GetGainInputDisplayName(InputIndex)
 					};
-					TInputDataVertexModel<float>GainVertexModel(GetGainInputName(InputIndex), GainPinMetaData, 1.0f);
+#else 
+					FDataVertexMetadata GainPinMetaData;
+#endif // WITH_EDITOR
+					TInputDataVertex<float>GainVertexModel(GetGainInputName(InputIndex), GainPinMetaData, 1.0f);
 
 					InputInterface.Add(GainVertexModel);
 				}
@@ -76,7 +90,16 @@ namespace Metasound
 				FOutputVertexInterface OutputInterface;
 				for (uint32 i = 0; i < NumChannels; ++i)
 				{
-					OutputInterface.Add(TOutputDataVertexModel<FAudioBuffer>(GetAudioOutputName(i), GetAudioOutputDescription(i)));
+#if WITH_EDITOR
+					const FDataVertexMetadata AudioOutputMetadata
+					{
+						GetAudioOutputDescription(i),
+						GetAudioOutputDisplayName(i)
+					};
+#else 
+					const FDataVertexMetadata AudioOutputMetadata;
+#endif // WITH_EDITOR
+					OutputInterface.Add(TOutputDataVertex<FAudioBuffer>(GetAudioOutputName(i), AudioOutputMetadata));
 				}
 
 				return FVertexInterface(InputInterface, OutputInterface);
@@ -193,10 +216,11 @@ namespace Metasound
 				for (uint32 ChanIndex = 0; ChanIndex < NumChannels; ++ChanIndex)
 				{
 					// Outputs[Chan] += Gains[i] * Inputs[i][Chan]
-					const float* InputPtr = Inputs[InputIndex * NumChannels + ChanIndex]->GetData();
-					float* OutputPtr = Outputs[ChanIndex]->GetData();
+					TArrayView<const float> InputView(Inputs[InputIndex * NumChannels + ChanIndex]->GetData(), Settings.GetNumFramesPerBlock());
+					TArrayView<float> OutputView(Outputs[ChanIndex]->GetData(), Settings.GetNumFramesPerBlock());
 
-					Audio::MixInBufferFast(InputPtr, OutputPtr, Settings.GetNumFramesPerBlock(), PrevGain, NextGain);
+					Audio::ArrayMixIn(InputView, OutputView, PrevGain, NextGain);
+
 				}
 
 				PrevGains[InputIndex] = NextGain;
@@ -248,24 +272,9 @@ namespace Metasound
 			return *FString::Printf(TEXT("In %i, %i"), InputIndex, ChannelIndex);
 		}
 
-		static const FText GetAudioInputDescription(uint32 InputIndex, uint32 ChannelIndex)
-		{
-			return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInputDescription", "Audio Input #: {0}, Channel: {1}", InputIndex, ChannelIndex);
-		}
-
 		static const FVertexName GetGainInputName(uint32 InputIndex)
 		{
 			return *FString::Printf(TEXT("Gain %i"), InputIndex);
-		}
-
-		static const FText GetGainInputDisplayName(uint32 InputIndex)
-		{
-			return METASOUND_LOCTEXT_FORMAT("AudioMixerGainInputDisplayName", "Gain {0} (Lin)", InputIndex);
-		}
-
-		static const FText GetGainInputDescription(uint32 InputIndex)
-		{
-			return METASOUND_LOCTEXT_FORMAT("AudioMixerGainInputDescription", "Gain Input #: {0}", InputIndex);
 		}
 
 		static const FVertexName GetAudioOutputName(uint32 ChannelIndex)
@@ -282,10 +291,67 @@ namespace Metasound
 			return *FString::Printf(TEXT("Out %i"), ChannelIndex);
 		}
 
+#if WITH_EDITOR
+		static const FText GetAudioInputDescription(uint32 InputIndex, uint32 ChannelIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInputDescription", "Audio Input #: {0}, Channel: {1}", InputIndex, ChannelIndex);
+		}
+
+		static const FText GetAudioInputDisplayName(uint32 InputIndex, uint32 ChannelIndex)
+		{
+			if (NumChannels == 1)
+			{
+				return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInput1In", "In {0}", InputIndex);
+			}
+			else if (NumChannels == 2)
+			{
+				if (ChannelIndex == 0)
+				{
+					return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInput2InL", "In {0} L", InputIndex);
+				}
+				else
+				{
+					return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInput2InR", "In {0} R", InputIndex);
+				}
+			}
+			return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioInputIn", "In {0}, {0}", InputIndex, ChannelIndex);
+		}
+
+		static const FText GetGainInputDisplayName(uint32 InputIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("AudioMixerGainInputDisplayName", "Gain {0} (Lin)", InputIndex);
+		}
+
+		static const FText GetGainInputDescription(uint32 InputIndex)
+		{
+			return METASOUND_LOCTEXT_FORMAT("AudioMixerGainInputDescription", "Gain Input #: {0}", InputIndex);
+		}
+
+		static const FText GetAudioOutputDisplayName(uint32 ChannelIndex)
+		{
+			if (NumChannels == 1)
+			{
+				return METASOUND_LOCTEXT("AudioMixerAudioOutput1Out", "Out");
+			}
+			else if (NumChannels == 2)
+			{
+				if (ChannelIndex == 0)
+				{
+					return METASOUND_LOCTEXT("AudioMixerAudioOutput2OutL", "Out L");
+				}
+				else
+				{
+					return METASOUND_LOCTEXT("AudioMixerAudioOutput2OutR", "Out R");
+				}
+			}
+			return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioOutputOut", "Out {0}", ChannelIndex);
+		}
+
 		static const FText GetAudioOutputDescription(uint32 ChannelIndex)
 		{
 			return METASOUND_LOCTEXT_FORMAT("AudioMixerAudioOutputDescription", "Summed output for channel: {0}", ChannelIndex);
 		}
+#endif // WITH_EDITOR
 #pragma endregion
 	}; // class TAudioMixerNodeOperator
 #pragma endregion

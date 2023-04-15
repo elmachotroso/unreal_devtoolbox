@@ -38,10 +38,10 @@ public:
 	virtual void CreateViewContent(FMenuBuilder& MenuBuilder) {}
 
 	/** Returns a factory to create a Folder Picker mode which matches this mode */
-	virtual FCreateSceneOutlinerMode CreateFolderPickerMode(const FFolder::FRootObject& InRootObject = FFolder::GetDefaultRootObject()) const { return FCreateSceneOutlinerMode(); }
+	virtual FCreateSceneOutlinerMode CreateFolderPickerMode(const FFolder::FRootObject& InRootObject = FFolder::GetInvalidRootObject()) const { return FCreateSceneOutlinerMode(); }
 public:
 	/** Construct a new Drag and drop operation */
-	virtual TSharedPtr<FDragDropOperation> CreateDragDropOperation(const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const { return nullptr; }
+	virtual TSharedPtr<FDragDropOperation> CreateDragDropOperation(const FPointerEvent& MouseEvent, const TArray<FSceneOutlinerTreeItemPtr>& InTreeItems) const { return nullptr; }
 
 	/**
 		* Populates a drag/drop operation if the mode supports that type of operation.
@@ -82,11 +82,18 @@ public:
 	virtual TSharedPtr<SWidget> CreateContextMenu() { return TSharedPtr<SWidget>(); }
 	/** Check if an item can be renamed */
 	virtual bool CanRenameItem(const ISceneOutlinerTreeItem& Item) const { return false; }
+	/** Whether the toolbar can be customized. */
+	virtual bool CanCustomizeToolbar() const { return false; }
 
 	/** Synchronize the mode specific selection with the tree view */
 	virtual void SynchronizeSelection() {}
 	/** Trigger a duplication of selected items */
 	virtual void OnDuplicateSelected() {}
+
+	/** Returns the root object of this outliner mode */
+	virtual FFolder::FRootObject GetRootObject() const { return FFolder::GetInvalidRootObject(); }
+	/** Returns the target root object for a paste operation */
+	virtual FFolder::FRootObject GetPasteTargetRootObject() const { return FFolder::GetInvalidRootObject(); }
 public:
 	/** Get the current selection mode */
 	virtual ESelectionMode::Type GetSelectionMode() const { return ESelectionMode::Single; }
@@ -124,26 +131,41 @@ public:
 
 	/** Does the mode support drag and drop */
 	virtual bool CanSupportDragAndDrop() const { return false; }
+
+	/** Does the mode reports errors */
+	virtual bool HasErrors() const { return false; }
+
+	/** Return the errors text */
+	virtual FText GetErrorsText() const { return FText(); }
+
+	/** Repair errors*/
+	virtual void RepairErrors() const {}
+
 public:
 	/* Folder management */
 		
 	/** Creates a new folder item at the root with a valid name*/
-	virtual FFolder CreateNewFolder() { return FFolder(); }
+	virtual FFolder CreateNewFolder() { return FFolder::GetInvalidFolder(); }
+	/** Returns a unique folder path for a specific parent with a given leaf name (without creating it) */
+	virtual FFolder GetFolder(const FFolder& ParentPath, const FName& LeafName) { return FFolder::GetInvalidFolder(); }
 	/** Create a folder under a specific parent with a given leaf name */
-	virtual FFolder CreateFolder(const FFolder& ParentPath, const FName& LeafName) { return FFolder(); }
+	virtual bool CreateFolder(const FFolder& NewFolder) { return false; }
 	/** Reparent an item to a given folder path. Returns true if the operation is sucessful */
 	virtual bool ReparentItemToFolder(const FFolder& FolderPath, const FSceneOutlinerTreeItemPtr& Item) { return false; }
 	/** Select all descendants of a folder. Optionally select only immediate descendants. */
 	virtual void SelectFoldersDescendants(const TArray<FFolderTreeItem*>& FolderItems, bool bSelectImmediateChildrenOnly) {}
 public:
-	/** Pins an item in the outliner */
-	virtual void PinItem(const FSceneOutlinerTreeItemPtr& InItem) {}
-	/** Unpins an item in the outliner */
-	virtual void UnpinItem(const FSceneOutlinerTreeItemPtr& InItem) {}
+	/** Pins an item list in the outliner */
+	virtual void PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) {}
+	/** Unpins an item list in the outliner */
+	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) {}
 	/** Pins all selected items */
 	virtual void PinSelectedItems() {}
 	/** Unpins all selected items */
 	virtual void UnpinSelectedItems() {}
+
+	/** Function called by the Outliner Filter Bar to compare an item with Type Filters*/
+	virtual bool CompareItemWithClassName(SceneOutliner::FilterBarType InItem, const TSet<FTopLevelAssetPath>&) const { return false; };
 public:
 	/* Getters */
 

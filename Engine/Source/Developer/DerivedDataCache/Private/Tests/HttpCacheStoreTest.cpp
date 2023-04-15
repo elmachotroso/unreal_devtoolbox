@@ -7,6 +7,7 @@
 #include "DerivedDataRequestOwner.h"
 #include "DerivedDataValue.h"
 #include "DerivedDataValueId.h"
+#include "HAL/FileManager.h"
 #include "Memory/CompositeBuffer.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
@@ -21,15 +22,15 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogHttpDerivedDataBackendTests, Log, All);
 
-#define TEST_NAME_ROOT TEXT("System.DerivedDataCache.HttpDerivedDataBackend")
+#define TEST_NAME_ROOT "System.DerivedDataCache.HttpDerivedDataBackend"
 
 #define IMPLEMENT_HTTPDERIVEDDATA_AUTOMATION_TEST( TClass, PrettyName, TFlags ) \
-	IMPLEMENT_CUSTOM_COMPLEX_AUTOMATION_TEST(TClass, FHttpCacheStoreTestBase, TEST_NAME_ROOT PrettyName, TFlags) \
+	IMPLEMENT_CUSTOM_COMPLEX_AUTOMATION_TEST(TClass, FHttpCacheStoreTestBase, TEXT(TEST_NAME_ROOT PrettyName), TFlags) \
 	void TClass::GetTests(TArray<FString>& OutBeautifiedNames, TArray <FString>& OutTestCommands) const \
 	{ \
 		if (CheckPrequisites()) \
 		{ \
-			OutBeautifiedNames.Add(TEST_NAME_ROOT PrettyName); \
+			OutBeautifiedNames.Add(TEXT(TEST_NAME_ROOT PrettyName)); \
 			OutTestCommands.Add(FString()); \
 		} \
 	}
@@ -37,15 +38,17 @@ DEFINE_LOG_CATEGORY_STATIC(LogHttpDerivedDataBackendTests, Log, All);
 namespace UE::DerivedData
 {
 
-FDerivedDataBackendInterface* GetAnyHttpCacheStore(
+ILegacyCacheStore* GetAnyHttpCacheStore(
 	FString& OutDomain,
 	FString& OutOAuthProvider,
 	FString& OutOAuthClientId,
 	FString& OutOAuthSecret,
-	FString& OutNamespace,
-	FString& OutStructuredNamespace);
+	FString& OutOAuthScope,
+	FString& OAuthProviderIdentifier,
+	FString& OAuthAccessToken,
+	FString& OutNamespace);
 
-ILegacyCacheStore* CreateZenCacheStore(const TCHAR* NodeName, const TCHAR* ServiceUrl, const TCHAR* Namespace);
+TTuple<ILegacyCacheStore*, ECacheStoreFlags> CreateZenCacheStore(const TCHAR* NodeName, const TCHAR* Config);
 
 class FHttpCacheStoreTestBase : public FAutomationTestBase
 {
@@ -57,7 +60,7 @@ public:
 
 	bool CheckPrequisites() const
 	{
-		if (FDerivedDataBackendInterface* Backend = GetTestBackend())
+		if (ILegacyCacheStore* Backend = GetTestBackend())
 		{
 			return true;
 		}
@@ -70,7 +73,7 @@ protected:
 	{
 		std::atomic<uint64> Requests{ 0 };
 		std::atomic<uint64> MaxLatency{ 0 };
-		std::atomic<uint64> TotalMS{ 0 };
+		std::atomic<uint64> TotalCycles{ 0 };
 		std::atomic<uint64> TotalRequests{ 0 };
 
 		FEvent* StartEvent = FPlatformProcess::GetSynchEventFromPool(true);
@@ -90,11 +93,11 @@ protected:
 
 					while (FPlatformTime::Seconds() < StopTime.load(std::memory_order_relaxed))
 					{
-						uint64 Before = FPlatformTime::Cycles64();
+						const uint64 Before = FPlatformTime::Cycles64();
 						TestFunction();
-						uint64 Delta = FPlatformTime::Cycles64() - Before;
+						const uint64 Delta = FPlatformTime::Cycles64() - Before;
 						Requests++;
-						TotalMS += FPlatformTime::ToMilliseconds64(Delta);
+						TotalCycles += Delta;
 						TotalRequests++;
 
 						// Compare exchange loop until we either succeed to set the maximum value
@@ -139,11 +142,13 @@ protected:
 
 			if (TotalRequests)
 			{
-				UE_LOG(LogHttpDerivedDataBackendTests, Display, TEXT("RPS: %llu, AvgLatency: %.02f ms, MaxLatency: %.02f s"), Requests.exchange(0), double(TotalMS) / TotalRequests, FPlatformTime::ToSeconds(MaxLatency));
+				UE_LOG(LogHttpDerivedDataBackendTests, Display, TEXT("RPS: %" UINT64_FMT ", AvgLatency: %.02f ms, MaxLatency: %.02f s"),
+					Requests.exchange(0), FPlatformTime::ToMilliseconds64(TotalCycles) / double(TotalRequests), FPlatformTime::ToSeconds64(MaxLatency));
 			}
 			else
 			{
-				UE_LOG(LogHttpDerivedDataBackendTests, Display, TEXT("RPS: %llu, AvgLatency: N/A, MaxLatency: %.02f s"), Requests.exchange(0), FPlatformTime::ToSeconds(MaxLatency));
+				UE_LOG(LogHttpDerivedDataBackendTests, Display, TEXT("RPS: %" UINT64_FMT ", AvgLatency: N/A, MaxLatency: %.02f s"),
+					Requests.exchange(0), FPlatformTime::ToSeconds64(MaxLatency));
 			}
 		}
 
@@ -153,10 +158,10 @@ protected:
 		FPlatformProcess::ReturnSynchEventToPool(LastEvent);
 	}
 
-	FDerivedDataBackendInterface* GetTestBackend() const
+	static ILegacyCacheStore* GetTestBackend()
 	{
-		static FDerivedDataBackendInterface* CachedBackend = GetAnyHttpCacheStore(
-			TestDomain, TestOAuthProvider, TestOAuthClientId, TestOAuthSecret, TestNamespace, TestStructuredNamespace);
+		static ILegacyCacheStore* CachedBackend = GetAnyHttpCacheStore(
+			TestDomain, TestOAuthProvider, TestOAuthClientId, TestOAuthSecret, TestOAuthScope, TestOAuthProviderIdentifier, TestOAuthAccessToken, TestNamespace);
 		return CachedBackend;
 	}
 
@@ -199,7 +204,7 @@ protected:
 						RecordBuilder.AddValue(Value);
 					}
 				}
-				GetOutputs[Response.UserData].Emplace(FGetOutput{ RecordBuilder.Build(), Response.Status });
+				GetOutputs[int32(Response.UserData)].Emplace(FGetOutput{ RecordBuilder.Build(), Response.Status });
 			});
 		RequestOwner.Wait();
 
@@ -216,10 +221,10 @@ protected:
 		return true;
 	}
 
-	bool GetValues(TConstArrayView<FValue> Values, ECachePolicy Policy, TArray<FValue>& OutValues, const char* BucketName = nullptr)
+	bool GetValues(TConstArrayView<FValue> Values, ECachePolicy Policy, TArray<FValue>& OutValues, const char* BucketName = nullptr, ICacheStore* CacheStore = GetTestBackend())
 	{
 		using namespace UE::DerivedData;
-		ICacheStore* TestBackend = GetTestBackend();
+		ICacheStore* TestBackend = CacheStore;
 		FCacheBucket TestCacheBucket(BucketName ? BucketName : "AutoTestDummy");
 
 		TArray<FCacheGetValueRequest> Requests;
@@ -245,7 +250,7 @@ protected:
 		FRequestOwner RequestOwner(EPriority::Blocking);
 		TestBackend->GetValue(Requests, RequestOwner, [&GetValueOutputs](FCacheGetValueResponse&& Response)
 			{
-				GetValueOutputs[Response.UserData].Emplace(FGetValueOutput{ Response.Value, Response.Status });
+				GetValueOutputs[int32(Response.UserData)].Emplace(FGetValueOutput{ Response.Value, Response.Status });
 			});
 		RequestOwner.Wait();
 
@@ -293,7 +298,7 @@ protected:
 		FRequestOwner RequestOwner(EPriority::Blocking);
 		TestBackend->GetChunks(Requests, RequestOwner, [&GetOutputs](FCacheGetChunkResponse&& Response)
 			{
-				GetOutputs[Response.UserData].Emplace(FGetChunksOutput { Response.RawData, Response.Status });
+				GetOutputs[int32(Response.UserData)].Emplace(FGetChunksOutput { Response.RawData, Response.Status });
 			});
 		RequestOwner.Wait();
 
@@ -442,11 +447,11 @@ protected:
 		return ReceivedRecords;
 	}
 
-	TArray<FValue> GetAndValidateValues(const TCHAR* Name, TConstArrayView<FValue> Values, ECachePolicy Policy)
+	TArray<FValue> GetAndValidateValues(const TCHAR* Name, TConstArrayView<FValue> Values, ECachePolicy Policy, ICacheStore* CacheStore = GetTestBackend())
 	{
 		using namespace UE::DerivedData;
 		TArray<FValue> ReceivedValues;
-		bool bGetSuccessful = GetValues(Values, Policy, ReceivedValues);
+		bool bGetSuccessful = GetValues(Values, Policy, ReceivedValues, nullptr, CacheStore);
 		TestTrue(FString::Printf(TEXT("%s::Get status"), Name), bGetSuccessful);
 
 		if (!bGetSuccessful)
@@ -485,32 +490,11 @@ protected:
 	static inline FString TestOAuthProvider;
 	static inline FString TestOAuthClientId;
 	static inline FString TestOAuthSecret;
+	static inline FString TestOAuthScope;
+	static inline FString TestOAuthProviderIdentifier;
+	static inline FString TestOAuthAccessToken;
 	static inline FString TestNamespace;
-	static inline FString TestStructuredNamespace;
 };
-
-// Helper function to create a number of dummy cache keys for testing
-TArray<FString> CreateTestCacheKeys(FDerivedDataBackendInterface* InTestBackend, uint32 InNumKeys)
-{
-	TArray<FString> Keys;
-	TArray<uint8> KeyContents;
-	KeyContents.Add(42);
-
-	FSHA1 HashState;
-	HashState.Update(KeyContents.GetData(), KeyContents.Num());
-	HashState.Final();
-	uint8 Hash[FSHA1::DigestSize];
-	HashState.GetHash(Hash);
-	const FString HashString = BytesToHex(Hash, FSHA1::DigestSize);
-
-	for (uint32 KeyIndex = 0; KeyIndex < InNumKeys; ++KeyIndex)
-	{
-		FString NewKey = FString::Printf(TEXT("__AutoTest_Dummy_%u__%s"), KeyIndex, *HashString);
-		Keys.Add(NewKey);
-		InTestBackend->PutCachedData(*NewKey, KeyContents, false);
-	}
-	return Keys;
-}
 
 TArray<FCacheRecord> CreateTestCacheRecords(ICacheStore* InTestBackend, uint32 InNumKeys, uint32 InNumValues, FCbObject MetaContents = FCbObject(), const char* BucketName = nullptr)
 {
@@ -564,9 +548,14 @@ TArray<FCacheRecord> CreateTestCacheRecords(ICacheStore* InTestBackend, uint32 I
 	InTestBackend->Put(PutRequests, Owner, [&CacheRecords, &PutRequests] (FCachePutResponse&& Response)
 	{
 		check(Response.Status == EStatus::Ok);
-		CacheRecords.Add(PutRequests[Response.UserData].Record);
 	});
 	Owner.Wait();
+
+	CacheRecords.Reserve(PutRequests.Num());
+	for (const FCachePutRequest& PutRequest : PutRequests)
+	{
+		CacheRecords.Add(PutRequest.Record);
+	}
 
 	return CacheRecords;
 }
@@ -610,109 +599,57 @@ TArray<FValue> CreateTestCacheValues(ICacheStore* InTestBackend, uint32 InNumVal
 	InTestBackend->PutValue(PutValueRequests, Owner, [&Values, &PutValueRequests](FCachePutValueResponse&& Response)
 		{
 			check(Response.Status == EStatus::Ok);
-			Values.Add(PutValueRequests[Response.UserData].Value);
 		});
 	Owner.Wait();
+
+	Values.Reserve(PutValueRequests.Num());
+	for (const FCachePutValueRequest& PutValueRequest : PutValueRequests)
+	{
+		Values.Add(PutValueRequest.Value);
+	}
 
 	return Values;
 }
 
-IMPLEMENT_HTTPDERIVEDDATA_AUTOMATION_TEST(FConcurrentCachedDataProbablyExistsBatch, TEXT(".FConcurrentCachedDataProbablyExistsBatch"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool FConcurrentCachedDataProbablyExistsBatch::RunTest(const FString& Parameters)
-{
-	FDerivedDataBackendInterface* TestBackend = GetTestBackend();
-
-	const int32 ThreadCount = 64;
-	const double Duration = 10;
-	const uint32 KeysInBatch = 4;
-
-	TArray<FString> Keys = CreateTestCacheKeys(TestBackend, KeysInBatch);
-
-	std::atomic<uint32> MismatchedResults = 0;
-
-	ConcurrentTestWithStats(
-		[&]()
-		{
-			TConstArrayView<FString> BatchView = MakeArrayView(Keys.GetData(), KeysInBatch);
-			TBitArray<> Result = TestBackend->CachedDataProbablyExistsBatch(BatchView);
-			if (Result.CountSetBits() != BatchView.Num())
-			{
-				MismatchedResults.fetch_add(BatchView.Num() - Result.CountSetBits(), std::memory_order_relaxed);
-			}
-		},
-		ThreadCount,
-		Duration
-	);
-
-	TestEqual(TEXT("Concurrent calls to CachedDataProbablyExistsBatch for a batch of keys that were put are not reliably found"), MismatchedResults, 0);
-
-	return true;
-}
-
-// This test validate that batch requests wont mismatch head and get request for the same keys in the same batch
-IMPLEMENT_HTTPDERIVEDDATA_AUTOMATION_TEST(FConcurrentExistsAndGetForSameKeyBatch, TEXT(".FConcurrentExistsAndGetForSameKeyBatch"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool FConcurrentExistsAndGetForSameKeyBatch::RunTest(const FString& Parameters)
-{
-	FDerivedDataBackendInterface* TestBackend = GetTestBackend();
-
-	const int32 ParallelTasks = 32;
-	const uint32 Iterations = 20;
-	const uint32 KeysInBatch = 4;
-
-	TArray<FString> Keys = CreateTestCacheKeys(TestBackend, KeysInBatch);
-	// Add some non valid keys by just using guids
-	for (int32 Index = 0; Index < KeysInBatch; ++Index)
-	{
-		Keys.Add(FGuid::NewGuid().ToString());
-	}
-	
-	ParallelFor(ParallelTasks,
-		[&](int32 TaskIndex)
-		{
-			for (uint32 Iteration = 0; Iteration < Iterations; ++Iteration)
-			{
-				for (int32 KeyIndex = 0; KeyIndex < Keys.Num(); ++KeyIndex)
-				{
-					if ((Iteration % 2) ^ (KeyIndex % 2))
-					{
-						TestBackend->CachedDataProbablyExists(*Keys[KeyIndex]);
-					}
-					else
-					{
-						TArray<uint8> OutData;
-						TestBackend->GetCachedData(*Keys[KeyIndex], OutData);
-					}
-				}
-			}
-		}
-	);
-	return true;
-}
-
 // Tests basic functionality for structured cache operations
-IMPLEMENT_HTTPDERIVEDDATA_AUTOMATION_TEST(CacheStore, TEXT(".CacheStore"), EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool CacheStore::RunTest(const FString& Parameters)
+IMPLEMENT_HTTPDERIVEDDATA_AUTOMATION_TEST(FHttpCacheStoreTest, ".CacheStore", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
+bool FHttpCacheStoreTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DerivedData;
-	FDerivedDataBackendInterface* TestBackend = GetTestBackend();
+	ILegacyCacheStore* TestBackend = GetTestBackend();
 
 #if UE_WITH_ZEN
 	using namespace UE::Zen;
 	FServiceSettings ZenUpstreamTestServiceSettings;
 	FServiceAutoLaunchSettings& ZenUpstreamTestAutoLaunchSettings = ZenUpstreamTestServiceSettings.SettingsVariant.Get<FServiceAutoLaunchSettings>();
 	ZenUpstreamTestAutoLaunchSettings.DataPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::EngineSavedDir(), "ZenUpstreamUnitTest"));
-	ZenUpstreamTestAutoLaunchSettings.ExtraArgs = FString::Printf(TEXT("--http asio --upstream-jupiter-url \"%s\" --upstream-jupiter-oauth-url \"%s\" --upstream-jupiter-oauth-clientid \"%s\" --upstream-jupiter-oauth-clientsecret \"%s\" --upstream-jupiter-namespace-ddc \"%s\" --upstream-jupiter-namespace \"%s\""),
+	ZenUpstreamTestAutoLaunchSettings.ExtraArgs = FString::Printf(TEXT("--http asio --upstream-jupiter-url \"%s\" --upstream-jupiter-oauth-url \"%s\" --upstream-jupiter-oauth-clientid \"%s\" --upstream-jupiter-oauth-clientsecret \"%s\" --upstream-jupiter-namespace \"%s\""),
 		*TestDomain,
 		*TestOAuthProvider,
 		*TestOAuthClientId,
 		*TestOAuthSecret,
-		*TestNamespace,
-		*TestStructuredNamespace
+		*TestNamespace
 	);
 	ZenUpstreamTestAutoLaunchSettings.DesiredPort = 23337; // Avoid the normal default port
 	ZenUpstreamTestAutoLaunchSettings.bShowConsole = true;
 	ZenUpstreamTestAutoLaunchSettings.bLimitProcessLifetime = true;
 	FScopeZenService ScopeZenUpstreamService(MoveTemp(ZenUpstreamTestServiceSettings));
+
+	IFileManager::Get().DeleteDirectory(*FPaths::Combine(FPaths::EngineSavedDir(), "ZenUpstreamSiblingUnitTest"), false, true);
+	FServiceSettings ZenUpstreamSiblingTestServiceSettings;
+	FServiceAutoLaunchSettings& ZenUpstreamSiblingTestAutoLaunchSettings = ZenUpstreamSiblingTestServiceSettings.SettingsVariant.Get<FServiceAutoLaunchSettings>();
+	ZenUpstreamSiblingTestAutoLaunchSettings.DataPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::EngineSavedDir(), "ZenUpstreamSiblingUnitTest"));
+	ZenUpstreamSiblingTestAutoLaunchSettings.ExtraArgs = FString::Printf(TEXT("--http asio --upstream-jupiter-url \"%s\" --upstream-jupiter-oauth-url \"%s\" --upstream-jupiter-oauth-clientid \"%s\" --upstream-jupiter-oauth-clientsecret \"%s\" --upstream-jupiter-namespace \"%s\""),
+		*TestDomain,
+		*TestOAuthProvider,
+		*TestOAuthClientId,
+		*TestOAuthSecret,
+		*TestNamespace
+	);
+	ZenUpstreamSiblingTestAutoLaunchSettings.DesiredPort = 23338; // Avoid the normal default port
+	ZenUpstreamSiblingTestAutoLaunchSettings.bShowConsole = true;
+	ZenUpstreamSiblingTestAutoLaunchSettings.bLimitProcessLifetime = true;
+	FScopeZenService ScopeZenUpstreamSiblingService(MoveTemp(ZenUpstreamSiblingTestServiceSettings));
 
 	FServiceSettings ZenTestServiceSettings;
 	FServiceAutoLaunchSettings& ZenTestAutoLaunchSettings = ZenTestServiceSettings.SettingsVariant.Get<FServiceAutoLaunchSettings>();
@@ -724,8 +661,24 @@ bool CacheStore::RunTest(const FString& Parameters)
 	ZenTestAutoLaunchSettings.bShowConsole = true;
 	ZenTestAutoLaunchSettings.bLimitProcessLifetime = true;
 
+	IFileManager::Get().DeleteDirectory(*FPaths::Combine(FPaths::EngineSavedDir(), "ZenUnitTestSibling"), false, true);
+	FServiceSettings ZenTestServiceSiblingSettings;
+	FServiceAutoLaunchSettings& ZenTestSiblingAutoLaunchSettings = ZenTestServiceSiblingSettings.SettingsVariant.Get<FServiceAutoLaunchSettings>();
+	ZenTestSiblingAutoLaunchSettings.DataPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::EngineSavedDir(), "ZenUnitTestSibling"));
+	ZenTestSiblingAutoLaunchSettings.ExtraArgs = FString::Printf(TEXT("--http asio --upstream-zen-url \"http://localhost:%d\""),
+		ScopeZenUpstreamSiblingService.GetInstance().GetPort()
+	);
+	ZenTestSiblingAutoLaunchSettings.DesiredPort = 13338; // Avoid the normal default port
+	ZenTestSiblingAutoLaunchSettings.bShowConsole = true;
+	ZenTestSiblingAutoLaunchSettings.bLimitProcessLifetime = true;
+
+	FScopeZenService ScopeZenSiblingService(MoveTemp(ZenTestServiceSiblingSettings));
+	TUniquePtr<ILegacyCacheStore> ZenIntermediarySiblingBackend(CreateZenCacheStore(TEXT("TestSibling"),
+		*FString::Printf(TEXT("Host=%s, StructuredNamespace=%s"), ScopeZenSiblingService.GetInstance().GetURL(), *TestNamespace)).Key);
+
 	FScopeZenService ScopeZenService(MoveTemp(ZenTestServiceSettings));
-	TUniquePtr<ILegacyCacheStore> ZenIntermediaryBackend(CreateZenCacheStore(TEXT("Test"), ScopeZenService.GetInstance().GetURL(), *TestNamespace));
+	TUniquePtr<ILegacyCacheStore> ZenIntermediaryBackend(CreateZenCacheStore(TEXT("Test"),
+		*FString::Printf(TEXT("Host=%s, StructuredNamespace=%s"), ScopeZenService.GetInstance().GetURL(), *TestNamespace)).Key);
 	auto WaitForZenPushToUpstream = [](ILegacyCacheStore* ZenBackend, TConstArrayView<FCacheRecord> Records)
 	{
 		// TODO: Expecting a legitimate means to wait for zen to finish pushing records to its upstream in the future
@@ -762,7 +715,7 @@ bool CacheStore::RunTest(const FString& Parameters)
 	{
 		TCbWriter<64> MetaWriter;
 		MetaWriter.BeginObject();
-		MetaWriter.AddInteger("MetaKey"_ASV, 42);
+		MetaWriter.AddInteger(ANSITEXTVIEW("MetaKey"), 42);
 		MetaWriter.EndObject();
 		FCbObject MetaObject = MetaWriter.Save().AsObject();
 
@@ -813,6 +766,11 @@ bool CacheStore::RunTest(const FString& Parameters)
 			WaitForZenPushValuesToUpstream(ZenIntermediaryBackend.Get(), PutValuesZen);
 			ValidateValues(TEXT("SimpleValueZenAndDirect"), GetAndValidateValues(TEXT("SimpleValueZen"), PutValuesZen, ECachePolicy::Default), ReceivedValues, ECachePolicy::Default);
 			ValidateValues(TEXT("SimpleValueSkipDataZenAndDirect"), GetAndValidateValues(TEXT("SimpleValueSkipDataZen"), PutValuesZen, ECachePolicy::Default | ECachePolicy::SkipData), ReceivedValuesSkipData, ECachePolicy::Default | ECachePolicy::SkipData);
+		}
+		if (ZenIntermediarySiblingBackend)
+		{
+			GetAndValidateValues(TEXT("SimpleValueZen"), PutValues, ECachePolicy::Default, ZenIntermediarySiblingBackend.Get());
+			GetAndValidateValues(TEXT("SimpleValueSkipDataZen"), PutValues, ECachePolicy::Default | ECachePolicy::SkipData, ZenIntermediarySiblingBackend.Get());
 		}
 #endif // UE_WITH_ZEN
 	}

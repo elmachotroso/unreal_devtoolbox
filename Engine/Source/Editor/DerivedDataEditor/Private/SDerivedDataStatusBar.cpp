@@ -1,33 +1,53 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDerivedDataStatusBar.h"
+
+#include "Async/Future.h"
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "DerivedDataCacheInterface.h"
 #include "DerivedDataEditorModule.h"
 #include "DerivedDataInformation.h"
-#include "SDerivedDataDialogs.h"
-#include "SDerivedDataCacheSettings.h"
-#include "DerivedDataCacheUsageStats.h"
-#include "DerivedDataCacheInterface.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SToolTip.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
-#include "EditorFontGlyphs.h"
-#include "DerivedDataCacheUsageStats.h"
-#include "Stats/Stats.h"
-#include "Widgets/SOverlay.h"
-#include "Settings/EditorSettings.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Async/Future.h"
-#include "Settings/EditorProjectSettings.h"
-#include "Modules/ModuleManager.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/PlatformCrt.h"
 #include "ISettingsModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/UnitConversion.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
+#include "Misc/CoreMisc.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Textures/SlateIcon.h"
+#include "ToolMenu.h"
 #include "ToolMenuContext.h"
+#include "ToolMenuSection.h"
 #include "ToolMenus.h"
-#include "Widgets/Input/SComboButton.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 #include "Widgets/Images/SImage.h"
-#include "Styling/StyleColors.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "DerivedDataEditor"
 
@@ -40,7 +60,7 @@ FDerivedDataStatusBarMenuCommands::FDerivedDataStatusBarMenuCommands()
 		"DerivedDataSettings",
 		NSLOCTEXT("Contexts", "Derived Data", "Derived Data"),
 		"LevelEditor",
-		FEditorStyle::GetStyleSetName()
+		FAppStyle::GetAppStyleSetName()
 		)
 {}
 
@@ -49,7 +69,6 @@ void FDerivedDataStatusBarMenuCommands::RegisterCommands()
 	UI_COMMAND(ChangeSettings, "Change Cache Settings", "Opens a dialog to change Cache settings.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewCacheStatistics, "View Cache Statistics", "Opens the Cache Statistics panel.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewResourceUsage, "View Resource Usage", "Opens the Resource Usage panel.", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ViewVirtualAssetsStatistics, "View Virtual Assets Statistics", "Opens the Virtual Assets Statistics panel.", EUserInterfaceActionType::Button, FInputChord());
 
 	ActionList->MapAction(
 		ChangeSettings,
@@ -64,11 +83,6 @@ void FDerivedDataStatusBarMenuCommands::RegisterCommands()
 	ActionList->MapAction(
 		ViewResourceUsage,
 		FExecuteAction::CreateStatic(&FDerivedDataStatusBarMenuCommands::ViewResourceUsage_Clicked)
-	);
-
-	ActionList->MapAction(
-		ViewVirtualAssetsStatistics,
-		FExecuteAction::CreateStatic(&FDerivedDataStatusBarMenuCommands::ViewVirtualAssetsStatistics_Clicked)
 	);
 }
 
@@ -89,12 +103,6 @@ void FDerivedDataStatusBarMenuCommands::ViewResourceUsage_Clicked()
 	DerivedDataEditorModule.ShowResourceUsageTab();
 }
 
-void FDerivedDataStatusBarMenuCommands::ViewVirtualAssetsStatistics_Clicked()
-{
-	FDerivedDataEditorModule& DerivedDataEditorModule = FModuleManager::LoadModuleChecked<FDerivedDataEditorModule>("DerivedDataEditor");
-	DerivedDataEditorModule.ShowVirtualAssetsStatisticsTab();
-}
-
 TSharedRef<SWidget> SDerivedDataStatusBarWidget::CreateStatusBarMenu()
 {
 	UToolMenu* Menu = UToolMenus::Get()->RegisterMenu("StatusBar.ToolBar.DDC", NAME_None, EMultiBoxType::Menu, false);
@@ -106,7 +114,7 @@ TSharedRef<SWidget> SDerivedDataStatusBarWidget::CreateStatusBarMenu()
 			FDerivedDataStatusBarMenuCommands::Get().ChangeSettings,
 			TAttribute<FText>(),
 			TAttribute<FText>(),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "DerivedData.Cache.Settings")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "DerivedData.Cache.Settings")
 		);
 	}
 
@@ -117,21 +125,14 @@ TSharedRef<SWidget> SDerivedDataStatusBarWidget::CreateStatusBarMenu()
 			FDerivedDataStatusBarMenuCommands::Get().ViewCacheStatistics,
 			TAttribute<FText>(),
 			TAttribute<FText>(),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "DerivedData.Cache.Statistics")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "DerivedData.Cache.Statistics")
 		);
 
 		Section.AddMenuEntry(
 			FDerivedDataStatusBarMenuCommands::Get().ViewResourceUsage,
 			TAttribute<FText>(),
 			TAttribute<FText>(),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "DerivedData.ResourceUsage")
-		);
-
-		Section.AddMenuEntry(
-			FDerivedDataStatusBarMenuCommands::Get().ViewVirtualAssetsStatistics,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "DerivedData.Cache.Statistics")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "DerivedData.ResourceUsage")
 		);
 	}
 

@@ -23,11 +23,11 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Animation/AnimBlueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "IContentBrowserSingleton.h"
@@ -78,7 +78,7 @@ public:
 		[
 			SNew(SBorder)
 			.Visibility(EVisibility::Visible)
-			.BorderImage(FEditorStyle::GetBrush("ChildWindow.Background"))
+			.BorderImage(FAppStyle::GetBrush("ChildWindow.Background"))
 			[
 				SNew(SVerticalBox)
 				+SVerticalBox::Slot()
@@ -95,7 +95,7 @@ public:
 						.HeightOverride(400.0f)
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("NewAnimBlueprintDialog.AreaBorder"))
+							.BorderImage(FAppStyle::GetBrush("NewAnimBlueprintDialog.AreaBorder"))
 							[	
 								SNew(SVerticalBox)
 								+SVerticalBox::Slot()
@@ -107,10 +107,6 @@ public:
 									.OnValueChanged_Lambda([this](bool bInNewValue)
 									{
 										bTemplate = bInNewValue;
-										if(bTemplate)
-										{
-											TargetSkeleton = FAssetData(); 
-										}
 										RefreshSkeletonPicker();
 									})
 									.Value_Lambda([this](){ return bTemplate; })	
@@ -118,14 +114,14 @@ public:
 									[
 										SNew(STextBlock)
 										.Text(LOCTEXT("SpecificSkeleton", "Specific Skeleton"))
-										.TextStyle( FEditorStyle::Get(), "NormalText" )
-										.ToolTipText(LOCTEXT("SpecoficSkeletonTooltip", "Choose a specific skeleton to bind your new Animation Blueprint to. The Blueprint will be able to use assets that are compatible with this skeleton."))
+										.TextStyle( FAppStyle::Get(), "NormalText" )
+										.ToolTipText(LOCTEXT("SpecificSkeletonTooltip", "Choose a specific skeleton to bind your new Animation Blueprint to. The Blueprint will be able to use assets that are compatible with this skeleton."))
 									]
 									+SSegmentedControl<bool>::Slot(true)
 									[
 										SNew(STextBlock)
 										.Text(LOCTEXT("Template", "Template"))
-										.TextStyle(FEditorStyle::Get(), "NormalText")
+										.TextStyle(FAppStyle::Get(), "NormalText")
 										.ToolTipText(TemplateDesc)
 									]
 								]
@@ -146,7 +142,7 @@ public:
 										.Justification(ETextJustify::Center)
 										.AutoWrapText(true)
 										.Text(TemplateDesc)
-										.TextStyle(FEditorStyle::Get(), "NormalText")
+										.TextStyle(FAppStyle::Get(), "NormalText")
 									]
 								]
 							]
@@ -157,7 +153,7 @@ public:
 					.Padding(10.0f, 0.0f, 10.0f, 0.0f)
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("NewAnimBlueprintDialog.AreaBorder"))
+						.BorderImage(FAppStyle::GetBrush("NewAnimBlueprintDialog.AreaBorder"))
 						[
 							MakeParentClassPicker()
 						]
@@ -172,9 +168,9 @@ public:
 				.Padding(10.0f)
 				[
 					SNew(SUniformGridPanel)
-					.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-					.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-					.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+					.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+					.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+					.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 					+SUniformGridPanel::Slot(0,0)
 					[
 						SNew(SButton)
@@ -184,7 +180,7 @@ public:
 							return ParentClass.Get() != nullptr && (bTemplate || TargetSkeleton.IsValid());
 						})
 						.HAlign(HAlign_Center)
-						.ContentPadding( FEditorStyle::GetMargin("StandardDialog.ContentPadding") )
+						.ContentPadding( FAppStyle::GetMargin("StandardDialog.ContentPadding") )
 						.OnClicked(this, &SAnimBlueprintCreateDialog::OkClicked)
 						.Text(LOCTEXT("CreateAnimBlueprintCreate", "Create"))
 					]
@@ -192,7 +188,7 @@ public:
 					[
 						SNew(SButton)
 						.HAlign(HAlign_Center)
-						.ContentPadding( FEditorStyle::GetMargin("StandardDialog.ContentPadding") )
+						.ContentPadding( FAppStyle::GetMargin("StandardDialog.ContentPadding") )
 						.OnClicked(this, &SAnimBlueprintCreateDialog::CancelClicked)
 						.Text(LOCTEXT("CreateAnimBlueprintCancel", "Cancel"))
 					]
@@ -208,7 +204,6 @@ public:
 
 		TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title( LOCTEXT("CreateAnimBlueprintOptions", "Create Animation Blueprint") )
-		.ClientSize(FVector2D(500, 500))
 		.SizingRule(ESizingRule::Autosized)
 		.SupportsMinimize(false)
 		.SupportsMaximize(false)
@@ -270,6 +265,7 @@ private:
 			.ToolTipText(LOCTEXT("ParentClass_Tooltip", "Optionally choose a parent class for your Animation Blueprint"))
 			.Padding(10.0f)
 			.InitiallyCollapsed(true)
+			.MaxHeight(200)
 			.HeaderContent()
 			[
 				SNew(SBox)
@@ -280,7 +276,7 @@ private:
 					{
 						return FText::Format(LOCTEXT("ParentClassFormat", "Parent Class: {0}"), FText::FromString(ParentClass->GetName()));
 					})
-					.TextStyle( FEditorStyle::Get(), "NormalText" )
+					.TextStyle( FAppStyle::Get(), "NormalText" )
 				]
 			]
 			.BodyContent()
@@ -308,7 +304,7 @@ private:
 
 		FAssetPickerConfig AssetPickerConfig;
 		AssetPickerConfig.RefreshAssetViewDelegates.Add(&RefreshSkeletonViewDelegate);
-		AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SAnimBlueprintCreateDialog::OnSkeletonSelected);
 		AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateSP(this, &SAnimBlueprintCreateDialog::FilterSkeletonBasedOnParentClass);
 		AssetPickerConfig.bAllowNullSelection = false;
@@ -347,6 +343,11 @@ private:
 	/** Handler for when ok is clicked */
 	FReply OkClicked()
 	{
+		if (bTemplate)
+		{
+			TargetSkeleton = FAssetData();
+		}
+
 		if ( AnimBlueprintFactory.IsValid() )
 		{
 			AnimBlueprintFactory->BlueprintType = BPTYPE_Normal;
@@ -432,6 +433,11 @@ UAnimBlueprintFactory::UAnimBlueprintFactory(const FObjectInitializer& ObjectIni
 	bEditAfterNew = true;
 	SupportedClass = UAnimBlueprint::StaticClass();
 	ParentClass = UAnimInstance::StaticClass();
+}
+
+FText UAnimBlueprintFactory::GetDisplayName() const
+{
+	return LOCTEXT("AnimationBlueprintFactoryDescription", "Animation Blueprint");
 }
 
 bool UAnimBlueprintFactory::ConfigureProperties()

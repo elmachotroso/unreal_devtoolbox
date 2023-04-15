@@ -112,12 +112,12 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 		// doing it here ensures that we're using the most up-to-date config, e.g. after a branch spec reload
 
 		// preprocess to get a list of all additional Slack channels
-		const slackChannelOverrides: [Branch, Branch, string][] = []
+		const slackChannelOverrides: [Branch, Branch, string, boolean][] = []
 		for (const branch of this.branchGraph.branches) {
 			for (const [targetBranchName, edgeProps] of branch.edgeProperties) {
 				const slackChannel = edgeProps.additionalSlackChannel
 				if (slackChannel) {
-					slackChannelOverrides.push([branch, this.branchGraph.getBranch(targetBranchName)!, slackChannel])
+					slackChannelOverrides.push([branch, this.branchGraph.getBranch(targetBranchName)!, slackChannel, (edgeProps.postOnlyToAdditionalChannel || false)])
 				}
 			}
 		}
@@ -130,7 +130,14 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 			if (branch.enabled) {
 				const persistence = this.settings.getContext(branch.upperName)
 				branch.bot = new NodeBot(branch, this.mailer, this.externalUrl, this.eventTriggers, persistence, ubergraph,
-					() => this.handleRequestedIntegrationsForAllNodes()
+					async () => {
+						const errPair = await this.handleRequestedIntegrationsForAllNodes()
+						if (errPair) {
+							// can report wrong nodebot (this rather than one that errored)
+							const [_, err] = errPair
+							throw err
+						}
+					}
 				)
 
 				if (branch.bot.getNumConflicts() > 0) {
@@ -198,7 +205,7 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 		this.crashRequested = msg
 	}
 
-	async handleRequestedIntegrationsForAllNodes() {
+	async handleRequestedIntegrationsForAllNodes(): Promise<[NodeBot, Error] | null> {
 		for (const branchName of this.branchGraph.getBranchNames()) {
 			const node = this.findNode(branchName)!
 			for (;;) {
@@ -206,10 +213,44 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 				if (!request) {
 					break
 				}
-				await node.processQueuedChange(request)
+				try {
+					await node.processQueuedChange(request)
+				}
+				catch(err) {
+					return [node, err]
+				}
 				node.persistQueuedChanges()
 			}
 		}
+		return null
+	}
+
+	// mostly for nodebots, but could also be the auto reloader bot
+	private handleNodebotError(bot: Bot, err: Error) {
+		this._runningBots = false
+
+		let errStr = err.toString()
+		if (errStr.length > MAX_ERROR_LENGTH_TO_REPORT) {
+			errStr = errStr.substr(0, MAX_ERROR_LENGTH_TO_REPORT) + ` ... (error length ${errStr.length})`
+		}
+		else {
+			errStr += err.stack
+		}
+		this.lastError = {
+			nodeBot: bot.fullName,
+			error: errStr
+		}
+
+		Sentry.withScope((scope) => {
+			scope.setTag('graphBot', this.branchGraph.botname)
+			scope.setTag('nodeBot', bot.fullName)
+			scope.setTag('lastCl', bot.lastCl.toString())
+
+			Sentry.captureException(err);
+		})
+		const msg = `${this.lastError.nodeBot} fell over with error`
+		this.botLogger.printException(err, msg)
+		postToRobomergeAlerts(`@here ${msg}:\n\`\`\`${errStr}\`\`\``)
 	}
 
 	private async startBotsAsync() {
@@ -243,31 +284,7 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 					ticked = await bot.tick()
 				}
 				catch (err) {
-					this._runningBots = false
-
-					let errStr = err.toString()
-					if (errStr.length > MAX_ERROR_LENGTH_TO_REPORT) {
-						errStr = errStr.substr(0, MAX_ERROR_LENGTH_TO_REPORT) + ` ... (error length ${errStr.length})`
-					}
-					else {
-						errStr += err.stack
-					}
-					this.lastError = {
-						nodeBot: bot.fullName,
-						error: errStr
-					}
-
-					Sentry.withScope((scope) => {
-						scope.setTag('graphBot', this.branchGraph.botname)
-						scope.setTag('nodeBot', bot.fullName)
-						scope.setTag('lastCl', bot.lastCl.toString())
-
-						Sentry.captureException(err);
-					})
-					const msg = `${this.lastError.nodeBot} fell over with error`
-					this.botLogger.printException(err, msg)
-					postToRobomergeAlerts(`@here ${msg}:\n\`\`\`${errStr}\`\`\``)
-
+					this.handleNodebotError(bot, err)
 					return
 				}
 				bot.isActive = false
@@ -292,7 +309,12 @@ export class GraphBot implements GraphInterface, BotEventHandler {
 				await new Promise(done => setTimeout(done, this.waitTime!))
 			}
 
-			await this.handleRequestedIntegrationsForAllNodes()
+			const errPair = await this.handleRequestedIntegrationsForAllNodes()
+			if (errPair) {
+				const [bot, err] = errPair
+				this.handleNodebotError(bot, err)
+				return
+			}
 
 			roboAnalytics!.reportActivity(this.branchGraph.botname, activity)
 			roboAnalytics!.reportMemoryUsage('main', process.memoryUsage().heapUsed)

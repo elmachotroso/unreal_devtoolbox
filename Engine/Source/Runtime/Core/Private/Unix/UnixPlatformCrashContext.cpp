@@ -93,7 +93,7 @@ void FGenericCrashContext::CleanupPlatformSpecificFiles()
 {
 }
 
-__thread siginfo_t FUnixCrashContext::FakeSiginfoForEnsures;
+__thread siginfo_t FUnixCrashContext::FakeSiginfoForDiagnostics;
 
 FUnixCrashContext::~FUnixCrashContext()
 {
@@ -114,19 +114,19 @@ void FUnixCrashContext::InitFromSignal(int32 InSignal, siginfo_t* InInfo, void* 
 	FCString::Strcat(SignalDescription, UE_ARRAY_COUNT( SignalDescription ) - 1, *DescribeSignal(Signal, Info, Context));
 }
 
-void FUnixCrashContext::InitFromEnsureHandler(const TCHAR* EnsureMessage, const void* CrashAddress)
+void FUnixCrashContext::InitFromDiagnostics(const void* InAddress)
 {
 	Signal = SIGTRAP;
 
-	FakeSiginfoForEnsures.si_signo = SIGTRAP;
-	FakeSiginfoForEnsures.si_code = TRAP_TRACE;
-	FakeSiginfoForEnsures.si_addr = const_cast<void *>(CrashAddress);
-	Info = &FakeSiginfoForEnsures;
+	FakeSiginfoForDiagnostics.si_signo = SIGTRAP;
+	FakeSiginfoForDiagnostics.si_code = TRAP_TRACE;
+	FakeSiginfoForDiagnostics.si_addr = const_cast<void *>(InAddress);
+	Info = &FakeSiginfoForDiagnostics;
 
 	Context = nullptr;
 
 	// set signal description to a more human-readable one for ensures
-	FCString::Strcpy(SignalDescription, UE_ARRAY_COUNT(SignalDescription) - 1, EnsureMessage);
+	FCString::Strcpy(SignalDescription, UE_ARRAY_COUNT(SignalDescription) - 1, ErrorMessage);
 
 	// only need the first string
 	for (int Idx = 0; Idx < UE_ARRAY_COUNT(SignalDescription); ++Idx)
@@ -154,7 +154,7 @@ void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Context)
 	// do not flush logs at this point; this can result in a deadlock if the signal was received while we were holding lock in the malloc (flushing allocates memory)
 	if( !IsEngineExitRequested() && !GShouldRequestExit )
 	{
-		FPlatformMisc::RequestExitWithStatus(false, 128 + Signal);	// Keeping the established shell practice of returning 128 + signal for terminations by signal. Allows to distinguish SIGINT/SIGTERM/SIGHUP.
+		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(128 + Signal));	// Keeping the established shell practice of returning 128 + signal for terminations by signal. Allows to distinguish SIGINT/SIGTERM/SIGHUP.
 	}
 	else
 	{
@@ -284,6 +284,8 @@ void FUnixCrashContext::CaptureStackTrace(void* ErrorProgramCounter)
 	// Only do work the first time this function is called - this is mainly a carry over from Windows where it can be called multiple times, left intact for extra safety.
 	if (!bCapturedBacktrace)
 	{
+		bCapturedBacktrace = true;
+
 		static const SIZE_T StackTraceSize = 65535;
 		static ANSICHAR StackTrace[StackTraceSize];
 		StackTrace[0] = 0;
@@ -299,8 +301,33 @@ void FUnixCrashContext::CaptureStackTrace(void* ErrorProgramCounter)
 
 		FCString::Strncat( GErrorHist, UTF8_TO_TCHAR(StackTrace), UE_ARRAY_COUNT(GErrorHist) - 1 );
 		CreateExceptionInfoString(Signal, Info, Context);
+	}
+}
 
+void FUnixCrashContext::CaptureThreadStackTrace(uint32_t ThreadId)
+{
+	// Only do work the first time this function is called - this is mainly a carry over from Windows where it can be called multiple times, left intact for extra safety.
+	if (!bCapturedBacktrace)
+	{
 		bCapturedBacktrace = true;
+
+		CaptureThreadPortableCallStack(ThreadId, this);
+
+		// The crash report XML has an element <CallStack>. However, CrashReportClient will run after the UE process generates the report. It will overwrite this
+		//  part of the report with whatever is in the CALLSTACK section of Diagnostics.txt. Because of this we have to call APIs here to ensure that MiniDumpCallstackInfo
+		//  gets filled out. So, we iterate through the portable callstack for the thread and call ProgramCounterToHumanReadableString passing the CrashContext (this).
+		static const SIZE_T StackTraceSize = 65535;
+		static ANSICHAR StackTrace[StackTraceSize];
+		StackTrace[0] = 0;
+		for ( int i=0; i<CallStack.Num(); i++ )
+		{
+			FPlatformStackWalk::ProgramCounterToHumanReadableString( i, CallStack[i].BaseAddress + CallStack[i].Offset, StackTrace, StackTraceSize, this );
+			FCStringAnsi::Strncat(StackTrace, LINE_TERMINATOR_ANSI, (int32)StackTraceSize);
+		}
+
+		// We do not set the ExceptionInfo string here as it just gets details for the exact callsite,
+		//  and this function by definition is just capturing the state of some other specific thread
+		//  (and not some instrumentation point or instruction pointer that generated a signal)
 	}
 }
 
@@ -452,7 +479,7 @@ namespace UnixCrashReporterTracker
 				return false;
 			}
 
-			FPlatformProcess::Sleep(SleepIntervalInSec);
+			FPlatformProcess::Sleep(static_cast<float>(SleepIntervalInSec));
 		};
 
 		return true;
@@ -488,8 +515,10 @@ void FUnixCrashContext::AddPlatformSpecificProperties() const
 	}
 }
 
-void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCrash) const
+void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter() const
 {
+	const bool bReportingNonCrash = IsTypeContinuable(Type);
+
 	// do not report crashes for tools (particularly for crash reporter itself)
 #if !IS_PROGRAM
 
@@ -572,7 +601,19 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 
 	if (!bSkipCRC)
 	{
-		FString CrashInfoFolder = FPaths::Combine(*FPaths::ProjectSavedDir(), TEXT("Crashes"), *FString::Printf(TEXT("%sinfo-%s-pid-%d-%s"), bReportingNonCrash ? TEXT("ensure") : TEXT("crash"), FApp::GetProjectName(), getpid(), *CrashGuid));
+		const TCHAR* TypeString = TEXT("crash");
+		switch(Type)
+		{
+		case ECrashContextType::Ensure:
+			TypeString = TEXT("ensure");
+			break;
+
+		case ECrashContextType::Stall:
+			TypeString = TEXT("stall");
+			break;
+		}
+
+		FString CrashInfoFolder = FPaths::Combine(*FPaths::ProjectSavedDir(), TEXT("Crashes"), *FString::Printf(TEXT("%sinfo-%s-pid-%d-%s"), TypeString, FApp::GetProjectName(), getpid(), *CrashGuid));
 		FString CrashInfoAbsolute = FPaths::ConvertRelativePathToFull(CrashInfoFolder);
 		if (IFileManager::Get().MakeDirectory(*CrashInfoAbsolute, true))
 		{
@@ -714,7 +755,7 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 				bool bFoundEmptySlot = false;
 
 				constexpr double kEnsureTimeOut = 45.0;
-				constexpr double kEnsureSleepInterval = 0.1;
+				constexpr float kEnsureSleepInterval = 0.1f;
 				double kTimeOutTimer = 0.0;
 
 				while (!bFoundEmptySlot)
@@ -847,8 +888,7 @@ void DefaultCrashHandler(const FUnixCrashContext & Context)
 	const_cast<FUnixCrashContext&>(Context).CaptureStackTrace(Context.ErrorFrame);
 	if (GLog)
 	{
-		GLog->SetCurrentThreadAsMasterThread();
-		GLog->Flush();
+		GLog->Panic();
 	}
 	if (GWarn)
 	{
@@ -1015,16 +1055,34 @@ void *FRunnableThreadUnix::MainThreadSignalHandlerStack = nullptr;
 
 void *FRunnableThreadUnix::AllocCrashHandlerStack()
 {
+	SIZE_T PageSize = FPlatformMemory::GetConstants().PageSize;
 	uint64 StackBufferSize = GetCrashHandlerStackSize();
 
-	return mmap(nullptr, StackBufferSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	// grab two extra pages to protect the left/right boundary of this stack
+	void* Ptr = mmap(nullptr, StackBufferSize + PageSize * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+
+	// protect the left most page, and the right most page in case of a buffer under/over flow
+	mprotect(Ptr, PageSize, PROT_NONE);
+	mprotect(reinterpret_cast<uint8*>(Ptr) + StackBufferSize + PageSize, PageSize, PROT_NONE);
+
+	return reinterpret_cast<uint8*>(Ptr) + PageSize;
 }
 
 void FRunnableThreadUnix::FreeCrashHandlerStack(void *StackBuffer)
 {
 	if (StackBuffer)
 	{
-		munmap(StackBuffer, GetCrashHandlerStackSize());
+		SIZE_T PageSize = FPlatformMemory::GetConstants().PageSize;
+		uint64 StackTraceSize = GetCrashHandlerStackSize();
+
+		// disable our current altstack so the kernel is not left with a dangling pointer, so we can then free the memory
+		stack_t CurrentSignalHandlerStack;
+		FMemory::Memzero(CurrentSignalHandlerStack);
+		CurrentSignalHandlerStack.ss_flags = SS_DISABLE;
+		sigaltstack(&CurrentSignalHandlerStack, nullptr);
+
+		// we added an extra PageSize when allocating in ::AllocCrashHandlerStack, lets return back to the start here
+		munmap(reinterpret_cast<uint8*>(StackBuffer) - PageSize, GetCrashHandlerStackSize() + PageSize * 2);
 	}
 }
 
@@ -1041,6 +1099,9 @@ uint64 FRunnableThreadUnix::GetCrashHandlerStackSize()
 	{
 		GCrashHandlerStackSize = EConstants::CrashHandlerStackSizeMin;
 	}
+
+	check(IsAligned(GCrashHandlerStackSize, FPlatformMemory::GetConstants().PageSize));
+
 	return GCrashHandlerStackSize;
 }
 

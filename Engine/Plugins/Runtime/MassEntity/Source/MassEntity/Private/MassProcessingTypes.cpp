@@ -2,19 +2,26 @@
 
 #include "MassProcessingTypes.h"
 #include "MassProcessor.h"
-#include "MassSchematic.h"
 #include "Misc/OutputDevice.h"
 #include "MassEntityUtils.h"
 #include "VisualLogger/VisualLogger.h"
-#include "MassEntityDebug.h"
+#include "MassDebugger.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MassProcessingTypes)
 
 DEFINE_LOG_CATEGORY(LogMass);
 
 //----------------------------------------------------------------------//
 //  FMassProcessingContext
 //----------------------------------------------------------------------//
-FMassProcessingContext::FMassProcessingContext(UMassEntitySubsystem& InEntitySubsystem, const float InDeltaSeconds)
-	: EntitySubsystem(&InEntitySubsystem), DeltaSeconds(InDeltaSeconds)
+FMassProcessingContext::FMassProcessingContext(FMassEntityManager& InEntityManager, const float InDeltaSeconds)
+	: EntityManager(InEntityManager.AsShared()), DeltaSeconds(InDeltaSeconds)
+{
+
+}
+
+FMassProcessingContext::FMassProcessingContext(TSharedPtr<FMassEntityManager>& InEntityManager, const float InDeltaSeconds)
+	: EntityManager(InEntityManager), DeltaSeconds(InDeltaSeconds)
 {
 
 }
@@ -23,12 +30,12 @@ FMassProcessingContext::~FMassProcessingContext()
 {
 	if (CommandBuffer && CommandBuffer.IsUnique() && CommandBuffer->HasPendingCommands())
 	{
-		UE_CLOG(EntitySubsystem == nullptr, LogMass, Error, TEXT("Unable to auto-flush FMassProcessingContext\'s commands due to missing EntitySubsystem"));
-		if (ensure(EntitySubsystem))
+		UE_CLOG(!EntityManager, LogMass, Error, TEXT("Unable to auto-flush FMassProcessingContext\'s commands due to missing EntityManager"));
+		if (ensure(EntityManager))
 		{
-			UE_VLOG(EntitySubsystem, LogMass, Log, TEXT("Auto-flushing command buffer as part of FMassProcessingContext destruction"));
+			UE_VLOG(EntityManager->GetOwner(), LogMass, Log, TEXT("Auto-flushing command buffer as part of FMassProcessingContext destruction"));
 			checkf(CommandBuffer->IsFlushing() == false, TEXT("A totally unexpected scenario."));
-			EntitySubsystem->FlushCommands(CommandBuffer);
+			EntityManager->FlushCommands(CommandBuffer);
 		}
 	}
 }
@@ -56,27 +63,6 @@ void FMassRuntimePipeline::Initialize(UObject& Owner)
 void FMassRuntimePipeline::SetProcessors(TArray<UMassProcessor*>&& InProcessors)
 {
 	Processors = InProcessors;
-}
-
-void FMassRuntimePipeline::InitializeFromSchematics(TConstArrayView<TSoftObjectPtr<UMassSchematic>> Schematics, UObject& InOwner)
-{
-	Reset();
-	
-	// @todo we'll sometimes end up with duplicated MassProcessors in the resulting array. We need to come up with a consistent policy for handling that 
-	for (const TSoftObjectPtr<UMassSchematic>& Schematic : Schematics)
-	{
-		UMassSchematic* SchematicInstance = Schematic.LoadSynchronous();
-		if (SchematicInstance)
-		{
-			AppendOrOverrideRuntimeProcessorCopies(SchematicInstance->GetProcessors(), InOwner);
-		}
-		else
-		{
-			UE_LOG(LogMass, Error, TEXT("Unable to resolve MassSchematic %s while creating FMassRuntimePipeline"), *Schematic.GetLongPackageName());
-		}
-	}
-
-	Initialize(InOwner);
 }
 
 void FMassRuntimePipeline::CreateFromArray(TConstArrayView<const UMassProcessor*> InProcessors, UObject& InOwner)
@@ -184,7 +170,7 @@ void FMassRuntimePipeline::AppendOrOverrideRuntimeProcessorCopies(TConstArrayVie
 			else 
 			{
 				const UClass* TestClass = Proc->GetClass();
-				UMassProcessor** PrevProcessor = Processors.FindByPredicate([TestClass, ProcCopy](const UMassProcessor* Proc) {
+				TObjectPtr<UMassProcessor>* PrevProcessor = Processors.FindByPredicate([TestClass, ProcCopy](const UMassProcessor* Proc) {
 					return Proc != nullptr && Proc->GetClass() == TestClass;
 				});
 
@@ -230,11 +216,6 @@ UMassCompositeProcessor* FMassRuntimePipeline::FindTopLevelGroupByName(FName Gro
 	return nullptr;
 }
 
-void FMassRuntimePipeline::DebugOutputDescription(FOutputDevice& Ar) const
-{
-	UE::Mass::Debug::DebugOutputDescription(Processors, Ar);
-}
-
 uint32 GetTypeHash(const FMassRuntimePipeline& Instance)
 { 
 	uint32 Hash = 0;
@@ -244,3 +225,4 @@ uint32 GetTypeHash(const FMassRuntimePipeline& Instance)
 	}
 	return Hash;
 }
+

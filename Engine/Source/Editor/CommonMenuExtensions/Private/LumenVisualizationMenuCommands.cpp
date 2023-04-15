@@ -1,14 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LumenVisualizationMenuCommands.h"
-#include "LumenVisualizationData.h"
-#include "Containers/UnrealString.h"
-#include "Framework/Commands/InputChord.h"
-#include "Materials/Material.h"
-#include "Internationalization/Text.h"
-#include "Templates/Function.h"
-#include "EditorStyleSet.h"
+
+#include "Delegates/Delegate.h"
 #include "EditorViewportClient.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "LumenVisualizationData.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "UObject/UnrealNames.h"
 
 #define LOCTEXT_NAMESPACE "LumenVisualizationMenuCommands"
 
@@ -18,7 +24,7 @@ FLumenVisualizationMenuCommands::FLumenVisualizationMenuCommands()
 		TEXT("LumenVisualizationMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "LumenVisualizationMenu", "Lumen"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	),
 	CommandMap()
 {

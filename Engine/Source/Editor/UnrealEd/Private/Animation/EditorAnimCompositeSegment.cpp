@@ -15,7 +15,7 @@ UEditorAnimCompositeSegment::UEditorAnimCompositeSegment(const FObjectInitialize
 	AnimSegmentIndex = 0;
 }
 
-void UEditorAnimCompositeSegment::InitAnimSegment(int AnimSegmentIndexIn)
+void UEditorAnimCompositeSegment::InitAnimSegment(int32 AnimSegmentIndexIn)
 {
 	AnimSegmentIndex = AnimSegmentIndexIn;
 	if(UAnimComposite* Composite = Cast<UAnimComposite>(AnimObject))
@@ -27,20 +27,32 @@ void UEditorAnimCompositeSegment::InitAnimSegment(int AnimSegmentIndexIn)
 	}
 }
 
+void UEditorAnimCompositeSegment::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(FAnimSegment, AnimReference))
+	{
+		AnimSegment.UpdateCachedPlayLength();			
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
 bool UEditorAnimCompositeSegment::ApplyChangesToMontage()
 {
 	if(UAnimComposite* Composite = Cast<UAnimComposite>(AnimObject))
 	{
 		if(Composite->AnimationTrack.AnimSegments.IsValidIndex(AnimSegmentIndex))
 		{
-			if (AnimSegment.AnimReference && Composite->GetSkeleton()->IsCompatible(AnimSegment.AnimReference->GetSkeleton()))
+			if (AnimSegment.GetAnimReference() && Composite->GetSkeleton()->IsCompatible(AnimSegment.GetAnimReference()->GetSkeleton()))
 			{
 				Composite->AnimationTrack.AnimSegments[AnimSegmentIndex] = AnimSegment;
 				return true;
 			}
 			else
 			{
-				AnimSegment.AnimReference = Composite->AnimationTrack.AnimSegments[AnimSegmentIndex].AnimReference;
+				AnimSegment.SetAnimReference(Composite->AnimationTrack.AnimSegments[AnimSegmentIndex].GetAnimReference(), false);
 				return false;
 			}
 		}

@@ -1,19 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourcesViewWidgets.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
-#include "EditorFontGlyphs.h"
-#include "PathViewTypes.h"
 
-#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "AssetViewUtils.h"
+#include "CollectionManagerTypes.h"
+#include "CollectionViewTypes.h"
+#include "CollectionViewUtils.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDataSource.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "ContentBrowserPluginFilters.h"
+#include "ContentBrowserUtils.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "DragAndDrop/CollectionDragDropOp.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 #include "DragDropHandler.h"
-#include "ContentBrowserUtils.h"
-#include "CollectionViewUtils.h"
+#include "Fonts/SlateFontInfo.h"
+#include "GenericPlatform/ICursor.h"
+#include "Input/DragAndDrop.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "PathViewTypes.h"
+#include "SAssetTagItem.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Function.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
 
-#include "ContentBrowserDataSource.h"
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -31,11 +52,11 @@ void SAssetTreeItem::Construct( const FArguments& InArgs )
 
 	IsSelected = InArgs._IsSelected;
 
-	FolderOpenBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderOpen");
-	FolderClosedBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
-	FolderOpenCodeBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderOpenCode");
-	FolderClosedCodeBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderClosedCode");
-	FolderDeveloperBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper");
+	FolderOpenBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderOpen");
+	FolderClosedBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
+	FolderOpenCodeBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderOpenCode");
+	FolderClosedCodeBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosedCode");
+	FolderDeveloperBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper");
 	
 	FolderType = EFolderType::Normal;
 	if (ContentBrowserUtils::IsItemDeveloperContent(InArgs._TreeItem->GetItem()))
@@ -75,7 +96,7 @@ void SAssetTreeItem::Construct( const FArguments& InArgs )
 				SAssignNew(InlineRenameWidget, SInlineEditableTextBlock)
 					.Text(this, &SAssetTreeItem::GetNameText)
 					.ToolTipText(this, &SAssetTreeItem::GetToolTipText)
-					.Font( InArgs._FontOverride.IsSet() ? InArgs._FontOverride : FEditorStyle::GetFontStyle(bIsRoot ? "ContentBrowser.SourceTreeRootItemFont" : "ContentBrowser.SourceTreeItemFont") )
+					.Font( InArgs._FontOverride.IsSet() ? InArgs._FontOverride : FAppStyle::GetFontStyle(bIsRoot ? "ContentBrowser.SourceTreeRootItemFont" : "ContentBrowser.SourceTreeItemFont") )
 					.HighlightText( InArgs._HighlightText )
 					.OnTextCommitted(this, &SAssetTreeItem::HandleNameCommitted)
 					.OnVerifyTextChanged(this, &SAssetTreeItem::VerifyNameChanged)
@@ -253,7 +274,7 @@ const FSlateBrush* SAssetTreeItem::GetBorderImage() const
 {
 	static const FName NAME_DraggedBorderImage = TEXT("Menu.Background");
 	static const FName NAME_NoBorderImage = TEXT("NoBorder");
-	return bDraggedOver ? FEditorStyle::GetBrush(NAME_DraggedBorderImage) : FEditorStyle::GetBrush(NAME_NoBorderImage);
+	return bDraggedOver ? FAppStyle::GetBrush(NAME_DraggedBorderImage) : FAppStyle::GetBrush(NAME_NoBorderImage);
 }
 
 

@@ -19,6 +19,8 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "MovieSceneTracksComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SequenceCameraShake)
+
 #if !IS_MONOLITHIC
 	UE::MovieScene::FEntityManager*& GEntityManagerForDebugging = UE::MovieScene::GEntityManagerForDebuggingVisualizers;
 #endif
@@ -33,10 +35,7 @@ USequenceCameraShakePattern::USequenceCameraShakePattern(const FObjectInitialize
 	, bRandomSegment(false)
 {
 	CameraStandIn = CreateDefaultSubobject<UCameraAnimationSequenceCameraStandIn>(TEXT("CameraStandIn"), true);
-	Player = CreateDefaultSubobject<UCameraAnimationSequencePlayer>(TEXT("Player"), true);
-
-	// Make sure we have our custom accessors registered for our stand-in class.
-	UCameraAnimationSequenceCameraStandIn::RegisterCameraStandIn();
+	Player = CreateDefaultSubobject<UCameraAnimationSequencePlayer>(TEXT("CameraShakePlayer"), true);
 }
 
 void USequenceCameraShakePattern::GetShakePatternInfoImpl(FCameraShakeInfo& OutInfo) const
@@ -45,16 +44,18 @@ void USequenceCameraShakePattern::GetShakePatternInfoImpl(FCameraShakeInfo& OutI
 	{
 		if (UMovieScene* MovieScene = Sequence->GetMovieScene())
 		{
+			const float ActualPlayRate = (PlayRate > 0.f) ? PlayRate : 1.f;
+
 			if (bRandomSegment)
 			{
-				OutInfo.Duration = FCameraShakeDuration(RandomSegmentDuration);
+				OutInfo.Duration = FCameraShakeDuration(RandomSegmentDuration / ActualPlayRate);
 			}
 			else
 			{
 				const FFrameRate TickResolution = MovieScene->GetTickResolution();
 				const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
 				const float Duration = TickResolution.AsSeconds(PlaybackRange.Size<FFrameNumber>());
-				OutInfo.Duration = FCameraShakeDuration(Duration);
+				OutInfo.Duration = FCameraShakeDuration(Duration / ActualPlayRate);
 			}
 
 			OutInfo.BlendIn = BlendInTime;
@@ -132,12 +133,9 @@ void USequenceCameraShakePattern::TeardownShakePatternImpl()
 {
 	using namespace UE::MovieScene;
 
+	// Stop if we had reached the end of the animation and the sequence needs finishing.
+	// If the shake had been stopped explicitly, this basically won't do anything.
 	Player->Stop();
-	
-	if (UMovieSceneEntitySystemLinker* Linker = Player->GetEvaluationTemplate().GetEntitySystemLinker())
-	{
-		Linker->Reset();
-	}
 }
 
 void USequenceCameraShakePattern::UpdateCamera(FFrameTime NewPosition, const FMinimalViewInfo& InPOV, FCameraShakeUpdateResult& OutResult)
@@ -176,4 +174,5 @@ void USequenceCameraShakePattern::UpdateCamera(FFrameTime NewPosition, const FMi
 	OutResult.PostProcessSettings = CameraStandIn->PostProcessSettings;
 	OutResult.PostProcessBlendWeight = CameraStandIn->PostProcessBlendWeight;
 }
+
 

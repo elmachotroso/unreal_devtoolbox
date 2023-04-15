@@ -2,13 +2,18 @@
 
 #include "Abilities/GameplayAbilityTypes.h"
 
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/MovementComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemLog.h"
+#include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/MovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "GameplayPrediction.h"
 #include "Misc/NetworkVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayAbilityTypes)
 
 //----------------------------------------------------------------------
 
@@ -76,11 +81,35 @@ void FGameplayAbilityActorInfo::ClearActorInfo()
 	MovementComponent = nullptr;
 }
 
+UAnimInstance* FGameplayAbilityActorInfo::GetAnimInstance() const
+{ 
+	const USkeletalMeshComponent* SKMC = SkeletalMeshComponent.Get();
+
+	if (SKMC)
+	{
+		if (AffectedAnimInstanceTag != NAME_None)
+		{
+			if(UAnimInstance* Instance = SKMC->GetAnimInstance())
+			{
+				return Instance->GetLinkedAnimGraphInstanceByTag(AffectedAnimInstanceTag);
+			}
+		}
+
+		return SKMC->GetAnimInstance();
+	}
+
+	return nullptr;
+}
+
 bool FGameplayAbilityActorInfo::IsLocallyControlled() const
 {
 	if (const APlayerController* PC = PlayerController.Get())
 	{
 		return PC->IsLocalController();
+	}
+	else if (const APawn* OwnerPawn = Cast<APawn>(OwnerActor))
+	{
+		return OwnerPawn->IsLocallyControlled();
 	}
 	else if (IsNetAuthority())
 	{
@@ -113,6 +142,14 @@ bool FGameplayAbilityActorInfo::IsNetAuthority() const
 	// This rarely happens during shutdown cases for reasons that aren't quite clear
 	ABILITY_LOG(Warning, TEXT("IsNetAuthority called when OwnerActor was invalid. Returning false. AbilitySystemComponent: %s"), *GetNameSafe(AbilitySystemComponent.Get()));
 	return false;
+}
+
+FGameplayAbilityActivationInfo::FGameplayAbilityActivationInfo(AActor* InActor)
+	: bCanBeEndedByOtherInstance(false)	
+{
+	// On Init, we are either Authority or NonAuthority. We haven't been given a PredictionKey and we haven't been confirmed.
+	// NonAuthority essentially means 'I'm not sure what how I'm going to do this yet'.
+	ActivationMode = (InActor->GetLocalRole() == ROLE_Authority ? EGameplayAbilityActivationMode::Authority : EGameplayAbilityActivationMode::NonAuthority);
 }
 
 void FGameplayAbilityActivationInfo::SetPredicting(FPredictionKey PredictionKey)
@@ -233,7 +270,7 @@ FGameplayAbilitySpec::FGameplayAbilitySpec(TSubclassOf<UGameplayAbility> InAbili
 FGameplayAbilitySpec::FGameplayAbilitySpec(FGameplayAbilitySpecDef& InDef, int32 InGameplayEffectLevel, FActiveGameplayEffectHandle InGameplayEffectHandle)
 	: Ability(InDef.Ability ? InDef.Ability->GetDefaultObject<UGameplayAbility>() : nullptr)
 	, InputID(InDef.InputID)
-	, SourceObject(InDef.SourceObject)
+	, SourceObject(InDef.SourceObject.Get())
 	, ActiveCount(0)
 	, InputPressed(false)
 	, RemoveAfterActivation(false)
@@ -248,18 +285,10 @@ FGameplayAbilitySpec::FGameplayAbilitySpec(FGameplayAbilitySpecDef& InDef, int32
 
 	FString ContextString = FString::Printf(TEXT("FGameplayAbilitySpec::FGameplayAbilitySpec for %s from %s"), 
 		(InDef.Ability ? *InDef.Ability->GetName() : TEXT("INVALID ABILITY")), 
-		(InDef.SourceObject ? *InDef.SourceObject->GetName() : TEXT("INVALID ABILITY")));
+		(InDef.SourceObject.IsValid() ? *InDef.SourceObject->GetName() : TEXT("INVALID ABILITY")));
 	Level = InDef.LevelScalableFloat.GetValueAtLevel(InGameplayEffectLevel, &ContextString);
 }
 
-// ----------------------------------------------------
-
-void FGameplayAbilitySpecHandle::GenerateNewHandle()
-{
-	// Must be in C++ to avoid duplicate statics accross execution units
-	static int32 GHandle = 1;
-	Handle = GHandle++;
-}
 
 // ----------------------------------------------------
 
@@ -452,3 +481,4 @@ void FGameplayAbilityRepAnimMontage::SetRepAnimPositionMethod(ERepAnimPositionMe
 	case ERepAnimPositionMethod::CurrentSectionId: bRepPosition = false; break;
 	}
 }
+

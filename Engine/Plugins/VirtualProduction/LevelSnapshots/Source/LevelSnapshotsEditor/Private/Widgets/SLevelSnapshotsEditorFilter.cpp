@@ -8,7 +8,7 @@
 #include "Widgets/Filter/SLevelSnapshotsFilterCheckBox.h"
 #include "Widgets/Filter/SHoverableFilterActions.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SWrapBox.h"
@@ -45,7 +45,7 @@ SLevelSnapshotsEditorFilter::~SLevelSnapshotsEditorFilter()
 {
 	if (ensure(EditorData.IsValid()))
 	{
-		EditorData->OnEditedFiterChanged.Remove(ActiveFilterChangedDelegateHandle);
+		EditorData->OnEditedFilterChanged.Remove(ActiveFilterChangedDelegateHandle);
 	}
 
 	if (SnapshotFilter.IsValid())
@@ -76,7 +76,7 @@ void SLevelSnapshotsEditorFilter::Construct(const FArguments& InArgs, const TWea
 			SNew(SBorder)
 			.Padding(0)
 			.BorderBackgroundColor(FLinearColor(0.2, 0.2, 0.2, 1))
-			.BorderImage(FEditorStyle::GetBrush("ContentBrowser.FilterBackground"))
+			.BorderImage(FAppStyle::GetBrush("ContentBrowser.FilterBackground"))
 			.ColorAndOpacity_Lambda([this](){ return SnapshotFilter.IsValid() && SnapshotFilter->IsIgnored() ? FLinearColor(0.175f, 0.175f, 0.175f, 1.f) : FLinearColor(1,1,1,1); })
 			[
 				SAssignNew(ToggleButtonPtr, SLevelSnapshotsFilterCheckBox) 
@@ -88,7 +88,7 @@ void SLevelSnapshotsEditorFilter::Construct(const FArguments& InArgs, const TWea
 					SAssignNew(FilterNamePtr, SClickableText)
 					.MinDesiredWidth(65.f)	//  SHoverableFilterActions (see below) makes clicking filters with short names difficult
 					.ColorAndOpacity(FLinearColor::White)
-					.Font(FEditorStyle::GetFontStyle("ContentBrowser.FilterNameFont"))
+					.Font(FAppStyle::GetFontStyle("ContentBrowser.FilterNameFont"))
 					.ShadowOffset(FVector2D(1.f, 1.f))
 					.Text_Lambda([InFilter]()
 					{
@@ -125,7 +125,7 @@ void SLevelSnapshotsEditorFilter::Construct(const FArguments& InArgs, const TWea
 	// Hightlight & unhighlight filter when being edited
 	FilterNamePtr->SetOnClicked(FOnClicked::CreateRaw(this, &SLevelSnapshotsEditorFilter::OnSelectFilterForEdit));
 	
-	ActiveFilterChangedDelegateHandle = InEditorData->OnEditedFiterChanged.AddRaw(this, &SLevelSnapshotsEditorFilter::OnActiveFilterChanged);
+	ActiveFilterChangedDelegateHandle = InEditorData->OnEditedFilterChanged.AddSP(this, &SLevelSnapshotsEditorFilter::OnActiveFilterChanged);
 	OnFilterDestroyedDelegateHandle = InFilter->OnFilterDestroyed.AddLambda([this](UNegatableFilter* Filter)
 	{
 		if (EditorData.IsValid() && EditorData->IsEditingFilter(Filter))
@@ -211,7 +211,7 @@ FReply SLevelSnapshotsEditorFilter::OnSelectFilterForEdit()
 	if (EditorData->IsEditingFilter(SnapshotFilter.Get()))
 	{
 		bShouldHighlightFilter = false;
-		EditorData->SetEditedFilter(TOptional<UNegatableFilter*>());
+		EditorData->SetEditedFilter(nullptr);
 	}
 	else
 	{
@@ -241,13 +241,13 @@ FReply SLevelSnapshotsEditorFilter::OnRemoveFilter()
 	return FReply::Handled();
 }
 
-void SLevelSnapshotsEditorFilter::OnActiveFilterChanged(const TOptional<UNegatableFilter*>& NewFilter)
+void SLevelSnapshotsEditorFilter::OnActiveFilterChanged(UNegatableFilter* NewFilter)
 {
-	if (!SnapshotFilter.IsValid()) // This can actually become stale after a save: UI rebuilds next tick but object was already destroyed.
+	if (SnapshotFilter.IsValid()) // This can actually become stale after a save: UI rebuilds next tick but object was already destroyed.
 	{
-		return;
+		bShouldHighlightFilter = NewFilter && NewFilter == SnapshotFilter.Get();
 	}
-	bShouldHighlightFilter = NewFilter.IsSet() && *NewFilter == SnapshotFilter.Get();
+	
 }
 
 

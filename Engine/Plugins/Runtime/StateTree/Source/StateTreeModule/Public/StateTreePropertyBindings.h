@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "StateTreeTypes.h"
 #include "Misc/Guid.h"
 #include "StructView.h"
 #include "StateTreePropertyBindings.generated.h"
@@ -144,6 +145,23 @@ protected:
 };
 
 
+UENUM()
+enum class EStateTreeBindableStructSource : uint8
+{
+	/** Source is StateTree context object */
+	Context,
+	/** Source is StateTree parameter */
+	Parameter,
+	/** Source is StateTree evaluator */
+	Evaluator,
+	/** Source is State parameter */
+	State,
+	/** Source is State task */
+	Task,
+	/** Source is State condition */
+	Condition,
+};
+
 /**
  * Descriptor for a struct or class that can be a binding source or target.
  * Each struct has unique identifier, which is used to distinguish them, and name that is mostly for debugging and UI.
@@ -153,21 +171,33 @@ struct STATETREEMODULE_API FStateTreeBindableStructDesc
 {
 	GENERATED_BODY()
 
+	FStateTreeBindableStructDesc() = default;
+
 #if WITH_EDITORONLY_DATA
+	FStateTreeBindableStructDesc(const FName InName, const UStruct* InStruct, const EStateTreeBindableStructSource InDataSource, const FGuid InGuid)
+		: Struct(InStruct), Name(InName), DataSource(InDataSource), ID(InGuid)
+	{
+	}
+
 	bool operator==(const FStateTreeBindableStructDesc& RHS) const
 	{
 		return ID == RHS.ID && Struct == RHS.Struct; // Not checking name, it's cosmetic.
 	}
 #endif
 
+	bool IsValid() const { return Struct != nullptr; }
+	
 	/** The type of the struct or class. */
 	UPROPERTY()
-	const UStruct* Struct = nullptr;
+	TObjectPtr<const UStruct> Struct = nullptr;
 
 	/** Name of the container (cosmetic). */
 	UPROPERTY()
 	FName Name;
 
+	UPROPERTY()
+	EStateTreeBindableStructSource DataSource = EStateTreeBindableStructSource::Context;
+	
 #if WITH_EDITORONLY_DATA
 	/** Unique identifier of the struct. */
 	UPROPERTY()
@@ -205,6 +235,8 @@ enum class EStateTreePropertyCopyType : uint8
 	CopyName,					// FName needs special case because its size changes between editor/compiler and runtime.
 	CopyFixedArray,				// Array needs special handling for fixed size TArrays
 
+	StructReference,			// Copies pointer to a source struct into a FStateTreeStructRef.
+
 	/* Promote the type during the copy */
 
 	/* Bool promotions */
@@ -229,12 +261,18 @@ enum class EStateTreePropertyCopyType : uint8
 
 	/* UInt32 promotions */
 	PromoteUInt32ToInt64,
-    PromoteUInt32ToFloat,	// This is strictly sketchy because of potential data loss, but it is usually OK in the general case
+	PromoteUInt32ToFloat,	// This is strictly sketchy because of potential data loss, but it is usually OK in the general case
+	PromoteUInt32ToDouble,
 
 	/* Float promotions */
-	// LWC_TODO: Float/double should become synonyms in state trees? Certainly BPs.
+	PromoteFloatToInt32,
+	PromoteFloatToInt64,
 	PromoteFloatToDouble,
-	DemoteDoubleToFloat,	// LWC_TODO: This should not ship!
+
+	/* Double promotions */
+	DemoteDoubleToInt32,
+	DemoteDoubleToInt64,
+	DemoteDoubleToFloat,
 };
 
 
@@ -246,35 +284,26 @@ struct STATETREEMODULE_API FStateTreePropertySegment
 {
 	GENERATED_BODY()
 
+	/** @return true if the segment is empty. */
+	bool IsEmpty() const { return Name.IsNone(); }
+	
 	/** Property name. */
 	UPROPERTY()
 	FName Name;
 
 	/** Index in the array the property points at. */
 	UPROPERTY()
-	int32 ArrayIndex = 0;
+	FStateTreeIndex16 ArrayIndex = FStateTreeIndex16::Invalid;
+
+	/** Index to next segment. */
+	UPROPERTY()
+	FStateTreeIndex16 NextIndex = FStateTreeIndex16::Invalid;
 
 	/** Type of access/indirection. */
 	UPROPERTY()
 	EStateTreePropertyAccessType Type = EStateTreePropertyAccessType::Offset;
 };
 
-/**
- * Describes a property path made of segments (i.e. Foo.Bar consists of two segments). Used for storage only.
- */
-USTRUCT()
-struct STATETREEMODULE_API FStateTreePropertyPath
-{
-	GENERATED_BODY()
-
-	/** Index to first segment of the property path. */
-	UPROPERTY()
-	int32 SegmentsBegin = 0;
-
-	/** Index to one past the last segment in the property path. */
-	UPROPERTY()
-	int32 SegmentsEnd = 0;
-};
 
 /**
  * Describes property binding, the property from source path is copied into the property at the target path.
@@ -284,18 +313,18 @@ struct STATETREEMODULE_API FStateTreePropertyBinding
 {
 	GENERATED_BODY()
 
-	/** Index to source property path. */
+	/** Source property path. */
 	UPROPERTY()
-	int32 SourcePathIndex = 0;
+	FStateTreePropertySegment SourcePath;
 
-	/** Index to target property path. */
+	/** Target property path. */
 	UPROPERTY()
-	int32 TargetPathIndex = 0;
-
+	FStateTreePropertySegment TargetPath;
+	
 	/** Index to the source struct the source path refers to, sources are stored in FStateTreePropertyBindings. */
 	UPROPERTY()
-	int32 SourceStructIndex = 0;
-
+	FStateTreeIndex16 SourceStructIndex = FStateTreeIndex16::Invalid;
+	
 	/** The type of copy to use between the properties. */
 	UPROPERTY()
 	EStateTreePropertyCopyType CopyType = EStateTreePropertyCopyType::None;
@@ -311,11 +340,15 @@ struct STATETREEMODULE_API FStateTreePropertyIndirection
 
 	/** Index in the array the property points at. */
 	UPROPERTY()
-	int32 ArrayIndex = 0;
+	FStateTreeIndex16 ArrayIndex = FStateTreeIndex16::Invalid;
 
 	/** Cached offset of the property */
 	UPROPERTY()
-	int32 Offset = 0;
+	uint16 Offset = 0;
+
+	/** Cached offset of the property */
+	UPROPERTY()
+	FStateTreeIndex16 NextIndex = FStateTreeIndex16::Invalid;
 
 	/** Type of access/indirection. */
 	UPROPERTY()
@@ -326,27 +359,6 @@ struct STATETREEMODULE_API FStateTreePropertyIndirection
 };
 
 /**
- * Property access is a resolved property path, used for accessing properties in structs via one or more indirections.
- */
-USTRUCT()
-struct STATETREEMODULE_API FStateTreePropertyAccess
-{
-	GENERATED_BODY()
-
-	/** Index to first indirection of the property access. */
-	UPROPERTY()
-	int32 IndirectionsBegin = 0;
-
-	/** Index to one past the last indirection in the property access. */
-	UPROPERTY()
-	int32 IndirectionsEnd = 0;
-
-	/** Cached pointer to the leaf property of the access. */
-	const FProperty* LeafProperty = nullptr;
-};
-
-
-/**
  * Describes property copy, the property from source is copied into the property at the target.
  * Copy target struct is described in the property copy batch.
  */
@@ -355,27 +367,32 @@ struct STATETREEMODULE_API FStateTreePropCopy
 {
 	GENERATED_BODY()
 
-	/** Index to source property access. */
+	/** Source property access. */
 	UPROPERTY()
-	int32 SourceAccessIndex = 0;
+	FStateTreePropertyIndirection SourceIndirection;
 
-	/** Index to target property access. */
+	/** Target property access. */
 	UPROPERTY()
-	int32 TargetAccessIndex = 0;
+	FStateTreePropertyIndirection TargetIndirection;
 
-	/** Index to the struct the source path refers to, sources are stored in FStateTreePropertyBindings. */
-	UPROPERTY()
-	int32 SourceStructIndex = 0;
+	/** Cached pointer to the leaf property of the access. */
+	const FProperty* SourceLeafProperty = nullptr;
 
-	/** Type of the copy */
-	UPROPERTY()
-	EStateTreePropertyCopyType Type = EStateTreePropertyCopyType::None;
+	/** Cached pointer to the leaf property of the access. */
+	const FProperty* TargetLeafProperty = nullptr;
 
 	/** Cached property element size * dim. */
 	UPROPERTY()
 	int32 CopySize = 0;
-};
 
+	/** Index to the struct the source path refers to, sources are stored in FStateTreePropertyBindings. */
+	UPROPERTY()
+	FStateTreeIndex16 SourceStructIndex = FStateTreeIndex16::Invalid;
+
+	/** Type of the copy */
+	UPROPERTY()
+	EStateTreePropertyCopyType Type = EStateTreePropertyCopyType::None;
+};
 
 /**
  * Describes a batch of property copies from many sources to one target struct.
@@ -392,11 +409,11 @@ struct STATETREEMODULE_API FStateTreePropCopyBatch
 
 	/** Index to first binding/copy. */
 	UPROPERTY()
-	int32 BindingsBegin = 0;
+	uint16 BindingsBegin = 0;
 
 	/** Index to one past the last binding/copy. */
 	UPROPERTY()
-	int32 BindingsEnd = 0;
+	uint16 BindingsEnd = 0;
 };
 
 /**
@@ -416,7 +433,7 @@ struct STATETREEMODULE_API FStateTreePropertyBindings
 	 * Resolves paths to indirections.
 	 * @return True if resolve succeeded.
 	 */
-	bool ResolvePaths();
+	[[nodiscard]] bool ResolvePaths();
 
 	/**
 	 * @return True if bindings have been resolved.
@@ -428,22 +445,28 @@ struct STATETREEMODULE_API FStateTreePropertyBindings
 	 */
 	int32 GetSourceStructNum() const { return SourceStructs.Num(); }
 
+	TArrayView<FStateTreeBindableStructDesc> GetSourceStructs() { return  SourceStructs; };
+
+	TArrayView<FStateTreePropCopyBatch> GetCopyBatches() { return CopyBatches; };
+
+	
 	/**
 	 * Copies a batch of properties from source structs to target struct.
 	 * @param SourceStructViews Views to structs where properties are copied from.
 	 * @param TargetBatchIndex Batch index to copy (see FStateTreePropertyBindingCompiler).
 	 * @param TargetStructView View to struct where properties are copied to.
+	 * @return true if all copies succeeded (a copy can fail e.g. if source or destination struct view is invalid).
 	 */
-	void CopyTo(TConstArrayView<FStateTreeDataView> SourceStructViews, const int32 TargetBatchIndex, FStateTreeDataView TargetStructView) const;
+	bool CopyTo(TConstArrayView<FStateTreeDataView> SourceStructViews, const FStateTreeIndex16 TargetBatchIndex, FStateTreeDataView TargetStructView) const;
 
 	void DebugPrintInternalLayout(FString& OutString) const;
 
 protected:
-	bool ResolvePath(const UStruct* Struct, const FStateTreePropertyPath& Path, FStateTreePropertyAccess& OutAccess);
-	bool ValidateCopy(FStateTreePropCopy& Copy) const;
-	void PerformCopy(const FStateTreePropCopy& Copy, const FProperty* SourceProperty, const uint8* SourceAddress, const FProperty* TargetProperty, uint8* TargetAddress) const;
-	uint8* GetAddress(FStateTreeDataView InStructView, const FStateTreePropertyAccess& InAccess) const;
-	FString GetPathAsString(const FStateTreePropertyPath& Path, const int32 HighlightedSegment = INDEX_NONE, const TCHAR* HighlightPrefix = nullptr, const TCHAR* HighlightPostfix = nullptr);
+	[[nodiscard]] bool ResolvePath(const UStruct* Struct, const FStateTreePropertySegment& FirstPathSegment, FStateTreePropertyIndirection& OutFirstIndirection, const FProperty*& OutLeafProperty);
+	[[nodiscard]] bool ValidateCopy(FStateTreePropCopy& Copy) const;
+	void PerformCopy(const FStateTreePropCopy& Copy, uint8* SourceAddress, uint8* TargetAddress) const;
+	uint8* GetAddress(FStateTreeDataView InStructView, const FStateTreePropertyIndirection& FirstIndirection, const FProperty* LeafProperty) const;
+	FString GetPathAsString(const FStateTreePropertySegment& FirstPathSegment, const FStateTreePropertySegment* HighlightedSegment = nullptr, const TCHAR* HighlightPrefix = nullptr, const TCHAR* HighlightPostfix = nullptr);
 
 	/** Array of expected source structs. */
 	UPROPERTY()
@@ -457,10 +480,6 @@ protected:
 	UPROPERTY()
 	TArray<FStateTreePropertyBinding> PropertyBindings;
 
-	/** Array of property bindings, indexed by property paths. */
-	UPROPERTY()
-	TArray<FStateTreePropertyPath> PropertyPaths;
-
 	/** Array of property segments, indexed by property paths. */
 	UPROPERTY()
 	TArray<FStateTreePropertySegment> PropertySegments;
@@ -468,10 +487,6 @@ protected:
 	/** Array of property copies */
 	UPROPERTY(Transient)
 	TArray<FStateTreePropCopy> PropertyCopies;
-
-	/** Array of property accesses, indexed by copies*/
-	UPROPERTY(Transient)
-	TArray<FStateTreePropertyAccess> PropertyAccesses;
 
 	/** Array of property indirections, indexed by accesses*/
 	UPROPERTY(Transient)
@@ -514,7 +529,7 @@ struct STATETREEMODULE_API FStateTreeEditorPropertyPath
 	UPROPERTY()
 	TArray<FString> Path;
 
-	bool IsValid() const { return StructID.IsValid() && Path.Num() > 0; }
+	bool IsValid() const { return StructID.IsValid(); }
 
 	bool operator==(const FStateTreeEditorPropertyPath& RHS) const;
 };

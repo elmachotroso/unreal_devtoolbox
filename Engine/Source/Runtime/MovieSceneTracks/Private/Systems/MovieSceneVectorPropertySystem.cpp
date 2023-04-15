@@ -8,21 +8,20 @@
 #include "Systems/DoubleChannelEvaluatorSystem.h"
 #include "Systems/FloatChannelEvaluatorSystem.h"
 #include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
 #include "Systems/MovieScenePropertyInstantiator.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneVectorPropertySystem)
 
 UMovieSceneFloatVectorPropertySystem::UMovieSceneFloatVectorPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->FloatVector);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		// We need our floats correctly evaluated and blended, so we are downstream from those systems.
 		DefineImplicitPrerequisite(UFloatChannelEvaluatorSystem::StaticClass(), GetClass());
-		DefineImplicitPrerequisite(UMovieScenePiecewiseFloatBlenderSystem::StaticClass(), GetClass());
+		DefineImplicitPrerequisite(UMovieScenePiecewiseDoubleBlenderSystem::StaticClass(), GetClass());
 	}
 }
 
@@ -34,8 +33,6 @@ void UMovieSceneFloatVectorPropertySystem::OnRun(FSystemTaskPrerequisites& InPre
 UMovieSceneDoubleVectorPropertySystem::UMovieSceneDoubleVectorPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->DoubleVector);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
@@ -50,4 +47,5 @@ void UMovieSceneDoubleVectorPropertySystem::OnRun(FSystemTaskPrerequisites& InPr
 {
 	Super::OnRun(InPrerequisites, Subsequents);
 }
+
 

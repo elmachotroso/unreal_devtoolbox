@@ -2,11 +2,13 @@
 
 #include "AdvancedCopyCustomization.h"
 #include "Containers/UnrealString.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "Engine/World.h"
 #include "Engine/Level.h"
 #include "Engine/MapBuildDataRegistry.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AdvancedCopyCustomization)
 
 
 #define LOCTEXT_NAMESPACE "AdvancedCopyCustomization"
@@ -27,9 +29,9 @@ UAdvancedCopyCustomization::UAdvancedCopyCustomization(const class FObjectInitia
 
 	FilterForExcludingDependencies.bRecursivePaths = true;
 	FilterForExcludingDependencies.bRecursiveClasses = true;
-	FilterForExcludingDependencies.ClassNames.Add(UWorld::StaticClass()->GetFName());
-	FilterForExcludingDependencies.ClassNames.Add(ULevel::StaticClass()->GetFName());
-	FilterForExcludingDependencies.ClassNames.Add(UMapBuildDataRegistry::StaticClass()->GetFName());
+	FilterForExcludingDependencies.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
+	FilterForExcludingDependencies.ClassPaths.Add(ULevel::StaticClass()->GetClassPathName());
+	FilterForExcludingDependencies.ClassPaths.Add(UMapBuildDataRegistry::StaticClass()->GetClassPathName());
 
 }
 
@@ -56,3 +58,4 @@ void UAdvancedCopyCustomization::SetPackageThatInitiatedCopy(const FString& InBa
 }
 
 #undef LOCTEXT_NAMESPACE
+

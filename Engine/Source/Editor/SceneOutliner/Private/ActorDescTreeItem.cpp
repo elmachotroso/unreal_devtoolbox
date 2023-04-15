@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorDescTreeItem.h"
+#include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -21,10 +22,11 @@
 #include "SSocketChooser.h"
 #include "ToolMenus.h"
 #include "LevelEditorViewport.h"
+#include "HAL/PlatformApplicationMisc.h"
 
 #define LOCTEXT_NAMESPACE "SceneOutliner_ActorDescTreeItem"
 
-const FSceneOutlinerTreeItemType FActorDescTreeItem::Type(&ISceneOutlinerTreeItem::Type);
+const FSceneOutlinerTreeItemType FActorDescTreeItem::Type(&IActorBaseTreeItem::Type);
 
 struct SActorDescTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWidget
 {
@@ -117,9 +119,21 @@ private:
 			if (const FWorldPartitionActorDesc* ActorDesc = TreeItem->ActorDescHandle.Get())
 			{
 				FFormatNamedArguments Args;
-				Args.Add(TEXT("ActorLabel"), FText::FromName(ActorDesc->GetActorLabel()));
-				Args.Add(TEXT("UnloadedTag"), LOCTEXT("UnloadedActorLabel", "(Unloaded)"));
-				return FText::Format(LOCTEXT("UnloadedActorDisplay", "{ActorLabel} {UnloadedTag}"), Args);
+				Args.Add(TEXT("ActorLabel"), FText::FromString(TreeItem->GetDisplayString()));
+				
+				UActorDescContainer* ActorDescContainer = ActorDesc->GetContainer();
+				UWorld* World = ActorDescContainer != nullptr ? ActorDescContainer->GetWorld() : nullptr;
+				UWorldPartition* WorldPartition = World != nullptr ? World->GetWorldPartition() : nullptr;
+				if (WorldPartition && WorldPartition->IsActorPinned(ActorDesc->GetGuid()))
+				{
+					Args.Add(TEXT("UnloadState"), LOCTEXT("UnloadedDataLayer", "(Unloaded DataLayer)"));
+				}
+				else
+				{
+					Args.Add(TEXT("UnloadState"), LOCTEXT("UnloadedActorLabel", "(Unloaded)"));
+				}
+
+				return FText::Format(LOCTEXT("UnloadedActorDisplay", "{ActorLabel} {UnloadState}"), Args);
 			}
 		}
 		return FText();
@@ -136,7 +150,7 @@ private:
 		{
 			if (const FWorldPartitionActorDesc* ActorDesc = TreeItem->ActorDescHandle.Get())
 			{
-				return FText::FromName(ActorDesc->GetActorClass()->GetFName());
+				return FText::FromName(ActorDesc->GetDisplayClassName());
 			}
 		}
 
@@ -156,7 +170,7 @@ private:
 		{
 			if (const FWorldPartitionActorDesc* ActorDesc = TreeItem->ActorDescHandle.Get())
 			{
-				const FName IconName = ActorDesc->GetActorClass()->GetFName();
+				const FName IconName = ActorDesc->GetDisplayClassName();
 
 				const FSlateBrush* CachedBrush = WeakSceneOutliner.Pin()->GetCachedIconForClass(IconName);
 				if (CachedBrush != nullptr)
@@ -165,8 +179,7 @@ private:
 				}
 				else if (IconName != NAME_None)
 				{
-
-					const FSlateBrush* FoundSlateBrush = FSlateIconFinder::FindIconForClass(ActorDesc->GetActorClass()).GetIcon();
+					const FSlateBrush* FoundSlateBrush = FSlateIconFinder::FindIconForClass(ActorDesc->GetActorNativeClass()).GetIcon();
 					WeakSceneOutliner.Pin()->CacheIconForClass(IconName, FoundSlateBrush);
 					return FoundSlateBrush;
 				}
@@ -194,8 +207,17 @@ private:
 			{
 				return BaseColor.GetValue();
 			}
+			
+			if(WeakSceneOutliner.IsValid())
+			{
+				// Use the normal foreground color for selected items to make them readable
+				if(WeakSceneOutliner.Pin()->GetTree().IsItemSelected(TreeItem))
+				{
+					return FSlateColor::UseSubduedForeground();
+				}
+			}
 		}
-
+		
 		return FSceneOutlinerCommonLabelData::DarkColor;
 	}
 
@@ -212,11 +234,24 @@ private:
 };
 
 FActorDescTreeItem::FActorDescTreeItem(const FGuid& InActorGuid, UActorDescContainer* Container)
-	: ISceneOutlinerTreeItem(Type)
+	: IActorBaseTreeItem(Type)
 	, ActorDescHandle(Container, InActorGuid)
 	, ActorGuid(InActorGuid)
 {
-	ID = FSceneOutlinerTreeItemID(InActorGuid);
+	Initialize();
+}
+
+FActorDescTreeItem::FActorDescTreeItem(const FGuid& InActorGuid, FActorDescContainerCollection* ContainerCollection)
+	: IActorBaseTreeItem(Type)
+	, ActorDescHandle(ContainerCollection, InActorGuid)
+	, ActorGuid(InActorGuid)
+{
+	Initialize();
+}
+
+void FActorDescTreeItem::Initialize()
+{
+	ID = FSceneOutlinerTreeItemID(ActorGuid);
 
 	if (const FWorldPartitionActorDesc* const ActorDesc = ActorDescHandle.Get())
 	{
@@ -252,10 +287,21 @@ void FActorDescTreeItem::FocusActorBounds() const
 {
 	if (FWorldPartitionActorDesc const* ActorDesc = ActorDescHandle.Get())
 	{
-		if (FLevelEditorViewportClient* LevelViewportClient = GCurrentLevelEditingViewportClient)
+		const bool bActiveViewportOnly = true;
+		GEditor->MoveViewportCamerasToBox(ActorDesc->GetBounds(), bActiveViewportOnly, 0.5f);
+	}
+}
+
+void FActorDescTreeItem::CopyActorFilePathtoClipboard() const
+{
+	if (FWorldPartitionActorDesc const* ActorDesc = ActorDescHandle.Get())
+	{
+		FString PackageFilename;
+		if (FPackageName::TryConvertLongPackageNameToFilename(ActorDesc->GetActorPackage().ToString(), PackageFilename, FPackageName::GetAssetPackageExtension()))
 		{
-			LevelViewportClient->FocusViewportOnBox(ActorDesc->GetBounds(), false);
-		}	
+			FString Result = FPaths::ConvertRelativePathToFull(PackageFilename);
+			FPlatformApplicationMisc::ClipboardCopy(*Result);
+		}
 	}
 }
 
@@ -263,6 +309,7 @@ void FActorDescTreeItem::GenerateContextMenu(UToolMenu* Menu, SSceneOutliner&)
 {
 	FToolMenuSection& Section = Menu->AddSection("Section");
 	Section.AddMenuEntry("FocusActorBounds", LOCTEXT("FocusActorBounds", "Focus Actor Bounds"), FText(), FSlateIcon(), FUIAction(FExecuteAction::CreateSP(this, &FActorDescTreeItem::FocusActorBounds)));
+	Section.AddMenuEntry("CopyActorFilePath", LOCTEXT("CopyActorFilePath", "Copy Actor File Path"), LOCTEXT("CopyActorFilePathTooltip", "Copy the file path where this actor is saved"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Copy"), FUIAction(FExecuteAction::CreateSP(this, &FActorDescTreeItem::CopyActorFilePathtoClipboard)));
 }
 
 bool FActorDescTreeItem::GetVisibility() const
@@ -270,11 +317,25 @@ bool FActorDescTreeItem::GetVisibility() const
 	return true;
 }
 
+bool FActorDescTreeItem::ShouldShowPinnedState() const
+{
+	if (ActorDescHandle.IsValid())
+	{
+		// Pinning of ActorDescs is only supported on the main world partition
+		if (UActorDescContainer* Container = ActorDescHandle->GetContainer())
+		{
+			return Container->IsMainPartitionContainer();
+		}
+	}
+
+	return false;
+}
+
 bool FActorDescTreeItem::GetPinnedState() const
 {
 	if (ActorDescHandle.IsValid())
 	{
-		UWorldPartition* WorldPartition = Cast<UWorldPartition>(ActorDescHandle->GetContainer());
+		UWorldPartition* WorldPartition = ActorDescHandle->GetContainer()->GetWorld()->GetWorldPartition();
 		return WorldPartition ? WorldPartition->IsActorPinned(GetGuid()) : false;
 	}
 	return false;

@@ -4,25 +4,28 @@
 #include "CoreMinimal.h"
 #include "Announcement/ScreenReaderAnnouncement.h"
 #include "GenericPlatform/ScreenReaderReply.h"
+#include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
 
 class IAccessibleWidget;
 class FScreenReaderAnnouncementChannel;
+class IScreenReaderNavigationPolicy;
 
 /**
 * A user of the screen reader. Corresponds to a hardware device that users use.
 * This class is a facade that acts as a one stop shop for all screen reading services on a per user basis.
 * Multiple screen reader users can exist simultaneoulsy to facilitate local multiplayer and users can opt in or out 
 * of receiving screen reader feedback by registering and unregistering with the screen reader respectively.
-* A screen user is inactive by default when it is first registered with teh screen reader. Users must explicitly activate the screen reader user after successful registration with the screen reader to use its services.
+* A screen user is inactive by default when it is first registered through the screen reader. Users must explicitly activate the screen reader user after successful registration with the screen reader to use its services.
 * Responsibilities of the class are:
 * 1. Text to speech (TTS) requests - Users can request an announcement to be spoken via text to speech to  screen reader user
 * 2. Accessible focus handling - A screen reader user holds information about the accessible widget it is currently focused on
-* @see FScreenReaderBase, FScreenReaderAnnouncement
+ * 3. Accessible Navigation - Screen reader users have finer navigation controls around the accessible widget hierarchy as compared to regular tab navigation with keyboard or D-pad controls with a gamepad.
+* @see FScreenReaderBase, FScreenReaderAnnouncement, FGenericAccessibleUser
 */
-class SCREENREADER_API FScreenReaderUser
+class SCREENREADER_API FScreenReaderUser : public FGenericAccessibleUser
 {
 public:
-	explicit FScreenReaderUser(int32 InUserId);
+	explicit FScreenReaderUser(FAccessibleUserIndex InUserIndex);
 	~FScreenReaderUser();
 	/**
 	* Requests an announcement to be spoken to the screen reader user. This is the main mechanism to provide text to speech auditory feedback
@@ -33,7 +36,7 @@ public:
 	* If the screen reader user is active and no announcements are currently spoken, the announcement will be spoken immediately.
 	* If another announcement is currently being spoken, the passed in announcement could be queued or interrupt the currently spoken announcement.
 	* Examples:
-	* TSharedRef<FScreenReaderUser> MyUser = ScreenReader->GetUser(MyScreenReaderUserId);
+	* TSharedRef<FScreenReaderUser> MyUser = ScreenReader->GetUser(MyScreenReaderUserIndex);
 	* // All announcements to be spoken should be localized to provide language support for the text to speech system.
 	* static const FText MyText = LOCTEXT("ExampleUserFeedback", "Feedback to user.");
 	* // This makes the announcement interrupt any currently spoken announcement with lower priority and is played immediately. The announcement will be uninterruptable and guarantees the user will hear the announcement.
@@ -89,6 +92,43 @@ public:
 	/** Returns true if the text to speech for this user is muted. Else returns false. */
 	bool IsSpeechMuted() const;
 
+	
+	// Navigation
+	/** Sets the navigation policy this screen reader user will be using. The screen reader navigation policy will affect all functionality to do with shifting focus to the next available widget. */
+	void SetNavigationPolicy(const TSharedRef<IScreenReaderNavigationPolicy>& InNavigationPolicy);
+	/**
+	 * Shifts focus to the next sibling from the user's currently focused accessible widget based on the current navigation policy.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to a next sibling from the currently focused accessible widget. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToNextSibling();
+	/**
+	 * Shifts focus to the previous sibling from the user's currently focused accessible widget based on the current navigation policy.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to a previous sibling from the currently focused accessible widget. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToPreviousSibling();
+	/**
+	 * Shifts focus to the first ancestor of the user's currently focused accessible widget based on the current navigation policy.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to the first ancestor of the currently focused accessible widget. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToFirstAncestor();
+	/**
+	 * Shifts focus to the first child from the user's currently focused accessible widget based on the current navigation policy.
+	 * Focus is unaffected if the user's currently focused accessible widget has no children.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to the first child from the currently focused accessible widget based on the navigation policy. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToFirstChild();
+	/**
+	 * Shifts focus to the logical next widget in the accessible widget hierarchy from the user's currently focused accessible widget based on the current navigation policy.
+	 * See IAccessibleWidget::GetNextWidgetInHierarchy for an explanation of what the logical next widget in the accessible hierarchy means.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to a next widget from the currently focused accessible widget. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToNextWidgetInHierarchy();
+	/**
+	 * Shifts focus to the logical previous widget in the accessible widget hierarchy from the user's currently focused accessible widget based on the current navigation policy.
+	 * See IAccessibleWidget::GetPreviousWidgetInHierarchy for an explanation of what the logical previous widget in the accessible hierarchy means.
+	 * @return FScreenReaderReply::Handled() if focus has successfully shifted to a logical previous widget from the currently focused accessible widget. Else returns FScreenReaderReply::Unhandled()
+	 */
+	FScreenReaderReply NavigateToPreviousWidgetInHierarchy();
 	/**
 	* Activates the screen reader user and fulfill requests for accessibility services such as text to speech that clients can make.
 	* When screen reader users are firstr registered with a screen reader, they are deactivated by default. Users must explicitly activate the screen reader user.
@@ -104,25 +144,16 @@ public:
 	{ 
 		return bActive; 
 	}
-	/** Returns the user Id associated with this screen reader user. */
-	int32 GetUserId() const 
-	{ 
-		return UserId; 
-	}
-	/** Returns the accessible widget the screen reader user is currently focused on. */
-	TSharedPtr<IAccessibleWidget> GetAccessibleFocusWidget() const 
-	{ 
-		return AccessibleFocusWidget.Pin();
-	}
-	/** Sets the accessible widget the screen reader user is currently focused on */
-	void SetAccessibleFocusWidget(const TSharedRef<IAccessibleWidget>& InAccessibleFocusWidget) 
-	{ 
-		AccessibleFocusWidget = InAccessibleFocusWidget;
-	}
+
+protected:
+	//~ Begin FGenericAccessibleUser interface
+	virtual void OnUnregistered() override;
+	//~ End FGenericAccessibleUser interface
+	
 private:
-	int32 UserId;
 	/** Responsible for handling all incoming announcement requests and speaking them via text to speech if possible */
 	TUniquePtr<FScreenReaderAnnouncementChannel> AnnouncementChannel;
-	TWeakPtr<IAccessibleWidget> AccessibleFocusWidget;
+	TSharedRef<IScreenReaderNavigationPolicy> NavigationPolicy;
 	bool bActive;
 };
+

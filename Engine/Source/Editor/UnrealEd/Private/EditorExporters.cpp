@@ -58,7 +58,6 @@
 #include "GameFramework/PhysicsVolume.h"
 #include "EngineUtils.h"
 #include "Editor.h"
-#include "MatineeExporter.h"
 #include "FbxExporter.h"
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
@@ -89,6 +88,23 @@
 #include "Framework/Notifications/NotificationManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorExporters, Log, All);
+
+struct FScopedFbxExporterInstance
+{
+	FScopedFbxExporterInstance()
+	{
+		Exporter = UnFbx::FFbxExporter::GetInstance();
+	}
+	~FScopedFbxExporterInstance()
+	{
+		UnFbx::FFbxExporter::DeleteInstance();
+		Exporter = nullptr;
+	}
+
+	UnFbx::FFbxExporter* GetExporter() { return Exporter; }
+private:
+	UnFbx::FFbxExporter* Exporter = nullptr;
+};
 
 /*------------------------------------------------------------------------------
 	UTextBufferExporterTXT implementation.
@@ -151,9 +167,15 @@ bool USoundExporterWAV::SupportsObject(UObject* Object) const
 bool USoundExporterWAV::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
 {
 	USoundWave* Sound = CastChecked<USoundWave>( Object );
-	void* RawWaveData = Sound->RawData.Lock( LOCK_READ_ONLY );
-	Ar.Serialize( RawWaveData, Sound->RawData.GetBulkDataSize() );
-	Sound->RawData.Unlock();
+
+	// We a non-const pointer for the sake of calling serialize, but this is on writing FArchive so it's never modified
+	// Assert that's the case
+	if(ensure(Ar.IsSaving()))
+	{	
+		TFuture<FSharedBuffer> FutureBuffer = Sound->RawData.GetPayload(); // This will block, but for now that's ok.
+		void* RawWaveData = (void*)FutureBuffer.Get().GetData();
+		Ar.Serialize(RawWaveData, FutureBuffer.Get().GetSize());
+	}
 	return true;
 }
 
@@ -229,7 +251,7 @@ int32 USoundSurroundExporterWAV::GetFileCount( UObject* Object ) const
 	return( SPEAKER_Count );
 }
 
-FString USoundSurroundExporterWAV::GetUniqueFilename( const TCHAR* Filename, int32 FileIndex, int32 FileCount )
+FString USoundSurroundExporterWAV::GetUniqueFilename( UObject* Object, const TCHAR* Filename, int32 FileIndex, int32 FileCount ) const
 {
 	static FString SpeakerLocations[SPEAKER_Count] =
 	{
@@ -254,15 +276,18 @@ bool USoundSurroundExporterWAV::ExportBinary( UObject* Object, const TCHAR* Type
 
 	USoundWave* Sound = CastChecked<USoundWave>( Object );
 	if ( Sound->ChannelSizes.Num() > 0 )
-	{
-		uint8* RawWaveData = ( uint8* )Sound->RawData.Lock( LOCK_READ_ONLY );
-
-		if( Sound->ChannelSizes[ FileIndex ] )
+	{		
+		if (ensure(Ar.IsSaving()))
 		{
-			Ar.Serialize( RawWaveData + Sound->ChannelOffsets[ FileIndex ], Sound->ChannelSizes[ FileIndex ] );
-		}
+			// Non-const pointer for the sake of calling serialize, so assert that we are writing an archive.
+			TFuture<FSharedBuffer> FutureBuffer = Sound->RawData.GetPayload();
+			uint8* RawWaveData = (uint8*) FutureBuffer.Get().GetData();
 
-		Sound->RawData.Unlock();
+			if( Sound->ChannelSizes[ FileIndex ] )
+			{
+				Ar.Serialize( RawWaveData + Sound->ChannelOffsets[ FileIndex ], Sound->ChannelSizes[ FileIndex ] );
+			}
+		}
 
 		bResult = Sound->ChannelSizes[ FileIndex ] != 0;
 	}
@@ -1035,7 +1060,7 @@ static void ExportMaterialPropertyTexture(const FString& BMPFilename, UMaterialI
 
 	// make the BMP for the diffuse channel
 	TArray<FColor> OutputBMP;
-	FIntPoint OutSize;
+	FIntPoint OutSize{};
 
 	const TEnumAsByte<EBlendMode> BlendMode = Material->GetBlendMode();
 
@@ -1369,7 +1394,7 @@ static void ExportPolys( UPolys* Polys, int32 &PolyNum, int32 TotalPolys, FFeedb
 			const FVector& Normal = (FVector)Model->Vectors[Surf.vNormal];
 
 			FPoly Poly;
-			GEditor->polyFindMaster( Model, Node->iSurf, Poly );
+			GEditor->polyFindBrush( Model, Node->iSurf, Poly );
 
 			// Triangulate this node and generate an OBJ face from the vertices.
 			for(int32 StartVertexIndex = 1;StartVertexIndex < Node->NumVertices-1;StartVertexIndex++)
@@ -1561,7 +1586,7 @@ bool IsSomethingToExport(AActor* Actor)
 		UChildActorComponent* ChildActorComp = Cast<UChildActorComponent>(Component);
 
 		if ((StaticMeshComp && StaticMeshComp->GetStaticMesh()) ||
-			(SkelMeshComp && SkelMeshComp->SkeletalMesh) ||
+			(SkelMeshComp && SkelMeshComp->GetSkeletalMeshAsset()) ||
 			Component->IsA(UCameraComponent::StaticClass()) ||
 			Component->IsA(ULightComponent::StaticClass()) ||
 			(ChildActorComp && ChildActorComp->GetChildActor() && IsSomethingToExport(ChildActorComp->GetChildActor()))
@@ -1652,22 +1677,22 @@ bool ULevelExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, FArchi
 
 	GWarn->BeginSlowTask(NSLOCTEXT("UnrealEd", "ExportingLevelToFBX", "Exporting Level To FBX"), true);
 
-	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
+	FScopedFbxExporterInstance ScopedExporterInstance;
 	bool ExportCancel = false;
 	if (UFbxExportOption* AutomatedExportOptions = GetAutomatedExportOptionsFbx())
 	{
-		Exporter->SetExportOptionsOverride(AutomatedExportOptions);
+		ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(AutomatedExportOptions);
 	}
 	else
 	{
 		//Show the fbx export dialog options
 		bool ExportAll = false;
-		Exporter->FillExportOptions(false, true, UExporter::CurrentFilename, ExportCancel, ExportAll);
+		ScopedExporterInstance.GetExporter()->FillExportOptions(false, true, UExporter::CurrentFilename, ExportCancel, ExportAll);
 	}
 
 	if (!ExportCancel)
 	{
-		Exporter->CreateDocument();
+		ScopedExporterInstance.GetExporter()->CreateDocument();
 
 		GWarn->StatusUpdate(0, 1, NSLOCTEXT("UnrealEd", "ExportingLevelToFBX", "Exporting Level To FBX"));
 		{
@@ -1675,12 +1700,48 @@ bool ULevelExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, FArchi
 
 			if (bSelectedOnly)
 			{
-				Exporter->ExportBSP(World->GetModel(), true);
+				ScopedExporterInstance.GetExporter()->ExportBSP(World->GetModel(), true);
 			}
 
-			INodeNameAdapter NodeNameAdapter;
+			class FLevelExporterFBXNodeNameAdapter : public INodeNameAdapter
+			{
+			public:
+				virtual FString GetActorNodeName(const AActor* InActor) override
+				{
+					if (ActorNames.Contains(InActor))
+					{
+						return ActorNames[InActor].ToString();
+					}
 
-			Exporter->ExportLevelMesh(Level, bSelectedOnly, NodeNameAdapter);
+					FString ActorNodeName = InActor->GetActorLabel();
+
+					if (UniqueActorNames.Contains(ActorNodeName))
+					{
+						FString ActorNodeNamePrefix = ActorNodeName;
+						int32 ActorNodeNameIndex = 1;
+						FActorLabelUtilities::SplitActorLabel(ActorNodeNamePrefix, ActorNodeNameIndex);
+
+						do
+						{
+							ActorNodeName = FString::Printf(TEXT("%s%d"), *ActorNodeNamePrefix, ++ActorNodeNameIndex);
+						}
+						while (UniqueActorNames.Contains(ActorNodeName));
+					}
+
+					UniqueActorNames.Add(ActorNodeName);
+					ActorNames.Add(InActor) = FName(ActorNodeName);
+
+					return ActorNodeName;
+				}
+
+			private:
+				TSet<FString> UniqueActorNames;
+				TMap<const AActor*, FName> ActorNames;
+			};
+
+			FLevelExporterFBXNodeNameAdapter NodeNameAdapter;
+
+			ScopedExporterInstance.GetExporter()->ExportLevelMesh(Level, bSelectedOnly, NodeNameAdapter);
 
 			// Export streaming levels and actors
 			for (int32 CurLevelIndex = 0; CurLevelIndex < World->GetNumLevels(); ++CurLevelIndex)
@@ -1688,14 +1749,14 @@ bool ULevelExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, FArchi
 				ULevel* CurLevel = World->GetLevel(CurLevelIndex);
 				if (CurLevel != NULL && CurLevel != Level)
 				{
-					Exporter->ExportLevelMesh(CurLevel, bSelectedOnly, NodeNameAdapter);
+					ScopedExporterInstance.GetExporter()->ExportLevelMesh(CurLevel, bSelectedOnly, NodeNameAdapter);
 				}
 			}
 		}
-		Exporter->WriteToFile(*UExporter::CurrentFilename);
+		ScopedExporterInstance.GetExporter()->WriteToFile(*UExporter::CurrentFilename);
 	}
 
-	Exporter->SetExportOptionsOverride(nullptr);
+	ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(nullptr);
 
 	GWarn->EndSlowTask();
 
@@ -2067,10 +2128,10 @@ UStaticMeshExporterFBX::UStaticMeshExporterFBX(const FObjectInitializer& ObjectI
 bool UStaticMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
 {
 	UStaticMesh* StaticMesh = CastChecked<UStaticMesh>( Object );
-	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
+	FScopedFbxExporterInstance ScopedExporterInstance;
 	if (UFbxExportOption* AutomatedExportOptions = GetAutomatedExportOptionsFbx())
 	{
-		Exporter->SetExportOptionsOverride(AutomatedExportOptions);
+		ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(AutomatedExportOptions);
 		SetShowExportOption(false);
 	}
 	else
@@ -2078,7 +2139,7 @@ bool UStaticMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, F
 		//Show the fbx export dialog options
 		bool ExportAll = GetBatchMode() && !GetShowExportOption();
 		bool ExportCancel = false;
-		Exporter->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
+		ScopedExporterInstance.GetExporter()->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
 		if (ExportCancel)
 		{
 			SetCancelBatch(GetBatchMode());
@@ -2088,10 +2149,10 @@ bool UStaticMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, F
 		SetShowExportOption(!ExportAll);
 	}
 
-	Exporter->CreateDocument();
-	Exporter->ExportStaticMesh(StaticMesh);
-	Exporter->WriteToFile(*UExporter::CurrentFilename);
-	Exporter->SetExportOptionsOverride(nullptr);
+	ScopedExporterInstance.GetExporter()->CreateDocument();
+	ScopedExporterInstance.GetExporter()->ExportStaticMesh(StaticMesh);
+	ScopedExporterInstance.GetExporter()->WriteToFile(*UExporter::CurrentFilename);
+	ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(nullptr);
 
 	return true;
 }
@@ -2114,10 +2175,10 @@ USkeletalMeshExporterFBX::USkeletalMeshExporterFBX(const FObjectInitializer& Obj
 bool USkeletalMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type, FArchive& Ar, FFeedbackContext* Warn, int32 FileIndex, uint32 PortFlags )
 {
 	USkeletalMesh* SkeletalMesh = CastChecked<USkeletalMesh>( Object );
-	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
+	FScopedFbxExporterInstance ScopedExporterInstance;
 	if (UFbxExportOption* AutomatedExportOptions = GetAutomatedExportOptionsFbx())
 	{
-		Exporter->SetExportOptionsOverride(AutomatedExportOptions);
+		ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(AutomatedExportOptions);
 		SetShowExportOption(false);
 	}
 	else
@@ -2125,7 +2186,7 @@ bool USkeletalMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type,
 		//Show the fbx export dialog options
 		bool ExportAll = GetBatchMode() && !GetShowExportOption();
 		bool ExportCancel = false;
-		Exporter->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
+		ScopedExporterInstance.GetExporter()->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
 		if (ExportCancel)
 		{
 			SetCancelBatch(GetBatchMode());
@@ -2135,10 +2196,10 @@ bool USkeletalMeshExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type,
 		SetShowExportOption(!ExportAll);
 	}
 
-	Exporter->CreateDocument();
-	Exporter->ExportSkeletalMesh(SkeletalMesh);
-	Exporter->WriteToFile(*UExporter::CurrentFilename);
-	Exporter->SetExportOptionsOverride(nullptr);
+	ScopedExporterInstance.GetExporter()->CreateDocument();
+	ScopedExporterInstance.GetExporter()->ExportSkeletalMesh(SkeletalMesh);
+	ScopedExporterInstance.GetExporter()->WriteToFile(*UExporter::CurrentFilename);
+	ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(nullptr);
 
 	return true;
 }
@@ -2165,10 +2226,10 @@ bool UAnimSequenceExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type,
 
 	if (AnimSkeleton && PreviewMesh)
 	{
-		UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
+		FScopedFbxExporterInstance ScopedExporterInstance;
 		if (UFbxExportOption* AutomatedExportOptions = GetAutomatedExportOptionsFbx())
 		{
-			Exporter->SetExportOptionsOverride(AutomatedExportOptions);
+			ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(AutomatedExportOptions);
 			SetShowExportOption(false);
 		}
 		else
@@ -2176,7 +2237,7 @@ bool UAnimSequenceExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type,
 			//Show the fbx export dialog options
 			bool ExportAll = GetBatchMode() && !GetShowExportOption();
 			bool ExportCancel = false;
-			Exporter->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
+			ScopedExporterInstance.GetExporter()->FillExportOptions(GetBatchMode(), GetShowExportOption(), UExporter::CurrentFilename, ExportCancel, ExportAll);
 			if (ExportCancel)
 			{
 				SetCancelBatch(GetBatchMode());
@@ -2186,10 +2247,10 @@ bool UAnimSequenceExporterFBX::ExportBinary( UObject* Object, const TCHAR* Type,
 			SetShowExportOption(!ExportAll);
 		}
 
-		Exporter->CreateDocument();
-		Exporter->ExportAnimSequence(AnimSequence, PreviewMesh, Exporter->GetExportOptions()->bExportPreviewMesh);
-		Exporter->WriteToFile( *UExporter::CurrentFilename );
-		Exporter->SetExportOptionsOverride(nullptr);
+		ScopedExporterInstance.GetExporter()->CreateDocument();
+		ScopedExporterInstance.GetExporter()->ExportAnimSequence(AnimSequence, PreviewMesh, ScopedExporterInstance.GetExporter()->GetExportOptions()->bExportPreviewMesh);
+		ScopedExporterInstance.GetExporter()->WriteToFile( *UExporter::CurrentFilename );
+		ScopedExporterInstance.GetExporter()->SetExportOptionsOverride(nullptr);
 
 		return true;
 	}
@@ -2238,7 +2299,7 @@ void UEditorEngine::RebuildStaticNavigableGeometry(ULevel* Level)
 				const FVector& Normal = (FVector)Model->Vectors[Surf.vNormal];
 
 				FPoly Poly;
-				polyFindMaster( Model, Node->iSurf, Poly );
+				polyFindBrush( Model, Node->iSurf, Poly );
 
 				// Triangulate this node and generate an OBJ face from the vertices.
 				for(int32 StartVertexIndex = 1;StartVertexIndex < Node->NumVertices-1;StartVertexIndex++)

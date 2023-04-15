@@ -1,434 +1,645 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IoStoreCookOnTheFlyRequestManager.h"
-#include "CookOnTheFlyServerInterface.h"
+
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Async/Async.h"
+#include "Cooker/ExternalCookOnTheFlyServer.h"
 #include "CookOnTheFly.h"
 #include "CookOnTheFlyMessages.h"
-#include "Modules/ModuleManager.h"
-#include "PackageStoreWriter.h"
-#include "ShaderCompiler.h"
+#include "CookOnTheFlyNetServer.h"
+#include "CookOnTheFlyServerInterface.h"
+#include "Engine/Engine.h"
 #include "HAL/PlatformTime.h"
+#include "IPAddress.h"
+#include "MessageEndpoint.h"
+#include "MessageEndpointBuilder.h"
 #include "Misc/PackageName.h"
-#include "UObject/SavePackage.h"
+#include "Modules/ModuleManager.h"
+#include "NetworkMessage.h"
+#include "PackageStoreWriter.h"
 #include "ProfilingDebugging/CountersTrace.h"
-#include "AssetRegistry/IAssetRegistry.h"
+#include "Serialization/BufferArchive.h"
+#include "Sockets.h"
+#include "SocketSubsystem.h"
+#include "Templates/Function.h"
+#include "UObject/SavePackage.h"
 
-#if WITH_COTF
-
-DEFINE_LOG_CATEGORY_STATIC(LogCookOnTheFlyTracker, Log, All);
-
-class FCookOnTheFlyPackageTracker
+class FPackageRegistry
 {
-	enum class EPackageStatus
-	{
-		None,
-		Cooking,
-		Cooked,
-		Failed
-	};
-
-	inline const TCHAR* LexToString(EPackageStatus Status)
-	{
-		switch (Status)
-		{
-			case EPackageStatus::None:
-				return TEXT("None");
-			case EPackageStatus::Cooking:
-				return TEXT("Cooking");
-			case EPackageStatus::Cooked:
-				return TEXT("Cooked");
-			case EPackageStatus::Failed:
-				return TEXT("Failed");
-			default:
-				return TEXT("Unknown");
-		};
-	};
-
-	struct FPackage
-	{
-		FPackageId PackageId;
-		FName PackageName;
-		EPackageStatus Status = EPackageStatus::None;
-		int32 EntryIndex = INDEX_NONE;
-	};
-
 public:
-
-	struct FCompletedPackages
+	void Add(TArrayView<FAssetData> Assets)
 	{
-		TArray<int32> CookedEntryIndices;
-		TArray<FPackageId> FailedPackages;
-		int32 TotalCooked = 0;
-		int32 TotalFailed = 0;
-		int32 TotalTracked = 0;
-	};
+		FScopeLock _(&CriticalSection);
 
-	TArrayView<const int32> GetCookedEntryIndices() const
-	{
-		return CookedEntries;
-	}
-
-	TArrayView<const FName> GetFailedPackages() const
-	{
-		return FailedPackages; 
-	}
-
-	int32 TotalTracked() const
-	{
-		return Packages.Num();
-	}
-
-	EPackageStoreEntryStatus GetStatus(FPackageId PackageId)
-	{
-		FPackage& Package = GetPackage(PackageId);
-
-		switch(Package.Status)
+		for (const FAssetData& Asset : Assets)
 		{
-			case EPackageStatus::None:
-				return EPackageStoreEntryStatus::None;
-			case EPackageStatus::Cooking:
-				return EPackageStoreEntryStatus::Pending;
-			case EPackageStatus::Cooked:
-				return EPackageStoreEntryStatus::Ok;
-			default:
-				return EPackageStoreEntryStatus::Missing;
+			PackageIdToName.Add(FPackageId::FromName(Asset.PackageName), Asset.PackageName);
 		}
 	}
 
-	bool IsCooked(FPackageId PackageId)
+	void Add(FName PackageName)
 	{
-		FPackage& Package = GetPackage(PackageId);
-		return Package.Status != EPackageStatus::None;
+		FScopeLock _(&CriticalSection);
+		PackageIdToName.Add(FPackageId::FromName(PackageName), PackageName);
 	}
 
-	void MarkAsRequested(FPackageId PackageId)
+	FName Get(FPackageId PackageId)
 	{
-		FPackage& Package = GetPackage(PackageId);
-		check(Package.Status == EPackageStatus::None);
-		Package.Status = EPackageStatus::Cooking;
-	}
-
-	FCompletedPackages MarkAsFailed(const FName& PackageName)
-	{
-		FCompletedPackages ResultPackages;
-		MarkAsCompleted(PackageName, INDEX_NONE, TArrayView<const FPackageStoreEntryResource>(), ResultPackages);
-		return ResultPackages;
-	}
-
-	void MarkAsCompleted(const FName& PackageName, const int32 EntryIndex, TArrayView<const FPackageStoreEntryResource> Entries, FCompletedPackages& OutPackages)
-	{
-		const int32 NumCookedPackages = CookedEntries.Num();
-		const int32 NumFailedPackages = FailedPackages.Num();
-
-		const FPackageId PackageId = FPackageId::FromName(PackageName);
-
-		FPackage& Package	= GetPackage(PackageId);
-		check(Package.Status == EPackageStatus::None || Package.Status == EPackageStatus::Cooking);
-
-		Package.PackageId	= PackageId;
-		Package.PackageName = PackageName;
-		Package.Status		= EntryIndex != INDEX_NONE ? EPackageStatus::Cooked : EPackageStatus::Failed;
-		Package.EntryIndex	= EntryIndex;
-
-		AddCompletedPackage(Package);
-		
-		OutPackages.TotalCooked = CookedEntries.Num();
-		OutPackages.TotalFailed = FailedPackages.Num();
-		OutPackages.TotalTracked = Packages.Num();
-
-		if (CookedEntries.Num() > NumCookedPackages || FailedPackages.Num() > NumFailedPackages)
-		{
-			for (int32 Idx = NumCookedPackages; Idx < CookedEntries.Num(); ++Idx)
-			{
-				OutPackages.CookedEntryIndices.Add(CookedEntries[Idx]);
-			}
-
-			for (int32 Idx = NumFailedPackages; Idx < FailedPackages.Num(); ++Idx)
-			{
-				OutPackages.FailedPackages.Add(FPackageId::FromName(FailedPackages[Idx]));
-			}
-		}
-	}
-
-	void AddExistingPackages(TArrayView<const FPackageStoreEntryResource> Entries, TArrayView<const IPackageStoreWriter::FOplogCookInfo> CookInfos)
-	{
-		Packages.Reserve(Entries.Num());
-		CookedEntries.Reserve(Entries.Num());
-
-		for (int32 EntryIndex = 0, Num = Entries.Num(); EntryIndex < Num; ++EntryIndex)
-		{
-			const FPackageStoreEntryResource& Entry = Entries[EntryIndex];
-			const IPackageStoreWriter::FOplogCookInfo& CookInfo = CookInfos[EntryIndex];
-			const FPackageId PackageId = Entry.GetPackageId();
-
-			FPackage& Package	= GetPackage(PackageId);
-			Package.PackageId	= PackageId;
-			Package.PackageName = Entry.PackageName;
-			Package.EntryIndex	= EntryIndex;
-
-			if (CookInfo.bUpToDate)
-			{
-				CookedEntries.Add(Package.EntryIndex);
-				Package.Status = EPackageStatus::Cooked;
-			}
-			else
-			{
-				Package.Status = EPackageStatus::None;
-			}
-		}
+		FScopeLock _(&CriticalSection);
+		return PackageIdToName.FindRef(PackageId);
 	}
 
 private:
-
-	FPackage& GetPackage(FPackageId PackageId)
-	{
-		TUniquePtr<FPackage>& Package = Packages.FindOrAdd(PackageId, MakeUnique<FPackage>());
-		check(Package.IsValid());
-		return *Package;
-	}
-	
-	void AddCompletedPackage(FPackage& Package)
-	{
-		check(Package.Status == EPackageStatus::Cooked || Package.Status == EPackageStatus::Failed);
-
-		if (Package.Status == EPackageStatus::Cooked)
-		{
-			CookedEntries.Add(Package.EntryIndex);
-		}
-		else
-		{
-			FailedPackages.Add(Package.PackageName);
-		}
-
-		UE_LOG(LogCookOnTheFlyTracker, Log, TEXT("'%s' (0x%llX) [%s], Cooked/Failed='%d/%d'"),
-			*Package.PackageName.ToString(), Package.PackageId.Value(), LexToString(Package.Status),
-			CookedEntries.Num(), FailedPackages.Num());
-	}
-
-	TMap<FPackageId, TUniquePtr<FPackage>> Packages;
-	TArray<int32> CookedEntries;
-	TArray<FName> FailedPackages;
+	TMap<FPackageId, FName> PackageIdToName;
+	FCriticalSection CriticalSection;
 };
 
 class FIoStoreCookOnTheFlyRequestManager final
 	: public UE::Cook::ICookOnTheFlyRequestManager
 {
 public:
-	FIoStoreCookOnTheFlyRequestManager(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, const IAssetRegistry* AssetRegistry, UE::Cook::FIoStoreCookOnTheFlyServerOptions InOptions)
+	FIoStoreCookOnTheFlyRequestManager(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, const IAssetRegistry* AssetRegistry, TSharedRef<UE::Cook::ICookOnTheFlyNetworkServer> InConnectionServer)
 		: CookOnTheFlyServer(InCookOnTheFlyServer)
-		, Options(MoveTemp(InOptions))
+		, ConnectionServer(InConnectionServer)
+		, ServiceId(FExternalCookOnTheFlyServer::GenerateServiceId())
 	{
+		using namespace UE::Cook;
+
+		ConnectionServer->OnClientConnected().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnClientConnected);
+		ConnectionServer->OnClientDisconnected().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnClientDisconnected);
+		ConnectionServer->OnRequest(ECookOnTheFlyMessage::GetCookedPackages).BindRaw(this, &FIoStoreCookOnTheFlyRequestManager::HandleClientRequest);
+		ConnectionServer->OnRequest(ECookOnTheFlyMessage::CookPackage).BindRaw(this, &FIoStoreCookOnTheFlyRequestManager::HandleClientRequest);
+		ConnectionServer->OnRequest(ECookOnTheFlyMessage::RecookPackages).BindRaw(this, &FIoStoreCookOnTheFlyRequestManager::HandleClientRequest);
+
+		MessageEndpoint = FMessageEndpoint::Builder("FCookOnTheFly");
 		TArray<FAssetData> AllAssets;
 		AssetRegistry->GetAllAssets(AllAssets, true);
-		for (const FAssetData& AssetData : AllAssets)
-		{
-			AllKnownPackagesMap.Add(FPackageId::FromName(AssetData.PackageName), AssetData.PackageName);
-		}
+		PackageRegistry.Add(AllAssets);
 	}
 
 private:
-	struct FPlatformContext
+	class FPlatformContext
 	{
+	public:
+		enum class EPackageStatus
+		{
+			None,
+			Cooking,
+			Cooked,
+			Failed,
+		};
+
+		struct FPackage
+		{
+			EPackageStatus Status = EPackageStatus::None;
+			FPackageStoreEntryResource Entry;
+		};
+
+		FPlatformContext(FName InPlatformName, IPackageStoreWriter* InPackageWriter, FPackageRegistry& InPackageRegistry)
+			: PlatformName(InPlatformName)
+			, PackageWriter(InPackageWriter)
+			, PackageRegistry(InPackageRegistry)
+		{
+		}
+
+		~FPlatformContext()
+		{
+			if (PackageCookedEvent)
+			{
+				FPlatformProcess::ReturnSynchEventToPool(PackageCookedEvent);
+			}
+		}
+
+		FCriticalSection& GetLock()
+		{
+			return CriticalSection;
+		}
+
+		void GetCompletedPackages(UE::ZenCookOnTheFly::Messaging::FCompletedPackages& OutCompletedPackages)
+		{
+			OutCompletedPackages.CookedPackages.Reserve(OutCompletedPackages.CookedPackages.Num() + Packages.Num());
+			for (const auto& KV : Packages)
+			{
+				if (KV.Value->Status == EPackageStatus::Cooked)
+				{
+					OutCompletedPackages.CookedPackages.Add(KV.Value->Entry);
+				}
+				else if (KV.Value->Status == EPackageStatus::Failed)
+				{
+					OutCompletedPackages.FailedPackages.Add(KV.Key);
+				}
+			}
+		}
+
+		EPackageStoreEntryStatus RequestCook(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, const FPackageId& PackageId, FPackageStoreEntryResource& OutEntry)
+		{
+			FPackage& Package = GetPackage(PackageId);
+			if (Package.Status == EPackageStatus::Cooked)
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("0x%llX was already cooked"), PackageId.ValueForDebugging());
+				OutEntry = Package.Entry;
+				return EPackageStoreEntryStatus::Ok;
+			}
+			else if (Package.Status == EPackageStatus::Failed)
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("0x%llX was already failed"), PackageId.ValueForDebugging());
+				return EPackageStoreEntryStatus::Missing;
+			}
+			else if (Package.Status == EPackageStatus::Cooking)
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("0x%llX was already cooking"), PackageId.ValueForDebugging());
+				return EPackageStoreEntryStatus::Pending;
+			}
+			FName PackageName = PackageRegistry.Get(PackageId);
+			if (PackageName.IsNone())
+			{
+				UE_LOG(LogCookOnTheFly, Warning, TEXT("Received cook request for unknown package 0x%llX"), PackageId.ValueForDebugging());
+				return EPackageStoreEntryStatus::Missing;
+			}
+			FString Filename;
+			if (FPackageName::TryConvertLongPackageNameToFilename(PackageName.ToString(), Filename))
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("Cooking package 0x%llX '%s'"), PackageId.ValueForDebugging(), *PackageName.ToString());
+				Package.Status = EPackageStatus::Cooking;
+				const bool bEnqueued = InCookOnTheFlyServer.EnqueueCookRequest(UE::Cook::FCookPackageRequest{ PlatformName, Filename });
+				check(bEnqueued);
+				return EPackageStoreEntryStatus::Pending;
+			}
+			else
+			{
+				UE_LOG(LogCookOnTheFly, Warning, TEXT("Failed to cook package 0x%llX '%s' (File not found)"), PackageId.ValueForDebugging(), *PackageName.ToString());
+				Package.Status = EPackageStatus::Failed;
+				return EPackageStoreEntryStatus::Missing;
+			}
+		}
+
+		void RequestRecook(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, const FPackageId& PackageId, const FName& PackageName)
+		{
+			FPackage& Package = GetPackage(PackageId);
+			if (Package.Status != EPackageStatus::Cooked && Package.Status != EPackageStatus::Failed)
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("Skipping recook of package 0x%llX '%s' that was not cooked"), PackageId.ValueForDebugging(), *PackageName.ToString());
+				return;
+			}
+			FString Filename;
+			if (FPackageName::TryConvertLongPackageNameToFilename(PackageName.ToString(), Filename))
+			{
+				UE_LOG(LogCookOnTheFly, Verbose, TEXT("Recooking package 0x%llX '%s'"), PackageId.ValueForDebugging(), *PackageName.ToString());
+				Package.Status = EPackageStatus::Cooking;
+				const bool bEnqueued = InCookOnTheFlyServer.EnqueueCookRequest(UE::Cook::FCookPackageRequest{ PlatformName, Filename });
+				check(bEnqueued);
+			}
+			else
+			{
+				UE_LOG(LogCookOnTheFly, Warning, TEXT("Failed to recook package 0x%llX '%s' (File not found)"), PackageId.ValueForDebugging(), *PackageName.ToString());
+				Package.Status = EPackageStatus::Failed;
+			}
+		}
+
+		void MarkAsFailed(FPackageId PackageId, UE::ZenCookOnTheFly::Messaging::FCompletedPackages& OutCompletedPackages)
+		{
+			UE_LOG(LogCookOnTheFly, Warning, TEXT("0x%llX failed"), PackageId.ValueForDebugging());
+			FPackage& Package = GetPackage(PackageId);
+			Package.Status = EPackageStatus::Failed;
+			OutCompletedPackages.FailedPackages.Add(PackageId);
+			if (PackageCookedEvent)
+			{
+				PackageCookedEvent->Trigger();
+			}
+		}
+
+		void MarkAsCooked(FPackageId PackageId, const FPackageStoreEntryResource& Entry, UE::ZenCookOnTheFly::Messaging::FCompletedPackages& OutCompletedPackages)
+		{
+			UE_LOG(LogCookOnTheFly, Verbose, TEXT("0x%llX cooked"), PackageId.ValueForDebugging());
+			FPackage& Package = GetPackage(PackageId);
+			Package.Status = EPackageStatus::Cooked;
+			Package.Entry = Entry;
+			OutCompletedPackages.CookedPackages.Add(Entry);
+			if (PackageCookedEvent)
+			{
+				PackageCookedEvent->Trigger();
+			}
+		}
+
+		void AddExistingPackages(TArrayView<const FPackageStoreEntryResource> Entries, TArrayView<const IPackageStoreWriter::FOplogCookInfo> CookInfos)
+		{
+			Packages.Reserve(Entries.Num());
+
+			for (int32 EntryIndex = 0, Num = Entries.Num(); EntryIndex < Num; ++EntryIndex)
+			{
+				const FPackageStoreEntryResource& Entry = Entries[EntryIndex];
+				const IPackageStoreWriter::FOplogCookInfo& CookInfo = CookInfos[EntryIndex];
+				const FPackageId PackageId = Entry.GetPackageId();
+
+				FPackage& Package = GetPackage(PackageId);
+
+				if (CookInfo.bUpToDate)
+				{
+					Package.Status = EPackageStatus::Cooked;
+					Package.Entry = Entry;
+				}
+				else
+				{
+					Package.Status = EPackageStatus::None;
+				}
+			}
+		}
+
+		FPackage& GetPackage(FPackageId PackageId)
+		{
+			TUniquePtr<FPackage>& Package = Packages.FindOrAdd(PackageId, MakeUnique<FPackage>());
+			check(Package.IsValid());
+			return *Package;
+		}
+
+		void AddSingleThreadedClient()
+		{
+			++SingleThreadedClientsCount;
+			if (!PackageCookedEvent)
+			{
+				PackageCookedEvent = FPlatformProcess::GetSynchEventFromPool();
+			}
+		}
+
+		void RemoveSingleThreadedClient()
+		{
+			check(SingleThreadedClientsCount >= 0);
+			if (!SingleThreadedClientsCount)
+			{
+				FPlatformProcess::ReturnSynchEventToPool(PackageCookedEvent);
+				PackageCookedEvent = nullptr;
+			}
+		}
+
+		void WaitForCook()
+		{
+			check(PackageCookedEvent);
+			PackageCookedEvent->Wait();
+		}
+
+	private:
 		FCriticalSection CriticalSection;
 		FName PlatformName;
-		FCookOnTheFlyPackageTracker PackageTracker;
+		TMap<FPackageId, TUniquePtr<FPackage>> Packages;
 		IPackageStoreWriter* PackageWriter = nullptr;
+		FPackageRegistry& PackageRegistry;
+		int32 SingleThreadedClientsCount = 0;
+		FEvent* PackageCookedEvent = nullptr;
 	};
 
 	virtual bool Initialize() override
 	{
 		using namespace UE::Cook;
 
-		ICookOnTheFlyModule& CookOnTheFlyModule = FModuleManager::LoadModuleChecked<ICookOnTheFlyModule>(TEXT("CookOnTheFly"));
-
-		const int32 Port = Options.Port > 0 ? Options.Port : UE::Cook::DefaultCookOnTheFlyServingPort;
-
-		ConnectionServer = CookOnTheFlyModule.CreateConnectionServer(FCookOnTheFlyServerOptions
+		TArray<TSharedPtr<FInternetAddr>> ListenAddresses;
+		if (MessageEndpoint.IsValid() && ConnectionServer->GetAddressList(ListenAddresses))
 		{
-			Port,
-			[this](FCookOnTheFlyClient Client, ECookOnTheFlyConnectionStatus ConnectionStatus)
-			{
-				return HandleClientConnection(Client, ConnectionStatus);
-			},
-			[this](FCookOnTheFlyClient Client, const FCookOnTheFlyRequest& Request, FCookOnTheFlyResponse& Response)
-			{ 
-				return HandleClientRequest(Client, Request, Response);
-			}
-		});
-
-		const bool bServerStarted = ConnectionServer->StartServer();
-
-		return bServerStarted;
+			FZenCookOnTheFlyRegisterServiceMessage* RegisterServiceMessage = FMessageEndpoint::MakeMessage<FZenCookOnTheFlyRegisterServiceMessage>();
+			RegisterServiceMessage->ServiceId = ServiceId;
+			RegisterServiceMessage->Port = ListenAddresses[0]->GetPort();
+			MessageEndpoint->Publish(RegisterServiceMessage);
+		}
+		return true;
 	}
 
 	virtual void Shutdown() override
 	{
-		ConnectionServer->StopServer();
-		ConnectionServer.Reset();
+	}
+
+	virtual void OnPackageGenerated(const FName& PackageName)
+	{
+		FPackageId PackageId = FPackageId::FromName(PackageName);
+		UE_LOG(LogCookOnTheFly, Verbose, TEXT("Package 0x%llX '%s' generated"), PackageId.ValueForDebugging(), *PackageName.ToString());
+		PackageRegistry.Add(PackageName);
+	}
+
+	void TickRecookPackages()
+	{
+		TArray<FPackageId, TInlineAllocator<128>> PackageIds;
+		{
+			FScopeLock _(&PackagesToRecookCritical);
+			if (PackagesToRecook.IsEmpty())
+			{
+				return;
+			}
+			PackageIds = PackagesToRecook.Array();
+			PackagesToRecook.Empty();
+		}
+
+		TArray<FName, TInlineAllocator<128>> PackageNames;
+		PackageNames.Reserve(PackageIds.Num());
+
+		CollectGarbage(RF_NoFlags);
+
+		for (FPackageId PackageId : PackageIds)
+		{
+			FName PackageName = PackageRegistry.Get(PackageId);
+			if (!PackageName.IsNone())
+			{
+				PackageNames.Add(PackageName);
+
+				UPackage* Package = FindObjectFast<UPackage>(nullptr, PackageName);
+				if (Package)
+				{
+					UE_LOG(LogCookOnTheFly, Warning, TEXT("Can't recook package '%s'"), *PackageName.ToString());
+					UEngine::FindAndPrintStaleReferencesToObject(Package, EPrintStaleReferencesOptions::Display);
+				}
+				else
+				{
+					UE_LOG(LogCookOnTheFly, Verbose, TEXT("Recooking package '%s'"), *PackageName.ToString());
+				}
+			}
+		}
+
+		for (const FName& PackageName : PackageNames)
+		{
+			CookOnTheFlyServer.MarkPackageDirty(PackageName);
+		}
+
+		ForEachContext([this, &PackageIds, &PackageNames](FPlatformContext& Context)
+			{
+				FScopeLock _(&Context.GetLock());
+				for (int32 PackageIndex = 0; PackageIndex < PackageNames.Num(); ++PackageIndex)
+				{
+					const FPackageId& PackageId = PackageIds[PackageIndex];
+					const FName& PackageName = PackageNames[PackageIndex];
+					if (!PackageName.IsNone())
+					{
+						Context.RequestRecook(CookOnTheFlyServer, PackageId, PackageName);
+					}
+				}
+				return true;
+			});
+	}
+
+	virtual void Tick() override
+	{
+		TickRecookPackages();
+	}
+
+	virtual bool ShouldUseLegacyScheduling() override
+	{
+		return false;
 	}
 
 private:
-	bool HandleClientConnection(UE::Cook::FCookOnTheFlyClient Client, UE::Cook::ECookOnTheFlyConnectionStatus ConnectionStatus)
+	void OnClientConnected(UE::Cook::ICookOnTheFlyClientConnection& Connection)
 	{
-		FScopeLock _(&CriticalSection);
-
-		if (ConnectionStatus == UE::Cook::ECookOnTheFlyConnectionStatus::Connected)
+		const ITargetPlatform* TargetPlatform = Connection.GetTargetPlatform();
+		if (TargetPlatform)
 		{
-			const ITargetPlatform* TargetPlatform = CookOnTheFlyServer.AddPlatform(Client.PlatformName);
-			if (TargetPlatform)
+			IPackageStoreWriter* PackageWriter = CookOnTheFlyServer.GetPackageWriter(TargetPlatform).AsPackageStoreWriter();
+			check(PackageWriter); // This class should not be used except when COTFS is using an IPackageStoreWriter
+
+			FName PlatformName = Connection.GetPlatformName();
+			FScopeLock _(&ContextsCriticalSection);
+			if (!PlatformContexts.Contains(PlatformName))
 			{
-				if (!PlatformContexts.Contains(Client.PlatformName))
-				{
-					TUniquePtr<FPlatformContext>& Context = PlatformContexts.Add(Client.PlatformName, MakeUnique<FPlatformContext>());
-					Context->PlatformName = Client.PlatformName;
-					IPackageStoreWriter* PackageWriter = CookOnTheFlyServer.GetPackageWriter(TargetPlatform).AsPackageStoreWriter();
-					check(PackageWriter); // This class should not be used except when COTFS is using an IPackageStoreWriter
-					Context->PackageWriter = PackageWriter;
-					
-					PackageWriter->GetEntries([&Context](TArrayView<const FPackageStoreEntryResource> Entries,
-						TArrayView<const IPackageStoreWriter::FOplogCookInfo> CookInfos)
+				TUniquePtr<FPlatformContext>& Context = PlatformContexts.Add(PlatformName, MakeUnique<FPlatformContext>(PlatformName, PackageWriter, PackageRegistry));
+
+				PackageWriter->GetEntries([&Context](TArrayView<const FPackageStoreEntryResource> Entries,
+					TArrayView<const IPackageStoreWriter::FOplogCookInfo> CookInfos)
 					{
-						Context->PackageTracker.AddExistingPackages(Entries, CookInfos);
+						Context->AddExistingPackages(Entries, CookInfos);
 					});
 
-					PackageWriter->OnCommit().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnPackageCooked);
-					PackageWriter->OnMarkUpToDate().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnPackagesMarkedUpToDate);
-				}
-
-				return true;
+				PackageWriter->OnEntryCreated().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnPackageStoreEntryCreated);
+				PackageWriter->OnCommit().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnPackageCooked);
+				PackageWriter->OnMarkUpToDate().AddRaw(this, &FIoStoreCookOnTheFlyRequestManager::OnPackagesMarkedUpToDate);
 			}
-
-			return false;
+			FPlatformContext& Context = GetContext(PlatformName);
+			FScopeLock __(&Context.GetLock());
+			if (Connection.GetIsSingleThreaded())
+			{
+				Context.AddSingleThreadedClient();
+			}
 		}
-		else
+
+		UE_LOG(LogCookOnTheFly, Display, TEXT("New client connected"));
 		{
-			CookOnTheFlyServer.RemovePlatform(Client.PlatformName);
-			return true;
+			FScopeLock _(&ClientsCriticalSection);
+			Clients.Add(&Connection);
 		}
 	}
 
-	bool HandleClientRequest(UE::Cook::FCookOnTheFlyClient Client, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
+	void OnClientDisconnected(UE::Cook::ICookOnTheFlyClientConnection& Connection)
 	{
-		bool bRequestOk = false;
+		{
+			FScopeLock _(&ClientsCriticalSection);
+			Clients.Remove(&Connection);
+		}
+		FName PlatformName = Connection.GetPlatformName();
+		if (!PlatformName.IsNone())
+		{
+			if (Connection.GetIsSingleThreaded())
+			{
+				FPlatformContext& Context = GetContext(PlatformName);
+				FScopeLock __(&Context.GetLock());
+				Context.RemoveSingleThreadedClient();
+			}
+		}
+	}
+
+	bool HandleClientRequest(UE::Cook::ICookOnTheFlyClientConnection& Connection, const UE::Cook::FCookOnTheFlyRequest& Request)
+	{
+		using namespace UE::Cook;
 
 		const double StartTime = FPlatformTime::Seconds();
 
-		UE_LOG(LogCookOnTheFly, Verbose, TEXT("New request, Type='%s', Client='%s (%d)'"), LexToString(Request.GetHeader().MessageType), *Client.PlatformName.ToString(), Client.ClientId);
+		UE_LOG(LogCookOnTheFly, Verbose, TEXT("Received: %s, Size='%lld'"), *Request.GetHeader().ToString(), Request.TotalSize());
 
-		switch (Request.GetHeader().MessageType)
-		{
+		FCookOnTheFlyResponse Response(Request);
+		bool bRequestOk = false;
+
+		UE_LOG(LogCookOnTheFly, Verbose, TEXT("New request, Type='%s', Client='%s'"), LexToString(Request.GetHeader().MessageType), *Connection.GetPlatformName().ToString());
+
+		switch (Request.GetMessageType())
+		{ 
 			case UE::Cook::ECookOnTheFlyMessage::CookPackage:
-				bRequestOk = HandleCookPackageRequest(Client, Request, Response);
+				bRequestOk = HandleCookPackageRequest(Connection.GetPlatformName(), Connection.GetIsSingleThreaded(), Request, Response);
 				break;
 			case UE::Cook::ECookOnTheFlyMessage::GetCookedPackages:
-				bRequestOk = HandleGetCookedPackagesRequest(Client, Request, Response);
+				bRequestOk = HandleGetCookedPackagesRequest(Connection.GetPlatformName(), Request, Response);
 				break;
-			case UE::Cook::ECookOnTheFlyMessage::RecompileShaders:
-				bRequestOk = HandleRecompileShadersRequest(Client, Request, Response);
+			case UE::Cook::ECookOnTheFlyMessage::RecookPackages:
+				bRequestOk = HandleRecookPackagesRequest(Connection.GetPlatformName(), Request, Response);
 				break;
 			default:
-				UE_LOG(LogCookOnTheFly, Fatal, TEXT("Unknown request, Type='%s', Client='%s (%d)'"), LexToString(Request.GetHeader().MessageType), *Client.PlatformName.ToString(), Client.ClientId);
-				break;
+				return false;
 		}
 
+		if (!bRequestOk)
+		{
+			Response.SetStatus(UE::Cook::ECookOnTheFlyMessageStatus::Error);
+		}
+		bRequestOk = Connection.SendMessage(Response);
+		
 		const double Duration = FPlatformTime::Seconds() - StartTime;
 
-		UE_LOG(LogCookOnTheFly, Verbose, TEXT("Request handled, Type='%s', Client='%s (%u)', Status='%s', Duration='%.6lfs'"),
-			LexToString(Request.GetHeader().MessageType),
-			*Client.PlatformName.ToString(), Client.ClientId,
+		UE_LOG(LogCookOnTheFly, Verbose, TEXT("Request handled, Type='%s', Client='%s', Status='%s', Duration='%.6lfs'"),
+			LexToString(Request.GetMessageType()),
+			*Connection.GetPlatformName().ToString(),
 			bRequestOk ? TEXT("Ok") : TEXT("Failed"),
 			Duration);
 
 		return bRequestOk;
 	}
 
-	bool HandleGetCookedPackagesRequest(UE::Cook::FCookOnTheFlyClient Client, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
+	bool HandleGetCookedPackagesRequest(const FName& PlatformName, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
 	{
 		using namespace UE::Cook;
 		using namespace UE::ZenCookOnTheFly::Messaging;
 
-		FPlatformContext& Context = GetContext(Client.PlatformName);
-		
-		UE::ZenCookOnTheFly::Messaging::FPackageStoreData PackageStoreData;
-		
-		Context.PackageWriter->GetEntries(
-			[&Context, &PackageStoreData](TArrayView<const FPackageStoreEntryResource> Entries,
-				TArrayView<const IPackageStoreWriter::FOplogCookInfo> CookInfos)
+		if (PlatformName.IsNone())
 		{
-			FScopeLock _(&Context.CriticalSection);
-			
-			const TArrayView<const int32> CookedEntryIndices = Context.PackageTracker.GetCookedEntryIndices();
-			const TArrayView<const FName> FailedPackages = Context.PackageTracker.GetFailedPackages();
-			
-			for (int32 EntryIndex : CookedEntryIndices)
-			{
-				check(EntryIndex != INDEX_NONE);
-				PackageStoreData.CookedPackages.Add(Entries[EntryIndex]);
-			}
-			
-			for (const FName& FailedPackageName : FailedPackages)
-			{
-				PackageStoreData.FailedPackages.Add(FPackageId::FromName(FailedPackageName));
-			}
-			
-			PackageStoreData.TotalCookedPackages	= CookedEntryIndices.Num();
-			PackageStoreData.TotalFailedPackages	= FailedPackages.Num();
-		});
-		
-		Response.SetBodyTo(FGetCookedPackagesResponse { MoveTemp(PackageStoreData) });
+			UE_LOG(LogCookOnTheFly, Warning, TEXT("GetCookedPackagesRequest from editor client"));
+			Response.SetStatus(ECookOnTheFlyMessageStatus::Error);
+			return true;
+		}
+		else
+		{
+			FScopeLock _(&ContextsCriticalSection);
+			FPlatformContext& Context = GetContext(PlatformName);
+			FScopeLock __(&Context.GetLock());
+			FCompletedPackages CompletedPackages;
+			Context.GetCompletedPackages(CompletedPackages);
+
+			Response.SetBodyTo(MoveTemp(CompletedPackages));
+		}
+
 		Response.SetStatus(ECookOnTheFlyMessageStatus::Ok);
 
 		return true;
 	}
 
-	bool HandleCookPackageRequest(UE::Cook::FCookOnTheFlyClient Client, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
+	bool HandleCookPackageRequest(const FName& PlatformName, bool bIsSingleThreaded, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
 	{
 		using namespace UE::ZenCookOnTheFly::Messaging;
 
+		if (PlatformName.IsNone())
+		{
+			UE_LOG(LogCookOnTheFly, Warning, TEXT("Received cook package request for unknown platform '%s'"), *PlatformName.ToString());
+			Response.SetStatus(UE::Cook::ECookOnTheFlyMessageStatus::Error);
+			return true;
+		}
+
 		TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::HandleCookPackageRequest);
 
-		const double FlushDurationInSeconds = CookOnTheFlyServer.WaitForPendingFlush();
-		UE_CLOG(FlushDurationInSeconds > 0.0, LogCookOnTheFly, Log, TEXT("Waited '%.2llf's for cooker to flush pending package(s), Client='%s (%u)'"),
-			FlushDurationInSeconds, *Client.PlatformName.ToString(), Client.ClientId);
-
-		FPlatformContext& Context = GetContext(Client.PlatformName);
-		FScopeLock _(&Context.CriticalSection);
-
+		FPlatformContext& Context = GetContext(PlatformName);
 		FCookPackageRequest CookRequest = Request.GetBodyAs<FCookPackageRequest>();
-		
-		const bool bIsCooked = Context.PackageTracker.IsCooked(CookRequest.PackageId);
-		if (!bIsCooked)
+		FCookPackageResponse CookResponse;
+
+		for (const FPackageId& PackageId : CookRequest.PackageIds)
 		{
-			FName PackageName = AllKnownPackagesMap.FindRef(CookRequest.PackageId);
-			if (PackageName.IsNone())
+			UE_LOG(LogCookOnTheFly, Verbose, TEXT("Received cook request 0x%llX"), PackageId.ValueForDebugging());
+
+			FPackageStoreEntryResource Entry;
+			EPackageStoreEntryStatus PackageStatus = EPackageStoreEntryStatus::Pending;
+			if (bIsSingleThreaded)
 			{
-				UE_LOG(LogCookOnTheFly, Log, TEXT("Received cook request for unknown package 0x%llX"), CookRequest.PackageId.ValueForDebugging());
-				Response.SetBodyTo(FCookPackageResponse { EPackageStoreEntryStatus::Missing });
+				for (;;)
+				{
+					{
+						FScopeLock _(&Context.GetLock());
+						PackageStatus = Context.RequestCook(CookOnTheFlyServer, PackageId, Entry);
+					}
+					if (PackageStatus != EPackageStoreEntryStatus::Pending)
+					{
+						break;
+					}
+					Context.WaitForCook();
+				}
 			}
 			else
 			{
-				UE_LOG(LogCookOnTheFly, Log, TEXT("Received cook request, PackageName='%s'"), *PackageName.ToString());
-			
-				Context.PackageTracker.MarkAsRequested(CookRequest.PackageId);
-
-				FString Filename;
-				if (FPackageName::TryConvertLongPackageNameToFilename(PackageName.ToString(), Filename))
-				{
-					const bool bEnqueued = CookOnTheFlyServer.EnqueueCookRequest(UE::Cook::FCookPackageRequest{ Client.PlatformName, Filename });
-					check(bEnqueued);
-				}
-				else
-				{
-					UE_LOG(LogCookOnTheFly, Warning, TEXT("Failed to cook package '%s' (File not found)"), *PackageName.ToString());
-					Context.PackageTracker.MarkAsFailed(PackageName);
-				}
+				FScopeLock _(&Context.GetLock());
+				PackageStatus = Context.RequestCook(CookOnTheFlyServer, PackageId, Entry);
 			}
 
-			Response.SetBodyTo(FCookPackageResponse{ Context.PackageTracker.GetStatus(CookRequest.PackageId) });
+			if (PackageStatus == EPackageStoreEntryStatus::Ok)
+			{
+				CookResponse.CookedPackages.Add(MoveTemp(Entry));
+			}
+			else if (PackageStatus == EPackageStoreEntryStatus::Missing)
+			{
+				CookResponse.FailedPackages.Add(PackageId);
+			}
 		}
+
+		Response.SetBodyTo(MoveTemp(CookResponse));
 		Response.SetStatus(UE::Cook::ECookOnTheFlyMessageStatus::Ok);
 
 		return true;
+	}
+
+	bool HandleRecookPackagesRequest(const FName& PlatformName, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
+	{
+		using namespace UE::ZenCookOnTheFly::Messaging;
+
+		TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::HandleRecookPackagesRequest);
+
+		FRecookPackagesRequest RecookRequest = Request.GetBodyAs<FRecookPackagesRequest>();
+
+		UE_LOG(LogCookOnTheFly, Display, TEXT("Received recook request for %d packages"), RecookRequest.PackageIds.Num());
+
+		{
+			FScopeLock _(&PackagesToRecookCritical);
+			for (FPackageId PackageId : RecookRequest.PackageIds)
+			{
+				PackagesToRecook.Add(PackageId);
+			}
+		}
+
+		Response.SetStatus(UE::Cook::ECookOnTheFlyMessageStatus::Ok);
+
+		return true;
+	}
+
+	bool BroadcastMessage(const UE::Cook::FCookOnTheFlyMessage& Message, const FName& PlatformName = NAME_None)
+	{
+		using namespace UE::Cook;
+
+		UE_LOG(LogCookOnTheFly, Verbose, TEXT("Sending: %s, Size='%lld'"), *Message.GetHeader().ToString(), Message.TotalSize());
+
+		TArray<ICookOnTheFlyClientConnection*, TInlineAllocator<4>> ClientsToBroadcast;
+		{
+			FScopeLock _(&ClientsCriticalSection);
+
+			for (ICookOnTheFlyClientConnection* Client : Clients)
+			{
+				if (PlatformName.IsNone() || Client->GetPlatformName() == PlatformName)
+				{
+					ClientsToBroadcast.Add(Client);
+				}
+			}
+		}
+
+		bool bBroadcasted = true;
+		for (ICookOnTheFlyClientConnection* Client : ClientsToBroadcast)
+		{
+			if (!Client->SendMessage(Message))
+			{
+				UE_LOG(LogCookOnTheFly, Warning, TEXT("Failed to send message '%s' to client (Platform='%s')"),
+					LexToString(Message.GetHeader().MessageType), *Client->GetPlatformName().ToString());
+
+				bBroadcasted = false;
+			}
+		}
+
+		return bBroadcasted;
+	}
+
+	void OnPackageStoreEntryCreated(const IPackageStoreWriter::FEntryCreatedEventArgs& EventArgs)
+	{
+		FPlatformContext& Context = GetContext(EventArgs.PlatformName);
+
+		FScopeLock _(&Context.GetLock());
+		for (const FPackageId& ImportedPackageId : EventArgs.Entry.ImportedPackageIds)
+		{
+			FPackageStoreEntryResource DummyEntry;
+			EPackageStoreEntryStatus PackageStatus = Context.RequestCook(CookOnTheFlyServer, ImportedPackageId, DummyEntry);
+		}
 	}
 
 	void OnPackageCooked(const IPackageStoreWriter::FCommitEventArgs& EventArgs)
@@ -457,149 +668,109 @@ private:
 				*Ar << ChunkIds;
 			}
 
-			ConnectionServer->BroadcastMessage(Message, EventArgs.PlatformName);
+			BroadcastMessage(Message, EventArgs.PlatformName);
 		}
 
-		FCookOnTheFlyPackageTracker::FCompletedPackages NewCompletedPackages;
+		FCompletedPackages NewCompletedPackages;
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::MarkAsCooked);
 
 			FPlatformContext& Context = GetContext(EventArgs.PlatformName);
-			FScopeLock _(&Context.CriticalSection);
+			FScopeLock _(&Context.GetLock());
 
-			Context.PackageTracker.MarkAsCompleted(EventArgs.PackageName, EventArgs.EntryIndex, EventArgs.Entries, NewCompletedPackages);
+			if (EventArgs.EntryIndex >= 0)
+			{
+				Context.MarkAsCooked(FPackageId::FromName(EventArgs.PackageName), EventArgs.Entries[EventArgs.EntryIndex], NewCompletedPackages);
+			}
+			else
+			{
+				Context.MarkAsFailed(FPackageId::FromName(EventArgs.PackageName), NewCompletedPackages);
+			}
 		}
-		BroadcastCompletedPackages(EventArgs.PlatformName, MoveTemp(NewCompletedPackages), EventArgs.Entries);
+		BroadcastCompletedPackages(EventArgs.PlatformName, MoveTemp(NewCompletedPackages));
 	}
 
 	void OnPackagesMarkedUpToDate(const IPackageStoreWriter::FMarkUpToDateEventArgs& EventArgs)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::OnPackagesMarkedUpToDate);
 
-		FCookOnTheFlyPackageTracker::FCompletedPackages NewCompletedPackages;
+		UE::ZenCookOnTheFly::Messaging::FCompletedPackages NewCompletedPackages;
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::MarkAsCooked);
 
 			FPlatformContext& Context = GetContext(EventArgs.PlatformName);
-			FScopeLock _(&Context.CriticalSection);
+			FScopeLock _(&Context.GetLock());
 
 			for (int32 EntryIndex : EventArgs.PackageIndexes)
 			{
 				FName PackageName = EventArgs.Entries[EntryIndex].PackageName;
-				Context.PackageTracker.MarkAsCompleted(PackageName, EntryIndex, EventArgs.Entries, NewCompletedPackages);
+				Context.MarkAsCooked(FPackageId::FromName(PackageName), EventArgs.Entries[EntryIndex], NewCompletedPackages);
 			}
 		}
-		BroadcastCompletedPackages(EventArgs.PlatformName, MoveTemp(NewCompletedPackages), EventArgs.Entries);
+		BroadcastCompletedPackages(EventArgs.PlatformName, MoveTemp(NewCompletedPackages));
 	}
 
-	void BroadcastCompletedPackages(FName PlatformName,
-		FCookOnTheFlyPackageTracker::FCompletedPackages&& NewCompletedPackages, TArrayView<const FPackageStoreEntryResource> Entries)
+	void BroadcastCompletedPackages(FName PlatformName, UE::ZenCookOnTheFly::Messaging::FCompletedPackages&& NewCompletedPackages)
 	{
 		using namespace UE::Cook;
 		using namespace UE::ZenCookOnTheFly::Messaging;
-		if (NewCompletedPackages.CookedEntryIndices.Num() || NewCompletedPackages.FailedPackages.Num())
+		if (NewCompletedPackages.CookedPackages.Num() || NewCompletedPackages.FailedPackages.Num())
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::SendCookedPackagesMessage);
 
-			FPackageStoreData PackageStoreData;
-			PackageStoreData.TotalCookedPackages = NewCompletedPackages.TotalCooked;
-			PackageStoreData.TotalFailedPackages = NewCompletedPackages.TotalFailed;
-			PackageStoreData.FailedPackages = MoveTemp(NewCompletedPackages.FailedPackages);
-
-			for (int32 EntryIndex : NewCompletedPackages.CookedEntryIndices)
-			{
-				check(EntryIndex != INDEX_NONE);
-				PackageStoreData.CookedPackages.Add(Entries[EntryIndex]);
-			}
-
-			UE_LOG(LogCookOnTheFly, Verbose, TEXT("Sending '%s' message, Cooked='%d', Failed='%d', Server total='%d/%d/%d' (Tracked/Cooked/Failed)"),
+			UE_LOG(LogCookOnTheFly, Verbose, TEXT("Sending '%s' message, Cooked='%d', Failed='%d'"),
 				LexToString(ECookOnTheFlyMessage::PackagesCooked),
-				PackageStoreData.CookedPackages.Num(),
-				PackageStoreData.FailedPackages.Num(),
-				NewCompletedPackages.TotalTracked,
-				PackageStoreData.TotalCookedPackages,
-				PackageStoreData.TotalFailedPackages);
+				NewCompletedPackages.CookedPackages.Num(),
+				NewCompletedPackages.FailedPackages.Num());
 
 			FCookOnTheFlyMessage Message(ECookOnTheFlyMessage::PackagesCooked);
-			Message.SetBodyTo<FPackagesCookedMessage>(FPackagesCookedMessage { MoveTemp(PackageStoreData) });
-			ConnectionServer->BroadcastMessage(Message, PlatformName);
+			Message.SetBodyTo<FCompletedPackages>(MoveTemp(NewCompletedPackages));
+			BroadcastMessage(Message, PlatformName);
 		}
 	}
-
-	bool HandleRecompileShadersRequest(UE::Cook::FCookOnTheFlyClient Client, const UE::Cook::FCookOnTheFlyRequest& Request, UE::Cook::FCookOnTheFlyResponse& Response)
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(CookOnTheFly::HandleRecompileShadersRequest);
-
-		TArray<FString> RecompileModifiedFiles;
-		TArray<uint8> MeshMaterialMaps;
-		TArray<uint8> GlobalShaderMap;
-
-		FShaderRecompileData RecompileData(Client.PlatformName.ToString(), &RecompileModifiedFiles, &MeshMaterialMaps, &GlobalShaderMap);
-		{
-			int32 iShaderPlatform = static_cast<int32>(RecompileData.ShaderPlatform);
-			TUniquePtr<FArchive> Ar = Request.ReadBody();
-			*Ar << RecompileData.MaterialsToLoad;
-			*Ar << iShaderPlatform;
-			*Ar << RecompileData.CommandType;
-			*Ar << RecompileData.ShadersToRecompile;
-		}
-
-		RecompileShaders(RecompileData);
-
-		{
-			TUniquePtr<FArchive> Ar = Response.WriteBody();
-			*Ar << MeshMaterialMaps;
-			*Ar << GlobalShaderMap;
-		}
-
-		Response.SetStatus(UE::Cook::ECookOnTheFlyMessageStatus::Ok);
-
-		return true;
-	}
-
-	void RecompileShaders(FShaderRecompileData& RecompileData)
-	{
-		FEvent* RecompileCompletedEvent = FPlatformProcess::GetSynchEventFromPool();
-		UE::Cook::FRecompileShaderCompletedCallback RecompileCompleted = [this, RecompileCompletedEvent]()
-		{
-			RecompileCompletedEvent->Trigger();
-		};
-
-		const bool bEnqueued = CookOnTheFlyServer.EnqueueRecompileShaderRequest(UE::Cook::FRecompileShaderRequest
-		{
-			RecompileData, 
-			MoveTemp(RecompileCompleted)
-		});
-		check(bEnqueued);
-
-		RecompileCompletedEvent->Wait();
-		FPlatformProcess::ReturnSynchEventToPool(RecompileCompletedEvent);
-	}
-
+	
 	FPlatformContext& GetContext(const FName& PlatformName)
 	{
-		FScopeLock _(&CriticalSection);
+		FScopeLock _(&ContextsCriticalSection);
 		TUniquePtr<FPlatformContext>& Ctx = PlatformContexts.FindChecked(PlatformName);
 		check(Ctx.IsValid());
 		return *Ctx;
 	}
 
+	void ForEachContext(TFunctionRef<bool(FPlatformContext&)> Callback)
+	{
+		FScopeLock _(&ContextsCriticalSection);
+		for (auto& KV : PlatformContexts)
+		{
+			TUniquePtr<FPlatformContext>& Ctx = KV.Value;
+			check(Ctx.IsValid());
+			if (!Callback(*Ctx))
+			{
+				return;
+			}
+		}
+	}
+
 	UE::Cook::ICookOnTheFlyServer& CookOnTheFlyServer;
-	UE::Cook::FIoStoreCookOnTheFlyServerOptions Options;
-	TUniquePtr<UE::Cook::ICookOnTheFlyConnectionServer> ConnectionServer;
-	FCriticalSection CriticalSection;
+	TSharedRef<UE::Cook::ICookOnTheFlyNetworkServer> ConnectionServer;
+	FCriticalSection ClientsCriticalSection;
+	TArray<UE::Cook::ICookOnTheFlyClientConnection*> Clients;
+	TSharedPtr<FMessageEndpoint, ESPMode::ThreadSafe> MessageEndpoint;
+	const FString ServiceId;
+	FCriticalSection ContextsCriticalSection;
 	TMap<FName, TUniquePtr<FPlatformContext>> PlatformContexts;
-	TMap<FPackageId, FName> AllKnownPackagesMap;
+	FPackageRegistry PackageRegistry;
+	FCriticalSection PackagesToRecookCritical;
+	TSet<FPackageId> PackagesToRecook;
 };
 
 namespace UE { namespace Cook
 {
 
-TUniquePtr<ICookOnTheFlyRequestManager> MakeIoStoreCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer, const IAssetRegistry* AssetRegistry, FIoStoreCookOnTheFlyServerOptions Options)
+TUniquePtr<ICookOnTheFlyRequestManager> MakeIoStoreCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer, const IAssetRegistry* AssetRegistry, TSharedRef<ICookOnTheFlyNetworkServer> ConnectionServer)
 {
-	return MakeUnique<FIoStoreCookOnTheFlyRequestManager>(CookOnTheFlyServer, AssetRegistry, Options);
+	return MakeUnique<FIoStoreCookOnTheFlyRequestManager>(CookOnTheFlyServer, AssetRegistry, ConnectionServer);
 }
 
 }}
 
-#endif

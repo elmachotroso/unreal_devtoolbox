@@ -115,6 +115,7 @@ public:
 	virtual void OnRegister() override;
 	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport) override;
 #if WITH_EDITOR
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 	virtual void CheckForErrors() override;
 #endif
@@ -135,6 +136,11 @@ public:
 #endif
 	// End of UObject interface
 
+protected:
+	bool IsXRHeadTrackedCamera() const;
+	virtual void HandleXRCamera();
+
+public:
 	/**
 	 * Returns camera's Point of View.
 	 * Called by Camera class. Subclass and postprocess to add any effects.
@@ -170,6 +176,9 @@ protected:
 
 	/** Ensure the proxy mesh is in the correct place */
 	void UpdateProxyMeshTransform();
+
+	/* Update draw frustum values */
+	void UpdateDrawFrustum();
 
 #endif	// WITH_EDITORONLY_DATA
 

@@ -3,10 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "LandscapeEditorDetailCustomization_Base.h"
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
 #include "IDetailCustomization.h"
-#include "Editor/LandscapeEditor/Private/LandscapeEditorDetailCustomization_Base.h"
 
 class IDetailLayoutBuilder;
 
@@ -35,6 +35,8 @@ protected:
 	// Splines Tool
 	static FReply OnApplyAllSplinesButtonClicked();
 	static FReply OnApplySelectedSplinesButtonClicked();
+	static FReply OnSelectAllControlPointsButtonClicked();
+	static FReply OnSelectAllSegmentsButtonClicked();
 	void OnbUseAutoRotateControlPointChanged(ECheckBoxState NewState);
 	ECheckBoxState GetbUseAutoRotateControlPoint() const;
 
@@ -53,4 +55,7 @@ protected:
 	void OnCompletedFlattenToolEyeDrop(bool Canceled);
 	TOptional<float> GetFlattenValue() const;
 
+	// Common Error handling
+	EVisibility GetMiscLandscapeErrorVisibility() const;
+	FText GetMiscLandscapeErrorText() const;
 };

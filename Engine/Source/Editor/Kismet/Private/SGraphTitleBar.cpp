@@ -2,23 +2,40 @@
 
 
 #include "SGraphTitleBar.h"
-#include "SGraphTitleBarAddNewBookmark.h"
+
+#include "BlueprintEditor.h"
+#include "Containers/Array.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Engine/Blueprint.h"
 #include "Fonts/SlateFontInfo.h"
-#include "Misc/Paths.h"
-#include "Widgets/SBoxPanel.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SGraphTitleBarAddNewBookmark.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Types/ISlateMetaData.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Object.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphSchema.h"
 #include "Widgets/Navigation/SBreadcrumbTrail.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-
-#include "BlueprintEditor.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SGraphTitleBar"
 
@@ -91,12 +108,12 @@ void SGraphTitleBar::Construct( const FArguments& InArgs )
 
 	// Set-up shared breadcrumb defaults
 	FMargin BreadcrumbTrailPadding = FMargin(4.f, 2.f);
-	const FSlateBrush* BreadcrumbButtonImage = FEditorStyle::GetBrush("BreadcrumbTrail.Delimiter");
+	const FSlateBrush* BreadcrumbButtonImage = FAppStyle::GetBrush("BreadcrumbTrail.Delimiter");
 	
 	this->ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
+		.BorderImage( FAppStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
 		.HAlign(HAlign_Fill)
 		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("EventGraphTitleBar")))
 		[
@@ -161,7 +178,7 @@ void SGraphTitleBar::Construct( const FArguments& InArgs )
 							[
 								SNew(STextBlock)
 								.Text(this, &SGraphTitleBar::GetBlueprintTitle )
-								.TextStyle( FEditorStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
+								.TextStyle( FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
 								.Visibility( this, &SGraphTitleBar::IsGraphBlueprintNameVisible )
 							]
 							+SHorizontalBox::Slot()
@@ -179,8 +196,8 @@ void SGraphTitleBar::Construct( const FArguments& InArgs )
 							.VAlign(VAlign_Center)
 							[
 								SAssignNew(BreadcrumbTrail, SBreadcrumbTrail<UEdGraph*>)
-								.ButtonStyle(FEditorStyle::Get(), "GraphBreadcrumbButton")
-								.TextStyle(FEditorStyle::Get(), "GraphBreadcrumbButtonText")
+								.ButtonStyle(FAppStyle::Get(), "GraphBreadcrumbButton")
+								.TextStyle(FAppStyle::Get(), "GraphBreadcrumbButtonText")
 								.ButtonContentPadding( BreadcrumbTrailPadding )
 								.DelimiterImage( BreadcrumbButtonImage )
 								.PersistentBreadcrumbs( true )

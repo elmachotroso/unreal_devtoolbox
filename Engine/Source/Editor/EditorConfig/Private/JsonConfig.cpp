@@ -1,10 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "JsonConfig.h"
+
+#include "Containers/StringView.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "EditorConfigModule.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
 #include "Misc/FileHelper.h"
-#include "Misc/StringBuilder.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonTypes.h"
+#include "Serialization/JsonWriter.h"
+#include "Templates/EnableIf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/NameTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogJsonConfig, Log, All);
 
@@ -150,7 +166,7 @@ namespace UE
 		MergedObject = MakeShared<FJsonObject>();
 	}
 
-	void FJsonConfig::SetParent(TSharedPtr<FJsonConfig> Parent)
+	void FJsonConfig::SetParent(const TSharedPtr<FJsonConfig>& Parent)
 	{
 		if (ParentConfig.IsValid())
 		{
@@ -182,14 +198,20 @@ namespace UE
 			return false;
 		}
 
-		return LoadFromString(Contents);
+		if (!LoadFromString(Contents))
+		{
+			UE_LOG(LogEditorConfig, Error, TEXT("Failed to load JSON file into JsonConfig %s"), FilePath.GetData());
+			return false;
+		}
+		return true;
 	}
 
 	bool FJsonConfig::LoadFromString(FStringView Content)
 	{
-		TSharedRef<FJsonStringReader> JsonReader = FJsonStringReader::Create(Content.GetData());
+		TSharedRef<FJsonStringReader> JsonReader = FJsonStringReader::Create(FString(Content));
 		if (!FJsonSerializer::Deserialize(JsonReader.Get(), OverrideObject))
 		{
+			UE_LOG(LogEditorConfig, Error, TEXT("Failed to deserialize JSON string"));
 			return false;
 		}
 
@@ -824,9 +846,9 @@ namespace UE
 		return true;
 	}
 
-	static bool SetValueHelper(TSharedPtr<FJsonValue>& CurrentValue, TSharedPtr<FJsonValue> NewValue, TSharedPtr<FJsonValue> ParentValue);
+	static bool SetValueHelper(TSharedPtr<FJsonValue>& CurrentValue, const TSharedPtr<FJsonValue>& NewValue, const TSharedPtr<FJsonValue>& ParentValue);
 
-	static bool SetArrayValueHelper(TSharedPtr<FJsonValue> CurrentValue, const TArray<TSharedPtr<FJsonValue>>& NewArray, TSharedPtr<FJsonValue> ParentValue)
+	static bool SetArrayValueHelper(const TSharedPtr<FJsonValue>& CurrentValue, const TArray<TSharedPtr<FJsonValue>>& NewArray, const TSharedPtr<FJsonValue>& ParentValue)
 	{
 		TArray<TSharedPtr<FJsonValue>>* CurrentArray = nullptr;
 		if (CurrentValue->TryGetArray(CurrentArray))
@@ -918,7 +940,7 @@ namespace UE
 				(*AddArray) = AddedValues;
 			}
 		}
-		else
+		else if (AddedValues.Num() > 0)
 		{
 			(*CurrentObject)->SetArrayField(TEXT("+"), AddedValues);
 		}
@@ -932,7 +954,7 @@ namespace UE
 				(*RemoveArray) = RemovedValues;
 			}
 		}
-		else
+		else if (RemovedValues.Num() > 0)
 		{
 			(*CurrentObject)->SetArrayField(TEXT("-"), RemovedValues);
 		}
@@ -940,7 +962,7 @@ namespace UE
 		return true;
 	}
 
-	static bool SetObjectValueHelper(TSharedPtr<FJsonObject> CurrentObject, TSharedPtr<FJsonObject> NewObject, TSharedPtr<FJsonValue> ParentValue)
+	static bool SetObjectValueHelper(const TSharedPtr<FJsonObject>& CurrentObject, const TSharedPtr<FJsonObject>& NewObject, const TSharedPtr<FJsonValue>& ParentValue)
 	{
 		TSharedPtr<FJsonObject>* ParentObject = nullptr;
 		if (ParentValue.IsValid())
@@ -992,7 +1014,7 @@ namespace UE
 		return true;
 	}
 
-	bool SetValueHelper(TSharedPtr<FJsonValue>& CurrentValue, TSharedPtr<FJsonValue> NewValue, TSharedPtr<FJsonValue> ParentValue)
+	bool SetValueHelper(TSharedPtr<FJsonValue>& CurrentValue, const TSharedPtr<FJsonValue>& NewValue, const TSharedPtr<FJsonValue>& ParentValue)
 	{
 		check(CurrentValue.IsValid());
 		check(NewValue.IsValid());
@@ -1032,7 +1054,7 @@ namespace UE
 		return false;
 	}
 
-	bool FJsonConfig::SetJsonValueInMerged(const FJsonPath& Path, TSharedPtr<FJsonValue> NewValue)
+	bool FJsonConfig::SetJsonValueInMerged(const FJsonPath& Path, const TSharedPtr<FJsonValue>& NewValue)
 	{
 		TSharedPtr<FJsonObject>* CurrentObject = &MergedObject;
 	
@@ -1077,7 +1099,7 @@ namespace UE
 		return SetValueHelper(*LastValue, NewValue, TSharedPtr<FJsonValue>());
 	}
 
-	bool FJsonConfig::SetJsonValueInOverride(const FJsonPath& Path, TSharedPtr<FJsonValue> NewValue, TSharedPtr<FJsonValue> PreviousValue, TSharedPtr<FJsonValue> ParentValue)
+	bool FJsonConfig::SetJsonValueInOverride(const FJsonPath& Path, const TSharedPtr<FJsonValue>& NewValue, const TSharedPtr<FJsonValue>& PreviousValue, const TSharedPtr<FJsonValue>& ParentValue)
 	{
 		TSharedPtr<FJsonObject>* CurrentObject = &OverrideObject;
 	
@@ -1241,7 +1263,7 @@ namespace UE
 		return SetValueHelper(*LastValue, NewValue, ParentValue);
 	}
 
-	bool FJsonConfig::RemoveJsonValueFromOverride(const FJsonPath& Path, TSharedPtr<FJsonValue> CurrentValue)
+	bool FJsonConfig::RemoveJsonValueFromOverride(const FJsonPath& Path, const TSharedPtr<FJsonValue>& CurrentValue)
 	{
 		TSharedPtr<FJsonObject>* CurrentObject = &OverrideObject;
 	
@@ -1330,7 +1352,29 @@ namespace UE
 		return true;
 	}
 
-	bool FJsonConfig::SetJsonValue(const FJsonPath& Path, TSharedPtr<FJsonValue> NewValue)
+	static bool ShouldAlwaysKeep(const FJsonPath& Path)
+	{
+		static const TCHAR* AlwaysKeep[] =
+		{
+			TEXT("$type")
+		};
+
+		if (Path.Length() > 0)
+		{
+			const FJsonPath::FPart& LastPart = Path[Path.Length() - 1];
+			for (const TCHAR* Key : AlwaysKeep)
+			{
+				if (LastPart.Name == Key)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool FJsonConfig::SetJsonValue(const FJsonPath& Path, const TSharedPtr<FJsonValue>& NewValue)
 	{
 		TSharedPtr<FJsonValue> PreviousValue;
 		TryGetJsonValue(Path, PreviousValue);
@@ -1346,14 +1390,17 @@ namespace UE
 		// this was a valid change in the merged object 
 		// we need to either add or remove it from this object, depending on if it differs from our parent
 		bool bShouldRemove = false;
-		if (ParentConfig.IsValid())
+		if (!ShouldAlwaysKeep(Path))
 		{
-			if (ParentConfig->TryGetJsonValue(Path, ParentValue))
+			if (ParentConfig.IsValid())
 			{
-				if (FJsonValue::CompareEqual(*ParentValue.Get(), *NewValue.Get()))
+				if (ParentConfig->TryGetJsonValue(Path, ParentValue))
 				{
-					// same as inherited, remove it from this
-					bShouldRemove = true;
+					if (FJsonValue::CompareEqual(*ParentValue.Get(), *NewValue.Get()))
+					{
+						// same as inherited, remove it from this
+						bShouldRemove = true;
+					}
 				}
 			}
 		}
@@ -1391,7 +1438,7 @@ namespace UE
 		return SetJsonValue(Path, JsonValue);
 	}
 
-	bool FJsonConfig::SetJsonObject(const FJsonPath& Path, TSharedPtr<FJsonObject> Object)
+	bool FJsonConfig::SetJsonObject(const FJsonPath& Path, const TSharedPtr<FJsonObject>& Object)
 	{
 		TSharedPtr<FJsonValue> JsonValue = MakeShared<FJsonValueObject>(Object);
 		return SetJsonValue(Path, JsonValue);
@@ -1435,7 +1482,7 @@ namespace UE
 		return true;
 	}
 
-	bool FJsonConfig::SetRootObject(TSharedPtr<FJsonObject> Object)
+	bool FJsonConfig::SetRootObject(const TSharedPtr<FJsonObject>& Object)
 	{
 		if (!Object.IsValid())
 		{

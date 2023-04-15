@@ -146,8 +146,7 @@ TArray<FLayoutGeometry> SSplitter::ArrangeChildrenForLayout(const FGeometry& All
 	const float SpaceNeededForHandles = FMath::Max(0, NumNonCollapsedChildren - 1) * PhysicalSplitterHandleSize;
 	const float ResizableSpace = AllottedGeometry.Size.Component(AxisIndex) - SpaceNeededForHandles - NonResizableSpace;
 
-	FMemMark Mark(FMemStack::Get());
-	TArray<float, TMemStackAllocator<>> SlotSizes;
+	TArray<float, FConcurrentLinearArrayAllocator> SlotSizes;
 	SlotSizes.Empty(Children.Num());
 
 	float ExtraRequiredSpace = 0;
@@ -611,7 +610,7 @@ int32 SSplitter::FindResizeableSlotAfterHandle( int32 DraggedHandle, const TPane
 }
 
 
-void SSplitter::FindAllResizeableSlotsAfterHandle( int32 DraggedHandle, const TPanelChildren<FSlot>& Children, TArray< int32, TMemStackAllocator<> >& OutSlotIndicies )
+void SSplitter::FindAllResizeableSlotsAfterHandle( int32 DraggedHandle, const TPanelChildren<FSlot>& Children, TArray< int32, FConcurrentLinearArrayAllocator >& OutSlotIndicies )
 {
 	const int32 NumChildren = Children.Num();
 
@@ -635,8 +634,7 @@ void SSplitter::HandleResizingDelta(EOrientation SplitterOrientation, const floa
 	//  - Prev vs. Next refers to the widgets in the order they are laid out (left->right, top->bottom).
 	//  - New vs. Old refers to the Old values for width/height vs. the post-resize values.
 
-	FMemMark Mark(FMemStack::Get());
-	TArray<int32, TMemStackAllocator<>> SlotsAfterDragHandleIndices;
+	TArray<int32, FConcurrentLinearArrayAllocator> SlotsAfterDragHandleIndices;
 	SlotsAfterDragHandleIndices.Reserve(NumChildren);
 	if (InResizeMode == ESplitterResizeMode::FixedPosition)
 	{
@@ -662,7 +660,7 @@ void SSplitter::HandleResizingDelta(EOrientation SplitterOrientation, const floa
 			float NewSize;
 		};
 
-		TArray<FSlotInfo, TMemStackAllocator<>> SlotsAfterDragHandle;
+		TArray<FSlotInfo, FConcurrentLinearArrayAllocator> SlotsAfterDragHandle;
 		SlotsAfterDragHandle.Reserve(NumSlotsAfterDragHandle);
 		for (int32 SlotIndex = 0; SlotIndex < NumSlotsAfterDragHandle; SlotIndex++)
 		{
@@ -1103,8 +1101,8 @@ void SSplitter2x2::ResizeChildren( const FGeometry& MyGeometry, const TArray<FLa
 		NewSizeTL.X = TopLeftSize.X + Delta.X;
 		NewSizeBL.X = BotLeftSize.X + Delta.X;
 
-		//workaround PS4 compiler crash.
-#if PLATFORM_PS4 || PLATFORM_ANDROID_X64
+		// @todo: revisit workaround for compiler crash on clang version > 9
+#if PLATFORM_ANDROID_X64
 		volatile float workaround = 0.0f;
 		NewSizeTR.X = TopRightSize.X - Delta.X + workaround;
 #else

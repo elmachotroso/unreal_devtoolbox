@@ -23,9 +23,9 @@
 #include "Misc/FileHelper.h"
 
 // AssetRegistry includes
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetData.h"
 
 // ContentBrowser includes
 #include "IContentBrowserSingleton.h"
@@ -51,8 +51,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/SlateIconFinder.h"
 
-// EditorStyle includes
-#include "EditorStyleSet.h"
+// Style includes
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 
 // UnrealEd includes
@@ -73,6 +73,7 @@ STakeRecorderPanel::~STakeRecorderPanel()
 	UTakeRecorder::OnRecordingInitialized().Remove(OnRecordingInitializedHandle);
 	ITakeRecorderModule& TakeRecorderModule = FModuleManager::Get().LoadModuleChecked<ITakeRecorderModule>("TakeRecorder");
 	TakeRecorderModule.OnForceSaveAsPreset().Unbind();
+	TakeRecorderModule.GetLastLevelSequenceProvider().Unbind();
 	TakeRecorderModule.GetExternalObjectAddRemoveEventDelegate().Remove(OnWidgetExternalObjectChangedHandle);
 }
 
@@ -157,6 +158,7 @@ void STakeRecorderPanel::Construct(const FArguments& InArgs)
 		TakeRecorderModule.GetExternalObjectAddRemoveEventDelegate().AddSP(this, &STakeRecorderPanel::ReconfigureExternalSettings);
 
 	TakeRecorderModule.OnForceSaveAsPreset().BindRaw(this, &STakeRecorderPanel::OnSaveAsPreset);
+	TakeRecorderModule.GetLastLevelSequenceProvider().BindRaw(this, &STakeRecorderPanel::SetLastLevelSequence);
 
 	for(TWeakObjectPtr<> Object : TakeRecorderModule.GetExternalObjects())
 	{
@@ -204,7 +206,7 @@ void STakeRecorderPanel::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop"))
 			.BorderBackgroundColor( FLinearColor( .6,.6,.6, 1.0f ) )
 			.IsEnabled_Lambda([this]() { return !CockpitWidget->Reviewing() && !CockpitWidget->Recording(); })
 			[
@@ -261,11 +263,11 @@ void STakeRecorderPanel::Construct(const FArguments& InArgs)
 					.ContentPadding(TakeRecorder::ButtonPadding)
 					.ToolTipText(LOCTEXT("RevertChanges_Text", "Revert all changes made to this take back its original state (either its original preset, or an empty take)."))
 					.ForegroundColor(FSlateColor::UseForeground())
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.OnClicked(this, &STakeRecorderPanel::OnRevertChanges)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 						.Text(FEditorFontGlyphs::Undo)
 					]
 				]
@@ -290,7 +292,7 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 	TSharedPtr<SHorizontalBox> ButtonHolder;
 
 	TSharedRef<SBorder> Border = SNew(SBorder)
-	.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+	.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 	.Padding(FMargin(3.f, 3.f))
 	[
 
@@ -310,11 +312,11 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 				.VAlign(VAlign_Center)
 				.ToolTipText(LOCTEXT("ClearPendingTake", "Clear pending take"))
 				.ForegroundColor(FSlateColor::UseForeground())
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &STakeRecorderPanel::OnClearPendingTake)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 					.Text(FEditorFontGlyphs::File)
 				]
 			]
@@ -337,8 +339,8 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 				.ContentPadding(TakeRecorder::ButtonPadding)
 				.ToolTipText(LOCTEXT("ReviewLastRecording", "Review the last recording"))
 				.ForegroundColor(FSlateColor::UseForeground())
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.IsEnabled_Lambda([this]() { return (LastRecordedLevelSequence != nullptr && GetTakeRecorderMode() == ETakeRecorderMode::RecordNewSequence); })
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+				.IsEnabled_Lambda([this]() { return (CanReviewLastLevelSequence() && GetTakeRecorderMode() == ETakeRecorderMode::RecordNewSequence); })
 				.OnClicked(this, &STakeRecorderPanel::OnReviewLastRecording)
 				[
 					SNew(SImage)
@@ -363,11 +365,11 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 				.ContentPadding(TakeRecorder::ButtonPadding)
 				.ToolTipText(LOCTEXT("Back", "Return back to the pending take"))
 				.ForegroundColor(FSlateColor::UseForeground())
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &STakeRecorderPanel::OnBackToPendingTake)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 					.Text(FEditorFontGlyphs::Arrow_Left)
 				]
 			]
@@ -417,8 +419,8 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 					.ButtonContent()
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.TextStyle(FAppStyle::Get(), "NormalText.Important")
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(FEditorFontGlyphs::Caret_Down)
 					]
 				]
@@ -447,7 +449,7 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 				.OnCheckStateChanged(this, &STakeRecorderPanel::ToggleTakeBrowserCheckState)
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 					.Text(FEditorFontGlyphs::Folder_Open)
 				]
 			]
@@ -493,14 +495,14 @@ TSharedRef<SWidget> STakeRecorderPanel::MakeToolBar()
 				SNew(SCheckBox)
 				.Padding(TakeRecorder::ButtonPadding)
 				.ToolTipText(LOCTEXT("ShowSettings_Tip", "Show/Hide the general user/project settings for Take Recorder"))
-				.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 				.ForegroundColor(FSlateColor::UseForeground())
 				.IsChecked(this, &STakeRecorderPanel::GetSettingsCheckState)
 				.OnCheckStateChanged(this, &STakeRecorderPanel::ToggleSettings)
 				.Visibility_Lambda([this]() { return !CockpitWidget->Reviewing() ? EVisibility::Visible : EVisibility::Collapsed; })
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 					.Text(FEditorFontGlyphs::Cogs)
 				]
 			]
@@ -553,6 +555,27 @@ ULevelSequence* STakeRecorderPanel::GetLevelSequence() const
 ULevelSequence* STakeRecorderPanel::GetLastRecordedLevelSequence() const
 {
 	return LastRecordedLevelSequence;
+}
+
+void STakeRecorderPanel::SetLastLevelSequence(ULevelSequence *InSequence)
+{
+	LastRecordedLevelSequence = InSequence;
+}
+
+bool STakeRecorderPanel::CanReviewLastLevelSequence() const
+{
+	if (LastRecordedLevelSequence == nullptr)
+	{
+		return false;
+	}
+	ITakeRecorderModule& TakeRecorderModule = FModuleManager::Get().LoadModuleChecked<ITakeRecorderModule>("TakeRecorder");
+	FCanReviewLastRecordedLevelSequence& CanReview = TakeRecorderModule.GetCanReviewLastRecordedLevelSequenceDelegate();
+	if (CanReview.IsBound())
+	{
+		return CanReview.Execute();
+	}
+	
+	return true;
 }
 
 ETakeRecorderMode STakeRecorderPanel::GetTakeRecorderMode() const
@@ -629,6 +652,7 @@ void STakeRecorderPanel::AddReferencedObjects(FReferenceCollector& Collector)
 	Collector.AddReferencedObject(RecordIntoLevelSequence);
 	Collector.AddReferencedObject(SuppliedLevelSequence);
 	Collector.AddReferencedObject(RecordingLevelSequence);
+	Collector.AddReferencedObject(LastRecordedLevelSequence);
 }
 
 
@@ -641,7 +665,7 @@ TSharedRef<SWidget> STakeRecorderPanel::OnGeneratePresetsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsPreset_Text", "Save As Preset"),
 		LOCTEXT("SaveAsPreset_Tip", "Save the current setup as a new preset that can be imported at a later date"),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &STakeRecorderPanel::OnSaveAsPreset)
 		)
@@ -662,7 +686,7 @@ TSharedRef<SWidget> STakeRecorderPanel::OnGeneratePresetsMenu()
 		AssetPickerConfig.bSortByPathInColumnView = false;
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoPresets_Warning", "No Presets Found");
-		AssetPickerConfig.Filter.ClassNames.Add(UTakePreset::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UTakePreset::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &STakeRecorderPanel::OnImportPreset);
 	}
 
@@ -714,7 +738,7 @@ static bool OpenSaveDialog(const FString& InDefaultPath, const FString& InNewNam
 	{
 		SaveAssetDialogConfig.DefaultPath = InDefaultPath;
 		SaveAssetDialogConfig.DefaultAssetName = InNewNameSuggestion;
-		SaveAssetDialogConfig.AssetClassNames.Add(UTakePreset::StaticClass()->GetFName());
+		SaveAssetDialogConfig.AssetClassNames.Add(UTakePreset::StaticClass()->GetClassPathName());
 		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveTakePresetDialogTitle", "Save Take Preset");
 	}
@@ -902,7 +926,7 @@ TSharedRef<SWidget> STakeRecorderPanel::OnOpenSequenceToRecordIntoMenu()
 		AssetPickerConfig.SaveSettingsName = TEXT("TakeRecorderOpenSequenceToRecordInto");
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoSequences_Warning", "No Level Sequences Found");
-		AssetPickerConfig.Filter.ClassNames.Add(ULevelSequence::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(ULevelSequence::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &STakeRecorderPanel::OnOpenSequenceToRecordInto);
 	}
 

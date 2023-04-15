@@ -11,6 +11,8 @@
 #include "Animation/WidgetAnimation.h"
 #include "MovieScene.h"
 
+#include "FieldNotification/CustomizationHelper.h"
+#include "FieldNotification/FieldNotificationHelpers.h"
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Kismet2/KismetReinstanceUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -20,8 +22,10 @@
 #include "IUMGModule.h"
 #include "UMGEditorProjectSettings.h"
 #include "WidgetCompilerRule.h"
+#include "WidgetBlueprintExtension.h"
 #include "Editor/WidgetCompilerLog.h"
 #include "Editor.h"
+#include "Algo/RemoveIf.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -29,7 +33,36 @@
 
 extern COREUOBJECT_API bool GMinimalCompileOnLoad;
 
+//////////////////////////////////////////////////////////////////////////
+// FWidgetBlueprintCompiler::FCreateVariableContext
+FWidgetBlueprintCompilerContext::FCreateVariableContext::FCreateVariableContext(FWidgetBlueprintCompilerContext& InContext)
+	: Context(InContext)
+{}
 
+FProperty* FWidgetBlueprintCompilerContext::FCreateVariableContext::CreateVariable(const FName Name, const FEdGraphPinType& Type) const
+{
+	return Context.CreateVariable(Name, Type);
+}
+
+UWidgetBlueprint* FWidgetBlueprintCompilerContext::FCreateVariableContext::GetWidgetBlueprint() const
+{
+	return Context.WidgetBlueprint();
+}
+
+UWidgetBlueprintGeneratedClass* FWidgetBlueprintCompilerContext::FCreateVariableContext::GetSkeletonGeneratedClass() const
+{
+	return Context.NewWidgetBlueprintClass;
+}
+
+
+EKismetCompileType::Type FWidgetBlueprintCompilerContext::FCreateVariableContext::GetCompileType() const
+{
+	return Context.CompileOptions.CompileType;
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+// FWidgetBlueprintCompiler
 FWidgetBlueprintCompiler::FWidgetBlueprintCompiler()
 	: ReRegister(nullptr)
 	, CompileCount(0)
@@ -99,10 +132,18 @@ FWidgetBlueprintCompilerContext::FWidgetBlueprintCompilerContext(UWidgetBlueprin
 	, OldWidgetTree(nullptr)
 	, WidgetSchema(nullptr)
 {
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [this](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->BeginCompilation(*this);
+		});
 }
 
 FWidgetBlueprintCompilerContext::~FWidgetBlueprintCompilerContext()
 {
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->EndCompilation();
+		});
 }
 
 UEdGraphSchema_K2* FWidgetBlueprintCompilerContext::CreateSchema()
@@ -113,6 +154,11 @@ UEdGraphSchema_K2* FWidgetBlueprintCompilerContext::CreateSchema()
 
 void FWidgetBlueprintCompilerContext::CreateFunctionList()
 {
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [this](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->CreateFunctionList();
+		});
+
 	Super::CreateFunctionList();
 
 	for ( FDelegateEditorBinding& EditorBinding : WidgetBlueprint()->Bindings )
@@ -357,8 +403,17 @@ void FWidgetBlueprintCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedC
 		RenameObjectToTransientPackage(Animation, FName(), false);
 	}
 	NewWidgetBlueprintClass->Animations.Empty();
-
 	NewWidgetBlueprintClass->Bindings.Empty();
+	NewWidgetBlueprintClass->Extensions.Empty();
+	NewWidgetBlueprintClass->FieldNotifyNames.Empty();
+
+	if (UWidgetBlueprintGeneratedClass* WidgetClassToClean = Cast<UWidgetBlueprintGeneratedClass>(ClassToClean))
+	{
+		UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [WidgetClassToClean, InOutOldCDO](UWidgetBlueprintExtension* InExtension)
+			{
+				InExtension->CleanAndSanitizeClass(WidgetClassToClean, InOutOldCDO);
+			});
+	}
 }
 
 void FWidgetBlueprintCompilerContext::SaveSubObjectsFromCleanAndSanitizeClass(FSubobjectCollection& SubObjectsToSave, UBlueprintGeneratedClass* ClassToClean)
@@ -382,6 +437,17 @@ void FWidgetBlueprintCompilerContext::SaveSubObjectsFromCleanAndSanitizeClass(FS
 	// We need to save the widget tree to survive the initial sub-object clean blitz, 
 	// otherwise they all get renamed, and it causes early loading errors.
 	SubObjectsToSave.AddObject(WidgetBP->WidgetTree);
+
+	if (UUserWidget* ClassDefaultWidgetToClean = Cast<UUserWidget>(ClassToClean->ClassDefaultObject))
+	{
+		// We need preserve any named slots that have been slotted into the CDO.  This can happen when someone subclasses
+		// from a widget with named slots.  Those named slots are exposed to the child classes widget tree as
+		// containers they can slot stuff into.  Those widgets need to survive recompile.
+		for (FNamedSlotBinding& CDONamedSlotBinding : ClassDefaultWidgetToClean->NamedSlotBindings)
+		{
+			SubObjectsToSave.AddObject(CDONamedSlotBinding.Content);
+		}
+	}
 }
 
 void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
@@ -479,7 +545,7 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 			// Only show variables if they're explicitly marked as variables.
 			if ( Widget->bIsVariable )
 			{
-				WidgetProperty->SetPropertyFlags(CPF_BlueprintVisible);
+				WidgetProperty->SetPropertyFlags(CPF_BlueprintVisible | CPF_BlueprintReadOnly | CPF_DisableEditOnInstance);
 
 				const FString& CategoryName = Widget->GetCategoryName();
 				
@@ -522,6 +588,22 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 			AnimationProperty->SetPropertyFlags(CPF_RepSkip);
 
 			WidgetAnimToMemberVariableMap.Add(Animation, AnimationProperty);
+		}
+	}
+
+	FWidgetBlueprintCompilerContext* Self = this;
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [Self](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->CreateClassVariablesFromBlueprint(FCreateVariableContext(*Self));
+		});
+
+	//Add FieldNotifyNames
+	for (TFieldIterator<const FProperty> PropertyIt(NewClass, EFieldIterationFlags::None); PropertyIt; ++PropertyIt)
+	{
+		const FProperty* Property = *PropertyIt;
+		if (Property->HasMetaData(UE::FieldNotification::FCustomizationHelper::MetaData_FieldNotify))
+		{
+			NewWidgetBlueprintClass->FieldNotifyNames.Emplace(Property->GetFName());
 		}
 	}
 }
@@ -591,6 +673,11 @@ void FWidgetBlueprintCompilerContext::CopyTermDefaultsToDefaultObject(UObject* D
 			MessageLog.Warning(*LOCTEXT("NonTickableButTickFound", "This widget has a blueprint implemented Tick event but the widget is set to never tick.  This tick event will never be called.").ToString());
 		}
 	}
+
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [DefaultObject](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->CopyTermDefaultsToDefaultObject(DefaultObject);
+		});
 }
 
 void FWidgetBlueprintCompilerContext::SanitizeBindings(UBlueprintGeneratedClass* Class)
@@ -655,10 +742,25 @@ void FWidgetBlueprintCompilerContext::FixAbandonedWidgetTree(UWidgetBlueprint* W
 
 void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 {
+	if (Class == nullptr)
+		return;
+
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
-	UWidgetBlueprintGeneratedClass* BPGClass = CastChecked<UWidgetBlueprintGeneratedClass>(Class);
+
+	if (WidgetBP == nullptr)
+		return;
+
 	UClass* ParentClass = WidgetBP->ParentClass;
+
+	if (ParentClass == nullptr)
+		return;
+	
 	const bool bIsSkeletonOnly = CompileOptions.CompileType == EKismetCompileType::SkeletonOnly;
+
+	UWidgetBlueprintGeneratedClass* BPGClass = CastChecked<UWidgetBlueprintGeneratedClass>(Class);
+
+	if (BPGClass == nullptr)
+		return;
 
 	// Don't do a bunch of extra work on the skeleton generated class.
 	if ( !bIsSkeletonOnly )
@@ -803,13 +905,48 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 		}
 
 		// Add all the names of the named slot widgets to the slot names structure.
-		BPGClass->NamedSlots.Reset();
-		WidgetBP->ForEachSourceWidget([&] (UWidget* Widget) {
-			if ( Widget && Widget->IsA<UNamedSlot>() )
+		{
+			BPGClass->NamedSlots.Reset();
+			BPGClass->InstanceNamedSlots.Reset();
+			UWidgetBlueprint* WidgetBPIt = WidgetBP;
+			while (WidgetBPIt)
 			{
-				BPGClass->NamedSlots.Add(Widget->GetFName());
+				WidgetBPIt->ForEachSourceWidget([&] (const UWidget* Widget) {
+					if (const UNamedSlot* NamedSlot = Cast<UNamedSlot>(Widget))
+					{
+						BPGClass->NamedSlots.Add(Widget->GetFName());
+
+						if (NamedSlot->bExposeOnInstanceOnly)
+						{
+							BPGClass->InstanceNamedSlots.Add(Widget->GetFName());
+						}
+					}
+				});
+				
+				WidgetBPIt = Cast<UWidgetBlueprint>(WidgetBPIt->ParentClass->ClassGeneratedBy);
 			}
-		});
+
+			BPGClass->AvailableNamedSlots = BPGClass->NamedSlots;
+
+			// Remove any named slots from the available slots that has content for it.
+			BPGClass->GetNamedSlotArchetypeContent([BPGClass](FName SlotName, UWidget* Content)
+			{
+				// If we find content for this slot, remove it from the available set.
+				BPGClass->AvailableNamedSlots.Remove(SlotName);
+			});
+
+			// Remove any available subclass named slots that are marked as instance named slot.
+			for (const FName& InstanceNamedSlot : BPGClass->InstanceNamedSlots)
+			{
+				BPGClass->AvailableNamedSlots.Remove(InstanceNamedSlot);
+			}
+
+			// Now add any available named slot that doesn't have anything in it also.
+			for (const FName& AvailableNamedSlot : BPGClass->AvailableNamedSlots)
+			{
+				BPGClass->InstanceNamedSlots.AddUnique(AvailableNamedSlot);
+			}
+		}
 
 		// Make sure that we don't have dueling widget hierarchies
 		if (UWidgetBlueprintGeneratedClass* SuperBPGClass = Cast<UWidgetBlueprintGeneratedClass>(BPGClass->GetSuperClass()))
@@ -827,6 +964,48 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 							WidgetBP, SuperBPGClass->ClassGeneratedBy);
 					}
 				}
+			}
+		}
+
+		// Do validation that as we subclass trees, we never stomp the slotted content of a parent widget.
+		// doing that is not valid, as it would invalidate variables that were set?  This check could be
+		// made more complex to only worry about cases with variables being generated, but that's a whole lot
+		// extra, so for now lets just limit it to be safe.
+		{
+			TMap<FName, UWidget*> NamedSlotContentMap;
+			// Make sure that we don't have dueling widget hierarchies
+			UWidgetBlueprintGeneratedClass* NamedSlotClass = BPGClass;
+			while (NamedSlotClass)
+			{
+				UWidgetTree* Tree = NamedSlotClass->GetWidgetTreeArchetype();
+			
+				TArray<FName> SlotNames;
+				Tree->GetSlotNames(SlotNames);
+
+				for (FName SlotName : SlotNames)
+				{
+					if (UWidget* ContentInSlot = Tree->GetContentForSlot(SlotName))
+					{
+						if (!NamedSlotContentMap.Contains(SlotName))
+						{
+							NamedSlotContentMap.Add(SlotName, ContentInSlot);
+						}
+						else
+						{
+							UClass* SubClassWithSlotFilled = ContentInSlot->GetTypedOuter<UClass>();
+							UClass* ParentClassWithSlotFilled = NamedSlotClass;
+							MessageLog.Note(
+								*FText::Format(
+									LOCTEXT("NamedSlotAlreadyFilled", "The Named Slot '{0}' already contains @@ from the class @@ but the subclass @@ tried to slot @@ into it."),
+									FText::FromName(SlotName)
+								).ToString(),
+								ContentInSlot, ParentClassWithSlotFilled,
+								SubClassWithSlotFilled, NamedSlotContentMap.FindRef(SlotName));
+						}
+					}
+				}
+			
+				NamedSlotClass = Cast<UWidgetBlueprintGeneratedClass>(NamedSlotClass->GetSuperClass());
 			}
 		}
 	}
@@ -922,6 +1101,20 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 	}
 
 	Super::FinishCompilingClass(Class);
+
+	if (!bIsSkeletonOnly)
+	{
+		CA_ASSUME(BPGClass);
+		if (UUserWidget* UserWidget = Cast<UUserWidget>(BPGClass->GetDefaultObject()))
+		{
+			BPGClass->InitializeFieldNotification(UserWidget);
+		}
+	}
+
+	UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [BPGClass](UWidgetBlueprintExtension* InExtension)
+		{
+			InExtension->FinishCompilingClass(BPGClass);
+		});
 }
 
 
@@ -950,10 +1143,39 @@ private:
 	TSubclassOf<UUserWidget> ClassContext;
 };
 
-
-void FWidgetBlueprintCompilerContext::OnPostCDOCompiled()
+void FWidgetBlueprintCompilerContext::ValidateWidgetAnimations()
 {
-	Super::OnPostCDOCompiled();
+	UWidgetBlueprintGeneratedClass* WidgetClass = NewWidgetBlueprintClass;
+	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
+	UUserWidget& UserWidget = *WidgetClass->GetDefaultObject<UUserWidget>();
+	FBlueprintCompilerLog BlueprintLog(MessageLog, WidgetClass);
+
+	for (const UWidgetAnimation* InAnimation : WidgetBP->Animations)
+	{
+		for (const FWidgetAnimationBinding& Binding : InAnimation->AnimationBindings)
+		{
+			// Look for the object bindings within the widget
+			UObject* FoundObject = Binding.FindRuntimeObject(*WidgetBP->WidgetTree, UserWidget);
+
+			// If any of the FoundObjects is null, we do not play the animation.
+			if (FoundObject == nullptr)
+			{
+				// Notify the user of the null track in the editor
+				const FText AnimationNullTrackMessage = LOCTEXT("AnimationNullTrack", "UMG Animation '{0}' from '{1}' is trying to animate a non-existent widget through binding '{2}'. Please re-bind or delete this object from the animation.");
+				BlueprintLog.Warning(FText::Format(AnimationNullTrackMessage, InAnimation->GetDisplayName(), FText::FromString(UserWidget.GetClass()->GetName()), FText::FromName(Binding.WidgetName)));
+			}
+		}
+	}
+}
+
+void FWidgetBlueprintCompilerContext::OnPostCDOCompiled(const UObject::FPostCDOCompiledContext& Context)
+{
+	Super::OnPostCDOCompiled(Context);
+
+	if (Context.bIsSkeletonOnly)
+	{
+		return;
+	}
 
 	WidgetToMemberVariableMap.Empty();
 	WidgetAnimToMemberVariableMap.Empty();
@@ -965,6 +1187,7 @@ void FWidgetBlueprintCompilerContext::OnPostCDOCompiled()
 	{
 		FBlueprintCompilerLog BlueprintLog(MessageLog, WidgetClass);
 		WidgetClass->GetDefaultObject<UUserWidget>()->ValidateBlueprint(*WidgetBP->WidgetTree, BlueprintLog);
+		ValidateWidgetAnimations();
 	}
 }
 
@@ -1029,12 +1252,48 @@ void FWidgetBlueprintCompilerContext::VerifyEventReplysAreNotEmpty(FKismetFuncti
 	}
 }
 
+void FWidgetBlueprintCompilerContext::PostcompileFunction(FKismetFunctionContext& Context)
+{
+	Super::PostcompileFunction(Context);
+
+	VerifyFieldNotifyFunction(Context);
+}
+
+void FWidgetBlueprintCompilerContext::VerifyFieldNotifyFunction(FKismetFunctionContext& Context)
+{
+	if (Context.Function && Context.Function->HasMetaData(UE::FieldNotification::FCustomizationHelper::MetaData_FieldNotify))
+	{
+		if (!UE::FieldNotification::Helpers::IsValidAsField(Context.Function))
+		{
+			MessageLog.Error(*LOCTEXT("FieldNotify_IsEventGraph", "Function @@ cannot be a FieldNotify. A function needs to be const, returns a single properties, has no inputs, not be an event or a net function.").ToString(), Context.EntryPoint);
+		}
+		NewWidgetBlueprintClass->FieldNotifyNames.Emplace(Context.Function->GetFName());
+	}
+}
+
 bool FWidgetBlueprintCompilerContext::ValidateGeneratedClass(UBlueprintGeneratedClass* Class)
 {
-	bool SuperResult = Super::ValidateGeneratedClass(Class);
-	bool Result = UWidgetBlueprint::ValidateGeneratedClass(Class);
+	const bool bSuperResult = Super::ValidateGeneratedClass(Class);
+	const bool bResult = UWidgetBlueprint::ValidateGeneratedClass(Class);
 
-	return SuperResult && Result;
+	UWidgetBlueprintGeneratedClass* WidgetClass = Cast<UWidgetBlueprintGeneratedClass>(Class);
+	bool bExtension = WidgetClass != nullptr;
+	if (bExtension)
+	{
+		UWidgetBlueprintExtension::ForEachExtension(WidgetBlueprint(), [&bExtension, WidgetClass](UWidgetBlueprintExtension* InExtension)
+			{
+				bExtension = InExtension->ValidateGeneratedClass(WidgetClass) && bExtension;
+			});
+	}
+
+	return bSuperResult && bResult && bExtension;
+}
+
+void FWidgetBlueprintCompilerContext::AddExtension(UWidgetBlueprintGeneratedClass* Class, UWidgetBlueprintGeneratedClassExtension* Extension)
+{
+	check(Class);
+	check(Extension);
+	Class->Extensions.Add(Extension);
 }
 
 #undef LOCTEXT_NAMESPACE

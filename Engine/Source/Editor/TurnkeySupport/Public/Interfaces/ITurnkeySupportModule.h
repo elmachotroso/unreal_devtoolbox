@@ -30,15 +30,14 @@ enum class ETurnkeyDeviceStatus : uint8
 
 struct FTurnkeySdkInfo
 {
+	struct Version { FString Min, Max, Current; };
 	ETurnkeyPlatformSdkStatus Status = ETurnkeyPlatformSdkStatus::Unknown;
 	ETurnkeyDeviceStatus DeviceStatus = ETurnkeyDeviceStatus::Unknown;
 	FText SdkErrorInformation;
-	FString InstalledVersion;
-	FString AutoSDKVersion; // only valid for platform, not device
-	FString MinAllowedVersion;
-	FString MaxAllowedVersion;
+	TMap<FString, Version> SDKVersions;
 	bool bCanInstallFullSdk;
 	bool bCanInstallAutoSdk;
+	bool bHasBestSdk;
 };
 
 

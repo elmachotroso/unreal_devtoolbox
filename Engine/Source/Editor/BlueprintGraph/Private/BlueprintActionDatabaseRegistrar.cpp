@@ -1,14 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintActionDatabaseRegistrar.h"
-#include "Engine/Blueprint.h"
-#include "UObject/UnrealType.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
-#include "Engine/BlueprintGeneratedClass.h"
-#include "EdGraphSchema_K2.h"
-#include "BlueprintNodeSpawnerUtils.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetToolsModule.h"
 #include "BlueprintEditorSettings.h"
+#include "BlueprintNodeSpawner.h"
+#include "BlueprintNodeSpawnerUtils.h"
+#include "Containers/Array.h"
+#include "Containers/StringFwd.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "HAL/PlatformCrt.h"
+#include "IAssetTools.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/NamePermissionList.h"
+#include "Modules/ModuleManager.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Script.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealType.h"
+
+class UEdGraphNode;
 
 /*******************************************************************************
  * BlueprintActionDatabaseRegistrarImpl
@@ -26,7 +45,7 @@ static UObject const* BlueprintActionDatabaseRegistrarImpl::ResolveClassKey(UCla
 	UObject const* ResolvedKey = ClassKey;
 	if (UBlueprintGeneratedClass const* BlueprintClass = Cast<UBlueprintGeneratedClass>(ClassKey))
 	{
-		ResolvedKey = CastChecked<UBlueprint>(BlueprintClass->ClassGeneratedBy);
+		ResolvedKey = CastChecked<UBlueprint>(BlueprintClass->ClassGeneratedBy, ECastCheckedType::NullAllowed);
 	}
 	return ResolvedKey;
 }
@@ -72,6 +91,7 @@ FBlueprintActionDatabaseRegistrar::FBlueprintActionDatabaseRegistrar(FActionRegi
 	, ActionKeyFilter(nullptr)
 	, ActionPrimingQueue(PrimingQueue)
 {
+	AssetTools = &FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 }
 
 //------------------------------------------------------------------------------
@@ -94,12 +114,23 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UBlueprintNodeSpawner
 	{
 		ActionKey = MemberField;
 	}
+
+	if (!FBlueprintActionDatabase::IsFieldAllowed(ActionKey, FBlueprintActionDatabase::EPermissionsContext::Asset))
+	{
+		return false;
+	}
+
 	return AddActionToDatabase(ActionKey, NodeSpawner);
 }
 
 //------------------------------------------------------------------------------
 bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UClass const* ClassOwner, UBlueprintNodeSpawner* NodeSpawner)
 {
+	if (!FBlueprintActionDatabase::IsClassAllowed(ClassOwner, FBlueprintActionDatabase::EPermissionsContext::Asset))
+	{
+		return false;
+	}
+
 	// @TODO: assert that AddBlueprintAction(UBlueprintNodeSpawner* NodeSpawner) 
 	//        wouldn't come up with a different key (besides GeneratingClass)
 
@@ -111,6 +142,11 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UClass const* ClassOw
 //------------------------------------------------------------------------------
 bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UEnum const* EnumOwner, UBlueprintNodeSpawner* NodeSpawner)
 {
+	if (!FBlueprintActionDatabase::IsEnumAllowed(EnumOwner, FBlueprintActionDatabase::EPermissionsContext::Asset))
+	{
+		return false;
+	}
+
 	// @TODO: assert that AddBlueprintAction(UBlueprintNodeSpawner* NodeSpawner) 
 	//        wouldn't come up with a different key (besides GeneratingClass)
 
@@ -122,6 +158,11 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UEnum const* EnumOwne
 //------------------------------------------------------------------------------
 bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UScriptStruct const* StructOwner, UBlueprintNodeSpawner* NodeSpawner)
 {
+	if (!FBlueprintActionDatabase::IsStructAllowed(StructOwner, FBlueprintActionDatabase::EPermissionsContext::Asset))
+	{
+		return false;
+	}
+
 	// @TODO: assert that AddBlueprintAction(UBlueprintNodeSpawner* NodeSpawner) 
 	//        wouldn't come up with a different key (besides GeneratingClass)
 
@@ -133,6 +174,11 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UScriptStruct const* 
 //------------------------------------------------------------------------------
 bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UField const* FieldOwner, UBlueprintNodeSpawner* NodeSpawner)
 {
+	if (!FBlueprintActionDatabase::IsFieldAllowed(FieldOwner, FBlueprintActionDatabase::EPermissionsContext::Asset))
+	{
+		return false;
+	}
+
 	// @TODO: assert that AddBlueprintAction(UBlueprintNodeSpawner* NodeSpawner) 
 	//        wouldn't come up with a different key (besides GeneratingClass)
 
@@ -144,6 +190,11 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UField const* FieldOw
 //------------------------------------------------------------------------------
 bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(UObject const* AssetOwner, UBlueprintNodeSpawner* NodeSpawner)
 {
+	if (AssetTools && !AssetTools->IsAssetClassSupported(AssetOwner->GetClass()))
+	{
+		return false;
+	}
+
 	// @TODO: assert that AddBlueprintAction(UBlueprintNodeSpawner* NodeSpawner) 
 	//        wouldn't come up with a different key (besides GeneratingClass)
 
@@ -170,7 +221,7 @@ bool FBlueprintActionDatabaseRegistrar::AddBlueprintAction(FAssetData const& Ass
 		bReturnResult = AddBlueprintAction(NodeSpawner->NodeClass, NodeSpawner);
 		if(bReturnResult)
 		{
-			TArray<UBlueprintNodeSpawner*>& ActionList = UnloadedActionDatabase.FindOrAdd(AssetDataOwner.ObjectPath);
+			TArray<UBlueprintNodeSpawner*>& ActionList = UnloadedActionDatabase.FindOrAdd(AssetDataOwner.GetSoftObjectPath());
 			ActionList.Add(NodeSpawner);
 		}
 	}
@@ -204,6 +255,29 @@ int32 FBlueprintActionDatabaseRegistrar::RegisterStructActions(const FMakeStruct
 {
 	int32 RegisteredCount = 0;
 
+	const FPathPermissionList& Permissions = GetMutableDefault<UBlueprintEditorSettings>()->GetStructPermissions();
+
+	auto RegisterStruct = [this, &MakeActionCallback, &RegisteredCount, &Permissions](const UScriptStruct* InStruct)
+	{
+		if ((InStruct->StructFlags & STRUCT_NewerVersionExists) == 0)
+		{
+			if (Permissions.HasFiltering())
+			{
+				TStringBuilder<256> ResultBuilder;
+				InStruct->GetPathName(nullptr, ResultBuilder);
+				if (!Permissions.PassesFilter(ResultBuilder.ToView()))
+				{
+					return;
+				}
+			}
+
+			if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(InStruct))
+			{
+				RegisteredCount += (int32)AddActionToDatabase(InStruct, NewAction);
+			}
+		}
+	};
+
 	// to keep from needlessly looping through UScriptStructs, first check to 
 	// see if the registrar is looking for only certain actions of this type
 	// (could be regenerating actions for a specific asset, and therefore the 
@@ -213,13 +287,7 @@ int32 FBlueprintActionDatabaseRegistrar::RegisterStructActions(const FMakeStruct
 		if (const UScriptStruct* StructAsset = Cast<UScriptStruct>(RegistrarTarget))
 		{
 			check(IsOpenForRegistration(StructAsset));
-			if ((StructAsset->StructFlags & STRUCT_NewerVersionExists) == 0)
-			{
-				if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(StructAsset))
-				{
-					RegisteredCount += (int32)AddBlueprintAction(StructAsset, NewAction);
-				}
-			}
+			RegisterStruct(StructAsset);
 		}
 		// else, the target is a class or a different asset type... not something pertaining to a struct
 	}
@@ -228,13 +296,7 @@ int32 FBlueprintActionDatabaseRegistrar::RegisterStructActions(const FMakeStruct
 		for (TObjectIterator<UScriptStruct> StructIt; StructIt; ++StructIt)
 		{
 			UScriptStruct const* Struct = (*StructIt);
-			if ((Struct->StructFlags & STRUCT_NewerVersionExists) == 0)
-			{
-				if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(Struct))
-				{
-					RegisteredCount += (int32)AddBlueprintAction(Struct, NewAction);
-				}
-			}
+			RegisterStruct(Struct);
 		}
 	}
 	return RegisteredCount;
@@ -244,58 +306,49 @@ int32 FBlueprintActionDatabaseRegistrar::RegisterStructActions(const FMakeStruct
 int32 FBlueprintActionDatabaseRegistrar::RegisterEnumActions(const FMakeEnumSpawnerDelegate& MakeActionCallback)
 {
 	int32 RegisteredCount = 0;
+
+	const FPathPermissionList& Permissions = GetMutableDefault<UBlueprintEditorSettings>()->GetEnumPermissions();
+
+	auto RegisterEnum = [this, &MakeActionCallback, &RegisteredCount, &Permissions](const UEnum* InEnum)
+	{
+		if (!InEnum->HasAnyEnumFlags(EEnumFlags::NewerVersionExists) && UEdGraphSchema_K2::IsAllowableBlueprintVariableType(InEnum))
+		{
+			if (Permissions.HasFiltering())
+			{
+				TStringBuilder<256> ResultBuilder;
+				InEnum->GetPathName(nullptr, ResultBuilder);
+				if (!Permissions.PassesFilter(ResultBuilder.ToView()))
+				{
+					return;
+				}
+			}
+
+			if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(InEnum))
+			{
+				RegisteredCount += (int32)AddActionToDatabase(InEnum, NewAction);
+			}
+		}
+	};
+
 	if (const UObject* RegistrarTarget = GetActionKeyFilter())
 	{
 		if (const UClass* TargetClass = Cast<UClass>(RegistrarTarget))
 		{
 			for (TFieldIterator<UEnum> EnumIt(TargetClass, EFieldIteratorFlags::ExcludeSuper); EnumIt; ++EnumIt)
 			{
-				UEnum const* EnumToConsider = (*EnumIt);
-				if (EnumToConsider->HasAnyEnumFlags(EEnumFlags::NewerVersionExists))
-				{
-					continue;
-				}
-				if (!UEdGraphSchema_K2::IsAllowableBlueprintVariableType(EnumToConsider))
-				{
-					continue;
-				}
-
-				if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(EnumToConsider))
-				{
-					RegisteredCount += (int32)AddBlueprintAction(EnumToConsider, NewAction);
-				}
+				RegisterEnum(*EnumIt);
 			}
 		}
 		else if (const UEnum* TargetEnum = Cast<UEnum>(RegistrarTarget))
 		{
-			if (!TargetEnum->HasAnyEnumFlags(EEnumFlags::NewerVersionExists) && UEdGraphSchema_K2::IsAllowableBlueprintVariableType(TargetEnum))
-			{
-				if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(TargetEnum))
-				{
-					RegisteredCount += (int32)AddBlueprintAction(TargetEnum, NewAction);
-				}
-			}
+			RegisterEnum(TargetEnum);
 		}
 	}
 	else
 	{
 		for (TObjectIterator<UEnum> EnumIt; EnumIt; ++EnumIt)
 		{
-			UEnum const* EnumToConsider = (*EnumIt);
-			if (EnumToConsider->HasAnyEnumFlags(EEnumFlags::NewerVersionExists))
-			{
-				continue;
-			}
-
-			if (!UEdGraphSchema_K2::IsAllowableBlueprintVariableType(EnumToConsider))
-			{
-				continue;
-			}
-
-			if (UBlueprintNodeSpawner* NewAction = MakeActionCallback.Execute(EnumToConsider))
-			{
-				RegisteredCount += (int32)AddBlueprintAction(EnumToConsider, NewAction);
-			}
+			RegisterEnum(*EnumIt);
 		}
 	}
 
@@ -319,7 +372,8 @@ int32 FBlueprintActionDatabaseRegistrar::RegisterClassFactoryActions(const UClas
 			{
 				FObjectProperty* ReturnProperty = CastField<FObjectProperty>(Function->GetReturnProperty());
 				// see if the function is a static factory method
-				bool const bIsFactoryMethod = (ReturnProperty != nullptr) && ReturnProperty->PropertyClass->IsChildOf(InTargetType);
+				bool const bIsFactoryMethod = (ReturnProperty != nullptr) && (ReturnProperty->PropertyClass != nullptr) &&
+					ReturnProperty->PropertyClass->IsChildOf(InTargetType);
 
 				return bIsFactoryMethod;
 			}

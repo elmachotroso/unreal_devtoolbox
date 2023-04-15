@@ -34,6 +34,8 @@
 #include "Engine/SCS_Node.h"
 #include "Engine/TextureRenderTarget2D.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SceneCaptureComponent)
+
 #define LOCTEXT_NAMESPACE "SceneCaptureComponent"
 
 static TMultiMap<TWeakObjectPtr<UWorld>, TWeakObjectPtr<USceneCaptureComponent> > SceneCapturesToUpdateMap;
@@ -79,29 +81,29 @@ void ASceneCapture::PostLoad()
 		if (IsTemplate())
 		{
 			if (UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(GetClass()))
-{
+			{
 				for (USCS_Node* RootNode : BPClass->SimpleConstructionScript->GetRootNodes())
-{
+				{
 					static const FName OldMeshName(TEXT("CamMesh0"));
 					static const FName OldFrustumName(TEXT("DrawFrust0"));
 					static const FName NewRootName(TEXT("SceneComponent"));
 					if (RootNode->ParentComponentOrVariableName == OldMeshName || RootNode->ParentComponentOrVariableName == OldFrustumName)
-	{
+					{
 						RootNode->ParentComponentOrVariableName = NewRootName;
 					}
 				}
-	}
-}
+			}
+		}
 
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (MeshComp_DEPRECATED)
 		{
 			MeshComp_DEPRECATED->SetStaticMesh(nullptr);
-			}
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
-#endif
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
+#endif
+}
 
 void ASceneCapture::Serialize(FArchive& Ar)
 {
@@ -166,12 +168,42 @@ USceneCaptureComponent::USceneCaptureComponent(const FObjectInitializer& ObjectI
 	ShowFlags.SetSeparateTranslucency(0);
 	ShowFlags.SetHMDDistortion(0);
 	ShowFlags.SetOnScreenDebug(0);
+
+	if (!HasAnyFlags(RF_ClassDefaultObject))
+	{
+		FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddUObject(this, &USceneCaptureComponent::ReleaseGarbageReferences);
+	}
+}
+
+void USceneCaptureComponent::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
+}
+
+// Because HiddenActors and ShowOnlyActors are serialized they are not easily refactored into weak pointers.
+// Before GC runs, release pointers to any actors that have been explicitly marked garbage.
+void USceneCaptureComponent::ReleaseGarbageReferences()
+{
+	// We only want to remove resolved actors that are explicitly marked as garbage, not unresolved pointers.
+	auto Predicate = [](TObjectPtr<AActor> Ptr)
+	{
+		if (AActor* Actor = Ptr.Get())
+		{
+			return Actor->HasAnyInternalFlags(EInternalObjectFlags::Garbage);
+		}
+		return false;
+	};
+	HiddenActors.RemoveAll(Predicate);
+	ShowOnlyActors.RemoveAll(Predicate);
 }
 
 void USceneCaptureComponent::OnRegister()
 {
 #if WITH_EDITORONLY_DATA
-	if (AActor* MyOwner = GetOwner())
+	AActor* MyOwner = GetOwner();
+	if ((MyOwner != nullptr) && !IsRunningCommandlet())
 	{
 		if (ProxyMeshComponent == nullptr)
 		{
@@ -311,6 +343,12 @@ FSceneViewStateInterface* USceneCaptureComponent::GetViewState(int32 ViewIndex)
 	while (ViewIndex >= ViewStates.Num())
 	{
 		ViewStates.Add(new FSceneViewStateReference());
+
+		// Cube map view states can share an origin, saving memory and performance
+		if ((ViewIndex > 0) && IsCube())
+		{
+			ViewStates.Last().ShareOrigin(&ViewStates[0]);
+		}
 	}
 
 	FSceneViewStateInterface* ViewStateInterface = ViewStates[ViewIndex].GetReference();
@@ -442,6 +480,14 @@ void USceneCaptureComponent::OnUnregister()
 		ViewStates[ViewIndex].Destroy();
 	}
 
+	// Manually destroy the view state array here.  To account for the possibility of "FSceneViewStateReference::ShareOrigin" being used,
+	// where later view states reference the first item in the array, we delete the later items first.
+	if (ViewStates.Num() > 1)
+	{
+		ViewStates.RemoveAt(1, ViewStates.Num() - 1);
+	}
+	ViewStates.Empty();
+
 	Super::OnUnregister();
 }
 
@@ -468,7 +514,6 @@ USceneCaptureComponent2D::USceneCaptureComponent2D(const FObjectInitializer& Obj
 	ClipPlaneNormal = FVector(0, 0, 1);
 	bCameraCutThisFrame = false;
 	bConsiderUnrenderedOpaquePixelAsFullyTranslucent = false;
-	bDisableFlipCopyGLES = false;
 	
 	TileID = 0;
 
@@ -496,7 +541,8 @@ void USceneCaptureComponent2D::OnRegister()
 	Super::OnRegister();
 
 #if WITH_EDITORONLY_DATA
-	if (AActor* MyOwner = GetOwner())
+	AActor* MyOwner = GetOwner();
+	if ((MyOwner != nullptr) && !IsRunningCommandlet())
 	{
 		if (DrawFrustum == nullptr)
 		{
@@ -705,11 +751,6 @@ bool USceneCaptureComponent2D::CanEditChange(const FProperty* InProperty) const
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(USceneCaptureComponent2D, CustomProjectionMatrix))
 		{
 			return bUseCustomProjectionMatrix;
-		}
-
-		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(USceneCaptureComponent2D, bDisableFlipCopyGLES))
-		{
-			return CaptureSource == SCS_FinalColorLDR;
 		}
 	}
 
@@ -1062,7 +1103,6 @@ USceneCaptureComponentCube::USceneCaptureComponentCube(const FObjectInitializer&
 	PrimaryComponentTick.TickGroup = TG_DuringPhysics;
 	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
 	bTickInEditor = true;
-	IPD = 6.2f;
 	bCaptureRotation = false;
 
 #if WITH_EDITORONLY_DATA
@@ -1081,7 +1121,8 @@ void USceneCaptureComponentCube::OnRegister()
 	Super::OnRegister();
 
 #if WITH_EDITORONLY_DATA
-	if (AActor* MyOwner = GetOwner())
+	AActor* MyOwner = GetOwner();
+	if ((MyOwner != nullptr) && !IsRunningCommandlet())
 	{
 		if (DrawFrustum == nullptr)
 		{

@@ -49,16 +49,27 @@ bool FPFMExporterMesh::SaveToFile(const FString& FileName)
 bool FPFMExporterMesh::BeginExport_RenderThread(FRHICommandListImmediate& RHICmdList)
 {
 	// Allocate RT+SR RHI resources
-	FRHIResourceCreateInfo CreateInfo(TEXT("FPFMExporterMesh"));
-	RHICreateTargetableShaderResource2D(DimWidth, DimHeight, PFMTextureFormat, 1, TexCreate_None, TexCreate_RenderTargetable, true, CreateInfo, RenderTargetTexture, ShaderResourceTexture);
+	FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("FPFMExporterMesh"))
+		.SetExtent(DimWidth, DimHeight)
+		.SetFormat(PFMTextureFormat)
+		.SetInitialState(ERHIAccess::CopySrc);
+
+	ShaderResourceTexture = RHICreateTexture(Desc);
+
+	Desc.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::RTV);
+
+	RenderTargetTexture = RHICreateTexture(Desc);
 
 	return true;
 }
 
 bool FPFMExporterMesh::FinishExport_RenderThread(FRHICommandListImmediate& RHICmdList)
 {
-	//Copy texture to SR
-	RHICmdList.CopyToResolveTarget(RenderTargetTexture, ShaderResourceTexture, FResolveParams());
+	RHICmdList.Transition(FRHITransitionInfo(RenderTargetTexture, ERHIAccess::RTV, ERHIAccess::CopyDest));
+
+	RHICmdList.CopyTexture(RenderTargetTexture, ShaderResourceTexture, {});
 	RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 	// Extract result to memory

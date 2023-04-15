@@ -31,6 +31,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FVolumetricCloudCommonShaderParameters, )
 	SHADER_PARAMETER(float, BottomRadiusKm)
 	SHADER_PARAMETER(float, TopRadiusKm)
 	SHADER_PARAMETER(float, TracingStartMaxDistance)
+	SHADER_PARAMETER(int32, TracingMaxDistanceMode)
 	SHADER_PARAMETER(float, TracingMaxDistance)
 	SHADER_PARAMETER(int32, SampleCountMin)
 	SHADER_PARAMETER(int32, SampleCountMax)
@@ -74,6 +75,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLightCloudTransmittanceParameters, )
 END_SHADER_PARAMETER_STRUCT()
 
 bool SetupLightCloudTransmittanceParameters(FRDGBuilder& GraphBuilder, const FScene* Scene, const FViewInfo& View, const FLightSceneInfo* LightSceneInfo, FLightCloudTransmittanceParameters& OutParameters);
+
+bool LightHasCloudShadow(const FScene* Scene, const FViewInfo& View, const FLightSceneInfo* LightSceneInfo);
 
 /** Contains render data created render side for a FVolumetricCloudSceneProxy objects. */
 class FVolumetricCloudRenderSceneInfo
@@ -144,7 +147,18 @@ struct FCloudRenderContext
 
 	int VirtualShadowMapId0 = INDEX_NONE;
 
+	FRDGTextureRef DefaultCloudColorCubeTexture = nullptr;
+	FRDGTextureRef DefaultCloudColor2DTexture = nullptr;
+	FRDGTextureRef DefaultCloudDepthTexture = nullptr;
+	FRDGTextureUAVRef DefaultCloudColorCubeTextureUAV = nullptr;
+	FRDGTextureUAVRef DefaultCloudColor2DTextureUAV = nullptr;
+	FRDGTextureUAVRef DefaultCloudDepthTextureUAV = nullptr;
+
+	FRDGTextureUAVRef ComputeOverlapCloudColorCubeTextureUAVWithoutBarrier = nullptr;
+
 	FCloudRenderContext();
+
+	void CreateDefaultTexturesIfNeeded(FRDGBuilder& GraphBuilder);
 
 private:
 };

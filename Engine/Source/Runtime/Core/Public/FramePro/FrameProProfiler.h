@@ -10,6 +10,9 @@
 class CORE_API FFrameProProfiler
 {
 public:
+	static void Initialize();
+	static void TearDown();
+
 	/** Called to mark the start of each frame  */
 	static void FrameStart();
 
@@ -24,10 +27,11 @@ public:
 	static void PopEvent(const ANSICHAR* Override);
 
 	static void StartFrameProRecordingFromCommand(const TArray< FString >& Args);
-	static FString StartFrameProRecording(const FString& FilenameRoot, int32 MinScopeTime);
+	static FString StartFrameProRecording(const FString& FilenameRoot, int32 MinScopeTime, bool bAppendDateTime=true);
 	static void StopFrameProRecording();
 
 	static bool IsFrameProRecording();
+	static bool IsThreadContextReady();
 };
 
 #endif // FRAMEPRO_ENABLED

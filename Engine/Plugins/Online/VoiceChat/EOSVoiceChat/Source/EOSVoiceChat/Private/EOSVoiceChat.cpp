@@ -12,9 +12,10 @@
 #include "Stats/Stats.h"
 
 #include "EOSShared.h"
-#include "EOSVoiceChatErrors.h"
+#include "EOSVoiceChatLog.h"
 #include "EOSVoiceChatModule.h"
 #include "EOSVoiceChatUser.h"
+#include "EOSAudioDevicePool.h"
 #include "IEOSSDKManager.h"
 #include "VoiceChatErrors.h"
 #include "VoiceChatResult.h"
@@ -26,114 +27,6 @@
 #define CHECKPIN() FEOSVoiceChatPtr StrongThis = WeakThis.Pin(); if(!StrongThis) return
 
 DEFINE_LOG_CATEGORY(LogEOSVoiceChat);
-
-FVoiceChatResult ResultFromEOSResult(const EOS_EResult EosResult)
-{
-	FVoiceChatResult Result = FVoiceChatResult::CreateSuccess();
-	if (EosResult != EOS_EResult::EOS_Success)
-	{
-		switch (EosResult)
-		{
-		case EOS_EResult::EOS_InvalidCredentials:
-		case EOS_EResult::EOS_InvalidAuth:
-		case EOS_EResult::EOS_Token_Not_Account:
-			Result = VoiceChat::Errors::CredentialsInvalid();
-			break;
-		case EOS_EResult::EOS_InvalidUser:
-		case EOS_EResult::EOS_InvalidParameters:
-		case EOS_EResult::EOS_LimitExceeded:
-			Result = VoiceChat::Errors::InvalidArgument();
-			break;
-		case EOS_EResult::EOS_AccessDenied:
-		case EOS_EResult::EOS_MissingPermissions:
-		case EOS_EResult::EOS_InvalidRequest:
-			Result = VoiceChat::Errors::NotPermitted();
-			break;
-		case EOS_EResult::EOS_TooManyRequests:
-			Result = VoiceChat::Errors::Throttled();
-			break;
-		case EOS_EResult::EOS_AlreadyPending:
-			Result = VoiceChat::Errors::AlreadyInProgress();
-			break;
-		case EOS_EResult::EOS_NotConfigured:
-			Result = VoiceChat::Errors::MissingConfig();
-			break;
-		case EOS_EResult::EOS_AlreadyConfigured:
-			Result = VoiceChat::Errors::InvalidState();
-			break;
-
-			// TODO the rest
-		case EOS_EResult::EOS_OperationWillRetry:
-		case EOS_EResult::EOS_NoChange:
-		case EOS_EResult::EOS_VersionMismatch:
-		case EOS_EResult::EOS_Disabled:
-		case EOS_EResult::EOS_DuplicateNotAllowed:
-
-			// Auth/Presence/Friends/Ecom we're not expecting to encounter
-		case EOS_EResult::EOS_Auth_AccountLocked:
-		case EOS_EResult::EOS_Auth_AccountLockedForUpdate:
-		case EOS_EResult::EOS_Auth_InvalidRefreshToken:
-		case EOS_EResult::EOS_Auth_InvalidToken:
-		case EOS_EResult::EOS_Auth_AuthenticationFailure:
-		case EOS_EResult::EOS_Auth_InvalidPlatformToken:
-		case EOS_EResult::EOS_Auth_WrongAccount:
-		case EOS_EResult::EOS_Auth_WrongClient:
-		case EOS_EResult::EOS_Auth_FullAccountRequired:
-		case EOS_EResult::EOS_Auth_HeadlessAccountRequired:
-		case EOS_EResult::EOS_Auth_PasswordResetRequired:
-		case EOS_EResult::EOS_Auth_PasswordCannotBeReused:
-		case EOS_EResult::EOS_Auth_Expired:
-		case EOS_EResult::EOS_Auth_PinGrantCode:
-		case EOS_EResult::EOS_Auth_PinGrantExpired:
-		case EOS_EResult::EOS_Auth_PinGrantPending:
-		case EOS_EResult::EOS_Auth_ExternalAuthNotLinked:
-		case EOS_EResult::EOS_Auth_ExternalAuthRevoked:
-		case EOS_EResult::EOS_Auth_ExternalAuthInvalid:
-		case EOS_EResult::EOS_Auth_ExternalAuthRestricted:
-		case EOS_EResult::EOS_Auth_ExternalAuthCannotLogin:
-		case EOS_EResult::EOS_Auth_ExternalAuthExpired:
-		case EOS_EResult::EOS_Auth_ExternalAuthIsLastLoginType:
-		case EOS_EResult::EOS_Auth_ExchangeCodeNotFound:
-		case EOS_EResult::EOS_Auth_OriginatingExchangeCodeSessionExpired:
-		case EOS_EResult::EOS_Auth_PersistentAuth_AccountNotActive:
-		case EOS_EResult::EOS_Auth_MFARequired:
-		case EOS_EResult::EOS_Auth_ParentalControls:
-		case EOS_EResult::EOS_Auth_NoRealId:
-		case EOS_EResult::EOS_Friends_InviteAwaitingAcceptance:
-		case EOS_EResult::EOS_Friends_NoInvitation:
-		case EOS_EResult::EOS_Friends_AlreadyFriends:
-		case EOS_EResult::EOS_Friends_NotFriends:
-		case EOS_EResult::EOS_Presence_DataInvalid:
-		case EOS_EResult::EOS_Presence_DataLengthInvalid:
-		case EOS_EResult::EOS_Presence_DataKeyInvalid:
-		case EOS_EResult::EOS_Presence_DataKeyLengthInvalid:
-		case EOS_EResult::EOS_Presence_DataValueInvalid:
-		case EOS_EResult::EOS_Presence_DataValueLengthInvalid:
-		case EOS_EResult::EOS_Presence_RichTextInvalid:
-		case EOS_EResult::EOS_Presence_RichTextLengthInvalid:
-		case EOS_EResult::EOS_Presence_StatusInvalid:
-		case EOS_EResult::EOS_Ecom_EntitlementStale:
-
-			// Intentional fall-through cases
-		case EOS_EResult::EOS_NoConnection:
-		case EOS_EResult::EOS_Canceled:
-		case EOS_EResult::EOS_IncompatibleVersion:
-		case EOS_EResult::EOS_UnrecognizedResponse:
-		case EOS_EResult::EOS_NotImplemented:
-		case EOS_EResult::EOS_NotFound:
-		case EOS_EResult::EOS_UnexpectedError:
-		default:
-			// TODO map more EOS statuses to text error codes
-			Result = EOSVOICECHAT_ERROR(EVoiceChatResult::ImplementationError, *LexToString(EosResult));
-			break;
-		}
-
-		Result.ErrorNum = static_cast<int>(EosResult);
-		Result.ErrorDesc = FString::Printf(TEXT("EOS_EResult=%s"), *LexToString(EosResult));
-	}
-
-	return Result;
-}
 
 const TCHAR* LexToString(EOS_ERTCAudioInputStatus Status)
 {
@@ -157,9 +50,9 @@ int64 FEOSVoiceChat::StaticInstanceIdCount = 0;
 
 #define EOS_VOICE_TODO 0
 
-FEOSVoiceChat::FEOSVoiceChat(IEOSSDKManager& InSDKManager, const IEOSPlatformHandlePtr& PlatformHandle)
+FEOSVoiceChat::FEOSVoiceChat(IEOSSDKManager& InSDKManager, const IEOSPlatformHandlePtr& InPlatformHandle)
 	: SDKManager(InSDKManager)
-	, ExternalPlatformHandle(PlatformHandle)
+	, EosPlatformHandle(InPlatformHandle)
 {
 }
 
@@ -188,7 +81,7 @@ bool FEOSVoiceChat::Uninitialize()
 
 	while (!bIsDone)
 	{
-		InitSession.EosPlatformHandle->Tick();
+		EosPlatformHandle->Tick();
 	}
 	
 	return !IsInitialized();
@@ -208,14 +101,10 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 		{
 			InitSession.State = EInitializationState::Initializing;
 
-			EOS_EResult EosResult = SDKManager.Initialize();
-			if (EosResult == EOS_EResult::EOS_Success)
+			if (!EosPlatformHandle)
 			{
-				if(ExternalPlatformHandle)
-				{
-					InitSession.EosPlatformHandle = ExternalPlatformHandle;
-				}
-				else
+				EOS_EResult EosResult = SDKManager.Initialize();
+				if (EosResult == EOS_EResult::EOS_Success)
 				{
 					FString ConfigProductId;
 					FString ConfigSandboxId;
@@ -246,7 +135,7 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 
 					EOS_Platform_Options PlatformOptions = {};
 					PlatformOptions.ApiVersion = EOS_PLATFORM_OPTIONS_API_LATEST;
-					static_assert(EOS_PLATFORM_OPTIONS_API_LATEST == 11, "EOS_Platform_Options updated, check new fields");
+					static_assert(EOS_PLATFORM_OPTIONS_API_LATEST == 12, "EOS_Platform_Options updated, check new fields");
 					PlatformOptions.Reserved = nullptr;
 					PlatformOptions.ProductId = ConfigProductId.IsEmpty() ? nullptr : Utf8ProductId.Get();
 					PlatformOptions.SandboxId = ConfigSandboxId.IsEmpty() ? nullptr : Utf8SandboxId.Get();
@@ -260,6 +149,7 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 					PlatformOptions.Flags = EOS_PF_DISABLE_OVERLAY;
 					PlatformOptions.CacheDirectory = nullptr;
 					PlatformOptions.TickBudgetInMilliseconds = 1;
+					PlatformOptions.IntegratedPlatformOptionsContainerHandle = nullptr;
 #if UE_EDITOR
 					//PlatformCreateOptions.Flags |= EOS_PF_LOADING_IN_EDITOR;
 #endif
@@ -269,45 +159,48 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 					static_assert(EOS_PLATFORM_RTCOPTIONS_API_LATEST == 1, "EOS_Platform_RTCOptions updated, check new fields");
 					PlatformOptions.RTCOptions = &PlatformRTCOptions;
 
-					InitSession.EosPlatformHandle = EOSPlatformCreate(PlatformOptions);
-					if (!InitSession.EosPlatformHandle)
+					EosPlatformHandle = EOSPlatformCreate(PlatformOptions);
+					if (!EosPlatformHandle)
 					{
 						UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize CreatePlatform failed"));
-						InitSession = FInitSession();
 						Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
 					}
 				}
-
-				if (Result.IsSuccess())
+				else
 				{
-					InitSession.EosRtcInterface = EOS_Platform_GetRTCInterface(*InitSession.EosPlatformHandle);
-					InitSession.EosLobbyInterface = EOS_Platform_GetLobbyInterface(*InitSession.EosPlatformHandle);
-					if (InitSession.EosRtcInterface)
-					{
-						BindInitCallbacks();
-						InitSession.State = EInitializationState::Initialized;
-						PostInitialize();
-						Result = FVoiceChatResult::CreateSuccess();
-					}
-					else
-					{
-						UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize failed to get RTC interface handle"));
-						InitSession = FInitSession();
-						Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
-					}
+					UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize SDKManager.Initialize failed"));
+					Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
 				}
 			}
-			else
+
+			if (Result.IsSuccess())
 			{
-				UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize Initialize failed"));
-				InitSession = FInitSession();
-				Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
+				InitSession.EosRtcInterface = EOS_Platform_GetRTCInterface(*EosPlatformHandle);
+				InitSession.EosLobbyInterface = EOS_Platform_GetLobbyInterface(*EosPlatformHandle);
+				if (InitSession.EosRtcInterface && InitSession.EosLobbyInterface)
+				{
+					BindInitCallbacks();
+					InitSession.State = EInitializationState::Initialized;
+					PostInitialize();
+					Result = FVoiceChatResult::CreateSuccess();
+				}
+				else
+				{
+					UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize failed to get interface handles"));
+					Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
+				}
 			}
 		}
 		else
 		{
 			Result = VoiceChat::Errors::NotEnabled();
 		}
+
+		if (!Result.IsSuccess())
+		{
+			InitSession.Reset();
+		}
+
 		break;
 	}
 	case EInitializationState::Uninitializing:
@@ -351,7 +244,7 @@ void FEOSVoiceChat::Uninitialize(const FOnVoiceChatUninitializeCompleteDelegate&
 			UnbindInitCallbacks();
 
 			const TArray<FOnVoiceChatUninitializeCompleteDelegate> UninitializeCompleteDelegates = MoveTemp(InitSession.UninitializeCompleteDelegates);
-			InitSession = FInitSession();
+			InitSession.Reset();
 			for (const FOnVoiceChatUninitializeCompleteDelegate& UninitializeCompleteDelegate : UninitializeCompleteDelegates)
 			{
 				UninitializeCompleteDelegate.ExecuteIfBound(FVoiceChatResult::CreateSuccess());
@@ -409,7 +302,7 @@ void FEOSVoiceChat::ReleaseUser(IVoiceChatUser* User)
 			&& User->IsLoggedIn())
 		{
 			UE_LOG(LogEOSVoiceChat, Log, TEXT("ReleaseUser User=[%p] Logging out"), User);
-			User->Logout(FOnVoiceChatLogoutCompleteDelegate::CreateLambda([this, WeakThis = CreateWeakThis(), User](const FString& PlayerName, const FVoiceChatResult& Result)
+			User->Logout(FOnVoiceChatLogoutCompleteDelegate::CreateLambda([this, WeakThis = AsWeak(), User](const FString& PlayerName, const FVoiceChatResult& Result)
 			{
 				CHECKPIN();
 
@@ -892,7 +785,7 @@ void FEOSVoiceChat::BindInitCallbacks()
 	EOS_RTCAudio_AddNotifyAudioDevicesChangedOptions AudioDevicesChangedOptions = {};
 	AudioDevicesChangedOptions.ApiVersion = EOS_RTCAUDIO_ADDNOTIFYAUDIODEVICESCHANGED_API_LATEST;
 	static_assert(EOS_RTCAUDIO_ADDNOTIFYAUDIODEVICESCHANGED_API_LATEST == 1, "EOS_RTC_AddNotifyAudioDevicesChangedOptions updated, check new fields");
-	InitSession.OnAudioDevicesChangedNotificationId = EOS_RTCAudio_AddNotifyAudioDevicesChanged(EOS_RTC_GetAudioInterface(InitSession.EosRtcInterface), &AudioDevicesChangedOptions, this, &FEOSVoiceChat::OnAudioDevicesChangedStatic);
+	InitSession.OnAudioDevicesChangedNotificationId = EOS_RTCAudio_AddNotifyAudioDevicesChanged(EOS_RTC_GetAudioInterface(GetRtcInterface()), &AudioDevicesChangedOptions, this, &FEOSVoiceChat::OnAudioDevicesChangedStatic);
 	if (InitSession.OnAudioDevicesChangedNotificationId == EOS_INVALID_NOTIFICATIONID)
 	{
 		UE_LOG(LogEOSVoiceChat, Warning, TEXT("BindInitCallbacks EOS_RTC_AddNotifyAudioDevicesChanged failed"));
@@ -905,7 +798,7 @@ void FEOSVoiceChat::UnbindInitCallbacks()
 {
 	if (InitSession.OnAudioDevicesChangedNotificationId != EOS_INVALID_NOTIFICATIONID)
 	{
-		EOS_RTCAudio_RemoveNotifyAudioDevicesChanged(EOS_RTC_GetAudioInterface(InitSession.EosRtcInterface), InitSession.OnAudioDevicesChangedNotificationId);
+		EOS_RTCAudio_RemoveNotifyAudioDevicesChanged(EOS_RTC_GetAudioInterface(GetRtcInterface()), InitSession.OnAudioDevicesChangedNotificationId);
 		InitSession.OnAudioDevicesChangedNotificationId = EOS_INVALID_NOTIFICATIONID;
 	}
 }
@@ -931,103 +824,17 @@ void FEOSVoiceChat::OnAudioDevicesChangedStatic(const EOS_RTCAudio_AudioDevicesC
 
 void FEOSVoiceChat::OnAudioDevicesChanged()
 {
-	InitSession.CachedInputDeviceInfos = GetRtcInputDeviceInfos(InitSession.DefaultInputDeviceInfoIdx);
-	InitSession.CachedOutputDeviceInfos = GetRtcOutputDeviceInfos(InitSession.DefaultOutputDeviceInfoIdx);
-
-	UE_LOG(LogEOSVoiceChat, Verbose, TEXT("OnAudioDevicesChanged InputDeviceInfos=[%s] DefaultInputDeviceInfoIdx=%d"), *FString::JoinBy(InitSession.CachedInputDeviceInfos, TEXT(", "), &FVoiceChatDeviceInfo::ToDebugString), InitSession.DefaultInputDeviceInfoIdx);
-	UE_LOG(LogEOSVoiceChat, Verbose, TEXT("OnAudioDevicesChanged OutputDeviceInfos=[%s] DefaultOutputDeviceInfoIdx=%d"), *FString::JoinBy(InitSession.CachedOutputDeviceInfos, TEXT(", "), &FVoiceChatDeviceInfo::ToDebugString), InitSession.DefaultOutputDeviceInfoIdx);
-
-	OnVoiceChatAvailableAudioDevicesChangedDelegate.Broadcast();
-}
-
-TArray<FVoiceChatDeviceInfo> FEOSVoiceChat::GetRtcInputDeviceInfos(int32& OutDefaultDeviceIdx) const
-{
-	OutDefaultDeviceIdx = -1;
-	TArray<FVoiceChatDeviceInfo> InputDeviceInfos;
-	EOS_HRTCAudio RTCAudioHandle = EOS_RTC_GetAudioInterface(InitSession.EosRtcInterface);
-
-	EOS_RTCAudio_GetAudioInputDevicesCountOptions CountOptions = {};
-	CountOptions.ApiVersion = EOS_RTCAUDIO_GETAUDIOINPUTDEVICESCOUNT_API_LATEST;
- 	static_assert(EOS_RTCAUDIO_GETAUDIOINPUTDEVICESCOUNT_API_LATEST == 1, "EOS_RTCAudio_GetAudioInputDevicesCountOptions updated, check new fields");
-
-	uint32_t Count = EOS_RTCAudio_GetAudioInputDevicesCount(RTCAudioHandle, &CountOptions);
-
-	for (uint32_t Index = 0; Index < Count; Index++)
+	InitSession.EosAudioDevicePool->RefreshAudioDevices(FEOSAudioDevicePool::FOnAudioDevicePoolRefreshAudioDevicesCompleteDelegate::CreateLambda([WeakThis = AsWeak()](const FVoiceChatResult& Result) -> void
 	{
-		EOS_RTCAudio_GetAudioInputDeviceByIndexOptions GetByIndexOptions = {};
-		GetByIndexOptions.ApiVersion = EOS_RTCAUDIO_GETAUDIOINPUTDEVICEBYINDEX_API_LATEST;
-		GetByIndexOptions.DeviceInfoIndex = Index;
-		if (const EOS_RTCAudio_AudioInputDeviceInfo* DeviceInfo = EOS_RTCAudio_GetAudioInputDeviceByIndex(RTCAudioHandle, &GetByIndexOptions))
+		CHECKPIN();
+
+		if (!Result.IsSuccess())
 		{
-			FString DeviceName = UTF8_TO_TCHAR(DeviceInfo->DeviceName);
-			if (DeviceName != TEXT("Default Device"))
-			{
-				FVoiceChatDeviceInfo& InputDeviceInfo = InputDeviceInfos.Emplace_GetRef();
-				InputDeviceInfo.DisplayName = MoveTemp(DeviceName);
-				InputDeviceInfo.Id = UTF8_TO_TCHAR(DeviceInfo->DeviceId);
-				if (DeviceInfo->bDefaultDevice)
-				{
-					OutDefaultDeviceIdx = InputDeviceInfos.Num() - 1;
-				}
-			}
+			UE_LOG(LogEOSVoiceChat, Warning, TEXT("OnAudioDevicesChanged RefreshAudioDevicesCompletionDelegate failed, Result=[%s]"), *LexToString(Result));
 		}
-		else
-		{
-			UE_LOG(LogEOSVoiceChat, Warning, TEXT("EOS_RTCAudio_GetAudioInputDeviceByIndex failed: DevicesInfo=nullptr"));
-		}
-	}
 
-	if (Count == 0)
-	{
-		UE_LOG(LogEOSVoiceChat, Warning, TEXT("EOS_RTCAudio_GetAudioInputDevicesCount failed: DevicesCount=0"));
-	}
-
-	return InputDeviceInfos;
-}
-
-TArray<FVoiceChatDeviceInfo> FEOSVoiceChat::GetRtcOutputDeviceInfos(int32& OutDefaultDeviceIdx) const
-{
-	OutDefaultDeviceIdx = -1;
-	TArray<FVoiceChatDeviceInfo> OutputDeviceInfos;
-	EOS_HRTCAudio RTCAudioHandle = EOS_RTC_GetAudioInterface(InitSession.EosRtcInterface);
-
-	EOS_RTCAudio_GetAudioOutputDevicesCountOptions CountOptions = {};
-	CountOptions.ApiVersion = EOS_RTCAUDIO_GETAUDIOOUTPUTDEVICESCOUNT_API_LATEST;
-	static_assert(EOS_RTCAUDIO_GETAUDIOOUTPUTDEVICESCOUNT_API_LATEST == 1, "EOS_RTCAudio_GetAudioOutputDevicesCountOptions updated, check new fields");
-
-	uint32_t Count = EOS_RTCAudio_GetAudioOutputDevicesCount(RTCAudioHandle, &CountOptions);
-
-	for (uint32_t Index = 0; Index < Count; Index++)
-	{
-		EOS_RTCAudio_GetAudioOutputDeviceByIndexOptions GetByIndexOptions = {};
-		GetByIndexOptions.ApiVersion = EOS_RTCAUDIO_GETAUDIOOUTPUTDEVICEBYINDEX_API_LATEST;
-		GetByIndexOptions.DeviceInfoIndex = Index;
-		if (const EOS_RTCAudio_AudioOutputDeviceInfo* DeviceInfo = EOS_RTCAudio_GetAudioOutputDeviceByIndex(RTCAudioHandle, &GetByIndexOptions))
-		{
-			FString DeviceName = UTF8_TO_TCHAR(DeviceInfo->DeviceName);
-			if (DeviceName != TEXT("Default Device"))
-			{
-				FVoiceChatDeviceInfo& InputDeviceInfo = OutputDeviceInfos.Emplace_GetRef();
-				InputDeviceInfo.DisplayName = MoveTemp(DeviceName);
-				InputDeviceInfo.Id = UTF8_TO_TCHAR(DeviceInfo->DeviceId);
-				if (DeviceInfo->bDefaultDevice)
-				{
-					OutDefaultDeviceIdx = OutputDeviceInfos.Num() - 1;
-				}
-			}
-		}
-		else
-		{
-			UE_LOG(LogEOSVoiceChat, Warning, TEXT("EOS_RTCAudio_GetAudioOutputDeviceByIndex failed: DevicesInfo=nullptr"));
-		}
-	}
-
-	if (Count == 0)
-	{
-		UE_LOG(LogEOSVoiceChat, Warning, TEXT("EOS_RTCAudio_GetAudioOutputDevicesCount failed: DevicesCount=0"));
-	}
-
-	return OutputDeviceInfos;
+		StrongThis->OnVoiceChatAvailableAudioDevicesChangedDelegate.Broadcast();
+	}));
 }
 
 FEOSVoiceChatUser& FEOSVoiceChat::GetVoiceChatUser()
@@ -1209,14 +1016,28 @@ bool FEOSVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 	return false;
 }
 
+FEOSVoiceChat::FInitSession::FInitSession()
+	: EosAudioDevicePool{ MakeShared<FEOSAudioDevicePool>(EosRtcInterface) }
+{
+}
+
+void FEOSVoiceChat::FInitSession::Reset()
+{
+	State = EInitializationState::Uninitialized;
+
+	UninitializeCompleteDelegates = TArray<FOnVoiceChatUninitializeCompleteDelegate>{};
+
+	EosRtcInterface = nullptr;
+	EosLobbyInterface = nullptr;
+
+	OnAudioDevicesChangedNotificationId = EOS_INVALID_NOTIFICATIONID;
+
+	EosAudioDevicePool = MakeShared<FEOSAudioDevicePool>(EosRtcInterface);
+}
+
 IEOSPlatformHandlePtr FEOSVoiceChat::EOSPlatformCreate(EOS_Platform_Options& PlatformOptions)
 {
 	return SDKManager.CreatePlatform(PlatformOptions);
-}
-
-FEOSVoiceChatWeakPtr FEOSVoiceChat::CreateWeakThis()
-{
-	return FEOSVoiceChatWeakPtr(AsShared());
 }
 
 const TCHAR* LexToString(FEOSVoiceChat::EConnectionState State)

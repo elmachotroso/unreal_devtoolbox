@@ -38,8 +38,7 @@ typedef TWeakPtr<class FMemAllocNode> FMemAllocNodeWeak;
  */
 class FMemAllocNode : public FTableTreeNode
 {
-public:
-	static const FName TypeName;
+	INSIGHTS_DECLARE_RTTI(FMemAllocNode, FTableTreeNode)
 
 public:
 	/** Initialization constructor for the MemAlloc node. */
@@ -56,14 +55,22 @@ public:
 	{
 	}
 
-	virtual const FName& GetTypeName() const override { return TypeName; }
-
 	FMemAllocTable& GetMemTableChecked() const { return *MemAllocTable; }
 
 	bool IsValidMemAlloc() const { return GetMemTableChecked().IsValidRowIndex(GetRowIndex()); }
 	const FMemoryAlloc* GetMemAlloc() const { return GetMemTableChecked().GetMemAlloc(GetRowIndex()); }
 	const FMemoryAlloc& GetMemAllocChecked() const { return GetMemTableChecked().GetMemAllocChecked(GetRowIndex()); }
+
+	uint64 GetCallstackId() const;
 	FText GetFullCallstack() const;
+	FText GetFullCallstackSourceFiles() const;
+	FText GetTopFunction() const;
+	FText GetTopFunctionEx() const;
+	FText GetTopSourceFile() const;
+	FText GetTopSourceFileEx() const;
+
+private:
+	FText GetTopFunctionOrSourceFile(uint8 Flags) const;
 
 private:
 	FMemAllocTable* MemAllocTable;

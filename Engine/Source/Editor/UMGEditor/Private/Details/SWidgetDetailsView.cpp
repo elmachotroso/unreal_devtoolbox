@@ -18,7 +18,6 @@
 #include "PropertyEditorModule.h"
 #include "Customizations/SlateBrushCustomization.h"
 #include "Customizations/SlateFontInfoCustomization.h"
-
 #include "Customizations/WidgetTypeCustomization.h"
 #include "Customizations/WidgetNavigationCustomization.h"
 #include "Customizations/CanvasSlotCustomization.h"
@@ -31,6 +30,7 @@
 #include "WidgetBlueprintEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "Styling/SlateIconFinder.h"
+#include "UMGEditorProjectSettings.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -45,7 +45,6 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.NotifyHook = this;
-	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
 
 	PropertyView = EditModule.CreateDetailView(DetailsViewArgs);
 
@@ -57,8 +56,22 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 	TSharedRef<FDetailWidgetExtensionHandler> BindingHandler = MakeShareable( new FDetailWidgetExtensionHandler( InBlueprintEditor ) );
 	PropertyView->SetExtensionHandler(BindingHandler);
 
+	// Handle EditDefaultsOnly and EditInstanceOnly flags
+	PropertyView->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateSP(this, &SWidgetDetailsView::IsPropertyVisible));
+
 	// Notify us of object selection changes so we can update the package re-mapping
 	PropertyView->SetOnObjectArrayChanged(FOnObjectArrayChanged::CreateSP(this, &SWidgetDetailsView::OnPropertyViewObjectArrayChanged));
+
+	TSharedRef<SWidget> IsVariableCheckbox =
+		SNew(SCheckBox)
+		.IsChecked(this, &SWidgetDetailsView::GetIsVariable)
+		.OnCheckStateChanged(this, &SWidgetDetailsView::HandleIsVariableChanged)
+		.Padding(FMargin(3, 1, 18, 1))
+		.Visibility(GetDefault<UUMGEditorProjectSettings>()->bGraphEditorHidden ? EVisibility::Hidden : EVisibility::Visible)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("IsVariable", "Is Variable"))
+		];
 
 	ChildSlot
 	[
@@ -69,7 +82,7 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 		.Padding(0, 2)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
+			.BorderImage(FAppStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
 			.Visibility(this, &SWidgetDetailsView::GetBorderAreaVisibility)
 			[
 				SNew(SVerticalBox)
@@ -87,7 +100,7 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 					.VAlign(VAlign_Center)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush(TEXT("UMGEditor.CategoryIcon")))
+						.Image(FAppStyle::GetBrush(TEXT("UMGEditor.CategoryIcon")))
 					]
 
 					+ SHorizontalBox::Slot()
@@ -146,20 +159,12 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					[
-						SNew(SCheckBox)
-						.IsChecked(this, &SWidgetDetailsView::GetIsVariable)
-						.OnCheckStateChanged(this, &SWidgetDetailsView::HandleIsVariableChanged)
-						.Padding(FMargin(3,1,3,1))
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("IsVariable", "Is Variable"))
-						]
+						GetDefault<UUMGEditorProjectSettings>()->bGraphEditorHidden ? SNullWidget::NullWidget : IsVariableCheckbox
 					]
 
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.Padding(15,0,0,0)
 					[
 						SAssignNew(ClassLinkArea, SBox)
 					]
@@ -192,9 +197,6 @@ SWidgetDetailsView::~SWidgetDetailsView()
 	}
 
 	// Unregister the property type layouts
-	static FName PropertyEditor("PropertyEditor");
-	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>(PropertyEditor);
-
 	PropertyView->UnregisterInstancedCustomPropertyTypeLayout(TEXT("Widget"));
 	PropertyView->UnregisterInstancedCustomPropertyTypeLayout(TEXT("WidgetNavigation"));
 	PropertyView->UnregisterInstancedCustomPropertyTypeLayout(TEXT("PanelSlot"));
@@ -209,10 +211,6 @@ SWidgetDetailsView::~SWidgetDetailsView()
 void SWidgetDetailsView::RegisterCustomizations()
 {
 	PropertyView->RegisterInstancedCustomPropertyLayout(UWidget::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintWidgetCustomization::MakeInstance, BlueprintEditor.Pin().ToSharedRef(), BlueprintEditor.Pin()->GetBlueprintObj()));
-
-	static FName PropertyEditor("PropertyEditor");
-	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>(PropertyEditor);
-
 	PropertyView->RegisterInstancedCustomPropertyTypeLayout(TEXT("Widget"), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetTypeCustomization::MakeInstance, BlueprintEditor.Pin().ToSharedRef()), nullptr);
 	PropertyView->RegisterInstancedCustomPropertyTypeLayout(TEXT("WidgetNavigation"), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetNavigationCustomization::MakeInstance, BlueprintEditor.Pin().ToSharedRef()));
 	PropertyView->RegisterInstancedCustomPropertyTypeLayout(TEXT("PanelSlot"), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCanvasSlotCustomization::MakeInstance, BlueprintEditor.Pin()->GetBlueprintObj()));
@@ -265,7 +263,10 @@ void SWidgetDetailsView::OnEditorSelectionChanged()
 	// If only 1 valid selected object exists, update the class link to point to the right class.
 	if ( SelectedObjects.Num() == 1 && SelectedObjects[0].IsValid() )
 	{
-		ClassLinkArea->SetContent(FEditorClassUtils::GetSourceLink(SelectedObjects[0]->GetClass(), TWeakObjectPtr<UObject>()));
+		FEditorClassUtils::FSourceLinkParams SourceLinkParams;
+		SourceLinkParams.bUseDefaultFormat = true;
+
+		ClassLinkArea->SetContent(FEditorClassUtils::GetSourceLink(SelectedObjects[0]->GetClass(), SourceLinkParams));
 	}
 	else
 	{
@@ -312,6 +313,24 @@ void SWidgetDetailsView::ClearFocusIfOwned()
 		}
 		bIsReentrant = false;
 	}
+}
+
+bool SWidgetDetailsView::IsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const
+{
+	const FProperty& Property = PropertyAndParent.Property;
+
+	const bool bIsEditDefaultsOnly = Property.HasAnyPropertyFlags(CPF_DisableEditOnInstance);
+	const bool bIsEditInstanceOnly = Property.HasAnyPropertyFlags(CPF_DisableEditOnTemplate);
+	if (bIsEditDefaultsOnly || bIsEditInstanceOnly)
+	{
+		// EditDefaultsOnly properties are only visible when the CDO/root is selected, EditInstanceOnly are only visible when the CDO/root is *not* selected
+		const bool bIsCDOSelected = IsWidgetCDOSelected();
+		if ((bIsEditDefaultsOnly && !bIsCDOSelected) || (bIsEditInstanceOnly && bIsCDOSelected))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 bool SWidgetDetailsView::IsWidgetCDOSelected() const

@@ -2,15 +2,39 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "EditorSubsystem.h"
-#include "Misc/StringBuilder.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "Containers/SortedMap.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
-#include "ContentBrowserItem.h"
-#include "ContentBrowserDataFilter.h"
 #include "Containers/Ticker.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDataFilter.h"
+#include "ContentBrowserItem.h"
+#include "ContentBrowserItemData.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "EditorSubsystem.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/StringBuilder.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "ContentBrowserDataSubsystem.generated.h"
+
+class FSubsystemCollectionBase;
+class FText;
+class UContentBrowserDataSource;
+class UObject;
+struct FAssetData;
+struct FContentBrowserItemPath;
+struct FFrame;
+template <typename FuncType> class TFunctionRef;
 
 UENUM(BlueprintType)
 enum class EContentBrowserPathType : uint8
@@ -165,7 +189,7 @@ public:
 	 * @param InItemTypeFilter The types of items we want to find.
 	 * @param InCallback The function to invoke for each matching item (return true to continue enumeration).
 	 */
-	bool EnumerateItemsAtPaths(const TArrayView<class FContentBrowserItemPath> InItemPaths, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const;
+	bool EnumerateItemsAtPaths(const TArrayView<struct FContentBrowserItemPath> InItemPaths, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const;
 
 	/**
 	 * Enumerate the items (files) that exist for the given objects.
@@ -188,6 +212,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="ContentBrowser")
 	FContentBrowserItem GetItemAtPath(const FName InPath, const EContentBrowserItemTypeFilter InItemTypeFilter) const;
+
+	/**
+	 * Get a list of other paths that the data source may be using to represent a specific path
+	 *
+	 * @param The internal path (or object path) of an asset to get aliases for
+	 * @return All alternative paths that represent the input path (not including the input path itself)
+	 */
+	TArray<FContentBrowserItemPath> GetAliasesForPath(const FSoftObjectPath& InInternalPath) const;
+	TArray<FContentBrowserItemPath> GetAliasesForPath(const FContentBrowserItemPath InPath) const;
+	TArray<FContentBrowserItemPath> GetAliasesForPath(const FName InInternalPath) const;
 
 	/**
 	 * Query whether any data sources are currently discovering content, and retrieve optional status messages that can be shown in the UI.

@@ -1,16 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "CADKernel/Core/Entity.h"
 #include "CADKernel/Core/MetadataDictionary.h"
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Topo/Shell.h"
 #include "CADKernel/Topo/TopologicalEntity.h"
 #include "CADKernel/Topo/TopologicalFace.h"
+#include "CADKernel/Topo/TopologicalShapeEntity.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
+class FCADKernelArchive;
+class FDatabase;
+class FModel;
 class FShell;
+class FTopologicalFace;
 
 class CADKERNEL_API FBody : public FTopologicalShapeEntity
 {
@@ -70,6 +76,8 @@ public:
 
 	void RemoveEmptyShell(FModel& Model);
 
+	virtual void Remove(const FTopologicalShapeEntity* ShellToRemove) override;
+
 	void Empty()
 	{
 		Shells.Empty();
@@ -114,7 +122,9 @@ public:
 		}
 	}
 
+#ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
+#endif
 
 };
 

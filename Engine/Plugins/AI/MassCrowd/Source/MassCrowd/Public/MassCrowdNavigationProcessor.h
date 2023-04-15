@@ -21,10 +21,7 @@ public:
 protected:
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void SignalEntities(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) override;
-
-	UPROPERTY(Transient)
-	UMassCrowdSubsystem* MassCrowdSubsystem;
+	virtual void SignalEntities(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSignalNameLookup& EntitySignals) override;
 };
 
 /** Processors that cleans up the lane tracking on entity destruction. */
@@ -37,12 +34,8 @@ public:
 	UMassCrowdLaneTrackingDestructor();
 
 protected:
-	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
-
-	UPROPERTY(Transient)
-	UMassCrowdSubsystem* MassCrowdSubsystem;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 };
@@ -59,7 +52,7 @@ public:
 protected:
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context);
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context);
 
 	void OnStop(FMassCrowdObstacleFragment& OutObstacle, const float Radius);
 	void OnMove(FMassCrowdObstacleFragment& OutObstacle);
@@ -67,7 +60,7 @@ protected:
 	FMassEntityQuery EntityQuery_Conditional;
 
 	UPROPERTY(Transient)
-	UZoneGraphAnnotationSubsystem* ZoneGraphAnnotationSubsystem;
+	TObjectPtr<UZoneGraphAnnotationSubsystem> ZoneGraphAnnotationSubsystem;
 };
 
 
@@ -81,7 +74,7 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	FMassEntityQuery EntityQuery;
 };
@@ -98,10 +91,10 @@ public:
 protected:
 	virtual void Initialize(UObject& Owner) override;
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	UPROPERTY(Transient)
-	UZoneGraphAnnotationSubsystem* ZoneGraphAnnotationSubsystem;
+	TObjectPtr<UZoneGraphAnnotationSubsystem> ZoneGraphAnnotationSubsystem;
 
 	FMassEntityQuery EntityQuery;
 };

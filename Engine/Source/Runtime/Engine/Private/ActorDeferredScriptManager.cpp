@@ -74,10 +74,12 @@ void FActorDeferredScriptManager::ProcessAsyncTasks(bool bLimitExecutionTime)
 		GIsEditorLoadingPackage = true;
 		while (!PendingConstructionScriptActors.IsEmpty() && bHasTimeLeft)
 		{
-			TWeakObjectPtr<AActor> WeakActor = PendingConstructionScriptActors.First();
-			PendingConstructionScriptActors.PopFirst();
-			if (AActor* Actor = WeakActor.Get())
+			TWeakObjectPtr<AActor> WeakActor = PendingConstructionScriptActors.Last();
+			PendingConstructionScriptActors.PopLast();
+			if (AActor* Actor = WeakActor.Get(); Actor && Actor->GetWorld())
 			{
+				// Temporarily do not consider actor as initialized if they were when running deferred construction scripts
+				FGuardValue_Bitfield(Actor->bActorInitialized, false);
 				Actor->RerunConstructionScripts();
 			}
 			bHasTimeLeft = bLimitExecutionTime ? ((FPlatformTime::Seconds() - TickStartTime) < MaxSecondsPerFrame) : true;

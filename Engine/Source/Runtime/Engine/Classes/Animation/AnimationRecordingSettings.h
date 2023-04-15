@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "Animation/AnimTypes.h"
 #include "Curves/RichCurve.h"
 #include "Misc/FrameRate.h"
 #include "AnimationRecordingSettings.generated.h"
@@ -29,6 +30,7 @@ struct ENGINE_API FAnimationRecordingSettings
 		, bAutoSaveAsset(false)
 		, SampleFrameRate(DefaultSampleFrameRate)
 		, Length((float)DefaultMaximumLength)
+		, Interpolation(EAnimInterpolationType::Linear)
 		, InterpMode(ERichCurveInterpMode::RCIM_Linear)
 		, TangentMode(ERichCurveTangentMode::RCTM_Auto)
 		, bCheckDeltaTimeAtBeginning(true)
@@ -58,6 +60,10 @@ struct ENGINE_API FAnimationRecordingSettings
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	float Length;
 
+	/** This defines how values between keys are calculated for transforms.**/
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	EAnimInterpolationType Interpolation;
+
 	/** Interpolation mode for the recorded keys. */
 	UPROPERTY(EditAnywhere, Category = "Settings", DisplayName = "Interpolation Mode")
 	TEnumAsByte<ERichCurveInterpMode> InterpMode;
@@ -84,4 +90,12 @@ struct ENGINE_API FAnimationRecordingSettings
 	/** Whether or not to record material curves */
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	bool bRecordMaterialCurves;
+
+	/** Include only the animation bones/curves that match this list */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	TArray<FString> IncludeAnimationNames;
+
+	/** Exclude all animation bones/curves that match this list */
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	TArray<FString> ExcludeAnimationNames;
 };

@@ -4,6 +4,8 @@
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_BoneHarmonics)
+
 FRigUnit_BoneHarmonics_Execute()
 {
 	TArray<FRigUnit_Harmonics_TargetItem> Targets;
@@ -31,6 +33,38 @@ FRigUnit_BoneHarmonics_Execute()
 		WorkData,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_BoneHarmonics::GetUpgradeInfo() const
+{
+	FRigUnit_ItemHarmonics NewNode;
+	
+	for(int32 BoneIndex = 0;BoneIndex<Bones.Num();BoneIndex++)
+	{
+		FRigUnit_Harmonics_TargetItem Target;
+		Target.Item = FRigElementKey(Bones[BoneIndex].Bone, ERigElementType::Bone);
+		Target.Ratio = Bones[BoneIndex].Ratio;
+		NewNode.Targets.Add(Target);
+	}
+
+	NewNode.WaveSpeed = WaveSpeed;
+	NewNode.WaveFrequency = WaveFrequency;
+	NewNode.WaveAmplitude = WaveAmplitude;
+	NewNode.WaveOffset = WaveOffset;
+	NewNode.WaveNoise = WaveNoise;
+	NewNode.WaveEase = WaveEase;
+	NewNode.WaveMinimum = WaveMinimum;
+	NewNode.WaveMaximum = WaveMaximum;
+	NewNode.RotationOrder = RotationOrder;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	for(int32 BoneIndex = 0;BoneIndex<Bones.Num();BoneIndex++)
+	{
+		Info.AddRemappedPin(
+			FString::Printf(TEXT("Bones.%d.Bone"), BoneIndex),
+			FString::Printf(TEXT("Targets.%d.Item.Name"), BoneIndex));
+	}
+	return Info;
 }
 
 FRigUnit_ItemHarmonics_Execute()
@@ -96,3 +130,4 @@ FRigUnit_ItemHarmonics_Execute()
 
 	WaveTime += WaveSpeed * Context.DeltaTime;
 }
+

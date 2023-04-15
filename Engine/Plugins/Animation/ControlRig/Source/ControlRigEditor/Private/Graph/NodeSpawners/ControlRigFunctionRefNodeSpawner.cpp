@@ -7,7 +7,7 @@
 #include "Graph/ControlRigGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor/EditorEngine.h"
 #include "ObjectEditorUtils.h"
 #include "EditorCategoryUtils.h"
@@ -15,9 +15,11 @@
 #include "BlueprintNodeTemplateCache.h"
 #include "ControlRigBlueprintUtils.h"
 #include "ScopedTransaction.h"
-#include "ControlRig/Private/Units/Execution/RigUnit_BeginExecution.h"
+#include "Units/Execution/RigUnit_BeginExecution.h"
 #include "ControlRig.h"
 #include "Settings/ControlRigSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigFunctionRefNodeSpawner)
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -65,7 +67,7 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 		MenuSignature.Keywords = FText::FromString(TEXT(" "));
 	}
 
-	MenuSignature.Icon = FSlateIcon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+	MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 
 #if WITH_EDITOR
 	if (InFunction->IsMutable())
@@ -84,7 +86,9 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFromAssetData(const FAssetData& InAssetData, const FControlRigPublicFunctionData& InPublicFunction)
 {
 	UControlRigFunctionRefNodeSpawner* NodeSpawner = NewObject<UControlRigFunctionRefNodeSpawner>(GetTransientPackage());
-	NodeSpawner->ReferencedAssetObjectPath = InAssetData.ObjectPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	NodeSpawner->ReferencedAssetObjectPath = InAssetData.ToSoftObjectPath().ToFName();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	NodeSpawner->ReferencedPublicFunctionData = InPublicFunction;
 	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
 	NodeSpawner->bIsLocalFunction = false;
@@ -108,7 +112,7 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 		}
 	}
 
-	const FString ObjectPathString = InAssetData.ObjectPath.ToString();
+	const FString ObjectPathString = InAssetData.GetObjectPathString();
 	if(MenuSignature.Tooltip.IsEmpty())
 	{
 		MenuSignature.Tooltip = FText::FromString(ObjectPathString);
@@ -127,7 +131,7 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 		MenuSignature.Keywords = FText::FromString(TEXT(" "));
 	}
 
-	MenuSignature.Icon = FSlateIcon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+	MenuSignature.Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 
 #if WITH_EDITOR
 	if (InPublicFunction.IsMutable())
@@ -280,7 +284,7 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 	if (RigBlueprint != nullptr && RigGraph != nullptr)
 	{
 		bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
-		bool const bUndo = !bIsTemplateNode;
+		bool const bIsUserFacingNode = !bIsTemplateNode;
 
 		FName Name = bIsTemplateNode ? *InFunction->GetName() : FControlRigBlueprintUtils::ValidateName(RigBlueprint, InFunction->GetName());
 		URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->GetController(ParentGraph);
@@ -290,12 +294,12 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 			Controller->OpenUndoBracket(FString::Printf(TEXT("Add '%s' Node"), *Name.ToString()));
 		}
 
-		if (URigVMFunctionReferenceNode* ModelNode = Controller->AddFunctionReferenceNode(InFunction, Location, Name.ToString(), bUndo, !bIsTemplateNode))
+		if (URigVMFunctionReferenceNode* ModelNode = Controller->AddFunctionReferenceNode(InFunction, Location, Name.ToString(), bIsUserFacingNode, !bIsTemplateNode))
 		{
 			NewNode = Cast<UControlRigGraphNode>(RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()));
 			check(NewNode);
 
-			if (NewNode && bUndo)
+			if (NewNode && bIsUserFacingNode)
 			{
 				Controller->ClearNodeSelection(true);
 				Controller->SelectNode(ModelNode, true, true);
@@ -327,7 +331,7 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 					{
 						if(!MappedVariablePair.Value.IsNone())
 						{
-							Controller->SetRemappedVariable(ModelNode, MappedVariablePair.Key, MappedVariablePair.Value, bUndo);
+							Controller->SetRemappedVariable(ModelNode, MappedVariablePair.Key, MappedVariablePair.Value, bIsUserFacingNode);
 						}
 					}
 				}
@@ -341,14 +345,18 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 				Controller->SuspendNotifications(false);
 			}
 
-			if (bUndo)
+			if (bIsUserFacingNode)
 			{
 				Controller->CloseUndoBracket();
+			}
+			else
+			{
+				Controller->RemoveNode(ModelNode, false);
 			}
 		}
 		else
 		{
-			if (bUndo)
+			if (bIsUserFacingNode)
 			{
 				Controller->CancelUndoBracket();
 			}
@@ -387,3 +395,4 @@ bool UControlRigFunctionRefNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActi
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -281,7 +281,7 @@ void FStandardChartPacker::ScaleCharts( TArray<FUVIsland>& Charts, double UVScal
 			FVector2d ChartSize = Chart.MaxUV - Chart.MinUV;
 			FVector2d ChartSizeScaled = ChartSize * Chart.UVScale * UniformScale;
 
-			const double MaxChartEdge = TextureResolution - 1.0f;
+			const double MaxChartEdge = TextureResolution - 1.0;
 			const double LongestChartEdge = FMathd::Max(ChartSizeScaled.X, ChartSizeScaled.Y);
 
 			const double Epsilon = 0.01f;
@@ -526,8 +526,8 @@ bool FStandardChartPacker::PackCharts(TArray<FUVIsland>& Charts, double UVScale,
 
 						if (StartPos)
 						{
-							RasterRect.X = StartPos->X;
-							RasterRect.Y = StartPos->Y;
+							RasterRect.X = FMath::FloorToInt32(StartPos->X);
+							RasterRect.Y = FMath::FloorToInt32(StartPos->Y);
 						}
 
 						bFound = LayoutRaster.FindWithSegments(RasterRect, ChartRaster, IsBestRect);

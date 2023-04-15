@@ -12,8 +12,7 @@
 
 #define DEBUG_ENABLE 0
 #if DEBUG_ENABLE
-	#include "../ShaderDrawDebug.ush"
-	#include "../ShaderPrintCommon.ush"
+	#include "../ShaderPrint.ush"
 #endif //DEBUG_ENABLE
 
 #ifndef MAX_HAIR_MACROGROUP_COUNT
@@ -27,6 +26,7 @@ struct FTransmittanceSettings
 	int2	 DeepShadowResolution;
 	int2	 DeepShadowOffset;
 	float4x4 TranslatedWorldToLightTransform;
+	float4 AtlasScaleBias;
 	float3   LightDirection; // Direction from world position to the light
 	float3   TranslatedLightPosition;
 	bool	 bIsDirectional;
@@ -72,7 +72,7 @@ float3 GetTranslatedWorldPosition(float2 UV, float SceneDepth)
 
 #if SHADER_TRANSMITTANCE_DEEPSHADOW
 
-StructuredBuffer<FDeepShadowTransform> DeepShadow_TranslatedWorldToLightTransformBuffer;
+StructuredBuffer<FDeepShadowViewInfo> DeepShadow_ViewInfoBuffer;
 uint				DeepShadow_bIsGPUDriven;
 
 uint2				DeepShadow_Resolution;
@@ -105,7 +105,7 @@ FHairTransmittanceMask ComputeTransmittance(
 	FHairTransmittanceMask Out = InitHairTransmittanceMask();
 	{
 		// LightSpacePosition is 'TranslatedWorldPosition' in LightSpace (TexelCoord.XY / NDC Depth.Z)
-		const float3 LightSpacePosition = ToLightPosition(TranslatedWorldPosition, Settings.TranslatedWorldToLightTransform) * float3(Settings.DeepShadowResolution, 1) + float3(Settings.DeepShadowOffset, 0);
+		const float3 LightSpacePosition = ToLightPosition(TranslatedWorldPosition, Settings.TranslatedWorldToLightTransform) * float3(Settings.AtlasScaleBias.xy, 1) + float3(Settings.AtlasScaleBias.zw, 0);
 
 		float DepthBias = 0;
 		if (Settings.DeepShadowDepthBiasScale > 0)
@@ -186,13 +186,17 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		const uint MacroGroupIndex = clamp(Sample.MacroGroupId, 0, MAX_HAIR_MACROGROUP_COUNT - 1);
 		const int3 SlotOffset_SlotIndex = DeepShadow_AtlasSlotOffsets_AtlasSlotIndex[MacroGroupIndex].xyz;
 		float4x4 TranslatedWorldToLightTransform = 0;
+		float4 AtlasScaleBias = float4(1.0f, 1.0f, 0.0f, 0.0f);
 		if (DeepShadow_bIsGPUDriven > 0)
 		{
-			TranslatedWorldToLightTransform = DeepShadow_TranslatedWorldToLightTransformBuffer[SlotOffset_SlotIndex.z].TranslatedWorldToClip;
+			FDeepShadowViewInfo ShadowViewInfo = DeepShadow_ViewInfoBuffer[SlotOffset_SlotIndex.z];
+			TranslatedWorldToLightTransform = ShadowViewInfo.TranslatedWorldToClip;
+			AtlasScaleBias = ShadowViewInfo.AtlasScaleBias * float4(DeepShadow_Resolution, DeepShadow_Resolution);
 		}	
 		else
 		{
 			TranslatedWorldToLightTransform = DeepShadow_CPUTranslatedWorldToLightTransforms[MacroGroupIndex];
+			AtlasScaleBias = float4(DeepShadow_Resolution, SlotOffset_SlotIndex.xy);
 		}
 		
 		const float SceneDepth = ConvertFromDeviceZ(Sample.Depth);
@@ -202,6 +206,7 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		Settings.DeepShadowOffset = SlotOffset_SlotIndex.xy;
 		Settings.DeepShadowResolution = DeepShadow_Resolution;
 		Settings.TranslatedWorldToLightTransform = TranslatedWorldToLightTransform;
+		Settings.AtlasScaleBias = AtlasScaleBias;
 		Settings.bIsDirectional = IsLightDirectional(TranslatedLightPosition_LightDirection);
 		Settings.LightDirection = GetTranslatedLightDirection(TranslatedLightPosition_LightDirection, TranslatedWorldPosition);
 		Settings.TranslatedLightPosition = GetTranslatedLightPosition(TranslatedLightPosition_LightDirection, TranslatedWorldPosition);
@@ -235,25 +240,24 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 #include "../LightGridCommon.ush"
 
 #if VOXEL_TRAVERSAL_DEBUG
-#include "../ShaderPrintCommon.ush"
+#include "../ShaderPrint.ush"
 void PrintInfo(uint Index, uint2 PixelCoord, FHairTransmittanceMask TransmittanceMask)
 {
 	#if 0
-	const uint2 OutputResolution = uint2(1024, 1024); // TODO send the actual output resolution
+	const uint2 OutputResolution = uint2(1024, 1024); 
 	float2 Origin = (PixelCoord) / float2(OutputResolution);
 	Origin.y += (Index % 8) * 2 * ShaderPrintUniform.FontSize.w;
 
-	float2 Pos = Origin;
-	Pos = ShaderPrintText(Pos, TEXT("Hair Count "));
-	Pos = ShaderPrint(Pos, TransmittanceMask.HairCount);
+	FShaderPrintContext Context = InitShaderPrintContext(true, Origin);
 
-	Pos = ShaderPrintNewline(Pos);
-	Pos.x = Origin.x;
+	Print(Context, TEXT("Hair Count "));
+	Print(Context, TransmittanceMask.HairCount);
+	Newline(Context);
 
-	Pos = ShaderPrintText(Pos, TEXT("Visibility "));
-	Pos = ShaderPrint(Pos, TransmittanceMask.Visibility);
+	Print(Context, TEXT("Visibility "));
+	Print(Context, TransmittanceMask.Visibility);
+	Newline(Context);
 
-	Pos = ShaderPrintNewline(Pos);
 	#endif
 }
 #endif // VOXEL_TRAVERSAL_DEBUG
@@ -281,6 +285,14 @@ FHairTransmittanceMask ComputeTransmittanceVoxel(
 	// Cone opening - Area light transmission is disabled as it is too noisy for now
 	const float TanLightAngle = 0; // Settings.bIsDirectional ? 0 : LightRadius / length(Settings.TranslatedLightPosition - TranslatedWorldPosition);
 
+	const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(VirtualVoxel.NodeDescBuffer[MacroGroupId], VirtualVoxel.PageResolution);
+
+	FVirtualVoxelCommonDesc CommonDesc;
+	CommonDesc.PageCountResolution	= VirtualVoxel.PageCountResolution;
+	CommonDesc.PageTextureResolution= VirtualVoxel.PageTextureResolution;
+	CommonDesc.PageResolution		= VirtualVoxel.PageResolution;
+	CommonDesc.PageResolutionLog2	= VirtualVoxel.PageResolutionLog2;
+
 	// Compute the number of hair count between light & shading point
 	const float DistanceThreshold = 100000;
 	float AvgHairCount = 0;
@@ -297,19 +309,10 @@ FHairTransmittanceMask ComputeTransmittanceVoxel(
 		#else
 		const float3 SampleRandom = GetHairVoxelJitter(PixelCoord, View.StateFrameIndexMod8, VirtualVoxel.JitterMode);
 		#endif
-		
+	
 		const float PositionBiasScale = 0.5f;
-		const float3 DepthBias = VirtualVoxel.VoxelWorldSize * (VirtualVoxel.DepthBiasScale_Transmittance * Settings.LightDirection + PositionBiasScale*(SampleRandom*2-1));
+		const float3 DepthBias = NodeDesc.VoxelWorldSize * (VirtualVoxel.DepthBiasScale_Transmittance * Settings.LightDirection + PositionBiasScale*(SampleRandom*2-1));
 		const float3 SampleTranslatedWorldPosition = TranslatedWorldPosition + DepthBias;
-
-		FVirtualVoxelCommonDesc CommonDesc;
-		CommonDesc.PageCountResolution	= VirtualVoxel.PageCountResolution;
-		CommonDesc.VoxelWorldSize		= VirtualVoxel.VoxelWorldSize;
-		CommonDesc.PageTextureResolution= VirtualVoxel.PageTextureResolution;
-		CommonDesc.PageResolution		= VirtualVoxel.PageResolution;
-
-		const FPackedVirtualVoxelNodeDesc PackedNode = VirtualVoxel.NodeDescBuffer[MacroGroupId];
-		const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(PackedNode, VirtualVoxel.PageResolution);
 
 		FHairTraversalSettings TraversalSettings = InitHairTraversalSettings();
 		TraversalSettings.DensityScale = VirtualVoxel.DensityScale_Transmittance;

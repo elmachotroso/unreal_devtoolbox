@@ -4,10 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "UnrealWidgetFwd.h"
-#include "IPersonaEditMode.h"
+#include "AnimationEditMode.h"
+
+class UAnimGraphNode_Base;
+struct FAnimNode_Base;
 
 /** Base interface for skeletal control edit modes */
-class IAnimNodeEditMode : public IPersonaEditMode
+class IAnimNodeEditMode : public FAnimationEditMode
 {
 public:
 	/** Returns the coordinate system that should be used for this bone */
@@ -35,8 +38,14 @@ public:
 	virtual void DoScale(FVector& InScale) = 0;
 
 	/** Called when entering this edit mode */
-	virtual void EnterMode(class UAnimGraphNode_Base* InEditorNode, struct FAnimNode_Base* InRuntimeNode) = 0;
+	virtual void EnterMode(UAnimGraphNode_Base* InEditorNode, FAnimNode_Base* InRuntimeNode) = 0;
 
 	/** Called when exiting this edit mode */
 	virtual void ExitMode() = 0;
+
+	/** Called to determine whether this edit mode should be drawn when nodes edited by this edit mode are pose watched */
+	virtual bool SupportsPoseWatch() = 0;
+
+	/** Called when a Pose Watch is created on a node edited by this edit mode */
+	virtual void RegisterPoseWatchedNode(UAnimGraphNode_Base* InEditorNode, FAnimNode_Base* InRuntimeNode) = 0;
 };

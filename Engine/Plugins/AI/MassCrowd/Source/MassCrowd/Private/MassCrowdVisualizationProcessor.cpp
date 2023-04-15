@@ -45,6 +45,7 @@ void UMassCrowdVisualizationProcessor::ConfigureQueries()
 // UMassDebugCrowdVisualizationProcessor
 //----------------------------------------------------------------------//
 UMassDebugCrowdVisualizationProcessor::UMassDebugCrowdVisualizationProcessor()
+	: EntityQuery(*this)
 {
 	ExecutionFlags = (int32)(EProcessorExecutionFlags::Client | EProcessorExecutionFlags::Standalone);
 
@@ -61,6 +62,7 @@ void UMassDebugCrowdVisualizationProcessor::ConfigureQueries()
 	EntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 	EntityQuery.AddRequirement<FMassRepresentationFragment>(EMassFragmentAccess::ReadWrite);
 	EntityQuery.AddRequirement<FMassActorFragment>(EMassFragmentAccess::ReadWrite);
+	EntityQuery.RequireMutatingWorldAccess(); // due to UWorld mutable access
 }
 
 void UMassDebugCrowdVisualizationProcessor::Initialize(UObject& Owner)
@@ -71,7 +73,7 @@ void UMassDebugCrowdVisualizationProcessor::Initialize(UObject& Owner)
 	check(World);
 }
 
-void UMassDebugCrowdVisualizationProcessor::Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context)
+void UMassDebugCrowdVisualizationProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
 {
 	if (UE::MassCrowd::bDebugCrowdVisualType)
 	{
@@ -79,7 +81,7 @@ void UMassDebugCrowdVisualizationProcessor::Execute(UMassEntitySubsystem& Entity
 
 		TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("DebugDisplayVisualType"))
 
-		EntityQuery.ForEachEntityChunk(EntitySubsystem, Context, [this](const FMassExecutionContext& Context)
+		EntityQuery.ForEachEntityChunk(EntityManager, Context, [this](const FMassExecutionContext& Context)
 		{
 			const TConstArrayView<FMassRepresentationFragment> VisualizationList = Context.GetFragmentView<FMassRepresentationFragment>();
 			const TConstArrayView<FMassActorFragment> ActorList = Context.GetFragmentView<FMassActorFragment>();

@@ -18,6 +18,8 @@
 #include "DynamicMeshBuilder.h"
 #include "StaticMeshResources.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CableComponent)
+
 DECLARE_CYCLE_STAT(TEXT("Cable Sim"), STAT_Cable_SimTime, STATGROUP_CableComponent);
 DECLARE_CYCLE_STAT(TEXT("Cable Solve"), STAT_Cable_SolveTime, STATGROUP_CableComponent);
 DECLARE_CYCLE_STAT(TEXT("Cable Collision"), STAT_Cable_CollisionTime, STATGROUP_CableComponent);
@@ -279,9 +281,10 @@ public:
 				int32 SingleCaptureIndex;
 				bool bOutputVelocity;
 				GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+				bOutputVelocity |= AlwaysHasVelocity();
 
 				FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-				DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity);
+				DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity);
 				BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 				BatchElement.FirstIndex = 0;
@@ -308,7 +311,11 @@ public:
 		Result.bDrawRelevance = IsShown(View);
 		Result.bShadowRelevance = IsShadowCast(View);
 		Result.bDynamicRelevance = true;
+
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
+
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
+
 		return Result;
 	}
 
@@ -576,7 +583,7 @@ void UCableComponent::SetAttachEndTo(AActor* Actor, FName ComponentProperty, FNa
 
 AActor* UCableComponent::GetAttachedActor() const
 {
-	return AttachEndTo.OtherActor;
+	return AttachEndTo.OtherActor.Get();
 }
 
 USceneComponent* UCableComponent::GetAttachedComponent() const
@@ -825,3 +832,4 @@ bool UCableComponent::DoesSocketExist(FName InSocketName) const
 {
 	return (InSocketName == CableEndSocketName) || (InSocketName == CableStartSocketName);
 }
+

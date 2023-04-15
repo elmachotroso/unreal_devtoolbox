@@ -5,6 +5,8 @@
 #include "MoviePipelineBlueprintLibrary.h"
 #include "MoviePipeline.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineLinearExecutor)
+
 #define LOCTEXT_NAMESPACE "MoviePipelineLinearExecutorBase"
 
 void UMoviePipelineLinearExecutorBase::Execute_Implementation(UMoviePipelineQueue* InPipelineQueue)
@@ -43,6 +45,12 @@ void UMoviePipelineLinearExecutorBase::StartPipelineByIndex(int32 InPipelineInde
 	
 	CurrentPipelineIndex = InPipelineIndex;
 
+	if (!Queue->GetJobs()[CurrentPipelineIndex]->IsEnabled())
+	{
+		OnIndividualPipelineFinished(nullptr);
+		return;
+	}
+
 	if (Queue->GetJobs()[CurrentPipelineIndex]->IsConsumed())
 	{
 		// We skip working on consumed jobs. Jobs submitted to remote renders might already be consumed and
@@ -66,7 +74,8 @@ void UMoviePipelineLinearExecutorBase::StartPipelineByIndex(int32 InPipelineInde
 
 void UMoviePipelineLinearExecutorBase::OnIndividualPipelineFinished(UMoviePipeline* /* FinishedPipeline */)
 {
-	if (CurrentPipelineIndex == Queue->GetJobs().Num() - 1 || bIsCanceling)
+	const bool bNoMoreJobs = CurrentPipelineIndex >= Queue->GetJobs().Num() - 1;
+	if (bNoMoreJobs || bIsCanceling)
 	{
 		OnExecutorFinishedImpl();
 	}
@@ -132,3 +141,4 @@ void UMoviePipelineLinearExecutorBase::CancelAllJobs_Implementation()
 
 
 #undef LOCTEXT_NAMESPACE // "MoviePipelineLinearExecutorBase"
+

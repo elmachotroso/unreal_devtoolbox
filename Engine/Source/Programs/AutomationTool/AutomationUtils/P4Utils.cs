@@ -1,4 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
+using EpicGames.Perforce;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -940,6 +942,7 @@ namespace AutomationTool
 	{
 		static private P4Connection PerforceConnection;
 		static private P4Environment PerforceEnvironment;
+		static private IPerforceSettings PerforceSettings;
 
 		static public P4Connection P4
 		{
@@ -965,6 +968,18 @@ namespace AutomationTool
 			}
 		}
 
+		static public IPerforceSettings P4Settings
+		{
+			get
+			{
+				if (PerforceSettings == null)
+				{
+					throw new AutomationException("Attempt to use P4Settings before it was initialized or P4 support is disabled.");
+				}
+				return PerforceSettings;
+			}
+		}
+
 		/// <summary>
 		/// Initializes build environment. If the build command needs a specific env-var mapping or
 		/// has an extended BuildEnvironment, it must implement this method accordingly.
@@ -973,6 +988,11 @@ namespace AutomationTool
 		{
 			// Temporary connection - will use only the currently set env vars to connect to P4
 			PerforceEnvironment = new P4Environment(CmdEnv);
+
+			PerforceSettings Settings = new PerforceSettings(PerforceEnvironment.ServerAndPort, PerforceEnvironment.User);
+			Settings.PreferNativeClient = true;
+			Settings.ClientName = PerforceEnvironment.Client;
+			PerforceSettings = Settings;
 		}
 
 		/// <summary>
@@ -2375,31 +2395,18 @@ namespace AutomationTool
 				else
 				{
 					LastCmdOutput = CmdOutput;
-					if (CmdOutput.Trim().EndsWith("submitted."))
-					{
-						if (CmdOutput.Trim().EndsWith(" and submitted."))
-						{
-							string EndStr = " and submitted.";
-							string ChangeStr = "renamed change ";
-							int Offset = CmdOutput.LastIndexOf(ChangeStr);
-							int EndOffset = CmdOutput.LastIndexOf(EndStr);
-							if (Offset >= 0 && Offset < EndOffset)
-							{
-								SubmittedCL = int.Parse(CmdOutput.Substring(Offset + ChangeStr.Length, EndOffset - Offset - ChangeStr.Length));
-							}
-						}
-						else
-						{
-							string EndStr = " submitted.";
-							string ChangeStr = "Change ";
-							int Offset = CmdOutput.LastIndexOf(ChangeStr);
-							int EndOffset = CmdOutput.LastIndexOf(EndStr);
-							if (Offset >= 0 && Offset < EndOffset)
-							{
-								SubmittedCL = int.Parse(CmdOutput.Substring(Offset + ChangeStr.Length, EndOffset - Offset - ChangeStr.Length));
-							}
-						}
 
+					Regex SubmitRegex = new Regex(@"Change \d+ renamed change (?<number>\d+) and submitted");
+					Match SubmitMatch = SubmitRegex.Match(CmdOutput);
+					if (!SubmitMatch.Success)
+					{
+						SubmitRegex = new Regex(@"Change (?<number>\d+) submitted");
+						SubmitMatch = SubmitRegex.Match(CmdOutput);
+					}
+
+					if (SubmitMatch.Success)
+					{
+						SubmittedCL = int.Parse(SubmitMatch.Groups["number"].Value);
 						CommandUtils.LogInformation("Submitted CL {0} which became CL {1}\n", CL, SubmittedCL);
 					}
 
@@ -3619,7 +3626,7 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Run 'p4 files <cmdline>'and return a list of the files in the changelist (files being deleted are excluded)
+		/// Run 'p4 files [cmdline]'and return a list of the files in the changelist (files being deleted are excluded)
 		/// </summary>
 		/// <param name="CommandLine"></param>
 		/// <returns>List of files in the specified directory.</returns>
@@ -3646,7 +3653,7 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Run 'p4 opened <cmdline>'and return a list of the files in the changelist (files being deleted are excluded)
+		/// Run 'p4 opened [cmdline]'and return a list of the files in the changelist (files being deleted are excluded)
 		/// </summary>
 		/// <param name="CommandLine"></param>
 		/// <returns>List of files in the specified directory.</returns>

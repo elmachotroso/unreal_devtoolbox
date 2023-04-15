@@ -5,7 +5,7 @@
 #include "CADKernel/Geo/Sampling/PolylineTools.h"
 #include "CADKernel/Math/BSpline.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FBezierCurve::EvaluatePoint(double Coordinate, FCurvePoint& OutPoint, int32 DerivativeOrder) const
@@ -54,6 +54,14 @@ TSharedPtr<FEntityGeom> FBezierCurve::ApplyMatrix(const FMatrixH& InMatrix) cons
 	return FEntity::MakeShared<FBezierCurve>(TransformedPoles);
 }
 
+void FBezierCurve::Offset(const FPoint& OffsetDirection)
+{
+	for (FPoint& Pole : Poles)
+	{
+		Pole += OffsetDirection;
+	}
+}
+
 #ifdef CADKERNEL_DEV
 FInfoEntity& FBezierCurve::GetInfo(FInfoEntity& Info) const
 {
@@ -68,5 +76,5 @@ void FBezierCurve::ExtendTo(const FPoint& Point)
 	PolylineTools::ExtendTo(Poles, Point);
 }
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

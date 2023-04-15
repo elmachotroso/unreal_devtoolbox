@@ -22,8 +22,8 @@
 #include "ClassIconFinder.h"
 
 // AssetRegistry includes
-#include "AssetRegistryModule.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
 
 // ContentBrowser includes
 #include "IContentBrowserSingleton.h"
@@ -42,9 +42,10 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/SlateIconFinder.h"
+#include "SPositiveActionButton.h"
 
-// EditorStyle includes
-#include "EditorStyleSet.h"
+// Style includes
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 
 // UnrealEd includes
@@ -75,7 +76,7 @@ TArray<UClass*> FindRecordingSourceClasses()
 	TArray<FAssetData> ClassList;
 
 	FARFilter Filter;
-	Filter.ClassNames.Add(UTakeRecorderSource::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UTakeRecorderSource::StaticClass()->GetClassPathName());
 
 	// Include any Blueprint based objects as well, this includes things like Blutilities, UMG, and GameplayAbility objects
 	Filter.bRecursiveClasses = true;
@@ -127,7 +128,7 @@ void SLevelSequenceTakeEditor::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(4)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			[
 				SourcesWidget.ToSharedRef()
 			]
@@ -143,47 +144,10 @@ void SLevelSequenceTakeEditor::Construct(const FArguments& InArgs)
 
 TSharedRef<SWidget> SLevelSequenceTakeEditor::MakeAddSourceButton()
 {
-	return SNew(SComboButton)
-		.ContentPadding(TakeRecorder::ButtonPadding)
-		.ButtonStyle(FTakeRecorderStyle::Get(), "FlatButton.Success")
+	return SNew(SPositiveActionButton)
 		.OnGetMenuContent(this, &SLevelSequenceTakeEditor::OnGenerateSourcesMenu)
-		.ForegroundColor(FSlateColor::UseForeground())
-		.HasDownArrow(false)
-		.ButtonContent()
-		[
-			SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Plus)
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Text(LOCTEXT("AddNewSource_Text", "Source"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Caret_Down)
-			]
-		];
+		.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
+		.Text(LOCTEXT("AddNewSource_Text", "Source"));
 }
 PRAGMA_ENABLE_OPTIMIZATION
 
@@ -420,7 +384,7 @@ class FRecorderPropertyMapCustomization : public IPropertyTypeCustomization
 	    	[
 	    		SNew(STextBlock)
 	    		.Text(ActorOrComponentName)
-	    		.Font( FEditorStyle::GetFontStyle( "PropertyWindow.BoldFont" ))
+	    		.Font( FAppStyle::GetFontStyle( "PropertyWindow.BoldFont" ))
 	    	]
 
 	    	+SHorizontalBox::Slot()
@@ -430,7 +394,7 @@ class FRecorderPropertyMapCustomization : public IPropertyTypeCustomization
 	    	[
 	    		SNew(STextBlock)
 	    		.Text(LOCTEXT("TakeRecorderRecordedPropertiesTitle", "Recorded Properties"))
-	    		.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ))
+	    		.Font( FAppStyle::GetFontStyle( "PropertyWindow.NormalFont" ))
 	    	]
 	    ];
 	}
@@ -478,7 +442,7 @@ class FRecorderPropertyMapCustomization : public IPropertyTypeCustomization
 	    	[
 	    		SNew(STextBlock)
 	    		.Text(DisplayName)
-	    		.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ))
+	    		.Font( FAppStyle::GetFontStyle( "PropertyWindow.NormalFont" ))
 	    	]
 		];
 

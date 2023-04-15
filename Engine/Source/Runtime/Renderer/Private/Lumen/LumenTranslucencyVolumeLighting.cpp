@@ -130,14 +130,6 @@ FAutoConsoleVariableRef CVarTranslucencyVolumeTracingOctahedronResolution(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-float GTranslucencyVolumeVoxelStepFactor = 1.0f;
-FAutoConsoleVariableRef CVarTranslucencyVolumeVoxelStepFactor(
-	TEXT("r.Lumen.TranslucencyVolume.VoxelStepFactor"),
-	GTranslucencyVolumeVoxelStepFactor,
-	TEXT("."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-	);
-
 float GTranslucencyVolumeVoxelTraceStartDistanceScale = 1.0f;
 FAutoConsoleVariableRef CVarTranslucencyVoxelTraceStartDistanceScale(
 	TEXT("r.Lumen.TranslucencyVolume.VoxelTraceStartDistanceScale"),
@@ -191,7 +183,7 @@ FAutoConsoleVariableRef CVarTranslucencyVolumeRadianceCacheNumProbesToTraceBudge
 	TEXT("r.Lumen.TranslucencyVolume.RadianceCache.NumProbesToTraceBudget"),
 	GTranslucencyVolumeRadianceCacheNumProbesToTraceBudget,
 	TEXT(""),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 int32 GTranslucencyVolumeRadianceCacheGridResolution = 24;
@@ -305,7 +297,8 @@ namespace LumenTranslucencyVolumeRadianceCache
 		Parameters.RadianceProbeResolution = GetProbeResolution();
 		Parameters.FinalProbeResolution = GetFinalProbeResolution();
 		Parameters.FinalRadianceAtlasMaxMip = GetNumMipmaps() - 1;
-		Parameters.NumProbesToTraceBudget = GTranslucencyVolumeRadianceCacheNumProbesToTraceBudget;
+		const float TraceBudgetScale = View.Family->bCurrentlyBeingEdited ? 10.0f : 1.0f;
+		Parameters.NumProbesToTraceBudget = GTranslucencyVolumeRadianceCacheNumProbesToTraceBudget * TraceBudgetScale;
 		Parameters.RadianceCacheStats = GTranslucencyVolumeRadianceCacheStats;
 		return Parameters;
 	}
@@ -329,7 +322,10 @@ FRDGTextureRef OrDefault3dUintTextureIfNull(FRDGBuilder& GraphBuilder, FRDGTextu
 	return Texture ? Texture: GSystemTextures.GetVolumetricBlackUintDummy(GraphBuilder);
 }
 
-FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(FRDGBuilder& GraphBuilder, const FLumenTranslucencyGIVolume& LumenTranslucencyGIVolume)
+FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(
+	FRDGBuilder& GraphBuilder, 
+	const FLumenTranslucencyGIVolume& LumenTranslucencyGIVolume,
+	const FLumenFrontLayerTranslucency& LumenFrontLayerTranslucency)
 {
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
@@ -351,6 +347,12 @@ FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(FRDG
 	{
 		Parameters.RadianceCacheInterpolationParameters.ProbeWorldOffset = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(GSystemTextures.GetDefaultStructuredBuffer(GraphBuilder, sizeof(FVector4f))));
 	}
+
+	Parameters.FrontLayerTranslucencyReflectionParameters.Enabled = LumenFrontLayerTranslucency.bEnabled ? 1 : 0;
+	Parameters.FrontLayerTranslucencyReflectionParameters.RelativeDepthThreshold = LumenFrontLayerTranslucency.RelativeDepthThreshold;
+	Parameters.FrontLayerTranslucencyReflectionParameters.Radiance = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.Radiance);
+	Parameters.FrontLayerTranslucencyReflectionParameters.Normal = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.Normal);
+	Parameters.FrontLayerTranslucencyReflectionParameters.SceneDepth = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.SceneDepth);
 
 	Parameters.TranslucencyGIVolume0            = LumenTranslucencyGIVolume.Texture0        ? LumenTranslucencyGIVolume.Texture0        : SystemTextures.VolumetricBlack;
 	Parameters.TranslucencyGIVolume1            = LumenTranslucencyGIVolume.Texture1        ? LumenTranslucencyGIVolume.Texture1        : SystemTextures.VolumetricBlack;
@@ -507,6 +509,7 @@ class FTranslucencyVolumeIntegrateCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, RWTranslucencyGINewHistory1)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingVolumeParameters, VolumeParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FOctahedralSolidAngleParameters, OctahedralSolidAngleParameters)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, VolumeTraceRadiance)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, VolumeTraceHitDistance)
 		SHADER_PARAMETER(float, HistoryWeight)
@@ -575,7 +578,8 @@ static void MarkRadianceProbesUsedByTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
-	const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
+	const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	FMarkRadianceProbesUsedByTranslucencyVolumeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMarkRadianceProbesUsedByTranslucencyVolumeCS::FParameters>();
 	PassParameters->View = View.ViewUniformBuffer;
@@ -591,6 +595,7 @@ static void MarkRadianceProbesUsedByTranslucencyVolume(
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
 		RDG_EVENT_NAME("MarkRadianceProbesUsedByTranslucencyVolume"),
+		ComputePassFlags,
 		ComputeShader,
 		PassParameters,
 		GroupSize);
@@ -600,18 +605,19 @@ void TraceVoxelsTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	bool bDynamicSkyLight,
-	FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingInputs& TracingInputs,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
 	FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters,
 	FRDGTextureRef VolumeTraceRadiance,
-	FRDGTextureRef VolumeTraceHitDistance)
+	FRDGTextureRef VolumeTraceHitDistance,
+	ERDGPassFlags ComputePassFlags)
 {
 	FTranslucencyVolumeTraceVoxelsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FTranslucencyVolumeTraceVoxelsCS::FParameters>();
 	PassParameters->RWVolumeTraceRadiance = GraphBuilder.CreateUAV(VolumeTraceRadiance);
 	PassParameters->RWVolumeTraceHitDistance = GraphBuilder.CreateUAV(VolumeTraceHitDistance);
 
-	GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+	GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 	PassParameters->RadianceCacheParameters = RadianceCacheParameters;
 	PassParameters->VolumeParameters = VolumeParameters;
 	PassParameters->TraceSetupParameters = TraceSetupParameters;
@@ -629,211 +635,269 @@ void TraceVoxelsTranslucencyVolume(
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
 		RDG_EVENT_NAME("%s %ux%u", bTraceFromVolume ? TEXT("TraceVoxels") : TEXT("RadianceCacheInterpolate"), GTranslucencyVolumeTracingOctahedronResolution, GTranslucencyVolumeTracingOctahedronResolution),
+		ComputePassFlags,
 		ComputeShader,
 		PassParameters,
 		GroupSize);
 }
 
+LumenRadianceCache::FUpdateInputs FDeferredShadingSceneRenderer::GetLumenTranslucencyGIVolumeRadianceCacheInputs(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View, 
+	const FLumenCardTracingInputs& TracingInputs,
+	ERDGPassFlags ComputePassFlags)
+{
+	const FLumenTranslucencyLightingVolumeParameters VolumeParameters = GetTranslucencyLightingVolumeParameters(View);
+	const LumenRadianceCache::FRadianceCacheInputs RadianceCacheInputs = LumenTranslucencyVolumeRadianceCache::SetupRadianceCacheInputs(View);
+
+	FRadianceCacheConfiguration Configuration;
+	Configuration.bFarField = GTranslucencyVolumeRadianceCacheFarField != 0;
+
+	FMarkUsedRadianceCacheProbes MarkUsedRadianceCacheProbesCallbacks;
+
+	if (GLumenTranslucencyVolume && GLumenTranslucencyVolumeRadianceCache)
+	{
+		MarkUsedRadianceCacheProbesCallbacks.AddLambda([VolumeParameters, ComputePassFlags](
+			FRDGBuilder& GraphBuilder, 
+			const FViewInfo& View, 
+			const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
+			{
+				MarkRadianceProbesUsedByTranslucencyVolume(
+					GraphBuilder,
+					View,
+					VolumeParameters,
+					RadianceCacheMarkParameters,
+					ComputePassFlags);
+			});
+	}
+
+	LumenRadianceCache::FUpdateInputs RadianceCacheUpdateInputs(
+		TracingInputs,
+		RadianceCacheInputs,
+		Configuration,
+		View,
+		nullptr,
+		nullptr,
+		FMarkUsedRadianceCacheProbes(),
+		MoveTemp(MarkUsedRadianceCacheProbesCallbacks));
+
+	return RadianceCacheUpdateInputs;
+}
+
 void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 	FRDGBuilder& GraphBuilder,
-	FLumenCardTracingInputs& TracingInputs,
-	FGlobalShaderMap* GlobalShaderMap)
+	FViewInfo& View, 
+	const FLumenCardTracingInputs& TracingInputs,
+	LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	if (GLumenTranslucencyVolume)
 	{
-		FViewInfo& View = Views[0];
-
 		RDG_EVENT_SCOPE(GraphBuilder, "TranslucencyVolumeLighting");
 
-		const FLumenTranslucencyLightingVolumeParameters VolumeParameters = GetTranslucencyLightingVolumeParameters(View);
-		const FIntVector TranslucencyGridSize = VolumeParameters.TranslucencyGIGridSize;
-		const LumenRadianceCache::FRadianceCacheInputs RadianceCacheInputs = LumenTranslucencyVolumeRadianceCache::SetupRadianceCacheInputs(View);
-
-		LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters;
-
-		if (GLumenTranslucencyVolumeRadianceCache != 0)
+		if (GLumenTranslucencyVolumeRadianceCache && !RadianceCacheParameters.RadianceProbeIndirectionTexture)
 		{
-			FMarkUsedRadianceCacheProbes MarkUsedRadianceCacheProbesCallbacks;
+			LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateInputs> InputArray;
+			LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateOutputs> OutputArray;
 
-			MarkUsedRadianceCacheProbesCallbacks.AddLambda([VolumeParameters](
-				FRDGBuilder& GraphBuilder, 
-				const FViewInfo& View, 
-				const LumenRadianceCache::FRadianceCacheMarkParameters& RadianceCacheMarkParameters)
-				{
-					MarkRadianceProbesUsedByTranslucencyVolume(
-						GraphBuilder,
-						View,
-						VolumeParameters,
-						RadianceCacheMarkParameters);
-				});
-
-			FRadianceCacheConfiguration Configuration;
-			Configuration.bFarField = GTranslucencyVolumeRadianceCacheFarField != 0;
-
-			RenderRadianceCache(
-				GraphBuilder, 
-				TracingInputs, 
-				RadianceCacheInputs, 
-				Configuration,
-				Scene,
-				View, 
-				nullptr, 
-				nullptr, 
-				MarkUsedRadianceCacheProbesCallbacks,
-				View.ViewState->TranslucencyVolumeRadianceCacheState, 
-				RadianceCacheParameters);
-		}
-
-		FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters;
-		{
-			TraceSetupParameters.StepFactor = FMath::Clamp(GTranslucencyVolumeTraceStepFactor, .1f, 10.0f);
-			TraceSetupParameters.MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
-			TraceSetupParameters.VoxelStepFactor = FMath::Clamp(GTranslucencyVolumeVoxelStepFactor, .1f, 10.0f);
-			TraceSetupParameters.VoxelTraceStartDistanceScale = GTranslucencyVolumeVoxelTraceStartDistanceScale;
-			TraceSetupParameters.MaxRayIntensity = GTranslucencyVolumeMaxRayIntensity;
-		}
-
-		const FIntVector OctahedralAtlasSize(
-			TranslucencyGridSize.X * GTranslucencyVolumeTracingOctahedronResolution, 
-			TranslucencyGridSize.Y * GTranslucencyVolumeTracingOctahedronResolution,
-			TranslucencyGridSize.Z);
-
-		FRDGTextureDesc VolumeTraceRadianceDesc(FRDGTextureDesc::Create3D(OctahedralAtlasSize, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
-		FRDGTextureDesc VolumeTraceHitDistanceDesc(FRDGTextureDesc::Create3D(OctahedralAtlasSize, PF_R16F, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
-	
-		FRDGTextureRef VolumeTraceRadiance = GraphBuilder.CreateTexture(VolumeTraceRadianceDesc, TEXT("Lumen.TranslucencyVolume.VolumeTraceRadiance"));
-		FRDGTextureRef VolumeTraceHitDistance = GraphBuilder.CreateTexture(VolumeTraceHitDistanceDesc, TEXT("Lumen.TranslucencyVolume.VolumeTraceHitDistance"));
-
-		if (Lumen::UseHardwareRayTracedTranslucencyVolume() && GLumenTranslucencyVolumeTraceFromVolume != 0)
-		{
-			HardwareRayTraceTranslucencyVolume(
+			LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
 				GraphBuilder,
-				View,
+				View, 
 				TracingInputs,
-				RadianceCacheParameters,
-				VolumeParameters,
-				TraceSetupParameters, 
-				VolumeTraceRadiance, 
-				VolumeTraceHitDistance);
-		}
-		else
-		{
-			const bool bDynamicSkyLight = Lumen::ShouldHandleSkyLight(Scene, ViewFamily);
-			TraceVoxelsTranslucencyVolume(GraphBuilder, View, bDynamicSkyLight, TracingInputs, RadianceCacheParameters, VolumeParameters, TraceSetupParameters, VolumeTraceRadiance, VolumeTraceHitDistance);
-		}
+				ComputePassFlags);
 
-		if (GTranslucencyVolumeSpatialFilter)
-		{
-			for (int32 PassIndex = 0; PassIndex < GTranslucencyVolumeSpatialFilterNumPasses; PassIndex++)
+			if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
 			{
-				FRDGTextureRef FilteredVolumeTraceRadiance = GraphBuilder.CreateTexture(VolumeTraceRadianceDesc, TEXT("Lumen.TranslucencyVolume.FilteredVolumeTraceRadiance"));
+				InputArray.Add(TranslucencyVolumeRadianceCacheUpdateInputs);
+				OutputArray.Add(LumenRadianceCache::FUpdateOutputs(
+					View.ViewState->Lumen.TranslucencyVolumeRadianceCacheState,
+					RadianceCacheParameters));
 
-				FTranslucencyVolumeSpatialFilterCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FTranslucencyVolumeSpatialFilterCS::FParameters>();
-				PassParameters->RWVolumeTraceRadiance = GraphBuilder.CreateUAV(FilteredVolumeTraceRadiance);
-
-				PassParameters->VolumeTraceRadiance = VolumeTraceRadiance;
-				PassParameters->VolumeTraceHitDistance = VolumeTraceHitDistance;
-				PassParameters->View = View.ViewUniformBuffer;
-				PassParameters->VolumeParameters = VolumeParameters;
-				const int32 PreviousFrameIndexOffset = View.bStatePrevViewInfoIsReadOnly ? 0 : 1;
-				PassParameters->PreviousFrameJitterOffset = (FVector3f)TranslucencyVolumeTemporalRandom(View.ViewState ? View.ViewState->GetFrameIndex() - PreviousFrameIndexOffset : 0);
-				PassParameters->UnjitteredPrevWorldToClip = FMatrix44f(View.PrevViewInfo.ViewMatrices.GetViewMatrix() * View.PrevViewInfo.ViewMatrices.ComputeProjectionNoAAMatrix());		// LWC_TODO: Precision loss?
-
-				FTranslucencyVolumeSpatialFilterCS::FPermutationDomain PermutationVector;
-				auto ComputeShader = View.ShaderMap->GetShader<FTranslucencyVolumeSpatialFilterCS>(PermutationVector);
-
-				const FIntVector GroupSize = FComputeShaderUtils::GetGroupCount(OctahedralAtlasSize, FTranslucencyVolumeSpatialFilterCS::GetGroupSize());
-
-				FComputeShaderUtils::AddPass(
-					GraphBuilder,
-					RDG_EVENT_NAME("SpatialFilter"),
-					ComputeShader,
-					PassParameters,
-					GroupSize);
-
-				VolumeTraceRadiance = FilteredVolumeTraceRadiance;
+				LumenRadianceCache::UpdateRadianceCaches(
+					GraphBuilder, 
+					InputArray,
+					OutputArray,
+					Scene,
+					ViewFamily.EngineShowFlags,
+					LumenCardRenderer.bPropagateGlobalLightingChange,
+					ComputePassFlags);
 			}
 		}
 
-		FRDGTextureRef TranslucencyGIVolumeHistory0 = nullptr;
-		FRDGTextureRef TranslucencyGIVolumeHistory1 = nullptr;
-
-		if (View.ViewState && View.ViewState->Lumen.TranslucencyVolume0)
 		{
-			TranslucencyGIVolumeHistory0 = GraphBuilder.RegisterExternalTexture(View.ViewState->Lumen.TranslucencyVolume0);
-			TranslucencyGIVolumeHistory1 = GraphBuilder.RegisterExternalTexture(View.ViewState->Lumen.TranslucencyVolume1);
-		}
+			const FLumenTranslucencyLightingVolumeParameters VolumeParameters = GetTranslucencyLightingVolumeParameters(View);
+			const FIntVector TranslucencyGridSize = VolumeParameters.TranslucencyGIGridSize;
 
-		FRDGTextureDesc LumenTranslucencyGIDesc0(FRDGTextureDesc::Create3D(TranslucencyGridSize, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV | TexCreate_3DTiling));
-		FRDGTextureDesc LumenTranslucencyGIDesc1(FRDGTextureDesc::Create3D(TranslucencyGridSize, PF_FloatRGBA, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV | TexCreate_3DTiling));
+			FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters;
+			{
+				TraceSetupParameters.StepFactor = FMath::Clamp(GTranslucencyVolumeTraceStepFactor, .1f, 10.0f);
+				TraceSetupParameters.MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
+				TraceSetupParameters.VoxelTraceStartDistanceScale = GTranslucencyVolumeVoxelTraceStartDistanceScale;
+				TraceSetupParameters.MaxRayIntensity = GTranslucencyVolumeMaxRayIntensity;
+			}
+
+			const FIntVector OctahedralAtlasSize(
+				TranslucencyGridSize.X * GTranslucencyVolumeTracingOctahedronResolution, 
+				TranslucencyGridSize.Y * GTranslucencyVolumeTracingOctahedronResolution,
+				TranslucencyGridSize.Z);
+
+			FRDGTextureDesc VolumeTraceRadianceDesc(FRDGTextureDesc::Create3D(OctahedralAtlasSize, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
+			FRDGTextureDesc VolumeTraceHitDistanceDesc(FRDGTextureDesc::Create3D(OctahedralAtlasSize, PF_R16F, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
 	
-		FRDGTextureRef TranslucencyGIVolume0 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc0, TEXT("Lumen.TranslucencyVolume.SHLighting0"));
-		FRDGTextureRef TranslucencyGIVolume1 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc1, TEXT("Lumen.TranslucencyVolume.SHLighting1"));
-		FRDGTextureUAVRef TranslucencyGIVolume0UAV = GraphBuilder.CreateUAV(TranslucencyGIVolume0);
-		FRDGTextureUAVRef TranslucencyGIVolume1UAV = GraphBuilder.CreateUAV(TranslucencyGIVolume1);
+			FRDGTextureRef VolumeTraceRadiance = GraphBuilder.CreateTexture(VolumeTraceRadianceDesc, TEXT("Lumen.TranslucencyVolume.VolumeTraceRadiance"));
+			FRDGTextureRef VolumeTraceHitDistance = GraphBuilder.CreateTexture(VolumeTraceHitDistanceDesc, TEXT("Lumen.TranslucencyVolume.VolumeTraceHitDistance"));
 
-		FRDGTextureRef TranslucencyGIVolumeNewHistory0 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc0, TEXT("Lumen.TranslucencyVolume.SHLightingNewHistory0"));
-		FRDGTextureRef TranslucencyGIVolumeNewHistory1 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc1, TEXT("Lumen.TranslucencyVolume.SHLightingNewHistory0"));
-		FRDGTextureUAVRef TranslucencyGIVolumeNewHistory0UAV = GraphBuilder.CreateUAV(TranslucencyGIVolumeNewHistory0);
-		FRDGTextureUAVRef TranslucencyGIVolumeNewHistory1UAV = GraphBuilder.CreateUAV(TranslucencyGIVolumeNewHistory1);
+			if (Lumen::UseHardwareRayTracedTranslucencyVolume(ViewFamily) && GLumenTranslucencyVolumeTraceFromVolume != 0)
+			{
+				check(ComputePassFlags == ERDGPassFlags::Compute);
 
-		{
-			FTranslucencyVolumeIntegrateCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FTranslucencyVolumeIntegrateCS::FParameters>();
-			PassParameters->RWTranslucencyGI0 = TranslucencyGIVolume0UAV;
-			PassParameters->RWTranslucencyGI1 = TranslucencyGIVolume1UAV;
-			PassParameters->RWTranslucencyGINewHistory0 = TranslucencyGIVolumeNewHistory0UAV;
-			PassParameters->RWTranslucencyGINewHistory1 = TranslucencyGIVolumeNewHistory1UAV;
+				HardwareRayTraceTranslucencyVolume(
+					GraphBuilder,
+					View,
+					TracingInputs,
+					RadianceCacheParameters,
+					VolumeParameters,
+					TraceSetupParameters, 
+					VolumeTraceRadiance, 
+					VolumeTraceHitDistance);
+			}
+			else
+			{
+				const bool bDynamicSkyLight = Lumen::ShouldHandleSkyLight(Scene, ViewFamily);
+				TraceVoxelsTranslucencyVolume(
+					GraphBuilder,
+					View,
+					bDynamicSkyLight,
+					TracingInputs,
+					RadianceCacheParameters,
+					VolumeParameters,
+					TraceSetupParameters,
+					VolumeTraceRadiance,
+					VolumeTraceHitDistance,
+					ComputePassFlags);
+			}
 
-			PassParameters->View = View.ViewUniformBuffer;
-			PassParameters->VolumeTraceRadiance = VolumeTraceRadiance;
-			PassParameters->VolumeTraceHitDistance = VolumeTraceHitDistance;
-			PassParameters->VolumeParameters = VolumeParameters;
+			if (GTranslucencyVolumeSpatialFilter)
+			{
+				for (int32 PassIndex = 0; PassIndex < GTranslucencyVolumeSpatialFilterNumPasses; PassIndex++)
+				{
+					FRDGTextureRef FilteredVolumeTraceRadiance = GraphBuilder.CreateTexture(VolumeTraceRadianceDesc, TEXT("Lumen.TranslucencyVolume.FilteredVolumeTraceRadiance"));
 
-			const bool bUseTemporalReprojection =
-				GTranslucencyVolumeTemporalReprojection
-				&& View.ViewState
-				&& !View.bCameraCut
-				&& !View.bPrevTransformsReset
-				&& ViewFamily.bRealtimeUpdate
-				&& TranslucencyGIVolumeHistory0
-				&& TranslucencyGIVolumeHistory0->Desc == LumenTranslucencyGIDesc0;
+					FTranslucencyVolumeSpatialFilterCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FTranslucencyVolumeSpatialFilterCS::FParameters>();
+					PassParameters->RWVolumeTraceRadiance = GraphBuilder.CreateUAV(FilteredVolumeTraceRadiance);
 
-			PassParameters->HistoryWeight = GTranslucencyVolumeHistoryWeight;
-			const int32 PreviousFrameIndexOffset = View.bStatePrevViewInfoIsReadOnly ? 0 : 1;
-			PassParameters->PreviousFrameJitterOffset = (FVector3f)TranslucencyVolumeTemporalRandom(View.ViewState ? View.ViewState->GetFrameIndex() - PreviousFrameIndexOffset : 0);
-			PassParameters->UnjitteredPrevWorldToClip = FMatrix44f(View.PrevViewInfo.ViewMatrices.GetViewMatrix() * View.PrevViewInfo.ViewMatrices.ComputeProjectionNoAAMatrix());		// LWC_TODO: Precision loss?
-			PassParameters->TranslucencyGIHistory0 = TranslucencyGIVolumeHistory0;
-			PassParameters->TranslucencyGIHistory1 = TranslucencyGIVolumeHistory1;
-			PassParameters->TranslucencyGIHistorySampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+					PassParameters->VolumeTraceRadiance = VolumeTraceRadiance;
+					PassParameters->VolumeTraceHitDistance = VolumeTraceHitDistance;
+					PassParameters->View = View.ViewUniformBuffer;
+					PassParameters->VolumeParameters = VolumeParameters;
+					const int32 PreviousFrameIndexOffset = View.bStatePrevViewInfoIsReadOnly ? 0 : 1;
+					PassParameters->PreviousFrameJitterOffset = (FVector3f)TranslucencyVolumeTemporalRandom(View.ViewState ? View.ViewState->GetFrameIndex() - PreviousFrameIndexOffset : 0);
+					PassParameters->UnjitteredPrevWorldToClip = FMatrix44f(View.PrevViewInfo.ViewMatrices.GetViewMatrix() * View.PrevViewInfo.ViewMatrices.ComputeProjectionNoAAMatrix());		// LWC_TODO: Precision loss?
 
-			FTranslucencyVolumeIntegrateCS::FPermutationDomain PermutationVector;
-			PermutationVector.Set<FTranslucencyVolumeIntegrateCS::FTemporalReprojection>(bUseTemporalReprojection);
-			auto ComputeShader = View.ShaderMap->GetShader<FTranslucencyVolumeIntegrateCS>(PermutationVector);
+					FTranslucencyVolumeSpatialFilterCS::FPermutationDomain PermutationVector;
+					auto ComputeShader = View.ShaderMap->GetShader<FTranslucencyVolumeSpatialFilterCS>(PermutationVector);
 
-			const FIntVector GroupSize = FComputeShaderUtils::GetGroupCount(TranslucencyGridSize, FTranslucencyVolumeIntegrateCS::GetGroupSize());
+					const FIntVector GroupSize = FComputeShaderUtils::GetGroupCount(OctahedralAtlasSize, FTranslucencyVolumeSpatialFilterCS::GetGroupSize());
 
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("Integrate %ux%ux%u", TranslucencyGridSize.X, TranslucencyGridSize.Y, TranslucencyGridSize.Z),
-				ComputeShader,
-				PassParameters,
-				GroupSize);
+					FComputeShaderUtils::AddPass(
+						GraphBuilder,
+						RDG_EVENT_NAME("SpatialFilter"),
+						ComputePassFlags,
+						ComputeShader,
+						PassParameters,
+						GroupSize);
+
+					VolumeTraceRadiance = FilteredVolumeTraceRadiance;
+				}
+			}
+
+			FRDGTextureRef TranslucencyGIVolumeHistory0 = nullptr;
+			FRDGTextureRef TranslucencyGIVolumeHistory1 = nullptr;
+
+			if (View.ViewState && View.ViewState->Lumen.TranslucencyVolume0)
+			{
+				TranslucencyGIVolumeHistory0 = GraphBuilder.RegisterExternalTexture(View.ViewState->Lumen.TranslucencyVolume0);
+				TranslucencyGIVolumeHistory1 = GraphBuilder.RegisterExternalTexture(View.ViewState->Lumen.TranslucencyVolume1);
+			}
+
+			FRDGTextureDesc LumenTranslucencyGIDesc0(FRDGTextureDesc::Create3D(TranslucencyGridSize, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV | TexCreate_3DTiling));
+			FRDGTextureDesc LumenTranslucencyGIDesc1(FRDGTextureDesc::Create3D(TranslucencyGridSize, PF_FloatRGBA, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV | TexCreate_3DTiling));
+	
+			FRDGTextureRef TranslucencyGIVolume0 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc0, TEXT("Lumen.TranslucencyVolume.SHLighting0"));
+			FRDGTextureRef TranslucencyGIVolume1 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc1, TEXT("Lumen.TranslucencyVolume.SHLighting1"));
+			FRDGTextureUAVRef TranslucencyGIVolume0UAV = GraphBuilder.CreateUAV(TranslucencyGIVolume0);
+			FRDGTextureUAVRef TranslucencyGIVolume1UAV = GraphBuilder.CreateUAV(TranslucencyGIVolume1);
+
+			FRDGTextureRef TranslucencyGIVolumeNewHistory0 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc0, TEXT("Lumen.TranslucencyVolume.SHLightingNewHistory0"));
+			FRDGTextureRef TranslucencyGIVolumeNewHistory1 = GraphBuilder.CreateTexture(LumenTranslucencyGIDesc1, TEXT("Lumen.TranslucencyVolume.SHLightingNewHistory0"));
+			FRDGTextureUAVRef TranslucencyGIVolumeNewHistory0UAV = GraphBuilder.CreateUAV(TranslucencyGIVolumeNewHistory0);
+			FRDGTextureUAVRef TranslucencyGIVolumeNewHistory1UAV = GraphBuilder.CreateUAV(TranslucencyGIVolumeNewHistory1);
+
+			{
+				FTranslucencyVolumeIntegrateCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FTranslucencyVolumeIntegrateCS::FParameters>();
+				PassParameters->RWTranslucencyGI0 = TranslucencyGIVolume0UAV;
+				PassParameters->RWTranslucencyGI1 = TranslucencyGIVolume1UAV;
+				PassParameters->RWTranslucencyGINewHistory0 = TranslucencyGIVolumeNewHistory0UAV;
+				PassParameters->RWTranslucencyGINewHistory1 = TranslucencyGIVolumeNewHistory1UAV;
+
+				PassParameters->View = View.ViewUniformBuffer;
+				PassParameters->VolumeTraceRadiance = VolumeTraceRadiance;
+				PassParameters->VolumeTraceHitDistance = VolumeTraceHitDistance;
+				PassParameters->VolumeParameters = VolumeParameters;
+
+				TRefCountPtr<IPooledRenderTarget> LocalOctahedralSolidAngleTextureRT;
+				TRefCountPtr<IPooledRenderTarget>& OctahedralSolidAngleTextureRT = View.ViewState ? View.ViewState->Lumen.ScreenProbeGatherState.OctahedralSolidAngleTextureRT : LocalOctahedralSolidAngleTextureRT;
+				extern int32 GLumenOctahedralSolidAngleTextureSize;
+				PassParameters->OctahedralSolidAngleParameters.OctahedralSolidAngleTextureResolutionSq = GLumenOctahedralSolidAngleTextureSize * GLumenOctahedralSolidAngleTextureSize;
+				PassParameters->OctahedralSolidAngleParameters.OctahedralSolidAngleTexture = InitializeOctahedralSolidAngleTexture(GraphBuilder, View.ShaderMap, GLumenOctahedralSolidAngleTextureSize, OctahedralSolidAngleTextureRT);
+
+				const bool bUseTemporalReprojection =
+					GTranslucencyVolumeTemporalReprojection
+					&& View.ViewState
+					&& !View.bCameraCut
+					&& !View.bPrevTransformsReset
+					&& ViewFamily.bRealtimeUpdate
+					&& TranslucencyGIVolumeHistory0
+					&& TranslucencyGIVolumeHistory0->Desc == LumenTranslucencyGIDesc0;
+
+				PassParameters->HistoryWeight = GTranslucencyVolumeHistoryWeight;
+				const int32 PreviousFrameIndexOffset = View.bStatePrevViewInfoIsReadOnly ? 0 : 1;
+				PassParameters->PreviousFrameJitterOffset = (FVector3f)TranslucencyVolumeTemporalRandom(View.ViewState ? View.ViewState->GetFrameIndex() - PreviousFrameIndexOffset : 0);
+				PassParameters->UnjitteredPrevWorldToClip = FMatrix44f(View.PrevViewInfo.ViewMatrices.GetViewMatrix() * View.PrevViewInfo.ViewMatrices.ComputeProjectionNoAAMatrix());		// LWC_TODO: Precision loss?
+				PassParameters->TranslucencyGIHistory0 = TranslucencyGIVolumeHistory0;
+				PassParameters->TranslucencyGIHistory1 = TranslucencyGIVolumeHistory1;
+				PassParameters->TranslucencyGIHistorySampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+				FTranslucencyVolumeIntegrateCS::FPermutationDomain PermutationVector;
+				PermutationVector.Set<FTranslucencyVolumeIntegrateCS::FTemporalReprojection>(bUseTemporalReprojection);
+				auto ComputeShader = View.ShaderMap->GetShader<FTranslucencyVolumeIntegrateCS>(PermutationVector);
+
+				const FIntVector GroupSize = FComputeShaderUtils::GetGroupCount(TranslucencyGridSize, FTranslucencyVolumeIntegrateCS::GetGroupSize());
+
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("Integrate %ux%ux%u", TranslucencyGridSize.X, TranslucencyGridSize.Y, TranslucencyGridSize.Z),
+					ComputePassFlags,
+					ComputeShader,
+					PassParameters,
+					GroupSize);
+			}
+
+			if (View.ViewState && !View.bStatePrevViewInfoIsReadOnly)
+			{
+				View.ViewState->Lumen.TranslucencyVolume0 = GraphBuilder.ConvertToExternalTexture(TranslucencyGIVolumeNewHistory0);
+				View.ViewState->Lumen.TranslucencyVolume1 = GraphBuilder.ConvertToExternalTexture(TranslucencyGIVolumeNewHistory1);
+			}
+
+			View.LumenTranslucencyGIVolume.Texture0 = TranslucencyGIVolume0;
+			View.LumenTranslucencyGIVolume.Texture1 = TranslucencyGIVolume1;
+
+			View.LumenTranslucencyGIVolume.HistoryTexture0 = TranslucencyGIVolumeNewHistory0;
+			View.LumenTranslucencyGIVolume.HistoryTexture1 = TranslucencyGIVolumeNewHistory1;
+
+			View.LumenTranslucencyGIVolume.GridZParams = (FVector)VolumeParameters.TranslucencyGIGridZParams;
+			View.LumenTranslucencyGIVolume.GridPixelSizeShift = FMath::FloorLog2(GTranslucencyFroxelGridPixelSize);
+			View.LumenTranslucencyGIVolume.GridSize = TranslucencyGridSize;
 		}
-
-		if (View.ViewState && !View.bStatePrevViewInfoIsReadOnly)
-		{
-			View.ViewState->Lumen.TranslucencyVolume0 = GraphBuilder.ConvertToExternalTexture(TranslucencyGIVolumeNewHistory0);
-			View.ViewState->Lumen.TranslucencyVolume1 = GraphBuilder.ConvertToExternalTexture(TranslucencyGIVolumeNewHistory1);
-		}
-
-		View.LumenTranslucencyGIVolume.Texture0 = TranslucencyGIVolume0;
-		View.LumenTranslucencyGIVolume.Texture1 = TranslucencyGIVolume1;
-
-		View.LumenTranslucencyGIVolume.HistoryTexture0 = TranslucencyGIVolumeNewHistory0;
-		View.LumenTranslucencyGIVolume.HistoryTexture1 = TranslucencyGIVolumeNewHistory1;
-
-		View.LumenTranslucencyGIVolume.GridZParams = (FVector)VolumeParameters.TranslucencyGIGridZParams;
-		View.LumenTranslucencyGIVolume.GridPixelSizeShift = FMath::FloorLog2(GTranslucencyFroxelGridPixelSize);
-		View.LumenTranslucencyGIVolume.GridSize = TranslucencyGridSize;
 	}
 }

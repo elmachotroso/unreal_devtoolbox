@@ -40,7 +40,7 @@ namespace Chaos
 
 	uint8 FGeometryCollectionCacheAdapter::GetPriority() const
 	{
-		return EngineAdapterPriotityBegin;
+		return EngineAdapterPriorityBegin;
 	}
 	
 	void FGeometryCollectionCacheAdapter::Record_PostSolve(UPrimitiveComponent* InComp, const FTransform& InRootTransform, FPendingFrameWrite& OutFrame, Chaos::FReal InTime) const
@@ -267,7 +267,7 @@ namespace Chaos
 		Context.bEvaluateCurves    = false;
 		Context.bEvaluateEvents    = true;
 
-		FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+		FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context, &MassToLocal.GetConstArray());
 
 		const int32                      NumEventTracks = EvaluatedResult.Events.Num();
 		const TArray<FCacheEventHandle>* EnableEvents   = EvaluatedResult.Events.Find(FEnableStateEvent::EventName);
@@ -338,7 +338,7 @@ namespace Chaos
 					}
 					if (ClusterHandle)
 					{
-						Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticlesNoInternalCluster(ClusterHandle->CastToClustered(), nullptr, true);
+						Solver->GetEvolution()->GetRigidClustering().ReleaseClusterParticlesNoInternalCluster(ClusterHandle->CastToClustered(), true);
 					}
 				}
 			}
@@ -499,9 +499,10 @@ namespace Chaos
 					continue;
 				}
 
-				// Evaluated transform is in Cache Manager space with MassToLocal removed. We need it in World space.
-				FTransform WorldTransform = MassToLocal[ParticleIndex] * EvaluatedTransform;
-				
+				// EvaluatedTransform is in world space already as we have passed MassToLocal transform to InCache->Evaluate()
+				// to make sure the interpolation was done correctly in world space  
+				const FTransform WorldTransform{EvaluatedTransform};
+
 				Handle->SetP(WorldTransform.GetTranslation());
 				Handle->SetQ(WorldTransform.GetRotation());
 				Handle->SetX(Handle->P());
@@ -588,8 +589,6 @@ namespace Chaos
 
 	Chaos::FPhysicsSolver* FGeometryCollectionCacheAdapter::GetComponentSolver(UPrimitiveComponent* InComponent) const
 	{
-#if WITH_CHAOS
-
 		// If the observed component is a Geometry Collection using a non-default Chaos solver..
 		if (UGeometryCollectionComponent* GeometryCollectionComponent = Cast<UGeometryCollectionComponent>(InComponent))
 		{
@@ -610,9 +609,13 @@ namespace Chaos
 			}
 		}
 
-#endif // WITH_CHAOS
 
 		return nullptr;
+	}
+	
+	Chaos::FPhysicsSolverEvents* FGeometryCollectionCacheAdapter::BuildEventsSolver(UPrimitiveComponent* InComponent) const
+	{
+		return GetComponentSolver(InComponent);
 	}
 
 	void FGeometryCollectionCacheAdapter::SetRestState(UPrimitiveComponent* InComponent, UChaosCache* InCache, const FTransform& InRootTransform, Chaos::FReal InTime) const
@@ -632,7 +635,6 @@ namespace Chaos
 			const FTransform ActorToWorld = InRootTransform;
 			const FTransform WorldToComponent = Comp->GetComponentTransform().Inverse();
 			FTransform ActorToComponent = ActorToWorld * WorldToComponent;
-
 			
 			if (const UGeometryCollection* RestCollection = Comp->GetRestCollection())
 			{
@@ -646,7 +648,8 @@ namespace Chaos
 				Context.bEvaluateCurves = false;
 				Context.bEvaluateEvents = false;
 
-				FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+				// we only need the rest transforms, so no need to pass MassToLocal transforms 
+				FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context, nullptr);
 				const int32 NumCacheTransforms = EvaluatedResult.Transform.Num();
 			
 				// Any bone that is not explicitly set by the cache defaults to it's rest collection position.
@@ -768,7 +771,8 @@ namespace Chaos
 					Context.bEvaluateCurves = false;
 					Context.bEvaluateEvents = false;
 
-					FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+					// initial transforms do no need to be multiplied by MassToLocal transforms so we can pass nullptr
+					FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context, nullptr);
 					const int32 NumCacheTransforms = EvaluatedResult.Transform.Num();
 
 					// Any bone that is not explicitly set by the cache defaults to it's rest collection position.
@@ -817,7 +821,8 @@ namespace Chaos
 		Context.bEvaluateCurves = false;
 		Context.bEvaluateEvents = true;
 
-		FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+		// passing nullptr for the MassToLocal as we do not need to evaluate the transforms
+		FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context, nullptr);
 		const TArray<FCacheEventHandle>* EnableEvents = EvaluatedResult.Events.Find(FEnableStateEvent::EventName);
 		if (EnableEvents)
 		{

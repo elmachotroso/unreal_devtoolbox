@@ -4,7 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 class FSequencerCommands : public TCommands<FSequencerCommands>
 {
@@ -15,12 +21,18 @@ public:
 		"Sequencer",
 		NSLOCTEXT("Contexts", "Sequencer", "Sequencer"),
 		NAME_None, // "MainFrame" // @todo Fix this crash
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 	{}
 	
 	/** Toggle play */
 	TSharedPtr< FUICommandInfo > TogglePlay;
+
+	/** Toggle play viewport*/
+	TSharedPtr< FUICommandInfo > TogglePlayViewport;
+
+	/** Scrub time in the viewport*/
+	TSharedPtr< FUICommandInfo > ScrubTimeViewport;
 
 	/** Play forward */
 	TSharedPtr< FUICommandInfo > PlayForward;
@@ -30,7 +42,13 @@ public:
 
 	/** Jump to end of playback */
 	TSharedPtr< FUICommandInfo > JumpToEnd;
-	
+
+	/** Jump to start of playback */
+	TSharedPtr< FUICommandInfo > JumpToStartViewport;
+
+	/** Jump to end of playback */
+	TSharedPtr< FUICommandInfo > JumpToEndViewport;
+
 	/** Shuttle forward */
 	TSharedPtr< FUICommandInfo > ShuttleForward;
 
@@ -50,10 +68,10 @@ public:
 	TSharedPtr< FUICommandInfo > StepBackward;
 
 	/** Step forward */
-	TSharedPtr< FUICommandInfo > StepForward2;
+	TSharedPtr< FUICommandInfo > StepForwardViewport;
 
 	/** Step backward */
-	TSharedPtr< FUICommandInfo > StepBackward2;
+	TSharedPtr< FUICommandInfo > StepBackwardViewport;
 
 	/** Jump forward */
 	TSharedPtr< FUICommandInfo > JumpForward;
@@ -130,6 +148,9 @@ public:
 	/** Toggle constraining the playback range to the section bounds */
 	TSharedPtr< FUICommandInfo > ToggleKeepPlaybackRangeInSectionBounds;
 
+	/** Toggle auto expand outliner tree on child selection */
+	TSharedPtr< FUICommandInfo > ToggleAutoExpandNodesOnSelection;
+
 	/** Expand/collapse nodes */
 	TSharedPtr< FUICommandInfo > ToggleExpandCollapseNodes;
 
@@ -144,6 +165,9 @@ public:
 
 	/** Sort all nodes and descendants */
 	TSharedPtr< FUICommandInfo > SortAllNodesAndDescendants;
+
+	/** Reset all enabled filters */
+	TSharedPtr< FUICommandInfo > ResetFilters;
 
 	/** Sets the upper bound of the selection range */
 	TSharedPtr< FUICommandInfo > SetSelectionRangeEnd;
@@ -168,6 +192,9 @@ public:
 
 	/** Select all keys and sections backward from the current time */
 	TSharedPtr< FUICommandInfo > SelectBackward;
+
+	/** Select none */
+	TSharedPtr< FUICommandInfo > SelectNone;
 
 	/** Add selected actors to sequencer */
 	TSharedPtr< FUICommandInfo > AddActorsToSequencer;
@@ -331,11 +358,17 @@ public:
 	/** Finds the viewed sequence asset in the content browser. */
 	TSharedPtr< FUICommandInfo > FindInContentBrowser;
 
-	/** Toggles whether to show combined keys at the top node level. */
-	TSharedPtr< FUICommandInfo > ToggleCombinedKeyframes;
+	/** Toggles whether to show layer bars to edit keyframes in bulk. */
+	TSharedPtr< FUICommandInfo > ToggleLayerBars;
+
+	/** Show/hide key bar connectors for quickly retiming pairs of keys*/
+	TSharedPtr< FUICommandInfo > ToggleKeyBars;
 
 	/** Toggles whether to show channel colors in the track area. */
 	TSharedPtr< FUICommandInfo > ToggleChannelColors;
+
+	/** Toggles whether to show the status bar. */
+	TSharedPtr< FUICommandInfo > ToggleShowStatusBar;
 
 	/** Turns auto scroll on and off. */
 	TSharedPtr< FUICommandInfo > ToggleAutoScroll;
@@ -391,9 +424,6 @@ public:
 	/** Exports animation to fbx. */
 	TSharedPtr< FUICommandInfo > ExportFBX;
 
-	/** Exports animation to camera anim. */
-	TSharedPtr< FUICommandInfo > ExportToCameraAnim;
-
 	/** Toggle whether we should evaluate sub sequences in isolation */
 	TSharedPtr< FUICommandInfo > ToggleEvaluateSubSequencesInIsolation;
 
@@ -411,6 +441,9 @@ public:
 
 	/** Toggle piloting the last camera or the camera cut camera */
 	TSharedPtr< FUICommandInfo > TogglePilotCamera;
+
+	/** Forcibly refresh the UI */
+	TSharedPtr< FUICommandInfo > RefreshUI;
 
 	/**
 	 * Initialize commands

@@ -17,6 +17,7 @@ UNREALED_API DECLARE_LOG_CATEGORY_EXTERN(LogWorldPartitionConvertCommandlet, Log
 class ULevelStreaming;
 class UWorldPartition;
 class ULevelStreaming;
+class UDataLayerFactory;
 
 USTRUCT()
 struct FHLODLayerActorMapping
@@ -86,7 +87,6 @@ protected:
 	FString LevelConfigFilename;
 	TArray<UPackage*> PackagesToSave;
 	TArray<UPackage*> PackagesToDelete;
-	FPackageSourceControlHelper PackageHelper;
 
 	bool bOnlyMergeSubLevels;
 	bool bDeleteSourceLevels;
@@ -123,6 +123,9 @@ protected:
 	FString DefaultHLODLayerName;
 
 	UPROPERTY(Config)
+	FString DefaultHLODLayerAsset;
+
+	UPROPERTY(Config)
 	FString FoliageTypePath;
 
 	UPROPERTY(Config)
@@ -133,4 +136,10 @@ protected:
 
 	UPROPERTY(Config)
 	uint32 LandscapeGridSize;
+
+	UPROPERTY(Config)
+	FString DataLayerAssetFolder;
+
+	UPROPERTY()
+	TObjectPtr<UDataLayerFactory> DataLayerFactory;
 };

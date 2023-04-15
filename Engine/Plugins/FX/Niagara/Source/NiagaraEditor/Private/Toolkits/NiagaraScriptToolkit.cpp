@@ -2,9 +2,19 @@
 
 #include "NiagaraScriptToolkit.h"
 
+#include "AssetTypeActions/AssetTypeActions_NiagaraScript.h"
 #include "BusyCursor.h"
 #include "DetailLayoutBuilder.h"
 #include "Editor.h"
+#include "Engine/Selection.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IMessageLogListing.h"
+#include "MessageLogInitializationOptions.h"
+#include "MessageLogModule.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/MessageDialog.h"
+#include "Misc/TransactionObjectEvent.h"
+#include "Modules/ModuleManager.h"
 #include "NiagaraEditorCommands.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorStyle.h"
@@ -18,33 +28,21 @@
 #include "NiagaraScript.h"
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraScriptInputCollectionViewModel.h"
-#include "Widgets/SNiagaraParameterDefinitionsPanel.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraStandaloneScriptViewModel.h"
-#include "NiagaraSystem.h"
 #include "NiagaraVersionMetaData.h"
 #include "PropertyEditorModule.h"
 #include "SGraphActionMenu.h"
 #include "SNiagaraScriptVersionWidget.h"
-#include "AssetTypeActions/AssetTypeActions_NiagaraScript.h"
-#include "Developer/MessageLog/Public/IMessageLogListing.h"
-#include "Developer/MessageLog/Public/MessageLogInitializationOptions.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
-#include "Engine/Selection.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Misc/FeedbackContext.h"
-#include "Misc/MessageDialog.h"
-#include "Modules/ModuleManager.h"
 #include "UObject/Package.h"
-#include "UObject/UObjectIterator.h"
+#include "ViewModels/NiagaraParameterDefinitionsPanelViewModel.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
-#include "Widgets/SNiagaraParameterMapView.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SNiagaraParameterDefinitionsPanel.h"
 #include "Widgets/SNiagaraParameterPanel.h"
 #include "Widgets/SNiagaraScriptGraph.h"
 #include "Widgets/SNiagaraSelectedObjectsDetails.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "ViewModels/NiagaraParameterDefinitionsPanelViewModel.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraScriptToolkit"
 
@@ -81,6 +79,7 @@ FNiagaraScriptToolkit::~FNiagaraScriptToolkit()
 
 	FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::LoadModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
 	NiagaraEditorModule.GetOnScriptToolkitsShouldFocusGraphElement().RemoveAll(this);
+	GEditor->UnregisterForUndo(this);
 }
 
 void FNiagaraScriptToolkit::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -98,20 +97,17 @@ void FNiagaraScriptToolkit::RegisterTabSpawners(const TSharedRef<class FTabManag
 	InTabManager->RegisterTabSpawner(ScriptDetailsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabScriptDetails))
 		.SetDisplayName(LOCTEXT("ScriptDetailsTab", "Script Details"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(SelectedDetailsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabSelectedDetails))
 		.SetDisplayName(LOCTEXT("SelectedDetailsTab", "Selected Details"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(ParametersTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabScriptParameters))
 		.SetDisplayName(LOCTEXT("ParametersTab", "Parameters"))
-		.SetGroup(WorkspaceMenuCategoryRef);
-
-	InTabManager->RegisterTabSpawner(ParametersTabId2, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabScriptParameters2)) //@todo(ng) remove this
-		.SetDisplayName(LOCTEXT("ParametersTab2", "Legacy Parameters"))
-		.SetGroup(WorkspaceMenuCategoryRef);
+		.SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Parameters"));
 		
 	//@todo(ng) disable parameter definitions panel pending bug fixes
 // 	InTabManager->RegisterTabSpawner(ParameterDefinitionsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabParameterDefinitions))
@@ -121,15 +117,17 @@ void FNiagaraScriptToolkit::RegisterTabSpawners(const TSharedRef<class FTabManag
 	InTabManager->RegisterTabSpawner(StatsTabId, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabStats))
 		.SetDisplayName(LOCTEXT("StatsTab", "Stats"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(MessageLogTabID, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabMessageLog))
 		.SetDisplayName(LOCTEXT("NiagaraMessageLogTab", "Niagara Message Log"))
-		.SetGroup(WorkspaceMenuCategoryRef);
+		.SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Log"));
 
 	InTabManager->RegisterTabSpawner(VersioningTabID, FOnSpawnTab::CreateSP(this, &FNiagaraScriptToolkit::SpawnTabVersioning))
         .SetDisplayName(LOCTEXT("VersioningTab", "Versioning"))
-        .SetGroup(WorkspaceMenuCategoryRef);
+        .SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Versions"));
 }
 
 void FNiagaraScriptToolkit::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -219,7 +217,7 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	Stats = MessageLogModule.CreateLogListingWidget(StatsListing.ToSharedRef());
 
 	VersionMetadata = NewObject<UNiagaraVersionMetaData>(InputScript, "VersionMetadata", RF_Transient);
-	SAssignNew(VersionsWidget, SNiagaraScriptVersionWidget, EditedNiagaraScript.Script, VersionMetadata)
+	SAssignNew(VersionsWidget, SNiagaraScriptVersionWidget, EditedNiagaraScript.Script, VersionMetadata, InputScript->GetOutermost()->GetName())
 		.OnChangeToVersion(this, &FNiagaraScriptToolkit::SwitchToVersion)
 		.OnVersionDataChanged_Lambda([this]()
 		{
@@ -389,7 +387,7 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabNodeGraph( const FSpawnTabAr
 	return
 		SNew(SDockTab)
 		[
-			SAssignNew(NiagaraScriptGraphWidget, SNiagaraScriptGraph, ScriptViewModel->GetGraphViewModel())
+			SAssignNew(NiagaraScriptGraphWidget, SNiagaraScriptGraph, ScriptViewModel->GetGraphViewModel(), FAssetData(OriginalNiagaraScript.Script))
 			.GraphTitle(LOCTEXT("SpawnGraphTitle", "Script"))
 		];
 }
@@ -488,23 +486,6 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptParameters(const FSpaw
 		SNew(SDockTab)
 		[
 			SNew(SNiagaraParameterPanel, ParameterPanelViewModel, GetToolkitCommands())
-		];
-
-	return SpawnedTab;
-}
-
-TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptParameters2(const FSpawnTabArgs& Args)
-{
-	checkf(Args.GetTabId().TabType == ParametersTabId2, TEXT("Wrong tab ID in NiagaraScriptToolkit"));
-
-	TArray<TSharedRef<FNiagaraObjectSelection>> Array;
-	Array.Push(DetailsScriptSelection.ToSharedRef());
-	Array.Push(ScriptViewModel->GetVariableSelection());
-
-	TSharedRef<SDockTab> SpawnedTab =
-		SNew(SDockTab)
-		[
-			SNew(SNiagaraParameterMapView, Array, SNiagaraParameterMapView::EToolkitType::SCRIPT, GetToolkitCommands())
 		];
 
 	return SpawnedTab;
@@ -659,7 +640,7 @@ void FNiagaraScriptToolkit::ExtendToolbar()
                  FOnGetContent::CreateRaw(ScriptToolkit, &FNiagaraScriptToolkit::GenerateVersioningDropdownMenu, ScriptToolkit->GetToolkitCommands()),
                  FText(),
                  LOCTEXT("NiagaraShowVersions_ToolTip", "Select version to edit"),
-                 FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.SourceControl"),
+                 FSlateIcon(FAppStyle::GetAppStyleSetName(), "Versions"),
                  true);
 			}
 			ToolbarBuilder.EndSection();
@@ -825,14 +806,15 @@ void FNiagaraScriptToolkit::UpdateModuleStats()
 bool FNiagaraScriptToolkit::MatchesContext(const FTransactionContext& InContext, const TArray<TPair<UObject*, FTransactionObjectEvent>>& TransactionObjects) const
 {
 	const auto* Graph = ScriptViewModel->GetGraphViewModel()->GetGraph();
-	if (Graph)
+	UNiagaraScriptSourceBase* Source = EditedNiagaraScript.GetScriptData() ? EditedNiagaraScript.Script->GetSource(EditedNiagaraScript.Version) : nullptr;
+	if (Graph || Source)
 	{
 		for (const TPair<UObject*, FTransactionObjectEvent>& TransactionObjectPair : TransactionObjects)
 		{
 			UObject* Object = TransactionObjectPair.Key;
 			while (Object != nullptr)
 			{
-				if (Object == Graph)
+				if (Object == Graph || Object == Source)
 				{
 					return true;
 				}
@@ -845,6 +827,17 @@ bool FNiagaraScriptToolkit::MatchesContext(const FTransactionContext& InContext,
 
 void FNiagaraScriptToolkit::PostUndo(bool bSuccess)
 {
+	if (EditedNiagaraScript.Version.IsValid() && EditedNiagaraScript.GetScriptData() == nullptr)
+	{
+		if (EditedNiagaraScript.Script && EditedNiagaraScript.Script->IsVersioningEnabled())
+		{
+			SwitchToVersion(EditedNiagaraScript.Script->GetExposedVersion().VersionGuid);
+		}
+		else
+		{
+			EditedNiagaraScript.Version = FGuid();
+		}
+	}
 	MarkDirtyWithPendingChanges();
 }
 

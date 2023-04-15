@@ -2,34 +2,38 @@
 #include "MetasoundSource.h"
 
 #include "Algo/Transform.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AudioDeviceManager.h"
 #include "IAudioParameterInterfaceRegistry.h"
+#include "Interfaces/MetasoundFrontendOutputFormatInterfaces.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "Internationalization/Text.h"
 #include "MetasoundAssetBase.h"
+#include "MetasoundAssetManager.h"
 #include "MetasoundAudioFormats.h"
 #include "MetasoundEngineArchetypes.h"
+#include "MetasoundEngineAsset.h"
 #include "MetasoundEngineEnvironment.h"
 #include "MetasoundEnvironment.h"
 #include "MetasoundFrontendController.h"
 #include "MetasoundFrontendDataTypeRegistry.h"
-#include "MetasoundFrontendInjectReceiveNodes.h"
 #include "MetasoundFrontendQuery.h"
 #include "MetasoundFrontendQuerySteps.h"
 #include "MetasoundFrontendTransform.h"
 #include "MetasoundGenerator.h"
 #include "MetasoundLog.h"
+#include "MetasoundOperatorBuilderSettings.h"
 #include "MetasoundOperatorSettings.h"
-#include "MetasoundOutputFormatInterfaces.h"
 #include "MetasoundParameterTransmitter.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundReceiveNode.h"
 #include "MetasoundSettings.h"
-#include "MetasoundSourceInterface.h"
 #include "MetasoundTrace.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundUObjectRegistry.h"
 #include "UObject/ObjectSaveContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundSource)
 
 #if WITH_EDITORONLY_DATA
 #include "EdGraph/EdGraph.h"
@@ -41,43 +45,127 @@ namespace Metasound
 {
 	namespace SourcePrivate
 	{
-		using FFormatOutputVertexKeyMap = TMap<EMetasoundSourceAudioFormat, TArray<Metasound::FVertexName>>;
-
-		const FFormatOutputVertexKeyMap& GetFormatOutputVertexKeys()
+		// Contains information on output audio formats
+		struct FOutputFormatInfo
 		{
-			auto CreateVertexKeyMap = []()
+			FMetasoundFrontendVersion InterfaceVersion;
+			TArray<Metasound::FVertexName> OutputVertexChannelOrder;
+		};
+
+		using FFormatInfoMap = TMap<EMetasoundSourceAudioFormat, FOutputFormatInfo>;
+		using FFormatInfoPair = TPair<EMetasoundSourceAudioFormat, FOutputFormatInfo>;
+
+		// Return a map containing all the supported audio formats for a MetaSound
+		// Source. 
+		const FFormatInfoMap& GetFormatInfoMap()
+		{
+			auto CreateFormatInfoMap = []()
 			{
 				using namespace Metasound::Frontend;
 
-				return FFormatOutputVertexKeyMap
+				return FFormatInfoMap
 				{
 					{
 						EMetasoundSourceAudioFormat::Mono,
 						{
-							OutputFormatMonoInterface::Outputs::MonoOut
+							OutputFormatMonoInterface::GetVersion(),
+							{
+								OutputFormatMonoInterface::Outputs::MonoOut
+							}
 						}
 					},
 					{
 						EMetasoundSourceAudioFormat::Stereo,
 						{
-							OutputFormatStereoInterface::Outputs::LeftOut,
-							OutputFormatStereoInterface::Outputs::RightOut,
+							OutputFormatStereoInterface::GetVersion(),
+							{
+								OutputFormatStereoInterface::Outputs::LeftOut,
+								OutputFormatStereoInterface::Outputs::RightOut
+							}
+						}
+					},
+					{
+						EMetasoundSourceAudioFormat::Quad,
+						{
+							OutputFormatQuadInterface::GetVersion(),
+							{
+								OutputFormatQuadInterface::Outputs::FrontLeftOut,
+								OutputFormatQuadInterface::Outputs::FrontRightOut,
+								OutputFormatQuadInterface::Outputs::SideLeftOut,
+								OutputFormatQuadInterface::Outputs::SideRightOut
+							}
+						}
+					},
+					{
+						EMetasoundSourceAudioFormat::FiveDotOne,
+						{
+							OutputFormatFiveDotOneInterface::GetVersion(),
+							{
+								OutputFormatFiveDotOneInterface::Outputs::FrontLeftOut,
+								OutputFormatFiveDotOneInterface::Outputs::FrontRightOut,
+								OutputFormatFiveDotOneInterface::Outputs::FrontCenterOut,
+								OutputFormatFiveDotOneInterface::Outputs::LowFrequencyOut,
+								OutputFormatFiveDotOneInterface::Outputs::SideLeftOut,
+								OutputFormatFiveDotOneInterface::Outputs::SideRightOut
+							}
+						}
+					},
+					{
+						EMetasoundSourceAudioFormat::SevenDotOne,
+						{
+							OutputFormatSevenDotOneInterface::GetVersion(),
+							{
+								OutputFormatSevenDotOneInterface::Outputs::FrontLeftOut,
+								OutputFormatSevenDotOneInterface::Outputs::FrontRightOut,
+								OutputFormatSevenDotOneInterface::Outputs::FrontCenterOut,
+								OutputFormatSevenDotOneInterface::Outputs::LowFrequencyOut,
+								OutputFormatSevenDotOneInterface::Outputs::SideLeftOut,
+								OutputFormatSevenDotOneInterface::Outputs::SideRightOut,
+								OutputFormatSevenDotOneInterface::Outputs::BackLeftOut,
+								OutputFormatSevenDotOneInterface::Outputs::BackRightOut
+							}
 						}
 					}
 				};
 			};
-			static const FFormatOutputVertexKeyMap Map = CreateVertexKeyMap();
+
+			static const FFormatInfoMap Map = CreateFormatInfoMap();
 			return Map;
 		}
+		
+		Frontend::FMetaSoundAssetRegistrationOptions GetInitRegistrationOptions()
+		{
+			Frontend::FMetaSoundAssetRegistrationOptions RegOptions;
+			RegOptions.bForceReregister = false;
+			if (const UMetaSoundSettings* Settings = GetDefault<UMetaSoundSettings>())
+			{
+				RegOptions.bAutoUpdateLogWarningOnDroppedConnection = Settings->bAutoUpdateLogWarningOnDroppedConnection;
+			}
+
+			return RegOptions;
+		}
+
+		// Return an array of all the audio format versions.
+		const TArray<FMetasoundFrontendVersion>& GetFormatInterfaceVersions()
+		{
+			auto CreateFormatInterfaceVersions = []() -> TArray<FMetasoundFrontendVersion>
+			{
+				TArray<FMetasoundFrontendVersion> FormatVersions;
+				const FFormatInfoMap& FormatMap = GetFormatInfoMap();
+				for (const auto& Pair : FormatMap)
+				{
+					FormatVersions.Add(Pair.Value.InterfaceVersion);
+				}
+				return FormatVersions;
+			};
+
+			static const TArray<FMetasoundFrontendVersion> Versions = CreateFormatInterfaceVersions();
+			return Versions;
+		}
+
 	} // namespace SourcePrivate
 } // namespace Metasound
 
-FAutoConsoleVariableRef CVarMetaSoundBlockRate(
-	TEXT("au.MetaSound.BlockRate"),
-	Metasound::ConsoleVariables::BlockRate,
-	TEXT("Sets block rate (blocks per second) of MetaSounds.\n")
-	TEXT("Default: 100.0f"),
-	ECVF_Default);
 
 UMetaSoundSource::UMetaSoundSource(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -88,14 +176,13 @@ UMetaSoundSource::UMetaSoundSource(const FObjectInitializer& ObjectInitializer)
 
 	// todo: ensure that we have a method so that the audio engine can be authoritative over the sample rate the UMetaSoundSource runs at.
 	SampleRate = 48000.f;
-
 }
 
 #if WITH_EDITOR
 void UMetaSoundSource::PostEditUndo()
 {
 	Super::PostEditUndo();
-	Metasound::PostEditUndo(*this);
+	Metasound::FMetaSoundEngineAssetHelper::PostEditUndo(*this);
 }
 
 void UMetaSoundSource::PostDuplicate(EDuplicateMode::Type InDuplicateMode)
@@ -113,85 +200,87 @@ void UMetaSoundSource::PostDuplicate(EDuplicateMode::Type InDuplicateMode)
 
 void UMetaSoundSource::PostEditChangeProperty(FPropertyChangedEvent& InEvent)
 {
-	using namespace Metasound;
-	using namespace Metasound::Engine;
-	using namespace Metasound::Frontend;
-
 	Super::PostEditChangeProperty(InEvent);
 
 	if (InEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UMetaSoundSource, OutputFormat))
 	{
-		ConvertFromPreset();
+		PostEditChangeOutputFormat();
+	}
+}
 
-		bool bDidModifyDocument = false;
-		switch (OutputFormat)
+void UMetaSoundSource::PostEditChangeOutputFormat()
+{
+	using namespace Metasound::SourcePrivate;
+	using namespace Metasound::Frontend;
+
+	// If this is a preset, convert to normal metasound source since it is being
+	// altered. 
+	ConvertFromPreset();
+
+	// Determine which interfaces to add and remove from the document due to the
+	// output format being changed.
+	TArray<FMetasoundFrontendVersion> OutputFormatsToAdd;
+	if (const FOutputFormatInfo* FormatInfo = GetFormatInfoMap().Find(OutputFormat))
+	{
+		OutputFormatsToAdd.Add(FormatInfo->InterfaceVersion);
+	}
+
+	TArray<FMetasoundFrontendVersion> OutputFormatsToRemove;
+	for (const FMetasoundFrontendVersion& FormatVersion : GetFormatInterfaceVersions())
+	{
+		if (RootMetasoundDocument.Interfaces.Contains(FormatVersion))
 		{
-			case EMetasoundSourceAudioFormat::Mono:
+			if (!OutputFormatsToAdd.Contains(FormatVersion))
 			{
-				bDidModifyDocument = FModifyRootGraphInterfaces(
-					{ OutputFormatStereoInterface::GetVersion() },
-					{ OutputFormatMonoInterface::GetVersion() }
-				).Transform(GetDocumentHandle());
+				OutputFormatsToRemove.Add(FormatVersion);
 			}
-			break;
-
-			case EMetasoundSourceAudioFormat::Stereo:
-			{
-				bDidModifyDocument = FModifyRootGraphInterfaces(
-					{ OutputFormatMonoInterface::GetVersion() },
-					{ OutputFormatStereoInterface::GetVersion() }
-				).Transform(GetDocumentHandle());
-			}
-			break;
-
-			default:
-			{
-				static_assert(static_cast<int32>(EMetasoundSourceAudioFormat::COUNT) == 2, "Possible missing format switch case coverage.");
-			}
-			break;
 		}
+	}
 
-		if (bDidModifyDocument)
+	// Add and/or remove interfaces from the root document.
+	const bool bDidModifyDocument = FModifyRootGraphInterfaces(OutputFormatsToRemove, OutputFormatsToAdd).Transform(GetDocumentHandle());
+
+	if (bDidModifyDocument)
+	{
+		// Update the data in this UMetaSoundSource to reflect what is in the metasound document.
+		ConformObjectDataToInterfaces();
+
+		// Use the editor form of register to ensure other editors'
+		// MetaSounds are auto-updated if they are referencing this graph.
+		if (Graph)
 		{
-			ConformObjectDataToInterfaces();
-
-			// Use the editor form of register to ensure other editors'
-			// MetaSounds are auto-updated if they are referencing this graph.
-			if (Graph)
-			{
-				Graph->RegisterGraphWithFrontend();
-			}
-			MarkMetasoundDocumentDirty();
+			Graph->RegisterGraphWithFrontend();
 		}
+		MarkMetasoundDocumentDirty();
 	}
 }
 #endif // WITH_EDITOR
 
 bool UMetaSoundSource::ConformObjectDataToInterfaces()
 {
-	using namespace Metasound::Frontend;
+	using namespace Metasound::SourcePrivate;
 
-	if (IsInterfaceDeclared(OutputFormatMonoInterface::GetVersion()))
+	bool bDidAlterObjectData = false;
+
+	// Update the OutputFormat and NumChannels to match the audio format interface
+	// on the root document.
+	const FFormatInfoMap& FormatInfo = GetFormatInfoMap();
+	for (const FFormatInfoPair& Pair : FormatInfo)
 	{
-		if (OutputFormat != EMetasoundSourceAudioFormat::Mono || NumChannels != 1)
+		if (RootMetasoundDocument.Interfaces.Contains(Pair.Value.InterfaceVersion))
 		{
-			OutputFormat = EMetasoundSourceAudioFormat::Mono;
-			NumChannels = 1;
-			return true;
+			if ((OutputFormat != Pair.Key) || (NumChannels != Pair.Value.OutputVertexChannelOrder.Num()))
+			{
+				OutputFormat = Pair.Key;
+				NumChannels = Pair.Value.OutputVertexChannelOrder.Num();
+				bDidAlterObjectData = true;
+			}
+
+			break;
 		}
 	}
 
-	if (IsInterfaceDeclared(OutputFormatStereoInterface::GetVersion()))
-	{
-		if (OutputFormat != EMetasoundSourceAudioFormat::Stereo || NumChannels != 2)
-		{
-			OutputFormat = EMetasoundSourceAudioFormat::Stereo;
-			NumChannels = 2;
-			return true;
-		}
-	}
-
-	return false;
+	return bDidAlterObjectData;
 }
 
 
@@ -204,31 +293,39 @@ void UMetaSoundSource::BeginDestroy()
 void UMetaSoundSource::PreSave(FObjectPreSaveContext InSaveContext)
 {
 	Super::PreSave(InSaveContext);
-	Metasound::PreSaveAsset(*this, InSaveContext);
+	Metasound::FMetaSoundEngineAssetHelper::PreSaveAsset(*this, InSaveContext);
 }
 
 void UMetaSoundSource::Serialize(FArchive& InArchive)
 {
 	Super::Serialize(InArchive);
-	Metasound::SerializeToArchive(*this, InArchive);
+	Metasound::FMetaSoundEngineAssetHelper::SerializeToArchive(*this, InArchive);
 }
 
-void UMetaSoundSource::SetReferencedAssetClassKeys(TSet<Metasound::Frontend::FNodeRegistryKey>&& InKeys)
+#if WITH_EDITOR
+void UMetaSoundSource::SetReferencedAssetClasses(TSet<Metasound::Frontend::IMetaSoundAssetManager::FAssetInfo>&& InAssetClasses)
 {
-	ReferencedAssetClassKeys = MoveTemp(InKeys);
+	Metasound::FMetaSoundEngineAssetHelper::SetReferencedAssetClasses(*this, MoveTemp(InAssetClasses));
+}
+#endif // WITH_EDITOR
+
+TArray<FMetasoundAssetBase*> UMetaSoundSource::GetReferencedAssets()
+{
+	return Metasound::FMetaSoundEngineAssetHelper::GetReferencedAssets(*this);
 }
 
-TSet<FSoftObjectPath>& UMetaSoundSource::GetReferencedAssetClassCache()
+const TSet<FSoftObjectPath>& UMetaSoundSource::GetAsyncReferencedAssetClassPaths() const 
 {
 	return ReferenceAssetClassCache;
 }
 
-const TSet<FSoftObjectPath>& UMetaSoundSource::GetReferencedAssetClassCache() const
+void UMetaSoundSource::OnAsyncReferencedAssetsLoaded(const TArray<FMetasoundAssetBase*>& InAsyncReferences)
 {
-	return ReferenceAssetClassCache;
+	Metasound::FMetaSoundEngineAssetHelper::OnAsyncReferencedAssetsLoaded(*this, InAsyncReferences);
 }
 
 #if WITH_EDITORONLY_DATA
+
 UEdGraph* UMetaSoundSource::GetGraph()
 {
 	return Graph;
@@ -257,43 +354,52 @@ FText UMetaSoundSource::GetDisplayName() const
 	return FMetasoundAssetBase::GetDisplayName(MoveTemp(TypeName));
 }
 
+
+void UMetaSoundSource::SetRegistryAssetClassInfo(const Metasound::Frontend::FNodeClassInfo& InNodeInfo)
+{
+	Metasound::FMetaSoundEngineAssetHelper::SetMetaSoundRegistryAssetClassInfo(*this, InNodeInfo);
+}
+#endif // WITH_EDITORONLY_DATA
+
 void UMetaSoundSource::PostLoad()
 {
 	Super::PostLoad();
+	Metasound::FMetaSoundEngineAssetHelper::PostLoad(*this);
 
 	Duration = GetDuration();
 	bLooping = IsLooping();
 }
 
-void UMetaSoundSource::SetRegistryAssetClassInfo(const Metasound::Frontend::FNodeClassInfo& InNodeInfo)
+void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& ParametersToInit, FName InFeatureName)
 {
-	Metasound::SetMetaSoundRegistryAssetClassInfo(*this, InNodeInfo);
-}
-#endif // WITH_EDITORONLY_DATA
+	using namespace Metasound::SourcePrivate;
 
-void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& InParametersToInit, FName InFeatureName)
-{
-	// Have to call cache vs a simple get as the source may have yet to start playing/has not been registered
+	METASOUND_LLM_SCOPE;
+
+	// Have to call register vs a simple get as the source may have yet to start playing/has not been registered
 	// via InitResources. If it has, this call is fast and returns the already cached RuntimeData.
-	const FRuntimeData& RuntimeData = CacheRuntimeData();
-	const TArray<FMetasoundFrontendClassInput>& TransmittableInputs = RuntimeData.TransmittableInputs;
+	RegisterGraphWithFrontend(GetInitRegistrationOptions());
+	const FRuntimeData& RuntimeData = GetRuntimeData();
+	const TArray<FMetasoundFrontendClassInput>& PublicInputs = RuntimeData.PublicInputs;
+
+	TMap<FName, FMetasoundFrontendVertex> PublicInputMap;
+	Algo::Transform(PublicInputs, PublicInputMap, [](const FMetasoundFrontendClassInput& Input)
+	{
+		return TPair<FName, FMetasoundFrontendVertex>(Input.Name, Input);
+	});
 
 	// Removes values that are not explicitly defined by the ParamType and returns
 	// whether or not the parameter is a valid input and should be included.
-	auto Sanitize = [&TransmittableInputs](FAudioParameter& Parameter) -> bool
+	auto Sanitize = [&PublicInputMap](FAudioParameter& Parameter) -> bool
 	{
-		auto FindInput = [&Parameter](const FMetasoundFrontendClassInput& Input)
-		{
-			if (Parameter.ParamName == Input.Name)
-			{
-				return Parameter.TypeName.IsNone() || Parameter.TypeName == Input.TypeName;
-			}
-
-			return false;
-		};
-
-		const FMetasoundFrontendClassInput* Input = TransmittableInputs.FindByPredicate(FindInput);
+		const FMetasoundFrontendVertex* Input = PublicInputMap.Find(Parameter.ParamName);
 		if (!Input)
+		{
+			return false;
+		}
+
+		const bool bIsMatchingType = Parameter.TypeName.IsNone() || (Parameter.TypeName == Input->TypeName);
+		if (!bIsMatchingType)
 		{
 			return false;
 		}
@@ -419,15 +525,10 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& InParametersToIni
 		}
 	};
 
-	TMap<FName, FName> InputNameTypeMap;
-	Algo::Transform(GetDocumentChecked().RootGraph.Interface.Inputs, InputNameTypeMap, [](const FMetasoundFrontendClassInput& Input)
-	{
-		return TPair<FName, FName>(Input.Name, Input.TypeName);
-	});
 
-	for (int32 i = InParametersToInit.Num() - 1; i >= 0; --i)
+	for (int32 i = ParametersToInit.Num() - 1; i >= 0; --i)
 	{
-		FAudioParameter& Parameter = InParametersToInit[i];
+		FAudioParameter& Parameter = ParametersToInit[i];
 		
 #if !NO_LOGGING
 		// For logging in case of failure
@@ -436,25 +537,32 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& InParametersToIni
 		
 		if (Sanitize(Parameter))
 		{
-			if (IsParameterValid(Parameter, InputNameTypeMap))
+			if (IsParameterValid(Parameter, PublicInputMap))
 			{
 				ConstructProxies(Parameter);
 			}
 			else
 			{
 #if !NO_LOGGING
-				UE_LOG(LogMetaSound, Error, TEXT("Failed to set invalid parameter '%s' in asset '%s': Either does not exist or is unsupported type"), *Parameter.ParamName.ToString(), *AssetName);
+				if (::Metasound::MetaSoundParameterEnableWarningOnIgnoredParameterCVar)
+				{
+					UE_LOG(LogMetaSound, Warning, TEXT("Failed to set invalid parameter '%s' in asset '%s': Either does not exist or is unsupported type"), *Parameter.ParamName.ToString(), *AssetName);
+				}
 #endif // !NO_LOGGING
 				constexpr bool bAllowShrinking = false;
-				InParametersToInit.RemoveAtSwap(i, 1, bAllowShrinking);
+				ParametersToInit.RemoveAtSwap(i, 1, bAllowShrinking);
 			}
 		}
 		else
 		{
 			constexpr bool bAllowShrinking = false;
-			InParametersToInit.RemoveAtSwap(i, 1, bAllowShrinking);
+			ParametersToInit.RemoveAtSwap(i, 1, bAllowShrinking);
+
 #if !NO_LOGGING
-			UE_LOG(LogMetaSound, Error, TEXT("Failed to set parameter '%s' in asset '%s': No name specified, no transmittable input found, or type mismatch."), *Parameter.ParamName.ToString(), *AssetName);
+			if (::Metasound::MetaSoundParameterEnableWarningOnIgnoredParameterCVar)
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Failed to set parameter '%s' in asset '%s': No name specified, no transmittable input found, or type mismatch."), *Parameter.ParamName.ToString(), *AssetName);
+			}
 #endif // !NO_LOGGING
 		}
 	}
@@ -463,22 +571,17 @@ void UMetaSoundSource::InitParameters(TArray<FAudioParameter>& InParametersToIni
 void UMetaSoundSource::InitResources()
 {
 	using namespace Metasound::Frontend;
+	using namespace Metasound::SourcePrivate;
+
+	METASOUND_LLM_SCOPE;
 	METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(UMetaSoundSource::InitResources);
 
-	FMetaSoundAssetRegistrationOptions RegOptions;
-	RegOptions.bForceReregister = false;
-	if (const UMetaSoundSettings* Settings = GetDefault<UMetaSoundSettings>())
-	{
-		RegOptions.bAutoUpdateLogWarningOnDroppedConnection = Settings->bAutoUpdateLogWarningOnDroppedConnection;
-	}
-
-	RegisterGraphWithFrontend(RegOptions);
-	CacheRuntimeData();
+	RegisterGraphWithFrontend(GetInitRegistrationOptions());
 }
 
 Metasound::Frontend::FNodeClassInfo UMetaSoundSource::GetAssetClassInfo() const
 {
-	return { GetDocumentChecked().RootGraph, *GetPathName() };
+	return { GetDocumentChecked().RootGraph, FSoftObjectPath(this) };
 }
 
 bool UMetaSoundSource::IsPlayable() const
@@ -508,12 +611,13 @@ bool UMetaSoundSource::ImplementsParameterInterface(Audio::FParameterInterfacePt
 	return GetDocumentChecked().Interfaces.Contains(Version);
 }
 
-ISoundGeneratorPtr UMetaSoundSource::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams)
+ISoundGeneratorPtr UMetaSoundSource::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams, TArray<FAudioParameter>&& InDefaultParameters)
 {
 	using namespace Metasound;
 	using namespace Metasound::Frontend;
 	using namespace Metasound::Engine;
 
+	METASOUND_LLM_SCOPE;
 	METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(UMetaSoundSource::CreateSoundGenerator);
 
 	SampleRate = InParams.SampleRate;
@@ -526,13 +630,20 @@ ISoundGeneratorPtr UMetaSoundSource::CreateSoundGenerator(const FSoundGeneratorI
 		return ISoundGeneratorPtr(nullptr);
 	}
 
+	FOperatorBuilderSettings BuilderSettings = FOperatorBuilderSettings::GetDefaultSettings();
+
+	// Graph analyzer currently only enabled for preview sounds (but can theoretically be supported for all sounds)
+	BuilderSettings.bPopulateInternalDataReferences = InParams.bIsPreviewSound;
+
 	FMetasoundGeneratorInitParams InitParams =
 	{
 		InSettings,
+		MoveTemp(BuilderSettings),
 		MetasoundGraph,
 		Environment,
 		GetName(),
-		GetAudioOutputVertexKeys()
+		GetOutputAudioChannelOrder(),
+		MoveTemp(InDefaultParameters)
 	};
 
 	return ISoundGeneratorPtr(new FMetasoundGenerator(MoveTemp(InitParams)));
@@ -545,8 +656,8 @@ bool UMetaSoundSource::GetAllDefaultParameters(TArray<FAudioParameter>& OutParam
 	using namespace Metasound::Engine;
 
 	// TODO: Make this use the cached runtime data's input copy. This call can become expensive if called repeatedly.
-	TArray<FMetasoundFrontendClassInput> TransmittableInputs = GetTransmittableClassInputs();
-	for(const FMetasoundFrontendClassInput& Input : TransmittableInputs)
+	TArray<FMetasoundFrontendClassInput> PublicInputs = GetPublicClassInputs();
+	for(const FMetasoundFrontendClassInput& Input : PublicInputs)
 	{
 		FAudioParameter Params;
 		Params.ParamName = Input.Name;
@@ -640,15 +751,15 @@ bool UMetaSoundSource::GetAllDefaultParameters(TArray<FAudioParameter>& OutParam
 
 bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter) const
 {
-	TMap<FName, FName> InputNameTypeMap;
+	TMap<FName, FMetasoundFrontendVertex> InputNameTypeMap;
 	Algo::Transform(GetDocumentChecked().RootGraph.Interface.Inputs, InputNameTypeMap, [] (const FMetasoundFrontendClassInput& Input)
 	{
-		return TPair<FName, FName>(Input.Name, Input.TypeName);
+		return TPair<FName, FMetasoundFrontendVertex>(Input.Name, Input);
 	});
 	return IsParameterValid(InParameter, InputNameTypeMap);
 }
 
-bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, const TMap<FName, FName>& InInputNameTypeMap) const
+bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, const TMap<FName, FMetasoundFrontendVertex>& InInputNameVertexMap) const
 {
 	using namespace Metasound;
 	using namespace Metasound::Frontend;
@@ -658,11 +769,12 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		return false;
 	}
 
-	const FName* TypeName = InInputNameTypeMap.Find(InParameter.ParamName);
-	if (!TypeName)
+	const FMetasoundFrontendVertex* Vertex = InInputNameVertexMap.Find(InParameter.ParamName);
+	if (!Vertex)
 	{
 		return false;
 	}
+	const FName& TypeName = Vertex->TypeName;
 
 	bool bIsValid = false;
 	switch (InParameter.ParamType)
@@ -670,7 +782,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::Boolean:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsBoolParsable;
 		}
 		break;
@@ -678,7 +790,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::BooleanArray:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsBoolArrayParsable;
 		}
 		break;
@@ -686,7 +798,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::Float:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsFloatParsable;
 		}
 		break;
@@ -694,7 +806,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::FloatArray:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsFloatArrayParsable;
 		}
 		break;
@@ -702,7 +814,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::Integer:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsIntParsable;
 		}
 		break;
@@ -710,7 +822,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::IntegerArray:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsIntArrayParsable;
 
 		}
@@ -721,7 +833,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 			FDataTypeRegistryInfo DataTypeInfo;
 			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(InParameter.ObjectParam, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsProxyParsable;
-			bIsValid &= DataTypeInfo.DataTypeName == *TypeName;
+			bIsValid &= DataTypeInfo.DataTypeName == TypeName;
 		}
 		break;
 
@@ -729,7 +841,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		{
 			bIsValid = true;
 
-			const FName ElementTypeName = CreateElementTypeNameFromArrayTypeName(*TypeName);
+			const FName ElementTypeName = CreateElementTypeNameFromArrayTypeName(TypeName);
 			for (UObject* Object : InParameter.ArrayObjectParam)
 			{
 				FDataTypeRegistryInfo DataTypeInfo;
@@ -748,7 +860,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::String:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsStringParsable;
 		}
 		break;
@@ -756,7 +868,7 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::StringArray:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsStringArrayParsable;
 		}
 		break;
@@ -764,14 +876,14 @@ bool UMetaSoundSource::IsParameterValid(const FAudioParameter& InParameter, cons
 		case EAudioParameterType::NoneArray:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsDefaultArrayParsable;
 		}
 		case EAudioParameterType::None:
 		default:
 		{
 			FDataTypeRegistryInfo DataTypeInfo;
-			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(*TypeName, DataTypeInfo);
+			bIsValid = IDataTypeRegistry::Get().GetDataTypeInfo(TypeName, DataTypeInfo);
 			bIsValid &= DataTypeInfo.bIsDefaultParsable;
 		}
 		break;
@@ -793,24 +905,24 @@ bool UMetaSoundSource::IsOneShot() const
 	return IsInterfaceDeclared(SourceOneShotInterface::GetVersion());
 }
 
-TUniquePtr<Audio::IParameterTransmitter> UMetaSoundSource::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
+TSharedPtr<Audio::IParameterTransmitter> UMetaSoundSource::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
 {
-	Metasound::FMetaSoundParameterTransmitter::FInitParams InitParams(GetOperatorSettings(InParams.SampleRate), InParams.InstanceID);
+	METASOUND_LLM_SCOPE;
+
+	Metasound::FMetaSoundParameterTransmitter::FInitParams InitParams(GetOperatorSettings(InParams.SampleRate), InParams.InstanceID, MoveTemp(InParams.DefaultParams));
+	InitParams.DebugMetaSoundName = GetFName();
 
 	for (const FSendInfoAndVertexName& InfoAndName : FMetasoundAssetBase::GetSendInfos(InParams.InstanceID))
 	{
 		InitParams.Infos.Add(InfoAndName.SendInfo);
 	}
 
-	TUniquePtr<Audio::IParameterTransmitter> NewTransmitter = MakeUnique<Metasound::FMetaSoundParameterTransmitter>(InitParams);
-	NewTransmitter->SetParameters(MoveTemp(InParams.DefaultParams));
-
-	return NewTransmitter;
+	return MakeShared<Metasound::FMetaSoundParameterTransmitter>(MoveTemp(InitParams));
 }
 
 Metasound::FOperatorSettings UMetaSoundSource::GetOperatorSettings(Metasound::FSampleRate InSampleRate) const
 {
-	const float BlockRate = FMath::Clamp(Metasound::ConsoleVariables::BlockRate, 1.0f, 1000.0f);
+	const float BlockRate = Metasound::Frontend::GetDefaultBlockRate();
 	return Metasound::FOperatorSettings(InSampleRate, BlockRate);
 }
 
@@ -835,6 +947,7 @@ Metasound::FMetasoundEnvironment UMetaSoundSource::CreateEnvironment(const FSoun
 	Environment.SetValue<bool>(SourceInterface::Environment::IsPreview, InParams.bIsPreviewSound);
 	Environment.SetValue<uint64>(SourceInterface::Environment::TransmitterID, InParams.InstanceID);
 	Environment.SetValue<Audio::FDeviceId>(SourceInterface::Environment::DeviceID, InParams.AudioDeviceID);
+	Environment.SetValue<int32>(SourceInterface::Environment::AudioMixerNumOutputFrames, InParams.AudioMixerNumOutputFrames);
 
 #if WITH_METASOUND_DEBUG_ENVIRONMENT
 	Environment.SetValue<FString>(SourceInterface::Environment::GraphName, GetFullName());
@@ -855,13 +968,13 @@ Metasound::FMetasoundEnvironment UMetaSoundSource::CreateEnvironment(const Audio
 	return Environment;
 }
 
-const TArray<Metasound::FVertexName>& UMetaSoundSource::GetAudioOutputVertexKeys() const
+const TArray<Metasound::FVertexName>& UMetaSoundSource::GetOutputAudioChannelOrder() const
 {
 	using namespace Metasound::SourcePrivate;
 
-	if (const TArray<Metasound::FVertexName>* ArrayKeys = GetFormatOutputVertexKeys().Find(OutputFormat))
+	if (const FOutputFormatInfo* FormatInfo = GetFormatInfoMap().Find(OutputFormat))
 	{
-		return *ArrayKeys;
+		return FormatInfo->OutputVertexChannelOrder;
 	}
 	else
 	{
@@ -872,3 +985,4 @@ const TArray<Metasound::FVertexName>& UMetaSoundSource::GetAudioOutputVertexKeys
 	}
 }
 #undef LOCTEXT_NAMESPACE // MetaSound
+

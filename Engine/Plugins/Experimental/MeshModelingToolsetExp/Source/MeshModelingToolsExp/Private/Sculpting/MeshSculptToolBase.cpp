@@ -17,6 +17,8 @@
 
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshSculptToolBase)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UMeshSculptToolBase"
@@ -249,16 +251,9 @@ void UMeshSculptToolBase::OnTick(float DeltaTime)
 
 	UpdateHoverStamp(GetBrushFrameWorld());
 
-	if (bInStroke)
-	{
-		BrushIndicator->Update((float)GetCurrentBrushRadius(),
-			CurrentStamp.WorldFrame.ToFTransform(), 1.0f - (float)GetCurrentBrushFalloff());
-	}
-	else
-	{
-		BrushIndicator->Update((float)GetCurrentBrushRadius(),
-			HoverStamp.WorldFrame.ToFTransform(), 1.0f - (float)GetCurrentBrushFalloff());
-	}
+	// always using HoverStamp here because it's position should always be up-to-date for the current apply-stamp...
+	BrushIndicator->Update((float)GetCurrentBrushRadius(),
+		HoverStamp.WorldFrame.ToFTransform(), 1.0f - (float)GetCurrentBrushFalloff());
 
 	UpdateWorkPlane();
 }
@@ -634,7 +629,8 @@ retry_frame_update:
 	ActiveStrokePathArcLen += Distance(LastBrushFrameWorld.Origin, PrevBrushFrameWorld.Origin);
 
 	LastBrushFrameLocal = LastBrushFrameWorld;
-	LastBrushFrameLocal.Transform(CurTargetTransform.Inverse());
+	LastBrushFrameLocal.Transform(CurTargetTransform.InverseUnsafe()); // Note: Unsafe inverse used because we cannot handle scales on a frame regardless.
+	// TODO: in the case of a non-uniform scale, consider whether we should do additional work to align the Z axis?
 }
 
 void UMeshSculptToolBase::AlignBrushToView()
@@ -733,9 +729,11 @@ void UMeshSculptToolBase::SaveActiveStrokeModifiers()
 }
 
 
-void UMeshSculptToolBase::UpdateHoverStamp(const FFrame3d& StampFrame)
+void UMeshSculptToolBase::UpdateHoverStamp(const FFrame3d& StampFrameWorld)
 {
-	HoverStamp.WorldFrame = StampFrame;
+	HoverStamp.WorldFrame = StampFrameWorld;
+	HoverStamp.LocalFrame = HoverStamp.WorldFrame;
+	HoverStamp.LocalFrame.Transform(CurTargetTransform.InverseUnsafe());
 }
 
 void UMeshSculptToolBase::UpdateStampPendingState()
@@ -956,6 +954,18 @@ void UMeshSculptToolBase::DecreaseBrushRadiusSmallStepAction()
 	CalculateBrushRadius();
 }
 
+
+
+FBox UMeshSculptToolBase::GetWorldSpaceFocusBox()
+{
+	if (LastBrushTriangleID == INDEX_NONE)
+	{
+		return Super::GetWorldSpaceFocusBox();
+	}
+	FVector Center = LastBrushFrameWorld.Origin;
+	double Size = GetCurrentBrushRadius();
+	return FBox(Center - FVector(Size), Center + FVector(Size));
+}
 
 
 
@@ -1200,6 +1210,10 @@ UPreviewMesh* UMeshSculptToolBase::MakeBrushIndicatorMesh(UObject* Parent, UWorl
 		SphereMesh->SetMaterial(BrushIndicatorMaterial);
 	}
 
+	// make sure raytracing is disabled on the brush indicator
+	Cast<UDynamicMeshComponent>(SphereMesh->GetRootComponent())->SetEnableRaytracing(false);
+	SphereMesh->SetShadowsEnabled(false);
+
 	return SphereMesh;
 }
 
@@ -1441,4 +1455,5 @@ void UMeshSculptToolBase::RegisterActions(FInteractiveToolActionSet& ActionSet)
 
 
 #undef LOCTEXT_NAMESPACE
+
 

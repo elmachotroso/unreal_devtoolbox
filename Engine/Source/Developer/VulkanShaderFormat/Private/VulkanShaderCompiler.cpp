@@ -5,9 +5,11 @@
 #include "VulkanCommon.h"
 #include "ShaderPreprocessor.h"
 #include "ShaderCompilerCommon.h"
+#include "ShaderParameterParser.h"
 #include "HlslccHeaderWriter.h"
 #include "hlslcc.h"
 #include "SpirvReflectCommon.h"
+#include "RHIShaderFormatDefinitions.inl"
 
 #if PLATFORM_MAC
 // Horrible hack as we need the enum available but the Vulkan headers do not compile on Mac
@@ -37,32 +39,25 @@ enum VkDescriptorType {
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
-inline bool CanCompilePlatform(EShaderPlatform ShaderPlatform)
+inline bool IsVulkanShaderFormat(FName ShaderFormat)
 {
-	return ShaderPlatform == SP_VULKAN_PCES3_1
-		|| ShaderPlatform == SP_VULKAN_SM5
-		|| ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
-		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
+	return ShaderFormat == NAME_VULKAN_ES3_1_ANDROID
+		|| ShaderFormat == NAME_VULKAN_ES3_1
+		|| ShaderFormat == NAME_VULKAN_SM5
+		|| ShaderFormat == NAME_VULKAN_SM5_ANDROID;
 }
 
-inline bool ShouldStripReflection(EShaderPlatform ShaderPlatform)
+inline bool IsAndroidShaderFormat(FName ShaderFormat)
 {
-	return ShaderPlatform == SP_VULKAN_PCES3_1
-		|| ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
-		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
+	return ShaderFormat == NAME_VULKAN_ES3_1_ANDROID
+		|| ShaderFormat == NAME_VULKAN_SM5_ANDROID;
 }
 
-inline bool IsAndroidShaderPlatform(EShaderPlatform ShaderPlatform)
+inline bool SupportsOfflineCompiler(FName ShaderFormat)
 {
-	return ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
-		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
-}
-
-inline bool SupportsOfflineCompiler(EShaderPlatform ShaderPlatform)
-{
-	return ShaderPlatform == SP_VULKAN_PCES3_1
-		|| ShaderPlatform == SP_VULKAN_ES3_1_ANDROID
-		|| ShaderPlatform == SP_VULKAN_SM5_ANDROID;
+	return ShaderFormat == NAME_VULKAN_ES3_1_ANDROID
+		|| ShaderFormat == NAME_VULKAN_ES3_1
+		|| ShaderFormat == NAME_VULKAN_SM5_ANDROID;
 }
 
 inline CrossCompiler::FShaderConductorOptions::ETargetEnvironment GetMinimumTargetEnvironment(EShaderPlatform ShaderPlatform)
@@ -204,45 +199,6 @@ static uint16 GetCombinedSamplerStateAlias(const FString& ParameterName,
 	}
 
 	return UINT16_MAX;
-}
-
-// Parses ray tracing shader entry point specification string in one of the following formats:
-// 1) Verbatim single entry point name, e.g. "MainRGS"
-// 2) Complex entry point for ray tracing hit group shaders:
-//      a) "closesthit=MainCHS"
-//      b) "closesthit=MainCHS anyhit=MainAHS"
-//      c) "closesthit=MainCHS anyhit=MainAHS intersection=MainIS"
-//      d) "closesthit=MainCHS intersection=MainIS"
-//    NOTE: closesthit attribute must always be provided for complex hit group entry points
-static void ParseRayTracingEntryPoint(const FString& Input, FString& OutMain, FString& OutAnyHit, FString& OutIntersection)
-{
-	auto ParseEntry = [&Input](const TCHAR* Marker)
-	{
-		FString Result;
-		const int32 BeginIndex = Input.Find(Marker, ESearchCase::IgnoreCase, ESearchDir::FromStart);
-		if (BeginIndex != INDEX_NONE)
-		{
-			int32 EndIndex = Input.Find(TEXT(" "), ESearchCase::IgnoreCase, ESearchDir::FromStart, BeginIndex);
-			if (EndIndex == INDEX_NONE)
-			{
-				EndIndex = Input.Len() + 1;
-			}
-			const int32 MarkerLen = FCString::Strlen(Marker);
-			const int32 Count = EndIndex - BeginIndex;
-			Result = Input.Mid(BeginIndex + MarkerLen, Count - MarkerLen);
-		}
-		return Result;
-	};
-
-	OutMain = ParseEntry(TEXT("closesthit="));
-	OutAnyHit = ParseEntry(TEXT("anyhit="));
-	OutIntersection = ParseEntry(TEXT("intersection="));
-
-	// If complex hit group entry is not specified, assume a single verbatim entry point
-	if (OutMain.IsEmpty() && OutAnyHit.IsEmpty() && OutIntersection.IsEmpty())
-	{
-		OutMain = Input;
-	}
 }
 
 struct FPatchType
@@ -1003,7 +959,9 @@ static void BuildShaderOutput(
 			check(VulkanBindingIndex != -1);
 			check(!UsedUniformBufferSlots[VulkanBindingIndex]);
 			UsedUniformBufferSlots[VulkanBindingIndex] = true;
-			ParameterMap.AddParameterAllocation(*UniformBlock.Name, VulkanBindingIndex, 0, 0, EShaderParameterType::UniformBuffer);
+
+			HandleReflectedUniformBuffer(UniformBlock.Name, VulkanBindingIndex, ShaderOutput);
+
 			++OLDHeader.SerializedBindings.NumUniformBuffers;
 			NEWEntryTypes.Add(*UniformBlock.Name, FVulkanShaderHeader::UniformBuffer);
 		}
@@ -1066,14 +1024,15 @@ static void BuildShaderOutput(
 		}
 		check(Found != -1);
 
-		ParameterMap.AddParameterAllocation(
-			*PackedGlobal.Name,
+		HandleReflectedGlobalConstantBufferMember(
+			PackedGlobal.Name,
 			Found,
 			PackedGlobal.Offset * BytesPerComponent,
 			PackedGlobal.Count * BytesPerComponent,
-			EShaderParameterType::LooseData
-			);
-		NEWEntryTypes.Add(*PackedGlobal.Name, FVulkanShaderHeader::PackedGlobal);
+			ShaderOutput
+		);
+
+		NEWEntryTypes.Add(PackedGlobal.Name, FVulkanShaderHeader::PackedGlobal);
 
 		uint32& Size = PackedGlobalArraySize.FindOrAdd((CrossCompiler::EPackedTypeName)PackedGlobal.PackedType);
 		Size = FMath::Max<uint32>(BytesPerComponent * (PackedGlobal.Offset + PackedGlobal.Count), Size);
@@ -1087,7 +1046,9 @@ static void BuildShaderOutput(
 		//check(PackedUB.Attribute.Index == Header.SerializedBindings.NumUniformBuffers);
 		check(!UsedUniformBufferSlots[OLDHeader.UNUSED_NumNonGlobalUBs]);
 		UsedUniformBufferSlots[OLDHeader.UNUSED_NumNonGlobalUBs] = true;
-		ParameterMap.AddParameterAllocation(*PackedUB.Attribute.Name, OLDHeader.UNUSED_NumNonGlobalUBs++, PackedUB.Attribute.Index, 0, EShaderParameterType::UniformBuffer);
+
+		HandleReflectedUniformBuffer(PackedUB.Attribute.Name, OLDHeader.UNUSED_NumNonGlobalUBs++, PackedUB.Attribute.Index, 0, ShaderOutput);
+
 		NEWEntryTypes.Add(PackedUB.Attribute.Name, FVulkanShaderHeader::PackedGlobal);
 	}
 
@@ -1214,13 +1175,9 @@ static void BuildShaderOutput(
 		auto& Binding = HlslccBindings[HlslccBindingIndex];
 		int32 BindingIndex = Spirv.FindBinding(Binding.Name, true);
 		check(BindingIndex != -1);
-		ParameterMap.AddParameterAllocation(
-			*Name,
-			0,
-			BindingIndex,
-			1,
-			EShaderParameterType::Sampler
-		);
+
+		HandleReflectedShaderSampler(Name, BindingIndex, ShaderOutput);
+
 		NEWEntryTypes.Add(Name, FVulkanShaderHeader::Global);
 
 		// Count only samplers states, not textures
@@ -1231,13 +1188,9 @@ static void BuildShaderOutput(
 	{
 		int32 VulkanBindingIndex = Spirv.FindBinding(Sampler.Name, true);
 		check(VulkanBindingIndex != -1);
-		ParameterMap.AddParameterAllocation(
-			*Sampler.Name,
-			Sampler.Offset,
-			VulkanBindingIndex,
-			Sampler.Count,
-			EShaderParameterType::SRV
-		);
+
+		HandleReflectedShaderResource(Sampler.Name, Sampler.Offset, VulkanBindingIndex, Sampler.Count, ShaderOutput);
+
 		NEWEntryTypes.Add(Sampler.Name, FVulkanShaderHeader::Global);
 
 		for (auto& SamplerState : Sampler.SamplerStates)
@@ -1246,13 +1199,9 @@ static void BuildShaderOutput(
 			{
 				// ParameterMap does not use a TMultiMap, so we cannot push the same entry to it more than once!  if we try to, we've done something wrong...
 				check(!ParameterMap.ContainsParameterAllocation(*SamplerState));
-				ParameterMap.AddParameterAllocation(
-					*SamplerState,
-					Sampler.Offset,
-					VulkanBindingIndex,
-					Sampler.Count,
-					EShaderParameterType::Sampler
-				);
+
+				HandleReflectedShaderSampler(SamplerState, Sampler.Offset, VulkanBindingIndex, Sampler.Count, ShaderOutput);
+
 				NEWEntryTypes.Add(SamplerState, FVulkanShaderHeader::Global);
 
 				// Count compiled texture-samplers as output samplers
@@ -1266,13 +1215,8 @@ static void BuildShaderOutput(
 		int32 VulkanBindingIndex = Spirv.FindBinding(UAV.Name);
 		check(VulkanBindingIndex != -1);
 
-		ParameterMap.AddParameterAllocation(
-			*UAV.Name,
-			UAV.Offset,
-			VulkanBindingIndex,
-			UAV.Count,
-			EShaderParameterType::UAV
-			);
+		HandleReflectedShaderUAV(UAV.Name, UAV.Offset, VulkanBindingIndex, UAV.Count, ShaderOutput);
+
 		NEWEntryTypes.Add(UAV.Name, FVulkanShaderHeader::Global);
 
 		OLDHeader.SerializedBindings.NumUAVs = FMath::Max<uint8>(
@@ -1286,13 +1230,8 @@ static void BuildShaderOutput(
 		int32 VulkanBindingIndex = Spirv.FindBinding(AccelerationStructure.Name);
 		check(VulkanBindingIndex != -1);
 
-		ParameterMap.AddParameterAllocation(
-			*AccelerationStructure.Name,
-			AccelerationStructure.Offset,
-			VulkanBindingIndex,
-			1,
-			EShaderParameterType::SRV
-		);
+		HandleReflectedShaderResource(AccelerationStructure.Name, AccelerationStructure.Offset, VulkanBindingIndex, 1, ShaderOutput);
+
 		NEWEntryTypes.Add(AccelerationStructure.Name, FVulkanShaderHeader::Global);
 
 		OLDHeader.SerializedBindings.NumAccelerationStructures = FMath::Max<uint8>(
@@ -1389,7 +1328,7 @@ static void BuildShaderOutput(
 	}
 	if (ShaderInput.ExtraSettings.OfflineCompilerPath.Len() > 0)
 	{
-		if (SupportsOfflineCompiler(ShaderInput.Target.GetPlatform()))
+		if (SupportsOfflineCompiler(ShaderInput.ShaderFormat))
 		{
 			CompileOfflineMali(ShaderInput, ShaderOutput, (const ANSICHAR*)Spirv.GetByteData(), Spirv.GetByteSize(), true, Spirv.EntryPointName);
 		}
@@ -1408,68 +1347,6 @@ FCompilerInfo::FCompilerInfo(const FShaderCompilerInput& InInput, const FString&
 	bDebugDump = Input.DumpDebugInfoPath != TEXT("") && IFileManager::Get().DirectoryExists(*Input.DumpDebugInfoPath);
 	BaseSourceFilename = Input.GetSourceFilename();
 }
-
-/**
- * Compile a shader using the internal shader compiling library
- */
-static bool CompileUsingInternal(FCompilerInfo& CompilerInfo, const FVulkanBindingTable& BindingTable, const TArray<ANSICHAR>& GlslSource, FShaderCompilerOutput& Output)
-{
-	FString Errors;
-	FVulkanSpirv Spirv;
-	const ANSICHAR* Main = GlslSource.GetData();
-	Main = FCStringAnsi::Strstr(Main, "void main_");
-	check(Main);
-	auto GetNumEOLs = [](const ANSICHAR* Ptr)
-	{
-		uint32 NumLines = 0;
-		while (*Ptr)
-		{
-			if (*Ptr == '\n')
-			{
-				++NumLines;
-			}
-			++Ptr;
-		}
-
-		return NumLines;
-	};
-	uint32 NumLines = GetNumEOLs(Main);
-	if (GenerateSpirv(GlslSource.GetData(), CompilerInfo, Errors, CompilerInfo.Input.DumpDebugInfoPath, Spirv))
-	{
-		FString DebugName = CompilerInfo.Input.DumpDebugInfoPath.Right(CompilerInfo.Input.DumpDebugInfoPath.Len() - CompilerInfo.Input.DumpDebugInfoRootPath.Len());
-
-		Output.Target = CompilerInfo.Input.Target;
-		BuildShaderOutput(Output, CompilerInfo.Input,
-			GlslSource.GetData(), GlslSource.Num(),
-			BindingTable, NumLines, Spirv, DebugName, false);
-
-		if (CompilerInfo.bDebugDump)
-		{
-			FString InfoFile = CompilerInfo.Input.DumpDebugInfoPath / TEXT("Info.txt");
-			FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*InfoFile);
-			if (FileWriter)
-			{
-				FString OutputString = FString::Printf(TEXT("main_%0.8x_%0.8x\n"), Spirv.GetByteSize(), Spirv.CRC);
-				auto AnsiOutputString = StringCast<ANSICHAR>(*OutputString);
-				FileWriter->Serialize((ANSICHAR*)AnsiOutputString.Get(), AnsiOutputString.Length());
-				FileWriter->Close();
-			}
-			delete FileWriter;
-		}
-		return true;
-	}
-	else
-	{
-		if (Errors.Len() > 0)
-		{
-			FShaderCompilerError* Error = new(Output.Errors) FShaderCompilerError();
-			Error->StrippedErrorMessage = Errors;
-		}
-
-		return false;
-	}
-}
-
 
 #if PLATFORM_MAC || PLATFORM_WINDOWS || PLATFORM_LINUX
 
@@ -1597,7 +1474,7 @@ static bool BuildShaderOutputFromSpirv(
 	{
 		// For now only use the primary entry point for hit groups until we decide how to best support hit group library shaders.
 		FString OutMain, OutAnyHit, OutIntersection;
-		ParseRayTracingEntryPoint(EntryPointName, OutMain, OutAnyHit, OutIntersection);
+		UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(EntryPointName, OutMain, OutAnyHit, OutIntersection);
 
 		for (uint32 i = 0; i < Reflection.GetEntryPointCount(); ++i)
 		{
@@ -1956,7 +1833,7 @@ static bool BuildShaderOutputFromSpirv(
 	}
 
 	// For Android run an additional pass to patch spirv to be compatible across drivers
-	if(IsAndroidShaderPlatform(Input.Target.GetPlatform()))
+	if(IsAndroidShaderFormat(Input.ShaderFormat))
 	{
 		const char* OptArgs[] = { "--android-driver-patch" };
 		if (!CompilerContext.OptimizeSpirv(Spirv.Data, OptArgs, UE_ARRAY_COUNT(OptArgs)))
@@ -2121,6 +1998,115 @@ static void Patch64bitSamplers(FVulkanSpirv& Spirv)
 	}
 }
 
+static FString VulkanGetShaderProfileDXC(const FCompilerInfo& CompilerInfo, const CrossCompiler::FShaderConductorOptions Options)
+{
+	const TCHAR* ShaderProfile = TEXT("unknown");
+	switch (CompilerInfo.Input.Target.Frequency)
+	{
+	case SF_Vertex:
+		ShaderProfile = TEXT("vs");
+		break;
+
+	case SF_Pixel:
+		ShaderProfile = TEXT("ps");
+		break;
+
+	case SF_Geometry:
+		ShaderProfile = TEXT("gs");
+		break;
+
+	case SF_Compute:
+		ShaderProfile = TEXT("cs");
+		break;
+
+	case SF_RayGen:
+	case SF_RayMiss:
+	case SF_RayHitGroup:
+	case SF_RayCallable:
+		return TEXT("lib_6_3");
+	}
+
+	return FString::Printf(TEXT("%s_%d_%d"), ShaderProfile, Options.ShaderModel.Major, Options.ShaderModel.Minor); 
+}
+
+static void VulkanCreateDXCCompileBatchFiles(
+	const FString& EntryPointName,
+	EShaderFrequency Frequency,
+	const FCompilerInfo& CompilerInfo,
+	const CrossCompiler::FShaderConductorOptions Options)
+{
+
+	FString USFFilename = CompilerInfo.Input.GetSourceFilename();
+	FString SPVFilename = FPaths::GetBaseFilename(USFFilename) + TEXT(".DXC.spv");
+	FString GLSLFilename = FPaths::GetBaseFilename(USFFilename) + TEXT(".SPV.glsl");
+
+	FString DxcPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
+
+	DxcPath = FPaths::Combine(DxcPath, TEXT("Binaries/ThirdParty/ShaderConductor/Win64"));
+	FPaths::MakePlatformFilename(DxcPath);
+
+	FString DxcFilename = FPaths::Combine(DxcPath, TEXT("dxc.exe"));
+	FPaths::MakePlatformFilename(DxcFilename);
+
+	const TCHAR* VulkanVersion = TEXT("vulkanUNKNOWN");
+	if (Options.TargetEnvironment == CrossCompiler::FShaderConductorOptions::ETargetEnvironment::Vulkan_1_0)
+	{
+		VulkanVersion = TEXT("vulkan1.0");
+	}
+	else if (Options.TargetEnvironment == CrossCompiler::FShaderConductorOptions::ETargetEnvironment::Vulkan_1_1)
+	{
+		VulkanVersion = TEXT("vulkan1.1");
+	}
+	else if (Options.TargetEnvironment == CrossCompiler::FShaderConductorOptions::ETargetEnvironment::Vulkan_1_2)
+	{
+		VulkanVersion = TEXT("vulkan1.2");
+	}
+	else
+	{
+		ensure(false);
+	}
+
+	FString ShaderProfile = VulkanGetShaderProfileDXC(CompilerInfo, Options);
+
+	// CompileDXC.bat
+	{
+		FString BatchFileContents =  FString::Printf(
+			TEXT(
+				"@ECHO OFF\n"
+				"SET DXC=\"%s\"\n"
+				"SET SPIRVCROSS=\"spirv-cross.exe\"\n"
+				"IF NOT EXIST %%DXC%% (\n"
+				"\tECHO Couldn't find dxc.exe under \"%s\"\n"
+				"\tGOTO :END\n"
+				")\n"
+				"ECHO Compiling with DXC...\n"
+				"%%DXC%% -HV %d -T %s -E %s -spirv -fspv-target-env=%s -Fo %s %s\n"
+				"WHERE %%SPIRVCROSS%%\n"
+				"IF %%ERRORLEVEL%% NEQ 0 (\n"
+				"\tECHO spirv-cross.exe not found in Path environment variable, please build it from source https://github.com/KhronosGroup/SPIRV-Cross\n"
+				"\tGOTO :END\n"
+				")\n"
+				"ECHO Translating SPIRV back to glsl...\n"
+				"%%SPIRVCROSS%% --vulkan-semantics --output %s %s\n"
+				":END\n"
+				"PAUSE\n"
+			),
+			*DxcFilename,
+			*DxcPath,
+			Options.HlslVersion,
+			*ShaderProfile,
+			*EntryPointName,
+			VulkanVersion,
+			*SPVFilename,
+			*USFFilename,
+			*GLSLFilename,
+			*SPVFilename
+		);
+
+		FFileHelper::SaveStringToFile(BatchFileContents, *(CompilerInfo.Input.DumpDebugInfoPath / TEXT("CompileDXC.bat")));
+	}
+}
+
 static bool CompileWithShaderConductor(
 	const FString&			PreprocessedShader,
 	const FString&			EntryPointName,
@@ -2140,12 +2126,6 @@ static bool CompileWithShaderConductor(
 
 	// Inject additional macro definitions to circumvent missing features: external textures
 	FShaderCompilerDefinitions AdditionalDefines;
-	AdditionalDefines.SetDefine(TEXT("TextureExternal"), TEXT("Texture2D"));
-
-	if (bDebugDump)
-	{
-		DumpDebugUSF(Input, PreprocessedShader, CompilerInfo.CCFlags);
-	}
 
 	// Load shader source into compiler context
 	CompilerContext.LoadSource(PreprocessedShader, Input.VirtualSourceFilePath, EntryPointName, Frequency, &AdditionalDefines);
@@ -2153,6 +2133,12 @@ static bool CompileWithShaderConductor(
 	// Initialize compilation options for ShaderConductor
 	CrossCompiler::FShaderConductorOptions Options;
 	Options.bDisableScalarBlockLayout = !bIsRayTracingShader;
+
+	// Enable HLSL 2021 if specified
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021))
+	{
+		Options.HlslVersion = 2021;
+	}
 
 	// Ray tracing features require Vulkan 1.2 environment.
 	if (bIsRayTracingShader || Input.Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing))
@@ -2162,6 +2148,17 @@ static bool CompileWithShaderConductor(
 	else
 	{
 		Options.TargetEnvironment = GetMinimumTargetEnvironment(Input.Target.GetPlatform());
+	}
+
+	if (bDebugDump)
+	{
+		VulkanCreateDXCCompileBatchFiles(
+			EntryPointName,
+			Frequency,
+			CompilerInfo,
+			Options);
+
+		DumpDebugUSF(Input, PreprocessedShader, CompilerInfo.CCFlags);
 	}
 
 	if (bRewriteHlslSource)
@@ -2218,11 +2215,18 @@ static bool CompileWithShaderConductor(
 
 void DoCompileVulkanShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& Output, const class FString& WorkingDirectory, EVulkanShaderVersion Version)
 {
-	check(CanCompilePlatform(Input.Target.GetPlatform()));
+	check(IsVulkanShaderFormat(Input.ShaderFormat));
 
 	const bool bIsSM5 = (Version == EVulkanShaderVersion::SM5);
 	const bool bIsMobile = (Version == EVulkanShaderVersion::ES3_1 || Version == EVulkanShaderVersion::ES3_1_ANDROID);
-	const bool bStripReflect = SupportsOfflineCompiler(Input.Target.GetPlatform()) || Input.IsRayTracingShader();
+	bool bStripReflect = Input.IsRayTracingShader();
+	// By default we strip reflecion information for Android platform to avoid issues with older drivers
+	if (IsAndroidShaderFormat(Input.ShaderFormat))
+	{
+		const FString* StripReflect_Android = Input.Environment.GetDefinitions().Find(TEXT("STRIP_REFLECT_ANDROID"));
+		bStripReflect = !(StripReflect_Android && *StripReflect_Android == TEXT("0"));
+	}
+
 	const CrossCompiler::FShaderConductorOptions::ETargetEnvironment TargetEnvironment = GetMinimumTargetEnvironment(Input.Target.GetPlatform());
 
 	const EHlslShaderFrequency FrequencyTable[] =
@@ -2269,6 +2273,7 @@ void DoCompileVulkanShader(const FShaderCompilerInput& Input, FShaderCompilerOut
 
 	AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_ATTRIBUTES"), (uint32)1);
 	AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_DUAL_SOURCE_BLENDING_SLOT_DECORATION"), (uint32)1);
+	AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_ROV"), 0); // Disabled until DXC->SPRIV ROV support is implemented
 
 	if (Input.Environment.FullPrecisionInPS)
 	{
@@ -2284,6 +2289,8 @@ void DoCompileVulkanShader(const FShaderCompilerInput& Input, FShaderCompilerOut
 	{
 		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS"), 1);
 	}
+
+	const double StartPreprocessTime = FPlatformTime::Seconds();
 
 	// Preprocess the shader.
 	FString PreprocessedShaderSource;
@@ -2308,8 +2315,7 @@ void DoCompileVulkanShader(const FShaderCompilerInput& Input, FShaderCompilerOut
 	}
 
 	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndMoveShaderParametersToRootConstantBuffer(
-		Input, Output, PreprocessedShaderSource, /* ConstantBufferType = */ nullptr))
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShaderSource, /* ConstantBufferType = */ nullptr))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -2318,6 +2324,11 @@ void DoCompileVulkanShader(const FShaderCompilerInput& Input, FShaderCompilerOut
 	FString EntryPointName = Input.EntryPointName;
 
 	RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShaderSource);
+
+	// Process TEXT macro.
+	TransformStringIntoCharacterArray(PreprocessedShaderSource);
+
+	Output.PreprocessTime = FPlatformTime::Seconds() - StartPreprocessTime;
 
 	FCompilerInfo CompilerInfo(Input, WorkingDirectory, HlslFrequency);
 

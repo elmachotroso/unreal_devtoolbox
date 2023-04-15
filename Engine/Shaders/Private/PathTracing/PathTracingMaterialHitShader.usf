@@ -33,7 +33,7 @@
 
 RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 	FPackedPathTracingPayload, PackedPayload,
-	FDefaultAttributes, Attributes)
+	FRayTracingIntersectionAttributes, Attributes)
 {
 	PackedPayload.HitT = RayTCurrent();
 
@@ -44,25 +44,24 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 
 	float4 SvPosition = float4(PixelCoord.xy, 0.0, 1.0);
 
-	FRayCone PropagatedCone = PropagateRayCone(PackedPayload.GetRayCone(), 0 /* surface curvature */, RayTCurrent());
-
 #if VF_SUPPORTS_RAYTRACING_PREPARE_MATERIAL_PIXEL_PARAMETERS
 	// this is a newer codepath that is both more flexible and allows for more direct calculation compared to the other codepath
 	// TODO: implement such a method for all vertex factories
 	float3 GeoNormal = 0;
-	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), PrimitiveIndex(), Attributes, HitKind(), GeoNormal);
+	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(TranslatedWorldRayOrigin(), WorldRayDirection(), RayTCurrent(), PrimitiveIndex(), Attributes, HitKind(), GeoNormal);
 #else
 	FVertexFactoryInterpolantsVSToPS Interpolants;
 	float3 GeoNormal = 0;
-	CalcInterpolants(PropagatedCone, Attributes, Interpolants, GeoNormal);
+	CalcInterpolants((FRayCone)0, Attributes, Interpolants, GeoNormal);
 
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
 #endif
+
 	FPixelMaterialInputs PixelMaterialInputs;
 
 	{
 		float4 ScreenPosition = SvPositionToResolvedScreenPosition(SvPosition);
-		float3 TranslatedWorldPosition = WorldRayOrigin() + WorldRayDirection() * RayTCurrent() + LWCHackToFloat(ResolvedView.PreViewTranslation);
+		float3 TranslatedWorldPosition = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
 
 		bool bIsFrontFace = HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE;
 
@@ -75,7 +74,6 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 	}
 
 	FPathTracingPayload Payload = (FPathTracingPayload)0;
-	Payload.RayCone = PropagatedCone;
 
 	/**
 	 * Set common material attributes for both full and simplified materials
@@ -98,6 +96,11 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 
 	Payload.BlendingMode = MaterialBlendingMode;
 	Payload.PrimitiveLightingChannelMask = GetPrimitive_LightingChannelMask(MaterialParameters.PrimitiveId);
+
+	if ((GetPrimitiveData(MaterialParameters.PrimitiveId).Flags & PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER) != 0)
+	{
+		Payload.SetDecalReceiver();
+	}
 
 	Payload.HitT = RayTCurrent();
 	if (HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE)
@@ -130,7 +133,7 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 	/**
 	 * Set material attributes for full materials
 	 **/
-	Payload.WorldPos = LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition);
+	Payload.TranslatedWorldPos = LWCToFloat(LWCAdd(MaterialParameters.AbsoluteWorldPosition, ResolvedView.PreViewTranslation));
 	// Because the geometric normal is computed directly in world space
 	// it doesn't reflect the sign flip from the object transform, so apply it here
 	float GeoNormalSign = MaterialParameters.TwoSidedSign * GetPrimitive_DeterminantSign(MaterialParameters.PrimitiveId);
@@ -152,7 +155,14 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 #if MATERIALBLENDING_MASKED
 #if MATERIAL_DITHER_OPACITY_MASK
 	// dithering emulates real transparency, so switch to translucent
-	Payload.Opacity = DitheredOpacityMaskToOpacity(GetMaterialMask(PixelMaterialInputs));
+	// NOTE: the raster path technically takes into account the opacity mask clip value, so the effective transparency should be:
+	//        saturate(MaskRaw - ClipValue + 0.5)
+	// (See derivation in DitheredOpacityMaskToOpacity)
+	// However this behavior is surprising to most users and does not exactly match the rasterizer anyway due to how the realtime AA
+	// code performs blending.
+	// Since the goal of dithered opacity is to emulate ordinary transparency, just use the mask input as opacity directly and
+	// ignore the configured clip value.
+	Payload.Opacity = saturate(GetMaterialMaskInputRaw(PixelMaterialInputs));
 	Payload.BlendingMode = RAY_TRACING_BLEND_MODE_TRANSLUCENT;
 #else
 	// regular masked mode - accounted for in AHS
@@ -207,12 +217,37 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 	else
 #endif
 
-#if MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT
-	if (Payload.ShadingModelID == SHADINGMODELID_THIN_TRANSLUCENT)
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+	if (Payload.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER)
 	{
-		Payload.CustomData.xyz = GetThinTranslucentMaterialOutput0(MaterialParameters);
+		// For single layer water we always want to treat it as front facing when evaluating parameters 
+		// as hitting back face is treated as being underwater and we get completely different parameters.
+		FMaterialPixelParameters WaterMaterialParameters = MaterialParameters;
+		WaterMaterialParameters.TwoSidedSign = 1; 
+
+		const float3 ScatteringCoeff = max(0.0f, LWCToFloat(GetSingleLayerWaterMaterialOutput0(WaterMaterialParameters)));
+		const float3 AbsorptionCoeff = max(0.0f, LWCToFloat(GetSingleLayerWaterMaterialOutput1(WaterMaterialParameters)));
+		const float PhaseG = clamp(LWCToFloat(GetSingleLayerWaterMaterialOutput2(WaterMaterialParameters)), -1.0f, 1.0f);
+
+		const float3 WaterExtinction = ScatteringCoeff + AbsorptionCoeff;
+		const float3 WaterAlbedo = ScatteringCoeff / WaterExtinction;
+
+		Payload.BaseColor.xyz = WaterAlbedo;
+		Payload.CustomData.xyz = WaterExtinction;
+		Payload.CustomData.w = PhaseG;
+
+		Payload.Ior = DielectricF0ToIor(DielectricSpecularToF0(Specular));
+		Payload.BlendingMode = RAY_TRACING_BLEND_MODE_TRANSLUCENT;
 	}
 	else
+#endif
+
+#if MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT
+		if (Payload.ShadingModelID == SHADINGMODELID_THIN_TRANSLUCENT)
+		{
+			Payload.CustomData.xyz = GetThinTranslucentMaterialOutput0(MaterialParameters);
+		}
+		else
 #endif
 
 #if MATERIAL_SHADINGMODEL_HAIR
@@ -314,17 +349,37 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 	else
 #endif
 	{
+		// Redirect translucent blending mode to thin translucent
+#if MATERIALBLENDING_TRANSLUCENT
+		Payload.ShadingModelID = SHADINGMODELID_THIN_TRANSLUCENT;
+#else
 		Payload.ShadingModelID = SHADINGMODELID_DEFAULT_LIT;
+#endif
 	}
-	Payload.WorldPos = LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition);
+	Payload.TranslatedWorldPos = LWCToFloat(LWCAdd(MaterialParameters.AbsoluteWorldPosition, ResolvedView.PreViewTranslation));
 	Payload.WorldNormal = normalize(MaterialParameters.WorldNormal);
+	float GeoNormalSign = MaterialParameters.TwoSidedSign * GetPrimitive_DeterminantSign(MaterialParameters.PrimitiveId);
+	Payload.WorldGeoNormal = GeoNormalSign * GeoNormal;
 	Payload.Radiance = GetMaterialEmissive(PixelMaterialInputs);
 	Payload.BaseColor = BaseColor;
 	Payload.Specular = 0;
 	Payload.Roughness = 1;
 	Payload.Metallic = 0;
+#if MATERIALBLENDING_TRANSLUCENT && !MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT
+	// Force opacity to 0 so it is ignored for path hits and only evaluated in AHS as a modulation to throughput
+	Payload.Opacity = 0;
+#else
 	Payload.Opacity = GetMaterialOpacity(PixelMaterialInputs);
+#endif
 	Payload.Ior = 1;
+
+#if !MATERIAL_TWOSIDED
+	if (!Payload.IsFrontFace() && !Payload.IsMaterialTransmissive())
+	{
+		// Overloaded semantics for opacity
+		Payload.Opacity = -1;
+	}
+#endif
 
 #endif
 
@@ -334,15 +389,15 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(PathTracingMaterialCHS,
 
 RAY_TRACING_ENTRY_ANY_HIT(PathTracingMaterialAHS,
 	FPackedPathTracingPayload, PackedPayload,
-	FDefaultAttributes, Attributes)
+	FRayTracingIntersectionAttributes, Attributes)
 {
 #if USE_MATERIAL_ANY_HIT_SHADER
 
-#if MATERIALBLENDING_SOLID
+#if MATERIALBLENDING_SOLID || MATERIALBLENDING_ALPHAHOLDOUT
 	// Continue traversal by simply returning from this shader
 	// Usually this path is inactive because opaque materials don't have AHS bound
 	return;
-#elif MATERIALBLENDING_ALPHAHOLDOUT || MATERIALBLENDING_ADDITIVE
+#elif MATERIALBLENDING_ADDITIVE
 	if (PackedPayload.IsVisibilityRay())
 	{
 		// path tracer wants to treat these cases as fully transparent
@@ -378,19 +433,28 @@ RAY_TRACING_ENTRY_ANY_HIT(PathTracingMaterialAHS,
 
 	ResolvedView = ResolveView();
 
-	FVertexFactoryInterpolantsVSToPS Interpolants;
 	float4 SvPosition = float4(PixelCoord.xy, 0.0, 1.0);
 
-	CalcInterpolants(PackedPayload.GetRayCone(), Attributes, Interpolants);
+#if VF_SUPPORTS_RAYTRACING_PREPARE_MATERIAL_PIXEL_PARAMETERS
+	// this is a newer codepath that is both more flexible and allows for more direct calculation compared to the other codepath
+	// TODO: implement such a method for all vertex factories
+	float3 GeoNormal = 0;
+	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(TranslatedWorldRayOrigin(), WorldRayDirection(), RayTCurrent(), PrimitiveIndex(), Attributes, HitKind(), GeoNormal);
+#else
+	FVertexFactoryInterpolantsVSToPS Interpolants;
+	float3 GeoNormal = 0;
+	CalcInterpolants((FRayCone)0, Attributes, Interpolants, GeoNormal);
 
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
+#endif
+
 	FPixelMaterialInputs PixelMaterialInputs;
 
 	const bool bIsFrontFace = HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE;
 
 	{
 		float4 ScreenPosition = SvPositionToResolvedScreenPosition(SvPosition);
-		float3 TranslatedWorldPosition = WorldRayOrigin() + WorldRayDirection() * RayTCurrent() + LWCHackToFloat(ResolvedView.PreViewTranslation);
+		float3 TranslatedWorldPosition = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
 
 		MaterialParameters.CameraVector = -WorldRayDirection();
 
@@ -458,12 +522,18 @@ RAY_TRACING_ENTRY_ANY_HIT(PathTracingMaterialAHS,
 		Transparency *= A;
 	}
 #elif MATERIALBLENDING_MASKED && MATERIAL_DITHER_OPACITY_MASK
-	float Opacity = DitheredOpacityMaskToOpacity(GetMaterialMask(PixelMaterialInputs));
+	// See MATERIAL_DITHER_OPACITY_MASK comment above
+	float Opacity = saturate(GetMaterialMaskInputRaw(PixelMaterialInputs));
 	float Transparency = 1 - Opacity;
 #elif MATERIALBLENDING_TRANSLUCENT
-	float Opacity = GetMaterialOpacity(PixelMaterialInputs);
-	float Transparency = 1 - Opacity;
-
+	#if !SIMPLIFIED_MATERIAL_SHADER
+		float Opacity = GetMaterialOpacity(PixelMaterialInputs);
+		float Transparency = 1 - Opacity;
+	#else
+		// CPU Lightmass translucency behavior emulation
+		float3 Transparency = lerp(float3(1, 1, 1), GetMaterialBaseColor(PixelMaterialInputs), GetMaterialOpacity(PixelMaterialInputs));
+	#endif
+	
 	// Is refraction enabled?
 #if !SIMPLIFIED_MATERIAL_SHADER && MATERIAL_SHADINGMODEL_DEFAULT_LIT && REFRACTION_USE_INDEX_OF_REFRACTION
 	float Ior = GetMaterialRefraction(PixelMaterialInputs).x;

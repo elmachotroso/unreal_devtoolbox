@@ -99,7 +99,7 @@ public:
 	virtual uint32 ComputeHLODHash(const UActorComponent* InSourceComponent) const;
 
 	/**
-	 * Components created with this method needs to be properly outered & assigned to your target actor.
+	 * Components created with this method need to be properly outered & assigned to your target actor.
 	 */
 	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const PURE_VIRTUAL(UHLODBuilder::CreateComponents, return {};);
 
@@ -110,6 +110,8 @@ public:
 	static uint32 ComputeHLODHash(const TArray<AActor*>& InSourceActors);
 
 protected:
+	static TArray<UActorComponent*> BatchInstances(const TArray<UActorComponent*>& InSubComponents);
+
 	template <typename TComponentClass>
 	static inline TArray<TComponentClass*> FilterComponents(const TArray<UActorComponent*>& InSourceComponents)
 	{
@@ -129,5 +131,22 @@ protected:
 protected:
 	UPROPERTY()
 	TObjectPtr<const UHLODBuilderSettings> HLODBuilderSettings;
+#endif
+};
+
+
+/**
+ * Null HLOD builder that ignores it's input and generate no component.
+ */
+UCLASS(HideDropdown)
+class ENGINE_API UNullHLODBuilder : public UHLODBuilder
+{
+	GENERATED_UCLASS_BODY()
+
+#if WITH_EDITOR
+	virtual bool RequiresCompiledAssets() const { return false; }
+	virtual bool RequiresWarmup() const { return false; }
+	virtual uint32 ComputeHLODHash(const UActorComponent* InSourceComponent) const { return 0; }
+	virtual TArray<UActorComponent*> Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const { return {}; }
 #endif
 };

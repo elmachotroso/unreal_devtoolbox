@@ -18,9 +18,29 @@ void FAjaMediaOutputModule::StartupModule()
 {
 	const auto DMAInitializationFunc = [this]()
 	{
+		static const TArray<FString> SupportedGPUPrefixes= { 
+			TEXT("RTX A4"),
+			TEXT("RTX A5"),
+			TEXT("RTX A6"),
+			TEXT("Quadro")
+		};
+
 		const FGPUDriverInfo GPUDriverInfo = FPlatformMisc::GetGPUDriverInfo(GRHIAdapterName);
 		bIsGPUTextureTransferAvailable = GPUDriverInfo.IsNVIDIA() &&!FModuleManager::Get().IsModuleLoaded("RenderDocPlugin");
 		bIsGPUTextureTransferAvailable &= !GPUDriverInfo.DeviceDescription.Contains(TEXT("Tesla"));
+		
+		if (bIsGPUTextureTransferAvailable)
+		{
+			bIsGPUTextureTransferAvailable = false;
+			for (const FString& GPUPrefix : SupportedGPUPrefixes)
+			{
+				if (GPUDriverInfo.DeviceDescription.Contains(GPUPrefix))
+				{
+					bIsGPUTextureTransferAvailable = true;
+					break;
+				}
+			}
+		}
 
 		if (bIsGPUTextureTransferAvailable)
 		{
@@ -34,22 +54,13 @@ void FAjaMediaOutputModule::StartupModule()
 
 					auto GetRHI = []()
 					{
-						FString RHIName = GDynamicRHI->GetName();
-						if (RHIName == TEXT("D3D11"))
+						switch (RHIGetInterfaceType())
 						{
-							return AJA::ERHI::D3D11;
+						case ERHIInterfaceType::D3D11: return AJA::ERHI::D3D11;
+						case ERHIInterfaceType::D3D12: return AJA::ERHI::D3D12;
+						case ERHIInterfaceType::Vulkan: return AJA::ERHI::Vulkan;
+						default: return AJA::ERHI::Invalid;
 						}
-						else if (RHIName == TEXT("D3D12"))
-						{
-							return AJA::ERHI::D3D12;
-						}
-						else if (RHIName == TEXT("Vulkan"))
-						{
-							return AJA::ERHI::Vulkan;
-						}
-
-						return AJA::ERHI::Invalid;
-
 					};
 
 					AJA::FInitializeDMAArgs Args;
@@ -58,7 +69,7 @@ void FAjaMediaOutputModule::StartupModule()
 					/* Re-enable when adding vulkan support
 					if (RHI == AJA::ERHI::Vulkan)
 					{
-						FVulkanDynamicRHI* vkDynamicRHI = static_cast<FVulkanDynamicRHI*>(GDynamicRHI);
+						FVulkanDynamicRHI* vkDynamicRHI = GetDynamicRHI<FVulkanDynamicRHI>();
 						Args.InVulkanInstance = vkDynamicRHI->GetInstance();
 
 						FMemory::Memcpy(Args.InRHIDeviceUUID, vkDynamicRHI->GetDevice()->GetDeviceIdProperties().deviceUUID, 16);
@@ -67,6 +78,7 @@ void FAjaMediaOutputModule::StartupModule()
 					Args.RHIDevice = GDynamicRHI->RHIGetNativeDevice();
 					Args.RHICommandQueue = GDynamicRHI->RHIGetNativeGraphicsQueue();
 
+					UE_LOG(LogAjaMediaOutput, Display, TEXT("Initializing GPU Texture transfer from AJA"));
 					bIsGPUTextureTransferAvailable = AJA::InitializeDMA(Args);
 				});
 		}
@@ -76,7 +88,7 @@ void FAjaMediaOutputModule::StartupModule()
 	{
 		if (bIsGPUTextureTransferAvailable)
 		{
-			ENQUEUE_RENDER_COMMAND(AjaMediaCaptureUninitialize)(
+			ENQUEUE_RENDER_COMMAND(AjaMediaOutputModuleUninitialize)(
 				[](FRHICommandListImmediate& RHICmdList) mutable
 				{
 					AJA::UninitializeDMA();

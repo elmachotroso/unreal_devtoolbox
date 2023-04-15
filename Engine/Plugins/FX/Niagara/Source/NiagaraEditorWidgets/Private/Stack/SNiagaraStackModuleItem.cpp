@@ -69,25 +69,11 @@ void SNiagaraStackModuleItem::FillRowContextMenu(FMenuBuilder& MenuBuilder)
 
 FReply SNiagaraStackModuleItem::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent)
 {
-	const UNiagaraNodeFunctionCall& ModuleFunctionCall = ModuleItem->GetModuleNode();
-	if (ModuleFunctionCall.FunctionScript != nullptr)
+	if (ModuleItem->OpenSourceAsset())
 	{
-		if (ModuleFunctionCall.FunctionScript->IsAsset() || GbShowNiagaraDeveloperWindows > 0)
-		{
-			ModuleFunctionCall.FunctionScript->VersionToOpenInEditor = ModuleFunctionCall.SelectedScriptVersion;
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ToRawPtr(ModuleFunctionCall.FunctionScript));
-			return FReply::Handled();
-		}
-		else if (ModuleItem->IsScratchModule())
-		{
-			TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchPadScriptViewModel = ModuleItem->GetSystemViewModel()->GetScriptScratchPadViewModel()->GetViewModelForScript(ModuleFunctionCall.FunctionScript);
-			if (ScratchPadScriptViewModel.IsValid())
-			{
-				ModuleItem->GetSystemViewModel()->GetScriptScratchPadViewModel()->FocusScratchPadScriptViewModel(ScratchPadScriptViewModel.ToSharedRef());
-				return FReply::Handled();
-			}
-		}
+		return FReply::Handled();
 	}
+	
 	return FReply::Unhandled();
 }
 
@@ -110,7 +96,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 		.AutoWidth()
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "RoundButton")
+			.ButtonStyle(FAppStyle::Get(), "RoundButton")
 			.OnClicked(this, &SNiagaraStackModuleItem::ScratchButtonPressed)
 			.ToolTipText(LOCTEXT("OpenInScratchToolTip", "Open this module in the scratch pad."))
 			.ContentPadding(FMargin(1.0f, 0.0f))
@@ -129,7 +115,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
     [
         SNew(SComboButton)
         .HasDownArrow(false)
-        .ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+        .ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
         .ForegroundColor(FSlateColor::UseForeground())
         .OnGetMenuContent(this, &SNiagaraStackModuleItem::GetVersionSelectorDropdownMenu)
         .ContentPadding(FMargin(2))
@@ -141,7 +127,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
         .ButtonContent()
         [
 	        SNew(STextBlock)
-	        .Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+	        .Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 	        .ColorAndOpacity(this, &SNiagaraStackModuleItem::GetVersionSelectorColor)
 	        .Text(FEditorFontGlyphs::Random)
         ]
@@ -184,7 +170,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 		.Content()
 		[
 			SNew(STextBlock)
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+			.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 			.Text(FEditorFontGlyphs::Refresh)
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
@@ -360,7 +346,7 @@ TSharedRef<SWidget> SNiagaraStackModuleItem::AddContainerForRowWidgets(TSharedRe
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.Item.CustomNoteBackgroundColor"))
 			[
 				AddNoteWidget.ToSharedRef()
@@ -559,7 +545,7 @@ void SNiagaraStackModuleItem::CollectModuleActions(FGraphActionListBuilderBase& 
 
 		FText AssetDescription;
 		ModuleAsset.GetTagValue(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, Description), AssetDescription);
-		FText Description = FNiagaraEditorUtilities::FormatScriptDescription(AssetDescription, ModuleAsset.ObjectPath, bIsInLibrary);
+		FText Description = FNiagaraEditorUtilities::FormatScriptDescription(AssetDescription, ModuleAsset.GetSoftObjectPath(), bIsInLibrary);
 
 		FText Keywords;
 		ModuleAsset.GetTagValue(GET_MEMBER_NAME_CHECKED(FVersionedNiagaraScriptData, Keywords), Keywords);
@@ -576,7 +562,7 @@ void SNiagaraStackModuleItem::ShowReassignModuleScriptMenu()
 	TSharedPtr<SGraphActionMenu> GraphActionMenu;
 
 	TSharedRef<SBorder> MenuWidget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)

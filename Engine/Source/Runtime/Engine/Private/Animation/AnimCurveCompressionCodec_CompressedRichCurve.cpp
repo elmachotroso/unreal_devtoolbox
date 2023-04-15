@@ -3,6 +3,9 @@
 #include "Animation/AnimCurveCompressionCodec_CompressedRichCurve.h"
 #include "Animation/AnimSequence.h"
 #include "Serialization/MemoryWriter.h"
+#include "AnimationCompression.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCurveCompressionCodec_CompressedRichCurve)
 
 UAnimCurveCompressionCodec_CompressedRichCurve::UAnimCurveCompressionCodec_CompressedRichCurve(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -26,6 +29,13 @@ struct FCurveDesc
 };
 
 #if WITH_EDITORONLY_DATA
+
+int32 ValidateCompressedRichCurveEvaluation = 0;
+static FAutoConsoleVariableRef CVarValidateCompressedRichCurveEvaluation(
+	TEXT("a.Compression.ValidateCompressedRichCurveEvaluation"),
+	ValidateCompressedRichCurveEvaluation,
+	TEXT("1 = runs validation, evaluating the compressed rich curve at animation its sampling rate comparing against the MaxCurveError. 0 = validation disabled"));
+
 bool UAnimCurveCompressionCodec_CompressedRichCurve::Compress(const FCompressibleAnimData& AnimSeq, FAnimCurveCompressionResult& OutResult)
 {
 	int32 NumCurves = AnimSeq.RawFloatCurves.Num();
@@ -47,7 +57,7 @@ bool UAnimCurveCompressionCodec_CompressedRichCurve::Compress(const FCompressibl
 		const FFloatCurve& Curve = AnimSeq.RawFloatCurves[CurveIndex];
 
 		FRichCurve RawCurve = Curve.FloatCurve;	// Copy
-		RawCurve.RemoveRedundantKeys(MaxCurveError);
+		RawCurve.RemoveRedundantAutoTangentKeys(MaxCurveError);
 
 		FCompressedRichCurve CompressedCurve;
 		RawCurve.CompressCurve(CompressedCurve, MaxCurveError, SampleRate);
@@ -62,6 +72,26 @@ bool UAnimCurveCompressionCodec_CompressedRichCurve::Compress(const FCompressibl
 
 		KeyDataOffset += CompressedCurve.CompressedKeys.Num();
 		KeyData.Append(CompressedCurve.CompressedKeys);
+
+		// Compressed curve validation
+		if(!!ValidateCompressedRichCurveEvaluation)
+		{
+			const int32 SamplesToTake = AnimSeq.NumberOfKeys;
+			for (int32 KeyIndex = 0; KeyIndex < SamplesToTake; ++KeyIndex)
+			{
+				// Evaluated RawCurve and Compressed Curve
+				const float EvalTime = KeyIndex * Helper.TimePerKey();
+				const float RawValue = RawCurve.Eval(EvalTime);
+				const float CompressedValue = CompressedCurve.Eval(EvalTime);
+
+				const float AbsDelta = FMath::Abs(CompressedValue - RawValue);
+				if (AbsDelta > MaxCurveError)
+				{
+					// Delta larger than tolerated error value
+					UE_LOG(LogAnimationCompression, Warning, TEXT("Curve %s: delta too large %f at %f"), *Curve.Name.DisplayName.ToString(), AbsDelta, EvalTime);
+				}
+			}
+		}
 	}
 
 	TArray<uint8> TempBytes;
@@ -135,3 +165,4 @@ float UAnimCurveCompressionCodec_CompressedRichCurve::DecompressCurve(const FCom
 
 	return 0.0f;
 }
+

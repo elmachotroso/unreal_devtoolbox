@@ -4,6 +4,7 @@
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
 #include "SceneView.h"
+#include "SceneRenderTargetParameters.h"
 
 BEGIN_UNIFORM_BUFFER_STRUCT(FIrradianceCachingParameters, )
 	SHADER_PARAMETER(uint32, HashTableSize)
@@ -11,29 +12,23 @@ BEGIN_UNIFORM_BUFFER_STRUCT(FIrradianceCachingParameters, )
 	SHADER_PARAMETER(int32, Quality)
 	SHADER_PARAMETER(float, Spacing)
 	SHADER_PARAMETER(float, CornerRejection)
-	SHADER_PARAMETER_UAV(RWStructuredBuffer<FIrradianceCacheRecord>, IrradianceCacheRecords)
-	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, RWHashTable)
+	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint4>, IrradianceCacheRecords)
+	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint4>, IrradianceCacheRecordBackfaceHits)
+	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint2>, RWHashTable)
 	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, RWHashToIndex)
 	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, RWIndexToHash)
 	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, RecordAllocator)
+	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, HashTableSemaphore)
 END_UNIFORM_BUFFER_STRUCT()
 
 struct FIrradianceCache
 {
-	struct FIrradianceCacheRecord
-	{
-		// When used as a cache entry, 
-		// WorldPosition.w == FrameLastTouched
-		// WorldNormal.w == NumAccumulatedSamples
-		FVector4f WorldPosition;
-		FVector4f WorldNormal;
-		FVector4f Irradiance;
-	};
-
-	const int32 IrradianceCacheMaxSize = 1048576;
+	const int32 IrradianceCacheMaxSize = 4194304;
 
 	FBufferRHIRef IrradianceCacheRecords;
 	FUnorderedAccessViewRHIRef IrradianceCacheRecordsUAV;
+	FBufferRHIRef IrradianceCacheRecordBackfaceHits;
+	FUnorderedAccessViewRHIRef IrradianceCacheRecordBackfaceHitsUAV;
 
 	TUniformBufferRef<FIrradianceCachingParameters> IrradianceCachingParametersUniformBuffer;
 
@@ -43,6 +38,7 @@ struct FIrradianceCache
 	FRWBuffer HashToIndex;
 	FRWBuffer IndexToHash;
 	FRWBuffer RecordAllocator;
+	FRWBuffer HashTableSemaphore;
 
 	int32 CurrentRevision = 0;
 };

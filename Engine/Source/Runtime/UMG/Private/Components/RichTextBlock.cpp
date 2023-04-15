@@ -15,6 +15,8 @@
 #include "Editor/WidgetCompilerLog.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RichTextBlock)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -47,7 +49,7 @@ FORCEINLINE TSharedPtr< ObjectType > MakeShareableDeferredCleanup(ObjectType* In
 URichTextBlock::URichTextBlock(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 	TextTransformPolicy = ETextTransformPolicy::None;
 	TextOverflowPolicy = ETextOverflowPolicy::Clip;
 }
@@ -159,7 +161,12 @@ void URichTextBlock::RebuildStyleInstance()
 	}
 }
 
-void URichTextBlock::SetTextStyleSet(class UDataTable* NewTextStyleSet)
+UDataTable* URichTextBlock::GetTextStyleSet() const
+{
+	return TextStyleSet;
+}
+
+void URichTextBlock::SetTextStyleSet(UDataTable* NewTextStyleSet)
 {
 	if (TextStyleSet != NewTextStyleSet)
 	{
@@ -276,6 +283,13 @@ void URichTextBlock::SetDefaultTextStyle(const FTextBlockStyle& InDefaultTextSty
 	ApplyUpdatedDefaultTextStyle();
 }
 
+void URichTextBlock::SetDefaultMaterial(UMaterialInterface* InMaterial)
+{
+	BeginDefaultStyleOverride();
+	DefaultTextStyleOverride.Font.FontMaterial = InMaterial;
+	ApplyUpdatedDefaultTextStyle();
+}
+
 void URichTextBlock::ClearAllDefaultStyleOverrides()
 {
 	if (bOverrideDefaultStyle)
@@ -307,6 +321,23 @@ UMaterialInstanceDynamic* URichTextBlock::GetDefaultDynamicMaterial()
 	}
 
 	return nullptr;
+}
+
+void URichTextBlock::SetDecorators(const TArray<TSubclassOf<URichTextBlockDecorator>>& InDecoratorClasses)
+{
+	DecoratorClasses = InDecoratorClasses;
+
+	StyleInstance.Reset();
+	UpdateStyleData();
+
+	if (MyRichTextBlock.IsValid())
+	{
+		TArray<TSharedRef<ITextDecorator>> CreatedDecorators;
+		CreateDecorators(CreatedDecorators);
+
+		MyRichTextBlock->SetDecoratorStyleSet(StyleInstance.Get());
+		MyRichTextBlock->SetDecorators(CreatedDecorators);
+	}
 }
 
 void URichTextBlock::SetDefaultColorAndOpacity(FSlateColor InColorAndOpacity)
@@ -410,3 +441,4 @@ void URichTextBlock::RefreshTextLayout()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

@@ -13,6 +13,8 @@ public class VCamInput : ModuleRules
 			new string[]
 			{
 				"Core",
+				"UMG",
+				"CommonUI"
 			}
 			);
 
@@ -24,7 +26,8 @@ public class VCamInput : ModuleRules
 				"Engine",
 				"InputCore",
 				"Slate",
-				"SlateCore"
+				"SlateCore",
+				"DeveloperSettings"
 			}
 			);
 	}

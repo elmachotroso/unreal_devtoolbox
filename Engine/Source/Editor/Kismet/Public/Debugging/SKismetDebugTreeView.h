@@ -2,24 +2,47 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Widgets/SWidget.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateConstants.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STreeView.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
+class FBreakpointParentItem;
 class FDebugLineItem;
+class FName;
 class FTraceStackParentItem;
+class ITableRow;
+class SCheckBox;
+class SComboButton;
+class SHeaderRow;
+class SSearchBox;
+class SWidget;
 class UBlueprint;
 class UBlueprintGeneratedClass;
-class FBreakpointParentItem;
 class UEdGraphPin;
-
-class SSearchBox;
-class SComboButton;
-class SCheckBox;
+class UObject;
+struct FGeometry;
 
 //////////////////////////////////////////////////////////////////////////
 // FDebugLineItem
@@ -28,7 +51,7 @@ class SCheckBox;
 typedef TSharedPtr<class FDebugLineItem> FDebugTreeItemPtr;
 
 // The base class for a line entry in the debugging tree view
-class FDebugLineItem : public TSharedFromThis<FDebugLineItem>
+class KISMET_API FDebugLineItem : public TSharedFromThis<FDebugLineItem>
 {
 public:
 	friend class FLineItemWithChildren; // used by FLineItemWithChildren::EnsureChildIsAdded
@@ -147,7 +170,7 @@ protected:
 	void CopyValueToClipboard() const;
 
 protected:
-	// Type of action (poor mans RTTI for the tree, really only used to accelerate Compare checks)
+	// Type of action (a kind of RTTI for the tree, really only used to accelerate Compare checks)
 	EDebugLineType Type;
 
 	static uint16 ActiveTypeBitset;

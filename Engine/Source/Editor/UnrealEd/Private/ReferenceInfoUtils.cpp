@@ -13,13 +13,13 @@
 #include "Engine/Level.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/UnrealEdEngine.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "Editor.h"
 #include "UnrealEdGlobals.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Engine/Selection.h"
@@ -48,7 +48,7 @@ void ExecuteReferenceInfo(const TArray<FString>& Args, UWorld* InWorld )
 	ReferenceInfoUtils::GenerateOutput(InWorld, Depth, bShowDefault, bShowScript);
 }
 
-FAutoConsoleCommandWithWorldAndArgs ReferenceInfo(
+static FAutoConsoleCommandWithWorldAndArgs ActorReferenceInfoCVar(
 	TEXT("ReferenceInfo"),
 	TEXT("Outputs reference info for selected actors to a log file. Syntax is: ReferenceInfo [-depth=<depth value>] [-nodefault] [-noscript]"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(ExecuteReferenceInfo)

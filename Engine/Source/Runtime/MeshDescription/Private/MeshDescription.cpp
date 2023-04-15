@@ -16,6 +16,8 @@
 #include "UObject/UE5CookerObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshDescription)
+
 #if WITH_EDITORONLY_DATA
 #include "DerivedDataBuildVersion.h"
 #endif
@@ -1256,7 +1258,7 @@ static bool VectorsOnSameSide(const FVector& Vec, const FVector& A, const FVecto
 	const FVector CrossA = FVector::CrossProduct(Vec, A);
 	const FVector CrossB = FVector::CrossProduct(Vec, B);
 	float DotWithEpsilon = SameSideDotProductEpsilon + FVector::DotProduct(CrossA, CrossB);
-	return !FMath::IsNegativeFloat(DotWithEpsilon);
+	return !(DotWithEpsilon < 0.0f);
 }
 
 
@@ -1999,6 +2001,8 @@ void FMeshDescriptionBulkData::Serialize( FArchive& Ar, UObject* Owner )
 	if ( Ar.IsTransacting() )
 	{
 		// If transacting, keep these members alive the other side of an undo, otherwise their values will get lost
+		Ar << UEVersion;
+		Ar << LicenseeUEVersion;
 		CustomVersions.Serialize( Ar );
 		Ar << bBulkDataUpdated;
 	}
@@ -2054,9 +2058,10 @@ void FMeshDescriptionBulkData::Serialize( FArchive& Ar, UObject* Owner )
 
 	if (!Ar.IsTransacting() && Ar.IsLoading())
 	{
-		// If loading, take a copy of the package custom version container, so it can be applied when unpacking
+		// If loading, take a copy of the package's version information, so it can be applied when unpacking
 		// MeshDescription from the bulk data.
-		CustomVersions = BulkData.GetCustomVersions(Ar);
+		BulkData.GetBulkDataVersions(Ar, UEVersion, LicenseeUEVersion, CustomVersions);
+
 	}
 
 	// Needs to be after the guid is serialized
@@ -2083,7 +2088,9 @@ void FMeshDescriptionBulkData::SaveMeshDescription( FMeshDescription& MeshDescri
 		UE::Serialization::FEditorBulkDataWriter Ar(BulkData, bIsPersistent);
 		Ar << MeshDescription;
 
-		// Preserve CustomVersions at save time so we can reuse the same ones when reloading direct from memory
+		// Preserve versions at save time so we can reuse the same ones when reloading direct from memory
+		UEVersion = Ar.UEVer();
+		LicenseeUEVersion = Ar.LicenseeUEVer();
 		CustomVersions = Ar.GetCustomVersions();
 	}
 
@@ -2118,8 +2125,10 @@ void FMeshDescriptionBulkData::LoadMeshDescription( FMeshDescription& MeshDescri
 		const bool bIsPersistent = true;
 		UE::Serialization::FEditorBulkDataReader Ar(BulkData, bIsPersistent);
 
-		// Propagate the custom version information from the package to the bulk data, so that the MeshDescription
+		// Propagate the version information from the package to the bulk data, so that the MeshDescription
 		// is serialized with the same versioning.
+		Ar.SetUEVer(UEVersion);
+		Ar.SetLicenseeUEVer(LicenseeUEVersion);
 		Ar.SetCustomVersions(CustomVersions);
 		Ar << MeshDescription;
 
@@ -2150,6 +2159,8 @@ void FMeshDescriptionBulkData::UpdateMeshDescriptionFormat()
 	BulkData.UnloadData();
 	// Propagate the custom version information from the package to the bulk data, so that the MeshDescription
 	// is serialized with the same versioning.
+	Reader.SetUEVer(UEVersion);
+	Reader.SetLicenseeUEVer(LicenseeUEVersion);
 	Reader.SetCustomVersions(CustomVersions);
 	FMeshDescription MeshDescription;
 	MeshDescription.Empty();
@@ -2167,7 +2178,9 @@ void FMeshDescriptionBulkData::UpdateMeshDescriptionFormat()
 	{
 		// The MeshDescription format has changed, so save it to this's BulkData
 		BulkData.UpdatePayload(FSharedBuffer::TakeOwnership(NewBytes.ReleaseOwnership(), NumBytes, FMemory::Free));
-		// Preserve CustomVersions at save time so we can reuse the same ones when reloading direct from memory
+		// Preserve versions at save time so we can reuse the same ones when reloading direct from memory
+		UEVersion = NewBytes.UEVer();
+		LicenseeUEVersion = NewBytes.LicenseeUEVer();
 		CustomVersions = NewBytes.GetCustomVersions();
 		if (bGuidIsHash)
 		{
@@ -2175,7 +2188,7 @@ void FMeshDescriptionBulkData::UpdateMeshDescriptionFormat()
 		}
 		else
 		{
-			// Maintain the original guid; this is a format change only. GetIdString will change because it adds the CustomVersions to the key.
+			// Maintain the original guid; this is a format change only. GetIdString will change because it adds the version information to the key.
 		}
 	}
 
@@ -2191,10 +2204,14 @@ void FMeshDescriptionBulkData::Empty()
 
 FString FMeshDescriptionBulkData::GetIdString() const
 {
-	// Create the IDString by combining this->Guid with the CustomVersions used for serialization,
-	// hashed down into a Guid to keep the string length the same as the original Guid.
+	// Create the IDString by combining this->Guid with the version information that will be used
+	// used for save serialization, hashed down into a Guid to keep the string length the same as the original Guid.
+	// Use the current binary's value for all versions, because this will be the versioning used during
+	// save serialization.
 	UE::DerivedData::FBuildVersionBuilder Builder;
 	Builder << const_cast<FGuid&>(Guid);
+	Builder << GPackageFileUEVersion;
+	Builder << GPackageFileLicenseeUEVersion;
 	for (const FGuid& CustomVersionGuid : GetMeshDescriptionCustomVersions())
 	{
 		Builder << const_cast<FGuid&>(CustomVersionGuid);
@@ -2236,4 +2253,5 @@ void FMeshDescriptionBulkData::UseHashAsGuid()
 }
 
 #endif // #if WITH_EDITORONLY_DATA
+
 

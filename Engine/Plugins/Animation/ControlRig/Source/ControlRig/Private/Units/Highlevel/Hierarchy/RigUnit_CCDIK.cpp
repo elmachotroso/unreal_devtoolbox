@@ -3,6 +3,8 @@
 #include "RigUnit_CCDIK.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_CCDIK)
+
 FRigUnit_CCDIK_Execute()
 {
 	if (Context.State == EControlRigState::Init)
@@ -48,9 +50,31 @@ FRigUnit_CCDIK_Execute()
 		Context);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_CCDIK::GetUpgradeInfo() const
+{
+	// this node is no longer supported and the upgrade path is too complex.
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_CCDIKPerItem_Execute()
 {
 	FRigUnit_CCDIKItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, EffectorTransform, Precision, Weight, MaxIterations, bStartFromTail, BaseRotationLimit, RotationLimits, bPropagateToChildren, WorkData, ExecuteContext, Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_CCDIKPerItem::GetUpgradeInfo() const
+{
+	FRigUnit_CCDIKItemArray NewNode;
+	NewNode.Items = Items.Keys;
+	NewNode.EffectorTransform = EffectorTransform;
+	NewNode.Precision = Precision;
+	NewNode.Weight = Weight;
+	NewNode.MaxIterations = MaxIterations;
+	NewNode.bStartFromTail = bStartFromTail;
+	NewNode.BaseRotationLimit = BaseRotationLimit;
+	NewNode.RotationLimits = RotationLimits;
+	NewNode.bPropagateToChildren = bPropagateToChildren;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
 }
 
 FRigUnit_CCDIKItemArray_Execute()
@@ -175,3 +199,4 @@ FRigUnit_CCDIKItemArray_Execute()
 		}
 	}
 }
+

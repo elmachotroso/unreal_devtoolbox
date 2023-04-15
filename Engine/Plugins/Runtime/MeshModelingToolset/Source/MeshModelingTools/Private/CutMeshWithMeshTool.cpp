@@ -19,6 +19,8 @@
 #include "TargetInterfaces/AssetBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CutMeshWithMeshTool)
+
 using namespace UE::Geometry;
 
 namespace
@@ -70,7 +72,7 @@ void UCutMeshWithMeshTool::ConvertInputsAndSetPreviewMaterials(bool bSetPreviewM
 	// disable output options
 	// (this property set is not registered yet in SetupProperties() above)
 	SetToolPropertySourceEnabled(HandleSourcesProperties, false);
-
+	SetToolPropertySourceEnabled(OutputTypeProperties, false);
 
 	FComponentMaterialSet AllMaterialSet;
 	TArray<TArray<int>> MaterialRemap; MaterialRemap.SetNum(Targets.Num());
@@ -353,8 +355,8 @@ void UCutMeshWithMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 		{
 			if (OpResult.Mesh->TriangleCount() > 0)
 			{
-				MeshTransforms::ApplyTransform(*OpResult.Mesh, OpResult.Transform);
-				MeshTransforms::ApplyTransformInverse(*OpResult.Mesh, TargetToWorld);
+				MeshTransforms::ApplyTransform(*OpResult.Mesh, OpResult.Transform, true);
+				MeshTransforms::ApplyTransformInverse(*OpResult.Mesh, TargetToWorld, true);
 				UE::ToolTarget::CommitMeshDescriptionUpdateViaDynamicMesh(Targets[0], *OpResult.Mesh, true);
 				Cast<IMaterialProvider>(Targets[0])->CommitMaterialSetUpdate(MaterialSet, true);
 			}
@@ -364,8 +366,8 @@ void UCutMeshWithMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 		// create intersection asset
 		if ( IntersectionMesh.TriangleCount() > 0)
 		{
-			MeshTransforms::ApplyTransform(IntersectionMesh, OpResult.Transform);
-			MeshTransforms::ApplyTransformInverse(IntersectionMesh, TargetToWorld);
+			MeshTransforms::ApplyTransform(IntersectionMesh, OpResult.Transform, true);
+			MeshTransforms::ApplyTransformInverse(IntersectionMesh, TargetToWorld, true);
 			FTransform3d NewTransform = TargetToWorld;
 
 			FString CurName = UE::Modeling::GetComponentAssetBaseName(UE::ToolTarget::GetTargetComponent(Targets[0]));
@@ -377,6 +379,7 @@ void UCutMeshWithMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 			NewMeshObjectParams.BaseName = UseBaseName;
 			NewMeshObjectParams.Materials = GetOutputMaterials();
 			NewMeshObjectParams.SetMesh(&IntersectionMesh);
+			// note: CutMeshWithMeshTool does not support converting types currently
 			UE::ToolTarget::ConfigureCreateMeshObjectParams(Targets[0], NewMeshObjectParams);
 			FCreateMeshObjectResult Result = UE::Modeling::CreateMeshObject(GetToolManager(), MoveTemp(NewMeshObjectParams));
 			if (Result.IsOK() && Result.NewActor != nullptr)
@@ -395,3 +398,4 @@ void UCutMeshWithMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 
 
 #undef LOCTEXT_NAMESPACE
+

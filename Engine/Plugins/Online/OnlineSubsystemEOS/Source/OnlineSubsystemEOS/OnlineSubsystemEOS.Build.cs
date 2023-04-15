@@ -11,8 +11,7 @@ public class OnlineSubsystemEOS : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
-				"OnlineSubsystemUtils",
-				"EOSSDK"
+				"OnlineSubsystemUtils"
 			}
 		);
 
@@ -22,9 +21,11 @@ public class OnlineSubsystemEOS : ModuleRules
 				"CoreOnline",
 				"CoreUObject",
 				"Engine",
+				"EOSSDK",
 				"EOSShared",
 				"EOSVoiceChat",
 				"Json",
+				"OnlineBase",
 				"OnlineSubsystem",
 				"Sockets",
 				"SocketSubsystemEOS",
@@ -36,9 +37,6 @@ public class OnlineSubsystemEOS : ModuleRules
 		PrivateDefinitions.Add("USE_XBL_XSTS_TOKEN=" + (bUseXblXstsToken ? "1" : "0"));
 		PrivateDefinitions.Add("USE_PSN_ID_TOKEN=" + (bUsePsnIdToken ? "1" : "0"));
 		PrivateDefinitions.Add("ADD_USER_LOGIN_INFO=" + (bAddUserLoginInfo ? "1" : "0"));
-
-		// Temp fix, add Private folder to PublicIncludePaths in 5.0.1 so OnlineSubsystemEOS.h is includeable. Fixed properly in 5.1.
-		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Private"));
 	}
 
 	protected virtual bool bUseXblXstsToken { get { return false; } }

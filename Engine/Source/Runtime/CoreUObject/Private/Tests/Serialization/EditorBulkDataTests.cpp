@@ -2,6 +2,7 @@
 
 #include "Algo/AllOf.h"
 #include "Memory/SharedBuffer.h"
+#include "Serialization/BulkDataRegistry.h"
 #include "Serialization/EditorBulkData.h"
 #include "Serialization/EditorBulkDataReader.h"
 #include "Serialization/EditorBulkDataWriter.h"
@@ -19,6 +20,15 @@ namespace UE::Serialization
 {
 	
 constexpr const uint32 TestFlags = EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter;
+
+bool IsBulkDataRegistryEnabled()
+{
+#if WITH_EDITOR
+	return IBulkDataRegistry::IsEnabled();
+#else
+	return false;
+#endif //WITH_EDITOR 
+}
 
 /** Creates a buffer full of random data to make it easy to have something to test against. */
 TUniquePtr<uint8[]> CreateRandomData(int64 BufferSize)
@@ -239,35 +249,79 @@ bool FEditorBulkDataTestReaderWriter::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataTestSerializationToMemory, TEXT("System.CoreUObject.Serialization.EditorBulkData.SerializationToMemory"), TestFlags)
 bool FEditorBulkDataTestSerializationToMemory::RunTest(const FString& Parameters)
 {
+	const bool bIsArPersistent = true;
 	const int64 BufferSize = 1024;
 
 	TUniquePtr<uint8[]> SourceBuffer = CreateRandomData(BufferSize);
 	
-	FEditorBulkData EmptyBulkData;
-	FEditorBulkData ValidBulkData;
-	ValidBulkData.UpdatePayload(FSharedBuffer::Clone(SourceBuffer.Get(), BufferSize));
-	
 	TArray<uint8> MemoryBuffer;
-	const bool bIsArPersistent = true;
+	FGuid ValidBulkDataId;
+	FEditorBulkData EmptyBulkData;
 
-	// Write out
 	{
-		FMemoryWriter WriterAr(MemoryBuffer, bIsArPersistent);
+		FEditorBulkData ValidBulkData;
+		ValidBulkData.UpdatePayload(FSharedBuffer::Clone(SourceBuffer.Get(), BufferSize));
+		ValidBulkDataId = ValidBulkData.GetIdentifier();
 
-		ValidBulkData.Serialize(WriterAr, nullptr);
-		EmptyBulkData.Serialize(WriterAr, nullptr);
-		ValidBulkData.Serialize(WriterAr, nullptr);
-		EmptyBulkData.Serialize(WriterAr, nullptr);
+		// Write out
+		{
+			FMemoryWriter WriterAr(MemoryBuffer, bIsArPersistent);
+
+			ValidBulkData.Serialize(WriterAr, nullptr);
+			EmptyBulkData.Serialize(WriterAr, nullptr);
+			ValidBulkData.Serialize(WriterAr, nullptr);
+			EmptyBulkData.Serialize(WriterAr, nullptr);
+		}
+
+		// First test we test reading the editor bulkdata while ValidBulkData is still registered and in scope
+		// in this case if the BulkDataRegistry is enabled then SerializedBulkData and ValidBulkData should
+		// have different identifiers, if the BulkDataRegistry is disabled then they should have the same identifiers
+		FEditorBulkData SerializedBulkData;
+
+		FMemoryReader ReaderAr(MemoryBuffer, bIsArPersistent);
+
+		SerializedBulkData.Serialize(ReaderAr, nullptr);
+		if (IsBulkDataRegistryEnabled())
+		{
+			TestNotEqual(TEXT("Bulkdata identifier should change"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		}
+		else
+		{
+			TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		}
+		
+		TestTrue(TEXT("Bulkdata payload should remain the same"), FMemory::Memcmp(SourceBuffer.Get(), SerializedBulkData.GetPayload().Get().GetData(), BufferSize) == 0);
+
+		SerializedBulkData.Serialize(ReaderAr, nullptr);
+		TestFalse(TEXT("Bulkdata identifier should be invalid"), SerializedBulkData.GetIdentifier().IsValid());
+		TestTrue(TEXT("Bulkdata should not have a payload"), SerializedBulkData.GetPayload().Get().IsNull());
+
+		SerializedBulkData.Serialize(ReaderAr, nullptr);
+		if (IsBulkDataRegistryEnabled())
+		{
+			TestNotEqual(TEXT("Bulkdata identifier should change"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		}
+		else
+		{
+			TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		}
+		TestTrue(TEXT("Bulkdata payload should remain the same"), FMemory::Memcmp(SourceBuffer.Get(), SerializedBulkData.GetPayload().Get().GetData(), BufferSize) == 0);
+
+		SerializedBulkData.Serialize(ReaderAr, nullptr);
+		TestFalse(TEXT("Bulkdata identifier should be invalid"), SerializedBulkData.GetIdentifier().IsValid());
+		TestTrue(TEXT("Bulkdata should not have a payload"), SerializedBulkData.GetPayload().Get().IsNull());
 	}
 
-	// Read in
+	// Now test the serialization when ValidBulkData is no longer in scope and has unregistered itself. In this
+	// case it doesn't matter if the BulkDataRegistry is enabled or not. In both cases we should get the original
+	// bulkdata identifier.
 	{
 		FEditorBulkData SerializedBulkData;
 
 		FMemoryReader ReaderAr(MemoryBuffer, bIsArPersistent);
 
 		SerializedBulkData.Serialize(ReaderAr, nullptr);
-		TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkDataId);
 		TestTrue(TEXT("Bulkdata payload should remain the same"), FMemory::Memcmp(SourceBuffer.Get(), SerializedBulkData.GetPayload().Get().GetData(), BufferSize) == 0);
 
 		SerializedBulkData.Serialize(ReaderAr, nullptr);
@@ -275,13 +329,14 @@ bool FEditorBulkDataTestSerializationToMemory::RunTest(const FString& Parameters
 		TestTrue(TEXT("Bulkdata should not have a payload"), SerializedBulkData.GetPayload().Get().IsNull());
 
 		SerializedBulkData.Serialize(ReaderAr, nullptr);
-		TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkData.GetIdentifier());
+		TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), ValidBulkDataId);
 		TestTrue(TEXT("Bulkdata payload should remain the same"), FMemory::Memcmp(SourceBuffer.Get(), SerializedBulkData.GetPayload().Get().GetData(), BufferSize) == 0);
 
 		SerializedBulkData.Serialize(ReaderAr, nullptr);
 		TestEqual(TEXT("Bulkdata identifier should remain the same"), SerializedBulkData.GetIdentifier(), EmptyBulkData.GetIdentifier());
 		TestTrue(TEXT("Bulkdata should not have a payload"), SerializedBulkData.GetPayload().Get().IsNull());
 	}
+
 	return true;
 }
 
@@ -439,7 +494,14 @@ bool FEditorBulkDataTestIdentifiers::RunTest(const FString& Parameters)
 			DstData.Serialize(ReaderAr, nullptr);
 		}
 
-		TestEqual(TEXT("Serialization should preserve the identifier"), SrcData.GetIdentifier(), DstData.GetIdentifier());
+		if (IsBulkDataRegistryEnabled())
+		{
+			TestNotEqual(TEXT("Serialization should not preserve the identifier"), SrcData.GetIdentifier(), DstData.GetIdentifier());
+		}
+		else
+		{
+			TestEqual(TEXT("Serialization should preserve the identifier"), SrcData.GetIdentifier(), DstData.GetIdentifier());
+		}	
 	}
 
 	// Test that serialization does not change the identifier (in this case serializing to and from a memory buffer) 
@@ -540,6 +602,72 @@ bool FEditorBulkDataIoHashToGuid::RunTest(const FString& Parameters)
 	FGuid KnownResult(TEXT("04030201-0807-0605-0C0B-0A09100F0E0D"));
 
 	TestEqual(TEXT("That the result of hashing known data will be unchanged"), KnownGuid, KnownResult);
+
+	return true;
+}
+
+/** This tests that updating a payload via a FSharedBufferWithID will have the same results as if the payload was applied to the bulkdata object directly */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FEditorBulkDataSharedBufferWithID, TEXT("System.CoreUObject.Serialization.EditorBulkData.SharedBufferWithID"), TestFlags)
+bool FEditorBulkDataSharedBufferWithID::RunTest(const FString& Parameters)
+{
+	// Test FSharedBufferWithID/FEditorBulkData in their default states
+	{
+		FEditorBulkData::FSharedBufferWithID SharedId;
+		FEditorBulkData BulkDataFromSharedId;
+		BulkDataFromSharedId.UpdatePayload(MoveTemp(SharedId));
+
+		FEditorBulkData BulkData;
+
+		TestEqual(TEXT("0: PayloadId"), BulkDataFromSharedId.GetPayloadId(), BulkData.GetPayloadId());
+		TestEqual(TEXT("0: PayloadSize"), BulkDataFromSharedId.GetPayloadSize(), BulkData.GetPayloadSize());
+	}
+
+	// Test FSharedBufferWithID/FEditorBulkData updated with a null FSharedBuffer
+	{
+		FSharedBuffer NullBuffer;
+
+		FEditorBulkData::FSharedBufferWithID SharedId(NullBuffer);
+		FEditorBulkData BulkDataFromSharedId;
+		BulkDataFromSharedId.UpdatePayload(MoveTemp(SharedId));
+
+		FEditorBulkData BulkData;
+		BulkData.UpdatePayload(NullBuffer);
+
+		TestEqual(TEXT("1: PayloadId"), BulkDataFromSharedId.GetPayloadId(), BulkData.GetPayloadId());
+		TestEqual(TEXT("1: PayloadSize"), BulkDataFromSharedId.GetPayloadSize(), BulkData.GetPayloadSize());
+	}
+
+	// Test FSharedBufferWithID/FEditorBulkData updated with a zero length FSharedBuffer
+	{
+		FSharedBuffer ZeroLengthBuffer = FUniqueBuffer::Alloc(0).MoveToShared();
+
+		FEditorBulkData::FSharedBufferWithID SharedId(ZeroLengthBuffer);
+		FEditorBulkData BulkDataFromSharedId;
+		BulkDataFromSharedId.UpdatePayload(MoveTemp(SharedId));
+
+		FEditorBulkData BulkData;
+		BulkData.UpdatePayload(ZeroLengthBuffer);
+
+		TestEqual(TEXT("2: PayloadId"), BulkDataFromSharedId.GetPayloadId(), BulkData.GetPayloadId());
+		TestEqual(TEXT("2: PayloadSize"), BulkDataFromSharedId.GetPayloadSize(), BulkData.GetPayloadSize());
+	}
+
+	// Test FSharedBufferWithID/FEditorBulkData updated with a random set of data
+	{
+		const int64 BufferSize = 1024;
+		TUniquePtr<uint8[]> SourceBuffer = CreateRandomData(BufferSize);
+		FSharedBuffer RandomData = FSharedBuffer::MakeView(SourceBuffer.Get(), BufferSize);
+
+		FEditorBulkData::FSharedBufferWithID SharedId(RandomData);
+		FEditorBulkData BulkDataFromSharedId;
+		BulkDataFromSharedId.UpdatePayload(MoveTemp(SharedId));
+
+		FEditorBulkData BulkData;
+		BulkData.UpdatePayload(RandomData);
+
+		TestEqual(TEXT("3: PayloadId"), BulkDataFromSharedId.GetPayloadId(), BulkData.GetPayloadId());
+		TestEqual(TEXT("3: PayloadSize"), BulkDataFromSharedId.GetPayloadSize(), BulkData.GetPayloadSize());
+	}
 
 	return true;
 }

@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkeletonEditor.h"
+
+#include "DetailLayoutBuilder.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Toolkits/AssetEditorToolkit.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Editor/EditorEngine.h"
 #include "EngineGlobals.h"
@@ -23,6 +25,9 @@
 #include "ISkeletonTreeItem.h"
 #include "Algo/Transform.h"
 #include "PersonaToolMenuContext.h"
+#include "ToolMenus.h"
+#include "ToolMenuMisc.h"
+#include "SkeletonToolMenuContext.h"
 
 const FName SkeletonEditorAppIdentifier = FName(TEXT("SkeletonEditorApp"));
 
@@ -85,9 +90,12 @@ void FSkeletonEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>&
 void FSkeletonEditor::InitSkeletonEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, USkeleton* InSkeleton)
 {
 	Skeleton = InSkeleton;
+	
+	FPersonaToolkitArgs PersonaToolkitArgs;
+	PersonaToolkitArgs.OnPreviewSceneSettingsCustomized = FOnPreviewSceneSettingsCustomized::FDelegate::CreateSP(this, &FSkeletonEditor::HandleOnPreviewSceneSettingsCustomized);
 
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
-	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InSkeleton);
+	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InSkeleton, PersonaToolkitArgs);
 
 	PersonaToolkit->GetPreviewScene()->SetDefaultAnimationMode(EPreviewSceneDefaultAnimationMode::ReferencePose);
 
@@ -117,6 +125,8 @@ void FSkeletonEditor::InitSkeletonEditor(const EToolkitMode::Type Mode, const TS
 	ExtendMenu();
 	ExtendToolbar();
 	RegenerateMenusAndToolbars();
+
+	PersonaToolkit->GetPreviewScene()->SetAllowMeshHitProxies(false);
 }
 
 FName FSkeletonEditor::GetToolkitFName() const
@@ -143,10 +153,13 @@ void FSkeletonEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 {
 	FAssetEditorToolkit::InitToolMenuContext(MenuContext);
 
-	UPersonaToolMenuContext* Context = NewObject<UPersonaToolMenuContext>();
-	Context->SetToolkit(GetPersonaToolkit());
+	UPersonaToolMenuContext* PersonaContext = NewObject<UPersonaToolMenuContext>();
+	PersonaContext->SetToolkit(GetPersonaToolkit());
+	MenuContext.AddObject(PersonaContext);
 
-	MenuContext.AddObject(Context);
+	USkeletonToolMenuContext* SkeletonContext = NewObject<USkeletonToolMenuContext>();
+	SkeletonContext->SkeletonEditor = SharedThis(this);
+	MenuContext.AddObject(SkeletonContext);
 }
 
 void FSkeletonEditor::BindCommands()
@@ -176,8 +189,49 @@ void FSkeletonEditor::BindCommands()
 		FExecuteAction::CreateRaw(&GetPersonaToolkit()->GetPreviewScene().Get(), &IPersonaPreviewScene::TogglePlayback));
 }
 
+TSharedPtr<FSkeletonEditor> FSkeletonEditor::GetSkeletonEditor(const FToolMenuContext& InMenuContext)
+{
+	if (USkeletonToolMenuContext* Context = InMenuContext.FindContext<USkeletonToolMenuContext>())
+	{
+		if (Context->SkeletonEditor.IsValid())
+		{
+			return StaticCastSharedPtr<FSkeletonEditor>(Context->SkeletonEditor.Pin());
+		}
+	}
+
+	return TSharedPtr<FSkeletonEditor>();
+}
+
 void FSkeletonEditor::ExtendToolbar()
 {
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	// Add in Editor Specific functionality
+	FName ParentName;
+	static const FName MenuName = GetToolMenuToolbarName(ParentName);
+
+	UToolMenu* ToolMenu = UToolMenus::Get()->ExtendMenu(MenuName);
+	const FToolMenuInsert SectionInsertLocation("Asset", EToolMenuInsertType::After);
+
+	{
+		ToolMenu->AddDynamicSection("Persona", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InToolMenu)
+		{
+			TSharedPtr<FSkeletonEditor> SkeletonEditor = GetSkeletonEditor(InToolMenu->Context);
+			if (SkeletonEditor.IsValid() && SkeletonEditor->PersonaToolkit.IsValid())
+			{
+				FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
+				PersonaModule.AddCommonToolbarExtensions(InToolMenu);
+			}
+		}), SectionInsertLocation);
+	}
+
+	{
+		FToolMenuSection& SkeletonSection = ToolMenu->AddSection("Skeleton", LOCTEXT("ToolbarSkeletonSectionLabel", "Skeleton"), SectionInsertLocation);
+		SkeletonSection.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletonEditorCommands::Get().AnimNotifyWindow));
+		SkeletonSection.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletonEditorCommands::Get().RetargetManager, LOCTEXT("Toolbar_RetargetManager", "Retarget Manager")));
+		SkeletonSection.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletonEditorCommands::Get().ImportMesh));
+	}
+
 	// If the ToolbarExtender is valid, remove it before rebuilding it
 	if (ToolbarExtender.IsValid())
 	{
@@ -209,16 +263,6 @@ void FSkeletonEditor::ExtendToolbar()
 		FToolBarExtensionDelegate::CreateLambda([this](FToolBarBuilder& ToolbarBuilder)
 		{
 			FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
-			PersonaModule.AddCommonToolbarExtensions(ToolbarBuilder, PersonaToolkit.ToSharedRef());
-
-			ToolbarBuilder.BeginSection("Skeleton");
-			{
-				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().AnimNotifyWindow);
-				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().RetargetManager, NAME_None, LOCTEXT("Toolbar_RetargetSources", "Retarget Sources"));
-				ToolbarBuilder.AddToolBarButton(FSkeletonEditorCommands::Get().ImportMesh);
-			}
-			ToolbarBuilder.EndSection();
-
 			TSharedRef<class IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(Skeleton);
 			AddToolbarWidget(PersonaModule.CreateAssetFamilyShortcutWidget(SharedThis(this), AssetFamily));
 		}	
@@ -311,7 +355,7 @@ TStatId FSkeletonEditor::GetStatId() const
 bool FSkeletonEditor::CanRemoveBones() const
 {
 	UDebugSkelMeshComponent* PreviewMeshComponent = PersonaToolkit->GetPreviewMeshComponent();
-	return PreviewMeshComponent && PreviewMeshComponent->SkeletalMesh;
+	return PreviewMeshComponent && PreviewMeshComponent->GetSkeletalMeshAsset();
 }
 
 void FSkeletonEditor::RemoveUnusedBones()
@@ -327,9 +371,9 @@ void FSkeletonEditor::TestSkeletonCurveNamesForUse() const
 
 void FSkeletonEditor::UpdateSkeletonRefPose()
 {
-	if (PersonaToolkit->GetPreviewMeshComponent()->SkeletalMesh)
+	if (PersonaToolkit->GetPreviewMeshComponent()->GetSkeletalMeshAsset())
 	{
-		GetSkeletonTree()->GetEditableSkeleton()->UpdateSkeletonReferencePose(PersonaToolkit->GetPreviewMeshComponent()->SkeletalMesh);
+		GetSkeletonTree()->GetEditableSkeleton()->UpdateSkeletonReferencePose(PersonaToolkit->GetPreviewMeshComponent()->GetSkeletalMeshAsset());
 	}
 }
 
@@ -347,6 +391,11 @@ void FSkeletonEditor::OnImportAsset()
 {
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 	PersonaModule.ImportNewAsset(Skeleton, FBXIT_SkeletalMesh);
+}
+
+void FSkeletonEditor::HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder)
+{
+	DetailBuilder.HideCategory("Animation Blueprint");
 }
 
 void FSkeletonEditor::HandleDetailsCreated(const TSharedRef<IDetailsView>& InDetailsView)

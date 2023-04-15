@@ -7,6 +7,8 @@
 #include "Evaluation/MovieSceneSequenceHierarchy.h"
 #include "IMovieScenePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneActorReferenceSection)
+
 bool FMovieSceneActorReferenceData::Evaluate(FFrameTime InTime, FMovieSceneActorReferenceKey& OutValue) const
 {
 	if (KeyTimes.Num())
@@ -144,7 +146,10 @@ void UMovieSceneActorReferenceSection::OnBindingIDsUpdated(const TMap<UE::MovieS
 	{
 		Modify();
 
-		ActorReferenceData.GetDefault().Object = OldFixedToNewFixedMap[DefaultFixedBindingID].ConvertToRelative(LocalSequenceID, Hierarchy);
+		FMovieSceneActorReferenceKey NewDefaultValue = ActorReferenceData.GetDefault();
+		NewDefaultValue.Object = OldFixedToNewFixedMap[DefaultFixedBindingID].ConvertToRelative(LocalSequenceID, Hierarchy);
+
+		ActorReferenceData.SetDefault(NewDefaultValue);
 	}
 
 	for (FMovieSceneActorReferenceKey& Key : ActorReferenceData.GetData().GetValues())
@@ -159,4 +164,5 @@ void UMovieSceneActorReferenceSection::OnBindingIDsUpdated(const TMap<UE::MovieS
 		}
 	}
 }
+
 

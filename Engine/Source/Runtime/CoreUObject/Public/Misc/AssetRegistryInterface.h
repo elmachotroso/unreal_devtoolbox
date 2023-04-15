@@ -2,11 +2,22 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
+#include "Containers/Array.h"
 #include "Containers/ContainersFwd.h"
+#include "Containers/Set.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Misc/EnumClassFlags.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/NameTypes.h"
+#include "UObject/TopLevelAssetPath.h"
+
+class FLinkerSave;
+class FStructuredArchiveRecord;
+class ITargetPlatform;
+class UObject;
+class UPackage;
 
 namespace EAssetRegistryDependencyType
 {
@@ -49,6 +60,9 @@ namespace UE::AssetRegistry
 	// 
 	enum class EDependencyCategory : uint8
 	{
+		// This enum is serialized by value into the runtime AssetRegistry and the AssetDataGatherer.
+		// If any values change or are removed, bump FAssetRegistryVersion and add backwards compatibility in FAssetRegistryState::Serialize.
+
 		Package = 0x01,			// The target asset of any package dependency is expected to be loadable whenever the source asset is available; see EDependencyProperty for different requirements of the loadability.
 		Manage = 0x02,			// The target asset of any manage dependency is managed (e.g. given a disk layout location) either directly or indirectly by the source asset. Used by UAssetManager.
 		SearchableName = 0x04,  // Targets of SearchableName dependencies are FNames Keys inside of an Asset. The Source Asset of the dependency has a value for that Key. Used to search for Assets with a given Key,Value for the custom Key.
@@ -64,6 +78,8 @@ namespace UE::AssetRegistry
 	enum class EDependencyProperty : uint8
 	{
 		None = 0,
+		// This enum is serialized by value into the runtime AssetRegistry and the AssetDataGatherer.
+		// If any values change or are removed, bump FAssetRegistryVersion and add backwards compatibility in FAssetRegistryState::Serialize.
 
 		// Package Dependencies
 		PackageMask = 0x7,
@@ -124,6 +140,16 @@ namespace UE::AssetRegistry
 	};
 
 	/**
+	 * Return values for AssetRegistry functions
+	 */
+	enum class EExists
+	{
+		DoesNotExist,	// Does not exist on disk
+		Exists,			// Exists on disk
+		Unknown,		// Not known. AssetRegistry might still be indexing
+	};
+
+	/**
 	 * A struct that is equivalent to EDependencyQuery, but is more useful for performance in filtering operations.
 	 * This is used by the filter implementations inside of GetDependency/GetReferencer calls; callers of those functions can instead use the more convenient values in EDependencyQuery.
 	 */
@@ -164,7 +190,7 @@ namespace UE::AssetRegistry
 	};
 
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
-	COREUOBJECT_API void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking, const UPackage* Package, FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame, const TSet<FName>& SoftPackagesUsedInGame);
+	COREUOBJECT_API void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking, const UPackage* Package, FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame, const TSet<FName>& SoftPackagesUsedInGame, const ITargetPlatform* TargetPlatform);
 	// ReadPackageDataMain and ReadPackageDataDependencies are declared in IAssetRegistry.h, in the AssetRegistry module, because they depend upon some structures defined in the AssetRegistry module
 
 	namespace Private
@@ -191,7 +217,7 @@ namespace UE::AssetRegistry
 	{
 	public:
 		/** Return whether to filter out assets of the given class and flags from the editor's asset registry */
-		static bool ShouldSkipAsset(FName AssetClass, uint32 PackageFlags);
+		static bool ShouldSkipAsset(const FTopLevelAssetPath& AssetClass, uint32 PackageFlags);
 
 		/** Return whether to filter out the given object (assumed to be an asset) from the editor's asset registry */
 		static bool ShouldSkipAsset(const UObject* InAsset);
@@ -201,7 +227,7 @@ namespace UE::AssetRegistry
 
 #if WITH_ENGINE && WITH_EDITOR
 		/** Copy the global skip classes set from the given external sets that were already populated. */
-		static void SetSkipClasses(const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+		static void SetSkipClasses(const TSet<FTopLevelAssetPath>& InSkipUncookedClasses, const TSet<FTopLevelAssetPath>& InSkipCookedClasses);
 #endif
 	};
 
@@ -209,13 +235,13 @@ namespace UE::AssetRegistry
 namespace Utils
 {
 	/** Return whether to filter out assets of the given class and flags based on the skip classes */
-	COREUOBJECT_API bool ShouldSkipAsset(FName AssetClass, uint32 PackageFlags,
-		const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+	COREUOBJECT_API bool ShouldSkipAsset(const FTopLevelAssetPath& AssetClass, uint32 PackageFlags,
+		const TSet<FTopLevelAssetPath>& InSkipUncookedClasses, const TSet<FTopLevelAssetPath>& InSkipCookedClasses);
 	/** Return whether to filter out the given object (assumed to be an asset) based on the skip classes */
 	COREUOBJECT_API bool ShouldSkipAsset(const UObject* InAsset,
-		const TSet<FName>& InSkipUncookedClasses, const TSet<FName>& InSkipCookedClasses);
+		const TSet<FTopLevelAssetPath>& InSkipUncookedClasses, const TSet<FTopLevelAssetPath>& InSkipCookedClasses);
 	/** Run the calculation of which classes to skip and store results in the given sets. */
-	COREUOBJECT_API void PopulateSkipClasses(TSet<FName>& OutSkipUncookedClasses, TSet<FName>& OutSkipCookedClasses);
+	COREUOBJECT_API void PopulateSkipClasses(TSet<FTopLevelAssetPath>& OutSkipUncookedClasses, TSet<FTopLevelAssetPath>& OutSkipCookedClasses);
 }
 #endif
 
@@ -263,6 +289,24 @@ public:
 	 * Lookup dependencies for the given package name and fill OutDependencies with direct dependencies
 	 */
 	virtual void GetDependencies(FName InPackageName, TArray<FName>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::Package, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) = 0;
+
+	/**
+	 * Tries to get the asset data for the specified object path
+	 *
+	 * @param ObjectPath the path of the object to be looked up
+	 * @param OutAssetData out FAssetData
+	 * @return Return code enum
+	 */
+	virtual UE::AssetRegistry::EExists TryGetAssetByObjectPath(const FSoftObjectPath& ObjectPath, struct FAssetData& OutAssetData) const = 0;
+
+	/**
+	 * Tries to get the pacakge data for a specified path
+	 *
+	 * @param PackageName name of the package
+	 * @param OutAssetPackageData out FAssetPackageData
+	 * @return Return code enum
+	 */
+	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(FName PackageName, class FAssetPackageData& OutPackageData) const = 0;
 
 protected:
 	/* This function is a workaround for platforms that don't support disable of deprecation warnings on override functions*/

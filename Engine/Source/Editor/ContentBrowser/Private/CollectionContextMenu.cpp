@@ -1,25 +1,50 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CollectionContextMenu.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Colors/SColorBlock.h"
-#include "EditorStyleSet.h"
-#include "ISourceControlProvider.h"
-#include "ISourceControlModule.h"
-#include "ICollectionManager.h"
+
 #include "CollectionManagerModule.h"
-#include "ContentBrowserUtils.h"
+#include "CollectionViewTypes.h"
 #include "CollectionViewUtils.h"
+#include "Containers/UnrealString.h"
+#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
-#include "Widgets/Colors/SColorPicker.h"
+#include "ContentBrowserUtils.h"
+#include "Delegates/Delegate.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "Settings/ContentBrowserSettings.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "ICollectionManager.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "ISourceControlState.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Views/STreeView.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -92,7 +117,7 @@ TSharedPtr<SWidget> FCollectionContextMenu::MakeCollectionTreeContextMenu(TShare
 			// New... (submenu)
 			MenuBuilder.AddSubMenu(
 				LOCTEXT("NewChildCollection", "New..."),
-				LOCTEXT("NewChildCollectionTooltip", "Create child a collection."),
+				LOCTEXT("NewChildCollectionTooltip", "Create a child collection."),
 				FNewMenuDelegate::CreateRaw( this, &FCollectionContextMenu::MakeNewCollectionSubMenu, ECollectionStorageMode::Static, SCollectionView::FCreateCollectionPayload( ParentCollection ) ),
 				FUIAction(
 					FExecuteAction(),
@@ -212,7 +237,7 @@ void FCollectionContextMenu::MakeNewCollectionSubMenu(FMenuBuilder& MenuBuilder,
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("NewCollection_Shared", "Shared Collection"),
 			LOCTEXT("NewCollection_SharedTooltip", "Create a collection that can be seen by anyone."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Shared ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Shared ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteNewCollection, ECollectionShareType::CST_Shared, StorageMode, InCreationPayload ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteNewCollection, ECollectionShareType::CST_Shared, bCanCreateSharedChildren )
@@ -223,7 +248,7 @@ void FCollectionContextMenu::MakeNewCollectionSubMenu(FMenuBuilder& MenuBuilder,
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("NewCollection_Private", "Private Collection"),
 			LOCTEXT("NewCollection_PrivateTooltip", "Create a collection that can only be seen by you."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Private ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Private ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteNewCollection, ECollectionShareType::CST_Private, StorageMode, InCreationPayload ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteNewCollection, ECollectionShareType::CST_Private, bCanCreatePrivateChildren )
@@ -234,7 +259,7 @@ void FCollectionContextMenu::MakeNewCollectionSubMenu(FMenuBuilder& MenuBuilder,
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("NewCollection_Local", "Local Collection"),
 			LOCTEXT("NewCollection_LocalTooltip", "Create a collection that is not in source control and can only be seen by you."),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Local ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Local ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteNewCollection, ECollectionShareType::CST_Local, StorageMode, InCreationPayload ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteNewCollection, ECollectionShareType::CST_Local, bCanCreateLocalChildren )
@@ -284,7 +309,7 @@ void FCollectionContextMenu::MakeSaveDynamicCollectionSubMenu(FMenuBuilder& Menu
 			MenuBuilder.AddMenuEntry(
 				FText::FromName(AvailableCollection.Name), 
 				FText::Format(LOCTEXT("SaveDynamicCollection_OverwriteExistingCollectionToolTip", "Overwrite '{0}' with the current search query"), FText::FromName(AvailableCollection.Name)),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName(AvailableCollection.Type)),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName(AvailableCollection.Type)),
 				FUIAction(
 					FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteSaveDynamicCollection, AvailableCollection, InSearchQuery ),
 					FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteSaveDynamicCollection, AvailableCollection )
@@ -303,7 +328,7 @@ void FCollectionContextMenu::MakeCollectionShareTypeSubMenu(FMenuBuilder& MenuBu
 		MenuBuilder.AddMenuEntry(
 			ECollectionShareType::ToText( ECollectionShareType::CST_Shared ),
 			ECollectionShareType::GetDescription( ECollectionShareType::CST_Shared ),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Shared ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Shared ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteSetCollectionShareType, ECollectionShareType::CST_Shared ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteSetCollectionShareType, ECollectionShareType::CST_Shared ),
@@ -316,7 +341,7 @@ void FCollectionContextMenu::MakeCollectionShareTypeSubMenu(FMenuBuilder& MenuBu
 		MenuBuilder.AddMenuEntry(
 			ECollectionShareType::ToText( ECollectionShareType::CST_Private ),
 			ECollectionShareType::GetDescription( ECollectionShareType::CST_Private ),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Private ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Private ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteSetCollectionShareType, ECollectionShareType::CST_Private ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteSetCollectionShareType, ECollectionShareType::CST_Private ),
@@ -329,7 +354,7 @@ void FCollectionContextMenu::MakeCollectionShareTypeSubMenu(FMenuBuilder& MenuBu
 		MenuBuilder.AddMenuEntry(
 			ECollectionShareType::ToText( ECollectionShareType::CST_Local ),
 			ECollectionShareType::GetDescription( ECollectionShareType::CST_Local ),
-			FSlateIcon( FEditorStyle::GetStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Local ) ),
+			FSlateIcon( FAppStyle::GetAppStyleSetName(), ECollectionShareType::GetIconStyleName( ECollectionShareType::CST_Local ) ),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FCollectionContextMenu::ExecuteSetCollectionShareType, ECollectionShareType::CST_Local ),
 				FCanExecuteAction::CreateSP( this, &FCollectionContextMenu::CanExecuteSetCollectionShareType, ECollectionShareType::CST_Local ),
@@ -379,7 +404,7 @@ void FCollectionContextMenu::MakeSetColorSubMenu(FMenuBuilder& MenuBuilder)
 						.Padding(2, 0, 0, 0)
 						[
 							SNew(SButton)
-							.ButtonStyle( FEditorStyle::Get(), "Menu.Button" )
+							.ButtonStyle( FAppStyle::Get(), "Menu.Button" )
 							.OnClicked( this, &FCollectionContextMenu::OnColorClicked, Color )
 							[
 								SNew(SColorBlock)

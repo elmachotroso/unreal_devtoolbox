@@ -16,9 +16,16 @@ static_assert(sizeof(ispc::FTransform) == sizeof(FTransform), "sizeof(ispc::FTra
 static_assert(sizeof(ispc::BoneTrackPair) == sizeof(BoneTrackPair), "sizeof(ispc::BoneTrackPair) != sizeof(BoneTrackPair)");
 #endif
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
-bool bAnim_PerTrackCompression_ISPC_Enabled = true;
-FAutoConsoleVariableRef CVarAnimPerTrackCompressionISPCEnabled(TEXT("a.PerTrackCompression.ISPC"), bAnim_PerTrackCompression_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in per track anim encoding"));
+#if !defined(ANIM_PER_TRACK_COMPRESSION_ISPC_ENABLED_DEFAULT)
+#define ANIM_PER_TRACK_COMPRESSION_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bAnim_PerTrackCompression_ISPC_Enabled = INTEL_ISPC && ANIM_PER_TRACK_COMPRESSION_ISPC_ENABLED_DEFAULT;
+#else
+static bool bAnim_PerTrackCompression_ISPC_Enabled = ANIM_PER_TRACK_COMPRESSION_ISPC_ENABLED_DEFAULT;
+static FAutoConsoleVariableRef CVarAnimPerTrackCompressionISPCEnabled(TEXT("a.PerTrackCompression.ISPC"), bAnim_PerTrackCompression_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in per track anim encoding"));
 #endif
 
 // This define controls whether scalar or vector code is used to decompress keys.  Note that not all key decompression code
@@ -488,12 +495,12 @@ void AEFPerTrackCompressionCodec::GetBoneAtomRotation(
 		{
 			if ((FormatFlags & 0x8) == 0)
 			{
-				Alpha = TimeToIndex(DecompContext.SequenceLength, DecompContext.RelativePos, NumKeys, DecompContext.Interpolation, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.GetPlayableLength(), DecompContext.GetRelativePosition(), NumKeys, DecompContext.Interpolation, Index0, Index1);
 			}
 			else
 			{
 				const uint8* RESTRICT FrameTable = Align(TrackData + FixedBytes + BytesPerKey * NumKeys, 4);
-				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.RelativePos, NumKeys, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.GetRelativePosition(), NumKeys, Index0, Index1);
 			}
 		}
 
@@ -579,12 +586,12 @@ void AEFPerTrackCompressionCodec::GetBoneAtomTranslation(
 		{
 			if ((FormatFlags & 0x8) == 0)
 			{
-				Alpha = TimeToIndex(DecompContext.SequenceLength, DecompContext.RelativePos, NumKeys, DecompContext.Interpolation, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.GetPlayableLength(), DecompContext.GetRelativePosition(), NumKeys, DecompContext.Interpolation, Index0, Index1);
 			}
 			else
 			{
 				const uint8* RESTRICT FrameTable = Align(TrackData + FixedBytes + BytesPerKey * NumKeys, 4);
-				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.RelativePos, NumKeys, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.GetRelativePosition(), NumKeys, Index0, Index1);
 			}
 		}
 
@@ -665,12 +672,12 @@ void AEFPerTrackCompressionCodec::GetBoneAtomScale(
 		{
 			if ((FormatFlags & 0x8) == 0)
 			{
-				Alpha = TimeToIndex(DecompContext.SequenceLength, DecompContext.RelativePos, NumKeys, DecompContext.Interpolation, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.GetPlayableLength(), DecompContext.GetRelativePosition(), NumKeys, DecompContext.Interpolation, Index0, Index1);
 			}
 			else
 			{
 				const uint8* RESTRICT FrameTable = Align(TrackData + FixedBytes + BytesPerKey * NumKeys, 4);
-				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.RelativePos, NumKeys, Index0, Index1);
+				Alpha = TimeToIndex(DecompContext.Interpolation, AnimData.CompressedNumberOfKeys, FrameTable, DecompContext.GetRelativePosition(), NumKeys, Index0, Index1);
 			}
 		}
 
@@ -751,8 +758,8 @@ void AEFPerTrackCompressionCodec::GetPoseRotations(
 			AnimData.CompressedTrackOffsets.GetData(),
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.SequenceLength,
-			DecompContext.RelativePos,
+			DecompContext.GetPlayableLength(),
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			PairCount);
 #endif
@@ -799,8 +806,8 @@ void AEFPerTrackCompressionCodec::GetPoseTranslations(
 			AnimData.CompressedTrackOffsets.GetData(),
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.SequenceLength,
-			DecompContext.RelativePos,
+			DecompContext.GetPlayableLength(),
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			PairCount);
 #endif
@@ -853,8 +860,8 @@ void AEFPerTrackCompressionCodec::GetPoseScales(
 			StripSize,
 			AnimData.CompressedByteStream.GetData(),
 			AnimData.CompressedNumberOfKeys,
-			DecompContext.SequenceLength,
-			DecompContext.RelativePos,
+			DecompContext.GetPlayableLength(),
+			DecompContext.GetRelativePosition(),
 			(uint8)DecompContext.Interpolation,
 			PairCount);
 #endif

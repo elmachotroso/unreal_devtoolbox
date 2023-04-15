@@ -290,6 +290,10 @@ public:
 	/** Width of spline in editor for use with scale visualization */
 	UPROPERTY(EditAnywhere, Category = Editor, meta=(EditCondition="bShouldVisualizeScale"))
 	float ScaleVisualizationWidth;
+
+	/** Delegate that's called when this component is deselected in the editor */
+	DECLARE_MULTICAST_DELEGATE_OneParam(DeselectedInEditorDelegate, TObjectPtr<USplineComponent>)
+	DeselectedInEditorDelegate OnDeselectedInEditor;
 #endif
 
 	//~ Begin UObject Interface
@@ -308,8 +312,14 @@ public:
 #if UE_ENABLE_DEBUG_DRAWING
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+#endif
+	
+#if WITH_EDITOR
+	virtual void PushSelectionToProxy() override;
+#endif
 	//~ End UPrimitiveComponent Interface.
 
+#if UE_ENABLE_DEBUG_DRAWING
 	//~ Begin USceneComponent Interface
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	//~ End USceneComponent Interface
@@ -600,8 +610,19 @@ public:
 	FVector GetDefaultUpVector(ESplineCoordinateSpace::Type CoordinateSpace) const;
 
 	/** Given a distance along the length of this spline, return the corresponding input key at that point */
-	UFUNCTION(BlueprintCallable, Category=Spline)
+	/** This method has been deprecated because it was incorrectly returning the input key at time. To maintain the same behavior,
+	 *  replace it with GetTimeAtDistanceAlongSpline. To actually get the input key, instead call GetInputKeyValueAtDistanceAlongSpline. */
+	UFUNCTION(BlueprintCallable, Category=Spline, meta = (DeprecatedFunction, DeprecationMessage = "Please use GetInputKeyValueAtDistanceAlongSpline to get input key at distance or GetTimeAtDistanceAlongSpline to get time value (normalized to duration) at distance (same logic as deprecated function)."))
 	float GetInputKeyAtDistanceAlongSpline(float Distance) const;
+
+	/** Given a distance along the length of this spline, return the corresponding input key at that point 
+      * with a fractional component between the current input key and the next as a percentage. */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	float GetInputKeyValueAtDistanceAlongSpline(float Distance) const;
+	
+	/** Given a distance along the length of this spline, return the corresponding time at that point */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	float GetTimeAtDistanceAlongSpline(float Distance) const;
 
 	/** Given a distance along the length of this spline, return the point in space where this puts you */
 	UFUNCTION(BlueprintCallable, Category=Spline)
@@ -755,6 +776,11 @@ public:
 	/** Given a threshold, recursively sub-divides the spline section until the list of segments (polyline) matches the spline shape. */
 	UFUNCTION(BlueprintCallable, Category = Spline)
 	bool DivideSplineIntoPolylineRecursive(float StartDistanceAlongSpline, float EndDistanceAlongSpline, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const;
+
+	/** Given a threshold, recursively sub-divides the spline section until the list of segments (polyline) matches the spline shape. */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	bool DivideSplineIntoPolylineRecursiveWithDistances(float StartDistanceAlongSpline, float EndDistanceAlongSpline, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints, TArray<double>& OutDistancesAlongSpline) const;
+
 
 	/** Given a threshold, returns a list of vertices along the spline segment that, treated as a list of segments (polyline), matches the spline shape. */
 	UFUNCTION(BlueprintCallable, Category = Spline)

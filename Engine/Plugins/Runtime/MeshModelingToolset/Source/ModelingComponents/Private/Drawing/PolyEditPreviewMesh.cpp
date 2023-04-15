@@ -9,6 +9,8 @@
 #include "DynamicMesh/MeshNormals.h"
 #include "DynamicMeshEditor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PolyEditPreviewMesh)
+
 using namespace UE::Geometry;
 
 void UPolyEditPreviewMesh::InitializeExtrudeType(
@@ -28,13 +30,15 @@ void UPolyEditPreviewMesh::InitializeExtrudeType(
 	if (bHaveMeshTransform)
 	{
 		MeshTransform = *MeshTransformIn;
-		MeshTransforms::ApplyTransform(EditPatch, MeshTransform);
+		MeshTransforms::ApplyTransform(EditPatch, MeshTransform, true);
 	}
 	//FMeshNormals::QuickComputeVertexNormals(EditPatch);
 
 	// save copy of initial patch
 	InitialEditPatch = EditPatch;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	InitialEditPatchBVTree.SetMesh(&InitialEditPatch);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// save initial tri normals
 	InitialTriNormals.SetNum(InitialEditPatch.MaxTriangleID());
@@ -99,11 +103,13 @@ void UPolyEditPreviewMesh::InitializeExtrudeType(FDynamicMesh3&& BaseMesh,
 	if (bHaveMeshTransform)
 	{
 		MeshTransform = *MeshTransformIn;
-		MeshTransforms::ApplyTransform(InitialEditPatch, MeshTransform);
+		MeshTransforms::ApplyTransform(InitialEditPatch, MeshTransform, true);
 	}
 
 	// save copy of initial patch
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	InitialEditPatchBVTree.SetMesh(&InitialEditPatch);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// save initial tri normals
 	InitialTriNormals.SetNum(InitialEditPatch.MaxTriangleID());
@@ -254,12 +260,14 @@ void UPolyEditPreviewMesh::InitializeInsetType(const FDynamicMesh3* SourceMesh, 
 	if (bHaveMeshTransform)
 	{
 		MeshTransform = *MeshTransformIn;
-		MeshTransforms::ApplyTransform(EditPatch, MeshTransform);
+		MeshTransforms::ApplyTransform(EditPatch, MeshTransform, true);
 	}
 
 	// save copy of initial patch
 	InitialEditPatch = EditPatch;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	InitialEditPatchBVTree.SetMesh(&InitialEditPatch);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// initialize the preview mesh
 	UpdatePreview(&EditPatch);
@@ -290,6 +298,7 @@ void UPolyEditPreviewMesh::UpdateInsetType(double NewOffset, bool bReproject, do
 void UPolyEditPreviewMesh::MakeInsetTypeTargetMesh(FDynamicMesh3& TargetMesh)
 {
 	TargetMesh = InitialEditPatch;
+	MeshTransforms::ApplyTransform(TargetMesh, GetTransform());
 }
 
 
@@ -310,12 +319,11 @@ void UPolyEditPreviewMesh::InitializeStaticType(const FDynamicMesh3* SourceMesh,
 	if (bHaveMeshTransform)
 	{
 		MeshTransform = *MeshTransformIn;
-		MeshTransforms::ApplyTransform(EditPatch, MeshTransform);
+		MeshTransforms::ApplyTransform(EditPatch, MeshTransform, true);
 	}
 
 	// save copy of initial patch
 	InitialEditPatch = EditPatch;
-	InitialEditPatchBVTree.SetMesh(&InitialEditPatch);
 
 	// initialize the preview mesh
 	UpdatePreview(&EditPatch);

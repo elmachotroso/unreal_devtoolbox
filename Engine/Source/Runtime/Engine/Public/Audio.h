@@ -48,7 +48,7 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Updating Effects"), STAT_AudioUpdateEffects, STA
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Init"), STAT_AudioSourceInitTime, STATGROUP_Audio, ENGINE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Create"), STAT_AudioSourceCreateTime, STATGROUP_Audio, ENGINE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Submit Buffers"), STAT_AudioSubmitBuffersTime, STATGROUP_Audio, ENGINE_API);
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Audio"), STAT_AudioDecompressTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Audio"), STAT_AudioDecompressTime, STATGROUP_Audio, ENGINE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Vorbis"), STAT_VorbisDecompressTime, STATGROUP_Audio, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Prepare Audio Decompression"), STAT_AudioPrepareDecompressionTime, STATGROUP_Audio, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Prepare Vorbis Decompression"), STAT_VorbisPrepareDecompressionTime, STATGROUP_Audio, );
@@ -63,6 +63,7 @@ class USoundWave;
 class USoundClass;
 class USoundSubmix;
 class USoundSourceBus;
+class UAudioLinkSettingsAbstract;
 struct FActiveSound;
 struct FWaveInstance;
 struct FSoundSourceBusSendInfo;
@@ -92,6 +93,7 @@ class USoundNode;
 struct FWaveInstance;
 struct FReverbSettings;
 struct FSampleLoop;
+struct FSoundWaveTimecodeInfo;
 
 enum ELoopingMode
 {
@@ -211,6 +213,10 @@ struct ENGINE_API FWaveInstance
 	/** Source Buffer listener */
 	FSharedISourceBufferListenerPtr SourceBufferListener;
 	bool bShouldSourceBufferListenerZeroBuffer = false;
+
+	/** AudioLink Opt in */
+	bool bShouldUseAudioLink = true;
+	UAudioLinkSettingsAbstract* AudioLinkSettingsOverride = nullptr;	
 
 private:
 
@@ -874,6 +880,9 @@ public:
 
 	// List of cues parsed from the wave file
 	TArray<FWaveCue> WaveCues;
+
+	// Timecode data if it was found on import.
+	TPimplPtr<FSoundWaveTimecodeInfo, EPimplPtrMode::DeepCopy> TimecodeInfo;
 
 	// Constructor.
 	FWaveModInfo()

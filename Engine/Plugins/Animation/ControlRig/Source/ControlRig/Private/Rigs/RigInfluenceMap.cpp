@@ -2,6 +2,8 @@
 
 #include "Rigs/RigInfluenceMap.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigInfluenceMap)
+
 ////////////////////////////////////////////////////////////////////////////////
 // RigInfluenceEntry
 ////////////////////////////////////////////////////////////////////////////////
@@ -85,23 +87,7 @@ FRigInfluenceMap FRigInfluenceMap::Inverse() const
 
 bool FRigInfluenceMap::Merge(const FRigInfluenceMap& Other)
 {
-	if(Other.EventName != EventName)
-	{
-		return false;
-	}
-
-	FRigInfluenceMap Temp = *this;
-	for(const FRigInfluenceEntry& OtherEntry : Other)
-	{
-		FRigInfluenceEntry& Entry = Temp.FindOrAdd(OtherEntry.Source);
-		if(!Entry.Merge(OtherEntry))
-		{
-			return false;
-		}
-	}
-
-	*this = Temp;
-	return true;
+	return Merge(Other, false);
 }
 
 FRigInfluenceEntryModifier FRigInfluenceMap::GetEntryModifier(const FRigElementKey& InKey) const
@@ -160,6 +146,27 @@ void FRigInfluenceMap::OnKeyRenamed(const FRigElementKey& InOldKey, const FRigEl
 		KeyToIndex.Remove(InOldKey);
 		KeyToIndex.Add(InNewKey, IndexToRename);
 	}
+}
+
+bool FRigInfluenceMap::Merge(const FRigInfluenceMap& Other, bool bIgnoreEventName)
+{
+	if(!bIgnoreEventName && (Other.EventName != EventName))
+	{
+		return false;
+	}
+
+	FRigInfluenceMap Temp = *this;
+	for(const FRigInfluenceEntry& OtherEntry : Other)
+	{
+		FRigInfluenceEntry& Entry = Temp.FindOrAdd(OtherEntry.Source);
+		if(!Entry.Merge(OtherEntry))
+		{
+			return false;
+		}
+	}
+
+	*this = Temp;
+	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

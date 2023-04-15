@@ -115,38 +115,6 @@ void FVulkanCommandListContext::RHISetStreamSource(uint32 StreamIndex, FRHIBuffe
 	}
 }
 
-void FVulkanCommandListContext::RHISetComputeShader(FRHIComputeShader* ComputeShaderRHI)
-{
-	FVulkanComputeShader* ComputeShader = ResourceCast(ComputeShaderRHI);
-	FVulkanComputePipeline* ComputePipeline = Device->GetPipelineStateCache()->GetOrCreateComputePipeline(ComputeShader);
-	RHISetComputePipelineState(ComputePipeline);
-}
-
-void FVulkanCommandListContext::RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState)
-{
-	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
-	if (CmdBuffer->IsInsideRenderPass())
-	{
-		if (GVulkanSubmitAfterEveryEndRenderPass)
-		{
-			CommandBufferManager->SubmitActiveCmdBuffer();
-			CommandBufferManager->PrepareForNewActiveCommandBuffer();
-			CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
-		}
-	}
-
-	if (CmdBuffer->CurrentDescriptorPoolSetContainer == nullptr)
-	{
-		CmdBuffer->CurrentDescriptorPoolSetContainer = &Device->GetDescriptorPoolsManager().AcquirePoolSetContainer();
-	}
-
-	//#todo-rco: Set PendingGfx to null
-	FVulkanComputePipeline* ComputePipeline = ResourceCast(ComputePipelineState);
-	PendingComputeState->SetComputePipeline(ComputePipeline);
-
-	ApplyStaticUniformBuffers(const_cast<FVulkanComputeShader*>(ComputePipeline->GetShader()));
-}
-
 void FVulkanCommandListContext::RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ)
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
@@ -223,8 +191,8 @@ void FVulkanCommandListContext::RHISetUAVParameter(FRHIComputeShader* ComputeSha
 
 void FVulkanCommandListContext::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI, uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
-	FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(NewTextureRHI);
-	VkImageLayout Layout = LayoutManager.FindLayoutChecked(Texture->Surface.Image);
+	FVulkanTexture* Texture = FVulkanTexture::Cast(NewTextureRHI);
+	VkImageLayout Layout = LayoutManager.FindLayoutChecked(Texture->Image);
 
 	ShaderStage::EStage Stage = GetAndVerifyShaderStage(ShaderRHI, PendingGfxState);
 	PendingGfxState->SetTextureForStage(Stage, TextureIndex, Texture, Layout);
@@ -236,8 +204,8 @@ void FVulkanCommandListContext::RHISetShaderTexture(FRHIComputeShader* ComputeSh
 	FVulkanComputeShader* ComputeShader = ResourceCast(ComputeShaderRHI);
 	check(PendingComputeState->GetCurrentShader() == ComputeShader);
 
-	FVulkanTextureBase* VulkanTexture = FVulkanTextureBase::Cast(NewTextureRHI);
-	VkImageLayout Layout = LayoutManager.FindLayoutChecked(VulkanTexture->Surface.Image);
+	FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(NewTextureRHI);
+	VkImageLayout Layout = LayoutManager.FindLayoutChecked(VulkanTexture->Image);
 	PendingComputeState->SetTextureForStage(TextureIndex, VulkanTexture, Layout);
 	NewTextureRHI->SetLastRenderTime((float)FPlatformTime::Seconds());
 }
@@ -335,14 +303,14 @@ inline void SetShaderUniformBufferResources(FVulkanCommandListContext* Context, 
 			FRHITexture* TexRef = (FRHITexture*)(ResourceArray[ResourceInfo.SourceUBResourceIndex].GetReference());
 			if (TexRef)
 			{
-				const FVulkanTextureBase* BaseTexture = FVulkanTextureBase::Cast(TexRef);
-				if (!ensure(BaseTexture))
+				const FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(TexRef);
+				if (!ensure(VulkanTexture))
 				{
-					BaseTexture = FVulkanTextureBase::Cast(GBlackTexture->TextureRHI.GetReference());
+					VulkanTexture = FVulkanTexture::Cast(GBlackTexture->TextureRHI.GetReference());
 				}
 
 				// If the descriptor is a storage image in a slot expecting to read only, make sure it's because we don't support sampling
-				ensure(DescriptorType != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || !BaseTexture->Surface.SupportsSampling());
+				ensure(DescriptorType != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || !VulkanTexture->SupportsSampling());
 
 #if ENABLE_RHI_VALIDATION
 				if (Context->Tracker)
@@ -351,8 +319,8 @@ inline void SetShaderUniformBufferResources(FVulkanCommandListContext* Context, 
 				}
 #endif
 
-				const VkImageLayout Layout = Context->GetLayoutManager().FindLayoutChecked(BaseTexture->Surface.Image);
-				State->SetTextureForUBResource(GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewDescriptorSet, GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewBindingIndex, BaseTexture, Layout);
+				const VkImageLayout Layout = Context->GetLayoutManager().FindLayoutChecked(VulkanTexture->Image);
+				State->SetTextureForUBResource(GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewDescriptorSet, GlobalRemappingInfo[ResourceInfo.GlobalIndex].NewBindingIndex, VulkanTexture, Layout);
 				TexRef->SetLastRenderTime(CurrentTime);
 			}
 			else
@@ -745,6 +713,7 @@ bool FVulkanDynamicRHI::RHIIsRenderingSuspended()
 
 void FVulkanDynamicRHI::RHIBlockUntilGPUIdle()
 {
+	Device->SubmitCommandsAndFlushGPU();
 	Device->WaitUntilIdle();
 }
 
@@ -864,21 +833,25 @@ void FVulkanCommandListContext::RHIWriteGPUFence(FRHIGPUFence* FenceRHI)
 }
 
 
-FVulkanCommandContextContainer::FVulkanCommandContextContainer(FVulkanDevice* InDevice)
-	: VulkanRHI::FDeviceChild(InDevice)
-	, CmdContext(nullptr)
+
+
+struct FVulkanPlatformCommandList : public IRHIPlatformCommandList
 {
-	check(IsInRenderingThread());
+	FVulkanCommandListContext* CmdContext = nullptr;
+};
 
-	CmdContext = Device->AcquireDeferredContext();
-}
-
-IRHICommandContext* FVulkanCommandContextContainer::GetContext()
+template<>
+struct TVulkanResourceTraits<IRHIPlatformCommandList>
 {
-	//FPlatformMisc::LowLevelOutputDebugStringf(TEXT("*** Thread %d GetContext() Container=%p\n"), FPlatformTLS::GetCurrentThreadId(), this);
-	//FPlatformTLS::SetTlsValue(GGnmManager.GetParallelTranslateTLS(), (void*)1);
+	typedef FVulkanPlatformCommandList TConcreteType;
+};
 
-	CmdContext->PrepareParallelFromBase(Device->GetImmediateContext());
+IRHIComputeContext* FVulkanDynamicRHI::RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask)
+{
+	// @todo: RHI command list refactor - fix async compute
+	checkf(Pipeline == ERHIPipeline::Graphics, TEXT("Async compute command contexts not currently implemented."));
+
+	FVulkanCommandListContext* CmdContext = Device->AcquireDeferredContext();
 
 	FVulkanCommandBufferManager* CmdMgr = CmdContext->GetCommandBufferManager();
 	FVulkanCmdBuffer* CmdBuffer = CmdMgr->GetActiveCmdBuffer();
@@ -897,99 +870,37 @@ IRHICommandContext* FVulkanCommandContextContainer::GetContext()
 		CmdBuffer->Begin();
 	}
 
-	CmdContext->RHIPushEvent(TEXT("Parallel Context"), FColor::Blue);
-
-	//CmdContext->InitContextBuffers();
-	//CmdContext->ClearState();
 	return CmdContext;
 }
 
-
-void FVulkanCommandContextContainer::FinishContext()
+IRHIPlatformCommandList* FVulkanDynamicRHI::RHIFinalizeContext(IRHIComputeContext* Context)
 {
-	//FPlatformMisc::LowLevelOutputDebugStringf(TEXT("*** Thread %d FinishContext() Container=%p\n"), FPlatformTLS::GetCurrentThreadId(), this);
-
-	//GGnmManager.TimeSubmitOnCmdListEnd(CmdContext);
-
-	//store off all memory ranges for DCBs to be submitted to the GPU.
-	//FinalCommandList = CmdContext->GetContext().Finalize(CmdContext->GetBeginCmdListTimestamp(), CmdContext->GetEndCmdListTimestamp());
-
-	FVulkanCommandBufferManager* CmdMgr = CmdContext->GetCommandBufferManager();
-	FVulkanCmdBuffer* CmdBuffer = CmdMgr->GetActiveCmdBuffer();
-	check(CmdBuffer->HasBegun());
-
-	CmdContext->RHIPopEvent();
-
-	//CmdContext = nullptr;
-	//CmdContext->CommandBufferManager->GetActiveCmdBuffer()->End();
-	//check(!CmdContext/* && FinalCommandList.SubmissionAddrs.Num() > 0*/);
-
-	//FPlatformTLS::SetTlsValue(GGnmManager.GetParallelTranslateTLS(), (void*)0);
+	FVulkanPlatformCommandList* PlatformCmdList = new FVulkanPlatformCommandList();
+	PlatformCmdList->CmdContext = static_cast<FVulkanCommandListContext*>(Context);
+	return PlatformCmdList;
 }
 
-void FVulkanCommandContextContainer::SubmitAndFreeContextContainer(int32 Index, int32 Num)
+void FVulkanDynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
 {
-	//FPlatformMisc::LowLevelOutputDebugStringf(TEXT("*** Thread %d Submit() Container=%p %d/%d\n"), FPlatformTLS::GetCurrentThreadId(), this, Index, Num);
-	if (!Index)
+	for (IRHIPlatformCommandList* Ptr : CommandLists)
 	{
-		FVulkanCommandListContext& Imm = Device->GetImmediateContext();
-		FVulkanCommandBufferManager* ImmCmdMgr = Imm.GetCommandBufferManager();
-		FVulkanCmdBuffer* ImmCmdBuf = ImmCmdMgr->GetActiveCmdBuffer();
-		if (ImmCmdBuf && !ImmCmdBuf->IsSubmitted())
-		{
-			ImmCmdMgr->SubmitActiveCmdBuffer();
-		}
-	}
-	//GGnmManager.AddSubmission(FinalCommandList);
-	check(CmdContext);
-	FVulkanCommandBufferManager* CmdBufMgr = CmdContext->GetCommandBufferManager();
-	check(!CmdBufMgr->HasPendingUploadCmdBuffer());
-	//{
-	//	CmdBufMgr->SubmitUploadCmdBuffer(false);
-	//}
-	FVulkanCmdBuffer* CmdBuffer = CmdBufMgr->GetActiveCmdBuffer();
-	check(!CmdBuffer->IsInsideRenderPass());
-	//{
-	//	CmdContext->TransitionState.EndRenderPass(CmdBuffer);
-	//}
-	CmdBufMgr->SubmitActiveCmdBuffer();
+		FVulkanPlatformCommandList* PlatformCmdList = ResourceCast(Ptr);
 
-	Device->ReleaseDeferredContext(CmdContext);
-
-	//check(!CmdContext/* && FinalCommandList.SubmissionAddrs.Num() != 0*/);
-	if (Index == Num - 1)
-	{
-		FVulkanCommandListContext& Imm = Device->GetImmediateContext();
-		FVulkanCommandBufferManager* ImmCmdMgr = Imm.GetCommandBufferManager();
-		FVulkanCmdBuffer* ImmCmdBuf = ImmCmdMgr->GetActiveCmdBuffer();
-		if (ImmCmdBuf)
+		if (PlatformCmdList->CmdContext->IsImmediate())
 		{
-			if (ImmCmdBuf->IsSubmitted())
-			{
-				ImmCmdMgr->PrepareForNewActiveCommandBuffer();
-				ImmCmdBuf = ImmCmdMgr->GetActiveCmdBuffer();
-			}
+			PlatformCmdList->CmdContext->RHISubmitCommandsHint();
 		}
 		else
 		{
-			ImmCmdMgr->PrepareForNewActiveCommandBuffer();
-			ImmCmdBuf = ImmCmdMgr->GetActiveCmdBuffer();
+			FVulkanCommandBufferManager* CmdBufMgr = PlatformCmdList->CmdContext->GetCommandBufferManager();
+			check(!CmdBufMgr->HasPendingUploadCmdBuffer());  // todo-jn
+			FVulkanCmdBuffer* CmdBuffer = CmdBufMgr->GetActiveCmdBuffer();
+			check(!CmdBuffer->IsInsideRenderPass());
+			CmdBufMgr->SubmitActiveCmdBuffer();
+
+			Device->ReleaseDeferredContext(PlatformCmdList->CmdContext);
 		}
-		check(ImmCmdBuf->HasBegun());
 
-		//printf("EndParallelContexts: %i, %i\n", Index, Num);
-		//GGnmManager.EndParallelContexts();
+		delete PlatformCmdList;
 	}
-	//FinalCommandList.Reset();
-	delete this;
-}
-
-void* FVulkanCommandContextContainer::operator new(size_t Size)
-{
-	return FMemory::Malloc(Size);
-}
-
-void FVulkanCommandContextContainer::operator delete(void* RawMemory)
-{
-	FMemory::Free(RawMemory);
 }

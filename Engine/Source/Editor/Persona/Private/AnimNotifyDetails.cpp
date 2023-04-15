@@ -181,7 +181,7 @@ void FAnimNotifyDetails::AddBoneNameProperty(IDetailCategoryBuilder& CategoryBui
 						[
 							SNew(STextBlock)
 							.Text(Property->GetPropertyDisplayName())
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 						]
 					]
 				.ValueContent()
@@ -219,7 +219,7 @@ void FAnimNotifyDetails::AddCurveNameProperty(IDetailCategoryBuilder& CategoryBu
 						[
 							SNew(STextBlock)
 							.Text(Property->GetPropertyDisplayName())
-							.Font(FEditorStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 						]
 					]
 				.ValueContent()
@@ -249,7 +249,7 @@ void FAnimNotifyDetails::ClearInstancedSelectionDropDown(IDetailCategoryBuilder&
 	.CustomWidget(bShowChildren)
 	.NameContent()
 	[
-		PropHandle->CreatePropertyNameWidget(FText::GetEmpty(), FText::GetEmpty(), false)
+		PropHandle->CreatePropertyNameWidget()
 	]
 	.ValueContent()
 	[

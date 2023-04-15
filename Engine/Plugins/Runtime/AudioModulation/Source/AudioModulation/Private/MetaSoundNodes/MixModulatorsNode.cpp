@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#if WITH_AUDIOMODULATION_METASOUND_SUPPORT
+
 #include "AudioModulation.h"
 #include "IAudioModulation.h"
+#include "Interfaces/MetasoundFrontendSourceInterface.h"
 #include "MetasoundDataFactory.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundFacade.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundPrimitives.h"
-#include "MetasoundSourceInterface.h"
 #include "SoundModulatorAsset.h"
 
 #define LOCTEXT_NAMESPACE "AudioModulationNodes"
@@ -19,15 +21,17 @@ namespace AudioModulation
 	public:
 		static const Metasound::FVertexInterface& GetDefaultInterface()
 		{
-			static const Metasound::FVertexInterface DefaultInterface(
-				Metasound::FInputVertexInterface(
-					Metasound::TInputDataVertexModel<FSoundModulatorAsset>("In1", LOCTEXT("MixModulatorsNode_InputModulator1Name", "In 1")),
-					Metasound::TInputDataVertexModel<FSoundModulatorAsset>("In2", LOCTEXT("MixModulatorsNode_InputModulator2Name", "In 2")),
-					Metasound::TInputDataVertexModel<FSoundModulationParameterAsset>("MixParameter", LOCTEXT("MixModulatorsNode_InputMixParameterName", "Mix Parameter")),
-					Metasound::TInputDataVertexModel<bool>("Normalized", LOCTEXT("MixModulatorsNode_InputNormalizedName", "Normalized"), true)
+			using namespace Metasound;
+
+			static const FVertexInterface DefaultInterface(
+				FInputVertexInterface(
+					TInputDataVertex<FSoundModulatorAsset>("In1", FDataVertexMetadata{ LOCTEXT("MixModulatorsNode_InputModulator1Description", "First modulator to mix together") }),
+					TInputDataVertex<FSoundModulatorAsset>("In2", FDataVertexMetadata{ LOCTEXT("MixModulatorsNode_InputModulator2Description", "Second modulator to mix together") }),
+					TInputDataVertex<FSoundModulationParameterAsset>("MixParameter", FDataVertexMetadata{ LOCTEXT("MixModulatorsNode_InputMixParameterDescription", "Parameter to use to mix parameters together") }),
+					TInputDataVertex<bool>("Normalized", FDataVertexMetadata{ LOCTEXT("MixModulatorsNode_InputNormalizedDescription", "Whether the output value should be normalized [0.0, 1.0] or converted to the unit described by the parameter.") }, true)
 				),
-				Metasound::FOutputVertexInterface(
-					Metasound::TOutputDataVertexModel<float>("Out", LOCTEXT("MixModulatorsNode_OutputModulatorValue", "Out"))
+				FOutputVertexInterface(
+					TOutputDataVertex<float>("Out", FDataVertexMetadata{ LOCTEXT("MixModulatorsNode_OutputModulatorValue", "Out") })
 				)
 			);
 
@@ -42,7 +46,7 @@ namespace AudioModulation
 				{
 					Metasound::FNodeClassName { "Modulation", "MixModulators", "" },
 					1, // Major Version
-					0, // Minor Version
+					1, // Minor Version
 					LOCTEXT("MixModulatorsNode_Name", "Mix Modulators"),
 					LOCTEXT("MixModulatorsNode_Description", "Mixes two modulators using the parameterized mix function. Returns the 'Normalized' value (0-1) if true, or the value in unit space (dB, Frequency, etc.) if set to false."),
 					AudioModulation::PluginAuthor,
@@ -146,7 +150,15 @@ namespace AudioModulation
 			const FSoundModulationParameterAsset& ParameterAsset = *Parameter;
 			if (ParameterAsset.IsValid())
 			{
-				ParameterAsset->GetParameter().MixFunction(Value1, Value2);
+				const Audio::FModulationParameter& ModParam = ParameterAsset->GetParameter();
+				ModParam.MixFunction(Value1, Value2);
+				if (!*Normalized)
+				{
+					if (ModParam.bRequiresConversion)
+					{
+						ModParam.UnitFunction(Value1);
+					}
+				}
 			}
 			else
 			{
@@ -185,3 +197,4 @@ namespace AudioModulation
 } // namespace AudioModulation
 
 #undef LOCTEXT_NAMESPACE
+#endif // WITH_AUDIOMODULATION_METASOUND_SUPPORT

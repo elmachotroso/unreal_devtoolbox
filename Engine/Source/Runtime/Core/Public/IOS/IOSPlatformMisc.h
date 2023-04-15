@@ -57,7 +57,9 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	static bool IsRunningOnBattery();
 	static float GetDeviceTemperatureLevel();
 	static EDeviceScreenOrientation GetDeviceOrientation();
+	UE_DEPRECATED(5.1, "SetDeviceOrientation is deprecated. Use SetAllowedDeviceOrientation instead.")
 	static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrientation);
+	static void SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation);
 	static int32 GetDeviceVolume();
 	static void SetBrightness(float Brightness);
 	static float GetBrightness();
@@ -194,11 +196,11 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 
 	static bool RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc);
     
-	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, int32& OutputDevice, int32& ColorGamut)
+	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, EDisplayOutputFormat& OutputDevice, EDisplayColorGamut& ColorGamut)
 	{
 		// Linear output to Apple's specific format.
-		OutputDevice = 7;
-		ColorGamut = 0;
+		OutputDevice = EDisplayOutputFormat::HDR_LinearEXR;
+		ColorGamut = EDisplayColorGamut::sRGB_D65;
 	}
 
 	static int32 GetMaxRefreshRate();

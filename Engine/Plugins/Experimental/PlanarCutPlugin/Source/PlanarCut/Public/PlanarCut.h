@@ -7,6 +7,9 @@
 #include "Voronoi/Voronoi.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "MeshDescription.h"
+#include "DynamicMesh/DynamicMesh3.h"
+
+class FProgressCancel;
 
 struct PLANARCUT_API FNoiseSettings
 {
@@ -33,7 +36,7 @@ struct PLANARCUT_API FInternalSurfaceMaterials
 	 * @param Collection	Reference collection to use for setting UV scale
 	 * @param GeometryIdx	Reference geometry inside collection; if -1, use all geometries in collection
 	 */
-	void SetUVScaleFromCollection(const FGeometryCollection& Collection, int32 GeometryIdx = -1);
+	void SetUVScaleFromCollection(const FGeometryCollectionMeshFacade& CollectionMesh, int32 GeometryIdx = -1);
 
 	
 	int32 GetDefaultMaterialIDForGeometry(const FGeometryCollection& Collection, int32 GeometryIdx = -1) const;
@@ -47,7 +50,7 @@ struct PLANARCUT_API FPlanarCells
 	}
 	FPlanarCells(const FPlane& Plane);
 	FPlanarCells(const TArrayView<const FVector> Sites, FVoronoiDiagram &Voronoi);
-	FPlanarCells(const TArrayView<const FBox> Boxes);
+	FPlanarCells(const TArrayView<const FBox> Boxes, bool bResolveAdjacencies = false);
 	FPlanarCells(const FBox &Region, const FIntVector& CubesPerAxis);
 	FPlanarCells(const FBox &Region, const TArrayView<const FColor> Image, int32 Width, int32 Height);
 
@@ -123,11 +126,12 @@ struct PLANARCUT_API FPlanarCells
 		PlaneBoundaries.Emplace();
 	}
 
-	inline void AddPlane(const FPlane &P, int32 CellIdxBehind, int32 CellIdxInFront, const TArray<int32>& PlaneBoundary)
+	inline int32 AddPlane(const FPlane &P, int32 CellIdxBehind, int32 CellIdxInFront, const TArray<int32>& PlaneBoundary)
 	{
-		Planes.Add(P);
+		int32 PlaneIdx = Planes.Add(P);
 		PlaneCells.Emplace(CellIdxBehind, CellIdxInFront);
 		PlaneBoundaries.Add(PlaneBoundary);
+		return PlaneIdx;
 	}
 
 	void SetNoise(FNoiseSettings Noise = FNoiseSettings())
@@ -148,7 +152,8 @@ struct PLANARCUT_API FPlanarCells
  * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
  * @param bIncludeOutsideCellInOutput	If true, geometry that was not inside any of the cells (e.g. was outside of the bounds of all cutting geometry) will still be included in the output; if false, it will be discarded.
- * @param CheckDistanceAcrossOutsideCellForProximity	If > 0, when a plane is neighboring the "outside" cell, instead of setting proximity to the outside cell, the algo will sample a point this far outside the cell in the normal direction of the plane to see if there is actually a non-outside cell there.  (Useful for bricks w/out mortar)
+ * @param Progress						Optionally tracks progress and supports early-cancel
+ * @param CellsOrigin					Optionally provide a local origin of the cutting Cells
  * @return	index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
  */
 int32 PLANARCUT_API CutWithPlanarCells(
@@ -160,8 +165,9 @@ int32 PLANARCUT_API CutWithPlanarCells(
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bIncludeOutsideCellInOutput = true,
-	float CheckDistanceAcrossOutsideCellForProximity = 0,
-	bool bSetDefaultInternalMaterialsFromCollection = true
+	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr,
+	FVector CellsOrigin = FVector::ZeroVector
 );
 
 /**
@@ -175,7 +181,8 @@ int32 PLANARCUT_API CutWithPlanarCells(
  * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
  * @param bIncludeOutsideCellInOutput	If true, geometry that was not inside any of the cells (e.g. was outside of the bounds of all cutting geometry) will still be included in the output; if false, it will be discarded.
- * @param CheckDistanceAcrossOutsideCellForProximity	If > 0, when a plane is neighboring the "outside" cell, instead of setting proximity to the outside cell, the algo will sample a point this far outside the cell in the normal direction of the plane to see if there is actually a non-outside cell there.  (Useful for bricks w/out mortar)
+ * @param Progress						Optionally tracks progress and supports early-cancel
+ * @param CellsOrigin					Optionally provide a local origin of the cutting Cells
  * @return	index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
  */
 int32 PLANARCUT_API CutMultipleWithPlanarCells(
@@ -187,8 +194,25 @@ int32 PLANARCUT_API CutMultipleWithPlanarCells(
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bIncludeOutsideCellInOutput = true,
-	float CheckDistanceAcrossOutsideCellForProximity = 0,  // TODO: < this param does nothing in the new mode; is only needed in special cases that aren't possible in the UI currently
-	bool bSetDefaultInternalMaterialsFromCollection = true
+	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr,
+	FVector CellsOrigin = FVector::ZeroVector
+);
+
+/**
+ * Split the geometry at the given transforms into their connected components
+ *
+ * @param Collection		The collection to be cut
+ * @param TransformIndices	Which transform groups inside the collection to cut
+ * @param CollisionSampleSpacing	Target spacing between collision sample vertices
+ * @param Progress						Optionally tracks progress and supports early-cancel
+ * @return	index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
+ */
+int32 PLANARCUT_API SplitIslands(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	double CollisionSampleSpacing,
+	FProgressCancel* Progress = nullptr
 );
 
 /**
@@ -202,6 +226,7 @@ int32 PLANARCUT_API CutMultipleWithPlanarCells(
  * @param CollisionSampleSpacing	Target spacing between collision sample vertices
  * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
+ * @param Progress					Optionally tracks progress and supports early-cancel
  * @return	index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
  */
 int32 PLANARCUT_API CutMultipleWithMultiplePlanes(
@@ -213,7 +238,8 @@ int32 PLANARCUT_API CutMultipleWithMultiplePlanes(
 	double CollisionSampleSpacing,
 	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
-	bool bSetDefaultInternalMaterialsFromCollection = true
+	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr
 );
 
 
@@ -301,6 +327,19 @@ int32 PLANARCUT_API MergeBones(
 );
 
 /**
+ * Merge all chosen nodes into a single node.  Unlike MergeBones(), does not account for proximity and will always only merge the selected bones.
+ *
+ * @param Collection				The collection to be processed
+ * @param TransformIndices			The transform indices to process, or empty if all should be processed
+ * @param bUnionJoinedPieces		Try to 'union' the merged pieces, removing internal triangles and connecting the shared cut boundary
+ */
+void PLANARCUT_API MergeAllSelectedBones(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	bool bUnionJoinedPieces
+);
+
+/**
  * Recompute normals and tangents of selected geometry, optionally restricted to faces with odd or given material IDs (i.e. to target internal faces)
  *
  * @param bOnlyTangents		If true, leave normals unchanged and only recompute tangent&bitangent vectors
@@ -333,18 +372,50 @@ int32 PLANARCUT_API AddCollisionSampleVertices(double TargetSpacing, FGeometryCo
  * @param TransformIndices			Which transform groups inside the collection to cut
  * @param CollisionSampleSpacing	Target spacing between collision sample vertices
  * @param TransformCollection		Optional transform of the collection; if unset, defaults to Identity
+ * @param Progress					Optionally tracks progress and supports early-cancel
  * @return index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
  */
 int32 PLANARCUT_API CutWithMesh(
-	FMeshDescription* CuttingMesh,
+	const UE::Geometry::FDynamicMesh3& CuttingMesh,
 	FTransform CuttingMeshTransform,
 	FInternalSurfaceMaterials& InternalSurfaceMaterials,
 	FGeometryCollection& Collection,
 	const TArrayView<const int32>& TransformIndices,
 	double CollisionSampleSpacing,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
-	bool bSetDefaultInternalMaterialsFromCollection = true
+	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr
 );
+
+/// Convert a mesh description to a dynamic mesh *specifically* augmented / designed for cutting geometry collections, to be passed to CutWithMesh
+UE::Geometry::FDynamicMesh3 PLANARCUT_API ConvertMeshDescriptionToCuttingDynamicMesh(const FMeshDescription* CuttingMesh, int32 NumUVLayers, FProgressCancel* Progress = nullptr);
+
+inline int32 CutWithMesh(
+	const FMeshDescription* CuttingMesh,
+	FTransform CuttingMeshTransform,
+	FInternalSurfaceMaterials& InternalSurfaceMaterials,
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	double CollisionSampleSpacing,
+	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
+	bool bSetDefaultInternalMaterialsFromCollection = true,
+	FProgressCancel* Progress = nullptr
+)
+{
+	int32 NumUVLayers = Collection.NumUVLayers();
+	return CutWithMesh(ConvertMeshDescriptionToCuttingDynamicMesh(CuttingMesh, NumUVLayers, Progress),
+		CuttingMeshTransform,
+		InternalSurfaceMaterials,
+		Collection,
+		TransformIndices,
+		CollisionSampleSpacing,
+		TransformCollection,
+		bSetDefaultInternalMaterialsFromCollection,
+		Progress
+		);
+}
+
+
 
 /**
  * Convert chosen Geometry groups inside a GeometryCollection to a single Mesh Description.

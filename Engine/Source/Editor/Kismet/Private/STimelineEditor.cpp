@@ -2,41 +2,91 @@
 
 
 #include "STimelineEditor.h"
-#include "Engine/TimelineTemplate.h"
-#include "Modules/ModuleManager.h"
-#include "SlateOptMacros.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Images/SImage.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SSlider.h"
-#include "Widgets/Input/STextComboBox.h"
-#include "SPositiveActionButton.h"
-#include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "BlueprintEditor.h"
+#include "Components/TimelineComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "Curves/CurveBase.h"
 #include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveVector.h"
-#include "Editor.h"
-#include "K2Node_Timeline.h"
-#include "ScopedTransaction.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "Editor/PropertyEditor/Public/PropertyCustomizationHelpers.h"
-
-#include "BlueprintEditor.h"
-#include "AssetRegistryModule.h"
-#include "IAssetTools.h"
-#include "AssetToolsModule.h"
+#include "Curves/KeyHandle.h"
+#include "Curves/RichCurve.h"
 #include "Dialogs/DlgPickAssetPath.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/TimelineTemplate.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Engine/Selection.h"
-#include "AssetData.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformMisc.h"
+#include "IAssetTools.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_Timeline.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
+#include "SCurveEditor.h"
+#include "SPositiveActionButton.h"
+#include "ScopedTransaction.h"
+#include "Selection.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
 #include "Styling/StyleColors.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/GarbageCollection.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/ReflectedTypeAccessors.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSlider.h"
+#include "Widgets/Input/STextComboBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class FTagMetaData;
+class ITableRow;
+class STableViewBase;
+class SWidget;
+struct FGeometry;
+struct FKeyEvent;
 
 #define LOCTEXT_NAMESPACE "STimelineEditor"
 
@@ -125,8 +175,8 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 	check(TimelineObj); // We shouldn't have any tracks if there is no track object!
 
 	// Get a pointer to the track this widget is for
-	CurveBasePtr = NULL;
-	FTTTrackBase* TrackBase = NULL;
+	CurveBasePtr = nullptr;
+	FTTTrackBase* TrackBase = nullptr;
 	bool bDrawCurve = true;
 
 	FTTTrackId TrackId = TimelineObj->GetDisplayTrackId(InTrack->DisplayIndex);
@@ -180,7 +230,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop_Hovered"))
+			.BorderImage(FAppStyle::GetBrush("DetailsView.CategoryTop_Hovered"))
 			.ForegroundColor(FLinearColor::White)
 			[
 				SNew(SHorizontalBox)
@@ -192,12 +242,12 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 					SNew(SCheckBox)
 					.IsChecked(this, &STimelineEdTrack::GetIsExpandedState)
 					.OnCheckStateChanged(this, &STimelineEdTrack::OnIsExpandedStateChanged)
-					.CheckedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.CheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Expanded_Hovered"))
-					.CheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-					.UncheckedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
-					.UncheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
-					.UncheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
+					.CheckedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.CheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Expanded_Hovered"))
+					.CheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+					.UncheckedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
+					.UncheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
+					.UncheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
 				]
 
 				// Track Name
@@ -231,7 +281,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 					// External Curve Label
 					+SVerticalBox::Slot()
 					.AutoHeight()
-					.Padding(2)
+					.Padding(2.0f)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("ExternalCurveLabel", "External Curve"))
@@ -244,7 +294,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 					.Padding(2, 0, 0, 4)
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("NoBrush"))
+						.BorderImage(FAppStyle::GetBrush("NoBrush"))
 						.ForegroundColor(FStyleColors::Foreground)
 						[
 							SNew(SHorizontalBox)
@@ -263,13 +313,13 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 							.VAlign(VAlign_Center)
 							[
 								SNew(SButton)
-								.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+								.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 								.OnClicked(this, &STimelineEdTrack::OnClickClear)
 								.ContentPadding(1.f)
 								.ToolTipText(NSLOCTEXT("TimelineEdTrack", "TimelineEdTrack_Clear", "Convert to Internal Curve"))
 								[
 									SNew(SImage)
-									.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")))
+									.Image( FAppStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")))
 									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
@@ -303,14 +353,14 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 							.VAlign(VAlign_Center)
 							[
 								SNew(SButton)
-								.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+								.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 								.OnClicked(this, &STimelineEdTrack::OnMoveUp)
 								.IsEnabled(this, &STimelineEdTrack::CanMoveUp)
 								.ContentPadding(1.f)
 								.ToolTipText(NSLOCTEXT("TimelineEdTrack", "TimelineEdTrack_MoveUp", "Move track up list"))
 								[
 									SNew(SImage)
-									.Image( FEditorStyle::GetBrush(TEXT("ArrowUp")) )
+									.Image( FAppStyle::GetBrush(TEXT("ArrowUp")) )
 									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
@@ -321,14 +371,14 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 							.VAlign(VAlign_Center)
 							[
 								SNew(SButton)
-								.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+								.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 								.OnClicked(this, &STimelineEdTrack::OnMoveDown)
 								.IsEnabled(this, &STimelineEdTrack::CanMoveDown)
 								.ContentPadding(1.f)
 								.ToolTipText(NSLOCTEXT("TimelineEdTrack", "TimelineEdTrack_MoveDown", "Move track down list"))
 								[
 									SNew(SImage)
-									.Image( FEditorStyle::GetBrush(TEXT("ArrowDown")) )
+									.Image( FAppStyle::GetBrush(TEXT("ArrowDown")) )
 									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
@@ -451,7 +501,7 @@ void STimelineEdTrack::SwitchToExternalCurve(UCurveBase* AssetCurvePtr)
 		FTTTrackId TrackId = TimelineObj->GetDisplayTrackId(Track->DisplayIndex);
 		FTTTrackBase::ETrackType TrackType = (FTTTrackBase::ETrackType)TrackId.TrackType;
 
-		FTTTrackBase* TrackBase = NULL;
+		FTTTrackBase* TrackBase = nullptr;
 		if(TrackType == FTTTrackBase::TT_Event)
 		{
 			if(AssetCurvePtr->IsA(UCurveFloat::StaticClass()))
@@ -526,8 +576,8 @@ void STimelineEdTrack::UseInternalCurve( )
 		FTTTrackId TrackId = TimelineObj->GetDisplayTrackId(Track->DisplayIndex);
 		FTTTrackBase::ETrackType TrackType = (FTTTrackBase::ETrackType)TrackId.TrackType;
 
-		FTTTrackBase* TrackBase = NULL;
-		UCurveBase* CurveBase = NULL;
+		FTTTrackBase* TrackBase = nullptr;
+		UCurveBase* CurveBase = nullptr;
 
 		if(TrackType == FTTTrackBase::TT_Event)
 		{
@@ -644,7 +694,7 @@ FString STimelineEdTrack::GetExternalCurvePath( ) const
 
 UCurveBase* STimelineEdTrack::CreateCurveAsset()
 {
-	UCurveBase* AssetCurve = NULL;
+	UCurveBase* AssetCurve = nullptr;
 
 	TSharedPtr<STimelineEditor> TimelineEd = TimelineEdPtr.Pin();
 	check(TimelineEd.IsValid());
@@ -749,7 +799,7 @@ UCurveBase* STimelineEdTrack::CreateCurveAsset()
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 
@@ -954,10 +1004,10 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 	NewTrackPendingRename = NAME_None;
 
 	Kismet2Ptr = InKismet2;
-	TimelineObj = NULL;
+	TimelineObj = nullptr;
 
 	NominalTimelineDesiredHeight = 300.0f;
-	TimelineDesiredSize = FVector2D(128.0f, NominalTimelineDesiredHeight);
+	TimelineDesiredSize = FVector2f(128.0f, NominalTimelineDesiredHeight);
 
 	// Leave these uninitialized at first.  We'll zoom to fit the tracks which will set the correct values
 	ViewMinInput = 0.f;
@@ -1015,7 +1065,7 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 		[
 			// Header, shows name of timeline we are editing
 			SNew(SBorder)
-			. BorderImage( FEditorStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
+			. BorderImage( FAppStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
 			. HAlign(HAlign_Center)
 			.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.Title"))
 			[
@@ -1026,7 +1076,7 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image( FEditorStyle::GetBrush(TEXT("GraphEditor.TimelineGlyph")) )
+					.Image( FAppStyle::GetBrush(TEXT("GraphEditor.TimelineGlyph")) )
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
@@ -1237,7 +1287,7 @@ void STimelineEditor::OnTimelineTickGroupChanged(TSharedPtr<FString> NewValue, E
 
 FText STimelineEditor::GetTimelineName() const
 {
-	if(TimelineObj != NULL)
+	if(TimelineObj != nullptr)
 	{
 		return FText::FromString(TimelineObj->GetVariableName().ToString());
 	}
@@ -1269,7 +1319,7 @@ float STimelineEditor::GetViewMinOutput() const
 
 float STimelineEditor::GetTimelineLength() const
 {
-	return (TimelineObj != NULL) ? TimelineObj->TimelineLength : 0.f;
+	return (TimelineObj != nullptr) ? TimelineObj->TimelineLength : 0.f;
 }
 
 void STimelineEditor::SetInputViewRange(float InViewMinInput, float InViewMaxInput)
@@ -1344,7 +1394,7 @@ void STimelineEditor::CreateNewTrack(FTTTrackBase::ETrackType Type)
 			FTTFloatTrack NewTrack;
 			NewTrack.SetTrackName(TrackName, TimelineObj);
 			// @hack for using existing curve assets.  need something better!
-			NewTrack.CurveFloat = FindObject<UCurveFloat>(ANY_PACKAGE, *TrackName.ToString() );
+			NewTrack.CurveFloat = FindFirstObject<UCurveFloat>(*TrackName.ToString(), EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous);
 			if (NewTrack.CurveFloat == nullptr)
 			{
 				NewTrack.CurveFloat = NewObject<UCurveFloat>(OwnerClass, NAME_None, RF_Public);
@@ -1404,7 +1454,7 @@ UCurveBase* STimelineEditor::CreateNewCurve(FTTTrackBase::ETrackType Type )
 	UBlueprint* Blueprint = Kismet2->GetBlueprintObj();
 	UClass* OwnerClass = Blueprint->GeneratedClass;
 	check(OwnerClass);
-	UCurveBase* NewCurve = NULL;
+	UCurveBase* NewCurve = nullptr;
 	if(Type == FTTTrackBase::TT_Event)
 	{
 		NewCurve = NewObject<UCurveFloat>(OwnerClass, NAME_None, RF_Public);
@@ -1433,7 +1483,7 @@ bool STimelineEditor::CanDeleteSelectedTracks() const
 
 void STimelineEditor::OnDeleteSelectedTracks()
 {
-	if(TimelineObj != NULL)
+	if(TimelineObj != nullptr)
 	{
 		TSharedPtr<FBlueprintEditor> Kismet2 = Kismet2Ptr.Pin();
 		UBlueprint* Blueprint = Kismet2->GetBlueprintObj();
@@ -1507,7 +1557,7 @@ void STimelineEditor::OnTimelineChanged()
 	TSharedPtr<FTimelineEdTrack> NewlyCreatedTrack;
 
 	// If we have a timeline,
-	if(TimelineObj != NULL)
+	if(TimelineObj != nullptr)
 	{
 		// Iterate over tracks and create entries in the array that drives the list widget
 		for (int32 i = 0; i < TimelineObj->GetNumDisplayTracks(); ++i)
@@ -1664,7 +1714,7 @@ void STimelineEditor::OnIgnoreTimeDilationChanged(ECheckBoxState NewType)
 FText STimelineEditor::GetLengthString() const
 {
 	FString LengthString(TEXT("0.0"));
-	if(TimelineObj != NULL)
+	if(TimelineObj != nullptr)
 	{
 		LengthString = FString::Printf(TEXT("%.2f"), TimelineObj->TimelineLength);
 	}
@@ -1674,7 +1724,7 @@ FText STimelineEditor::GetLengthString() const
 void STimelineEditor::OnLengthStringChanged(const FText& NewString, ETextCommit::Type CommitInfo)
 {
 	bool bCommitted = (CommitInfo == ETextCommit::OnEnter) || (CommitInfo == ETextCommit::OnUserMovedFocus);
-	if(TimelineObj != NULL && bCommitted)
+	if(TimelineObj != nullptr && bCommitted)
 	{
 		float NewLength = FCString::Atof( *NewString.ToString() );
 		if(NewLength > KINDA_SMALL_NUMBER)
@@ -1769,7 +1819,7 @@ void STimelineEditor::OnTrackNameCommitted( const FText& StringName, ETextCommit
 
 void STimelineEditor::OnReorderTracks(int32 DisplayIndex, int32 DirectionDelta)
 {
-	if (TimelineObj != NULL)
+	if (TimelineObj != nullptr)
 	{
 		const FScopedTransaction Transaction(LOCTEXT("TimelineEditor_DeleteTrack", "Delete track"));
 
@@ -1956,7 +2006,7 @@ TSharedRef<SWidget> STimelineEditor::MakeAddButton()
 
 FVector2D STimelineEditor::GetTimelineDesiredSize() const
 {
-	return TimelineDesiredSize;
+	return FVector2D{ TimelineDesiredSize };
 }
 
 void STimelineEditor::SetSizeScaleValue(float NewValue)

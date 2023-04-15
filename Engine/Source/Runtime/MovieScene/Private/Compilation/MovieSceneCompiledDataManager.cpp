@@ -7,6 +7,7 @@
 #include "EntitySystem/IMovieSceneEntityProvider.h"
 #include "Evaluation/MovieSceneEvaluationCustomVersion.h"
 #include "Evaluation/MovieSceneRootOverridePath.h"
+#include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "Tracks/MovieSceneSubTrack.h"
@@ -21,6 +22,8 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Package.h"
 #include "UObject/PackageReload.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCompiledDataManager)
 
 
 FString GMovieSceneCompilerVersion = TEXT("7D4B98092FAC4A6B964ECF72D8279EF8");
@@ -1246,7 +1249,18 @@ void UMovieSceneCompiledDataManager::GatherTrack(const FMovieSceneBinding* Objec
 			FieldBuilder.GetSharedMetaData().ObjectBindingID = ObjectBinding->GetObjectGuid();
 		}
 
-		for (const FMovieSceneTrackEvaluationFieldEntry& Entry : EvaluationField.Entries)
+		IMovieSceneEntityProvider* TrackEntityProvider = Cast<IMovieSceneEntityProvider>(Track);
+
+		// If the track is an entity provider, allow it to add entries first
+		if (TrackEntityProvider)
+		{
+			FMovieSceneEvaluationFieldEntityMetaData MetaData(PreCompileResult.DefaultMetaData);
+			MetaData.bEvaluateInSequencePreRoll  = Track->EvalOptions.bEvaluateInPreroll;
+			MetaData.bEvaluateInSequencePostRoll = Track->EvalOptions.bEvaluateInPostroll;
+
+			TrackEntityProvider->PopulateEvaluationField(Params.LocalClampRange, MetaData, &FieldBuilder);
+		}
+		else for (const FMovieSceneTrackEvaluationFieldEntry& Entry : EvaluationField.Entries)
 		{
 			if (Entry.Section && Track->IsRowEvalDisabled(Entry.Section->GetRowIndex()))
 			{
@@ -1671,3 +1685,4 @@ TOptional<FFrameNumber> UMovieSceneCompiledDataManager::GetLoopingSubSectionEndT
 	// indefinitely... we don't support that yet.
 	return TOptional<FFrameNumber>();
 }
+

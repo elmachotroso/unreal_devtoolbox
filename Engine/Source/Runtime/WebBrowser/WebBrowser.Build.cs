@@ -7,8 +7,6 @@ public class WebBrowser : ModuleRules
 {
 	public WebBrowser(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/WebBrowser/Public");
-		PrivateIncludePaths.Add("Runtime/WebBrowser/Private");
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -91,5 +89,7 @@ public class WebBrowser : ModuleRules
 				}
 			}
 		}
+		PrivateDefinitions.Add("PLATFORM_SPECIFIC_WEB_BROWSER=" + (bPlatformSpecificWebBrowser ? "1" : "0"));
 	}
+	protected virtual bool bPlatformSpecificWebBrowser { get { return false; } }
 }

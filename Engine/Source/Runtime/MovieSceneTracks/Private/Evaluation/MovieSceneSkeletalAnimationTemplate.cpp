@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneSkeletalAnimationTemplate.h"
+#include "Evaluation/MovieSceneTemplateCommon.h"
 #include "Compilation/MovieSceneCompilerRules.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSingleNodeInstance.h"
-#include "Runtime/AnimGraphRuntime/Public/AnimSequencerInstance.h"
+#include "AnimSequencerInstance.h"
 #include "AnimCustomInstanceHelper.h"
 #include "Evaluation/MovieSceneEvaluation.h"
 #include "IMovieScenePlayer.h"
@@ -14,9 +15,14 @@
 #include "Rendering/MotionVectorSimulation.h"
 #include "Systems/MovieSceneMotionVectorSimulationSystem.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
+#include "EntitySystem/MovieSceneEntitySystemTask.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
+#include "MovieSceneTracksComponentTypes.h"
 #include "UObject/StrongObjectPtr.h"
 #include "SkeletalMeshRestoreState.h"
 #include "AnimSequencerInstanceProxy.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSkeletalAnimationTemplate)
 
 bool ShouldUsePreviewPlayback(IMovieScenePlayer& Player, UObject& RuntimeObject)
 {
@@ -27,8 +33,8 @@ bool ShouldUsePreviewPlayback(IMovieScenePlayer& Player, UObject& RuntimeObject)
 
 bool CanPlayAnimation(USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* AnimAssetBase)
 {
-	return (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->SkeletalMesh->GetSkeleton() && 
-		(!AnimAssetBase || SkeletalMeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(AnimAssetBase->GetSkeleton())));
+	return (SkeletalMeshComponent->GetSkeletalMeshAsset() && SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton() &&
+		(!AnimAssetBase || SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimAssetBase->GetSkeleton())));
 }
 
 void ResetAnimSequencerInstance(UObject& InObject, const UE::MovieScene::FRestoreStateParams& Params)
@@ -138,10 +144,10 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 				{
 					Component->AnimScriptInstance = CachedAnimInstance.Get();
 					CachedAnimInstance.Reset();
-					if (Component->AnimScriptInstance && Component->SkeletalMesh && Component->AnimScriptInstance->CurrentSkeleton != Component->SkeletalMesh->GetSkeleton())
+					if (Component->AnimScriptInstance && Component->GetSkeletalMeshAsset() && Component->AnimScriptInstance->CurrentSkeleton != Component->GetSkeletalMeshAsset()->GetSkeleton())
 					{
 						//the skeleton may have changed so need to recalc required bones as needed.
-						Component->AnimScriptInstance->CurrentSkeleton = Component->SkeletalMesh->GetSkeleton();
+						Component->AnimScriptInstance->CurrentSkeleton = Component->GetSkeletalMeshAsset()->GetSkeleton();
 						//Need at least RecalcRequiredbones and UpdateMorphTargetrs
 						Component->InitializeAnimScriptInstance(true);
 					}
@@ -153,7 +159,7 @@ struct FPreAnimatedAnimationTokenProducer : IMovieScenePreAnimatedTokenProducer
 				Component->TickAnimation(0.f, false);
 
 				Component->RefreshBoneTransforms();
-				Component->RefreshSlaveComponents();
+				Component->RefreshFollowerComponents();
 				Component->UpdateComponentToWorld();
 				Component->FinalizeBoneTransform();
 				Component->MarkRenderTransformDirty();
@@ -277,7 +283,7 @@ namespace MovieScene
 			ensureMsgf(InObject, TEXT("Attempting to evaluate an Animation track with a null object."));
 
 			USkeletalMeshComponent* SkeletalMeshComponent = SkeletalMeshComponentFromObject(InObject);
-			if (!SkeletalMeshComponent || !SkeletalMeshComponent->SkeletalMesh)
+			if (!SkeletalMeshComponent || !SkeletalMeshComponent->GetSkeletalMeshAsset())
 			{
 				return;
 			}
@@ -358,7 +364,7 @@ namespace MovieScene
 				SkeletalMeshComponent->TickAnimation(0.f, false);
 
 				SkeletalMeshComponent->RefreshBoneTransforms();
-				SkeletalMeshComponent->RefreshSlaveComponents();
+				SkeletalMeshComponent->RefreshFollowerComponents();
 				SkeletalMeshComponent->UpdateComponentToWorld();
 				SkeletalMeshComponent->FinalizeBoneTransform();
 				SkeletalMeshComponent->MarkRenderTransformDirty();
@@ -419,13 +425,27 @@ namespace MovieScene
 
 			for (const FMinimalAnimParameters& AnimParams : Parameters)
 			{
+				// Don't fire notifies if looping around
+				bool bLooped = false;
+				if (AnimParams.AnimSection->Params.bReverse)
+				{
+					if (AnimParams.FromEvalTime <= AnimParams.ToEvalTime)
+					{
+						bLooped = true;
+					}
+				}
+				else if (AnimParams.FromEvalTime >= AnimParams.ToEvalTime)
+				{
+					bLooped = true;
+				}
+
 				FScopedPreAnimatedCaptureSource CaptureSource(&Player.PreAnimatedState, AnimParams.EvaluationScope.Key, AnimParams.EvaluationScope.CompletionMode == EMovieSceneCompletionMode::RestoreState);
 
 				if (bPreviewPlayback)
 				{
 					PreviewSetAnimPosition(PersistentData, Player, SkeletalMeshComponent,
 						AnimParams.SlotName, AnimParams.Section, AnimParams.Animation, AnimParams.FromEvalTime, AnimParams.ToEvalTime, AnimParams.BlendWeight,
-						bFireNotifies && !AnimParams.bSkipAnimNotifiers, DeltaTime, PlayerStatus == EMovieScenePlayerStatus::Playing,
+						bFireNotifies && !AnimParams.bSkipAnimNotifiers && !bLooped, DeltaTime, PlayerStatus == EMovieScenePlayerStatus::Playing,
 						bResetDynamics, AnimParams.bForceCustomMode, AnimParams.AnimSection, AnimParams.SectionTime
 					);
 				}
@@ -433,13 +453,72 @@ namespace MovieScene
 				{
 					SetAnimPosition(PersistentData, Player, SkeletalMeshComponent,
 						AnimParams.SlotName, AnimParams.Section, AnimParams.Animation, AnimParams.FromEvalTime, AnimParams.ToEvalTime, AnimParams.BlendWeight,
-						PlayerStatus == EMovieScenePlayerStatus::Playing, bFireNotifies && !AnimParams.bSkipAnimNotifiers,
+						PlayerStatus == EMovieScenePlayerStatus::Playing, bFireNotifies && !AnimParams.bSkipAnimNotifiers && !bLooped,
 						AnimParams.bForceCustomMode, AnimParams.AnimSection, AnimParams.SectionTime
 					);
 				}
 			}
 		}
 		
+		// Determines whether the bound object has a component transform property tag
+		bool ContainsTransform(IMovieScenePlayer& Player, UObject* InBoundObject) const
+		{
+			using namespace UE::MovieScene;
+			UMovieSceneEntitySystemLinker* Linker = Player.GetEvaluationTemplate().GetEntitySystemLinker();
+
+			bool bContainsTransform = false;
+
+			auto HarvestTransforms = [InBoundObject, &bContainsTransform](UObject* BoundObject)
+			{
+				if (BoundObject == InBoundObject)
+				{
+					bContainsTransform = true;
+				}
+			};
+					
+			FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+
+			FMovieSceneTracksComponentTypes* Components = FMovieSceneTracksComponentTypes::Get();
+			FEntityTaskBuilder()
+				.Read(BuiltInComponents->BoundObject)
+				// Only include component transforms
+				.FilterAll({ Components->ComponentTransform.PropertyTag })
+				// Only read things with the resolved properties on - this ensures we do not read any intermediate component transforms for blended properties
+				.FilterAny({ BuiltInComponents->CustomPropertyIndex, BuiltInComponents->FastPropertyOffset, BuiltInComponents->SlowProperty })
+				.Iterate_PerEntity(&Linker->EntityManager, HarvestTransforms);
+
+			return bContainsTransform;
+		}
+		
+
+		// Get the current transform for the component that the root bone will be swaped to
+		TOptional<FTransform> GetCurrentTransform(IMovieScenePlayer& Player, ESwapRootBone SwapRootBone, USkeletalMeshComponent* SkeletalMeshComponent) const
+		{
+			TOptional<FTransform> CurrentTransform;
+			if (SwapRootBone == ESwapRootBone::SwapRootBone_Component)
+			{
+				if (ContainsTransform(Player, SkeletalMeshComponent))
+				{
+					CurrentTransform = SkeletalMeshComponent->GetRelativeTransform();
+				}
+			}
+			else if (SwapRootBone == ESwapRootBone::SwapRootBone_Actor)
+			{
+				if (AActor* Actor = SkeletalMeshComponent->GetOwner())
+				{
+					if (USceneComponent* RootComponent = Actor->GetRootComponent())
+					{
+						if (ContainsTransform(Player, RootComponent))
+						{
+							CurrentTransform = RootComponent->GetRelativeTransform();
+						}
+					}
+				}
+			}
+
+			return CurrentTransform;
+		}
+
 		void SetAnimPosition(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player, USkeletalMeshComponent* SkeletalMeshComponent, FName SlotName, FObjectKey Section, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, 
 			bool bPlaying, bool bFireNotifies, bool bForceCustomMode, const UMovieSceneSkeletalAnimationSection* AnimSection, FFrameTime CurrentTime)
 		{
@@ -469,7 +548,11 @@ namespace MovieScene
 					RootMotion.GetValue().bBlendFirstChildOfRoot = bBlendFirstChildOfRoot;
 				}
 
-				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID),RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.MirrorDataTable.Get());
+				// If Sequencer has a transform track, we want to set the initial transform so that root motion (if it exists) can be applied relative to that.
+				TOptional<FTransform> CurrentTransform = GetCurrentTransform(Player, AnimSection->Params.SwapRootBone, SkeletalMeshComponent);
+
+				FAnimSequencerData AnimSequencerData(InAnimSequence, GetTypeHash(AnimTypeID), RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.SwapRootBone, CurrentTransform, AnimSection->Params.MirrorDataTable.Get());
+				SequencerInst->UpdateAnimTrackWithRootMotion(AnimSequencerData);
 			}
 			else if (UAnimInstance* AnimInst = GetSourceAnimInstance(SkeletalMeshComponent))
 			{
@@ -501,6 +584,8 @@ namespace MovieScene
 			bool bFireNotifies, float DeltaTime, bool bPlaying, bool bResetDynamics, bool bForceCustomMode, const UMovieSceneSkeletalAnimationSection* AnimSection,
 			FFrameTime CurrentTime)
 		{
+			using namespace UE::MovieScene;
+
 			static const bool bLooping = false;
 
 			if (!CanPlayAnimation(SkeletalMeshComponent, InAnimSequence))
@@ -528,8 +613,12 @@ namespace MovieScene
 					RootMotion.GetValue().RootMotion = RootMotionTransform.GetValue();
 					RootMotion.GetValue().bBlendFirstChildOfRoot = bBlendFirstChildOfRoot;
 				}
+							
+				// If Sequencer has a transform track, we want to set the initial transform so that root motion (if it exists) can be applied relative to that.
+				TOptional<FTransform> CurrentTransform = GetCurrentTransform(Player, AnimSection->Params.SwapRootBone, SkeletalMeshComponent);
 
-				SequencerInst->UpdateAnimTrackWithRootMotion(InAnimSequence, GetTypeHash(AnimTypeID), RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.MirrorDataTable.Get());
+				FAnimSequencerData AnimSequencerData(InAnimSequence, GetTypeHash(AnimTypeID), RootMotion, InFromPosition, InToPosition, Weight, bFireNotifies, AnimSection->Params.SwapRootBone, CurrentTransform, AnimSection->Params.MirrorDataTable.Get());
+				SequencerInst->UpdateAnimTrackWithRootMotion(AnimSequencerData);
 			}
 			else if (UAnimInstance* AnimInst = GetSourceAnimInstance(SkeletalMeshComponent))
 			{
@@ -635,30 +724,40 @@ void FMovieSceneSkeletalAnimationSectionTemplate::Evaluate(const FMovieSceneEval
 
 double FMovieSceneSkeletalAnimationSectionTemplateParameters::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
 {
+	// Get Animation Length and frame time
 	const FFrameTime AnimationLength = GetSequenceLength() * InFrameRate;
 	const int32 LengthInFrames = AnimationLength.FrameNumber.Value + (int)(AnimationLength.GetSubFrame() + 0.5f) + 1;
-	//we only play end if we are not looping, and assuming we are looping if Length is greater than default length;
-	const bool bLooping = (SectionEndTime.Value - SectionStartTime.Value + StartFrameOffset + EndFrameOffset) > LengthInFrames;
 
-	InPosition = FMath::Clamp(InPosition, FFrameTime(SectionStartTime), FFrameTime(SectionEndTime -1));
+	// we only play end if we are not looping, and assuming we are looping if Length is greater than default length;
+	const bool bLooping = (SectionEndTime.Value - SectionStartTime.Value + StartFrameOffset + EndFrameOffset) > LengthInFrames;	
+
+	// Make sure InPosition FrameTime doesn't underflow SectionStartTime or overflow SectionEndTime
+	InPosition = FMath::Clamp(InPosition, FFrameTime(SectionStartTime), FFrameTime(SectionEndTime - 1));
 	
+	// Gather helper values
 	const float SectionPlayRate = PlayRate * Animation->RateScale;
 	const float AnimPlayRate = FMath::IsNearlyZero(SectionPlayRate) ? 1.0f : SectionPlayRate;
-
 	const float FirstLoopSeqLength = GetSequenceLength() - InFrameRate.AsSeconds(FirstLoopStartFrameOffset + StartFrameOffset + EndFrameOffset);
 	const double SeqLength = GetSequenceLength() - InFrameRate.AsSeconds(StartFrameOffset + EndFrameOffset);
 
-	double AnimPosition = FFrameTime::FromDecimal((InPosition - SectionStartTime).AsDecimal() * AnimPlayRate) / InFrameRate;
-	AnimPosition += InFrameRate.AsSeconds(FirstLoopStartFrameOffset);
-	if (SeqLength > 0.0 && (bLooping || !FMath::IsNearlyEqual(AnimPosition, SeqLength, 1e-4)))
-	{
-		AnimPosition = FMath::Fmod(AnimPosition, SeqLength);
-	}
-	AnimPosition += InFrameRate.AsSeconds(StartFrameOffset);
+	// The Time from the beginning of SectionStartTime to InPosition in seconds
+	double SecondsFromSectionStart = FFrameTime::FromDecimal((InPosition - SectionStartTime).AsDecimal() * AnimPlayRate) / InFrameRate;
+
+	// Logic for reversed animation
 	if (bReverse)
 	{
-		AnimPosition = GetSequenceLength() - AnimPosition;
+		// Duration of this section 
+		double SectionDuration = (((SectionEndTime - SectionStartTime) * AnimPlayRate) / InFrameRate);
+		SecondsFromSectionStart = SectionDuration - SecondsFromSectionStart;
+	}
+	// Make sure Seconds is in range
+	if (SeqLength > 0.0 && (bLooping || !FMath::IsNearlyEqual(SecondsFromSectionStart, SeqLength, 1e-4)))
+	{
+		SecondsFromSectionStart = FMath::Fmod(SecondsFromSectionStart, SeqLength);
 	}
 
-	return AnimPosition;
+	// Add the StartFrameOffset and FirstLoopStartFrameOffset to the current seconds in the section to get the right animation frame
+	SecondsFromSectionStart += InFrameRate.AsSeconds(StartFrameOffset) + InFrameRate.AsSeconds(FirstLoopStartFrameOffset);
+	return SecondsFromSectionStart;
 }
+

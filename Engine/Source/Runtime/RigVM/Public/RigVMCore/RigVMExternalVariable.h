@@ -4,7 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "RigVMTraits.h"
+#include "RigVMDefines.h"
 #include "RigVMMemory.h"
+#include "RigVMModule.h"
+#include "RigVMTypeUtils.h"
+#include "UObject/UnrealType.h"
 
 /**
  * The external variable can be used to map external / unowned
@@ -14,9 +18,7 @@ struct RIGVM_API FRigVMExternalVariable
 {
 	FORCEINLINE FRigVMExternalVariable()
 		: Name(NAME_None)
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 		, Property(nullptr)
-#endif
 		, TypeName(NAME_None)
 		, TypeObject(nullptr)
 		, bIsArray(false)
@@ -74,21 +76,122 @@ struct RIGVM_API FRigVMExternalVariable
 		}
 		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(InProperty))
 		{
-			OutTypeName = *StructProperty->Struct->GetStructCPPName();
+			OutTypeName = *RigVMTypeUtils::GetUniqueStructTypeName(StructProperty->Struct);
 			OutTypeObject = StructProperty->Struct;
 		}
 		else if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InProperty))
 		{
-			OutTypeName = *FString::Printf(TEXT("TObjectPtr<%s%s>"),
-				ObjectProperty->PropertyClass->GetPrefixCPP(),
-				*ObjectProperty->PropertyClass->GetName());
-			OutTypeObject = ObjectProperty->PropertyClass;
+			if(RigVMCore::SupportsUObjects())
+			{
+				OutTypeName = *FString::Printf(TEXT("TObjectPtr<%s%s>"),
+					ObjectProperty->PropertyClass->GetPrefixCPP(),
+					*ObjectProperty->PropertyClass->GetName());
+				OutTypeObject = ObjectProperty->PropertyClass;
+			}
+			else
+			{
+				OutTypeName = NAME_None;
+				OutTypeObject = nullptr;
+			}
+		}
+		else if (const FInterfaceProperty* InterfaceProperty = CastField<FInterfaceProperty>(InProperty))
+		{
+			if (RigVMCore::SupportsUInterfaces())
+			{
+				OutTypeName = *FString::Printf(TEXT("TScriptInterface<%s%s>"),
+					InterfaceProperty->InterfaceClass->GetPrefixCPP(),
+					*InterfaceProperty->InterfaceClass->GetName());
+				OutTypeObject = InterfaceProperty->InterfaceClass;
+			}
+			else
+			{
+				OutTypeName = NAME_None;
+				OutTypeObject = nullptr;
+			}
 		}
 		else
 		{
 			checkNoEntry();
 		}
 	}
+
+	static uint32 GetPropertyTypeHash(const FProperty *InProperty, const uint8 *InMemory)
+	{
+		if (!ensure(InProperty))
+		{
+			return 0;
+		}
+
+		if (InProperty->PropertyFlags & CPF_HasGetValueTypeHash)
+		{
+			return InProperty->GetValueTypeHash(InMemory);
+		}
+
+		if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(InProperty))
+		{
+			return static_cast<uint32>(BoolProperty->GetPropertyValue(InMemory));
+		}
+		else if (const FArrayProperty *ArrayProperty = CastField<FArrayProperty>(InProperty))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, InMemory);
+			int32 Hash = ::GetTypeHash(ArrayHelper.Num());
+			for (int32 Index = 0; Index < ArrayHelper.Num(); Index++)
+			{
+				Hash = HashCombine(Hash, GetPropertyTypeHash(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index)));
+			}
+			return Hash;
+		}
+		else if (const FMapProperty *MapProperty = CastField<FMapProperty>(InProperty))
+		{
+			FScriptMapHelper MapHelper(MapProperty, InMemory);
+			int32 Hash = ::GetTypeHash(MapHelper.Num());
+			for (int32 Index = 0; Index < MapHelper.Num(); Index++)
+			{
+				Hash = HashCombine(Hash, GetPropertyTypeHash(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index)));
+				Hash = HashCombine(Hash, GetPropertyTypeHash(MapProperty->ValueProp, MapHelper.GetValuePtr(Index)));
+			}
+			return Hash;
+		}
+		else if (const FSetProperty *SetProperty = CastField<FSetProperty>(InProperty))
+		{
+			FScriptSetHelper SetHelper(SetProperty, InMemory);
+			int32 Hash = ::GetTypeHash(SetHelper.Num());
+			for (int32 Index = 0; Index < SetHelper.Num(); Index++)
+			{
+				Hash = HashCombine(Hash, GetPropertyTypeHash(SetProperty->ElementProp, SetHelper.GetElementPtr(Index)));
+			}
+			return Hash;
+		}
+		else if (const FStructProperty *StructProperty = CastField<FStructProperty>(InProperty))
+		{
+			const UScriptStruct* StructType = StructProperty->Struct;
+			// UserDefinedStruct overrides GetStructTypeHash to work without valid CppStructOps
+			if (StructType->IsA<UUserDefinedStruct>() || (StructType->GetCppStructOps() && StructType->GetCppStructOps()->HasGetTypeHash()))
+			{
+				return StructType->GetStructTypeHash(InMemory);
+			}
+			else
+			{
+				uint32 Hash = 0;
+				for (TFieldIterator<FProperty> It(StructType); It; ++It)
+				{
+					const FProperty* SubProperty = *It;
+					Hash = HashCombine(Hash, GetPropertyTypeHash(*It, InMemory + SubProperty->GetOffset_ForInternal()));
+				}
+				return Hash;
+			}
+		}
+
+		// If we get here, we're missing support for a property type that doesn't do its own hashing. 
+		checkNoEntry();
+		return 0;
+	}
+
+	uint32 GetTypeHash() const
+	{
+		return GetPropertyTypeHash(Property, Memory);
+	}
+	
 
 	FORCEINLINE static FRigVMExternalVariable Make(const FProperty* InProperty, void* InContainer, const FName& InOptionalName = NAME_None)
 	{
@@ -98,9 +201,7 @@ struct RIGVM_API FRigVMExternalVariable
 
 		FRigVMExternalVariable ExternalVariable;
 		ExternalVariable.Name = InOptionalName.IsNone() ? InProperty->GetFName() : InOptionalName;
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 		ExternalVariable.Property = Property;
-#endif
 		ExternalVariable.bIsPublic = !InProperty->HasAllPropertyFlags(CPF_DisableEditOnInstance);
 		ExternalVariable.bIsReadOnly = InProperty->HasAllPropertyFlags(CPF_BlueprintReadOnly);
 
@@ -332,7 +433,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = *TBaseStructure<T>::Get()->GetStructCPPName();
+		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(TBaseStructure<T>::Get());
 		Variable.TypeObject = TBaseStructure<T>::Get();
 		Variable.bIsArray = false;
 		Variable.Size = TBaseStructure<T>::Get()->GetStructureSize();
@@ -348,7 +449,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = *TBaseStructure<T>::Get()->GetStructCPPName();
+		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(TBaseStructure<T>::Get());
 		Variable.TypeObject = TBaseStructure<T>::Get();
 		Variable.bIsArray = true;
 		Variable.Size = TBaseStructure<T>::Get()->GetStructureSize();
@@ -364,7 +465,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = *T::StaticStruct()->GetStructCPPName();
+		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(T::StaticStruct());
 		Variable.TypeObject = T::StaticStruct();
 		Variable.bIsArray = false;
 		Variable.Size = T::StaticStruct()->GetStructureSize();
@@ -380,7 +481,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = *T::StaticStruct()->GetStructCPPName();
+		Variable.TypeName = *RigVMTypeUtils::GetUniqueStructTypeName(T::StaticStruct());
 		Variable.TypeObject = T::StaticStruct();
 		Variable.bIsArray = true;
 		Variable.Size = T::StaticStruct()->GetStructureSize();
@@ -471,18 +572,14 @@ struct RIGVM_API FRigVMExternalVariable
 			(bAllowNullPtr || Memory != nullptr);
 	}
 
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-
-	FORCEINLINE FRigVMMemoryHandle GetHandle() const
+	FORCEINLINE FName GetExtendedCPPType() const
 	{
-		return FRigVMMemoryHandle(
-			Memory,
-			Size,
-			bIsArray ? FRigVMMemoryHandle::FType::Dynamic : FRigVMMemoryHandle::FType::Plain
-		);
+		if(bIsArray)
+		{
+			return *RigVMTypeUtils::ArrayTypeFromBaseType(TypeName.ToString());
+		}
+		return TypeName;
 	}
-
-#endif
 
 	FORCEINLINE static void MergeExternalVariable(TArray<FRigVMExternalVariable>& OutVariables, const FRigVMExternalVariable& InVariable)
 	{
@@ -505,9 +602,7 @@ struct RIGVM_API FRigVMExternalVariable
 	}
 
 	FName Name;
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	const FProperty* Property;
-#endif
 	FName TypeName;
 	UObject* TypeObject;
 	bool bIsArray;

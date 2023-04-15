@@ -3,16 +3,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Kismet/BlueprintAsyncActionBase.h"
+#include "Delegates/Delegate.h"
 #include "EditorUtilityTask.h"
-#include "Templates/UniquePtr.h"
+#include "HAL/Platform.h"
+#include "Kismet/BlueprintAsyncActionBase.h"
 #include "Templates/SubclassOf.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include "AsyncCaptureScene.generated.h"
 
 class ASceneCapture2D;
+class UCameraComponent;
+class UObject;
 class UTextureRenderTarget2D;
+struct FFrame;
 template<typename PixelType>
 struct TImagePixelData;
 
@@ -28,6 +35,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta=( BlueprintInternalUseOnly="true" ))
 	static UAsyncCaptureScene* CaptureSceneAsync(UCameraComponent* ViewCamera, TSubclassOf<ASceneCapture2D> SceneCaptureClass, int ResX, int ResY);
+	
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true"))
+	static UAsyncCaptureScene* CaptureSceneWithWarmupAsync(UCameraComponent* ViewCamera, TSubclassOf<ASceneCapture2D> SceneCaptureClass, int ResX, int ResY, int WarmUpFrames);
 
 	virtual void Activate() override;
 public:
@@ -38,7 +48,7 @@ public:
 private:
 
 	void NotifyComplete(UTextureRenderTarget2D* InTexture);
-	void Start(UCameraComponent* ViewCamera, TSubclassOf<ASceneCapture2D> SceneCaptureClass, int ResX, int ResY);
+	void Start(UCameraComponent* ViewCamera, TSubclassOf<ASceneCapture2D> SceneCaptureClass, int ResX, int ResY, int InWarmUpFrames);
 	void FinishLoadingBeforeScreenshot();
 	
 private:
@@ -47,4 +57,6 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UTextureRenderTarget2D> SceneCaptureRT;
+
+	int32 WarmUpFrames;
 };

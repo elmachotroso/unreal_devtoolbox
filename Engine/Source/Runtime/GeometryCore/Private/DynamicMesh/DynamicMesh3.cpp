@@ -335,6 +335,68 @@ void FDynamicMesh3::Clear()
 }
 
 
+void FDynamicMesh3::EnableMatchingAttributes(const FDynamicMesh3& ToMatch, bool bClearExisting)
+{
+	bool bWantVertexNormals = ToMatch.HasVertexNormals() || (this->HasVertexNormals() && bClearExisting == false);
+	if (bClearExisting || bWantVertexNormals == false)
+	{
+		DiscardVertexNormals();
+	}
+	if (bWantVertexNormals)
+	{
+		EnableVertexNormals(FVector3f::UnitZ());
+	}
+
+	bool bWantVertexColors = ToMatch.HasVertexColors() || (this->HasVertexColors() && bClearExisting == false);
+	if (bClearExisting || bWantVertexColors == false)
+	{
+		DiscardVertexColors();
+	}
+	if (bWantVertexColors)
+	{
+		EnableVertexColors(FVector3f::Zero());
+	}
+
+
+	bool bWantVertexUVs = ToMatch.HasVertexUVs() || (this->HasVertexUVs() && bClearExisting == false);
+	if (bClearExisting || bWantVertexUVs == false)
+	{
+		DiscardVertexUVs();
+	}
+	if (bWantVertexUVs)
+	{
+		EnableVertexUVs(FVector2f::Zero());
+	}
+
+
+	bool bWantTriangleGroups = ToMatch.HasTriangleGroups() || (this->HasTriangleGroups() && bClearExisting == false);
+	if (bClearExisting || bWantTriangleGroups == false)
+	{
+		DiscardTriangleGroups();
+	}
+	if (bWantTriangleGroups)
+	{
+		EnableTriangleGroups();
+	}
+
+
+	bool bWantAttributes = ToMatch.HasAttributes() || (this->HasAttributes() && bClearExisting == false);
+	if (bClearExisting || bWantAttributes == false)
+	{
+		DiscardAttributes();
+	}
+	if (bWantAttributes)
+	{
+		EnableAttributes();
+	}
+	if (HasAttributes() && ToMatch.HasAttributes())
+	{
+		Attributes()->EnableMatchingAttributes(*ToMatch.Attributes(), bClearExisting);
+	}
+
+}
+
+
 
 int FDynamicMesh3::GetComponentsFlags() const
 {
@@ -599,7 +661,22 @@ void FDynamicMesh3::EnumerateVertexTriangles(int32 VertexID, TFunctionRef<void(i
 }
 
 
-FString FDynamicMesh3::MeshInfoString()
+void FDynamicMesh3::EnumerateEdgeTriangles(int32 EdgeID, TFunctionRef<void(int32)> ApplyFunc) const
+{
+	checkSlow(EdgeRefCounts.IsValid(EdgeID));
+	if (IsEdge(EdgeID))
+	{
+		const FEdge Edge = Edges[EdgeID];
+		ApplyFunc(Edge.Tri.A);
+		if (Edge.Tri.B != IndexConstants::InvalidID)
+		{
+			ApplyFunc(Edge.Tri.B);
+		}
+	}
+}
+
+
+FString FDynamicMesh3::MeshInfoString() const
 {
 	FString VtxString = FString::Printf(TEXT("Vertices count %d max %d  %s  VtxEdges %s"),
 		VertexCount(), MaxVertexID(), *VertexRefCounts.UsageStats(), *(VertexEdgeLists.MemoryUsage()));
@@ -609,8 +686,8 @@ FString FDynamicMesh3::MeshInfoString()
 		EdgeCount(), MaxEdgeID(), *EdgeRefCounts.UsageStats());
 	FString AttribString = FString::Printf(TEXT("VtxNormals %d  VtxColors %d  VtxUVs %d  TriGroups %d  Attributes %d"),
 		HasVertexNormals(), HasVertexColors(), HasVertexUVs(), HasTriangleGroups(), HasAttributes());
-	FString InfoString = FString::Printf(TEXT("Closed %d  Compact %d  ShapeChangeStamp %d  TopologyChangeStamp %d  MaxGroupID %d"),
-		IsClosed(), IsCompact(), GetShapeChangeStamp(), GetTopologyChangeStamp(), MaxGroupID());
+	FString InfoString = FString::Printf(TEXT("Closed %d  Compact %d  TopologyChangeStamp %d  MaxGroupID %d"),
+		IsClosed(), IsCompact(), GetTopologyChangeStamp(), MaxGroupID());
 
 	return VtxString + "\n" + TriString + "\n" + EdgeString + "\n" + AttribString + "\n" + InfoString;
 }

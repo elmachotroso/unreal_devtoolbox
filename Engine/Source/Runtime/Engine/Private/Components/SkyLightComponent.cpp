@@ -89,11 +89,26 @@ FAutoConsoleVariableRef CVarSkylightIntensityMultiplier(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
 
+void OnChangeSkylightRealTimeReflectionCapture(IConsoleVariable* Var)
+{
+	// r.SkyLight.RealTimeReflectionCapture is set based on the "Effect" quality level (to be supported, or not, on some different platofrms).
+	// When that quality level changes, real-time sky capture can become disabled. In this case, sky light recapture should be scheduled to match the current quality level.
+	for (TObjectIterator<USkyLightComponent> It; It; ++It)
+	{
+		USkyLightComponent* SkylightComponent = *It;
+		if (IsValid(SkylightComponent) && SkylightComponent->IsRenderStateCreated())
+		{
+			SkylightComponent->SetCaptureIsDirty();
+		}
+	}
+}
+
 int32 GSkylightRealTimeReflectionCapture = 1;
 FAutoConsoleVariableRef CVarSkylightRealTimeReflectionCapture(
 	TEXT("r.SkyLight.RealTimeReflectionCapture"),
 	GSkylightRealTimeReflectionCapture,
 	TEXT("Make sure the sky light real time capture is not run on platform where it is considered out of budget. Cannot be changed at runtime."),
+	FConsoleVariableDelegate::CreateStatic(&OnChangeSkylightRealTimeReflectionCapture),
 	ECVF_Scalability
 	);
 
@@ -103,10 +118,13 @@ void FSkyTextureCubeResource::InitRHI()
 {
 	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5 || GSupportsRenderTargetFormat_PF_FloatRGBA)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("SkyTextureCube"));
-		
 		checkf(FMath::IsPowerOfTwo(Size), TEXT("Size of SkyTextureCube must be a power of two; size is %d"), Size);
-		TextureCubeRHI = RHICreateTextureCube(Size, Format, NumMips, TexCreate_None, CreateInfo);
+
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::CreateCube(TEXT("SkyTextureCube"), Size, Format)
+			.SetNumMips(NumMips);
+
+		TextureCubeRHI = RHICreateTexture(Desc);
 		TextureRHI = TextureCubeRHI;
 
 		// Create the sampler state RHI resource.
@@ -517,6 +535,23 @@ void USkyLightComponent::DestroyRenderState_Concurrent()
 
 		SceneProxy = nullptr;
 	}
+}
+
+void USkyLightComponent::SendRenderTransform_Concurrent()
+{
+	if (SceneProxy)
+	{
+		FSkyLightSceneProxy* InLightSceneProxy = SceneProxy;
+		FVector Position = GetComponentTransform().GetLocation();
+
+		ENQUEUE_RENDER_COMMAND(UpdateSkyLightCapturePosition)(
+			[InLightSceneProxy, Position](FRHICommandListImmediate& RHICmdList)
+			{
+				InLightSceneProxy->CapturePosition = Position;
+			});
+	}
+
+	Super::SendRenderTransform_Concurrent();
 }
 
 #if WITH_EDITOR
@@ -958,6 +993,19 @@ void USkyLightComponent::SetCubemap(UTextureCube* NewCubemap)
 		&& Cubemap != NewCubemap)
 	{
 		Cubemap = NewCubemap;
+		MarkRenderStateDirty();
+		// Note: this will cause the cubemap to be reprocessed including readback from the GPU
+		SetCaptureIsDirty();
+	}
+}
+
+void USkyLightComponent::SetSourceCubemapAngle(float NewValue)
+{
+	// Can't set on a static light
+	if (AreDynamicDataChangesAllowed()
+		&& SourceCubemapAngle != NewValue)
+	{
+		SourceCubemapAngle = NewValue;
 		MarkRenderStateDirty();
 		// Note: this will cause the cubemap to be reprocessed including readback from the GPU
 		SetCaptureIsDirty();

@@ -91,7 +91,7 @@ void FMessageBridge::Enable()
 	}
 	else
 	{
-		MessageSubscription = Bus->Subscribe(AsShared(), NAME_All, FMessageScopeRange::AtLeast(EMessageScope::Network));
+		MessageSubscription = Bus->Subscribe(AsShared(), IMessageBus::PATHNAME_All, FMessageScopeRange::AtLeast(EMessageScope::Network));
 	}
 
 	Enabled = true;
@@ -101,6 +101,20 @@ void FMessageBridge::Enable()
 bool FMessageBridge::IsEnabled() const
 {
 	return Enabled;
+}
+
+FGuid FMessageBridge::LookupAddress(const FMessageAddress &InAddress)
+{
+	if (InAddress.IsValid())
+	{
+		TArray<FGuid> RemoteNodes = AddressBook.GetNodesFor({InAddress});
+		ensure(RemoteNodes.Num() <= 1);
+		if (RemoteNodes.Num()>0 && RemoteNodes[0].IsValid())
+		{
+			return RemoteNodes[0];
+		}
+	}
+	return {};
 }
 
 
@@ -133,7 +147,7 @@ bool FMessageBridge::IsLocal() const
 
 void FMessageBridge::ReceiveMessage(const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
-	UE_LOG(LogMessaging, Verbose, TEXT("Received %s message from %s"), *Context->GetMessageType().ToString(), *Context->GetSender().ToString());
+	UE_LOG(LogMessaging, Verbose, TEXT("Received %s message from %s"), *Context->GetMessageTypePathName().ToString(), *Context->GetSender().ToString());
 
 	if (!Enabled)
 	{
@@ -206,7 +220,7 @@ void FMessageBridge::ReceiveTransportMessage(const TSharedRef<IMessageContext, E
 	{
 		FString RecipientStr = FString::JoinBy(Context->GetRecipients(), TEXT("+"), &FMessageAddress::ToString);
 		UE_LOG(LogMessaging, Verbose, TEXT("FMessageBridge::ReceiveTransportMessage: Received %s from %s for %s"),
-			*Context->GetMessageType().ToString(),
+			*Context->GetMessageTypePathName().ToString(),
 			*Context->GetSender().ToString(),
 			*RecipientStr);
 	}
@@ -226,7 +240,7 @@ void FMessageBridge::ReceiveTransportMessage(const TSharedRef<IMessageContext, E
 	// register newly discovered endpoints
 	if (!AddressBook.Contains(Context->GetSender()))
 	{
-		UE_LOG(LogMessaging, Verbose, TEXT("FMessageBridge::ReceiveTransportMessage: Registering new sender %s"), *Context->GetMessageType().ToString());
+		UE_LOG(LogMessaging, Verbose, TEXT("FMessageBridge::ReceiveTransportMessage: Registering new sender %s"), *Context->GetMessageTypePathName().ToString());
 
 		AddressBook.Add(Context->GetSender(), NodeId);
 		Bus->Register(Context->GetSender(), AsShared());

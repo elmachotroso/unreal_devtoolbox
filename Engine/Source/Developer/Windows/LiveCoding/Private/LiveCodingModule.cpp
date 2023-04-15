@@ -20,6 +20,7 @@
 #include "Windows/WindowsHWrapper.h"
 #include "Algo/Sort.h"
 #include "Algo/BinarySearch.h"
+#include "HAL/LowLevelMemTracker.h"
 #if WITH_EDITOR
 	#include "Editor.h"
 	#include "Kismet2/ReloadUtilities.h"
@@ -34,9 +35,18 @@
 	#include "UObject/StrongObjectPtr.h"
 #endif
 
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <psapi.h> // for GetModuleFileNameEx
+#ifdef NT_SUCCESS
+#undef NT_SUCCESS
+#endif
+#include <subauth.h> // for UNICODE_STRING
+
 IMPLEMENT_MODULE(FLiveCodingModule, LiveCoding)
 
 #define LOCTEXT_NAMESPACE "LiveCodingModule"
+
+LLM_DEFINE_TAG(LiveCoding);
 
 bool GIsCompileActive = false;
 bool GTriggerReload = false;
@@ -136,8 +146,29 @@ private:
 };
 #endif
 
+// Helper structure to load the NTDLL library and work with an API
+struct FNtDllFunction
+{
+	FARPROC Addr;
+
+	FNtDllFunction(const char* Name)
+	{
+		HMODULE NtDll = LoadLibraryW(L"ntdll.dll");
+		check(NtDll);
+		Addr = GetProcAddress(NtDll, Name);
+	}
+
+	template <typename... ArgTypes>
+	unsigned int operator () (ArgTypes... Args)
+	{
+		typedef unsigned int (NTAPI* Prototype)(ArgTypes...);
+		return (Prototype((void*)Addr))(Args...);
+	}
+};
+
 FLiveCodingModule::FLiveCodingModule()
-	: FullEnginePluginsDir(FPaths::ConvertRelativePathToFull(FPaths::EnginePluginsDir()))
+	: FullEngineDir(FPaths::ConvertRelativePathToFull(FPaths::EngineDir()))
+	, FullEnginePluginsDir(FPaths::ConvertRelativePathToFull(FPaths::EnginePluginsDir()))
 	, FullProjectDir(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()))
 	, FullProjectPluginsDir(FPaths::ConvertRelativePathToFull(FPaths::ProjectPluginsDir()))
 {
@@ -151,6 +182,78 @@ FLiveCodingModule::~FLiveCodingModule()
 
 void FLiveCodingModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(LiveCoding);
+
+	// Register with NT to get dll nitrifications
+	FNtDllFunction RegisterFunc("LdrRegisterDllNotification");
+	RegisterFunc(0, OnDllNotification, this, &CallbackCookie);
+
+	// Get the creating process main executable name.  We want to skip this file when iterating through the dll list
+	FString MainModuleName;
+	{
+		TCHAR Scratch[MAX_PATH];
+		int Length = GetModuleFileNameEx(::GetCurrentProcess(), NULL, Scratch, MAX_PATH);
+		MainModuleName = FString(Length, Scratch);
+	}
+
+	// https://docs.microsoft.com/en-us/windows/win32/api/winternl/ns-winternl-peb_ldr_data
+	typedef struct _PEB_LDR_DATA {
+		BYTE       Reserved1[8];
+		PVOID      Reserved2[3];
+		LIST_ENTRY InMemoryOrderModuleList;
+	} PEB_LDR_DATA, * PPEB_LDR_DATA;
+
+	// https://docs.microsoft.com/en-us/windows/win32/api/winternl/ns-winternl-peb
+	typedef struct _PEB {
+		BYTE                          Reserved1[2];
+		BYTE                          BeingDebugged;
+		BYTE                          Reserved2[1];
+		PVOID                         Reserved3[2];
+		PPEB_LDR_DATA                 Ldr;
+		//...
+	} PEB, * PPEB;
+
+	// https://docs.microsoft.com/en-us/windows/win32/api/winternl/ns-winternl-teb
+	typedef struct _TEB {
+		PVOID Reserved1[12];
+		PPEB  ProcessEnvironmentBlock;
+		//...
+	} TEB, * PTEB;
+
+	// https://docs.microsoft.com/en-us/windows/win32/api/winternl/ns-winternl-peb_ldr_data
+	typedef struct _LDR_DATA_TABLE_ENTRY {
+		PVOID Reserved1[2];
+		LIST_ENTRY InMemoryOrderLinks;
+		PVOID Reserved2[2];
+		PVOID DllBase;
+		PVOID EntryPoint;
+		PVOID Reserved3;
+		UNICODE_STRING FullDllName;
+		//...
+	} LDR_DATA_TABLE_ENTRY, * PLDR_DATA_TABLE_ENTRY;
+
+	// Enumerate already loaded modules.
+	const TEB* ThreadEnvBlock = reinterpret_cast<TEB*>(NtCurrentTeb());
+	const PEB* ProcessEnvBlock = ThreadEnvBlock->ProcessEnvironmentBlock;
+	const LIST_ENTRY* ModuleIter = ProcessEnvBlock->Ldr->InMemoryOrderModuleList.Flink;
+	const LIST_ENTRY* ModuleIterEnd = ModuleIter->Blink;
+	do
+	{
+		const auto& ModuleData = *(LDR_DATA_TABLE_ENTRY*)(ModuleIter - 1);
+		if (ModuleData.DllBase == 0)
+		{
+			break;
+		}
+
+		FString FullPath(ModuleData.FullDllName.Length / sizeof(ModuleData.FullDllName.Buffer[0]), ModuleData.FullDllName.Buffer);
+		if (!FullPath.Equals(MainModuleName, ESearchCase::IgnoreCase))
+		{
+			FPaths::NormalizeFilename(FullPath);
+			OnDllLoaded(FullPath);
+		}
+		ModuleIter = ModuleIter->Flink;
+	} while (ModuleIter != ModuleIterEnd);
+
 	Settings = GetMutableDefault<ULiveCodingSettings>();
 
 	IConsoleManager& ConsoleManager = IConsoleManager::Get();
@@ -158,7 +261,7 @@ void FLiveCodingModule::StartupModule()
 	EnableCommand = ConsoleManager.RegisterConsoleCommand(
 		TEXT("LiveCoding"),
 		TEXT("Enables live coding support"),
-		FConsoleCommandDelegate::CreateRaw(this, &FLiveCodingModule::EnableForSession, true),
+		FConsoleCommandWithOutputDeviceDelegate::CreateRaw(this, &FLiveCodingModule::EnableConsoleCommand),
 		ECVF_Cheat
 	);
 
@@ -191,9 +294,13 @@ void FLiveCodingModule::StartupModule()
 #else
 	FString SourceProject = FPaths::IsProjectFilePathSet() ? FPaths::GetProjectFilePath() : TEXT("");
 #endif
+	if (SourceProject.Len() > 0)
+	{
+		SourceProject = FPaths::ConvertRelativePathToFull(SourceProject);
+	}
 	SourceProjectVariable = ConsoleManager.RegisterConsoleVariable(
 		TEXT("LiveCoding.SourceProject"),
-		FPaths::ConvertRelativePathToFull(SourceProject),
+		SourceProject,
 		TEXT("Path to the project that this target was built from"),
 		ECVF_Cheat
 	);
@@ -246,6 +353,13 @@ void FLiveCodingModule::ShutdownModule()
 	ConsoleManager.UnregisterConsoleObject(ConsolePathVariable);
 	ConsoleManager.UnregisterConsoleObject(CompileCommand);
 	ConsoleManager.UnregisterConsoleObject(EnableCommand);
+
+	// Unregister from the dll notifications
+	if (CallbackCookie)
+	{
+		FNtDllFunction UnregisterFunc("LdrUnregisterDllNotification");
+		UnregisterFunc(CallbackCookie);
+	}
 }
 
 void FLiveCodingModule::EnableByDefault(bool bEnable)
@@ -264,6 +378,18 @@ void FLiveCodingModule::EnableByDefault(bool bEnable)
 bool FLiveCodingModule::IsEnabledByDefault() const
 {
 	return Settings->bEnabled;
+}
+
+void FLiveCodingModule::EnableConsoleCommand(FOutputDevice& out)
+{
+	EnableForSession(true);
+
+	// For packaged builds, by default it is unlikely that UE_LOG messages will be seen in the console.
+	// So log any error directly.
+	if (!EnableErrorText.IsEmpty())
+	{
+		out.Log(EnableErrorText);
+	}
 }
 
 void FLiveCodingModule::EnableForSession(bool bEnable)
@@ -746,7 +872,7 @@ bool FLiveCodingModule::StartLiveCoding()
 			}
 		}
 
-		ensure(CreateMutex(NULL, Windows::FALSE, *MutexName));
+		ensure(CreateMutex(NULL, FALSE, *MutexName));
 
 		// Configure all the current modules. For non-commandlets, schedule it to be done in the first Tick() so we can batch everything together.
 		if (IsRunningCommandlet())
@@ -758,9 +884,6 @@ bool FLiveCodingModule::StartLiveCoding()
 			bUpdateModulesInTick = true;
 		}
 
-		// Register a delegate to listen for new modules loaded from this point onwards
-		ModulesChangedDelegateHandle = FModuleManager::Get().OnModulesChanged().AddRaw(this, &FLiveCodingModule::OnModulesChanged);
-
 		// Mark it as started
 		bStarted = true;
 		bEnabledForSession = true;
@@ -770,6 +893,12 @@ bool FLiveCodingModule::StartLiveCoding()
 
 void FLiveCodingModule::UpdateModules()
 {
+	TArray<ModuleChange> Changes;
+	{
+		FScopeLock lock(&ModuleChangeCs);
+		Swap(Changes, ModuleChanges);
+	}
+
 	if (bEnabledForSession)
 	{
 #if IS_MONOLITHIC
@@ -777,30 +906,41 @@ void FLiveCodingModule::UpdateModules()
 		verify(GetModuleFileName(hInstance, FullFilePath, UE_ARRAY_COUNT(FullFilePath)));
 		LppEnableModule(FullFilePath);
 #else
-		TArray<FModuleStatus> ModuleStatuses;
-		FModuleManager::Get().QueryModules(ModuleStatuses);
+		// Collect the list of preloaded modules
+		TSet<FName> PreloadedFileNames;
+		{
+			FModuleManager& Manager = FModuleManager::Get();
+			for (FName moduleName : Settings->PreloadNamedModules)
+			{
+				FString FileName = Manager.GetModuleFilename(moduleName);
+				if (!FileName.IsEmpty())
+				{
+					PreloadedFileNames.Add(FName(FPaths::GetBaseFilename(FileName, true)));
+				}
+			}
+		}
 
 		TArray<FString> EnableModules;
-		for (const FModuleStatus& ModuleStatus : ModuleStatuses)
+		for (const ModuleChange& Change : Changes)
 		{
-			if (ModuleStatus.bIsLoaded)
+			if (Change.bLoaded)
 			{
-				FName ModuleName(*ModuleStatus.Name);
-				if (!ConfiguredModules.Contains(ModuleName))
+				ConfiguredModules.Add(Change.FullName);
+				FString FullFilePath(Change.FullName.ToString());
+				if (ShouldPreloadModule(PreloadedFileNames, FullFilePath))
 				{
-					FString FullFilePath = FPaths::ConvertRelativePathToFull(ModuleStatus.FilePath);
-					if (ShouldPreloadModule(ModuleName, FullFilePath))
-					{
-						EnableModules.Add(FullFilePath);
-					}
-					else
-					{
-						TRACE_CPUPROFILER_EVENT_SCOPE(LppEnableLazyLoadedModule);
-						void* LppEnableLazyLoadedModuleToken = LppEnableLazyLoadedModule(*FullFilePath);
-						LppPendingTokens.Add(LppEnableLazyLoadedModuleToken);
-					}
-					ConfiguredModules.Add(ModuleName);
+					EnableModules.Add(FullFilePath);
 				}
+				else
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(LppEnableLazyLoadedModule);
+					void* LppEnableLazyLoadedModuleToken = LppEnableLazyLoadedModule(*FullFilePath);
+					LppPendingTokens.Add(LppEnableLazyLoadedModuleToken);
+				}
+			}
+			else
+			{
+				ConfiguredModules.Remove(Change.FullName);
 			}
 		}
 
@@ -840,27 +980,27 @@ void FLiveCodingModule::OnModulesChanged(FName ModuleName, EModuleChangeReason R
 #endif
 }
 
-bool FLiveCodingModule::ShouldPreloadModule(const FName& Name, const FString& FullFilePath) const
+bool FLiveCodingModule::ShouldPreloadModule(const TSet<FName>& PreloadedFileNames, const FString& FullFilePath) const
 {
-	// For the hooks to work properly, we always have to load the live coding module
-	if (Name == TEXT(LIVE_CODING_MODULE_NAME))
+
+	// Perform some name based checks
 	{
-		return true;
+		FString FileName = FPaths::GetBaseFilename(FullFilePath, true);
+		FName Name(FileName, FNAME_Find);
+		if (Name != NAME_None && PreloadedFileNames.Contains(Name))
+		{
+			return true;
+		}
 	}
 
-	if (Settings->PreloadNamedModules.Contains(Name))
-	{
-		return true;
-	}
-
-	if (FullFilePath.StartsWith(FullProjectDir))
+	if (FullFilePath.StartsWith(FullProjectDir, ESearchCase::IgnoreCase))
 	{
 		if (Settings->bPreloadProjectModules == Settings->bPreloadProjectPluginModules)
 		{
 			return Settings->bPreloadProjectModules;
 		}
 
-		if(FullFilePath.StartsWith(FullProjectPluginsDir))
+		if(FullFilePath.StartsWith(FullProjectPluginsDir, ESearchCase::IgnoreCase))
 		{
 			return Settings->bPreloadProjectPluginModules;
 		}
@@ -881,7 +1021,7 @@ bool FLiveCodingModule::ShouldPreloadModule(const FName& Name, const FString& Fu
 			return Settings->bPreloadEngineModules;
 		}
 
-		if(FullFilePath.StartsWith(FullEnginePluginsDir))
+		if(FullFilePath.StartsWith(FullEnginePluginsDir, ESearchCase::IgnoreCase))
 		{
 			return Settings->bPreloadEnginePluginModules;
 		}
@@ -924,6 +1064,97 @@ bool FLiveCodingModule::IsReinstancingEnabled() const
 bool FLiveCodingModule::AutomaticallyCompileNewClasses() const
 {
 	return Settings->bAutomaticallyCompileNewClasses;
+}
+
+void FLiveCodingModule::OnDllNotification(unsigned int Reason, const void* DataPtr, void* Context)
+{
+	FLiveCodingModule* This = reinterpret_cast<FLiveCodingModule*>(Context);
+
+	enum
+	{
+		LDR_DLL_NOTIFICATION_REASON_LOADED = 1,
+		LDR_DLL_NOTIFICATION_REASON_UNLOADED = 2,
+	};
+
+	struct FNotificationData
+	{
+		uint32 Flags;
+		const UNICODE_STRING& FullPath;
+		const UNICODE_STRING& BaseName;
+		UPTRINT	Base;
+	};
+	const auto& Data = *(FNotificationData*)DataPtr;
+	FString FullPath(Data.FullPath.Length / sizeof(Data.FullPath.Buffer[0]), Data.FullPath.Buffer);
+	FPaths::NormalizeFilename(FullPath);
+
+	switch (Reason)
+	{
+	case LDR_DLL_NOTIFICATION_REASON_LOADED:
+		This->OnDllLoaded(FullPath);
+		break;
+
+	case LDR_DLL_NOTIFICATION_REASON_UNLOADED:
+		This->OnDllUnloaded(FullPath);
+		break;
+	}
+}
+
+void FLiveCodingModule::OnDllLoaded(const FString& FullPath)
+{
+	if (IsUEDll(FullPath))
+	{
+		FScopeLock lock(&ModuleChangeCs);
+		ModuleChanges.Emplace(ModuleChange{ FName(FullPath), true });
+	}
+}
+
+void FLiveCodingModule::OnDllUnloaded(const FString& FullPath)
+{
+	if (IsUEDll(FullPath))
+	{
+		FScopeLock lock(&ModuleChangeCs);
+		ModuleChanges.Emplace(ModuleChange{ FName(FullPath), false });
+	}
+}
+
+
+bool FLiveCodingModule::IsUEDll(const FString& FullPath)
+{
+	// Ignore patches.
+	if (IsPatchDll(FullPath))
+	{
+		return false;
+	}
+
+	// Dll must be in the engine or project dir
+	if (!FullPath.StartsWith(FullEngineDir, ESearchCase::IgnoreCase) &&
+		!FullPath.StartsWith(FullEnginePluginsDir, ESearchCase::IgnoreCase) &&
+		!FullPath.StartsWith(FullProjectDir, ESearchCase::IgnoreCase) &&
+		!FullPath.StartsWith(FullProjectPluginsDir, ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+	return true;
+}
+
+bool FLiveCodingModule::IsPatchDll(const FString& FullPath)
+{
+	// If the Dll ends with ".patch_#.dll", then ignore it
+	FString Name = FPaths::GetBaseFilename(FullPath, true);
+	FString Extension = FPaths::GetExtension(Name);
+	if (!Extension.StartsWith("patch_", ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+
+	for (int Index = 6; Index < Extension.Len(); ++Index)
+	{
+		if (!FChar::IsDigit(Extension[Index]))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 // Invoked from LC_ClientCommandActions

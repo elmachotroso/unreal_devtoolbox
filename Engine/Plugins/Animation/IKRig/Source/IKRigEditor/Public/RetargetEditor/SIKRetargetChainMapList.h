@@ -12,6 +12,7 @@
 #include "Widgets/Views/SListView.h"
 #include "Framework/Commands/UICommandList.h"
 
+class FTextFilterExpressionEvaluator;
 class FIKRigEditorController;
 class SIKRetargetChainMapList;
 class FIKRetargetEditor;
@@ -57,10 +58,16 @@ public:
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override;
 
 	void OnSourceChainComboSelectionChanged(TSharedPtr<FString> InName, ESelectInfo::Type SelectInfo);
-
-	FText GetSourceChainName() const;
 	
 private:
+
+	FReply OnResetToDefaultClicked();
+
+	EVisibility GetResetToDefaultVisibility() const;
+	
+	FText GetSourceChainName() const;
+
+	FText GetTargetIKGoalName() const;
 
 	TArray<TSharedPtr<FString>> SourceChainOptions;
 
@@ -71,16 +78,29 @@ private:
 	friend SIKRetargetChainMapList;
 };
 
+struct FChainMapFilterOptions
+{
+	bool bHideUnmappedChains = false;
+	bool bHideMappedChains = false;
+	bool bHideChainsWithoutIK = false;
+};
+
 typedef SListView< TSharedPtr<FRetargetChainMapElement> > SRetargetChainMapListViewType;
 
 class SIKRetargetChainMapList : public SCompoundWidget, public FEditorUndoClient
 {
+	
 public:
+	
 	SLATE_BEGIN_ARGS(SIKRetargetChainMapList) {}
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs, TSharedRef<FIKRetargetEditorController> InEditorController);
 
+	void ClearSelection() const;
+
+	void ResetChainSettings(URetargetChainSettings* Settings) const;
+	
 private:
 	
 	/** menu for adding new solver commands */
@@ -101,16 +121,22 @@ private:
 	FText GetTargetRootBone() const;
 	bool IsChainMapEnabled() const;
 	/** when a chain is clicked on in the table view */
-	void OnItemClicked(TSharedPtr<FRetargetChainMapElement> InItem);
-
-	/** update selection / details view */
-	void OnSelectionChanged();
-	TArray<UObject*> SelectedChainSettings;
+	void OnItemClicked(TSharedPtr<FRetargetChainMapElement> InItem) const;
+	/** when edit global settings button clicked */
+	FReply OnGlobalSettingsButtonClicked() const;
+	/** when edit root settings button clicked */
+	FReply OnRootSettingsButtonClicked() const;
 
 	/** auto-map chain button*/
 	EVisibility IsAutoMapButtonVisible() const;
 	FReply OnAutoMapButtonClicked() const;
 	/** END auto-map chain button*/
+
+	/** filtering the list with search box */
+	TSharedRef<SWidget> CreateFilterMenuWidget();
+	void OnFilterTextChanged(const FText& SearchText);
+	TSharedPtr<FTextFilterExpressionEvaluator> TextFilter;
+	FChainMapFilterOptions ChainFilterOptions;
 
 	/** list view generate row callback */
 	TSharedRef<ITableRow> MakeListRowWidget(TSharedPtr<FRetargetChainMapElement> InElement, const TSharedRef<STableViewBase>& OwnerTable);

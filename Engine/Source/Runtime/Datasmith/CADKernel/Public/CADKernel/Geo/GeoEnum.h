@@ -3,7 +3,7 @@
 
 #include "CADKernel/Core/Types.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 enum class ECurve : uint8
@@ -82,6 +82,13 @@ enum EOrientation : uint8
 {
 	Back = 0,
 	Front = 1
+};
+
+enum ESituation : uint8
+{
+	Undefined = 0,
+	Inside,
+	Outside
 };
 
 #ifdef CADKERNEL_DEV

@@ -3,9 +3,13 @@
 #pragma once
 
 #include "DMXFixtureActor.h"
+
 #include "ProceduralMeshComponent.h"
+#include "RHI.h"
 #include "Rendering/Texture2DResource.h"
+
 #include "DMXFixtureActorMatrix.generated.h"
+
 
 UCLASS()
 class DMXFIXTURES_API ADMXFixtureActorMatrix : public ADMXFixtureActor
@@ -14,7 +18,6 @@ class DMXFIXTURES_API ADMXFixtureActorMatrix : public ADMXFixtureActor
 
 public:
 	ADMXFixtureActorMatrix();
-	~ADMXFixtureActorMatrix();
 
 protected:
 	
@@ -23,6 +26,9 @@ protected:
 #endif
 
 public:
+	//~ Begin DMXGDTFActorInterface interface
+	virtual void OnMVRGetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames, TArray<FName>& OutMatrixAttributeNames) const override;
+	//~ End DMXGDTFActorInterface interface
 
 	TArray<uint8> MatrixData;
 	int MatrixDataSize;
@@ -32,10 +38,10 @@ public:
 	int YCells;
 
 	UTexture2D* MatrixDataTexture;
-	FUpdateTextureRegion2D* TextureRegion;
+	FUpdateTextureRegion2D TextureRegion;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "DMX Matrix Fixture")
-	UProceduralMeshComponent* MatrixHead;
+	TObjectPtr<UProceduralMeshComponent> MatrixHead;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Matrix Fixture")
 	float MatrixWidth;

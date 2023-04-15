@@ -7,18 +7,17 @@ public class Sequencer : ModuleRules
 	public Sequencer(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PrivateIncludePaths.AddRange(
-            new string[] {
-                "Editor/Sequencer/Private",
-                "Editor/Sequencer/Private/DisplayNodes",
+			new string[] {
+				"Editor/Sequencer/Private",
 				"Editor/UnrealEd/Private" // TODO: Fix this, for now it's needed for the fbx exporter
-	}
-        );
+				}
+			);
 
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"TimeManagement",
-			}
-		);
+				}
+			);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -29,68 +28,69 @@ public class Sequencer : ModuleRules
 				"ContentBrowser",
 				"Core", 
 				"CoreUObject", 
-                "CurveEditor",
-                "InputCore",
+				"CurveEditor",
+				"InputCore",
 				"Engine", 
 				"Slate", 
 				"SlateCore",
 				"SceneOutliner",
-                "EditorStyle",
+				"SequencerCore",
+				"EditorStyle",
 				"EditorFramework",
 				"UnrealEd", 
 				"MovieScene", 
 				"MovieSceneTracks", 
 				"MovieSceneTools", 
 				"MovieSceneCapture", 
-                "MovieSceneCaptureDialog", 
+				"MovieSceneCaptureDialog", 
 				"EditorWidgets", 
 				"SequencerWidgets",
 				"BlueprintGraph",
 				"LevelSequence",
 				"GraphEditor",
-                "ViewportInteraction",
-                "SerializedRecorderInterface",
+				"PropertyEditor",
+				"ViewportInteraction",
+				"SerializedRecorderInterface",
 				"ToolMenus",
 				"ToolWidgets",
-			}
-		);
+				}
+			);
 
 		CircularlyReferencedDependentModules.AddRange(
-			new string[]
-			{
+			new string[] {
 				"ViewportInteraction",
-			}
-		);
+				}
+			);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-                "ContentBrowser",
+				"ContentBrowser",
 				"PropertyEditor",
 				"Kismet",
-                "LevelEditor",
+				"LevelEditor",
 				"MainFrame",
 				"DesktopPlatform",
-                "SerializedRecorderInterface"
-            }
-        );
+				"SerializedRecorderInterface"
+				}
+			);
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
 				"PropertyEditor",
-                "SceneOutliner",
-                "CurveEditor",
-                "Analytics",
-            }
-        );
+				"SceneOutliner",
+				"CurveEditor",
+				"Analytics",
+				"SequencerWidgets"
+				}
+			);
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
-				"PropertyEditor",
 				"LevelEditor",
 				"WorkspaceMenuStructure",
 				"MainFrame",
-			}
-		);
+				}
+			);
 
 		CircularlyReferencedDependentModules.Add("MovieSceneTools");
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "FBX");

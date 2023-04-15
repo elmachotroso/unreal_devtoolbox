@@ -15,8 +15,13 @@
 #include "EditorFolderUtils.h"
 #include "ScopedTransaction.h"
 #include "UObject/ObjectSaveContext.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "ActorFolder.h"
+#include "Subsystems/ActorEditorContextSubsystem.h"
+#include "Styling/AppStyle.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/ActorDescContainer.h"
 
 #define LOCTEXT_NAMESPACE "FActorFolders"
 
@@ -44,6 +49,7 @@ FActorFolders::FActorFolders()
 
 	FEditorDelegates::MapChange.AddRaw(this, &FActorFolders::OnMapChange);
 	FEditorDelegates::PostSaveWorldWithContext.AddRaw(this, &FActorFolders::OnWorldSaved);
+	FEditorDelegates::PostSaveExternalActors.AddRaw(this, &FActorFolders::SaveWorldFoldersState);
 }
 
 FActorFolders::~FActorFolders()
@@ -55,6 +61,7 @@ FActorFolders::~FActorFolders()
 
 	FEditorDelegates::MapChange.RemoveAll(this);
 	FEditorDelegates::PostSaveWorldWithContext.RemoveAll(this);
+	FEditorDelegates::PostSaveExternalActors.RemoveAll(this);
 }
 
 void FActorFolders::AddReferencedObjects(FReferenceCollector& Collector)
@@ -72,10 +79,12 @@ FActorFolders& FActorFolders::Get()
 void FActorFolders::Init()
 {
 	Singleton = new FActorFolders;
+	UActorEditorContextSubsystem::Get()->RegisterClient(Singleton);
 }
 
 void FActorFolders::Cleanup()
 {
+	UActorEditorContextSubsystem::Get()->UnregisterClient(Singleton);
 	delete Singleton;
 	Singleton = nullptr;
 }
@@ -95,33 +104,36 @@ void FActorFolders::BroadcastOnActorFolderCreated(UWorld& InWorld, const FFolder
 {
 	OnFolderCreated.Broadcast(InWorld, InFolder);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (!InFolder.HasRootObject())
+	if (InFolder.IsRootObjectPersistentLevel())
 	{
 		OnFolderCreate.Broadcast(InWorld, InFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	BroadcastOnActorEditorContextClientChanged();
 }
 
 void FActorFolders::BroadcastOnActorFolderDeleted(UWorld& InWorld, const FFolder& InFolder)
 {
 	OnFolderDeleted.Broadcast(InWorld, InFolder);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (!InFolder.HasRootObject())
+	if (InFolder.IsRootObjectPersistentLevel())
 	{
 		OnFolderDelete.Broadcast(InWorld, InFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	BroadcastOnActorEditorContextClientChanged();
 }
 
 void FActorFolders::BroadcastOnActorFolderMoved(UWorld& InWorld, const FFolder& InSrcFolder, const FFolder& InDstFolder)
 {
 	OnFolderMoved.Broadcast(InWorld, InSrcFolder, InDstFolder);
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (!InSrcFolder.HasRootObject() && !InDstFolder.HasRootObject())
+	if (InSrcFolder.IsRootObjectPersistentLevel() && InDstFolder.IsRootObjectPersistentLevel())
 	{
 		OnFolderMove.Broadcast(InWorld, InSrcFolder.GetPath(), InDstFolder.GetPath());
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	BroadcastOnActorEditorContextClientChanged();
 }
 
 void FActorFolders::OnLevelActorListChanged()
@@ -162,11 +174,20 @@ void FActorFolders::OnMapChange(uint32 MapChangeFlags)
 
 void FActorFolders::OnWorldSaved(UWorld* World, FObjectPostSaveContext ObjectSaveContext)
 {
-	// Attempt to save the folder state
+	SaveWorldFoldersState(World);
+}
+
+void FActorFolders::SaveWorldFoldersState(UWorld* World)
+{
 	if (UWorldFolders** Folders = WorldFolders.Find(World))
 	{
-		(*Folders)->OnWorldSaved();
+		(*Folders)->SaveState();
 	}
+}
+
+bool FActorFolders::IsInitializedForWorld(UWorld& InWorld) const
+{
+	return !!WorldFolders.Find(&InWorld);
 }
 
 UWorldFolders& FActorFolders::GetOrCreateWorldFolders(UWorld& InWorld)
@@ -243,13 +264,13 @@ FFolder FActorFolders::GetDefaultFolderForSelection(UWorld& InWorld, TArray<FFol
 		}
 		else if (CommonFolder.GetValue().GetRootObject() != Folder.GetRootObject())
 		{
-			CommonFolder = FFolder();
+			CommonFolder.Reset();
 			return false;
 		}
 		else if (CommonFolder.GetValue().GetPath() != Folder.GetPath())
 		{
 			// Empty path and continue iterating as we need to continue validating RootObjects
-			CommonFolder.GetValue().SetPath(NAME_None);
+			CommonFolder = FFolder(CommonFolder->GetRootObject());
 		}
 		return true;
 	};
@@ -261,11 +282,11 @@ FFolder FActorFolders::GetDefaultFolderForSelection(UWorld& InWorld, TArray<FFol
 
 		FFolder Folder = Actor->GetFolder();
 		// Special case for Level Instance, make root as level instance if editing
-		if (ALevelInstance* LevelInstance = Cast<ALevelInstance>(Actor))
+		if (ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(Actor))
 		{
 			if (LevelInstance->IsEditing())
 			{
-				Folder = FFolder(FFolder::GetEmptyPath(), FFolder::FRootObject(LevelInstance));
+				Folder = FFolder(FFolder::FRootObject(Actor), FFolder::GetEmptyPath());
 			}
 		}
 		if (!MergeFolders(Folder))
@@ -285,14 +306,16 @@ FFolder FActorFolders::GetDefaultFolderForSelection(UWorld& InWorld, TArray<FFol
 		}
 	}
 
-	return GetDefaultFolderName(InWorld, CommonFolder.Get(FFolder()));
+	return GetDefaultFolderName(InWorld, CommonFolder.Get(FFolder::GetInvalidFolder()));
 }
 
 FFolder FActorFolders::GetFolderName(UWorld& InWorld, const FFolder& InParentFolder, const FName& InLeafName)
 {
+	FFolder ParentFolder = FFolder::IsRootObjectValid(InParentFolder.GetRootObject()) ? InParentFolder : FFolder(GetWorldFolderRootObject(InWorld), InParentFolder.GetPath());
+
 	// This is potentially very slow but necessary to find a unique name
 	const UWorldFolders& Folders = GetOrCreateWorldFolders(InWorld);
-	const FFolder::FRootObject& RootObject = InParentFolder.GetRootObject();
+	const FFolder::FRootObject& RootObject = ParentFolder.GetRootObject();
 	const FString LeafNameString = InLeafName.ToString();
 
 	// Find the last non-numeric character
@@ -326,14 +349,14 @@ FFolder FActorFolders::GetFolderName(UWorld& InWorld, const FFolder& InParentFol
 
 	FText LeafName = FText::Format(LOCTEXT("FolderNamePattern", "{0}{1}"), FText::FromString(LeafNameRoot), SuffixLen > 0 ? FText::AsNumber(Suffix++, &NumberFormat) : FText::GetEmpty());
 
-	FString ParentFolderPath = InParentFolder.IsNone() ? TEXT("") : InParentFolder.ToString();
+	FString ParentFolderPath = ParentFolder.IsNone() ? TEXT("") : ParentFolder.ToString();
 	if (!ParentFolderPath.IsEmpty())
 	{
 		ParentFolderPath += "/";
 	}
 
 	FName FolderName(*(ParentFolderPath + LeafName.ToString()));
-	while (Folders.ContainsFolder(FFolder(FolderName, RootObject)))
+	while (Folders.ContainsFolder(FFolder(RootObject, FolderName)))
 	{
 		LeafName = FText::Format(LOCTEXT("FolderNamePattern", "{0}{1}"), FText::FromString(LeafNameRoot), FText::AsNumber(Suffix++, &NumberFormat));
 		FolderName = FName(*(ParentFolderPath + LeafName.ToString()));
@@ -345,14 +368,16 @@ FFolder FActorFolders::GetFolderName(UWorld& InWorld, const FFolder& InParentFol
 		}
 	}
 
-	return FFolder(FolderName, RootObject);
+	return FFolder(RootObject, FolderName);
 }
 
 FFolder FActorFolders::GetDefaultFolderName(UWorld& InWorld, const FFolder& InParentFolder)
 {
+	FFolder ParentFolder = FFolder::IsRootObjectValid(InParentFolder.GetRootObject()) ? InParentFolder : FFolder(GetWorldFolderRootObject(InWorld), InParentFolder.GetPath());
+
 	// This is potentially very slow but necessary to find a unique name
 	const UWorldFolders& Folders = GetOrCreateWorldFolders(InWorld);
-	const FFolder::FRootObject& RootObject = InParentFolder.GetRootObject();
+	const FFolder::FRootObject& RootObject = ParentFolder.GetRootObject();
 
 	// Create a valid base name for this folder
 	FNumberFormattingOptions NumberFormat;
@@ -360,14 +385,14 @@ FFolder FActorFolders::GetDefaultFolderName(UWorld& InWorld, const FFolder& InPa
 	uint32 Suffix = 1;
 	FText LeafName = FText::Format(LOCTEXT("DefaultFolderNamePattern", "NewFolder{0}"), FText::AsNumber(Suffix++, &NumberFormat));
 
-	FString ParentFolderPath = InParentFolder.IsNone() ? TEXT("") : InParentFolder.ToString();
+	FString ParentFolderPath = ParentFolder.IsNone() ? TEXT("") : ParentFolder.ToString();
 	if (!ParentFolderPath.IsEmpty())
 	{
 		ParentFolderPath += "/";
 	}
 
 	FName FolderName(*(ParentFolderPath + LeafName.ToString()));
-	while (Folders.ContainsFolder(FFolder(FolderName, RootObject)))
+	while (Folders.ContainsFolder(FFolder(RootObject, FolderName)))
 	{
 		LeafName = FText::Format(LOCTEXT("DefaultFolderNamePattern", "NewFolder{0}"), FText::AsNumber(Suffix++, &NumberFormat));
 		FolderName = FName(*(ParentFolderPath + LeafName.ToString()));
@@ -379,7 +404,7 @@ FFolder FActorFolders::GetDefaultFolderName(UWorld& InWorld, const FFolder& InPa
 		}
 	}
 
-	return FFolder(FolderName, RootObject);
+	return FFolder(RootObject, FolderName);
 }
 
 void FActorFolders::CreateFolderContainingSelection(UWorld& InWorld, const FFolder& InFolder)
@@ -416,14 +441,16 @@ void FActorFolders::SetSelectedFolderPath(const FFolder& InFolder) const
 	}
 }
 
-void FActorFolders::CreateFolder(UWorld& InWorld, const FFolder& InFolder)
+bool FActorFolders::CreateFolder(UWorld& InWorld, const FFolder& InFolder)
 {
 	FScopedTransaction Transaction(LOCTEXT("UndoAction_CreateFolder", "Create Folder"));
 
 	if (AddFolderToWorld(InWorld, InFolder))
 	{
 		BroadcastOnActorFolderCreated(InWorld, InFolder);
+		return true;
 	}
+	return false;
 }
 
 void FActorFolders::OnActorFolderAdded(UActorFolder* InActorFolder)
@@ -433,13 +460,19 @@ void FActorFolders::OnActorFolderAdded(UActorFolder* InActorFolder)
 	check(Level->IsUsingActorFolders());
 
 	AddFolderToWorld(*Level->GetWorld(), InActorFolder->GetFolder());
-	SetIsFolderExpanded(*Level->GetWorld(), InActorFolder->GetFolder(), InActorFolder->IsInitiallyExpanded());
+	// To avoid overriding the expanded state initialized by UWorldFolders::LoadState, only override value if folder is initially collapsed.
+	if (!InActorFolder->IsInitiallyExpanded())
+	{
+		SetIsFolderExpanded(*Level->GetWorld(), InActorFolder->GetFolder(), false);
+	}
 }
 
 void FActorFolders::OnFolderRootObjectRemoved(UWorld& InWorld, const FFolder::FRootObject& InFolderRootObject)
 {
+	const FFolder::FRootObject FolderRootObject = FFolder::IsRootObjectValid(InFolderRootObject) ? InFolderRootObject : GetWorldFolderRootObject(InWorld);
+
 	TArray<FFolder> FoldersToDelete;
-	ForEachFolderWithRootObject(InWorld, InFolderRootObject, [&FoldersToDelete](const FFolder& Folder)
+	ForEachFolderWithRootObject(InWorld, FolderRootObject, [&FoldersToDelete](const FFolder& Folder)
 	{
 		FoldersToDelete.Add(Folder);
 		return true;
@@ -513,26 +546,164 @@ void FActorFolders::SetIsFolderExpanded(UWorld& InWorld, const FFolder& InFolder
 	GetOrCreateWorldFolders(InWorld).SetIsFolderExpanded(InFolder, bIsExpanded);
 }
 
+FFolder FActorFolders::GetActorEditorContextFolder(UWorld& InWorld, bool bMustMatchCurrentLevel) const
+{
+	const UWorldFolders** Folders = (const UWorldFolders **)WorldFolders.Find(&InWorld);
+	if (Folders)
+	{
+		return (*Folders)->GetActorEditorContextFolder(bMustMatchCurrentLevel);
+	}
+	return FFolder::GetWorldRootFolder(&InWorld);
+}
+
+void FActorFolders::SetActorEditorContextFolder(UWorld& InWorld, const FFolder& InFolder)
+{
+	if (GetOrCreateWorldFolders(InWorld).SetActorEditorContextFolder(InFolder))
+	{
+		BroadcastOnActorEditorContextClientChanged();
+	}
+}
+
+void FActorFolders::OnExecuteActorEditorContextAction(UWorld* InWorld, const EActorEditorContextAction& InType, AActor* InActor)
+{
+	switch (InType)
+	{
+		case EActorEditorContextAction::ApplyContext:
+			check(InActor && InActor->GetWorld() == InWorld);
+			{
+				const bool bMustMatchCurrentLevel = false;
+				FFolder Folder = GetActorEditorContextFolder(*InWorld, bMustMatchCurrentLevel);
+				if (!Folder.IsNone() && (Folder.GetRootObjectAssociatedLevel() == InActor->GetLevel()))
+				{
+					// Currently not supported to change rootobject through this interface
+					if (Folder.GetRootObject() == InActor->GetFolderRootObject())
+					{
+						InActor->SetFolderPath_Recursively(Folder.GetPath());
+					}
+				}
+			}
+			break;
+		case EActorEditorContextAction::ResetContext:
+			SetActorEditorContextFolder(*InWorld, FFolder::GetWorldRootFolder(InWorld));
+			break;
+		case EActorEditorContextAction::PushContext:
+			if (UWorldFolders** Folders = (UWorldFolders**)WorldFolders.Find(InWorld))
+			{
+				(*Folders)->PushActorEditorContext();
+			}
+			break;
+		case EActorEditorContextAction::PopContext:
+			if (UWorldFolders** Folders = (UWorldFolders**)WorldFolders.Find(InWorld))
+			{
+				(*Folders)->PopActorEditorContext();
+			}
+			break;
+	}
+}
+
+bool FActorFolders::GetActorEditorContextDisplayInfo(UWorld* InWorld, FActorEditorContextClientDisplayInfo& OutDiplayInfo) const
+{
+	const FFolder Folder = GetActorEditorContextFolder(*InWorld);
+	if (!Folder.IsNone())
+	{
+		OutDiplayInfo.Title = TEXT("Actor Folder");
+		OutDiplayInfo.Brush = FAppStyle::GetBrush(TEXT("SceneOutliner.FolderClosed"));
+		return true;
+	}
+	return false;
+}
+
+TSharedRef<SWidget> FActorFolders::GetActorEditorContextWidget(UWorld* InWorld) const
+{
+	const FFolder Folder = GetActorEditorContextFolder(*InWorld);
+	FText Text = (!Folder.IsNone()) ? FText::FromName(Folder.GetLeafName()) : FText::GetEmpty();
+	return SNew(STextBlock).Text(Text);
+}
+
+void FActorFolders::BroadcastOnActorEditorContextClientChanged()
+{
+	ActorEditorContextClientChanged.Broadcast(this);
+}
+
 void FActorFolders::ForEachFolder(UWorld& InWorld, TFunctionRef<bool(const FFolder&)> Operation)
 {
 	GetOrCreateWorldFolders(InWorld).ForEachFolder(Operation);
 }
 
-void FActorFolders::ForEachFolderWithRootObject(UWorld& InWorld, const FFolder::FRootObject& InFolderRootObject, TFunctionRef<bool(const FFolder&)> Operation)
+FFolder::FRootObject FActorFolders::GetWorldFolderRootObject(UWorld& InWorld)
 {
-	GetOrCreateWorldFolders(InWorld).ForEachFolderWithRootObject(InFolderRootObject, Operation);
+	return FFolder::GetWorldRootFolder(&InWorld).GetRootObject();
 }
 
-void FActorFolders::ForEachActorInFolders(UWorld& World, const TArray<FName>& Paths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject)
+void FActorFolders::ForEachFolderWithRootObject(UWorld& InWorld, const FFolder::FRootObject& InFolderRootObject, TFunctionRef<bool(const FFolder&)> Operation)
 {
-	for (FActorIterator ActorIt(&World); ActorIt; ++ActorIt)
+	const FFolder::FRootObject FolderRootObject = FFolder::IsRootObjectValid(InFolderRootObject) ? InFolderRootObject : GetWorldFolderRootObject(InWorld);
+	GetOrCreateWorldFolders(InWorld).ForEachFolderWithRootObject(FolderRootObject, Operation);
+}
+
+FFolder FActorFolders::GetActorDescFolder(UWorld& InWorld, const FWorldPartitionActorDesc* InActorDesc)
+{
+	if (InActorDesc)
 	{
-		if (ActorIt->GetFolderRootObject() != InFolderRootObject)
+		UWorld& OuterWorld = InActorDesc->GetContainer() ? *InActorDesc->GetContainer()->GetTypedOuter<UWorld>() : InWorld;
+		{
+			ULevel* OuterLevel = OuterWorld.PersistentLevel;
+			if (OuterLevel->IsUsingActorFolders())
+			{
+				if (UActorFolder* ActorFolder = OuterLevel->GetActorFolder(InActorDesc->GetFolderGuid()))
+				{
+					return ActorFolder->GetFolder();
+				}
+				return FFolder::GetWorldRootFolder(&OuterWorld).GetRootObject();
+			}
+			return FFolder(FFolder::GetWorldRootFolder(&OuterWorld).GetRootObject(), InActorDesc->GetFolderPath());
+		}
+	}
+	return FFolder::GetInvalidFolder();
+}
+
+void FActorFolders::ForEachActorDescInFolders(UWorld& InWorld, const TSet<FName>& InPaths, TFunctionRef<bool(const FWorldPartitionActorDesc*)> Operation, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
+{
+	if (UWorldPartition* WorldPartition = InWorld.GetWorldPartition())
+	{
+		FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [&](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			FFolder ActorDescFolder = GetActorDescFolder(InWorld, ActorDesc);
+			if (ActorDescFolder == FFolder::GetInvalidFolder())
+			{
+				return true;
+			}
+
+			FName ActorDescPath = ActorDescFolder.GetPath();
+			if (ActorDescPath.IsNone() || !InPaths.Contains(ActorDescPath))
+			{
+				return true;
+			}
+
+			return Operation(ActorDesc);
+		});
+	}
+}
+
+void FActorFolders::ForEachActorInFolders(UWorld& InWorld, const TArray<FName>& InPaths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
+{
+	TSet<FName> Paths;
+	Paths.Append(InPaths);
+	ForEachActorInFolders(InWorld, Paths, Operation, InFolderRootObject);
+}
+
+void FActorFolders::ForEachActorInFolders(UWorld& InWorld, const TSet<FName>& InPaths, TFunctionRef<bool(AActor*)> Operation, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
+{
+	const FFolder::FRootObject FolderRootObject = FFolder::IsRootObjectValid(InFolderRootObject) ? InFolderRootObject : GetWorldFolderRootObject(InWorld);
+
+	for (FActorIterator ActorIt(&InWorld); ActorIt; ++ActorIt)
+	{
+		if (ActorIt->GetFolderRootObject() != FolderRootObject)
 		{
 			continue;
 		}
 		FName ActorPath = ActorIt->GetFolderPath();
-		if (ActorPath.IsNone() || !Paths.Contains(ActorPath))
+		if (ActorPath.IsNone() || !InPaths.Contains(ActorPath))
 		{
 			continue;
 		}
@@ -544,22 +715,41 @@ void FActorFolders::ForEachActorInFolders(UWorld& World, const TArray<FName>& Pa
 	}
 }
 
-void FActorFolders::GetActorsFromFolders(UWorld& World, const TArray<FName>& Paths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject)
+void FActorFolders::GetActorsFromFolders(UWorld& InWorld, const TArray<FName>& InPaths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
 {
-	ForEachActorInFolders(World, Paths, [&OutActors](AActor* InActor)
-	{
-		OutActors.Add(InActor);
-		return true;
-	}, InFolderRootObject);
+	TSet<FName> Paths;
+	Paths.Append(InPaths);
+	GetActorsFromFolders(InWorld, Paths, OutActors, InFolderRootObject);
 }
 
-void FActorFolders::GetWeakActorsFromFolders(UWorld& World, const TArray<FName>& Paths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject)
+void FActorFolders::GetActorsFromFolders(UWorld& InWorld, const TSet<FName>& InPaths, TArray<AActor*>& OutActors, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
 {
-	ForEachActorInFolders(World, Paths, [&OutActors](AActor* InActor)
+	const FFolder::FRootObject FolderRootObject = FFolder::IsRootObjectValid(InFolderRootObject) ? InFolderRootObject : GetWorldFolderRootObject(InWorld);
+
+	ForEachActorInFolders(InWorld, InPaths, [&OutActors](AActor* InActor)
 	{
 		OutActors.Add(InActor);
 		return true;
-	}, InFolderRootObject);
+	}, FolderRootObject);
+}
+
+
+void FActorFolders::GetWeakActorsFromFolders(UWorld& InWorld, const TArray<FName>& InPaths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
+{
+	TSet<FName> Paths;
+	Paths.Append(InPaths);
+	GetWeakActorsFromFolders(InWorld, Paths, OutActors, InFolderRootObject);
+}
+
+void FActorFolders::GetWeakActorsFromFolders(UWorld& InWorld, const TSet<FName>& InPaths, TArray<TWeakObjectPtr<AActor>>& OutActors, const FFolder::FRootObject& InFolderRootObject /*= FFolder::GetInvalidRootObject()*/)
+{
+	const FFolder::FRootObject FolderRootObject = FFolder::IsRootObjectValid(InFolderRootObject) ? InFolderRootObject : GetWorldFolderRootObject(InWorld);
+
+	ForEachActorInFolders(InWorld, InPaths, [&OutActors](AActor* InActor)
+	{
+		OutActors.Add(InActor);
+		return true;
+	}, FolderRootObject);
 }
 
 ////////////////////////////////////////////
@@ -567,12 +757,12 @@ void FActorFolders::GetWeakActorsFromFolders(UWorld& World, const TArray<FName>&
 
 FActorFolderProps* FActorFolders::GetFolderProperties(UWorld& InWorld, FName InPath)
 {
-	return GetFolderProperties(InWorld, FFolder(InPath));
+	return GetFolderProperties(InWorld, FFolder(GetWorldFolderRootObject(InWorld), InPath));
 }
 
 FName FActorFolders::GetDefaultFolderName(UWorld& InWorld, FName ParentPath)
 {
-	FFolder DefaultFolderName = GetDefaultFolderName(InWorld, FFolder(ParentPath));
+	FFolder DefaultFolderName = GetDefaultFolderName(InWorld, FFolder(GetWorldFolderRootObject(InWorld), ParentPath));
 	return DefaultFolderName.GetPath();
 }
 
@@ -584,33 +774,33 @@ FName FActorFolders::GetDefaultFolderNameForSelection(UWorld& InWorld)
 
 FName FActorFolders::GetFolderName(UWorld& InWorld, FName InParentPath, FName InFolderName)
 {
-	FFolder FolderName = GetFolderName(InWorld, FFolder(InParentPath), InFolderName);
+	FFolder FolderName = GetFolderName(InWorld, FFolder(GetWorldFolderRootObject(InWorld), InParentPath), InFolderName);
 	return FolderName.GetPath();
 }
 
 void FActorFolders::CreateFolder(UWorld& InWorld, FName Path)
 {
-	CreateFolder(InWorld, FFolder(Path));
+	CreateFolder(InWorld, FFolder(GetWorldFolderRootObject(InWorld), Path));
 }
 
 void FActorFolders::CreateFolderContainingSelection(UWorld& InWorld, FName Path)
 {
-	CreateFolderContainingSelection(InWorld, FFolder(Path));
+	CreateFolderContainingSelection(InWorld, FFolder(GetWorldFolderRootObject(InWorld), Path));
 }
 
 void FActorFolders::SetSelectedFolderPath(FName Path) const
 {
-	SetSelectedFolderPath(FFolder(Path));
+	SetSelectedFolderPath(FFolder(FFolder::GetInvalidRootObject(), Path));
 }
 
 void FActorFolders::DeleteFolder(UWorld& InWorld, FName FolderToDelete)
 {
-	DeleteFolder(InWorld, FFolder(FolderToDelete));
+	DeleteFolder(InWorld, FFolder(GetWorldFolderRootObject(InWorld), FolderToDelete));
 }
 
 bool FActorFolders::RenameFolderInWorld(UWorld& InWorld, FName OldPath, FName NewPath)
 {
-	return RenameFolderInWorld(InWorld, FFolder(OldPath), FFolder(NewPath));
+	return RenameFolderInWorld(InWorld, FFolder(GetWorldFolderRootObject(InWorld), OldPath), FFolder(GetWorldFolderRootObject(InWorld), NewPath));
 }
 
 //~ End Deprecated

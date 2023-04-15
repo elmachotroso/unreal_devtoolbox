@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "SlateGlobals.h"
 #include "Fonts/ShapedTextFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "Fonts/SlateFontInfo.h"
@@ -163,7 +164,8 @@ public:
 			&& OutlineSize == Other.OutlineSize
 			&& OutlineSeparateFillAlpha == Other.OutlineSeparateFillAlpha
 			&& FontScale == Other.FontScale
-			&& GlyphIndex == Other.GlyphIndex;
+			&& GlyphIndex == Other.GlyphIndex
+			&& FontSkew == Other.FontSkew;
 	}
 
 	FORCEINLINE bool operator!=(const FShapedGlyphEntryKey& Other) const
@@ -191,6 +193,8 @@ private:
 	uint32 GlyphIndex;
 	/** Cached hash value used for map lookups */
 	uint32 KeyHash;
+	/** The skew transform amount for the rendered font */
+	float FontSkew;
 };
 
 /** Information for rendering a shaped text sequence */
@@ -444,6 +448,13 @@ private:
 	TArray<TWeakPtr<FFreeTypeFace>> GlyphFontFaces;
 	/** A map of source indices to their shaped glyph data indices - used to perform efficient reverse look-up */
 	FSourceIndicesToGlyphData SourceIndicesToGlyphData;
+#if SLATE_CHECK_UOBJECT_SHAPED_GLYPH_SEQUENCE
+	// Used to guard against crashes when the material object is deleted. This is expensive so we do not do it in shipping
+	TWeakObjectPtr<const UObject> FontMaterialWeakPtr;
+	TWeakObjectPtr<const UObject> OutlineMaterialWeakPtr;
+	FName DebugFontMaterialName;
+	FName DebugOutlineMaterialName;
+#endif
 };
 
 /** Information for rendering one non-shaped character */
@@ -500,21 +511,16 @@ class SLATECORE_API FCharacterList
 public:
 	FCharacterList( const FSlateFontKey& InFontKey, FSlateFontCache& InFontCache );
 
-	/* @return Is the character in this list */
-	bool IsValidIndex( TCHAR Character ) const
-	{
-		return DirectIndexEntries.IsValidIndex( Character ) || ( Character >= MaxDirectIndexedEntries && MappedEntries.Contains( Character ) );
-	}
-
 	/**
-	 * Gets data about how to render and measure a character 
-	 * Caching and atlasing it if needed
+	 * Gets data about how to render and measure a character.
+	 * Caching and atlasing it if needed.
+	 * Subsequent calls may invalidate previous pointers.
 	 *
 	 * @param Character			The character to get
 	 * @param MaxFontFallback	The maximum fallback level that can be used when resolving glyphs
 	 * @return				Data about the character
 	 */
-	FCharacterEntry GetCharacter(TCHAR Character, const EFontFallback MaxFontFallback);
+	const FCharacterEntry& GetCharacter(TCHAR Character, const EFontFallback MaxFontFallback);
 
 #if WITH_EDITORONLY_DATA
 	/** Check to see if our cached data is potentially stale for our font */
@@ -553,23 +559,6 @@ public:
 	int16 GetBaseline() const;
 
 private:
-	/** Maintains a fake shaped glyph for each character in the character list */
-	struct FCharacterListEntry
-	{
-		/** The shaped glyph data for this character */
-		FShapedGlyphEntry ShapedGlyphEntry;
-		/** Font data this character was rendered with */
-		const FFontData* FontData = nullptr;
-		/** Kerning cache that this character uses */
-		TSharedPtr<FFreeTypeKerningCache> KerningCache;
-		/** The fallback level this character represents */
-		EFontFallback FallbackLevel = EFontFallback::FF_Max;
-		/** Does this character have kerning? */
-		bool HasKerning = false;
-		/** Has this entry been initialized? */
-		bool Valid = false;
-	};
-
 	/**
 	 * Returns whether the specified character is valid for caching (i.e. whether it matches the FontFallback level)
 	 *
@@ -583,18 +572,12 @@ private:
 	 * 
 	 * @param Character	The character to cache
 	 */
-	FCharacterListEntry* CacheCharacter(TCHAR Character);
-
-	/**
-	 * Convert the cached internal entry to the external data for the old non-shaped API
-	 */
-	FCharacterEntry MakeCharacterEntry(TCHAR Character, const FCharacterListEntry& InternalEntry) const;
+	const FCharacterEntry* CacheCharacter(TCHAR Character);
 
 private:
 	/** Entries for larger character sets to conserve memory */
-	TMap<TCHAR, FCharacterListEntry> MappedEntries; 
-	/** Directly indexed entries for fast lookup */
-	TArray<FCharacterListEntry> DirectIndexEntries;
+	TMap<TCHAR, FCharacterEntry> MappedEntries;
+
 	/** Font for this character list */
 	FSlateFontKey FontKey;
 	/** Reference to the font cache for accessing new unseen characters */
@@ -603,8 +586,6 @@ private:
 	/** The history revision of the cached composite font */
 	int32 CompositeFontHistoryRevision;
 #endif	// WITH_EDITORONLY_DATA
-	/** Number of directly indexed entries */
-	int32 MaxDirectIndexedEntries;
 	/** The global max height for any character in this font */
 	mutable uint16 MaxHeight;
 	/** The offset from the bottom of the max character height to the baseline. */
@@ -668,6 +649,11 @@ public:
 	FShapedGlyphSequenceRef ShapeUnidirectionalText( const FString& InText, const FSlateFontInfo &InFontInfo, const float InFontScale, const TextBiDi::ETextDirection InTextDirection, const ETextShapingMethod InTextShapingMethod ) const;
 	FShapedGlyphSequenceRef ShapeUnidirectionalText( const TCHAR* InText, const int32 InTextStart, const int32 InTextLen, const FSlateFontInfo &InFontInfo, const float InFontScale, const TextBiDi::ETextDirection InTextDirection, const ETextShapingMethod InTextShapingMethod ) const;
 
+	/**
+	 * Performs text shaping on the overflow glyph sequence for a given font. The overflow sequence is used to replace characters that are clipped
+	 */
+	FShapedGlyphSequenceRef ShapeOverflowEllipsisText(const FSlateFontInfo& InFontInfo, const float InFontScale);
+
 	/** 
 	 * Gets information for how to draw all non-shaped characters in the specified string. Caches characters as they are found
 	 * 
@@ -685,6 +671,7 @@ public:
 	/**
 	 * Gets the overflow glyph sequence for a given font. The overflow sequence is used to replace characters that are clipped
 	 */
+	UE_DEPRECATED(5.1, "GetOverflowEllipsisText is known to create dangling pointer. Use FShapedTextCache::FindOrAddOverflowEllipsisText.")
 	FShapedGlyphSequenceRef GetOverflowEllipsisText(const FSlateFontInfo& InFontInfo, const float InFontScale);
 
 public:
@@ -892,9 +879,6 @@ private:
 
 	/** Mapping Font keys to cached data */
 	TMap<FSlateFontKey, TUniquePtr<FCharacterList>, FDefaultSetAllocator, FSlateFontKeyFuncs<TUniquePtr<FCharacterList>>> FontToCharacterListCache;
-
-	/** Caches overflow text to display usually an ellipsis character for text elements that are clipped and request replacing clipped text with an ellipsis */
-	TMap<FSlateFontKey, FShapedGlyphSequenceRef, FDefaultSetAllocator, FSlateFontKeyFuncs<FShapedGlyphSequenceRef>> FontToOverflowGlyphSequence;
 
 	/** Mapping shaped glyphs to their cached atlas data */
 	TMap<FShapedGlyphEntryKey, TSharedRef<FShapedGlyphFontAtlasData>> ShapedGlyphToAtlasData;

@@ -24,6 +24,8 @@
 
 #define LOCTEXT_NAMESPACE "OculusEditor"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 const FName FOculusEditorModule::OculusPerfTabName = FName("OculusPerfCheck");
 const FName FOculusEditorModule::OculusPlatToolTabName = FName("OculusPlatormTool");
 
@@ -131,11 +133,11 @@ void FOculusEditorModule::RegisterSettings()
 		SettingsModule->RegisterSettings("Project", "Plugins", "OculusVR",
 			LOCTEXT("RuntimeSettingsName", "OculusVR"),
 			LOCTEXT("RuntimeSettingsDescription", "Configure the OculusVR plugin"),
-			GetMutableDefault<UOculusHMDRuntimeSettings>()
+			GetMutableDefault<UDEPRECATED_UOculusHMDRuntimeSettings>()
 		);
 
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		PropertyModule.RegisterCustomClassLayout(UOculusHMDRuntimeSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FOculusHMDSettingsDetailsCustomization::MakeInstance));
+		PropertyModule.RegisterCustomClassLayout(UDEPRECATED_UOculusHMDRuntimeSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FOculusHMDSettingsDetailsCustomization::MakeInstance));
 	}
 }
 
@@ -290,7 +292,7 @@ void FOculusHMDSettingsDetailsCustomization::CustomizeDetails(IDetailLayoutBuild
 					+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(4)
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("Icons.Warning"))
+							.Image(FAppStyle::Get().GetBrush("Icons.Warning"))
 							.Visibility(this, &FOculusHMDSettingsDetailsCustomization::GetOculusHMDAvailableWarningVisibility)
 						]
 					+ SHorizontalBox::Slot().FillWidth(8).VAlign(VAlign_Center)
@@ -299,12 +301,14 @@ void FOculusHMDSettingsDetailsCustomization::CustomizeDetails(IDetailLayoutBuild
 							.AutoWrapText(true)
 							.Text(LOCTEXT("OculusHMDNotConnected", "WARNING: Build telemetry functionality may be limited, because the Oculus HMD was not found to be connected, available, or configured correctly. Check the Devices tab of the Oculus PC app."))
 							.ColorAndOpacity(FLinearColor(0.7f, 0.23f, 0.23f, 1.f))
-							.Font(FEditorStyle::GetFontStyle(TEXT("BoldFont")))
+							.Font(FAppStyle::GetFontStyle(TEXT("BoldFont")))
 							.Visibility(this, &FOculusHMDSettingsDetailsCustomization::GetOculusHMDAvailableWarningVisibility)
 						]
 				]
 		];
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 //////////////////////////////////////////////////////////////////////////
 

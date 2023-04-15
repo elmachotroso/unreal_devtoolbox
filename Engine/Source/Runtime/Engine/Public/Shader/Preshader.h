@@ -8,6 +8,8 @@
 
 class FUniformExpressionSet;
 struct FMaterialRenderContext;
+class FMaterial;
+class FXxHash64Builder;
 
 namespace UE
 {
@@ -59,6 +61,32 @@ enum class EPreshaderOpcode : uint8
 	ExternalTextureCoordinateScaleRotation,
 	ExternalTextureCoordinateOffset,
 	RuntimeVirtualTextureUniform,
+	GetField,
+	SetField,
+	Neg,
+	Jump,
+	JumpIfFalse,
+	PushValue,
+	Less,
+	Assign,
+	Greater,
+	LessEqual,
+	GreaterEqual,
+};
+
+struct FPreshaderStructType
+{
+	DECLARE_TYPE_LAYOUT(FPreshaderStructType, NonVirtual);
+	LAYOUT_FIELD(uint64, Hash);
+	LAYOUT_FIELD(int32, ComponentTypeIndex);
+	LAYOUT_FIELD(int32, NumComponents);
+};
+
+struct FPreshaderLabel
+{
+	explicit FPreshaderLabel(int32 InOffset = INDEX_NONE) : Offset(InOffset) {}
+
+	int32 Offset;
 };
 
 class FPreshaderData
@@ -67,7 +95,7 @@ class FPreshaderData
 public:
 	friend inline bool operator==(const FPreshaderData& Lhs, const FPreshaderData& Rhs)
 	{
-		return Lhs.Data == Rhs.Data;
+		return Lhs.Names == Rhs.Names && Lhs.Data == Rhs.Data;
 	}
 
 	friend inline bool operator!=(const FPreshaderData& Lhs, const FPreshaderData& Rhs)
@@ -75,14 +103,23 @@ public:
 		return !operator==(Lhs, Rhs);
 	}
 
-	void Evaluate(FUniformExpressionSet* UniformExpressionSet, const struct FMaterialRenderContext& Context, FValue& OutValue);
+	void AppendHash(FXxHash64Builder& OutHasher) const;
 
-	void Append(const FPreshaderData& InPreshader);
+	FPreshaderValue Evaluate(FUniformExpressionSet* UniformExpressionSet, const struct FMaterialRenderContext& Context, FPreshaderStack& Stack) const;
+	FPreshaderValue EvaluateConstant(const FMaterial& Material, FPreshaderStack& Stack) const;
 
 	const int32 Num() const { return Data.Num(); }
 
 	void WriteData(const void* Value, uint32 Size);
 	void WriteName(const FScriptName& Name);
+	void WriteType(const FType& Type);
+	void WriteValue(const FValue& Value);
+
+	FPreshaderLabel WriteJump(EPreshaderOpcode Op);
+	void WriteJump(EPreshaderOpcode Op, FPreshaderLabel Label);
+
+	FPreshaderLabel GetLabel();
+	void SetLabel(FPreshaderLabel InLabel);
 
 	template<typename T>
 	FPreshaderData& Write(const T& Value) { WriteData(&Value, sizeof(T)); return *this; }
@@ -91,7 +128,10 @@ public:
 	FPreshaderData& Write<FScriptName>(const FScriptName& Value) { WriteName(Value); return *this; }
 
 	template<>
-	FPreshaderData& Write<FValue>(const FValue& Value);
+	FPreshaderData& Write<FType>(const FType& Value) { WriteType(Value); return *this; }
+
+	template<>
+	FPreshaderData& Write<FValue>(const FValue& Value) { WriteValue(Value); return *this; }
 
 	/** Can't write FName, use FScriptName instead */
 	template<>
@@ -100,25 +140,13 @@ public:
 	template<>
 	FPreshaderData& Write<FHashedMaterialParameterInfo>(const FHashedMaterialParameterInfo& Value) { return Write(Value.Name).Write(Value.Index).Write(Value.Association); }
 
-	inline FPreshaderData& WriteOpcode(EPreshaderOpcode Op) { return Write<uint8>((uint8)Op); }
+	inline FPreshaderData& WriteOpcode(EPreshaderOpcode Op) { ensure(Op != EPreshaderOpcode::Nop); return Write<uint8>((uint8)Op); }
 
 	LAYOUT_FIELD(TMemoryImageArray<FScriptName>, Names);
-	LAYOUT_FIELD(TMemoryImageArray<uint32>, NameOffsets);
+	LAYOUT_FIELD(TMemoryImageArray<FPreshaderStructType>, StructTypes);
+	LAYOUT_FIELD(TMemoryImageArray<EValueComponentType>, StructComponentTypes);
 	LAYOUT_FIELD(TMemoryImageArray<uint8>, Data);
 };
-
-template<>
-inline FPreshaderData& FPreshaderData::Write<FValue>(const FValue& Value)
-{
-	const EValueType Type = Value.GetType();
-	FMemoryImageValue MemoryValue = Value.AsMemoryImage();
-	Data.Add((uint8)Type);
-	if (MemoryValue.Size > 0u)
-	{
-		Data.Append(MemoryValue.Bytes, MemoryValue.Size);
-	}
-	return *this;
-}
 
 } // namespace Shader
 } // namespace UE

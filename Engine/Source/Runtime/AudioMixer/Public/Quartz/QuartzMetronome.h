@@ -2,37 +2,46 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
 #include "Sound/QuartzQuantizationUtilities.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+
+class FQuartzTickableObject;
 
 namespace Audio
 {
-	using MetronomeCommandQueuePtr = TSharedPtr<FShareableQuartzCommandQueue, ESPMode::ThreadSafe>;
+	template <typename T> class TQuartzShareableCommandQueue;
+
+	using MetronomeCommandQueuePtr = TSharedPtr<TQuartzShareableCommandQueue<FQuartzTickableObject>, ESPMode::ThreadSafe>;
 
 	// Class to track the passage of musical time, and allow subscribers to be notified when these musical events take place
 	class FQuartzMetronome
 	{
 	public:
 		// ctor
-		FQuartzMetronome();
-		FQuartzMetronome(const FQuartzTimeSignature& InTimeSignature);
+		FQuartzMetronome(FName InClockName = {});
+		FQuartzMetronome(const FQuartzTimeSignature& InTimeSignature, FName InClockName = {});
 
 		// dtor
 		~FQuartzMetronome();
 
-		// called by owning FQuartzClock
+		// Transport Control:
 		void Tick(int32 InNumSamples, int32 FramesOfLatency = 0);
 
-		// called by owning FQuartzClock
 		void SetTickRate(FQuartzClockTickRate InNewTickRate, int32 NumFramesLeft = 0);
-
-		FQuartzClockTickRate GetTickRate() const { return CurrentTickRate; }
 
 		void SetSampleRate(float InNewSampleRate);
 
-		// affects bars/beats values we send back to the game thread
 		void SetTimeSignature(const FQuartzTimeSignature& InNewTimeSignature);
 
-		int32 GetFramesUntilBoundary(FQuartzQuantizationBoundary InQuantizationBoundary) const;
+		void ResetTransport();
+
+		// Getters
+		const FQuartzClockTickRate& GetTickRate() const { return CurrentTickRate; }
+
+		double GetFramesUntilBoundary(FQuartzQuantizationBoundary InQuantizationBoundary) const;
 
 		const FQuartzTimeSignature & GetTimeSignature() const { return CurrentTimeSignature; }
 
@@ -40,6 +49,7 @@ namespace Audio
 
 		double GetTimeSinceStart() const { return TimeSinceStart; }
 
+		// Event Subscription
 		void SubscribeToTimeDivision(MetronomeCommandQueuePtr InListenerQueue, EQuartzCommandQuantization InQuantizationBoundary);
 
 		void SubscribeToAllTimeDivisions(MetronomeCommandQueuePtr InListenerQueue);
@@ -48,9 +58,10 @@ namespace Audio
 
 		void UnsubscribeFromAllTimeDivisions(MetronomeCommandQueuePtr InListenerQueue);
 
-		void ResetTransport();
 
 	private:
+
+		// Helpers:
 		void RecalculateDurations();
 
 		void FireEvents(int32 EventFlags);
@@ -69,7 +80,6 @@ namespace Audio
 
 		FQuartzClockTickRate CurrentTickRate;
 
-		// (Subtract one because Tick and 1/32 are the same.)
 		TArray<MetronomeCommandQueuePtr> MetronomeSubscriptionMatrix[static_cast<int32>(EQuartzCommandQuantization::Count)];
 		
 		// wrapper around our array so it can be indexed into by different Enums that represent musical time
@@ -77,28 +87,28 @@ namespace Audio
 		{
 		public:
 			// index operators for EQuartzCommandQuantization
-			int32& operator[](EQuartzCommandQuantization InTimeValue)
+			double& operator[](EQuartzCommandQuantization InTimeValue)
 			{
 				return FramesInTimeValueInternal[static_cast<int32>(InTimeValue)];
 			}
 
-			const int32& operator[](EQuartzCommandQuantization InTimeValue) const
+			const double& operator[](EQuartzCommandQuantization InTimeValue) const
 			{
 				return FramesInTimeValueInternal[static_cast<int32>(InTimeValue)];
 			}
 
 			// index operators for int32
-			int32& operator[](int32 Index)
+			double& operator[](int32 Index)
 			{
 				return FramesInTimeValueInternal[Index];
 			}
 
-			const int32& operator[](int32 Index) const
+			const double& operator[](int32 Index) const
 			{
 				return FramesInTimeValueInternal[Index];
 			}
 
-			int32 FramesInTimeValueInternal[static_cast<int32>(EQuartzCommandQuantization::Count)]{ 0 };
+			double FramesInTimeValueInternal[static_cast<int32>(EQuartzCommandQuantization::Count)]{ 0.0 };
 		};
 
 		// array of lengths of musical durations (in audio frames)
@@ -108,7 +118,7 @@ namespace Audio
 		FramesInTimeValue FramesLeftInMusicalDuration;
 
 		// optional array of pulse duration overrides (for odd meters)
-		TArray<int32> PulseDurations;
+		TArray<double> PulseDurations;
 
 		// the index of the active pulse duration override
 		int32 PulseDurationIndex{ -1 };
@@ -117,6 +127,8 @@ namespace Audio
 
 		//Keeps track of time in seconds since the Clock was last reset
 		double TimeSinceStart;
+
+		FName ClockName;
 
 	}; // class QuartzMetronome
 } // namespace Audio

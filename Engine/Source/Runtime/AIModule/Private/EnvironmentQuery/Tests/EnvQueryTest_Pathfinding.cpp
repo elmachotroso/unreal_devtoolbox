@@ -8,6 +8,8 @@
 #include "EnvironmentQuery/Items/EnvQueryItemType_VectorBase.h"
 #include "EnvironmentQuery/Contexts/EnvQueryContext_Querier.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EnvQueryTest_Pathfinding)
+
 #define LOCTEXT_NAMESPACE "EnvQueryGenerator"
 
 UEnvQueryTest_Pathfinding::UEnvQueryTest_Pathfinding(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
@@ -58,7 +60,7 @@ void UEnvQueryTest_Pathfinding::RunTest(FEnvQueryInstance& QueryInstance) const
 	}
 
 	EPathFindingMode::Type PFMode(EPathFindingMode::Regular);
-	FSharedConstNavQueryFilter NavFilter = UNavigationQueryFilter::GetQueryFilter(*NavData, QueryOwner, FilterClass);
+	FSharedConstNavQueryFilter NavFilter = UNavigationQueryFilter::GetQueryFilter(*NavData, QueryOwner, GetNavFilterClass(QueryInstance));
 
 	if (GetWorkOnFloatValues())
 	{
@@ -231,4 +233,10 @@ ANavigationData* UEnvQueryTest_Pathfinding::FindNavigationData(UNavigationSystem
 	return NavSys.GetDefaultNavDataInstance(FNavigationSystem::DontCreate);
 }
 
+TSubclassOf<UNavigationQueryFilter> UEnvQueryTest_Pathfinding::GetNavFilterClass(FEnvQueryInstance& QueryInstance) const
+{
+	return FilterClass;
+}
+
 #undef LOCTEXT_NAMESPACE
+

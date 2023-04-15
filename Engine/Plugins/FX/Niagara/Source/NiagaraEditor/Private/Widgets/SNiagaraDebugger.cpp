@@ -1,34 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNiagaraDebugger.h"
-#include "SNiagaraDebuggerSpawn.h"
-#include "Editor/EditorStyle/Private/SlateEditorStyle.h"
-#include "NiagaraEditorStyle.h"
-
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
+#include "Customizations/NiagaraDebugHUDCustomization.h"
+#include "Customizations/NiagaraOutlinerCustomization.h"
+#include "EditorWidgetsModule.h"
+#include "Framework/Docking/LayoutService.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IStructureDetailsView.h"
 #include "Modules/ModuleManager.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
+#include "Modules/ModuleManager.h"
+#include "NiagaraComponent.h"
+#include "NiagaraConstants.h"
+#include "NiagaraEditorModule.h"
+#include "NiagaraEditorStyle.h"
+#include "PropertyEditorModule.h"
+#include "SNiagaraDebuggerSpawn.h"
+#include "Styling/AppStyle.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SNumericDropDown.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Framework/Docking/LayoutService.h"
-#include "Framework/Docking/TabManager.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "UObject/UObjectIterator.h"
-#include "EditorWidgetsModule.h"
-#include "PropertyEditorModule.h"
-#include "Modules/ModuleManager.h"
-#include "NiagaraEditorModule.h"
-#include "Customizations/NiagaraDebugHUDCustomization.h"
-#include "Customizations/NiagaraOutlinerCustomization.h"
-#include "IStructureDetailsView.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 
 // the SessionFrontend is a "target" developer tool for talking to other devices, etc, and may get disabled
 #define WITH_SESSION_FRONTEND 	WITH_UNREAL_TARGET_DEVELOPER_TOOLS
@@ -151,9 +152,9 @@ namespace NiagaraPerformanceTab
 				.AutoWidth()
 				[
 					SNew(SUniformGridPanel)
-					.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-					.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-					.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+					.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+					.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+					.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 					+ SUniformGridPanel::Slot(0, 0)
 					[
 						SNew(SButton)
@@ -332,8 +333,8 @@ namespace NiagaraOutlinerTab
  			// Capture delay
  			{
 				TSharedRef<SWidget> DelayWidget = SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-				.Padding(FMargin(3.0, 0.0f, 3.0f, 0.0f))
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.Padding(FMargin(6.0, 0.0f, 6.0f, 0.0f))
 				.ToolTipText(LOCTEXT("OutlinerDelayTooltip", "Number of frames to delay between a capture being triggered and it being taken.\nThis provides time to affect the scene and also defines the length of time performance data is gathered."))				
 				[
 					SNew(SEditableTextBox)
@@ -355,6 +356,34 @@ namespace NiagaraOutlinerTab
 					}))					
 				];
 				ToolbarBuilder.AddToolBarWidget(DelayWidget, LOCTEXT("OutlinerDelay", "Delay"));
+			}
+			
+ 			// Sim Cache Capture frames
+ 			{
+				TSharedRef<SWidget> FramesWidget = SNew(SBorder)
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.Padding(FMargin(6.0, 0.0f, 6.0f, 0.0f))
+				.ToolTipText(LOCTEXT("OutlinerSimCacheCaptureFramesTooltip", "Number of frames to capture when capturing Sim Cache Data."))				
+				[
+					SNew(SEditableTextBox)
+					.OnTextCommitted(FOnTextCommitted::CreateLambda([Debugger](const FText& InText, ETextCommit::Type CommitInfo)
+					{
+						if (UNiagaraOutliner* Outliner = Debugger->GetOutliner())
+						{
+							LexFromString(Outliner->CaptureSettings.SimCacheCaptureFrames, *InText.ToString());
+							Outliner->OnChanged();
+						}
+					}))
+					.Text(MakeAttributeLambda([Debugger]()
+					{
+						if (UNiagaraOutliner* Outliner = Debugger->GetOutliner())
+						{
+							return FText::AsNumber(Outliner->CaptureSettings.SimCacheCaptureFrames);
+						}
+						return FText::GetEmpty();
+					}))					
+				];
+				ToolbarBuilder.AddToolBarWidget(FramesWidget, LOCTEXT("OutlinerSimCacheFrames", "Sim Cache Frames"));
 			}
 		}
 
@@ -449,7 +478,7 @@ namespace NiagaraOutlinerTab
 				.OnGetMenuContent(FOnGetContent::CreateLambda([Debugger, FiltersData, FilterDetails]()
 				{
 					return SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+						.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 						.Padding(FMargin(2))
 						[
 							FilterDetails->GetWidget().ToSharedRef()
@@ -503,7 +532,7 @@ namespace NiagaraOutlinerTab
 								NAME_None,
 								LOCTEXT("SortDecsending", "Descending"),
 								LOCTEXT("SortDecsendingTooltip", "Sort Descending or Ascending"),
-								FSlateIcon(FSlateEditorStyle::GetStyleSetName(), "Profiler.Misc.SortDescending"),
+								FSlateIcon(FAppStyle::GetAppStyleSetName(), "Profiler.Misc.SortDescending"),
 								EUserInterfaceActionType::ToggleButton
 								);
 				}
@@ -791,7 +820,9 @@ void SNiagaraDebugger::RegisterTabSpawner()
 	.SetDisplayName(NSLOCTEXT("UnrealEditor", "NiagaraDebuggerTab", "Niagara Debugger"))
 	.SetTooltipText(NSLOCTEXT("UnrealEditor", "NiagaraDebuggerTooltipText", "Open the Niagara Debugger Tab."))
 	.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory())
-	.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Debugger"));
+	.SetIcon(FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "Tab.Debugger"))
+	// FORT-497240 - Issue is that having a Tab with nested tabs will auto close when in the sidebar if any area of the nested tabs are clicked
+	.SetCanSidebarTab(false);
 }
 
 void SNiagaraDebugger::UnregisterTabSpawner()
@@ -799,6 +830,241 @@ void SNiagaraDebugger::UnregisterTabSpawner()
 	if (FSlateApplication::IsInitialized())
 	{
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SNiagaraDebugger::DebugWindowName);
+	}
+}
+
+void SNiagaraDebugger::InvokeDebugger(UNiagaraComponent* InComponent)
+{
+	TSharedPtr<SDockTab> DebugTab = FGlobalTabmanager::Get()->TryInvokeTab(SNiagaraDebugger::DebugWindowName);
+
+	if (DebugTab.IsValid())
+	{
+		TSharedRef<SNiagaraDebugger> Content = StaticCastSharedRef<SNiagaraDebugger>(DebugTab->GetContent());
+		Content->FocusDebugTab();
+
+		UNiagaraDebugHUDSettings* HudSettings = GetMutableDefault<UNiagaraDebugHUDSettings>();
+		if (HudSettings && InComponent)
+		{
+			HudSettings->Data.bComponentFilterEnabled = true;
+			HudSettings->Data.ComponentFilter = InComponent->GetName();
+			
+			UNiagaraSystem* System = InComponent->GetAsset();
+			if (System)
+			{
+				HudSettings->Data.SystemFilter = System->GetName();
+				HudSettings->Data.bSystemFilterEnabled = true;
+			}
+
+			AActor* Actor = InComponent->GetOwner();
+			if (IsValid(Actor))
+			{
+				HudSettings->Data.ActorFilter = Actor->GetActorNameOrLabel();
+				HudSettings->Data.bActorFilterEnabled = true;
+			}
+
+			HudSettings->Data.bEmitterFilterEnabled = false;
+
+			if (HudSettings->Data.SystemDebugVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemDebugVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+			HudSettings->NotifyPropertyChanged();
+		}
+	}
+}
+
+void SNiagaraDebugger::InvokeDebugger(UNiagaraSystem* InSystem)
+{
+	TSharedPtr<SDockTab> DebugTab = FGlobalTabmanager::Get()->TryInvokeTab(SNiagaraDebugger::DebugWindowName);
+
+	if (DebugTab.IsValid())
+	{
+		TSharedRef<SNiagaraDebugger> Content = StaticCastSharedRef<SNiagaraDebugger>(DebugTab->GetContent());
+		Content->FocusDebugTab();
+
+		UNiagaraDebugHUDSettings* HudSettings = GetMutableDefault<UNiagaraDebugHUDSettings>();
+		if (HudSettings && InSystem)
+		{
+			HudSettings->Data.bComponentFilterEnabled = false;
+			HudSettings->Data.ComponentFilter = TEXT("");
+
+			HudSettings->Data.ActorFilter = TEXT("");
+			HudSettings->Data.bActorFilterEnabled = false;
+
+			if (InSystem)
+			{
+				HudSettings->Data.SystemFilter = InSystem->GetName();
+				HudSettings->Data.bSystemFilterEnabled = true;
+			}
+
+			if (HudSettings->Data.SystemDebugVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemDebugVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+			HudSettings->NotifyPropertyChanged();
+		}
+	}
+}
+
+
+void SNiagaraDebugger::InvokeDebugger(FNiagaraEmitterHandle& InEmitterHandle)
+{
+	TSharedPtr<SDockTab> DebugTab = FGlobalTabmanager::Get()->TryInvokeTab(SNiagaraDebugger::DebugWindowName);
+
+	if (DebugTab.IsValid())
+	{
+		TSharedRef<SNiagaraDebugger> Content = StaticCastSharedRef<SNiagaraDebugger>(DebugTab->GetContent());
+		Content->FocusDebugTab();
+
+		UNiagaraDebugHUDSettings* HudSettings = GetMutableDefault<UNiagaraDebugHUDSettings>();
+		if (HudSettings && InEmitterHandle.IsValid() && InEmitterHandle.GetInstance().Emitter)
+		{
+			HudSettings->Data.bComponentFilterEnabled = false;
+			HudSettings->Data.ComponentFilter = TEXT("");
+
+			HudSettings->Data.ActorFilter = TEXT("");
+			HudSettings->Data.bActorFilterEnabled = false;
+
+			UNiagaraSystem* System = Cast<UNiagaraSystem>(InEmitterHandle.GetInstance().Emitter->GetOuter());
+			if (System)
+			{
+				HudSettings->Data.SystemFilter = System->GetName();
+				HudSettings->Data.bSystemFilterEnabled = true;
+			}
+
+			HudSettings->Data.EmitterFilter = InEmitterHandle.GetUniqueInstanceName();
+			HudSettings->Data.bEmitterFilterEnabled = true;
+
+			if (HudSettings->Data.SystemDebugVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemDebugVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+			if (HudSettings->Data.SystemEmitterVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemEmitterVerbosity = ENiagaraDebugHudVerbosity::Verbose;
+
+			HudSettings->NotifyPropertyChanged();
+		}
+	}
+}
+
+void SNiagaraDebugger::InvokeDebugger(UNiagaraSystem* InSystem, TArray<FNiagaraEmitterHandle>& InSelectedHandles, TArray<FNiagaraVariableBase>& InAttributes)
+{
+	TSharedPtr<SDockTab> DebugTab = FGlobalTabmanager::Get()->TryInvokeTab(SNiagaraDebugger::DebugWindowName);
+
+	if (DebugTab.IsValid())
+	{
+		TSharedRef<SNiagaraDebugger> Content = StaticCastSharedRef<SNiagaraDebugger>(DebugTab->GetContent());
+		Content->FocusDebugTab();
+
+		UNiagaraDebugHUDSettings* HudSettings = GetMutableDefault<UNiagaraDebugHUDSettings>();
+		if (HudSettings && InSystem)
+		{
+			HudSettings->Data.bComponentFilterEnabled = false;
+			HudSettings->Data.ComponentFilter = TEXT("");
+
+			HudSettings->Data.ActorFilter = TEXT("");
+			HudSettings->Data.bActorFilterEnabled = false;
+
+			if (InSystem)
+			{
+				HudSettings->Data.SystemFilter = InSystem->GetName();
+				HudSettings->Data.bSystemFilterEnabled = true;
+			}
+
+			if (InSelectedHandles.Num() > 0)
+			{
+				HudSettings->Data.EmitterFilter = InSelectedHandles[0].GetUniqueInstanceName();
+				HudSettings->Data.bEmitterFilterEnabled = true;
+			}
+
+			if (HudSettings->Data.SystemDebugVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemDebugVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+			if (HudSettings->Data.SystemEmitterVerbosity == ENiagaraDebugHudVerbosity::None)
+				HudSettings->Data.SystemEmitterVerbosity = ENiagaraDebugHudVerbosity::Verbose;
+
+			TArray<FString> ParticleAttribNames;
+			TArray<FString> SystemAttribNames;
+			for (const FNiagaraVariableBase& Var : InAttributes)
+			{
+				if (Var.IsInNameSpace(FNiagaraConstants::UserNamespaceString) || 
+					Var.IsInNameSpace(FNiagaraConstants::SystemNamespaceString))
+				{
+					// No other work needed, use as-is
+					SystemAttribNames.AddUnique(Var.GetName().ToString());
+				}
+				else if (Var.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
+				{
+					// Need to replace the emitter namespace with specific emitter name
+					if (InSelectedHandles.Num() > 0)
+					{
+						FString StrippedEmitterName = Var.GetName().ToString();
+						if (StrippedEmitterName.RemoveFromStart(FNiagaraConstants::EmitterNamespaceString + TEXT(".")))
+							SystemAttribNames.AddUnique(InSelectedHandles[0].GetUniqueInstanceName() + TEXT(".") + StrippedEmitterName);
+					}
+				}
+				else if (Var.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString))
+				{
+					// Need to replace the particle namespace altogether
+					FString StrippedParticleName = Var.GetName().ToString();
+					if (StrippedParticleName.RemoveFromStart(FNiagaraConstants::ParticleAttributeNamespaceString + TEXT(".")))
+						ParticleAttribNames.AddUnique(StrippedParticleName);
+				}
+			}
+			
+			bool bHasSystemAttributes = SystemAttribNames.Num() > 0;
+			bool bHasParticleAttributes = ParticleAttribNames.Num() > 0;
+
+
+			if (bHasParticleAttributes)
+			{
+				HudSettings->Data.bShowParticleVariables = true;
+				for (const FString& Var : ParticleAttribNames)
+				{
+					FNiagaraDebugHUDVariable NewVar;
+					NewVar.bEnabled = true;
+					NewVar.Name = Var;
+					
+					bool bAdd = true;
+					for (const FNiagaraDebugHUDVariable& OldVar : HudSettings->Data.ParticlesVariables)
+					{
+						if (OldVar.Name == NewVar.Name)
+						{
+							bAdd = false;
+							break;
+						}
+					}
+
+					if (bAdd)
+						HudSettings->Data.ParticlesVariables.Add(NewVar);
+				}
+
+				if (InSelectedHandles.Num() > 0 && InSelectedHandles[0].GetEmitterData() && InSelectedHandles[0].GetEmitterData()->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+					HudSettings->Data.bEnableGpuParticleReadback = true;
+			}
+
+			if (bHasSystemAttributes)
+			{
+				HudSettings->Data.bShowSystemVariables = true;
+				for (const FString& Var : SystemAttribNames)
+				{
+					FNiagaraDebugHUDVariable NewVar;
+					NewVar.bEnabled = true;
+					NewVar.Name = Var;
+					bool bAdd = true;
+					for (const FNiagaraDebugHUDVariable& OldVar : HudSettings->Data.SystemVariables)
+					{
+						if (OldVar.Name == NewVar.Name)
+						{
+							bAdd = false;
+							break;
+						}
+					}
+
+					if (bAdd)
+						HudSettings->Data.SystemVariables.Add(NewVar);
+				}
+			}
+
+			HudSettings->NotifyPropertyChanged();
+		}
 	}
 }
 
@@ -880,7 +1146,7 @@ TSharedRef<SWidget> SNiagaraDebugger::MakeToolbar()
 			NAME_None,
 			LOCTEXT("Refresh", "Refresh"),
 			LOCTEXT("RefreshTooltip", "Refesh the settings on the target device.  Used if we get out of sync."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.Refresh")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Refresh")
 		);
 	}
 
@@ -977,7 +1243,7 @@ TSharedRef<SWidget> SNiagaraDebugger::MakeToolbar()
 			FOnGetContent::CreateSP(this, &SNiagaraDebugger::MakePlaybackOptionsMenu),
 			FText(),
 			LOCTEXT("PlaybackOptionsTooltip", "Additional options to control playback."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "MaterialEditor.ToggleMaterialStats"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "MaterialEditor.ToggleMaterialStats"),
 			true
 		);
 	}

@@ -2,10 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
 #include "CoreMinimal.h"
-#include "Serialization/BitReader.h"
+#include "CoreTypes.h"
 #include "Misc/NetworkGuid.h"
+#include "Serialization/BitReader.h"
+#include "Templates/Tuple.h"
 
+class FArchive;
 class FGuidReferences;
 
 using FGuidReferencesMap = TMap<int32, FGuidReferences>;
@@ -69,6 +75,23 @@ public:
 	{}
 
 	~FGuidReferences();
+
+	FGuidReferences& operator=(const FGuidReferences& Other) = delete;
+
+	FGuidReferences(const FGuidReferences& Other)
+		: ParentIndex(Other.ParentIndex)
+		, CmdIndex(Other.CmdIndex)
+		, NumBufferBits(Other.NumBufferBits)
+		, UnmappedGUIDs(Other.UnmappedGUIDs)
+		, MappedDynamicGUIDs(Other.MappedDynamicGUIDs)
+		, Buffer(Other.Buffer)
+		, Array(nullptr)
+	{
+		if (Other.Array)
+		{
+			Array = new FGuidReferencesMap(*Other.Array);
+		}
+	}
 
 	void CountBytes(FArchive& Ar) const
 	{

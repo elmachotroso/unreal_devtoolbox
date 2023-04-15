@@ -14,6 +14,8 @@
 #include "Serialization/ArchiveUObject.h"
 #include "Serialization/ArchiveSerializedPropertyChain.h"
 #include "Misc/ITransaction.h"
+#include "Misc/TransactionObjectEvent.h"
+#include "TransactionCommon.h"
 #include "Algo/Find.h"
 #include <type_traits>
 #include "Transactor.generated.h"
@@ -36,212 +38,42 @@ class UNREALED_API FTransaction : public ITransaction
 	friend class FTransactionObjectEvent;
 
 protected:
-	/**
-		This type is necessary because the blueprint system is destroying and creating
-		CDOs at edit time (usually on compile, but also on load), but also stores user
-		entered data in the CDO. We "need"  changes to a CDO to persist across instances
-		because as we undo and redo we  need to apply changes to different instances of
-		the CDO - alternatively we could destroy and create the CDO as part of a transaction
-		(this alternative is the reason for the bunny ears around need).
-
-		DanO: My long term preference is for the editor to use a dynamic, mutable type
-		(rather than the CDO) to store editor data. The CDO can then be re-instanced (or not)
-		as runtime code requires.
-	*/
-	struct FPersistentObjectRef
-	{
-	public:
-		friend FArchive& operator<<(FArchive& Ar, FPersistentObjectRef& ReferencedObject)
-		{
-			Ar << (std::underlying_type_t<EReferenceType>&)ReferencedObject.ReferenceType;
-			Ar << ReferencedObject.RootObject;
-			Ar << ReferencedObject.SubObjectHierarchyIDs;
-			return Ar;
-		}
-
-		friend bool operator==(const FPersistentObjectRef& LHS, const FPersistentObjectRef& RHS)
-		{
-			return LHS.ReferenceType == RHS.ReferenceType
-				&& LHS.RootObject == RHS.RootObject
-				&& (LHS.ReferenceType != EReferenceType::SubObject || LHS.SubObjectHierarchyIDs == RHS.SubObjectHierarchyIDs);
-		}
-
-		friend bool operator!=(const FPersistentObjectRef& LHS, const FPersistentObjectRef& RHS)
-		{
-			return !(LHS == RHS);
-		}
-
-		friend uint32 GetTypeHash(const FPersistentObjectRef& InObjRef)
-		{
-			return HashCombine(GetTypeHash(InObjRef.ReferenceType), GetTypeHash(InObjRef.RootObject));
-		}
-
-		FPersistentObjectRef() = default;
-		explicit FPersistentObjectRef(UObject* InObject);
-
-		bool IsRootObjectReference() const
-		{
-			return ReferenceType == EReferenceType::RootObject;
-		}
-
-		bool IsSubObjectReference() const
-		{
-			return ReferenceType == EReferenceType::SubObject;
-		}
-
-		UObject* Get() const;
-
-		void AddReferencedObjects(FReferenceCollector& Collector);
-
-	private:
-		/** This enum represents all of the different special cases we are handling with this type */
-		enum class EReferenceType : uint8
-		{
-			Unknown,
-			RootObject,
-			SubObject,
-		};
-
-		/** The reference type we're handling */
-		EReferenceType ReferenceType = EReferenceType::Unknown;
-		/** Stores the object pointer when ReferenceType==RootObject, and the outermost pointer of the sub-object chain when when ReferenceType==SubObject */
-		TObjectPtr<UObject> RootObject = nullptr;
-		/** Stores the sub-object name chain when ReferenceType==SubObject */
-		TArray<FName, TInlineAllocator<4>> SubObjectHierarchyIDs;
-
-		/** Cached pointers corresponding to RootObject when ReferenceType==SubObject (@note cache needs testing on access as it may have become stale) */
-		mutable TWeakObjectPtr<UObject> CachedRootObject;
-		/** Cache of pointers corresponding to the items within SubObjectHierarchyIDs when ReferenceType==SubObject (@note cache needs testing on access as it may have become stale) */
-		mutable TArray<TWeakObjectPtr<UObject>, TInlineAllocator<4>> CachedSubObjectHierarchy;
-	};
-
 	// Record of an object.
 	class UNREALED_API FObjectRecord
 	{
 	public:
-		struct FSerializedProperty
+		struct FSerializedObject : public UE::Transaction::FSerializedObject
 		{
-			FSerializedProperty()
-				: DataOffset(INDEX_NONE)
-				, DataSize(0)
-			{
-			}
-
-			static FName BuildSerializedPropertyKey(const FArchiveSerializedPropertyChain& InPropertyChain)
-			{
-				const int32 NumProperties = InPropertyChain.GetNumProperties();
-				check(NumProperties > 0);
-				return InPropertyChain.GetPropertyFromRoot(0)->GetFName();
-			}
-
-			void AppendSerializedData(const int64 InOffset, const int64 InSize)
-			{
-				if (DataOffset == INDEX_NONE)
-				{
-					DataOffset = InOffset;
-					DataSize = InSize;
-				}
-				else
-				{
-					DataOffset = FMath::Min(DataOffset, InOffset);
-					DataSize = FMath::Max(InOffset + InSize - DataOffset, DataSize);
-				}
-			}
-
-			/** Offset to the start of this property within the serialized object */
-			int64 DataOffset;
-			/** Size (in bytes) of this property within the serialized object */
-			int64 DataSize;
-		};
-
-		struct FSerializedObject
-		{
-			FSerializedObject()
-				: bIsPendingKill(false)
-			{
-			}
-
 			void SetObject(const UObject* InObject)
 			{
-				ObjectPackageName = InObject->GetPackage()->GetFName();
-				ObjectName = InObject->GetFName();
-				ObjectPathName = *InObject->GetPathName();
-				ObjectOuterPathName = InObject->GetOuter() ? FName(*InObject->GetOuter()->GetPathName()) : FName();
-				ObjectExternalPackageName = InObject->GetExternalPackage() ? InObject->GetExternalPackage()->GetFName() : FName();
-				ObjectClassPathName = FName(*InObject->GetClass()->GetPathName());
-				bIsPendingKill = IsValid(InObject);
+				ObjectId.SetObject(InObject);
 				ObjectAnnotation = InObject->FindOrCreateTransactionAnnotation();
 			}
 
 			void Reset()
 			{
-				ObjectPackageName = FName();
-				ObjectName = FName();
-				ObjectPathName = FName();
-				ObjectOuterPathName = FName();
-				ObjectExternalPackageName = FName();
-				ObjectClassPathName = FName();
-				bIsPendingKill = false;
-				Data.Reset();
-				ReferencedObjects.Reset();
-				ReferencedNames.Reset();
-				SerializedProperties.Reset();
-				SerializedObjectIndices.Reset();
-				SerializedNameIndices.Reset();
+				UE::Transaction::FSerializedObject::Reset();
+				ObjectId.Reset();
 				ObjectAnnotation.Reset();
 			}
 
 			void Swap(FSerializedObject& Other)
 			{
-				Exchange(ObjectPackageName, Other.ObjectPackageName);
-				Exchange(ObjectName, Other.ObjectName);
-				Exchange(ObjectPathName, Other.ObjectPathName);
-				Exchange(ObjectOuterPathName, Other.ObjectOuterPathName);
-				Exchange(ObjectExternalPackageName, Other.ObjectExternalPackageName);
-				Exchange(ObjectClassPathName, Other.ObjectClassPathName);
-				Exchange(bIsPendingKill, Other.bIsPendingKill);
-				Exchange(Data, Other.Data);
-				Exchange(ReferencedObjects, Other.ReferencedObjects);
-				Exchange(ReferencedNames, Other.ReferencedNames);
-				Exchange(SerializedProperties, Other.SerializedProperties);
-				Exchange(SerializedObjectIndices, Other.SerializedObjectIndices);
-				Exchange(SerializedNameIndices, Other.SerializedNameIndices);
+				UE::Transaction::FSerializedObject::Swap(Other);
+				ObjectId.Swap(Other.ObjectId);
 				Exchange(ObjectAnnotation, Other.ObjectAnnotation);
 			}
 
-			/** The package name of the object when it was serialized, can be dictated either by outer chain or external package */
-			FName ObjectPackageName;
-			/** The name of the object when it was serialized */
-			FName ObjectName;
-			/** The path name of the object when it was serialized */
-			FName ObjectPathName;
-			/** The outer path name of the object when it was serialized */
-			FName ObjectOuterPathName;
-			/** The external package name of the object when it was serialized, if any */
-			FName ObjectExternalPackageName;
-			/** The path name of the object's class. */
-			FName ObjectClassPathName;
-			/** The pending kill state of the object when it was serialized */
-			bool bIsPendingKill;
-			/** The data stream used to serialize/deserialize record */
-			TArray64<uint8> Data;
-			/** External objects referenced in the transaction */
-			TArray<FPersistentObjectRef> ReferencedObjects;
-			/** FNames referenced in the object record */
-			TArray<FName> ReferencedNames;
-			/** Information about the properties that were serialized within this object */
-			TMap<FName, FSerializedProperty> SerializedProperties;
-			/** Information about the object pointer offsets that were serialized within this object (this maps the property name (or None if there was no property) to the ReferencedObjects indices of the property) */
-			TMultiMap<FName, int32> SerializedObjectIndices;
-			/** Information about the name offsets that were serialized within this object (this maps the property name to the ReferencedNames index of the property) */
-			TMultiMap<FName, int32> SerializedNameIndices;
+			/** ID of the object when it was serialized */
+			FTransactionObjectId ObjectId;
+
 			/** Annotation data for the object stored externally */
 			TSharedPtr<ITransactionObjectAnnotation> ObjectAnnotation;
 		};
 
 		// Variables.
 		/** The object to track */
-		FPersistentObjectRef Object;
+		UE::Transaction::FPersistentObjectRef Object;
 		/** Custom change to apply to this object to undo this record.  Executing the undo will return an object that can be used to redo the change. */
 		TUniquePtr<FChange> CustomChange;
 		/** Array: If an array object, reference to script array */
@@ -267,17 +99,23 @@ protected:
 		bool				bRestored = false;
 		/** True if object has been finalized and generated diff data */
 		bool				bFinalized = false;
-		/** True if object has been snapshot before */
-		bool				bSnapshot = false;
 		/** True if record should serialize data as binary blob (more compact). False to use tagged serialization (more robust) */
 		bool				bWantsBinarySerialization = true;
+		/** True if the serialized object state changed between when the transaction started and when the transaction ended (set once finalized) */
+		bool				bHasSerializedObjectChanges = false;
 		/** The serialized object data */
 		FSerializedObject	SerializedObject;
 		/** The serialized object data that will be used when the transaction is flipped */
 		FSerializedObject	SerializedObjectFlip;
-		/** The serialized object data when it was last snapshot (if bSnapshot is true) */
-		FSerializedObject	SerializedObjectSnapshot;
-		/** Delta change information between the state of the object when the transaction started, and the state of the object when the transaction ended */
+		/** The diffable object data (always null once finalized) */
+		TUniquePtr<UE::Transaction::FDiffableObject> DiffableObject;
+		/** The diffable object data when it was last snapshot (always null once finalized) */
+		TUniquePtr<UE::Transaction::FDiffableObject> DiffableObjectSnapshot;
+		/** Annotation data the last time the object was snapshot (always null once finalized) */
+		TSharedPtr<ITransactionObjectAnnotation> ObjectAnnotationSnapshot;
+		/** The combined list of properties that have been passed any Snapshot call for this object (always empty once finalized) */
+		TArray<const FProperty*> AllPropertiesSnapshot;
+		/** Delta change information between the diffable state of the object when the transaction started, and the diffable state of the object when the transaction ended */
 		FTransactionObjectDeltaChange DeltaChange;
 
 		// Constructors.
@@ -290,15 +128,16 @@ protected:
 		FObjectRecord& operator=( const FObjectRecord& ) = delete;
 
 	public:
+		UE::Transaction::FDiffableObject GetDiffableObject(TArrayView<const FProperty*> PropertiesToSerialize = TArrayView<const FProperty*>()) const;
+
 		// Functions.
-		void SerializeContents( FArchive& Ar, int32 InOper );
-		void SerializeObject( FArchive& Ar );
+		void SerializeContents( FArchive& Ar, int32 InOper ) const;
+		void SerializeObject( FArchive& Ar ) const;
 		void Restore( FTransaction* Owner );
 		void Save( FTransaction* Owner );
 		void Load( FTransaction* Owner );
-		void Finalize( FTransaction* Owner, TSharedPtr<ITransactionObjectAnnotation>& OutFinalizedObjectAnnotation );
-		void Snapshot( FTransaction* Owner, TArrayView<const FProperty*> Properties );
-		static void Diff( const FTransaction* Owner, const FSerializedObject& OldSerializedObect, const FSerializedObject& NewSerializedObject, FTransactionObjectDeltaChange& OutDeltaChange, const bool bFullDiff = true );
+		void Finalize( FTransaction* Owner, UE::Transaction::DiffUtil::FDiffableObjectArchetypeCache& ArchetypeCache, TSharedPtr<ITransactionObjectAnnotation>& OutFinalizedObjectAnnotation );
+		void Snapshot( FTransaction* Owner, UE::Transaction::DiffUtil::FDiffableObjectArchetypeCache& ArchetypeCache, TArrayView<const FProperty*> Properties );
 
 		/** Used by GC to collect referenced objects. */
 		void AddReferencedObjects( FReferenceCollector& Collector );
@@ -313,7 +152,7 @@ protected:
 		bool HasExpired() const;
 
 		/** Transfers data from an array. */
-		class FReader : public FArchiveUObject
+		class FReader : public UE::Transaction::FSerializedObjectDataReader
 		{
 		public:
 			FReader(
@@ -321,55 +160,19 @@ protected:
 				const FSerializedObject& InSerializedObject,
 				bool bWantBinarySerialization
 				)
-				: Owner(InOwner)
-				, SerializedObject(InSerializedObject)
-				, Offset(0)
+				: UE::Transaction::FSerializedObjectDataReader(InSerializedObject)
+				, Owner(InOwner)
 			{
 				this->SetWantBinaryPropertySerialization(bWantBinarySerialization);
-				this->SetIsLoading(true);
 				this->SetIsTransacting(true);
 			}
 
-			virtual int64 Tell() override {return Offset;}
-			virtual void Seek( int64 InPos ) override { Offset = InPos; }
-			virtual int64 TotalSize() override { return SerializedObject.Data.Num(); }
-
 		private:
-			void Serialize( void* SerData, int64 Num ) override
-			{
-				if( Num )
-				{
-					checkSlow(Offset+Num<=SerializedObject.Data.Num());
-					FMemory::Memcpy( SerData, &SerializedObject.Data[Offset], Num );
-					Offset += Num;
-				}
-			}
-			FArchive& operator<<( class FName& N ) override
-			{
-				int32 NameIndex = 0;
-				(FArchive&)*this << NameIndex;
-				N = SerializedObject.ReferencedNames[NameIndex];
-				return *this;
-			}
-			FArchive& operator<<( class UObject*& Res ) override
-			{
-				int32 ObjectIndex = 0;
-				(FArchive&)*this << ObjectIndex;
-				if (ObjectIndex != INDEX_NONE)
-				{
-					Res = SerializedObject.ReferencedObjects[ObjectIndex].Get();
-				}
-				else
-				{
-					Res = nullptr;
-				}
-				return *this;
-			}
 			void Preload( UObject* InObject ) override
 			{
 				if (Owner)
 				{
-					if (const FObjectRecords* ObjectRecords = Owner->ObjectRecordsMap.Find(FPersistentObjectRef(InObject)))
+					if (const FObjectRecords* ObjectRecords = Owner->ObjectRecordsMap.Find(UE::Transaction::FPersistentObjectRef(InObject)))
 					{
 						for (FObjectRecord* Record : ObjectRecords->Records)
 						{
@@ -383,162 +186,23 @@ protected:
 				}
 			}
 			FTransaction* Owner;
-			const FSerializedObject& SerializedObject;
-			int64 Offset;
 		};
 
 		/**
 		 * Transfers data to an array.
 		 */
-		class FWriter : public FArchiveUObject
+		class FWriter : public UE::Transaction::FSerializedObjectDataWriter
 		{
 		public:
 			FWriter(
 				FSerializedObject& InSerializedObject,
-				bool bWantBinarySerialization,
-				TArrayView<const FProperty*> InPropertiesToSerialize = TArrayView<const FProperty*>()
+				bool bWantBinarySerialization
 				)
-				: SerializedObject(InSerializedObject)
-				, PropertiesToSerialize(InPropertiesToSerialize)
-				, Offset(0)
+				: UE::Transaction::FSerializedObjectDataWriter(InSerializedObject)
 			{
-				for(int32 ObjIndex = 0; ObjIndex < SerializedObject.ReferencedObjects.Num(); ++ObjIndex)
-				{
-					ObjectMap.Add(SerializedObject.ReferencedObjects[ObjIndex].Get(), ObjIndex);
-				}
-
-				for(int32 NameIndex = 0; NameIndex < SerializedObject.ReferencedNames.Num(); ++NameIndex)
-				{
-					NameMap.Add(SerializedObject.ReferencedNames[NameIndex], NameIndex);
-				}
-
 				this->SetWantBinaryPropertySerialization(bWantBinarySerialization);
-				this->SetIsSaving(true);
 				this->SetIsTransacting(true);
 			}
-
-			virtual int64 Tell() override {return Offset;}
-			virtual void Seek( int64 InPos ) override
-			{
-				checkSlow(Offset<=SerializedObject.Data.Num());
-				Offset = InPos; 
-			}
-
-			virtual int64 TotalSize() override { return SerializedObject.Data.Num(); }
-
-			virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
-			{
-				return (PropertiesToSerialize.Num() > 0 && !PropertiesToSerialize.Contains(InProperty))
-					|| FArchiveUObject::ShouldSkipProperty(InProperty);
-			}
-
-		private:
-			struct FCachedPropertyKey
-			{
-			public:
-				FCachedPropertyKey()
-					: LastUpdateCount(0)
-				{
-				}
-
-				FName SyncCache(const FArchiveSerializedPropertyChain* InPropertyChain)
-				{
-					if (InPropertyChain)
-					{
-						const uint32 CurrentUpdateCount = InPropertyChain->GetUpdateCount();
-						if (CurrentUpdateCount != LastUpdateCount)
-						{
-							CachedKey = InPropertyChain->GetNumProperties() > 0 ? FSerializedProperty::BuildSerializedPropertyKey(*InPropertyChain) : FName();
-							LastUpdateCount = CurrentUpdateCount;
-						}
-					}
-					else
-					{
-						CachedKey = FName();
-						LastUpdateCount = 0;
-					}
-
-					return CachedKey;
-				}
-
-			private:
-				FName CachedKey;
-				uint32 LastUpdateCount;
-			};
-
-			void Serialize( void* SerData, int64 Num ) override
-			{
-				if( Num )
-				{
-					int64 DataIndex = ( Offset == SerializedObject.Data.Num() )
-						?  SerializedObject.Data.AddUninitialized(Num)
-						:  Offset;
-					
-					FMemory::Memcpy( &SerializedObject.Data[DataIndex], SerData, Num );
-					Offset+= Num;
-
-					// Track this property offset in the serialized data
-					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
-					if (PropertyChain && PropertyChain->GetNumProperties() > 0)
-					{
-						const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
-						FSerializedProperty& SerializedTaggedProperty = SerializedObject.SerializedProperties.FindOrAdd(SerializedTaggedPropertyKey);
-						SerializedTaggedProperty.AppendSerializedData(DataIndex, Num);
-					}
-				}
-			}
-			FArchive& operator<<( class FName& N ) override
-			{
-				int32 NameIndex = INDEX_NONE;
-				const int32 * NameIndexPtr = NameMap.Find(N);
-				if (NameIndexPtr)
-				{
-					NameIndex = *NameIndexPtr;
-				}
-				else
-				{
-					NameIndex = SerializedObject.ReferencedNames.Add(N);
-					NameMap.Add(N, NameIndex);
-				}
-
-				// Track this name index in the serialized data
-				{
-					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
-					const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
-					SerializedObject.SerializedNameIndices.Add(SerializedTaggedPropertyKey, NameIndex);
-				}
-
-				return (FArchive&)*this << NameIndex;
-			} 
-			FArchive& operator<<( class UObject*& Res ) override
-			{
-				int32 ObjectIndex = INDEX_NONE;
-				const int32* ObjIndexPtr = ObjectMap.Find(Res);
-				if(ObjIndexPtr)
-				{
-					ObjectIndex = *ObjIndexPtr;
-				}
-				else if(Res)
-				{
-					ObjectIndex = SerializedObject.ReferencedObjects.Add(FPersistentObjectRef(Res));
-					ObjectMap.Add(Res, ObjectIndex);
-				}
-
-				// Track this object offset in the serialized data
-				{
-					const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
-					const FName SerializedTaggedPropertyKey = CachedSerializedTaggedPropertyKey.SyncCache(PropertyChain);
-					SerializedObject.SerializedObjectIndices.Add(SerializedTaggedPropertyKey, ObjectIndex);
-				}
-
-				return (FArchive&)*this << ObjectIndex;
-			}
-			FSerializedObject& SerializedObject;
-			TArrayView<const FProperty*> PropertiesToSerialize;
-			TMap<UObject*, int32> ObjectMap;
-			TMap<FName, int32> NameMap;
-			FCachedPropertyKey CachedSerializedTaggedPropertyKey;
-			int64 Offset;
 		};
 	};
 
@@ -566,7 +230,7 @@ protected:
 	TIndirectArray<FObjectRecord> Records;
 
 	/** Map of object records (non-array), for optimized look-up and to prevent an object being serialized to a transaction more than once. */
-	TMap<FPersistentObjectRef, FObjectRecords> ObjectRecordsMap;
+	TMap<UE::Transaction::FPersistentObjectRef, FObjectRecords> ObjectRecordsMap;
 
 	/** Unique identifier for this transaction, used to track it during its lifetime */
 	FGuid		Id;
@@ -587,28 +251,27 @@ protected:
 	/** The key object being edited in this transaction. For example the blueprint object. Can be NULL */
 	UObject* PrimaryObject = nullptr;
 
-	/** If true, on apply flip the direction of iteration over object records. The only client for which this is false is FMatineeTransaction */
+	/** If true, on apply flip the direction of iteration over object records. */
 	bool		bFlip = true;
+	// @TODO now that Matinee is gone, it's worth investigating removing this
 
 	/** Used to track direction to iterate over transaction's object records. Typically -1 for Undo, 1 for Redo */
 	int32		Inc = -1;
 
 	struct FChangedObjectValue
 	{
-		FChangedObjectValue()
-			: Annotation()
-			, RecordIndex(INDEX_NONE)
-		{
-		}
+		FChangedObjectValue() = default;
 
-		FChangedObjectValue(const int32 InRecordIndex, const TSharedPtr<ITransactionObjectAnnotation>& InAnnotation)
+		FChangedObjectValue(const int32 InRecordIndex, const TSharedPtr<ITransactionObjectAnnotation>& InAnnotation, const TSharedPtr<ITransactionObjectAnnotation>& InAnnotationSnapshot = nullptr)
 			: Annotation(InAnnotation)
+			, AnnotationSnapshot(InAnnotationSnapshot)
 			, RecordIndex(InRecordIndex)
 		{
 		}
 
 		TSharedPtr<ITransactionObjectAnnotation> Annotation;
-		int32 RecordIndex;
+		TSharedPtr<ITransactionObjectAnnotation> AnnotationSnapshot;
+		int32 RecordIndex = INDEX_NONE;
 	};
 
 	/** Objects that will be changed directly by the transaction, empty when not transacting */
@@ -641,6 +304,7 @@ public:
 	virtual void StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange ) override;
 	virtual void SetPrimaryObject(UObject* InObject) override;
 	virtual void SnapshotObject( UObject* InObject, TArrayView<const FProperty*> Properties ) override;
+	virtual bool ContainsObject(const UObject* Object) const override;
 
 	/** BeginOperation should be called when a transaction or undo/redo starts */
 	virtual void BeginOperation() override;
@@ -965,7 +629,11 @@ class UNREALED_API UTransactor : public UObject
 	virtual void SetPrimaryUndoObject( UObject* Object ) PURE_VIRTUAL(UTransactor::SetPrimaryUndoObject,);
 
 	/** Checks if a specific object is referenced by the transaction buffer */
-	virtual bool IsObjectInTransationBuffer( const UObject* Object ) const { return false; }
+	UE_DEPRECATED(5.1, "IsObjectInTransationBuffer is deprecated, please use IsObjectInTransactionBuffer instead.")
+	virtual bool IsObjectInTransationBuffer( const UObject* Object ) const { return IsObjectInTransactionBuffer(Object); }
+
+	/** Checks if a specific object is referenced by the transaction buffer */
+	virtual bool IsObjectInTransactionBuffer( const UObject* Object ) const { return false; }
 
 	/** Checks if a specific object is in the transaction currently underway */
 	virtual bool IsObjectTransacting(const UObject* Object) const PURE_VIRTUAL(UTransactor::IsObjectTransacting, return false;);

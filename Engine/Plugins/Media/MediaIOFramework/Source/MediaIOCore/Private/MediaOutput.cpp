@@ -5,6 +5,8 @@
 #include "MediaCapture.h"
 #include "MediaIOCoreModule.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MediaOutput)
+
 const FIntPoint UMediaOutput::RequestCaptureSourceSize = FIntPoint::ZeroValue;
 
 /* UMediaOutput
@@ -54,3 +56,13 @@ bool UMediaOutput::Validate(FString& OutFailureReason) const
 
 	return true;
 }
+
+#if WITH_EDITOR
+void UMediaOutput::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	UObject::PostEditChangeProperty(PropertyChangedEvent);
+
+	OnOutputModifiedDelegate.Broadcast(this);
+}
+#endif
+

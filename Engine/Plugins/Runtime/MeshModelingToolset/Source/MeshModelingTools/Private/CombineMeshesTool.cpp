@@ -20,6 +20,8 @@
 #include "ToolTargetManager.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CombineMeshesTool)
+
 #if WITH_EDITOR
 #include "Misc/ScopedSlowTask.h"
 #endif
@@ -215,15 +217,9 @@ void UCombineMeshesTool::CreateNewAsset()
 			FDynamicMesh3& ComponentDMesh = InputMeshes[ComponentIdx];
 			bNeedColorAttr = bNeedColorAttr || (ComponentDMesh.HasAttributes() && ComponentDMesh.Attributes()->HasPrimaryColors());
 
-			if (ComponentDMesh.HasAttributes() && ComponentDMesh.Attributes()->NumUVLayers() > AccumulateDMesh.Attributes()->NumUVLayers())
+			if (ComponentDMesh.HasAttributes())
 			{
-				AccumulateDMesh.Attributes()->SetNumUVLayers(ComponentDMesh.Attributes()->NumUVLayers());
-			}
-
-			FTransformSRT3d XF = (UE::ToolTarget::GetLocalToWorldTransform(Targets[ComponentIdx]) * ToAccum);
-			if (XF.GetDeterminant() < 0)
-			{
-				ComponentDMesh.ReverseOrientation(false);
+				AccumulateDMesh.Attributes()->EnableMatchingAttributes(*ComponentDMesh.Attributes(), false);
 			}
 
 			// update material IDs to account for combined material set
@@ -248,6 +244,12 @@ void UCombineMeshesTool::CreateNewAsset()
 			}
 			else
 			{
+				FTransformSRT3d XF = (UE::ToolTarget::GetLocalToWorldTransform(Targets[ComponentIdx]) * ToAccum);
+				if (XF.GetDeterminant() < 0)
+				{
+					ComponentDMesh.ReverseOrientation(false);
+				}
+
 				Editor.AppendMesh(&ComponentDMesh, IndexMapping,
 					[&XF](int Unused, const FVector3d P) { return XF.TransformPosition(P); },
 					[&XF](int Unused, const FVector3d N) { return XF.TransformNormal(N); });
@@ -356,7 +358,6 @@ void UCombineMeshesTool::UpdateExistingAsset()
 	SkipActor = UE::ToolTarget::GetTargetActor(Targets[SkipIndex]);
 
 	FTransform3d TargetToWorld = UE::ToolTarget::GetLocalToWorldTransform(Targets[SkipIndex]);
-	FTransform3d WorldToTarget = TargetToWorld.Inverse();
 
 	FSimpleShapeSet3d SimpleCollision;
 	UE::Geometry::FComponentCollisionSettings CollisionSettings;
@@ -398,18 +399,25 @@ void UCombineMeshesTool::UpdateExistingAsset()
 			if (ComponentIdx != SkipIndex)
 			{
 				FTransform3d ComponentToWorld = (FTransform3d)UE::ToolTarget::GetLocalToWorldTransform(Targets[ComponentIdx]);
-				MeshTransforms::ApplyTransform(ComponentDMesh, ComponentToWorld);
-				if (ComponentToWorld.GetDeterminant() < 0)
-				{
-					ComponentDMesh.ReverseOrientation(true);
-				}
-				MeshTransforms::ApplyTransform(ComponentDMesh, WorldToTarget);
-				if (WorldToTarget.GetDeterminant() < 0)
-				{
-					ComponentDMesh.ReverseOrientation(true);
-				}
+				MeshTransforms::ApplyTransform(ComponentDMesh, ComponentToWorld, true);
+				MeshTransforms::ApplyTransformInverse(ComponentDMesh, TargetToWorld, true);
 				Transforms[0] = ComponentToWorld;
-				Transforms[1] = WorldToTarget;
+				if (TargetToWorld.GetRotation().IsIdentity() || TargetToWorld.GetScale3D().IsUniform())
+				{
+					// Inverse can be represented by a single FTransform3d
+					Transforms[1] = TargetToWorld.Inverse();
+				}
+				else
+				{
+					// Separate inverse into a rotation+translation part and a scale part
+					FQuat4d WorldToTargetR = TargetToWorld.GetRotation().Inverse();
+					FTransform3d WorldToTargetRT(WorldToTargetR, WorldToTargetR * (-TargetToWorld.GetTranslation()), FVector3d::One());
+					FTransform3d WorldToTargetS = FTransform3d::Identity;
+					WorldToTargetS.SetScale3D(FTransform3d::GetSafeScaleReciprocal(TargetToWorld.GetScale3D()));
+
+					Transforms[1] = WorldToTargetRT;
+					Transforms.Add(WorldToTargetS);
+				}
 				if (bOutputComponentSupportsCollision && UE::Geometry::ComponentTypeSupportsCollision(PrimitiveComponent))
 				{
 					UE::Geometry::AppendSimpleCollision(PrimitiveComponent, &SimpleCollision, Transforms);
@@ -499,3 +507,4 @@ void UCombineMeshesTool::BuildCombinedMaterialSet(TArray<UMaterialInterface*>& N
 
 
 #undef LOCTEXT_NAMESPACE
+

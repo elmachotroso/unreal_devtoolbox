@@ -2,14 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Engine/MeshMerging.h"
-#include "Layout/Visibility.h"
 #include "IPropertyTypeCustomization.h"
-#include "PropertyHandle.h"
+#include "Layout/Visibility.h"
 #include "OverrideResetToDefault.h"
+#include "Templates/SharedPointer.h"
 
 class FDetailWidgetRow;
+class IPropertyHandle;
 
 class FMeshProxySettingsCustomizations : public IPropertyTypeCustomization, public TOverrideResetToDefaultWithStaticUStruct<FMeshProxySettings>
 {
@@ -29,10 +29,13 @@ protected:
 	EVisibility IsMergeDistanceVisible() const;
 	EVisibility IsUnresolvedGeometryColorVisible() const;
 	EVisibility IsVoxelSizeVisible() const;
+	EVisibility IsScreenSizeVisible() const;	
 	EVisibility IsNormalCalcMethodVisible() const;
 	EVisibility IsSearchDistanceVisible() const;
 
 	EVisibility IsThirdPartySpecificVisible() const;
 	EVisibility IsProxyLODSpecificVisible() const;
 	bool UseNativeProxyLODTool() const;
+
+	bool bIsEditingHLODLayer;
 };

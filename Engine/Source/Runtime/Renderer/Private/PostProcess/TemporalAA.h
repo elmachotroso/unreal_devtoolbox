@@ -3,7 +3,7 @@
 #pragma once
 
 #include "ScreenPass.h"
-#include "PostProcessMotionBlur.h"
+#include "PostProcess/PostProcessMotionBlur.h"
 
 struct FTemporalAAHistory;
 struct FTranslucencyPassResources;
@@ -43,11 +43,12 @@ enum class ETAAPassConfig
 	// Permutation for DOF that handle Coc.
 	DiaphragmDOF,
 	DiaphragmDOFUpsampling,
+	
+	// Permutation for hair.
+	Hair,
 
 	MAX
 };
-
-bool IsTemporalAASceneDownsampleAllowed(const FViewInfo& View);
 
 static FORCEINLINE bool IsTAAUpsamplingConfig(ETAAPassConfig Pass)
 {
@@ -171,14 +172,17 @@ extern RENDERER_API FTAAOutputs AddTemporalAAPass(
 	const FTemporalAAHistory& InputHistory,
 	FTemporalAAHistory* OutputHistory);
 
+extern RENDERER_API FScreenPassTexture AddTSRComputeMoireLuma(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FScreenPassTexture SceneColor);
+
 /** Interface for the main temporal upscaling algorithm. */
-class RENDERER_API ITemporalUpscaler
+class RENDERER_API ITemporalUpscaler : public ISceneViewFamilyExtention
 {
 public:
 
 	struct FPassInputs
 	{
-		bool bAllowDownsampleSceneColor = false;
+		bool bGenerateSceneColorHalfRes = false;
+		bool bGenerateSceneColorQuarterRes = false;
 		bool bGenerateOutputMip1 = false;
 		bool bGenerateVelocityFlattenTextures = false;
 		EPixelFormat DownsampleOverrideFormat;
@@ -186,12 +190,14 @@ public:
 		FRDGTextureRef SceneDepthTexture = nullptr;
 		FRDGTextureRef SceneVelocityTexture = nullptr;
 		FTranslucencyPassResources PostDOFTranslucencyResources;
+		FScreenPassTexture MoireInputTexture;
 	};
 
 	struct FOutputs
 	{
 		FScreenPassTexture FullRes;
 		FScreenPassTexture HalfRes;
+		FScreenPassTexture QuarterRes;
 		FVelocityFlattenTextures VelocityFlattenTextures;
 	};
 
@@ -212,6 +218,8 @@ public:
 
 	virtual float GetMinUpsampleResolutionFraction() const = 0;
 	virtual float GetMaxUpsampleResolutionFraction() const = 0;
+
+	virtual ITemporalUpscaler* Fork_GameThread(const class FSceneViewFamily& ViewFamily) const = 0;
 
 	static const ITemporalUpscaler* GetDefaultTemporalUpscaler();
 

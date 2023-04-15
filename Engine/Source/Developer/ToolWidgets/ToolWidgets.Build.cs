@@ -12,20 +12,19 @@ public class ToolWidgets : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
+				"CoreUObject",
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"ToolMenus",
+				"CoreUObject"
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Developer/ToolWidgets/Private",
+				"AppFramework",
+				"ApplicationCore"
 			}
 		);
 	}

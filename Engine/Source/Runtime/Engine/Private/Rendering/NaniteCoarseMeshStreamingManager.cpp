@@ -198,12 +198,19 @@ namespace Nanite
 		// (this can happen because of different order of destruction during garbage collection)
 		if (RegisteredComponents)
 		{
+			// If already marked for release then don't touch the component anymore (could have already been destroyed and bool was already set to false)
+			TSet<const UPrimitiveComponent*>* ComponentsToRelease = RequestReleaseComponentsMap.Find(RenderAsset);
 			for (const UPrimitiveComponent* Component : *RegisteredComponents)
 			{
-				Component->bAttachedToCoarseMeshStreamingManager = false;
+				bool bRequestReleased = ComponentsToRelease && ComponentsToRelease->Contains(Component);
+				if (!bRequestReleased)
+				{
+					Component->bAttachedToCoarseMeshStreamingManager = false;
+				}
 			}
 		}
 		RegisteredComponentsMap.Remove(RenderAsset);
+		RequestReleaseComponentsMap.Remove(RenderAsset);
 
 		if (RenderAssetInfo.ResourceState != EResourceState::Unloaded)
 		{
@@ -227,7 +234,7 @@ namespace Nanite
 	void FCoarseMeshStreamingManager::ProcessNotifiedActor(const AActor* Actor, ENotifyMode NotifyMode)
 	{
 		TInlineComponentArray<UPrimitiveComponent*> Primitives;
-		Actor->GetComponents<UPrimitiveComponent>(Primitives);
+		Actor->GetComponents(Primitives);
 		for (const UPrimitiveComponent* Primitive : Primitives)
 		{
 			check(Primitive);
@@ -245,17 +252,27 @@ namespace Nanite
 
 	void FCoarseMeshStreamingManager::RegisterComponent(const UPrimitiveComponent* Primitive, bool bCheckStaticMeshChanged)
 	{		
-		// Already registered or not a static mesh?
-		if ((Primitive->bAttachedToCoarseMeshStreamingManager && !bCheckStaticMeshChanged) || !Primitive->IsA<UStaticMeshComponent>())
+		// Not a static mesh or no nanite data
+		if (!Primitive->IsA<UStaticMeshComponent>())
 		{
 			return;
 		}
-				
 		UStaticMesh* StaticMesh = ((UStaticMeshComponent*)Primitive)->GetStaticMesh();
+		if (StaticMesh == nullptr || !StaticMesh->HasValidNaniteData())
+		{
+			return;
+		}
+
+		const FStreamableRenderResourceState& ResourceState = StaticMesh->GetStreamableResourceState();
+		if (!ResourceState.bSupportsStreaming)
+		{
+			return;
+		}
+
+		FScopeLock ScopeLock(&UpdateCS);
+						
 		if (bCheckStaticMeshChanged && Primitive->bAttachedToCoarseMeshStreamingManager)
 		{
-			FScopeLock ScopeLock(&UpdateCS);
-
 			UStreamableRenderAsset** RegisteredAsset = ComponentToRenderAssetLookUpMap.Find(Primitive);
 			check(RegisteredAsset);
 
@@ -267,12 +284,10 @@ namespace Nanite
 		}
 
 		// Has new static mesh valid Nanite data?
-		if (Primitive->bAttachedToCoarseMeshStreamingManager || StaticMesh == nullptr || !StaticMesh->HasValidNaniteData())
+		if (Primitive->bAttachedToCoarseMeshStreamingManager)
 		{
 			return;
 		}
-
-		FScopeLock ScopeLock(&UpdateCS);
 
 		// Make sure it's not requested for release anymore
 		bool bNeedToAdd = true;
@@ -302,17 +317,32 @@ namespace Nanite
 
 	void FCoarseMeshStreamingManager::UnregisterComponent(const UPrimitiveComponent* Primitive)
 	{
+		// Not a static mesh or no nanite data
+		if (!Primitive->IsA<UStaticMeshComponent>())
+		{
+			return;
+		}
+		
+		UStaticMesh* StaticMesh = ((UStaticMeshComponent*)Primitive)->GetStaticMesh();
+		if (StaticMesh == nullptr || !StaticMesh->HasValidNaniteData())
+		{
+			return;
+		}
+
+		const FStreamableRenderResourceState& ResourceState = StaticMesh->GetStreamableResourceState();
+		if (!ResourceState.bSupportsStreaming)
+		{
+			return;
+		}
+
+		FScopeLock ScopeLock(&UpdateCS);
+
 		// Not tracked then early out
 		if (!Primitive->bAttachedToCoarseMeshStreamingManager)
 		{
 			return;
 		}
 
-		check(Primitive->IsA<UStaticMeshComponent>());
-		UStaticMesh* StaticMesh = ((UStaticMeshComponent*)Primitive)->GetStaticMesh();
-		check(StaticMesh && StaticMesh->HasValidNaniteData());
-
-		FScopeLock ScopeLock(&UpdateCS);
 		UnregisterComponentInternal(Primitive, StaticMesh);
 	}
 
@@ -363,12 +393,12 @@ namespace Nanite
 		{
 			UStreamableRenderAsset* RenderAsset = Iter.Key();			
 			TSet<const UPrimitiveComponent*>* RegisteredComponents = RegisteredComponentsMap.Find(RenderAsset);
-			if (RegisteredComponents)
+			if (RegisteredComponents) 
 			{
 				TSet<const UPrimitiveComponent*>& ComponentsToRelease = Iter.Value();
 				for (const UPrimitiveComponent* Component : ComponentsToRelease)
 				{
-					RegisteredComponents->Remove(Component);
+					verify(RegisteredComponents->Remove(Component) == 1);
 				}
 
 				// remove if empty

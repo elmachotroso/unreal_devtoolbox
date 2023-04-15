@@ -2,6 +2,7 @@
 
 #include "Animation/AnimationAsset.h"
 #include "Engine/AssetUserData.h"
+#include "Engine/SkeletalMesh.h"
 #include "Animation/AssetMappingTable.h"
 #include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
@@ -12,6 +13,9 @@
 #include "Animation/PoseAsset.h"
 #include "Animation/AnimSequenceHelpers.h"
 #include "Animation/AnimNodeBase.h"
+#include "UObject/UObjectThreadContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimationAsset)
 
 #define LOCTEXT_NAMESPACE "AnimationAsset"
 
@@ -182,6 +186,11 @@ void FAnimGroupInstance::Prepare(const FAnimGroupInstance* PreviousGroup)
 	}
 }
 
+void FAnimTickRecord::AllocateContextDataContainer()
+{
+	ContextData = MakeShared<TArray<TUniquePtr<const UE::Anim::IAnimNotifyEventContextDataInterface>>>();
+}
+
 FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord)
 {
 	SourceAsset = InSequence;
@@ -190,6 +199,7 @@ FAnimTickRecord::FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping,
 	PlayRateMultiplier = InPlayRate;
 	EffectiveBlendWeight = InFinalBlendWeight;
 	bLooping = bInLooping;
+	BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
 }
 
 FAnimTickRecord::FAnimTickRecord(
@@ -240,9 +250,9 @@ void FAnimTickRecord::GatherContextData(const FAnimationUpdateContext& InContext
 		InContext.GetSharedContext()->MessageStack.MakeEventContextData(NewContextData);
 		if(NewContextData.Num())
 		{
-			if(!ContextData.IsValid())
+			if (!ContextData.IsValid())
 			{
-				ContextData = MakeShared<TArray<TUniquePtr<const UE::Anim::IAnimNotifyEventContextDataInterface>>>();
+				AllocateContextDataContainer();
 			}
 
 			ContextData->Append(MoveTemp(NewContextData));
@@ -469,8 +479,6 @@ bool UAnimationAsset::ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpace
 			}
 		}
 
-		PostEditChange();
-		MarkPackageDirty();
 		return true;
 	}
 
@@ -479,7 +487,7 @@ bool UAnimationAsset::ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpace
 
 bool UAnimationAsset::GetAllAnimationSequencesReferred(TArray<UAnimationAsset*>& AnimationSequences, bool bRecursive /*= true*/) 
 {
-	//@todo:@fixme: this doens't work for retargeting because postload gets called after duplication, mixing up the mapping table
+	//@todo:@fixme: this doesn't work for retargeting because postload gets called after duplication, mixing up the mapping table
 	// because skeleton changes, for now we don't support retargeting for parent asset, it will disconnect, and just duplicate everything else
 // 	if (ParentAsset)
 // 	{
@@ -506,7 +514,7 @@ void UAnimationAsset::HandleAnimReferenceCollection(TArray<UAnimationAsset*>& An
 
 void UAnimationAsset::ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap)
 {
-	//@todo:@fixme: this doens't work for retargeting because postload gets called after duplication, mixing up the mapping table
+	//@todo:@fixme: this doesn't work for retargeting because postload gets called after duplication, mixing up the mapping table
 	// because skeleton changes, for now we don't support retargeting for parent asset, it will disconnect, and just duplicate everything else
 	if (ParentAsset)
 	{
@@ -697,6 +705,19 @@ void UAnimationAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
+EDataValidationResult UAnimationAsset::IsDataValid(TArray<FText>& ValidationErrors)
+{
+	EDataValidationResult Result = UObject::IsDataValid(ValidationErrors);
+	for (UAssetUserData* Datum : AssetUserData)
+	{
+		if(Datum != nullptr && Datum->IsDataValid(ValidationErrors) == EDataValidationResult::Invalid)
+		{
+			Result = EDataValidationResult::Invalid;
+		}
+	}
+	return Result;
 }
 #endif
 

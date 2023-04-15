@@ -43,7 +43,7 @@ uint MaterialPass_LightChannelMask;
 struct FEvaluateOutput
 {
 	FHairSample NodeData;
-	float2 NodeVelocity;
+	float4 NodeVelocity;
 };
 
 struct FHairVertexData
@@ -60,12 +60,8 @@ FVertexFactoryInterpolantsVSToPS GetInterpolants(uint PrimitiveId, uint HairPrim
 	FMaterialVertexParameters Empty = (FMaterialVertexParameters)0;
 
 	FVertexFactoryInput Input;
-#if VF_USE_PRIMITIVE_SCENE_DATA
-	// GPUCULL_TODO: Making use of dynamic draw workaround, assumes no actual instancing used for these draws.
-	//               Will load the first instance data.
-	Input.InstanceIdOffset = PrimitiveId | (1U << 31U);
-	Input.DrawInstanceId = 0;
-#endif // VF_USE_PRIMITIVE_SCENE_DATA 
+	// Assumes no actual instancing used for these draws. Will load the first instance data.
+	VF_GPUSCENE_SET_INPUT_FOR_RT(Input, PrimitiveId, 0U);
 #if USE_HAIR_TRIANGLE_STRIP
 	Input.VertexId = HairPrimitiveId * 2; // 6: the vertex factory expect triangles strip index. A quad is made of two triangles with indices: 0,1.
 #else
@@ -151,13 +147,13 @@ FEvaluateOutput Evaluate(
 	
 
 	#if 1
-	float2 EncodedVelocity = 0;
+	float4 EncodedVelocity = 0;
 	{
 		const float4 ScreenPos		= mul(float4(Velocity_World_P.xyz, 1), ResolvedView.TranslatedWorldToClip);
 		const float4 PrevScreenPos	= mul(float4(Velocity_World_P_Prev.xyz, 1), ResolvedView.PrevTranslatedWorldToClip);
 
-		const float2 Velocity	= Calculate3DVelocity(ScreenPos, PrevScreenPos).xy;
-		EncodedVelocity			= EncodeVelocityToTexture(float3(Velocity, 0.0)).xy;
+		const float3 Velocity	= Calculate3DVelocity(ScreenPos, PrevScreenPos);
+		EncodedVelocity			= EncodeVelocityToTexture(Velocity);
 	}
 	#endif
 
@@ -202,15 +198,34 @@ FEvaluateOutput Evaluate(
 		float3 TranslatedWorldPosition = SvPositionToResolvedTranslatedWorld(SvPosition);
 		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, SvPosition, LocalScreenPosition, bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);
 
-#if PROJECT_STRATA && MATERIAL_IS_STRATA && MATERIAL_SHADINGMODEL_HAIR
-		FStrataBSDF HairBSDF = PixelMaterialInputs.FrontMaterial.Layers[0].BSDFs[0];
+#if STRATA_ENABLED && MATERIAL_IS_STRATA && MATERIAL_SHADINGMODEL_HAIR
+		FStrataPixelHeader StrataPixelHeader		= InitialiseStrataPixelHeader();
+		StrataPixelHeader.StrataTree				= MaterialParameters.StrataTree;
+		StrataPixelHeader.BSDFCount					= MaterialParameters.StrataTree.BSDFCount;
+		StrataPixelHeader.SharedLocalBases			= MaterialParameters.SharedLocalBases;
+		StrataPixelHeader.IrradianceAO				= InitIrradianceAndOcclusion();
+		SetCastContactShadow(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & 0x100);
+		SetDynamicIndirectShadowCasterRepresentation(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & 0x80);
 
-		OutSample.BaseColor = HAIR_BASECOLOR(HairBSDF);
-		OutSample.Roughness = HAIR_ROUGHNESS(HairBSDF);
-		OutSample.Specular	= HAIR_SPECULAR(HairBSDF);
-		OutSample.Backlit	= HAIR_BACKLIT(HairBSDF);
-		OutSample.Emissive	= BSDF_GETEMISSIVE(HairBSDF);
-		float3 Tangent		= normalize(MaterialParameters.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(HairBSDF)]);
+		float3 Tangent = float3(0,1,0);
+		//if (StrataPixelHeader.StrataTree.BSDFCount > 0)
+		{
+			// Using the tree data, instread of the inline BSDF does not seem to work. It is unclear why. It is not very 
+			// important as we expect a single hair BSDF.
+			// Update tree (coverage/transmittance/luminace weights)
+			FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
+			const float3 V = MaterialParameters.CameraVector;
+			const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, false /*bRoughDiffuse*/, -1 /*PeelLayersAboveDepth*/);
+			StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataPixelHeader.StrataTree, V, Settings);
+			FStrataBSDF HairBSDF = StrataPixelHeader.StrataTree.BSDFs[0];
+
+			OutSample.BaseColor = HAIR_BASECOLOR(HairBSDF);
+			OutSample.Roughness = HAIR_ROUGHNESS(HairBSDF);
+			OutSample.Specular	= HAIR_SPECULAR(HairBSDF);
+			OutSample.Backlit	= HAIR_BACKLIT(HairBSDF);
+			OutSample.Emissive	= BSDF_GETEMISSIVE(HairBSDF);
+			Tangent				= normalize(MaterialParameters.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(HairBSDF)]);
+		}
 		
 	#if HAIRSTRANDS_HAS_NORMAL_CONNECTED
 	  #if MATERIAL_TANGENTSPACENORMAL 

@@ -1,20 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailsPanel/SDeviceProfileDetailsPanel.h"
+
+#include "Containers/Array.h"
+#include "DetailsViewArgs.h"
 #include "DeviceProfiles/DeviceProfile.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SScrollBox.h"
-#include "EditorStyleSet.h"
+#include "IDetailsView.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "PlatformInfo.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
-#include "IDetailsView.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+struct FSlateBrush;
 
 
 #define LOCTEXT_NAMESPACE "DeviceProfileDetailsPanel"
@@ -30,7 +44,7 @@ void SDeviceProfileDetailsPanel::Construct( const FArguments& InArgs )
 	ChildSlot
 	[
 		SNew( SBorder )
-		.BorderImage( FEditorStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
+		.BorderImage( FAppStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
 		[
 			SNew( SVerticalBox )
 			+ SVerticalBox::Slot()
@@ -44,14 +58,14 @@ void SDeviceProfileDetailsPanel::Construct( const FArguments& InArgs )
 				.Padding( 0.0f, 0.0f, 4.0f, 0.0f )
 				[
 					SNew( SImage )
-					.Image( FEditorStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
+					.Image( FAppStyle::GetBrush( "LevelEditor.Tabs.Details" ) )
 				]
 				+ SHorizontalBox::Slot()
 					.VAlign( VAlign_Center )
 					[
 						SNew( STextBlock )
 						.Text( LOCTEXT("CVarsLabel", "Console Variables") )
-						.TextStyle( FEditorStyle::Get(), "Docking.TabFont" )
+						.TextStyle( FAppStyle::Get(), "Docking.TabFont" )
 					]
 			]
 
@@ -96,11 +110,11 @@ void SDeviceProfileDetailsPanel::RefreshUI()
 
 	if( ViewingProfile.IsValid() )
 	{
-		const FSlateBrush* DeviceProfileTypeIcon = FEditorStyle::GetDefaultBrush();
+		const FSlateBrush* DeviceProfileTypeIcon = FAppStyle::GetDefaultBrush();
 		TArray<ITargetPlatform*> TargetPlatforms = GetTargetPlatformManager()->GetTargetPlatforms();
 		if (TargetPlatforms.Num())
 		{
-			DeviceProfileTypeIcon = FEditorStyle::GetBrush(TargetPlatforms[0]->GetPlatformInfo().GetIconStyleName(EPlatformIconSize::Normal));
+			DeviceProfileTypeIcon = FAppStyle::GetBrush(TargetPlatforms[0]->GetPlatformInfo().GetIconStyleName(EPlatformIconSize::Normal));
 		}
 
 		SettingsView->SetObject(&*ViewingProfile);
@@ -108,7 +122,7 @@ void SDeviceProfileDetailsPanel::RefreshUI()
 		DetailsViewBox->AddSlot()
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
+			.BorderImage( FAppStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 			[
 				SNew( SVerticalBox )
 				+ SVerticalBox::Slot()
@@ -147,7 +161,7 @@ void SDeviceProfileDetailsPanel::RefreshUI()
 					+ SScrollBox::Slot()
 					[
 						SNew( SBorder )
-						.BorderImage( FEditorStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
+						.BorderImage( FAppStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
 						[
 							SNew( SVerticalBox )
 							+ SVerticalBox::Slot()
@@ -168,7 +182,7 @@ void SDeviceProfileDetailsPanel::RefreshUI()
 		DetailsViewBox->AddSlot()
 			[
 				SNew( SBorder )
-				.BorderImage( FEditorStyle::GetBrush( "ToolPanel.GroupBorder" ) )
+				.BorderImage( FAppStyle::GetBrush( "ToolPanel.GroupBorder" ) )
 				[
 					SNew(SVerticalBox)
 					+SVerticalBox::Slot()

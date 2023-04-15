@@ -3,7 +3,7 @@
 #include "WorldPartition/WorldPartitionDebugHelper.h"
 #include "WorldPartition/WorldPartitionRuntimeHash.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
 #include "Engine/Canvas.h"
@@ -11,6 +11,12 @@
 #include "HAL/IConsoleManager.h"
 #include "Algo/AnyOf.h"
 #include "Algo/AllOf.h"
+
+bool FWorldPartitionDebugHelper::bDebugFilterOutContentBundles = true;
+FAutoConsoleVariableRef FWorldPartitionDebugHelper::DebugFilterOutContentBundlesCommand(
+	TEXT("wp.Runtime.DebugFilterOutContentBundles"),
+	FWorldPartitionDebugHelper::bDebugFilterOutContentBundles,
+	TEXT("Filter content bundle from world partition debug display."));
 
 TSet<FName> FWorldPartitionDebugHelper::DebugRuntimeHashFilter;
 FAutoConsoleCommand FWorldPartitionDebugHelper::DebugFilterByRuntimeHashGridNameCommand(
@@ -57,10 +63,10 @@ FAutoConsoleCommand FWorldPartitionDebugHelper::DebugFilterByDataLayerCommand(
 			UWorld* World = Context.World();
 			if (World && World->IsGameWorld())
 			{
-				TArray<UDataLayer*> DataLayers = UDataLayerSubsystem::ConvertArgsToDataLayers(World, InArgs);
-				for (UDataLayer* DataLayer : DataLayers)
+				TArray<UDataLayerInstance*> DataLayers = UDataLayerSubsystem::ConvertArgsToDataLayers(World, InArgs);
+				for (UDataLayerInstance* DataLayer : DataLayers)
 				{
-					DebugDataLayerFilter.Add(DataLayer->GetFName());
+					DebugDataLayerFilter.Add(DataLayer->GetDataLayerFName());
 				}
 			}
 		}
@@ -141,12 +147,15 @@ bool FWorldPartitionDebugHelper::IsDebugCellNameShown(const FString& CellName)
 
 void FWorldPartitionDebugHelper::DrawText(UCanvas* Canvas, const FString& Text, const UFont* Font, const FColor& Color, FVector2D& Pos, float* MaxTextWidth)
 {
+	const float XScale = 1.f;
+	const float YScale = 1.f;
+	FFontRenderInfo RenderInfo;
+	RenderInfo.bClipText = true;
+	RenderInfo.bEnableShadow = true;
+	Canvas->SetDrawColor(Color);
+	Canvas->DrawText(Font, Text, Pos.X, Pos.Y, XScale, YScale, RenderInfo);
 	float TextWidth, TextHeight;
 	Canvas->StrLen(Font, Text, TextWidth, TextHeight);
-	Canvas->SetDrawColor(FColor(0,0,0));
-	Canvas->DrawText(Font, Text, Pos.X + 1, Pos.Y + 1);
-	Canvas->SetDrawColor(Color);
-	Canvas->DrawText(Font, Text, Pos.X, Pos.Y);
 	Pos.Y += TextHeight + 1;
 	if (MaxTextWidth)
 	{
@@ -180,10 +189,10 @@ void FWorldPartitionDebugHelper::DrawLegendItem(UCanvas* Canvas, const FString& 
 	Pos.Y = TextPos.Y;
 }
 
-bool FWorldPartitionDebugHelper::bShowRuntimeSpatialHashCellStreamingPriotity = false;
-FAutoConsoleVariableRef FWorldPartitionDebugHelper::ShowRuntimeSpatialHashCellStreamingPriotityCommand(
-	TEXT("wp.Runtime.ShowRuntimeSpatialHashCellStreamingPriotity"),
-	FWorldPartitionDebugHelper::bShowRuntimeSpatialHashCellStreamingPriotity,
+bool FWorldPartitionDebugHelper::bShowRuntimeSpatialHashCellStreamingPriority = false;
+FAutoConsoleVariableRef FWorldPartitionDebugHelper::ShowRuntimeSpatialHashCellStreamingPriorityCommand(
+	TEXT("wp.Runtime.ShowRuntimeSpatialHashCellStreamingPriority"),
+	FWorldPartitionDebugHelper::bShowRuntimeSpatialHashCellStreamingPriority,
 	TEXT("Enable to show a heatmap of the runtime spatial hash grid cells based on their priority."));
 
 FLinearColor FWorldPartitionDebugHelper::GetHeatMapColor(float ValueNormalized)

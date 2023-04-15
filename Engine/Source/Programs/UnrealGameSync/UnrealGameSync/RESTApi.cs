@@ -7,93 +7,81 @@ using System.Net;
 using System.Net.Mime;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
 	class RestException : Exception
 	{
-		public RestException(string Method, string Uri, Exception InnerException)
-			: base(String.Format("Error executing {0} {1}", Method, Uri), InnerException)
+		public RestException(string method, string uri, Exception innerException)
+			: base(String.Format("Error executing {0} {1}", method, uri), innerException)
 		{
 		}
 
 		public override string ToString()
 		{
-			return String.Format("{0}\n\n{1}", Message, InnerException.ToString());
+			return String.Format("{0}\n\n{1}", Message, InnerException!.ToString());
 		}
 	}
 
-	public static class RESTApi
+	public static class RestApi
 	{
-		private static string SendRequestInternal(string URI, string Resource, string Method, string RequestBody = null, params string[] QueryParams)
+		private static async Task<string> SendRequestInternal(string url, string method, string? requestBody, CancellationToken cancellationToken)
 		{
-			// set up the query string
-			StringBuilder TargetURI = new StringBuilder(string.Format("{0}/api/{1}", URI, Resource));
-			if (QueryParams.Length != 0)
-			{
-				TargetURI.Append("?");
-				for (int Idx = 0; Idx < QueryParams.Length; Idx++)
-				{
-					TargetURI.Append(QueryParams[Idx]);
-					if (Idx != QueryParams.Length - 1)
-					{
-						TargetURI.Append("&");
-					}
-				}
-			}
-
-			HttpWebRequest Request = (HttpWebRequest)WebRequest.Create(TargetURI.ToString());
-			Request.ContentType = "application/json";
-			Request.Method = Method;
+			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+			request.ContentType = "application/json";
+			request.Method = method;
 
 			// Add json to request body
-			if (!string.IsNullOrEmpty(RequestBody))
+			if (!string.IsNullOrEmpty(requestBody))
 			{
-				if (Method == "POST" || Method == "PUT")
+				if (method == "POST" || method == "PUT")
 				{
-					byte[] bytes = Encoding.UTF8.GetBytes(RequestBody);
-					using (Stream RequestStream = Request.GetRequestStream())
+					byte[] bytes = Encoding.UTF8.GetBytes(requestBody);
+					using (Stream requestStream = request.GetRequestStream())
 					{
-						RequestStream.Write(bytes, 0, bytes.Length);
+						await requestStream.WriteAsync(bytes, 0, bytes.Length, cancellationToken);
 					}
 				}
 			}
 			try
 			{
-				using (WebResponse Response = Request.GetResponse())
+				using (WebResponse response = request.GetResponse())
 				{
-					string ResponseContent;
-					using (StreamReader ResponseReader = new StreamReader(Response.GetResponseStream(), Encoding.UTF8))
+					byte[] data;
+					using (MemoryStream buffer = new MemoryStream())
 					{
-						ResponseContent = ResponseReader.ReadToEnd();
+						await response.GetResponseStream().CopyToAsync(buffer, cancellationToken);
+						data = buffer.ToArray();
 					}
-					return ResponseContent;
+					return Encoding.UTF8.GetString(data);
 				}
 			}
-			catch (Exception Ex)
+			catch (Exception ex)
 			{
-				throw new RestException(Method, Request.RequestUri.ToString(), Ex);
+				throw new RestException(method, request.RequestUri.ToString(), ex);
 			}
 		}
 
-		public static string POST(string URI, string Resource, string RequestBody = null, params string[] QueryParams)
+		public static Task<string> PostAsync(string url, string requestBody, CancellationToken cancellationToken)
 		{
-			return SendRequestInternal(URI, Resource, "POST", RequestBody, QueryParams);
+			return SendRequestInternal(url, "POST", requestBody, cancellationToken);
 		}
 
-		public static string GET(string URI, string Resource, params string[] QueryParams)
+		public static Task<string> GetAsync(string url, CancellationToken cancellationToken)
 		{
-			return SendRequestInternal(URI, Resource, "GET", null, QueryParams);
+			return SendRequestInternal(url, "GET", null, cancellationToken);
 		}
 
-		public static T GET<T>(string URI, string Resource, params string[] QueryParams)
+		public static async Task<T> GetAsync<T>(string url, CancellationToken cancellationToken)
 		{
-			return JsonSerializer.Deserialize<T>(SendRequestInternal(URI, Resource, "GET", null, QueryParams), Program.DefaultJsonSerializerOptions);
+			return JsonSerializer.Deserialize<T>(await GetAsync(url, cancellationToken), Utility.DefaultJsonSerializerOptions)!;
 		}
 
-		public static string PUT<T>(string URI, string Resource, T Object, params string[] QueryParams)
+		public static Task<string> PutAsync<T>(string url, T obj, CancellationToken cancellationToken)
 		{
-			return SendRequestInternal(URI, Resource, "PUT", JsonSerializer.Serialize(Object), QueryParams);
+			return SendRequestInternal(url, "PUT", JsonSerializer.Serialize(obj), cancellationToken);
 		}
 	}
 }

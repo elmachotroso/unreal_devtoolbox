@@ -2,29 +2,51 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Misc/EnumClassFlags.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Class.h"
-#include "UObject/SoftObjectPath.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
-#include "AssetData.h"
-#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphSchema.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "EdGraphSchema_K2.generated.h"
 
 class AActor;
+class FKismetCompilerContext;
 class FMenuBuilder;
-class UToolMenu;
-struct FToolMenuSection;
+class FProperty;
 class UBlueprint;
-class UK2Node;
-struct FTypesDatabase;
-class UEnum;
 class UClass;
+class UEnum;
+class UK2Node;
 class UScriptStruct;
+class UToolMenu;
+struct FAssetData;
+struct FToolMenuSection;
+struct FTypesDatabase;
+template <typename T> struct TObjectPtr;
 
 /** Reference to an structure (only used in 'docked' palette) */
 USTRUCT()
@@ -132,6 +154,9 @@ public:
 	// [FunctionMetadata] Indicates that a particular function parameter is for internal use only, which means it will be both hidden and not connectible.
 	static const FName MD_InternalUseParam;
 
+	// [FunctionMetadata] Indicates that the function should appear as blueprint function even if it doesn't return a value.
+	static const FName MD_ForceAsFunction;
+
 	// [FunctionMetadata] Indicates that the function should be ignored when considered for blueprint type promotion
 	static const FName MD_IgnoreTypePromotion;
 
@@ -177,6 +202,7 @@ public:
 	static const FName MD_HidePin;
 
 	static const FName MD_BlueprintInternalUseOnly;
+	static const FName MD_BlueprintInternalUseOnlyHierarchical;
 	static const FName MD_NeedsLatentFixup;
 
 	static const FName MD_LatentInfo;
@@ -371,7 +397,6 @@ class BLUEPRINTGRAPH_API UEdGraphSchema_K2 : public UEdGraphSchema
 	static const FName PN_CastSucceeded;    // Category=PC_Exec, singleton, output
 	static const FName PN_CastFailed;    // Category=PC_Exec, singleton, output
 	static const FString PN_CastedValuePrefix;    // Category=PC_Object, singleton, output; actual pin name varies depending on the type to be casted to, this is just a prefix
-	static const FName PN_MatineeFinished;    // Category=PC_Exec, singleton, output
 
 	// construction script function names
 	static const FName FN_UserConstructionScript;
@@ -557,9 +582,17 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	virtual float GetActionFilteredWeight(const FGraphActionListBuilderBase::ActionGroup& InCurrentAction, const TArray<FString>& InFilterTerms, const TArray<FString>& InSanitizedFilterTerms, const TArray<UEdGraphPin*>& DraggedFromPins) const override;
+	virtual FGraphSchemaSearchWeightModifiers GetSearchWeightModifiers() const override;
 #endif // WITH_EDITORONLY_DATA	
 
 	//~ End EdGraphSchema Interface
+
+	/**
+	 * Determine if this graph supports collapsing nodes into subgraphs
+	 *
+	 * @return True if this schema supports collapsed node subgraphs
+	 */
+	virtual bool DoesSupportCollapsedNodes() const { return true; }
 
 	/**
 	 *
@@ -942,7 +975,7 @@ public:
 	 * @param	Graph			Graph to add the function terminators to
 	 * @param	FunctionSignature	The function signature to mimic when creating the inputs and outputs for the function.
 	 */
-	virtual void CreateFunctionGraphTerminators(UEdGraph& Graph, UFunction* FunctionSignature) const;
+	virtual void CreateFunctionGraphTerminators(UEdGraph& Graph, const UFunction* FunctionSignature) const;
 
 	/**
 	 * Converts the type of a property into a fully qualified string (e.g., object'ObjectName').
@@ -984,6 +1017,17 @@ public:
 	 * @return	The text to display for the category.
 	 */
 	static FText GetCategoryText(const FName Category, const bool bForMenu = false);
+
+	/**
+	 * Returns the FText to use for a given schema category and subcategory
+	 *
+	 * @param	Category	The category to convert into a FText.
+	 * @param	SubCategory	The subcategory to convert into a FText.
+	 * @param	bForMenu	Indicates if this is for display in tooltips or menu
+	 *
+	 * @return	The text to display for the category.
+	 */
+	static FText GetCategoryText(FName Category, FName SubCategory, bool bForMenu = false);
 
 	/**
 	 * Get the type tree for all of the property types valid for this schema
@@ -1075,7 +1119,10 @@ public:
 
 	/** Find an appropriate node that can convert from one pin type to another (not a cast; e.g. "MakeLiteralArray" node) */
 	virtual bool FindSpecializedConversionNode(const UEdGraphPin* OutputPin, const UEdGraphPin* InputPin, bool bCreateNode, /*out*/ class UK2Node*& TargetNode) const;
-
+	
+	/** Find an appropriate node that can convert from one pin type to another (not a cast; e.g. "MakeLiteralArray" node) */
+	virtual bool FindSpecializedConversionNode(const FEdGraphPinType& OutputPinType, const UEdGraphPin* InputPinType, bool bCreateNode, /*out*/ class UK2Node*& TargetNode) const;
+	
 	/** Create menu for variable get/set nodes which refer to a variable which does not exist. */
 	void GetNonExistentVariableMenu(FToolMenuSection& Section, const UEdGraphNode* InGraphNode, UBlueprint* OwnerBlueprint) const;
 

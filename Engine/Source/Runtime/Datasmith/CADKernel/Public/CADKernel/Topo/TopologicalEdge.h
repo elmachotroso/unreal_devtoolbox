@@ -3,13 +3,14 @@
 
 #include "CADKernel/Geo/Curves/Curve.h"
 #include "CADKernel/Geo/Curves/RestrictionCurve.h"
+#include "CADKernel/Geo/Sampling/SurfacicPolyline.h"
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Topo/Linkable.h"
 #include "CADKernel/Topo/TopologicalVertex.h"
 #include "CADKernel/Utils/Cache.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 typedef TTopologicalLink<FTopologicalEdge> FEdgeLink;
@@ -34,7 +35,7 @@ struct FCuttingPoint;
 struct FImposedCuttingPoint;
 
 class FModelMesh;
-class FRestrictionCurve;
+class FEdgeMesh;
 class FSurface;
 class FTopologicalLoop;
 class FTopologicalVertex;
@@ -167,7 +168,15 @@ public:
 	virtual FInfoEntity& GetInfo(FInfoEntity&) const override;
 #endif
 
-	double GetTolerance3D();
+	double GetTolerance3D() const
+	{
+		return GetCurve()->GetCarrierSurface()->Get3DTolerance();
+	}
+
+	double GetTolerance2DAt(double Coordinate) const
+	{
+		return GetCurve()->GetToleranceAt(Coordinate);
+	}
 
 	virtual EEntity GetEntityType() const override
 	{
@@ -182,13 +191,32 @@ public:
 	 * Checks if the carrier curve is degenerated i.e. the 2d length of the curve is nearly zero
 	 * If the 3d length is nearly zero, the edge is flag as degenerated
 	 */
-	bool CheckIfDegenerated();
+	bool CheckIfDegenerated() const;
 
 	/**
-	 * Build face links with its neigbour (link edges) should be done after the loop is finalize.
-	 * In some case, edges can be delete, split, extend... Link edges when the loop is well done and clean avoid problems
+	 * It can be linked to the edge if :
+	 *  - they are connected at their extremities,
+	 *  - they have the same length (5% or +/- EdgeLengthTolerance)
+	 *  - they are ~tangent at their extremities i.e @see IsTangentAtExtremitiesWith
 	 */
-	void Link(FTopologicalEdge& OtherEdge, double SquareJoiningTolerance);
+	bool IsLinkableTo(const FTopologicalEdge& Edge, double EdgeLengthTolerance) const;
+
+	/**
+	 * Link two edges.
+	 * Two edges can be linked if :
+	 *  - they are connected at their extremities (SquareJoiningTolerance),
+	 *  - they are linkable (@see IsLinkableTo)
+	 * 
+	 * This step must be done when the loop is finalize because in some case edges can be delete, split, extend... to avoid problems
+	 */
+	void LinkIfCoincident(FTopologicalEdge& OtherEdge, double EdgeLengthTolerance, double SquareJoiningTolerance);
+
+	/**
+	 * Link with the other edge.
+	 * No check is performed except check if degenerated ot deleted.
+	 * If checks are needed, use LinkIfCoincident
+	 */
+	void Link(FTopologicalEdge& OtherEdge);
 
 	TSharedRef<const FTopologicalEdge> GetLinkActiveEdge() const
 	{
@@ -220,6 +248,11 @@ public:
 	 * @return true if the twin edge is in the same direction as this
 	 */
 	bool IsSameDirection(const FTopologicalEdge& Edge) const;
+
+	/**
+	 * @return true if it is ~tangent with the edge at their extremities i.e Cos(tangents) > cos(30 deg)
+	 */
+	bool IsTangentAtExtremitiesWith(const FTopologicalEdge & Edge) const;
 
 	/**
 	 * @return true if the edge is self connected at its extremities
@@ -387,9 +420,11 @@ public:
 		return EndVertex->GetCoordinates();
 	}
 
-
-
 	void GetTangentsAtExtremities(FPoint& StartTangent, FPoint& EndTangent, bool bForward) const;
+	void GetTangentsAtExtremities(FPoint& StartTangent, FPoint& EndTangent, EOrientation Orientation) const
+	{
+		GetTangentsAtExtremities(StartTangent, EndTangent, Orientation == EOrientation::Front);
+	}
 
 	// ======   Meshing Function   ======
 
@@ -419,7 +454,7 @@ public:
 		int32 Size = CrossingPointUs.Num();
 		ensureCADKernel(Size >= 2);
 		CrossingPointUs.SetNum(Size);
-		CrossingPointDeltaUMins.Init(SMALL_NUMBER, Size - 1);
+		CrossingPointDeltaUMins.Init(DOUBLE_SMALL_NUMBER, Size - 1);
 		CrossingPointDeltaUMaxs.Init(2.0 * (GetEndCurvilinearCoordinates() - GetStartCurvilinearCoordinates()), Size - 1);
 	}
 
@@ -625,6 +660,7 @@ public:
 		Curve->GetExtremities(Boundary, Extremities);
 	}
 
+	void Offset2D(const FPoint2D& OffsetDirection);
 
 	// ======   Geometrical Functions   ======
 
@@ -643,8 +679,10 @@ public:
 	 */
 	bool ExtendTo(bool bStartExtremity, const FPoint2D& NewExtremityCoordinate, TSharedRef<FTopologicalVertex>& NewVertex);
 
-	bool IsSharpEdge();
+	bool IsSharpEdge() const;
 
+	/** @return true if they have the same length +/- 5 % or +/- EdgeLengthTolerance */
+	bool HasSameLengthAs(const FTopologicalEdge& Edge, double EdgeLengthTolerance) const;
 
 	// ======   State Functions   ======
 
@@ -792,7 +830,7 @@ struct CADKERNEL_API FImposedCuttingPoint
 	/**
 	 * coordinate of the edge's mesh nodes
 	 */
-	double Coordinate;
+	double Coordinate = 0;
 	int32 OppositNodeIndex = -1;
 
 	FImposedCuttingPoint()
@@ -814,11 +852,11 @@ struct CADKERNEL_API FCuttingPoint
 	/**
 	 * coordinate of the edge's mesh nodes
 	 */
-	double Coordinate;
-	ECoordinateType Type;
+	double Coordinate = 0;
+	ECoordinateType Type = ECoordinateType::OtherCoordinate;
 	int32 OppositNodeIndex = -1;
 	int32 OppositNodeIndex2 = -1;
-	double IsoDeltaU;
+	double IsoDeltaU = 0;
 
 	FCuttingPoint()
 	{
@@ -881,4 +919,4 @@ void GetCuttingPointCoordinates(const TArray<FCuttingPointType>& CuttingPoints, 
 };
 
 
-} // namespace CADKernel
+} // namespace UE::CADKernel

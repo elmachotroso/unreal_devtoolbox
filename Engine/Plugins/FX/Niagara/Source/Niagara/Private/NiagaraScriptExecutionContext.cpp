@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraScriptExecutionContext.h"
+#include "NiagaraSettings.h"
 #include "NiagaraStats.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraWorldManager.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraGPUInstanceCountManager.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "HAL/PlatformFileManager.h"
 
 DECLARE_CYCLE_STAT(TEXT("Register Setup"), STAT_NiagaraSimRegisterSetup, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Context Ticking"), STAT_NiagaraScriptExecContextTick, STATGROUP_Niagara);
@@ -25,16 +28,31 @@ static FAutoConsoleVariableRef CVarNiagaraExecVMScripts(
 	ECVF_Default
 );
 
+static int32 GbForceExecVMPath = 0;
+static FAutoConsoleVariableRef CVarNiagaraForceExecVMPath(
+	TEXT("fx.ForceExecVMPath"),
+	GbForceExecVMPath,
+	TEXT("If < 0, the legacy VM path will be used, if > 0 the experimental version will be used, and the default if 0. \n"),
+	ECVF_Default
+);
+
 FNiagaraScriptExecutionContextBase::FNiagaraScriptExecutionContextBase()
 	: Script(nullptr)
-	, HasInterpolationParameters(false)
+	, VectorVMState(nullptr)
+	, ScriptType(ENiagaraSystemSimulationScript::Update)
 	, bAllowParallel(true)
+#if VECTORVM_SUPPORTS_EXPERIMENTAL && VECTORVM_SUPPORTS_LEGACY
+	, bUsingExperimentalVM(true)
+#endif
 {
 
 }
 
 FNiagaraScriptExecutionContextBase::~FNiagaraScriptExecutionContextBase()
 {
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
+	FreeVectorVMState(VectorVMState);
+#endif 
 }
 
 bool FNiagaraScriptExecutionContextBase::Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
@@ -44,6 +62,30 @@ bool FNiagaraScriptExecutionContextBase::Init(UNiagaraScript* InScript, ENiagara
 	Parameters.InitFromOwningContext(Script, InTarget, true);
 
 	HasInterpolationParameters = Script && Script->GetComputedVMCompilationId().HasInterpolatedParameters();
+
+#if VECTORVM_SUPPORTS_EXPERIMENTAL && VECTORVM_SUPPORTS_LEGACY
+	const bool ProjectSupportsExperimentalVM = GetDefault<UNiagaraSettings>()->bExperimentalVMEnabled;
+	const bool ScriptSupportsExperimentalVM = (Script ? Script->GetVMExecutableData().SupportsExperimentalVM() : false);
+	bool SystemDisabledExperimentalVM = false;
+
+	if (InScript)
+	{
+		if (const UNiagaraSystem* OwnerSystem = InScript->GetTypedOuter<UNiagaraSystem>())
+		{
+			if (OwnerSystem->ShouldDisableExperimentalVM())
+			{
+				SystemDisabledExperimentalVM = true;
+			}
+		}
+	}
+
+	bUsingExperimentalVM = ProjectSupportsExperimentalVM && ScriptSupportsExperimentalVM && ((GbForceExecVMPath > 0) || (!GbForceExecVMPath && !SystemDisabledExperimentalVM));
+#endif
+
+#	if VECTORVM_SUPPORTS_EXPERIMENTAL
+	FVectorVMOptimizeContext OptimizeContext = Script->GetVMExecutableData().BuildExperimentalContext();
+	VectorVMState = AllocVectorVMState(&OptimizeContext);
+#	endif
 
 	return true;
 }
@@ -62,7 +104,7 @@ void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataSet& 
 
 	DataSetMetaTable.SetNum(FMath::Max(DataSetMetaTable.Num(), Index + 1));
 	DataSetMetaTable[Index].Init(InputRegisters, OutputRegisters, StartInstance,
-		Output ? &Output->GetIDTable() : nullptr, &DataSet.GetFreeIDTable(), &DataSet.GetNumFreeIDs(), &DataSet.GetMaxUsedID(), DataSet.GetIDAcquireTag(), &DataSet.GetSpawnedIDsTable());
+		Output ? &Output->GetIDTable() : nullptr, &DataSet.GetFreeIDTable(), &DataSet.GetNumFreeIDs(), &DataSet.NumSpawnedIDs, &DataSet.GetMaxUsedID(), DataSet.GetIDAcquireTag(), &DataSet.GetSpawnedIDsTable());
 
 	if (InputRegisters.Num() > 0)
 	{
@@ -87,7 +129,7 @@ void FNiagaraScriptExecutionContextBase::BindData(int32 Index, FNiagaraDataBuffe
 	TArrayView<uint8 const* RESTRICT const> InputRegisters = Input->GetRegisterTable();
 
 	DataSetMetaTable.SetNum(FMath::Max(DataSetMetaTable.Num(), Index + 1));
-	DataSetMetaTable[Index].Init(InputRegisters, TArrayView<uint8 const* RESTRICT const>(), StartInstance, nullptr, nullptr, &DataSet->GetNumFreeIDs(), &DataSet->GetMaxUsedID(), DataSet->GetIDAcquireTag(), &DataSet->GetSpawnedIDsTable());
+	DataSetMetaTable[Index].Init(InputRegisters, TArrayView<uint8 const* RESTRICT const>(), StartInstance, nullptr, nullptr, &DataSet->GetNumFreeIDs(), &DataSet->NumSpawnedIDs, &DataSet->GetMaxUsedID(), DataSet->GetIDAcquireTag(), &DataSet->GetSpawnedIDsTable());
 
 	if (InputRegisters.Num() > 0)
 	{
@@ -121,6 +163,15 @@ TMap<TStatIdData const*, float> FNiagaraScriptExecutionContextBase::ReportStats(
 }
 #endif
 
+static void *VVMRealloc(void* Ptr, size_t NumBytes, const char *Filename, int LineNum)
+{
+	return FMemory::Realloc(Ptr, NumBytes);
+}
+static void VVMFree(void* Ptr, const char *Filename, int LineNum)
+{
+	return FMemory::Free(Ptr);
+}
+
 bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
 {
 	if (NumInstances == 0)
@@ -137,67 +188,190 @@ bool FNiagaraScriptExecutionContextBase::Execute(uint32 NumInstances, const FScr
 		CreateStatScopeData();
 #endif	
 
-		FNiagaraVMExecutableData& ExecData = Script->GetVMExecutableData();
+		bool bSuccess = true;
 
-		// If we have an optimization task it must be ready at this point
-		// However we will need to lock and test again as multiple threads may be coming in here
-		if (ExecData.OptimizationTask.State.IsValid())
+#if VECTORVM_SUPPORTS_EXPERIMENTAL && VECTORVM_SUPPORTS_LEGACY
+		if (bUsingExperimentalVM)
 		{
-			FScopeLock Lock(&ExecData.OptimizationTask.Lock);
-			if (ExecData.OptimizationTask.State.IsValid())
+			bSuccess = ExecuteInternal_Experimental(NumInstances, ConstantBufferTable);
+		}
+		else
+		{
+			bSuccess = ExecuteInternal_Legacy(NumInstances, ConstantBufferTable);
+		}
+#elif VECTORVM_SUPPORTS_EXPERIMENTAL
+		bSuccess = ExecuteInternal_Experimental(NumInstances, ConstantBufferTable);
+#elif VECTORVM_SUPPORTS_LEGACY
+		bSuccess = ExecuteInternal_Legacy(NumInstances, ConstantBufferTable);
+#else
+	#error "Not implemented"
+#endif
+
+		// Tell the datasets we wrote how many instances were actually written.
+		for (int Idx = 0; Idx < DataSetInfo.Num(); Idx++)
+		{
+			FNiagaraDataSetExecutionInfo& Info = DataSetInfo[Idx];
+
+#if NIAGARA_NAN_CHECKING
+			Info.DataSet->CheckForNaNs();
+#endif
+			if (Info.bUpdateInstanceCount)
 			{
-				ExecData.ApplyFinishedOptimization(Script->GetVMExecutableDataCompilationId(), ExecData.OptimizationTask.State);
-				ExecData.OptimizationTask.State.Reset();
+				Info.Output->SetNumInstances(Info.StartInstance + DataSetMetaTable[Idx].DataSetAccessIndex + 1);
 			}
 		}
 
-		check((ExecData.ByteCode.HasByteCode() && !ExecData.ByteCode.IsCompressed()) || (ExecData.OptimizedByteCode.HasByteCode() && !ExecData.OptimizedByteCode.IsCompressed()));
-
-		VectorVM::FVectorVMExecArgs ExecArgs;
-		ExecArgs.ByteCode = ExecData.ByteCode.GetDataPtr();
-		ExecArgs.OptimizedByteCode = ExecData.OptimizedByteCode.HasByteCode() ? ExecData.OptimizedByteCode.GetDataPtr(): nullptr;
-		ExecArgs.NumTempRegisters = ExecData.NumTempRegisters;
-		ExecArgs.ConstantTableCount = ConstantBufferTable.Buffers.Num();
-		ExecArgs.ConstantTable = ConstantBufferTable.Buffers.GetData();
-		ExecArgs.ConstantTableSizes = ConstantBufferTable.BufferSizes.GetData();
-		ExecArgs.DataSetMetaTable = DataSetMetaTable;
-		ExecArgs.ExternalFunctionTable = FunctionTable.GetData();
-		ExecArgs.UserPtrTable = UserPtrTable.GetData();
-		ExecArgs.NumInstances = NumInstances;
-#if STATS
-		ExecArgs.StatScopes = MakeArrayView(StatScopeData);
-#elif ENABLE_STATNAMEDEVENTS
-		ExecArgs.StatNamedEventsScopes = Script->GetStatNamedEvents();
-#endif
-		
-		ExecArgs.bAllowParallel = bAllowParallel;
-		VectorVM::Exec(ExecArgs);
-	}
-
-	// Tell the datasets we wrote how many instances were actually written.
-	for (int Idx = 0; Idx < DataSetInfo.Num(); Idx++)
-	{
-		FNiagaraDataSetExecutionInfo& Info = DataSetInfo[Idx];
-
-#if NIAGARA_NAN_CHECKING
-		Info.DataSet->CheckForNaNs();
-#endif
-
-		if (Info.bUpdateInstanceCount)
+		//Can maybe do without resetting here. Just doing it for tidiness.
+		for (int32 DataSetIdx = 0; DataSetIdx < DataSetInfo.Num(); ++DataSetIdx)
 		{
-			Info.Output->SetNumInstances(Info.StartInstance + DataSetMetaTable[Idx].DataSetAccessIndex + 1);
+			DataSetInfo[DataSetIdx].Reset();
+			DataSetMetaTable[DataSetIdx].Reset();
+		}
+	}
+	return true;//TODO: Error cases?
+}
+
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
+
+bool FNiagaraScriptExecutionContextBase::ExecuteInternal_Experimental(uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(VectorVM_Experimental);
+	FVectorVMExecContext ExecCtx;
+	ExecCtx.VVMState            = VectorVMState;
+	ExecCtx.DataSets            = DataSetMetaTable;
+	ExecCtx.ExtFunctionTable    = FunctionTable;
+	ExecCtx.UserPtrTable        = UserPtrTable;
+	ExecCtx.NumInstances        = NumInstances;
+	ExecCtx.ConstantTableData   = ConstantBufferTable.Buffers.GetData();
+	ExecCtx.ConstantTableSizes  = ConstantBufferTable.BufferSizes.GetData();
+	ExecCtx.ConstantTableCount  = ConstantBufferTable.Buffers.Num();
+
+	if (VectorVMState)
+	{
+		ExecVectorVMState(&ExecCtx, nullptr, nullptr);
+	}
+	return true;
+}
+
+#endif
+
+#if VECTORVM_SUPPORTS_LEGACY
+
+bool FNiagaraScriptExecutionContextBase::ExecuteInternal_Legacy(uint32 NumInstances, const FScriptExecutionConstantBufferTable& ConstantBufferTable)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(VectorVM_Legacy);
+
+	FNiagaraVMExecutableData& ExecData = Script->GetVMExecutableData();
+
+	// If we have an optimization task it must be ready at this point
+	// However we will need to lock and test again as multiple threads may be coming in here
+	if (ExecData.OptimizationTask.State.IsValid())
+	{
+		FScopeLock Lock(&ExecData.OptimizationTask.Lock);
+		if (ExecData.OptimizationTask.State.IsValid())
+		{
+			ExecData.ApplyFinishedOptimization(Script->GetVMExecutableDataCompilationId(), ExecData.OptimizationTask.State);
+			ExecData.OptimizationTask.State.Reset();
 		}
 	}
 
-	//Can maybe do without resetting here. Just doing it for tidiness.
-	for (int32 DataSetIdx = 0; DataSetIdx < DataSetInfo.Num(); ++DataSetIdx)
+	check((ExecData.ByteCode.HasByteCode() && !ExecData.ByteCode.IsCompressed()) || (ExecData.OptimizedByteCode.HasByteCode() && !ExecData.OptimizedByteCode.IsCompressed()));
+
+	VectorVM::FVectorVMExecArgs ExecArgs;
+	ExecArgs.ByteCode = ExecData.ByteCode.GetDataPtr();
+	ExecArgs.OptimizedByteCode = ExecData.OptimizedByteCode.HasByteCode() ? ExecData.OptimizedByteCode.GetDataPtr() : nullptr;
+	ExecArgs.NumTempRegisters = ExecData.NumTempRegisters;
+	ExecArgs.ConstantTableCount = ConstantBufferTable.Buffers.Num();
+	ExecArgs.ConstantTable = ConstantBufferTable.Buffers.GetData();
+	ExecArgs.ConstantTableSizes = ConstantBufferTable.BufferSizes.GetData();
+	ExecArgs.DataSetMetaTable = DataSetMetaTable;
+	ExecArgs.ExternalFunctionTable = FunctionTable.GetData();
+	ExecArgs.UserPtrTable = UserPtrTable.GetData();
+	ExecArgs.NumInstances = NumInstances;
+#if STATS
+	ExecArgs.StatScopes = MakeArrayView(StatScopeData);
+#elif ENABLE_STATNAMEDEVENTS
+	ExecArgs.StatNamedEventsScopes = Script->GetStatNamedEvents();
+#endif
+
+	ExecArgs.bAllowParallel = bAllowParallel;
+	FVectorVMSerializeState UESerializeState = { };
+#ifdef VVM_INCLUDE_SERIALIZATION
+	static const IConsoleVariable* CVarInstancesPerChunk = IConsoleManager::Get().FindConsoleVariable(TEXT("vm.InstancesPerChunk"));
+	int32 NumParallelInstancesPerChunk = CVarInstancesPerChunk ? CVarInstancesPerChunk->GetInt() : 128;
+
+	UESerializeState.ReallocFn        = VVMRealloc;
+	UESerializeState.FreeFn           = VVMFree;
+	UESerializeState.NumInstances     = NumInstances;
+	UESerializeState.NumTempRegisters = ExecData.NumTempRegisters;
+	UESerializeState.NumTempRegFlags  = UESerializeState.NumTempRegisters;
+		
+	UESerializeState.TempRegFlags     = (unsigned char *)VVMRealloc(NULL, UESerializeState.NumTempRegisters, __FILE__, __LINE__);
+	FMemory::Memset(UESerializeState.TempRegFlags, 0, UESerializeState.NumTempRegisters);
+	UESerializeState.Bytecode         = (unsigned char *)ExecData.ByteCode.GetData().GetData();
+	UESerializeState.NumBytecodeBytes = ExecData.ByteCode.GetData().Num();
+	SerializeVectorVMInputDataSets(&UESerializeState, DataSetMetaTable,  ConstantBufferTable.Buffers.GetData(), ConstantBufferTable.BufferSizes.GetData(), ConstantBufferTable.Buffers.Num());
+
+	UESerializeState.NumChunks        = (NumInstances + NumParallelInstancesPerChunk - 1) / NumParallelInstancesPerChunk;
+	UESerializeState.Chunks           = (FVectorVMSerializeChunk *)VVMRealloc(NULL, sizeof(FVectorVMSerializeChunk) * UESerializeState.NumChunks, __FILE__, __LINE__);
+
+		
+	int NumExternalFunctions = FunctionTable.Num();
+	if (NumExternalFunctions != 0)
 	{
-		DataSetInfo[DataSetIdx].Reset();
-		DataSetMetaTable[DataSetIdx].Reset();
+		UESerializeState.ExternalData = (FVectorVMSerializeExternalData *)VVMRealloc(NULL, sizeof(FVectorVMSerializeExternalData) * NumExternalFunctions, __FILE__, __LINE__);
+		if (UESerializeState.ExternalData)
+		{
+			UESerializeState.NumExternalData = NumExternalFunctions;
+			const FNiagaraVMExecutableData& ScriptExecutableData = Script->GetVMExecutableData();
+			for (int i = 0; i < NumExternalFunctions; ++i)
+			{
+				FVectorVMSerializeExternalData *ExtData = UESerializeState.ExternalData + i;
+				TCHAR buff[128];
+				uint32 NameLen = ScriptExecutableData.CalledVMExternalFunctions[i].Name.ToString(buff, sizeof(buff) >> 1);
+				if (NameLen > 0)
+				{
+					ExtData->Name       = (wchar_t *)UESerializeState.ReallocFn(NULL, sizeof(wchar_t) * NameLen, __FILE__, __LINE__);
+					FMemory::Memcpy(ExtData->Name, buff, sizeof(TCHAR) * NameLen);
+					ExtData->NameLen    = NameLen;
+				}
+				else
+				{
+					ExtData->Name       = NULL;
+					ExtData->NameLen    = 0;
+				}
+				ExtData->NumInputs      = ScriptExecutableData.CalledVMExternalFunctions[i].GetNumInputs();
+				ExtData->NumOutputs     = ScriptExecutableData.CalledVMExternalFunctions[i].GetNumOutputs();
+			}
+		}
+	}
+#endif //VVM_INCLUDE_SERIALIZATION
+	VectorVM::Exec(ExecArgs, &UESerializeState);
+
+#ifdef VVM_INCLUDE_SERIALIZATION
+		SerializeVectorVMOutputDataSets(&UESerializeState, DataSetMetaTable,  ConstantBufferTable.Buffers.GetData(), ConstantBufferTable.BufferSizes.GetData(), ConstantBufferTable.Buffers.Num());
+#endif //VVM_INCLUDE_SERIALIZATION
+
+	for (int32 Idx = 0; Idx < DataSetInfo.Num(); Idx++)
+	{
+		FNiagaraDataSetExecutionInfo& Info = DataSetInfo[Idx];
+
+		Info.DataSet->NumSpawnedIDs = Info.DataSet->GetSpawnedIDsTable().Num();
 	}
 
-	return true;//TODO: Error cases?
+#		ifdef VVM_INCLUDE_SERIALIZATION
+		{
+			//we don't own the bytecode memory so we can't free it
+			UESerializeState.Bytecode = NULL;
+			UESerializeState.NumBytecodeBytes = 0;
+			FreeVectorVMSerializeState(&UESerializeState);
+		}
+#		endif //VVM_INCLUDE_SERIALIZATION
+
+	return true;
 }
+
+#endif // VECTORVM_SUPPORTS_LEGACY
 
 TArrayView<const uint8> FNiagaraScriptExecutionContextBase::GetScriptLiterals() const
 {
@@ -385,11 +559,45 @@ void FNiagaraScriptExecutionContextBase::PostTick()
 }
 
 //////////////////////////////////////////////////////////////////////////
+#if VECTORVM_SUPPORTS_EXPERIMENTAL
+static void PerInsFn(FVectorVMExternalFunctionContext& ParentContext, FVectorVMExternalFunctionContextExperimental& PerInsFnContext, TArray<FNiagaraSystemInstance*>** SystemInstances, ENiagaraSystemSimulationScript ScriptType, int32 PerInstFunctionIndex, int32 UserPtrIdx)
+{
+	check(PerInsFnContext.DataSets.Num() > 0);
+	check(SystemInstances);
+	check(*SystemInstances);
 
-void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExternalFunctionContext& Context, int32 PerInstFunctionIndex, int32 UserPtrIndex)
+	void* SavedUserPtrData = UserPtrIdx != INDEX_NONE ? PerInsFnContext.UserPtrTable[UserPtrIdx] : NULL;
+	int32 InstanceOffset = PerInsFnContext.DataSets[0].InstanceOffset; //Apparently the function table is generated based off the first data set, therefore this is safe. (I don't like this - @shawn mcgrath)	
+	int NumInstances = PerInsFnContext.NumInstances;
+	PerInsFnContext.NumInstances = 1;
+	for (int i = 0; i < NumInstances; ++i)
+	{
+		PerInsFnContext.RegReadCount = 0;
+		PerInsFnContext.PerInstanceFnInstanceIdx = i;
+
+		int32 InstanceIndex = InstanceOffset + PerInsFnContext.StartInstance + i;
+		FNiagaraSystemInstance* Instance = (**SystemInstances)[InstanceIndex];
+		const FNiagaraPerInstanceDIFuncInfo& FuncInfo = Instance->GetPerInstanceDIFunction(ScriptType, PerInstFunctionIndex);
+
+		if (UserPtrIdx != INDEX_NONE)
+		{
+			PerInsFnContext.UserPtrTable[UserPtrIdx] = FuncInfo.InstData;
+		}
+		FuncInfo.Function.Execute(ParentContext);
+	}
+
+	if (SavedUserPtrData)
+	{
+		PerInsFnContext.UserPtrTable[UserPtrIdx] = SavedUserPtrData;
+	}
+}
+#endif
+
+#if VECTORVM_SUPPORTS_LEGACY
+void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExternalFunctionContext& ParentContext, FVectorVMExternalFunctionContextLegacy& Context, int32 PerInstFunctionIndex, int32 UserPtrIndex)
 {
 	check(SystemInstances);
-	
+
 	//This is a bit of a hack. We grab the base offset into the instance data from the primary dataset.
 	//TODO: Find a cleaner way to do this.
 	int32 InstanceOffset = Context.VectorVMContext->GetDataSetMeta(0).InstanceOffset;
@@ -412,10 +620,10 @@ void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExte
 		int32 InstanceIndex = InstanceOffset + CachedContextStartInstance + i;
 		FNiagaraSystemInstance* Instance = (*SystemInstances)[InstanceIndex];
 		const FNiagaraPerInstanceDIFuncInfo& FuncInfo = Instance->GetPerInstanceDIFunction(ScriptType, PerInstFunctionIndex);
-		
+
 		//TODO: We can embed the instance data inside the function lambda. No need for the user ptr table at all.
 		//Do this way for now to reduce overall complexity of the initial change. Doing this needs extensive boiler plate changes to most DI classes and a script recompile.
-		if(UserPtrIndex != INDEX_NONE)
+		if (UserPtrIndex != INDEX_NONE)
 		{
 			Context.VectorVMContext->UserPtrTable[UserPtrIndex] = FuncInfo.InstData;
 		}
@@ -425,7 +633,7 @@ void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExte
 		//TODO: In future for DIs where more perf is needed here we could split the DI func into an args gen and a execution.
 		//The this path could gen args from the bytecode once and just run the execution func per instance.
 		//I wonder if we could auto generate the args gen in a template func and just pass them into the DI for perf and reduced end user/author complexity.
-		FuncInfo.Function.Execute(Context);
+		FuncInfo.Function.Execute(ParentContext);
 	}
 
 	//Restore the context state.
@@ -433,6 +641,7 @@ void FNiagaraSystemScriptExecutionContext::PerInstanceFunctionHook(FVectorVMExte
 	Context.VectorVMContext->StartInstance = CachedContextStartInstance;
 	Context.VectorVMContext->NumInstances = CachedContextNumInstances;
 }
+#endif
 
 bool FNiagaraSystemScriptExecutionContext::Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget)
 {
@@ -490,14 +699,43 @@ bool FNiagaraSystemScriptExecutionContext::Tick(class FNiagaraSystemInstance* In
 						//Currently we must assume that any User DI is overridden but maybe we can be less conservative with this in future.
 						if (ScriptDIInfo.NeedsPerInstanceBinding())
 						{
-							//This DI needs a binding per instance so we just bind to the external function hook which will call the correct binding for each instance.
-							auto PerInstFunctionHookLambda = [ExecContext = this, NumPerInstanceFunctions, UserPtrIndex = ScriptDIInfo.UserPtrIdx](FVectorVMExternalFunctionContext& Context)
+#if VECTORVM_SUPPORTS_EXPERIMENTAL && VECTORVM_SUPPORTS_LEGACY
+							if (bUsingExperimentalVM)
 							{
-								ExecContext->PerInstanceFunctionHook(Context, NumPerInstanceFunctions, UserPtrIndex);
-							};
-
+								FuncInfo.Function = FVMExternalFunction::CreateLambda(
+									[SystemInstances = &this->SystemInstances, ScriptType = this->ScriptType, NumPerInstanceFunctions, UserPtrIdx = ScriptDIInfo.UserPtrIdx](FVectorVMExternalFunctionContext& ExtFnContext)
+									{
+										PerInsFn(ExtFnContext, ExtFnContext.Experimental, SystemInstances, ScriptType, NumPerInstanceFunctions, UserPtrIdx);
+									}
+								);
+							}
+							else
+							{
+								FuncInfo.Function = FVMExternalFunction::CreateLambda(
+									[ExecContext = this, NumPerInstanceFunctions, UserPtrIndex = ScriptDIInfo.UserPtrIdx](FVectorVMExternalFunctionContext& Context)
+									{
+										//This DI needs a binding per instance so we just bind to the external function hook which will call the correct binding for each instance.
+										ExecContext->PerInstanceFunctionHook(Context, Context.Legacy, NumPerInstanceFunctions, UserPtrIndex);
+									}
+								);
+							}
+#elif VECTORVM_SUPPORTS_EXPERIMENTAL
+							FuncInfo.Function = FVMExternalFunction::CreateLambda(
+								[SystemInstances = &this->SystemInstances, ScriptType = this->ScriptType, NumPerInstanceFunctions, UserPtrIdx = ScriptDIInfo.UserPtrIdx](FVectorVMExternalFunctionContext& ExtFnContext)
+							{
+								PerInsFn(ExtFnContext, ExtFnContext, SystemInstances, ScriptType, NumPerInstanceFunctions, UserPtrIdx);
+							}
+							);
+#elif VECTORVM_SUPPORTS_LEGACY
+							FuncInfo.Function = FVMExternalFunction::CreateLambda(
+								[ExecContext = this, NumPerInstanceFunctions, UserPtrIndex = ScriptDIInfo.UserPtrIdx](FVectorVMExternalFunctionContext& Context)
+							{
+								//This DI needs a binding per instance so we just bind to the external function hook which will call the correct binding for each instance.
+								ExecContext->PerInstanceFunctionHook(Context, Context, NumPerInstanceFunctions, UserPtrIndex);
+							}
+							);
+#endif
 							++NumPerInstanceFunctions;
-							FuncInfo.Function = FVMExternalFunction::CreateLambda(PerInstFunctionHookLambda);
 						}
 						else
 						{

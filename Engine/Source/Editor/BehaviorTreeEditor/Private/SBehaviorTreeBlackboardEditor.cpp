@@ -1,25 +1,49 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBehaviorTreeBlackboardEditor.h"
+
 #include "BehaviorTree/Blackboard/BlackboardKeyType.h"
 #include "BehaviorTree/BlackboardData.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Layout/SBox.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "EditorStyleSet.h"
-#include "ClassViewerModule.h"
-#include "SGraphActionMenu.h"
-
-#include "ScopedTransaction.h"
 #include "BehaviorTreeEditorCommands.h"
 #include "ClassViewerFilter.h"
+#include "ClassViewerModule.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogCategory.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Modules/ModuleManager.h"
+#include "SGraphActionMenu.h"
+#include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SBehaviorTreeBlackboardEditor"
 
@@ -85,7 +109,7 @@ void SBehaviorTreeBlackboardEditor::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 		FOnGetContent::CreateSP(this, &SBehaviorTreeBlackboardEditor::HandleCreateNewEntryMenu),
 		LOCTEXT( "New_Label", "New Key" ),
 		LOCTEXT( "New_ToolTip", "Create a new blackboard entry" ),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "BTEditor.Blackboard.NewEntry")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "BTEditor.Blackboard.NewEntry")
 	);			
 }
 

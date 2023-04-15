@@ -1,24 +1,23 @@
 {
-	"FileVersion" : 3,
-	"Version" : 1,
-	"VersionName" : "1.0",
-	"FriendlyName" : "OpenXR",
-	"Description" : "OpenXR is an open VR/AR standard",
-	"Category" : "Virtual Reality",
-	"CreatedBy" : "Epic Games, Inc.",
-	"CreatedByURL" : "http://epicgames.com",
-	"DocsURL" : "",
-	"MarketplaceURL" : "",
-	"SupportURL" : "",
-	"EnabledByDefault" : false,
-	"CanContainContent" : true,
-	"IsBetaVersion" : false,
-	"Installed" : false,
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "OpenXR",
+	"Description": "OpenXR is an open VR/AR standard",
+	"Category": "Virtual Reality",
+	"CreatedBy": "Epic Games, Inc.",
+	"CreatedByURL": "http://epicgames.com",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": false,
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"Installed": false,
 	"SupportedTargetPlatforms": [
 		"Win64",
 		"Linux",
-		"Android",
-		"HoloLens"
+		"Android"
 	],
 	"Modules": [
 		{
@@ -28,8 +27,7 @@
 			"PlatformAllowList": [
 				"Win64",
 				"Linux",
-				"Android",
-				"HoloLens"
+				"Android"
 			]
 		},
 		{
@@ -39,8 +37,7 @@
 			"PlatformAllowList": [
 				"Win64",
 				"Linux",
-				"Android",
-				"HoloLens"
+				"Android"
 			]
 		},
 		{
@@ -50,8 +47,7 @@
 			"PlatformAllowList": [
 				"Win64",
 				"Linux",
-				"Android",
-				"HoloLens"
+				"Android"
 			]
 		},
 		{
@@ -62,6 +58,12 @@
 				"Win64",
 				"Linux"
 			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EnhancedInput",
+			"Enabled": true
 		}
 	]
 }

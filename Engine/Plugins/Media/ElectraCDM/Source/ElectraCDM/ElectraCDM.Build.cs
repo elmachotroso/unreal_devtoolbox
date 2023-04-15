@@ -6,7 +6,7 @@ namespace UnrealBuildTool.Rules
 	{
 		public ElectraCDM(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PCHUsage = PCHUsageMode.NoPCHs;     // to get around the "xzy must be first header included" error in 3rdParty lib
+			bEnforceIWYU = false; // Disabled because of third party code
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{

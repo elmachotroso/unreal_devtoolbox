@@ -35,12 +35,13 @@ public:
 
 	
 	/******************** Active snapshot ********************/
-	
-	void SetActiveSnapshot(const TOptional<ULevelSnapshot*>& NewActiveSnapshot);
-	void ClearActiveSnapshot();
-	TOptional<ULevelSnapshot*> GetActiveSnapshot() const;
 
-	DECLARE_EVENT_OneParam(ULevelSnapshotsEditorData, FOnActiveSnapshotChanged, const TOptional<ULevelSnapshot*>& /* NewSnapshot */);
+	/** @param NewActiveSnapshot Can be nullptr */
+	void SetActiveSnapshot(ULevelSnapshot* NewActiveSnapshot);
+	void ClearActiveSnapshot() { SetActiveSnapshot(nullptr); }
+	ULevelSnapshot* GetActiveSnapshot() const { return ActiveSnapshot; }
+
+	DECLARE_EVENT_OneParam(ULevelSnapshotsEditorData, FOnActiveSnapshotChanged, ULevelSnapshot* /* NewSnapshot */);
 	FOnActiveSnapshotChanged OnActiveSnapshotChanged;
 
 
@@ -52,12 +53,12 @@ public:
 	
 	/******************** Edited filter ********************/
 	
-	void SetEditedFilter(const TOptional<UNegatableFilter*>& InFilter);
-	TOptional<UNegatableFilter*> GetEditedFilter() const;
-	bool IsEditingFilter(UNegatableFilter* Filter) const;
+	void SetEditedFilter(UNegatableFilter* InFilter);
+	UNegatableFilter* GetEditedFilter() const { return EditedFilter; }
+	bool IsEditingFilter(UNegatableFilter* Filter) const { return Filter == GetEditedFilter(); }
 
-	DECLARE_EVENT_OneParam(ULevelSnapshotsEditorData, FOnEditedFilterChanged, const TOptional<UNegatableFilter*>& /*NewEditedFilter*/);
-	FOnEditedFilterChanged OnEditedFiterChanged;
+	DECLARE_EVENT_OneParam(ULevelSnapshotsEditorData, FOnEditedFilterChanged, UNegatableFilter* /*NewEditedFilter*/);
+	FOnEditedFilterChanged OnEditedFilterChanged;
 
 	DECLARE_EVENT(ULevelSnapshotsEditorData, FOnRefreshResults);
 	FOnRefreshResults OnRefreshResults;
@@ -90,24 +91,33 @@ private:
 	FDelegateHandle TrackedFilterModifiedHandle;
 	
 	UPROPERTY()
-	UFavoriteFilterContainer* FavoriteFilters;
+	TObjectPtr<UFavoriteFilterContainer> FavoriteFilters;
 	/* Stores user-defined filters in chain of ORs of ANDs. */
 	UPROPERTY()
-	ULevelSnapshotsFilterPreset* UserDefinedFilters;
+	TObjectPtr<ULevelSnapshotsFilterPreset> UserDefinedFilters;
 	/* Handles save & load requests for exchanging UserDefinedFilters. */
 	UPROPERTY()
-	UFilterLoader* FilterLoader;
+	TObjectPtr<UFilterLoader> FilterLoader;
 	
 	/* Used for determining whether the filter state has changed since it was last refreshed. */
 	UPROPERTY()
 	bool bIsFilterDirty = false;
 
+	/** Whether ActiveSnapshot is currently being restored. Does not allow changing the active snapshot while true.  */
+	UPROPERTY()
+	bool bIsApplyingSnapshot = false;
+
 	/* Converts UserDefinedFilters into ULevelSnapshotsSelectionSet display in results view. */
 	UPROPERTY()
-	UFilteredResults* FilterResults;
+	TObjectPtr<UFilteredResults> FilterResults;
 
 	/* Snapshot selected by user */
-	TOptional<TStrongObjectPtr<ULevelSnapshot>> ActiveSnapshot;
+	UPROPERTY()
+	TObjectPtr<ULevelSnapshot> ActiveSnapshot;
 	/* Filter visible in details panel */
-	TOptional<TStrongObjectPtr<UNegatableFilter>> EditedFilter;
+	UPROPERTY()
+	TObjectPtr<UNegatableFilter> EditedFilter;
+
+	void OnPreApplySnapshot() { bIsApplyingSnapshot = true; }
+	void OnPostApplySnapshot() { bIsApplyingSnapshot = false; }
 };

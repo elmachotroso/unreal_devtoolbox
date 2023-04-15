@@ -2,15 +2,22 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "EdGraph/EdGraphSchema.h"
 #include "BlueprintNodeSignature.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "BlueprintPaletteFavorites.generated.h"
 
 class UBlueprintNodeSpawner;
 struct FBlueprintActionInfo;
+struct FEdGraphSchemaAction;
 
 /*******************************************************************************
 * FFavoritedPaletteItem
@@ -176,10 +183,10 @@ public:
 	void LoadProfile(FString const& ProfileName);
 
 	/**
-	 * Provides any easy way to see if the user is currently using his/her own
-	 * manual profile (one he/she set up through the tool).
+	 * Provides any easy way to see if the user is currently using their own
+	 * manual profile (one they set up through the tool).
 	 * 
-	 * @return True if he/she is using their own profile, false if it is a predefined one.
+	 * @return True if the user is using their own profile, false if it is a predefined one.
 	 */
 	bool IsUsingCustomProfile() const;
 

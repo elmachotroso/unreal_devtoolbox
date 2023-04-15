@@ -8,10 +8,7 @@
 #include "Random.ush"
 #include "DeferredShadingCommon.ush"
 #include "MonteCarlo.ush"
-
-#if STRATA_ENABLED
 #include "Strata/Strata.ush"
-#endif
 
 // Setup the max number of Burley samples
 #define BURLEY_NUM_SAMPLES	64
@@ -307,15 +304,9 @@ FBurleySampleInfo GenerateSampleInfo(float2 Rand0T1, float DiffuseMeanFreePathFo
 }
 
 #if STRATA_ENABLED
-FStrataSubsurfaceData LoadStrataSSSData(float2 UV)
-{
-	const float2 PixelPos = UV.xy * View.BufferSizeAndInvSize.xy - View.ViewRectMin.xy;
-	return StrataUnpackSSSData(Strata.SSSTexture.Load(uint3(PixelPos, 0)));
-}
-
 FStrataTopLayerData LoadStrataTopLayerData(float2 UV)
 {
-	const float2 PixelPos = UV.xy * View.BufferSizeAndInvSize.xy - View.ViewRectMin.xy;
+	const float2 PixelPos = UV.xy * View.BufferSizeAndInvSize.xy;
 	return StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(PixelPos, 0)));
 }
 #endif
@@ -324,8 +315,8 @@ FStrataTopLayerData LoadStrataTopLayerData(float2 UV)
 float GetProfileMask(float2 BufferUV)
 {
 #if STRATA_ENABLED
-	const FStrataSubsurfaceData SSSData = LoadStrataSSSData(BufferUV);
-	const bool bIsProfile = SSSData.bIsValid;
+	const FStrataSubsurfaceHeader SSSHeader = LoadStrataSSSHeader(BufferUV);
+	const bool bIsProfile = StrataSubSurfaceHeaderGetIsValid(SSSHeader);
 #else
 	const FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(BufferUV);
 	const bool bIsProfile = UseSubsurfaceProfile(ScreenSpaceData.GBuffer.ShadingModelID);	
@@ -482,9 +473,9 @@ int GetNumOfSamplesBasedOnQuality(float2 UV)
 // If the shading model is valid, return the profile. Otherwise, return SSS_PROFILE_ID_INVALID.
 // That way if we have a valid profile, we can check of the other profile is valid with a single boolean expression.
 #if STRATA_ENABLED
-uint ExtractSubsurfaceProfileIntWithInvalid(FStrataSubsurfaceData SSSData)
+uint ExtractSubsurfaceProfileIntWithInvalid(FStrataSubsurfaceHeader SSSHeader)
 {
-	return SSSData.ProfileId;
+	return StrataSubSurfaceHeaderGetProfileId(SSSHeader);
 }
 #else
 uint ExtractSubsurfaceProfileIntWithInvalid(FGBufferData BufferData)
@@ -744,9 +735,9 @@ BurleySampleDiffuseNormal SampleSSSColorConsideringLocalShared(float2 CenterUV, 
 
 #if !(ENABLE_PROFILE_ID_CACHE && (SUBSURFACE_FORCE_SEPARABLE !=1))
 	#if STRATA_ENABLED
-	const FStrataSubsurfaceData SSSData = LoadStrataSSSData(ClampedUV);
+	const FStrataSubsurfaceHeader SSSHeader = LoadStrataSSSHeader(ClampedUV);
 	#else
-	const FGBufferData SSSData = GetScreenSpaceData(ClampedUV).GBuffer;
+	const FGBufferData SSSHeader = GetScreenSpaceData(ClampedUV).GBuffer;
 	#endif
 #endif
 
@@ -772,7 +763,7 @@ BurleySampleDiffuseNormal SampleSSSColorConsideringLocalShared(float2 CenterUV, 
 #if ENABLE_PROFILE_ID_CACHE && (SUBSURFACE_FORCE_SEPARABLE !=1)
 	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(ClampedUV,Sample.DiffuseLighting.w);
 #else
-	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSData);
+	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSHeader);
 #endif
 
 	return Sample;
@@ -796,7 +787,7 @@ BurleySampleDiffuseNormal SampleSSSColorConsideringLocalShared(float2 CenterUV, 
 #if ENABLE_PROFILE_ID_CACHE && (SUBSURFACE_FORCE_SEPARABLE != 1)
 			Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(ClampedUV, Sample.DiffuseLighting.w);
 #else
-			Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSData);
+			Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSHeader);
 #endif
 
 			return Sample;
@@ -813,7 +804,7 @@ BurleySampleDiffuseNormal SampleSSSColorConsideringLocalShared(float2 CenterUV, 
 #if ENABLE_PROFILE_ID_CACHE && (SUBSURFACE_FORCE_SEPARABLE != 1)
 	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(ClampedUV, Sample.DiffuseLighting.w);
 #else
-	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSData);
+	Sample.ProfileID = ExtractSubsurfaceProfileIntWithInvalid(SSSHeader);
 #endif
 
 	return Sample;
@@ -826,6 +817,9 @@ float2 CalculateBurleyScale(float WorldUnitScale, float DepthAtCenter)
 
 	float SSSScaleX = SubsurfaceParams.x;
 	BurleyScale *= SSSScaleX / DepthAtCenter;
+	
+	// cast from cm to mm for depth, and remove the effect of SUBSURFACE_KERNEL_SIZE. 
+	BurleyScale *= SUBSURFACE_KERNEL_SIZE / BURLEY_CM_2_MM;
 
 	// account for Screen Percentage/Dyanmic Resolution Scaling
 	BurleyScale *= (SubsurfaceInput0_ViewportSize.x * SubsurfaceInput0_ExtentInverse.x);
@@ -864,8 +858,8 @@ float3 CalculateCenterSampleWeight(float Depth, FBurleyParameter BurleyParameter
 
 	float DiffuseMeanFreePath = GetDiffuseMeanFreePathForSampling(BurleyParameter.DiffuseMeanFreePath);
 
-	// To calculate the surface free path from albedo, use diffuse surface scaling.
-	float3 D = DiffuseMeanFreePath / GetDiffuseSurfaceScalingFactor3D(BurleyParameter.SurfaceAlbedo.xyz);
+	// To calculate the surface free path from albedo, use the default scaling.
+	float3 D = DiffuseMeanFreePath / GetScalingFactor3D(BurleyParameter.SurfaceAlbedo.xyz);
 
 	float3 CenterSampleWeight;
 
@@ -918,7 +912,7 @@ float4 BurleyNormalizedSS(float2 BufferUV, uint2 GroupThreadID)
 	const FStrataSubsurfaceData SSSData = LoadStrataSSSData(BufferUV);
 	const FStrataTopLayerData TopLayerData = LoadStrataTopLayerData(BufferUV);
 	const float3 WorldNormal = TopLayerData.WorldNormal;
-	const uint SubsurfaceProfileInt = SSSData.ProfileId;
+	const uint SubsurfaceProfileInt = StrataSubSurfaceHeaderGetProfileId(SSSData.Header);
 	const FBurleyParameter BurleyParameter = GetBurleyParameters(SSSData);
 #else
 	const FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(BufferUV);
@@ -1064,7 +1058,12 @@ float4 BurleyNormalizedSS(float2 BufferUV, uint2 GroupThreadID)
 
 			// Step 4: create the bilateral filtering weighted Distance between entry and exit.
 #if USE_BILATERAL_FILTERING
-			float DeltaDepth = (SampledRadianceAndDepth.w - DepthAtDiscCenter)*BURLEY_CM_2_MM;
+			// Bring DeltaDepth into the normalized kernal space.
+			// 
+			// Without the division of world unit scale, we add too much penalty to the sample weight when world unit scale is 
+			// large. E.g., when we have a 1 cm world unit scale (i.e., 1cm is regarded as 1mm), if we get 1mm depth difference, 
+			// it should be treated as 0.1mm instead of 1mm to reduce the weight contribution.
+			float DeltaDepth = (SampledRadianceAndDepth.w - DepthAtDiscCenter) * BURLEY_CM_2_MM / BurleyParameter.WorldUnitScale;
 			float RadiusSampledInMM = sqrt(BurleySampleInfo.RadiusInMM * BurleySampleInfo.RadiusInMM + DeltaDepth * DeltaDepth);
 
 #if RESAMPLE_PDF
@@ -1104,7 +1103,7 @@ float4 BurleyNormalizedSS(float2 BufferUV, uint2 GroupThreadID)
 	RadianceAccumulated.xyz *= (ActiveNumOfSamples==0)? 0 :(1/ActiveNumOfSamples * 2 * PI) * EnergyNormalization;
 #else
 	// The added epsilon is used to avoid divid by zero.
-	RadianceAccumulated.xyz *= (WeightingFactor == 0)? 0:(1.0f /WeightingFactor*EnergyNormalization);
+	RadianceAccumulated.xyz *= select(WeightingFactor == 0, 0.0, 1.0f /WeightingFactor*EnergyNormalization);
 #endif
 
 	RadianceAccumulated.xyz *= BoundaryColorBleedAccum*InvNumOfSamples;
@@ -1115,7 +1114,7 @@ float4 BurleyNormalizedSS(float2 BufferUV, uint2 GroupThreadID)
 #endif
 
 	// The opacity works by reducing the radius based on opacity, but this runs into precision issues with low opacity values.
-	// So as the opacity goes from 0.02 to 0.01, we transition to fully disabling SSS by the time we get to 0.01.
+	// So as the opacity goes to SSSS_OPACITY_THRESHOLD_EPS, we transition to fully disabling SSS by the time we get there.
 	float LowOpacityEps = SSSS_OPACITY_THRESHOLD_EPS;
 
 	float OriginalLerp = saturate((BurleyParameter.SurfaceOpacity - LowOpacityEps) / LowOpacityEps);
@@ -1211,16 +1210,16 @@ void BurleyComputeMain(uint2 DT_ID, uint2 G_ID, uint GI)
 		#if STRATA_ENABLED
 			const FStrataTopLayerData TopLayerData = LoadStrataTopLayerData(SampleUV);
 			const float3 SampleWorldNormal = TopLayerData.WorldNormal;
-			const FStrataSubsurfaceData SampleSSSData = LoadStrataSSSData(SampleUV);
+			const FStrataSubsurfaceHeader SampleSSSHeader = LoadStrataSSSHeader(SampleUV);
 		#else
-			const FGBufferData SampleSSSData = GetScreenSpaceData(SampleUV).GBuffer;
-			const float3 SampleWorldNormal = SampleSSSData.WorldNormal;
+			const FGBufferData SampleSSSHeader = GetScreenSpaceData(SampleUV).GBuffer;
+			const float3 SampleWorldNormal = SampleSSSHeader.WorldNormal;
 		#endif
 
 #if BILATERAL_FILTER_KERNEL_FUNCTION_TYPE == BILATERAL_FILTER_KERNEL_FUNCTION_DEPTH_AND_NORMAL
 			SharedSubsurfaceWorldNormal[LocalSharedIndex] = SampleWorldNormal;
 #endif
-			SharedSubsurfaceProfileID[LocalSharedIndex] = ExtractSubsurfaceProfileIntWithInvalid(SampleSSSData);
+			SharedSubsurfaceProfileID[LocalSharedIndex] = ExtractSubsurfaceProfileIntWithInvalid(SampleSSSHeader);
 		}
 	}
 

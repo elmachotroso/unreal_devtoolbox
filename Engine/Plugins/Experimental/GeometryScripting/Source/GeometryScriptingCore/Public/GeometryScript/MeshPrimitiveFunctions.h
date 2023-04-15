@@ -36,13 +36,13 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPrimitiveOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptPrimitivePolygroupMode PolygroupMode = EGeometryScriptPrimitivePolygroupMode::PerFace;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bFlipOrientation = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptPrimitiveUVMode UVMode = EGeometryScriptPrimitiveUVMode::Uniform;
 };
 
@@ -52,26 +52,46 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptRevolveOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float RevolveDegrees = 360.0f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float DegreeOffset = 0.0f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bReverseDirection = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bHardNormals = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float HardNormalAngle = 30.0f;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bProfileAtMidpoint = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bFillPartialRevolveEndcaps = true;
+};
+
+USTRUCT(BlueprintType)
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptVoronoiOptions
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	float BoundsExpand = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	FBox Bounds = FBox(EForceInit::ForceInit);
+
+	/** Optional list of cells to create meshes for.  If empty, create all cells. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	TArray<int32> CreateCells;
+
+	/** Whether to include the bordering Voronoi cells (which extend 'infinitely' to any boundary) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	bool bIncludeBoundary = true;
 };
 
 
@@ -229,6 +249,35 @@ public:
 		UGeometryScriptDebug* Debug = nullptr);
 
 	/**
+	 * Sweep the given 2D PolylineVertices along the SweepPath specified as a set of FTransforms
+	 * If the 2D vertices are (U,V), then in the coordinate space of the FTransform, X points "along" the path,
+	 * Y points "right" (U) and Z points "up" (V).
+	 * @param PolylineVertices vertices of the open 2D path that will be swept along the SweepPath
+	 * @param SweepPath defines the 3D sweep path curve as a 3D poly-path, with rotation and scaling at each polypath vertex taken from the Transform
+	 * @param PolylineTexParamU defines U coordinate value for each element in PolylineVertices. Must be same length as PolylineVertices (ignored if length=0).
+	 * @param SweepPathTexParamV defines V coordinate value for each element in SweepPath. Must be same length as PolylineVertices if bLoop=false, length+1 if bLoop=true, and ignored if length=0.
+	 * @param bLoop if true, SweepPath is considered to be a Loop and a section connecting the end and start of the path is added (bCapped is ignored)
+	 * @param StartScale uniform scaling applied to the 2D polygon at the start of the path. Interpolated via arc length to EndScale at the end of the path.
+	 * @param EndScale uniform scaling applied to the 2D polygon at the end of the path
+	 * @param RotationAngleDeg Rotation applied to the 2D Polygon. Positive rotation rotates clockwise, ie Up/+Z/+V towards Right/+Y/+U. This Rotation is applied before any rotation in the SweepPath Transforms.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod, AutoCreateRefTerm="PolylineTexParamU, SweepPathTexParamV"))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	AppendSweepPolyline( 
+		UDynamicMesh* TargetMesh, 
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		const TArray<FVector2D>& PolylineVertices,
+		const TArray<FTransform>& SweepPath,
+		const TArray<float>& PolylineTexParamU,
+		const TArray<float>& SweepPathTexParamV,
+		bool bLoop = false,
+		float StartScale = 1.0f,
+		float EndScale = 1.0f,
+		float RotationAngleDeg = 0.0f,
+		UGeometryScriptDebug* Debug = nullptr);
+
+	/**
 	 * Polygon should be oriented counter-clockwise to produce a correctly-oriented shape, otherwise it will be inside-out
 	 * Polygon endpoint is not repeated.
 	 */
@@ -260,6 +309,32 @@ public:
 		float EndScale = 1.0f,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	 * Sweep the given 2D PolygonVertices along the SweepPath specified as a set of FTransforms
+	 * If the 2D vertices are (U,V), then in the coordinate space of the FTransform, X points "along" the path,
+	 * Y points "right" (U) and Z points "up" (V).
+	 * @param PolygonVertices vertices of the closed 2D polyon that will be swept along the SweepPath
+	 * @param SweepPath defines the 3D sweep path curve as a 3D poly-path, with rotation and scaling at each polypath vertex taken from the Transform
+	 * @param bLoop if true, SweepPath is considered to be a Loop and a section connecting the end and start of the path is added (bCapped is ignored)
+	 * @param bCapped if true the open ends of the swept generalized cylinder are triangulated
+	 * @param StartScale uniform scaling applied to the 2D polygon at the start of the path. Interpolated via arc length to EndScale at the end of the path.
+	 * @param EndScale uniform scaling applied to the 2D polygon at the end of the path
+	 * @param RotationAngleDeg Rotation applied to the 2D Polygon. Positive rotation rotates clockwise, ie Up/+Z/+V towards Right/+Y/+U
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	AppendSweepPolygon( 
+		UDynamicMesh* TargetMesh, 
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		const TArray<FVector2D>& PolygonVertices,
+		const TArray<FTransform>& SweepPath,
+		bool bLoop = false,
+		bool bCapped = true,
+		float StartScale = 1.0f,
+		float EndScale = 1.0f,
+		float RotationAngleDeg = 0.0f,
+		UGeometryScriptDebug* Debug = nullptr);
 
 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
@@ -346,6 +421,16 @@ public:
 		bool bFloating = false,
 		UGeometryScriptDebug* Debug = nullptr);
 
+
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta = (ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
+	AppendVoronoiDiagram2D(
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		const TArray<FVector2D>& VoronoiSites,
+		FGeometryScriptVoronoiOptions VoronoiOptions,
+		UGeometryScriptDebug* Debug = nullptr);
 
 
 

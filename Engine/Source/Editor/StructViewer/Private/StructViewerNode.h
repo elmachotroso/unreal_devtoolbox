@@ -2,15 +2,20 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Internationalization/Text.h"
 #include "StructViewerModule.h"
+#include "Templates/SharedPointer.h"
 #include "UObject/Class.h"
-#include "UObject/WeakObjectPtr.h"
-
-struct FAssetData;
+#include "UObject/NameTypes.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class IPropertyHandle;
+class UScriptStruct;
 class UUserDefinedStruct;
+struct FAssetData;
 
 /** Common data representing an unfiltered hierarchy of nodes */
 class FStructViewerNodeData : public TSharedFromThis<FStructViewerNodeData>
@@ -38,13 +43,13 @@ public:
 	}
 
 	/** Get the full object path to the struct we represent */
-	FName GetStructPath() const
+	FSoftObjectPath GetStructPath() const
 	{
 		return StructPath;
 	}
 
 	/** Get the full object path to the parent of the struct we represent */
-	FName GetParentStructPath() const
+	FSoftObjectPath GetParentStructPath() const
 	{
 		return ParentStructPath;
 	}
@@ -80,7 +85,7 @@ public:
 	void AddUniqueChild(const TSharedRef<FStructViewerNodeData>& InChild);
 
 	/** Remove the child representing the given struct path (if present) */
-	bool RemoveChild(const FName InStructPath);
+	bool RemoveChild(const FSoftObjectPath& InStructPath);
 
 private:
 	/** The unlocalized name of the struct we represent */
@@ -90,10 +95,10 @@ private:
 	mutable FText StructDisplayName;
 
 	/** The full object path to the struct we represent */
-	FName StructPath;
+	FSoftObjectPath StructPath;
 
 	/** The full object path to the parent of the struct we represent */
-	FName ParentStructPath;
+	FSoftObjectPath ParentStructPath;
 
 	/** The struct that we represent (for loaded struct assets, or native structs) */
 	mutable TWeakObjectPtr<const UScriptStruct> Struct;
@@ -131,13 +136,13 @@ public:
 	FText GetStructDisplayName(const EStructViewerNameTypeToDisplay InNameType) const;
 
 	/** Get the full object path to the struct we represent */
-	FName GetStructPath() const
+	FSoftObjectPath GetStructPath() const
 	{
 		return NodeData->GetStructPath();
 	}
 
 	/** Get the full object path to the parent of the struct we represent */
-	FName GetParentStructPath() const
+	FSoftObjectPath GetParentStructPath() const
 	{
 		return NodeData->GetParentStructPath();
 	}

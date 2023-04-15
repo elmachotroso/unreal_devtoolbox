@@ -30,15 +30,18 @@
 #include "Framework/Application/SlateApplication.h"
 
 #if WITH_EDITOR
+	#include "DirectoryWatcherModule.h"
 	#include "Editor.h"
-	#include "UnrealEdGlobals.h"
 	#include "Editor/UnrealEdEngine.h"
+	#include "FileHelpers.h"
+	#include "GameMapsSettings.h"
+	#include "IDirectoryWatcher.h"
+	#include "Modules/ModuleManager.h"
+	#include "ObjectTools.h"	
 	#include "PackageTools.h"
-	#include "ObjectTools.h"
 	#include "Selection.h"
 	#include "Subsystems/AssetEditorSubsystem.h"
-	#include "GameMapsSettings.h"
-	#include "FileHelpers.h"
+	#include "UnrealEdGlobals.h"
 #endif
 
 namespace ConcertSyncClientUtil
@@ -48,7 +51,36 @@ static TAutoConsoleVariable<int32> CVarDelayApplyingTransactionsWhileEditing(
 	TEXT("Concert.DelayTransactionsWhileEditing"), 0,
 	TEXT("Focus is lost by the editor when a transaction is applied. This variable suspends applying a transaction until the user has removed focus on editable UI."));
 
-bool UserIsEditing()
+static TAutoConsoleVariable<int32> CVarDelayApplyingTransactionsWaitTimeout(
+	TEXT("Concert.DelayTransactionsWhileEditingTimeout"), 5,
+	TEXT("When Concert.DelayTransactionsWhileEditing is enabled we make sure the user has not been idle too long to prevent transactions from stacking up. The timeout value is specified in seconds."));
+
+bool IsUserEditing()
+{
+	static FName SEditableTextType(TEXT("SEditableText"));
+	static FName SMultiLineEditableTextType(TEXT("SMultiLineEditableText"));
+
+#if WITH_EDITOR
+	if (GUnrealEd)
+	{
+		auto IsUserEditingWidget = [] () {
+			bool bIsEditing = false;
+			FSlateApplication& App = FSlateApplication::Get();
+			App.ForEachUser([&bIsEditing](FSlateUser& User) {
+				TSharedPtr<SWidget> FocusedWidget = User.GetFocusedWidget();
+				bool bTextWidgetHasFocus = FocusedWidget && (FocusedWidget->GetType() == SEditableTextType || FocusedWidget->GetType() == SMultiLineEditableTextType);
+				bIsEditing |= bTextWidgetHasFocus;
+			});
+			return bIsEditing;
+		};
+		return GUnrealEd->IsUserInteracting() || IsUserEditingWidget();
+	}
+#endif
+
+	return false;
+}
+
+bool ShouldDelayTransaction()
 {
 #if WITH_EDITOR
 	if (CVarDelayApplyingTransactionsWhileEditing.GetValueOnAnyThread() > 0)
@@ -56,14 +88,18 @@ bool UserIsEditing()
 		static FName SEditableTextType(TEXT("SEditableText"));
 		static FName SMultiLineEditableTextType(TEXT("SMultiLineEditableText"));
 
-		bool bEditable = false;
-		FSlateApplication::Get().ForEachUser([&bEditable](FSlateUser& User) {
-			TSharedPtr<SWidget> FocusedWidget = User.GetFocusedWidget();
-
-			bool bCanEdit = FocusedWidget && (FocusedWidget->GetType() == SEditableTextType || FocusedWidget->GetType() == SMultiLineEditableTextType);
-			bEditable |= bCanEdit;
-		});
-		return bEditable;
+		const bool bIsEditing = IsUserEditing();
+		if (bIsEditing)
+		{
+			FSlateApplication& App = FSlateApplication::Get();
+			double LastUpdateTime = App.GetLastUserInteractionTime();
+			double Duration = App.GetCurrentTime() - LastUpdateTime;
+			if (static_cast<int32>(Duration) > CVarDelayApplyingTransactionsWaitTimeout.GetValueOnAnyThread())
+			{
+				return false;
+			}
+		}
+		return bIsEditing;
 	}
 #endif
 	return false;
@@ -78,13 +114,72 @@ bool CanPerformBlockingAction(const bool bBlockDuringInteraction)
 
 void UpdatePendingKillState(UObject* InObj, const bool bIsPendingKill)
 {
+	const bool bWasPendingKill = !IsValid(InObj);
+	if (bIsPendingKill == bWasPendingKill)
+	{
+		return;
+	}
+
 	if (bIsPendingKill)
 	{
-		InObj->MarkAsGarbage();
+		bool bMarkAsGarbage = true;
+
+		if (AActor* Actor = Cast<AActor>(InObj))
+		{
+			if (UWorld* ActorWorld = Actor->GetWorld())
+			{
+#if WITH_EDITOR
+				if (GIsEditor)
+				{
+					bMarkAsGarbage = !ActorWorld->EditorDestroyActor(Actor, /*bShouldModifyLevel*/false);
+				}
+				else
+#endif	// WITH_EDITOR
+				{
+					bMarkAsGarbage = !ActorWorld->DestroyActor(Actor, /*bNetForce*/false, /*bShouldModifyLevel*/false);
+				}
+			}
+		}
+
+		if (bMarkAsGarbage)
+		{
+			InObj->MarkAsGarbage();
+		}
 	}
 	else
 	{
 		InObj->ClearGarbage();
+	}
+}
+
+void AddActorToOwnerLevel(AActor* InActor)
+{
+	if (ULevel* Level = InActor->GetLevel())
+	{
+		if (Level->Actors.Contains(InActor))
+		{
+			return;
+		}
+
+		Level->Actors.Add(InActor);
+		Level->ActorsForGC.Add(InActor);
+
+#if WITH_EDITOR
+		if (GIsEditor)
+		{
+			if (Level->IsUsingActorFolders())
+			{
+				InActor->FixupActorFolder();
+			}
+
+			GEngine->BroadcastLevelActorAdded(InActor);
+
+			if (UWorld* World = Level->GetWorld())
+			{
+				World->BroadcastLevelsChanged();
+			}
+		}
+#endif	// WITH_EDITOR
 	}
 }
 
@@ -157,7 +252,7 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	// TODO: If a case arises where we need to go the other direction and get
 	// an object with a non-partitioned path from a partitioned path, a
 	// different mechanism for that would be needed here.
-	if (UObject* ExistingObjectOuter = FSoftObjectPath(ObjectOuterPathToFind).ResolveObject())
+	if (UObject* ExistingObjectOuter = FSoftObjectPath(ObjectOuterPathToFind.ToString()).ResolveObject())
 	{
 		// We need the object class to find or create the object
 		if (UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName))
@@ -181,7 +276,7 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 					if (UObject* NewObject = StaticFindObject(ObjectClass, NewObjectOuter ? NewObjectOuter : ExistingObjectOuter, *ObjectNameToCreate.ToString(), /*bExactClass*/true))
 					{
 						UE_LOG(LogConcert, Warning, TEXT("Attempted to rename '%s' over '%s'. Re-using the found object instead of performing the rename!"), *ExistingObject->GetPathName(), *NewObject->GetPathName());
-						ExistingObject->MarkAsGarbage();
+						UpdatePendingKillState(ExistingObject, /*bIsPendingKill*/true);
 						ResultFlags |= EGetObjectResultFlags::NeedsGC;
 
 						ExistingObject = NewObject;
@@ -207,7 +302,7 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	// Find the outer for the new object.
 	// As above, we use FSoftObjectPath::ResolveObject() here to account for
 	// the possibility of world partitioning.
-	if (UObject* NewObjectOuter = FSoftObjectPath(ObjectOuterPathToCreate).ResolveObject())
+	if (UObject* NewObjectOuter = FSoftObjectPath(ObjectOuterPathToCreate.ToString()).ResolveObject())
 	{
 		// We need the object class to find or create the object
 		if (UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName))
@@ -246,9 +341,8 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 							SpawnParams.OverrideLevel = OuterLevel;
 							SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 							SpawnParams.bNoFail = true;
-							SpawnParams.bDeferConstruction = true; // We defer FinishSpawning until the correct object state has been applied
 							SpawnParams.ObjectFlags = (EObjectFlags)InObjectId.ObjectPersistentFlags;
-							ObjectResult = FGetObjectResult(OwnerWorld->SpawnActor<AActor>(ObjectClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams), EGetObjectResultFlags::NeedsPostSpawn);
+							ObjectResult = FGetObjectResult(OwnerWorld->SpawnActor<AActor>(ObjectClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams), EGetObjectResultFlags::NewlyCreated);
 						}
 						else
 						{
@@ -262,7 +356,7 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 				}
 				else
 				{
-					ObjectResult = FGetObjectResult(NewObject<UObject>(NewObjectOuter, ObjectClass, *ObjectNameToCreate.ToString(), (EObjectFlags)InObjectId.ObjectPersistentFlags));
+					ObjectResult = FGetObjectResult(NewObject<UObject>(NewObjectOuter, ObjectClass, *ObjectNameToCreate.ToString(), (EObjectFlags)InObjectId.ObjectPersistentFlags), EGetObjectResultFlags::NewlyCreated);
 				}
 				
 				// if we have any package assignment, do it here
@@ -276,62 +370,42 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	return FGetObjectResult();
 }
 
-bool ImportPropertyData(const FConcertLocalIdentifierTable* InLocalIdentifierTable, const FConcertSyncWorldRemapper& InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const FName InPropertyName, const TArray<uint8>& InSerializedData)
+TArray<const FProperty*> GetExportedProperties(const UStruct* InStruct, const TArray<FName>& InPropertyNames, const bool InIncludeEditorOnlyData)
 {
-	FProperty* Prop = InObj->GetClass()->FindPropertyByName(InPropertyName);
-	if (Prop)
+	TArray<const FProperty*> ExportedProperties;
+	ExportedProperties.Reserve(InPropertyNames.Num());
+
+	for (const FName& PropertyName : InPropertyNames)
 	{
-		FConcertSyncObjectReader ObjectReader(InLocalIdentifierTable, InWorldRemapper, InVersionInfo, InObj, InSerializedData);
-		ObjectReader.SerializeProperty(Prop, InObj);
-		return !ObjectReader.GetError();
+		if (const FProperty* Property = GetExportedProperty(InStruct, PropertyName, InIncludeEditorOnlyData))
+		{
+			ExportedProperties.Add(Property);
+		}
 	}
 
-	return false;
+	return ExportedProperties;
 }
 
-TArray<FName> GetRootProperties(const TArray<FName>& InChangedProperties)
+const FProperty* GetExportedProperty(const UStruct* InStruct, const FName InPropertyName, const bool InIncludeEditorOnlyData)
 {
-	TArray<FName> RootProperties;
-	RootProperties.Reserve(InChangedProperties.Num());
-	for (const FName& PropertyChainName : InChangedProperties)
+	if (const FProperty* Property = FindFProperty<FProperty>(InStruct, InPropertyName))
 	{
-		// Only care about the root property in the chain
-		TArray<FString> PropertyChainNames;
-		PropertyChainName.ToString().ParseIntoArray(PropertyChainNames, TEXT("."));
-		check(PropertyChainNames.Num() >= 1);
-
-		RootProperties.AddUnique(*PropertyChainNames[0]);
+		if (ConcertSyncUtil::CanExportProperty(Property, InIncludeEditorOnlyData))
+		{
+			return Property;
+		}
 	}
-	return RootProperties;
-}
 
-FProperty* GetExportedProperty(const UStruct* InStruct, const FName InPropertyName, const bool InIncludeEditorOnlyData)
-{
-	FProperty* Property = FindFProperty<FProperty>(InStruct, InPropertyName);
-
-	// Filter the property
-	if (Property 
-		&& (!Property->IsEditorOnlyProperty() || InIncludeEditorOnlyData) 
-		&& !Property->HasAnyPropertyFlags(CPF_NonTransactional)
-		&& !ConcertSyncUtil::ShouldSkipTransientProperty(Property))
-	{
-		return Property;
-	}
 	return nullptr;
 }
 
-void SerializeProperties(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const TArray<FName>& InChangedProperties, const bool InIncludeEditorOnlyData, TArray<FConcertSerializedPropertyData>& OutPropertyDatas)
+void SerializeProperties(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const TArray<const FProperty*>& InProperties, const bool InIncludeEditorOnlyData, TArray<FConcertSerializedPropertyData>& OutPropertyDatas)
 {
-	const TArray<FName> RootPropertyNames = GetRootProperties(InChangedProperties);
-	for (const FName& RootPropertyName : RootPropertyNames)
+	for (const FProperty* Property : InProperties)
 	{
-		FProperty* RootProperty = GetExportedProperty(InObject->GetClass(), RootPropertyName, InIncludeEditorOnlyData);
-		if (RootProperty)
-		{
-			FConcertSerializedPropertyData& PropertyData = OutPropertyDatas.AddDefaulted_GetRef();
-			PropertyData.PropertyName = RootProperty->GetFName();
-			SerializeProperty(InLocalIdentifierTable, InObject, RootProperty, InIncludeEditorOnlyData, PropertyData.SerializedData);
-		}
+		FConcertSerializedPropertyData& PropertyData = OutPropertyDatas.AddDefaulted_GetRef();
+		PropertyData.PropertyName = Property->GetFName();
+		SerializeProperty(InLocalIdentifierTable, InObject, Property, InIncludeEditorOnlyData, PropertyData.SerializedData);
 	}
 }
 
@@ -340,15 +414,15 @@ void SerializeProperty(FConcertLocalIdentifierTable* InLocalIdentifierTable, con
 	bool bSkipAssets = false; // TODO: Handle asset updates
 
 	FConcertSyncObjectWriter ObjectWriter(InLocalIdentifierTable, (UObject*)InObject, OutSerializedData, InIncludeEditorOnlyData, bSkipAssets);
-	ObjectWriter.SerializeProperty((FProperty*)InProperty, (UObject*)InObject);
+	ObjectWriter.SerializeProperty(InProperty, InObject);
 }
 
-void SerializeObject(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const TArray<FName>* InChangedProperties, const bool InIncludeEditorOnlyData, TArray<uint8>& OutSerializedData)
+void SerializeObject(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const TArray<const FProperty*>* InProperties, const bool InIncludeEditorOnlyData, TArray<uint8>& OutSerializedData)
 {
 	bool bSkipAssets = false; // TODO: Handle asset updates
 
 	FConcertSyncObjectWriter ObjectWriter(InLocalIdentifierTable, (UObject*)InObject, OutSerializedData, InIncludeEditorOnlyData, bSkipAssets);
-	ObjectWriter.SerializeObject((UObject*)InObject, InChangedProperties);
+	ObjectWriter.SerializeObject(InObject, InProperties);
 }
 
 
@@ -377,6 +451,54 @@ void FlushPackageLoading(const FString& InPackageName, bool bForceBulkDataLoad)
 			ExistingPackage->GetLinker()->Detach();
 		}
 	}
+}
+
+#if WITH_EDITOR
+
+FDirectoryWatcherModule& GetDirectoryWatcherModule()
+{
+	static const FName DirectoryWatcherModuleName = TEXT("DirectoryWatcher");
+	return FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(DirectoryWatcherModuleName);
+}
+
+FDirectoryWatcherModule* GetDirectoryWatcherModuleIfLoaded()
+{
+	static const FName DirectoryWatcherModuleName = TEXT("DirectoryWatcher");
+	if (FModuleManager::Get().IsModuleLoaded(DirectoryWatcherModuleName))
+	{
+		return &FModuleManager::GetModuleChecked<FDirectoryWatcherModule>(DirectoryWatcherModuleName);
+	}
+	return nullptr;
+}
+
+IDirectoryWatcher* GetDirectoryWatcher()
+{
+	FDirectoryWatcherModule& DirectoryWatcherModule = GetDirectoryWatcherModule();
+	return DirectoryWatcherModule.Get();
+}
+
+IDirectoryWatcher* GetDirectoryWatcherIfLoaded()
+{
+	if (FDirectoryWatcherModule* DirectoryWatcherModule = GetDirectoryWatcherModuleIfLoaded())
+	{
+		return DirectoryWatcherModule->Get();
+	}
+	return nullptr;
+}
+
+#endif // WITH_EDITOR
+
+void SynchronizeAssetRegistry()
+{
+#if WITH_EDITOR
+	IDirectoryWatcher* DirectoryWatcher = GetDirectoryWatcherIfLoaded();
+	if (!DirectoryWatcher)
+	{
+		return;
+	}
+
+	DirectoryWatcher->Tick(0.0f);
+#endif // WITH_EDITOR
 }
 
 void HotReloadPackages(TArrayView<const FName> InPackageNames)

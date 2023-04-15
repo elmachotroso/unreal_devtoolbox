@@ -7,18 +7,10 @@
 #include "Animation/NodeMappingContainer.h"
 #include "AnimationRuntime.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
+#include "Units/Execution/RigUnit_PrepareForExecution.h"
+#include "Algo/Transform.h"
 
-#include <limits>
-
-// Use this as a sentinel that the curve has _not_ been written to by the pose. If we get this
-// value back when reading the curve value in CR, then the curve value has not been touched and
-// so should not be written to. This value is close enough to zero to be indistinguishable for
-// all practical purposes. We don't use min() directly since that is a value that can happen
-// when dividing a small number with large. This one is less likely to happen though and would
-// be more deliberate. We also cannot use denorm_min(), since denormalized math is turned off
-// on PlayStation hardware. Another option, negative zero, is not usable either because some
-// -ffast-math optimizations can get rid of it.
-static constexpr float InvalidCurveValueSentinel = std::numeric_limits<float>::min() * 4.0f;
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ControlRigBase)
 
 #if ENABLE_ANIM_DEBUG
 TAutoConsoleVariable<int32> CVarAnimNodeControlRigDebug(TEXT("a.AnimNode.ControlRig.Debug"), 0, TEXT("Set to 1 to turn on debug drawing for AnimNode_ControlRigBase"));
@@ -37,6 +29,8 @@ FAnimNode_ControlRigBase::FAnimNode_ControlRigBase()
 	, OutputSettings(FControlRigIOSettings())
 	, bExecute(true)
 	, InternalBlendAlpha (1.f)
+	, bControlRigRequiresInitialization(true)
+	, LastBonesSerialNumberForCacheBones(0)
 {
 
 }
@@ -49,7 +43,7 @@ void FAnimNode_ControlRigBase::OnInitializeAnimInstance(const FAnimInstanceProxy
 
 	USkeletalMeshComponent* Component = InAnimInstance->GetOwningComponent();
 	UControlRig* ControlRig = GetControlRig();
-	if (Component && Component->SkeletalMesh && ControlRig)
+	if (Component && Component->GetSkeletalMeshAsset() && ControlRig)
 	{
 #if WITH_EDITORONLY_DATA
 		UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(ControlRig->GetClass());
@@ -57,7 +51,7 @@ void FAnimNode_ControlRigBase::OnInitializeAnimInstance(const FAnimInstanceProxy
 		{
 			UBlueprint* Blueprint = Cast<UBlueprint>(BlueprintClass->ClassGeneratedBy);
 			// node mapping container will be saved on the initialization part
-			NodeMappingContainer = Component->SkeletalMesh->GetNodeMappingContainer(Blueprint);
+			NodeMappingContainer = Component->GetSkeletalMeshAsset()->GetNodeMappingContainer(Blueprint);
 		}
 #endif
 
@@ -78,6 +72,8 @@ void FAnimNode_ControlRigBase::Initialize_AnyThread(const FAnimationInitializeCo
 		//Don't Inititialize the Control Rig here it may have the wrong VM on the CDO
 		SetTargetInstance(ControlRig);
 		ControlRig->RequestInit();
+		bControlRigRequiresInitialization = true;
+		LastBonesSerialNumberForCacheBones = 0;
 	}
 }
 
@@ -244,8 +240,15 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const uint16 SkeletonIndex = Pair.Value;
 
 				bool bIsValid;
-				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid, InvalidCurveValueSentinel);
-				ControlRig->GetHierarchy()->SetCurveValueByIndex(ControlRigIndex, Value);
+				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
+				if (bIsValid)
+				{
+					ControlRig->GetHierarchy()->SetCurveValueByIndex(ControlRigIndex, Value);
+				}
+				else
+				{
+					ControlRig->GetHierarchy()->UnsetCurveValueByIndex(ControlRigIndex);
+				}
 			}
 		}
 		else
@@ -257,8 +260,15 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const FRigElementKey Key(Name, ERigElementType::Curve);
 
 				bool bIsValid;
-				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid, InvalidCurveValueSentinel);
-				ControlRig->GetHierarchy()->SetCurveValue(Key, Value);
+				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
+				if (bIsValid)
+				{
+					ControlRig->GetHierarchy()->SetCurveValue(Key, Value);
+				}
+				else
+				{
+					ControlRig->GetHierarchy()->UnsetCurveValue(Key);
+				}
 			}
 		}
 	}
@@ -379,15 +389,17 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 ControlRigIndex = Pair.Key;
 				const uint16 SkeletonIndex = Pair.Value;
 
-				const float Value = ControlRig->GetHierarchy()->GetCurveValueByIndex(ControlRigIndex);
-
-				// Do an exact comparison to ensure we only catch values that started out as
-				// the sentinel value.
-				if(Value != InvalidCurveValueSentinel)
+				if (ControlRig->GetHierarchy()->IsCurveValueSetByIndex(ControlRigIndex))
 				{
-					// this causes a side effect of marking the curve as "valid"
-					// so only apply it for curves that have really changed
-					InOutput.Curve.Set(SkeletonIndex, Value);
+					InOutput.Curve.Set(SkeletonIndex, ControlRig->GetHierarchy()->GetCurveValueByIndex(ControlRigIndex));
+				}
+				else
+				{
+					const int32 WeightIndex = InOutput.Curve.GetArrayIndexByUID(SkeletonIndex);
+					if (WeightIndex != INDEX_NONE)
+					{
+						InOutput.Curve.ValidCurveWeights[WeightIndex] = false;
+					}
 				}
 			}
 		}
@@ -399,15 +411,17 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 Index = Iter.Value();
 				const FRigElementKey Key(Name, ERigElementType::Curve);
 
-				const float Value = ControlRig->GetHierarchy()->GetCurveValue(Key);
-
-				// Do an exact comparison to ensure we only catch values that started out as
-				// the sentinel value.
-				if(Value != InvalidCurveValueSentinel)
+				if (ControlRig->GetHierarchy()->IsCurveValueSet(Key))
 				{
-					// this causes a side effect of marking the curve as "valid"
-					// so only apply it for curves that have really changed
-					InOutput.Curve.Set(Index, Value);
+					InOutput.Curve.Set(Index, ControlRig->GetHierarchy()->GetCurveValue(Key));
+				}
+				else
+				{
+					const int32 WeightIndex = InOutput.Curve.GetArrayIndexByUID(Index);
+					if (WeightIndex != INDEX_NONE)
+					{
+						InOutput.Curve.ValidCurveWeights[WeightIndex] = false;
+					}
 				}
 			}
 		}
@@ -479,6 +493,10 @@ void FAnimNode_ControlRigBase::ExecuteControlRig(FPoseContext& InOutput)
 {
 	if (UControlRig* ControlRig = GetControlRig())
 	{
+		// temporarily give control rig access to the stack allocated attribute container
+		// control rig may have rig units that can add/get attributes to/from this container
+		UControlRig::FAnimAttributeContainerPtrScope AttributeScope(ControlRig, InOutput.CustomAttributes);
+		
 		// first update input to the system
 		UpdateInput(ControlRig, InOutput);
 
@@ -494,7 +512,27 @@ void FAnimNode_ControlRigBase::ExecuteControlRig(FPoseContext& InOutput)
 			}
 #endif
 
-			// first evaluate control rig
+			// pick the event to run
+			if(EventQueue.IsEmpty())
+			{
+				if(bClearEventQueueRequired)
+				{
+					ControlRig->SetEventQueue({FRigUnit_BeginExecution::EventName});
+					bClearEventQueueRequired = false;
+				}
+			}
+			else
+			{
+				TArray<FName> EventNames;
+				Algo::Transform(EventQueue, EventNames, [](const FControlRigAnimNodeEventName& InEventName) 
+				{
+					return InEventName.EventName;
+				});
+				ControlRig->SetEventQueue(EventNames);
+				bClearEventQueueRequired = true;
+			}
+			
+			// evaluate control rig
 			ControlRig->Evaluate_AnyThread();
 
 #if ENABLE_ANIM_DEBUG 
@@ -566,6 +604,17 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 	{
 		// fill up node names
 		FBoneContainer& RequiredBones = Context.AnimInstanceProxy->GetRequiredBones();
+
+		const uint16 BonesSerialNumber = RequiredBones.GetSerialNumber();
+		const bool bIsLODChange = !bControlRigRequiresInitialization && (BonesSerialNumber != LastBonesSerialNumberForCacheBones);
+
+		// the construction event may create a set of bones that we can map to. let's run construction now.
+		if(ControlRig->IsConstructionModeEnabled() ||
+			(ControlRig->IsConstructionRequired() && (bControlRigRequiresInitialization || bIsLODChange)))
+		{
+			ControlRig->Execute(EControlRigState::Update, FRigUnit_PrepareForExecution::EventName);
+			bControlRigRequiresInitialization = false;
+		}
 
 		ControlRigBoneInputMappingByIndex.Reset();
 		ControlRigBoneOutputMappingByIndex.Reset();
@@ -750,10 +799,16 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 			}
 		}
 
-		// re-init when LOD changes
-		// and restore control values
-		FControlRigControlScope Scope(ControlRig);
-		ControlRig->Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
+		if(bControlRigRequiresInitialization)
+		{
+			// re-init only if this is the first run
+			// and restore control values
+			FControlRigControlScope Scope(ControlRig);
+			ControlRig->Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
+			bControlRigRequiresInitialization = false;
+		}
+		
+		LastBonesSerialNumberForCacheBones = BonesSerialNumber;
 	}
 }
 
@@ -822,4 +877,5 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 		}
 	}
 }
+
 

@@ -8,7 +8,8 @@
 #include "ActorFolderTreeItem.h"
 #include "EditorActorFolders.h"
 #include "EditorFolderUtils.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "ActorMode.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 
 FActorFolderHierarchy::FActorFolderHierarchy(ISceneOutlinerMode* InMode, const TWeakObjectPtr<UWorld>& World, const FFolder::FRootObject& InRootObject)
 	: ISceneOutlinerHierarchy(InMode)
@@ -44,9 +45,9 @@ FSceneOutlinerTreeItemPtr FActorFolderHierarchy::FindOrCreateParentItem(const IS
 					if (Folder.GetRootObject() == RootObject)
 					{
 						// If item belongs to a LevelInstance
-						if (ALevelInstance* RootLevelInstance = Cast<ALevelInstance>(Folder.GetRootObjectPtr()))
+						if (ILevelInstanceInterface* RootLevelInstance = Cast<ILevelInstanceInterface>(Folder.GetRootObjectPtr()))
 						{
-							return Mode->CreateItemFor<FActorTreeItem>(RootLevelInstance, true);
+							return Mode->CreateItemFor<FActorTreeItem>(CastChecked<AActor>(RootLevelInstance), true);
 						}
 					}
 				}
@@ -90,21 +91,24 @@ void FActorFolderHierarchy::CreateWorldChildren(UWorld* World, TArray<FSceneOutl
 		return true;
 	});
 
-	if (FFolder::HasRootObject(RootObject))
+	if (FFolder::IsRootObjectValid(RootObject))
 	{
 		UObject* RootObjectPtr = FFolder::GetRootObjectPtr(RootObject);
-		if (ALevelInstance* RootLevelInstance = Cast<ALevelInstance>(RootObjectPtr))
+		if (ILevelInstanceInterface* RootLevelInstance = Cast<ILevelInstanceInterface>(RootObjectPtr))
 		{
-			if (FSceneOutlinerTreeItemPtr ActorItem = Mode->CreateItemFor<FActorTreeItem>(RootLevelInstance, true))
+			if (FSceneOutlinerTreeItemPtr ActorItem = Mode->CreateItemFor<FActorTreeItem>(CastChecked<AActor>(RootLevelInstance), true))
 			{
 				OutItems.Add(ActorItem);
 			}
 		}
 		else if (ULevel* RootLevel = Cast<ULevel>(RootObjectPtr))
 		{
-			if (FSceneOutlinerTreeItemPtr ActorItem = Mode->CreateItemFor<FLevelTreeItem>(RootLevel, true))
+			if (FActorMode::IsActorLevelDisplayable(RootLevel))
 			{
-				OutItems.Add(ActorItem);
+				if (FSceneOutlinerTreeItemPtr ActorItem = Mode->CreateItemFor<FLevelTreeItem>(RootLevel, true))
+				{
+					OutItems.Add(ActorItem);
+				}
 			}
 		}
 	}
@@ -114,7 +118,7 @@ void FActorFolderHierarchy::CreateItems(TArray<FSceneOutlinerTreeItemPtr>& OutIt
 {
 	check(RepresentingWorld.IsValid());
 
-	if (!FFolder::HasRootObject(RootObject))
+	if (FFolder::IsRootObjectPersistentLevel(RootObject))
 	{
 		if (FSceneOutlinerTreeItemPtr WorldItem = Mode->CreateItemFor<FWorldTreeItem>(RepresentingWorld.Get()))
 		{
@@ -151,11 +155,11 @@ void FActorFolderHierarchy::CreateChildren(const FSceneOutlinerTreeItemPtr& Item
 	else if (FActorTreeItem* ParentActorItem = Item->CastTo<FActorTreeItem>())
 	{
 		AActor* ParentActor = ParentActorItem->Actor.Get();
-		if (const ALevelInstance* LevelInstanceParentActor = Cast<ALevelInstance>(ParentActor))
+		if (const ILevelInstanceInterface* LevelInstanceParent = Cast<ILevelInstanceInterface>(ParentActor))
 		{
 			check(ParentActor->GetWorld() == World);
-			FFolder ParentFolder = LevelInstanceParentActor->GetFolder();
-			CreateChildrenFolders(World, ParentFolder, LevelInstanceParentActor, OutChildren);
+			FFolder ParentFolder = ParentActor->GetFolder();
+			CreateChildrenFolders(World, ParentFolder, ParentActor, OutChildren);
 		}
 	}
 	else if (FActorFolderTreeItem* FolderItem = Item->CastTo<FActorFolderTreeItem>())

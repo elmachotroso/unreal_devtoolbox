@@ -41,7 +41,7 @@ FPacketTransport::~FPacketTransport()
 		for (FPacketNode* Node = Root; Node != nullptr;)
 		{
 			FPacketNode* Next = Node->Next;
-			delete[] Node;
+			FMemory::Free(Node);
 			Node = Next;
 		}
 	}
@@ -153,7 +153,7 @@ bool FPacketTransport::GetNextBatch()
 			};
 			auto* PacketEncoded = (FPacketEncoded*)PacketBase;
 
-			Node->Size = UE::Trace::Private::Decode(
+			Node->Size = (uint16)UE::Trace::Private::Decode(
 				PacketEncoded->Data,
 				int32(PacketEncoded->PacketSize - sizeof(FPacketEncoded)),
 				Node->Data,

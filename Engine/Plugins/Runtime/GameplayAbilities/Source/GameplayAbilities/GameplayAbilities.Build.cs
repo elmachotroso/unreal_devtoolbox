@@ -26,7 +26,6 @@ namespace UnrealBuildTool.Rules
 			// Niagara support for gameplay cue notifies.
 			{
 				PrivateDependencyModuleNames.Add("Niagara");
-				PublicDefinitions.Add("WITH_NIAGARA=1");
 			}
 
 			if (Target.bBuildEditor == true)
@@ -37,15 +36,9 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("SequenceRecorder");
 			}
 
-			if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
-			{
-				PrivateDependencyModuleNames.Add("GameplayDebugger");
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
-			}
-			else
-			{
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
-			}
+			SetupGameplayDebuggerSupport(Target);
+
+			SetupIrisSupport(Target);
 		}
 	}
 }

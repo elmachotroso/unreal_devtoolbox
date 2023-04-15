@@ -11,11 +11,13 @@
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Spherical Constraints"), STAT_PBD_Spherical, STATGROUP_Chaos);
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Spherical Backstop Constraints"), STAT_PBD_SphericalBackstop, STATGROUP_Chaos);
 
-// Support ISPC enable/disable in non-shipping builds
-#if !INTEL_ISPC
-const bool bChaos_Spherical_ISPC_Enabled = false;
-#elif UE_BUILD_SHIPPING
-const bool bChaos_Spherical_ISPC_Enabled = true;
+#if !defined(CHAOS_SPHERICAL_ISPC_ENABLED_DEFAULT)
+#define CHAOS_SPHERICAL_ISPC_ENABLED_DEFAULT 1
+#endif
+
+// Support run-time toggling on supported platforms in non-shipping configurations
+#if !INTEL_ISPC || UE_BUILD_SHIPPING
+static constexpr bool bChaos_Spherical_ISPC_Enabled = INTEL_ISPC && CHAOS_SPHERICAL_ISPC_ENABLED_DEFAULT;
 #else
 extern CHAOS_API bool bChaos_Spherical_ISPC_Enabled;
 #endif
@@ -65,7 +67,7 @@ private:
 	{
 		const int32 ParticleCount = SphereRadii.Num();
 
-		PhysicsParallelFor(ParticleCount, [&](int32 Index)  // TODO: profile need for parallel loop based on particle count
+		PhysicsParallelFor(ParticleCount, [this, &Particles, Dt](int32 Index)  // TODO: profile need for parallel loop based on particle count
 		{
 			const int32 ParticleIndex = ParticleOffset + Index;
 
@@ -80,7 +82,7 @@ private:
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
 			const FSolverReal DistanceSquared = CenterToParticle.SizeSquared();
 
-			static const FSolverReal DeadZoneSquareRadius = SMALL_NUMBER; // We will not push the particle away in the dead zone
+			static const FSolverReal DeadZoneSquareRadius = UE_SMALL_NUMBER; // We will not push the particle away in the dead zone
 			if (DistanceSquared > FMath::Square(Radius) + DeadZoneSquareRadius)
 			{
 				const FSolverReal Distance = sqrt(DistanceSquared);
@@ -183,7 +185,7 @@ private:
 	{
 		const int32 ParticleCount = SphereRadii.Num();
 
-		PhysicsParallelFor(ParticleCount, [&](int32 Index)  // TODO: profile need for parallel loop based on particle count
+		PhysicsParallelFor(ParticleCount, [this, &Particles, Dt](int32 Index)  // TODO: profile need for parallel loop based on particle count
 		{
 			const int32 ParticleIndex = ParticleOffset + Index;
 
@@ -202,7 +204,7 @@ private:
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
 			const FSolverReal DistanceSquared = CenterToParticle.SizeSquared();
 
-			static const FSolverReal DeadZoneSquareRadius = SMALL_NUMBER;
+			static const FSolverReal DeadZoneSquareRadius = UE_SMALL_NUMBER;
 			if (DistanceSquared < DeadZoneSquareRadius)
 			{
 				Particles.P(ParticleIndex) = AnimationPosition - SphereOffsetDistance * AnimationNormal;  // Non legacy version adds radius to the distance
@@ -220,7 +222,7 @@ private:
 	{
 		const int32 ParticleCount = SphereRadii.Num();
 
-		PhysicsParallelFor(ParticleCount, [&](int32 Index)  // TODO: profile need for parallel loop based on particle count
+		PhysicsParallelFor(ParticleCount, [this, &Particles, Dt](int32 Index)  // TODO: profile need for parallel loop based on particle count
 		{
 			const int32 ParticleIndex = ParticleOffset + Index;
 
@@ -239,7 +241,7 @@ private:
 			const FSolverVec3 CenterToParticle = Particles.P(ParticleIndex) - Center;
 			const FSolverReal DistanceSquared = CenterToParticle.SizeSquared();
 
-			static const FSolverReal DeadZoneSquareRadius = SMALL_NUMBER;
+			static const FSolverReal DeadZoneSquareRadius = UE_SMALL_NUMBER;
 			if (DistanceSquared < DeadZoneSquareRadius)
 			{
 				Particles.P(ParticleIndex) = AnimationPosition - (SphereOffsetDistance - Radius) * AnimationNormal;  // Legacy version already includes the radius to the distance

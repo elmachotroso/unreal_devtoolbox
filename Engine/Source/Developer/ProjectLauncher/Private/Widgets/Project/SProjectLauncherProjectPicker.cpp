@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SProjectLauncherProjectPicker.h"
+#include "Widgets/Project/SProjectLauncherProjectPicker.h"
 
 #include "DesktopPlatformModule.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -81,7 +81,7 @@ TSharedRef<SWidget> SProjectLauncherProjectPicker::MakeProjectMenuWidget()
 TSharedRef<SWidget> SProjectLauncherProjectPicker::MakeProjectWidget()
 {
 	TSharedRef<SWidget> Widget = SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(0)
 		[
 			SNew(SHorizontalBox)
@@ -101,7 +101,6 @@ TSharedRef<SWidget> SProjectLauncherProjectPicker::MakeProjectWidget()
 				[
 					// project selector
 					SNew(SComboButton)
-					.ComboButtonStyle(FAppStyle::Get(), "Launcher.ComboButton")
 					.ButtonContent()
 					[
 						SNew(STextBlock)

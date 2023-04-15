@@ -2,13 +2,22 @@
 
 #pragma once
 
-#include "InstallBundleTypes.h"
-#include "Misc/EnumClassFlags.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Logging/LogMacros.h"
-#include "Internationalization/Text.h"
-#include "Templates/ValueOrError.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "Containers/Union.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "InstallBundleTypes.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogMacros.h"
+#include "Logging/LogVerbosity.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/ValueOrError.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
 
 class IAnalyticsProviderET;
 
@@ -87,6 +96,8 @@ public:
 
 	virtual ~IInstallBundleManager() {}
 
+	virtual void Initialize() {}
+
 	virtual bool HasBundleSource(EInstallBundleSourceType SourceType) const = 0;
 
 	virtual FDelegateHandle PushInitErrorCallback(FInstallBundleManagerInitErrorHandler Callback) = 0;
@@ -119,8 +130,8 @@ public:
 	EInstallBundleResult FlushCache(FInstallBundleManagerFlushCacheCompleteDelegate Callback, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging);
 	virtual EInstallBundleResult FlushCache(FInstallBundleSourceOrCache SourceOrCache, FInstallBundleManagerFlushCacheCompleteDelegate Callback, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) = 0;
 
-	virtual TArray<FInstallBundleCacheStats> GetCacheStats(bool bDumpToLog = false, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) = 0;
-	virtual TOptional<FInstallBundleCacheStats> GetCacheStats(FInstallBundleSourceOrCache SourceOrCache, bool bDumpToLog = false, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) = 0;
+	virtual TArray<FInstallBundleCacheStats> GetCacheStats(EInstallBundleCacheDumpToLog DumpToLog = EInstallBundleCacheDumpToLog::None, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) = 0;
+	virtual TOptional<FInstallBundleCacheStats> GetCacheStats(FInstallBundleSourceOrCache SourceOrCache, EInstallBundleCacheDumpToLog DumpToLog = EInstallBundleCacheDumpToLog::None, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) = 0;
 
 	void RequestRemoveContentOnNextInit(FName RemoveName, TArrayView<const FName> KeepNames = TArrayView<const FName>());
 	virtual void RequestRemoveContentOnNextInit(TArrayView<const FName> RemoveNames, TArrayView<const FName> KeepNames = TArrayView<const FName>()) = 0;
@@ -148,6 +159,7 @@ public:
 	virtual void StartPatchCheck();
 	virtual void AddEnvironmentWantsPatchCheckBackCompatDelegate(FName Tag, FInstallBundleManagerEnvironmentWantsPatchCheck Delegate) {}
 	virtual void RemoveEnvironmentWantsPatchCheckBackCompatDelegate(FName Tag) {}
+	virtual bool SupportsEarlyStartupPatching() const = 0;
 
 	virtual bool IsNullInterface() const = 0;
 

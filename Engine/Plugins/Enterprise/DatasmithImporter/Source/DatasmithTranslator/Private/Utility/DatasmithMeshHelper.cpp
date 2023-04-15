@@ -26,18 +26,9 @@ namespace DatasmithMeshHelper
 		return Mesh.Triangles().Num();
 	}
 
-	void ExtractVertexPositions(const FMeshDescription& Mesh, TArray<FVector>& Positions)
+	void ExtractVertexPositions(const FMeshDescription& Mesh, TArray<FVector3f>& OutPositions)
 	{
-		FStaticMeshConstAttributes Attributes(Mesh);
-		const TVertexAttributesConstRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
-		if (VertexPositions.IsValid())
-		{
-			Positions.Reserve(VertexPositions.GetNumElements());
-			for (const FVertexID VertexID : Mesh.Vertices().GetElementIDs())
-			{
-				Positions.Add((FVector)VertexPositions[VertexID]);
-			}
-		}
+		FDatasmithMeshUtils::ExtractVertexPositions(Mesh, OutPositions);
 	}
 
 	void PrepareAttributeForStaticMesh(FMeshDescription& Mesh)
@@ -268,49 +259,7 @@ namespace DatasmithMeshHelper
 
 	void CreateDefaultUVs(FDatasmithMesh& DatasmithMesh)
 	{
-		// Get the mesh description to generate BoxUV.
-		FMeshDescription MeshDescription;
-		PrepareAttributeForStaticMesh(MeshDescription);
-		FDatasmithMeshUtils::ToMeshDescription(DatasmithMesh, MeshDescription);
-		FUVMapParameters UVParameters(DatasmithMesh.GetExtents().GetCenter(), FQuat::Identity, DatasmithMesh.GetExtents().GetSize(), FVector::OneVector, FVector2D::UnitVector);
-		TMap<FVertexInstanceID, FVector2D> TexCoords;
-		FStaticMeshOperations::GenerateBoxUV(MeshDescription, UVParameters, TexCoords);
-
-		// Put the results in a map to determine the number of unique values.
-		TMap<FVector2D, TArray<int32>> UniqueTexCoordMap;
-		for (const TPair<FVertexInstanceID, FVector2D>& Pair : TexCoords)
-		{
-			TArray<int32>& MappedIndices = UniqueTexCoordMap.FindOrAdd(Pair.Value);
-			MappedIndices.Add(Pair.Key.GetValue());
-		}
-
-		//Set the UV values
-		if (DatasmithMesh.GetUVChannelsCount() == 0)
-		{
-			DatasmithMesh.AddUVChannel();
-		}
-		DatasmithMesh.SetUVCount(0, UniqueTexCoordMap.Num());
-		int32 UVIndex = 0;
-		TArray<int32> IndicesMapping;
-		IndicesMapping.AddZeroed(TexCoords.Num());
-
-		for (const TPair<FVector2D, TArray<int32>>& UniqueCoordPair : UniqueTexCoordMap)
-		{
-			DatasmithMesh.SetUV(0, UVIndex, UniqueCoordPair.Key.X, UniqueCoordPair.Key.Y);
-			for (int32 IndicesIndex : UniqueCoordPair.Value)
-			{
-				IndicesMapping[IndicesIndex] = UVIndex;
-			}
-			UVIndex++;
-		}
-
-		//Map the UV indices.
-		for (int32 FaceIndex = 0; FaceIndex < DatasmithMesh.GetFacesCount(); ++FaceIndex)
-		{
-			const int32 IndicesOffset = FaceIndex * 3;
-			check(IndicesOffset + 2 < IndicesMapping.Num());
-			DatasmithMesh.SetFaceUV(FaceIndex, 0, IndicesMapping[IndicesOffset + 0], IndicesMapping[IndicesOffset + 1], IndicesMapping[IndicesOffset + 2]);
-		}
+		FDatasmithMeshUtils::CreateDefaultUVsWithLOD(DatasmithMesh);
 	}
 
 	void CreateDefaultUVs(FMeshDescription& MeshDescription)
@@ -339,24 +288,24 @@ namespace DatasmithMeshHelper
 		}
 	}
 
-	bool IsMeshValid(const FMeshDescription& Mesh, FVector BuildScale)
+	bool IsMeshValid(const FMeshDescription& Mesh, FVector3f BuildScale)
 	{
 		TVertexAttributesConstRef<FVector3f> VertexPositions = Mesh.GetVertexPositions();
-		FVector RawNormalScale(BuildScale.Y*BuildScale.Z, BuildScale.X*BuildScale.Z, BuildScale.X*BuildScale.Y); // Component-wise scale
+		FVector3f RawNormalScale(BuildScale.Y*BuildScale.Z, BuildScale.X*BuildScale.Z, BuildScale.X*BuildScale.Y); // Component-wise scale
 
 		for (const FTriangleID TriangleID : Mesh.Triangles().GetElementIDs())
 		{
 			TArrayView<const FVertexID> VertexIDs = Mesh.GetTriangleVertices(TriangleID);
-			FVector Corners[3] =
+			FVector3f Corners[3] =
 			{
-				(FVector)VertexPositions[VertexIDs[0]],
-				(FVector)VertexPositions[VertexIDs[1]],
-				(FVector)VertexPositions[VertexIDs[2]]
+				VertexPositions[VertexIDs[0]],
+				VertexPositions[VertexIDs[1]],
+				VertexPositions[VertexIDs[2]]
 			};
 
-			FVector RawNormal = (Corners[1] - Corners[2]) ^ (Corners[0] - Corners[2]);
+			FVector3f RawNormal = (Corners[1] - Corners[2]) ^ (Corners[0] - Corners[2]);
 			RawNormal *= RawNormalScale;
-			double FourSquaredTriangleArea = RawNormal.SizeSquared();
+			float FourSquaredTriangleArea = RawNormal.SizeSquared();
 
 			// We support even small triangles, but this function is still useful to
 			// see if we have at least one valid triangle in the mesh

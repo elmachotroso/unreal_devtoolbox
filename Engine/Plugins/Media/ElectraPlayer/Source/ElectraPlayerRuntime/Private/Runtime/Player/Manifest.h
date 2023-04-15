@@ -12,12 +12,6 @@
 #include "ParameterDictionary.h"
 
 
-
-//
-//
-//
-
-
 namespace Electra
 {
 
@@ -32,10 +26,66 @@ namespace Electra
 	};
 
 
+	struct FPlayStartOptions
+	{
+		FPlayStartOptions()
+		{
+			PlaybackRange.Start = FTimeValue::GetZero();
+			PlaybackRange.End = FTimeValue::GetPositiveInfinity();
+		}
+		FTimeRange		PlaybackRange;
+		bool			bFrameAccuracy = false;
+	};
+
 	struct FPlayStartPosition
 	{
-		FTimeValue		Time;
+		FTimeValue			Time;
+		FPlayStartOptions	Options;
 	};
+
+	struct FLowLatencyDescriptor
+	{
+		struct FLatency
+		{
+			int64 ReferenceID = -1;
+			FTimeValue Target;
+			FTimeValue Min;
+			FTimeValue Max;
+		};
+		struct FPlayRate
+		{
+			FTimeValue Min;
+			FTimeValue Max;
+		};
+		FLatency Latency;
+		FPlayRate PlayRate;
+
+		FTimeValue GetLatencyMin() const
+		{ return Latency.Min; }
+		FTimeValue GetLatencyMax() const
+		{ return Latency.Max; }
+		FTimeValue GetLatencyTarget() const
+		{ return Latency.Target; }
+		FTimeValue GetPlayrateMin() const
+		{ return PlayRate.Min; }
+		FTimeValue GetPlayrateMax() const
+		{ return PlayRate.Max; }
+	};
+
+	struct IProducerReferenceTimeInfo
+	{
+		enum class EType
+		{
+			Encoder,
+			Captured
+		};
+		virtual FTimeValue GetWallclockTime() const = 0;
+		virtual uint64 GetPresentationTime() const = 0;
+		virtual uint32 GetID() const = 0;
+		virtual EType GetType() const = 0;
+		virtual bool GetIsInband() const = 0;
+	};
+
 
 
 	class IStreamSegment : public TSharedFromThis<IStreamSegment, ESPMode::ThreadSafe>
@@ -53,7 +103,7 @@ namespace Electra
 		 */
 		virtual uint32 GetPlaybackSequenceID() const = 0;
 
-		virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) = 0;
+		virtual void SetExecutionDelay(const FTimeValue& UTCNow, const FTimeValue& ExecutionDelay) = 0;
 
 		virtual FTimeValue GetExecuteAtUTCTime() const = 0;
 
@@ -82,6 +132,8 @@ namespace Electra
 		virtual int32 GetBitrate() const = 0;
 
 		virtual void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const = 0;
+
+		virtual bool GetStartupDelay(FTimeValue& OutStartTime, FTimeValue& OutTimeIntoSegment, FTimeValue& OutSegmentDuration) const = 0;
 	};
 
 
@@ -150,7 +202,7 @@ namespace Electra
 			}
 			static const TCHAR* GetTypeName(EType s)
 			{
-				switch (s)
+				switch(s)
 				{
 					case EType::Found:
 						return TEXT("Found");
@@ -174,10 +226,9 @@ namespace Electra
 			FErrorDetail	ErrorDetail;
 		};
 
-		//!
+
+
 		virtual ~IManifest() = default;
-
-
 
 		//-------------------------------------------------------------------------
 		// Presentation related functions
@@ -185,6 +236,8 @@ namespace Electra
 		//! Returns the type of this presentation, either on-demand or live.
 		virtual EType GetPresentationType() const = 0;
 
+		//! Returns the low-latency descriptor, if any. May return nullptr if there is none.
+		virtual TSharedPtrTS<const FLowLatencyDescriptor> GetLowLatencyDescriptor() const = 0;
 
 
 		//-------------------------------------------------------------------------
@@ -260,12 +313,25 @@ namespace Electra
 		//
 		virtual FTimeValue GetMinBufferTime() const = 0;
 
+		//
+		virtual TSharedPtrTS<IProducerReferenceTimeInfo> GetProducerReferenceTimeInfo(int64 ID) const = 0;
+
+		virtual FTimeValue GetDesiredLiveLatency() const = 0;
 
 		//! Needs to be called when the user has explicitly triggered a seek, including a programmatic loop back to the beginning.
 		//! For presentations with dynamic content changes (eg. DASH xlink:onRequest Periods) the content may need to be updated
 		//! again. This is different to internal seeking for retry purposes where content will not be re-resolved.
 		virtual void UpdateDynamicRefetchCounter() = 0;
 
+
+		enum class EClockSyncType
+		{
+			Recommended,
+			Required
+		};
+		virtual void TriggerClockSync(EClockSyncType InClockSyncType) = 0;
+
+		virtual void TriggerPlaylistRefresh() = 0;
 
 		//-------------------------------------------------------------------------
 		// Stream fragment reader
@@ -342,6 +408,18 @@ namespace Electra
 			 */
 			virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) = 0;
 
+			struct FInitSegmentPreload
+			{
+				FString AdaptationSetID;
+				FString RepresentationID;
+			};
+			/**
+			 * Triggers pre-loading of initialization segments.
+			 * This may be called multiple times with different streams. The implementation needs to keep track
+			 * of which init segments have already been loaded.
+			 */
+			virtual void TriggerInitSegmentPreload(const TArray<FInitSegmentPreload>& InitSegmentsToPreload) = 0;
+
 			/**
 			 * Sets up a starting segment request to begin playback at the specified time.
 			 * The streams selected through SelectStream() will be used.
@@ -368,13 +446,12 @@ namespace Electra
 			 *
 			 * @param OutSegment
 			 * @param InSequenceState
-			 * @param InFinishedSegments
 			 * @param StartPosition
 			 * @param SearchType
 			 *
 			 * @return
 			 */
-			virtual FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
+			virtual FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
 			/**
 			 * Gets the segment request for the segment following the specified earlier request.
@@ -385,18 +462,19 @@ namespace Electra
 			 *
 			 * @return
 			 */
-			virtual FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment) = 0;
+			virtual FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FPlayStartOptions& Options) = 0;
 
 			/**
 			 * Gets the segment request for the same segment on a different quality level or CDN.
 			 *
 			 * @param OutSegment
 			 * @param CurrentSegment
+			 * @param Options
 			 * @param bReplaceWithFillerData
 			 *
 			 * @return
 			 */
-			virtual FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, bool bReplaceWithFillerData) = 0;
+			virtual FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FPlayStartOptions& Options, bool bReplaceWithFillerData) = 0;
 
 			/**
 			 * Called by the ABR to increase the delay in fetching the next segment in case the segment returned a 404 when fetched at

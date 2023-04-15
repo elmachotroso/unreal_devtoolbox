@@ -31,8 +31,8 @@
 #include "VirtualShadowMaps/VirtualShadowMapProjectionCommon.ush"
 #endif
 
-#if SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
-#include "VolumetricCloudCommon.ush" 
+#ifndef ENABLE_FORWARD_CLOUD_SHADOW
+#define ENABLE_FORWARD_CLOUD_SHADOW 0
 #endif
 
 float PrevSceneColorPreExposureInv;
@@ -118,7 +118,10 @@ float GetIndirectOcclusion(float2 ScreenUV, bool bHasDynamicIndirectShadowCaster
 	return IndirectOcclusion;
 }
 
-FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 TranslatedWorldPosition, float3 CameraVector, FGBufferData GBufferData, float2 ScreenUV, uint PrimitiveId, uint EyeIndex, float Dither, float InDirectionalLightCloudShadow, inout float OutDirectionalLightShadow)
+FDeferredLightingSplit GetForwardDirectLightingSplit(
+	uint GridIndex, float3 TranslatedWorldPosition, float3 CameraVector, FGBufferData GBufferData, float2 ScreenUV, uint PrimitiveId, uint EyeIndex, float Dither, 
+	float InDirectionalLightCloudShadow, float3 InDirectionalLightAtmosphereTransmittance, inout float OutDirectionalLightShadow,
+	bool bSeparateMainDirLightLuminance, inout float3 SeparatedMainDirLightLuminance)
 {
 	float3 WorldPosition = TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation);
 
@@ -141,7 +144,6 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 	uint LightingChannelMask = GetPrimitive_LightingChannelMask(PrimitiveId);
 
 	const FDirectionalLightData DirectionalLightData = GetDirectionalLightData(EyeIndex);
-	FRectTexture RectTexture = InitRectTexture(ForwardLightData.DummyRectLightSourceTexture);
 
 	BRANCH
 	if (DirectionalLightData.HasDirectionalLight)
@@ -201,19 +203,29 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 			float4 LightAttenuation = float4(DynamicShadowFactor.x, DynamicShadowFactor.x, 1, 1);
 		#endif
 
-		FDeferredLightingSplit NewLighting = GetDynamicLightingSplit(TranslatedWorldPosition, -CameraVector, GBufferData, 1, GBufferData.ShadingModelID, LightData, LightAttenuation, Dither, uint2(0,0), RectTexture, OutDirectionalLightShadow);
+		FDeferredLightingSplit NewLighting = GetDynamicLightingSplit(TranslatedWorldPosition, -CameraVector, GBufferData, 1, GBufferData.ShadingModelID, LightData, LightAttenuation, Dither, uint2(0,0), OutDirectionalLightShadow);
 
 		FLATTEN
 		if ((DirectionalLightData.DirectionalLightShadowMapChannelMask >> 8) & LightingChannelMask)
 		{
-		#if SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
+		#if ENABLE_FORWARD_CLOUD_SHADOW
 			// This cannot go into LightAttenuation due to some distance based attenuation math being applied.
 			NewLighting.DiffuseLighting *= InDirectionalLightCloudShadow;
 			NewLighting.SpecularLighting *= InDirectionalLightCloudShadow;
 		#endif
+			NewLighting.DiffuseLighting.rgb *= InDirectionalLightAtmosphereTransmittance;
+			NewLighting.SpecularLighting.rgb *= InDirectionalLightAtmosphereTransmittance;
 
-			DirectLighting.DiffuseLighting += NewLighting.DiffuseLighting;
-			DirectLighting.SpecularLighting += NewLighting.SpecularLighting;
+			if (bSeparateMainDirLightLuminance)
+			{
+				SeparatedMainDirLightLuminance += NewLighting.DiffuseLighting.rgb;
+				SeparatedMainDirLightLuminance += NewLighting.SpecularLighting.rgb;
+			}
+			else
+			{
+				DirectLighting.DiffuseLighting += NewLighting.DiffuseLighting;
+				DirectLighting.SpecularLighting += NewLighting.SpecularLighting;
+			}
 		}
 	}
 
@@ -240,12 +252,18 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 		LightData.SpotAngles = LocalLight.SpotAnglesAndSourceRadiusPacked.xy;
 		LightData.SourceRadius = LocalLight.SpotAnglesAndSourceRadiusPacked.z;
 		LightData.SourceLength = f16tof32(asuint(LocalLight.SpotAnglesAndSourceRadiusPacked.w));
-        LightData.Tangent = LocalLight.LightTangentAndSoftSourceRadius.xyz;
-        LightData.SoftSourceRadius = LocalLight.LightTangentAndSoftSourceRadius.w;
+		LightData.Tangent = LocalLight.LightTangentAndSoftSourceRadius.xyz;
+		LightData.SoftSourceRadius = LocalLight.LightTangentAndSoftSourceRadius.w;
 		LightData.bInverseSquared = LightData.FalloffExponent == 0;
 		LightData.bRadialLight = true;
 		LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
-		LightData.SpecularScale = SpecularScale;
+		LightData.SpecularScale = SpecularScale * LocalLight.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.w;
+		// Initialize rect light once parameters are supported onto FLocalLightData
+		// LightData.RectLightAtlasMaxLevel = LocalLight.RectLightAtlasMaxLevel;
+		// LightData.RectLightAtlasUVOffset = LocalLight.RectLightAtlasUVOffset;
+		// LightData.RectLightAtlasUVScale  = LocalLight.RectLightAtlasUVScale;
+		// LightData.RectLightBarnCosAngle	= DeferredLightUniforms.RectLightBarnCosAngle;
+		// LightData.RectLightBarnLength	= DeferredLightUniforms.RectLightBarnLength;
 		LightData.HairTransmittance = InitHairTransmittanceData();
 		#if USE_HAIR_COMPLEX_TRANSMITTANCE
 		if (GBufferData.ShadingModelID == SHADINGMODELID_HAIR)
@@ -259,7 +277,7 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 
 		// TODO: currently LightType is ignored and the code always sets 'LightData.bRectLight' to false (initialization)
 		//       but the light grid adds rect lights as well so this probably leads to artifacts.
-		uint LightType = LightTypeAndPackedShadowMapChannelMask >> 16;
+		uint LightType = UnpackLightType(LightTypeAndPackedShadowMapChannelMask);
 
 		LightData.ShadowedBits = (LightTypeAndPackedShadowMapChannelMask & 0xFF) != 0 ? 1 : 0;
 		// Static shadowing uses ShadowMapChannel, dynamic shadows are packed into light attenuation using PreviewShadowMapChannel
@@ -268,7 +286,7 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 		float DynamicShadowing = dot(PreviewShadowMapChannelMask, DynamicShadowFactors);
 		float4 LightAttenuation = float4(1, 1, DynamicShadowing.x, DynamicShadowing.x);
 		float SurfaceShadow = 1.0f;
-		FDeferredLightingSplit NewLighting = GetDynamicLightingSplit(TranslatedWorldPosition, -CameraVector, GBufferData, 1, GBufferData.ShadingModelID, LightData, LightAttenuation, Dither, uint2(0,0), RectTexture, SurfaceShadow);
+		FDeferredLightingSplit NewLighting = GetDynamicLightingSplit(TranslatedWorldPosition, -CameraVector, GBufferData, 1, GBufferData.ShadingModelID, LightData, LightAttenuation, Dither, uint2(0,0), SurfaceShadow);
 
 		FLATTEN
 		if ((LightTypeAndPackedShadowMapChannelMask >> 8) & LightingChannelMask)
@@ -288,13 +306,6 @@ FDeferredLightingSplit GetForwardDirectLightingSplit(uint GridIndex, float3 Tran
 	}
 
 	return DirectLighting;
-}
-
-float3 GetForwardDirectLighting(uint GridIndex, float3 TranslatedWorldPosition, float3 CameraVector, FGBufferData GBufferData, float2 ScreenUV, uint PrimitiveId, uint EyeIndex, float Dither, float InDirectionalLightCloudShadow, inout float OutDirectionalLightShadow)
-{
-	FDeferredLightingSplit Ret = GetForwardDirectLightingSplit(GridIndex, TranslatedWorldPosition, CameraVector, GBufferData, ScreenUV, PrimitiveId, EyeIndex, Dither, InDirectionalLightCloudShadow, OutDirectionalLightShadow);
-
-	return Ret.DiffuseLighting.rgb + Ret.SpecularLighting.rgb;
 }
 
 float3 GetForwardDirectLightingForVertexLighting(uint GridIndex, float3 TranslatedWorldPosition, float SceneDepth, float3 WorldNormal, uint EyeIndex, float InDirectionalLightCloudShadow)
@@ -322,7 +333,7 @@ float3 GetForwardDirectLightingForVertexLighting(uint GridIndex, float3 Translat
 		bool bUnused = false;
 		ShadowFactor *= ComputeDirectionalLightDynamicShadowing(TranslatedWorldPosition, SceneDepth, bUnused);
 
-	#if SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
+	#if ENABLE_FORWARD_CLOUD_SHADOW
 		ShadowFactor *= InDirectionalLightCloudShadow;
 	#endif
 
@@ -388,19 +399,27 @@ uint MortonCode( uint x )
 half3 GetImageBasedReflectionSpecular(FMaterialPixelParameters MaterialParameters, float3 RayDirection, half Roughness, half IndirectIrradiance, uint GridIndex, int SingleCaptureIndex, uint EyeIndex)
 {
 	float3 SpecularIBL;
+	bool bUseLumenFrontLayerReflection = false;
 
-#if (TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING || TRANSLUCENCY_LIGHTING_SURFACE_LIGHTINGVOLUME) && (MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE)
+#if (TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING || TRANSLUCENCY_LIGHTING_SURFACE_LIGHTINGVOLUME) && MATERIALBLENDING_ANY_TRANSLUCENT && PROJECT_SUPPORTS_LUMEN && !FORWARD_SHADING
+	
+	bUseLumenFrontLayerReflection = UseFrontLayerReflection(MaterialParameters.ViewBufferUV, MaterialParameters.ScreenPosition.w);
+
 	FRadianceCacheCoverage LumenRadianceCacheCoverage;
 	LumenRadianceCacheCoverage.bValid = false;
 
 	// Lumen Radiance Cache for reflections on translucency
-	if (TranslucentBasePass_FinalProbeResolution > 0)
+	if (TranslucentBasePass_FinalProbeResolution > 0 && !bUseLumenFrontLayerReflection)
 	{
 		float ClipmapDitherRandom = InterleavedGradientNoise(MaterialParameters.SvPosition.xy, View.StateFrameIndexMod8);
 		LumenRadianceCacheCoverage = GetRadianceCacheCoverage(LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition), RayDirection, ClipmapDitherRandom);
 	}
 
-	if (LumenRadianceCacheCoverage.bValid)
+	if (bUseLumenFrontLayerReflection)
+	{
+		SpecularIBL = SampleFrontLayerReflection(MaterialParameters.ViewBufferUV);
+	}
+	else if (LumenRadianceCacheCoverage.bValid)
 	{
 		float ConeHalfAngle = 0;
 		SpecularIBL = SampleRadianceCacheInterpolated(LumenRadianceCacheCoverage, LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition), RayDirection, ConeHalfAngle);
@@ -451,7 +470,7 @@ half3 GetImageBasedReflectionSpecular(FMaterialPixelParameters MaterialParameter
 	}
 
 #if MATERIAL_SSR && !FORWARD_SHADING
-	if( View.CameraCut == 0 && TranslucentBasePass.SSRQuality > 0)
+	if( View.CameraCut == 0 && TranslucentBasePass.SSRQuality > 0 && !bUseLumenFrontLayerReflection)
 	{
 		float StepOffset = InterleavedGradientNoise( MaterialParameters.SvPosition.xy, View.StateFrameIndexMod8 );
 		StepOffset -= 0.5;

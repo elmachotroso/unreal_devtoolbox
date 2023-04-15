@@ -4,12 +4,25 @@
 
 #include "CoreMinimal.h"
 #include "ConcertSyncSessionTypes.h"
+#include "Templates/SharedPointerInternals.h"
 
 class FConcertFileCache;
 class FConcertSyncSessionDatabaseStatements;
 
 class FSQLiteDatabase;
 enum class ESQLiteDatabaseOpenMode : uint8;
+
+enum class EBreakBehavior
+{
+	Break,
+	Continue
+};
+
+using FConsumePackageActivityFunc = TFunctionRef<void(FConcertSyncActivity&&/*BasePart*/, FConcertSyncPackageEventData& /*EventPart*/)>;
+using FIteratePackageActivityFunc = TFunctionRef<EBreakBehavior(FConcertSyncActivity&&/*BasePart*/, FConcertSyncPackageEventData& /*EventPart*/)>;
+using FIterateActivityFunc = TFunctionRef<EBreakBehavior(FConcertSyncActivity&&)>;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnActivityProduced, const FConcertSyncActivity&);
 
 /**
  * Database of activities that have happened in a Concert Sync Session.
@@ -18,14 +31,15 @@ enum class ESQLiteDatabaseOpenMode : uint8;
 class CONCERTSYNCCORE_API FConcertSyncSessionDatabase
 {
 public:
+	
 	FConcertSyncSessionDatabase();
 	~FConcertSyncSessionDatabase();
 
 	FConcertSyncSessionDatabase(const FConcertSyncSessionDatabase&) = delete;
 	FConcertSyncSessionDatabase& operator=(const FConcertSyncSessionDatabase&) = delete;
 
-	FConcertSyncSessionDatabase(FConcertSyncSessionDatabase&&) = default;
-	FConcertSyncSessionDatabase& operator=(FConcertSyncSessionDatabase&&) = default;
+	FConcertSyncSessionDatabase(FConcertSyncSessionDatabase&&);
+	FConcertSyncSessionDatabase& operator=(FConcertSyncSessionDatabase&&);
 
 	/**
 	 * Is this a valid database? (ie, has been successfully opened).
@@ -124,6 +138,11 @@ public:
 	bool AddPackageActivity(const FConcertSyncActivity& InPackageActivity, const FConcertPackageInfo& InPackageInfo, FConcertPackageDataStream& InPackageDataStream, int64& OutActivityId, int64& OutPackageEventId);
 
 	/**
+	 * Iterates the given range, calls UpdateCallback on each element, and commits the update.
+	 */
+	bool SetActivities(const TSet<int64>& ActivityIds, TFunctionRef<void(FConcertSyncActivity&)> UpdateCallback);
+	
+	/**
 	 * Set a connection activity in this database, creating or replacing it.
 	 * @note The endpoint ID referenced by the activity must exist in the database (@see SetEndpoint).
 	 * @note This function is expected to be called on the client to populate its version of the session database from data synced from the server.
@@ -219,7 +238,7 @@ public:
 	 *
 	 * @return True if the package activity was found, false otherwise.
 	 */
-	bool GetPackageActivity(const int64 InActivityId, const TFunctionRef<void(FConcertSyncActivity&& /*BasePart*/, FConcertSyncPackageEventData& /*EventPart*/)>& PackageActivityFn) const;
+	bool GetPackageActivity(const int64 InActivityId, FConsumePackageActivityFunc PackageActivityFn) const;
 
 	/**
 	 * Get the type of an activity in this database.
@@ -281,7 +300,7 @@ public:
 	 *
 	 * @return True if the package activity was found, false otherwise.
 	 */
-	bool GetPackageActivityForEvent(const int64 InPackageEventId, const TFunctionRef<void(FConcertSyncActivity&& /*BasePart*/, FConcertSyncPackageEventData& /*EventPart*/)>& PackageActivityFn) const;
+	bool GetPackageActivityForEvent(const int64 InPackageEventId, FIteratePackageActivityFunc PackageActivityFn) const;
 
 	/**
 	 * Enumerate the generic part of the activities in this database.
@@ -290,7 +309,7 @@ public:
 	 *
 	 * @return True if the activities were enumerated without error, false otherwise.
 	 */
-	bool EnumerateActivities(TFunctionRef<bool(FConcertSyncActivity&&)> InCallback) const;
+	bool EnumerateActivities(FIterateActivityFunc InCallback) const;
 
 	/**
 	 * Enumerate all the connection activities in this database.
@@ -326,7 +345,7 @@ public:
 	 *
 	 * @return True if the package activities were enumerated without error, false otherwise.
 	 */
-	bool EnumeratePackageActivities(const TFunctionRef<bool(FConcertSyncActivity&&/*BasePart*/, FConcertSyncPackageEventData& /*EventPart*/)>& InCallback) const;
+	bool EnumeratePackageActivities(FIteratePackageActivityFunc InCallback) const;
 
 	/**
 	 * Enumerate all the activities in this database of the given type.
@@ -336,7 +355,7 @@ public:
 	 *
 	 * @return True if the activities were enumerated without error, false otherwise.
 	 */
-	bool EnumerateActivitiesForEventType(const EConcertSyncActivityEventType InEventType, TFunctionRef<bool(FConcertSyncActivity&&)> InCallback) const;
+	bool EnumerateActivitiesForEventType(const EConcertSyncActivityEventType InEventType, FIterateActivityFunc InCallback) const;
 
 	/**
 	 * Enumerate all the activities in this database in the given range.
@@ -347,7 +366,7 @@ public:
 	 *
 	 * @return True if the activities were enumerated without error, false otherwise.
 	 */
-	bool EnumerateActivitiesInRange(const int64 InFirstActivityId, const int64 InMaxNumActivities, TFunctionRef<bool(FConcertSyncActivity&&)> InCallback) const;
+	bool EnumerateActivitiesInRange(const int64 InFirstActivityId, const int64 InMaxNumActivities, FIterateActivityFunc InCallback) const;
 
 	/**
 	 * Enumerate the IDs and event types of all the activities in this database.
@@ -369,6 +388,17 @@ public:
 	 */
 	bool EnumerateActivityIdsAndEventTypesInRange(const int64 InFirstActivityId, const int64 InMaxNumActivities, TFunctionRef<bool(int64, EConcertSyncActivityEventType)> InCallback) const;
 
+	/**
+	 * Enumerate the IDs, event types and flags of the activities in this database in the given range.
+	 *
+	 * @param InFirstActivityId			The first activity ID to include in the results.
+	 * @param InMaxNumActivities		The maximum number of activities to include in the results.
+	 * @param InCallback				Callback invoked for each activity; return true to continue enumeration, or false to stop.
+	 *
+	 * @return True if the activities were enumerated without error, false otherwise.
+	 */
+	bool EnumerateActivityIdsWithEventTypesAndFlagsInRange(const int64 InFirstActivityId, const int64 InMaxNumActivities, TFunctionRef<bool(int64, EConcertSyncActivityEventType, EConcertSyncActivityFlags)> InCallback) const;
+	
 	/**
 	 * Get the maximum ID of the activities in this database.
 	 *
@@ -506,15 +536,6 @@ public:
 	bool EnumerateLiveTransactionEventIdsForPackage(const FName InPackageName, TFunctionRef<bool(int64)> InCallback) const;
 
 	/**
-	 * Get the names of of any packages that have live transaction events.
-	 *
-	 * @param OutPackageNames			The array of names to populate with the result.
-	 *
-	 * @return True if the package names were resolved, false otherwise.
-	 */
-	bool GetPackageNamesWithLiveTransactions(TArray<FName>& OutPackageNames) const;
-
-	/**
 	 * Enumerate the names of of any packages that have live transaction events.
 	 *
 	 * @param InCallback				Callback invoked for each package name; return true to continue enumeration, or false to stop.
@@ -556,16 +577,6 @@ public:
 	bool GetPackageEvent(const int64 InPackageEventId, const TFunctionRef<void(FConcertSyncPackageEventData&)>& PackageEventFn) const;
 
 	/**
-	 * Get package names for packages with a head revision (at least one package event)
-	 *
-	 * @param OutPackageNames			The array of names to populate with the result.
-	 * @param IgnorePersisted			Will ignore packages which head revision have been persisted.
-	 *
-	 * @return True if the package names were resolved, false otherwise.
-	 */
-	bool GetPackageNamesWithHeadRevision(TArray<FName>& OutPackageNames, bool IgnorePersisted) const;
-
-	/**
 	 * Enumerate package names for packages with a head revision (at least one package event)
 	 *
 	 * @param InCallback				Callback invoked for each package name; return true to continue enumeration, or false to stop.
@@ -605,6 +616,16 @@ public:
 	 * @return True if package data could be found for the given revision, false otherwise.
 	 */
 	bool GetPackageDataForRevision(const FName InPackageName, const TFunctionRef<void(const FConcertPackageInfo&, FConcertPackageDataStream&)>& InCallback, const int64* InPackageRevision = nullptr) const;
+
+	/**
+	 * Gets the package size in bytes of a package
+	 *
+	 * @param InPackageName				The name of the package to get the head revision for.
+	 * @param InPackageRevision			The revision of the package to get the data for, or null to get the head revision.
+	 *
+	 * @return True if package data could be found for the given revision, false otherwise.
+	 */
+	TOptional<int64> GetPackageSizeForRevision(const FName InPackageName, const int64* InPackageRevision = nullptr) const;
 	
 	/**
 	 * Get the head revision in this database for the given package name.
@@ -664,7 +685,17 @@ public:
 	 */
 	void FlushAsynchronousTasks();
 
+	FOnActivityProduced& OnActivityProduced() { return ActivityProducedEvent; }
+	
 private:
+
+	using FProcessPackageRequest = TFunctionRef<bool(const FConcertPackageInfo& PackageInfo, const FString& DataFilename)>;
+	/** Helper function which obtains package information and passes it to HandleFunc. */
+	bool HandleRequestPackageRequest(const FName InPackageName, const int64* InPackageRevision, FProcessPackageRequest HandleFunc) const;
+
+	/** Helper functions that for getting a package revision for an optional package revision argument */
+	TOptional<int64> GetSpecifiedOrHeadPackageRevision(FName InPackageName, const int64* InPackageRevision) const;
+	
 	/**
 	 * Schedule an asynchronous write for the given Package Stream.  The stream must be in-memory. File sharing
 	 * asynchronous write is not supported.
@@ -917,7 +948,10 @@ private:
 	 * @return True if the package data was loaded, false otherwise.
 	 */
 	bool LoadPackage(const FString& InPackageBlobFilename, const TFunctionRef<void(FConcertPackageDataStream&)>& PackageDataStreamFn) const;
-
+	
+	/** Called when an activity is produced */
+	FOnActivityProduced ActivityProducedEvent;
+	
 	/** Root path to store all session data under */
 	FString SessionPath;
 
@@ -933,7 +967,7 @@ private:
 	/** Internal SQLite database */
 	TUniquePtr<FSQLiteDatabase> Database;
 
-	TMap<FString,TSharedPtr<struct FConcertPackageAsyncDataStream>> DeferredLargePackageIO;
+	TPimplPtr<struct FDeferredLargePackageIOImpl> DeferredLargePackageIOPtr;
 };
 
 namespace ConcertSyncSessionDatabaseFilterUtil

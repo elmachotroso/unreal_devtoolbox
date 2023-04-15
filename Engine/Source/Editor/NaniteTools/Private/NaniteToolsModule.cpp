@@ -1,22 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteToolsModule.h"
-#include "NaniteToolsArguments.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+
+#include "Delegates/Delegate.h"
+#include "WorkspaceMenuStructure.h"
+#include "WorkspaceMenuStructureModule.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructure.h"
-#include "Editor/WorkspaceMenuStructure/Public/WorkspaceMenuStructureModule.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Docking/SDockTab.h"
-#include "SNaniteTools.h"
-#include "ISettingsModule.h"
 #include "HAL/PlatformProcess.h"
-#include "Misc/Paths.h"
+#include "Internationalization/Internationalization.h"
+#include "Modules/ModuleManager.h"
+#include "SNaniteTools.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
 
 #define LOCTEXT_NAMESPACE "NaniteTools"
 
@@ -46,7 +45,7 @@ void FNaniteToolsModule::StartupModule()
 		.SetDisplayName(NSLOCTEXT("NaniteToolsApp", "TabTitle", "Nanite Tools"))
 		.SetTooltipText(NSLOCTEXT("NaniteToolsApp", "TooltipText", "Tools for auditing and optimizing Nanite assets."))
 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.UserDefinedStruct"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.UserDefinedStruct"));
 }
 
 void FNaniteToolsModule::ShutdownModule()

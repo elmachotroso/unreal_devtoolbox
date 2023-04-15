@@ -1,27 +1,44 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PropertyVisualization/ConfigPropertyCellPresenter.h"
+
+#include "ConfigPropertyHelper.h"
+#include "Containers/Array.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "IConfigEditorModule.h"
+#include "Input/Reply.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
 #include "Layout/Visibility.h"
 #include "Misc/Attribute.h"
-#include "Layout/Margin.h"
-#include "Widgets/SNullWidget.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/SBoxPanel.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/FieldPath.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "IConfigEditorModule.h"
-#include "UObject/UnrealType.h"
-#include "ConfigPropertyHelper.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
 
-#include "PropertyHandle.h"
+class UObject;
+struct FGeometry;
+struct FPointerEvent;
 
 
 #define LOCTEXT_NAMESPACE "ConfigEditor"
@@ -97,7 +114,7 @@ void SConfigPropertyCell::BuildDisplayAreaWidget()
 				[
 					SNew(SBorder)
 					.BorderImage(FCoreStyle::Get().GetBrush("ToolPanel.GroupBorder"))
-					.ForegroundColor(FEditorStyle::GetSlateColor(DefaultForegroundName))
+					.ForegroundColor(FAppStyle::GetSlateColor(DefaultForegroundName))
 					.Padding(0.0f)
 					[
 						DisplayedValueWidget.ToSharedRef()
@@ -117,10 +134,10 @@ void SConfigPropertyCell::BuildDisplayAreaWidget()
 			[
 				SAssignNew(AddPropertyToConfigButton, SButton)
 				.OnClicked(this, &SConfigPropertyCell::HandleAddPropertyToConfigClicked)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("Plus")))
+					.Image(FAppStyle::GetBrush(TEXT("Plus")))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
@@ -139,10 +156,10 @@ void SConfigPropertyCell::BuildDisplayAreaWidget()
 			[
 				SAssignNew(RemovePropertyFromConfigButton, SButton)
 				.OnClicked(this, &SConfigPropertyCell::HandleRemovePropertyFromConfigClicked)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("Cross")))
+					.Image(FAppStyle::GetBrush(TEXT("Cross")))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]

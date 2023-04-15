@@ -2,41 +2,34 @@
 
 #include "CookOnTheFlyMessages.h"
 
-#if WITH_COTF
-
 namespace UE { namespace ZenCookOnTheFly { namespace Messaging
 {
 
-FArchive& operator<<(FArchive& Ar, FPackageStoreData& PackageStoreData)
+FArchive& operator<<(FArchive& Ar, FCompletedPackages& CompletedPackages)
 {
-	Ar << PackageStoreData.CookedPackages;
-	Ar << PackageStoreData.FailedPackages;
-	Ar << PackageStoreData.TotalCookedPackages;
-	Ar << PackageStoreData.TotalFailedPackages;
-
+	Ar << CompletedPackages.CookedPackages;
+	Ar << CompletedPackages.FailedPackages;
+	
 	return Ar;
 }
 
 FArchive& operator<<(FArchive& Ar, FCookPackageRequest& Request)
 {
-	Ar << Request.PackageId;
+	Ar << Request.PackageIds;
 
 	return Ar;
 }
 
-FArchive& operator<<(FArchive& Ar, FCookPackageResponse& Response)
+FArchive& operator<<(FArchive& Ar, FRecookPackagesRequest& Request)
 {
-	uint32 Status = static_cast<uint32>(Response.Status);
-	Ar << Status;
+	Ar << Request.PackageIds;
 
-	if (Ar.IsLoading())
-	{
-		Response.Status = static_cast<EPackageStoreEntryStatus>(Status);
-	}
+	return Ar;
+}
 
+FArchive& operator<<(FArchive& Ar, FRecookPackagesResponse& Response)
+{
 	return Ar;
 }
 
 }}} // namesapce UE::ZenCookOnTheFly::Messaging
-
-#endif // WITH_COTF

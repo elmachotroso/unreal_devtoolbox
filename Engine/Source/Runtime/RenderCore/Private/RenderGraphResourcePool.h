@@ -21,17 +21,22 @@ public:
 	void TickPoolElements();
 
 	/** Allocate a buffer from a given descriptor. */
-	TRefCountPtr<FRDGPooledBuffer> FindFreeBuffer(FRHICommandList& RHICmdList, const FRDGBufferDesc& Desc, const TCHAR* InDebugName);
+	UE_DEPRECATED(5.1, "Use FindFreeBuffer without a command list instead.")
+	TRefCountPtr<FRDGPooledBuffer> FindFreeBuffer(FRHICommandList& RHICmdList, const FRDGBufferDesc& Desc, const TCHAR* InDebugName)
+	{
+		return FindFreeBuffer(Desc, InDebugName);
+	}
+
+	TRefCountPtr<FRDGPooledBuffer> FindFreeBuffer(const FRDGBufferDesc& Desc, const TCHAR* InDebugName, ERDGPooledBufferAlignment Alignment = ERDGPooledBufferAlignment::Page);
+
+	void DumpMemoryUsage(FOutputDevice& OutputDevice);
 
 private:
 	void ReleaseDynamicRHI() override;
 
-	/** Allocate a buffer from a given descriptor. */
-	TRefCountPtr<FRDGPooledBuffer> FindFreeBufferInternal(FRHICommandList& RHICmdList, const FRDGBufferDesc& Desc, const TCHAR* InDebugName);
-
 	/** Elements can be 0, we compact the buffer later. */
 	TArray<TRefCountPtr<FRDGPooledBuffer>> AllocatedBuffers;
-	TArray<uint64> AllocatedBufferHashes;
+	TArray<uint32> AllocatedBufferHashes;
 
 	uint32 FrameCounter = 0;
 
@@ -74,15 +79,13 @@ public:
 		RenderTargetItem.TargetableTexture = nullptr;
 	}
 
-	FRDGTextureSubresourceState State;
-
 private:
 	FRDGTransientRenderTarget() = default;
 
 	FRHITransientTexture* Texture;
 	FPooledRenderTargetDesc Desc;
 	ERDGTransientResourceLifetimeState LifetimeState;
-	mutable uint32 RefCount = 0;
+	mutable int32 RefCount = 0;
 
 	friend class FRDGTransientResourceAllocator;
 };
@@ -108,6 +111,7 @@ private:
 
 	IRHITransientResourceAllocator* Allocator = nullptr;
 
+	FCriticalSection CS;
 	TArray<FRDGTransientRenderTarget*> FreeList;
 	TArray<FRDGTransientRenderTarget*> PendingDeallocationList;
 	TArray<FRDGTransientRenderTarget*> DeallocatedList;

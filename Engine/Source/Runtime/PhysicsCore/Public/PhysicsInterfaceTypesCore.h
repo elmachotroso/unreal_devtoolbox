@@ -22,12 +22,7 @@ struct FActorCreationParams
 		, bStartAwake(true)
 		, DebugName(nullptr)
 	{}
-
-#if WITH_CHAOS
 	FChaosScene* Scene;
-#else
-	FPhysScene* Scene;
-#endif
 	FTransform InitialTM;
 	bool bStatic;
 	bool bQueryOnly;
@@ -74,12 +69,14 @@ struct FBodyCollisionFlags
 		: bEnableSimCollisionSimple(false)
 		, bEnableSimCollisionComplex(false)
 		, bEnableQueryCollision(false)
+		, bEnableProbeCollision(false)
 	{
 	}
 
 	bool bEnableSimCollisionSimple;
 	bool bEnableSimCollisionComplex;
 	bool bEnableQueryCollision;
+	bool bEnableProbeCollision;
 };
 
 
@@ -136,7 +133,7 @@ static bool CalcMeshNegScaleCompensation(const FVector& InScale3D, FTransform& O
 		else
 		{
 			// y pos, z neg
-			OutTransform.SetRotation(FQuat(FVector(0.0f, 1.0f, 0.0f), PI));
+			OutTransform.SetRotation(FQuat(FVector(0.0f, 1.0f, 0.0f), UE_PI));
 			//OutTransform.q = PxQuat(PxPi, PxVec3(0,1,0));
 		}
 	}
@@ -146,13 +143,13 @@ static bool CalcMeshNegScaleCompensation(const FVector& InScale3D, FTransform& O
 		{
 			// y neg, z pos
 			//OutTransform.q = PxQuat(PxPi, PxVec3(0,0,1));
-			OutTransform.SetRotation(FQuat(FVector(0.0f, 0.0f, 1.0f), PI));
+			OutTransform.SetRotation(FQuat(FVector(0.0f, 0.0f, 1.0f), UE_PI));
 		}
 		else
 		{
 			// y neg, z neg
 			//OutTransform.q = PxQuat(PxPi, PxVec3(1,0,0));
-			OutTransform.SetRotation(FQuat(FVector(1.0f, 0.0f, 0.0f), PI));
+			OutTransform.SetRotation(FQuat(FVector(1.0f, 0.0f, 0.0f), UE_PI));
 		}
 	}
 
@@ -164,9 +161,7 @@ static bool CalcMeshNegScaleCompensation(const FVector& InScale3D, FTransform& O
 // TODO: Fixup types, these are more or less the PhysX types renamed as a temporary solution.
 // Probably should move to different header as well.
 
-#if !PHYSICS_INTERFACE_PHYSX
 const uint32 AggregateMaxSize = 128;
-#endif
 
 class UPhysicalMaterial;
 class UPrimitiveComponent;
@@ -217,14 +212,8 @@ public:
 	static bool IsGarbage(void* UserData){ return ((FChaosUserData*)UserData)->Type < EChaosUserDataType::Invalid || ((FChaosUserData*)UserData)->Type > EChaosUserDataType::CustomPayload; }
 };
 
-#if PHYSICS_INTERFACE_PHYSX
-using FUserData = FPhysxUserData;
-using FPhysicsQueryFlag = physx::PxQueryFlag;
-#else
 using FUserData = FChaosUserData;
 using FPhysicsQueryFlag = FChaosQueryFlag;
-#endif
-
 
 template <> FORCEINLINE FBodyInstance* FChaosUserData::Get(void* UserData)			{ if (!UserData || ((FChaosUserData*)UserData)->Type != EChaosUserDataType::BodyInstance) { return nullptr; } return (FBodyInstance*)((FChaosUserData*)UserData)->Payload; }
 template <> FORCEINLINE UPhysicalMaterial* FChaosUserData::Get(void* UserData)		{ if (!UserData || ((FChaosUserData*)UserData)->Type != EChaosUserDataType::PhysicalMaterial) { return nullptr; } return (UPhysicalMaterial*)((FChaosUserData*)UserData)->Payload; }

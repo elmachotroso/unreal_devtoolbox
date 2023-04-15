@@ -6,7 +6,7 @@
 #include "Editor.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Layout/SBox.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "IContentBrowserSingleton.h"
@@ -36,8 +36,9 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
 	const bool bCloseSelfOnly = true;
+	const bool bSearchable = false;
 	
-	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterMenuSelection, nullptr, nullptr, bCloseSelfOnly);
+	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterMenuSelection, nullptr, nullptr, bCloseSelfOnly, &FCoreStyle::Get(), bSearchable);
 
 	if (NewAssetFactories.Num() > 0)
 	{
@@ -105,27 +106,25 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("BrowseHeader", "Browse"));
 	{
-		TSharedPtr<SWidget> MenuContent;
-
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 		FAssetPickerConfig AssetPickerConfig;
 		// Add filter classes - if we have a single filter class of "Object" then don't set a filter since it would always match everything (but slower!)
 		if (AllowedClasses.Num() == 1 && AllowedClasses[0] == UObject::StaticClass())
 		{
-			AssetPickerConfig.Filter.ClassNames.Reset();
+			AssetPickerConfig.Filter.ClassPaths.Reset();
 		}
 		else
 		{
 			for(int32 i = 0; i < AllowedClasses.Num(); ++i)
 			{
-				AssetPickerConfig.Filter.ClassNames.Add( AllowedClasses[i]->GetFName() );
+				AssetPickerConfig.Filter.ClassPaths.Add( AllowedClasses[i]->GetClassPathName() );
 			}
 		}
 
 		for (int32 i = 0; i < DisallowedClasses.Num(); ++i)
 		{
-			AssetPickerConfig.Filter.RecursiveClassesExclusionSet.Add(DisallowedClasses[i]->GetFName());
+			AssetPickerConfig.Filter.RecursiveClassPathsExclusionSet.Add(DisallowedClasses[i]->GetClassPathName());
 		}
 
 		// Allow child classes
@@ -157,15 +156,17 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 		// Force show plugin content if meta data says so
 		AssetPickerConfig.bForceShowPluginContent = bForceShowPluginContent;
 
-		MenuContent =
+		AssetPickerWidget = ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig);
+
+		TSharedRef<SWidget> MenuContent =
 			SNew(SBox)
 			.WidthOverride(PropertyEditorAssetConstants::ContentBrowserWindowSize.X)
 			.HeightOverride(PropertyEditorAssetConstants::ContentBrowserWindowSize.Y)
 			[
-				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
+				AssetPickerWidget.ToSharedRef()
 			];
 
-		MenuBuilder.AddWidget(MenuContent.ToSharedRef(), FText::GetEmpty(), true);
+		MenuBuilder.AddWidget(MenuContent, FText::GetEmpty(), true);
 	}
 	MenuBuilder.EndSection();
 
@@ -173,6 +174,39 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 	[
 		MenuBuilder.MakeWidget()
 	];
+}
+
+FReply SPropertyMenuAssetPicker::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (!AssetPickerWidget.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+	
+	// only give the search box focus if it's not a command like Ctrl+C
+	if (InKeyEvent.GetCharacter() == 0 || 
+		InKeyEvent.IsAltDown() ||
+		InKeyEvent.IsControlDown() ||
+		InKeyEvent.IsCommandDown())
+	{
+		return FReply::Unhandled();
+	}
+
+	const FWidgetPath* Path = InKeyEvent.GetEventPath();
+	if (Path != nullptr)
+	{
+		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+		TSharedPtr<SWidget> SearchBox = ContentBrowserModule.Get().GetAssetPickerSearchBox(AssetPickerWidget.ToSharedRef());
+		if (SearchBox.IsValid())
+		{
+			if (!Path->ContainsWidget(SearchBox.Get()))
+			{
+				return FReply::Unhandled().SetUserFocus(SearchBox.ToSharedRef());
+			}
+		}
+	}
+
+	return FReply::Unhandled();
 }
 
 void SPropertyMenuAssetPicker::OnEdit()
@@ -261,7 +295,7 @@ bool SPropertyMenuAssetPicker::CanPaste()
 	else
 	{
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( *PossibleObjectPath ).IsValid();
+		bCanPaste = PossibleObjectPath.Len() < NAME_SIZE && AssetRegistryModule.Get().GetAssetByObjectPath( FSoftObjectPath(PossibleObjectPath) ).IsValid();
 	}
 
 	return bCanPaste;

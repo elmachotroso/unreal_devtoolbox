@@ -53,14 +53,12 @@ protected:
 	FNetworkPredictionProxy NetworkPredictionProxy;
 
 	UPROPERTY()
-	UPrimitiveComponent* UpdatedPrimitive = nullptr;
+	TObjectPtr<UPrimitiveComponent> UpdatedPrimitive = nullptr;
 
 	UPROPERTY(Replicated, transient)
 	FReplicationProxy ReplicationProxy;
 
-#if WITH_CHAOS
 	FPhysicsActorHandle PhysicsActorHandle = nullptr;
-#endif // WITH_CHAOS
 
 	FReplicationProxySet GetReplicationProxies()
 	{

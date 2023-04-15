@@ -6,8 +6,17 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
 #include "UObject/Script.h"
+
+class FOutputDevice;
+class UFunction;
 
 /**
  * Kismet bytecode disassembler; Can be used to create a human readable version
@@ -52,6 +61,9 @@ private:
 	float ReadFLOAT(int32& ScriptIndex);
 	double ReadDOUBLE(int32& ScriptIndex);
 	FVector ReadFVECTOR(int32& ScriptIndex);
+	FRotator ReadFROTATOR(int32& ScriptIndex);
+	FQuat ReadFQUAT(int32& ScriptIndex);
+	FTransform ReadFTRANSFORM(int32& ScriptIndex);
 	CodeSkipSizeType ReadSkipCount(int32& ScriptIndex);
 	FString ReadString(int32& ScriptIndex);
 	FString ReadString8(int32& ScriptIndex);

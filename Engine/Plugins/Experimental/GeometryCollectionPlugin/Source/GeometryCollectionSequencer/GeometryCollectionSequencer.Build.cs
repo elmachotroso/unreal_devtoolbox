@@ -12,15 +12,12 @@ namespace UnrealBuildTool.Rules
                 }
             );
 
-            PrivateIncludePaths.Add("GeometryCollectionSequencer/Private");
-
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
                     "AssetTools",
                     "Core",
                     "CoreUObject",
-                    "EditorStyle",
                     "Engine",
 					"LevelSequence",
                     "MovieScene",

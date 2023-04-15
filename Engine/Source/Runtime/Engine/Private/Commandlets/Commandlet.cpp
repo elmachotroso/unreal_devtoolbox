@@ -3,6 +3,15 @@
 #include "Commandlets/Commandlet.h"
 #include "Misc/AutomationTest.h"
 
+#include "Engine/Engine.h"
+#include "EngineModule.h"
+#include "RenderingThread.h"
+#include "RendererInterface.h"
+#include "HAL/ThreadManager.h"
+#include "Framework/Application/SlateApplication.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Commandlet)
+
 UCommandlet::UCommandlet(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -57,3 +66,66 @@ bool FCommandletCommandLineParsingTest::RunTest(const FString& Parameters)
 
 #endif // WITH_DEV_AUTOMATION_TESTS
 
+
+void CommandletHelpers::TickEngine(UWorld* InWorld, double InDeltaTime)
+{
+	// Simulate an engine frame tick
+	// Will make sure systems can perform their internal bookkeeping properly. For example, the VT system needs to 
+	// process deleted VTs.
+
+	FApp::SetDeltaTime(InDeltaTime);
+
+	// Tick the engine.
+	GEngine->Tick(FApp::GetDeltaTime(), false);
+
+	// Tick Slate.
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().PumpMessages();
+		FSlateApplication::Get().Tick();
+	}
+
+	// Required for FTimerManager to function - as it blocks ticks, if the frame counter doesn't change
+	GFrameCounter++;
+
+	// Update task graph.
+	FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+
+	// Ticks all fake threads and their runnable objects.
+	FThreadManager::Get().Tick();
+
+	// Core ticker tick.
+	FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
+
+	// Execute deferred commands.
+	GEngine->TickDeferredCommands();
+
+	// Tick rendering.
+	if (InWorld && IsAllowCommandletRendering())
+	{
+		if (FSceneInterface* Scene = InWorld->Scene)
+		{
+			// BeingFrame/EndFrame (taken from FEngineLoop)
+
+			ENQUEUE_RENDER_COMMAND(BeginFrame)([](FRHICommandListImmediate& RHICmdList)
+			{
+				GFrameNumberRenderThread++;
+				RHICmdList.BeginFrame();
+				FCoreDelegates::OnBeginFrameRT.Broadcast();
+			});
+
+			ENQUEUE_RENDER_COMMAND(EndFrame)([](FRHICommandListImmediate& RHICmdList)
+			{
+				FCoreDelegates::OnEndFrameRT.Broadcast();
+				RHICmdList.EndFrame();
+			});
+
+			FlushRenderingCommands();
+		}
+
+		ENQUEUE_RENDER_COMMAND(VirtualTextureScalability_Release)([](FRHICommandList& RHICmdList)
+		{
+			GetRendererModule().ReleaseVirtualTexturePendingResources();
+		});
+	}
+}

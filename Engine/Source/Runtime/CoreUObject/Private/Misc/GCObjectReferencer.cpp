@@ -59,7 +59,8 @@ void UGCObjectReferencer::AddReferencedObjects(UObject* InThis, FReferenceCollec
 void UGCObjectReferencer::AddObject(FGCObject* Object)
 {
 	check(Object);
-	check(GObjUnhashUnreachableIsInProgress || GObjIncrementalPurgeIsInProgress || !IsGarbageCollecting());	FScopeLock ReferencedObjectsLock(&ReferencedObjectsCritical);
+	check(GObjUnhashUnreachableIsInProgress || GObjIncrementalPurgeIsInProgress || !IsGarbageCollectingAndLockingUObjectHashTables());
+	FScopeLock ReferencedObjectsLock(&ReferencedObjectsCritical);
 	// Make sure there are no duplicates. Should be impossible...
 	checkSlow(!ReferencedObjects.Contains(Object));
 	ReferencedObjects.Add(Object);
@@ -75,7 +76,8 @@ void UGCObjectReferencer::AddObject(FGCObject* Object)
 void UGCObjectReferencer::RemoveObject(FGCObject* Object)
 {
 	check(Object);
-	check(GObjUnhashUnreachableIsInProgress || GObjIncrementalPurgeIsInProgress || !IsGarbageCollecting());	FScopeLock ReferencedObjectsLock(&ReferencedObjectsCritical);
+	check(GObjUnhashUnreachableIsInProgress || GObjIncrementalPurgeIsInProgress || !IsGarbageCollectingAndLockingUObjectHashTables());
+	FScopeLock ReferencedObjectsLock(&ReferencedObjectsCritical);
 	int32 NumRemoved = ReferencedObjects.RemoveSingleSwap(Object);
 	check(NumRemoved == 1);
 #if VERIFY_DISREGARD_GC_ASSUMPTIONS
@@ -207,7 +209,7 @@ void UGCObjectReferencer::VerifyGCObjectNames()
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UGCObjectReferencer, UObject, 
 	{
-		Class->ClassAddReferencedObjects = &UGCObjectReferencer::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UGCObjectReferencer);
 	}
 );
 

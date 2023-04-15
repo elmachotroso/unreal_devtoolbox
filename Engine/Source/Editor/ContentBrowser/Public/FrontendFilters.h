@@ -2,13 +2,32 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "CollectionManagerTypes.h"
-#include "ISourceControlProvider.h"
-#include "IAssetTools.h"
-#include "Misc/TextFilterExpressionEvaluator.h"
-#include "FrontendFilterBase.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Set.h"
 #include "Containers/Ticker.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Delegates/IDelegateInstance.h"
+#include "FrontendFilterBase.h"
+#include "HAL/Platform.h"
+#include "IAssetTools.h"
+#include "IContentBrowserSingleton.h"
+#include "ISourceControlOperation.h"
+#include "ISourceControlProvider.h"
+#include "Internationalization/Text.h"
+#include "Misc/TextFilterExpressionEvaluator.h"
+#include "Misc/TextFilterUtils.h"
+#include "SourceControlOperations.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+
+class UPackage;
+struct FAssetRenameData;
+struct FCollectionNameType;
+struct FContentBrowserDataFilter;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -264,7 +283,7 @@ public:
 
 private:
 	bool bAreRedirectorsInBaseFilter;
-	FName RedirectorClassName;
+	FString RedirectorClassName;
 };
 
 /** A filter that only displays assets used by loaded levels */
@@ -388,6 +407,23 @@ public:
 	virtual bool PassesFilter(FAssetFilterType InItem) const override;
 
 private:
+};
+
+/** A filter that displays only packages that contain virtualized data  */
+class CONTENTBROWSER_API FFrontendFilter_VirtualizedData : public FFrontendFilter
+{
+public:
+	FFrontendFilter_VirtualizedData(TSharedPtr<FFrontendFilterCategory> InCategory);
+	~FFrontendFilter_VirtualizedData() = default;
+
+private:
+	// FFrontendFilter implementation
+	virtual FString GetName() const override { return TEXT("VirtualizedData"); }
+	virtual FText GetDisplayName() const override { return LOCTEXT("FrontendFilter_VirtualizedData", "Virtualized Data"); }
+	virtual FText GetToolTipText() const override { return LOCTEXT("FrontendFilter_VirtualizedDataTooltip", "Show only package that contain virtualized data."); }
+
+	// IFilter implementation
+	virtual bool PassesFilter(FAssetFilterType InItem) const override;
 };
 
 #undef LOCTEXT_NAMESPACE

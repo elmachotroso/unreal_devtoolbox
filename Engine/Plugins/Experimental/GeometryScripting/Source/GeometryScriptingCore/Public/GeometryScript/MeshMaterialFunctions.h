@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GeometryScript/GeometryScriptTypes.h"
+#include "GeometryScript/GeometryScriptSelectionTypes.h"
 #include "MeshMaterialFunctions.generated.h"
 
 class UDynamicMesh;
@@ -35,16 +36,31 @@ public:
 		int ToMaterialID,
 		UGeometryScriptDebug* Debug = nullptr );
 
-	UFUNCTION(BlueprintPure, Category = "GeometryScript|Materials", meta=(ScriptMethod))
+	UFUNCTION(BlueprintPure, Category = "GeometryScript|Materials", meta=(ScriptMethod, DisplayName="GetMaterialIDOfTriangle"))
 	static UPARAM(DisplayName = "Material ID") int32
 	GetTriangleMaterialID( UDynamicMesh* TargetMesh, int TriangleID, bool& bIsValidTriangle );
 
 	UFUNCTION(BlueprintPure, Category = "GeometryScript|Materials", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	GetMaterialIDsOfTriangles(
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptIndexList TriangleIDList,
+		FGeometryScriptIndexList& MaterialIDList,
+		UGeometryScriptDebug* Debug = nullptr);
+
+	UFUNCTION(BlueprintPure, Category = "GeometryScript|Materials", meta=(ScriptMethod, DisplayName="GetMaterialIDsOfAllTriangles"))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	GetAllTriangleMaterialIDs( UDynamicMesh* TargetMesh, FGeometryScriptIndexList& MaterialIDList, bool& bHasMaterialIDs );
 
+	UFUNCTION(BlueprintPure, Category = "GeometryScript|Selection", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	GetTrianglesByMaterialID( 
+		UDynamicMesh* TargetMesh, 
+		int MaterialID,
+		FGeometryScriptIndexList& TriangleIDList,
+		UGeometryScriptDebug* Debug = nullptr);
 
-	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod, DisplayName="SetMaterialIDOnTriangle"))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	SetTriangleMaterialID( 
 		UDynamicMesh* TargetMesh, 
@@ -53,15 +69,44 @@ public:
 		bool& bIsValidTriangle, 
 		bool bDeferChangeNotifications = false );
 
-	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod, DisplayName="SetMaterialIDsOnAllTriangles"))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
 	SetAllTriangleMaterialIDs(
 		UDynamicMesh* TargetMesh,
-		FGeometryScriptIndexList& TriangleMaterialIDList,
+		FGeometryScriptIndexList TriangleMaterialIDList,
 		bool bDeferChangeNotifications = false,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	SetMaterialIDOnTriangles(
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptIndexList TriangleIDList,
+		int MaterialID,
+        bool bDeferChangeNotifications = false,
+		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	* Set a new MaterialID on all the triangles of the given Selection.
+	* @param MaterialID new Material ID to set
+	* @param bDeferChangeNotifications if true, the UDynamicMesh does not emit a change event/signal for this modification
+	*/
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Polygroups", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	SetMaterialIDForMeshSelection( 
+		UDynamicMesh* TargetMesh, 
+		FGeometryScriptMeshSelection Selection,
+		int MaterialID,
+		bool bDeferChangeNotifications = false,
+		UGeometryScriptDebug* Debug = nullptr);
+
+	/**
+	* Set a new MaterialID on all the triangles of TargetMesh with the given Polygroup.
+	* @param GroupLayer Polygroup Layer to use as basis for polygroups
+	* @param PolygroupID Polygroup ID that specifies Triangles to set to new MaterialID
+	* @param MaterialID explicit new MaterialID to set
+	* @param bDeferChangeNotifications if true, the UDynamicMesh does not emit a change event/signal for this modification
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	SetPolygroupMaterialID( 
@@ -73,6 +118,10 @@ public:
 		bool bDeferChangeNotifications = false,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	 * Delete all triangles in TargetMesh with the given MaterialID
+	 * @param NumDeleted number of deleted triangles is returned here
+	 */
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Materials", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	DeleteTrianglesByMaterialID( 

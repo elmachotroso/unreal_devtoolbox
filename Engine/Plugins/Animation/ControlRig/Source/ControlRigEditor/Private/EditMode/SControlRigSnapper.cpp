@@ -1,27 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SControlRigSnapper.h"
+#include "EditMode/SControlRigSnapper.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "AssetData.h"
-#include "EditorStyleSet.h"
+#include "AssetRegistry/AssetData.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "ScopedTransaction.h"
 #include "ControlRig.h"
 #include "UnrealEdGlobals.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "Tools/ControlRigPose.h"
 #include "EditorModeManager.h"
 #include "ISequencer.h"
 #include "LevelSequence.h"
-#include "UnrealEd/Public/Selection.h"
+#include "Selection.h"
 #include "Editor.h"
 #include "Tools/ControlRigSnapSettings.h"
 #include "LevelEditor.h"
-#include "Editor/SceneOutliner/Private/SSocketChooser.h"
+#include "SSocketChooser.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
@@ -94,7 +94,7 @@ public:
 		this->ChildSlot
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush(TEXT("Menu.Background")))
+				.BorderImage(FAppStyle::GetBrush(TEXT("Menu.Background")))
 			.Padding(5)
 			.Content()
 			[
@@ -104,7 +104,7 @@ public:
 			.Padding(0.0f, 1.0f)
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::GetFontStyle(TEXT("SocketChooser.TitleFont")))
+				.Font(FAppStyle::GetFontStyle(TEXT("SocketChooser.TitleFont")))
 			.Text(NSLOCTEXT("ComponentChooser", "ChooseComponentLabel", "Choose Component"))
 			]
 		+ SVerticalBox::Slot()
@@ -125,6 +125,32 @@ public:
 			];
 	}
 };
+
+//function to keep framenumber from beign too large do to user error, it can cause a crash if we snap too many frames.
+static void KeepFrameInRange(FFrameNumber& KeepFrameInRange, UMovieScene* MovieScene)
+{
+	if (MovieScene)
+	{
+		//limit values to 10x times the range from the end points.
+		FFrameNumber StartFrame = MovieScene->GetPlaybackRange().GetLowerBoundValue();
+		FFrameNumber EndFrame = MovieScene->GetPlaybackRange().GetUpperBoundValue();
+		if (EndFrame < StartFrame)
+		{
+			FFrameNumber Temp = StartFrame;
+			StartFrame = EndFrame;
+			EndFrame = Temp;
+		}
+		const FFrameNumber Max = (EndFrame - StartFrame) * 10;
+		if (KeepFrameInRange < (StartFrame - Max))
+		{
+			KeepFrameInRange = (StartFrame - Max);
+		}
+		else if (KeepFrameInRange > (EndFrame + Max))
+		{
+			KeepFrameInRange = (EndFrame + Max);
+		}
+	}
+}
 
 void SControlRigSnapper::Construct(const FArguments& InArgs)
 {
@@ -265,6 +291,7 @@ void SControlRigSnapper::Construct(const FArguments& InArgs)
 											if (NewFrameTime.IsSet())
 											{
 												StartFrame = FFrameNumber((int32)NewFrameTime.GetValue());
+												KeepFrameInRange(StartFrame, Sequencer.Pin()->GetFocusedMovieSceneSequence()->GetMovieScene());
 											}
 										}
 									})
@@ -298,6 +325,7 @@ void SControlRigSnapper::Construct(const FArguments& InArgs)
 											if (NewFrameTime.IsSet())
 											{
 												EndFrame = FFrameNumber((int32)NewFrameTime.GetValue());
+												KeepFrameInRange(EndFrame, Sequencer.Pin()->GetFocusedMovieSceneSequence()->GetMovieScene());
 											}
 										}
 									})
@@ -339,7 +367,31 @@ void SControlRigSnapper::Construct(const FArguments& InArgs)
 				]
 			]
 		];
+
+	TWeakPtr<ISequencer> Sequencer = Snapper.GetSequencer();
+	if (Sequencer.IsValid())
+	{
+		Sequencer.Pin()->OnActivateSequence().AddRaw(this, &SControlRigSnapper::OnActivateSequenceChanged);
+	}
 }
+
+SControlRigSnapper::~SControlRigSnapper()
+{
+	TWeakPtr<ISequencer> Sequencer = Snapper.GetSequencer();
+	if (Sequencer.IsValid())
+	{
+		Sequencer.Pin()->OnActivateSequence().RemoveAll(this);
+	}
+}
+
+void SControlRigSnapper::OnActivateSequenceChanged(FMovieSceneSequenceIDRef ID)
+{
+	if(!GIsTransacting)
+	{ 
+		ClearActors();
+	}
+}
+
 
 FReply SControlRigSnapper::OnActorToSnapClicked()
 {
@@ -447,19 +499,33 @@ void SControlRigSnapper::SetStartEndFrames()
 FControlRigSnapperSelection SControlRigSnapper::GetSelection(bool bGetAll) 
 {
 	FControlRigSnapperSelection Selection;
-	UControlRig* ControlRig = GetControlRig();
-	if (ControlRig)
+	TArray<UControlRig*> ControlRigs;
+	GetControlRigs(ControlRigs);
+	for (UControlRig* ControlRig : ControlRigs)
 	{
-		TArray<FName> SelectedControls = ControlRig->CurrentControlSelection();
-		if (SelectedControls.Num() > 0)
+		if (ControlRig)
 		{
-			FControlRigForWorldTransforms ControlRigAndSelection;
-			ControlRigAndSelection.ControlRig = ControlRig;
-			ControlRigAndSelection.ControlNames = SelectedControls;
-			Selection.ControlRigs.Add(ControlRigAndSelection);
-			if (bGetAll == false)
+			TArray<FName> SelectedControls = ControlRig->CurrentControlSelection();
+			if (SelectedControls.Num() > 0)
 			{
-				return Selection;
+				FControlRigForWorldTransforms ControlRigAndSelection;
+				ControlRigAndSelection.ControlRig = ControlRig;
+				ControlRigAndSelection.ControlNames = SelectedControls;
+				if (bGetAll == false)
+				{
+					//make sure to only use first control
+					if (SelectedControls.Num() > 1)
+					{
+						ControlRigAndSelection.ControlNames.SetNum(0);
+						ControlRigAndSelection.ControlNames.Add(SelectedControls[0]);
+					}
+					Selection.ControlRigs.Add(ControlRigAndSelection);
+					return Selection;
+				}
+				else
+				{
+					Selection.ControlRigs.Add(ControlRigAndSelection);
+				}
 			}
 		}
 	}
@@ -482,13 +548,20 @@ FControlRigSnapperSelection SControlRigSnapper::GetSelection(bool bGetAll)
 	return Selection;
 }
 
-UControlRig* SControlRigSnapper::GetControlRig() const
+void SControlRigSnapper::GetControlRigs(TArray<UControlRig*>& OutControlRigs) const
 {
+	OutControlRigs.SetNum(0);
 	if (FControlRigEditMode* EditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName)))
 	{
-		return EditMode->GetControlRig(true);
+		TArrayView<TWeakObjectPtr<UControlRig>> ControlRigPtrs = EditMode->GetControlRigs();
+		for (TWeakObjectPtr<UControlRig>& ControlRigPtr : ControlRigPtrs)
+		{
+			if (UControlRig* ControlRig = ControlRigPtr.Get())
+			{
+				OutControlRigs.Add(ControlRig);
+			}
+		}
 	}
-	return nullptr;
 }
 
 

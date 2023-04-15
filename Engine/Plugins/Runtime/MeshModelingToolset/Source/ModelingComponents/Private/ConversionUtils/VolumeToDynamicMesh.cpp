@@ -17,7 +17,7 @@
 #include "Components/BrushComponent.h"
 
 #if WITH_EDITOR
-#include "Engine/Classes/Engine/Polys.h"
+#include "Engine/Polys.h"
 #endif
 
 using namespace UE::Geometry;
@@ -39,7 +39,7 @@ void VolumeToDynamicMesh(AVolume* Volume, FDynamicMesh3& Mesh,
 	if (Options.bInWorldSpace)
 	{
 		FTransform3d XForm(Volume->GetTransform());
-		MeshTransforms::ApplyTransform(Mesh, XForm);
+		MeshTransforms::ApplyTransform(Mesh, XForm, true);
 	}
 }
 
@@ -57,7 +57,7 @@ void BrushComponentToDynamicMesh(UBrushComponent* Component, UE::Geometry::FDyna
 	if (Options.bInWorldSpace)
 	{
 		FTransform3d XForm(Component->GetComponentTransform());
-		MeshTransforms::ApplyTransform(Mesh, XForm);
+		MeshTransforms::ApplyTransform(Mesh, XForm, true);
 	}
 }
 

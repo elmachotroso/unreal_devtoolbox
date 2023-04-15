@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/Classes/Engine/Texture2D.h"
+#include "Engine/Texture2D.h"
 #include "InteractiveToolBuilder.h"
 #include "MeshMaterialProperties.generated.h"
 
@@ -38,7 +38,7 @@ public:
 	bool bShowWireframe = false;
 
 	/** If true, extended options are available */ 
-	UPROPERTY()
+	UPROPERTY(meta = (TransientToolProperty))
 	bool bShowExtendedOptions = true;
 };
 

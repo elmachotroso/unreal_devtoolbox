@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TextureDefines.h"
+#include "RenderCommandFence.h"
 #include "SceneComponent.h"
 #include "RuntimeVirtualTextureComponent.generated.h"
 
@@ -30,7 +32,7 @@ protected:
 	bool bSnapBoundsToLandscape;
 
 	/** The virtual texture object to use. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonPIEDuplicateTransient, Category = VirtualTexture)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, TextExportTransient, Category = VirtualTexture)
 	TObjectPtr<URuntimeVirtualTexture> VirtualTexture = nullptr;
 
 	/** Set to true to enable scalability settings for the virtual texture. */
@@ -46,7 +48,7 @@ protected:
 	bool bHidePrimitives = false;
 
 	/** Texture object containing streamed low mips. This can reduce rendering update cost. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonPIEDuplicateTransient, Category = VirtualTextureBuild)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VirtualTextureBuild)
 	TObjectPtr<UVirtualTextureBuilder> StreamingTexture = nullptr;
 
 	/** Number of streaming low mips to build for the virtual texture. */
@@ -57,13 +59,17 @@ protected:
 	UPROPERTY(VisibleAnywhere, Transient, Category = VirtualTextureBuild)
 	bool bBuildStreamingMipsButton;
 
+	/** 
+	 * How aggressively should any relevant lossy compression be applied. 
+	 * For compressors that support EncodeSpeed (i.e. Oodle), this is only applied if enabled (see Project Settings -> Texture Encoding). 
+	 * Note that this is in addition to any unavoidable loss due to the target format. Selecting "No Lossy Compression" will not result in zero distortion for BCn formats.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = VirtualTextureBuild)
+	TEnumAsByte<ETextureLossyCompressionAmount> LossyCompressionAmount = TLCA_Default;
+
 	/** Use streaming low mips when rendering in editor. Set true to view and debug the baked streaming low mips. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "View in Editor"))
 	bool bUseStreamingLowMipsInEditor = false;
-
-	/** Enable Crunch texture compression for the streaming low mips. Generic ZLib compression is used when Crunch is disabled. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "Enable Crunch"))
-	bool bEnableCompressCrunch = false;
 
 	/** Build the streaming low mips using debug coloring. This can help show where streaming mips are being used. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "Build Debug"))
@@ -77,6 +83,9 @@ protected:
 	/** Delegate that this virtual texture will call to evaluated the full HidePrimitives state. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FGetHidePrimitivesDelegate, bool&, bool&);
 	FGetHidePrimitivesDelegate HidePrimitivesDelegate;
+
+	/** A fence to track render thread has finished with StreamingTexture data before destroy. */
+	FRenderCommandFence DestroyFence;
 
 public:
 	/**
@@ -113,11 +122,11 @@ public:
 	/** Get if we want to use any streaming low mips on this component. */
 	bool IsStreamingLowMips() const;
 
-	/** Public getter for crunch compression flag. */
-	bool IsCrunchCompressed() const { return bEnableCompressCrunch; }
-
 	/** Public getter for debug streaming mips flag. */
 	bool IsBuildDebugStreamingMips() { return bBuildDebugStreamingMips; }
+
+	/** Public getter for lossy compression setting. */
+	TEnumAsByte<ETextureLossyCompressionAmount> GetLossyCompressionAmount() const { return LossyCompressionAmount; }
 
 	/** Returns true if there are StreamingTexure contents but they are not valid for use. */
 	bool IsStreamingTextureInvalid() const;
@@ -142,6 +151,8 @@ public:
 
 protected:
 	//~ Begin UObject Interface
+	virtual void BeginDestroy() override;
+	virtual bool IsReadyForFinishDestroy() override;
 #if WITH_EDITOR
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif

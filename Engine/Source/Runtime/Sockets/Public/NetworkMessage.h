@@ -2,10 +2,20 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "Serialization/BufferArchive.h"
-#include "Serialization/ArrayReader.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ByteSwap.h"
+#include "Misc/Crc.h"
+#include "Misc/DateTime.h"
 #include "Misc/EnumClassFlags.h"
+#include "Serialization/Archive.h"
+#include "Serialization/ArrayReader.h"
+#include "Serialization/BufferArchive.h"
+
+class FArrayReader;
+class FString;
 
 enum
 { 
@@ -94,6 +104,8 @@ public:
 	virtual bool Send(const uint8 *Buffer, int32 Size) const = 0;
 	/** return the magic number for this message, also used for endian correction on the archives **/
 	virtual uint32 GetMagic() const = 0;
+	/** Destructor */
+	virtual ~FSimpleAbstractSocket() { }
 };
 
 /**

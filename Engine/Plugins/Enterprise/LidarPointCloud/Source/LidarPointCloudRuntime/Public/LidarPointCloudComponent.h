@@ -8,6 +8,7 @@
 #include "LidarPointCloudComponent.generated.h"
 
 class UBodySetup;
+class FViewportClient;
 
 UENUM(BlueprintType)
 enum class ELidarPointCloudSpriteOrientation : uint8
@@ -26,14 +27,14 @@ class LIDARPOINTCLOUDRUNTIME_API ULidarPointCloudComponent : public UMeshCompone
 		
 private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lidar Point Cloud", meta = (AllowPrivateAccess = "true"))
-	ULidarPointCloud *PointCloud;
+	TObjectPtr<ULidarPointCloud> PointCloud;
 
 	/**
 	 * Allows using custom-built material for the point cloud.
 	 * Set to None to use the default one instead.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Material", meta = (AllowPrivateAccess = "true"))
-	UMaterialInterface* CustomMaterial;
+	TObjectPtr<UMaterialInterface> CustomMaterial;
 
 public:
 	/**
@@ -144,11 +145,11 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UMaterialInterface* Material;
+	TObjectPtr<UMaterialInterface> Material;
 	UPROPERTY(Transient)
-	UMaterialInterface *MasterMaterial;
+	TObjectPtr<UMaterialInterface> BaseMaterial;
 	UPROPERTY(Transient)
-	UMaterialInterface* MasterMaterialMasked;
+	TObjectPtr<UMaterialInterface> BaseMaterialMasked;
 
 	/** Pointer to the viewport client of the owning editor, or null, if this is a game object. */
 	TWeakPtr<FViewportClient> OwningViewportClient;
@@ -501,6 +502,17 @@ public:
 		}
 	}
 
+#if WITH_EDITOR
+	void SelectByConvexVolume(FConvexVolume ConvexVolume, bool bAdditive, bool bVisibleOnly);
+	void SelectBySphere(FSphere Sphere, bool bAdditive, bool bVisibleOnly);
+	void HideSelected();
+	void DeleteSelected();
+	void InvertSelection();
+	int64 NumSelectedPoints();
+	void GetSelectedPointsAsCopies(TArray64<FLidarPointCloudPoint>& SelectedPoints);
+	void ClearSelection();
+#endif
+	
 public:
 	UFUNCTION(BlueprintCallable, Category = "Components|LidarPointCloud")
 	void SetPointCloud(ULidarPointCloud *InPointCloud);
@@ -571,6 +583,7 @@ private:
 	void RemovePointCloudListener();
 	void OnPointCloudRebuilt();
 	void OnPointCloudCollisionUpdated();
+	void OnPointCloudNormalsUpdated();
 
 	void PostPointCloudSet();
 

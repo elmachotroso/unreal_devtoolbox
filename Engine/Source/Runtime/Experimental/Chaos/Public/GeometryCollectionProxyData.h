@@ -88,12 +88,60 @@ public:
 	TManagedArray<bool> SimulatableParticles;
 };
 
+/**
+ * Provides an API for dynamic state related attributes
+ * physics state , broken state, current parent (normal or internal clusters )
+ * To be used with the dynamic collection
+ */
+class CHAOS_API FGeometryCollectionDynamicStateFacade
+{
+public:
+	FGeometryCollectionDynamicStateFacade(FManagedArrayCollection& InCollection);
+
+	/** returns true if all the necessary attributes are present */
+	bool IsValid() const;
+
+	/** return true if the transform is in a dynamic or sleeping state */
+	bool IsDynamicOrSleeping(int32 TransformIndex) const;
+
+	/** return true if the transform is in a sleeping state */
+	bool IsSleeping(int32 TransformIndex) const;
+
+	/** whether there's children attached to this transfom (Cluster) */
+	bool HasChildren(int32 TransformIndex) const;
+	
+	/** return true if the transform has broken off its parent */
+	bool HasBrokenOff(int32 TransformIndex) const;
+
+	/** return true if the transform has an internal cluster parent */
+	bool HasInternalClusterParent(int32 TransformIndex) const;
+
+	/** return true if the transform has an internal cluster parent in a dynamic state */
+	bool HasDynamicInternalClusterParent(int32 TransformIndex) const;
+	
+private:
+	/** Active state, true means that the transform is active or broken off from its parent */
+	TManagedArrayAccessor<bool> ActiveAttribute;
+
+	/** physics state of the transform (Dynamic, kinematic, static, sleeping) */
+	TManagedArrayAccessor<int32> DynamicStateAttribute;
+
+	/** currently attached children (potentially different from the initial children setup) */
+	TManagedArrayAccessor<TSet<int32>> ChildrenAttribute;
+	
+	/** Current parent (potentially different from the initial parent) */
+	TManagedArrayAccessor<int32> ParentAttribute;
+
+	/** type of internal state parent */
+	TManagedArrayAccessor<uint8> InternalClusterParentTypeAttribute;
+};
 
 class FGeometryCollectioPerFrameData
 {
 public:
 	FGeometryCollectioPerFrameData()
-		: IsWorldTransformDirty(false) {}
+		: IsWorldTransformDirty(false)
+		, bIsCollisionFilterDataDirty(false) {}
 
 	const FTransform& GetWorldTransform() const { return WorldTransform; }
 
@@ -109,9 +157,30 @@ public:
 	bool GetIsWorldTransformDirty() const { return IsWorldTransformDirty; }
 	void ResetIsWorldTransformDirty() { IsWorldTransformDirty = false; }
 
+	const FCollisionFilterData& GetSimFilter() const { return SimFilter; }
+	void SetSimFilter(const FCollisionFilterData& NewSimFilter)
+	{
+		SimFilter = NewSimFilter;
+		bIsCollisionFilterDataDirty = true;
+	}
+
+	const FCollisionFilterData& GetQueryFilter() const { return QueryFilter; }
+	void SetQueryFilter(const FCollisionFilterData& NewQueryFilter)
+	{
+		QueryFilter = NewQueryFilter;
+		bIsCollisionFilterDataDirty = true;
+	}
+
+	bool GetIsCollisionFilterDataDirty() const { return bIsCollisionFilterDataDirty; }
+	void ResetIsCollisionFilterDataDirty() { bIsCollisionFilterDataDirty = false; }
+
 private:
 	FTransform WorldTransform;
 	bool IsWorldTransformDirty;
+
+	FCollisionFilterData SimFilter;
+	FCollisionFilterData QueryFilter;
+	bool bIsCollisionFilterDataDirty;
 };
 
 /**
@@ -130,23 +199,52 @@ public:
 	void InitArrays(const FGeometryDynamicCollection& Other)
 	{
 		const int32 NumTransforms = Other.NumElements(FGeometryCollection::TransformGroup);
-		DisabledStates.SetNumUninitialized(NumTransforms);
+		States.SetNumUninitialized(NumTransforms);
 		GlobalTransforms.SetNumUninitialized(NumTransforms);
-		ParticleToWorldTransforms.SetNumUninitialized(NumTransforms);
-
+		ParticleXs.SetNumUninitialized(NumTransforms);
+		ParticleRs.SetNumUninitialized(NumTransforms);
+		ParticleVs.SetNumUninitialized(NumTransforms);
+		ParticleWs.SetNumUninitialized(NumTransforms);
+		
 		Transforms.SetNumUninitialized(NumTransforms);
 		Parent.SetNumUninitialized(NumTransforms);
-		DynamicState.SetNumUninitialized(NumTransforms);
+		InternalClusterUniqueIdx.SetNumUninitialized(NumTransforms);
+#if WITH_EDITORONLY_DATA
+		DamageInfo.SetNumUninitialized(NumTransforms);
+#endif		
 	}
 
+	struct FState
+	{
+		int16 DynamicState: 8; // need to fit EObjectStateTypeEnum
+		int16 DisabledState: 1;
+		int16 HasInternalClusterParent: 1;
+		int16 DynamicInternalClusterParent: 1;
+		// 5 bits left
+	};
+
 	Chaos::FReal SolverDt;
-	TArray<bool> DisabledStates;
+	TArray<FState> States;
 	TArray<FMatrix> GlobalTransforms;
-	TArray<FTransform> ParticleToWorldTransforms;
+	TArray<Chaos::FVec3> ParticleXs;
+	TArray<Chaos::FRotation3> ParticleRs;
+	TArray<Chaos::FVec3> ParticleVs;
+	TArray<Chaos::FVec3> ParticleWs;
 
 	TArray<FTransform> Transforms;
 	TArray<int32> Parent;
-	TArray<int32> DynamicState;
+	TArray<int32> InternalClusterUniqueIdx;
+
+#if WITH_EDITORONLY_DATA
+	struct FDamageInfo
+	{
+		float Damage = 0;
+		float DamageThreshold = 0;
+	};
+	
+	// use to display impulse statistics in editor
+	TArray<FDamageInfo> DamageInfo;
+#endif
 	
 	bool IsObjectDynamic;
 	bool IsObjectLoading;

@@ -7,9 +7,11 @@
 #include "GeometryCollection/GeometryCollectionFactory.h"
 #include "Misc/FileHelper.h"
 #include "ActorFactories/ActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorFactoryGeometryCollection)
 
 #define LOCTEXT_NAMESPACE "ActorFactoryGeometryCollection"
 
@@ -27,7 +29,7 @@ UActorFactoryGeometryCollection::UActorFactoryGeometryCollection(const FObjectIn
 
 bool UActorFactoryGeometryCollection::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (!AssetData.IsValid() || !AssetData.GetClass()->IsChildOf(UGeometryCollection::StaticClass()))
+	if (!AssetData.IsValid() || !AssetData.IsInstanceOf(UGeometryCollection::StaticClass()))
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoGeometryCollectionSpecified", "No GeometryCollection mesh was specified.");
 		return false;

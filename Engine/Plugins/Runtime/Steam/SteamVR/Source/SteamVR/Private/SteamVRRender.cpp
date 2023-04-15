@@ -8,7 +8,6 @@
 #include "SteamVRHMD.h"
 
 #include "RendererPrivate.h"
-#include "ScenePrivate.h"
 #include "PostProcess/PostProcessHMD.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
@@ -18,13 +17,11 @@
 #if PLATFORM_MAC
 #include <Metal/Metal.h>
 #else
-#include "VulkanRHIPrivate.h"
-#include "VulkanPendingState.h"
-#include "VulkanContext.h"
+#include "IVulkanDynamicRHI.h"
 #endif
 
 #if PLATFORM_WINDOWS
-#include "D3D12RHIPrivate.h"
+#include "ID3D12DynamicRHI.h"
 #endif
 
 static TAutoConsoleVariable<int32> CUsePostPresentHandoff(TEXT("vr.SteamVR.UsePostPresentHandoff"), 0, TEXT("Whether or not to use PostPresentHandoff.  If true, more GPU time will be available, but this relies on no SceneCaptureComponent2D or WidgetComponents being active in the scene.  Otherwise, it will break async reprojection."));
@@ -40,7 +37,7 @@ void FSteamVRHMD::DrawDistortionMesh_RenderThread(struct FHeadMountedDisplayPass
 	check(0);
 }
 
-void FSteamVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* BackBuffer, FRHITexture2D* SrcTexture, FVector2D WindowSize) const
+void FSteamVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* BackBuffer, FRHITexture* SrcTexture, FVector2D WindowSize) const
 {
 	check(IsInRenderingThread());
 
@@ -58,7 +55,7 @@ void FSteamVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdLis
 	SpectatorScreenController->RenderSpectatorScreen_RenderThread(RHICmdList, BackBuffer, SrcTexture, WindowSize);
 }
 
-void FSteamVRHMD::PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+void FSteamVRHMD::PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
 	check(IsInRenderingThread());
 	UpdateStereoLayers_RenderThread();
@@ -261,13 +258,13 @@ void FSteamVRHMD::D3D12Bridge::FinishRendering()
 	bool bSubmitDepth = CVarEnableDepthSubmission->GetInt() > 0;
 	vr::EVRSubmitFlags Flags = bSubmitDepth ? vr::EVRSubmitFlags::Submit_TextureWithDepth : vr::EVRSubmitFlags::Submit_Default;
 
-	FD3D12DynamicRHI* D3D12RHI = FD3D12DynamicRHI::GetD3DRHI();
-	FD3D12Device* Device = D3D12RHI->GetAdapter().GetDevice(0);
+	ID3D12CommandQueue* CommandQueue = GetID3D12DynamicRHI()->RHIGetCommandQueue();
+	const uint32 DeviceNodeMask = GetID3D12DynamicRHI()->RHIGetDeviceNodeMask(0);
 
 	vr::D3D12TextureData_t TextureData;
 	TextureData.m_pResource = (ID3D12Resource*)SwapChain->GetTexture2D()->GetNativeResource();
-	TextureData.m_pCommandQueue = D3D12RHI->RHIGetD3DCommandQueue();
-	TextureData.m_nNodeMask = Device->GetGPUMask().GetNative();
+	TextureData.m_pCommandQueue = CommandQueue;
+	TextureData.m_nNodeMask = DeviceNodeMask;
 
 	vr::VRTextureWithDepth_t Texture;
 	Texture.handle = &TextureData;
@@ -281,8 +278,8 @@ void FSteamVRHMD::D3D12Bridge::FinishRendering()
 	{
 		// If this flag is false, the struct will be treated as a vr::Texture_t and these entries will be ignored - so we can skip this if not submitting depth
 		DepthTextureData.m_pResource = (ID3D12Resource*)DepthSwapChain->GetTexture2D()->GetNativeResource();
-		DepthTextureData.m_pCommandQueue = D3D12RHI->RHIGetD3DCommandQueue();
-		DepthTextureData.m_nNodeMask = Device->GetGPUMask().GetNative();
+		DepthTextureData.m_pCommandQueue = CommandQueue;
+		DepthTextureData.m_nNodeMask = DeviceNodeMask;
 
 		Texture.depth.handle = &DepthTextureData;
 
@@ -356,23 +353,21 @@ void FSteamVRHMD::VulkanBridge::FinishRendering()
 	bool bSubmitDepth = false; // CVarEnableDepthSubmission->GetInt() > 0;
 	vr::EVRSubmitFlags Flags = bSubmitDepth ? vr::EVRSubmitFlags::Submit_TextureWithDepth : vr::EVRSubmitFlags::Submit_Default;
 
-	if(SwapChain->GetTexture2D())
+	if (FRHITexture2D* SwapChainTexture = SwapChain->GetTexture2D())
 	{
-		FVulkanTexture2D* Texture2D = (FVulkanTexture2D*)SwapChain->GetTexture2D();
-		FVulkanTexture2D* DepthTexture2D = (FVulkanTexture2D*)DepthSwapChain->GetTexture2D();
-
-		FVulkanCommandListContext& ImmediateContext = GVulkanRHI->GetDevice()->GetImmediateContext();
+		IVulkanDynamicRHI* VulkanRHI = GetIVulkanDynamicRHI();
+		const VkImage SwapChainImage = VulkanRHI->RHIGetVkImage(SwapChainTexture);
+		const VkFormat SwapChainFormat = VulkanRHI->RHIGetViewVkFormat(SwapChainTexture);
 
 		// Color layout
-		VkImageLayout& CurrentLayout = ImmediateContext.GetLayoutManager().FindOrAddLayoutRW(Texture2D->Surface, VK_IMAGE_LAYOUT_UNDEFINED);
+		VkImageLayout& CurrentLayout = VulkanRHI->RHIFindOrAddLayoutRW(SwapChainTexture, VK_IMAGE_LAYOUT_UNDEFINED);
 		bool bHadLayout = (CurrentLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 		
-		FVulkanCmdBuffer* CmdBuffer = ImmediateContext.GetCommandBufferManager()->GetUploadCmdBuffer();
 		VkImageSubresourceRange SubresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
 		if (CurrentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 		{
-			GVulkanRHI->VulkanSetImageLayout(CmdBuffer->GetHandle(), Texture2D->Surface.Image, CurrentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SubresourceRange);
+			VulkanRHI->RHISetUploadImageLayout(SwapChainImage, CurrentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SubresourceRange);
 		}
 
 		vr::VRTextureBounds_t LeftBounds;
@@ -388,38 +383,43 @@ void FSteamVRHMD::VulkanBridge::FinishRendering()
 		RightBounds.vMax = 1.0f;
 
 		vr::VRVulkanTextureData_t VulkanTextureDataColor {};
-		VulkanTextureDataColor.m_pInstance			= GVulkanRHI->GetInstance();
-		VulkanTextureDataColor.m_pDevice			= GVulkanRHI->GetDevice()->GetInstanceHandle();
-		VulkanTextureDataColor.m_pPhysicalDevice	= GVulkanRHI->GetDevice()->GetPhysicalHandle();
-		VulkanTextureDataColor.m_pQueue				= GVulkanRHI->GetDevice()->GetGraphicsQueue()->GetHandle();
-		VulkanTextureDataColor.m_nQueueFamilyIndex	= GVulkanRHI->GetDevice()->GetGraphicsQueue()->GetFamilyIndex();
-		VulkanTextureDataColor.m_nImage				= (uint64_t)Texture2D->Surface.Image;
-		VulkanTextureDataColor.m_nWidth				= Texture2D->Surface.Width;
-		VulkanTextureDataColor.m_nHeight			= Texture2D->Surface.Height;
-		VulkanTextureDataColor.m_nFormat			= (uint32_t)Texture2D->Surface.ViewFormat;
-		VulkanTextureDataColor.m_nSampleCount = 1;
+		VulkanTextureDataColor.m_pInstance			= VulkanRHI->RHIGetVkInstance();
+		VulkanTextureDataColor.m_pDevice			= VulkanRHI->RHIGetVkDevice();
+		VulkanTextureDataColor.m_pPhysicalDevice	= VulkanRHI->RHIGetVkPhysicalDevice();
+		VulkanTextureDataColor.m_pQueue				= VulkanRHI->RHIGetGraphicsVkQueue();
+		VulkanTextureDataColor.m_nQueueFamilyIndex	= VulkanRHI->RHIGetGraphicsQueueFamilyIndex();
+		VulkanTextureDataColor.m_nImage				= (uint64_t)SwapChainImage;
+		VulkanTextureDataColor.m_nWidth				= SwapChainTexture->GetSizeX();
+		VulkanTextureDataColor.m_nHeight			= SwapChainTexture->GetSizeY();
+		VulkanTextureDataColor.m_nFormat			= (uint32_t)SwapChainFormat;
+		VulkanTextureDataColor.m_nSampleCount       = 1;
 
 		if (bSubmitDepth)
 		{
+			FRHITexture2D* DepthSwapChainTexture = DepthSwapChain->GetTexture2D();
+
+			const VkImage DepthSwapChainImage = VulkanRHI->RHIGetVkImage(DepthSwapChainTexture);
+			const VkFormat DepthSwapChainFormat = VulkanRHI->RHIGetViewVkFormat(DepthSwapChainTexture);
+
 			VkImageSubresourceRange SubresourceRangeDepth = { VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 };
-			VkImageLayout& CurrentDepthLayout = ImmediateContext.GetLayoutManager().FindOrAddLayoutRW(DepthTexture2D->Surface, VK_IMAGE_LAYOUT_UNDEFINED);
+			VkImageLayout& CurrentDepthLayout = VulkanRHI->RHIFindOrAddLayoutRW(DepthSwapChainTexture, VK_IMAGE_LAYOUT_UNDEFINED);
 			bool bDepthHadLayout = (CurrentDepthLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 
 			if (CurrentDepthLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 			{
-				GVulkanRHI->VulkanSetImageLayout(CmdBuffer->GetHandle(), DepthTexture2D->Surface.Image, CurrentDepthLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SubresourceRangeDepth);
+				VulkanRHI->RHISetUploadImageLayout(DepthSwapChainImage, CurrentDepthLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SubresourceRangeDepth);
 			}
 
 			vr::VRVulkanTextureData_t VulkanTextureDataDepth{};
-			VulkanTextureDataDepth.m_pInstance = GVulkanRHI->GetInstance();
-			VulkanTextureDataDepth.m_pDevice = GVulkanRHI->GetDevice()->GetInstanceHandle();
-			VulkanTextureDataDepth.m_pPhysicalDevice = GVulkanRHI->GetDevice()->GetPhysicalHandle();
-			VulkanTextureDataDepth.m_pQueue = GVulkanRHI->GetDevice()->GetGraphicsQueue()->GetHandle();
-			VulkanTextureDataDepth.m_nQueueFamilyIndex = GVulkanRHI->GetDevice()->GetGraphicsQueue()->GetFamilyIndex();
-			VulkanTextureDataDepth.m_nImage = (uint64_t)DepthTexture2D->Surface.Image;
-			VulkanTextureDataDepth.m_nWidth = DepthTexture2D->Surface.Width;
-			VulkanTextureDataDepth.m_nHeight = DepthTexture2D->Surface.Height;
-			VulkanTextureDataDepth.m_nFormat = (uint32_t)DepthTexture2D->Surface.ViewFormat;
+			VulkanTextureDataDepth.m_pInstance         = VulkanRHI->RHIGetVkInstance();
+			VulkanTextureDataDepth.m_pDevice           = VulkanRHI->RHIGetVkDevice();
+			VulkanTextureDataDepth.m_pPhysicalDevice   = VulkanRHI->RHIGetVkPhysicalDevice();
+			VulkanTextureDataDepth.m_pQueue            = VulkanRHI->RHIGetGraphicsVkQueue();
+			VulkanTextureDataDepth.m_nQueueFamilyIndex = VulkanRHI->RHIGetGraphicsQueueFamilyIndex();
+			VulkanTextureDataDepth.m_nImage            = (uint64_t)DepthSwapChainImage;
+			VulkanTextureDataDepth.m_nWidth            = DepthSwapChainTexture->GetSizeX();
+			VulkanTextureDataDepth.m_nHeight           = DepthSwapChainTexture->GetSizeY();
+			VulkanTextureDataDepth.m_nFormat           = (uint32_t)DepthSwapChainFormat;
 			VulkanTextureDataDepth.m_nSampleCount = 1;
 
 			vr::VRTextureWithDepth_t Texture;
@@ -446,7 +446,7 @@ void FSteamVRHMD::VulkanBridge::FinishRendering()
 
 			if (bDepthHadLayout && CurrentDepthLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 			{
-				GVulkanRHI->VulkanSetImageLayout(CmdBuffer->GetHandle(), DepthTexture2D->Surface.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentDepthLayout, SubresourceRangeDepth);
+				VulkanRHI->RHISetUploadImageLayout(DepthSwapChainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentDepthLayout, SubresourceRangeDepth);
 			}
 			else
 			{
@@ -466,14 +466,14 @@ void FSteamVRHMD::VulkanBridge::FinishRendering()
 
 		if (bHadLayout && CurrentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 		{
-			GVulkanRHI->VulkanSetImageLayout(CmdBuffer->GetHandle(), Texture2D->Surface.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentLayout, SubresourceRange);
+			VulkanRHI->RHISetUploadImageLayout(SwapChainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentLayout, SubresourceRange);
 		}
 		else
 		{
 			CurrentLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 		}
 
-		ImmediateContext.GetCommandBufferManager()->SubmitUploadCmdBuffer();
+		VulkanRHI->RHISubmitUploadCommandBuffer();
 	}
 }
 
@@ -493,13 +493,15 @@ FSteamVRHMD::OpenGLBridge::OpenGLBridge(FSteamVRHMD* plugin):
 
 void FSteamVRHMD::OpenGLBridge::FinishRendering()
 {
-	GLuint RenderTargetTexture = *reinterpret_cast<GLuint*>(SwapChain->GetTexture2D()->GetNativeResource());
-	GLuint DepthTargetTexture = *reinterpret_cast<GLuint*>(DepthSwapChain->GetTexture2D()->GetNativeResource());
+	IOpenGLDynamicRHI* RHI = GetIOpenGLDynamicRHI();
+
+	const GLuint RenderTargetTexture = RHI->RHIGetResource(SwapChain->GetTexture2D());
+	const GLuint DepthTargetTexture = RHI->RHIGetResource(DepthSwapChain->GetTexture2D());
 
 	// Yaakuro:
 	// TODO This is a workaround. After exiting VR Editor the texture gets invalid at some point.
 	// Need to find it. This at least prevents to use this method when texture name is not valid anymore.
-	if (!glIsTexture(RenderTargetTexture) || !glIsTexture(DepthTargetTexture))
+	if (!RHI->RHIIsValidTexture(RenderTargetTexture) || !RHI->RHIIsValidTexture(DepthTargetTexture))
 	{
 		return;
 	}
@@ -590,7 +592,7 @@ void FSteamVRHMD::MetalBridge::Reset()
 
 IOSurfaceRef FSteamVRHMD::MetalBridge::GetSurface(const uint32 SizeX, const uint32 SizeY)
 {
-	// @todo: Get our man in MacVR to switch to a modern & secure method of IOSurface sharing...
+	// @todo: Get our contact in MacVR to switch to a modern & secure method of IOSurface sharing...
 	// @todo: Also add support for depth.
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	const NSDictionary* SurfaceDefinition = @{

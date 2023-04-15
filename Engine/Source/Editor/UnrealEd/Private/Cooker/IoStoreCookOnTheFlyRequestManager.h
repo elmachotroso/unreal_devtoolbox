@@ -2,21 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 
 class IAssetRegistry;
 
-namespace UE { namespace Cook
+namespace UE::Cook
 {
 
 class ICookOnTheFlyServer;
 class ICookOnTheFlyRequestManager;
+class ICookOnTheFlyNetworkServer;
 
-struct FIoStoreCookOnTheFlyServerOptions
-{
-	int32 Port = -1; // -1 indicates the default COTF serving port
-};
+TUniquePtr<ICookOnTheFlyRequestManager> MakeIoStoreCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer,
+	const IAssetRegistry* AssetRegistry, TSharedRef<ICookOnTheFlyNetworkServer> ConnectionServer);
 
-TUniquePtr<ICookOnTheFlyRequestManager> MakeIoStoreCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer, const IAssetRegistry* AssetRegistry, FIoStoreCookOnTheFlyServerOptions Options);
-
-}} // namespace UE::Cook
+} // namespace UE::Cook

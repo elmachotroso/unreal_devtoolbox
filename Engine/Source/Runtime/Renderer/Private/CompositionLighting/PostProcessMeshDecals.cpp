@@ -32,6 +32,12 @@ public:
 			DecalRendering::GetBaseRenderStage(DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters)) != EDecalRenderStage::None;
 	}
 
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("STRATA_INLINE_SHADING"), 1);
+	}
+
 	FMeshDecalsVS() = default;
 	FMeshDecalsVS(const ShaderMetaType::CompiledShaderInitializerType & Initializer)
 		: FMeshMaterialShader(Initializer)
@@ -119,12 +125,20 @@ class FMeshDecalMeshProcessor : public FMeshPassProcessor
 {
 public:
 	FMeshDecalMeshProcessor(const FScene* Scene, 
+		ERHIFeatureLevel::Type FeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand, 
 		EDecalRenderStage InPassDecalStage, 
 		EDecalRenderTargetMode InRenderTargetMode,
 		FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
+
+	virtual void CollectPSOInitializers(
+		const FSceneTexturesConfig& SceneTexturesConfig,
+		const FMaterial& Material,
+		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheParams& PreCacheParams, 
+		TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 private:
 	bool TryAddMeshBatch(
@@ -154,11 +168,12 @@ IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(DeferredDecals);
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FDeferredDecalUniformParameters, "DeferredDecal", DeferredDecals);
 
 FMeshDecalMeshProcessor::FMeshDecalMeshProcessor(const FScene* Scene, 
+	ERHIFeatureLevel::Type InFeatureLevel,
 	const FSceneView* InViewIfDynamicMeshCommand, 
 	EDecalRenderStage InPassDecalStage, 
 	EDecalRenderTargetMode InRenderTargetMode,
 	FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::MeshDecal, Scene, InFeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDecalStage(InPassDecalStage)
 	, RenderTargetMode(InRenderTargetMode)
 {
@@ -200,7 +215,7 @@ bool FMeshDecalMeshProcessor::TryAddMeshBatch(
 		if (Material.GetRenderingThreadShaderMap())
 		{
 			const EShaderPlatform ShaderPlatform = ViewIfDynamicMeshCommand->GetShaderPlatform();
-			const FDecalBlendDesc DecalBlendDesc = DecalRendering::ComputeDecalBlendDesc(ShaderPlatform, &Material);
+			const FDecalBlendDesc DecalBlendDesc = DecalRendering::ComputeDecalBlendDesc(ShaderPlatform, Material);
 
 			const bool bShouldRender =
 				DecalRendering::IsCompatibleWithRenderStage(DecalBlendDesc, PassDecalStage) &&
@@ -209,8 +224,8 @@ bool FMeshDecalMeshProcessor::TryAddMeshBatch(
 			if (bShouldRender)
 			{
 				const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-				ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-				ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+				ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+				ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 
 				if (ViewIfDynamicMeshCommand->Family->UseDebugViewPS())
 				{
@@ -284,7 +299,11 @@ bool FMeshDecalMeshProcessor::Process(
 	FMeshMaterialShaderElementData ShaderElementData;
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, true);
 
-	const FMeshDrawCommandSortKey SortKey = CalculateMeshStaticSortKey(MeshDecalPassShaders.VertexShader, MeshDecalPassShaders.PixelShader);
+	// Use BasePass sort key layout but replace the "Masked" highest priority bits with TranslucencySortPriority.
+	FMeshDrawCommandSortKey SortKey;
+	SortKey.BasePass.VertexShaderHash = (MeshDecalPassShaders.VertexShader.IsValid() ? MeshDecalPassShaders.VertexShader->GetSortKey() : 0) & 0xFFFF;
+	SortKey.BasePass.PixelShaderHash = MeshDecalPassShaders.PixelShader.IsValid() ? MeshDecalPassShaders.PixelShader->GetSortKey() : 0;
+	SortKey.BasePass.Masked = PrimitiveSceneProxy->GetTranslucencySortPriority();
 
 	BuildMeshDrawCommands(
 		MeshBatch,
@@ -303,6 +322,98 @@ bool FMeshDecalMeshProcessor::Process(
 	return true;
 }
 
+void FMeshDecalMeshProcessor::CollectPSOInitializers(
+	const FSceneTexturesConfig& SceneTexturesConfig,
+	const FMaterial& Material,
+	const FVertexFactoryType* VertexFactoryType,
+	const FPSOPrecacheParams& PreCacheParams, 
+	TArray<FPSOPrecacheData>& PSOInitializers)
+{
+	if (!Material.IsDeferredDecal())
+	{
+		return;
+	}
+
+	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
+	const FDecalBlendDesc DecalBlendDesc = DecalRendering::ComputeDecalBlendDesc(ShaderPlatform, Material);
+
+	for (uint32 DecalStageIter = 0; DecalStageIter < (uint32)EDecalRenderStage::Num; ++DecalStageIter)
+	{
+		EDecalRenderStage LocalDecalRenderState = EDecalRenderStage(DecalStageIter);
+
+		const bool bShouldRender = DecalRendering::IsCompatibleWithRenderStage(DecalBlendDesc, LocalDecalRenderState);
+		if (!bShouldRender)
+		{
+			continue;
+		}
+		
+		EDecalRenderTargetMode LocalRenderTargetMode = DecalRendering::GetRenderTargetMode(DecalBlendDesc, LocalDecalRenderState);
+		PassDrawRenderState.SetBlendState(DecalRendering::GetDecalBlendState(DecalBlendDesc, LocalDecalRenderState, LocalRenderTargetMode));
+
+		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
+		ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
+		ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
+
+		FMaterialShaderTypes ShaderTypes;
+		ShaderTypes.AddShaderType<FMeshDecalsVS>();
+		if (LocalDecalRenderState == EDecalRenderStage::Emissive)
+		{
+			ShaderTypes.AddShaderType<FMeshDecalsEmissivePS>();
+		}
+		else if (LocalDecalRenderState == EDecalRenderStage::AmbientOcclusion)
+		{
+			ShaderTypes.AddShaderType<FMeshDecalsAmbientOcclusionPS>();
+		}
+		else
+		{
+			ShaderTypes.AddShaderType<FMeshDecalsPS>();
+		}
+
+		FMaterialShaders Shaders;
+		if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+		{
+			continue;
+		}
+
+		TMeshProcessorShaders<
+			FMeshDecalsVS,
+			FMeshDecalsPS> MeshDecalPassShaders;
+		Shaders.TryGetVertexShader(MeshDecalPassShaders.VertexShader);
+		Shaders.TryGetPixelShader(MeshDecalPassShaders.PixelShader);
+
+		FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+		RenderTargetsInfo.NumSamples = 1;
+		GetDeferredDecalRenderTargetsInfo(SceneTexturesConfig, ShaderPlatform, LocalRenderTargetMode, RenderTargetsInfo);
+		
+		AddGraphicsPipelineStateInitializer(
+			VertexFactoryType,
+			Material,
+			PassDrawRenderState,
+			RenderTargetsInfo,
+			MeshDecalPassShaders,
+			MeshFillMode,
+			MeshCullMode,
+			PT_TriangleList,
+			EMeshPassFeatures::Default,
+			PSOInitializers);
+	}
+}
+
+IPSOCollector* CreateMeshDecalMeshProcessor(ERHIFeatureLevel::Type FeatureLevel)
+{
+	if (DoesPlatformSupportNanite(GetFeatureLevelShaderPlatform(FeatureLevel)))
+	{
+		return new FMeshDecalMeshProcessor(nullptr, FeatureLevel, nullptr, EDecalRenderStage::None, EDecalRenderTargetMode::None, nullptr);
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+// Only register for PSO Collection
+FRegisterPSOCollectorCreateFunction RegisterPSOCollectorMeshDecal(&CreateMeshDecalMeshProcessor, EShadingPath::Deferred, (uint32)EMeshPass::MeshDecal);
+
 void DrawDecalMeshCommands(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
@@ -313,36 +424,34 @@ void DrawDecalMeshCommands(
 	auto* PassParameters = GraphBuilder.AllocParameters<FDeferredDecalPassParameters>();
 	GetDeferredDecalPassParameters(GraphBuilder, View, DecalPassTextures, RenderTargetMode, *PassParameters);
 
-	GraphBuilder.AddPass(
+	AddDrawDynamicMeshPass(
+		GraphBuilder,
 		RDG_EVENT_NAME("MeshDecals"),
 		PassParameters,
-		ERDGPassFlags::Raster,
-		[&View, DecalRenderStage, RenderTargetMode](FRHICommandListImmediate& RHICmdList)
+		View,
+		View.ViewRect,
+		[&View, DecalRenderStage, RenderTargetMode](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 	{
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+		TRACE_CPUPROFILER_EVENT_SCOPE(MeshDecalCommands);
 
-		const FScene& Scene = *View.Family->Scene->GetRenderScene();
+		FMeshDecalMeshProcessor PassMeshProcessor(
+			View.Family->Scene->GetRenderScene(),
+			View.GetFeatureLevel(),
+			&View,
+			DecalRenderStage,
+			RenderTargetMode,
+			DynamicMeshPassContext);
 
-		DrawDynamicMeshPass(View, RHICmdList,
-			[&View, DecalRenderStage, RenderTargetMode](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+		for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.MeshDecalBatches.Num(); ++MeshBatchIndex)
 		{
-			FMeshDecalMeshProcessor PassMeshProcessor(
-				View.Family->Scene->GetRenderScene(),
-				&View,
-				DecalRenderStage,
-				RenderTargetMode,
-				DynamicMeshPassContext);
+			const FMeshBatch* Mesh = View.MeshDecalBatches[MeshBatchIndex].Mesh;
+			const FPrimitiveSceneProxy* PrimitiveSceneProxy = View.MeshDecalBatches[MeshBatchIndex].Proxy;
+			const uint64 DefaultBatchElementMask = ~0ull;
 
-			for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.MeshDecalBatches.Num(); ++MeshBatchIndex)
-			{
-				const FMeshBatch* Mesh = View.MeshDecalBatches[MeshBatchIndex].Mesh;
-				const FPrimitiveSceneProxy* PrimitiveSceneProxy = View.MeshDecalBatches[MeshBatchIndex].Proxy;
-				const uint64 DefaultBatchElementMask = ~0ull;
+			PassMeshProcessor.AddMeshBatch(*Mesh, DefaultBatchElementMask, PrimitiveSceneProxy);
+		}
 
-				PassMeshProcessor.AddMeshBatch(*Mesh, DefaultBatchElementMask, PrimitiveSceneProxy);
-			}
-		}, true);
-	});
+	}, true);
 }
 
 void RenderMeshDecals(
@@ -392,6 +501,7 @@ void RenderMeshDecalsMobile(FRHICommandListImmediate& RHICmdList, const FViewInf
 	{
 		FMeshDecalMeshProcessor PassMeshProcessor(
 			View.Family->Scene->GetRenderScene(),
+			View.GetFeatureLevel(),
 			&View,
 			DecalRenderStage,
 			RenderTargetMode,

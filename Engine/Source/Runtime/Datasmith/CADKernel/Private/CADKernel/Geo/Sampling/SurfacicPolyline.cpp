@@ -10,7 +10,7 @@
 #include "CADKernel/Geo/Sampling/PolylineTools.h"
 #include "CADKernel/Math/SlopeUtils.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 FSurfacicPolyline::FSurfacicPolyline(TSharedRef<FSurface> InCarrierSurface, TSharedRef<FCurve> Curve2D, const double InTolerance)
@@ -140,8 +140,8 @@ void FSurfacicPolyline::ComputeIntersectionsWithIsos(const FLinearBoundary& InBo
 		}
 
 		GetMinMax(Points2D[Index][TypeIso], Points2D[Index + 1][TypeIso], UMin, UMax);
-		UMin -= SMALL_NUMBER;
-		UMax += SMALL_NUMBER;
+		UMin -= DOUBLE_SMALL_NUMBER;
+		UMax += DOUBLE_SMALL_NUMBER;
 
 		if (IsoCoordinate < UMin || IsoCoordinate > UMax)
 		{
@@ -211,4 +211,4 @@ void FSurfacicPolyline::ComputeIntersectionsWithIsos(const FLinearBoundary& InBo
 	}
 }
 
-} //namespace CADKernel
+} //namespace UE::CADKernel

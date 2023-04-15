@@ -6,15 +6,41 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Containers/List.h"
-#include "RHI.h"
-#include "RenderCore.h"
-#include "Serialization/MemoryLayout.h"
+#include "Containers/Array.h"
 #include "Containers/DynamicRHIResourceArray.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/List.h"
+#include "Containers/ResourceArray.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreMinimal.h"
+#include "HAL/CriticalSection.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "PixelFormat.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "RenderCore.h"
+#include "RenderingThread.h"
+#include "Serialization/MemoryLayout.h"
+
+typedef TBitArray<TInlineAllocator<EShaderPlatform::SP_NumPlatforms / 8>>	ShaderPlatformMaskType;
 
 /** Number of frames after which unused global resource allocations will be discarded. */
 extern int32 GGlobalBufferNumFramesUnusedThresold;
+
+/** Experimental: whether we free helper structures after submitting to RHI. */
+extern RENDERCORE_API bool GFreeStructuresOnRHIBufferCreation;
+
+enum class ERenderResourceState : uint8
+{
+	Default,
+	BatchReleased,
+	Deleted,
+};
 
 /**
  * A rendering resource which is owned by the rendering thread.
@@ -23,54 +49,22 @@ extern int32 GGlobalBufferNumFramesUnusedThresold;
 class RENDERCORE_API FRenderResource
 {
 public:
-	template<typename FunctionType>
-	static void ForAllResources(const FunctionType& Function)
-	{
-		const TArray<FRenderResource*>& ResourceList = GetResourceList();
-		ResourceListIterationActive.Increment();
-		for (int32 Index = 0; Index < ResourceList.Num(); ++Index)
-		{
-			FRenderResource* Resource = ResourceList[Index];
-			if (Resource)
-			{
-				checkSlow(Resource->ListIndex == Index);
-				Function(Resource);
-			}
-		}
-		ResourceListIterationActive.Decrement();
-	}
+	////////////////////////////////////////////////////////////////////////////////////
+	// The following methods may not be called while asynchronously initializing / releasing render resources.
 
-	template<typename FunctionType>
-	static void ForAllResourcesReverse(const FunctionType& Function)
-	{
-		const TArray<FRenderResource*>& ResourceList = GetResourceList();
-		ResourceListIterationActive.Increment();
-		for (int32 Index = ResourceList.Num() - 1; Index >= 0; --Index)
-		{
-			FRenderResource* Resource = ResourceList[Index];
-			if (Resource)
-			{
-				checkSlow(Resource->ListIndex == Index);
-				Function(Resource);
-			}
-		}
-		ResourceListIterationActive.Decrement();
-	}
+	/** Release all render resources that are currently initialized. */
+	static void ReleaseRHIForAllResources();
 
-	static void InitRHIForAllResources()
-	{
-		ForAllResources([](FRenderResource* Resource) { Resource->InitRHI(); });
-		// Dynamic resources can have dependencies on static resources (with uniform buffers) and must initialized last!
-		ForAllResources([](FRenderResource* Resource) { Resource->InitDynamicRHI(); });
-	}
+	/** Initialize all resources initialized before the RHI was initialized. */
+	static void InitPreRHIResources();
 
-	static void ReleaseRHIForAllResources()
-	{
-		ForAllResourcesReverse([](FRenderResource* Resource) { check(Resource->IsInitialized()); Resource->ReleaseRHI(); });
-		ForAllResourcesReverse([](FRenderResource* Resource) { Resource->ReleaseDynamicRHI(); });
-	}
+	/** Call periodically to coalesce the render resource list. */
+	static void CoalesceResourceList();
 
+	/** Reinitializes render resources at a new feature level. */
 	static void ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel);
+
+	////////////////////////////////////////////////////////////////////////////////////
 
 	/** Default constructor. */
 	FRenderResource()
@@ -141,15 +135,9 @@ public:
 	// Accessors.
 	FORCEINLINE bool IsInitialized() const { return ListIndex != INDEX_NONE; }
 
-	/** Initialize all resources initialized before the RHI was initialized */
-	static void InitPreRHIResources();
+	int32 GetListIndex() const { return ListIndex; }
 
 private:
-	/** @return The global initialized resource list. */
-	static TArray<FRenderResource*>& GetResourceList();
-
-	static FThreadSafeCounter ResourceListIterationActive;
-
 	int32 ListIndex;
 
 protected:
@@ -158,8 +146,44 @@ protected:
 	const FStaticFeatureLevel GetFeatureLevel() const { return FeatureLevel == ERHIFeatureLevel::Num ? FStaticFeatureLevel(GMaxRHIFeatureLevel) : FeatureLevel; }
 	FORCEINLINE bool HasValidFeatureLevel() const { return FeatureLevel < ERHIFeatureLevel::Num; }
 
+	// Helper for submitting a resource array to RHI and freeing eligible CPU memory
+	template<bool bRenderThread, typename T>
+	FBufferRHIRef CreateRHIBuffer(T& InOutResourceObject, const uint32 ResourceCount, EBufferUsageFlags InBufferUsageFlags, const TCHAR* InDebugName)
+	{
+		FBufferRHIRef Buffer;
+		FResourceArrayInterface* RESTRICT ResourceArray = InOutResourceObject ? InOutResourceObject->GetResourceArray() : nullptr;
+		if (ResourceCount != 0)
+		{
+			const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
+			FRHIResourceCreateInfo CreateInfo(InDebugName, ResourceArray);
+			CreateInfo.bWithoutNativeResource = !InOutResourceObject;
+
+			if (bRenderThread)
+			{
+				Buffer = RHICreateVertexBuffer(SizeInBytes, InBufferUsageFlags, CreateInfo);
+			}
+			else
+			{
+				FRHIAsyncCommandList CommandList;
+				return CommandList->CreateBuffer(SizeInBytes, InBufferUsageFlags | EBufferUsageFlags::VertexBuffer, 0, ERHIAccess::SRVMask, CreateInfo);
+			}
+		}
+
+		// If the buffer creation emptied the resource array, delete the containing structure as well
+		if (GFreeStructuresOnRHIBufferCreation && InOutResourceObject && (!ResourceArray || !ResourceArray->GetResourceDataSize()))
+		{
+			delete InOutResourceObject;
+			InOutResourceObject = nullptr;
+		}
+
+		return Buffer;
+	}
+
 private:
 	TEnumAsByte<ERHIFeatureLevel::Type> FeatureLevel;
+
+public:
+	ERenderResourceState ResourceState = ERenderResourceState::Default;
 };
 
 /**
@@ -365,7 +389,7 @@ struct FMipBiasFade
 	{
 		float DeltaTime = GRenderingRealtimeClock.GetCurrentTime() - StartTime;
 		float TimeFactor = DeltaTime * MipCountFadingRate;
-		return (FMath::Abs<float>(MipCountDelta) > SMALL_NUMBER && TimeFactor < 1.0f);
+		return (FMath::Abs<float>(MipCountDelta) > UE_SMALL_NUMBER && TimeFactor < 1.0f);
 	}
 };
 
@@ -389,7 +413,10 @@ public:
 	/** Base values for fading in/out mip-levels. */
 	FMipBiasFade		MipBiasFade;
 
-	/** true if the texture is in a greyscale texture format. */
+	/** bGreyScaleFormat indicates the texture is actually in R channel but should be read as Grey (replicate R to RGBA)
+	 *  this is set from CompressionSettings, not PixelFormat
+	 *  this is only used by Editor/Debug shaders, not real game materials, which use SamplerType from MaterialExpressions
+	 */
 	bool				bGreyScaleFormat;
 
 	/**
@@ -417,7 +444,9 @@ public:
 
 	// Destructor
 	virtual ~FTexture() {}
-	
+
+	FRHITexture* GetTextureRHI() { return TextureRHI; }
+
 	/** Returns the width of the texture in pixels. */
 	virtual uint32 GetSizeX() const
 	{
@@ -517,6 +546,7 @@ public:
 	{
 		VertexBufferRHI.SafeRelease();
 	}
+
 	virtual FString GetFriendlyName() const override { return TEXT("FVertexBuffer"); }
 };
 
@@ -628,8 +658,8 @@ FORCEINLINE bool IsRayTracingEnabledForProject(EShaderPlatform ShaderPlatform)
 {
 	if (RHISupportsRayTracing(ShaderPlatform))
 	{
-		extern RENDERCORE_API uint64 GRayTracingPlaformMask;
-		return !!(GRayTracingPlaformMask & (1ull << ShaderPlatform));
+		extern RENDERCORE_API TBitArray<TInlineAllocator<EShaderPlatform::SP_NumPlatforms / 8>> GRayTracingPlatformMask;
+		return (GRayTracingPlatformMask[(int)ShaderPlatform]);
 	}
 	else
 	{
@@ -649,9 +679,17 @@ FORCEINLINE bool ShouldCompileRayTracingShadersForProject(EShaderPlatform Shader
 	}
 }
 
+FORCEINLINE bool ShouldCompileRayTracingCallableShadersForProject(EShaderPlatform ShaderPlatform)
+{
+	return RHISupportsRayTracingCallableShaders(ShaderPlatform) && ShouldCompileRayTracingShadersForProject(ShaderPlatform);
+}
+
 // Returns `true` when running on RT-capable machine, RT support is enabled for the project and by game graphics options.
 // This function may only be called at runtime, never during cooking.
 extern RENDERCORE_API bool IsRayTracingEnabled();
+// Returns 'true' when running on RT-capable machine, RT support is enabled for the project and by game graphics options and ShaderPlatform supports RT
+// This function may only be called at runtime, never during cooking.
+RENDERCORE_API bool IsRayTracingEnabled(EShaderPlatform ShaderPlatform);
 
 enum class ERTAccelerationStructureBuildPriority
 {
@@ -690,6 +728,9 @@ public:
 	FRayTracingGeometryInitializer Initializer;
 	FRayTracingGeometryRHIRef RayTracingGeometryRHI;
 	bool bRequiresBuild = false;
+
+	/** LOD of the mesh associated with this ray tracing geometry object (-1 if unknown) */
+	int8 LODIndex = -1;
 
 	void SetInitializer(const FRayTracingGeometryInitializer& InInitializer)
 	{

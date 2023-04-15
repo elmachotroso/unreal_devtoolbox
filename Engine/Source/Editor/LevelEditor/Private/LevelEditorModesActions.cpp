@@ -25,7 +25,7 @@ void FLevelEditorModesCommands::RegisterCommands()
 			FInputBindingManager::Get().FindCommandInContext(GetContextName(), EditorModeCommandName);
 
 		// If a command isn't yet registered for this mode, we need to register one.
-		if ( !EditorModeCommand.IsValid() )
+		if (!EditorModeCommand.IsValid() && Mode.IsVisible())
 		{
 			FFormatNamedArguments Args;
 			FText ModeName = Mode.Name;
@@ -34,7 +34,7 @@ void FLevelEditorModesCommands::RegisterCommands()
 				ModeName = FText::FromName(Mode.ID);
 			}
 			Args.Add(TEXT("Mode"), ModeName);
-			const FText Tooltip = FText::Format( NSLOCTEXT("LevelEditor", "ModeTooltipF", "Activate {Mode} Editing Mode"), Args );
+			const FText Tooltip = FText::Format( NSLOCTEXT("LevelEditor", "ModeTooltipF", "Activate {Mode} Mode"), Args );
 
 			FInputChord DefaultKeyBinding;
 			if (Mode.IsVisible() && editorMode < EdModeKeys.Num())

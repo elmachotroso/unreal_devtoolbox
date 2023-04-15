@@ -16,38 +16,39 @@ class UTexture2DArray : public UTexture
 {
 	GENERATED_UCLASS_BODY()
 
-public:
-	/** Platform data. */
-	FTexturePlatformData* PlatformData;
-	TMap<FString, FTexturePlatformData*> CookedPlatformData;
+	/** The derived data for this texture on this platform. */
+	FTexturePlatformData* PrivatePlatformData;
 
-	/*
-	* Initialize texture source from textures in SourceArray.
-	* @param bUpdateSourceSettings Set to false to prevent overriding current texture settings.
+public:
+	UE_DEPRECATED(5.1, "Use GetPlatformData() / SetPlatformData() accessors instead.")
+	TFieldPtrAccessor<FTexturePlatformData> PlatformData;
+
+	/** Set the derived data for this texture on this platform. */
+	ENGINE_API void SetPlatformData(FTexturePlatformData* PlatformData);
+	/** Get the derived data for this texture on this platform. */
+	ENGINE_API FTexturePlatformData* GetPlatformData();
+	/** Get the const derived data for this texture on this platform. */
+	ENGINE_API const FTexturePlatformData* GetPlatformData() const;
+
+#if WITH_EDITOR
+	TMap<FString, FTexturePlatformData*> CookedPlatformData;
+#endif
+
+	ENGINE_API int32 GetSizeX() const;
+	ENGINE_API int32 GetSizeY() const;
+	ENGINE_API int32 GetArraySize() const;
+	ENGINE_API int32 GetNumMips() const;
+	ENGINE_API EPixelFormat GetPixelFormat() const;
+
+	/**
+	*  Makes a copy of the mip chain for the texture array starting with InFirstMipToLoad.
+	* 
+	*  In the editor this can potentially wait for texture builds to complete.
 	*/
-	/** Trivial accessors. */
-	FORCEINLINE int32 GetSizeX() const
-	{
-		return PlatformData ? PlatformData->SizeX : 0;
-	}
-	FORCEINLINE int32 GetSizeY() const
-	{
-		return PlatformData ? PlatformData->SizeY : 0;
-	}
-	FORCEINLINE int32 GetArraySize() const
-	{
-		return PlatformData ? PlatformData->GetNumSlices() : 0;
-	}
-	FORCEINLINE int32 GetNumMips() const
-	{
-		return PlatformData ? PlatformData->Mips.Num() : 0;
-	}
-	FORCEINLINE EPixelFormat GetPixelFormat() const
-	{
-		return PlatformData ? PlatformData->PixelFormat : PF_Unknown;
-	}
+	bool GetMipData(int32 InFirstMipToLoad, TArray<FUniqueBuffer, TInlineAllocator<MAX_TEXTURE_MIP_COUNT>>& OutMipData);
 
 	//~ Begin UTexture Interface
+	virtual ETextureClass GetTextureClass() const override { return ETextureClass::Array; }
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
@@ -64,13 +65,16 @@ public:
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	ENGINE_API bool UpdateSourceFromSourceTextures(bool bCreatingNewTexture = true);
-	ENGINE_API void InvadiateTextureSource();
+	ENGINE_API void InvalidateTextureSource();
 	ENGINE_API bool CheckArrayTexturesCompatibility();
 #endif // WITH_EDITOR
 	virtual void UpdateResource() override;
 	virtual EMaterialValueType GetMaterialType() const override { return MCT_Texture2DArray; }
-	virtual FTexturePlatformData** GetRunningPlatformData() override { return &PlatformData; }
-	virtual TMap<FString, FTexturePlatformData*> *GetCookedPlatformData() override { return &CookedPlatformData; }
+	virtual FTexturePlatformData** GetRunningPlatformData() override;
+#if WITH_EDITOR
+	virtual bool IsDefaultTexture() const override;
+	virtual TMap<FString, FTexturePlatformData*>* GetCookedPlatformData() override { return &CookedPlatformData; }
+#endif // WITH_EDITOR
 	//~ End UTexture Interface
 
 	/** The addressing mode to use for the X axis.*/
@@ -87,9 +91,21 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** Add Textures*/
-	UPROPERTY(EditAnywhere, Category = Source2D, meta = (DisplayName = "Source Textures"))
+	UPROPERTY(EditAnywhere, Category = Source2D, meta = (DisplayName = "Source Textures", EditCondition = bSourceGeneratedFromSourceTexturesArray, EditConditionHides, HideEditConditionToggle))
 	TArray<TObjectPtr<UTexture2D>> SourceTextures;
+
+	/** 
+	* Is set to true if the source texture was generated from the SourceTextures array
+	* (which is not always the case, i.e. the source texture could be imported from a DDS file containing multiple slices).
+	* This transient property is used to control access to the SourceTextures array from UI using EditCondition mechanism
+	* (as any operation with the SourceTextures array would invalidate the originally imported source texture).
+	*/
+	UPROPERTY(Transient, SkipSerialization)
+	bool bSourceGeneratedFromSourceTexturesArray = true;
 #endif
+
+	/** Creates and initializes a new Texture2DArray with the requested settings */
+	ENGINE_API static class UTexture2DArray* CreateTransient(int32 InSizeX, int32 InSizeY, int32 InArraySize, EPixelFormat InFormat = PF_B8G8R8A8, const FName InName = NAME_None);
 
 	/**
 	 * Calculates the size of this texture in bytes if it had MipCount mip-levels streamed in.
@@ -124,7 +140,6 @@ public:
 protected:
 
 #if WITH_EDITOR
-	void UpdateMipGenSettings();
 	virtual bool GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const override;
 #endif
 };

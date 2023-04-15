@@ -407,6 +407,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "integer64 / integer64", CompactNodeTitle = "/", Keywords = "/ divide division"), Category="Math|Integer64")
 	static int64 Divide_Int64Int64(int64 A, int64 B = 1);
 	
+	/** Modulo (A % B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "% (integer64)", CompactNodeTitle = "%", Keywords = "% modulus"), Category = "Math|Integer64")
+	static int64 Percent_Int64Int64(int64 A, int64 B = 1);
+
 	/** Addition (A + B) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "integer64 + integer64", CompactNodeTitle = "+", Keywords = "+ add plus", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer64")
 	static int64 Add_Int64Int64(int64 A, int64 B = 1);
@@ -764,6 +768,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Integer")
 	static void MinOfIntArray(const TArray<int32>& IntArray, int32& IndexOfMinValue, int32& MinValue);
 
+	/** Returns median of all array entries. Returns value of 0 if the supplied array is empty. */
+	UFUNCTION(BlueprintPure, Category = "Math|Integer")
+	static void MedianOfIntArray(TArray<int32> IntArray, float& MedianValue);
+
+	/** Returns average of all array entries. Returns value of 0 if the supplied array is empty. */
+	UFUNCTION(BlueprintPure, Category = "Math|Integer")
+	static void AverageOfIntArray(const TArray<int32>& IntArray, float& AverageValue);
+
 	/** Returns max of all array entries and the index at which it was found. Returns value of 0 and index of -1 if the supplied array is empty. */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
 	static void MaxOfFloatArray(const TArray<float>& FloatArray, int32& IndexOfMaxValue, float& MaxValue);
@@ -888,27 +900,27 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 	
 	/** Zero Int Point (0, 0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_Zero();
 	
 	/** One Int Point (1, 1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_One();
 	
 	/** Up Int Point (0, -1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Up", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Up", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_Up();
 	
 	/** Left Int Point (-1, 0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Left", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Left", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_Left();
 	
 	/** Right Int Point (1, 0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Right", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Right", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_Right();
 	
 	/** Down Int Point (0, 1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Down", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Down", ScriptConstantHost = "/Script/CoreUObject.IntPoint"), Category = "Math|IntPoint|Constants")
 	static FIntPoint IntPoint_Down();
 
 	//
@@ -965,15 +977,15 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** 2D one vector constant (1,1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "Vector2D"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "/Script/CoreUObject.Vector2D"), Category = "Math|Vector2D")
 	static FVector2D Vector2D_One();
 
 	/** 2D unit vector constant along the 45 degree angle or symmetrical positive axes (sqrt(.5),sqrt(.5)) or (.707,.707). https://en.wikipedia.org/wiki/Unit_vector */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Unit45Deg", ScriptConstantHost = "Vector2D"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Unit45Deg", ScriptConstantHost = "/Script/CoreUObject.Vector2D"), Category = "Math|Vector2D")
 	static FVector2D Vector2D_Unit45Deg();
 
 	/** 2D zero vector constant (0,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "Vector2D"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "/Script/CoreUObject.Vector2D"), Category = "Math|Vector2D")
 	static FVector2D Vector2D_Zero();
 
 
@@ -1248,35 +1260,35 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** 3D vector zero constant (0,0,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Zero();
 
 	/** 3D vector one constant (1,1,1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_One();
 
 	/** 3D vector Unreal forward direction constant (1,0,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Forward", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Forward", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Forward();
 
 	/** 3D vector Unreal backward direction constant (-1,0,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Backward", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Backward", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Backward();
 
 	/** 3D vector Unreal up direction constant (0,0,1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Up", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Up", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Up();
 
 	/** 3D vector Unreal down direction constant (0,0,-1) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Down", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Down", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Down();
 
 	/** 3D vector Unreal right direction constant (0,1,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Right", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Right", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Right();
 
 	/** 3D vector Unreal left direction constant (0,-1,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Left", ScriptConstantHost = "Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Left", ScriptConstantHost = "/Script/CoreUObject.Vector"), Category = "Math|Vector")
 	static FVector Vector_Left();
 
 	//
@@ -1972,6 +1984,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Math|Random", meta=(ScriptMethod = "RandomPointInBoxExtents", NotBlueprintThreadSafe))
 	static FVector RandomPointInBoundingBox(const FVector Center, const FVector HalfSize);
 
+	/** Returns a random point within the specified bounding box. */
+	UFUNCTION(BlueprintPure, Category = "Math|Random", meta=(DisplayName = "Random Point In Bounding Box (Box)", ScriptMethod = "RandomPointInBoxExtents", NotBlueprintThreadSafe))
+	static FVector RandomPointInBoundingBox_Box(const FBox Box);
+
 	/** 
 	 * Returns a random vector with length of 1, within the specified cone, with uniform random distribution.
 	 * @param ConeDir					The base "center" direction of the cone.
@@ -2020,7 +2036,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** 4D vector zero constant (0,0,0) */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "Vector4"), Category = "Math|Vector4")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "/Script/CoreUObject.Vector4"), Category = "Math|Vector4")
 	static FVector4 Vector4_Zero();
 
 	//
@@ -2420,7 +2436,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FVector Matrix_GetOrigin(const FMatrix& InMatrix);
 
 	// Identity matrix
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Identity (Matrix)", ScriptConstant = "Identity", ScriptConstantHost = "Matrix"), Category = "Math|Matrix")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Identity (Matrix)", ScriptConstant = "Identity", ScriptConstantHost = "/Script/CoreUObject.Matrix"), Category = "Math|Matrix")
 	static FMatrix Matrix_Identity();
 
 	/**
@@ -2719,7 +2735,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Identity quaternion constant */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Identity", ScriptConstantHost = "Quat"), Category = "Math|Quat")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Identity", ScriptConstantHost = "/Script/CoreUObject.Quat"), Category = "Math|Quat")
 	static FQuat Quat_Identity();
 
 	//
@@ -2941,35 +2957,35 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** White linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "White", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "White", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_White();
 
 	/** Grey linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Gray", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Gray", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Gray();
 
 	/** Black linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Black", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Black", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Black();
 
 	/** Red linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Red", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Red", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Red();
 
 	/** Green linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Green", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Green", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Green();
 
 	/** Blue linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Blue", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Blue", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Blue();
 
 	/** Yellow linear color */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Yellow", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Yellow", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Yellow();
 
 	/** Transparent linear color - black with 0 opacity/alpha */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Transparent", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Transparent", ScriptConstantHost = "/Script/CoreUObject.LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Transparent();
 
 
@@ -3334,15 +3350,15 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Returns the maximum time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="Max Value (Timespan)", ScriptConstant = "MaxValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Max Value (Timespan)", ScriptConstant = "MaxValue", ScriptConstantHost = "/Script/CoreUObject.Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanMaxValue( );
 
 	/** Returns the minimum time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="Min Value (Timespan)", ScriptConstant = "MinValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Min Value (Timespan)", ScriptConstant = "MinValue", ScriptConstantHost = "/Script/CoreUObject.Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanMinValue( );
 
 	/** Returns a zero time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="Zero Value (Timespan)", ScriptConstant = "Zero", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Zero Value (Timespan)", ScriptConstant = "Zero", ScriptConstantHost = "/Script/CoreUObject.Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanZeroValue( );
 
 	//
@@ -3991,6 +4007,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Random")
 	static FVector RandomPointInBoundingBoxFromStream(const FVector Center, const FVector HalfSize, const FRandomStream& Stream);
 
+	/** Returns a random point within the specified bounding box. */
+	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(DisplayName="Random Point In Bounding Box From Stream (Box)"))
+	static FVector RandomPointInBoundingBoxFromStream_Box(const FBox Box, const FRandomStream& Stream);
+
 	/** Create a random rotation */
 	UFUNCTION(BlueprintPure, Category="Math|Random")
 	static FRotator RandomRotatorFromStream(bool bRoll, const FRandomStream& Stream);
@@ -4121,6 +4141,16 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool IsPointInBox(FVector Point, FVector BoxOrigin, FVector BoxExtent);
 
 	/**
+     * Determines whether the given point is in a box. Includes points on the box.
+     *
+     * @param Point			Point to test
+     * @param Box			Box to test against
+     * @return Whether the point is in the box.
+     */
+    UFUNCTION(BlueprintPure, Category = "Math|Geometry", meta=(DisplayName = "Is Point In Box (Box)"))
+    static bool IsPointInBox_Box(FVector Point, FBox Box);
+
+	/**
 	* Determines whether a given point is in a box with a given transform. Includes points on the box.
 	*
 	* @param Point				Point to test
@@ -4130,6 +4160,17 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintPure, Category = "Math|Geometry")
 	static bool IsPointInBoxWithTransform(FVector Point, const FTransform& BoxWorldTransform, FVector BoxExtent);
+
+	/**
+	* Determines whether a given point is in a box with a given transform. Includes points on the box.
+	*
+	* @param Point				Point to test
+	* @param BoxWorldTransform	Component-to-World transform of the box.
+	* @param Box				Box to test agains in component space.
+	* @return Whether the point is in the box.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Math|Geometry", meta=(DisplayName = "Is Point In Box With Transform (Box)"))
+	static bool IsPointInBoxWithTransform_Box(FVector Point, const FTransform& BoxWorldTransform, FBox BoxExtent);
 
 	/**
 	* Returns Slope Pitch and Roll angles in degrees based on the following information: 
@@ -4276,6 +4317,7 @@ private:
 	static void ReportError_Divide_DoubleDouble();
 	static void ReportError_Divide_Int64Int64();
 	static void ReportError_Percent_IntInt();
+	static void ReportError_Percent_Int64Int64();
 	static void ReportError_Sqrt();
 	static void ReportError_Divide_VectorFloat();
 	static void ReportError_Divide_VectorInt();
@@ -4291,5 +4333,5 @@ private:
 
 // Conditionally inlined
 #if KISMET_MATH_INLINE_ENABLED
-#include "KismetMathLibrary.inl"
+#include "KismetMathLibrary.inl" // IWYU pragma: export
 #endif

@@ -6,7 +6,7 @@
 #include "CADKernel/Geo/Sampling/SurfacicSampling.h"
 #include "CADKernel/Math/Boundary.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FConeSurface::EvaluatePoint(const FPoint2D& InPoint2D, FSurfacicPoint& OutPoint3D, int32 InDerivativeOrder) const
@@ -94,7 +94,8 @@ void FConeSurface::EvaluatePointGrid(const FCoordinateGrid& Coordinates, FSurfac
 				FPoint GradientV(DeltaVR * CosU[Undex], DeltaVR * SinU[Undex], 1.0);
 				GradientU = Matrix.MultiplyVector(GradientU);
 				GradientV = Matrix.MultiplyVector(GradientV);
-				OutPoints.Normals.Emplace(GradientU ^ GradientV);
+				const FPoint Normal = GradientU ^ GradientV;
+				OutPoints.Normals.Emplace(Normal);
 			}
 		}
 

@@ -11,6 +11,8 @@
 
 class FStructOnScope;
 
+using FActivityID = int64;
+
 UENUM()
 enum class EConcertServerFlags : uint8
 {
@@ -19,6 +21,17 @@ enum class EConcertServerFlags : uint8
 	IgnoreSessionRequirement = 1 << 0,
 };
 ENUM_CLASS_FLAGS(EConcertServerFlags)
+
+
+UENUM()
+enum class EConcertSessionState : uint8
+{
+	/** Session is a normal state and can be joined. */
+	Normal = 0,
+
+	/** Session is in a transient state and cannot be joined. */
+	Transient
+};
 
 UENUM()
 enum class EConcertPayloadCompressionType : uint8
@@ -201,13 +214,33 @@ struct FConcertSessionInfo
 	UPROPERTY(VisibleAnywhere, Category = "Session Info")
 	FString OwnerDeviceName;
 
-	/** Settings pertaining to project, change list number etc */ 
+	/** Settings pertaining to project, change list number etc */
 	UPROPERTY(VisibleAnywhere, Category="Session Info")
 	FConcertSessionSettings Settings;
 
 	/** Version information for this session. This is set during creation, and updated each time the session is restored */
 	UPROPERTY()
 	TArray<FConcertSessionVersionInfo> VersionInfos;
+
+	/** Current state of the session used to determine joinability by clients. */
+	UPROPERTY()
+	EConcertSessionState State = EConcertSessionState::Normal;
+
+	FDateTime GetLastModified() const { return FDateTime(LastModifiedTicks); }
+	void SetLastModified(const FDateTime& Value) { LastModifiedTicks = Value.GetTicks(); }
+	void SetLastModifiedToNow() { SetLastModified(FDateTime::Now()); }
+
+private:
+	
+	/**
+	 * The last time the session directory was modified in local time.
+	 * 
+	 * Stored in ticks instead of FDateTime because FDateTime is not serialized properly by FStructSerializer::Serialize and FStructDeserializer::Deserialize.
+	 * These functions are used for packing data when sent across the network. The issue is that in UObject/NoExportTypes.h FDateTime does not expose Ticks as UProperty;
+	 * doing this would be the 'proper' fix but it may cause instability this late into 5.1 dev.
+	 */
+	UPROPERTY(VisibleAnywhere, Category="Session Info")
+	int64 LastModifiedTicks {};
 };
 
 /** Holds filter rules used when migrating session data */
@@ -307,6 +340,14 @@ struct FConcertSessionSerializedPayload
 	/** Extract the payload into an in-memory instance */
 	CONCERT_API bool GetPayload(FStructOnScope& OutPayload) const;
 	CONCERT_API bool GetPayload(const UScriptStruct* InPayloadType, void* InOutPayloadData) const;
+
+	CONCERT_API bool IsTypeChildOf(const UScriptStruct* InPayloadType) const;
+	
+	template<typename T>
+	bool IsTypeChildOf() const
+	{
+		return IsTypeChildOf(TBaseStructure<T>::Get());
+	}
 
 	template <typename T>
 	bool GetTypedPayload(T& OutPayloadData) const

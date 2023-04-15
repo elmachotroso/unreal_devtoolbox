@@ -6,10 +6,10 @@ using System.IO;
 using AutomationTool;
 using AutomationTool.DeviceReservation;
 using UnrealBuildTool;
-using System.Threading;
 using System.Text.RegularExpressions;
 using System.Linq;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Gauntlet
 {
@@ -30,30 +30,30 @@ namespace Gauntlet
 	/// </summary>
 	public class DeviceDefinition
 	{
-		public string Name;
+		public string Name { get; set; }
 
-		public string Address;
+		public string Address { get; set; }
 
-		public string DeviceData;
+		public string DeviceData { get; set; }
 
 		// legacy - remove!
 		[JsonConverter(typeof(UnrealTargetPlatformConvertor))]
-		public UnrealTargetPlatform Type;
+		public UnrealTargetPlatform Type { get; set; }
 
 		[JsonConverter(typeof(UnrealTargetPlatformConvertor))]
-		public UnrealTargetPlatform? Platform;
+		public UnrealTargetPlatform? Platform { get; set; }
 
-		public EPerfSpec PerfSpec;
+		public EPerfSpec PerfSpec { get; set; }
 
-		public string Model = string.Empty;
+		public string Model { get; set; } = string.Empty;
 
-		public string Available;
-		
-		public bool RemoveOnShutdown;
-		
+		public string Available { get; set; }
+
+		public bool RemoveOnShutdown { get; set; }
+
 		public override string ToString()
 		{
-			return string.Format("{0} @ {1}. Platform={2}", Name, Address, Platform);
+			return string.Format("{0} @ {1}. Platform={2} Model={3}", Name, Address, Platform, string.IsNullOrEmpty(Model) ? "Unspecified" : Model);
 		}
 	}
 
@@ -114,9 +114,22 @@ namespace Gauntlet
 				throw new AutomationException("Comparing null target constraint");
 			}
 
-			if (ReferenceEquals(this, Other)) return true;
+			if (ReferenceEquals(this, Other))
+			{
+				return true;
+			}
 
-			return Other.Platform == Platform && Other.PerfSpec == PerfSpec && Other.Model.Equals(Model, StringComparison.InvariantCultureIgnoreCase);
+			if (Other.Platform != Platform)
+			{
+				return false;
+			}
+
+			if (Other.Model.Equals(Model, StringComparison.InvariantCultureIgnoreCase))
+			{
+				return true;
+			}
+
+			return Other.PerfSpec == PerfSpec;
 		}
 
 		public override bool Equals(object Obj)
@@ -153,7 +166,7 @@ namespace Gauntlet
 				return string.Format("{0}", Platform);
 			}
 
-			return string.Format("{0}:{1}", Platform, PerfSpec == EPerfSpec.Unspecified ? Model : PerfSpec.ToString());
+			return string.Format("{0}:{1}", Platform, Model == string.Empty ? PerfSpec.ToString() : Model);
 		}
 
 		public override int GetHashCode()
@@ -589,7 +602,7 @@ namespace Gauntlet
 					{
 						DeviceDefinition Def = new DeviceDefinition();
 						Def.Name = string.Format("Virtual{0}{1}", DevicePlatform.ToString(), i);
-						Def.Platform = DevicePlatform;
+						Def.Platform = DevicePlatform??BuildHostPlatform.Current.Platform;
 						UnprovisionedDevices.Add(Def);
 					}
 				}
@@ -685,14 +698,16 @@ namespace Gauntlet
 					Def.Name = Device.Name;
 					Def.Platform = DeviceMap.FirstOrDefault(Entry => Entry.Value == Device.Type.Replace("-DevKit", "", StringComparison.OrdinalIgnoreCase)).Key;
 					Def.DeviceData = Device.DeviceData;
-					Def.Model = string.Empty;
+					Def.Model = Device.Model;
 
-					if (!String.IsNullOrEmpty(Device.PerfSpec) && !Enum.TryParse<EPerfSpec>(Device.PerfSpec, true, out Def.PerfSpec))
+					EPerfSpec Out = EPerfSpec.Unspecified;
+					if (!String.IsNullOrEmpty(Device.PerfSpec) && !Enum.TryParse<EPerfSpec>(Device.PerfSpec, true, out Out))
 					{
 						throw new AutomationException("Unable to convert perfspec '{0}' into an EPerfSpec", Device.PerfSpec);
 					}
+					Def.PerfSpec = Out;
 
-					ITargetDevice TargetDevice = CreateAndRegisterDeviceFromDefinition(Def);
+				    ITargetDevice TargetDevice = CreateAndRegisterDeviceFromDefinition(Def);
 
 					// If a device from service can't be added, fail reservation and cleanup devices
 					// @todo: device problem reporting, requesting additional devices
@@ -755,7 +770,10 @@ namespace Gauntlet
 				if (PossibleFileName && File.Exists(InputReference))
 				{
 					Gauntlet.Log.Info("Adding devices from {0}", InputReference);
-					List<DeviceDefinition> DeviceDefinitions = JsonConvert.DeserializeObject<List<DeviceDefinition>>(File.ReadAllText(InputReference));
+					List<DeviceDefinition> DeviceDefinitions = JsonSerializer.Deserialize<List < DeviceDefinition >>(
+						File.ReadAllText(InputReference),
+						new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+					);
 
 					foreach (DeviceDefinition Def in DeviceDefinitions)
 					{
@@ -939,7 +957,7 @@ namespace Gauntlet
 
 			try
 			{
-				bool IsDesktop = Def.Platform != null && UnrealBuildTool.Utils.GetPlatformsInClass(UnrealPlatformClass.Desktop).Contains(Def.Platform.Value);
+				bool IsDesktop = Def.Platform != null && UnrealBuildTool.Utils.GetPlatformsInClass(UnrealPlatformClass.Desktop).Contains(Def.Platform!.Value);
 
 				string ClientTempDir = GetCleanCachePath(Def);
 
@@ -1126,7 +1144,15 @@ namespace Gauntlet
 			lock (LockObject)
 			{
 				List<ITargetDevice> Selection = new List<ITargetDevice>();
+				
+				Log.Verbose($"Enumerating devices for constraint {Constraint}");
 
+				Log.Verbose($"   Available devices:");
+				AvailableDevices.ForEach(D => Log.Verbose($"      {D.Platform}:{D.Name}"));
+
+				Log.Verbose($"   Unprovisioned devices:");
+				UnprovisionedDevices.ForEach(D => Log.Verbose($"      {D}"));
+				
 				// randomize the order of all devices that are of this platform
 				var MatchingProvisionedDevices = AvailableDevices.Where(D => Constraint.Check(D)).ToList();
 				var MatchingUnprovisionedDevices = UnprovisionedDevices.Where(D => Constraint.Check(D)).ToList();

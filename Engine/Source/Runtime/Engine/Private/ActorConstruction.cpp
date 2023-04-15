@@ -17,6 +17,7 @@
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
+#include "ActorTransactionAnnotation.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BillboardComponent.h"
@@ -31,6 +32,8 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Algo/Transform.h"
 #include "Misc/ScopeExit.h"
+#include "Engine/InputDelegateBinding.h"
+#include "GameFramework/InputSettings.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -231,6 +234,7 @@ bool AActor::HasNonTrivialUserConstructionScript() const
 	return false;
 }
 
+#if WITH_EDITOR
 void AActor::RerunConstructionScripts()
 {
 	checkf(!HasAnyFlags(RF_ClassDefaultObject), TEXT("RerunConstructionScripts should never be called on a CDO as it can mutate the transient data on the CDO which then propagates to instances!"));
@@ -242,7 +246,6 @@ void AActor::RerunConstructionScripts()
 	if (bAllowReconstruction)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(AActor::RerunConstructionScripts);
-#if WITH_EDITOR
 		if(GIsEditor)
 		{
 			// Don't allow reconstruction if we're still in the middle of construction.
@@ -266,7 +269,7 @@ void AActor::RerunConstructionScripts()
 				}
 			}
 		}
-#endif
+
 		// Child Actors can be customized in many ways by their parents construction scripts and rerunning directly on them would wipe
 		// that out. So instead we redirect up the hierarchy
 		if (IsChildActor())
@@ -303,6 +306,7 @@ void AActor::RerunConstructionScripts()
 			FName AttachedToSocket;
 			bool bSetRelativeTransform;
 			FTransform RelativeTransform;
+			FName AttachParentName;
 		};
 
 		// Save info about attached actors
@@ -328,7 +332,6 @@ void AActor::RerunConstructionScripts()
 			}
 		}
 
-#if WITH_EDITOR
 		if (!CurrentTransactionAnnotation.IsValid())
 		{
 			CurrentTransactionAnnotation = FActorTransactionAnnotation::Create(this, false);
@@ -367,9 +370,6 @@ void AActor::RerunConstructionScripts()
 
 			bUseRootComponentProperties = false;
 		}
-#else
-		InstanceDataCache = new FComponentInstanceDataCache(this);
-#endif
 
 		if (bUseRootComponentProperties)
 		{
@@ -391,6 +391,10 @@ void AActor::RerunConstructionScripts()
 						Info.AttachedActor = AttachedActor;
 						Info.AttachedToSocket = EachRoot->GetAttachSocketName();
 						Info.bSetRelativeTransform = false;
+						if (EachRoot->GetAttachParent() != RootComponent)
+						{
+							Info.AttachParentName = EachRoot->GetAttachParent()->GetFName();
+						}
 						AttachedActorInfos.Add(Info);
 
 						// Now detach it
@@ -429,8 +433,6 @@ void AActor::RerunConstructionScripts()
 				OldTransformRotationCache = RootComponent->GetRelativeRotationCache();
 			}
 		}
-
-#if WITH_EDITOR
 
 		// Return the component which was added by the construction script.
 		// It may be the same as the argument, or a parent component if the argument was a native subobject.
@@ -493,7 +495,7 @@ void AActor::RerunConstructionScripts()
 				// Determine if this component is an inner of a component added by the construction script
 				const bool bIsInnerComponent = (CSAddedComponent != Component);
 
-				// Poor man's topological sort - try to ensure that children are added to the list after the parents
+				// Try to ensure that children are added to the list after the parents.
 				// IndexOffset specifies how many items from the end new items are added.
 				const int32 Index = ComponentMapping.Num() - IndexOffset;
 				if (bIsInnerComponent)
@@ -516,7 +518,6 @@ void AActor::RerunConstructionScripts()
 				ComponentData.UCSComponentIndex = Component->GetUCSSerializationIndex();
 			}
 		}
-#endif
 
 		// Destroy existing components
 		DestroyConstructedComponents();
@@ -556,7 +557,33 @@ void AActor::RerunConstructionScripts()
 				USceneComponent* ChildRoot = Info.AttachedActor->GetRootComponent();
 				if (ChildRoot && ChildRoot->GetAttachParent() != RootComponent)
 				{
-					ChildRoot->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepWorldTransform, Info.AttachedToSocket);
+					if (Info.AttachParentName != NAME_None)
+					{
+						TArray<USceneComponent*> ChildComponents;
+						RootComponent->GetChildrenComponents(true, ChildComponents);
+						for (USceneComponent* Child : ChildComponents)
+						{
+							if (Child->GetFName() == Info.AttachParentName)
+							{
+								ChildRoot->AttachToComponent(Child, FAttachmentTransformRules::SnapToTargetIncludingScale, Info.AttachedToSocket);
+								break;
+							}
+						}
+						// if we couldn't find component by name, attach it to root and log a warning
+						if (!ChildRoot->GetAttachParent())
+						{
+							UE_LOG(LogBlueprint, Warning,
+								TEXT("Couldn't find a component named \'%s\' when reattaching. Attaching to root component instead."),
+								*Info.AttachParentName.ToString()
+							);
+							ChildRoot->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepWorldTransform, Info.AttachedToSocket);
+						}
+					}
+					else
+					{
+						ChildRoot->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepWorldTransform, Info.AttachedToSocket);
+					}
+
 					if (Info.bSetRelativeTransform)
 					{
 						ChildRoot->SetRelativeTransform(Info.RelativeTransform);
@@ -569,7 +596,6 @@ void AActor::RerunConstructionScripts()
 		// Restore the undo buffer
 		GUndo = CurrentTransaction;
 
-#if WITH_EDITOR
 		// Create the mapping of old->new components and notify the editor of the replacements
 		TInlineComponentArray<UActorComponent*> NewComponents;
 		GetComponents(NewComponents);
@@ -688,12 +714,9 @@ void AActor::RerunConstructionScripts()
 		{
 			CurrentTransactionAnnotation = nullptr;
 		}
-#else
-		delete InstanceDataCache;
-#endif
-
 	}
 }
+#endif
 
 namespace
 {
@@ -1108,10 +1131,21 @@ UActorComponent* AActor::CreateComponentFromTemplateData(const FBlueprintCookedC
 
 UActorComponent* AActor::AddComponent(FName TemplateName, bool bManualAttachment, const FTransform& RelativeTransform, const UObject* ComponentTemplateContext, bool bDeferredFinish)
 {
-	UWorld* World = GetWorld();
-	if (World->bIsTearingDown)
+	if (const UWorld* World = GetWorld())
 	{
-		UE_LOG(LogActor, Warning, TEXT("AddComponent failed because we are in the process of tearing down the world"));
+		if (World->bIsTearingDown)
+		{
+			UE_LOG(LogActor, Warning, TEXT("AddComponent failed for actor: [%s] with param TemplateName: [%s] because we are in the process of tearing down the world")
+				, *GetName()
+				, *TemplateName.ToString());
+			return nullptr;
+		}
+	}
+	else
+	{
+		UE_LOG(LogActor, Warning, TEXT("AddComponent failed for actor: [%s] with param TemplateName: [%s] because world == nullptr")
+			, *GetName()
+			, *TemplateName.ToString());
 		return nullptr;
 	}
 
@@ -1154,10 +1188,21 @@ UActorComponent* AActor::AddComponentByClass(TSubclassOf<UActorComponent> Class,
 		return nullptr;
 	}
 
-	UWorld* World = GetWorld();
-	if (World->bIsTearingDown)
+	if (const UWorld* World = GetWorld())
 	{
-		UE_LOG(LogActor, Warning, TEXT("AddComponent failed because we are in the process of tearing down the world"));
+		if (World->bIsTearingDown)
+		{
+			UE_LOG(LogActor, Warning, TEXT("AddComponentByClass failed for actor: [%s] with param Class: [%s] because we are in the process of tearing down the world")
+				, *GetName()
+				, *GetNameSafe(Class));
+			return nullptr;
+		}
+	}
+	else
+	{
+		UE_LOG(LogActor, Warning, TEXT("AddComponentByClass failed for actor: [%s] with param Class: [%s] because world == nullptr")
+			, *GetName()
+			, *GetNameSafe(Class));
 		return nullptr;
 	}
 
@@ -1217,6 +1262,11 @@ void AActor::FinishAddComponent(UActorComponent* NewActorComp, bool bManualAttac
 			{
 				World->UpdateCullDistanceVolumes(this, NewPrimitiveComponent);
 			}
+		}
+		
+		if (InputComponent && GetDefault<UInputSettings>()->bEnableDynamicComponentInputBinding)
+		{
+			UInputDelegateBinding::BindInputDelegates(NewActorComp->GetClass(), InputComponent, NewActorComp);
 		}
 	}
 }
@@ -1294,6 +1344,8 @@ void AActor::PostCreateBlueprintComponent(UActorComponent* NewActorComp)
 		if (NewActorComp->GetIsReplicated())
 		{
 			ReplicatedComponents.AddUnique(NewActorComp);
+
+			AddComponentForReplication(NewActorComp);
 		}
 	}
 }

@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "TextureFormatOodlePCH.h"
 #include "CoreMinimal.h"
 #include "ImageCore.h"
+#include "DDSFile.h"
 #include "Modules/ModuleManager.h"
 #include "TextureCompressorModule.h"
 #include "Interfaces/ITextureFormat.h"
@@ -12,10 +12,12 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/SecureHash.h"
+#include "Async/ParallelFor.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "Misc/FileHelper.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryWriter.h"
 #include "DerivedDataBuildFunctionFactory.h"
@@ -24,13 +26,12 @@
 #include "TextureBuildFunction.h"
 #include "HAL/FileManager.h"
 #include "Misc/WildcardString.h"
-
-#include "DDSFile.h"
+#include "Misc/CommandLine.h"
 
 #include "oodle2tex.h"
 
 // Alternate job system - can set UseOodleExampleJobify in engine ini to enable.
-#include "example_jobify.h"
+#include "Jobify/example_jobify.h"
 
 /**********
 
@@ -143,7 +144,7 @@ For example here I have changed "World" LossyCompressionAmount to TLCA_High, and
 "WorldNormalMap" to TLCA_Low :
 
 
-[/Script/Engine.TextureLODSettings]
+[GlobalDefaults DeviceProfile]
 @TextureLODGroups=Group
 TextureLODGroups=(Group=TEXTUREGROUP_World,MinLODSize=1,MaxLODSize=8192,LODBias=0,MinMagFilter=aniso,MipFilter=point,MipGenSettings=TMGS_SimpleAverage,LossyCompressionAmount=TLCA_High)
 +TextureLODGroups=(Group=TEXTUREGROUP_WorldNormalMap,MinLODSize=1,MaxLODSize=8192,LODBias=0,MinMagFilter=aniso,MipFilter=point,MipGenSettings=TMGS_SimpleAverage,LossyCompressionAmount=TLCA_Low)
@@ -210,6 +211,8 @@ OODEFFUNC typedef OO_S32 (OOEXPLINK t_fp_OodleTex_BC_BytesPerBlock)(OodleTex_BC 
 
 OODEFFUNC typedef OO_S32 (OOEXPLINK t_fp_OodleTex_PixelFormat_BytesPerPixel)(OodleTex_PixelFormat pf);
 
+OODEFFUNC typedef OodleTex_Err (OOEXPLINK t_fp_OodleTex_LogVersion)(void);
+
 /**
 * 
 * FOodleTextureVTable provides function calls to a specific version of the Oodle Texture dynamic lib
@@ -245,17 +248,52 @@ struct FOodleTextureVTable
 
 		// TFO_DLL_PREFIX/SUFFIX is set by the build.cs with the right names for this platform
 		FString DynamicLibName = FString(TFO_DLL_PREFIX) + InVersionString + FString(TFO_DLL_SUFFIX);
-		
-		UE_LOG(LogTextureFormatOodle, Display, TEXT("Oodle Texture loading DLL: %s"), *DynamicLibName);
+
+		// I want to see this log by default in Cook+Editor , but not in TBW
+		#ifndef VerboseIfNotEditor
+		#if WITH_EDITOR
+		#define VerboseIfNotEditor	Display
+		#else
+		#define VerboseIfNotEditor	Verbose
+		#endif
+		#endif
+
+		UE_LOG(LogTextureFormatOodle,VerboseIfNotEditor,TEXT("Oodle Texture loading DLL: %s"), *DynamicLibName);
 
 		DynamicLib = FPlatformProcess::GetDllHandle(*DynamicLibName);
 		if ( DynamicLib == nullptr )
 		{
 			UE_LOG(LogTextureFormatOodle, Warning, TEXT("Oodle Texture %s requested but could not be loaded"), *DynamicLibName);
-			Version = FName("invalid");
+
+			Version = FName("invalid"); // so we can't be found
 			return false;
 		}
 	
+		fp_OodleTex_Err_GetName = (t_fp_OodleTex_Err_GetName *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Err_GetName") );
+		check( fp_OodleTex_Err_GetName != nullptr );
+		
+		fp_OodleTex_Plugins_SetPrintf = (t_fp_OodleTex_Plugins_SetPrintf *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Plugins_SetPrintf") );
+		check( fp_OodleTex_Plugins_SetPrintf != nullptr );
+		
+		t_fp_OodleTex_LogVersion * fp_OodleTex_LogVersion = (t_fp_OodleTex_LogVersion *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_LogVersion") );
+		check( fp_OodleTex_LogVersion != nullptr );
+		
+		// make Printf go to NULL for LogVersion :
+		(*fp_OodleTex_Plugins_SetPrintf)(nullptr);
+
+		// Get LogVersion so we can get an error code to check the DLL is okay :
+		OodleTex_Err OodleErr = (*fp_OodleTex_LogVersion)();
+		if ( OodleErr != OodleTex_Err_OK )
+		{
+			const char * OodleErrStr = (*fp_OodleTex_Err_GetName)(OodleErr);
+
+			UE_LOG(LogTextureFormatOodle, Warning, TEXT("Oodle Texture %s loaded but failed in LogVersion with error %d=%s"), *DynamicLibName,
+				(int)OodleErr, ANSI_TO_TCHAR(OodleErrStr) );
+
+			Version = FName("invalid"); // so we can't be found
+			return false;
+		}
+
 		fp_OodleTex_EncodeBCN_RDO_Ex = (t_fp_OodleTex_EncodeBCN_RDO_Ex *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_EncodeBCN_RDO_Ex") );
 		check( fp_OodleTex_EncodeBCN_RDO_Ex != nullptr );
 		
@@ -265,14 +303,8 @@ struct FOodleTextureVTable
 		fp_OodleTex_Plugins_SetJobSystemAndCount = (t_fp_OodleTex_Plugins_SetJobSystemAndCount *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Plugins_SetJobSystemAndCount") );
 		check( fp_OodleTex_Plugins_SetJobSystemAndCount != nullptr );
 				
-		fp_OodleTex_Plugins_SetPrintf = (t_fp_OodleTex_Plugins_SetPrintf *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Plugins_SetPrintf") );
-		check( fp_OodleTex_Plugins_SetPrintf != nullptr );
-		
 		fp_OodleTex_Plugins_SetAssertion = (t_fp_OodleTex_Plugins_SetAssertion *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Plugins_SetAssertion") );
 		check( fp_OodleTex_Plugins_SetAssertion != nullptr );
-		
-		fp_OodleTex_Err_GetName = (t_fp_OodleTex_Err_GetName *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_Err_GetName") );
-		check( fp_OodleTex_Err_GetName != nullptr );
 		
 		fp_OodleTex_PixelFormat_GetName = (t_fp_OodleTex_PixelFormat_GetName *) FPlatformProcess::GetDllExport( DynamicLib, TEXT("OodleTex_PixelFormat_GetName") );
 		check( fp_OodleTex_PixelFormat_GetName != nullptr );
@@ -323,7 +355,7 @@ class FOodleTextureBuildFunction final : public FTextureBuildFunction
 
 struct FOodlePixelFormatMapping 
 {
-	OodleDDS::EDXGIFormat DXGIFormat;
+	UE::DDS::EDXGIFormat DXGIFormat;
 	OodleTex_PixelFormat OodlePF;
 	bool bHasAlpha;
 };
@@ -334,26 +366,26 @@ struct FOodlePixelFormatMapping
 static FOodlePixelFormatMapping PixelFormatMap[] = 
 {
 	// dxgi											ootex								has_alpha
-	{ OodleDDS::EDXGIFormat::R32G32B32A32_FLOAT,	OodleTex_PixelFormat_4_F32_RGBA,	true },
-	{ OodleDDS::EDXGIFormat::R32G32B32_FLOAT,		OodleTex_PixelFormat_3_F32_RGB,		true },
-	{ OodleDDS::EDXGIFormat::R16G16B16A16_FLOAT,	OodleTex_PixelFormat_4_F16_RGBA,	true },
-	{ OodleDDS::EDXGIFormat::R8G8B8A8_UNORM,		OodleTex_PixelFormat_4_U8_RGBA,		true },
-	{ OodleDDS::EDXGIFormat::R16G16B16A16_UNORM,	OodleTex_PixelFormat_4_U16,			true },
-	{ OodleDDS::EDXGIFormat::R16G16_UNORM,			OodleTex_PixelFormat_2_U16,			false },
-	{ OodleDDS::EDXGIFormat::R16G16_SNORM,			OodleTex_PixelFormat_2_S16,			false },
-	{ OodleDDS::EDXGIFormat::R8G8_UNORM,			OodleTex_PixelFormat_2_U8,			false },
-	{ OodleDDS::EDXGIFormat::R8G8_SNORM,			OodleTex_PixelFormat_2_S8,			false },
-	{ OodleDDS::EDXGIFormat::R16_UNORM,				OodleTex_PixelFormat_1_U16,			false },
-	{ OodleDDS::EDXGIFormat::R16_SNORM,				OodleTex_PixelFormat_1_S16,			false },
-	{ OodleDDS::EDXGIFormat::R8_UNORM,				OodleTex_PixelFormat_1_U8,			false },
-	{ OodleDDS::EDXGIFormat::R8_SNORM,				OodleTex_PixelFormat_1_S8,			false },
-	{ OodleDDS::EDXGIFormat::B8G8R8A8_UNORM,		OodleTex_PixelFormat_4_U8_BGRA,		true },
-	{ OodleDDS::EDXGIFormat::B8G8R8X8_UNORM,		OodleTex_PixelFormat_4_U8_BGRx,		false },
+	{ UE::DDS::EDXGIFormat::R32G32B32A32_FLOAT,	OodleTex_PixelFormat_4_F32_RGBA,	true },
+	{ UE::DDS::EDXGIFormat::R32G32B32_FLOAT,	OodleTex_PixelFormat_3_F32_RGB,		true },
+	{ UE::DDS::EDXGIFormat::R16G16B16A16_FLOAT,	OodleTex_PixelFormat_4_F16_RGBA,	true },
+	{ UE::DDS::EDXGIFormat::R8G8B8A8_UNORM,		OodleTex_PixelFormat_4_U8_RGBA,		true },
+	{ UE::DDS::EDXGIFormat::R16G16B16A16_UNORM,	OodleTex_PixelFormat_4_U16,			true },
+	{ UE::DDS::EDXGIFormat::R16G16_UNORM,		OodleTex_PixelFormat_2_U16,			false },
+	{ UE::DDS::EDXGIFormat::R16G16_SNORM,		OodleTex_PixelFormat_2_S16,			false },
+	{ UE::DDS::EDXGIFormat::R8G8_UNORM,			OodleTex_PixelFormat_2_U8,			false },
+	{ UE::DDS::EDXGIFormat::R8G8_SNORM,			OodleTex_PixelFormat_2_S8,			false },
+	{ UE::DDS::EDXGIFormat::R16_UNORM,			OodleTex_PixelFormat_1_U16,			false },
+	{ UE::DDS::EDXGIFormat::R16_SNORM,			OodleTex_PixelFormat_1_S16,			false },
+	{ UE::DDS::EDXGIFormat::R8_UNORM,			OodleTex_PixelFormat_1_U8,			false },
+	{ UE::DDS::EDXGIFormat::R8_SNORM,			OodleTex_PixelFormat_1_S8,			false },
+	{ UE::DDS::EDXGIFormat::B8G8R8A8_UNORM,		OodleTex_PixelFormat_4_U8_BGRA,		true },
+	{ UE::DDS::EDXGIFormat::B8G8R8X8_UNORM,		OodleTex_PixelFormat_4_U8_BGRx,		false },
 };
 
-static OodleTex_PixelFormat OodlePFFromDXGIFormat(OodleDDS::EDXGIFormat InFormat) 
+static OodleTex_PixelFormat OodlePFFromDXGIFormat(UE::DDS::EDXGIFormat InFormat) 
 {
-	InFormat = OodleDDS::DXGIFormatRemoveSRGB(InFormat);
+	InFormat = UE::DDS::DXGIFormatRemoveSRGB(InFormat);
 	for (size_t i = 0; i < sizeof(PixelFormatMap) / sizeof(*PixelFormatMap); ++i) 
 	{
 		if (PixelFormatMap[i].DXGIFormat == InFormat) 
@@ -365,9 +397,9 @@ static OodleTex_PixelFormat OodlePFFromDXGIFormat(OodleDDS::EDXGIFormat InFormat
 }
 
 // don't need this for all DXGI formats, just the ones we can translate to Oodle Texture formats
-static bool DXGIFormatHasAlpha(OodleDDS::EDXGIFormat InFormat)
+static bool DXGIFormatHasAlpha(UE::DDS::EDXGIFormat InFormat)
 {
-	InFormat = OodleDDS::DXGIFormatRemoveSRGB(InFormat);
+	InFormat = UE::DDS::DXGIFormatRemoveSRGB(InFormat);
 	for (size_t i = 0; i < sizeof(PixelFormatMap) / sizeof(*PixelFormatMap); ++i) 
 	{
 		if (PixelFormatMap[i].DXGIFormat == InFormat)
@@ -379,7 +411,7 @@ static bool DXGIFormatHasAlpha(OodleDDS::EDXGIFormat InFormat)
 	return true;
 }
 
-static OodleDDS::EDXGIFormat DXGIFormatFromOodlePF(OodleTex_PixelFormat pf) 
+static UE::DDS::EDXGIFormat DXGIFormatFromOodlePF(OodleTex_PixelFormat pf) 
 {
 	for (size_t i = 0; i < sizeof(PixelFormatMap) / sizeof(*PixelFormatMap); ++i) 
 	{
@@ -388,34 +420,34 @@ static OodleDDS::EDXGIFormat DXGIFormatFromOodlePF(OodleTex_PixelFormat pf)
 			return PixelFormatMap[i].DXGIFormat;
 		}
 	}
-	return OodleDDS::EDXGIFormat::UNKNOWN;
+	return UE::DDS::EDXGIFormat::UNKNOWN;
 }
 
 struct FOodleBCMapping 
 {
-	OodleDDS::EDXGIFormat DXGIFormat;
+	UE::DDS::EDXGIFormat DXGIFormat;
 	OodleTex_BC OodleBC;
 };
 
 static FOodleBCMapping BCFormatMap[] = 
 {
-	{ OodleDDS::EDXGIFormat::BC1_UNORM, OodleTex_BC1 },
-	{ OodleDDS::EDXGIFormat::BC1_UNORM, OodleTex_BC1_WithTransparency },
-	{ OodleDDS::EDXGIFormat::BC2_UNORM, OodleTex_BC2 },
-	{ OodleDDS::EDXGIFormat::BC3_UNORM, OodleTex_BC3 },
-	{ OodleDDS::EDXGIFormat::BC4_UNORM, OodleTex_BC4U },
-	{ OodleDDS::EDXGIFormat::BC4_SNORM, OodleTex_BC4S },
-	{ OodleDDS::EDXGIFormat::BC5_UNORM, OodleTex_BC5U },
-	{ OodleDDS::EDXGIFormat::BC5_SNORM, OodleTex_BC5S },
-	{ OodleDDS::EDXGIFormat::BC6H_UF16, OodleTex_BC6U },
-	{ OodleDDS::EDXGIFormat::BC6H_SF16, OodleTex_BC6S },
-	{ OodleDDS::EDXGIFormat::BC7_UNORM, OodleTex_BC7RGBA },
-	{ OodleDDS::EDXGIFormat::BC7_UNORM, OodleTex_BC7RGB },
+	{ UE::DDS::EDXGIFormat::BC1_UNORM, OodleTex_BC1 },
+	{ UE::DDS::EDXGIFormat::BC1_UNORM, OodleTex_BC1_WithTransparency },
+	{ UE::DDS::EDXGIFormat::BC2_UNORM, OodleTex_BC2 },
+	{ UE::DDS::EDXGIFormat::BC3_UNORM, OodleTex_BC3 },
+	{ UE::DDS::EDXGIFormat::BC4_UNORM, OodleTex_BC4U },
+	{ UE::DDS::EDXGIFormat::BC4_SNORM, OodleTex_BC4S },
+	{ UE::DDS::EDXGIFormat::BC5_UNORM, OodleTex_BC5U },
+	{ UE::DDS::EDXGIFormat::BC5_SNORM, OodleTex_BC5S },
+	{ UE::DDS::EDXGIFormat::BC6H_UF16, OodleTex_BC6U },
+	{ UE::DDS::EDXGIFormat::BC6H_SF16, OodleTex_BC6S },
+	{ UE::DDS::EDXGIFormat::BC7_UNORM, OodleTex_BC7RGBA },
+	{ UE::DDS::EDXGIFormat::BC7_UNORM, OodleTex_BC7RGB },
 };
 
-static OodleTex_BC OodleBCFromDXGIFormat(OodleDDS::EDXGIFormat InFormat) 
+static OodleTex_BC OodleBCFromDXGIFormat(UE::DDS::EDXGIFormat InFormat) 
 {
-	InFormat = OodleDDS::DXGIFormatRemoveSRGB(InFormat);
+	InFormat = UE::DDS::DXGIFormatRemoveSRGB(InFormat);
 	for (size_t i = 0; i < sizeof(BCFormatMap) / sizeof(*BCFormatMap); ++i) 
 	{
 		if (BCFormatMap[i].DXGIFormat == InFormat)
@@ -426,7 +458,7 @@ static OodleTex_BC OodleBCFromDXGIFormat(OodleDDS::EDXGIFormat InFormat)
 	return OodleTex_BC_Invalid;
 }
 
-static OodleDDS::EDXGIFormat DXGIFormatFromOodleBC(OodleTex_BC InBC) 
+static UE::DDS::EDXGIFormat DXGIFormatFromOodleBC(OodleTex_BC InBC) 
 {
 	for (size_t i = 0; i < sizeof(BCFormatMap) / sizeof(*BCFormatMap); ++i) 
 	{
@@ -435,7 +467,7 @@ static OodleDDS::EDXGIFormat DXGIFormatFromOodleBC(OodleTex_BC InBC)
 			return BCFormatMap[i].DXGIFormat;
 		}
 	}
-	return OodleDDS::EDXGIFormat::UNKNOWN;
+	return UE::DDS::EDXGIFormat::UNKNOWN;
 }
 
 
@@ -518,7 +550,19 @@ public:
 		GConfig->GetString(IniSection, TEXT("DebugDumpFilter"), LocalDebugConfig.DebugDumpFilter, GEngineIni);
 		GConfig->GetInt(IniSection, TEXT("LogVerbosity"), LocalDebugConfig.LogVerbosity, GEngineIni);
 		GConfig->GetFloat(IniSection, TEXT("GlobalLambdaMultiplier"), GlobalLambdaMultiplier, GEngineIni);
+		
+		FString CmdLineString;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-OodleDebugDumpFilter="), CmdLineString) )
+		{
+			UE_LOG(LogTextureFormatOodle, Display, TEXT("Enabling debug dump from command line: -OodleDebugDumpFilter=%s"), *CmdLineString);
+			LocalDebugConfig.DebugDumpFilter = CmdLineString;
+		}
 
+		if (FParse::Param(FCommandLine::Get(), TEXT("OodleDebugColor")))
+		{
+			UE_LOG(LogTextureFormatOodle, Display, TEXT("Enabling debug color encoding from command line (-OodleDebugColor)"));
+			bDebugColor = true;
+		}
 
 		// sanitize config values :
 		if ( GlobalLambdaMultiplier <= 0.f )
@@ -526,8 +570,8 @@ public:
 			GlobalLambdaMultiplier = 1.f;
 		}
 
-		UE_LOG(LogTextureFormatOodle, Display, TEXT("Oodle Texture TFO init; latest sdk version = %s"),
-			TEXT(OodleTextureVersion)
+		UE_LOG(LogTextureFormatOodle,VerboseIfNotEditor,
+			TEXT("Oodle Texture TFO init; latest sdk version = %s"),TEXT(OodleTextureVersion)
 			);
 		#ifdef DO_FORCE_UNIQUE_DDC_KEY_PER_BUILD
 		UE_LOG(LogTextureFormatOodle, Display, TEXT("Oodle Texture DO_FORCE_UNIQUE_DDC_KEY_PER_BUILD"));
@@ -729,13 +773,15 @@ public:
 	FName OodleTextureVersionLatest;
 	FName OodleTextureSdkVersionToUseIfNone;
 
-	FTextureFormatOodle() : OodleTextureVersionLatest(OodleTextureVersion),
+	FTextureFormatOodle() : 
+		OodleTextureVersionLatest(OodleTextureVersion),
 		OodleTextureSdkVersionToUseIfNone("2.9.5")
 	{
 		// OodleTextureSdkVersionToUseIfNone is the fallback version to use if none is in the Texture uasset
 		//	and also no remap pref is set
 		// it should not be latest; it should be oldest (2.9.5)
 		//  OodleTextureSdkVersionToUseIfNone should never be changed
+		// if you want to map none to a newer version use config ini option AlternateTextureCompression/OodleTextureSdkVersionToUseIfNone
 	}
 
 
@@ -764,7 +810,7 @@ public:
 		return GlobalFormatConfig.ExportToCb(BuildSettings);
 	}
 
-	void Init()
+	bool Init()
 	{
 		TFO_Plugins_Init();
 
@@ -773,10 +819,40 @@ public:
 
 		// load ALL Oodle DLL versions we support :
 		// !! add new versions of Oodle here !!
-		VTables.SetNum(1);
 
-		VTables[0].LoadDynamicLib( FString(TEXT("2.9.5")) );
-		TFO_Plugins_Install(&(VTables[0]));
+		const TCHAR * OodleTextureVersions[] =
+		{
+			TEXT("2.9.5"),
+			TEXT("2.9.6"),
+			TEXT("2.9.7"),
+			TEXT("2.9.8")
+		};
+		const int32 OodleTextureVersionsCount = (int32)( sizeof(OodleTextureVersions)/sizeof(OodleTextureVersions[0]) );
+
+		VTables.SetNum(OodleTextureVersionsCount);
+
+		for(int32 i=0;i<OodleTextureVersionsCount;i++)
+		{
+			if ( VTables[i].LoadDynamicLib( FString(OodleTextureVersions[i]) ) )
+			{
+				TFO_Plugins_Install(&(VTables[i]));
+			}
+		}
+
+		// verify the latest and oldest can be found :
+		if ( GetOodleTextureVTable(OodleTextureVersionLatest) == nullptr ||
+			GetOodleTextureVTable(OodleTextureSdkVersionToUseIfNone) == nullptr )
+		{
+			UE_LOG(LogTextureFormatOodle,Warning,
+				TEXT("Required Oodle Texture versions not available : (%s and %s), will be disabled."),
+				*OodleTextureVersionLatest.ToString(),
+				*OodleTextureSdkVersionToUseIfNone.ToString()
+				);
+
+			return false;
+		}
+
+		return true;
 	}
 	
 	const FOodleTextureVTable * GetOodleTextureVTable(const FName & InVersion) const
@@ -793,7 +869,7 @@ public:
 	}
 	
 	// increment this to invalidate Derived Data Cache to recompress everything
-	#define DDC_OODLE_TEXTURE_VERSION 13
+	#define DDC_OODLE_TEXTURE_VERSION 16
 
 	virtual uint16 GetVersion(FName Format, const FTextureBuildSettings* InBuildSettings) const override
 	{
@@ -838,7 +914,12 @@ public:
 		check(RDOLambda<256);
 		if (bDebugColor)
 		{
-			RDOLambda = 256;
+			// Debug Color is solid or check for RDO/ no RDO
+			//	so make different DDC keys :
+			if ( RDOLambda == 0 )
+				RDOLambda = 256;
+			else
+				RDOLambda = 257;
 			EffortLevel = OodleTex_EncodeEffortLevel_Default;
 		}
 		
@@ -878,12 +959,7 @@ public:
 		OutFormats.Append(GSupportedTextureFormatNames, sizeof(GSupportedTextureFormatNames)/sizeof(GSupportedTextureFormatNames[0]) ); 
 	}
 
-	virtual FTextureFormatCompressorCaps GetFormatCapabilities() const override
-	{
-		return FTextureFormatCompressorCaps(); // Default capabilities.
-	}
-	
-	virtual EPixelFormat GetPixelFormatForImage(const FTextureBuildSettings& InBuildSettings, const struct FImage& Image, bool bHasAlpha) const override
+	virtual EPixelFormat GetEncodedPixelFormat(const FTextureBuildSettings& InBuildSettings, bool bImageHasAlphaChannel) const
 	{
 		int RDOLambda;
 		OodleTex_EncodeEffortLevel EffortLevel;
@@ -891,17 +967,17 @@ public:
 		EPixelFormat CompressedPixelFormat;
 		bool bDebugColor;
 
-		GlobalFormatConfig.GetOodleCompressParameters(&CompressedPixelFormat,&RDOLambda,&EffortLevel,&bDebugColor,&RDOUniversalTiling,InBuildSettings,bHasAlpha);
+		GlobalFormatConfig.GetOodleCompressParameters(&CompressedPixelFormat, &RDOLambda, &EffortLevel, &bDebugColor, &RDOUniversalTiling, InBuildSettings, bImageHasAlphaChannel);
 		return CompressedPixelFormat;
 	}
 
 	static void DebugDumpDDS(const FStringView & DebugTexturePathName,
-			int32 SizeX,int32 SizeY,int32 Slice, OodleDDS::EDXGIFormat DebugFormat, const TCHAR * InOrOut,
+			int32 SizeX,int32 SizeY,int32 Slice, UE::DDS::EDXGIFormat DebugFormat, const TCHAR * InOrOut,
 			const void * PixelData, size_t PixelDataSize)
 	{
-		if (DebugFormat != OodleDDS::EDXGIFormat::UNKNOWN)
+		if (DebugFormat != UE::DDS::EDXGIFormat::UNKNOWN)
 		{
-			OodleDDS::FDDSFile* DDS = OodleDDS::FDDSFile::CreateEmpty2D(SizeX, SizeY, 1, DebugFormat, OodleDDS::FDDSFile::CREATE_FLAG_NONE);
+			UE::DDS::FDDSFile* DDS = UE::DDS::FDDSFile::CreateEmpty2D(SizeX, SizeY, 1, DebugFormat, UE::DDS::FDDSFile::CREATE_FLAG_NONE);
 
 			if ( DDS->Mips[0].DataSize != PixelDataSize )
 			{
@@ -910,16 +986,29 @@ public:
 			size_t MipCopySize = FMath::Min(PixelDataSize,(size_t)DDS->Mips[0].DataSize);
 			FMemory::Memcpy(DDS->Mips[0].Data, PixelData, MipCopySize);
 
-			FString FileName = FString::Printf(TEXT("%.*s_%dx%d_S%d_%s.dds"), DebugTexturePathName.Len(), DebugTexturePathName.GetData(), SizeX, SizeY, Slice, InOrOut);
+			const TCHAR * FormatStr = DXGIFormatGetName(DebugFormat);
+			FString FileName = FString::Printf(TEXT("%.*s_%s_%dx%d_S%d_%s.dds"), DebugTexturePathName.Len(), DebugTexturePathName.GetData(), FormatStr, SizeX, SizeY, Slice, InOrOut);
 
 			// Object paths a) can contain slashes as its a path, and we dont want a hierarchy and b) can have random characters we don't want
 			FileName = FPaths::MakeValidFileName(FileName, TEXT('_'));
+
+			// limit file name len
+			// full path will still likely be longer than _MAX_PATH which breaks many programs
+			if ( FileName.Len() >= 256 )
+			{
+				FileName = FileName.Right(255);
+			}
+
 			FileName = FPaths::ProjectSavedDir() + TEXT("OodleDebugImages/") + FileName;
 				
 			FArchive* Ar = IFileManager::Get().CreateFileWriter(*FileName);
 			if (Ar != nullptr)
-			{					
-				DDS->SerializeToArchive(Ar);
+			{
+				TArray64<uint8> DdsBytes;
+				if (DDS->WriteDDS(DdsBytes) == UE::DDS::EDDSError::OK)
+				{
+					Ar->Serialize(DdsBytes.GetData(), DdsBytes.Num());
+				}
 				Ar->Close();
 				delete Ar;
 			}
@@ -932,9 +1021,14 @@ public:
 		}
 	}
 
-	virtual bool CompressImage(const FImage& InImage, const FTextureBuildSettings& InBuildSettings, FStringView DebugTexturePathName, const bool bInHasAlpha, FCompressedImage2D& OutImage) const override
+	bool CanAcceptNonF32Source() const override
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(Oodle_CompressImage);
+		return true;
+	}
+
+	virtual bool CompressImage(FImage& InImage, const FTextureBuildSettings& InBuildSettings, FStringView DebugTexturePathName, const bool bInHasAlpha, FCompressedImage2D& OutImage) const override
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_CompressImage);
 
 		check(InImage.SizeX > 0);
 		check(InImage.SizeY > 0);
@@ -971,8 +1065,9 @@ public:
 			return false;
 		}
 
-		// InImage always comes in as F32 in linear light
+		// InImage usually comes in as F32 in linear light
 		//	(Unreal has just made mips in that format)
+		//	(when no processing is needed, eg for VT tiles, it can come in different formats now)
 		// we are run simultaneously on all mips or VT tiles
 		
 		// bHasAlpha = DetectAlphaChannel , scans the A's for non-opaque , in in CompressMipChain
@@ -1012,7 +1107,8 @@ public:
 
 		if ( GlobalFormatConfig.GetLocalDebugConfig().LogVerbosity >= 2 || (GlobalFormatConfig.GetLocalDebugConfig().LogVerbosity && bIsLargeMip) )
 		{
-			UE_LOG(LogTextureFormatOodle, Display, TEXT("%s encode %i x %i x %i to format %s%s (Oodle %s) lambda=%i effort=%i "), \
+			UE_LOG(LogTextureFormatOodle, Display, TEXT("Oodle%s %s encode %i x %i x %i to format %s%s (%s) lambda=%i effort=%i "),
+				*CompressOodleTextureVersion.ToString(),
 				RDOLambda ? TEXT("RDO") : TEXT("non-RDO"), InImage.SizeX, InImage.SizeY, InImage.NumSlices, 
 				*TextureFormatName.ToString(),
 				bIsVT ? TEXT(" VT") : TEXT(""),
@@ -1023,10 +1119,8 @@ public:
 		// input Image comes in as F32 in linear light
 		// for BC6 we just leave that alone
 		// for all others we must convert to 8 bit to get Gamma correction
-		// because Unreal only does Gamma correction on the 8 bit conversion
-		//	(this loses precision for BC4,5 which would like 16 bit input)
 		
-		EGammaSpace Gamma = InBuildSettings.GetGammaSpace();		
+		EGammaSpace Gamma = InBuildSettings.GetDestGammaSpace();		
 		// note in unreal if Gamma == Pow22 due to legacy Gamma,
 		//	we still want to encode to sRGB
 		// (CopyTo does that even without this change, but let's make it explicit)
@@ -1051,6 +1145,10 @@ public:
 			// BC6 is assumed to be a linear-light HDR Image by default
 			// use OodleTex_BCNFlag_BC6_NonRGBData if it is some other kind of data
 			Gamma = EGammaSpace::Linear;
+
+			// TFO just passes the F32 to Oodle
+			// FImageCore::SanitizeFloat16AndSetAlphaOpaqueForBC6H is not needed here
+			// Oodle will convert the F32 to F16 and also clamp in [0,F16_max] (no negatives, no +inf)
 		}
 		else if ((OodleBCN == OodleTex_BC4U || OodleBCN == OodleTex_BC5U) &&
 			Gamma == EGammaSpace::Linear &&			
@@ -1060,20 +1158,19 @@ public:
 			//	BC4/5 should always have linear gamma
 			// @todo we only need 1 or 2 channel 16-bit, not all 4; use our own converter
 			//	or just let our encoder take F32 input?
+
+			// input image format now can be BGRA8 (used to always be RGBA32F)
+			// but to maintain matching output with previous RGBA32F format, still do convert to RGBA16
+			// ideally should pass BGRA8 directly to Oodle, but that changes output bits
 			ImageFormat = ERawImageFormat::RGBA16;
 			OodlePF = OodleTex_PixelFormat_4_U16;
 		}
 		else
 		{
 			ImageFormat = ERawImageFormat::BGRA8;
-			// if requested format was DXT1
-			// Unreal assumes that will not encode any alpha channel in the source
-			//	(Unreal's "compress without alpha" just selects DXT1)
-			// the legacy NVTT behavior for DXT1 was to always encode opaque pixels
-			// for DXT1 we use BC1_WithTransparency which will preserve the input A transparency bit
-			//	so we need to force the A's to be 255 coming into Oodle
-			//	so for DXT1 we force bHasAlpha = false
-			// force Oodle to ignore input alpha :
+
+			// if bHasAlpha is off due to bForceNoAlphaChannel, we could still have transparent pixels
+			// force Oodle to read input alpha as opaque :
 			OodlePF = bHasAlpha ? OodleTex_PixelFormat_4_U8_BGRA : OodleTex_PixelFormat_4_U8_BGRx;
 		}
 
@@ -1085,19 +1182,20 @@ public:
 		if (bNeedsImageCopy)
 		{
 			InImage.CopyTo(ImageCopy, ImageFormat, Gamma);
+			
+			// after we copy the image, we can free the source
+			//	can reduce peak mem use to do so immediately
+			//	(source is usually/often F32 RGBA (when not VT) so quite fat)
+			InImage.RawData.Empty();
 		}
 		const FImage& Image = bNeedsImageCopy ? ImageCopy : InImage;
 
 		// verify OodlePF matches Image :
 		check( Image.GetBytesPerPixel() == (VTable->fp_OodleTex_PixelFormat_BytesPerPixel)(OodlePF) );
 		
-		OodleTex_Surface InSurf = {};
-		InSurf.width  = Image.SizeX;
-		InSurf.height = Image.SizeY;
-		InSurf.pixels = 0;
-		InSurf.rowStrideBytes = Image.GetBytesPerPixel() * Image.SizeX;
+		SSIZE_T InRowStrideBytes = Image.GetBytesPerPixel() * Image.SizeX;
 
-		SSIZE_T InBytesPerSlice = InSurf.rowStrideBytes * Image.SizeY;
+		SSIZE_T InBytesPerSlice = InRowStrideBytes * Image.SizeY;
 		uint8 * ImageBasePtr = (uint8 *) &(Image.RawData[0]);
 
 		SSIZE_T InBytesTotal = InBytesPerSlice * Image.NumSlices;
@@ -1156,7 +1254,7 @@ public:
 					for (SSIZE_T Slice = 0; Slice < NumSlices; Slice++)
 					{
 						float* LineBase = (float*)(ImageBasePtr + InBytesPerSlice * Slice);
-						for (SSIZE_T Y = 0; Y < SizeY; Y++, LineBase += (InSurf.rowStrideBytes / sizeof(float)))
+						for (SSIZE_T Y = 0; Y < SizeY; Y++, LineBase += (InRowStrideBytes / sizeof(float)))
 						{
 							for (SSIZE_T X = 0; X < SizeX; X++)
 							{
@@ -1223,7 +1321,7 @@ public:
 					for (SSIZE_T Slice = 0; Slice < NumSlices; Slice++)
 					{
 						uint8* LineBase = ImageBasePtr + InBytesPerSlice * Slice;;
-						for (SSIZE_T Y = 0; Y < SizeY; Y++, LineBase += InSurf.rowStrideBytes)
+						for (SSIZE_T Y = 0; Y < SizeY; Y++, LineBase += InRowStrideBytes)
 						{
 							for (SSIZE_T X = 0; X < SizeX; X++)
 							{
@@ -1255,6 +1353,16 @@ public:
 			}			
 		}
 
+		/*
+		UE_LOG(LogTextureFormatOodle, Display, TEXT("bHasAlpha=%d OodlePF=%d=%s OodleBCN=%d=%s"),
+			(int)bHasAlpha,
+			(int)OodlePF,
+			*FString((VTable->fp_OodleTex_PixelFormat_GetName)(OodlePF)),
+			(int)OodleBCN,
+			*FString((VTable->fp_OodleTex_BC_GetName)(OodleBCN))
+			);
+		*/
+
 		int BytesPerBlock = (VTable->fp_OodleTex_BC_BytesPerBlock)(OodleBCN);
 		int NumBlocksX = (Image.SizeX + 3)/4;
 		int NumBlocksY = (Image.SizeY + 3)/4;
@@ -1263,12 +1371,19 @@ public:
 		OO_SINTa OutBytesTotal = OutBytesPerSlice * Image.NumSlices;
 
 		OutImage.PixelFormat = CompressedPixelFormat;
-		OutImage.SizeX = NumBlocksX*4;
-		OutImage.SizeY = NumBlocksY*4;
+		// old behavior :
+		//OutImage.SizeX = NumBlocksX*4;
+		//OutImage.SizeY = NumBlocksY*4;
+		OutImage.SizeX = Image.SizeX;
+		OutImage.SizeY = Image.SizeY;
 		// note: cubes come in as 6 slices and go out as 1
 		OutImage.SizeZ = (InBuildSettings.bVolume || InBuildSettings.bTextureArray) ? Image.NumSlices : 1;
 		OutImage.RawData.AddUninitialized(OutBytesTotal);
 
+		UE_LOG(LogTextureFormatOodle, Verbose, TEXT("TFO out size=%dx%d stride=%d total=%d"),
+			OutImage.SizeX,OutImage.SizeY,
+			NumBlocksX * BytesPerBlock,
+			OutBytesTotal);
 
 		uint8 * OutBlocksBasePtr = (uint8 *) &OutImage.RawData[0];
 
@@ -1287,7 +1402,12 @@ public:
 		int CurJobifyNumThreads = OodleJobifyNumThreads;
 		void* CurJobifyUserPointer = OodleJobifyUserPointer;
 
-		if (bIsVT)
+		// Have a target number of pixels per job, and clamp the num threads
+		// to avoid generating lots of tiny jobs
+		const int64 TargetPixelsPerJobThread = 128 * 128;
+		const int TargetJobThreads = (int)(int64(Image.SizeX) * Image.SizeY / TargetPixelsPerJobThread);
+
+		if (bIsVT || TargetJobThreads <= 1)
 		{
 			// VT runs its tiles in a ParallelFor on the TaskGraph
 			//   We internally also make tasks on TaskGraph
@@ -1297,59 +1417,102 @@ public:
 			CurJobifyNumThreads = OODLETEX_JOBS_DISABLE;
 			CurJobifyUserPointer = nullptr;
 		}
+		else
+		{
+			CurJobifyNumThreads = FMath::Min(CurJobifyNumThreads, TargetJobThreads);
+		}
 
 		// encode each slice
-		// @todo Oodle alternatively could do [Image.NumSlices] array of OodleTex_Surface
-		//	and call OodleTex_Encode with the array
-		//  would be slightly better for parallelism with multi-slice images & cube maps
-		//	that's a rare case so don't bother for now
-		// (the main parallelism is from running many mips or VT tiles at once which is done by our caller)
-		bool bCompressionSucceeded = true;
-		for (int Slice = 0; Slice < Image.NumSlices; ++Slice)
-		{
-			InSurf.pixels = ImageBasePtr + Slice * InBytesPerSlice;
-			uint8 * OutSlicePtr = OutBlocksBasePtr + Slice * OutBytesPerSlice;
+		std::atomic_bool bCompressionSucceeded { true };
 
-			OodleTex_RDO_Options OodleOptions = { };
-			OodleOptions.effort = EffortLevel;
-			OodleOptions.metric = OodleTex_RDO_ErrorMetric_Default;
-			OodleOptions.bcn_flags = OodleTex_BCNFlags_None;
-			OodleOptions.universal_tiling = RDOUniversalTiling;
-
-			if (bImageDump)
+		ParallelFor(
+			TEXT("ProcessSlice"),
+			Image.NumSlices, 1,
+			[&](int32 Slice)
 			{
-				DebugDumpDDS(DebugTexturePathName,InSurf.width,InSurf.height,Slice,
-					DXGIFormatFromOodlePF(OodlePF),TEXT("IN"),
-					InSurf.pixels, InBytesPerSlice);
-			}
+				// Early out in case another task failed
+				if (!bCompressionSucceeded)
+				{
+					return;
+				}
 
-			{
-				TRACE_CPUPROFILER_EVENT_SCOPE(Oodle_EncodeBCN);
+				OodleTex_Surface InSurf = {};
+				InSurf.pixels = ImageBasePtr + Slice * InBytesPerSlice;
+				InSurf.rowStrideBytes = InRowStrideBytes;
+				InSurf.width = Image.SizeX;
+				InSurf.height = Image.SizeY;
+				uint8 * OutSlicePtr = OutBlocksBasePtr + Slice * OutBytesPerSlice;
 
-			// if RDOLambda == 0, does non-RDO encode :
-			OodleTex_Err OodleErr = (VTable->fp_OodleTex_EncodeBCN_RDO_Ex)(OodleBCN, OutSlicePtr, NumBlocksPerSlice, 
-					&InSurf, 1, OodlePF, NULL, RDOLambda, 
-					&OodleOptions, CurJobifyNumThreads, CurJobifyUserPointer);
+				// verify that the surface memory ranges given to us by Unreal are valid before calling into Oodle Texture:
+				CheckMemoryIsReadable(InSurf.pixels,InBytesPerSlice);
+				CheckMemoryIsReadable(OutSlicePtr,OutBytesPerSlice);
 
-			if (OodleErr != OodleTex_Err_OK)
-			{
-				const char * OodleErrStr = (VTable->fp_OodleTex_Err_GetName)(OodleErr);
-				UE_LOG(LogTextureFormatOodle, Display, TEXT("Oodle Texture encode failed!? %s"), OodleErrStr );
-				bCompressionSucceeded = false;
-				break;
-			}
-			}
+				OodleTex_RDO_Options OodleOptions = { };
+				OodleOptions.effort = EffortLevel;
+				OodleOptions.metric = OodleTex_RDO_ErrorMetric_Default;
+				OodleOptions.bcn_flags = OodleTex_BCNFlags_None;
+				OodleOptions.universal_tiling = RDOUniversalTiling;
+
+				if (bImageDump)
+				{
+					DebugDumpDDS(DebugTexturePathName,InSurf.width,InSurf.height,Slice,
+						DXGIFormatFromOodlePF(OodlePF),TEXT("IN"),
+						InSurf.pixels, InBytesPerSlice);
+				}
+
+				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN);
+
+					// if RDOLambda == 0, does non-RDO encode :
+					OodleTex_Err OodleErr = (VTable->fp_OodleTex_EncodeBCN_RDO_Ex)(OodleBCN, OutSlicePtr, NumBlocksPerSlice, 
+							&InSurf, 1, OodlePF, NULL, RDOLambda, 
+							&OodleOptions, CurJobifyNumThreads, CurJobifyUserPointer);
+
+					if (OodleErr != OodleTex_Err_OK)
+					{
+						const char * OodleErrStr = (VTable->fp_OodleTex_Err_GetName)(OodleErr);
+						UE_LOG(LogTextureFormatOodle, Warning, TEXT("Oodle Texture encode failed!? %d=%s"), (int)OodleErr, ANSI_TO_TCHAR(OodleErrStr) );
+						bCompressionSucceeded = false;
+						return;
+					}
+				}
 			
-			if (bImageDump)
-			{
-				DebugDumpDDS(DebugTexturePathName,InSurf.width,InSurf.height,Slice,
-					DXGIFormatFromOodleBC(OodleBCN),TEXT("OUT"),
-					OutSlicePtr, OutBytesPerSlice);
-			}
-		}
+				if (bImageDump)
+				{
+					// put RDO lambda on the debug name :
+					FStringView DebugNameOut = DebugTexturePathName;
+					FString Scratch;
+					if ( RDOLambda != 0 )
+					{
+						Scratch = FString::Printf(TEXT("%.*s_RDO%d"), DebugTexturePathName.Len(), DebugTexturePathName.GetData(), RDOLambda);
+						DebugNameOut = Scratch;
+					}
+
+					DebugDumpDDS(DebugNameOut,InSurf.width,InSurf.height,Slice,
+						DXGIFormatFromOodleBC(OodleBCN),TEXT("OUT"),
+						OutSlicePtr, OutBytesPerSlice);
+				}
+			},
+			EParallelForFlags::Unbalanced
+		);
 
 		return bCompressionSucceeded;
 	}
+	
+	// noinline so we see it on the call stack :
+	FORCENOINLINE void CheckMemoryIsReadable(const void * Buffer,int64 Size) const
+	{
+		check( Size > 0 );
+
+		const uint8 * Start = (const uint8 *)Buffer;
+
+		// volatile to ensure it's not optimized out
+		volatile uint8 Byte;
+
+		Byte = Start[0];
+		Byte = Start[Size-1];
+	}
+
 };
 
 //===============================================================
@@ -1361,41 +1524,37 @@ static OO_U64 OODLE_CALLBACK TFO_RunJob(t_fp_Oodle_Job* JobFunction, void* JobDa
 {
 	using namespace UE::Tasks;
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(Oodle_RunJob);
-	
-	TArray<Private::FTaskBase*> Prerequisites;
-	Prerequisites.Reserve(NumDependencies);
-	for (int DependencyIndex = 0; DependencyIndex < NumDependencies; DependencyIndex++)
-	{
-		Prerequisites.Add(reinterpret_cast<Private::FTaskBase*>(Dependencies[DependencyIndex]));
-	}
+	// Don't trace both RunJob and the EncodeBCN_Task by default; that's a lot of event
+	// spam. The RunJob portion is a bit of setup work, just elide that unless there's
+	// reason to suspect something fishy here.
+	//TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN_RunJob);
 
-	auto* Task{ new Private::FTaskBase };
-	Task->Init(TEXT("OodleJob"), 
+	FTask* Task = new FTask;
+	Task->Launch(
+		TEXT("Oodle_EncodeBCN_Task"),
 		[JobFunction, JobData]
 		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(OodleJob);
+			TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN_Task);
 			JobFunction(JobData);
-		}, 
+		},
+		TArrayView<FTask*>{ reinterpret_cast<FTask**>(Dependencies), NumDependencies },
 		// Use Background priority so we don't use Foreground time in the Editor
 		// @todo maybe it's better to inherit so the outer caller can tell us if we are high priority or not?
 		IsInGameThread() ? ETaskPriority::Normal : ETaskPriority::BackgroundNormal
 	);
-	Task->AddPrerequisites(Prerequisites);
-	Task->TryLaunch();
 
-	return reinterpret_cast<uint64>(Task);
+	return reinterpret_cast<OO_U64>(Task);
 }
 
 static void OODLE_CALLBACK TFO_WaitJob(OO_U64 JobHandle, void* UserPtr)
 {
 	using namespace UE::Tasks;
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(Oodle_WaitJob);
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_WaitJob);
 
-	Private::FTaskBase* Task = reinterpret_cast<Private::FTaskBase*>(JobHandle);
+	FTask* Task = reinterpret_cast<FTask*>(JobHandle);
 	Task->Wait();
-	Task->Release();
+	delete Task;
 }
 
 static OO_BOOL OODLE_CALLBACK TFO_OodleAssert(const char* file, const int line, const char* function, const char* message)
@@ -1476,35 +1635,50 @@ static void TFO_Plugins_Install(const FOodleTextureVTable * VTable)
 
 //=========================================================================
 
-static ITextureFormat* Singleton = nullptr;
-
 class FTextureFormatOodleModule : public ITextureFormatModule
 {
 public:
+
+	ITextureFormat* TextureFormat = nullptr;
+
 	FTextureFormatOodleModule() { }
 	virtual ~FTextureFormatOodleModule()
 	{
-		ITextureFormat * p = Singleton;
-		Singleton = nullptr;
-		if ( p )
-			delete p;
+		if ( TextureFormat )
+		{
+			delete TextureFormat;
+			TextureFormat = nullptr;
+		}
 	}
 
 	virtual void StartupModule() override
 	{
 	}
 
+	virtual bool CanCallGetTextureFormats() override { return false; }
+
 	virtual ITextureFormat* GetTextureFormat()
 	{
-		// this is called twice
+		// this is called several times during normal init
 		
-		if ( Singleton == nullptr ) // not thread safe
+		auto MakeTextureFormat = [&]()
 		{
+			check( TextureFormat == nullptr );
 			FTextureFormatOodle * ptr = new FTextureFormatOodle();
-			ptr->Init();
-			Singleton = ptr;
+			if ( ptr->Init() )
+			{
+				TextureFormat = ptr;
+			}
+			else
+			{
+				UE_LOG(LogTextureFormatOodle,Warning,TEXT("Oodle Texture Init failed, not installed"));
+				delete ptr;
 		}
-		return Singleton;
+		};
+		
+		UE_CALL_ONCE( MakeTextureFormat );
+
+		return TextureFormat;
 	}
 
 	static inline UE::DerivedData::TBuildFunctionFactory<FOodleTextureBuildFunction> BuildFunctionFactory;

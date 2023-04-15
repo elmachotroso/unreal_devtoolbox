@@ -21,6 +21,8 @@
 #include "CurveEditorSnapMetrics.h"
 #include "SCurveEditorView.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CurveEditorRetimeTool)
+
 #define LOCTEXT_NAMESPACE "CurveEditorToolCommands"
 namespace CurveEditorRetimeTool
 {
@@ -247,7 +249,7 @@ void FCurveEditorRetimeTool::OnPaint(const FPaintArgs& Args, const FGeometry& Al
 			OutDrawElements,
 			PaintOnLayerId,
 			AllottedGeometry.ToPaintGeometry(),
-			FEditorStyle::GetBrush(TEXT("WhiteBrush")),
+			FAppStyle::GetBrush(TEXT("WhiteBrush")),
 			ESlateDrawEffect::None,
 			FLinearColor::Black.CopyWithNewOpacity(0.75f)
 		);
@@ -313,7 +315,7 @@ void FCurveEditorRetimeTool::DrawAnchor(const FCurveEditorRetimeAnchor& InAnchor
 		OutDrawElements,
 		PaintOnLayerId + 2,
 		BarGeometry.ToPaintGeometry(),
-		FEditorStyle::GetBrush("WhiteBrush"),
+		FAppStyle::GetBrush("WhiteBrush"),
 		ESlateDrawEffect::None,
 		AnchorColor
 	);
@@ -326,7 +328,7 @@ void FCurveEditorRetimeTool::DrawAnchor(const FCurveEditorRetimeAnchor& InAnchor
 			ButtonColor = FMath::Lerp(ButtonColor, FLinearColor::White, 0.10f);
 		}
 
-		const FSlateFontInfo FontInfo = FEditorStyle::Get().GetFontStyle("FontAwesome.11");
+		const FSlateFontInfo FontInfo = FAppStyle::Get().GetFontStyle("FontAwesome.11");
 		FSlateDrawElement::MakeText(
 			OutDrawElements,
 			PaintOnLayerId + 1,
@@ -642,3 +644,4 @@ void FCurveEditorRetimeTool::StopDragIfPossible()
 }
 
 #undef LOCTEXT_NAMESPACE // "CurveEditorToolCommands"
+

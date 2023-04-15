@@ -1,9 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "NetTraceAnalyzer.h"
+
 #include "AnalysisServicePrivate.h"
 #include "Common/Utils.h"
-#include "TraceServices/Model/Threads.h"
+#include "TraceServices/Model/Frames.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Logging/LogMacros.h"
+#include "TraceServices/Model/Threads.h"
+
 
 DEFINE_LOG_CATEGORY_STATIC(LogNetTrace, Log, All);
 
@@ -21,6 +26,7 @@ enum ENetTraceAnalyzerVersion
 FNetTraceAnalyzer::FNetTraceAnalyzer(IAnalysisSession& InSession, FNetProfilerProvider& InNetProfilerProvider)
 	: Session(InSession)
 	, NetProfilerProvider(InNetProfilerProvider)
+	, FrameProvider(ReadFrameProvider(InSession))
 	, NetTraceVersion(0)
 	, NetTraceReporterVersion(0)
 {
@@ -41,6 +47,8 @@ void FNetTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	// Add some default event types that we use for generic type events to make it easier to extend
 	// ConnectionAdded/Removed connections state /name etc?
 	Builder.RouteEvent(RouteId_ConnectionClosedEvent, "NetTrace", "ConnectionClosedEvent");
+	Builder.RouteEvent(RouteId_PacketStatsCounterEvent, "NetTrace", "PacketStatsCounterEvent");
+	Builder.RouteEvent(RouteId_FrameStatsCounterEvent, "NetTrace", "FrameStatsCounterEvent");
 	Builder.RouteEvent(RouteId_ObjectCreatedEvent, "NetTrace", "ObjectCreatedEvent");
 	Builder.RouteEvent(RouteId_ObjectDestroyedEvent, "NetTrace", "ObjectDestroyedEvent");
 	Builder.RouteEvent(RouteId_ConnectionStateUpdatedEvent, "NetTrace", "ConnectionStateUpdatedEvent");
@@ -77,6 +85,8 @@ uint32 FNetTraceAnalyzer::GetTracedEventTypeIndex(uint16 NameIndex, uint8 Level)
 
 bool FNetTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FNetTraceAnalyzer"));
+
 	FAnalysisSessionEditScope _(Session);
 
 	// check that we always get the InitEvent before processing any other events
@@ -96,7 +106,7 @@ bool FNetTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 			// we always trace the version so that we make sure that we are backwards compatible with older trace stream
 			NetTraceVersion = EventData.GetValue<uint32>("NetTraceVersion");
 			NetTraceReporterVersion = EventData.GetValue<uint32>("NetTraceReporterVersion");
-			
+
 			NetProfilerProvider.SetNetTraceVersion(NetTraceVersion);
 		}
 		break;
@@ -148,6 +158,18 @@ bool FNetTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		}
 		break;
 
+		case RouteId_PacketStatsCounterEvent:
+		{
+			HandlePacketStatsCounterEvent(Context, EventData);
+		}
+		break;
+
+		case RouteId_FrameStatsCounterEvent:
+		{
+			HandleFrameStatsCounterEvent(Context, EventData);
+		}
+		break;
+
 		case RouteId_ConnectionStateUpdatedEvent:
 		{
 			HandleConnectionStateUpdatedEvent(Context, EventData);
@@ -177,7 +199,7 @@ bool FNetTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 			HandleObjectDestroyedEvent(Context, EventData);
 		}
 		break;
-		
+
 		case RouteId_InstanceUpdatedEvent:
 		{
 			HandleGameInstanceUpdatedEvent(Context, EventData);
@@ -204,8 +226,6 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 	}
 
 	const ENetProfilerConnectionMode ConnectionMode = ENetProfilerConnectionMode(PacketType);
-	FNetProfilerConnectionData& ConnectionData = NetProfilerProvider.EditConnectionData(ConnectionState->ConnectionIndex, ConnectionMode);
-	++ConnectionData.ContentEventChangeCount;
 
 	TArray<FNetProfilerContentEvent>& Events = (ConnectionState->BunchEvents)[ConnectionMode];
 	TArray<FBunchInfo>& BunchInfos = (ConnectionState->BunchInfos)[ConnectionMode];
@@ -259,27 +279,27 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 				}
 				else if (DecodedEventType == EContentEventType::NameId)
 				{
-					if (const uint32* NetProfilerNameIndex = TracedNameIdToNetProfilerNameIdMap.Find(DecodedNameOrObjectId))
+					if (const uint32* NetProfilerNameIndex = TracedNameIdToNetProfilerNameIdMap.Find(IntCastChecked<uint16>(DecodedNameOrObjectId)))
 					{
 						Event.NameIndex = *NetProfilerNameIndex;
 					}
 					else
 					{
-						UE_LOG(LogNetTrace, Warning, TEXT("PacketContentEvent GameInstanceId: %u, ConnectionId: %u %s, Missing NameIndex: %llu"), (uint32)GameInstanceId, (uint32)ConnectionId, ConnectionMode ? TEXT("Incoming") : TEXT("Outgoing"), DecodedNameOrObjectId);	
+						UE_LOG(LogNetTrace, Warning, TEXT("PacketContentEvent GameInstanceId: %u, ConnectionId: %u %s, Missing NameIndex: %llu"), (uint32)GameInstanceId, (uint32)ConnectionId, ConnectionMode ? TEXT("Incoming") : TEXT("Outgoing"), DecodedNameOrObjectId);
 					}
 				}
 
 				// EventTypeIndex does not match NameIndex as we might see the same name on different levels
-				Event.EventTypeIndex = GetTracedEventTypeIndex(Event.NameIndex, Event.Level);
+				Event.EventTypeIndex = GetTracedEventTypeIndex(static_cast<uint16>(Event.NameIndex), static_cast<uint8>(Event.Level));
 			}
 			break;
 
 			case EContentEventType::BunchEvent:
 			{
-				const uint64 DecodedNameId = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
-				const uint64 DecodedEventStartPos = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
-				const uint64 DecodedEventEndPos = FTraceAnalyzerUtils::Decode7bit(BufferPtr) + DecodedEventStartPos;
-				
+				const uint16 DecodedNameId = IntCastChecked<uint16>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
+				const uint32 DecodedEventStartPos = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
+				const uint32 DecodedEventEndPos = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr)) + DecodedEventStartPos;
+
 				const uint32* NetProfilerNameIndex = DecodedNameId ? TracedNameIdToNetProfilerNameIdMap.Find(DecodedNameId) : nullptr;
 
 				FBunchInfo BunchInfo;
@@ -288,7 +308,7 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 				BunchInfo.HeaderBits = 0U;
 				BunchInfo.BunchBits = DecodedEventEndPos;
 				BunchInfo.FirstBunchEventIndex = Events.Num();
-				BunchInfo.NameIndex = NetProfilerNameIndex ? *NetProfilerNameIndex : 0U;
+				BunchInfo.NameIndex = NetProfilerNameIndex ? IntCastChecked<uint16>(*NetProfilerNameIndex) : 0U;
 
 				BunchInfos.Add(BunchInfo);
 
@@ -299,8 +319,8 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 
 			case EContentEventType::BunchHeaderEvent:
 			{
-				const uint64 DecodedEventCount = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
-				const uint64 DecodedHeaderBits = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
+				const uint32 DecodedEventCount = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
+				const uint32 DecodedHeaderBits = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
 
 				FBunchInfo& BunchInfo = BunchInfos.Last();
 
@@ -329,8 +349,8 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 						}
 						else
 						{
-							const uint32* ExistingChannelNameIndex = GameInstanceState->ChannelNames.Find(BunchInfo.BunchInfo.ChannelIndex);						
-							BunchInfo.NameIndex = ExistingChannelNameIndex ? *ExistingChannelNameIndex : 0U;
+							const uint32* ExistingChannelNameIndex = GameInstanceState->ChannelNames.Find(BunchInfo.BunchInfo.ChannelIndex);
+							BunchInfo.NameIndex = ExistingChannelNameIndex ? IntCastChecked<uint16>(*ExistingChannelNameIndex) : 0U;
 						}
 
 						BunchInfo.BunchInfo.bIsValid = 1U;
@@ -355,13 +375,13 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 void FNetTraceAnalyzer::AddEvent(TPagedArray<FNetProfilerContentEvent>& Events, const FNetProfilerContentEvent& InEvent, uint32 Offset, uint32 LevelOffset)
 {
 	FNetProfilerContentEvent& Event = Events.PushBack();
-	
-	Event.EventTypeIndex = GetTracedEventTypeIndex(InEvent.NameIndex, InEvent.Level + LevelOffset);
-	Event.NameIndex =  InEvent.NameIndex;
+
+	Event.EventTypeIndex = GetTracedEventTypeIndex(IntCastChecked<uint16>(InEvent.NameIndex), IntCastChecked<uint8>(InEvent.Level + LevelOffset));
+	Event.NameIndex = InEvent.NameIndex;
 	Event.ObjectInstanceIndex = InEvent.ObjectInstanceIndex;
 	Event.StartPos = InEvent.StartPos + Offset;
 	Event.EndPos = InEvent.EndPos + Offset;
-	Event.Level = InEvent.Level + LevelOffset;	
+	Event.Level = InEvent.Level + LevelOffset;
 	Event.BunchInfo = InEvent.BunchInfo;
 }
 
@@ -369,11 +389,11 @@ void FNetTraceAnalyzer::AddEvent(TPagedArray<FNetProfilerContentEvent>& Events, 
 {
 	FNetProfilerContentEvent& Event = Events.PushBack();
 
-	Event.EventTypeIndex = GetTracedEventTypeIndex(NameIndex, Level);
-	Event.NameIndex = NameIndex; 
+	Event.EventTypeIndex = GetTracedEventTypeIndex(IntCastChecked<uint16>(NameIndex), IntCastChecked<uint8>(Level));
+	Event.NameIndex = NameIndex;
 	Event.ObjectInstanceIndex = 0;
 	Event.StartPos = StartPos;
-	Event.EndPos = EndPos;			
+	Event.EndPos = EndPos;
 	Event.Level = Level;
 	Event.BunchInfo = BunchInfo;
 }
@@ -399,9 +419,10 @@ void FNetTraceAnalyzer::FlushPacketEvents(FNetTraceConnectionState& ConnectionSt
 		const FNetProfilerContentEvent& BunchEvent = BunchEvents[CurrentBunchEventIndex];
 
 		AddEvent(Events, BunchEvent, 0U, 0U);
-	
-		NextBunchOffset = FMath::Max<uint64>(BunchEvent.EndPos, NextBunchOffset);
+
+		NextBunchOffset = FMath::Max(static_cast<uint32>(BunchEvent.EndPos), NextBunchOffset);
 		++CurrentBunchEventIndex;
+		++ConnectionData.ContentEventChangeCount;
 	}
 
 	uint32 EventsToAdd = 0U;
@@ -418,7 +439,7 @@ void FNetTraceAnalyzer::FlushPacketEvents(FNetTraceConnectionState& ConnectionSt
 
 			// Bunch header event
 			AddEvent(Events, NextBunchOffset, NextBunchOffset + Bunch.HeaderBits, 1, BunchHeaderNameIndex, FNetProfilerBunchInfo::MakeBunchInfo(0));
-	
+
 			// Add events belonging to bunch, including the ones from merged bunches
 			for (uint32 EventIt = 0; EventIt < EventsToAdd; ++EventIt)
 			{
@@ -435,7 +456,7 @@ void FNetTraceAnalyzer::FlushPacketEvents(FNetTraceConnectionState& ConnectionSt
 			// Reset event count
 			EventsToAdd = 0U;
 		}
-		
+
 		++ConnectionData.ContentEventChangeCount;
 	}
 
@@ -457,6 +478,12 @@ void FNetTraceAnalyzer::HandlePacketEvent(const FOnEventContext& Context, const 
 	// Update LastTimestamp, later on we will be able to get timestamps piggybacked from other analyzers
 	LastTimeStamp = Context.EventTime.AsSeconds(TimestampCycles);
 
+	// Get the NetProfilerFrameIndex for the current engine frame/timestamp
+	const uint32 NetProfilerFrameIndex = GetCurrentNetProfilerFrameIndexAndFlushFrameStatsCountersIfNeeded(
+		GameInstanceId,
+		FrameProvider.GetFrameNumberForTimestamp(ETraceFrameType::TraceFrameType_Game, LastTimeStamp)
+	);
+
 	FNetTraceConnectionState* ConnectionState = GetActiveConnectionState(GameInstanceId, ConnectionId);
 	if (!ConnectionState)
 	{
@@ -471,9 +498,11 @@ void FNetTraceAnalyzer::HandlePacketEvent(const FOnEventContext& Context, const 
 	// Flush packet events
 	FlushPacketEvents(*ConnectionState, ConnectionData, ConnectionMode);
 
+	Packet.NetProfilerFrameIndex = NetProfilerFrameIndex;
+
 	// Fill in packet data a packet must have at least 1 event?
 	Packet.StartEventIndex = ConnectionState->CurrentPacketStartIndex[ConnectionMode];
-	Packet.EventCount = ConnectionData.ContentEvents.Num() - Packet.StartEventIndex;
+	Packet.EventCount = static_cast<uint32>(ConnectionData.ContentEvents.Num()) - Packet.StartEventIndex;
 	Packet.TimeStamp = GetLastTimestamp();
 	Packet.SequenceNumber = SequenceNumber;
 	Packet.DeliveryStatus = ENetProfilerDeliveryStatus::Unknown;
@@ -483,11 +512,70 @@ void FNetTraceAnalyzer::HandlePacketEvent(const FOnEventContext& Context, const 
 	Packet.TotalPacketSizeInBytes = (Packet.ContentSizeInBits + 7u) >> 3u;
 	Packet.DeliveryStatus = ENetProfilerDeliveryStatus::Delivered;
 
+	// Flush PacketStats
+	Packet.StartStatsIndex = static_cast<uint32>(ConnectionData.PacketStats.Num());
+	Packet.StatsCount = ConnectionState->PacketStats.Num();
+	for (const FNetProfilerStats& Stat : ConnectionState->PacketStats)
+	{
+		ConnectionData.PacketStats.EmplaceBack(Stat);
+	}
+
+	ConnectionState->PacketStats.Reset();
+	++ConnectionData.PacketStatsChangeCount;
+
+
 	// Mark the beginning of a new packet
-	ConnectionState->CurrentPacketStartIndex[ConnectionMode] = ConnectionData.ContentEvents.Num();
+	ConnectionState->CurrentPacketStartIndex[ConnectionMode] = static_cast<uint32>(ConnectionData.ContentEvents.Num());
 	ConnectionState->CurrentPacketBitOffset[ConnectionMode] = 0U;
+	ConnectionState->CurrentPacketStatsStartIndex[ConnectionMode] = static_cast<uint32>(ConnectionData.PacketStats.Num());
 
 	//UE_LOG(LogNetTrace, Log, TEXT("PacketEvent GameInstanceId: %u, ConnectionId: %u, %s, Seq: %u PacketBits: %u"), (uint32)GameInstanceId, (uint32)ConnectionId, ConnectionMode ? TEXT("Incoming") : TEXT("Outgoing"), SequenceNumber, Packet.ContentSizeInBits);
+}
+
+void FNetTraceAnalyzer::FlushFrameStatsCounters(FNetTraceAnalyzer::FNetTraceGameInstanceState& GameInstanceState)
+{
+	if (FNetProfilerGameInstanceInternal* GameInstance = NetProfilerProvider.EditGameInstance(GameInstanceState.GameInstanceIndex))
+	{
+		const bool bIsNewFrame = (GameInstance->Frames->Num() == 0) || (GameInstance->Frames->Last().EngineFrameNumber != GameInstanceState.CurrentEngineFrameIndex);
+
+		if (bIsNewFrame)
+		{
+			FNetProfilerFrame& Frame = GameInstance->Frames->EmplaceBack();
+			Frame.EngineFrameNumber = GameInstanceState.CurrentEngineFrameIndex;
+			Frame.StartStatsIndex = static_cast<uint32>(GameInstance->FrameStats->Num());
+			Frame.StatsCount = GameInstanceState.FrameStatsCounters.Num();
+			Frame.TimeStamp = LastTimeStamp;
+		}
+		else
+		{
+			FNetProfilerFrame& Frame = GameInstance->Frames->Last();
+			Frame.StatsCount += GameInstanceState.FrameStatsCounters.Num();
+		}
+
+		for (const FNetProfilerStats& Stat : GameInstanceState.FrameStatsCounters)
+		{
+			GameInstance->FrameStats->EmplaceBack(Stat);
+		}
+
+		GameInstanceState.FrameStatsCounters.Reset();
+		GameInstanceState.CurrentNetProfilerFrameIndex = static_cast<uint32>(GameInstance->Frames->Num());
+
+		// Mark frames dirty
+		++GameInstance->FramesChangeCount;
+	}
+}
+
+uint32 FNetTraceAnalyzer::GetCurrentNetProfilerFrameIndexAndFlushFrameStatsCountersIfNeeded(uint32 GameInstanceId, uint32 EngineFrameIndex)
+{
+	TSharedRef<FNetTraceAnalyzer::FNetTraceGameInstanceState> GameInstanceStateRef = GetOrCreateActiveGameInstanceState(GameInstanceId);
+	FNetTraceAnalyzer::FNetTraceGameInstanceState& GameInstanceState = GameInstanceStateRef.Get();
+	if (EngineFrameIndex > GameInstanceState.CurrentEngineFrameIndex)
+	{
+		FlushFrameStatsCounters(GameInstanceState);
+		GameInstanceState.CurrentEngineFrameIndex = EngineFrameIndex;
+	}
+
+	return GameInstanceState.CurrentNetProfilerFrameIndex;
 }
 
 void FNetTraceAnalyzer::HandlePacketDroppedEvent(const FOnEventContext& Context, const FEventData& EventData)
@@ -535,6 +623,72 @@ void FNetTraceAnalyzer::HandleConnectionCreatedEvent(const FOnEventContext& Cont
 
 	ConnectionState->CurrentPacketBitOffset[ENetProfilerConnectionMode::Outgoing] = 0U;
 	ConnectionState->CurrentPacketBitOffset[ENetProfilerConnectionMode::Incoming] = 0U;
+
+	ConnectionState->CurrentPacketStatsStartIndex[ENetProfilerConnectionMode::Outgoing] = 0U;
+	ConnectionState->CurrentPacketStatsStartIndex[ENetProfilerConnectionMode::Incoming] = 0U;
+}
+
+uint32 FNetTraceAnalyzer::GetOrCreateNetProfilerStatsCounterTypeIndex(uint32 NameId, ENetProfilerStatsCounterType StatsType)
+{
+	if (const uint32* ExistingNetProfilerStatsCounterTypeIndex = TraceNetStatsCounterIdToNetProfilerStatsCounterTypeIndexMap.Find(static_cast<uint16>(NameId)))
+	{
+		return *ExistingNetProfilerStatsCounterTypeIndex;
+	}
+	else
+	{
+		// Add new counter type
+		const uint32* NetProfilerNameIndex = TracedNameIdToNetProfilerNameIdMap.Find(static_cast<uint16>(NameId));
+		const uint32 NameIndex = NetProfilerNameIndex ? *NetProfilerNameIndex : 0u;
+
+		uint32 NetProfilerStatsCounterTypeIndex = NetProfilerProvider.AddNetProfilerStatsCounterType(NameIndex, StatsType);
+		TraceNetStatsCounterIdToNetProfilerStatsCounterTypeIndexMap.Add(static_cast<uint16>(NameId), NetProfilerStatsCounterTypeIndex);
+
+		return NetProfilerStatsCounterTypeIndex;
+	}
+}
+
+void FNetTraceAnalyzer::HandlePacketStatsCounterEvent(const FOnEventContext& Context, const FEventData& EventData)
+{
+	const uint32 StatsCounterValue = EventData.GetValue<uint32>("StatsValue");
+	const uint8 GameInstanceId = EventData.GetValue<uint8>("GameInstanceId");
+	const uint16 ConnectionId = EventData.GetValue<uint16>("ConnectionId");
+	const uint16 NameId = EventData.GetValue<uint16>("NameId");
+
+	FNetProfilerStats Stats;
+	Stats.StatsCounterTypeIndex = GetOrCreateNetProfilerStatsCounterTypeIndex(NameId, ENetProfilerStatsCounterType::Packet);
+	Stats.StatsValue = StatsCounterValue;
+
+	// Accumulate stats for current packet
+	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
+	if (TSharedRef<FNetTraceConnectionState>* ConnectionState = GameInstanceState->ActiveConnections.Find(ConnectionId))
+	{
+		(*ConnectionState)->PacketStats.Emplace(Stats);
+	}
+}
+
+void FNetTraceAnalyzer::HandleFrameStatsCounterEvent(const FOnEventContext& Context, const FEventData& EventData)
+{
+	const uint64 TimestampCycles = EventData.GetValue<uint64>("Timestamp");
+	const uint32 StatsCounterValue = EventData.GetValue<uint32>("StatsValue");
+	const uint8 GameInstanceId = EventData.GetValue<uint8>("GameInstanceId");
+	const uint16 NameId = EventData.GetValue<uint16>("NameId");
+
+	// Update LastTimestamp, later on we will be able to get timestamps piggybacked from other analyzers
+	LastTimeStamp = Context.EventTime.AsSeconds(TimestampCycles);
+
+	// Get the NetProfilerFrameIndex for the current engine frame/timestamp
+	const uint32 NetProfilerFrameIndex = GetCurrentNetProfilerFrameIndexAndFlushFrameStatsCountersIfNeeded(
+		GameInstanceId,
+		FrameProvider.GetFrameNumberForTimestamp(ETraceFrameType::TraceFrameType_Game, LastTimeStamp)
+	);
+
+	FNetProfilerStats Stats;
+	Stats.StatsCounterTypeIndex = GetOrCreateNetProfilerStatsCounterTypeIndex(NameId, ENetProfilerStatsCounterType::Frame);
+	Stats.StatsValue = StatsCounterValue;
+
+	// Accumulate stats for current frame
+	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
+	GameInstanceState->FrameStatsCounters.Emplace(Stats);
 }
 
 void FNetTraceAnalyzer::HandleConnectionStateUpdatedEvent(const FOnEventContext& Context, const FEventData& EventData)
@@ -561,7 +715,7 @@ void FNetTraceAnalyzer::HandleConnectionUpdatedEvent(const FOnEventContext& Cont
 	EventData.GetString("Address", AddressString);
 
 	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
-	
+
 	if (TSharedRef<FNetTraceConnectionState>* ConnectionState = GameInstanceState->ActiveConnections.Find(ConnectionId))
 	{
 		if (FNetProfilerConnectionInternal* Connection = NetProfilerProvider.EditConnection((*ConnectionState)->ConnectionIndex))
@@ -612,7 +766,7 @@ void FNetTraceAnalyzer::HandleObjectCreatedEvent(const FOnEventContext& Context,
 	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
 	const uint32* NetProfilerNameIndex = TracedNameIdToNetProfilerNameIdMap.Find(NameId);
 	const uint32 NameIndex = NetProfilerNameIndex ? *NetProfilerNameIndex : 0u;
-	
+
 	if (GameInstanceState->ActiveObjects.Contains(ObjectId))
 	{
 		if (FNetProfilerObjectInstance* ExistingInstance = NetProfilerProvider.EditObject(GameInstanceState->GameInstanceIndex, GameInstanceState->ActiveObjects[ObjectId].ObjectIndex))
@@ -637,8 +791,8 @@ void FNetTraceAnalyzer::HandleObjectCreatedEvent(const FOnEventContext& Context,
 	FNetProfilerObjectInstance& ObjectInstance = NetProfilerProvider.CreateObject(GameInstanceState->GameInstanceIndex);
 
 	// Fill in object data
-	ObjectInstance.LifeTime.Begin =  GetLastTimestamp();
-	ObjectInstance.NameIndex = NameIndex;
+	ObjectInstance.LifeTime.Begin = GetLastTimestamp();
+	ObjectInstance.NameIndex = IntCastChecked<uint16>(NameIndex);
 	ObjectInstance.NetId = ObjectId;
 	ObjectInstance.TypeId = TypeId;
 
@@ -683,6 +837,9 @@ TSharedRef<FNetTraceAnalyzer::FNetTraceGameInstanceState> FNetTraceAnalyzer::Get
 		ActiveGameInstances.Add(GameInstanceId, GameInstanceState);
 		GameInstanceState->GameInstanceIndex = GameInstance.Instance.GameInstanceIndex;
 
+		const uint32 FrameCount = static_cast<uint32>(FrameProvider.GetFrameCount(TraceFrameType_Game));
+		GameInstanceState->CurrentEngineFrameIndex = (FrameCount > 0) ? FrameCount - 1 : 0;
+
 		return GameInstanceState;
 	}
 }
@@ -695,6 +852,7 @@ void FNetTraceAnalyzer::DestroyActiveGameInstanceState(uint32 GameInstanceId)
 		if (FNetProfilerGameInstanceInternal* GameInstance = NetProfilerProvider.EditGameInstance((*FoundState)->GameInstanceIndex))
 		{
 			GameInstance->Instance.LifeTime.End = GetLastTimestamp();
+			NetProfilerProvider.MarkGameInstancesDirty();
 		}
 		ActiveGameInstances.Remove(GameInstanceId);
 	}
@@ -709,7 +867,7 @@ FNetTraceAnalyzer::FNetTraceConnectionState* FNetTraceAnalyzer::GetActiveConnect
 			return &(*ConnectionState).Get();
 		}
 	}
-		
+
 	return nullptr;
 }
 
@@ -726,6 +884,7 @@ void FNetTraceAnalyzer::HandleGameInstanceUpdatedEvent(const FOnEventContext& Co
 	{
 		InternalGameInstance->Instance.bIsServer = bIsServer;
 		InternalGameInstance->Instance.InstanceName = Session.StoreString(InstanceName);
+		NetProfilerProvider.MarkGameInstancesDirty();
 	}
 }
 

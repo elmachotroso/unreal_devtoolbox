@@ -1,27 +1,45 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceGrid2DCollection.h"
-#include "NiagaraShader.h"
-#include "ShaderParameterUtils.h"
-#include "ClearQuad.h"
-#include "Engine/Canvas.h"
-#include "CanvasItem.h"
-#include "TextureResource.h"
-#include "Engine/Texture2DArray.h"
+#include "NiagaraBatchedElements.h"
+#include "NiagaraConstants.h"
+#include "NiagaraGpuComputeDebugInterface.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraRenderer.h"
-#include "NiagaraSystemInstance.h"
 #include "NiagaraSettings.h"
-#include "NiagaraBatchedElements.h"
-#include "NiagaraGpuComputeDebug.h"
+#include "NiagaraShader.h"
+#include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraSystemInstance.h"
+
+#include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/TextureRenderTarget2DArray.h"
-#include "NiagaraConstants.h"
+#include "ClearQuad.h"
+#include "CanvasItem.h"
+#include "ShaderParameterMetadataBuilder.h"
+#include "ShaderParameterUtils.h"
+#include "TextureResource.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGrid2DCollection)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceGrid2DCollection"
 
-const FString UNiagaraDataInterfaceGrid2DCollection::GridName(TEXT("Grid_"));
-const FString UNiagaraDataInterfaceGrid2DCollection::OutputGridName(TEXT("OutputGrid_"));
-const FString UNiagaraDataInterfaceGrid2DCollection::SamplerName(TEXT("Sampler_"));
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Grid2DCollection);
+
+BEGIN_SHADER_PARAMETER_STRUCT(FNDIGrid2DShaderParameters, )
+	SHADER_PARAMETER(int,							NumAttributes)
+	SHADER_PARAMETER(FVector2f,						UnitToUV)
+	SHADER_PARAMETER(FIntPoint,						NumCells)
+	SHADER_PARAMETER(FVector2f,						CellSize)
+	SHADER_PARAMETER(FVector2f,						WorldBBoxSize)
+
+	SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2DArray<float>,		Grid)
+	SHADER_PARAMETER_SAMPLER(SamplerState,						GridSampler)
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2DArray<float>,	OutputGrid)
+END_SHADER_PARAMETER_STRUCT()
+
+const FString UNiagaraDataInterfaceGrid2DCollection::GridName(TEXT("_Grid"));
+const FString UNiagaraDataInterfaceGrid2DCollection::OutputGridName(TEXT("_OutputGrid"));
+const FString UNiagaraDataInterfaceGrid2DCollection::SamplerName(TEXT("_GridSampler"));
 
 const FName UNiagaraDataInterfaceGrid2DCollection::SetNumCellsFunctionName("SetNumCells");
 
@@ -66,7 +84,7 @@ const FString UNiagaraDataInterfaceGrid2DCollection::AnonymousAttributeString("A
 const FName UNiagaraDataInterfaceGrid2DCollection::ClearCellFunctionName("ClearCell");
 const FName UNiagaraDataInterfaceGrid2DCollection::CopyPreviousToCurrentForCellFunctionName("CopyPreviousToCurrentForCell");
 
-const FString UNiagaraDataInterfaceGrid2DCollection::AttributeIndicesBaseName(TEXT("AttributeIndices_"));
+const FString UNiagaraDataInterfaceGrid2DCollection::AttributeIndicesBaseName(TEXT("AttributeIndices"));
 const TCHAR* UNiagaraDataInterfaceGrid2DCollection::VectorComponentNames[] = { TEXT(".x"), TEXT(".y"), TEXT(".z"), TEXT(".w") };
 
 const FName UNiagaraDataInterfaceGrid2DCollection::SampleGridFunctionName("SampleGrid");
@@ -151,7 +169,6 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 		: NumAttributes(InNumAttributes)
 		, NumCells(InNumCells)
 	{
-		const int MaxTextureDim = GMaxTextureDimensions;
 		const int MaxTilesX = FMath::DivideAndRoundDown<int>(GMaxTextureDimensions, NumCells.X);
 		const int MaxTilesY = FMath::DivideAndRoundDown<int>(GMaxTextureDimensions, NumCells.Y);
 		const int MaxAttributes = MaxTilesX * MaxTilesY;
@@ -164,6 +181,26 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 
 			Size.X = NumCells.X * NumTiles.X;
 			Size.Y = NumCells.Y * NumTiles.Y;
+		}
+	}
+
+	void CopyTo2D(FRDGBuilder& GraphBuilder, FRDGTexture* SourceTexture, FRHITexture* DestinationTextureRHI, const TCHAR* NameIfNotRegistered) const
+	{
+		FRDGTexture* DestinationTexture = GraphBuilder.FindExternalTexture(DestinationTextureRHI);
+		if (DestinationTexture == nullptr)
+		{
+			DestinationTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(DestinationTextureRHI, NameIfNotRegistered));
+		}
+
+		for (int iAttribute = 0; iAttribute < NumAttributes; ++iAttribute)
+		{
+			FRHICopyTextureInfo CopyInfo;
+			CopyInfo.Size = FIntVector(NumCells.X, NumCells.Y, 1);
+			CopyInfo.SourceSliceIndex = iAttribute;
+			CopyInfo.DestPosition.X = (iAttribute % NumTiles.X) * NumCells.X;
+			CopyInfo.DestPosition.Y = (iAttribute / NumTiles.X) * NumCells.Y;
+			CopyInfo.DestPosition.Z = 0;
+			AddCopyTexturePass(GraphBuilder, SourceTexture, DestinationTexture, CopyInfo);
 		}
 	}
 
@@ -202,143 +239,11 @@ struct FNiagaraGrid2DLegacyTiled2DInfo
 	FIntPoint Size = FIntPoint::ZeroValue;
 };
 
-/*--------------------------------------------------------------------------------------------------------------------------*/
-
-void FNiagaraDataInterfaceParametersCS_Grid2DCollection::Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
-{
-	NumAttributesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::NumAttributesName + ParameterInfo.DataInterfaceHLSLSymbol));
-	NumCellsParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::NumCellsName + ParameterInfo.DataInterfaceHLSLSymbol));
-	UnitToUVParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::UnitToUVName + ParameterInfo.DataInterfaceHLSLSymbol));
-	CellSizeParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::CellSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-	WorldBBoxSizeParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::WorldBBoxSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
-
-	GridParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollection::GridName + ParameterInfo.DataInterfaceHLSLSymbol));
-	OutputGridParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollection::OutputGridName + ParameterInfo.DataInterfaceHLSLSymbol));
-
-	SamplerParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollection::SamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
-	AttributeIndicesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid2DCollection::AttributeIndicesBaseName + ParameterInfo.DataInterfaceHLSLSymbol));
-
-	// Gather up all the attribute names referenced. Note that there may be multiple in the list of the same name,
-	// but we only deal with this by the number of bound methods.
-	{
-		int32 NumFuncs = ParameterInfo.GeneratedFunctions.Num();
-
-		for (int32 FuncIdx = 0; FuncIdx < NumFuncs; ++FuncIdx)
-		{
-			const FNiagaraDataInterfaceGeneratedFunction& Func = ParameterInfo.GeneratedFunctions[FuncIdx];
-			static const FName NAME_Attribute("Attribute");
-			const FName* AttributeName = Func.FindSpecifierValue(NAME_Attribute);
-			if (AttributeName != nullptr)
-			{
-				int32 ComponentCount = UNiagaraDataInterfaceGrid2DCollection::GetComponentCountFromFuncName(Func.DefinitionName);
-				AttributeNames.Add(*AttributeName);
-				AttributeChannelCount.Add(ComponentCount);
-			}
-			else
-			{
-				AttributeNames.Add(FName());
-				AttributeChannelCount.Add(INDEX_NONE);
-			}
-		}
-	}
-}
-
-void FNiagaraDataInterfaceParametersCS_Grid2DCollection::Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-{
-	check(IsInRenderingThread());
-
-	// Get shader and DI
-	FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-	FNiagaraDataInterfaceProxyGrid2DCollectionProxy* VFDI = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(Context.DataInterface);
-
-	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = VFDI->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-	FGrid2DCollectionRWInstanceData_RenderThread* OriginalProxyData = ProxyData;
-	check(ProxyData);
-
-	if (ProxyData->OtherProxy != nullptr)
-	{
-		FNiagaraDataInterfaceProxyGrid2DCollectionProxy* OtherGrid3DProxy = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(ProxyData->OtherProxy);
-		ProxyData = OtherGrid3DProxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		check(ProxyData);
-	}
-
-	if (OriginalProxyData->AttributeIndices.Num() == 0 && AttributeNames.Num() > 0)
-	{
-		int NumAttrIndices = Align(AttributeNames.Num(), 4);
-		OriginalProxyData->AttributeIndices.SetNumZeroed(NumAttrIndices);
-
-		// TODO handle mismatched types!
-		for (int32 i = 0; i < AttributeNames.Num(); i++)
-		{
-			int32 FoundIdx = ProxyData->Vars.Find(AttributeNames[i]);
-			check(AttributeNames.Num() == AttributeChannelCount.Num());
-			check(ProxyData->Offsets.Num() == ProxyData->VarComponents.Num());
-			check(ProxyData->Offsets.Num() == ProxyData->Vars.Num());
-			if (ProxyData->Offsets.IsValidIndex(FoundIdx) && AttributeChannelCount[i] == ProxyData->VarComponents[FoundIdx])
-			{
-				OriginalProxyData->AttributeIndices[i] = ProxyData->Offsets[FoundIdx];
-			}
-			else
-			{
-				OriginalProxyData->AttributeIndices[i] = -1; // We may need to protect against this in the hlsl as this might underflow an array lookup if used incorrectly.
-			}
-		}
-	}
-
-	SetShaderValue(RHICmdList, ComputeShaderRHI, NumAttributesParam, ProxyData->NumAttributes);
-	SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector2f(1.0f) / FVector2f(ProxyData->NumCells));
-	SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, ProxyData->NumCells);
-	SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, FVector2f(ProxyData->CellSize));
-	SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector2f(ProxyData->WorldBBoxSize));	// LWC_TODO: Precision loss?
-
-	SetShaderValueArray(RHICmdList, ComputeShaderRHI, AttributeIndicesParam, OriginalProxyData->AttributeIndices.GetData(), OriginalProxyData->AttributeIndices.Num());
-	FRHISamplerState *SamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	SetSamplerParameter(RHICmdList, ComputeShaderRHI, SamplerParam, SamplerState);
-
-	if (GridParam.IsBound())
-	{
-		FRHIShaderResourceView* InputGridBuffer;
-		if (ProxyData->CurrentData != nullptr)
-		{
-			InputGridBuffer = ProxyData->CurrentData->GridSRV;
-		}
-		else
-		{
-			InputGridBuffer = FNiagaraRenderer::GetDummyTextureReadBuffer2DArray();
-		}
-		SetSRVParameter(RHICmdList, Context.Shader.GetComputeShader(), GridParam, InputGridBuffer);
-	}
-
-	if ( OutputGridParam.IsUAVBound() )
-	{
-		FRHIUnorderedAccessView* OutputGridUAV;
-		if (Context.IsOutputStage && ProxyData->DestinationData != nullptr)
-		{
-			OutputGridUAV = ProxyData->DestinationData->GridUAV;
-		}
-		else
-		{
-			OutputGridUAV = Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_FLOAT, ENiagaraEmptyUAVType::Texture2DArray);
-		}
-		RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputGridParam.GetUAVIndex(), OutputGridUAV);
-	}
-}
-
-void FNiagaraDataInterfaceParametersCS_Grid2DCollection::Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
-{
-	if (OutputGridParam.IsBound())
-	{
-		OutputGridParam.UnsetUAV(RHICmdList, Context.Shader.GetComputeShader());
-	}
-}
-
-IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Grid2DCollection);
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceGrid2DCollection, FNiagaraDataInterfaceParametersCS_Grid2DCollection);
-
-
 UNiagaraDataInterfaceGrid2DCollection::UNiagaraDataInterfaceGrid2DCollection(FObjectInitializer const& ObjectInitializer)
-	: Super(ObjectInitializer)
+	: Super(ObjectInitializer), OverrideBufferFormat(ENiagaraGpuBufferFormat::Float), bOverrideFormat(false)
+#if WITH_EDITORONLY_DATA
+	, bPreviewGrid(false)
+#endif
 {
 	Proxy.Reset(new FNiagaraDataInterfaceProxyGrid2DCollectionProxy());
 
@@ -368,6 +273,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::AppendCompileHash(FNiagaraCompileHas
 
 
 	InVisitor->UpdatePOD(TEXT("UNiagaraDataInterfaceGrid2DCollectionVersion"), (int32)FNiagaraGridCollection2DDIFunctionVersion::LatestVersion);
+	InVisitor->UpdateShaderParameters<FNDIGrid2DShaderParameters>();
 	return true;
 }
 #endif
@@ -994,11 +900,11 @@ void UNiagaraDataInterfaceGrid2DCollection::GetFunctions(TArray<FNiagaraFunction
 // #todo(dmp): expose more CPU functionality
 // #todo(dmp): ideally these would be exposed on the parent class, but we can't bind functions of parent classes but need to work on the interface
 // for sharing an instance data object with the super class
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetWorldBBoxSize);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetCellSize);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetNumCells);
-DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, SetNumCells);
-DEFINE_NDI_DIRECT_FUNC_BINDER_WITH_PAYLOAD(UNiagaraDataInterfaceGrid2DCollection, GetAttributeIndex);
+DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetWorldBBoxSize);
+DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetCellSize);
+DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetNumCells);
+DEFINE_NDI_DIRECT_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMSetNumCells);
+DEFINE_NDI_DIRECT_FUNC_BINDER_WITH_PAYLOAD(UNiagaraDataInterfaceGrid2DCollection, VMGetAttributeIndex);
 void UNiagaraDataInterfaceGrid2DCollection::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)
 {
 	Super::GetVMExternalFunction(BindingInfo, InstanceData, OutFunc);
@@ -1008,51 +914,51 @@ void UNiagaraDataInterfaceGrid2DCollection::GetVMExternalFunction(const FVMExter
 	if (BindingInfo.Name == UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 2);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetWorldBBoxSize)::Bind(this, OutFunc);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetWorldBBoxSize)::Bind(this, OutFunc);
 	}
 	else if (BindingInfo.Name == UNiagaraDataInterfaceRWBase::CellSizeFunctionName)
 	{
 		// #todo(dmp): this will override the base class definition for GetCellSize because the data interface instance data computes cell size
 		// it would be nice to refactor this so it can be part of the super class
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 2);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetCellSize)::Bind(this, OutFunc);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetCellSize)::Bind(this, OutFunc);
 	}
 	else if (BindingInfo.Name == UNiagaraDataInterfaceRWBase::NumCellsFunctionName)
 	{
 		// #todo(dmp): this will override the base class definition for GetCellSize because the data interface instance data computes cell size
 		// it would be nice to refactor this so it can be part of the super class
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 2);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetNumCells)::Bind(this, OutFunc);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetNumCells)::Bind(this, OutFunc);
 	}
 	else if (BindingInfo.Name == SetNumCellsFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 3 && BindingInfo.GetNumOutputs() == 1);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, SetNumCells)::Bind(this, OutFunc);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMSetNumCells)::Bind(this, OutFunc);
 	}
 
 	else if (BindingInfo.Name == GetVector4AttributeIndexFunctionName)
 	{
 		FName AttributeName = BindingInfo.FindSpecifier(NAME_Attribute)->Value;
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetAttributeIndex)::Bind(this, OutFunc, AttributeName, 4);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetAttributeIndex)::Bind(this, OutFunc, AttributeName, 4);
 	}
 	else if (BindingInfo.Name == GetVectorAttributeIndexFunctionName)
 	{
 		FName AttributeName = BindingInfo.FindSpecifier(NAME_Attribute)->Value;
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetAttributeIndex)::Bind(this, OutFunc, AttributeName, 3);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetAttributeIndex)::Bind(this, OutFunc, AttributeName, 3);
 	}
 	else if (BindingInfo.Name == GetVector2DAttributeIndexFunctionName)
 	{
 		FName AttributeName = BindingInfo.FindSpecifier(NAME_Attribute)->Value;
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetAttributeIndex)::Bind(this, OutFunc, AttributeName, 2);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetAttributeIndex)::Bind(this, OutFunc, AttributeName, 2);
 	}
 	else if (BindingInfo.Name == GetFloatAttributeIndexFunctionName)
 	{
 		FName AttributeName = BindingInfo.FindSpecifier(NAME_Attribute)->Value;
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
-		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, GetAttributeIndex)::Bind(this, OutFunc, AttributeName, 1);
+		NDI_FUNC_BINDER(UNiagaraDataInterfaceGrid2DCollection, VMGetAttributeIndex)::Bind(this, OutFunc, AttributeName, 1);
 	}
 }
 
@@ -1081,7 +987,7 @@ void UNiagaraDataInterfaceGrid2DCollection::GetParameterDefinitionHLSL(const FNi
 
 	static const TCHAR *FormatDeclarations = TEXT(R"(
 		Texture2DArray<float> {GridName};
-		RWTexture2DArray<float> RW{OutputGridName};
+		RWTexture2DArray<float> {OutputGridName};
 		SamplerState {SamplerName};
 		int4 {AttributeIndicesName}[{AttributeInt4Count}];
 		int {NumAttributesName};
@@ -1094,12 +1000,12 @@ void UNiagaraDataInterfaceGrid2DCollection::GetParameterDefinitionHLSL(const FNi
 	const int AttributeInt4Count = FMath::Max(1, FMath::DivideAndRoundUp(ParamInfo.GeneratedFunctions.Num(), 4));
 
 	TMap<FString, FStringFormatArg> ArgsDeclarations = {
-		{ TEXT("GridName"),    GridName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("SamplerName"),    SamplerName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("OutputGridName"),    OutputGridName + ParamInfo.DataInterfaceHLSLSymbol },
-		{ TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-		{ TEXT("AttributeInt4Count"), AttributeInt4Count},
-		{ TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
+		{ TEXT("GridName"),				ParamInfo.DataInterfaceHLSLSymbol + GridName},
+		{ TEXT("SamplerName"),			ParamInfo.DataInterfaceHLSLSymbol + SamplerName},
+		{ TEXT("OutputGridName"),		ParamInfo.DataInterfaceHLSLSymbol + OutputGridName},
+		{ TEXT("AttributeIndicesName"),	ParamInfo.DataInterfaceHLSLSymbol + TEXT("_") + AttributeIndicesBaseName},
+		{ TEXT("AttributeInt4Count"),	AttributeInt4Count},
+		{ TEXT("NumAttributesName"),	ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumAttributesName},
 	};
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
 }
@@ -1153,19 +1059,19 @@ void UNiagaraDataInterfaceGrid2DCollection::WriteSetHLSL(const FNiagaraDataInter
 					})");
 	}
 	FormatBounds += TEXT(R"(
-					RW{OutputGrid}[int3(In_IndexX, In_IndexY, In_AttributeIndex + i)] = Val;
+					{OutputGrid}[int3(In_IndexX, In_IndexY, In_AttributeIndex + i)] = Val;
 				}
 			}
 		)");
 	TMap<FString, FStringFormatArg> ArgsBounds = {
-		{TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{TEXT("OutputGrid"), OutputGridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
-		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
-		{TEXT("NumChannels"), FString::FromInt(InNumChannels)},
+		{TEXT("FunctionName"),				FunctionInfo.InstanceName},
+		{TEXT("OutputGrid"),				ParamInfo.DataInterfaceHLSLSymbol + OutputGridName},
+		{TEXT("NumCellsName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName},
+		{TEXT("UnitToUVName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName},
+		{TEXT("AttributeIndicesName"),		ParamInfo.DataInterfaceHLSLSymbol + TEXT("_") + AttributeIndicesBaseName},
+		{TEXT("AttributeIndexGroup"),		FunctionInstanceIndex / 4},
+		{TEXT("AttributeIndexComponent"),	VectorComponentNames[FunctionInstanceIndex % 4]},
+		{TEXT("NumChannels"),				FString::FromInt(InNumChannels)},
 		{TEXT("NumChannelsVariableSuffix"), InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
 
 	};
@@ -1225,16 +1131,16 @@ void UNiagaraDataInterfaceGrid2DCollection::WriteGetHLSL(const FNiagaraDataInter
 			}
 		)");
 	TMap<FString, FStringFormatArg> ArgsBounds = {
-		{TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{TEXT("OutputGrid"), OutputGridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
-		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
-		{TEXT("NumChannels"), FString::FromInt(InNumChannels)},
-		{TEXT("NumChannelsVariableSuffix"), InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
+		{TEXT("FunctionName"),				FunctionInfo.InstanceName},
+		{TEXT("OutputGrid"),				ParamInfo.DataInterfaceHLSLSymbol + OutputGridName},
+		{TEXT("Grid"),						ParamInfo.DataInterfaceHLSLSymbol + GridName},
+		{TEXT("NumCellsName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName},
+		{TEXT("UnitToUVName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName},
+		{TEXT("AttributeIndicesName"),		ParamInfo.DataInterfaceHLSLSymbol + TEXT("_") + AttributeIndicesBaseName},
+		{TEXT("AttributeIndexGroup"),		FunctionInstanceIndex / 4},
+		{TEXT("AttributeIndexComponent"),	VectorComponentNames[FunctionInstanceIndex % 4]},
+		{TEXT("NumChannels"),				FString::FromInt(InNumChannels)},
+		{TEXT("NumChannelsVariableSuffix"),	InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
 
 	};
 	OutHLSL += FString::Format(*FormatBounds, ArgsBounds);
@@ -1293,16 +1199,16 @@ void UNiagaraDataInterfaceGrid2DCollection::WriteSampleHLSL(const FNiagaraDataIn
 		)");
 
 	TMap<FString, FStringFormatArg> ArgsBounds = {
-		{TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SamplerName"),    SamplerName + ParamInfo.DataInterfaceHLSLSymbol },
-		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("NumChannels"), FString::FromInt(InNumChannels)},
-		{TEXT("NumChannelsVariableSuffix"), InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
-		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
-		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
+		{TEXT("FunctionName"),				FunctionInfo.InstanceName},
+		{TEXT("Grid"),						ParamInfo.DataInterfaceHLSLSymbol + GridName},
+		{TEXT("SamplerName"),				ParamInfo.DataInterfaceHLSLSymbol + SamplerName},
+		{TEXT("NumCellsName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName},
+		{TEXT("UnitToUVName"),				ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName},
+		{TEXT("NumChannels"),				FString::FromInt(InNumChannels)},
+		{TEXT("NumChannelsVariableSuffix"),	InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
+		{TEXT("AttributeIndicesName"),		ParamInfo.DataInterfaceHLSLSymbol + TEXT("_") + AttributeIndicesBaseName},
+		{TEXT("AttributeIndexGroup"),		FunctionInstanceIndex / 4},
+		{TEXT("AttributeIndexComponent"),	VectorComponentNames[FunctionInstanceIndex % 4]},
 	};
 	OutHLSL += FString::Format(*FormatBounds, ArgsBounds);
 }
@@ -1320,7 +1226,7 @@ void UNiagaraDataInterfaceGrid2DCollection::WriteAttributeGetIndexHLSL(const FNi
 
 	TMap<FString, FStringFormatArg> ArgsBounds = {
 		{TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("AttributeIndicesName"), ParamInfo.DataInterfaceHLSLSymbol + TEXT("_") + AttributeIndicesBaseName},
 		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
 		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
 	};
@@ -1374,13 +1280,13 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetFunctionHLSL(const FNiagaraDataIn
 
 	TMap<FString, FStringFormatArg> ArgsBounds =
 	{
-		{TEXT("FunctionName"), FunctionInfo.InstanceName},
-		{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("OutputGrid"), OutputGridName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("NumAttributes"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("NumCells"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("SamplerName"), SamplerName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("FunctionName"),	FunctionInfo.InstanceName},
+		{TEXT("Grid"),			ParamInfo.DataInterfaceHLSLSymbol + GridName},
+		{TEXT("OutputGrid"),	ParamInfo.DataInterfaceHLSLSymbol + OutputGridName},
+		{TEXT("NumAttributes"),	ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumAttributesName},
+		{TEXT("NumCells"),		ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::NumCellsName},
+		{TEXT("UnitToUVName"),	ParamInfo.DataInterfaceHLSLSymbol + UNiagaraDataInterfaceRWBase::UnitToUVName},
+		{TEXT("SamplerName"),	ParamInfo.DataInterfaceHLSLSymbol + SamplerName},
 	};
 
 	if (FunctionInfo.DefinitionName == GetValueFunctionName || FunctionInfo.DefinitionName == GetPreviousValueAtIndexFunctionName)
@@ -1394,13 +1300,24 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetFunctionHLSL(const FNiagaraDataIn
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
 		return true;
 	}
-	else if (FunctionInfo.DefinitionName == SetValueFunctionName || FunctionInfo.DefinitionName == SetValueAtIndexFunctionName)
+	else if (FunctionInfo.DefinitionName == SetValueAtIndexFunctionName)
+	{
+		static const TCHAR* FormatBounds = TEXT(R"(
+			void {FunctionName}(int In_IndexX, int In_IndexY, int In_AttributeIndex, float In_Value)
+			{
+				{OutputGrid}[int3(In_IndexX, In_IndexY, In_AttributeIndex)] = In_Value;
+			}
+		)");
+		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
+		return true;
+	}
+	else if (FunctionInfo.DefinitionName == SetValueFunctionName)
 	{
 		static const TCHAR *FormatBounds = TEXT(R"(
 			void {FunctionName}(int In_IndexX, int In_IndexY, int In_AttributeIndex, float In_Value, out int val)
 			{
 				val = 0;
-				RW{OutputGrid}[int3(In_IndexX, In_IndexY, In_AttributeIndex)] = In_Value;
+				{OutputGrid}[int3(In_IndexX, In_IndexY, In_AttributeIndex)] = In_Value;
 			}
 		)");
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
@@ -1414,7 +1331,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetFunctionHLSL(const FNiagaraDataIn
 				for (int AttributeIndex = 0; AttributeIndex < {NumAttributes}.x; AttributeIndex++)
 				{
 					float Val = {Grid}.Load(int4(In_IndexX, In_IndexY, AttributeIndex, 0));
-					RW{OutputGrid}[int3(In_IndexX, In_IndexY, AttributeIndex)] = Val;
+					{OutputGrid}[int3(In_IndexX, In_IndexY, AttributeIndex)] = Val;
 				}
 			}
 		)");
@@ -1429,7 +1346,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetFunctionHLSL(const FNiagaraDataIn
 				for (int AttributeIndex = 0; AttributeIndex < {NumAttributes}.x; AttributeIndex++)
 				{
 					float Val = 0.0f;
-					RW{OutputGrid}[int3(In_IndexX, In_IndexY, AttributeIndex)] = Val;
+					{OutputGrid}[int3(In_IndexX, In_IndexY, AttributeIndex)] = Val;
 				}
 			}
 		)");
@@ -1531,6 +1448,133 @@ bool UNiagaraDataInterfaceGrid2DCollection::GetFunctionHLSL(const FNiagaraDataIn
 	return false;
 }
 #endif
+
+void UNiagaraDataInterfaceGrid2DCollection::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
+{
+	ShaderParametersBuilder.AddNestedStruct<FNDIGrid2DShaderParameters>();
+
+	const int32 IndirectionTableSize = FMath::Max(FMath::DivideAndRoundUp(ShaderParametersBuilder.GetGeneratedFunctions().Num(), 4), 1);
+	ShaderParametersBuilder.AddLooseParamArray<FIntVector4>(*UNiagaraDataInterfaceGrid2DCollection::AttributeIndicesBaseName, IndirectionTableSize);
+}
+
+void UNiagaraDataInterfaceGrid2DCollection::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
+{
+	FNiagaraDataInterfaceProxyGrid2DCollectionProxy& DIProxy = Context.GetProxy<FNiagaraDataInterfaceProxyGrid2DCollectionProxy>();
+	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = DIProxy.SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+	FGrid2DCollectionRWInstanceData_RenderThread* OriginalProxyData = ProxyData;
+	check(ProxyData);
+
+	if (ProxyData->OtherProxy != nullptr)
+	{
+		FNiagaraDataInterfaceProxyGrid2DCollectionProxy* OtherGrid3DProxy = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(ProxyData->OtherProxy);
+		ProxyData = OtherGrid3DProxy->SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+		check(ProxyData);
+	}
+
+	const FNiagaraDataInterfaceParametersCS_Grid2DCollection& ShaderStorage = Context.GetShaderStorage<FNiagaraDataInterfaceParametersCS_Grid2DCollection>();
+	if (OriginalProxyData->AttributeIndices.Num() == 0 && ShaderStorage.AttributeNames.Num() > 0)
+	{
+		OriginalProxyData->AttributeIndices.SetNumZeroed(Align(ShaderStorage.AttributeNames.Num(), 4));
+
+		// TODO handle mismatched types!
+		for (int32 i = 0; i < ShaderStorage.AttributeNames.Num(); i++)
+		{
+			const int32 FoundIdx = ProxyData->Vars.Find(ShaderStorage.AttributeNames[i]);
+			check(ShaderStorage.AttributeNames.Num() == ShaderStorage.AttributeChannelCount.Num());
+			check(ProxyData->Offsets.Num() == ProxyData->VarComponents.Num());
+			check(ProxyData->Offsets.Num() == ProxyData->Vars.Num());
+			if (ProxyData->Offsets.IsValidIndex(FoundIdx) && ShaderStorage.AttributeChannelCount[i] == ProxyData->VarComponents[FoundIdx])
+			{
+				OriginalProxyData->AttributeIndices[i] = ProxyData->Offsets[FoundIdx];
+			}
+			else
+			{
+				OriginalProxyData->AttributeIndices[i] = -1; // We may need to protect against this in the hlsl as this might underflow an array lookup if used incorrectly.
+			}
+		}
+	}
+
+	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+
+	FNDIGrid2DShaderParameters* Parameters = Context.GetParameterNestedStruct<FNDIGrid2DShaderParameters>();
+	Parameters->NumAttributes = ProxyData->NumAttributes;
+	Parameters->UnitToUV = FVector2f(1.0f) / FVector2f(ProxyData->NumCells);
+	Parameters->NumCells = ProxyData->NumCells;
+	Parameters->CellSize = FVector2f(ProxyData->CellSize);
+	Parameters->WorldBBoxSize = FVector2f(ProxyData->WorldBBoxSize);	// LWC_TODO: Precision loss?
+	if (Context.IsResourceBound(&Parameters->Grid))
+	{
+		if (ProxyData->CurrentData)
+		{
+			Parameters->Grid = ProxyData->CurrentData->GetOrCreateSRV(GraphBuilder);
+		}
+		else
+		{
+			Parameters->Grid = Context.GetComputeDispatchInterface().GetBlackTextureSRV(GraphBuilder, ETextureDimension::Texture2DArray);
+		}
+	}
+	Parameters->GridSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+	if (Context.IsResourceBound(&Parameters->OutputGrid))
+	{
+		if (Context.IsOutputStage() && ProxyData->DestinationData)
+		{
+			Parameters->OutputGrid = ProxyData->DestinationData->GetOrCreateUAV(GraphBuilder);
+		}
+		else
+		{
+			Parameters->OutputGrid = Context.GetComputeDispatchInterface().GetEmptyTextureUAV(GraphBuilder, PF_R32_FLOAT, ETextureDimension::Texture2DArray);
+		}
+	}
+
+	// Do we need to set the indirection table?
+	if (ShaderStorage.AttributeNames.Num() > 0)
+	{
+		const int NumAttributesVector4s = FMath::Max(FMath::DivideAndRoundUp(ShaderStorage.AttributeNames.Num(), 4), 1);
+		TArrayView<FIntVector4> AttributeIndices = Context.GetParameterLooseArray<FIntVector4>(NumAttributesVector4s);
+		check(OriginalProxyData->AttributeIndices.Num() * OriginalProxyData->AttributeIndices.GetTypeSize() == AttributeIndices.Num() * AttributeIndices.GetTypeSize());
+		FMemory::Memcpy(AttributeIndices.GetData(), OriginalProxyData->AttributeIndices.GetData(), AttributeIndices.Num() * AttributeIndices.GetTypeSize());
+	}
+}
+
+FNiagaraDataInterfaceParametersCS* UNiagaraDataInterfaceGrid2DCollection::CreateShaderStorage(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const FShaderParameterMap& ParameterMap) const
+{
+	FNiagaraDataInterfaceParametersCS_Grid2DCollection* ShaderStorage = new FNiagaraDataInterfaceParametersCS_Grid2DCollection();
+
+	// Gather up all the attribute names referenced. Note that there may be multiple in the list of the same name,
+	// but we only deal with this by the number of bound methods.
+	const int32 NumFuncs = ParameterInfo.GeneratedFunctions.Num();
+	ShaderStorage->AttributeNames.Reserve(NumFuncs);
+	ShaderStorage->AttributeChannelCount.Reserve(NumFuncs);
+
+	for (int32 FuncIdx=0; FuncIdx < NumFuncs; ++FuncIdx)
+	{
+		const FNiagaraDataInterfaceGeneratedFunction& Func = ParameterInfo.GeneratedFunctions[FuncIdx];
+		static const FName NAME_Attribute("Attribute");
+		const FName* AttributeName = Func.FindSpecifierValue(NAME_Attribute);
+		if (AttributeName != nullptr)
+		{
+			int32 ComponentCount = UNiagaraDataInterfaceGrid2DCollection::GetComponentCountFromFuncName(Func.DefinitionName);
+			ShaderStorage->AttributeNames.Add(*AttributeName);
+			ShaderStorage->AttributeChannelCount.Add(ComponentCount);
+		}
+		else
+		{
+			ShaderStorage->AttributeNames.Add(FName());
+			ShaderStorage->AttributeChannelCount.Add(INDEX_NONE);
+		}
+	}
+
+	ShaderStorage->AttributeNames.Shrink();
+	ShaderStorage->AttributeChannelCount.Shrink();
+
+	return ShaderStorage;
+}
+
+const FTypeLayoutDesc* UNiagaraDataInterfaceGrid2DCollection::GetShaderStorageType() const
+{
+	return &StaticGetTypeLayoutDesc<FNiagaraDataInterfaceParametersCS_Grid2DCollection>();
+}
 
 #if WITH_EDITOR
 bool UNiagaraDataInterfaceGrid2DCollection::GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& IterationSourceVar, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const
@@ -1932,7 +1976,7 @@ void UNiagaraDataInterfaceGrid2DCollection::CollectAttributesForScript(UNiagaraS
 		const int32 * IndexOfDataInterface = ParameterStore->FindParameterOffset(DataInterfaceVariable);
 		if (IndexOfDataInterface != nullptr)
 		{
-			const TArray<FNiagaraDataInterfaceGPUParamInfo>& ParamInfoArray = Script->GetVMExecutableData().DIParamInfo;
+			TConstArrayView<FNiagaraDataInterfaceGPUParamInfo> ParamInfoArray = Script->GetDataInterfaceGPUParamInfos();
 			for (const FNiagaraDataInterfaceGeneratedFunction& Func : ParamInfoArray[*IndexOfDataInterface].GeneratedFunctions)
 			{
 				static const FName NAME_Attribute("Attribute");
@@ -1981,10 +2025,10 @@ void UNiagaraDataInterfaceGrid2DCollection::FindAttributesByName(FName VariableN
 	int32 TotalAttributes = NumAttributes;
 	for (const FNiagaraEmitterHandle& EmitterHandle : OwnerSystem->GetEmitterHandles())
 	{
-		UNiagaraEmitter* Emitter = EmitterHandle.GetInstance();
-		if (Emitter && EmitterHandle.GetIsEnabled() && Emitter->IsValid() && (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim))
+		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
+		if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
 		{
-			CollectAttributesForScript(Emitter->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
+			CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
 		}
 	}
 	OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
@@ -2003,18 +2047,18 @@ void UNiagaraDataInterfaceGrid2DCollection::FindAttributes(TArray<FNiagaraVariab
 	int32 TotalAttributes = NumAttributes;
 	for (const FNiagaraEmitterHandle& EmitterHandle : OwnerSystem->GetEmitterHandles())
 	{
-		UNiagaraEmitter* Emitter = EmitterHandle.GetInstance();
-		if (Emitter && EmitterHandle.GetIsEnabled() && Emitter->IsValid() && (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim))
+		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
+		if (EmitterData && EmitterHandle.GetIsEnabled() && EmitterData->IsValid() && (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim))
 		{
 			// Search scripts for this data interface so we get the variable name
 			auto FindDataInterfaceVariable =
-				[&OwnerSystem, &Emitter](const UNiagaraDataInterface* DataInterface) -> FName
+				[&OwnerSystem, &EmitterData](const UNiagaraDataInterface* DataInterface) -> FName
 				{
 					UNiagaraScript* Scripts[] =
 					{
 						OwnerSystem->GetSystemSpawnScript(),
 						OwnerSystem->GetSystemUpdateScript(),
-						Emitter->GetGPUComputeScript(),
+						EmitterData->GetGPUComputeScript(),
 					};
 
 					for (UNiagaraScript* Script : Scripts)
@@ -2033,30 +2077,11 @@ void UNiagaraDataInterfaceGrid2DCollection::FindAttributes(TArray<FNiagaraVariab
 			const FName VariableName = FindDataInterfaceVariable(this);
 			if (!VariableName.IsNone() )
 			{
-				CollectAttributesForScript(Emitter->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
+				CollectAttributesForScript(EmitterData->GetGPUComputeScript(), VariableName, OutVariables, OutVariableOffsets, TotalAttributes, OutWarnings);
 			}
 		}
 	}
 	OutNumAttribChannelsFound = TotalAttributes - NumAttributes;
-}
-
-static void TransitionAndCopyTexture(FRHICommandList& RHICmdList, FRHITexture* Source, FRHITexture* Destination, const FRHICopyTextureInfo& CopyInfo)
-{
-	FRHITransitionInfo TransitionsBefore[] = {
-		FRHITransitionInfo(Source, ERHIAccess::SRVMask, ERHIAccess::CopySrc),
-		FRHITransitionInfo(Destination, ERHIAccess::SRVMask, ERHIAccess::CopyDest)
-	};
-
-	RHICmdList.Transition(MakeArrayView(TransitionsBefore, UE_ARRAY_COUNT(TransitionsBefore)));
-
-	RHICmdList.CopyTexture(Source, Destination, CopyInfo);
-
-	FRHITransitionInfo TransitionsAfter[] = {
-		FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask),
-		FRHITransitionInfo(Destination, ERHIAccess::CopyDest, ERHIAccess::SRVMask)
-	};
-
-	RHICmdList.Transition(MakeArrayView(TransitionsAfter, UE_ARRAY_COUNT(TransitionsAfter)));
 }
 
 void UNiagaraDataInterfaceGrid2DCollection::GetCanvasVariables(TArray<FNiagaraVariableBase>& OutVariables) const
@@ -2106,7 +2131,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::RenderVariableToCanvas(FNiagaraSyste
 			{
 				if ( RT_InstanceData->CurrentData != nullptr )
 				{
-					OutTexture = RT_InstanceData->CurrentData->GridTexture;
+					OutTexture = RT_InstanceData->CurrentData->GetPooledTexture()->GetRHI();
 					OutSamplerState = TStaticSamplerState<SF_Bilinear>::GetRHI();
 				}
 			}
@@ -2117,7 +2142,6 @@ bool UNiagaraDataInterfaceGrid2DCollection::RenderVariableToCanvas(FNiagaraSyste
 	return true;
 }
 
-UFUNCTION(BlueprintCallable, Category = Niagara)
 bool UNiagaraDataInterfaceGrid2DCollection::FillTexture2D(const UNiagaraComponent *Component, UTextureRenderTarget2D *Dest, int AttributeIndex)
 {
 	if (!Component || !Dest)
@@ -2156,7 +2180,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::FillTexture2D(const UNiagaraComponen
 			FRHICopyTextureInfo CopyInfo;
 			CopyInfo.Size = FIntVector(Grid2DInstanceData->NumCells.X, Grid2DInstanceData->NumCells.Y, 1);
 			CopyInfo.SourcePosition = FIntVector(0, 0, AttributeIndex);
-			TransitionAndCopyTexture(RHICmdList, Grid2DInstanceData->CurrentData->GridTexture, RT_TextureResource->TextureRHI, CopyInfo);
+			TransitionAndCopyTexture(RHICmdList, Grid2DInstanceData->CurrentData->GetPooledTexture()->GetRHI(), RT_TextureResource->TextureRHI, CopyInfo);
 		}
 	});
 
@@ -2209,7 +2233,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::FillRawTexture2D(const UNiagaraCompo
 		if (RT_TextureResource && RT_TextureResource->TextureRHI.IsValid() && RT_Grid2DInstanceData && RT_Grid2DInstanceData->CurrentData)
 		{
 			const FNiagaraGrid2DLegacyTiled2DInfo Tiled2DInfo(RT_Grid2DInstanceData->NumCells, RT_Grid2DInstanceData->NumAttributes);
-			Tiled2DInfo.CopyTo2D(RHICmdList, RT_Grid2DInstanceData->CurrentData->GridTexture, RT_TextureResource->TextureRHI);
+			Tiled2DInfo.CopyTo2D(RHICmdList, RT_Grid2DInstanceData->CurrentData->GetPooledTexture()->GetRHI(), RT_TextureResource->TextureRHI);
 		}
 	});
 
@@ -2277,7 +2301,7 @@ void UNiagaraDataInterfaceGrid2DCollection::GetTextureSize(const UNiagaraCompone
 	SizeY = Grid2DInstanceData->NumCells.Y;
 }
 
-void UNiagaraDataInterfaceGrid2DCollection::GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context)
+void UNiagaraDataInterfaceGrid2DCollection::VMGetWorldBBoxSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FGrid2DCollectionRWInstanceData_GameThread> InstData(Context);
 	FNDIOutputParam<FVector2f> OutWorldBounds(Context);
@@ -2290,7 +2314,7 @@ void UNiagaraDataInterfaceGrid2DCollection::GetWorldBBoxSize(FVectorVMExternalFu
 }
 
 
-void UNiagaraDataInterfaceGrid2DCollection::GetCellSize(FVectorVMExternalFunctionContext& Context)
+void UNiagaraDataInterfaceGrid2DCollection::VMGetCellSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FGrid2DCollectionRWInstanceData_GameThread> InstData(Context);
 	FNDIOutputParam<FVector2f> OutCellSize(Context);
@@ -2302,7 +2326,7 @@ void UNiagaraDataInterfaceGrid2DCollection::GetCellSize(FVectorVMExternalFunctio
 	}
 }
 
-void UNiagaraDataInterfaceGrid2DCollection::GetNumCells(FVectorVMExternalFunctionContext& Context)
+void UNiagaraDataInterfaceGrid2DCollection::VMGetNumCells(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FGrid2DCollectionRWInstanceData_GameThread> InstData(Context);
 	FNDIOutputParam<int> OutNumCellsX(Context);
@@ -2323,7 +2347,7 @@ void UNiagaraDataInterfaceGrid2DCollection::GetNumCells(FVectorVMExternalFunctio
 	}
 }
 
-void UNiagaraDataInterfaceGrid2DCollection::SetNumCells(FVectorVMExternalFunctionContext& Context)
+void UNiagaraDataInterfaceGrid2DCollection::VMSetNumCells(FVectorVMExternalFunctionContext& Context)
 {
 	// This should only be called from a system or emitter script due to a need for only setting up initially.
 	VectorVM::FUserPtrHandler<FGrid2DCollectionRWInstanceData_GameThread> InstData(Context);
@@ -2409,7 +2433,7 @@ bool UNiagaraDataInterfaceGrid2DCollection::PerInstanceTickPostSimulate(void* Pe
 }
 
 
-void UNiagaraDataInterfaceGrid2DCollection::GetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels)
+void UNiagaraDataInterfaceGrid2DCollection::VMGetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels)
 {
 	VectorVM::FUserPtrHandler<FGrid2DCollectionRWInstanceData_GameThread> InstData(Context);
 	VectorVM::FExternalFuncRegisterHandler<int> OutIndex(Context);
@@ -2507,7 +2531,7 @@ bool FGrid2DCollectionRWInstanceData_GameThread::UpdateTargetTexture(ENiagaraGpu
 	return false;
 }
 
-void FGrid2DCollectionRWInstanceData_RenderThread::BeginSimulate(FRHICommandList& RHICmdList)
+void FGrid2DCollectionRWInstanceData_RenderThread::BeginSimulate(FRDGBuilder& GraphBuilder)
 {
 	for (TUniquePtr<FGrid2DBuffer>& Buffer : Buffers)
 	{
@@ -2521,120 +2545,117 @@ void FGrid2DCollectionRWInstanceData_RenderThread::BeginSimulate(FRHICommandList
 
 	if (DestinationData == nullptr)
 	{
-		DestinationData = new FGrid2DBuffer(NumCells.X, NumCells.Y, NumAttributes, PixelFormat);
+		DestinationData = new FGrid2DBuffer();
 		Buffers.Emplace(DestinationData);
 
-		// The rest of the code expects to find the buffers readable, and will transition from there to UAVCompute as necessary.
-		RHICmdList.Transition(FRHITransitionInfo(DestinationData->GridUAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+		const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create2DArray(NumCells, PixelFormat, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV, NumAttributes);
+		DestinationData->Initialize(GraphBuilder, TEXT("FGrid2DBuffer"), TextureDesc);
 	}
 }
 
-void FGrid2DCollectionRWInstanceData_RenderThread::EndSimulate(FRHICommandList& RHICmdList)
+void FGrid2DCollectionRWInstanceData_RenderThread::EndSimulate()
 {
 	CurrentData = DestinationData;
 	DestinationData = nullptr;
 }
 
-void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context)
+void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::ResetData(const FNDIGpuComputeResetContext& Context)
+{
+	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+	if (!ProxyData)
+	{
+		return;
+	}
+
+	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+	for (TUniquePtr<FGrid2DBuffer>& Buffer : ProxyData->Buffers)
+	{
+		AddClearUAVPass(GraphBuilder, Buffer->GetOrCreateUAV(GraphBuilder), FVector4f(ForceInitToZero));
+	}
+}
+
+void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PreStage(const FNDIGpuComputePreStageContext& Context)
 {
 	// #todo(dmp): Context doesnt need to specify if a stage is output or not since we moved pre/post stage to the DI itself.  Not sure which design is better for the future
-	if (Context.IsOutputStage)
+	if (Context.IsOutputStage())
 	{
-		FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
+		FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
 
-		ProxyData->BeginSimulate(RHICmdList);
+		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+		ProxyData->BeginSimulate(GraphBuilder);
 
 		// If we don't have an iteration stage, then we should manually clear the buffer to make sure there is no residual data.  If we are doing something like rasterizing particles into a grid, we want it to be clear before
 		// we start.  If a user wants to access data from the previous stage, then they can read from the current data.
 
 		// #todo(dmp): we might want to expose an option where we have buffers that are write only and need a clear (ie: no buffering like the neighbor grid).  They would be considered transient perhaps?  It'd be more
 		// memory efficient since it would theoretically not require any double buffering.
-		RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridUAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
-		if (!Context.IsIterationStage)
+		if (!Context.IsIterationStage())
 		{
-			SCOPED_DRAW_EVENT(RHICmdList, Grid2DCollection_PreStage);
-			RHICmdList.ClearUAVFloat(ProxyData->DestinationData->GridUAV, FVector4f(ForceInitToZero));
-			RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridUAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+			AddClearUAVPass(GraphBuilder, ProxyData->DestinationData->GetOrCreateUAV(GraphBuilder), FVector4f(ForceInitToZero));
 		}
 	}
 }
 
-void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PostStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context)
+void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PostStage(const FNDIGpuComputePostStageContext& Context)
 {
-	if (Context.IsOutputStage)
+	if (Context.IsOutputStage())
 	{
-		FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-		RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridUAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
-		ProxyData->EndSimulate(RHICmdList);
+		FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
+		ProxyData->EndSimulate();
 	}
 }
 
-void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context)
+void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::PostSimulate(const FNDIGpuComputePostSimulateContext& Context)
 {
-	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
+	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
 
-	if (ProxyData->RenderTargetToCopyTo != nullptr && ProxyData->CurrentData != nullptr && ProxyData->CurrentData->GridTexture != nullptr)
+	if (ProxyData->RenderTargetToCopyTo != nullptr && ProxyData->CurrentData != nullptr && ProxyData->CurrentData->IsValid())
 	{
-		SCOPED_DRAW_EVENT(RHICmdList, Grid2DCollection_PostSimulate);
+		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 		if (ProxyData->RenderTargetToCopyTo->GetTexture2DArray() != nullptr)
 		{
-			FRHICopyTextureInfo CopyInfo;
-			TransitionAndCopyTexture(RHICmdList, ProxyData->CurrentData->GridTexture, ProxyData->RenderTargetToCopyTo, CopyInfo);
+			ProxyData->CurrentData->CopyToTexture(GraphBuilder, ProxyData->RenderTargetToCopyTo, TEXT("NiagaraRenderTargetToCopyTo"));
 		}
 		else if (ensure(ProxyData->RenderTargetToCopyTo->GetTexture2D() != nullptr))
 		{
 			const FNiagaraGrid2DLegacyTiled2DInfo Tiled2DInfo(ProxyData->NumCells, ProxyData->NumAttributes);
-			Tiled2DInfo.CopyTo2D(RHICmdList, ProxyData->CurrentData->GridTexture, ProxyData->RenderTargetToCopyTo);
+			Tiled2DInfo.CopyTo2D(GraphBuilder, ProxyData->CurrentData->GetOrCreateTexture(GraphBuilder), ProxyData->RenderTargetToCopyTo, TEXT("NiagaraRenderTargetToCopyTo"));
 		}
 	}
 
 #if NIAGARA_COMPUTEDEBUG_ENABLED && WITH_EDITORONLY_DATA
-	if (ProxyData->bPreviewGrid && ProxyData->CurrentData)
+	if (ProxyData->bPreviewGrid && ProxyData->CurrentData && ProxyData->CurrentData->IsValid())
 	{
-		if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.ComputeDispatchInterface->GetGpuComputeDebug())
+		FNiagaraGpuComputeDebugInterface GpuComputeDebugInterface = Context.GetComputeDispatchInterface().GetGpuComputeDebugInterface();
+		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+		if (ProxyData->PreviewAttribute[0] != INDEX_NONE)
 		{
-			if (ProxyData->PreviewAttribute[0] != INDEX_NONE)
-			{
-				GpuComputeDebug->AddAttributeTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, ProxyData->CurrentData->GridTexture, FIntPoint::ZeroValue, ProxyData->PreviewAttribute);
-			}
-			else
-			{
-				GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, ProxyData->CurrentData->GridTexture);
-			}
+			GpuComputeDebugInterface.AddAttributeTexture(GraphBuilder, Context.GetSystemInstanceID(), SourceDIName, ProxyData->CurrentData->GetOrCreateTexture(GraphBuilder), FIntPoint::ZeroValue, ProxyData->PreviewAttribute);
+		}
+		else
+		{
+			GpuComputeDebugInterface.AddTexture(GraphBuilder, Context.GetSystemInstanceID(), SourceDIName, ProxyData->CurrentData->GetOrCreateTexture(GraphBuilder));
 		}
 	}
 #endif
-}
 
-void FNiagaraDataInterfaceProxyGrid2DCollectionProxy::ResetData(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context)
-{
-	FGrid2DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-	if (!ProxyData)
+	// Clear out the transient resource we cached
+	if (Context.IsFinalPostSimulate())
 	{
-		return;
-	}
-
-	for (TUniquePtr<FGrid2DBuffer>& Buffer : ProxyData->Buffers)
-	{
-		if (Buffer.IsValid())
+		for (TUniquePtr<FGrid2DBuffer>& Buffer : ProxyData->Buffers)
 		{
-			ERHIAccess AccessAfter;
-			const bool bIsDestination = (ProxyData->DestinationData == Buffer.Get());
-			if (bIsDestination)
-			{
-				// The destination buffer is already in UAVCompute because PreStage() runs first. It must stay in UAVCompute after the clear
-				// because the shader is going to use it.
-				AccessAfter = ERHIAccess::UAVCompute;
-			}
-			else
-			{
-				// The other buffers are in SRVMask and must be returned to that state after the clear.
-				RHICmdList.Transition(FRHITransitionInfo(Buffer->GridUAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
-				AccessAfter = ERHIAccess::SRVMask;
-			}
+			Buffer->EndGraphUsage();
+		}
 
-			RHICmdList.ClearUAVFloat(Buffer->GridUAV, FVector4f(ForceInitToZero));
-			RHICmdList.Transition(FRHITransitionInfo(Buffer->GridUAV, ERHIAccess::UAVCompute, AccessAfter));
+		// Readers point to data not owned by themselves so can be caching resources on the 'other' proxy
+		// Therefore we need to ensure the transient buffers are correctly cleared
+		if ( FNiagaraDataInterfaceProxyGrid2DCollectionProxy* OtherGrid3DProxy = static_cast<FNiagaraDataInterfaceProxyGrid2DCollectionProxy*>(ProxyData->OtherProxy) )
+		{
+			FGrid2DCollectionRWInstanceData_RenderThread& OtherProxyData = OtherGrid3DProxy->SystemInstancesToProxyData_RT.FindChecked(Context.GetSystemInstanceID());
+			for (TUniquePtr<FGrid2DBuffer>& Buffer : OtherProxyData.Buffers)
+			{
+				Buffer->EndGraphUsage();
+			}
 		}
 	}
 }
@@ -2659,3 +2680,4 @@ FIntVector FNiagaraDataInterfaceProxyGrid2DCollectionProxy::GetElementCount(FNia
 }
 
 #undef LOCTEXT_NAMESPACE
+

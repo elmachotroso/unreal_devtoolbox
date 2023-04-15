@@ -14,6 +14,8 @@
 #include "CineCameraComponent.h"
 #include "ProceduralMeshComponent.h"
 
+#include "DisplayClusterLightCardActor.h"
+
 #include "Config/IPDisplayClusterConfigManager.h"
 #include "DisplayClusterConfigurationStrings.h"
 
@@ -39,6 +41,8 @@
 #include "Render/Viewport/DisplayClusterViewportManager.h"
 
 #include "Game/EngineClasses/Scene/DisplayClusterRootActorInitializer.h"
+
+#include "Algo/MaxElement.h"
 
 #if WITH_EDITOR
 #include "IConcertSyncClientModule.h"
@@ -201,7 +205,7 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 
 		for (auto NewNodeIt = ConfigData->Cluster->Nodes.CreateConstIterator(); NewNodeIt; ++NewNodeIt)
 		{
-			UDisplayClusterConfigurationClusterNode** CurrentNodePtr = CurrentConfigData->Cluster->Nodes.Find(NewNodeIt->Key);
+			TObjectPtr<UDisplayClusterConfigurationClusterNode>* CurrentNodePtr = CurrentConfigData->Cluster->Nodes.Find(NewNodeIt->Key);
 
 			// Add the node if it doesn't exist
 			if (!CurrentNodePtr)
@@ -243,7 +247,7 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 				// Go over viewport and override the current ones (or add new ones that didn't exist)
 				for (auto NewViewportIt = NewNode->Viewports.CreateConstIterator(); NewViewportIt; ++NewViewportIt)
 				{
-					UDisplayClusterConfigurationViewport** CurrentViewportPtr = CurrentNode->Viewports.Find(NewViewportIt->Key);
+					TObjectPtr<UDisplayClusterConfigurationViewport>* CurrentViewportPtr = CurrentNode->Viewports.Find(NewViewportIt->Key);
 
 					// Add the viewport if it doesn't exist
 					if (!CurrentViewportPtr)
@@ -329,7 +333,10 @@ void ADisplayClusterRootActor::UpdateConfigDataInstance(UDisplayClusterConfigura
 		else if (bForceRecreate)
 		{
 			UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			// Leaving this enabled for now for the purposes of the aggressive replacement auditing
 			Params.bAggressiveDefaultSubobjectReplacement = true;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			Params.bNotifyObjectReplacement = false;
 			Params.bDoDelta = false;
 			UEngine::CopyPropertiesForUnrelatedObjects(ConfigDataTemplate, CurrentConfigData, Params);
@@ -501,7 +508,7 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 	// Hide visualization and hidden components from RootActor
 	{
 		TArray<UPrimitiveComponent*> PrimitiveComponents;
-		GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+		GetComponents(PrimitiveComponents);
 
 		for (UPrimitiveComponent* CompIt : PrimitiveComponents)
 		{
@@ -526,11 +533,12 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 				const bool bActorHideInGame = Actor->IsHidden();
 
 				TArray<UPrimitiveComponent*> PrimitiveComponents;
-				Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+				Actor->GetComponents(PrimitiveComponents);
 
 				for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
 				{
-					if ((bHideVisualizationComponents && PrimComp->IsVisualizationComponent()) || bActorHideInGame || PrimComp->bHiddenInGame)
+					if ((bHideVisualizationComponents && PrimComp->IsVisualizationComponent()) 
+						|| ((bActorHideInGame || PrimComp->bHiddenInGame) && !PrimComp->bCastHiddenShadow))
 					{
 						OutPrimitives.Add(PrimComp->ComponentId);
 					}
@@ -623,6 +631,70 @@ bool ADisplayClusterRootActor::BuildHierarchy()
 	}
 
 	return true;
+}
+
+void ADisplayClusterRootActor::UpdateLightCardPositions()
+{
+	// Find a view origin to use as the transform "anchor" of each light card. At the moment, assume the first view origin component
+	// found is the correct view origin (the same assumption is made in the light card editor). If no view origin is found, use the root component
+	USceneComponent* ViewOriginComponent = GetRootComponent();
+
+	TArray<UDisplayClusterCameraComponent*> ViewOriginComponents;
+	GetComponents(ViewOriginComponents);
+
+	if (ViewOriginComponents.Num())
+	{
+		ViewOriginComponent = ViewOriginComponents[0];
+	}
+
+	const FVector Location = ViewOriginComponent ? ViewOriginComponent->GetComponentLocation() : GetActorLocation();
+	const FRotator Rotation = GetActorRotation();
+
+	// Iterate over all the light cards referenced in the root actor's config data and update their location and rotation to match the view origin
+	if (UDisplayClusterConfigurationData* CurrentData = GetConfigData())
+	{
+		FDisplayClusterConfigurationICVFX_VisibilityList& LightCards = CurrentData->StageSettings.Lightcard.ShowOnlyList;
+
+		for (const TSoftObjectPtr<AActor>& Actor : LightCards.Actors)
+		{
+			ADisplayClusterLightCardActor* LightCardActor = Actor.IsValid() ? Cast<ADisplayClusterLightCardActor>(Actor.Get()) : nullptr;
+			if (LightCardActor)
+			{
+				// Set the owner so the light card actor can look the root actor up in certain situations, like adjusting labels
+				// when running as -game
+				LightCardActor->SetRootActorOwner(this);
+				if (LightCardActor->bLockToOwningRootActor)
+				{
+					LightCardActor->SetActorLocation(Location);
+					LightCardActor->SetActorRotation(Rotation);
+				}
+			}
+		}
+
+		if (LightCards.ActorLayers.Num())
+		{
+			if (UWorld* World = GetWorld())
+			{
+				for (TActorIterator<ADisplayClusterLightCardActor> Iter(World); Iter; ++Iter)
+				{
+					ADisplayClusterLightCardActor* LightCardActor = *Iter;
+					for (const FActorLayer& ActorLayer : LightCards.ActorLayers)
+					{
+						if (LightCardActor->Layers.Contains(ActorLayer.Name))
+						{
+							LightCardActor->SetRootActorOwner(this);
+							if (LightCardActor->bLockToOwningRootActor)
+							{
+								LightCardActor->SetActorLocation(Location);
+								LightCardActor->SetActorRotation(Rotation);
+							}
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 bool ADisplayClusterRootActor::IsBlueprint() const
@@ -728,6 +800,14 @@ void ADisplayClusterRootActor::Tick(float DeltaSeconds)
 	// Tick editor preview
 	Tick_Editor(DeltaSeconds);
 #endif
+
+	if (UDisplayClusterConfigurationData* CurrentData = GetConfigData())
+	{
+		if (CurrentData->StageSettings.Lightcard.bEnable)
+		{
+			UpdateLightCardPositions();
+		}
+	}
 
 	Super::Tick(DeltaSeconds);
 }
@@ -932,7 +1012,7 @@ static void PropagateDataFromDefaultConfig(UDisplayClusterConfigurationData* InD
 	
 	PropagateDefaultMapToInstancedMap(ClusterNodesMapProperty, InDefaultConfigData->Cluster, InInstanceConfigData->Cluster);
 	
-	for (const TTuple<FString, UDisplayClusterConfigurationClusterNode*>& ClusterKeyVal : InDefaultConfigData->Cluster->Nodes)
+	for (const TTuple<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& ClusterKeyVal : InDefaultConfigData->Cluster->Nodes)
 	{
 		UDisplayClusterConfigurationClusterNode* DestinationValue = InInstanceConfigData->Cluster->Nodes.FindChecked(
 			ClusterKeyVal.Key);
@@ -940,6 +1020,7 @@ static void PropagateDataFromDefaultConfig(UDisplayClusterConfigurationData* InD
 	}
 }
 
+#if WITH_EDITOR
 void ADisplayClusterRootActor::RerunConstructionScripts()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ADisplayClusterRootActor::RerunConstructionScripts"), STAT_RerunConstructionScripts, STATGROUP_NDisplay);
@@ -958,15 +1039,73 @@ void ADisplayClusterRootActor::RerunConstructionScripts()
 				PropagateDataFromDefaultConfig(DefaultData, CurrentData);
 			}
 		}
-#if WITH_EDITOR
 		RerunConstructionScripts_Editor();
-#endif
 	}
 }
+#endif
 
 UDisplayClusterCameraComponent* ADisplayClusterRootActor::GetDefaultCamera() const
 {
 	return DefaultViewPoint;
+}
+
+USceneComponent* ADisplayClusterRootActor::GetCommonViewPoint() const
+{
+	if (UDisplayClusterConfigurationData* ConfigData = GetConfigData())
+	{
+		if (ConfigData->Cluster)
+		{
+			TMap<FString, int32> ViewPointCounts;
+
+			// Get all the camera names used by viewports in this cluster
+			for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& NodePair : ConfigData->Cluster->Nodes)
+			{
+				if (!NodePair.Value)
+				{
+					continue;
+				}
+
+				for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportPair : NodePair.Value->Viewports)
+				{
+					if (!ViewportPair.Value)
+					{
+						continue;
+					}
+
+					ViewPointCounts.FindOrAdd(ViewportPair.Value->Camera)++;
+				}
+			}
+
+			if (!ViewPointCounts.IsEmpty())
+			{
+				// Find the viewpoint with the most references
+				TPair<FString, int32>* MostCommonViewPointCount = Algo::MaxElementBy(ViewPointCounts,
+					[](const TPair<FString, int32>& Pair)
+					{
+						return Pair.Value;
+					}
+				);
+
+				if (MostCommonViewPointCount && !MostCommonViewPointCount->Key.IsEmpty())
+				{
+					// Try to return the camera with the most common name
+					if (USceneComponent* Camera = GetComponentByName<UDisplayClusterCameraComponent>(MostCommonViewPointCount->Key))
+					{
+						return Camera;
+					}
+				}
+			}
+		}
+	}
+
+	// We didn't find a common camera override (or it was empty), so fall back to the default camera
+	if (USceneComponent* DefaultCamera = GetDefaultCamera())
+	{
+		return DefaultCamera;
+	}
+
+	// No default camera, so fall back to the cluster root
+	return GetRootComponent();
 }
 
 bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplace)
@@ -990,7 +1129,7 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 	// Only update the viewports of the current node. If there isn't one, which is normal in Editor, we update them all.
 
 	const FString NodeId = Display.GetClusterMgr()->GetNodeId();
-	TArray<UDisplayClusterConfigurationClusterNode*, TInlineAllocator<1>> Nodes;
+	TArray<typename decltype(UDisplayClusterConfigurationCluster::Nodes)::ValueType, TInlineAllocator<1>> Nodes;
 
 	if (NodeId.IsEmpty())
 	{
@@ -1013,7 +1152,7 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 	{
 		check(Node != nullptr);
 
-		for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportItem : Node->Viewports)
+		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportItem : Node->Viewports)
 		{
 			if (ViewportItem.Value)
 			{
@@ -1021,14 +1160,14 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 			}
 		}
 
-		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& NodeItem : ConfigData->Cluster->Nodes)
+		for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& NodeItem : ConfigData->Cluster->Nodes)
 		{
 			if (!NodeItem.Value)
 			{
 				continue;
 			}
 
-			for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportItem : NodeItem.Value->Viewports)
+			for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& ViewportItem : NodeItem.Value->Viewports)
 			{
 				if (ViewportItem.Value)
 				{

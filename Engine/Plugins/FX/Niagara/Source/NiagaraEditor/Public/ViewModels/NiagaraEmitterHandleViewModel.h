@@ -27,8 +27,8 @@ public:
 public:
 	/** Creates a new emitter editor view model.  This must be initialized before it can be used. */
 	FNiagaraEmitterHandleViewModel(bool bInIsForDataProcessingOnly);
-	
-	~FNiagaraEmitterHandleViewModel();
+
+	virtual ~FNiagaraEmitterHandleViewModel() override;
 
 	/** Initializes the emitter editor view model with the supplied emitter handle and simulation.*/
 	void Initialize(TSharedRef<FNiagaraSystemViewModel> InOwningSystemViewModel, int32 InEmitterHandleIndex, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
@@ -74,9 +74,6 @@ public:
 	FText GetErrorText() const;
 	EVisibility GetErrorTextVisibility() const;
 	FSlateColor GetErrorTextColor() const;
-
-	/** Called to get the synch state of the emitter handle to its source.*/
-	bool IsSynchronized() const;
 
 	/** Gets whether or not this emitter handle is enabled. */
 	NIAGARAEDITOR_API bool GetIsEnabled() const;
@@ -130,6 +127,8 @@ public:
 
 	/** Remove a serialized message from the Emitter this viewmodel is managing. */
 	NIAGARAEDITOR_API void RemoveMessage(const FGuid& MessageKey) const;
+
+	void BeginDebugEmitter();
 
 private:
 	/** The system view model which owns this emitter handle view model. */

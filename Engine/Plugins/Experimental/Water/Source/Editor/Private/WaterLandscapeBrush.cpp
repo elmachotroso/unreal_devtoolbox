@@ -26,6 +26,11 @@
 #include "Components/BillboardComponent.h"
 #include "Modules/ModuleManager.h"
 #include "WaterModule.h"
+#include "WaterEditorSettings.h"
+#include "LandscapeModule.h"
+#include "LandscapeEditorServices.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterLandscapeBrush)
 
 #define LOCTEXT_NAMESPACE "WaterLandscapeBrush"
 
@@ -163,13 +168,17 @@ void AWaterLandscapeBrush::UpdateActors(bool bInTriggerEvents)
 	}
 }
 
-void AWaterLandscapeBrush::OnActorChanged(AActor* Actor, bool bWeightmapSettingsChanged, bool bRebuildWaterMesh)
+void AWaterLandscapeBrush::OnWaterBrushActorChanged(const IWaterBrushActorInterface::FWaterBrushActorChangedEventParams& InParams)
 {
-	bool bAffectsLandscape = IsActorAffectingLandscape(Actor);
-	IWaterBrushActorInterface* WaterBrushActor = CastChecked<IWaterBrushActorInterface>(Actor);
-	int32 ActorIndex = ActorsAffectingLandscape.IndexOfByKey(TWeakInterfacePtr<IWaterBrushActorInterface>(WaterBrushActor));
+	AActor* Actor = CastChecked<AActor>(InParams.WaterBrushActor);
+	bool bAffectsLandscape = InParams.WaterBrushActor->AffectsLandscape();
+	bool bAffectsWaterMesh = InParams.WaterBrushActor->AffectsWaterMesh();
+
+	int32 ActorIndex = ActorsAffectingLandscape.IndexOfByKey(InParams.WaterBrushActor);
 	// if the actor went from affecting landscape to non-affecting landscape (and vice versa), update the brush
 	bool bForceUpdateBrush = false;
+	bool bForceUpdateWaterMesh = false;
+	
 	if (bAffectsLandscape != (ActorIndex != INDEX_NONE))
 	{
 		if (bAffectsLandscape)
@@ -182,41 +191,34 @@ void AWaterLandscapeBrush::OnActorChanged(AActor* Actor, bool bWeightmapSettings
 		}
 
 		// Force rebuild the mesh if a water body actor has been added or removed (islands don't affect the water mesh so it's not necessary for them): 
-		bRebuildWaterMesh = WaterBrushActor->CanAffectWaterMesh();
+		bForceUpdateWaterMesh = InParams.WaterBrushActor->CanEverAffectWaterMesh();
 		bForceUpdateBrush = true;
 	}
 
-	if (bWeightmapSettingsChanged)
+	if (InParams.bWeightmapSettingsChanged)
 	{
 		UpdateAffectedWeightmaps();
 	}
 
 	BlueprintWaterBodyChanged(Actor);
 
-	if (bAffectsLandscape || bForceUpdateBrush)
+	const UWaterEditorSettings* WaterEditorSettings = GetDefault<UWaterEditorSettings>();
+	check(WaterEditorSettings != nullptr);
+
+	bool bAllowLandscapeUpdate = (InParams.PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive) || WaterEditorSettings->GetUpdateLandscapeDuringInteractiveChanges();
+	if (bForceUpdateBrush || (bAffectsLandscape && bAllowLandscapeUpdate))
 	{
 		RequestLandscapeUpdate();
-		MarkRenderTargetsDirty();
 	}
 
-	if (bRebuildWaterMesh)
+	bool bAllowWaterMeshUpdate = (InParams.PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive) || WaterEditorSettings->GetUpdateWaterMeshDuringInteractiveChanges();
+	if (bForceUpdateWaterMesh || (bAffectsWaterMesh && bAllowWaterMeshUpdate))
 	{
 		if (UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld()))
 		{
-			WaterSubsystem->MarkAllWaterMeshesForRebuild();
+			WaterSubsystem->MarkAllWaterZonesForRebuild(EWaterZoneRebuildFlags::UpdateWaterMesh);
 		}
 	}
-}
-
-void AWaterLandscapeBrush::MarkRenderTargetsDirty()
-{
-	bRenderTargetsDirty = true;
-}
-
-void AWaterLandscapeBrush::OnWaterBrushActorChanged(const IWaterBrushActorInterface::FWaterBrushActorChangedEventParams& InParams)
-{
-	AActor* Actor = CastChecked<AActor>(InParams.WaterBrushActor);
-	OnActorChanged(Actor, /* bWeightmapSettingsChanged = */InParams.bWeightmapSettingsChanged, /* bRebuildWaterMesh = */InParams.WaterBrushActor->AffectsWaterMesh());
 }
 
 void AWaterLandscapeBrush::OnActorsAffectingLandscapeChanged()
@@ -225,10 +227,8 @@ void AWaterLandscapeBrush::OnActorsAffectingLandscapeChanged()
 	RequestLandscapeUpdate();
 	if (UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld()))
 	{
-		WaterSubsystem->MarkAllWaterMeshesForRebuild();
+		WaterSubsystem->MarkAllWaterZonesForRebuild();
 	}
-
-	MarkRenderTargetsDirty();
 }
 
 bool AWaterLandscapeBrush::IsActorAffectingLandscape(AActor* Actor) const
@@ -241,7 +241,7 @@ void AWaterLandscapeBrush::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_Transient))
+	if (!IsTemplate())
 	{
 		OnWorldPostInitHandle = FWorldDelegates::OnPostWorldInitialization.AddLambda([this](UWorld* World, const UWorld::InitializationValues IVS)
 		{
@@ -277,31 +277,11 @@ void AWaterLandscapeBrush::PostInitProperties()
 		OnLevelActorAddedHandle = GEngine->OnLevelActorAdded().AddUObject(this, &AWaterLandscapeBrush::OnLevelActorAdded);
 		OnLevelActorDeletedHandle = GEngine->OnLevelActorDeleted().AddUObject(this, &AWaterLandscapeBrush::OnLevelActorRemoved);
 
-#if WITH_EDITOR
-		// in world partition, actors don't belong to levels and the on loaded/removed callbacks are different :
-		if (UWorld* World = GetWorld())
-		{
-			if (World->PersistentLevel)
-			{
-				OnLoadedActorAddedToLevelEventHandle = World->PersistentLevel->OnLoadedActorAddedToLevelEvent.AddLambda([this](AActor& InActor) { OnLevelActorAdded(&InActor); });
-				OnLoadedActorRemovedFromLevelEventHandle = World->PersistentLevel->OnLoadedActorRemovedFromLevelEvent.AddLambda([this](AActor& InActor) { OnLevelActorRemoved(&InActor); });
-			}
-		}
-#endif // WITH_EDITOR
-
-		OnActorMovedHandle = GEngine->OnActorMoved().AddLambda([this](AActor* Actor)
-		{
-			if (IsActorAffectingLandscape(Actor))
-			{
-				OnActorChanged(Actor, /* bWeightmapSettingsChanged */ false, /* bRebuildWaterMesh */ true);
-			}
-		});
-
 		IWaterBrushActorInterface::GetOnWaterBrushActorChangedEvent().AddUObject(this, &AWaterLandscapeBrush::OnWaterBrushActorChanged);
-	}
 
-	// If we are loading do not trigger events
-	UpdateActors(!GIsEditorLoadingPackage);
+		// If we are loading do not trigger events
+		UpdateActors(!GIsEditorLoadingPackage);
+	}
 }
 
 void AWaterLandscapeBrush::OnLevelActorAdded(AActor* InActor)
@@ -339,7 +319,7 @@ void AWaterLandscapeBrush::BeginDestroy()
 {
 	Super::BeginDestroy();
 
-	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_Transient))
+	if (!IsTemplate())
 	{
 		ClearActors();
 
@@ -358,25 +338,59 @@ void AWaterLandscapeBrush::BeginDestroy()
 		GEngine->OnLevelActorDeleted().Remove(OnLevelActorDeletedHandle);
 		OnLevelActorDeletedHandle.Reset();
 
-		GEngine->OnActorMoved().Remove(OnActorMovedHandle);
-		OnActorMovedHandle.Reset();
+		IWaterBrushActorInterface::GetOnWaterBrushActorChangedEvent().RemoveAll(this);
+	}
+}
+
+void AWaterLandscapeBrush::PostRegisterAllComponents()
+{
+	Super::PostRegisterAllComponents();
 
 #if WITH_EDITOR
-		// Unregister callbacks
+	if (!IsTemplate())
+	{
+		if (!OnLoadedActorRemovedFromLevelEventHandle.IsValid())
+		{
+			check(!OnLoadedActorRemovedFromLevelEventHandle.IsValid());
+
+			// In world partition, actors don't belong to levels and the on loaded/removed callbacks are different : 
+			// Since these are world events, we register/unregister to it in AWaterLandscapeBrush::RegisterAllComponents() / AWaterLandscapeBrush::UnregisterAllComponents() to make sure that the world is in a valid state when it's called :
+			UWorld* World = GetWorld();
+			checkf((World != nullptr) && (World->PersistentLevel != nullptr), TEXT("This function should only be called when the world and level are accessible"));
+			OnLoadedActorAddedToLevelEventHandle = World->PersistentLevel->OnLoadedActorAddedToLevelEvent.AddLambda([this](AActor& InActor) { OnLevelActorAdded(&InActor); });
+			OnLoadedActorRemovedFromLevelEventHandle = World->PersistentLevel->OnLoadedActorRemovedFromLevelEvent.AddLambda([this](AActor& InActor) { OnLevelActorRemoved(&InActor); });
+		}
+
+		// It's possible that actors registered to us via OnLoadedActorAddedToLevelEvent were already loaded by the time PostRegisterAllComponents runs, so we need to update our list of actors now : 
+		UpdateActors();
+	}
+#endif // WITH_EDITOR
+}
+
+void AWaterLandscapeBrush::UnregisterAllComponents(bool bForReregister)
+{
+	Super::UnregisterAllComponents(bForReregister);
+
+#if WITH_EDITOR
+	if (!IsTemplate())
+	{
+		if (OnLoadedActorAddedToLevelEventHandle.IsValid())
+		{
+			check(OnLoadedActorRemovedFromLevelEventHandle.IsValid());
+
+			// UnregisterAllComponents can be called when the world if getting GCed. By this time, the world won't be able to broadcast these events so it's fine if we don't unregister from them :
 		if (UWorld* World = GetWorld())
 		{
-			if (World->PersistentLevel)
-			{
+				// Since these are world events, we register/unregister to it in AWaterLandscapeBrush::RegisterAllComponents() / AWaterLandscapeBrush::UnregisterAllComponents() to make sure that the world is in a valid state when it's called :
+				checkf(World->PersistentLevel != nullptr, TEXT("This function should only be called when the world and level are accessible"));
 				World->PersistentLevel->OnLoadedActorAddedToLevelEvent.Remove(OnLoadedActorAddedToLevelEventHandle);
 				World->PersistentLevel->OnLoadedActorRemovedFromLevelEvent.Remove(OnLoadedActorRemovedFromLevelEventHandle);
 			}
-		}
 		OnLoadedActorAddedToLevelEventHandle.Reset();
 		OnLoadedActorRemovedFromLevelEventHandle.Reset();
-#endif // WITH_EDITOR
-
-		IWaterBrushActorInterface::GetOnWaterBrushActorChangedEvent().RemoveAll(this);
+		}
 	}
+#endif // WITH_EDITOR
 }
 
 void AWaterLandscapeBrush::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
@@ -385,7 +399,7 @@ void AWaterLandscapeBrush::AddReferencedObjects(UObject* InThis, FReferenceColle
 	Super::AddReferencedObjects(This, Collector);
 
 	// TODO [jonathan.bard] : remove : probably not necessary since it's now a uproperty :
-	for (TPair<TWeakObjectPtr<AActor>, UObject*>& Pair : This->Cache)
+	for (TPair<TWeakObjectPtr<AActor>, TObjectPtr<UObject>>& Pair : This->Cache)
 	{
 		Collector.AddReferencedObject(Pair.Value);
 	}
@@ -414,11 +428,6 @@ void AWaterLandscapeBrush::BlueprintWaterBodyChanged_Implementation(AActor* Acto
 	BlueprintWaterBodyChanged_Native(Actor);
 }
 
-void AWaterLandscapeBrush::SetWaterBodyCache(AWaterBody* WaterBody, UObject* InCache)
-{
-	SetActorCache(WaterBody, InCache);
-}
-
 void AWaterLandscapeBrush::SetActorCache(AActor* InActor, UObject* InCache)
 {
 	if (!InCache)
@@ -426,29 +435,19 @@ void AWaterLandscapeBrush::SetActorCache(AActor* InActor, UObject* InCache)
 		return;
 	}
 
-	UObject*& Value = Cache.FindOrAdd(TWeakObjectPtr<AActor>(InActor));
+	TObjectPtr<UObject>& Value = Cache.FindOrAdd(TWeakObjectPtr<AActor>(InActor));
 	Value = InCache;
 }
 
 
-UObject* AWaterLandscapeBrush::GetWaterBodyCache(AWaterBody* WaterBody, TSubclassOf<UObject> CacheClass) const
-{
-	return GetActorCache(WaterBody, CacheClass);
-}
-
 UObject* AWaterLandscapeBrush::GetActorCache(AActor* InActor, TSubclassOf<UObject> CacheClass) const
 {
-	UObject* const* ValuePtr = Cache.Find(TWeakObjectPtr<AActor>(InActor));
+	TObjectPtr<UObject> const* ValuePtr = Cache.Find(TWeakObjectPtr<AActor>(InActor));
 	if (ValuePtr && (*ValuePtr) && (*ValuePtr)->IsA(*CacheClass))
 	{
 		return *ValuePtr;
 	}
 	return nullptr;
-}
-
-void AWaterLandscapeBrush::ClearWaterBodyCache(AWaterBody* WaterBody)
-{
-	ClearActorCache(WaterBody);
 }
 
 void AWaterLandscapeBrush::ClearActorCache(AActor* InActor)
@@ -458,7 +457,7 @@ void AWaterLandscapeBrush::ClearActorCache(AActor* InActor)
 
 void AWaterLandscapeBrush::BlueprintGetRenderTargets_Implementation(UTextureRenderTarget2D* InHeightRenderTarget, UTextureRenderTarget2D*& OutVelocityRenderTarget)
 {
-	BlueprintGetRenderTargets_Native(InHeightRenderTarget, OutVelocityRenderTarget);
+	// Deprecated
 }
 
 void AWaterLandscapeBrush::SetTargetLandscape(ALandscape* InTargetLandscape)
@@ -472,13 +471,12 @@ void AWaterLandscapeBrush::SetTargetLandscape(ALandscape* InTargetLandscape)
 
 		if (InTargetLandscape && InTargetLandscape->CanHaveLayersContent())
 		{
-			FName WaterLayerName = FName("Water");
-			int32 ExistingWaterLayerIndex = InTargetLandscape->GetLayerIndex(WaterLayerName);
-			if (ExistingWaterLayerIndex == INDEX_NONE)
-			{
-				ExistingWaterLayerIndex = InTargetLandscape->CreateLayer(WaterLayerName);
-			}
-			InTargetLandscape->AddBrushToLayer(ExistingWaterLayerIndex, this);
+			static const FName WaterLayerName = FName("Water");
+			
+			ILandscapeModule& LandscapeModule = FModuleManager::GetModuleChecked<ILandscapeModule>("Landscape");
+			int32 WaterLayerIndex = LandscapeModule.GetLandscapeEditorServices()->GetOrCreateEditLayer(WaterLayerName, InTargetLandscape);
+			
+			InTargetLandscape->AddBrushToLayer(WaterLayerIndex, this);
 		}
 	}
 
@@ -489,25 +487,10 @@ void AWaterLandscapeBrush::SetTargetLandscape(ALandscape* InTargetLandscape)
 
 void AWaterLandscapeBrush::OnFullHeightmapRenderDone(UTextureRenderTarget2D* InHeightmapRenderTarget)
 {
-	if (bRenderTargetsDirty)
+	// #todo_water [roey]: This needs to be changed when the WaterZone can maintain it's own list of "ground actors" so that we don't needlessly update all water zones.
+	if (UWaterSubsystem* WaterSubsystem = UWaterSubsystem::GetWaterSubsystem(GetWorld()))
 	{
-		FScopedDurationTimeLogger DurationTimer(TEXT("Water Texture Update Time"));
-
-		UTextureRenderTarget2D* VelocityRenderTarget = nullptr;
-		BlueprintGetRenderTargets(InHeightmapRenderTarget, VelocityRenderTarget);
-
-		UTexture2D* WaterVelocityTexture = nullptr;
-		GEditor->GetEditorSubsystem<UWaterEditorSubsystem>()->UpdateWaterTextures(
-			GetWorld(),
-			VelocityRenderTarget,
-			WaterVelocityTexture);
-
-		if (WaterVelocityTexture)
-		{
-			BlueprintOnRenderTargetTexturesUpdated(WaterVelocityTexture);
-		}
-
-		bRenderTargetsDirty = false;
+		WaterSubsystem->MarkAllWaterZonesForRebuild(EWaterZoneRebuildFlags::UpdateWaterInfoTexture);
 	}
 }
 
@@ -547,12 +530,12 @@ void AWaterLandscapeBrush::ForceUpdate()
 
 void AWaterLandscapeBrush::BlueprintOnRenderTargetTexturesUpdated_Implementation(UTexture2D* VelocityTexture)
 {
-	BlueprintOnRenderTargetTexturesUpdated_Native(VelocityTexture);
+	// Deprecated
 }
 
 void AWaterLandscapeBrush::ForceWaterTextureUpdate()
 {
-	MarkRenderTargetsDirty();
+	// Deprecated
 }
 
 #if WITH_EDITOR
@@ -618,6 +601,23 @@ void AWaterLandscapeBrush::UpdateActorIcon()
 	}
 }
 
+bool AWaterLandscapeBrush::CanEditChange(const FProperty* InProperty) const
+{
+	if (!Super::CanEditChange(InProperty))
+	{
+		return false;
+	}
+
+	// Weightmap layers are automatically populated by the list of IWaterBrushActorInterface affecting this brush :
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(AWaterLandscapeBrush, AffectedWeightmapLayers))
+	{
+		return false;
+	}
+
+	return true;
+}
+
 #endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE
+

@@ -20,6 +20,7 @@ struct FNiagaraSimStageData
 
 	uint32 StageIndex = INDEX_NONE;
 	uint32 IterationIndex = 0;
+	FIntVector ElementCountXYZ = FIntVector::NoneValue;
 
 	class FNiagaraDataBuffer* Source = nullptr;
 	uint32 SourceCountOffset = INDEX_NONE;

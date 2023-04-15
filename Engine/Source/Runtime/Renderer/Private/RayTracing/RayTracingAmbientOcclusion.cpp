@@ -6,12 +6,12 @@
 
 #include "ClearQuad.h"
 #include "SceneRendering.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 #include "SceneUtils.h"
 #include "RenderTargetPool.h"
 #include "RHIResources.h"
 #include "UniformBuffer.h"
-#include "RHI/Public/PipelineStateCache.h"
+#include "PipelineStateCache.h"
 #include "RayTracing/RaytracingOptions.h"
 #include "RayTracingMaterialHitShaders.h"
 #include "RayTracingDefinitions.h"
@@ -96,9 +96,9 @@ class FRayTracingAmbientOcclusionRGS : public FGlobalShader
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWAmbientOcclusionMaskUAV)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWAmbientOcclusionHitDistanceUAV)
-
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -158,7 +158,8 @@ void FDeferredShadingSceneRenderer::RenderRayTracingAmbientOcclusion(
 	PassParameters->MaxRayDistance = View.FinalPostProcessSettings.RayTracingAORadius;
 	PassParameters->Intensity = View.FinalPostProcessSettings.RayTracingAOIntensity;
 	PassParameters->MaxNormalBias = GetRaytracingMaxNormalBias();
-	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+	PassParameters->TLAS = Scene->RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 	PassParameters->RWAmbientOcclusionMaskUAV = GraphBuilder.CreateUAV(DenoiserInputs.Mask);
 	PassParameters->RWAmbientOcclusionHitDistanceUAV = GraphBuilder.CreateUAV(DenoiserInputs.RayHitDistance);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
@@ -194,7 +195,10 @@ void FDeferredShadingSceneRenderer::RenderRayTracingAmbientOcclusion(
 			Initializer.SetHitGroupTable(HitGroupTable);
 			Initializer.bAllowHitGroupIndexing = false; // Use the same hit shader for all geometry in the scene by disabling SBT indexing.
 
+			// TODO(UE-157946): This pipeline does not bind any miss shader and relies on the pipeline to do this automatically. This should be made explicit.
 			Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
+
+			RHICmdList.SetRayTracingMissShader(View.GetRayTracingSceneChecked(), 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 		}
 
 		FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();

@@ -10,8 +10,9 @@ using System.Text;
 using EpicGames.Core;
 using UnrealBuildBase;
 using System.Text.Json;
+using System.Threading.Tasks;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	/// <summary>
 	/// Parameters for a ModifyJsonValue task
@@ -41,7 +42,7 @@ namespace BuildGraph.Tasks
 	/// Modifies json files by setting a value specified in the key path
 	/// </summary>
 	[TaskElement("ModifyJsonValue", typeof(ModifyJsonValueParameters))]
-	public class ModifyJsonValue : CustomTask
+	public class ModifyJsonValue : BgTaskImpl
 	{
 		ModifyJsonValueParameters Parameters;
 
@@ -57,7 +58,7 @@ namespace BuildGraph.Tasks
 		/// <summary>
 		/// Placeholder comment
 		/// </summary>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			string[] Keys = Parameters.KeyPath.Split('.');
 			if (Keys.Length == 0)
@@ -80,7 +81,7 @@ namespace BuildGraph.Tasks
 				CurrObj[Keys[Keys.Length - 1]] = Parameters.NewValue;
 
 				var NewContents = JsonSerializer.Serialize(ParamObj, new JsonSerializerOptions { WriteIndented = true });
-				File.WriteAllText(JsonFile, NewContents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+				await File.WriteAllTextAsync(JsonFile, NewContents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 			}
 		}
 

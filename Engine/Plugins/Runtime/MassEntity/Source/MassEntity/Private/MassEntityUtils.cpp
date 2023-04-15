@@ -3,6 +3,7 @@
 #include "MassEntityUtils.h"
 #include "MassEntityTypes.h"
 #include "MassArchetypeTypes.h"
+#include "MassEntityManager.h"
 #include "MassEntitySubsystem.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/World.h"
@@ -34,8 +35,8 @@ EProcessorExecutionFlags GetProcessorExecutionFlagsForWold(const UWorld& World)
 	return ExecutionFlags;
 }
 
-void CreateSparseChunks(const UMassEntitySubsystem& EntitySystem, const TConstArrayView<FMassEntityHandle> Entities
-	, const FMassArchetypeSubChunks::EDuplicatesHandling DuplicatesHandling, TArray<FMassArchetypeSubChunks>& OutChunkCollections)
+void CreateEntityCollections(const FMassEntityManager& EntityManager, const TConstArrayView<FMassEntityHandle> Entities
+	, const FMassArchetypeEntityCollection::EDuplicatesHandling DuplicatesHandling, TArray<FMassArchetypeEntityCollection>& OutEntityCollections)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE_STR("Mass_CreateSparseChunks");
 
@@ -43,20 +44,32 @@ void CreateSparseChunks(const UMassEntitySubsystem& EntitySystem, const TConstAr
 
 	for (const FMassEntityHandle& Entity : Entities)
 	{
-		FMassArchetypeHandle Archetype = EntitySystem.GetArchetypeForEntity(Entity);
-		TArray<FMassEntityHandle>& PerArchetypeEntities = ArchetypeToEntities.FindOrAdd(Archetype);
-		PerArchetypeEntities.Add(Entity);
+		if (EntityManager.IsEntityValid(Entity))
+		{
+			FMassArchetypeHandle Archetype = EntityManager.GetArchetypeForEntityUnsafe(Entity);
+			TArray<FMassEntityHandle>& PerArchetypeEntities = ArchetypeToEntities.FindOrAdd(Archetype);
+			PerArchetypeEntities.Add(Entity);
+		}
 	}
 
 	for (auto& Pair : ArchetypeToEntities)
 	{
-		// @todo this is a temporary measure to skip entities we've destroyed without the
-		// UMassSpawnerSubsystem::DestroyEntities' caller knowledge. Should be removed once that's addressed.
-		if (Pair.Key.IsValid())
-		{
-			OutChunkCollections.Add(FMassArchetypeSubChunks(Pair.Key, Pair.Value, DuplicatesHandling));
-		}
+		OutEntityCollections.Add(FMassArchetypeEntityCollection(Pair.Key, Pair.Value, DuplicatesHandling));
 	}
+}
+
+FMassEntityManager* GetEntityManager(const UWorld* World)
+{
+	UMassEntitySubsystem* EntityManager = UWorld::GetSubsystem<UMassEntitySubsystem>(World);
+	check(EntityManager);
+	return &EntityManager->GetMutableEntityManager();
+}
+
+FMassEntityManager& GetEntityManagerChecked(const UWorld& World)
+{
+	UMassEntitySubsystem* EntityManager = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
+	check(EntityManager);
+	return EntityManager->GetMutableEntityManager();
 }
 
 } // namespace UE::Mass::Utils

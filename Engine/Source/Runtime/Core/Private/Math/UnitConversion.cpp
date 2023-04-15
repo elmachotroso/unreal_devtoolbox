@@ -1,10 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Math/UnitConversion.h"
+
+#include "HAL/PlatformCrt.h"
 #include "Internationalization/Internationalization.h"
-#include "Misc/ExpressionParserTypes.h"
-#include "Misc/ExpressionParser.h"
+#include "Internationalization/Text.h"
 #include "Math/BasicMathExpressionEvaluator.h"
+#include "Math/UnitConversion.inl"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/ExpressionParser.h"
+#include "Misc/ExpressionParserTypes.h"
+#include "Misc/ExpressionParserTypes.inl"
+#include "Misc/Guid.h"
+#include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 
 PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
@@ -17,6 +28,7 @@ struct FParseCandidate
 	EUnit Unit;
 };
 
+//TODO: Add note about updating
 FParseCandidate ParseCandidates[] = {
 	
 	{ TEXT("Micrometers"),			EUnit::Micrometers },			{ TEXT("um"),		EUnit::Micrometers }, 			{ TEXT("\u00B5m"),	EUnit::Micrometers },
@@ -62,16 +74,18 @@ FParseCandidate ParseCandidates[] = {
 	{ TEXT("RevolutionsPerMinute"),	EUnit::RevolutionsPerMinute },	{ TEXT("rpm"),		EUnit::RevolutionsPerMinute },
 
 	{ TEXT("Bytes"),				EUnit::Bytes },					{ TEXT("B"),		EUnit::Bytes },
-	{ TEXT("Kilobytes"),			EUnit::Kilobytes },				{ TEXT("KB"),		EUnit::Kilobytes },
-	{ TEXT("Megabytes"),			EUnit::Megabytes },				{ TEXT("MB"),		EUnit::Megabytes },
-	{ TEXT("Gigabytes"),			EUnit::Gigabytes },				{ TEXT("GB"),		EUnit::Gigabytes },
-	{ TEXT("Terabytes"),			EUnit::Terabytes },				{ TEXT("TB"),		EUnit::Terabytes },
+	{ TEXT("Kilobytes"),			EUnit::Kilobytes },				{ TEXT("KB"),		EUnit::Kilobytes },				{ TEXT("KiB"),		EUnit::Kilobytes },
+	{ TEXT("Megabytes"),			EUnit::Megabytes },				{ TEXT("MB"),		EUnit::Megabytes },				{ TEXT("MiB"),		EUnit::Megabytes },
+	{ TEXT("Gigabytes"),			EUnit::Gigabytes },				{ TEXT("GB"),		EUnit::Gigabytes },				{ TEXT("GiB"),		EUnit::Gigabytes },
+	{ TEXT("Terabytes"),			EUnit::Terabytes },				{ TEXT("TB"),		EUnit::Terabytes },				{ TEXT("TiB"),		EUnit::Terabytes },
 
 	{ TEXT("Lumens"),				EUnit::Lumens },				{ TEXT("lm"),		EUnit::Lumens },
 	{ TEXT("Candela"),				EUnit::Candela },				{ TEXT("cd"),		EUnit::Candela },
 	{ TEXT("Lux"),					EUnit::Lux },					{ TEXT("lx"),		EUnit::Lux },
 	{ TEXT("CandelaPerMeterSquared"), EUnit::CandelaPerMeter2 },	{ TEXT("cd/m2"),	EUnit::CandelaPerMeter2 },		{ TEXT("CandelaPerMeter2"),		EUnit::CandelaPerMeter2 },
 
+	{ TEXT("Nanoseconds"),			EUnit::Nanoseconds },			{ TEXT("ns"),		EUnit::Nanoseconds },
+	{ TEXT("Microseconds"),			EUnit::Microseconds },			{ TEXT("us"),		EUnit::Microseconds },			{ TEXT("Microseconds"),			EUnit::Microseconds },			{ TEXT("\u00B5s"),	EUnit::Microseconds },
 	{ TEXT("Milliseconds"),			EUnit::Milliseconds },			{ TEXT("ms"),		EUnit::Milliseconds },
 	{ TEXT("Seconds"),				EUnit::Seconds },				{ TEXT("s"),		EUnit::Seconds },
 	{ TEXT("Minutes"),				EUnit::Minutes },				{ TEXT("min"),		EUnit::Minutes },
@@ -110,7 +124,7 @@ const TCHAR* const DisplayStrings[] = {
 
 	TEXT("lm"), TEXT("cd"), TEXT("lux"), TEXT("cd/m2"),
 
-	TEXT("ms"), TEXT("s"), TEXT("min"), TEXT("hr"), TEXT("dy"), TEXT("mth"), TEXT("yr"),
+	TEXT("ns"), TEXT("\u00B5s"), TEXT("ms"), TEXT("s"), TEXT("min"), TEXT("hr"), TEXT("dy"), TEXT("mth"), TEXT("yr"),
 
 	TEXT("ppi"),
 
@@ -141,7 +155,7 @@ const EUnitType UnitTypes[] = {
 
 	EUnitType::LuminousFlux, EUnitType::LuminousIntensity, EUnitType::Illuminance, EUnitType::Luminance,
 
-	EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,
+	EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,		EUnitType::Time,
 
 	EUnitType::PixelDensity,
 
@@ -558,7 +572,7 @@ namespace UnitConversion
 		// Convert to degrees
 		switch (From)
 		{
-			case EUnit::Radians:			return (180 / PI);
+			case EUnit::Radians:			return (180 / UE_PI);
 			default: 						return 1;
 		}
 	}
@@ -645,6 +659,8 @@ namespace UnitConversion
 			case EUnit::Days:				Factor *= 24;		// fallthrough
 											return Factor;
 
+			case EUnit::Nanoseconds:		Factor /= 1000;		// fallthrough
+			case EUnit::Microseconds:		Factor /= 1000;		// fallthrough
 			case EUnit::Milliseconds:		Factor /= 1000;		// fallthrough
 			case EUnit::Seconds:			Factor /= 60;		// fallthrough
 			case EUnit::Minutes:			Factor /= 60;		// fallthrough

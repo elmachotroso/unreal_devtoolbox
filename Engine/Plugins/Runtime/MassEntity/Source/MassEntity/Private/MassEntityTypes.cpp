@@ -3,6 +3,14 @@
 #include "MassEntityTypes.h"
 #include "StructUtilsTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MassEntityTypes)
+
+DEFINE_TYPEBITSET(FMassFragmentBitSet);
+DEFINE_TYPEBITSET(FMassTagBitSet);
+DEFINE_TYPEBITSET(FMassChunkFragmentBitSet);
+DEFINE_TYPEBITSET(FMassSharedFragmentBitSet);
+DEFINE_TYPEBITSET(FMassExternalSubsystemBitSet);
+
 uint32 FMassArchetypeSharedFragmentValues::CalculateHash() const
 {
 	checkf(bSorted, TEXT("Expecting the containers to be sorted for the hash caluclation to be correct"));
@@ -21,3 +29,4 @@ uint32 FMassArchetypeSharedFragmentValues::CalculateHash() const
 
 	return Hash;
 }
+

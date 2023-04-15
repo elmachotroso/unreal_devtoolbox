@@ -103,10 +103,13 @@ struct FConcertSessionVersionInfo
 	GENERATED_BODY()
 
 	/** Initialize this version info from the compiled in data */
-	CONCERT_API void Initialize();
+	CONCERT_API void Initialize(bool bSupportMixedBuildTypes);
 
 	/** Validate this version info against another */
 	CONCERT_API bool Validate(const FConcertSessionVersionInfo& InOther, const EConcertVersionValidationMode InValidationMode, FText* OutFailureReason = nullptr) const;
+
+	/** Return the version information in string represenation. */
+	CONCERT_API FText AsText() const;
 
 	/** File version info */
 	UPROPERTY()

@@ -3,7 +3,7 @@
 #include "FractureEditorModeToolkit.h"
 #include "FractureEditorModeToolkit.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorModeManager.h"
 
 #include "Engine/Selection.h"
@@ -39,7 +39,7 @@
 #include "GeometryCollection/GeometryCollectionConvexUtility.h"
 
 #include "Styling/AppStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "FractureEditor.h"
 #include "FractureEditorCommands.h"
 #include "FractureEditorStyle.h"
@@ -50,6 +50,7 @@
 #include "FractureToolAutoCluster.h" 
 #include "SGeometryCollectionOutliner.h"
 #include "SGeometryCollectionHistogram.h"
+#include "SGeometryCollectionStatistics.h"
 #include "FractureSelectionTools.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
@@ -318,10 +319,15 @@ void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolki
 void FFractureEditorModeToolkit::RequestModeUITabs()
 {
 	FModeToolkit::RequestModeUITabs();
-	if (ModeUILayer.IsValid())
+	if (TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin())
 	{
-		TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin();
-		TSharedRef<FWorkspaceItem> MenuGroup = ModeUILayerPtr->GetModeMenuCategory().ToSharedRef();
+		TSharedPtr<FWorkspaceItem> MenuModeCategoryPtr = ModeUILayerPtr->GetModeMenuCategory();
+
+		if(!MenuModeCategoryPtr)
+		{ 
+			return;
+		}
+		TSharedRef<FWorkspaceItem> MenuGroup = MenuModeCategoryPtr.ToSharedRef();
 		HierarchyTabInfo.OnSpawnTab = FOnSpawnTab::CreateSP(SharedThis(this), &FFractureEditorModeToolkit::CreateHierarchyTab);
 		HierarchyTabInfo.TabLabel = LOCTEXT("FractureHierarchy", "Fracture Hierarchy");
 		HierarchyTabInfo.TabTooltip = LOCTEXT("ModesToolboxTabTooltipText", "Open the  Modes tab, which contains the active editor mode's settings.");
@@ -341,11 +347,15 @@ void FFractureEditorModeToolkit::InvokeUI()
 {
 	FModeToolkit::InvokeUI();
 
-	if (ModeUILayer.IsValid())
+	if (TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin())
 	{
-		TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin();
-		HierarchyTab = ModeUILayerPtr->GetTabManager()->TryInvokeTab(UAssetEditorUISubsystem::TopRightTabID);
-		StatisticsTab = ModeUILayerPtr->GetTabManager()->TryInvokeTab(UAssetEditorUISubsystem::BottomLeftTabID);
+		TSharedPtr<FTabManager> TabManagerPtr = ModeUILayerPtr->GetTabManager();
+		if (!TabManagerPtr)
+		{
+			return;
+		}
+		HierarchyTab = TabManagerPtr->TryInvokeTab(UAssetEditorUISubsystem::TopRightTabID);
+		StatisticsTab = TabManagerPtr->TryInvokeTab(UAssetEditorUISubsystem::BottomLeftTabID);
 	}
 
 
@@ -539,7 +549,7 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateHierarchyTab(const FSpawn
 		.Padding(MorePadding)
 		.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 		.BodyBorderBackgroundColor(FLinearColor(1.0, 0.0, 0.0))
-		.AreaTitleFont(FEditorStyle::Get().GetFontStyle("HistogramDetailsView.CategoryFontStyle"))
+		.AreaTitleFont(FAppStyle::Get().GetFontStyle("HistogramDetailsView.CategoryFontStyle"))
 		.InitiallyCollapsed(true)
 		.Clipping(EWidgetClipping::ClipToBounds)
 		.BodyContent()
@@ -561,10 +571,10 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateHierarchyTab(const FSpawn
 		.AreaTitle(FText(LOCTEXT("Outliner", "Outliner")))
 		.HeaderPadding(FMargin(2.0, 2.0))
 		.Padding(MorePadding)
-		.BorderImage(FEditorStyle::Get().GetBrush("DetailsView.CategoryTop"))
+		.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
 		.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 		.BodyBorderBackgroundColor(FLinearColor(1.0, 0.0, 0.0))
-		.AreaTitleFont(FEditorStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
+		.AreaTitleFont(FAppStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
 		.BodyContent()
 		[
 			SNew(SVerticalBox)
@@ -594,13 +604,22 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateHierarchyTab(const FSpawn
 					[
 						OutlinerDetailsView.ToSharedRef()
 					]
-
 					+ SVerticalBox::Slot()
 					[
 						SAssignNew(OutlinerView, SGeometryCollectionOutliner)
 						.OnBoneSelectionChanged(this, &FFractureEditorModeToolkit::OnOutlinerBoneSelectionChanged)
 					]
-
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SButton)
+						.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
+						.ContentPadding(FMargin(2, 0))
+						.HAlign(HAlign_Center)
+						.OnClicked(this, &FFractureEditorModeToolkit::OnRefreshOutlinerButtonClicked)
+						.Text(LOCTEXT("GCOUtliner_Refresh_Button_Text", "Refresh"))
+						.ToolTipText(LOCTEXT("GCOUtliner_Refresh_Button_ToolTip", "Refresh the outliner"))
+					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					[
@@ -620,6 +639,20 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateHierarchyTab(const FSpawn
 	return CreatedTab.ToSharedRef();
 }
 
+FReply FFractureEditorModeToolkit::OnRefreshOutlinerButtonClicked()
+{
+	RefreshOutliner();
+	return FReply::Handled();
+}
+
+void FFractureEditorModeToolkit::RefreshOutliner()
+{
+	if (OutlinerView)
+	{
+		OutlinerView->RegenerateItems();
+	}
+}
+
 TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateStatisticsTab(const FSpawnTabArgs& Args)
 {
 	FMargin MorePadding = FMargin(10.0f, 2.0f);
@@ -627,14 +660,15 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateStatisticsTab(const FSpaw
 		.AreaTitle(FText(LOCTEXT("LevelStatistics", "Level Statistics")))
 		.HeaderPadding(FMargin(2.0, 2.0))
 		.Padding(MorePadding)
-		.BorderImage(FEditorStyle::Get().GetBrush("DetailsView.CategoryTop"))
+		.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
 		.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
 		.BodyBorderBackgroundColor(FLinearColor(1.0, 0.0, 0.0))
-		.AreaTitleFont(FEditorStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
+		.AreaTitleFont(FAppStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
 		.BodyContent()
 		[
-			SNew(STextBlock)
-			.Text(this, &FFractureEditorModeToolkit::GetStatisticsSummary)
+			SAssignNew(StatisticsView, SGeometryCollectionStatistics)
+			//SNew(STextBlock)
+			//.Text(LOCTEXT("Statt", "Statt")) //this, &FFractureEditorModeToolkit::GetStatisticsSummary)
 		];
 	TSharedPtr<SDockTab> CreatedTab = SNew(SDockTab)
 		[
@@ -679,10 +713,23 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ItemText))
 		{
-			UOutlinerSettings* OutlinerSettings = GetMutableDefault<UOutlinerSettings>();
 			OutlinerView->RegenerateItems();
 		}
-
+		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColorByLevel))
+		{
+			OutlinerView->RegenerateItems();
+			FGeometryCollectionStatistics Stats;
+			GetStatisticsSummary(Stats);
+			StatisticsView->SetStatistics(Stats);
+		}
+		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColumnMode))
+		{
+			OutlinerView->RegenerateHeader();
+			OutlinerView->RegenerateItems();
+			FGeometryCollectionStatistics Stats;
+			GetStatisticsSummary(Stats);
+			StatisticsView->SetStatistics(Stats);
+		}
 	}
 }
 
@@ -778,6 +825,8 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.SelectSiblings);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectAllInLevel);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectNeighbors);
+		ToolbarBuilder.AddToolBarButton(Commands.SelectLeaves);
+		ToolbarBuilder.AddToolBarButton(Commands.SelectClusters);
 		ToolbarBuilder.AddToolBarButton(Commands.SelectCustom);
 	}
 	else if (PaletteIndex == TEXT("Fracture"))
@@ -796,6 +845,8 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.DeleteBranch);
 		ToolbarBuilder.AddToolBarButton(Commands.Hide);
 		ToolbarBuilder.AddToolBarButton(Commands.Unhide);
+		ToolbarBuilder.AddToolBarButton(Commands.MergeSelected);
+		//ToolbarBuilder.AddToolBarButton(Commands.SplitSelected); // Split tool intentionally disabled; prefer the 'split' option on import instead.
 	}
 	else if (PaletteIndex == TEXT("Cluster"))
 	{
@@ -823,6 +874,7 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.MakeConvex);
 		ToolbarBuilder.AddToolBarButton(Commands.FixTinyGeo);
 		ToolbarBuilder.AddToolBarButton(Commands.SetInitialDynamicState);
+		ToolbarBuilder.AddToolBarButton(Commands.SetRemoveOnBreak);
 	}
 }
 
@@ -859,7 +911,22 @@ void FFractureEditorModeToolkit::BindCommands()
 
 	ToolkitCommands->MapAction(
 		Commands.CancelTool,
-		FExecuteAction::CreateLambda([=]() { this->SetActiveTool(nullptr); })
+		FExecuteAction::CreateLambda([=]()
+		{
+			if (GetActiveTool())
+			{
+				this->SetActiveTool(nullptr);
+			}
+			else
+			{
+				GEditor->SelectNone(true, true, false);
+			}
+		}),
+		FCanExecuteAction::CreateLambda([this]()
+		{
+			// don't capture escape when in PIE or simulating
+			return GEditor->PlayWorld == NULL && !GEditor->bIsSimulatingInEditor;
+		})
 	);
 
 	// Map actions of all the Fracture Tools
@@ -911,7 +978,7 @@ void FFractureEditorModeToolkit::SetHideForUnselected(UGeometryCollectionCompone
 		// If a cluster is selected, set false for all children.
 		if (GeometryCollection->HasAttribute("Hide", FGeometryCollection::TransformGroup))
 		{
-			TManagedArray<bool>& Hide = GeometryCollection->GetAttribute<bool>("Hide", FGeometryCollection::TransformGroup);
+			TManagedArray<bool>& Hide = GeometryCollection->ModifyAttribute<bool>("Hide", FGeometryCollection::TransformGroup);
 			const TManagedArray<TSet<int32>>& Children = GeometryCollection->GetAttribute<TSet<int32>>("Children", FGeometryCollection::TransformGroup);
 			
 			const TArray<int32>& SelectedBones = GCComp->GetSelectedBones();
@@ -921,6 +988,12 @@ void FFractureEditorModeToolkit::SetHideForUnselected(UGeometryCollectionCompone
 
 				for (int32 SelectedBone : SelectedBones)
 				{
+					if (!ensure(SelectedBone >= 0 && SelectedBone < Hide.Num()))
+					{
+						// Invalid selection, don't hide anything
+						Hide.Fill(false);
+						break;
+					}
 					Hide[SelectedBone] = false;
 					if (Children[SelectedBone].Num() > 0)
 					{ 
@@ -1062,7 +1135,7 @@ int32 FFractureEditorModeToolkit::GetLevelCount()
 				bool HasLevelAttribute = GeometryCollection->HasAttribute("Level", FTransformCollection::TransformGroup);
 				if (HasLevelAttribute)
 				{
-					TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
+					const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
 
 					if(Levels.Num() > 0)
 					{
@@ -1175,9 +1248,8 @@ void FFractureEditorModeToolkit::ToggleShowBoneColors()
 
 	for (UGeometryCollectionComponent* Comp : GeomCompSelection)
 	{
-		Comp->SetShowBoneColors(!Comp->GetShowBoneColors());
-		Comp->MarkRenderStateDirty();
-		Comp->MarkRenderDynamicDataDirty();
+		FScopedColorEdit EditBoneColor(Comp, true /*bForceUpdate*/); // the property has already changed; this will trigger the color update + render state updates
+		EditBoneColor.SetShowBoneColors(!EditBoneColor.GetShowBoneColors());
 	}
 }
 
@@ -1404,6 +1476,13 @@ void FFractureEditorModeToolkit::SetOutlinerComponents(const TArray<UGeometryCol
 		HistogramView->SetComponents(ComponentsToEdit, GetLevelViewValue());
 	}
 
+	if (StatisticsView)
+	{
+		FGeometryCollectionStatistics Stats;
+		GetStatisticsSummary(Stats);
+		StatisticsView->SetStatistics(Stats);
+	}
+
 	if (ActiveTool != nullptr)
 	{
 		ActiveTool->SelectedBonesChanged();
@@ -1411,15 +1490,10 @@ void FFractureEditorModeToolkit::SetOutlinerComponents(const TArray<UGeometryCol
 	}
 }
 
-void FFractureEditorModeToolkit::SetBoneSelection(UGeometryCollectionComponent* InRootComponent, const TArray<int32>& InSelectedBones, bool bClearCurrentSelection)
+void FFractureEditorModeToolkit::SetBoneSelection(UGeometryCollectionComponent* InRootComponent, const TArray<int32>& InSelectedBones, bool bClearCurrentSelection, int32 FocusBoneIdx)
 {
-	if (InSelectedBones.Num() > 0 && !InRootComponent->IsSelected())
-	{
-		GEditor->SelectComponent(InRootComponent, true, true);
-	}
-
-	OutlinerView->SetBoneSelection(InRootComponent, InSelectedBones, bClearCurrentSelection);
-	HistogramView->SetBoneSelection(InRootComponent, InSelectedBones, bClearCurrentSelection);
+	OutlinerView->SetBoneSelection(InRootComponent, InSelectedBones, bClearCurrentSelection, FocusBoneIdx);
+	HistogramView->SetBoneSelection(InRootComponent, InSelectedBones, bClearCurrentSelection, FocusBoneIdx);
 
 	UpdateHideForComponent(InRootComponent);
 	
@@ -1650,7 +1724,7 @@ void FFractureEditorModeToolkit::UpdateExplodedVectors(UGeometryCollectionCompon
 
 		check(OutGeometryCollection->HasAttribute("ExplodedVector", FGeometryCollection::TransformGroup));
 
-		TManagedArray<FVector3f>& ExplodedVectors = OutGeometryCollection->GetAttribute<FVector3f>("ExplodedVector", FGeometryCollection::TransformGroup);
+		TManagedArray<FVector3f>& ExplodedVectors = OutGeometryCollection->ModifyAttribute<FVector3f>("ExplodedVector", FGeometryCollection::TransformGroup);
 		const TManagedArray<FTransform>& Transform = OutGeometryCollection->GetAttribute<FTransform>("Transform", FGeometryCollection::TransformGroup);
 		const TManagedArray<int32>& TransformToGeometryIndex = OutGeometryCollection->GetAttribute<int32>("TransformToGeometryIndex", FGeometryCollection::TransformGroup);
 		const TManagedArray<FBox>& BoundingBox = OutGeometryCollection->GetAttribute<FBox>("BoundingBox", FGeometryCollection::GeometryGroup);
@@ -1717,6 +1791,7 @@ void FFractureEditorModeToolkit::UpdateExplodedVectors(UGeometryCollectionCompon
 	}
 
 	GeometryCollectionComponent->RefreshEmbeddedGeometry();
+	GeometryCollectionComponent->UpdateCachedBounds();
 }
 
 void FFractureEditorModeToolkit::RegenerateOutliner()
@@ -1805,9 +1880,8 @@ FText FFractureEditorModeToolkit::GetSelectionInfo() const
 }
 
 
-FText FFractureEditorModeToolkit::GetStatisticsSummary() const
+void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatistics& Stats) const
 {
-
 	TArray<const FGeometryCollection*> GeometryCollectionArray;
 	if (USelection* SelectedActors = GEditor->GetSelectedActors())
 	{
@@ -1815,23 +1889,22 @@ FText FFractureEditorModeToolkit::GetStatisticsSummary() const
 		{
 			if (AGeometryCollectionActor* Actor = Cast<AGeometryCollectionActor>(*Iter))
 			{
-				const UGeometryCollection* RestCollection = Actor->GetGeometryCollectionComponent()->GetRestCollection();
-
-				if(RestCollection)
+				if (UGeometryCollectionComponent* Component = Actor->GetGeometryCollectionComponent())
 				{
-					const FGeometryCollection* GeometryCollection = RestCollection->GetGeometryCollection().Get();
-
-					if(GeometryCollection != nullptr)
+					if (const UGeometryCollection* RestCollection = Component->GetRestCollection())
 					{
-						GeometryCollectionArray.Add(GeometryCollection);
+						const FGeometryCollection* GeometryCollection = RestCollection->GetGeometryCollection().Get();
+
+						if (GeometryCollection != nullptr)
+						{
+							GeometryCollectionArray.Add(GeometryCollection);
+						}
 					}
 				}
 			}
 		}
 	}
 
-
-	FString Buffer;
 
 	if (GeometryCollectionArray.Num() > 0)
 	{
@@ -1844,9 +1917,6 @@ FText FFractureEditorModeToolkit::GetStatisticsSummary() const
 			const FGeometryCollection* GeometryCollection = GeometryCollectionArray[Idx];
 
 			check(GeometryCollection);
-
-
-			Buffer += FString::Printf(TEXT("Sum of the selected Geometry Collections\n\n"));
 
 			if(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
 			{
@@ -1887,14 +1957,14 @@ FText FFractureEditorModeToolkit::GetStatisticsSummary() const
 			}
 		}
 
+		Stats.CountsPerLevel.Reset();
 		for (int32 Level = 0; Level < LevelMax; ++Level)
 		{
-			Buffer += FString::Printf(TEXT("Level: %d \t - \t %d\n"), Level, LevelTransformsAll[Level]);
+			Stats.CountsPerLevel.Add(LevelTransformsAll[Level]);
 		}
-		Buffer += FString::Printf(TEXT("\nEmbedded: %d"), EmbeddedCount);
-	}
 
-	return FText::FromString(Buffer);
+		Stats.EmbeddedCount = EmbeddedCount;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

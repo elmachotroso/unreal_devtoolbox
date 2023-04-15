@@ -1,12 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Buffers;
-using System.Security.Cryptography;
-using System.Text;
 using System.Buffers.Binary;
-using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
@@ -31,147 +27,232 @@ namespace EpicGames.Core
 		/// </summary>
 		public const int NumBits = NumBytes * 8;
 
-		/// <summary>
-		/// Memory storing the digest data
-		/// </summary>
-		public ReadOnlyMemory<byte> Memory;
-
-		/// <summary>
-		/// Span for the underlying memory
-		/// </summary>
-		public ReadOnlySpan<byte> Span => Memory.Span;
+		readonly ulong _a;
+		readonly ulong _b;
+		readonly uint _c;
 
 		/// <summary>
 		/// Hash consisting of zeroes
 		/// </summary>
-		public static IoHash Zero { get; } = new IoHash(new byte[NumBytes]);
+		public static IoHash Zero { get; } = new IoHash(0, 0, 0);
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Memory">Memory to construct from</param>
-		public IoHash(ReadOnlyMemory<byte> Memory)
+		/// <param name="span">Memory to construct from</param>
+		public IoHash(ReadOnlySpan<byte> span)
+			: this(BinaryPrimitives.ReadUInt64BigEndian(span), BinaryPrimitives.ReadUInt64BigEndian(span.Slice(8)), BinaryPrimitives.ReadUInt32BigEndian(span.Slice(16)))
 		{
-			if (Memory.Length != NumBytes)
-			{
-				throw new ArgumentException($"IoHash must be {NumBytes} bytes long");
-			}
+		}
 
-			this.Memory = Memory;
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		public IoHash(ulong a, ulong b, uint c)
+		{
+			_a = a;
+			_b = b;
+			_c = c;
 		}
 
 		/// <summary>
 		/// Construct 
 		/// </summary>
-		/// <param name="Hasher">The hasher to construct from</param>
-		public IoHash(Blake3.Hasher Hasher)
+		/// <param name="hasher">The hasher to construct from</param>
+		public static IoHash FromBlake3(Blake3.Hasher hasher)
 		{
-			byte[] Output = new byte[32];
-			Hasher.Finalize(Output);
-			Memory = Output.AsMemory(0, NumBytes);
+			Span<byte> output = stackalloc byte[32];
+			hasher.Finalize(output);
+			return new IoHash(output);
 		}
 
 		/// <summary>
-		/// Creates a content hash for a block of data, using a given algorithm.
+		/// Creates the IoHash for a block of data.
 		/// </summary>
-		/// <param name="Data">Data to compute the hash for</param>
-		/// <returns>New content hash instance containing the hash of the data</returns>
-		public static IoHash Compute(ReadOnlySpan<byte> Data)
+		/// <param name="data">Data to compute the hash for</param>
+		/// <returns>New hash instance containing the hash of the data</returns>
+		public static IoHash Compute(ReadOnlySpan<byte> data)
 		{
-			byte[] Output = new byte[32];
-			Blake3.Hasher.Hash(Data, Output);
-			return new IoHash(Output.AsMemory(0, 20));
+			Span<byte> output = stackalloc byte[32];
+			Blake3.Hasher.Hash(data, output);
+			return new IoHash(output);
+		}
+
+		/// <summary>
+		/// Creates the IoHash for a block of data.
+		/// </summary>
+		/// <param name="sequence">Data to compute the hash for</param>
+		/// <returns>New hash instance containing the hash of the data</returns>
+		public static IoHash Compute(ReadOnlySequence<byte> sequence)
+		{
+			if (sequence.IsSingleSegment)
+			{
+				return Compute(sequence.FirstSpan);
+			}
+
+			using (Blake3.Hasher hasher = Blake3.Hasher.New())
+			{
+				foreach (ReadOnlyMemory<byte> segment in sequence)
+				{
+					hasher.Update(segment.Span);
+				}
+				return FromBlake3(hasher);
+			}
 		}
 
 		/// <summary>
 		/// Parses a digest from the given hex string
 		/// </summary>
-		/// <param name="Text"></param>
+		/// <param name="text"></param>
 		/// <returns></returns>
-		public static IoHash Parse(string Text)
+		public static IoHash Parse(string text)
 		{
-			return new IoHash(StringUtils.ParseHexString(Text));
+			return new IoHash(StringUtils.ParseHexString(text));
 		}
 
 		/// <summary>
 		/// Parses a digest from the given hex string
 		/// </summary>
-		/// <param name="Text"></param>
+		/// <param name="text"></param>
 		/// <returns></returns>
-		public static IoHash Parse(ReadOnlySpan<byte> Text)
+		public static IoHash Parse(ReadOnlySpan<byte> text)
 		{
-			return new IoHash(StringUtils.ParseHexString(Text));
+			return new IoHash(StringUtils.ParseHexString(text));
+		}
+
+		/// <summary>
+		/// Parses a digest from the given hex string
+		/// </summary>
+		/// <param name="text"></param>
+		/// <param name="hash">Receives the hash on success</param>
+		/// <returns></returns>
+		public static bool TryParse(string text, out IoHash hash)
+		{
+			byte[]? bytes;
+			if (StringUtils.TryParseHexString(text, out bytes) && bytes.Length == IoHash.NumBytes)
+			{
+				hash = new IoHash(bytes);
+				return true;
+			}
+			else
+			{
+				hash = default;
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Parses a digest from the given hex string
+		/// </summary>
+		/// <param name="text"></param>
+		/// <param name="hash">Receives the hash on success</param>
+		/// <returns></returns>
+		public static bool TryParse(ReadOnlySpan<byte> text, out IoHash hash)
+		{
+			byte[]? bytes;
+			if (StringUtils.TryParseHexString(text, out bytes) && bytes.Length == IoHash.NumBytes)
+			{
+				hash = new IoHash(bytes);
+				return true;
+			}
+			else
+			{
+				hash = default;
+				return false;
+			}
 		}
 
 		/// <inheritdoc cref="IComparable{T}.CompareTo(T)"/>
-		public int CompareTo(IoHash Other)
+		public int CompareTo(IoHash other)
 		{
-			ReadOnlySpan<byte> A = Span;
-			ReadOnlySpan<byte> B = Other.Span;
-
-			for (int Idx = 0; Idx < A.Length && Idx < B.Length; Idx++)
+			if (_a != other._a)
 			{
-				int Compare = A[Idx] - B[Idx];
-				if (Compare != 0)
-				{
-					return Compare;
-				}
+				return (_a < other._a) ? -1 : +1;
 			}
-			return A.Length - B.Length;
+			else if (_b != other._b)
+			{
+				return (_b < other._b) ? -1 : +1;
+			}
+			else
+			{
+				return (_c < other._c) ? -1 : +1;
+			}
 		}
 
 		/// <inheritdoc/>
-		public bool Equals(IoHash Other) => Span.SequenceEqual(Other.Span);
+		public bool Equals(IoHash other) => _a == other._a && _b == other._b && _c == other._c;
 
 		/// <inheritdoc/>
-		public override bool Equals(object? Obj) => (Obj is IoHash Hash) && Hash.Span.SequenceEqual(Span);
+		public override bool Equals(object? obj) => (obj is IoHash hash) && Equals(hash);
 
 		/// <inheritdoc/>
-		public override int GetHashCode() => BinaryPrimitives.ReadInt32LittleEndian(Span);
+		public override int GetHashCode() => (int)_a;
 
 		/// <inheritdoc/>
-		public Utf8String ToUtf8String() => StringUtils.FormatUtf8HexString(Memory.Span);
+		public Utf8String ToUtf8String() => StringUtils.FormatUtf8HexString(ToByteArray());
 
 		/// <inheritdoc/>
-		public override string ToString() => StringUtils.FormatHexString(Memory.Span);
+		public override string ToString() => StringUtils.FormatHexString(ToByteArray());
+
+		/// <summary>
+		/// Convert this hash to a byte array
+		/// </summary>
+		/// <returns>Data for the hash</returns>
+		public byte[] ToByteArray()
+		{
+			byte[] data = new byte[NumBytes];
+			CopyTo(data);
+			return data;
+		}
+
+		/// <summary>
+		/// Copies this hash into a span
+		/// </summary>
+		/// <param name="span"></param>
+		public void CopyTo(Span<byte> span)
+		{
+			BinaryPrimitives.WriteUInt64BigEndian(span, _a);
+			BinaryPrimitives.WriteUInt64BigEndian(span[8..], _b);
+			BinaryPrimitives.WriteUInt32BigEndian(span[16..], _c);
+		}
 
 		/// <summary>
 		/// Test two hash values for equality
 		/// </summary>
-		public static bool operator ==(IoHash A, IoHash B) => A.Span.SequenceEqual(B.Span);
+		public static bool operator ==(IoHash a, IoHash b) => a.Equals(b);
 
 		/// <summary>
 		/// Test two hash values for equality
 		/// </summary>
-		public static bool operator !=(IoHash A, IoHash B) => !(A == B);
+		public static bool operator !=(IoHash a, IoHash b) => !(a == b);
 
 		/// <summary>
 		/// Tests whether A > B
 		/// </summary>
-		public static bool operator >(IoHash A, IoHash B) => A.CompareTo(B) > 0;
+		public static bool operator >(IoHash a, IoHash b) => a.CompareTo(b) > 0;
 
 		/// <summary>
 		/// Tests whether A is less than B
 		/// </summary>
-		public static bool operator <(IoHash A, IoHash B) => A.CompareTo(B) < 0;
+		public static bool operator <(IoHash a, IoHash b) => a.CompareTo(b) < 0;
 
 		/// <summary>
 		/// Tests whether A is greater than or equal to B
 		/// </summary>
-		public static bool operator >=(IoHash A, IoHash B) => A.CompareTo(B) >= 0;
+		public static bool operator >=(IoHash a, IoHash b) => a.CompareTo(b) >= 0;
 
 		/// <summary>
 		/// Tests whether A is less than or equal to B
 		/// </summary>
-		public static bool operator <=(IoHash A, IoHash B) => A.CompareTo(B) <= 0;
+		public static bool operator <=(IoHash a, IoHash b) => a.CompareTo(b) <= 0;
 
 		/// <summary>
 		/// Convert a Blake3Hash to an IoHash
 		/// </summary>
-		/// <param name="Hash"></param>
-		public static implicit operator IoHash(Blake3Hash Hash)
+		/// <param name="hash"></param>
+		public static implicit operator IoHash(Blake3Hash hash)
 		{
-			return new IoHash(Hash.Memory.Slice(0, NumBytes));
+			return new IoHash(hash.Span.Slice(0, NumBytes));
 		}
 	}
 
@@ -183,21 +264,22 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Read an <see cref="IoHash"/> from a memory reader
 		/// </summary>
-		/// <param name="Reader"></param>
+		/// <param name="reader"></param>
 		/// <returns></returns>
-		public static IoHash ReadIoHash(this MemoryReader Reader)
+		public static IoHash ReadIoHash(this IMemoryReader reader)
 		{
-			return new IoHash(Reader.ReadFixedLengthBytes(IoHash.NumBytes));
+			return new IoHash(reader.ReadFixedLengthBytes(IoHash.NumBytes).Span);
 		}
 
 		/// <summary>
 		/// Write an <see cref="IoHash"/> to a memory writer
 		/// </summary>
-		/// <param name="Writer"></param>
-		/// <param name="Hash"></param>
-		public static void WriteIoHash(this MemoryWriter Writer, IoHash Hash)
+		/// <param name="writer"></param>
+		/// <param name="hash"></param>
+		public static void WriteIoHash(this IMemoryWriter writer, IoHash hash)
 		{
-			Writer.WriteFixedLengthBytes(Hash.Span);
+			hash.CopyTo(writer.GetSpan(IoHash.NumBytes));
+			writer.Advance(IoHash.NumBytes);
 		}
 	}
 
@@ -207,10 +289,10 @@ namespace EpicGames.Core
 	sealed class IoHashJsonConverter : JsonConverter<IoHash>
 	{
 		/// <inheritdoc/>
-		public override IoHash Read(ref Utf8JsonReader Reader, Type TypeToConvert, JsonSerializerOptions Options) => IoHash.Parse(Reader.ValueSpan);
+		public override IoHash Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => IoHash.Parse(reader.ValueSpan);
 
 		/// <inheritdoc/>
-		public override void Write(Utf8JsonWriter Writer, IoHash Value, JsonSerializerOptions Options) => Writer.WriteStringValue(Value.ToUtf8String().Span);
+		public override void Write(Utf8JsonWriter writer, IoHash value, JsonSerializerOptions options) => writer.WriteStringValue(value.ToUtf8String().Span);
 	}
 
 	/// <summary>
@@ -219,15 +301,15 @@ namespace EpicGames.Core
 	sealed class IoHashTypeConverter : TypeConverter
 	{
 		/// <inheritdoc/>
-		public override bool CanConvertFrom(ITypeDescriptorContext Context, Type SourceType)
+		public override bool CanConvertFrom(ITypeDescriptorContext context, Type sourceType)
 		{
-			return SourceType == typeof(string);
+			return sourceType == typeof(string);
 		}
 
 		/// <inheritdoc/>
-		public override object ConvertFrom(ITypeDescriptorContext Context, CultureInfo Culture, object Value)
+		public override object ConvertFrom(ITypeDescriptorContext context, CultureInfo culture, object value)
 		{
-			return IoHash.Parse((string)Value);
+			return IoHash.Parse((string)value);
 		}
 	}
 }

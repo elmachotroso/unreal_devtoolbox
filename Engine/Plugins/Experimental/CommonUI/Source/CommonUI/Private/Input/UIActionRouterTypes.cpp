@@ -4,8 +4,10 @@
 #include "Input/CommonUIActionRouterBase.h"
 #include "CommonActivatableWidget.h"
 #include "Input/CommonUIInputTypes.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
+#include "CommonInputSettings.h"
 #include "CommonInputSubsystem.h"
+#include "ICommonInputModule.h"
 #include "Input/CommonUIInputSettings.h"
 #include "Engine/GameViewportClient.h"
 #include "Framework/Application/SlateApplication.h"
@@ -710,6 +712,21 @@ EProcessHoldActionResult FActivatableTreeNode::ProcessHoldInput(ECommonInputMode
 	return EProcessHoldActionResult::Unhandled;
 }
 
+bool FActivatableTreeNode::ProcessActionDomainHoldInput(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent, EProcessHoldActionResult& OutHoldActionResult) const
+{
+	for (const FActivatableTreeNodeRef& ChildNode : Children)
+	{
+		EProcessHoldActionResult ChildResult = ChildNode->ProcessHoldInput(ActiveInputMode, Key, InputEvent);
+		if (ChildResult != EProcessHoldActionResult::Unhandled)
+		{
+			OutHoldActionResult = ChildResult;
+			return true;
+		}
+	}
+	OutHoldActionResult = FActionRouterBindingCollection::ProcessHoldInput(ActiveInputMode, Key, InputEvent);
+	return OutHoldActionResult != EProcessHoldActionResult::Unhandled;
+}
+
 bool FActivatableTreeNode::ProcessNormalInput(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent) const
 {
 	if (IsReceivingInput())
@@ -724,6 +741,18 @@ bool FActivatableTreeNode::ProcessNormalInput(ECommonInputMode ActiveInputMode, 
 		return FActionRouterBindingCollection::ProcessNormalInput(ActiveInputMode, Key, InputEvent);
 	}
 	return false;
+}
+
+bool FActivatableTreeNode::ProcessActionDomainNormalInput(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent) const
+{
+	for (const FActivatableTreeNodeRef& ChildNode : Children)
+	{
+		if (ChildNode->ProcessActionDomainNormalInput(ActiveInputMode, Key, InputEvent))
+		{
+			return true;
+		}
+	}
+	return FActionRouterBindingCollection::ProcessNormalInput(ActiveInputMode, Key, InputEvent);
 }
 
 bool FActivatableTreeNode::IsWidgetValid() const
@@ -783,21 +812,29 @@ int32 FActivatableTreeNode::GetLastPaintLayer() const
 	return INDEX_NONE;
 }
 
-FUIInputConfig FActivatableTreeNode::FindDesiredInputConfig() const
+TOptional<FUIInputConfig> FActivatableTreeNode::FindDesiredInputConfig() const
 {
 	TOptional<FUIInputConfig> DesiredConfig = ensure(RepresentedWidget.IsValid()) ? RepresentedWidget->GetDesiredInputConfig() : TOptional<FUIInputConfig>();
+	TOptional<FUIInputConfig> ActionDomainDesiredConfig = FindDesiredActionDomainInputConfig();
+
+	if (ActionDomainDesiredConfig.IsSet() && !DesiredConfig.IsSet())
+	{
+		return ActionDomainDesiredConfig;
+	}
+	
 	if (!DesiredConfig.IsSet() && Parent.IsValid())
 	{
 		DesiredConfig = Parent.Pin()->FindDesiredInputConfig();
 	}
+	
+	return DesiredConfig;
+}
 
-	if (DesiredConfig.IsSet())
-	{
-		return DesiredConfig.GetValue();
-	}
-
-	// If nobody in the entire tree cares about the config, fall back to the initial default
-	return FUIInputConfig();
+TOptional<FUIInputConfig> FActivatableTreeNode::FindDesiredActionDomainInputConfig() const
+{
+	UCommonInputActionDomain* ActionDomain = ensure(RepresentedWidget.IsValid()) ? RepresentedWidget->GetCalculatedActionDomain() : nullptr;
+	const bool bHasActionDomainConfig = ActionDomain && ActionDomain->bUseActionDomainDesiredInputConfig;
+	return  bHasActionDomainConfig ? FUIInputConfig(ActionDomain->InputMode, ActionDomain->MouseCaptureMode) : TOptional<FUIInputConfig>();
 }
 
 FUICameraConfig FActivatableTreeNode::FindDesiredCameraConfig() const
@@ -1016,7 +1053,8 @@ void FActivatableTreeNode::HandleWidgetDeactivated()
 				{
 					NearestActiveParent = NearestActiveParent->GetParentNode();
 				}
-				GetRoot()->UpdateLeafmostActiveNode(NearestActiveParent);
+
+				GetActionRouter().UpdateLeafNodeAndConfig(GetRoot(), NearestActiveParent);
 			}
 		}
 	}
@@ -1100,27 +1138,23 @@ FActivatableTreeRootRef FActivatableTreeRoot::Create(UCommonUIActionRouterBase& 
 	return NewRoot;
 }
 
-void FActivatableTreeRoot::SetCanReceiveInput(bool bInCanReceiveInput)
+void FActivatableTreeRoot::UpdateLeafNode()
 {
-	if (CanReceiveInput() != bInCanReceiveInput)
+	if (!CanReceiveInput())
 	{
-		FActivatableTreeNode::SetCanReceiveInput(bInCanReceiveInput);
-		if (!bInCanReceiveInput)
+		if (LeafmostActiveNode.IsValid())
 		{
-			if (LeafmostActiveNode.IsValid())
-			{
-				LeafmostActiveNode.Pin()->CacheFocusRestorationTarget();
-				UpdateLeafmostActiveNode(nullptr);
-			}
+			LeafmostActiveNode.Pin()->CacheFocusRestorationTarget();
+			UpdateLeafmostActiveNode(nullptr);
 		}
-		else if (ensure(IsWidgetActivated()))
+	}
+	else if (ensure(IsWidgetActivated()))
+	{
+		if (!UpdateLeafmostActiveNode(SharedThis(this)))
 		{
-			if (!UpdateLeafmostActiveNode(SharedThis(this)))
-			{
-				// Our leafmost active node didn't change (good!), so we make sure apply its desired config
-				// We only bother when the update doesn't do anything to avoid calling Apply twice.
-				ApplyLeafmostNodeConfig();
-			}
+			// Our leafmost active node didn't change (good!), so we make sure apply its desired config
+			// We only bother when the update doesn't do anything to avoid calling Apply twice.
+			ApplyLeafmostNodeConfig();
 		}
 	}
 }
@@ -1132,7 +1166,7 @@ TArray<const UWidget*> FActivatableTreeRoot::GatherScrollRecipients() const
 	return AllScrollRecipients;
 }
 
-bool FActivatableTreeRoot::UpdateLeafmostActiveNode(FActivatableTreeNodePtr BaseCandidateNode)
+bool FActivatableTreeRoot::UpdateLeafmostActiveNode(FActivatableTreeNodePtr BaseCandidateNode, bool bInApplyConfig)
 {
 	bool bValidBaseCandidate = !BaseCandidateNode || BaseCandidateNode->IsReceivingInput();
 	if (!bValidBaseCandidate)
@@ -1167,7 +1201,10 @@ bool FActivatableTreeRoot::UpdateLeafmostActiveNode(FActivatableTreeNodePtr Base
 		}
 
 		LeafmostActiveNode = NewLeafmostNode;
-		ApplyLeafmostNodeConfig();
+		if (bInApplyConfig)
+		{
+			ApplyLeafmostNodeConfig();
+		}
 
 		if (LeafmostActiveNode.IsValid())
 		{
@@ -1202,11 +1239,8 @@ void FActivatableTreeRoot::HandleInputMethodChanged(ECommonInputType InputMethod
 {
 	if (IsReceivingInput() && LeafmostActiveNode.IsValid() && ensure(LeafmostActiveNode.Pin()->IsReceivingInput()))
 	{
-		if (InputMethod == ECommonInputType::Gamepad)
-		{
-			FocusLeafmostNode();
-		}
-		else
+		ApplyLeafmostNodeConfig();
+		if (InputMethod != ECommonInputType::Gamepad)
 		{
 			LeafmostActiveNode.Pin()->CacheFocusRestorationTarget();
 		}
@@ -1229,8 +1263,16 @@ void FActivatableTreeRoot::ApplyLeafmostNodeConfig()
 		{
 			UE_LOG(LogUIActionRouter, Display, TEXT("Applying input config for leaf-most node [%s]"), *PinnedLeafmostNode->GetWidget()->GetName());
 
-			FUIInputConfig DesiredConfig = PinnedLeafmostNode->FindDesiredInputConfig();
-			GetActionRouter().SetActiveUIInputConfig(DesiredConfig);
+			TOptional<FUIInputConfig> DesiredConfig = PinnedLeafmostNode->FindDesiredInputConfig();
+			if(DesiredConfig.IsSet())
+			{
+				GetActionRouter().SetActiveUIInputConfig(DesiredConfig.GetValue());
+			}
+			else if(ICommonInputModule::GetSettings().GetEnableDefaultInputConfig())
+			{
+				// Nobody in the entire tree cares about the config and the default is enabled so fall back to the default
+				GetActionRouter().SetActiveUIInputConfig(FUIInputConfig());
+			}
 
 			FocusLeafmostNode();
 		}

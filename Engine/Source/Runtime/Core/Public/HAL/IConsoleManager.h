@@ -93,6 +93,15 @@ enum EConsoleVariableFlags
 	/* CVars with this flag will be included in the device profile previews. */
 	ECVF_Preview = 0x100,
 
+	/* Cvars with this flag will modify the Shader Keystring for All Platforms*/
+	ECVF_GeneralShaderChange = 0x200,
+
+	/* Cvars with this flag will modify the Shader Keystring for Mobile Platforms*/
+	ECVF_MobileShaderChange = 0x400,
+
+	/* Cvars with this flag will modify the Shader Keystring for Desktop Platforms*/
+	ECVF_DesktopShaderChange = 0x800,
+
 	// ------------------------------------------------
 
 	/* Set flags */
@@ -131,6 +140,7 @@ enum EConsoleVariableFlags
 	// Highest priority used via editor UI or or game/editor interactive console
 	ECVF_SetByConsole =				0x0A000000,
 
+
 	// ------------------------------------------------
 };
 
@@ -155,6 +165,9 @@ DECLARE_DELEGATE_OneParam( FConsoleCommandWithWorldDelegate, UWorld* );
 
 /** Console command delegate type (with a world and arguments.)  This is a void callback function that always takes a list of arguments and a world. */
 DECLARE_DELEGATE_TwoParams(FConsoleCommandWithWorldAndArgsDelegate, const TArray< FString >&, UWorld*);
+
+/** Console command delegate type (with arguments and output device.)  This is a void callback function that always takes a list of arguments and output device. */
+DECLARE_DELEGATE_TwoParams(FConsoleCommandWithArgsAndOutputDeviceDelegate, const TArray< FString >&, FOutputDevice&);
 
 /** Console command delegate type (with a world arguments and output device.)  This is a void callback function that always takes a list of arguments, a world and output device. */
 DECLARE_DELEGATE_ThreeParams(FConsoleCommandWithWorldArgsAndOutputDeviceDelegate, const TArray< FString >&, UWorld*, FOutputDevice&);
@@ -271,13 +284,14 @@ struct FNullConsoleVariableDelegate
 	}
 };
 
-struct FConsoleVariableDelegate                            : FNullConsoleVariableDelegate<FConsoleVariableDelegate, IConsoleVariable*> {};
-struct FConsoleCommandDelegate                             : FNullConsoleVariableDelegate<FConsoleCommandDelegate> {};
-struct FConsoleCommandWithArgsDelegate                     : FNullConsoleVariableDelegate<FConsoleCommandWithArgsDelegate, const TArray<FString>&> {};
-struct FConsoleCommandWithWorldDelegate                    : FNullConsoleVariableDelegate<FConsoleCommandWithWorldDelegate, UWorld*> {};
-struct FConsoleCommandWithWorldAndArgsDelegate             : FNullConsoleVariableDelegate<FConsoleCommandWithWorldAndArgsDelegate, const TArray<FString>&, UWorld*> {};
-struct FConsoleCommandWithWorldArgsAndOutputDeviceDelegate : FNullConsoleVariableDelegate<FConsoleCommandWithWorldArgsAndOutputDeviceDelegate, const TArray<FString>&, UWorld*, FOutputDevice&> {};
-struct FConsoleCommandWithOutputDeviceDelegate             : FNullConsoleVariableDelegate<FConsoleCommandWithOutputDeviceDelegate, FOutputDevice&> {};
+struct FConsoleVariableDelegate								: FNullConsoleVariableDelegate<FConsoleVariableDelegate, IConsoleVariable*> {};
+struct FConsoleCommandDelegate								: FNullConsoleVariableDelegate<FConsoleCommandDelegate> {};
+struct FConsoleCommandWithArgsDelegate						: FNullConsoleVariableDelegate<FConsoleCommandWithArgsDelegate, const TArray<FString>&> {};
+struct FConsoleCommandWithWorldDelegate						: FNullConsoleVariableDelegate<FConsoleCommandWithWorldDelegate, UWorld*> {};
+struct FConsoleCommandWithWorldAndArgsDelegate				: FNullConsoleVariableDelegate<FConsoleCommandWithWorldAndArgsDelegate, const TArray<FString>&, UWorld*> {};
+struct FConsoleCommandWithArgsAndOutputDeviceDelegate		: FNullConsoleVariableDelegate<FConsoleCommandWithArgsAndOutputDeviceDelegate, const TArray<FString>&, FOutputDevice&> {};
+struct FConsoleCommandWithWorldArgsAndOutputDeviceDelegate	: FNullConsoleVariableDelegate<FConsoleCommandWithWorldArgsAndOutputDeviceDelegate, const TArray<FString>&, UWorld*, FOutputDevice&> {};
+struct FConsoleCommandWithOutputDeviceDelegate				: FNullConsoleVariableDelegate<FConsoleCommandWithOutputDeviceDelegate, FOutputDevice&> {};
 
 #endif
 
@@ -668,6 +682,11 @@ public:
 	* Returns the hotkey for this executor
 	*/
 	virtual struct FInputChord GetHotKey() const = 0;
+	/**
+	* Returns the hotkey to switch to the next executor. This is usually the same hotkey as GetHotKey but with a modifier,
+	* such as "`" turning into "Ctrl + `".
+	*/
+	virtual struct FInputChord GetIterateExecutorHotKey() const = 0;
 };
 
 
@@ -816,7 +835,17 @@ struct CORE_API IConsoleManager
 	* @param	Flags		Optional flags bitmask
 	*/
 	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldAndArgsDelegate& Command, uint32 Flags = ECVF_Default) = 0;
-
+	
+	/**
+	* Register a console command that takes arguments
+	*
+	* @param	Name		The name of this command (must not be nullptr)
+	* @param	Help		Help text for this command
+	* @param	Command		The user function to call when this command is executed
+	* @param	Flags		Optional flags bitmask
+	*/
+	virtual IConsoleCommand* RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithArgsAndOutputDeviceDelegate& Command, uint32 Flags = ECVF_Default) = 0;
+	
 	/**
 	* Register a console command that takes arguments
 	*
@@ -973,11 +1002,13 @@ struct CORE_API IConsoleManager
 	 * It also won't include any UserSettings or ConsoleVariables.ini settings.
 	 * 
 	 * @param PlatformName The platform name (the ini name, so Windows, not Win64)
-	 * @param bVisitPlatformDeviceProfile Set to true if you want Visit called with CVars found in the base DeviceProfile named PlatformName 
+	 * @param DeviceProfileName If this is non-empty, the given deviceprofile will be loaded from the platform's inis and inserted into the CVars
 	 * @param Visit the callback to run for each CVar found
 	 */
-	static bool VisitPlatformCVarsForEmulation(FName PlatformName, bool bVisitPlatformDeviceProfile, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit);
+	static bool VisitPlatformCVarsForEmulation(FName PlatformName, const FString& DeviceProfileName, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit);
 #endif
+
+	virtual FConsoleVariableMulticastDelegate& OnCVarUnregistered() = 0;
 
 protected:
 	virtual ~IConsoleManager() { }
@@ -1025,14 +1056,30 @@ protected:
 		: Target(InTarget)
 	{
 		check(Target);
+		if (Target->TestFlags(ECVF_GeneralShaderChange))
+		{
+			AccessGeneralShaderChangeCvars().Add(this);
+		}
+		else if (Target->TestFlags(ECVF_MobileShaderChange))
+		{
+			AccessMobileShaderChangeCvars().Add(this);
+		}
+		else if (Target->TestFlags(ECVF_DesktopShaderChange))
+		{
+			AccessDesktopShaderChangeCvars().Add(this);
+		}
 	}
+public:
 	/** Destructor, removes the console object **/
 	virtual ~FAutoConsoleObject()
 	{
 		IConsoleManager::Get().UnregisterConsoleObject(Target);
 	}
 
-public:
+	static TArray<const FAutoConsoleObject*>& AccessGeneralShaderChangeCvars();
+	static TArray<const FAutoConsoleObject*>& AccessMobileShaderChangeCvars();
+	static TArray<const FAutoConsoleObject*>& AccessDesktopShaderChangeCvars();
+
 	/** returns the contained console object as an IConsoleVariable **/
 	FORCEINLINE IConsoleVariable* AsVariable()
 	{
@@ -1748,6 +1795,19 @@ public:
 	 * @param	Flags		Optional flags bitmask
 	 */
 	FAutoConsoleCommandWithWorldAndArgs(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithWorldAndArgsDelegate& Command, uint32 Flags = ECVF_Default)
+		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleCommand(Name, Help, Command, Flags))
+	{
+	}
+};
+
+/**
+ * Autoregistering console command with args and an output device
+ */
+class CORE_API FAutoConsoleCommandWithArgsAndOutputDevice : private FAutoConsoleObject
+{
+public:
+	
+	FAutoConsoleCommandWithArgsAndOutputDevice(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandWithArgsAndOutputDeviceDelegate& Command, uint32 Flags = ECVF_Default)
 		: FAutoConsoleObject(IConsoleManager::Get().RegisterConsoleCommand(Name, Help, Command, Flags))
 	{
 	}

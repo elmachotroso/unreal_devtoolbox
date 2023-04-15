@@ -32,13 +32,13 @@ void FSlateTextRun::SetTextRange( const FTextRange& Value )
 int16 FSlateTextRun::GetBaseLine( float Scale ) const 
 {
 	const TSharedRef< FSlateFontMeasure > FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-	return FontMeasure->GetBaseline( Style.Font, Scale ) - (FMath::Min(0.0f, Style.ShadowOffset.Y) + Style.Font.OutlineSettings.OutlineSize * Scale);
+	return FontMeasure->GetBaseline( Style.Font, Scale ) - ( FMath::Min(0.0f, Style.ShadowOffset.Y) + Style.Font.OutlineSettings.OutlineSize ) * Scale;
 }
 
 int16 FSlateTextRun::GetMaxHeight( float Scale ) const 
 {
 	const TSharedRef< FSlateFontMeasure > FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-	return FontMeasure->GetMaxCharacterHeight( Style.Font, Scale ) + (FMath::Abs(Style.ShadowOffset.Y) + Style.Font.OutlineSettings.OutlineSize * Scale);
+	return FontMeasure->GetMaxCharacterHeight( Style.Font, Scale ) + ( FMath::Abs(Style.ShadowOffset.Y) + Style.Font.OutlineSettings.OutlineSize ) * Scale;
 }
 
 FVector2D FSlateTextRun::Measure( int32 BeginIndex, int32 EndIndex, float Scale, const FRunTextContext& TextContext ) const 
@@ -115,8 +115,7 @@ int32 FSlateTextRun::OnPaint(const FPaintArgs& PaintArgs, const FTextArgs& TextA
 	FTextOverflowArgs OverflowArgs;
 	if (TextArgs.OverflowPolicy == ETextOverflowPolicy::Ellipsis && TextArgs.OverflowDirection != ETextOverflowDirection::NoOverflow)
 	{
-		TSharedRef<FSlateFontCache> FontCache = FSlateApplication::Get().GetRenderer()->GetFontCache();
-		OverflowArgs.OverflowTextPtr = FontCache->GetOverflowEllipsisText(Style.Font, AllottedGeometry.GetAccumulatedLayoutTransform().GetScale());
+		OverflowArgs.OverflowTextPtr = BlockTextContext.ShapedTextCache->FindOrAddOverflowEllipsisText(AllottedGeometry.GetAccumulatedLayoutTransform().GetScale(), BlockTextContext, Style.Font);
 		OverflowArgs.OverflowDirection = TextArgs.OverflowDirection;
 		OverflowArgs.bForceEllipsisDueToClippedLine = TextArgs.bForceEllipsisDueToClippedLine;
 	}
@@ -189,10 +188,10 @@ int32 FSlateTextRun::GetTextIndexAt( const TSharedRef< ILayoutBlock >& Block, co
 	const FVector2D& BlockOffset = Block->GetLocationOffset();
 	const FVector2D& BlockSize = Block->GetSize();
 
-	const float Left = BlockOffset.X;
-	const float Top = BlockOffset.Y;
-	const float Right = BlockOffset.X + BlockSize.X;
-	const float Bottom = BlockOffset.Y + BlockSize.Y;
+	const double Left = BlockOffset.X;
+	const double Top = BlockOffset.Y;
+	const double Right = BlockOffset.X + BlockSize.X;
+	const double Bottom = BlockOffset.Y + BlockSize.Y;
 
 	const bool ContainsPoint = Location.X >= Left && Location.X < Right && Location.Y >= Top && Location.Y < Bottom;
 

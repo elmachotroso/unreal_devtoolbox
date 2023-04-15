@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Media.Imaging;
 using Autodesk.Revit.DB;
@@ -16,26 +18,74 @@ namespace DatasmithRevitExporter
 	// Add-in external application Datasmith Revit Exporter.
 	public class DatasmithRevitApplication : IExternalApplication
 	{
+		// Updater notifying us when 3D views got updated/added/deleted.
+		public class View3DUpdater : IUpdater
+		{
+			static AddInId AppId;
+			static UpdaterId AppUpdaterId;
+
+			public View3DUpdater(AddInId InId)
+			{
+				AppId = InId;
+				AppUpdaterId = new UpdaterId(AppId, new Guid("BE5DA5A4-73C2-42BB-9346-E54F632E2B54"));
+			}
+
+			public void Execute(UpdaterData InData)
+			{
+				if (InData.GetAddedElementIds().Count > 0 || InData.GetDeletedElementIds().Count > 0 || InData.GetModifiedElementIds().Count > 0)
+				{
+					Instance.SetViewList(ElementId.InvalidElementId);
+				}
+			}
+
+			public string GetAdditionalInformation()
+			{
+				return "";
+			}
+
+			public ChangePriority GetChangePriority()
+			{
+				return ChangePriority.FloorsRoofsStructuralWalls;
+			}
+
+			public UpdaterId GetUpdaterId()
+			{
+				return AppUpdaterId;
+			}
+
+			public string GetUpdaterName()
+			{
+				return "View3DUpdater";
+			}
+		}
+
 		private static DatasmithRevitExportMessages ExportMessagesDialog = null;
 
 		private static string ExportMessages;
 
 		private EventHandler<DocumentClosingEventArgs> DocumentClosingHandler;
+		private EventHandler<IdlingEventArgs> IdlingEventHandler;
+		private EventHandler<DocumentOpenedEventArgs> DocumentOpenedHandler;
+		private EventHandler<DocumentCreatedEventArgs> DocumentCreatedHandler;
 		private EventHandler<ViewActivatedEventArgs> ViewActivatedHandler;
 
-		//PushButton AutoSyncPushButton;
-		PushButton SyncPushButton;
+		private PushButton AutoSyncPushButton;
+		private PushButton SyncPushButton;
 
-		//BitmapImage AutoSyncIconOn_Small;
-		//BitmapImage AutoSyncIconOn_Large;
-		//BitmapImage AutoSyncIconOff_Small;
-		//BitmapImage AutoSyncIconOff_Large;
+		private View3DUpdater ViewsUpdater;
+		private ElementId SelectedViewId = ElementId.InvalidElementId;
+		private ComboBox ComboViews;
+		private List<View3D> All3DViews;
+
+		BitmapImage AutoSyncIconOn_Small;
+		BitmapImage AutoSyncIconOn_Large;
+		BitmapImage AutoSyncIconOff_Small;
+		BitmapImage AutoSyncIconOff_Large;
 
 		public object Properties { get; private set; }
 
 		public static DatasmithRevitApplication Instance { get; private set; }
 
-#if false
 		public void SetAutoSyncButtonToggled(bool bToggled)
 		{
 			if (bToggled)
@@ -50,7 +100,102 @@ namespace DatasmithRevitExporter
 			}
 			SyncPushButton.Enabled = !bToggled;
 		}
-#endif
+
+		private void OnComboBoxChanged(object s, Autodesk.Revit.UI.Events.ComboBoxCurrentChangedEventArgs e)
+		{
+			if (e.NewValue != null)
+			{
+				View3D SelectedView = All3DViews.Find(View => View.Name == e.NewValue.ItemText);
+
+				if (SelectedView != null)
+				{
+					SelectedViewId = SelectedView.Id;
+					FDocument.ActiveDocument?.SetActiveDirectLinkInstance(SelectedView);
+				}
+			}
+		}
+
+		private void ClearViews()
+		{
+			All3DViews.Clear();
+
+			foreach (ComboBoxMember Item in ComboViews.GetItems())
+			{
+				Item.Visible = false;
+			}
+
+			SelectedViewId = ElementId.InvalidElementId;
+		}
+
+		private void SetViewList(ElementId InActiveViewId)
+		{
+			if (FDocument.ActiveDocument == null)
+			{
+				return;
+			}
+
+			// Cache prev selected view
+			All3DViews = new FilteredElementCollector(FDocument.ActiveDocument.RevitDoc).OfClass(typeof(View3D)).Cast<View3D>().ToList();
+			All3DViews.RemoveAll(view => (view.IsTemplate || !view.CanBePrinted));
+
+			// Combo box does not allow removal of items :). This is a workaround to always only add items and 
+			// reuse them.
+			int ViewIndex = 0;
+			for (; ViewIndex < All3DViews.Count; ++ViewIndex)
+			{
+				View3D View = All3DViews[ViewIndex];
+
+				var Items = ComboViews.GetItems();
+				if (Items.Count == ViewIndex)
+				{
+					ComboViews.AddItem(new ComboBoxMemberData($"View_{ViewIndex}", "ViewName"));
+				}
+
+				Items = ComboViews.GetItems();
+				ComboBoxMember Item = Items[ViewIndex];
+				Item.ItemText = View.Name;
+				Item.Visible = true;
+			}
+
+			// Hide the excessive items
+			for (; ViewIndex < ComboViews.GetItems().Count; ++ViewIndex)
+			{
+				ComboViews.GetItems()[ViewIndex].Visible = false;
+			}
+
+			if (InActiveViewId != ElementId.InvalidElementId)
+			{
+				SelectedViewId = InActiveViewId;
+			}
+
+			// Set the active view
+			View3D ComboActiveView = null;
+
+			if (SelectedViewId != ElementId.InvalidElementId)
+			{
+				ComboActiveView = All3DViews.Find(View => View.Id == SelectedViewId);
+			}
+
+			if (ComboActiveView == null)
+			{
+				ComboActiveView = All3DViews.Count > 0 ? All3DViews.First() : null;
+			}
+
+			if (ComboActiveView != null)
+			{
+				foreach (ComboBoxMember Item in ComboViews.GetItems())
+				{
+					if (Item.ItemText == ComboActiveView.Name)
+					{
+						ComboViews.Current = Item;
+						SelectedViewId = ComboActiveView.Id;
+						FDocument.ActiveDocument?.SetActiveDirectLinkInstance(ComboActiveView);
+						break;
+					}
+				}
+			}
+		}
+
 		// Implement the interface to execute some tasks when Revit starts.
 		public Result OnStartup(
 			UIControlledApplication InApplication // handle to the application being started
@@ -70,15 +215,41 @@ namespace DatasmithRevitExporter
 			string AssemblyPath = Assembly.GetExecutingAssembly().Location;
 			PushButtonData ExportButtonData = new PushButtonData("Export3DView", DatasmithRevitResources.Strings.ButtonExport3DView, AssemblyPath, "DatasmithRevitExporter.DatasmithExportRevitCommand");
 			PushButtonData SyncButtonData = new PushButtonData("Sync3DView", DatasmithRevitResources.Strings.ButtonSync, AssemblyPath, "DatasmithRevitExporter.DatasmithSyncRevitCommand");
-			//PushButtonData AutoSyncButtonData = new PushButtonData("AutoSync3DView", DatasmithRevitResources.Strings.ButtonAutoSync, AssemblyPath, "DatasmithRevitExporter.DatasmithAutoSyncRevitCommand");
+			PushButtonData AutoSyncButtonData = new PushButtonData("AutoSync3DView", DatasmithRevitResources.Strings.ButtonAutoSync, AssemblyPath, "DatasmithRevitExporter.DatasmithAutoSyncRevitCommand");
 			PushButtonData ManageConnectionsButtonData = new PushButtonData("Connections", DatasmithRevitResources.Strings.ButtonConnections, AssemblyPath, "DatasmithRevitExporter.DatasmithManageConnectionsRevitCommand");
 			PushButtonData SettingsButtonData = new PushButtonData("Settings", DatasmithRevitResources.Strings.ButtonSettings, AssemblyPath, "DatasmithRevitExporter.DatasmithShowSettingsRevitCommand");
 			PushButtonData LogButtonData = new PushButtonData("Messages", DatasmithRevitResources.Strings.ButtonMessages, AssemblyPath, "DatasmithRevitExporter.DatasmithShowMessagesRevitCommand");
 
 			SyncPushButton = DirectLinkRibbonPanel.AddItem(SyncButtonData) as PushButton;
-			//AutoSyncPushButton = DirectLinkRibbonPanel.AddItem(AutoSyncButtonData) as PushButton;
+			AutoSyncPushButton = DirectLinkRibbonPanel.AddItem(AutoSyncButtonData) as PushButton;
+
 			PushButton ManageConnectionsButton = DirectLinkRibbonPanel.AddItem(ManageConnectionsButtonData) as PushButton;
 			PushButton ExportPushButton = FileExportRibbonPanel.AddItem(ExportButtonData) as PushButton;
+
+			// Create the view sync combo
+			ComboBoxData CbData = new ComboBoxData("ComboBoxViews");
+			PushButtonData LabelData = new PushButtonData("ComboLabel", "Select 3D view to sync", Assembly.GetExecutingAssembly().Location, "DatasmithRevitExporter.DatasmithSyncRevitCommand");
+
+			IList<RibbonItem> StackedItems = DatasmithRibbonPanel.AddStackedItems(LabelData, CbData);
+			if (StackedItems.Count > 1)
+			{
+				// We emulate a label on the ribbon with disabled push button (the Revit way to do things)
+				PushButton LabelButton = StackedItems[0] as PushButton;
+				if (LabelButton != null)
+				{
+					LabelButton.ToolTip = "Select 3D view to sync";
+					LabelButton.Enabled = false;
+				}
+
+				ComboViews = StackedItems[1] as ComboBox;
+				if (ComboViews != null)
+				{
+					ComboViews.CurrentChanged += OnComboBoxChanged;
+					ComboViews.ItemText = "3D Views";
+					ComboViews.ToolTip = "Select 3D View to Sync";
+				}
+			}
+
 			PushButton ShowLogButton = DatasmithRibbonPanel.AddItem(LogButtonData) as PushButton;
 			PushButton SettingsButton = DatasmithRibbonPanel.AddItem(SettingsButtonData) as PushButton;
 
@@ -94,14 +265,14 @@ namespace DatasmithRevitExporter
 
 			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithAutoSyncIcon");
 
-			//AutoSyncIconOn_Small = new BitmapImage(new Uri(DatasmithIconBase + "On16.png"));
-			//AutoSyncIconOn_Large = new BitmapImage(new Uri(DatasmithIconBase + "On32.png"));
-			//AutoSyncIconOff_Small = new BitmapImage(new Uri(DatasmithIconBase + "Off16.png"));
-			//AutoSyncIconOff_Large = new BitmapImage(new Uri(DatasmithIconBase + "Off32.png"));
+			AutoSyncIconOn_Small = new BitmapImage(new Uri(DatasmithIconBase + "On16.png"));
+			AutoSyncIconOn_Large = new BitmapImage(new Uri(DatasmithIconBase + "On32.png"));
+			AutoSyncIconOff_Small = new BitmapImage(new Uri(DatasmithIconBase + "Off16.png"));
+			AutoSyncIconOff_Large = new BitmapImage(new Uri(DatasmithIconBase + "Off32.png"));
 
-			//AutoSyncPushButton.Image = AutoSyncIconOn_Small;
-			//AutoSyncPushButton.LargeImage = AutoSyncIconOn_Large;
-			//AutoSyncPushButton.ToolTip = DatasmithRevitResources.Strings.ButtonAutoSyncHint;
+			AutoSyncPushButton.Image = AutoSyncIconOn_Small;
+			AutoSyncPushButton.LargeImage = AutoSyncIconOn_Large;
+			AutoSyncPushButton.ToolTip = DatasmithRevitResources.Strings.ButtonAutoSyncHint;
 
 			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithManageConnectionsIcon");
 			ManageConnectionsButton.Image = new BitmapImage(new Uri(DatasmithIconBase + "16.png"));
@@ -118,12 +289,21 @@ namespace DatasmithRevitExporter
 			ShowLogButton.LargeImage = new BitmapImage(new Uri(DatasmithIconBase + "32.png"));
 			ShowLogButton.ToolTip = DatasmithRevitResources.Strings.ButtonMessagesHint;
 
+			DocumentOpenedHandler = new EventHandler<DocumentOpenedEventArgs>(OnDocumentOpened);
+			InApplication.ControlledApplication.DocumentOpened += DocumentOpenedHandler;
+
+			DocumentCreatedHandler = new EventHandler<DocumentCreatedEventArgs>(OnDocumentCreated);
+			InApplication.ControlledApplication.DocumentCreated += DocumentCreatedHandler;
+
 			DocumentClosingHandler = new EventHandler<DocumentClosingEventArgs>(OnDocumentClosing);
 			InApplication.ControlledApplication.DocumentClosing += DocumentClosingHandler;
 
+			IdlingEventHandler = new EventHandler<IdlingEventArgs>(OnIdling);
+			InApplication.Idling += IdlingEventHandler;
+
 			ViewActivatedHandler = new EventHandler<ViewActivatedEventArgs>(OnViewActivated);
 			InApplication.ViewActivated += ViewActivatedHandler;
-			
+
 			// Setup Direct Link
 
 			string RevitEngineDir = null;
@@ -148,14 +328,40 @@ namespace DatasmithRevitExporter
 
 			Debug.Assert(bDirectLinkInitOk);
 
-			FSettingsManager.Init(InApplication);
+			// Register updater to react to view modification
+
+			ViewsUpdater = new View3DUpdater(InApplication.ControlledApplication.ActiveAddInId);
+			UpdaterRegistry.RegisterUpdater(ViewsUpdater);
+
+			ElementCategoryFilter Filter = new ElementCategoryFilter( BuiltInCategory.OST_Views);
+			UpdaterRegistry.AddTrigger(ViewsUpdater.GetUpdaterId(), Filter, Element.GetChangeTypeAny());
+			UpdaterRegistry.AddTrigger(ViewsUpdater.GetUpdaterId(), Filter, Element.GetChangeTypeElementAddition());
+			UpdaterRegistry.AddTrigger(ViewsUpdater.GetUpdaterId(), Filter, Element.GetChangeTypeElementDeletion());
 
 			return Result.Succeeded;
 		}
 
+		void OnIdling(object Sender, IdlingEventArgs Args)
+		{
+			FDirectLink.OnApplicationIdle();
+		}
+
+		static void OnDocumentOpened(object sender, DocumentOpenedEventArgs e)
+		{
+			FDocument.SetActiveDocument(e.Document);
+			Instance.SetViewList(FDocument.ActiveDocument?.Settings.SyncViewId ?? ElementId.InvalidElementId);
+		}
+
+		static void OnDocumentCreated(object sender, DocumentCreatedEventArgs e)
+		{
+			FDocument.SetActiveDocument(e.Document);
+			Instance.SetViewList(ElementId.InvalidElementId);
+		}
+
 		static void OnDocumentClosing(object sender, DocumentClosingEventArgs e)
 		{
-			FDirectLink.DestroyInstance(FDirectLink.FindInstance(e.Document), e.Document.Application);
+			Instance.ClearViews();
+			FDocument.Destroy(e.Document);
 		}
 
 		static void OnViewActivated(object sender, ViewActivatedEventArgs e)
@@ -163,9 +369,10 @@ namespace DatasmithRevitExporter
 			View Previous = e.PreviousActiveView;
 			View Current = e.CurrentActiveView;
 
-			if (Previous == null || !Previous.Document.Equals(Current.Document))
+			if (Previous != null && !Previous.Document.Equals(Current.Document))
 			{
-				FDirectLink.ActivateInstance(Current.Document);
+				FDocument.SetActiveDocument(e.Document);
+				Instance.SetViewList(FDocument.ActiveDocument?.Settings.SyncViewId ?? ElementId.InvalidElementId);
 			}
 		}
 
@@ -174,17 +381,25 @@ namespace DatasmithRevitExporter
 			UIControlledApplication InApplication // handle to the application being shut down
 		)
 		{
+			FDocument.DestroyAll();
+
 			InApplication.ControlledApplication.DocumentClosing -= DocumentClosingHandler;
+			InApplication.ControlledApplication.DocumentOpened -= DocumentOpenedHandler;
+			InApplication.ControlledApplication.DocumentCreated -= DocumentCreatedHandler;
 			InApplication.ViewActivated -= ViewActivatedHandler;
 
 			DocumentClosingHandler = null;
+			DocumentOpenedHandler = null;
+			DocumentCreatedHandler = null;
 			ViewActivatedHandler = null;
+
+			UpdaterRegistry.UnregisterUpdater(ViewsUpdater.GetUpdaterId());
+			ViewsUpdater = null;
 
 			if (ExportMessagesDialog != null && !ExportMessagesDialog.IsDisposed)
 			{
 				ExportMessagesDialog.Close();
 			}
-			FSettingsManager.Destroy(InApplication);
 			FDatasmithFacadeDirectLink.Shutdown();
 			return Result.Succeeded;
 		}
@@ -199,11 +414,14 @@ namespace DatasmithRevitExporter
 			}
 		}
 
-		public static void ShowExportMessages()
+		public static void ShowExportMessages(ExternalCommandData InCommandData)
 		{
 			if (ExportMessagesDialog == null || ExportMessagesDialog.IsDisposed)
 			{
-				ExportMessagesDialog = new DatasmithRevitExportMessages(() => ExportMessages = "");
+				int CenterX = (InCommandData.Application.MainWindowExtents.Left + InCommandData.Application.MainWindowExtents.Right) / 2;
+				int CenterY = (InCommandData.Application.MainWindowExtents.Top + InCommandData.Application.MainWindowExtents.Bottom) / 2;
+
+				ExportMessagesDialog = new DatasmithRevitExportMessages(new System.Drawing.Point(CenterX, CenterY), () => ExportMessages = "");
 				ExportMessagesDialog.Messages = ExportMessages;
 				ExportMessagesDialog.Show();
 			}
@@ -211,6 +429,15 @@ namespace DatasmithRevitExporter
 			{
 				ExportMessagesDialog.Focus();
 			}
+		}
+
+		public static bool IsPreHandshakeRevitBuild(string VersionBuild)
+		{
+#if REVIT_API_2023
+			return Version.Parse(VersionBuild) < Version.Parse("23.1");
+#else
+			return true;
+#endif
 		}
 	}
 }

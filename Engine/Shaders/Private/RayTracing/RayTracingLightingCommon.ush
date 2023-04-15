@@ -10,8 +10,7 @@
 #include "RayTracingDirectionalLight.ush"
 #include "RayTracingRectLight.ush"
 #include "RayTracingSphereLight.ush"
-#include "RayTracingSpotLight.ush"
-#include "RayTracingPointLight.ush"
+#include "RayTracingCapsuleLight.ush"
 #include "RayTracingSkyLightEvaluation.ush"
 #include "RayTracingLightCullingCommon.ush"
 
@@ -31,9 +30,9 @@ struct FRTLightingData
 {
 	uint Type;
 	int LightProfileIndex;
-	uint RectLightTextureIndex;
-	uint Pad;
-	float3 LightPosition;
+	float RectLightAtlasMaxLevel;
+	uint LightMissShaderIndex;
+	float3 TranslatedLightPosition;
 	float InvRadius;
 	float3 Direction;
 	float FalloffExponent;
@@ -47,7 +46,8 @@ struct FRTLightingData
 	float2 DistanceFadeMAD;
 	float RectLightBarnCosAngle;
 	float RectLightBarnLength;
-	float4 Dummy;
+	float2 RectLightAtlasUVOffset;
+	float2 RectLightAtlasUVScale;
 }; // 128 bytes total
 
 // Decode RTLightingData from a StructuredBuffer<uint4>
@@ -68,12 +68,12 @@ FRTLightingData GetRayTracingLightData(int LightIndex)
 
 	Data.Type = Element.x;
 	Data.LightProfileIndex = Element.y;
-	Data.RectLightTextureIndex = Element.z;
-	Data.Pad = Element.w;
+	Data.RectLightAtlasMaxLevel = asfloat(Element.z);
+	Data.LightMissShaderIndex = Element.w;
 
 	Element = LightDataBuffer[LightIndex++];
 
-	Data.LightPosition = asfloat(Element.xyz);
+	Data.TranslatedLightPosition = asfloat(Element.xyz);
 	Data.InvRadius = asfloat(Element.w);
 
 	Element = LightDataBuffer[LightIndex++];
@@ -104,22 +104,23 @@ FRTLightingData GetRayTracingLightData(int LightIndex)
 	Data.RectLightBarnLength = asfloat(Element.w);
 
 	Element = LightDataBuffer[LightIndex++];
-	Data.Dummy = asfloat(Element);
+	Data.RectLightAtlasUVOffset = asfloat(Element.xy);
+	Data.RectLightAtlasUVScale = asfloat(Element.zw);
 
 	return Data;
 }
 
 FDeferredLightData GetRayTracingDeferredLightData(int LightIndex,
 	inout int OutLightProfileIndex,
-	inout int OutRectLightTextureIndex,
-	inout uint OutLightType)
+	inout uint OutLightType,
+	inout uint OutLightMissShaderIndex)
 {
 	FDeferredLightData LightData = (FDeferredLightData)0;
 	FRTLightingData RayTracingLightData = GetRayTracingLightData(LightIndex);
 
 	const uint LightType = RayTracingLightData.Type;
 
-	LightData.TranslatedWorldPosition = RayTracingLightData.LightPosition;
+	LightData.TranslatedWorldPosition = RayTracingLightData.TranslatedLightPosition;
 	LightData.InvRadius = RayTracingLightData.InvRadius;
 	LightData.Color = RayTracingLightData.LightColor;
 	LightData.FalloffExponent = RayTracingLightData.FalloffExponent;
@@ -153,32 +154,32 @@ FDeferredLightData GetRayTracingDeferredLightData(int LightIndex,
 		LightData.bInverseSquared = LightData.FalloffExponent == 0;
 	}
 
+	LightData.RectLightAtlasUVOffset = RayTracingLightData.RectLightAtlasUVOffset;
+	LightData.RectLightAtlasUVScale  = RayTracingLightData.RectLightAtlasUVScale;
+	LightData.RectLightAtlasMaxLevel = RayTracingLightData.RectLightAtlasMaxLevel;
+
 	OutLightProfileIndex = RayTracingLightData.LightProfileIndex;
-	OutRectLightTextureIndex = RayTracingLightData.RectLightTextureIndex;
 	OutLightType = LightType;
+	OutLightMissShaderIndex = RayTracingLightData.LightMissShaderIndex;
 
 	return LightData;
 }
 
-FRectTexture GetRayTracingRectTextureData()
+FDeferredLightData GetRayTracingDeferredLightData(int LightIndex,
+	inout int OutLightProfileIndex,
+	inout uint OutLightType)
 {
-	FRectTexture RectTexture;
+	uint LightMissShaderIndex = 0;
+	return GetRayTracingDeferredLightData(LightIndex, OutLightProfileIndex, OutLightType, LightMissShaderIndex);
+}
 
-#if USE_SOURCE_TEXTURE_ARRAY 
-	RectTexture.SourceTexture0 = RaytracingLightsDataPacked.RectLightTexture0;
-	RectTexture.SourceTexture1 = RaytracingLightsDataPacked.RectLightTexture1;
-	RectTexture.SourceTexture2 = RaytracingLightsDataPacked.RectLightTexture2;
-	RectTexture.SourceTexture3 = RaytracingLightsDataPacked.RectLightTexture3;
-	RectTexture.SourceTexture4 = RaytracingLightsDataPacked.RectLightTexture4;
-	RectTexture.SourceTexture5 = RaytracingLightsDataPacked.RectLightTexture5;
-	RectTexture.SourceTexture6 = RaytracingLightsDataPacked.RectLightTexture6;
-	RectTexture.SourceTexture7 = RaytracingLightsDataPacked.RectLightTexture7;
-	RectTexture.SourceTextureIndex = 99;
-#else
-	RectTexture = InitRectTexture(RaytracingLightsDataPacked.RectLightTexture0);
-#endif
-
-	return RectTexture;
+FRectTexture GetRayTracingRectTextureData(FDeferredLightData In)
+{
+	FRectTexture Out;
+	Out.AtlasUVOffset = In.RectLightAtlasUVOffset;
+	Out.AtlasUVScale  = In.RectLightAtlasUVScale;
+	Out.AtlasMaxLevel = In.RectLightAtlasMaxLevel;
+	return Out;
 }
 
 float3 GenerateReflectedRayDirection(
@@ -216,7 +217,7 @@ float3 GenerateReflectedRayDirection(
 }
 
 void TraceShadowRayMissShaderLighting(
-	in RayDesc Ray,
+	in FRayDesc Ray,
 	in uint RayFlags,
 	in uint InstanceInclusionMask,
 	in RaytracingAccelerationStructure TLAS,
@@ -233,14 +234,15 @@ void TraceShadowRayMissShaderLighting(
 		RAY_TRACING_SHADER_SLOT_SHADOW,
 		RAY_TRACING_NUM_SHADER_SLOTS,
 		MissShaderIndex,
-		Ray,
+		Ray.GetNativeDesc(),
 		PackedPayload
 	);
 }
 
-float3 SampleAreaLightDirection(
+// Returns xyz: Direction, w: RayLength
+float4 SampleAreaLightDirection(
 	in FDeferredLightData LightData, 
-	in float3 WorldPosition,
+	in float3 TranslatedWorldPosition,
 	in float3 WorldNormal,
 	in uint LightType, 
 	inout RandomSequence RandSequence )
@@ -255,7 +257,7 @@ float3 SampleAreaLightDirection(
 	float2 RandSample = RandomSequence_GenerateSample2D(RandSequence);
 
 	FLightShaderParameters LightParameters;
-	LightParameters.Position = LightData.TranslatedWorldPosition; // LWC_TODO
+	LightParameters.TranslatedWorldPosition = LightData.TranslatedWorldPosition;
 	LightParameters.SpotAngles = LightData.SpotAngles;
 	LightParameters.SourceRadius = LightData.SourceRadius;
 	LightParameters.SourceLength = LightData.SourceLength;
@@ -268,43 +270,34 @@ float3 SampleAreaLightDirection(
 		LightParameters.SourceRadius *= ShadowSourceAngleFactor;
 		GenerateDirectionalLightOcclusionRay(
 			LightParameters,
-			WorldPosition, WorldNormal,
+			TranslatedWorldPosition, WorldNormal,
 			RandSample,
 			/* out */ RayOrigin,
 			/* out */ ShadowRayDirection,
 			/* out */ RayTMin,
 			/* out */ RayTMax);
 	}
-	else if (LightType == LIGHT_TYPE_SPOT)
+	else if (LightType == LIGHT_TYPE_POINT || LightType == LIGHT_TYPE_SPOT)
 	{
-		GenerateSpotLightOcclusionRay(
-			LightParameters,
-			WorldPosition, WorldNormal,
-			RandSample,
-			/* out */ RayOrigin,
-			/* out */ ShadowRayDirection,
-			/* out */ RayTMin,
-			/* out */ RayTMax);
-	}
-	else if (LightType == LIGHT_TYPE_POINT)
-	{
-		if (LightData.SourceRadius == 0)
+		// NOTE: Spot cone is being checked before calling this function, so we know we are inside the cone
+		float RayPdf;
+		if (LightParameters.SourceLength > 0.0)
 		{
-			GeneratePointLightOcclusionRay(
+			GenerateCapsuleLightOcclusionRayWithSolidAngleSampling(
 				LightParameters,
-				WorldPosition, WorldNormal,
+				TranslatedWorldPosition, WorldNormal,
 				RandSample,
 				/* out */ RayOrigin,
 				/* out */ ShadowRayDirection,
 				/* out */ RayTMin,
-				/* out */ RayTMax);
+				/* out */ RayTMax,
+				/* out */ RayPdf);
 		}
 		else
 		{
-			//GenerateSphereLightOcclusionRayWithAreaSampling(
 			GenerateSphereLightOcclusionRayWithSolidAngleSampling(
 				LightParameters,
-				WorldPosition, WorldNormal,
+				TranslatedWorldPosition, WorldNormal,
 				RandSample,
 				/* out */ RayOrigin,
 				/* out */ ShadowRayDirection,
@@ -317,7 +310,7 @@ float3 SampleAreaLightDirection(
 	{
 		GenerateRectLightOcclusionRay(
 			LightParameters,
-			WorldPosition, WorldNormal,
+			TranslatedWorldPosition, WorldNormal,
 			RandSample,
 			/* out */ RayOrigin,
 			/* out */ ShadowRayDirection,
@@ -326,17 +319,23 @@ float3 SampleAreaLightDirection(
 			/* out */ RayPdf);
 	}
 
-	return ShadowRayDirection;
+	return float4(ShadowRayDirection, RayTMax);
 }
 
 float3 ComputeIndirectLighting(
-	in float3 WorldPosition,
+	in float3 TranslatedWorldPosition,
 	in float3 ViewDirection,
 	in RaytracingAccelerationStructure TLAS,
 	in uint2 PixelCoord,
 	in FPackedMaterialClosestHitPayload Payload,
 	in bool bRayTraceSkyLightContribution,
 	in bool bDecoupleSampleGeneration)
+#if STRATA_ENABLED
+{
+	// STRATA_TODO
+	return 0;
+}
+#else
 {
 	float3 IndirectLighting = float3(0.0f, 0.0f, 0.0f);
 
@@ -365,7 +364,7 @@ float3 ComputeIndirectLighting(
 		SkyLightEvaluate(
 			PixelCoord,
 			SkyLight.SamplesPerPixel,
-			WorldPosition,
+			TranslatedWorldPosition,
 			GBufferData.WorldNormal,
 			ViewDirection,
 			GBufferData,
@@ -384,9 +383,10 @@ float3 ComputeIndirectLighting(
 
 	return IndirectLighting;
 }
+#endif
 
 float3 ComputeDirectLighting(
-	in float3 WorldPosition,
+	in float3 TranslatedWorldPosition,
 	in float3 ViewDirection,
 	in FRayCone RayCone,
 	in uint2 PixelCoord,
@@ -398,16 +398,13 @@ float3 ComputeDirectLighting(
 {
 	float3 DirectLighting = (float3)0;
 
-	// Preserve current custom data value from the material payload, as it will be overwritten during shadow ray tracing.
-	uint SavedPackedCustomData = Payload.PackedCustomData;
-
 	// Repurpose some fields in the material payload to pass parameters into lighting miss shader.
 	float3 OldRadiance = Payload.GetRadiance();
-	float3 OldIndirectIrradiance = Payload.GetIndirectIrradiance();
+	float3 OldIndirectIrradiance = Payload.GetIndirectIrradiance(); // Aliased with ViewDirection
 	Payload.SetRadiance(float3(0, 0, 0));
-	Payload.SetIndirectIrradiance(ViewDirection);
+	Payload.SetRayDirection(ViewDirection);
 
-	FCulledLightList CullData = FCulledLightList::Create(WorldPosition);
+	FCulledLightList CullData = FCulledLightList::Create(TranslatedWorldPosition);
 	const uint LightCount = CullData.NumLights();
 
 	for (uint Index = 0; WaveActiveAnyTrue(Index < LightCount); Index++)
@@ -418,13 +415,13 @@ float3 ComputeDirectLighting(
 		LightIndex = CullData.GetLightIndex(Index, Lit);
 
 		int LightProfileIndex = -1;
-		int RectLightTextureIndex = -1;
 		uint LightType = 0;
-		FDeferredLightData LightData = GetRayTracingDeferredLightData(LightIndex, LightProfileIndex, RectLightTextureIndex, LightType);
+		uint LightMissShaderIndex = 0;
+		FDeferredLightData LightData = GetRayTracingDeferredLightData(LightIndex, LightProfileIndex, LightType, LightMissShaderIndex);
 
 		float3 ShadowRayDirection;
 		// ToLight should not be normalized because its length is used to compute the shadow ray TMax 
-		float3 ToLight = LightData.TranslatedWorldPosition - WorldPosition; // LWC_TODO
+		float3 ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
 		float LightMask = 1.0;
 
 		if (LightType == LIGHT_TYPE_DIRECTIONAL)
@@ -434,7 +431,7 @@ float3 ComputeDirectLighting(
 		}
 		else
 		{
-			LightMask = GetLocalLightAttenuation(WorldPosition, LightData, ToLight, ShadowRayDirection);
+			LightMask = GetLocalLightAttenuation(TranslatedWorldPosition, LightData, ToLight, ShadowRayDirection);
 
 			// Skip the light sample that does not contribute anything due to attenuation.
 			if (LightMask <= 0.0)
@@ -455,18 +452,26 @@ float3 ComputeDirectLighting(
 		}
 
 		bool IsLightVisible = false;
+		float ShadowRayLength = 0.0;
 		if (ReflectedShadowsType == 2)
 		{
-			ShadowRayDirection = SampleAreaLightDirection(LightData, WorldPosition, Payload.GetWorldNormal(), LightType, RandSequence);
+			float4 Result = SampleAreaLightDirection(LightData, TranslatedWorldPosition, Payload.GetWorldNormal(), LightType, RandSequence);
+			ShadowRayDirection = Result.xyz;
+			ShadowRayLength = Result.w;
+		}
+		else
+		{
+			// hard shadow or no shadow -- just trace toward light center
+			ShadowRayLength = length(ToLight);
 		}
 
 		const bool ApplyShadow = (Lit && ReflectedShadowsType != 0);
 
-		RayDesc ShadowRay;
-		ShadowRay.Origin = WorldPosition;
+		FRayDesc ShadowRay;
+		ShadowRay.Origin = TranslatedWorldPosition;
 		ShadowRay.Direction = ShadowRayDirection;
 		ShadowRay.TMin = 1e-4f;
-		ShadowRay.TMax = (ApplyShadow) ? length(ToLight) : ShadowRay.TMin;
+		ShadowRay.TMax = (ApplyShadow) ? ShadowRayLength : ShadowRay.TMin;
 		ApplyPositionBias(ShadowRay, Payload.GetWorldNormal(), ShadowMaxNormalBias);
 
 		uint RayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
@@ -484,11 +489,11 @@ float3 ComputeDirectLighting(
 #if ENABLE_FAR_FIELD_TRACING
 		{
 			// Rebase origin for far-field rays
-			RayDesc FarFieldShadowRay = ShadowRay;
+			FRayDesc FarFieldShadowRay = ShadowRay;
 			FarFieldShadowRay.Origin += FarFieldReferencePos;
 
 			FDefaultPayload DefaultPayload = (FDefaultPayload)0;
-			TraceRay(TLAS, RayFlags, RAY_TRACING_MASK_FAR_FIELD, RAY_TRACING_SHADER_SLOT_SHADOW, RAY_TRACING_NUM_SHADER_SLOTS, RAY_TRACING_MISS_SHADER_SLOT_DEFAULT, FarFieldShadowRay, DefaultPayload);
+			TraceRay(TLAS, RayFlags, RAY_TRACING_MASK_FAR_FIELD, RAY_TRACING_SHADER_SLOT_SHADOW, RAY_TRACING_NUM_SHADER_SLOTS, RAY_TRACING_MISS_SHADER_SLOT_DEFAULT, FarFieldShadowRay.GetNativeDesc(), DefaultPayload);
 
 			bMissFarField = DefaultPayload.IsMiss();
 		}
@@ -497,26 +502,26 @@ float3 ComputeDirectLighting(
 		// use the bound miss shader lighting evaluation if lighting, else nothing
 		if (bMissFarField)
 		{
-			uint MissShaderIndex = Lit ? RAY_TRACING_MISS_SHADER_SLOT_LIGHTING : RAY_TRACING_MISS_SHADER_SLOT_DEFAULT;
+			uint MissShaderIndex = Lit ? LightMissShaderIndex : RAY_TRACING_MISS_SHADER_SLOT_DEFAULT;
 			TraceShadowRayMissShaderLighting(ShadowRay, RayFlags, InstanceInclusionMask, TLAS, MissShaderIndex, PixelCoord, Payload);
 		}
 	}
 
 	DirectLighting = Payload.GetRadiance();
 	Payload.SetRadiance(OldRadiance);
-	Payload.SetIndirectIrradiance(OldIndirectIrradiance);
+	Payload.SetIndirectIrradiance(OldIndirectIrradiance); // Set back indirect irradiance (previously aliased with view direction
 
 	return DirectLighting;
 }
 
-void ComputeBottomLayerMaterialProperties(RayDesc Ray, inout FMaterialClosestHitPayload Payload)
+void ComputeBottomLayerMaterialProperties(FRayDesc Ray, inout FMaterialClosestHitPayload Payload)
 {
 	// #dxr_todo: Remove me
 }
 
 void AccumulateResults(
 	inout FPackedMaterialClosestHitPayload Payload,
-	in float3 WorldPosition,
+	in float3 TranslatedWorldPosition,
 	in float3 ViewDirection,
 	in RaytracingAccelerationStructure TLAS,
 	inout RandomSequence RandSequence,
@@ -537,12 +542,12 @@ void AccumulateResults(
 
 	float3 DirectLighting = 0;
 		
-	if (ShouldDoDirectLighting && Payload.GetShadingModelID() != SHADINGMODELID_UNLIT)
+	if (ShouldDoDirectLighting && Payload.IsValid())
 	{
 		// Save and restore original payload HitT, as it's modified during shadow ray tracing
 		float OldHitT = Payload.HitT;
 
-		DirectLighting = ComputeDirectLighting(WorldPosition, ViewDirection, RayCone, PixelCoord, TLAS, Payload, RandSequence, ReflectedShadowsType, ShadowMaxNormalBias);
+		DirectLighting = ComputeDirectLighting(TranslatedWorldPosition, ViewDirection, RayCone, PixelCoord, TLAS, Payload, RandSequence, ReflectedShadowsType, ShadowMaxNormalBias);
 
 		Payload.HitT = OldHitT;
 	}
@@ -558,7 +563,7 @@ void AccumulateResults(
 
 		// Indirect contribution
 		const float3 IndirectLighting = ComputeIndirectLighting(
-			WorldPosition,
+			TranslatedWorldPosition,
 			ViewDirection,
 			TLAS,
 			PixelCoord,
@@ -571,7 +576,7 @@ void AccumulateResults(
 }
 
 FMaterialClosestHitPayload TraceRayAndAccumulateResults(
-	in RayDesc Ray,
+	in FRayDesc Ray,
 	in RaytracingAccelerationStructure TLAS,
 	in uint RayFlags,
 	in uint InstanceInclusionMask,
@@ -604,12 +609,12 @@ FMaterialClosestHitPayload TraceRayAndAccumulateResults(
 		PixelCoord,
 		bEnableSkyLightContribution);
 
-	float3 WorldPosition = Ray.Origin + Ray.Direction * Payload.HitT;
+	float3 TranslatedWorldPosition = Ray.Origin + Ray.Direction * Payload.HitT;
 	float3 ViewDirection = Ray.Direction;
 
 	AccumulateResults(
 		Payload,
-		WorldPosition,
+		TranslatedWorldPosition,
 		ViewDirection,
 		TLAS,
 		RandSequence,
@@ -627,7 +632,7 @@ FMaterialClosestHitPayload TraceRayAndAccumulateResults(
 }
 
 FMaterialClosestHitPayload TraceRayAndAccumulateBottomLayerResults(
-	in RayDesc Ray,
+	in FRayDesc Ray,
 	in RaytracingAccelerationStructure TLAS,
 	in uint RayFlags,
 	in uint InstanceInclusionMask,
@@ -663,13 +668,13 @@ FMaterialClosestHitPayload TraceRayAndAccumulateBottomLayerResults(
 
 	ComputeBottomLayerMaterialProperties(Ray, BottomLayerPayload);
 
-	float3 WorldPosition = Ray.Origin + Ray.Direction * BottomLayerPayload.HitT;
+	float3 TranslatedWorldPosition = Ray.Origin + Ray.Direction * BottomLayerPayload.HitT;
 	float3 ViewDirection = Ray.Direction;
 
 	FPackedMaterialClosestHitPayload PackedBottomLayerPayload = PackRayTracingPayload(BottomLayerPayload, RayCone);
 	AccumulateResults(
 		PackedBottomLayerPayload,
-		WorldPosition,
+		TranslatedWorldPosition,
 		ViewDirection,
 		TLAS,
 		RandSequence,

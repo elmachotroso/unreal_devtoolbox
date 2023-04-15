@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
+#include "Templates/SubclassOf.h"
 #include "LevelInstanceTypes.generated.h"
 
 // FLevelInstanceID is a runtime unique id that is computed from the Hash of LevelInstance Actor Guid and all its ancestor LevelInstance Actor Guids.
@@ -11,7 +12,7 @@
 struct FLevelInstanceID
 {
 	FLevelInstanceID() {}
-	FLevelInstanceID(class ULevelInstanceSubsystem* LevelInstanceSubsystem, class ALevelInstance* Actor);
+	FLevelInstanceID(class ULevelInstanceSubsystem* LevelInstanceSubsystem, class ILevelInstanceInterface* LevelInstance);
 
 	inline friend uint32 GetTypeHash(const FLevelInstanceID& Key)
 	{
@@ -25,7 +26,7 @@ struct FLevelInstanceID
 
 	inline bool operator==(const FLevelInstanceID& Other) const
 	{
-		return Hash == Other.Hash && Guids == Other.Guids;
+		return Hash == Other.Hash && Guids == Other.Guids && ActorName == Other.ActorName;
 	}
 
 	inline bool IsValid() const { return !Guids.IsEmpty(); }
@@ -35,6 +36,19 @@ struct FLevelInstanceID
 private:
 	uint64 Hash = 0;
 	TArray<FGuid> Guids;
+	FName ActorName;
+};
+
+UENUM()
+enum class ELevelInstanceRuntimeBehavior : uint8
+{
+	None UMETA(Hidden),
+	// Deprecated exists only to avoid breaking Actor Desc serialization
+	Embedded_Deprecated UMETA(Hidden),
+	// Default behavior is to move Level Instance level actors to the main world partition using World Partition clustering rules
+	Partitioned,
+	// Behavior only supported through Conversion Commandlet or on non OFPA Level Instances
+	LevelStreaming UMETA(Hidden)
 };
 
 UENUM()
@@ -68,6 +82,9 @@ struct FNewLevelInstanceParams
 	TObjectPtr<AActor> PivotActor = nullptr;
 
 	UPROPERTY()
+	bool bAlwaysShowDialog = true;
+
+	UPROPERTY()
 	TObjectPtr<UWorld> TemplateWorld = nullptr;
 		
 	UPROPERTY()
@@ -75,6 +92,9 @@ struct FNewLevelInstanceParams
 
 	UPROPERTY()
 	bool bPromptForSave = false;
+
+	UPROPERTY()
+	TSubclassOf<AActor> LevelInstanceClass;
 
 private:
 	UPROPERTY(EditAnywhere, Category = Default, meta = (EditCondition = "!bForceExternalActors", EditConditionHides, HideEditConditionToggle))

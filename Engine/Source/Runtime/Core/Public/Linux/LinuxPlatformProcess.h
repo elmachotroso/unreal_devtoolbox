@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include "Unix/UnixPlatformProcess.h"
+#include "HAL/Platform.h"
+#include "Unix/UnixPlatformProcess.h" // IWYU pragma: export
 
 /**
  * Linux implementation of the Process OS functions

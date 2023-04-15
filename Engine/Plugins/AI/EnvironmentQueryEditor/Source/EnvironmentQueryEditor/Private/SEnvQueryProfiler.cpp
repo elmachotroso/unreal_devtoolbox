@@ -14,9 +14,9 @@
 #include "EnvironmentQuery/EnvQueryManager.h"
 #include "Editor/UnrealEdEngine.h"
 #include "UnrealEdGlobals.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
@@ -207,17 +207,17 @@ static UObject* FindQueryObjectByName(FName StatName)
 		AssetPathName.LeftInline(SepIdx);
 	}
 
-	UObject* QueryOb = FindObject<UObject>(ANY_PACKAGE, *AssetPathName);
+	UObject* QueryOb = FindFirstObject<UObject>(*AssetPathName, EFindFirstObjectOptions::NativeFirst);
 	if (QueryOb == nullptr)
 	{
 		TArray<FAssetData> Assets;
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		AssetRegistry.GetAssetsByClass(UEnvQuery::StaticClass()->GetFName(), Assets);
+		AssetRegistry.GetAssetsByClass(UEnvQuery::StaticClass()->GetClassPathName(), Assets);
 
 		const FString MatchObjectName = FString(".") + AssetPathName;
 		for (int32 Idx = 0; Idx < Assets.Num(); Idx++)
 		{
-			const FString AssetNameStr = Assets[Idx].ObjectPath.ToString();
+			const FString AssetNameStr = Assets[Idx].GetObjectPathString();
 			if (AssetNameStr.EndsWith(MatchObjectName))
 			{
 				QueryOb = Assets[Idx].GetAsset();
@@ -286,7 +286,7 @@ TSharedRef<SWidget> SEnvQueryProfilerTableRow::GenerateWidgetForColumn(const FNa
 			.AutoWidth()
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.Text(NSLOCTEXT("PropertyCustomizationHelpers", "BrowseButtonLabel", "Browse"))
 				.ToolTipText(NSLOCTEXT("PropertyCustomizationHelpers", "BrowseButtonToolTipText", "Browse to Asset in Content Browser"))
 				.OnClicked(this, &SEnvQueryProfilerTableRow::OnBrowseClicked)
@@ -295,7 +295,7 @@ TSharedRef<SWidget> SEnvQueryProfilerTableRow::GenerateWidgetForColumn(const FNa
 				.IsFocusable(false)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.Search"))
+					.Image(FAppStyle::GetBrush("Icons.Search"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]

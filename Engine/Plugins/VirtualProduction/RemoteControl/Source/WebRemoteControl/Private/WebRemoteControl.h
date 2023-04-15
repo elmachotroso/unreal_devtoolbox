@@ -11,6 +11,7 @@
 #include "HttpServerRequest.h"
 #include "RemoteControlRequest.h"
 #include "RemoteControlRoute.h"
+#include "RemoteControlWebsocketRoute.h"
 #include "RemoteControlWebSocketServer.h"
 #include "WebRemoteControlEditorRoutes.h"
 
@@ -44,9 +45,16 @@ public:
 	virtual void UnregisterRequestPreprocessor(const FDelegateHandle& RequestPreprocessorHandle) override;
 	virtual FOnWebServerStarted& OnHttpServerStarted() override { return OnHttpServerStartedDelegate; }
 	virtual FSimpleMulticastDelegate& OnHttpServerStopped() override { return OnHttpServerStoppedDelegate; }
+	virtual bool IsHttpServerRunning() override { return bIsHttpServerRunning; }
 	virtual FOnWebServerStarted& OnWebSocketServerStarted() override { return OnWebSocketServerStartedDelegate; }
 	virtual FSimpleMulticastDelegate& OnWebSocketServerStopped() override { return OnWebSocketServerStoppedDelegate; }
-	virtual void SetExternalRemoteWebSocketLoggerConnection(TSharedPtr<class INetworkingWebSocket> WebSocketLoggerConnection);
+	virtual bool IsWebSocketServerRunning() override { return WebSocketServer.IsRunning(); }
+	virtual FOnWebSocketConnectionClosed& OnWebSocketConnectionOpened() override { return WebSocketServer.OnConnectionOpened(); }
+	virtual FOnWebSocketConnectionClosed& OnWebSocketConnectionClosed() override { return WebSocketServer.OnConnectionClosed(); }
+	virtual void RegisterWebsocketRoute(const FRemoteControlWebsocketRoute& Route) override;
+	virtual void UnregisterWebsocketRoute(const FRemoteControlWebsocketRoute& Route) override;
+	virtual void SendWebsocketMessage(const FGuid& InTargetClientId, const TArray<uint8>& InUTF8Payload) override;
+	virtual void SetExternalRemoteWebSocketLoggerConnection(TSharedPtr<class INetworkingWebSocket> WebSocketLoggerConnection) override;
 	//~ End IWebRemoteControlModule Interface
 
 	/**
@@ -60,18 +68,6 @@ public:
 	 * @param Route The route to unregister.
 	 */
 	void UnregisterRoute(const FRemoteControlRoute& Route);
-
-	/**
-	 * Register a websocket route.
-	 * @param Route the route to register.
-	 */
-	void RegisterWebsocketRoute(const FRemoteControlWebsocketRoute& Route);
-
-	/**
-	 * Unregister a websocket route.
-	 * @param Route the route to unregister.
-	 */
-	void UnregisterWebsocketRoute(const FRemoteControlWebsocketRoute& Route);
 
 	/**
 	 * Start the web control server
@@ -118,6 +114,8 @@ private:
 	bool HandlePresetCallFunctionRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePresetSetPropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePresetGetPropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandlePresetExposePropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandlePresetUnexposePropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePresetGetExposedActorPropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePresetGetExposedActorPropertiesRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePresetSetExposedActorPropertyRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
@@ -132,9 +130,14 @@ private:
 	bool HandleEntityMetadataOperationsRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandleEntitySetLabelRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 	bool HandlePassphraseRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandleCreateTransientPresetRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandleDeleteTransientPresetRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandlePresetSetControllerRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+	bool HandlePresetGetControllerRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	//~ Websocket route handlers
 	void HandleWebSocketHttpMessage(const struct FRemoteControlWebSocketMessage& WebSocketMessage);
+	void HandleWebSocketBatchMessage(const FRemoteControlWebSocketMessage& WebSocketMessage);
 
 	void InvokeWrappedRequest(const struct FRCRequestWrapper& Wrapper, FMemoryWriter& OutUTF8PayloadWriter, const FHttpServerRequest* TemplateRequest = nullptr);
 
@@ -161,7 +164,7 @@ private:
 	TSet<FRemoteControlRoute> RegisteredHttpRoutes;
 
 	/** Set of routes that will be activated on websocket server start. */
-	TSet<FRemoteControlRoute> RegisteredWebSocketRoutes;
+	TSet<FRemoteControlWebsocketRoute> RegisteredWebSocketRoutes;
 
 	/** Port of the remote control http server. */
 	uint32 HttpServerPort;
@@ -184,6 +187,9 @@ private:
 	/** Holds the client currently making a request. */
 	FGuid ActingClientId;
 
+	/** Whether the HTTP server has been started and has not been stopped. */
+	bool bIsHttpServerRunning = false;
+
 	/** List of preprocessor delegates that need to be registered when the server is started. */
 	TMap<FDelegateHandle, FHttpRequestHandler> PreprocessorsToRegister;
 
@@ -200,4 +206,8 @@ private:
 	FSimpleMulticastDelegate OnHttpServerStoppedDelegate;
 	FOnWebServerStarted OnWebSocketServerStartedDelegate;
 	FSimpleMulticastDelegate OnWebSocketServerStoppedDelegate;
+
+	/** Name cache for Get Controller Result structs
+	* Key: Controller name; Value: Name of the dynamic struct holding our result*/
+	TMap<FName, FString> ControllersSerializerStructNameCache;
 };

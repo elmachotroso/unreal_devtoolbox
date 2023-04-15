@@ -11,6 +11,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "HAL/LowLevelMemTracker.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DecalComponent)
+
 static TAutoConsoleVariable<float> CVarDecalFadeDurationScale(
 	TEXT("r.Decal.FadeDurationScale"),
 	1.0f,
@@ -41,13 +43,13 @@ FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
 
 	Component = InComponent;
 	DecalMaterial = EffectiveMaterial;
-	SetTransformIncludingDecalSize(InComponent->GetTransformIncludingDecalSize());
+	SetTransformIncludingDecalSize(InComponent->GetTransformIncludingDecalSize(), InComponent->CalcBounds(InComponent->GetComponentTransform()));
 	bOwnerSelected = InComponent->IsOwnerSelected();
 	SortOrder = InComponent->SortOrder;
 
 #if WITH_EDITOR
 	// We don't want to fade when we're editing, only in Simulate/PIE/Game
-	if (!GIsEditor || GIsPlayInEditorWorld)
+	if (!GIsEditor || (InComponent->GetWorld() && InComponent->GetWorld()->IsPlayInEditor()))
 #endif
 	{
 		InitializeFadingParameters(InComponent->GetWorld()->GetTimeSeconds(), InComponent->GetFadeDuration(), InComponent->GetFadeStartDelay(), InComponent->GetFadeInDuration(), InComponent->GetFadeInStartDelay());
@@ -62,9 +64,10 @@ FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
 	}
 }
 
-void FDeferredDecalProxy::SetTransformIncludingDecalSize(const FTransform& InComponentToWorldIncludingDecalSize)
+void FDeferredDecalProxy::SetTransformIncludingDecalSize(const FTransform& InComponentToWorldIncludingDecalSize, const FBoxSphereBounds& InBounds)
 {
 	ComponentTrans = InComponentToWorldIncludingDecalSize;
+	Bounds = InBounds;
 }
 
 void FDeferredDecalProxy::InitializeFadingParameters(float AbsSpawnTime, float FadeDuration, float FadeStartDelay, float FadeInDuration, float FadeInStartDelay)
@@ -195,7 +198,7 @@ float UDecalComponent::GetFadeInStartDelay() const
 void UDecalComponent::SetFadeOut(float StartDelay, float Duration, bool DestroyOwnerAfterFade /*= true*/)
 {
 	float FadeDurationScale = CVarDecalFadeDurationScale.GetValueOnGameThread();
-	FadeDurationScale = (FadeDurationScale <= SMALL_NUMBER) ? 0.0f : FadeDurationScale;
+	FadeDurationScale = (FadeDurationScale <= UE_SMALL_NUMBER) ? 0.0f : FadeDurationScale;
 
 	FadeStartDelay = StartDelay * FadeDurationScale;
 	FadeDuration = Duration * FadeDurationScale;
@@ -262,13 +265,21 @@ class UMaterialInterface* UDecalComponent::GetDecalMaterial() const
 
 class UMaterialInstanceDynamic* UDecalComponent::CreateDynamicMaterialInstance()
 {
+	UMaterialInterface* CurrentMaterial = DecalMaterial;
+	
+	// If we already set a MID, then we need to create based on its parent.
+	if (UMaterialInstanceDynamic* CurrentMaterialMID = Cast<UMaterialInstanceDynamic>(CurrentMaterial))
+	{
+		CurrentMaterial = CurrentMaterialMID->Parent;
+	}
+
 	// Create the MID
-	UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(DecalMaterial, this);
+	UMaterialInstanceDynamic* NewMaterialInstance = UMaterialInstanceDynamic::Create(CurrentMaterial, this);
 
-	// Assign it, once parent is set
-	SetDecalMaterial(Instance);
+	// Assign the MID
+	SetDecalMaterial(NewMaterialInstance);
 
-	return Instance;
+	return NewMaterialInstance;
 }
 
 void UDecalComponent::GetUsedMaterials( TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials ) const
@@ -327,4 +338,5 @@ void UDecalComponent::DestroyRenderState_Concurrent()
 	Super::DestroyRenderState_Concurrent();
 	GetWorld()->Scene->RemoveDecal(this);
 }
+
 

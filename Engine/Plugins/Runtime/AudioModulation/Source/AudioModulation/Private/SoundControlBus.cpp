@@ -11,6 +11,8 @@
 #include "Engine/World.h"
 #include "SoundControlBusProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundControlBus)
+
 
 USoundControlBus::USoundControlBus(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -105,8 +107,6 @@ void USoundControlBus::BeginDestroy()
 {
 	using namespace AudioModulation;
 
-	Super::BeginDestroy();
-
 	if (UWorld* World = GetWorld())
 	{
 		FAudioDeviceHandle AudioDevice = World->GetAudioDevice();
@@ -121,6 +121,9 @@ void USoundControlBus::BeginDestroy()
 			}
 		}
 	}
+
+	// Call parent destroy at end to ensure object is in a valid state for the modulation manager to clean up first
+	Super::BeginDestroy();
 }
 
 const Audio::FModulationMixFunction USoundControlBus::GetMixFunction() const
@@ -144,3 +147,4 @@ const Audio::FModulationParameter& USoundControlBus::GetOutputParameter() const
 	const FString Breadcrumb = FString::Format(TEXT("{0} '{1}'"), { *GetClass()->GetName(), *GetName() });
 	return AudioModulation::GetOrRegisterParameter(Parameter, Breadcrumb);
 }
+

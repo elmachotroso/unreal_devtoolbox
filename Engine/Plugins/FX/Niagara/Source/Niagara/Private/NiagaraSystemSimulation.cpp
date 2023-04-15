@@ -417,6 +417,7 @@ struct FNiagaraSystemSimulationSpawnConcurrentTask
 
 		Context.BeforeInstancesTickGraphEvents.Add(MyCompletionGraphEvent);
 		Context.Owner->Spawn_Concurrent(Context);
+		Context.BeforeInstancesTickGraphEvents.Empty();
 		CompletionTask->Unlock();
 	}
 
@@ -428,9 +429,10 @@ struct FNiagaraSystemSimulationSpawnConcurrentTask
 // Task to run FNiagaraSystemInstance::Tick_Concurrent
 struct FNiagaraSystemInstanceTickConcurrentTask
 {
-	FNiagaraSystemInstanceTickConcurrentTask(FNiagaraSystemSimulation* InSystemSimulation, FNiagaraSystemTickBatch& InBatch)
+	FNiagaraSystemInstanceTickConcurrentTask(FNiagaraSystemSimulation* InSystemSimulation, FNiagaraSystemTickBatch& InBatch, UWorld* InWorldContext)
 		: SystemSimulation(InSystemSimulation)
 		, Batch(InBatch)
+		, WorldContext(InWorldContext)
 	{
 	}
 
@@ -440,6 +442,7 @@ struct FNiagaraSystemInstanceTickConcurrentTask
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(WorldContext, SystemSimulation->GetSystem()), TickConcurrent);
 #if NIAGARA_SYSTEMSIMULATION_DEBUGGING
 		NiagaraSystemSimulationLocal::DebugDelayInstancesTask();
 #endif
@@ -485,6 +488,7 @@ struct FNiagaraSystemInstanceTickConcurrentTask
 
 	FNiagaraSystemSimulation* SystemSimulation = nullptr;
 	FNiagaraSystemTickBatch Batch;
+	UWorld* WorldContext = nullptr;
 };
 
 
@@ -786,8 +790,15 @@ void FNiagaraSystemSimulation::Destroy()
 
 	check(GetSystemInstances(ENiagaraSystemInstanceState::Spawning).Num() == 0);
 
-	SpawnExecContext->Parameters.UnbindFromSourceStores();
-	UpdateExecContext->Parameters.UnbindFromSourceStores();
+	// Can be nullptr if bCanExecute is false
+	if (SpawnExecContext)
+	{
+		SpawnExecContext->Parameters.UnbindFromSourceStores();
+	}
+	if (UpdateExecContext)
+	{
+		UpdateExecContext->Parameters.UnbindFromSourceStores();
+	}
 
 	World = nullptr;
 }
@@ -1093,7 +1104,7 @@ void FNiagaraSystemSimulation::FlushTickBatch(FNiagaraSystemSimulationTickContex
 		if ( Context.IsRunningAsync() )
 		{
 			// Queue instance concurrent task and track information in the instance
-			FGraphEventRef InstanceAsyncGraphEvent = TGraphTask<FNiagaraSystemInstanceTickConcurrentTask>::CreateTask(&Context.BeforeInstancesTickGraphEvents).ConstructAndDispatchWhenReady(this, TickBatch);
+			FGraphEventRef InstanceAsyncGraphEvent = TGraphTask<FNiagaraSystemInstanceTickConcurrentTask>::CreateTask(&Context.BeforeInstancesTickGraphEvents).ConstructAndDispatchWhenReady(this, TickBatch, Context.World);
 
 			for (FNiagaraSystemInstance* Inst : TickBatch)
 			{
@@ -1566,11 +1577,53 @@ void FNiagaraSystemSimulation::Spawn_Concurrent(FNiagaraSystemSimulationTickCont
 	bInSpawnPhase = false;
 }
 
+void FNiagaraSystemSimulation::SimCachePostTick_Concurrent(float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent)
+{
+	check(GetIsSolo());
+	check(System != nullptr);
+
+	TArray<FNiagaraSystemInstance*>& SystemInstances = GetSystemInstances(ENiagaraSystemInstanceState::Running);
+	if (SystemInstances.Num() == 0)
+	{
+		return;
+	}
+
+	if (!bBindingsInitialized)
+	{
+		InitParameterDataSetBindings(SystemInstances[0]);
+	}
+
+	FNiagaraDataSetReaderInt32<ENiagaraExecutionState> SystemExecutionStateAccessor = System->GetSystemExecutionStateAccessor().GetReader(MainDataSet);
+	TConstArrayView<FNiagaraDataSetAccessor<ENiagaraExecutionState>> EmitterExecutionStateAccessors = System->GetEmitterExecutionStateAccessors();
+
+	for ( int32 iSystemInstance=0; iSystemInstance < SystemInstances.Num(); ++iSystemInstance )
+	{
+		FNiagaraSystemInstance& SystemInstance = *SystemInstances[iSystemInstance];
+
+		TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>>& Emitters = SystemInstance.GetEmitters();
+		for (int32 iEmitter=0; iEmitter < Emitters.Num(); ++iEmitter)
+		{
+			FNiagaraEmitterInstance& EmitterInstance = Emitters[iEmitter].Get();
+			if ( EmitterInstance.IsComplete() )
+			{
+				continue;
+			}
+
+			ENiagaraExecutionState State = EmitterExecutionStateAccessors[iEmitter].GetReader(MainDataSet).GetSafe(iSystemInstance, ENiagaraExecutionState::Disabled);
+			EmitterInstance.SetExecutionState(State);
+
+			//DataSetToEmitterSpawnParameters[iEmitter].DataSetToParameterStore(EmitterInstance.GetSpawnExecutionContext().Parameters, MainDataSet, iSystemInstance);
+			//DataSetToEmitterUpdateParameters[iEmitter].DataSetToParameterStore(EmitterInstance.GetUpdateExecutionContext().Parameters, MainDataSet, iSystemInstance);
+			DataSetToEmitterRendererParameters[iEmitter].DataSetToParameterStore(EmitterInstance.GetRendererBoundVariables(), MainDataSet, iSystemInstance);
+		}
+	}
+}
+
 void FNiagaraSystemSimulation::DumpStalledInfo()
 {
 	TStringBuilder<128> Builder;
 	Builder.Appendf(TEXT("ConcurrentTickGraphEvent Complete (%d)\n"), ConcurrentTickGraphEvent ? ConcurrentTickGraphEvent->IsComplete() : true);
-	Builder.Appendf(TEXT("AllWorkCompleteGraphEvent Complete (%d)\n"), AllWorkCompleteGraphEvent ? ConcurrentTickGraphEvent->IsComplete() : true);
+	Builder.Appendf(TEXT("AllWorkCompleteGraphEvent Complete (%d)\n"), AllWorkCompleteGraphEvent ? AllWorkCompleteGraphEvent->IsComplete() : true);
 	Builder.Appendf(TEXT("SystemTickGroup (%d)\n"), SystemTickGroup);
 	Builder.Appendf(TEXT("bInSpawnPhase (%d)\n"), bInSpawnPhase);
 	Builder.Appendf(TEXT("bIsSolo (%d)\n"), bIsSolo);
@@ -1609,7 +1662,7 @@ void FNiagaraSystemSimulation::WaitForConcurrentTickComplete(bool bEnsureComplet
 		}
 		else
 		{
-			FTaskGraphInterface::Get().WaitUntilTaskCompletes(ConcurrentTickGraphEvent, ENamedThreads::GameThread);
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(ConcurrentTickGraphEvent, ENamedThreads::GameThread_Local);
 		}
 	}
 	ConcurrentTickGraphEvent = nullptr;
@@ -1642,6 +1695,8 @@ void FNiagaraSystemSimulation::WaitForInstancesTickComplete(bool bEnsureComplete
 			}
 		}
 	}
+
+	ConcurrentTickGraphEvent = nullptr;
 	AllWorkCompleteGraphEvent = nullptr;
 }
 
@@ -2054,7 +2109,6 @@ void FNiagaraSystemSimulation::TransferSystemSimResults(FNiagaraSystemSimulation
 				}
 
 				DataSetToEmitterRendererParameters[EmitterIdx].DataSetToParameterStore(EmitterInst.GetRendererBoundVariables(), Context.DataSet, SystemIndex);
-
 			}
 		}
 	}
@@ -2090,6 +2144,7 @@ void FNiagaraSystemSimulation::RemoveInstance(FNiagaraSystemInstance* Instance)
 	}
 
 	// We did not finalize and will not so clear the reference
+	Instance->ConcurrentTickGraphEvent = nullptr;
 	Instance->FinalizeRef.ConditionalClear();
 
 	// Remove the instance if it is still valid
@@ -2124,7 +2179,8 @@ void FNiagaraSystemSimulation::AddInstance(FNiagaraSystemInstance* Instance)
 	}
 
 	check(GetSystemInstances(ENiagaraSystemInstanceState::Running).Num() == MainDataSet.GetCurrentDataChecked().GetNumInstances());
-	check(GetSystemInstances(ENiagaraSystemInstanceState::Spawning).Num() == SpawningDataSet.GetCurrentDataChecked().GetNumInstances());
+	//Note: We can't check this here because AddInstance can be called while we are moving system from PendingSpawn -> Spawning
+	//check(GetSystemInstances(ENiagaraSystemInstanceState::Spawning).Num() == SpawningDataSet.GetCurrentDataChecked().GetNumInstances());
 	check(GetSystemInstances(ENiagaraSystemInstanceState::Paused).Num() == PausedDataSet.GetCurrentDataChecked().GetNumInstances());
 }
 

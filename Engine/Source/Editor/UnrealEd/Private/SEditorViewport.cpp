@@ -20,8 +20,9 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "MaterialShaderQualitySettings.h"
-#include "RHIShaderPlatformDefinitions.inl"
 #include "RayTracingDebugVisualizationMenuCommands.h"
+#include "GPUSkinCacheVisualizationMenuCommands.h"
+#include "GPUSkinCache.h"
 #include "Widgets/Colors/SComplexGradient.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewport"
@@ -83,17 +84,6 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 	// Ensure the commands are registered
 	FEditorViewportCommands::Register();
 	BindCommands();
-
-	TSharedPtr<SWidget> ViewportToolbar = MakeViewportToolbar();
-
-	if(ViewportToolbar.IsValid())
-	{
-		ViewportOverlay->AddSlot()
-			.VAlign(VAlign_Top)
-			[
-				ViewportToolbar.ToSharedRef()
-			];
-	}
 	
 	ViewportOverlay->AddSlot()
 	[
@@ -104,6 +94,17 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 		.Padding(0.0f)
 		.ShowEffectWhenDisabled(false)
 	];
+
+	TSharedPtr<SWidget> ViewportToolbar = MakeViewportToolbar();
+
+	if (ViewportToolbar.IsValid())
+	{
+		ViewportOverlay->AddSlot()
+			.VAlign(VAlign_Top)
+			[
+				ViewportToolbar.ToSharedRef()
+			];
+	}
 
 	// This makes a gradient that displays whether or not a viewport is active
 	FLinearColor ActiveBorderColor = FAppStyle::Get().GetSlateColor("EditorViewport.ActiveBorderColor").GetSpecifiedColor();
@@ -432,6 +433,12 @@ void SEditorViewport::BindCommands()
 	MAP_VIEWMODE_ACTION( Commands.CollisionPawn, VMI_CollisionPawn);
 	MAP_VIEWMODE_ACTION( Commands.CollisionVisibility, VMI_CollisionVisibility);
 
+	if (GEnableGPUSkinCache)
+	{
+		MAP_VIEWMODE_ACTION(Commands.VisualizeGPUSkinCacheMode, VMI_VisualizeGPUSkinCache);
+		FGPUSkinCacheVisualizationMenuCommands::Get().BindCommands(CommandListRef, Client);
+	}
+
 	MAP_VIEWMODEPARAM_ACTION( Commands.TexStreamAccMeshUVDensityAll, -1 );
 	for (int32 TexCoordIndex = 0; TexCoordIndex < TEXSTREAM_MAX_NUM_UVCHANNELS; ++TexCoordIndex)
 	{
@@ -573,11 +580,21 @@ bool SEditorViewport::IsRealtime() const
 
 bool SEditorViewport::IsVisible() const
 {
+#if WITH_DUMPGPU
+	extern ENGINE_API uint32 GDumpGPU_FrameNumber;
+#endif
+
 	const float VisibilityTimeThreshold = .25f;
-	// The viewport is visible if we don't have a parent layout (likely a floating window) or this viewport is visible in the parent layout
+	// The viewport is visible if we don't have a parent layout (likely a floating window) or this viewport is visible in the parent layout.
+	// Also, always render the viewport if DumpGPU is active, regardless of tick time threshold -- otherwise these don't show up due to lag
+	// caused by the GPU dump being triggered.
 	return 
 		LastTickTime == 0.0	||	// Never been ticked
-		FPlatformTime::Seconds() - LastTickTime <= VisibilityTimeThreshold;	// Ticked recently
+		FPlatformTime::Seconds() - LastTickTime <= VisibilityTimeThreshold	// Ticked recently
+#if WITH_DUMPGPU
+		|| GDumpGPU_FrameNumber == GFrameNumber	// GPU dump in progress
+#endif		
+		;
 }
 
 void SEditorViewport::OnScreenCapture()
@@ -619,7 +636,7 @@ TSharedRef<SWidget> SEditorViewport::BuildFixedEV100Menu()  const
 				[
 					SNew(SSpinBox<float>)
 					.Style(&FAppStyle::Get(), "Menu.SpinBox")
-					.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
+					.Font( FAppStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
 					.MinValue(EV100Min)
 					.MaxValue(EV100Max)
 					.Value( this, &SEditorViewport::OnGetFixedEV100Value )
@@ -843,7 +860,7 @@ FText SEditorViewport::GetCurrentFeatureLevelPreviewText(bool bDrawOnlyLabel) co
 		{
 			ERHIFeatureLevel::Type TargetFeatureLevel = World->FeatureLevel;
 			EShaderPlatform ShaderPlatform = GetShaderPlatformHelper(TargetFeatureLevel);
-			const FText& PlatformText = GetFriendlyShaderPlatformName(ShaderPlatform);
+			const FText& PlatformText = FDataDrivenShaderPlatformInfo::GetFriendlyName(ShaderPlatform);
 			LabelName = FText::Format(LOCTEXT("WorldFeatureLevel", "{0}"), PlatformText);
 		}
 	}

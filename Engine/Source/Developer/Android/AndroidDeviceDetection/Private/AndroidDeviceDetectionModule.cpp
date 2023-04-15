@@ -39,7 +39,7 @@
 #include "DesktopPlatformModule.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #endif
 #include "String/ParseLines.h"
 
@@ -509,6 +509,18 @@ private:
 					const TCHAR* Ptr = *RoHardware;
 					FParse::Line(&Ptr, NewDeviceInfo.Hardware);
 				}
+				{
+					HardwareCommand = FString::Printf(TEXT("-s %s %s ro.soc.model"), *NewDeviceInfo.SerialNumber, *GetPropCommand);
+					FString RoSOCModelIn;
+					FString RoSOCModelOut;
+					ExecuteAdbCommand(*HardwareCommand, &RoSOCModelIn, nullptr);
+					const TCHAR* Ptr = *RoSOCModelIn;
+					FParse::Line(&Ptr, RoSOCModelOut);
+					if (!RoSOCModelOut.IsEmpty())
+					{
+						NewDeviceInfo.Hardware = RoSOCModelOut;
+					}
+				}
 
 				// Read hardware from cpuinfo:
 				FString CPUInfoString;
@@ -610,7 +622,7 @@ private:
 				// Add reverse port forwarding
 				uint16 ReversePortMappings[] = {
 					41899,	// Network file server, DEFAULT_TCP_FILE_SERVING_PORT in NetworkMessage.h
-					1980,	// Unreal Insights data collection, TraceInsightsModule.cpp
+					1981,	// Unreal Insights data collection, TraceInsightsModule.cpp
 					0		// end of list
 					};
 
@@ -945,7 +957,7 @@ private:
 			InMenuBuilder.AddMenuEntry(
 				FText::FromString(ModelName),
 				FText(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetEditor.SaveAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveAsset"),
 				FUIAction(FExecuteAction::CreateLambda(LambdaSaveConfigFile))
 			);
 		}
@@ -961,7 +973,7 @@ private:
 			LOCTEXT("loc_tip_AddAndroidConfigExportMenu", "Export device settings to a Json file."),
 			FNewMenuDelegate::CreateLambda([this](FMenuBuilder& Builder) { AddAndroidConfigExportSubMenus(Builder); }),
 			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "MainFrame.SaveAll")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.SaveAll")
 		);
 	}
 

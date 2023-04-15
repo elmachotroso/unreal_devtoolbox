@@ -4,6 +4,8 @@
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitGameplayEvent)
+
 // ----------------------------------------------------------------
 
 UAbilityTask_WaitGameplayEvent::UAbilityTask_WaitGameplayEvent(const FObjectInitializer& ObjectInitializer)
@@ -76,7 +78,7 @@ UAbilitySystemComponent* UAbilityTask_WaitGameplayEvent::GetTargetASC()
 		return OptionalExternalTarget;
 	}
 
-	return AbilitySystemComponent;
+	return AbilitySystemComponent.Get();
 }
 
 void UAbilityTask_WaitGameplayEvent::OnDestroy(bool AbilityEnding)
@@ -97,3 +99,4 @@ void UAbilityTask_WaitGameplayEvent::OnDestroy(bool AbilityEnding)
 
 	Super::OnDestroy(AbilityEnding);
 }
+

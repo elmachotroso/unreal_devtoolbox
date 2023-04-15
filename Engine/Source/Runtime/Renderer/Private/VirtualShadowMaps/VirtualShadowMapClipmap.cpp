@@ -10,6 +10,9 @@ VirtualShadowMapClipmap.cpp
 #include "RendererModule.h"
 #include "VirtualShadowMapArray.h"
 #include "VirtualShadowMapCacheManager.h"
+#include "VirtualShadowMapDefinitions.h"
+
+extern int32 GForceInvalidateDirectionalVSM;
 
 static TAutoConsoleVariable<float> CVarVirtualShadowMapResolutionLodBiasDirectional(
 	TEXT( "r.Shadow.Virtual.ResolutionLodBiasDirectional" ),
@@ -63,7 +66,6 @@ static float GetLevelRadius(int32 Level)
 
 FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 	FVirtualShadowMapArray& VirtualShadowMapArray,
-	FVirtualShadowMapArrayCacheManager* VirtualShadowMapArrayCacheManager,
 	const FLightSceneInfo& InLightSceneInfo,
 	const FMatrix& WorldToLightRotationMatrix,
 	const FViewMatrices& CameraViewMatrices,
@@ -73,6 +75,8 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 	  DependentView(InDependentView)
 {
 	check(WorldToLightRotationMatrix.GetOrigin() == FVector(0, 0, 0));	// Should not contain translation or scaling
+
+	FVirtualShadowMapArrayCacheManager* VirtualShadowMapArrayCacheManager = VirtualShadowMapArray.CacheManager;
 
 	const bool bCacheValid = VirtualShadowMapArrayCacheManager && VirtualShadowMapArrayCacheManager->IsValid();
 
@@ -109,9 +113,24 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 
 	WorldOrigin = CameraViewMatrices.GetViewOrigin();
 
-	if (bCacheValid)
+	if (InDependentView && InDependentView->ViewState)	// scene capture views don't have a persistent view state
 	{
-		PerLightCacheEntry = VirtualShadowMapArrayCacheManager->FindCreateLightCacheEntry(LightSceneInfo.Id);
+		PerLightCacheEntry = VirtualShadowMapArrayCacheManager->FindCreateLightCacheEntry(LightSceneInfo.Id, InDependentView->ViewState->GetViewKey());
+		if (PerLightCacheEntry.IsValid())
+		{
+			PerLightCacheEntry->UpdateClipmap();
+		}
+	}
+
+	const int RadiusLn = GetLevelRadius(LastLevel);
+	const int RadiiPerLevel = 4;
+	FVector SnappedOriginLn = WorldToLightViewRotationMatrix.TransformPosition(WorldOrigin);
+	{
+		FInt64Point OriginSnapUnitsLn(
+			FMath::RoundToInt64(SnappedOriginLn.X / RadiusLn),
+			FMath::RoundToInt64(SnappedOriginLn.Y / RadiusLn));
+		SnappedOriginLn.X = OriginSnapUnitsLn.X * RadiusLn;
+		SnappedOriginLn.Y = OriginSnapUnitsLn.Y * RadiusLn;
 	}
 
 	for (int32 Index = 0; Index < LevelCount; ++Index)
@@ -120,7 +139,7 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 		const int32 AbsoluteLevel = Index + FirstLevel;		// Absolute (virtual) level index
 
 		// TODO: Allocate these as a chunk if we continue to use one per clipmap level
-		Level.VirtualShadowMap = VirtualShadowMapArray.Allocate();
+		Level.VirtualShadowMap = VirtualShadowMapArray.Allocate(false);
 		ensure(Index == 0 || (Level.VirtualShadowMap->ID == (LevelData[Index-1].VirtualShadowMap->ID + 1)));
 
 		const float RawLevelRadius = GetLevelRadius(AbsoluteLevel);
@@ -129,20 +148,29 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 		double SnapSize = RawLevelRadius;
 
 		FVector ViewCenter = WorldToLightViewRotationMatrix.TransformPosition(WorldOrigin);
-		FIntPoint CenterSnapUnits(
-			FMath::RoundToInt(ViewCenter.X / SnapSize),
-			FMath::RoundToInt(ViewCenter.Y / SnapSize));
+		FVector2D CenterSnapUnits(
+			FMath::RoundToDouble(ViewCenter.X / SnapSize),
+			FMath::RoundToDouble(ViewCenter.Y / SnapSize));
 		ViewCenter.X = CenterSnapUnits.X * SnapSize;
 		ViewCenter.Y = CenterSnapUnits.Y * SnapSize;
 
-		FIntPoint CornerOffset;
-		CornerOffset.X = -CenterSnapUnits.X + 2;
-		CornerOffset.Y =  CenterSnapUnits.Y + 2;
+		FInt64Point CornerOffset;
+		CornerOffset.X = -(int64_t)CenterSnapUnits.X + (RadiiPerLevel/2);
+		CornerOffset.Y =  (int64_t)CenterSnapUnits.Y + (RadiiPerLevel/2);
 
 		const FVector SnappedWorldCenter = ViewToWorldRotationMatrix.TransformPosition(ViewCenter);
 
 		Level.WorldCenter = SnappedWorldCenter;
 		Level.CornerOffset = CornerOffset;
+
+		// A relative corner offset is used for LWC reasons.
+		// The reference point is WorldOrigin snapped to a grid of GetLevelRadius(LastLevel),
+		// because points on this grid are guaranteed to also be present on lower levels,
+		// therefore allowing the offsets to represented as factors of level radii without precision loss.
+		const FInt64Point SnappedPageOriginLi(-ViewCenter.X, ViewCenter.Y);
+		const FInt64Point SnappedPageOriginLn(-SnappedOriginLn.X, SnappedOriginLn.Y);
+		const FInt64Point RelativeCornerOffset = SnappedPageOriginLi - SnappedPageOriginLn + ((RadiiPerLevel / 2) * (int64_t)SnapSize);
+		Level.RelativeCornerOffset = FIntPoint(RelativeCornerOffset / SnapSize);
 
 		// Check if we have a cache entry for this level
 		// If we do and it covers our required depth range, we can use cached pages. Otherwise we need to invalidate.
@@ -167,14 +195,16 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 		{
 			// We snap to half the size of the VSM at each level
 			check((FVirtualShadowMap::Level0DimPagesXY & 1) == 0);
-			FIntPoint PageOffset(CornerOffset * (FVirtualShadowMap::Level0DimPagesXY >> 2));
+			FInt64Point PageOffset(CornerOffset * (FVirtualShadowMap::Level0DimPagesXY >> 2));
 
 			CacheEntry->UpdateClipmap(Level.VirtualShadowMap->ID,
 				WorldToLightRotationMatrix,
 				PageOffset,
+				CornerOffset,
 				RawLevelRadius,
 				ViewCenter.Z,
-				ViewRadiusZ);
+				ViewRadiusZ,
+				*PerLightCacheEntry);
 
 			Level.VirtualShadowMap->VirtualShadowMapCacheEntry = CacheEntry;
 
@@ -260,9 +290,10 @@ FVirtualShadowMapProjectionShaderData FVirtualShadowMapClipmap::GetProjectionSha
 	Data.ClipmapIndex = ClipmapIndex;
 	Data.ClipmapLevel = FirstLevel + ClipmapIndex;
 	Data.ClipmapLevelCount = LevelData.Num();
-	Data.ClipmapResolutionLodBias = ResolutionLodBias;
-	Data.ClipmapCornerOffset = Level.CornerOffset;
+	Data.ResolutionLodBias = ResolutionLodBias;
+	Data.ClipmapCornerRelativeOffset = Level.RelativeCornerOffset;
 	Data.LightSourceRadius = GetLightSceneInfo().Proxy->GetSourceRadius();
+	Data.Flags = GForceInvalidateDirectionalVSM ? VSM_PROJ_FLAG_UNCACHED : 0U;
 
 	return Data;
 }

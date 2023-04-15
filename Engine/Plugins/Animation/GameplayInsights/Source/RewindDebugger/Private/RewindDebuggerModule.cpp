@@ -12,16 +12,41 @@
 #include "RewindDebuggerStyle.h"
 #include "RewindDebuggerCommands.h"
 #include "SRewindDebugger.h"
+#include "SRewindDebuggerDetails.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "AnimInstanceHelpers.h"
 #include "PropertyTraceMenu.h"
 #include "ToolMenus.h"
+#include "LevelEditor.h"
+#include "Kismet2/DebuggerCommands.h"
 
 #define LOCTEXT_NAMESPACE "RewindDebuggerModule"
 
-static const FName RewindDebuggerTabName("RewindDebugger");
+const FName FRewindDebuggerModule::MainTabName("RewindDebugger2");
+const FName FRewindDebuggerModule::DetailsTabName("RewindDebuggerDetails2");
+
+TSharedRef<SDockTab> FRewindDebuggerModule::SpawnRewindDebuggerDetailsTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+	if (FRewindDebugger::Instance() == nullptr)
+	{
+		FRewindDebugger::Initialize();
+	}
+
+	FRewindDebugger* RewindDebugger = FRewindDebugger::Instance();
+	
+	RewindDebugger->SetIsDetailsPanelOpen(true);
+	
+	TSharedRef<SDockTab> MajorTab = SNew(SDockTab)
+		.TabRole(ETabRole::PanelTab);
+
+	MajorTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateLambda( [](TSharedRef<SDockTab>) { FRewindDebugger::Instance()->SetIsDetailsPanelOpen(false); }));
+
+	RewindDebugger->UpdateDetailsPanel(MajorTab);
+
+	return MajorTab;
+}
 
 TSharedRef<SDockTab> FRewindDebuggerModule::SpawnRewindDebuggerTab(const FSpawnTabArgs& SpawnTabArgs)
 {
@@ -31,15 +56,12 @@ TSharedRef<SDockTab> FRewindDebuggerModule::SpawnRewindDebuggerTab(const FSpawnT
 	}
 	
 	const TSharedRef<SDockTab> MajorTab = SNew(SDockTab)
-		.TabRole(ETabRole::NomadTab)
+		.TabRole(ETabRole::PanelTab)
 		.OnTabClosed_Lambda([this](TSharedRef<SDockTab>)
 		{
 			// clear reference to widget so it will be destroyed
-			RewindDebuggerWidget->CloseAllTabs();
 			RewindDebuggerWidget = nullptr;
 		});
-
-	TSharedPtr<SWidget> TabContent;
 
 	TSharedPtr<FUICommandList> CommandList = MakeShared<FUICommandList>();
 	const FRewindDebuggerCommands& Commands = FRewindDebuggerCommands::Get();
@@ -58,6 +80,25 @@ TSharedRef<SDockTab> FRewindDebuggerModule::SpawnRewindDebuggerTab(const FSpawnT
 							FIsActionChecked(),
 							FIsActionButtonVisible());
 
+	CommandList->MapAction(Commands.PauseOrPlay,
+							FExecuteAction::CreateLambda([DebuggerInstance]()
+							{
+								if (DebuggerInstance->CanPause())
+								{
+									DebuggerInstance->Pause();
+								}
+								else if (DebuggerInstance->CanPlay())
+								{
+									DebuggerInstance->Play();
+								}
+							}), 
+							FCanExecuteAction::CreateLambda([DebuggerInstance]()
+							{
+								return DebuggerInstance->CanPause() || DebuggerInstance->CanPlay();
+							}),
+							FIsActionChecked(),
+							FIsActionButtonVisible());
+	
 	CommandList->MapAction(Commands.ReversePlay,
 							FExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::PlayReverse), 
 							FCanExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::CanPlayReverse),
@@ -101,13 +142,31 @@ TSharedRef<SDockTab> FRewindDebuggerModule::SpawnRewindDebuggerTab(const FSpawnT
 							 FIsActionChecked(),
 							 FIsActionButtonVisible::CreateRaw(DebuggerInstance, &FRewindDebugger::CanStopRecording));
 
+	// Register PIE Rewind Debugger Commands
+	if (GEditor != nullptr)
+	{
+		check(FPlayWorldCommands::GlobalPlayWorldActions.IsValid());
 
+		FPlayWorldCommands::GlobalPlayWorldActions->MapAction(Commands.StartRecording, 
+							FExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::StartRecording), 
+							FCanExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::CanStartRecording),
+							FIsActionChecked(),
+							FIsActionButtonVisible::CreateLambda([]() { return !FRewindDebugger::Instance()->IsRecording();}));
+
+		FPlayWorldCommands::GlobalPlayWorldActions->MapAction(Commands.StopRecording,
+							 FExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::StopRecording),
+							 FCanExecuteAction::CreateRaw(DebuggerInstance, &FRewindDebugger::CanStopRecording),
+							 FIsActionChecked(),
+							 FIsActionButtonVisible::CreateRaw(DebuggerInstance, &FRewindDebugger::CanStopRecording));
+	}
+	
 	RewindDebuggerWidget = SNew(SRewindDebugger, CommandList.ToSharedRef(), MajorTab, SpawnTabArgs.GetOwnerWindow())
 								.DebugTargetActor(DebuggerInstance->GetDebugTargetActorProperty())
 								.RecordingDuration(DebuggerInstance->GetRecordingDurationProperty())
-								.DebugComponents(&DebuggerInstance->GetDebugComponents())
+								.DebugComponents(&DebuggerInstance->GetDebugTracks())
 								.TraceTime(DebuggerInstance->GetTraceTimeProperty())
 								.OnScrubPositionChanged_Raw(DebuggerInstance,&FRewindDebugger::ScrubToTime)
+								.OnViewRangeChanged_Raw(DebuggerInstance,&FRewindDebugger::SetCurrentViewRange)
 								.OnComponentDoubleClicked_Raw(DebuggerInstance, &FRewindDebugger::ComponentDoubleClicked)
 								.OnComponentSelectionChanged_Raw(DebuggerInstance, &FRewindDebugger::ComponentSelectionChanged)
 								.BuildComponentContextMenu_Raw(DebuggerInstance, &FRewindDebugger::BuildComponentContextMenu)
@@ -131,14 +190,37 @@ void FRewindDebuggerModule::StartupModule()
 	FRewindDebuggerStyle::Initialize();
 	FRewindDebuggerCommands::Register();
 
-	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
-		RewindDebuggerTabName, FOnSpawnTab::CreateRaw(this, &FRewindDebuggerModule::SpawnRewindDebuggerTab))
-		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory())
-		.SetDisplayName(LOCTEXT("TabTitle", "Rewind Debugger"))
-		.SetIcon(FSlateIcon("RewindDebuggerStyle", "RewindDebugger.RewindIcon"))
-		.SetTooltipText(LOCTEXT("TooltipText", "Opens Rewind Debugger."));
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 
+	/* LevelEditorTabManagerChangedHandle = */ LevelEditorModule.OnTabManagerChanged().AddLambda([this]()
+		{
+			FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+			TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
+			LevelEditorTabManager->RegisterTabSpawner(
+				MainTabName, FOnSpawnTab::CreateRaw(this, &FRewindDebuggerModule::SpawnRewindDebuggerTab))
+				.SetDisplayName(LOCTEXT("TabTitle", "Rewind Debugger"))
+				.SetIcon(FSlateIcon("RewindDebuggerStyle", "RewindDebugger.RewindIcon"))
+				.SetTooltipText(LOCTEXT("TooltipText", "Opens Rewind Debugger."))
+				.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory());
+
+			LevelEditorTabManager->RegisterTabSpawner(
+				DetailsTabName, FOnSpawnTab::CreateRaw(this, &FRewindDebuggerModule::SpawnRewindDebuggerDetailsTab))
+				.SetDisplayName(LOCTEXT("DetailsTabTitle", "Rewind Debugger Details"))
+				.SetIcon(FSlateIcon("RewindDebuggerStyle", "RewindDebugger.RewindDetailsIcon"))
+				.SetTooltipText(LOCTEXT("DetailsWindowTooltipText", "Opens Rewind Debugger Details Window."))
+				.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory());
+			
+		});
+
+	/*LevelEditorLayoutExtensionHandle = */ LevelEditorModule.OnRegisterLayoutExtensions().AddLambda(
+		[this](FLayoutExtender& Extender)
+		{
+			Extender.ExtendLayout(FName("LevelEditorSelectionDetails"), ELayoutExtensionPosition::After, FTabManager::FTab(DetailsTabName, ETabState::ClosedTab));
+			Extender.ExtendLayout(FName("Sequencer"), ELayoutExtensionPosition::After, FTabManager::FTab(MainTabName, ETabState::ClosedTab));
+		}
+	);
+	
 	RewindDebuggerCameraExtension.Initialize();
 	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerExtension::ModularFeatureName, &RewindDebuggerCameraExtension);
 	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerDoubleClickHandler::ModularFeatureName, &AnimInstanceDoubleClickHandler);

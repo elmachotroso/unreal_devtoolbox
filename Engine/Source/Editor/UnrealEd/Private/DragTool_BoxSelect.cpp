@@ -10,18 +10,45 @@
 #include "UnrealEdGlobals.h"
 #include "EngineUtils.h"
 #include "EditorModeManager.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Framework/TypedElementSelectionSet.h"
+#include "Elements/Interfaces/TypedElementWorldInterface.h"
 #include "EditorModes.h"
 #include "ActorEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "Engine/LevelStreaming.h"
 #include "CanvasTypes.h"
 #include "Subsystems/BrushEditingSubsystem.h"
+#include "LevelEditorSubsystem.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // FDragTool_BoxSelect
 //
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace UE::LevelEditor::Private
+{
+	TArray<FTypedElementHandle> GetElementsIntersectingBox(const AActor* Actor,
+		const FBox& InBox,
+		FLevelEditorViewportClient* Viewport,
+		const FWorldSelectionElementArgs& SelectionArgs)
+	{
+		if (Actor && (!Viewport || !Actor->IsA(AVolume::StaticClass()) || !Viewport->IsVolumeVisibleInViewport(*Actor)))
+		{
+			if (FTypedElementHandle ActorHandle = UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor))
+			{
+				if (TTypedElement<ITypedElementWorldInterface> WorldElement = UTypedElementRegistry::GetInstance()->GetElement<ITypedElementWorldInterface>(ActorHandle))
+				{
+					return WorldElement.GetSelectionElementsInBox(InBox, SelectionArgs);
+				}
+			}
+		}
+
+		return {};
+	}
+}
 
 /**
  * Starts a mouse drag behavior.  The start location is snapped to the editor constraints if bUseSnapping is true.
@@ -81,6 +108,22 @@ void FDragTool_ActorBoxSelect::AddDelta( const FVector& InDelta )
 	{
 		const bool bStrictDragSelection = GetDefault<ULevelEditorViewportSettings>()->bStrictBoxSelection;
 
+		UTypedElementSelectionSet* SelectionSet = GEditor->GetEditorSubsystem<ULevelEditorSubsystem>()->GetSelectionSet();
+
+		UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
+		const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
+
+		FWorldSelectionElementArgs SeletionArgs
+		{
+			SelectionSet,
+			ETypedElementSelectionMethod::Primary,
+			FTypedElementSelectionOptions(),
+			&(LevelViewportClient->EngineShowFlags),
+			bStrictDragSelection,
+			bGeometryMode
+		};
+
+
 		// If we are using over feedback calculate a new box from the one being dragged
 		FBox SelBBox;
 		CalculateBox( SelBBox );
@@ -92,7 +135,8 @@ void FDragTool_ActorBoxSelect::AddDelta( const FVector& InDelta )
 		for( FActorIterator It(IteratorWorld); It; ++It )
 		{
 			AActor& Actor = **It;
-			const bool bActorHitByBox = IntersectsBox( Actor, SelBBox, bStrictDragSelection );
+			const bool bActorHitByBox = !UE::LevelEditor::Private::GetElementsIntersectingBox( &Actor, SelBBox, LevelViewportClient, SeletionArgs ).IsEmpty();
+
 
 			if( bActorHitByBox )
 			{
@@ -133,7 +177,7 @@ void FDragTool_ActorBoxSelect::EndDrag()
 {
 	UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
 	const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
-	
+
 	FScopedTransaction Transaction( NSLOCTEXT("ActorFrustumSelect", "MarqueeSelectTransation", "Marquee Select" ) );
 
 	bool bShouldSelect = true;
@@ -147,7 +191,7 @@ void FDragTool_ActorBoxSelect::EndDrag()
 	}
 	else if( !bShiftDown )
 	{
-		// If the user is selecting, but isn't hold down SHIFT, remove all current selections.
+		// If the user is selecting, but isn't holding down SHIFT, give modes a chance to clear selection
 		ModeTools->SelectNone();
 	}
 
@@ -162,21 +206,30 @@ void FDragTool_ActorBoxSelect::EndDrag()
 	{
 		const bool bStrictDragSelection = GetDefault<ULevelEditorViewportSettings>()->bStrictBoxSelection;
 
-		if( bControlDown )
+		UTypedElementSelectionSet* SelectionSet = GEditor->GetEditorSubsystem<ULevelEditorSubsystem>()->GetSelectionSet();
+		FTypedElementSelectionOptions ElementSelectionOption;
+		if (!bControlDown && !bShiftDown)
 		{
-			// If control is down remove from selection
-			bShouldSelect = false;
-		}
-		else if( !bShiftDown )
-		{
-			// If the user is selecting, but isn't hold down SHIFT, remove all current selections.
-			GEditor->SelectNone( true, true );
+			// If the user is selecting, but isn't holding down SHIFT, remove all current selections from the selection set
+			SelectionSet->ClearSelection(ElementSelectionOption);
 		}
 
-		// Select all actors that are within the selection box area.  Be aware that certain modes do special processing below.	
+		FWorldSelectionElementArgs SeletionArgs
+		{
+			SelectionSet,
+			ETypedElementSelectionMethod::Primary,
+			ElementSelectionOption,
+			&(LevelViewportClient->EngineShowFlags),
+			bStrictDragSelection,
+			bGeometryMode
+		};
+
+		// Select all element that are within the selection box area.  Be aware that certain modes do special processing below.	
 		bool bSelectionChanged = false;
 		UWorld* IteratorWorld = GWorld;
 		const TArray<FName>& HiddenLayers = LevelViewportClient->ViewHiddenLayers;
+		TArray<FTypedElementHandle> Handles;
+
 		for( FActorIterator It(IteratorWorld); It; ++It )
 		{
 			AActor* Actor = *It;
@@ -192,12 +245,20 @@ void FDragTool_ActorBoxSelect::EndDrag()
 				}
 			}
 
-			// Select the actor if we need to
-			if( bActorIsVisible && IntersectsBox( *Actor, SelBBox, bStrictDragSelection ) )
+			// Select the actor or its child elements
+			if( bActorIsVisible )
 			{
-				GEditor->SelectActor( Actor, bShouldSelect, false );
-				bSelectionChanged = true;
+				Handles.Append( UE::LevelEditor::Private::GetElementsIntersectingBox( Actor, SelBBox, LevelViewportClient, SeletionArgs ) );
 			}
+		}
+
+		if (bShouldSelect)
+		{
+			SelectionSet->SelectElements( Handles, ElementSelectionOption );
+		}
+		else
+		{
+			SelectionSet->DeselectElements( Handles, ElementSelectionOption );
 		}
 
 		// Check every model to see if its BSP surfaces should be selected
@@ -279,54 +340,6 @@ void FDragTool_ActorBoxSelect::CalculateBox( FBox& OutBox )
 	case LVT_Perspective:
 		break;
 	}
-}
-
-
-/** 
- * Returns true if the passed in Actor intersects with the provided box 
- *
- * @param InActor				The actor to check
- * @param InBox					The box to check against
- * @param bUseStrictSelection	true if the actor must be entirely within the frustum
- */
-bool FDragTool_ActorBoxSelect::IntersectsBox( AActor& InActor, const FBox& InBox, bool bUseStrictSelection )
-{
-	bool bActorHitByBox = false;
-
-	UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
-	const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
-
-	// Check for special cases (like certain show flags that might hide an actor)
-	bool bActorIsHiddenByShowFlags = false;
-
-	// Check to see that volume actors are visible in the viewport
-	if( InActor.IsA(AVolume::StaticClass()) && (!LevelViewportClient->EngineShowFlags.Volumes || !LevelViewportClient->IsVolumeVisibleInViewport(InActor) ) )
-	{
-		bActorIsHiddenByShowFlags = true;
-	}
-
-	// Never drag-select hidden actors or builder brushes. Also, don't consider actors which haven't been recently rendered.
-	//@TODO - replace with proper check for if this object was visible last frame.  This is viewport dependent and viewports can use different concepts of time
-	//depending on if they are in "realtime" mode or not.  See FLevelEditorViewportClient::Draw for the differing concepts of time.
-	const bool bActorRecentlyRendered = true;//Actor->LastRenderTime > ( GWorld->GetTimeSeconds() - 1.0f );
-	if( !bActorIsHiddenByShowFlags && !InActor.IsHiddenEd() && !FActorEditorUtils::IsABuilderBrush(&InActor) && bActorRecentlyRendered )
-	{
-		// Iterate over all actor components, selecting out primitive components
-		for (UActorComponent* Component : InActor.GetComponents())
-		{
-			UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(Component);
-			if (PrimitiveComponent && PrimitiveComponent->IsRegistered() && PrimitiveComponent->IsVisibleInEditor())
-			{
-				if (PrimitiveComponent->ComponentIsTouchingSelectionBox(InBox, LevelViewportClient->EngineShowFlags, bGeometryMode, bUseStrictSelection))
-				{
-					bActorHitByBox = true;
-					break;
-				}
-			}
-		}
-	}
-
-	return bActorHitByBox;
 }
 
 /** 

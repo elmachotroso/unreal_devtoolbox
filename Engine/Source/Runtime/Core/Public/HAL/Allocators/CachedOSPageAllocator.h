@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "HAL/CriticalSection.h"
+#include "HAL/PlatformMemory.h"
 
 struct FCachedOSPageAllocator
 {
@@ -23,6 +24,11 @@ protected:
 	void* AllocateImpl(SIZE_T Size, uint32 CachedByteLimit, FFreePageBlock* First, FFreePageBlock* Last, uint32& FreedPageBlocksNum, SIZE_T& CachedTotal, FCriticalSection* Mutex);
 	void FreeImpl(void* Ptr, SIZE_T Size, uint32 NumCacheBlocks, uint32 CachedByteLimit, FFreePageBlock* First, uint32& FreedPageBlocksNum, SIZE_T& CachedTotal, FCriticalSection* Mutex, bool ThreadIsTimeCritical);
 	void FreeAllImpl(FFreePageBlock* First, uint32& FreedPageBlocksNum, SIZE_T& CachedTotal, FCriticalSection* Mutex);
+
+	static bool IsOSAllocation(SIZE_T Size, uint32 CachedByteLimit)
+	{
+		return (FPlatformMemory::BinnedPlatformHasMemoryPoolForThisSize(Size) || Size > CachedByteLimit / 4);
+	}
 };
 
 template <uint32 NumCacheBlocks, uint32 CachedByteLimit>
@@ -54,6 +60,11 @@ struct TCachedOSPageAllocator : private FCachedOSPageAllocator
 	uint64 GetCachedFreeTotal()
 	{
 		return CachedTotal;
+	}
+
+	bool IsOSAllocation(SIZE_T Size)
+	{
+		return FCachedOSPageAllocator::IsOSAllocation(Size, CachedByteLimit);
 	}
 
 private:

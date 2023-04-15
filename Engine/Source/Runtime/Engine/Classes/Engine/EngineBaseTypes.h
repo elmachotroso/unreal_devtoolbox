@@ -266,7 +266,7 @@ private:
 		int32 TickQueuedGFrameCounter;
 
 		/** Pointer to the task, only used during setup. This is often stale. **/
-		void* TaskPointer;
+		FBaseGraphTask* TaskPointer;
 
 		/** The next function in the cooling down list for ticks with an interval*/
 		FTickFunction* Next;
@@ -297,11 +297,11 @@ public:
 	virtual ~FTickFunction();
 
 	/** 
-	 * Adds the tick function to the master list of tick functions. 
+	 * Adds the tick function to the primary list of tick functions. 
 	 * @param Level - level to place this tick function in
 	 **/
 	void RegisterTickFunction(class ULevel* Level);
-	/** Removes the tick function from the master list of tick functions. **/
+	/** Removes the tick function from the primary list of tick functions. **/
 	void UnRegisterTickFunction();
 	/** See if the tick function is currently registered */
 	bool IsTickFunctionRegistered() const { return (InternalData && InternalData->bRegistered); }
@@ -629,7 +629,7 @@ enum ETravelType
 UENUM(BlueprintType)
 namespace EDemoPlayFailure
 {
-	enum Type
+	enum UE_DEPRECATED(5.1, "No longer used in favor of EReplayResult") Type
 	{
 		/** A Generic failure. */
 		Generic,
@@ -654,6 +654,8 @@ namespace EDemoPlayFailure
 
 namespace EDemoPlayFailure
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.1, "EDemoPlayFailure is now deprecated")
 	inline const TCHAR* ToString(EDemoPlayFailure::Type FailureType)
 	{
 		switch (FailureType)
@@ -680,6 +682,7 @@ namespace EDemoPlayFailure
 
 		return TEXT("Unknown EDemoPlayFailure error occurred.");
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 //URL structure.
@@ -915,6 +918,9 @@ enum EViewModeIndex
 
 	/** Visualize virtual shadow map */
 	VMI_VisualizeVirtualShadowMap = 32 UMETA(DisplayName = "Virtual Shadow Map Visualization"),
+
+	/** Visualize Skin Cache. */
+	VMI_VisualizeGPUSkinCache = 33 UMETA(DisplayName = "GPU Skin Cache Visualization"),
 
 	VMI_Max UMETA(Hidden),
 

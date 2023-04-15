@@ -92,6 +92,13 @@ FCurlHttpRequest::FCurlHttpRequest()
 
 	curl_easy_setopt(EasyHandle, CURLOPT_USE_SSL, CURLUSESSL_ALL);
 
+	// HTTP2 is linked in for newer libcurl builds and the library will use it by default.
+	// There have been issues found with it use in production on long lived servers with heavy HTTP usage, for
+	// that reason we're disabling its use by default in the general purpose curl request wrapper and only
+	// allowing use of HTTP2 from other curl wrappers like the DerivedDataCache one.
+	// Note that CURL_HTTP_VERSION_1_1 was the default for libcurl version before 7.62.0
+	curl_easy_setopt(EasyHandle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+
 	// set certificate verification (disable to allow self-signed certificates)
 	if (FCurlHttpManager::CurlRequestOptions.bVerifyPeer)
 	{
@@ -331,10 +338,10 @@ void FCurlHttpRequest::SetContentAsString(const FString& ContentString)
 		return;
 	}
 
-	int32 Utf8Length = FTCHARToUTF8_Convert::ConvertedLength(*ContentString, ContentString.Len());
+	int32 Utf8Length = FPlatformString::ConvertedLength<UTF8CHAR>(*ContentString, ContentString.Len());
 	TArray<uint8> Buffer;
 	Buffer.SetNumUninitialized(Utf8Length);
-	FTCHARToUTF8_Convert::Convert((UTF8CHAR*)Buffer.GetData(), Buffer.Num(), *ContentString, ContentString.Len());
+	FPlatformString::Convert((UTF8CHAR*)Buffer.GetData(), Buffer.Num(), *ContentString, ContentString.Len());
 	RequestPayload = MakeUnique<FRequestPayloadInMemory>(MoveTemp(Buffer));
 	bIsRequestPayloadSeekable = true;
 }
@@ -629,8 +636,8 @@ size_t FCurlHttpRequest::DebugCallback(CURL * Handle, curl_infotype DebugInfoTyp
 				char* FoundNulPtr = (char*)memchr(DebugInfo, 0, DebugInfoSize);
 				int CalculatedSize = FoundNulPtr != nullptr ? FoundNulPtr - DebugInfo : DebugInfoSize;
 
-				auto ConvertedString = StringCast<TCHAR>(static_cast<const ANSICHAR*>(DebugInfo), CalculatedSize);
-				FString DebugText(ConvertedString.Length(), ConvertedString.Get());
+				FString DebugText(CalculatedSize, static_cast<const ANSICHAR*>(DebugInfo));
+
 				DebugText.ReplaceInline(TEXT("\n"), TEXT(""), ESearchCase::CaseSensitive);
 				DebugText.ReplaceInline(TEXT("\r"), TEXT(""), ESearchCase::CaseSensitive);
 				UE_LOG(LogHttp, VeryVerbose, TEXT("%p: '%s'"), this, *DebugText);
@@ -649,49 +656,52 @@ size_t FCurlHttpRequest::DebugCallback(CURL * Handle, curl_infotype DebugInfoTyp
 
 		case CURLINFO_HEADER_OUT:
 			{
-				// C string is not null terminated:  https://curl.haxx.se/libcurl/c/CURLOPT_DEBUGFUNCTION.html
-
-				// Scan for \r\n\r\n.  According to some code in tool_cb_dbg.c, special processing is needed for
-				// CURLINFO_HEADER_OUT blocks when containing both headers and data (which may be binary).
-				//
-				// Truncate at 1023 characters. This is just an arbitrary number based on a buffer size seen in
-				// the libcurl code.
-				int RecalculatedSize = FMath::Min(DebugInfoSize, (size_t)1023);
-				for (int Index = 0; Index <= RecalculatedSize - 4; ++Index)
+				if (UE_LOG_ACTIVE(LogHttp, VeryVerbose))
 				{
-					if (DebugInfo[Index] == '\r' && DebugInfo[Index + 1] == '\n'
-							&& DebugInfo[Index + 2] == '\r' && DebugInfo[Index + 3] == '\n')
+					// C string is not null terminated:  https://curl.haxx.se/libcurl/c/CURLOPT_DEBUGFUNCTION.html
+
+					// Scan for \r\n\r\n.  According to some code in tool_cb_dbg.c, special processing is needed for
+					// CURLINFO_HEADER_OUT blocks when containing both headers and data (which may be binary).
+					//
+					// Truncate at 1023 characters. This is just an arbitrary number based on a buffer size seen in
+					// the libcurl code.
+					int RecalculatedSize = FMath::Min(DebugInfoSize, (size_t)1023);
+					for (int Index = 0; Index <= RecalculatedSize - 4; ++Index)
 					{
-						RecalculatedSize = Index;
-						break;
+						if (DebugInfo[Index] == '\r' && DebugInfo[Index + 1] == '\n'
+								&& DebugInfo[Index + 2] == '\r' && DebugInfo[Index + 3] == '\n')
+						{
+							RecalculatedSize = Index;
+							break;
+						}
 					}
-				}
 
-				// As lib/http.c states that CURLINFO_HEADER_OUT may contain binary data, only print it if
-				// the header data is readable.
-				bool bIsPrintable = true;
-				for (int Index = 0; Index < RecalculatedSize; ++Index)
-				{
-					unsigned char Ch = DebugInfo[Index];
-					if (!isprint(Ch) && !isspace(Ch))
+					// As lib/http.c states that CURLINFO_HEADER_OUT may contain binary data, only print it if
+					// the header data is readable.
+					bool bIsPrintable = true;
+					for (int Index = 0; Index < RecalculatedSize; ++Index)
 					{
-						bIsPrintable = false;
-						break;
+						unsigned char Ch = DebugInfo[Index];
+						if (!isprint(Ch) && !isspace(Ch))
+						{
+							bIsPrintable = false;
+							break;
+						}
 					}
-				}
 
-				if (bIsPrintable)
-				{
-					auto ConvertedString = StringCast<TCHAR>(static_cast<const ANSICHAR*>(DebugInfo), RecalculatedSize);
-					FString DebugText(ConvertedString.Length(), ConvertedString.Get());
-					DebugText.ReplaceInline(TEXT("\n"), TEXT(""), ESearchCase::CaseSensitive);
-					DebugText.ReplaceInline(TEXT("\r"), TEXT(""), ESearchCase::CaseSensitive);
-					UE_LOG(LogHttp, VeryVerbose, TEXT("%p: Sent header (%d bytes) - %s"), this, RecalculatedSize, *DebugText);
-				}
-				else
-				{
-					UE_LOG(LogHttp, VeryVerbose, TEXT("%p: Sent header (%d bytes) - contains binary data"), this, RecalculatedSize);
-				}
+					if (bIsPrintable)
+					{
+						FString DebugText(RecalculatedSize, static_cast<const ANSICHAR*>(DebugInfo));
+
+						DebugText.ReplaceInline(TEXT("\n"), TEXT(""), ESearchCase::CaseSensitive);
+						DebugText.ReplaceInline(TEXT("\r"), TEXT(""), ESearchCase::CaseSensitive);
+						UE_LOG(LogHttp, VeryVerbose, TEXT("%p: Sent header (%d bytes) - %s"), this, RecalculatedSize, *DebugText);
+					}
+					else
+					{
+						UE_LOG(LogHttp, VeryVerbose, TEXT("%p: Sent header (%d bytes) - contains binary data"), this, RecalculatedSize);
+					}
+					}
 			}
 			break;
 
@@ -756,6 +766,12 @@ bool FCurlHttpRequest::SetupRequest()
 	else if (URL.IsEmpty())
 	{
 		UE_LOG(LogHttp, Log, TEXT("Cannot process HTTP request: URL is empty"));
+		return false;
+	}
+	if ((GetVerb().IsEmpty() || GetVerb().Equals(TEXT("GET"), ESearchCase::IgnoreCase))
+		&& (RequestPayload.IsValid() && RequestPayload->GetContentLength() > 0))
+	{
+		UE_LOG(LogHttp, Warning, TEXT("An HTTP Get request cannot contain a payload."));
 		return false;
 	}
 
@@ -1316,6 +1332,7 @@ void FCurlHttpRequest::FinishedRequest()
 			case CURLE_COULDNT_CONNECT:
 			case CURLE_COULDNT_RESOLVE_PROXY:
 			case CURLE_COULDNT_RESOLVE_HOST:
+			case CURLE_SSL_CONNECT_ERROR:
 				// report these as connection errors (safe to retry)
 				CompletionStatus = EHttpRequestStatus::Failed_ConnectionError;
 				break;

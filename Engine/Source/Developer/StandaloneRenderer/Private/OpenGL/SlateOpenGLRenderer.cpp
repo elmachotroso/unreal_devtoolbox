@@ -3,6 +3,7 @@
 #include "OpenGL/SlateOpenGLRenderer.h"
 #include "Fonts/FontTypes.h"
 #include "Fonts/FontCache.h"
+#include "Types/SlateVector2.h"
 #include "Widgets/SWindow.h"
 #include "OpenGL/SlateOpenGLTextures.h"
 
@@ -79,11 +80,21 @@ FSlateOpenGLRenderer::~FSlateOpenGLRenderer()
 }
 
 /** Returns a draw buffer that can be used by Slate windows to draw window elements */
-FSlateDrawBuffer& FSlateOpenGLRenderer::GetDrawBuffer()
+FSlateDrawBuffer& FSlateOpenGLRenderer::AcquireDrawBuffer()
 {
+	ensureMsgf(!DrawBuffer.IsLocked(), TEXT("The DrawBuffer is already locked. Make sure to ReleaseDrawBuffer the DrawBuffer"));
+	DrawBuffer.Lock();
+
 	// Clear out the buffer each time its accessed
 	DrawBuffer.ClearBuffer();
+
 	return DrawBuffer;
+}
+
+void FSlateOpenGLRenderer::ReleaseDrawBuffer(FSlateDrawBuffer& InWindowDrawBuffer)
+{
+	ensureMsgf(&DrawBuffer == &InWindowDrawBuffer, TEXT("It release a DrawBuffer that is not a member of the SlateNullRenderer"));
+	InWindowDrawBuffer.Unlock();
 }
 
 bool FSlateOpenGLRenderer::Initialize()
@@ -116,8 +127,6 @@ bool FSlateOpenGLRenderer::Initialize()
  */
 void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 {
-	FMemMark MemMark(FMemStack::Get());
-
 	const TSharedRef<FSlateFontCache> FontCache = SlateFontServices->GetFontCache();
 
 	// Draw each window.  For performance.  All elements are batched before anything is rendered
@@ -142,7 +151,7 @@ void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 				{
 					//@todo implement fullscreen
 					const bool bFullscreen = false;
-					Private_ResizeViewport( WindowSize, *Viewport, bFullscreen );
+					Private_ResizeViewport( UE::Slate::CastToVector2f(WindowSize), *Viewport, bFullscreen );
 				}
 
 				Viewport->MakeCurrent();
@@ -225,7 +234,7 @@ void FSlateOpenGLRenderer::RequestResize( const TSharedPtr<SWindow>& InWindow, u
 	// @todo implement.  Viewports are currently resized in DrawWindows
 }
 
-void FSlateOpenGLRenderer::Private_ResizeViewport( const FVector2D& WindowSize, FSlateOpenGLViewport& InViewport, bool bFullscreen )
+void FSlateOpenGLRenderer::Private_ResizeViewport( FVector2f WindowSize, FSlateOpenGLViewport& InViewport, bool bFullscreen )
 {
 	uint32 Width = FMath::TruncToInt(WindowSize.X);
 	uint32 Height = FMath::TruncToInt(WindowSize.Y);
@@ -245,7 +254,7 @@ void FSlateOpenGLRenderer::UpdateFullscreenState( const TSharedRef<SWindow> InWi
 //		uint32 ResX = OverrideResX ? OverrideResX : GSystemResolution.ResX;
 //		uint32 ResY = OverrideResY ? OverrideResY : GSystemResolution.ResY;
 
-		Private_ResizeViewport( FVector2D( Viewport->ViewportRect.Right, Viewport->ViewportRect.Bottom ), *Viewport, bFullscreen );
+		Private_ResizeViewport( FVector2f( Viewport->ViewportRect.Right, Viewport->ViewportRect.Bottom ), *Viewport, bFullscreen );
 	}
 }
 
@@ -261,7 +270,7 @@ bool FSlateOpenGLRenderer::GenerateDynamicImageResource(FName ResourceName, uint
 	return TextureManager->CreateDynamicTextureResource(ResourceName, Width, Height, Bytes) != NULL;
 }
 
-FSlateResourceHandle FSlateOpenGLRenderer::GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale)
+FSlateResourceHandle FSlateOpenGLRenderer::GetResourceHandle(const FSlateBrush& Brush, FVector2f LocalSize, float DrawScale)
 {
 	return TextureManager->GetResourceHandle(Brush, LocalSize, DrawScale);
 }

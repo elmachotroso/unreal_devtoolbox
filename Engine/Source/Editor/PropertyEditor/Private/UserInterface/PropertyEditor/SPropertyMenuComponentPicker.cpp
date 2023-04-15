@@ -9,13 +9,13 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/Actor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
-#include "Editor/SceneOutliner/Public/SceneOutlinerPublicTypes.h"
-#include "Editor/SceneOutliner/Public/SceneOutlinerModule.h"
-#include "AssetRegistryModule.h"
+#include "SceneOutlinerPublicTypes.h"
+#include "SceneOutlinerModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "UserInterface/PropertyEditor/PropertyEditorAssetConstants.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "SceneOutlinerPublicTypes.h"
@@ -130,7 +130,7 @@ void SPropertyMenuComponentPicker::Construct(const FArguments& InArgs)
 			.HeightOverride(PropertyEditorAssetConstants::SceneOutlinerWindowSize.Y)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+				.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 				[
 					SceneOutlinerModule.CreateComponentPicker(InitOptions, FOnComponentPicked::CreateSP(this, &SPropertyMenuComponentPicker::OnItemSelected))
 				]
@@ -216,7 +216,7 @@ bool SPropertyMenuComponentPicker::CanPaste()
 		bCanPaste = !Class.IsEmpty() && !PossibleObjectPath.IsEmpty();
 		if (bCanPaste)
 		{
-			bCanPaste = LoadClass<UActorComponent>(nullptr, *Class) != nullptr;
+			bCanPaste = LoadClass<UActorComponent>(nullptr, *Class, nullptr, LOAD_Quiet | LOAD_NoWarn) != nullptr;
 		}
 		if (bCanPaste)
 		{

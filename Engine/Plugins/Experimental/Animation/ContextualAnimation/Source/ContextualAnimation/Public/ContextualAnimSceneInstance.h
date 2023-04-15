@@ -10,8 +10,7 @@
 #include "ContextualAnimSceneInstance.generated.h"
 
 struct FAnimMontageInstance;
-struct FContextualAnimData;
-struct FContextualAnimTrackSettings;
+struct FContextualAnimTrack;
 class UContextualAnimSceneInstance;
 class UContextualAnimSceneActorComponent;
 class UContextualAnimSceneAsset;
@@ -20,78 +19,17 @@ class USkeletalMeshComponent;
 class UAnimMontage;
 class UWorld;
 
-/** Represent an actor bound to a role in the scene */
-USTRUCT(BlueprintType)
-struct CONTEXTUALANIMATION_API FContextualAnimSceneActorData
-{
-	GENERATED_BODY()
-
-		FContextualAnimSceneActorData()
-		: Actor(nullptr), AnimDataPtr(nullptr), SettingsPtr(nullptr), AnimStartTime(0.f)
-	{}
-
-	FContextualAnimSceneActorData(AActor* InActor, const FContextualAnimData* InAnimData, const FContextualAnimTrackSettings* InSettings, float InAnimStartTime = 0.f)
-		: Actor(InActor), AnimDataPtr(InAnimData), SettingsPtr(InSettings), AnimStartTime(InAnimStartTime)
-	{}
-
-	/** Return a pointer to the actual actor in the world */
-	FORCEINLINE AActor* GetActor() const { return Actor.Get(); }
-
-	FORCEINLINE float GetAnimStartTime() const { return AnimStartTime; }
-
-	FORCEINLINE const FContextualAnimData* GetAnimData() const { return AnimDataPtr; }
-
-	FORCEINLINE const FContextualAnimTrackSettings* GetSettings() const { return SettingsPtr; }
-
-	FORCEINLINE const UContextualAnimSceneInstance* GetSceneInstance() const { return SceneInstancePtr.Get(); }
-
-	/** Return the transform used for alignment for this scene actor */
-	FTransform GetTransform() const;
-
-	/** Return the current playback time of the animation this actor is playing */
-	float GetAnimTime() const;
-
-	FName GetCurrentSection() const;
-
-	int32 GetCurrentSectionIndex() const;
-
-	FAnimMontageInstance* GetAnimMontageInstance() const;
-
-	const UAnimMontage* GetAnimMontage() const;
-
-	UAnimInstance* GetAnimInstance() const;
-
-	USkeletalMeshComponent* GetSkeletalMeshComponent() const;
-
-	UContextualAnimSceneActorComponent* GetSceneActorComponent() const;
-
-private:
-
-	friend UContextualAnimSceneInstance;
-
-	/** The actual actor in the world */
-	TWeakObjectPtr<AActor> Actor = nullptr;
-
-	/** Ptr to the animation data in the scene asset used by this actor */
-	const FContextualAnimData* AnimDataPtr = nullptr;
-
-	const FContextualAnimTrackSettings* SettingsPtr = nullptr;
-
-	/** Desired time to start the animation */
-	float AnimStartTime = 0.f;
-
-	/** Ptr back to the scene instance we belong to */
-	TWeakObjectPtr<const UContextualAnimSceneInstance> SceneInstancePtr = nullptr;
-};
-
 /** Delegate to notify external objects when this is scene is completed */
-DECLARE_DELEGATE_OneParam(FOnContextualAnimSceneEnded, class UContextualAnimSceneInstance*)
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnContextualAnimSceneEnded, class UContextualAnimSceneInstance*, SceneInstance);
 
 /** Delegate to notify external objects when an actor join this scene */
-DECLARE_DELEGATE_TwoParams(FOnContextualAnimSceneActorJoined, class UContextualAnimSceneInstance*, AActor* Actor)
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnContextualAnimSceneActorJoined, class UContextualAnimSceneInstance*, SceneInstance, AActor*, Actor);
 
 /** Delegate to notify external objects when an actor left this scene */
-DECLARE_DELEGATE_TwoParams(FOnContextualAnimSceneActorLeft, class UContextualAnimSceneInstance*, AActor* Actor)
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnContextualAnimSceneActorLeft, class UContextualAnimSceneInstance*, SceneInstance, AActor*, Actor);
+
+/** Delegate to notify external objects about anim notify events */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnContextualAnimSceneNotify, class UContextualAnimSceneInstance*, SceneInstance, AActor*, Actor, FName, NotifyName);
 
 /** Instance of a contextual animation scene */
 UCLASS(BlueprintType, Blueprintable)
@@ -101,25 +39,38 @@ class CONTEXTUALANIMATION_API UContextualAnimSceneInstance : public UObject
 
 public:
 
-	/** Scene asset this instance was created from */
-	UPROPERTY()
-	TObjectPtr<const UContextualAnimSceneAsset> SceneAsset;
+	friend class UContextualAnimManager;
+	friend class FContextualAnimViewModel;
 
-	/** Map of roles to scene actor */
-	UPROPERTY()
-	TMap<FName, FContextualAnimSceneActorData> SceneActorMap;
+	/**
+	 * Delegate to notify once the scene play time reaches the duration defined by the longest played montage of the selected section.
+	 * This delegate should be used if one or more montages have 'bEnableAutoBlendOut' set to 'false'.
+	 */
+	UPROPERTY(BlueprintAssignable)
+	FOnContextualAnimSceneEnded OnSectionEndTimeReached;
 
-	/** List of alignment section to scene pivot */
-	TArray<TTuple<FName, FTransform>> AlignmentSectionToScenePivotList;
-
-	/** Delegate to notify external objects when this is scene is completed */
+	/**
+	 * Delegate to notify external objects when this is scene is completed after all montages played by the scene section blended out.
+	 * Will not be broadcasted if one or more montages have 'bEnableAutoBlendOut' set to 'false'.
+	 */
+	UPROPERTY(BlueprintAssignable)
 	FOnContextualAnimSceneEnded OnSceneEnded;
 
 	/** Delegate to notify external objects when an actor join */
+	UPROPERTY(BlueprintAssignable)
 	FOnContextualAnimSceneActorJoined OnActorJoined;
 
 	/** Delegate to notify external objects when an actor leave */
+	UPROPERTY(BlueprintAssignable)
 	FOnContextualAnimSceneActorLeft OnActorLeft;
+
+	/** Delegate to notify external objects when an animation hits a 'PlayMontageNotify' or 'PlayMontageNotifyWindow' begin */
+	UPROPERTY(BlueprintAssignable)
+	FOnContextualAnimSceneNotify OnNotifyBegin;
+
+	/** Delegate to notify external objects when an animation hits a 'PlayMontageNotify' or 'PlayMontageNotifyWindow' end */
+	UPROPERTY(BlueprintAssignable)
+	FOnContextualAnimSceneNotify OnNotifyEnd;
 
 	UContextualAnimSceneInstance(const FObjectInitializer& ObjectInitializer);
 
@@ -130,45 +81,48 @@ public:
 	/** Resolve initial alignment and start playing animation for all actors */
 	void Start();
 
+	/**
+	 * Tells current scene instance to transition to a different section.
+	 * @note The method assumes that selection criteria were applied through bindings creation before calling.
+	 * @return True if scene was able to transition all bindings to the new section, false otherwise.
+	 */
+	bool ForceTransitionToSection(const int32 SectionIdx, const int32 AnimSetIdx, const TArray<FContextualAnimSetPivot>& Pivots);
+		
 	/** Force all the actors to leave the scene */
 	void Stop();
+
+	bool IsDonePlaying() const;
 
 	/** Whether the supplied actor is part of this scene */
 	bool IsActorInThisScene(const AActor* Actor) const;
 
-	const FContextualAnimSceneActorData* FindSceneActorDataForActor(const AActor* Actor) const;
-
-	const FContextualAnimSceneActorData* FindSceneActorDataForRole(const FName& Role) const;
-
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Instance")
-	float GetCurrentSectionTimeLeft() const;
-
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Instance")
-	bool DidCurrentSectionLoop() const;
-
-	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Instance")
-	float GetPositionInCurrentSection() const;
-
-	UFUNCTION(BlueprintNativeEvent, Category = "Contextual Anim|Scene Instance")
-	float GetResumePositionForSceneActor(const FContextualAnimSceneActorData& SceneActorData, int32 DesiredSectionIndex) const;
+	const UContextualAnimSceneAsset& GetSceneAsset() const { return *SceneAsset; }
+	const FContextualAnimSceneBindings& GetBindings() const { return Bindings; }
+	FContextualAnimSceneBindings& GetBindings() { return Bindings; }
+	const FContextualAnimSceneBinding* FindBindingByActor(const AActor* Actor) const { return Bindings.FindBindingByActor(Actor); }
+	const FContextualAnimSceneBinding* FindBindingByRole(const FName& Role) const { return Bindings.FindBindingByRole(Role); }
 
 	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Instance")
 	AActor* GetActorByRole(FName Role) const;
 
 protected:
 
-	/** Tells the scene actor to join the scene (play animation) */
-	void Join(FContextualAnimSceneActorData& SceneActorData);
+	/**
+	 * Tells the scene actor to join the scene (play animation)
+	 * @return Duration of the playing animation, or MIN_flt if not playing one.
+	 */
+	float Join(FContextualAnimSceneBinding& Binding);
 
 	/** Tells the scene actor to leave the scene (stop animation) */
-	void Leave(FContextualAnimSceneActorData& SceneActorData);
+	void Leave(FContextualAnimSceneBinding& Binding);
 
-	bool TransitionTo(FContextualAnimSceneActorData& SceneActorData, const FName& ToSectionName);
+	float TransitionTo(FContextualAnimSceneBinding& Binding, const FContextualAnimTrack& AnimTrack);
+
+	TArray<FContextualAnimSetPivot>& GetMutablePivots() { return AlignmentSectionToScenePivotList; }
+	void SetPivots(const TArray<FContextualAnimSetPivot>& Pivots) { AlignmentSectionToScenePivotList = Pivots; }
 
 	/** Helper function to set ignore collision between the supplied actor and all the other actors in this scene */
 	void SetIgnoreCollisionWithOtherActors(AActor* Actor, bool bValue) const;
-
-	void UpdateTransitions(float DeltaTime);
 
 	UFUNCTION()
 	void OnMontageBlendingOut(UAnimMontage* Montage, bool bInterrupted);
@@ -179,9 +133,23 @@ protected:
 	UFUNCTION()
 	void OnNotifyEndReceived(FName NotifyName, const FBranchingPointNotifyPayload& BranchingPointNotifyPayload);
 
-public:
+private:
 
-	/** Extracts data from a ContextualAnimSceneActorData */
-	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Actor Data", meta = (NativeBreakFunc))
-	static void BreakContextualAnimSceneActorData(const FContextualAnimSceneActorData& SceneActorData, AActor*& Actor, UAnimMontage*& Montage, float& AnimTime, int32& CurrentSectionIndex, FName& CurrentSectionName);
+	/** Scene asset this instance was created from */
+	UPROPERTY()
+	TObjectPtr<const UContextualAnimSceneAsset> SceneAsset;
+
+	UPROPERTY()
+	FContextualAnimSceneBindings Bindings;
+
+	TArray<FContextualAnimSetPivot> AlignmentSectionToScenePivotList;
+
+	/**
+	 * Remaining scene section duration initially computed based on the longest animation duration from all actors that joined the scene.
+	 * Delegate 'OnSectionEndTimeReached' is broadcasted once value reaches 0.
+	 */
+	float RemainingDuration;
+
+	/** Helper to play an AnimSequenceBase as montage. If Animation is not a montage it plays it as dynamic montage  */
+	UAnimMontage* PlayAnimation(UAnimInstance& AnimInstance, UAnimSequenceBase& Animation);
 };

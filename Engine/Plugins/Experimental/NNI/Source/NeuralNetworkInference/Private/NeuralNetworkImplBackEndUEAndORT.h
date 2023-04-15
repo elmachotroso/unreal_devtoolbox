@@ -7,8 +7,6 @@
 
 // RHI includes must happen before onnxruntime_cxx_api.h (both files include Windows.h)
 #include "HAL/CriticalSection.h"
-#include "RHI.h"
-#include "DynamicRHI.h"
 
 #if defined(WITH_UE_AND_ORT_SUPPORT) && defined(PLATFORM_WIN64)
 // Disable NOMINMAX & WIN32_LEAN_AND_MEAN defines to avoid compiler warnings
@@ -16,7 +14,7 @@
 #pragma push_macro("WIN32_LEAN_AND_MEAN")
 #undef NOMINMAX
 #undef WIN32_LEAN_AND_MEAN
-#include "D3D12RHIPrivate.h"
+#include "ID3D12DynamicRHI.h"
 #pragma pop_macro("WIN32_LEAN_AND_MEAN")
 #pragma pop_macro("NOMINMAX")
 #endif
@@ -55,9 +53,10 @@ public:
 		const TArray<uint8>& InModelReadFromFileInBytes, const FString& InModelFullFilePath, const ENeuralDeviceType InDeviceType, const ENeuralDeviceType InInputDeviceType,
 		const ENeuralDeviceType InOutputDeviceType);
 
-	int32 CreateInferenceContext();
+	int32 CreateInferenceContext(ENeuralDeviceType InInputDeviceType, ENeuralDeviceType InOutputDeviceType);
 	void DestroyInferenceContext(int32 ContextHandle);
 
+	void Run(int32 ContextHandle);
 	void Run(FRDGBuilder& GraphBuilder, int32 ContextHandle);
 	void Run(const ENeuralSynchronousMode InSynchronousMode, const ENeuralDeviceType InDeviceType, const ENeuralDeviceType InInputDeviceType);
 
@@ -115,7 +114,7 @@ private:
 		TArray<Ort::Value> OutputOrtTensors;
 		TArray<void*> OutputDmlAllocation;
 
-		bool Init(Ort::Session* Session, Ort::AllocatorWithDefaultOptions* Allocator, Ort::MemoryInfo* AllocatorInfo);
+		bool Init(Ort::Session* Session, Ort::AllocatorWithDefaultOptions* Allocator, Ort::MemoryInfo* AllocatorInfo, ENeuralDeviceType InInputDeviceType, ENeuralDeviceType InOutputDeviceType);
 		void UpdateGPUAllocations(FRDGBuilder& GraphBuilder);
 		void Release();
 #ifdef PLATFORM_WIN64

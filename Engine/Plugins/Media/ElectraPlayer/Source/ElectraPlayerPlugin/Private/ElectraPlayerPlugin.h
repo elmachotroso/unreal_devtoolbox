@@ -17,6 +17,8 @@
 #include "MediaSampleQueue.h"
 #include "Templates/SharedPointer.h"
 #include "Logging/LogMacros.h"
+#include "ElectraTextureSample.h"
+#include "ElectraPlayerAudioSample.h"
 
 class IElectraPlayerRuntimeModule;
 class IElectraSafeMediaOptionInterface;
@@ -24,11 +26,6 @@ class FElectraPlayerResourceDelegate;
 
 
 DECLARE_LOG_CATEGORY_EXTERN(LogElectraPlayerPlugin, Log, All);
-
-//-----------------------------------------------------------------------------
-
-#include "ElectraTextureSample.h"
-#include "ElectraPlayerAudioSample.h"
 
 //-----------------------------------------------------------------------------
 
@@ -102,7 +99,7 @@ public:
 	void SetLastAudioRenderedSampleTime(FTimespan SampleTime) override;
 	bool FlushOnSeekStarted() const override
 	{
-		return false;
+		return true;
 	}
 	bool FlushOnSeekCompleted() const override
 	{
@@ -172,7 +169,7 @@ private:
 		bool CanReceiveAudioSamples(int32 NumFrames) override;
 		void PrepareForDecoderShutdown() override;
 		FString GetVideoAdapterName() const override;
-		IElectraPlayerResourceDelegate* GetResourceDelegate() const override;
+		TSharedPtr<IElectraPlayerResourceDelegate, ESPMode::ThreadSafe> GetResourceDelegate() const override;
 
 	private:
 		TWeakPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> Host;
@@ -198,9 +195,8 @@ private:
 	TSharedPtr<IElectraPlayerInterface, ESPMode::ThreadSafe> Player;
 
 	/** Output sample pools */
-	FElectraTextureSamplePool OutputTexturePool;
+	TSharedPtr<FElectraTextureSamplePool, ESPMode::ThreadSafe> OutputTexturePool;
 	FElectraPlayerAudioSamplePool OutputAudioPool;
 
-	TUniquePtr<IElectraPlayerResourceDelegate> PlayerResourceDelegate;
+	TSharedPtr<IElectraPlayerResourceDelegate,ESPMode::ThreadSafe> PlayerResourceDelegate;
 };
-

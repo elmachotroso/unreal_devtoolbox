@@ -12,7 +12,9 @@
 #include "RichTextBlock.generated.h"
 
 class SRichTextBlock;
+class UDataTable;
 class UMaterialInstanceDynamic;
+class UMaterialInterface;
 class URichTextBlockDecorator;
 
 /** Simple struct for rich text styles */
@@ -110,6 +112,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Appearance)
 	void SetDefaultTextStyle(const FTextBlockStyle& InDefaultTextStyle);
 
+	UFUNCTION(BlueprintCallable, Category = Appearance)
+	void SetDefaultMaterial(UMaterialInterface* InMaterial);
+
 	/** Remove all overrides made to the default text style and return to the style specified in the style set data table */
 	UFUNCTION()
 	void ClearAllDefaultStyleOverrides();
@@ -120,6 +125,12 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
 	UMaterialInstanceDynamic* GetDefaultDynamicMaterial();
+
+	/**
+	 * Replaces the existing decorators with the list provided
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetDecorators(const TArray<TSubclassOf<URichTextBlockDecorator>>& InDecoratorClasses);
 
 public:
 	URichTextBlock(const FObjectInitializer& ObjectInitializer);
@@ -159,7 +170,10 @@ public:
 	virtual void SetText(const FText& InText);
 
 	UFUNCTION(BlueprintCallable, Category = "Widget")
-	void SetTextStyleSet(class UDataTable* NewTextStyleSet);
+	UDataTable* GetTextStyleSet() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void SetTextStyleSet(UDataTable* NewTextStyleSet);
 
 	const FTextBlockStyle& GetDefaultTextStyle() const;
 	const FTextBlockStyle& GetCurrentDefaultTextStyle() const;
@@ -192,8 +206,8 @@ protected:
 	FText Text;
 
 	/**  */
-	UPROPERTY(EditAnywhere, Category=Appearance, meta=(RequiredAssetDataTags = "RowStructure=RichTextStyleRow"))
-	TObjectPtr<class UDataTable> TextStyleSet;
+	UPROPERTY(EditAnywhere, Category=Appearance, meta=(RequiredAssetDataTags = "RowStructure=/Script/UMG.RichTextStyleRow"))
+	TObjectPtr<UDataTable> TextStyleSet;
 
 	/**  */
 	UPROPERTY(EditAnywhere, Category=Appearance)

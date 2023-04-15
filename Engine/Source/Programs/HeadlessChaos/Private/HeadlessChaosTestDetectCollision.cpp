@@ -61,14 +61,6 @@ namespace ChaosTest
 				CheckContactPoint(ContactPoint, FVec3(0, 0, -SphereRadius), FVec3(0, 0, 0.5f * BoxSize.Z), FVec3(0,0,1), 1, FVec3(0,0,1), SpherePos.Z - SphereRadius);
 			}
 		}
-		{
-			FContactPoint ContactPoint = ConvexSphereContactPoint(Convex, ConvexTransform, Sphere, SphereTransform);
-			EXPECT_TRUE(ContactPoint.IsSet());
-			if (ContactPoint.IsSet())
-			{
-				CheckContactPoint(ContactPoint, FVec3(0, 0, 0.5f * BoxSize.Z), FVec3(0, 0, -SphereRadius), FVec3(0, 0, -1), 0, FVec3(0, 0, -1), SpherePos.Z - SphereRadius);
-			}
-		}
 	}
 
 	// Sphere-Convex(with margin) far separated when an edge is the nearest feature.
@@ -267,21 +259,11 @@ namespace ChaosTest
 		const FRigidTransform3 CapsuleTransform = FRigidTransform3(CapsulePos, FRotation3::FromIdentity());
 		const FRigidTransform3 ConvexTransform = FRigidTransform3(ConvexPos, FRotation3::FromIdentity());
 
+		FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
+		EXPECT_TRUE(ContactPoint.IsSet());
+		if (ContactPoint.IsSet())
 		{
-			FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
-			EXPECT_TRUE(ContactPoint.IsSet());
-			if (ContactPoint.IsSet())
-			{
-				CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0, 0, 0.5f * BoxSize.Z), FVec3(0, 0, 1), 1, FVec3(0, 0, 1), CapsulePos.Z - CapsuleRadius);
-			}
-		}
-		{
-			FContactPoint ContactPoint = ConvexCapsuleContactPoint(Convex, ConvexTransform, Capsule, CapsuleTransform);
-			EXPECT_TRUE(ContactPoint.IsSet());
-			if (ContactPoint.IsSet())
-			{
-				CheckContactPoint(ContactPoint, FVec3(0, 0, 0.5f * BoxSize.Z), FVec3(0, 0, -CapsuleRadius), FVec3(0, 0, -1), 0, FVec3(0, 0, -1), CapsulePos.Z - CapsuleRadius);
-			}
+			CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0, 0, 0.5f * BoxSize.Z), FVec3(0, 0, 1), 1, FVec3(0, 0, 1), CapsulePos.Z - CapsuleRadius);
 		}
 	}
 
@@ -301,16 +283,14 @@ namespace ChaosTest
 		const FRigidTransform3 CapsuleTransform = FRigidTransform3(CapsulePos, FRotation3::FromAxisAngle(FVec3(0,1,0), FMath::DegreesToRadians(45)));
 		const FRigidTransform3 ConvexTransform = FRigidTransform3(ConvexPos, FRotation3::FromIdentity());
 
+		FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
+		EXPECT_TRUE(ContactPoint.IsSet());
+		if (ContactPoint.IsSet())
 		{
-			FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
-			EXPECT_TRUE(ContactPoint.IsSet());
-			if (ContactPoint.IsSet())
-			{
-				const FVec3 CapsuleOffset = CapsulePos - FVec3(0.5f * BoxSize.X, 0.0f, 0.0f);
-				const FVec3 ExpectedNormal = CapsuleOffset.GetSafeNormal();
-				const FReal ExpectedPhi = CapsuleOffset.Size() - CapsuleRadius;
-				CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0.5f * BoxSize.X, 0, 0.5f * BoxSize.Z), ExpectedNormal, 1, ExpectedNormal, ExpectedPhi);
-			}
+			const FVec3 CapsuleOffset = CapsulePos - FVec3(0.5f * BoxSize.X, 0.0f, 0.0f);
+			const FVec3 ExpectedNormal = CapsuleOffset.GetSafeNormal();
+			const FReal ExpectedPhi = CapsuleOffset.Size() - CapsuleRadius;
+			CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0.5f * BoxSize.X, 0, 0.5f * BoxSize.Z), ExpectedNormal, 1, ExpectedNormal, ExpectedPhi);
 		}
 	}
 
@@ -331,16 +311,14 @@ namespace ChaosTest
 		const FRigidTransform3 CapsuleTransform = FRigidTransform3(CapsulePos, FRotation3::FromAxisAngle(FVec3(0, 1, 0), FMath::DegreesToRadians(45)));
 		const FRigidTransform3 ConvexTransform = FRigidTransform3(ConvexPos, FRotation3::FromIdentity());
 
+		FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
+		EXPECT_TRUE(ContactPoint.IsSet());
+		if (ContactPoint.IsSet())
 		{
-			FContactPoint ContactPoint = CapsuleConvexContactPoint(Capsule, CapsuleTransform, Convex, ConvexTransform);
-			EXPECT_TRUE(ContactPoint.IsSet());
-			if (ContactPoint.IsSet())
-			{
-				const FVec3 CapsuleOffset = CapsulePos - FVec3(0.5f * BoxSize.X, 0.0f, 0.0f);
-				const FVec3 ExpectedNormal = -CapsuleOffset.GetSafeNormal();
-				const FReal ExpectedPhi = -(CapsuleOffset.Size() + CapsuleRadius);
-				CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0.5f * BoxSize.X, 0, 0.5f * BoxSize.Z), ExpectedNormal, 1, ExpectedNormal, ExpectedPhi);
-			}
+			const FVec3 CapsuleOffset = CapsulePos - FVec3(0.5f * BoxSize.X, 0.0f, 0.0f);
+			const FVec3 ExpectedNormal = -CapsuleOffset.GetSafeNormal();
+			const FReal ExpectedPhi = -(CapsuleOffset.Size() + CapsuleRadius);
+			CheckContactPoint(ContactPoint, FVec3(0, 0, -CapsuleRadius), FVec3(0.5f * BoxSize.X, 0, 0.5f * BoxSize.Z), ExpectedNormal, 1, ExpectedNormal, ExpectedPhi);
 		}
 	}
 

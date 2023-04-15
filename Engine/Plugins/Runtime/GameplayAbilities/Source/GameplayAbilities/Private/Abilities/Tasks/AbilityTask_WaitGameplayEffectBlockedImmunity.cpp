@@ -4,6 +4,8 @@
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitGameplayEffectBlockedImmunity)
+
 UAbilityTask_WaitGameplayEffectBlockedImmunity::UAbilityTask_WaitGameplayEffectBlockedImmunity(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -81,7 +83,7 @@ UAbilitySystemComponent* UAbilityTask_WaitGameplayEffectBlockedImmunity::GetASC(
 	{
 		return ExternalOwner;
 	}
-	return AbilitySystemComponent;
+	return AbilitySystemComponent.Get();
 }
 
 void UAbilityTask_WaitGameplayEffectBlockedImmunity::RegisterDelegate()
@@ -107,3 +109,4 @@ void UAbilityTask_WaitGameplayEffectBlockedImmunity::RemoveDelegate()
 		}
 	}
 }
+

@@ -6,16 +6,12 @@ namespace UnrealBuildTool.Rules
 	{
 		public HairStrandsEditor(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.Add(ModuleDirectory + "/Private");
-			PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
 					"CoreUObject",
-					"EditorFramework",
-					"EditorStyle",
+					"EditorFramework",					
 					"Engine",
 					"GeometryCache",
 					"HairStrandsCore",
@@ -25,6 +21,7 @@ namespace UnrealBuildTool.Rules
 					"SlateCore",
 					"Projects",
 					"ToolMenus",
+					"ContentBrowser",
 					"UnrealEd",
 					"AssetTools",
 					"EditorInteractiveToolsFramework",
@@ -36,7 +33,8 @@ namespace UnrealBuildTool.Rules
 					"LevelSequence",
 					"MovieScene",
 					"MovieSceneTools",
-					"Sequencer"
+					"Sequencer",
+					"HairCardGeneratorFramework"
 				});
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 			 "FBX"

@@ -4,14 +4,21 @@
 
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /** Anim Graph Commands */
 class ANIMGRAPH_API FAnimGraphCommands : public TCommands<FAnimGraphCommands>
 {
 public:
 	FAnimGraphCommands()
-		: TCommands<FAnimGraphCommands>(TEXT("AnimGraph"), NSLOCTEXT("Contexts", "AnimGraphCommands", "Anim Graph Commands"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FAnimGraphCommands>(TEXT("AnimGraph"), NSLOCTEXT("Contexts", "AnimGraphCommands", "Anim Graph Commands"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 
@@ -21,6 +28,9 @@ public:
 
 	// Toggle pose watching for a given node
 	TSharedPtr<FUICommandInfo> TogglePoseWatch;
+
+	// Hide unbound property pins
+	TSharedPtr<FUICommandInfo> HideUnboundPropertyPins;
 
 	// SkeletalControl specific commands
 	TSharedPtr< FUICommandInfo > SelectBone;

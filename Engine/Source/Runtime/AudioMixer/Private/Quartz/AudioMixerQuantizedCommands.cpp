@@ -119,7 +119,7 @@ namespace Audio
 	int32 FQuantizedQueueCommand::OverrideFramesUntilExec(int32 NumFramesUntilExec)
 	{
 		// Calculate the amount of time before taking up a voice slot
-		int32 NumFramesBeforeVoiceSlot = NumFramesUntilExec - OwningClockPtr->GetTickRate().GetFramesPerDuration(AudioComponentData.AnticapatoryBoundary.Quantization);
+		int32 NumFramesBeforeVoiceSlot = NumFramesUntilExec - static_cast<int32>(OwningClockPtr->GetTickRate().GetFramesPerDuration(AudioComponentData.AnticapatoryBoundary.Quantization));
 
 		//If NumFramesBeforeVoiceSlot is less than 0, change the boundary back to the original, and mark this command as having 0 frames till exec
 		if (NumFramesBeforeVoiceSlot < 0)
@@ -132,12 +132,12 @@ namespace Audio
 
 	void FQuantizedQueueCommand::OnFinalCallbackCustom(int32 InNumFramesLeft)
 	{
-		if (OwningClockPtr && AudioComponentData.ComponentCommandPtr.IsValid())
+		if (OwningClockPtr)
 		{
 			FName ClockName = OwningClockPtr->GetName();
 			Audio::FQuartzQueueCommandData CommandData(AudioComponentData, ClockName);
 
-			AudioComponentData.ComponentCommandPtr->PushEvent(CommandData);
+			AudioComponentData.Subscriber.PushEvent(CommandData);
 		}
 	}
 

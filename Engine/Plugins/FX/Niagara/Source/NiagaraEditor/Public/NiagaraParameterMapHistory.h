@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "NiagaraCommon.h"
+#include "NiagaraEmitter.h"
 #include "Templates/Tuple.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScript.h"
@@ -17,12 +18,12 @@ class FHlslNiagaraTranslator;
 class FCompileConstantResolver
 {
 public:
-	FCompileConstantResolver() : Emitter(nullptr), System(nullptr), Translator(nullptr), Usage(ENiagaraScriptUsage::Function), DebugState(ENiagaraFunctionDebugState::NoDebug) {}
-	FCompileConstantResolver(const UNiagaraEmitter* Emitter, ENiagaraScriptUsage Usage, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(Emitter), System(nullptr), Translator(nullptr), Usage(Usage), DebugState(DebugState) {}
-	FCompileConstantResolver(const UNiagaraSystem* System, ENiagaraScriptUsage Usage, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(nullptr), System(System), Translator(nullptr), Usage(Usage), DebugState(DebugState) {}
-	FCompileConstantResolver(const FHlslNiagaraTranslator* Translator, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(nullptr), System(nullptr), Translator(Translator), Usage(ENiagaraScriptUsage::Function), DebugState(DebugState) {}
+	FCompileConstantResolver() : Emitter(FVersionedNiagaraEmitter()), System(nullptr), Translator(nullptr), Usage(ENiagaraScriptUsage::Function), DebugState(ENiagaraFunctionDebugState::NoDebug) {}
+	FCompileConstantResolver(const FVersionedNiagaraEmitter& Emitter, ENiagaraScriptUsage Usage, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(Emitter), System(nullptr), Translator(nullptr), Usage(Usage), DebugState(DebugState) {}
+	FCompileConstantResolver(const UNiagaraSystem* System, ENiagaraScriptUsage Usage, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(FVersionedNiagaraEmitter()), System(System), Translator(nullptr), Usage(Usage), DebugState(DebugState) {}
+	FCompileConstantResolver(const FHlslNiagaraTranslator* Translator, ENiagaraFunctionDebugState DebugState = ENiagaraFunctionDebugState::NoDebug) : Emitter(FVersionedNiagaraEmitter()), System(nullptr), Translator(Translator), Usage(ENiagaraScriptUsage::Function), DebugState(DebugState) {}
 
-	const UNiagaraEmitter* GetEmitter() const { return Emitter; }
+	const UNiagaraEmitter* GetEmitter() const { return Emitter.Emitter; }
 	const UNiagaraSystem* GetSystem() const { return System; }
 	const FHlslNiagaraTranslator* GetTranslator() const { return Translator; }
 	ENiagaraScriptUsage GetUsage() const { return Usage; }
@@ -33,8 +34,14 @@ public:
 	ENiagaraFunctionDebugState CalculateDebugState() const;
 	FCompileConstantResolver WithDebugState(ENiagaraFunctionDebugState InDebugState) const;
 	FCompileConstantResolver WithUsage(ENiagaraScriptUsage ScriptUsage) const;
+
+	// returns a hash of the data that is used when resolving constants using this resolver.  The specific
+	// Emitter/System/Translator shouldn't be included but the values that it might use from those objects
+	// should be
+	uint32 BuildTypeHash() const;
+
 private:
-	const UNiagaraEmitter* Emitter;
+	FVersionedNiagaraEmitter Emitter;
 	const UNiagaraSystem* System;
 	const FHlslNiagaraTranslator* Translator;
 	ENiagaraScriptUsage Usage;
@@ -87,11 +94,18 @@ public:
 		return Value;
 	}
 
-	FString ToString() const
+	FString ToString(bool bVerbose = false) const
 	{
 		FString Output;
 		for (const FString& Str : FriendlyPath)
 			Output += TEXT("/") + Str;
+
+		if (bVerbose)
+		{
+			Output += " GUID: ";
+			for (const FGuid& Guid : Path)
+				Output += TEXT("/") + Guid.ToString();
+		}
 		return Output;
 	}
 private:
@@ -110,6 +124,8 @@ public:
 	FNiagaraParameterMapHistory();
 
 	ENiagaraScriptUsage OriginatingScriptUsage;
+	FGuid UsageGuid;
+	FName UsageName;
 
 	/** The variables that have been identified during the traversal. */
 	TArray<FNiagaraVariable> Variables;
@@ -174,7 +190,7 @@ public:
 	*/
 	int32 RegisterParameterMapPin(const UEdGraphPin* Pin);
 
-	void RegisterConstantVariableWrite(const FString& InValue, int32 InVarIdx, bool bIsSettingDefault);
+	void RegisterConstantVariableWrite(const FString& InValue, int32 InVarIdx, bool bIsSettingDefault, bool bIsLinkNotValue);
 
 	uint32 BeginNodeVisitation(const UNiagaraNode* Node);
 	void EndNodeVisitation(uint32 IndexFromBeginNode);
@@ -356,7 +372,7 @@ public:
 	int32 RegisterParameterMapPin(int32 WhichParameterMap, const UEdGraphPin* Pin);
 
 	int32 RegisterConstantPin(int32 WhichConstant, const UEdGraphPin* Pin);
-	int32 RegisterConstantVariableWrite(int32 WhichParamMapIdx, int32 WhichConstant, int32 WhichVarIdx, bool bIsSettingDefault);
+	int32 RegisterConstantVariableWrite(int32 WhichParamMapIdx, int32 WhichConstant, int32 WhichVarIdx, bool bIsSettingDefault, bool bLinkNotValue);
 
 	int32  RegisterConstantFromInputPin(const UEdGraphPin* InputPin);
 
@@ -490,25 +506,28 @@ public:
 	bool GetIgnoreDisabled() const { return bIgnoreDisabled; }
 	void SetIgnoreDisabled(bool bInIgnore) { bIgnoreDisabled = bInIgnore; }
 
-	bool IsInEncounteredFunctionNamespace(FNiagaraVariable& InVar) const;
-	bool IsInEncounteredEmitterNamespace(FNiagaraVariable& InVar) const;
+	bool IsInEncounteredFunctionNamespace(const FNiagaraVariable& InVar) const;
+	bool IsInEncounteredEmitterNamespace(const FNiagaraVariable& InVar) const;
 
 	/** Register any user or other external variables that could possibly be encountered but may not be declared explicitly. */
-	void RegisterEncounterableVariables(const TArray<FNiagaraVariable>& Variables);
+	void RegisterEncounterableVariables(TConstArrayView<FNiagaraVariable> Variables);
 	const TArray<FNiagaraVariable>& GetEncounterableVariables() const {	return EncounterableExternalVariables;}
 
-	void RegisterExternalStaticVariables(const TArray<FNiagaraVariable>& Variables);
+	void RegisterExternalStaticVariables(TConstArrayView<FNiagaraVariable> Variables);
 
 	FCompileConstantResolver ConstantResolver;
 
 	bool bShouldBuildSubHistories = true;
 
+	int32 MaxGraphDepthTraversal = INDEX_NONE;
+	int32 CurrentGraphDepth = 0;
 
 	void SetConstantByStaticVariable(int32& OutValue, const UEdGraphPin* InDefaultPin);
 	void SetConstantByStaticVariable(int32& OutValue, const FNiagaraVariable& Var);
 	int32 FindStaticVariable(const FNiagaraVariable& Var) const;
 
 	TArray<FNiagaraVariable> StaticVariables;
+	TArray<bool> StaticVariableExportable; // Should we export out these static variables to calling context?
 
 	void GetContextuallyVisitedNodes(TArray<const class UNiagaraNode*>& OutVistedNodes)
 	{
@@ -516,6 +535,10 @@ public:
 			OutVistedNodes.Append(ContextuallyVisitedNodes.Last());
 	}
 protected:
+	/** Internal helper function to decide whether or not we should use this static variable when merging with other
+		graph traversal static variables, like Emitter graphs merging with System graphs. */
+	bool IsStaticVariableExportableToOuterScopeBasedOnCurrentContext(const FNiagaraVariable& Var) const;
+
 	/**
 	* Generate the internal alias map from the current traversal state.
 	*/

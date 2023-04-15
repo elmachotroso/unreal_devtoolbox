@@ -2,18 +2,25 @@
 
 using UnrealBuildTool;
 using System.Collections.Generic;
+using EpicGames.Core;
 
 [SupportedPlatforms("Win64", "Linux", "Mac")]
 public class UnrealInsightsTarget : TargetRules
 {
+	[CommandLine("-Monolithic")]
+	public bool bMonolithic = false;
+
 	public UnrealInsightsTarget(TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Program;
-		LinkType = TargetLinkType.Modular; // TargetLinkType.Monolithic;
+		LinkType = bMonolithic ? TargetLinkType.Monolithic : TargetLinkType.Modular;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 
 		LaunchModuleName = "UnrealInsights";
-		ExtraModuleNames.Add("EditorStyle");
-
+		if (bBuildEditor)
+		{
+			ExtraModuleNames.Add("EditorStyle");
+		}
 		bCompileAgainstEngine = false;
 		bCompileAgainstCoreUObject = true;
 		bForceBuildTargetPlatforms = true;

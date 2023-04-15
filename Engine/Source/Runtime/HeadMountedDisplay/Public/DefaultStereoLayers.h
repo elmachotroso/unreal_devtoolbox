@@ -19,15 +19,25 @@ public:
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override {}
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
-	virtual void PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override {}
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
+	virtual void PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
 
 	virtual bool ShouldCopyDebugLayersToSpectatorScreen() const override
 	{
 		// Emulated layer support means that the debug layer will be in the 3d scene render that the spectator screen displays.
 		return false;
 	}
+
+	/** Experimental struct */
+	struct FLayerRenderParams
+	{
+		FIntRect Viewport;
+		FMatrix RenderMatrices[3];
+	};
+
+	/** Experimental method */
+	static void StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<FLayerDesc>& LayersToRender, const FLayerRenderParams& RenderParams);
 
 protected:
 	
@@ -39,20 +49,11 @@ protected:
 		HmdTransform = InHmdTransform;
 	}
 
-	struct FLayerRenderParams
-	{
-		FIntRect Viewport;
-		FMatrix RenderMatrices[3];
-	};
-
-	void StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<uint32> & LayersToRender, const FLayerRenderParams& RenderParams) const;
-
 	FHeadMountedDisplayBase* HMDDevice;
 	FTransform HmdTransform;
 
-	TArray<FLayerDesc> RenderThreadLayers;
-	TArray<uint32> SortedSceneLayers;
-	TArray<uint32> SortedOverlayLayers;
+	TArray<FLayerDesc> SortedSceneLayers;
+	TArray<FLayerDesc> SortedOverlayLayers;
 
 	friend class FHeadMountedDisplayBase;
 };

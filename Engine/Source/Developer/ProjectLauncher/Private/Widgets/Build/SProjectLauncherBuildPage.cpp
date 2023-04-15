@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SProjectLauncherBuildPage.h"
+#include "Widgets/Build/SProjectLauncherBuildPage.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Widgets/SBoxPanel.h"
@@ -16,6 +16,7 @@
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Shared/SProjectLauncherBuildConfigurationSelector.h"
 #include "Widgets/Shared/SProjectLauncherFormLabel.h"
+#include "Widgets/Shared/SProjectLauncherBuildTargetSelector.h"
 
 
 #define LOCTEXT_NAMESPACE "SProjectLauncherBuildPage"
@@ -94,7 +95,7 @@ void SProjectLauncherBuildPage::Construct(const FArguments& InArgs, const TShare
 			.Padding(0, 3, 0, 3)
 			[
 				SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.Visibility(this, &SProjectLauncherBuildPage::ShowBuildConfiguration)
 					[
 						SNew(SHorizontalBox)
@@ -117,6 +118,14 @@ void SProjectLauncherBuildPage::Construct(const FArguments& InArgs, const TShare
 									.OnConfigurationSelected(this, &SProjectLauncherBuildPage::HandleBuildConfigurationSelectorConfigurationSelected)
 									.Text(this, &SProjectLauncherBuildPage::HandleBuildConfigurationSelectorText)
 							]
+
+						+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SNew(SProjectLauncherBuildTargetSelector, Model.ToSharedRef())
+									.UseProfile(true)
+							]
+
 					]
 			]
 

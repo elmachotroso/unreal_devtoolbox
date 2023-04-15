@@ -7,13 +7,15 @@
 #include "ConsoleVariablesEditorCommandInfo.h"
 #include "ConsoleVariablesEditorLog.h"
 #include "ConsoleVariablesEditorModule.h"
+#include "MultiUser/ConsoleVariableSync.h"
 #include "Views/List/ConsoleVariablesEditorList.h"
 #include "Views/MainPanel/SConsoleVariablesEditorMainPanel.h"
 
+#include "Editor/EditorEngine.h"
 #include "FileHelpers.h"
 #include "Framework/Application/SlateApplication.h"
 #include "MultiUser/ConsoleVariableSyncData.h"
-
+#include "UnrealEngine.h"
 
 FConsoleVariablesEditorMainPanel::FConsoleVariablesEditorMainPanel()
 {
@@ -23,6 +25,8 @@ FConsoleVariablesEditorMainPanel::FConsoleVariablesEditorMainPanel()
 		&FConsoleVariablesEditorMainPanel::OnConnectionChanged);
 	OnRemoteCVarChangeHandle = MultiUserManager.OnRemoteCVarChange().AddStatic(
 		&FConsoleVariablesEditorMainPanel::OnRemoteCvarChange);
+	OnRemoteListItemCheckStateChangeHandle = MultiUserManager.OnRemoteListItemCheckStateChange().AddStatic(
+			&FConsoleVariablesEditorMainPanel::OnRemoteListItemCheckStateChange);
 }
 
 FConsoleVariablesEditorMainPanel::~FConsoleVariablesEditorMainPanel()
@@ -31,6 +35,7 @@ FConsoleVariablesEditorMainPanel::~FConsoleVariablesEditorMainPanel()
 	EditorList.Reset();
 	MultiUserManager.OnConnectionChange().Remove(OnConnectionChangedHandle);
 	MultiUserManager.OnRemoteCVarChange().Remove(OnRemoteCVarChangeHandle);
+	MultiUserManager.OnRemoteListItemCheckStateChange().Remove(OnRemoteListItemCheckStateChangeHandle);
 }
 
 TSharedRef<SWidget> FConsoleVariablesEditorMainPanel::GetOrCreateWidget()
@@ -58,13 +63,23 @@ void FConsoleVariablesEditorMainPanel::AddConsoleObjectToCurrentPreset(
 {
 	if (const TObjectPtr<UConsoleVariablesAsset> Asset = GetEditingAsset())
 	{
+		const FString TrimmedCommand = InConsoleCommand.TrimStartAndEnd();
+		FConsoleVariablesEditorAssetSaveData ExistingData;
+		const bool bHadCommandInAsset = Asset->FindSavedDataByCommandString(TrimmedCommand, ExistingData, ESearchCase::IgnoreCase);
+
 		Asset->AddOrSetConsoleObjectSavedData(
 			{
-				InConsoleCommand.TrimStartAndEnd(),
+				TrimmedCommand,
 				InValue,
 				ECheckBoxState::Checked
 			}
 		);
+		if (!bHadCommandInAsset)
+		{
+			GetConsoleVariablesModule().SendMultiUserConsoleVariableChange(
+				ERemoteCVarChangeType::Add,
+				TrimmedCommand, InValue);
+		}
 
 		if (GetEditorList().Pin()->GetListMode() == FConsoleVariablesEditorList::EConsoleVariablesEditorListMode::Preset)
 		{
@@ -305,9 +320,22 @@ void FConsoleVariablesEditorMainPanel::OnConnectionChanged(EConcertConnectionSta
 	}
 }
 
-void FConsoleVariablesEditorMainPanel::OnRemoteCvarChange(const FString InName, const FString InValue)
+void FConsoleVariablesEditorMainPanel::OnRemoteCvarChange(ERemoteCVarChangeType InChangeType, FString InName, FString InValue)
 {
 	FConsoleVariablesEditorModule& ConsoleVariablesEditorModule = FConsoleVariablesEditorModule::Get();
 
-	ConsoleVariablesEditorModule.OnRemoteCvarChanged(InName, InValue);
+	ConsoleVariablesEditorModule.OnRemoteCvarChanged(InChangeType, MoveTemp(InName), MoveTemp(InValue));
+}
+
+void FConsoleVariablesEditorMainPanel::OnRemoteListItemCheckStateChange(const FString InName, ECheckBoxState InCheckedState)
+{
+	const FString CheckStateAsString =
+		InCheckedState == ECheckBoxState::Checked ? "Checked" : InCheckedState == ECheckBoxState::Unchecked ? "Unchecked" : "Undetermined";
+	UE_LOG(LogConsoleVariablesEditor, Display,
+		TEXT("%hs: Remote check state change for list item with name '%s' set to '%s'"), __FUNCTION__, *InName, *CheckStateAsString);
+}
+
+void FConsoleVariablesEditorMainPanel::SendListItemCheckStateChange(const FString& InName, ECheckBoxState InCheckedState)
+{
+	GetMultiUserManager().SendListItemCheckStateChange(InName, InCheckedState);
 }

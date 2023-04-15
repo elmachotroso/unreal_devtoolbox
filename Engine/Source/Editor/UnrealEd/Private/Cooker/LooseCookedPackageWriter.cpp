@@ -2,32 +2,54 @@
 
 #include "Cooker/LooseCookedPackageWriter.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryState.h"
-#include "Async/Async.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Async/ParallelFor.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/Set.h"
+#include "Containers/StringView.h"
 #include "Cooker/AsyncIODelete.h"
 #include "Cooker/CookPackageData.h"
 #include "Cooker/CookTypes.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformCrt.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformString.h"
+#include "Hash/Blake3.h"
+#include "IO/IoHash.h"
 #include "Interfaces/IPluginManager.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/App.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/CString.h"
-#include "Misc/ConfigCacheIni.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Optional.h"
 #include "Misc/PackageName.h"
-#include "Misc/Paths.h"
 #include "Misc/PathViews.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/SecureHash.h"
 #include "Misc/StringBuilder.h"
+#include "PackageStoreOptimizer.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Serialization/Archive.h"
 #include "Serialization/ArchiveStackTrace.h"
 #include "Serialization/ArrayReader.h"
 #include "Serialization/LargeMemoryWriter.h"
+#include "Serialization/MemoryWriter.h"
+#include "Tasks/Task.h"
+#include "Templates/RefCounting.h"
+#include "Templates/UnrealTemplate.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/ObjectVersion.h"
 #include "UObject/Package.h"
-#include "PackageStoreOptimizer.h"
+#include "UObject/SavePackage.h"
 
 FLooseCookedPackageWriter::FLooseCookedPackageWriter(const FString& InOutputPath,
 	const FString& InMetadataDirectoryPath, const ITargetPlatform* InTargetPlatform, FAsyncIODelete& InAsyncIODelete,
@@ -53,20 +75,21 @@ void FLooseCookedPackageWriter::BeginPackage(const FBeginPackageInfo& Info)
 	PackageStoreManifest.BeginPackage(Info.PackageName);
 }
 
-TFuture<FMD5Hash> FLooseCookedPackageWriter::CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
+void FLooseCookedPackageWriter::CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
 	const FCommitPackageInfo& Info)
 {
 	FRecord& Record = static_cast<FRecord&>(BaseRecord);
-	TFuture<FMD5Hash> CookedHash;
-	if (Info.bSucceeded)
+	if (Info.Status == IPackageWriter::ECommitStatus::Success)
 	{
-		CookedHash = AsyncSave(Record, Info);
+		AsyncSave(Record, Info);
 	}
-	UpdateManifest(Record);
-	return CookedHash;
+	if (Info.Status != IPackageWriter::ECommitStatus::Canceled)
+	{
+		UpdateManifest(Record);
+	}
 }
 
-TFuture<FMD5Hash> FLooseCookedPackageWriter::AsyncSave(FRecord& Record, const FCommitPackageInfo& Info)
+void FLooseCookedPackageWriter::AsyncSave(FRecord& Record, const FCommitPackageInfo& Info)
 {
 	FCommitContext Context{ Info };
 
@@ -80,12 +103,12 @@ TFuture<FMD5Hash> FLooseCookedPackageWriter::AsyncSave(FRecord& Record, const FC
 	CollectForSaveExportsFooter(Record, Context);
 	CollectForSaveExportsBuffers(Record, Context);
 
-	return AsyncSaveOutputFiles(Record, Context);
+	AsyncSaveOutputFiles(Record, Context);
 }
 
 void FLooseCookedPackageWriter::CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive)
 {
-	FPackageWriterRecords::FPackage& BaseRecord = Records.FindRecordChecked(Info.InputPackageName);
+	FPackageWriterRecords::FPackage& BaseRecord = Records.FindRecordChecked(Info.PackageName);
 	FRecord& Record = static_cast<FRecord&>(BaseRecord);
 	Record.bCompletedExportsArchiveForDiff = true;
 
@@ -142,6 +165,7 @@ void FLooseCookedPackageWriter::CollectForSaveBulkData(FRecord& Record, FCommitC
 			OutputFile.Regions = MoveTemp(BulkRecord.Regions);
 			OutputFile.bIsSidecar = true;
 			OutputFile.bContributeToHash = BulkRecord.Info.MultiOutputIndex == 0; // Only caculate the main package output hash
+			OutputFile.ChunkId = BulkRecord.Info.ChunkId;
 		}
 	}
 }
@@ -168,6 +192,7 @@ void FLooseCookedPackageWriter::CollectForSaveAdditionalFileRecords(FRecord& Rec
 		OutputFile.Buffer = FCompositeBuffer(AdditionalRecord.Buffer);
 		OutputFile.bIsSidecar = true;
 		OutputFile.bContributeToHash = AdditionalRecord.Info.MultiOutputIndex == 0; // Only calculate the main package output hash
+		OutputFile.ChunkId = AdditionalRecord.Info.ChunkId;
 	}
 }
 
@@ -252,28 +277,54 @@ FPackageWriterRecords::FPackage* FLooseCookedPackageWriter::ConstructRecord()
 	return new FRecord();
 }
 
-TFuture<FMD5Hash> FLooseCookedPackageWriter::AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context)
+void FLooseCookedPackageWriter::AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context)
 {
 	if (!EnumHasAnyFlags(Context.Info.WriteOptions, EWriteOptions::Write | EWriteOptions::ComputeHash))
 	{
-		return TFuture<FMD5Hash>();
+		return;
 	}
 
 	UE::SavePackageUtilities::IncrementOutstandingAsyncWrites();
-	return Async(EAsyncExecution::TaskGraph,
-		[OutputFiles = MoveTemp(Context.OutputFiles), WriteOptions = Context.Info.WriteOptions]() mutable
-	{
-		FMD5 AccumulatedHash;
-		for (FWriteFileData& OutputFile : OutputFiles)
-		{
-			OutputFile.Write(AccumulatedHash, WriteOptions);
-		}
 
-		FMD5Hash OutputHash;
-		OutputHash.Set(AccumulatedHash);
-		UE::SavePackageUtilities::DecrementOutstandingAsyncWrites();
-		return OutputHash;
-	});
+	TRefCountPtr<FPackageHashes> ThisPackageHashes;
+	
+	if (EnumHasAnyFlags(Context.Info.WriteOptions, EWriteOptions::ComputeHash))
+	{
+		ThisPackageHashes = new FPackageHashes();
+
+		bool bAlreadyExisted = false;
+		{
+			FScopeLock ConcurrentSaveScopeLock(&ConcurrentSaveLock);
+			TRefCountPtr<FPackageHashes>& ExistingPackageHashes = AllPackageHashes.FindOrAdd(Context.Info.PackageName);
+			// This calculation of bAlreadyExisted looks weird but we're finding the _refcount_, not the hashes. So if it gets
+			// constructed, it's not actually assigned a pointer.
+			bAlreadyExisted = ExistingPackageHashes.IsValid();
+			ExistingPackageHashes = ThisPackageHashes;
+		}
+		if (bAlreadyExisted)
+		{
+			UE_LOG(LogSavePackage, Error, TEXT("FLooseCookedPackageWriter encountered the same package twice in a cook! (%s)"), *Context.Info.PackageName.ToString());
+		}
+	}
+
+	UE::Tasks::Launch(TEXT("HashAndWriteLooseCookedFile"), [OutputFiles = MoveTemp(Context.OutputFiles), WriteOptions = Context.Info.WriteOptions, ThisPackageHashes = MoveTemp(ThisPackageHashes)]()
+		{
+			FMD5 AccumulatedHash;
+			for (const FWriteFileData& OutputFile : OutputFiles)
+			{
+				OutputFile.HashAndWrite(AccumulatedHash, ThisPackageHashes, WriteOptions);
+			}
+
+			if (EnumHasAnyFlags(WriteOptions, EWriteOptions::ComputeHash))
+			{
+				ThisPackageHashes->PackageHash.Set(AccumulatedHash);
+			}
+
+			// This is used to release the game thread to access the hashes
+			UE::SavePackageUtilities::DecrementOutstandingAsyncWrites();
+		},
+		UE::Tasks::ETaskPriority::BackgroundNormal
+	);
 }
 
 static void WriteToFile(const FString& Filename, const FCompositeBuffer& Buffer)
@@ -284,6 +335,9 @@ static void WriteToFile(const FString& Filename, const FCompositeBuffer& Buffer)
 	{
 		uint32 LastErrorCode = 0;
 		bool bSizeMatchFailed = false;
+		int64 ExpectedSize = 0;
+		int64 ActualSize = 0;
+		bool bArchiveError = false;
 	};
 	TOptional<FFailureReason> FailureReason;
 
@@ -306,13 +360,15 @@ static void WriteToFile(const FString& Filename, const FCompositeBuffer& Buffer)
 			Ar->Serialize(const_cast<void*>(Segment.GetData()), SegmentSize);
 			DataSize += SegmentSize;
 		}
+		bool bArchiveError = Ar->IsError();
 		delete Ar;
 
-		if (FileManager.FileSize(*Filename) != DataSize)
+		int64 ActualSize = FileManager.FileSize(*Filename);
+		if (ActualSize != DataSize)
 		{
 			if (!FailureReason)
 			{
-				FailureReason = FFailureReason{ 0, true };
+				FailureReason = FFailureReason{ 0, true, DataSize, ActualSize, bArchiveError };
 			}
 			FileManager.Delete(*Filename);
 			continue;
@@ -320,23 +376,27 @@ static void WriteToFile(const FString& Filename, const FCompositeBuffer& Buffer)
 		return;
 	}
 
-	TCHAR LastErrorText[1024];
+	FString ReasonText;
 	if (FailureReason && FailureReason->bSizeMatchFailed)
 	{
-		FCString::Strcpy(LastErrorText, TEXT("Unexpected file size. Another operation is modifying the file, or the write operation failed to write completely."));
+		ReasonText = FString::Printf(TEXT("Unexpected file size. Tried to write %" INT64_FMT " but resultant size was %" INT64_FMT ".%s")
+			TEXT(" Another operation is modifying the file, or the write operation failed to write completely."),
+			FailureReason->ExpectedSize, FailureReason->ActualSize, FailureReason->bArchiveError ? TEXT(" Ar->Serialize failed.") : TEXT(""));
 	}
 	else if (FailureReason && FailureReason->LastErrorCode != 0)
 	{
+		TCHAR LastErrorText[1024];
 		FPlatformMisc::GetSystemErrorMessage(LastErrorText, UE_ARRAY_COUNT(LastErrorText), FailureReason->LastErrorCode);
+		ReasonText = LastErrorText;
 	}
 	else
 	{
-		FCString::Strcpy(LastErrorText, TEXT("Unknown failure reason."));
+		ReasonText = TEXT("Unknown failure reason.");
 	}
-	UE_LOG(LogSavePackage, Fatal, TEXT("SavePackage Async write %s failed: %s"), *Filename, LastErrorText);
+	UE_LOG(LogSavePackage, Fatal, TEXT("SavePackage Async write %s failed: %s"), *Filename, *ReasonText);
 }
 
-void FLooseCookedPackageWriter::FWriteFileData::Write(FMD5& AccumulatedHash, EWriteOptions WriteOptions) const
+void FLooseCookedPackageWriter::FWriteFileData::HashAndWrite(FMD5& AccumulatedHash, const TRefCountPtr<FPackageHashes>& PackageHashes, EWriteOptions WriteOptions) const
 {
 	//@todo: FH: Should we calculate the hash of both output, currently only the main package output hash is calculated
 	if (EnumHasAnyFlags(WriteOptions, EWriteOptions::ComputeHash) && bContributeToHash)
@@ -344,6 +404,17 @@ void FLooseCookedPackageWriter::FWriteFileData::Write(FMD5& AccumulatedHash, EWr
 		for (const FSharedBuffer& Segment : Buffer.GetSegments())
 		{
 			AccumulatedHash.Update(static_cast<const uint8*>(Segment.GetData()), Segment.GetSize());
+		}
+
+		if (ChunkId.IsValid())
+		{
+			FBlake3 ChunkHash;
+			for (const FSharedBuffer& Segment : Buffer.GetSegments())
+			{
+				ChunkHash.Update(static_cast<const uint8*>(Segment.GetData()), Segment.GetSize());
+			}
+			FIoHash FinalHash(ChunkHash.Finalize());
+			PackageHashes->ChunkHashes.Add(ChunkId, FinalHash);
 		}
 	}
 
@@ -376,11 +447,11 @@ void FLooseCookedPackageWriter::UpdateManifest(FRecord& Record)
 {
 	for (const FPackageWriterRecords::FWritePackage& Package : Record.Packages)
 	{
-		PackageStoreManifest.AddPackageData(Package.Info.InputPackageName, Package.Info.OutputPackageName, Package.Info.LooseFilePath, Package.Info.ChunkId);
+		PackageStoreManifest.AddPackageData(Package.Info.PackageName, Package.Info.LooseFilePath, Package.Info.ChunkId);
 	}
 	for (const FPackageWriterRecords::FBulkData& BulkData : Record.BulkDatas)
 	{
-		PackageStoreManifest.AddBulkData(BulkData.Info.InputPackageName, BulkData.Info.OutputPackageName, BulkData.Info.LooseFilePath, BulkData.Info.ChunkId);
+		PackageStoreManifest.AddBulkData(BulkData.Info.PackageName, BulkData.Info.LooseFilePath, BulkData.Info.ChunkId);
 	}
 }
 
@@ -403,10 +474,11 @@ FDateTime FLooseCookedPackageWriter::GetPreviousCookTime() const
 void FLooseCookedPackageWriter::Initialize(const FCookInfo& Info)
 {
 	bIterateSharedBuild = Info.bIterateSharedBuild;
-	if (Info.bFullBuild)
+	if (Info.bFullBuild && !Info.bWorkerOnSharedSandbox)
 	{
 		DeleteSandboxDirectory();
 	}
+	if (!Info.bWorkerOnSharedSandbox)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(SaveScriptObjects);
 		FPackageStoreOptimizer PackageStoreOptimizer;
@@ -421,16 +493,12 @@ void FLooseCookedPackageWriter::Initialize(const FCookInfo& Info)
 void FLooseCookedPackageWriter::BeginCook()
 {
 	PackageStoreManifest.Load(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
+	AllPackageHashes.Empty();
 }
 
 void FLooseCookedPackageWriter::EndCook()
 {
 	PackageStoreManifest.Save(*(MetadataDirectoryPath / TEXT("packagestore.manifest")));
-}
-
-void FLooseCookedPackageWriter::Flush()
-{
-	UPackage::WaitForAsyncFileWrites();
 }
 
 TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegistry()
@@ -479,8 +547,30 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 		for (const TPair<FName, const FAssetPackageData*>& Pair : PreviousState->GetAssetPackageDataMap())
 		{
 			FName PackageName = Pair.Key;
-			const FName UncookedFilename = PackageDatas.GetFileNameByPackageName(PackageName);
+			FName UncookedFilename = PackageDatas.GetFileNameByPackageName(PackageName);
+
+			bool bNoLongerExistsInEditor = false;
+			bool bIsScriptPackage = FPackageName::IsScriptPackage(WriteToString<256>(PackageName));
 			if (UncookedFilename.IsNone())
+			{
+				// Script and generated packages do not exist uncooked
+				// Check that the package is not an exception before removing from cooked
+				bool bIsCookedOnly = bIsScriptPackage;
+				bool bIsMap = false;
+				if (!bIsCookedOnly)
+				{
+					for (const FAssetData* AssetData : PreviousState->GetAssetsByPackageName(PackageName))
+					{
+						bIsCookedOnly |= !!(AssetData->PackageFlags & PKG_CookGenerated);
+						bIsMap |= !!(AssetData->PackageFlags & PKG_ContainsMap);
+					}
+				}
+				bNoLongerExistsInEditor = !bIsCookedOnly;
+				UncookedFilename = UE::Cook::FPackageDatas::LookupFileNameOnDisk(PackageName,
+					false /* bRequireExists */, bIsMap);
+
+			}
+			if (bNoLongerExistsInEditor)
 			{
 				// Remove package from both disk and registry
 				// Keep its RemoveFromDisk entry
@@ -491,7 +581,7 @@ TUniquePtr<FAssetRegistryState> FLooseCookedPackageWriter::LoadPreviousAssetRegi
 				// Keep package on disk if it exists. Keep package in registry if it exists on disk or was a FailedSave.
 				bool bExistsOnDisk = (RemoveFromDisk.Remove(UncookedFilename) == 1); // Remove its RemoveFromDisk entry
 				const FAssetPackageData* PackageData = Pair.Value;
-				if (!bExistsOnDisk && PackageData->DiskSize >= 0)
+				if (!bExistsOnDisk && PackageData->DiskSize >= 0 && !bIsScriptPackage)
 				{
 					// Add RemoveFromRegistry entry if it didn't exist on disk and is a SuccessfulSave package
 					RemoveFromRegistry.Add(PackageName);
@@ -609,11 +699,14 @@ public:
 		{
 			FString Filename(FilenameOrDirectory);
 			FStringView Extension(FPathViews::GetExtension(Filename, true /* bIncludeDot */));
-			const TCHAR* ExtensionStr = Extension.GetData();
-			check(ExtensionStr[Extension.Len()] == '\0'); // IsPackageExtension takes a null-terminated TCHAR; we should have it since GetExtension is from the end of the filename
-			if (FPackageName::IsPackageExtension(ExtensionStr))
+			if (!Extension.IsEmpty())
 			{
-				FoundFiles.Add(Filename);
+				const TCHAR* ExtensionStr = Extension.GetData();
+				check(ExtensionStr[Extension.Len()] == '\0'); // IsPackageExtension takes a null-terminated TCHAR; we should have it since GetExtension is from the end of the filename
+				if (FPackageName::IsPackageExtension(ExtensionStr))
+				{
+					FoundFiles.Add(Filename);
+				}
 			}
 		}
 		return true;

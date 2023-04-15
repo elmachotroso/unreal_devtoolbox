@@ -1,19 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HLODOutlinerDragDrop.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
-#include "DragAndDrop/ActorDragDropOp.h"
+
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
-#include "IHierarchicalLODUtilities.h"
+#include "DragAndDrop/ActorDragDropOp.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
 #include "HierarchicalLODUtilitiesModule.h"
+#include "IHierarchicalLODUtilities.h"
 #include "ITreeItem.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
 
 HLODOutliner::FDragDropPayload::FDragDropPayload()
 {
@@ -119,7 +127,7 @@ TSharedPtr<SWidget> HLODOutliner::FHLODOutlinerDragDropOp::GetDefaultDecorator()
 	VerticalBox->AddSlot()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Graph.ConnectorFeedback.Border"))
+			.BorderImage(FAppStyle::GetBrush("Graph.ConnectorFeedback.Border"))
 			.Visibility(this, &FHLODOutlinerDragDropOp::GetOverrideVisibility)
 			.Content()
 			[

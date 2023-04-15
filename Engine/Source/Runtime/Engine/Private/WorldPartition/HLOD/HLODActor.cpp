@@ -5,7 +5,10 @@
 #include "Components/PrimitiveComponent.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/ObjectSaveContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODActor)
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartition.h"
@@ -41,11 +44,6 @@ AWorldPartitionHLOD::AWorldPartitionHLOD(const FObjectInitializer& ObjectInitial
 #endif
 }
 
-UPrimitiveComponent* AWorldPartitionHLOD::GetHLODComponent()
-{
-	return Cast<UPrimitiveComponent>(RootComponent);
-}
-
 void AWorldPartitionHLOD::SetVisibility(bool bInVisible)
 {
 	// When propagating visibility state to children, SetVisibility dirties all attached components.
@@ -73,6 +71,7 @@ void AWorldPartitionHLOD::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5PrivateFrostyStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
 	Super::Serialize(Ar);
 
@@ -96,10 +95,38 @@ void AWorldPartitionHLOD::Serialize(FArchive& Ar)
 #endif
 }
 
+#if WITH_EDITOR
+
+void AWorldPartitionHLOD::PostLoad()
+{
+	Super::PostLoad();
+
+	if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::WorldPartitionStreamingCellsNamingShortened)
+	{
+		if (!HLODSubActors.IsEmpty())
+		{
+			// As we may be dealing with an unsaved world created from a template map, get
+			// the source package name of this HLOD actor and figure out the world name from there
+			FName ExternalActorsPath = HLODSubActors[0].ContainerPackage;
+			FString WorldName = FPackageName::GetShortName(ExternalActorsPath);
+
+			// Strip "WorldName_" from the cell name
+			FString CellName = SourceCellName.ToString();
+			bool bRemoved = CellName.RemoveFromStart(WorldName + TEXT("_"), ESearchCase::CaseSensitive);
+			if (bRemoved)
+			{
+				SourceCellName = *CellName;
+			}
+		}
+	}
+
+	// Update the disk size stat on load, as we can't really know it when saving
+	HLODStats.Add(FWorldPartitionHLODStats::MemoryDiskSizeBytes, FHLODActorDesc::GetPackageSize(this));
+}
+
 void AWorldPartitionHLOD::RerunConstructionScripts()
 {}
 
-#if WITH_EDITOR
 
 TUniquePtr<FWorldPartitionActorDesc> AWorldPartitionHLOD::CreateClassActorDesc() const
 {
@@ -109,6 +136,8 @@ TUniquePtr<FWorldPartitionActorDesc> AWorldPartitionHLOD::CreateClassActorDesc()
 void AWorldPartitionHLOD::SetHLODComponents(const TArray<UActorComponent*>& InHLODComponents)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(AWorldPartitionHLOD::SetHLODComponents);
+
+	Modify();
 
 	TArray<UActorComponent*> ComponentsToRemove;
 	GetComponents(ComponentsToRemove);
@@ -130,7 +159,8 @@ void AWorldPartitionHLOD::SetHLODComponents(const TArray<UActorComponent*>& InHL
 			}
 			else
 			{
-				HLODSceneComponent->SetupAttachment(RootComponent);
+				// Attach to root component, but don't mess world tranform
+				HLODSceneComponent->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepWorldTransform);
 			}
 		}
 	

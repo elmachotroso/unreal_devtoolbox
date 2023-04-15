@@ -10,6 +10,7 @@
 #include "Misc/CoreDelegates.h"
 #include "NavFilters/NavigationQueryFilter.h"
 #include "AI/Navigation/NavigationTypes.h"
+#include "AI/Navigation/NavigationDirtyElement.h"
 #include "NavigationSystemTypes.h"
 #include "NavigationData.h"
 #include "AI/NavigationSystemBase.h"
@@ -38,6 +39,12 @@ class UNavigationPath;
 class UNavigationSystemModuleConfig;
 struct FNavigationRelevantData;
 struct FNavigationOctreeElement;
+
+#if !UE_BUILD_SHIPPING
+#define ALLOW_TIME_SLICE_DEBUG 1
+#else
+#define ALLOW_TIME_SLICE_DEBUG 0
+#endif
 
 /** delegate to let interested parties know that new nav area class has been registered */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnNavAreaChanged, const UClass* /*AreaClass*/);
@@ -73,9 +80,12 @@ namespace FNavigationSystem
 	};
 
 	bool NAVIGATIONSYSTEM_API ShouldLoadNavigationOnClient(ANavigationData& NavData);
-	bool NAVIGATIONSYSTEM_API ShouldDiscardSubLevelNavData(ANavigationData& NavData);
 
 	void NAVIGATIONSYSTEM_API MakeAllComponentsNeverAffectNav(AActor& Actor);
+
+#if ALLOW_TIME_SLICE_DEBUG
+	const FName DebugTimeSliceDefaultSectionName = FName(TEXT("DefaultSection"));
+#endif // ALLOW_TIME_SLICE_DEBUG
 }
 
 struct FNavigationSystemExec: public FSelfRegisteringExec
@@ -96,6 +106,15 @@ namespace ENavigationBuildLock
 	};
 }
 
+
+// Use this just  before a call to TestTimeSliceFinished() to allow the time slice logging to use a debug name for the section of code being timed.
+#if ALLOW_TIME_SLICE_DEBUG
+#define MARK_TIMESLICE_SECTION_DEBUG(TIME_SLICER, TIME_SLICE_FNAME) \
+static const FName TIME_SLICE_FNAME(TEXT(#TIME_SLICE_FNAME)); \
+TIME_SLICER.DebugSetSectionName(TIME_SLICE_FNAME);
+#else
+#define MARK_TIMESLICE_SECTION_DEBUG(TIME_SLICER, TIME_SLICE_FNAME) ;
+#endif
 
 class NAVIGATIONSYSTEM_API FNavRegenTimeSlicer
 {
@@ -122,7 +141,28 @@ public:
 
 	//* Returns the cached result of calling TestTimeSliceFinished, false by default */
 	bool IsTimeSliceFinishedCached() const { return bTimeSliceFinishedCached; }
+	double GetRemainingDuration() const { return RemainingDuration; }
 	double GetRemainingDurationFraction() const { return OriginalDuration > 0. ? RemainingDuration / OriginalDuration : 0.; }
+
+
+#if ALLOW_TIME_SLICE_DEBUG
+	/*
+	 * Sets data used for debugging time slices that are taking too long to process.
+	 * @param LongTimeSliceFunction function called when a time slice is taking too long to process.
+	 * @param LongTimeSliceDuration when a time slice takes longer than this duration LongTimeSliceFunction will be called.
+	 */
+	void DebugSetLongTimeSliceData(TFunction<void(FName, double)> LongTimeSliceFunction, double LongTimeSliceDuration) const;
+	void DebugResetLongTimeSliceFunction() const;
+
+	/**
+	 *  Sets the debug name for a time sliced section of code.
+	 *  Do not call this directly use MARK_TIMESLICE_SECTION_DEBUG
+	 */
+	void DebugSetSectionName(FName InDebugSectionName) const
+	{
+		DebugSectionName = InDebugSectionName;
+	}
+#endif // ALLOW_TIME_SLICE_DEBUG
 
 protected:
 	double OriginalDuration = 0.;
@@ -130,6 +170,12 @@ protected:
 	double StartTime = 0.;
 	mutable double TimeLastTested = 0.;
 	mutable bool bTimeSliceFinishedCached = false;
+
+#if ALLOW_TIME_SLICE_DEBUG
+	mutable TFunction<void(FName, double)> DebugLongTimeSliceFunction;
+	mutable double DebugLongTimeSliceDuration = 0.;
+	mutable FName DebugSectionName = FNavigationSystem::DebugTimeSliceDefaultSectionName;
+#endif
 };
 
 class NAVIGATIONSYSTEM_API FNavRegenTimeSliceManager
@@ -268,8 +314,12 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=NavigationSystem)
 	uint32 bSkipAgentHeightCheckWhenPickingNavData:1;
 
+	/** Warnings are logged if exporting the navigation collision for an object exceed this vertex count.
+	 * Use -1 to disable. */
+	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = NavigationSystem)
+	int32 GeometryExportVertexCountWarningThreshold = 1000000;
+	
 protected:
-
 	/** If set to true navigation will be generated only around registered "navigation enforcers"
 	*	This has a range of consequences (including how navigation octree operates) so it needs to
 	*	be a conscious decision.
@@ -642,6 +692,12 @@ public:
 	const TSet<FNavigationBounds>& GetNavigationBounds() const;
 
 	static const FNavDataConfig& GetDefaultSupportedAgent();
+	static const FNavDataConfig& GetBiggestSupportedAgent(const UWorld* World);
+	
+#if WITH_EDITOR
+	static double GetWorldPartitionNavigationDataBuilderOverlap(const UWorld& World);
+#endif
+	
 	const FNavDataConfig& GetDefaultSupportedAgentConfig() const;
 	FORCEINLINE const TArray<FNavDataConfig>& GetSupportedAgents() const { return SupportedAgents; }
 	void OverrideSupportedAgents(const TArray<FNavDataConfig>& NewSupportedAgents);
@@ -686,8 +742,6 @@ public:
 
 	/** Adds NavData to registration candidates queue - NavDataRegistrationQueue*/
 	virtual void RequestRegistrationDeferred(ANavigationData& NavData);
-	UE_DEPRECATED(4.24, "This version of RequestRegistration is deprecated. Please use the RequestRegistrationDeferred as the registration request is always queued now.")
-	virtual void RequestRegistration(ANavigationData* NavData, bool bTriggerRegistrationProcessing = true);
 
 protected:
 	void ApplySupportedAgentsFilter();
@@ -722,6 +776,9 @@ protected:
 	/** @return pointer to ANavigationData instance of given ID, or NULL if it was not found. Note it looks only through registered navigation data */
 	ANavigationData* GetNavDataWithID(const uint16 NavDataID) const;
 
+	static void RegisterComponentToNavOctree(UActorComponent* Comp);
+	static void UnregisterComponentToNavOctree(UActorComponent* Comp);
+
 public:
 	virtual void ReleaseInitialBuildingLock();
 
@@ -730,6 +787,8 @@ public:
 	//----------------------------------------------------------------------//
 	static void OnComponentRegistered(UActorComponent* Comp);
 	static void OnComponentUnregistered(UActorComponent* Comp);
+	static void RegisterComponent(UActorComponent* Comp);
+	static void UnregisterComponent(UActorComponent* Comp);
 	static void OnActorRegistered(AActor* Actor);
 	static void OnActorUnregistered(AActor* Actor);
 
@@ -759,8 +818,9 @@ public:
 	/** updates bounds of all components implementing INavRelevantInterface */
 	static void UpdateNavOctreeBounds(AActor* Actor);
 
-	void AddDirtyArea(const FBox& NewArea, int32 Flags);
-	void AddDirtyAreas(const TArray<FBox>& NewAreas, int32 Flags);
+	void AddDirtyArea(const FBox& NewArea, int32 Flags, const FName& DebugReason = NAME_None);
+	void AddDirtyArea(const FBox& NewArea, int32 Flags, const TFunction<UObject*()>& ObjectProviderFunc, const FName& DebugReason = NAME_None);
+	void AddDirtyAreas(const TArray<FBox>& NewAreas, int32 Flags, const FName& DebugReason = NAME_None);
 	bool HasDirtyAreasQueued() const;
 	int32 GetNumDirtyAreas() const;
 
@@ -809,6 +869,9 @@ public:
 
 	/** updates custom link for all active navigation data instances */
 	void UpdateCustomLink(const INavLinkCustomInterface* CustomLink);
+
+	/** Return a Bounding Box containing the navlink points */
+	static FBox ComputeCustomLinkBounds(const INavLinkCustomInterface& CustomLink);
 
 	//----------------------------------------------------------------------//
 	// Areas
@@ -1215,59 +1278,11 @@ public:
 	// DEPRECATED
 	//----------------------------------------------------------------------//
 public:
-	UE_DEPRECATED(4.16, "This version of ProjectPointToNavigation is deprecated. Please use the new version")
-	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "ProjectPointToNavigation_DEPRECATED", ScriptNoExport, DeprecatedFunction, DeprecationMessage = "This version of ProjectPointToNavigation is deprecated. Please use the new version"))
-	static FVector ProjectPointToNavigation(UObject* WorldContextObject, const FVector& Point, ANavigationData* NavData = NULL, TSubclassOf<UNavigationQueryFilter> FilterClass = NULL, const FVector QueryExtent = FVector::ZeroVector);
-	UE_DEPRECATED(4.16, "This version of GetRandomReachablePointInRadius is deprecated. Please use the new version")
-	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "GetRandomReachablePointInRadius_DEPRECATED", ScriptNoExport, DeprecatedFunction, DeprecationMessage = "This version of GetRandomReachablePointInRadius is deprecated. Please use the new version"))
-	static FVector GetRandomReachablePointInRadius(UObject* WorldContextObject, const FVector& Origin, float Radius, ANavigationData* NavData = NULL, TSubclassOf<UNavigationQueryFilter> FilterClass = NULL);
-	UE_DEPRECATED(4.16, "This version of GetRandomPointInNavigableRadius is deprecated. Please use the new version")
-	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "GetRandomPointInNavigableRadius_DEPRECATED", ScriptNoExport, DeprecatedFunction, DeprecationMessage = "This version of GetRandomPointInNavigableRadius is deprecated. Please use the new version"))
-	static FVector GetRandomPointInNavigableRadius(UObject* WorldContextObject, const FVector& Origin, float Radius, ANavigationData* NavData = NULL, TSubclassOf<UNavigationQueryFilter> FilterClass = NULL);
-	UE_DEPRECATED(4.20, "SimpleMoveToActor is deprecated. Use UAIBlueprintHelperLibrary::SimpleMoveToActor instead")
-	UFUNCTION(BlueprintCallable, Category = "AI|Navigation", meta = (DisplayName = "SimpleMoveToActor_DEPRECATED", ScriptNoExport, DeprecatedFunction, DeprecationMessage = "SimpleMoveToActor is deprecated. Use AIBlueprintHelperLibrary::SimpleMoveToActor instead"))
-	static void SimpleMoveToActor(AController* Controller, const AActor* Goal);
-	UE_DEPRECATED(4.20, "SimpleMoveToLocation is deprecated. Use UAIBlueprintHelperLibrary::SimpleMoveToLocation instead")
-	UFUNCTION(BlueprintCallable, Category = "AI|Navigation", meta = (DisplayName = "SimpleMoveToLocation_DEPRECATED", ScriptNoExport, DeprecatedFunction, DeprecationMessage = "SimpleMoveToLocation is deprecated. Use AIBlueprintHelperLibrary::SimpleMoveToLocation instead"))
-	static void SimpleMoveToLocation(AController* Controller, const FVector& Goal);
-	UE_DEPRECATED(4.20, "UNavigationSystemV1::GetDefaultWalkableArea is deprecated. Use FNavigationSystem::GetDefaultWalkableArea instead")
-	static TSubclassOf<UNavAreaBase> GetDefaultWalkableArea() { return FNavigationSystem::GetDefaultWalkableArea(); }
-	UE_DEPRECATED(4.20, "UNavigationSystemV1::GetDefaultObstacleArea is deprecated. Use FNavigationSystem::GetDefaultObstacleArea instead")
-	static TSubclassOf<UNavAreaBase> GetDefaultObstacleArea() { return FNavigationSystem::GetDefaultObstacleArea(); }
+	// Note that this function was only deprecated for blueprint in 5.1
 	UE_DEPRECATED(4.22, "This version is deprecated.  Please use GetRandomLocationInNavigableRadius instead")
-	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "GetRandomPointInNavigableRadius", ScriptName = "GetRandomPointInNavigableRadius"))
+	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "GetRandomPointInNavigableRadius", ScriptName = "GetRandomPointInNavigableRadius", DeprecatedFunction, DeprecationMessage = "GetRandomPointInNavigableRadius is deprecated. Use GetRandomLocationInNavigableRadius instead"))
 	static bool K2_GetRandomPointInNavigableRadius(UObject* WorldContextObject, const FVector& Origin, FVector& RandomLocation, float Radius, ANavigationData* NavData = NULL, TSubclassOf<UNavigationQueryFilter> FilterClass = NULL);
-	UE_DEPRECATED(4.23, "This function is deprecated.  Please use CreateNavigationDataInstanceInLevel instead")
-	virtual ANavigationData* CreateNavigationDataInstance(const FNavDataConfig& NavConfig);
 	
-	UE_DEPRECATED(4.24, "This function is deprecated and no longer used. NavigationSystem is no longer involved in storing navoctree element IDs. See FNavigationOctree for more details.")
-	void SetObjectsNavOctreeId(const UObject& Object, FOctreeElementId2 Id) {}
-
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access OctreeController instead")
-	TMap<uint32, FOctreeElementId2> ObjectToOctreeId;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access OctreeController instead")
-	TSet<FNavigationDirtyElement> PendingOctreeUpdates;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access OctreeController instead")
-	TSharedPtr<FNavigationOctree, ESPMode::ThreadSafe> NavOctree;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access OctreeController instead")
-	TMultiMap<UObject*, FWeakObjectPtr> OctreeChildNodesMap;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access OctreeController instead")
-	uint8 bNavOctreeLock : 1;
-
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access DirtyAreasController instead")
-	UPROPERTY(config, EditAnywhere, Category = NavigationSystem)
-	float DirtyAreasUpdateFreq = 60;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access DirtyAreasController instead")
-	float DirtyAreasUpdateTime = 0;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access DirtyAreasController instead")
-	TArray<FNavigationDirtyArea> DirtyAreas;
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access DirtyAreasController instead")
-	uint8 bCanAccumulateDirtyAreas : 1;
-#if !UE_BUILD_SHIPPING
-	UE_DEPRECATED(4.24, "This member is deprecated and no longer used.  Please access DirtyAreasController instead")
-	uint8 bDirtyAreasReportedWhileAccumulationLocked : 1;
-#endif // !UE_BUILD_SHIPPING
-
 	UE_DEPRECATED(4.26, "This version of RemoveNavigationBuildLock is deprecated. Please use the new version")
 	void RemoveNavigationBuildLock(uint8 Flags, bool bSkipRebuildInEditor) { RemoveNavigationBuildLock(Flags, bSkipRebuildInEditor ? ELockRemovalRebuildAction::RebuildIfNotInEditor : ELockRemovalRebuildAction::Rebuild);}
 };

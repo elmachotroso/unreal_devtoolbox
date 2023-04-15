@@ -2,6 +2,16 @@
 
 #include "BasicTokenParser.h"
 
+#include "HAL/UnrealMemory.h"
+#include "Internationalization/Internationalization.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Char.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/UnrealNames.h"
+
 #define LOCTEXT_NAMESPACE "BasicTokenParser"
 DEFINE_LOG_CATEGORY_STATIC(LogTokenParser, Log, All);
 
@@ -81,10 +91,10 @@ void FBasicToken::SetConstBool(bool InBool)
 }
 
 //------------------------------------------------------------------------------
-void FBasicToken::SetConstFloat(float InFloat)
+void FBasicToken::SetConstDouble(double InDouble)
 {
-	ConstantType = CPT_Float;
-	Float        = InFloat;
+	ConstantType = CPT_Double;
+	Double       = InDouble;
 	TokenType    = TOKEN_Const;
 }
 
@@ -128,8 +138,8 @@ FString FBasicToken::GetConstantValue() const
 		case CPT_Bool:
 			// Don't use FCoreTexts::True/FCoreTexts::False here because they can be localized
 			return FString::Printf(TEXT("%s"), NativeBool ? *(FName::GetEntry(NAME_TRUE)->GetPlainNameString()) : *(FName::GetEntry(NAME_FALSE)->GetPlainNameString()));
-		case CPT_Float:
-			return FString::Printf(TEXT("%f"), Float);
+		case CPT_Double:
+			return FString::Printf(TEXT("%f"), Double);
 		case CPT_Name:
 			return FString::Printf(TEXT("%s"), *ScriptNameToName(*(FScriptName*)NameBytes).ToString());
 		case CPT_String:
@@ -153,19 +163,22 @@ bool FBasicToken::GetConstInt(int32& ValOut) const
 	if(TokenType==TOKEN_Const && ConstantType==CPT_Int)
 	{
 		ValOut = Int;
-		return 1;
+		return true;
 	}
 	else if(TokenType==TOKEN_Const && ConstantType==CPT_Byte)
 	{
 		ValOut = Byte;
-		return 1;
+		return true;
 	}
-	else if(TokenType==TOKEN_Const && ConstantType==CPT_Float && Float==FMath::TruncToInt(Float))
+	else if(TokenType==TOKEN_Const && ConstantType==CPT_Double && Double==FMath::TruncToInt(Double))
 	{
-		ValOut = (int32)Float;
-		return 1;
+		ValOut = static_cast<int32>(Double);
+		return true;
 	}
-	else return 0;
+	else
+	{
+		return false;
+	}
 }
 
 /*******************************************************************************
@@ -361,15 +374,15 @@ bool FBasicTokenParser::GetToken(FBasicToken& Token, bool bNoConsts/* = false*/)
 	// if const values are allowed, determine whether the non-identifier token represents a const
 	else if ( !bNoConsts && (IsNumericChar(c) || ((c=='+' || c=='-') && IsNumericChar(p))) )
 	{
-		// Integer or floating point constant.
-		bool  bIsFloat = 0;
+		// Integer or double-precision floating point constant.
+		bool  bIsDouble = 0;
 		int32 Length   = 0;
 		bool  bIsHex   = 0;
 		do
 		{
 			if( c==TEXT('.') )
 			{
-				bIsFloat = true;
+				bIsDouble = true;
 			}
 			if( c==TEXT('X') || c == TEXT('x') )
 			{
@@ -388,17 +401,17 @@ bool FBasicTokenParser::GetToken(FBasicToken& Token, bool bNoConsts/* = false*/)
 				break;
 			}
 			c = FChar::ToUpper(GetChar());
-		} while (IsNumericChar(c) || (!bIsFloat && c == TEXT('.')) || (!bIsHex && c == TEXT('X')) || (bIsHex && c >= TEXT('A') && c <= TEXT('F')));
+		} while (IsNumericChar(c) || (!bIsDouble && c == TEXT('.')) || (!bIsHex && c == TEXT('X')) || (bIsHex && c >= TEXT('A') && c <= TEXT('F')));
 
 		Token.Identifier[Length]=0;
-		if (!bIsFloat || c != 'F')
+		if (!bIsDouble || c != 'F')
 		{
 			UngetChar();
 		}
 
-		if (bIsFloat)
+		if (bIsDouble)
 		{
-			Token.SetConstFloat( FCString::Atof(Token.Identifier) );
+			Token.SetConstDouble( FCString::Atod(Token.Identifier) );
 		}
 		else if (bIsHex)
 		{
@@ -1044,7 +1057,7 @@ void FBasicTokenParser::SetError(TEnumAsByte<FErrorState::EErrorType> ErrorCode,
 }
 
 //------------------------------------------------------------------------------
-FBasicTokenParser::FErrorState const& FBasicTokenParser::GetErrorState() const
+const FBasicTokenParser::FErrorState& FBasicTokenParser::GetErrorState() const
 {
 	return CurrentError;
 }

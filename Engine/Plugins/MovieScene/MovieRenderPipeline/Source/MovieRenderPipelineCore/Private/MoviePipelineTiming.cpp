@@ -11,6 +11,7 @@
 #include "MovieScene.h"
 #include "LevelSequence.h"
 #include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
@@ -147,6 +148,11 @@ void UMoviePipeline::TickProducingFrames()
 		// again after the warm-up frames.
 		UMoviePipelineAntiAliasingSetting* AntiAliasingSettings = FindOrAddSettingForShot<UMoviePipelineAntiAliasingSetting>(CurrentCameraCut);
 
+		// If we're not emulating the first frame motion blur, we back up by an extra frame so that we can fall through to regular frame-advance logic.
+		// However this causes the Sequencer to initially jump to/evaluate the wrong frame (where objects may not be spawned) and we need cameras, etc.
+		// spawned so we can cache current viewpoints. So we store how much we're going to go back so that we can temporarily add it to the sequence eval
+		// time, and then the actual eval will go forward as usual later.
+		FFrameNumber SequencerEvalOffset = FFrameNumber(0);
 		if (!CurrentCameraCut->ShotInfo.bEmulateFirstFrameMotionBlur)
 		{
 			FFrameTime TicksToEndOfPreviousFrame;
@@ -176,11 +182,12 @@ void UMoviePipeline::TickProducingFrames()
 			TicksToEndOfPreviousFrame += FFrameRate::TransformTime(FFrameTime(FFrameNumber(CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining)), TargetSequence->GetMovieScene()->GetDisplayRate(), TargetSequence->GetMovieScene()->GetTickResolution());
 			AccumulatedTickSubFrameDeltas -= TicksToEndOfPreviousFrame.GetSubFrame();
 			CurrentCameraCut->ShotInfo.CurrentTickInMaster = CurrentCameraCut->ShotInfo.CurrentTickInMaster - TicksToEndOfPreviousFrame.FloorToFrame();
+			SequencerEvalOffset = TicksToEndOfPreviousFrame.FloorToFrame();
 		}
 
 		// Jump to the first frame of the sequence that we will be playing from. This doesn't take into account camera timing offset or temporal sampling, but that is
 		// proably okay as it means the first frame (frame 0) is exactly evaluated which is easier to preview effects in the editor instead of -.25 of a frame.
-		FFrameNumber CurrentMasterSeqTick = CurrentCameraCut->ShotInfo.CurrentTickInMaster;
+		FFrameNumber CurrentMasterSeqTick = CurrentCameraCut->ShotInfo.CurrentTickInMaster + SequencerEvalOffset;
 		FFrameTime TimeInPlayRate = FFrameRate::TransformTime(CurrentMasterSeqTick, TargetSequence->GetMovieScene()->GetTickResolution(), TargetSequence->GetMovieScene()->GetDisplayRate());
 
 		// We tell it to jump so that things responding to different scrub-types work correctly.
@@ -205,6 +212,19 @@ void UMoviePipeline::TickProducingFrames()
 			
 			FrameInfo.PrevViewLocation = FrameInfo.CurrViewLocation;
 			FrameInfo.PrevViewRotation = FrameInfo.CurrViewRotation;
+
+			// Cache data for all the sidecar cameras too.
+			bool bSuccess = GetSidecarCameraViewPoints(CurrentCameraCut, FrameInfo.CurrSidecarViewLocations, FrameInfo.CurrSidecarViewRotations);
+			FrameInfo.PrevSidecarViewLocations = FrameInfo.CurrSidecarViewLocations;
+			FrameInfo.PrevSidecarViewRotations = FrameInfo.CurrSidecarViewRotations;
+
+			// This warning is only relevant if they actually have a camera in Sequencer. If they don't,
+			// it'll be falling back to the LocalPlayerController anyways (above) so it's not actually
+			// the error we're trying to catch.
+			if (CurrentCameraCut->ShotInfo.SubSectionHierarchy->CameraCutSection.IsValid())
+			{
+				ensureMsgf(bSuccess, TEXT("Failed to evaluate camera to create cur/prev camera locations. No camera actor found on Eval Tick: %d"), CurrentMasterSeqTick.Value);
+			}
 		}
 
 		// We can safely fall through to the below states as they're OK to process the same frame we set up.
@@ -258,8 +278,20 @@ void UMoviePipeline::TickProducingFrames()
 			CustomSequenceTimeController->SetCachedFrameTiming(FQualifiedFrameTime(FinalEvalTime, FrameMetrics.TickResolution));
 		}
 
+		// Apply the cloth fixups during warmup differently. If we don't use the increased number of sub-steps used on the large delta times here,
+		// then transitioning from warmup to rendering causes a jump in delta times (from large to small) which makes all the cloth ripple. 
+		if (AntiAliasingSettings->TemporalSampleCount > 1)
+		{
+			double Ratio = FrameMetrics.TicksWhileShutterOpen.FloorToFrame().Value / (double)FrameMetrics.TicksPerSample.FrameNumber.Value;
+
+			// Slomo can end up trying to do less than one iteration, we don't want that.	
+			int32 DivisionMultiplier = FMath::Max(FMath::FloorToInt(Ratio), 1);
+			SetSkeletalMeshClothSubSteps(DivisionMultiplier);
+		}
+
 		CachedOutputState.TimeData.FrameDeltaTime = FrameDeltaTime;
 		CachedOutputState.TimeData.WorldSeconds = CachedOutputState.TimeData.WorldSeconds + FrameDeltaTime;
+		TRACE_BOOKMARK(TEXT("MoviePipeline - WarmingUp %d"), CurrentCameraCut->ShotInfo.NumEngineWarmUpFramesRemaining);
 		// We don't want to execute the other possible states until at least the next frame.
 		// This ensures that we actually tick the world once for the WarmUp state.
 		return;
@@ -338,6 +370,8 @@ void UMoviePipeline::TickProducingFrames()
 		// with many renders for a frame to fill history buffers).
 		CurrentCameraCut->ShotInfo.bHasEvaluatedMotionBlurFrame = true;
 		UE_LOG(LogMovieRenderPipeline, Verbose, TEXT("[%d] Shot MotionBlur set engine DeltaTime to %f seconds."), GFrameCounter, FrameDeltaTime);
+		TRACE_BOOKMARK(TEXT("MoviePipeline - MotionBlurEmulation"));
+
 		return;
 	}
 
@@ -551,6 +585,21 @@ void UMoviePipeline::TickProducingFrames()
 			DeltaFrameTime = DeltaFrameTime * WorldTimeDilation;
 		}
 
+		// Cloth doesn't like temporal sub-sampling due to the wildly varying delta times (due to the 'shutter closed') period.
+		// To help account for this, we increase the sub-division count for each skeletal mesh inversely to the deltatime
+		// for this frame. That means if a 'short' frame is 2ms, but a long frame is 10ms, we make the long frame 5x as many
+		// sub-divisions as the short frame to fake the cloth simulation system into processing each step with the same dt.
+		{
+			if (AntiAliasingSettings->TemporalSampleCount > 1)
+			{
+				double Ratio = DeltaFrameTime.FrameNumber.Value / (double)FrameMetrics.TicksPerSample.FrameNumber.Value;
+				
+				// Slomo can end up trying to do less than one iteration, we don't want that.	
+				int32 DivisionMultiplier = FMath::Max(FMath::FloorToInt(Ratio), 1);
+				SetSkeletalMeshClothSubSteps(DivisionMultiplier);
+			}
+		}
+
 		/*
 		* Now that we know how much we want to advance the sequence by (and the world)
 		* We can calculate out the desired frame for the shot to evaluate. This is slightly
@@ -686,6 +735,8 @@ void UMoviePipeline::TickProducingFrames()
 		double UndilatedDeltaTime = FrameMetrics.TickResolution.AsSeconds(FFrameTime(UndilatedDeltaFrameTime.GetFrame()));
 		CustomTimeStep->SetCachedFrameTiming(MoviePipeline::FFrameTimeStepCache(UndilatedDeltaTime));
 		CustomSequenceTimeController->SetCachedFrameTiming(FQualifiedFrameTime(FinalEvalTime, FrameMetrics.TickResolution));
+		TRACE_BOOKMARK(TEXT("MoviePipeline - Rendering Frame %d"), CachedOutputState.EffectiveFrameNumber);
+
 		return;
 	}
 
@@ -722,5 +773,7 @@ void UMoviePipeline::CalculateFrameNumbersForOutputState(const MoviePipeline::FF
 	}
 
 	InOutOutputState.ShotName = InCameraCut->OuterName;
+
+	// Continue to use the InnerName (which is the master camera for the shot), individual render passes can override it later if rendering more than one camera.
 	InOutOutputState.CameraName = InCameraCut->InnerName;
 }

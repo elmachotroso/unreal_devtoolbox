@@ -92,13 +92,14 @@ struct FSharedSimulationParameters
 	FSharedSimulationParameters()
 	: bMassAsDensity(true)
 	, Mass(1.0f)
-	, MinimumMassClamp(0.1f)							// todo : Expose to users with better initial values
-	, MaximumMassClamp(1e5f)							// todo : Expose to users with better initial values
-	, MinimumBoundingExtentClamp(0.1f)					// todo : Expose to users with better initial values
-	, MaximumBoundingExtentClamp(1e6f)					// todo : Expose to users with better initial values
-	, MinimumInertiaTensorDiagonalClamp(SMALL_NUMBER)	// todo : Expose to users with better initial values
-	, MaximumInertiaTensorDiagonalClamp(1e20f)			// todo : Expose to users with better initial values
+	, MinimumMassClamp(0.1f)								// todo : Expose to users with better initial values
+	, MaximumMassClamp(1e5f)								// todo : Expose to users with better initial values
+	, MinimumBoundingExtentClamp(0.1f)						// todo : Expose to users with better initial values
+	, MaximumBoundingExtentClamp(1e6f)						// todo : Expose to users with better initial values
+	, MinimumInertiaTensorDiagonalClamp(UE_SMALL_NUMBER)	// todo : Expose to users with better initial values
+	, MaximumInertiaTensorDiagonalClamp(1e20f)				// todo : Expose to users with better initial values
 	, MaximumCollisionParticleCount(60)
+	, bUseImportedCollisionImplicits(false)
 	{
 		SizeSpecificData.AddDefaulted();
 	}
@@ -119,7 +120,8 @@ struct FSharedSimulationParameters
 		, float InMaximumInertiaTensorDiagonalClamp
 		, float InCollisionParticlesFraction
 		, int32 InMaximumCollisionParticleCount
-		, float InCollisionMarginFraction)
+		, float InCollisionMarginFraction
+		, bool InUseImportedCollisionImplicits )
 	: bMassAsDensity(InMassAsDensity)
 	, Mass(InMass)
 	, MinimumMassClamp(InMinimumMassClamp)
@@ -129,6 +131,7 @@ struct FSharedSimulationParameters
 	, MinimumInertiaTensorDiagonalClamp(InMinimumInertiaTensorDiagonalClamp)
 	, MaximumInertiaTensorDiagonalClamp(InMaximumInertiaTensorDiagonalClamp)
 	, MaximumCollisionParticleCount(InMaximumCollisionParticleCount)
+	, bUseImportedCollisionImplicits(InUseImportedCollisionImplicits)
 	{
 		SizeSpecificData.AddDefaulted();
 		if (ensure(SizeSpecificData.Num() && SizeSpecificData[0].CollisionShapesData.Num()))
@@ -158,8 +161,8 @@ struct FSharedSimulationParameters
 	float MaximumVolumeClamp() const { return MaximumBoundingExtentClamp * MaximumBoundingExtentClamp * MaximumBoundingExtentClamp; }
 
 	TArray<FSharedSimulationSizeSpecificData> SizeSpecificData;
-	TArray<int32> RemoveOnFractureIndices;
 	int32 MaximumCollisionParticleCount;
+	bool bUseImportedCollisionImplicits;
 };
 
 struct FSimulationParameters
@@ -176,7 +179,9 @@ struct FSimulationParameters
 		, MaxClusterLevel(100)
 		, bUseSizeSpecificDamageThresholds(false)
 		, DamageThreshold({500000.f, 50000.f, 5000.f})
+		, bUsePerClusterOnlyDamageThreshold(false)
 		, ClusterConnectionMethod(Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit)
+		, ConnectionGraphBoundsFilteringMargin(0)
 		, CollisionGroup(0)
 		, CollisionSampleFraction(1.0)
 		, InitialVelocityType(EInitialVelocityTypeEnum::Chaos_Initial_Velocity_None)
@@ -186,11 +191,22 @@ struct FSimulationParameters
 		, CacheBeginTime(0.0f)
 		, ReverseCacheBeginTime(0.0f)
 		, bClearCache(false)
+		, ObjectType(EObjectStateTypeEnum::Chaos_NONE)
+		, StartAwake(true)
 		, bGenerateBreakingData(false)
 		, bGenerateCollisionData(false)
 		, bGenerateTrailingData(false)
 		, bGenerateRemovalsData(false)
-		, RemoveOnFractureEnabled(false)
+		, bGenerateCrumblingData(false)
+		, bGenerateCrumblingChildrenData(false)
+		, EnableGravity(true)
+		, UseInertiaConditioning(true)
+		, UseCCD(false)
+		, LinearDamping(0.01f)
+		, AngularDamping(0)
+		, bUseDamagePropagation(false)
+		, BreakDamagePropagationFactor(1.0f)
+		, ShockDamagePropagationFactor(0.0f)
 		, SimulationFilterData()
 		, QueryFilterData()
 		, UserData(nullptr)
@@ -209,7 +225,9 @@ struct FSimulationParameters
 		, MaxClusterLevel(Other.MaxClusterLevel)
 		, bUseSizeSpecificDamageThresholds(Other.bUseSizeSpecificDamageThresholds)
 		, DamageThreshold(Other.DamageThreshold)
+		, bUsePerClusterOnlyDamageThreshold(Other.bUsePerClusterOnlyDamageThreshold)
 		, ClusterConnectionMethod(Other.ClusterConnectionMethod)
+		, ConnectionGraphBoundsFilteringMargin(Other.ConnectionGraphBoundsFilteringMargin)
 		, CollisionGroup(Other.CollisionGroup)
 		, CollisionSampleFraction(Other.CollisionSampleFraction)
 		, InitialVelocityType(Other.InitialVelocityType)
@@ -220,13 +238,23 @@ struct FSimulationParameters
 		, ReverseCacheBeginTime(Other.ReverseCacheBeginTime)
 		, bClearCache(Other.bClearCache)
 		, ObjectType(Other.ObjectType)
+		, StartAwake(Other.StartAwake)
 		, PhysicalMaterialHandle(Other.PhysicalMaterialHandle)
 		, bGenerateBreakingData(Other.bGenerateBreakingData)
 		, bGenerateCollisionData(Other.bGenerateCollisionData)
 		, bGenerateTrailingData(Other.bGenerateTrailingData)
 		, bGenerateRemovalsData(Other.bGenerateRemovalsData)
+		, bGenerateCrumblingData(Other.bGenerateCrumblingData)
+		, bGenerateCrumblingChildrenData(Other.bGenerateCrumblingChildrenData)
 		, Shared(Other.Shared)
-		, RemoveOnFractureEnabled(false)
+		, EnableGravity(Other.EnableGravity)
+		, UseInertiaConditioning(Other.UseInertiaConditioning)
+		, UseCCD(Other.UseCCD)
+		, LinearDamping(Other.LinearDamping)
+		, AngularDamping(Other.AngularDamping)
+		, bUseDamagePropagation(Other.bUseDamagePropagation)
+		, BreakDamagePropagationFactor(Other.BreakDamagePropagationFactor)
+		, ShockDamagePropagationFactor(Other.ShockDamagePropagationFactor)
 		, SimulationFilterData(Other.SimulationFilterData)
 		, QueryFilterData(Other.QueryFilterData)
 		, UserData(Other.UserData)
@@ -259,7 +287,9 @@ struct FSimulationParameters
 	int32 MaxClusterLevel;
 	bool bUseSizeSpecificDamageThresholds;
 	TArray<float> DamageThreshold;
+	bool bUsePerClusterOnlyDamageThreshold;
 	Chaos::FClusterCreationParameters::EConnectionMethod ClusterConnectionMethod;
+	float ConnectionGraphBoundsFilteringMargin;
 
 	int32 CollisionGroup;
 	float CollisionSampleFraction;
@@ -274,6 +304,7 @@ struct FSimulationParameters
 	bool bClearCache;
 
 	EObjectStateTypeEnum ObjectType;
+	bool StartAwake;
 
 	Chaos::FMaterialHandle PhysicalMaterialHandle;
 
@@ -281,10 +312,20 @@ struct FSimulationParameters
 	bool bGenerateCollisionData;
 	bool bGenerateTrailingData;
 	bool bGenerateRemovalsData;
+	bool bGenerateCrumblingData;
+	bool bGenerateCrumblingChildrenData;
 
 	FSharedSimulationParameters Shared;
 
-	bool RemoveOnFractureEnabled;
+	bool EnableGravity;
+	bool UseInertiaConditioning;
+	bool UseCCD;
+	float LinearDamping;
+	float AngularDamping;
+
+	bool bUseDamagePropagation;
+	float BreakDamagePropagationFactor;
+	float ShockDamagePropagationFactor;
 
 	FCollisionFilterData SimulationFilterData;
 	FCollisionFilterData QueryFilterData;

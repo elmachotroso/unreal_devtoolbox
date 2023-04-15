@@ -2,6 +2,7 @@
 
 #include "USDSchemaTranslator.h"
 
+#include "USDInfoCache.h"
 #include "USDErrorUtils.h"
 #include "USDSchemasModule.h"
 #include "USDTypesConversion.h"
@@ -55,6 +56,8 @@ TSharedPtr< FUsdSchemaTranslator > FUsdSchemaTranslatorRegistry::CreateTranslato
 FUsdRenderContextRegistry::FUsdRenderContextRegistry()
 {
 #if USE_USD_SDK
+	LLM_SCOPE_BYTAG(Usd);
+
 	UniversalRenderContext = FName( UsdToUnreal::ConvertToken( pxr::UsdShadeTokens->universalRenderContext ) );
 	Register( UniversalRenderContext );
 
@@ -203,29 +206,13 @@ bool FUsdSchemaTranslator::IsCollapsed( ECollapsingType CollapsingType ) const
 #if USE_USD_SDK
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdSchemaTranslator::IsCollapsed );
 
-	if ( !CanBeCollapsed( CollapsingType ) )
+	if ( Context->InfoCache.IsValid() )
 	{
-		return false;
+		return Context->InfoCache->IsPathCollapsed( PrimPath, CollapsingType );
 	}
 
-	TUsdStore< pxr::UsdPrim > Prim = pxr::UsdPrim( GetPrim() );
-	TUsdStore< pxr::UsdPrim > ParentPrim = Prim.Get().GetParent();
-
-	IUsdSchemasModule& UsdSchemasModule = FModuleManager::Get().LoadModuleChecked< IUsdSchemasModule >( TEXT("USDSchemas") );
-
-	while ( ParentPrim.Get() )
-	{
-		TSharedPtr< FUsdSchemaTranslator > ParentSchemaTranslator = UsdSchemasModule.GetTranslatorRegistry().CreateTranslatorForSchema( Context, UE::FUsdTyped( ParentPrim.Get() ) );
-
-		if ( ParentSchemaTranslator && ParentSchemaTranslator->CollapsesChildren( CollapsingType ) )
-		{
-			return true;
-		}
-		else
-		{
-			ParentPrim = ParentPrim.Get().GetParent();
-		}
-	}
+	// This is merely a fallback, and we should never need this
+	return CanBeCollapsed( CollapsingType );
 #endif // #if USE_USD_SDK
 
 	return false;
@@ -306,48 +293,61 @@ FUsdSchemaTranslatorTaskChain& FUsdSchemaTranslatorTaskChain::Then( ESchemaTrans
 	return *this;
 }
 
+namespace UsdSchemaTranslatorTaskChainImpl
+{
+	FORCEINLINE bool CanStart( FSchemaTranslatorTask* Task, bool bExclusiveSyncTasks )
+	{
+		return ( Task->LaunchPolicy == ESchemaTranslationLaunchPolicy::ExclusiveSync ) == bExclusiveSyncTasks;
+	}
+}
+
 ESchemaTranslationStatus FUsdSchemaTranslatorTaskChain::Execute(bool bExclusiveSyncTasks)
 {
-	if ( !CurrentTask )
+	FSchemaTranslatorTask* TranslatorTask = CurrentTask.Get();
+
+	if ( TranslatorTask == nullptr )
 	{
 		return ESchemaTranslationStatus::Done;
 	}
 
-	FSchemaTranslatorTask& TranslatorTask = *CurrentTask;
-
-	bool bCanStart =
-		(  bExclusiveSyncTasks && CurrentTask->LaunchPolicy == ESchemaTranslationLaunchPolicy::ExclusiveSync ) ||
-		( !bExclusiveSyncTasks && CurrentTask->LaunchPolicy != ESchemaTranslationLaunchPolicy::ExclusiveSync );
-
-	if ( !TranslatorTask.IsDone() )
+	if ( !TranslatorTask->IsDone() )
 	{
-		if ( !TranslatorTask.IsStarted() )
+		if ( !TranslatorTask->IsStarted() )
 		{
-			if ( bCanStart )
+			if ( UsdSchemaTranslatorTaskChainImpl::CanStart( TranslatorTask, bExclusiveSyncTasks ) )
 			{
-				TranslatorTask.Start();
+				TranslatorTask->Start();
 			}
 			else
 			{
 				return ESchemaTranslationStatus::Pending;
 			}
 		}
+
+		return ESchemaTranslationStatus::InProgress;
 	}
 	else
 	{
-		CurrentTask = CurrentTask->Continuation;
-
-		if ( CurrentTask )
+		if ( CurrentTask->Result.IsSet() )
 		{
-			if ( bCanStart )
+			CurrentTask = CurrentTask->Result->Get() ? CurrentTask->Continuation : nullptr;
+		}
+		else
+		{
+			CurrentTask = CurrentTask->Continuation;
+		}
+
+		if (( TranslatorTask = CurrentTask.Get()) != nullptr )
+		{
+			if ( UsdSchemaTranslatorTaskChainImpl::CanStart( TranslatorTask, bExclusiveSyncTasks ) )
 			{
 				if ( IsInGameThread() )
 				{
-					CurrentTask->StartIfAsync(); // Queue the next task asap if async
+					TranslatorTask->StartIfAsync(); // Queue the next task asap if async
 				}
 				else
 				{
-					CurrentTask->Start();
+					TranslatorTask->Start();
 				}
 			}
 			else
@@ -357,7 +357,7 @@ ESchemaTranslationStatus FUsdSchemaTranslatorTaskChain::Execute(bool bExclusiveS
 		}
 	}
 
-	return CurrentTask ? ESchemaTranslationStatus::InProgress : ESchemaTranslationStatus::Done;
+	return TranslatorTask ? ESchemaTranslationStatus::InProgress : ESchemaTranslationStatus::Done;
 }
 
 #undef LOCTEXT_NAMESPACE

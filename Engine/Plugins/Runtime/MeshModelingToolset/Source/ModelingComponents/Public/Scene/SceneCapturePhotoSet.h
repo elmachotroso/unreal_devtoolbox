@@ -8,6 +8,7 @@
 
 class UWorld;
 class AActor;
+struct FScopedSlowTask;
 
 namespace UE
 {
@@ -18,6 +19,7 @@ namespace Geometry
  * FSceneCapturePhotoSet creates a set of render captures for a given World and set of Actors,
  * stored as a SpatialPhotoSet for each desired render buffer type. Currently the set of buffers are
  * defined by ERenderCaptureType:
+ * 
  *		BaseColor
  *		Roughness
  *		Metallic
@@ -25,6 +27,8 @@ namespace Geometry
  *		PackedMRS   (Metallic / Roughness / Specular)
  *		Emissive
  *		WorldNormal
+ *		DeviceDepth
+ *
  * There are various efficiences possible by doing these captures as a group, rather
  * than doing each one individually.
  * 
@@ -38,15 +42,25 @@ namespace Geometry
 class MODELINGCOMPONENTS_API FSceneCapturePhotoSet
 {
 public:
+
+	FSceneCapturePhotoSet();
+
 	/**
 	 * Set the target World and set of Actors
 	 */
 	void SetCaptureSceneActors(UWorld* World, const TArray<AActor*>& Actors);
 
 	/**
-	 * Enable/Disable a particular capture type. Currently all are enabled by default.
+	 * Enable/Disable a particular capture type
 	 */
 	void SetCaptureTypeEnabled(ERenderCaptureType CaptureType, bool bEnabled);
+	bool GetCaptureTypeEnabled(ERenderCaptureType CaptureType) const;
+
+	/**
+	 * Configure the given capture type
+	 */
+	void SetCaptureConfig(ERenderCaptureType CaptureType, const FRenderCaptureConfig& Config);
+	FRenderCaptureConfig GetCaptureConfig(ERenderCaptureType CaptureType) const;
 
 	/**
 	 * Add captures at the corners and face centers of the "view box",
@@ -58,7 +72,9 @@ public:
 		double NearPlaneDist,
 		bool bFaces,
 		bool bUpperCorners,
-		bool bLowerCorners);
+		bool bLowerCorners,
+		bool bUpperEdges,
+		bool bSideEdges);
 
 	/**
 	 * Add captures on the "view sphere", ie a sphere centered/sized such that the target actors
@@ -90,6 +106,7 @@ public:
 		float Metallic;
 		FVector3f Emissive;
 		FVector3f WorldNormal;
+		float DeviceDepth;
 
 		FSceneSample();
 
@@ -112,6 +129,31 @@ public:
 		TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction,
 		FSceneSample& DefaultsInResultsOut) const;
 
+	/**
+	 * If ValidSampleDepthThreshold >  0 then the VisibilityFunction and the DeviceDepthPhotoSet will be used to determine
+	 * sample validity. Using DeviceDepthPhotoSet will mitigate artefacts caused by samples which cannot be determined
+	 * invalid by querying only the VisibilityFunction.
+	 * If ValidSampleDepthThreshold <= 0 only VisibilityFunction will be used to determine sample validity
+	 */
+	bool ComputeSampleLocation(
+		const FVector3d& Position,
+		const FVector3d& Normal,
+		float ValidSampleDepthThreshold,
+		TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction,
+		int& PhotoIndex,
+		FVector2d& PhotoCoords) const;
+
+	/**
+	 * @returns the value of the nearest pixel in the given photo for the given CaptureType
+	 * Note: This function does not interpolate because this causes artefacts; two adjacent pixels on a photo can be
+	 * from parts of the scene which are very far from each other so interpolating the values when makes no sense.
+	 * Texture filtering is accomplished by the baking framework where it can use correctly localized information.
+	 */
+	template <ERenderCaptureType CaptureType>
+	FVector4f ComputeSampleNearest(
+		const int& PhotoIndex,
+		const FVector2d& PhotoCoords,
+		const FSceneSample& DefaultSample) const;
 
 	const FSpatialPhotoSet3f& GetBaseColorPhotoSet() { return BaseColorPhotoSet; }
 	const FSpatialPhotoSet1f& GetRoughnessPhotoSet() { return RoughnessPhotoSet; }
@@ -120,6 +162,7 @@ public:
 	const FSpatialPhotoSet3f& GetPackedMRSPhotoSet() { return PackedMRSPhotoSet; }
 	const FSpatialPhotoSet3f& GetWorldNormalPhotoSet() { return WorldNormalPhotoSet; }
 	const FSpatialPhotoSet3f& GetEmissivePhotoSet() { return EmissivePhotoSet; }
+	const FSpatialPhotoSet1f& GetDeviceDepthPhotoSet() { return DeviceDepthPhotoSet; }
 
 	/**
 	 * Enable debug image writing. All captured images will be written to <Project>/Intermediate/<FolderName>.
@@ -128,10 +171,29 @@ public:
 	 */
 	void SetEnableWriteDebugImages(bool bEnable, FString FolderName = FString());
 
+	/**
+	 * If enabled, any Component Scene Proxies in the level that are not meant to be included in
+	 * the capture (ie not added via SetCaptureSceneActors), will be unregistered to hide them.
+	 * This is generally not necessary, and disabled by default, but in some cases the Renderer
+	 * may not be able to fully exclude the effects of an object via hidden/visible flags.
+	 */
+	void SetEnableVisibilityByUnregisterMode(bool bEnable);
+
+	void SetAllowCancel(bool bAllowCancelIn)
+	{
+		bAllowCancel = bAllowCancelIn;
+	}
+
+	bool Cancelled() const
+	{
+		return bWasCancelled;
+	}
 
 protected:
 	UWorld* TargetWorld = nullptr;
 	TArray<AActor*> VisibleActors;
+
+	bool bEnforceVisibilityViaUnregister = false;
 
 	bool bEnableBaseColor = true;
 	bool bEnableRoughness = false;
@@ -140,6 +202,7 @@ protected:
 	bool bEnablePackedMRS = true;
 	bool bEnableWorldNormal = true;
 	bool bEnableEmissive = true;
+	bool bEnableDeviceDepth = true;
 
 	FSpatialPhotoSet3f BaseColorPhotoSet;
 	FSpatialPhotoSet1f RoughnessPhotoSet;
@@ -148,11 +211,85 @@ protected:
 	FSpatialPhotoSet3f PackedMRSPhotoSet;
 	FSpatialPhotoSet3f WorldNormalPhotoSet;
 	FSpatialPhotoSet3f EmissivePhotoSet;
+	FSpatialPhotoSet1f DeviceDepthPhotoSet;
+
+	FRenderCaptureConfig BaseColorConfig;
+	FRenderCaptureConfig RoughnessConfig;
+	FRenderCaptureConfig SpecularConfig;
+	FRenderCaptureConfig MetallicConfig;
+	FRenderCaptureConfig PackedMRSConfig;
+	FRenderCaptureConfig WorldNormalConfig;
+	FRenderCaptureConfig EmissiveConfig;
+	FRenderCaptureConfig DeviceDepthConfig;
+
+	TArray<FSpatialPhotoParams> PhotoSetParams;
 
 	bool bWriteDebugImages = false;
 	FString DebugImagesFolderName = TEXT("SceneCapturePhotoSet");
+
+	bool bAllowCancel = false;
+	bool bWasCancelled = false;
 };
 
+
+template <ERenderCaptureType CaptureType>
+FVector4f FSceneCapturePhotoSet::ComputeSampleNearest(
+	const int& PhotoIndex,
+	const FVector2d& PhotoCoords,
+	const FSceneSample& DefaultSample) const
+{
+	if constexpr (CaptureType == ERenderCaptureType::BaseColor)
+	{
+		FVector3f BaseColor = BaseColorPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.BaseColor);
+		return FVector4f(BaseColor, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::Roughness)
+	{
+		float Roughness = RoughnessPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.Roughness);
+		return FVector4f(Roughness, Roughness, Roughness, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::Specular)
+	{
+		float Specular = SpecularPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.Specular);
+		return FVector4f(Specular, Specular, Specular, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::Metallic)
+	{
+		float Metallic = MetallicPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.Metallic);
+		return FVector4f(Metallic, Metallic, Metallic, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::CombinedMRS)
+	{
+		FVector3f MRSValue(DefaultSample.Metallic, DefaultSample.Roughness, DefaultSample.Specular);
+		MRSValue = PackedMRSPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, MRSValue);
+		return FVector4f(MRSValue, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::Emissive)
+	{
+		FVector3f Emissive = EmissivePhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.Emissive);
+		return FVector4f(Emissive, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::WorldNormal)
+	{
+		FVector3f WorldNormal = WorldNormalPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.WorldNormal);
+		return FVector4f(WorldNormal, 1.f);
+	}
+
+	if constexpr (CaptureType == ERenderCaptureType::DeviceDepth)
+	{
+		float Depth = DeviceDepthPhotoSet.ComputeSampleNearest(PhotoIndex, PhotoCoords, DefaultSample.DeviceDepth);
+		return FVector4f(Depth, Depth, Depth, 1.f);
+	}
+
+	ensure(false);
+	return FVector4f::Zero();
+}
 
 
 } // end namespace UE::Geometry

@@ -121,29 +121,31 @@ void FClothingSimulationCloth::FLODData::Add(FClothingSimulationSolver* Solver, 
 				DisabledCollisionElements.Emplace(TVec2<int32>(Element, Index));
 			}
 		}
-		ClothConstraints.SetSelfCollisionConstraints(TriangleMesh, MoveTemp(DisabledCollisionElements), (Softs::FSolverReal)Cloth->SelfCollisionThickness);
+		ClothConstraints.SetSelfCollisionConstraints(TriangleMesh, MoveTemp(DisabledCollisionElements), (Softs::FSolverReal)Cloth->SelfCollisionThickness, (Softs::FSolverReal)Cloth->SelfCollisionFrictionCoefficient, Cloth->bUseSelfIntersections, Cloth->bUseSelfIntersections);
 	}
 
 	// Edge constraints
 	const TConstArrayView<FRealSingle>& EdgeStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::EdgeStiffness];
 	if (Cloth->EdgeStiffness[0] > (FRealSingle)0. || (Cloth->EdgeStiffness[1] > (FRealSingle)0. && EdgeStiffnessMultipliers.Num() == NumParticles))
 	{
-		ClothConstraints.SetEdgeConstraints(SurfaceElements, EdgeStiffnessMultipliers, Cloth->bUseXPBDConstraints);
+		ClothConstraints.SetEdgeConstraints(SurfaceElements, EdgeStiffnessMultipliers, Cloth->bUseXPBDEdgeConstraints);
 	}
 
 	// Bending constraints
 	const TConstArrayView<FRealSingle>& BendingStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::BendingStiffness];
-	if (Cloth->BendingStiffness[0] > (FRealSingle)0. || (Cloth->BendingStiffness[1] > (FRealSingle)0. && BendingStiffnessMultipliers.Num() == NumParticles))
+	const TConstArrayView<FRealSingle>& BucklingStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::BucklingStiffness];
+	if (Cloth->BendingStiffness[0] > (FRealSingle)0. || (Cloth->BendingStiffness[1] > (FRealSingle)0. && BendingStiffnessMultipliers.Num() == NumParticles) ||
+		(Cloth->bUseBendingElements && (Cloth->BucklingStiffness[0] > (FRealSingle)0. || (Cloth->BucklingStiffness[1] > (FRealSingle)0. && BucklingStiffnessMultipliers.Num() == NumParticles))))
 	{
 		if (Cloth->bUseBendingElements)
 		{
 			TArray<Chaos::TVec4<int32>> BendingElements = TriangleMesh.GetUniqueAdjacentElements();
-			ClothConstraints.SetBendingConstraints(MoveTemp(BendingElements), (Softs::FSolverReal)Cloth->BendingStiffness[0]);  // TODO: Add support for weight maps
+			ClothConstraints.SetBendingConstraints(MoveTemp(BendingElements), BendingStiffnessMultipliers, BucklingStiffnessMultipliers, Cloth->bUseXPBDBendingConstraints);
 		}
 		else
 		{
 			const TArray<Chaos::TVec2<int32>> Edges = TriangleMesh.GetUniqueAdjacentPoints();
-			ClothConstraints.SetBendingConstraints(Edges, BendingStiffnessMultipliers, Cloth->bUseXPBDConstraints);
+			ClothConstraints.SetBendingConstraints(Edges, BendingStiffnessMultipliers, Cloth->bUseXPBDBendingConstraints);
 		}
 	}
 
@@ -151,7 +153,7 @@ void FClothingSimulationCloth::FLODData::Add(FClothingSimulationSolver* Solver, 
 	const TConstArrayView<FRealSingle>& AreaStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::AreaStiffness];
 	if (Cloth->AreaStiffness[0] > (FRealSingle)0. || (Cloth->AreaStiffness[1] > (FRealSingle)0. && AreaStiffnessMultipliers.Num() == NumParticles))
 	{
-		ClothConstraints.SetAreaConstraints(SurfaceElements, AreaStiffnessMultipliers, Cloth->bUseXPBDConstraints);
+		ClothConstraints.SetAreaConstraints(SurfaceElements, AreaStiffnessMultipliers, Cloth->bUseXPBDAreaConstraints);
 	}
 
 	// Volume constraints
@@ -210,8 +212,7 @@ void FClothingSimulationCloth::FLODData::Add(FClothingSimulationSolver* Solver, 
 			Tethers,
 			TetherStiffnessMultipliers,
 			TetherScaleMultipliers,
-			Softs::FSolverVec2((Softs::FSolverReal)Cloth->TetherScale[0], (Softs::FSolverReal)Cloth->TetherScale[1]) * MeshScale,
-			Cloth->bUseXPBDConstraints);
+			Softs::FSolverVec2((Softs::FSolverReal)Cloth->TetherScale[0], (Softs::FSolverReal)Cloth->TetherScale[1]) * MeshScale);
 	}
 
 	// Max distances
@@ -281,12 +282,12 @@ void FClothingSimulationCloth::FLODData::Update(FClothingSimulationSolver* Solve
 	FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
 	ClothConstraints.SetMaximumDistanceProperties((Softs::FSolverReal)Cloth->MaxDistancesMultiplier * MeshScale);
 	ClothConstraints.SetEdgeProperties(Softs::FSolverVec2((Softs::FSolverReal)Cloth->EdgeStiffness[0], (Softs::FSolverReal)Cloth->EdgeStiffness[1]));
-	ClothConstraints.SetBendingProperties(Softs::FSolverVec2((Softs::FSolverReal)Cloth->BendingStiffness[0], (Softs::FSolverReal)Cloth->BendingStiffness[1]));
+	ClothConstraints.SetBendingProperties(Softs::FSolverVec2((Softs::FSolverReal)Cloth->BendingStiffness[0], (Softs::FSolverReal)Cloth->BendingStiffness[1]), Cloth->BucklingRatio, Softs::FSolverVec2((Softs::FSolverReal)Cloth->BucklingStiffness[0], (Softs::FSolverReal)Cloth->BucklingStiffness[1]));
 	ClothConstraints.SetAreaProperties(Softs::FSolverVec2((FSolverReal)Cloth->AreaStiffness[0], (Softs::FSolverReal)Cloth->AreaStiffness[1]));
 	ClothConstraints.SetLongRangeAttachmentProperties(
 		Softs::FSolverVec2((Softs::FSolverReal)Cloth->TetherStiffness[0], (Softs::FSolverReal)Cloth->TetherStiffness[1]),
 		Softs::FSolverVec2((Softs::FSolverReal)Cloth->TetherScale[0], (Softs::FSolverReal)Cloth->TetherScale[1]) * MeshScale);
-	ClothConstraints.SetSelfCollisionProperties((Softs::FSolverReal)Cloth->SelfCollisionThickness);
+	ClothConstraints.SetSelfCollisionProperties((Softs::FSolverReal)Cloth->SelfCollisionThickness, (Softs::FSolverReal)Cloth->SelfCollisionFrictionCoefficient, Cloth->bUseSelfIntersections, Cloth->bUseSelfIntersections);
 	ClothConstraints.SetAnimDriveProperties(
 		Softs::FSolverVec2((Softs::FSolverReal)Cloth->AnimDriveStiffness[0], (Softs::FSolverReal)Cloth->AnimDriveStiffness[1]),
 		Softs::FSolverVec2((Softs::FSolverReal)Cloth->AnimDriveDamping[0], (Softs::FSolverReal)Cloth->AnimDriveDamping[1]));
@@ -341,6 +342,8 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	FRealSingle InMinPerParticleMass,
 	const TVec2<FRealSingle>& InEdgeStiffness,
 	const TVec2<FRealSingle>& InBendingStiffness,
+	FRealSingle InBucklingRatio,
+	const TVec2<FRealSingle>& InBucklingStiffness,
 	bool bInUseBendingElements,
 	const TVec2<FRealSingle>& InAreaStiffness,
 	FRealSingle InVolumeStiffness,
@@ -352,7 +355,9 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	const TVec2<FRealSingle>& InAnimDriveStiffness,
 	const TVec2<FRealSingle>& InAnimDriveDamping,
 	FRealSingle InShapeTargetStiffness,
-	bool bInUseXPBDConstraints,
+	bool bInUseXPBDEdgeConstraints,
+	bool bInUseXPBDBendingConstraints,
+	bool bInUseXPBDAreaConstraints,
 	FRealSingle InGravityScale,
 	bool bInIsGravityOverridden,
 	const TVec3<FRealSingle>& InGravityOverride,
@@ -362,6 +367,7 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	const TVec2<FRealSingle>& InDrag,
 	const TVec2<FRealSingle>& InLift,
 	bool bInUseLegacyWind,
+	const TVec2<FRealSingle>& InPressure,
 	FRealSingle InDampingCoefficient,
 	FRealSingle InLocalDampingCoefficient,
 	FRealSingle InCollisionThickness,
@@ -369,6 +375,8 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	bool bInUseCCD,
 	bool bInUseSelfCollisions,
 	FRealSingle InSelfCollisionThickness,
+	FRealSingle InSelfCollisionFrictionCoefficient,
+	bool bInUseSelfIntersections,
 	bool bInUseLegacyBackstop,
 	bool bInUseLODIndexOverride, 
 	int32 InLODIndexOverride)
@@ -380,6 +388,8 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	, MinPerParticleMass(InMinPerParticleMass)
 	, EdgeStiffness(InEdgeStiffness)
 	, BendingStiffness(InBendingStiffness)
+	, BucklingRatio(InBucklingRatio)
+	, BucklingStiffness(InBucklingStiffness)
 	, bUseBendingElements(bInUseBendingElements)
 	, AreaStiffness(InAreaStiffness)
 	, VolumeStiffness(InVolumeStiffness)
@@ -391,7 +401,9 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	, AnimDriveStiffness(InAnimDriveStiffness)
 	, AnimDriveDamping(InAnimDriveDamping)
 	, ShapeTargetStiffness(InShapeTargetStiffness)
-	, bUseXPBDConstraints(bInUseXPBDConstraints)
+	, bUseXPBDEdgeConstraints(bInUseXPBDEdgeConstraints)
+	, bUseXPBDBendingConstraints(bInUseXPBDBendingConstraints)
+	, bUseXPBDAreaConstraints(bInUseXPBDAreaConstraints)
 	, GravityScale(InGravityScale)
 	, bIsGravityOverridden(bInIsGravityOverridden)
 	, GravityOverride(InGravityOverride)
@@ -403,6 +415,7 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	, WindVelocity((FReal)0., (FReal)0., (FReal)0.)  // Set by clothing interactor
 	, AirDensity(1.225e-6f)  // Set by clothing interactor
 	, bUseLegacyWind(bInUseLegacyWind)
+	, Pressure(InPressure)
 	, DampingCoefficient(InDampingCoefficient)
 	, LocalDampingCoefficient(InLocalDampingCoefficient)
 	, CollisionThickness(InCollisionThickness)
@@ -410,6 +423,8 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	, bUseCCD(bInUseCCD)
 	, bUseSelfCollisions(bInUseSelfCollisions)
 	, SelfCollisionThickness(InSelfCollisionThickness)
+	, SelfCollisionFrictionCoefficient(InSelfCollisionFrictionCoefficient)
+	, bUseSelfIntersections(bInUseSelfIntersections)
 	, bEnableBackstop(true)  // Set by clothing interactor
 	, bUseLegacyBackstop(bInUseLegacyBackstop)
 	, bUseLODIndexOverride(bInUseLODIndexOverride)
@@ -737,8 +752,9 @@ void FClothingSimulationCloth::Update(FClothingSimulationSolver* Solver)
 				// Update the wind velocity field for the new LOD mesh
 				const TConstArrayView<FRealSingle>& DragMultipliers = LODData[LODIndex].WeightMaps[(int32)EChaosWeightMapTarget::Drag];
 				const TConstArrayView<FRealSingle>& LiftMultipliers = LODData[LODIndex].WeightMaps[(int32)EChaosWeightMapTarget::Lift];
+				const TConstArrayView<FRealSingle>& PressureMultipliers = LODData[LODIndex].WeightMaps[(int32)EChaosWeightMapTarget::Pressure];
 
-				Solver->SetWindGeometry(GroupId, GetTriangleMesh(Solver), DragMultipliers, LiftMultipliers);
+				Solver->SetWindAndPressureGeometry(GroupId, GetTriangleMesh(Solver), DragMultipliers, LiftMultipliers, PressureMultipliers);
 		}
 		else
 		{
@@ -801,11 +817,11 @@ void FClothingSimulationCloth::Update(FClothingSimulationSolver* Solver)
 
 		if (bUseLegacyWind && ClothingSimulationClothConsoleVariables::CVarLegacyDisablesAccurateWind.GetValueOnAnyThread())
 		{
-			Solver->SetWindProperties(GroupId, TVec2<FRealSingle>(0.), TVec2<FRealSingle>(0.), (FRealSingle)0.);  // Disable the wind velocity field
+			Solver->SetWindAndPressureProperties(GroupId, TVec2<FRealSingle>(0.), TVec2<FRealSingle>(0.), (FRealSingle)0., Pressure);  // Disable the wind velocity field
 		}
 		else
 		{
-			Solver->SetWindProperties(GroupId, Drag, Lift, AirDensity);
+			Solver->SetWindAndPressureProperties(GroupId, Drag, Lift, AirDensity, Pressure);
 		}
 		Solver->SetWindVelocity(GroupId, WindVelocity + Solver->GetWindVelocity());
 
@@ -863,6 +879,14 @@ TConstArrayView<Softs::FSolverVec3> FClothingSimulationCloth::GetParticleNormals
 	const int32 LODIndex = LODIndices.FindChecked(Solver);
 	check(GetOffset(Solver, LODIndex) != INDEX_NONE);
 	return TConstArrayView<Softs::FSolverVec3>(Solver->GetNormals(GetOffset(Solver, LODIndex)), GetNumParticles(LODIndex));
+}
+
+TConstArrayView<Softs::FSolverVec3> FClothingSimulationCloth::GetParticleVelocities(const FClothingSimulationSolver* Solver) const
+{
+	check(Solver);
+	const int32 LODIndex = LODIndices.FindChecked(Solver);
+	check(GetOffset(Solver, LODIndex) != INDEX_NONE);
+	return TConstArrayView<Softs::FSolverVec3>(Solver->GetParticleVs(GetOffset(Solver, LODIndex)), GetNumParticles(LODIndex));
 }
 
 TConstArrayView<Softs::FSolverReal> FClothingSimulationCloth::GetParticleInvMasses(const FClothingSimulationSolver* Solver) const

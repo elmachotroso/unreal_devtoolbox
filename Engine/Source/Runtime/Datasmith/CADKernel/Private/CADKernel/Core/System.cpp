@@ -4,7 +4,6 @@
 #include "CADKernel/Core/Database.h"
 #include "CADKernel/Core/Entity.h"
 #include "CADKernel/Core/KernelParameters.h"
-#include "CADKernel/Core/Version.h"
 #include "CADKernel/UI/Visu.h"
 #include "CADKernel/Utils/Util.h"
 
@@ -12,11 +11,13 @@
 #include "Misc/Paths.h"
 
 #ifdef CADKERNEL_DEV
+#include "CADKernel/Core/Version.h"
+
 #include <stdlib.h>
 #include <signal.h>
 #endif 
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 TUniquePtr<FSystem> FSystem::Instance = nullptr;
@@ -139,7 +140,10 @@ void FSystem::InitializeCADKernel()
 
 FString FSystem::GetToolkitVersion()
 {
+#ifdef CADKERNEL_DEV
 	return UTF8_TO_TCHAR(TOOLKIT_VERSION_ASCII);
+#endif
+	return FString();
 }
 
 FString FSystem::GetCompilationDate()
@@ -151,9 +155,10 @@ void FSystem::PrintHeader()
 {
 	FMessage::Printf(Log, TEXT("_______________________________________________________________________________\n"));
 	FMessage::Printf(Log, TEXT("\n"));
-
+#ifdef CADKERNEL_DEV
 	FMessage::Printf(Log, TEXT("\tDatasmith CAD Kernel Toolkit release %s (%s)\n"), UTF8_TO_TCHAR(TOOLKIT_VERSION_ASCII), UTF8_TO_TCHAR(__DATE__));
-	FMessage::Printf(Log, TEXT("\t" EPIC_COPYRIGHT "\n"));
+#endif
+	FMessage::Printf(Log, TEXT("\tCopyright Epic Games, Inc. All Rights Reserved.\n"));
 	FMessage::Printf(Log, TEXT("\n"));
 	FMessage::Printf(Log, TEXT("_______________________________________________________________________________\n"));
 	FMessage::Printf(Log, TEXT("\n"));

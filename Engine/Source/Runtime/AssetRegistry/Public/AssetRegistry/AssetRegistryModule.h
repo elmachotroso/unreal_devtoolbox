@@ -3,11 +3,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "Misc/AssetRegistryInterface.h"
+#include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+
+class UPackage;
 
 namespace AssetRegistryConstants
 {
@@ -28,6 +35,18 @@ public:
 	virtual IAssetRegistry& Get() const
 	{
 		return IAssetRegistry::GetChecked();
+	}
+
+	/** Reports whether Get is valid to call. Will be true except during engine shutdown. */
+	bool IsValid() const
+	{
+		return IAssetRegistry::Get() != nullptr;
+	}
+
+	/** Returns AssetRegistry pointer if valid, or nullptr. Will be non-null except during engine shutdown. */
+	IAssetRegistry* TryGet() const
+	{
+		return IAssetRegistry::Get();
 	}
 
 	static IAssetRegistry& GetRegistry()
@@ -77,6 +96,25 @@ public:
 		IAssetRegistry::GetChecked().GetDependencies(InPackageName, OutDependencies, Category, Flags);
 	}
 
+	virtual UE::AssetRegistry::EExists TryGetAssetByObjectPath(const FSoftObjectPath& ObjectPath, FAssetData& OutAssetData) const override
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (!AssetRegistry)
+		{
+			return UE::AssetRegistry::EExists::Unknown;
+		}
+		return AssetRegistry->TryGetAssetByObjectPath(ObjectPath, OutAssetData);
+	}
+
+	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(FName PackageName, FAssetPackageData& OutAssetPackageData) const override
+	{
+		IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+		if (!AssetRegistry)
+		{
+			return UE::AssetRegistry::EExists::Unknown;
+		}
+		return AssetRegistry->TryGetAssetPackageData(PackageName, OutAssetPackageData);
+	}
 
 protected:
 	/* This function is a workaround for platforms that don't support disable of deprecation warnings on override functions*/

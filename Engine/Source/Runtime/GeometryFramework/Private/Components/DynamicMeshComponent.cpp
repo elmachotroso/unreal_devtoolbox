@@ -11,6 +11,7 @@
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "MeshDescriptionToDynamicMesh.h"
+#include "Util/ColorConstants.h"
 
 #include "Changes/MeshVertexChange.h"
 #include "Changes/MeshChange.h"
@@ -18,6 +19,8 @@
 
 // default proxy for this component
 #include "Components/DynamicMeshSceneProxy.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DynamicMeshComponent)
 
 using namespace UE::Geometry;
 
@@ -31,6 +34,33 @@ namespace
 #endif
 }
 
+
+
+namespace UELocal
+{
+	static EMeshRenderAttributeFlags ConvertChangeFlagsToUpdateFlags(EDynamicMeshAttributeChangeFlags ChangeFlags)
+	{
+		EMeshRenderAttributeFlags UpdateFlags = EMeshRenderAttributeFlags::None;
+		if ((ChangeFlags & EDynamicMeshAttributeChangeFlags::VertexPositions) != EDynamicMeshAttributeChangeFlags::Unknown)
+		{
+			UpdateFlags |= EMeshRenderAttributeFlags::Positions;
+		}
+		if ((ChangeFlags & EDynamicMeshAttributeChangeFlags::NormalsTangents) != EDynamicMeshAttributeChangeFlags::Unknown)
+		{
+			UpdateFlags |= EMeshRenderAttributeFlags::VertexNormals;
+		}
+		if ((ChangeFlags & EDynamicMeshAttributeChangeFlags::VertexColors) != EDynamicMeshAttributeChangeFlags::Unknown)
+		{
+			UpdateFlags |= EMeshRenderAttributeFlags::VertexColors;
+		}
+		if ((ChangeFlags & EDynamicMeshAttributeChangeFlags::UVs) != EDynamicMeshAttributeChangeFlags::Unknown)
+		{
+			UpdateFlags |= EMeshRenderAttributeFlags::VertexUVs;
+		}
+		return UpdateFlags;
+	}
+
+}
 
 
 
@@ -168,11 +198,11 @@ void UDynamicMeshComponent::ApplyTransform(const FTransform3d& Transform, bool b
 	{
 		if (bInvert)
 		{
-			MeshTransforms::ApplyTransformInverse(EditMesh, Transform);
+			MeshTransforms::ApplyTransformInverse(EditMesh, Transform, true);
 		}
 		else
 		{
-			MeshTransforms::ApplyTransform(EditMesh, Transform);
+			MeshTransforms::ApplyTransform(EditMesh, Transform, true);
 		}
 	}, EDynamicMeshChangeType::DeformationEdit);
 }
@@ -821,6 +851,11 @@ FPrimitiveSceneProxy* UDynamicMeshComponent::CreateSceneProxy()
 			NewProxy->bUsePerTriangleColor = true;
 			NewProxy->PerTriangleColorFunc = [this](const FDynamicMesh3* MeshIn, int TriangleID) { return GetTriangleColor(MeshIn, TriangleID); };
 		}
+		else if ( GetColorOverrideMode() == EDynamicMeshComponentColorOverrideMode::Polygroups )
+		{
+			NewProxy->bUsePerTriangleColor = true;
+			NewProxy->PerTriangleColorFunc = [this](const FDynamicMesh3* MeshIn, int TriangleID) { return GetGroupColor(MeshIn, TriangleID); };
+		}
 
 		if (SecondaryTriFilterFunc)
 		{
@@ -914,7 +949,7 @@ void UDynamicMeshComponent::DisableSecondaryTriangleBuffers()
 
 void UDynamicMeshComponent::SetExternalDecomposition(TUniquePtr<FMeshRenderDecomposition> DecompositionIn)
 {
-	check(DecompositionIn->Num() > 0);
+	ensure(DecompositionIn->Num() > 0);
 	Decomposition = MoveTemp(DecompositionIn);
 	NotifyMeshUpdated();
 }
@@ -933,6 +968,12 @@ FColor UDynamicMeshComponent::GetTriangleColor(const FDynamicMesh3* MeshIn, int 
 	}
 }
 
+
+FColor UDynamicMeshComponent::GetGroupColor(const FDynamicMesh3* Mesh, int TriangleID) const
+{
+	int32 GroupID = Mesh->HasTriangleGroups() ? Mesh->GetTriangleGroup(TriangleID) : 0;
+	return UE::Geometry::LinearColors::SelectFColor(GroupID);
+}
 
 
 FBoxSphereBounds UDynamicMeshComponent::CalcBounds(const FTransform& LocalToWorld) const
@@ -995,13 +1036,23 @@ void UDynamicMeshComponent::OnMeshObjectChanged(UDynamicMesh* ChangedMeshObject,
 	}
 	else
 	{
-		NotifyMeshUpdated();
+		if (ChangeInfo.Type == EDynamicMeshChangeType::DeformationEdit)
+		{
+			// if ChangeType is a vertex deformation, we can do a fast-update of the vertex buffers
+			// without fully rebuilding the SceneProxy
+			EMeshRenderAttributeFlags UpdateFlags = UELocal::ConvertChangeFlagsToUpdateFlags(ChangeInfo.Flags);
+			FastNotifyVertexAttributesUpdated(UpdateFlags);
+		}
+		else
+		{
+			NotifyMeshUpdated();
+		}
 		OnMeshChanged.Broadcast();
 	}
 
 	// Rebuild body setup. Should this be deferred until proxy creation? Sometimes multiple changes are emitted...
 	// todo: can possibly skip this in some change situations, eg if only changing attributes
-	if (bDeferCollisionUpdates)
+	if (bDeferCollisionUpdates || bTransientDeferCollisionUpdates )
 	{
 		InvalidatePhysicsData();
 	}
@@ -1031,7 +1082,7 @@ void UDynamicMeshComponent::SetDynamicMesh(UDynamicMesh* NewMesh)
 	OnMeshChanged.Broadcast();
 
 	// Rebuild physics data
-	if (bDeferCollisionUpdates)
+	if (bDeferCollisionUpdates || bTransientDeferCollisionUpdates)
 	{
 		InvalidatePhysicsData();
 	}
@@ -1100,6 +1151,23 @@ bool UDynamicMeshComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* 
 			Triangle.v0 = (bIsSparseV) ? VertexMap[Tri.A] : Tri.A;
 			Triangle.v1 = (bIsSparseV) ? VertexMap[Tri.B] : Tri.B;
 			Triangle.v2 = (bIsSparseV) ? VertexMap[Tri.C] : Tri.C;
+
+			// Filter out triangles which will cause physics system to emit degenerate-geometry warnings.
+			// These checks reproduce tests in Chaos::CleanTrimesh
+			const FVector3f& A = CollisionData->Vertices[Triangle.v0];
+			const FVector3f& B = CollisionData->Vertices[Triangle.v1];
+			const FVector3f& C = CollisionData->Vertices[Triangle.v2];
+			if (A == B || A == C || B == C)
+			{
+				continue;
+			}
+			// anything that fails the first check should also fail this, but Chaos does both so doing the same here...
+			const float SquaredArea = FVector3f::CrossProduct(A - B, A - C).SizeSquared();
+			if (SquaredArea < UE_SMALL_NUMBER)
+			{
+				continue;
+			}
+
 			CollisionData->Indices.Add(Triangle);
 
 			CollisionData->MaterialIndices.Add(0);		// not supporting physical materials yet
@@ -1123,26 +1191,33 @@ bool UDynamicMeshComponent::WantsNegXTriMesh()
 	return true;
 }
 
+UBodySetup* UDynamicMeshComponent::CreateBodySetupHelper()
+{
+	UBodySetup* NewBodySetup = nullptr;
+	{
+		FGCScopeGuard Scope;
+
+		// Below flags are copied from UProceduralMeshComponent::CreateBodySetupHelper(). Without these flags, DynamicMeshComponents inside
+		// a DynamicMeshActor BP will result on a GLEO error after loading and modifying a saved Level (but *not* on the initial save)
+		// The UBodySetup in a template needs to be public since the property is Instanced and thus is the archetype of the instance meaning there is a direct reference
+		NewBodySetup = NewObject<UBodySetup>(this, NAME_None, (IsTemplate() ? RF_Public | RF_ArchetypeObject : RF_NoFlags));
+	}
+	NewBodySetup->BodySetupGuid = FGuid::NewGuid();
+
+	NewBodySetup->bGenerateMirroredCollision = false;
+	NewBodySetup->CollisionTraceFlag = this->CollisionType;
+
+	NewBodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+	NewBodySetup->bSupportUVsAndFaceRemap = false; /* bSupportPhysicalMaterialMasks; */
+
+	return NewBodySetup;
+}
+
 UBodySetup* UDynamicMeshComponent::GetBodySetup()
 {
 	if (MeshBodySetup == nullptr)
 	{
-		UBodySetup* NewBodySetup = nullptr;
-		{
-			FGCScopeGuard Scope;
-
-			// Below flags are copied from UProceduralMeshComponent::CreateBodySetupHelper(). Without these flags, DynamicMeshComponents inside
-			// a DynamicMeshActor BP will result on a GLEO error after loading and modifying a saved Level (but *not* on the initial save)
-			// The UBodySetup in a template needs to be public since the property is Instanced and thus is the archetype of the instance meaning there is a direct reference
-			NewBodySetup = NewObject<UBodySetup>(this, NAME_None, (IsTemplate() ? RF_Public | RF_ArchetypeObject : RF_NoFlags));
-		}
-		NewBodySetup->BodySetupGuid = FGuid::NewGuid();
-		
-		NewBodySetup->bGenerateMirroredCollision = false;
-		NewBodySetup->CollisionTraceFlag = this->CollisionType;
-
-		NewBodySetup->DefaultInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
-		NewBodySetup->bSupportUVsAndFaceRemap = false; /* bSupportPhysicalMaterialMasks; */
+		UBodySetup* NewBodySetup = CreateBodySetupHelper();
 		
 		SetBodySetup(NewBodySetup);
 	}
@@ -1158,6 +1233,24 @@ void UDynamicMeshComponent::SetBodySetup(UBodySetup* NewSetup)
 	}
 }
 
+void UDynamicMeshComponent::SetSimpleCollisionShapes(const struct FKAggregateGeom& AggGeomIn, bool bUpdateCollision)
+{
+	AggGeom = AggGeomIn;
+	if (bUpdateCollision)
+	{
+		UpdateCollision(false);
+	}
+}
+
+void UDynamicMeshComponent::ClearSimpleCollisionShapes(bool bUpdateCollision)
+{
+	AggGeom.EmptyElements();
+	if (bUpdateCollision)
+	{
+		UpdateCollision(false);
+	}
+}
+
 void UDynamicMeshComponent::InvalidatePhysicsData()
 {
 	if (GetBodySetup())
@@ -1169,21 +1262,88 @@ void UDynamicMeshComponent::InvalidatePhysicsData()
 
 void UDynamicMeshComponent::RebuildPhysicsData()
 {
-	UBodySetup* BodySetup = GetBodySetup();
-	if (BodySetup)
+	UWorld* World = GetWorld();
+	const bool bUseAsyncCook = World && World->IsGameWorld() && bUseAsyncCooking;
+
+	UBodySetup* BodySetup = nullptr;
+	if (bUseAsyncCook)
+	{
+		// Abort all previous ones still standing
+		for (UBodySetup* OldBody : AsyncBodySetupQueue)
+		{
+			OldBody->AbortPhysicsMeshAsyncCreation();
+		}
+
+		BodySetup = CreateBodySetupHelper();
+		if (BodySetup)
+		{
+			AsyncBodySetupQueue.Add(BodySetup);
+		}
+	}
+	else
+	{
+		AsyncBodySetupQueue.Empty();	// If for some reason we modified the async at runtime, just clear any pending async body setups
+		BodySetup = GetBodySetup();
+	}
+
+	if (!BodySetup)
+	{
+		return;
+	}
+
+	BodySetup->CollisionTraceFlag = this->CollisionType;
+	// Note: Directly assigning AggGeom wouldn't do some important-looking cleanup (clearing pointers on convex elements)
+	//  so we RemoveSimpleCollision then AddCollisionFrom instead
+	BodySetup->RemoveSimpleCollision();
+	BodySetup->AddCollisionFrom(this->AggGeom);
+
+	if (bUseAsyncCook)
+	{
+		BodySetup->CreatePhysicsMeshesAsync(FOnAsyncPhysicsCookFinished::CreateUObject(this, &UDynamicMeshComponent::FinishPhysicsAsyncCook, BodySetup));
+	}
+	else
 	{
 		// New GUID as collision has changed
 		BodySetup->BodySetupGuid = FGuid::NewGuid();
 		// Also we want cooked data for this
 		BodySetup->bHasCookedCollisionData = true;
-
-		BodySetup->CollisionTraceFlag = this->CollisionType;
-
 		BodySetup->InvalidatePhysicsData();
 		BodySetup->CreatePhysicsMeshes();
 		RecreatePhysicsState();
 
 		bCollisionUpdatePending = false;
+	}
+}
+
+void UDynamicMeshComponent::FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* FinishedBodySetup)
+{
+	TArray<UBodySetup*> NewQueue;
+	NewQueue.Reserve(AsyncBodySetupQueue.Num());
+
+	int32 FoundIdx;
+	if (AsyncBodySetupQueue.Find(FinishedBodySetup, FoundIdx))
+	{
+		// Note: currently no-cook-needed is reported identically to cook failed.
+		// Checking AggGeom.GetElemCount() here is a hack to distinguish the no-cook-needed case
+		// TODO: remove this hack to distinguish the no-cook-needed case when/if that is no longer identical to the cook failed case
+		if (bSuccess || FinishedBodySetup->AggGeom.GetElementCount() > 0)
+		{
+			// The new body was found in the array meaning it's newer, so use it
+			MeshBodySetup = FinishedBodySetup;
+			RecreatePhysicsState();
+
+			// remove any async body setups that were requested before this one
+			for (int32 AsyncIdx = FoundIdx + 1; AsyncIdx < AsyncBodySetupQueue.Num(); ++AsyncIdx)
+			{
+				NewQueue.Add(AsyncBodySetupQueue[AsyncIdx]);
+			}
+
+			AsyncBodySetupQueue = NewQueue;
+		}
+		else
+		{
+			AsyncBodySetupQueue.RemoveAt(FoundIdx);
+		}
 	}
 }
 
@@ -1193,6 +1353,13 @@ void UDynamicMeshComponent::UpdateCollision(bool bOnlyIfPending)
 	{
 		RebuildPhysicsData();
 	}
+}
+
+void UDynamicMeshComponent::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+	AggGeom.FreeRenderInfo();
 }
 
 void UDynamicMeshComponent::EnableComplexAsSimpleCollision()
@@ -1252,6 +1419,11 @@ void UDynamicMeshComponent::SetDeferredCollisionUpdatesEnabled(bool bEnabled, bo
 	}
 }
 
+void UDynamicMeshComponent::SetTransientDeferCollisionUpdates(bool bEnabled)
+{
+	bTransientDeferCollisionUpdates = bEnabled;
+}
+
 void UDynamicMeshComponent::SetSceneProxyVerifyUsedMaterials(bool bState)
 {
 	bProxyVerifyUsedMaterials = bState;
@@ -1260,4 +1432,5 @@ void UDynamicMeshComponent::SetSceneProxyVerifyUsedMaterials(bool bState)
 		Proxy->SetVerifyUsedMaterials(bState);
 	}
 }
+
 

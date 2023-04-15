@@ -1,11 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace EpicGames.Perforce
 {
 	/// <summary>
@@ -17,7 +11,7 @@ namespace EpicGames.Perforce
 		/// Submitted changelist number
 		/// </summary>
 		[PerforceTag("change", Optional = true)]
-		public int ChangeNumber = -1;
+		public int ChangeNumber { get; set; } = -1;
 
 		/// <summary>
 		/// Format this record for display in the debugger

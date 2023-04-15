@@ -4,6 +4,7 @@
 
 #include "Render/PostProcess/IDisplayClusterPostProcess.h"
 #include "Render/IDisplayClusterRenderManager.h"
+#include "Templates/SharedPointer.h"
 
 class FDisplayClusterViewportManager;
 class FDisplayClusterViewportManagerProxy;
@@ -15,10 +16,13 @@ struct FDisplayClusterConfigurationPostprocess;
  */
 
 class FDisplayClusterViewportPostProcessManager
+	: public TSharedFromThis<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe>
 {
 public:
 	FDisplayClusterViewportPostProcessManager(FDisplayClusterViewportManager& InViewportManager);
-	virtual ~FDisplayClusterViewportPostProcessManager() = default;
+	virtual ~FDisplayClusterViewportPostProcessManager();
+
+	void Release();
 
 public:
 	bool IsPostProcessViewBeforeWarpBlendRequired(const TSharedPtr<IDisplayClusterPostProcess, ESPMode::ThreadSafe>& PostprocessInstance) const;
@@ -30,8 +34,9 @@ public:
 	bool ShouldUseAdditionalFrameTargetableResource() const;
 	bool ShouldUseFullSizeFrameTargetableResource() const;
 
-	void PerformPostProcessBeforeWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
-	void PerformPostProcessAfterWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
+	void PerformPostProcessViewBeforeWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
+	void PerformPostProcessViewAfterWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
+	void PerformPostProcessFrameAfterWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
 
 	void Tick();
 
@@ -42,7 +47,9 @@ public:
 	void HandleBeginNewFrame(FDisplayClusterRenderFrame& InOutRenderFrame);
 
 	void HandleRenderFrameSetup_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
+
 	void HandleBeginUpdateFrameResources_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
+	void HandleUpdateFrameResourcesAfterWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const IDisplayClusterViewportManagerProxy* InViewportManagerProxy);
 	void HandleEndUpdateFrameResources_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
 
 	// Send data to render thread

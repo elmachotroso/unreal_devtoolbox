@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigSequenceFactory.h"
+#include "Sequencer/ControlRigSequenceFactory.h"
 #include "Sequencer/ControlRigSequence.h"
 #include "MovieScene.h"
 #include "MovieSceneToolsProjectSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSequenceFactory)
 
 #define LOCTEXT_NAMESPACE "MovieSceneFactory"
 
@@ -35,3 +37,4 @@ bool UControlRigSequenceFactory::ShouldShowInNewMenu() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

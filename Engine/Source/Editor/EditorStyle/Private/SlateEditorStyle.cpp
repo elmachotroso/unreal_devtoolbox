@@ -4,7 +4,7 @@
 #include "Misc/CommandLine.h"
 #include "Styling/CoreStyle.h"
 
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 
 #include "SlateOptMacros.h"
 
@@ -31,13 +31,13 @@ BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
  *****************************************************************************/
 
 TSharedPtr< FSlateEditorStyle::FStyle > FSlateEditorStyle::StyleInstance = NULL;
-TWeakObjectPtr< UEditorStyleSettings > FSlateEditorStyle::Settings = NULL;
+TWeakObjectPtr< class UEditorStyleSettings > FSlateEditorStyle::Settings = NULL;
 
 
 /* FSlateEditorStyle interface
  *****************************************************************************/
 
-FSlateEditorStyle::FStyle::FStyle( const TWeakObjectPtr< UEditorStyleSettings >& InSettings )
+FSlateEditorStyle::FStyle::FStyle( const TWeakObjectPtr< class UEditorStyleSettings >& InSettings )
 	: FSlateStyleSet("EditorStyle")
 
 	// Note, these sizes are in Slate Units.
@@ -124,14 +124,14 @@ void FSlateEditorStyle::FStyle::SyncSettings()
 {
 	if ( Settings.IsValid() )
 	{
-		// Sync the colors used by FEditorStyle
+		// Sync the colors used by FAppStyle
 		SetColor( SelectionColor_LinearRef, Settings->SelectionColor );
 
 		// The subdued selection color is derived from the selection color
 		auto SubduedSelectionColor = Settings->GetSubduedSelectionColor();
 		SetColor( SelectionColor_Subdued_LinearRef, SubduedSelectionColor );
 
-		// Also sync the colors used by FCoreStyle, as FEditorStyle isn't yet being used as an override everywhere
+		// Also sync the colors used by FCoreStyle, as FAppStyle isn't yet being used as an override everywhere
 		FCoreStyle::SetSelectionColor( Settings->SelectionColor );
 
 		// Sync the window background settings
@@ -663,6 +663,7 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 
 	// EditableTextBox
 	NormalEditableTextBoxStyle = FEditableTextBoxStyle()
+		.SetTextStyle(NormalText)
 		.SetBackgroundImageNormal( BOX_BRUSH( "Common/TextBox", FMargin(4.0f/16.0f) ) )
 		.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
 		.SetBackgroundImageFocused( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -682,6 +683,7 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 		Set( "SpecialEditableTextImageNormal", SpecialEditableTextImageNormal );
 
 		const FEditableTextBoxStyle SpecialEditableTextBoxStyle = FEditableTextBoxStyle()
+			.SetTextStyle(NormalText)
 			.SetBackgroundImageNormal( *SpecialEditableTextImageNormal )
 			.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Special_Hovered", FMargin(8.0f/32.0f) ) )
 			.SetBackgroundImageFocused( BOX_BRUSH( "Common/TextBox_Special_Hovered", FMargin(8.0f/32.0f) ) )
@@ -703,8 +705,8 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 		Set( "ProgressBar.ThinBackground", new BOX_BRUSH( "Common/ProgressBar_Thin_Background", FMargin(5.f/12.f) ) );
 		Set( "ProgressBar.ThinFill", new BOX_BRUSH( "Common/ProgressBar_Thin_Fill", FMargin(5.f/12.f) ) );
 
-		// Legacy ProgressBar styles; kept here because other FEditorStyle controls (mis)use them
-		// todo: jdale - Widgets using these styles should be updated to use SlateStyle types once FEditorStyle has been obliterated from the Slate core
+		// Legacy ProgressBar styles; kept here because other FAppStyle controls (mis)use them
+		// todo: jdale - Widgets using these styles should be updated to use SlateStyle types once FAppStyle has been obliterated from the Slate core
 		Set( "ProgressBar.Background", new BOX_BRUSH( "Common/ProgressBar_Background", FMargin(5.f/12.f) ) );
 		Set( "ProgressBar.Marquee", new IMAGE_BRUSH( "Common/ProgressBar_Marquee", FVector2D(20,12), FLinearColor::White, ESlateBrushTileType::Horizontal ) );
 		Set( "ProgressBar.BorderPadding", FVector2D(1,0) );
@@ -741,6 +743,7 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 			.SetShadowColorAndOpacity( FLinearColor::Black );
 
 		FEditableTextBoxStyle InlineEditableTextBlockEditable = FEditableTextBoxStyle()
+			.SetTextStyle(NormalText)
 			.SetFont(NormalText.Font)
 			.SetBackgroundImageNormal( BOX_BRUSH( "Common/TextBox", FMargin(4.0f/16.0f) ) )
 			.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -1220,47 +1223,7 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 	);
 
 
-	// Output Log Window
 #if WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
-	{
-		const int32 LogFontSize = Settings.IsValid() ? Settings->LogFontSize : 9;
-
-		const FTextBlockStyle NormalLogText = FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", LogFontSize ) )
-			.SetColorAndOpacity( LogColor_Normal )
-			.SetSelectedBackgroundColor( LogColor_SelectionBackground );
-
-		Set("Log.Normal", NormalLogText );
-
-		Set("Log.Command", FTextBlockStyle(NormalLogText)
-			.SetColorAndOpacity( LogColor_Command )
-			);
-
-		Set("Log.Warning", FTextBlockStyle(NormalLogText)
-			.SetColorAndOpacity( LogColor_Warning )
-			);
-
-		Set("Log.Error", FTextBlockStyle(NormalLogText)
-			.SetColorAndOpacity( LogColor_Error )
-			);
-
-		Set("Log.TabIcon", new IMAGE_BRUSH( "Icons/icon_tab_OutputLog_16x", Icon16x16 ) );
-
-		Set("Log.TextBox", FEditableTextBoxStyle(NormalEditableTextBoxStyle)
-			.SetBackgroundImageNormal( BOX_BRUSH( "Common/WhiteGroupBorder", FMargin(4.0f/16.0f) ) )
-			.SetBackgroundImageHovered( BOX_BRUSH( "Common/WhiteGroupBorder", FMargin(4.0f/16.0f) ) )
-			.SetBackgroundImageFocused( BOX_BRUSH( "Common/WhiteGroupBorder", FMargin(4.0f/16.0f) ) )
-			.SetBackgroundImageReadOnly( BOX_BRUSH( "Common/WhiteGroupBorder", FMargin(4.0f/16.0f) ) )
-			.SetBackgroundColor( LogColor_Background )
-			);
-
-		Set("DebugConsole.Background", new BOX_BRUSH("Old/Menu_Background", FMargin(8.0f / 64.0f)));
-
-		Set("OutputLog.OpenSourceLocation", new IMAGE_BRUSH("Icons/icon_Asset_Open_Source_Location_16x", Icon16x16));
-		Set("OutputLog.OpenInExternalEditor", new IMAGE_BRUSH("Icons/icon_Asset_Open_In_External_Editor_16x", Icon16x16));
-
-	}
-
 	// Debug Tools Window
 	{
 		Set("DebugTools.TabIcon", new IMAGE_BRUSH( "Icons/icon_tab_DebugTools_16x", Icon16x16 ) );
@@ -1303,11 +1266,6 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 
 	// Session Browser tab
 	{
-		Set("SessionBrowser.SessionLocked", new IMAGE_BRUSH( "Icons/icon_locked_highlight_16px", Icon16x16 ) );
-		Set("SessionBrowser.StatusRunning", new IMAGE_BRUSH( "Icons/icon_status_green_16x", Icon16x16 ) );
-		Set("SessionBrowser.StatusTimedOut", new IMAGE_BRUSH( "Icons/icon_status_grey_16x", Icon16x16 ) );
-		Set("SessionBrowser.Terminate", new IMAGE_BRUSH( "Icons/icon_DevicePowerOff_40x", Icon20x20 ) );
-
 		Set("SessionBrowser.Terminate.Font", FTextBlockStyle(NormalText)
 			.SetFont(DEFAULT_FONT( "Bold", 12))
 			.SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f))
@@ -1447,6 +1405,7 @@ void FSlateEditorStyle::FStyle::SetupGeneralStyles()
 		Set( "SceneOutliner.NewFolderIcon", new IMAGE_BRUSH("Icons/icon_AddFolder_16x", Icon16x16 ) );
 		Set( "SceneOutliner.MoveToRoot", new IMAGE_BRUSH("Icons/icon_NoFolder_16x", Icon16x16 ) );
 		Set( "SceneOutliner.ChangedItemHighlight", new BOX_BRUSH( "Common/EditableTextSelectionBackground", FMargin(4.f/16.f) ) );
+		Set( "SceneOutliner.MarkedAsCurrent", new IMAGE_BRUSH("Icons/MarkedAsCurrent", Icon12x12));
 		Set( "SceneOutliner.World", new IMAGE_BRUSH( "Icons/icon_world_16x", Icon16x16 ) );
 
 		// Selection color should still be orange to align with the editor viewport.
@@ -2630,6 +2589,7 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 	);
 
 	Set("Sequencer.HyperlinkTextBox", FEditableTextBoxStyle()
+		.SetTextStyle(NormalText)
 		.SetFont(DEFAULT_FONT("Regular", 9))
 		.SetBackgroundImageNormal(FSlateNoResource())
 		.SetBackgroundImageHovered(FSlateNoResource())
@@ -3772,7 +3732,7 @@ void FSlateEditorStyle::FStyle::SetupProfilerStyle()
 		Set( "Profiler.Tab", new IMAGE_BRUSH( "Icons/Profiler/Profiler_Tab_16x", Icon16x16 ) );
 		Set( "Profiler.Tab.GraphView", new IMAGE_BRUSH( "Icons/Profiler/Profiler_Graph_View_Tab_16x", Icon16x16 ) );
 		Set( "Profiler.Tab.EventGraph", new IMAGE_BRUSH( "Icons/Profiler/profiler_OpenEventGraph_32x", Icon16x16 ) );
-		Set( "Profiler.Tab.FiltersAndPresets", new IMAGE_BRUSH( "Icons/Profiler/Profiler_Filter_Presets_Tab_16x", Icon16x16 ) );
+		Set( "Profiler.Tab.FiltersAndPresets", new CORE_IMAGE_BRUSH( "Icons/Profiler/Profiler_Filter_Presets_Tab_16x", Icon16x16 ) );
 
 		Set( "ProfilerCommand.ProfilerManager_Load", new IMAGE_BRUSH( "Icons/Profiler/Profiler_Load_Profiler_40x", Icon40x40 ) );
 		Set( "ProfilerCommand.ProfilerManager_Load.Small", new IMAGE_BRUSH( "Icons/Profiler/Profiler_Load_Profiler_40x", Icon20x20 ) );
@@ -3901,7 +3861,6 @@ void FSlateEditorStyle::FStyle::SetupProfilerStyle()
 		Set( "Profiler.EventGraph.Border.R", new BOX_BRUSH( "Icons/Profiler/Profiler_Border_R_16x",   FMargin(4.0f/16.0f) ) );
 
 		// Misc
-		Set( "Profiler.Misc.WarningSmall", new IMAGE_BRUSH( "ContentBrowser/SCC_NotAtHeadRevision", Icon12x12 ) );
 
 		Set( "Profiler.Misc.SortBy", new IMAGE_BRUSH( "Icons/Profiler/profiler_SortBy_32x", Icon32x32 ) );
 		Set( "Profiler.Misc.SortAscending", new IMAGE_BRUSH( "Icons/Profiler/profiler_SortAscending_32x", Icon32x32 ) );
@@ -3909,7 +3868,6 @@ void FSlateEditorStyle::FStyle::SetupProfilerStyle()
 
 		Set( "Profiler.Misc.ResetToDefault", new IMAGE_BRUSH( "Icons/Profiler/profiler_ResetToDefault_32x", Icon32x32 ) );
 
-		Set( "Profiler.Misc.Save16", new IMAGE_BRUSH( "Icons/LV_Save", Icon16x16 ) );
 		Set( "Profiler.Misc.Reset16", new IMAGE_BRUSH( "Icons/Profiler/profiler_ResetToDefault_32x", Icon16x16 ) );
 
 		Set( "Profiler.Type.Calls", new IMAGE_BRUSH( "Icons/Profiler/profiler_Calls_32x", Icon16x16 ) );
@@ -4053,6 +4011,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 				Set( "Graph.StateNode.NodeTitle", GraphStateNodeTitle );
 
 				FEditableTextBoxStyle GraphStateNodeTitleEditableText = FEditableTextBoxStyle()
+					.SetTextStyle(NormalText)
 					.SetFont(NormalText.Font)
 					.SetBackgroundImageNormal( BOX_BRUSH( "Common/TextBox", FMargin(4.0f/16.0f) ) )
 					.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -4259,6 +4218,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 			Set( "Graph.Node.NodeTitle", GraphNodeTitle );
 
 			FEditableTextBoxStyle GraphNodeTitleEditableText = FEditableTextBoxStyle()
+				.SetTextStyle(NormalText)
 				.SetFont(NormalText.Font)
 				.SetBackgroundImageNormal( BOX_BRUSH( "Common/TextBox", FMargin(4.0f/16.0f) ) )
 				.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -4287,6 +4247,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 			Set( "Graph.CommentBlock.Title", GraphCommentBlockTitle );
 
 			FEditableTextBoxStyle GraphCommentBlockTitleEditableText = FEditableTextBoxStyle()
+				.SetTextStyle(NormalText)
 				.SetFont(GraphCommentBlockTitle.Font)
 				.SetBackgroundImageNormal( BOX_BRUSH( "Common/TextBox", FMargin(4.0f/16.0f) ) )
 				.SetBackgroundImageHovered( BOX_BRUSH( "Common/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -4330,6 +4291,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 					.SetShadowColorAndOpacity(FLinearColor(0.8f, 0.8f, 0.8f, 0.5));
 
 				FEditableTextBoxStyle InlineEditableTextBlockEditable = FEditableTextBoxStyle()
+					.SetTextStyle(NormalText)
 					.SetFont(DEFAULT_FONT("Regular", 9))
 					.SetBackgroundImageNormal(BOX_BRUSH("Common/TextBox", FMargin(4.0f / 16.0f)))
 					.SetBackgroundImageHovered(BOX_BRUSH("Common/TextBox_Hovered", FMargin(4.0f / 16.0f)))
@@ -4599,6 +4561,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 			// EditableTextBox
 			{
 				Set( "Graph.EditableTextBox", FEditableTextBoxStyle()
+					.SetTextStyle(NormalText)
 					.SetBackgroundImageNormal( BOX_BRUSH( "Graph/CommonWidgets/TextBox", FMargin(4.0f/16.0f) ) )
 					.SetBackgroundImageHovered( BOX_BRUSH( "Graph/CommonWidgets/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
 					.SetBackgroundImageFocused( BOX_BRUSH( "Graph/CommonWidgets/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -4610,6 +4573,7 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 			// VectorEditableTextBox
 			{
 				Set( "Graph.VectorEditableTextBox", FEditableTextBoxStyle()
+					.SetTextStyle(NormalText)
 					.SetBackgroundImageNormal( BOX_BRUSH( "Graph/CommonWidgets/TextBox", FMargin(4.0f/16.0f) ) )
 					.SetBackgroundImageHovered( BOX_BRUSH( "Graph/CommonWidgets/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
 					.SetBackgroundImageFocused( BOX_BRUSH( "Graph/CommonWidgets/TextBox_Hovered", FMargin(4.0f/16.0f) ) )
@@ -5209,6 +5173,7 @@ void FSlateEditorStyle::FStyle::SetupLevelEditorStyle()
 	{
 		Set( "ShowFlagsMenu.AntiAliasing", new IMAGE_BRUSH( "Icons/icon_ShowAnti-aliasing_16x", Icon16x16 ) );
 		Set( "ShowFlagsMenu.Atmosphere", new IMAGE_BRUSH( "Icons/icon_ShowAtmosphere_16x", Icon16x16 ) );
+		Set( "ShowFlagsMenu.Cloud", new IMAGE_BRUSH( "Icons/AssetIcons/VolumetricCloud_16x", Icon16x16 ) );
 		Set( "ShowFlagsMenu.BSP", new IMAGE_BRUSH( "Icons/icon_ShowBSP_16x", Icon16x16 ) );
 		Set( "ShowFlagsMenu.Collision", new IMAGE_BRUSH( "Icons/icon_ShowCollision_16x", Icon16x16 ) );
 		Set( "ShowFlagsMenu.Decals", new IMAGE_BRUSH( "Icons/icon_ShowDecals_16x", Icon16x16 ) );
@@ -6592,6 +6557,7 @@ void FSlateEditorStyle::FStyle::SetupContentBrowserStyle()
 	{
 		// Tab and menu icon
 		Set( "ContentBrowser.TabIcon", new IMAGE_BRUSH( "Icons/icon_tab_ContentBrowser_16x", Icon16x16 ) );
+		Set( "ContentBrowser.PrivateContentEdit", new IMAGE_BRUSH("Icons/hiererchy_16x", Icon16x16));
 
 		// Sources View
 		Set( "ContentBrowser.SourceTitleFont", DEFAULT_FONT( "Regular", 12 ) );
@@ -6652,6 +6618,7 @@ void FSlateEditorStyle::FStyle::SetupContentBrowserStyle()
 		Set( "ContentBrowser.TileViewTooltip.ToolTipBorder", new FSlateColorBrush( FLinearColor::Black ) );
 		Set( "ContentBrowser.TileViewTooltip.NonContentBorder", new BOX_BRUSH( "/Docking/TabContentArea", FMargin(4/16.0f) ) );
 		Set( "ContentBrowser.TileViewTooltip.ContentBorder", new BOX_BRUSH( "Common/GroupBorder", FMargin(4.0f/16.0f) ) );
+		Set( "ContentBrowser.TileViewTooltip.PillBorder", new FSlateRoundedBoxBrush(FLinearColor::Transparent, 12.0f, FLinearColor::White, 0.5f));
 		Set( "ContentBrowser.TileViewTooltip.NameFont", DEFAULT_FONT( "Regular", 12 ) );
 		Set( "ContentBrowser.TileViewTooltip.AssetUserDescriptionFont", DEFAULT_FONT("Regular", 12 ) );
 
@@ -6778,6 +6745,7 @@ void FSlateEditorStyle::FStyle::SetupContentBrowserStyle()
 		Set( "ContentBrowser.AssetActions.Duplicate", new IMAGE_BRUSH( "Icons/Edit/icon_Edit_Duplicate_16x", Icon16x16) );
 		Set( "ContentBrowser.AssetActions.OpenSourceLocation", new IMAGE_BRUSH( "Icons/icon_Asset_Open_Source_Location_16x", Icon16x16) );
 		Set( "ContentBrowser.AssetActions.OpenInExternalEditor", new IMAGE_BRUSH( "Icons/icon_Asset_Open_In_External_Editor_16x", Icon16x16) );
+		Set( "ContentBrowser.AssetActions.PublicAssetToggle", new IMAGE_BRUSH("Icons/hiererchy_16x", Icon16x16));
 		Set( "ContentBrowser.AssetActions.ReimportAsset", new IMAGE_BRUSH( "Icons/icon_TextureEd_Reimport_40x", Icon16x16 ) );
 		Set( "ContentBrowser.AssetActions.GoToCodeForAsset", new IMAGE_BRUSH( "GameProjectDialog/feature_code_32x", Icon16x16 ) );
 		Set( "ContentBrowser.AssetActions.FindAssetInWorld", new IMAGE_BRUSH( "/Icons/icon_Genericfinder_16x", Icon16x16 ) );
@@ -7678,6 +7646,7 @@ void FSlateEditorStyle::FStyle::SetupToolkitStyles()
 		Set("PhysicsAssetEditor.Graph.Node.Shadow", new BOX_BRUSH( "Graph/RegularNode_shadow", FMargin(18.0f/64.0f) ) );
 
 		FEditableTextBoxStyle EditableTextBlock = FEditableTextBoxStyle()
+			.SetTextStyle(NormalText)
 			.SetFont(NormalText.Font)
 			.SetBackgroundImageNormal(BOX_BRUSH("Common/TextBox", FMargin(4.0f / 16.0f)))
 			.SetBackgroundImageHovered(BOX_BRUSH("Common/TextBox_Hovered", FMargin(4.0f / 16.0f)))
@@ -7840,150 +7809,6 @@ void FSlateEditorStyle::FStyle::SetupAutomationStyles()
 {
 	//Automation
 #if WITH_EDITOR || (IS_PROGRAM && WITH_UNREAL_DEVELOPER_TOOLS)
-	{
-		Set( "Automation.Header" , FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", 12 ) )
-			.SetColorAndOpacity(FLinearColor(FColor(0xffffffff))) );
-
-		Set( "Automation.Normal" , FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", 9 ) )
-			.SetColorAndOpacity(FLinearColor(FColor(0xffaaaaaa))) );
-
-		Set( "Automation.Warning", FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", 9 ) )
-			.SetColorAndOpacity(FLinearColor(FColor(0xffbbbb44))) );
-
-		Set( "Automation.Error"  , FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", 9 ) )
-			.SetColorAndOpacity(FLinearColor(FColor(0xffff0000))) );
-
-		Set( "Automation.ReportHeader" , FTextBlockStyle(NormalText)
-			.SetFont( DEFAULT_FONT( "Mono", 10 ) )
-			.SetColorAndOpacity(FLinearColor(FColor(0xffffffff))) );
-		
-		//state of individual tests
-		Set( "Automation.Success", new IMAGE_BRUSH( "Automation/Success", Icon16x16 ) );
-		Set( "Automation.Warning", new IMAGE_BRUSH( "Automation/Warning", Icon16x16 ) );
-		Set( "Automation.Fail", new IMAGE_BRUSH( "Automation/Fail", Icon16x16 ) );
-		Set( "Automation.InProcess", new IMAGE_BRUSH( "Automation/InProcess", Icon16x16 ) );
-		Set( "Automation.NotRun", new IMAGE_BRUSH( "Automation/NotRun", Icon16x16, FLinearColor(0.0f, 0.0f, 0.0f, 0.4f) ) );
-		Set( "Automation.Skipped", new IMAGE_BRUSH( "Automation/NoSessionWarning", Icon16x16 ) );
-		Set( "Automation.ParticipantsWarning", new IMAGE_BRUSH( "Automation/ParticipantsWarning", Icon16x16 ) );
-		Set( "Automation.Participant", new IMAGE_BRUSH( "Automation/Participant", Icon16x16 ) );
-		
-		//status as a regression test or not
-		Set( "Automation.SmokeTest", new IMAGE_BRUSH( "Automation/SmokeTest", Icon16x16 ) );
-		Set( "Automation.SmokeTestParent", new IMAGE_BRUSH( "Automation/SmokeTestParent", Icon16x16 ) );
-
-		//run icons
-		Set( "AutomationWindow.RunTests", new IMAGE_BRUSH( "Automation/RunTests", Icon40x40) );
-		Set( "AutomationWindow.RefreshTests", new IMAGE_BRUSH( "Automation/RefreshTests", Icon40x40) );
-		Set( "AutomationWindow.FindWorkers", new IMAGE_BRUSH( "Automation/RefreshWorkers", Icon40x40) );
-		Set( "AutomationWindow.StopTests", new IMAGE_BRUSH( "Automation/StopTests", Icon40x40 ) );
-		Set( "AutomationWindow.RunTests.Small", new IMAGE_BRUSH( "Automation/RunTests", Icon20x20) );
-		Set( "AutomationWindow.RefreshTests.Small", new IMAGE_BRUSH( "Automation/RefreshTests", Icon20x20) );
-		Set( "AutomationWindow.FindWorkers.Small", new IMAGE_BRUSH( "Automation/RefreshWorkers", Icon20x20) );
-		Set( "AutomationWindow.StopTests.Small", new IMAGE_BRUSH( "Automation/StopTests", Icon20x20 ) );
-
-		//filter icons
-		Set( "AutomationWindow.ErrorFilter", new IMAGE_BRUSH( "Automation/ErrorFilter", Icon40x40) );
-		Set( "AutomationWindow.WarningFilter", new IMAGE_BRUSH( "Automation/WarningFilter", Icon40x40) );
-		Set( "AutomationWindow.SmokeTestFilter", new IMAGE_BRUSH( "Automation/SmokeTestFilter", Icon40x40) );
-		Set( "AutomationWindow.DeveloperDirectoryContent", new IMAGE_BRUSH( "Automation/DeveloperDirectoryContent", Icon40x40) );
-		Set( "AutomationWindow.ExcludedTestsFilter", new IMAGE_BRUSH("Automation/ExcludedTestsFilter", Icon40x40) );
-		Set( "AutomationWindow.ErrorFilter.Small", new IMAGE_BRUSH( "Automation/ErrorFilter", Icon20x20) );
-		Set( "AutomationWindow.WarningFilter.Small", new IMAGE_BRUSH( "Automation/WarningFilter", Icon20x20) );
-		Set( "AutomationWindow.SmokeTestFilter.Small", new IMAGE_BRUSH( "Automation/SmokeTestFilter", Icon20x20) );
-		Set( "AutomationWindow.DeveloperDirectoryContent.Small", new IMAGE_BRUSH( "Automation/DeveloperDirectoryContent", Icon20x20) );
-		Set( "AutomationWindow.TrackHistory", new IMAGE_BRUSH( "Automation/TrackTestHistory", Icon40x40) );
-
-		//device group settings
-		Set( "AutomationWindow.GroupSettings", new IMAGE_BRUSH( "Automation/Groups", Icon40x40) );
-		Set( "AutomationWindow.GroupSettings.Small", new IMAGE_BRUSH( "Automation/Groups", Icon20x20) );
-
-		//test preset icons
-		Set( "AutomationWindow.PresetNew", new IMAGE_BRUSH( "Icons/icon_add_40x", Icon16x16 ) );
-		Set( "AutomationWindow.PresetSave", new IMAGE_BRUSH( "Icons/icon_file_save_16px", Icon16x16 ) );
-		Set( "AutomationWindow.PresetRemove", new IMAGE_BRUSH( "Icons/icon_Cascade_DeleteLOD_40x", Icon16x16 ) );
-
-		//test backgrounds
-		Set( "AutomationWindow.GameGroupBorder", new BOX_BRUSH( "Automation/GameGroupBorder", FMargin(4.0f/16.0f) ) );
-		Set( "AutomationWindow.EditorGroupBorder", new BOX_BRUSH( "Automation/EditorGroupBorder", FMargin(4.0f/16.0f) ) );
-	}
-
-	// Launcher
-	{
-		Set( "Launcher.Run", new IMAGE_BRUSH("Launcher/Launcher_Run", Icon40x40) );
-		Set( "Launcher.EditSettings", new IMAGE_BRUSH("Launcher/Launcher_EditSettings", Icon40x40) );
-		Set( "Launcher.Back", new IMAGE_BRUSH("Launcher/Launcher_Back", Icon32x32) );
-		Set( "Launcher.Back.Small", new IMAGE_BRUSH("Launcher/Launcher_Back", Icon32x32));
-		Set( "Launcher.Delete", new IMAGE_BRUSH("Launcher/Launcher_Delete", Icon32x32) );
-
-		Set( "Launcher.Instance_Commandlet", new IMAGE_BRUSH( "Launcher/Instance_Commandlet", Icon25x25 ) );
-		Set( "Launcher.Instance_Editor", new IMAGE_BRUSH( "Launcher/Instance_Editor", Icon25x25 ) );
-		Set( "Launcher.Instance_Game", new IMAGE_BRUSH( "Launcher/Instance_Game", Icon25x25 ) );
-		Set( "Launcher.Instance_Other", new IMAGE_BRUSH( "Launcher/Instance_Other", Icon25x25 ) );
-		Set( "Launcher.Instance_Server", new IMAGE_BRUSH( "Launcher/Instance_Server", Icon25x25 ) );
-		Set( "Launcher.Instance_Unknown", new IMAGE_BRUSH( "Launcher/Instance_Unknown", Icon25x25 ) );
-		Set( "LauncherCommand.DeployBuild", new IMAGE_BRUSH( "Launcher/Launcher_Deploy", Icon40x40 ) );
-		Set( "LauncherCommand.QuickLaunch", new IMAGE_BRUSH( "Launcher/Launcher_Launch", Icon40x40 ) );
-		Set( "LauncherCommand.CreateBuild", new IMAGE_BRUSH( "Launcher/Launcher_Build", Icon40x40 ) );
-		Set( "LauncherCommand.AdvancedBuild", new IMAGE_BRUSH( "Launcher/Launcher_Advanced", Icon40x40 ) );
-		Set( "LauncherCommand.AdvancedBuild.Medium", new IMAGE_BRUSH("Launcher/Launcher_Advanced", Icon25x25) );
-		Set( "LauncherCommand.AdvancedBuild.Small", new IMAGE_BRUSH("Launcher/Launcher_Advanced", Icon20x20) );
-
-		Set("Launcher.Filters.Text", FTextBlockStyle(NormalText)
-			.SetFont(DEFAULT_FONT("Bold", 9))
-			.SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.9f))
-			.SetShadowOffset(FVector2D(1, 1))
-			.SetShadowColorAndOpacity(FLinearColor(0, 0, 0, 0.9f)));
-
-		Set( "Launcher.Platform.Warning", new IMAGE_BRUSH( "Icons/alert", Icon24x24) );
-
-#if DDPI_HAS_EXTENDED_PLATFORMINFO_DATA
-
-		for (auto Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
-		{
-			const FDataDrivenPlatformInfo& PlatformInfo = Pair.Value;
-
-			// some platforms may specify a "rooted" path in the platform extensions directory, so look for that case here, and use a different path for the brush
-			FString NormalIconPath = PlatformInfo.GetIconPath(EPlatformIconSize::Normal);
-			if (NormalIconPath.StartsWith(TEXT("/Platforms/")))
-			{
-#define PLATFORM_IMAGE_BRUSH( PlatformPath, ... ) FSlateImageBrush( PlatformPath.Replace(TEXT("/Platforms/"), *FPaths::EnginePlatformExtensionsDir()) + TEXT(".png") , __VA_ARGS__ )
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal), new PLATFORM_IMAGE_BRUSH(NormalIconPath, Icon24x24));
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Large), new PLATFORM_IMAGE_BRUSH(PlatformInfo.GetIconPath(EPlatformIconSize::Large), Icon64x64));
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::XLarge), new PLATFORM_IMAGE_BRUSH(PlatformInfo.GetIconPath(EPlatformIconSize::XLarge), Icon128x128));
-			}
-			else
-			{
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Normal), new IMAGE_BRUSH(*NormalIconPath, Icon24x24));
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::Large), new IMAGE_BRUSH(*PlatformInfo.GetIconPath(EPlatformIconSize::Large), Icon64x64));
-				Set(PlatformInfo.GetIconStyleName(EPlatformIconSize::XLarge), new IMAGE_BRUSH(*PlatformInfo.GetIconPath(EPlatformIconSize::XLarge), Icon128x128));
-			}
-		}
-
-		for (const FPreviewPlatformMenuItem& Item : FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems())
-		{
-			if(!Item.ActiveIconPath.IsEmpty())
-			{
-				Set(Item.ActiveIconName, new PLATFORM_IMAGE_BRUSH(Item.ActiveIconPath, Icon40x40));
-			}
-			if (!Item.InactiveIconPath.IsEmpty())
-			{
-				Set(Item.InactiveIconName, new PLATFORM_IMAGE_BRUSH(Item.InactiveIconPath, Icon40x40));
-			}
-		}
-
-#endif
-
-		Set("Launcher.NoHoverTableRow", FTableRowStyle(NormalTableRowStyle)
-			.SetEvenRowBackgroundHoveredBrush(FSlateNoResource())
-			.SetOddRowBackgroundHoveredBrush(FSlateNoResource())
-			.SetActiveHoveredBrush(FSlateNoResource())
-			.SetInactiveHoveredBrush(FSlateNoResource())
-			);
-	}
 
 	// Device Manager
 	{

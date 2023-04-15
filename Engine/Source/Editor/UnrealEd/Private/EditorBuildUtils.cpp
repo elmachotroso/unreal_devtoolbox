@@ -8,6 +8,7 @@
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "Engine/EngineTypes.h"
@@ -47,11 +48,13 @@
 #include "Components/RuntimeVirtualTextureComponent.h"
 #include "LandscapeSubsystem.h"
 #include "ShaderCompilerCore.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "WorldPartition/IWorldPartitionEditorModule.h"
 #include "WorldPartition/SWorldPartitionBuildNavigationDialog.h"
 #include "WorldPartition/WorldPartitionBuildNavigationOptions.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionRuntimeVirtualTextureBuilder.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorBuildUtils, Log, All);
 
@@ -71,6 +74,7 @@ const FName FBuildOptions::BuildAllSubmit(TEXT("BuildAllSubmit"));
 const FName FBuildOptions::BuildAllOnlySelectedPaths(TEXT("BuildAllOnlySelectedPaths"));
 const FName FBuildOptions::BuildHierarchicalLOD(TEXT("BuildHierarchicalLOD"));
 const FName FBuildOptions::BuildMinimap(TEXT("BuildMinimap"));
+const FName FBuildOptions::BuildLandscapeSplineMeshes(TEXT("BuildLandscapeSplineMeshes"));
 const FName FBuildOptions::BuildTextureStreaming(TEXT("BuildTextureStreaming"));
 const FName FBuildOptions::BuildVirtualTexture(TEXT("BuildVirtualTexture"));
 const FName FBuildOptions::BuildAllLandscape(TEXT("BuildAllLandscape"));
@@ -314,6 +318,10 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 	{
 		BuildType = SBuildProgressWidget::BUILDTYPE_Minimap;
 	}
+	else if (Id == FBuildOptions::BuildLandscapeSplineMeshes)
+	{
+		BuildType = SBuildProgressWidget::BUILDTYPE_LandscapeSplineMeshes;
+	}
 	else if (Id == FBuildOptions::BuildTextureStreaming)
 	{
 		BuildType = SBuildProgressWidget::BUILDTYPE_TextureStreaming;
@@ -416,6 +424,12 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 			const FScopedBusyCursor BusyCursor;
 
 			TriggerNavigationBuilder(InWorld, Id);
+
+			// No need to dirty the world package if it uses external actors
+			if (InWorld->PersistentLevel->IsUsingExternalActors())
+			{
+				bDirtyPersistentLevel = false;
+			}
 		}
 	}
 	else if (CustomBuildTypes.Contains(Id))
@@ -460,7 +474,7 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 		bDoBuild = InWorld->IsPartitionedWorld();
 		if ( bDoBuild )
 		{
-			GEditor->ResetTransaction( NSLOCTEXT("UnrealEd", "BuildHLODMeshes", "Building Hierarchical LOD Meshes") );
+			GEditor->ResetTransaction( NSLOCTEXT("UnrealEd", "BuildMinimap", "Building Minimap") );
 
 			// We can't set the busy cursor for all windows, because lighting
 			// needs a cursor for the lighting options dialog.
@@ -470,6 +484,23 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 			bDirtyPersistentLevel = false;
 
 			TriggerMinimapBuilder(InWorld, Id);
+		}
+	}
+	else if (Id == FBuildOptions::BuildLandscapeSplineMeshes)
+	{
+		bDoBuild = InWorld->IsPartitionedWorld();
+		if ( bDoBuild )
+		{
+			GEditor->ResetTransaction( NSLOCTEXT("UnrealEd", "BuildLandscapeSplineMeshes", "Building Landscape Spline Meshes") );
+
+			// We can't set the busy cursor for all windows, because lighting
+			// needs a cursor for the lighting options dialog.
+			const FScopedBusyCursor BusyCursor;
+
+			bShouldMapCheck = false;
+			bDirtyPersistentLevel = false;
+
+			TriggerLandscapeSplineMeshesBuilder(InWorld);
 		}
 	}
 	else if (Id == FBuildOptions::BuildAllLandscape)
@@ -902,9 +933,9 @@ void FEditorBuildUtils::TriggerNavigationBuilder(UWorld*& InOutWorld, FName Id)
 			bBuildingNavigationFromUserRequest = false;
 		}
 
-		const FString& LongPackageName = GetNameSafe(InOutWorld->GetPackage());
-		if (UE::EditorBuildUtils::bNavmeshAllowPartitionedBuildingFromEditor && ULevel::GetIsLevelPartitionedFromPackage(*LongPackageName))
+		if (UE::EditorBuildUtils::bNavmeshAllowPartitionedBuildingFromEditor && InOutWorld->IsPartitionedWorld())
 		{
+			const FString& LongPackageName = GetNameSafe(InOutWorld->GetPackage());
 			WorldPartitionBuildNavigation(LongPackageName);
 			InOutWorld = GEditor->GetEditorWorldContext().World();
 		}
@@ -1192,8 +1223,13 @@ void FBuildAllHandler::ProcessBuild(const TWeakPtr<SBuildProgressWidget>& BuildP
 		}
 		else if (StepId == FBuildOptions::BuildMinimap)
 		{
-			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_HLODs);
-			FEditorBuildUtils::TriggerHierarchicalLODBuilder(CurrentWorld, CurrentBuildId);
+			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_Minimap);
+			FEditorBuildUtils::TriggerMinimapBuilder(CurrentWorld, CurrentBuildId);
+		}
+		else if (StepId == FBuildOptions::BuildLandscapeSplineMeshes)
+		{
+			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_LandscapeSplineMeshes);
+			FEditorBuildUtils::TriggerLandscapeSplineMeshesBuilder(CurrentWorld);
 		}
 		else if (StepId == FBuildOptions::BuildTextureStreaming)
 		{
@@ -1280,8 +1316,8 @@ void FEditorBuildUtils::TriggerHierarchicalLODBuilder(UWorld* InWorld, FName Id)
 	if (InWorld->IsPartitionedWorld())
 	{
 		IWorldPartitionEditorModule& WorldPartitionEditorModule = FModuleManager::LoadModuleChecked<IWorldPartitionEditorModule>("WorldPartitionEditor");
-		TSubclassOf<UWorldPartitionBuilder> WorldPartitionHLODsBuilder = FindObjectChecked<UClass>(ANY_PACKAGE, TEXT("WorldPartitionHLODsBuilder"), true);
-		WorldPartitionEditorModule.RunBuilder(WorldPartitionHLODsBuilder, InWorld->GetPackage()->GetName());
+		TSubclassOf<UWorldPartitionBuilder> WorldPartitionHLODsBuilder = FindObjectChecked<UClass>(nullptr, TEXT("/Script/UnrealEd.WorldPartitionHLODsBuilder"), true);
+		WorldPartitionEditorModule.RunBuilder(WorldPartitionHLODsBuilder, InWorld);
 	}
 	else
 	{
@@ -1295,8 +1331,18 @@ void FEditorBuildUtils::TriggerMinimapBuilder(UWorld* InWorld, FName Id)
 	if (InWorld->IsPartitionedWorld())
 	{
 		IWorldPartitionEditorModule& WorldPartitionEditorModule = FModuleManager::LoadModuleChecked<IWorldPartitionEditorModule>("WorldPartitionEditor");
-		TSubclassOf<UWorldPartitionBuilder> WorldPartitionMiniMapBuilder = FindObjectChecked<UClass>(ANY_PACKAGE, TEXT("WorldPartitionMiniMapBuilder"), true);
-		WorldPartitionEditorModule.RunBuilder(WorldPartitionMiniMapBuilder, InWorld->GetPackage()->GetName());
+		TSubclassOf<UWorldPartitionBuilder> WorldPartitionMiniMapBuilder = FindObjectChecked<UClass>(nullptr, TEXT("/Script/UnrealEd.WorldPartitionMiniMapBuilder"), true);
+		WorldPartitionEditorModule.RunBuilder(WorldPartitionMiniMapBuilder, InWorld);
+	}
+}
+
+void FEditorBuildUtils::TriggerLandscapeSplineMeshesBuilder(UWorld* InWorld)
+{
+	if (InWorld->IsPartitionedWorld())
+	{
+		IWorldPartitionEditorModule& WorldPartitionEditorModule = FModuleManager::LoadModuleChecked<IWorldPartitionEditorModule>("WorldPartitionEditor");
+		TSubclassOf<UWorldPartitionBuilder> WorldPartitionLandscapeSplineMeshesBuilder = FindObjectChecked<UClass>(nullptr, TEXT("/Script/UnrealEd.WorldPartitionLandscapeSplineMeshesBuilder"), true);
+		WorldPartitionEditorModule.RunBuilder(WorldPartitionLandscapeSplineMeshesBuilder, InWorld);
 	}
 }
 
@@ -1325,6 +1371,8 @@ EDebugViewShaderMode ViewModeIndexToDebugViewShaderMode(EViewModeIndex SelectedV
 	case VMI_LODColoration:
 	case VMI_HLODColoration:
 		return DVSM_LODColoration;
+	case VMI_VisualizeGPUSkinCache:
+		return DVSM_VisualizeGPUSkinCache;
 	case VMI_Unknown:
 	default :
 		return DVSM_None;
@@ -1594,37 +1642,49 @@ bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 	}
 
 	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-
-	TArray<URuntimeVirtualTextureComponent*> Components;
-	for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
+	ON_SCOPE_EXIT
 	{
-		if (Module->HasStreamedMips(*It))
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	};
+
+	{
+		FWorldPartitionHelpers::FForEachActorWithLoadingResult ForEachActorWithLoadingResult;
+		if (UWorldPartition* WorldPartition = InWorld->GetWorldPartition())
 		{
-			Components.Add(*It);
+			FScopedSlowTask BuildTask(1.0f, LOCTEXT("VirtualTextureLoadActors", "Loading Actors"));
+			BuildTask.MakeDialog();
+			UWorldPartitionRuntimeVirtualTextureBuilder::LoadRuntimeVirtualTextureActors(WorldPartition, ForEachActorWithLoadingResult);
+		}
+
+		TArray<URuntimeVirtualTextureComponent*> Components;
+		for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
+		{
+			if (Module->HasStreamedMips(*It))
+			{
+				Components.Add(*It);
+			}
+		}
+
+		if (Components.Num() == 0)
+		{
+			return true;
+		}
+
+		FScopedSlowTask BuildTask(static_cast<float>(Components.Num()), LOCTEXT("VirtualTextureBuild", "Building Virtual Textures"));
+		BuildTask.MakeDialog(true);
+
+		for (URuntimeVirtualTextureComponent* Component : Components)
+		{
+			BuildTask.EnterProgressFrame();
+
+			// Note that Build*() functions return true if the associated Has*() functions return false
+			if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component))
+			{
+				return false;
+			}
 		}
 	}
-
-	if (Components.Num() == 0)
-	{
-		return true;
-	}
-
-	FScopedSlowTask BuildTask(Components.Num(), LOCTEXT("VirtualTextureBuild", "Building Virtual Textures"));
-	BuildTask.MakeDialog(true);
-
-	for (URuntimeVirtualTextureComponent* Component : Components)
-	{
-		BuildTask.EnterProgressFrame();
-
-		// Note that Build*() functions return true if the associated Has*() functions return false
-		if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component))
-		{
-			return false;
-		}
-	}
-
-	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-
+	
 	return true;
 }
 

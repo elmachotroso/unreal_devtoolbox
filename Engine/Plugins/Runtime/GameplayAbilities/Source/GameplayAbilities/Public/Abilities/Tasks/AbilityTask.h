@@ -99,10 +99,10 @@ class GAMEPLAYABILITIES_API UAbilityTask : public UGameplayTask
 
 	/** GameplayAbility that created us */
 	UPROPERTY()
-	UGameplayAbility* Ability;
+	TObjectPtr<UGameplayAbility> Ability;
 
 	UPROPERTY()
-	UAbilitySystemComponent* AbilitySystemComponent;
+	TWeakObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;
 
 	/** Returns true if the ability is a locally predicted ability running on a client. Usually this means we need to tell the server something. */
 	bool IsPredictingClient() const;
@@ -121,6 +121,8 @@ class GAMEPLAYABILITIES_API UAbilityTask : public UGameplayTask
 
 	virtual void InitSimulatedTask(UGameplayTasksComponent& InGameplayTasksComponent) override;
 
+	static void DebugRecordAbilityTaskCreatedByAbility(const UObject* Ability);
+
 	/** Helper function for instantiating and initializing a new task */
 	template <class T>
 	static T* NewAbilityTask(UGameplayAbility* ThisAbility, FName InstanceName = FName())
@@ -129,6 +131,9 @@ class GAMEPLAYABILITIES_API UAbilityTask : public UGameplayTask
 
 		T* MyObj = NewObject<T>();
 		MyObj->InitTask(*ThisAbility, ThisAbility->GetGameplayTaskDefaultPriority());
+
+		UAbilityTask::DebugRecordAbilityTaskCreatedByAbility(ThisAbility);
+
 		MyObj->InstanceName = InstanceName;
 		return MyObj;
 	}
@@ -163,10 +168,6 @@ class GAMEPLAYABILITIES_API UAbilityTask : public UGameplayTask
 protected:
 	/** Helper method for registering client replicated callbacks */
 	bool CallOrAddReplicatedDelegate(EAbilityGenericReplicatedEvent::Type Event, FSimpleMulticastDelegate::FDelegate Delegate);
-
-private:
-
-	static int32 GlobalAbilityTaskCount;
 };
 
 //For searching through lists of ability instances

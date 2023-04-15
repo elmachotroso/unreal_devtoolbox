@@ -9,7 +9,7 @@
 class ENGINE_API FActorDescList
 {
 #if WITH_EDITOR
-	friend struct FWorldPartitionHandleUtils;
+	friend struct FWorldPartitionImplBase;
 
 public:
 	FActorDescList() {}
@@ -32,6 +32,7 @@ public:
 
 	int32 GetActorDescCount() const { return ActorsByGuid.Num(); }
 
+	bool IsEmpty() const { return GetActorDescCount() == 0; }
 	void Empty();
 
 	template<bool bConst, class ActorType>
@@ -51,6 +52,7 @@ public:
 			: ActorsIterator(InActorDescList->ActorsByGuid)
 			, ActorClass(InActorClass)
 		{
+			check(ActorClass->IsNative());
 			check(ActorClass->IsChildOf(ActorType::StaticClass()));
 
 			if (ShouldSkip())
@@ -100,6 +102,13 @@ public:
 			return (bool)ActorsIterator;
 		}
 
+		/**
+		 * Returns the actor class on which the iterator iterates on.
+		 *
+		 * @return the actor class
+		 */
+		FORCEINLINE UClass* GetActorClass() const { return ActorClass; }
+
 	protected:
 		/**
 		 * Determines whether the iterator currently points to a valid actor desc or not.
@@ -112,7 +121,7 @@ public:
 				return false;
 			}
 
-			return !ActorsIterator->Value->Get()->GetActorClass()->IsChildOf(ActorClass);
+			return !ActorsIterator->Value->Get()->GetActorNativeClass()->IsChildOf(ActorClass);
 		}
 
 		IteratorType ActorsIterator;

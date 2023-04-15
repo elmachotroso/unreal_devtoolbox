@@ -16,6 +16,8 @@
 #include "CanvasItem.h"
 #include "MeshPaintingToolsetTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TexturePaintToolset)
+
 void UTexturePaintToolset::CopyTextureToRenderTargetTexture(UTexture* SourceTexture, UTextureRenderTarget2D* RenderTargetTexture, ERHIFeatureLevel::Type FeatureLevel)
 {
 	check(SourceTexture != nullptr);
@@ -96,12 +98,8 @@ void UTexturePaintToolset::CopyTextureToRenderTargetTexture(UTexture* SourceText
 	ENQUEUE_RENDER_COMMAND(UpdateMeshPaintRTCommand)(
 		[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
 		{
-			// Copy (resolve) the rendered image from the frame buffer to its render target texture
-			RHICmdList.CopyToResolveTarget(
-				RenderTargetResource->GetRenderTargetTexture(),		// Source texture
-				RenderTargetResource->TextureRHI,					// Dest texture
-				FResolveParams());									// Resolve parameters
-		});		
+			TransitionAndCopyTexture(RHICmdList, RenderTargetResource->GetRenderTargetTexture(), RenderTargetResource->TextureRHI, {});
+		});
 }
 
 bool UTexturePaintToolset::GenerateSeamMask(UMeshComponent* MeshComponent, int32 UVSet, UTextureRenderTarget2D* SeamRenderTexture, UTexture2D* Texture, UTextureRenderTarget2D* RenderTargetTexture)
@@ -308,14 +306,9 @@ bool UTexturePaintToolset::GenerateSeamMask(UMeshComponent* MeshComponent, int32
 	{
 		ENQUEUE_RENDER_COMMAND(UpdateMeshPaintRTCommand5)(
 			[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
-			{
-				// Copy (resolve) the rendered image from the frame buffer to its render target texture
-				RHICmdList.CopyToResolveTarget(
-					RenderTargetResource->GetRenderTargetTexture(),		// Source texture
-					RenderTargetResource->TextureRHI,
-					FResolveParams());									// Resolve parameters
-			});
-
+		{
+			TransitionAndCopyTexture(RHICmdList, RenderTargetResource->GetRenderTargetTexture(), RenderTargetResource->TextureRHI, {});
+		});
 	}
 
 	return RetVal;
@@ -459,7 +452,7 @@ void UTexturePaintToolset::RetrieveMeshSectionsForMaterialIndices(const UMeshCom
 	}
 	else if (const USkeletalMeshComponent* SkeletalMeshComponent = Cast<const USkeletalMeshComponent>(MeshComponent))
 	{
-		const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+		const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 		if (SkeletalMesh)
 		{
 			const FSkeletalMeshRenderData* Resource = SkeletalMesh->GetResourceForRendering();
@@ -510,4 +503,5 @@ void UTexturePaintToolset::RetrieveTexturesForComponent(const UMeshComponent* Co
 			});
 	}
 }
+
 

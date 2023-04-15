@@ -20,9 +20,10 @@
 #include "Systems/MovieSceneComponentTransformSystem.h"
 #include "Systems/MovieSceneFloatPropertySystem.h"
 #include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
 #include "TemplateSequence.h"
 #include "TemplateSequenceComponentTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TemplateSequenceSystem)
 
 UTemplateSequenceSystem::UTemplateSequenceSystem(const FObjectInitializer& ObjInit)
 	: UMovieSceneEntitySystem(ObjInit)
@@ -172,7 +173,7 @@ void UTemplateSequencePropertyScalingInstantiatorSystem::OnRun(FSystemTaskPrereq
 			const FTemplateSequencePropertyScaleComponentData& PropertyScale)
 	{
 		const FInstanceHandle SubSequenceHandle = InstanceRegistry->FindRelatedInstanceHandle(InstanceHandle, PropertyScale.SubSequenceID);
-		if (ensure(SubSequenceHandle.IsValid()))
+		if (ensure(SubSequenceHandle.IsValid()) && PropertyScaledInstances.Contains(SubSequenceHandle))
 		{
 			FPropertyScaleEntityIDs& PropertyScaleEntities = PropertyScaledInstances.FindChecked(SubSequenceHandle);
 			if (PropertyScaleEntities.Remove(EntityID) > 0)
@@ -271,7 +272,6 @@ UTemplateSequencePropertyScalingEvaluatorSystem::UTemplateSequencePropertyScalin
 		DefineImplicitPrerequisite(UDoubleChannelEvaluatorSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UMovieSceneBaseValueEvaluatorSystem::StaticClass(), GetClass());
 		// We need to multiply values before they are blended together with other values we shouldn't touch.
-		DefineImplicitPrerequisite(GetClass(), UMovieScenePiecewiseFloatBlenderSystem::StaticClass());
 		DefineImplicitPrerequisite(GetClass(), UMovieScenePiecewiseDoubleBlenderSystem::StaticClass());
 		// We need to multiply values before they are set on the animated objects. For blended values, the dependencies above are
 		// enough, but for non-blended values that use the "fast-path", we need this dependency.
@@ -448,8 +448,8 @@ struct FScaleFloatProperties
 			TRead<FInstanceHandle> InstanceHandles,
 			TRead<FMovieScenePropertyBinding> PropertyBindings,
 			TRead<FGuid> ReverseBindingLookups,
-			TReadOptional<float> BasePropertyValues,
-			TWrite<float> PropertyValues,
+			TReadOptional<double> BasePropertyValues,
+			TWrite<double> PropertyValues,
 			TWrite<FSourceFloatChannelFlags> PropertyFlags)
 	{
 		for (int32 Index = 0; Index < Allocation->Num(); ++Index)
@@ -507,7 +507,7 @@ void UTemplateSequencePropertyScalingEvaluatorSystem::OnRun(FSystemTaskPrerequis
 	FGraphEventRef GatherTask = FEntityTaskBuilder()
 		.Read(BuiltInComponents->InstanceHandle)
 		.Read(TemplateSequenceComponents->PropertyScale)
-		.Read(BuiltInComponents->FloatResult[0])
+		.Read(BuiltInComponents->DoubleResult[0])
 		.Dispatch_PerEntity<FGatherPropertyScales>(&Linker->EntityManager, InPrerequisites, &Subsequents, this);
 	if (GatherTask)
 	{
@@ -551,11 +551,12 @@ void UTemplateSequencePropertyScalingEvaluatorSystem::OnRun(FSystemTaskPrerequis
 			.Read(BuiltInComponents->InstanceHandle)
 			.Read(BuiltInComponents->PropertyBinding)
 			.Read(TemplateSequenceComponents->PropertyScaleReverseBindingLookup)
-			.ReadOptional(BuiltInComponents->BaseFloat[0])
-			.Write(BuiltInComponents->FloatResult[0])
+			.ReadOptional(BuiltInComponents->BaseDouble[0])
+			.Write(BuiltInComponents->DoubleResult[0])
 			.Write(BuiltInComponents->FloatChannelFlags[0])
 			.FilterAll({ TrackComponents->Float.PropertyTag })
 			.Dispatch_PerAllocation<FScaleFloatProperties>(&Linker->EntityManager, InPrerequisites, &Subsequents, this);
 	}
 }
+
 

@@ -31,18 +31,21 @@ public:
 	virtual ~FConcertLocalEndpoint();
 
 	virtual const FConcertEndpointContext& GetEndpointContext() const override;
+	virtual TArray<FConcertEndpointContext> GetRemoteEndpoints() const override;
+	virtual FMessageAddress GetRemoteAddress(const FGuid& ConcertEndpointId) const override;
 
 	virtual FOnConcertRemoteEndpointConnectionChanged& OnRemoteEndpointConnectionChanged() override;
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() override;
 
 protected:
-	virtual void InternalAddRequestHandler(const FName& RequestMessageType, const TSharedRef<IConcertRequestHandler>& Handler) override;
-	virtual void InternalAddEventHandler(const FName& EventMessageType, const TSharedRef<IConcertEventHandler>& Handler) override;
+	virtual void InternalAddRequestHandler(const FTopLevelAssetPath& RequestMessageType, const TSharedRef<IConcertRequestHandler>& Handler) override;
+	virtual void InternalAddEventHandler(const FTopLevelAssetPath& EventMessageType, const TSharedRef<IConcertEventHandler>& Handler) override;
 
-	virtual void InternalRemoveRequestHandler(const FName& RequestMessageType) override;
-	virtual void InternalRemoveEventHandler(const FName& EventMessageType) override;
+	virtual void InternalRemoveRequestHandler(const FTopLevelAssetPath& RequestMessageType) override;
+	virtual void InternalRemoveEventHandler(const FTopLevelAssetPath& EventMessageType) override;
 
-	virtual void InternalSubscribeToEvent(const FName& EventMessageType) override;
-	virtual void InternalUnsubscribeFromEvent(const FName& EventMessageType) override;
+	virtual void InternalSubscribeToEvent(const FTopLevelAssetPath& EventMessageType) override;
+	virtual void InternalUnsubscribeFromEvent(const FTopLevelAssetPath& EventMessageType) override;
 
 	virtual void InternalQueueRequest(const TSharedRef<IConcertRequest>& Request, const FGuid& Endpoint) override;
 	virtual void InternalQueueResponse(const TSharedRef<IConcertResponse>& Response, const FGuid& Endpoint) override;
@@ -157,11 +160,14 @@ private:
 	TArray<TTuple<FConcertEndpointContext, EConcertRemoteEndpointConnection>> PendingRemoteEndpointConnectionChangedEvents;
 	FOnConcertRemoteEndpointConnectionChanged OnRemoteEndpointConnectionChangedDelegate;
 
+	/** Callback when a message has been acknowledged by a remote endpoint */
+	FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint OnConcertMessageAcknowledgementReceivedDelegate; 
+
 	/** Registered message handlers that do not generate a response */
-	TMap<FName, TSharedPtr<IConcertEventHandler>> EventHandlers;
+	TMap<FTopLevelAssetPath, TSharedPtr<IConcertEventHandler>> EventHandlers;
 
 	/** Registered message handlers that returns a response */
-	TMap<FName, TSharedPtr<IConcertRequestHandler>> RequestHandlers;
+	TMap<FTopLevelAssetPath, TSharedPtr<IConcertRequestHandler>> RequestHandlers;
 
 	/** Handle to the registered ticker for request and reliable message */
 	FTSTicker::FDelegateHandle TickerHandle;

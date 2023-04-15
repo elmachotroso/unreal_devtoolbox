@@ -30,11 +30,11 @@ DECLARE_CYCLE_STAT(TEXT("TimelineComp Tick"), STAT_TimelineCompTick, STATGROUP_D
 
 UEnum* FTimeline::GetTimelineDirectionEnum()
 {
-	static UEnum* TimelineDirectionEnum = NULL;
-	if(NULL == TimelineDirectionEnum)
+	static UEnum* TimelineDirectionEnum = nullptr;
+	if (nullptr == TimelineDirectionEnum)
 	{
-		FName TimelineDirectionEnumName(TEXT("ETimelineDirection::Forward"));
-		UEnum::LookupEnumName(TimelineDirectionEnumName, &TimelineDirectionEnum);
+		FTopLevelAssetPath TimelineDirectionEnumEnumPath(TEXT("/Script/Engine"), TEXT("ETimelineDirection"));
+		TimelineDirectionEnum = FindObject<UEnum>(TimelineDirectionEnumEnumPath);
 		check(TimelineDirectionEnum);
 	}
 	return TimelineDirectionEnum;
@@ -369,7 +369,7 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			// Slight hack here.. if playing forwards and reaching the end of the sequence, force it over a little to ensure we fire events actually on the end of the sequence.
 			if (MaxTime == GetTimelineLength())
 			{
-				MaxTime += (float)KINDA_SMALL_NUMBER;
+				MaxTime += (float)UE_KINDA_SMALL_NUMBER;
 			}
 		}
 		// If playing sequence backwards.
@@ -381,7 +381,7 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			// Same small hack as above for backwards case.
 			if (MinTime == 0.f)
 			{
-				MinTime -= (float)KINDA_SMALL_NUMBER;
+				MinTime -= (float)UE_KINDA_SMALL_NUMBER;
 			}
 		}
 
@@ -583,7 +583,7 @@ void FTimeline::SetTimelineLength(float NewLength)
 	Length = NewLength;
 	if(Position > NewLength)
 	{
-		SetNewTime(NewLength-KINDA_SMALL_NUMBER);
+		SetNewTime(NewLength-UE_KINDA_SMALL_NUMBER);
 	}
 }
 
@@ -771,14 +771,29 @@ void UTimelineComponent::AddInterpVector(UCurveVector* VectorCurve, FOnTimelineV
 	TheTimeline.AddInterpVector(VectorCurve, InterpFunc, PropertyName, TrackName);
 }
 
+void UTimelineComponent::AddInterpVector(UCurveVector* VectorCurve, const FOnTimelineVectorStatic InterpFunc)
+{
+	TheTimeline.AddInterpVector(VectorCurve, InterpFunc);
+}
+
 void UTimelineComponent::AddInterpFloat(UCurveFloat* FloatCurve, FOnTimelineFloat InterpFunc, FName PropertyName, FName TrackName)
 {
 	TheTimeline.AddInterpFloat(FloatCurve, InterpFunc, PropertyName, TrackName);
 }
 
+void UTimelineComponent::AddInterpFloat(UCurveFloat* FloatCurve, const FOnTimelineFloatStatic InterpFunc)
+{
+	TheTimeline.AddInterpFloat(FloatCurve, InterpFunc);
+}
+
 void UTimelineComponent::AddInterpLinearColor(UCurveLinearColor* LinearColorCurve, FOnTimelineLinearColor InterpFunc, FName PropertyName, FName TrackName)
 {
 	TheTimeline.AddInterpLinearColor(LinearColorCurve, InterpFunc, PropertyName, TrackName);
+}
+
+void UTimelineComponent::AddInterpLinearColor(UCurveLinearColor* LinearColorCurve, const FOnTimelineLinearColorStatic InterpFunc)
+{
+	TheTimeline.AddInterpLinearColor(LinearColorCurve, InterpFunc);
 }
 
 void UTimelineComponent::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bFireUpdate)
@@ -948,12 +963,11 @@ void UTimelineComponent::SetDirectionPropertyName(FName DirectionPropertyName)
 	TheTimeline.SetDirectionPropertyName(DirectionPropertyName);
 }
 
-void UTimelineComponent::OnRep_Timeline()
+void UTimelineComponent::OnRep_Timeline(FTimeline& OldTimeline)
 {
-	if (!TheTimeline.IsPlaying())
+	if (!TheTimeline.IsPlaying() && OldTimeline.GetPlaybackPosition() != TheTimeline.GetPlaybackPosition())
 	{
 		// make sure a final update call occurs on the client for the final position
-		// FIXME: this is incomplete, we need to compare vs the last simulated position for firing events and such
 		TheTimeline.SetPlaybackPosition(TheTimeline.GetPlaybackPosition(), false, true);
 	}
 }

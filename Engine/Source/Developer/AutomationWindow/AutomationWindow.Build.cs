@@ -20,7 +20,7 @@ namespace UnrealBuildTool.Rules
 					"ApplicationCore",
                     "Slate",
                     "SlateCore",
-                    "EditorStyle",
+                    "ToolWidgets",
                     "CoreUObject",
                     "Json",
                     "JsonUtilities",

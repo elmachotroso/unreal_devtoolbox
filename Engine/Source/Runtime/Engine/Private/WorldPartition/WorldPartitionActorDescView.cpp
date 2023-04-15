@@ -5,6 +5,7 @@
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/ActorDescContainer.h"
 
 FWorldPartitionActorDescView::FWorldPartitionActorDescView()
 	: FWorldPartitionActorDescView(nullptr)
@@ -22,14 +23,19 @@ const FGuid& FWorldPartitionActorDescView::GetGuid() const
 	return ActorDesc->GetGuid();
 }
 
-FName FWorldPartitionActorDescView::GetClass() const
+FTopLevelAssetPath FWorldPartitionActorDescView::GetBaseClass() const
 {
-	return ActorDesc->GetClass();
+	return ActorDesc->GetBaseClass();
 }
 
-UClass* FWorldPartitionActorDescView::GetActorClass() const
+FTopLevelAssetPath FWorldPartitionActorDescView::GetNativeClass() const
 {
-	return ActorDesc->GetActorClass();
+	return ActorDesc->GetNativeClass();
+}
+
+UClass* FWorldPartitionActorDescView::GetActorNativeClass() const
+{
+	return ActorDesc->GetActorNativeClass();
 }
 
 FVector FWorldPartitionActorDescView::GetOrigin() const
@@ -52,14 +58,14 @@ bool FWorldPartitionActorDescView::GetActorIsEditorOnly() const
 	return ActorDesc->GetActorIsEditorOnly();
 }
 
+bool FWorldPartitionActorDescView::GetActorIsRuntimeOnly() const
+{
+	return ActorDesc->GetActorIsRuntimeOnly();
+}
+
 bool FWorldPartitionActorDescView::GetIsSpatiallyLoaded() const
 {
 	return bIsForcedNonSpatiallyLoaded ? false : ActorDesc->GetIsSpatiallyLoaded();
-}
-
-bool FWorldPartitionActorDescView::GetLevelBoundsRelevant() const
-{
-	return ActorDesc->GetLevelBoundsRelevant();
 }
 
 bool FWorldPartitionActorDescView::GetActorIsHLODRelevant() const
@@ -75,7 +81,22 @@ FName FWorldPartitionActorDescView::GetHLODLayer() const
 const TArray<FName>& FWorldPartitionActorDescView::GetDataLayers() const
 {
 	static TArray<FName> EmptyDataLayers;
-	return bInvalidDataLayers ? EmptyDataLayers : ActorDesc->GetDataLayers();
+	return bInvalidDataLayers ? EmptyDataLayers : ActorDesc->GetDataLayerInstanceNames();
+}
+
+const TArray<FName>& FWorldPartitionActorDescView::GetDataLayerInstanceNames() const
+{
+	return ActorDesc->GetDataLayerInstanceNames();
+}
+const TArray<FName>& FWorldPartitionActorDescView::GetRuntimeDataLayers() const
+{
+	static TArray<FName> EmptyDataLayers;
+	return (bInvalidDataLayers || !RuntimeDataLayers.IsSet()) ? EmptyDataLayers : RuntimeDataLayers.GetValue();
+}
+
+const TArray<FName>& FWorldPartitionActorDescView::GetTags() const
+{
+	return ActorDesc->GetTags();
 }
 
 FName FWorldPartitionActorDescView::GetActorPackage() const
@@ -83,9 +104,9 @@ FName FWorldPartitionActorDescView::GetActorPackage() const
 	return ActorDesc->GetActorPackage();
 }
 
-FName FWorldPartitionActorDescView::GetActorPath() const
+FSoftObjectPath FWorldPartitionActorDescView::GetActorSoftPath() const
 {
-	return ActorDesc->GetActorPath();
+	return ActorDesc->GetActorSoftPath();
 }
 
 FName FWorldPartitionActorDescView::GetActorLabel() const
@@ -106,17 +127,12 @@ FBox FWorldPartitionActorDescView::GetBounds() const
 
 const TArray<FGuid>& FWorldPartitionActorDescView::GetReferences() const
 {
-	return ActorDesc->GetReferences();
+	return RuntimeReferences.IsSet() ? RuntimeReferences.GetValue() : ActorDesc->GetReferences();
 }
 
 FString FWorldPartitionActorDescView::ToString() const
 {
 	return ActorDesc->ToString();
-}
-
-uint32 FWorldPartitionActorDescView::GetTag() const
-{
-	return ActorDesc->Tag;
 }
 
 const FGuid& FWorldPartitionActorDescView::GetParentActor() const
@@ -129,9 +145,24 @@ const FGuid& FWorldPartitionActorDescView::GetFolderGuid() const
 	return ActorDesc->GetFolderGuid();
 }
 
+FGuid FWorldPartitionActorDescView::GetContentBundleGuid() const
+{
+	return ActorDesc->GetContentBundleGuid();
+}
+
+bool FWorldPartitionActorDescView::IsContainerInstance() const
+{
+	return ActorDesc->IsContainerInstance();
+}
+
 bool FWorldPartitionActorDescView::GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const
 {
 	return ActorDesc->GetContainerInstance(OutLevelContainer, OutLevelTransform, OutClusterMode);
+}
+
+void FWorldPartitionActorDescView::CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const
+{
+	ActorDesc->CheckForErrors(ErrorHandler);
 }
 
 FName FWorldPartitionActorDescView::GetActorLabelOrName() const
@@ -144,7 +175,7 @@ void FWorldPartitionActorDescView::SetForcedNonSpatiallyLoaded()
 	if (!bIsForcedNonSpatiallyLoaded)
 	{
 		bIsForcedNonSpatiallyLoaded = true;
-		UE_LOG(LogWorldPartition, Verbose, TEXT("Actor '%s' forced to be non-spatially loaded"), *GetActorLabel().ToString());
+		UE_LOG(LogWorldPartition, Verbose, TEXT("Actor '%s' forced to be non-spatially loaded"), *GetActorLabelOrName().ToString());
 	}
 }
 
@@ -158,7 +189,22 @@ void FWorldPartitionActorDescView::SetInvalidDataLayers()
 	if (!bInvalidDataLayers)
 	{
 		bInvalidDataLayers = true;
-		UE_LOG(LogWorldPartition, Verbose, TEXT("Actor '%s' data layers invalidated"), *GetActorLabel().ToString());
+		UE_LOG(LogWorldPartition, Verbose, TEXT("Actor '%s' data layers invalidated"), *GetActorLabelOrName().ToString());
 	}
+}
+
+void FWorldPartitionActorDescView::SetRuntimeDataLayers(TArray<FName>& InRuntimeDataLayers)
+{
+	RuntimeDataLayers = InRuntimeDataLayers;
+}
+
+void FWorldPartitionActorDescView::SetRuntimeReferences(TArray<FGuid>& InRuntimeReferences)
+{
+	RuntimeReferences = InRuntimeReferences;
+}
+
+AActor* FWorldPartitionActorDescView::GetActor() const
+{
+	return ActorDesc->GetActor();
 }
 #endif

@@ -2,7 +2,10 @@
 
 #include "Instances/InstancedPlacementClientInfo.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InstancedPlacementClientInfo)
+
 #if WITH_EDITORONLY_DATA
+#include "Misc/ITransaction.h"
 #include "Instances/InstancedPlacementPartitionActor.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
 
@@ -400,8 +403,16 @@ void FClientPlacementInfo::NotifyISMPartitionInstanceSelectionChanged(const FISM
 	check(IsInitialized());
 	check(InstanceId.Handle == ClientHandle);
 
-	ParentPartitionActor->Modify(false);
-	ParentPartitionActor->SelectISMInstances(ClientHandle, bIsSelected, { InstanceId.Index });
+	if (AInstancedPlacementPartitionActor* ParentPartitionActorPtr = ParentPartitionActor.Get())
+	{
+		if (!GUndo || !GUndo->ContainsObject(ParentPartitionActorPtr))
+		{
+			// Actor modify can be a bit slow since when there is a transaction active it need to iterate the properties
+			ParentPartitionActorPtr->Modify(false);
+		}
+
+		ParentPartitionActorPtr->SelectISMInstances(ClientHandle, bIsSelected, { InstanceId.Index });
+	}
 #endif
 }
 
@@ -457,3 +468,4 @@ bool FClientPlacementInfo::DuplicateISMPartitionInstances(TArrayView<const FISMC
 }
 
 #endif	// WITH_EDITORONLY_DATA
+

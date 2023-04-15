@@ -34,7 +34,7 @@ namespace Gauntlet
 	/// <summary>
 	/// Class that is manages the creation and execution of one or more tests
 	/// </summary>
-	public class TextExecutor
+	public class TestExecutor
 	{
 		class TestExecutionInfo
 		{
@@ -54,7 +54,7 @@ namespace Gauntlet
 			public ExecutionResult	Result;
 			public TestResult		FinalResult;
 			public string			CancellationReason;
-
+			
 			/// <summary>
 			/// Time the test had to wait before running
 			/// </summary>
@@ -91,15 +91,20 @@ namespace Gauntlet
 
 		TestExecutorOptions Options;
 
+		protected string BuildCommandThatLaunchedExecutor;
+
 		public bool IsRunning { get; private set; }
 		public bool IsCancelled { get; private set; }
 		protected bool HaveReceivedPostAbort { get; private set; }
 
 		/// <summary>
 		/// Constructor that fills in some member variables
+		/// @Param the BuildCommand that was used to start this Test Executor.
+		/// Useful to log out or know where this test executor came from.
 		/// </summary>
-		public TextExecutor()
+		public TestExecutor(string InBuildCommand)
 		{
+			BuildCommandThatLaunchedExecutor = InBuildCommand;
 			RunningTests = new List<TestExecutionInfo>();
 		}
 
@@ -226,7 +231,7 @@ namespace Gauntlet
 							catch (System.Exception ex)
 							{
 								Log.Error("Test {0} threw an exception during ready check. Ex: {1}", Node, ex);
-
+								Node.AddTestEvent(new UnrealTestEvent(EventSeverity.Error, "Test Failed to Start", new List<string> {ex.Message}));
 								PendingTests[i] = null;
 								NodeInfo.TimeSetupBegan = NodeInfo.TimeSetupEnded = NodeInfo.TimeTestEnded = DateTime.Now;
 								CompletedTests.Add(NodeInfo);
@@ -261,6 +266,7 @@ namespace Gauntlet
 									if (TimeWaiting >= Options.Wait)
 									{
 										Log.Warning("Test {0} has been waiting to run resource-free for {1:00} seconds. Removing from wait list", Node, TimeWaiting);
+										Node.AddTestEvent(new UnrealTestEvent(EventSeverity.Error, "Insufficient devices found", new List<string> {string.Format("Test {0} was unable to find enough devices after trying for {1:00} seconds.", Node, TimeWaiting), "This is not a test-related failure."}));
 										PendingTests[i] = null;
 										NodeInfo.TimeSetupBegan = NodeInfo.TimeSetupEnded = NodeInfo.TimeTestEnded = DateTime.Now;
 										NodeInfo.Result = TestExecutionInfo.ExecutionResult.TimedOut;
@@ -389,14 +395,15 @@ namespace Gauntlet
 						}
 					}
 
-					// tick anything running, this will also check IsCancelled and stop them
-					// forcibly kill anything waiting
 					if (StartingTestThreads.Count > 0)
 					{
 						foreach (Thread T in StartingTestThreads)
 						{
-							Log.Info("Aborting startup thread");
-							T.Abort();
+							// SYSLIB0006: 'Thread.Abort()' is obsolete: 'Thread.Abord it not supported and throws PlatformNotSupportedException'
+							//Log.Info("Aborting startup thread");
+							//T.Abort();
+
+							Log.Info($"Thread is still running: {T.Name} {T.ManagedThreadId}");
 						}
 						Thread.Sleep(1000);
 					}
@@ -479,7 +486,7 @@ namespace Gauntlet
 					}
 
 					// report all tests
-					ReportMasterSummary(CurrentTestPass + 1, Options.TestIterations, PassDuration, CompletedTests);
+					ReportMainSummary(CurrentTestPass + 1, Options.TestIterations, PassDuration, CompletedTests);
 
 					if (FailedCount > 0 && Options.StopOnError)
 					{
@@ -610,6 +617,9 @@ namespace Gauntlet
 				}
 			}
 
+			// display how the test could be ran locally
+			string RunLocalString = TestInfo.TestNode.GetRunLocalCommand(BuildCommandThatLaunchedExecutor);
+			Log.Info("How to run locally: ({0})", RunLocalString);
 		}
 
 		/// <summary>
@@ -620,7 +630,7 @@ namespace Gauntlet
 		/// <param name="Duration"></param>
 		/// <param name="AllInfo"></param>
 		/// <returns></returns>
-		void ReportMasterSummary(int CurrentPass, int NumPasses, TimeSpan Duration, IEnumerable<TestExecutionInfo> AllInfo)
+		void ReportMainSummary(int CurrentPass, int NumPasses, TimeSpan Duration, IEnumerable<TestExecutionInfo> AllInfo)
 		{
 
 			MarkdownBuilder MB = new MarkdownBuilder();

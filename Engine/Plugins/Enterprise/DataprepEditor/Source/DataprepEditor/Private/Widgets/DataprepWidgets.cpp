@@ -14,11 +14,12 @@
 #include "Widgets/Parameterization/SDataprepParameterizationLinkIcon.h"
 
 #include "ContentBrowserModule.h"
+#include "DetailColumnSizeData.h"
 #include "DetailLayoutBuilder.h"
 #include "Dialogs/DlgPickPath.h"
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -69,7 +70,7 @@ namespace DataprepWidgetUtils
 			SSplitter::FArguments Args;
 
 			SSplitter::Construct(Args
-				.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+				.Style(FAppStyle::Get(), "DetailsView.Splitter")
 				.PhysicalSplitterHandleSize(1.0f)
 				.HitDetectionSplitterHandleSize(5.0f)
 				.ResizeMode( ESplitterResizeMode::Fill ));
@@ -77,15 +78,15 @@ namespace DataprepWidgetUtils
 			ColumnSizeData = InArgs._ColumnSizeData;
 
 			AddSlot()
-			.Value(ColumnSizeData->NameColumnWidth)
-			.OnSlotResized(ColumnSizeData->OnNameColumnResized)
+			.Value(ColumnSizeData->GetNameColumnWidth())
+			.OnSlotResized(ColumnSizeData->GetOnNameColumnResized())
 			[
 				InArgs._NameWidget.ToSharedRef()
 			];
 
 			AddSlot()
-			.Value(InArgs._ColumnSizeData->ValueColumnWidth)
-			.OnSlotResized(ColumnSizeData->OnValueColumnResized)
+			.Value(InArgs._ColumnSizeData->GetValueColumnWidth())
+			.OnSlotResized(ColumnSizeData->GetOnValueColumnResized())
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
@@ -108,14 +109,14 @@ namespace DataprepWidgetUtils
 				const FVector2D AllottedSize = AllottedGeometry.GetLocalSize();
 
 				FVector2D LocalPosition = FVector2D::ZeroVector;
-				FVector2D LocalSize(  AllottedSize.X * ColumnSizeData->NameColumnWidth.Get(0.f), AllottedSize.Y );
+				FVector2D LocalSize(AllottedSize.X * ColumnSizeData->GetNameColumnWidth().Get(0), AllottedSize.Y);
 
 				ArrangedChildren.AddWidget( EVisibility::Visible, AllottedGeometry.MakeChild( LeftChild.GetWidget(), LocalPosition, LocalSize ));
 
 				const SSplitter::FSlot& RightChild = Children[1];
 
 				LocalPosition = FVector2D(LocalSize.X, 0.f);
-				LocalSize.X = AllottedSize.X * ColumnSizeData->ValueColumnWidth.Get(0.f);
+				LocalSize.X = AllottedSize.X * ColumnSizeData->GetValueColumnWidth().Get(0);
 
 				ArrangedChildren.AddWidget( EVisibility::Visible, AllottedGeometry.MakeChild( RightChild.GetWidget(), LocalPosition, LocalSize ));
 			}
@@ -188,11 +189,11 @@ const FSlateBrush* SDataprepCategoryWidget::GetBackgroundImage() const
 {
 	if (IsHovered())
 	{
-		return bIsExpanded ? FEditorStyle::GetBrush("DetailsView.CategoryTop_Hovered") : FEditorStyle::GetBrush("DetailsView.CollapsedCategory_Hovered");
+		return bIsExpanded ? FAppStyle::GetBrush("DetailsView.CategoryTop_Hovered") : FAppStyle::GetBrush("DetailsView.CollapsedCategory_Hovered");
 	} 
 	else
 	{
-		return bIsExpanded ? FEditorStyle::GetBrush("DetailsView.CategoryTop") : FEditorStyle::GetBrush("DetailsView.CollapsedCategory");
+		return bIsExpanded ? FAppStyle::GetBrush("DetailsView.CategoryTop") : FAppStyle::GetBrush("DetailsView.CollapsedCategory");
 	}
 }
 
@@ -227,7 +228,7 @@ void SDataprepCategoryWidget::Construct( const FArguments& InArgs, TSharedRef< S
 		[
 			SNew(STextBlock)
 			.Text( InArgs._Title )
-			.Font( FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle") )
+			.Font( FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle") )
 			.ShadowOffset( FVector2D( 1.0f, 1.0f ) )
 		];
 
@@ -266,7 +267,7 @@ void SDataprepCategoryWidget::Construct( const FArguments& InArgs, TSharedRef< S
 
 	STableRow< TSharedPtr< EDataprepCategory > >::ConstructInternal(
 		STableRow::FArguments()
-		.Style( FEditorStyle::Get(), "DetailsView.TreeView.TableRow" )
+		.Style( FAppStyle::Get(), "DetailsView.TreeView.TableRow" )
 		.ShowSelection( false ),
 		InOwnerTableView
 	);
@@ -286,7 +287,7 @@ void SDataprepDetailsView::CreateDefaultWidget( int32 Index, TSharedPtr< SWidget
 		.VAlign( VAlign_Center )
 		[
 			SNew( SButton )
-			.ButtonStyle( FEditorStyle::Get(), "FlatButton.Primary" )
+			.ButtonStyle( FAppStyle::Get(), "FlatButton.Primary" )
 			.ButtonColorAndOpacity( FLinearColor::Transparent )
 			.ForegroundColor( FLinearColor::White )
 			.ContentPadding( FMargin(6, 2) )
@@ -294,8 +295,8 @@ void SDataprepDetailsView::CreateDefaultWidget( int32 Index, TSharedPtr< SWidget
 			.Content()
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 				.Text_Lambda( [this](){ return StringArrayDetailedObject->bExpanded ? FEditorFontGlyphs::Caret_Down: FEditorFontGlyphs::Caret_Right; } )
 			]
 			.OnClicked_Lambda( [this]()
@@ -444,9 +445,11 @@ void SDataprepDetailsView::OnObjectReplaced(const TMap<UObject*, UObject*>& Repl
 
 void SDataprepDetailsView::ForceRefresh()
 {
-	// ueent_hotfix Hotfix for 4.24 (Remove the ui flickering)
-	Invalidate(EInvalidateWidgetReason::Prepass);
-	bRefreshObjectToDisplay = true;
+	if (Generator.IsValid())
+	{
+		Generator->SetObjects({ DetailedObject });
+	}
+	Construct();
 }
 
 void SDataprepDetailsView::OnDataprepParameterizationStatusForObjectsChanged(const TSet<UObject*>* Objects)
@@ -630,7 +633,6 @@ void SDataprepDetailsView::AddWidgets( const TArray< TSharedRef< IDetailTreeNode
 
 void SDataprepDetailsView::Construct(const FArguments& InArgs)
 {
-	bRefreshObjectToDisplay = false;
 	DetailedObject = InArgs._Object;
 	Spacing = InArgs._Spacing;
 	bColumnPadding = InArgs._ColumnPadding;
@@ -671,7 +673,6 @@ void SDataprepDetailsView::Construct()
 {
 	TrackedProperties.Reset();
 	DataprepAssetForParameterization.Reset();
-	bHasCustomPrepass = true;
 
 	if ( DetailedObject )
 	{
@@ -771,20 +772,6 @@ void SDataprepDetailsView::AddReferencedObjects(FReferenceCollector& Collector)
 			Property->AddReferencedObjects(Collector);
 		}
 	}
-}
-
-bool SDataprepDetailsView::CustomPrepass(float LayoutScaleMultiplier)
-{
-	if ( bRefreshObjectToDisplay )
-	{
-		TArray< UObject* > Objects;
-		Objects.Add( DetailedObject );
-		Generator->SetObjects( Objects );
-		Construct();
-		bRefreshObjectToDisplay = false;
-	}
-
-	return true;
 }
 
 void SDataprepContextMenuOverride::Construct(const FArguments& InArgs)

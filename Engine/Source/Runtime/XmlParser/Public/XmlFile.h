@@ -2,8 +2,15 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "XmlNode.h"
+
+class FXmlAttribute;
+class FXmlNode;
 
 namespace EConstructMethod
 {
@@ -82,9 +89,9 @@ private:
 	 * Add an attribute to the passed-in array.
 	 * This makes the assumption that an attribute comes in as one 'token' (i.e. no spaces between tag="value").
 	 */
-	void AddAttribute(const FString& InToken, TArray<FXmlAttribute>& OutAttributes);
+	static void AddAttribute(const FString& InToken, TArray<FXmlAttribute>& OutAttributes);
 	/** Recursively creates nodes from the list of tokens */
-	FXmlNode* CreateNodeRecursive(const TArray<FString>& Tokens, int32 StartIndex, int32* OutNextIndex = nullptr);
+	FXmlNode* CreateRootNode(TArrayView<const FString> Tokens);
 	/** Hook next ptrs up recursively */
 	void HookUpNextPtrs(FXmlNode* Node);
 	/** Creates the internal file representation as a bunch of FXmlNode's */

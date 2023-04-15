@@ -72,13 +72,19 @@ namespace AutomationTool.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.TagList)]
 		public string TagReferences;
+
+		/// <summary>
+		/// Whether to use the system toolchain rather than the bundled UE SDK
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool UseSystemCompiler;
 	}
 
 	/// <summary>
 	/// Compiles C# project files, and their dependencies.
 	/// </summary>
 	[TaskElement("CsCompile", typeof(CsCompileTaskParameters))]
-	public class CsCompileTask : CustomTask
+	public class CsCompileTask : BgTaskImpl
 	{
 		/// <summary>
 		/// Parameters for the task
@@ -100,7 +106,7 @@ namespace AutomationTool.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Get the project file
 			HashSet<FileReference> ProjectFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Project, TagNameToFileSet);
@@ -168,9 +174,24 @@ namespace AutomationTool.Tasks
 				}
 				Arguments.Add("/verbosity:minimal");
 				Arguments.Add("/nologo");
+
+				string JoinedArguments = String.Join(" ", Arguments);
+
 				foreach(FileReference ProjectFile in ProjectFiles)
 				{
-					CommandUtils.MsBuild(CommandUtils.CmdEnv, ProjectFile.FullName, String.Join(" ", Arguments), null);
+					if (!FileReference.Exists(ProjectFile))
+					{
+						throw new AutomationException("Project {0} does not exist!", ProjectFile);
+					}
+
+					if (Parameters.UseSystemCompiler)
+					{
+						CommandUtils.MsBuild(CommandUtils.CmdEnv, ProjectFile.FullName, JoinedArguments, null);
+					}
+					else
+					{
+						CommandUtils.RunAndLog(CommandUtils.CmdEnv, CommandUtils.CmdEnv.DotnetMsbuildPath, $"msbuild {CommandUtils.MakePathSafeToUseWithCommandLine(ProjectFile.FullName)} {JoinedArguments}");
+					}
 				}
 			}
 
@@ -197,6 +218,7 @@ namespace AutomationTool.Tasks
 			// Merge them into the standard set of build products
 			BuildProducts.UnionWith(ProjectBuildProducts);
 			BuildProducts.UnionWith(ProjectReferences);
+			return Task.CompletedTask;
 		}
 
 		/// <summary>
@@ -305,5 +327,112 @@ namespace AutomationTool.Tasks
 				}
 			}
 		}
-	}	
+	}
+
+	/// <summary>
+	/// Output from compiling a csproj file
+	/// </summary>
+	public class CsCompileOutput
+	{
+		/// <summary>
+		/// Empty instance of CsCompileOutput
+		/// </summary>
+		public static CsCompileOutput Empty { get; } = new CsCompileOutput(FileSet.Empty, FileSet.Empty);
+
+		/// <summary>
+		/// Output binaries
+		/// </summary>
+		public FileSet Binaries { get; }
+
+		/// <summary>
+		/// Referenced output
+		/// </summary>
+		public FileSet References { get; }
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		public CsCompileOutput(FileSet Binaries, FileSet References)
+		{
+			this.Binaries = Binaries;
+			this.References = References;
+		}
+
+		/// <summary>
+		/// Merge all outputs from this project
+		/// </summary>
+		/// <returns></returns>
+		public FileSet Merge()
+		{
+			return Binaries + References;
+		}
+
+		/// <summary>
+		/// Merges two outputs together
+		/// </summary>
+		public static CsCompileOutput operator +(CsCompileOutput Lhs, CsCompileOutput Rhs)
+		{
+			return new CsCompileOutput(Lhs.Binaries + Rhs.Binaries, Lhs.References + Rhs.References);
+		}
+	}
+
+	/// <summary>
+	/// Extension methods for csproj compilation
+	/// </summary>
+	public static class CsCompileOutputExtensions
+	{
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="Task"></param>
+		/// <returns></returns>
+		public static async Task<FileSet> MergeAsync(this Task<CsCompileOutput> Task)
+		{
+			return (await Task).Merge();
+		}
+	}
+
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Compile a C# project
+		/// </summary>
+		/// <param name="Project">The C# project files to compile.</param>
+		/// <param name="Platform">The platform to compile.</param>
+		/// <param name="Configuration">The configuration to compile.</param>
+		/// <param name="Target">The target to build.</param>
+		/// <param name="Properties">Properties for the command.</param>
+		/// <param name="Arguments">Additional options to pass to the compiler.</param>
+		/// <param name="EnumerateOnly">Only enumerate build products -- do not actually compile the projects.</param>
+		public static async Task<CsCompileOutput> CsCompileAsync(FileReference Project, string Platform = null, string Configuration = null, string Target = null, string Properties = null, string Arguments = null, bool? EnumerateOnly = null)
+		{
+			CsCompileTaskParameters Parameters = new CsCompileTaskParameters();
+			Parameters.Project = Project.FullName;
+			Parameters.Platform = Platform;
+			Parameters.Configuration = Configuration;
+			Parameters.Target = Target;
+			Parameters.Properties = Properties;
+			Parameters.Arguments = Arguments;
+			Parameters.EnumerateOnly = EnumerateOnly ?? Parameters.EnumerateOnly;
+			Parameters.Tag = "#Out";
+			Parameters.TagReferences = "#Refs";
+
+			HashSet<FileReference> BuildProducts = new HashSet<FileReference>();
+			Dictionary<string, HashSet<FileReference>> TagNameToFileSet = new Dictionary<string, HashSet<FileReference>>();
+			await new CsCompileTask(Parameters).ExecuteAsync(new JobContext(null!), BuildProducts, TagNameToFileSet);
+
+			FileSet Binaries = FileSet.Empty;
+			FileSet References = FileSet.Empty;
+			if (TagNameToFileSet.TryGetValue(Parameters.Tag, out HashSet<FileReference> BinaryFiles))
+			{
+				Binaries = FileSet.FromFiles(Unreal.RootDirectory, BinaryFiles);
+			}
+			if (TagNameToFileSet.TryGetValue(Parameters.TagReferences, out HashSet<FileReference> ReferenceFiles))
+			{
+				References = FileSet.FromFiles(Unreal.RootDirectory, ReferenceFiles);
+			}
+
+			return new CsCompileOutput(Binaries, References);
+		}
+	}
 }

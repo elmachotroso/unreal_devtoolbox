@@ -6,6 +6,7 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -18,8 +19,9 @@ namespace UnrealBuildTool
 		/// Constructor
 		/// </summary>
 		/// <param name="Arguments">Command line arguments passed to the project generator</param>
-		public WindowsProjectGenerator(CommandLineArguments Arguments)
-			: base(Arguments)
+		/// <param name="Logger">Logger for output</param>
+		public WindowsProjectGenerator(CommandLineArguments Arguments, ILogger Logger)
+			: base(Arguments, Logger)
 		{
 		}
 
@@ -47,6 +49,34 @@ namespace UnrealBuildTool
 				return "x64";
 			}
 			return InPlatform.ToString();
+		}
+
+		public override string GetVisualStudioUserFileStrings(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, string InConditionString, TargetRules InTargetRules, FileReference TargetRulesPath, FileReference ProjectFilePath, string ProjectName, string? ForeignUProjectPath)
+		{
+			StringBuilder VCUserFileContent = new StringBuilder();
+
+			VCUserFileContent.AppendLine("  <PropertyGroup {0}>", InConditionString);
+			if (InTargetRules.Type != TargetType.Game)
+			{
+				string DebugOptions = "";
+
+				if (ForeignUProjectPath != null)
+				{
+					DebugOptions += ForeignUProjectPath;
+					DebugOptions += " -skipcompile";
+				}
+				else if (InTargetRules.Type == TargetType.Editor && ProjectName != ProjectFileGenerator.EngineProjectFileNameBase)
+				{
+					DebugOptions += ProjectName;
+				}
+
+				VCUserFileContent.AppendLine("    <LocalDebuggerCommandArguments>{0}</LocalDebuggerCommandArguments>", DebugOptions);
+			}
+			VCUserFileContent.AppendLine("    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>");
+			VCUserFileContent.AppendLine("  </PropertyGroup>");
+
+
+			return VCUserFileContent.ToString();
 		}
 
 		public override bool RequiresVSUserFileGeneration()

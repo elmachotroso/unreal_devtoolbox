@@ -33,6 +33,7 @@ public:
 #if WITH_EDITOR
 	virtual void EnableObjectPropertyTrace(UObject* Object, bool bEnable = true) override;
 	virtual bool IsObjectPropertyTraceEnabled(UObject* Object) override;
+	virtual void StartTrace() override;
 #endif
 
 	// Spawn a document tab
@@ -59,4 +60,6 @@ private:
 	TSharedPtr<UE::Trace::FStoreService> StoreService;
 #endif
 	TWeakPtr<FTabManager> WeakTimingProfilerTabManager;
+	
+	bool bTraceStarted = false;
 };

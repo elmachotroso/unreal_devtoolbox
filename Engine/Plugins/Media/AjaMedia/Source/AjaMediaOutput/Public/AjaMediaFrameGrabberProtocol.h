@@ -29,7 +29,7 @@ public:
 public:
 
 	/** AJA Setting to use for the FrameGrabberProtocol */
-	UPROPERTY(config, BlueprintReadWrite, EditAnywhere, Category=AJA, meta=(AllowedClasses=AjaMediaOutput))
+	UPROPERTY(config, BlueprintReadWrite, EditAnywhere, Category=AJA, meta=(AllowedClasses="/Script/AjaMediaOutput.AjaMediaOutput"))
 	FSoftObjectPath MediaOutput;
 
 	/** States unused options for AJAFrameGrabberProtocolSettings */
@@ -40,9 +40,9 @@ private:
 
 	/** Transient media output pointer to keep the media output alive while this protocol is in use */
 	UPROPERTY(Transient)
-	UAjaMediaOutput* TransientMediaOutputPtr;
+	TObjectPtr<UAjaMediaOutput> TransientMediaOutputPtr;
 
 	/** Transient media capture pointer that will capture the viewport */
 	UPROPERTY(Transient)
-	UAjaMediaCapture* TransientMediaCapturePtr;
+	TObjectPtr<UAjaMediaCapture> TransientMediaCapturePtr;
 };

@@ -5,12 +5,13 @@
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/ScopeLock.h"
+#include "UObject/TopLevelAssetPath.h"
 
 struct FSearchRecord
 {
 	FString AssetName;
 	FString AssetPath;
-	FString AssetClass;
+	FTopLevelAssetPath AssetClass;
 
 	FString object_name;
 	FString object_path;

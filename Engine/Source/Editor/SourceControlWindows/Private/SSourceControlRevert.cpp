@@ -27,7 +27,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PackageTools.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -124,7 +124,7 @@ public:
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 
 				SNew(SVerticalBox)
@@ -140,7 +140,7 @@ public:
 				.Padding(10,0)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.Padding(5)
 					[
 						SNew(SCheckBox)
@@ -191,14 +191,14 @@ public:
 					.Padding(5)
 					[
 						SNew(SUniformGridPanel)
-						.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-						.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-						.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+						.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+						.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+						.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 						+SUniformGridPanel::Slot(0,0)
 						[
 							SNew(SButton) 
 							.HAlign(HAlign_Center)
-							.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+							.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 							.OnClicked(this, &SSourceControlRevertWidget::OKClicked)
 							.IsEnabled(this, &SSourceControlRevertWidget::IsOKEnabled)
 							.Text(LOCTEXT("RevertButton", "Revert"))
@@ -207,7 +207,7 @@ public:
 						[
 							SNew(SButton) 
 							.HAlign(HAlign_Center)
-							.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+							.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 							.OnClicked(this, &SSourceControlRevertWidget::CancelClicked)
 							.Text(LOCTEXT("CancelButton", "Cancel"))
 						]
@@ -273,7 +273,7 @@ private:
 				.HAlign(HAlign_Right)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("ContentBrowser.ContentDirty")))
+					.Image(FAppStyle::GetBrush(TEXT("ContentBrowser.ContentDirty")))
 					.Visibility(ListItemPtr.ToSharedRef(), &FRevertCheckBoxListViewItem::OnGetModifiedStateVisibility)
 					.ToolTipText(LOCTEXT("ModifiedFileToolTip","This file has been modified from the source version"))
 				]
@@ -437,58 +437,10 @@ bool FSourceControlWindows::PromptForRevert( const TArray<FString>& InPackageNam
 		{
 			TArray<FString> FinalPackagesToRevert;
 			SourceControlWidget->GetPackagesToRevert(FinalPackagesToRevert);
+			
 			if (FinalPackagesToRevert.Num() > 0)
 			{
-				// attempt to unload the packages we are about to revert
-				TArray<UPackage*> LoadedPackages;
-				for (TArray<FString>::TConstIterator PackageIter(InPackageNames); PackageIter; ++PackageIter)
-				{
-					UPackage* Package = FindPackage(NULL, **PackageIter);
-					if (Package != NULL)
-					{
-						LoadedPackages.Add(Package);
-					}
-				}
-
-				const TArray<FString> RevertPackageFilenames = SourceControlHelpers::PackageFilenames(FinalPackagesToRevert);
-
-				// Prepare the packages to be reverted...
-				for (UPackage* Package : LoadedPackages)
-				{
-					// Detach the linkers of any loaded packages so that SCC can overwrite the files...
-					if (!Package->IsFullyLoaded())
-					{
-						FlushAsyncLoading();
-						Package->FullyLoad();
-					}
-					ResetLoaders(Package);
-				}
-
-				// Revert everything...
-				SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), RevertPackageFilenames);
-
-				// Reverting may have deleted some packages, so we need to unload those rather than re-load them...
-				TArray<UPackage*> PackagesToUnload;
-				LoadedPackages.RemoveAll([&](UPackage* InPackage) -> bool
-				{
-					const FString PackageExtension = InPackage->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
-					const FString PackageFilename = FPackageName::LongPackageNameToFilename(InPackage->GetName(), PackageExtension);
-					if (!FPaths::FileExists(PackageFilename))
-					{
-						PackagesToUnload.Emplace(InPackage);
-						return true; // remove package
-					}
-					return false; // keep package
-				});
-
-				// Hot-reload the new packages...
-				UPackageTools::ReloadPackages(LoadedPackages);
-
-				// Unload any deleted packages...
-				UPackageTools::UnloadPackages(PackagesToUnload);
-
-				// Re-cache the SCC state...
-				SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), RevertPackageFilenames, EConcurrency::Asynchronous);
+				SourceControlHelpers::RevertAndReloadPackages(FinalPackagesToRevert);
 
 				bReverted = true;
 			}

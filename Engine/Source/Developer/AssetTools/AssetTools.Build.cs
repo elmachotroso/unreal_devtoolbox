@@ -6,8 +6,6 @@ public class AssetTools : ModuleRules
 {
 	public AssetTools(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add("Developer/AssetTools/Private");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -18,6 +16,12 @@ public class AssetTools : ModuleRules
 			}
 		);
 
+		PublicIncludePathModuleNames.AddRange(
+			new string[] {
+				"Merge",
+			}
+		);
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
                 "CurveAssetEditor",
@@ -25,9 +29,7 @@ public class AssetTools : ModuleRules
                 "InputCore",
 				"ApplicationCore",
 				"Slate",
-                "EditorStyle",
 				"SourceControl",
-				"TextureEditor",
 				"PropertyEditor",
 				"Kismet",
 				"Landscape",
@@ -38,17 +40,18 @@ public class AssetTools : ModuleRules
 				"ToolMenus",
 				"PhysicsCore",
 				"DeveloperSettings",
+				"ClassViewer",
 				"EngineSettings",
 				"InterchangeCore",
 				"InterchangeEngine",
 				"PhysicsUtilities",
+				"AssetRegistry",
 			}
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Analytics",
-				"AssetRegistry",
 				"ContentBrowser",
 				"CollectionManager",
                 "CurveAssetEditor",
@@ -71,13 +74,18 @@ public class AssetTools : ModuleRules
                 "SkeletalMeshEditor",
                 "AnimationEditor",
                 "AnimationBlueprintEditor",
-                "AnimationModifiers"
+                "AnimationModifiers",
+			    "TextureEditor",
+				"DataTableEditor",
+				"Cascade",
+				"PhysicsAssetEditor",
+				"CurveTableEditor",
+				"StaticMeshEditor"
 			}
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
-				"AssetRegistry",
 				"ContentBrowser",
 				"CollectionManager",
 				"CurveTableEditor",

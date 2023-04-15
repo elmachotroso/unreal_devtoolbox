@@ -55,51 +55,29 @@ namespace UsdViewModelImpl
 }
 #endif // #if USE_USD_SDK
 
-void FUsdStageViewModel::NewStage( const TCHAR* FilePath )
+void FUsdStageViewModel::NewStage()
 {
-	FScopedTransaction Transaction( FText::Format(
-		LOCTEXT("NewStageTransaction", "Created new USD stage '{0}'"),
-		FText::FromString( FilePath )
-	));
+	FScopedTransaction Transaction( LOCTEXT( "NewStageTransaction", "Created new USD stage" ) );
 
-	UE::FUsdStage UsdStage = FilePath ? UnrealUSDWrapper::NewStage( FilePath ) : UnrealUSDWrapper::NewStage();
-	if ( !UsdStage )
+	UsdUtils::StartMonitoringErrors();
+
+	if ( !UsdStageActor.IsValid() )
 	{
-		return;
+		IUsdStageModule& UsdStageModule = FModuleManager::GetModuleChecked< IUsdStageModule >( TEXT( "USDStage" ) );
+		UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
 	}
 
-	// If we pass in nullptr, we'll create an in-memory stage, and so the "RootLayer" path we'll send down to the
-	// stage actor will be a magic path that is guaranteed to never exist in a filesystem due to invalid characters.
-	// The stage actor will interpret that, and try to load the stage from the stage cache
-	FString StagePath = FilePath;
-	if ( FilePath == nullptr )
+	if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
 	{
-		UE::FSdfLayer Layer = UsdStage.GetRootLayer();
-		if ( Layer )
-		{
-			StagePath = FString( UnrealIdentifiers::IdentifierPrefix ) + Layer.GetIdentifier();
-		}
+		StageActor->Modify();
+		StageActor->NewStage();
 	}
 
-#if USE_USD_SDK
-	{
-		FScopedUsdAllocs UsdAllocs;
-
-		// Create default prim
-		pxr::UsdGeomXform RootPrim = pxr::UsdGeomXform::Define( UsdStage, UnrealToUsd::ConvertPath( TEXT("/Root") ).Get() );
-		pxr::UsdModelAPI( RootPrim ).SetKind( pxr::KindTokens->assembly );
-
-		// Set default prim
-		( (pxr::UsdStageRefPtr&)UsdStage )->SetDefaultPrim( RootPrim.GetPrim() );
-	}
-#endif // #if USE_USD_SDK
-
-	OpenStage( *StagePath );
+	UsdUtils::ShowErrorsAndStopMonitoring();
 }
 
 void FUsdStageViewModel::OpenStage( const TCHAR* FilePath )
 {
-
 	UsdUtils::StartMonitoringErrors();
 
 	if ( !UsdStageActor.IsValid() )
@@ -117,6 +95,8 @@ void FUsdStageViewModel::OpenStage( const TCHAR* FilePath )
 	{
 		UE_LOG(LogUsd, Error, TEXT("Failed to find a AUsdStageActor that could open stage '%s'!"), FilePath);
 	}
+
+	UsdUtils::ShowErrorsAndStopMonitoring();
 }
 
 void FUsdStageViewModel::ReloadStage()
@@ -240,7 +220,8 @@ void FUsdStageViewModel::SaveStageAs( const TCHAR* FilePath )
 		FText::FromString( FilePath )
 	) );
 
-	if ( UsdStageActor.IsValid() )
+	AUsdStageActor* StageActorPtr = UsdStageActor.Get();
+	if ( StageActorPtr )
 	{
 		if ( UE::FUsdStage UsdStage = UsdStageActor->GetOrLoadUsdStage() )
 		{
@@ -252,7 +233,25 @@ void FUsdStageViewModel::SaveStageAs( const TCHAR* FilePath )
 				{
 					FScopedUnrealAllocs UEAllocs;
 
+					// In the process of opening FilePath below we'll close our previous stage, which is an anonymous
+					// layer and marked dirty by default. Even though we just saved (exported) it to disk, we'd end
+					// up getting the "do you want to save these dirty USD layers?" dialog by default...
+					// Here we'll write out a comment on the layer that we can easily check for in
+					// USDStageEditorModule::SaveStageActorLayersForWorld to know to skip showing that dialog. Note
+					// how this comment iself doesn't actually get saved to disk though.
+					//
+					// We also block listening here because we don't want to record to the transactor that we wrote
+					// this comment, because we can't record restoring it to what it was either, given that we'll stop
+					// listening to the previous stage after we open the next one. If we just recorded writing the
+					// comment, undoing/redoing through this operation would have left the temp stage with the comment
+					// in it permanently.
+					FScopedBlockNoticeListening BlockListening( StageActorPtr );
+					FString OldComment = RootLayer.GetComment();
+					RootLayer.SetComment( UnrealIdentifiers::LayerSavedComment );
+
 					OpenStage( FilePath );
+
+					RootLayer.SetComment( *OldComment );
 
 					UsdViewModelImpl::SaveUEStateLayer( UsdStage );
 				}
@@ -286,6 +285,7 @@ void FUsdStageViewModel::ImportStage()
 		// Preload some settings according to USDStage options. These will overwrite whatever is loaded from config
 		ImportContext.ImportOptions->PurposesToImport = StageActor->PurposesToLoad;
 		ImportContext.ImportOptions->RenderContextToImport = StageActor->RenderContext;
+		ImportContext.ImportOptions->MaterialPurpose = StageActor->MaterialPurpose;
 		ImportContext.ImportOptions->StageOptions.MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( UsdStage );
 		ImportContext.ImportOptions->StageOptions.UpAxis = UsdUtils::GetUsdStageUpAxisAsEnum( UsdStage );
 		ImportContext.bReadFromStageCache = true; // So that we import whatever the user has open right now, even if the file has changes
@@ -299,6 +299,9 @@ void FUsdStageViewModel::ImportStage()
 			StageName = TEXT("TransientStage");
 		}
 
+		// Pass the stage directly too in case we're importing a transient stage with no filepath
+		ImportContext.Stage = UsdStage;
+
 		const bool bIsAutomated = false;
 		if ( ImportContext.Init( StageName, RootPath, TEXT("/Game/"), RF_Public | RF_Transactional, bIsAutomated ) )
 		{
@@ -307,14 +310,12 @@ void FUsdStageViewModel::ImportStage()
 			// Let the importer reuse our assets, but force it to spawn new actors and components always
 			// This allows a different setting for asset/component collapsing, and doesn't require modifying the PrimTwins
 			ImportContext.AssetCache = StageActor->GetAssetCache();
+			ImportContext.InfoCache = StageActor->GetInfoCache();
 			ImportContext.LevelSequenceHelper.SetAssetCache( StageActor->GetAssetCache() );
 			ImportContext.MaterialToPrimvarToUVIndex = StageActor->GetMaterialToPrimvarToUVIndex();
 
 			ImportContext.TargetSceneActorAttachParent = StageActor->GetRootComponent()->GetAttachParent();
 			ImportContext.TargetSceneActorTargetTransform = StageActor->GetActorTransform();
-
-			// Pass the stage directly too in case we're importing a transient stage with no filepath
-			ImportContext.Stage = UsdStage;
 
 			UUsdStageImporter* USDImporter = IUsdStageImporterModule::Get().GetImporter();
 			USDImporter->ImportFromFile(ImportContext);

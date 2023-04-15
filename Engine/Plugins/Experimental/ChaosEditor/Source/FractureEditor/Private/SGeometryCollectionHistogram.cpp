@@ -13,6 +13,8 @@
 #include "FractureEditorMode.h"
 #include "ScopedTransaction.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SGeometryCollectionHistogram)
+
 #define LOCTEXT_NAMESPACE "ChaosEditor"
 
 
@@ -135,7 +137,7 @@ FGeometryCollectionHistogramItemList FGeometryCollectionHistogramItemComponent::
 	// Collect the inspected attribute 
 	FGeometryCollectionHistogramItemList NodesList;
 	
-	if (Component->GetRestCollection())
+	if (Component.IsValid() && Component->GetRestCollection())
 	{
 		FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
 
@@ -214,6 +216,10 @@ void SGeometryCollectionHistogram::SetComponents(const TArray<UGeometryCollectio
 	{
 		for (UGeometryCollectionComponent* Component : InNewComponents)
 		{
+			if (!ensure(Component))
+			{
+				continue;
+			}
 			RootNodes.Add(MakeShared<FGeometryCollectionHistogramItemComponent>(Component));
 			LeafNodes.Append(RootNodes.Last()->RegenerateNodes(LevelView));
 		}
@@ -361,7 +367,7 @@ void SGeometryCollectionHistogram::SetListIndices()
 }
 
 
-void SGeometryCollectionHistogram::SetBoneSelection(UGeometryCollectionComponent* RootComponent, const TArray<int32>& InSelection, bool bClearCurrentSelection)
+void SGeometryCollectionHistogram::SetBoneSelection(UGeometryCollectionComponent* RootComponent, const TArray<int32>& InSelection, bool bClearCurrentSelection, int32 FocusBoneIdx)
 {
 	TGuardValue<bool> ExternalSelectionGuard(bPerformingSelection, true);
 
@@ -381,7 +387,7 @@ void SGeometryCollectionHistogram::SetBoneSelection(UGeometryCollectionComponent
 				FGeometryCollectionHistogramItemPtr Item = RootNode->GetItemFromBoneIndex(BoneIndex);
 				if (Item.IsValid())
 				{
-					if (bFirstSelection)
+					if (bFirstSelection && BoneIndex == FocusBoneIdx)
 					{
 						ListView->RequestScrollIntoView(Item);
 						bFirstSelection = false;
@@ -404,3 +410,4 @@ TSharedRef<ITableRow> SGeometryCollectionHistogram::MakeHistogramRowWidget(FGeom
 
 
 #undef LOCTEXT_NAMESPACE
+

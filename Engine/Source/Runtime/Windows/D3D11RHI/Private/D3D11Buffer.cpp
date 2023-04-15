@@ -13,7 +13,7 @@ TAutoConsoleVariable<int32> GCVarUseSharedKeyedMutex(
 	TEXT("with the D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX flag instead of D3D11_RESOURCE_MISC_SHARED (default).\n"),
 	ECVF_Default);
 
-FBufferRHIRef FD3D11DynamicRHI::RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
+FBufferRHIRef FD3D11DynamicRHI::RHICreateBuffer(FRHICommandListBase&, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
 {
 	if (CreateInfo.bWithoutNativeResource)
 	{
@@ -21,7 +21,7 @@ FBufferRHIRef FD3D11DynamicRHI::RHICreateBuffer(uint32 Size, EBufferUsageFlags U
 	}
 
 	// Explicitly check that the size is nonzero before allowing CreateBuffer to opaquely fail.
-	check(Size > 0);
+	checkf(Size > 0, TEXT("Attempt to create buffer '%s' with size 0."), CreateInfo.DebugName ? CreateInfo.DebugName : TEXT("(null)"));
 
 	// Describe the buffer.
 	D3D11_BUFFER_DESC Desc = { Size };
@@ -92,7 +92,15 @@ FBufferRHIRef FD3D11DynamicRHI::RHICreateBuffer(uint32 Size, EBufferUsageFlags U
 	}
 
 	TRefCountPtr<ID3D11Buffer> BufferResource;
-	VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc, pInitData, BufferResource.GetInitReference()), Direct3DDevice);
+	{
+		HRESULT hr = Direct3DDevice->CreateBuffer(&Desc, pInitData, BufferResource.GetInitReference());
+		if (FAILED(hr))
+		{
+			UE_LOG(LogD3D11RHI, Error, TEXT("Failed to create buffer '%s' with ByteWidth=%u, Usage=%d, BindFlags=0x%x, CPUAccessFlags=0x%x, MiscFlags=0x%x, StructureByteStride=%u, InitData=0x%p"),
+				CreateInfo.DebugName ? CreateInfo.DebugName : TEXT(""), Desc.ByteWidth, Desc.Usage, Desc.BindFlags, Desc.CPUAccessFlags, Desc.MiscFlags, Desc.StructureByteStride, pInitData);
+			VerifyD3D11Result(hr, "CreateBuffer", __FILE__, __LINE__, Direct3DDevice);
+		}
+	}
 
 	if (CreateInfo.DebugName)
 	{
@@ -120,12 +128,7 @@ FBufferRHIRef FD3D11DynamicRHI::RHICreateBuffer(uint32 Size, EBufferUsageFlags U
 	return NewBuffer;
 }
 
-FBufferRHIRef FD3D11DynamicRHI::CreateBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
-{
-	return RHICreateBuffer(Size, Usage, Stride, ResourceState, CreateInfo);
-}
-
-void* FD3D11DynamicRHI::LockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI, uint32 Offset, uint32 Size, EResourceLockMode LockMode)
+void* FD3D11DynamicRHI::LockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI, uint32 Offset, uint32 Size, EResourceLockMode LockMode)
 {
 	FD3D11Buffer* Buffer = ResourceCast(BufferRHI);
 	// If this resource is bound to the device, unbind it
@@ -198,7 +201,7 @@ void* FD3D11DynamicRHI::LockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmd
 	return (void*)((uint8*)LockedData.GetData() + Offset);
 }
 
-void FD3D11DynamicRHI::UnlockBuffer_BottomOfPipe(FRHICommandListImmediate& RHICmdList, FRHIBuffer* BufferRHI)
+void FD3D11DynamicRHI::UnlockBuffer_BottomOfPipe(FRHICommandListBase& RHICmdList, FRHIBuffer* BufferRHI)
 {
 	FD3D11Buffer* Buffer = ResourceCast(BufferRHI);
 
@@ -276,6 +279,9 @@ void FD3D11DynamicRHI::RHIBindDebugLabelName(FRHIBuffer* BufferRHI, const TCHAR*
 	BufferRHI->SetName(DebugName);
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 	FD3D11Buffer* BufferD3D = ResourceCast(BufferRHI);
-	BufferD3D->Resource->SetPrivateData(WKPDID_D3DDebugObjectName, FCString::Strlen(Name) + 1, TCHAR_TO_ANSI(Name));
+	if (BufferD3D->Resource != nullptr)
+	{
+		BufferD3D->Resource->SetPrivateData(WKPDID_D3DDebugObjectName, FCString::Strlen(Name) + 1, TCHAR_TO_ANSI(Name));
+	}
 #endif
 }

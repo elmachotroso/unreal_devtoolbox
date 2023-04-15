@@ -124,7 +124,7 @@ TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TShared
 	const int32 NodeArrayIndex = PropertyNode->GetArrayIndex();
 	FProperty* Property = PropertyNode->GetProperty();
 	
-	FSlateFontInfo FontStyle = FEditorStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle );
+	FSlateFontInfo FontStyle = FAppStyle::GetFontStyle( PropertyEditorConstants::PropertyFontStyle );
 	TSharedPtr<SWidget> PropertyWidget; 
 	if( Property )
 	{
@@ -532,7 +532,7 @@ namespace PropertyEditorHelpers
 				{
 
 					const FString& EnumName = Property->GetMetaData(TEXT("Enum"));
-					Enum = FindObject<UEnum>(ANY_PACKAGE, *EnumName, true);
+					Enum = UClass::TryFindTypeSlow<UEnum>(EnumName, EFindFirstObjectOptions::ExactClass);
 				}
 
 				if(Enum)
@@ -603,6 +603,10 @@ namespace PropertyEditorHelpers
 		else if( FPropertyHandleRotator::Supports( PropertyNode ) )
 		{
 			PropertyHandle = MakeShareable( new FPropertyHandleRotator( PropertyNode, NotifyHook, PropertyUtilities ) );
+		}
+		else if (FPropertyHandleColor::Supports(PropertyNode))
+		{
+			PropertyHandle = MakeShareable(new FPropertyHandleColor(PropertyNode, NotifyHook, PropertyUtilities));
 		}
 		else if (FPropertyHandleSet::Supports(PropertyNode))
 		{
@@ -1081,7 +1085,7 @@ namespace PropertyEditorHelpers
 			TArray<FString> ValidEnumValuesAsString;
 
 			Property->GetMetaData(ValidEnumValuesName).ParseIntoArray(ValidEnumValuesAsString, TEXT(","));
-			for(auto& Value : ValidEnumValuesAsString)
+			for(FString& Value : ValidEnumValuesAsString)
 			{
 				Value.TrimStartInline();
 				ValidEnumValues.Add(*InEnum->GenerateFullEnumName(*Value));
@@ -1089,6 +1093,26 @@ namespace PropertyEditorHelpers
 		}
 
 		return ValidEnumValues;
+	}
+
+	TArray<FName> GetInvalidEnumsFromPropertyOverride(const FProperty* Property, const UEnum* InEnum)
+	{
+		TArray<FName> InvalidEnumValues;
+
+		static const FName InvalidEnumValuesName("InvalidEnumValues");
+		if(Property->HasMetaData(InvalidEnumValuesName))
+		{
+			TArray<FString> InvalidEnumValuesAsString;
+
+			Property->GetMetaData(InvalidEnumValuesName).ParseIntoArray(InvalidEnumValuesAsString, TEXT(","));
+			for(FString& Value : InvalidEnumValuesAsString)
+			{
+				Value.TrimStartInline();
+				InvalidEnumValues.Add(*InEnum->GenerateFullEnumName(*Value));
+			}
+		}
+
+		return InvalidEnumValues;
 	}
 
 	bool IsCategoryHiddenByClass(const TSharedPtr<FComplexPropertyNode>& InRootNode, FName CategoryName)

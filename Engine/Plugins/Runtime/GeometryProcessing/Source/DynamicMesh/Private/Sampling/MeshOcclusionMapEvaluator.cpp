@@ -23,6 +23,8 @@ const FVector3d FMeshOcclusionMapEvaluator::DefaultObjectNormal = FVector3d::Zer
 
 void FMeshOcclusionMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationContext& Context)
 {
+	Context.DataLayout = DataLayout();
+
 	if (WANT_ALL(OcclusionType))
 	{
 		if (NormalSpace == ESpace::Tangent)
@@ -39,7 +41,6 @@ void FMeshOcclusionMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationC
 		}
 		Context.EvalData = this;
 		Context.AccumulateMode = EAccumulateMode::Add;
-		Context.DataLayout = { EComponents::Float1, EComponents::Float3 };
 	}
 	else if (WANT_AMBIENT_OCCLUSION(OcclusionType))
 	{
@@ -48,7 +49,6 @@ void FMeshOcclusionMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationC
 		Context.EvaluateColor = &EvaluateColor<EMeshOcclusionMapType::AmbientOcclusion, ESpace::Tangent>;
 		Context.EvalData = this;
 		Context.AccumulateMode = EAccumulateMode::Add;
-		Context.DataLayout = { EComponents::Float1 };
 	}
 	else if (WANT_BENT_NORMAL(OcclusionType))
 	{
@@ -66,7 +66,6 @@ void FMeshOcclusionMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationC
 		}
 		Context.EvalData = this;
 		Context.AccumulateMode = EAccumulateMode::Add;
-		Context.DataLayout = { EComponents::Float3 };
 	}
 	else
 	{
@@ -119,6 +118,33 @@ void FMeshOcclusionMapEvaluator::Setup(const FMeshBaseBaker& Baker, FEvaluationC
 	}
 }
 
+const TArray<FMeshMapEvaluator::EComponents>& FMeshOcclusionMapEvaluator::DataLayout() const
+{
+	if (WANT_ALL(OcclusionType))
+	{
+		static const TArray<EComponents> Layout{ EComponents::Float1, EComponents::Float3 };
+		return Layout;
+	}
+
+	if (WANT_AMBIENT_OCCLUSION(OcclusionType))
+	{
+		static const TArray<EComponents> Layout{ EComponents::Float1 };
+		return Layout;
+	}
+
+	if (WANT_BENT_NORMAL(OcclusionType))
+	{
+		static const TArray<EComponents> Layout{ EComponents::Float3 };
+		return Layout;
+	}
+
+	// TODO: Support error case in the baker to skip over invalid eval configs?
+	checkSlow(false);
+
+	static const TArray<EComponents> Layout{ EComponents::Float1 };
+	return Layout;
+}
+
 template <EMeshOcclusionMapType ComputeType, FMeshOcclusionMapEvaluator::ESpace ComputeSpace>
 void FMeshOcclusionMapEvaluator::EvaluateSample(float*& Out, const FCorrespondenceSample& Sample, void* EvalData)
 {
@@ -131,7 +157,7 @@ void FMeshOcclusionMapEvaluator::EvaluateSample(float*& Out, const FCorresponden
 
 	if constexpr (WANT_AMBIENT_OCCLUSION(ComputeType))
 	{
-		WriteToBuffer(Out, FMathd::Clamp(1.0f - (float)Occlusion, 0.0f, 1.0f));
+		WriteToBuffer(Out, FMathf::Clamp(1.0f - (float)Occlusion, 0.0f, 1.0f));
 	}
 
 	if constexpr (WANT_BENT_NORMAL(ComputeType))
@@ -194,7 +220,11 @@ FMeshOcclusionMapEvaluator::FOcclusionTuple FMeshOcclusionMapEvaluator::SampleFu
 
 	FVector3f DetailTriNormal;
 	DetailSampler->TriBaryInterpolateNormal(DetailMesh, DetailTriID, SampleData.DetailBaryCoords, DetailTriNormal);
-	Normalize(DetailTriNormal);
+	if (!DetailTriNormal.Normalize())
+	{
+		// degenerate triangle normal
+		return FOcclusionTuple(0.0f, (FVector3f)DefaultNormal);
+	}
 
 	FVector3d BaseTangentX, BaseTangentY;
 	if constexpr (WANT_BENT_NORMAL(ComputeType) && ComputeSpace == ESpace::Tangent)
@@ -275,6 +305,9 @@ FMeshOcclusionMapEvaluator::FOcclusionTuple FMeshOcclusionMapEvaluator::SampleFu
 	{
 		AccumNormal = (AccumNormal.Length() > 0.0) ? Normalized(AccumNormal) : DefaultNormal;
 	}
-	return FOcclusionTuple(AccumOcclusion, AccumNormal);
+	return FOcclusionTuple( (float)AccumOcclusion, (FVector3f)AccumNormal);
 }
 
+#undef WANT_AMBIENT_OCCLUSION
+#undef WANT_BENT_NORMAL
+#undef WANT_ALL

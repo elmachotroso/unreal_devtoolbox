@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Units/Debug/RigUnit_DebugBase.h"
+#include "RigUnit_DebugBase.h"
 #include "RigUnit_DebugTransform.generated.h"
 
 UENUM()
@@ -62,6 +62,9 @@ struct CONTROLRIG_API FRigUnit_DebugTransform : public FRigUnit_DebugBase
 
 	UPROPERTY(meta = (Input, Constant))
 	bool bEnabled;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
 
 USTRUCT(meta=(DisplayName="Draw Transform", Deprecated = "4.25"))
@@ -105,6 +108,9 @@ struct CONTROLRIG_API FRigUnit_DebugTransformMutable : public FRigUnit_DebugBase
 
 	UPROPERTY(meta = (Input, Constant))
 	bool bEnabled;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
 
 /**
@@ -150,7 +156,7 @@ struct CONTROLRIG_API FRigUnit_DebugTransformMutableItemSpace : public FRigUnit_
 	UPROPERTY(meta = (Input))
 	FTransform WorldOffset;
 
-	UPROPERTY(meta = (Input, Constant))
+	UPROPERTY(meta = (Input))
 	bool bEnabled;
 };
 
@@ -207,6 +213,9 @@ struct CONTROLRIG_API FRigUnit_DebugTransformArrayMutable : public FRigUnit_Debu
 
 	UPROPERTY(transient)
 	FRigUnit_DebugTransformArrayMutable_WorkData WorkData;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
 
 /**
@@ -255,6 +264,6 @@ struct CONTROLRIG_API FRigUnit_DebugTransformArrayMutableItemSpace : public FRig
 	UPROPERTY(meta = (Input))
 	FTransform WorldOffset;
 
-	UPROPERTY(meta = (Input, Constant))
+	UPROPERTY(meta = (Input))
 	bool bEnabled;
 };

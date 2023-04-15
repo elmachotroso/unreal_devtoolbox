@@ -6,6 +6,7 @@
 #include "Styling/ISlateStyle.h"
 #include "Toolkits/IToolkitHost.h"
 #include "AssetTypeActions_Base.h"
+#include "AssetTypeCategories.h"
 
 struct FTemplateSequenceToolkitParams;
 
@@ -21,7 +22,7 @@ public:
 	 *
 	 * @param InStyle The style set to use for asset editor toolkits.
 	 */
-	FTemplateSequenceActions(const TSharedRef<ISlateStyle>& InStyle);
+	FTemplateSequenceActions(const TSharedRef<ISlateStyle>& InStyle, const EAssetTypeCategories::Type InAssetCategory);
 
 public:
 
@@ -33,7 +34,6 @@ public:
 	virtual void OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>()) override;
 	virtual bool ShouldForceWorldCentric() override;
 	virtual bool CanLocalize() const override { return false; }
-	virtual bool HasActions(const TArray<UObject*>& InObjects) const override { return false; }
 
 protected:
 
@@ -43,4 +43,6 @@ private:
 
 	/** Pointer to the style set to use for toolkits. */
 	TSharedRef<ISlateStyle> Style;
+
+	const EAssetTypeCategories::Type AssetCategory;
 };

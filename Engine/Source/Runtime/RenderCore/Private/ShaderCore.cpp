@@ -11,6 +11,7 @@
 #include "Misc/PathViews.h"
 #include "Misc/ScopeLock.h"
 #include "Stats/StatsMisc.h"
+#include "Misc/ScopeRWLock.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/StringBuilder.h"
 #include "Shader.h"
@@ -158,6 +159,11 @@ public:
 		}
 
 		bInitialized = true;
+	}
+
+	void UpdateIncludeDirectoryForPreviewPlatform(EShaderPlatform PreviewShaderPlatform, EShaderPlatform ParentShaderPlatform)
+	{
+		Platforms[PreviewShaderPlatform].IncludeDirectory = Platforms[ParentShaderPlatform].IncludeDirectory;
 	}
 
 	FSHAHash* FindHash(EShaderPlatform ShaderPlatform, const FString& VirtualFilePath)
@@ -490,15 +496,10 @@ bool AllowGlobalShaderLoad()
 
 }
 
-bool FShaderParameterMap::FindParameterAllocation(const TCHAR* ParameterName,uint16& OutBufferIndex,uint16& OutBaseIndex,uint16& OutSize) const
+TOptional<FParameterAllocation> FShaderParameterMap::FindParameterAllocation(const FString& ParameterName) const
 {
-	const FParameterAllocation* Allocation = ParameterMap.Find(ParameterName);
-	if(Allocation)
+	if (const FParameterAllocation* Allocation = ParameterMap.Find(ParameterName))
 	{
-		OutBufferIndex = Allocation->BufferIndex;
-		OutBaseIndex = Allocation->BaseIndex;
-		OutSize = Allocation->Size;
-
 		if (Allocation->bBound)
 		{
 			// Can detect copy-paste errors in binding parameters.  Need to fix all the false positives before enabling.
@@ -506,12 +507,25 @@ bool FShaderParameterMap::FindParameterAllocation(const TCHAR* ParameterName,uin
 		}
 
 		Allocation->bBound = true;
+
+		return TOptional<FParameterAllocation>(*Allocation);
+	}
+
+	return TOptional<FParameterAllocation>();
+}
+
+bool FShaderParameterMap::FindParameterAllocation(const TCHAR* ParameterName, uint16& OutBufferIndex, uint16& OutBaseIndex, uint16& OutSize) const
+{
+	if (TOptional<FParameterAllocation> Allocation = FindParameterAllocation(ParameterName))
+	{
+		OutBufferIndex = Allocation->BufferIndex;
+		OutBaseIndex = Allocation->BaseIndex;
+		OutSize = Allocation->Size;
+
 		return true;
 	}
-	else
-	{
-		return false;
-	}
+
+	return false;
 }
 
 bool FShaderParameterMap::ContainsParameterAllocation(const TCHAR* ParameterName) const
@@ -522,17 +536,25 @@ bool FShaderParameterMap::ContainsParameterAllocation(const TCHAR* ParameterName
 void FShaderParameterMap::AddParameterAllocation(const TCHAR* ParameterName,uint16 BufferIndex,uint16 BaseIndex,uint16 Size,EShaderParameterType ParameterType)
 {
 	check(ParameterType < EShaderParameterType::Num);
-	FParameterAllocation Allocation;
-	Allocation.BufferIndex = BufferIndex;
-	Allocation.BaseIndex = BaseIndex;
-	Allocation.Size = Size;
-	Allocation.Type = ParameterType;
-	ParameterMap.Add(ParameterName,Allocation);
+	ParameterMap.Add(ParameterName, FParameterAllocation(BufferIndex, BaseIndex, Size, ParameterType));
 }
 
 void FShaderParameterMap::RemoveParameterAllocation(const TCHAR* ParameterName)
 {
 	ParameterMap.Remove(ParameterName);
+}
+
+TArray<FString> FShaderParameterMap::GetAllParameterNamesOfType(EShaderParameterType InType) const
+{
+	TArray<FString> Result;
+	for (const TMap<FString, FParameterAllocation>::ElementType& Parameter : ParameterMap)
+	{
+		if (Parameter.Value.Type == InType)
+		{
+			Result.Emplace(Parameter.Key);
+		}
+	}
+	return Result;
 }
 
 void FShaderCompilerDefinitions::SetFloatDefine(const TCHAR* Name, float Value)
@@ -595,14 +617,14 @@ bool CheckVirtualShaderFilePath(FStringView VirtualFilePath, TArray<FShaderCompi
 		bSuccess = false;
 	}
 
-	if (Contains(VirtualFilePath, TEXT(".."_SV)))
+	if (Contains(VirtualFilePath, TEXTVIEW("..")))
 	{
 		FString Error = FString::Printf(TEXT("Virtual shader source file name \"%s\" should have relative directories (\"../\") collapsed."), *FString(VirtualFilePath));
 		ReportVirtualShaderFilePathError(CompileErrors, Error);
 		bSuccess = false;
 	}
 
-	if (Contains(VirtualFilePath, TEXT("\\"_SV)))
+	if (Contains(VirtualFilePath, TEXTVIEW("\\")))
 	{
 		FString Error = FString::Printf(TEXT("Backslashes are not permitted in virtual shader source file name \"%s\""), *FString(VirtualFilePath));
 		ReportVirtualShaderFilePathError(CompileErrors, Error);
@@ -612,7 +634,7 @@ bool CheckVirtualShaderFilePath(FStringView VirtualFilePath, TArray<FShaderCompi
 	FStringView Extension = FPathViews::GetExtension(VirtualFilePath);
 	if (VirtualFilePath.StartsWith(TEXT("/Engine/Shared/")))
 	{
-		if ((Extension != TEXT("h"_SV)))
+		if ((Extension != TEXTVIEW("h")))
 		{
 			FString Error = FString::Printf(TEXT("Extension on virtual shader source file name \"%s\" is wrong. Only .h is allowed for shared headers that are shared between C++ and shader code."), *FString(VirtualFilePath));
 			ReportVirtualShaderFilePathError(CompileErrors, Error);
@@ -643,7 +665,7 @@ bool CheckVirtualShaderFilePath(FStringView VirtualFilePath, TArray<FShaderCompi
 * @param OutVirtualFilePaths - [out] list of shader source files to add to
 * @param ShaderFilename - shader file to add
 */
-void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString VirtualFilePath, EShaderPlatform ShaderPlatform)
+void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString VirtualFilePath, EShaderPlatform ShaderPlatform, const FName* ShaderPlatformName)
 {
 	check(CheckVirtualShaderFilePath(VirtualFilePath));
 	if (!OutVirtualFilePaths.Contains(VirtualFilePath))
@@ -651,7 +673,9 @@ void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString Virt
 		OutVirtualFilePaths.Add(VirtualFilePath);
 
 		TArray<FString> ShaderIncludes;
-		GetShaderIncludes(*VirtualFilePath, *VirtualFilePath, OutVirtualFilePaths, ShaderPlatform);
+
+		const uint32 DepthLimit = 100;
+		GetShaderIncludes(*VirtualFilePath, *VirtualFilePath, OutVirtualFilePaths, ShaderPlatform, DepthLimit, ShaderPlatformName);
 		for( int32 IncludeIdx=0; IncludeIdx < ShaderIncludes.Num(); IncludeIdx++ )
 		{
 			OutVirtualFilePaths.AddUnique(ShaderIncludes[IncludeIdx]);
@@ -664,7 +688,7 @@ void AddShaderSourceFileEntry(TArray<FString>& OutVirtualFilePaths, FString Virt
 *
 * @param OutVirtualFilePaths - [out] list of shader source files to add to
 */
-void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShaderPlatform ShaderPlatform)
+void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShaderPlatform ShaderPlatform, const FName* ShaderPlatformName)
 {
 	// add all shader source files for hashing
 	for( TLinkedList<FVertexFactoryType*>::TIterator FactoryIt(FVertexFactoryType::GetTypeList()); FactoryIt; FactoryIt.Next() )
@@ -673,7 +697,7 @@ void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShade
 		if( VertexFactoryType )
 		{
 			FString ShaderFilename(VertexFactoryType->GetShaderFilename());
-			AddShaderSourceFileEntry(OutVirtualFilePaths, ShaderFilename, ShaderPlatform);
+			AddShaderSourceFileEntry(OutVirtualFilePaths, ShaderFilename, ShaderPlatform, ShaderPlatformName);
 		}
 	}
 	for( TLinkedList<FShaderType*>::TIterator ShaderIt(FShaderType::GetTypeList()); ShaderIt; ShaderIt.Next() )
@@ -682,17 +706,17 @@ void GetAllVirtualShaderSourcePaths(TArray<FString>& OutVirtualFilePaths, EShade
 		if(ShaderType)
 		{
 			FString ShaderFilename(ShaderType->GetShaderFilename());
-			AddShaderSourceFileEntry(OutVirtualFilePaths, ShaderFilename, ShaderPlatform);
+			AddShaderSourceFileEntry(OutVirtualFilePaths, ShaderFilename, ShaderPlatform, ShaderPlatformName);
 		}
 	}
 
 	//#todo-rco: No need to loop through Shader Pipeline Types (yet)
 
 	// Always add ShaderVersion.ush, so if shader forgets to include it, it will still won't break DDC.
-	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Public/ShaderVersion.ush")), ShaderPlatform);
-	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/MaterialTemplate.ush")), ShaderPlatform);
-	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/Common.ush")), ShaderPlatform);
-	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/Definitions.usf")), ShaderPlatform);
+	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Public/ShaderVersion.ush")), ShaderPlatform, ShaderPlatformName);
+	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/MaterialTemplate.ush")), ShaderPlatform, ShaderPlatformName);
+	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/Common.ush")), ShaderPlatform, ShaderPlatformName);
+	AddShaderSourceFileEntry(OutVirtualFilePaths, FString(TEXT("/Engine/Private/Definitions.usf")), ShaderPlatform, ShaderPlatformName);
 }
 
 /**
@@ -875,24 +899,25 @@ bool ReplaceVirtualFilePathForShaderPlatform(FString& InOutVirtualFilePath, ESha
 	return false;
 }
 
-bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform)
+bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform, const FName* InShaderPlatformName)
 {
-	const FStringView ShaderAutogenStem = TEXT("/Engine/Generated/ShaderAutogen/"_SV);
+	const FStringView ShaderAutogenStem = TEXTVIEW("/Engine/Generated/ShaderAutogen/");
 
 	// Tweak the autogen path
 	// for examples, if it starts with "/Engine/Generated/ShaderAutogen/" change it to "ShaderAutogen/PCD3D_SM5/"
 	if (!FCString::Strnicmp(*InOutVirtualFilePath, ShaderAutogenStem.GetData(), ShaderAutogenStem.Len()))
 	{
+		check(FDataDrivenShaderPlatformInfo::IsValid(ShaderPlatform) || InShaderPlatformName != nullptr);
+		FName ShaderPlatformName = FDataDrivenShaderPlatformInfo::IsValid(ShaderPlatform) ? FDataDrivenShaderPlatformInfo::GetName(ShaderPlatform) : *InShaderPlatformName;
 		TStringBuilder<1024> OutputShaderName;
 
 		// Append the prefix.
-		OutputShaderName.Append(TEXT("/ShaderAutogen/"_SV)); // using FStringView (_SV suffix) in order to avoid a strlen call
+		OutputShaderName.Append(TEXTVIEW("/ShaderAutogen/"));
 
 		// Append the platform name.
-		const FName PlatformName = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
-		TCHAR PlatformNameString[NAME_SIZE];
-		const uint32 PlatformNameLen = PlatformName.GetPlainNameString(PlatformNameString);
-		OutputShaderName.Append(PlatformNameString, PlatformNameLen);
+
+		FString PlatformNameString = ShaderPlatformName.ToString();
+		OutputShaderName.Append(*PlatformNameString, PlatformNameString.Len());
 
 		OutputShaderName.AppendChar(TEXT('/'));
 
@@ -907,7 +932,7 @@ bool ReplaceVirtualFilePathForShaderAutogen(FString& InOutVirtualFilePath, EShad
 	return false;
 }
 
-bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors) // TODO: const FString&
+bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors, const FName* ShaderPlatformName) // TODO: const FString&
 {
 	// it's not expected that cooked platforms get here, but if they do, this is the final out
 	if (FPlatformProperties::RequiresCookedData())
@@ -927,7 +952,7 @@ bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform Shader
 		ReplaceVirtualFilePathForShaderPlatform(VirtualFilePath, ShaderPlatform);
 
 		// Fixup autogen file
-		ReplaceVirtualFilePathForShaderAutogen(VirtualFilePath, ShaderPlatform);
+		ReplaceVirtualFilePathForShaderAutogen(VirtualFilePath, ShaderPlatform, ShaderPlatformName);
 
 		// Protect GShaderFileCache from simultaneous access by multiple threads
 		FScopeLock ScopeLock(&FileCacheCriticalSection);
@@ -967,9 +992,9 @@ bool LoadShaderSourceFile(const TCHAR* InVirtualFilePath, EShaderPlatform Shader
 	return bResult;
 }
 
-void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents)
+void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents, const FName* ShaderPlatformName)
 {
-	if (!LoadShaderSourceFile(VirtualFilePath, ShaderPlatform, &OutFileContents, nullptr))
+	if (!LoadShaderSourceFile(VirtualFilePath, ShaderPlatform, &OutFileContents, nullptr, ShaderPlatformName))
 	{
 		UE_LOG(LogShaders, Fatal, TEXT("Couldn't find source file of virtual shader path \'%s\'"), VirtualFilePath);
 	}
@@ -1031,7 +1056,7 @@ static const TCHAR* FindFirstInclude(const TCHAR* Text)
 /**
  * Recursively populates IncludeFilenames with the unique include filenames found in the shader file named Filename.
  */
-static void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, bool AddToIncludeFile)
+static void InternalGetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, bool AddToIncludeFile, const FName* ShaderPlatformName)
 {
 	//avoid an infinite loop with a 0 length string
 	if (FileContents.Len() > 0)
@@ -1080,7 +1105,7 @@ static void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHA
 					ReplaceVirtualFilePathForShaderPlatform(ExtractedIncludeFilename, ShaderPlatform);
 
 					// Fixup autogen file
-					ReplaceVirtualFilePathForShaderAutogen(ExtractedIncludeFilename, ShaderPlatform);
+					ReplaceVirtualFilePathForShaderAutogen(ExtractedIncludeFilename, ShaderPlatform, ShaderPlatformName);
 
 					// Ignore uniform buffer, vertex factory and instanced stereo includes
 					bool bIgnoreInclude = ExtractedIncludeFilename.StartsWith(TEXT("/Engine/Generated/"));
@@ -1101,8 +1126,8 @@ static void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHA
 						if (!IncludeVirtualFilePaths.Contains(ExtractedIncludeFilename))
 						{
 							FString IncludedFileContents;
-							LoadShaderSourceFile(*ExtractedIncludeFilename, ShaderPlatform, &IncludedFileContents, nullptr);
-							GetShaderIncludes(EntryPointVirtualFilePath, *ExtractedIncludeFilename, IncludedFileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit - 1, true);
+							LoadShaderSourceFile(*ExtractedIncludeFilename, ShaderPlatform, &IncludedFileContents, nullptr, ShaderPlatformName);
+							InternalGetShaderIncludes(EntryPointVirtualFilePath, *ExtractedIncludeFilename, IncludedFileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit - 1, true, ShaderPlatformName);
 						}
 					}
 				}
@@ -1133,22 +1158,22 @@ static void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHA
 /**
  * Recursively populates IncludeFilenames with the unique include filenames found in the shader file named Filename.
  */
-static void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, bool AddToIncludeFile)
+static void InternalGetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, bool AddToIncludeFile, const FName* ShaderPlatformName)
 {
 	FString FileContents;
-	LoadShaderSourceFile(VirtualFilePath, ShaderPlatform, &FileContents, nullptr);
+	LoadShaderSourceFile(VirtualFilePath, ShaderPlatform, &FileContents, nullptr, ShaderPlatformName);
 
-	GetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, FileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, AddToIncludeFile);
+	InternalGetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, FileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, AddToIncludeFile, ShaderPlatformName);
 }
 
-void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit)
+void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, const FName* ShaderPlatformName)
 {
-	GetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, false);
+	InternalGetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, false, ShaderPlatformName);
 }
 
-void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit)
+void GetShaderIncludes(const TCHAR* EntryPointVirtualFilePath, const TCHAR* VirtualFilePath, const FString& FileContents, TArray<FString>& IncludeVirtualFilePaths, EShaderPlatform ShaderPlatform, uint32 DepthLimit, const FName* ShaderPlatformName)
 {
-	GetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, FileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, false);
+	InternalGetShaderIncludes(EntryPointVirtualFilePath, VirtualFilePath, FileContents, IncludeVirtualFilePaths, ShaderPlatform, DepthLimit, false, ShaderPlatformName);
 }
 
 void HashShaderFileWithIncludes(FArchive& HashingArchive, const TCHAR* VirtualFilePath, const FString& FileContents, EShaderPlatform ShaderPlatform, bool bOnlyHashIncludedFiles)
@@ -1318,12 +1343,12 @@ const FSHAHash& GetShaderFilesHash(const TArray<FString>& VirtualFilePaths, ESha
 	}
 }
 
-void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables)
+void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables, const FName* ShaderPlatformName)
 {
 	if (!FPlatformProperties::RequiresCookedData())
 	{
 		TArray<FString> ShaderSourceFiles;
-		GetAllVirtualShaderSourcePaths(ShaderSourceFiles, GMaxRHIShaderPlatform);
+		GetAllVirtualShaderSourcePaths(ShaderSourceFiles, GMaxRHIShaderPlatform, ShaderPlatformName);
 
 		FScopedSlowTask SlowTask((float)ShaderSourceFiles.Num());
 
@@ -1354,7 +1379,7 @@ void BuildShaderFileToUniformBufferMap(TMap<FString, TArray<const TCHAR*> >& Sha
 			SlowTask.EnterProgressFrame(1);
 
  			FString ShaderFileContents;
-			LoadShaderSourceFileChecked(*ShaderSourceFiles[FileIndex], GMaxRHIShaderPlatform, ShaderFileContents);
+			LoadShaderSourceFileChecked(*ShaderSourceFiles[FileIndex], GMaxRHIShaderPlatform, ShaderFileContents, ShaderPlatformName);
 
 			// To allow case sensitive search which is way faster on some platforms (no need to look up locale, etc)
 			ShaderFileContents.ToUpperInline();
@@ -1378,6 +1403,12 @@ void InitializeShaderHashCache()
 {
 	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
 	GShaderHashCache.Initialize();
+}
+
+void UpdateIncludeDirectoryForPreviewPlatform(EShaderPlatform PreviewPlatform, EShaderPlatform ActualPlatform)
+{
+	FScopeLock ShaderHashAccessLock(&GShaderHashAccessGuard);
+	GShaderHashCache.UpdateIncludeDirectoryForPreviewPlatform(PreviewPlatform, ActualPlatform);
 }
 
 void CheckShaderHashCacheInclude(const FString& VirtualFilePath, EShaderPlatform ShaderPlatform)
@@ -1424,7 +1455,7 @@ void UninitializeShaderTypes()
  * Flushes the shader file and CRC cache, and regenerates the binary shader files if necessary.
  * Allows shader source files to be re-read properly even if they've been modified since startup.
  */
-void FlushShaderFileCache()
+void FlushShaderFileCache(const FName* ShaderPlatformName)
 {
 	UE_LOG(LogShaders, Log, TEXT("FlushShaderFileCache() begin"));
 
@@ -1442,7 +1473,7 @@ void FlushShaderFileCache()
 		LogShaderSourceDirectoryMappings();
 
 		TMap<FString, TArray<const TCHAR*> > ShaderFileToUniformBufferVariables;
-		BuildShaderFileToUniformBufferMap(ShaderFileToUniformBufferVariables);
+		BuildShaderFileToUniformBufferMap(ShaderFileToUniformBufferVariables, ShaderPlatformName);
 
 		for (TLinkedList<FShaderPipelineType*>::TConstIterator It(FShaderPipelineType::GetTypeList()); It; It.Next())
 		{
@@ -1488,33 +1519,82 @@ void GenerateReferencedUniformBuffers(
 	}
 }
 
+
+/** Efficient lookup to find FShaderParametersMetadata members by name pointer */
+class FShaderParameterMemberLookup 
+{
+public:
+	FShaderParameterMemberLookup(TLinkedList<FShaderParametersMetadata*>& ShaderParameters)
+	{
+		for (FShaderParametersMetadata* Struct : ShaderParameters)
+		{
+			Map.Add(Struct->GetShaderVariableName(), Struct->GetMembers());
+		}
+	}
+
+	const TConstArrayView<FShaderParametersMetadata::FMember>* FindMembersByPointer(const TCHAR* ShaderVariableName) const
+	{
+		return Map.Find(ShaderVariableName);
+	}
+
+private:
+	TMap<const void*, TConstArrayView<FShaderParametersMetadata::FMember>> Map;
+};
+
+/** Cache providing a FShaderParameterMemberLookup for the current FShaderParametersMetadata::GetStructList */
+class FFShaderParameterPointerLookupCache
+{
+public:
+	TSharedPtr<const FShaderParameterMemberLookup> Get()
+	{
+		TLinkedList<FShaderParametersMetadata*>* CurrentHead = FShaderParametersMetadata::GetStructList();
+		check(CurrentHead);
+
+		{
+			FReadScopeLock ReadScope(Lock);
+			if (CurrentHead == CachedHead)
+			{
+				return CachedLookup;
+			}
+		}
+
+		TSharedPtr<FShaderParameterMemberLookup> NewLookup = MakeShared<FShaderParameterMemberLookup>(*CurrentHead);
+
+		FWriteScopeLock WriteScope(Lock);
+		CachedHead = CurrentHead;
+		CachedLookup = NewLookup;
+
+		return NewLookup;
+	}
+
+private:
+	FRWLock Lock;
+	TLinkedList<FShaderParametersMetadata*>* CachedHead = nullptr;
+	TSharedPtr<const FShaderParameterMemberLookup> CachedLookup;
+};
+
+static FFShaderParameterPointerLookupCache GShaderParameterMemberLookupCache;
+
 void SerializeUniformBufferInfo(FShaderSaveArchive& Ar, const TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>& UniformBufferEntries)
 {
-	for (TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder>::TConstIterator It(UniformBufferEntries); It; ++It)
+	TSharedPtr<const FShaderParameterMemberLookup> ShaderParameterMembers = GShaderParameterMemberLookupCache.Get();
+
+	for (const TPair<const TCHAR*, FCachedUniformBufferDeclaration>& Entry : UniformBufferEntries)
 	{
-		for (TLinkedList<FShaderParametersMetadata*>::TIterator StructIt(FShaderParametersMetadata::GetStructList()); StructIt; StructIt.Next())
+		if (const TConstArrayView<FShaderParametersMetadata::FMember>* Members = ShaderParameterMembers->FindMembersByPointer(Entry.Key))
 		{
-			if (It.Key() == StructIt->GetShaderVariableName())
+			// Serialize information about the struct layout so we can detect when it changes
+			int32 NumMembers = Members->Num();
+			// Serializing with NULL so that FShaderSaveArchive will record the length without causing an actual data serialization
+			Ar.Serialize(nullptr, NumMembers);
+
+			for (const FShaderParametersMetadata::FMember& Member : *Members)
 			{
-				// Serialize information about the struct layout so we can detect when it changes
-				const FShaderParametersMetadata& Struct = **StructIt;
-				const TArray<FShaderParametersMetadata::FMember>& Members = Struct.GetMembers();
-
-				int32 NumMembers = Members.Num();
-				// Serializing with NULL so that FShaderSaveArchive will record the length without causing an actual data serialization
-				Ar.Serialize(NULL, NumMembers);
-
-				for (int32 MemberIndex = 0; MemberIndex < Members.Num(); MemberIndex++)
-				{
-					const FShaderParametersMetadata::FMember& Member = Members[MemberIndex];
-
-					// Note: Only comparing number of floats used by each member and type, so this can be tricked (eg. swapping two equal size and type members)
-					int32 MemberSize = Member.GetNumColumns() * Member.GetNumRows();
-					Ar.Serialize(NULL, MemberSize);
-					int32 MemberType = (int32)Member.GetBaseType();
-					Ar.Serialize(NULL, MemberType);
-				}
-				break;
+				// Note: Only comparing number of floats used by each member and type, so this can be tricked (eg. swapping two equal size and type members)
+				int32 MemberSize = Member.GetNumColumns() * Member.GetNumRows();
+				Ar.Serialize(nullptr, MemberSize);
+				int32 MemberType = (int32)Member.GetBaseType();
+				Ar.Serialize(nullptr, MemberType);
 			}
 		}
 	}
@@ -1669,7 +1749,12 @@ void AddShaderSourceDirectoryMapping(const FString& VirtualShaderDirectory, cons
 	check(!GShaderSourceDirectoryMappings.Contains(VirtualShaderDirectory));
 
 	// Make sure the real directory to map exists.
-	checkf(FPaths::DirectoryExists(RealShaderDirectory), TEXT("FPaths::DirectoryExists(%s)"), *RealShaderDirectory);
+	bool bDirectoryExists = FPaths::DirectoryExists(RealShaderDirectory);
+	if (!bDirectoryExists)
+	{
+		UE_LOG(LogShaders, Log, TEXT("Directory %s"), *RealShaderDirectory);
+	}
+	checkf(bDirectoryExists, TEXT("FPaths::DirectoryExists(%s %s) %s"), *RealShaderDirectory, *FPaths::ConvertRelativePathToFull(RealShaderDirectory), FPlatformProcess::ComputerName());
 
 	// Make sure the Generated directory does not exist, because is reserved for C++ generated shader source
 	// by the FShaderCompilerEnvironment::IncludeVirtualPathToContentsMap member.
@@ -1761,6 +1846,11 @@ FArchive& operator<<(FArchive& Ar, FShaderCompilerInput& Input)
 		FString CompressionFormatString(Input.CompressionFormat.ToString());
 		Ar << CompressionFormatString;
 		Input.CompressionFormat = FName(*CompressionFormatString);
+	}
+	{
+		FString ShaderPlatformNameString(Input.ShaderPlatformName.ToString());
+		Ar << ShaderPlatformNameString;
+		Input.ShaderPlatformName = FName(*ShaderPlatformNameString);
 	}
 	Ar << Input.SourceFilePrefix;
 	Ar << Input.VirtualSourceFilePath;

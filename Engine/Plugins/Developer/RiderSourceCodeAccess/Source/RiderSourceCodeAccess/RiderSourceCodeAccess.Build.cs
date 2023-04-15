@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -15,7 +15,8 @@ namespace UnrealBuildTool.Rules
                     "DesktopPlatform",
 					"Projects",
 					"Json",
-					"Projects"
+					"Projects",
+					"Slate"
 				}
 			);
 
@@ -25,6 +26,8 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("UnrealEd");
 				PrivateDependencyModuleNames.Add("GameProjectGeneration");
 			}
+
+			ShortName = "RiderSCA";
 		}
 	}
 }

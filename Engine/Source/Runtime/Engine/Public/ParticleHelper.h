@@ -602,6 +602,7 @@ struct FLightParticlePayload
 	uint64		LightId;
 	float		RadiusScale;
 	float		LightExponent;
+	float		InverseExposureBlend;
 	bool		bValid;
 	bool		bAffectsTranslucency;
 	bool		bHighQuality;
@@ -1390,6 +1391,7 @@ struct FDynamicSpriteEmitterReplayDataBase
 	FVector3f							NormalsSphereCenter;
 	FVector3f							NormalsCylinderDirection;
 	float							InvDeltaSeconds;
+	FVector3f						LWCTile;
 	int32							MaxDrawCount;
 	int32							OrbitModuleOffset;
 	int32							DynamicParameterDataOffset;

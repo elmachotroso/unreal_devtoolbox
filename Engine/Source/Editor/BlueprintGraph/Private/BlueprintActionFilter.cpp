@@ -30,6 +30,7 @@
 #include "BlueprintEventNodeSpawner.h"
 #include "BlueprintBoundEventNodeSpawner.h"
 #include "BlueprintBoundNodeSpawner.h"
+#include "BlueprintAssetNodeSpawner.h"
 #include "Algo/Transform.h"
 // "impure" node types (utilized in BlueprintActionFilterImpl::IsImpure)
 #include "K2Node_MultiGate.h"
@@ -38,6 +39,8 @@
 #include "EditorCategoryUtils.h"
 #include "BlueprintEditorModule.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Editor/EditorEngine.h"
+#include "BlueprintEditorSettings.h"
 
 /*******************************************************************************
  * Static BlueprintActionFilter Helpers
@@ -156,6 +159,17 @@ namespace BlueprintActionFilterImpl
 	
 	/**
 	 * Rejection test that checks to see if the supplied node-spawner would 
+	 * produce an asset-related action that cannot be accessed according to 
+	 * asset permissions
+	 * 
+	 * @param  Filter			Holds the blueprint context for this test.
+	 * @param  BlueprintAction	The action you wish to query.
+	 * @return True if the action would spawn a variable-set node for a read-only property.
+	 */
+	static bool IsAssetPermissionNotGranted(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
+
+	/**
+	 * Rejection test that checks to see if the supplied node-spawner would 
 	 * produce a variable-set node when the property is read-only (in this
 	 * blueprint).
 	 * 
@@ -231,10 +245,9 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter			Holds the TagetClass context for this test.
 	 * @param  BlueprintAction	The action you wish to query.
-	 * @param  Flags			Filter flags that may modify this test (@see FBlueprintActionFilter::EFlags).
 	 * @return True if the action should be rejected.
 	 */
-	static bool IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags);
+	static bool IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
 
 	/**
 	 * Rejection test that checks to see if the node-spawner represents an object
@@ -253,10 +266,9 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter					Holds the class context for this test.
 	 * @param  BlueprintAction			The action you wish to query.
-	 * @param  bPermitNonTargetGlobals	Determines if this test should pass for external global/static fields.
 	 * @return True if the action is associated with a non-allowed class member.
 	 */
-	static bool IsNonTargetMember(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool const bPermitNonTargetGlobals);
+	static bool IsNonTargetMember(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
 
 	/**
 	 * Rejection test that checks to see if the node-spawner is associated with 
@@ -283,11 +295,9 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter				Holds the class context for this test.
 	 * @param  BlueprintAction		The action you wish to query.
-	 * @param  bPermitChildClasses	When true, the node's class doesn't have to perfectly match a class to be passed (it can be a sub-class).
-	 * @param  bRejectChildClasses	When true, the node's class doesn't have to perfectly match a class to be rejected (it can be a sub-class).
 	 * @return True if the action would produce a denied node.
 	 */
-	static bool IsFilteredNodeType(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool const bPermitChildClasses, bool const bRejectChildClasses);
+	static bool IsFilteredNodeType(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
 
 	/**
 	 * Rejection test that checks to see if the node-spawner is tied to a 
@@ -421,10 +431,9 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter			Holds the graph context for this test.
 	 * @param  BlueprintAction	The action you wish to query.
-	 * @param  Flags			Filter flags that may modify this test (@see FBlueprintActionFilter::EFlags).
 	 * @return True if the macro instance is incompatible with the current graph context
 	 */
-	static bool IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags);
+	static bool IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
 
 	/**
 	 * Rejection test to help unblock common crashes, where programmers forget 
@@ -554,7 +563,7 @@ static const TArray< TSubclassOf<UEdGraphNode> >& BlueprintActionFilterImpl::Get
 		HiddenNodeTypes.Reserve(HiddenClassNames.Num());
 		for (FString const& ClassName : HiddenClassNames)
 		{
-			if (UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *ClassName))
+			if (UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(ClassName))
 			{
 				HiddenNodeTypes.Add(FoundClass);
 			}
@@ -841,6 +850,42 @@ static bool BlueprintActionFilterImpl::IsRestrictedClassMember(FBlueprintActionF
 }
 
 //------------------------------------------------------------------------------
+static bool BlueprintActionFilterImpl::IsAssetPermissionNotGranted(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
+{
+	bool bIsFilteredOut = false;
+	FBlueprintActionContext const& FilterContext = Filter.Context;
+
+	// This handles actions with loaded assets
+	UObject const* const Owner = BlueprintAction.GetActionOwner();
+	if (Owner && Owner->IsAsset())
+	{
+		if (Filter.AssetReferenceFilter.IsValid())
+		{
+			bool const bIsAccessible = Filter.AssetReferenceFilter->PassesFilter(FAssetData(Owner));
+			if (!bIsAccessible)
+			{
+				bIsFilteredOut = true;
+			}
+		}
+	}
+	// Handle unloaded asset spawners
+	else if(UBlueprintAssetNodeSpawner const* AssetNodeSpawner = Cast<UBlueprintAssetNodeSpawner>(BlueprintAction.NodeSpawner))
+	{
+		const FAssetData& AssetData = AssetNodeSpawner->GetAssetData();
+		if (Filter.AssetReferenceFilter.IsValid() && AssetData.IsValid())
+		{
+			bool const bIsAccessible = Filter.AssetReferenceFilter->PassesFilter(AssetData);
+			if (!bIsAccessible)
+			{
+				bIsFilteredOut = true;
+			}
+		}
+	}
+
+	return bIsFilteredOut;
+}
+
+//------------------------------------------------------------------------------
 static bool BlueprintActionFilterImpl::IsPermissionNotGranted(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
 	bool bIsFilteredOut = false;
@@ -889,25 +934,10 @@ static bool BlueprintActionFilterImpl::IsNonImportedObject(FBlueprintActionFilte
 
 	if (InObject)
 	{
-		// @todo_namespaces - Maybe cache this as part of the filter context, or decouple queries from the editor?
-		TArray<TSharedPtr<IBlueprintEditor>> BlueprintEditors;
-		for (const UBlueprint* Blueprint : Filter.Context.Blueprints)
+		TSharedPtr<IBlueprintEditor> BlueprintEditor = Filter.Context.EditorPtr.Pin();
+		if (BlueprintEditor.IsValid())
 		{
-			const bool bOpenEditor = false;
-			TSharedPtr<IBlueprintEditor> BlueprintEditor = FKismetEditorUtilities::GetIBlueprintEditorForObject(Blueprint, bOpenEditor);
-			if (BlueprintEditor.IsValid())
-			{
-				BlueprintEditors.AddUnique(BlueprintEditor);
-			}
-		}
-
-		for (const TSharedPtr<IBlueprintEditor>& BlueprintEditor : BlueprintEditors)
-		{
-			if (BlueprintEditor->IsNonImportedObject(InObject))
-			{
-				bIsFilteredOut = true;
-				break;
-			}
+			bIsFilteredOut = BlueprintEditor->IsNonImportedObject(InObject);
 		}
 	}
 
@@ -915,10 +945,10 @@ static bool BlueprintActionFilterImpl::IsNonImportedObject(FBlueprintActionFilte
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags)
+static bool BlueprintActionFilterImpl::IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
-	const bool bRejectAllGlobalFields = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectGlobalFields) != 0);
-	const bool bRejectNonImportedFields = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectNonImportedFields) != 0);
+	const bool bRejectAllGlobalFields = Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_RejectGlobalFields);
+	const bool bRejectNonImportedFields = Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_RejectNonImportedFields);
 
 	bool bIsFilteredOut = false;
 	FFieldVariant Field = BlueprintAction.GetAssociatedMemberField();
@@ -955,9 +985,12 @@ static bool BlueprintActionFilterImpl::IsRejectedGlobalField(FBlueprintActionFil
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsNonTargetMember(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool bPermitNonTargetGlobals)
+static bool BlueprintActionFilterImpl::IsNonTargetMember(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
 	bool bIsFilteredOut = false;
+
+	// Determines if this test should pass for external global/static fields.
+	const bool bPermitNonTargetGlobals = !Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_RejectGlobalFields);
 
 	FFieldVariant ClassField = BlueprintAction.GetAssociatedMemberField();
 	bool const bIsMemberAction = ClassField.IsValid() && ClassField.GetOwnerClass() != nullptr;
@@ -1149,9 +1182,15 @@ static bool BlueprintActionFilterImpl::IsIncompatibleWithGraphType(FBlueprintAct
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsFilteredNodeType(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool const bPermitChildClasses, bool const bRejectChildClasses)
+static bool BlueprintActionFilterImpl::IsFilteredNodeType(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
 	bool bIsFilteredOut = (Filter.PermittedNodeTypes.Num() > 0);
+
+	// When true, the node's class doesn't have to perfectly match a class to be passed (it can be a sub-class).
+	const bool bPermitChildClasses = !Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_RejectPermittedSubClasses);
+
+	// When true, the node's class doesn't have to perfectly match a class to be rejected (it can be a sub-class).
+	const bool bRejectChildClasses = !Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_PermitRejectionSubClasses);
 
 	UClass const* NodeClass = BlueprintAction.GetNodeClass();
 	if (NodeClass != nullptr)
@@ -1796,11 +1835,11 @@ static bool BlueprintActionFilterImpl::IsExtraneousInterfaceCall(FBlueprintActio
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags)
+static bool BlueprintActionFilterImpl::IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
 	bool bIsFilteredOut = false;
 
-	const bool bRejectNonImportedMacros = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectNonImportedFields) != 0);
+	const bool bRejectNonImportedMacros = Filter.HasAllFlags(FBlueprintActionFilter::BPFILTER_RejectNonImportedFields);
 
 	if(BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_MacroInstance>())
 	{
@@ -1824,7 +1863,7 @@ static bool BlueprintActionFilterImpl::IsIncompatibleMacroInstance(FBlueprintAct
 					return true;
 				}
 
-				bIsFilteredOut = (Blueprint != MacroBP) && (MacroBP->BlueprintType != BPTYPE_MacroLibrary || !Blueprint->ParentClass->IsChildOf(MacroBP->ParentClass));
+				bIsFilteredOut = (Blueprint != MacroBP) && (MacroBP->BlueprintType != BPTYPE_MacroLibrary || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(MacroBP->ParentClass));
 			}
 
 			// Note: The rest is handled by IsNodeTemplateSelfFiltered() - the check above is a "fast path" in that we don't have to instance the node template (see UK2Node_MacroInstance::IsActionFilteredOut())
@@ -1922,7 +1961,7 @@ FBlueprintActionInfo::FBlueprintActionInfo(FBlueprintActionInfo const& Rhs, IBlu
 }
 
 //------------------------------------------------------------------------------
-UObject const* FBlueprintActionInfo::GetActionOwner()
+UObject const* FBlueprintActionInfo::GetActionOwner() const
 {
 	return ActionOwner.Get();
 }
@@ -2033,14 +2072,341 @@ UFunction const* FBlueprintActionInfo::GetAssociatedFunction()
 	return CachedActionFunction;
 }
 
+bool FBlueprintActionInfo::operator==(const FBlueprintActionInfo& other) const
+{
+	if (NodeSpawner != other.NodeSpawner || ActionOwner != other.ActionOwner)
+	{
+		return false;
+	}
+	
+	for (const FBindingObject &Binding : Bindings)
+	{
+		if (!other.Bindings.Contains(Binding))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/*******************************************************************************
+ * FActionFilterCacheNode
+ ******************************************************************************/
+
+uint32 GetTypeHash(const FBlueprintActionInfo& BlueprintActionInfo)
+{
+	uint32 Hash = GetTypeHash(BlueprintActionInfo.NodeSpawner);
+	Hash = HashCombine(Hash,GetTypeHash(BlueprintActionInfo.GetActionOwner()));
+	Hash = HashCombine(Hash,BlueprintActionInfo.GetBindings().Num());
+	
+	return Hash;
+}
+
+/*******************************************************************************
+ * TActionFilterCacheKeyNode
+ ******************************************************************************/
+
+template<typename TKeyType>
+class TActionFilterCacheKeyNode : public FActionFilterCacheNode
+{
+public:
+	explicit TActionFilterCacheKeyNode(const TKeyType& Key, TDelegate<bool(const TKeyType&, const TKeyType&)> Comparison = nullptr) :
+		Key(MakeShared<TKeyType>(Key)),
+		Comparison(Comparison)
+	{}
+	
+	virtual ~TActionFilterCacheKeyNode() override = default;
+
+	virtual void UnCacheSelf() override
+	{
+		if (Parent.IsValid())
+		{
+			const FSharedNode SharedParent = Parent.Pin();
+
+			// remove this node from parent
+			SharedParent->Children.RemoveSingleSwap(this->AsShared(), false);
+
+			if (SharedParent->Children.IsEmpty())
+			{
+				SharedParent->UnCacheSelf();
+			}
+		}
+	}
+	
+	TSharedPtr<TKeyType> Key = nullptr;
+protected:
+	virtual bool KeysMatch(const void* RawKey) const override
+	{
+		if (Comparison.IsBound())
+		{
+			return Comparison.Execute(*Key, *StaticCast<const TKeyType*>(RawKey));
+		}
+		return *Key == *StaticCast<const TKeyType*>(RawKey);
+	}
+
+	TDelegate<bool(const TKeyType&, const TKeyType&)> Comparison = nullptr;
+};
+
+/*******************************************************************************
+ * TActionFilterCacheLeaf
+ ******************************************************************************/
+
+template<typename TKeyType>
+class TActionFilterCacheLeaf : public TActionFilterCacheKeyNode<TKeyType>
+{
+public:
+	explicit TActionFilterCacheLeaf(const TKeyType& Key, TDelegate<bool(const TKeyType&, const TKeyType&)> Comparison = nullptr) :
+		TActionFilterCacheKeyNode<TKeyType>(Key, Comparison),
+		CachedFilterResults(MakeShared<TMap<FBlueprintActionInfo, bool>>())
+	{}
+	
+	virtual ~TActionFilterCacheLeaf() override = default;
+
+	virtual uint32 GetLeafAccessCount() const override
+	{
+		return AccessCount;
+	}
+
+
+	virtual void DecrementLeafAccessCount() override
+	{
+		if (AccessCount > 0)
+		{
+			--AccessCount;
+		}
+	}
+
+	uint32 AccessCount = 1;
+	TSharedPtr<TMap<FBlueprintActionInfo, bool>> CachedFilterResults;
+};
+
+/*******************************************************************************
+ * FActionFilterCache
+ ******************************************************************************/
+
+FActionFilterCache::FActionFilterCache()
+{
+	if (!ReloadCompleteDelegate.IsValid())
+	{
+		ReloadCompleteDelegate = FCoreUObjectDelegates::ReloadCompleteDelegate.AddStatic(&FActionFilterCache::OnReloadComplete);
+	}
+	if (!ModuleChangedDelegate.IsValid())
+	{
+		ModuleChangedDelegate = FModuleManager::Get().OnModulesChanged().AddStatic(&FActionFilterCache::OnModuleChanged);
+	}
+}
+
+void FActionFilterCache::OnReloadComplete(EReloadCompleteReason Reason)
+{
+	ClearAllCache();
+}
+
+void FActionFilterCache::OnModuleChanged(FName ModuleName, EModuleChangeReason ChangeReason)
+{
+	ClearAllCache();
+}
+
+void FActionFilterCache::ClearAllCache()
+{
+	SharedCache = MakeShared<FActionFilterCacheNode>();
+	CacheLeafs.Empty();
+}
+
+TSharedPtr<TMap<FBlueprintActionInfo, bool>> FActionFilterCache::GetCachedFilterResults(const FBlueprintActionFilter &Filter)
+{
+	// if the leaf for this context has already been looked up, just grab it rather than researching the tree
+	if (CachedFilterResults.IsValid())
+	{
+		return CachedFilterResults;
+	}
+	
+	TSharedPtr<FActionFilterCacheNode> Current = SharedCache;
+
+/** update Current to it's child that matches Key. Create one if neccesary */
+#define LOOKUP_CACHE_KEY(Key) \
+	FindOrCacheChildNode(Current, Key, #Key)
+	
+/** update Current to it's child that matches Key as a leaf. Create one if neccesary */
+#define LOOKUP_CACHE_KEY_LEAF(Key) \
+	FindOrCacheLeaf(Current, Key, #Key)
+
+/** update Current to it's child that matches Key as a leaf. Create one if neccesary
+ *  uses Comparison lambda to check for key "equality"
+ */
+#define LOOKUP_CACHE_KEY_PREDICATE(Key, Comparison) \
+	FindOrCacheChildNode<decltype(Key)>(Current, Key, #Key, TDelegate<bool(const decltype(Key)&, const decltype(Key)&)>::CreateLambda(Comparison))
+
+/** update Current to it's child that matches Key as a leaf. Create one if neccesary
+ *  uses Comparison lambda to check for key "equality"
+ */
+#define LOOKUP_CACHE_KEY_LEAF_PREDICATE(Key, Comparison) \
+	FindOrCacheLeaf<decltype(Key)>(Current, Key, #Key, TDelegate<bool(const decltype(Key)&, const decltype(Key)&)>::CreateLambda(Comparison))
+
+	// traverse/build the cache tree looking for the cached results
+
+	// cache based on what filter tests are being applied
+	LOOKUP_CACHE_KEY(Filter.FilterTests);
+
+	// cache based on which blueprints/graphs/editor we're generating actions for
+	LOOKUP_CACHE_KEY(Filter.Context.Blueprints);
+	LOOKUP_CACHE_KEY(Filter.Context.Graphs);
+	LOOKUP_CACHE_KEY(Filter.Context.EditorPtr);
+
+	// cache based on the filter's target classes
+	LOOKUP_CACHE_KEY(Filter.TargetClasses);
+
+	// cache based on what node types are permitted or rejected
+	LOOKUP_CACHE_KEY(Filter.RejectedNodeTypes);
+	LOOKUP_CACHE_KEY(Filter.PermittedNodeTypes);
+
+	// cache based on what flags are active
+	LOOKUP_CACHE_KEY(Filter.FilterFlags);
+	
+	// cache based on the relevant pin types and directions
+	LOOKUP_CACHE_KEY_LEAF_PREDICATE(Filter.Context.Pins, [](const TArray<UEdGraphPin*>& A, const TArray<UEdGraphPin*>& B)
+	{
+		if (A.Num() != B.Num())
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < A.Num(); ++Index)
+		{
+			if (A[Index]->Direction != B[Index]->Direction)
+			{
+				return false;
+			}
+			if (A[Index]->PinType != B[Index]->PinType)
+			{
+				return false;
+			}
+		}
+		return true;
+	});
+
+	// at this point, IsFilteredByThisCache has been updated to a shared memory space that can be retrieved again
+	// by following the above procedure with the same keys values.
+	return CachedFilterResults;
+}
+
+void FActionFilterCache::PopCache()
+{
+	int32 MinIndex = 0;
+	uint32 MinAccessCount = TNumericLimits<uint32>::Max();
+	for (int32 LeafIndex = 0; LeafIndex < CacheLeafs.Num(); ++LeafIndex)
+	{
+		TWeakPtr<FActionFilterCacheNode>& Leaf = CacheLeafs[LeafIndex];
+		// if there's invalid cache, remove it first
+		if (!Leaf.IsValid())
+		{
+			MinIndex = LeafIndex;
+			break;
+		}
+
+		const uint32 AccessCount = Leaf.Pin()->GetLeafAccessCount();
+		if (AccessCount < MinAccessCount)
+		{
+			MinAccessCount = AccessCount;
+			MinIndex = LeafIndex;
+		}
+
+		// decrement access count of all leafs so that recently used leafs get prioritized more
+		Leaf.Pin()->DecrementLeafAccessCount();
+	}
+
+	TWeakPtr<FActionFilterCacheNode> RemovedElement = CacheLeafs[MinIndex];
+	if (RemovedElement.IsValid())
+	{
+		RemovedElement.Pin()->UnCacheSelf();
+	}
+
+	CacheLeafs.RemoveAt(MinIndex, 1, false);
+}
+
+TSharedPtr<FActionFilterCacheNode> FActionFilterCache::SharedCache = MakeShared<FActionFilterCacheNode>();
+
+TAutoConsoleVariable<int32> FActionFilterCache::CVarCacheLeafCapacity{
+	TEXT("BP.ActionMenuFilterCacheLeafCapacity"),
+	32,
+	TEXT("The number of action menu contexts to cache simultaniously. raising this number will increase the memory footprint but decrease how often the cache is blown")
+};
+
+TArray<TWeakPtr<FActionFilterCacheNode>> FActionFilterCache::CacheLeafs;
+
+FDelegateHandle FActionFilterCache::ReloadCompleteDelegate;
+FDelegateHandle FActionFilterCache::ModuleChangedDelegate;
+
+/*******************************************************************************
+ * FActionFilterTest
+ ******************************************************************************/
+
+TAutoConsoleVariable<bool> FActionFilterTest::CVarEnableCaching{
+		TEXT("BP.EnableActionMenuFilterCaching"),
+		false,
+		TEXT("If enabled, action filter tests with the CacheResults flag set will have their results cached")
+	};
+
+FActionFilterTest::FActionFilterTest(const FRejectionDelegate Delegate, FString Name, EActionFilterTestFlags Flags) :
+	RejectionDelegate(Delegate),
+	Name(Name),
+	Flags(Flags)
+{
+}
+
+bool FActionFilterTest::Call(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& ActionInfo,
+                             TMap<FString, uint32>* FilterTestToCpuSpecIds)
+{
+	check(RejectionDelegate.IsBound());
+
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	checkf(FilterTestToCpuSpecIds, TEXT("If Action Filter Profiling is enabled, FilterTestToCpuSpecIds must be provided"));
+	uint32& CpuSpecId = FilterTestToCpuSpecIds->FindOrAdd(Name);
+	FCpuProfilerTrace::FEventScope ProfilerEvent(CpuSpecId, *FString::Printf(TEXT("IsFiltered_%s"), *Name), true, __FILE__, __LINE__);
+
+	const double StartTime = FPlatformTime::Seconds();
+#endif	// ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+
+	const bool bIsFiltered = RejectionDelegate.Execute(Filter, ActionInfo);
+
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	ProfileRecord.NumIterations += 1;
+	ProfileRecord.TotalTimeMs += (FPlatformTime::Seconds() - StartTime) * 1000.0f;
+	if (bIsFiltered)
+	{
+		ProfileRecord.NumFilteredOut += 1;
+	}
+#endif	// ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	
+	return bIsFiltered;
+}
+
+bool FActionFilterTest::operator==(const FActionFilterTest& other) const
+{
+	return Name == other.Name && Flags == other.Flags;
+}
+
 /*******************************************************************************
  * FBlueprintActionFilter
  ******************************************************************************/
 
 //------------------------------------------------------------------------------
-FBlueprintActionFilter::FBlueprintActionFilter(uint32 Flags/*= 0x00*/)
+// DEPRECATED
+FBlueprintActionFilter::FBlueprintActionFilter(uint32 Flags)
+	:FBlueprintActionFilter(EFlags(Flags))
+{
+}
+
+//------------------------------------------------------------------------------
+FBlueprintActionFilter::FBlueprintActionFilter(const EFlags InFlags /*= BPFILTER_NoFlags*/)
 {
 	using namespace BlueprintActionFilterImpl;
+
+	FilterFlags = InFlags;
+
+	// Disable non-imported type filtering if namespace filtering features are disabled.
+	if (!GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceFilteringFeatures)
+	{
+		FilterFlags &= ~BPFILTER_RejectNonImportedFields;
+	}
 
 	BluprintGraphModule = &FModuleManager::LoadModuleChecked<FBlueprintGraphModule>("BlueprintGraph");
 
@@ -2056,53 +2422,59 @@ FBlueprintActionFilter::FBlueprintActionFilter(uint32 Flags/*= 0x00*/)
 	//
 	// this test in-particular spawns a template-node and then calls 
 	// AllocateDefaultPins() which is costly, so it should be very last!
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleAnimNotification));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsNodeTemplateSelfFiltered));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsMissingMatchingPinParam));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsMissmatchedPropertyType));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFunctionMissingPinParam));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleLatentNode));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleImpureNode));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsPropertyAccessorNode));
-	if (Flags & BPFILTER_RejectIncompatibleThreadSafety)
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsNodeTemplateSelfFiltered)); // since this is virtual, we'll avoid caching it.
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsIncompatibleAnimNotification)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsAssetPermissionNotGranted)); // since this depends on other filters, we'll avoid caching it
+
+	// TODO: blow cache when the results of the following might change:
+	//   - K2Schema->FunctionHasParamOfType
+	//   - K2Schema->ArePinTypesCompatible
+	//   - K2Schema->ConvertPropertyToPinType
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsMissingMatchingPinParam)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsMissmatchedPropertyType)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsFunctionMissingPinParam)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsIncompatibleLatentNode)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsIncompatibleImpureNode)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsPropertyAccessorNode)->WithFlags(EActionFilterTestFlags::CacheResults));
+	if (HasAnyFlags(BPFILTER_RejectIncompatibleThreadSafety))
 	{
-		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsThreadSafetyIncompatible));
+		AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsThreadSafetyIncompatible)->WithFlags(EActionFilterTestFlags::CacheResults));
 	}
 	
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsActionHiddenByConfig));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFieldCategoryHidden));
-	if (Flags & (BPFILTER_RejectGlobalFields | BPFILTER_RejectNonImportedFields))
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsActionHiddenByConfig)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsFieldCategoryHidden)->WithFlags(EActionFilterTestFlags::CacheResults));
+	if (HasAnyFlags(BPFILTER_RejectGlobalFields | BPFILTER_RejectNonImportedFields))
 	{
-		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsRejectedGlobalField, Flags));
+		AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsRejectedGlobalField)->WithFlags(EActionFilterTestFlags::CacheResults));
 	}
 	
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFieldInaccessible));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsNotSubClassCast));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsEventUnimplementable));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsPermissionNotGranted));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsRestrictedClassMember));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleWithGraphType));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsSchemaIncompatible));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsExtraneousInterfaceCall));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleMacroInstance, Flags));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsFieldInaccessible)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsNotSubClassCast)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsEventUnimplementable)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsPermissionNotGranted)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsRestrictedClassMember)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsIncompatibleWithGraphType)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsSchemaIncompatible)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsExtraneousInterfaceCall)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsIncompatibleMacroInstance)->WithFlags(EActionFilterTestFlags::CacheResults));
 
-	if (!(Flags & BPFILTER_PermitDeprecated))
+	if (!HasAnyFlags(BPFILTER_PermitDeprecated))
 	{
-		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsDeprecated));
+		AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsDeprecated)->WithFlags(EActionFilterTestFlags::CacheResults));
 	}
 
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFilteredNodeType, !(Flags & BPFILTER_RejectPermittedSubClasses), !(Flags & BPFILTER_PermitRejectionSubClasses)));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsNonTargetMember, !(Flags & BPFILTER_RejectGlobalFields)));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsUnBoundBindingSpawner));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsOutOfScopeLocalVariable));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsLevelScriptActionValid));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsFilteredNodeType)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsNonTargetMember)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsUnBoundBindingSpawner)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsOutOfScopeLocalVariable)->WithFlags(EActionFilterTestFlags::CacheResults));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsLevelScriptActionValid)->WithFlags(EActionFilterTestFlags::CacheResults));
 
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsHiddenInNonEditorBlueprint));	
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsHiddenInNonEditorBlueprint)->WithFlags(EActionFilterTestFlags::CacheResults));
 
 
 	// added as the first rejection test, so that we don't operate on stale 
 	// (TRASH/REINST) class fields
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsStaleFieldAction));
+	AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(IsStaleFieldAction));
 }
 
 //------------------------------------------------------------------------------
@@ -2128,17 +2500,20 @@ void FBlueprintActionFilter::Add(TArray<FTargetClassFilterData>& ToArray, UClass
 }
 
 //------------------------------------------------------------------------------
-void FBlueprintActionFilter::AddRejectionTest(FRejectionTestDelegate IsFilteredDelegate)
+void FBlueprintActionFilter::AddRejectionTest(TSharedRef<FActionFilterTest> RejectionTest)
 {
-	if (IsFilteredDelegate.IsBound())
-	{
-		FilterTests.Add(IsFilteredDelegate);
-	}
+	checkf(RejectionTest->RejectionDelegate.IsBound(), TEXT("Cannot add a rejection test without a bound delegate"));
+	FilterTests.Add(RejectionTest);
 }
 
 //------------------------------------------------------------------------------
 bool FBlueprintActionFilter::IsFiltered(FBlueprintActionInfo& BlueprintAction)
 {
+	
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintActionFilter::IsFiltered);
+#endif
+
 	bool bIsFiltered = IsFilteredByThis(BlueprintAction);
 	if (!bIsFiltered)
 	{
@@ -2178,8 +2553,24 @@ FBlueprintActionFilter const& FBlueprintActionFilter::operator&=(FBlueprintActio
 }
 
 //------------------------------------------------------------------------------
-bool FBlueprintActionFilter::IsFilteredByThis(FBlueprintActionInfo& BlueprintAction) const
+TSharedPtr<TMap<FBlueprintActionInfo, bool>> FBlueprintActionFilter::GetCachedFilterResults()
 {
+	return ActionFilterCache.GetCachedFilterResults(*this);
+}
+
+const TArray<TSharedRef<FActionFilterTest>> &FBlueprintActionFilter::GetFilterTests() const
+{
+	return FilterTests;
+}
+
+//------------------------------------------------------------------------------
+bool FBlueprintActionFilter::IsFilteredByThis(FBlueprintActionInfo& BlueprintAction)
+{
+	if (IsFilteredByCachedFilters(BlueprintAction))
+	{
+		return true;
+	}
+	
 	FBlueprintActionFilter const& FilterRef = *this;
 
 	// for debugging purposes:
@@ -2190,28 +2581,42 @@ bool FBlueprintActionFilter::IsFilteredByThis(FBlueprintActionInfo& BlueprintAct
 // 		bDebugBreak = true;
 // 	}
 
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	static TMap<FString, uint32> FilterTestToCpuSpecIds;
+#endif	// ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+
 	bool bIsFiltered = false;
 	// iterate backwards so that custom user test are ran first (and the slow
 	// internal tests are ran last).
 	for (int32 TestIndex = FilterTests.Num()-1; TestIndex >= 0; --TestIndex)
 	{
-		FRejectionTestDelegate const& RejectionTestDelegate = FilterTests[TestIndex];
-		check(RejectionTestDelegate.IsBound());
+		TSharedRef<FActionFilterTest> RejectionTest = FilterTests[TestIndex];
 
-		if (RejectionTestDelegate.Execute(FilterRef, BlueprintAction))
+		// cached tests have already been ran. we can skip them.
+		if (EnumHasAllFlags(RejectionTest->Flags, EActionFilterTestFlags::CacheResults))
 		{
-			bIsFiltered = true;
+			continue;
+		}
+
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+		bIsFiltered = RejectionTest.Call(FilterRef, BlueprintAction, &FilterTestToCpuSpecIds);
+#else
+		bIsFiltered = RejectionTest->Call(FilterRef, BlueprintAction);
+#endif
+		
+		if (bIsFiltered)
+		{
 			break;
 		}
 	}
 
 	if (!bIsFiltered)
 	{
-		for (auto& ExtraRejectionTest : BluprintGraphModule->GetExtendedActionMenuFilters())
+		for (const FBlueprintGraphModule::FActionMenuRejectionTest& ExtraRejectionTest : BluprintGraphModule->GetExtendedActionMenuFilters())
 		{
-			if (ExtraRejectionTest.Execute(FilterRef, BlueprintAction))
+			bIsFiltered = ExtraRejectionTest.Execute(FilterRef, BlueprintAction);
+			if (bIsFiltered)
 			{
-				bIsFiltered = true;
 				break;
 			}
 		}
@@ -2219,3 +2624,96 @@ bool FBlueprintActionFilter::IsFilteredByThis(FBlueprintActionInfo& BlueprintAct
 
 	return bIsFiltered;
 }
+
+bool FBlueprintActionFilter::IsFilteredByCachedFilters(FBlueprintActionInfo& BlueprintAction)
+{
+	
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintActionFilter::IsFilteredByCachedFilters);
+#endif
+	
+	const TSharedPtr<TMap<FBlueprintActionInfo, bool>> Cache = GetCachedFilterResults();
+	FBlueprintActionFilter const& FilterRef = *this;
+		
+	if (BlueprintActionFilterImpl::IsStaleFieldAction(FilterRef, BlueprintAction))
+	{
+		// if BlueprintAction is stale, immediately filter the action
+		if (FActionFilterTest::CVarEnableCaching.GetValueOnGameThread())
+		{
+			Cache->FindOrAdd(BlueprintAction) = true;
+		}
+		return true;
+	}
+
+	if (FActionFilterTest::CVarEnableCaching.GetValueOnGameThread())
+	{
+		if (const bool* Result = Cache->Find(BlueprintAction))
+		{
+			return *Result;
+		}
+	}
+
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	static TMap<FString, uint32> FilterTestToCpuSpecIds;
+#endif	// ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+	
+	bool bIsFiltered = false;
+	// iterate backwards so that custom user test are ran first (and the slow
+	// internal tests are ran last).
+	for (int32 TestIndex = FilterTests.Num()-1; TestIndex >= 0; --TestIndex)
+	{
+		TSharedRef<FActionFilterTest> RejectionTest = FilterTests[TestIndex];
+		
+		// this method only checks cached rejection tests
+		if (!EnumHasAllFlags(RejectionTest->Flags, EActionFilterTestFlags::CacheResults))
+		{
+			continue;
+		}
+		
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+		bIsFiltered = RejectionTest.Call(FilterRef, BlueprintAction, &FilterTestToCpuSpecIds);
+#else
+		bIsFiltered = RejectionTest->Call(FilterRef, BlueprintAction);
+#endif
+		
+		if (bIsFiltered)
+		{
+			break;
+		}
+	}
+	
+	if (FActionFilterTest::CVarEnableCaching.GetValueOnGameThread())
+	{
+		Cache->Add(BlueprintAction, bIsFiltered);
+	}
+	
+	return bIsFiltered;
+}
+
+//------------------------------------------------------------------------------
+#if ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING
+TArray<FString> FBlueprintActionFilter::GetFilterTestProfile()
+{
+	TArray<FString> Result;
+
+	for (int32 TestIndex = FilterTests.Num() - 1; TestIndex >= 0; --TestIndex)
+	{
+		FActionFilterTest& RejectionTest = FilterTests[TestIndex];
+		FActionFilterTest::FFilterTestProfileRecord& ProfileRecord = RejectionTest.ProfileRecord;
+		
+		Result.Add(FString::Printf(TEXT("[%02d]: %s | %d tested | %d failed | %.02f ms | %.02f us (per test)"),
+			FilterTests.Num() - TestIndex,
+			*RejectionTest.Name,
+			ProfileRecord.NumIterations,
+			ProfileRecord.NumFilteredOut,
+			ProfileRecord.TotalTimeMs,
+			ProfileRecord.TotalTimeMs / ProfileRecord.NumIterations * 1000.0f
+		));
+
+		// reset record
+		ProfileRecord = FActionFilterTest::FFilterTestProfileRecord();
+	}
+
+	return Result;
+}
+#endif	// ENABLE_BLUEPRINT_ACTION_FILTER_PROFILING

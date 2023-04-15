@@ -5,29 +5,137 @@
 #include "CoreMinimal.h"
 
 #include "Tools/UEdMode.h"
-#include "ToolTargets/ToolTarget.h"
+#include "ToolTargets/ToolTarget.h" // FToolTargetTypeRequirements
 #include "GeometryBase.h"
+#include "InteractiveTool.h"
 
 #include "UVEditorMode.generated.h"
 
 PREDECLARE_GEOMETRY(class FDynamicMesh3);
 
-class FEditorViewportClient;
 class FAssetEditorModeManager;
+class UEditorInteractiveToolsContext;
+class FEditorViewportClient;
 class FToolCommandChange;
-class IUVUnwrapDynamicMesh;
+class UContextObjectStore;
+class UInteractiveToolPropertySet;
 class UMeshElementsVisualizer;
-class UPreviewMesh;
-class UToolTarget;
-class UWorld;
-class FUVEditorModeToolkit;
-class UInteractiveToolPropertySet; 
 class UMeshOpPreviewWithBackgroundCompute;
-class UUVToolStateObjectStore;
+class UPreviewMesh;
+class UTexture2D;
 class UUVEditorToolMeshInput;
 class UUVEditorBackgroundPreview;
+class UUVToolAction;
+class UUVToolContextObject;
+class UUVToolSelectionAPI;
 class UUVToolViewportButtonsAPI;
+class UUVTool2DViewportAPI;
+class UUVEditorMode;
+class UWorld;
 
+/**
+ * Visualization settings for the UUVEditorMode's Grid
+ */
+UCLASS()
+class UVEDITOR_API UUVEditorGridProperties : public UInteractiveToolPropertySet
+{
+	GENERATED_BODY()
+public:
+	/** Should the grid be shown?*/
+	UPROPERTY(EditAnywhere, Category = "Grid & Guides", meta = (DisplayName = "Display Grid"))
+	bool bDrawGrid = true;
+
+	/** Should the grid rulers be shown?*/
+	UPROPERTY(EditAnywhere, Category = "Grid & Guides", meta = (DisplayName = "Display Rulers"))
+	bool bDrawRulers = true;
+};
+
+USTRUCT()
+struct FUDIMSpecifier
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Transient, Category = UDIM, meta = (ClampMin = "1001", UIMin = "1001"))
+	int32 UDIM = 1001;
+
+	UPROPERTY(VisibleAnywhere, Transient, Category = UDIM, meta = (DisplayName = "Block U Offset"))
+	int32 UCoord = 0;
+
+	UPROPERTY(VisibleAnywhere, Transient, Category = UDIM, meta = (DisplayName = "Block V Offset"))
+	int32 VCoord = 0;
+
+	friend bool operator==(const FUDIMSpecifier& A, const FUDIMSpecifier& B )
+	{
+		return A.UDIM == B.UDIM;
+	}
+
+	friend uint32 GetTypeHash(const FUDIMSpecifier& UDIMSpecifier)
+	{
+		uint32 HashCode = GetTypeHash(UDIMSpecifier.UDIM);
+		return HashCode;
+	}
+};
+
+UENUM()
+enum class EUVEditorModeActions
+{
+	NoAction,
+
+	ConfigureUDIMsFromAsset,
+	ConfigureUDIMsFromTexture
+};
+
+/**
+ * Settings for UDIMs in the UVEditor
+ */
+UCLASS()
+class UVEDITOR_API UUVEditorUDIMProperties : public UInteractiveToolPropertySet
+{
+	GENERATED_BODY()
+public:
+	void Initialize(UUVEditorMode* ParentModeIn) { ParentMode = ParentModeIn; }
+	void PostAction(EUVEditorModeActions Action);
+
+	UPROPERTY(EditAnywhere, Transient, Category = "UDIM", meta = (DisplayName = "UDIM Source Mesh", GetOptions = GetAssetNames))
+	FString UDIMSourceAsset;
+
+	UFUNCTION()
+	const TArray<FString>& GetAssetNames();
+
+	UFUNCTION()
+	int32 AssetByIndex() const;
+
+	/** Set UDIM Layout from selected asset's UVs */
+	UFUNCTION(CallInEditor, Category = UDIM)
+	void SetUDIMsFromAsset() { PostAction(EUVEditorModeActions::ConfigureUDIMsFromAsset); }
+
+	/** Texture asset to source UDIM information from */
+	UPROPERTY(EditAnywhere, Transient, Category = UDIM)
+	TObjectPtr<UTexture2D> UDIMSourceTexture;
+
+	/** Set UDIM Layout from selected texture asset */
+	UFUNCTION(CallInEditor, Category = UDIM)
+	void SetUDIMsFromTexture() { PostAction(EUVEditorModeActions::ConfigureUDIMsFromTexture); };
+
+	/** Currently active UDIM set */
+	UPROPERTY(EditAnywhere, Transient, Category = UDIM, meta = (TitleProperty = "UDIM"))
+	TArray<FUDIMSpecifier> ActiveUDIMs;
+
+public:
+	void InitializeAssets(const TArray<TObjectPtr<UUVEditorToolMeshInput>>& TargetsIn);
+
+private:
+	void UpdateActiveUDIMsFromTexture();
+	void UpdateActiveUDIMsFromAsset();
+
+	TWeakObjectPtr<UUVEditorMode> ParentMode;
+	TArray<FString> UVAssetNames;
+};
+
+namespace UVEditorModeChange
+{
+	class FApplyChangesChange;
+}
 
 /**
  * The UV editor mode is the mode used in the UV asset editor. It holds most of the inter-tool state.
@@ -38,12 +146,12 @@ UCLASS(Transient)
 class UUVEditorMode : public UEdMode
 {
 	GENERATED_BODY()
+
+	friend UVEditorModeChange::FApplyChangesChange;
 public:
 	const static FEditorModeID EM_UVEditorModeId;
 
 	UUVEditorMode();
-
-	void RegisterTools();
 
 	/**
 	 * Gets the tool target requirements for the mode. The resulting targets undergo further processing
@@ -54,13 +162,15 @@ public:
 	/**
 	 * Gets the factor by which UV layer unwraps get scaled (scaling makes certain things easier, like zooming in, etc).
 	 */
-	static double GetUVMeshScalingFactor() { return 1000; }
+	static double GetUVMeshScalingFactor();
 
-	// Both initialization functions must be called for things to function properly. InitializeContexts should
-	// be done first so that the 3d preview world is ready for creating meshes in InitializeTargets.
-	void InitializeContexts(FEditorViewportClient& LivePreviewViewportClient, FAssetEditorModeManager& LivePreviewModeManager,
-		UUVToolViewportButtonsAPI& ViewportButtonsAPI);
-	void InitializeTargets(const TArray<TObjectPtr<UObject>>& AssetsIn, const TArray<FTransform>& TransformsIn);
+	/**
+	 * Called by an asset editor so that a created instance of the mode has all the data it needs on Enter() to initialize itself.
+	 */
+	static void InitializeAssetEditorContexts(UContextObjectStore& ContextStore,
+		const TArray<TObjectPtr<UObject>>& AssetsIn, const TArray<FTransform>& TransformsIn,
+		FEditorViewportClient& LivePreviewViewportClient, FAssetEditorModeManager& LivePreviewModeManager,
+		UUVToolViewportButtonsAPI& ViewportButtonsAPI, UUVTool2DViewportAPI& UVTool2DViewportAPI);
 
 	// Public for use by undo/redo. Otherwise should use RequestUVChannelChange
 	void ChangeInputObjectLayer(int32 AssetID, int32 NewLayerIndex);
@@ -85,7 +195,8 @@ public:
 	void EmitToolIndependentObjectChange(UObject* TargetObject, TUniquePtr<FToolCommandChange> Change, const FText& Description);
 
 	// Asset management
-	bool HaveUnappliedChanges();
+	bool HaveUnappliedChanges() const;
+	bool CanApplyChanges() const;
 	void GetAssetsWithUnappliedChanges(TArray<TObjectPtr<UObject>> UnappliedAssetsOut);
 	void ApplyChanges();
 
@@ -100,6 +211,18 @@ public:
 
 	/** @return A settings object suitable for display in a details panel to control the background visualization. */
 	UObject* GetBackgroundSettingsObject();
+
+	/** @return A settings object suitable for display in a details panel to control the grid. */
+	UObject* GetGridSettingsObject();
+
+	/** @return A settings object suitable for display in a details panel to control UDIM configuration. */
+	UObject* GetUDIMSettingsObject();
+
+	/** @return A settings object suitable for display in a details panel to control the active tool's visualization settings. */
+	UObject* GetToolDisplaySettingsObject();
+
+	virtual void Render(IToolsContextRenderAPI* RenderAPI) ;
+	virtual void DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI);
 
 	// UEdMode overrides
 	virtual void Enter() override;
@@ -122,17 +245,40 @@ public:
 	UPROPERTY()
 	TObjectPtr<UUVEditorBackgroundPreview> BackgroundVisualization;
 
+	// Hold a settings object to configure the grid
+	UPROPERTY()
+	TObjectPtr<UUVEditorGridProperties> UVEditorGridProperties = nullptr;
+
+	// Hold a settings object to configure the UDIMs
+	UPROPERTY()
+	TObjectPtr<UUVEditorUDIMProperties> UVEditorUDIMProperties = nullptr;
+
+	void PopulateUDIMsByAsset(int32 AssetId, TArray<FUDIMSpecifier>& UDIMsOut) const;
+
+	void FocusLivePreviewCameraOnSelection();
+
 protected:
+	UPROPERTY()
+	TArray<TObjectPtr<UUVToolAction>> RegisteredActions;
+
+	void InitializeModeContexts();
+	void InitializeTargets();
+	void RegisterTools();
+	void RegisterActions();
+	void SetSimulationWarning(bool bEnabled);
 
 	// UEdMode overrides
 	virtual void CreateToolkit() override;
 	// Not sure whether we need these yet
 	virtual void BindCommands() override;
-	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override {}
-	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override {}
+	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
+	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
 	
 	void UpdateTriangleMaterialBasedOnBackground(bool IsBackgroundVisible);
 	void UpdatePreviewMaterialBasedOnBackground();
+
+	void UpdateActiveUDIMs();
+	int32 UDIMsChangedWatcherId;
 
 	/**
 	 * Stores original input objects, for instance UStaticMesh pointers. AssetIDs on tool input 
@@ -200,15 +346,34 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UWorld> LivePreviewWorld = nullptr;
 
+	// Used to forward Render/DrawHUD calls in the live preview to the api object.
+	TWeakObjectPtr<UEditorInteractiveToolsContext> LivePreviewITC;
+
+	UPROPERTY()
+	TObjectPtr<UUVToolSelectionAPI> SelectionAPI = nullptr;
+
 	/**
 	 * Mode-level property objects (visible or not) that get ticked.
 	 */
 	UPROPERTY()
 	TArray<TObjectPtr<UInteractiveToolPropertySet>> PropertyObjectsToTick;
 
+	TArray<TWeakObjectPtr<UUVToolContextObject>> ContextsToUpdateOnToolEnd;
+	TArray<TWeakObjectPtr<UUVToolContextObject>> ContextsToShutdown;
+
 	bool bIsActive = false;
 	FString DefaultToolIdentifier;
 
 	static FDateTime AnalyticsLastStartTimestamp;
+
+	// Holds references to PIE callbacks to handle logic when the PIE session starts & shuts down
+	bool bPIEModeActive;
+	FDelegateHandle BeginPIEDelegateHandle;
+	FDelegateHandle EndPIEDelegateHandle;
+	FDelegateHandle CancelPIEDelegateHandle;
+
+	// Holds references to Save callbacks to handle logic when the autosave triggers and shuts down active tools. 
+	// We need to recover from this, so we restart the select tool after the save is over.
+	FDelegateHandle PostSaveWorldDelegateHandle;
 };
 

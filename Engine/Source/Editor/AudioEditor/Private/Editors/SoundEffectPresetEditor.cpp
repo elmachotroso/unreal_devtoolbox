@@ -1,24 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "SoundEffectPresetEditor.h"
 
+#include "Audio/SoundEffectPresetWidgetInterface.h"
 #include "Blueprint/UserWidget.h"
-#include "Containers/Set.h"
-#include "EditorStyleSet.h"
-#include "Framework/Commands/UIAction.h"
+#include "Containers/List.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "DetailsViewArgs.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
 #include "Framework/Docking/TabManager.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "HAL/PlatformCrt.h"
 #include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
+#include "Sound/SoundEffectPreset.h"
+#include "Styling/AppStyle.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/StrongObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
-#include "WidgetBlueprint.h"
-#include "AudioEditorModule.h"
+#include "Widgets/Text/STextBlock.h"
+
+class UWorld;
+struct FSlateBrush;
 
 
 #define LOCTEXT_NAMESPACE "SoundEffectPresetEditor"
@@ -42,14 +58,14 @@ void FSoundEffectPresetEditor::RegisterTabSpawners(const TSharedRef<FTabManager>
 	InTabManager->RegisterTabSpawner(PropertiesTabId, FOnSpawnTab::CreateSP(this, &FSoundEffectPresetEditor::SpawnTab_Properties))
 		.SetDisplayName(LOCTEXT("DetailsTab", "Details"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 
 	for (int32 i = 0; i < UserWidgets.Num(); i++)
 	{
 		TStrongObjectPtr<UUserWidget> UserWidget = UserWidgets[i];
 		const FString ClassName = SoundEffectPreset->GetClass()->GetName();
-		FSlateIcon BPIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.CreateClassBlueprint");
+		FSlateIcon BPIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.CreateClassBlueprint");
 
 		const FName UserWidgetTabIdIndexed = FName(UserWidgetTabId.ToString() + FString(TEXT("_")) + FString::FromInt(i));
 		InTabManager->RegisterTabSpawner(UserWidgetTabIdIndexed, FOnSpawnTab::CreateLambda([this, i](const FSpawnTabArgs& Args) { return SpawnTab_UserWidgetEditor(Args, i); }))
@@ -261,7 +277,7 @@ TSharedRef<SDockTab> FSoundEffectPresetEditor::SpawnTab_UserWidgetEditor(const F
 		IconBrushName = "GenericEditor.Tabs.Properties";
 	}
 
-	const FSlateBrush* IconBrush = FEditorStyle::GetBrush(IconBrushName);
+	const FSlateBrush* IconBrush = FAppStyle::GetBrush(IconBrushName);
 
 	FText Label = FText::FromString(SoundEffectPreset->GetName());
 	if (UserWidgets.Num() < WidgetIndex)
@@ -288,7 +304,7 @@ TSharedRef<SDockTab> FSoundEffectPresetEditor::SpawnTab_UserWidgetEditor(const F
 		.TabColorScale(GetTabColorScale())
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(0.0f)
 			[
 				UserWidgets[WidgetIndex]->TakeWidget()

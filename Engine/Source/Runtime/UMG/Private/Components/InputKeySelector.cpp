@@ -9,6 +9,8 @@
 #include "Internationalization/Internationalization.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InputKeySelector)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 static FButtonStyle* DefaultInputKeySelectorButtonStyle = nullptr;
@@ -88,17 +90,6 @@ void UInputKeySelector::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
-}
-
-void UInputKeySelector::PostLoad()
-{
-	Super::PostLoad();
-
-	if (GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::InputKeySelectorTextStyle)
-	{
-		TextStyle.Font = Font_DEPRECATED;
-		TextStyle.ColorAndOpacity = ColorAndOpacity_DEPRECATED;
-	}
 }
 
 void UInputKeySelector::SetSelectedKey( const FInputChord& InSelectedKey )

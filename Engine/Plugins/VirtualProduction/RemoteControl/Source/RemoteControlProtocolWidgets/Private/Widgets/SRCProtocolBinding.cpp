@@ -2,14 +2,16 @@
 
 #include "SRCProtocolBinding.h"
 
-#include "EditorFontGlyphs.h"
 #include "SDropTarget.h"
 #include "SRCBindingWarning.h"
 #include "SRCProtocolRangeList.h"
 #include "ViewModels/ProtocolBindingViewModel.h"
+#include "Widgets/Masks/SRCProtocolBindingMask.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SRCProtocolEntity.h"
+#include "Widgets/SRCProtocolShared.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "RemoteControlProtocolWidgets"
@@ -31,7 +33,7 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 		[
 			SNew(STextBlock)
 			.Text(ViewModel->GetProtocolName())
-			.TextStyle(FEditorStyle::Get(), "LargeText")
+			.TextStyle(FAppStyle::Get(), "LargeText")
 		];
 
 	// Validation warning
@@ -58,18 +60,18 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 	RowBox->AddSlot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.Padding(0)
+		.Padding(2.f)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ForegroundColor(FSlateColor::UseForeground())
 			.IsFocusable(false)
 			.OnClicked(this, &SRCProtocolBinding::OnDelete)
 			.Content()
 			[
-				SNew(STextBlock)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FText::FromString(FString(TEXT("\xf00d"))))
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::GetBrush("Icons.X"))
 			]
 		];
 
@@ -77,19 +79,18 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 	RowBox->AddSlot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.Padding(0)
+		.Padding(2.f)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(LOCTEXT("RecordingButtonToolTip", "Status of the protocol entity binding"))
 			.ForegroundColor(FSlateColor::UseForeground())
 			.OnClicked(this, &SRCProtocolBinding::ToggleRecording)
 			.Content()
 			[
-				SNew(STextBlock)
+				SNew(SImage)
 				.ColorAndOpacity_Raw(this, &SRCProtocolBinding::GetRecordingButtonColor)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Circle)
+				.Image(FAppStyle::Get().GetBrush(TEXT("Icons.FilledCircle")))
 			]
 		];
 
@@ -100,7 +101,7 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 		.Content()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(Padding)
 			.VAlign(VAlign_Fill)
 			[
@@ -119,6 +120,14 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 				.AutoHeight()
 				[
 					SNew(SRCProtocolEntity, ViewModel.ToSharedRef())
+				]
+				
+				+ SVerticalBox::Slot()
+				.Padding(Padding)
+				.VAlign(VAlign_Center)
+				.AutoHeight()
+				[
+					ConstructMaskingWidget()
 				]
 
 				+ SVerticalBox::Slot()
@@ -146,6 +155,55 @@ void SRCProtocolBinding::Construct(const FArguments& InArgs, const TSharedRef<ST
 			]
 		],
 		InOwnerTableView);
+}
+
+TSharedRef<SWidget> SRCProtocolBinding::ConstructMaskingWidget()
+{
+	const TSharedPtr<SWidget> LeftWidget = SNew(SHorizontalBox)
+
+		// Masking Label
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
+		.Padding(4.f, 2.f)
+		.AutoWidth()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("OverrideMaskingLabel", "Override Masks"))
+			.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+			.ShadowOffset(FVector2D(1.f, 1.f))
+		]
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.f)
+		[
+			SNew(SSpacer)
+		];
+
+		const TSharedPtr<SWidget> RightWidget = SNew(SHorizontalBox)
+
+			// Masking Widget
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Left)
+			.Padding(4.f, 2.f)
+			.AutoWidth()
+			[
+				SNew(SRCProtocolBindingMask, ViewModel.ToSharedRef())
+			]
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.f)
+			[
+				SNew(SSpacer)
+			];
+
+	TSharedRef<SWidget> Widget = SNew(RemoteControlProtocolWidgetUtils::SCustomSplitter)
+		.LeftWidget(LeftWidget.ToSharedRef())
+		.RightWidget(RightWidget.ToSharedRef())
+		.ColumnSizeData(PrimaryColumnSizeData);
+
+	return Widget;
 }
 
 FReply SRCProtocolBinding::OnDelete()

@@ -135,8 +135,6 @@ float4 ViewportSize;
 uint4 ViewportRect;
 
 float2 TemporalJitterPixels;
-float4 CocModelParameters;
-float2 DepthBlurParameters;
 float2 DOFBufferUVMax;
 
 float4 SeparateTranslucencyBilinearUVMinMax;
@@ -214,11 +212,6 @@ float NoizNorm(float2 N, float X)
 float2 RotVec(float Radius, float Radians)
 {
 	return Radius * float2(cos(Radians), sin(Radians));
-}
-
-float DepthToHalfResCocRadius(float WorldDepth)
-{
-	return DepthToHalfResCocRadius(CocModelParameters, DepthBlurParameters, WorldDepth);
 }
 
 void AmendAdditiveColorWithMaxTranslucency(inout float4 Color, inout float Translucency, float MaxTranslucency)
@@ -569,7 +562,7 @@ void FetchAndAccumulateSamplePair(
 	float SampleDistance = FullResPixelDistanceToCocDistance(length(PixelOffset));
 
 	// Scene buffer offset.
-	float2 SceneBufferUVOffset = PixelOffset * View.BufferSizeAndInvSize.zw;
+	float2 SceneBufferUVOffset = PixelOffset * View.BufferSizeAndInvSize.zw * float2(CocInvSqueeze, 1.0);
 	
 	// Two sample to gather at same time.
 	FGatherSample Sample[2];
@@ -585,7 +578,7 @@ void FetchAndAccumulateSamplePair(
 		{
 			const float InvLutSize = rcp(float(BOKEH_LUT_SIZE));
 
-			float2 LookupUV = (0.5 + 0.5 * InvLutSize) + PixelOffset * (SampleSign * InvLutSize);
+			float2 LookupUV = (0.5 + 0.5 * InvLutSize) + PixelOffset * (SampleSign * InvLutSize) * float2(CocInvSqueeze, 1.0);
 			float4 LookupSample = BokehLUT.SampleLevel(GlobalPointClampedSampler, LookupUV, 0);
 			SampleDistance = LookupSample.x;
 		}
@@ -604,7 +597,7 @@ void FetchAndAccumulateSamplePair(
 			Sample[k].CocRadius = Sample[k].Color.a;
 		#else
 			Sample[k].Color = SceneColorInput.SampleLevel(GlobalPointClampedSampler, BufferUV, 0);
-			Sample[k].CocRadius = DepthToHalfResCocRadius(SampleWorldDepth(BufferUV));
+			Sample[k].CocRadius = SceneDepthToCocRadius(SampleWorldDepth(BufferUV));
 		#endif
 		
 		// Convert scene color alpha from translucency to opacity.
@@ -754,7 +747,7 @@ void RecombineMainCS(
 	#if CONFIG_FETCH_FULLRES_COC_FROM_ALPHA
 		CenterSample.CocRadius = CenterSample.Color.a;
 	#else
-		CenterSample.CocRadius = DepthToHalfResCocRadius(SampleWorldDepth(InputParameters.SceneBufferUV));
+		CenterSample.CocRadius = SceneDepthToCocRadius(SampleWorldDepth(InputParameters.SceneBufferUV));
 	#endif
 	
 	// Convert scene color alpha from translucency to opacity.
@@ -798,7 +791,7 @@ void RecombineMainCS(
 				#if CONFIG_FETCH_FULLRES_COC_FROM_ALPHA
 					float SampleCocRadius = SceneColorInput.SampleLevel(GlobalPointClampedSampler, SampleUV, 0).a;
 				#else
-					float SampleCocRadius = DepthToHalfResCocRadius(SampleWorldDepth(SampleUV));
+					float SampleCocRadius = SceneDepthToCocRadius(SampleWorldDepth(SampleUV));
 				#endif
 
 				float SampleAbsCocRadius = abs(SampleCocRadius);
@@ -1012,20 +1005,24 @@ void RecombineMainCS(
 		GatherForegroundAdditiveColor *= SafeRcp(1 - GatherForegroundTranslucency);
 		GatherForegroundTranslucency = 0;
 	}
-	else if (CONFIG_COMPOSITING_METHOD == COMPOSITING_METHOD_BILINEAR_BKG)
+	else
 	{
-		BackgroundColor = BackgroundConvolution_SceneColor.SampleLevel(GlobalBilinearClampedSampler, InputParameters.DOFBufferUV, 0);
+		#if CONFIG_COMPOSITING_METHOD == COMPOSITING_METHOD_BILINEAR_BKG
+		{
+			BackgroundColor = BackgroundConvolution_SceneColor.SampleLevel(GlobalBilinearClampedSampler, InputParameters.DOFBufferUV, 0);
 
-		#if CONFIG_DOF_ALPHA
-			BackgroundValidity = BackgroundConvolution_SeparateAlpha.SampleLevel(GlobalBilinearClampedSampler, InputParameters.DOFBufferUV, 0).r;
-		#else
-			//Background = float4(0, 0, 0, 1);
-			BackgroundValidity = BackgroundColor.a;
+			#if CONFIG_DOF_ALPHA
+				BackgroundValidity = BackgroundConvolution_SeparateAlpha.SampleLevel(GlobalBilinearClampedSampler, InputParameters.DOFBufferUV, 0).r;
+			#else
+				//Background = float4(0, 0, 0, 1);
+				BackgroundValidity = BackgroundColor.a;
+			#endif
+	
+			// Make sure the background color is always normalized, or unrendered.
+			BackgroundColor *= SafeRcp(BackgroundValidity);
+		}
 		#endif
-	
-		// Make sure the background color is always normalized, or unrendered.
-		BackgroundColor *= SafeRcp(BackgroundValidity);
-	
+
 		// Hole fill the background in output final scene color before composing foreground on top.
 		#if CONFIG_HOLE_FILLING_METHOD == HOLE_FILLING_METHOD_SEPARATE_GATHER
 		{

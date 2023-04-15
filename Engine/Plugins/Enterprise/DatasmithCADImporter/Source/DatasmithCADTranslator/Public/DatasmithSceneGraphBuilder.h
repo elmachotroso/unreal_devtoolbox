@@ -5,14 +5,17 @@
 
 #include "CADData.h"
 #include "CADSceneGraph.h"
-#include "CoreTechTypes.h"
-#include "CTSession.h"
 #include "DatasmithImportOptions.h"
 #include "MeshDescriptionHelper.h"
 
 #include "Containers/Map.h"
 #include "Containers/Queue.h"
 #include "Misc/Paths.h"
+
+namespace CADLibrary
+{
+class FArchiveCADObject;
+}
 
 class FDatasmithSceneSource;
 class IDatasmithActorElement;
@@ -25,27 +28,24 @@ class ActorData  //#ueent_CAD
 public:
 	ActorData(const TCHAR* NodeUuid, const ActorData& ParentData)
 		: Uuid(NodeUuid)
-		, Material(ParentData.Material)
-		, MaterialUuid(ParentData.MaterialUuid)
-		, Color(ParentData.Color)
-		, ColorUuid(ParentData.ColorUuid)
+		, Inheritance(ParentData.Inheritance)
+		, MaterialUId(ParentData.MaterialUId)
+		, ColorUId(ParentData.ColorUId)
 	{
 	}
 
 	ActorData(const TCHAR* NodeUuid)
 		: Uuid(NodeUuid)
-		, MaterialUuid(0)
-		, ColorUuid(0)
+		, Inheritance(CADLibrary::ECADGraphicPropertyInheritance::Unset)
+		, MaterialUId(0)
+		, ColorUId(0)
 	{
 	}
 
 	const TCHAR* Uuid;
-
-	CADLibrary::FCADMaterial Material;
-	uint32 MaterialUuid;
-
-	FColor Color;
-	uint32 ColorUuid;
+	CADLibrary::ECADGraphicPropertyInheritance Inheritance = CADLibrary::ECADGraphicPropertyInheritance::Unset;
+	FMaterialUId MaterialUId;
+	FMaterialUId ColorUId;
 };
 
 
@@ -66,21 +66,21 @@ public:
 	virtual bool Build();
 
 protected:
-	TSharedPtr< IDatasmithActorElement > BuildInstance(int32 InstanceIndex, const ActorData& ParentData);
-	TSharedPtr< IDatasmithActorElement > BuildComponent(CADLibrary::FArchiveComponent& Component, const ActorData& ParentData);
-	TSharedPtr< IDatasmithActorElement > BuildBody(int32 BodyIndex, const ActorData& ParentData);
+	TSharedPtr<IDatasmithActorElement> BuildInstance(FCadId InstanceId, const ActorData& ParentData);
+	TSharedPtr<IDatasmithActorElement> BuildReference(CADLibrary::FArchiveReference& Reference, const ActorData& ParentData);
+	TSharedPtr<IDatasmithActorElement> BuildBody(FCadId BodyId, const ActorData& ParentData);
 
-	void AddMetaData(TSharedPtr<IDatasmithActorElement> ActorElement, TMap<FString, FString>& InstanceNodeAttributeSetMap, TMap<FString, FString>& ReferenceNodeAttributeSetMap);
-	void AddChildren(TSharedPtr<IDatasmithActorElement> Actor, const CADLibrary::FArchiveComponent& Component, const ActorData& ParentData);
+	void AddMetaData(TSharedPtr<IDatasmithActorElement> ActorElement, const CADLibrary::FArchiveCADObject& Instance, const CADLibrary::FArchiveCADObject& Reference);
+	void AddChildren(TSharedPtr<IDatasmithActorElement> Actor, const CADLibrary::FArchiveReference& Reference, const ActorData& ParentData);
 	bool DoesActorHaveChildrenOrIsAStaticMesh(const TSharedPtr< IDatasmithActorElement >& ActorElement);
 
-	TSharedPtr< IDatasmithUEPbrMaterialElement > GetDefaultMaterial();
-	TSharedPtr<IDatasmithMaterialIDElement> FindOrAddMaterial(uint32 MaterialUuid);
+	TSharedPtr<IDatasmithUEPbrMaterialElement> GetDefaultMaterial();
+	TSharedPtr<IDatasmithMaterialIDElement> FindOrAddMaterial(FMaterialUId MaterialUuid);
 
-	TSharedPtr< IDatasmithActorElement > CreateActor(const TCHAR* ActorUUID, const TCHAR* ActorLabel);
-	virtual TSharedPtr< IDatasmithMeshElement > FindOrAddMeshElement(CADLibrary::FArchiveBody& Body, FString& InLabel);
+	TSharedPtr<IDatasmithActorElement> CreateActor(const TCHAR* ActorUUID, const TCHAR* ActorLabel);
+	virtual TSharedPtr<IDatasmithMeshElement> FindOrAddMeshElement(CADLibrary::FArchiveBody& Body);
 
-	void GetNodeUUIDAndName(const TMap<FString, FString>& InInstanceNodeMetaDataMap, const TMap<FString, FString>& InReferenceNodeMetaDataMap, int32 InComponentIndex, const TCHAR* InParentUEUUID, FString& OutUEUUID, FString& OutName);
+	CADLibrary::FArchiveSceneGraph* FindSceneGraphArchive(const CADLibrary::FFileDescriptor& File, uint32& FileHash) const;
 
 protected:
 	CADLibrary::FArchiveSceneGraph* SceneGraph;
@@ -93,19 +93,15 @@ protected:
 	TArray<CADLibrary::FArchiveSceneGraph> ArchiveMockUps;
 	TMap<uint32, CADLibrary::FArchiveSceneGraph*> CADFileToSceneGraphArchive;
 
-	TMap< FCADUUID, TSharedPtr< IDatasmithMeshElement > > BodyUuidToMeshElement;
+	TMap<FCadUuid, TSharedPtr< IDatasmithMeshElement>> BodyUuidToMeshElement;
 
-	TMap< FCADUUID, TSharedPtr< IDatasmithUEPbrMaterialElement > > MaterialUuidMap;
-	TSharedPtr<IDatasmithUEPbrMaterialElement > DefaultMaterial;
+	TMap<FMaterialUId, TSharedPtr< IDatasmithUEPbrMaterialElement>> MaterialUuidMap;
+	TSharedPtr<IDatasmithUEPbrMaterialElement> DefaultMaterial;
 
-	TMap<FCADUUID, CADLibrary::FArchiveColor> ColorNameToColorArchive; 
-	TMap<FCADUUID, CADLibrary::FArchiveMaterial> MaterialNameToMaterialArchive; 
+	TMap<FMaterialUId, CADLibrary::FArchiveColor> ColorUIdToColorArchive; 
+	TMap<FMaterialUId, CADLibrary::FArchiveMaterial> MaterialUIdToMaterialArchive; 
 
 	TArray<uint32> AncestorSceneGraphHash;
-
-
-	bool bPreferMaterial;
-	bool bMaterialPropagationIsTopDown;
 };
 
 class DATASMITHCADTRANSLATOR_API FDatasmithSceneGraphBuilder : public FDatasmithSceneBaseGraphBuilder

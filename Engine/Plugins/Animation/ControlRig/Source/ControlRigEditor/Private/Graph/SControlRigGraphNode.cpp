@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SControlRigGraphNode.h"
+#include "Graph/SControlRigGraphNode.h"
 #include "ControlRig.h"
 #include "Graph/ControlRigGraphNode.h"
 #include "Graph/ControlRigGraph.h"
@@ -30,8 +30,9 @@
 #include "RigVMCompiler/RigVMCompiler.h"
 #include "IDocumentation.h"
 #include "DetailLayoutBuilder.h"
-#include "EditorStyleSet.h"
-#include "SControlRigGraphPinVariableBinding.h"
+#include "Styling/AppStyle.h"
+#include "Graph/SControlRigGraphPinVariableBinding.h"
+#include "RigVMModel/Nodes/RigVMAggregateNode.h"
 #include "Slate/SlateTextures.h"
 
 #if WITH_EDITOR
@@ -205,7 +206,7 @@ void SControlRigGraphNode::Construct( const FArguments& InArgs )
 				PinInfo.bHideInputWidget = !bIsStructEditable;
 				PinInfo.bAutoHeight = bIsStructEditable;
 			}
-			else if(PinInfo.bHasChildren)
+			else if(PinInfo.bHasChildren && !ModelPin->IsBoundToVariable())
 			{
 				PinInfo.bHideInputWidget = true;
 			}
@@ -328,7 +329,7 @@ void SControlRigGraphNode::Construct( const FArguments& InArgs )
 		[
 			SNew(SButton)
 			.ContentPadding(0.0f)
-			.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+			.ButtonStyle(FAppStyle::Get(), "NoBorder")
 			.OnClicked(this, &SControlRigGraphNode::HandleAddArrayElement, InModelPin->GetPinPath())
 			.IsEnabled(this, &SGraphNode::IsNodeEditable)
 			.Cursor(EMouseCursor::Default)
@@ -341,7 +342,7 @@ void SControlRigGraphNode::Construct( const FArguments& InArgs )
 				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("Icons.PlusCircle")))
+					.Image(FAppStyle::GetBrush(TEXT("Icons.PlusCircle")))
 				]
 			]
 		];
@@ -494,7 +495,7 @@ void SControlRigGraphNode::Construct( const FArguments& InArgs )
 				[
 					SNew(STextBlock)
 					.Text(FText::FromName(ExternalVariable->Name))
-					.TextStyle(FEditorStyle::Get(), NAME_DefaultPinLabelStyle)
+					.TextStyle(FAppStyle::Get(), NAME_DefaultPinLabelStyle)
 					.ColorAndOpacity(this, &SControlRigGraphNode::GetVariableLabelTextColor, WeakFunctionReferenceNode, ExternalVariable->Name)
 					.ToolTipText(this, &SControlRigGraphNode::GetVariableLabelTooltipText, WeakControlRigBlueprint, ExternalVariable->Name)
 				]
@@ -513,6 +514,8 @@ void SControlRigGraphNode::Construct( const FArguments& InArgs )
 			];
 		}
 	}
+
+	CreateAggregateAddPinButton();
 	
 	// add spacer widget at the end
 	LeftNodeBox->AddSlot()
@@ -578,6 +581,46 @@ bool SControlRigGraphNode::UseLowDetailPinNames() const
 		return (MyOwnerPanel->GetCurrentLOD() <= EGraphRenderingLOD::LowDetail);
 	}
 	return false;
+}
+
+void SControlRigGraphNode::CreateAggregateAddPinButton()
+{
+	if (LeftNodeBox.IsValid() && ModelNode.IsValid() && (ModelNode->IsAggregate() || ModelNode->IsA<URigVMAggregateNode>()))
+	{
+		const bool bInputAggregate = ModelNode->IsInputAggregate();
+		const TSharedRef<SWidget> AddPinButton = AddPinButtonContent(
+		   LOCTEXT("ControlRigAggregateNodeAddPinButton", "Add pin"),
+		   bInputAggregate ? 
+			LOCTEXT("ControlRigAggregateNodeAddInputPinButton_Tooltip", "Adds an input pin to the node") :
+			LOCTEXT("ControlRigAggregateNodeAddOutputPinButton_Tooltip", "Adds an output pin to the node"),
+		   !bInputAggregate);
+
+		FMargin AddPinPadding = bInputAggregate ? Settings->GetInputPinPadding() : Settings->GetOutputPinPadding();
+		AddPinPadding.Top += 2.0f;
+		AddPinPadding.Left -= bInputAggregate ? 2.f : 0.f;
+		AddPinPadding.Right -= bInputAggregate ? 0.f : 2.f;
+
+		LeftNodeBox->AddSlot()
+			.AutoHeight()
+			.VAlign(VAlign_Center)
+			.HAlign(bInputAggregate ? HAlign_Left : HAlign_Right)
+			.Padding(AddPinPadding)
+			[
+				AddPinButton
+			];
+	}
+}
+
+FReply SControlRigGraphNode::OnAddPin()
+{
+	if (ModelNode.IsValid())
+	{
+		if (UControlRigGraphNode* ControlRigGraphNode = Cast<UControlRigGraphNode>(GraphNode))
+		{
+			ControlRigGraphNode->HandleAddAggregateElement(ModelNode->GetNodePath());
+		}
+	}
+	return FReply::Handled();
 }
 
 bool SControlRigGraphNode::UseLowDetailNodeContent() const
@@ -650,6 +693,19 @@ void SControlRigGraphNode::AddPin(const TSharedRef<SGraphPin>& PinToAdd)
 					PinToAdd->SetCustomPinIcon(CachedImg_CR_Pin_Connected, CachedImg_CR_Pin_Disconnected);
 				}
 				PinToAdd->SetToolTipText(ModelPin->GetToolTipText());
+
+				// If the pin belongs to a template node that does not own an argument for that pin, make it transparent
+				if (URigVMTemplateNode* TemplateNode = Cast<URigVMTemplateNode>(ModelPin->GetNode()))
+				{
+					if (const FRigVMTemplate* Template = TemplateNode->GetTemplate())
+					{
+						URigVMPin* RootPin = ModelPin->GetRootPin();
+						if (Template->FindArgument(RootPin->GetFName()) == nullptr)
+						{
+							PinToAdd->SetColorAndOpacity(PinToAdd->GetColorAndOpacity() * FLinearColor(1.0f,1.0f,1.0f,0.2f));
+						}
+					}
+				}
 			}
 		}
 
@@ -711,10 +767,10 @@ const FSlateBrush * SControlRigGraphNode::GetNodeBodyBrush() const
 	{
 		if(RigNode->bEnableProfiling)
 		{
-			return FEditorStyle::GetBrush("Graph.Node.TintedBody");
+			return FAppStyle::GetBrush("Graph.Node.TintedBody");
 		}
 	}
-	return FEditorStyle::GetBrush("Graph.Node.Body");
+	return FAppStyle::GetBrush("Graph.Node.Body");
 }
 
 FReply SControlRigGraphNode::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
@@ -883,7 +939,7 @@ void SControlRigGraphNode::GetOverlayBrushes(bool bSelected, const FVector2D Wid
 		{
 			FOverlayBrushInfo BreakpointOverlayInfo;
 
-			BreakpointOverlayInfo.Brush = FEditorStyle::GetBrush(TEXT("Kismet.DebuggerOverlay.Breakpoint.EnabledAndValid"));
+			BreakpointOverlayInfo.Brush = FAppStyle::GetBrush(TEXT("Kismet.DebuggerOverlay.Breakpoint.EnabledAndValid"));
 			if (BreakpointOverlayInfo.Brush != NULL)
 			{
 				BreakpointOverlayInfo.OverlayOffset -= BreakpointOverlayInfo.Brush->ImageSize / 2.f;
@@ -897,7 +953,7 @@ void SControlRigGraphNode::GetOverlayBrushes(bool bSelected, const FVector2D Wid
 			FOverlayBrushInfo IPOverlayInfo;
 			if (VMNode->ExecutionIsHaltedAtThisNode())
 			{
-				IPOverlayInfo.Brush = FEditorStyle::GetBrush( TEXT("Kismet.DebuggerOverlay.InstructionPointerBreakpoint") );
+				IPOverlayInfo.Brush = FAppStyle::GetBrush( TEXT("Kismet.DebuggerOverlay.InstructionPointerBreakpoint") );
 				if (IPOverlayInfo.Brush != NULL)
 				{
 					float Overlap = 10.f;
@@ -976,10 +1032,6 @@ void SControlRigGraphNode::GetNodeInfoPopups(FNodeInfoContext* Context, TArray<F
 							FString PinHash = URigVMCompiler::GetPinHash(ModelPin, nullptr, true);
 							if (const FRigVMOperand* WatchOperand = RigBlueprint->PinToOperandMap.Find(PinHash))
 							{
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-								FRigVMMemoryContainer& Memory = ActiveObject->GetVM()->GetDebugMemory();
-								DefaultValues = Memory.GetRegisterValueAsString(*WatchOperand, ModelPin->GetCPPType(), ModelPin->GetCPPTypeObject());
-#else
 								URigVMMemoryStorage* Memory = ActiveObject->GetVM()->GetDebugMemory();
 								// We mark PPF_ExternalEditor so that default values are also printed
 								const FString DebugValue = Memory->GetDataAsStringSafe(WatchOperand->GetRegisterIndex(), PPF_ExternalEditor | STRUCT_ExportTextItemNative);
@@ -987,7 +1039,6 @@ void SControlRigGraphNode::GetNodeInfoPopups(FNodeInfoContext* Context, TArray<F
 								{
 									DefaultValues = URigVMPin::SplitDefaultValue(DebugValue);
 								}
-#endif
 							}
 						}
 
@@ -1077,10 +1128,10 @@ TArray<FOverlayWidgetInfo> SControlRigGraphNode::GetOverlayWidgets(bool bSelecte
 				{
 					if (URigVMUnitNode* VisualDebugNode = Cast<URigVMUnitNode>(Injection->Node))
 					{
-						FString PrototypeName;
-					   if (VisualDebugNode->GetScriptStruct()->GetStringMetaDataHierarchical(TEXT("PrototypeName"), &PrototypeName))
+						FString TemplateName;
+					   if (VisualDebugNode->GetScriptStruct()->GetStringMetaDataHierarchical(FRigVMStruct::TemplateNameMetaName, &TemplateName))
 					   {
-						   if (PrototypeName == TEXT("VisualDebug"))
+						   if (TemplateName == TEXT("VisualDebug"))
 						   {
 							   if (!bSetColor)
 							   {
@@ -1119,17 +1170,18 @@ TArray<FOverlayWidgetInfo> SControlRigGraphNode::GetOverlayWidgets(bool bSelecte
 
 		if(Blueprint.IsValid())
 		{
+			const bool bShowInstructionIndex = Blueprint->RigGraphDisplaySettings.bShowNodeInstructionIndex;
 			const bool bShowNodeCounts = Blueprint->RigGraphDisplaySettings.bShowNodeRunCounts;
 			const bool bEnableProfiling = Blueprint->VMRuntimeSettings.bEnableProfiling;
 			
-			if(bShowNodeCounts || bEnableProfiling)
+			if(bShowNodeCounts || bShowInstructionIndex || bEnableProfiling)
 			{
 				if(UControlRig* DebuggedControlRig = Cast<UControlRig>(Blueprint->GetObjectBeingDebugged()))
 				{
-					if(bShowNodeCounts)
+					if(bShowNodeCounts || bShowInstructionIndex)
 					{
 						const int32 Count = ModelNode->GetInstructionVisitedCount(DebuggedControlRig->GetVM(), FRigVMASTProxy());
-						if(Count > Blueprint->RigGraphDisplaySettings.NodeRunLowerBound)
+						if((Count > Blueprint->RigGraphDisplaySettings.NodeRunLowerBound) || bShowInstructionIndex)
 						{
 							const int32 VOffset = bSelected ? -2 : 2;
 							const FVector2D TextSize = InstructionCountTextBlockWidget->GetDesiredSize();
@@ -1176,6 +1228,11 @@ void SControlRigGraphNode::RefreshErrorInfo()
 
 void SControlRigGraphNode::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	if (!ModelNode.IsValid())
+	{
+		return;
+	}
+	
 	SGraphNode::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
 	if (GraphNode)
@@ -1203,16 +1260,54 @@ FText SControlRigGraphNode::GetInstructionCountText() const
 {
 	if(Blueprint.IsValid())
 	{
-		if(Blueprint->RigGraphDisplaySettings.bShowNodeRunCounts)
+		bool bShowInstructionIndex = Blueprint->RigGraphDisplaySettings.bShowNodeInstructionIndex;
+		bool bShowNodeRunCount = Blueprint->RigGraphDisplaySettings.bShowNodeRunCounts;
+		if(bShowInstructionIndex || bShowNodeRunCount)
 		{
 			if (ModelNode.IsValid())
 			{
 				if(UControlRig* DebuggedControlRig = Cast<UControlRig>(Blueprint->GetObjectBeingDebugged()))
 				{
-					const int32 Count = ModelNode->GetInstructionVisitedCount(DebuggedControlRig->GetVM(), FRigVMASTProxy());
-					if(Count > Blueprint->RigGraphDisplaySettings.NodeRunLowerBound)
+					int32 RunCount = 0;
+					int32 FirstInstructionIndex = INDEX_NONE;
+					if(bShowNodeRunCount)
 					{
-						return FText::FromString(FString::FromInt(Count));
+						RunCount = ModelNode->GetInstructionVisitedCount(DebuggedControlRig->GetVM(), FRigVMASTProxy());
+						bShowNodeRunCount = RunCount > Blueprint->RigGraphDisplaySettings.NodeRunLowerBound;
+					}
+
+					if(bShowInstructionIndex)
+					{
+						const TArray<int32> Instructions = ModelNode->GetInstructionsForVM(DebuggedControlRig->GetVM());
+						bShowInstructionIndex = Instructions.Num() > 0;
+						if(bShowInstructionIndex)
+						{
+							FirstInstructionIndex = Instructions[0];
+						}
+					}
+
+					if(bShowInstructionIndex || bShowNodeRunCount)
+					{
+						FText NodeRunCountText, NodeInstructionIndexText;
+						if(bShowNodeRunCount)
+						{
+							NodeRunCountText = FText::FromString(FString::FromInt(RunCount));
+							if(!bShowInstructionIndex)
+							{
+								return NodeRunCountText;
+							}
+						}
+
+						if(bShowInstructionIndex)
+						{
+							NodeInstructionIndexText = FText::FromString(FString::FromInt(FirstInstructionIndex));
+							if(!bShowNodeRunCount)
+							{
+								return NodeInstructionIndexText;
+							}
+						}
+
+						return FText::Format(LOCTEXT("SControlRigGraphNodeCombinedNodeCountText", "{0}: {1}"), NodeInstructionIndexText, NodeRunCountText);
 					}
 				}
 			}

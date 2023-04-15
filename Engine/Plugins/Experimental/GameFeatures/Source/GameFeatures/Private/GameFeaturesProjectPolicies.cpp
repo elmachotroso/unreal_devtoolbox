@@ -5,6 +5,8 @@
 #include "GameFeaturesSubsystemSettings.h"
 #include "Misc/CoreMisc.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeaturesProjectPolicies)
+
 void UDefaultGameFeaturesProjectPolicies::InitGameFeatureManager()
 {
 	UE_LOG(LogGameFeatures, Log, TEXT("Scanning for built-in game feature plugins"));
@@ -40,4 +42,16 @@ const TArray<FName> UDefaultGameFeaturesProjectPolicies::GetPreloadBundleStateFo
 		FeatureBundles.Add(UGameFeaturesSubsystemSettings::LoadStateServer);
 	}
 	return FeatureBundles;
+}
+
+void UGameFeaturesProjectPolicies::ExplicitLoadGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginLoadComplete& CompleteDelegate, const bool bActivateGameFeatures)
+{
+	if (bActivateGameFeatures)
+	{
+		UGameFeaturesSubsystem::Get().LoadAndActivateGameFeaturePlugin(PluginURL, CompleteDelegate);
+	}
+	else
+	{
+		UGameFeaturesSubsystem::Get().LoadGameFeaturePlugin(PluginURL, CompleteDelegate);
+	}
 }

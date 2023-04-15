@@ -1,24 +1,42 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FontFaceDetailsCustomization.h"
-#include "Styling/SlateColor.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Misc/Paths.h"
-#include "FontEditorModule.h"
+
 #include "DesktopPlatformModule.h"
-#include "Engine/FontFace.h"
-#include "EditorStyleSet.h"
-#include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "ScopedTransaction.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorFontGlyphs.h"
 #include "EditorDirectories.h"
-#include "Misc/FileHelper.h"
+#include "EditorFontGlyphs.h"
+#include "Engine/FontFace.h"
+#include "Fonts/CompositeFont.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "IDesktopPlatform.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Optional.h"
+#include "Misc/Paths.h"
+#include "PropertyHandle.h"
+#include "Rendering/SlateRenderer.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Object.h"
+#include "UObject/WeakObjectPtr.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FontFaceDetailsCustomization"
 
@@ -60,7 +78,7 @@ void FFontFaceDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
 				.VAlign(VAlign_Center)
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ToolTipText(LOCTEXT("FontFilePathPickerToolTip", "Choose a font file from this computer"))
 					.OnClicked(this, &FFontFaceDetailsCustomization::OnBrowseFontPath)
 					.ContentPadding(2.0f)
@@ -68,7 +86,7 @@ void FFontFaceDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& Detai
 					.IsFocusable(false)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(FEditorFontGlyphs::Folder_Open)
 					]
 				]

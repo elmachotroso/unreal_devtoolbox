@@ -12,9 +12,13 @@
 #include "Views/MainPanel/SConsoleVariablesEditorCustomConsoleInputBox.h"
 
 #include "ContentBrowserModule.h"
+#include "DetailsViewArgs.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IContentBrowserSingleton.h"
+#include "IDetailsView.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
 #include "SPositiveActionButton.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
@@ -207,7 +211,7 @@ void SConsoleVariablesEditorMainPanel::CreateConcertButtonIfNeeded()
 			.OnCheckStateChanged_Raw(this, &SConsoleVariablesEditorMainPanel::ToggleMultiUserDetails)
 			[
 				SNew(SImage)
-				.Image(FConsoleVariablesEditorStyle::Get().GetBrush("Concert.MultiUser"))
+				.Image(FConsoleVariablesEditorStyle::Get().GetBrush("Icons.MultiUser"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		];
@@ -275,7 +279,7 @@ TSharedRef<SWidget> SConsoleVariablesEditorMainPanel::OnGeneratePresetsMenu()
 		AssetPickerConfig.bForceShowPluginContent = false;
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoPresets_Warning", "No Presets Found");
-		AssetPickerConfig.Filter.ClassNames.Add(UConsoleVariablesAsset::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UConsoleVariablesAsset::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.OnAssetSelected =
 			FOnAssetSelected::CreateRaw(MainPanel.Pin().Get(), &FConsoleVariablesEditorMainPanel::ImportPreset);

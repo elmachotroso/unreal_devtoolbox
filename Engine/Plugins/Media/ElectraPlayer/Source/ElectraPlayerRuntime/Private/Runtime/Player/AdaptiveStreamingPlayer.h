@@ -68,6 +68,11 @@ public:
 	virtual void Initialize(const FParamDict& InOptions) = 0;
 
 	/**
+	 * Modifies options. Not all options are modifiable during playback.
+	 */
+	virtual void ModifyOptions(const FParamDict& InOptionsToSetOrChange, const FParamDict& InOptionsToClear) = 0;
+
+	/**
 	 * Sets the attributes for the stream to start buffering for and playing.
 	 * This must be set before calling SeekTo() or LoadManifest() to have an immediate effect.
 	 * A best effort to match a stream with the given attributes will be made.
@@ -128,6 +133,9 @@ public:
 	 * Seek to a new position and play from there. This includes first playstart.
 	 * Playback is initially paused on first player use and must be resumed to begin.
 	 * Query the seekable range (GetSeekableRange()) to get the valid time range.
+	 * 
+	 * If the seek-to time is not set the seek will start at the beginning for
+	 * on-demand presentations and on the Live edge for Live presentations.
 	 * 
 	 * Seeks can be issued while a seek is already executing. The seek parameters
 	 * control behaviour. If seeking is performed for scrubbing any new seek will

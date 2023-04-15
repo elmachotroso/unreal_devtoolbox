@@ -53,11 +53,19 @@ void FImportUAssetNormal::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 		CopyUassetFiles(AssetPaths, DestinationFolder);
 	}
 
-	AssetUtils::ConvertToVT(AssetMetaData);
+	if (AssetMetaData.assetType != TEXT("3dplant"))
+	{
+		AssetUtils::ConvertToVT(AssetMetaData);
+	}
 
 	if (FMaterialUtils::ShouldOverrideMaterial(AssetMetaData.assetType))
 	{
 		
+		UMaterialInstanceConstant* OverridenInstance = FMaterialUtils::CreateMaterialOverride(AssetMetaData);
+		FMaterialUtils::ApplyMaterialInstance(AssetMetaData, OverridenInstance);
+	}
+	else if (AssetUtils::IsVTEnabled() && AssetMetaData.assetType != TEXT("3dplant"))
+	{
 		UMaterialInstanceConstant* OverridenInstance = FMaterialUtils::CreateMaterialOverride(AssetMetaData);
 		FMaterialUtils::ApplyMaterialInstance(AssetMetaData, OverridenInstance);
 	}

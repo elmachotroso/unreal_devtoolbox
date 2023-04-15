@@ -11,9 +11,24 @@ public class WebRTC : ModuleRules
 	protected virtual bool bShouldUseWebRTC
 	{
 		get =>
-			Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.Win64 ||
+			Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) ||
 			(Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture.StartsWith("x86_64"));
+	}
+
+	private static bool bWebRtcVersion96
+	{
+		get
+		{
+			return true;
+		}
+	}
+	public static string WebRtcVersionPath
+	{
+		get
+		{
+			return bWebRtcVersion96 ? Path.Join("WebRTC", "4664") :   // Branch head 4664 is Release 96
+									  Path.Join("WebRTC", "4147");    // Branch head 4147 is Release 84
+		}
 	}
 
 	public WebRTC(ReadOnlyTargetRules Target) : base(Target)
@@ -28,12 +43,15 @@ public class WebRTC : ModuleRules
 		}
 		else
 		{
+			// The debug webrtc binares are not portable, so we only ship with the release binaries
+			// If you wanted, you would need to compile the webrtc binaries in debug and place the Lib and Include folder in the relevant location
+			// ConfigPath = "Debug";
 			ConfigPath = "Release";
 		}
 
 		if (bShouldUseWebRTC)
 		{
-			string WebRtcSdkPath = Target.UEThirdPartySourceDirectory + "WebRTC/4147"; // Branch head 4147 is Release 84
+			string WebRtcSdkPath = Target.UEThirdPartySourceDirectory + WebRtcVersionPath;
 			string VS2013Friendly_WebRtcSdkPath = Target.UEThirdPartySourceDirectory;
 
 			string PlatformSubdir = Target.Platform.ToString();
@@ -41,14 +59,16 @@ public class WebRTC : ModuleRules
 			string IncludePath = Path.Combine(WebRtcSdkPath, "Include");
 			PublicSystemIncludePaths.Add(IncludePath);
 
-			string AbslthirdPartyIncludePath = Path.Combine(WebRtcSdkPath, "Include", "third_party", "abseil-cpp");
+			string AbslthirdPartyIncludePath = Path.Combine(IncludePath, "third_party", "abseil-cpp");
 			PublicSystemIncludePaths.Add(AbslthirdPartyIncludePath);
 
-			if (Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
 				PublicDefinitions.Add("WEBRTC_WIN=1");
 
+				PlatformSubdir = "Win64"; // windows-based platform extensions can share this library
 				string LibraryPath = Path.Combine(WebRtcSdkPath, "Lib", PlatformSubdir, ConfigPath);
+				
 				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "webrtc.lib"));
 
 				// Additional System library
@@ -74,7 +94,8 @@ public class WebRTC : ModuleRules
 			}
 		}
 
-		PublicDefinitions.Add("WEBRTC_VERSION=84");
+		string WebRtcDefinitionVersion = bWebRtcVersion96 ? "96" : "84";
+		PublicDefinitions.Add("WEBRTC_VERSION=" + WebRtcDefinitionVersion);
 		PublicDefinitions.Add("ABSL_ALLOCATOR_NOTHROW=1");
 	}
 }

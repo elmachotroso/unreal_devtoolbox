@@ -13,6 +13,9 @@
 #include "AnimationGraphSchema.h"
 #include "ControlRigBlueprintGeneratedClass.h"
 #include "ControlRigBlueprint.h"
+#include "Misc/DefaultValueHelper.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimGraphNode_ControlRig)
 
 #define LOCTEXT_NAMESPACE "AnimGraphNode_ControlRig"
 
@@ -69,15 +72,26 @@ void UAnimGraphNode_ControlRig::CreateCustomPins(TArray<UEdGraphPin*>* OldPins)
 				{
 					for (UEdGraphPin* OldPin : *OldPins)
 					{
+						// do not rebuild sub pins as they will be treated after in UK2Node::RestoreSplitPins
+						const bool bIsSubPin = OldPin->ParentPin && OldPin->ParentPin->bHidden;
+						if (bIsSubPin)
+						{
+							continue;
+						}
+						
 						bool bFound = false;
 						for (UEdGraphPin* CurrentPin : Pins)
 						{
-							if (CurrentPin->GetFName() == OldPin->GetFName() &&
-								CurrentPin->PinType == OldPin->PinType)
+							if (CurrentPin->GetFName() == OldPin->GetFName())
 							{
-								bFound = true;
-								break;
-							}
+								if (CurrentPin->PinType == OldPin->PinType ||
+									AnimGraphDefaultSchema->ArePinTypesCompatible(CurrentPin->PinType, OldPin->PinType))
+								{
+									bFound = true;
+									break;
+								}
+								
+							}							
 						}
 
 						if (!bFound)
@@ -164,9 +178,10 @@ void UAnimGraphNode_ControlRig::CreateCustomPins(TArray<UEdGraphPin*>* OldPins)
 						{
 							FString DefaultValue;
 							
+							// The format the graph pins editor use is different of what property exporter produces, so we use BlueprintEditorUtils to generate the default string
 							// Variable.Memory here points to the corresponding property in the Control Rig BP CDO, it was initialized in UAnimGraphNode_ControlRig::RebuildExposedProperties 
-							PropertyIt->ExportTextItem(DefaultValue, Variable.Memory, nullptr, nullptr, PPF_None, nullptr);
-							
+							FBlueprintEditorUtils::PropertyValueToString_Direct(*PropertyIt, Variable.Memory, DefaultValue, this);
+
 							if (!DefaultValue.IsEmpty())
 							{
 								AnimGraphDefaultSchema->TrySetDefaultValue(*NewPin, DefaultValue);
@@ -189,7 +204,7 @@ void UAnimGraphNode_ControlRig::CreateCustomPins(TArray<UEdGraphPin*>* OldPins)
 			{
 				Hierarchy->ForEach<FRigControlElement>([&](FRigControlElement* ControlElement) -> bool
 				{
-					if(ControlElement->Settings.bAnimatable)
+					if (Hierarchy->IsAnimatable(ControlElement))
 					{
 						const FName ControlName = ControlElement->GetName();
 						BeginExposableNames.Remove(ControlName);
@@ -359,7 +374,7 @@ void UAnimGraphNode_ControlRig::RebuildExposedProperties()
 			{
 				Hierarchy->ForEach<FRigControlElement>([&](const FRigControlElement* ControlElement) -> bool
 				{
-					if(ControlElement->Settings.bAnimatable)
+					if (Hierarchy->IsAnimatable(ControlElement))
 					{
 						const FName ControlName = ControlElement->GetName();
 						CustomPinProperties.Add(MakeOptionalPin(ControlName));
@@ -620,7 +635,7 @@ void UAnimGraphNode_ControlRig::GetAvailableMapping(const FName& PathName, TArra
 				{
 					Hierarchy->ForEach<FRigControlElement>([&](FRigControlElement* ControlElement) -> bool
 					{
-						if(ControlElement->Settings.bAnimatable)
+						if (Hierarchy->IsAnimatable(ControlElement))
 						{
 							OutArray.Add(ControlElement->GetName());
 						}
@@ -694,7 +709,7 @@ void UAnimGraphNode_ControlRig::CreateVariableMapping(const FString& FilteredTex
 				{
 					Hierarchy->ForEach<FRigControlElement>([&](FRigControlElement* ControlElement) -> bool
 					{
-						if(ControlElement->Settings.bAnimatable)
+						if (Hierarchy->IsAnimatable(ControlElement))
 						{
 							const FName ControlName = ControlElement->GetName();
 							const FString& DisplayName = ControlName.ToString();
@@ -776,6 +791,80 @@ void UAnimGraphNode_ControlRig::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	}
 }
 
+void UAnimGraphNode_ControlRig::PostReconstructNode()
+{
+	// Fix default values that were serialized directly with property exported strings (not valid for pin editors)
+#if WITH_EDITOR
+	if (!IsTemplate())
+	{
+		static UScriptStruct* VectorStruct = TBaseStructure<FVector>::Get();
+		static UScriptStruct* TransformStruct = TBaseStructure<FTransform>::Get();
+
+		// fix up any pin data if it needs to 
+		for (UEdGraphPin* CurrentPin : Pins)
+		{
+			const FName& PinCategory = CurrentPin->PinType.PinCategory;
+
+			// Target only struct types vector and transform 
+			// For rotator, if it was created with incorect format, it was serialized with DefaultValue = L"0, 0, 0", so it can not be corrected without risking changing users value
+			if (PinCategory == UEdGraphSchema_K2::PC_Struct)
+			{
+				const UAnimationGraphSchema* AnimGraphDefaultSchema = GetDefault<UAnimationGraphSchema>();
+				const FName& PinName = CurrentPin->GetFName();
+
+				if (CurrentPin->PinType.PinSubCategoryObject == VectorStruct)
+				{
+					// If InitFromString succeeds, it has bad format, re-encode
+					FVector FixVector = FVector::ZeroVector;
+					if (FixVector.InitFromString(CurrentPin->DefaultValue))
+					{
+						const FString DefaultValue = FString::Printf(TEXT("%f,%f,%f"), FixVector.X, FixVector.Y, FixVector.Z);
+						AnimGraphDefaultSchema->TrySetDefaultValue(*CurrentPin, DefaultValue);
+					}
+				}
+				else if (CurrentPin->PinType.PinSubCategoryObject == TransformStruct)
+				{
+					// If pin was serialized with bad format, transforms would stay empty, so try to get the value from ControlRig or set to Identity as last resort
+					if (CurrentPin->DefaultValue.IsEmpty())
+					{
+						FTransform FixTransform = FTransform::Identity;
+						FString DefaultValue = FixTransform.ToString();
+
+						const FRigVMExternalVariable* RigVMExternalVariable = (CurrentPin->Direction == EGPD_Input) ? 
+							InputVariables.Find(CurrentPin->GetFName()) : (CurrentPin->Direction == EGPD_Output) ? 
+							OutputVariables.Find(CurrentPin->GetFName()) : nullptr;
+
+						if (RigVMExternalVariable != nullptr && RigVMExternalVariable->IsValid())
+						{
+							if (UControlRigBlueprintGeneratedClass* GeneratedClass = Cast<UControlRigBlueprintGeneratedClass>(GetTargetClass()))
+							{
+								const FName& PropertyName = CurrentPin->GetFName();
+
+								for (TFieldIterator<FProperty> PropertyIt(GeneratedClass); PropertyIt; ++PropertyIt)
+								{
+									if (PropertyIt->GetFName() == PropertyName)
+									{
+										// The format the graph pins editor use is different of what property exporter produces, so we use BlueprintEditorUtils to generate the default string
+										// Variable.Memory here points to the corresponding property in the Control Rig BP CDO, it was initialized in UAnimGraphNode_ControlRig::RebuildExposedProperties 
+										FBlueprintEditorUtils::PropertyValueToString_Direct(*PropertyIt, RigVMExternalVariable->Memory, DefaultValue, this);
+										break;
+									}
+								}
+							}
+						}
+
+						AnimGraphDefaultSchema->SetPinAutogeneratedDefaultValue(CurrentPin, DefaultValue);
+						AnimGraphDefaultSchema->TrySetDefaultValue(*CurrentPin, DefaultValue);
+					}
+				}
+			}
+		}
+	}
+#endif // WITH_EDITOR
+
+	Super::PostReconstructNode();
+}
+
 void UAnimGraphNode_ControlRig::CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex) const
 {
 	Super::CustomizePinData(Pin, SourcePropertyName, ArrayIndex);
@@ -806,3 +895,4 @@ void UAnimGraphNode_ControlRig::CustomizePinData(UEdGraphPin* Pin, FName SourceP
 	}
 }
 #undef LOCTEXT_NAMESPACE
+

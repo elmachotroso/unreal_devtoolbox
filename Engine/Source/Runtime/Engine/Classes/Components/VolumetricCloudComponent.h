@@ -14,6 +14,12 @@
 
 class FVolumetricCloudSceneProxy;
 
+UENUM()
+enum class EVolumetricCloudTracingMaxDistanceMode : uint8
+{
+	DistanceFromCloudLayerEntryPoint = 0,
+	DistanceFromPointOfView = 1,
+};
 
 /**
  * A component that represents a participating media material around a planet, e.g. clouds.
@@ -36,6 +42,10 @@ class UVolumetricCloudComponent : public USceneComponent
 	/** The maximum distance of the volumetric surface before which we will accept to start tracing. (kilometers) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Layer", meta = (UIMin = 100.0f, UIMax = 500.0f, ClampMin = 1.0f, SliderExponent = 2.0))
 	float TracingStartMaxDistance;
+
+	/** Mode to select how the tracing max distance should be interpreted. DistanceFromPointOfView is useful to avoid the top of the cloud layer to be clipped when TracingMaxDistance is shorten for performance. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Layer")
+	EVolumetricCloudTracingMaxDistanceMode TracingMaxDistanceMode;
 
 	/** The maximum distance that will be traced inside the cloud layer. (kilometers) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Layer", meta = (UIMin = 1.0f, UIMax = 500.0f, ClampMin = 0.1f, SliderExponent = 2.0))
@@ -70,14 +80,16 @@ class UVolumetricCloudComponent : public USceneComponent
 	 * Scale the tracing sample count in primary views. Quality level scalability CVARs affect the maximum range.
 	 * The sample count resolution is still clamped according to scalability setting to 'r.VolumetricCloud.ViewRaySampleCountMax'.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
 	float ViewSampleCountScale;
 	/**
 	 * Scale the tracing sample count in reflection views. Quality level scalability CVARs affect the maximum range.
 	 * The sample count resolution is still clamped according to scalability setting to 'r.VolumetricCloud.ReflectionRaySampleMaxCount'.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
-	float ReflectionViewSampleCountScale;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
+	float ReflectionViewSampleCountScaleValue;
+	UPROPERTY()
+	float ReflectionViewSampleCountScale_DEPRECATED;
 	UPROPERTY()
 	float ReflectionSampleCountScale_DEPRECATED;
 
@@ -85,27 +97,29 @@ class UVolumetricCloudComponent : public USceneComponent
 	 * Scale the shadow tracing sample count in primary views, only used with Advanced Output ray marched shadows. Quality level scalability CVARs affect the maximum range.
 	 * The sample count resolution is still clamped according to scalability setting to 'r.VolumetricCloud.Shadow.ViewRaySampleMaxCount'.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
 	float ShadowViewSampleCountScale;
 	/**
 	 * Scale the shadow tracing sample count in reflection views, only used with Advanced Output ray marched shadows. Quality level scalability CVARs affect the maximum range.
 	 * The sample count resolution is still clamped according to scalability setting to 'r.VolumetricCloud.Shadow.ReflectionRaySampleMaxCount'.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
-	float ShadowReflectionViewSampleCountScale;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.05", UIMax = "8", ClampMin = "0.05", SliderExponent = 1.0))
+	float ShadowReflectionViewSampleCountScaleValue;
+	UPROPERTY()
+	float ShadowReflectionViewSampleCountScale_DEPRECATED;
 	UPROPERTY()
 	float ShadowReflectionSampleCountScale_DEPRECATED;
 
 	/**
 	 * The shadow tracing distance in kilometers, only used with Advanced Output ray marched shadows.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.1", UIMax = "50", ClampMin = "0.01", SliderExponent = 3.0))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.1", UIMax = "50", ClampMin = "0.01", SliderExponent = 3.0))
 	float ShadowTracingDistance;
 
 	/**
 	 * When the mean transmittance is below this threshold, we stop tracing. This is a good way to reduce the ray marched sample count, and thus to increase performance.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", AdvancedDisplay, meta = (UIMin = "0.0", UIMax = "1.0", ClampMin = "0.0", ClampMax = "1.0", SliderExponent = 5.0))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cloud Tracing", meta = (UIMin = "0.0", UIMax = "1.0", ClampMin = "0.0", ClampMax = "1.0", SliderExponent = 5.0))
 	float StopTracingTransmittanceThreshold;
 
 
@@ -200,9 +214,8 @@ private:
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Atmosphere, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<class UVolumetricCloudComponent> VolumetricCloudComponent;
 
-public:
 #if WITH_EDITOR
-	virtual bool SupportsDataLayer() const override { return true; }
+	virtual bool ActorTypeSupportsDataLayer() const override { return true; }
 #endif
 
 };

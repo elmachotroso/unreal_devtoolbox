@@ -1,22 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System;
+using Horde.Build.Agents;
+using Horde.Build.Agents.Pools;
+using Horde.Build.Logs;
+using Horde.Build.Streams;
+using Horde.Build.Utilities;
 using HordeCommon;
-using HordeServer.Utilities;
-using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Attributes;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
-namespace HordeServer.Models
+namespace Horde.Build.Jobs
 {
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
+	using PoolId = StringId<IPool>;
 	using StreamId = StringId<IStream>;
 	using TemplateRefId = StringId<TemplateRef>;
-	using PoolId = StringId<IPool>;
 
 	/// <summary>
 	/// Unique id struct for JobStepRef objects. Includes a job id, batch id, and step id to uniquely identify the step.
@@ -42,25 +42,25 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="JobId">The job id</param>
-		/// <param name="BatchId">The batch id within the job</param>
-		/// <param name="StepId">The step id</param>
-		public JobStepRefId(JobId JobId, SubResourceId BatchId, SubResourceId StepId)
+		/// <param name="jobId">The job id</param>
+		/// <param name="batchId">The batch id within the job</param>
+		/// <param name="stepId">The step id</param>
+		public JobStepRefId(JobId jobId, SubResourceId batchId, SubResourceId stepId)
 		{
-			this.JobId = JobId;
-			this.BatchId = BatchId;
-			this.StepId = StepId;
+			JobId = jobId;
+			BatchId = batchId;
+			StepId = stepId;
 		}
 
 		/// <summary>
 		/// Parse a job step id from a string
 		/// </summary>
-		/// <param name="Text">Text to parse</param>
+		/// <param name="text">Text to parse</param>
 		/// <returns>The parsed id</returns>
-		public static JobStepRefId Parse(string Text)
+		public static JobStepRefId Parse(string text)
 		{
-			string[] Components = Text.Split(':');
-			return new JobStepRefId(JobId.Parse(Components[0]), SubResourceId.Parse(Components[1]), SubResourceId.Parse(Components[2]));
+			string[] components = text.Split(':');
+			return new JobStepRefId(JobId.Parse(components[0]), SubResourceId.Parse(components[1]), SubResourceId.Parse(components[2]));
 		}
 
 		/// <summary>
@@ -79,33 +79,30 @@ namespace HordeServer.Models
 	public sealed class JobStepRefIdSerializer : IBsonSerializer<JobStepRefId>
 	{
 		/// <inheritdoc/>
-		public Type ValueType
+		public Type ValueType => typeof(JobStepRefId);
+
+		/// <inheritdoc/>
+		void IBsonSerializer.Serialize(BsonSerializationContext context, BsonSerializationArgs args, object value)
 		{
-			get { return typeof(JobStepRefId); }
+			Serialize(context, args, (JobStepRefId)value);
 		}
 
 		/// <inheritdoc/>
-		void IBsonSerializer.Serialize(BsonSerializationContext Context, BsonSerializationArgs Args, object Value)
+		object IBsonSerializer.Deserialize(BsonDeserializationContext context, BsonDeserializationArgs args)
 		{
-			Serialize(Context, Args, (JobStepRefId)Value);
+			return ((IBsonSerializer<JobStepRefId>)this).Deserialize(context, args);
 		}
 
 		/// <inheritdoc/>
-		object IBsonSerializer.Deserialize(BsonDeserializationContext Context, BsonDeserializationArgs Args)
+		public JobStepRefId Deserialize(BsonDeserializationContext context, BsonDeserializationArgs args)
 		{
-			return ((IBsonSerializer<JobStepRefId>)this).Deserialize(Context, Args);
+			return JobStepRefId.Parse(context.Reader.ReadString());
 		}
 
 		/// <inheritdoc/>
-		public JobStepRefId Deserialize(BsonDeserializationContext Context, BsonDeserializationArgs Args)
+		public void Serialize(BsonSerializationContext context, BsonSerializationArgs args, JobStepRefId value)
 		{
-			return JobStepRefId.Parse(Context.Reader.ReadString());
-		}
-
-		/// <inheritdoc/>
-		public void Serialize(BsonSerializationContext Context, BsonSerializationArgs Args, JobStepRefId Value)
-		{
-			Context.Writer.WriteString(((JobStepRefId)Value).ToString());
+			context.Writer.WriteString(((JobStepRefId)value).ToString());
 		}
 	}
 
@@ -163,6 +160,16 @@ namespace HordeServer.Models
 		/// Outcome of the step, once complete.
 		/// </summary>
 		public JobStepOutcome? Outcome { get; }
+
+		/// <summary>
+		/// The last change that succeeded. Note that this is only set when the ref is updated; it is not necessarily consistent with steps run later.
+		/// </summary>
+		public int? LastSuccess { get; }
+
+		/// <summary>
+		/// The last change that succeeded, or completed a warning. See <see cref="LastSuccess"/>.
+		/// </summary>
+		public int? LastWarning { get; }
 
 		/// <summary>
 		/// Time taken for the batch containing this batch to start after it became ready

@@ -74,32 +74,17 @@ void* FMacPlatformProcess::GetDllHandle( const TCHAR* Filename )
 
 	check(Filename);
 
-	NSString* DylibPath = [NSString stringWithUTF8String:TCHAR_TO_UTF8(Filename)];
+	NSString* DylibPath = FString(Filename).GetNSString();
 	NSString* ExecutableFolder = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
 	void* Handle = nullptr;
 
-	// On 11.0.0+, system-provided dynamic libraries do not exist on the
-	// filesystem, only in a built-in dynamic linker cache.
-	if (FPlatformMisc::MacOSXVersionCompare(10,16,0) >= 0)
-	{
-		Handle = GetDllHandleImpl(DylibPath, ExecutableFolder);
-		if (!Handle)
-		{
-			// If it's not a absolute or relative path, try to find the file in the app bundle
-			DylibPath = [ExecutableFolder stringByAppendingPathComponent:FString(Filename).GetNSString()];
-			Handle = GetDllHandleImpl(DylibPath, ExecutableFolder);
-		}
-	}
-	else
-	{
-		NSFileManager* FileManager = [NSFileManager defaultManager];
-		if (![FileManager fileExistsAtPath:DylibPath])
-		{
-			// If it's not a absolute or relative path, try to find the file in the app bundle
-			DylibPath = [ExecutableFolder stringByAppendingPathComponent:FString(Filename).GetNSString()];
-		}
-		Handle = GetDllHandleImpl(DylibPath, ExecutableFolder);
-	}
+    Handle = GetDllHandleImpl(DylibPath, ExecutableFolder);
+    if (!Handle)
+    {
+        // If it's not a absolute or relative path, try to find the file in the app bundle
+        DylibPath = [ExecutableFolder stringByAppendingPathComponent:DylibPath];
+        Handle = GetDllHandleImpl(DylibPath, ExecutableFolder);
+    }
 	return Handle;
 }
 
@@ -542,10 +527,7 @@ FProcHandle FMacPlatformProcess::CreateProcInternal(const TCHAR* URL, const TCHA
 
 	if (OptionalWorkingDirectory)
 	{
-		if (@available(macOS 10.15, *))
-		{
-			posix_spawn_file_actions_addchdir_np(&FileActions, TCHAR_TO_UTF8(OptionalWorkingDirectory));
-		}
+		posix_spawn_file_actions_addchdir_np(&FileActions, TCHAR_TO_UTF8(OptionalWorkingDirectory));
 	}
 
 	posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
@@ -1041,7 +1023,26 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 					BasePath = [BasePath stringByDeletingLastPathComponent];
 				}
 			}
-		
+#ifdef UE_RELATIVE_BASE_DIR
+			else
+			{
+				// Get executable path
+				NSString* ExecutablePath = [[NSBundle mainBundle]executablePath];
+
+				// When building an extra console app i.e. a commandlet, the Mac executable can  be placed in a distinct folder, usually 3 directories up compared to the packaged app
+				if ([[ExecutablePath lowercaseString]hasSuffix:@"-cmd"] )
+				{
+#ifdef UE_CMDLET_RELATIVE_BASE_DIR
+					BasePath = [BasePath stringByAppendingPathComponent : @UE_CMDLET_RELATIVE_BASE_DIR];
+#endif
+				}
+				else
+				{
+					BasePath = [BasePath stringByAppendingPathComponent : @UE_RELATIVE_BASE_DIR];
+				}
+			}
+#endif
+
 			FCString::Strcpy(Result, MAC_MAX_PATH, *FString(BasePath));
 			FCString::Strcat(Result, TEXT("/"));
 		}

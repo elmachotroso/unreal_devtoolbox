@@ -166,10 +166,14 @@ public:
 	UPROPERTY(config)
 	FName PreviewPlatformName;
 
-	/** The shader platform to preview, or NAME_None if there is no preview platform */
+	/** The shader format to preview, or NAME_None if there is no preview platform */
 	UPROPERTY(config)
 	FName PreviewShaderFormatName;
 
+	/** The shader platform to preview, or NAME_None if there is no preview platform */
+	UPROPERTY(config)
+	FName PreviewShaderPlatformName;
+	
 	/** Is feature level preview currently active */
 	UPROPERTY(config)
 	bool bPreviewFeatureLevelActive;

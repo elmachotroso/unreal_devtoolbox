@@ -27,7 +27,7 @@ class FImgMediaPlayer
 	, protected IMediaControls
 	, protected IMediaSamples
 	, protected IMediaTracks
-	, protected IMediaView
+	, public IMediaView
 {
 public:
 
@@ -43,6 +43,9 @@ public:
 	/** Virtual destructor. */
 	virtual ~FImgMediaPlayer();
 
+	/** Get the loader. */
+	TSharedPtr<FImgMediaLoader, ESPMode::ThreadSafe> GetLoader() { return Loader; }
+
 public:
 
 	//~ IMediaPlayer interface
@@ -51,6 +54,7 @@ public:
 	virtual IMediaCache& GetCache() override;
 	virtual IMediaControls& GetControls() override;
 	virtual FString GetInfo() const override;
+	virtual FVariant GetMediaInfo(FName InfoName) const override;
 	virtual FGuid GetPlayerPluginGUID() const override;
 	virtual IMediaSamples& GetSamples() override;
 	virtual FString GetStats() const override;

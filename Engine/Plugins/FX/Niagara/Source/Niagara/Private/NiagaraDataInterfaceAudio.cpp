@@ -2,6 +2,10 @@
 
 #include "NiagaraDataInterfaceAudio.h"
 
+#include "AudioDevice.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceAudio)
+
 FNiagaraSubmixListener::FNiagaraSubmixListener(Audio::FPatchMixer& InMixer, int32 InNumSamplesToBuffer, Audio::FDeviceId InDeviceId, USoundSubmix* InSoundSubmix)
 	: NumChannelsInSubmix(0)
 	, SubmixSampleRate(0)
@@ -52,13 +56,11 @@ FNiagaraSubmixListener::~FNiagaraSubmixListener()
 
 void FNiagaraSubmixListener::RegisterToSubmix()
 {
-	FAudioDevice * DeviceHandle = FAudioDeviceManager::Get()->GetAudioDeviceRaw(AudioDeviceId);
-	ensure(DeviceHandle);
-
-	if (DeviceHandle)
+	if (FAudioDevice* DeviceHandle = FAudioDeviceManager::Get()->GetAudioDeviceRaw(AudioDeviceId))
 	{
-		DeviceHandle->RegisterSubmixBufferListener(this, Submix);
 		bIsRegistered = true;
+
+		DeviceHandle->RegisterSubmixBufferListener(this, Submix);
 
 		// RegisterSubmixBufferListener lazily enqueues the registration on the audio thread,
 		// so we have to wait for the audio thread to destroy.
@@ -72,23 +74,38 @@ void FNiagaraSubmixListener::UnregisterFromSubmix()
 {
 	if (bIsRegistered)
 	{
-		FAudioDevice * DeviceHandle = FAudioDeviceManager::Get()->GetAudioDeviceRaw(AudioDeviceId);
-		ensure(DeviceHandle);
-		DeviceHandle->UnregisterSubmixBufferListener(this, Submix);
-
 		bIsRegistered = false;
+		
+		if (FAudioDevice* DeviceHandle = FAudioDeviceManager::Get()->GetAudioDeviceRaw(AudioDeviceId))
+		{
+			if (IsInGameThread())
+			{
+				DeviceHandle->UnregisterSubmixBufferListener(this, Submix);
+				
+				// UnregisterSubmixBufferListener lazily enqueues the unregistration on the audio thread,
+				// so we have to wait for the audio thread to destroy.
+				FAudioCommandFence Fence;
+				Fence.BeginFence();
+				Fence.Wait();
+			}
+			else
+			{
+				UE::Tasks::FTaskEvent CompletionEvent{ UE_SOURCE_LOCATION };
+				FAudioThread::RunCommandOnAudioThread([this, DeviceHandle, &CompletionEvent]()
+				{
+					DeviceHandle->UnregisterSubmixBufferListener(this, Submix);
+					CompletionEvent.Trigger();
+				});
 
-		// UnregisterSubmixBufferListener lazily enqueues the unregistration on the audio thread,
-		// so we have to wait for the audio thread to destroy.
-		FAudioCommandFence Fence;
-		Fence.BeginFence();
-		Fence.Wait();
+				CompletionEvent.Wait();
+			}
+		}
 	}
 }
 
 float FNiagaraSubmixListener::GetSampleRate() const
 {
-	return (float) SubmixSampleRate;
+	return static_cast<float>(SubmixSampleRate.Load());
 }
 
 int32 FNiagaraSubmixListener::GetNumChannels() const
@@ -138,14 +155,7 @@ void FNiagaraDataInterfaceProxySubmix::RegisterToAllAudioDevices()
 
 void FNiagaraDataInterfaceProxySubmix::UnregisterFromAllAudioDevices()
 {
-	if (FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get())
-	{
-		// Register a new submix listener for every audio device that currently exists.
-		DeviceManager->IterateOverAllDevices([&](Audio::FDeviceId DeviceId, FAudioDevice* InDevice)
-		{
-			RemoveSubmixListener(DeviceId);
-		});
-	}
+	SubmixListeners.Empty();
 }
 
 void FNiagaraDataInterfaceProxySubmix::OnUpdateSubmix(USoundSubmix* Submix)
@@ -305,10 +315,7 @@ void UNiagaraDataInterfaceAudioSubmix::PostEditChangeProperty(struct FPropertyCh
 void UNiagaraDataInterfaceAudioSubmix::PostInitProperties()
 {
 	Super::PostInitProperties();
-
-	GetProxyAs<FNiagaraDataInterfaceProxySubmix>()->OnUpdateSubmix(Submix);
 }
-
 
 void UNiagaraDataInterfaceAudioSubmix::BeginDestroy()
 {
@@ -320,6 +327,8 @@ void UNiagaraDataInterfaceAudioSubmix::BeginDestroy()
 void UNiagaraDataInterfaceAudioSubmix::PostLoad()
 {
 	Super::PostLoad();
+
+	GetProxyAs<FNiagaraDataInterfaceProxySubmix>()->OnUpdateSubmix(Submix);
 }
 
 bool UNiagaraDataInterfaceAudioSubmix::CopyToInternal(UNiagaraDataInterface* Destination) const
@@ -336,4 +345,5 @@ bool UNiagaraDataInterfaceAudioSubmix::CopyToInternal(UNiagaraDataInterface* Des
 	
 	return true;
 }
+
 

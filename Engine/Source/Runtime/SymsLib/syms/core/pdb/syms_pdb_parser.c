@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #ifndef SYMS_PDB_PARSER_C
 #define SYMS_PDB_PARSER_C
 
@@ -268,7 +269,7 @@ syms_pdb_types_from_name(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel 
 //~ NOTE(allen): PDB GSI
 
 SYMS_API SYMS_PdbGsiAccel
-syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAccel *accel, SYMS_MsfRange range){
+syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAccel *msf, SYMS_MsfRange range){
   SYMS_ProfBegin("syms_pdb_parse_info");
   
   // get scratch
@@ -276,7 +277,7 @@ syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
   // check gsi info
   SYMS_B32 has_gsi = syms_false;
   SYMS_PdbGsiHeader header = {0};
-  if (syms_msf_read_struct_in_range(data, accel, range, 0, &header)){
+  if (syms_msf_read_struct_in_range(data, msf, range, 0, &header)){
     if (header.sig == SYMS_PdbGsiSignature_Basic &&
         header.ver == SYMS_PdbGsiVersion_V70 &&
         header.num_buckets != 0){
@@ -306,12 +307,12 @@ syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
     
     // read bitmask
     SYMS_MsfRange bitmask_range = syms_msf_sub_range(range, bitmask_off, bitmask_size);
-    SYMS_String8 bitmask = syms_msf_read_whole_range(scratch.arena, data, accel, bitmask_range);
+    SYMS_String8 bitmask = syms_msf_read_whole_range(scratch.arena, data, msf, bitmask_range);
     SYMS_U32 bitmask_count_clamped = bitmask.size/4;
     
     // read packed offsets
     SYMS_MsfRange offsets_range = syms_msf_sub_range(range, offsets_off, range.size - offsets_off);
-    SYMS_String8 packed_offsets = syms_msf_read_whole_range(scratch.arena, data, accel, offsets_range);
+    SYMS_String8 packed_offsets = syms_msf_read_whole_range(scratch.arena, data, msf, offsets_range);
     SYMS_U32 packed_offsets_count = packed_offsets.size/4;
     
     // unpack offsets
@@ -354,7 +355,7 @@ syms_pdb_gsi_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
     
     // read hash records
     SYMS_MsfRange hash_record_range = syms_msf_sub_range(range, hash_record_array_off, header.hr_len);
-    SYMS_String8 hash_records = syms_msf_read_whole_range(scratch.arena, data, accel, hash_record_range);
+    SYMS_String8 hash_records = syms_msf_read_whole_range(scratch.arena, data, msf, hash_record_range);
     SYMS_U32 entry_count = hash_records.size/sizeof(SYMS_PdbGsiHashRecord);
     
     // build bucket chains
@@ -452,7 +453,7 @@ syms_pdb_symbols_from_name(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAccel *
           {
             SYMS_CvRef2 ref2 = {0};
             syms_msf_read_struct_in_range(data, msf, element.range, 0, &ref2);
-            uid = ref2.imod + SYMS_PdbPseudoUnit_FIRST_COMP_UNIT;
+            uid = SYMS_PdbPseudoUnit_COUNT + ref2.imod;
             sid = SYMS_ID_u32_u32(SYMS_PdbSymbolIDKind_Off, ref2.sym_off);
           }break;
         }
@@ -1083,26 +1084,28 @@ syms_pdb_unit_info_from_uid(SYMS_PdbUnitSetAccel *unit_set, SYMS_UnitID uid){
   
   // TODO(allen): language
   
-  // try symbols pseudo unit
-  if (uid == SYMS_PdbPseudoUnit_SYM){
-    result.features = (SYMS_UnitFeature_StaticVariables|
-                       SYMS_UnitFeature_ExternVariables|
-                       SYMS_UnitFeature_FunctionStubs);
-  }
-  
-  // try types pseudo unit
-  else if (uid == SYMS_PdbPseudoUnit_TPI){
-    result.features = SYMS_UnitFeature_Types;
-  }
-  
-  // try compilation unit
-  else{
-    SYMS_PdbCompUnit *unit = syms_pdb_comp_unit_from_id(unit_set, uid);
-    if (unit != 0){
-      result.features = (SYMS_UnitFeature_CompilationUnit|
-                         SYMS_UnitFeature_StaticVariables|
-                         SYMS_UnitFeature_Functions);
-    }
+  switch (uid){
+    case SYMS_PdbPseudoUnit_SYM:
+    {
+      result.features = (SYMS_UnitFeature_StaticVariables|
+                         SYMS_UnitFeature_ExternVariables|
+                         SYMS_UnitFeature_FunctionStubs);
+    }break;
+    
+    case SYMS_PdbPseudoUnit_TPI:
+    {
+      result.features = SYMS_UnitFeature_Types;
+    }break;
+    
+    default:
+    {
+      SYMS_PdbCompUnit *unit = syms_pdb_comp_unit_from_id(unit_set, uid);
+      if (unit != 0){
+        result.features = (SYMS_UnitFeature_CompilationUnit|
+                           SYMS_UnitFeature_StaticVariables|
+                           SYMS_UnitFeature_Functions);
+      }
+    }break;
   }
   
   return(result);
@@ -1695,6 +1698,11 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
   SYMS_PdbStubRef *var_last = 0;
   SYMS_U64 var_count = 0;
   
+  // thread vars
+  SYMS_PdbStubRef *tls_var_first = 0;
+  SYMS_PdbStubRef *tls_var_last = 0;
+  SYMS_U64 tls_var_count = 0;
+  
   // thunk
   SYMS_PdbStubRef *thunk_first = 0;
   SYMS_PdbStubRef *thunk_last = 0;
@@ -1706,7 +1714,7 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
   SYMS_U64 pub_count = 0;
   
   // parse loop
-  SYMS_PdbStub *defrange_collector_stub = 0;
+  SYMS_PdbStub *defrange_collector_stub = &root;
   SYMS_PdbStubRef *stack = 0;
   SYMS_PdbStubRef *stack_free = 0;
   SYMS_U32 cursor = 0;
@@ -1721,8 +1729,7 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
     
     // init stub
     SYMS_U32 symbol_off = element.range.off - 4;
-    SYMS_PdbStub *stub = syms_push_array(arena, SYMS_PdbStub, 1);
-    syms_memzero_struct(stub);
+    SYMS_PdbStub *stub = syms_push_array_zero(arena, SYMS_PdbStub, 1);
     SYMS_QueuePush_N(first, last, stub, bucket_next);
     all_count += 1;
     stub->off = symbol_off;
@@ -1755,7 +1762,6 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
         var_count += 1;
       }break;
       
-#if 0
       case SYMS_CvSymKind_LTHREAD32:
       case SYMS_CvSymKind_GTHREAD32:
       {
@@ -1767,15 +1773,25 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
         // push onto var list
         SYMS_PdbStubRef *ref = syms_pdb_alloc_ref(scratch.arena, &stack_free);
         ref->stub = stub;
-        SYMS_QueuePush(var_first, var_last, ref);
-        var_count += 1;
+        SYMS_QueuePush(tls_var_first, tls_var_last, ref);
+        tls_var_count += 1;
       }break;
-#endif
       
       // general local variable
       case SYMS_CvSymKind_LOCAL:
       {
         SYMS_U32 name_off = sizeof(SYMS_CvLocal);
+        SYMS_String8 name = syms_msf_read_zstring_in_range(arena, data, msf, element.range, name_off);
+        
+        stub->name = name;
+        
+        preserve_defrange_collection = syms_true;
+        defrange_collector_stub = stub;
+      }break;
+      
+      case SYMS_CvSymKind_FILESTATIC:
+      {
+        SYMS_U32 name_off = sizeof(SYMS_CvFileStatic);
         SYMS_String8 name = syms_msf_read_zstring_in_range(arena, data, msf, element.range, name_off);
         
         stub->name = name;
@@ -1832,6 +1848,9 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
       case SYMS_CvSymKind_LPROC32:
       case SYMS_CvSymKind_GPROC32:
       {
+        // TODO(allen): (element.range.off + element.range.size) gives the beginning of
+        // the FRAMEPROC - use this to write a fast *PROC32 -> FRAMEPROC helper
+        
         SYMS_U32 name_off = sizeof(SYMS_CvProc32);
         SYMS_String8 name = syms_msf_read_zstring_in_range(arena, data, msf, element.range, name_off);
         
@@ -1869,7 +1888,7 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
           SYMS_StackPop(stack);
           SYMS_StackPush(stack_free, bucket);
         }
-        parent_for_this_stub = 0;
+        parent_for_this_stub = &root;
       }break;
       
       case SYMS_CvSymKind_PUB32:
@@ -1901,14 +1920,16 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
     
     // clear defrange collector
     if (!preserve_defrange_collection){
-      defrange_collector_stub = 0;
+      defrange_collector_stub = &root;
     }
     
     // insert into tree
-    if (parent_for_this_stub != 0){
-      SYMS_QueuePush_N(parent_for_this_stub->first, parent_for_this_stub->last, stub, sibling_next);
+    SYMS_ASSERT(parent_for_this_stub != 0);
+    SYMS_QueuePush_N(parent_for_this_stub->first, parent_for_this_stub->last, stub, sibling_next);
+    if (parent_for_this_stub != &root){
+      stub->parent = parent_for_this_stub;
     }
-    if (parent_for_this_stub == &root){
+    else{
       top_count += 1;
     }
     
@@ -1943,6 +1964,17 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
   {
     SYMS_PdbStub **ptr = var_stubs;
     for (SYMS_PdbStubRef *ref = var_first;
+         ref != 0;
+         ref = ref->next, ptr += 1){
+      *ptr = ref->stub;
+    }
+  }
+  
+  // build thread stubs pointer table
+  SYMS_PdbStub **tls_var_stubs = syms_push_array(arena, SYMS_PdbStub*, tls_var_count);
+  {
+    SYMS_PdbStub **ptr = tls_var_stubs;
+    for (SYMS_PdbStubRef *ref = tls_var_first;
          ref != 0;
          ref = ref->next, ptr += 1){
       *ptr = ref->stub;
@@ -2003,6 +2035,8 @@ syms_pdb_sym_accel_from_range(SYMS_Arena *arena, SYMS_String8 data, SYMS_MsfAcce
   result->proc_count = proc_count;
   result->var_stubs = var_stubs;
   result->var_count = var_count;
+  result->tls_var_stubs = tls_var_stubs;
+  result->tls_var_count = tls_var_count;
   result->thunk_stubs = thunk_stubs;
   result->thunk_count = thunk_count;
   result->pub_stubs = pub_stubs;
@@ -2042,9 +2076,6 @@ syms_pdb_sym_symbol_kind_from_id(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
         result = SYMS_SymbolKind_ImageRelativeVariable;
       }break;
       case SYMS_CvSymKind_LOCAL:
-      {
-        result = SYMS_SymbolKind_LocalVariable;
-      }break;
       case SYMS_CvSymKind_REGREL32:
       {
         result = SYMS_SymbolKind_LocalVariable;
@@ -2061,6 +2092,11 @@ syms_pdb_sym_symbol_kind_from_id(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
       case SYMS_CvSymKind_BLOCK32:
       {
         result = SYMS_SymbolKind_Scope;
+      }break;
+      case SYMS_CvSymKind_LTHREAD32:
+      case SYMS_CvSymKind_GTHREAD32:
+      {
+        result = SYMS_SymbolKind_TLSVariable;
       }break;
     }
   }
@@ -2203,6 +2239,7 @@ syms_pdb_leaf_accel_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAc
           SYMS_PdbStub *fl_stub = syms_push_array(arena, SYMS_PdbStub, 1);
           syms_memzero_struct(fl_stub);
           SYMS_QueuePush_N(parent->first, parent->last, fl_stub, sibling_next);
+          fl_stub->parent = parent;
           fl_stub->off = element.range.off + fl_cursor;
           
           // read internal leaf
@@ -2360,6 +2397,7 @@ syms_pdb_leaf_accel_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAc
           SYMS_PdbStub *ml_stub = syms_push_array(arena, SYMS_PdbStub, 1);
           syms_memzero_struct(ml_stub);
           SYMS_QueuePush_N(parent->first, parent->last, ml_stub, sibling_next);
+          ml_stub->parent = parent;
           ml_stub->off = element.range.off + ml_cursor;
           ml_stub->num = virtual_offset;
           
@@ -3181,27 +3219,29 @@ syms_pdb_stub_from_unit_index(SYMS_PdbUnitAccel *unit, SYMS_U32 index){
 
 SYMS_API SYMS_PdbUnitAccel*
 syms_pdb_unit_accel_from_id(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
-                            SYMS_PdbUnitSetAccel *unit_set, SYMS_UnitID id){
+                            SYMS_PdbUnitSetAccel *unit_set, SYMS_UnitID uid){
   // setup result
   SYMS_PdbUnitAccel *result = (SYMS_PdbUnitAccel*)&syms_format_nil;
   
-  // try symbols pseudo unit
-  if (id == SYMS_PdbPseudoUnit_SYM){
-    result = syms_pdb_pub_sym_accel_from_dbg(arena, data, dbg);
-  }
-  
-  // try types pseudo unit
-  else if (id == SYMS_PdbPseudoUnit_TPI){
-    result = syms_pdb_leaf_accel_from_dbg(arena, data, dbg);
-  }
-  
-  // try compilation unit
-  else{
-    SYMS_PdbCompUnit *unit = syms_pdb_comp_unit_from_id(unit_set, id);
-    if (unit != 0){
-      SYMS_MsfRange range = syms_pdb_msf_range_from_comp_unit(unit, SYMS_PdbCompUnitRange_Symbols);
-      result = syms_pdb_sym_accel_from_range(arena, data, dbg->msf, range, id);
-    }
+  switch (uid){
+    case SYMS_PdbPseudoUnit_SYM:
+    {
+      result = syms_pdb_pub_sym_accel_from_dbg(arena, data, dbg);
+    }break;
+    
+    case SYMS_PdbPseudoUnit_TPI:
+    {
+      result = syms_pdb_leaf_accel_from_dbg(arena, data, dbg);
+    }break;
+    
+    default:
+    {
+      SYMS_PdbCompUnit *unit = syms_pdb_comp_unit_from_id(unit_set, uid);
+      if (unit != 0){
+        SYMS_MsfRange range = syms_pdb_msf_range_from_comp_unit(unit, SYMS_PdbCompUnitRange_Symbols);
+        result = syms_pdb_sym_accel_from_range(arena, data, dbg->msf, range, uid);
+      }
+    }break;
   }
   
   return(result);
@@ -3210,6 +3250,14 @@ syms_pdb_unit_accel_from_id(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAcc
 SYMS_API SYMS_UnitID
 syms_pdb_uid_from_accel(SYMS_PdbUnitAccel *unit){
   return(unit->uid);
+}
+
+SYMS_API SYMS_UnitID
+syms_pdb_tls_var_uid_from_dbg(SYMS_PdbDbgAccel *dbg){
+  // NOTE(nick): Thread var symbols are stored in global symbol stream
+  // which doesn't abstract well with DWARF model where thread vars
+  // are stored on per compilation units basis.
+  return(SYMS_PdbPseudoUnit_SYM);
 }
 
 SYMS_API SYMS_SymbolIDArray
@@ -3257,6 +3305,31 @@ syms_pdb_var_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *unit){
     result.count = count;
     result.ids = ids;
   }
+  return(result);
+}
+
+SYMS_API SYMS_SymbolIDArray
+syms_pdb_tls_var_sid_array_from_unit(SYMS_Arena *arena, SYMS_PdbUnitAccel *thread_unit){
+  SYMS_SymbolIDArray result = {0};
+  if (!thread_unit->leaf_set){
+    
+    //- allocate array
+    SYMS_U64 count = thread_unit->tls_var_count;
+    SYMS_SymbolID *ids = syms_push_array(arena, SYMS_SymbolID, count);
+    
+    //- fill array
+    SYMS_SymbolID *id_ptr = ids;
+    SYMS_PdbStub **stub_ptr = thread_unit->tls_var_stubs;
+    SYMS_PdbStub **opl = stub_ptr + count;
+    for (; stub_ptr < opl; id_ptr += 1, stub_ptr += 1){
+      *id_ptr = SYMS_ID_u32_u32(SYMS_PdbSymbolIDKind_Off, (**stub_ptr).off);
+    }
+    
+    //- assemble result
+    result.count = count;
+    result.ids = ids;
+  }
+  
   return(result);
 }
 
@@ -3394,6 +3467,16 @@ syms_pdb_sym_type_from_var_id(SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
         result.sid = SYMS_ID_u32_u32(SYMS_PdbSymbolIDKind_Index, regrel32.itype);
         result.uid = SYMS_PdbPseudoUnit_TPI;
       }break;
+      
+      case SYMS_CvSymKind_LTHREAD32:
+      case SYMS_CvSymKind_GTHREAD32:
+      {
+        SYMS_CvThread32 thread32 = {0};
+        syms_msf_read_struct_in_range(data, msf, element.range, 0, &thread32);
+        
+        result.sid = SYMS_ID_u32_u32(SYMS_PdbSymbolIDKind_Index, thread32.itype);
+        result.uid = SYMS_PdbPseudoUnit_TPI;
+      }break;
     }
   }
   
@@ -3434,6 +3517,162 @@ syms_pdb_sym_voff_from_var_sid(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_Pd
   return(result);
 }
 
+SYMS_API SYMS_RegSection
+syms_pdb_reg_section_from_x86_reg(SYMS_CvReg cv_reg){
+  SYMS_RegSection result = {0};
+  if (cv_reg < SYMS_ARRAY_SIZE(syms_reg_slices_X86)){
+    SYMS_RegSlice *slice = syms_reg_slices_X86 + cv_reg;
+    SYMS_RegID reg_id = slice->reg_id;
+    if (reg_id < SYMS_RegX86Code_COUNT){
+      SYMS_RegSection *section = syms_reg_section_X86 + reg_id;
+      result.off = section->off + slice->byte_off;
+      result.size = slice->byte_size;
+    }
+  }
+  return(result);
+}
+
+SYMS_API SYMS_RegSection
+syms_pdb_reg_section_from_x64_reg(SYMS_CvReg cv_reg){
+  SYMS_RegSection result = {0};
+  if (cv_reg < SYMS_ARRAY_SIZE(syms_reg_slices_X64)){
+    SYMS_RegSlice *slice = syms_reg_slices_X64 + cv_reg;
+    SYMS_RegID reg_id = slice->reg_id;
+    if (reg_id < SYMS_RegX64Code_COUNT){
+      SYMS_RegSection *section = syms_reg_section_X64 + reg_id;
+      result.off = section->off + slice->byte_off;
+      result.size = slice->byte_size;
+    }
+  }
+  return(result);
+}
+
+SYMS_API SYMS_RegSection
+syms_pdb_reg_section_from_arch_reg(SYMS_Arch arch, SYMS_CvReg cv_reg){
+  SYMS_RegSection result = {0};
+  switch (arch){
+    case SYMS_Arch_X86: result = syms_pdb_reg_section_from_x86_reg(cv_reg); break;
+    case SYMS_Arch_X64: result = syms_pdb_reg_section_from_x64_reg(cv_reg); break;
+  }
+  return(result);
+}
+
+SYMS_API SYMS_RegSection
+syms_pdb_reg_section_from_framepointer(SYMS_String8 data,  SYMS_PdbDbgAccel *dbg,
+                                       SYMS_MsfRange range, SYMS_PdbStub *framepointer_stub){
+  //- get accelerator
+  SYMS_MsfAccel *msf = dbg->msf;
+  
+  //- get LOCAL
+  SYMS_PdbStub *local_stub = framepointer_stub->parent;
+  SYMS_CvElement local_element = {0};
+  SYMS_B32 got_local = syms_false;
+  if (local_stub != 0){
+    local_element = syms_cv_element(data, msf, range, local_stub->off);
+    if (local_element.kind == SYMS_CvSymKind_LOCAL){
+      got_local = syms_true;
+    }
+  }
+  
+  //- get *PROC32
+  SYMS_CvElement root_element = {0};
+  if (got_local){
+    SYMS_PdbStub *root_stub = local_stub->parent;
+    for (;root_stub->parent != 0;){
+      root_stub = root_stub->parent;
+    }
+    root_element = syms_cv_element(data, msf, range, root_stub->off);
+  }
+  SYMS_B32 got_proc32 = (root_element.kind == SYMS_CvSymKind_LPROC32 ||
+                         root_element.kind == SYMS_CvSymKind_GPROC32);
+  
+  //- get FRAMEPROC
+  SYMS_B32 got_fp_flags = syms_false;
+  SYMS_CvFrameprocFlags fp_flags = 0;
+  if (got_proc32){
+    SYMS_U64 fp_off = root_element.range.off + root_element.range.size;
+    SYMS_CvElement fp_element = syms_cv_element(data, msf, range, fp_off);
+    if (fp_element.kind == SYMS_CvSymKind_FRAMEPROC){
+      SYMS_U64 flags_off = SYMS_MEMBER_OFFSET(SYMS_CvFrameproc, flags);
+      got_fp_flags = syms_msf_read_struct_in_range(data, msf, fp_element.range,
+                                                   flags_off, &fp_flags);
+    }
+  }
+  
+  //- determine the register
+  SYMS_RegSection result = {0};
+  SYMS_Arch arch = syms_pdb_arch_from_dbg(dbg);
+  if (got_fp_flags){
+    // check if parameter
+    SYMS_U64 flags_off = SYMS_MEMBER_OFFSET(SYMS_CvLocal, flags);
+    SYMS_CvLocalFlags local_flags = 0;
+    syms_msf_read_struct_in_range(data, msf, local_element.range, flags_off, &local_flags);
+    SYMS_B32 is_parameter = (local_flags & SYMS_CvLocalFlag_PARAM);
+    
+    // get frame pointer code
+    SYMS_CvEncodedFramePtrReg frame_ptr_reg = 0;
+    if (is_parameter){
+      frame_ptr_reg = SYMS_CvFrameprocFlags_Extract_ParamBasePointer(fp_flags);
+    }
+    else{
+      frame_ptr_reg = SYMS_CvFrameprocFlags_Extract_LocalBasePointer(fp_flags);
+    }
+    
+    // get register section
+    switch (arch){
+      case SYMS_Arch_X86:
+      {
+        switch (frame_ptr_reg){
+          case SYMS_CvEncodedFramePtrReg_StackPtr:
+          {
+            // TODO(allen): support SYMS_CvAllReg_VFRAME
+          }break;
+          case SYMS_CvEncodedFramePtrReg_FramePtr:
+          {
+            result = syms_pdb_reg_section_from_x86_reg(SYMS_CvRegx86_EBP);
+          }break;
+          case SYMS_CvEncodedFramePtrReg_BasePtr:
+          {
+            result = syms_pdb_reg_section_from_x86_reg(SYMS_CvRegx86_EBX);
+          }break;
+        }
+      }break;
+      case SYMS_Arch_X64:
+      {
+        switch (frame_ptr_reg){
+          case SYMS_CvEncodedFramePtrReg_StackPtr:
+          {
+            result = syms_pdb_reg_section_from_x64_reg(SYMS_CvRegx64_RSP);
+          }break;
+          case SYMS_CvEncodedFramePtrReg_FramePtr:
+          {
+            result = syms_pdb_reg_section_from_x64_reg(SYMS_CvRegx64_RBP);
+          }break;
+          case SYMS_CvEncodedFramePtrReg_BasePtr:
+          {
+            result = syms_pdb_reg_section_from_x64_reg(SYMS_CvRegx64_R13);
+          }break;
+        }
+      }break;
+    }
+  }
+  
+  //- fallback
+  else{
+    switch (arch){
+      case SYMS_Arch_X86:
+      {
+        result = syms_reg_section_X86[SYMS_RegX86Code_ebp];
+      }break;
+      case SYMS_Arch_X64:
+      {
+        result = syms_reg_section_X64[SYMS_RegX64Code_rbp];
+      }break;
+    }
+  }
+  
+  return(result);
+}
 
 // main api
 
@@ -3451,6 +3690,354 @@ syms_pdb_voff_from_var_sid(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_PdbUni
   SYMS_U64 result = 0;
   if (!unit->leaf_set){
     result = syms_pdb_sym_voff_from_var_sid(data, dbg, unit, sid);
+  }
+  return(result);
+}
+
+SYMS_API SYMS_Location
+syms_pdb_location_from_var_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                               SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid){
+  SYMS_Location result = {0};
+  if (!unit->leaf_set){
+    // setup accel
+    SYMS_MsfAccel *msf = dbg->msf;
+    
+    // read id
+    SYMS_MsfRange range = syms_msf_range_from_sn(msf, unit->sn);
+    SYMS_PdbStub *stub = syms_pdb_stub_from_unit_off(unit, SYMS_ID_u32_1(sid));
+    
+    // parse symbol
+    if (stub != 0){
+      SYMS_CvElement element = syms_cv_element(data, msf, range, stub->off);
+      
+      switch (element.kind){
+        case SYMS_CvSymKind_LDATA32:
+        case SYMS_CvSymKind_GDATA32:
+        {
+          SYMS_CvData32 data32 = {0};
+          syms_msf_read_struct_in_range(data, msf, element.range, 0, &data32);
+          SYMS_CoffSection section = syms_pdb_coff_section(data, dbg, data32.sec);
+          SYMS_U32 voff = section.virt_off + data32.sec_off;
+          
+          //- build the location info for addr:`module base + off`
+          SYMS_EvalOpList list = {0};
+          syms_op_push(arena, &list, SYMS_EvalOp_ModuleOff, syms_op_params(voff));
+          
+          result.op_list = list;
+          result.mode = SYMS_EvalMode_Address;
+        }break;
+        
+        case SYMS_CvSymKind_REGREL32:
+        {
+          //- extract info
+          SYMS_CvRegrel32 regrel32 = {0};
+          syms_msf_read_struct_in_range(data, msf, element.range, 0, &regrel32);
+          
+          SYMS_CvReg cv_reg = regrel32.reg;
+          SYMS_U32 off = regrel32.reg_off;
+          SYMS_Arch arch = syms_pdb_arch_from_dbg(dbg);
+          // TODO(allen): report unimplemented architecture, unimplemented register convertion
+          SYMS_RegSection sec = syms_pdb_reg_section_from_arch_reg(arch, cv_reg);
+          
+          //- build the location info for addr:`reg + off`
+          SYMS_EvalOpList list = {0};
+          syms_op_push(arena, &list, SYMS_EvalOp_RegRead, syms_op_params_2u16(sec.off, sec.size));
+          if (off != 0){
+            syms_op_encode_u(arena, &list, off);
+            syms_op_push(arena, &list, SYMS_EvalOp_Add, syms_op_params(SYMS_EvalTypeGroup_U));
+          }
+          
+          result.op_list = list;
+          result.mode = SYMS_EvalMode_Address;
+        }break;
+        
+        case SYMS_CvSymKind_GTHREAD32:
+        case SYMS_CvSymKind_LTHREAD32:
+        {
+          SYMS_CvThread32 thread32 = {0};
+          syms_msf_read_struct_in_range(data, msf, element.range, 0, &thread32);
+          
+          //- build the location info for addr:`TLS base + off`
+          SYMS_EvalOpList list = {0};
+          if (thread32.tls_off <= 0xFFFF){
+            syms_op_push(arena, &list, SYMS_EvalOp_TLSOff, syms_op_params(thread32.tls_off));
+          }
+          else{
+            syms_op_push(arena, &list, SYMS_EvalOp_TLSOff, syms_op_params(0xFFFF));
+            syms_op_encode_u(arena, &list, (thread32.tls_off - 0xFFFF));
+            syms_op_push(arena, &list, SYMS_EvalOp_Add, syms_op_params(SYMS_EvalTypeGroup_U));
+          }
+          
+          result.op_list = list;
+          result.mode = SYMS_EvalMode_Address;
+        }break;
+      }
+    }
+  }
+  return(result);
+}
+
+SYMS_API SYMS_LocRangeArray
+syms_pdb_location_ranges_from_var_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                      SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid){
+  SYMS_LocRangeArray result = {0};
+  if (!unit->leaf_set){
+    //- setup accel
+    SYMS_MsfAccel *msf = dbg->msf;
+    
+    //- read id
+    SYMS_MsfRange range = syms_msf_range_from_sn(msf, unit->sn);
+    SYMS_PdbStub *stub = syms_pdb_stub_from_unit_off(unit, SYMS_ID_u32_1(sid));
+    
+    //- parse symbol
+    if (stub != 0){
+      SYMS_CvElement element = syms_cv_element(data, msf, range, stub->off);
+      if (element.kind == SYMS_CvSymKind_LOCAL){
+        SYMS_ArenaTemp scratch = syms_get_scratch(&arena, 1);
+        
+        //- gather ranges
+        SYMS_LocRangeList list = {0};
+        for (SYMS_PdbStub *child = stub->first;
+             child != 0;
+             child = child->sibling_next){
+          SYMS_CvElement child_element = syms_cv_element(data, msf, range, child->off);
+          SYMS_LocID loc_id = SYMS_ID_u32_u32(SYMS_PdbSymbolIDKind_Off, child->off);
+          
+          //- determine handling path
+          SYMS_B32 do_standard_range = syms_true;
+          SYMS_U64 range_off = 0;
+          switch (child_element.kind){
+            case SYMS_CvSymKind_DEFRANGE_2005:
+            case SYMS_CvSymKind_DEFRANGE2_2005:
+            {
+              // TODO(allen): Investigate these cases further
+              do_standard_range = syms_false;
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrange, range);
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_SUBFIELD:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrangeSubfield, range);
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_REGISTER:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrangeRegister, range);
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_FRAMEPOINTER_REL:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrangeFramepointerRel, range);
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_SUBFIELD_REGISTER:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrangeSubfieldRegister, range);
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE:
+            {
+              do_standard_range = syms_false;
+              
+              //- emit a single range that covers all U64
+              SYMS_LocRangeNode *node = syms_push_array(scratch.arena, SYMS_LocRangeNode, 1);
+              SYMS_QueuePush(list.first, list.last, node);
+              list.count += 1;
+              node->loc_range.vrange.min = 0;
+              node->loc_range.vrange.max = SYMS_U64_MAX;
+              node->loc_range.loc_id = loc_id;
+            }break;
+            
+            case SYMS_CvSymKind_DEFRANGE_REGISTER_REL:
+            {
+              range_off = SYMS_MEMBER_OFFSET(SYMS_CvDefrangeRegisterRel, range);
+            }break;
+          }
+          
+          //- apply range handling
+          if (do_standard_range){
+            SYMS_CvLvarAddrRange addr_range = {0};
+            if (syms_msf_read_struct_in_range(data, msf, child_element.range, range_off, &addr_range)){
+              // setup main range
+              SYMS_CoffSection section = syms_pdb_coff_section(data, dbg, addr_range.sec);
+              SYMS_U64 vaddr_base = section.virt_off + addr_range.off;
+              SYMS_U64 vaddr_last = vaddr_base + addr_range.len;
+              
+              // setup gaps
+              SYMS_U64 gap_off = range_off + sizeof(addr_range);
+              SYMS_U64 gap_count = (child_element.range.size - gap_off)/sizeof(SYMS_CvLvarAddrGap);
+              SYMS_U64 gap_opl = gap_off + gap_count*sizeof(SYMS_CvLvarAddrGap);
+              
+              // emit loop
+              SYMS_U64 vaddr_cursor = vaddr_base;
+              for (SYMS_U64 gap_cursor = gap_off;
+                   gap_cursor < gap_opl;
+                   gap_cursor += sizeof(SYMS_CvLvarAddrGap)){
+                SYMS_CvLvarAddrGap gap = {0};
+                syms_msf_read_struct_in_range(data, msf, child_element.range, gap_off, &gap);
+                
+                SYMS_U64 gap_first = vaddr_base + gap.off;
+                
+                // emit range
+                {
+                  SYMS_LocRangeNode *node = syms_push_array(scratch.arena, SYMS_LocRangeNode, 1);
+                  SYMS_QueuePush(list.first, list.last, node);
+                  list.count += 1;
+                  node->loc_range.vrange.min = vaddr_cursor;
+                  node->loc_range.vrange.max = gap_first;
+                  node->loc_range.loc_id = loc_id;
+                }
+                
+                // advance vaddr cursor
+                vaddr_cursor = gap_first + gap.len;
+              }
+              
+              // emit range
+              {
+                SYMS_LocRangeNode *node = syms_push_array(scratch.arena, SYMS_LocRangeNode, 1);
+                SYMS_QueuePush(list.first, list.last, node);
+                list.count += 1;
+                node->loc_range.vrange.min = vaddr_cursor;
+                node->loc_range.vrange.max = vaddr_last;
+                node->loc_range.loc_id = loc_id;
+              }
+            }
+          }
+        }
+        
+        //- flatten list
+        SYMS_LocRange *loc_ranges = syms_push_array(arena, SYMS_LocRange, list.count);
+        SYMS_LocRange *loc_range_ptr = loc_ranges;
+        for (SYMS_LocRangeNode *node = list.first;
+             node != 0;
+             node = node->next, loc_range_ptr += 1){
+          syms_memmove(loc_range_ptr, &node->loc_range, sizeof(node->loc_range));
+        }
+        
+        //- fill result
+        result.loc_ranges = loc_ranges;
+        result.count = list.count;
+        
+        syms_release_scratch(scratch);
+      }
+    }
+  }
+  return(result);
+}
+
+SYMS_API SYMS_Location
+syms_pdb_location_from_id(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                          SYMS_PdbUnitAccel *unit, SYMS_LocID loc_id){
+  SYMS_Location result = {0};
+  if (!unit->leaf_set){
+    // setup accel
+    SYMS_MsfAccel *msf = dbg->msf;
+    
+    // read id
+    SYMS_MsfRange range = syms_msf_range_from_sn(msf, unit->sn);
+    SYMS_PdbStub *stub = syms_pdb_stub_from_unit_off(unit, SYMS_ID_u32_1(loc_id));
+    
+    // parse symbol
+    if (stub != 0){
+      SYMS_CvElement element = syms_cv_element(data, msf, range, stub->off);
+      
+      switch (element.kind){
+        {
+          case SYMS_CvSymKind_DEFRANGE_2005:
+          case SYMS_CvSymKind_DEFRANGE2_2005:
+          {
+            // TODO(allen): Investigate these cases further
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE:
+          {
+            // TODO(allen): SYMS_CvDefrange 'program' - don't know how to interpret
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE_SUBFIELD:
+          {
+            // TODO(allen): SYMS_CvDefrangeSubfield 'program' - don't know how to interpret
+            // TODO(allen): SYMS_CvDefrangeSubfield 'off_in_parent' - not a supported concept
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE_REGISTER:
+          {
+            // extract info
+            SYMS_CvDefrangeRegister defrange_register = {0};
+            syms_msf_read_struct_in_range(data, msf, element.range, 0, &defrange_register);
+            
+            SYMS_CvReg cv_reg = defrange_register.reg;
+            SYMS_Arch arch = syms_pdb_arch_from_dbg(dbg);
+            SYMS_RegSection sec = syms_pdb_reg_section_from_arch_reg(arch, cv_reg);
+            
+            // location info ops
+            SYMS_EvalOpList list = {0};
+            syms_op_encode_reg_section(arena, &list, sec);
+            
+            // fill result
+            result.op_list = list;
+            result.mode = SYMS_EvalMode_Register;
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE_FRAMEPOINTER_REL:
+          case SYMS_CvSymKind_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE:
+          {
+            // extract framepointer register
+            SYMS_RegSection sec = syms_pdb_reg_section_from_framepointer(data, dbg, range, stub);
+            
+            // extract offset
+            SYMS_U32 offset = 0;
+            syms_msf_read_struct_in_range(data, msf, element.range, 0, &offset);
+            
+            // location info ops
+            SYMS_EvalOpList list = {0};
+            syms_op_push(arena, &list, SYMS_EvalOp_RegRead, syms_op_params_2u16(sec.off, sec.size));
+            if (offset != 0){
+              syms_op_encode_u(arena, &list, offset);
+              syms_op_push(arena, &list, SYMS_EvalOp_Add, syms_op_params(SYMS_EvalTypeGroup_U));
+            }
+            
+            // fill result
+            result.op_list = list;
+            result.mode = SYMS_EvalMode_Address;
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE_SUBFIELD_REGISTER:
+          {
+            // TODO(allen): SYMS_CvDefrangeSubfieldRegister 'off_in_parent' - not a supported concept
+          }break;
+          
+          case SYMS_CvSymKind_DEFRANGE_REGISTER_REL:
+          {
+            // extract info
+            SYMS_CvDefrangeRegisterRel defrange_register_rel = {0};
+            syms_msf_read_struct_in_range(data, msf, element.range, 0, &defrange_register_rel);
+            
+            SYMS_CvReg cv_reg = defrange_register_rel.reg;
+            SYMS_U32 off = defrange_register_rel.reg_off;
+            SYMS_Arch arch = syms_pdb_arch_from_dbg(dbg);
+            SYMS_RegSection sec = syms_pdb_reg_section_from_arch_reg(arch, cv_reg);
+            
+            // location info ops
+            SYMS_EvalOpList list = {0};
+            syms_op_push(arena, &list, SYMS_EvalOp_RegRead, syms_op_params_2u16(sec.off, sec.size));
+            if (off != 0){
+              syms_op_encode_u(arena, &list, off);
+              syms_op_push(arena, &list, SYMS_EvalOp_Add, syms_op_params(SYMS_EvalTypeGroup_U));
+            }
+            
+            // fill result
+            result.op_list = list;
+            result.mode = SYMS_EvalMode_Address;;
+          }break;
+        }
+      }
+      
+    }
   }
   return(result);
 }
@@ -3581,11 +4168,21 @@ syms_pdb_mems_accel_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAc
             ti = struct_.field;
           }
         }break;
+        
         case SYMS_CvLeaf_UNION:
         {
           SYMS_CvLeafUnion union_ = {0};
           if (syms_msf_read_struct_in_range(data, msf, element.range, 0, &union_)){
             ti = union_.field;
+          }
+        }break;
+        
+        case SYMS_CvLeaf_CLASSPTR:
+        case SYMS_CvLeaf_CLASSPTR2:
+        {
+          SYMS_CvLeafClassPtr class_ptr = {0};
+          if (syms_msf_read_struct_in_range(data, msf, element.range, 0, &class_ptr)){
+            ti = class_ptr.field;
           }
         }break;
       }
@@ -4022,13 +4619,8 @@ syms_pdb_enum_info_array_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_Pdb
         SYMS_CvLeaf lf_kind = 0;
         syms_msf_read_struct_in_range(data, msf, range, lf_off, &lf_kind);
         if (lf_kind == SYMS_CvLeaf_ENUMERATE){
-          SYMS_U32 num_off = lf_off + sizeof(SYMS_CvLeafEnumerate);
-          SYMS_CvNumeric num = {SYMS_TypeKind_Null};
-          SYMS_U32 num_size = syms_cv_read_numeric(data, msf, range, num_off, &num);
-          SYMS_U32 size_clamped = SYMS_ClampTop(num_size, sizeof(enum_info_ptr->val));
-          
           enum_info_ptr->name = syms_push_string_copy(arena, field_stub->name);
-          syms_memmove(&enum_info_ptr->val, num.data, size_clamped);
+          syms_memmove(&enum_info_ptr->val, &field_stub->num, sizeof(field_stub->num));
           enum_info_ptr += 1;
         }
       }
@@ -4090,8 +4682,8 @@ syms_pdb_sig_info_from_handle(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgA
 }
 
 SYMS_API SYMS_U64RangeArray
-syms_pdb_proc_vranges_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
-                               SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid){
+syms_pdb_scope_vranges_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg,
+                                SYMS_PdbUnitAccel *unit, SYMS_SymbolID sid){
   SYMS_U64RangeArray result = {0};
   if (!unit->leaf_set){
     // setup accels
@@ -4117,6 +4709,22 @@ syms_pdb_proc_vranges_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbg
             SYMS_U64Range range = {0};
             range.min = section.virt_off + proc32.off;
             range.max = range.min + proc32.len;
+            
+            result.count = 1;
+            result.ranges = syms_push_array(arena, SYMS_U64Range, 1);
+            result.ranges[0] = range;
+          }
+        }break;
+        
+        case SYMS_CvSymKind_BLOCK32:
+        {
+          SYMS_CvBlock32 block32 = {0};
+          if (syms_msf_read_struct_in_range(data, msf, element.range, 0, &block32)){
+            SYMS_CoffSection section = syms_pdb_coff_section(data, dbg, block32.sec);
+            
+            SYMS_U64Range range = {0};
+            range.min = section.virt_off + block32.off;
+            range.max = range.min + block32.len;
             
             result.count = 1;
             result.ranges = syms_push_array(arena, SYMS_U64Range, 1);
@@ -4174,86 +4782,6 @@ syms_pdb_scope_children_from_sid(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbD
   
   return(result);
 }
-
-SYMS_API void
-syms_pdb_stripped_sort_in_place(SYMS_StrippedInfo *info, SYMS_U64 count){
-  if (count > 1){
-    SYMS_U64 pivot = count - 1;
-    SYMS_U64 pivot_voff = info[pivot].voff;
-    
-    SYMS_B32 eq_flip_flop = syms_false;
-    
-    SYMS_U64 j = 0;
-    for (SYMS_U64 i = 0; i < pivot; i += 1){
-      SYMS_U64 voff = info[i].voff;
-      SYMS_B32 swap = syms_false;
-      if (voff < pivot_voff){
-        swap = syms_true;
-      }
-      else if (voff == pivot_voff){
-        swap = eq_flip_flop;
-        eq_flip_flop = !eq_flip_flop;
-      }
-      if (swap){
-        SYMS_Swap(SYMS_StrippedInfo, info[i], info[j]);
-        j += 1;
-      }
-    }
-    
-    SYMS_Swap(SYMS_StrippedInfo, info[j], info[pivot]);
-    
-    syms_pdb_stripped_sort_in_place(info, j);
-    syms_pdb_stripped_sort_in_place(info + j + 1, count - (j + 1));
-  }
-}
-
-SYMS_API SYMS_StrippedInfoArray
-syms_pdb_stripped_from_unit(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit){
-  SYMS_StrippedInfoArray result = {0};
-  
-  if (unit->pub_count != 0){
-    // setup accels
-    SYMS_MsfAccel *msf = dbg->msf;
-    
-    // allocate output memory
-    SYMS_U64 count = unit->pub_count;
-    SYMS_StrippedInfo *info = syms_push_array(arena, SYMS_StrippedInfo, count);
-    
-    // fill output array
-    SYMS_StrippedInfo *info_ptr = info;
-    SYMS_PdbStub **stub_opl = unit->pub_stubs + count;
-    for (SYMS_PdbStub **stub_ptr = unit->pub_stubs; stub_ptr < stub_opl; stub_ptr += 1, info_ptr += 1){
-      SYMS_PdbStub *stub = *stub_ptr;
-      
-      // extract info from stub
-      SYMS_String8 name = stub->name;
-      SYMS_U64 voff = 0;
-      {
-        SYMS_MsfRange range = syms_msf_range_from_sn(msf, unit->sn);
-        SYMS_CvElement sig_element = syms_cv_element(data, msf, range, stub->off);
-        SYMS_CvPubsym32 pubsym32 = {0};
-        if (syms_msf_read_struct_in_range(data, msf, sig_element.range, 0, &pubsym32)){
-          SYMS_CoffSection coff_section = syms_pdb_coff_section(data, dbg, pubsym32.sec);
-          voff = coff_section.virt_off + pubsym32.off;
-        }
-      }
-      
-      // fill stripped info
-      info_ptr->name = syms_push_string_copy(arena, name);
-      info_ptr->voff = voff;
-    }
-    
-    // sort stripped info
-    syms_pdb_stripped_sort_in_place(info, count);
-    
-    // fill result struct
-    result.info = info;
-    result.count = count;
-  }
-  
-  return(result);
-}
-
 
 ////////////////////////////////
 //~ NOTE(allen): PDB Signature Info
@@ -4844,7 +5372,7 @@ syms_pdb_type_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAcce
 }
 
 SYMS_API SYMS_PdbMapAccel*
-syms_pdb_image_symbol_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg){
+syms_pdb_unmangled_symbol_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg){
   SYMS_PdbMapAccel *result = syms_push_array(arena, SYMS_PdbMapAccel, 1);
   result->format = SYMS_FileFormat_PDB;
   result->uid = SYMS_PdbPseudoUnit_SYM;
@@ -4862,14 +5390,14 @@ syms_pdb_usid_list_from_string(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbg
   SYMS_USIDList result = {0};
   if (unit->format == SYMS_FileFormat_PDB){
     switch (map->uid){
-      case SYMS_PdbPseudoUnit_TPI:
-      {
-        result = syms_pdb_types_from_name(arena, data, dbg, unit, string);
-      }break;
-      
       case SYMS_PdbPseudoUnit_SYM:
       {
         result = syms_pdb_symbols_from_name(arena, data, dbg->msf, &dbg->gsi, unit, string);
+      }break;
+      
+      case SYMS_PdbPseudoUnit_TPI:
+      {
+        result = syms_pdb_types_from_name(arena, data, dbg, unit, string);
       }break;
     }
   }
@@ -4878,7 +5406,112 @@ syms_pdb_usid_list_from_string(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbg
 
 
 ////////////////////////////////
-// NOTE(allen): PDB CV -> Syms Enums and Flags
+//~ allen: PDB Mangled Names
+
+SYMS_API SYMS_UnitID
+syms_pdb_link_names_uid(void){
+  return(SYMS_PdbPseudoUnit_SYM);
+}
+
+SYMS_API SYMS_PdbLinkMapAccel*
+syms_pdb_link_map_from_dbg(SYMS_Arena *arena, SYMS_String8 data, SYMS_PdbDbgAccel *dbg){
+  SYMS_PdbLinkMapAccel *result = syms_push_array(arena, SYMS_PdbLinkMapAccel, 1);
+  result->format = SYMS_FileFormat_PDB;
+  return(result);
+}
+
+SYMS_API SYMS_U64
+syms_pdb_voff_from_link_name(SYMS_String8 data, SYMS_PdbDbgAccel *dbg, SYMS_PdbLinkMapAccel *map,
+                             SYMS_PdbUnitAccel *link_unit, SYMS_String8 name){
+  SYMS_U64 result = 0;
+  
+  // get accelerators
+  SYMS_MsfAccel *msf = dbg->msf;
+  SYMS_PdbGsiAccel *psi = &dbg->psi;
+  
+  if (psi->bucket_count > 0){
+    // get unit range
+    SYMS_MsfRange range = syms_msf_range_from_sn(msf, link_unit->sn);
+    
+    // grab scratch
+    SYMS_ArenaTemp scratch = syms_get_scratch(0, 0);
+    
+    // get bucket
+    SYMS_U32 name_hash = syms_pdb_hashV1(name);
+    SYMS_U32 bucket_index = name_hash%psi->bucket_count;
+    
+    // iterate bucket
+    for (SYMS_PdbChain *bucket = psi->buckets[bucket_index];
+         bucket != 0;
+         bucket = bucket->next){
+      SYMS_U32 off = bucket->v;
+      SYMS_PdbStub *stub = syms_pdb_stub_from_unit_off(link_unit, off);
+      if (stub != 0 && syms_string_match(stub->name, name, 0)){
+        SYMS_CvElement element = syms_cv_element(data, msf, range, stub->off);
+        if (element.kind == SYMS_CvSymKind_PUB32){
+          SYMS_CvPubsym32 pub = {0};
+          syms_msf_read_struct_in_range(data, msf, element.range, 0, &pub);
+          SYMS_CoffSection coff_section = syms_pdb_coff_section(data, dbg, pub.sec);
+          result = coff_section.virt_off + pub.off;
+          break;
+        }
+      }
+    }
+    
+    // release scratch
+    syms_release_scratch(scratch);
+  }
+  
+  return(result);
+}
+
+SYMS_API SYMS_LinkNameRecArray
+syms_pdb_link_name_array_from_unit(SYMS_Arena *arena, SYMS_String8 data,
+                                   SYMS_PdbDbgAccel *dbg, SYMS_PdbUnitAccel *unit){
+  SYMS_LinkNameRecArray result = {0};
+  
+  if (unit->pub_count != 0){
+    // setup accels
+    SYMS_MsfAccel *msf = dbg->msf;
+    
+    // allocate output memory
+    SYMS_U64 count = unit->pub_count;
+    SYMS_LinkNameRec *rec = syms_push_array(arena, SYMS_LinkNameRec, count);
+    
+    // fill output array
+    SYMS_LinkNameRec *rec_ptr = rec;
+    SYMS_PdbStub **stub_opl = unit->pub_stubs + count;
+    for (SYMS_PdbStub **stub_ptr = unit->pub_stubs; stub_ptr < stub_opl; stub_ptr += 1, rec_ptr += 1){
+      SYMS_PdbStub *stub = *stub_ptr;
+      
+      // extract rec from stub
+      SYMS_String8 name = stub->name;
+      SYMS_U64 voff = 0;
+      {
+        SYMS_MsfRange range = syms_msf_range_from_sn(msf, unit->sn);
+        SYMS_CvElement sig_element = syms_cv_element(data, msf, range, stub->off);
+        SYMS_CvPubsym32 pubsym32 = {0};
+        if (syms_msf_read_struct_in_range(data, msf, sig_element.range, 0, &pubsym32)){
+          SYMS_CoffSection coff_section = syms_pdb_coff_section(data, dbg, pubsym32.sec);
+          voff = coff_section.virt_off + pubsym32.off;
+        }
+      }
+      
+      // fill stripped rec
+      rec_ptr->name = syms_push_string_copy(arena, name);
+      rec_ptr->voff = voff;
+    }
+    
+    // fill result struct
+    result.recs = rec;
+    result.count = count;
+  }
+  
+  return(result);
+}
+
+////////////////////////////////
+//~ allen: PDB CV -> Syms Enums and Flags
 
 SYMS_API SYMS_TypeKind
 syms_pdb_type_kind_from_cv_pointer_mode(SYMS_CvPointerMode mode){

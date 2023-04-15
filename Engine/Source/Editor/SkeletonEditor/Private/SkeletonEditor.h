@@ -12,6 +12,7 @@
 #include "Containers/ArrayView.h"
 #include "IAnimationSequenceBrowser.h"
 
+class IDetailLayoutBuilder;
 class IPersonaToolkit;
 class IPersonaViewport;
 class ISkeletonTree;
@@ -118,6 +119,9 @@ private:
 
 	void OnImportAsset();
 
+	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder);
+
+	static TSharedPtr<FSkeletonEditor> GetSkeletonEditor(const FToolMenuContext& InMenuContext);
 public:
 	/** Multicast delegate fired on global undo/redo */
 	FSimpleMulticastDelegate OnPostUndo;

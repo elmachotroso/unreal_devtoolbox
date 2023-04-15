@@ -2,14 +2,25 @@
 
 #pragma once
 
+#include "Channels/MovieSceneChannelHandle.h"
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Curves/KeyHandle.h"
+#include "HAL/Platform.h"
 #include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SNullWidget.h"
+#include "Internationalization/Text.h"
 #include "Layout/Margin.h"
+#include "Math/Vector2D.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/Guid.h"
 #include "MovieSceneSection.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SWidget.h"
 
 class FMenuBuilder;
 class FSequencerSectionPainter;
@@ -17,7 +28,19 @@ class IDetailsView;
 class ISequencer;
 class ISequencerSection;
 class ISequencerTrackEditor;
+class SWidget;
+struct FGeometry;
+struct FKeyHandle;
+struct FPointerEvent;
 struct FSlateBrush;
+template <typename ElementType> class TRange;
+struct FMovieSceneChannelMetaData;
+
+namespace UE::Sequencer
+{
+	class FCategoryModel;
+	class FChannelModel;
+}
 
 /** Enumerates which edge is being resized */
 UENUM()
@@ -35,7 +58,7 @@ namespace SequencerSectionConstants
 	/** The size of each key */
 	const FVector2D KeySize(12.0f, 12.0f);
 
-	const float DefaultSectionGripSize = 7.0f;
+	const float DefaultSectionGripSize = 8.0f;
 
 	const float DefaultSectionHeight = 15.f;
 
@@ -67,6 +90,16 @@ struct FSequencerSectionPropertyDetailsViewCustomizationParams
 class ISequencerSection
 {
 public:
+	/** Structure used during key area creation to group channels by their group name */
+	struct FChannelData
+	{
+		/** Handle to the channel */
+		FMovieSceneChannelHandle Channel;
+
+		/** The channel's editor meta data */
+		const FMovieSceneChannelMetaData& MetaData;
+	};
+
 	virtual ~ISequencerSection(){}
 	/**
 	 * The MovieSceneSection data being visualized
@@ -137,6 +170,16 @@ public:
 	 * @param LayoutBuilder	The builder utility for creating section layouts
 	 */	
 	SEQUENCER_API virtual void GenerateSectionLayout( class ISectionLayoutBuilder& LayoutBuilder );
+
+	/**
+	 * Create a custom category model
+	 */
+	virtual TSharedPtr<UE::Sequencer::FCategoryModel> ConstructCategoryModel(FName InCategoryName, const FText& InDisplayText, TArrayView<const FChannelData> Channels) const { return nullptr; }
+
+	/**
+	 * Create a custom channel model
+	 */
+	virtual TSharedPtr<UE::Sequencer::FChannelModel> ConstructChannelModel(FName InCategoryName, const FMovieSceneChannelHandle& InChannelHandle) const { return nullptr; }
 
 	/**
 	 * @return The height of the section

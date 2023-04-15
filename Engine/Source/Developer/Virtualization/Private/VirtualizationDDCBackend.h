@@ -28,7 +28,7 @@ namespace UE::Virtualization
 class FDDCBackend final : public IVirtualizationBackend
 {
 public:
-	explicit FDDCBackend(FStringView ConfigName, FStringView InDebugName);
+	explicit FDDCBackend(FStringView ProjectName, FStringView ConfigName, FStringView InDebugName);
 	virtual ~FDDCBackend() = default;
 
 private:
@@ -36,9 +36,10 @@ private:
 
 	virtual bool Initialize(const FString& ConfigEntry) override;
 
-	virtual EPushResult PushData(const FIoHash& Id, const FCompressedBuffer& Payload, const FString& PackageContext) override;
+	virtual EConnectionStatus OnConnect() override;
 
-	virtual FCompressedBuffer PullData(const FIoHash& Id) override;
+	virtual bool PushData(TArrayView<FPushRequest> Requests) override;
+	virtual bool PullData(TArrayView<FPullRequest> Requests) override;
 	
 	virtual bool DoesPayloadExist(const FIoHash& Id) override;
 

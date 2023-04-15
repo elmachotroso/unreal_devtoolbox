@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Dasync.Collections;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 using Jupiter.Utils;
 using Microsoft.Extensions.Caching.Memory;
@@ -22,7 +23,7 @@ namespace Horde.Storage.Implementation
     /// Primarily intended for use together with HierarchicalBlobStore to speed up reads from other stores, such as Amazon S3 and disk.
     /// </summary>
     // ReSharper disable once ClassNeverInstantiated.Global
-    public class MemoryCacheBlobStore : IBlobStore
+    public class MemoryCacheBlobStore : IBlobStore, IDisposable
     {
         private readonly IOptionsMonitor<MemoryCacheBlobSettings> _memoryOptions;
 
@@ -30,7 +31,7 @@ namespace Horde.Storage.Implementation
 
         private readonly ILogger _logger = Log.ForContext<MemoryCacheBlobStore>();
         private readonly FieldInfo _sizeField;
-        private Timer _cacheInfoTimer;
+        private readonly Timer _cacheInfoTimer;
 
         public MemoryCacheBlobStore(IOptionsMonitor<MemoryCacheBlobSettings> memoryOptions)
         {
@@ -68,12 +69,14 @@ namespace Horde.Storage.Implementation
         public async Task<BlobIdentifier> PutObject(NamespaceId ns, Stream blob, BlobIdentifier identifier)
         {
             if (blob.Length > int.MaxValue)
+            {
                 throw new BlobToLargeException(identifier);
+            }
 
             return await PutObject(ns, blob: await blob.ToByteArray(), identifier);
         }
 
-        public Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier identifier)
+        public Task<BlobContents> GetObject(NamespaceId ns, BlobIdentifier identifier, LastAccessTrackingFlags flags = LastAccessTrackingFlags.DoTracking)
         {
             bool exists = _memoryCache.TryGetValue(BuildKey(ns, identifier), out object? dataObj);
             if (!exists)
@@ -91,7 +94,7 @@ namespace Horde.Storage.Implementation
             return Task.CompletedTask;
         }
 
-        public Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier)
+        public Task<bool> Exists(NamespaceId ns, BlobIdentifier blobIdentifier, bool forceCheck = false)
         {
             return Task.FromResult(_memoryCache.TryGetValue(BuildKey(ns, blobIdentifier), out _));
         }
@@ -102,13 +105,13 @@ namespace Horde.Storage.Implementation
             return Task.CompletedTask;
         }
 
-        public IAsyncEnumerable<BlobIdentifier> ListOldObjects(NamespaceId ns, DateTime cutoff)
+        public IAsyncEnumerable<(BlobIdentifier,DateTime)> ListObjects(NamespaceId ns)
         {
             // Silently ignore this request as we cannot implement this using MemoryCache
-            return Array.Empty<BlobIdentifier>().ToAsyncEnumerable();
+            return Array.Empty<(BlobIdentifier, DateTime)>().ToAsyncEnumerable();
         }
         
-        private string BuildKey(NamespaceId ns, BlobIdentifier blob)
+        private static string BuildKey(NamespaceId ns, BlobIdentifier blob)
         {
             return $"{ns}.{blob}";
         }
@@ -116,6 +119,21 @@ namespace Horde.Storage.Implementation
         internal long? GetMemoryCacheSize()
         {
             return (long?)_sizeField.GetValue(_memoryCache);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _memoryCache.Dispose();
+                _cacheInfoTimer.Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
     }
 }

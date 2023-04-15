@@ -4,6 +4,8 @@
 #include "UObject/EditorObjectVersion.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScrollBar)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -117,25 +119,6 @@ void UScrollBar::Serialize(FArchive& Ar)
 	}
 }
 
-void UScrollBar::PostLoad()
-{
-	Super::PostLoad();
-
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
-	{
-		if ( Style_DEPRECATED != nullptr )
-		{
-			const FScrollBarStyle* StylePtr = Style_DEPRECATED->GetStyle<FScrollBarStyle>();
-			if ( StylePtr != nullptr )
-			{
-				WidgetStyle = *StylePtr;
-			}
-
-			Style_DEPRECATED = nullptr;
-		}
-	}
-}
-
 #endif // if WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
@@ -150,3 +133,4 @@ const FText UScrollBar::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

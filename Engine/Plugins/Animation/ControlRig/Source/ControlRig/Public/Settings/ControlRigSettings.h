@@ -93,10 +93,10 @@ public:
 	TMap<FString, FControlRigSettingsPerPinBool> RigUnitPinExpansion;
 	
 	/**
-	 * The border color of the viewport when entering "Setup Event" mode
+	 * The border color of the viewport when entering "Construction Event" mode
 	 */
 	UPROPERTY(EditAnywhere, config, Category = Viewport)
-	FLinearColor SetupEventBorderColor;
+	FLinearColor ConstructionEventBorderColor;
 	
 	/**
 	 * The border color of the viewport when entering "Backwards Solve" mode
@@ -111,14 +111,22 @@ public:
 	FLinearColor BackwardsAndForwardsBorderColor;
 
 	/**
-	* The border color of the hierarchy tree in dynamic hierarchy mode
-	*/
-	UPROPERTY(EditAnywhere, config, Category = Viewport)
-	FLinearColor DynamicHierarchyBorderColor;
+	 * Option to toggle displaying the stacked hierarchy items.
+	 * Note that changing this option potentially requires to re-open the editors in question. 
+	 */
+	UPROPERTY(EditAnywhere, config, Category = Hierarchy)
+	bool bShowStackedHierarchy;
 
 	/**
-	* The default node snippet to create when pressing 1 + Left Mouse Button
-	*/
+ 	 * The maximum number of stacked items in the view 
+ 	 * Note that changing this option potentially requires to re-open the editors in question. 
+ 	 */
+	UPROPERTY(EditAnywhere, config, Category = Hierarchy, meta = (EditCondition = "bShowStackedHierarchy"))
+	int32 MaxStackSize;
+
+	/**
+	 * The default node snippet to create when pressing 1 + Left Mouse Button
+	 */
 	UPROPERTY(EditAnywhere, config, Category = Snippets, meta = (DisplayName = "1"))
 	FString NodeSnippet_1;
 

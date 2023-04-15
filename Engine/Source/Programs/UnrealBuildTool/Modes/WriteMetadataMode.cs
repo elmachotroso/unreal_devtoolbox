@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -50,6 +51,11 @@ namespace UnrealBuildTool
 		public Dictionary<FileReference, ModuleManifest> FileToManifest;
 
 		/// <summary>
+		/// Map of load order manifest filenames to their locations on disk (generally, at most one load oder manifest is expected).
+		/// </summary>
+		public Dictionary<FileReference, LoadOrderManifest> FileToLoadOrderManifest;
+
+		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="ProjectFile"></param>
@@ -58,7 +64,8 @@ namespace UnrealBuildTool
 		/// <param name="ReceiptFile"></param>
 		/// <param name="Receipt"></param>
 		/// <param name="FileToManifest"></param>
-		public WriteMetadataTargetInfo(FileReference? ProjectFile, FileReference? VersionFile, BuildVersion? Version, FileReference? ReceiptFile, TargetReceipt? Receipt, Dictionary<FileReference, ModuleManifest> FileToManifest)
+		/// <param name="FileToLoadOrderManifest"></param>
+		public WriteMetadataTargetInfo(FileReference? ProjectFile, FileReference? VersionFile, BuildVersion? Version, FileReference? ReceiptFile, TargetReceipt? Receipt, Dictionary<FileReference, ModuleManifest> FileToManifest, Dictionary<FileReference, LoadOrderManifest>? FileToLoadOrderManifest)
 		{
 			this.ProjectFile = ProjectFile;
 			this.VersionFile = VersionFile;
@@ -66,6 +73,7 @@ namespace UnrealBuildTool
 			this.ReceiptFile = ReceiptFile;
 			this.Receipt = Receipt;
 			this.FileToManifest = FileToManifest;
+			this.FileToLoadOrderManifest = FileToLoadOrderManifest ?? new Dictionary<FileReference, LoadOrderManifest>();
 		}
 	}
 
@@ -86,14 +94,15 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
-		public override int Execute(CommandLineArguments Arguments)
+		/// <param name="Logger"></param>
+		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
 		{
 			// Acquire a different mutex to the regular UBT instance, since this mode will be called as part of a build. We need the mutex to ensure that building two modular configurations 
 			// in parallel don't clash over writing shared *.modules files (eg. DebugGame and Development editors).
 			string MutexName = SingleInstanceMutex.GetUniqueMutexForPath("UnrealBuildTool_WriteMetadata", Unreal.RootDirectory.FullName);
 			using(new SingleInstanceMutex(MutexName, true))
 			{
-				return ExecuteInternal(Arguments);
+				return ExecuteInternal(Arguments, Logger);
 			}
 		}
 
@@ -101,8 +110,9 @@ namespace UnrealBuildTool
 		/// Execute the command, having obtained the appropriate mutex
 		/// </summary>
 		/// <param name="Arguments">Command line arguments</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <returns>Exit code</returns>
-		private int ExecuteInternal(CommandLineArguments Arguments)
+		private int ExecuteInternal(CommandLineArguments Arguments, ILogger Logger)
 		{
 			// Read the target info
 			WriteMetadataTargetInfo TargetInfo = BinaryFormatterUtils.Load<WriteMetadataTargetInfo>(Arguments.GetFileReference("-Input="));
@@ -126,7 +136,7 @@ namespace UnrealBuildTool
 			{
 				BuildId = TargetInfo.Receipt.Version.BuildId;
 			}
-			else if (TargetInfo.VersionFile != null && BuildVersion.TryRead(TargetInfo.VersionFile, out BuildVersion? PrevVersion) && CanRecycleBuildId(PrevVersion.BuildId, TargetInfo.FileToManifest))
+			else if (TargetInfo.VersionFile != null && BuildVersion.TryRead(TargetInfo.VersionFile, out BuildVersion? PrevVersion) && CanRecycleBuildId(PrevVersion.BuildId, TargetInfo.FileToManifest, Logger))
 			{
 				BuildId = PrevVersion.BuildId;
 			}
@@ -139,7 +149,7 @@ namespace UnrealBuildTool
 			foreach(KeyValuePair<FileReference, ModuleManifest> Pair in TargetInfo.FileToManifest)
 			{
 				ModuleManifest? SourceManifest;
-				if(TryReadManifest(Pair.Key, out SourceManifest) && SourceManifest.BuildId == BuildId)
+				if(TryReadManifest(Pair.Key, Logger, out SourceManifest) && SourceManifest.BuildId == BuildId)
 				{
 					MergeManifests(SourceManifest, Pair.Value);
 				}
@@ -176,7 +186,47 @@ namespace UnrealBuildTool
 							string CurrentText = FileReference.ReadAllText(ManifestFile);
 							if (CurrentText != OutputText)
 							{
-								Log.TraceError("Build modifies {0}. This is not permitted. Before:\n    {1}\nAfter:\n    {2}", ManifestFile, CurrentText.Replace("\n", "\n    "), OutputText.Replace("\n", "\n    "));
+								Logger.LogError("Build modifies {File}. This is not permitted. Before:\n    {OldFile}\nAfter:\n    {NewFile}", ManifestFile, CurrentText.Replace("\n", "\n    "), OutputText.Replace("\n", "\n    "));
+							}
+						}
+
+						// Write it to disk
+						FileReference.WriteAllText(ManifestFile, OutputText);
+					}
+				}
+			}
+
+			// Write load order manifests out.
+			foreach (KeyValuePair<FileReference, LoadOrderManifest> Pair in TargetInfo.FileToLoadOrderManifest)
+			{
+				FileReference ManifestFile = Pair.Key;
+				if (!UnrealBuildTool.IsFileInstalled(ManifestFile))
+				{
+					LoadOrderManifest Manifest = Pair.Value;
+
+					if (!FileReference.Exists(ManifestFile))
+					{
+						// If the file doesn't already exist, just write it out
+						DirectoryReference.CreateDirectory(ManifestFile.Directory);
+						Manifest.Write(ManifestFile);
+					}
+					else
+					{
+						// Otherwise write it to a buffer first
+						string OutputText;
+						using (StringWriter Writer = new StringWriter())
+						{
+							Manifest.Write(Writer);
+							OutputText = Writer.ToString();
+						}
+
+						// Check if the manifest has changed. Note that if a manifest is out of date, we should have generated a new build id causing the contents to differ.
+						if (bNoManifestChanges)
+						{
+							string CurrentText = FileReference.ReadAllText(ManifestFile);
+							if (CurrentText != OutputText)
+							{
+								Logger.LogError("Build modifies {File}. This is not permitted. Before:\n    {OldFile}\nAfter:\n    {NewFile}", ManifestFile, CurrentText.Replace("\n", "\n    "), OutputText.Replace("\n", "\n    "));
 							}
 						}
 
@@ -210,13 +260,14 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="BuildId"></param>
 		/// <param name="FileToManifest"></param>
+		/// <param name="Logger"></param>
 		/// <returns></returns>
-		bool CanRecycleBuildId(string? BuildId, Dictionary<FileReference, ModuleManifest> FileToManifest)
+		bool CanRecycleBuildId(string? BuildId, Dictionary<FileReference, ModuleManifest> FileToManifest, ILogger Logger)
 		{
 			foreach (FileReference ManifestFileName in FileToManifest.Keys)
 			{
 				ModuleManifest? Manifest;
-				if (ManifestFileName.IsUnderDirectory(Unreal.EngineDirectory) && TryReadManifest(ManifestFileName, out Manifest) && Manifest.BuildId == BuildId)
+				if (ManifestFileName.IsUnderDirectory(Unreal.EngineDirectory) && TryReadManifest(ManifestFileName, Logger, out Manifest) && Manifest.BuildId == BuildId)
 				{
 					DateTime ManifestTime = FileReference.GetLastWriteTimeUtc(ManifestFileName);
 					foreach (string FileName in Manifest.ModuleNameToFileName.Values)
@@ -236,9 +287,10 @@ namespace UnrealBuildTool
 		/// Attempts to read a manifest from the given location
 		/// </summary>
 		/// <param name="ManifestFileName">Path to the manifest</param>
+		/// <param name="Logger"></param>
 		/// <param name="Manifest">If successful, receives the manifest that was read</param>
 		/// <returns>True if the manifest was read correctly, false otherwise</returns>
-		public static bool TryReadManifest(FileReference ManifestFileName, [NotNullWhen(true)] out ModuleManifest? Manifest)
+		public static bool TryReadManifest(FileReference ManifestFileName, ILogger Logger, [NotNullWhen(true)] out ModuleManifest? Manifest)
 		{
 			if(FileReference.Exists(ManifestFileName))
 			{
@@ -249,8 +301,8 @@ namespace UnrealBuildTool
 				}
 				catch(Exception Ex)
 				{
-					Log.TraceWarning("Unable to read '{0}'; ignoring.", ManifestFileName);
-					Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
+					Logger.LogWarning("Unable to read '{ManifestFileName}'; ignoring.", ManifestFileName);
+					Logger.LogDebug("{Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
 				}
 			}
 

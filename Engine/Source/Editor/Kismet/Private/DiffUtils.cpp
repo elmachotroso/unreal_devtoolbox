@@ -1,18 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DiffUtils.h"
-#include "UObject/PropertyPortFlags.h"
-#include "UObject/Package.h"
-#include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
-#include "ISourceControlProvider.h"
-#include "ISourceControlModule.h"
 
+#include "Components/ActorComponent.h"
+#include "Containers/BitArray.h"
 #include "EditorCategoryUtils.h"
 #include "Engine/Blueprint.h"
 #include "IAssetTypeActions.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "Internationalization/Internationalization.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/DateTime.h"
+#include "Misc/Optional.h"
 #include "ObjectEditorUtils.h"
-#include "Components/ActorComponent.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateConstants.h"
+#include "Types/SlateEnums.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/PropertyPortFlags.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
+
+class ITableRow;
+class SWidget;
 
 namespace UEDiffUtils_Private
 {
@@ -42,8 +67,35 @@ namespace UEDiffUtils_Private
 
 FResolvedProperty FPropertySoftPath::Resolve(const UObject* Object) const
 {
-	return Resolve(Object->GetClass(), Object);
+	FResolvedProperty ResolvedProperty = Resolve(Object->GetClass(), Object);
+	if (!ResolvedProperty.Property && Object->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		if (const UScriptStruct* SparseClassDataStruct = Object->GetClass()->GetSparseClassDataStruct())
+		{
+			if (const void* SparseClassData = Object->GetClass()->GetSparseClassData(EGetSparseClassDataMethod::ReturnIfNull))
+			{
+				ResolvedProperty = Resolve(SparseClassDataStruct, SparseClassData);
+			}
+		}
+	}
+	return ResolvedProperty;
 }
+
+
+
+int32 FPropertySoftPath::TryReadIndex(const TArray<FChainElement>& LocalPropertyChain, int32& OutIndex)
+{
+	if(OutIndex + 1 < LocalPropertyChain.Num())
+	{
+		FString AsString = LocalPropertyChain[OutIndex + 1].DisplayString;
+		if(AsString.IsNumeric())
+		{
+			++OutIndex;
+			return FCString::Atoi(*AsString);
+		}
+	}
+	return INDEX_NONE;
+};
 
 FResolvedProperty FPropertySoftPath::Resolve(const UStruct* Struct, const void* StructData) const
 {
@@ -57,6 +109,34 @@ FResolvedProperty FPropertySoftPath::Resolve(const UStruct* Struct, const void* 
 	{
 		CurrentBlock = NextBlock;
 		const FProperty* NextProperty = UEDiffUtils_Private::Resolve(NextClass, PropertyChain[i].PropertyName);
+
+		// if an index was provided, resolve it
+		const int32 PropertyIndex = TryReadIndex(PropertyChain, i);
+		if (NextProperty && PropertyIndex != INDEX_NONE)
+		{
+			Property = NextProperty;
+			if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				FScriptArrayHelper ArrayHelper(ArrayProperty, Property->ContainerPtrToValuePtr<UObject*>(CurrentBlock));
+				if (ArrayHelper.IsValidIndex(PropertyIndex))
+				{
+					NextProperty = ArrayProperty->Inner;
+					NextBlock = ArrayHelper.GetRawPtr(PropertyIndex);
+				}
+			}
+			else if( const FSetProperty* SetProperty = CastField<FSetProperty>(Property) )
+			{
+				checkf(false, TEXT("Set Indexing not supported yet"));
+				// TODO: @jordan.hoffmann: handle indexing for sets
+			}
+			else if( const FMapProperty* MapProperty = CastField<FMapProperty>(Property) )
+			{
+				checkf(false, TEXT("Map Indexing not supported yet"));
+				// TODO: @jordan.hoffmann: handle indexing for maps
+			}
+		}
+		
+		CurrentBlock = NextBlock;
 		if (NextProperty)
 		{
 			Property = NextProperty;
@@ -108,20 +188,6 @@ FPropertyPath FPropertySoftPath::ResolvePath(const UObject* Object) const
 		}
 	};
 
-	auto TryReadIndex = [](const TArray<FChainElement>& LocalPropertyChain, int32& OutIndex) -> int32
-	{
-		if(OutIndex + 1 < LocalPropertyChain.Num())
-		{
-			FString AsString = LocalPropertyChain[OutIndex + 1].DisplayString;
-			if(AsString.IsNumeric())
-			{
-				++OutIndex;
-				return FCString::Atoi(*AsString);
-			}
-		}
-		return INDEX_NONE;
-	};
-
 	const void* ContainerAddress = Object;
 	const UStruct* ContainerStruct = (Object ? Object->GetClass() : nullptr);
 
@@ -131,6 +197,12 @@ FPropertyPath FPropertySoftPath::ResolvePath(const UObject* Object) const
 		FName PropertyIdentifier = PropertyChain[I].PropertyName;
 		FProperty* ResolvedProperty = UEDiffUtils_Private::Resolve(ContainerStruct, PropertyIdentifier);
 
+		// If the property didn't exist inside the container, return an invalid property
+		if (!ResolvedProperty)
+		{
+			return FPropertyPath();
+		}
+		
 		FPropertyInfo Info(ResolvedProperty, INDEX_NONE);
 		Ret.AddProperty(Info);
 
@@ -140,10 +212,9 @@ FPropertyPath FPropertySoftPath::ResolvePath(const UObject* Object) const
 		// calculate offset so we can continue resolving object properties/structproperties:
 		if( const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ResolvedProperty) )
 		{
-			if(PropertyIndex != INDEX_NONE)
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<const void*>( ContainerAddress ));
+			if (ArrayHelper.IsValidIndex(PropertyIndex))
 			{
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<const void*>( ContainerAddress ));
-
 				UpdateContainerAddress( ArrayProperty->Inner, ArrayHelper.GetRawPtr(PropertyIndex), ContainerAddress, ContainerStruct );
 
 				FPropertyInfo ArrayInfo(ArrayProperty->Inner, PropertyIndex);
@@ -340,7 +411,7 @@ void DiffUtils::CompareUnrelatedSCS(const UBlueprint* Old, const TArray< FSCSRes
 	{
 		for (const auto& Node : InArray)
 		{
-			if (Node.Identifier.Name == Value->Name )
+			if (Node.Identifier.Name == Value->Name)
 			{
 				return &Node;
 			}
@@ -462,18 +533,29 @@ static void IdenticalHelper(const FProperty* AProperty, const FProperty* BProper
 	if (APropAsStruct != nullptr)
 	{
 		const FStructProperty* BPropAsStruct = CastFieldChecked<FStructProperty>(const_cast<FProperty*>(BProperty));
-		if (APropAsStruct->Struct->StructFlags & STRUCT_IdenticalNative && BPropAsStruct->Struct != APropAsStruct->Struct)
+		if (BPropAsStruct->Struct == APropAsStruct->Struct)
 		{
-			// If the struct uses CPP identical tests, then we can't dig into it, and we already know it's not identical from the test when we started
-			DifferingSubProperties.Push(RootPath);
+			if (APropAsStruct->Struct->StructFlags & STRUCT_IdenticalNative)
+			{
+				// If the struct uses CPP identical tests then we need to honor that
+				if (!AProperty->Identical(AValue, BValue, PPF_DeepComparison))
+				{
+					DifferingSubProperties.Push(RootPath);
+				}
+			}
+			else
+			{
+				// Compare sub-properties to detect more granular changes
+				for (TFieldIterator<FProperty> PropertyIt(APropAsStruct->Struct); PropertyIt; ++PropertyIt)
+				{
+					const FProperty* StructProp = *PropertyIt;
+					IdenticalHelper(StructProp, StructProp, StructProp->ContainerPtrToValuePtr<void>(AValue, 0), StructProp->ContainerPtrToValuePtr<void>(BValue, 0), FPropertySoftPath(RootPath, StructProp), DifferingSubProperties);
+				}
+			}
 		}
 		else
 		{
-			for (TFieldIterator<FProperty> PropertyIt(APropAsStruct->Struct); PropertyIt; ++PropertyIt)
-			{
-				const FProperty* StructProp = *PropertyIt;
-				IdenticalHelper(StructProp, StructProp, StructProp->ContainerPtrToValuePtr<void>(AValue, 0), StructProp->ContainerPtrToValuePtr<void>(BValue, 0), FPropertySoftPath(RootPath, StructProp), DifferingSubProperties);
-			}
+			DifferingSubProperties.Push(RootPath);
 		}
 	}
 	else if (APropAsArray != nullptr)
@@ -704,7 +786,7 @@ TSharedPtr<FBlueprintDifferenceTreeEntry> FBlueprintDifferenceTreeEntry::NoDiffe
 	{
 		return SNew(STextBlock)
 			.ColorAndOpacity(FLinearColor(.7f, .7f, .7f))
-			.TextStyle(FEditorStyle::Get(), TEXT("BlueprintDif.ItalicText"))
+			.TextStyle(FAppStyle::Get(), TEXT("BlueprintDif.ItalicText"))
 			.Text(NSLOCTEXT("FBlueprintDifferenceTreeEntry", "NoDifferencesLabel", "No differences detected..."));
 	};
 
@@ -722,7 +804,7 @@ TSharedPtr<FBlueprintDifferenceTreeEntry> FBlueprintDifferenceTreeEntry::Unknown
 	{
 		return SNew(STextBlock)
 			.ColorAndOpacity(FLinearColor(.7f, .7f, .7f))
-			.TextStyle(FEditorStyle::Get(), TEXT("BlueprintDif.ItalicText"))
+			.TextStyle(FAppStyle::Get(), TEXT("BlueprintDif.ItalicText"))
 			.Text(NSLOCTEXT("FBlueprintDifferenceTreeEntry", "BlueprintTypeNotSupported", "Warning: Detecting differences in this Blueprint type specific data is not yet supported..."));
 	};
 
@@ -899,7 +981,8 @@ FLinearColor DiffViewUtils::Differs()
 
 FLinearColor DiffViewUtils::Identical()
 {
-	return FLinearColor::White;
+	const static FLinearColor ForegroundColor = FAppStyle::GetColor("Graph.ForegroundColor");
+	return ForegroundColor;
 }
 
 FLinearColor DiffViewUtils::Missing()
@@ -958,7 +1041,7 @@ FText DiffViewUtils::SCSDiffMessage(const FSCSDiffEntry& Difference, FText Objec
 	return Text;
 }
 
-FText DiffViewUtils::GetPanelLabel(const UBlueprint* Blueprint, const FRevisionInfo& Revision, FText Label )
+FText DiffViewUtils::GetPanelLabel(const UObject* Asset, const FRevisionInfo& Revision, FText Label)
 {
 	if( !Revision.Revision.IsEmpty() )
 	{
@@ -981,32 +1064,32 @@ FText DiffViewUtils::GetPanelLabel(const UBlueprint* Blueprint, const FRevisionI
 		if (Label.IsEmpty())
 		{
 			return FText::Format(NSLOCTEXT("DiffViewUtils", "RevisionLabelTwoLines", "{0}\n{1}")
-				, FText::FromString(Blueprint->GetName())
+				, FText::FromString(Asset->GetName())
 				, RevisionData);
 		}
 		else
 		{
 			return FText::Format(NSLOCTEXT("DiffViewUtils", "RevisionLabel", "{0}\n{1}\n{2}")
 				, Label
-				, FText::FromString(Blueprint->GetName())
+				, FText::FromString(Asset->GetName())
 				, RevisionData);
 		}
 	}
 	else
 	{
-		if( Blueprint )
+		if( Asset )
 		{
 			if (Label.IsEmpty())
 			{
 				return FText::Format(NSLOCTEXT("DiffViewUtils", "RevisionLabelTwoLines", "{0}\n{1}")
-					, FText::FromString(Blueprint->GetName())
+					, FText::FromString(Asset->GetName())
 					, NSLOCTEXT("DiffViewUtils", "LocalRevisionLabel", "Local Revision"));
 			}
 			else
 			{
 				return FText::Format(NSLOCTEXT("DiffViewUtils", "RevisionLabel", "{0}\n{1}\n{2}")
 					, Label
-					, FText::FromString(Blueprint->GetName())
+					, FText::FromString(Asset->GetName())
 					, NSLOCTEXT("DiffViewUtils", "LocalRevisionLabel", "Local Revision"));
 			}
 		}
@@ -1021,11 +1104,11 @@ SHorizontalBox::FSlot::FSlotArguments DiffViewUtils::Box(bool bIsPresent, FLinea
 		.AutoWidth()
 		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Center)
-		.MaxWidth(8.0f)
+		.Padding(0.5f, 0.f)
 		[
 			SNew(SImage)
 			.ColorAndOpacity(Color)
-			.Image(bIsPresent ? FEditorStyle::GetBrush("BlueprintDif.HasGraph") : FEditorStyle::GetBrush("BlueprintDif.MissingGraph"))
+			.Image(bIsPresent ? FAppStyle::GetBrush("BlueprintDif.HasGraph") : FAppStyle::GetBrush("BlueprintDif.MissingGraph"))
 		]);
 };
 

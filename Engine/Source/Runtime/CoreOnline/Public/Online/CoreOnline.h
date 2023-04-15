@@ -2,14 +2,28 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/UnrealMemory.h"
 #include "Hash/CityHash.h"
+#include "Math/Vector4.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/TVariant.h"
 #include "Online/CoreOnlineFwd.h"
-#include "UObject/ObjectMacros.h"
-
 #include "Online/CoreOnlinePackage.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealNames.h"
 
+class FDefaultSetAllocator;
 class FLazySingleton;
 
 /** Maximum players supported on a given platform */
@@ -170,6 +184,11 @@ public:
 	 */
 	virtual FString ToDebugString() const = 0;
 
+	virtual uint32 GetTypeHash() const
+	{
+		return CityHash32(reinterpret_cast<const char*>(GetBytes()), GetSize());
+	}
+
 	/**
 	 * @return hex encoded string representation of unique id
 	 */
@@ -184,7 +203,7 @@ public:
 
 	friend inline uint32 GetTypeHash(const FUniqueNetId& Value)
 	{
-		return CityHash32(reinterpret_cast<const char*>(Value.GetBytes()), Value.GetSize());
+		return Value.GetTypeHash();
 	}
 };
 
@@ -192,12 +211,15 @@ namespace UE::Online {
 
 class FOnlineForeignAccountIdRegistry;
 
-/** Tags used as template argument to TOnlineIdHandle to make it a compile error to assign between id's of different types */
+/** Tags used as template argument to TOnlineId to make it a compile error to assign between id's of different types */
 namespace OnlineIdHandleTags
 {
 	struct FAccount {};
 	struct FSession {};
+	struct FSessionInvite {};
 	struct FLobby {};
+	struct FVerifiedAuthTicket {};
+	struct FVerifiedAuthSession {};
 }
 
 enum class EOnlineServices : uint8
@@ -267,11 +289,11 @@ COREONLINE_API void LexFromString(EOnlineServices& OutValue, const TCHAR* InStr)
  * Passed to and returned from OnlineServices APIs.
  */
 template<typename IdType>
-class TOnlineIdHandle
+class TOnlineId
 {
 public:
-	TOnlineIdHandle() = default;
-	TOnlineIdHandle(EOnlineServices Type, uint32 Handle)
+	TOnlineId() = default;
+	TOnlineId(EOnlineServices Type, uint32 Handle)
 	{
 		check(Handle < 0xFF000000);
 		Value = (Handle & 0x00FFFFFF) | (uint32(Type) << 24);
@@ -282,36 +304,48 @@ public:
 	EOnlineServices GetOnlineServicesType() const { return EOnlineServices(Value >> 24); }
 	uint32 GetHandle() const { return Value & 0x00FFFFFF; }
 
-	bool operator==(const TOnlineIdHandle& Other) const { return Value == Other.Value; }
-	bool operator!=(const TOnlineIdHandle& Other) const { return Value != Other.Value; }
+	bool operator==(const TOnlineId& Other) const { return Value == Other.Value; }
+	bool operator!=(const TOnlineId& Other) const { return Value != Other.Value; }
 
 private:
 	uint32 Value = uint32(EOnlineServices::Null) << 24;
 };
 
-using FOnlineAccountIdHandle = TOnlineIdHandle<OnlineIdHandleTags::FAccount>;
-using FOnlineLobbyIdHandle = TOnlineIdHandle<OnlineIdHandleTags::FLobby>;
+using FAccountId = TOnlineId<OnlineIdHandleTags::FAccount>;
+using FLobbyId = TOnlineId<OnlineIdHandleTags::FLobby>;
+using FOnlineSessionId = TOnlineId<OnlineIdHandleTags::FSession>;
+using FSessionInviteId = TOnlineId<OnlineIdHandleTags::FSessionInvite>;
+using FVerifiedAuthTicketId = TOnlineId<OnlineIdHandleTags::FVerifiedAuthTicket>;
+using FVerifiedAuthSessionId = TOnlineId<OnlineIdHandleTags::FVerifiedAuthSession>;
 
-COREONLINE_API FString ToLogString(const FOnlineAccountIdHandle& Id);
-COREONLINE_API FString ToLogString(const FOnlineLobbyIdHandle& Id);
+COREONLINE_API FString ToLogString(const FAccountId& Id);
+COREONLINE_API FString ToLogString(const FLobbyId& Id);
+COREONLINE_API FString ToLogString(const FOnlineSessionId& Id);
+COREONLINE_API FString ToLogString(const FSessionInviteId& Id);
+COREONLINE_API FString ToLogString(const FVerifiedAuthTicketId& Id);
+COREONLINE_API FString ToLogString(const FVerifiedAuthSessionId& Id);
 
 template<typename IdType>
-inline uint32 GetTypeHash(const TOnlineIdHandle<IdType>& Handle)
+inline uint32 GetTypeHash(const TOnlineId<IdType>& OnlineId)
 {
 	using ::GetTypeHash;
-	return HashCombine(GetTypeHash(Handle.GetOnlineServicesType()), GetTypeHash(Handle.GetHandle()));
+	return HashCombine(GetTypeHash(OnlineId.GetOnlineServicesType()), GetTypeHash(OnlineId.GetHandle()));
 }
 
 template<typename IdType>
 class IOnlineIdRegistry
 {
 public:
-	virtual FString ToLogString(const TOnlineIdHandle<IdType>& Handle) const = 0;
-	virtual TArray<uint8> ToReplicationData(const TOnlineIdHandle<IdType>& Handle) const = 0;
-	virtual TOnlineIdHandle<IdType> FromReplicationData(const TArray<uint8>& Handle) = 0;
+	virtual ~IOnlineIdRegistry() = default;
+
+	virtual FString ToLogString(const TOnlineId<IdType>& OnlineId) const = 0;
+	virtual TArray<uint8> ToReplicationData(const TOnlineId<IdType>& OnlineId) const = 0;
+	virtual TOnlineId<IdType> FromReplicationData(const TArray<uint8>& ReplicationData) = 0;
 };
 
 using IOnlineAccountIdRegistry = IOnlineIdRegistry<OnlineIdHandleTags::FAccount>;
+using IOnlineSessionIdRegistry = IOnlineIdRegistry<OnlineIdHandleTags::FSession>;
+using IOnlineSessionInviteIdRegistry = IOnlineIdRegistry<OnlineIdHandleTags::FSessionInvite>;
 
 class FOnlineIdRegistryRegistry
 {
@@ -329,41 +363,98 @@ public:
 	COREONLINE_API static void TearDown();
 
 	/**
-	 * Register a registry for a given OnlineServices implementation and TOnlineIdHandle type
+	 * Register a registry for a given OnlineServices implementation and IOnlineAccountIdHandle type
 	 *
 	 * @param OnlineServices Services that the registry is for
-	 * @param Registry the registry of online ids
+	 * @param Registry the registry of online account ids
 	 * @param Priority Integer priority, allows an existing registry to be extended and registered with a higher priority so it is used instead
 	 */
 	COREONLINE_API void RegisterAccountIdRegistry(EOnlineServices OnlineServices, IOnlineAccountIdRegistry* Registry, int32 Priority = 0);
 
 	/**
-	 * Unregister a previously registered Id registry
+	 * Unregister a previously registered Account Id registry
 	 *
 	 * @param OnlineServices Services that the registry is for
 	 * @param Priority Integer priority, will be unregistered only if the priority matches the one that is registered
 	 */
 	COREONLINE_API void UnregisterAccountIdRegistry(EOnlineServices OnlineServices, int32 Priority = 0);
 
-	COREONLINE_API FString ToLogString(const FOnlineAccountIdHandle& Handle) const;
-	COREONLINE_API TArray<uint8> ToReplicationData(const FOnlineAccountIdHandle& Handle) const;
-	COREONLINE_API FOnlineAccountIdHandle ToAccountId(EOnlineServices Services, const TArray<uint8>& RepData) const;
+	COREONLINE_API FString ToLogString(const FAccountId& AccountId) const;
+	COREONLINE_API TArray<uint8> ToReplicationData(const FAccountId& AccountId) const;
+	COREONLINE_API FAccountId ToAccountId(EOnlineServices Services, const TArray<uint8>& RepData) const;
 
 	COREONLINE_API IOnlineAccountIdRegistry* GetAccountIdRegistry(EOnlineServices OnlineServices) const;
 
+	/**
+	 * Register a registry for a given OnlineServices implementation and IOnlineSessionIdHandle type
+	 *
+	 * @param OnlineServices Services that the registry is for
+	 * @param Registry the registry of online session ids
+	 * @param Priority Integer priority, allows an existing registry to be extended and registered with a higher priority so it is used instead
+	 */
+	COREONLINE_API void RegisterSessionIdRegistry(EOnlineServices OnlineServices, IOnlineSessionIdRegistry* Registry, int32 Priority = 0);
+
+	/**
+	 * Unregister a previously registered Session Id registry
+	 *
+	 * @param OnlineServices Services that the registry is for
+	 * @param Priority Integer priority, will be unregistered only if the priority matches the one that is registered
+	 */
+	COREONLINE_API void UnregisterSessionIdRegistry(EOnlineServices OnlineServices, int32 Priority = 0);
+
+	COREONLINE_API FString ToLogString(const FOnlineSessionId& SessionId) const;
+	COREONLINE_API TArray<uint8> ToReplicationData(const FOnlineSessionId& SessionId) const;
+	COREONLINE_API FOnlineSessionId ToSessionId(EOnlineServices Services, const TArray<uint8>& RepData) const;
+
+	COREONLINE_API IOnlineSessionIdRegistry* GetSessionIdRegistry(EOnlineServices OnlineServices) const;
+
+	/**
+	 * Register a registry for a given OnlineServices implementation and IOnlineSessionInviteIdHandle type
+	 *
+	 * @param OnlineServices Services that the registry is for
+	 * @param Registry the registry of online session ids
+	 * @param Priority Integer priority, allows an existing registry to be extended and registered with a higher priority so it is used instead
+	 */
+	COREONLINE_API void RegisterSessionInviteIdRegistry(EOnlineServices OnlineServices, IOnlineSessionInviteIdRegistry* Registry, int32 Priority = 0);
+
+	/**
+	 * Unregister a previously registered Session Invite Id registry
+	 *
+	 * @param OnlineServices Services that the registry is for
+	 * @param Priority Integer priority, will be unregistered only if the priority matches the one that is registered
+	 */
+	COREONLINE_API void UnregisterSessionInviteIdRegistry(EOnlineServices OnlineServices, int32 Priority = 0);
+
+	COREONLINE_API FString ToLogString(const FSessionInviteId& SessionInviteId) const;
+	COREONLINE_API TArray<uint8> ToReplicationData(const FSessionInviteId& SessionInviteId) const;
+	COREONLINE_API FSessionInviteId ToSessionInviteId(EOnlineServices Services, const TArray<uint8>& RepData) const;
+
+	COREONLINE_API IOnlineSessionInviteIdRegistry* GetSessionInviteIdRegistry(EOnlineServices OnlineServices) const;
+
 private:
 
-	struct FAccountIdRegistryAndPriority
+	template<typename IdType>
+	struct FOnlineIdRegistryAndPriority
 	{
-		FAccountIdRegistryAndPriority(IOnlineAccountIdRegistry* InRegistry, int32 InPriority)
+		FOnlineIdRegistryAndPriority(IOnlineIdRegistry<IdType>* InRegistry, int32 InPriority)
 			: Registry(InRegistry), Priority(InPriority) {}
 
-		IOnlineAccountIdRegistry* Registry;
+		virtual ~FOnlineIdRegistryAndPriority() = default;
+
+		IOnlineIdRegistry<IdType>* Registry;
 		int32 Priority;
 	};
 
+	typedef FOnlineIdRegistryAndPriority<OnlineIdHandleTags::FAccount> FAccountIdRegistryAndPriority;
+	typedef FOnlineIdRegistryAndPriority<OnlineIdHandleTags::FSession> FSessionIdRegistryAndPriority;
+	typedef FOnlineIdRegistryAndPriority<OnlineIdHandleTags::FSessionInvite> FSessionInviteIdRegistryAndPriority;
+
 	TMap<EOnlineServices, FAccountIdRegistryAndPriority> AccountIdRegistries;
 	TUniquePtr<FOnlineForeignAccountIdRegistry> ForeignAccountIdRegistry;
+
+	TMap<EOnlineServices, FSessionIdRegistryAndPriority> SessionIdRegistries;
+
+	TMap<EOnlineServices, FSessionInviteIdRegistryAndPriority> SessionInviteIdRegistries;
 
 	friend FLazySingleton;
 
@@ -379,7 +470,7 @@ struct FUniqueNetIdWrapper
 {
 	//GENERATED_BODY()
 	
-	using FVariantType = TVariant<FUniqueNetIdPtr, UE::Online::FOnlineAccountIdHandle>;
+	using FVariantType = TVariant<FUniqueNetIdPtr, UE::Online::FAccountId>;
 
 	FUniqueNetIdWrapper() = default;
 	virtual ~FUniqueNetIdWrapper() = default;
@@ -401,9 +492,9 @@ struct FUniqueNetIdWrapper
 	{
 	}
 
-	FUniqueNetIdWrapper(const UE::Online::FOnlineAccountIdHandle& Handle)
+	FUniqueNetIdWrapper(const UE::Online::FAccountId& AccountId)
 	{
-		Variant.Emplace<UE::Online::FOnlineAccountIdHandle>(Handle);
+		Variant.Emplace<UE::Online::FAccountId>(AccountId);
 	}
 
 	// temporarily restored implicit conversion from FUniqueNetId
@@ -429,15 +520,15 @@ struct FUniqueNetIdWrapper
 
 	bool IsV2() const
 	{
-		return Variant.IsType<UE::Online::FOnlineAccountIdHandle>();
+		return Variant.IsType<UE::Online::FAccountId>();
 	}
 
-	UE::Online::FOnlineAccountIdHandle GetV2() const
+	UE::Online::FAccountId GetV2() const
 	{
-		UE::Online::FOnlineAccountIdHandle Result;
+		UE::Online::FAccountId Result;
 		if (ensure(IsV2()))
 		{
-			Result = Variant.Get<UE::Online::FOnlineAccountIdHandle>();
+			Result = Variant.Get<UE::Online::FAccountId>();
 		}
 		return Result;
 	}
@@ -476,8 +567,8 @@ struct FUniqueNetIdWrapper
 		}
 		else
 		{
-			const UE::Online::FOnlineAccountIdHandle& Handle = GetV2();
-			return Handle.IsValid();
+			const UE::Online::FAccountId& AccountId = GetV2();
+			return AccountId.IsValid();
 		}
 	}
 
@@ -491,9 +582,9 @@ struct FUniqueNetIdWrapper
 		Variant.Emplace<FUniqueNetIdPtr>(InUniqueNetId);
 	}
 
-	virtual void SetAccountId(const UE::Online::FOnlineAccountIdHandle& Handle)
+	virtual void SetAccountId(const UE::Online::FAccountId& AccountId)
 	{
-		Variant.Emplace<UE::Online::FOnlineAccountIdHandle>(Handle);
+		Variant.Emplace<UE::Online::FAccountId>(AccountId);
 	}
 
 	/** @return unique id associated with this wrapper object */

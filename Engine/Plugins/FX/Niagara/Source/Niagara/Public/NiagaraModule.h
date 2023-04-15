@@ -3,9 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
 #include "Modules/ModuleInterface.h"
-#include "Engine/World.h"
 #include "NiagaraTypes.h"
 #include "Templates/SharedPointer.h"
 #include "NiagaraPerfBaseline.h"
@@ -56,6 +54,8 @@ public:
 	void OnPreExit();
 
 	void OnWorldTickStart(UWorld* World, ELevelTick TickType, float DeltaSeconds);
+	void OnBeginFrame();
+	void OnPostGarbageCollect();
 	void OnWorldBeginTearDown(UWorld* World);
 
 	FDelegateHandle SetOnProcessShaderCompilationQueue(FOnProcessQueue InOnProcessQueue);
@@ -358,5 +358,7 @@ private:
 #if WITH_NIAGARA_DEBUGGER
 	TPimplPtr<FNiagaraDebuggerClient> DebuggerClient;
 #endif
+
+	FDelegateHandle OnCVarUnregisteredHandle;
 };
 

@@ -36,7 +36,6 @@ public:
 
 	SLATE_BEGIN_ARGS( SMultiLineEditableTextBox )
 		: _Style(&FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"))
-		, _TextStyle(&FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
 		, _Marshaller()
 		, _Text()
 		, _HintText()
@@ -77,10 +76,10 @@ public:
 		{}
 
 		/** The styling of the textbox */
-		SLATE_STYLE_ARGUMENT( FEditableTextBoxStyle, Style )
+		SLATE_STYLE_ARGUMENT(FEditableTextBoxStyle, Style)
 
 		/** Pointer to a style of the text block, which dictates the font, color, and shadow options. */
-		SLATE_STYLE_ARGUMENT( FTextBlockStyle, TextStyle )
+		SLATE_STYLE_ARGUMENT_DEPRECATED(FTextBlockStyle, TextStyle, 5.2, "TextStyle is deprecated and will be ignored. Please use the TextStyle embedded in FEditableTextBoxStyle Style.")
 
 		/** The marshaller used to get/set the raw text to/from the text layout. */
 		SLATE_ARGUMENT(TSharedPtr< ITextLayoutMarshaller >, Marshaller)
@@ -167,6 +166,9 @@ public:
 
 		/** Called whenever the text is committed.  This happens when the user presses enter or the text box loses focus. */
 		SLATE_EVENT( FOnTextCommitted, OnTextCommitted )
+
+		/** Called whenever the text is changed programmatically or interactively by the user */
+		SLATE_EVENT( FOnVerifyTextChanged, OnVerifyTextChanged )
 
 		/** Called whenever the horizontal scrollbar is moved by the user */
 		SLATE_EVENT( FOnUserScrolled, OnHScrollBarUserScrolled )
@@ -474,6 +476,13 @@ public:
 	void ForceScroll(int32 UserIndex, float ScrollAxisMagnitude);
 
 protected:
+	/** Callback for the editable text's OnTextChanged event */
+	void OnEditableTextChanged(const FText& InText);
+
+	/** Callback when the editable text is committed. */
+	void OnEditableTextCommitted(const FText& InText, ETextCommit::Type InCommitType);
+
+protected:
 
 	/** Editable text widget */
 	TSharedPtr< SMultiLineEditableText > EditableText;
@@ -511,7 +520,6 @@ protected:
 	/** Allows for inserting additional widgets that extend the functionality of the text box */
 	TSharedPtr<SHorizontalBox> Box;
 
-
 	/** Whether we have an externally supplied horizontal scrollbar or one created internally */
 	bool bHasExternalHScrollBar;
 
@@ -533,16 +541,24 @@ protected:
 	/** SomeWidget reporting */
 	TSharedPtr<class IErrorReportingWidget> ErrorReporting;
 
+	/** Called when the text is changed interactively */
+	FOnTextChanged OnTextChanged;
+
+	/** Called when the user commits their change to the editable text control */
+	FOnTextCommitted OnTextCommitted;
+
+	/** Callback to verify text when changed. Will return an error message to denote problems. */
+	FOnVerifyTextChanged OnVerifyTextChanged;
+
 	const FEditableTextBoxStyle* Style;
 
 private:
 
-	FMargin FORCEINLINE DeterminePadding() const { check(Style);  return PaddingOverride.IsSet() ? PaddingOverride.Get() : Style->Padding; }
-	FMargin FORCEINLINE DetermineHScrollBarPadding() const { check(Style);  return HScrollBarPaddingOverride.IsSet() ? HScrollBarPaddingOverride.Get() : Style->HScrollBarPadding; }
-	FMargin FORCEINLINE DetermineVScrollBarPadding() const { check(Style);  return VScrollBarPaddingOverride.IsSet() ? VScrollBarPaddingOverride.Get() : Style->VScrollBarPadding; }
-	FSlateFontInfo FORCEINLINE DetermineFont() const { check(Style);  return FontOverride.IsSet() ? FontOverride.Get() : Style->Font; }
-	FSlateColor FORCEINLINE DetermineBackgroundColor() const { check(Style);  return BackgroundColorOverride.IsSet() ? BackgroundColorOverride.Get() : Style->BackgroundColor; }
-
+	FMargin DeterminePadding() const;
+	FMargin DetermineHScrollBarPadding() const;
+	FMargin DetermineVScrollBarPadding() const;
+	FSlateFontInfo DetermineFont() const;
+	FSlateColor DetermineBackgroundColor() const;
 	FSlateColor DetermineForegroundColor() const;
 
 	/** Styling: border image to draw when not hovered or focused */

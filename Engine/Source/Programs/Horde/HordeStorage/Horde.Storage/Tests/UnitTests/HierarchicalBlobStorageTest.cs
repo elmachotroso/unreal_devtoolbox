@@ -4,15 +4,25 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
-using Dasync.Collections;
+using EpicGames.Horde.Storage;
 using Horde.Storage.Implementation;
+using Horde.Storage.Implementation.Blob;
+using Jupiter;
+using Jupiter.Common;
 using Jupiter.Implementation;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Moq;
 
 namespace Horde.Storage.UnitTests
 {
+    using BlobNotFoundException = Horde.Storage.Implementation.BlobNotFoundException;
+    using IBlobStore = Implementation.IBlobStore;
+
     [TestClass]
     public class HierarchicalBlobStorageTest
     {
@@ -20,10 +30,10 @@ namespace Horde.Storage.UnitTests
         private readonly NamespaceId NsnonExistingNs = new NamespaceId("non-existing-ns");
         private readonly NamespaceId NsOnlyFirst = new NamespaceId("ns-only-in-first");
         private readonly NamespaceId NsOnlySecond = new NamespaceId("ns-only-in-second");
-        private readonly MemoryBlobStore _first = new MemoryBlobStore(throwOnOverwrite: true);
-        private readonly MemoryBlobStore _second = new MemoryBlobStore(throwOnOverwrite: true);
-        private readonly MemoryBlobStore _third = new MemoryBlobStore(throwOnOverwrite: true);
-        private readonly IBlobStore _chained;
+        private readonly MemoryBlobStore _first = new MemoryBlobStore(throwOnOverwrite: false);
+        private readonly MemoryBlobStore _second = new MemoryBlobStore(throwOnOverwrite: false);
+        private readonly MemoryBlobStore _third = new MemoryBlobStore(throwOnOverwrite: false);
+        private BlobService _chained = null!;
         
         private readonly BlobIdentifier _onlyFirstId = new BlobIdentifier(new string('1', 40));
         private readonly BlobIdentifier _onlySecondId = new BlobIdentifier(new string('2', 40));
@@ -35,12 +45,22 @@ namespace Horde.Storage.UnitTests
 
         public HierarchicalBlobStorageTest()
         {
-            _chained = new HierarchicalBlobStore(new []{_first, _second, _third});
+
         }
 
         [TestInitialize]
         public async Task Setup()
         {
+            Mock<IServiceProvider> serviceProviderMock = new Mock<IServiceProvider>();
+            using MemoryCacheBlobStore blobStore =  new MemoryCacheBlobStore(Mock.Of<IOptionsMonitor<MemoryCacheBlobSettings>>(_ => _.CurrentValue == new MemoryCacheBlobSettings()));
+            serviceProviderMock.Setup(x => x.GetService(typeof(MemoryCacheBlobStore))).Returns(blobStore);
+            IOptionsMonitor<HordeStorageSettings> settingsMonitor = Mock.Of<IOptionsMonitor<HordeStorageSettings>>(_ => _.CurrentValue == new HordeStorageSettings());
+            Mock<INamespacePolicyResolver> mockPolicyResolver = new Mock<INamespacePolicyResolver>();
+            mockPolicyResolver.Setup(x => x.GetPoliciesForNs(It.IsAny<NamespaceId>())).Returns(new NamespacePolicy());
+
+            _chained = new BlobService(serviceProviderMock.Object, settingsMonitor, Mock.Of<IBlobIndex>(), Mock.Of<IPeerStatusService>(), Mock.Of<IHttpClientFactory>(), Mock.Of<IServiceCredentials>(), mockPolicyResolver.Object, Mock.Of<IHttpContextAccessor>());
+            _chained.BlobStore = new List<IBlobStore> { _first, _second, _third };
+
             await _first.PutObject(Ns, Encoding.ASCII.GetBytes("onlyFirstContent"), _onlyFirstId);
             await _second.PutObject(Ns, Encoding.ASCII.GetBytes("onlySecondContent"), _onlySecondId);
             await _third.PutObject(Ns, Encoding.ASCII.GetBytes("onlyThirdContent"), _onlyThirdId);
@@ -48,14 +68,14 @@ namespace Horde.Storage.UnitTests
             await _first.PutObject(Ns, Encoding.ASCII.GetBytes("allContent"), _allId);
             await _second.PutObject(Ns, Encoding.ASCII.GetBytes("allContent"), _allId);
             await _third.PutObject(Ns, Encoding.ASCII.GetBytes("allContent"), _allId);
-            await _second.PutObject(NsOnlyFirst, Encoding.ASCII.GetBytes("onlyFirstUniqueNs"), _onlyFirstUniqueNsId);
+            await _first.PutObject(NsOnlyFirst, Encoding.ASCII.GetBytes("onlyFirstUniqueNs"), _onlyFirstUniqueNsId);
             await _second.PutObject(NsOnlySecond, Encoding.ASCII.GetBytes("onlySecondUniqueNs"), _onlySecondUniqueNsId);
         }
         
         [TestMethod]
         public async Task PutObject()
         {
-            BlobIdentifier new1 = new BlobIdentifier("1000000000000000000000000000000000000000");
+            BlobIdentifier new1 = new BlobIdentifier("A418A2821A76B110092C9745151E112253F7999B");
             Assert.IsFalse(await _chained.Exists(Ns, new1));
             await _chained.PutObject(Ns, Encoding.ASCII.GetBytes("new1"), new1);
             Assert.IsTrue(await _chained.Exists(Ns, new1));
@@ -137,29 +157,8 @@ namespace Horde.Storage.UnitTests
             await Assert.ThrowsExceptionAsync<NamespaceNotFoundException>(() => _first.DeleteNamespace(Ns));
             await Assert.ThrowsExceptionAsync<NamespaceNotFoundException>(() => _second.DeleteNamespace(Ns));
         }
-        
-        [TestMethod]
-        public async Task ListOldObjects()
-        {
-            List<BlobIdentifier> blobIds = await _chained.ListOldObjects(Ns, DateTime.Now.AddYears(10)).GetAsyncEnumerator().ToListAsync();
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_onlyFirstId)));
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_onlySecondId)));
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_onlyThirdId)));
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_allId)));
-            Assert.AreEqual(4, blobIds.Count);
-            
-            blobIds = await _chained.ListOldObjects(NsOnlyFirst, DateTime.Now.AddYears(10)).GetAsyncEnumerator().ToListAsync();
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_onlyFirstUniqueNsId)));
-            Assert.AreEqual(1, blobIds.Count);
-            
-            blobIds = await _chained.ListOldObjects(NsOnlySecond, DateTime.Now.AddYears(10)).GetAsyncEnumerator().ToListAsync();
-            Assert.IsTrue(blobIds.Exists(x => x.Equals(_onlySecondUniqueNsId)));
-            Assert.AreEqual(1, blobIds.Count);
-            
-            await Assert.ThrowsExceptionAsync<NamespaceNotFoundException>(() => _chained.ListOldObjects(NsnonExistingNs, DateTime.Now.AddYears(10)).GetAsyncEnumerator().ToListAsync());
-        }
 
-        private string BlobToString(BlobContents contents)
+        private static string BlobToString(BlobContents contents)
         {
             using StreamReader reader = new StreamReader(contents.Stream);
             return reader.ReadToEnd();

@@ -2,8 +2,19 @@
 
 
 #include "SGraphNodeResizable.h"
-#include "ScopedTransaction.h"
+
+#include "EdGraph/EdGraphNode.h"
 #include "Framework/Application/SlateApplication.h"
+#include "GenericPlatform/ICursor.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Geometry.h"
+#include "Math/UnrealMathUtility.h"
+#include "Misc/Attribute.h"
+#include "SNodePanel.h"
+#include "ScopedTransaction.h"
+#include "Widgets/SWindow.h"
 
 namespace GraphNodeResizableDefs
 {
@@ -157,7 +168,7 @@ FReply SGraphNodeResizable::OnMouseMove(const FGeometry& MyGeometry, const FPoin
 		DragSize.X += DeltaNodeSize.X;
 		DragSize.Y += DeltaNodeSize.Y;
 		// apply snap
-		const float SnapSize = SNodePanel::GetSnapGridSize();
+		const uint32 SnapSize = SNodePanel::GetSnapGridSize();
 		FVector2D SnappedSize;
 		SnappedSize.X = SnapSize * FMath::RoundToFloat( DragSize.X/SnapSize );
 		SnappedSize.Y = SnapSize * FMath::RoundToFloat( DragSize.Y/SnapSize );

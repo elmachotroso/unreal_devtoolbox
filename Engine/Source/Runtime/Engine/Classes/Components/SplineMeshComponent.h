@@ -156,6 +156,7 @@ class ENGINE_API USplineMeshComponent : public UStaticMeshComponent, public IInt
 	//Begin UObject Interface
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
+	virtual bool IsEditorOnly() const override;
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
@@ -197,6 +198,7 @@ public:
 	virtual bool ContainsPhysicsTriMeshData(bool InUseAllTriData) const override;
 	virtual bool WantsNegXTriMesh() override { return false; }
 	virtual void GetMeshId(FString& OutMeshId) override;
+	virtual bool GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const override;
 	//~ End Interface_CollisionDataProvider Interface
 
 	/** Determines the mesh proxy values for SplineMeshScaleZ and SplineMeshMinZ*/
@@ -354,6 +356,8 @@ public:
 	inline static FVector GetAxisMask(ESplineMeshAxis::Type InAxis);
 
 	virtual float GetTextureStreamingTransformScale() const override;
+
+	virtual void PrecachePSOs() override;
 
 private:
 	void UpdateRenderStateAndCollision_Internal(bool bConcurrent);

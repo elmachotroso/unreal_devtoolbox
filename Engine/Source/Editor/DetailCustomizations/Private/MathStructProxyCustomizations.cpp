@@ -1,16 +1,41 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "MathStructProxyCustomizations.h"
-#include "Framework/Commands/UIAction.h"
-#include "UObject/UnrealType.h"
-#include "Editor.h"
-#include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
+#include "Customizations/MathStructProxyCustomizations.h"
+
+#include "Containers/ArrayView.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
 #include "DetailLayoutBuilder.h"
-#include "IPropertyUtilities.h"
-#include "ScopedTransaction.h"
-#include "Widgets/Input/SNumericEntryBox.h"
+#include "DetailWidgetRow.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Framework/Commands/UIAction.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "IPropertyTypeCustomization.h"
+#include "IPropertyUtilities.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Math/Matrix.h"
+#include "Math/Quat.h"
+#include "Math/ScaleRotationTranslationMatrix.h"
+#include "Math/TransformVectorized.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/VectorRegister.h"
+#include "Misc/AssertionMacros.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "MatrixStructCustomization"
 void FMathStructProxyCustomization::CustomizeChildren( TSharedRef<class IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils )
@@ -368,16 +393,34 @@ bool FMatrixStructCustomization<T>::CacheValues( TWeakPtr<IPropertyHandle> Prope
 	TArray<void*> RawData;
 	PropertyHandle->AccessRawData(RawData);
 
-	if (RawData.Num() == 1)
+	const UE::Math::TMatrix<T>* FirstMatrixValue = nullptr;
+	for(void* RawDataPtr : RawData)
 	{
-		UE::Math::TMatrix<T>* MatrixValue = reinterpret_cast<UE::Math::TMatrix<T>*>(RawData[0]);
-		if (MatrixValue != NULL)
+		UE::Math::TMatrix<T>* MatrixValue = reinterpret_cast<UE::Math::TMatrix<T>*>(RawDataPtr);
+		if (MatrixValue == nullptr)
 		{
-			CachedTranslation->Set(MatrixValue->GetOrigin());
-			CachedRotation->Set(MatrixValue->Rotator());
-			CachedScale->Set(MatrixValue->GetScaleVector());
-			return true;
+			return false;
 		}
+
+		if(FirstMatrixValue)
+		{
+			if(!FirstMatrixValue->Equals(*MatrixValue, 0.0001f))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			FirstMatrixValue = MatrixValue;
+		}
+	}
+
+	if(FirstMatrixValue)
+	{
+		CachedTranslation->Set(FirstMatrixValue->GetOrigin());
+		CachedRotation->Set(FirstMatrixValue->Rotator());
+		CachedScale->Set(FirstMatrixValue->GetScaleVector());
+		return true;
 	}
 
 	return false;
@@ -507,16 +550,34 @@ bool FTransformStructCustomization<T>::CacheValues( TWeakPtr<IPropertyHandle> Pr
 	TArray<void*> RawData;
 	PropertyHandle->AccessRawData(RawData);
 
-	if (RawData.Num() == 1)
+	const UE::Math::TTransform<T>* FirstTransformValue = nullptr;
+	for(void* RawDataPtr : RawData)
 	{
-		UE::Math::TTransform<T>* TransformValue = reinterpret_cast<UE::Math::TTransform<T>*>(RawData[0]);
-		if (TransformValue != NULL)
+		UE::Math::TTransform<T>* TransformValue = reinterpret_cast<UE::Math::TTransform<T>*>(RawDataPtr);
+		if (TransformValue == nullptr)
 		{
-			this->CachedTranslation->Set(TransformValue->GetTranslation());
-			this->CachedRotation->Set(TransformValue->GetRotation().Rotator());
-			this->CachedScale->Set(TransformValue->GetScale3D());
-			return true;
+			return false;
 		}
+
+		if(FirstTransformValue)
+		{
+			if(!FirstTransformValue->Equals(*TransformValue, 0.0001f))
+			{
+				return false;
+			}
+		}
+		else
+		{
+			FirstTransformValue = TransformValue;
+		}
+	}
+
+	if(FirstTransformValue)
+	{
+		this->CachedTranslation->Set(FirstTransformValue->GetTranslation());
+		this->CachedRotation->Set(FirstTransformValue->GetRotation().Rotator());
+		this->CachedScale->Set(FirstTransformValue->GetScale3D());
+		return true;
 	}
 
 	return false;

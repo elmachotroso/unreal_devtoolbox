@@ -5,6 +5,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Materials/Material.h"
 #include "Misc/ConfigCacheIni.h"
+#include "SceneManagement.h"
 
 #define LOCTEXT_NAMESPACE "FVirtualShadowMapVisualizationData"
 
@@ -49,6 +50,34 @@ void FVirtualShadowMapVisualizationData::Initialize()
 			LOCTEXT("SMRTRayCountDesc", "Rays evaluated per pixel: red is more, green is fewer. Penumbra regions require more rays and are more expensive."),
 			FModeType::Advanced,
 			VIRTUAL_SHADOW_MAP_VISUALIZE_SMRT_RAY_COUNT);
+
+		AddVisualizationMode(
+			TEXT("dirty"),
+			LOCTEXT("DirtyPage", "Dirty Page"),
+			LOCTEXT("DirtyPageDebugDesc", "Show the pages marked as dirty."),
+			FModeType::Advanced,
+			VIRTUAL_SHADOW_MAP_VISUALIZE_DIRTY_PAGE);
+
+		AddVisualizationMode(
+			TEXT("invalid"),
+			LOCTEXT("InvalidPage", "GPU Invalidated Page"),
+			LOCTEXT("InvalidPageDebugDesc", "Show the pages marked for GPU-driven invalidaiton (World Position Offset)."),
+			FModeType::Advanced,
+			VIRTUAL_SHADOW_MAP_VISUALIZE_GPU_INVALIDATED_PAGE);
+
+		AddVisualizationMode(
+			TEXT("merged"),
+			LOCTEXT("MergedPage", "Merged Page"),
+			LOCTEXT("MergedPageDebugDesc", "Show the pages that were merged."),
+			FModeType::Advanced,
+			VIRTUAL_SHADOW_MAP_VISUALIZE_MERGED_PAGE);
+
+		AddVisualizationMode(
+			TEXT("debug"),
+			LOCTEXT("GeneralDebug", "General Debug"),
+			LOCTEXT("GeneralDebugDesc", "General-purpose debug for use during shader development"),
+			FModeType::Advanced,
+			VIRTUAL_SHADOW_MAP_VISUALIZE_GENERAL_DEBUG);
 
 		AddVisualizationMode(
 			TEXT("clipmapvirtual"),

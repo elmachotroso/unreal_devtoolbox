@@ -2,51 +2,56 @@
 
 #pragma once
 
+#include "EditorUndoClient.h"
 #include "IMovieScenePlayer.h"
-
+#include "ISequencer.h"
+#include "ISequencerModule.h"
 #include "NiagaraCommon.h"
 #include "NiagaraEditorCommon.h"
-#include "EditorUndoClient.h"
+#include "NiagaraOverviewNode.h"
+#include "NiagaraSystemScalabilityViewModel.h"
+#include "NiagaraUserParameterPanelViewModel.h"
+#include "TickableEditorObject.h"
 #include "UObject/GCObject.h"
+#include "UObject/ObjectKey.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
-#include "NiagaraOverviewNode.h"
-#include "ISequencer.h"
 
-#include "TickableEditorObject.h"
-#include "ISequencerModule.h"
-#include "UObject/ObjectKey.h"
-
-class UNiagaraSystem;
-class UNiagaraComponent;
-class UNiagaraSequence;
-class UMovieSceneNiagaraEmitterTrack;
-struct FNiagaraVariable;
-struct FNiagaraEmitterHandle;
-class UNiagaraOverviewNode;
-class FNiagaraEmitterHandleViewModel;
-class FNiagaraSystemScriptViewModel;
-class UNiagaraStackViewModel;
-class UNiagaraStackEntry;
-class UNiagaraSystemSelectionViewModel;
-class FNiagaraSystemInstance;
-class ISequencer;
 struct FAssetData;
-class UNiagaraSystemEditorData;
-class UNiagaraEditorSettings;
-struct FNiagaraParameterStore;
 struct FEdGraphEditAction;
-class UNiagaraNodeFunctionCall;
+struct FNiagaraEmitterHandle;
+class FNiagaraEmitterHandleViewModel;
 class FNiagaraEmitterViewModel;
+struct FNiagaraGraphParameterReference;
 class FNiagaraOverviewGraphViewModel;
-class UNiagaraScratchPadViewModel;
-class UNiagaraCurveSelectionViewModel;
-class UNiagaraMessageData;
-class UNiagaraEditorParametersAdapter;
-
-class INiagaraParameterDefinitionsSubscriber;
-
+struct FNiagaraParameterStore;
 class FNiagaraPlaceholderDataInterfaceManager;
+class FNiagaraSystemGraphSelectionViewModel;
+class FNiagaraSystemInstance;
+class FNiagaraSystemScriptViewModel;
+struct FNiagaraVariable;
+class INiagaraParameterDefinitionsSubscriber;
+class INiagaraParameterPanelViewModel;
+class ISequencer;
+class UMovieSceneNiagaraEmitterTrack;
+class UNiagaraComponent;
+class UNiagaraCurveSelectionViewModel;
+class UNiagaraEditorParametersAdapter;
+class UNiagaraEditorSettings;
+class UNiagaraGraph;
+class UNiagaraMessageData;
+class UNiagaraNodeFunctionCall;
+class UNiagaraOverviewNode;
+class UNiagaraScratchPadViewModel;
+class UNiagaraSequence;
+class UNiagaraStackEntry;
+class UNiagaraStackViewModel;
+class UNiagaraSystem;
+class UNiagaraSystemEditorData;
+class UNiagaraSystemEditorDocumentsViewModel;
+class UNiagaraSystemSelectionViewModel;
+class UNiagaraUserParametersHierarchyViewModel;
+
 
 /** Defines different editing modes for this system view model. */
 enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
@@ -59,13 +64,21 @@ enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
 	EmitterDuringMerge,
 };
 
+enum class ENiagaraGetGraphParameterReferencesMode
+{
+	AllGraphs,
+	SelectedGraphs,
+};
+
+DECLARE_DELEGATE_RetVal(FName, FOnGetWorkflowMode);
+
 /** Defines options for the niagara System view model */
 struct NIAGARAEDITOR_API FNiagaraSystemViewModelOptions
 {
 	FNiagaraSystemViewModelOptions();
 
 	/** Whether or not the user can edit emitters from the timeline. */
-	bool bCanModifyEmittersFromTimeline;
+	bool bCanModifyEmittersFromTimeline = true;
 
 	/** A delegate which is used to generate the content for the add menu in sequencer. */
 	FOnGetAddMenuContent OnGetSequencerAddMenuContent;
@@ -80,7 +93,7 @@ struct NIAGARAEDITOR_API FNiagaraSystemViewModelOptions
 	TOptional<const FGuid> MessageLogGuid;
 
 	/** Gets the current editing mode for this system. */
-	ENiagaraSystemViewModelEditMode EditMode;
+	ENiagaraSystemViewModelEditMode EditMode = ENiagaraSystemViewModelEditMode::SystemAsset;
 
 	/** Specifies that the view model is being constructed for data processing only and will not be displayed in the UI. */
 	bool bIsForDataProcessingOnly;
@@ -115,11 +128,12 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE(FOnPreClose);
 
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnRequestFocusTab, FName /* TabName */);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRequestFocusTab, FName /* TabName */, bool /* DrawAttention */);
 
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnExternalRenameParameter, const FNiagaraVariableBase&, const FNiagaraVariableBase&, UNiagaraEmitter*);
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnExternalRemoveParameter, const FNiagaraVariableBase&,  UNiagaraEmitter*);
 
+	DECLARE_DELEGATE_OneParam(FOnChangeWorkflowMode, FName /* WorkflowMode */)
 public:
 	struct FEmitterHandleToDuplicate
 	{
@@ -168,8 +182,8 @@ public:
 	/** Returns whether or not this view model is initialized and safe to use. */
 	bool IsValid() const;
 
-	NIAGARAEDITOR_API ~FNiagaraSystemViewModel();
-
+	NIAGARAEDITOR_API virtual ~FNiagaraSystemViewModel() override;
+	
 	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
 protected:
 	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override;
@@ -185,7 +199,7 @@ public:
 	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelById(FGuid InEmitterHandleId);
 
 	/** Gets an emitter handle view model for the given emitter. Returns an invalid shared ptr if it can't be found. */
-	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelForEmitter(UNiagaraEmitter* InEmitter) const;
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelForEmitter(const FVersionedNiagaraEmitter& InEmitter) const;
 
 	/** Gets the view model for the System script. */
 	TSharedPtr<FNiagaraSystemScriptViewModel> GetSystemScriptViewModel();
@@ -205,11 +219,26 @@ public:
 	/** Gets the current editing mode for this system view model. */
 	NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode GetEditMode() const;
 
+	/** Gets the current workflow mode for this system view model. */
+	NIAGARAEDITOR_API FName GetWorkflowMode() const;
+
+	/** Gets the delegate which is called any time the array of emitter handle view models changes. */
+	NIAGARAEDITOR_API FOnGetWorkflowMode& OnGetWorkflowMode();
+
+	NIAGARAEDITOR_API void SetWorkflowMode(FName WorkflowMode);
+	
+	/** Gets the delegate that is bound to the owning toolkit's SetCurrentMode function. */
+	NIAGARAEDITOR_API FOnChangeWorkflowMode& OnChangeWorkflowMode();
+	
 	/** Adds a new emitter to the System from an emitter asset data. */
 	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitterFromAssetData(const FAssetData& AssetData);
 
 	/** Adds a new emitter to the System. */
-	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitter(UNiagaraEmitter& Emitter);
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitter(UNiagaraEmitter& Emitter, FGuid EmitterVersion);
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitter(const FVersionedNiagaraEmitter& Emitter);
+
+	/** Adds an empty emitter to the system. */
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmptyEmitter();
 
 	/** Deletes the emitters with the supplied ids from the system */
 	NIAGARAEDITOR_API void DeleteEmitters(TSet<FGuid> EmitterHandleIdsToDelete);
@@ -272,6 +301,8 @@ public:
 
 	/** Reinitializes all System instances, and rebuilds emitter handle view models and tracks. */
 	NIAGARAEDITOR_API void RefreshAll();
+	
+	NIAGARAEDITOR_API void ResetStack();
 
 	/** Called to notify the system view model that one of the data objects in the system was modified. */
 	void NotifyDataObjectChanged(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
@@ -284,6 +315,9 @@ public:
 
 	/** Clear the captures stats for all the emitters in the current system. */
 	void ClearEmitterStats();
+
+	/** Changes the version of an existing emitter in the system */
+	bool ChangeEmitterVersion(const FVersionedNiagaraEmitter& Emitter, const FGuid& NewVersion);
 
 	/** Isolates the supplied emitters.  This will remove all other emitters from isolation. */
 	NIAGARAEDITOR_API void IsolateEmitters(TArray<FGuid> EmitterHandlesIdsToIsolate);
@@ -310,6 +344,7 @@ public:
 	NIAGARAEDITOR_API bool GetIsEmitterPinned(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleModel);
 
 	NIAGARAEDITOR_API void NotifyPreSave();
+	NIAGARAEDITOR_API void NotifyPostSave();
 
 	NIAGARAEDITOR_API void NotifyPreClose();
 
@@ -317,7 +352,7 @@ public:
 
 	FOnRequestFocusTab& OnRequestFocusTab();
 
-	NIAGARAEDITOR_API void FocusTab(FName TabName);
+	NIAGARAEDITOR_API void FocusTab(FName TabName, bool bDrawAttention = false);
 	
 	/** Gets the system toolkit command list. */
 	NIAGARAEDITOR_API TSharedPtr<FUICommandList> GetToolkitCommands();
@@ -335,7 +370,7 @@ public:
 	void GetOrderedScriptsForEmitterHandleId(FGuid EmitterHandleId, TArray<UNiagaraScript*>& OutScripts);
 
 	/** Gets all non-event scripts which will execute for an emitter. */
-	void GetOrderedScriptsForEmitter(UNiagaraEmitter* Emitter, TArray<UNiagaraScript*>& OutScripts);
+	void GetOrderedScriptsForEmitter(const FVersionedNiagaraEmitter& Emitter, TArray<UNiagaraScript*>& OutScripts);
 
 	/** Gets the ViewModel for the system overview graph. */
 	NIAGARAEDITOR_API TSharedPtr<FNiagaraOverviewGraphViewModel> GetOverviewGraphViewModel() const;
@@ -350,6 +385,10 @@ public:
 
 	NIAGARAEDITOR_API UNiagaraCurveSelectionViewModel* GetCurveSelectionViewModel();
 
+	NIAGARAEDITOR_API UNiagaraSystemScalabilityViewModel* GetScalabilityViewModel();
+
+	NIAGARAEDITOR_API UNiagaraUserParametersHierarchyViewModel* GetUserParametersHierarchyViewModel();
+	
 	TArray<float> OnGetPlaybackSpeeds() const;
 	
 	/** Duplicates a set of emitters and refreshes everything.*/
@@ -390,6 +429,29 @@ public:
 	/** Gets whether or not this view model is for data processing only and will not be displayed in the UI. */
 	bool GetIsForDataProcessingOnly() const;
 
+	INiagaraParameterPanelViewModel* GetParameterPanelViewModel() const {
+		return ParameterPanelViewModel.Pin().Get();
+	}
+	void SetParameterPanelViewModel(TSharedPtr<INiagaraParameterPanelViewModel> InVM);
+
+	UNiagaraSystemEditorDocumentsViewModel* GetDocumentViewModel() { return EditorDocumentsViewModel;};
+
+	/** Rename a parameter within the RenameScope and update associated tracking metadata such as Parameter Definition synchronization. */
+	bool RenameParameter(const FNiagaraVariable TargetParameter, const FName NewName, ENiagaraGetGraphParameterReferencesMode RenameScopeMode);
+
+	const TSharedPtr<FNiagaraSystemGraphSelectionViewModel>& GetSystemGraphSelectionViewModel() const { return SystemGraphSelectionViewModel; };
+
+	TSharedPtr<FNiagaraUserParameterPanelViewModel> GetUserParameterPanelViewModel() const { return UserParameterPanelViewModel; }
+	
+	/** Utility method to gather all graphs. */
+	TArray<UNiagaraGraph*> GetAllGraphs();
+
+	/** Utility method to gather all graphs marked as selected via the system selection viewmodel. */
+	TArray<UNiagaraGraph*> GetSelectedGraphs();
+
+	/** Utility method to gather graph parameter references */
+	TArray<FNiagaraGraphParameterReference> GetGraphParameterReferences(const FNiagaraVariable& Parameter, ENiagaraGetGraphParameterReferencesMode Mode);
+
 private:
 	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
 	void SendLastCompileMessageJobs() const;
@@ -422,9 +484,6 @@ private:
 	/** Callback function for when editor settings change. Used to snap to the closest available speed. */
 	void SnapToNextSpeed(const FString& PropertyName, const UNiagaraEditorSettings* Settings);
 
-	/** Gets the content for the add menu in sequencer. */
-	void GetSequencerAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
-
 	/** Updates the compiled versions of data interfaces when their sources change. */
 	void UpdateCompiledDataInterfaces(UNiagaraDataInterface* ChangedDataInterface);
 
@@ -436,6 +495,9 @@ private:
 
 	/** Called whenever a property on the emitter changes. */
 	void EmitterPropertyChanged();
+
+	/** Called whenever we need to invalidate the parameter cache from the parameter panel updates*/
+	void InvalidateCachedParams();
 
 	/** 
 	 * Called whenever a parameter store owned by the system changes.
@@ -514,10 +576,16 @@ private:
 	/** Called whenever one of the scripts in the scratch pad changes. */
 	void ScratchPadScriptsChanged();
 
+	/** Deferred refreshes the system and emitter view models the next time they are ticked. */
+	void RefreshStackViewModels();
+
 	/** Called whenever the map of messages associated with the managed Emitter/System changes. */
 	void RefreshAssetMessages();
 
-	const TArray<FNiagaraStackModuleData>& BuildAndCacheStackModuleData(FGuid EmitterHandleId, UNiagaraEmitter* Emitter);
+	const TArray<FNiagaraStackModuleData>& BuildAndCacheStackModuleData(FGuid EmitterHandleId, const FVersionedNiagaraEmitter& Emitter);
+
+	/** Utility method to gather all emitter handle viewmodels marked as selected via the system selection viewmodel. */
+	TArray<TSharedRef<FNiagaraEmitterHandleViewModel>> GetSelectedEmitterHandleViewModels();
 
 private:
 	/** The System being viewed and edited by this view model. */
@@ -562,9 +630,18 @@ private:
 	/** Whether or not the system represented by this view model can be simulated. */
 	bool bCanSimulate;
 
+	/** Whether we should use the CompileForEdit mode for the assigned system. */
+	bool bSupportCompileForEdit;
+
 	/** The current editing mode for this view model. */
 	ENiagaraSystemViewModelEditMode EditMode;
 
+	/** A delegate to retrieve the current workflow mode from the toolkit. */
+	FOnGetWorkflowMode OnGetWorkflowModeDelegate;
+
+	/** A delegate that calls the toolkit's set current mode function */
+	FOnChangeWorkflowMode OnChangeWorkflowModeDelegate;
+	
 	/** A delegate which is used to generate the content for the add menu in sequencer. */
 	FOnGetAddMenuContent OnGetSequencerAddMenuContent;
 
@@ -596,6 +673,9 @@ private:
 
 	/** A flag for preventing reentrancy when synchronizing sequencer selection with system selection */
 	bool bUpdatingSequencerSelectionFromSystem;
+
+	/** A flag for preventing selection changes when resetting the sequencer tracks due to the emitter handles array changing. */
+	bool bResetingSequencerTracks;
 
 	TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>::Handle RegisteredHandle;
 
@@ -642,12 +722,20 @@ private:
 	TSharedPtr<FNiagaraOverviewGraphViewModel> OverviewGraphViewModel;
 
 	UNiagaraStackViewModel* SystemStackViewModel;
+	
+	UNiagaraSystemEditorDocumentsViewModel* EditorDocumentsViewModel;
 
 	UNiagaraSystemSelectionViewModel* SelectionViewModel;
 
 	UNiagaraScratchPadViewModel* ScriptScratchPadViewModel;
 
 	UNiagaraCurveSelectionViewModel* CurveSelectionViewModel;
+
+	UNiagaraSystemScalabilityViewModel* ScalabilityViewModel;
+
+	UNiagaraUserParametersHierarchyViewModel* UserParametersHierarchyViewModel;
+	
+	TWeakPtr<INiagaraParameterPanelViewModel> ParameterPanelViewModel;
 
 	TSharedPtr<FNiagaraPlaceholderDataInterfaceManager> PlaceholderDataInterfaceManager;
 
@@ -666,4 +754,9 @@ private:
 
 	/** Specifies that this view model is for data processing only and will not be displayed in the UI. */
 	bool bIsForDataProcessingOnly;
+
+	/** ViewModel for caching the selected graph state and notifying when it changes. */
+	TSharedPtr<FNiagaraSystemGraphSelectionViewModel> SystemGraphSelectionViewModel;
+
+	TSharedPtr<FNiagaraUserParameterPanelViewModel> UserParameterPanelViewModel;
 };

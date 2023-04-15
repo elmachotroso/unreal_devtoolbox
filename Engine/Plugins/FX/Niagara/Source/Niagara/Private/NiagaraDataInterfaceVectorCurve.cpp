@@ -6,6 +6,8 @@
 #include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceVectorCurve)
+
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/ITargetPlatform.h"
 #endif
@@ -46,18 +48,23 @@ void UNiagaraDataInterfaceVectorCurve::Serialize(FArchive& Ar)
 	{
 		UpdateLUT(true);
 
-		FRichCurve TempXCurve;
-		FRichCurve TempYCurve;
-		FRichCurve TempZCurve;
-		Exchange(XCurve, TempXCurve);
-		Exchange(YCurve, TempYCurve);
-		Exchange(ZCurve, TempZCurve);
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
 
 		Super::Serialize(Ar);
 
-		Exchange(XCurve, TempXCurve);
-		Exchange(YCurve, TempYCurve);
-		Exchange(ZCurve, TempZCurve);
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
+	}
+	else if (bUseLUT && Ar.IsLoading() && GetOutermost()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		Super::Serialize(Ar);
+
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
 	}
 	else
 #endif
@@ -167,26 +174,11 @@ void UNiagaraDataInterfaceVectorCurve::GetFunctions(TArray<FNiagaraFunctionSigna
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceVectorCurve::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
-	FString TimeToLUTFrac = TEXT("TimeToLUTFraction_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString Sample = TEXT("SampleCurve_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString NumSamples = TEXT("CurveLUTNumMinusOne_") + ParamInfo.DataInterfaceHLSLSymbol;
-	OutHLSL += FString::Printf(TEXT("\
-void %s(in float In_X, out float3 Out_Value) \n\
-{ \n\
-	float RemappedX = %s(In_X) * %s; \n\
-	float Prev = floor(RemappedX); \n\
-	float Next = Prev < %s ? Prev + 1.0 : Prev; \n\
-	float Interp = RemappedX - Prev; \n\
-	Prev *= %u; \n\
-	Next *= %u; \n\
-	float3 A = float3(%s(Prev), %s(Prev + 1), %s(Prev + 2)); \n\
-	float3 B = float3(%s(Next), %s(Next + 1), %s(Next + 2)); \n\
-	Out_Value = lerp(A, B, Interp); \n\
-}\n") 
-, *FunctionInfo.InstanceName, *TimeToLUTFrac, *NumSamples, *NumSamples, CurveLUTNumElems, CurveLUTNumElems
-, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample);
-
-	return true;
+	if (FunctionInfo.DefinitionName == SampleCurveName)
+	{
+		return true;
+	}
+	return false;
 }
 #endif
 
@@ -212,8 +204,8 @@ FORCEINLINE_DEBUGGABLE FVector UNiagaraDataInterfaceVectorCurve::SampleCurveInte
 	float NextEntry = PrevEntry < LUTNumSamplesMinusOne ? PrevEntry + 1.0f : PrevEntry;
 	float Interp = RemappedX - PrevEntry;
 
-	int32 AIndex = PrevEntry * CurveLUTNumElems;
-	int32 BIndex = NextEntry * CurveLUTNumElems;
+	int32 AIndex = (int32)(PrevEntry * (float)CurveLUTNumElems);
+	int32 BIndex = (int32)(NextEntry * (float)CurveLUTNumElems);
 	FVector A = FVector(ShaderLUT[AIndex], ShaderLUT[AIndex + 1], ShaderLUT[AIndex + 2]);
 	FVector B = FVector(ShaderLUT[BIndex], ShaderLUT[BIndex + 1], ShaderLUT[BIndex + 2]);
 	return FMath::Lerp(A, B, Interp);
@@ -243,3 +235,4 @@ void UNiagaraDataInterfaceVectorCurve::SampleCurve(FVectorVMExternalFunctionCont
 		*OutSampleZ.GetDestAndAdvance() = V.Z;
 	}
 }
+

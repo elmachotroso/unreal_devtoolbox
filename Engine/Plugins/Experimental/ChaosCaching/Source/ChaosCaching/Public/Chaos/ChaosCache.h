@@ -26,11 +26,11 @@ struct FParticleTransformTrack
 
 	/** The offset from the beginning of the cache that holds this track that the track starts */
 	UPROPERTY()
-	float BeginOffset;
+	float BeginOffset = 0.f;
 
 	/** If this flag is set true, the particle represented by this track deactives on the final keyframe. */
 	UPROPERTY()
-	bool bDeactivateOnEnd;
+	bool bDeactivateOnEnd = false;
 
 	/**
 	 * The above raw track is just the key data and doesn't know at which time those keys are placed, this is
@@ -43,8 +43,25 @@ struct FParticleTransformTrack
 	 * Evaluates the transform track at the specified time, returning the evaluated transform. When in between
 	 * keys translations will be linearly interpolated and rotations spherically interpolated
 	 * @param InCacheTime Absolute time from the beginning of the entire owning cache to evaluate.
+	 * @param MassToLocal if not null, the will be premultiplied to transform before interpolation
 	 */
-	FTransform Evaluate(float InCacheTime) const;
+	FTransform Evaluate(float InCacheTime, const FTransform* MassToLocal) const;
+
+	/**
+	 * Find the index the key where timestamp is directly above InCacheTime
+	 * returned value is garanteed to be within the range of keys if there's any
+	 * in the case there's no key in the track, 0 is returned
+	 * @param InCacheTime Absolute time from the beginning of the entire owning cache to evaluate.
+	 * @return Valid key index
+	 */
+	int32 GetUpperBoundEvaluationIndex(float InCacheTime) const;
+
+	/**
+	 * Evaluate the acche at a sepcific index
+	 * this assumes that index is within the range of valid keys
+	 * * if the track is empty identity transform is returned
+	 */
+	FTransform EvaluateAt(int32 Index) const;
 
 	const int32 GetNumKeys() const;
 	const float GetDuration() const;
@@ -81,7 +98,7 @@ struct FCacheSpawnableTemplate
 	{}
 
 	UPROPERTY(VisibleAnywhere, Category = "Caching")
-	UObject* DuplicatedTemplate;
+	TObjectPtr<UObject> DuplicatedTemplate;
 
 	UPROPERTY(VisibleAnywhere, Category = "Caching")
 	FTransform InitialTransform;
@@ -154,6 +171,7 @@ struct FCacheEvaluationContext
 	bool                 bEvaluateCurves;
 	bool                 bEvaluateEvents;
 	TArray<int32>        EvaluationIndices;
+	bool                 bEvaluateChannels;
 };
 
 struct FCacheEvaluationResult
@@ -164,6 +182,7 @@ public:
 	TArray<FTransform>                     Transform;
 	TArray<TMap<FName, float>>             Curves;
 	TMap<FName, TArray<FCacheEventHandle>> Events;
+	TMap<FName, TArray<float>>             Channels;
 };
 
 struct FPendingParticleWrite
@@ -174,12 +193,24 @@ struct FPendingParticleWrite
 	TArray<TPair<FName, float>> PendingCurveData;
 };
 
+USTRUCT()
+struct FRichCurves
+{
+	GENERATED_BODY()
+	
+	UPROPERTY()
+	TArray<FRichCurve> RichCurves;
+};
+
 struct FPendingFrameWrite
 {
 	float                         Time;
 	TArray<FPendingParticleWrite> PendingParticleData;
 	TArray<TPair<FName, float>>   PendingCurveData;
 	TMap<FName, FCacheEventTrack> PendingEvents;
+
+	TArray<int32>				  PendingChannelsIndices;
+	TMap<FName, TArray<float>>	  PendingChannelsData;
 
 	template<typename T>
 	FCacheEventTrack& FindOrAddEventTrack(FName InName)
@@ -306,9 +337,10 @@ public:
 	/**
 	 * Evaluate the cache with the specified parameters, returning the evaluated results
 	 * @param InContext evaluation context
+	 * @param MassToLocalTransforms MassToLocal trasnform if available ( geometry collection are using them )
 	 * @see FCacheEvaluationContext
 	 */
-	FCacheEvaluationResult Evaluate(const FCacheEvaluationContext& InContext);
+	FCacheEvaluationResult Evaluate(const FCacheEvaluationContext& InContext, const TArray<FTransform>* MassToLocalTransforms);
 
 	/**
 	 * Initializes the spawnable template from a currently existing component so it can be spawned by the editor
@@ -326,12 +358,13 @@ public:
 	 * Evaluates a single particle from the tracks array
 	 * @param InIndex Particle track index (unchecked, ensure valid before call)
 	 * @param InTickRecord Tick record for this evaluation
+	 * @param MassToLocal MassToLocal transform, necessary for proper interpolation, if not available, nullptr shoudl used instead
 	 * @param OutOptTransform Transform to fill, skipped if null
 	 * @param OutOptCurves Curves to fill, skipped if null
 	 */
-	void EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves);
+	void EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecord, const FTransform* MassToLocal, FTransform* OutOptTransform, TMap<FName, float>* OutOptCurves);
 
-	void EvaluateTransform(const FPerParticleCacheData& InData, float InTime, FTransform& OutTransform);
+	void EvaluateTransform(const FPerParticleCacheData& InData, float InTime, const FTransform* MassToLocal, FTransform& OutTransform);
 	void EvaluateCurves(const FPerParticleCacheData& InData, float InTime, TMap<FName, float>& OutCurves);
 	void EvaluateEvents(FPlaybackTickRecord& InTickRecord, TMap<FName, TArray<FCacheEventHandle>>& OutEvents);
 
@@ -348,6 +381,10 @@ public:
 	/** Per-particle data, includes transforms, velocities and other per-particle, per-frame data */
 	UPROPERTY()
 	TArray<FPerParticleCacheData> ParticleTracks;
+
+	/** Per-particle data, includes transforms, velocities and other per-particle, per-frame data */
+	UPROPERTY()
+	TMap<FName,FRichCurves> ChannelsTracks;
 
 	/** Per component/cache curve data, any continuous data that isn't per-particle can be stored here */
 	UPROPERTY()

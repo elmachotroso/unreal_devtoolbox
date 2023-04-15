@@ -3,31 +3,24 @@
 #include "VT/VirtualTextureFeedbackBuffer.h"
 
 #include "RenderGraphUtils.h"
+#include "SceneView.h"
 #include "VT/VirtualTextureFeedback.h"
 
-int32 GVirtualTextureFeedbackFactor = 16;
-static FAutoConsoleVariableRef CVarVirtualTextureFeedbackFactor(
-	TEXT("r.vt.FeedbackFactor"),
-	GVirtualTextureFeedbackFactor,
-	TEXT("The size of the VT feedback buffer is calculated by dividing the render resolution by this factor.")
-	TEXT("The value set here is rounded up to the nearest power of two before use."),
-	ECVF_RenderThreadSafe
-);
-
-int32 GetVirtualTextureFeedbackScale()
+int32 GetVirtualTextureFeedbackScale(FSceneViewFamily const* InViewFamily)
 {
 	// Round to nearest power of two to ensure that shader maths is efficient and sampling sequence logic is simple.
-	return FMath::RoundUpToPowerOfTwo(FMath::Max(GVirtualTextureFeedbackFactor, 1));
+	const int32 VirtualTextureFeedbackFactor = InViewFamily ? InViewFamily->VirtualTextureFeedbackFactor : 0;
+	return FMath::RoundUpToPowerOfTwo(FMath::Max(VirtualTextureFeedbackFactor, 1));
 }
 
-FIntPoint GetVirtualTextureFeedbackBufferSize(FIntPoint InSceneTextureExtent)
+FIntPoint GetVirtualTextureFeedbackBufferSize(FSceneViewFamily const* InViewFamily, FIntPoint InSceneTextureExtent)
 {
-	return FIntPoint::DivideAndRoundUp(InSceneTextureExtent, GetVirtualTextureFeedbackScale());
+	return FIntPoint::DivideAndRoundUp(InSceneTextureExtent, GetVirtualTextureFeedbackScale(InViewFamily));
 }
 
-uint32 SampleVirtualTextureFeedbackSequence(uint32 InFrameIndex)
+uint32 SampleVirtualTextureFeedbackSequence(FSceneViewFamily const* InViewFamily, uint32 InFrameIndex)
 {
-	const uint32 TileSize = GetVirtualTextureFeedbackScale();
+	const uint32 TileSize = GetVirtualTextureFeedbackScale(InViewFamily);
 	const uint32 TileSizeLog2 = FMath::CeilLogTwo(TileSize);
 	const uint32 SequenceSize = FMath::Square(TileSize);
 	const uint32 PixelIndex = InFrameIndex % SequenceSize;
@@ -86,14 +79,14 @@ void FVirtualTextureFeedbackBuffer::Begin(FRDGBuilder& GraphBuilder, const FVirt
 	FRDGBufferDesc BufferDesc(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), Desc.BufferSize.X * Desc.BufferSize.Y));
 	BufferDesc.Usage |= BUF_SourceCopy;
 
-	if (GetPooledFreeBuffer(GraphBuilder.RHICmdList, BufferDesc, PooledBuffer, TEXT("VirtualTextureFeedbackGPU")))
+	if (AllocatePooledBuffer(BufferDesc, PooledBuffer, TEXT("VirtualTextureFeedbackGPU")))
 	{
 		FRDGBufferUAVDesc UAVDesc;
 		UAVDesc.Format = PF_R32_UINT;
 		UAV = PooledBuffer->GetOrCreateUAV(UAVDesc);
 	}
 
-	AddPass(GraphBuilder, RDG_EVENT_NAME("VirtualTextureFeedbackClear"), [this](FRHICommandList& RHICmdList)
+	AddPass(GraphBuilder, RDG_EVENT_NAME("VirtualTextureClear"), [this](FRHICommandListImmediate& RHICmdList)
 	{
 		// Clear virtual texture feedback to default value
 		RHICmdList.Transition(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));

@@ -14,17 +14,23 @@
 
 // SketchUp SDK.
 #include "DatasmithSketchUpSDKBegins.h"
+#include <SketchUpAPI/model/component_definition.h>
 #include "SketchUpAPI/model/drawing_element.h"
 #include "SketchUpAPI/model/edge.h"
 #include "SketchUpAPI/model/face.h"
 #include "SketchUpAPI/model/entities.h"
 #include "SketchUpAPI/model/entity.h"
+#include "SketchUpAPI/model/image.h"
 #include "SketchUpAPI/model/layer.h"
 #include "SketchUpAPI/model/mesh_helper.h"
 #include "SketchUpAPI/model/uv_helper.h"
+#include "SketchUpAPI/geometry/point3d.h"
+#include "SketchUpAPI/geometry/vector3d.h"
+#include <SketchUpAPI/geometry/transformation.h>
 #include "DatasmithSketchUpSDKCeases.h"
 
 // Datasmith SDK.
+
 #include "DatasmithMesh.h"
 #include "DatasmithMeshExporter.h"
 #include "DatasmithSceneExporter.h"
@@ -64,12 +70,10 @@ namespace DatasmithSketchUp
 	public:
 
 		// Convert the combined mesh into a Datasmith mesh.
-		void ConvertMeshToDatasmith(FDatasmithMesh& OutDMesh) const;
+		void ConvertMeshToDatasmith(FExportContext& Context, SUTransformation Transform, FDatasmithMesh& OutDMesh) const;
 
 		// Tessellate a SketchUp face into a triangle mesh merged into the combined mesh.
-		void AddFace(
-			SUFaceRef InSFaceRef // valid source SketchUp face to tessellate and combine
-		);
+		void AddFace(FExportContext& Context, SUFaceRef InSFaceRef, FLayerIDType LayerId);
 
 		int32 GetOrCreateSlotForMaterial(FMaterialIDType MaterialID)
 		{
@@ -82,6 +86,21 @@ namespace DatasmithSketchUp
 				int32 SlotId = MaterialIDForSlotId.Num();
 				MaterialIDForSlotId.Add(MaterialID);// Assign material to slot
 				SlotIdForMaterialId.Add(MaterialID, SlotId); // store back reference from material to slot
+				return SlotId;
+			}
+		}
+
+		int32 GetOrCreateSlotForLayer(FLayerIDType LayerID)
+		{
+			if (int32* SlotIdPtr = SlotIdForLayerId.Find(LayerID))
+			{
+				return *SlotIdPtr;
+			}
+			else
+			{
+				int32 SlotId = LayerIDForSlotId.Num();
+				LayerIDForSlotId.Add(LayerID);// Assign material to slot
+				SlotIdForLayerId.Add(LayerID, SlotId); // store back reference from material to slot
 				return SlotId;
 			}
 		}
@@ -106,6 +125,10 @@ namespace DatasmithSketchUp
 
 		TArray<FEntityIDType> MaterialIDForSlotId;
 		TMap<FEntityIDType, int32> SlotIdForMaterialId;
+
+		TArray<FLayerIDType> LayerIDForSlotId;
+		TMap<FLayerIDType, int32> SlotIdForLayerId;
+
 		bool bHasFacesWithDefaultMaterial = false;;
 
 	};
@@ -116,7 +139,7 @@ namespace DatasmithSketchUp
 		return (MeshVertexPoints.Num() > 0 && MeshTriangleIndices.Num() > 0);
 	}
 
-	void FDatasmithSketchUpMesh::AddFace(SUFaceRef InSFaceRef)
+	void FDatasmithSketchUpMesh::AddFace(FExportContext& Context, SUFaceRef InSFaceRef, FLayerIDType LayerId)
 	{
 		// Retrieve the SketchUp face front material.
 		SUMaterialRef FrontMaterialRef = SU_INVALID;
@@ -262,24 +285,31 @@ namespace DatasmithSketchUp
 
 		int32 SlotId = 0; // Default material slot
 
-		// Get the SketckUp material ID.
-		if (bUseFrontMaterial)
+		if (Context.bColorByLayer)
 		{
-			if (SUIsValid(FrontMaterialRef))
+			// Get the front material ID of the SketckUp front material.
+			SlotId = GetOrCreateSlotForLayer(LayerId);
+		}
+		else
+		{
+			// Get the SketckUp material ID.
+			if (bUseFrontMaterial)
 			{
-				// Get the front material ID of the SketckUp front material.
-				SlotId = GetOrCreateSlotForMaterial(DatasmithSketchUpUtils::GetMaterialID(FrontMaterialRef));
+				if (SUIsValid(FrontMaterialRef))
+				{
+					// Get the front material ID of the SketckUp front material.
+					SlotId = GetOrCreateSlotForMaterial(DatasmithSketchUpUtils::GetMaterialID(FrontMaterialRef));
+				}
+			}
+			else // bUseBackMaterial
+			{
+				if (SUIsValid(BackMaterialRef))
+				{
+					// Get the back material ID of the SketckUp back material.
+					SlotId = GetOrCreateSlotForMaterial(DatasmithSketchUpUtils::GetMaterialID(BackMaterialRef));
+				}
 			}
 		}
-		else // bUseBackMaterial
-		{
-			if (SUIsValid(BackMaterialRef))
-			{
-				// Get the back material ID of the SketckUp back material.
-				SlotId = GetOrCreateSlotForMaterial(DatasmithSketchUpUtils::GetMaterialID(BackMaterialRef));
-			}
-		}
-
 
 		if (SlotId == 0)
 		{
@@ -288,14 +318,15 @@ namespace DatasmithSketchUp
 			bHasFacesWithDefaultMaterial = true;
 		}
 
-		MeshTriangleSlotIds.Reserve(MeshTriangleSlotIds.Num());
+		MeshTriangleSlotIds.Reserve(MeshTriangleSlotIds.Num() + TriangleCount);
+		
 		for(int32 TriangleIndex = 0; TriangleIndex < TriangleCount; ++TriangleIndex)
 		{
 			MeshTriangleSlotIds.Add(SlotId);
 		}
 	}
 
-	void FDatasmithSketchUpMesh::ConvertMeshToDatasmith(FDatasmithMesh& OutDMesh) const
+	void FDatasmithSketchUpMesh::ConvertMeshToDatasmith(FExportContext& Context, SUTransformation Transform, FDatasmithMesh& OutDMesh) const
 	{
 		// Get the number of mesh vertices (must be > 0).
 		int32 VertexCount = MeshVertexPoints.Num();
@@ -305,7 +336,9 @@ namespace DatasmithSketchUp
 
 		for (int32 VertexNo = 0; VertexNo < VertexCount; VertexNo++)
 		{
-			SUPoint3D const& VertexPoint = MeshVertexPoints[VertexNo];
+			SUPoint3D VertexPoint = MeshVertexPoints[VertexNo];
+			SUPoint3DTransform(&Transform, &VertexPoint);
+			
 			FVector P = FVector(DatasmithSketchUpUtils::FromSketchUp::ConvertPosition(VertexPoint));
 			OutDMesh.SetVertex(VertexNo, P.X, P.Y, P.Z);
 		}
@@ -329,6 +362,33 @@ namespace DatasmithSketchUp
 		// Set the number of triangles of the exported Datasmith mesh.
 		OutDMesh.SetFacesCount(TriangleCount);
 
+		SUTransformation TransformNoTranslation = Transform;
+		TransformNoTranslation.values[12] = 0;
+		TransformNoTranslation.values[13] = 0;
+		TransformNoTranslation.values[14] = 0;
+
+		// Make inverse-transposed transform for normals from orientation component of source transform
+		SUTransformation TransformInverse;
+		SUTransformationGetInverse(&TransformNoTranslation, &TransformInverse);
+		SUTransformation TransformForNormals;
+
+		// Transpose
+		for (int32 X = 0; X < 4; ++X)
+		{
+			for (int32 Y = 0; Y < 4; ++Y)
+			{
+				TransformForNormals.values[X + Y*4] = TransformNoTranslation.values[Y + X*4];
+			}
+		}
+
+		TArray<SUVector3D> MeshVertexNormalsBaked;
+		MeshVertexNormalsBaked.Reserve(MeshVertexNormals.Num());
+		for (SUVector3D Normal : MeshVertexNormals)
+		{
+			SUVector3DTransform(&TransformForNormals, &Normal);
+			MeshVertexNormalsBaked.Add(Normal);
+		}
+
 		// Convert triangle vertex indices and normals from SketchUp right-handed Z-up coordinates to Unreal left-handed Z-up coordinates.
 		// To avoid perturbating X, which is forward in Unreal, the handedness conversion is done by flipping the side vector Y.
 		for (int32 TriangleNo = 0, NormalNo = 0; TriangleNo < TriangleCount; TriangleNo++)
@@ -342,9 +402,9 @@ namespace DatasmithSketchUp
 			OutDMesh.SetFace(TriangleNo, int32(TriangleIndices.IndexA), int32(TriangleIndices.IndexB), int32(TriangleIndices.IndexC), MeshTriangleSlotIds[TriangleNo]);
 
 			// Set the triangle vertex normals in the exported Datasmith mesh.
-			SMeshTriangleNormals TriangleNormals = { MeshVertexNormals[TriangleIndices.IndexA],
-													 MeshVertexNormals[TriangleIndices.IndexB],
-													 MeshVertexNormals[TriangleIndices.IndexC] };
+			SMeshTriangleNormals TriangleNormals = { MeshVertexNormalsBaked[TriangleIndices.IndexA],
+													 MeshVertexNormalsBaked[TriangleIndices.IndexB],
+													 MeshVertexNormalsBaked[TriangleIndices.IndexC] };
 			OutDMesh.SetNormal(NormalNo++, float(TriangleNormals.NormalA.x), float(-TriangleNormals.NormalA.y), float(TriangleNormals.NormalA.z));
 			OutDMesh.SetNormal(NormalNo++, float(TriangleNormals.NormalB.x), float(-TriangleNormals.NormalB.y), float(TriangleNormals.NormalB.z));
 			OutDMesh.SetNormal(NormalNo++, float(TriangleNormals.NormalC.x), float(-TriangleNormals.NormalC.y), float(TriangleNormals.NormalC.z));
@@ -355,6 +415,107 @@ namespace DatasmithSketchUp
 	}
 
 }
+
+namespace DatasmithSketchUp
+{
+	// Parses SU Image entity geometry
+	class FImageParser
+	{
+	public:
+		FImageParser(SUEntityRef InEntityRef): EntityRef(InEntityRef)
+		{
+		}
+
+		int32 ImageId = 0;
+		FLayerIDType LayerId;
+
+		void Parse(FExportContext& Context, FDatasmithSketchUpMesh& ExtractedMesh)
+		{
+			SUEntityGetID(EntityRef, &ImageId);
+
+			// Record every face's layer(even for invisible faces!). When face layer visibility changes 
+			// this geometry needs to be rebuilt
+			SULayerRef LayerRef = SU_INVALID;
+			SUImageRef ImageRef = SUImageFromEntity(EntityRef);
+			SUDrawingElementGetLayer(SUImageToDrawingElement(ImageRef), &LayerRef);
+			LayerId = DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef));
+
+			bool bHidden = false;
+			SUDrawingElementGetHidden(SUImageToDrawingElement(ImageRef), &bHidden);
+
+			if (!bHidden && Context.Layers.IsLayerVisible(LayerRef))
+			{
+				TArray<SUPoint3D>& MeshVertexPoints = ExtractedMesh.MeshVertexPoints;
+				TArray<SUVector3D>& MeshVertexNormals = ExtractedMesh.MeshVertexNormals;
+				TArray<SUUVQ>& MeshVertexUVQs = ExtractedMesh.MeshVertexUVQs;
+				TArray<SMeshTriangleIndices>& MeshTriangleIndices = ExtractedMesh.MeshTriangleIndices;
+				TArray<int32>& MeshTriangleSlotIds = ExtractedMesh.MeshTriangleSlotIds;
+
+				// Get the SketchUp triangle mesh vertex offset into the combined mesh vertex vector.
+				int32 MeshVertexIndexOffset = MeshVertexPoints.Num();
+
+				const int32 VertexPointCount = 4;
+				const int32 VertexNormalCount = 4;
+				const int32 TriangleCount = 2;
+				const int32 TriangleVertexIndexCount = 6;
+
+				MeshVertexNormals.Reserve(MeshVertexNormals.Num() + VertexNormalCount);
+				MeshVertexUVQs.Reserve(MeshVertexUVQs.Num() + VertexPointCount);
+				MeshTriangleIndices.Reserve(MeshTriangleIndices.Num() + TriangleVertexIndexCount);
+
+				SUVector3D Normal{0, 0, 1}; // todo: fix
+
+				double WidthInch = 0;
+				double HeightInch = 0;
+				if (SUImageGetDimensions(ImageRef, &WidthInch, &HeightInch) != SU_ERROR_NONE)
+				{
+					return;
+				}
+
+				for (size_t VertexPointIndex = 0; VertexPointIndex < VertexPointCount; VertexPointIndex++)
+				{
+
+					MeshVertexNormals.Add(Normal);
+
+					double X = (VertexPointIndex % 2);
+					double Y = (VertexPointIndex / 2);
+
+					// Put 1 in Q as we divide later by it
+					MeshVertexUVQs.Add(SUUVQ{X, Y, 1});
+					MeshVertexPoints.Add(SUPoint3D{X * WidthInch, Y * HeightInch, 0});
+				}
+
+				const size_t TriangleVertexIndices[TriangleVertexIndexCount] = 
+				{
+					0, 1, 2,
+					3, 2, 1
+				};
+
+				// Combine the mesh front-facing triangle vertex indices.
+				for (size_t Index = 0; Index < TriangleVertexIndexCount;)
+				{
+					size_t IndexA = MeshVertexIndexOffset + TriangleVertexIndices[Index++];
+					size_t IndexB = MeshVertexIndexOffset + TriangleVertexIndices[Index++];
+					size_t IndexC = MeshVertexIndexOffset + TriangleVertexIndices[Index++];
+
+					SMeshTriangleIndices TriangleIndices = { IndexA, IndexB, IndexC };
+
+					MeshTriangleIndices.Add(TriangleIndices);
+				}
+
+				MeshTriangleSlotIds.Reserve(MeshTriangleSlotIds.Num() + TriangleCount);
+					
+				for(int32 TriangleIndex = 0; TriangleIndex < TriangleCount; ++TriangleIndex)
+				{
+					MeshTriangleSlotIds.Add(0);
+				}
+			}
+		}
+
+		SUEntityRef EntityRef;
+	};
+}
+
 
 bool FEntitiesGeometry::IsMeshUsingInheritedMaterial(int32 MeshIndex)
 {
@@ -372,7 +533,8 @@ const TCHAR* FEntitiesGeometry::GetMeshElementName(int32 MeshIndex)
 	return Meshes[MeshIndex]->DatasmithMesh->GetName();
 }
 
-void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh);
+void ScanSketchUpEntitiesFaces(FExportContext& Context, SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh);
+void CombineSketchUpEntitiesFaces(FExportContext& Context, SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh);
 
 void FEntities::UpdateGeometry(FExportContext& Context)
 {
@@ -397,7 +559,7 @@ void FEntities::UpdateGeometry(FExportContext& Context)
 	{
 		if (ExtractedMeshPtr->ContainsGeometry())
 		{
-			FString MeshElementName = FString::Printf(TEXT("M%ls_%d"), *FMD5::HashAnsiString(*Definition.GetSketchupSourceGUID()), MeshCount + 1); // Count meshes from 1
+			FString MeshElementName = FString::Printf(TEXT("M%ls_%d"), *Definition.GetSketchupSourceId(), MeshCount + 1); // Count meshes from 1
 			FString MeshLabel = FDatasmithUtils::SanitizeObjectName(Definition.GetSketchupSourceName());
 
 			TSharedPtr<FDatasmithInstantiatedMesh> Mesh;
@@ -405,7 +567,8 @@ void FEntities::UpdateGeometry(FExportContext& Context)
 			if (MeshCount < EntitiesGeometry->Meshes.Num())
 			{
 				Mesh = EntitiesGeometry->Meshes[MeshCount];
-				Mesh->SlotIdForMaterialID.Reset();
+				Mesh->SlotIdForMaterialId.Reset();
+				Mesh->SlotIdForLayerId.Reset();
 			}
 			else
 			{
@@ -422,38 +585,65 @@ void FEntities::UpdateGeometry(FExportContext& Context)
 			Mesh->bIsUsingInheritedMaterial = ExtractedMeshPtr->bHasFacesWithDefaultMaterial;
 
 			// Add the non-inherited materials used by the combined mesh triangles.
-			for (int32 SlotId = 0;SlotId < ExtractedMeshPtr->MaterialIDForSlotId.Num(); ++SlotId)
+			if (Context.bColorByLayer)
 			{
-				if (SlotId == 0 && !ExtractedMeshPtr->bHasFacesWithDefaultMaterial)
+				for (int32 SlotId = 0;SlotId < ExtractedMeshPtr->LayerIDForSlotId.Num(); ++SlotId)
 				{
-					continue; // Skip adding Default material slot if it's not used
-				}
+					FLayerIDType LayerID = ExtractedMeshPtr->LayerIDForSlotId[SlotId];
+					Mesh->SlotIdForLayerId.FindOrAdd(LayerID, SlotId);
 
-				FMaterialIDType MeshMaterialID = ExtractedMeshPtr->MaterialIDForSlotId[SlotId];
-				Mesh->SlotIdForMaterialID.FindOrAdd(MeshMaterialID, SlotId);
-				// Default or (somehow)missing materials are also assigned to mesh(as a default material)
-				if (FMaterialOccurrence* Material = Context.Materials.RegisterGeometry(MeshMaterialID, EntitiesGeometry.Get()))
-				{
-					Mesh->DatasmithMesh->SetMaterial(Material->GetName(), SlotId);
+					if (FMaterialOccurrence* Material = Context.Materials.LayerMaterials.RegisterGeometryForLayer(LayerID, EntitiesGeometry.Get()))
+					{
+						Mesh->DatasmithMesh->SetMaterial(Material->GetName(), SlotId);
+					}
 				}
 			}
+			else
+			{
+				for (int32 SlotId = 0;SlotId < ExtractedMeshPtr->MaterialIDForSlotId.Num(); ++SlotId)
+				{
+					if (SlotId == 0 && !ExtractedMeshPtr->bHasFacesWithDefaultMaterial)
+					{
+						continue; // Skip adding Default material slot if it's not used
+					}
+
+					FMaterialIDType MeshMaterialID = ExtractedMeshPtr->MaterialIDForSlotId[SlotId];
+					Mesh->SlotIdForMaterialId.FindOrAdd(MeshMaterialID, SlotId);
+					// Default or (somehow)missing materials are also assigned to mesh(as a default material)
+					if (FMaterialOccurrence* Material = Context.Materials.RegularMaterials.RegisterGeometry(MeshMaterialID, EntitiesGeometry.Get()))
+					{
+						Mesh->DatasmithMesh->SetMaterial(Material->GetName(), SlotId);
+					}
+				}
+			}
+			
+			SUTransformation Transform = Definition.GetMeshBakedTransform();
 
 			Context.MeshExportTasks.Emplace(Async(
 				EAsyncExecution::ThreadPool,
-				[Mesh, ExtractedMeshPtr, &Context]()
+				[&Context, Mesh, ExtractedMeshPtr, Transform]()
 				{
 					FDatasmithMeshExporter DatasmithMeshExporter;
 					FDatasmithMesh DatasmithMesh;
-					ExtractedMeshPtr->ConvertMeshToDatasmith(DatasmithMesh);
+					ExtractedMeshPtr->ConvertMeshToDatasmith(Context, Transform, DatasmithMesh);
 
-					FGCScopeGuard GCGuard; // Prevent GC from running while UDatasmithMesh is created in ExportToUObject. 
+					FGCScopeGuard GCGuard; // Prevent GC from running while UDatasmithMesh is created in ExportToUObject.
+
 					return DatasmithMeshExporter.ExportToUObject(Mesh->DatasmithMesh, Context.GetAssetsOutputPath(), DatasmithMesh, nullptr, FDatasmithExportOptions::LightmapUV);
 				}
 			));
 		}
 	};
 
-	ScanSketchUpEntitiesFaces(EntitiesRef, *EntitiesGeometry, ProcessExtractedMesh);
+	if (Context.Options.bSeparateDisconnectedMeshes)
+	{
+		ScanSketchUpEntitiesFaces(Context, EntitiesRef, *EntitiesGeometry, ProcessExtractedMesh);
+	}
+	else
+	{
+		CombineSketchUpEntitiesFaces(Context, EntitiesRef, *EntitiesGeometry, ProcessExtractedMesh);
+	}
+
 	EntitiesGeometry->Meshes.SetNum(MeshCount);
 
 	Context.EntitiesObjects.RegisterEntities(*this);
@@ -473,21 +663,6 @@ void FEntities::RemoveMeshesFromDatasmithScene(FExportContext& Context)
 	{
 		Context.DatasmithScene->RemoveMesh(Mesh->DatasmithMesh);
 	}
-}
-
-TSharedPtr<IDatasmithMeshElement> FEntities::CreateMeshElement(FExportContext& Context, FDatasmithMesh& DatasmithMesh)
-{
-	FString MeshElementName = FString::Printf(TEXT("M%ls_%d"), *FMD5::HashAnsiString(*Definition.GetSketchupSourceGUID()), EntitiesGeometry->Meshes.Num() + 1); // Count meshes from 1
-	FString MeshLabel = FDatasmithUtils::SanitizeObjectName(Definition.GetSketchupSourceName());
-
-	FDatasmithMeshExporter DatasmithMeshExporter;
-	TSharedPtr<IDatasmithMeshElement> MeshElementPtr = DatasmithMeshExporter.ExportToUObject(Context.GetAssetsOutputPath(), *MeshElementName, DatasmithMesh, nullptr, FDatasmithExportOptions::LightmapUV);
-
-	// Set the mesh element label used in the Unreal UI.
-	MeshElementPtr->SetLabel(*MeshLabel);
-
-	Context.DatasmithScene->AddMesh(MeshElementPtr);
-	return MeshElementPtr;
 }
 
 TArray<SUGroupRef> FEntities::GetGroups()
@@ -517,8 +692,20 @@ TArray<SUComponentInstanceRef> FEntities::GetComponentInstances()
 	return MoveTemp(SComponentInstances);
 }
 
+TArray<SUImageRef> FEntities::GetImages()
+{
+	size_t ImageCount = 0;
+	SUEntitiesGetNumImages(EntitiesRef, &ImageCount);
 
-void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh)
+	TArray<SUImageRef> ImageRefs;
+	ImageRefs.Init(SU_INVALID, ImageCount);
+	SUEntitiesGetImages(EntitiesRef, ImageCount, ImageRefs.GetData(), &ImageCount);
+	ImageRefs.SetNum(ImageCount);
+
+	return MoveTemp(ImageRefs);
+}
+
+void ScanSketchUpEntitiesFaces(FExportContext& Context, SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh)
 {
 	// Get the number of faces in the source SketchUp entities.
 	size_t SFaceCount = 0;
@@ -532,7 +719,7 @@ void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geo
 	// Retrieve the faces in the source SketchUp entities.
 	TArray<SUFaceRef> SFaces;
 	SFaces.Init(SU_INVALID, SFaceCount);
-	SUEntitiesGetFaces(EntitiesRef, SFaceCount, SFaces.GetData(), &SFaceCount); // we can ignore the returned SU_RESULT
+	SUEntitiesGetFaces(EntitiesRef, SFaceCount, SFaces.GetData(), &SFaceCount);
 	SFaces.SetNum(SFaceCount);
 
 	TSet<int32> ScannedEdgeIDSet;
@@ -556,7 +743,6 @@ void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geo
 		FDatasmithSketchUpMesh& ExtractedMesh = *ExtractedMeshPtr;
 		ExtractedMesh.GetOrCreateSlotForMaterial(FMaterial::INHERITED_MATERIAL_ID); // Add default material to Slot=0
 
-
 		// The source SketchUp face needs to be scanned once.
 		TArray<SUFaceRef> FacesToScan;
 		FacesToScan.Add(SSourceFaceRef);
@@ -575,13 +761,15 @@ void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geo
 			// this geometry needs to be rebuilt
 			SULayerRef LayerRef = SU_INVALID;
 			SUDrawingElementGetLayer(SUFaceToDrawingElement(SScannedFaceRef), &LayerRef);
-			Geometry.Layers.Add(DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef)));
+			FLayerIDType LayerId = DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef));
+			Geometry.Layers.Add(LayerId);
 
+			bool bFaceHidden = false;
+			SUDrawingElementGetHidden(SUFaceToDrawingElement(SScannedFaceRef), &bFaceHidden);
 
-			// Get whether or not the SketckUp face is visible in the current SketchUp scene.
-			if (DatasmithSketchUpUtils::IsVisible(SScannedFaceRef))
+			if (!bFaceHidden && Context.Layers.IsLayerVisible(LayerRef))
 			{
-				ExtractedMesh.AddFace(SScannedFaceRef);
+				ExtractedMesh.AddFace(Context, SScannedFaceRef, LayerId);
 			}
 
 			// Get the number of SketchUp face edges.
@@ -635,3 +823,85 @@ void ScanSketchUpEntitiesFaces(SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geo
 		OnNewExtractedMesh(ExtractedMeshPtr);
 	}
 }
+
+void CombineSketchUpEntitiesFaces(FExportContext& Context, SUEntitiesRef EntitiesRef, FEntitiesGeometry& Geometry, TFunctionRef<void(TSharedPtr<FDatasmithSketchUpMesh> ExtractedMesh)> OnNewExtractedMesh)
+{
+	// Get the number of faces in the source SketchUp entities.
+	size_t SFaceCount = 0;
+	SUEntitiesGetNumFaces(EntitiesRef, &SFaceCount); // we can ignore the returned SU_RESULT
+
+	if (SFaceCount == 0)
+	{
+		return;
+	}
+
+	// Retrieve the faces in the source SketchUp entities.
+	TArray<SUFaceRef> SFaces;
+	SFaces.Init(SU_INVALID, SFaceCount);
+	SUEntitiesGetFaces(EntitiesRef, SFaceCount, SFaces.GetData(), &SFaceCount);
+	SFaces.SetNum(SFaceCount);
+
+	// Create a mesh combining the geometry of the SketchUp connected faces.
+	TSharedPtr<FDatasmithSketchUpMesh> ExtractedMeshPtr = MakeShared<FDatasmithSketchUpMesh>();
+	FDatasmithSketchUpMesh& ExtractedMesh = *ExtractedMeshPtr;
+	ExtractedMesh.GetOrCreateSlotForMaterial(FMaterial::INHERITED_MATERIAL_ID); // Add default material to Slot=0
+
+	for (SUFaceRef FaceRef : SFaces)
+	{
+		// Get the Source SketckUp face ID.
+		int32 SSourceFaceID = DatasmithSketchUpUtils::GetFaceID(FaceRef);
+
+		// Do not scan more than once a valid SketckUp face.
+		if (SUIsInvalid(FaceRef) || Geometry.FaceIds.Contains(SSourceFaceID))
+		{
+			continue;
+		}
+
+		Geometry.FaceIds.Add(SSourceFaceID);
+
+		// Record every face's layer(even for invisible faces!). When face layer visibility changes 
+		// this geometry needs to be rebuilt
+		SULayerRef LayerRef = SU_INVALID;
+		SUDrawingElementGetLayer(SUFaceToDrawingElement(FaceRef), &LayerRef);
+		FLayerIDType LayerId = DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(LayerRef));
+		Geometry.Layers.Add(LayerId);
+
+		bool bFaceHidden = false;
+		SUDrawingElementGetHidden(SUFaceToDrawingElement(FaceRef), &bFaceHidden);
+
+		if (!bFaceHidden && Context.Layers.IsLayerVisible(LayerRef))
+		{
+			ExtractedMesh.AddFace(Context, FaceRef, LayerId);
+		}
+	}
+
+	OnNewExtractedMesh(ExtractedMeshPtr);
+}
+
+
+void FImage::UpdateGeometry(FExportContext& Context)
+{
+	FImageParser ImageParser(EntityRef);
+	FDatasmithSketchUpMesh ExtractedMesh;
+	ImageParser.Parse(Context, ExtractedMesh);
+
+	FDatasmithMeshExporter DatasmithMeshExporter;
+	FDatasmithMesh DatasmithMesh;
+
+	SUTransformation Transform;
+	SUTransformationScale(&Transform, 1.0);
+
+	ExtractedMesh.ConvertMeshToDatasmith(Context, Transform, DatasmithMesh);
+
+	DatasmithMeshElement = FDatasmithSceneFactory::CreateMesh(TEXT(""));
+
+	DatasmithMeshElement->SetName(GetMeshElementName());
+	DatasmithMeshElement->SetLabel(*GetName());
+
+	FGCScopeGuard GCGuard; // Prevent GC from running while UDatasmithMesh is created in ExportToUObject. 
+	bool bResult = DatasmithMeshExporter.ExportToUObject(DatasmithMeshElement, Context.GetAssetsOutputPath(), DatasmithMesh, nullptr, FDatasmithExportOptions::LightmapUV);
+
+	// todo: something like AddMeshesToDatasmithScene
+	Context.DatasmithScene->AddMesh(DatasmithMeshElement);
+}
+

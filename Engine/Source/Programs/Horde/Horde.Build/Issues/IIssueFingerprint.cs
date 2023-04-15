@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Utilities;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Models
+namespace Horde.Build.Issues
 {
 	/// <summary>
 	/// Fingerprint for an issue
@@ -14,7 +13,7 @@ namespace HordeServer.Models
 	public interface IIssueFingerprint
 	{
 		/// <summary>
-		/// The type of issue
+		/// The type of issue, which defines the handler to use for it
 		/// </summary>
 		public string Type { get; }
 
@@ -27,6 +26,11 @@ namespace HordeServer.Models
 		/// Set of keys which should trigger a negative match
 		/// </summary>
 		public CaseInsensitiveStringSet? RejectKeys { get; }
+
+		/// <summary>
+		/// Collection of additional metadata added by the handler
+		/// </summary>
+		public CaseInsensitiveStringSet? Metadata { get; }
 	}
 
 	/// <summary>
@@ -37,20 +41,30 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Checks if a fingerprint matches another fingerprint
 		/// </summary>
-		/// <param name="Fingerprint">The first fingerprint to compare</param>
-		/// <param name="Other">The other fingerprint to compare to</param>
+		/// <param name="fingerprint">The first fingerprint to compare</param>
+		/// <param name="other">The other fingerprint to compare to</param>
 		/// <returns>True is the fingerprints match</returns>
-		public static bool IsMatch(this IIssueFingerprint Fingerprint, IIssueFingerprint Other)
+		public static bool IsMatch(this IIssueFingerprint fingerprint, IIssueFingerprint other)
 		{
-			if (!Fingerprint.Type.Equals(Other.Type, StringComparison.Ordinal))
+			if (!fingerprint.Type.Equals(other.Type, StringComparison.Ordinal))
 			{
 				return false;
 			}
-			if (Fingerprint.Keys.Count > 0 && Other.Keys.Count > 0 && !Fingerprint.Keys.Any(x => Other.Keys.Contains(x)))
+			if (fingerprint.Keys.Count == 0)
 			{
-				return false;
+				if (other.Keys.Count > 0)
+				{
+					return false;
+				}
 			}
-			if (Fingerprint.RejectKeys != null && Fingerprint.RejectKeys.Any(x => Other.Keys.Contains(x)))
+			else
+			{
+				if (!fingerprint.Keys.Any(x => other.Keys.Contains(x)))
+				{
+					return false;
+				}
+			}
+			if (fingerprint.RejectKeys != null && fingerprint.RejectKeys.Any(x => other.Keys.Contains(x)))
 			{
 				return false;
 			}
@@ -60,20 +74,51 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Checks if a fingerprint matches another fingerprint for creating a new span
 		/// </summary>
-		/// <param name="Fingerprint">The first fingerprint to compare</param>
-		/// <param name="Other">The other fingerprint to compare to</param>
+		/// <param name="fingerprint">The first fingerprint to compare</param>
+		/// <param name="other">The other fingerprint to compare to</param>
 		/// <returns>True is the fingerprints match</returns>
-		public static bool IsMatchForNewSpan(this IIssueFingerprint Fingerprint, IIssueFingerprint Other)
+		public static bool IsMatchForNewSpan(this IIssueFingerprint fingerprint, IIssueFingerprint other)
 		{
-			if (!Fingerprint.Type.Equals(Other.Type, StringComparison.Ordinal))
+			if (!fingerprint.Type.Equals(other.Type, StringComparison.Ordinal))
 			{
 				return false;
 			}
-			if (Fingerprint.RejectKeys != null && Fingerprint.RejectKeys.Any(x => Other.Keys.Contains(x)))
+			if (fingerprint.RejectKeys != null && fingerprint.RejectKeys.Any(x => other.Keys.Contains(x)))
 			{
 				return false;
 			}
 			return true;
+		}
+
+		/// <summary>
+		/// Gets all the metadata values with a given key
+		/// </summary>
+		/// <param name="fingerprint">Fingerprint to find values for</param>
+		/// <param name="value">Key name to search for</param>
+		/// <returns>All values with the given key</returns>
+		public static bool HasMetadataValue(this IIssueFingerprint fingerprint, string value)
+		{
+			return fingerprint.Metadata != null && fingerprint.Metadata.Contains(value);
+		}
+
+		/// <summary>
+		/// Gets all the metadata values with a given key
+		/// </summary>
+		/// <param name="fingerprint">Fingerprint to find values for</param>
+		/// <param name="key">Key name to search for</param>
+		/// <returns>All values with the given key</returns>
+		public static IEnumerable<string> GetMetadataValues(this IIssueFingerprint fingerprint, string key)
+		{
+			if (fingerprint.Metadata != null)
+			{
+				foreach (string element in fingerprint.Metadata)
+				{
+					if (element.StartsWith(key, StringComparison.OrdinalIgnoreCase) && element.Length > key.Length && element[key.Length] == '=')
+					{
+						yield return element.Substring(key.Length + 1);
+					}
+				}
+			}
 		}
 	}
 }

@@ -12,6 +12,8 @@
 #include "Fonts/LegacySlateFontInfoCache.h"
 #include "Fonts/FontCacheUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FontCache)
+
 #include <limits>
 
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Num Font Atlases"), STAT_SlateNumFontAtlases, STATGROUP_SlateMemory);
@@ -45,14 +47,6 @@ FAutoConsoleVariableRef CVarUnloadFreeTypeDataOnFlush(
 	TEXT("Slate.UnloadFreeTypeDataOnFlush"),
 	UnloadFreeTypeDataOnFlush,
 	TEXT("Releases the free type data when the font cache is flushed"));
-
-
-namespace FontCacheConstants
-{
-	/** Number of characters that can be indexed directly in the cache */
-	const int32 DirectAccessSize = 256;
-}
-
 
 static TAutoConsoleVariable<int32> CVarDefaultTextShapingMethod(
 	TEXT("Slate.DefaultTextShapingMethod"),
@@ -100,6 +94,7 @@ FShapedGlyphEntryKey::FShapedGlyphEntryKey(const FShapedGlyphFaceData& InFontFac
 	, FontScale(InFontFaceData.FontScale)
 	, GlyphIndex(InGlyphIndex)
 	, KeyHash(0)
+	, FontSkew(InFontFaceData.FontSkew)
 {
 	KeyHash = HashCombine(KeyHash, GetTypeHash(FontFace));
 	KeyHash = HashCombine(KeyHash, GetTypeHash(FontSize));
@@ -107,6 +102,7 @@ FShapedGlyphEntryKey::FShapedGlyphEntryKey(const FShapedGlyphFaceData& InFontFac
 	KeyHash = HashCombine(KeyHash, GetTypeHash(OutlineSeparateFillAlpha));
 	KeyHash = HashCombine(KeyHash, GetTypeHash(FontScale));
 	KeyHash = HashCombine(KeyHash, GetTypeHash(GlyphIndex));
+	KeyHash = HashCombine(KeyHash, GetTypeHash(FontSkew));
 }
 
 FShapedGlyphSequence::FShapedGlyphSequence(TArray<FShapedGlyphEntry> InGlyphsToRender, const int16 InTextBaseline, const uint16 InMaxTextHeight, const UObject* InFontMaterial, const FFontOutlineSettings& InOutlineSettings, const FSourceTextRange& InSourceTextRange)
@@ -180,6 +176,19 @@ FShapedGlyphSequence::FShapedGlyphSequence(TArray<FShapedGlyphEntry> InGlyphsToR
 			*SourceIndexToGlyphData = FSourceIndexToGlyphData(CurrentGlyphIndex);
 		}
 	}
+
+#if SLATE_CHECK_UOBJECT_SHAPED_GLYPH_SEQUENCE
+	if (FontMaterial)
+	{
+		FontMaterialWeakPtr = FontMaterial;
+		DebugFontMaterialName = FontMaterial->GetFName();
+	}
+	if (OutlineSettings.OutlineMaterial)
+	{
+		OutlineMaterialWeakPtr = OutlineSettings.OutlineMaterial;
+		DebugOutlineMaterialName = OutlineSettings.OutlineMaterial->GetFName();
+	}
+#endif
 
 	// Track memory usage
 	INC_MEMORY_STAT_BY(STAT_SlateShapedGlyphSequenceMemory, GetAllocatedSize());
@@ -424,6 +433,32 @@ FShapedGlyphSequencePtr FShapedGlyphSequence::GetSubSequence(const int32 InStart
 
 void FShapedGlyphSequence::AddReferencedObjects(FReferenceCollector& Collector)
 {
+#if SLATE_CHECK_UOBJECT_SHAPED_GLYPH_SEQUENCE
+	if (GSlateCheckUObjectShapedGlyphSequence)
+	{
+		// pending kill objects may still be rendered for a frame so it is valid for the check to pass
+		const bool bEvenIfPendingKill = true;
+		// This test needs to be thread safe. It doesn't give us as many chances to trap bugs here but it is still useful
+		const bool bThreadSafe = true;
+		if (!DebugFontMaterialName.IsNone())
+		{
+			const UObject* FontMaterialPin = FontMaterialWeakPtr.GetEvenIfUnreachable();
+			if (FontMaterial != FontMaterialPin)
+			{
+				UE_LOG(LogSlate, Fatal, TEXT("Material % s has become invalid. This means the FShapedGlyphSequence::FontMaterial was garbage collected while slate was using it"), *DebugFontMaterialName.ToString());
+			}
+		}
+		if (!DebugOutlineMaterialName.IsNone())
+		{
+			const UObject* OutlineMaterialPin = OutlineMaterialWeakPtr.GetEvenIfUnreachable();
+			if (OutlineSettings.OutlineMaterial != OutlineMaterialPin)
+			{
+				UE_LOG(LogSlate, Fatal, TEXT("Material %s has become invalid. This means the FShapedGlyphSequence::OutlineSettings::OutlineMaterial was garbage collected while slate was using it"), *DebugOutlineMaterialName.ToString());
+			}
+		}
+	}
+#endif
+
 	Collector.AddReferencedObject(FontMaterial);
 	Collector.AddReferencedObject(OutlineSettings.OutlineMaterial);
 }
@@ -551,7 +586,6 @@ FCharacterList::FCharacterList( const FSlateFontKey& InFontKey, FSlateFontCache&
 #if WITH_EDITORONLY_DATA
 	, CompositeFontHistoryRevision( INDEX_NONE )
 #endif	// WITH_EDITORONLY_DATA
-	, MaxDirectIndexedEntries( FontCacheConstants::DirectAccessSize )
 	, MaxHeight( 0 )
 	, Baseline( 0 )
 {
@@ -574,8 +608,8 @@ bool FCharacterList::IsStale() const
 
 int8 FCharacterList::GetKerning(TCHAR FirstChar, TCHAR SecondChar, const EFontFallback MaxFontFallback)
 {
-	const FCharacterEntry First = GetCharacter(FirstChar, MaxFontFallback);
-	const FCharacterEntry Second = GetCharacter(SecondChar, MaxFontFallback);
+	const FCharacterEntry& First = GetCharacter(FirstChar, MaxFontFallback);
+	const FCharacterEntry& Second = GetCharacter(SecondChar, MaxFontFallback);
 	return GetKerning(First, Second);
 }
 
@@ -643,93 +677,40 @@ bool FCharacterList::CanCacheCharacter(TCHAR Character, const EFontFallback MaxF
 	return bReturnVal;
 }
 
-FCharacterEntry FCharacterList::GetCharacter(TCHAR Character, const EFontFallback MaxFontFallback)
+const FCharacterEntry& FCharacterList::GetCharacter(TCHAR Character, const EFontFallback MaxFontFallback)
 {
 #if WITH_FREETYPE
-	const FCharacterListEntry* InternalEntry = nullptr;
-	const bool bDirectIndexChar = Character < MaxDirectIndexedEntries;
-
-	// First get a reference to the character, if it is already mapped (mapped does not mean cached though)
-	if (bDirectIndexChar)
+	if (const FCharacterEntry* const FoundEntry = MappedEntries.Find(Character))
 	{
-		if (DirectIndexEntries.IsValidIndex(Character))
+		// For already-cached characters, reject characters that don't fall within maximum font fallback level requirements
+		if (Character == SlateFontRendererUtils::InvalidSubChar || MaxFontFallback >= FoundEntry->FallbackLevel)
 		{
-			InternalEntry = &DirectIndexEntries[Character];
+			return *FoundEntry;
 		}
 	}
-	else
-	{
-		const FCharacterListEntry* const FoundEntry = MappedEntries.Find(Character);
-		if (FoundEntry)
-		{
-			InternalEntry = FoundEntry;
-		}
-	}
-
-	// Determine whether the character needs caching, and map it if needed
-	bool bNeedCaching = false;
-
-	if (InternalEntry)
-	{
-		bNeedCaching = !InternalEntry->Valid;
-
-		// If the character needs caching, but can't be cached, reject the character
-		if (bNeedCaching && !CanCacheCharacter(Character, MaxFontFallback))
-		{
-			bNeedCaching = false;
-			InternalEntry = nullptr;
-		}
-	}
-	// Only map the character if it can be cached
 	else if (CanCacheCharacter(Character, MaxFontFallback))
 	{
-		bNeedCaching = true;
-
-		if (bDirectIndexChar)
+		if (const FCharacterEntry* NewEntry = CacheCharacter(Character))
 		{
-			DirectIndexEntries.AddZeroed((Character - DirectIndexEntries.Num()) + 1);
-			InternalEntry = &DirectIndexEntries[Character];
-		}
-		else
-		{
-			InternalEntry = &MappedEntries.Add(Character);
+			return *NewEntry;
 		}
 	}
-
-	if (InternalEntry)
+	
+	// If we weren't able to cache the character, try fetching an invalid character to display instead.
+	// If we're already invalid, just return an invalid entry so we don't loop.
+	if (Character != SlateFontRendererUtils::InvalidSubChar)
 	{
-		if (bNeedCaching)
-		{
-			InternalEntry = CacheCharacter(Character);
-		}
-		// For already-cached characters, reject characters that don't fall within maximum font fallback level requirements
-		else if (Character != SlateFontRendererUtils::InvalidSubChar && MaxFontFallback < InternalEntry->FallbackLevel)
-		{
-			InternalEntry = nullptr;
-		}
+		return GetCharacter(SlateFontRendererUtils::InvalidSubChar, MaxFontFallback);
 	}
+#endif
 
-	if (InternalEntry)
-	{
-		return MakeCharacterEntry(Character, *InternalEntry);
-	}
-
-	// We have exhausted our options, looks like even InvalidSubChar can't be cached
-	// so just return an invalid character instead of going into an infinite loop.
-	if (Character == SlateFontRendererUtils::InvalidSubChar)
-	{
-		return FCharacterEntry{};
-	}
-
-	return GetCharacter(SlateFontRendererUtils::InvalidSubChar, MaxFontFallback);
-#else
 	// CacheCharacter always returns invalid characters when FreeType is not available
 	// so just shortcut to this instead.
-	return FCharacterEntry{};
-#endif
+	static const FCharacterEntry Invalid{};
+	return Invalid;
 }
 
-FCharacterList::FCharacterListEntry* FCharacterList::CacheCharacter(TCHAR Character)
+const FCharacterEntry* FCharacterList::CacheCharacter(TCHAR Character)
 {
 #if WITH_FREETYPE
 	// Fake shape the character
@@ -770,33 +751,46 @@ FCharacterList::FCharacterListEntry* FCharacterList::CacheCharacter(TCHAR Charac
 				}
 			}
 
-			FCharacterListEntry NewInternalEntry;
-			NewInternalEntry.ShapedGlyphEntry.FontFaceData = MakeShared<FShapedGlyphFaceData>(FaceGlyphData.FaceAndMemory, GlyphFlags, FontInfo.Size, FinalFontScale);
-			NewInternalEntry.ShapedGlyphEntry.GlyphIndex = GlyphIndex;
-			NewInternalEntry.ShapedGlyphEntry.XAdvance = XAdvance;
-			NewInternalEntry.ShapedGlyphEntry.bIsVisible = !bIsWhitespace;
+			FShapedGlyphEntry ShapedGlyphEntry;
+			ShapedGlyphEntry.FontFaceData = MakeShared<FShapedGlyphFaceData>(FaceGlyphData.FaceAndMemory, GlyphFlags, FontInfo.Size, FinalFontScale, FontInfo.GetClampSkew());
+			ShapedGlyphEntry.GlyphIndex = GlyphIndex;
+			ShapedGlyphEntry.XAdvance = XAdvance;
+			ShapedGlyphEntry.bIsVisible = !bIsWhitespace;
 
-			NewInternalEntry.KerningCache = FontCache.FontRenderer->GetKerningCache(*FontDataPtr, FontInfo.Size, FinalFontScale);
-
-			NewInternalEntry.FontData = FontDataPtr;
-			NewInternalEntry.FallbackLevel = FaceGlyphData.CharFallbackLevel;
-			NewInternalEntry.HasKerning = bHasKerning;
-			NewInternalEntry.Valid = Character == 0 || GlyphIndex != 0;
+			FCharacterEntry CharEntry;
+			CharEntry.Valid = Character == 0 || GlyphIndex != 0;
 
 			// Cache the shaped entry in the font cache
-			if (NewInternalEntry.Valid)
+			if (CharEntry.Valid)
 			{
-				FontCache.GetShapedGlyphFontAtlasData(NewInternalEntry.ShapedGlyphEntry, FontKey.GetFontOutlineSettings());
-
-				if (Character < MaxDirectIndexedEntries)
+				const FShapedGlyphFontAtlasData ShapedGlyphFontAtlasData = FontCache.GetShapedGlyphFontAtlasData(ShapedGlyphEntry, FontKey.GetFontOutlineSettings());
+				if (ShapedGlyphFontAtlasData.Valid)
 				{
-					DirectIndexEntries[Character] = MoveTemp(NewInternalEntry);
-					return &DirectIndexEntries[Character];
+					CharEntry.Character = Character;
+					CharEntry.GlyphIndex = GlyphIndex;
+					CharEntry.FontData = FontDataPtr;
+					CharEntry.KerningCache = FontCache.FontRenderer->GetKerningCache(*FontDataPtr, FontInfo.Size, FinalFontScale);
+					CharEntry.FontScale = ShapedGlyphEntry.FontFaceData->FontScale;
+					CharEntry.BitmapRenderScale = ShapedGlyphEntry.FontFaceData->BitmapRenderScale;
+					CharEntry.StartU = ShapedGlyphFontAtlasData.StartU;
+					CharEntry.StartV = ShapedGlyphFontAtlasData.StartV;
+					CharEntry.USize = ShapedGlyphFontAtlasData.USize;
+					CharEntry.VSize = ShapedGlyphFontAtlasData.VSize;
+					CharEntry.VerticalOffset = ShapedGlyphFontAtlasData.VerticalOffset;
+					CharEntry.HorizontalOffset = ShapedGlyphFontAtlasData.HorizontalOffset;
+					CharEntry.GlobalDescender = GetBaseline(); // All fonts within a composite font need to use the baseline of the default font
+					CharEntry.XAdvance = ShapedGlyphEntry.XAdvance;
+					CharEntry.TextureIndex = ShapedGlyphFontAtlasData.TextureIndex;
+					CharEntry.FallbackLevel = FaceGlyphData.CharFallbackLevel;
+					CharEntry.HasKerning = bHasKerning;
+					CharEntry.SupportsOutline = ShapedGlyphFontAtlasData.SupportsOutline;
 				}
 				else
 				{
-					return &MappedEntries.Add(Character, MoveTemp(NewInternalEntry));
+					CharEntry.Valid = false;
 				}
+
+				return &MappedEntries.Add(Character, MoveTemp(CharEntry));
 			}
 		}
 	}
@@ -804,42 +798,6 @@ FCharacterList::FCharacterListEntry* FCharacterList::CacheCharacter(TCHAR Charac
 #endif // WITH_FREETYPE
 
 	return nullptr;
-}
-
-FCharacterEntry FCharacterList::MakeCharacterEntry(TCHAR Character, const FCharacterListEntry& InternalEntry) const
-{
-	FCharacterEntry CharEntry;
-
-	CharEntry.Valid = InternalEntry.Valid;
-	if (CharEntry.Valid)
-	{
-		FShapedGlyphFontAtlasData ShapedGlyphFontAtlasData = FontCache.GetShapedGlyphFontAtlasData(InternalEntry.ShapedGlyphEntry, FontKey.GetFontOutlineSettings());
-		CharEntry.Valid = ShapedGlyphFontAtlasData.Valid;
-
-		if (CharEntry.Valid)
-		{
-			CharEntry.Character = Character;
-			CharEntry.GlyphIndex = InternalEntry.ShapedGlyphEntry.GlyphIndex;
-			CharEntry.FontData = InternalEntry.FontData;
-			CharEntry.KerningCache = InternalEntry.KerningCache;
-			CharEntry.FontScale = InternalEntry.ShapedGlyphEntry.FontFaceData->FontScale;
-			CharEntry.BitmapRenderScale = InternalEntry.ShapedGlyphEntry.FontFaceData->BitmapRenderScale;
-			CharEntry.StartU = ShapedGlyphFontAtlasData.StartU;
-			CharEntry.StartV = ShapedGlyphFontAtlasData.StartV;
-			CharEntry.USize = ShapedGlyphFontAtlasData.USize;
-			CharEntry.VSize = ShapedGlyphFontAtlasData.VSize;
-			CharEntry.VerticalOffset = ShapedGlyphFontAtlasData.VerticalOffset;
-			CharEntry.HorizontalOffset = ShapedGlyphFontAtlasData.HorizontalOffset;
-			CharEntry.GlobalDescender = GetBaseline(); // All fonts within a composite font need to use the baseline of the default font
-			CharEntry.XAdvance = InternalEntry.ShapedGlyphEntry.XAdvance;
-			CharEntry.TextureIndex = ShapedGlyphFontAtlasData.TextureIndex;
-			CharEntry.HasKerning = InternalEntry.HasKerning;
-			CharEntry.SupportsOutline = ShapedGlyphFontAtlasData.SupportsOutline;
-			CharEntry.FallbackLevel = InternalEntry.FallbackLevel;
-		}
-	}
-
-	return CharEntry;
 }
 
 FSlateFontCache::FSlateFontCache( TSharedRef<ISlateFontAtlasFactory> InFontAtlasFactory, ESlateTextureAtlasThreadId InOwningThread)
@@ -863,7 +821,6 @@ FSlateFontCache::~FSlateFontCache()
 
 	// Make sure things get destroyed in the correct order
 	FontToCharacterListCache.Empty();
-	FontToOverflowGlyphSequence.Empty();
 	ShapedGlyphToAtlasData.Empty();
 	TextShaper.Reset();
 	FontRenderer.Reset();
@@ -1103,18 +1060,12 @@ FShapedGlyphFontAtlasData FSlateFontCache::GetShapedGlyphFontAtlasData( const FS
 
 FShapedGlyphSequenceRef FSlateFontCache::GetOverflowEllipsisText(const FSlateFontInfo& InFontInfo, const float InFontScale)
 {
-	FSlateFontKey Key(InFontInfo, InFontInfo.OutlineSettings, InFontScale);
+	return ShapeOverflowEllipsisText(InFontInfo, InFontScale);
+}
 
-	FShapedGlyphSequenceRef* FoundSequence = FontToOverflowGlyphSequence.Find(Key);
-
-	if (FoundSequence)
-	{
-		return *FoundSequence;
-	}
-
-	FShapedGlyphSequenceRef NewSequence = ShapeBidirectionalText(EllipsisText.ToString(), InFontInfo, InFontScale, TextBiDi::ETextDirection::LeftToRight, GetDefaultTextShapingMethod());
-
-	return FontToOverflowGlyphSequence.Add(Key, NewSequence);
+FShapedGlyphSequenceRef FSlateFontCache::ShapeOverflowEllipsisText(const FSlateFontInfo& InFontInfo, const float InFontScale)
+{
+	return ShapeBidirectionalText(EllipsisText.ToString(), InFontInfo, InFontScale, TextBiDi::ETextDirection::LeftToRight, GetDefaultTextShapingMethod());
 }
 
 const FFontData& FSlateFontCache::GetDefaultFontData( const FSlateFontInfo& InFontInfo ) const
@@ -1298,7 +1249,6 @@ void FSlateFontCache::FlushData()
 	}
 
 	FontToCharacterListCache.Empty();
-	FontToOverflowGlyphSequence.Empty();
 
 	ShapedGlyphToAtlasData.Empty();
 }
@@ -1343,3 +1293,4 @@ void FSlateFontCache::HandleCultureChanged()
 	// We don't flush immediately as the request may come in from a different thread than the one that owns the font cache
 	RequestFlushCache(TEXT("Culture for localization was changed"));
 }
+

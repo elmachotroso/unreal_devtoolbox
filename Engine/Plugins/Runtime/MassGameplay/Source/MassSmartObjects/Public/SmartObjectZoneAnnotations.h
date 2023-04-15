@@ -95,7 +95,7 @@ class MASSSMARTOBJECTS_API USmartObjectZoneAnnotations : public UZoneGraphAnnota
 
 public:
 	const FSmartObjectAnnotationData* GetAnnotationData(FZoneGraphDataHandle DataHandle) const;
-	TOptional<FSmartObjectLaneLocation> GetSmartObjectLaneLocation(const FZoneGraphDataHandle& DataHandle, const FSmartObjectHandle& SmartObjectHandle) const;
+	TOptional<FSmartObjectLaneLocation> GetSmartObjectLaneLocation(const FZoneGraphDataHandle DataHandle, const FSmartObjectHandle SmartObjectHandle) const;
 
 protected:
 	virtual void PostSubsystemsInitialized() override;
@@ -105,9 +105,9 @@ protected:
 	virtual void PostZoneGraphDataAdded(const AZoneGraphData& ZoneGraphData) override;
 	virtual void PreZoneGraphDataRemoved(const AZoneGraphData& ZoneGraphData) override;
 
-#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+#if UE_ENABLE_DEBUG_DRAWING
 	virtual void DebugDraw(FZoneGraphAnnotationSceneProxy* DebugProxy) override;
-#endif
+#endif // UE_ENABLE_DEBUG_DRAWING
 
 	/** Filter specifying which lanes the behavior is applied to. */
 	UPROPERTY(EditAnywhere, Category = SmartObject)
@@ -131,9 +131,15 @@ protected:
 	FDelegateHandle OnAnnotationSettingsChangedHandle;
 	FDelegateHandle OnGraphDataChangedHandle;
 	FDelegateHandle OnMainCollectionChangedHandle;
+	FDelegateHandle OnMainCollectionDirtiedHandle;
 #endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	virtual void Serialize(FArchive& Ar) override;
+	bool bRebuildAllGraphsRequested = false;
+#endif
 
 	/** Cached SmartObjectSubsystem */
 	UPROPERTY(Transient)
-	USmartObjectSubsystem* SmartObjectSubsystem = nullptr;
+	TObjectPtr<USmartObjectSubsystem> SmartObjectSubsystem = nullptr;
 };

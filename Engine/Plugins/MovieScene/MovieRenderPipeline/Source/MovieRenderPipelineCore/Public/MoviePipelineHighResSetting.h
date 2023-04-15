@@ -20,6 +20,7 @@ public:
 		, OverlapRatio(0.f)
 		, bOverrideSubSurfaceScattering(false)
 		, BurleySampleCount(64)
+		, bAllocateHistoryPerTile(true)
 	{
 	}
 	
@@ -43,7 +44,7 @@ public:
 
 		if (TileCount > 1)
 		{
-			ValidationResults.Add(NSLOCTEXT("MovieRenderPipeline", "HighRes_UnsupportedFeatures", "Tiling does not support all rendering features (bloom, some screen-space effects). Additionally, TAA and Auto Exposure are not supported and will be forced off when rendering. Use Spatial/Temporal sampling and Manual Camera Exposure /w Exposure Compensation instead."));
+			ValidationResults.Add(NSLOCTEXT("MovieRenderPipeline", "HighRes_UnsupportedFeatures", "Tiling does not support all rendering features (bloom, some screen-space effects). Additionally, TAA and Auto Exposure are not supported and will be forced off when rendering. Use Spatial/Temporal sampling and Manual Camera Exposure /w Exposure Compensation instead. Tiling does not support reference motion blur with the Path Tracer."));
 			if (FMath::IsNearlyEqual(OverlapRatio, 0.f))
 			{
 				ValidationResults.Add(NSLOCTEXT("MovieRenderPipeline", "HighRes_OverlapNeeded", "Increase the overlap amount to avoid seams in the final image. More overlap results in longer renders so start at 0.1 and increase as needed."));
@@ -192,7 +193,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (UIMin = "64", ClampMin = "0", UIMax = "1024", EditCondition="bOverrideSubSurfaceScattering"), Category = "Render Settings")
 	int32 BurleySampleCount;
 	
-
+	/*
+	* If true, allocate a unique history for each tile. This is needed to make some render features work, but should be disabled
+	* when dealing with extremely large resolutions as you will spend all of your GPU memory on history buffers.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Render Settings")
+	bool bAllocateHistoryPerTile;
 
 
 private:

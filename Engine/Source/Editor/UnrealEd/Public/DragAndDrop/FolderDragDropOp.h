@@ -20,14 +20,14 @@ public:
 	/** Root object of folder (can be invalid) */
 	FFolder::FRootObject RootObject;
 
-	void Init(TArray<FName> InFolders, UWorld* InWorld, const FFolder::FRootObject& InRootObject = FFolder::GetDefaultRootObject())
+	void Init(TArray<FName> InFolders, UWorld* InWorld, const FFolder::FRootObject& InRootObject = FFolder::GetInvalidRootObject())
 	{
 		check(InWorld != nullptr);
 		Folders = MoveTemp(InFolders);
 		World = InWorld;
 		RootObject = InRootObject;
 
-		CurrentIconBrush = FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+		CurrentIconBrush = FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		if (Folders.Num() == 1)
 		{
 			CurrentHoverText = FText::FromName(FEditorFolderUtils::GetLeafName(Folders[0]));

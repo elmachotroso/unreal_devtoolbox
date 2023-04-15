@@ -2,19 +2,37 @@
 
 #pragma once
 
+#include "BlueprintActionFilter.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Class.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphNodeUtils.h"
+#include "Engine/MemberReference.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "K2Node.h"
+#include "KismetCompilerMisc.h"
+#include "Math/Color.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/SubclassOf.h"
 #include "Textures/SlateIcon.h"
-#include "Engine/MemberReference.h"
-#include "EdGraph/EdGraphNodeUtils.h"
-#include "K2Node.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_CallFunction.generated.h"
 
+class FArchive;
 class FKismetCompilerContext;
+class FProperty;
 class SWidget;
 class UEdGraph;
+class UEdGraphPin;
+class UFunction;
+class UObject;
+template <typename KeyType, typename ValueType> struct TKeyValuePair;
 
 UCLASS()
 class BLUEPRINTGRAPH_API UK2Node_CallFunction : public UK2Node
@@ -95,13 +113,14 @@ public:
 	virtual UObject* GetJumpTargetForDoubleClick() const override;
 	virtual bool CanJumpToDefinition() const override;
 	virtual void JumpToDefinition() const override;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	// End of UEdGraphNode interface
 
 	// UK2Node interface
 	virtual void ReallocatePinsDuringReconstruction(TArray<UEdGraphPin*>& OldPins) override;
 	virtual bool IsNodePure() const override { return bIsPureFunc; }
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual void PostReconstructNode() override;
 	virtual bool ShouldDrawCompact() const override;
 	virtual bool ShouldDrawAsBead() const override;
@@ -237,6 +256,9 @@ protected:
 
 	/** Helper function to ensure function is called in our context */
 	virtual void FixupSelfMemberContext();
+
+	/** Adds this function to the suppressed deprecation warnings list for this project */
+	void SuppressDeprecationWarning() const;
 
 	/** Helper function to find UFunction entries from the skeleton class, use with caution.. */
 	UFunction* GetTargetFunctionFromSkeletonClass() const;

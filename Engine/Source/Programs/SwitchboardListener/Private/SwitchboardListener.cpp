@@ -935,8 +935,7 @@ bool FSwitchboardListener::Task_ReceiveFileFromClient(const FSwitchboardReceiveF
 
 	if (Destination.Contains(TEXT("%TEMP%")))
 	{
-		const FString TempDir = FPlatformMisc::GetEnvironmentVariable(TEXT("TEMP"));
-		Destination.ReplaceInline(TEXT("%TEMP%"), *TempDir);
+		Destination.ReplaceInline(TEXT("%TEMP%"), FPlatformProcess::UserTempDir());
 	}
 	if (Destination.Contains(TEXT("%RANDOM%")))
 	{
@@ -1295,10 +1294,10 @@ static void FillOutSyncTopologies(TArray<FSyncTopo>& SyncTopos)
 				SyncDisplay.SyncState = TEXT("Unsynced");
 				break;
 			case NVAPI_GSYNC_DISPLAY_SYNC_STATE_SLAVE:
-				SyncDisplay.SyncState = TEXT("Slave");
+				SyncDisplay.SyncState = TEXT("Follower");
 				break;
 			case NVAPI_GSYNC_DISPLAY_SYNC_STATE_MASTER:
-				SyncDisplay.SyncState = TEXT("Master");
+				SyncDisplay.SyncState = TEXT("Leader");
 				break;
 			default:
 				SyncDisplay.SyncState = TEXT("Unknown");
@@ -1344,7 +1343,7 @@ static void FillOutSyncTopologies(TArray<FSyncTopo>& SyncTopos)
 			SyncTopo.SyncStatusParams.RefreshRate = GSyncStatusParams.refreshRate;
 			SyncTopo.SyncStatusParams.HouseSyncIncoming = GSyncStatusParams.houseSyncIncoming;
 			SyncTopo.SyncStatusParams.bHouseSync = !!GSyncStatusParams.bHouseSync;
-			SyncTopo.SyncStatusParams.bInternalSlave = GSyncStatusParams.bInternalSlave;
+			SyncTopo.SyncStatusParams.bInternalSecondary = GSyncStatusParams.bInternalSlave;
 		}
 
 		// Sync Control Parameters
@@ -1631,7 +1630,7 @@ static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMo
 	// TimeInSeconds,MsBetweenPresents,MsBetweenDisplayChange,MsInPresentAPI,MsUntilRenderComplete,MsUntilDisplayed
 	//
 	// e.g.
-	//   "UE4Editor.exe,10916,0x0000022096A0F830,DXGI,0,512,0,Composed: Flip,1,3.753577,22.845,0.000,0.880,0.946,0.000"
+	//   "UnrealEditor.exe,10916,0x0000022096A0F830,DXGI,0,512,0,Composed: Flip,1,3.753577,22.845,0.000,0.880,0.946,0.000"
 
 	TArray<FString> Fields;
 

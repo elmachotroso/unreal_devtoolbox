@@ -24,6 +24,33 @@
 #define RHI_RAYTRACING 0
 #endif
 
+enum class ERHIInterfaceType
+{
+	Hidden,
+	Null,
+	D3D11,
+	D3D12,
+	Vulkan,
+	Metal,
+	Agx,
+	OpenGL,
+};
+
+enum class ERHIFeatureSupport : uint8
+{
+	// The RHI feature is completely unavailable at runtime
+	Unsupported,
+
+	// The RHI feature can be available at runtime based on hardware or driver
+	RuntimeDependent,
+
+	// The RHI feature is guaranteed to be available at runtime.
+	RuntimeGuaranteed,
+
+	Num,
+	NumBits = 2,
+};
+
 enum EShaderFrequency : uint8
 {
 	SF_Vertex			= 0,
@@ -53,32 +80,17 @@ static_assert(SF_NumFrequencies <= (1 << SF_NumBits), "SF_NumFrequencies will no
 enum EShaderPlatform
 {
 	SP_PCD3D_SM5					= 0,
-	SP_OPENGL_SM4_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 1,
-	SP_PS4_REMOVED					UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 2,
-	SP_OPENGL_PCES2_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 3,
-	SP_XBOXONE_D3D12_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 4,
-	SP_PCD3D_SM4_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 5,
-	SP_OPENGL_SM5_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 6,
-	SP_PCD3D_ES2_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 7,
-	SP_OPENGL_ES2_ANDROID_REMOVED	UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 8,
-	SP_OPENGL_ES2_WEBGL_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 9, 
-	SP_OPENGL_ES2_IOS_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 10,
 	SP_METAL						= 11,
 	SP_METAL_MRT					= 12,
-	SP_OPENGL_ES31_EXT_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 13,
 	SP_PCD3D_ES3_1					= 14,
 	SP_OPENGL_PCES3_1				= 15,
 	SP_METAL_SM5					= 16,
 	SP_VULKAN_PCES3_1				= 17,
 	SP_METAL_SM5_NOTESS_REMOVED		UE_DEPRECATED(5.0, "ShaderPlatform is removed; please don't use.") = 18,
-	SP_VULKAN_SM4_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 19,
 	SP_VULKAN_SM5					= 20,
 	SP_VULKAN_ES3_1_ANDROID			= 21,
 	SP_METAL_MACES3_1 				= 22,
-	SP_METAL_MACES2_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 23,
 	SP_OPENGL_ES3_1_ANDROID			= 24,
-	SP_SWITCH_REMOVED				UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 25,
-	SP_SWITCH_FORWARD_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 26,
 	SP_METAL_MRT_MAC				= 27,
 	SP_VULKAN_SM5_LUMIN_REMOVED		UE_DEPRECATED(5.0, "ShaderPlatform is removed; please don't use.") = 28,
 	SP_VULKAN_ES3_1_LUMIN_REMOVED	UE_DEPRECATED(5.0, "ShaderPlatform is removed; please don't use.") = 29,
@@ -107,8 +119,11 @@ enum EShaderPlatform
 	SP_PCD3D_SM6,
 	SP_D3D_ES3_1_HOLOLENS,
 
+	SP_CUSTOM_PLATFORM_FIRST,
+	SP_CUSTOM_PLATFORM_LAST = (SP_CUSTOM_PLATFORM_FIRST + 100),
+
 	SP_NumPlatforms,
-	SP_NumBits						= 7,
+	SP_NumBits						= 16,
 };
 static_assert(SP_NumPlatforms <= (1 << SP_NumBits), "SP_NumPlatforms will not fit on SP_NumBits");
 
@@ -320,8 +335,12 @@ extern RHI_API const FName LANGUAGE_Nintendo;
 
 class RHI_API FGenericDataDrivenShaderPlatformInfo
 {
+	FName Name;
 	FName Language;
 	ERHIFeatureLevel::Type MaxFeatureLevel;
+	FName ShaderFormat;
+	EShaderPlatform PreviewShaderPlatformParent;
+	uint32 ShaderPropertiesHash;
 	uint32 bIsMobile: 1;
 	uint32 bIsMetalMRT: 1;
 	uint32 bIsPC: 1;
@@ -339,16 +358,17 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 	uint32 bSupportsVolumetricFog: 1; // also used for FVVoxelization
 	uint32 bSupportsIndexBufferUAVs: 1;
 	uint32 bSupportsInstancedStereo: 1;
-	uint32 bSupportsMultiView: 1;
+	uint32 SupportsMultiViewport: int32(ERHIFeatureSupport::NumBits);
 	uint32 bSupportsMSAA: 1;
 	uint32 bSupports4ComponentUAVReadWrite: 1;
 	uint32 bSupportsRenderTargetWriteMask: 1;
 	uint32 bSupportsRayTracing: 1;
+	uint32 bSupportsRayTracingCallableShaders : 1;
 	uint32 bSupportsRayTracingProceduralPrimitive : 1;
+	uint32 bSupportsRayTracingTraversalStatistics : 1;
 	uint32 bSupportsRayTracingIndirectInstanceData : 1; // Whether instance transforms can be copied from the GPU to the TLAS instances buffer
 	uint32 bSupportsHighEndRayTracingReflections : 1; // Whether fully-featured RT reflections can be used on the platform (with multi-bounce, translucency, etc.)
 	uint32 bSupportsPathTracing : 1; // Whether real-time path tracer is supported on this platform (avoids compiling unnecessary shaders)
-	uint32 bSupportsGPUSkinCache: 1;
 	uint32 bSupportsGPUScene : 1;
 	uint32 bSupportsByteBufferComputeShaders : 1;
 	uint32 bSupportsPrimitiveShaders : 1;
@@ -359,7 +379,9 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 	uint32 bSupportsSSDIndirect : 1;
 	uint32 bSupportsTemporalHistoryUpscale : 1;
 	uint32 bSupportsRTIndexFromVS : 1;
-	uint32 bSupportsWaveOperations : 1; // Whether HLSL SM6 shader wave intrinsics are supported
+	uint32 bSupportsWaveOperations : int32(ERHIFeatureSupport::NumBits);
+	uint32 MinimumWaveSize : 8;
+	uint32 MaximumWaveSize : 8;
 	uint32 bSupportsIntrinsicWaveOnce : 1;
 	uint32 bSupportsConservativeRasterization : 1;
 	uint32 bRequiresExplicit128bitRT : 1;
@@ -379,10 +401,10 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 	uint32 bSupportsPerPixelDBufferMask : 1;
 	uint32 bIsHlslcc : 1;
 	uint32 bSupportsDxc : 1; // Whether DirectXShaderCompiler (DXC) is supported
+	uint32 bIsSPIRV : 1;
 	uint32 bSupportsVariableRateShading : 1;
 	uint32 NumberOfComputeThreads : 10;
 	uint32 bWaterUsesSimpleForwardShading : 1;
-	uint32 bNeedsToSwitchVerticalAxisOnMobileOpenGL : 1;
 	uint32 bSupportsHairStrandGeometry : 1;
 	uint32 bSupportsDOFHybridScattering : 1;
 	uint32 bNeedsExtraMobileFrames : 1;
@@ -397,8 +419,15 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 	uint32 bSupportsInlineRayTracing : 1;
 	uint32 bSupportsRayTracingShaders : 1;
 	uint32 bSupportsVertexShaderLayer : 1;
+	uint32 bSupportsBindless : 1;
 	uint32 bSupportsVolumeTextureAtomics : 1;
-
+	uint32 bSupportsROV : 1;
+	uint32 bSupportsOIT : 1;
+	uint32 bSupportsRealTypes : int32(ERHIFeatureSupport::NumBits);
+	uint32 EnablesHLSL2021ByDefault : 2; // 0: disabled, 1: global shaders only, 2: all shaders
+	uint32 bSupportsSceneDataCompressedTransforms : 1;
+	uint32 bIsPreviewPlatform : 1;
+	uint32 bSupportsSwapchainUAVs : 1;
 		
 #if WITH_EDITOR
 	FText FriendlyName;
@@ -418,7 +447,33 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 
 public:
 	static void Initialize();
+	static void UpdatePreviewPlatforms();
 	static void ParseDataDrivenShaderInfo(const FConfigSection& Section, FGenericDataDrivenShaderPlatformInfo& Info);
+	static const EShaderPlatform GetShaderPlatformFromName(const FName ShaderPlatformName);
+
+	static FORCEINLINE_DEBUGGABLE const FName GetName(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].Name;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const FName GetShaderFormat(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].ShaderFormat;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const EShaderPlatform GetPreviewShaderPlatformParent(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].PreviewShaderPlatformParent;
+	}
+
+	static FORCEINLINE_DEBUGGABLE uint32 GetShaderPlatformPropertiesHash(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].ShaderPropertiesHash;
+	}
 
 	static FORCEINLINE_DEBUGGABLE const bool GetIsLanguageD3D(const FStaticShaderPlatform Platform)
 	{
@@ -558,11 +613,18 @@ public:
 		return Infos[Platform].bSupportsInstancedStereo;
 	}
 
+	UE_DEPRECATED(5.1, "bSupportsMultiView shader platform property has been deprecated. Use SupportsMultiViewport")
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsMultiView(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
-		return Infos[Platform].bSupportsMultiView;
+		return ERHIFeatureSupport(Infos[Platform].SupportsMultiViewport) != ERHIFeatureSupport::Unsupported;
 	}
+
+	static FORCEINLINE_DEBUGGABLE const ERHIFeatureSupport GetSupportsMultiViewport(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return ERHIFeatureSupport(Infos[Platform].SupportsMultiViewport);
+	}	
 
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsMSAA(const FStaticShaderPlatform Platform)
 	{
@@ -576,12 +638,24 @@ public:
 		return Infos[Platform].bSupports4ComponentUAVReadWrite;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsSwapchainUAVs(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].bSupportsSwapchainUAVs;
+	}
+
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRenderTargetWriteMask(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
 		return Infos[Platform].bSupportsRenderTargetWriteMask;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportSceneDataCompressedTransforms(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].bSupportsSceneDataCompressedTransforms;
+	}
+	
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRayTracing(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
@@ -600,10 +674,22 @@ public:
 		return Infos[Platform].bSupportsRayTracing && Infos[Platform].bSupportsInlineRayTracing;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRayTracingCallableShaders(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].bSupportsRayTracing && Infos[Platform].bSupportsRayTracingCallableShaders;
+	}
+
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRayTracingProceduralPrimitive(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
 		return Infos[Platform].bSupportsRayTracing && Infos[Platform].bSupportsRayTracingProceduralPrimitive;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRayTracingTraversalStatistics(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].bSupportsRayTracing && Infos[Platform].bSupportsRayTracingTraversalStatistics;
 	}
 
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsRayTracingIndirectInstanceData(const FStaticShaderPlatform Platform)
@@ -624,10 +710,11 @@ public:
 		return Infos[Platform].bSupportsRayTracing && Infos[Platform].bSupportsHighEndRayTracingReflections;
 	}
 
+	UE_DEPRECATED(5.1, "This function is no longer in use and will be removed.")
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsGPUSkinCache(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
-		return Infos[Platform].bSupportsGPUSkinCache;
+		return true;
 	}
 
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsComputeFramework(const FStaticShaderPlatform Platform)
@@ -660,10 +747,22 @@ public:
 		return Infos[Platform].bSupportsByteBufferComputeShaders;
 	}
 
-	static FORCEINLINE_DEBUGGABLE const bool GetSupportsWaveOperations(const FStaticShaderPlatform Platform)
+	static FORCEINLINE_DEBUGGABLE const ERHIFeatureSupport GetSupportsWaveOperations(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
-		return Infos[Platform].bSupportsWaveOperations;
+		return ERHIFeatureSupport(Infos[Platform].bSupportsWaveOperations);
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetMinimumWaveSize(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].MinimumWaveSize;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetMaximumWaveSize(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].MaximumWaveSize;
 	}
 
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsTemporalHistoryUpscale(const FStaticShaderPlatform Platform)
@@ -810,6 +909,12 @@ public:
 		return Infos[Platform].bSupportsDxc;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetIsSPIRV(const FStaticShaderPlatform Platform)
+	{
+		check(IsValid(Platform));
+		return Infos[Platform].bIsSPIRV;
+	}
+
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsVariableRateShading(const FStaticShaderPlatform Platform)
 	{
 		check(IsValid(Platform));
@@ -826,12 +931,6 @@ public:
 	{
 		check(IsValid(Platform));
 		return Infos[Platform].bWaterUsesSimpleForwardShading;
-	}
-
-	static FORCEINLINE_DEBUGGABLE const bool GetNeedsToSwitchVerticalAxisOnMobileOpenGL(const FStaticShaderPlatform Platform)
-	{
-		check(IsValid(Platform));
-		return Infos[Platform].bNeedsToSwitchVerticalAxisOnMobileOpenGL;
 	}
 
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsHairStrandGeometry(const FStaticShaderPlatform Platform)
@@ -906,17 +1005,43 @@ public:
 		return Infos[Platform].bSupportsVertexShaderLayer;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsBindless(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsBindless;
+	}
+
 	static FORCEINLINE_DEBUGGABLE const bool GetSupportsVolumeTextureAtomics(const FStaticShaderPlatform Platform)
 	{
 		return Infos[Platform].bSupportsVolumeTextureAtomics;
 	}
 
-#if WITH_EDITOR
-	static FORCEINLINE_DEBUGGABLE FText GetFriendlyName(const FStaticShaderPlatform Platform)
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsROV(const FStaticShaderPlatform Platform)
 	{
-		check(IsValid(Platform));
-		return Infos[Platform].FriendlyName;
+		return Infos[Platform].bSupportsROV;
 	}
+
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsOIT(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsOIT;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const bool GetIsPreviewPlatform(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bIsPreviewPlatform;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const ERHIFeatureSupport GetSupportsRealTypes(const FStaticShaderPlatform Platform)
+	{
+		return ERHIFeatureSupport(Infos[Platform].bSupportsRealTypes);
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetEnablesHLSL2021ByDefault(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].EnablesHLSL2021ByDefault;
+	}
+
+#if WITH_EDITOR
+	static FText GetFriendlyName(const FStaticShaderPlatform Platform);
 #endif
 
 private:
@@ -1069,6 +1194,16 @@ enum ERasterizerCullMode
 	ERasterizerCullMode_NumBits = 2,
 };
 static_assert(ERasterizerCullMode_Num <= (1 << ERasterizerCullMode_NumBits), "ERasterizerCullMode_Num will not fit on ERasterizerCullMode_NumBits");
+
+enum class ERasterizerDepthClipMode : uint8
+{
+	DepthClip,
+	DepthClamp,
+
+	Num,
+	NumBits = 1,
+};
+static_assert(uint32(ERasterizerDepthClipMode::Num) <= (1U << uint32(ERasterizerDepthClipMode::NumBits)), "ERasterizerDepthClipMode::Num will not fit on ERasterizerDepthClipMode::NumBits");
 
 enum EColorWriteMask
 {
@@ -1269,6 +1404,8 @@ enum class EShaderCodeResourceBindingType : uint8
 	RWBuffer,
 	RWStructuredBuffer,
 	RWByteAddressBuffer,
+
+	RasterizerOrderedTexture2D,
 
 	MAX
 };
@@ -1662,7 +1799,7 @@ enum class EGpuVendorId
 };
 
 /** An enumeration of the different RHI reference types. */
-enum ERHIResourceType
+enum ERHIResourceType : uint8
 {
 	RRT_None,
 
@@ -1686,10 +1823,12 @@ enum ERHIResourceType
 	RRT_UniformBuffer,
 	RRT_Buffer,
 	RRT_Texture,
+	// @todo: texture type unification - remove these
 	RRT_Texture2D,
 	RRT_Texture2DArray,
 	RRT_Texture3D,
 	RRT_TextureCube,
+	// @todo: texture type unification - remove these
 	RRT_TextureReference,
 	RRT_TimestampCalibrationQuery,
 	RRT_GPUFence,
@@ -1709,7 +1848,7 @@ enum ERHIResourceType
 };
 
 /** Describes the dimension of a texture. */
-enum class ETextureDimension
+enum class ETextureDimension : uint8
 {
 	Texture2D,
 	Texture2DArray,
@@ -1936,6 +2075,36 @@ enum class EAsyncComputeBudget
 	EAll_4,				//Async compute can use the entire GPU.
 };
 
+enum class ERHIDescriptorHeapType : uint8
+{
+	Standard,
+	Sampler,
+	RenderTarget,
+	DepthStencil,
+	count
+};
+
+struct FRHIDescriptorHandle
+{
+	FRHIDescriptorHandle() = default;
+	FRHIDescriptorHandle(ERHIDescriptorHeapType InType, uint32 InIndex)
+		: Index(InIndex)
+		, Type(InType)
+	{
+	}
+
+	inline uint32                GetIndex() const { return Index; }
+	inline ERHIDescriptorHeapType GetType() const { return Type; }
+
+	inline bool IsValid() const { return Index != UINT_MAX && Type != ERHIDescriptorHeapType::count; }
+
+private:
+	uint32                 Index{ UINT_MAX };
+	ERHIDescriptorHeapType Type{ ERHIDescriptorHeapType::count };
+};
+
+using FDisplayInformationArray = TArray<struct FDisplayInformation>;
+
 inline bool IsPCPlatform(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetIsPC(Platform);
@@ -1945,6 +2114,11 @@ inline bool IsPCPlatform(const FStaticShaderPlatform Platform)
 inline bool IsMobilePlatform(const FStaticShaderPlatform Platform)
 {
 	return FDataDrivenShaderPlatformInfo::GetMaxFeatureLevel(Platform) == ERHIFeatureLevel::ES3_1;
+}
+
+inline bool IsCustomPlatform(const FStaticShaderPlatform Platform)
+{
+	return (Platform >= EShaderPlatform::SP_CUSTOM_PLATFORM_FIRST) && (Platform < EShaderPlatform::SP_CUSTOM_PLATFORM_LAST);
 }
 
 inline bool IsOpenGLPlatform(const FStaticShaderPlatform Platform)
@@ -1979,13 +2153,10 @@ inline bool IsConsolePlatform(const FStaticShaderPlatform Platform)
 	return FDataDrivenShaderPlatformInfo::GetIsConsole(Platform);
 }
 
-UE_DEPRECATED(4.27, "IsSwitchPlatform() is deprecated; please use DataDrivenShaderPlatformInfo instead.")
-inline bool IsSwitchPlatform(const FStaticShaderPlatform Platform)
+// @todo: data drive uses of this function
+inline bool IsAndroidPlatform(const FStaticShaderPlatform Platform)
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return Platform == SP_SWITCH_REMOVED || Platform == SP_SWITCH_FORWARD_REMOVED || 
-		FDataDrivenShaderPlatformInfo::GetIsLanguageNintendo(Platform);	
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	return (Platform == SP_VULKAN_ES3_1_ANDROID) || (Platform == SP_VULKAN_SM5_ANDROID) || (Platform == SP_OPENGL_ES3_1_ANDROID);
 }
 
 inline bool IsVulkanPlatform(const FStaticShaderPlatform Platform)
@@ -2048,35 +2219,14 @@ inline FStaticFeatureLevel GetMaxSupportedFeatureLevel(const FStaticShaderPlatfo
 /* Returns true if the shader platform Platform is used to simulate a mobile feature level on a PC platform. */
 inline bool IsSimulatedPlatform(const FStaticShaderPlatform Platform)
 {
-	switch (Platform)
-	{
-		case SP_PCD3D_ES3_1:
-		case SP_OPENGL_PCES3_1:
-		case SP_METAL_MACES3_1:
-		case SP_VULKAN_PCES3_1:
-			return true;
-		break;
-
-		default:
-			return false;
-		break;
-	}
-
-	return false;
+	return FDataDrivenShaderPlatformInfo::GetIsPreviewPlatform(Platform);
 }
 
 inline EShaderPlatform GetSimulatedPlatform(FStaticShaderPlatform Platform)
 {
-	switch (Platform)
+	if (IsSimulatedPlatform(Platform))
 	{
-		case SP_PCD3D_ES3_1:
-		case SP_OPENGL_PCES3_1:
-			return SP_OPENGL_ES3_1_ANDROID;
-		break;
-
-		default:
-			return Platform;
-		break;
+		return FDataDrivenShaderPlatformInfo::GetPreviewShaderPlatformParent(Platform);
 	}
 
 	return Platform;
@@ -2088,31 +2238,16 @@ inline bool IsFeatureLevelSupported(const FStaticShaderPlatform InShaderPlatform
 	return InFeatureLevel <= GetMaxSupportedFeatureLevel(InShaderPlatform);
 }
 
-inline bool RHINeedsToSwitchVerticalAxis(const FStaticShaderPlatform Platform)
-{
-#if WITH_EDITOR
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ForceRHISwitchVerticalAxis"));
-	if (CVar->GetValueOnAnyThread())
-	{
-		// only allow this for mobile preview.
-		return IsMobilePlatform(Platform);
-	}
-#endif
-
-	// ES3.1 need to flip when rendering to an RT that will be post processed
-	return IsOpenGLPlatform(Platform) && IsMobilePlatform(Platform) && !IsPCPlatform(Platform) && !IsMetalMobilePlatform(Platform) && !IsVulkanPlatform(Platform)
-			&& FDataDrivenShaderPlatformInfo::GetNeedsToSwitchVerticalAxisOnMobileOpenGL(Platform);
-}
-
 inline bool RHISupportsSeparateMSAAAndResolveTextures(const FStaticShaderPlatform Platform)
 {
 	// Metal mobile devices and Android ES3.1 need to handle MSAA and resolve textures internally (unless RHICreateTexture2D was changed to take an optional resolve target)
-	return !IsMetalMobilePlatform(Platform) && !IsAndroidOpenGLESPlatform(Platform);
+	return !IsMetalMobilePlatform(Platform);
 }
 
+UE_DEPRECATED(5.1, "This function is no longer in use and will be removed.")
 inline bool RHISupportsComputeShaders(const FStaticShaderPlatform Platform)
 {
-	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) 
+	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5)
 		|| (GetMaxSupportedFeatureLevel(Platform) == ERHIFeatureLevel::ES3_1);
 }
 
@@ -2505,6 +2640,16 @@ inline ERHIResourceType GetRHIResourceType(ETextureDimension Dimension)
 	checkNoEntry();
 	return ERHIResourceType::RRT_None;
 }
+
+enum class ERHIBindlessConfiguration
+{
+	Disabled,
+	AllShaders,
+	RayTracingShaders,
+};
+
+RHI_API ERHIBindlessConfiguration RHIGetBindlessResourcesConfiguration(EShaderPlatform Platform);
+RHI_API ERHIBindlessConfiguration RHIGetBindlessSamplersConfiguration(EShaderPlatform Platform);
 
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	#define GEOMETRY_SHADER(GeometryShader)	(GeometryShader)

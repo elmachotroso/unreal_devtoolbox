@@ -8,6 +8,7 @@
 #include "AssetRegistry.generated.h"
 
 class FRWScopeLock;
+namespace UE::AssetRegistry::Premade { struct FAsyncConsumer; }
 
 /**
  * The AssetRegistry singleton gathers information about .uasset files in the background so things
@@ -23,22 +24,29 @@ public:
 	UAssetRegistryImpl(const FObjectInitializer& ObjectInitializer);
 	UAssetRegistryImpl(FVTableHelper& Helper);
 	virtual ~UAssetRegistryImpl();
+	virtual void FinishDestroy() override;
 
 	/** Gets the asset registry singleton for asset registry module use */
 	static UAssetRegistryImpl& Get();
 
 	// IAssetRegistry implementation
 	virtual bool HasAssets(const FName PackagePath, const bool bRecursive = false) const override;
-	virtual bool GetAssetsByPackageName(FName PackageName, TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false) const override;
+	virtual bool GetAssetsByPackageName(FName PackageName, TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false, bool bSkipARFilteredAssets=true) const override;
 	virtual bool GetAssetsByPath(FName PackagePath, TArray<FAssetData>& OutAssetData, bool bRecursive = false, bool bIncludeOnlyOnDiskAssets = false) const override;
 	virtual bool GetAssetsByPaths(TArray<FName> PackagePath, TArray<FAssetData>& OutAssetData, bool bRecursive = false, bool bIncludeOnlyOnDiskAssets = false) const override;
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
 	virtual bool GetAssetsByClass(FName ClassName, TArray<FAssetData>& OutAssetData, bool bSearchSubClasses = false) const override;
+	virtual bool GetAssetsByClass(FTopLevelAssetPath ClassPathName, TArray<FAssetData>& OutAssetData, bool bSearchSubClasses = false) const override;
 	virtual bool GetAssetsByTags(const TArray<FName>& AssetTags, TArray<FAssetData>& OutAssetData) const override;
 	virtual bool GetAssetsByTagValues(const TMultiMap<FName, FString>& AssetTagsAndValues, TArray<FAssetData>& OutAssetData) const override;
-	virtual bool GetAssets(const FARFilter& Filter, TArray<FAssetData>& OutAssetData) const override;
-	virtual bool EnumerateAssets(const FARFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback) const override;
-	virtual bool EnumerateAssets(const FARCompiledFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback) const override;
+	virtual bool GetAssets(const FARFilter& Filter, TArray<FAssetData>& OutAssetData, bool bSkipARFilteredAssets = true) const override;
+	virtual bool EnumerateAssets(const FARFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback, bool bSkipARFilteredAssets=true) const override;
+	virtual bool EnumerateAssets(const FARCompiledFilter& Filter, TFunctionRef<bool(const FAssetData&)> Callback, bool bSkipARFilteredAssets = true) const override;
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual FAssetData GetAssetByObjectPath( const FName ObjectPath, bool bIncludeOnlyOnDiskAssets = false ) const override;
+	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const override;
+	virtual UE::AssetRegistry::EExists TryGetAssetByObjectPath(const FSoftObjectPath& ObjectPath, FAssetData& OutAssetData) const override;
+	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(const FName PackageName, FAssetPackageData& OutAssetPackageData) const override;
 	virtual bool GetAllAssets(TArray<FAssetData>& OutAssetData, bool bIncludeOnlyOnDiskAssets = false) const override;
 	virtual bool EnumerateAllAssets(TFunctionRef<bool(const FAssetData&)> Callback, bool bIncludeOnlyOnDiskAssets = false) const override;
 	virtual void GetPackagesByName(FStringView PackageName, TArray<FName>& OutPackageNames) const override;
@@ -59,13 +67,22 @@ public:
 	virtual bool GetReferencers(FName PackageName, TArray<FName>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::Package, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const override;
 	virtual const FAssetPackageData* GetAssetPackageData(FName PackageName) const override;
 	virtual TOptional<FAssetPackageData> GetAssetPackageDataCopy(FName PackageName) const override;
+	virtual void EnumerateAllPackages(TFunctionRef<void(FName PackageName, const FAssetPackageData& PackageData)> Callback) const override;
+	virtual bool DoesPackageExistOnDisk(FName PackageName, FString* OutCorrectCasePackageName = nullptr, FString* OutExtension = nullptr) const override;
+	virtual FSoftObjectPath GetRedirectedObjectPath(const FSoftObjectPath& ObjectPath) const override;
+	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual FName GetRedirectedObjectPath(const FName ObjectPath) const override;
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
 	virtual bool GetAncestorClassNames(FName ClassName, TArray<FName>& OutAncestorClassNames) const override;
+	virtual bool GetAncestorClassNames(FTopLevelAssetPath ClassName, TArray<FTopLevelAssetPath>& OutAncestorClassNames) const override;
+	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use a version of this function that uses FTopLevelAssetPath.")
 	virtual void GetDerivedClassNames(const TArray<FName>& ClassNames, const TSet<FName>& ExcludedClassNames, TSet<FName>& OutDerivedClassNames) const override;
+	virtual void GetDerivedClassNames(const TArray<FTopLevelAssetPath>& ClassNames, const TSet<FTopLevelAssetPath>& ExcludedClassNames, TSet<FTopLevelAssetPath>& OutDerivedClassNames) const override;	
 	virtual void GetAllCachedPaths(TArray<FString>& OutPathList) const override;
 	virtual void EnumerateAllCachedPaths(TFunctionRef<bool(FString)> Callback) const override;
 	virtual void EnumerateAllCachedPaths(TFunctionRef<bool(FName)> Callback) const override;
 	virtual void GetSubPaths(const FString& InBasePath, TArray<FString>& OutPathList, bool bInRecurse) const override;
+	virtual void GetSubPaths(const FName& InBasePath, TArray<FName>& OutPathList, bool bInRecurse) const override;
 	virtual void EnumerateSubPaths(const FString& InBasePath, TFunctionRef<bool(FString)> Callback, bool bInRecurse) const override;
 	virtual void EnumerateSubPaths(const FName InBasePath, TFunctionRef<bool(FName)> Callback, bool bInRecurse) const override;
 	virtual void RunAssetsThroughFilter (TArray<FAssetData>& AssetDataList, const FARFilter& Filter) const override;
@@ -81,6 +98,7 @@ public:
 	virtual float GetAssetAvailabilityProgress(const FAssetData& AssetData, EAssetAvailabilityProgressReportingType::Type ReportType) const override;
 	virtual bool GetAssetAvailabilityProgressTypeSupported(EAssetAvailabilityProgressReportingType::Type ReportType) const override;
 	virtual void PrioritizeAssetInstall(const FAssetData& AssetData) const override;
+	virtual bool GetVerseFilesByPath(FName PackagePath, TArray<FName>& OutFilePaths, bool bRecursive = false) const override;
 	virtual bool AddPath(const FString& PathToAdd) override;
 	virtual bool RemovePath(const FString& PathToRemove) override;
 	virtual bool PathExists(const FString& PathToTest) const override;
@@ -99,7 +117,7 @@ public:
 	virtual SIZE_T GetAllocatedSize(bool bLogDetailed = false) const override;
 	virtual void LoadPackageRegistryData(FArchive& Ar, FLoadPackageRegistryData& InOutData) const override;
 	virtual void LoadPackageRegistryData(const FString& PackageFilename, FLoadPackageRegistryData& InOutData) const override;
-	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false, const TMap<FName, FAssetData*>& OverrideData = TMap<FName, FAssetData*>()) const override;
+	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false) const override;
 #if ASSET_REGISTRY_STATE_DUMPING_ENABLED
 	virtual void DumpState(const TArray<FString>& Arguments, TArray<FString>& OutPages, int32 LinesPerPage = 1) const override;
 #endif
@@ -120,6 +138,7 @@ public:
 	virtual void AssetDeleted(UObject* DeletedAsset) override;
 	virtual void AssetRenamed(const UObject* RenamedAsset, const FString& OldObjectPath) override;
 	virtual void AssetSaved(const UObject& SavedAsset) override;
+	virtual void AssetTagsFinalized(const UObject& FinalizedAsset) override;
 
 	virtual void PackageDeleted(UPackage* DeletedPackage) override;
 
@@ -158,9 +177,17 @@ public:
 
 protected:
 	virtual void SetManageReferences(const TMultiMap<FAssetIdentifier, FAssetIdentifier>& ManagerMap, bool bClearExisting, UE::AssetRegistry::EDependencyCategory RecurseType, TSet<FDependsNode*>& ExistingManagedNodes, ShouldSetManagerPredicate ShouldSetManager = nullptr) override;
-	virtual bool SetPrimaryAssetIdForObjectPath(const FName ObjectPath, FPrimaryAssetId PrimaryAssetId) override;
+	virtual bool SetPrimaryAssetIdForObjectPath(const FName ObjectPath, FPrimaryAssetId PrimaryAssetId) override
+	{
+		return SetPrimaryAssetIdForObjectPath(FSoftObjectPath(ObjectPath), PrimaryAssetId);
+	}
+	virtual bool SetPrimaryAssetIdForObjectPath(const FSoftObjectPath& ObjectPath, FPrimaryAssetId PrimaryAssetId) override;
 
 private:
+	void OnEnginePreExit();
+#if WITH_EDITOR
+	void OnFEngineLoopInitCompleteSearchAllAssets();
+#endif
 	void InitializeEvents(UE::AssetRegistry::Impl::FInitializeContext& Context);
 	void Broadcast(UE::AssetRegistry::Impl::FEventContext& EventContext);
 
@@ -216,6 +243,13 @@ private:
 	void GetInheritanceContextWithRequiredLock(FRWScopeLock& InOutScopeLock,
 		UE::AssetRegistry::Impl::FClassInheritanceContext& InheritanceContext,
 		UE::AssetRegistry::Impl::FClassInheritanceBuffer& StackBuffer);
+	void GetInheritanceContextWithRequiredLock(FWriteScopeLock& InOutScopeLock,
+		UE::AssetRegistry::Impl::FClassInheritanceContext& InheritanceContext,
+		UE::AssetRegistry::Impl::FClassInheritanceBuffer& StackBuffer);
+	void GetInheritanceContextAfterVerifyingLock(uint64 CurrentClassesVersionNumber,
+		UE::AssetRegistry::Impl::FClassInheritanceContext& InheritanceContext,
+		UE::AssetRegistry::Impl::FClassInheritanceBuffer& StackBuffer);
+
 
 #if WITH_EDITOR
 	/**
@@ -276,5 +310,8 @@ private:
 	FFileLoadProgressUpdatedEvent FileLoadProgressUpdatedEvent;
 
 	UE::AssetRegistry::Impl::FEventContext DeferredEvents;
+
+	friend class UE::AssetRegistry::FAssetRegistryImpl;
+	friend struct UE::AssetRegistry::Premade::FAsyncConsumer;
 };
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

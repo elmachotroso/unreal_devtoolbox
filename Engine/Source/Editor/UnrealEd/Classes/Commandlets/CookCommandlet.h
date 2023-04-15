@@ -18,6 +18,7 @@
 
 class FSandboxPlatformFile;
 class ITargetPlatform;
+class UCookOnTheFlyServer;
 
 UCLASS(config=Editor)
 class UCookCommandlet
@@ -33,12 +34,16 @@ class UCookCommandlet
 	bool bIterativeCooking;
 	/** Prototype cook-on-the-fly server */
 	bool bCookOnTheFly; 
+	/** Is using fast cook */
+	bool bFastCook;
 	/** Cook everything */
 	bool bCookAll;
 	/** Skip saving any packages in Engine/Content/Editor* UNLESS TARGET HAS EDITORONLY DATA (in which case it will save those anyway) */
 	bool bSkipEditorContent;
 	/** Save all cooked packages without versions. These are then assumed to be current version on load. This is dangerous but results in smaller patch sizes. */
 	bool bUnversioned;
+	/** Produce editor optional package output when cooking. */
+	bool bCookEditorOptional;
 	/** Generate manifests for building streaming install packages */
 	bool bGenerateStreamingInstallManifests;
 	/** Error if we access engine content (useful for dlc) */
@@ -53,8 +58,8 @@ class UCookCommandlet
 	bool bVerboseCookerWarnings;
 	/** only clean up objects which are not in use by the cooker when we gc (false will enable full gc) */
 	bool bPartialGC;
-	/** Do not cook any shaders.  Shader maps will be empty */
-	bool bNoShaderCooking;
+	/** Ignore ini settings out of date. */
+	bool bIgnoreIniSettingsOutOfDate;
 	/** All commandline tokens */
 	TArray<FString> Tokens;
 	/** All commandline switches */
@@ -77,9 +82,13 @@ class UCookCommandlet
 	/** Cooks for specified targets */
 	bool CookByTheBook(const TArray<ITargetPlatform*>& Platforms);
 
-	/**	Process deferred commands */
-	void ProcessDeferredCommands();
+	bool CookAsCookWorker();
 
+	/** Collect garbage if the cooker's TickResults requested it */
+	void ConditionalCollectGarbage(uint32 TickResults, UCookOnTheFlyServer& COTFS);
+
+	UE_DEPRECATED(5.1, "No longer used")
+	bool bNoShaderCooking;
 public:
 
 	//~ Begin UCommandlet Interface

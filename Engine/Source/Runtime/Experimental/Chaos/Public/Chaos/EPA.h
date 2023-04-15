@@ -39,6 +39,18 @@ struct TEPAEntry
 		return Distance > Other.Distance;
 	}
 
+	static constexpr T SelectEpsilon(float FloatEpsilon, double DoubleEpsilon)
+	{
+		if (sizeof(T) <= sizeof(float))
+		{
+			return FloatEpsilon;
+		}
+		else
+		{
+			return DoubleEpsilon;
+		}
+	}
+
 	FORCEINLINE_DEBUGGABLE bool Initialize(const TVec3<T>* VerticesA, const TVec3<T>* VerticesB, int32 InIdx0, int32 InIdx1, int32 InIdx2, const TVector<int32,3>& InAdjFaces, const TVector<int32,3>& InAdjEdges)
 	{
 		const TVec3<T> V0 = MinkowskiVert(VerticesA, VerticesB, InIdx0);
@@ -49,7 +61,9 @@ struct TEPAEntry
 		const TVec3<T> V0V2 = V2 - V0;
 		const TVec3<T> Norm = TVec3<T>::CrossProduct(V0V1, V0V2);
 		const T NormLenSq = Norm.SizeSquared();
-		constexpr T Eps = 1e-4f;
+		// We have the square of the size of a cross product, so we need the distance margin to be a power of 4
+		// Verbosity emphasizes that
+		const T Eps = TEPAEntry::SelectEpsilon(1.e-4f * 1.e-4f * 1.e-4f * 1.e-4f, 1.e-8 * 1.e-8 * 1.e-8 * 1.e-8);
 		if (NormLenSq < Eps)
 		{
 			return false;
@@ -333,7 +347,7 @@ void EPAComputeVisibilityBorder(TEPAWorkingArray<TEPAEntry<T>>& Entries, int32 E
 		TEPAEntry<T>& Entry = Entries[FloodEntry.EntryIdx];
 		if (!Entry.bObsolete)
 		{
-			if (Entry.DistanceToPlane(W) < 0)
+			if (Entry.DistanceToPlane(W) <= TEPAEntry<T>::SelectEpsilon(1.e-4f, 1.e-8))
 			{
 				//W can't see this triangle so mark the edge as a border
 				OutBorderEdges.Add(FloodEntry);
@@ -406,6 +420,7 @@ enum class EEPAResult
 	MaxIterations,				// We have a contact point, but did not reach the target tolerance before we hit the iteration limit - result accuracy is unknown
 	Degenerate,					// We hit a degenerate condition in EPA which prevents a solution from being generated (result is invalid but objects may be penetrating)
 	BadInitialSimplex,			// The initial setup did not provide a polytope containing the origin (objects are separated)
+	NoValidContact,             // No valid contact have been found, no contacts will be returned
 };
 
 inline const bool IsEPASuccess(EEPAResult EPAResult)
@@ -422,6 +437,15 @@ inline const bool IsEPASuccess(EEPAResult EPAResult)
 // or "Real-time Collision Detection with Implicit Objects" (Leif Olvang, 2010)
 template <typename T, typename TSupportA, typename TSupportB>
 EEPAResult EPA(TArray<TVec3<T>>& VertsABuffer, TArray<TVec3<T>>& VertsBBuffer, const TSupportA& SupportA, const TSupportB& SupportB, T& OutPenetration, TVec3<T>& OutDir, TVec3<T>& WitnessA, TVec3<T>& WitnessB, const FReal Eps = 1.e-2f)
+{
+	const TFunctionRef<TVector<T, 3>(const TVec3<T>& V)> SupportFuncA(SupportA);
+	const TFunctionRef<TVector<T, 3>(const TVec3<T>& V)> SupportFuncB(SupportB);
+	return EPA<T>(VertsABuffer, VertsBBuffer, SupportFuncA, SupportFuncB, OutPenetration, OutDir, WitnessA, WitnessB, Eps);
+}
+
+template <typename T>
+EEPAResult EPA(TArray<TVec3<T>>& VertsABuffer, TArray<TVec3<T>>& VertsBBuffer, const TFunctionRef<TVector<T, 3>(const TVec3<T>& V)>& SupportA,
+	const TFunctionRef<TVector<T, 3>(const TVec3<T>& V)>& SupportB, T& OutPenetration, TVec3<T>& OutDir, TVec3<T>& WitnessA, TVec3<T>& WitnessB, const FReal Eps = 1.e-2f)
 {
 	struct FEPAEntryWrapper
 	{

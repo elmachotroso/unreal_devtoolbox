@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "WidgetBlueprintEditor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
@@ -179,7 +179,7 @@ protected:
 	UWidgetBlueprint* GetBlueprint() const;
 
 	virtual void BuildWidgetList();
-	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates) = 0;
+	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList) = 0;
 	void BuildClassWidgetList();
 
 	static bool FilterAssetData(FAssetData& BPAssetData);
@@ -223,7 +223,7 @@ public:
 	FPaletteViewModel(TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor) : FWidgetCatalogViewModel(InBlueprintEditor) { }
 
 	//~ Begin FWidgetCatalogViewModel Interface
-	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates) override;
+	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList) override;
 	virtual void AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
 	virtual void RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
 	//~ End FWidgetCatalogViewModel Interface

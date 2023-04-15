@@ -17,6 +17,8 @@
 #include "ToolActivities/PolyEditActivityUtil.h"
 #include "ToolSceneQueriesUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PolyEditCutFacesActivity)
+
 #define LOCTEXT_NAMESPACE "UPolyEditInsetOutsetActivity"
 
 using namespace UE::Geometry;
@@ -103,7 +105,9 @@ void UPolyEditCutFacesActivity::BeginCutFaces()
 	FTransform3d WorldTransform(ActivityContext->Preview->PreviewMesh->GetTransform());
 
 	EditPreview = PolyEditActivityUtil::CreatePolyEditPreviewMesh(*ParentTool, *ActivityContext);
-	EditPreview->InitializeStaticType(ActivityContext->CurrentMesh.Get(), ActiveTriangleSelection, &WorldTransform);
+	FTransform3d WorldTranslation, WorldRotateScale;
+	EditPreview->ApplyTranslationToPreview(WorldTransform, WorldTranslation, WorldRotateScale);
+	EditPreview->InitializeStaticType(ActivityContext->CurrentMesh.Get(), ActiveTriangleSelection, &WorldRotateScale);
 
 	FDynamicMesh3 StaticHitTargetMesh;
 	EditPreview->MakeInsetTypeTargetMesh(StaticHitTargetMesh);
@@ -268,3 +272,4 @@ void FPolyEditCutFacesActivityFirstPointChange::Revert(UObject* Object)
 }
 
 #undef LOCTEXT_NAMESPACE
+

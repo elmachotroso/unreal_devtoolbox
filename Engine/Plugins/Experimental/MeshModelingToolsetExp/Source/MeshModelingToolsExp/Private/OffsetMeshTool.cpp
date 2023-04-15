@@ -8,6 +8,8 @@
 #include "WeightMapTypes.h"
 #include "DeformationOps/MeshOffsetOps.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OffsetMeshTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UOffsetMeshTool"
@@ -54,7 +56,7 @@ void UOffsetMeshTool::OnShutdown(EToolShutdownType ShutdownType)
 
 FText UOffsetMeshTool::GetToolMessageString() const
 {
-	return LOCTEXT("StartOffsetToolMessage", "Offset the mesh vertex positions using various Offseting methods.");
+	return LOCTEXT("StartOffsetToolMessage", "Offset the mesh vertex positions using various Offsetting methods.");
 }
 
 FText UOffsetMeshTool::GetAcceptTransactionName() const
@@ -131,3 +133,4 @@ TUniquePtr<FDynamicMeshOperator> UOffsetMeshTool::MakeNewOperator()
 
 
 #undef LOCTEXT_NAMESPACE
+

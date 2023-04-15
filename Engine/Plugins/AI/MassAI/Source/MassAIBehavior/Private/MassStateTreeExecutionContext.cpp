@@ -2,14 +2,16 @@
 
 #include "MassStateTreeExecutionContext.h"
 #include "MassStateTreeTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassSignalSubsystem.h"
 #include "Engine/World.h"
 
-FMassStateTreeExecutionContext::FMassStateTreeExecutionContext(UMassEntitySubsystem& InEntitySubsystem,
-                                                               UMassSignalSubsystem& InSignalSubsystem,
-                                                               FMassExecutionContext& InContext):
-	EntitySubsystem(&InEntitySubsystem), SignalSubsystem(&InSignalSubsystem), EntitySubsystemExecutionContext(&InContext)
+FMassStateTreeExecutionContext::FMassStateTreeExecutionContext(UObject& InOwner, const UStateTree& InStateTree, FStateTreeInstanceData& InInstanceData,
+															   FMassEntityManager& InEntityManager, UMassSignalSubsystem& InSignalSubsystem, FMassExecutionContext& InContext)
+	: FStateTreeExecutionContext(InOwner, InStateTree, InInstanceData)
+	, EntityManager(&InEntityManager)
+	, SignalSubsystem(&InSignalSubsystem)
+	, EntitySubsystemExecutionContext(&InContext)
 {
 }
 

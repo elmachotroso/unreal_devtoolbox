@@ -17,10 +17,11 @@
 /* FTcpMessageTransport structors
  *****************************************************************************/
 
-FTcpMessageTransport::FTcpMessageTransport(const FIPv4Endpoint& InListenEndpoint, const TArray<FIPv4Endpoint>& InConnectToEndpoints, int32 InConnectionRetryDelay)
+FTcpMessageTransport::FTcpMessageTransport(const FIPv4Endpoint& InListenEndpoint, const TArray<FIPv4Endpoint>& InConnectToEndpoints, int32 InConnectionRetryDelay, int32 InConnectionRetryPeriod)
 	: ListenEndpoint(InListenEndpoint)
 	, ConnectToEndpoints(InConnectToEndpoints)
 	, ConnectionRetryDelay(InConnectionRetryDelay)
+	, ConnectionRetryPeriod(InConnectionRetryPeriod)
 	, bStopping(false)
 	, SocketSubsystem(ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
 	, Listener(nullptr)
@@ -81,7 +82,7 @@ void FTcpMessageTransport::AddOutgoingConnection(const FIPv4Endpoint& Endpoint)
 	}
 	else
 	{
-		PendingConnections.Enqueue(MakeShareable(new FTcpMessageTransportConnection(Socket, Endpoint, ConnectionRetryDelay)));
+		PendingConnections.Enqueue(MakeShareable(new FTcpMessageTransportConnection(Socket, Endpoint, ConnectionRetryDelay, ConnectionRetryPeriod)));
 	}
 }
 
@@ -165,11 +166,11 @@ bool FTcpMessageTransport::TransportMessage(const TSharedRef<IMessageContext, ES
 
 	if (RecipientConnections.Num() == 0)
 	{
-		UE_LOG(LogTcpMessaging, Verbose, TEXT("No recipients for message %s from %s"), *Context->GetMessageType().ToString(), *Context->GetSender().ToString());
+		UE_LOG(LogTcpMessaging, Verbose, TEXT("No recipients for message %s from %s"), *Context->GetMessageTypePathName().ToString(), *Context->GetSender().ToString());
 		return false;
 	}
 
-	UE_LOG(LogTcpMessaging, Verbose, TEXT("Transporting message '%s' to %d connections"), *Context->GetMessageType().ToString(), RecipientConnections.Num());
+	UE_LOG(LogTcpMessaging, Verbose, TEXT("Transporting message '%s' to %d connections"), *Context->GetMessageTypePathName().ToString(), RecipientConnections.Num());
 
 	FTcpSerializedMessageRef SerializedMessage = MakeShareable(new FTcpSerializedMessage());
 
@@ -258,7 +259,7 @@ uint32 FTcpMessageTransport::Run()
 
 				while (Connection->Receive(Message, SenderNodeId))
 				{
-					UE_LOG(LogTcpMessaging, Verbose, TEXT("Received message '%s'"), *Message->GetMessageType().ToString());
+					UE_LOG(LogTcpMessaging, Verbose, TEXT("Received message '%s'"), *Message->GetMessageTypePathName().ToString());
 					TransportHandler->ReceiveTransportMessage(Message.ToSharedRef(), SenderNodeId);
 				}
 			}

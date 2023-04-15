@@ -2,6 +2,8 @@
 
 #include "LandscapeHLODBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LandscapeHLODBuilder)
+
 #if WITH_EDITOR
 
 #include "Landscape.h"
@@ -33,25 +35,6 @@ ULandscapeHLODBuilder::ULandscapeHLODBuilder(const FObjectInitializer& ObjectIni
 
 #if WITH_EDITOR
 
-static uint32 GetTransformHash(const FRotator& ComponentRotation, const FVector& ComponentLocation, const FVector& ComponentScale)
-{
-	FArchiveCrc32 Ar;
-
-	// Include transform - round sufficiently to ensure stability
-	FIntVector Location(FMath::RoundToInt(ComponentLocation.X), FMath::RoundToInt(ComponentLocation.Y), FMath::RoundToInt(ComponentLocation.Z));
-	Ar << Location;
-
-	FRotator Rotator(ComponentRotation.GetDenormalized());
-	FIntVector Rotation(FMath::RoundToInt(Rotator.Pitch), FMath::RoundToInt(Rotator.Yaw), FMath::RoundToInt(Rotator.Roll));
-	Ar << Rotation;
-
-	float SCALE_FACTOR = 100;
-	FIntVector Scale(FMath::RoundToInt(ComponentScale.X * SCALE_FACTOR), FMath::RoundToInt(ComponentScale.Y * SCALE_FACTOR), FMath::RoundToInt(ComponentScale.Z * SCALE_FACTOR));
-	Ar << Scale;
-
-	return Ar.GetCrc();
-}
-
 uint32 ULandscapeHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceComponent) const
 {
 	FArchiveCrc32 Ar;
@@ -68,7 +51,7 @@ uint32 ULandscapeHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceCom
 		UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - LODScreenSize = %x"), Ar.GetCrc());
 		
 		// LS Transform
-		uint32 TransformHash = GetTransformHash(LSComponent->GetComponentRotation(), LSComponent->GetComponentLocation(), LSComponent->GetComponentScale());
+		uint32 TransformHash = UHLODProxy::GetCRC(LSComponent->GetComponentTransform());
 		Ar << TransformHash;
 		UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - TransformHash = %x"), Ar.GetCrc());
 
@@ -123,6 +106,10 @@ uint32 ULandscapeHLODBuilder::ComputeHLODHash(const UActorComponent* InSourceCom
 			Ar << UsedTexturesCRC;
 			UE_LOG(LogHLODBuilder, VeryVerbose, TEXT("     - UsedTexturesCRC = %x"), Ar.GetCrc());
 		}
+
+		// Nanite enabled?
+		bool bNaniteEnabled = LSProxy->IsNaniteEnabled();
+		Ar << bNaniteEnabled;
 	}
 
 	return Ar.GetCrc();
@@ -292,6 +279,9 @@ TArray<UActorComponent*> ULandscapeHLODBuilder::Build(const FHLODBuildContext& I
 
 			StaticMesh->CommitMeshDescription(0);
 
+			// Nanite settings
+			StaticMesh->NaniteSettings.bEnabled = LandscapeProxy->IsNaniteEnabled();
+
 			StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
 		}
 
@@ -320,3 +310,4 @@ TArray<UActorComponent*> ULandscapeHLODBuilder::Build(const FHLODBuildContext& I
 }
 
 #endif
+

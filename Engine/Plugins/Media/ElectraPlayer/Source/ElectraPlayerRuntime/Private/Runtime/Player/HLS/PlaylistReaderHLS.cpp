@@ -236,7 +236,7 @@ private:
 	void InternalHandleOnce();
 
 	void HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeNow);
-	void HandleCompletedPlaylistDownloads(const FTimeValue& TimeNow);
+	void HandleCompletedPlaylistDownloads(FTimeValue& TimeNow);
 	void HandleStaticRequestCompletions(const FTimeValue& TimeNow);
 	void CheckForPlaylistUpdate(const FTimeValue& TimeNow);
 
@@ -323,7 +323,7 @@ void FPlaylistReaderHLS::Initialize(IPlayerSessionServices* InPlayerSessionServi
 {
 	PlayerSessionServices = InPlayerSessionServices;
 	ProgressListener = MakeSharedTS<IElectraHttpManager::FProgressListener>();
-	ProgressListener->CompletionDelegate = Electra::MakeDelegate(this, &FPlaylistReaderHLS::HTTPCompletionCallback);
+	ProgressListener->CompletionDelegate = IElectraHttpManager::FProgressListener::FCompletionDelegate::CreateRaw(this, &FPlaylistReaderHLS::HTTPCompletionCallback);
 }
 
 void FPlaylistReaderHLS::Close()
@@ -766,7 +766,7 @@ void FPlaylistReaderHLS::HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeN
 	EnqueuedPlaylistRequestsLock.Unlock();
 }
 
-void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& TimeNow)
+void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(FTimeValue& TimeNow)
 {
 	FErrorDetail ParseError;
 	while(CompletedPlaylistRequests.Num())
@@ -783,6 +783,8 @@ void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& Time
 			if (!ConnInfo->StatusInfo.ErrorDetail.IsSet())
 			{
 				ParseError = ParsePlaylist(Request);
+				// Get the current time again which may now be synchronized with the server time.
+				TimeNow = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 			}
 
 			// Was this an initially required playlist?
@@ -995,9 +997,9 @@ void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& Time
 
 						if (bFail)
 						{
-							int32 BlacklistForMilliseconds = 1000 * 15;
-							Builder->SetVariantPlaylistFailure(Manifest, Request->GetPlaylistLoadRequest(), ConnInfo, RetryInfo, TimeNow + FTimeValue().SetFromMilliseconds(BlacklistForMilliseconds));
-							LogMessage(IInfoLog::ELevel::Warning, FString::Printf(TEXT("Failed %s playlist \"%s\" (%s), blacklisting for %d milliseconds"), ParseError.IsSet() ? TEXT("parsing") : TEXT("downloading"), *ConnInfo->EffectiveURL, ParseError.IsSet() ? *ParseError.GetPrintable() : *ConnInfo->StatusInfo.ErrorDetail.GetMessage(), BlacklistForMilliseconds));
+							int32 DenylistForMilliseconds = 1000 * 15;
+							Builder->SetVariantPlaylistFailure(Manifest, Request->GetPlaylistLoadRequest(), ConnInfo, RetryInfo, TimeNow + FTimeValue().SetFromMilliseconds(DenylistForMilliseconds));
+							LogMessage(IInfoLog::ELevel::Warning, FString::Printf(TEXT("Failed %s playlist \"%s\" (%s), denylisting for %d milliseconds"), ParseError.IsSet() ? TEXT("parsing") : TEXT("downloading"), *ConnInfo->EffectiveURL, ParseError.IsSet() ? *ParseError.GetPrintable() : *ConnInfo->StatusInfo.ErrorDetail.GetMessage(), DenylistForMilliseconds));
 						}
 					}
 					else

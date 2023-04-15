@@ -58,7 +58,7 @@ namespace AutomationTool
 		public string RobocopyExe { get; protected set; }
 		public string MountExe { get; protected set; }
 		public string CmdExe { get; protected set; }
-		public string UATExe { get; protected set; }
+		public string AutomationToolDll { get; protected set; }
 		public string TimestampAsString { get; protected set; }
 		public bool HasCapabilityToCompile { get; protected set; }
 		public string FrameworkMsbuildPath { get; protected set; }
@@ -71,26 +71,19 @@ namespace AutomationTool
 		/// </summary>
 		internal CommandEnvironment()
 		{
-			// Get the path to the UAT executable
-			// the entry assembly is the .dll but it is easier to use apphost so change extension to the executable
-			UATExe = Path.ChangeExtension(Assembly.GetEntryAssembly().GetOriginalLocation(), RuntimePlatform.IsWindows ? "exe" : null);
+			// Get the path to AutomationTool.dll
+			AutomationToolDll = Assembly.GetEntryAssembly().GetOriginalLocation();
 
-			if (!CommandUtils.FileExists(UATExe))
+			if (!CommandUtils.FileExists(AutomationToolDll))
 			{
-				// use the dll as a fallback if the exe doesn't exist
-				UATExe = Assembly.GetEntryAssembly().GetOriginalLocation();
-			}
-
-			if (!CommandUtils.FileExists(UATExe))
-			{
-				throw new AutomationException("Could not find AutomationTool.exe. Reflection indicated it was here: {0}", UATExe);
+				throw new AutomationException("Could not find AutomationTool.dll. Reflection indicated it was here: {0}", AutomationToolDll);
 			}
 
 			// Find the root directory (containing the Engine folder)
 			LocalRoot = CommandUtils.GetEnvVar(EnvVarNames.LocalRoot);
 			if(String.IsNullOrEmpty(LocalRoot))
 			{
-				LocalRoot = CommandUtils.ConvertSeparators(PathSeparator.Slash, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(UATExe), "..", "..", "..", "..")));
+				LocalRoot = CommandUtils.ConvertSeparators(PathSeparator.Slash, Path.GetFullPath(Path.Combine(Path.GetDirectoryName(AutomationToolDll), "..", "..", "..", "..")));
 				CommandUtils.ConditionallySetEnvVar(EnvVarNames.LocalRoot, LocalRoot);
 			}
 
@@ -199,7 +192,7 @@ namespace AutomationTool
 			Log.TraceVerbose("DotnetMsbuildExe={0}", DotnetMsbuildPath);
 			Log.TraceVerbose("RobocopyExe={0}", RobocopyExe);
 			Log.TraceVerbose("TimestampAsString={0}", TimestampAsString);
-			Log.TraceVerbose("UATExe={0}", UATExe);			
+			Log.TraceVerbose("AutomationToolDll={0}", AutomationToolDll);			
 		}
 
 		/// <summary>
@@ -224,16 +217,7 @@ namespace AutomationTool
 			Log.TraceVerbose("CompilationEvironment.HasCapabilityToCompile={0}", HasCapabilityToCompile);
 			Log.TraceVerbose("CompilationEvironment.FrameworkMsbuildExe={0}", FrameworkMsbuildPath);
 
-			try
-			{
-				DotnetMsbuildPath = HostPlatform.Current.GetDotnetMsbuildExe();
-			}
-			catch (Exception Ex)
-			{
-				Log.WriteLine(LogEventType.Warning, Ex.Message);
-				Log.WriteLine(LogEventType.Warning, "Assuming no compilation capability for NET Core projects.");
-				FrameworkMsbuildPath = "";
-			}
+			DotnetMsbuildPath = Unreal.DotnetPath.FullName;
 			Log.TraceVerbose("CompilationEvironment.DotnetMsbuildExe={0}", DotnetMsbuildPath);
 		}
 

@@ -2,19 +2,42 @@
 
 
 #include "SThumbnailEditModeTools.h"
-#include "ThumbnailRendering/SceneThumbnailInfo.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+
+#include "AssetRegistry/AssetData.h"
+#include "AssetThumbnail.h"
+#include "AssetToolsModule.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
 #include "Editor/UnrealEdEngine.h"
-#include "ThumbnailRendering/SceneThumbnailInfoWithPrimitive.h"
-#include "UnrealEdGlobals.h"
+#include "GenericPlatform/ICursor.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
-#include "AssetToolsModule.h"
-#include "AssetThumbnail.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Misc/Attribute.h"
+#include "Modules/ModuleManager.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "ThumbnailRendering/SceneThumbnailInfo.h"
+#include "ThumbnailRendering/SceneThumbnailInfoWithPrimitive.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPath.h"
+#include "UnrealEdGlobals.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/SBoxPanel.h"
+
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -50,7 +73,7 @@ void SThumbnailEditModeTools::Construct( const FArguments& InArgs, const TShared
 			SNew(SButton)
 			.Visibility(this, &SThumbnailEditModeTools::GetPrimitiveToolsVisibility)
 			.ContentPadding(0)
-			.ButtonStyle(FEditorStyle::Get(), "SimpleButton")
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 			.OnClicked(this, &SThumbnailEditModeTools::ChangePrimitive)
 			.ToolTipText(LOCTEXT("CyclePrimitiveThumbnailShapes", "Cycle through primitive shape for this thumbnail"))
 			.Content()
@@ -72,7 +95,7 @@ void SThumbnailEditModeTools::Construct( const FArguments& InArgs, const TShared
 			.Content()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("ContentBrowser.ResetPrimitiveToDefault"))
+				.Image(FAppStyle::GetBrush("ContentBrowser.ResetPrimitiveToDefault"))
 				.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 		]
@@ -107,10 +130,10 @@ const FSlateBrush* SThumbnailEditModeTools::GetCurrentPrimitiveBrush() const
 		EThumbnailPrimType PrimType = ThumbnailInfo->bUserModifiedShape ? ThumbnailInfo->PrimitiveType.GetValue() : GetDefaultThumbnailType();
 		switch (PrimType)
 		{
-		case TPT_None: return FEditorStyle::GetBrush("ContentBrowser.PrimitiveCustom");
-		case TPT_Sphere: return FEditorStyle::GetBrush("ContentBrowser.PrimitiveSphere");
-		case TPT_Cube: return FEditorStyle::GetBrush("ContentBrowser.PrimitiveCube");
-		case TPT_Cylinder: return FEditorStyle::GetBrush("ContentBrowser.PrimitiveCylinder");
+		case TPT_None: return FAppStyle::GetBrush("ContentBrowser.PrimitiveCustom");
+		case TPT_Sphere: return FAppStyle::GetBrush("ContentBrowser.PrimitiveSphere");
+		case TPT_Cube: return FAppStyle::GetBrush("ContentBrowser.PrimitiveCube");
+		case TPT_Cylinder: return FAppStyle::GetBrush("ContentBrowser.PrimitiveCylinder");
 		case TPT_Plane:
 		default:
 			// Fall through and return a plane
@@ -118,7 +141,7 @@ const FSlateBrush* SThumbnailEditModeTools::GetCurrentPrimitiveBrush() const
 		}
 	}
 
-	return FEditorStyle::GetBrush( "ContentBrowser.PrimitivePlane" );
+	return FAppStyle::GetBrush( "ContentBrowser.PrimitivePlane" );
 }
 
 FReply SThumbnailEditModeTools::ChangePrimitive()

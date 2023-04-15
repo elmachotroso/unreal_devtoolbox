@@ -2,11 +2,25 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/Class.h"
-#include "UObject/UnrealType.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/AssertionMacros.h"
 #include "PropertyTypeCompatibility.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UnrealType.h"
+
 #include "PropertyPathHelpers.generated.h"
+
+class FArchive;
+template <typename FuncType> class TFunctionRef;
 
 /** Base class for cached property path segments */
 USTRUCT()
@@ -213,6 +227,7 @@ namespace PropertyPathHelpersInternal
 	struct FPropertyPathResolver;
 	template<typename T> struct FInternalGetterResolver;
 	template<typename T> struct FInternalSetterResolver;
+
 	PROPERTYPATH_API bool ResolvePropertyPath(UObject* InContainer, const FString& InPropertyPath, FPropertyPathResolver& InResolver);
 	PROPERTYPATH_API bool ResolvePropertyPath(UObject* InContainer, const FCachedPropertyPath& InPropertyPath, FPropertyPathResolver& InResolver);
 	PROPERTYPATH_API bool ResolvePropertyPath(void* InContainer, UStruct* InStruct, const FString& InPropertyPath, FPropertyPathResolver& InResolver);
@@ -1085,13 +1100,18 @@ namespace PropertyPathHelpersInternal
 			FArrayProperty* ArrayProp = CastField<FArrayProperty>(OutProperty);
 			if ( ArrayProp && LastSegment.GetArrayIndex() != INDEX_NONE )
 			{
-				ArrayProp->Inner->CopySingleValue(&OutValue, InPropertyPath.GetCachedAddress());
+				if (IsConcreteTypeCompatibleWithReflectedType<T>(ArrayProp->Inner))
+				{
+					ArrayProp->Inner->CopySingleValue(&OutValue, InPropertyPath.GetCachedAddress());
+					return true;
+				}
 			}
-			else
+			else if (IsConcreteTypeCompatibleWithReflectedType<T>(OutProperty))
 			{
 				OutProperty->CopySingleValue(&OutValue, InPropertyPath.GetCachedAddress());
+				return true;
 			}
-			return true;
+			return false;
 		}
 	};
 
@@ -1103,8 +1123,12 @@ namespace PropertyPathHelpersInternal
 		{
 			const FPropertyPathSegment& LastSegment = InPropertyPath.GetLastSegment();
 			OutProperty = CastFieldChecked<FProperty>(LastSegment.GetField().ToField());
-			OutProperty->CopyCompleteValue(&OutValue, InPropertyPath.GetCachedAddress());
-			return true;
+			if (IsConcreteTypeCompatibleWithReflectedType<T>(OutProperty))
+			{
+				OutProperty->CopyCompleteValue(&OutValue, InPropertyPath.GetCachedAddress());
+				return true;
+			}
+			return false;
 		}
 	};
 
@@ -1119,14 +1143,19 @@ namespace PropertyPathHelpersInternal
 			FArrayProperty* ArrayProp = CastField<FArrayProperty>(OutProperty);
 			if ( ArrayProp && LastSegment.GetArrayIndex() != INDEX_NONE )
 			{
-				ArrayProp->Inner->CopySingleValue(&OutValue, InPropertyPath.GetCachedAddress());
+				if (IsConcreteTypeCompatibleWithReflectedType<bool>(ArrayProp->Inner))
+				{
+					ArrayProp->Inner->CopySingleValue(&OutValue, InPropertyPath.GetCachedAddress());
+					return true;
+				}
 			}
-			else
+			else if (IsConcreteTypeCompatibleWithReflectedType<bool>(OutProperty))
 			{
 				FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(OutProperty);
 				OutValue = BoolProperty->GetPropertyValue(InPropertyPath.GetCachedAddress());
+				return true;
 			}
-			return true;
+			return false;
 		}
 	};
 
@@ -1164,13 +1193,18 @@ namespace PropertyPathHelpersInternal
 			FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property);
 			if ( ArrayProp && LastSegment.GetArrayIndex() != INDEX_NONE )
 			{
-				ArrayProp->Inner->CopySingleValue(InPropertyPath.GetCachedAddress(), &InValue);
+				if (IsConcreteTypeCompatibleWithReflectedType<T>(ArrayProp->Inner))
+				{
+					ArrayProp->Inner->CopySingleValue(InPropertyPath.GetCachedAddress(), &InValue);
+					return true;
+				}
 			}
-			else
+			else if (IsConcreteTypeCompatibleWithReflectedType<T>(Property))
 			{
 				Property->CopySingleValue(InPropertyPath.GetCachedAddress(), &InValue);
+				return true;
 			}
-			return true;
+			return false;
 		}
 	};
 
@@ -1182,8 +1216,12 @@ namespace PropertyPathHelpersInternal
 		{
 			const FPropertyPathSegment& LastSegment = InPropertyPath.GetLastSegment();
 			FProperty* Property = CastFieldChecked<FProperty>(LastSegment.GetField().ToField());
-			Property->CopyCompleteValue(InPropertyPath.GetCachedAddress(), &InValue);
-			return true;
+			if (IsConcreteTypeCompatibleWithReflectedType<T>(Property))
+			{
+				Property->CopyCompleteValue(InPropertyPath.GetCachedAddress(), &InValue);
+				return true;
+			}
+			return false;
 		}
 	};
 
@@ -1198,15 +1236,20 @@ namespace PropertyPathHelpersInternal
 			FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property);
 			if ( ArrayProp && LastSegment.GetArrayIndex() != INDEX_NONE )
 			{
-				ArrayProp->Inner->CopySingleValue(InPropertyPath.GetCachedAddress(), &InValue);
+				if (IsConcreteTypeCompatibleWithReflectedType<bool>(ArrayProp->Inner))
+				{
+					ArrayProp->Inner->CopySingleValue(InPropertyPath.GetCachedAddress(), &InValue);
+					return true;
+				}
 			}
-			else
+			else if (IsConcreteTypeCompatibleWithReflectedType<bool>(Property))
 			{
 				FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property);
 				BoolProperty->SetPropertyValue(InPropertyPath.GetCachedAddress(), InValue);
+				return true;
 			}
 			
-			return true;
+			return false;
 		}
 	};
 

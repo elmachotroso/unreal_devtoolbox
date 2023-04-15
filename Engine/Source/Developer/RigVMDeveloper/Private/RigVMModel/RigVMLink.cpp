@@ -3,6 +3,8 @@
 #include "RigVMModel/RigVMLink.h"
 #include "RigVMModel/RigVMGraph.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMLink)
+
 URigVMGraph* URigVMLink::GetGraph() const
 {
 	return Cast<URigVMGraph>(GetOuter());
@@ -50,7 +52,7 @@ int32 URigVMLink::GetLinkIndex() const
 
 }
 
-URigVMPin* URigVMLink::GetSourcePin()
+URigVMPin* URigVMLink::GetSourcePin() const
 {
 	if (SourcePin == nullptr)
 	{
@@ -59,13 +61,26 @@ URigVMPin* URigVMLink::GetSourcePin()
 	return SourcePin;
 }
 
-URigVMPin* URigVMLink::GetTargetPin()
+URigVMPin* URigVMLink::GetTargetPin() const
 {
 	if (TargetPin == nullptr)
 	{
 		TargetPin = GetGraph()->FindPin(TargetPinPath);
 	}
 	return TargetPin;
+}
+
+URigVMPin* URigVMLink::GetOppositePin(const URigVMPin* InPin) const
+{
+	if (InPin == GetSourcePin())
+	{
+		return GetTargetPin();
+	}
+	else if (InPin == GetTargetPin())
+	{
+		return GetSourcePin();
+	}
+	return nullptr;
 }
 
 FString URigVMLink::GetPinPathRepresentation()
@@ -89,3 +104,4 @@ void URigVMLink::PrepareForCopy()
 		TargetPinPath = CurrenTargetPin->GetPinPath();
 	}
 }
+

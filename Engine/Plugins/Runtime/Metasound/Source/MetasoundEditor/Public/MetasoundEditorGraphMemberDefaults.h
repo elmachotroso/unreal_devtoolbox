@@ -11,6 +11,7 @@
 #include "MetasoundDataReference.h"
 #include "MetasoundEditorGraph.h"
 #include "MetasoundEditorGraphNode.h"
+#include "MetasoundEditorSettings.h"
 #include "MetasoundFrontend.h"
 #include "MetasoundFrontendController.h"
 #include "MetasoundFrontendDocument.h"
@@ -19,6 +20,7 @@
 #include "MetasoundPrimitives.h"
 #include "MetasoundVertex.h"
 #include "Misc/Guid.h"
+#include "SAudioRadialSlider.h"
 #include "Sound/SoundWave.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPath.h"
@@ -119,13 +121,6 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnMetasoundInputValueChangedEvent, float);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnMetasoundRangeChangedEvent, FVector2D);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnMetasoundInputClampDefaultChangedEvent, bool);
 
-UENUM()
-enum class EMetasoundMemberDefaultWidget : uint8
-{
-	None,
-	Slider,
-	RadialSlider UMETA(DisplayName = "Knob"),
-};
 
 UENUM()
 enum class EMetasoundMemberDefaultWidgetValueType : uint8
@@ -162,9 +157,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = Widget, meta=(DisplayName = "Value Type", EditCondition = "WidgetType != EMetasoundMemberDefaultWidget::None", EditConditionHides))
 	EMetasoundMemberDefaultWidgetValueType WidgetValueType = EMetasoundMemberDefaultWidgetValueType::Linear;
 
-	/** If true, output linear (0 - 1) value. Otherwise, output dB value. The volume widget itself will always display the value in dB. */
+	/** If true, output linear value. Otherwise, output dB value. The volume widget itself will always display the value in dB. The Default Value and Range are linear. */
 	UPROPERTY(EditAnywhere, Category = Widget, meta = (DisplayName = "Output Linear"))
 	bool VolumeWidgetUseLinearOutput = true;
+
+	/** Range in decibels. This will be converted to the linear range in the Default Value category. */
+	UPROPERTY(EditAnywhere, Category = Widget, meta = (DisplayName = "Range in dB", EditCondition = "VolumeWidgetUseLinearOutput", EditConditionHides))
+	FVector2D VolumeWidgetDecibelRange = FVector2D(SAudioVolumeRadialSlider::MinDbValue, 0.0f);
 
 	static FName GetDefaultPropertyName()
 	{
@@ -183,6 +182,8 @@ public:
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& InPropertyChangedEvent) override;
 
 	void SetDefault(const float InDefault);
+	// Set Range to reasonable limit given current Default value
+	void SetInitialRange();
 	float GetDefault();
 	FVector2D GetRange();
 	void SetRange(const FVector2D InRange);
@@ -246,7 +247,7 @@ struct FMetasoundEditorGraphMemberDefaultObjectRef
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = DefaultValue)
-	UObject* Object = nullptr;
+	TObjectPtr<UObject> Object = nullptr;
 };
 
 UCLASS(MinimalAPI)

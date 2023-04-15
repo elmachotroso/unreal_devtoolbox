@@ -3,19 +3,22 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "HAL/MemoryBase.h"
-#include "HAL/UnrealMemory.h"
-#include "Math/NumericLimits.h"
-#include "Templates/AlignmentTemplates.h"
-#include "HAL/CriticalSection.h"
-#include "HAL/PlatformTLS.h"
 #include "HAL/Allocators/CachedOSPageAllocator.h"
 #include "HAL/Allocators/CachedOSVeryLargePageAllocator.h"
 #include "HAL/Allocators/PooledVirtualMemoryAllocator.h"
-#include "HAL/PlatformMath.h"
+#include "HAL/CriticalSection.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/MemoryBase.h"
+#include "HAL/PlatformMath.h"
+#include "HAL/PlatformTLS.h"
+#include "HAL/UnrealMemory.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Fork.h"
+#include "Templates/AlignmentTemplates.h"
 #include "Templates/Atomic.h"
+
+struct FGenericMemoryStats;
 
 #define BINNED2_MAX_CACHED_OS_FREES (64)
 #if PLATFORM_64BITS
@@ -52,6 +55,11 @@
 // bookKeeping at the end needs to be disabled if we want VeryLargePageAllocator to properly fallback to regular TCachedOSPageAllocator if needed
 #ifndef BINNED2_BOOKKEEPING_AT_THE_END_OF_LARGEBLOCK
 #define BINNED2_BOOKKEEPING_AT_THE_END_OF_LARGEBLOCK 0
+#endif
+
+// If we are emulating forking on a windows server or are a linux server, enable support for avoiding dirtying pages owned by the parent. 
+#ifndef BINNED2_FORK_SUPPORT
+	#define BINNED2_FORK_SUPPORT (UE_SERVER && (PLATFORM_UNIX || DEFAULT_SERVER_FAKE_FORKS))
 #endif
 
 
@@ -95,10 +103,25 @@ extern TAtomic<int64> AllocatedLargePoolMemoryWAlignment; // when we allocate at
 #endif
 #if BINNED2_ALLOCATOR_STATS_VALIDATION
 #include "Misc/ScopeLock.h"
+
 extern int64 AllocatedSmallPoolMemoryValidation;
 extern FCriticalSection ValidationCriticalSection;
 extern int32 RecursionCounter;
 #endif
+
+// Canary value used in FFreeBlock
+// A constant value unless we're compiled with fork support in which case there are two values identifying whether the page
+// was allocated pre- or post-fork
+enum class EBlockCanary : uint8
+{
+	Zero = 0x0, // Not clear why this is needed by FreeBundles
+#if BINNED2_FORK_SUPPORT
+	PreFork = 0xb7,
+	PostFork = 0xca,
+#else
+	Value = 0xe3 
+#endif
+};
 
 
 //
@@ -106,24 +129,18 @@ extern int32 RecursionCounter;
 //
 class CORE_API FMallocBinned2 : public FMalloc
 {
-	struct Private;
-
 	// Forward declares.
 	struct FPoolInfo;
 	struct PoolHashBucket;
+	struct Private;
 
 	/** Information about a piece of free memory. */
 	struct FFreeBlock
 	{
-		enum
-		{
-			CANARY_VALUE = 0xe3
-		};
-
-		FORCEINLINE FFreeBlock(uint32 InPageSize, uint16 InBlockSize, uint8 InPoolIndex)
+		FORCEINLINE FFreeBlock(uint32 InPageSize, uint16 InBlockSize, uint8 InPoolIndex, EBlockCanary InCanary)
 			: BlockSize(InBlockSize)
 			, PoolIndex(InPoolIndex)
-			, Canary(CANARY_VALUE)
+			, CanaryAndForkState(InCanary)
 			, NextFreeBlock(nullptr)
 		{
 			check(InPoolIndex < MAX_uint8 && InBlockSize <= MAX_uint16);
@@ -139,20 +156,7 @@ class CORE_API FMallocBinned2 : public FMalloc
 		{
 			return NumFreeBlocks;
 		}
-		FORCEINLINE bool IsCanaryOk() const
-		{
-			return Canary == FFreeBlock::CANARY_VALUE;
-		}
 
-		FORCEINLINE void CanaryTest() const
-		{
-			if (!IsCanaryOk())
-			{
-				CanaryFail();
-			}
-			//checkSlow(PoolIndex == BoundSizeToPoolIndex(BlockSize));
-		}
-		void CanaryFail() const;
 
 		FORCEINLINE void* AllocateRegularBlock()
 		{
@@ -176,7 +180,12 @@ class CORE_API FMallocBinned2 : public FMalloc
 
 		uint16 BlockSize;				// Size of the blocks that this list points to
 		uint8 PoolIndex;				// Index of this pool
-		uint8 Canary;					// Constant value of 0xe3
+
+		// Normally this value just functions as a canary to detect invalid memory state.
+		// When process forking is supported, it's still a canary but it has two valid values.
+		// One value is used pre-fork and one post-fork and the value is used to avoid freeing memory in pages shared with the parent process.
+		EBlockCanary CanaryAndForkState; 
+
 		uint32 NumFreeBlocks;          // Number of consecutive free blocks here, at least 1.
 		void*  NextFreeBlock;          // Next free block in another pool
 	};
@@ -185,6 +194,7 @@ class CORE_API FMallocBinned2 : public FMalloc
 	{
 		FPoolList();
 
+		void Clear();
 		bool IsEmpty() const;
 
 		      FPoolInfo& GetFrontPool();
@@ -269,6 +279,12 @@ class CORE_API FMallocBinned2 : public FMalloc
 	PoolHashBucket* HashBuckets;
 	PoolHashBucket* HashBucketFreeList;
 	uint64 NumPoolsPerPage;
+#if BINNED2_FORK_SUPPORT
+	EBlockCanary CurrentCanary = EBlockCanary::PreFork; // The value of the canary for pages we have allocated this side of the fork 
+	EBlockCanary OldCanary = EBlockCanary::PreFork;		// If we have forked, the value canary of old pages we should avoid touching 
+#else 
+	static constexpr EBlockCanary CurrentCanary = EBlockCanary::Value;
+#endif
 
 #if !PLATFORM_UNIX && !PLATFORM_ANDROID
 #if UE_USE_VERYLARGEPAGEALLOCATOR
@@ -291,9 +307,13 @@ class CORE_API FMallocBinned2 : public FMalloc
 #endif
 	}
 
+	// This needs to be small enough to fit inside the smallest allocation handled by MallocBinned2, hence the union.
 	struct FBundleNode
 	{
 		FBundleNode* NextNodeInCurrentBundle;
+
+		// NextBundle ptr is valid when node is stored in FFreeBlockList in a thread-local list of reusable allocations.
+		// Count is valid when node is stored in global recycler and caches the number of nodes in the list formed by NextNodeInCurrentBundle.
 		union
 		{
 			FBundleNode* NextBundle;
@@ -334,7 +354,6 @@ class CORE_API FMallocBinned2 : public FMalloc
 		FBundleNode* Head;
 		uint32       Count;
 	};
-	static_assert(sizeof(FBundleNode) <= BINNED2_MINIMUM_ALIGNMENT, "Bundle nodes must fit into the smallest block size");
 
 	struct FFreeBlockList
 	{
@@ -398,7 +417,8 @@ class CORE_API FMallocBinned2 : public FMalloc
 #if BINNED2_ALLOCATOR_STATS
 			: AllocatedMemory(0) 
 #endif
-		{ }
+		{ 
+		}
 
 		FORCEINLINE void* Malloc(uint32 InPoolIndex)
 		{
@@ -610,7 +630,8 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 					FFreeBlock* Free = GetPoolHeaderFromPointer(Ptr);
 					BlockSize = Free->BlockSize;
 					PoolIndex = Free->PoolIndex;
-					bCanFree = Free->IsCanaryOk();
+					// If canary is invalid we will assert in ReallocExternal. Otherwise it's the pre-fork canary and we will allocate new memory without touching this allocation.
+					bCanFree = Free->CanaryAndForkState == CurrentCanary;
 					if (NewSize && bCanFree && NewSize <= BlockSize && (PoolIndex == 0 || NewSize > PoolIndexToBlockSize(PoolIndex - 1)))
 					{
 						return Ptr;
@@ -687,7 +708,8 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 			{
 				FFreeBlock* BasePtr = GetPoolHeaderFromPointer(Ptr);
 				int32 BlockSize = BasePtr->BlockSize;
-				if (BasePtr->IsCanaryOk() && Lists->Free(Ptr, BasePtr->PoolIndex, BasePtr->BlockSize))
+				// If canary is invalid we will assert in FreeExternal. Otherwise it's the pre-fork canary and we will turn this free into a no-op.
+				if (BasePtr->CanaryAndForkState == CurrentCanary && Lists->Free(Ptr, BasePtr->PoolIndex, BasePtr->BlockSize))
 				{
 #if BINNED2_ALLOCATOR_STATS
 					Lists->AllocatedMemory -= BasePtr->BlockSize;
@@ -703,7 +725,11 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 		if (!IsOSAllocation(Ptr))
 		{
 			const FFreeBlock* Free = GetPoolHeaderFromPointer(Ptr);
-			if (Free->IsCanaryOk())
+#if BINNED2_FORK_SUPPORT
+			if (Free->CanaryAndForkState == CurrentCanary || Free->CanaryAndForkState == OldCanary)
+#else
+			if (Free->CanaryAndForkState == CurrentCanary)
+#endif
 			{
 				SizeOut = Free->BlockSize;
 				return true;
@@ -737,6 +763,9 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 	virtual void ClearAndDisableTLSCachesOnCurrentThread() override;
 	virtual const TCHAR* GetDescriptiveName() override;
 	virtual void UpdateStats() override;
+	virtual void OnMallocInitialized() override;
+	virtual void OnPreFork() override;
+	virtual void OnPostFork() override;
 	// End FMalloc interface.
 
 	void FlushCurrentThreadCache();
@@ -745,6 +774,9 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 	void* ReallocExternal(void* Ptr, SIZE_T NewSize, uint32 Alignment);
 	void FreeExternal(void *Ptr);
 	bool GetAllocationSizeExternal(void* Ptr, SIZE_T& SizeOut);
+
+	void CanaryTest(const FFreeBlock* Block) const;
+	void CanaryFail(const FFreeBlock* Block) const;
 
 #if BINNED2_ALLOCATOR_STATS
 	int64 GetTotalAllocatedSmallPoolMemory() const;
@@ -780,7 +812,7 @@ if (NewSize <= BINNED2_MAX_SMALL_POOL_SIZE && Alignment <= BINNED2_MINIMUM_ALIGN
 	#if PLATFORM_USES_FIXED_GMalloc_CLASS && !FORCE_ANSI_ALLOCATOR && USE_MALLOC_BINNED2
 		#define FMEMORY_INLINE_FUNCTION_DECORATOR  FORCEINLINE
 		#define FMEMORY_INLINE_GMalloc (FMallocBinned2::MallocBinned2)
-		#include "FMemory.inl"
+		#include "FMemory.inl" // IWYU pragma: export
 	#endif
 #endif
 

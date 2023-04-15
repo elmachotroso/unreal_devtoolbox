@@ -3,23 +3,44 @@
 #include "LandscapeProxyUIDetails.h"
 
 #include "Components/RuntimeVirtualTextureComponent.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "Editor.h"
-#include "Misc/MessageDialog.h"
-#include "PropertyHandle.h"
-#include "Runtime/Landscape/Classes/Landscape.h"
-#include "Runtime/Landscape/Classes/LandscapeInfo.h"
+#include "Engine/World.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailPropertyRow.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Landscape.h"
+#include "LandscapeInfo.h"
+#include "LandscapeProxy.h"
+#include "Layout/Margin.h"
+#include "Math/IntPoint.h"
+#include "Math/IntRect.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/Attribute.h"
 #include "RuntimeVirtualTextureSetBounds.h"
 #include "ScopedTransaction.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "VT/RuntimeVirtualTexture.h"
+#include "Templates/Casts.h"
+#include "Types/SlateEnums.h"
+#include "UObject/LazyObjectPtr.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "VT/RuntimeVirtualTextureVolume.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Text/STextBlock.h"
+
+class IPropertyHandle;
+class SWidget;
+class UObject;
+class URuntimeVirtualTexture;
 
 #define LOCTEXT_NAMESPACE "FLandscapeProxyUIDetails"
 
@@ -55,6 +76,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 				
 				FText RowDisplayText = LOCTEXT("LandscapeComponentResolution", "Component Resolution (Verts)");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeComponentResolution"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -66,6 +88,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 
 				RowDisplayText = LOCTEXT("LandscapeComponentCount", "Component Count");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeComponentCount"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -77,6 +100,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 
 				RowDisplayText = LOCTEXT("LandscapeComponentSubsections", "Component Subsections");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeComponentSubsections"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -90,6 +114,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 				FIntPoint Size = Rect.Size();
 				RowDisplayText = LOCTEXT("LandscapeResolution", "Resolution (Verts)");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeResolution"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -99,9 +124,10 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 					GenerateTextWidget(FText::Format(LOCTEXT("LandscapeResolutionValue", "{0} x {1}"), Size.X+1, Size.Y+1), true)
 				];
 
-				int32 LandscapeCount = LandscapeInfo->Proxies.Num() + (LandscapeInfo->LandscapeActor.Get() ? 1 : 0);
+				int32 LandscapeCount = LandscapeInfo->StreamingProxies.Num() + (LandscapeInfo->LandscapeActor.Get() ? 1 : 0);
 				RowDisplayText = LOCTEXT("LandscapeCount", "Landscape Count");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeCount"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -114,6 +140,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 				int32 TotalComponentCount = LandscapeInfo->XYtoComponentMap.Num();
 				RowDisplayText = LOCTEXT("TotalLandscapeComponentCount", "Total Component Count");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("TotalLandscapeComponentCount"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)
@@ -127,6 +154,7 @@ void FLandscapeProxyUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBui
 				Size = Rect.Size();
 				RowDisplayText = LOCTEXT("LandscapeOverallResolution", "Overall Resolution (Verts)");
 				CategoryBuilder.AddCustomRow(RowDisplayText)
+				.RowTag(TEXT("LandscapeOverallResolution"))
 				.NameContent()
 				[
 					GenerateTextWidget(RowDisplayText)

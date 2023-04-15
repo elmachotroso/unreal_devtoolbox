@@ -189,7 +189,6 @@
 #include "Templates/RefCounting.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Misc/Attribute.h"
-#include "Misc/ITransaction.h"
 #include "Templates/ScopedCallback.h"
 #include "Misc/CoreStats.h"
 #include "Modules/ModuleInterface.h"
@@ -368,7 +367,7 @@
 #include "VertexFactory.h"
 
 // From AssetRegistry:
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 // From Engine:
 #include "EngineLogs.h"

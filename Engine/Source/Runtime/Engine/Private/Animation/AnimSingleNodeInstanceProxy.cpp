@@ -13,6 +13,8 @@
 #include "Animation/AnimSyncScope.h"
 #include "Animation/MirrorDataTable.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimSingleNodeInstanceProxy)
+
 FAnimSingleNodeInstanceProxy::~FAnimSingleNodeInstanceProxy()
 {
 }
@@ -200,7 +202,8 @@ void FAnimSingleNodeInstanceProxy::InternalBlendSpaceEvaluatePose(class UBlendSp
 		FAnimationPoseData AdditiveAnimationPoseData = { AdditivePose, AdditiveCurve, AdditiveAttributes };
 		BlendSpace->GetAnimationPose(BlendSampleDataCache, ExtractionContext, AdditiveAnimationPoseData);
 
-		enum EAdditiveAnimationType AdditiveType = BlendSpace->bRotationBlendInMeshSpace? AAT_RotationOffsetMeshSpace : AAT_LocalSpaceBase;
+		enum EAdditiveAnimationType AdditiveType = 
+			BlendSpace->bContainsRotationOffsetMeshSpaceSamples ? AAT_RotationOffsetMeshSpace : AAT_LocalSpaceBase;
 		FAnimationRuntime::AccumulateAdditivePose(AnimationPoseData, AdditiveAnimationPoseData, 1.f, AdditiveType);
 	}
 	else
@@ -590,6 +593,7 @@ void FAnimNode_SingleNode::Update_AnyThread(const FAnimationUpdateContext& Conte
 		else if (UAnimSequence* Sequence = Cast<UAnimSequence>(Proxy->CurrentAsset))
 		{
 			FAnimTickRecord TickRecord(Sequence, Proxy->bLooping, NewPlayRate, 1.f, /*inout*/ Proxy->CurrentTime, Proxy->MarkerTickRecord);
+			TickRecord.BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
 			TickRecord.DeltaTimeRecord = &(Proxy->DeltaTimeRecord);
 			
 			SyncScope.AddTickRecord(TickRecord);
@@ -609,6 +613,7 @@ void FAnimNode_SingleNode::Update_AnyThread(const FAnimationUpdateContext& Conte
 		else if (UAnimStreamable* Streamable = Cast<UAnimStreamable>(Proxy->CurrentAsset))
 		{
 			FAnimTickRecord TickRecord(Streamable, Proxy->bLooping, NewPlayRate, 1.f, /*inout*/ Proxy->CurrentTime, Proxy->MarkerTickRecord);
+			TickRecord.BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
 			TickRecord.DeltaTimeRecord = &(Proxy->DeltaTimeRecord);
 			
 			SyncScope.AddTickRecord(TickRecord);
@@ -628,6 +633,7 @@ void FAnimNode_SingleNode::Update_AnyThread(const FAnimationUpdateContext& Conte
 		else if(UAnimComposite* Composite = Cast<UAnimComposite>(Proxy->CurrentAsset))
 		{
 			FAnimTickRecord TickRecord(Composite, Proxy->bLooping, NewPlayRate, 1.f, /*inout*/ Proxy->CurrentTime, Proxy->MarkerTickRecord);
+			TickRecord.BlendSpace.bIsEvaluator = false;	// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
 			TickRecord.DeltaTimeRecord = &(Proxy->DeltaTimeRecord);
 			
 			SyncScope.AddTickRecord(TickRecord);
@@ -688,3 +694,4 @@ void FAnimNode_SingleNode::Update_AnyThread(const FAnimationUpdateContext& Conte
 	}
 #endif
 }
+

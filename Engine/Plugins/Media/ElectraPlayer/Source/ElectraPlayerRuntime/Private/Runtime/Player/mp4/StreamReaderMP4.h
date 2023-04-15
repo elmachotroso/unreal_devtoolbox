@@ -28,25 +28,27 @@ public:
 	FStreamSegmentRequestMP4();
 	virtual ~FStreamSegmentRequestMP4();
 
-	virtual void SetPlaybackSequenceID(uint32 InPlaybackSequenceID) override;
-	virtual uint32 GetPlaybackSequenceID() const override;
+	void SetPlaybackSequenceID(uint32 InPlaybackSequenceID) override;
+	uint32 GetPlaybackSequenceID() const override;
 
-	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
-	virtual FTimeValue GetExecuteAtUTCTime() const override;
+	void SetExecutionDelay(const FTimeValue& UTCNow, const FTimeValue& ExecutionDelay) override;
+	FTimeValue GetExecuteAtUTCTime() const override;
 
-	virtual EStreamType GetType() const override;
+	EStreamType GetType() const override;
 
-	virtual void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
-	virtual void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
-	virtual void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
+	void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
+	void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
+	void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
 
 	//! Returns the first PTS value as indicated by the media timeline. This should correspond to the actual absolute PTS of the sample.
-	virtual FTimeValue GetFirstPTS() const override;
+	FTimeValue GetFirstPTS() const override;
 
-	virtual int32 GetQualityIndex() const override;
-	virtual int32 GetBitrate() const override;
+	int32 GetQualityIndex() const override;
+	int32 GetBitrate() const override;
 
-	virtual void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
+	void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
+	bool GetStartupDelay(FTimeValue& OutStartTime, FTimeValue& OutTimeIntoSegment, FTimeValue& OutSegmentDuration) const override
+	{ return false; }
 
 
 
@@ -117,6 +119,7 @@ private:
 		{
 			ReceiveBuffer.Reset();
 			CurrentPos = 0;
+			ParsePos = 0;
 			bAbort = false;
 			bHasErrored = false;
 		}
@@ -141,9 +144,10 @@ private:
 		{
 			bHasErrored = true;
 		}
-		int32 ReadTo(void* ToBuffer, int32 NumBytes);
+		int32 ReadTo(void* ToBuffer, int64 NumBytes);
 		TSharedPtrTS<IElectraHttpManager::FReceiveBuffer>	ReceiveBuffer;
 		int64												CurrentPos;
+		int64												ParsePos;
 		bool												bAbort;
 		bool												bHasErrored;
 	};

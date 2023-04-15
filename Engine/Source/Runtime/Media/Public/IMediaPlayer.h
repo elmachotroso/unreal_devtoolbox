@@ -5,8 +5,11 @@
 #include "Containers/UnrealString.h"
 #include "Internationalization/Text.h"
 #include "Math/Interval.h"
+#include "Math/IntPoint.h"
+#include "Math/MathFwd.h"
 #include "Misc/Paths.h"
 #include "Misc/Timespan.h"
+#include "Misc/Variant.h"
 
 class FArchive;
 
@@ -180,6 +183,18 @@ public:
 	}
 
 	/**
+	 * Get information about the media that is playing.
+	 *
+	 * @param	InfoName		Name of the information we want.
+	 * @returns					Requested information, or empty if not available.
+	 * @see						UMediaPlayer::GetMediaInfo.
+	 */
+	virtual FVariant GetMediaInfo(FName InfoName) const
+	{
+		return FVariant();
+	}
+
+	/**
 	 * Get the human readable name of the currently loaded media source.
 	 *
 	 * Depending on the type of media source, this might be the name of a file,
@@ -305,12 +320,14 @@ public:
 		// Override in child class if needed.
 	}
 
-	enum class EFeatureFlag {
+	enum class EFeatureFlag
+	{
 		AllowShutdownOnClose = 0,		//!< Allow player to be shutdown right after 'close' event is received from it
 		UsePlaybackTimingV2,			//!< Use v2 playback timing and AV sync
 		UseRealtimeWithVideoOnly,		//!< Use realtime rather then game deltatime to control video playback if no audio is present
 		AlwaysPullNewestVideoFrame,		//!< Mediaframework will not gate video frame output with its own timing, but assumes "ASAP" as output time for every sample
 		PlayerUsesInternalFlushOnSeek,	//!< The player implements an internal flush logic on seeks and Mediaframework will not issue an explicit Flush() call to it on seeks
+		IsTrackSwitchSeamless,			//!< If track switching is seamless then a flush of sinks is not necessary.
 	};
 	
 	virtual bool GetPlayerFeatureFlag(EFeatureFlag /*flag*/) const

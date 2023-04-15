@@ -436,9 +436,7 @@ void UK2Node_GetDMXAttributeValues::ExposeAttributes()
 	{
 		for (const FDMXFixtureFunction& Function : ActiveFixtureMode->Functions)
 		{
-			auto Attribute = Function.Attribute.GetAttribute();
-
-			if (Attribute.Name.IsNone())
+			if (!Function.Attribute.IsValid())
 			{
 				continue;
 			}
@@ -526,7 +524,7 @@ FName UK2Node_GetDMXAttributeValues::GetPinName(const FDMXFixtureFunction& Funct
 	FString EnumString;
 	EnumString = StaticEnum<EDMXFixtureSignalFormat>()->GetDisplayNameTextByIndex((int64)Function.DataType).ToString();
 
-	return *FString::Printf(TEXT("%s_%s"), *Function.Attribute.GetName().ToString(), *EnumString);
+	return *FString::Printf(TEXT("%s_%s"), *Function.Attribute.Name.ToString(), *EnumString);
 }
 
 const FDMXFixtureMode* UK2Node_GetDMXAttributeValues::GetActiveFixtureMode() const

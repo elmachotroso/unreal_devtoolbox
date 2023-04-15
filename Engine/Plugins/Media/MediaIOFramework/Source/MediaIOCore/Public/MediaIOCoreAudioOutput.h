@@ -2,9 +2,13 @@
 
 #pragma once
 
-#include "AudioDevice.h"
 #include "DSP/BufferVectorOperations.h"
+#include "ISubmixBufferListener.h"
 #include "Math/NumericLimits.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "AudioDevice.h"
+#endif
 
 namespace UE::MediaIoCoreModule::Private
 {
@@ -21,7 +25,8 @@ namespace UE::MediaIoCoreModule::Private
 		// @Note: We only support upmixing at the moment.
 		
 		TArray<OutputType> ConvertedBuffer;
-		ConvertedBuffer.SetNumZeroed(NumOutputChannels / NumInputChannels * InBuffer.Num());
+		const float ChannelRatio = static_cast<float>(NumOutputChannels) / NumInputChannels;
+		ConvertedBuffer.SetNumZeroed(FMath::CeilToInt32(ChannelRatio * InBuffer.Num()));
 
 		OutputType* ConvertedBufferPtr = ConvertedBuffer.GetData();
 
@@ -140,8 +145,8 @@ private:
 	/** Sample rate on the engine side. */ 
 	uint32 SampleRate = 0;
 
-	// Used to make sure we only accumulate audio from the master submix. 
-	FName MasterSubmixName;
+	// Used to make sure we only accumulate audio from the primary submix. 
+	FName PrimarySubmixName;
 
 	/** Number of channels on the engine side. */
 	int32 NumChannels = 0;

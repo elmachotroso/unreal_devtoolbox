@@ -1,27 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Cooker/NetworkFileCookOnTheFlyRequestManager.h"
+
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CookOnTheFlyServerInterface.h"
+#include "Cooker/CookTypes.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Event.h"
+#include "HAL/PlatformProcess.h"
 #include "INetworkFileServer.h"
 #include "INetworkFileSystemModule.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+
+namespace UE::Cook { struct FPackageData; }
 
 class FNetworkFileCookOnTheFlyRequestManager final
 	: public UE::Cook::ICookOnTheFlyRequestManager
 {
 public:
-	FNetworkFileCookOnTheFlyRequestManager(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, FNetworkFileServerOptions FileServerOptions)
+	FNetworkFileCookOnTheFlyRequestManager(UE::Cook::ICookOnTheFlyServer& InCookOnTheFlyServer, TSharedRef<UE::Cook::ICookOnTheFlyNetworkServer> NetworkServer)
 		: CookOnTheFlyServer(InCookOnTheFlyServer)
 	{
-		FileServerOptions.Delegates.NewConnectionDelegate			= FNewConnectionDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnNewConnection);
-		FileServerOptions.Delegates.FileRequestDelegate				= FFileRequestDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnFileRequest);
-		FileServerOptions.Delegates.RecompileShadersDelegate		= FRecompileShadersDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnRecompileShaders);
-		FileServerOptions.Delegates.SandboxPathOverrideDelegate		= FSandboxPathDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnGetSandboxPath);
-		FileServerOptions.Delegates.OnFileModifiedCallback			= &FileModifiedDelegate;
-		FileServerOptions.bRestrictPackageAssetsToSandbox			= true; // prevents sending uncooked packages if the package fails to cook
+		FNetworkFileDelegateContainer Delegates;
+		Delegates.FileRequestDelegate				= FFileRequestDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnFileRequest);
+		Delegates.SandboxPathOverrideDelegate		= FSandboxPathDelegate::CreateRaw(this, &FNetworkFileCookOnTheFlyRequestManager::OnGetSandboxPath);
+		Delegates.OnFileModifiedCallback			= &FileModifiedDelegate;
 
 		NetworkFileServer.Reset(FModuleManager::LoadModuleChecked<INetworkFileSystemModule>("NetworkFileSystem")
-			.CreateNetworkFileServer(MoveTemp(FileServerOptions), /* bLoadTargetPlatforms */ true));
+			.CreateNetworkFileServer(NetworkServer, Delegates));
 	}
 
 	virtual ~FNetworkFileCookOnTheFlyRequestManager()
@@ -34,6 +46,10 @@ public:
 		return NetworkFileServer.IsValid();
 	}
 
+	virtual void Tick() override
+	{
+	}
+
 	virtual void Shutdown() override
 	{
 		if (NetworkFileServer.IsValid())
@@ -43,12 +59,16 @@ public:
 		}
 	}
 
-private:
-	bool OnNewConnection(const FString& VersionInfo, const FString& PlatformName)
+	virtual void OnPackageGenerated(const FName& PackageName) override
 	{
-		return CookOnTheFlyServer.AddPlatform(FName(*PlatformName)) != nullptr;
 	}
 
+	virtual bool ShouldUseLegacyScheduling() override
+	{
+		return true;
+	}
+
+private:
 	void OnFileRequest(FString& Filename, const FString& PlatformNameStr, TArray<FString>& UnsolicitedFiles)
 	{
 		using namespace UE::Cook;
@@ -59,7 +79,7 @@ private:
 		if (bIsCookable)
 		{
 			FEvent* CookCompletedEvent = FPlatformProcess::GetSynchEventFromPool();
-			FCookRequestCompletedCallback CookRequestCompleted = [this, CookCompletedEvent](const UE::Cook::ECookResult)
+			FCompletionCallback CookRequestCompleted = [this, CookCompletedEvent](UE::Cook::FPackageData*)
 			{
 				CookCompletedEvent->Trigger();
 			};
@@ -82,25 +102,6 @@ private:
 		}
 	}
 
-	void OnRecompileShaders(const FShaderRecompileData& RecompileData)
-	{
-		FEvent* RecompileCompletedEvent = FPlatformProcess::GetSynchEventFromPool();
-		UE::Cook::FRecompileShaderCompletedCallback RecompileCompleted = [this, RecompileCompletedEvent]()
-		{
-			RecompileCompletedEvent->Trigger();
-		};
-
-		const bool bEnqueued = CookOnTheFlyServer.EnqueueRecompileShaderRequest(UE::Cook::FRecompileShaderRequest
-		{
-			RecompileData,
-			MoveTemp(RecompileCompleted)
-		});
-		check(bEnqueued);
-
-		RecompileCompletedEvent->Wait();
-		FPlatformProcess::ReturnSynchEventToPool(RecompileCompletedEvent);
-	}
-
 	FString OnGetSandboxPath()
 	{
 		return CookOnTheFlyServer.GetSandboxDirectory();
@@ -114,9 +115,9 @@ private:
 namespace UE { namespace Cook
 {
 
-TUniquePtr<ICookOnTheFlyRequestManager> MakeNetworkFileCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer, const FNetworkFileServerOptions& FileServerOptions)
+TUniquePtr<ICookOnTheFlyRequestManager> MakeNetworkFileCookOnTheFlyRequestManager(ICookOnTheFlyServer& CookOnTheFlyServer, TSharedRef<ICookOnTheFlyNetworkServer> NetworkServer)
 {
-	return MakeUnique<FNetworkFileCookOnTheFlyRequestManager>(CookOnTheFlyServer, FileServerOptions);
+	return MakeUnique<FNetworkFileCookOnTheFlyRequestManager>(CookOnTheFlyServer, NetworkServer);
 }
 
 }} // namespace UE::Cook

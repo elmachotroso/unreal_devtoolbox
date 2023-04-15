@@ -39,15 +39,20 @@ UTypedElementCommonActions* UAssetEditorContextObject::GetCommonActions()
 
 UWorld* UAssetEditorContextObject::GetEditingWorld() const
 {
-	if (GetToolkitHost())
-	{
-		return GetToolkitHost()->GetWorld();
-	}
-
-	return nullptr;
+	return GetWorld();
 }
 
-UWorld* UAssetEditorContextObject::GetWorld() const
+const IToolkitHost* UAssetEditorContextObject::GetToolkitHost() const
 {
-	return GetEditingWorld();
+	return ToolkitHost;
+}
+
+IToolkitHost* UAssetEditorContextObject::GetMutableToolkitHost()
+{
+	return ToolkitHost;
+}
+
+void UAssetEditorContextObject::SetToolkitHost(IToolkitHost* InToolkitHost)
+{
+	ToolkitHost = InToolkitHost;
 }

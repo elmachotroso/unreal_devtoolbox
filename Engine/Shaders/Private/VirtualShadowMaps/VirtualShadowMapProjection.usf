@@ -1,12 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	VirtualShadowMapProjection.usf: 
-=============================================================================*/
-
 #define SUPPORT_CONTACT_SHADOWS 1
 #include "../Common.ush"
 #include "../SceneTexturesCommon.ush"
+#include "../Strata/Strata.ush"
 #include "../DeferredShadingCommon.ush"
 #include "../DeferredLightingCommon.ush"
 #include "../LightShaderParameters.ush"
@@ -35,57 +32,106 @@
 #define VISUALIZE_OUTPUT 0
 #endif
 
-#define CONTACT_SHADOW_SAMPLES 8
+#define SCREEN_RAY_SAMPLES 4
 
-float4 EncodeLightAttenuationFromMask(float ShadowMask, float SSSTransmission)
+struct FProjectionShadingInfo
 {
-	const float ShadowFadeFraction = 1;
+	bool bIsValid;
+	bool bIsHair;
+	bool bIsSubsurface;
 
-	// 0 is shadowed, 1 is unshadowed
-	// RETURN_COLOR not needed unless writing to SceneColor;
-	//float FadedShadow = lerp(1.0f, Square(ShadowMask), ShadowFadeFraction);
-	//float FadedSSSShadow = lerp(1.0f, Square(SSSTransmission), ShadowFadeFraction);
-	float FadedShadow = lerp(1.0f, ShadowMask, ShadowFadeFraction);
-	float FadedSSSShadow = lerp(1.0f, SSSTransmission, ShadowFadeFraction);
+	float3 WorldNormal;
+};
 
-	// the channel assignment is documented in ShadowRendering.cpp (look for Light Attenuation channel assignment)
-	return EncodeLightAttenuation(half4(FadedShadow, FadedSSSShadow, FadedShadow, FadedSSSShadow));
-}
-
-Texture2D<float2> InputShadowFactor;
-
-void VirtualShadowMapCompositePS(
-	in float4 SvPosition : SV_Position,
-	out float4 OutShadowMask : SV_Target)
+FProjectionShadingInfo GetProjectionShadingInfo(uint2 PixelPos)
 {
-	float2 ShadowFactor = InputShadowFactor.Load(int3(SvPosition.xy, 0));
-	OutShadowMask = EncodeLightAttenuationFromMask(ShadowFactor.x, ShadowFactor.y);
+	FProjectionShadingInfo Out;
+#if STRATA_ENABLED
+	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	const FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+	const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(PixelPos, 0)));
+
+	const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, PixelPos);
+	const bool bIsValid = StrataSubSurfaceHeaderGetIsValid(SSSHeader);
+	const bool bIsProfile = StrataSubSurfaceHeaderGetIsProfile(SSSHeader);
+	Out.bIsSubsurface = bIsValid && !bIsProfile;
+
+	Out.bIsValid = IsStrataMaterial(TopLayerData);
+	Out.bIsHair = StrataGetBSDFType(StrataPixelHeader) == STRATA_BSDF_TYPE_HAIR;
+	Out.WorldNormal = TopLayerData.WorldNormal;
+#else
+	const FGBufferData GBufferData = GetGBufferDataUint(PixelPos, true);
+	Out.bIsValid = GBufferData.ShadingModelID != SHADINGMODELID_UNLIT;
+	Out.bIsHair = GBufferData.ShadingModelID == SHADINGMODELID_HAIR;
+	Out.bIsSubsurface = IsSubsurfaceModel(GBufferData.ShadingModelID);
+	Out.WorldNormal = GBufferData.WorldNormal;
+#endif
+	return Out;
 }
 
 
 SCHEDULER_MIN_PRESSURE
-MAX_OCCUPENCY
+MAX_OCCUPANCY
 
-// Returns hit distance or negative if miss
+// Screen space ray trace to attempt to skip over ambiguous regions near the receiver surface
+// Returns length at which to start the virtual shadow map ray; usually this is where the screen ray ended or went behind a surface
 float VirtualShadowMapScreenRayCast(
-	float3 RayOriginTranslatedWorld, float3 RayDirection, float RayLength,
-	int NumSteps, float Dither)
+	float3 RayOriginTranslatedWorld,
+	float3 RayDirection,
+	float RayLength,
+	float Dither)
 {
+	float4 RayStartClip	= mul(float4(RayOriginTranslatedWorld, 1), View.TranslatedWorldToClip);
+	float4 RayDirClip	= mul(float4(RayDirection * RayLength, 0), View.TranslatedWorldToClip);
+	float4 RayEndClip	= RayStartClip + RayDirClip;
+
+	float3 RayStartScreen = RayStartClip.xyz / RayStartClip.w;
+	float3 RayEndScreen = RayEndClip.xyz / RayEndClip.w;
+
+	float3 RayStepScreen = RayEndScreen - RayStartScreen;
+
+	float3 RayStartUVz = float3(RayStartScreen.xy * View.ScreenPositionScaleBias.xy + View.ScreenPositionScaleBias.wz, RayStartScreen.z);
+	float3 RayStepUVz  = float3(RayStepScreen.xy * View.ScreenPositionScaleBias.xy, RayStepScreen.z);
+
+	float4 RayDepthClip	= RayStartClip + mul(float4(0, 0, RayLength, 0), View.ViewToClip);
+	float3 RayDepthScreen = RayDepthClip.xyz / RayDepthClip.w;
+
+	const int Steps = SCREEN_RAY_SAMPLES;
 	float StepOffset = Dither - 0.5f;
+	const float Step = 1.0 / Steps;
+	float SampleTime = StepOffset * Step + Step;
 
-	bool bHitCastContactShadow = false;
-	float HitDistance = ShadowRayCast(
-		RayOriginTranslatedWorld, RayDirection, RayLength,
-		NumSteps, StepOffset, bHitCastContactShadow);
+	const float StartDepth = SceneTexturesStruct.SceneDepthTexture.SampleLevel(SceneTexturesStruct_SceneDepthTextureSampler, RayStartUVz.xy, 0).r;
 
-	return (bHitCastContactShadow) ? HitDistance : -1.0f;
+	UNROLL
+	for (int i = 0; i < Steps; i++)
+	{
+		float3 SampleUVz = RayStartUVz + RayStepUVz * SampleTime;
+		float SampleDepth = SceneTexturesStruct.SceneDepthTexture.SampleLevel(SceneTexturesStruct_SceneDepthTextureSampler, SampleUVz.xy, 0).r;
+
+		// Avoid self-intersection with the start pixel (exact comparison due to point sampling depth buffer)
+		if (SampleDepth != StartDepth)
+		{
+			if (SampleUVz.z < SampleDepth)
+			{
+				// Behind geometry. Back up a bit along the ray and do the VSM sample from there.
+				return RayLength * max(0.0, SampleTime - 1.5f * Step);
+			}
+		}
+
+		SampleTime += Step;
+	}
+
+	// Got to the end of the ray without going behind or hitting anything
+	return RayLength;
 }
 
-float3 GetEstimatedGeoWorldNormal(float3 TranslatedWorldPosition, float2 ScreenUV)
+// NOTE: Not currently used by occasionally useful for testing
+float3 GetEstimatedGeoWorldNormal(float3 TranslatedWorldPosition, float3 ShadingNormal)
 {
 	// Figure out slope, we do world space since that is the space where we might override using the shading normal...
-	float3 TranslatedWorldPositionDDX = DDX(TranslatedWorldPosition);
-	float3 TranslatedWorldPositionDDY = DDY(TranslatedWorldPosition);
+	float3 TranslatedWorldPositionDDX = ddx_fine(TranslatedWorldPosition);
+	float3 TranslatedWorldPositionDDY = ddy_fine(TranslatedWorldPosition);
 	float3 EstimatedGeoWorldNormal = cross(TranslatedWorldPositionDDX, TranslatedWorldPositionDDY);
 
 	// Handle NaNs; will cause it to revert to shading normal below
@@ -95,11 +141,10 @@ float3 GetEstimatedGeoWorldNormal(float3 TranslatedWorldPosition, float2 ScreenU
 #if 1
 	// NOTE: Gbuffer normal is not the surface normal for hair; hair lighting takes a different path but possibly
 	// necessary to do some sort of special casing here (disable normal offset and biasing entirely?).
-	FGBufferData GBufferData = GetGBufferData(ScreenUV);
 	// If the estimated geo normal is too far out we assume it's broken (derivative includes other surfaces or background) and fall back to the shading normal
-	if (dot(GBufferData.WorldNormal, EstimatedGeoWorldNormal) < 0.25f)
+	if (dot(ShadingNormal, EstimatedGeoWorldNormal) < 0.25f)
 	{
-		EstimatedGeoWorldNormal = GBufferData.WorldNormal;
+		EstimatedGeoWorldNormal = ShadingNormal;
 	}
 #endif
 
@@ -109,7 +154,6 @@ float3 GetEstimatedGeoWorldNormal(float3 TranslatedWorldPosition, float2 ScreenU
 FLightShaderParameters ConvertFromLocal( const FLocalLightData LightData )
 {
 	FLightShaderParameters Light = (FLightShaderParameters)0;
-	Light.Position					= LightData.LightPositionAndInvRadius.xyz - LWCHackToFloat(PrimaryView.PreViewTranslation);
 	Light.TranslatedWorldPosition	= LightData.LightPositionAndInvRadius.xyz;
 	Light.InvRadius					= LightData.LightPositionAndInvRadius.w;
 	Light.Color						= LightData.LightColorAndFalloffExponent.xyz;
@@ -117,7 +161,7 @@ FLightShaderParameters ConvertFromLocal( const FLocalLightData LightData )
 	Light.Direction					= LightData.LightDirectionAndShadowMask.xyz;
 	Light.Tangent					= LightData.LightTangentAndSoftSourceRadius.xyz;
 	Light.SpotAngles				= LightData.SpotAnglesAndSourceRadiusPacked.xy;
-	Light.SpecularScale				= 1;
+	Light.SpecularScale				= LightData.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.w;
 	Light.SourceRadius				= LightData.SpotAnglesAndSourceRadiusPacked.z;
 	Light.SoftSourceRadius			= LightData.LightTangentAndSoftSourceRadius.w;
 	Light.SourceLength				= f16tof32(asuint(LightData.SpotAnglesAndSourceRadiusPacked.w));
@@ -135,16 +179,21 @@ float4 ComputeRandom4(uint2 PixelPosition)
 }
 
 int4 ProjectionRect;
-float ContactShadowLength;
+float ScreenRayLength;
 float NormalBias;
+float SubsurfaceMinSourceRadius;
+int SubsurfaceShadowMode;			// Temp for testing and A/B comparison
 int SMRTRayCount;					// 0 = off
 int SMRTSamplesPerRay;
 float SMRTRayLengthScale;			// Directional lights
 float SMRTCotMaxRayAngleFromLight;	// Spot/point lights
 float SMRTTexelDitherScale;			// Currently only directional lights
+float SMRTExtrapolateSlope;
+float SMRTMaxSlopeBias;				// Currently only local lights
+uint bSMRTUseAdaptiveRayCount;
 
 // One pass projection
-RWTexture2D< uint4 >OutShadowMaskBits;
+RWTexture2D< uint4 > OutShadowMaskBits;
 
 // Single light per pass
 // Light parameters loaded via GetRootLightShaderParameters();
@@ -166,19 +215,18 @@ uint bCullBackfacingPixels;
 FVirtualShadowMapSampleResult ProjectLight(
 	int VirtualShadowMapId,
 	FLightShaderParameters Light,
+	FProjectionShadingInfo ShadingInfo,
 	uint2 PixelPos,
 	float SceneDepth,
-	float ContactShadowLengthWorld,
+	float ScreenRayLengthWorld,
 	float3 TranslatedWorldPosition,
-	half3 GBufferNormal,
-	const half Noise)
+	const float Noise)
 {
-	const uint ShadingModelID = GetGBufferDataUint(PixelPos).ShadingModelID;
 	const bool bIsHairInput = InputType == INPUT_TYPE_HAIRSTRANDS;
 
 	// NOTE: If PrimaryView.PreViewTranslation is guaranteed to be the camera position we can simplify
 	const float DistanceToCamera = length(TranslatedWorldPosition - View.TranslatedWorldCameraOrigin);
-	const float NormalBiasLength = max(0.01f, NormalBias * DistanceToCamera / View.ViewToClip._11);
+	const float NormalBiasLength = max(0.02f, NormalBias * DistanceToCamera / View.ViewToClip._11);
 
 #if DIRECTIONAL_LIGHT
 	float3 L = Light.Direction;
@@ -187,7 +235,7 @@ FVirtualShadowMapSampleResult ProjectLight(
 	float3 ToLight = Light.TranslatedWorldPosition - TranslatedWorldPosition;
 	float d2 = dot( ToLight, ToLight );
 	float InvDist = rsqrt( d2 );
-	half3 L = ToLight * InvDist;
+	float3 L = ToLight * InvDist;
 	
 	bool bInLightRadius = InvDist >= Light.InvRadius;
 	bool bInLightCone = dot( L, Light.Direction ) >= Light.SpotAngles.x;
@@ -196,18 +244,37 @@ FVirtualShadowMapSampleResult ProjectLight(
 
 	FVirtualShadowMapSampleResult Result = InitVirtualShadowMapSampleResult();
 
-	const bool bValidPixel = bIsHairInput || ShadingModelID != SHADINGMODELID_UNLIT;
+	const bool bValidPixel = bIsHairInput || ShadingInfo.bIsValid;
 
 	BRANCH
 	if (bInLightRegion && bValidPixel)
 	{
-		const bool bBackfaceCull = (bCullBackfacingPixels != 0) && !bIsHairInput && !IsSubsurfaceModel(ShadingModelID);
-
-		const half3 WorldNormal = (bIsHairInput || ShadingModelID == SHADINGMODELID_HAIR) ? L : GBufferNormal;
+		const bool bBackfaceCull = (bCullBackfacingPixels > 0) && !bIsHairInput && !ShadingInfo.bIsSubsurface;
+		
+		float3 WorldNormal = (bIsHairInput || ShadingInfo.bIsHair) ? L : ShadingInfo.WorldNormal;
 		TranslatedWorldPosition += WorldNormal * NormalBiasLength;
+
+		// Do not run contact shadow when computing the hair shadow mask (i.e. shadow mask applied on hair, has the scene 
+		// depth buffer contains fully opaque depth, which create false positive intersection resulting in wrong self shadowing)
+		float SMRTRayOffset = ScreenRayLengthWorld;
+		if (!bIsHairInput)
+		{
+			if (ScreenRayLengthWorld > 0.0f)
+			{
+				// Trace a screen space ray to try and get "away" from the receiver surface before
+				// we trace the SMRT ray to avoid mismatches/incorrect self-shadowing.
+				SMRTRayOffset = VirtualShadowMapScreenRayCast(
+					TranslatedWorldPosition,
+					L,
+					ScreenRayLengthWorld,
+					Noise);
+			}
+		}
 
 		if (SMRTRayCount > 0)
 		{
+			const bool bUseAdaptiveRayCount = bSMRTUseAdaptiveRayCount > 0;
+
 		#if DIRECTIONAL_LIGHT
 			Result = TraceDirectional(
 				VirtualShadowMapId,
@@ -215,14 +282,16 @@ FVirtualShadowMapSampleResult ProjectLight(
 				PixelPos,
 				SceneDepth,
 				TranslatedWorldPosition,
-				ContactShadowLengthWorld,
+				SMRTRayOffset,
 				SMRTRayCount,
 				SMRTSamplesPerRay,
 				SMRTRayLengthScale,
 				Noise,
 				bBackfaceCull,
 				WorldNormal,
-				SMRTTexelDitherScale);
+				SMRTTexelDitherScale,
+				SMRTExtrapolateSlope,
+				bUseAdaptiveRayCount);
 		#else
 			Result = TraceLocalLight(
 				VirtualShadowMapId,
@@ -230,13 +299,17 @@ FVirtualShadowMapSampleResult ProjectLight(
 				PixelPos,
 				SceneDepth,
 				TranslatedWorldPosition,
-				ContactShadowLengthWorld,
+				SMRTRayOffset,
 				SMRTRayCount,
 				SMRTSamplesPerRay,
 				SMRTCotMaxRayAngleFromLight,
 				Noise,
 				bBackfaceCull,
-				WorldNormal);
+				WorldNormal,
+				SMRTTexelDitherScale,
+				SMRTExtrapolateSlope,
+				SMRTMaxSlopeBias,
+				bUseAdaptiveRayCount);
 		#endif // DIRECTIONAL_LIGHT
 		}
 		else
@@ -244,24 +317,11 @@ FVirtualShadowMapSampleResult ProjectLight(
 			Result = SampleVirtualShadowMapTranslatedWorld(
 				VirtualShadowMapId,
 				TranslatedWorldPosition,
-				ContactShadowLengthWorld,
+				SMRTRayOffset,
 				WorldNormal);
 		}
 
-		// Do not run contact shadow when computing the hair shadow mask (i.e. shadow mask applied on hair, has the scene 
-		// depth buffer contains fully opaque depth, which create false positive intersection resulting in wrong self shadowing)
-		if (!bIsHairInput)
-		{
-			if (ContactShadowLengthWorld > 0.0f)
-			{
-				half ContactShadowHitDistance = VirtualShadowMapScreenRayCast(TranslatedWorldPosition, L, ContactShadowLengthWorld, CONTACT_SHADOW_SAMPLES, Noise);
-				if (ContactShadowHitDistance > 0.0f)
-				{
-					Result.ShadowFactor = 0.0f;
-					Result.OccluderDistance = ContactShadowHitDistance;
-				}
-			}
-		}
+		//Result.GeneralDebug = GreenToRedTurbo(1.0f - (SMRTRayOffset / ScreenRayLengthWorld));
 
 		// Hair strands voxel traversal to apply hair shadow on top of opaque geometry
 		#if HAS_HAIR_STRANDS
@@ -281,7 +341,7 @@ FVirtualShadowMapSampleResult ProjectLight(
 					Light,
 					PixelPos,
 					TranslatedWorldPosition,
-					ContactShadowLengthWorld,
+					SMRTRayOffset,		// TODO: Is this actually what we want here?
 					RayIndex,
 					SMRTRayCount,
 					RayStart,
@@ -303,10 +363,10 @@ FVirtualShadowMapSampleResult ProjectLight(
 			if (bCastHairRay)
 			{
 				// Jitter start position to mask/compensate coarse voxel resolution
+				float3 NormalizedDepthBias = 0;
 				{
 					const float PositionBiasScale = 0.5f;
-					const float3 DepthBias = VirtualVoxel.VoxelWorldSize * (VirtualVoxel.DepthBiasScale_Shadow * L + PositionBiasScale * (Random.xyz * 2 - 1));
-					RayStart += DepthBias;
+					NormalizedDepthBias = (VirtualVoxel.DepthBiasScale_Shadow * L + PositionBiasScale * (Random.xyz * 2 - 1));
 				}
 
 				const float DistanceThreshold = 100000.0f;
@@ -314,9 +374,9 @@ FVirtualShadowMapSampleResult ProjectLight(
 
 				FVirtualVoxelCommonDesc CommonDesc;
 				CommonDesc.PageCountResolution		= VirtualVoxel.PageCountResolution;
-				CommonDesc.VoxelWorldSize			= VirtualVoxel.VoxelWorldSize;
 				CommonDesc.PageTextureResolution	= VirtualVoxel.PageTextureResolution;
 				CommonDesc.PageResolution			= VirtualVoxel.PageResolution;
+				CommonDesc.PageResolutionLog2		= VirtualVoxel.PageResolutionLog2;
 
 				FHairTraversalSettings TraversalSettings = InitHairTraversalSettings();
 				TraversalSettings.DensityScale		= VirtualVoxel.DensityScale_Shadow;
@@ -337,7 +397,7 @@ FVirtualShadowMapSampleResult ProjectLight(
 
 					FHairTraversalResult HairResult = InitHairTraversalResult();
 					HairResult = ComputeHairCountVirtualVoxel(
-						RayStart,
+						RayStart + NodeDesc.VoxelWorldSize * NormalizedDepthBias,
 						RayEnd,
 						CommonDesc,
 						NodeDesc,
@@ -409,6 +469,65 @@ void OutputVisualize( uint2 PixelPos, FVirtualShadowMapSampleResult Result )
 			float3 PageColor = IntToColor(vPage.x + (vPage.y << 10U));
 			Output = 0.55f*CacheColor + 0.25f*PageColor + 0.2f*Result.ShadowFactor.xxx;
 		}
+		else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_DIRTY_PAGE)
+		{
+			float3 PageColor = IntToColor(vPage.x + (vPage.y << 10U)) * 0.4f;
+			float3 DirtyColor = PageColor;
+			if (bValidPageAddress)
+			{
+				bool bDirty = (pPageMeta.Flags & VSM_PHYSICAL_FLAG_DIRTY) != 0U;
+
+				if (bDirty)
+				{
+					DirtyColor.x = 1.0f;
+				}
+				PageColor = lerp(PageColor, DirtyColor, 0.8f);
+			}
+			Output = 0.8f * PageColor + 0.2f * Result.ShadowFactor.xxx;
+		}
+		else if (VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_GPU_INVALIDATED_PAGE)
+		{
+			float3 PageColor = IntToColor(vPage.x + (vPage.y << 10U)) * 0.4f;
+			float3 DirtyColor = PageColor;
+			if (bValidPageAddress)
+			{
+				uint InvalidationFlags = pPageMeta.Flags >> VSM_PHYSICAL_PAGE_INVALIDATION_FLAGS_SHIFT;
+				bool bUncachedDynamic = (InvalidationFlags & VSM_DYNAMIC_UNCACHED_FLAG) != 0;
+				bool bUncachedStatic = (InvalidationFlags & VSM_STATIC_UNCACHED_FLAG) != 0;
+
+				if (bUncachedStatic)
+				{
+					DirtyColor.x = 1.0f;
+				}
+				if (bUncachedDynamic)
+				{
+					DirtyColor.y = 1.0f;
+				}
+				PageColor = lerp(PageColor, DirtyColor, 0.8f);
+			}
+			Output = 0.8f * PageColor + 0.2f * Result.ShadowFactor.xxx;
+		}
+		else if ( VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_MERGED_PAGE)
+		{
+			bool bMerged = ((pPageMeta.Flags & VSM_PHYSICAL_FLAG_DIRTY) != 0U) && (pPageMeta.Flags & VSM_PHYSICAL_FLAG_VIEW_UNCACHED) == 0U;
+			float3 Color = float3(0, 1, 0);
+			if (bMerged)
+			{
+				Color = float3(1, 0, 0);
+			}
+			float3 PageColor = IntToColor(vPage.x + (vPage.y << 10U));
+			Output = 0.55f * Color + 0.25f * PageColor + 0.2f * Result.ShadowFactor.xxx;
+		}
+		else if ( VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_GENERAL_DEBUG )
+		{
+			Output = 0.8f*Result.GeneralDebug + 0.2f*Result.ShadowFactor.xxx;
+		}
+		/* TODO: Enable this and add to menu
+		else if ( VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_OCCLUDER_DISTANCE )
+		{
+			Output = (Result.OccluderDistance / 1000.0f).xxx;
+		}
+		*/
 		/*
 		else if ( VisualizeModeId == VIRTUAL_SHADOW_MAP_VISUALIZE_CACHED_PAGE_AGE && bValidPageAddress )
 		{
@@ -431,7 +550,6 @@ void OutputVisualize( uint2 PixelPos, FVirtualShadowMapSampleResult Result )
 		OutVisualize[PixelPos] = float4(Output, 1.0f);
 	}
 }
-
 
 [numthreads(8, 8, 1)]
 void VirtualShadowMapProjection(
@@ -465,11 +583,10 @@ void VirtualShadowMapProjection(
 	const float4 SvPosition = float4( float2( PixelPos ) + 0.5, DeviceZ, 1.0f );
 	const float3 TranslatedWorldPosition = SvPositionToTranslatedWorld( SvPosition );
 
-	const float ContactShadowLengthWorld = ContactShadowLength * View.ClipToView[1][1] * SceneDepth;
-	const half Noise = InterleavedGradientNoise( SvPosition.xy, View.StateFrameIndexMod8 );
+	const float ScreenRayLengthWorld = ScreenRayLength * View.ClipToView[1][1] * SceneDepth;
+	const float Noise = InterleavedGradientNoise( SvPosition.xy, View.StateFrameIndexMod8 );
 
-	const half3 GBufferNormal = GetGBufferDataUint( PixelPos, true ).WorldNormal;
-	const half SubsurfaceOpacity = bIsHairInput ? 1.0f : GetSubsurfaceOpacityFromGbuffer( PixelPos );
+	const FProjectionShadingInfo ShadingInfo = GetProjectionShadingInfo(PixelPos);
 
 	FVirtualShadowMapSampleResult VisualizeResult = InitVirtualShadowMapSampleResult();
 
@@ -496,11 +613,11 @@ void VirtualShadowMapProjection(
 			FVirtualShadowMapSampleResult Result = ProjectLight(
 				VirtualShadowMapId,
 				Light,
+				ShadingInfo,
 				PixelPos,
 				SceneDepth,
-				ContactShadowLengthWorld,
+				ScreenRayLengthWorld,
 				TranslatedWorldPosition,
-				GBufferNormal,
 				Noise);
 
 			// NOTE: Subsurface opacity is handled in the clustered shading pass in the one pass projection path
@@ -519,28 +636,44 @@ void VirtualShadowMapProjection(
 #else // !ONE_PASS_PROJECTION
 	{
 		int VirtualShadowMapId = LightUniformVirtualShadowMapId;
-		FLightShaderParameters Light = GetRootLightShaderParameters(PrimaryView.PreViewTranslation);
+		FLightShaderParameters Light = GetRootLightShaderParameters();
+
+		// Subsurface approximation
+		// Increases light source radius for subsurface material as the opacity reduces to emulates light diffusion.
+		const float SubsurfaceOpacity = bIsHairInput ? 1.0f : GetSubsurfaceOpacityFromGbuffer( PixelPos );
+		if (SubsurfaceOpacity < 1.0f)
+		{
+			Light.SourceRadius = max(Light.SourceRadius, (1-SubsurfaceOpacity)*SubsurfaceMinSourceRadius);
+		}
 
 		FVirtualShadowMapSampleResult Result = ProjectLight(
 			VirtualShadowMapId,
 			Light,
+			ShadingInfo,
 			PixelPos,
 			SceneDepth,
-			ContactShadowLengthWorld,
+			ScreenRayLengthWorld,
 			TranslatedWorldPosition,
-			GBufferNormal,
 			Noise);
 		
-		half SSSTransmission = Result.ShadowFactor;
+		float TransmissionShadow = Result.ShadowFactor;
 		if ( SubsurfaceOpacity < 1.0f )
 		{
-			SSSTransmission = ComputeSimpleSubsurfaceTransmissionFromVirtualShadowMap(
-				VirtualShadowMapId,
-				TranslatedWorldPosition,
-				SubsurfaceOpacity);
+			if (SubsurfaceShadowMode > 0)
+			{
+				TransmissionShadow = GetShadowFactorSubsurface(Result.ShadowFactor, Result.OccluderDistance, SubsurfaceOpacity);
+				Result.ShadowFactor = TransmissionShadow;
+			}
+			else
+			{
+				TransmissionShadow = ComputeSimpleSubsurfaceTransmissionFromVirtualShadowMap(
+					VirtualShadowMapId,
+					TranslatedWorldPosition,
+					SubsurfaceOpacity);
+			}
 		}
 
-		OutShadowFactor[ PixelPos ] = half2( Result.ShadowFactor, SSSTransmission );
+		OutShadowFactor[ PixelPos ] = float2( Result.ShadowFactor, TransmissionShadow );
 
 		if (VisualizeVirtualShadowMapId == VirtualShadowMapId)
 		{
@@ -552,7 +685,7 @@ void VirtualShadowMapProjection(
 #if VISUALIZE_OUTPUT
 	if (InputType == INPUT_TYPE_GBUFFER)
 	{
-		OutputVisualize( PixelPos, VisualizeResult );
+		OutputVisualize( PixelPos - View.ViewRectMin.xy, VisualizeResult );
 	}
 #endif // VISUALIZE_OUTPUT
 }

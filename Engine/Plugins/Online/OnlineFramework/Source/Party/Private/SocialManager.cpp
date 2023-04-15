@@ -21,12 +21,21 @@
 #include "OnlineSubsystemSessionSettings.h"
 #include "Misc/Base64.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SocialManager)
+
+static TAutoConsoleVariable<bool> CVarForceDisconnectedToPartyService(
+	TEXT("SocialUI.ForceDisconnectedToPartyService"),
+	false,
+	TEXT("Overrides the bIsConnectedToPartyService state"));
+
+
 //////////////////////////////////////////////////////////////////////////
 // FRejoinableParty
 //////////////////////////////////////////////////////////////////////////
 
 USocialManager::FRejoinableParty::FRejoinableParty(const USocialParty& SourceParty)
-	: PartyId(SourceParty.GetPartyId().AsShared())
+	: PartyId(SourceParty.GetPartyId().AsShared()),
+	OriginalJoinMethod(SourceParty.GetOwningLocalMember().GetRepData().GetJoinMethod())
 {
 	for (UPartyMember* Member : SourceParty.GetPartyMembers())
 	{
@@ -46,26 +55,33 @@ USocialManager::FRejoinableParty::FRejoinableParty(const USocialParty& SourcePar
 // FJoinPartyAttempt
 //////////////////////////////////////////////////////////////////////////
 
-USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FOnJoinPartyAttemptComplete& InOnJoinComplete)
+USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FName& InJoinMethod, const FOnJoinPartyAttemptComplete& InOnJoinComplete)
 	: TargetUser(InTargetUser)
 	, PartyTypeId(InPartyTypeId)
+	, JoinMethod(InJoinMethod)
 	, OnJoinComplete(InOnJoinComplete)
+{}
+
+USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FOnJoinPartyAttemptComplete& InOnJoinComplete)
+	: USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(InTargetUser, InPartyTypeId, PartyJoinMethod::Unspecified, InOnJoinComplete)
 {}
 
 USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(TSharedRef<const FRejoinableParty> InRejoinInfo)
 	: PartyTypeId(IOnlinePartySystem::GetPrimaryPartyTypeId())
+	, JoinMethod(InRejoinInfo->OriginalJoinMethod)
 	, RejoinInfo(InRejoinInfo)
 {}
 
 FString USocialManager::FJoinPartyAttempt::ToDebugString() const
 {
-	return FString::Printf(TEXT("IsRejoin (%s), TargetUser (%s), PartyId (%s), TypeId (%d), TargetUserPlatformId (%s), PlatformSessionId (%s)"),
+	return FString::Printf(TEXT("IsRejoin (%s), TargetUser (%s), PartyId (%s), TypeId (%d), TargetUserPlatformId (%s), PlatformSessionId (%s), JoinMethod (%s)"),
 		RejoinInfo.IsValid() ? TEXT("true") : TEXT("false"),
 		TargetUser.IsValid() ? *TargetUser->ToDebugString() : TEXT("invalid"),
 		JoinInfo.IsValid() ? *JoinInfo->GetPartyId()->ToDebugString() : RejoinInfo.IsValid() ? *RejoinInfo->PartyId->ToDebugString() : TEXT("unknown"),
 		PartyTypeId.GetValue(),
 		*TargetUserPlatformId.ToDebugString(),
-		*PlatformSessionId);
+		*PlatformSessionId,
+		*JoinMethod.ToString());
 }
 
 const FName USocialManager::FJoinPartyAttempt::Step_FindPlatformSession = TEXT("FindPlatformSession");
@@ -304,7 +320,7 @@ void USocialManager::HandlePlatformSessionInviteAccepted(const FUniqueNetIdRef& 
 	// Session invites are always for the persistent party
 	const FOnlinePartyTypeId PersistentPartyTypeId = IOnlinePartySystem::GetPrimaryPartyTypeId();
 
-	FJoinPartyAttempt NewAttempt(nullptr, PersistentPartyTypeId, FOnJoinPartyAttemptComplete());
+	FJoinPartyAttempt NewAttempt(nullptr, PersistentPartyTypeId, PartyJoinMethod::PlatformSession, FOnJoinPartyAttemptComplete());
 	FJoinPartyResult ValidationResult = ValidateJoinAttempt(PersistentPartyTypeId);
 	if (ValidationResult.WasSuccessful())
 	{
@@ -606,11 +622,11 @@ FJoinPartyResult USocialManager::ValidateJoinTarget(const USocialUser& UserToJoi
 	return FJoinPartyResult();
 }
 
-void USocialManager::JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete)
+void USocialManager::JoinParty(const USocialUser& UserToJoin, const FOnlinePartyTypeId& PartyTypeId, const FOnJoinPartyAttemptComplete& OnJoinPartyComplete, const FName& JoinMethod)
 {
-	UE_LOG(LogParty, Verbose, TEXT("Attempting to join user [%s]'s party of type [%d]"), *UserToJoin.ToDebugString(), PartyTypeId.GetValue());
+	UE_LOG(LogParty, Verbose, TEXT("Attempting to join user [%s]'s party of type [%d] by [%s]"), *UserToJoin.ToDebugString(), PartyTypeId.GetValue(), *JoinMethod.ToString());
 
-	FJoinPartyAttempt NewAttempt(&UserToJoin, PartyTypeId, OnJoinPartyComplete);
+	FJoinPartyAttempt NewAttempt(&UserToJoin, PartyTypeId, JoinMethod, OnJoinPartyComplete);
 	const FJoinPartyResult ValidationResult = ValidateJoinTarget(UserToJoin, PartyTypeId);
 	if (ValidationResult.WasSuccessful())
 	{
@@ -845,6 +861,8 @@ void USocialManager::FinishJoinPartyAttempt(FJoinPartyAttempt& JoinAttemptToDest
 	if (bWasPersistentPartyJoinAttempt && !JoinResult.WasSuccessful() && !GetPersistentParty())
 	{
 		// Something goofed when trying to join a new persistent party, so create a replacement immediately
+		// TODO:  See if the below warning happens, and if so, flesh out this flow
+		UE_CLOG(!GetFirstLocalUserToolkit()->CanAutoRecreatePersistentParty(), LogParty, Warning, TEXT("FinishJoinPartyAttempt creating a persistent party when we shouldn't!"));
 		CreatePersistentParty();
 	}
 }
@@ -866,6 +884,7 @@ const USocialManager::FJoinPartyAttempt* USocialManager::GetJoinAttemptInProgres
 
 USocialParty* USocialManager::EstablishNewParty(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FOnlinePartyTypeId& PartyTypeId)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialManager_EstablishNewParty);
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 	
 	TSubclassOf<USocialParty> PartyClass = GetPartyClassForType(PartyTypeId);
@@ -880,7 +899,10 @@ USocialParty* USocialManager::EstablishNewParty(const FUniqueNetId& LocalUserId,
 		// This must be done before InitializeParty(), as initialization can complete synchronously.
 		JoinedPartiesByTypeId.Add(PartyTypeId, NewParty);
 
-		NewParty->InitializeParty(OssParty.ToSharedRef());
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialManager_EstablishNewParty_InitializeParty);
+			NewParty->InitializeParty(OssParty.ToSharedRef());
+		}
 
 		if (NewParty->IsPersistentParty())
 		{
@@ -1109,12 +1131,19 @@ void USocialManager::HandleCreatePartyComplete(const FUniqueNetId& LocalUserId, 
 {
 	ABORT_DURING_SHUTDOWN();
 
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialManager_HandleCreatePartyComplete);
 	ECreatePartyCompletionResult LocalCreationResult = Result;
 	if (Result == ECreatePartyCompletionResult::Succeeded)
 	{
 		if (USocialParty* NewParty = EstablishNewParty(LocalUserId, *PartyId, PartyTypeId))
 		{
 			NewParty->ResetPrivacySettings();
+
+			if (UPartyMember* LocalPartyMember = NewParty->GetPartyMember(LocalUserId.AsShared()))
+			{
+				UE_LOG(LogParty, Verbose, TEXT("Player [%s] created party."), *LocalUserId.ToDebugString());
+				LocalPartyMember->GetMutableRepData().SetJoinMethod(PartyJoinMethod::Creation.ToString());
+			}
 		}
 		else
 		{
@@ -1123,7 +1152,10 @@ void USocialManager::HandleCreatePartyComplete(const FUniqueNetId& LocalUserId, 
 	}
 
 	UE_LOG(LogParty, Verbose, TEXT("Finished trying to create party [%s] with result [%s]"), PartyId.IsValid() ? *PartyId->ToDebugString() : TEXT("Invalid"), ToString(LocalCreationResult));
-	CompletionDelegate.ExecuteIfBound(LocalCreationResult);
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialManager_HandleCreatePartyComplete_Delegate);
+		CompletionDelegate.ExecuteIfBound(LocalCreationResult);
+	}
 }
 
 void USocialManager::HandleJoinPartyComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EJoinPartyCompletionResult Result, int32 NotApprovedReasonCode, FOnlinePartyTypeId PartyTypeId)
@@ -1147,6 +1179,7 @@ void USocialManager::HandleJoinPartyComplete(const FUniqueNetId& LocalUserId, co
 				{
 					JoinResult.SetResult(EJoinPartyCompletionResult::UnknownClientFailure);
 				}
+
 				FinishJoinPartyAttempt(*JoinAttempt, JoinResult);
 			}
 			else
@@ -1236,6 +1269,11 @@ void USocialManager::HandleLeavePartyForJoinComplete(ELeavePartyCompletionResult
 	}
 }
 
+bool USocialManager::IsConnectedToPartyService() const
+{
+	return bIsConnectedToPartyService && !CVarForceDisconnectedToPartyService.GetValueOnAnyThread();
+}
+
 void USocialManager::HandlePartyDisconnected(USocialParty* DisconnectingParty)
 {
 	ABORT_DURING_SHUTDOWN();
@@ -1298,7 +1336,7 @@ void USocialManager::HandlePartyLeft(EMemberExitedReason Reason, USocialParty* L
 			}
 		}
 
-		if (LeftParty->IsPersistentParty() && GetFirstLocalUserToolkit()->IsOwnerLoggedIn())
+		if (LeftParty->IsPersistentParty() && GetFirstLocalUserToolkit()->CanAutoRecreatePersistentParty())
 		{
 			UE_LOG(LogParty, Verbose, TEXT("Finished leaving persistent party without a join/rejoin target. Creating a new persistent party now."));
 
@@ -1312,7 +1350,7 @@ void USocialManager::HandleLeavePartyForMissingJoinAttempt(const FUniqueNetId& L
 {
 	ABORT_DURING_SHUTDOWN();
 
-	if (PartyTypeId == IOnlinePartySystem::GetPrimaryPartyTypeId() && GetFirstLocalUserToolkit()->IsOwnerLoggedIn() && !GetPersistentPartyInternal(true))
+	if (PartyTypeId == IOnlinePartySystem::GetPrimaryPartyTypeId() && GetFirstLocalUserToolkit()->CanAutoRecreatePersistentParty() && !GetPersistentPartyInternal(true))
 	{
 		// We just had to bail on the persistent party due to unforeseen shenanigans, so try to correct things and set another one back up
 		CreatePersistentParty();
@@ -1380,3 +1418,4 @@ USocialDebugTools* USocialManager::GetDebugTools() const
 {
 	return SocialDebugTools;
 }
+

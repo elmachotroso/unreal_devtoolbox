@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/SoundFactory.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Audio.h"
+#include "AudioAnalytics.h"
 #include "Components/AudioComponent.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -325,13 +326,16 @@ UObject* USoundFactory::CreateObject
 			// Attempt to convert to 16 bit audio
 			if (Audio::ConvertAudioToWav(RawWaveData, ConvertedRawWaveData))
 			{
-				WaveInfo = FWaveModInfo();
+				// Icky, Reencoding with SNDFILE will strip the timecode info, so back it up.
+				auto CachedTimeCodeInfo = MoveTemp(WaveInfo.TimecodeInfo);
+				WaveInfo = FWaveModInfo();				
 				if (!WaveInfo.ReadWaveInfo(ConvertedRawWaveData.GetData(), ConvertedRawWaveData.Num(), &ErrorMessage))
 				{
 					Warn->Logf(ELogVerbosity::Error, TEXT("Failed to convert to 16 bit WAV source on import."));
 					GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
 					return nullptr;
 				}
+				WaveInfo.TimecodeInfo = MoveTemp(CachedTimeCodeInfo);
 			}
 
 			// Copy over the data
@@ -476,9 +480,9 @@ UObject* USoundFactory::CreateObject
 			// copy the data into the bulk byte data
 
 			// Get the raw data bulk byte pointer and copy over the .wav files we generated
-			Sound->RawData.Lock(LOCK_READ_WRITE);
 
-			uint8* LockedData = (uint8*)Sound->RawData.Realloc(TotalSize);
+			FUniqueBuffer EditableBuffer = FUniqueBuffer::Alloc(TotalSize);
+			uint8* LockedData = (uint8*)EditableBuffer.GetData();
 			int16* LockedDataInt16 = reinterpret_cast<int16*>(LockedData);
 
 			int32 RawDataOffset = 0;
@@ -521,15 +525,15 @@ UObject* USoundFactory::CreateObject
 					RawDataOffset += ChannelSize;
 				}
 			}
-			Sound->RawData.Unlock();
+
+			Sound->RawData.UpdatePayload(EditableBuffer.MoveToShared());
 		}
 		else
 		{
 			// For mono and stereo assets, just copy the data into the buffer
-			Sound->RawData.Lock(LOCK_READ_WRITE);
-			void* LockedData = Sound->RawData.Realloc(RawWaveDataBufferSize);
-			FMemory::Memcpy(LockedData, Buffer, RawWaveDataBufferSize);
-			Sound->RawData.Unlock();
+			FSharedBuffer UpdatedBuffer = FSharedBuffer::Clone(Buffer, RawWaveDataBufferSize);
+			Sound->RawData.UpdatePayload(UpdatedBuffer);
+
 		}
 
 		Sound->Duration = (float)NumFrames / *WaveInfo.pSamplesPerSec;
@@ -554,6 +558,16 @@ UObject* USoundFactory::CreateObject
 			Sound->CuePoints.Add(NewCuePoint);
 		}
 
+		// If we've read some time-code.
+		if (WaveInfo.TimecodeInfo)
+		{
+			Sound->SetTimecodeInfo(*WaveInfo.TimecodeInfo);
+		}
+		else
+		{
+			Sound->SetTimecodeInfo(FSoundWaveTimecodeInfo{});
+		}
+				
 		// Compressed data is now out of date.
 		const bool bRebuildStreamingChunks = FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching();
 		Sound->InvalidateCompressedData(true /* bFreeResources */, bRebuildStreamingChunks);
@@ -561,8 +575,10 @@ UObject* USoundFactory::CreateObject
 		// If stream caching is enabled, we need to make sure this asset is ready for playback.
 		if (bRebuildStreamingChunks && Sound->IsStreaming(nullptr))
 		{
-			Sound->EnsureZerothChunkIsLoaded();
+			Sound->LoadZerothChunk();
 		}
+
+		Sound->PostImport();
 
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, Sound);
 
@@ -584,6 +600,8 @@ UObject* USoundFactory::CreateObject
 		}
 
 		Sound->SetRedrawThumbnail(true);
+
+		Audio::Analytics::RecordEvent_Usage(TEXT("SoundFactory.SoundWaveImported"));
 
 		return Sound;
 	}

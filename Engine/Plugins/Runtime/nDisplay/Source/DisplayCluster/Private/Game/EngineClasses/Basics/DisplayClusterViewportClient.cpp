@@ -48,10 +48,6 @@
 
 #include "Config/DisplayClusterConfigManager.h"
 
-// Unpublished Renderer function to provide an array of view family origins, used to make Lumen LOD calculations multi-view-family aware.
-// Temporary fix for Virtual Production project using Lumen UE 5.0 -- in 5.1, scene rendering will be natively multi-view-family aware.
-void RENDERER_API SetMultiViewFamilyOrigins(const TArray<FVector>& ViewOrigins);
-
 
 // Debug feature to synchronize and force all external resources to be transferred cross GPU at the end of graph execution.
 // May be useful for testing cross GPU synchronization logic.
@@ -70,6 +66,53 @@ static FAutoConsoleVariableRef CVarDisplayClusterShowStats(
 	TEXT("Show per-view profiling stats for display cluster rendering."),
 	ECVF_RenderThreadSafe
 );
+
+int32 GDisplayClusterSingleRender = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterSingleRender(
+	TEXT("DC.SingleRender"),
+	GDisplayClusterSingleRender,
+	TEXT("Render Display Cluster view families in a single scene render."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterSortViews = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterSortViews(
+	TEXT("DC.SortViews"),
+	GDisplayClusterSortViews,
+	TEXT("Enable sorting of views by decreasing pixel count and decreasing GPU index.  Adds determinism, and tends to run inners first, which helps with scheduling, improving perf (default: enabled)."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterLumenPerView = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterLumenPerView(
+	TEXT("DC.LumenPerView"),
+	GDisplayClusterLumenPerView,
+	TEXT("Separate Lumen scene cache allocated for each View.  Reduces artifacts where views affect one another, at a cost in GPU memory."),
+	ECVF_RenderThreadSafe
+);
+
+struct FCompareViewFamilyBySizeAndGPU
+{
+	FORCEINLINE bool operator()(const FSceneViewFamilyContext& A, const FSceneViewFamilyContext& B) const
+	{
+		FIntPoint SizeA = A.RenderTarget->GetSizeXY();
+		FIntPoint SizeB = B.RenderTarget->GetSizeXY();
+		int32 AreaA = SizeA.X * SizeA.Y;
+		int32 AreaB = SizeB.X * SizeB.Y;
+
+		if (AreaA != AreaB)
+		{
+			// Decreasing area
+			return AreaA > AreaB;
+		}
+
+		int32 GPUIndexA = A.Views[0]->GPUMask.GetFirstIndex();
+		int32 GPUIndexB = B.Views[0]->GPUMask.GetFirstIndex();
+
+		// Decreasing GPU index
+		return GPUIndexA > GPUIndexB;
+	}
+};
 
 UDisplayClusterViewportClient::UDisplayClusterViewportClient(FVTableHelper& Helper)
 	: Super(Helper)
@@ -414,18 +457,11 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		return Super::Draw(InViewport, SceneCanvas);
 	}
 
-	//Experimental code from render team, now always disabled
-	const bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
-	bool bIsFirstViewInMultipleViewFamily = true;
-
 	// Gather all view families first
 	TArray<FSceneViewFamilyContext*> ViewFamilies;
 
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& DCRenderTarget : RenderFrame.RenderTargets)
 	{
-		// Special flag, allow clear RTT surface only for first family
-		bool bAdditionalViewFamily = false;
-
 		for (FDisplayClusterRenderFrame::FFrameViewFamily& DCViewFamily : DCRenderTarget.ViewFamilies)
 		{
 			// Create the view family for rendering the world scene to the viewport's render target
@@ -433,7 +469,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				DCRenderTarget,
 				MyWorld->Scene,
 				EngineShowFlags,
-				bAdditionalViewFamily
+				false				// bAdditionalViewFamily  (filled in later, after list of families is known, and optionally reordered)
 			)));
 			FSceneViewFamilyContext& ViewFamily = *ViewFamilies.Last();
 			bool bIsFamilyVisible = false;
@@ -502,7 +538,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				FRotator	ViewRotation;
 				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, ViewportContext.StereoViewIndex);
 
-				if (View && DCView.IsShouldRenderView() == false)
+				if (View && !DCView.ShouldRenderSceneView())
 				{
 					ViewFamily.Views.Remove(View);
 
@@ -559,6 +595,18 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 
 					View->CameraConstrainedViewRect = View->UnscaledViewRect;
 
+					// Enable per-view virtual shadow map caching
+					View->State->AddVirtualShadowMapCache(MyWorld->Scene);
+
+					// Enable per-view Lumen scene
+					if (GDisplayClusterLumenPerView)
+					{
+						View->State->AddLumenSceneData(MyWorld->Scene);
+					}
+					else
+					{
+						View->State->RemoveLumenSceneData(MyWorld->Scene);
+					}
 
 					{
 						// Save the location of the view.
@@ -627,6 +675,13 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					const float StreamingScale = 1.f / FMath::Clamp<float>(View->LODDistanceFactor, .2f, 1.f);
 					IStreamingManager::Get().AddViewInformation(View->ViewMatrices.GetViewOrigin(), View->UnscaledViewRect.Width(), View->UnscaledViewRect.Width() * View->ViewMatrices.GetProjectionMatrix().M[0][0], StreamingScale);
 					MyWorld->ViewLocationsRenderedLastFrame.Add(View->ViewMatrices.GetViewOrigin());
+
+					FWorldCachedViewInfo& WorldViewInfo = World->CachedViewInfoRenderedLastFrame.AddDefaulted_GetRef();
+					WorldViewInfo.ViewMatrix = View->ViewMatrices.GetViewMatrix();
+					WorldViewInfo.ProjectionMatrix = View->ViewMatrices.GetProjectionMatrix();
+					WorldViewInfo.ViewProjectionMatrix = View->ViewMatrices.GetViewProjectionMatrix();
+					WorldViewInfo.ViewToWorld = View->ViewMatrices.GetInvViewMatrix();
+					World->LastRenderTime = World->GetTimeSeconds();
 				}
 			}
 
@@ -683,14 +738,14 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 						GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::BeginDynamicResolutionRendering);
 						ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
 							ViewFamily,
-							DynamicResolutionStateInfos.ResolutionFractionApproximation,
-							DynamicResolutionStateInfos.ResolutionFractionUpperBound));
+							DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction],
+							DynamicResolutionStateInfos.ResolutionFractionUpperBounds[GDynamicPrimaryResolutionFraction]));
 					}
 
 	#if CSV_PROFILER
-					if (DynamicResolutionStateInfos.ResolutionFractionApproximation >= 0.0f)
+					if (DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] >= 0.0f)
 					{
-						CSV_CUSTOM_STAT_GLOBAL(DynamicResolutionPercentage, DynamicResolutionStateInfos.ResolutionFractionApproximation * 100.0f, ECsvCustomStatOp::Set);
+						CSV_CUSTOM_STAT_GLOBAL(DynamicResolutionPercentage, DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] * 100.0f, ECsvCustomStatOp::Set);
 					}
 	#endif
 				}
@@ -708,7 +763,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					if (ViewFamily.EngineShowFlags.ScreenPercentage)
 					{
 						// Get global view fraction set by r.ScreenPercentage.
-						GlobalResolutionFraction = FLegacyScreenPercentageDriver::GetCVarResolutionFraction() * CustomBufferRatio;
+						GlobalResolutionFraction = CustomBufferRatio;
 
 						// We need to split the screen percentage if below 0.5 because TAA upscaling only works well up to 2x.
 						if (GlobalResolutionFraction < 0.5f)
@@ -750,22 +805,12 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				// Draw the player views.
 				if (!bDisableWorldRendering && PlayerViewMap.Num() > 0 && FSlateApplication::Get().GetPlatformApplication()->IsAllowedToRender()) //-V560
 				{
-					ViewFamily.bIsRenderedImmediatelyAfterAnotherViewFamily = bIsRenderedImmediatelyAfterAnotherViewFamily;
-					ViewFamily.bIsMultipleViewFamily = true;
-					ViewFamily.bIsFirstViewInMultipleViewFamily = bIsFirstViewInMultipleViewFamily;
-					bIsFirstViewInMultipleViewFamily = false;
-
 					// If we reach here, the view family should be rendered
 					bIsFamilyVisible = true;
 				}
 			}
 
-			if (bIsFamilyVisible)
-			{
-				// Disable clean op for all next families on this render target
-				bAdditionalViewFamily = true;
-			}
-			else
+			if (!bIsFamilyVisible)
 			{
 				// Family didn't end up visible, remove last view family from the array
 				delete ViewFamilies.Pop();
@@ -776,39 +821,59 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 	// We gathered all the view families, now render them
 	if (!ViewFamilies.IsEmpty())
 	{
-		TArray<FVector> ViewFamilyOrigins;
-		for (const FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
+		if (ViewFamilies.Num() > 1)
 		{
-			for (const FSceneView* ViewInfo : ViewFamilyContext->Views)
+#if WITH_MGPU
+			if (GDisplayClusterSortViews)
 			{
-				// Call AddUnique, since it's common for multiple Display Cluster views to use the same origin
-				ViewFamilyOrigins.AddUnique(ViewInfo->ViewMatrices.GetViewOrigin());
+				ViewFamilies.StableSort(FCompareViewFamilyBySizeAndGPU());
+			}
+#endif  // WITH_MGPU
+
+			// Initialize some flags for which view family is which, now that any view family reordering has been handled.
+			ViewFamilies[0]->bAdditionalViewFamily = false;
+			ViewFamilies[0]->bIsFirstViewInMultipleViewFamily = true;
+			ViewFamilies[0]->bIsMultipleViewFamily = true;
+
+			for (int32 FamilyIndex = 1; FamilyIndex < ViewFamilies.Num(); FamilyIndex++)
+			{
+				FSceneViewFamily& ViewFamily = *ViewFamilies[FamilyIndex];
+				ViewFamily.bAdditionalViewFamily = true;
+				ViewFamily.bIsFirstViewInMultipleViewFamily = false;
+				ViewFamily.bIsMultipleViewFamily = true;
+			}
+		}
+
+		if (GDisplayClusterSingleRender)
+		{
+			GetRendererModule().BeginRenderingViewFamilies(
+				SceneCanvas, TArrayView<FSceneViewFamily*>((FSceneViewFamily**)(ViewFamilies.GetData()), ViewFamilies.Num()));
+		}
+		else
+		{
+			for (FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
+			{
+				FSceneViewFamily& ViewFamily = *ViewFamilyContext;
+
+				GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
+
+				if (GNumExplicitGPUsForRendering > 1)
+				{
+					const FRHIGPUMask SubmitGPUMask = ViewFamily.Views.Num() == 1 ? ViewFamily.Views[0]->GPUMask : FRHIGPUMask::All();
+					ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_SubmitCommandList)(
+						[SubmitGPUMask](FRHICommandListImmediate& RHICmdList)
+					{
+						SCOPED_GPU_MASK(RHICmdList, SubmitGPUMask);
+						RHICmdList.SubmitCommandsHint();
+					});
+				}
 			}
 		}
 
 		for (FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
 		{
-			FSceneViewFamily& ViewFamily = *ViewFamilyContext;
-
-			// To be called immediately before BeginRenderingViewFamily, which consumes the array of view family origins and resets the array
-			SetMultiViewFamilyOrigins(ViewFamilyOrigins);
-
-			GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
-
-			if (GNumExplicitGPUsForRendering > 1)
-			{
-				const FRHIGPUMask SubmitGPUMask = ViewFamily.Views.Num() == 1 ? ViewFamily.Views[0]->GPUMask : FRHIGPUMask::All();
-				ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_SubmitCommandList)(
-					[SubmitGPUMask](FRHICommandListImmediate& RHICmdList)
-					{
-						SCOPED_GPU_MASK(RHICmdList, SubmitGPUMask);
-						RHICmdList.SubmitCommandsHint();
-					});
-			}
-
 			delete ViewFamilyContext;
 		}
-
 		ViewFamilies.Empty();
 	}
 	else
@@ -819,9 +884,9 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		// Make sure RHI resources get flushed if we're not using a renderer
 		ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_FlushRHIResources)(
 			[](FRHICommandListImmediate& RHICmdList)
-		{
-			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
-		});
+			{
+				RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+			});
 	}
 
 	// Handle special viewports game-thread logic at frame end

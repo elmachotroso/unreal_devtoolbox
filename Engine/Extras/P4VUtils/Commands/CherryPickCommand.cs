@@ -32,7 +32,7 @@ namespace P4VUtils.Commands
 				return 1;
 			}
 
-			PerforceConnection Perforce = new PerforceConnection(null, null, null, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, null, Logger);
 			int NewChange = await MergeAsync(Perforce, Change, Logger);
 			return (NewChange > 0) ? 0 : 1;
 		}
@@ -69,12 +69,12 @@ namespace P4VUtils.Commands
 			NewChangeRecord.Client = Info.ClientName;
 			NewChangeRecord.Description = $"{ExistingChangeRecord.Description.TrimEnd()}\n#p4v-cherrypick {Change}";
 			NewChangeRecord = await Perforce.CreateChangeAsync(NewChangeRecord, CancellationToken.None);
-			Logger.LogInformation("Created pending changelist {0}", NewChangeRecord.Number);
+			Logger.LogInformation("Created pending changelist {Change}", NewChangeRecord.Number);
 
 			await Perforce.MergeAsync(MergeOptions.None, NewChangeRecord.Number, -1, SourceFileSpec, TargetFileSpec, CancellationToken.None);
-			Logger.LogInformation("Merged files into changelist {0}", SourceFileSpec, TargetFileSpec, NewChangeRecord.Number);
+			Logger.LogInformation("Merged files into changelist {Change}", NewChangeRecord.Number);
 
-			PerforceResponseList<ResolveRecord> ResolveRecords = await Perforce.TryResolveAsync(NewChangeRecord.Number, ResolveOptions.Automatic, FileSpecList.Empty, CancellationToken.None);
+			PerforceResponseList<ResolveRecord> ResolveRecords = await Perforce.TryResolveAsync(NewChangeRecord.Number, ResolveOptions.Automatic, FileSpecList.Any, CancellationToken.None);
 			if (!ResolveRecords.Succeeded)
 			{
 				Logger.LogError("Unable to resolve files. Please resolve manually.");

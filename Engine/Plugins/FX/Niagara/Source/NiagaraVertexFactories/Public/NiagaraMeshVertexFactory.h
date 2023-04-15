@@ -6,14 +6,14 @@ ParticleVertexFactory.h: Particle vertex factory definitions.
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RenderResource.h"
-#include "UniformBuffer.h"
-#include "NiagaraVertexFactory.h"
-#include "../../Niagara/Classes/NiagaraDataSet.h"
-#include "SceneView.h"
 #include "Components.h"
+#include "CoreMinimal.h"
+#include "NiagaraDataSet.h"
+#include "NiagaraVertexFactory.h"
+#include "RenderResource.h"
 #include "SceneManagement.h"
+#include "SceneView.h"
+#include "UniformBuffer.h"
 #include "VertexFactory.h"
 
 // Disable this define to test disabling the use of GPU Scene with Niagara mesh renderer
@@ -35,11 +35,12 @@ BEGIN_SHADER_PARAMETER_STRUCT(FNiagaraMeshCommonParameters, NIAGARAVERTEXFACTORI
 	SHADER_PARAMETER(uint32, NiagaraFloatDataStride)
 	SHADER_PARAMETER(uint32, NiagaraIntDataStride)
 
-	SHADER_PARAMETER_SRV(Buffer<int>, SortedIndices)
+	SHADER_PARAMETER_SRV(Buffer<uint>, SortedIndices)
 	SHADER_PARAMETER(int, SortedIndicesOffset)
 	
 	SHADER_PARAMETER(FVector3f, SystemLWCTile)
 	SHADER_PARAMETER(int, bLocalSpace)
+	SHADER_PARAMETER(int, AccurateMotionVectors)
 	SHADER_PARAMETER(float, DeltaSeconds)
 	SHADER_PARAMETER(uint32, FacingMode)
 
@@ -131,8 +132,6 @@ public:
 		, MeshIndex(-1)
 		, LODIndex(-1)
 		, bAddPrimitiveIDElement(true)
-		, InstanceVerticesCPU(nullptr)
-		, FloatDataStride(0)
 	{}
 
 	FNiagaraMeshVertexFactory()
@@ -140,8 +139,6 @@ public:
 		, MeshIndex(-1)
 		, LODIndex(-1)
 		, bAddPrimitiveIDElement(true)
-		, InstanceVerticesCPU(nullptr)
-		, FloatDataStride(0)
 	{}
 
 	/**
@@ -156,6 +153,10 @@ public:
 	*/
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
+	/**
+	* Get vertex elements used when during PSO precaching materials using this vertex factory type
+	*/
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 
 	/**
 	* An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
@@ -223,34 +224,4 @@ protected:
 
 	/** Uniform buffer with mesh particle parameters. */
 	FRHIUniformBuffer* MeshParticleUniformBuffer;
-	
-	/** Used to remember this in the case that we reuse the same vertex factory for multiple renders . */
-	FNiagaraMeshInstanceVertices* InstanceVerticesCPU;
-
-	FShaderResourceViewRHIRef ParticleDataFloatSRV;
-	uint32 FloatDataStride;
-
-	FShaderResourceViewRHIRef ParticleDataHalfSRV;
-	uint32 HalfDataStride;
-};
-
-/**
-* Advanced mesh vertex factory. Used for enabling accurate motion vector output
-*/
-class NIAGARAVERTEXFACTORIES_API FNiagaraMeshVertexFactoryEx : public FNiagaraMeshVertexFactory
-{
-	DECLARE_VERTEX_FACTORY_TYPE(FNiagaraMeshVertexFactoryEx);
-public:
-	FNiagaraMeshVertexFactoryEx(ENiagaraVertexFactoryType InType, ERHIFeatureLevel::Type InFeatureLevel)
-		: FNiagaraMeshVertexFactory(InType, InFeatureLevel)
-	{}
-
-	FNiagaraMeshVertexFactoryEx() {}
-
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FNiagaraMeshVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-
-		OutEnvironment.SetDefine(TEXT("ENABLE_PRECISE_MOTION_VECTORS"), TEXT("1"));
-	}
 };

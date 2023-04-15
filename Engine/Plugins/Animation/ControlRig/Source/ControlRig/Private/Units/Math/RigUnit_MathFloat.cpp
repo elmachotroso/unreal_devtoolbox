@@ -2,6 +2,9 @@
 
 #include "Units/Math/RigUnit_MathFloat.h"
 #include "Units/RigUnitContext.h"
+#include "Units/Core/RigUnit_CoreDispatch.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_MathFloat)
 
 FRigUnit_MathFloatConstPi_Execute()
 {
@@ -177,10 +180,20 @@ FRigUnit_MathFloatEquals_Execute()
 	Result = A == B;
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathFloatEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreEquals::StaticStruct());
+}
+
 FRigUnit_MathFloatNotEquals_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = A != B;
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathFloatNotEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreNotEquals::StaticStruct());
 }
 
 FRigUnit_MathFloatGreater_Execute()
@@ -231,6 +244,12 @@ FRigUnit_MathFloatSelectBool_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = Condition ? IfTrue : IfFalse;
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathFloatSelectBool::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_MathFloatDeg_Execute()
@@ -314,3 +333,4 @@ FRigUnit_MathFloatExponential_Execute()
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = FMath::Exp(Value);
 }
+

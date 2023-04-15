@@ -2,21 +2,49 @@
 
 
 #include "K2Node_Variable.h"
-#include "K2Node_FunctionEntry.h"
+
 #include "BlueprintCompilationManager.h"
-#include "UObject/UObjectHash.h"
+#include "Components/ActorComponent.h"
 #include "Components/PrimitiveComponent.h"
-#include "GameFramework/MovementComponent.h"
-#include "Engine/BlueprintGeneratedClass.h"
+#include "Containers/Set.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/MovementComponent.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_FunctionEntry.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "KismetCompilerMisc.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/StructureEditorUtils.h"
-#include "Styling/SlateIconFinder.h"
+#include "KismetCompilerMisc.h"
 #include "Logging/MessageLog.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "Serialization/Archive.h"
 #include "SourceCodeNavigation.h"
-#include "Engine/SimpleConstructionScript.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateIconFinder.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnrealEdGlobals.h"
+#include "Settings/BlueprintEditorProjectSettings.h"
+#include "ToolMenu.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -391,19 +419,7 @@ FProperty* UK2Node_Variable::GetPropertyForVariable_Internal(UClass* OwningClass
 {
 	const FName VarName = GetVarName();
 
-	// Look in the sparse class data first
-	FProperty* VariableProperty = nullptr;
-	// TODO: move some of this into MemberReference::ResolveMember if possible
-	UClass* Scope = VariableReference.GetScope(OwningClass);
-	UScriptStruct* SparseClassDataStruct = Scope ? Scope->GetSparseClassDataStruct() : nullptr;
-	if (SparseClassDataStruct)
-	{
-		VariableProperty = FindFProperty<FProperty>(SparseClassDataStruct, VarName);
-	}
-	if (!VariableProperty)
-	{
-		VariableProperty = VariableReference.ResolveMember<FProperty>(OwningClass);
-	}
+	FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(OwningClass);
 
 	// if the variable has been deprecated, don't use it
 	if (VariableProperty != nullptr)
@@ -563,16 +579,16 @@ FSlateIcon UK2Node_Variable::GetVarIconFromPinType(const FEdGraphPinType& InPinT
 
 	if (InPinType.IsArray())
 	{
-		return FSlateIcon("EditorStyle", "Kismet.AllClasses.ArrayVariableIcon");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.ArrayVariableIcon");
 	}
 	else if (InPinType.IsSet())
 	{
-		return FSlateIcon("EditorStyle", "Kismet.AllClasses.SetVariableIcon");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.SetVariableIcon");
 	}
 	else if (InPinType.IsMap())
 	{
 		// TODO: Need to properly deal with Key/Value stuff
-		return FSlateIcon("EditorStyle", "Kismet.AllClasses.MapVariableKeyIcon");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.MapVariableKeyIcon");
 	}
 	else if (InPinType.PinSubCategoryObject.IsValid())
 	{
@@ -582,7 +598,7 @@ FSlateIcon UK2Node_Variable::GetVarIconFromPinType(const FEdGraphPinType& InPinT
 		}
 	}
 
-	return FSlateIcon("EditorStyle", "Kismet.AllClasses.VariableIcon");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.VariableIcon");
 }
 
 FText UK2Node_Variable::GetToolTipHeading() const
@@ -702,7 +718,7 @@ FSlateIcon UK2Node_Variable::GetVariableIconAndColor(const UStruct* VarScope, FN
 		}
 	}
 
-	return FSlateIcon("EditorStyle", "Kismet.AllClasses.VariableIcon");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.VariableIcon");
 }
 
 
@@ -991,7 +1007,7 @@ bool UK2Node_Variable::CanPasteHere(const UEdGraph* TargetGraph) const
 		{
 			const UClass* CurrentClass = GetBlueprint()->SkeletonGeneratedClass->GetAuthoritativeClass();
 			const UClass* PropertyClass = Property->GetOwnerClass()->GetAuthoritativeClass();
-			const bool bIsChildOf = CurrentClass->IsChildOf(PropertyClass);
+			const bool bIsChildOf = CurrentClass && CurrentClass->IsChildOf(PropertyClass);
 			return bIsChildOf;
 		}
 		return false;
@@ -1045,22 +1061,48 @@ void UK2Node_Variable::PostPasteNode()
 
 bool UK2Node_Variable::HasDeprecatedReference() const
 {
+	bool bDeprecated = false;
+	FProperty* VariableProperty = nullptr; // Declare up here so we can reuse if we would have resolved twice
+
 	// Check if the referenced variable is deprecated.
 	if (VariableReference.IsDeprecated())
 	{
-		return true;
+		bDeprecated = true;
 	}
-	else if (FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
+	else
 	{
-		// Backcompat: Allow variables tagged only with 'DeprecationMessage' meta to be seen as deprecated if inherited from a native parent class.
-		const bool bHasDeprecationMessage = VariableProperty->HasMetaData(FBlueprintMetadata::MD_DeprecationMessage);
-		if (bHasDeprecationMessage && VariableProperty->GetOwnerUObject()->IsNative())
+		VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode());
+		if (VariableProperty)
 		{
-			return true;
+			// Backcompat: Allow variables tagged only with 'DeprecationMessage' meta to be seen as deprecated if inherited from a native parent class.
+			const bool bHasDeprecationMessage = VariableProperty->HasMetaData(FBlueprintMetadata::MD_DeprecationMessage);
+			if (bHasDeprecationMessage && VariableProperty->GetOwnerUObject()->IsNative())
+			{
+				bDeprecated = true;
+			}
 		}
 	}
 
-	return false;
+	if (bDeprecated)
+	{
+		const UBlueprintEditorProjectSettings* BlueprintEditorProjectSettings = GetDefault<UBlueprintEditorProjectSettings>();
+		if (!VariableProperty)
+		{
+			VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode());
+		}
+
+
+		if (VariableProperty)
+		{
+			const FString PathName = VariableProperty->GetPathName();
+			if (BlueprintEditorProjectSettings->SuppressedDeprecationMessages.Contains(PathName))
+			{
+				bDeprecated = false;
+			}
+		}
+	}
+
+	return bDeprecated;
 }
 
 FEdGraphNodeDeprecationResponse UK2Node_Variable::GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const
@@ -1103,11 +1145,14 @@ bool UK2Node_Variable::CanJumpToDefinition() const
 {
 	const FProperty* VariableProperty = GetPropertyForVariable();
 	const bool bNativeVariable = (VariableProperty != nullptr) && (VariableProperty->IsNative());
-	return bNativeVariable || (GetJumpTargetForDoubleClick() != nullptr);
+	const bool bCanJumpToNativeVariable = bNativeVariable && ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
+	return bCanJumpToNativeVariable || (GetJumpTargetForDoubleClick() != nullptr);
 }
 
 void UK2Node_Variable::JumpToDefinition() const
 {
+	if (ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
 	// For native variables, try going to the variable definition in C++ if available
 	if (FProperty* VariableProperty = GetPropertyForVariable())
 	{
@@ -1117,9 +1162,34 @@ void UK2Node_Variable::JumpToDefinition() const
 			return;
 		}
 	}
+	}
 
 	// Otherwise, fall back to the inherited behavior
 	Super::JumpToDefinition();
+}
+
+void UK2Node_Variable::GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
+{
+	Super::GetNodeContextMenuActions(Menu, Context);
+
+	if (HasDeprecatedReference())
+	{
+		FText MenuEntryTitle = LOCTEXT("SuppressVariableDeprecationWarningTitle", "Suppress Deprecation Warning");
+		FText MenuEntryTooltip = LOCTEXT("SuppressVariableDeprecationWarningTooltip", "Adds this variable to the suppressed deprecation warnings list in the Bluperint Editor Project Settings for this project.");
+
+		FToolMenuSection& Section = Menu->AddSection("K2NodeVariable", LOCTEXT("VariableHeader", "Variable"));
+		Section.AddMenuEntry(
+			"SuppressDeprecationWarning",
+			MenuEntryTitle,
+			MenuEntryTooltip,
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateUObject(this, &UK2Node_Variable::SuppressDeprecationWarning),
+				FCanExecuteAction::CreateUObject(this, &UK2Node_Variable::HasDeprecatedReference),
+				FIsActionChecked()
+			)
+		);
+	}
 }
 
 bool UK2Node_Variable::FunctionParameterExists(const UEdGraph* InFunctionGraph, const FName InParameterName)
@@ -1161,6 +1231,18 @@ const UActorComponent* UK2Node_Variable::GetActorComponent(const FProperty* Vari
 	}
 	
 	return nullptr;
+}
+
+void UK2Node_Variable::SuppressDeprecationWarning() const
+{
+	if (const FProperty* Property = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
+	{
+		FString PathName = Property->GetPathName();
+		UBlueprintEditorProjectSettings* BlueprintEditorProjectSettings = GetMutableDefault<UBlueprintEditorProjectSettings>();
+		BlueprintEditorProjectSettings->SuppressedDeprecationMessages.Add(MoveTemp(PathName));
+		BlueprintEditorProjectSettings->SaveConfig();
+		BlueprintEditorProjectSettings->TryUpdateDefaultConfigFile("", false);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

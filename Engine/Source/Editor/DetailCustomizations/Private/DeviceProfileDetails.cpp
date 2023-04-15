@@ -1,33 +1,62 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DeviceProfileDetails.h"
-#include "HAL/IConsoleManager.h"
-#include "Layout/Margin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/Input/SComboBox.h"
-#include "EditorStyleSet.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
-#include "PropertyHandle.h"
+
+#include "Containers/BitArray.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformCrt.h"
 #include "IDetailGroup.h"
-#include "DetailCategoryBuilder.h"
-#include "TextureLODSettingsDetails.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "Misc/EnumRange.h"
+#include "Misc/Optional.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Serialization/Archive.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/Casts.h"
+#include "Templates/Less.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "TextureLODSettingsDetails.h"
+#include "Types/SlateStructs.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class STableViewBase;
+class SWidget;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "DeviceProfileDetails"
 
@@ -406,7 +435,7 @@ TSharedRef<ITableRow> SCVarSelectionPanel::GenerateCVarItemRow(TSharedPtr<FStrin
 		[
 			SNew(SButton)
 			.ForegroundColor(FSlateColor::UseForeground())
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(this, &SCVarSelectionPanel::HandleCVarSelected, InItem)
 			.ContentPadding(DeviceProfilePropertyConstants::CVarSelectionMenuPadding)
 			.ToolTipText(ComposedTooltip)
@@ -696,14 +725,14 @@ void FDeviceProfileConsoleVariablesPropertyDetails::CreateConsoleVariablesProper
 				.AutoWidth()
 				[
 					SNew(SComboButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.ContentPadding(4.0f)
 					.ForegroundColor(FSlateColor::UseForeground())
 					.IsFocusable(false)
 					.ButtonContent()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+						.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 					]
 					.MenuContent()
 					[
@@ -716,14 +745,14 @@ void FDeviceProfileConsoleVariablesPropertyDetails::CreateConsoleVariablesProper
 				.AutoWidth()
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.OnClicked(this, &FDeviceProfileConsoleVariablesPropertyDetails::OnRemoveAllFromGroup, (int32)Current.Key)
 					.ContentPadding(4.0f)
 					.ForegroundColor(FSlateColor::UseForeground())
 					.IsFocusable(false)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.Delete"))
+						.Image(FAppStyle::GetBrush("Icons.Delete"))
 					]
 				]
 			];
@@ -779,14 +808,14 @@ void FDeviceProfileConsoleVariablesPropertyDetails::CreateRowWidgetForCVarProper
 		.AutoWidth()
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.OnClicked(const_cast<FDeviceProfileConsoleVariablesPropertyDetails*>(this), &FDeviceProfileConsoleVariablesPropertyDetails::OnRemoveCVarProperty, InProperty)
 			.ContentPadding(4.0f)
 			.ForegroundColor(FSlateColor::UseForeground())
 			.IsFocusable(false)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.X"))
+				.Image(FAppStyle::GetBrush("Icons.X"))
 			]
 		]
 	];

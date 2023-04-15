@@ -188,7 +188,7 @@ struct NIAGARAEDITOR_API FNiagaraCurveTemplate
 	UPROPERTY(EditAnywhere, Category = Curve)
 	FString DisplayNameOverride;
 
-	UPROPERTY(EditAnywhere, Category = Curve, meta = (AllowedClasses = "CurveFloat"))
+	UPROPERTY(EditAnywhere, Category = Curve, meta = (AllowedClasses = "/Script/Engine.CurveFloat"))
 	FSoftObjectPath CurveAsset;
 };
 
@@ -210,6 +210,26 @@ struct NIAGARAEDITOR_API FNiagaraActionColors
 
 	UPROPERTY(EditAnywhere, Category = Color)
 	FLinearColor DeveloperColor;
+};
+
+
+USTRUCT()
+struct NIAGARAEDITOR_API FNiagaraParameterPanelSectionStorage
+{
+	GENERATED_BODY()
+		
+	FNiagaraParameterPanelSectionStorage() {}
+
+	FNiagaraParameterPanelSectionStorage(const FGuid& InGuid) : ParamStorageId(InGuid) 
+	{
+		check(InGuid.IsValid());
+	}
+
+	UPROPERTY()
+	FGuid ParamStorageId;
+
+	UPROPERTY()
+	TArray<FGuid> ExpandedCategories;
 };
 
 FORCEINLINE uint32 GetTypeHash(const FNiagaraNamespaceMetadata& NamespaceMetaData)
@@ -247,9 +267,17 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<FNiagaraSpawnShortcut> GraphCreationShortcuts;
 
-	/** Enables the Niagara Baker to be used within the system editor. */
-	UPROPERTY(config, EditAnywhere, Category = Experimental)
-	bool bEnableBaker = true;
+	/** If true then emitter and system nodes will show a simplified representation on low zoom levels. This improves performance and readablity when zoomed out of the system overview graph. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	bool bSimplifyStackNodesAtLowResolution = true;
+
+	/** The max number of chars before names on the low resolution nodes are truncated. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara, meta=(EditCondition="bSimplifyStackNodesAtLowResolution", UIMin=3))
+	int32 LowResolutionNodeMaxNameChars = 7;
+	
+	/** If true then the system editor will zoom to fit all emitters when opening an asset. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	bool bAlwaysZoomToFitSystemGraph = true;
 
 	TArray<float> GetPlaybackSpeeds() const;
 
@@ -289,6 +317,9 @@ public:
 	/** Sets whether or not to display advanced categories for the parameter panel. */
 	void SetDisplayAdvancedParameterPanelCategories(bool bInDisplayAdvancedParameterPanelCategories);
 
+	bool GetDisplayAffectedAssetStats() const;
+	int32 GetAssetStatsSearchLimit() const;
+
 	bool IsShowGridInViewport() const;
 	void SetShowGridInViewport(bool bShowGridInViewport);
 	
@@ -326,6 +357,27 @@ public:
 	const TMap<FString, FString>& GetHLSLKeywordReplacementsMap()const { return HLSLKeywordReplacements; }
 
 	FLinearColor GetSourceColor(EScriptSource Source) const;
+
+	FNiagaraParameterPanelSectionStorage& FindOrAddParameterPanelSectionStorage(FGuid PanelSectionId, bool& bOutAdded);
+
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassAllowed, const UClass* /*InClass*/);
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsClassPathAllowed, const FTopLevelAssetPath& /*InClassPath*/);
+	
+	/** Sets a delegate that allows external code to restrict which features can be used within the niagara editor by filtering which classes are allowed. */
+	void SetOnIsClassAllowed(const FOnIsClassAllowed& InOnIsClassAllowed);
+
+	/** Sets a delegate that allows external code to restrict which features can be used within the niagara editor by filtering which classes are allowed by class path. */
+	void SetOnIsClassPathAllowed(const FOnIsClassPathAllowed& InOnIsClassPathAllowed);
+
+	/** Returns whether or not the supplied class can be used in the current editor context. */
+	bool IsAllowedClass(const UClass* InClass) const;
+
+	/** Returns whether or not the class referenced by the supplied class path can be used in the current editor context. */
+	bool IsAllowedClassPath(const FTopLevelAssetPath& InClassPath) const;
+
+	/** Returns whether or not the supplied niagara type definition can be used in the current editor context. */
+	bool IsAllowedTypeDefinition(const FNiagaraTypeDefinition& InTypeDefinition) const;
+
 private:
 	void SetupNamespaceMetadata();
 	void BuildCachedPlaybackSpeeds() const;
@@ -355,6 +407,14 @@ private:
 	/** Whether or not to display advanced categories for the parameter panel. */
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	bool bDisplayAdvancedParameterPanelCategories;
+
+	/** If true, then the emitter and script editors will show an info message how many downstream asset are affected by a change. Gathering this information for large asset graphs can delay the opening of the asset editors a bit. */
+	UPROPERTY(config, EditAnywhere, Category=Niagara)
+	bool bDisplayAffectedAssetStats = true;
+
+	/** The maximum amount of asset references that are searched before stopping. Setting this too high can lead to long load times when opening default assets (basically the same as disabling the breadth limit in the reference viewer). */
+	UPROPERTY(config, EditAnywhere, Category=Niagara, meta=(EditCondition="bDisplayAffectedAssetStats", ClampMin=1))
+	int32 AffectedAssetSearchLimit = 25;
 
 	/** Speeds used for slowing down and speeding up the playback speeds */
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
@@ -398,9 +458,22 @@ private:
 
 	UPROPERTY(config)
 	bool bShowEmitterExecutionOrder;
+
+	UPROPERTY(config)
+	bool bShowGpuTickInformation;
+
+
+	UPROPERTY(config)
+	TArray<FNiagaraParameterPanelSectionStorage> SystemParameterPanelSectionData;
+
+	FOnIsClassAllowed OnIsClassAllowedDelegate;
+	FOnIsClassPathAllowed OnIsClassPathAllowedDelegate;
+
 public:
 	bool IsShowInstructionsCount() const;
 	void SetShowInstructionsCount(bool bShowInstructionsCount);
 	bool IsShowEmitterExecutionOrder() const;
 	void SetShowEmitterExecutionOrder(bool bShowEmitterExecutionOrder);
+	bool IsShowGpuTickInformation() const;
+	void SetShowGpuTickInformation(bool bShowGpuTickInformation);
 };

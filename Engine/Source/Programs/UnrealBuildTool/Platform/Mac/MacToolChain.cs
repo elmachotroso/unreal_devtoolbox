@@ -13,6 +13,7 @@ using EpicGames.Core;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -48,12 +49,13 @@ namespace UnrealBuildTool
 		/// Constructor
 		/// </summary>
 		/// <param name="bVerbose">Whether to output verbose logging</param>
-		public MacToolChainSettings(bool bVerbose) : base(bVerbose)
+		/// <param name="Logger">Logger for output</param>
+		public MacToolChainSettings(bool bVerbose, ILogger Logger) : base(bVerbose, Logger)
 		{
 			BaseSDKDir = XcodeDeveloperDir + "Platforms/MacOSX.platform/Developer/SDKs";
 			ToolchainDir = XcodeDeveloperDir + "Toolchains/XcodeDefault.xctoolchain/usr/bin/";
 
-			SelectSDK(BaseSDKDir, "MacOSX", ref MacOSSDKVersion, bVerbose);
+			SelectSDK(BaseSDKDir, "MacOSX", ref MacOSSDKVersion, bVerbose, Logger);
 
 			// convert to float for easy comparison
 			if(String.IsNullOrWhiteSpace(MacOSSDKVersion))
@@ -68,54 +70,16 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
-	/// Option flags for the Mac toolchain
-	/// </summary>
-	[Flags]
-	enum MacToolChainOptions
-	{
-		/// <summary>
-		/// No custom options
-		/// </summary>
-		None = 0,
-
-		/// <summary>
-		/// Enable address sanitzier
-		/// </summary>
-		EnableAddressSanitizer = 0x1,
-
-		/// <summary>
-		/// Enable thread sanitizer
-		/// </summary>
-		EnableThreadSanitizer = 0x2,
-
-		/// <summary>
-		/// Enable undefined behavior sanitizer
-		/// </summary>
-		EnableUndefinedBehaviorSanitizer = 0x4,
-
-		/// <summary>
-		/// Whether we're outputting a dylib instead of an executable
-		/// </summary>
-		OutputDylib = 0x08,
-	}
-
-	/// <summary>
 	/// Mac toolchain wrapper
 	/// </summary>
 	class MacToolChain : AppleToolChain
 	{
-		/// <summary>
-		/// Whether to compile with ASan enabled
-		/// </summary>
-		MacToolChainOptions Options;
-
-		public MacToolChain(FileReference? InProjectFile, MacToolChainOptions InOptions)
-			: base(InProjectFile)
+		public MacToolChain(FileReference? InProjectFile, ClangToolChainOptions InOptions, ILogger InLogger)
+			: base(InProjectFile, InOptions, InLogger)
 		{
-			this.Options = InOptions;			
 		}
 
-		public static Lazy<MacToolChainSettings> SettingsPrivate = new Lazy<MacToolChainSettings>(() => new MacToolChainSettings(false));
+		public static Lazy<MacToolChainSettings> SettingsPrivate = new Lazy<MacToolChainSettings>(() => new MacToolChainSettings(false, Log.Logger));
 
 		public static MacToolChainSettings Settings
 		{
@@ -124,18 +88,13 @@ namespace UnrealBuildTool
 
 		public static string SDKPath
 		{
-			get { return Settings.BaseSDKDir + "/MacOSX" + Settings.MacOSSDKVersion + ".sdk"; }
+			get { return Settings.BaseSDKDir + "/MacOSX.sdk"; }
 		}
 
 		/// <summary>
-		/// Which compiler frontend to use
+		/// Which compiler\linker frontend to use
 		/// </summary>
 		private const string MacCompiler = "clang++";
-
-		/// <summary>
-		/// Which linker frontend to use
-		/// </summary>
-		private const string MacLinker = "clang++";
 
 		/// <summary>
 		/// Which archiver to use
@@ -149,6 +108,13 @@ namespace UnrealBuildTool
 
 		private static List<FileItem> BundleDependencies = new List<FileItem>();
 
+		protected override ClangToolChainInfo GetToolChainInfo()
+		{
+			FileReference CompilerPath = new FileReference(Settings.ToolchainDir + MacCompiler);
+			FileReference ArchiverPath = new FileReference(Settings.ToolchainDir + MacArchiver);
+			return new AppleToolChainInfo(CompilerPath, ArchiverPath, Logger);
+		}
+
 		private static void SetupXcodePaths(bool bVerbose)
 		{
 		}
@@ -160,7 +126,7 @@ namespace UnrealBuildTool
 			// validation, because sometimes this is called from a shell script and quoting messes up		
 			if (!Target.Architecture.All(C => char.IsLetterOrDigit(C) || C == '_' || C == '+'))
 			{
-				Log.TraceError("Architecture '{0}' contains invalid characters", Target.Architecture);
+				throw new BuildException($"Architecture '{Target.Architecture}' contains invalid characters");
 			}			
 
 			SetupXcodePaths(true);
@@ -187,185 +153,88 @@ namespace UnrealBuildTool
 			return ArchArg;
 		}
 
-		string GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment)
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_WarningsAndErrors(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
 		{
-			string Result = "";
+			base.GetCompileArguments_WarningsAndErrors(CompileEnvironment, Arguments);
 
-			Result += " -fmessage-length=0";
-			Result += " -pipe";
-			Result += " -fpascal-strings";
+			//Arguments.Add("-Wsign-compare"); // fed up of not seeing the signed/unsigned warnings we get on Windows - lets enable them here too.
+		}
 
-			Result += " -fexceptions";
-			Result += " -DPLATFORM_EXCEPTIONS_DISABLED=0";
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Debugging(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Debugging(CompileEnvironment, Arguments);
 
-			Result += " -fasm-blocks";
-
-			if(CompileEnvironment.bHideSymbolsByDefault)
+			// TODO: Mac always enables exceptions, is this correct?
+			if (!CompileEnvironment.bEnableExceptions)
 			{
-				Result += " -fvisibility-ms-compat";
-				Result += " -fvisibility-inlines-hidden";
+				Arguments.Remove("-fno-exceptions");
+				Arguments.Remove("-DPLATFORM_EXCEPTIONS_DISABLED=1");
 			}
-			if (Options.HasFlag(MacToolChainOptions.EnableAddressSanitizer))
-			{
-				Result += " -fsanitize=address";
-			}
-			if (Options.HasFlag(MacToolChainOptions.EnableThreadSanitizer))
-			{
-				Result += " -fsanitize=thread";
-			}
-			if (Options.HasFlag(MacToolChainOptions.EnableUndefinedBehaviorSanitizer))
-			{
-				Result += " -fsanitize=undefined";
-			}			
+			Arguments.Add("-fexceptions");
+			Arguments.Add("-DPLATFORM_EXCEPTIONS_DISABLED=0");
 
-			Result += " -Wall -Werror";
-			Result += " -Wdelete-non-virtual-dtor";
-
-			// clang 12.00 has a new warning for copies in ranged loops. Instances have all been fixed up (2020/6/26) but
-			// are likely to be reintroduced due to no equivalent on other platforms at this time so disable the warning
-			if (GetClangVersion().Major >= 12)
+			if (CompileEnvironment.bHideSymbolsByDefault)
 			{
-				Result += " -Wno-range-loop-analysis ";
+				Arguments.Add("-fvisibility-ms-compat");
+				Arguments.Add("-fvisibility-inlines-hidden");
 			}
+		}
 
-			if (GetClangVersion().Major >= 12)
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_AdditionalArgs(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			if (!string.IsNullOrWhiteSpace(CompileEnvironment.AdditionalArguments))
 			{
-				// We have 'this' vs nullptr comparisons that get optimized away for newer versions of Clang, which is undesirable until we refactor these checks.
-				Result += " -fno-delete-null-pointer-checks";
-			}
+				string EscapedAdditionalArgs = string.Empty;
+				foreach (string AdditionalArg in CompileEnvironment.AdditionalArguments.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+				{
+					Match DefinitionMatch = Regex.Match(AdditionalArg, "-D\"?(?<Name>.*)=(?<Value>.*)\"?");
+					if (DefinitionMatch.Success)
+					{
+						EscapedAdditionalArgs += string.Format(" -D{0}=\"{1}\"", DefinitionMatch.Groups["Name"].Value, DefinitionMatch.Groups["Value"].Value);
+					}
+					else
+					{
+						EscapedAdditionalArgs += " " + AdditionalArg;
+					}
+				}
 
-			//Result += " -Wsign-compare"; // fed up of not seeing the signed/unsigned warnings we get on Windows - lets enable them here too.
+				if (!string.IsNullOrWhiteSpace(EscapedAdditionalArgs))
+				{
+					Arguments.Add(EscapedAdditionalArgs);
+				}
+			}
+		}
 
-			if (CompileEnvironment.ShadowVariableWarningLevel != WarningLevel.Off)
-			{
-				Result += " -Wshadow" + ((CompileEnvironment.ShadowVariableWarningLevel == WarningLevel.Error) ? "" : " -Wno-error=shadow");
-			}
-			
-			if (CompileEnvironment.bEnableUndefinedIdentifierWarnings)
-			{
-				Result += " -Wundef" + (CompileEnvironment.bUndefinedIdentifierWarningsAsErrors ? "" : " -Wno-error=undef");
-			}
+		/// <inheritdoc/>
+		protected override void GetCompileArguments_Global(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+		{
+			base.GetCompileArguments_Global(CompileEnvironment, Arguments);
+
+			Arguments.Add("-fasm-blocks");
 
 			if (CompileEnvironment.bEnableOSX109Support)
 			{
-				Result += " -faligned-new"; // aligned operator new is supported only on macOS 10.14 and above
+				Arguments.Add("-faligned-new"); // aligned operator new is supported only on macOS 10.14 and above
 			}
-
-			Result += " -c";
 
 			// Pass through architecture and OS info
-			Result += " " + FormatArchitectureArg(CompileEnvironment.Architecture);	
-			Result += string.Format(" -isysroot \"{0}\"", SDKPath);
-			Result += " -mmacosx-version-min=" + (CompileEnvironment.bEnableOSX109Support ? "10.9" : Settings.MacOSVersion);
+			Arguments.Add("" + FormatArchitectureArg(CompileEnvironment.Architecture));
+			Arguments.Add($"-isysroot \"{SDKPath}\"");
+			Arguments.Add("-mmacosx-version-min=" + (CompileEnvironment.bEnableOSX109Support ? "10.9" : Settings.MacOSVersion));
 
-			bool bStaticAnalysis = false;
-			string? StaticAnalysisMode = Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE");
-			if(StaticAnalysisMode != null && StaticAnalysisMode != "")
+			List<string> FrameworksSearchPaths = new List<string>();
+			foreach (UEBuildFramework Framework in CompileEnvironment.AdditionalFrameworks)
 			{
-				bStaticAnalysis = true;
-			}
-
-			// Optimize non- debug builds.
-			if (CompileEnvironment.bOptimizeCode && !bStaticAnalysis)
-			{
-				// Don't over optimise if using AddressSanitizer or you'll get false positive errors due to erroneous optimisation of necessary AddressSanitizer instrumentation.
-				if (Options.HasFlag(MacToolChainOptions.EnableAddressSanitizer))
+				FileReference FrameworkPath = new FileReference(Path.GetFullPath(Framework.Name));
+				if (!FrameworksSearchPaths.Contains(FrameworkPath.Directory.FullName))
 				{
-					Result += " -O1 -g -fno-optimize-sibling-calls -fno-omit-frame-pointer";
-				}
-				else if (Options.HasFlag(MacToolChainOptions.EnableThreadSanitizer))
-				{
-					Result += " -O1 -g";
-				}
-				else if (CompileEnvironment.bOptimizeForSize)
-				{
-					Result += " -Oz";
-				}
-				else
-				{
-					Result += " -O3";
+					Arguments.Add($"-F \"{NormalizeCommandLinePath(FrameworkPath.Directory)}\"");
+					FrameworksSearchPaths.Add(FrameworkPath.Directory.FullName);
 				}
 			}
-			else
-			{
-				Result += " -O0";
-			}
-
-			if (!CompileEnvironment.bUseInlining)
-			{
-				Result += " -fno-inline-functions";
-			}
-
-			// Create DWARF format debug info if wanted,
-			if (CompileEnvironment.bCreateDebugInfo)
-			{
-				Result += " -gdwarf-2";
-			}
-
-			return Result;
-		}
-		
-		static string GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c++";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-
-			return Result;
-		}
-
-		static string GetCompileArguments_MM(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c++";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-			return Result;
-		}
-
-		static string GetCompileArguments_M(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c";
-			Result += " -stdlib=libc++";
-			return Result;
-		}
-
-		static string GetCompileArguments_C()
-		{
-			string Result = "";
-			Result += " -x c";
-			return Result;
-		}
-
-		static string GetCompileArguments_PCH(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-			Result += " -x objective-c++-header";
-			Result += GetCppStandardCompileArgument(CompileEnvironment);
-			Result += " -stdlib=libc++";
-
-			return Result;
-		}
-
-		// Conditionally enable (default disabled) generation of information about every class with virtual functions for use by the C++ runtime type identification features 
-		// (`dynamic_cast' and `typeid'). If you don't use those parts of the language, you can save some space by using -fno-rtti. 
-		// Note that exception handling uses the same information, but it will generate it as needed. 
-		static string GetRTTIFlag(CppCompileEnvironment CompileEnvironment)
-		{
-			string Result = "";
-
-			if (CompileEnvironment.bUseRTTI)
-			{
-				Result = " -frtti";
-			}
-			else
-			{
-				Result = " -fno-rtti";
-			}
-
-			return Result;
 		}
 		
 		string AddFrameworkToLinkCommand(string FrameworkName, string Arg = "-framework")
@@ -380,252 +249,58 @@ namespace UnrealBuildTool
 			return Result;
 		}
 
-		string GetLinkArguments_Global(LinkEnvironment LinkEnvironment)
+		void GetLinkArguments_Global(LinkEnvironment LinkEnvironment, List<string> Arguments)
 		{
-			string Result = "";
-
 			// Pass through architecture and OS info		
-			Result += " " + FormatArchitectureArg(LinkEnvironment.Architecture);
-			Result += string.Format(" -isysroot \"{0}\"", SDKPath);
-			Result += " -mmacosx-version-min=" + Settings.MacOSVersion;
-			Result += " -dead_strip";
-			Result += " -Wl,-fatal_warnings";
+			Arguments.Add(FormatArchitectureArg(LinkEnvironment.Architecture));
+			Arguments.Add(string.Format("-isysroot \"{0}\"", SDKPath));
+			Arguments.Add("-mmacosx-version-min=" + Settings.MacOSVersion);
+			Arguments.Add("-dead_strip");
 
-			if (Options.HasFlag(MacToolChainOptions.EnableAddressSanitizer) || Options.HasFlag(MacToolChainOptions.EnableThreadSanitizer) || Options.HasFlag(MacToolChainOptions.EnableUndefinedBehaviorSanitizer))
+			// Temporary workaround for linker warning with Xcode 14:
+			//		'ld: warning: could not create compact unwind for _inflate_fast: registers 27 not saved contiguously in frame'
+			if (CompilerVersionLessThan(14, 0, 0))
 			{
-				Result += " -g";
-				if (Options.HasFlag(MacToolChainOptions.EnableAddressSanitizer))
+				Arguments.Add("-Wl,-fatal_warnings");
+			}
+
+			if (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer) || Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer) || Options.HasFlag(ClangToolChainOptions.EnableUndefinedBehaviorSanitizer))
+			{
+				Arguments.Add("-g");
+				if (Options.HasFlag(ClangToolChainOptions.EnableAddressSanitizer))
 				{
-					Result += " -fsanitize=address";
+					Arguments.Add("-fsanitize=address");
 				}
-				else if (Options.HasFlag(MacToolChainOptions.EnableThreadSanitizer))
+				else if (Options.HasFlag(ClangToolChainOptions.EnableThreadSanitizer))
 				{
-					Result += " -fsanitize=thread";
+					Arguments.Add("-fsanitize=thread");
 				}
-				else if (Options.HasFlag(MacToolChainOptions.EnableUndefinedBehaviorSanitizer))
+				else if (Options.HasFlag(ClangToolChainOptions.EnableUndefinedBehaviorSanitizer))
 				{
-					Result += " -fsanitize=undefined";
+					Arguments.Add("-fsanitize=undefined");
 				}
 			}
 
 			if (LinkEnvironment.bIsBuildingDLL)
 			{
-				Result += " -dynamiclib";
+				Arguments.Add("-dynamiclib");
 			}
 
 			if (LinkEnvironment.Configuration == CppConfiguration.Debug)
 			{
 				// Apple's Clang is not supposed to run the de-duplication pass when linking in debug configs. Xcode adds this flag automatically, we need it as well, otherwise linking would take very long
-				Result += " -Wl,-no_deduplicate";
+				Arguments.Add("-Wl,-no_deduplicate");
 			}
 
 			// Needed to make sure install_name_tool will be able to update paths in Mach-O headers
-			Result += " -headerpad_max_install_names";
+			Arguments.Add("-headerpad_max_install_names");
 
-			Result += " -lc++";
-
-			return Result;
+			Arguments.Add("-lc++");
 		}
 
-		static string GetArchiveArguments_Global(LinkEnvironment LinkEnvironment)
+		void GetArchiveArguments_Global(LinkEnvironment LinkEnvironment, List<string> Arguments)
 		{
-			string Result = "";
-			Result += " -static";
-			return Result;
-		}
-
-		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
-		{
-			StringBuilder Arguments = new StringBuilder();
-			StringBuilder PCHArguments = new StringBuilder();
-
-			Arguments.Append(GetCompileArguments_Global(CompileEnvironment));
-
-			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
-			{
-				// Add the precompiled header file's path to the include path so GCC can find it.
-				// This needs to be before the other include paths to ensure GCC uses it instead of the source header file.
-				PCHArguments.Append(" -include \"");
-				PCHArguments.Append(CompileEnvironment.PrecompiledHeaderIncludeFilename);
-				PCHArguments.Append("\"");
-			}
-
-			// Add include paths to the argument list.
-			HashSet<DirectoryReference> AllIncludes = new HashSet<DirectoryReference>(CompileEnvironment.UserIncludePaths);
-			AllIncludes.UnionWith(CompileEnvironment.SystemIncludePaths);
-			foreach (DirectoryReference IncludePath in AllIncludes)
-			{
-				Arguments.Append(" -I\"");
-				Arguments.Append(IncludePath);
-				Arguments.Append("\"");
-			}
-
-			foreach (string Definition in CompileEnvironment.Definitions)
-			{
-				string DefinitionArgument = Definition.Contains("\"") ? Definition.Replace("\"", "\\\"") : Definition;
-				Arguments.Append(" -D\"");
-				Arguments.Append(DefinitionArgument);
-				Arguments.Append("\"");
-			}
-
-			List<string> FrameworksSearchPaths = new List<string>();
-			foreach (UEBuildFramework Framework in CompileEnvironment.AdditionalFrameworks)
-			{
-				string FrameworkPath = Path.GetDirectoryName(Path.GetFullPath(Framework.Name))!;
-				if (!FrameworksSearchPaths.Contains(FrameworkPath))
-				{
-					Arguments.Append(" -F \"");
-					Arguments.Append(FrameworkPath);
-					Arguments.Append("\"");
-					FrameworksSearchPaths.Add(FrameworkPath);
-				}
-			}
-
-			CPPOutput Result = new CPPOutput();
-			// Create a compile action for each source file.
-			foreach (FileItem SourceFile in InputFiles)
-			{
-				Action CompileAction = Graph.CreateAction(ActionType.Compile);
-				CompileAction.PrerequisiteItems.AddRange(CompileEnvironment.ForceIncludeFiles);
-				CompileAction.PrerequisiteItems.AddRange(CompileEnvironment.AdditionalPrerequisites);
-
-				string FileArguments = "";
-				string Extension = Path.GetExtension(SourceFile.AbsolutePath).ToUpperInvariant();
-
-				if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
-				{
-					// Compile the file as a C++ PCH.
-					FileArguments += GetCompileArguments_PCH(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-				}
-				else if (Extension == ".C")
-				{
-					// Compile the file as C code.
-					FileArguments += GetCompileArguments_C();
-				}
-				else if (Extension == ".MM")
-				{
-					// Compile the file as Objective-C++ code.
-					FileArguments += GetCompileArguments_MM(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-				}
-				else if (Extension == ".M")
-				{
-					// Compile the file as Objective-C++ code.
-					FileArguments += GetCompileArguments_M(CompileEnvironment);
-				}
-				else
-				{
-					// Compile the file as C++ code.
-					FileArguments += GetCompileArguments_CPP(CompileEnvironment);
-					FileArguments += GetRTTIFlag(CompileEnvironment);
-
-					// only use PCH for .cpp files
-					FileArguments += PCHArguments.ToString();
-				}
-
-				foreach (FileItem ForceIncludeFile in CompileEnvironment.ForceIncludeFiles)
-				{
-					FileArguments += String.Format(" -include \"{0}\"", ForceIncludeFile.Location);
-				}
-
-				// Add the C++ source file and its included files to the prerequisite item list.
-				CompileAction.PrerequisiteItems.Add(SourceFile);
-
-				string? OutputFilePath = null;
-				if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
-				{
-					// Add the precompiled header file to the produced item list.
-					FileItem PrecompiledHeaderFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".gch"));
-					CompileAction.ProducedItems.Add(PrecompiledHeaderFile);
-					Result.PrecompiledHeaderFile = PrecompiledHeaderFile;
-
-					// Add the parameters needed to compile the precompiled header file to the command-line.
-					FileArguments += string.Format(" -o \"{0}\"", PrecompiledHeaderFile.AbsolutePath);
-				}
-				else
-				{
-					if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
-					{
-						CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile!);
-					}
-					// Add the object file to the produced item list.
-					FileItem ObjectFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".o"));
-
-					CompileAction.ProducedItems.Add(ObjectFile);
-					Result.ObjectFiles.Add(ObjectFile);
-					FileArguments += string.Format(" -o \"{0}\"", ObjectFile.AbsolutePath);
-					OutputFilePath = ObjectFile.AbsolutePath;
-				}
-
-				// Add the source file path to the command-line.
-				FileArguments += string.Format(" \"{0}\"", SourceFile.AbsolutePath);
-
-				// Generate the included header dependency list
-				if(CompileEnvironment.bGenerateDependenciesFile)
-				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".d"));
-					FileArguments += string.Format(" -MD -MF\"{0}\"", DependencyListFile.AbsolutePath.Replace('\\', '/'));
-					CompileAction.DependencyListFile = DependencyListFile;
-					CompileAction.ProducedItems.Add(DependencyListFile);
-				}
-
-				string EscapedAdditionalArgs = "";
-				if(!string.IsNullOrWhiteSpace(CompileEnvironment.AdditionalArguments))
-				{
-					foreach(string AdditionalArg in CompileEnvironment.AdditionalArguments.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
-					{
-						Match DefinitionMatch = Regex.Match(AdditionalArg, "-D\"?(?<Name>.*)=(?<Value>.*)\"?");
-						if (DefinitionMatch.Success)
-						{
-							EscapedAdditionalArgs += string.Format(" -D{0}=\"{1}\"", DefinitionMatch.Groups["Name"].Value, DefinitionMatch.Groups["Value"].Value);
-						}
-						else
-						{
-							EscapedAdditionalArgs += " " + AdditionalArg;
-						}
-					}
-				}
-
-				string AllArgs = Arguments + FileArguments + EscapedAdditionalArgs;
-
-				string CompilerPath = Settings.ToolchainDir + MacCompiler;
-				
-				// Analyze and then compile using the shell to perform the indirection
-				string? StaticAnalysisMode = Environment.GetEnvironmentVariable("CLANG_STATIC_ANALYZER_MODE");
-				if(StaticAnalysisMode != null && StaticAnalysisMode != "" && OutputFilePath != null)
-				{
-					string TempArgs = "-c \"" + CompilerPath + " " + AllArgs + " --analyze -Wno-unused-command-line-argument -Xclang -analyzer-output=html -Xclang -analyzer-config -Xclang path-diagnostics-alternate=true -Xclang -analyzer-config -Xclang report-in-main-source-file=true -Xclang -analyzer-disable-checker -Xclang deadcode.DeadStores -o " + OutputFilePath.Replace(".o", ".html") + "; " + CompilerPath + " " + AllArgs + "\"";
-					AllArgs = TempArgs;
-					CompilerPath = "/bin/sh";
-				}
-
-				CompileAction.WorkingDirectory = GetMacDevSrcRoot();
-
-				if (MacExports.IsRunningUnderRosetta)
-				{
-					string ArchPath = "/usr/bin/arch";
-					CompileAction.CommandPath = new FileReference(ArchPath);
-					CompileAction.CommandArguments = string.Format("-{0} {1} {2}", MacExports.HostArchitecture, CompilerPath, AllArgs);
-
-				}
-				else
-				{
-					CompileAction.CommandPath = new FileReference(CompilerPath);
-					CompileAction.CommandArguments = AllArgs;
-				}
-
-				// For compilation we delete everything we produce
-				CompileAction.DeleteItems.AddRange(CompileAction.ProducedItems);
-				CompileAction.CommandDescription = "Compile";
-				CompileAction.StatusDescription = Path.GetFileName(SourceFile.AbsolutePath);
-				CompileAction.bIsGCCCompiler = true;
-				// We're already distributing the command by execution on Mac.
-				CompileAction.bCanExecuteRemotely = Extension != ".C";
-				CompileAction.bShouldOutputStatusDescription = true;
-				CompileAction.CommandVersion = GetFullClangVersion();
-			}
-			return Result;
+			Arguments.Add("-static");
 		}
 
 		private void AppendMacLine(StreamWriter Writer, string Format, params object[] Arg)
@@ -696,7 +371,7 @@ namespace UnrealBuildTool
 			return GameName;
 		}
 
-		private void AddLibraryPathToRPaths(string Library, string ExeAbsolutePath, ref List<string> RPaths, ref string LinkCommand, bool bIsBuildingAppBundle)
+		private void AddLibraryPathToRPaths(string Library, string ExeAbsolutePath, ref List<string> RPaths, ref string LinkCommand, bool bIsBuildingAppBundle, ILogger Logger)
 		{
 			string LibraryFullPath = Path.GetFullPath(Library);
  			string LibraryDir = Path.GetDirectoryName(LibraryFullPath)!;
@@ -754,7 +429,7 @@ namespace UnrealBuildTool
 					}
 					else
 					{
-						Log.TraceWarning("Unexpected third party dylib location when generating RPATH entries: {0}. Skipping.", LibraryFullPath);
+						Logger.LogWarning("Unexpected third party dylib location when generating RPATH entries: {LibraryFullPath}. Skipping.", LibraryFullPath);
 					}
 
 					// For staged code-based games we need additional entry if the game is not stored directly in the engine's root directory
@@ -781,22 +456,28 @@ namespace UnrealBuildTool
 			// Create an action that invokes the linker.
 			Action LinkAction = Graph.CreateAction(ActionType.Link);
 
+			FileReference LinkerPath = bIsBuildingLibrary ? Info.Archiver : Info.Clang;
+
 			LinkAction.WorkingDirectory = GetMacDevSrcRoot();
-			LinkAction.CommandPath = new FileReference("/usr/bin/env");
+			LinkAction.CommandPath = LinkerPath;
 			LinkAction.CommandDescription = "Link";
-			LinkAction.CommandVersion = GetFullClangVersion();
+			LinkAction.CommandVersion = Info.ClangVersionString;
 
 			string EngineAPIVersion = LoadEngineAPIVersion();
 			string EngineDisplayVersion = LoadEngineDisplayVersion(true);
 			string VersionArg = LinkEnvironment.bIsBuildingDLL ? " -current_version " + EngineAPIVersion + " -compatibility_version " + EngineDisplayVersion : "";
 
-			string Linker = bIsBuildingLibrary ? MacArchiver : MacLinker;
-			string LinkCommand = Settings.ToolchainDir + Linker + VersionArg + " " + (bIsBuildingLibrary ? GetArchiveArguments_Global(LinkEnvironment) : GetLinkArguments_Global(LinkEnvironment));
-
-			if (MacExports.IsRunningUnderRosetta)
+			List<string> LinkArguments = new();
+			if (bIsBuildingLibrary)
 			{
-				LinkCommand = string.Format("/usr/bin/arch -{0} {1}", MacExports.HostArchitecture, LinkCommand);
+				GetArchiveArguments_Global(LinkEnvironment, LinkArguments);
 			}
+			else
+			{
+				GetLinkArguments_Global(LinkEnvironment, LinkArguments);
+			}
+
+			string LinkCommand = VersionArg + " " + string.Join(' ', LinkArguments);
 
 			// Tell the action that we're building an import library here and it should conditionally be
 			// ignored as a prerequisite for other actions
@@ -864,7 +545,7 @@ namespace UnrealBuildTool
 						LinkCommand += string.Format(" \"{0}\"", Path.GetFullPath(AdditionalLibrary));
 					}
 
-					AddLibraryPathToRPaths(AdditionalLibrary, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle);
+					AddLibraryPathToRPaths(AdditionalLibrary, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle, Logger);
 				}
 
 				foreach (string AdditionalLibrary in LinkEnvironment.DelayLoadDLLs)
@@ -877,7 +558,7 @@ namespace UnrealBuildTool
 
 					LinkCommand += string.Format(" -weak_library \"{0}\"", Path.GetFullPath(AdditionalLibrary));
 
-					AddLibraryPathToRPaths(AdditionalLibrary, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle);
+					AddLibraryPathToRPaths(AdditionalLibrary, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle, Logger);
 				}
 			}
 
@@ -910,20 +591,14 @@ namespace UnrealBuildTool
 				foreach (KeyValuePair<string, bool> Framework in AllFrameworks)
 				{
 					LinkCommand += AddFrameworkToLinkCommand(Framework.Key, Framework.Value ? "-weak_framework" : "-framework");
-					AddLibraryPathToRPaths(Framework.Key, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle);
+					AddLibraryPathToRPaths(Framework.Key, AbsolutePath, ref RPaths, ref LinkCommand, bIsBuildingAppBundle, Logger);
 				}
 			}
 
 			List<string> InputFileNames = new List<string>();
 			foreach (FileItem InputFile in LinkEnvironment.InputFiles)
 			{
-				string InputFilePath = InputFile.AbsolutePath;
-				if (InputFile.Location.IsUnderDirectory(Unreal.RootDirectory))
-				{
-					InputFilePath = InputFile.Location.MakeRelativeTo(UnrealBuildTool.EngineSourceDirectory);
-				}
-
-				InputFileNames.Add(string.Format("\"{0}\"", InputFilePath));
+				InputFileNames.Add(string.Format("\"{0}\"", NormalizeCommandLinePath(InputFile)));
 				LinkAction.PrerequisiteItems.Add(InputFile);
 			}
 
@@ -983,7 +658,7 @@ namespace UnrealBuildTool
 			// Add the additional arguments specified by the environment.
 			LinkCommand += LinkEnvironment.AdditionalArguments;
 
-			LinkAction.CommandArguments = "-- " + LinkCommand;
+			LinkAction.CommandArguments = LinkCommand;
 
 			// Only execute linking on the local Mac.
 			LinkAction.bCanExecuteRemotely = false;
@@ -1029,6 +704,7 @@ namespace UnrealBuildTool
 					}
 					string FixDylibLine = "pushd \"" + Directory.GetCurrentDirectory() + "\"  > /dev/null; ";
 					FixDylibLine += string.Format("TIMESTAMP=`stat -n -f \"%Sm\" -t \"%Y%m%d%H%M.%S\" \"{0}\"`; ", OutputFile.AbsolutePath);
+					FixDylibLine += LinkerPath;
 					FixDylibLine += LinkCommand.Replace("-undefined dynamic_lookup", EngineAndGameLibrariesString).Replace("$", "\\$");
 					FixDylibLine += string.Format("; touch -t $TIMESTAMP \"{0}\"; if [[ $? -ne 0 ]]; then exit 1; fi; ", OutputFile.AbsolutePath);
 					FixDylibLine += "popd > /dev/null";
@@ -1091,7 +767,7 @@ namespace UnrealBuildTool
 						}
 						else
 						{
-							Log.TraceWarning("Found {0} Target.cs files for {1} in alldir search of directory {2}", TargetFiles.Length, GameName, Directory.GetCurrentDirectory());
+							Logger.LogWarning("Found {NumFiles} Target.cs files for {GameName} in alldir search of directory {Dir}", TargetFiles.Length, GameName, Directory.GetCurrentDirectory());
 						}
 					}
 					else
@@ -1153,6 +829,15 @@ namespace UnrealBuildTool
 					AppendMacLine(FinalizeAppBundleScript, FormatCopyCommand(TempInfoPlist, String.Format("{0}.app/Contents/Info.plist", ExeName)));
 					AppendMacLine(FinalizeAppBundleScript, "chmod 644 \"{0}.app/Contents/Info.plist\"", ExeName);
 
+					// Also copy it to where Xcode will look for it, now that Xcode 14 requireswe have one set up - it can't point into the .app because that
+					// is where it will copy to, so it will error with reading and writing to the same location
+					string IntermediateDirectory = (ProjectFile == null ? Unreal.EngineDirectory : ProjectFile.Directory) + "/Intermediate/Mac";
+					string XcodeInputPListFile = IntermediateDirectory + "/" + ExeName + "-Info.plist";
+					AppendMacLine(FinalizeAppBundleScript, "mkdir -p \"{0}\"", IntermediateDirectory);
+					AppendMacLine(FinalizeAppBundleScript, FormatCopyCommand(TempInfoPlist, XcodeInputPListFile));
+					AppendMacLine(FinalizeAppBundleScript, "chmod 644 \"{0}\"", XcodeInputPListFile);
+
+
 					// Generate PkgInfo file
 					string TempPkgInfo = "$TMPDIR/TempPkgInfo";
 					AppendMacLine(FinalizeAppBundleScript, "echo 'echo -n \"APPL????\"' | bash > \"{0}\"", TempPkgInfo);
@@ -1176,7 +861,7 @@ namespace UnrealBuildTool
 		FileItem FixDylibDependencies(LinkEnvironment LinkEnvironment, FileItem Executable, IActionGraphBuilder Graph)
 		{
 			Action FixDylibAction = Graph.CreateAction(ActionType.PostBuildStep);
-			FixDylibAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
+			FixDylibAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 			FixDylibAction.CommandPath = BuildHostPlatform.Current.Shell;
 			FixDylibAction.CommandDescription = "";
 
@@ -1213,7 +898,8 @@ namespace UnrealBuildTool
 		/// <param name="MachOBinary">FileItem describing the executable or dylib to generate debug info for</param>
 		/// <param name="LinkEnvironment"></param>
 		/// <param name="Graph">List of actions to be executed. Additional actions will be added to this list.</param>
-		public FileItem GenerateDebugInfo(FileItem MachOBinary, LinkEnvironment LinkEnvironment, IActionGraphBuilder Graph)
+		/// <param name="Logger">Logger for output</param>
+		public FileItem GenerateDebugInfo(FileItem MachOBinary, LinkEnvironment LinkEnvironment, IActionGraphBuilder Graph, ILogger Logger)
 		{
 			string BinaryPath = MachOBinary.AbsolutePath;
 			if (BinaryPath.Contains(".app"))
@@ -1246,7 +932,7 @@ namespace UnrealBuildTool
 			// a problem where dsymutil would exit with an error saying the input file did not exist.
 			// Note that the source and dest are switched from a copy command
 			string ExtraOptions;
-			string DsymutilPath = GetDsymutilPath(out ExtraOptions, bIsForLTOBuild: false);
+			string DsymutilPath = GetDsymutilPath(Logger, out ExtraOptions, bIsForLTOBuild: false);
 
 			string ArgumentString = "-c \"";
 			ArgumentString += string.Format("for i in {{1..30}}; ");
@@ -1449,8 +1135,12 @@ namespace UnrealBuildTool
 
 		private List<FileItem> DebugInfoFiles = new List<FileItem>();
 
-		public override void FinalizeOutput(ReadOnlyTargetRules Target, TargetMakefile Makefile)
+		public override void FinalizeOutput(ReadOnlyTargetRules Target, TargetMakefileBuilder MakefileBuilder)
 		{
+			base.FinalizeOutput(Target, MakefileBuilder);
+
+			TargetMakefile Makefile = MakefileBuilder.Makefile;
+
 			// Re-add any .dSYM files that may have been stripped out.
 			List<string> OutputFiles = Makefile.OutputItems.Select(Item => Path.ChangeExtension(Item.FullName, ".dSYM")).Distinct().ToList();
 			foreach (FileItem DebugItem in DebugInfoFiles)
@@ -1485,7 +1175,7 @@ namespace UnrealBuildTool
 				// We want dsyms to be created after all dylib dependencies are fixed. If FixDylibDependencies action was not created yet, save the info for later.
 				if (FixDylibOutputFile != null)
 				{
-					DebugInfoFiles.Add(GenerateDebugInfo(Executable, BinaryLinkEnvironment, Graph));
+					DebugInfoFiles.Add(GenerateDebugInfo(Executable, BinaryLinkEnvironment, Graph, Logger));
 				}
 				else
 				{
@@ -1493,7 +1183,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			if ((BinaryLinkEnvironment.bIsBuildingDLL && (Options & MacToolChainOptions.OutputDylib) == 0) || (BinaryLinkEnvironment.bIsBuildingConsoleApplication && Executable.Name.EndsWith("-Cmd")))
+			if ((BinaryLinkEnvironment.bIsBuildingDLL && (Options & ClangToolChainOptions.OutputDylib) == 0) || (BinaryLinkEnvironment.bIsBuildingConsoleApplication && Executable.Name.EndsWith("-Cmd")))
 			{
 				return OutputFiles;
 			}
@@ -1510,7 +1200,7 @@ namespace UnrealBuildTool
 			// Add dsyms that we couldn't add before FixDylibDependencies action was created
 			foreach (FileItem Exe in ExecutablesThatNeedDsyms)
 			{
-				DebugInfoFiles.Add(GenerateDebugInfo(Exe, BinaryLinkEnvironment, Graph));
+				DebugInfoFiles.Add(GenerateDebugInfo(Exe, BinaryLinkEnvironment, Graph, Logger));
 			}
 			ExecutablesThatNeedDsyms.Clear();
 

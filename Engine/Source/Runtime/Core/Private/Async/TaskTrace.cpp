@@ -46,18 +46,17 @@ namespace TaskTrace
 		UE_TRACE_EVENT_FIELD(uint64, TaskId)
 	UE_TRACE_EVENT_END()
 
-	UE_TRACE_EVENT_BEGIN(TaskTrace, NestedAdded)
-		UE_TRACE_EVENT_FIELD(uint64, Timestamp)
-		UE_TRACE_EVENT_FIELD(uint64, TaskId)
-		UE_TRACE_EVENT_FIELD(uint64, NestedId)
-	UE_TRACE_EVENT_END()
-
 	UE_TRACE_EVENT_BEGIN(TaskTrace, Finished)
 		UE_TRACE_EVENT_FIELD(uint64, Timestamp)
 		UE_TRACE_EVENT_FIELD(uint64, TaskId)
 	UE_TRACE_EVENT_END()
 
 	UE_TRACE_EVENT_BEGIN(TaskTrace, Completed)
+		UE_TRACE_EVENT_FIELD(uint64, Timestamp)
+		UE_TRACE_EVENT_FIELD(uint64, TaskId)
+	UE_TRACE_EVENT_END()
+
+	UE_TRACE_EVENT_BEGIN(TaskTrace, Destroyed)
 		UE_TRACE_EVENT_FIELD(uint64, Timestamp)
 		UE_TRACE_EVENT_FIELD(uint64, TaskId)
 	UE_TRACE_EVENT_END()
@@ -97,7 +96,6 @@ namespace TaskTrace
 	{
 		check(bGTaskTraceInitialized);
 		check(TaskId != InvalidId);
-		check(TaskId != 0);
 
 		UE_TRACE_LOG(TaskTrace, Created, TaskChannel)
 			<< Created.Timestamp(FPlatformTime::Cycles64())
@@ -154,18 +152,6 @@ namespace TaskTrace
 			<< Started.TaskId(TaskId);
 	}
 
-	void NestedAdded(FId TaskId, FId NestedId)
-	{
-		check(bGTaskTraceInitialized);
-		check(TaskId != InvalidId);
-		check(NestedId != InvalidId);
-
-		UE_TRACE_LOG(TaskTrace, NestedAdded, TaskChannel)
-			<< NestedAdded.Timestamp(FPlatformTime::Cycles64())
-			<< NestedAdded.TaskId(TaskId)
-			<< NestedAdded.NestedId(NestedId);
-	}
-
 	void Finished(FId TaskId)
 	{
 		check(bGTaskTraceInitialized);
@@ -189,6 +175,15 @@ namespace TaskTrace
 		UE_TRACE_LOG(TaskTrace, Completed, TaskChannel)
 			<< Completed.Timestamp(FPlatformTime::Cycles64())
 			<< Completed.TaskId(TaskId);
+	}
+
+	void Destroyed(FId TaskId)
+	{
+		check(bGTaskTraceInitialized);
+
+		UE_TRACE_LOG(TaskTrace, Destroyed, TaskChannel)
+			<< Destroyed.Timestamp(FPlatformTime::Cycles64())
+			<< Destroyed.TaskId(TaskId);
 	}
 
 	FWaitingScope::FWaitingScope(const TArray<FId>& Tasks)

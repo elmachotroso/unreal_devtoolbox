@@ -26,20 +26,21 @@ void FLandscapeTexture2DResource::InitRHI()
 {
 	FTextureResource::InitRHI();
 
-	FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeTexture2DResource"));
-	ETextureCreateFlags Flags = TexCreate_None;
+	FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2D(TEXT("FLandscapeTexture2DResource"), SizeX, SizeY, Format)
+		.SetNumMips(NumMips);
 
 	if (bCreateUAVs)
 	{
-		Flags |= TexCreate_RenderTargetable | TexCreate_UAV;
+		Desc.AddFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV);
 	}
 
 	if (bCreateSRV)
 	{
-		Flags |= TexCreate_ShaderResource;
+		Desc.AddFlags(ETextureCreateFlags::ShaderResource);
 	}
 
-	TextureRHI = RHICreateTexture2D(SizeX, SizeY, Format, NumMips, 1, Flags, CreateInfo);
+	TextureRHI = RHICreateTexture(Desc);
 
 	if (bCreateUAVs)
 	{
@@ -113,7 +114,12 @@ void FLandscapeTexture2DArrayResource::InitRHI()
 		Flags |= TexCreate_ShaderResource;
 	}
 
-	TextureRHI = RHICreateTexture2DArray(SizeX, SizeY, SizeZ, Format, NumMips, 1, Flags, CreateInfo);
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create2DArray(TEXT("FLandscapeTexture2DArrayResource"), SizeX, SizeY, SizeZ, Format)
+		.SetNumMips(NumMips)
+		.SetFlags(Flags);
+
+	TextureRHI = RHICreateTexture(Desc);
 
 	if (bCreateUAVs)
 	{
@@ -171,12 +177,8 @@ void TrackLandscapeRDGTextures(FRDGBuilder& GraphBuilder, TMap<FTexture2DResourc
 		// We need a debug name that will last until the graph is executed: 
 		TrackedTexture.DebugName = GraphBuilder.AllocObject<FString>(TrackedTexture.TextureResource->GetTextureName().ToString());
 
-		// Register the texture to the GraphBuilder : we'll read from / write to it like a render target : 
-		TRefCountPtr<IPooledRenderTarget> RenderTarget = CreateRenderTarget(TrackedTexture.TextureResource->TextureRHI, **TrackedTexture.DebugName);
-
-		// Force tracking on the external texture if necessary, so that it can be copied from/to via CopyTexture within the graph : 
-		ERDGTextureFlags TextureFlags = (TrackedTexture.bNeedsForceTracking || TrackedTexture.bNeedsScratch) ? ERDGTextureFlags::ForceTracking : ERDGTextureFlags::ReadOnly;
-		TrackedTexture.ExternalTextureRef = GraphBuilder.RegisterExternalTexture(RenderTarget, **TrackedTexture.DebugName, TextureFlags);
+		// Register the texture to the GraphBuilder : we'll read from / write to it like a render target :
+		TrackedTexture.ExternalTextureRef = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(TrackedTexture.TextureResource->TextureRHI, **TrackedTexture.DebugName));
 
 		if (TrackedTexture.bNeedsScratch)
 		{

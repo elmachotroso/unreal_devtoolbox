@@ -2,8 +2,11 @@
 
 #include "MovieSceneGroomCacheTrack.h"
 #include "GroomComponent.h"
+#include "MovieScene.h"
 #include "MovieSceneGroomCacheSection.h"
 #include "MovieSceneGroomCacheTemplate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneGroomCacheTrack)
 
 #define LOCTEXT_NAMESPACE "MovieSceneGroomCacheTrack"
 
@@ -119,3 +122,4 @@ FText UMovieSceneGroomCacheTrack::GetDefaultDisplayName() const
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

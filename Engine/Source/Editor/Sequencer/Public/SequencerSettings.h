@@ -29,7 +29,7 @@ UENUM()
 enum ESequencerZoomPosition
 {
 	/** Current Time. */
-	SZP_CurrentTime UMETA(DisplayName="Current Time"),
+	SZP_CurrentTime UMETA(DisplayName="Playhead"),
 
 	/** Mouse Position. */
 	SZP_MousePosition UMETA(DisplayName="Mouse Position"),
@@ -214,10 +214,10 @@ public:
 	void SetShowSelectedNodesOnly(bool Visible);
 	FOnShowSelectedNodesOnlyChanged& GetOnShowSelectedNodesOnlyChanged() { return OnShowSelectedNodesOnlyChangedEvent; }
 
-	/** Gets whether to jump to the start of the sequence when we start a recording or not. */
-	bool ShouldRewindOnRecord() const;
-	/** Sets whether to jump to the start of the sequence when we start a recording. */
-	void SetRewindOnRecord(bool bInRewindOnRecord);
+	/** Gets whether left mouse drag does marquee select instead of camera orbit and ALT always moves the camera */
+	bool GetLeftMouseDragDoesMarquee() const;
+	/** Sets whether left mouse drag does marquee select instead of camera orbit and ALT always moves the camera */
+	void SetLeftMouseDragDoesMarque(bool bDoMarque);
 
 	/** Get zoom in/out position (mouse position or current time). */
 	ESequencerZoomPosition GetZoomPosition() const;
@@ -269,10 +269,15 @@ public:
 	/** Set the number of frames to increment when jumping forwards/backwards */
 	void SetJumpFrameIncrement(FFrameNumber InJumpFrameIncrement);
 
-	/** @return true if showing combined keyframes at the top node */
-	bool GetShowCombinedKeyframes() const;
-	/** Set whether to show combined keyframes at the top node */ 
-	void SetShowCombinedKeyframes(bool bInShowCombinedKeyframes);
+	/** @return true if showing layer bars */
+	bool GetShowLayerBars() const;
+	/** Set whether to show layer bars */ 
+	void SetShowLayerBars(bool bInShowLayerBars);
+
+	/** @return true if showing key bars */
+	bool GetShowKeyBars() const;
+	/** Set whether to show key bars */ 
+	void SetShowKeyBars(bool bInShowKeyBars);
 
 	/** @return true if key areas are infinite */
 	bool GetInfiniteKeyAreas() const;
@@ -284,14 +289,29 @@ public:
 	/** Set whether to show channel colors */
 	void SetShowChannelColors(bool bInShowChannelColors);
 
+	/** @return true if showing status bar */
+	bool GetShowStatusBar() const;
+	/** Set whether to show status bar */
+	void SetShowStatusBar(bool bInShowStatusBar);
+
+	/** @return true if showing tick lines */
+	bool GetShowTickLines() const;
+	/** Set whether to show status bar */
+	void SetShowTickLines(bool bInDrawTickLines);
+
+	/** @return true if showing sequencer toolbar */
+	bool GetShowSequencerToolbar() const;
+	/** Set whether to show sequencer toolbar bar */
+	void SetShowSequencerToolbar(bool bInDrawTickLines);
+
 	/** @return Whether the given channel has curve extents */
 	bool HasKeyAreaCurveExtents(const FString& ChannelName) const;
 	/** @ Remove curve extents for the given channel */
 	void RemoveKeyAreaCurveExtents(const FString& ChannelName);
 	/** @return Get the key area curve extents for the given channel */
-	void GetKeyAreaCurveExtents(const FString& ChannelName, float& InMin, float& InMax) const;
+	void GetKeyAreaCurveExtents(const FString& ChannelName, double& InMin, double& InMax) const;
 	/** Set the key area curve extents for the given channel */
-	void SetKeyAreaCurveExtents(const FString& ChannelName, float InMin, float InMax);
+	void SetKeyAreaCurveExtents(const FString& ChannelName, double InMin, double InMax);
 
 	/** @return The key area height when showing curves */
 	float GetKeyAreaHeightWithCurves() const;
@@ -372,6 +392,16 @@ public:
 	/** Sets the movie renderer to use */
 	void SetMovieRendererName(const FString& InMovieRendererName);
 
+	/** Gets whether or not to expand the outliner tree view when a child element is selected (from outside of the tree view). */
+	bool GetAutoExpandNodesOnSelection() const { return bAutoExpandNodesOnSelection; }
+	/** Sets whether or not to expand the outliner tree view when a child element is selected (from outside of the tree view). */
+	void SetAutoExpandNodesOnSelection(bool bInAutoExpandNodesOnSelection);
+
+	/** Gets the tree view width percentage */
+	float GetTreeViewWidth() const { return TreeViewWidth; }
+	/** Sets the tree view width percentage */
+	void SetTreeViewWidth(float InTreeViewWidth);
+
 protected:
 
 	/** The auto change mode (auto-key, auto-track or none). */
@@ -430,28 +460,28 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bSnapKeysAndSectionsToPlayRange;
 
-	/** Enable or disable snapping the current time to keys while scrubbing. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to keys while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Keys"))
 	bool bSnapPlayTimeToKeys;
 
-	/** Enable or disable snapping the current time to section bounds while scrubbing. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to section bounds while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Sections"))
 	bool bSnapPlayTimeToSections;
 
-	/** Enable or disable snapping the current time to markers while scrubbing. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to markers while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Markers"))
 	bool bSnapPlayTimeToMarkers;
 
-	/** Enable or disable snapping the current time to the time snapping interval while scrubbing. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to the time snapping interval while scrubbing. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Interval"))
 	bool bSnapPlayTimeToInterval;
 
-	/** Enable or disable snapping the current time to the pressed key. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to the pressed key. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Pressed Key"))
 	bool bSnapPlayTimeToPressedKey;
 
-	/** Enable or disable snapping the current time to the dragged key. */
-	UPROPERTY( config, EditAnywhere, Category=Snapping )
+	/** Enable or disable snapping the playhead to the dragged key. */
+	UPROPERTY( config, EditAnywhere, Category=Snapping, meta = (DisplayName = "Snap Playhead to Dragged Key"))
 	bool bSnapPlayTimeToDraggedKey;
 
 	/** The curve value interval to snap to. */
@@ -471,6 +501,10 @@ protected:
 	/** Defines whether to jump back to the start of the sequence when a recording is started */
 	UPROPERTY(config, EditAnywhere, Category=General)
 	bool bRewindOnRecord;
+
+	/** Defines whether left mouse drag does marquee select instead of camera orbit */
+	UPROPERTY(config, EditAnywhere, Category = General)
+	bool bLeftMouseDragDoesMarquee;
 
 	/** Whether to zoom in on the current position or the current time in the timeline. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
@@ -496,8 +530,8 @@ protected:
 	UPROPERTY( config )
 	TEnumAsByte<ESequencerLoopMode> LoopMode;
 
-	/** Enable or disable keeping the cursor in the current playback range while scrubbing. */
-	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	/** Enable or disable keeping the playhead in the current playback range while scrubbing. */
+	UPROPERTY(config, EditAnywhere, Category = Timeline, meta = (DisplayName = "Keep Playhead in Play Range While Scrubbing"))
 	bool bKeepCursorInPlayRangeWhileScrubbing;
 
 	/** Enable or disable keeping the playback range constrained to the section bounds. */
@@ -512,9 +546,13 @@ protected:
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
 	FFrameNumber JumpFrameIncrement;
 
-	/** Enable or disable the combined keyframes at the top node level. Disabling can improve editor performance. */
+	/** Enable or disable the layer bars to edit keyframes in bulk. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
-	bool bShowCombinedKeyframes;
+	bool bShowLayerBars;
+
+	/** Enable or disable key bar connections. */
+	UPROPERTY( config, EditAnywhere, Category=Timeline )
+	bool bShowKeyBars;
 
 	/** Enable or disable setting key area sections as infinite by default. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
@@ -523,6 +561,18 @@ protected:
 	/** Enable or disable displaying channel bar colors for vector properties. */
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bShowChannelColors;
+
+	/** Enable or disable displaying the status bar for number of items. */
+	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	bool bShowStatusBar;
+
+	/** Enable or disable displaying the tick lines. */
+	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	bool bShowTickLines;
+
+	/** Enable or disable displaying the sequencer toolbar. */
+	UPROPERTY(config, EditAnywhere, Category = Timeline)
+	bool bShowSequencerToolbar;
 
 	/** The key area curve extents, stored per channel name */
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
@@ -583,6 +633,14 @@ protected:
 	/** Which movie renderer to use */
 	UPROPERTY(config, EditAnywhere, Category=General)
 	FString MovieRendererName;
+
+	/** Whether to expand the sequencer tree view when a child element is selected (from outside of the tree view). */
+	UPROPERTY(config, EditAnywhere, Category = General)
+	bool bAutoExpandNodesOnSelection;
+
+	/** The tree view width percentage */
+	UPROPERTY(config, EditAnywhere, Category = General)
+	float TreeViewWidth;
 
 	FOnEvaluateSubSequencesInIsolationChanged OnEvaluateSubSequencesInIsolationChangedEvent;
 	FOnShowSelectedNodesOnlyChanged OnShowSelectedNodesOnlyChangedEvent;

@@ -17,6 +17,8 @@
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/InputSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlayerInput)
+
 DECLARE_CYCLE_STAT(TEXT("    PC Gesture Recognition"), STAT_PC_GestureRecognition, STATGROUP_PlayerController);
 
 bool bExecutingBindCommand = false;
@@ -93,7 +95,7 @@ void UPlayerInput::PostInitProperties()
 void UPlayerInput::FlushPressedKeys()
 {
 	APlayerController* PlayerController = GetOuterAPlayerController();
-	ULocalPlayer* LocalPlayer = Cast<ULocalPlayer>(PlayerController->Player);
+	ULocalPlayer* LocalPlayer = PlayerController ? Cast<ULocalPlayer>(PlayerController->Player) : nullptr;
 	if (LocalPlayer != nullptr)
 	{
 		TArray<FKey> PressedKeys;
@@ -116,7 +118,9 @@ void UPlayerInput::FlushPressedKeys()
 			for (int32 KeyIndex = 0; KeyIndex < PressedKeys.Num(); KeyIndex++)
 			{
 				FKey& Key = PressedKeys[KeyIndex];
-				InputKey(FInputKeyParams(Key, IE_Released, 0.0));
+				FInputKeyParams Params(Key, IE_Released, 0.0);
+				Params.NumSamples = 1;
+				InputKey(Params);
 			}
 		}
 	}
@@ -292,13 +296,16 @@ bool UPlayerInput::InputKey(const FInputKeyParams& Params)
 	#if !UE_BUILD_SHIPPING
 		CurrentEvent		= IE_Axis;
 
-		const FString Command = GetBind(Params.Key);
-		if(Command.Len())
+		if(Params.Event == IE_Pressed)
 		{
-			UWorld* World = GetWorld();
-			check(World);
-			ExecInputCommands( World, *Command,*GLog);
-			return true;
+			const FString Command = GetBind(Params.Key);
+			if(Command.Len())
+			{
+				UWorld* World = GetWorld();
+				check(World);
+				ExecInputCommands( World, *Command,*GLog);
+				return true;
+			}
 		}
 	#endif
 
@@ -749,6 +756,11 @@ void UPlayerInput::ForceRebuildingKeyMaps(const bool bRestoreDefaults)
 	bKeyMapsBuilt = false;
 }
 
+APlayerController* UPlayerInput::GetOuterAPlayerController() const
+{
+	return Cast<APlayerController>(GetOuter());
+}
+
 void UPlayerInput::ConditionalBuildKeyMappings_Internal() const
 {
 	if (ActionKeyMap.Num() == 0)
@@ -1108,8 +1120,10 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 	// in this processing batch
 
 	APlayerController* PlayerController = GetOuterAPlayerController();
-
-	PlayerController->PreProcessInput(DeltaTime, bGamePaused);
+	if (PlayerController)
+	{
+		PlayerController->PreProcessInput(DeltaTime, bGamePaused);
+	}
 
 	// copy data from accumulators to the real values
 	for (TMap<FKey,FKeyState>::TIterator It(KeyStateMap); It; ++It)
@@ -1447,8 +1461,11 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 		}
 	}
 
-	PlayerController->PostProcessInput(DeltaTime, bGamePaused);
-
+	if (PlayerController)
+	{
+		PlayerController->PostProcessInput(DeltaTime, bGamePaused);
+	}
+	
 	FinishProcessingPlayerInput();
 	AxisDelegates.Reset();
 	VectorAxisDelegates.Reset();
@@ -1899,7 +1916,7 @@ float UPlayerInput::MassageAxisInput(FKey Key, float RawValue)
 
 		// Take FOV into account (lower FOV == less sensitivity).
 		APlayerController const* const PlayerController = GetOuterAPlayerController();
-		float const FOVScale = (DefaultInputSettings->bEnableFOVScaling && PlayerController->PlayerCameraManager) ? (DefaultInputSettings->FOVScale*PlayerController->PlayerCameraManager->GetFOVAngle()) : 1.0f;
+		float const FOVScale = (DefaultInputSettings->bEnableFOVScaling && PlayerController && PlayerController->PlayerCameraManager) ? (DefaultInputSettings->FOVScale*PlayerController->PlayerCameraManager->GetFOVAngle()) : 1.0f;
 		NewVal *= FOVScale;
 
 		// debug
@@ -2221,7 +2238,11 @@ void UPlayerInput::SetBind(FName BindName, const FString& Command)
 
 class UWorld* UPlayerInput::GetWorld() const
 {
-	check(GetOuterAPlayerController());
-	UWorld* World = GetOuterAPlayerController()->GetWorld();
-	return World;
+	if (APlayerController* PC = GetOuterAPlayerController())
+	{
+		return PC->GetWorld();	
+	}
+	
+	return Super::GetWorld();
 }
+

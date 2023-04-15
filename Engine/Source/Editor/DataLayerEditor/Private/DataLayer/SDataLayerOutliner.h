@@ -2,8 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Input/Reply.h"
 #include "SSceneOutliner.h"
+#include "Templates/SharedPointer.h"
+
+struct FSceneOutlinerInitializationOptions;
 
 class SDataLayerOutliner : public SSceneOutliner
 {
@@ -22,5 +26,5 @@ private:
 	bool CanRemoveSelectedActorsFromSelectedDataLayersClicked() const;
 	FReply OnAddSelectedActorsToSelectedDataLayersClicked();
 	FReply OnRemoveSelectedActorsFromSelectedDataLayersClicked();
-	TArray<class UDataLayer*> GetSelectedDataLayers() const;
+	TArray<class UDataLayerInstance*> GetSelectedDataLayers() const;
 };

@@ -3,14 +3,16 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.IdentityModel.Tokens.Jwt;
 using System.IO;
-using System.Linq;
 using System.Net.Mime;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Amazon;
 using Datadog.Trace;
+using EpicGames.AspNet;
+using Jupiter.Common;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -19,13 +21,13 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
+using Microsoft.Net.Http.Headers;
 using Microsoft.OpenApi.Models;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
@@ -39,36 +41,41 @@ namespace Jupiter
 {
     public abstract class BaseStartup
     {
-        protected readonly ILogger _logger = Log.ForContext<BaseStartup>();
+        protected ILogger Logger { get; } = Log.ForContext<BaseStartup>();
 
-        public BaseStartup(IConfiguration configuration, IWebHostEnvironment environment)
+        protected BaseStartup(IConfiguration configuration)
         {
             Configuration = configuration;
-            Environment = environment;
             Auth = new AuthSettings();
         }
 
-        public IConfiguration Configuration { get; }
-        public IWebHostEnvironment Environment { get; }
+        protected IConfiguration Configuration { get; }
 
-        protected AuthSettings Auth { get; }
+        private AuthSettings Auth { get; }
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
+            CbConvertersAspNet.AddAspnetConverters();
+
+            services.AddServerTiming();
+            services.AddSuppressExceptionsMiddleware();
+
             // aws specific settings
             services.AddOptions<AWSCredentialsSettings>().Bind(Configuration.GetSection("AWSCredentials")).ValidateDataAnnotations();
             services.AddDefaultAWSOptions(Configuration.GetAWSOptions());
             // send log4net logs to serilog and configure aws to log to log4net (they lack a serilog implementation)
             AWSConfigs.LoggingConfig.LogTo = LoggingOptions.Log4Net;
 
-            services.AddOptions<AuthSettings>().Bind(Configuration.GetSection("Auth")).ValidateDataAnnotations();
+            services.AddOptions<AuthSettings>().Bind(Configuration.GetSection("Auth")).ValidateDataAnnotations().ValidateOnStart();
             Configuration.GetSection("Auth").Bind(Auth);
 
             services.AddOptions<ServiceAccountAuthOptions>().Bind(Configuration.GetSection("ServiceAccounts")).ValidateDataAnnotations();
 
-            services.AddOptions<AuthorizationSettings>().Bind(Configuration.GetSection("Authorization")).ValidateDataAnnotations();
             services.AddOptions<JupiterSettings>().Bind(Configuration.GetSection("Jupiter")).ValidateDataAnnotations();
+            services.AddOptions<NamespaceSettings>().Bind(Configuration.GetSection("Namespaces")).ValidateDataAnnotations();
+
+            services.AddSingleton(typeof(INamespacePolicyResolver), typeof(NamespacePolicyResolver));
 
             // this is the same as invoke MvcBuilder.AddJsonOptions but with a service provider passed so we can use DI in the options creation
             // see https://stackoverflow.com/questions/53288633/net-core-api-custom-json-resolver-based-on-request-values
@@ -80,19 +87,20 @@ namespace Jupiter
                 .AddNewtonsoftJson()
                 .AddMvcOptions(options =>
                 {
-                    options.InputFormatters.Add(new CompactBinaryInputFormatter());
-                    options.OutputFormatters.Add(new CompactBinaryOutputFormatter());
+                    options.InputFormatters.Add(new CbInputFormatter());
+                    options.OutputFormatters.Add(new CbOutputFormatter());
                     options.OutputFormatters.Add(new RawOutputFormatter());
 
                     options.FormatterMappings.SetMediaTypeMappingForFormat("raw", MediaTypeNames.Application.Octet);
                     options.FormatterMappings.SetMediaTypeMappingForFormat("uecb", CustomMediaTypeNames.UnrealCompactBinary);
+                    options.FormatterMappings.SetMediaTypeMappingForFormat("uecbpkg", CustomMediaTypeNames.UnrealCompactBinaryPackage);
 
                     OnAddControllers(options);
                 }).ConfigureApiBehaviorOptions(options =>
                 {
                     options.InvalidModelStateResponseFactory = context =>
                     {
-                        var result = new BadRequestObjectResult(context.ModelState);
+                        BadRequestObjectResult result = new BadRequestObjectResult(context.ModelState);
                         // always return errors as json objects
                         // we could allow more types here, but we do not want raw for instance
                         result.ContentTypes.Add(MediaTypeNames.Application.Json);
@@ -103,77 +111,141 @@ namespace Jupiter
 
             services.AddHttpContextAccessor();
 
-            // we change the name of the jwt scheme as okta uses the same name and does not allow us to reconfigure it.
-            const string JwtScheme = "JWTBearer";
-            List<string> defaultSchemes = new List<string>();
+            const string ForwardingScheme = "ForwardingScheme";
+            List<string> availableSchemes = new List<string>();
 
             AuthenticationBuilder authenticationBuilder = services.AddAuthentication(options =>
                 {
-                    switch (Auth.Method)
+                    if (Auth.Enabled)
                     {
-                        case AuthMethod.JWTBearer:
-                            options.DefaultAuthenticateScheme = JwtScheme;
-                            options.DefaultChallengeScheme = JwtScheme;
+                        if (Auth.Schemes.Count > 1)
+                        {
+                            // we have multiple schemes, so we set the default to the forwarding scheme which will use the jwtAuthority to pick the correct scheme for the token
+                            options.DefaultAuthenticateScheme = ForwardingScheme;
+                            options.DefaultChallengeScheme = ForwardingScheme;
+                        }
+                        else
+                        {
+                            // if we only have one scheme we set it to default
+                            options.DefaultAuthenticateScheme = Auth.DefaultScheme;
+                            options.DefaultChallengeScheme = Auth.DefaultScheme;
+
+                        }
+                    }
+                    else
+                    {
+                        options.DefaultAuthenticateScheme = DisabledAuthenticationHandler.AuthenticateScheme;
+                        options.DefaultChallengeScheme = DisabledAuthenticationHandler.AuthenticateScheme;
+                    }
+                }
+            );
+
+            if (Auth.Enabled)
+            {
+                foreach (KeyValuePair<string, AuthSchemeEntry> schemeEntry in Auth.Schemes)
+                {
+                    string name = schemeEntry.Key;
+                    AuthSchemeEntry scheme = schemeEntry.Value;
+
+                    switch (scheme.Implementation)
+                    {
+                        case SchemeImplementations.JWTBearer:
+                            availableSchemes.Add(name);
+                            authenticationBuilder.AddJwtBearer(name, options =>
+                            {
+                                options.Authority = scheme.JwtAuthority;
+                                options.Audience = scheme.JwtAudience;
+                            });
                             break;
-                        case AuthMethod.Okta:
-                            options.DefaultAuthenticateScheme = OktaDefaults.ApiAuthenticationScheme;
-                            options.DefaultChallengeScheme = OktaDefaults.ApiAuthenticationScheme;
-                            break;
-                        case AuthMethod.Disabled:
-                            options.DefaultAuthenticateScheme = DisabledAuthenticationHandler.AuthenticateScheme;
-                            options.DefaultChallengeScheme = DisabledAuthenticationHandler.AuthenticateScheme;
+                        case SchemeImplementations.Okta:
+                            availableSchemes.Add(name);
+                            authenticationBuilder.AddOktaWebApi(name, new OktaWebApiOptions
+                            {
+                                OktaDomain = scheme.OktaDomain,
+                                AuthorizationServerId = scheme.OktaAuthorizationServerId,
+                                Audience = scheme.JwtAudience,
+                            });
                             break;
                         default:
-                            throw new ArgumentOutOfRangeException();
+                            throw new NotSupportedException($"Unknown implementation type {scheme.Implementation}");
                     }
-                });
-            if (Auth.Method == AuthMethod.JWTBearer)
-            {
-                defaultSchemes.Add(JwtScheme);
-                authenticationBuilder.AddJwtBearer(JwtScheme, options =>
+                }
+
+                authenticationBuilder.AddPolicyScheme(ForwardingScheme, ForwardingScheme, options =>
                 {
-                    options.Authority = Auth.JwtAuthority;
-                    options.Audience = Auth.JwtAudience;
+                    options.ForwardDefaultSelector = context =>
+                    {
+                        string authorization = context.Request.Headers[HeaderNames.Authorization];
+                        string name = "Bearer";
+                        string tokenName = $"{name} ";
+                        if (string.IsNullOrEmpty(authorization) ||
+                            !authorization.StartsWith(tokenName, StringComparison.InvariantCulture))
+                        {
+                            return Auth.DefaultScheme;
+                        }
+
+                        string token = authorization.Substring(tokenName.Length).Trim();
+                        JwtSecurityTokenHandler jwtHandler = new JwtSecurityTokenHandler();
+
+                        if (!jwtHandler.CanReadToken(token))
+                        {
+                            return Auth.DefaultScheme;
+                        }
+
+                        JwtSecurityToken jwtToken = jwtHandler.ReadJwtToken(token);
+
+                        foreach (KeyValuePair<string, AuthSchemeEntry> entry in Auth.Schemes)
+                        {
+                            if (entry.Value.JwtAuthority == jwtToken.Issuer)
+                            {
+                                return entry.Key;
+                            }
+                        }
+
+                        return Auth.DefaultScheme;
+
+                    };
                 });
             }
-
-            if (Auth.Method == AuthMethod.Okta)
+            else
             {
-                defaultSchemes.Add(OktaDefaults.ApiAuthenticationScheme);
-                authenticationBuilder.AddOktaWebApi(new OktaWebApiOptions
-                {
-                    OktaDomain = Auth.OktaDomain,
-                    AuthorizationServerId = Auth.AuthorizationServerId,
-                    Audience = Auth.JwtAudience,
-                });
-            }
-
-            if (Auth.Method == AuthMethod.Disabled)
-            {
-                defaultSchemes.Add(DisabledAuthenticationHandler.AuthenticateScheme);
+                availableSchemes.Add(DisabledAuthenticationHandler.AuthenticateScheme);
                 authenticationBuilder.AddTestAuth(options => { });
             }
 
-            defaultSchemes.Add(ServiceAccountAuthHandler.AuthenticationScheme);
+            availableSchemes.Add(ServiceAccountAuthHandler.AuthenticationScheme);
             authenticationBuilder.AddScheme<ServiceAccountAuthOptions, ServiceAccountAuthHandler>(ServiceAccountAuthHandler.AuthenticationScheme, options => { });
 
             services.AddAuthorization(options =>
             {
                 options.AddPolicy(NamespaceAccessRequirement.Name, policy =>
                 {
-                    policy.AuthenticationSchemes = defaultSchemes;
+                    policy.AuthenticationSchemes = availableSchemes;
                     policy.Requirements.Add(new NamespaceAccessRequirement());
                 });
+                
+                options.AddPolicy(GlobalAccessRequirement.Name, policy =>
+                {
+                    policy.AuthenticationSchemes = availableSchemes;
+                    policy.Requirements.Add(new GlobalAccessRequirement());
+                });
 
-                OnAddAuthorization(options, defaultSchemes);
+                // A policy that grants any authenticated user access
+                options.AddPolicy("Any", policy =>
+                {
+                    policy.AuthenticationSchemes = availableSchemes;
+                    policy.RequireAuthenticatedUser();
+                });
+
+                OnAddAuthorization(options, availableSchemes);
             });
             services.AddSingleton<IAuthorizationHandler, NamespaceAuthorizationHandler>();
+            services.AddSingleton<IAuthorizationHandler, GlobalAuthorizationHandler>();
 
             services.Configure<ForwardedHeadersOptions>(options =>
             {
                 options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
             });
-
 
             services.AddSwaggerGen(settings =>
             {
@@ -205,10 +277,14 @@ namespace Jupiter
         private void OnAddHealthChecks(IServiceCollection services)
         {
             IHealthChecksBuilder healthChecks = services.AddHealthChecks()
-                .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] {"self"});
+                .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
             OnAddHealthChecks(services, healthChecks);
 
-            healthChecks.AddDatadogPublisher("jupiter.healthchecks");
+            string? ddAgentHost = System.Environment.GetEnvironmentVariable("DD_AGENT_HOST");
+            if (!string.IsNullOrEmpty(ddAgentHost))
+            {
+                healthChecks.AddDatadogPublisher("jupiter.healthchecks");
+            }
         }
 
         /// <summary>
@@ -235,49 +311,33 @@ namespace Jupiter
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
         {
             JupiterSettings jupiterSettings = app.ApplicationServices.GetService<IOptionsMonitor<JupiterSettings>>()!.CurrentValue;
-            
-            bool IsHttpPort(HttpContext httpContext) => !IsHighPerfHttpPort(httpContext);
-            bool IsHighPerfHttpPort(HttpContext httpContext) => jupiterSettings.DisableAuthOnPorts.Any(port => port == httpContext.Connection.LocalPort);
-            
+
             if (jupiterSettings.ShowPII)
             {
-                _logger.Error("Personally Identifiable information being shown. This should not be generally enabled in prod.");
+                Logger.Error("Personally Identifiable information being shown. This should not be generally enabled in prod.");
 
                 // do not hide personal information during development
                 Microsoft.IdentityModel.Logging.IdentityModelEventSource.ShowPII = true;
             }
 
-            if (jupiterSettings.DisableAuthOnPorts.Any())
-            {
-                _logger.Information("Auth is disabled on port(s) {Ports}", jupiterSettings.DisableAuthOnPorts);
-            }
-
-            app.MapWhen(IsHttpPort, httpApp =>
-            {
-                ConfigureMiddlewares(false, jupiterSettings, httpApp, env);
-            });
-            
-            app.MapWhen(IsHighPerfHttpPort, highPerfApp =>
-            {
-                ConfigureMiddlewares(true, jupiterSettings, highPerfApp, env);
-            });
+            ConfigureMiddlewares(jupiterSettings, app, env);
         }
 
-        private void ConfigureMiddlewares(bool isHighPerf, JupiterSettings jupiterSettings, IApplicationBuilder app, IWebHostEnvironment env)
+        private void ConfigureMiddlewares(JupiterSettings jupiterSettings, IApplicationBuilder app, IWebHostEnvironment env)
         {
             // enable use of forwarding headers as we expect a reverse proxy to be running in front of us
-            app.UseMiddleware<DatadogTraceMiddleware>("ForwardedHeaders");
+            //app.UseMiddleware<DatadogTraceMiddleware>("ForwardedHeaders");
             app.UseForwardedHeaders();
 
-            if (!isHighPerf && jupiterSettings.UseRequestLogging)
+            if (jupiterSettings.UseRequestLogging)
             {
-                app.UseMiddleware<DatadogTraceMiddleware>("RequestLogging");
+                //app.UseMiddleware<DatadogTraceMiddleware>("RequestLogging");
                 app.UseSerilogRequestLogging();
             }
 
             OnConfigureAppEarly(app, env);
-                
-            if (!isHighPerf && env.IsDevelopment() && UseDeveloperExceptionPage)
+
+            if (env.IsDevelopment() && UseDeveloperExceptionPage)
             {
                 app.UseDeveloperExceptionPage();
             }
@@ -286,42 +346,54 @@ namespace Jupiter
                 app.UseExceptionHandler("/error");
             }
                 
-            app.UseMiddleware<DatadogTraceMiddleware>("Routing");
+            //app.UseMiddleware<DatadogTraceMiddleware>("Routing");
             app.UseRouting();
 
-            if (!isHighPerf)
-            {
-                app.UseMiddleware<DatadogTraceMiddleware>("Authentication");
-                app.UseAuthentication();
-                app.UseMiddleware<DatadogTraceMiddleware>("Authorization");
-                app.UseAuthorization();
-            }
-            
-            app.UseMiddleware<DatadogTraceMiddleware>("Endpoints");
+            //app.UseMiddleware<DatadogTraceMiddleware>("Authentication");
+            app.UseAuthentication();
+            //app.UseMiddleware<DatadogTraceMiddleware>("Authorization");
+            app.UseAuthorization();
+
+            app.UseMiddleware<SuppressExceptionMiddleware>();
+			app.UseMiddleware<ServerTimingMiddleware>();
+
+            //app.UseMiddleware<DatadogTraceMiddleware>("Endpoints");
             app.UseEndpoints(endpoints =>
             {
                 bool PassAllChecks(HealthCheckRegistration check) => true;
 
                 // Ready checks in Kubernetes is to verify that the service is working, if this returns false the app will not get any traffic (load balancer ignores it)
-                endpoints.MapHealthChecks("/health/ready", options: new HealthCheckOptions()
+                endpoints.MapHealthChecks("/health/readiness", options: new HealthCheckOptions()
                 {
                     Predicate = jupiterSettings.DisableHealthChecks ? PassAllChecks : (check) => check.Tags.Contains("self"),
                 });
 
                 // Live checks in Kubernetes to see if the pod is working as it should, if this returns false the entire pod is killed
-                endpoints.MapHealthChecks("/health/live", options: new HealthCheckOptions()
+                endpoints.MapHealthChecks("/health/liveness", options: new HealthCheckOptions()
                 {
                     Predicate = jupiterSettings.DisableHealthChecks ? PassAllChecks : (check) => check.Tags.Contains("services"),
                 });
 
-                OnUseEndpoints(env, endpoints);
-                
+                endpoints.MapGet("/health/ready", async context =>
+                {
+                    context.Response.StatusCode = 200;
+                    context.Response.Headers.ContentType = "text/plain";
+                    await context.Response.Body.WriteAsync(Encoding.ASCII.GetBytes("Healthy"));
+                });
+
+                endpoints.MapGet("/health/live", async context =>
+                {
+                    context.Response.StatusCode = 200;
+                    context.Response.Headers.ContentType = "text/plain";
+                    await context.Response.Body.WriteAsync(Encoding.ASCII.GetBytes("Healthy"));
+                });
+
                 endpoints.MapControllers();
             });
 
-            if (!isHighPerf && jupiterSettings.HostSwaggerDocumentation)
+            if (jupiterSettings.HostSwaggerDocumentation)
             {
-                app.UseMiddleware<DatadogTraceMiddleware>("Swagger");
+                //app.UseMiddleware<DatadogTraceMiddleware>("Swagger");
                 app.UseSwagger();
                 app.UseReDoc(options => { options.SpecUrl = "/swagger/v1/swagger.json"; });
             }
@@ -329,12 +401,7 @@ namespace Jupiter
             OnConfigureApp(app, env);
         }
 
-        protected virtual void OnUseEndpoints(IWebHostEnvironment env, IEndpointRouteBuilder endpoints)
-        {
-            
-        }
-
-        public virtual bool UseDeveloperExceptionPage { get; } = true;
+        public virtual bool UseDeveloperExceptionPage { get; } = false;
 
         protected virtual void OnConfigureAppEarly(IApplicationBuilder app, IWebHostEnvironment env)
         {
@@ -348,7 +415,7 @@ namespace Jupiter
 
     public class MvcJsonOptionsWrapper : IConfigureOptions<MvcNewtonsoftJsonOptions>
     {
-        IServiceProvider ServiceProvider;
+        readonly IServiceProvider ServiceProvider;
 
         public MvcJsonOptionsWrapper(IServiceProvider serviceProvider)
         {
@@ -362,7 +429,7 @@ namespace Jupiter
 
     public class FieldFilteringResolver : DefaultContractResolver
     {
-        private IHttpContextAccessor _httpContextAccessor;
+        private readonly IHttpContextAccessor _httpContextAccessor;
 
         public FieldFilteringResolver(IServiceProvider sp)
         {
@@ -381,11 +448,15 @@ namespace Jupiter
                 HttpContext? httpContext = _httpContextAccessor.HttpContext;
 
                 if (httpContext == null)
+                {
                     return true;
+                }
 
                 // if no fields are being filtered we should serialize the property
                 if (!httpContext.Request.Query.ContainsKey("fields"))
+                {
                     return true;
+                }
 
                 StringValues fields = httpContext.Request.Query["fields"];
                 bool ignore = true;
@@ -396,7 +467,7 @@ namespace Jupiter
                     {
                         return true;
                     }
-                    if (string.Equals(field, property.PropertyName, StringComparison.InvariantCultureIgnoreCase))
+                    if (string.Equals(field, property.PropertyName, StringComparison.OrdinalIgnoreCase))
                     {
                         ignore = false;
                     }
@@ -409,45 +480,181 @@ namespace Jupiter
         }
     }
 
-
-    public enum AuthMethod
+    public enum SchemeImplementations
     {
         JWTBearer,
-        Okta,
-        Disabled
+        Okta
     };
 
-    public class AuthSettings
+    public class AuthSchemeEntry: IValidatableObject
     {
+        /// <summary>
+        /// The implementation to use, this controls which other configuration values needs to be set. For most servers JWTBearer should work fine.
+        /// </summary>
         [Required] 
-        public AuthMethod Method { get; set; } = AuthMethod.JWTBearer;
+        public SchemeImplementations Implementation { get; set; } = SchemeImplementations.JWTBearer;
 
-
-        [Required]
+        /// <summary>
+        /// The Okta domain (url to your okta server - do not include the authorization server id)
+        /// </summary>
         public string OktaDomain { get; set; } = "";
-        public string AuthorizationServerId { get; set; } = OktaWebOptions.DefaultAuthorizationServerId;
+        /// <summary>
+        /// The Okta AuthorizationServerId, this is used if you have more then one authorization server within your Okta server. We recommend using a separate authorization server for each major set of systems to reduce blast radius of security issues.
+        /// </summary>
+        public string OktaAuthorizationServerId { get; set; } = OktaWebOptions.DefaultAuthorizationServerId;
 
-        [Required]
+        /// <summary>
+        /// The JWT Authority (url to your IdP)
+        /// </summary>
         public string JwtAuthority { get; set; } = "";
 
+        /// <summary>
+        /// The audience for the token, this is usually defined by your IdP 
+        /// </summary>
         [Required]
         public string JwtAudience { get; set; } = "";
 
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            List<ValidationResult> validationResults = new List<ValidationResult>();
+            if (Implementation == SchemeImplementations.JWTBearer)
+            {
+                if (string.IsNullOrEmpty(JwtAuthority))
+                {
+                    validationResults.Add(new ValidationResult("JWT Authority must be specified when using JWTBearer implementation"));
+                }
+                if (string.IsNullOrEmpty(JwtAudience))
+                {
+                    validationResults.Add(new ValidationResult("JWT Audience must be specified when using JWTBearer implementation"));
+                }
+            } 
+            else if (Implementation == SchemeImplementations.Okta)
+            {
+                if (string.IsNullOrEmpty(OktaDomain))
+                {
+                    validationResults.Add(new ValidationResult("Okta Domain must be specified when using Okta implementation"));
+                }
+                if (string.IsNullOrEmpty(JwtAudience))
+                {
+                    validationResults.Add(new ValidationResult("JWT Audience must be specified when using Okta implementation"));
+                }
+                if (string.IsNullOrEmpty(JwtAuthority))
+                {
+                    validationResults.Add(new ValidationResult("JWT Authority must be specified when using Okta implementation"));
+                }
+            }
+            else
+            {
+                throw new NotSupportedException($"Unknown auth implementation {Implementation}");
+            }
+
+            return validationResults;
+        }
+    }
+
+    public class AuthSettings : IValidatableObject
+    {
+        /// <summary>
+        /// The name of the scheme to use by default
+        /// </summary>
+        public string DefaultScheme { get; set; } = "Bearer";
+
+        /// <summary>
+        /// Used to disable authentication, not recommended to set for anything other then local use cases
+        /// </summary>
+        public bool Enabled { get; set; } = true;
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+        public Dictionary<string, AuthSchemeEntry> Schemes { get; set; } = new Dictionary<string, AuthSchemeEntry>();
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+        public List<AclEntry> Acls { get; set; } = new List<AclEntry>();
+
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            List<ValidationResult> validationResults = new List<ValidationResult>();
+            if (!Enabled)
+            {
+                return validationResults;
+            }
+
+            if (Schemes.Count == 0)
+            {
+                validationResults.Add(new ValidationResult("You must have at least one scheme when authentication is enabled"));
+            }
+
+            if (!Schemes.ContainsKey(DefaultScheme))
+            {
+                validationResults.Add(new ValidationResult($"Expected to find a scheme with the name {DefaultScheme} as its set as the default scheme"));
+            }
+
+            return validationResults;
+        }
     }
 
     public class JupiterSettings
     {
+        /// <summary>
+        /// If the request is smaller then MemoryBufferSize we buffer it in memory rather then as a file
+        /// </summary>
+        public long MemoryBufferSize { get; set; } = int.MaxValue;
+
         // enable to unhide potentially personal information, see https://aka.ms/IdentityModel/PII
-        public bool ShowPII = false;
+        public bool ShowPII { get; set; } = false;
         public bool DisableHealthChecks { get; set; } = false;
         public bool HostSwaggerDocumentation { get; set; } = true;
 
-        public List<int> DisableAuthOnPorts { get; set; } = new();
+        /// <summary>
+        /// Port used to host the internally accessible api (as well as the public api).
+        /// This hosts both public and private namespaces
+        /// </summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+
+        public List<int> InternalApiPorts { get; set; } = new List<int>() { 8080 };
+
+        /// <summary>
+        /// Port that hosts public and private namespaces
+        /// </summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+
+        public List<int> CorpApiPorts { get; set; } = new List<int>() { 8008 };
+
+        /// <summary>
+        /// Port that only hosts the public namespaces
+        /// </summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+
+        public List<int> PublicApiPorts { get; set; } = new List<int>() { 80 };
 
         // Enable to echo every request to the log file, usually this is more efficiently done on the load balancer
         public bool UseRequestLogging { get; set; } = false;
 
-        //public Dictionary<string, int> DisableAuthOnPorts { get; set; } = new ();
+        /// <summary>
+        ///  Name of the current site, has to be globally unique across all deployments
+        /// </summary>
+        [Required]
+        [Key]
+        public string CurrentSite { get; set; } = "";
+    }
+
+    public class NamespaceSettings
+    {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+        public Dictionary<string, NamespacePolicy> Policies { get; set; } = new Dictionary<string, NamespacePolicy>();
+    }
+
+    public class NamespacePolicy
+    {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by the configuration system")]
+        public List<AclEntry> Acls { get; set; } = new List<AclEntry>();
+        public string StoragePool { get; set; } = "";
+
+        public bool LastAccessTracking { get; set; } = true;
+        public bool OnDemandReplication { get; set; } = false;
+        public bool UseBlobIndexForExists { get; set; } = false;
+        public bool UseBlobIndexForSlowExists { get; set; } = false;
+        public bool? IsLegacyNamespace { get; set; } = null;
+        public bool IsPublicNamespace { get; set; } = true;
     }
 
     public class DatadogTraceMiddleware
@@ -463,9 +670,9 @@ namespace Jupiter
 
         public async Task InvokeAsync(HttpContext httpContext)
         {
-            using Scope _ = Tracer.Instance.StartActive(_scopeName);
+            using IScope _ = Tracer.Instance.StartActive(_scopeName);
 
-            //Move to next delegate/middleware in the pipleline
+            //Move to next delegate/middleware in the pipeline
             await _next.Invoke(httpContext);
         }
     }

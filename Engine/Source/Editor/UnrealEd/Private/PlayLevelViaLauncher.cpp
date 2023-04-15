@@ -45,15 +45,15 @@ static void HandleOutputReceived(const FString& InMessage)
 {
 	if (InMessage.Contains(TEXT("Error:")))
 	{
-		UE_LOG(LogPlayLevel, Error, TEXT("%s"), *InMessage);
+		UE_LOG(LogPlayLevel, Error, TEXT("UAT: %s"), *InMessage);
 	}
 	else if (InMessage.Contains(TEXT("Warning:")))
 	{
-		UE_LOG(LogPlayLevel, Warning, TEXT("%s"), *InMessage);
+		UE_LOG(LogPlayLevel, Warning, TEXT("UAT: %s"), *InMessage);
 	}
 	else
 	{
-		UE_LOG(LogPlayLevel, Log, TEXT("%s"), *InMessage);
+		UE_LOG(LogPlayLevel, Log, TEXT("UAT: %s"), *InMessage);
 	}
 }
 
@@ -279,7 +279,11 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	// only set the BuildTarget in code-based projects
 	if (LauncherSessionInfo->bPlayUsingLauncherHasCode)
 	{
-		LauncherProfile->SetBuildTarget(GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo()->Name);
+		const FTargetInfo* TargetInfo = GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo();
+		if (TargetInfo != nullptr)
+		{
+			LauncherProfile->SetBuildTarget(TargetInfo->Name);
+		}
 	}
 	LauncherProfile->SetCookMode(CurrentLauncherCookMode);
 	LauncherProfile->SetUnversionedCooking(!bIncrementalCooking); // Unversioned cooking is not allowed with incremental cooking
@@ -395,7 +399,7 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	FText LaunchingText = LOCTEXT("LauncherTaskInProgressNotificationNoDevice", "Launching...");
 	FNotificationInfo Info(LaunchingText);
 
-	Info.Image = FEditorStyle::GetBrush(TEXT("MainFrame.CookContent"));
+	Info.Image = FAppStyle::GetBrush(TEXT("MainFrame.CookContent"));
 	Info.bFireAndForget = false;
 	Info.ExpireDuration = 10.0f;
 	Info.Hyperlink = FSimpleDelegate::CreateStatic(HandleHyperlinkNavigate);
@@ -421,15 +425,23 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	}
 
 	// analytics for launch on
-	int32 ErrorCode = 0;
-	FEditorAnalytics::ReportEvent(TEXT("Editor.LaunchOn.Started"), LastPlayUsingLauncherDeviceId.Left(LastPlayUsingLauncherDeviceId.Find(TEXT("@"))), LauncherSessionInfo->bPlayUsingLauncherHasCode);
+	TArray<FAnalyticsEventAttribute> AnalyticsParamArray;
+	if (LaunchPlatform != nullptr)
+	{
+		LaunchPlatform->GetPlatformSpecificProjectAnalytics(AnalyticsParamArray);
+	}
+	FEditorAnalytics::ReportEvent(TEXT("Editor.LaunchOn.Started"), LaunchPlatformName, LauncherSessionInfo->bPlayUsingLauncherHasCode, AnalyticsParamArray);
+
 
 	NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
 
 	TWeakPtr<SNotificationItem> NotificationItemPtr(NotificationItem);
 	if (GEditor->LauncherWorker.IsValid() && GEditor->LauncherWorker->GetStatus() != ELauncherWorkerStatus::Completed)
 	{
-		GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileStart_Cue.CompileStart_Cue"));
+		if (EditorPlaySettings->EnablePIEEnterAndExitSounds)
+		{
+			GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileStart_Cue.CompileStart_Cue"));
+		}
 		GEditor->LauncherWorker->OnOutputReceived().AddStatic(HandleOutputReceived);
 		GEditor->LauncherWorker->OnStageStarted().AddUObject(this, &UEditorEngine::HandleStageStarted, NotificationItemPtr);
 		GEditor->LauncherWorker->OnStageCompleted().AddUObject(this, &UEditorEngine::HandleStageCompleted, LauncherSessionInfo->bPlayUsingLauncherHasCode, NotificationItemPtr);
@@ -439,7 +451,10 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	else
 	{
 		GEditor->LauncherWorker.Reset();
-		GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
+		if (EditorPlaySettings->EnablePIEEnterAndExitSounds)
+		{
+			GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
+		}
 
 		NotificationItem->SetText(LOCTEXT("LauncherTaskFailedNotification", "Failed to launch task!"));
 		NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
@@ -513,13 +528,17 @@ public:
 	{
 		if (NotificationItemPtr.IsValid())
 		{
-			if (CompletionState == SNotificationItem::CS_Fail)
+			const ULevelEditorPlaySettings* EditorPlaySettings = GetDefault<ULevelEditorPlaySettings>();
+			if (EditorPlaySettings->EnablePIEEnterAndExitSounds)
 			{
-				GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
-			}
-			else if (CompletionState == SNotificationItem::CS_Success)
-			{
-				GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileSuccess_Cue.CompileSuccess_Cue"));
+				if (CompletionState == SNotificationItem::CS_Fail)
+				{
+					GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
+				}
+				else if (CompletionState == SNotificationItem::CS_Success)
+				{
+					GEditor->PlayEditorSound(TEXT("/Engine/EditorSounds/Notifications/CompileSuccess_Cue.CompileSuccess_Cue"));
+				}
 			}
 
 			TSharedPtr<SNotificationItem> NotificationItem = NotificationItemPtr.Pin();

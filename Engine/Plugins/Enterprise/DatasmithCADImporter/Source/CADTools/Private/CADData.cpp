@@ -12,48 +12,43 @@ uint32 MeshArchiveMagic = 345612;
 namespace CADLibrary
 {
 
-uint32 BuildColorId(uint32 ColorId, uint8 Alpha)
+FMaterialUId BuildColorFastUId(uint32 ColorId, uint8 Alpha)
 {
 	if (Alpha == 0)
 	{
 		Alpha = 1;
 	}
-	return ColorId | Alpha << 24;
+	uint32 FastColorId =  ColorId | Alpha << 24;
+	return FMath::Abs((int32) ::GetTypeHash(FastColorId));
 }
 
-void GetCTColorIdAlpha(FColorId ColorId, uint32& CTColorId, uint8& Alpha)
+FMaterialUId BuildColorUId(const FColor& Color)
 {
-	CTColorId = ColorId & 0x00ffffff;
-	Alpha = (uint8)((ColorId & 0xff000000) >> 24);
+	return FMath::Abs((int32) ::GetTypeHash(Color));
 }
 
-int32 BuildColorName(const FColor& Color)
-{
-	return FMath::Abs((int32)GetTypeHash(Color));
-}
-
-int32 BuildMaterialName(const FCADMaterial& Material)
+FMaterialUId BuildMaterialUId(const FCADMaterial& Material)
 {
 	using ::GetTypeHash;
 
-	uint32 MaterialName = 0;
+	uint32 MaterialUId = 0;
 	if (!Material.MaterialName.IsEmpty())
 	{
-		MaterialName = GetTypeHash(*Material.MaterialName); // we add material name because it could be used by the end user so two material with same parameters but different name are different.
+		MaterialUId = GetTypeHash(*Material.MaterialName); // we add material name because it could be used by the end user so two material with same parameters but different name are different.
 	}
 
-	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Diffuse));
-	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Ambient));
-	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Specular));
-	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Shininess * 255.0)));
-	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Transparency * 255.0)));
-	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Reflexion * 255.0)));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash(Material.Diffuse));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash(Material.Ambient));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash(Material.Specular));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash((int)(Material.Shininess * 255.0)));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash((int)(Material.Transparency * 255.0)));
+	MaterialUId = HashCombine(MaterialUId, GetTypeHash((int)(Material.Reflexion * 255.0)));
 
 	if (!Material.TextureName.IsEmpty())
 	{
-		MaterialName = HashCombine(MaterialName, GetTypeHash(*Material.TextureName));
+		MaterialUId = HashCombine(MaterialUId, GetTypeHash(*Material.TextureName));
 	}
-	return FMath::Abs((int32) MaterialName);
+	return FMath::Abs((int32)MaterialUId);
 }
 
 FArchive& operator<<(FArchive& Ar, FCADMaterial& Material)
@@ -90,8 +85,8 @@ FArchive& operator<<(FArchive& Ar, FTessellationData& TessellationData)
 	Ar << TessellationData.NormalArray;
 	Ar << TessellationData.TexCoordArray;
 
-	Ar << TessellationData.ColorName;
-	Ar << TessellationData.MaterialName;
+	Ar << TessellationData.ColorUId;
+	Ar << TessellationData.MaterialUId;
 
 	Ar << TessellationData.PatchId;
 
@@ -100,13 +95,14 @@ FArchive& operator<<(FArchive& Ar, FTessellationData& TessellationData)
 
 FArchive& operator<<(FArchive& Ar, FBodyMesh& BodyMesh)
 {
+	Ar << BodyMesh.bIsFromCad;
+
 	Ar << BodyMesh.VertexArray;
 	Ar << BodyMesh.Faces;
-	Ar << BodyMesh.BBox;
 
 	Ar << BodyMesh.TriangleCount;
 	Ar << BodyMesh.BodyID;
-	Ar << BodyMesh.MeshActorName;
+	Ar << BodyMesh.MeshActorUId;
 
 	Ar << BodyMesh.MaterialSet;
 	Ar << BodyMesh.ColorSet;
@@ -206,82 +202,136 @@ uint32 GetTypeHash(const FFileDescriptor& FileDescriptor)
 	return DescriptorHash;
 }
 
-ECADFormat FileFormat(const FString& Extension)
+void FFileDescriptor::SetFileFormat(const FString& Extension)
 {
-	if (Extension == TEXT("catpart") || Extension == TEXT("catproduct"))
+	if (Extension == TEXT("catpart") )
 	{
-		return ECADFormat::CATIA;
+		Format = ECADFormat::CATIA;
+		bCanReferenceOtherFiles = false;
+	}
+	else if (Extension == TEXT("catproduct"))
+	{
+		Format = ECADFormat::CATIA;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("cgr"))
 	{
-		return ECADFormat::CATIA_CGR;
+		Format = ECADFormat::CATIA_CGR;
+		bCanReferenceOtherFiles = false;
 	}
 	else if (Extension == TEXT("iges") || Extension == TEXT("igs"))
 	{
-		return ECADFormat::IGES;
+		Format = ECADFormat::IGES;
+		bCanReferenceOtherFiles = false;
 	}
 	else if (Extension == TEXT("step") || Extension == TEXT("stp"))
 	{
-		return ECADFormat::STEP;
+		Format = ECADFormat::STEP;
+		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("ipt") || Extension == TEXT("iam"))
+	else if (Extension == TEXT("ipt"))
 	{
-		return ECADFormat::INVENTOR;
+		Format = ECADFormat::INVENTOR;
+		bCanReferenceOtherFiles = false;
+	}
+	else if (Extension == TEXT("iam"))
+	{
+		Format = ECADFormat::INVENTOR;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("jt"))
 	{
-		return ECADFormat::JT;
+		Format = ECADFormat::JT;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("model"))
 	{
-		return ECADFormat::CATIAV4;
+		Format = ECADFormat::CATIAV4;
+		bCanReferenceOtherFiles = false;
 	}
-	else if (Extension == TEXT("prt.*") || Extension == TEXT("asm.*") 
+	else if (Extension == TEXT("exp") || Extension == TEXT("session") || Extension == TEXT("dlv"))
+	{
+		Format = ECADFormat::CATIAV4;
+		bCanReferenceOtherFiles = true;
+	}
+	else if (Extension == TEXT("prt.*")
+		|| Extension == TEXT("xpr"))
+	{
+		Format = ECADFormat::CREO;
+		bCanReferenceOtherFiles = false;
+	}
+	else if (Extension == TEXT("asm.*")
 		|| Extension == TEXT("creo") || Extension == TEXT("creo.*")
 		|| Extension == TEXT("neu") || Extension == TEXT("neu.*")
-		|| Extension == TEXT("xas") || Extension == TEXT("xpr"))
+		|| Extension == TEXT("xpr"))
 	{
-		return ECADFormat::CREO;
+		Format = ECADFormat::CREO;
+		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("prt") || Extension == TEXT("asm"))
+	else if (Extension == TEXT("prt"))
 	{
-		return ECADFormat::NX;
+		Format = ECADFormat::N_X;
+		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("sat"))
+	else if (Extension == TEXT("sat") || Extension == TEXT("sab"))
 	{
-		return ECADFormat::ACIS;
+		Format = ECADFormat::ACIS;
+		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("sldprt") || Extension == TEXT("sldasm"))
+	else if (Extension == TEXT("sldprt") )
 	{
-		return ECADFormat::SOLIDWORKS;
+		Format = ECADFormat::SOLIDWORKS;
+		bCanReferenceOtherFiles = false;
+	}
+	else if (Extension == TEXT("sldasm"))
+	{
+		Format = ECADFormat::SOLIDWORKS;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("x_t") || Extension == TEXT("x_b"))
 	{
-		return ECADFormat::PARASOLID;
+		Format = ECADFormat::PARASOLID;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("3dxml") || Extension == TEXT("3drep"))
 	{
-		return ECADFormat::CATIA_3DXML;
+		Format = ECADFormat::CATIA_3DXML;
+		bCanReferenceOtherFiles = false;
 	}
-	else if (Extension == TEXT("par") || Extension == TEXT("psm"))
+	else if (Extension == TEXT("par") )
 	{
-		return ECADFormat::SOLID_EDGE;
+		Format = ECADFormat::SOLID_EDGE;
+		bCanReferenceOtherFiles = false;
+	}
+	else if (Extension == TEXT("psm"))
+	{
+		Format = ECADFormat::SOLID_EDGE;
+		bCanReferenceOtherFiles = true;
 	}
 	else if (Extension == TEXT("dwg"))
 	{
-		return ECADFormat::AUTOCAD;
+		Format = ECADFormat::AUTOCAD;
+		bCanReferenceOtherFiles = true;
+	}
+	else if (Extension == TEXT("ifc"))
+	{
+		Format = ECADFormat::IFC;
+		bCanReferenceOtherFiles = false;
 	}
 	else if (Extension == TEXT("dgn"))
 	{
-		return ECADFormat::MICROSTATION;
+		Format = ECADFormat::MICROSTATION;
+		bCanReferenceOtherFiles = true;
 	}
-	else if (Extension == TEXT("hsf"))
+	else if (Extension == TEXT("hsf") || Extension == TEXT("prc"))
 	{
-		return ECADFormat::TECHSOFT;
+		Format = ECADFormat::TECHSOFT;
+		bCanReferenceOtherFiles = false;
 	}
 	else
 	{
-		return ECADFormat::OTHER;
+		Format = ECADFormat::OTHER;
+		bCanReferenceOtherFiles = true;
 	}
 }
 

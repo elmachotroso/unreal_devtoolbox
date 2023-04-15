@@ -4,46 +4,123 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
-#include "Containers/Array.h" // TIndexedContainerIterator
 #include "Containers/ArrayView.h"
 #include "Templates/IsPODType.h"
 #include "Templates/IsTriviallyDestructible.h"
+#include "Templates/MakeSigned.h"
+#include "Templates/MakeUnsigned.h"
 #include "Templates/MemoryOps.h"
 #include "Templates/UnrealTemplate.h"
 
-// PUBLIC_RINGBUFFER_TODO: Move TMakeSigned and TMakeUnsigned into MakeSigned.h
-template <typename T>
-struct TMakeSigned
+template< typename ContainerType, typename ElementType, typename SizeType>
+class TRingBufferIterator
 {
-	static_assert(sizeof(T) == 0, "Unsupported type in TMakeSigned<T>.");
+public:
+	TRingBufferIterator(ContainerType& InContainer, SizeType StartIndex = 0)
+		: Container(InContainer)
+		, Index(StartIndex)
+	{
+	}
+
+	/** Advances iterator to the next element in the container. */
+	TRingBufferIterator& operator++()
+	{
+		++Index;
+		return *this;
+	}
+	TRingBufferIterator operator++(int)
+	{
+		TRingBufferIterator Tmp(*this);
+		++Index;
+		return Tmp;
+	}
+
+	/** Moves iterator to the previous element in the container. */
+	TRingBufferIterator& operator--()
+	{
+		--Index;
+		return *this;
+	}
+	TRingBufferIterator operator--(int)
+	{
+		TRingBufferIterator Tmp(*this);
+		--Index;
+		return Tmp;
+	}
+
+	/** iterator arithmetic support */
+	TRingBufferIterator& operator+=(SizeType Offset)
+	{
+		Index += Offset;
+		return *this;
+	}
+
+	TRingBufferIterator operator+(SizeType Offset) const
+	{
+		TRingBufferIterator Tmp(*this);
+		return Tmp += Offset;
+	}
+
+	TRingBufferIterator& operator-=(SizeType Offset)
+	{
+		return *this += -Offset;
+	}
+
+	TRingBufferIterator operator-(SizeType Offset) const
+	{
+		TRingBufferIterator Tmp(*this);
+		return Tmp -= Offset;
+	}
+
+	FORCEINLINE ElementType& operator* () const
+	{
+		return Container[Index];
+	}
+
+	FORCEINLINE ElementType* operator->() const
+	{
+		return &Container[Index];
+	}
+
+	/** conversion to "bool" returning true if the iterator has not reached the last element. */
+	FORCEINLINE explicit operator bool() const
+	{
+		return Container.IsValidIndex(Index);
+	}
+
+	/** Returns an index to the current element. */
+	SizeType GetIndex() const
+	{
+		return Index;
+	}
+
+	/** Resets the iterator to the first element. */
+	void Reset()
+	{
+		Index = 0;
+	}
+
+	/** Sets the iterator to one past the last element. */
+	void SetToEnd()
+	{
+		Index = Container.Num();
+	}
+
+	/** Removes current element in array. This invalidates the current iterator value and it must be incremented */
+	void RemoveCurrent()
+	{
+		Container.RemoveAt(Index);
+		Index--;
+	}
+
+	FORCEINLINE friend bool operator==(const TRingBufferIterator& Lhs, const TRingBufferIterator& Rhs) { return &Lhs.Container == &Rhs.Container && Lhs.Index == Rhs.Index; }
+	FORCEINLINE friend bool operator!=(const TRingBufferIterator& Lhs, const TRingBufferIterator& Rhs) { return &Lhs.Container != &Rhs.Container || Lhs.Index != Rhs.Index; }
+
+private:
+
+	ContainerType& Container;
+	SizeType      Index;
 };
-template <typename T> struct TMakeSigned<const          T> { using Type = const          typename TMakeSigned<T>::Type; };
-template <typename T> struct TMakeSigned<      volatile T> { using Type =       volatile typename TMakeSigned<T>::Type; };
-template <typename T> struct TMakeSigned<const volatile T> { using Type = const volatile typename TMakeSigned<T>::Type; };
-template <> struct TMakeSigned<int8>   { using Type = int8; };
-template <> struct TMakeSigned<uint8>  { using Type = int8; };
-template <> struct TMakeSigned<int16>  { using Type = int16; };
-template <> struct TMakeSigned<uint16> { using Type = int16; };
-template <> struct TMakeSigned<int32>  { using Type = int32; };
-template <> struct TMakeSigned<uint32> { using Type = int32; };
-template <> struct TMakeSigned<int64>  { using Type = int64; };
-template <> struct TMakeSigned<uint64> { using Type = int64; };
-template <typename T>
-struct TMakeUnsigned
-{
-	static_assert(sizeof(T) == 0, "Unsupported type in TMakeUnsigned<T>.");
-};
-template <typename T> struct TMakeUnsigned<const          T> { using Type = const          typename TMakeUnsigned<T>::Type; };
-template <typename T> struct TMakeUnsigned<      volatile T> { using Type =       volatile typename TMakeUnsigned<T>::Type; };
-template <typename T> struct TMakeUnsigned<const volatile T> { using Type = const volatile typename TMakeUnsigned<T>::Type; };
-template <> struct TMakeUnsigned<int8>   { using Type = uint8; };
-template <> struct TMakeUnsigned<uint8>  { using Type = uint8; };
-template <> struct TMakeUnsigned<int16>  { using Type = uint16; };
-template <> struct TMakeUnsigned<uint16> { using Type = uint16; };
-template <> struct TMakeUnsigned<int32>  { using Type = uint32; };
-template <> struct TMakeUnsigned<uint32> { using Type = uint32; };
-template <> struct TMakeUnsigned<int64>  { using Type = uint64; };
-template <> struct TMakeUnsigned<uint64> { using Type = uint64; };
 
 /**
  * RingBuffer - an array with a Front and Back pointer and with implicit wraparound to the beginning of the array when reaching the end of the array when iterating from Front to Back
@@ -67,8 +144,8 @@ public:
 	/** Type used to communicate size and capacity and counts */
 	typedef typename TMakeUnsigned<typename Allocator::SizeType>::Type SizeType;
 	/** Iterator type used for ranged-for traversal. */
-	typedef TIndexedContainerIterator<TRingBuffer, ElementType, typename Allocator::SizeType> TIterator;
-	typedef TIndexedContainerIterator<const TRingBuffer, const ElementType, typename Allocator::SizeType> TConstIterator;
+	typedef TRingBufferIterator<TRingBuffer, ElementType, typename Allocator::SizeType> TIterator;
+	typedef TRingBufferIterator<const TRingBuffer, const ElementType, typename Allocator::SizeType> TConstIterator;
 private:
 	/**
 	 * Type used for variables that are indexes into the underlying storage.

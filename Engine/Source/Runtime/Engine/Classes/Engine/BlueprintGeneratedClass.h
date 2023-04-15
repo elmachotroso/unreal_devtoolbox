@@ -12,9 +12,6 @@
 #include "EdGraph/EdGraphPin.h"
 #include "Containers/SortedMap.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #include "BlueprintGeneratedClass.generated.h"
 
 class AActor;
@@ -22,6 +19,7 @@ class UActorComponent;
 class UDynamicBlueprintBinding;
 class UInheritableComponentHandler;
 class UTimelineTemplate;
+class UClassCookedMetaData;
 
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Persistent Uber Graph Frame memory"), STAT_PersistentUberGraphFrameMemory, STATGROUP_Memory, );
 DECLARE_MEMORY_STAT_EXTERN(TEXT("BPComp Instancing Fast Path memory"), STAT_BPCompInstancingFastPathMemory, STATGROUP_Memory, );
@@ -627,8 +625,30 @@ struct FBPComponentClassOverride
 	}
 };
 
+/**
+ * Interface to query the property name<->GUID relationship using either a UBlueprint or a UBlueprintGeneratedClass.
+ * This allows cooked and uncooked Blueprints to be queried via the same API.
+ */
+class IBlueprintPropertyGuidProvider
+{
+public:
+	virtual ~IBlueprintPropertyGuidProvider() = default;
+
+	/**
+	 * Returns the property name for the given GUID, if any.
+	 * @note Does not recurse into parents.
+	 */
+	virtual FName FindBlueprintPropertyNameFromGuid(const FGuid& PropertyGuid) const = 0;
+
+	/**
+	 * Returns the property GUID for the given name, if any.
+	 * @note Does not recurse into parents.
+	 */
+	virtual FGuid FindBlueprintPropertyGuidFromName(const FName PropertyName) const = 0;
+};
+
 UCLASS(NeedsDeferredDependencyLoading)
-class ENGINE_API UBlueprintGeneratedClass : public UClass
+class ENGINE_API UBlueprintGeneratedClass : public UClass, public IBlueprintPropertyGuidProvider
 {
 	GENERATED_UCLASS_BODY()
 
@@ -713,6 +733,10 @@ public:
 	TArray<TObjectPtr<UFunction>> CalledFunctions;
 #endif //WITH_EDITORONLY_DATA
 
+	/** Property guid map (if any), for use only when this BP is cooked */
+	UPROPERTY()
+	TMap<FName, FGuid> CookedPropertyGuids;
+
 	// Mapping of changed properties & data to apply when instancing components in a cooked build (one entry per named AddComponent node template for fast lookup at runtime).
 	// Note: This is not currently utilized by the editor; it is a runtime optimization for cooked builds only. It assumes that the component class structure does not change.
 	UPROPERTY()
@@ -736,12 +760,20 @@ public:
 	static void CreateComponentsForActor(const UClass* ThisClass, AActor* Actor);
 	static void CreateTimelineComponent(AActor* Actor, const UTimelineTemplate* TimelineTemplate);
 
+	// IBlueprintPropertyGuidProvider interface
+	virtual FName FindBlueprintPropertyNameFromGuid(const FGuid& PropertyGuid) const override final;
+	virtual FGuid FindBlueprintPropertyGuidFromName(const FName PropertyName) const override final;
+	// End IBlueprintPropertyGuidProvider interface
+
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 	virtual void PostInitProperties() override;
 	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+#if WITH_EDITOR
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+#endif // WITH_EDITOR
 	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
 	virtual bool NeedsLoadForServer() const override;
 	virtual bool NeedsLoadForClient() const override;
@@ -749,9 +781,10 @@ public:
 	virtual bool CanBeClusterRoot() const override;
 #if WITH_EDITOR
 	virtual UClass* RegenerateClass(UClass* ClassToRegenerate, UObject* PreviousCDO) override;
+	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext) override;
+	virtual void PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext) override;
 #endif	//WITH_EDITOR
 	virtual bool IsAsset() const override;
-
 	// End UObject interface
 
 	// UClass interface
@@ -811,6 +844,18 @@ protected:
 	* @param	DefaultDataPtr		source address (where to start copying the defaults data from)
 	*/
 	static void InitArrayPropertyFromCustomList(const FArrayProperty* ArrayProperty, const FCustomPropertyListNode* InPropertyList, uint8* DataPtr, const uint8* DefaultDataPtr);
+
+
+	/**
+	* Helper method to assist with initializing a property from sub property list
+	*
+	* @param	Property					the property to copy
+	* @param	CustomPropertySubListNode	the list node of the sub property to copy
+	* @param	PropertyValue				destination address (where to start copying values to)
+	* @param	DefaultPropertyValue		source address (where to start copying the defaults data from)
+	* @return	true if the method was able to copy the property successfully via the sub custom property list
+	*/
+	static bool InitPropertyFromSubPropertyList(const FProperty* Property, const FCustomPropertyListNode* SubPropertyList, uint8* PropertyValue, const uint8* DefaultPropertyValue);
 
 	// @todo: BP2CPP_remove
 	/** Check for and handle manual application of default value overrides to component subobjects that were inherited from a nativized parent class */
@@ -888,7 +933,16 @@ private:
 
 	/** Editor-only asset registry tags on cooked BPGC */
 	FEditorTags CookedEditorTags;
+
+protected:
+	virtual TSubclassOf<UClassCookedMetaData> GetCookedMetaDataClass() const;
+
+private:
+	UClassCookedMetaData* NewCookedMetaData();
+	const UClassCookedMetaData* FindCookedMetaData();
+	void PurgeCookedMetaData();
+
+	UPROPERTY()
+	TObjectPtr<UClassCookedMetaData> CachedCookedMetaDataPtr;
 #endif // WITH_EDITORONLY_DATA
 };
-
-#include "UObject/DefineUPropertyMacros.h"

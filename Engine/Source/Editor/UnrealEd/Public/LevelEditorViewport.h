@@ -195,8 +195,8 @@ public:
 	////////////////////////////
 	// FEditorViewportClient interface
 	virtual void DrawCanvas( FViewport& InViewport, FSceneView& View, FCanvas& Canvas ) override;
-	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
-	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
+	virtual bool InputKey(const FInputKeyEventArgs& InEventArgs) override;
+	virtual bool InputAxis(FViewport* Viewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
 	virtual EMouseCursor::Type GetCursor(FViewport* Viewport,int32 X,int32 Y) override;
 	virtual void CapturedMouseMove(FViewport* InViewport, int32 InMouseX, int32 InMouseY) override;
 	virtual void MouseMove(FViewport* InViewport, int32 x, int32 y) override;
@@ -590,29 +590,11 @@ public:
 	}
 
 	/** 
-	 * Set the actor locked to the viewport by Matinee.
-	 */
-	UE_DEPRECATED(4.27, "Matinee is being deprecated, use SetCinematicActorLock instead.")
-	void SetMatineeActorLock(AActor* Actor)
-	{
-		SetCinematicActorLock(Actor);
-	}
-
-	/** 
 	 * Check whether this viewport is locked to the specified actor
 	 */
 	bool IsLockedToActor(AActor* Actor) const
 	{
 		return ActorLocks.HasActorLocked(Actor);
-	}
-
-	/** 
-	 * Check whether this viewport is locked to display the matinee view
-	 */
-	UE_DEPRECATED(4.27, "Matinee is being deprecated, use IsLockedToCinematic instead.")
-	bool IsLockedToMatinee() const
-	{
-		return IsLockedToCinematic();
 	}
 
 	/**
@@ -665,6 +647,12 @@ public:
 	static UObject* GetOrCreateMaterialFromTexture( UTexture* UnrealTexture );
 
 	virtual bool UseAppTime() const override { return false; }
+
+	/**
+	 * Informs the renderer that the view is being interactively edited. (ex. rotation/translation gizmo).
+	 * This state is reset on tick.
+	 */
+	void SetEditingThroughMovementWidget();
 
 protected:
 	/**
@@ -924,6 +912,9 @@ private:
 
 	/** If this view was controlled by another view this/last frame, don't update itself */
 	bool bWasControlledByOtherViewport;
+
+	/** Whether the user is currently using the rotation / translation widget */
+	bool bCurrentlyEditingThroughMovementWidget;
 
 	/**
 	 * When locked to an actor this view will be positioned in the same location and rotation as the actor.

@@ -7,14 +7,16 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "DesktopPlatformModule.h"
 #include "ISourceControlModule.h"
+#include "IUndoHistoryEditorModule.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Toolkits/GlobalEditorCommonCommands.h"
 #include "SourceCodeNavigation.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "EditorStyleSet.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Editor/Transactor.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "UnrealEdGlobals.h"
 #include "Frame/MainFrameActions.h"
@@ -26,7 +28,6 @@
 #include "WorkspaceMenuStructureModule.h"
 #include "Features/EditorFeatures.h"
 #include "Features/IModularFeatures.h"
-#include "UndoHistoryModule.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "ITranslationEditor.h"
 #include "LauncherPlatformModule.h"
@@ -100,8 +101,8 @@ void FMainMenu::RegisterEditMenu()
 			"UndoHistory",
 			LOCTEXT("UndoHistoryTabTitle", "Undo History"),
 			LOCTEXT("UndoHistoryTooltipText", "View the entire undo history."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "UndoHistory.TabIcon"),
-			FUIAction(FExecuteAction::CreateStatic(&FUndoHistoryModule::ExecuteOpenUndoHistory))
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "UndoHistory.TabIcon"),
+			FUIAction(FExecuteAction::CreateLambda([](){  IUndoHistoryEditorModule::Get().ExecuteOpenUndoHistory(); } ))
 			);
 	}
 
@@ -115,7 +116,7 @@ void FMainMenu::RegisterEditMenu()
 				LOCTEXT("EditorPreferencesSubMenuToolTip", "Configure the behavior and features of this Editor"),
 				FNewToolMenuDelegate::CreateStatic(&FSettingsMenu::MakeMenu, FName("Editor")),
 				false,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorPreferences.TabIcon")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorPreferences.TabIcon")
 			);
 
 			Section.AddSubMenu(
@@ -124,26 +125,42 @@ void FMainMenu::RegisterEditMenu()
 				LOCTEXT("ProjectSettingsSubMenuToolTip", "Change the settings of the currently loaded project"),
 				FNewToolMenuDelegate::CreateStatic(&FSettingsMenu::MakeMenu, FName("Project")),
 				false,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ProjectSettings.TabIcon")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ProjectSettings.TabIcon")
 			);
 		}
 		else
 		{
 #if !PLATFORM_MAC // Handled by app's menu in menu bar
-			Section.AddMenuEntry(
-				"EditorPreferencesMenu",
-				LOCTEXT("EditorPreferencesMenuLabel", "Editor Preferences..."),
-				LOCTEXT("EditorPreferencesMenuToolTip", "Configure the behavior and features of the Unreal Editor."),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorPreferences.TabIcon"),
-				FUIAction(FExecuteAction::CreateStatic(&FSettingsMenu::OpenSettings, FName("Editor"), FName("General"), FName("Appearance")))
-			);
-#endif
+			{
+				IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+				FName CategoryName;
+				FName SectionName;
+				MainFrame.GetEditorSettingsDefaultSelectionOverride(CategoryName, SectionName);
+
+				if (CategoryName.IsNone())
+				{
+					CategoryName = FName("General");
+				}
+				if (SectionName.IsNone())
+				{
+					SectionName = FName("Appearance");
+				}
+
+				Section.AddMenuEntry(
+					"EditorPreferencesMenu",
+					LOCTEXT("EditorPreferencesMenuLabel", "Editor Preferences..."),
+					LOCTEXT("EditorPreferencesMenuToolTip", "Configure the behavior and features of the Unreal Editor."),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorPreferences.TabIcon"),
+					FUIAction(FExecuteAction::CreateStatic(&FSettingsMenu::OpenSettings, FName("Editor"), CategoryName, SectionName))
+				);
+			}
+#endif //if !PLATFORM_MAC
 
 			Section.AddMenuEntry(
 				"ProjectSettingsMenu",
 				LOCTEXT("ProjectSettingsMenuLabel", "Project Settings..."),
 				LOCTEXT("ProjectSettingsMenuToolTip", "Change the settings of the currently loaded project."),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ProjectSettings.TabIcon"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ProjectSettings.TabIcon"),
 				FUIAction(FExecuteAction::CreateStatic(&FSettingsMenu::OpenSettings, FName("Project"), FName("Project"), FName("General")))
 			);
 		}
@@ -270,9 +287,11 @@ void FMainMenu::RegisterHelpMenu()
 
 	FToolMenuSection& CommunitySection = Menu->AddSection("Community", NSLOCTEXT("MainHelpMenu", "CommunitySection", "Community"));
 	{
+		CommunitySection.AddMenuEntry(FMainFrameCommands::Get().VisitCommunityHome);
 		CommunitySection.AddMenuEntry(FMainFrameCommands::Get().VisitOnlineLearning);
 		CommunitySection.AddMenuEntry(FMainFrameCommands::Get().VisitForums);
 		CommunitySection.AddMenuEntry(FMainFrameCommands::Get().VisitSearchForAnswersPage);
+		CommunitySection.AddMenuEntry(FMainFrameCommands::Get().VisitCommunitySnippets);
 	}
 
 	FToolMenuSection& BugReportingSection = Menu->AddSection("Support", NSLOCTEXT("MainHelpMenu", "SupportSection", "Support"));
@@ -396,47 +415,44 @@ void FMainMenu::RegisterMainMenu()
 
 void FMainMenu::RegisterFileProjectMenu()
 {
-	if (!GetDefault<UEditorStyleSettings>()->bShowProjectMenus)
-	{
-		return;
-	}
-
 	UToolMenus* ToolMenus = UToolMenus::Get();
 	UToolMenu* MainTabFileMenu = ToolMenus->ExtendMenu("MainFrame.MainTabMenu.File");
 	FToolMenuSection& Section = MainTabFileMenu->AddSection("FileProject", LOCTEXT("ProjectHeading", "Project"));
 
-	Section.AddMenuEntry( FMainFrameCommands::Get().NewProject );
-	Section.AddMenuEntry( FMainFrameCommands::Get().OpenProject );
-	/*
-	MenuBuilder.AddMenuEntry( FMainFrameCommands::Get().LocalizeProject,
-		NAME_None,
-		TAttribute<FText>(),
-		LOCTEXT("LocalizeProjectToolTip", "Gather text from your project and import/export translations.")
-		);
-		*/
-	/*
-	MenuBuilder.AddSubMenu(
-		LOCTEXT("CookProjectSubMenuLabel", "Cook Project"),
-		LOCTEXT("CookProjectSubMenuToolTip", "Cook your project content for debugging"),
-		FNewMenuDelegate::CreateStatic( &FCookContentMenu::MakeMenu ), false, FSlateIcon()
-	);
-	*/
-
-
-	Section.AddMenuEntry(FMainFrameCommands::Get().ZipUpProject);
-
-	if (GetDefault<UEditorStyleSettings>()->bShowProjectMenus && FMainFrameActionCallbacks::RecentProjects.Num() > 0)
+	if (GetDefault<UEditorStyleSettings>()->bShowProjectMenus)
 	{
-		Section.AddSubMenu(
-			"RecentProjects",
-			LOCTEXT("SwitchProjectSubMenu", "Recent Projects"),
-			LOCTEXT("SwitchProjectSubMenu_ToolTip", "Select a project to switch to"),
-			FNewToolMenuDelegate::CreateStatic(&FRecentProjectsMenu::MakeMenu),
-			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "MainFrame.RecentProjects")
-		);
-	}
+		Section.AddMenuEntry(FMainFrameCommands::Get().NewProject);
+		Section.AddMenuEntry(FMainFrameCommands::Get().OpenProject);
+		/*
+		MenuBuilder.AddMenuEntry( FMainFrameCommands::Get().LocalizeProject,
+			NAME_None,
+			TAttribute<FText>(),
+			LOCTEXT("LocalizeProjectToolTip", "Gather text from your project and import/export translations.")
+			);
+			*/
+			/*
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("CookProjectSubMenuLabel", "Cook Project"),
+				LOCTEXT("CookProjectSubMenuToolTip", "Cook your project content for debugging"),
+				FNewMenuDelegate::CreateStatic( &FCookContentMenu::MakeMenu ), false, FSlateIcon()
+			);
+			*/
 
+
+		Section.AddMenuEntry(FMainFrameCommands::Get().ZipUpProject);
+
+		if (FMainFrameActionCallbacks::RecentProjects.Num() > 0)
+		{
+			Section.AddSubMenu(
+				"RecentProjects",
+				LOCTEXT("SwitchProjectSubMenu", "Recent Projects"),
+				LOCTEXT("SwitchProjectSubMenu_ToolTip", "Select a project to switch to"),
+				FNewToolMenuDelegate::CreateStatic(&FRecentProjectsMenu::MakeMenu),
+				false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.RecentProjects")
+			);
+		}
+	}
 }
 
 void FMainMenu::RegisterToolsMenu()
@@ -506,26 +522,24 @@ void FMainMenu::RegisterToolsMenu()
 		const bool bTranslationPicker = GetDefault<UEditorExperimentalSettings>()->bEnableTranslationPicker;
 
 		// Make sure at least one is enabled before creating the section
-		if ( bTranslationPicker)
+
+		FToolMenuSection& ExperimentalSection = Menu->AddSection("ExperimentalTabSpawners", LOCTEXT("ExperimentalTabSpawnersHeading", "Experimental"));
 		{
-			FToolMenuSection& ExperimentalSection = Menu->AddSection("ExperimentalTabSpawners", LOCTEXT("ExperimentalTabSpawnersHeading", "Experimental"));
+			// Translation Picker
+			if (bTranslationPicker)
 			{
-				// Translation Picker
-				if (bTranslationPicker)
-				{
-					ExperimentalSection.AddMenuEntry(
-						"TranslationPicker",
-						LOCTEXT("TranslationPickerMenuItem", "Translation Picker"),
-						LOCTEXT("TranslationPickerMenuItemToolTip", "Launch the Translation Picker to Modify Editor Translations"),
-						FSlateIcon(),
-						FUIAction(FExecuteAction::CreateLambda(
-							[]()
-							{
-								FModuleManager::Get().LoadModuleChecked("TranslationEditor");
-								ITranslationEditor::OpenTranslationPicker();
-							}))
-					);
-				}
+				ExperimentalSection.AddMenuEntry(
+					"TranslationPicker",
+					LOCTEXT("TranslationPickerMenuItem", "Translation Picker"),
+					LOCTEXT("TranslationPickerMenuItemToolTip", "Launch the Translation Picker to Modify Editor Translations"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda(
+						[]()
+						{
+							FModuleManager::Get().LoadModuleChecked("TranslationEditor");
+							ITranslationEditor::OpenTranslationPicker();
+						}))
+				);
 			}
 		}
 	}
@@ -536,14 +550,14 @@ void FMainMenu::RegisterToolsMenu()
 		FMainFrameCommands::Get().ViewChangelists,
 		TAttribute<FText>(),
 		TAttribute<FText>(),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.ChangelistsTab")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.ChangelistsTab")
 	);
 
 	SourceControlSection.AddMenuEntry(
 		FMainFrameCommands::Get().SubmitContent,
 		TAttribute<FText>(),
 		TAttribute<FText>(),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Submit")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Submit")
 	);
 
 	SourceControlSection.AddDynamicEntry("ConnectToSourceControl", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
@@ -556,7 +570,7 @@ void FMainMenu::RegisterToolsMenu()
 				FMainFrameCommands::Get().ChangeSourceControlSettings,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.ChangeSettings")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.ChangeSettings")
 			);
 		}
 		else
@@ -565,7 +579,7 @@ void FMainMenu::RegisterToolsMenu()
 				FMainFrameCommands::Get().ConnectToSourceControl,
 				TAttribute<FText>(),
 				TAttribute<FText>(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Connect")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Connect")
 			);
 		}
 	}));

@@ -13,20 +13,36 @@ public class OutputLog : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
-                "TargetPlatform",
-                "DesktopPlatform"
+				"TargetPlatform",
+				"DesktopPlatform",
+				"ToolWidgets", 
 			}
 		);
 
 		if (Target.bBuildEditor)
-        {
-            PrivateDependencyModuleNames.AddRange(
+		{
+			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-						"EditorFramework",
-                        "UnrealEd"
+					"EditorFramework",
+					"StatusBar",
+					"UnrealEd",
 				}
 			);
-        }
-    }
+		}
+
+		if (Target.bBuildEditor || Target.bBuildDeveloperTools)
+		{
+			PrivateIncludePathModuleNames.AddRange(
+				new string[] {
+					"WorkspaceMenuStructure",
+				}
+			);
+		}
+
+		if (Target.bCompileAgainstEngine)
+		{
+			// Required for output log drawer in editor / engine builds. 
+			PrivateDependencyModuleNames.Add("Engine");
+		}
+	}
 }

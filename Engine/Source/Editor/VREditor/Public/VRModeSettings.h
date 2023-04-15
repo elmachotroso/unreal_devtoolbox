@@ -61,7 +61,7 @@ public:
 	uint32 bShowWorldScaleProgressBar : 1;
 
 	/** Adjusts the brightness of the UI panels */
-	UPROPERTY(EditAnywhere, config, Category = "UI Customization", meta = (DisplayName = "UI Panel Brightness", ClampMin = 0.01, ClampMax = 10.0))
+	UPROPERTY(EditAnywhere, config, Category = "UI Customization", meta = (DisplayName = "UI Panel Brightness", ClampMin = 0.01, UIMax = 10.0))
 	float UIBrightness;
 
 	/** The size of the transform gizmo */
@@ -80,16 +80,19 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Motion Controllers", meta = (DisplayName = "Trigger Pressed Threshold (Oculus Touch)", ClampMin = 0.01, ClampMax = 1.0))
 	float TriggerPressedThreshold_Rift;
 
-	/** The controller to use when UnrealEd is in VR mode. Use VREditorInteractor get default editor behavior, or select a custom controller for special behavior */
-	UPROPERTY(EditAnywhere, config, NoClear, Category = "Motion Controllers")
+	UE_DEPRECATED(5.1, "Refer to UVREditorMode::InteractorClass, or create a derived mode to override the interactor class.")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Refer to UVREditorMode::InteractorClass, or create a derived mode to override the interactor class."))
 	TSoftClassPtr<UVREditorInteractor> InteractorClass;
 
-	/** The teleporter to use when UnrealEd is in VR mode. Use VREditorTeleporter to get default editor behavior, or select a custom teleporter */
-	UPROPERTY( EditAnywhere, config, NoClear, Category = "Motion Controllers" )
+	UE_DEPRECATED(5.1, "Refer to UVREditorMode::TeleporterClass, or create a derived mode to override the teleporter class.")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Refer to UVREditorMode::TeleporterClass, or create a derived mode to override the teleporter class."))
 	TSoftClassPtr<AVREditorTeleporter> TeleporterClass;
 
-private:
+	/** The mode extension to use when UnrealEd is in VR mode. Use VREditorMode to get default editor behavior or select a custom mode. */
+	UPROPERTY(EditAnywhere, config, NoClear, Category = "General")
+	TSoftClassPtr<UVREditorMode> ModeClass;
+
 #if WITH_EDITOR
-	void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent);
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };

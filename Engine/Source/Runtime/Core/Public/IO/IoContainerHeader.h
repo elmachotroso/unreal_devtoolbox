@@ -2,11 +2,15 @@
 
 #pragma once
 
-#include "IO/PackageId.h"
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
 #include "IO/IoContainerId.h"
+#include "IO/PackageId.h"
 #include "Serialization/MappedName.h"
+#include "UObject/NameBatchSerialization.h"
 
 class FArchive;
+class FSHAHash;
 
 /**
  * Package store entry array view.
@@ -65,6 +69,7 @@ enum class EIoContainerHeaderVersion : uint32
 {
 	Initial = 0,
 	LocalizedPackages = 1,
+	OptionalSegmentPackages = 2,
 
 	LatestPlusOne,
 	Latest = LatestPlusOne - 1
@@ -78,10 +83,11 @@ struct FIoContainerHeader
 	};
 
 	FIoContainerId ContainerId;
-	uint32 PackageCount = 0;
 	TArray<FPackageId> PackageIds;
-	TArray<uint8> StoreEntries; //FPackageStoreEntry[PackageCount]
-	TArray<FNameEntryId> RedirectsNameMap;
+	TArray<uint8> StoreEntries; //FPackageStoreEntry[PackageIds.Num()]
+	TArray<FPackageId> OptionalSegmentPackageIds;
+	TArray<uint8> OptionalSegmentStoreEntries; //FPackageStoreEntry[OptionalSegmentPackageIds.Num()]
+	TArray<FDisplayNameEntryId> RedirectsNameMap;
 	TArray<FIoContainerHeaderLocalizedPackage> LocalizedPackages;
 	TArray<FIoContainerHeaderPackageRedirect> PackageRedirects;
 

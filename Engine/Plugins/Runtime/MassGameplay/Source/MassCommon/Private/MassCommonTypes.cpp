@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassCommonTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "Math/ColorList.h"
+#include "HAL/IConsoleManager.h"
 
 #if WITH_MASSGAMEPLAY_DEBUG
 
@@ -87,7 +88,7 @@ bool GetDebugEntitiesRange(int32& OutBegin, int32& OutEnd)
 {
 	OutBegin = DebugEntityBegin;
 	OutEnd = DebugEntityEnd;
-	return DebugEntityBegin != INDEX_NONE && DebugEntityEnd != INDEX_NONE;  
+	return DebugEntityBegin != INDEX_NONE && DebugEntityEnd != INDEX_NONE && DebugEntityBegin <= DebugEntityEnd;
 }
 	
 bool IsDebuggingEntity(FMassEntityHandle Entity, FColor* OutEntityColor)

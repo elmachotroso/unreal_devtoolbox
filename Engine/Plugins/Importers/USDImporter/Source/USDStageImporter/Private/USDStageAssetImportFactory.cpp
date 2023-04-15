@@ -35,7 +35,7 @@ UUsdStageAssetImportFactory::UUsdStageAssetImportFactory(const FObjectInitialize
 	bEditorImport = true;
 	bText = false;
 
-	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
+	for ( const FString& Extension : UnrealUSDWrapper::GetNativeFileFormats() )
 	{
 		Formats.Add(FString::Printf(TEXT("%s; Universal Scene Description files"), *Extension));
 	}
@@ -60,6 +60,9 @@ UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject
 		ImportContext.ImportOptions = Cast<UUsdStageImportOptions>( AssetImportTask->Options );
 	}
 
+	// When importing from file we don't want to use any opened stage
+	ImportContext.bReadFromStageCache = false;
+
 	const FString InitialPackagePath = InParent ? InParent->GetName() : TEXT( "/Game/" );
 	const bool bIsReimport = false;
 	const bool bAllowActorImport = false;
@@ -75,7 +78,7 @@ UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, ImportContext.SceneActor);
 		GEditor->BroadcastLevelActorListChanged();
 
-		ImportedObject = ImportContext.ImportedAsset ? ImportContext.ImportedAsset : Cast<UObject>(ImportContext.SceneActor);
+		ImportedObject = ImportContext.ImportedAsset ? ToRawPtr(ImportContext.ImportedAsset) : Cast<UObject>(ImportContext.SceneActor);
 	}
 	else
 	{
@@ -102,7 +105,7 @@ bool UUsdStageAssetImportFactory::FactoryCanImport(const FString& Filename)
 
 void UUsdStageAssetImportFactory::CleanUp()
 {
-	ImportContext = FUsdStageImportContext();
+	ImportContext.Reset();
 	Super::CleanUp();
 }
 
@@ -152,6 +155,8 @@ EReimportResult::Type UUsdStageAssetImportFactory::Reimport(UObject* Obj)
 		// which is not what we would expect
 		ImportContext.ImportOptions = DuplicateObject( ReimportOptions, ImportData );
 	}
+
+	ImportContext.bReadFromStageCache = false;
 
 	const bool bIsReimport = true;
 	const bool bAllowActorImport = false;

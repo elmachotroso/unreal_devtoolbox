@@ -3,7 +3,6 @@
 #include "NiagaraShader.h"
 #include "ShaderParameterUtils.h"
 #include "ClearQuad.h"
-#include "TextureResource.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
 #include "Engine/VolumeTexture.h"
@@ -11,13 +10,11 @@
 #include "NiagaraSettings.h"
 #include "NiagaraConstants.h"
 #include "NiagaraComputeExecutionContext.h"
-#if WITH_EDITOR
-#include "NiagaraGpuComputeDebug.h"
-#endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceGrid2DCollectionReader)
+
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceGrid2DCollectionReader"
-
-IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceGrid2DCollectionReader, FNiagaraDataInterfaceParametersCS_Grid2DCollection);
 
 UNiagaraDataInterfaceGrid2DCollectionReader::UNiagaraDataInterfaceGrid2DCollectionReader(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -65,7 +62,7 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::InitPerInstanceData(void* PerI
 	FNiagaraEmitterInstance* EmitterInstanceToUse = nullptr;
 	for (TSharedPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> EmitterInstance : SystemInstance->GetEmitters())
 	{
-		UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter();
+		UNiagaraEmitter* Emitter = EmitterInstance->GetCachedEmitter().Emitter;
 		if (Emitter == nullptr)
 		{
 			continue;
@@ -133,18 +130,17 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::InitPerInstanceData(void* PerI
 	return false;
 }
 
-void UNiagaraDataInterfaceGrid2DCollectionReader::GetEmitterDependencies(UNiagaraSystem* Asset, TArray<UNiagaraEmitter*>& Dependencies) const
+void UNiagaraDataInterfaceGrid2DCollectionReader::GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const
 {
 	if (!Asset)
 	{
 		return;
 	}
 
-	UNiagaraEmitter* FoundSourceEmitter = nullptr;
 	for (const FNiagaraEmitterHandle& EmitterHandle : Asset->GetEmitterHandles())
 	{
-		UNiagaraEmitter* EmitterInstance = EmitterHandle.GetInstance();
-		if (EmitterInstance && EmitterInstance->GetUniqueEmitterName() == EmitterName)
+		FVersionedNiagaraEmitter EmitterInstance = EmitterHandle.GetInstance();
+		if (EmitterInstance.Emitter && EmitterInstance.Emitter->GetUniqueEmitterName() == EmitterName)
 		{
 			Dependencies.Add(EmitterInstance);
 			return;
@@ -206,3 +202,4 @@ bool UNiagaraDataInterfaceGrid2DCollectionReader::PerInstanceTickPostSimulate(vo
 }
 
 #undef LOCTEXT_NAMESPACE
+

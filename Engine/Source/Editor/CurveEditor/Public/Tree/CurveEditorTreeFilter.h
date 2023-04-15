@@ -2,16 +2,23 @@
 
 #pragma once
 
-#include "Templates/SharedPointer.h"
-#include "Misc/EnumClassFlags.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/ContainersFwd.h"
 #include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
 #include "Internationalization/Text.h"
+#include "Misc/CString.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
 
 class FCurveEditorTree;
+struct FCurveEditorFilterStates;
 struct FCurveEditorTreeItem;
 struct FCurveEditorTreeItemID;
-struct FCurveEditorFilterStates;
+
 enum class ECurveEditorTreeFilterState : uint8;
 
 enum class ECurveEditorTreeFilterType : uint32
@@ -35,6 +42,7 @@ struct CURVEEDITOR_API FCurveEditorTreeFilter
 	FCurveEditorTreeFilter(ECurveEditorTreeFilterType InFilterType, int32 InFilterPass)
 		: FilterType(InFilterType)
 		, FilterPass(InFilterPass)
+		, bExpandToMatchedItems(true)
 	{}
 
 	virtual ~FCurveEditorTreeFilter() {}
@@ -55,6 +63,14 @@ struct CURVEEDITOR_API FCurveEditorTreeFilter
 		return FilterPass;
 	}
 
+	/**
+	 *  @return If tree paths should be expanded down to matched items
+	 */
+	bool ShouldExpandOnMatch() const
+	{
+		return bExpandToMatchedItems;
+	}
+
 public:
 
 	/**
@@ -72,6 +88,9 @@ protected:
 
 	/** Defines which pass this filter should be applied in */
 	int32 FilterPass;
+
+	/** Determines if tree paths should be expanded down to matched items */
+	bool bExpandToMatchedItems : 1;
 };
 
 /** A specific text token (containing neither spaces nor .) */

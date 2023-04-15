@@ -3,13 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "NiagaraEditorCommon.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeCustomHlsl.generated.h"
 
 class UNiagaraScript;
+struct FNiagaraCustomHlslInclude;
 
 UCLASS(MinimalAPI)
 class UNiagaraNodeCustomHlsl : public UNiagaraNodeFunctionCall
@@ -19,6 +18,8 @@ class UNiagaraNodeCustomHlsl : public UNiagaraNodeFunctionCall
 public:
 	const FString& GetCustomHlsl() const;
 	void SetCustomHlsl(const FString& InCustomHlsl);
+
+	void GetIncludeFilePaths(TArray<FNiagaraCustomHlslInclude>& OutCustomHlslIncludeFilePaths) const;
 
 	UPROPERTY()
 	ENiagaraScriptUsage ScriptUsage;
@@ -30,26 +31,25 @@ public:
 	FText GetHlslText() const;
 	void OnCustomHlslTextCommitted(const FText& InText, ETextCommit::Type InType);
 
-	bool GetTokens(TArray<FString>& OutTokens, bool IncludeComments = true) const;
+	bool GetTokens(TArray<FString>& OutTokens, bool IncludeComments = true, bool IncludeWhitespace = true) const;
 
 	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true, bool bFilterForCompilation = true) const override;
+	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
 
 	// Replace items in the tokens array if they start with the src string or optionally src string and a namespace delimiter
-	static uint32 ReplaceExactMatchTokens(TArray<FString>& Tokens, const FString& SrcString, const FString& ReplaceString, bool bAllowNamespaceSeparation);
-	static FNiagaraVariable StripVariableToBaseType(const FNiagaraVariable& InVar);
-	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const;
-	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType, EEdGraphPinDirection InDirection) const;
+	static uint32 ReplaceExactMatchTokens(TArray<FString>& Tokens, FStringView SrcString, FStringView ReplaceString, bool bAllowNamespaceSeparation);
+
+	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const override;
+	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType, EEdGraphPinDirection InDirection) const override;
 
 	virtual bool ReferencesVariable(const FNiagaraVariableBase& InVar) const;
 
-	static bool GetTokensFromString(const FString& InHlsl, TArray<FString>& OutTokens, bool IncludeComments = true);
+	static bool GetTokensFromString(const FString& InHlsl, TArray<FString>& OutTokens, bool IncludeComments = true, bool IncludeWhitespace = true);
 
-#if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	void InitAsCustomHlslDynamicInput(const FNiagaraTypeDefinition& OutputType);
 
-#endif
 protected:
 	virtual bool AllowDynamicPins() const override { return true; }
 	virtual bool GetValidateDataInterfaces() const override { return false; }
@@ -82,6 +82,15 @@ protected:
 	UEdGraphPin* PinPendingRename;
 
 private:
-	UPROPERTY(EditAnywhere, Category = "Function", meta = (MultiLine = true))
+	UPROPERTY(EditAnywhere, Category = "HLSL", meta = (MultiLine = true))
 	FString CustomHlsl;
+
+	// Links to hlsl files that will be included by the translator. These external files are not watched by the engine, so changes to them do not automatically trigger a recompile of Niagara scripts.
+	UPROPERTY(EditAnywhere, Category = "HLSL")
+	TArray<FFilePath> AbsoluteIncludeFilePaths;
+
+	// Links to hlsl files that will be included by the translator. These paths are resolved with the virtual shader paths registered in the engine.
+	// For example, /Plugin/FX/Niagara maps to /Engine/Plugins/FX/Niagara/Shaders. Custom mappings can be added via AddShaderSourceDirectoryMapping().
+	UPROPERTY(EditAnywhere, Category = "HLSL")
+	TArray<FString> VirtualIncludeFilePaths;
 };

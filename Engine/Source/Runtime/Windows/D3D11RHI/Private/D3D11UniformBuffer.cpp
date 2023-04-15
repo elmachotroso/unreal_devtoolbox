@@ -154,21 +154,22 @@ static TRefCountPtr<ID3D11Buffer> CreateAndUpdatePooledUniformBuffer(
 
 	check(IsValidRef(UniformBufferResource));
 
-	D3D11_MAPPED_SUBRESOURCE MappedSubresource;
-	// Discard previous results since we always do a full update
-	VERIFYD3D11RESULT_EX(Context->Map(UniformBufferResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedSubresource), Device);
-	check(MappedSubresource.RowPitch >= NumBytes);
-	FMemory::Memcpy(MappedSubresource.pData, Contents, NumBytes);
-	Context->Unmap(UniformBufferResource, 0);
+	if (Contents)
+	{
+		D3D11_MAPPED_SUBRESOURCE MappedSubresource;
+		// Discard previous results since we always do a full update
+		VERIFYD3D11RESULT_EX(Context->Map(UniformBufferResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedSubresource), Device);
+		check(MappedSubresource.RowPitch >= NumBytes);
+		FMemory::Memcpy(MappedSubresource.pData, Contents, NumBytes);
+		Context->Unmap(UniformBufferResource, 0);
+	}
 
 	return UniformBufferResource;
 }
 
 FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
 {
-	check(IsInRenderingThread() || IsInRHIThread());
-
-	if (Validation == EUniformBufferValidation::ValidateResources)
+	if (Contents && Validation == EUniformBufferValidation::ValidateResources)
 	{
 		ValidateShaderParameterResourcesRHI(Contents, *Layout);
 	}
@@ -185,8 +186,10 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 
 		SCOPE_CYCLE_COUNTER(STAT_D3D11UpdateUniformBufferTime);
 
-		if (IsPoolingEnabled())
+		if (IsPoolingEnabled() && (IsInRenderingThread() || IsInRHIThread()))
 		{
+			const bool bAllocatedFromPool = true;
+
 			if (ShouldNotEnqueueRHICommand())
 			{
 				TRefCountPtr<ID3D11Buffer> UniformBufferResource = CreateAndUpdatePooledUniformBuffer(
@@ -194,14 +197,21 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 					Direct3DDeviceIMContext.GetReference(),
 					Contents,
 					NumBytes);
-				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation());
+
+				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation(), bAllocatedFromPool);
 			}
 			else
 			{
-				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation());
+				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation(), bAllocatedFromPool);
 				NewUniformBuffer->AddRef();
-				void* CPUContent = FMemory::Malloc(NumBytes);
-				FMemory::Memcpy(CPUContent, Contents, NumBytes);
+
+				void* CPUContent = nullptr;
+				
+				if (Contents)
+				{
+					CPUContent = FMemory::Malloc(NumBytes);
+					FMemory::Memcpy(CPUContent, Contents, NumBytes);
+				}
 
 				RunOnRHIThread(
 					[NewUniformBuffer, CPUContent, NumBytes]()
@@ -234,7 +244,8 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 			TRefCountPtr<ID3D11Buffer> UniformBufferResource;
 			VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc,&ImmutableData,UniformBufferResource.GetInitReference()), Direct3DDevice);
 
-			NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation());
+			const bool bAllocatedFromPool = false;
+			NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation(), bAllocatedFromPool);
 
 			INC_DWORD_STAT(STAT_D3D11NumImmutableUniformBuffers);
 		}
@@ -242,7 +253,8 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 	else
 	{
 		// This uniform buffer contains no constants, only a resource table.
-		NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation());
+		const bool bAllocatedFromPool = false;
+		NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation(), bAllocatedFromPool);
 	}
 
 	if (Layout->Resources.Num())
@@ -251,10 +263,13 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 		NewUniformBuffer->ResourceTable.Empty(ResourceCount);
 		NewUniformBuffer->ResourceTable.AddZeroed(ResourceCount);
 
-		for (int32 Index = 0; Index < ResourceCount; ++Index)
+		if (Contents)
 		{
-			const auto ResourceParameter = Layout->Resources[Index];
-			NewUniformBuffer->ResourceTable[Index] = GetShaderParameterResourceRHI(Contents, ResourceParameter.MemberOffset, ResourceParameter.MemberType);
+			for (int32 Index = 0; Index < ResourceCount; ++Index)
+			{
+				const auto ResourceParameter = Layout->Resources[Index];
+				NewUniformBuffer->ResourceTable[Index] = GetShaderParameterResourceRHI(Contents, ResourceParameter.MemberOffset, ResourceParameter.MemberType);
+			}
 		}
 	}
 
@@ -278,9 +293,8 @@ void UpdateUniformBufferContents(FD3D11Device* Direct3DDevice, FD3D11DeviceConte
 	}
 }
 
-void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
+void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
 {
-	check(IsInRenderingThread());
 	check(UniformBufferRHI);
 
 	FD3D11UniformBuffer* UniformBuffer = ResourceCast(UniformBufferRHI);
@@ -291,8 +305,6 @@ void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRH
 	const int32 NumResources = Layout.Resources.Num();
 
 	check(UniformBuffer->ResourceTable.Num() == NumResources);
-
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
 	if (RHICmdList.Bypass())
 	{
@@ -332,7 +344,7 @@ void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRH
 			CmdListResources,
 			NumResources,
 			CmdListConstantBufferData,
-			ConstantBufferSize](FRHICommandList&)
+			ConstantBufferSize](FRHICommandListBase&)
 		{
 			UpdateUniformBufferContents(Direct3DDevice, Direct3DDeviceIMContext, UniformBuffer, CmdListConstantBufferData, ConstantBufferSize);
 
@@ -349,7 +361,7 @@ void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRH
 FD3D11UniformBuffer::~FD3D11UniformBuffer()
 {
 	// Do not return the allocation to the pool if it is in the dynamic constant buffer!
-	if (!RingAllocation.IsValid() && Resource != nullptr)
+	if (bAllocatedFromPool && !RingAllocation.IsValid() && Resource != nullptr)
 	{
 		check(IsInRHIThread() || IsInRenderingThread());
 		D3D11_BUFFER_DESC Desc;

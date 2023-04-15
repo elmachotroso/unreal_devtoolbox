@@ -2,11 +2,21 @@
 
 #pragma once
 #include "AI/Navigation/NavigationTypes.h"
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "Logging/LogMacros.h"
+#include "Math/Box.h"
+#include "Templates/Function.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class UObject;
 
 
 NAVIGATIONSYSTEM_API DECLARE_LOG_CATEGORY_EXTERN(LogNavigationDirtyArea, Warning, All);
 
 class ANavigationData;
+struct FNavigationDirtyElement;
 
 struct NAVIGATIONSYSTEM_API FNavigationDirtyAreasController
 {
@@ -21,6 +31,8 @@ struct NAVIGATIONSYSTEM_API FNavigationDirtyAreasController
 	TArray<FNavigationDirtyArea> DirtyAreas;
 
 	uint8 bCanAccumulateDirtyAreas : 1;
+	uint8 bUseWorldPartitionedDynamicMode : 1;
+
 #if !UE_BUILD_SHIPPING
 	uint8 bDirtyAreasReportedWhileAccumulationLocked : 1;
 private:
@@ -49,8 +61,11 @@ public:
 	 *	@param NewArea Bounding box of the affected area
 	 *	@param Flags Indicates the type of modification applied to the area
 	 *	@param ObjectProviderFunc Optional function to retrieve source object that can be use for error reporting and navmesh exclusion
+	 *	@param DirtyElement Optional dirty element
+	 *	@param DebugReason Source of the new area
 	 */
-	void AddArea(const FBox& NewArea, const int32 Flags, const TFunction<UObject*()>& ObjectProviderFunc = nullptr);
+	void AddArea(const FBox& NewArea, const int32 Flags, const TFunction<UObject*()>& ObjectProviderFunc = nullptr,
+		const FNavigationDirtyElement* DirtyElement = nullptr, const FName& DebugReason = NAME_None);
 	
 	bool IsDirty() const { return GetNumDirtyAreas() > 0; }
 	int32 GetNumDirtyAreas() const { return DirtyAreas.Num(); }
@@ -58,6 +73,7 @@ public:
 	void OnNavigationBuildLocked();
 	void OnNavigationBuildUnlocked();
 
+	void SetUseWorldPartitionedDynamicMode(bool bIsWPDynamic);
 	void SetCanReportOversizedDirtyArea(const bool bCanReport);
 	void SetDirtyAreaWarningSizeThreshold(const float Threshold);
 

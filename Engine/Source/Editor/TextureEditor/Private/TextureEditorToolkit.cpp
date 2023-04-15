@@ -13,7 +13,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorReimportHandler.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/LightMapTexture2D.h"
@@ -49,11 +49,12 @@
 #include "Menus/TextureEditorViewOptionsMenu.h"
 #include "MediaTexture.h"
 #include "TextureEncodingSettings.h"
-#include "EditorWidgets/Public/SEnumCombo.h"
+#include "SEnumCombo.h"
 #include "Widgets/Layout/SHeader.h"
-#include "DerivedDataCache/Public/DerivedDataCacheKey.h"
+#include "DerivedDataCacheKey.h"
 #include "Settings/ProjectPackagingSettings.h"
 #include "Compression/OodleDataCompressionUtil.h"
+#include "Components/SceneCaptureComponent2D.h"
 
 #define LOCTEXT_NAMESPACE "FTextureEditorToolkit"
 
@@ -121,7 +122,6 @@ void FTextureEditorToolkit::PostTextureRecode()
 FTextureEditorToolkit::FTextureEditorToolkit()
 	: Texture(nullptr)
 	, VolumeOpacity(1.f)
-	, VolumeOrientation(90, 0, -90)
 {
 }
 
@@ -169,17 +169,17 @@ void FTextureEditorToolkit::RegisterTabSpawners( const TSharedRef<class FTabMana
 	InTabManager->RegisterTabSpawner(ViewportTabId, FOnSpawnTab::CreateSP(this, &FTextureEditorToolkit::HandleTabSpawnerSpawnViewport))
 		.SetDisplayName(LOCTEXT("ViewportTab", "Viewport"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"));
 
 	InTabManager->RegisterTabSpawner(PropertiesTabId, FOnSpawnTab::CreateSP(this, &FTextureEditorToolkit::HandleTabSpawnerSpawnProperties))
 		.SetDisplayName(LOCTEXT("PropertiesTab", "Details") )
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 
 	InTabManager->RegisterTabSpawner(OodleTabId, FOnSpawnTab::CreateSP(this, &FTextureEditorToolkit::HandleTabSpawnerSpawnOodle))
 		.SetDisplayName(LOCTEXT("OodleTab", "Oodle"))
 		.SetGroup(WorkspaceMenuCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
 }
 
 
@@ -235,18 +235,40 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 		break;
 	}
 
+	// Start out with alpha channel unchecked for render targets.  Scene capture render targets have a depth mask
+	// in the alpha channel, which causes them to appear as fully transparent (checkerboard), and it isn't easily
+	// discoverable that toggling off the alpha channel would solve the issue, so it's helpful to start out with
+	// it disabled.
+	if (Texture->GetTextureClass() == ETextureClass::RenderTarget)
+	{
+		bIsAlphaChannel = false;
+	}
+
 	bIsDesaturation = false;
+
+	PreviewEffectiveTextureWidth = 0;
+	PreviewEffectiveTextureHeight = 0;
 
 	SpecifiedMipLevel = 0;
 	bUseSpecifiedMipLevel = false;
 
 	SpecifiedLayer = 0;
 
+	SpecifiedSlice = 0;
+	bUseSpecifiedSlice = false;
+
+	SpecifiedFace = 0;
+	bUseSpecifiedFace = false;
+
 	SavedCompressionSetting = false;
 
-	// Start at whatever the last used zoom mode was
+	// Start at whatever the last used zoom mode, volume view mode and cubemap view mode were
 	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
 	ZoomMode = Settings.ZoomMode;
+	VolumeViewMode = Settings.VolumeViewMode;
+	CubemapViewMode = Settings.CubemapViewMode;
+
+	ResetOrientation();
 	Zoom = 1.0f;
 
 	// Register our commands. This will only register them if not previously registered
@@ -307,110 +329,63 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 /* ITextureEditorToolkit interface
  *****************************************************************************/
 
-void FTextureEditorToolkit::CalculateTextureDimensions( uint32& Width, uint32& Height, uint32& Depth, uint32& ArraySize ) const
+void FTextureEditorToolkit::CalculateTextureDimensions(int32& OutWidth, int32& OutHeight, int32& OutDepth, int32& OutArraySize, bool bInIncludeBorderSize) const
 {
-	const FIntPoint LogicalSize = Texture->Source.GetLogicalSize();
-	Width = LogicalSize.X;
-	Height = LogicalSize.Y;
-	Depth = IsVolumeTexture() ? Texture->Source.GetNumLayers() : 0;
-	ArraySize = (Is2DArrayTexture() || IsCubeTexture()) ? Texture->Source.GetNumLayers() : 0;
+	OutWidth = Texture->GetSurfaceWidth();
+	OutHeight = Texture->GetSurfaceHeight();
+	OutDepth = Texture->GetSurfaceDepth();
+	OutArraySize = IsArrayTexture() ? (IsCubeTexture() ? Texture->GetSurfaceArraySize() / 6 : Texture->GetSurfaceArraySize()) : 0;
+	const int32 BorderSize = GetDefault<UTextureEditorSettings>()->TextureBorderEnabled ? 1 : 0;
 
-	if (!Width && !Height)
+	if (!PreviewEffectiveTextureWidth || !PreviewEffectiveTextureHeight)
 	{
-		Width = (uint32)Texture->GetSurfaceWidth();
-		Height = (uint32)Texture->GetSurfaceHeight();
-		Depth = (uint32)Texture->GetSurfaceDepth();
-		ArraySize = Texture->GetSurfaceArraySize();
-	}
-
-	// catch if the Width and Height are still zero for some reason
-	if ((Width == 0) || (Height == 0))
-	{
-		Width = 0;
-		Height= 0;
-		Depth = 0;
-		ArraySize = 0;
+		OutWidth = 0;
+		OutHeight = 0;
+		OutDepth = 0;
+		OutArraySize = 0;
 		return;
 	}
-
-	// See if we need to uniformly scale it to fit in viewport
-	// Cap the size to effective dimensions
-	uint32 ViewportW = TextureViewport->GetViewport()->GetSizeXY().X;
-	uint32 ViewportH = TextureViewport->GetViewport()->GetSizeXY().Y;
-	uint32 MaxWidth; 
-	uint32 MaxHeight;
 
 	// Fit is the same as fill, but doesn't scale up past 100%
 	const ETextureEditorZoomMode CurrentZoomMode = GetZoomMode();
 	if (CurrentZoomMode == ETextureEditorZoomMode::Fit || CurrentZoomMode == ETextureEditorZoomMode::Fill)
 	{
-		const UVolumeTexture* VolumeTexture = Cast<UVolumeTexture>(Texture);
-		const UTextureRenderTargetVolume* VolumeTextureRT = Cast< UTextureRenderTargetVolume>(Texture);
+		const int32 MaxWidth = FMath::Max(TextureViewport->GetViewport()->GetSizeXY().X - 2 * BorderSize, 0);
+		const int32 MaxHeight = FMath::Max(TextureViewport->GetViewport()->GetSizeXY().Y - 2 * BorderSize, 0);
 
-		// Subtract off the viewport space devoted to padding (2 * PreviewPadding)
-		// so that the texture is padded on all sides
-		MaxWidth = ViewportW;
-		MaxHeight = ViewportH;
-
-		if (IsCubeTexture())
+		if (IsVolumeTexture() && GetVolumeViewMode() == ETextureEditorVolumeViewMode::TextureEditorVolumeViewMode_VolumeTrace)
 		{
-			// Cubes are displayed 2:1. 2x width if the source exists and is not an unwrapped image.
-			const bool bMultipleSourceImages = Texture->Source.GetNumSlices() > 1;
-			const bool bNoSourceImage = Texture->Source.GetNumSlices() == 0;
-			Width *= (bNoSourceImage || bMultipleSourceImages) ? 2 : 1;
+			OutWidth = OutHeight = FMath::Min(MaxWidth, MaxHeight);
 		}
-		else if (VolumeTexture || VolumeTextureRT)
+		else if (MaxWidth * PreviewEffectiveTextureHeight < MaxHeight * PreviewEffectiveTextureWidth)
 		{
-			UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
-			if (Settings.VolumeViewMode == ETextureEditorVolumeViewMode::TextureEditorVolumeViewMode_VolumeTrace)
-			{
-				Width  = Height;
-			}
-			else
-			{
-				Width = FMath::CeilToInt((float)Height * (float)PreviewEffectiveTextureWidth / (float)PreviewEffectiveTextureHeight);
-			}
-		}
-
-		// First, scale up based on the size of the viewport
-		if (MaxWidth > MaxHeight)
-		{
-			Height = Height * MaxWidth / Width;
-			Width = MaxWidth;
+			OutWidth = MaxWidth;
+			OutHeight = FMath::DivideAndRoundNearest(OutWidth * PreviewEffectiveTextureHeight, PreviewEffectiveTextureWidth);
 		}
 		else
 		{
-			Width = Width * MaxHeight / Height;
-			Height = MaxHeight;
+			OutHeight = MaxHeight;
+			OutWidth = FMath::DivideAndRoundNearest(OutHeight * PreviewEffectiveTextureWidth, PreviewEffectiveTextureHeight);
 		}
 
-		// then, scale again if our width and height is impacted by the scaling
-		if (Width > MaxWidth)
-		{
-			Height = Height * MaxWidth / Width;
-			Width = MaxWidth;
-		}
-		if (Height > MaxHeight)
-		{
-			Width = Width * MaxHeight / Height;
-			Height = MaxHeight;
-		}
-		
 		// If fit, then we only want to scale down
 		// So if our natural dimensions are smaller than the viewport, we can just use those
-		if (CurrentZoomMode == ETextureEditorZoomMode::Fit)
+		if (CurrentZoomMode == ETextureEditorZoomMode::Fit && (PreviewEffectiveTextureWidth < OutWidth || PreviewEffectiveTextureHeight < OutHeight))
 		{
-			if (PreviewEffectiveTextureWidth < Width && PreviewEffectiveTextureHeight < Height)
-			{
-				Width = PreviewEffectiveTextureWidth;
-				Height = PreviewEffectiveTextureHeight;
-			}
+			OutWidth = PreviewEffectiveTextureWidth;
+			OutHeight = PreviewEffectiveTextureHeight;
 		}
 	}
 	else
 	{
-		Width = PreviewEffectiveTextureWidth * Zoom;
-		Height = PreviewEffectiveTextureHeight * Zoom;
+		OutWidth = PreviewEffectiveTextureWidth * Zoom;
+		OutHeight = PreviewEffectiveTextureHeight * Zoom;
+	}
+
+	if (bInIncludeBorderSize)
+	{
+		OutWidth += 2 * BorderSize;
+		OutHeight += 2 * BorderSize;
 	}
 }
 
@@ -457,6 +432,16 @@ int32 FTextureEditorToolkit::GetLayer() const
 	return SpecifiedLayer;
 }
 
+int32 FTextureEditorToolkit::GetSlice() const
+{
+	return GetUseSpecifiedSlice() ? HandleSliceEntryBoxValue().Get(-1) : -1;
+}
+
+int32 FTextureEditorToolkit::GetFace() const
+{
+	return GetUseSpecifiedFace() ? SpecifiedFace : -1;
+}
+
 UTexture* FTextureEditorToolkit::GetTexture( ) const
 {
 	return Texture;
@@ -486,6 +471,15 @@ bool FTextureEditorToolkit::GetUseSpecifiedMip( ) const
 	return false;
 }
 
+bool FTextureEditorToolkit::GetUseSpecifiedSlice() const
+{
+	return HandleSliceCheckBoxIsEnabled() && bUseSpecifiedSlice;
+}
+
+bool FTextureEditorToolkit::GetUseSpecifiedFace() const
+{
+	return bUseSpecifiedFace;
+}
 
 double FTextureEditorToolkit::GetCustomZoomLevel( ) const
 {
@@ -507,6 +501,8 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 		NumMipsText->SetText(NSLOCTEXT("TextureEditor", "QuickInfo_NumMips_NA", "Number of Mips: Computing..."));
 		HasAlphaChannelText->SetText(NSLOCTEXT("TextureEditor", "QuickInfo_HasAlphaChannel_NA", "Has Alpha Channel: Computing..."));
 		EncodeSpeedText->SetText(NSLOCTEXT("TextureEditor", "QuickInfo_EncodeSpeed_Computing", "Encode Speed: Computing..."));
+		SceneCaptureSizeText->SetText(FText());
+		SceneCaptureNameText->SetText(FText());
 		return;
 	}
 
@@ -714,62 +710,66 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 	const bool bIsArray = IsArrayTexture();
 	const bool bIsCube = IsCubeTexture();
 
-	const uint32 SurfaceWidth = (uint32)Texture->GetSurfaceWidth();
-	const uint32 SurfaceHeight = (uint32)Texture->GetSurfaceHeight();
-	const uint32 SurfaceDepth = (uint32)Texture->GetSurfaceDepth();
-	const uint32 NumSurfaces = (uint32)Texture->GetSurfaceArraySize();
-	const uint32 ArraySize = bIsCube ? (NumSurfaces / 6u) : NumSurfaces;
+	const int32 SurfaceWidth = Texture->GetSurfaceWidth();
+	const int32 SurfaceHeight = Texture->GetSurfaceHeight();
+	const int32 SurfaceDepth = Texture->GetSurfaceDepth();
+	const int32 NumSurfaces = Texture->GetSurfaceArraySize();
+	const int32 ArraySize = bIsArray ? (bIsCube ? NumSurfaces / 6 : NumSurfaces) : 0;
 
-	const uint32 ImportedWidth = FMath::Max<uint32>(SurfaceWidth, Texture->Source.GetSizeX());
-	const uint32 ImportedHeight =  FMath::Max<uint32>(SurfaceHeight, Texture->Source.GetSizeY());
-	const uint32 ImportedDepth = FMath::Max<uint32>(SurfaceDepth, bIsVolume ? Texture->Source.GetNumSlices() : 0);
+	const int32 ImportedWidth = Texture->Source.IsValid() ? Texture->Source.GetSizeX() : SurfaceWidth;
+	const int32 ImportedHeight = Texture->Source.IsValid() ? Texture->Source.GetSizeY() : SurfaceHeight;
+	const int32 ImportedDepth = Texture->Source.IsValid() ? (bIsVolume ? Texture->Source.GetNumSlices() : 0) : SurfaceDepth;
 
 	const FStreamableRenderResourceState SRRState = Texture->GetStreamableResourceState();
 	const int32 ActualMipBias = SRRState.IsValid() ? (SRRState.ResidentFirstLODIdx() + SRRState.AssetLODBias) : Texture->GetCachedLODBias();
-	const uint32 ActualWidth = FMath::Max<uint32>(SurfaceWidth >> ActualMipBias, 1);
-	const uint32 ActualHeight = FMath::Max<uint32>(SurfaceHeight >> ActualMipBias, 1);
-	const uint32 ActualDepth =  FMath::Max<uint32>(SurfaceDepth >> ActualMipBias, 1);
-
 	// Editor dimensions (takes user specified mip setting into account)
-	const int32 MipLevel = FMath::Max(GetMipLevel(), 0);
-	PreviewEffectiveTextureWidth = FMath::Max<uint32>(ActualWidth >> MipLevel, 1);
-	PreviewEffectiveTextureHeight = FMath::Max<uint32>(ActualHeight >> MipLevel, 1);;
-	uint32 PreviewEffectiveTextureDepth = FMath::Max<uint32>(ActualDepth >> MipLevel, 1);
+	const int32 MipLevel = ActualMipBias + FMath::Max(GetMipLevel(), 0);
+	PreviewEffectiveTextureWidth = SurfaceWidth ? FMath::Max(SurfaceWidth >> MipLevel, 1) : 0;
+	PreviewEffectiveTextureHeight = SurfaceHeight ? FMath::Max(SurfaceHeight >> MipLevel, 1) : 0;
+	const int32 PreviewEffectiveTextureDepth = SurfaceDepth ? FMath::Max(SurfaceDepth >> MipLevel, 1) : 0;
 
 	// In game max bias and dimensions
 	const int32 MaxResMipBias = Texture2D ? (Texture2D->GetNumMips() - Texture2D->GetNumMipsAllowed(true)) : Texture->GetCachedLODBias();
-	const uint32 MaxInGameWidth = FMath::Max<uint32>(SurfaceWidth >> MaxResMipBias, 1);
-	const uint32 MaxInGameHeight = FMath::Max<uint32>(SurfaceHeight >> MaxResMipBias, 1);
-	const uint32 MaxInGameDepth = FMath::Max<uint32>(SurfaceDepth >> MaxResMipBias, 1);
+	const int32 MaxInGameWidth = SurfaceWidth ? FMath::Max(SurfaceWidth >> MaxResMipBias, 1) : 0;
+	const int32 MaxInGameHeight = SurfaceHeight ? FMath::Max(SurfaceHeight >> MaxResMipBias, 1) : 0;
+	const int32 MaxInGameDepth = SurfaceDepth ? FMath::Max(SurfaceDepth >> MaxResMipBias, 1) : 0;
 
 	// Texture asset size
-	const uint32 Size = (Texture->GetResourceSizeBytes(EResourceSizeMode::Exclusive) + 512) / 1024;
+	const int64 ResourceSize = PlatformDataPtr && *PlatformDataPtr ? (*PlatformDataPtr)->GetPayloadSize(ActualMipBias) : Texture->GetResourceSizeBytes(EResourceSizeMode::Exclusive);
 
-	FNumberFormattingOptions SizeOptions;
-	SizeOptions.UseGrouping = false;
-	SizeOptions.MaximumFractionalDigits = 0;
-
-	// Cubes are previewed as unwrapped 2D textures.
-	// These have 2x the width of a cube face.
-	PreviewEffectiveTextureWidth *= IsCubeTexture() ? 2 : 1;
-
-	FNumberFormattingOptions Options;
-	Options.UseGrouping = false;
-
-	FText CubemapAdd;
+	FText ImportedCubemapInfo;
+	FText DisplayedCubemapInfo;
+	FText InGameCubemapInfo;
 	if (bIsCube)
 	{
-		CubemapAdd = NSLOCTEXT("TextureEditor", "QuickInfo_PerCubeSide", "*6 (CubeMap)");
+		InGameCubemapInfo = NSLOCTEXT("TextureEditor", "QuickInfo_PerCubeSide", "*6 (Cubemap)");
+		ImportedCubemapInfo = Texture->Source.IsLongLatCubemap() ? NSLOCTEXT("TextureEditor", "QuickInfo_LongLat", " (LongLat)") : InGameCubemapInfo;
+		if (GetFace() >= 0)
+		{
+			DisplayedCubemapInfo = NSLOCTEXT("TextureEditor", "QuickInfo_CubemapFace", " (Cubemap face)");
+		}
+		else if (GetCubemapViewMode() == TextureEditorCubemapViewMode_2DView)
+		{
+			// when using 2D view mode and face index is not specified, cubemaps are previewed as longlat unwraps, which have double width of a cube face
+			PreviewEffectiveTextureWidth *= 2;
+			DisplayedCubemapInfo = NSLOCTEXT("TextureEditor", "QuickInfo_LongLat", " (LongLat)");
+		}
+		else 
+		{
+			DisplayedCubemapInfo = InGameCubemapInfo;
+		}
 	}
+
+	FNumberFormattingOptions FormatOptions;
+	FormatOptions.UseGrouping = false;
 
 	if (bIsVolume)
 	{
-		ImportedText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Imported_3x", "Imported: {0}x{1}x{2}"), FText::AsNumber(ImportedWidth, &Options), FText::AsNumber(ImportedHeight, &Options), FText::AsNumber(ImportedDepth, &Options)));
-		CurrentText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_3x", "Displayed: {0}x{1}x{2}"), FText::AsNumber(PreviewEffectiveTextureWidth, &Options ), FText::AsNumber(PreviewEffectiveTextureHeight, &Options), FText::AsNumber(PreviewEffectiveTextureDepth, &Options)));
-		MaxInGameText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_3x_v1", "Max In-Game: {0}x{1}x{2}"), FText::AsNumber(MaxInGameWidth, &Options), FText::AsNumber(MaxInGameHeight, &Options), FText::AsNumber(MaxInGameDepth, &Options)));
+		ImportedText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Imported_3x", "Imported: {0}x{1}x{2}"), FText::AsNumber(ImportedWidth, &FormatOptions), FText::AsNumber(ImportedHeight, &FormatOptions), FText::AsNumber(ImportedDepth, &FormatOptions)));
+		CurrentText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_3x", "Displayed: {0}x{1}x{2}"), FText::AsNumber(PreviewEffectiveTextureWidth, &FormatOptions ), FText::AsNumber(PreviewEffectiveTextureHeight, &FormatOptions), FText::AsNumber(PreviewEffectiveTextureDepth, &FormatOptions)));
+		MaxInGameText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_3x_v1", "Max In-Game: {0}x{1}x{2}"), FText::AsNumber(MaxInGameWidth, &FormatOptions), FText::AsNumber(MaxInGameHeight, &FormatOptions), FText::AsNumber(MaxInGameDepth, &FormatOptions)));
 
-		UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
-		if (Settings.VolumeViewMode == ETextureEditorVolumeViewMode::TextureEditorVolumeViewMode_VolumeTrace)
+		if (GetVolumeViewMode() == ETextureEditorVolumeViewMode::TextureEditorVolumeViewMode_VolumeTrace)
 		{
 			PreviewEffectiveTextureWidth = PreviewEffectiveTextureHeight = FMath::Max(PreviewEffectiveTextureWidth, PreviewEffectiveTextureHeight);
 		}
@@ -778,24 +778,24 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 			int32 NumTilesX = 0;
 			int32 NumTilesY = 0;
 			GetBestFitForNumberOfTiles(PreviewEffectiveTextureDepth, NumTilesX, NumTilesY);
-			PreviewEffectiveTextureWidth *= (uint32)NumTilesX;
-			PreviewEffectiveTextureHeight *= (uint32)NumTilesY;
+			PreviewEffectiveTextureWidth *= NumTilesX;
+			PreviewEffectiveTextureHeight *= NumTilesY;
 		}
 	}
 	else if (bIsArray)
 	{
-		ImportedText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_Imported_3x_v2", "Imported: {0}x{1}*{2}"), FText::AsNumber(ImportedWidth, &Options), FText::AsNumber(ImportedHeight, &Options), FText::AsNumber(ArraySize, &Options)));
-		CurrentText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_3x_v2", "Displayed: {0}x{1}{2}*{3}"), FText::AsNumber(PreviewEffectiveTextureWidth, &Options), FText::AsNumber(PreviewEffectiveTextureHeight, &Options), CubemapAdd, FText::AsNumber(ArraySize, &Options)));
-		MaxInGameText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_3x_v2", "Max In-Game: {0}x{1}{2}*{3}"), FText::AsNumber(MaxInGameWidth, &Options), FText::AsNumber(MaxInGameHeight, &Options), CubemapAdd, FText::AsNumber(ArraySize, &Options)));
+		ImportedText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_Imported_3x_v2", "Imported: {0}x{1}{2}*{3}"), FText::AsNumber(ImportedWidth, &FormatOptions), FText::AsNumber(ImportedHeight, &FormatOptions), ImportedCubemapInfo, FText::AsNumber(ArraySize, &FormatOptions)));
+		CurrentText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_3x_v2", "Displayed: {0}x{1}{2}*{3}"), FText::AsNumber(PreviewEffectiveTextureWidth, &FormatOptions), FText::AsNumber(PreviewEffectiveTextureHeight, &FormatOptions), DisplayedCubemapInfo, FText::AsNumber(ArraySize, &FormatOptions)));
+		MaxInGameText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_3x_v2", "Max In-Game: {0}x{1}{2}*{3}"), FText::AsNumber(MaxInGameWidth, &FormatOptions), FText::AsNumber(MaxInGameHeight, &FormatOptions), InGameCubemapInfo, FText::AsNumber(ArraySize, &FormatOptions)));
 	}
 	else
 	{
-	    ImportedText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Imported_2x", "Imported: {0}x{1}"), FText::AsNumber(ImportedWidth, &Options), FText::AsNumber(ImportedHeight, &Options)));
-		CurrentText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_2x", "Displayed: {0}x{1}{2}"), FText::AsNumber(PreviewEffectiveTextureWidth, &Options ), FText::AsNumber(PreviewEffectiveTextureHeight, &Options), CubemapAdd));
-		MaxInGameText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_2x", "Max In-Game: {0}x{1}{2}"), FText::AsNumber(MaxInGameWidth, &Options), FText::AsNumber(MaxInGameHeight, &Options), CubemapAdd));
+	    ImportedText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Imported_2x", "Imported: {0}x{1}{2}"), FText::AsNumber(ImportedWidth, &FormatOptions), FText::AsNumber(ImportedHeight, &FormatOptions), ImportedCubemapInfo));
+		CurrentText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_Displayed_2x", "Displayed: {0}x{1}{2}"), FText::AsNumber(PreviewEffectiveTextureWidth, &FormatOptions ), FText::AsNumber(PreviewEffectiveTextureHeight, &FormatOptions), DisplayedCubemapInfo));
+		MaxInGameText->SetText(FText::Format( NSLOCTEXT("TextureEditor", "QuickInfo_MaxInGame_2x", "Max In-Game: {0}x{1}{2}"), FText::AsNumber(MaxInGameWidth, &FormatOptions), FText::AsNumber(MaxInGameHeight, &FormatOptions), InGameCubemapInfo));
 	}
 
-	SizeText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_ResourceSize", "Resource Size: {0} KB"), FText::AsNumber(Size, &SizeOptions)));
+	SizeText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_ResourceSize", "Resource Size: {0} KB"), FText::AsNumber(FMath::DivideAndRoundNearest(ResourceSize, (int64)1024), &FormatOptions)));
 
 	FText Method = Texture->IsCurrentlyVirtualTextured() ? NSLOCTEXT("TextureEditor", "QuickInfo_MethodVirtualStreamed", "Virtual Streamed")
 													: (!Texture->IsStreamable() ? NSLOCTEXT("TextureEditor", "QuickInfo_MethodNotStreamed", "Not Streamed") 
@@ -817,6 +817,32 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 
 	int32 NumMips = GetNumMips();
 	NumMipsText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_NumMips", "Number of Mips: {0}"), FText::AsNumber(NumMips)));
+
+	uint64 CaptureSize = 0;
+	FName CaptureName;
+	if (Texture->GetTextureClass() == ETextureClass::RenderTarget)
+	{
+		for (TObjectIterator<USceneCaptureComponent2D> It; It; ++It)
+		{
+			USceneCaptureComponent2D* SceneCaptureComponent = *It;
+			if (SceneCaptureComponent->TextureTarget == Texture && SceneCaptureComponent->CaptureMemorySize.IsValid())
+			{
+				// Could have multiple scene captures blending to the same render target -- add them all up, but only show the name of the last one...
+				CaptureSize += SceneCaptureComponent->CaptureMemorySize->Size;
+				CaptureName = SceneCaptureComponent->GetOwner()->GetFName();
+			}
+		}
+	}
+	if (CaptureSize)
+	{
+		SceneCaptureSizeText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_SceneCaptureSize", "Scene Capture: {0} KB"), FText::AsNumber(FMath::DivideAndRoundNearest(CaptureSize, (uint64)1024), &FormatOptions)));
+		SceneCaptureNameText->SetText(FText::Format(FText::FromString(TEXT("({0})")), FText::FromName(CaptureName)));
+	}
+	else
+	{
+		SceneCaptureSizeText->SetText(FText());
+		SceneCaptureNameText->SetText(FText());
+	}
 }
 
 
@@ -845,8 +871,8 @@ double FTextureEditorToolkit::CalculateDisplayedZoomLevel() const
 		return Zoom;
 	}
 
-	uint32 DisplayWidth, DisplayHeight, DisplayDepth, DisplayArraySize;
-	CalculateTextureDimensions(DisplayWidth, DisplayHeight, DisplayDepth, DisplayArraySize);
+	int32 DisplayWidth, DisplayHeight, DisplayDepth, DisplayArraySize;
+	CalculateTextureDimensions(DisplayWidth, DisplayHeight, DisplayDepth, DisplayArraySize, false);
 	if (PreviewEffectiveTextureHeight != 0)
 	{
 		return (double)DisplayHeight / PreviewEffectiveTextureHeight;
@@ -911,14 +937,59 @@ void FTextureEditorToolkit::SetVolumeOpacity(float InVolumeOpacity)
 	VolumeOpacity = FMath::Clamp(InVolumeOpacity, 0.f, 1.f);
 }
 
-const FRotator& FTextureEditorToolkit::GetVolumeOrientation() const
+ETextureEditorVolumeViewMode FTextureEditorToolkit::GetVolumeViewMode() const
 {
-	return VolumeOrientation;
+	// Each texture editor keeps a local volume view mode so that it can be changed without affecting other open editors
+	return VolumeViewMode;
 }
 
-void FTextureEditorToolkit::SetVolumeOrientation(const FRotator& InOrientation)
+void FTextureEditorToolkit::SetVolumeViewMode(const ETextureEditorVolumeViewMode InVolumeViewMode)
 {
-	VolumeOrientation = InOrientation;
+	// Update our own volume view mode
+	VolumeViewMode = InVolumeViewMode;
+
+	// And also save it so it's used for new texture editors
+	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
+	Settings.VolumeViewMode = VolumeViewMode;
+	Settings.PostEditChange();
+}
+
+ETextureEditorCubemapViewMode FTextureEditorToolkit::GetCubemapViewMode() const
+{
+	// Each texture editor keeps a local cubemap view mode so that it can be changed without affecting other open editors
+	return CubemapViewMode;
+}
+
+void FTextureEditorToolkit::SetCubemapViewMode(const ETextureEditorCubemapViewMode InCubemapViewMode)
+{
+	// Update our own cubemap view mode
+	CubemapViewMode = InCubemapViewMode;
+
+	// And also save it so it's used for new texture editors
+	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
+	Settings.CubemapViewMode = CubemapViewMode;
+	Settings.PostEditChange();
+}
+
+bool FTextureEditorToolkit::IsUsingOrientation() const
+{
+	return (IsVolumeTexture() && GetVolumeViewMode() == TextureEditorVolumeViewMode_VolumeTrace) ||
+		(IsCubeTexture() && GetCubemapViewMode() == TextureEditorCubemapViewMode_3DView && GetFace() < 0);
+}
+
+const FRotator& FTextureEditorToolkit::GetOrientation() const
+{
+	return Orientation;
+}
+
+void FTextureEditorToolkit::SetOrientation(const FRotator& InOrientation)
+{
+	Orientation = InOrientation;
+}
+
+void FTextureEditorToolkit::ResetOrientation()
+{
+	SetOrientation(IsVolumeTexture() ? FRotator(90, 0, -90) : FRotator(0, 0, 0));
 }
 
 /* IToolkit interface
@@ -1036,20 +1107,6 @@ void FTextureEditorToolkit::BindCommands( )
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleCheckeredBackgroundActionIsChecked, TextureEditorBackground_SolidColor));
 
-	// Begin - Volume Texture Specifics
-	ToolkitCommands->MapAction(
-		Commands.DepthSlices,
-		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleVolumeViewModeActionExecute, TextureEditorVolumeViewMode_DepthSlices),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleVolumeViewModeActionIsChecked, TextureEditorVolumeViewMode_DepthSlices));
-
-	ToolkitCommands->MapAction(
-		Commands.TraceIntoVolume,
-		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleVolumeViewModeActionExecute, TextureEditorVolumeViewMode_VolumeTrace),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleVolumeViewModeActionIsChecked, TextureEditorVolumeViewMode_VolumeTrace));
-	// End - Volume Texture Specifics
-
 	ToolkitCommands->MapAction(
 		Commands.TextureBorder,
 		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleTextureBorderActionExecute),
@@ -1141,8 +1198,8 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 		}
 		else
 		{
-			UE_LOG(LogTextureEditor, Warning, TEXT("No compression block size found in settings - using 256KB"));
-			CompressionBlockSize = 256*1024;
+			UE_LOG(LogTextureEditor, Verbose, TEXT("No compression block size found in settings - using 64KB"));
+			CompressionBlockSize = 64*1024;
 		}
 	}
 
@@ -1612,6 +1669,14 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 			[
 				SAssignNew(HasAlphaChannelText, STextBlock)
 			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f)
+			[
+				SAssignNew(SceneCaptureSizeText, STextBlock)
+			]
 		]
 
 		+ SHorizontalBox::Slot()
@@ -1659,6 +1724,13 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 				SAssignNew(EncodeSpeedText, STextBlock)
 			]
 
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f)
+			[
+				SAssignNew(SceneCaptureNameText, STextBlock)
+			]
 		]
 	]
 
@@ -1692,9 +1764,12 @@ void FTextureEditorToolkit::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 	TSharedRef<SWidget> ChannelControl = MakeChannelControlWidget();
 	TSharedRef<SWidget> LODControl = MakeLODControlWidget();
 	TSharedRef<SWidget> LayerControl = MakeLayerControlWidget();
+	TSharedRef<SWidget> SliceControl = MakeSliceControlWidget();
+	TSharedRef<SWidget> FaceControl = MakeFaceControlWidget();
 	TSharedRef<SWidget> ExposureControl = MakeExposureContolWidget();
 	TSharedPtr<SWidget> OptionalOpacityControl = IsVolumeTexture() ? TSharedPtr<SWidget>(MakeOpacityControlWidget()) : nullptr;
 	TSharedRef<SWidget> ZoomControl = MakeZoomControlWidget();
+	TSharedRef<SWidget> View3DControl = MakeView3DControlWidget();
 
 	UCurveLinearColorAtlas* Atlas = Cast<UCurveLinearColorAtlas>(GetTexture());
 	if (!Atlas)
@@ -1728,6 +1803,24 @@ void FTextureEditorToolkit::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 			ToolbarBuilder.EndSection();
 		}
 
+		if (HasSlices())
+		{
+			ToolbarBuilder.BeginSection("Slices");
+			{
+				ToolbarBuilder.AddWidget(SliceControl);
+			}
+			ToolbarBuilder.EndSection();
+		}
+
+		if (IsCubeTexture())
+		{
+			ToolbarBuilder.BeginSection("Faces");
+			{
+				ToolbarBuilder.AddWidget(FaceControl);
+			}
+			ToolbarBuilder.EndSection();
+		}
+
 		if (OptionalOpacityControl.IsValid())
 		{
 			ToolbarBuilder.BeginSection("Opacity");
@@ -1737,11 +1830,21 @@ void FTextureEditorToolkit::FillToolbar(FToolBarBuilder& ToolbarBuilder)
 			ToolbarBuilder.EndSection();
 		}
 
+		if (IsCubeTexture() || IsVolumeTexture())
+		{
+			ToolbarBuilder.BeginSection("View3D");
+			{
+				ToolbarBuilder.AddWidget(View3DControl);
+			}
+			ToolbarBuilder.EndSection();
+		}
+
 		ToolbarBuilder.BeginSection("Zoom");
 		{
 			ToolbarBuilder.AddWidget(ZoomControl);
 		}
 		ToolbarBuilder.EndSection();
+
 		ToolbarBuilder.BeginSection("Settings");
 		ToolbarBuilder.BeginStyleOverride("CalloutToolbar");
 		{
@@ -1875,6 +1978,11 @@ TOptional<int32> FTextureEditorToolkit::GetMaxLayer() const
 	return FMath::Max(Texture->Source.GetNumLayers() - 1, 1);
 }
 
+TOptional<int32> FTextureEditorToolkit::GetMaxSlice() const
+{
+	return FMath::Max(0, GetNumSlices() - 1);
+}
+
 bool FTextureEditorToolkit::IsCubeTexture( ) const
 {
 	return (Texture->IsA(UTextureCube::StaticClass()) || Texture->IsA(UTextureCubeArray::StaticClass()) || Texture->IsA(UTextureRenderTargetCube::StaticClass()));
@@ -1921,7 +2029,7 @@ TSharedRef<SWidget> FTextureEditorToolkit::OnGenerateMipMapLevelMenu()
 TSharedRef<SWidget> FTextureEditorToolkit::OnGenerateSettingsMenu()
 {
 	FMenuBuilder MenuBuilder(true, ToolkitCommands);
-	FTextureEditorViewOptionsMenu::MakeMenu(MenuBuilder, IsVolumeTexture());
+	FTextureEditorViewOptionsMenu::MakeMenu(MenuBuilder);
 
 	return MenuBuilder.MakeWidget();
 }
@@ -2035,7 +2143,7 @@ bool FTextureEditorToolkit::HandleCheckeredBackgroundActionIsChecked( ETextureEd
 	return (Background == Settings.Background);
 }
 
-// Callback for toggling the volume display action.
+// Callback for toggling the volume view action.
 void FTextureEditorToolkit::HandleVolumeViewModeActionExecute(ETextureEditorVolumeViewMode InViewMode)
 {
 	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
@@ -2043,7 +2151,7 @@ void FTextureEditorToolkit::HandleVolumeViewModeActionExecute(ETextureEditorVolu
 	Settings.PostEditChange();
 }
 
-// Callback for getting the checked state of the volume display action.
+// Callback for getting the checked state of the volume view action.
 bool FTextureEditorToolkit::HandleVolumeViewModeActionIsChecked(ETextureEditorVolumeViewMode InViewMode)
 {
 	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
@@ -2051,6 +2159,20 @@ bool FTextureEditorToolkit::HandleVolumeViewModeActionIsChecked(ETextureEditorVo
 	return (InViewMode == Settings.VolumeViewMode);
 }
 
+// Callback for toggling the cubemap view action.
+void FTextureEditorToolkit::HandleCubemapViewModeActionExecute(ETextureEditorCubemapViewMode InViewMode)
+{
+	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
+	Settings.CubemapViewMode = InViewMode;
+	Settings.PostEditChange();
+}
+
+// Callback for getting the checked state of the cubemap view action.
+bool FTextureEditorToolkit::HandleCubemapViewModeActionIsChecked(ETextureEditorCubemapViewMode InViewMode)
+{
+	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
+	return Settings.CubemapViewMode == InViewMode;
+}
 
 void FTextureEditorToolkit::HandleCompressNowActionExecute( )
 {
@@ -2106,14 +2228,7 @@ ECheckBoxState FTextureEditorToolkit::HandleMipLevelCheckBoxIsChecked( ) const
 
 bool FTextureEditorToolkit::HandleMipLevelCheckBoxIsEnabled( ) const
 {
-	UTextureCube* TextureCube = Cast<UTextureCube>(Texture);
-
-	if (GetMaxMipLevel().Get(MIPLEVEL_MAX) <= 0 || TextureCube)
-	{
-		return false;
-	}
-
-	return true;
+	return GetMaxMipLevel().Get(MIPLEVEL_MAX) > 0;
 }
 
 void FTextureEditorToolkit::HandleMipLevelChanged(int32 NewMipLevel)
@@ -2159,6 +2274,103 @@ bool FTextureEditorToolkit::HasLayers() const
 	return Texture->Source.GetNumLayers() > 1;
 }
 
+bool FTextureEditorToolkit::HasSlices() const
+{
+	// slice selection should be supported even for a texture array with less than two elements, because array elements can be added dynamically
+	return IsArrayTexture();
+}
+
+int32 FTextureEditorToolkit::GetNumSlices() const
+{
+	if (Texture->IsA(UTexture2DArray::StaticClass()))
+	{
+		return Cast<UTexture2DArray>(Texture)->GetArraySize();
+	}
+	else if (Texture->IsA(UTextureRenderTarget2DArray::StaticClass()))
+	{
+		return Cast<UTextureRenderTarget2DArray>(Texture)->GetSurfaceArraySize();
+	}
+	else if (Texture->IsA(UTextureCubeArray::StaticClass()))
+	{
+		// for a TextureCube array SliceIndex represents an index of a cubemap in the array
+		return Cast<UTextureCubeArray>(Texture)->GetSurfaceArraySize() / 6;
+	}
+	return 1;
+}
+
+bool FTextureEditorToolkit::HandleSliceCheckBoxIsEnabled() const
+{
+	return GetNumSlices() > 1;
+}
+
+ECheckBoxState FTextureEditorToolkit::HandleSliceCheckBoxIsChecked() const
+{
+	return GetUseSpecifiedSlice() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FTextureEditorToolkit::HandleSliceCheckBoxCheckedStateChanged(ECheckBoxState InNewState)
+{
+	bUseSpecifiedSlice = InNewState == ECheckBoxState::Checked;
+}
+
+TOptional<int32> FTextureEditorToolkit::HandleSliceEntryBoxValue() const
+{
+	return FMath::Clamp<int32>(SpecifiedSlice, 0, GetMaxSlice().Get(0));
+}
+
+void FTextureEditorToolkit::HandleSliceEntryBoxChanged(int32 NewSlice)
+{
+	SpecifiedSlice = FMath::Clamp<int32>(NewSlice, 0, GetMaxSlice().Get(0));
+	PopulateQuickInfo();
+}
+
+ECheckBoxState FTextureEditorToolkit::HandleFaceCheckBoxIsChecked() const
+{
+	return GetUseSpecifiedFace() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FTextureEditorToolkit::HandleFaceCheckBoxCheckedStateChanged(ECheckBoxState InNewState)
+{
+	bUseSpecifiedFace = InNewState == ECheckBoxState::Checked;
+}
+
+TOptional<int32> FTextureEditorToolkit::HandleFaceEntryBoxValue() const
+{
+	return FMath::Clamp<int32>(SpecifiedFace, 0, 5);
+}
+
+void FTextureEditorToolkit::HandleFaceEntryBoxChanged(int32 NewFace)
+{
+	SpecifiedFace = FMath::Clamp<int32>(NewFace, 0, 5);
+	PopulateQuickInfo();
+}
+
+ECheckBoxState FTextureEditorToolkit::HandleView3DCheckBoxIsChecked() const
+{
+	if (IsVolumeTexture())
+	{
+		return GetVolumeViewMode() == TextureEditorVolumeViewMode_VolumeTrace ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+	else
+	{
+		check(IsCubeTexture());
+		return GetCubemapViewMode() == TextureEditorCubemapViewMode_3DView ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	}
+}
+
+void FTextureEditorToolkit::HandleView3DCheckBoxCheckedStateChanged(ECheckBoxState InNewState)
+{
+	if (IsVolumeTexture())
+	{
+		SetVolumeViewMode(InNewState == ECheckBoxState::Checked ? TextureEditorVolumeViewMode_VolumeTrace : TextureEditorVolumeViewMode_DepthSlices);
+	}
+	else
+	{
+		check(IsCubeTexture());
+		SetCubemapViewMode(InNewState == ECheckBoxState::Checked ? TextureEditorCubemapViewMode_3DView : TextureEditorCubemapViewMode_2DView);
+	}	
+}
+
 bool FTextureEditorToolkit::HandleReimportActionCanExecute( ) const
 {
 	if (Texture->IsA<ULightMapTexture2D>() || Texture->IsA<UShadowMapTexture2D>() || Texture->IsA<UTexture2DDynamic>() || Texture->IsA<UTextureRenderTarget>() || Texture->IsA<UCurveLinearColorAtlas>())
@@ -2172,7 +2384,7 @@ bool FTextureEditorToolkit::HandleReimportActionCanExecute( ) const
 
 void FTextureEditorToolkit::HandleReimportActionExecute( )
 {
-	FReimportManager::Instance()->Reimport(Texture, /*bAskForNewFileIfMissing=*/true);
+	FReimportManager::Instance()->ReimportAsync(Texture, /*bAskForNewFileIfMissing=*/true);
 }
 
 
@@ -2295,11 +2507,14 @@ bool FTextureEditorToolkit::HandleTextureBorderActionIsChecked( ) const
 
 EVisibility FTextureEditorToolkit::HandleExposureBiasWidgetVisibility() const
 {
-	if ((Texture != nullptr) && (Texture->CompressionSettings == TC_HDR || Texture->CompressionSettings == TC_HDR_Compressed))
+	if (Texture)
 	{
-		return EVisibility::Visible;
+		FTexturePlatformData** RunningPlatformDataPtr = Texture->GetRunningPlatformData();
+		if (RunningPlatformDataPtr && *RunningPlatformDataPtr && IsHDR((*RunningPlatformDataPtr)->PixelFormat))
+		{
+			return EVisibility::Visible;
+		}
 	}
-
 	return EVisibility::Collapsed;
 }
 
@@ -2656,6 +2871,87 @@ TSharedRef<SWidget> FTextureEditorToolkit::MakeLayerControlWidget()
 	return LayerControl;
 }
 
+TSharedRef<SWidget> FTextureEditorToolkit::MakeSliceControlWidget()
+{
+	TSharedRef<SWidget> SliceControl = SNew(SBox)
+		.WidthOverride(212.0f)
+		[
+			SNew(SHorizontalBox)
+			.IsEnabled(this, &FTextureEditorToolkit::HandleSliceCheckBoxIsEnabled)
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(NSLOCTEXT("TextureEditor", "Slice", "Slice"))
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 2.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FTextureEditorToolkit::HandleSliceCheckBoxIsChecked)
+				.OnCheckStateChanged(this, &FTextureEditorToolkit::HandleSliceCheckBoxCheckedStateChanged)
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SNumericEntryBox<int32>)
+				.IsEnabled(this, &FTextureEditorToolkit::GetUseSpecifiedSlice)
+				.AllowSpin(true)
+				.MinSliderValue(0)
+				.MaxSliderValue(this, &FTextureEditorToolkit::GetMaxSlice)
+				.Value(this, &FTextureEditorToolkit::HandleSliceEntryBoxValue)
+				.OnValueChanged(this, &FTextureEditorToolkit::HandleSliceEntryBoxChanged)
+			]
+		];
+
+	return SliceControl;
+}
+
+TSharedRef<SWidget> FTextureEditorToolkit::MakeFaceControlWidget()
+{
+	TSharedRef<SWidget> FaceControl = SNew(SBox)
+		.WidthOverride(212.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(NSLOCTEXT("TextureEditor", "Face", "Face"))
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 2.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FTextureEditorToolkit::HandleFaceCheckBoxIsChecked)
+				.OnCheckStateChanged(this, &FTextureEditorToolkit::HandleFaceCheckBoxCheckedStateChanged)
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SNumericEntryBox<int32>)
+				.IsEnabled(this, &FTextureEditorToolkit::GetUseSpecifiedFace)
+				.AllowSpin(true)
+				.MinSliderValue(0)
+				.MaxSliderValue(5)
+				.Value(this, &FTextureEditorToolkit::HandleFaceEntryBoxValue)
+				.OnValueChanged(this, &FTextureEditorToolkit::HandleFaceEntryBoxChanged)
+			]
+		];
+
+	return FaceControl;
+}
+
 TSharedRef<SWidget> FTextureEditorToolkit::MakeExposureContolWidget()
 {
 	TSharedRef<SWidget> ExposureControl = SNew(SBox)
@@ -2805,6 +3101,37 @@ TSharedRef<SWidget> FTextureEditorToolkit::MakeZoomControlWidget()
 		];
 
 	return ZoomControl;
+}
+
+TSharedRef<SWidget> FTextureEditorToolkit::MakeView3DControlWidget()
+{
+	// currently both volume textures and cubemaps have only 2 view modes, one of which can be described as "3D View"
+	// ("Trace Into Volume" for volume textures and "3D View" for cubemaps),
+	// therefore view mode for both volume textures and cubemaps can be controlled using the same "3D View" checkbox widget.
+	TSharedRef<SWidget> View3DControl = SNew(SBox)
+		.WidthOverride(80.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(NSLOCTEXT("TextureEditor", "3D View", "3D View"))
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f, 0.0f, 2.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FTextureEditorToolkit::HandleView3DCheckBoxIsChecked)
+				.OnCheckStateChanged(this, &FTextureEditorToolkit::HandleView3DCheckBoxCheckedStateChanged)
+			]
+		];
+
+	return View3DControl;
 }
 
 void FTextureEditorToolkit::OnEstimateCompressionChanged(ECheckBoxState NewState)

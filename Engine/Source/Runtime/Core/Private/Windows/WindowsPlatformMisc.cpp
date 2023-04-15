@@ -60,12 +60,10 @@ THIRD_PARTY_INCLUDES_END
 
 #include "Modules/ModuleManager.h"
 
-#if !FORCE_ANSI_ALLOCATOR
-	#include "Windows/AllowWindowsPlatformTypes.h"
-		#include <Psapi.h>
-	#include "Windows/HideWindowsPlatformTypes.h"
-	#pragma comment(lib, "psapi.lib")
-#endif
+#include "Windows/AllowWindowsPlatformTypes.h"
+	#include <Psapi.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#pragma comment(lib, "psapi.lib")
 
 #include <fcntl.h>
 #include <io.h>
@@ -82,13 +80,14 @@ THIRD_PARTY_INCLUDES_END
 // this cvar can be removed once we have a single method that works well
 static TAutoConsoleVariable<int32> CVarDriverDetectionMethod(
 	TEXT("r.DriverDetectionMethod"),
-	4,
-	TEXT("Defines which implementation is used to detect the GPU driver (to check for old drivers, logs and statistics)\n")
-	TEXT("  0: Iterate available drivers in registry and choose the one with the same name, if in question use next method (happens)\n")
-	TEXT("  1: Get the driver of the primary adapter (might not be correct when dealing with multiple adapters)\n")
-	TEXT("  2: Use DirectX LUID (would be the best, not yet implemented)\n")
-	TEXT("  3: Use Windows functions, use the primary device (might be wrong when API is using another adapter)\n")
-	TEXT("  4: Use Windows functions, use names such as DirectX Device (newest, most promising)"),
+	5,
+	TEXT("Defines which implementation is used to detect the GPU driver (to check for old drivers, logs and statistics)\n"
+	     "  0: Iterate available drivers in registry and choose the one with the same name, if in question use next method (happens)\n"
+	     "  1: Get the driver of the primary adapter (might not be correct when dealing with multiple adapters)\n"
+	     "  2: Use DirectX LUID (would be the best, not yet implemented)\n"
+	     "  3: Use Windows functions, use the primary device (might be wrong when API is using another adapter)\n"
+	     "  4: Use Windows functions, use names such as DirectX Device (newest, most promising)\n"
+	     "  5: Use Windows SetupAPI functions"),
 	ECVF_RenderThreadSafe);
 
 int32 GetOSVersionsHelper( TCHAR* OutOSVersionLabel, int32 OSVersionLabelLength, TCHAR* OutOSSubVersionLabel, int32 OSSubVersionLabelLength )
@@ -343,8 +342,8 @@ int32 FWindowsOSVersionHelper::GetOSVersions( FString& OutOSVersionLabel, FStrin
 	TCHAR OSVersionLabel[128];
 	TCHAR OSSubVersionLabel[128];
 
-	OSVersionLabel[0] = 0;
-	OSSubVersionLabel[0] = 0;
+	OSVersionLabel[0] = TEXT('\0');
+	OSSubVersionLabel[0] = TEXT('\0');
 
 	int32 Result = GetOSVersionsHelper( OSVersionLabel, UE_ARRAY_COUNT(OSVersionLabel), OSSubVersionLabel, UE_ARRAY_COUNT(OSSubVersionLabel) );
 
@@ -573,6 +572,10 @@ void FWindowsPlatformMisc::PlatformInit()
 	FWindowsPlatformStackWalk::RegisterOnModulesChanged();
 }
 
+void FWindowsPlatformMisc::PlatformTearDown()
+{
+	FPlatformProcess::CeaseBeingFirstInstance();
+}
 
 /**
  * Handler called for console events like closure, CTRL-C, ...
@@ -681,6 +684,24 @@ void FWindowsPlatformMisc::SetGracefulTerminationHandler()
 #endif // !UE_BUILD_SHIPPING && PLATFORM_CPU_X86_FAMILY
 }
 
+void FWindowsPlatformMisc::CallGracefulTerminationHandler()
+{
+	ConsoleCtrlHandler(CTRL_CLOSE_EVENT);
+}
+
+static ECrashHandlingType GCrashHandlingType; /* = ECrashHandlingType::Default */
+
+ECrashHandlingType FWindowsPlatformMisc::GetCrashHandlingType()
+{
+	return GCrashHandlingType;
+}
+
+ECrashHandlingType FWindowsPlatformMisc::SetCrashHandlingType(ECrashHandlingType Type)
+{
+	GCrashHandlingType = Type;
+	return GCrashHandlingType;
+}
+
 int32 FWindowsPlatformMisc::GetMaxPathLength()
 {
 	struct FLongPathsEnabled
@@ -712,7 +733,7 @@ void FWindowsPlatformMisc::GetEnvironmentVariable(const TCHAR* VariableName, TCH
 	uint32 Error = ::GetEnvironmentVariableW(VariableName, Result, ResultLength);
 	if (Error <= 0)
 	{		
-		*Result = 0;
+		*Result = TEXT('\0');
 	}
 }
 
@@ -791,7 +812,6 @@ static void HardKillIfAutomatedTesting()
 
 		UE_LOG(LogWindows, Warning, TEXT("Attempting to run KillAllPopUpBlockingWindows"));
 
-		TCHAR KillAllBlockingWindows[] = TEXT("KillAllPopUpBlockingWindows.bat");
 		// .bat files never seem to launch correctly with FPlatformProcess::CreateProc so we just use the FPlatformProcess::LaunchURL which will call ShellExecute
 		// we don't really care about the return code in this case 
 		FPlatformProcess::LaunchURL( TEXT("KillAllPopUpBlockingWindows.bat"), NULL, NULL );
@@ -952,9 +972,7 @@ void FWindowsPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
 		// Make sure the log is flushed.
 		if (GLog)
 		{
-			// This may be called from other thread, so set this thread as the master.
-			GLog->SetCurrentThreadAsMasterThread();
-			GLog->TearDown();
+			GLog->Flush();
 		}
 
 		TerminateProcess(GetCurrentProcess(), ReturnCode);
@@ -1748,30 +1766,30 @@ static void QueryCpuInformation(FProcessorGroupDesc& OutGroupDesc, uint32& OutNu
 int32 FWindowsPlatformMisc::NumberOfCores()
 {
 	static int32 CoreCount = 0;
-	if (CoreCount == 0)
+	if (CoreCount > 0)
 	{
-		FProcessorGroupDesc GroupDesc;
-		uint32 NumaNodeCount = 0;
-		uint32 NumCores = 0;
-		uint32 LogicalProcessorCount = 0;
-		QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
+		return CoreCount;
+	}
 
-		if (FCommandLine::IsInitialized() && FParse::Param(FCommandLine::Get(), TEXT("usehyperthreading")))
-		{
-			CoreCount = LogicalProcessorCount;
-		}
-		else
-		{
-			CoreCount = NumCores;
-		}
+	FProcessorGroupDesc GroupDesc;
+	uint32 NumaNodeCount = 0;
+	uint32 NumCores = 0;
+	uint32 LogicalProcessorCount = 0;
+	QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
 
-		// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
+	bool bLimitsInitialized;
+	int32 PhysicalCoreLimit;
+	int32 LogicalCoreLimit;
+	bool bSetPhysicalCountToLogicalCount;
+	GetConfiguredCoreLimits(NumCores, LogicalProcessorCount, bLimitsInitialized, PhysicalCoreLimit,
+		LogicalCoreLimit, bSetPhysicalCountToLogicalCount);
 
-		int32 LimitCount = 32768;
-		if (FCommandLine::IsInitialized() && FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
-		{
-			CoreCount = FMath::Min(CoreCount, LimitCount);
-		}
+	CoreCount = bSetPhysicalCountToLogicalCount ? LogicalProcessorCount : NumCores;
+
+	// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
+	if (PhysicalCoreLimit > 0)
+	{
+		CoreCount = FMath::Min(CoreCount, PhysicalCoreLimit);
 	}
 
 	return CoreCount;
@@ -1796,23 +1814,30 @@ const FProcessorGroupDesc& FWindowsPlatformMisc::GetProcessorGroupDesc()
 int32 FWindowsPlatformMisc::NumberOfCoresIncludingHyperthreads()
 {
 	static int32 CoreCount = 0;
-	if (CoreCount == 0)
+	if (CoreCount > 0)
 	{
-		FProcessorGroupDesc GroupDesc;
-		uint32 NumaNodeCount = 0;
-		uint32 NumCores = 0;
-		uint32 LogicalProcessorCount = 0;
-		QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
+		return CoreCount;
+	}
 
-		CoreCount = LogicalProcessorCount;
+	FProcessorGroupDesc GroupDesc;
+	uint32 NumaNodeCount = 0;
+	uint32 NumCores = 0;
+	uint32 LogicalProcessorCount = 0;
+	QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
 
-		// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
+	bool bLimitsInitialized;
+	int32 PhysicalCoreLimit;
+	int32 LogicalCoreLimit;
+	bool bSetPhysicalCountToLogicalCount;
+	GetConfiguredCoreLimits(NumCores, LogicalProcessorCount, bLimitsInitialized, PhysicalCoreLimit,
+		LogicalCoreLimit, bSetPhysicalCountToLogicalCount);
 
-		int32 LimitCount = 32768;
-		if (FCommandLine::IsInitialized() && FParse::Value(FCommandLine::Get(), TEXT("-corelimit="), LimitCount))
-		{
-			CoreCount = FMath::Min(CoreCount, LimitCount);
-		}
+	CoreCount = LogicalProcessorCount;
+
+	// Optionally limit number of threads (we don't necessarily scale super well with very high core counts)
+	if (LogicalCoreLimit > 0)
+	{
+		CoreCount = FMath::Min(CoreCount, LogicalCoreLimit);
 	}
 
 	return CoreCount;
@@ -2053,9 +2078,9 @@ void FWindowsPlatformMisc::SetLastError(uint32 ErrorCode)
 	::SetLastError((DWORD)ErrorCode);
 }
 
-bool FWindowsPlatformMisc::CoInitialize()
+bool FWindowsPlatformMisc::CoInitialize(ECOMModel Model)
 {
-	HRESULT hr = ::CoInitialize(NULL);
+	HRESULT hr = ::CoInitializeEx(NULL, (Model == ECOMModel::Singlethreaded) ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED);
 	return hr == S_OK || hr == S_FALSE;
 }
 
@@ -2094,13 +2119,13 @@ void FWindowsPlatformMisc::PromptForRemoteDebugging(bool bIsEnsure)
 		FPlatformStackWalk::UploadLocalSymbols();
 
 		FCString::Sprintf(GErrorRemoteDebugPromptMessage, 
-			TEXT("Have a programmer remote debug this crash?\n")
-			TEXT("Hit NO to exit and submit error report as normal.\n")
-			TEXT("Otherwise, contact a programmer for remote debugging,\n")
-			TEXT("giving them the changelist number below.\n")
-			TEXT("Once they have confirmed they are connected to the machine,\n")
-			TEXT("hit YES to allow them to debug the crash.\n")
-			TEXT("[Changelist = %d]"),
+			TEXT("Have a programmer remote debug this crash?\n"
+			     "Hit NO to exit and submit error report as normal.\n"
+			     "Otherwise, contact a programmer for remote debugging,\n"
+			     "giving them the changelist number below.\n"
+			     "Once they have confirmed they are connected to the machine,\n"
+			     "hit YES to allow them to debug the crash.\n"
+			     "[Changelist = %d]"),
 			FEngineVersion::Current().GetChangelist());
 		FSlowHeartBeatScope SuspendHeartBeat;
 		if (MessageBox(0, GErrorRemoteDebugPromptMessage, TEXT("CRASHED"), MB_YESNO|MB_SYSTEMMODAL) == IDYES)
@@ -2129,6 +2154,9 @@ public:
 			CPUInfo = Info[0];
 			CPUInfo2 = Info[2];
 			CacheLineSize = QueryCacheLineSize();
+			int ExtendedFeatures[4];
+			QueryCPUExtendedFeatures(ExtendedFeatures);
+			CPUExtendedFeatures2 = ExtendedFeatures[2];
 		}
 	}
 
@@ -2180,6 +2208,16 @@ public:
 	static uint32 GetCPUInfo2()
 	{
 		return CPUIDStaticCache.CPUInfo2;
+	}
+
+	/**
+	* Gets __cpuidex CPU features.
+	*
+	* @returns CPU info unsigned int queried using __cpuidex.
+	*/
+	static uint32 GetCPUExtendedFeatures2()
+	{
+		return CPUIDStaticCache.CPUExtendedFeatures2;
 	}
 
 	/**
@@ -2290,6 +2328,16 @@ private:
 	}
 
 	/**
+	 * Queries CPU info using __cpuid instruction.
+	 *
+	 * @returns CPU info unsigned int queried using __cpuidex.
+	 */
+	static void QueryCPUExtendedFeatures(int Args[4])
+	{
+		__cpuidex(Args, 7, 0);
+	}
+
+	/**
 	 * Queries cache line size using __cpuid instruction.
 	 *
 	 * @returns Cache line size.
@@ -2322,6 +2370,7 @@ private:
 	/** CPU info from __cpuid. */
 	uint32 CPUInfo;
 	uint32 CPUInfo2;
+	uint32 CPUExtendedFeatures2;
 
 	/** CPU cache line size. */
 	int32 CacheLineSize;
@@ -2420,6 +2469,172 @@ FString FWindowsPlatformMisc::GetPrimaryGPUBrand()
 	}
 
 	return PrimaryGPUBrand;
+}
+
+#define USE_SP_ALTPLATFORM_INFO_V1 0
+#define USE_SP_ALTPLATFORM_INFO_V3 1
+#define USE_SP_DRVINFO_DATA_V1 0
+#define USE_SP_BACKUP_QUEUE_PARAMS_V1 0
+#define USE_SP_INF_SIGNER_INFO_V1 0
+#include <SetupAPI.h>
+#include <initguid.h>
+#include <devguid.h>
+#include <devpkey.h>
+#undef USE_SP_ALTPLATFORM_INFO_V1
+#undef USE_SP_ALTPLATFORM_INFO_V3
+#undef USE_SP_DRVINFO_DATA_V1
+#undef USE_SP_BACKUP_QUEUE_PARAMS_V1
+#undef USE_SP_INF_SIGNER_INFO_V1
+
+static void GetVideoDriverDetailsFromSetup(const FString& DeviceName, FGPUDriverInfo& Out)
+{
+	
+	HDEVINFO hDevInfo = SetupDiGetClassDevs(&GUID_DEVCLASS_DISPLAY, NULL, NULL, DIGCF_PRESENT);
+
+	FString RegistryKey = "";
+	
+	if (hDevInfo != INVALID_HANDLE_VALUE)
+	{
+		DWORD DataType = 0;
+		
+		const uint32 BufferSize = 512;
+		TCHAR Buffer[BufferSize + 1] = { 0 };
+		
+		SP_DEVINFO_DATA DeviceInfoData;
+		DeviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
+
+		bool bFound = false;
+		for (int32 Idx = 0; SetupDiEnumDeviceInfo(hDevInfo, Idx, &DeviceInfoData); Idx++)
+		{
+			// Get the device description, check if it matches the queried device name
+			if (SetupDiGetDeviceProperty(hDevInfo, &DeviceInfoData, &DEVPKEY_Device_DriverDesc, &DataType,
+				(PBYTE)Buffer, sizeof(Buffer), nullptr, 0))
+			{
+				if (DeviceName.Compare(Buffer) == 0)
+				{
+					Out.DeviceDescription = Buffer;
+					bFound = true;
+					ZeroMemory(Buffer, sizeof(Buffer));
+
+					// Retrieve the registry key for this device for 3rd party data
+					if (SetupDiGetDeviceProperty(hDevInfo, &DeviceInfoData, &DEVPKEY_Device_Driver, &DataType,
+						(PBYTE)Buffer, sizeof(Buffer), nullptr, 0))
+					{
+						RegistryKey = Buffer;
+						ZeroMemory(Buffer, sizeof(Buffer));
+					}
+					else
+					{
+						UE_LOG(LogWindows, Log, TEXT("Failed to retrieve driver registry key for device %d"), Idx);
+					}
+					
+					break;
+				}
+				ZeroMemory(Buffer, sizeof(Buffer));
+			}
+			else
+			{
+				UE_LOG(LogWindows, Log, TEXT("Failed to retrieve driver description for device %d"), Idx);
+			}
+		}
+
+		if (bFound)
+		{
+			// Get the provider name
+			if (SetupDiGetDeviceProperty(hDevInfo, &DeviceInfoData, &DEVPKEY_Device_DriverProvider, &DataType,
+				(PBYTE)Buffer, sizeof(Buffer), nullptr, 0))
+			{
+				Out.ProviderName = Buffer;
+				ZeroMemory(Buffer, sizeof(Buffer));
+			}
+			else
+			{
+				UE_LOG(LogWindows, Log, TEXT("Failed to find provider name"));
+			}
+			// Get the internal driver version
+			if (SetupDiGetDeviceProperty(hDevInfo, &DeviceInfoData, &DEVPKEY_Device_DriverVersion, &DataType,
+				(PBYTE)Buffer, sizeof(Buffer), nullptr, 0))
+			{
+				Out.InternalDriverVersion = Buffer;
+				ZeroMemory(Buffer, sizeof(Buffer));
+			}
+			else
+			{
+				UE_LOG(LogWindows, Log, TEXT("Failed to find internal driver version"));
+			}
+			// Get the driver date
+			FILETIME FileTime;
+			if (SetupDiGetDeviceProperty(hDevInfo, &DeviceInfoData, &DEVPKEY_Device_DriverDate, &DataType,
+				(PBYTE)&FileTime, sizeof(FILETIME), nullptr, 0))
+			{
+				SYSTEMTIME SystemTime;
+				FileTimeToSystemTime(&FileTime, &SystemTime);
+				Out.DriverDate = FString::Printf(TEXT("%d-%d-%d"), SystemTime.wMonth, SystemTime.wDay, SystemTime.wYear);
+			}
+			else
+			{
+				UE_LOG(LogWindows, Log, TEXT("Failed to find driver date"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogWindows, Log, TEXT("Unable to find requested device '%s' using Setup API."), *DeviceName);
+		}
+		
+		SetupDiDestroyDeviceInfoList(hDevInfo);
+	}
+	else
+	{
+		UE_LOG(LogWindows, Log, TEXT("Failed to initialize Setup API"));
+	}
+
+	if (!Out.ProviderName.IsEmpty())
+	{
+		if (Out.ProviderName.Find(TEXT("NVIDIA")) != INDEX_NONE)
+		{
+			Out.SetNVIDIA();
+		}
+		else if (Out.ProviderName.Find(TEXT("Advanced Micro Devices")) != INDEX_NONE)
+		{
+			Out.SetAMD();
+		}
+		else if (Out.ProviderName.Find(TEXT("Intel")) != INDEX_NONE)	// usually TEXT("Intel Corporation")
+		{
+			Out.SetIntel();
+		}
+	}
+
+	Out.UserDriverVersion = Out.InternalDriverVersion;
+
+	if(Out.IsNVIDIA())
+	{
+		Out.UserDriverVersion = Out.TrimNVIDIAInternalVersion(Out.InternalDriverVersion);
+	}
+	else if(Out.IsAMD() && !RegistryKey.IsEmpty())
+	{
+		// Get the AMD specific information directly from the registry
+		// AMD AGS could be used instead, but retrieving the radeon software version cannot occur after a D3D Device
+		// has been created, and this function could be called at any time
+		
+		const FString Key = FString::Printf(TEXT("SYSTEM\\CurrentControlSet\\Control\\Class\\%s"), *RegistryKey);
+		
+		if(FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, *Key, TEXT("Catalyst_Version"), Out.UserDriverVersion))
+		{
+			Out.UserDriverVersion = FString(TEXT("Catalyst ")) + Out.UserDriverVersion;
+		}
+
+		FString Edition;
+		if(FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, *Key, TEXT("RadeonSoftwareEdition"), Edition))
+		{
+			FString Version;
+			if(FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, *Key, TEXT("RadeonSoftwareVersion"), Version))
+			{
+				// e.g. TEXT("Crimson 15.12") or TEXT("Catalyst 14.1")
+				Out.UserDriverVersion = Edition + TEXT(" ") + Version;
+			}
+		}
+	}
+
 }
 
 static void GetVideoDriverDetails(const FString& Key, FGPUDriverInfo& Out)
@@ -2547,6 +2762,21 @@ FGPUDriverInfo FWindowsPlatformMisc::GetGPUDriverInfo(const FString& DeviceDescr
 
 	int32 Method = CVarDriverDetectionMethod.GetValueOnGameThread();
 
+	if (Method == 5)
+	{
+		UE_LOG(LogWindows, Log, TEXT("Gathering driver information using Windows Setup API"));
+		FGPUDriverInfo Local;
+		GetVideoDriverDetailsFromSetup(DeviceDescription, Local);
+
+		if(Local.IsValid() && Local.DeviceDescription == DeviceDescription)
+		{
+			return Local;
+		}
+
+		UE_LOG(LogWindows, Log, TEXT("Failed to get driver data for device '%s' using Setup API. Switching to fallback method."), *DeviceDescription);
+		Method = 4; // Switch to method 4 as a fallback if method 5 fails
+	}
+	
 	if(Method == 3 || Method == 4)
 	{
 		UE_LOG(LogWindows, Log, TEXT("EnumDisplayDevices:"));
@@ -2740,8 +2970,8 @@ void FWindowsPlatformMisc::GetOSVersions( FString& OutOSVersionLabel, FString& O
 	{
 		FOSVersionsInitializer()
 		{
-			OSVersionLabel[0] = 0;
-			OSSubVersionLabel[0] = 0;
+			OSVersionLabel[0] = TEXT('\0');
+			OSSubVersionLabel[0] = TEXT('\0');
 			GetOSVersionsHelper( OSVersionLabel, UE_ARRAY_COUNT(OSVersionLabel), OSSubVersionLabel, UE_ARRAY_COUNT(OSSubVersionLabel) );
 		}
 
@@ -2760,10 +2990,10 @@ FString FWindowsPlatformMisc::GetOSVersion()
 	{
 		FOSVersionInitializer()
 		{
-			CachedOSVersion[0] = 0;
+			CachedOSVersion[0] = TEXT('\0');
 			if (!GetOSVersionHelper(CachedOSVersion, UE_ARRAY_COUNT(CachedOSVersion)))
 			{
-				CachedOSVersion[0] = 0;
+				CachedOSVersion[0] = TEXT('\0');
 			}
 		}
 
@@ -2842,6 +3072,11 @@ bool FWindowsPlatformMisc::NeedsNonoptionalCPUFeaturesCheck()
 {
 	// popcnt is 64bit
 	return PLATFORM_ENABLE_POPCNT_INTRINSIC;
+}
+
+bool FWindowsPlatformMisc::HasTimedPauseCPUFeature()
+{
+	return false;
 }
 
 int32 FWindowsPlatformMisc::GetCacheLineSize()

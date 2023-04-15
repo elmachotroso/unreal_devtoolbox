@@ -134,6 +134,7 @@ FSlateEditableTextLayout::FSlateEditableTextLayout(ISlateEditableTextWidget& InO
 	PreferredCursorScreenOffsetInLine = 0.0f;
 	SelectionStart = TOptional<FTextLocation>();
 	CurrentUndoLevel = INDEX_NONE;
+	NumTransactionsOpened = 0;
 
 	bIsDragSelecting = false;
 	bWasFocusedByLastMouseDown = false;
@@ -255,6 +256,11 @@ void FSlateEditableTextLayout::SetText(const TAttribute<FText>& InText)
 	}
 }
 
+int32 FSlateEditableTextLayout::GetTextLineCount()
+{
+	return TextLayout->GetLineCount();
+}
+
 FText FSlateEditableTextLayout::GetText() const
 {
 	SLATE_CROSS_THREAD_CHECK();
@@ -300,6 +306,16 @@ void FSlateEditableTextLayout::SetSearchText(const TAttribute<FText>& InSearchTe
 FText FSlateEditableTextLayout::GetSearchText() const
 {
 	return SearchText;
+}
+
+int32 FSlateEditableTextLayout::GetSearchResultIndex() const
+{
+	return CurrentSearchResultIndex;
+}
+
+int32 FSlateEditableTextLayout::GetNumSearchResults() const
+{
+	return SearchResultToIndexMap.Num();
 }
 
 void FSlateEditableTextLayout::SetTextStyle(const FTextBlockStyle& InTextStyle)
@@ -427,6 +443,15 @@ FText FSlateEditableTextLayout::GetSelectedText() const
 	}
 
 	return FText::GetEmpty();
+}
+
+FTextSelection FSlateEditableTextLayout::GetSelection() const
+{
+	const FTextLocation CursorInteractionPosition = CursorInfo.GetCursorInteractionLocation();
+	const FTextLocation SelectionLocation = SelectionStart.Get(CursorInteractionPosition);
+	const FTextSelection Selection(SelectionLocation, CursorInteractionPosition);
+	
+	return Selection;
 }
 
 void FSlateEditableTextLayout::SetTextShapingMethod(const TOptional<ETextShapingMethod>& InTextShapingMethod)
@@ -599,9 +624,12 @@ void FSlateEditableTextLayout::BeginSearch(const FText& InSearchText, const ESea
 
 void FSlateEditableTextLayout::AdvanceSearch(const bool InReverse)
 {
+	//FirstMatchedLocation used as a key to find the index of the first matched string among all matches
+	FTextLocation FirstMatchedLocation(INDEX_NONE, INDEX_NONE);
+	const FTextLocation CursorInteractionPosition = CursorInfo.GetCursorInteractionLocation();
+	
 	if (!SearchText.IsEmpty())
 	{
-		const FTextLocation CursorInteractionPosition = CursorInfo.GetCursorInteractionLocation();
 		const FTextLocation SelectionLocation = SelectionStart.Get(CursorInteractionPosition);
 		const FTextSelection Selection(SelectionLocation, CursorInteractionPosition);
 
@@ -613,17 +641,43 @@ void FSlateEditableTextLayout::AdvanceSearch(const bool InReverse)
 
 		int32 CurrentLineIndex = SearchStartLocation.GetLineIndex();
 		int32 CurrentLineOffset = SearchStartLocation.GetOffset();
+
+		int32 NumLinesSearched = 0;
+		
 		do
 		{
 			const FTextLayout::FLineModel& Line = Lines[CurrentLineIndex];
 
-			// Do we have a match on this line?
-			const int32 CurrentSearchBegin = Line.Text->Find(SearchTextString, SearchCase, InReverse ? ESearchDir::FromEnd : ESearchDir::FromStart, CurrentLineOffset);
-			if (CurrentSearchBegin != INDEX_NONE)
+			bool bShouldSearchLine = true;
+			
+			if (!InReverse && CurrentLineOffset >= Line.Text->Len() )
 			{
-				SelectionStart = FTextLocation(CurrentLineIndex, CurrentSearchBegin);
-				CursorInfo.SetCursorLocationAndCalculateAlignment(*TextLayout, FTextLocation(CurrentLineIndex, CurrentSearchBegin + SearchTextLength));
-				break;
+				// CurrentLineOffset needs to be less than len(),
+				// otherwise, Find() clamps it to len() - 1 (see FString::Find()),
+				// and if there is a match at len() - 1, the search gets stuck
+				// 
+				// for example, for text "[cursor]abcd", len() = 4, len() - 1 = 3
+				// if you search for 'd', after the first advance,
+				// we get "abcd[cursor]", where CurrentLineOffset = 4
+				// if we advance one more time with Find('d', offset = 4)
+				// internally it becomes a search starting from len() - 1 = 3,
+				// since at index 3 there is a 'd' match, the CurrentSearchBegin is 3
+				// as a result, cursor position is set to 3 + len('d') = 4, again
+				bShouldSearchLine = false;
+			}
+
+			if (bShouldSearchLine)
+			{
+				// Do we have a match on this line?
+				const int32 CurrentSearchBegin = Line.Text->Find(SearchTextString, SearchCase, InReverse ? ESearchDir::FromEnd : ESearchDir::FromStart, CurrentLineOffset);
+				if (CurrentSearchBegin != INDEX_NONE)
+				{
+					SelectionStart = FTextLocation(CurrentLineIndex, CurrentSearchBegin);
+					CursorInfo.SetCursorLocationAndCalculateAlignment(*TextLayout, FTextLocation(CurrentLineIndex, CurrentSearchBegin + SearchTextLength));
+
+					FirstMatchedLocation = SelectionStart.GetValue();
+					break;
+				}
 			}
 
 			if (InReverse)
@@ -646,11 +700,55 @@ void FSlateEditableTextLayout::AdvanceSearch(const bool InReverse)
 				}
 				CurrentLineOffset = 0;
 			}
-		}
-		while (CurrentLineIndex != SearchStartLocation.GetLineIndex());
+
+			NumLinesSearched++;
+
+		}while(NumLinesSearched <= Lines.Num());
+		// use "<=" because if we start a search from the middle of a line
+		// the search should wrap around and search from the beginning of the line
+		// so loop twice even if there is only a single line
 	}
 
 	UpdateCursorHighlight();
+
+	// UpdateCursorHighlight() ensures SearchResultToIndexMap is up to date
+	CurrentSearchResultIndex = 0;
+	if (FirstMatchedLocation.IsValid())
+	{
+		int32* Index = SearchResultToIndexMap.Find(FirstMatchedLocation);
+		if (ensure(Index))
+		{
+			CurrentSearchResultIndex = *Index;
+		}
+		
+		// PositionToScrollIntoView is set to cursor position in UpdateCursorHighlight();
+		// Scrolling to cursor position directly does not always produce a good result
+		// because you can have only the last letter of the matched text in the view
+		// and most of the text out of view. The following code addresses this problem
+		const FTextLocation LineStart(GetSelection().GetBeginning().GetLineIndex(), 0);
+		const FVector2D LocalLineStartLocation = TextLayout->GetLocationAt(LineStart, false) / TextLayout->GetScale();
+
+		const FVector2D LocalSelectionBeginLocation = TextLayout->GetLocationAt(GetSelection().GetBeginning(), false) / TextLayout->GetScale();
+
+		const FVector2D LocalSelectionEndLocation = TextLayout->GetLocationAt(GetSelection().GetEnd(), false) / TextLayout->GetScale();
+		
+		// Only apply extra scrolling if we are going from right to left 
+		if (LocalSelectionBeginLocation.X < 0.0f)
+		{
+			const float DistanceFromSelectionEndToLineStart = LocalSelectionEndLocation.X - LocalLineStartLocation.X;
+
+			if (DistanceFromSelectionEndToLineStart < TextLayout->GetViewSize().X)
+			{
+				// Scroll to line start if both the matched text and line start can fit into the view
+				PositionToScrollIntoView = SlateEditableTextTypes::FScrollInfo(LineStart, SlateEditableTextTypes::ECursorAlignment::Left);
+			}
+			else
+			{
+				// Otherwise, just apply minimal scrolling such that the entirety of the matched text is in the view
+				PositionToScrollIntoView = SlateEditableTextTypes::FScrollInfo(GetSelection().GetBeginning(), SlateEditableTextTypes::ECursorAlignment::Left);
+			}
+		}
+	}
 }
 
 FVector2D FSlateEditableTextLayout::SetHorizontalScrollFraction(const float InScrollOffsetFraction)
@@ -1481,16 +1579,16 @@ bool FSlateEditableTextLayout::HandleTypeChar(const TCHAR InChar)
 		return false;
 	}
 
-	if (AnyTextSelected())
-	{
-		// Delete selected text
-		DeleteSelectedText();
-	}
-
 	// Certain characters are not allowed
 	const bool bIsCharAllowed = IsCharAllowed(InChar);
 	if (bIsCharAllowed)
 	{
+		if (AnyTextSelected())
+		{
+			// Delete selected text only if an allowed char is received
+			DeleteSelectedText();
+		}
+		
 		const FTextLocation CursorInteractionPosition = CursorInfo.GetCursorInteractionLocation();
 		const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
 		const FTextLayout::FLineModel& Line = Lines[CursorInteractionPosition.GetLineIndex()];
@@ -1748,6 +1846,28 @@ void FSlateEditableTextLayout::SelectWordAt(const FVector2D& InLocalPosition)
 	}
 }
 
+void FSlateEditableTextLayout::SelectText(const FTextLocation& InSelectionStart, const FTextLocation& InCursorLocation)
+{
+	if (TextLayout->IsEmpty())
+	{
+		return;
+	}
+
+	const FTextLocation NewCursorPosition = InCursorLocation;
+	CursorInfo.SetCursorLocationAndCalculateAlignment(*TextLayout, NewCursorPosition);
+
+	if (InSelectionStart != InCursorLocation)
+	{
+		SelectionStart = InSelectionStart;
+	}
+	else
+	{
+		SelectionStart.Reset();
+	}
+	
+	UpdateCursorHighlight();	
+}
+
 void FSlateEditableTextLayout::ClearSelection()
 {
 	SelectionStart = TOptional<FTextLocation>();
@@ -1963,6 +2083,7 @@ void FSlateEditableTextLayout::InsertTextAtCursorImpl(const FString& InString)
 			TextLayout->InsertAt(CursorInteractionPosition, NewLineText);
 
 			// Advance caret position
+			ClearSelection();
 			const FTextLocation NewCursorPosition = FTextLocation(CursorInteractionPosition.GetLineIndex(), FMath::Min(CursorInteractionPosition.GetOffset() + NewLineText.Len(), Line.Text->Len()));
 			CursorInfo.SetCursorLocationAndCalculateAlignment(*TextLayout, NewCursorPosition);
 		}
@@ -2541,6 +2662,7 @@ void FSlateEditableTextLayout::UpdateCursorHighlight()
 		const FString& SearchTextString = SearchText.ToString();
 		const int32 SearchTextLength = SearchTextString.Len();
 
+		int32 SearchResultIndex = 0;
 		const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
 		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
 		{
@@ -2553,6 +2675,12 @@ void FSlateEditableTextLayout::UpdateCursorHighlight()
 			{
 				FindBegin = CurrentSearchBegin + SearchTextLength;
 				ActiveLineHighlights.Add(FTextLineHighlight(LineIndex, FTextRange(CurrentSearchBegin, FindBegin), SearchHighlightZOrder, SearchSelectionHighlighter.ToSharedRef()));
+
+				// SearchResultIndex starts from 1
+				// for example, if it is used to display stats about search results
+				// it would appear as "1 of 5" for the first match among five matches.
+				SearchResultIndex++;
+				SearchResultToIndexMap.Add(FTextLocation(LineIndex, CurrentSearchBegin), SearchResultIndex);
 			}
 		}
 
@@ -2660,6 +2788,7 @@ void FSlateEditableTextLayout::RemoveCursorHighlight()
 	}
 
 	ActiveLineHighlights.Empty();
+	SearchResultToIndexMap.Reset();
 }
 
 void FSlateEditableTextLayout::UpdatePreferredCursorScreenOffsetInLine()
@@ -2996,11 +3125,13 @@ bool FSlateEditableTextLayout::HasTextChangedFromOriginal() const
 
 void FSlateEditableTextLayout::BeginEditTransation()
 {
-	if (StateBeforeChangingText.IsSet() || OwnerWidget->IsTextReadOnly())
+	NumTransactionsOpened += 1;
+	
+	if (NumTransactionsOpened > 1 || OwnerWidget->IsTextReadOnly())
 	{
 		// Already within a translation - don't open another
-		//Or never change text on read only controls.
-		//The TextReadOnly is an attribute, the return value may have changed since the last time it was checked.
+		// Or never change text on read only controls.
+		// The TextReadOnly is an attribute, the return value may have changed since the last time it was checked.
 		return;
 	}
 
@@ -3012,9 +3143,15 @@ void FSlateEditableTextLayout::BeginEditTransation()
 
 void FSlateEditableTextLayout::EndEditTransaction()
 {
-	if (!StateBeforeChangingText.IsSet())
+	NumTransactionsOpened -= 1;
+
+	check(NumTransactionsOpened >= 0);
+
+	if (NumTransactionsOpened > 0)
 	{
-		// No transaction to close
+		// Don't close transaction if there are more opened
+		// Caller of the first opened transaction should be
+		// responsible for actually closing the transaction
 		return;
 	}
 
@@ -3575,6 +3712,15 @@ void FSlateEditableTextLayout::GetCurrentTextLine(FString& OutTextLine) const
 	if (Lines.IsValidIndex(LineIdx))
 	{
 		OutTextLine = *Lines[LineIdx].Text;
+	}
+}
+
+void FSlateEditableTextLayout::GetTextLine(const int32 InLineIndex, FString& OutTextLine) const
+{
+	const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
+	if (Lines.IsValidIndex(InLineIndex))
+	{
+		OutTextLine = *Lines[InLineIndex].Text;
 	}
 }
 

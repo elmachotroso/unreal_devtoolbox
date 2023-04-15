@@ -28,7 +28,7 @@ enum class ECheckBoxState : uint8;
 /** Widget to assign fixture patches to universes and their channels */
 class SDMXFixturePatcher
 	: public SCompoundWidget
-	, public FEditorUndoClient
+	, public FSelfRegisteringEditorUndoClient
 {
 public:
 	SLATE_BEGIN_ARGS(SDMXFixturePatcher)
@@ -42,22 +42,13 @@ public:
 	/** Constructs this widget */
 	void Construct(const FArguments& InArgs);
 
-	/** Updates the patcher, should be called on property changes */
-	void NotifyPropertyChanged(const FPropertyChangedEvent& PropertyChangedEvent);
-
 	/** Refreshes the whole view from properties, does not consider changes in the library */
 	void RefreshFromProperties();
 
 	/** Refreshes the whole view from the library, considers library changes */
 	void RefreshFromLibrary();
 
-	/** Selects a universe that contains selected patches, if possible */
-	void SelectUniverseThatContainsSelectedPatches();
-
 protected:
-	/** Called when the active tab changed */
-	void OnActiveTabChanged(TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated);
-
 	// Begin SWidget Interface
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
@@ -81,7 +72,7 @@ protected:
 	// End of FEditorUndoClient
 
 	/** Finds specified fixture patch in all universes */
-	TSharedPtr<FDMXFixturePatchNode> FindPatchNode(TWeakObjectPtr<UDMXEntityFixturePatch> Patch) const;
+	TSharedPtr<FDMXFixturePatchNode> FindPatchNode(const TWeakObjectPtr<UDMXEntityFixturePatch> FixturePatch) const;
 
 	/** Returns first node with same fixture type */
 	TSharedPtr<FDMXFixturePatchNode> FindPatchNodeOfType(UDMXEntityFixtureType* Type, const TSharedPtr<FDMXFixturePatchNode>& IgoredNode) const;
@@ -89,8 +80,8 @@ protected:
 	/** Called when entities were added to or removed from a DMX Library */
 	void OnEntitiesAddedOrRemoved(UDMXLibrary* DMXLibrary, TArray<UDMXEntity*> Entities);
 
-	/** Called when a fixture patch changed */
-	void OnFixturePatchChanged(const UDMXEntityFixturePatch* FixturePatch);
+	/** Called when a fixture type changed */
+	void OnFixtureTypeChanged(const UDMXEntityFixtureType* FixtureType);
 
 	/** Called when a fixture patch was selected */
 	void OnFixturePatchSelectionChanged();
@@ -105,7 +96,7 @@ protected:
 	int32 GetSelectedUniverse() const;
 
 	/** Shows the selected universe only */
-	void ShowSelectedUniverse(bool bForceReconstructWidget = false);
+	void ShowSelectedUniverse();
 
 	/** Shows all universes */
 	void ShowAllPatchedUniverses(bool bForceReconstructWidgets = false);
@@ -143,9 +134,6 @@ protected:
 protected:
 	/** Clamps the starting channel to remain within a valid channel range */
 	int32 ClampStartingChannel(int32 StartingChannel, int32 ChannelSpan) const;
-
-	/** Helper disabling bAutoAssignAdress in fixture patch transacted */
-	void DisableAutoAssignAdress(TWeakObjectPtr<UDMXEntityFixturePatch> FixturePatch);
 
 	/** Returns the DMXLibrary or nullptr if not available */
 	UDMXLibrary* GetDMXLibrary() const;

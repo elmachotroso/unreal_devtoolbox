@@ -7,6 +7,8 @@
 #include "NiagaraCommon.h"
 #include "NiagaraCustomVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEmitterHandle)
+
 const FNiagaraEmitterHandle FNiagaraEmitterHandle::InvalidHandle;
 
 FNiagaraEmitterHandle::FNiagaraEmitterHandle() 
@@ -16,12 +18,12 @@ FNiagaraEmitterHandle::FNiagaraEmitterHandle()
 	, LastMergedSource_DEPRECATED(nullptr)
 	, bIsolated(false)
 #endif
-	, Instance(nullptr)
+	, Instance_DEPRECATED(nullptr)
 {
 }
 
 #if WITH_EDITORONLY_DATA
-FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& InEmitter)
+FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& InEmitter, const FGuid& Version)
 	: Id(FGuid::NewGuid())
 	, IdName(*Id.ToString())
 	, bIsEnabled(true)
@@ -29,7 +31,21 @@ FNiagaraEmitterHandle::FNiagaraEmitterHandle(UNiagaraEmitter& InEmitter)
 	, Source_DEPRECATED(nullptr)
 	, LastMergedSource_DEPRECATED(nullptr)
 	, bIsolated(false)
-	, Instance(&InEmitter)
+	, Instance_DEPRECATED(nullptr)
+	, VersionedInstance(FVersionedNiagaraEmitter(&InEmitter, Version))
+{
+}
+
+FNiagaraEmitterHandle::FNiagaraEmitterHandle(const FVersionedNiagaraEmitter& InEmitter)
+	: Id(FGuid::NewGuid())
+	, IdName(*Id.ToString())
+	, bIsEnabled(true)
+	, Name(*InEmitter.Emitter->GetUniqueEmitterName())
+	, Source_DEPRECATED(nullptr)
+	, LastMergedSource_DEPRECATED(nullptr)
+	, bIsolated(false)
+	, Instance_DEPRECATED(nullptr)
+	, VersionedInstance(InEmitter)
 {
 }
 #endif
@@ -73,7 +89,7 @@ void FNiagaraEmitterHandle::SetName(FName InName, UNiagaraSystem& InOwnerSystem)
 	FName UniqueName = FNiagaraUtilities::GetUniqueName(SanitizedName, OtherEmitterNames);
 
 	Name = UniqueName;
-	if (Instance->SetUniqueEmitterName(Name.ToString()))
+	if (VersionedInstance.Emitter->SetUniqueEmitterName(Name.ToString()))
 	{
  #if WITH_EDITOR
 		if (InOwnerSystem.GetSystemSpawnScript() && InOwnerSystem.GetSystemSpawnScript()->GetLatestSource())
@@ -109,9 +125,10 @@ bool FNiagaraEmitterHandle::SetIsEnabled(bool bInIsEnabled, UNiagaraSystem& InOw
 			InOwnerSystem.GetSystemUpdateScript()->InvalidateCompileResults(InvalidateReason);
 
 			// Clean out the emitter's compile results for cleanliness.
-			if (Instance)
+			FVersionedNiagaraEmitterData* EmitterData = VersionedInstance.GetEmitterData();
+			if (EmitterData)
 			{
-				Instance->InvalidateCompileResults();
+				EmitterData->InvalidateCompileResults();
 			}
 
 			// In some cases we may do the recompile now.
@@ -126,22 +143,29 @@ bool FNiagaraEmitterHandle::SetIsEnabled(bool bInIsEnabled, UNiagaraSystem& InOw
 	return false;
 }
 
-UNiagaraEmitter* FNiagaraEmitterHandle::GetInstance() const
+FVersionedNiagaraEmitter FNiagaraEmitterHandle::GetInstance() const
 {
-	return Instance;
+	return VersionedInstance;
 }
 
-FString FNiagaraEmitterHandle::GetUniqueInstanceName()const
+FVersionedNiagaraEmitter& FNiagaraEmitterHandle::GetInstance()
+{
+	return VersionedInstance;
+}
+
+FVersionedNiagaraEmitterData* FNiagaraEmitterHandle::GetEmitterData() const
+{
+	return VersionedInstance.GetEmitterData();
+}
+
+FString FNiagaraEmitterHandle::GetUniqueInstanceName() const
 {
 	// We might not have an instance if this is a cooked object that we're loading in the editor
-	if (Instance)
+	if (VersionedInstance.Emitter)
 	{
-		return Instance->GetUniqueEmitterName();
+		return VersionedInstance.Emitter->GetUniqueEmitterName();
 	}
-	else
-	{
-		return FString();
-	}
+	return FString();
 }
 
 #if WITH_EDITORONLY_DATA
@@ -151,7 +175,7 @@ bool FNiagaraEmitterHandle::NeedsRecompile() const
 	if (GetIsEnabled())
 	{
 		TArray<UNiagaraScript*> Scripts;
-		Instance->GetScripts(Scripts);
+		VersionedInstance.GetEmitterData()->GetScripts(Scripts);
 
 		for (UNiagaraScript* Script : Scripts)
 		{
@@ -166,47 +190,74 @@ bool FNiagaraEmitterHandle::NeedsRecompile() const
 
 void FNiagaraEmitterHandle::ConditionalPostLoad(int32 NiagaraCustomVersion)
 {
-	if (Instance != nullptr)
+	if (Instance_DEPRECATED != nullptr)
 	{
-		Instance->ConditionalPostLoad();
+		VersionedInstance.Emitter = Instance_DEPRECATED;
+		VersionedInstance.Version = Instance_DEPRECATED->IsVersioningEnabled() ? Instance_DEPRECATED->GetExposedVersion().VersionGuid : FGuid(); 
+	}
+
+	if (UNiagaraEmitter* InstanceEmitter = VersionedInstance.Emitter)
+	{
+		InstanceEmitter->ConditionalPostLoad();
 		if (NiagaraCustomVersion < FNiagaraCustomVersion::MoveInheritanceDataFromTheEmitterHandleToTheEmitter)
 		{
-			if (Source_DEPRECATED != nullptr)
+			FVersionedNiagaraEmitterData* EmitterData = GetEmitterData();
+			if (Source_DEPRECATED && EmitterData)
 			{
 				Source_DEPRECATED->ConditionalPostLoad();
-				Instance->Parent = Source_DEPRECATED;
+				EmitterData->VersionedParent = FVersionedNiagaraEmitter(Source_DEPRECATED, Source_DEPRECATED->GetExposedVersion().VersionGuid);
 				Source_DEPRECATED = nullptr;
 			}
-			if (LastMergedSource_DEPRECATED != nullptr)
+			if (LastMergedSource_DEPRECATED && EmitterData)
 			{
 				LastMergedSource_DEPRECATED->ConditionalPostLoad();
-				Instance->ParentAtLastMerge = LastMergedSource_DEPRECATED;
-				Instance->ParentAtLastMerge->Rename(nullptr, Instance, REN_ForceNoResetLoaders);
+				EmitterData->VersionedParentAtLastMerge = FVersionedNiagaraEmitter(LastMergedSource_DEPRECATED, LastMergedSource_DEPRECATED->GetExposedVersion().VersionGuid);
+				EmitterData->VersionedParentAtLastMerge.Emitter->Rename(nullptr, InstanceEmitter, REN_ForceNoResetLoaders);
 				LastMergedSource_DEPRECATED = nullptr;
 			}
 		}
 
 		FText Reason;
-		if (Instance->GetFName().IsValidObjectName(Reason) == false)
+		if (InstanceEmitter->GetFName().IsValidObjectName(Reason) == false)
 		{
-			UNiagaraSystem* OwningSystem = Instance->GetTypedOuter<UNiagaraSystem>();
+			UNiagaraSystem* OwningSystem = InstanceEmitter->GetTypedOuter<UNiagaraSystem>();
 			if (OwningSystem != nullptr)
 			{
 				// If the name isn't a valid object name, set the name again so that it will be properly sanitized.
 				SetName(Name, *OwningSystem);
 			}
 		}
+
+		// Temporary Workaround - These thumbnails aren't used by the system so remove them here to fix issues with cooked editor data.
+		InstanceEmitter->ThumbnailImage = nullptr;
 	}
+}
+
+bool FNiagaraEmitterHandle::UsesEmitter(const FVersionedNiagaraEmitter& InEmitter) const
+{
+	if (ensure(InEmitter.Emitter))
+	{
+		if (InEmitter.Emitter->IsVersioningEnabled())
+		{
+			return VersionedInstance == InEmitter || (VersionedInstance.GetEmitterData() && VersionedInstance.GetEmitterData()->UsesEmitter(*InEmitter.Emitter));
+		}
+		else
+		{
+			return FNiagaraEmitterHandle::UsesEmitter(*InEmitter.Emitter);
+		}
+	}
+	return false;
 }
 
 bool FNiagaraEmitterHandle::UsesEmitter(const UNiagaraEmitter& InEmitter) const
 {
-	return Instance == &InEmitter || (Instance != nullptr && Instance->UsesEmitter(InEmitter));
+	return VersionedInstance.Emitter == &InEmitter || (VersionedInstance.GetEmitterData() && VersionedInstance.GetEmitterData()->UsesEmitter(InEmitter));
 }
 
 void FNiagaraEmitterHandle::ClearEmitter()
 {
-	Instance = nullptr;
+	VersionedInstance = FVersionedNiagaraEmitter();
+	Instance_DEPRECATED = nullptr;
 	Source_DEPRECATED = nullptr;
 	LastMergedSource_DEPRECATED = nullptr;
 }

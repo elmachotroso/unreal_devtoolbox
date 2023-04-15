@@ -1,16 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reservekd.
 
-#include "CoreMinimal.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Animation/AnimationAsset.h"
-#include "AssetData.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
-#include "PropertyCustomizationHelpers.h"
 #include "Animation/PoseAsset.h"
-#include "IDetailCustomization.h"
+#include "Animation/Skeleton.h"
 #include "AnimationAssetDetails.h"
+#include "Containers/Array.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "HAL/PlatformCrt.h"
+#include "Misc/AssertionMacros.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "Templates/Casts.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+
+class IDetailCustomization;
+class UObject;
+struct FAssetData;
 
 #define LOCTEXT_NAMESPACE	"AnimationAssetDetails"
 
@@ -46,7 +58,9 @@ void FAnimationAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 
 	// add widget for editing source animation 
 	IDetailCategoryBuilder& AnimationCategory = DetailBuilder.EditCategory("Animation");
-	AnimationCategory.AddCustomRow(PreviewPoseAssetHandler->GetPropertyDisplayName())
+	AnimationCategory
+	.AddCustomRow(PreviewPoseAssetHandler->GetPropertyDisplayName())
+	.RowTag(PreviewPoseAssetHandler->GetProperty()->GetFName())
 	.NameContent()
 	[
 		PreviewPoseAssetHandler->CreatePropertyNameWidget()

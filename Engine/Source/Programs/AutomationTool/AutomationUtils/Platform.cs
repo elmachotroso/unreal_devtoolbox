@@ -35,16 +35,19 @@ namespace AutomationTool
 			this.Platform = Platform;
 		}
 
-		public DeviceInfo(UnrealTargetPlatform Platform, string Name, string Id, string SoftwareVersion, string Type, bool bIsDefault, bool bCanConnect, string SubType = "")
+		public DeviceInfo(UnrealTargetPlatform Platform, string Name, string Id, string SoftwareVersion, string Type, bool bIsDefault, bool bCanConnect, Dictionary<string, string> PlatformValues=null)
 		{
 			this.Platform = Platform;
 			this.Name = Name;
 			this.Id = Id;
 			this.SoftwareVersion = SoftwareVersion;
 			this.Type = Type;
-			this.SubType = SubType;
 			this.bIsDefault = bIsDefault;
 			this.bCanConnect = bCanConnect;
+			if (PlatformValues != null)
+			{
+				this.PlatformValues = new Dictionary<string, string>(PlatformValues);
+			}
 		}
 
 		public UnrealTargetPlatform Platform;
@@ -52,11 +55,13 @@ namespace AutomationTool
 		public string Id;
 		public string SoftwareVersion;
 		public string Type;
-		public string SubType;
 		public bool bIsDefault = false;
 		// is the device able to be connected to (this is more about able to flash SDK or run, not about matching SDK version)
 		// if false, any of the above fields are suspect, especually SoftwareVersion
 		public bool bCanConnect = true;
+
+		// case insesitive platform value dictionary. turnkey doesn't use this, but the platform can look up the device during deployment, etc to get this out
+		public Dictionary<string, string> PlatformValues = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
 	}
 
 	/// <summary>
@@ -75,7 +80,7 @@ namespace AutomationTool
 		public TargetPlatformDescriptor(UnrealTargetPlatform InType, string InCookFlavor)
 		{
 			Type = InType;
-			CookFlavor = InCookFlavor;
+			CookFlavor = InCookFlavor ?? "";
 		}
 
 		public override string ToString()
@@ -140,7 +145,7 @@ namespace AutomationTool
 					}
 				}
 				// Re-throw, this is still a critical error!
-				throw Ex;
+				throw;
 			}
 			foreach (var PotentialPlatformType in AllTypes)
 			{
@@ -226,7 +231,7 @@ namespace AutomationTool
 
 		}
 
-		public virtual bool InstallSDK(BuildCommand BuildCommand, ITurnkeyContext TurnkeyContext, DeviceInfo Device, bool bUnattended)
+		public virtual bool InstallSDK(BuildCommand BuildCommand, ITurnkeyContext TurnkeyContext, DeviceInfo Device, bool bUnattended, bool bSdkAlreadyInstalled)
 		{
 			string Command, Params;
 
@@ -237,7 +242,7 @@ namespace AutomationTool
 				int ExitCode = TurnkeyContext.RunExternalCommand(Command, Params, bRequiresPrivilegeElevation, bUnattended, bCreateWindow);
 				return OnSDKInstallComplete(ExitCode, TurnkeyContext, Device);
 			}
-			else if (Device == null && GetSDKInstallCommand(out Command, out Params, ref bRequiresPrivilegeElevation, ref bCreateWindow, TurnkeyContext))
+			else if (Device == null && GetSDKInstallCommand(out Command, out Params, ref bRequiresPrivilegeElevation, ref bCreateWindow, TurnkeyContext, bSdkAlreadyInstalled))
 			{
 				int ExitCode = TurnkeyContext.RunExternalCommand(Command, Params, bRequiresPrivilegeElevation, bUnattended, bCreateWindow);
 				return OnSDKInstallComplete(ExitCode, TurnkeyContext, null);
@@ -262,7 +267,10 @@ namespace AutomationTool
 			Params = null;
 			return false;
 		}
-
+		public virtual bool GetSDKInstallCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext, bool bSdkAlreadyInstalled)
+		{
+			return GetSDKInstallCommand(out Command, out Params, ref bRequiresPrivilegeElevation, ref bCreateWindow, TurnkeyContext);
+		}
 		public virtual bool GetDeviceUpdateSoftwareCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext, DeviceInfo Device = null)
 		{
 			Command = null;
@@ -517,7 +525,7 @@ namespace AutomationTool
 		/// <summary>
 		/// return true if we need to change the case of filenames outside of pak files
 		/// </summary>
-		/// <param name="FileType" The staged file type to check (UFS vs SsytemNonUFS, etc)
+		/// <param name="FileType">The staged file type to check (UFS vs SsytemNonUFS, etc)</param>
 		/// <returns>true if files should be lower-cased during staging, for the given filetype</returns>
 		public virtual bool DeployLowerCaseFilenames(StagedFileType FileType)
 		{
@@ -527,7 +535,7 @@ namespace AutomationTool
 		/// <summary>
 		/// return true if we need to change the case of a particular file
 		/// </summary>
-		/// <param name="FileType" The staged file type to check (UFS vs SsytemNonUFS, etc)
+		/// <param name="FileType">The staged file type to check (UFS vs SsytemNonUFS, etc)</param>
 		/// <returns>true if files should be lower-cased during staging, for the given filetype</returns>
 		public virtual bool DeployLowerCaseFile(FileReference File, StagedFileType FileType)
 		{
@@ -615,6 +623,13 @@ namespace AutomationTool
 		}
 
 		/// <summary>
+		/// Modify or override the list of file host addresses for this platform.
+		/// </summary>
+		public virtual void ModifyFileHostAddresses(List<string> HostAddresses)
+		{
+		}
+
+		/// <summary>
 		/// True if this platform can write to the abslog path that's on the host desktop.
 		/// </summary>
 		public virtual bool UseAbsLog
@@ -625,7 +640,7 @@ namespace AutomationTool
 		/// <summary>
 		/// return true if we need to call Remap of a specific file type
 		/// </summary>
-		/// <param name="FileType" The staged file type to check (UFS vs SsytemNonUFS, etc)
+		/// <param name="FileType">The staged file type to check (UFS vs SsytemNonUFS, etc)</param>
 		/// <returns>true if files should be remaped, for the given filetype</returns>
 		public virtual bool RemapFileType(StagedFileType FileType)
 		{
@@ -643,7 +658,6 @@ namespace AutomationTool
 		/// <summary>
 		/// Tri-state - The intent is to override command line parameters for pak if needed per platform.
 		/// </summary>
-		///
 		public enum PakType { Always, Never, DontCare };
 
 		public virtual PakType RequiresPak(ProjectParams Params)
@@ -673,6 +687,14 @@ namespace AutomationTool
 		public virtual bool SupportsMultiDeviceDeploy
 		{
 			get { return false; }
+		}
+
+		/// <summary>
+		/// Returns the ICU data version we use for this platform
+		/// </summary>
+		public virtual string ICUDataVersion
+		{
+			get { return "icudt64l"; }
 		}
 
 		/// <summary>
@@ -845,7 +867,7 @@ namespace AutomationTool
 				return PlatformExeExtension;
 			}
 
-			if (Target == UnrealTargetPlatform.Win64 || Target == UnrealTargetPlatform.HoloLens)
+			if (Target == UnrealTargetPlatform.Win64)
 			{
 				return ".exe";
 			}

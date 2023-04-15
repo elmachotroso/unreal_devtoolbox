@@ -2,14 +2,18 @@
 
 #pragma once
 
+#ifdef UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
-#include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "AI/Navigation/NavigationDirtyElement.h"
+#endif //UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+
+#include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "Templates/SubclassOf.h"
-#include "UObject/WeakObjectPtr.h"
 #include "Misc/CoreStats.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Actor.h"
@@ -55,6 +59,12 @@ namespace FNavigationSystem
 	{
 		return FVector::PointsAreSame(A.Min, B.Min) && FVector::PointsAreSame(A.Max, B.Max);
 	}
+
+	/** Returns true if the visibility of the owning level is currently changing (loading/unloading). */
+	ENGINE_API bool IsLevelVisibilityChanging(const UObject* Object);
+	
+	/** Objects placed directly in the level and objects placed in the base navmesh data layers are in the base navmesh. */
+	ENGINE_API bool IsInBaseNavmesh(const UObject* Object);
 }
 
 UENUM()
@@ -96,6 +106,16 @@ struct FNavigationDirtyArea
 	FNavigationDirtyArea() : Flags(0) {}
 	FNavigationDirtyArea(const FBox& InBounds, int32 InFlags, UObject* const InOptionalSourceObject = nullptr) : Bounds(InBounds), Flags(InFlags), OptionalSourceObject(InOptionalSourceObject) {}
 	FORCEINLINE bool HasFlag(ENavigationDirtyFlag::Type Flag) const { return (Flags & Flag) != 0; }
+
+	bool operator==(const FNavigationDirtyArea& Other) const 
+	{ 
+		return Flags == Other.Flags && OptionalSourceObject == Other.OptionalSourceObject && Bounds.Equals(Other.Bounds); 
+	}
+	
+	bool operator!=( const FNavigationDirtyArea& Other) const
+	{
+		return !(*this == Other);
+	}
 };
 
 USTRUCT()
@@ -233,60 +253,6 @@ struct FNavigationBoundsUpdateRequest
 	Type UpdateRequest;
 };
 
-struct FNavigationDirtyElement
-{
-	/** object owning this element */
-	FWeakObjectPtr Owner;
-	
-	/** cached interface pointer */
-	INavRelevantInterface* NavInterface;
-
-	/** override for update flags */
-	int32 FlagsOverride;
-	
-	/** flags of already existing entry for this actor */
-	int32 PrevFlags;
-	
-	/** bounds of already existing entry for this actor */
-	FBox PrevBounds;
-
-	/** prev flags & bounds data are set */
-	uint8 bHasPrevData : 1;
-
-	/** request was invalidated while queued, use prev values to dirty area */
-	uint8 bInvalidRequest : 1;
-
-	FNavigationDirtyElement()
-		: NavInterface(0), FlagsOverride(0), PrevFlags(0), PrevBounds(ForceInit), bHasPrevData(false), bInvalidRequest(false)
-	{
-	}
-
-	FNavigationDirtyElement(UObject* InOwner)
-		: Owner(InOwner), NavInterface(0), FlagsOverride(0), PrevFlags(0), PrevBounds(ForceInit), bHasPrevData(false), bInvalidRequest(false)
-	{
-	}
-
-	FNavigationDirtyElement(UObject* InOwner, INavRelevantInterface* InNavInterface, int32 InFlagsOverride = 0)
-		: Owner(InOwner), NavInterface(InNavInterface),	FlagsOverride(InFlagsOverride), PrevFlags(0), PrevBounds(ForceInit), bHasPrevData(false), bInvalidRequest(false)
-	{
-	}
-
-	bool operator==(const FNavigationDirtyElement& Other) const 
-	{ 
-		return Owner == Other.Owner; 
-	}
-
-	bool operator==(const UObject*& OtherOwner) const 
-	{ 
-		return (Owner == OtherOwner);
-	}
-
-	FORCEINLINE friend uint32 GetTypeHash(const FNavigationDirtyElement& Info)
-	{
-		return GetTypeHash(Info.Owner);
-	}
-};
-
 UENUM()
 enum class ENavDataGatheringMode : uint8
 {
@@ -317,7 +283,7 @@ struct FNavigationPortalEdge
 	FVector Right;
 	NavNodeRef ToRef;
 
-	FNavigationPortalEdge() : Left(0.f), Right(0.f)
+	FNavigationPortalEdge() : Left(0.f), Right(0.f), ToRef(INVALID_NAVNODEREF)
 	{}
 
 	FNavigationPortalEdge(const FVector& InLeft, const FVector& InRight, NavNodeRef InToRef)
@@ -510,7 +476,7 @@ struct ENGINE_API FNavAgentProperties : public FMovementProperties
 	float NavWalkingSearchHeightScale;
 
 	/** Type of navigation data used by agent, null means "any" */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MovementProperties, meta=(MetaClass = "NavigationData"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MovementProperties, meta=(MetaClass = "/Script/NavigationSystem.NavigationData"))
 	FSoftClassPath PreferredNavData;
 	
 	FNavAgentProperties(float Radius = -1.f, float Height = -1.f)
@@ -588,7 +554,7 @@ struct ENGINE_API FNavDataConfig : public FNavAgentProperties
 
 protected:
 	/** Class to use when spawning navigation data instance */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Navigation, meta = (MetaClass = "NavigationData"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Navigation, meta = (MetaClass = "/Script/NavigationSystem.NavigationData"))
 	TSoftClassPtr<AActor> NavDataClass;
 
 public:	
@@ -709,7 +675,7 @@ namespace NavMeshMemory
 		public:
 			typedef FDefaultAllocator::ForAnyElementType Super;
 		private:
-			int32 AllocatedSize;
+			int64 AllocatedSize;
 		public:
 
 			ForAnyElementType()
@@ -727,9 +693,16 @@ namespace NavMeshMemory
 				}
 			}
 
-			void ResizeAllocation(int32 PreviousNumElements, int32 NumElements, int32 NumBytesPerElement, uint32 AlignmentOfElement)
+			FORCEINLINE_DEBUGGABLE void ResizeAllocation(int32 PreviousNumElements, int32 NumElements, int32 NumBytesPerElement, uint32 AlignmentOfElement)
 			{
-				const int32 NewSize = NumElements * NumBytesPerElement;
+				// Maintain existing behavior, call the default aligned version of this function.
+				// We currently rely on this as we are often storing actual structs into uint8's here.
+				ResizeAllocation(PreviousNumElements, NumElements, NumBytesPerElement);
+			}
+
+			FORCEINLINE_DEBUGGABLE void ResizeAllocation(SizeType PreviousNumElements, SizeType NumElements, SIZE_T NumBytesPerElement)
+			{
+				const int64 NewSize = NumElements * NumBytesPerElement;
 				INC_DWORD_STAT_BY(STAT_NavigationMemory, NewSize - AllocatedSize);
 				AllocatedSize = NewSize;
 
@@ -739,6 +712,16 @@ namespace NavMeshMemory
 		private:
 			ForAnyElementType(const ForAnyElementType&);
 			ForAnyElementType& operator=(const ForAnyElementType&);
+		};
+
+		template<typename ElementType>
+		class ForElementType : public ForAnyElementType
+		{
+		public:
+			ElementType* GetAllocation() const
+			{
+				return (ElementType*)ForAnyElementType::GetAllocation();
+			}
 		};
 	};
 
@@ -780,6 +763,7 @@ struct ENGINE_API FNavHeightfieldSamples
 	TBitArray<> Holes;
 
 	FNavHeightfieldSamples();
+	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 
 	FORCEINLINE bool IsEmpty() const { return Heights.Num() == 0; }
 };

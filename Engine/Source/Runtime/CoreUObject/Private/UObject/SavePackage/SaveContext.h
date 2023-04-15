@@ -14,7 +14,6 @@
 #include "Serialization/UnversionedPropertySerialization.h"
 #include "Templates/PimplPtr.h"
 #include "Templates/UniquePtr.h"
-#include "UObject/AsyncWorkSequence.h"
 #include "UObject/LinkerSave.h"
 #include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
@@ -22,6 +21,7 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/SavePackage/SavePackageUtilities.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectThreadContext.h"
 
@@ -34,20 +34,27 @@ struct FTaggedExport
 	uint32 bNotAlwaysLoadedForEditorGame : 1;
 	/**
 	 * Indicate that this export should have a public hash even if it isn't marked as RF_Public
-	 * This will artificially mark the object RF_Public in the linker tables so the iostore generates the public hash 
+	 * This will artificially mark the object RF_Public in the linker tables so the iostore generates the public hash
 	 */
 	uint32 bGeneratePublicHash : 1;
+	/**
+	 * Indicate if the object that directly referenced this export was optional
+	 * Used to determine mandatory objects in the game save realm
+	 */
+	uint32 bFromOptionalReference : 1;
 
 	FTaggedExport()
 		: Obj(nullptr)
 		, bNotAlwaysLoadedForEditorGame(false)
 		, bGeneratePublicHash(false)
+		, bFromOptionalReference(false)
 	{}
 
-	FTaggedExport(UObject* InObj, bool bInNotAlwaysLoadedForEditorGame = true)
+	FTaggedExport(UObject* InObj, bool bInNotAlwaysLoadedForEditorGame = true, bool bInFromOptionalReference = false)
 		: Obj(InObj)
 		, bNotAlwaysLoadedForEditorGame(bInNotAlwaysLoadedForEditorGame)
 		, bGeneratePublicHash(false)
+		, bFromOptionalReference(bInFromOptionalReference)
 	{}
 
 	inline bool operator == (const FTaggedExport& Other) const
@@ -80,6 +87,8 @@ enum class EIllegalRefReason : uint8
 	None = 0,
 	ReferenceToOptional,
 	ReferenceFromOptionalToMissingGameExport,
+	UnsaveableClass,
+	UnsaveableOuter,
 };
 
 /** Small struct to store illegal references harvested during save */
@@ -88,6 +97,7 @@ struct FIllegalReference
 	UObject* From = nullptr;
 	UObject* To = nullptr;
 	EIllegalRefReason Reason;
+	FString FormatStringArg;
 };
 
 /** Hold the harvested exports and imports for a realm */
@@ -113,9 +123,9 @@ struct FHarvestedRealm
 		Imports.Add(InObject);
 	}
 
-	void AddExport(UObject* InObj, bool bNotAlwaysLoadedForEditorGame)
+	void AddExport(FTaggedExport InTagObj)
 	{
-		Exports.Add(FTaggedExport(InObj, bNotAlwaysLoadedForEditorGame));
+		Exports.Add(MoveTemp(InTagObj));
 	}
 
 	void AddExcluded(UObject* InObject)
@@ -191,6 +201,16 @@ struct FHarvestedRealm
 	TSet<FNameEntryId>& GetNamesReferencedFromPackageHeader()
 	{
 		return NamesReferencedFromPackageHeader;
+	}
+
+	const TSet<FSoftObjectPath>& GetSoftObjectPathList() const
+	{
+		return SoftObjectPathList;
+	}
+
+	TSet<FSoftObjectPath>& GetSoftObjectPathList() 
+	{
+		return SoftObjectPathList;
 	}
 
 	const TMap<UObject*, TSet<UObject*>>& GetObjectDependencies() const
@@ -330,6 +350,8 @@ private:
 	TSet<FNameEntryId> NamesReferencedFromExportData;
 	// Set of names referenced from the package header (import and export table object names etc)
 	TSet<FNameEntryId> NamesReferencedFromPackageHeader;
+	// Set of SoftObjectPath harvested in this realm
+	TSet<FSoftObjectPath> SoftObjectPathList;
 	// List of soft package reference found
 	TSet<FName> SoftPackageReferenceList;
 	// Map of objects to their list of searchable names
@@ -374,7 +396,7 @@ public:
 		, SaveArgs(InSaveArgs)
 		, PackageWriter(InSaveArgs.SavePackageContext ? InSaveArgs.SavePackageContext->PackageWriter : nullptr)
 		, SerializeContext(InSerializeContext)
-		, ExcludedObjectMarks(SavePackageUtilities::GetExcludedObjectMarksForTargetPlatform(SaveArgs.TargetPlatform))
+		, ExcludedObjectMarks(SavePackageUtilities::GetExcludedObjectMarksForTargetPlatform(SaveArgs.GetTargetPlatform()))
 	{
 		// Assumptions & checks
 		check(InPackage);
@@ -401,7 +423,7 @@ public:
 			TargetPackagePath.SetHeaderExtension(EPackageExtension::EmptyString);
 		}
 
-		bCanUseUnversionedPropertySerialization = CanUseUnversionedPropertySerialization(SaveArgs.TargetPlatform);
+		bCanUseUnversionedPropertySerialization = CanUseUnversionedPropertySerialization(SaveArgs.GetTargetPlatform());
 		bTextFormat = FString(Filename).EndsWith(FPackageName::GetTextAssetPackageExtension()) || FString(Filename).EndsWith(FPackageName::GetTextMapPackageExtension());
 		static const IConsoleVariable* ProcessPrestreamingRequests = IConsoleManager::Get().FindConsoleVariable(TEXT("s.ProcessPrestreamingRequests"));
 		if (ProcessPrestreamingRequests)
@@ -417,12 +439,12 @@ public:
 		ObjectSaveContext.Set(InPackage, GetTargetPlatform(), TargetPackagePath, SaveArgs.SaveFlags);
 
 		// Setup the harvesting flags and generate the context for harvesting the package
-		CreateHarvestingRealms();
+		SetupHarvestingRealms();
 	} 
 
 	~FSaveContext()
 	{
-		if (bNeedPreSaveCleanup && Asset)
+		if (bPostSaveRootRequired && Asset)
 		{
 			UE::SavePackageUtilities::CallPostSaveRoot(Asset, ObjectSaveContext, bNeedPreSaveCleanup);
 		}
@@ -433,9 +455,14 @@ public:
 		return SaveArgs;
 	}
 
+	FArchiveCookData* GetCookData()
+	{
+		return SaveArgs.ArchiveCookData;
+	}
+
 	const ITargetPlatform* GetTargetPlatform() const
 	{
-		return SaveArgs.TargetPlatform;
+		return SaveArgs.GetTargetPlatform();
 	}
 
 	UPackage* GetPackage() const
@@ -458,9 +485,10 @@ public:
 		return TargetPackagePath;
 	}
 
-	EObjectMark GetExcludedObjectMarks() const
+	EObjectMark GetExcludedObjectMarks(ESaveRealm HarvestingRealm) const
 	{
-		return ExcludedObjectMarks;
+		// When considering excluded objects for a platform, do not consider editor only object and not for platform objects in the optional context as excluded
+		return (HarvestingRealm == ESaveRealm::Optional) ? (EObjectMark)(ExcludedObjectMarks & ~(EObjectMark::OBJECTMARK_EditorOnly|EObjectMark::OBJECTMARK_NotForTargetPlatform)) : ExcludedObjectMarks;
 	}
 
 	EObjectFlags GetTopLevelFlags() const
@@ -490,7 +518,7 @@ public:
 
 	bool IsCooking() const
 	{
-		return SaveArgs.TargetPlatform != nullptr;
+		return SaveArgs.IsCooking();
 	}
 
 	bool IsProceduralSave() const
@@ -568,9 +596,9 @@ public:
 		return !!(SaveArgs.SaveFlags & SAVE_Optional);
 	}
 
-	bool IsComputeHash() const
+	bool IsSaveAutoOptional() const
 	{
-		return !!(SaveArgs.SaveFlags & SAVE_ComputeHash);
+		return bIsSaveAutoOptional;
 	}
 
 	bool IsConcurrent() const
@@ -603,6 +631,11 @@ public:
 		return bIsFixupStandaloneFlags;
 	}
 
+	bool ShouldRehydratePayloads() const
+	{
+		return (SaveArgs.SaveFlags & ESaveFlags::SAVE_RehydratePayloads) != 0;
+	}
+
 	FUObjectSerializeContext* GetSerializeContext() const
 	{
 		return SerializeContext;
@@ -613,12 +646,12 @@ public:
 		SerializeContext = InContext;
 	}
 
-	FEDLCookChecker* GetEDLCookChecker() const
+	FEDLCookCheckerThreadState* GetEDLCookChecker() const
 	{
 		return EDLCookChecker;
 	}
 
-	void SetEDLCookChecker(FEDLCookChecker* InCookChecker)
+	void SetEDLCookChecker(FEDLCookCheckerThreadState* InCookChecker)
 	{
 		EDLCookChecker = InCookChecker;
 	}
@@ -626,6 +659,16 @@ public:
 	uint32 GetPortFlags() const
 	{
 		return PPF_DeepCompareInstances | PPF_DeepCompareDSOsOnly;
+	}
+
+	bool GetPostSaveRootRequired() const
+	{
+		return bPostSaveRootRequired;
+	}
+
+	void SetPostSaveRootRequired(bool bInPostSaveRootRequired)
+	{
+		bPostSaveRootRequired = bInPostSaveRootRequired;
 	}
 
 	bool GetPreSaveCleanup() const
@@ -653,15 +696,29 @@ public:
 		return CurrentHarvestingRealm;
 	}
 
+	/** Returns which save context should be saved. */
 	TArray<ESaveRealm> GetHarvestedRealmsToSave();
 
 	void MarkUnsaveable(UObject* InObject);
 
 	bool IsUnsaveable(UObject* InObject, bool bEmitWarning = true) const;
-
-	void RecordIllegalReference(UObject* InFrom, UObject* InTo, EIllegalRefReason InReason)
+	enum class ESaveableStatus
 	{
-		HarvestedIllegalReferences.Add({ InFrom, InTo, InReason });
+		Success,
+		PendingKill,
+		Transient,
+		AbstractClass,
+		DeprecatedClass,
+		NewerVersionExistsClass,
+		OuterUnsaveable,
+		__Count,
+	};
+	ESaveableStatus GetSaveableStatus(UObject* InObject, UObject** OutCulprit = nullptr, ESaveableStatus* OutCulpritStatus = nullptr) const;
+	ESaveableStatus GetSaveableStatusNoOuter(UObject* InObject) const;
+
+	void RecordIllegalReference(UObject* InFrom, UObject* InTo, EIllegalRefReason InReason, FString&& InOptionalReasonText = FString())
+	{
+		HarvestedIllegalReferences.Add({ InFrom, InTo, InReason, MoveTemp(InOptionalReasonText) });
 	}
 
 	const TArray<FIllegalReference>& GetIllegalReferences() const
@@ -674,9 +731,9 @@ public:
 		GetHarvestedRealm().AddImport(InObject);
 	}
 
-	void AddExport(UObject* InObj, bool bNotAlwaysLoadedForEditorGame)
+	void AddExport(FTaggedExport InTagObj)
 	{
-		GetHarvestedRealm().AddExport(InObj, bNotAlwaysLoadedForEditorGame);
+		GetHarvestedRealm().AddExport(MoveTemp(InTagObj));
 	}
 
 	void AddExcluded(UObject* InObject)
@@ -694,9 +751,9 @@ public:
 		return GetHarvestedRealm().IsExport(InObject);
 	}
 
-	bool IsIncluded(UObject* InObject, ESaveRealm InContext = ESaveRealm::None) const
+	bool IsIncluded(UObject* InObject) const
 	{
-		return GetHarvestedRealm(InContext).IsIncluded(InObject);
+		return GetHarvestedRealm().IsIncluded(InObject);
 	}
 
 	bool IsExcluded(UObject* InObject) const
@@ -757,6 +814,11 @@ public:
 	const TSet<FNameEntryId>& GetNamesReferencedFromPackageHeader() const
 	{
 		return GetHarvestedRealm().GetNamesReferencedFromPackageHeader();
+	}
+
+	const TSet<FSoftObjectPath>& GetSoftObjectPathList() const
+	{
+		return GetHarvestedRealm().GetSoftObjectPathList();
 	}
 
 	const TMap<UObject*, TSet<UObject*>>& GetObjectDependencies() const
@@ -898,13 +960,6 @@ public:
 
 	FSavePackageResultStruct GetFinalResult()
 	{
-		auto HashCompletionFunc = [](FMD5& State)
-		{
-			FMD5Hash OutputHash;
-			OutputHash.Set(State);
-			return OutputHash;
-		};
-
 		if (Result != ESavePackageResult::Success)
 		{
 			return Result;
@@ -912,7 +967,6 @@ public:
 
 		ESavePackageResult FinalResult = IsStubRequested() ? ESavePackageResult::GenerateStub : ESavePackageResult::Success;
 		return FSavePackageResultStruct(FinalResult, TotalPackageSizeUncompressed,
-			AsyncWriteAndHashSequence.Finalize(EAsyncExecution::TaskGraph, MoveTemp(HashCompletionFunc)),
 			SerializedPackageFlags, IsCompareLinker() ? MoveTemp(GetHarvestedRealm().Linker) : nullptr);
 	}
 
@@ -953,20 +1007,12 @@ public:
 	int32 OffsetAfterExportMap = 0;
 	int64 OffsetAfterPayloadToc = 0;
 	int32 SerializedPackageFlags = 0;
-	TAsyncWorkSequence<FMD5> AsyncWriteAndHashSequence;
 	TArray<FLargeMemoryWriter, TInlineAllocator<4>> AdditionalFilesFromExports;
 	FSavePackageOutputFileArray AdditionalPackageFiles;
 private:
 
-	// Create the needed harvesting context depending on the save context options
-	void CreateHarvestingRealms()
-	{
-		// Create the different harvesting realms
-		HarvestedRealms.AddDefaulted((uint32)ESaveRealm::RealmCount);
-	
-		// if cooking the default harvesting context is Game, otherwise it's the editor context
-		CurrentHarvestingRealm = IsCooking() ? ESaveRealm::Game : ESaveRealm::Editor;
-	}
+	// Create the harvesting contexts and automatic optional context gathering options
+	void SetupHarvestingRealms();
 		
 	friend class FPackageHarvester;
 
@@ -985,15 +1031,17 @@ private:
 	bool bTextFormat = false;
 	bool bIsProcessingPrestreamPackages = false;
 	bool bIsFixupStandaloneFlags = false;
+	bool bPostSaveRootRequired = false;
 	bool bNeedPreSaveCleanup = false;
 	bool bGenerateFileStub = false;
 	bool bIgnoreHeaderDiffs = false;
+	bool bIsSaveAutoOptional = false;
 
 	// Config classes shared with the old Save
 	FCanSkipEditorReferencedPackagesWhenCooking SkipEditorRefCookingSetting;
 
 	// Pointer to the EDLCookChecker associated with this context
-	FEDLCookChecker* EDLCookChecker = nullptr;
+	FEDLCookCheckerThreadState* EDLCookChecker = nullptr;
 
 	// Matching any mark in ExcludedObjectMarks indicates that an object should be excluded from being either an import or an export for this save
 	const EObjectMark ExcludedObjectMarks;
@@ -1012,3 +1060,5 @@ private:
 	// Set of harvested prestream packages, should be deprecated
 	TSet<UPackage*> PrestreamPackages;
 };
+
+const TCHAR* LexToString(FSaveContext::ESaveableStatus Status);

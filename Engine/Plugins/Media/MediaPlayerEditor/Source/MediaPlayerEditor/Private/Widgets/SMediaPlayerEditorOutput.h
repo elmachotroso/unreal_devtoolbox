@@ -40,8 +40,11 @@ public:
 	 *
 	 * @param InArgs The declaration data for this widget.
 	 * @param InMediaPlayer The UMediaPlayer asset to show the details for.
+	 * @param InMediaTexture The UMediaTexture asset to output video to. If nullptr then use our own.
+	 * @param bInIsSoundEnabled If true then produce sound.
 	 */
-	void Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer);
+	void Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer,
+		UMediaTexture* InMediaTexture, bool  bInIsSoundEnabled);
 
 public:
 
@@ -64,4 +67,7 @@ private:
 
 	/** The sound component to play the media player's audio output. */
 	UMediaSoundComponent* SoundComponent;
+
+	/** If true then we created MediaTexture and need to clean it up when we are done. */
+	bool bIsOurMediaTexture;
 };

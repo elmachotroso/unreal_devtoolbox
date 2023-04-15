@@ -6,21 +6,28 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformAtomics.h"
 #include "RHI.h"
+#include "RenderGraphDefinitions.h"
+#include "RenderGraphResources.h"
 #include "RenderResource.h"
 #include "RendererInterface.h"
-#include "RenderGraphResources.h"
+#include "Templates/RefCounting.h"
 
+class FOutputDevice;
+class FRHICommandList;
 class FRenderTargetPool;
 
 /** The reference to a pooled render target, use like this: TRefCountPtr<IPooledRenderTarget> */
 struct RENDERCORE_API FPooledRenderTarget final : public IPooledRenderTarget
 {
-	FPooledRenderTarget(FRHITexture* Texture, ERHIAccess AccessInitial, const FPooledRenderTargetDesc& InDesc, FRenderTargetPool* InRenderTargetPool) 
+	FPooledRenderTarget(FRHITexture* Texture, const FPooledRenderTargetDesc& InDesc, FRenderTargetPool* InRenderTargetPool) 
 		: RenderTargetPool(InRenderTargetPool)
 		, Desc(InDesc)
-		, PooledTexture(Texture, Translate(InDesc), AccessInitial)
+		, PooledTexture(Texture)
 	{
 		RenderTargetItem.TargetableTexture = RenderTargetItem.ShaderResourceTexture = Texture;
 	}
@@ -98,7 +105,7 @@ class RENDERCORE_API FRenderTargetPool : public FRenderResource
 public:
 	FRenderTargetPool() = default;
 
-	TRefCountPtr<IPooledRenderTarget> FindFreeElement(const FRHITextureCreateInfo& Desc, const TCHAR* Name);
+	TRefCountPtr<IPooledRenderTarget> FindFreeElement(FRHITextureCreateInfo Desc, const TCHAR* Name);
 
 	bool FindFreeElement(const FRHITextureCreateInfo& Desc, TRefCountPtr<IPooledRenderTarget>& Out, const TCHAR* Name);
 
@@ -148,11 +155,10 @@ public:
 	void DumpMemoryUsage(FOutputDevice& OutputDevice);
 
 private:
-	TRefCountPtr<IPooledRenderTarget> FindFreeElementInternal(FRHITextureCreateInfo Desc, const TCHAR* Name, bool bResetStateToUnknown);
 	void FreeElementAtIndex(int32 Index);
 
 	/** Elements can be 0, we compact the buffer later. */
-	TArray<uint64> PooledRenderTargetHashes;
+	TArray<uint32> PooledRenderTargetHashes;
 	TArray< TRefCountPtr<FPooledRenderTarget> > PooledRenderTargets;
 	TArray< TRefCountPtr<FPooledRenderTarget> > DeferredDeleteArray;
 

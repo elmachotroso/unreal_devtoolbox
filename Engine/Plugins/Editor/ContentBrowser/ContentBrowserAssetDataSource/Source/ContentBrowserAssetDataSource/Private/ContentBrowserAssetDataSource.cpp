@@ -4,7 +4,7 @@
 #include "ContentBrowserAssetDataCore.h"
 #include "ContentBrowserDataLegacyBridge.h"
 #include "Modules/ModuleManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "CollectionManagerModule.h"
 #include "ICollectionManager.h"
@@ -33,6 +33,8 @@
 #include "ContentBrowserMenuContexts.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserAssetDataSource)
 
 #define LOCTEXT_NAMESPACE "ContentBrowserAssetDataSource"
 
@@ -427,7 +429,9 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			FARFilter InclusiveFilter;
 			if (Params.ObjectFilter)
 			{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				InclusiveFilter.ObjectPaths.Append(Params.ObjectFilter->ObjectNamesToInclude);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				InclusiveFilter.TagsAndValues.Append(Params.ObjectFilter->TagsAndValuesToInclude);
 				InclusiveFilter.bIncludeOnlyOnDiskAssets |= Params.ObjectFilter->bOnDiskObjectsOnly;
 			}
@@ -439,18 +443,18 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			}
 			if (Params.ClassFilter)
 			{
-				InclusiveFilter.ClassNames.Append(Params.ClassFilter->ClassNamesToInclude);
+				InclusiveFilter.ClassPaths.Append(Params.ClassFilter->ClassNamesToInclude);
 				InclusiveFilter.bRecursiveClasses |= Params.ClassFilter->bRecursiveClassNamesToInclude;
 			}
 			if (Params.CollectionFilter)
 			{
-				TArray<FName> ObjectPathsForCollections;
+				TArray<FSoftObjectPath> ObjectPathsForCollections;
 				if (GetObjectPathsForCollections(Params.CollectionManager, Params.CollectionFilter->SelectedCollections, Params.CollectionFilter->bIncludeChildCollections, ObjectPathsForCollections) && ObjectPathsForCollections.Num() == 0)
 				{
 					// If we had collections but they contained no objects then we can bail as nothing will pass the filter
 					return false;
 				}
-				InclusiveFilter.ObjectPaths.Append(MoveTemp(ObjectPathsForCollections));
+				InclusiveFilter.SoftObjectPaths.Append(MoveTemp(ObjectPathsForCollections));
 			}
 
 #if DO_ENSURE
@@ -551,18 +555,18 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 				FARFilter AllowListClassFilter;
 				for (const auto& AllowListPair : Params.ClassPermissionList->GetAllowList())
 				{
-					AllowListClassFilter.ClassNames.Add(AllowListPair.Key);
+					AllowListClassFilter.ClassPaths.Add(FTopLevelAssetPath(AllowListPair.Key));
 				}
 				AllowListClassFilter.bRecursiveClasses = true;
 				Params.AssetRegistry->CompileFilter(AllowListClassFilter, CompiledClassFilterAllowList);
 			}
 
-			if (CompiledInclusiveFilter.ClassNames.Num() > 0)
+			if (CompiledInclusiveFilter.ClassPaths.Num() > 0)
 			{
 				// Explicit classes given - remove anything not in the allow list class set
 				// If the classes resolve as empty then the combined filter will return nothing and can be skipped
-				CompiledInclusiveFilter.ClassNames = CompiledInclusiveFilter.ClassNames.Intersect(CompiledClassFilterAllowList.ClassNames);
-				if (CompiledInclusiveFilter.ClassNames.Num() == 0)
+				CompiledInclusiveFilter.ClassPaths = CompiledInclusiveFilter.ClassPaths.Intersect(CompiledClassFilterAllowList.ClassPaths);
+				if (CompiledInclusiveFilter.ClassPaths.Num() == 0)
 				{
 					return false;
 				}
@@ -570,7 +574,7 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			else
 			{
 				// No explicit classes given - just use the allow list class set
-				CompiledInclusiveFilter.ClassNames = MoveTemp(CompiledClassFilterAllowList.ClassNames);
+				CompiledInclusiveFilter.ClassPaths = MoveTemp(CompiledClassFilterAllowList.ClassPaths);
 			}
 		}
 	}
@@ -583,7 +587,9 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			FARFilter ExclusiveFilter;
 			if (Params.ObjectFilter)
 			{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				ExclusiveFilter.ObjectPaths.Append(Params.ObjectFilter->ObjectNamesToExclude);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				ExclusiveFilter.TagsAndValues.Append(Params.ObjectFilter->TagsAndValuesToExclude);
 				ExclusiveFilter.bIncludeOnlyOnDiskAssets |= Params.ObjectFilter->bOnDiskObjectsOnly;
 			}
@@ -595,7 +601,7 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			}
 			if (Params.ClassFilter)
 			{
-				ExclusiveFilter.ClassNames.Append(Params.ClassFilter->ClassNamesToExclude);
+				ExclusiveFilter.ClassPaths.Append(Params.ClassFilter->ClassNamesToExclude);
 				ExclusiveFilter.bRecursiveClasses |= Params.ClassFilter->bRecursiveClassNamesToExclude;
 			}
 			CreateCompiledFilter(ExclusiveFilter, CompiledExclusiveFilter);
@@ -626,13 +632,13 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 				FARFilter ClassFilter;
 				for (const auto& FilterPair : Params.ClassPermissionList->GetDenyList())
 				{
-					ClassFilter.ClassNames.Add(FilterPair.Key);
+					ClassFilter.ClassPaths.Add(FTopLevelAssetPath(FilterPair.Key));
 				}
 				ClassFilter.bRecursiveClasses = true;
 				Params.AssetRegistry->CompileFilter(ClassFilter, CompiledClassFilter);
 			}
 
-			CompiledExclusiveFilter.ClassNames.Append(CompiledClassFilter.ClassNames);
+			CompiledExclusiveFilter.ClassPaths.Append(CompiledClassFilter.ClassPaths);
 		}
 	}
 
@@ -657,23 +663,23 @@ bool UContentBrowserAssetDataSource::CreateAssetFilter(FAssetFilterInputParams& 
 			}
 			CompiledExclusiveFilter.PackagePaths.Reset();
 		}
-		if (CompiledInclusiveFilter.ObjectPaths.Num() > 0 && CompiledExclusiveFilter.ObjectPaths.Num() > 0)
+		if (CompiledInclusiveFilter.SoftObjectPaths.Num() > 0 && CompiledExclusiveFilter.SoftObjectPaths.Num() > 0)
 		{
-			CompiledInclusiveFilter.ObjectPaths = CompiledInclusiveFilter.ObjectPaths.Difference(CompiledExclusiveFilter.ObjectPaths);
-			if (CompiledInclusiveFilter.ObjectPaths.Num() == 0)
+			CompiledInclusiveFilter.SoftObjectPaths = CompiledInclusiveFilter.SoftObjectPaths.Difference(CompiledExclusiveFilter.SoftObjectPaths);
+			if (CompiledInclusiveFilter.SoftObjectPaths.Num() == 0)
 			{
 				return false;
 			}
-			CompiledExclusiveFilter.ObjectPaths.Reset();
+			CompiledExclusiveFilter.SoftObjectPaths.Reset();
 		}
-		if (CompiledInclusiveFilter.ClassNames.Num() > 0 && CompiledExclusiveFilter.ClassNames.Num() > 0)
+		if (CompiledInclusiveFilter.ClassPaths.Num() > 0 && CompiledExclusiveFilter.ClassPaths.Num() > 0)
 		{
-			CompiledInclusiveFilter.ClassNames = CompiledInclusiveFilter.ClassNames.Difference(CompiledExclusiveFilter.ClassNames);
-			if (CompiledInclusiveFilter.ClassNames.Num() == 0)
+			CompiledInclusiveFilter.ClassPaths = CompiledInclusiveFilter.ClassPaths.Difference(CompiledExclusiveFilter.ClassPaths);
+			if (CompiledInclusiveFilter.ClassPaths.Num() == 0)
 			{
 				return false;
 			}
-			CompiledExclusiveFilter.ClassNames.Reset();
+			CompiledExclusiveFilter.ClassPaths.Reset();
 		}
 	}
 
@@ -738,8 +744,10 @@ void UContentBrowserAssetDataSource::CompileFilter(const FName InPath, const FCo
 						FARFilter CustomSourceAssetsFilter;
 						CustomSourceAssetsFilter.PackageNames = Params.AssetDataFilter->InclusiveFilter.PackageNames.Array();
 						CustomSourceAssetsFilter.PackagePaths = Params.AssetDataFilter->InclusiveFilter.PackagePaths.Array();
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 						CustomSourceAssetsFilter.ObjectPaths = Params.AssetDataFilter->InclusiveFilter.ObjectPaths.Array();
-						CustomSourceAssetsFilter.ClassNames = Params.AssetDataFilter->InclusiveFilter.ClassNames.Array();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+						CustomSourceAssetsFilter.ClassPaths = Params.AssetDataFilter->InclusiveFilter.ClassPaths.Array();
 						CustomSourceAssetsFilter.TagsAndValues = Params.AssetDataFilter->InclusiveFilter.TagsAndValues;
 						CustomSourceAssetsFilter.bIncludeOnlyOnDiskAssets = Params.AssetDataFilter->InclusiveFilter.bIncludeOnlyOnDiskAssets;
 
@@ -930,7 +938,9 @@ void UContentBrowserAssetDataSource::EnumerateItemsAtPath(const FName InPath, co
 	if (EnumHasAnyFlags(InItemTypeFilter, EContentBrowserItemTypeFilter::IncludeFiles))
 	{
 		FARFilter ARFilter;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		ARFilter.ObjectPaths.Add(InternalPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		AssetRegistry->EnumerateAssets(ARFilter, [this, &InCallback](const FAssetData& AssetData)
 		{
 			if (ContentBrowserAssetData::IsPrimaryAsset(AssetData))
@@ -1254,7 +1264,9 @@ bool UContentBrowserAssetDataSource::DuplicateItem(const FContentBrowserItemData
 	if (ContentBrowserAssetData::DuplicateItem(AssetTools, this, InItem, SourceAsset, NewAssetData))
 	{
 		FName VirtualizedPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		TryConvertInternalPathToVirtual(NewAssetData.ObjectPath, VirtualizedPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		FContentBrowserItemData NewItemData(
 			this,
@@ -1321,6 +1333,21 @@ bool UContentBrowserAssetDataSource::DeleteItem(const FContentBrowserItemData& I
 bool UContentBrowserAssetDataSource::BulkDeleteItems(TArrayView<const FContentBrowserItemData> InItems)
 {
 	return ContentBrowserAssetData::DeleteItems(AssetTools, AssetRegistry, this, InItems);
+}
+
+bool UContentBrowserAssetDataSource::CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	return ContentBrowserAssetData::CanPrivatizeItem(AssetTools, AssetRegistry, this, InItem, OutErrorMsg);
+}
+
+bool UContentBrowserAssetDataSource::PrivatizeItem(const FContentBrowserItemData& InItem)
+{
+	return ContentBrowserAssetData::PrivatizeItems(AssetTools, AssetRegistry, this, MakeArrayView(&InItem, 1));
+}
+
+bool UContentBrowserAssetDataSource::BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems)
+{
+	return ContentBrowserAssetData::PrivatizeItems(AssetTools, AssetRegistry, this, InItems);
 }
 
 bool UContentBrowserAssetDataSource::CanRenameItem(const FContentBrowserItemData& InItem, const FString* InNewName, FText* OutErrorMsg)
@@ -1556,11 +1583,11 @@ bool UContentBrowserAssetDataSource::HandleDragDropOnItem(const FContentBrowserI
 	return false;
 }
 
-bool UContentBrowserAssetDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId)
+bool UContentBrowserAssetDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId)
 {
 	if (TSharedPtr<const FContentBrowserAssetFileItemDataPayload> AssetPayload = GetAssetFileItemPayload(InItem))
 	{
-		OutCollectionId = AssetPayload->GetAssetData().ObjectPath;
+		OutCollectionId = AssetPayload->GetAssetData().GetSoftObjectPath();
 		return true;
 	}
 	return false;
@@ -1594,8 +1621,10 @@ bool UContentBrowserAssetDataSource::Legacy_TryConvertPackagePathToVirtualPath(c
 
 bool UContentBrowserAssetDataSource::Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath)
 {
-	return InAssetData.AssetClass != NAME_Class // Ignore legacy class items
+	return InAssetData.AssetClassPath != FTopLevelAssetPath(TEXT("/Script/CoreUObject"), TEXT("Class")) // Ignore legacy class items
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		&& TryConvertInternalPathToVirtual(InUseFolderPaths ? InAssetData.PackagePath : InAssetData.ObjectPath, OutPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UContentBrowserAssetDataSource::IsKnownContentPath(const FName InPackagePath) const
@@ -1626,7 +1655,7 @@ bool UContentBrowserAssetDataSource::IsRootContentPath(const FName InPackagePath
 	});
 }
 
-bool UContentBrowserAssetDataSource::GetObjectPathsForCollections(ICollectionManager* CollectionManager, TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FName>& OutObjectPaths)
+bool UContentBrowserAssetDataSource::GetObjectPathsForCollections(ICollectionManager* CollectionManager, TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FSoftObjectPath>& OutObjectPaths)
 {
 	if (InCollections.Num() > 0)
 	{
@@ -1654,7 +1683,9 @@ FContentBrowserItemData UContentBrowserAssetDataSource::CreateAssetFolderItem(co
 FContentBrowserItemData UContentBrowserAssetDataSource::CreateAssetFileItem(const FAssetData& InAssetData)
 {
 	FName VirtualizedPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	TryConvertInternalPathToVirtual(InAssetData.ObjectPath, VirtualizedPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return ContentBrowserAssetData::CreateAssetFileItem(this, VirtualizedPath, InAssetData);
 }
@@ -2089,10 +2120,12 @@ void UContentBrowserAssetDataSource::OnBeginCreateAsset(const FName InDefaultAss
 	}
 	else
 	{
-		FAssetData NewAssetData(*(InPackagePath.ToString() / InDefaultAssetName.ToString()), InPackagePath, InDefaultAssetName, ClassToUse->GetFName());
+		FAssetData NewAssetData(*(InPackagePath.ToString() / InDefaultAssetName.ToString()), InPackagePath, InDefaultAssetName, ClassToUse->GetClassPathName());
 
 		FName VirtualizedPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		TryConvertInternalPathToVirtual(NewAssetData.ObjectPath, VirtualizedPath);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		FContentBrowserItemData NewItemData(
 			this, 
@@ -2130,7 +2163,7 @@ FReply UContentBrowserAssetDataSource::OnImportClicked(const UContentBrowserTool
 
 bool UContentBrowserAssetDataSource::IsImportEnabled(const UContentBrowserToolbarMenuContext* ContextObject) const
 {
-	return ContextObject->GetCurrentPath() != NAME_None;
+	return ContextObject->CanWriteToCurrentPath();
 }
 
 FContentBrowserItemData UContentBrowserAssetDataSource::OnFinalizeCreateFolder(const FContentBrowserItemData& InItemData, const FString& InProposedName, FText* OutErrorMsg)
@@ -2227,3 +2260,4 @@ bool UContentBrowserAssetDataSource::PathPassesCompiledDataFilter(const FContent
 }
 
 #undef LOCTEXT_NAMESPACE
+

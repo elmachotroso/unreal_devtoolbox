@@ -13,11 +13,11 @@ namespace UnrealBuildTool.Rules
 			(
 				new string[]
 				{
-					"Core",
-					"Serialization",
-					"SignalProcessing",
 					"AudioExtensions",
-					"MetasoundFrontend"
+					"Core",
+					"MetasoundFrontend",
+					"Serialization",
+					"SignalProcessing"
 				}
 			);
 
@@ -25,10 +25,12 @@ namespace UnrealBuildTool.Rules
 			(
 				new string[]
 				{
-					"MetasoundGraphCore",
-					"CoreUObject"
+					"CoreUObject",
+					"MetasoundGraphCore"
 				}
 			);
+
+			NumIncludedBytesPerUnityCPPOverride = 120 * 1024;
 		}
 	}
 }

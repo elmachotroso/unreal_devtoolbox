@@ -1,13 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyTable/SPropertyTableCell.h"
-#include "Rendering/DrawElements.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SMenuAnchor.h"
-#include "IPropertyTable.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/Set.h"
+#include "Delegates/Delegate.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IPropertyTable.h"
+#include "IPropertyTableCell.h"
+#include "IPropertyTableCellPresenter.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Math/Color.h"
+#include "Misc/Attribute.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateColor.h"
+#include "Styling/WidgetStyle.h"
+#include "Templates/TypeHash.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SMenuAnchor.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FSlateRect;
+class SWidget;
+class SWindow;
+class UObject;
+struct FPropertyChangedEvent;
 
 void SPropertyTableCell::Construct( const FArguments& InArgs, const TSharedRef< class IPropertyTableCell >& InCell )
 {
@@ -15,7 +48,7 @@ void SPropertyTableCell::Construct( const FArguments& InArgs, const TSharedRef< 
 	Presenter = InArgs._Presenter;
 	Style = InArgs._Style;
 
-	CellBackground = FEditorStyle::GetBrush( Style, ".ColumnBorder" );
+	CellBackground = FAppStyle::GetBrush( Style, ".ColumnBorder" );
 
 	SetContent( ConstructCellContents() );
 
@@ -26,7 +59,7 @@ void SPropertyTableCell::Construct( const FArguments& InArgs, const TSharedRef< 
 
 	static const FName InvertedForegroundName("InvertedForeground");
 
-	SetForegroundColor( FEditorStyle::GetSlateColor(InvertedForegroundName) );
+	SetForegroundColor( FAppStyle::GetSlateColor(InvertedForegroundName) );
 }
 
 void SPropertyTableCell::SetContent( const TSharedRef< SWidget >& NewContents )
@@ -78,10 +111,10 @@ const FSlateBrush* SPropertyTableCell::GetCurrentCellBorder() const
 
 	if ( IsReadOnly )
 	{
-		return FEditorStyle::GetBrush( Style, ".ReadOnlyCurrentCellBorder" );
+		return FAppStyle::GetBrush( Style, ".ReadOnlyCurrentCellBorder" );
 	}
 
-	return FEditorStyle::GetBrush( Style, ".CurrentCellBorder" );
+	return FAppStyle::GetBrush( Style, ".CurrentCellBorder" );
 }
 
 void SPropertyTableCell::OnAnchorWindowClosed( const TSharedRef< SWindow >& WindowClosing )
@@ -148,7 +181,7 @@ int32 SPropertyTableCell::OnPaint( const FPaintArgs& Args, const FGeometry& Allo
 		}
 		else if ( Cell->GetTable()->GetSelectedCells().Contains( Cell.ToSharedRef() ) )
 		{
-			Background = FEditorStyle::GetBrush( Style, ".ReadOnlySelectedCellBorder" );
+			Background = FAppStyle::GetBrush( Style, ".ReadOnlySelectedCellBorder" );
 		}
 
 		FSlateDrawElement::MakeBox(
@@ -182,7 +215,7 @@ FReply SPropertyTableCell::OnMouseButtonDoubleClick( const FGeometry& InMyGeomet
 
 TSharedRef< class SWidget > SPropertyTableCell::ConstructEditModeCellWidget()
 {
-	const FSlateBrush* BorderBrush = ( Presenter->HasReadOnlyEditMode() || Cell->IsReadOnly() ) ? FEditorStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder" ) : FEditorStyle::GetBrush( Style, ".Selection.Active" );
+	const FSlateBrush* BorderBrush = ( Presenter->HasReadOnlyEditMode() || Cell->IsReadOnly() ) ? FAppStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder" ) : FAppStyle::GetBrush( Style, ".Selection.Active" );
 
 	return SNew( SBorder )
 		.BorderImage( BorderBrush )
@@ -209,7 +242,7 @@ TSharedRef<SBorder> SPropertyTableCell::ConstructInvalidPropertyWidget()
 {
 	return 
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder"))
+		.BorderImage(FAppStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder"))
 		.VAlign(VAlign_Center)
 		.Padding(0)
 		.Content()
@@ -220,7 +253,7 @@ TSharedRef<SBorder> SPropertyTableCell::ConstructInvalidPropertyWidget()
 			.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Error"))
+				.Image(FAppStyle::GetBrush("Icons.Error"))
 			]
 			+SHorizontalBox::Slot()
 			[

@@ -25,6 +25,12 @@
 #include "ContextObjectStore.h"
 #include "PlacementPaletteItem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PlacementPlaceSingleTool)
+
+#if !UE_IS_COOKED_EDITOR
+#include "AssetPlacementEdModeModule.h"
+#endif
+
 constexpr TCHAR UPlacementModePlaceSingleTool::ToolName[];
 
 UPlacementBrushToolBase* UPlacementModePlaceSingleToolBuilder::FactoryToolInstance(UObject* Outer) const
@@ -70,6 +76,11 @@ void UPlacementModePlaceSingleTool::OnClickPress(const FInputDeviceRay& PressPos
 {
 	Super::OnClickPress(PressPos);
 
+	if (!PlacementInfo)
+	{
+		return;
+	}
+
 	DestroyPreviewElements();
 	LastBrushStamp.Radius = 100.0f * LastBrushStampWorldToPixelScale;
 
@@ -81,7 +92,17 @@ void UPlacementModePlaceSingleTool::OnClickPress(const FInputDeviceRay& PressPos
 		// Place the Preview data if we managed to get to a valid handled click.
 		FPlacementOptions PlacementOptions;
 		PlacementOptions.bPreferBatchPlacement = true;
-		PlacementOptions.InstancedPlacementGridGuid = PlacementSettings->GetActivePaletteGuid();
+		
+#if !UE_IS_COOKED_EDITOR
+		if (AssetPlacementEdModeUtil::AreInstanceWorkflowsEnabled())
+		{
+			PlacementOptions.InstancedPlacementGridGuid = PlacementSettings->GetActivePaletteGuid();
+		}
+		else
+#endif
+		{
+			PlacementOptions.InstancedPlacementGridGuid = FGuid();
+		}
 
 		FAssetPlacementInfo FinalizedPlacementInfo = *PlacementInfo;
 		FinalizedPlacementInfo.FinalizedTransform = FinalizeTransform(
@@ -268,6 +289,11 @@ void UPlacementModePlaceSingleTool::CreatePreviewElements(const FInputDeviceRay&
 		GeneratePlacementData(DevicePos);
 	}
 
+	if (!PlacementInfo)
+	{
+		return;
+	}
+
 	if (UPlacementSubsystem* PlacementSubsystem = GEditor->GetEditorSubsystem<UPlacementSubsystem>())
 	{
 		FPlacementOptions PlacementOptions;
@@ -411,3 +437,4 @@ void UPlacementModePlaceSingleTool::SetupRightClickMouseBehavior()
 	RightMouseBehavior->Initialize();
 	AddInputBehavior(RightMouseBehavior);
 }
+

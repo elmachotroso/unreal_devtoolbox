@@ -17,13 +17,14 @@
 #include "UObject/PackageFileSummary.h"
 #include "Framework/Commands/Commands.h"
 #include "Commandlets/GatherTextFromSourceCommandlet.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Sound/DialogueWave.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PackageHelperFunctions.h"
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
 #include "Templates/UniquePtr.h"
 #include "CollectionManagerModule.h"
 #include "ICollectionManager.h"
@@ -416,6 +417,13 @@ bool IsGatherableTextDataIdentical(const TArray<FGatherableTextData>& Gatherable
 	return true;
 }
 
+bool UGatherTextFromAssetsCommandlet::ShouldRunInPreview(const TArray<FString>& Switches, const TMap<FString, FString>& ParamVals) const
+{
+	const FString* GatherType = ParamVals.Find(UGatherTextCommandletBase::GatherTypeParam);
+	// If the param is not specified, it is assumed that both source and assets are to be gathered 
+	return !GatherType || *GatherType == TEXT("Asset") || *GatherType == TEXT("All");
+}
+
 int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 {
 	// Parse command line.
@@ -474,6 +482,7 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 
 			if (ModuleLoadResult != EModuleLoadResult::Success)
 			{
+				UE_LOG(LogGatherTextFromAssetsCommandlet, Warning, TEXT("Failed to preload dependent module %s. Please check if the modules have been renamed or moved to another folder."), *ModuleName);
 				HasFailedToPreloadAnyModules = true;
 				continue;
 			}
@@ -502,7 +511,9 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 			ICollectionManager& CollectionManager = CollectionManagerModule.Get();
 			for (const FString& CollectionName : CollectionFilters)
 			{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				if (!CollectionManager.GetObjectsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, FirstPassFilter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				{
 					UE_LOG(LogGatherTextFromAssetsCommandlet, Error, TEXT("Failed get objects in specified collection: %s"), *CollectionName);
 					HasFailedToGetACollection = true;
@@ -518,11 +529,19 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 		if (ShouldExcludeDerivedClasses)
 		{
 			FirstPassFilter.bRecursiveClasses = true;
-			FirstPassFilter.ClassNames.Add(TEXT("Object"));
+			FirstPassFilter.ClassPaths.Add(UObject::StaticClass()->GetClassPathName());
 			for (const FString& ExcludeClassName : ExcludeClassNames)
 			{
-				// Note: Can't necessarily validate these class names here, as the class may be a generated blueprint class that hasn't been loaded yet.
-				FirstPassFilter.RecursiveClassesExclusionSet.Add(*ExcludeClassName);
+				FTopLevelAssetPath ExcludedClassPathName = UClass::TryConvertShortTypeNameToPathName<UClass>(ExcludeClassName, ELogVerbosity::Warning, TEXT("GatherTextFromAssetsCommandlet"));
+				if (!ExcludedClassPathName.IsNull())
+				{
+					// Note: Can't necessarily validate these class names here, as the class may be a generated blueprint class that hasn't been loaded yet.
+					FirstPassFilter.RecursiveClassPathsExclusionSet.Add(FTopLevelAssetPath(ExcludeClassName));
+				}
+				else
+				{
+					UE_CLOG(!ExcludeClassName.IsEmpty(), LogGatherTextFromAssetsCommandlet, Error, TEXT("Unable to convert short class name \"%s\" to path name. Please use path names fo ExcludeClassNames"), *ExcludeClassName);
+				}
 			}
 		}
 
@@ -544,8 +563,17 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 		ExcludeExactClassesFilter.bRecursiveClasses = false;
 		for (const FString& ExcludeClassName : ExcludeClassNames)
 		{
-			// Note: Can't necessarily validate these class names here, as the class may be a generated blueprint class that hasn't been loaded yet.
-			ExcludeExactClassesFilter.ClassNames.Add(*ExcludeClassName);
+			FTopLevelAssetPath ExcludedClassPathName = UClass::TryConvertShortTypeNameToPathName<UClass>(ExcludeClassName, ELogVerbosity::Warning, TEXT("GatherTextFromAssetsCommandlet"));
+			if (!ExcludedClassPathName.IsNull())
+			{
+				// Note: Can't necessarily validate these class names here, as the class may be a generated blueprint class that hasn't been loaded yet.
+				ExcludeExactClassesFilter.ClassPaths.Add(FTopLevelAssetPath(ExcludeClassName));
+			}
+			else
+			{
+				UE_CLOG(!ExcludeClassName.IsEmpty(), LogGatherTextFromAssetsCommandlet, Error, TEXT("Unable to convert short class name \"%s\" to path name. Please use path names fo ExcludeClassNames"), *ExcludeClassName);
+			}
+
 		}
 
 		// Reapply filter over the current set of assets.
@@ -707,7 +735,7 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 			AssetRegistry.GetAssetsByPackageName(PackagePendingGather.PackageName, AllAssetDataInSamePackage);
 			for (const FAssetData& AssetData : AllAssetDataInSamePackage)
 			{
-				if (AssetData.AssetClass == UDialogueWave::StaticClass()->GetFName())
+				if (AssetData.AssetClassPath == UDialogueWave::StaticClass()->GetClassPathName())
 				{
 					PackagePendingGather.PackageLocCacheState = EPackageLocCacheState::Uncached_TooOld;
 				}
@@ -817,6 +845,10 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 		if (GDistanceFieldAsyncQueue)
 		{
 			GDistanceFieldAsyncQueue->ProcessAsyncTasks();
+		}
+		if (GCardRepresentationAsyncQueue)
+		{
+			GCardRepresentationAsyncQueue->ProcessAsyncTasks();
 		}
 
 		// Because packages may not have been resaved after this flagging was implemented, we may have added packages to load that weren't flagged - potential false positives.

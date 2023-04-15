@@ -3,6 +3,7 @@
 
 #include "IRemoteControlUIModule.h"
 
+#include "AssetTypeCategories.h"
 #include "CoreMinimal.h"	
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
@@ -19,6 +20,11 @@ class URemoteControlPreset;
 class FRemoteControlUIModule : public IRemoteControlUIModule
 {
 public:
+	
+	FRemoteControlUIModule()
+		: RemoteControlAssetCategoryBit(EAssetTypeCategories::Misc)
+	{
+	}
 
 	/**
 	 * Singleton-like access to this module's interface.  This is just for convenience!
@@ -44,9 +50,9 @@ public:
 	virtual void RegisterMetadataCustomization(FName MetadataKey, FOnCustomizeMetadataEntry OnCustomizeCallback) override;
 	virtual void UnregisterMetadataCustomization(FName MetadataKey) override;
 	virtual URemoteControlPreset* GetActivePreset() const override;
+	virtual uint32 GetRemoteControlAssetCategory() const override;
 	virtual void RegisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType, const FOnGenerateRCWidget& OnGenerateRCWidgetDelegate) override;
 	virtual void UnregisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType) override;
-
 	//~ End IRemoteControlUIModule interface
 
 	/**
@@ -55,6 +61,8 @@ public:
 	 * @return The remote control widget.
 	 */
 	TSharedRef<SRemoteControlPanel> CreateRemoteControlPanel(URemoteControlPreset* Preset, const TSharedPtr<IToolkitHost>& ToolkitHost = TSharedPtr<IToolkitHost>());
+
+	void UnregisterRemoteControlPanel(SRemoteControlPanel* Panel);
 
 	/**
 	 * Get the map of entity metadata entry customizations.
@@ -65,7 +73,6 @@ public:
 	}
 
 public:
-	static const FName EntityDetailsTabName;
 	static const FName RemoteControlPanelTabName;
 
 	TSharedPtr<SRCPanelTreeNode> GenerateEntityWidget(const FGenerateWidgetArgs& Args);
@@ -102,13 +109,16 @@ private:
 	void RegisterEvents();
 	void UnregisterEvents();
 
-	//~ Toggle Edit Mode RC Command.
-	void ToggleEditMode();
-	bool CanToggleEditMode() const;	
-	bool IsInEditMode() const;
-
 	/** Handle creating the row extensions.  */
 	void HandleCreatePropertyRowExtension(const FOnGenerateGlobalRowExtensionArgs& InArgs, TArray<FPropertyRowExtensionButton>& OutExtensions);
+
+	/*
+	 * Returns the Panel widget associated with an property by, in the case of embedded presets, examining the
+	 * world that the property's owning object belongs to. In the case of assets, just returns the Panel ref in this module.
+	 */
+	TSharedPtr<SRemoteControlPanel> GetPanelForObject(const UObject* Object) const;
+	TSharedPtr<SRemoteControlPanel> GetPanelForProperty(const FRCExposesPropertyArgs& InPropertyArgs) const;
+	TSharedPtr<SRemoteControlPanel> GetPanelForPropertyChangeEvent(const FPropertyChangedEvent& InPropertyChangeEvent) const;
 
 	/** Handle getting the icon displayed in the row extension. */
 	FSlateIcon OnGetExposedIcon(const FRCExposesPropertyArgs& InArgs) const;
@@ -200,4 +210,9 @@ private:
 	TMap<FName, FOnCustomizeMetadataEntry> ExternalEntityMetadataCustomizations;
 
 	TMap<TWeakObjectPtr<UScriptStruct>, FOnGenerateRCWidget> GenerateWidgetDelegates;
+
+	/** Holds the advanced asset type category bit registered by Remote Control. */
+	EAssetTypeCategories::Type RemoteControlAssetCategoryBit;
+
+	TArray<TWeakPtr<SRemoteControlPanel>> RegisteredRemoteControlPanels;
 };

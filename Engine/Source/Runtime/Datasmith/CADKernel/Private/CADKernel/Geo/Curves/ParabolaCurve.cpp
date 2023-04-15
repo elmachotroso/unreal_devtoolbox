@@ -4,7 +4,7 @@
 #include "CADKernel/Math/Point.h"
 #include "CADKernel/Math/MatrixH.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 TSharedPtr<FEntityGeom> FParabolaCurve::ApplyMatrix(const FMatrixH& InMatrix) const
@@ -12,6 +12,13 @@ TSharedPtr<FEntityGeom> FParabolaCurve::ApplyMatrix(const FMatrixH& InMatrix) co
 	FMatrixH NewMatrix = InMatrix * Matrix;
 	return FEntity::MakeShared<FParabolaCurve>(NewMatrix, FocalDistance, Boundary, Dimension);
 }
+
+void FParabolaCurve::Offset(const FPoint& OffsetDirection)
+{
+	FMatrixH Offset = FMatrixH::MakeTranslationMatrix(OffsetDirection);
+	Matrix *= Offset;
+}
+
 
 #ifdef CADKERNEL_DEV
 FInfoEntity& FParabolaCurve::GetInfo(FInfoEntity& Info) const

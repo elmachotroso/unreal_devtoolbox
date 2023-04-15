@@ -23,7 +23,6 @@
 
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
-#include "Developer/SourceCodeAccess/Public/ISourceCodeAccessModule.h"
 #endif
 
 #if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
@@ -82,6 +81,16 @@ FAutoConsoleVariableRef	CVarForceRawInputSimulation(
 static int32 ForceRawInputSimulation = false;
 static int32 EnableRawInputSimulationOverRDP = false;
 #endif
+
+/* 
+* Enabling first touch event will prevent small pop on some touch input devices.
+*/
+static bool bEnableFirstTouchEvent = false;
+FAutoConsoleVariableRef CVarEnableFirstTouchEvent(
+	TEXT("WindowsApplication.EnableFirstTouchEvent"),
+	bEnableFirstTouchEvent,
+	TEXT("Enable FirstTouch Event which prevents small pop on some touch input devices")
+);
 
 const FIntPoint FWindowsApplication::MinimizedWindowPosition(-32000,-32000);
 
@@ -805,10 +814,10 @@ static void GetMonitorsInfo(TArray<FMonitorInfo>& OutMonitorInfo)
 						else
 						{
 							// we also need to include the OS scaling value
-							const float CenterX = 0.5f * (Info.WorkArea.Right + Info.WorkArea.Left);
-							const float CenterY = 0.5f * (Info.WorkArea.Top + Info.WorkArea.Bottom);
+							const float CenterX = 0.5f * float(Info.WorkArea.Right + Info.WorkArea.Left);
+							const float CenterY = 0.5f * float(Info.WorkArea.Top + Info.WorkArea.Bottom);
 							const float DPIScaleFactor = FWindowsPlatformApplicationMisc::GetDPIScaleFactorAtPoint(CenterX, CenterY);
-							Info.DPI *= DPIScaleFactor;
+							Info.DPI = (int32)((float)Info.DPI * DPIScaleFactor);
 						}
 
 						// The editor shouldn't care about lower level display resolutions. This is only necessary for fullscreen exclusive situations.
@@ -878,7 +887,7 @@ EWindowTitleAlignment::Type FWindowsApplication::GetWindowTitleAlignment() const
 	VersionInfo.dwOSVersionInfoSize = sizeof(VersionInfo);
 
 	DWORDLONG LongConditionMask = 0;
-	int ConditionMask = VER_GREATER_EQUAL;
+	BYTE ConditionMask = VER_GREATER_EQUAL;
 	VER_SET_CONDITION(LongConditionMask, VER_MAJORVERSION, ConditionMask);
 	VER_SET_CONDITION(LongConditionMask, VER_MINORVERSION, ConditionMask);
 
@@ -1013,11 +1022,11 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			DeferMessage( CurrentNativeEventWindowPtr, hwnd, msg, wParam, lParam );
 			return 0;
 		case WM_IME_NOTIFY:
-			UE_LOG(LogWindowsDesktop, Verbose, TEXT("WM_IME_NOTIFY - %s"), IMNStrings.Find(wParam) ? *(IMNStrings[wParam]) : nullptr);
+			UE_LOG(LogWindowsDesktop, Verbose, TEXT("WM_IME_NOTIFY - %s"), IMNStrings.Find(IntCastChecked<uint32>(wParam)) ? *(IMNStrings[(uint32)wParam]) : nullptr);
 			DeferMessage( CurrentNativeEventWindowPtr, hwnd, msg, wParam, lParam );
 			return 0;
 		case WM_IME_REQUEST:
-			UE_LOG(LogWindowsDesktop, Verbose, TEXT("WM_IME_REQUEST - %s"), IMRStrings.Find(wParam) ? *(IMRStrings[wParam]) : nullptr);
+			UE_LOG(LogWindowsDesktop, Verbose, TEXT("WM_IME_REQUEST - %s"), IMRStrings.Find(IntCastChecked<uint32>(wParam)) ? *(IMRStrings[(uint32)wParam]) : nullptr);
 			DeferMessage( CurrentNativeEventWindowPtr, hwnd, msg, wParam, lParam );
 			return 0;
 			// Character
@@ -1124,8 +1133,8 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 								const int32 Width = GetSystemMetrics(IsVirtualScreen ? SM_CXVIRTUALSCREEN : SM_CXSCREEN);
 								const int32 Height = GetSystemMetrics(IsVirtualScreen ? SM_CYVIRTUALSCREEN : SM_CYSCREEN);
 
-								CursorPoint.x = static_cast<int>((float(Raw->data.mouse.lLastX) / 65535.0f) * Width) + Left;
-								CursorPoint.y = static_cast<int>((float(Raw->data.mouse.lLastY) / 65535.0f) * Height) + Top;
+								CursorPoint.x = static_cast<int>((float(Raw->data.mouse.lLastX) / 65535.0f) * (float)Width) + Left;
+								CursorPoint.y = static_cast<int>((float(Raw->data.mouse.lLastY) / 65535.0f) * (float)Height) + Top;
 
 								const int32 ClipWidth = ClipCursorRect.right - ClipCursorRect.left;
 								const int32 ClipHeight = ClipCursorRect.bottom - ClipCursorRect.top;
@@ -1350,14 +1359,14 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 						HANDLE hTimer = CreateWaitableTimer(NULL, TRUE, NULL);
 						if (NULL != hTimer)
 						{
-							float WaitTimeMilliseconds = 0.0;
+							double WaitTimeMilliseconds = 0.0;
 							if (Freq.QuadPart > 0)
 							{
-								WaitTimeMilliseconds = 1000.0 * WaitTime / (float)Freq.QuadPart;
+								WaitTimeMilliseconds = 1000.0 * (double)WaitTime / (double)Freq.QuadPart;
 							}
 
 							// Due time for WaitForSingleObject is in 100 nanosecond units.							
-							float WaitTime100NanoSeconds = (1000.0f * 10.0f * WaitTimeMilliseconds);
+							double WaitTime100NanoSeconds = (1000.0f * 10.0f * WaitTimeMilliseconds);
 
 							LARGE_INTEGER DueTime;
 
@@ -1441,10 +1450,10 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 					case WMSZ_TOPLEFT:
 					case WMSZ_TOPRIGHT:
 					{
-						int32 MinWidth = SizeLimits.GetMinWidth().GetValue();
+						int32 MinWidth = (int32)SizeLimits.GetMinWidth().GetValue();
 						if (SizeLimits.GetMinHeight().GetValue() < SizeLimits.GetMinWidth().GetValue())
 						{
-							MinWidth = SizeLimits.GetMinHeight().GetValue() * AspectRatio;
+							MinWidth = (int32)(SizeLimits.GetMinHeight().GetValue() * AspectRatio);
 						}
 
 						if (NewWidth < MinWidth)
@@ -1466,10 +1475,10 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 					case WMSZ_TOP:
 					case WMSZ_BOTTOM:
 					{
-						int32 MinHeight = SizeLimits.GetMinHeight().GetValue();
+						int32 MinHeight = (int32)SizeLimits.GetMinHeight().GetValue();
 						if (SizeLimits.GetMinWidth().GetValue() < SizeLimits.GetMinHeight().GetValue())
 						{
-							MinHeight = SizeLimits.GetMinWidth().GetValue() / AspectRatio;
+							MinHeight = (int32)(SizeLimits.GetMinWidth().GetValue() / AspectRatio);
 						}
 
 						if (NewHeight < MinHeight)
@@ -1494,7 +1503,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 					case WMSZ_LEFT:
 					case WMSZ_RIGHT:
 						{
-							int32 AdjustedHeight = NewWidth / AspectRatio;
+							int32 AdjustedHeight = (int32)((float)NewWidth / AspectRatio);
 							Rect->top -= (AdjustedHeight - NewHeight) / 2;
 							Rect->bottom += (AdjustedHeight - NewHeight) / 2;
 							break;
@@ -1502,32 +1511,32 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 					case WMSZ_TOP:
 					case WMSZ_BOTTOM:
 						{
-							int32 AdjustedWidth = NewHeight * AspectRatio;
+							int32 AdjustedWidth = (int32)((float)NewHeight * AspectRatio);
 							Rect->left -= (AdjustedWidth - NewWidth) / 2;
 							Rect->right += (AdjustedWidth - NewWidth) / 2;
 							break;
 						}
 					case WMSZ_TOPLEFT:
 						{
-							int32 AdjustedHeight = NewWidth / AspectRatio;
+							int32 AdjustedHeight = (int32)((float)NewWidth / AspectRatio);
 							Rect->top -= AdjustedHeight - NewHeight;
 							break;
 						}
 					case WMSZ_TOPRIGHT:
 						{
-							int32 AdjustedHeight = NewWidth / AspectRatio;
+							int32 AdjustedHeight = (int32)((float)NewWidth / AspectRatio);
 							Rect->top -= AdjustedHeight - NewHeight;
 							break;
 						}
 					case WMSZ_BOTTOMLEFT:
 						{
-							int32 AdjustedHeight = NewWidth / AspectRatio;
+							int32 AdjustedHeight = (int32)((float)NewWidth / AspectRatio);
 							Rect->bottom += AdjustedHeight - NewHeight;
 							break;
 						}
 					case WMSZ_BOTTOMRIGHT:
 						{
-							int32 AdjustedHeight = NewWidth / AspectRatio;
+							int32 AdjustedHeight = (int32)((float)NewWidth / AspectRatio);
 							Rect->bottom += AdjustedHeight - NewHeight;
 							break;
 						}
@@ -1600,7 +1609,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 							HTRIGHT, HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT,
 							HTCAPTION, HTMINBUTTON, HTMAXBUTTON, HTCLOSE, HTSYSMENU};
 
-						return Results[Zone];
+						return IntCastChecked<int32>(Results[Zone]);
 					}
 				}
 			}
@@ -1711,7 +1720,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 				{
 					FCoreDelegates::OnUserLoginChangedEvent.Broadcast(false, 0, 0);
 				}
-				return DefWindowProc(hwnd, msg, wParam, lParam);
+				return IntCastChecked<int32>(DefWindowProc(hwnd, msg, wParam, lParam));
 			}
 			break;
 
@@ -1787,10 +1796,10 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 				const float DPIScaleFactor = CurrentNativeEventWindow->GetDPIScaleFactor();
 
 				// We always apply BorderWidth and BorderHeight since Slate always works with client area window sizes
-				MinMaxInfo->ptMinTrackSize.x = FMath::RoundToInt( SizeLimits.GetMinWidth().Get(MinMaxInfo->ptMinTrackSize.x) * DPIScaleFactor );
-				MinMaxInfo->ptMinTrackSize.y = FMath::RoundToInt( SizeLimits.GetMinHeight().Get(MinMaxInfo->ptMinTrackSize.y) * DPIScaleFactor );
-				MinMaxInfo->ptMaxTrackSize.x = FMath::RoundToInt( SizeLimits.GetMaxWidth().Get(MinMaxInfo->ptMaxTrackSize.x) * DPIScaleFactor ) + BorderWidth;
-				MinMaxInfo->ptMaxTrackSize.y = FMath::RoundToInt( SizeLimits.GetMaxHeight().Get(MinMaxInfo->ptMaxTrackSize.y) * DPIScaleFactor ) + BorderHeight;
+				MinMaxInfo->ptMinTrackSize.x = FMath::RoundToInt( SizeLimits.GetMinWidth().Get((float)MinMaxInfo->ptMinTrackSize.x) * DPIScaleFactor );
+				MinMaxInfo->ptMinTrackSize.y = FMath::RoundToInt( SizeLimits.GetMinHeight().Get((float)MinMaxInfo->ptMinTrackSize.y) * DPIScaleFactor );
+				MinMaxInfo->ptMaxTrackSize.x = FMath::RoundToInt( SizeLimits.GetMaxWidth().Get((float)MinMaxInfo->ptMaxTrackSize.x) * DPIScaleFactor ) + BorderWidth;
+				MinMaxInfo->ptMaxTrackSize.y = FMath::RoundToInt( SizeLimits.GetMaxHeight().Get((float)MinMaxInfo->ptMaxTrackSize.y) * DPIScaleFactor ) + BorderHeight;
 				return 0;
 			}
 			break;
@@ -1874,7 +1883,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			{
 				FScopedWidgetProvider Provider(UIAManager->GetWindowProvider(CurrentNativeEventWindow));
 				LRESULT Result = UiaReturnRawElementProvider(hwnd, wParam, lParam, &Provider.Provider);
-				return Result;
+				return IntCastChecked<int32>(Result);
 			}
 			break;
 		}
@@ -1888,7 +1897,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 		}
 	}
 
-	return DefWindowProc(hwnd, msg, wParam, lParam);
+	return IntCastChecked<int32>(DefWindowProc(hwnd, msg, wParam, lParam));
 }
 
 void FWindowsApplication::CheckForShiftUpEvents(const int32 KeyCode)
@@ -1954,7 +1963,7 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 		case WM_CHAR:
 			{
 				// Character code is stored in WPARAM
-				const TCHAR Character = wParam;
+				const TCHAR Character = IntCastChecked<TCHAR>(wParam);
 
 				// LPARAM bit 30 will be ZERO for new presses, or ONE if this is a repeat
 				const bool bIsRepeat = ( lParam & 0x40000000 ) != 0;
@@ -1972,7 +1981,7 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 		case WM_KEYDOWN:
 			{
 				// Character code is stored in WPARAM
-				const int32 Win32Key = wParam;
+				const int32 Win32Key = IntCastChecked<int32>(wParam);
 
 				// The actual key to use.  Some keys will be translated into other keys. 
 				// I.E VK_CONTROL will be translated to either VK_LCONTROL or VK_RCONTROL as these
@@ -2056,7 +2065,7 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 		case WM_KEYUP:
 			{
 				// Character code is stored in WPARAM
-				int32 Win32Key = wParam;
+				int32 Win32Key = IntCastChecked<int32>(wParam);
 
 				// The actual key to use.  Some keys will be translated into other keys. 
 				// I.E VK_CONTROL will be translated to either VK_LCONTROL or VK_RCONTROL as these
@@ -2299,7 +2308,7 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 						for ( uint32 i = 0; i < InputCount; i++ )
 						{
 							TOUCHINPUT Input = Inputs[i];
-							FVector2D Location( Input.x / 100.0f, Input.y / 100.0f );
+							FVector2D Location((float)Input.x / 100.0f, (float)Input.y / 100.0f );
 							if ( Input.dwFlags & TOUCHEVENTF_DOWN )
 							{
 								int32 TouchIndex = GetTouchIndexForID( Input.dwID );
@@ -2308,7 +2317,10 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 									TouchIndex = GetFirstFreeTouchIndex();
 									check(TouchIndex >= 0);
 									
-									TouchIDs[TouchIndex] = TOptional<int32>(Input.dwID);
+									TouchInfoArray[TouchIndex].TouchID = TOptional<int32>(Input.dwID);
+									TouchInfoArray[TouchIndex].HasMoved = false;
+									TouchInfoArray[TouchIndex].PreviousLocation = Location;
+
 									UE_LOG(LogWindowsDesktop, Verbose, TEXT("OnTouchStarted at (%f, %f), finger %d (system touch id %d)"), Location.X, Location.Y, TouchIndex, Input.dwID);
 									MessageHandler->OnTouchStarted(CurrentNativeEventWindowPtr, Location, 1.0f, TouchIndex, 0);
 								}
@@ -2323,6 +2335,21 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 								if ( TouchIndex >= 0 )
 								{
 									UE_LOG(LogWindowsDesktop, Verbose, TEXT("OnTouchMoved at (%f, %f), finger %d (system touch id %d)"), Location.X, Location.Y, TouchIndex, Input.dwID);
+
+									if (bEnableFirstTouchEvent)
+									{
+										// track first move event, for helping with "pop" on the filtered small movements
+										if (!TouchInfoArray[TouchIndex].HasMoved)
+										{
+											if (TouchInfoArray[TouchIndex].PreviousLocation != Location)
+											{
+												TouchInfoArray[TouchIndex].HasMoved = true;
+												MessageHandler->OnTouchFirstMove(Location, 1.0f, TouchIndex, 0);
+											}
+										}
+									}
+
+									TouchInfoArray[TouchIndex].PreviousLocation = Location;
 									MessageHandler->OnTouchMoved(Location, 1.0f, TouchIndex, 0);
 								}
 							}
@@ -2331,7 +2358,7 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 								int32 TouchIndex = GetTouchIndexForID( Input.dwID );
 								if ( TouchIndex >= 0 )
 								{
-									TouchIDs[TouchIndex] = TOptional<int32>();
+									TouchInfoArray[TouchIndex].TouchID = TOptional<int32>();
 									UE_LOG(LogWindowsDesktop, Verbose, TEXT("OnTouchEnded at (%f, %f), finger %d (system touch id %d)"), Location.X, Location.Y, TouchIndex, Input.dwID);
 									MessageHandler->OnTouchEnded(Location, TouchIndex, 0);
 								}
@@ -3032,9 +3059,9 @@ void FWindowsApplication::QueryConnectedMice()
 
 uint32 FWindowsApplication::GetTouchIndexForID( int32 TouchID )
 {
-	for (int i = 0; i < TouchIDs.Num(); i++)
+	for (int i = 0; i < TouchInfoArray.Num(); i++)
 	{
-		if ( TouchIDs[i].IsSet() && TouchIDs[i].GetValue() == TouchID )
+		if (TouchInfoArray[i].TouchID.IsSet() && TouchInfoArray[i].TouchID.GetValue() == TouchID )
 		{
 			return i;
 		}
@@ -3044,15 +3071,15 @@ uint32 FWindowsApplication::GetTouchIndexForID( int32 TouchID )
 
 uint32 FWindowsApplication::GetFirstFreeTouchIndex()
 {
-	for ( int i = 0; i < TouchIDs.Num(); i++ )
+	for ( int i = 0; i < TouchInfoArray.Num(); i++ )
 	{
-		if ( TouchIDs[i].IsSet() == false )
+		if (!TouchInfoArray[i].TouchID.IsSet())
 		{
 			return i;
 		}
 	}
 
-	return TouchIDs.Add(TOptional<int32>());
+	return TouchInfoArray.Add(TouchInfo());
 }
 
 void FTaskbarList::Initialize()

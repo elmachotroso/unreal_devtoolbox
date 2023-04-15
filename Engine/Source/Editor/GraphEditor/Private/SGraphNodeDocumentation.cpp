@@ -2,18 +2,44 @@
 
 
 #include "SGraphNodeDocumentation.h"
-#include "Widgets/SBoxPanel.h"
+
+#include "Animation/CurveHandle.h"
+#include "Animation/CurveSequence.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SSpacer.h"
+#include "HAL/PlatformMath.h"
+#include "IDocumentation.h"
+#include "IDocumentationPage.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "SGraphNode.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SNodePanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "TutorialMetaData.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/Colors/SSimpleGradient.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "IDocumentationPage.h"
-#include "IDocumentation.h"
-#include "SLevelOfDetailBranchNode.h"
-#include "TutorialMetaData.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "Widgets/Colors/SSimpleGradient.h"
+#include "Widgets/Text/STextBlock.h"
+
+struct FPointerEvent;
 
 #define LOCTEXT_NAMESPACE "SGraphNodeDocumentation"
 
@@ -85,14 +111,14 @@ void SGraphNodeDocumentation::UpdateGraphNode()
 		+SOverlay::Slot()
 		[
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush( "Graph.Node.TitleGloss" ))
+			.Image( FAppStyle::GetBrush( "Graph.Node.TitleGloss" ))
 		]
 		+SOverlay::Slot()
 		.HAlign( HAlign_Left )
 		.VAlign( VAlign_Center )
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "Graph.Node.ColorSpill" ))
+			.BorderImage( FAppStyle::GetBrush( "Graph.Node.ColorSpill" ))
 			.Padding( FMargin( 10, 5, 30, 3 ))
 			.BorderBackgroundColor( this, &SGraphNodeDocumentation::GetNodeTitleColor )
 			[
@@ -101,7 +127,7 @@ void SGraphNodeDocumentation::UpdateGraphNode()
 				.AutoHeight()
 				[
 					SAssignNew( InlineEditableText,SInlineEditableTextBlock )
-					.Style( FEditorStyle::Get(), "Graph.Node.NodeTitleInlineEditableText" )
+					.Style( FAppStyle::Get(), "Graph.Node.NodeTitleInlineEditableText" )
 					.Text( this, &SGraphNodeDocumentation::GetDocumentationTitle )
 				]
 				+SVerticalBox::Slot()
@@ -116,7 +142,7 @@ void SGraphNodeDocumentation::UpdateGraphNode()
 		[
 			SNew( SBorder )
 			.Visibility( EVisibility::HitTestInvisible )			
-			.BorderImage( FEditorStyle::GetBrush( "Graph.Node.TitleHighlight" ))
+			.BorderImage( FAppStyle::GetBrush( "Graph.Node.TitleHighlight" ))
 			[
 				SNew( SSpacer )
 				.Size( FVector2D( 20, 20 ))
@@ -129,7 +155,7 @@ void SGraphNodeDocumentation::UpdateGraphNode()
 	.LowDetail()
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush( "Graph.Node.ColorSpill" ))
+		.BorderImage( FAppStyle::GetBrush( "Graph.Node.ColorSpill" ))
 		.BorderBackgroundColor( this, &SGraphNodeDocumentation::GetNodeTitleColor )
 	]
 	.HighDetail()
@@ -152,7 +178,7 @@ void SGraphNodeDocumentation::UpdateGraphNode()
 		.VAlign( VAlign_Fill )
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush( "Graph.Node.Body" ))
+			.BorderImage( FAppStyle::GetBrush( "Graph.Node.Body" ))
 			.Visibility( this, &SGraphNodeDocumentation::GetWidgetVisibility )
 			.Padding( 0.f )
 			[

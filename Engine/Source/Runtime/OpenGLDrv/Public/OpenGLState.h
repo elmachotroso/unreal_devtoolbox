@@ -75,18 +75,11 @@ public:
 
 struct FOpenGLRasterizerStateData
 {
-	GLenum FillMode;
-	GLenum CullMode;
-	float DepthBias;
-	float SlopeScaleDepthBias;
-
-	FOpenGLRasterizerStateData()
-		: FillMode(GL_FILL)
-		, CullMode(GL_NONE)
-		, DepthBias(0.0f)
-		, SlopeScaleDepthBias(0.0f)
-	{
-	}
+	GLenum FillMode = GL_FILL;
+	GLenum CullMode = GL_NONE;
+	float DepthBias = 0.0f;
+	float SlopeScaleDepthBias = 0.0f;
+	ERasterizerDepthClipMode DepthClipMode = ERasterizerDepthClipMode::DepthClip;
 };
 
 class FOpenGLRasterizerState : public FRHIRasterizerState
@@ -199,7 +192,7 @@ public:
 
 struct FTextureStage
 {
-	class FOpenGLTextureBase* Texture;
+	class FOpenGLTexture* Texture;
 	class FOpenGLShaderResourceView* SRV;
 	GLenum Target;
 	GLuint Resource;
@@ -278,13 +271,11 @@ struct FOpenGLStream
 
 struct FOpenGLCommonState
 {
-	FTextureStage*			Textures;
-	FOpenGLSamplerState**	SamplerStates;
+	TArray<FTextureStage>	Textures;
+	TArray<FOpenGLSamplerState*>	SamplerStates;
 	TArray<FUAVStage>		UAVs;
 
 	FOpenGLCommonState()
-	: Textures(NULL)
-	, SamplerStates(NULL)
 	{}
 
 	virtual ~FOpenGLCommonState()
@@ -298,10 +289,9 @@ struct FOpenGLCommonState
 	{
 		check(NumCombinedTextures >= FOpenGL::GetMaxCombinedTextureImageUnits());
 		check(NumCombinedUAVUnits >= FOpenGL::GetMaxCombinedUAVUnits());
-		check(!Textures && !SamplerStates && UAVs.Num() == 0);
-		Textures = new FTextureStage[NumCombinedTextures];
-		SamplerStates = new FOpenGLSamplerState*[NumCombinedTextures];
-		FMemory::Memset( SamplerStates, 0, NumCombinedTextures * sizeof(*SamplerStates) );
+		check(Textures.IsEmpty() && SamplerStates.IsEmpty() && UAVs.Num() == 0);
+		Textures.SetNum(NumCombinedTextures);
+		SamplerStates.SetNumZeroed(NumCombinedTextures);
 		
 		UAVs.Reserve(NumCombinedUAVUnits);
 		UAVs.AddDefaulted(NumCombinedUAVUnits);
@@ -309,12 +299,9 @@ struct FOpenGLCommonState
 
 	virtual void CleanupResources()
 	{
-		delete [] SamplerStates;
-		delete [] Textures;
-
+		SamplerStates.Empty();
+		Textures.Empty();
 		UAVs.Empty();
-		SamplerStates = NULL;
-		Textures = NULL;
 	}
 };
 
@@ -440,11 +427,12 @@ struct FOpenGLRHIState final : public FOpenGLCommonState
 	bool							bAlphaToCoverageEnabled;
 
 	// Pending framebuffer setup
+	int32							NumRenderingSamples;// Only used with GL_EXT_multisampled_render_to_texture
 	int32							FirstNonzeroRenderTarget;
-	FOpenGLTextureBase*				RenderTargets[MaxSimultaneousRenderTargets];
+	FOpenGLTexture*					RenderTargets[MaxSimultaneousRenderTargets];
 	uint32							RenderTargetMipmapLevels[MaxSimultaneousRenderTargets];
 	uint32							RenderTargetArrayIndex[MaxSimultaneousRenderTargets];
-	FOpenGLTextureBase*				DepthStencil;
+	FOpenGLTexture*					DepthStencil;
 	ERenderTargetStoreAction		StencilStoreAction;
 	uint32							DepthTargetWidth;
 	uint32							DepthTargetHeight;
@@ -473,6 +461,8 @@ struct FOpenGLRHIState final : public FOpenGLCommonState
 	/** Track the currently bound uniform buffers. */
 	FUniformBufferRHIRef BoundUniformBuffers[SF_NumStandardFrequencies][MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE];
 
+	/** Array to track if any real (not emulated) uniform buffers have been bound since the last draw call */
+	bool bAnyDirtyRealUniformBuffers[SF_NumStandardFrequencies];
 	/** Bit array to track which uniform buffers have changed since the last draw call. */
 	bool bAnyDirtyGraphicsUniformBuffers;
 	uint16 DirtyUniformBuffers[SF_NumStandardFrequencies];
@@ -495,6 +485,7 @@ struct FOpenGLRHIState final : public FOpenGLCommonState
 	,	RenderTargetHeight(0)
 	,	RunningOcclusionQuery(0)
 	,	bAlphaToCoverageEnabled(false)
+	,	NumRenderingSamples(1)
 	,	FirstNonzeroRenderTarget(-1)
 	,	DepthStencil(0)
 	,	StencilStoreAction(ERenderTargetStoreAction::ENoAction)

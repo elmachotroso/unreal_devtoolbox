@@ -24,10 +24,13 @@
 #include "WaterVersion.h"
 #include "Misc/MapErrors.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyActor)
+
 #if WITH_EDITOR
 #include "WaterIconHelper.h"
 #include "Components/BillboardComponent.h"
 #include "Editor/EditorEngine.h"
+#include "Landscape.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "Water"
@@ -58,10 +61,6 @@ AWaterBody::AWaterBody(const FObjectInitializer& ObjectInitializer)
 
 	// Temporarily set the root component to the spline because the WaterBodyComponent has not yet been created
 	RootComponent = SplineComp;
-
-#if WITH_EDITOR
-	ActorIcon = FWaterIconHelper::EnsureSpriteComponentCreated(this, TEXT("/Water/Icons/WaterSprite"));
-#endif
 
 #if WITH_EDITORONLY_DATA
 	bAffectsLandscape_DEPRECATED = true;
@@ -107,7 +106,10 @@ void AWaterBody::PreInitializeComponents()
 
 	check(WaterBodyComponent != nullptr);
 	// some water bodies are dynamic (e.g. Ocean) and thus need to be regenerated at runtime :
-	WaterBodyComponent->UpdateAll(true);
+	FOnWaterBodyChangedParams Params;
+	Params.bShapeOrPositionChanged = true;
+	Params.bWeightmapSettingsChanged = true;
+	WaterBodyComponent->UpdateAll(Params);
 }
 
 #if WITH_EDITOR
@@ -120,7 +122,10 @@ void AWaterBody::PostEditMove(bool bFinished)
 		WaterBodyComponent->UpdateWaterHeight();
 	}
 
-	WaterBodyComponent->OnWaterBodyChanged(bFinished);
+	FOnWaterBodyChangedParams Params;
+	Params.PropertyChangedEvent.ChangeType = bFinished ? EPropertyChangeType::ValueSet : EPropertyChangeType::Interactive;
+	Params.bShapeOrPositionChanged = true;
+	WaterBodyComponent->OnWaterBodyChanged(Params);
 }
 
 void AWaterBody::PreEditChange(FProperty* PropertyThatWillChange)
@@ -150,60 +155,11 @@ void AWaterBody::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 
 		WaterBodyComponent->RequestGPUWaveDataUpdate();
 
+		FOnWaterBodyChangedParams Params;
 		// Waves data affect the navigation : 
-		WaterBodyComponent->OnWaterBodyChanged(/* bShapeOrPositionChanged */ true, /* bWeightMapSettingsChanged */ false);
+		Params.bShapeOrPositionChanged = true;
+		WaterBodyComponent->OnWaterBodyChanged(Params);
 	}
-}
-
-void AWaterBody::UpdateActorIcon()
-{
-	if (ActorIcon && !bIsEditorPreviewActor)
-	{
-		// Actor icon gets in the way of meshes
-		ActorIcon->SetVisibility(IsIconVisible());
-
-		UTexture2D* IconTexture = ActorIcon->Sprite;
-		IWaterModuleInterface& WaterModule = FModuleManager::GetModuleChecked<IWaterModuleInterface>("Water");
-		if (const IWaterEditorServices* WaterEditorServices = WaterModule.GetWaterEditorServices())
-		{
-			bool bHasError = false;
-			if (WaterBodyComponent)
-			{
-				TArray<TSharedRef<FTokenizedMessage>> StatusMessages = WaterBodyComponent->CheckWaterBodyStatus();
-				for (const TSharedRef<FTokenizedMessage>& StatusMessage : StatusMessages)
-				{
-					// Message severities are ordered from most severe to least severe.
-					if (StatusMessage->GetSeverity() <= EMessageSeverity::Error)
-					{
-						bHasError = true;
-						break;
-					}
-				}
-			}
-
-			if (bHasError)
-			{
-				IconTexture = WaterEditorServices->GetErrorSprite();
-			}
-			else
-			{
-				IconTexture = WaterEditorServices->GetWaterActorSprite(GetClass());
-			}
-		}
-		FWaterIconHelper::UpdateSpriteComponent(this, IconTexture);
-
-		if (GetWaterBodyType() == EWaterBodyType::Lake && SplineComp)
-		{
-			// Move the actor icon to the center of the lake
-			const FVector ZOffset(0.0f, 0.0f, GetDefault<UWaterRuntimeSettings>()->WaterBodyIconWorldZOffset);
-			ActorIcon->SetWorldLocation(SplineComp->Bounds.Origin + ZOffset);
-		}
-	}
-}
-
-bool AWaterBody::IsIconVisible() const
-{
-	return GetWaterBodyType() != EWaterBodyType::Transition;
 }
 
 void AWaterBody::PostDuplicate(bool bDuplicateForPIE)
@@ -233,8 +189,10 @@ void AWaterBody::SetWaterWavesInternal(UWaterWavesBase* InWaterWaves)
 
 		WaterBodyComponent->RequestGPUWaveDataUpdate();
 
+		FOnWaterBodyChangedParams Params;
 		// Waves data can affect the navigation: 
-		WaterBodyComponent->OnWaterBodyChanged(/*bShapeOrPositionChanged = */true);
+		Params.bShapeOrPositionChanged = true;
+		WaterBodyComponent->OnWaterBodyChanged(Params);
 	}
 }
 
@@ -503,7 +461,7 @@ void AWaterBody::DeprecateData()
 		WaterBodyComponent->PhysicalMaterial = PhysicalMaterial_DEPRECATED;
 		WaterBodyComponent->TargetWaveMaskDepth = TargetWaveMaskDepth_DEPRECATED;
 		WaterBodyComponent->MaxWaveHeightOffset = MaxWaveHeightOffset_DEPRECATED;
-		WaterBodyComponent->bFillCollisionUnderWaterBodiesForNavmesh = bFillCollisionUnderWaterBodiesForNavmesh_DEPRECATED;
+		WaterBodyComponent->bFillCollisionUnderWaterBodiesForNavmesh_DEPRECATED = bFillCollisionUnderWaterBodiesForNavmesh_DEPRECATED;
 		WaterBodyComponent->UnderwaterPostProcessSettings = UnderwaterPostProcessSettings_DEPRECATED;
 		WaterBodyComponent->CurveSettings = CurveSettings_DEPRECATED;
 		WaterBodyComponent->SetWaterMaterial(WaterMaterial_DEPRECATED);
@@ -511,17 +469,20 @@ void AWaterBody::DeprecateData()
 		WaterBodyComponent->WaterHeightmapSettings = WaterHeightmapSettings_DEPRECATED;
 		WaterBodyComponent->LayerWeightmapSettings = LayerWeightmapSettings_DEPRECATED;
 		WaterBodyComponent->bAffectsLandscape = bAffectsLandscape_DEPRECATED;
-		WaterBodyComponent->bGenerateCollisions = bGenerateCollisions_DEPRECATED;
+		WaterBodyComponent->bGenerateCollisions_DEPRECATED = bGenerateCollisions_DEPRECATED;
 		WaterBodyComponent->WaterMeshOverride = WaterMeshOverride_DEPRECATED;
 		WaterBodyComponent->OverlapMaterialPriority = OverlapMaterialPriority_DEPRECATED;
-		WaterBodyComponent->CollisionProfileName = CollisionProfileName_DEPRECATED;
+		WaterBodyComponent->CollisionProfileName_DEPRECATED = CollisionProfileName_DEPRECATED;
 		WaterBodyComponent->WaterMID = WaterMID_DEPRECATED;
 		WaterBodyComponent->UnderwaterPostProcessMID = UnderwaterPostProcessMID_DEPRECATED;
-		WaterBodyComponent->Islands = Islands_DEPRECATED;
-		WaterBodyComponent->ExclusionVolumes = ExclusionVolumes_DEPRECATED;
-		WaterBodyComponent->bCanAffectNavigation = bCanAffectNavigation_DEPRECATED;
+		WaterBodyComponent->Islands_DEPRECATED = Islands_DEPRECATED;
+		WaterBodyComponent->ExclusionVolumes_DEPRECATED = ExclusionVolumes_DEPRECATED;
+		WaterBodyComponent->bCanAffectNavigation_DEPRECATED = bCanAffectNavigation_DEPRECATED;
 		WaterBodyComponent->WaterNavAreaClass = WaterNavAreaClass_DEPRECATED;
 		WaterBodyComponent->ShapeDilation = ShapeDilation_DEPRECATED;
+
+		// Some deprecated data on the actor were also later deprecated on the component (e.g. bFillCollisionUnderWaterBodiesForNavmesh_DEPRECATED), make sure it runs its own deprecation operations on it : 
+		WaterBodyComponent->DeprecateData();
 	}
 #endif // WITH_EDITORONLY_DATA
 }
@@ -582,7 +543,10 @@ void AWaterBody::PostRegisterAllComponents()
 
 	if (IsValid(WaterBodyComponent))
 	{
-		WaterBodyComponent->UpdateAll(true);
+		FOnWaterBodyChangedParams Params;
+		Params.bShapeOrPositionChanged = true;
+		Params.bWeightmapSettingsChanged = true;
+		WaterBodyComponent->UpdateAll(Params);
 		WaterBodyComponent->UpdateMaterialInstances();
 
 #if WITH_EDITOR
@@ -611,6 +575,11 @@ void AWaterBody::PostRegisterAllComponents()
 		// Needs to be done at the end so that all data needed by the MIDs (e.g. WaterBodyIndex) is up to date :
 		WaterBodyComponent->UpdateMaterialInstances();
 	}
+}
+
+bool AWaterBody::IsHLODRelevant() const
+{
+	return true;
 }
 
 #if WITH_EDITOR
@@ -658,6 +627,16 @@ bool AWaterBody::SetIsHiddenEdLayer(bool bIsHiddenEdLayer)
 	}
 	return false;
 }
+
+void AWaterBody::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const
+{
+	Super::GetActorDescProperties(PropertyPairsMap);
+	if (AffectsLandscape())
+	{
+		PropertyPairsMap.AddProperty(ALandscape::AffectsLandscapeActorDescProperty);
+	}
+}
+
 #endif // WITH_EDITOR
 
 void AWaterBody::UnregisterAllComponents(bool bForReregister)

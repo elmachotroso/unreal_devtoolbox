@@ -123,7 +123,7 @@ namespace AutomationTool
 			if (!string.IsNullOrEmpty(ProjectName))
 			{
 				// find the project
-				ProjectFile = ProjectUtils.FindProjectFileFromName(ProjectName);				
+				ProjectFile = ProjectUtils.FindProjectFileFromName(ProjectName);
 
 				if (ProjectFile == null)
 				{
@@ -193,8 +193,6 @@ namespace AutomationTool
 			}
 			else
 			{
-				// Get the path to UBT
-				FileReference InstalledUBT = FileReference.Combine(Unreal.EngineDirectory, "Binaries", "DotNET", "UnrealBuildTool", "UnrealBuildTool.exe");
 				UnrealTargetPlatform PlatformToBuild = PlatformList.First();
 				UnrealTargetConfiguration ConfigToBuild = ConfigurationList.First();
 				string TargetToBuild = BuildTargets.First().TargetName;
@@ -206,9 +204,9 @@ namespace AutomationTool
 
 					if (Clean)
 					{
-						CommandUtils.RunUBT(CommandUtils.CmdEnv, InstalledUBT.FullName, CommandLine + " -clean");
+						CommandUtils.RunUBT(CommandUtils.CmdEnv, Unreal.UnrealBuildToolDllPath, CommandLine + " -clean");
 					}
-					CommandUtils.RunUBT(CommandUtils.CmdEnv, InstalledUBT.FullName, CommandLine);
+					CommandUtils.RunUBT(CommandUtils.CmdEnv, Unreal.UnrealBuildToolDllPath, CommandLine);
 				}
 				else
 				{ 
@@ -250,7 +248,7 @@ namespace AutomationTool
 					new SimpleTargetInfo("UnrealGame", TargetType.Game),
 					new SimpleTargetInfo("UnrealClient", TargetType.Client),
 					new SimpleTargetInfo("UnrealServer", TargetType.Server),
-				};			
+				};
 			}
 
 
@@ -277,9 +275,23 @@ namespace AutomationTool
 										.Where(T => string.CompareOrdinal(T.TargetName, 0, ProjectName, 0, 1) == 0)
 										.Where(T => T.TargetName.IndexOf(InTargetName, StringComparison.OrdinalIgnoreCase) > 0)
 										.FirstOrDefault();
+
+						// Try to find a target where the target type matches the target name exactly such as "Editor" or "Game"
+						if (ProjectTarget == null && string.CompareOrdinal(InTargetName, "Program") != 0)
+						{
+							ProjectTarget = MatchingTargetTypes
+											.Where(T => string.CompareOrdinal(T.Type.ToString(), InTargetName) == 0)
+											.FirstOrDefault();
+						}
 					}
 				}
 			}		
+
+			// If no target is found, try to build the provided target name. This enables programs to build (Ex. UnrealInsights).
+			if(ProjectTarget == null)
+			{
+				ProjectTarget = new SimpleTargetInfo(InTargetName, TargetType.Program);
+			}
 
 			if (ProjectTarget == null)
 			{

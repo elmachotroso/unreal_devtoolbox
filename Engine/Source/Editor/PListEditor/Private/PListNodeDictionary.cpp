@@ -1,20 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PListNodeDictionary.h"
+
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "PListNode.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateColor.h"
+#include "Types/SlateEnums.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "EditorStyleSet.h"
+#include "Widgets/Views/ITableRow.h"
 
 /** Validation check */
 bool FPListNodeDictionary::IsValid()
@@ -119,7 +129,7 @@ TSharedRef<SWidget> FPListNodeDictionary::GenerateWidgetForColumn(const FName& C
 				+ SHorizontalBox::Slot()
 				[
 					SAssignNew(ExpanderArrow, SButton)
-					.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+					.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 					.ClickMethod( EButtonClickMethod::MouseDown )
 					.Visibility( this, &FPListNodeDictionary::GetExpanderVisibility )
 					.OnClicked( this, &FPListNodeDictionary::OnArrowClicked )
@@ -279,11 +289,11 @@ const FSlateBrush* FPListNodeDictionary::GetOverlayBrush()
 {
 	if(bFiltered)
 	{
-		return FEditorStyle::GetBrush( TEXT("PListEditor.FilteredColor") );
+		return FAppStyle::GetBrush( TEXT("PListEditor.FilteredColor") );
 	}
 	else
 	{
-		return FEditorStyle::GetBrush( TEXT("PListEditor.NoOverlayColor") );
+		return FAppStyle::GetBrush( TEXT("PListEditor.NoOverlayColor") );
 	}
 }
 
@@ -318,7 +328,7 @@ const FSlateBrush* FPListNodeDictionary::GetExpanderImage() const
 		}
 	}
 
-	return FEditorStyle::GetBrush( ResourceName );
+	return FAppStyle::GetBrush( ResourceName );
 }
 
 /** Delegate: Gets the visibility of the expander arrow */

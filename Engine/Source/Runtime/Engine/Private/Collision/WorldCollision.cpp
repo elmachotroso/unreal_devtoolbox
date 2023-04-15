@@ -15,10 +15,7 @@
 #include "Physics/PhysicsInterfaceCore.h"
 #include "PhysXPublic.h"
 #include "Physics/PhysicsInterfaceTypes.h"
-
-#if WITH_CHAOS
 #include "Chaos/ImplicitObject.h"
-#endif
 
 using namespace PhysicsInterfaceTypes;
 
@@ -395,19 +392,11 @@ bool UWorld::ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrim
 			check(Shape.IsValid());
 			ECollisionShapeType ShapeType = FPhysicsInterface::GetShapeType(Shape);
 
-#if WITH_CHAOS
 			if (!Shape.GetGeometry().IsConvex())
 			{
 				//We skip complex shapes. Should this respect complex as simple?
 				continue;
 			}
-#else
-			if(ShapeType == ECollisionShapeType::Heightfield || ShapeType == ECollisionShapeType::Trimesh)
-			{
-				//We skip complex shapes. Should this respect complex as simple?
-				continue;
-			}
-#endif
 
 			FPhysicsGeometryCollection GeomCollection = FPhysicsInterface::GetGeometryCollection(Shape);
 			TArray<FHitResult> TmpHits;

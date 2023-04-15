@@ -111,6 +111,19 @@ FAutoConsoleVariableRef CVarRenderNaniteMeshes(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+// TODO: Should move this outside of SM, since Nanite can be used for multiple primitive types
+int32 GEnableNaniteMaterialOverrides = 1;
+FAutoConsoleVariableRef CVarEnableNaniteNaterialOverrides(
+	TEXT("r.Nanite.MaterialOverrides"),
+	GEnableNaniteMaterialOverrides,
+	TEXT("Enable support for Nanite specific material overrides."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+	{
+		FGlobalComponentRecreateRenderStateContext Context;
+	}),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 int32 GNaniteProxyRenderMode = 0;
 FAutoConsoleVariableRef CVarNaniteProxyRenderMode(
 	TEXT("r.Nanite.ProxyRenderMode"),
@@ -185,14 +198,16 @@ static TAutoConsoleVariable<int32> CVarRayTracingStaticMeshesWPOCulling(
 
 static TAutoConsoleVariable<float> CVarRayTracingStaticMeshesWPOCullingRadius(
 	TEXT("r.RayTracing.Geometry.StaticMeshes.WPO.CullingRadius"),
-	5000.0f, // 50 m
-	TEXT("Do not evaluate world position offset for static meshes outside of this radius in ray tracing effects (default = 5000 (50m))"));
+	12000.0f, // 120 m
+	TEXT("Do not evaluate world position offset for static meshes outside of this radius in ray tracing effects (default = 12000 (120m))"));
 
 
 /** Initialization constructor. */
 FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, bool bForceLODsShareStaticLighting)
 	: FPrimitiveSceneProxy(InComponent, InComponent->GetStaticMesh()->GetFName())
 	, RenderData(InComponent->GetStaticMesh()->GetRenderData())
+	, OverlayMaterial(InComponent->OverlayMaterial)
+	, OverlayMaterialMaxDrawDistance(InComponent->OverlayMaterialMaxDrawDistance)
 	, ForcedLodModel(InComponent->ForcedLodModel)
 	, bCastShadow(InComponent->CastShadow)
 	, bReverseCulling(InComponent->bReverseCulling)
@@ -229,6 +244,8 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 
 	// Static meshes do not deform internally (save by material effects such as WPO and PDO, which is allowed).
 	bHasDeformableMesh = false;
+
+	bEvaluateWorldPositionOffset = !IsOptimizedWPO() || InComponent->bEvaluateWorldPositionOffset;
 
 	const auto FeatureLevel = GetScene().GetFeatureLevel();
 
@@ -292,7 +309,7 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 	bSupportRayTracing = InComponent->GetStaticMesh()->bSupportRayTracing;
 	bDynamicRayTracingGeometry = false;
 	
-	if (IsRayTracingEnabled() && bSupportRayTracing)
+	if (IsRayTracingEnabled(GetScene().GetShaderPlatform()) && bSupportRayTracing)
 	{
 		if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() > 0)
 		{
@@ -300,7 +317,7 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 
 			if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() == 1)
 			{
-				bDynamicRayTracingGeometry &= InComponent->bEvaluateWorldPositionOffset;
+				bDynamicRayTracingGeometry &= InComponent->bEvaluateWorldPositionOffsetInRayTracing;
 			}
 		}
 
@@ -333,8 +350,6 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 	// WPO is typically used for ambient animations, so don't include in cached shadowmaps
 	// Note mesh animation can also come from PDO or Tessellation but they are typically static uses so we ignore them for cached shadowmaps
 	bGoodCandidateForCachedShadowmap = CacheShadowDepthsFromPrimitivesUsingWPO() || !MaterialRelevance.bUsesWorldPositionOffset;
-
-	bUsingWPOMaterial = !!MaterialRelevance.bUsesWorldPositionOffset;
 
 	// Disable shadow casting if no section has it enabled.
 	bCastShadow = bCastShadow && bAnySectionCastsShadows;
@@ -428,6 +443,7 @@ void FStaticMeshSceneProxy::SetEvaluateWorldPositionOffsetInRayTracing(bool NewV
 				}
 				Initializer.bAllowUpdate = true;
 				Initializer.bFastBuild = true;
+				Initializer.Type = ERayTracingGeometryInitializerType::Rendering;
 			}
 
 			for (int32 i = 0; i < DynamicRayTracingGeometries.Num(); i++)
@@ -739,6 +755,7 @@ void FStaticMeshSceneProxy::CreateRenderThreadResources()
 				}
 				Initializer.bAllowUpdate = true;
 				Initializer.bFastBuild = true;
+				Initializer.Type = ERayTracingGeometryInitializerType::Rendering;
 			}
 		}
 
@@ -879,7 +896,7 @@ bool FStaticMeshSceneProxy::GetCollisionMeshElement(
 bool FStaticMeshSceneProxy::GetPrimitiveDistance(int32 LODIndex, int32 SectionIndex, const FVector& ViewOrigin, float& PrimitiveDistance) const
 {
 	const bool bUseNewMetrics = CVarStreamingUseNewMetrics.GetValueOnRenderThread() != 0;
-	const float OneOverDistanceMultiplier = 1.f / FMath::Max<float>(SMALL_NUMBER, StreamingDistanceMultiplier);
+	const float OneOverDistanceMultiplier = 1.f / FMath::Max<float>(UE_SMALL_NUMBER, StreamingDistanceMultiplier);
 
 	if (bUseNewMetrics && LODs.IsValidIndex(LODIndex) && LODs[LODIndex].Sections.IsValidIndex(SectionIndex))
 	{
@@ -1183,8 +1200,21 @@ void FStaticMeshSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PD
 								PDI->DrawMesh(MeshBatch, FLT_MAX);
 							}
 						}
+
 						{
 							PDI->DrawMesh(BaseMeshBatch, FLT_MAX);
+						}
+
+						if (OverlayMaterial != nullptr)
+						{
+							FMeshBatch OverlayMeshBatch(BaseMeshBatch);
+							OverlayMeshBatch.bOverlayMaterial = true;
+							OverlayMeshBatch.CastShadow = false;
+							OverlayMeshBatch.bSelectable = false;
+							OverlayMeshBatch.MaterialRenderProxy = OverlayMaterial->GetRenderProxy();
+							// make sure overlay is always rendered on top of base mesh
+							OverlayMeshBatch.MeshIdInPrimitive += LODModel.Sections.Num();
+							PDI->DrawMesh(OverlayMeshBatch, FLT_MAX);
 						}
 					}
 				}
@@ -1308,6 +1338,20 @@ void FStaticMeshSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PD
 								MeshBatch.bUseAsOccluder &= !bUseUnifiedMeshForDepth;
 								MeshBatch.bUseForDepthPass &= !bUseUnifiedMeshForDepth;
 								PDI->DrawMesh(MeshBatch, ScreenSize);
+							}
+
+							if (OverlayMaterial != nullptr)
+							{
+								FMeshBatch OverlayMeshBatch(BaseMeshBatch);
+								OverlayMeshBatch.bOverlayMaterial = true;
+								OverlayMeshBatch.CastShadow = false;
+								OverlayMeshBatch.bSelectable = false;
+								OverlayMeshBatch.MaterialRenderProxy = OverlayMaterial->GetRenderProxy();
+								// make sure overlay is always rendered on top of base mesh
+								OverlayMeshBatch.MeshIdInPrimitive += LODModel.Sections.Num();
+								// Reuse mesh ScreenSize as cull distance for an overlay. Overlay does not need to compute LOD so we can avoid adding new members into MeshBatch or MeshRelevance
+								float OverlayMeshScreenSize = OverlayMaterialMaxDrawDistance;
+								PDI->DrawMesh(OverlayMeshBatch, OverlayMeshScreenSize);
 							}
 						}
 					}
@@ -1667,7 +1711,7 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 
 			if((bDrawSimpleCollision || bDrawSimpleWireframeCollision) && BodySetup)
 			{
-				if(FMath::Abs(GetLocalToWorld().Determinant()) < SMALL_NUMBER)
+				if(FMath::Abs(GetLocalToWorld().Determinant()) < UE_SMALL_NUMBER)
 				{
 					// Catch this here or otherwise GeomTransform below will assert
 					// This spams so commented out
@@ -1688,13 +1732,13 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 						Collector.RegisterOneFrameMaterialProxy(SolidMaterialInstance);
 
 						FTransform GeomTransform(GetLocalToWorld());
-						BodySetup->AggGeom.GetAggGeom(GeomTransform, GetWireframeColor().ToFColor(true), SolidMaterialInstance, false, true, DrawsVelocity(), ViewIndex, Collector);
+						BodySetup->AggGeom.GetAggGeom(GeomTransform, GetWireframeColor().ToFColor(true), SolidMaterialInstance, false, true, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 					// wireframe
 					else
 					{
 						FTransform GeomTransform(GetLocalToWorld());
-						BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(SimpleCollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true), NULL, ( Owner == NULL ), false, DrawsVelocity(), ViewIndex, Collector);
+						BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(SimpleCollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true), NULL, ( Owner == NULL ), false, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 
 
@@ -1743,16 +1787,23 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 		return;
 	}
 
+	if (!ensureMsgf(IsRayTracingRelevant(),
+		TEXT("GetDynamicRayTracingInstances() is only expected to be called for scene proxies that are compatible with ray tracing. ")
+		TEXT("RT-relevant primitive gathering code in FDeferredShadingSceneRenderer may be wrong.")))
+	{
+		return;
+	}
+
 	ESceneDepthPriorityGroup PrimitiveDPG = GetStaticDepthPriorityGroup();
-	const uint32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
+	const int32 LODIndex = FMath::Max(GetLOD(Context.ReferenceView), (int32)GetCurrentFirstLODIdx_RenderThread());
 	const FStaticMeshLODResources& LODModel = RenderData->LODResources[LODIndex];
 
 	bool bEvaluateWPO = bDynamicRayTracingGeometry;
 
 	if (bEvaluateWPO && CVarRayTracingStaticMeshesWPOCulling.GetValueOnRenderThread() > 0)
 	{
-		FVector ViewCenter = Context.ReferenceView->ViewMatrices.GetViewOrigin();		
-		FVector MeshCenter = GetLocalToWorld().TransformPosition({ 0.0f, 0.0f, 0.0f });
+		FVector ViewCenter = Context.ReferenceView->ViewMatrices.GetViewOrigin();
+		FVector MeshCenter = GetLocalToWorld().GetOrigin();
 		const float CullingRadius = CVarRayTracingStaticMeshesWPOCullingRadius.GetValueOnRenderThread();
 		const float BoundingRadius = GetBounds().SphereRadius;
 
@@ -1782,29 +1833,43 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 		FRayTracingInstance &RayTracingInstance = OutRayTracingInstances.AddDefaulted_GetRef();
 	
 		const int32 NumBatches = GetNumMeshBatches();
+		const int32 NumRayTracingMaterialEntries = LODModel.Sections.Num() * NumBatches;
 
-		RayTracingInstance.Materials.Reserve(LODModel.Sections.Num() * NumBatches);
-		for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
+		if (NumRayTracingMaterialEntries != CachedRayTracingMaterials.Num() || CachedRayTracingMaterialsLODIndex != LODIndex)
 		{
-			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
-			{
-				FMeshBatch &Mesh = RayTracingInstance.Materials.AddDefaulted_GetRef();
-	
-				bool bResult = GetMeshElement(LODIndex, BatchIndex, SectionIndex, PrimitiveDPG, false, false, Mesh);
-				if (!bResult)
-				{
-					// Hidden material
-					Mesh.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-					Mesh.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
-				}
+			CachedRayTracingMaterials.Reset();
+			CachedRayTracingMaterials.Reserve(NumRayTracingMaterialEntries);
 
-				Mesh.SegmentIndex = SectionIndex;
-				Mesh.MeshIdInPrimitive = SectionIndex;
+			for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
+			{
+				for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
+				{
+					FMeshBatch &MeshBatch = CachedRayTracingMaterials.AddDefaulted_GetRef();
+
+					bool bResult = GetMeshElement(LODIndex, BatchIndex, SectionIndex, PrimitiveDPG, false, false, MeshBatch);
+					if (!bResult)
+					{
+						// Hidden material
+						MeshBatch.MaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+						MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
+					}
+
+					MeshBatch.SegmentIndex = SectionIndex;
+					MeshBatch.MeshIdInPrimitive = SectionIndex;
+				}
 			}
+
+			CachedRayTracingInstanceMaskAndFlags = BuildRayTracingInstanceMaskAndFlags(CachedRayTracingMaterials, GetScene().GetFeatureLevel());
+			CachedRayTracingMaterialsLODIndex = LODIndex;
 		}
 
 		RayTracingInstance.Geometry = &Geometry;
-		RayTracingInstance.InstanceTransforms.Add(GetLocalToWorld());
+
+		// scene proxies live for the duration of Render(), making array views below safe
+		const FMatrix& ThisLocalToWorld = GetLocalToWorld();
+		RayTracingInstance.InstanceTransformsView = MakeArrayView(&ThisLocalToWorld, 1);
+		RayTracingInstance.MaterialsView = MakeArrayView(CachedRayTracingMaterials);
+
 		if (bEvaluateWPO && RenderData->LODVertexFactories[LODIndex].VertexFactory.GetType()->SupportsRayTracingDynamicGeometry())
 		{
 			// Use the internal vertex buffer only when initialized otherwise used the shared vertex buffer - needs to be updated every frame
@@ -1817,7 +1882,7 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			Context.DynamicRayTracingGeometriesToUpdate.Add(
 				FRayTracingDynamicGeometryUpdateParams
 				{
-					RayTracingInstance.Materials,
+					CachedRayTracingMaterials, // TODO: this copy can be avoided if FRayTracingDynamicGeometryUpdateParams supported array views
 					false,
 					(uint32)LODModel.GetNumVertices(),
 					uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector3f)),
@@ -1829,11 +1894,14 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 			);
 		}
 		
-		RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
+		RayTracingInstance.Mask = CachedRayTracingInstanceMaskAndFlags.Mask;
+		RayTracingInstance.bForceOpaque = CachedRayTracingInstanceMaskAndFlags.bForceOpaque;
+		RayTracingInstance.bDoubleSided = CachedRayTracingInstanceMaskAndFlags.bDoubleSided;
 
-		checkf(RayTracingInstance.Geometry->Initializer.Segments.Num() == RayTracingInstance.Materials.Num(), TEXT("Segments/Materials mismatch. Number of segments: %d. Number of Materials: %d. LOD Index: %d"), 
+		check(CachedRayTracingMaterials.Num() == RayTracingInstance.GetMaterials().Num());
+		checkf(RayTracingInstance.Geometry->Initializer.Segments.Num() == CachedRayTracingMaterials.Num(), TEXT("Segments/Materials mismatch. Number of segments: %d. Number of Materials: %d. LOD Index: %d"), 
 			RayTracingInstance.Geometry->Initializer.Segments.Num(), 
-			RayTracingInstance.Materials.Num(), 
+			CachedRayTracingMaterials.Num(), 
 			LODIndex);
 	}
 }
@@ -1990,11 +2058,13 @@ void FStaticMeshSceneProxy::GetDistanceFieldAtlasData(const FDistanceFieldVolume
 	SelfShadowBias = DistanceFieldSelfShadowBias;
 }
 
-void FStaticMeshSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const
+void FStaticMeshSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
 {
+	check(InstanceLocalToPrimitiveTransforms.IsEmpty());
+
 	if (DistanceFieldData)
 	{
-		ObjectLocalToWorldTransforms.Add((FMatrix44f)GetLocalToWorld());
+		InstanceLocalToPrimitiveTransforms.Add(FRenderTransform::Identity);
 	}
 }
 
@@ -2040,6 +2110,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 			SetLightMap(MeshMapBuildData->LightMap);
 			SetShadowMap(MeshMapBuildData->ShadowMap);
 			SetResourceCluster(MeshMapBuildData->ResourceCluster);
+			bCanUsePrecomputedLightingParametersFromGPUScene = true;
 			IrrelevantLights = MeshMapBuildData->IrrelevantLights;
 		}
 	}
@@ -2059,6 +2130,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 					SetLightMap(MeshMapBuildData->LightMap);
 					SetShadowMap(MeshMapBuildData->ShadowMap);
 					SetResourceCluster(MeshMapBuildData->ResourceCluster);
+					bCanUsePrecomputedLightingParametersFromGPUScene = true;
 					IrrelevantLights = MeshMapBuildData->IrrelevantLights;
 				}
 			}
@@ -2123,6 +2195,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 				SetLightMap(MeshMapBuildData->LightMap);
 				SetShadowMap(MeshMapBuildData->ShadowMap);
 				SetResourceCluster(MeshMapBuildData->ResourceCluster);
+				bCanUsePrecomputedLightingParametersFromGPUScene = true;
 				IrrelevantLights = MeshMapBuildData->IrrelevantLights;
 			}
 		}
@@ -2384,7 +2457,7 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 	}
 
 	// If we didn't get a proxy, but Nanite was enabled on the asset when it was built, evaluate proxy creation
-	if (GetStaticMesh()->HasValidNaniteData())
+	if (HasValidNaniteData())
 	{
 		const bool bAllowProxyRender = GNaniteProxyRenderMode == 0
 	#if WITH_EDITORONLY_DATA

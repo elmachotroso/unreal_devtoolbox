@@ -13,11 +13,15 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Misc/TrackedActivity.h"
 #if WITH_EDITOR
 	#include "UnrealEdGlobals.h"
 #endif
 #if PLATFORM_WINDOWS
 	#include "Windows/WindowsHWrapper.h"
+	#include "Windows/AllowWindowsPlatformTypes.h"
+	#include <DbgHelp.h>
+	#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 
@@ -92,6 +96,8 @@ extern UNREALED_API FSecondsCounterData BlueprintCompileAndLoadTimerData;
  */
 int32 GuardedMain( const TCHAR* CmdLine )
 {
+	FTrackedActivity::GetEngineActivity().Update(TEXT("Starting"), FTrackedActivity::ELight::Yellow);
+
 	FTaskTagScope Scope(ETaskTag::EGameThread);
 
 #if !(UE_BUILD_SHIPPING)
@@ -99,7 +105,10 @@ int32 GuardedMain( const TCHAR* CmdLine )
 	// If "-waitforattach" or "-WaitForDebugger" was specified, halt startup and wait for a debugger to attach before continuing
 	if (FParse::Param(CmdLine, TEXT("waitforattach")) || FParse::Param(CmdLine, TEXT("WaitForDebugger")))
 	{
-		while (!FPlatformMisc::IsDebuggerPresent());
+		while (!FPlatformMisc::IsDebuggerPresent())
+		{
+			FPlatformProcess::Sleep(0.1f);
+		}
 		UE_DEBUG_BREAK();
 	}
 
@@ -131,9 +140,17 @@ int32 GuardedMain( const TCHAR* CmdLine )
 #if PLATFORM_WINDOWS
 	FCString::Strcpy(MiniDumpFilenameW, *FString::Printf(TEXT("unreal-v%i-%s.dmp"), FEngineVersion::Current().GetChangelist(), *FDateTime::Now().ToString()));
 
-	GIsConsoleExecutable = (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR);
+	if (PIMAGE_NT_HEADERS NtHeaders = ImageNtHeader(GetModuleHandle(nullptr)))
+	{
+		GIsConsoleExecutable = (NtHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI);
+	}
+	else
+	{
+		GIsConsoleExecutable = (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR);
+	}
 #endif
 
+	FTrackedActivity::GetEngineActivity().Update(TEXT("Initializing"));
 	int32 ErrorLevel = EnginePreInit( CmdLine );
 
 	// exit if PreInit failed.
@@ -175,6 +192,8 @@ int32 GuardedMain( const TCHAR* CmdLine )
 
 	BootTimingPoint("Tick loop starting");
 	DumpBootTiming();
+
+	FTrackedActivity::GetEngineActivity().Update(TEXT("Ticking loop"), FTrackedActivity::ELight::Green);
 
 	// Don't tick if we're running an embedded engine - we rely on the outer
 	// application ticking us instead.

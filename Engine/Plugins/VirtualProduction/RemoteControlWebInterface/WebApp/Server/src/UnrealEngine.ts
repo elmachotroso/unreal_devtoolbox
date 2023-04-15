@@ -1,21 +1,27 @@
 import { IPayload, IPayloads, IPreset, IPresets, IPanel, IView, ICustomStackWidget, ICustomStackTabs, PropertyValue, 
-          IAsset, WidgetTypes, PropertyType, IColorPickerList, ICustomStackItem } from '../../Client/src/shared';
+          IAsset, WidgetTypes, PropertyType, IColorPickerList, ICustomStackItem, IGroup, IExposedProperty, TabLayout } from '../../Client/src/shared';
 import _ from 'lodash';
 import WebSocket from 'ws';
 import { Notify, Program, LogServer } from './';
+import fs from 'fs-extra';
 import crypto from 'crypto';
 
 
 namespace UnrealApi {
   export enum PresetEvent {
-    FieldsRenamed     = 'PresetFieldsRenamed',
-    FieldsChanged     = 'PresetFieldsChanged',
-    FieldsAdded       = 'PresetFieldsAdded',
-    FieldsRemoved     = 'PresetFieldsRemoved',
-    MetadataModified  = 'PresetMetadataModified',
-    ActorModified     = 'PresetActorModified',
-    EntitiesModified  = 'PresetEntitiesModified',
-    LayoutModified    = 'PresetLayoutModified',
+    FieldsRenamed         = 'PresetFieldsRenamed',
+    FieldsChanged         = 'PresetFieldsChanged',
+    FieldsAdded           = 'PresetFieldsAdded',
+    FieldsRemoved         = 'PresetFieldsRemoved',
+    MetadataModified      = 'PresetMetadataModified',
+    ActorModified         = 'PresetActorModified',
+    EntitiesModified      = 'PresetEntitiesModified',
+    LayoutModified        = 'PresetLayoutModified',
+
+    ControllersAdded      = 'PresetControllersAdded',
+    ControllersRemoved    = 'PresetControllersRemoved',
+    ControllersModified   = 'PresetControllersModified',
+    ControllersRenamed    = 'PresetControllersRenamed',
   }
 
   export type Presets = { 
@@ -81,17 +87,25 @@ export namespace UnrealEngine {
   let isOpen: boolean;
 
   let pendings: { [id: string]: (reply: any) => void } = {};
-  let request: number = 1;
+  let httpRequest: number = 1;
+  let wsRequest: number = 1;
 
   let presets: IPresets = {};
   let registered: { [id: string]: boolean };
   let payloads: IPayloads = {};
   let views: { [preset: string]: IView } = {};
-  let workingPassphrase: string = undefined;
+  let workingPassphrases: string[] = [];
+  let favorites: { [preset: string]: boolean } = {};
 
   export async function initialize() {
+    try {
+      if (await fs.pathExists('./favorites.json'))
+        favorites = await fs.readJSON('./favorites.json');
+    } catch {
+    }
+
     connect();
-    startQuitTimeout(60 * 1000);
+    startQuitTimeout(10 * 60 * 1000);
   }
 
   export function isConnected(): boolean {
@@ -115,7 +129,7 @@ export namespace UnrealEngine {
     if (connection?.readyState === WebSocket.OPEN || connection?.readyState === WebSocket.CONNECTING)
       return;
 
-    const address = `ws://localhost:${Program.ueWebSocketPort}`;
+    const address = `ws://127.0.0.1:${Program.ueWebSocketPort}`;
 
     connection?.removeAllListeners();
 
@@ -129,21 +143,25 @@ export namespace UnrealEngine {
 
   export async function checkPassphrase(passphrase: string) : Promise<boolean> {
     try {
-      let res = await get<UnrealApi.PassphraseCheck>(`/remote/passphrase/`, passphrase);
-      if (!res?.keyCorrect) {
+      const res = await get<UnrealApi.PassphraseCheck>(`/remote/passphrase/`, passphrase);
+      if (!res?.keyCorrect)
         return false;
-      }
+
     } catch (error) {
       return false;
     }
 
-    if (workingPassphrase == undefined) {
-      workingPassphrase = passphrase;
-      await pullPresets(true);
-      pullTimer();   
+    if (!workingPassphrases.includes(passphrase)) {
+      workingPassphrases.push(passphrase);
+      
+      if (workingPassphrases.length === 1 || isOpen) {
+        await pullPresets();
+        pullTimer();   
+      }
     }
     else {
-      workingPassphrase = passphrase;
+      const index = workingPassphrases.findIndex((value:string):boolean => value === passphrase);
+      workingPassphrases[index] = passphrase;
     }
 
     return true;
@@ -157,6 +175,7 @@ export namespace UnrealEngine {
     registered = {};
     payloads = {};
     views = {};
+    favorites = {};
     isOpen = undefined;
     
     clearQuitTimeout();
@@ -164,16 +183,18 @@ export namespace UnrealEngine {
     console.log('Connected to UE Remote WebSocket');
     Notify.emit('connected', true);
     
-    isOpen = await checkPassphrase("");
-    if (isOpen || workingPassphrase !== undefined) {
-      await pullPresets(true);
+    isOpen = await checkPassphrase('');
+
+    Notify.emit('opened', isOpen);
+    if (isOpen || workingPassphrases.length > 0) {
+      await refresh();
       pullTimer();
     }
   }
 
-  async function refresh() { 
+  async function refresh() {
     try {
-      await pullPresets(true);
+      await pullPresets();
     } catch (error) {
     }
   }
@@ -184,9 +205,8 @@ export namespace UnrealEngine {
 
       // First check if there are any new presets
       for (const preset of Presets) {
-        if (preset && !presets[preset.ID]){
+        if (preset && !presets[preset.ID])
           await refreshPreset(preset.ID, preset.Name);
-        }
       }
 
       // Check for deleted presets
@@ -196,16 +216,15 @@ export namespace UnrealEngine {
           delete presets[id];
           delete payloads[id];
         }
-        
-        Notify.emit('presets', Object.values(presets));
+
+        Notify.emit('presets', getSortedPresets());
       }
     } catch (error) {
     }
 
     // Check for new presets once every 5 seconds
-    if (isConnected()) {
-      autoPullTimeout = setTimeout(pullTimer, 5 * 1000);
-    }
+    if (isConnected())
+       autoPullTimeout = setTimeout(pullTimer, 5 * 1000);
   }
  
   async function onMessage(data: WebSocket.Data) {
@@ -220,10 +239,26 @@ export namespace UnrealEngine {
 
         if (Program.logger)
           LogServer.logLoopback({ RequestId: message.RequestId, Stage: 'WebApp Done' }, true);
+        
+        if (message.Verb === "401" && workingPassphrases.includes(message.Passphrase)) {
+          Notify.emitPassphraseChanged(message.Passphrase);
+          workingPassphrases = workingPassphrases.filter(value => value !== message.Passphrase);
+
+          delete pendings[message.RequestId];
+          promise?.(message.ResponseCode);
+          return;
+        }
 
         delete pendings[message.RequestId];
         promise?.(message.ResponseBody);
         return;
+      }
+
+      if (message.keyCorrect !== undefined && isOpen !== message.keyCorrect) {
+        isOpen = message.keyCorrect;
+        Notify.emit('opened', isOpen);
+        await pullPresets();
+        pullTimer();
       }
 
       switch (message.Type) {
@@ -247,7 +282,7 @@ export namespace UnrealEngine {
         }
 
         case UnrealApi.PresetEvent.FieldsAdded: {
-          const preset = populatePreset(message.Description as IPreset);
+          const preset = await populatePreset(message.Description as IPreset);
           const values = await pullPresetValues(preset);
           for (const property in values) {
             setPayloadValueInternal(payloads, [preset.ID, property], values[property]);
@@ -258,32 +293,53 @@ export namespace UnrealEngine {
           break;
         }
 
-        case UnrealApi.PresetEvent.FieldsRemoved: {
-          await refreshPreset(message.PresetId, message.PresetName);
-          break;
-        }
-
+        case UnrealApi.PresetEvent.FieldsRemoved:
         case UnrealApi.PresetEvent.EntitiesModified: {
           await refreshPreset(message.PresetId, message.PresetName);
           break;
         }
 
         case UnrealApi.PresetEvent.MetadataModified: {
-          if (!message.Metadata.view)
-            break;
-
           await refreshPreset(message.PresetId, message.PresetName);
-          await refreshView(message.PresetId, message.Metadata.view);
+          refreshView(message.PresetId, message.Metadata.view);
           break;
         }
 
         case UnrealApi.PresetEvent.LayoutModified: {
-          const preset = populatePreset(message.Preset as IPreset);
+          const preset = await populatePreset(message.Preset as IPreset);
           if (preset?.ID) {
             presets[preset.ID] = preset;
-            Notify.emit('presets', Object.values(presets));
+            Notify.emit('presets', getSortedPresets());
           }
 
+          break;
+        }
+
+        case UnrealApi.PresetEvent.ControllersAdded:
+        case UnrealApi.PresetEvent.ControllersRemoved:
+        case UnrealApi.PresetEvent.ControllersRenamed: {
+          await refreshPreset(message.PresetId, message.PresetName);
+          break;
+        }
+
+        case UnrealApi.PresetEvent.ControllersModified: {
+          const preset = presets[message.PresetId];
+          if (!preset)
+            break;
+
+          const changes: any = {};
+          for (let i = 0; i < message.ModifiedControllers.Controllers.length; i++) {
+            const id = message.ModifiedControllers.Controllers[i].ID;
+            const controller = preset.Exposed[id];
+            if (!controller)
+              continue;
+
+            const value = message.ModifiedControllers.ChangedValues[i];
+            setPayloadValueInternal(payloads, [message.PresetId, id], value);
+            changes[id] = value;
+          }
+
+          Notify.emitValuesChanges(message.PresetId, changes);          
           break;
         }
       }
@@ -302,6 +358,7 @@ export namespace UnrealEngine {
     registered = {};
     payloads = {};
     views = {};
+    favorites = {};
     isOpen = undefined;
 
     Notify.emit('connected', false);
@@ -336,13 +393,13 @@ export namespace UnrealEngine {
 
   function send(message: string, parameters: any, passphrase?: string) {
     verifyConnection();
-    const Id = parameters?.RequestId ?? request++;
-    passphrase = passphrase ?? workingPassphrase;
+    const Id = parameters?.RequestId ?? wsRequest++;
+    passphrase = passphrase ?? workingPassphrases[0];
     connection.send(JSON.stringify({ MessageName: message, Id, Passphrase: passphrase, Parameters: parameters}));
   }
 
   function http<T>(Verb: string, URL: string, Body?: object, wantAnswer?: boolean, passphrase?: string): Promise<T> {
-    const RequestId = request++;
+    const RequestId = httpRequest++;
     const payload = { RequestId, Verb, URL, Body };
     if (Program.logger)
       LogServer.logLoopback(payload);
@@ -370,55 +427,44 @@ export namespace UnrealEngine {
 
   function unregisterPreset(PresetName: string) {
     send('preset.unregister', { PresetName });
-  }    
-
-  export async function getPresets(): Promise<IPreset[]> {
-    return Object.values(presets);
   }
 
-  async function pullPresets(bInitial?: boolean): Promise<void> {
+  function getSortedPresets() {
+    return _.orderBy(Object.values(presets), ['IsFavorite', 'Name'], ['desc', 'asc']);
+  }
+
+  export async function getPresets(): Promise<IPreset[]> {
+    return getSortedPresets();
+  }
+
+  async function pullPresets(): Promise<void> {
     if (isPullingPresets)
       return;
 
     isPullingPresets = true;
-    if (bInitial)
-      setLoading(true);
+    setLoading(true);
 
-    try {
-      const allPresets: IPresets = {};
-      let allPayloads: IPayloads = {};
-  
+    try { 
       const { Presets } = await get<UnrealApi.Presets>('/remote/presets');
-      
-      for (const p of Presets ?? []) {
-        const Preset = await pullPreset(p.ID, p.Name);
-        if (!Preset)
-          continue;
 
-        allPresets[Preset.ID] = Preset;
-        if (bInitial || !presets[Preset.ID]){
-          allPayloads[Preset.ID] = await pullPresetValues(Preset);
-        }
+      for (const preset of Presets ?? []) {
+        const stub = preset as IPreset;
+        stub.Exposed = {};
+        stub.ExposedFunctions = [];
+        stub.ExposedProperties = [];
+        stub.Groups = [];
+        stub.IsFavorite = !!favorites?.[preset.ID];
+        presets[preset.ID] = stub;
       }
 
-      if (!equal(presets, allPresets)) {
-        presets = allPresets;
-        Notify.emit('presets', Object.values(presets));
-      }
-
-      allPayloads = {...payloads, ...allPayloads };
-      if (bInitial || !equal(payloads, allPayloads)) {
-        payloads = allPayloads;
-        Notify.emit('payloads', payloads);
-      }
+      Notify.emit('presets', getSortedPresets());
 
     } catch (error) {
       console.log('Failed to pull presets data');
     }
 
     isPullingPresets = false;
-    if (bInitial)
-      setLoading(false);
+    setLoading(false);
   }
 
   async function pullPreset(id: string, name?: string): Promise<IPreset> {
@@ -432,7 +478,7 @@ export namespace UnrealEngine {
       if (!Preset)
         return null;
 
-      populatePreset(Preset);
+      await populatePreset(Preset);
       return Preset;
     } catch (error) {
       console.log(`Failed to pull preset '${name || id}' data`);
@@ -445,11 +491,11 @@ export namespace UnrealEngine {
       return;
 
     presets[id] = preset;
-    Notify.emit('presets', Object.values(presets));
+    Notify.emit('presets', getSortedPresets());
     return preset;
   }
 
-  function populatePreset(preset: IPreset) {
+  async function populatePreset(preset: IPreset) {
     preset.ExposedProperties = [];
     preset.ExposedFunctions = [];
     preset.Exposed = {};
@@ -457,6 +503,7 @@ export namespace UnrealEngine {
     for (const Group of preset.Groups) {
       for (const Property of Group.ExposedProperties) {
         Property.Type = Property.UnderlyingProperty.Type;
+        Property.TypePath = Property.UnderlyingProperty.TypePath;
         preset.Exposed[Property.ID] = Property;
       }
 
@@ -473,17 +520,44 @@ export namespace UnrealEngine {
       preset.ExposedFunctions.push(...Group.ExposedFunctions);
     }
 
+    if (preset.Controllers) {
+      const Controllers: IGroup = { Name: 'Controllers', ExposedProperties: [], ExposedFunctions: [] };
+      preset.Groups.push(Controllers);
+      for (const Controller of preset.Controllers) {
+        if (!Controller.Metadata)
+          Controller.Metadata = {};
+
+        Controller.UnderlyingProperty = {
+          Name: Controller.Name,
+          Metadata: Controller.Metadata,
+          Description: '',
+          Type: Controller.Type,
+          TypePath: Controller.TypePath
+        };
+
+        preset.Exposed[Controller.ID] = Controller;
+        Controllers.ExposedProperties.push(Controller);
+      }
+    } 
+
+    preset.IsFavorite = favorites?.[preset.ID];
     return preset;
   }
 
-  async function refreshView(id: string, viewJson: string) {
+  function refreshView(id: string, viewJson: string) {
     try {
-      if (!viewJson)
+      if (!viewJson) {
+        views[id] = {
+          tabs: [{ name: 'Tab 1', layout: TabLayout.Empty, icon: '' }]
+        };
+
+        Notify.onViewChange(id, views[id], true);
         return;
+      }
 
       const view = JSON.parse(viewJson) as IView;
       if (equal(view, views[id]))
-        return; 
+        return;
 
       for (const tab of view.tabs) {
         if (!tab.panels)
@@ -497,7 +571,7 @@ export namespace UnrealEngine {
       Notify.onViewChange(id, view, true);
     } catch (error) {
       console.log('Failed to parse View of Preset', id);
-    }    
+    }
   }
 
   function setPanelIds(panel: IPanel) {
@@ -583,24 +657,41 @@ export namespace UnrealEngine {
     return false;
   }
 
+  function getPropertyValueRequest(Preset: IPreset, Property: IExposedProperty, IsController: boolean) {
+    return ({
+      RequestId: httpRequest++,
+      Verb: 'GET',
+      URL: `/remote/preset/${Preset.ID}/property/${Property.ID}`,
+      PropertyId: Property.ID,
+      IsController,
+    });
+  }
+
   async function pullPresetValues(Preset: IPreset): Promise<IPayload> {
     const Requests = [];
-    for (const property of Preset.ExposedProperties) {
-      Requests.push({
-        RequestId: request++,
-        Verb: 'GET',
-        URL: `/remote/preset/${Preset.ID}/property/${property.ID}`,
-        PropertyId: property.ID,
-      });
+    for (const Property of Preset.ExposedProperties)
+      Requests.push(getPropertyValueRequest(Preset, Property, false));
+
+    if (Preset.Controllers) {
+      for (const Controller of Preset.Controllers)
+        Requests.push(getPropertyValueRequest(Preset, Controller, true));
     }
 
     const updatedPayloads: IPayloads = {};
-    const values = await put<UnrealApi.BatchResponses>('/remote/batch', { Requests });
+    const answers = await put<UnrealApi.BatchResponses>('/remote/batch', { Requests });
     for (let i = 0; i < Requests.length; i++) {
-      const { PropertyId } = Requests[i];
+      const { PropertyId, IsController } = Requests[i];
       try {
-        const value = values.Responses[i].ResponseBody as UnrealApi.PropertyValues;
-        setPayloadValueInternal(updatedPayloads, [Preset.ID, PropertyId], value?.PropertyValues?.[0]?.PropertyValue);
+        let value;
+        if (IsController) {
+          const body = answers.Responses[i].ResponseBody as UnrealApi.GetPropertyValue;
+          value = body?.PropertyValue;
+        } else {
+          const body = answers.Responses[i].ResponseBody as UnrealApi.PropertyValues;
+          value = body?.PropertyValues?.[0]?.PropertyValue;
+        }
+
+        setPayloadValueInternal(updatedPayloads, [Preset.ID, PropertyId], value);
       } catch (error) {
         console.log(`Failed to get value of Preset: ${Preset.Name}, Property: ${PropertyId}`);
       }
@@ -623,7 +714,7 @@ export namespace UnrealEngine {
     Notify.emit('payloads', payloads);
     
     const res = await get<UnrealApi.View>(`/remote/preset/${id}/metadata/view`);
-    await refreshView(id, res?.Value);
+    refreshView(id, res?.Value);
   }
 
   export async function getPayload(preset: string): Promise<IPayload> {
@@ -652,7 +743,7 @@ export namespace UnrealEngine {
       if (Program.logger) {
         const presetObj = presets[preset];
         const log = {
-          RequestId: request,
+          RequestId: httpRequest,
           Stage: 'Set Property',
           Preset: presetObj?.Name,
           Property: presetObj?.Exposed[property]?.DisplayName,
@@ -710,7 +801,7 @@ export namespace UnrealEngine {
       const prop = presets[preset]?.Exposed[property];
       if (prop) {
         prop.Metadata[metadata] = value;
-        Notify.emit('presets', Object.values(presets));
+        Notify.emit('presets', getSortedPresets());
       }
     } catch (err) {
       console.log('Failed to set property metadata');
@@ -742,6 +833,21 @@ export namespace UnrealEngine {
     }
 
     Notify.emitValuesChanges(preset, changes);
+  }
+
+  export async function favoritePreset(preset: string, value: boolean): Promise<void> {
+    if (!presets[preset])
+      return;
+
+    presets[preset].IsFavorite = value;
+
+    if (value)
+      favorites[preset] = true;
+    else
+      delete favorites[preset];
+
+    await fs.writeJson('./favorites.json', favorites, { spaces: 2 });
+    Notify.emit('presets', getSortedPresets());
   }
 
   export async function getView(preset: string): Promise<IView> {

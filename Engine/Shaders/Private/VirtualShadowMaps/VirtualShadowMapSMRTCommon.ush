@@ -11,14 +11,25 @@ struct FSMRTSample
 	bool bValid;	
 	float SampleDepth;
 	float ReferenceDepth;
-	float CompareToleranceScale;
+	float ExtrapolateSlope;
+	bool bResetExtrapolation;
 };
+
+FSMRTSample InitSMRTSample()
+{
+	FSMRTSample Result;
+	Result.bValid = false;
+	Result.SampleDepth = 0;
+	Result.ReferenceDepth = 0;
+	Result.ExtrapolateSlope = 0;
+	Result.bResetExtrapolation = false;
+	return Result;
+}
 
 struct FSMRTResult
 {
 	bool bValidHit;
-	float OccluderDistance;
-	int SampleMissCount;
+	float HitDepth;	// Valid if bValidHit is true
 };
 
 float SMRTComputeRayMissFactor(uint RayMissCount, uint RayCount, uint MaxRayCount, half Noise)

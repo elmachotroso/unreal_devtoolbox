@@ -2,8 +2,6 @@
 
 #include "ChaosDerivedData.h"
 
-#if WITH_CHAOS
-
 #include "CoreMinimal.h"
 #include "Chaos/Core.h"
 #include "Chaos/CollisionConvexMesh.h"
@@ -56,7 +54,7 @@ const TCHAR* FChaosDerivedDataCooker::GetVersionString() const
 	// for their own DDC or serialized data - change Chaos::ChaosVersionString in Chaos/Core.h to bump our
 	// Chaos data version. Callers can also rely on that version in their builders and avoid bad serialization
 	// when basic Chaos data changes
-	return *Chaos::ChaosVersionString;
+	return Chaos::ChaosVersionGUID;
 }
 
 FString FChaosDerivedDataCooker::GetDebugContextString() const
@@ -82,10 +80,19 @@ FString FChaosDerivedDataCooker::GetPluginSpecificCacheKeySuffix() const
 		Setup->GetGeometryDDCKey(SetupGeometryKey);
 	}
 
-	return FString::Printf(TEXT("%s_%s_REAL%d"),
-		*RequestedFormat.ToString(),
-		*SetupGeometryKey,
-		(int)sizeof(Chaos::FReal));
+	FString OutSuffix = FString::Printf(TEXT("%s_%s_REAL%d"),
+										*RequestedFormat.ToString(),
+										*SetupGeometryKey,
+										(int)sizeof(Chaos::FReal));
+
+#if PLATFORM_CPU_ARM_FAMILY
+	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
+	// input. Add the arm specifically so that a) we avoid rebuilding the current DDC and
+	// b) we can remove it once we get arm64 to be consistent.
+	OutSuffix.Append(TEXT("_arm64"));
+#endif
+
+	return OutSuffix;
 }
 
 bool FChaosDerivedDataCooker::IsBuildThreadsafe() const
@@ -96,6 +103,8 @@ bool FChaosDerivedDataCooker::IsBuildThreadsafe() const
 
 bool FChaosDerivedDataCooker::Build(TArray<uint8>& OutData)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FChaosDerivedDataCooker::Build);
+
 	bool bSucceeded = false;
 
 	if(Setup)
@@ -129,5 +138,3 @@ FChaosDerivedDataCooker::FChaosDerivedDataCooker(UBodySetup* InSetup, FName InFo
 }
 
 
-#endif
- 

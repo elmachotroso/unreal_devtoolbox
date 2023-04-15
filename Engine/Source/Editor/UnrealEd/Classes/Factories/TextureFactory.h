@@ -8,6 +8,7 @@
 #include "Factories/Factory.h"
 #include "Engine/Texture.h"
 #include "ImportSettings.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "TextureFactory.generated.h"
 
 struct FImportImage
@@ -15,7 +16,7 @@ struct FImportImage
 	TArray64<uint8> RawData;
 	ETextureSourceFormat Format = TSF_Invalid;
 	TextureCompressionSettings CompressionSettings = TC_Default;
-	int32 NumMips;
+	int32 NumMips = 0;
 	int32 SizeX = 0;
 	int32 SizeY = 0;
 	bool SRGB = true;
@@ -112,13 +113,13 @@ class UNREALED_API UTextureFactory : public UFactory, public IImportSettingsPars
 	UPROPERTY(EditAnywhere, Category=LODGroup, meta=(ToolTip="The group the texture belongs to"))
 	TEnumAsByte<enum TextureGroup> LODGroup;
 
-	/** If enabled, mip-map alpha values will be dithered for smooth transitions */
-	UPROPERTY(EditAnywhere, Category=DitherMipMaps, meta=(ToolTip="If enabled, mip-map alpha values will be dithered for smooth transitions"))
-	uint32 bDitherMipMapAlpha:1;
-	
 	/** Whether mip RGBA should be scaled to preserve the number of pixels with Value >= AlphaCoverageThresholds */
 	UPROPERTY(EditAnywhere, Category=PreserveAlphaCoverage, meta=(ToolTip="Whether mip RGBA should be scaled to preserve the number of pixels with Value >= AlphaCoverageThresholds"))
 	bool bDoScaleMipsForAlphaCoverage = false;
+
+	/** Whether to use newer & faster mip generation filter, same quality but produces slightly different results from previous implementation */
+	UPROPERTY(EditAnywhere, Category=TextureFactory, meta=(ToolTip="Whether to use newer & faster mip generation filter"))
+	bool bUseNewMipFilter = false;
 
 	/** Channel values to compare to when preserving alpha coverage from a mask. */
 	UPROPERTY(EditAnywhere, Category=PreserveAlphaCoverage, meta=(ToolTip="Channel values to compare to when preserving alpha coverage from a mask for mips"))
@@ -151,6 +152,10 @@ class UNREALED_API UTextureFactory : public UFactory, public IImportSettingsPars
 	/** Mode for how to determine the color space of the source image. Auto will let the factory decide based on header metadata or bit depth. Linear or SRGB will force the color space on the resulting texture. */
 	UPROPERTY(Transient)
 	ETextureSourceColorSpace ColorSpaceMode;
+
+	/* Store YesAll/NoAll responses: */
+	UPROPERTY(Transient)
+	TEnumAsByte<EAppReturnType::Type> HDRImportShouldBeLongLatCubeMap = EAppReturnType::Retry;
 
 public:
 	UTextureFactory(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
@@ -223,7 +228,7 @@ private:
 	*
 	*	@return	bool					true if the given height/width represent a supported texture resolution, false if not
 	*/
-	static bool IsImportResolutionValid(int32 Width, int32 Height, bool bAllowNonPowerOfTwo, FFeedbackContext* Warn);
+	static bool IsImportResolutionValid(int64 Width, int64 Height, bool bAllowNonPowerOfTwo, FFeedbackContext* Warn);
 
 	/** Flags to be used when calling ImportImage */
 	enum class EImageImportFlags
@@ -238,10 +243,12 @@ private:
 	FRIEND_ENUM_CLASS_FLAGS(EImageImportFlags);
 
 	/** Import image file into generic image struct, may be easily copied to FTextureSource */
-	bool ImportImage(const uint8* Buffer, uint32 Length, FFeedbackContext* Warn, EImageImportFlags Flags, FImportImage& OutImage);
+	bool ImportImage(const uint8* Buffer, int64 Length, FFeedbackContext* Warn, EImageImportFlags Flags, FImportImage& OutImage);
 
 	/** used by CreateTexture() */
 	UTexture* ImportTexture(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, const TCHAR* Type, const uint8*& Buffer, const uint8* BufferEnd, FFeedbackContext* Warn);
+	
+	UTexture * ImportDDS(const uint8* Buffer,int64 Length,UObject* InParent,FName Name, EObjectFlags Flags,EImageImportFlags ImportFlags,FFeedbackContext* Warn);
 
 	UTexture* ImportTextureUDIM(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, const TCHAR* Type, const TMap<int32, FString>& UDIMIndexToFile, FFeedbackContext* Warn);
 
@@ -253,3 +260,21 @@ private:
 };
 
 ENUM_CLASS_FLAGS(UTextureFactory::EImageImportFlags);
+
+UCLASS()
+class UUDIMTextureFunctionLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_UCLASS_BODY()
+
+	/**
+	* Make a UDIM virtual texture from a list of regular 2D textures
+	* @param OutputPathName			Path name of the UDIM texture (e.g. /Game/MyTexture)
+	* @param SourceTextures			List of regular 2D textures to be packed into the atlas
+	* @param BlockCoords			Coordinates of the corresponding texture in the atlas
+	* @param bKeepExistingSettings	Whether to keep existing settings if a texture with the same path name exists. Otherwise, settings will be copied from the first source texture
+	* @param bCheckOutAndSave		Whether to check out and save the UDIM texture
+	* @return UTexture2D*			Pointer to the UDIM texture or null if failed
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DispalyName = "Make UDIM Texture from Texture2Ds"))
+	static UTexture2D* MakeUDIMVirtualTextureFromTexture2Ds(FString OutputPathName, const TArray<UTexture2D*>& SourceTextures, const TArray<FIntPoint>& BlockCoords, bool bKeepExistingSettings = false, bool bCheckOutAndSave = false);
+};

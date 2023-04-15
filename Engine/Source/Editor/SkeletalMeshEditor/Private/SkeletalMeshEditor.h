@@ -11,6 +11,7 @@
 #include "ISkeletalMeshEditor.h"
 #include "Containers/ArrayView.h"
 
+class IDetailLayoutBuilder;
 class IDetailsView;
 class IPersonaToolkit;
 class IPersonaViewport;
@@ -131,6 +132,8 @@ private:
 	void HandleReimportAllMesh(int32 SourceFileIndex = INDEX_NONE);
 	void HandleReimportAllMeshWithNewFile(int32 SourceFileIndex = INDEX_NONE);
 
+	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder);
+
 	/** Callback for toggling UV drawing in the viewport */
 	void ToggleMeshSectionSelection();
 
@@ -140,7 +143,6 @@ private:
 	void HandleMeshClick(HActor* HitProxy, const FViewportClick& Click);
 
 	// Clothing menu handlers (builds and handles clothing context menu options)
-	void FillMeshClickMenu(FMenuBuilder& MenuBuilder, HActor* HitProxy, const FViewportClick& Click);
 	void FillApplyClothingAssetMenu(FMenuBuilder& MenuBuilder, int32 InLodIndex, int32 InSectionIndex);
 	void FillCreateClothingMenu(FMenuBuilder& MenuBuilder, int32 InLodIndex, int32 InSectionIndex);
 	void FillCreateClothingLodMenu(FMenuBuilder& MenuBuilder, int32 InLodIndex, int32 InSectionIndex);

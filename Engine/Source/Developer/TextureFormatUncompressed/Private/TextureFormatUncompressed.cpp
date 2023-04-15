@@ -40,10 +40,12 @@ class FUncompressedTextureBuildFunction final : public FTextureBuildFunction
 	op(G16) \
 	op(VU8) \
 	op(RGBA16F) \
+	op(RGBA32F) \
 	op(XGXR8) \
 	op(RGBA8) \
 	op(POTERROR) \
 	op(R16F) \
+	op(R32F) \
 	op(R5G6B5) \
 	op(A1RGB555) \
 	op(RGB555A1)
@@ -90,9 +92,17 @@ class FTextureFormatUncompressed : public ITextureFormat
 		{
 			return TEXT("RGBA16F");
 		}
+		else if (InBuildSettings.TextureFormatName == GTextureFormatNameRGBA32F)
+		{
+			return TEXT("RGBA32F");
+		}
 		else if (InBuildSettings.TextureFormatName == GTextureFormatNameR16F)
 		{
 			return TEXT("R16F");
+		}
+		else if (InBuildSettings.TextureFormatName == GTextureFormatNameR32F)
+		{
+			return TEXT("R32F");
 		}
 		else
 		{
@@ -111,12 +121,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		}
 	}
 	
-	virtual FTextureFormatCompressorCaps GetFormatCapabilities() const override
-	{
-		return FTextureFormatCompressorCaps(); // Default capabilities.
-	}
-
-	virtual EPixelFormat GetPixelFormatForImage(const FTextureBuildSettings& BuildSettings, const struct FImage& Image, bool bImageHasAlphaChannel) const override
+	virtual EPixelFormat GetEncodedPixelFormat(const FTextureBuildSettings& BuildSettings, bool bImageHasAlphaChannel) const override
 	{
 		if (BuildSettings.TextureFormatName == GTextureFormatNameG8)
 		{
@@ -139,9 +144,17 @@ class FTextureFormatUncompressed : public ITextureFormat
 		{
 			return PF_FloatRGBA;
 		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameRGBA32F)
+		{
+			return PF_A32B32G32R32F;
+		}
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameR16F)
 		{
 			return PF_R16F;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameR32F)
+		{
+			return PF_R32_FLOAT;
 		}
 		else if (BuildSettings.TextureFormatName == GTextureFormatNamePOTERROR)
 		{
@@ -156,24 +169,27 @@ class FTextureFormatUncompressed : public ITextureFormat
 			return PF_B5G5R5A1_UNORM;
 		}
 
-		UE_LOG(LogTextureFormatUncompressed, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatUncompressed::GetPixelFormatForImage()"), *BuildSettings.TextureFormatName.ToString());
+		UE_LOG(LogTextureFormatUncompressed, Fatal, TEXT("Unhandled texture format '%s' given to FTextureFormatUncompressed::GetEncodedPixelFormat()"), *BuildSettings.TextureFormatName.ToString());
 		return PF_Unknown;
 	}
 
 	virtual bool CompressImage(
-		const FImage& InImage,
+		FImage& InImage,
 		const FTextureBuildSettings& BuildSettings,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
 	{
-		OutCompressedImage.PixelFormat = GetPixelFormatForImage(BuildSettings, InImage, bImageHasAlphaChannel);
+		OutCompressedImage.PixelFormat = GetEncodedPixelFormat(BuildSettings, bImageHasAlphaChannel);
+
+		// @todo Oodle : fix me : lots of pointless code dupe here
+		//	most of these should just map the Name to an ERawImageFormat and do CopyImage
 
 		if (BuildSettings.TextureFormatName == GTextureFormatNameG8)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::G8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::G8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
@@ -197,7 +213,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameVU8)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
@@ -221,7 +237,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameBGRA8)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
@@ -233,12 +249,13 @@ class FTextureFormatUncompressed : public ITextureFormat
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameRGBA8)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
 			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
 
+			// BGRA to RGBA : @todo Oodle : just use ImageCore CopyImageRGBABGRA
 			// swizzle each texel
 			uint64 NumTexels = (uint64)Image.SizeX * Image.SizeY * Image.NumSlices;
 			OutCompressedImage.RawData.Empty(NumTexels * 4);
@@ -260,7 +277,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameXGXR8)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
@@ -296,6 +313,18 @@ class FTextureFormatUncompressed : public ITextureFormat
 
 			return true;
 		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameRGBA32F)
+		{
+			FImage Image;
+			InImage.CopyTo(Image, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
+
+			OutCompressedImage.SizeX = Image.SizeX;
+			OutCompressedImage.SizeY = Image.SizeY;
+			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
+
+			return true;
+		}
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameR16F)
 		{
 			FImage Image;
@@ -303,7 +332,19 @@ class FTextureFormatUncompressed : public ITextureFormat
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
-			OutCompressedImage.SizeZ = BuildSettings.bVolume ? Image.NumSlices : 1;
+			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
+			OutCompressedImage.RawData = MoveTemp(Image.RawData);
+
+			return true;
+		}
+		else if (BuildSettings.TextureFormatName == GTextureFormatNameR32F)
+		{
+			FImage Image;
+			InImage.CopyTo(Image, ERawImageFormat::R32F, EGammaSpace::Linear);
+
+			OutCompressedImage.SizeX = Image.SizeX;
+			OutCompressedImage.SizeY = Image.SizeY;
+			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
 			OutCompressedImage.RawData = MoveTemp(Image.RawData);
 
 			return true;
@@ -345,7 +386,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		else if (BuildSettings.TextureFormatName == GTextureFormatNameR5G6B5 || BuildSettings.TextureFormatName == GTextureFormatNameRGB555A1 || BuildSettings.TextureFormatName == GTextureFormatNameA1RGB555)
 		{
 			FImage Image;
-			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
+			InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
 
 			OutCompressedImage.SizeX = Image.SizeX;
 			OutCompressedImage.SizeY = Image.SizeY;
@@ -410,6 +451,9 @@ public:
 		delete Singleton;
 		Singleton = NULL;
 	}
+	
+	virtual bool CanCallGetTextureFormats() override { return false; }
+
 	virtual ITextureFormat* GetTextureFormat()
 	{
 		if (!Singleton)

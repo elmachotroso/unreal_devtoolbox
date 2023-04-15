@@ -9,6 +9,7 @@
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneInitialValueCache.h"
 
+#include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
 #include "MovieSceneSequence.h"
 #include "IMovieScenePlayer.h"
@@ -616,21 +617,33 @@ void FInterrogationChannels::QueryLocalSpaceTransforms(UMovieSceneEntitySystemLi
 	}
 }
 
+EEntitySystemCategory FSystemInterrogator::GetInterrogationCategory()
+{
+	static EEntitySystemCategory Interrogation = UMovieSceneEntitySystem::RegisterCustomSystemCategory();
+	return Interrogation;
+}
 
+EEntitySystemCategory FSystemInterrogator::GetExcludedFromInterrogationCategory()
+{
+	static EEntitySystemCategory ExcludedFromInterrogation = UMovieSceneEntitySystem::RegisterCustomSystemCategory();
+	return ExcludedFromInterrogation;
+}
 
 FSystemInterrogator::FSystemInterrogator()
 {
 	InitialValueCache = FInitialValueCache::GetGlobalInitialValues();
 
 	Linker = NewObject<UMovieSceneEntitySystemLinker>(GetTransientPackage());
-	Linker->SetSystemContext(EEntitySystemContext::Interrogation);
+	Linker->SetLinkerRole(EEntitySystemLinkerRole::Interrogation);
+	Linker->GetSystemFilter().DisallowCategory(FSystemInterrogator::GetExcludedFromInterrogationCategory());
 
 	Linker->AddExtension(IInterrogationExtension::GetExtensionID(), static_cast<IInterrogationExtension*>(this));
 	Linker->AddExtension(InitialValueCache.Get());
 }
 
 FSystemInterrogator::~FSystemInterrogator()
-{}
+{
+}
 
 void FSystemInterrogator::AddReferencedObjects(FReferenceCollector& Collector)
 {
@@ -663,6 +676,11 @@ void FSystemInterrogator::ImportTrack(UMovieSceneTrack* Track, FInterrogationCha
 
 void FSystemInterrogator::ImportTrack(UMovieSceneTrack* Track, const FGuid& ObjectBindingID, FInterrogationChannel InChannel)
 {
+	if (Track->IsEvalDisabled())
+	{
+		return;
+	}
+
 	TGuardValue<FEntityManager*> DebugVizGuard(GEntityManagerForDebuggingVisualizers, &Linker->EntityManager);
 
 	FFrameRate TickResolution = Track->GetTypedOuter<UMovieScene>()->GetTickResolution();
@@ -677,6 +695,11 @@ void FSystemInterrogator::ImportTrack(UMovieSceneTrack* Track, const FGuid& Obje
 		IMovieSceneEntityProvider* EntityProvider = Cast<IMovieSceneEntityProvider>(Entry.Section);
 
 		if (!EntityProvider || Entry.Range.IsEmpty())
+		{
+			continue;
+		}
+
+		if (Track->IsRowEvalDisabled(Entry.Section->GetRowIndex()))
 		{
 			continue;
 		}

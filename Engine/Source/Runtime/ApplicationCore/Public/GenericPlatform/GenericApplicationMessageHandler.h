@@ -8,6 +8,7 @@
 #include "Math/Vector2D.h"
 #include "Templates/SharedPointer.h"
 #include "Misc/Optional.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 class FGenericWindow;
 
@@ -300,10 +301,10 @@ public:
 	 */
 	virtual bool ShouldUsePlatformUserId() const
 	{
-		return false;
+		return true;
 	}
 
-	virtual bool OnControllerAnalog(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, float AnalogValue)
+	virtual bool OnControllerAnalog(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, float AnalogValue)
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -312,7 +313,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, bool IsRepeat)
+	virtual bool OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat)
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -321,7 +322,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, bool IsRepeat)
+	virtual bool OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat)
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -343,7 +344,7 @@ public:
     {
     }
 
-	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId )
+	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceId )
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -352,7 +353,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId )
+	virtual bool OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID )
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -361,7 +362,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnTouchEnded( const FVector2D& Location, int32 TouchIndex, FPlatformUserId PlatformUserId )
+	virtual bool OnTouchEnded( const FVector2D& Location, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID )
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -370,7 +371,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId)
+	virtual bool OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID)
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -379,7 +380,7 @@ public:
 		return false;
 	}
 
-	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId)
+	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID)
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -393,7 +394,7 @@ public:
 
 	}
 
-	virtual bool OnMotionDetected( const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, FPlatformUserId PlatformUserId )
+	virtual bool OnMotionDetected( const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId )
 	{
 		if (!ShouldUsePlatformUserId())
 		{
@@ -513,35 +514,54 @@ public:
 	}
 
 	// Deprecate these when engine code has been converted to handle platform user id
+	UE_DEPRECATED(5.1, "This version of OnControllerAnalog has been deprecated, please use the one that takes an FPlatformUser and FInputDeviceId instead.")
 	virtual bool OnControllerAnalog(FGamepadKeyNames::Type KeyName, int32 ControllerId, float AnalogValue)
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnControllerAnalog(KeyName, FPlatformUserId(ControllerId), AnalogValue);
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnControllerAnalog(KeyName, UserId, DeviceId, AnalogValue);
 		}
 		return false;
 	}
+	UE_DEPRECATED(5.1, "This version of OnControllerButtonPressed has been deprecated, please use the one that takes an FPlatformUser and FInputDeviceId instead.")
 	virtual bool OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat)
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnControllerButtonPressed(KeyName, FPlatformUserId(ControllerId), IsRepeat);
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnControllerButtonPressed(KeyName, UserId, DeviceId, IsRepeat);
 		}
 		return false;
 	}
+	UE_DEPRECATED(5.1, "This version of OnControllerButtonReleased has been deprecated, please use the one that takes an FPlatformUser and FInputDeviceId instead.")
 	virtual bool OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat)
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnControllerButtonReleased(KeyName, FPlatformUserId(ControllerId), IsRepeat);
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnControllerButtonReleased(KeyName, UserId, DeviceId, IsRepeat);
 		}
 		return false;
 	}
 	virtual bool OnTouchStarted(const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId)
-	{
+	{ 
 		if (ShouldUsePlatformUserId())
 		{
-			return OnTouchStarted(Window, Location, Force, TouchIndex, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnTouchStarted(Window, Location, Force, TouchIndex, UserId, DeviceId);
 		}
 		return false;
 	}
@@ -549,7 +569,11 @@ public:
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnTouchMoved(Location, Force, TouchIndex, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnTouchMoved(Location, Force, TouchIndex, UserId, DeviceId);
 		}
 		return false;
 	}
@@ -557,7 +581,11 @@ public:
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnTouchEnded(Location, TouchIndex, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnTouchEnded(Location, TouchIndex, UserId, DeviceId);
 		}
 		return false;
 	}
@@ -565,7 +593,11 @@ public:
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnTouchForceChanged(Location, Force, TouchIndex, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnTouchForceChanged(Location, Force, TouchIndex, UserId, DeviceId);
 		}
 		return false;
 	}
@@ -573,7 +605,11 @@ public:
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnTouchFirstMove(Location, Force, TouchIndex, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnTouchFirstMove(Location, Force, TouchIndex, UserId, DeviceId);
 		}
 		return false;
 	}
@@ -581,7 +617,11 @@ public:
 	{
 		if (ShouldUsePlatformUserId())
 		{
-			return OnMotionDetected(Tilt, RotationRate, Gravity, Acceleration, FPlatformUserId(ControllerId));
+			// Remap the old int32 ControlerId to the new Platform user for backwards compat
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+			return OnMotionDetected(Tilt, RotationRate, Gravity, Acceleration, UserId, DeviceId);
 		}
 		return false;
 	}

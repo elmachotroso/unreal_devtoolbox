@@ -3,31 +3,55 @@
 
 #include "K2Node_FunctionEntry.h"
 
-#include "Engine/Blueprint.h"
 #include "Animation/AnimBlueprint.h"
-#include "UObject/UnrealType.h"
-#include "UObject/BlueprintsObjectVersion.h"
-#include "UObject/FrameworkObjectVersion.h"
-#include "UObject/ObjectSaveContext.h"
-#include "UObject/StructOnScope.h"
-#include "Engine/UserDefinedStruct.h"
+#include "BPTerminal.h"
+#include "BlueprintCompiledStatement.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/IndirectArray.h"
+#include "Containers/Map.h"
+#include "CoreGlobals.h"
+#include "DiffResults.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
+#include "EdGraphUtilities.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "EngineLogs.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_MakeArray.h"
 #include "K2Node_MakeVariable.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "EdGraphUtilities.h"
-#include "BPTerminal.h"
-#include "UObject/PropertyPortFlags.h"
-#include "KismetCompilerMisc.h"
-#include "KismetCompiler.h"
-#include "Misc/OutputDeviceNull.h"
-#include "DiffResults.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/Kismet2NameValidators.h"
+#include "KismetCompiledFunctionContext.h"
+#include "KismetCompiler.h"
+#include "KismetCompilerMisc.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/BlueprintsObjectVersion.h"
+#include "UObject/Class.h"
+#include "UObject/CoreNetTypes.h"
+#include "UObject/Field.h"
+#include "UObject/FrameworkObjectVersion.h"
+#include "UObject/LinkerLoad.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/ObjectVersion.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_FunctionEntry"
 
@@ -673,7 +697,7 @@ void UK2Node_FunctionEntry::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResul
 			Diff.Node1 = this;
 			Diff.Node2 = OtherNode;
 			Diff.DisplayString = LOCTEXT("DIF_FunctionFlags", "Function flags have changed");
-			Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
+			Diff.Category = EDiffType::MODIFICATION;
 
 			Results.Add(Diff);
 		}
@@ -685,58 +709,148 @@ void UK2Node_FunctionEntry::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResul
 			Diff.Node1 = this;
 			Diff.Node2 = OtherNode;
 			Diff.DisplayString = LOCTEXT("DIF_FunctionMetadata", "Function metadata has changed");
-			Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
+			Diff.Category = EDiffType::MODIFICATION;
 
 			Results.Add(Diff);
 		}
 
-		bool bLocalVarsDiffer = (LocalVariables.Num() != OtherFunction->LocalVariables.Num());
-
-		for (int32 i = 0; i < LocalVariables.Num() && !bLocalVarsDiffer; i++)
+		// constructs a map from variable guid to index in the provided array
+		auto MapVarGuidToArrayIndex = [](const TArray<FBPVariableDescription>& Variables)
 		{
-			const FBPVariableDescription& ThisVar = LocalVariables[i];
-			const FBPVariableDescription& OtherVar = OtherFunction->LocalVariables[i];
-			
-			// Can't do a raw compare, for local variable defaults we need to compare the struct
-			if (ThisVar.VarName != OtherVar.VarName
-				|| ThisVar.VarType != OtherVar.VarType
-				|| ThisVar.FriendlyName != OtherVar.FriendlyName
-				|| !ThisVar.Category.EqualTo(OtherVar.Category)
-				|| ThisVar.PropertyFlags != OtherVar.PropertyFlags
-				|| ThisVar.RepNotifyFunc != OtherVar.RepNotifyFunc
-				|| ThisVar.ReplicationCondition != OtherVar.ReplicationCondition)
+			TMap<FGuid, int32> Map;
+			for (int32 i = 0; i < Variables.Num(); i++)
 			{
-				bLocalVarsDiffer = true;
+				Map.Add(Variables[i].VarGuid, i);
 			}
-		}
+			return MoveTemp(Map);
+		};
 
-		if (bLocalVarsDiffer)
+		auto AddDiff = [this, OtherNode, &Results](const FText& DisplayString)
 		{
 			FDiffSingleResult Diff;
 			Diff.Diff = EDiffType::NODE_PROPERTY;
 			Diff.Node1 = this;
 			Diff.Node2 = OtherNode;
-			Diff.DisplayString = LOCTEXT("DIF_FunctionLocalVariables", "Function local variables have changed in structure");
-			Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
-
+			Diff.DisplayString = DisplayString;
 			Results.Add(Diff);
-		}
-		else
+		};
+
+		// using maps so that order doesn't matter and it's easy to diff
+		const TMap<FGuid, int32> VarGuidToIndex = MapVarGuidToArrayIndex(LocalVariables);
+		const TMap<FGuid, int32> OtherVarGuidToIndex = MapVarGuidToArrayIndex(OtherFunction->LocalVariables);
+
+		FDiffSingleResult Diff;
+		Diff.Diff = EDiffType::NODE_PROPERTY;
+		Diff.Node1 = this;
+		Diff.Node2 = OtherNode;
+		const FText NodeName = FText::FromName(FunctionReference.GetMemberName());
+		for (const auto& [VarGuid,Index] : VarGuidToIndex)
 		{
-			TSharedPtr<FStructOnScope> MyLocals = GetFunctionVariableCache();
-			TSharedPtr<FStructOnScope> OtherLocals = OtherFunction->GetFunctionVariableCache();
-
-			if (MyLocals.IsValid() && MyLocals->IsValid() && OtherLocals.IsValid() && OtherLocals->IsValid())
+			const FBPVariableDescription& ThisVar = LocalVariables[Index];
+			const FText OldVarName = FText::FromName(ThisVar.VarName);
+			
+			if (const int32* OtherIndex = OtherVarGuidToIndex.Find(VarGuid))
 			{
-				// Check for local var diffs
-				FDiffSingleResult Diff;
-				Diff.Diff = EDiffType::NODE_PROPERTY;
-				Diff.Node1 = this;
-				Diff.Node2 = OtherNode;
-				Diff.ToolTip = LOCTEXT("DIF_FunctionLocalVariableDefaults", "Function local variable default values have changed");
-				Diff.DisplayColor = FLinearColor(0.25f, 0.71f, 0.85f);
-
-				DiffProperties(const_cast<UStruct*>(MyLocals->GetStruct()), const_cast<UStruct*>(OtherLocals->GetStruct()), MyLocals->GetStructMemory(), OtherLocals->GetStructMemory(), Results, Diff);
+				Diff.Category = EDiffType::MODIFICATION;
+				const FBPVariableDescription& OtherVar = OtherFunction->LocalVariables[*OtherIndex];
+				const FText NewVarName = FText::FromName(OtherVar.VarName);
+				if (ThisVar.VarName != OtherVar.VarName)
+				{
+					// variable name changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableNameChange", "Local variable name changed from {0}::{1} to {0}::{2}"),
+						NodeName,
+						OldVarName,
+						NewVarName
+					));
+				}
+				if (ThisVar.VarType != OtherVar.VarType)
+				{
+					// type changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableTypeChange", "Local variable {0}::{1} was a {2} but is now a {3}"),
+						NodeName,
+						NewVarName,
+						UEdGraphSchema_K2::TypeToText(ThisVar.VarType),
+						UEdGraphSchema_K2::TypeToText(OtherVar.VarType)
+					));
+				}
+				if (!ThisVar.Category.EqualTo(OtherVar.Category))
+				{
+					// category changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableCategoryChange", "Local variable {0}::{1} changed category from {2} to {3}"),
+						NodeName,
+						NewVarName,
+						ThisVar.Category,
+						OtherVar.Category
+					));
+				}
+				if (ThisVar.PropertyFlags != OtherVar.PropertyFlags)
+				{
+					// property flags changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableFlagChange", "Local variable {0}::{1} changed property flags"),
+						NodeName,
+						NewVarName
+					));
+				}
+				if (ThisVar.RepNotifyFunc != OtherVar.RepNotifyFunc)
+				{
+					// replication notify function changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableRepNotifyFuncChange", "Local variable {0}::{1} changed RepNotifyFunc"),
+						NodeName,
+						NewVarName
+					));
+				}
+				if (ThisVar.ReplicationCondition != OtherVar.ReplicationCondition)
+				{
+					// replication condition changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableRepConditionChange", "Local variable {0}::{1} changed ReplicationCondition"),
+						NodeName,
+						NewVarName
+					));
+				}
+				if (ThisVar.DefaultValue != OtherVar.DefaultValue)
+				{
+					// replication condition changed
+					AddDiff(FText::Format(
+						LOCTEXT("DIF_FunctionLocalVariableDefaultValueChange", "Local variable {0}::{1} changed default value from '{2}' to '{3}'"),
+						NodeName,
+						NewVarName,
+						FText::FromString(ThisVar.DefaultValue),
+						FText::FromString(OtherVar.DefaultValue)
+					));
+				}
+			}
+			else
+			{
+				// local variable is in this node but not in other node
+				Diff.Category = EDiffType::SUBTRACTION;
+				AddDiff(FText::Format(
+				LOCTEXT("DIF_FunctionLocalVariableRemoved", "Local variable {0}::{1} removed"),
+					NodeName,
+					OldVarName
+				));
+			}
+		}
+		
+		for (const auto& [VarGuid,Index] : OtherVarGuidToIndex)
+		{
+			const FBPVariableDescription& OtherVar = OtherFunction->LocalVariables[Index];
+			if (!VarGuidToIndex.Contains(VarGuid))
+			{
+				const FText NewVarName = FText::FromName(OtherVar.VarName);
+				
+				// local variable is in other node but not in this node
+				Diff.Category = EDiffType::ADDITION;
+				AddDiff(FText::Format(
+				LOCTEXT("DIF_FunctionLocalVariableAdded", "Local variable {0}::{1} added"),
+					NodeName,
+					NewVarName
+				));
 			}
 		}
 	}

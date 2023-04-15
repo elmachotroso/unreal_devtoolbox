@@ -11,11 +11,10 @@
 #include "Logging/TokenizedMessage.h"
 #include "RigVMAST.generated.h"
 
-DECLARE_DELEGATE_ThreeParams(FRigVMReportDelegate, EMessageSeverity::Type, UObject*, const FString&);
-
 class FRigVMParserAST;
 class FRigVMBlockExprAST;
 class FRigVMEntryExprAST;
+class FRigVMInvokeEntryExprAST;
 class FRigVMCallExternExprAST;
 class FRigVMNoOpExprAST;
 class FRigVMVarExprAST;
@@ -37,6 +36,33 @@ class URigVMGraph;
 class URigVMController;
 
 /*
+ * A structure to describe a link between two proxies
+ */
+struct RIGVMDEVELOPER_API FRigVMASTLinkDescription
+{
+	FRigVMASTLinkDescription() {}
+	
+	FRigVMASTLinkDescription(const FRigVMASTProxy& InSourceProxy, const FRigVMASTProxy& InTargetProxy, const FString& InSegmentPath)
+	: SourceProxy(InSourceProxy)
+	, TargetProxy(InTargetProxy)
+	, SegmentPath(InSegmentPath)
+	, LinkIndex(INDEX_NONE)
+	{}
+
+	FRigVMASTLinkDescription(const FRigVMASTLinkDescription& InOther)
+	: SourceProxy(InOther.SourceProxy)
+	, TargetProxy(InOther.TargetProxy)
+	, SegmentPath(InOther.SegmentPath)
+	, LinkIndex(INDEX_NONE)
+	{}
+
+	FRigVMASTProxy SourceProxy;
+	FRigVMASTProxy TargetProxy;
+	FString SegmentPath;
+	int32 LinkIndex;
+};
+
+/*
  * Base class for an expression within an abstract syntax tree.
  * The base implements parent / child relationships as well as a
  * simple typing system.
@@ -54,6 +80,7 @@ public:
 	{
 		Block,
 		Entry,
+		InvokeEntry,
 		CallExtern,
 		NoOp,
 		Var,
@@ -247,7 +274,7 @@ protected:
 	// @param InReplacement the expression to replace this one
 	void ReplaceBy(FRigVMExprAST* InReplacement);
 
-private:
+protected:
 
 	// returns a string containing an indented tree structure
 	// for debugging purposes. this is only used by the parser
@@ -261,6 +288,7 @@ private:
 	const FRigVMParserAST* ParserPtr;
 	TArray<FRigVMExprAST*> Parents;
 	TArray<FRigVMExprAST*> Children;
+	TMap<FName, int32> PinNameToChildIndex;
 
 	friend class FRigVMParserAST;
 	friend class URigVMCompiler;
@@ -286,6 +314,17 @@ FORCEINLINE const FRigVMEntryExprAST* FRigVMExprAST::To() const
 {
 	ensure(IsA(EType::Entry));
 	return (const FRigVMEntryExprAST*)this;
+}
+
+// specialized cast for type checking
+// for a InvokeEntry / FRigVMInvokeEntryExprAST expression
+// will raise if types are not compatible
+// @return this expression cast to FRigVMInvokeEntryExprAST
+template<>
+FORCEINLINE const FRigVMInvokeEntryExprAST* FRigVMExprAST::To() const
+{
+	ensure(IsA(EType::InvokeEntry));
+	return (const FRigVMInvokeEntryExprAST*)this;
 }
 
 // specialized cast for type checking
@@ -458,7 +497,7 @@ public:
 	// returns true if this block contains a given expression
 	// @param InExpression the expression to check
 	// @return true if this block contains a given expression
-	bool Contains(const FRigVMExprAST* InExpression) const;
+	bool Contains(const FRigVMExprAST* InExpression, TMap<const FRigVMExprAST*, bool>* ContainedExpressionsCache = nullptr) const;
 
 	// overload of the type checking mechanism
 	virtual bool IsA(EType InType) const override
@@ -506,6 +545,7 @@ public:
 	URigVMNode* GetNode() const { return GetProxy().GetSubjectChecked<URigVMNode>(); }
 
 	virtual bool IsConstant() const override;
+	const FRigVMExprAST* FindExprWithPinName(const FName& InPinName) const;
 	const FRigVMVarExprAST* FindVarWithPinName(const FName& InPinName) const;
 
 protected:
@@ -559,6 +599,46 @@ protected:
 	// default constructor (protected so that only parser can access it)
 	FRigVMEntryExprAST(const FRigVMASTProxy& InNodeProxy)
 		: FRigVMNodeExprAST(EType::Entry, InNodeProxy)
+	{}
+
+private:
+
+	friend class FRigVMParserAST;
+};
+
+/*
+ * An abstract syntax tree entry expression represents an invocation
+ * of an entry point.
+ */
+class RIGVMDEVELOPER_API FRigVMInvokeEntryExprAST : public FRigVMNodeExprAST
+{
+public:
+
+	// virtual destructor
+	virtual ~FRigVMInvokeEntryExprAST() {}
+
+	// disable copy constructor
+	FRigVMInvokeEntryExprAST(const FRigVMInvokeEntryExprAST&) = delete;
+
+	// overload of the type checking mechanism
+	virtual bool IsA(EType InType) const override
+	{
+		if(FRigVMNodeExprAST::IsA(InType))
+		{
+			return true;
+		}
+		return InType == EType::InvokeEntry;
+	};
+
+	// returns the name of the entry / event
+	// @return the name of the entry / event
+	FName GetEventName() const;
+
+protected:
+
+	// default constructor (protected so that only parser can access it)
+	FRigVMInvokeEntryExprAST(const FRigVMASTProxy& InNodeProxy)
+		: FRigVMNodeExprAST(EType::InvokeEntry, InNodeProxy)
 	{}
 
 private:
@@ -687,10 +767,6 @@ public:
 	// @return true if this variable is an execute context
 	bool IsExecuteContext() const;
 
-	// returns true if this variable is a graph parameter
-	// @return true if this variable is a graph parameter
-	bool IsGraphParameter() const;
-
 	// returns true if this variable is a graph variable
 	// @return true if this variable is a graph variable
 	bool IsGraphVariable() const;
@@ -815,18 +891,21 @@ public:
 	FRigVMAssignExprAST(const FRigVMAssignExprAST&) = delete;
 
 	// returns the source proxy this expression is using
-	const FRigVMASTProxy& GetSourceProxy() const { return SourceProxy; }
+	const FRigVMASTLinkDescription& GetLink() const { return Link; }
+
+	// returns the source proxy this expression is using
+	const FRigVMASTProxy& GetSourceProxy() const { return Link.SourceProxy; }
 
 	// returns the source pin for this assignment
 	// @return the source pin for this assignment
-	URigVMPin* GetSourcePin() const { return SourceProxy.GetSubjectChecked<URigVMPin>(); }
+	URigVMPin* GetSourcePin() const { return Link.SourceProxy.GetSubjectChecked<URigVMPin>(); }
 
 	// returns the target proxy this expression is using
-	const FRigVMASTProxy& GetTargetProxy() const { return TargetProxy; }
+	const FRigVMASTProxy& GetTargetProxy() const { return Link.TargetProxy; }
 
 	// returns the target pin for this assignment
 	// @return the target pin for this assignment
-	URigVMPin* GetTargetPin() const { return TargetProxy.GetSubjectChecked<URigVMPin>(); }
+	URigVMPin* GetTargetPin() const { return Link.TargetProxy.GetSubjectChecked<URigVMPin>(); }
 
 	// overload of the type checking mechanism
 	virtual bool IsA(EType InType) const override
@@ -837,17 +916,14 @@ public:
 protected:
 
 	// default constructor (protected so that only parser can access it)
-	FRigVMAssignExprAST(EType InType, const FRigVMASTProxy& InSourceProxy, const FRigVMASTProxy& InTargetProxy)
+	FRigVMAssignExprAST(EType InType, const FRigVMASTLinkDescription& InLink)
 		: FRigVMExprAST(InType)
-		, SourceProxy(InSourceProxy)
-		, TargetProxy(InTargetProxy)
+		, Link(InLink)
 	{
 	}
 
 private:
-
-	FRigVMASTProxy SourceProxy;
-	FRigVMASTProxy TargetProxy;
+	FRigVMASTLinkDescription Link;
 	friend class FRigVMParserAST;
 };
 
@@ -882,8 +958,8 @@ public:
 protected:
 
 	// default constructor (protected so that only parser can access it)
-	FRigVMCopyExprAST(const FRigVMASTProxy& InSourceProxy, const FRigVMASTProxy& InTargetProxy)
-		: FRigVMAssignExprAST(EType::Copy, InSourceProxy, InTargetProxy)
+	FRigVMCopyExprAST(const FRigVMASTLinkDescription& InLink)
+		: FRigVMAssignExprAST(EType::Copy, InLink)
 	{}
 
 
@@ -1205,7 +1281,7 @@ public:
 	// default constructor
 	// @param InGraph The graph / model to parse
 	// @param InSettings The parse settings to use
-	FRigVMParserAST(URigVMGraph* InGraph, URigVMController* InController = nullptr, const FRigVMParserASTSettings& InSettings = FRigVMParserASTSettings::Fast(), const TArray<FRigVMExternalVariable>& InExternalVariables = TArray<FRigVMExternalVariable>(), const TArray<FRigVMUserDataArray>& InRigVMUserData = TArray<FRigVMUserDataArray>());
+	FRigVMParserAST(TArray<URigVMGraph*> InGraphs, URigVMController* InController = nullptr, const FRigVMParserASTSettings& InSettings = FRigVMParserASTSettings::Fast(), const TArray<FRigVMExternalVariable>& InExternalVariables = TArray<FRigVMExternalVariable>(), const TArray<FRigVMUserDataArray>& InRigVMUserData = TArray<FRigVMUserDataArray>());
 
 	// default destructor
 	~FRigVMParserAST();
@@ -1275,13 +1351,23 @@ public:
 private:
 
 	// private constructor for a partial build
-	FRigVMParserAST(URigVMGraph* InGraph, const TArray<FRigVMASTProxy>& InNodesToCompute);
+	FRigVMParserAST(TArray<URigVMGraph*> InGraphs, const TArray<FRigVMASTProxy>& InNodesToCompute);
 
 	// make function to create an expression
 	template<class ExprType>
 	ExprType* MakeExpr(FRigVMExprAST::EType InType, const FRigVMASTProxy& InProxy)
 	{
 		ExprType* Expr = new ExprType(InType, InProxy);
+		Expr->ParserPtr = this;
+		Expr->Index = Expressions.Add(Expr);
+		return Expr;
+	}
+
+	// make function to create an expression
+	template<class ExprType>
+	ExprType* MakeExpr(FRigVMExprAST::EType InType, const FRigVMASTLinkDescription& InLink)
+	{
+		ExprType* Expr = new ExprType(InType, InLink);
 		Expr->ParserPtr = this;
 		Expr->Index = Expressions.Add(Expr);
 		return Expr;
@@ -1312,6 +1398,16 @@ private:
 	ExprType* MakeExpr(const FRigVMASTProxy& InProxy)
 	{
 		ExprType* Expr = new ExprType(InProxy);
+		Expr->ParserPtr = this;
+		Expr->Index = Expressions.Add(Expr);
+		return Expr;
+	}
+
+	// make function to create an expression
+	template<class ExprType>
+	ExprType* MakeExpr(const FRigVMASTLinkDescription& InLink)
+	{
+		ExprType* Expr = new ExprType(InLink);
 		Expr->ParserPtr = this;
 		Expr->Index = Expressions.Add(Expr);
 		return Expr;
@@ -1367,20 +1463,22 @@ private:
 	void FoldAssignments();
 
 	// helper function to fold constant values into literals
-	bool FoldConstantValuesToLiterals(URigVMGraph* InGraph, URigVMController* InController, const TArray<FRigVMExternalVariable>& InExternalVariables, const TArray<FRigVMUserDataArray>& InRigVMUserData);
+	bool FoldConstantValuesToLiterals(TArray<URigVMGraph*> InGraphs, URigVMController* InController, const TArray<FRigVMExternalVariable>& InExternalVariables, const TArray<FRigVMUserDataArray>& InRigVMUserData);
 
 	// helper function to fold unreachable branches 
-	bool FoldUnreachableBranches(URigVMGraph* InGraph);
+	bool FoldUnreachableBranches(TArray<URigVMGraph*> InGraphs);
 
 	// helper function to inline all contributing nodes of the graph
-	void Inline(URigVMGraph* InGraph);
-	void Inline(URigVMGraph* InGraph, const TArray<FRigVMASTProxy>& InNodeProxies);
+	void Inline(TArray<URigVMGraph*> InGraphs);
+	void Inline(TArray<URigVMGraph*> InGraphs, const TArray<FRigVMASTProxy>& InNodeProxies);
 
 	// helper functions to retrieve links for a given pin
-	const TArray<FRigVMASTProxy>& GetSourcePins(const FRigVMASTProxy& InPinProxy) const;
-	const TArray<FRigVMASTProxy>& GetTargetPins(const FRigVMASTProxy& InPinProxy) const;
-	TArray<FRigVMPinProxyPair> GetSourceLinks(const FRigVMASTProxy& InPinProxy, bool bRecursive = false) const;
-	TArray<FRigVMPinProxyPair> GetTargetLinks(const FRigVMASTProxy& InPinProxy, bool bRecursive = false) const;
+	TArray<int32> GetSourceLinkIndices(const FRigVMASTProxy& InPinProxy, bool bRecursive = false) const;
+	TArray<int32> GetTargetLinkIndices(const FRigVMASTProxy& InPinProxy, bool bRecursive = false) const;
+	TArray<int32> GetLinkIndices(const FRigVMASTProxy& InPinProxy, bool bGetSource, bool bRecursive) const;
+
+	// function to retrieve a link given its index
+	const FRigVMASTLinkDescription& GetLink(int32 InLinkIndex) const;
 
 	// traverse a single mutable node (constructs entry, call extern and other expressions)
 	FRigVMExprAST* TraverseMutableNode(const FRigVMASTProxy& InNodeProxy, FRigVMExprAST* InParentExpr);
@@ -1398,11 +1496,11 @@ private:
 	FRigVMExprAST* TraversePin(const FRigVMASTProxy& InPinProxy, FRigVMExprAST* InParentExpr);
 
 	// traverse a single link (constructs assign + copy expressions)
-	FRigVMExprAST* TraverseLink(const FRigVMPinProxyPair& InLink, FRigVMExprAST* InParentExpr);
+	FRigVMExprAST* TraverseLink(int32 InLinkIndex, FRigVMExprAST* InParentExpr);
 
-	bool ShouldLinkBeSkipped(const FRigVMPinProxyPair& InLink) const;
+	bool ShouldLinkBeSkipped(const FRigVMASTLinkDescription& InLink) const;
 
-	static FString GetLinkAsString(const FRigVMPinProxyPair& InLink);
+	static FString GetLinkAsString(const FRigVMASTLinkDescription& InLink);
 
 	TMap<FRigVMASTProxy, FRigVMExprAST*> SubjectToExpression;
 	TMap<FRigVMASTProxy, int32> NodeExpressionIndex;
@@ -1413,8 +1511,9 @@ private:
 
 	TArray<FRigVMASTProxy> NodeProxies;
 	TMap<FRigVMASTProxy, FRigVMASTProxy> SharedOperandPins;
-	TMap<FRigVMASTProxy, TArray<FRigVMASTProxy>> TargetLinks;
-	TMap<FRigVMASTProxy, TArray<FRigVMASTProxy>> SourceLinks;
+	TMap<FRigVMASTProxy, TArray<int32>> TargetLinkIndices;
+	TMap<FRigVMASTProxy, TArray<int32>> SourceLinkIndices;
+	TArray<FRigVMASTLinkDescription> Links;
 	static const TArray<FRigVMASTProxy> EmptyProxyArray;
 	URigVMPin::FPinOverrideMap PinOverrides;
 
@@ -1431,8 +1530,10 @@ private:
 	TArray<URigVMLink*> LinksToSkip;
 
 	FRigVMParserASTSettings Settings;
+	mutable TMap<TTuple<const FRigVMExprAST*,const FRigVMExprAST*>, int32> MinIndexOfChildWithinParent;
 
 	friend class FRigVMExprAST;
+	friend class FRigVMAssignExprAST;
 	friend class URigVMCompiler;
 };
 

@@ -67,6 +67,13 @@ class UKismetRenderingLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	static ENGINE_API void ReleaseRenderTarget2D(UTextureRenderTarget2D* TextureRenderTarget);
 
+	/**
+	 * Changes the resolution of a render target. This is useful for when you need to resize the game viewport or change the in-game resolution during runtime
+	 * and thus need to update the sizes of all the render targets in the game accordingly.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Rendering")
+	static ENGINE_API void ResizeRenderTarget2D(UTextureRenderTarget2D* TextureRenderTarget, int32 Width = 256, int32 Height = 256);
+
 	/** 
 	 * Renders a quad with the material applied to the specified render target.   
 	 * This sets the render target even if it is already set, which is an expensive operation. 
@@ -76,7 +83,7 @@ class UKismetRenderingLibrary : public UBlueprintFunctionLibrary
 	static ENGINE_API void DrawMaterialToRenderTarget(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, UMaterialInterface* Material);
 
 	/**
-	* Creates a new Static Texture from a Render Target 2D. Render Target Must be power of two and use four channels.
+	* Creates a new Static Texture from a Render Target 2D.
 	* Only works in the editor
 	*/
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Render Target Create Static Texture Editor Only", Keywords = "Create Static Texture from Render Target", UnsafeDuringActorConstruction = "true"), Category = Game)

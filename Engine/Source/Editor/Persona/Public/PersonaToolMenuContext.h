@@ -4,15 +4,20 @@
 
 #include "CoreMinimal.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "PersonaModule.h"
 
 #include "PersonaToolMenuContext.generated.h"
 
 class IPersonaToolkit;
-class USkeleton;
-class UDebugSkelMeshComponent;
-class USkeletalMesh;
 class UAnimBlueprint;
 class UAnimationAsset;
+class UDebugSkelMeshComponent;
+class USkeletalMesh;
+class USkeleton;
+struct FFrame;
 
 UCLASS(BlueprintType)
 class PERSONA_API UPersonaToolMenuContext : public UObject
@@ -40,7 +45,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = PersonaEditorExtensions)
 	UAnimationAsset* GetAnimationAsset() const;
 
+	/** Get the persona toolkit */
 	void SetToolkit(TSharedRef<IPersonaToolkit> InToolkit);
+
+	/** Get a weak ptr to the persona toolkit */
+	TWeakPtr<IPersonaToolkit> GetToolkit() const { return WeakToolkit; }
 
 protected:
 	bool HasValidToolkit() const;

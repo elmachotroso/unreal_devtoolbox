@@ -5,22 +5,25 @@
 #include "Materials/MaterialInterface.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
+#include "Misc/ITransaction.h"
 #include "Framework/Application/SlateApplication.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Components/MeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Animation/AnimSequenceBase.h"
 #include "CanvasItem.h"
 #include "Engine/BrushBuilder.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Engine/Brush.h"
 #include "AI/NavigationSystemBase.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Animation/AnimBlueprint.h"
 #include "Exporters/ExportTextContainer.h"
 #include "Factories/MaterialFactoryNew.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "Editor/GroupActor.h"
 #include "Components/DecalComponent.h"
 #include "Components/DirectionalLightComponent.h"
@@ -32,6 +35,7 @@
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
 #include "Editor.h"
+#include "EditorDirectories.h"
 #include "EditorModeRegistry.h"
 #include "EditorModes.h"
 #include "PhysicsManipulationMode.h"
@@ -57,7 +61,8 @@
 #include "SLevelViewport.h"
 #include "AssetSelection.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
 #include "IPlacementModeModule.h"
 #include "Engine/Polys.h"
 #include "ActorEditorUtils.h"
@@ -75,7 +80,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Settings/EditorProjectSettings.h"
-#include "Editor/ContentBrowser/Public/ContentBrowserModule.h"
+#include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentStreaming.h"
 #include "IHeadMountedDisplay.h"
@@ -95,6 +100,8 @@
 #include "LevelEditorDragDropHandler.h"
 #include "UnrealWidget.h"
 #include "EdModeInteractiveToolsContext.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "Rendering/StaticLightingSystemInterface.h"
 
 DEFINE_LOG_CATEGORY(LogEditorViewport);
 
@@ -186,6 +193,13 @@ static void NotifyAtmosphericLightHasMoved(UDirectionalLightComponent& SelectedA
 		// Now notify the owner about the transform update, e.g. construction script on instance.
 		LightOwner->PostEditMove(bFinished);
 		// No PostEditChangeProperty because not paired with a PreEditChange
+
+		if (bFinished)
+		{
+			SelectedAtmosphericLight.InvalidateLightingCache();
+		}
+		
+		FStaticLightingSystemInterface::OnSkyAtmosphereModified.Broadcast();
 	}
 }
 
@@ -286,22 +300,17 @@ TArray<AActor*> FLevelEditorViewportClient::TryPlacingActorFromObject( ULevel* I
 		}
 	}
 
+	if (PlacedActors.Num() > 0)
+	{
+		FEditorDelegates::OnNewActorsPlaced.Broadcast(ObjToUse, PlacedActors);
+	}
+
 	return PlacedActors;
 }
 
-namespace EMaterialKind
-{
-	enum Type
-	{
-		Unknown = 0,
-		Base,
-		Normal,
-		Specular,
-		Emissive,
-	};
-}
 
-static FString GetSharedTextureNameAndKind( FString TextureName, EMaterialKind::Type& Kind)
+
+static FString GetSharedTextureNameAndKind( FString TextureName, EMaterialKind& Kind)
 {
 	// Try and strip the suffix from the texture name, if we're successful it must be of that type.
 	bool hasBaseSuffix = TextureName.RemoveFromEnd( "_D" ) || TextureName.RemoveFromEnd( "_Diff" ) || TextureName.RemoveFromEnd( "_Diffuse" ) || TextureName.RemoveFromEnd( "_Detail" ) || TextureName.RemoveFromEnd( "_Base" );
@@ -341,12 +350,13 @@ static UTexture* GetTextureWithNameVariations( const FString& BasePackageName, c
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>( TEXT( "AssetRegistry" ) );
 
 	// Try all the variations of suffixes, if we find a package matching the suffix, return it.
+	const FTopLevelAssetPath Texture2DClassPath(TEXT("/Script/Engine"), TEXT("Texture2D"));
 	for ( int i = 0; i < Suffixes.Num(); i++ )
 	{
 		TArray<FAssetData> OutAssetData;
 		if ( AssetRegistryModule.Get().GetAssetsByPackageName( *( BasePackageName + Suffixes[i] ), OutAssetData ) && OutAssetData.Num() > 0 )
 		{
-			if ( OutAssetData[0].AssetClass == "Texture2D" )
+			if ( OutAssetData[0].AssetClassPath == Texture2DClassPath )
 			{
 				return Cast<UTexture>(OutAssetData[0].GetAsset());
 			}
@@ -356,7 +366,7 @@ static UTexture* GetTextureWithNameVariations( const FString& BasePackageName, c
 	return nullptr;
 }
 
-static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind::Type TextureKind, UTexture* UnrealTexture, FExpressionInput& MaterialInput, int X, int Y )
+static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind TextureKind, UTexture* UnrealTexture, FExpressionInput& MaterialInput, int X, int Y )
 {
 	// Ignore null textures.
 	if ( UnrealTexture == nullptr )
@@ -364,11 +374,25 @@ static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind:
 		return false;
 	}
 
-	bool bSetupAsNormalMap = UnrealTexture->IsNormalMap();
+	bool bTextureHasAlpha = !UnrealTexture->CompressionNoAlpha;
+	if ( bTextureHasAlpha )
+	{
+		if ( const UTexture2D* Texture2D = Cast<UTexture2D>(UnrealTexture) )
+		{
+			const EPixelFormatChannelFlags ValidTextureChannels = GetPixelFormatValidChannels(Texture2D->GetPixelFormat());
+			bTextureHasAlpha = EnumHasAnyFlags(ValidTextureChannels, EPixelFormatChannelFlags::A);
+		}
+	}
+
+	const bool bSetupAsNormalMap = UnrealTexture->IsNormalMap();
+
+	UMaterialEditorOnlyData* UnrealMaterialEditorOnly = UnrealMaterial->GetEditorOnlyData();
+	
+	UnrealMaterial->BlendMode = bTextureHasAlpha ? EBlendMode::BLEND_Masked : EBlendMode::BLEND_Opaque;
 
 	// Create a new texture sample expression, this is our texture input node into the material output.
 	UMaterialExpressionTextureSample* UnrealTextureExpression = NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
-	UnrealMaterial->Expressions.Add( UnrealTextureExpression );
+	UnrealMaterial->GetExpressionCollection().AddExpression( UnrealTextureExpression );
 	MaterialInput.Expression = UnrealTextureExpression;
 	UnrealTextureExpression->Texture = UnrealTexture;
 	UnrealTextureExpression->AutoSetSampleType();
@@ -386,13 +410,13 @@ static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind:
 		UMaterialExpressionTransformPosition* TransformPositionExpression = NewObject<UMaterialExpressionTransformPosition>(UnrealMaterial);
 		UMaterialExpressionWorldPosition* WorldPosExpression = NewObject<UMaterialExpressionWorldPosition>(UnrealMaterial);
 
-		UnrealMaterial->Expressions.Add( DivideExpression );
-		UnrealMaterial->Expressions.Add( BoundsRelativePosExpression );
-		UnrealMaterial->Expressions.Add( BoundsSizeExpression );
-		UnrealMaterial->Expressions.Add( LocalBoundsMinExpression );
-		UnrealMaterial->Expressions.Add( LocalBoundsMaxExpression );
-		UnrealMaterial->Expressions.Add( TransformPositionExpression );
-		UnrealMaterial->Expressions.Add( WorldPosExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( DivideExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( BoundsRelativePosExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( BoundsSizeExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( LocalBoundsMinExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( LocalBoundsMaxExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( TransformPositionExpression );
+		UnrealMaterial->GetExpressionCollection().AddExpression( WorldPosExpression );
 
 		int32 EditorPosX = UnrealTextureExpression->MaterialExpressionEditorX;
 		int32 EditorPosY = UnrealTextureExpression->MaterialExpressionEditorY;
@@ -455,139 +479,264 @@ static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind:
 	{
 		if ( TextureKind == EMaterialKind::Base )
 		{
-			UnrealMaterial->BaseColor.Expression = UnrealTextureExpression;
+			UnrealMaterialEditorOnly->BaseColor.Expression = UnrealTextureExpression;
+			if ( bTextureHasAlpha && UnrealTextureExpression->Outputs.IsValidIndex(4) )
+			{
+				UnrealMaterialEditorOnly->Opacity.Connect(4, UnrealTextureExpression);
+				UnrealMaterialEditorOnly->OpacityMask.Connect(4, UnrealTextureExpression);
+			}
 		}
 		else if ( TextureKind == EMaterialKind::Specular )
 		{
-			UnrealMaterial->Specular.Expression = UnrealTextureExpression;
+			UnrealMaterialEditorOnly->Specular.Expression = UnrealTextureExpression;
 		}
 		else if ( TextureKind == EMaterialKind::Emissive )
 		{
-			UnrealMaterial->EmissiveColor.Expression = UnrealTextureExpression;
+			UnrealMaterialEditorOnly->EmissiveColor.Expression = UnrealTextureExpression;
 		}
 		else
 		{
-			UnrealMaterial->BaseColor.Expression = UnrealTextureExpression;
+			UnrealMaterialEditorOnly->BaseColor.Expression = UnrealTextureExpression;
 		}
 	}
 	else
 	{
-		UnrealMaterial->Normal.Expression = UnrealTextureExpression;
+		UnrealMaterialEditorOnly->Normal.Expression = UnrealTextureExpression;
 	}
 
 
 	return true;
 }
 
-UObject* FLevelEditorViewportClient::GetOrCreateMaterialFromTexture( UTexture* UnrealTexture )
+UObject* FLevelEditorViewportClient::GetOrCreateMaterialFromTexture(UTexture* UnrealTexture)
 {
-	FString TextureShortName = FPackageName::GetShortName( UnrealTexture->GetOutermost()->GetName() );
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+	// Check if a base material and corresponding params are set in the Settings to determine whether to create a Material or MIC
+	const ULevelEditorViewportSettings* ViewportSettings = GetDefault<ULevelEditorViewportSettings>();
+	UMaterialInterface* BaseMaterial = ViewportSettings->MaterialForDroppedTextures.LoadSynchronous();
+	const bool bCreateMaterialInstance = BaseMaterial && ViewportSettings->MaterialParamsForDroppedTextures.Num() > 0;
+
+	const FString TexturePackageName = UnrealTexture->GetPackage()->GetName();
+	FString TextureShortName = FPackageName::GetShortName(TexturePackageName);
 
 	// See if we can figure out what kind of material it is, based on a suffix, like _S for Specular, _D for Base/Detail/Diffuse.
 	// if it can determine which type of texture it was, it will return the base name of the texture minus the suffix.
-	EMaterialKind::Type MaterialKind;
+	EMaterialKind MaterialKind;
 	TextureShortName = GetSharedTextureNameAndKind( TextureShortName, MaterialKind );
-	
-	FString MaterialFullName = TextureShortName + "_Mat";
-	FString NewPackageName = FPackageName::GetLongPackagePath( UnrealTexture->GetOutermost()->GetName() ) + TEXT( "/" ) + MaterialFullName;
-	NewPackageName = UPackageTools::SanitizePackageName( NewPackageName );
-	UPackage* Package = CreatePackage( *NewPackageName );
 
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>( TEXT( "AssetRegistry" ) );
+	FString NewPackageFolder;
+	if (AssetTools.GetWritableFolderPermissionList()->PassesStartsWithFilter(TexturePackageName))
+	{
+		// Create the material in the source texture folder
+		NewPackageFolder = FPackageName::GetLongPackagePath(TexturePackageName);
+	}
+	if (NewPackageFolder.IsEmpty())
+	{
+		// Create the material in the current world folder?
+		if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+		{
+			const FString EditorWorldPackageName = EditorWorld->GetPackage()->GetName();
+			if (!FPackageName::IsTempPackage(EditorWorldPackageName))
+			{
+				NewPackageFolder = FPackageName::GetLongPackagePath(EditorWorldPackageName);
+				if (!AssetTools.GetWritableFolderPermissionList()->PassesStartsWithFilter(NewPackageFolder))
+				{
+					NewPackageFolder.Reset();
+				}
+			}
+		}
+	}
+	if (NewPackageFolder.IsEmpty())
+	{
+		// Create the material in the last directory an asset was created in?
+		if (FPackageName::TryConvertFilenameToLongPackageName(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::NEW_ASSET), NewPackageFolder))
+		{
+			if (!AssetTools.GetWritableFolderPermissionList()->PassesStartsWithFilter(NewPackageFolder))
+			{
+				NewPackageFolder.Reset();
+			}
+		}
+		else
+		{
+			NewPackageFolder.Reset();
+		}
+	}
+	if (NewPackageFolder.IsEmpty())
+	{
+		// Create the material in the game root folder
+		NewPackageFolder = TEXT("/Game");
+	}
+
+	const FString MaterialFullName = bCreateMaterialInstance ? (TEXT("MI_") + TextureShortName) : (TextureShortName + TEXT("_Mat"));
+	FString NewPackageName = FPaths::Combine(NewPackageFolder, MaterialFullName);
+	NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);
+	UPackage* Package = CreatePackage(*NewPackageName);
 
 	// See if the material asset already exists with the expected name, if it does, just return
 	// an instance of it.
 	TArray<FAssetData> OutAssetData;
-	if ( AssetRegistryModule.Get().GetAssetsByPackageName( *NewPackageName, OutAssetData ) && OutAssetData.Num() > 0 )
+	if (AssetRegistry.GetAssetsByPackageName(*NewPackageName, OutAssetData) && (OutAssetData.Num() > 0))
 	{
-		// TODO Check if is material?
-		return OutAssetData[0].GetAsset();
-	}
-
-	// create an unreal material asset
-	UMaterialFactoryNew* MaterialFactory = NewObject<UMaterialFactoryNew>();
-
-	UMaterial* UnrealMaterial = (UMaterial*)MaterialFactory->FactoryCreateNew(
-		UMaterial::StaticClass(), Package, *MaterialFullName, RF_Standalone | RF_Public, NULL, GWarn );
-
-	if (UnrealMaterial == nullptr)
-	{
+		UObject* FoundAsset = OutAssetData[0].GetAsset();
+		if (FoundAsset->IsA(UMaterialInterface::StaticClass()))
+		{
+			return FoundAsset;
+		}
+		UE_LOG(LogEditorViewport, Warning, TEXT("Failed to create material %s from texture because a non-material asset already exists with that name"), *NewPackageName);
 		return nullptr;
 	}
 
-	const int HSpace = -300;
+	// Variations for Base Maps.
+	TArray<FString> BaseSuffixes;
+	BaseSuffixes.Add("_D");
+	BaseSuffixes.Add("_Diff");
+	BaseSuffixes.Add("_Diffuse");
+	BaseSuffixes.Add("_Detail");
+	BaseSuffixes.Add("_Base");
 
-	// If we were able to figure out the material kind, we need to try and build a complex material
-	// involving multiple textures.  If not, just try and connect what we found to the base map.
-	if ( MaterialKind == EMaterialKind::Unknown )
+	// Variations for Normal Maps.
+	TArray<FString> NormalSuffixes;
+	NormalSuffixes.Add("_N");
+	NormalSuffixes.Add("_Norm");
+	NormalSuffixes.Add("_Normal");
+
+	// Variations for Specular Maps.
+	TArray<FString> SpecularSuffixes;
+	SpecularSuffixes.Add("_S");
+	SpecularSuffixes.Add("_Spec");
+	SpecularSuffixes.Add("_Specular");
+
+	// Variations for Emissive Maps.
+	TArray<FString> EmissiveSuffixes;
+	EmissiveSuffixes.Add("_E");
+	EmissiveSuffixes.Add("_Emissive");
+
+	// The asset path for the base texture, we need this to try and append different suffixes to to find other textures we can use.
+	const FString BaseTexturePackage = FPackageName::GetLongPackagePath(TexturePackageName) + TEXT("/") + TextureShortName;
+
+	UMaterialInterface* CreatedMaterialInterface = nullptr;
+
+	if (bCreateMaterialInstance)
 	{
-		TryAndCreateMaterialInput( UnrealMaterial, EMaterialKind::Base, UnrealTexture, UnrealMaterial->BaseColor, HSpace, 0 );
+		UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
+		Factory->InitialParent = BaseMaterial;
+		UMaterialInstanceConstant* CreatedMIC = Cast<UMaterialInstanceConstant>(Factory->FactoryCreateNew(UMaterialInstanceConstant::StaticClass(), Package, *MaterialFullName, RF_Standalone | RF_Public, NULL, GWarn));
+		if (!CreatedMIC)
+		{
+			return nullptr;
+		}
+		CreatedMaterialInterface = CreatedMIC;
+
+		if (MaterialKind == EMaterialKind::Unknown)
+		{
+			// If the texture type cannot be determined, treat it as a base texture and don't look for any matching textures
+			if (const FName* UnknownParam = ViewportSettings->MaterialParamsForDroppedTextures.Find(EMaterialKind::Unknown))
+			{
+				CreatedMIC->SetTextureParameterValueEditorOnly(*UnknownParam, UnrealTexture);
+			}
+			else if (const FName* BaseParam = ViewportSettings->MaterialParamsForDroppedTextures.Find(EMaterialKind::Base))
+			{
+				CreatedMIC->SetTextureParameterValueEditorOnly(*BaseParam, UnrealTexture);
+			}
+			else
+			{
+				UE_LOG(LogEditorViewport, Warning, TEXT("Dropped texture not assigned to material instance %s because no material parameter name was defined for Unknown or Base in LevelEditorViewportSettings"), *MaterialFullName);
+			}
+		}
+		else
+		{
+			auto AssignParam = [ViewportSettings, CreatedMIC, BaseTexturePackage](EMaterialKind ParamKind, TArray<FString>& Suffixes)->bool
+			{
+				if (const FName* Param = ViewportSettings->MaterialParamsForDroppedTextures.Find(ParamKind))
+				{
+					if (UTexture* Texture = GetTextureWithNameVariations(BaseTexturePackage, Suffixes))
+					{
+						CreatedMIC->SetTextureParameterValueEditorOnly(*Param, Texture);
+						return true;
+					}
+				}
+				return false;
+			};
+
+			// The passed-in texture should be found and assigned in one of the below functions, however it's possible this fails because
+			// the user hasn't set up their Settings properly. If another type of texture is found but not defined in the settings, then
+			// those can just silently fail - only warn the user if the specific texture they chose failed to assign.
+			bool bAssignedInputTexture = false;
+			bAssignedInputTexture |= AssignParam(EMaterialKind::Base, BaseSuffixes) && MaterialKind == EMaterialKind::Base;
+			bAssignedInputTexture |= AssignParam(EMaterialKind::Normal, NormalSuffixes) && MaterialKind == EMaterialKind::Normal;
+			bAssignedInputTexture |= AssignParam(EMaterialKind::Specular, SpecularSuffixes) && MaterialKind == EMaterialKind::Specular;
+			bAssignedInputTexture |= AssignParam(EMaterialKind::Emissive, EmissiveSuffixes) && MaterialKind == EMaterialKind::Emissive;
+			if (!bAssignedInputTexture)
+			{
+				UE_LOG(LogEditorViewport, Warning, TEXT("Dropped texture not assigned to material instance %s because no material parameter name was defined in LevelEditorViewportSettings"), *MaterialFullName);
+			}
+		}
 	}
 	else
 	{
-		// Variations for Base Maps.
-		TArray<FString> BaseSuffixes;
-		BaseSuffixes.Add( "_D" );
-		BaseSuffixes.Add( "_Diff" );
-		BaseSuffixes.Add( "_Diffuse" );
-		BaseSuffixes.Add( "_Detail" );
-		BaseSuffixes.Add( "_Base" );
+		// create an unreal material asset
+		UMaterialFactoryNew* MaterialFactory = NewObject<UMaterialFactoryNew>();
 
-		// Variations for Normal Maps.
-		TArray<FString> NormalSuffixes;
-		NormalSuffixes.Add( "_N" );
-		NormalSuffixes.Add( "_Norm" );
-		NormalSuffixes.Add( "_Normal" );
+		UMaterial* UnrealMaterial = (UMaterial*)MaterialFactory->FactoryCreateNew(
+			UMaterial::StaticClass(), Package, *MaterialFullName, RF_Standalone | RF_Public, NULL, GWarn);
 
-		// Variations for Specular Maps.
-		TArray<FString> SpecularSuffixes;
-		SpecularSuffixes.Add( "_S" );
-		SpecularSuffixes.Add( "_Spec" );
-		SpecularSuffixes.Add( "_Specular" );
+		if (UnrealMaterial == nullptr)
+		{
+			return nullptr;
+		}
+		CreatedMaterialInterface = UnrealMaterial;
 
-		// Variations for Emissive Maps.
-		TArray<FString> EmissiveSuffixes;
-		EmissiveSuffixes.Add( "_E" );
-		EmissiveSuffixes.Add( "_Emissive" );
+		UMaterialEditorOnlyData* UnrealMaterialEditorOnly = UnrealMaterial->GetEditorOnlyData();
 
-		// The asset path for the base texture, we need this to try and append different suffixes to to find
-		// other textures we can use.
-		FString BaseTexturePackage = FPackageName::GetLongPackagePath( UnrealTexture->GetOutermost()->GetName() ) + TEXT( "/" ) + TextureShortName;
+		const int HSpace = -300;
 
-		// Try and find different variations
-		UTexture* BaseTexture = GetTextureWithNameVariations( BaseTexturePackage, BaseSuffixes );
-		UTexture* NormalTexture = GetTextureWithNameVariations( BaseTexturePackage, NormalSuffixes );
-		UTexture* SpecularTexture = GetTextureWithNameVariations( BaseTexturePackage, SpecularSuffixes );
-		UTexture* EmissiveTexture = GetTextureWithNameVariations( BaseTexturePackage, EmissiveSuffixes );
+		// If we were able to figure out the material kind, we need to try and build a complex material
+		// involving multiple textures.  If not, just try and connect what we found to the base map.
+		if (MaterialKind == EMaterialKind::Unknown)
+		{
+			TryAndCreateMaterialInput(UnrealMaterial, EMaterialKind::Base, UnrealTexture, UnrealMaterialEditorOnly->BaseColor, HSpace, 0);
+		}
+		else
+		{
+			// Try and find different variations
+			UTexture* BaseTexture = GetTextureWithNameVariations(BaseTexturePackage, BaseSuffixes);
+			UTexture* NormalTexture = GetTextureWithNameVariations(BaseTexturePackage, NormalSuffixes);
+			UTexture* SpecularTexture = GetTextureWithNameVariations(BaseTexturePackage, SpecularSuffixes);
+			UTexture* EmissiveTexture = GetTextureWithNameVariations(BaseTexturePackage, EmissiveSuffixes);
 
-		// Connect and layout any textures we find into their respective inputs in the material.
-		const int VSpace = 170;
-		TryAndCreateMaterialInput( UnrealMaterial, EMaterialKind::Base, BaseTexture, UnrealMaterial->BaseColor, HSpace, VSpace * -1 );
-		TryAndCreateMaterialInput( UnrealMaterial, EMaterialKind::Specular, SpecularTexture, UnrealMaterial->Specular, HSpace, VSpace * 0 );
-		TryAndCreateMaterialInput( UnrealMaterial, EMaterialKind::Emissive, EmissiveTexture, UnrealMaterial->EmissiveColor, HSpace, VSpace * 1 );
-		TryAndCreateMaterialInput( UnrealMaterial, EMaterialKind::Normal, NormalTexture, UnrealMaterial->Normal, HSpace, VSpace * 2 );
+			// Connect and layout any textures we find into their respective inputs in the material.
+			const int VSpace = 170;
+			TryAndCreateMaterialInput(UnrealMaterial, EMaterialKind::Base, BaseTexture, UnrealMaterialEditorOnly->BaseColor, HSpace, VSpace * -1);
+			TryAndCreateMaterialInput(UnrealMaterial, EMaterialKind::Specular, SpecularTexture, UnrealMaterialEditorOnly->Specular, HSpace, VSpace * 0);
+			TryAndCreateMaterialInput(UnrealMaterial, EMaterialKind::Emissive, EmissiveTexture, UnrealMaterialEditorOnly->EmissiveColor, HSpace, VSpace * 1);
+			TryAndCreateMaterialInput(UnrealMaterial, EMaterialKind::Normal, NormalTexture, UnrealMaterialEditorOnly->Normal, HSpace, VSpace * 2);
+		}
 	}
 
-	UnrealMaterial->PreEditChange(nullptr);
-	UnrealMaterial->PostEditChange();
+	CreatedMaterialInterface->PreEditChange(nullptr);
+	CreatedMaterialInterface->PostEditChange();
 
 	// Notify the asset registry
-	FAssetRegistryModule::AssetCreated( UnrealMaterial );
+	FAssetRegistryModule::AssetCreated(CreatedMaterialInterface);
 
 	// Set the dirty flag so this package will get saved later
 	Package->SetDirtyFlag( true );
 
-	UnrealMaterial->ForceRecompileForRendering();
+	CreatedMaterialInterface->ForceRecompileForRendering();
+
+	const FString MaterialTypeCreated = bCreateMaterialInstance ? TEXT("MaterialInstance") : TEXT("Material");
 
 	// Warn users that a new material has been created
-	FNotificationInfo Info( FText::Format( LOCTEXT( "DropTextureMaterialCreated", "Material '{0}' Created" ), FText::FromString(MaterialFullName)) );
+	FNotificationInfo Info( FText::Format( LOCTEXT( "DropTextureMaterialCreated", "{0} '{1}' Created" ), FText::FromString(MaterialTypeCreated), FText::FromString(MaterialFullName)));
 	Info.ExpireDuration = 4.0f;
 	Info.bUseLargeFont = true;
 	Info.bUseSuccessFailIcons = false;
-	Info.Image = FEditorStyle::GetBrush( "ClassThumbnail.Material" );
+	Info.Image = FAppStyle::GetBrush( "ClassThumbnail.Material" );
 	FSlateNotificationManager::Get().AddNotification( Info );
 
-	return UnrealMaterial;
+	return CreatedMaterialInterface;
 }
 
 /**
@@ -667,7 +816,7 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						SkeletalMeshComponent->Modify();
 
 						// If the component doesn't have a mesh or the anim blueprint's skeleton isn't compatible with the existing mesh's skeleton, the mesh should change
-						const bool bShouldChangeMesh = !SkeletalMeshComponent->SkeletalMesh || !SkeletalMeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(AnimBPSkeleton);
+						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset() || !SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimBPSkeleton);
 
 						if (bShouldChangeMesh)
 						{
@@ -675,7 +824,7 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						}
 
 						// Verify that the skeletons are compatible before changing the anim BP
-						if (SkeletalMeshComponent->SkeletalMesh && SkeletalMeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(AnimBPSkeleton))
+						if (SkeletalMeshComponent->GetSkeletalMeshAsset() && SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimBPSkeleton))
 						{
 							SkeletalMeshComponent->SetAnimInstanceClass(DroppedObjAsAnimBlueprint->GeneratedClass);
 							bResult = true;
@@ -702,7 +851,7 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						SkeletalMeshComponent->Modify();
 
 						// If the component doesn't have a mesh or the anim blueprint's skeleton isn't compatible with the existing mesh's skeleton, the mesh should change
-						const bool bShouldChangeMesh = !SkeletalMeshComponent->SkeletalMesh || !SkeletalMeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(AnimSkeleton);
+						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset() || !SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimSkeleton);
 
 						if (bShouldChangeMesh)
 						{
@@ -715,7 +864,7 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						// set runtime data
 						SkeletalMeshComponent->SetAnimation(DroppedObjAsAnimSequence);
 
-						if (SkeletalMeshComponent->SkeletalMesh)
+						if (SkeletalMeshComponent->GetSkeletalMeshAsset())
 						{
 							bResult = true;
 							SkeletalMeshComponent->InitAnim(true);
@@ -869,7 +1018,7 @@ bool FLevelEditorViewportClient::AttemptApplyObjAsMaterialToSurface( UObject* Ob
 				Model->Surfs[SelectedSurfIndex].Material = DroppedObjAsMaterial;
 				const bool bUpdateTexCoords = false;
 				const bool bOnlyRefreshSurfaceMaterials = true;
-				GEditor->polyUpdateMaster(Model, SelectedSurfIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
+				GEditor->polyUpdateBrush(Model, SelectedSurfIndex, bUpdateTexCoords, bOnlyRefreshSurfaceMaterials);
 			}
 
 			bResult = true;
@@ -891,6 +1040,19 @@ static bool AreAllDroppedObjectsBrushBuilders(const TArray<UObject*>& DroppedObj
 	}
 
 	return true;
+}
+
+static bool AreAnyDroppedObjectsBrushBuilders(const TArray<UObject*>& DroppedObjects)
+{
+	for (UObject* DroppedObject : DroppedObjects)
+	{
+		if (DroppedObject->IsA(UBrushBuilder::StaticClass()))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool FLevelEditorViewportClient::DropObjectsOnBackground(FViewportCursorLocation& Cursor, const TArray<UObject*>& DroppedObjects, EObjectFlags ObjectFlags, TArray<AActor*>& OutNewActors, bool bCreateDropPreview, bool bSelectActors, UActorFactory* FactoryToUse)
@@ -1107,8 +1269,8 @@ static FActorPositionTraceResult TraceForPositionOn2DLayer(const FViewportCursor
 	}
 
 	FActorPositionTraceResult Result;
-	const float Numerator = FVector::DotProduct(PlaneCenter - Cursor.GetOrigin(), PlaneNormal);
-	const float Denominator = FVector::DotProduct(PlaneNormal, Cursor.GetDirection());
+	const double Numerator = FVector::DotProduct(PlaneCenter - Cursor.GetOrigin(), PlaneNormal);
+	const double Denominator = FVector::DotProduct(PlaneNormal, Cursor.GetDirection());
 	if (FMath::Abs(Denominator) < SMALL_NUMBER)
 	{
 		Result.State = FActorPositionTraceResult::Failed;
@@ -1117,7 +1279,7 @@ static FActorPositionTraceResult TraceForPositionOn2DLayer(const FViewportCursor
 	{
 		Result.State = FActorPositionTraceResult::HitSuccess;
 		Result.SurfaceNormal = PlaneNormal;
-		float D = Numerator / Denominator;
+		double D = Numerator / Denominator;
 		Result.Location = Cursor.GetOrigin() + D * Cursor.GetDirection();
 	}
 
@@ -1265,9 +1427,12 @@ FDropQuery FLevelEditorViewportClient::CanDropObjectsAtCoordinates(int32 MouseX,
 	UObject* AssetObj = AssetData.GetAsset();
 	UClass* ClassObj = Cast<UClass>(AssetObj);
 
+	// Check if the asset has an actor factory
+	bool bHasActorFactory = FActorFactoryAssetProxy::GetFactoryForAsset(AssetData) != nullptr;
+
 	if (ClassObj)
 	{
-		if (!ObjectTools::IsClassValidForPlacing(ClassObj))
+		if (!bHasActorFactory && !ObjectTools::IsClassValidForPlacing(ClassObj))
 		{
 			Result.bCanDrop = false;
 			Result.HintText = FText::Format(LOCTEXT("DragAndDrop_CannotDropAssetClassFmt", "The class '{0}' cannot be placed in a level"), FText::FromString(ClassObj->GetName()));
@@ -1279,9 +1444,6 @@ FDropQuery FLevelEditorViewportClient::CanDropObjectsAtCoordinates(int32 MouseX,
 
 	if (ensureMsgf(AssetObj != NULL, TEXT("AssetObj was null (%s)"), *AssetData.GetFullName()))
 	{
-		// Check if the asset has an actor factory
-		bool bHasActorFactory = FActorFactoryAssetProxy::GetFactoryForAsset(AssetData) != nullptr;
-
 		if (AssetObj->IsA(AActor::StaticClass()) || bHasActorFactory)
 		{
 			Result.bCanDrop = true;
@@ -1496,7 +1658,13 @@ bool FLevelEditorViewportClient::DropObjectsAtCoordinates(int32 MouseX, int32 Mo
 				//Viewport->InvalidateHitProxy();
 			}
 			// Dropping the actors rather than a preview? Probably want to select them all then. 
-			else if(!bCreateDropPreview && SelectActors && OutNewActors.Num() > 0)
+			else if(!bCreateDropPreview && SelectActors && OutNewActors.Num() > 0
+
+				// If we're dropping bsp brushes, that geometry actually gets created later, in 
+				// FBrushBuilderDragDropOp::OnDrop(), so we don't want to select the (preview) builder brush.
+				// (for reference, this function gets called via CurWidget.Widget->OnDrop() in FSlateApplication::RoutePointerUpEvent,
+				// whereas the FBrushBuilderDragDropOp::OnDrop() gets called via SlateUser->NotifyPointerReleased).
+				&& !AreAnyDroppedObjectsBrushBuilders(DroppedObjects))
 			{
 				for (auto It = OutNewActors.CreateConstIterator(); It; ++It)
 				{
@@ -1719,6 +1887,7 @@ FLevelEditorViewportClient::FLevelEditorViewportClient(const TSharedPtr<SLevelVi
 	, DropPreviewMouseX(0)
 	, DropPreviewMouseY(0)
 	, bWasControlledByOtherViewport(false)
+	, bCurrentlyEditingThroughMovementWidget(false)
 	, bEditorCameraCut(false)
 	, bWasEditorCameraCut(false)
 	, bApplyCameraSpeedScaleByDistance(true)
@@ -1966,7 +2135,7 @@ bool FLevelEditorViewportClient::ShouldLockPitch() const
 		return false;
 	}
 	// Else use the standard rules
-	return FEditorViewportClient::ShouldLockPitch() || !ModeTools->GetActiveMode(FBuiltinEditorModes::EM_InterpEdit) ;
+	return FEditorViewportClient::ShouldLockPitch() ;
 }
 
 void FLevelEditorViewportClient::BeginCameraMovement(bool bHasMovement)
@@ -2282,7 +2451,7 @@ void FLevelEditorViewportClient::ProcessClick(FSceneView& View, HHitProxy* HitPr
 static float GPerspFrustumAngle=90.f;
 static float GPerspFrustumAspectRatio=1.77777f;
 static float GPerspFrustumStartDist=GNearClippingPlane;
-static float GPerspFrustumEndDist=HALF_WORLD_MAX;
+static float GPerspFrustumEndDist=UE_FLOAT_HUGE_DISTANCE;
 static FMatrix GPerspViewMatrix;
 
 
@@ -2293,6 +2462,7 @@ void FLevelEditorViewportClient::Tick(float DeltaTime)
 		bEditorCameraCut = false;
 	}
 	bWasEditorCameraCut = bEditorCameraCut;
+	bCurrentlyEditingThroughMovementWidget = false;
 
 	// Gives FindViewComponentForActor a chance to refresh once every Tick.
 	ViewComponentForActorCache.Reset();
@@ -2309,7 +2479,7 @@ void FLevelEditorViewportClient::Tick(float DeltaTime)
 		GPerspFrustumAspectRatio=AspectRatio;
 		GPerspFrustumStartDist=GetNearClipPlane();
 
-		GPerspFrustumEndDist= HALF_WORLD_MAX;
+		GPerspFrustumEndDist= UE_FLOAT_HUGE_DISTANCE;
 
 		FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
 			Viewport,
@@ -2388,7 +2558,7 @@ void FLevelEditorViewportClient::UpdateViewForLockedActor(float DeltaTime)
 				}
 			}
 
-			const float DistanceToCurrentLookAt = FVector::Dist( GetViewLocation() , GetLookAtLocation() );
+			const double DistanceToCurrentLookAt = FVector::Dist( GetViewLocation() , GetLookAtLocation() );
 
 			const FQuat CameraOrientation = FQuat::MakeFromEuler( GetViewRotation().Euler() );
 			FVector Direction = CameraOrientation.RotateVector( FVector(1,0,0) );
@@ -2488,7 +2658,7 @@ void FLevelEditorViewportClient::ProjectActorsIntoWorld(const TArray<AActor*>& A
 			if (SceneView->WorldToPixel(NewActorPosition, ScreenPos) && FMath::IsWithin<float>(ScreenPos.X, 0, ViewportSize.X) && FMath::IsWithin<float>(ScreenPos.Y, 0, ViewportSize.Y))
 			{
 				bIsOnScreen = true;
-				Cursor = FViewportCursorLocation(SceneView, this, ScreenPos.X, ScreenPos.Y);
+				Cursor = FViewportCursorLocation(SceneView, this, static_cast<int32>(ScreenPos.X), static_cast<int32>(ScreenPos.Y));
 			}
 		}
 
@@ -2623,6 +2793,13 @@ bool FLevelEditorViewportClient::InputWidgetDelta(FViewport* InViewport, EAxisLi
 
 									SelectionSet->SetSelection(DuplicatedElements, SelectionOptions);
 
+									// Selected actors are the same as the selection set at this point, send the legacy mode tools update
+									{
+										TArray<AActor*> SelectedActors = SelectionSet->GetSelectedObjects<AActor>();
+										constexpr bool bDidOffsetDuplicate = false;
+										ModeTools->ActorsDuplicatedNotify(SelectedActors, SelectedActors, bDidOffsetDuplicate);
+									}
+
 									// Force the cached manipulation list to update, as we don't notify about the change above
 									ResetElementsToManipulate();
 
@@ -2670,6 +2847,8 @@ bool FLevelEditorViewportClient::InputWidgetDelta(FViewport* InViewport, EAxisLi
 					}
 
 					ApplyDeltaToRotateWidget( Rot );
+
+					bCurrentlyEditingThroughMovementWidget = true;
 				}
 				else
 				{
@@ -2730,25 +2909,6 @@ TSharedPtr<FDragTool> FLevelEditorViewportClient::MakeDragTool( EDragTool::Type 
 	return DragTool;
 }
 
-static bool CommandAcceptsInput( FLevelEditorViewportClient& ViewportClient, FKey Key, const TSharedPtr<FUICommandInfo> Command )
-{
-	bool bAccepted = false;
-	for (uint32 i = 0; i < static_cast<uint8>(EMultipleKeyBindingIndex::NumChords); ++i)
-	{
-		// check each bound chord
-		EMultipleKeyBindingIndex ChordIndex = static_cast<EMultipleKeyBindingIndex>(i);
-		const FInputChord& Chord = *Command->GetActiveChord(ChordIndex);
-
-		bAccepted |= Chord.IsValidChord()
-			&& (!Chord.NeedsControl() || ViewportClient.IsCtrlPressed())
-			&& (!Chord.NeedsAlt() || ViewportClient.IsAltPressed())
-			&& (!Chord.NeedsShift() || ViewportClient.IsShiftPressed())
-			&& (!Chord.NeedsCommand() || ViewportClient.IsCmdPressed())
-			&& Chord.Key == Key;
-	}
-	return bAccepted;
-}
-
 static const FLevelViewportCommands& GetLevelViewportCommands()
 {
 	static FName LevelEditorName("LevelEditor");
@@ -2789,7 +2949,7 @@ void FLevelEditorViewportClient::SetLastKeyViewport()
 	}
 }
 
-bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool FLevelEditorViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 {
 	if (bDisableInput)
 	{
@@ -2797,16 +2957,16 @@ bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 Controlle
 	}
 
 	
-	const int32	HitX = InViewport->GetMouseX();
-	const int32	HitY = InViewport->GetMouseY();
+	const int32	HitX = InEventArgs.Viewport->GetMouseX();
+	const int32	HitY = InEventArgs.Viewport->GetMouseY();
 
-	FInputEventState InputState( InViewport, Key, Event );
+	FInputEventState InputState( InEventArgs.Viewport, InEventArgs.Key, InEventArgs.Event );
 
 	SetLastKeyViewport();
 
 	// Compute a view.
 	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
-		InViewport,
+		InEventArgs.Viewport,
 		GetScene(),
 		EngineShowFlags )
 		.SetRealtimeUpdate( IsRealtime() ) );
@@ -2825,7 +2985,7 @@ bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 Controlle
 		FSnappingUtils::SnapPointToGrid(GEditor->ClickLocation, FVector::ZeroVector);
 	}
 
-	if (GUnrealEd->ComponentVisManager.HandleInputKey(this, InViewport, Key, Event))
+	if (GUnrealEd->ComponentVisManager.HandleInputKey(this, InEventArgs.Viewport, InEventArgs.Key, InEventArgs.Event))
 	{
 		return true;
 	}
@@ -2848,7 +3008,7 @@ bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 Controlle
 	};
 
 
-	bool bCmdCtrlLPressed = (InputState.IsCommandButtonPressed() || InputState.IsCtrlButtonPressed()) && Key == EKeys::L;
+	bool bCmdCtrlLPressed = (InputState.IsCommandButtonPressed() || InputState.IsCtrlButtonPressed()) && InEventArgs.Key == EKeys::L;
 	if (bCmdCtrlLPressed && InputState.IsShiftButtonPressed())
 	{
 		ProcessAtmosphericLightShortcut(1, bUserIsControllingAtmosphericLight1);
@@ -2873,34 +3033,30 @@ bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 Controlle
 	bUserIsControllingAtmosphericLight1 = false;
 
 	UEditorWorldExtensionCollection& EditorWorldExtensionCollection = *GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions(GetWorld());
-	if (EditorWorldExtensionCollection.InputKey(this, Viewport, Key, Event))
+	if (EditorWorldExtensionCollection.InputKey(this, Viewport, InEventArgs.Key, InEventArgs.Event))
 	{
 		return true;
 	}
 
-	bool bHandled = FEditorViewportClient::InputKey(InViewport,ControllerId,Key,Event,AmountDepressed,bGamepad);
+	bool bHandled = FEditorViewportClient::InputKey(InEventArgs);
 
-	// Handle input for the player height preview mode. 
-	if (!InputState.IsMouseButtonEvent() && CommandAcceptsInput(*this, Key, GetLevelViewportCommands().EnablePreviewMesh))
+	// Handle input for the height preview mode. 
+	bool bEnablePreviewMeshChordPressed = IsCommandChordPressed(GetLevelViewportCommands().EnablePreviewMesh);
+	bool bCyclePreviewMeshChordPressed = IsCommandChordPressed(GetLevelViewportCommands().CyclePreviewMesh);
+	if (!InputState.IsMouseButtonEvent() && (bEnablePreviewMeshChordPressed || bCyclePreviewMeshChordPressed))
 	{
-		// Holding down the backslash buttons turns on the mode. 
-		if (Event == IE_Pressed)
-		{
-			GEditor->SetPreviewMeshMode(true);
+		GEditor->SetPreviewMeshMode(true);
 
-			// If shift down, cycle between the preview meshes
-			if (CommandAcceptsInput(*this, Key, GetLevelViewportCommands().CyclePreviewMesh))
-			{
-				GEditor->CyclePreviewMesh();
-			}
-		}
-		// Releasing backslash turns off the mode. 
-		else if (Event == IE_Released)
+		if (bCyclePreviewMeshChordPressed && (InEventArgs.Event == IE_Pressed))
 		{
-			GEditor->SetPreviewMeshMode(false);
+			GEditor->CyclePreviewMesh();
 		}
 
 		bHandled = true;
+	}
+	else
+	{
+		GEditor->SetPreviewMeshMode(false);
 	}
 
 	// Clear Duplicate Actors mode when ALT and all mouse buttons are released
@@ -3050,6 +3206,8 @@ void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInpu
 			// Suspend actor/component modification during each delta step to avoid recording unnecessary overhead into the transaction buffer
 			GEditor->DisableDeltaModification(true);
 		}
+
+		GUnrealEd->ComponentVisManager.TrackingStarted(this);
 	}
 }
 
@@ -3109,6 +3267,8 @@ void FLevelEditorViewportClient::TrackingStopped()
 		{
 			GUnrealEd->UpdatePivotLocationForSelection();
 		}
+
+		GUnrealEd->ComponentVisManager.TrackingStopped(this, bDidMove);
 	}
 
 	if (bNeedToRestoreComponentBeingMovedFlag)
@@ -3226,7 +3386,7 @@ void FLevelEditorViewportClient::NudgeSelectedObjects( const struct FInputEventS
 
 		bWidgetAxisControlledByDrag = false;
 		Widget->SetCurrentAxis( VirtualAxis );
-		MouseDeltaTracker->AddDelta( this, VirtualKey , VirtualDelta, 1 );
+		MouseDeltaTracker->AddDelta( this, VirtualKey, static_cast<int32>(VirtualDelta), 1 );
 		Widget->SetCurrentAxis( VirtualAxis );
 		UpdateMouseDelta();
 		InViewport->SetMouse( StartMousePos.X , StartMousePos.Y );
@@ -3316,7 +3476,7 @@ private:
 	FLevelEditorViewportClient* PrevCurrentLevelEditingViewportClient;
 };
 
-bool FLevelEditorViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
+bool FLevelEditorViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId DeviceId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	if (bDisableInput)
 	{
@@ -3327,7 +3487,7 @@ bool FLevelEditorViewportClient::InputAxis(FViewport* InViewport, int32 Controll
 
 	FScopedSetCurrentViewportClient( this );
 
-	return FEditorViewportClient::InputAxis(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+	return FEditorViewportClient::InputAxis(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
 }
 
 
@@ -4392,7 +4552,7 @@ void FLevelEditorViewportClient::DrawBrushDetails(const FSceneView* View, FPrimi
 			{
 				// Allocate the material proxy and register it so it can be deleted properly once the rendering is done with it.
 				FColor VolumeColor = Brush->GetWireColor();
-				VolumeColor.A = Brush->ShadedVolumeOpacityValue * 255.0f;
+				VolumeColor.A = static_cast<uint8>(Brush->ShadedVolumeOpacityValue * 255.0f);
 				FDynamicColoredMaterialRenderProxy* MaterialProxy = new FDynamicColoredMaterialRenderProxy(GEngine->GeomMaterial->GetRenderProxy(), VolumeColor);
 				PDI->RegisterDynamicResource(MaterialProxy);
 
@@ -4436,7 +4596,8 @@ void FLevelEditorViewportClient::DrawBrushDetails(const FSceneView* View, FPrimi
 							const FVector3f& PolyVertex = poly->Vertices[VertexIndex];
 							const FVector WorldLocation = FVector(BrushTransform.TransformPosition((FVector)PolyVertex));
 
-							const float Scale = View->WorldToScreen(WorldLocation).W * (4.0f / View->UnscaledViewRect.Width() / View->ViewMatrices.GetProjectionMatrix().M[0][0]);
+							const float Scale =
+								static_cast<float>(View->WorldToScreen(WorldLocation).W * (4.0f / View->UnscaledViewRect.Width() / View->ViewMatrices.GetProjectionMatrix().M[0][0]));
 
 							const FColor Color(Brush->GetWireColor());
 							PDI->SetHitProxy(new HBSPBrushVert(Brush, &poly->Vertices[VertexIndex]));
@@ -4533,6 +4694,7 @@ void FLevelEditorViewportClient::SetupViewForRendering( FSceneViewFamily& ViewFa
 	FEditorViewportClient::SetupViewForRendering( ViewFamily, View );
 
 	ViewFamily.bDrawBaseInfo = bDrawBaseInfo;
+	ViewFamily.bCurrentlyBeingEdited = bCurrentlyEditingThroughMovementWidget;
 
 	// Don't use fading or color scaling while we're in light complexity mode, since it may change the colors!
 	if(!ViewFamily.EngineShowFlags.LightComplexity)
@@ -4545,7 +4707,7 @@ void FLevelEditorViewportClient::SetupViewForRendering( FSceneViewFamily& ViewFa
 
 		if(bEnableColorScaling)
 		{
-				View.ColorScale = FLinearColor(ColorScale.X,ColorScale.Y,ColorScale.Z);
+			View.ColorScale = FLinearColor(FVector3f{ ColorScale });
 		}
 	}
 
@@ -5018,5 +5180,11 @@ bool FLevelEditorViewportClient::GetPivotForOrbit(FVector& Pivot) const
 
 	return false;
 }
+
+void FLevelEditorViewportClient::SetEditingThroughMovementWidget()
+{
+	bCurrentlyEditingThroughMovementWidget = true;
+}
+
 
 #undef LOCTEXT_NAMESPACE

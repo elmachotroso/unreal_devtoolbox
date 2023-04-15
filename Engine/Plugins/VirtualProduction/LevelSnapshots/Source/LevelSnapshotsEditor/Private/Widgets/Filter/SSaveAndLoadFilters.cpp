@@ -90,7 +90,7 @@ void SSaveAndLoadFilters::Construct(const FArguments& InArgs, ULevelSnapshotsEdi
         SNew(SComboButton)
           .ToolTipText(LOCTEXT("SaveLoad_Tooltip", "Export the current filter to an asset, or load a previously saved filter."))
           .ContentPadding(4.f)
-          .ComboButtonStyle(FEditorStyle::Get(), "GenericFilters.ComboButtonStyle")
+          .ComboButtonStyle(FAppStyle::Get(), "GenericFilters.ComboButtonStyle")
           .OnGetMenuContent(this, &SSaveAndLoadFilters::GenerateSaveLoadMenu)
           .ForegroundColor(FSlateColor::UseForeground())
           .ButtonContent()
@@ -128,7 +128,7 @@ TSharedRef<SWidget> SSaveAndLoadFilters::GenerateSaveLoadMenu()
 		MenuBuilder.AddMenuEntry(
             EntryName,
             LOCTEXT("SaveExistingFiltersToolTip", "Overwrite the asset you last loaded"),
-            FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
+            FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
             FUIAction(
                 FExecuteAction::CreateStatic(&SaveExisting, FilterLoader)
             )
@@ -138,18 +138,18 @@ TSharedRef<SWidget> SSaveAndLoadFilters::GenerateSaveLoadMenu()
 	MenuBuilder.AddMenuEntry(
 	    LOCTEXT("SaveFiltersAs", "Save as..."),
 	    LOCTEXT("SaveFiltersAsToolTip", "Saves a new asset."),
-	    FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
+	    FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
 	    FUIAction(
 	        FExecuteAction::CreateStatic(&SaveAs, FilterLoader)
 		)	
     );
 
-	MenuBuilder.BeginSection(NAME_None, LOCTEXT("LoadFilter_MenuSection", "Load filter"));
+	MenuBuilder.BeginSection(NAME_None, LOCTEXT("LoadPreset_MenuSection", "Load preset"));
 	{
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 		FAssetPickerConfig AssetPickerConfig;
-		AssetPickerConfig.Filter.ClassNames.Add(ULevelSnapshotsFilterPreset::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(ULevelSnapshotsFilterPreset::StaticClass()->GetClassPathName());
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.OnAssetSelected.BindStatic(OnSelectPreset, EditorData);
@@ -161,7 +161,7 @@ TSharedRef<SWidget> SSaveAndLoadFilters::GenerateSaveLoadMenu()
             .WidthOverride(300)
             [
                 SNew(SBorder)
-                .BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+                .BorderImage(FAppStyle::GetBrush("Menu.Background"))
                 [
                     ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
                 ]

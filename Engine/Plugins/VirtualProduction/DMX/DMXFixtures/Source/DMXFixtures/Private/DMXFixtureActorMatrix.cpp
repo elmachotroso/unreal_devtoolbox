@@ -4,7 +4,9 @@
 
 #include "DMXProtocolConstants.h"
 #include "DMXStats.h"
+#include "Game/DMXComponent.h"
 
+#include "Engine/Texture2D.h"
 #include "Rendering/Texture2DResource.h"
 #include "Components/StaticMeshComponent.h"
 
@@ -12,7 +14,7 @@ DECLARE_CYCLE_STAT(TEXT("Fixture Actor Matrix Push Fixture Matrix Cell Data"), S
 
 namespace
 {
-	void UpdateMatrixTexture(uint8* MatrixData, UTexture2D* DynamicTexture, int32 MipIndex, uint32 NumRegions, FUpdateTextureRegion2D Region, uint32 SrcPitch, uint32 SrcBpp)
+	void UpdateMatrixTexture(uint8* MatrixData, UTexture2D* DynamicTexture, int32 MipIndex, uint32 NumRegions, const FUpdateTextureRegion2D& Region, uint32 SrcPitch, uint32 SrcBpp)
 	{
 		if (DynamicTexture->GetResource())
 		{
@@ -52,14 +54,6 @@ ADMXFixtureActorMatrix::ADMXFixtureActorMatrix()
 	XCells = 1;
 	YCells = 1;
 	MatrixDataSize = 0;
-
-	TextureRegion = nullptr;
-}
-
-ADMXFixtureActorMatrix::~ADMXFixtureActorMatrix()
-{
-	if (TextureRegion)
-		delete TextureRegion;
 }
 
 #if WITH_EDITOR
@@ -70,12 +64,44 @@ void ADMXFixtureActorMatrix::PostEditChangeProperty(FPropertyChangedEvent& Prope
 }
 #endif
 
+void ADMXFixtureActorMatrix::OnMVRGetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames, TArray<FName>& OutMatrixAttributeNames) const
+{
+	Super::OnMVRGetSupportedDMXAttributes_Implementation(OutAttributeNames, OutMatrixAttributeNames);
+	
+	for (UDMXFixtureComponent* DMXComponent : TInlineComponentArray<UDMXFixtureComponent*>(this))
+	{
+		if (UDMXFixtureComponentColor* ColorComponent = Cast<UDMXFixtureComponentColor>(DMXComponent))
+		{
+			OutMatrixAttributeNames.Add(ColorComponent->DMXChannel1.Name);
+			OutMatrixAttributeNames.Add(ColorComponent->DMXChannel2.Name);
+			OutMatrixAttributeNames.Add(ColorComponent->DMXChannel3.Name);
+			OutMatrixAttributeNames.Add(ColorComponent->DMXChannel4.Name);
+		}
+		else if (UDMXFixtureComponentSingle* SingleComponent = Cast<UDMXFixtureComponentSingle>(DMXComponent))
+		{
+			// Single channel component - hardcoded and limited to specific names, as on PushFixtureMatrixCellData
+			if (SingleComponent->DMXChannel.Name.Name == FName("Dimmer"))
+			{
+				OutMatrixAttributeNames.Add(FName("Dimmer"));
+			}
+			else if (SingleComponent->DMXChannel.Name.Name == FName("Pan"))
+			{
+				OutMatrixAttributeNames.Add(FName("Pan"));
+			}
+			else if (SingleComponent->DMXChannel.Name.Name == FName("Tilt"))
+			{
+				OutMatrixAttributeNames.Add(FName("Tilt"));
+			}
+		}
+	}
+}
+
 void ADMXFixtureActorMatrix::InitializeMatrixFixture()
 {
 	UDMXEntityFixturePatch* FixturePatch = DMX->GetFixturePatch();
 	if (FixturePatch)
 	{
-		GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+		GetComponents(StaticMeshComponents);
 
 		// Create dynamic materials
 		DynamicMaterialLens = UMaterialInstanceDynamic::Create(LensMaterialInstance, nullptr);
@@ -135,8 +161,7 @@ void ADMXFixtureActorMatrix::InitializeMatrixFixture()
 		MatrixDataTexture->CompressionSettings = TextureCompressionSettings::TC_VectorDisplacementmap;
 		MatrixDataTexture->UpdateResource(); //to initialize resource
 
-		check(!TextureRegion);
-		TextureRegion = new FUpdateTextureRegion2D(0, 0, 0, 0, TextureWidth, TextureHeight);
+		TextureRegion = FUpdateTextureRegion2D(0, 0, 0, 0, TextureWidth, TextureHeight);
 
 		// Push fixture data into materials and lights
 		FeedFixtureData();
@@ -325,7 +350,7 @@ void ADMXFixtureActorMatrix::UpdateDynamicTexture()
 	if (MatrixDataTexture)
 	{
 		int NbrCells = XCells * YCells;
-		UpdateMatrixTexture(MatrixData.GetData(), MatrixDataTexture, 0, 1, *TextureRegion, NbrCells * 4, 4);
+		UpdateMatrixTexture(MatrixData.GetData(), MatrixDataTexture, 0, 1, TextureRegion, NbrCells * 4, 4);
 	}
 }
 
@@ -353,7 +378,7 @@ void ADMXFixtureActorMatrix::SetDefaultMatrixFixtureState()
 		FixturePatch->GetAllMatrixCells(Cells);
 
 		TArray<UDMXFixtureComponent*> DMXComponents;
-		GetComponents<UDMXFixtureComponent>(DMXComponents);
+		GetComponents(DMXComponents);
 
 		for (int CurrentCellIndex = 0; CurrentCellIndex < Cells.Num(); CurrentCellIndex++)
 		{

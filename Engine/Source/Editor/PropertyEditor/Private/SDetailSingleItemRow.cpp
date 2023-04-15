@@ -10,13 +10,12 @@
 #include "IDetailDragDropHandler.h"
 #include "IDetailPropertyExtensionHandler.h"
 #include "ObjectPropertyNode.h"
-#include "PropertyEditorConstants.h"
+#include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "PropertyEditorModule.h"
 #include "PropertyHandleImpl.h"
 #include "SConstrainedBox.h"
 #include "SDetailExpanderArrow.h"
 #include "SDetailRowIndent.h"
-#include "SResetToDefaultPropertyEditor.h"
 
 #include "HAL/PlatformApplicationMisc.h"
 #include "Modules/ModuleInterface.h"
@@ -168,8 +167,8 @@ FReply SDetailSingleItemRow::OnArrayAcceptDrop(const FDragDropEvent& DragDropEve
 
 	ParentHandle->MoveElementTo(OriginalIndex, NewIndex);
 
-	FPropertyChangedEvent MoveEvent(SwappingHandle->GetParentHandle()->GetProperty(), EPropertyChangeType::Unspecified);
-	SwappingHandle->GetParentHandle()->NotifyPostChange(EPropertyChangeType::Unspecified);
+	FPropertyChangedEvent MoveEvent(SwappingHandle->GetParentHandle()->GetProperty(), EPropertyChangeType::ArrayMove);
+	SwappingHandle->GetParentHandle()->NotifyPostChange(EPropertyChangeType::ArrayMove);
 	if (DetailsView->GetPropertyUtilities().IsValid())
 	{
 		DetailsView->GetPropertyUtilities()->NotifyFinishedChangingProperties(MoveEvent);
@@ -290,28 +289,27 @@ TSharedPtr<IPropertyHandle> SDetailSingleItemRow::GetPropertyHandle() const
 	return Handle;
 }
 
-bool SDetailSingleItemRow::UpdateResetToDefault()
+void SDetailSingleItemRow::UpdateResetToDefault()
 {
+	bCachedResetToDefaultVisible = false;
+
 	TSharedPtr<IPropertyHandle> PropertyHandle = GetPropertyHandle();
+	if (WidgetRow.CustomResetToDefault.IsSet())
+	{
+		bCachedResetToDefaultVisible = WidgetRow.CustomResetToDefault.GetValue().IsResetToDefaultVisible(PropertyHandle);
+		return;
+	}
+
 	if (PropertyHandle.IsValid())
 	{
 		if (PropertyHandle->HasMetaData("NoResetToDefault") || PropertyHandle->GetInstanceMetaData("NoResetToDefault"))
 		{
-			return false;
+			bCachedResetToDefaultVisible = false;
+			return;
 		}
-	}
 
-	if (WidgetRow.CustomResetToDefault.IsSet())
-	{
-		return WidgetRow.CustomResetToDefault.GetValue().IsResetToDefaultVisible(PropertyHandle);
+		bCachedResetToDefaultVisible = PropertyHandle->CanResetToDefault();
 	}
-	else if (PropertyHandle.IsValid())
-	{
-		return PropertyHandle->CanResetToDefault();
-	}
-
-	return false;
-
 }
 
 void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCustomization* InCustomization, bool bHasMultipleColumns, TSharedRef<FDetailTreeNode> InOwnerTreeNode, const TSharedRef<STableViewBase>& InOwnerTableView )
@@ -394,7 +392,7 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			TAttribute<bool> IsEnabledAttribute = TAttribute<bool>::CreateLambda(
 				[PropertyEnabledAttribute, RowIsEnabledAttribute, RowEditConditionAttribute]()
 				{
-					return PropertyEnabledAttribute.Get() && RowIsEnabledAttribute.Get(true) && RowEditConditionAttribute.Get(true);
+					return PropertyEnabledAttribute.Get(true) && RowIsEnabledAttribute.Get(true) && RowEditConditionAttribute.Get(true);
 				});
 
 			TAttribute<bool> RowIsValueEnabledAttribute = WidgetRow.IsValueEnabledAttr;
@@ -409,11 +407,11 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			ExtensionWidget->SetEnabled(IsEnabledAttribute);
 
 			TSharedRef<SSplitter> Splitter = SNew(SSplitter)
-					.Style(FEditorStyle::Get(), "DetailsView.Splitter")
+					.Style(FAppStyle::Get(), "DetailsView.Splitter")
 					.PhysicalSplitterHandleSize(1.0f)
 					.HitDetectionSplitterHandleSize(5.0f)
-					.HighlightedHandleIndex(ColumnSizeData.HoveredSplitterIndex)
-					.OnHandleHovered(ColumnSizeData.OnSplitterHandleHovered);
+					.HighlightedHandleIndex(ColumnSizeData.GetHoveredSplitterIndex())
+					.OnHandleHovered(ColumnSizeData.GetOnSplitterHandleHovered());
 
 			Widget = SNew(SBorder)
 				.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryMiddle"))
@@ -518,8 +516,8 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 				// create Name column:
 				// | Name | Value | Right |
 				Splitter->AddSlot()
-					.Value(ColumnSizeData.NameColumnWidth)
-					.OnSlotResized(ColumnSizeData.OnNameColumnResized)
+					.Value(ColumnSizeData.GetNameColumnWidth())
+					.OnSlotResized(ColumnSizeData.GetOnNameColumnResized())
 					[
 						NameColumnBox
 					];
@@ -527,8 +525,8 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 				// create Value column:
 				// | Name | Value | Right |
 				Splitter->AddSlot()
-					.Value(ColumnSizeData.ValueColumnWidth)
-					.OnSlotResized(ColumnSizeData.OnValueColumnResized) 
+					.Value(ColumnSizeData.GetValueColumnWidth())
+					.OnSlotResized(ColumnSizeData.GetOnValueColumnResized())
 					[
 						SNew(SHorizontalBox)
 						.Clipping(EWidgetClipping::OnDemand)
@@ -564,8 +562,8 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 					];
 
 				Splitter->AddSlot()
-					.Value(ColumnSizeData.PropertyColumnWidth)
-					.OnSlotResized(ColumnSizeData.OnPropertyColumnResized)
+					.Value(ColumnSizeData.GetWholeRowColumnWidth())
+					.OnSlotResized(ColumnSizeData.GetOnWholeRowColumnResized())
 					[
 						NameColumnBox
 					];
@@ -577,7 +575,10 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			ResetToDefault.Label = NSLOCTEXT("PropertyEditor", "ResetToDefault", "Reset to Default");
 			ResetToDefault.UIAction = FUIAction(
 				FExecuteAction::CreateSP(this, &SDetailSingleItemRow::OnResetToDefaultClicked),
-				FCanExecuteAction::CreateSP(this, &SDetailSingleItemRow::IsResetToDefaultEnabled)
+				FCanExecuteAction::CreateLambda([this, IsValueEnabledAttribute]()
+					{
+						return IsResetToDefaultVisible() && IsValueEnabledAttribute.Get(true);
+					})
 			);
 
 			// We could just collapse the Reset to Default button by setting the FIsActionButtonVisible delegate,
@@ -587,13 +588,14 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			static FSlateIcon DisabledResetToDefaultIcon(FAppStyle::Get().GetStyleSetName(), "NoBrush");
 			ResetToDefault.Icon = TAttribute<FSlateIcon>::Create([this]()
 			{
-				return IsResetToDefaultEnabled() ? 
+				return IsResetToDefaultVisible() ?
 					EnabledResetToDefaultIcon :
 					DisabledResetToDefaultIcon;
 			});
+
 			ResetToDefault.ToolTip = TAttribute<FText>::Create([this]() 
 			{
-				return IsResetToDefaultEnabled() ?
+				return IsResetToDefaultVisible() ?
 					NSLOCTEXT("PropertyEditor", "ResetToDefaultPropertyValueToolTip", "Reset this property to its default value.") :
 					FText::GetEmpty();
 			});
@@ -611,9 +613,9 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 			}
 
 			Splitter->AddSlot()
-				.Value(ColumnSizeData.RightColumnWidth)
-				.OnSlotResized(ColumnSizeData.OnRightColumnResized)
-				.MinSize(ColumnSizeData.RightColumnMinWidth)
+				.Value(ColumnSizeData.GetRightColumnWidth())
+				.OnSlotResized(ColumnSizeData.GetOnRightColumnResized())
+				.MinSize(ColumnSizeData.GetRightColumnMinWidth())
 			[
 				SNew(SBorder)
 				.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryMiddle"))
@@ -698,7 +700,7 @@ void SDetailSingleItemRow::Construct( const FArguments& InArgs, FDetailLayoutCus
 
 	STableRow< TSharedPtr< FDetailTreeNode > >::ConstructInternal(
 		STableRow::FArguments()
-			.Style(FEditorStyle::Get(), "DetailsView.TreeView.TableRow")
+			.Style(FAppStyle::Get(), "DetailsView.TreeView.TableRow")
 			.ShowSelection(false)
 			.OnDragLeave(DragLeaveDelegate)
 			.OnAcceptDrop(AcceptDropDelegate)
@@ -740,9 +742,9 @@ FReply SDetailSingleItemRow::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 	return SDetailTableRowBase::OnMouseButtonUp(MyGeometry, MouseEvent);
 }
 
-bool SDetailSingleItemRow::IsResetToDefaultEnabled() const
+bool SDetailSingleItemRow::IsResetToDefaultVisible() const
 {
-	return bCachedResetToDefaultEnabled;
+	return bCachedResetToDefaultVisible;
 }
 
 void SDetailSingleItemRow::OnResetToDefaultClicked() const
@@ -851,7 +853,7 @@ bool SDetailSingleItemRow::OnContextMenuOpening(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddMenuEntry(
 			FavoriteText,
 			FavoriteTooltipText,
-			FSlateIcon(FEditorStyle::Get().GetStyleSetName(), FavoriteIcon),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), FavoriteIcon),
 			FavoriteAction);
 	}
 
@@ -1012,7 +1014,7 @@ const UStruct* GetExactStructForProperty(const UStruct* MostDerivedStruct, const
 	return MostDerivedStruct;
 }
 
-void SDetailSingleItemRow::CopyRowNameText() const
+FString SDetailSingleItemRow::GetRowNameText() const
 {
 	if (const TSharedPtr<FDetailTreeNode> Owner = OwnerTreeNode.Pin())
 	{
@@ -1020,8 +1022,18 @@ void SDetailSingleItemRow::CopyRowNameText() const
 		if (BaseStructure)
 		{
 			const UStruct* ExactStruct = GetExactStructForProperty(Owner->GetParentBaseStructure(), Owner->GetNodeName());
-			FPlatformApplicationMisc::ClipboardCopy(*FString::Printf(TEXT("(%s, %s)"), *FSoftObjectPtr(ExactStruct).ToString(), *Owner->GetNodeName().ToString()));
+			return FString::Printf(TEXT("(%s, %s)"), *FSoftObjectPtr(ExactStruct).ToString(), *Owner->GetNodeName().ToString());
 		}
+	}
+	return FString();
+}
+
+void SDetailSingleItemRow::CopyRowNameText() const
+{
+	const FString RowNameText = GetRowNameText();
+	if (!RowNameText.IsEmpty())
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*RowNameText);
 	}
 }
 
@@ -1035,10 +1047,12 @@ void SDetailSingleItemRow::OnToggleAllowList() const
 		if (IsAllowListChecked())
 		{
 			FPropertyEditorPermissionList::Get().RemoveFromAllowList(ExactStruct, Owner->GetNodeName(), OwnerName);
+			UE_LOG(LogPropertyEditorPermissionList, Log, TEXT("Removing %s from AllowList"), *GetRowNameText());
 		}
 		else
 		{
 			FPropertyEditorPermissionList::Get().AddToAllowList(ExactStruct, Owner->GetNodeName(), OwnerName);
+			UE_LOG(LogPropertyEditorPermissionList, Log, TEXT("Adding %s to AllowList"), *GetRowNameText());
 		}
 	}
 }
@@ -1063,10 +1077,12 @@ void SDetailSingleItemRow::OnToggleDenyList() const
 		if (IsDenyListChecked())
 		{
 			FPropertyEditorPermissionList::Get().RemoveFromDenyList(ExactStruct, Owner->GetNodeName(), OwnerName);
+			UE_LOG(LogPropertyEditorPermissionList, Log, TEXT("Removing %s from DenyList"), *GetRowNameText());
 		}
 		else
 		{
 			FPropertyEditorPermissionList::Get().AddToDenyList(ExactStruct, Owner->GetNodeName(), OwnerName);
+			UE_LOG(LogPropertyEditorPermissionList, Log, TEXT("Adding %s to AllowList"), *GetRowNameText());
 		}
 	}
 }
@@ -1093,7 +1109,7 @@ void SDetailSingleItemRow::PopulateExtensionWidget()
 			const UClass* ObjectClass = Handle->GetOuterBaseClass();
 			if (Handle->IsValidHandle() && ObjectClass && ExtensionHandler->IsPropertyExtendable(ObjectClass, *Handle))
 			{
-				FDetailLayoutBuilderImpl& DetailLayout = OwnerTreeNodePinned->GetParentCategory()->GetParentLayoutImpl();
+				IDetailLayoutBuilder& DetailLayout = OwnerTreeNodePinned->GetParentCategory()->GetParentLayout();
 				ExtensionHandler->ExtendWidgetRow(WidgetRow, DetailLayout, ObjectClass, Handle);
 			}
 		}
@@ -1254,7 +1270,7 @@ TSharedPtr<FDragDropOperation> SDetailSingleItemRow::CreateDragDropOperation()
 
 void SDetailSingleItemRow::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	bCachedResetToDefaultEnabled = UpdateResetToDefault();
+	UpdateResetToDefault();
 }
 
 void SArrayRowHandle::Construct(const FArguments& InArgs)
@@ -1300,11 +1316,11 @@ void FArrayRowDragDropOp::SetValidTarget(bool IsValidTarget)
 	if (IsValidTarget)
 	{
 		CurrentHoverText = NSLOCTEXT("ArrayDragDrop", "PlaceRowHere", "Place Row Here");
-		CurrentIconBrush = FEditorStyle::GetBrush("Graph.ConnectorFeedback.OK");
+		CurrentIconBrush = FAppStyle::GetBrush("Graph.ConnectorFeedback.OK");
 	}
 	else
 	{
 		CurrentHoverText = NSLOCTEXT("ArrayDragDrop", "CannotPlaceRowHere", "Cannot Place Row Here");
-		CurrentIconBrush = FEditorStyle::GetBrush("Graph.ConnectorFeedback.Error");
+		CurrentIconBrush = FAppStyle::GetBrush("Graph.ConnectorFeedback.Error");
 	}
 }

@@ -5,19 +5,35 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
+	internal class TargetEntry
+	{
+		public TargetEntry(FileReference OutputFile, UEBuildTarget BuildTarget, bool bBuildByDefault)
+		{
+			this.OutputFile = OutputFile;
+			this.BuildTarget = BuildTarget;
+			this.bBuildByDefault = bBuildByDefault;
+		}
+		
+		public readonly FileReference OutputFile;
+		public readonly UEBuildTarget BuildTarget;
+		public readonly bool bBuildByDefault;
+	}
+
 	internal class RiderProjectFile : ProjectFile
 	{
 		private static readonly XcrunRunner AppleHelper = new XcrunRunner();
-		
-		public DirectoryReference RootPath;
-		public HashSet<TargetType> TargetTypes;
-		public CommandLineArguments Arguments;
+
+		private readonly DirectoryReference RootPath;
+		private readonly HashSet<TargetType> TargetTypes;
+		private readonly CommandLineArguments Arguments;
 
 		private ToolchainInfo RootToolchainInfo = new ToolchainInfo();
 		private UEBuildTarget? CurrentTarget;
@@ -47,14 +63,15 @@ namespace UnrealBuildTool
 		/// <param name="InConfigurations"></param>
 		/// <param name="PlatformProjectGenerators"></param>
 		/// <param name="Minimize"></param>
+		/// <param name="Logger"></param>
 		/// <returns></returns>
 		public bool WriteProjectFile(List<UnrealTargetPlatform> InPlatforms,
 			List<UnrealTargetConfiguration> InConfigurations,
-			PlatformProjectGeneratorCollection PlatformProjectGenerators, JsonWriterStyle Minimize)
+			PlatformProjectGeneratorCollection PlatformProjectGenerators, JsonWriterStyle Minimize, ILogger Logger)
 		{
 			string ProjectName = ProjectFilePath.GetFileNameWithoutAnyExtensions();
 			DirectoryReference ProjectRootFolder = RootPath;
-			List<Tuple<FileReference, UEBuildTarget>> FileToTarget = new List<Tuple<FileReference, UEBuildTarget>>();
+			List<TargetEntry> FileToTarget = new List<TargetEntry>();
 			foreach (UnrealTargetPlatform Platform in InPlatforms)
 			{
 				if (!IsPlatformInHostGroup(Platform))
@@ -82,6 +99,8 @@ namespace UnrealBuildTool
 							continue;
 						}
 						
+						bool bBuildByDefault = ShouldBuildByDefaultForSolutionTargets && ProjectTarget.SupportedPlatforms.Contains(Platform);
+						
 						DirectoryReference ConfigurationFolder = DirectoryReference.Combine(ProjectRootFolder, Platform.ToString(), Configuration.ToString());
 
 						DirectoryReference TargetFolder =
@@ -94,31 +113,32 @@ namespace UnrealBuildTool
 							Platform, Configuration, DefaultArchitecture, Arguments);
 						try
 						{
-							UEBuildTarget BuildTarget = UEBuildTarget.Create(TargetDesc, false, false, false);
+							UEBuildTarget BuildTarget = UEBuildTarget.Create(TargetDesc, false, false, false, Logger);
 						
 							FileReference OutputFile = FileReference.Combine(TargetFolder, $"{ProjectName}.json");
-							FileToTarget.Add(Tuple.Create(OutputFile, BuildTarget));
+							FileToTarget.Add(new TargetEntry(OutputFile, BuildTarget, bBuildByDefault));
 						}
 						catch(Exception Ex)
 						{
-							Log.TraceWarning("Exception while generating include data for Target:{0}, Platform: {1}, Configuration: {2}", TargetDesc.Name, Platform.ToString(), Configuration.ToString());
-							Log.TraceWarning(Ex.ToString());
+							Logger.LogWarning("Exception while generating include data for Target:{Target}, Platform: {Platform}, Configuration: {Configuration}", TargetDesc.Name, Platform.ToString(), Configuration.ToString());
+							Logger.LogWarning("{Ex}", Ex.ToString());
 						}
 					}
 				}
 			}
-			foreach (Tuple<FileReference,UEBuildTarget> tuple in FileToTarget)
+			foreach (TargetEntry TargetEntry in FileToTarget)
 			{
 				try
 				{
-					CurrentTarget = tuple.Item2;
-					CurrentTarget.PreBuildSetup();
-					SerializeTarget(tuple.Item1, CurrentTarget, Minimize);
+					CurrentTarget = TargetEntry.BuildTarget;
+					CurrentTarget.PreBuildSetup(Logger);
+					SerializeTarget(TargetEntry.OutputFile, CurrentTarget, PlatformProjectGenerators, Minimize, TargetEntry.bBuildByDefault, Logger);
 				}
 				catch (Exception Ex)
 				{
-					Log.TraceWarning("Exception while generating include data for Target:{0}, Platform: {1}, Configuration: {2}", tuple.Item2.AppName, tuple.Item2.Platform.ToString(), tuple.Item2.Configuration.ToString());
-					Log.TraceWarning(Ex.ToString());
+					Logger.LogWarning("Exception while generating include data for Target:{Target}, Platform: {Platform}, Configuration: {Configuration}",
+						TargetEntry.BuildTarget.AppName, TargetEntry.BuildTarget.Platform.ToString(), TargetEntry.BuildTarget.Configuration.ToString());
+					Logger.LogWarning("{Ex}", Ex.ToString());
 				}
 			}
 			
@@ -140,12 +160,12 @@ namespace UnrealBuildTool
 			return false;
 		}
 
-		private void SerializeTarget(FileReference OutputFile, UEBuildTarget BuildTarget, JsonWriterStyle Minimize)
+		private void SerializeTarget(FileReference OutputFile, UEBuildTarget BuildTarget, PlatformProjectGeneratorCollection PlatformProjectGenerators, JsonWriterStyle Minimize, bool bBuildByDefault, ILogger Logger)
 		{
 			DirectoryReference.CreateDirectory(OutputFile.Directory);
 			using (JsonWriter Writer = new JsonWriter(OutputFile, Minimize))
 			{
-				ExportTarget(BuildTarget, Writer);
+				ExportTarget(BuildTarget, Writer, PlatformProjectGenerators, bBuildByDefault, Logger);
 			}
 		}
 
@@ -154,7 +174,10 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Target"></param>
 		/// <param name="Writer">Writer for the array data</param>
-		private void ExportTarget(UEBuildTarget Target, JsonWriter Writer)
+		/// <param name="PlatformProjectGenerators"></param>
+		/// <param name="bBuildByDefault"></param>
+		/// <param name="Logger">Logger for output</param>
+		private void ExportTarget(UEBuildTarget Target, JsonWriter Writer, PlatformProjectGeneratorCollection PlatformProjectGenerators, bool bBuildByDefault, ILogger Logger)
 		{
 			Writer.WriteObjectStart();
 
@@ -167,7 +190,7 @@ namespace UnrealBuildTool
 				Writer.WriteValue("ProjectFile", Target.ProjectFile.FullName);
 			}
 			
-			ExportEnvironmentToJson(Target, Writer);
+			ExportEnvironmentToJson(Target, Writer, PlatformProjectGenerators, bBuildByDefault, Logger);
 			
 			if(Target.Binaries.Any())
 			{
@@ -181,7 +204,7 @@ namespace UnrealBuildTool
 				Writer.WriteArrayEnd();
 			}
 			
-			CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles();
+			CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles(Logger);
 			HashSet<string> ModuleNames = new HashSet<string>();
 			Writer.WriteObjectStart("Modules");
 			foreach (UEBuildBinary Binary in Target.Binaries)
@@ -192,25 +215,26 @@ namespace UnrealBuildTool
 					if(ModuleNames.Add(Module.Name))
 					{
 						Writer.WriteObjectStart(Module.Name);
-						ExportModule(Module, Binary.OutputDir, Target.GetExecutableDir(), Writer);
 						UEBuildModuleCPP? ModuleCpp = Module as UEBuildModuleCPP;
 						if (ModuleCpp != null)
 						{
-							CppCompileEnvironment ModuleCompileEnvironment = ModuleCpp.CreateCompileEnvironmentForIntellisense(Target.Rules, BinaryCompileEnvironment);
-							ExportModuleCpp(ModuleCpp, ModuleCompileEnvironment, Writer);
+							CppCompileEnvironment ModuleCompileEnvironment = ModuleCpp.CreateCompileEnvironmentForIntellisense(Target.Rules, BinaryCompileEnvironment, Logger);
+							ExportModuleCpp(ModuleCpp, ModuleCompileEnvironment, Writer, Logger);
+							Module.PrivateIncludePaths.UnionWith(ModuleCompileEnvironment.UserIncludePaths);
 						}
+						ExportModule(Module, Binary.OutputDir, Target.GetExecutableDir(), Writer, Logger);
 						Writer.WriteObjectEnd();
 					}
 				}
 			}
 			Writer.WriteObjectEnd();
 			
-			ExportPluginsFromTarget(Target, Writer);
+			ExportPluginsFromTarget(Target, Writer, Logger);
 			
 			Writer.WriteObjectEnd();
 		}
 
-		private void ExportModuleCpp(UEBuildModuleCPP ModuleCPP, CppCompileEnvironment ModuleCompileEnvironment, JsonWriter Writer)
+		private void ExportModuleCpp(UEBuildModuleCPP ModuleCPP, CppCompileEnvironment ModuleCompileEnvironment, JsonWriter Writer, ILogger Logger)
 		{
 			Writer.WriteValue("GeneratedCodeDirectory", ModuleCPP.GeneratedCodeDirectory != null ? ModuleCPP.GeneratedCodeDirectory.FullName  : string.Empty);
 			
@@ -220,7 +244,7 @@ namespace UnrealBuildTool
 				Writer.WriteObjectStart("ToolchainInfo");
 				foreach (Tuple<string,object?> Field in ModuleToolchainInfo.GetDiff(RootToolchainInfo))
 				{
-					WriteField(ModuleCPP.Name, Writer, Field);
+					WriteField(ModuleCPP.Name, Writer, Field, Logger);
 				}
 				Writer.WriteObjectEnd();
 			}
@@ -228,12 +252,12 @@ namespace UnrealBuildTool
 			if (ModuleCompileEnvironment.PrecompiledHeaderIncludeFilename != null)
 			{
 				string CorrectFilePathPch;
-				if(ExtractWrappedIncludeFile(ModuleCompileEnvironment.PrecompiledHeaderIncludeFilename, out CorrectFilePathPch))
+				if(ExtractWrappedIncludeFile(ModuleCompileEnvironment.PrecompiledHeaderIncludeFilename, Logger, out CorrectFilePathPch))
 					Writer.WriteValue("SharedPCHFilePath", CorrectFilePathPch);
 			}
 		}
 
-		private static bool ExtractWrappedIncludeFile(FileSystemReference FileRef, out string CorrectFilePathPch)
+		private static bool ExtractWrappedIncludeFile(FileSystemReference FileRef, ILogger Logger, out string CorrectFilePathPch)
 		{
 			CorrectFilePathPch = "";
 			try
@@ -250,7 +274,7 @@ namespace UnrealBuildTool
 			}
 			finally
 			{
-				Log.TraceVerbose("Couldn't extract path to PCH from {0}", FileRef);
+				Logger.LogDebug("Couldn't extract path to PCH from {FileRef}", FileRef);
 			}
 			return false;
 		}
@@ -262,7 +286,8 @@ namespace UnrealBuildTool
 		/// <param name="TargetOutputDir"></param>
 		/// <param name="Writer">Writer for the array data</param>
 		/// <param name="Module"></param>
-		private static void ExportModule(UEBuildModule Module, DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir, JsonWriter Writer)
+		/// <param name="Logger"></param>
+		private static void ExportModule(UEBuildModule Module, DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir, JsonWriter Writer, ILogger Logger)
 		{
 			Writer.WriteValue("Name", Module.Name);
 			Writer.WriteValue("Directory", Module.ModuleDirectory.FullName );
@@ -329,7 +354,7 @@ namespace UnrealBuildTool
 					}
 					catch(BuildException buildException)
 					{
-						Log.TraceVerbose("Value {0} for module {1} will not be stored. Reason: {2}", "Path", Module.Name, buildException);	
+						Logger.LogDebug("Value {Value} for module {ModuleName} will not be stored. Reason: {Ex}", "Path", Module.Name, buildException);	
 					}
 					
 					if (RuntimeDependency.SourcePath != null)
@@ -342,7 +367,7 @@ namespace UnrealBuildTool
 						}
 						catch(BuildException buildException)
 						{
-							Log.TraceVerbose("Value {0} for module {1} will not be stored. Reason: {2}", "SourcePath", Module.Name, buildException);	
+							Logger.LogDebug("Value {Value} for module {ModuleName} will not be stored. Reason: {Ex}", "SourcePath", Module.Name, buildException);	
 						}
 					}
 
@@ -378,7 +403,7 @@ namespace UnrealBuildTool
 		/// <param name="Writer">Writer for the array data</param>
 		/// <param name="ArrayName">Name of the array property</param>
 		/// <param name="Strings">Sequence of strings to write. May be null.</param>
-		static void ExportJsonStringArray(JsonWriter Writer, string ArrayName, IEnumerable<string> Strings)
+		private static void ExportJsonStringArray(JsonWriter Writer, string ArrayName, IEnumerable<string> Strings)
 		{
 			if (Strings == null || !Strings.Any()) return;
 			
@@ -401,7 +426,7 @@ namespace UnrealBuildTool
 			
 			Writer.WriteValue("File", Plugin.File.FullName );
 			Writer.WriteValue("Type", Plugin.Type.ToString());
-			if(Plugin.Dependencies.Any())
+			if(Plugin.Dependencies != null && Plugin.Dependencies.Any())
 			{
 				Writer.WriteStringArrayField("Dependencies", Plugin.Dependencies.Select(it => it.Name));
 			}
@@ -418,10 +443,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Target"></param>
 		/// <param name="Writer"></param>
-		private static void ExportPluginsFromTarget(UEBuildTarget Target, JsonWriter Writer)
+		/// <param name="Logger"></param>
+		private static void ExportPluginsFromTarget(UEBuildTarget Target, JsonWriter Writer, ILogger Logger)
 		{
-			Target.SetupPlugins();
-			if (!Target.BuildPlugins.Any()) return;
+			Target.SetupPlugins(Logger);
+			if (Target.BuildPlugins == null || !Target.BuildPlugins.Any()) return;
 			
 			Writer.WriteObjectStart("Plugins");
 			foreach (UEBuildPlugin plugin in Target.BuildPlugins!)
@@ -454,18 +480,23 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Target"></param>
 		/// <param name="Writer"></param>
-		private void ExportEnvironmentToJson(UEBuildTarget Target, JsonWriter Writer)
+		/// <param name="PlatformProjectGenerators"></param>
+		/// <param name="bBuildByDefault"></param>
+		/// <param name="Logger"></param>
+		private void ExportEnvironmentToJson(UEBuildTarget Target, JsonWriter Writer, PlatformProjectGeneratorCollection PlatformProjectGenerators, bool bBuildByDefault, ILogger Logger)
 		{
-			CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles();
+			CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles(Logger);
 			
 			RootToolchainInfo = GenerateToolchainInfo(GlobalCompileEnvironment);
 			
 			Writer.WriteObjectStart("ToolchainInfo");
 			foreach (Tuple<string, object?> Field in RootToolchainInfo.GetFields())
 			{
-				WriteField(Target.TargetName, Writer, Field);
+				WriteField(Target.TargetName, Writer, Field, Logger);
 			}
 			Writer.WriteObjectEnd();
+			
+			ExportBuildInfo(Writer, Target, PlatformProjectGenerators, bBuildByDefault);
 			
 			Writer.WriteArrayStart("EnvironmentIncludePaths");
 			foreach (DirectoryReference Path in GlobalCompileEnvironment.UserIncludePaths)
@@ -489,7 +520,7 @@ namespace UnrealBuildTool
 			{
 				// Only generate Apple system include paths when host platform is Apple OS
 				// TODO: Fix case when working with MacOS on Windows host platform  
-				foreach (string Path in AppleHelper.GetAppleSystemIncludePaths(GlobalCompileEnvironment.Architecture, Target.Platform))
+				foreach (string Path in AppleHelper.GetAppleSystemIncludePaths(GlobalCompileEnvironment.Architecture, Target.Platform, Logger))
 				{
 					Writer.WriteValue(Path);
 				}
@@ -526,7 +557,7 @@ namespace UnrealBuildTool
 					throw new ArgumentException("Wrong Target.Architecture: {0}", Target.Architecture);
 				}
 
-				string PlatformSdkVersionString = UEBuildPlatformSDK.GetSDKForPlatform(BuildPlatform.GetPlatformName())!.GetInstalledSDKVersion()!;
+				string PlatformSdkVersionString = UEBuildPlatformSDK.GetSDKForPlatform(BuildPlatform.GetPlatformName())!.GetInstalledVersion()!;
 				var Version = GetLinuxToolchainVersionFromFullString(PlatformSdkVersionString);
 
 				string? InternalSdkPath = UEBuildPlatform.GetSDK(UnrealTargetPlatform.Linux)!.GetInternalSDKPath();
@@ -548,7 +579,110 @@ namespace UnrealBuildTool
 			Writer.WriteArrayEnd();
 		}
 
-		private static void WriteField(string ModuleOrTargetName, JsonWriter Writer, Tuple<string, object?> Field)
+		private void ExportBuildInfo(JsonWriter Writer, UEBuildTarget Target, PlatformProjectGeneratorCollection PlatformProjectGenerators, bool bBuildByDefault)
+		{
+			if (IsStubProject) return;
+			
+			Writer.WriteObjectStart("BuildInfo");
+			UnrealTargetPlatform HostPlatform = BuildHostPlatform.Current.Platform;
+			
+			ProjectTarget ProjectTarget = ProjectTargets.OfType<ProjectTarget>().Single(It => Target.TargetRulesFile == It.TargetFilePath);
+			UnrealTargetPlatform Platform = Target.Platform;
+			UnrealTargetConfiguration Configuration = Target.Configuration;
+
+			string UProjectPath = "";
+			if (IsForeignProject)
+			{
+				UProjectPath = String.Format("\"{0}\"", ProjectTarget.UnrealProjectFilePath!.FullName);
+			}
+			
+			Writer.WriteValue("bBuildByDefault", bBuildByDefault);
+			
+			if (HostPlatform.IsInGroup(UnrealPlatformGroup.Windows))
+			{
+				PlatformProjectGenerator? ProjGenerator = PlatformProjectGenerators.GetPlatformProjectGenerator(Platform, true);
+				VCProjectFile.BuildCommandBuilder BuildCommandBuilder = new VCProjectFile.BuildCommandBuilder(Configuration, Platform, ProjectTarget, UProjectPath)
+				{
+					ProjectGenerator = ProjGenerator,
+					bIsForeignProject = IsForeignProject
+				};
+				
+				string BuildArguments = BuildCommandBuilder.GetBuildArguments();
+				WriteCommand(Writer, "BuildCmd", EscapePath(BuildCommandBuilder.BuildScript.FullName), BuildArguments);
+				WriteCommand(Writer, "RebuildCmd", EscapePath(BuildCommandBuilder.RebuildScript.FullName), BuildArguments);
+				WriteCommand(Writer, "CleanCmd", EscapePath(BuildCommandBuilder.CleanScript.FullName), BuildArguments);
+			}
+			else
+			{
+				string BuildScript = GetBuildScript(HostPlatform);
+				string BuildArguments = GetBuildArguments(HostPlatform, ProjectTarget, Target, UProjectPath, false);
+				string CleanArguments = GetBuildArguments(HostPlatform, ProjectTarget, Target, UProjectPath, true);
+				WriteCommand(Writer, "BuildCmd", BuildScript, BuildArguments);
+				WriteCommand(Writer, "RebuildCmd", "", "");
+				WriteCommand(Writer, "CleanCmd", BuildScript, CleanArguments);
+			}
+			
+			UEBuildBinary MainBinary = Target.Binaries[0];
+			Writer.WriteValue("Output", MainBinary.OutputFilePath.FullName);
+			Writer.WriteObjectEnd();
+		}
+
+		private string GetBuildScript(UnrealTargetPlatform HostPlatform)
+		{
+			DirectoryReference BatchFilesDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Build", "BatchFiles");
+			string ScriptExtension = HostPlatform.IsInGroup(UnrealPlatformGroup.Windows) ? ".bat" : ".sh";
+			if (HostPlatform.IsInGroup(UnrealPlatformGroup.Linux))
+			{
+				BatchFilesDirectory = DirectoryReference.Combine(BatchFilesDirectory, "Linux");
+			}
+			else if (HostPlatform == UnrealTargetPlatform.Mac)
+			{
+				BatchFilesDirectory = DirectoryReference.Combine(BatchFilesDirectory, "Mac");
+			}
+			
+			return EscapePath(FileReference.Combine(BatchFilesDirectory, "Build" + ScriptExtension).FullName);
+		}
+
+		private string GetBuildArguments(UnrealTargetPlatform HostPlatform, ProjectTarget ProjectTarget, UEBuildTarget Target, string UProjectPath, bool bIsClean)
+		{
+			UnrealTargetConfiguration Configuration = Target.Configuration;
+			UnrealTargetPlatform Platform = Target.Platform;
+			string TargetName = ProjectTarget.TargetFilePath.GetFileNameWithoutAnyExtensions();
+			StringBuilder BuildArguments = new StringBuilder();
+			BuildArguments.AppendFormat("{0} {1} {2}", TargetName, Platform.ToString(), Configuration.ToString());
+
+			if (IsForeignProject)
+			{
+				BuildArguments.AppendFormat(" -Project={0}", UProjectPath);
+			}
+
+			if (Target.TargetType == TargetType.Editor)
+			{
+				BuildArguments.Append(" -buildscw");
+			}
+
+			if (bIsClean)
+			{
+				BuildArguments.Append(" -clean");
+			}
+			else if (HostPlatform.IsInGroup(UnrealPlatformGroup.Apple) &&
+			         (Platform == UnrealTargetPlatform.TVOS || Platform == UnrealTargetPlatform.IOS))
+			{
+				BuildArguments.Append(" -deploy");
+			}
+
+			return BuildArguments.ToString();
+		}
+
+		private static void WriteCommand(JsonWriter Writer, string CommandName, string Command, string Arguments)
+		{
+			Writer.WriteObjectStart(CommandName);
+			Writer.WriteValue("Command", Command);
+			Writer.WriteValue("Args", Arguments);
+			Writer.WriteObjectEnd();
+		}
+
+		private static void WriteField(string ModuleOrTargetName, JsonWriter Writer, Tuple<string, object?> Field, ILogger Logger)
 		{
 			if (Field.Item2 == null) return;
 			string Name = Field.Item1;
@@ -588,7 +722,7 @@ namespace UnrealBuildTool
 						Writer.WriteValue(Name, "Latest");
 						break;
 					default:
-						Log.TraceError("Unsupported C++ standard type: {0}", version);
+						Logger.LogError("Unsupported C++ standard type: {Type}", version);
 						break;
 				}
 			}
@@ -604,7 +738,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				Log.TraceWarning("Dumping incompatible ToolchainInfo field: {0} with type: {1} for: {2}",
+				Logger.LogWarning("Dumping incompatible ToolchainInfo field: {Name} with type: {Field} for: {ModuleOrTarget}",
 					Name, Field.Item2, ModuleOrTargetName);
 			}
 		}
@@ -686,14 +820,14 @@ namespace UnrealBuildTool
 			private Process? XcrunProcess;
 			private bool IsReadingIncludesSection;
 
-			public IList<string> GetAppleSystemIncludePaths(string Architecture, UnrealTargetPlatform Platform)
+			public IList<string> GetAppleSystemIncludePaths(string Architecture, UnrealTargetPlatform Platform, ILogger Logger)
 			{
 				if (!UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Apple))
 				{
 					throw new InvalidOperationException("xcrun can be run only for Apple's platforms");
 				}
 
-				string SDKPath = GetSDKPath(Architecture, Platform);
+				string SDKPath = GetSDKPath(Architecture, Platform, Logger);
 				if (!CachedIncludePaths.ContainsKey(SDKPath))
 				{
 					CalculateSystemIncludePaths(SDKPath);
@@ -764,7 +898,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			private string GetSDKPath(string Architecture, UnrealTargetPlatform Platform)
+			private string GetSDKPath(string Architecture, UnrealTargetPlatform Platform, ILogger Logger)
 			{
 				if (Platform == UnrealTargetPlatform.Mac)
 				{
@@ -773,12 +907,12 @@ namespace UnrealBuildTool
 
 				if (Platform == UnrealTargetPlatform.IOS)
 				{
-					return new IOSToolChainSettings().GetSDKPath(Architecture);
+					return new IOSToolChainSettings(Logger).GetSDKPath(Architecture);
 				}
 
 				if (Platform == UnrealTargetPlatform.TVOS)
 				{
-					return new TVOSToolChainSettings().GetSDKPath(Architecture);
+					return new TVOSToolChainSettings(Logger).GetSDKPath(Architecture);
 				}
 
 				throw new NotImplementedException("Path to SDK has to be specified for each Apple's platform");

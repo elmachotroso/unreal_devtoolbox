@@ -80,6 +80,13 @@ namespace Gauntlet
 		public abstract void SetTestResult(TestResult testResult);
 
 		/// <summary>
+		/// Add a new test event to be rolled up into the summary at the end of this test.
+		/// </summary>
+		public virtual void AddTestEvent(UnrealTestEvent InEvent)
+		{
+		}
+
+		/// <summary>
 		/// Summarize the result of the test
 		/// </summary>
 		/// <returns></returns>
@@ -104,6 +111,13 @@ namespace Gauntlet
 		public virtual IEnumerable<string> GetErrors()
 		{
 			return new string[0];
+		}
+
+		public virtual string GetRunLocalCommand(string LaunchingBuildCommand)
+		{
+			string CommandToRunLocally =
+				string.Format("RunUAT {0} -Test={1} ", LaunchingBuildCommand, GetType());
+			return CommandToRunLocally;
 		}
 
 		/// <summary>

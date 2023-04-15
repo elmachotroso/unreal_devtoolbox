@@ -11,15 +11,16 @@
 
 #include "DMXPixelMappingRendererComponent.generated.h"
 
+enum class EDMXPixelMappingRendererType : uint8;
+class UDMXPixelMappingLayoutScript;
 
+enum class EMapChangeType : uint8;
 class UMaterialInterface;
 class UTexture;
 class UUserWidget;
 class UTextureRenderTarget2D;
 class UWorld;
 
-enum class EMapChangeType : uint8;
-enum class EDMXPixelMappingRendererType : uint8;
 
 /**
  * Component for rendering input texture
@@ -55,10 +56,6 @@ public:
 	virtual void RenderAndSendDMX() final;
 	//~ End UDMXPixelMappingBaseComponent implementation
 
-	// ~Begin UDMXPixelMappingOutputComponent interface
-	virtual void SetSize(const FVector2D& NewSize) override;
-	// ~End UDMXPixelMappingOutputComponent interface
-
 #if WITH_EDITOR
 	/** Render all downsample pixel for editor preview texture */
 	void RenderEditorPreviewTexture();
@@ -88,6 +85,7 @@ public:
 	/**
 	 * Take of container widget which is holds widget for all child components.
 	 */
+	UE_DEPRECATED(5.1, "Pixel Mapping Components no longer hold their own widget, in an effort to separate Views from Data.")
 	TSharedRef<SWidget> TakeWidget();
 #endif // WITH_EDITOR
 
@@ -170,19 +168,23 @@ public:
 
 	/** Texture to Downsampling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Render Settings")
-	UTexture* InputTexture;
+	TObjectPtr<UTexture> InputTexture;
 
 	/** Material to Downsampling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Render Settings", meta = (DisplayName = "User Interface Material"))
-	UMaterialInterface* InputMaterial;
+	TObjectPtr<UMaterialInterface> InputMaterial;
 
 	/** UMG to Downsampling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Render Settings")
 	TSubclassOf<UUserWidget> InputWidget;
 	
-	/** Master brightness of the renderer */
+	/** The brightness of the renderer */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Render Settings", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1"))
 	float Brightness;
+
+	/** Layout script for the children of this component (hidden in customizations and displayed in its own panel). */
+	UPROPERTY(EditAnywhere, Instanced, Category = "Layout")
+	TObjectPtr<UDMXPixelMappingLayoutScript> LayoutScript;
 
 	/** Check if a Component can be moved under another one (used for copy/move/duplicate) */
 	virtual bool CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const override;
@@ -196,19 +198,19 @@ private:
 #if WITH_EDITORONLY_DATA
 	/** Editor preview output target */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* PreviewRenderTarget;
+	TObjectPtr<UTextureRenderTarget2D> PreviewRenderTarget;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Material of UMG texture to downsample */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* InputRenderTarget;
+	TObjectPtr<UTextureRenderTarget2D> InputRenderTarget;
 
 	/** Reference to renderer */
 	TSharedPtr<IDMXPixelMappingRenderer> PixelMappingRenderer;
 
 	/** UMG widget for downsampling */
 	UPROPERTY(Transient)
-	UUserWidget* UserWidget;
+	TObjectPtr<UUserWidget> UserWidget;
 
 #if WITH_EDITORONLY_DATA
 	/** Canvas for all UI downsamping component widgets */
@@ -226,7 +228,7 @@ private:
 
 	/** GPU downsample pixel buffer target texture */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* DownsampleBufferTarget;
+	TObjectPtr<UTextureRenderTarget2D> DownsampleBufferTarget;
 
 	/** CPU downsample pixel buffer */
 	TArray<FLinearColor> DownsampleBuffer;
@@ -242,6 +244,7 @@ private:
 
 	/** Initial texture color */
 	static const FLinearColor ClearTextureColor;
+
 public:
 	/** Max downsample target size */
 	static const FIntPoint MaxDownsampleBufferTargetSize;

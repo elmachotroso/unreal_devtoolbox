@@ -14,24 +14,15 @@ namespace CADLibrary
 {
 
 class FArchiveBody;
-class FArchiveComponent;
+class FArchiveCADObject;
 class FArchiveColor;
+class FArchiveGraphicProperties;
 class FArchiveInstance;
 class FArchiveMaterial;
-class FArchiveUnloadedComponent;
+class FArchiveReference;
+class FArchiveSceneGraph;
+class FArchiveUnloadedReference;
 class FCADFileData;
-
-struct FEntityMetaData;
-
-enum EComponentType : uint32
-{
-	Reference = 0,
-	Occurrence,
-	UnloadedComponent,
-	Body,
-	Undefined,
-	LastType
-};
 
 class FTechSoftFileParser : public ICADFileParser
 {
@@ -56,7 +47,7 @@ public:
 		return FileUnit;
 	}
 
-	void ExtractMetaData(const A3DEntity* Entity, FEntityMetaData& OutMetaData);
+	void ExtractMetaData(const A3DEntity* Entity, FArchiveCADObject& OutMetaData);
 
 protected:
 
@@ -67,7 +58,7 @@ protected:
 
 	/**
 	 * If the tessellator is TechSoft, SewModel call TechSoftInterface::SewModel
-	 * If the tessellator is CADKernel, SewModel do nothing as the file is not yet parsed. In this case, the sew is done in GenerateBodyMeshes.
+	 * If the tessellator is UE::CADKernel, SewModel do nothing as the file is not yet parsed. In this case, the sew is done in GenerateBodyMeshes.
 	 */
 	virtual void SewModel();
 
@@ -83,8 +74,6 @@ private:
 	void CountUnderModel();
 	void CountUnderConfigurationSet(const A3DAsmProductOccurrence* Occurrence);
 	void CountUnderOccurrence(const A3DAsmProductOccurrence* Occurrence);
-	void CountUnderPrototype(const A3DAsmProductOccurrence* Prototype);
-	void CountUnderSubPrototype(const A3DAsmProductOccurrence* Prototype);
 	void CountUnderPartDefinition(const A3DAsmPartDefinition* PartDefinition);
 	void CountUnderRepresentationItem(const A3DRiRepresentationItem* RepresentationItem);
 	void CountUnderRepresentationSet(const A3DRiSet* RepresentationSet);
@@ -103,35 +92,39 @@ private:
 	// To be able to build a name, the name of the parent has to be known.
 	// The implementation of the naming policy is done in 5.0.3 with minimal code modification. However the model parsing need to be rewrite in the next version. (Jira UE-152624)
 
-	void TraverseReference(const A3DAsmProductOccurrence* Reference, const FString& RootName, const FMatrix& ParentMatrix, double ParentUnit);
+	void TraverseReference(const A3DAsmProductOccurrence* A3DReference, FArchiveReference& Reference);
 	bool IsConfigurationSet(const A3DAsmProductOccurrence* Occurrence);
-	void TraverseConfigurationSet(const A3DAsmProductOccurrence* ConfigurationSet, double ParentUnit);
-	FCadId TraverseOccurrence(const A3DAsmProductOccurrence* Occurrence, const FString& DefaultOccurrenceName, double ParentUnit);
-	void ProcessPrototype(const A3DAsmProductOccurrence* InPrototype, FEntityMetaData& OutMetaData, A3DMiscTransformation** OutLocation);
-	void TraversePartDefinition(const A3DAsmPartDefinition* PartDefinition, FArchiveComponent& Component, double ParentUnit);
-	FCadId TraverseRepresentationSet(const A3DRiSet* pSet, const FEntityMetaData& PartMetaData, double ParentUnit);
-	FCadId TraverseRepresentationItem(A3DRiRepresentationItem* RepresentationItem, const FEntityMetaData& PartMetaData, const FCadId ParentId, double ParentUnit, int32 ItemIndex);
-	FCadId TraverseBRepModel(A3DRiBrepModel* BrepModel, const FEntityMetaData& PartMetaData, const FCadId ParentId, double ParentUnit, int32 ItemIndex);
-	FCadId TraversePolyBRepModel(A3DRiPolyBrepModel* PolygonalBrepModel, const FEntityMetaData& PartMetaData, const FCadId ParentId, double ParentUnit, int32 ItemIndex);
+	void TraverseConfigurationSet(const A3DAsmProductOccurrence* ConfigurationSet, FArchiveReference& Reference);
+	void TraverseOccurrence(const A3DAsmProductOccurrence* Occurrence, FArchiveReference& ParentReference);
+	void ProcessPrototype(const A3DAsmProductOccurrence* InPrototype, FArchiveUnloadedReference& OutReference, A3DMiscTransformation** OutLocation);
+	void ProcessReference(const A3DAsmProductOccurrence* OccurrencePtr, FArchiveInstance& Instance, FArchiveReference& Reference);
+	void ProcessUnloadedReference(const FArchiveInstance& Instance, FArchiveUnloadedReference& Reference);
+
+	void TraversePartDefinition(const A3DAsmPartDefinition* InPartDefinition, FArchiveReference& Parent);
+	void TraverseExternalData(const A3DAsmProductOccurrence* InExternalData, FArchiveReference& Parent);
+	void TraverseRepresentationSet(const A3DRiSet* InSetPtr, FArchiveReference& Parent);
+	void TraverseRepresentationItem(A3DRiRepresentationItem* RepresentationItem, FArchiveReference& Parent);
+	void TraverseBRepModel(A3DRiBrepModel* BrepModel, FArchiveReference& Parent);
+	void TraversePolyBRepModel(A3DRiPolyBrepModel* PolygonalBrepModel, FArchiveReference& Parent);
 
 	// MetaData
-	void ExtractSpecificMetaData(const A3DAsmProductOccurrence* Occurrence, FEntityMetaData& OutMetaData);
+	void ExtractSpecificMetaData(const A3DAsmProductOccurrence* Occurrence, FArchiveCADObject& OutMetaData);
 
-	void BuildInstanceName(FEntityMetaData& MetaData, const FString& DefaultInstanceName);
-	void BuildReferenceName(FEntityMetaData& MetaData);
-	void BuildPartName(FEntityMetaData& MetaData, const FArchiveComponent& Component);
-	void BuildBodyName(FEntityMetaData& MetaData, const FEntityMetaData& PartMetaData, int32 ItemIndex, bool bIsSolid);
-
+	void BuildInstanceName(FArchiveInstance& MetaData, const FArchiveReference& Parent);
+	void BuildReferenceName(FArchiveCADObject& Reference);
+	void BuildPartName(FArchiveCADObject& Part);
+	void BuildBodyName(FArchiveBody& MetaData, const FArchiveReference& Parent);
+	void BuildRepresentationSetName(FArchiveCADObject& MetaData, const FArchiveReference& Parent);
 	// Graphic properties
-	void ExtractGraphicProperties(const A3DGraphics* Graphics, FEntityMetaData& OutMetaData);
+	void ExtractGraphicProperties(const A3DGraphics* Graphics, FArchiveCADObject& OutMetaData);
 
 	/**
 	 * ColorName and MaterialName have to be initialized before.
 	 * This method update the value ColorName or MaterialName accordingly of the GraphStyleData type (material or color)
 	 */
-	void ExtractGraphStyleProperties(uint32 StyleIndex, FCADUUID& ColorName, FCADUUID& MaterialName);
+	void ExtractGraphStyleProperties(uint32 StyleIndex, FArchiveGraphicProperties& OutGraphicProperties);
 	FArchiveColor& FindOrAddColor(uint32 ColorIndex, uint8 Alpha);
-	FArchiveMaterial& FindOrAddMaterial(uint32 MaterialId, const A3DGraphStyleData& GraphStyleData);
+	FArchiveMaterial& FindOrAddMaterial(FMaterialUId MaterialId, const A3DGraphStyleData& GraphStyleData);
 
 	/**
 	 * @param GraphMaterialIndex is the Techsoft index of the graphic data
@@ -144,18 +137,11 @@ private:
 	}
 
 	// Transform
-	FMatrix ExtractCoordinateSystem(const A3DRiCoordinateSystem* CoordinateSystem, double& InOutUnit);
-	FMatrix ExtractTransformation(const A3DMiscTransformation* Transformation3d, double& InOutUnit);
-	FMatrix ExtractGeneralTransformation(const A3DMiscTransformation* GeneralTransformation, double& InOutUnit);
-	FMatrix ExtractTransformation3D(const A3DMiscTransformation* CartesianTransformation, double& InOutUnit);
+	void ExtractCoordinateSystem(const A3DRiCoordinateSystem* CoordinateSystem, FArchiveCADObject& Component);
+	void ExtractTransformation(const A3DMiscTransformation* Transformation3d, FArchiveCADObject& Component);
+	void ExtractGeneralTransformation(const A3DMiscTransformation* GeneralTransformation, FArchiveCADObject& Component);
+	void ExtractTransformation3D(const A3DMiscTransformation* CartesianTransformation, FArchiveCADObject& Component);
 
-	// Archive methods
-	FArchiveInstance& AddInstance(FEntityMetaData& InstanceMetaData);
-	FArchiveComponent& AddComponent(FEntityMetaData& ComponentMetaData, FArchiveInstance& Instance);
-	FArchiveUnloadedComponent& AddUnloadedComponent(FEntityMetaData& ComponentMetaData, FArchiveInstance& Instance);
-	FArchiveComponent& AddOccurence(FEntityMetaData& InstanceMetaData, FEntityMetaData& ReferenceMetaData, FCadId& OutComponentId);
-	FArchiveComponent& AddOccurence(FEntityMetaData& InstanceMetaData, FCadId& OutComponentId);
-	int32 AddBody(FEntityMetaData& BodyMetaData, const FMatrix& Matrix, const FCadId ParentId, double BodyUnit);
 #endif
 
 protected:
@@ -166,6 +152,8 @@ protected:
 	uint32 ComponentCount[EComponentType::LastType] = { 0 };
 
 	FCADFileData& CADFileData;
+	FArchiveSceneGraph& SceneGraph;
+
 	FTechSoftInterface& TechSoftInterface;
 	ECADFormat Format;
 	bool bForceSew = false;
@@ -173,9 +161,8 @@ protected:
 	EModellerType ModellerType;
 	double FileUnit = 1;
 
-	FCadId LastEntityId = 1;
-
-	TMap<A3DRiRepresentationItem*, int32> RepresentationItemsCache;
+	TMap<A3DRiRepresentationItem*, FCadId> RepresentationItemsCache;
+	TMap<A3DAsmProductOccurrence*, FCadId> ReferenceCache;
 };
 
 } // ns CADLibrary

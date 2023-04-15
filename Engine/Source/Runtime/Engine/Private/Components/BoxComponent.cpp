@@ -10,6 +10,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "PrimitiveSceneProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BoxComponent)
+
 UBoxComponent::UBoxComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -40,6 +42,11 @@ void UBoxComponent::SetBoxExtent(FVector NewBoxExtent, bool bUpdateOverlaps)
 	}
 }
 
+void UBoxComponent::SetLineThickness(float Thickness)
+{
+	LineThickness = Thickness;
+	MarkRenderStateDirty();
+}
 
 template <EShapeBodySetupHelper UpdateBodySetupAction, typename BodySetupType>
 bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArchetypeBodySetup, FVector BoxExtent)
@@ -50,17 +57,17 @@ bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArch
 
 	// @todo do we allow this now?
 	// check for malformed values
-	if (BoxExtent.X < KINDA_SMALL_NUMBER)
+	if (BoxExtent.X < UE_KINDA_SMALL_NUMBER)
 	{
 		BoxExtent.X = 1.0f;
 	}
 
-	if (BoxExtent.Y < KINDA_SMALL_NUMBER)
+	if (BoxExtent.Y < UE_KINDA_SMALL_NUMBER)
 	{
 		BoxExtent.Y = 1.0f;
 	}
 
-	if (BoxExtent.Z < KINDA_SMALL_NUMBER)
+	if (BoxExtent.Z < UE_KINDA_SMALL_NUMBER)
 	{
 		BoxExtent.Z = 1.0f;
 	}
@@ -194,3 +201,4 @@ FCollisionShape UBoxComponent::GetCollisionShape(float Inflation) const
 
 	return FCollisionShape::MakeBox(Extent);
 }
+

@@ -1,28 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlutilityContentBrowserExtensions.h"
-#include "Modules/ModuleManager.h"
-#include "Misc/PackageName.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
-#include "AssetData.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "IAssetTools.h"
-#include "AssetToolsModule.h"
+
 #include "AssetActionUtility.h"
-#include "UObject/UObjectIterator.h"
-#include "AssetRegistryModule.h"
-#include "EditorUtilityBlueprint.h"
-#include "Framework/Application/SlateApplication.h"
-
-#include "BlueprintEditorModule.h"
+#include "AssetRegistry/AssetData.h"
 #include "BlutilityMenuExtensions.h"
-
-#include "IBlutilityModule.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "ContentBrowserDelegates.h"
+#include "ContentBrowserModule.h"
+#include "Delegates/Delegate.h"
+#include "EditorUtilityBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Modules/ModuleManager.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "BlutilityContentBrowserExtensions"
 
@@ -44,7 +46,7 @@ public:
 		{
 			// Check blueprint utils (we need to load them to query their validity against these assets)
 			TArray<FAssetData> UtilAssets;
-			FBlutilityMenuExtensions::GetBlutilityClasses(UtilAssets, UAssetActionUtility::StaticClass()->GetFName());
+			FBlutilityMenuExtensions::GetBlutilityClasses(UtilAssets, UAssetActionUtility::StaticClass()->GetClassPathName());
 
 			// Collect all UAssetActionUtility derived classes
 			TSet<UAssetActionUtility*> AssetClasses;
@@ -67,10 +69,18 @@ public:
 						bool bPassesClassFilter = false;
 						if (bIsActionForBlueprints)
 						{
-							if (UBlueprint* AssetAsBlueprint = Cast<UBlueprint>(Asset.GetAsset()))
+							if (TSubclassOf<UBlueprint> AssetClass = Asset.GetClass())
 							{
-								// It's a blueprint, but is it the right kind?
-								bPassesClassFilter = AssetAsBlueprint->ParentClass && AssetAsBlueprint->ParentClass->IsChildOf(SupportedClass);
+								if (UBlueprint* AssetAsBlueprint = Cast<UBlueprint>(Asset.GetAsset()))
+								{
+									// It's a blueprint, but is it the right kind?
+									bPassesClassFilter = AssetAsBlueprint->ParentClass && AssetAsBlueprint->ParentClass->IsChildOf(SupportedClass);
+								}
+								else
+								{
+									// Not a blueprint
+									bPassesClassFilter = false;
+								}
 							}
 							else
 							{
@@ -81,7 +91,7 @@ public:
 						else
 						{
 							// Is the asset the right kind?
-							bPassesClassFilter = Asset.GetClass()->IsChildOf(SupportedClass);
+							bPassesClassFilter = Asset.IsInstanceOf(SupportedClass);
 						}
 
 						if (bPassesClassFilter)
@@ -105,13 +115,25 @@ public:
 			// Process asset based utilities
 			for (const FAssetData& UtilAsset : UtilAssets)
 			{
-				if (UEditorUtilityBlueprint* Blueprint = Cast<UEditorUtilityBlueprint>(UtilAsset.GetAsset()))
+				FString ParentClassName;
+				if (UtilAsset.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
 				{
-					if (UClass* BPClass = Blueprint->GeneratedClass.Get())
+					UObject* Outer = nullptr;
+					ResolveName(Outer, ParentClassName, false, false);
+					const UClass* ParentClass = FindObject<UClass>(Outer, *ParentClassName);
+
+					// We only care about UEditorUtilityBlueprint's that are compiling subclasses of UAssetActionUtility
+					if (ParentClass && ParentClass->IsChildOf(UAssetActionUtility::StaticClass()))
 					{
-						if (UAssetActionUtility* DefaultObject = Cast<UAssetActionUtility>(BPClass->GetDefaultObject()))
+						if (const UEditorUtilityBlueprint* Blueprint = Cast<UEditorUtilityBlueprint>(UtilAsset.GetAsset()))
 						{
-							ProcessAssetAction(DefaultObject);
+							if (const UClass* BPClass = Blueprint->GeneratedClass.Get())
+							{
+								if (UAssetActionUtility* DefaultObject = Cast<UAssetActionUtility>(BPClass->GetDefaultObject()))
+								{
+									ProcessAssetAction(DefaultObject);
+								}
+							}
 						}
 					}
 				}

@@ -2,26 +2,50 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
-#include "HitProxies.h"
 #include "ComponentVisualizer.h"
 #include "Components/SplineComponent.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
+#include "GenericPlatform/ICursor.h"
+#include "HitProxies.h"
+#include "InputCoreTypes.h"
+#include "Math/Axis.h"
+#include "Math/Box.h"
+#include "Math/InterpCurvePoint.h"
+#include "Math/Matrix.h"
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/GCObject.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "SplineComponentVisualizer.generated.h"
 
 class AActor;
+class FCanvas;
 class FEditorViewportClient;
 class FMenuBuilder;
 class FPrimitiveDrawInterface;
-class FCanvas;
+class FProperty;
 class FSceneView;
 class FUICommandList;
 class FViewport;
-class SWidget;
-class USplineComponent;
 class SSplineGeneratorPanel;
-struct FViewportClick;
+class SWidget;
+class SWindow;
+class UActorComponent;
+class USplineComponent;
+class USplineMetadata;
 struct FConvexVolume;
+struct FViewportClick;
 
 /** Tangent handle selection modes. */
 UENUM()
@@ -217,6 +241,8 @@ public:
 	virtual bool HasFocusOnSelectionBoundingBox(FBox& OutBoundingBox) override;
 	/** Pass snap input to active visualizer */
 	virtual bool HandleSnapTo(const bool bInAlign, const bool bInUseLineTrace, const bool bInUseBounds, const bool bInUsePivot, AActor* InDestination) override;
+	/** Gets called when the mouse tracking has stopped (dragging behavior) */
+	virtual void TrackingStopped(FEditorViewportClient* InViewportClient, bool bInDidMove) override;
 	/** Get currently edited component, this is needed to reset the active visualizer after undo/redo */
 	virtual UActorComponent* GetEditedComponent() const override;
 	virtual TSharedPtr<SWidget> GenerateContextMenu() const override;
@@ -260,10 +286,10 @@ protected:
 	void SelectSplinePoint(int32 SelectIndex, bool bAddToSelection);
 
 	/** Transforms selected tangent by given translation */
-	bool TransformSelectedTangent(const FVector& DeltaTranslate);
+	bool TransformSelectedTangent(EPropertyChangeType::Type InPropertyChangeType, const FVector& InDeltaTranslate);
 
 	/** Transforms selected tangent by given translate, rotate and scale */
-	bool TransformSelectedKeys(const FVector& DeltaTranslate, const FRotator& DeltaRotate = FRotator::ZeroRotator, const FVector& DeltaScale = FVector::ZeroVector);
+	bool TransformSelectedKeys(EPropertyChangeType::Type InPropertyChangeType, const FVector& InDeltaTranslate, const FRotator& InDeltaRotate = FRotator::ZeroRotator, const FVector& InDeltaScale = FVector::ZeroVector);
 
 	/** Update the key selection state of the visualizer */
 	virtual void ChangeSelectionState(int32 Index, bool bIsCtrlHeld);
@@ -382,6 +408,8 @@ protected:
 	void SetEditedSplineComponent(const USplineComponent* InSplineComponent);
 
 	void CreateSplineGeneratorPanel();
+	
+	void OnDeselectedInEditor(TObjectPtr<USplineComponent> SplineComponent);
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector);
@@ -426,6 +454,8 @@ protected:
 	ESplineComponentSnapMode SnapToActorMode;
 
 	FProperty* SplineCurvesProperty;
+
+	FDelegateHandle DeselectedInEditorDelegateHandle;
 
 private:
 	TSharedPtr<SSplineGeneratorPanel> SplineGeneratorPanel;

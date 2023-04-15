@@ -5,6 +5,8 @@
 #include "WorldPartition/WorldPartition.h"
 #include "GameFramework/WorldSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionEditorPerProjectUserSettings)
+
 #if WITH_EDITOR
 
 void UWorldPartitionEditorPerProjectUserSettings::SetWorldDataLayersNonDefaultEditorLoadStates(UWorld* InWorld, const TArray<FName>& InDataLayersLoadedInEditor, const TArray<FName>& InDataLayersNotLoadedInEditor)
@@ -19,22 +21,43 @@ void UWorldPartitionEditorPerProjectUserSettings::SetWorldDataLayersNonDefaultEd
 	}
 }
 
-void UWorldPartitionEditorPerProjectUserSettings::SetEditorGridLoadedCells(UWorld* InWorld, const TArray<FName>& InEditorGridLoadedCells)
+void UWorldPartitionEditorPerProjectUserSettings::SetEditorLoadedRegions(UWorld* InWorld, const TArray<FBox>& InEditorLoadedRegions)
 {
 	if (ShouldSaveSettings(InWorld))
 	{
 		FWorldPartitionPerWorldSettings& PerWorldSettings = PerWorldEditorSettings.FindOrAdd(TSoftObjectPtr<UWorld>(InWorld));
-		PerWorldSettings.LoadedEditorGridCells = InEditorGridLoadedCells;
+		PerWorldSettings.LoadedEditorRegions = InEditorLoadedRegions;
 		
 		SaveConfig();
 	}
 }
 
-TArray<FName> UWorldPartitionEditorPerProjectUserSettings::GetEditorGridLoadedCells(UWorld* InWorld) const
+TArray<FBox> UWorldPartitionEditorPerProjectUserSettings::GetEditorLoadedRegions(UWorld* InWorld) const
 {
 	if (const FWorldPartitionPerWorldSettings* PerWorldSettings = GetWorldPartitionPerWorldSettings(InWorld))
 	{
-		return PerWorldSettings->LoadedEditorGridCells;
+		return PerWorldSettings->LoadedEditorRegions;
+	}
+
+	return TArray<FBox>();
+}
+
+void UWorldPartitionEditorPerProjectUserSettings::SetEditorLoadedLocationVolumes(UWorld* InWorld, const TArray<FName>& InEditorLoadedLocationVolumes)
+{
+	if (ShouldSaveSettings(InWorld))
+	{
+		FWorldPartitionPerWorldSettings& PerWorldSettings = PerWorldEditorSettings.FindOrAdd(TSoftObjectPtr<UWorld>(InWorld));
+		PerWorldSettings.LoadedEditorLocationVolumes = InEditorLoadedLocationVolumes;
+		
+		SaveConfig();
+	}
+}
+
+TArray<FName> UWorldPartitionEditorPerProjectUserSettings::GetEditorLoadedLocationVolumes(UWorld* InWorld) const
+{
+	if (const FWorldPartitionPerWorldSettings* PerWorldSettings = GetWorldPartitionPerWorldSettings(InWorld))
+	{
+		return PerWorldSettings->LoadedEditorLocationVolumes;
 	}
 
 	return TArray<FName>();

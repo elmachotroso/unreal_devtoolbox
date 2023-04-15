@@ -9,11 +9,14 @@
 #include "Drawing/PreviewGeometryActor.h"
 #include "Drawing/LineSetComponent.h"
 #include "Drawing/PointSetComponent.h"
+#include "SceneManagement.h"
 #include "InteractiveToolManager.h"
 #include "Polyline3.h"
 #include "ToolSceneQueriesUtil.h"
 #include "ToolSetupUtil.h"
 #include "Transforms/MultiTransformer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CurveControlPointsMechanic)
 
 using namespace UE::Geometry;
 
@@ -1403,3 +1406,4 @@ void UCurveControlPointsMechanic::FOrderedPoints::ReInitialize(const TArray<FVec
 }
 
 #undef LOCTEXT_NAMESPACE
+

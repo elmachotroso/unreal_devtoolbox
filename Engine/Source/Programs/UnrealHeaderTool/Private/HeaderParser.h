@@ -593,6 +593,18 @@ private:
 	// Verifies the target function meets the criteria for a replication notify callback
 	void VerifyRepNotifyCallback(FUnrealPropertyDefinitionInfo& PropertyDef, FUnrealFunctionDefinitionInfo* TargetFuncDef);
 
+	// Verifies the target property meets the criteria for Getter/Setter accessor
+	void VerifyGetterSetterAccessorProperties(const FUnrealClassDefinitionInfo& TargetClassDef, FUnrealPropertyDefinitionInfo& PropertyDef);
+
+	// Vefifies the target property meets the criteria for FieldNotify
+	void VerifyNotifyValueChangedProperties(FUnrealPropertyDefinitionInfo& PropertyDef);
+
+	// Verifies that all specified class's UFunction
+	void VerifyFunctionsMarkups(FUnrealClassDefinitionInfo& TargetClassDef);
+
+	// Verifies the target function meets the criteria for FieldNotify
+	void VerifyNotifyValueChangedFunction(const FUnrealFunctionDefinitionInfo& TargetFuncDef);
+
 	// Constructs the policy from a string
 	static FDocumentationPolicy GetDocumentationPolicyFromName(const FUHTMessageProvider& Context, const FString& PolicyName);
 
@@ -623,8 +635,17 @@ private:
 	// Check to see if the declaration is a constructor
 	static bool CheckForConstructor(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
 
+	// Check to see if the declaration is a destructor
+	static bool CheckForDestructor(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
+
 	// Check to see if the declaration is a serialize
 	static bool CheckForSerialize(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
+
+	// Check to see if the declaration is a property getter function
+	bool CheckForPropertyGetterFunction(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
+
+	// Check to see if the declaration is a property setter function
+	bool CheckForPropertySetterFunction(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
 
 	// Names that cannot be used enums, UStructs, or UClasses
 	static TArray<FString> ReservedTypeNames;
@@ -642,24 +663,15 @@ public:
 	static const FName NAME_OutputText;
 	static const FName NAME_ConstantText;
 	static const FName NAME_VisibleText;
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	static const FName NAME_ArraySizeText;
-#endif
 	static const FName NAME_SingletonText;
 	static const TCHAR* TArrayText;
 	static const TCHAR* TEnumAsByteText;
 	static const TCHAR* GetRefText;
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-	static const TCHAR* FFixedArrayText;
-	static const TCHAR* FDynamicArrayText;
-	static const TCHAR* GetFixedArrayText;
-	static const TCHAR* GetDynamicArrayText;
-#else
 	static const TCHAR* FTArrayText;
 	static const TCHAR* FTArrayViewText;
 	static const TCHAR* GetArrayText;
 	static const TCHAR* GetArrayViewText;
-#endif	
+	static const TCHAR* FTScriptInterfaceText;
 };
 
 /////////////////////////////////////////////////////

@@ -105,11 +105,11 @@ TUniquePtr<FVideoEncoder> FVideoEncoderFactory::Create(uint32 InID, const FVideo
 		{
 			Result = CreateEncoders[Index]();
 
-			FString RHIName = GDynamicRHI->GetName();
+			ERHIInterfaceType RHIType = RHIGetInterfaceType();
 
-			if (RHIName == TEXT("D3D11"))
+			if (RHIType == ERHIInterfaceType::D3D11)
 			{	
-				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), config.Width, config.Height, true, IsRHIDeviceAMD()).ToSharedRef();
+				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), true, IsRHIDeviceAMD()).ToSharedRef();
 				
 				if (Result && !Result->Setup(Input, config))
 				{
@@ -117,9 +117,9 @@ TUniquePtr<FVideoEncoder> FVideoEncoderFactory::Create(uint32 InID, const FVideo
 				}
 				break;
 			}
-			else if (RHIName == TEXT("D3D12"))
+			else if (RHIType == ERHIInterfaceType::D3D12)
 			{				
-				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), config.Width, config.Height, true, IsRHIDeviceNVIDIA()).ToSharedRef();
+				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), true, IsRHIDeviceNVIDIA()).ToSharedRef();
 				
 				if (Result && !Result->Setup(Input, config))
 				{
@@ -128,13 +128,13 @@ TUniquePtr<FVideoEncoder> FVideoEncoderFactory::Create(uint32 InID, const FVideo
 				break;
 			}
 #if PLATFORM_DESKTOP && !PLATFORM_APPLE
-			else if (RHIName == TEXT("Vulkan"))
+			else if (RHIType == ERHIInterfaceType::Vulkan)
 			{
 				AVEncoder::FVulkanDataStruct VulkanData = {	static_cast<VkInstance>(GDynamicRHI->RHIGetNativeInstance()), 
 															static_cast<VkPhysicalDevice>(GDynamicRHI->RHIGetNativePhysicalDevice()), 
 															static_cast<VkDevice>(GDynamicRHI->RHIGetNativeDevice())};
 
-				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForVulkan( &VulkanData, config.Width, config.Height, true).ToSharedRef();
+				TSharedRef<FVideoEncoderInput> Input = FVideoEncoderInput::CreateForVulkan( &VulkanData, true).ToSharedRef();
 				
 				if (Result && !Result->Setup(Input, config))
 				{

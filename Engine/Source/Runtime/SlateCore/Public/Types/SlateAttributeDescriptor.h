@@ -2,14 +2,23 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Attribute.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 #include "Widgets/InvalidateWidgetReason.h"
+#include "Templates/Identity.h"
 
 #include <type_traits>
 
-
 class FSlateWidgetClassData;
+class SWidget;
+
 namespace SlateAttributePrivate
 {
 	enum class ESlateAttributeType : uint8;
@@ -47,7 +56,7 @@ public:
 		}
 
 		template<typename... PayloadTypes>
-		explicit FInvalidateWidgetReasonAttribute(typename FGetter::template FStaticDelegate<PayloadTypes...>::FFuncPtr InFuncPtr, PayloadTypes&&... InputPayload)
+		explicit FInvalidateWidgetReasonAttribute(TIdentity_T<typename FGetter::template TFuncPtr<PayloadTypes...>> InFuncPtr, PayloadTypes&&... InputPayload)
 			: Reason(EInvalidateWidgetReason::None)
 			, Getter(FGetter::CreateStatic(InFuncPtr, Forward<PayloadTypes>(InputPayload)...))
 		{
@@ -90,10 +99,10 @@ public:
 	};
 
 public:
-	struct FContainer;
 	struct FAttribute;
-	struct FInitializer;
+	struct FContainer;
 	struct FContainerInitializer;
+	struct FInitializer;
 
 	using OffsetType = uint32;
 
@@ -217,7 +226,7 @@ public:
 			 * Notified when the attribute value changed.
 			 * It's preferable that you delay any action to the Tick or Paint function.
 			 * You are not allowed to make changes that would affect the SWidget ChildOrder or its Visibility.
-			 * It will not be called when the SWidget is in his construction phase.
+			 * It will not be called when the SWidget is in its construction phase.
 			 * @see SWidget::IsConstructed
 			 */
 			FAttributeEntry& OnValueChanged(FAttributeValueChangedDelegate Callback);
@@ -280,7 +289,7 @@ public:
 			 * Notified when the attribute value changed.
 			 * It's preferable that you delay any action to the Tick or Paint function.
 			 * You are not allowed to make changes that would affect the SWidget ChildOrder or its Visibility.
-			 * It will not be called when the SWidget is in his construction phase.
+			 * It will not be called when the SWidget is in its construction phase.
 			 * @see SWidget::IsConstructed
 			 */
 			FAttributeEntry& OnValueChanged(FAttributeValueChangedDelegate Callback);

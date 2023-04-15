@@ -13,6 +13,7 @@
 #include "SourceControlSettings.h"
 #include "DefaultSourceControlProvider.h"
 
+class FSourceControlFileStatusMonitor;
 class SSourceControlLogin;
 class SWindow;
 
@@ -34,6 +35,7 @@ public:
 	virtual void QueueStatusUpdate(const FString& InFilename) override;
 	virtual bool IsEnabled() const override;
 	virtual ISourceControlProvider& GetProvider() const override;
+	virtual TUniquePtr<ISourceControlProvider> CreateProvider(const FName& ProviderName, const FStringView& OwnerName, const FSourceControlInitSettings& InitialSettings) const override;
 	virtual FSourceControlAssetDataCache& GetAssetDataCache() override;
 	virtual void SetProvider( const FName& InName ) override;
 	virtual void ShowLoginDialog(const FSourceControlLoginClosed& InOnSourceControlLoginClosed, ELoginWindowMode::Type InLoginWindowMode, EOnLoginWindowStartup::Type InOnLoginWindowStartup = EOnLoginWindowStartup::ResetProviderToNone) override;
@@ -52,6 +54,12 @@ public:
 	virtual FDelegateHandle RegisterFilesDeleted(const FSourceControlFilesDeletedDelegate::FDelegate& InDelegate) override;
 	virtual void UnregisterFilesDeleted(FDelegateHandle InHandle) override;
 	virtual const FSourceControlFilesDeletedDelegate& GetOnFilesDeleted() const override;
+
+	virtual void RegisterSourceControlProjectDirDelegate(const FSourceControlProjectDirDelegate& SourceControlProjectDirDelegate) override;
+	virtual void UnregisterSourceControlProjectDirDelegate() override;
+	virtual FString GetSourceControlProjectDir() const override;
+	virtual bool UsesCustomProjectDir() const override;
+	virtual FSourceControlFileStatusMonitor& GetSourceControlFileStatusMonitor() override;
 
 	/** Save the settings to the ini file */
 	void SaveSettings();
@@ -121,6 +129,9 @@ private:
 	/** The login window control we may be using */
 	TSharedPtr<class SSourceControlLogin> SourceControlLoginPtr;
 
+	/** Monitor the source control status of a collection of files. */
+	TSharedPtr<class FSourceControlFileStatusMonitor> SourceControlFileStatusMonitor;
+
 	/** Files pending a status update */
 	TArray<FString> PendingStatusUpdateFiles;
 
@@ -144,4 +155,7 @@ private:
 
 	/** Used to cache source controlled AssetData information */
 	FSourceControlAssetDataCache AssetDataCache;
+
+	/** Delegate used to return the current project base directory */
+	FSourceControlProjectDirDelegate SourceControlProjectDirDelegate;
 };

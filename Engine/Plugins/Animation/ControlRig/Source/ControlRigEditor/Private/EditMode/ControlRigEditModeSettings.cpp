@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "ControlRigEditModeSettings.h"
+#include "EditMode/ControlRigEditModeSettings.h"
 #include "EditorModeManager.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigEditModeSettings)
 
 void UControlRigEditModeSettings::PreEditChange(FProperty* PropertyAboutToChange)
 {
@@ -33,4 +35,5 @@ void UControlRigEditModeSettings::PostEditUndo()
 	Tools.SetWidgetScale(GizmoScale);
 }
 #endif
+
 

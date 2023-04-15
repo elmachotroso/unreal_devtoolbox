@@ -35,10 +35,15 @@
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Engine/AssetUserData.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequence)
+
 
 #if WITH_EDITOR
 	#include "UObject/SequencerObjectVersion.h"
 	#include "UObject/ObjectRedirector.h"
+
+ULevelSequence::FPostDuplicateEvent ULevelSequence::PostDuplicateEvent;
+
 #endif
 
 static TAutoConsoleVariable<int32> CVarDefaultLockEngineToDisplayRate(
@@ -106,6 +111,11 @@ bool ULevelSequence::CanAnimateObject(UObject& InObject) const
 
 ETrackSupport ULevelSequence::IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const
 {
+	if (!UMovieScene::IsTrackClassAllowed(InTrackClass))
+	{
+		return ETrackSupport::NotSupported;
+	}
+
 	if (InTrackClass == UMovieScene3DAttachTrack::StaticClass() ||
 		InTrackClass == UMovieScene3DPathTrack::StaticClass() ||
 		InTrackClass == UMovieSceneAudioTrack::StaticClass() ||
@@ -160,6 +170,14 @@ void ULevelSequence::GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMe
 	}
 
 	Super::GetAssetRegistryTagMetadata(OutMetadata);
+}
+
+void ULevelSequence::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+
+	// GetAssetRegistryTags appends the DirectorBlueprint tags to the World's tags, so we also have to run the Blueprint PostLoadAssetRegistryTags
+	UBlueprint::PostLoadBlueprintAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
 }
 
 void PurgeLegacyBlueprints(UObject* InObject, UPackage* Package)
@@ -236,6 +254,13 @@ void ULevelSequence::PostDuplicate(bool bDuplicateForPIE)
 		DirectorClass = nullptr;
 	}
 #endif
+
+#if WITH_EDITOR
+	if (PostDuplicateEvent.IsBound())
+	{
+		PostDuplicateEvent.Execute(this);
+	}
+#endif
 }
 
 void ULevelSequence::PostLoad()
@@ -307,6 +332,14 @@ void ULevelSequence::PostLoad()
 	}
 #endif
 }
+
+#if WITH_EDITORONLY_DATA
+void ULevelSequence::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UObjectRedirector::StaticClass()));
+}
+#endif
 
 void ULevelSequence::PostInitProperties()
 {
@@ -381,10 +414,10 @@ bool ULevelSequence::CanPossessObject(UObject& Object, UObject* InPlaybackContex
 
 void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
-	LocateBoundObjects(ObjectId, Context, NAME_None, OutObjects);
+	LocateBoundObjects(ObjectId, Context, {}, OutObjects);
 }
 
-void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, FName StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
+void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, const FTopLevelAssetPath& StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
 	// Handle legacy object references
 	UObject* Object = Context ? ObjectReferences.ResolveBinding(ObjectId, Context) : nullptr;
@@ -441,6 +474,12 @@ UObject* ULevelSequence::GetParentObject(UObject* Object) const
 
 bool ULevelSequence::AllowsSpawnableObjects() const
 {
+#if WITH_EDITOR
+	if (!UMovieScene::IsTrackClassAllowed(UMovieSceneSpawnTrack::StaticClass()))
+	{
+		return false;
+	}
+#endif
 	return true;
 }
 
@@ -584,7 +623,7 @@ FGuid ULevelSequence::FindOrAddBinding(UObject* InObject)
 		FMovieScenePossessable* ChildPossessable = MovieScene->FindPossessable(NewGuid);
 		if (ensure(ChildPossessable))
 		{
-			ChildPossessable->SetParent(ParentGuid);
+			ChildPossessable->SetParent(ParentGuid, MovieScene);
 		}
 
 		FMovieSceneSpawnable* ParentSpawnable = MovieScene->FindSpawnable(ParentGuid);
@@ -712,3 +751,4 @@ const TArray<UAssetUserData*>* ULevelSequence::GetAssetUserDataArray() const
 {
 	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }
+

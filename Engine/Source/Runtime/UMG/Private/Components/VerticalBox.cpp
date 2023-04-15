@@ -3,6 +3,8 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VerticalBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -12,7 +14,7 @@ UVerticalBox::UVerticalBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 void UVerticalBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -82,3 +84,4 @@ const FText UVerticalBox::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

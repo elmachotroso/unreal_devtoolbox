@@ -2,15 +2,49 @@
 
 #pragma once
 
-#include "Templates/SharedPointer.h"
-#include "ISequencerChannelInterface.h"
-#include "KeyDrawParams.h"
 #include "Channels/MovieSceneChannelData.h"
+#include "Channels/MovieSceneChannelHandle.h"
+#include "Channels/MovieSceneChannelTraits.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "CoreTypes.h"
+#include "Curves/KeyHandle.h"
+#include "Evaluation/MovieSceneRootOverridePath.h"
+#include "ISequencer.h"
+#include "ISequencerChannelInterface.h"
+#include "Math/Range.h"
+#include "Misc/FrameNumber.h"
+#include "Misc/FrameRate.h"
+#include "Misc/FrameTime.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
 #include "MovieSceneClipboard.h"
+#include "MovieSceneSection.h"
+#include "MVVM/Views/KeyDrawParams.h"
 #include "SequencerClipboardReconciler.h"
 #include "SequencerKeyStructGenerator.h"
+#include "Templates/Decay.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/SNullWidget.h"
-#include "ISequencer.h"
+#include "TimeToPixel.h"
+
+class FCurveModel;
+class FMenuBuilder;
+class FSequencerSectionPainter;
+class FStructOnScope;
+class FTrackInstancePropertyBindings;
+class SWidget;
+class UMovieSceneTrack;
+class UObject;
+struct FGeometry;
+struct FKeyDrawParams;
+struct FMovieSceneChannel;
+template <typename T> struct TMovieSceneExternalValue;
+template <typename ValueType> struct TMovieSceneChannelData;
 
 /** Utility struct representing a number of selected keys on a single channel */
 template<typename ChannelType>
@@ -25,6 +59,28 @@ struct TExtendKeyMenuParams
 	/** An array of key handles to operante on */
 	TArray<FKeyHandle> Handles;
 };
+
+struct FSequencerChannelPaintArgs
+{
+	FSlateWindowElementList& DrawElements;
+
+	const FPaintArgs& WidgetPaintArgs;
+	const FGeometry& Geometry;
+	const FSlateRect& MyCullingRect;
+	const FWidgetStyle& WidgetStyle;
+
+	FTimeToPixel TimeToPixel;
+
+	bool bParentEnabled = true;
+};
+
+namespace UE::Sequencer
+{
+	class FChannelModel;
+	class STrackAreaLaneView;
+
+	struct FCreateTrackLaneViewParams;
+}
 
 /**
  * Stub/default implementations for ISequencerChannelInterface functions.
@@ -47,7 +103,7 @@ namespace Sequencer
 	 * @param InSequencer    The sequencer that is currently active
 	 */
 	template<typename ChannelType>
-	void ExtendSectionMenu(FMenuBuilder& MenuBuilder, TArray<TMovieSceneChannelHandle<ChannelType>>&& Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer)
+	void ExtendSectionMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArray<TMovieSceneChannelHandle<ChannelType>>&& Channels, TArrayView<UMovieSceneSection* const> Sections, TWeakPtr<ISequencer> InSequencer)
 	{}
 
 
@@ -60,7 +116,7 @@ namespace Sequencer
 	 * @param InSequencer    The sequencer that is currently active
 	 */
 	template<typename ChannelType>
-	void ExtendKeyMenu(FMenuBuilder& MenuBuilder, TArray<TExtendKeyMenuParams<ChannelType>>&& InChannels, TWeakPtr<ISequencer> InSequencer)
+	void ExtendKeyMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtender> MenuExtender, TArray<TExtendKeyMenuParams<ChannelType>>&& InChannels, TWeakPtr<ISequencer> InSequencer)
 	{}
 
 
@@ -219,7 +275,7 @@ namespace Sequencer
 	template<typename ChannelType, typename ValueType>
 	FKeyHandle AddOrUpdateKey(
 		ChannelType*                               InChannel,
-		UMovieSceneSection*             SectionToKey,
+		UMovieSceneSection*                        SectionToKey,
 		const TMovieSceneExternalValue<ValueType>& InExternalValue,
 		FFrameNumber                               InTime,
 		ISequencer&                                InSequencer,
@@ -255,10 +311,11 @@ namespace Sequencer
 	 *
 	 * @param InChannel          The channel to draw extra display information for
 	 * @param InOwner            The owning movie scene section for this channel
-	 * @param InKeyGeometry      Allocated geometry to draw in
-	 * @param Painter			 The painter to add the created geometry to
+	 * @param PaintArgs          Paint arguments containing the draw element list, time-to-pixel converter and other structures
+	 * @param LayerId            The slate layer to paint onto
+	 * @return The new slate layer ID for subsequent elements to paint onto
 	 */
-	SEQUENCER_API void DrawExtra(FMovieSceneChannel* InChannel, const UMovieSceneSection* InOwner, const FGeometry& KeyGeometry, FSequencerSectionPainter& Painter);
+	SEQUENCER_API int32 DrawExtra(FMovieSceneChannel* InChannel, const UMovieSceneSection* InOwner, const FSequencerChannelPaintArgs& PaintArgs, int32 LayerId);
 
 	/**
 	 * Copy the specified keys from a channel
@@ -355,5 +412,42 @@ namespace Sequencer
 	 * @return (Optional) A new model to be added to a curve editor
 	 */
 	SEQUENCER_API TUniquePtr<FCurveModel> CreateCurveEditorModel(const FMovieSceneChannelHandle& ChannelHandle, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer);
+
+	/**
+	 * Create a new channel model for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InChannelName      The identifying name of this channel
+	 * @return (Optional) A new model to be used as part of the Sequencer MVVM framework
+	 */
+	inline TSharedPtr<UE::Sequencer::FChannelModel> CreateChannelModel(const FMovieSceneChannelHandle& InChannelHandle, FName InChannelName)
+	{
+		return nullptr;
+	}
+
+	/**
+	 * Create a new channel view for this type of channel
+	 *
+	 * @param InChannelHandle    The channel handle to create a model for
+	 * @param InWeakModel        The model that is creating the view. Should not be Pinned persistently.
+	 * @param Parameters         View construction parameters
+	 * @return (Optional) A new view to be shown on the track area
+	 */
+	inline TSharedPtr<UE::Sequencer::STrackAreaLaneView> CreateChannelView(const FMovieSceneChannelHandle& InChannelHandle, TWeakPtr<UE::Sequencer::FChannelModel> InWeakModel, const UE::Sequencer::FCreateTrackLaneViewParams& Parameters)
+	{
+		return nullptr;
+	}	
+
+	/**
+	 * Whether this channel should draw a curve on its editor UI
+	 *
+	 * @param Channel               The channel to query
+	 * @param InSection             The section that owns the channel
+	 * @return true to show the curve on the UI, false otherwise
+	 */
+	inline bool ShouldShowCurve(const FMovieSceneChannel* Channel, UMovieSceneSection* InSection)
+	{
+		return false;
+	}
 
 }	// namespace Sequencer

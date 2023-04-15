@@ -35,6 +35,8 @@ public:
 
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const;
 
+	void AddOrphanedPinPairGuids(UEdGraphPin* OutputPin, UEdGraphPin* DefaultPin);
+	
 	/** Get the default value input pin for one of the output pins specified.*/
 	UEdGraphPin* GetDefaultPin(UEdGraphPin* OutputPin) const;
 
@@ -42,7 +44,7 @@ public:
 	
 	virtual void PostLoad() override;
 
-	void GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
+	void GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
 	virtual void GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 
 	virtual FName GetNewPinDefaultNamespace() const { return PARAM_MAP_MODULE_STR; }
@@ -66,9 +68,6 @@ protected:
 	
 	/** Properly set up the default input pin for an output pin.*/
 	UEdGraphPin* CreateDefaultPin(UEdGraphPin* OutputPin);
-
-	/** Returns the metadata for the given variable or nullptr if no metadata is available */
-	UNiagaraScriptVariable* GetScriptVariable(FName VariableName) const;
 
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TMap<FGuid, FGuid> PinOutputToPinDefaultPersistentId;

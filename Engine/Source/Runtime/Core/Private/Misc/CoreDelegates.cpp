@@ -3,6 +3,7 @@
 // Core includes.
 #include "Misc/CoreDelegates.h"
 #include "Math/Vector.h"
+#include "Misc/Fork.h"
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -44,8 +45,10 @@ FCoreDelegates::FNoPakFilesMountedDelegate FCoreDelegates::NoPakFilesMountedDele
 FCoreDelegates::FOnFileOpenedForReadFromPakFile FCoreDelegates::OnFileOpenedForReadFromPakFile;
 
 FCoreDelegates::FOnUserLoginChangedEvent FCoreDelegates::OnUserLoginChangedEvent;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FCoreDelegates::FOnUserControllerConnectionChange FCoreDelegates::OnControllerConnectionChange;
 FCoreDelegates::FOnUserControllerPairingChange FCoreDelegates::OnControllerPairingChange;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 FCoreDelegates::FOnSafeFrameChangedEvent FCoreDelegates::OnSafeFrameChangedEvent;
 FCoreDelegates::FOnHandleSystemEnsure FCoreDelegates::OnHandleSystemEnsure;
 FCoreDelegates::FOnHandleSystemError FCoreDelegates::OnHandleSystemError;
@@ -87,8 +90,12 @@ FCoreDelegates::FPakSigningKeysDelegate& FCoreDelegates::GetPakSigningKeysDelega
     FSimpleMulticastDelegate FCoreDelegates::PreSlateModal;
     FSimpleMulticastDelegate FCoreDelegates::PostSlateModal;
 #endif	//WITH_EDITOR
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	FCoreDelegates::FGatherDeviceProfileCVars FCoreDelegates::GatherDeviceProfileCVars;
+#endif
 FSimpleMulticastDelegate FCoreDelegates::OnShutdownAfterError;
 FSimpleMulticastDelegate FCoreDelegates::OnInit;
+FSimpleMulticastDelegate FCoreDelegates::OnOutputDevicesInit;
 FSimpleMulticastDelegate FCoreDelegates::OnPostEngineInit;
 FSimpleMulticastDelegate FCoreDelegates::OnAllModuleLoadingPhasesComplete;
 FSimpleMulticastDelegate FCoreDelegates::OnFEngineLoopInitComplete;
@@ -142,6 +149,7 @@ FCoreDelegates::FOnFConfigFileCreated FCoreDelegates::OnFConfigDeleted;
 FCoreDelegates::FOnConfigValueRead FCoreDelegates::OnConfigValueRead;
 FCoreDelegates::FOnConfigSectionRead FCoreDelegates::OnConfigSectionRead;
 FCoreDelegates::FOnConfigSectionRead FCoreDelegates::OnConfigSectionNameRead;
+FCoreDelegates::FOnConfigSectionsChanged FCoreDelegates::OnConfigSectionsChanged;
 FCoreDelegates::FOnApplyCVarFromIni FCoreDelegates::OnApplyCVarFromIni;
 FCoreDelegates::FOnSystemResolutionChanged FCoreDelegates::OnSystemResolutionChanged;
 
@@ -189,6 +197,8 @@ FCoreDelegates::FIsLoadingMovieCurrentlyPlaying FCoreDelegates::IsLoadingMovieCu
 
 FCoreDelegates::FShouldLaunchUrl FCoreDelegates::ShouldLaunchUrl;
 
+FCoreDelegates::FOnActivatedByProtocol FCoreDelegates::OnActivatedByProtocol;
+
 FCoreDelegates::FOnGCFinishDestroyTimeExtended FCoreDelegates::OnGCFinishDestroyTimeExtended;
 
 FCoreDelegates::FAccesExtraBinaryConfigData FCoreDelegates::AccessExtraBinaryConfigData;
@@ -197,7 +207,9 @@ FCoreDelegates::FPreloadPackageShaderMaps FCoreDelegates::PreloadPackageShaderMa
 FCoreDelegates::FReleasePreloadedPackageShaderMaps FCoreDelegates::ReleasePreloadedPackageShaderMaps;
 FCoreDelegates::FOnLogVerbosityChanged FCoreDelegates::OnLogVerbosityChanged;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FCoreDelegates::FCreatePackageStore FCoreDelegates::CreatePackageStore;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FCoreDelegates::FApplicationNetworkInitializationChanged FCoreDelegates::ApplicationNetworkInitializationChanged;
 
@@ -214,6 +226,12 @@ FSimpleMulticastDelegate& FCoreDelegates::GetMemoryTrimDelegate()
 	return OnMemoryTrim;
 }
 
+FSimpleMulticastDelegate& FCoreDelegates::GetLowLevelAllocatorMemoryTrimDelegate()
+{
+	static FSimpleMulticastDelegate OnLowLevelAllocatorMemoryTrim;
+	return OnLowLevelAllocatorMemoryTrim;
+}
+
 /**	 Implemented as a function to address global ctor issues */
 FSimpleMulticastDelegate& FCoreDelegates::GetOutOfMemoryDelegate()
 {
@@ -221,12 +239,19 @@ FSimpleMulticastDelegate& FCoreDelegates::GetOutOfMemoryDelegate()
 	return OnOOM;
 }
 
+/**	 Implemented as a function to address global ctor issues */
+FCoreDelegates::FGPUOutOfMemoryDelegate& FCoreDelegates::GetGPUOutOfMemoryDelegate()
+{
+	static FGPUOutOfMemoryDelegate OnGPUOOM;
+	return OnGPUOOM;
+}
+
 FCoreDelegates::FGetOnScreenMessagesDelegate FCoreDelegates::OnGetOnScreenMessages;
 
 typedef void(*TSigningKeyFunc)(TArray<uint8>&, TArray<uint8>&);
 typedef void(*TEncryptionKeyFunc)(unsigned char[32]);
 
-void RegisterSigningKeyCallback(TSigningKeyFunc InCallback)
+CORE_API void RegisterSigningKeyCallback(TSigningKeyFunc InCallback)
 {
 	FCoreDelegates::GetPakSigningKeysDelegate().BindLambda([InCallback](TArray<uint8>& OutExponent, TArray<uint8>& OutModulus)
 	{
@@ -234,7 +259,7 @@ void RegisterSigningKeyCallback(TSigningKeyFunc InCallback)
 	});
 }
 
-void RegisterEncryptionKeyCallback(TEncryptionKeyFunc InCallback)
+CORE_API void RegisterEncryptionKeyCallback(TEncryptionKeyFunc InCallback)
 {
 	FCoreDelegates::GetPakEncryptionKeyDelegate().BindLambda([InCallback](uint8 OutKey[32])
 	{
@@ -242,3 +267,7 @@ void RegisterEncryptionKeyCallback(TEncryptionKeyFunc InCallback)
 	});
 }
 
+FSimpleMulticastDelegate FCoreDelegates::OnParentBeginFork;
+FSimpleMulticastDelegate FCoreDelegates::OnParentPreFork;
+FCoreDelegates::FProcessForkDelegate FCoreDelegates::OnPostFork;
+FSimpleMulticastDelegate FCoreDelegates::OnChildEndFramePostFork;

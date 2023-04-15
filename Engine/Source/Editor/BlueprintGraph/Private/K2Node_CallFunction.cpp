@@ -22,8 +22,11 @@
 #include "K2Node_TemporaryVariable.h"
 #include "K2Node_ExecutionSequence.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Editor.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 #include "EdGraphUtilities.h"
 
 #include "KismetCompiler.h"
@@ -42,6 +45,8 @@
 #include "HAL/FileManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "BlueprintNodeStatics.h"
+#include "Settings/BlueprintEditorProjectSettings.h"
+#include "ToolMenu.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -488,8 +493,25 @@ UK2Node_CallFunction::UK2Node_CallFunction(const FObjectInitializer& ObjectIniti
 
 bool UK2Node_CallFunction::HasDeprecatedReference() const
 {
-	UFunction* Function = GetTargetFunction();
-	return (Function && Function->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction));
+	if (UFunction* Function = GetTargetFunction())
+	{
+		bool bDeprecated = Function->HasMetaData(FBlueprintMetadata::MD_DeprecatedFunction);
+
+		if (bDeprecated)
+		{
+			const UBlueprintEditorProjectSettings* BlueprintEditorProjectSettings = GetDefault<UBlueprintEditorProjectSettings>();
+			const FString PathName = Function->GetPathName();
+
+			if (BlueprintEditorProjectSettings->SuppressedDeprecationMessages.Contains(PathName))
+			{
+				bDeprecated = false;
+			}
+		}
+
+		return bDeprecated;
+	}
+
+	return false;
 }
 
 FEdGraphNodeDeprecationResponse UK2Node_CallFunction::GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const
@@ -1028,7 +1050,7 @@ bool UK2Node_CallFunction::CreatePinsForFunctionCall(const UFunction* Function)
 	ensure(BP);
 	if (BP != nullptr)
 	{
-		const bool bIsFunctionCompatibleWithSelf = BP->SkeletonGeneratedClass->IsChildOf(FunctionOwnerClass);
+		const bool bIsFunctionCompatibleWithSelf = BP->SkeletonGeneratedClass && BP->SkeletonGeneratedClass->IsChildOf(FunctionOwnerClass);
 
 		if (bIsStaticFunc)
 		{
@@ -1172,7 +1194,7 @@ void UK2Node_CallFunction::PostReconstructNode()
 		if (UBlueprint* BP = GetBlueprint())
 		{
 			UClass* FunctionOwnerClass = Function->GetOuterUClass();
-			if (!BP->SkeletonGeneratedClass->IsChildOf(FunctionOwnerClass))
+			if (!BP->SkeletonGeneratedClass || !BP->SkeletonGeneratedClass->IsChildOf(FunctionOwnerClass))
 			{
 				SelfPin->DefaultObject = FunctionOwnerClass->GetAuthoritativeClass()->GetDefaultObject();
 			}
@@ -1435,25 +1457,25 @@ FSlateIcon UK2Node_CallFunction::GetPaletteIconForFunction(UFunction const* Func
 
 	if (Function && Function->HasMetaData(NativeMakeFunc))
 	{
-		static FSlateIcon Icon("EditorStyle", "GraphEditor.MakeStruct_16x");
+		static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.MakeStruct_16x");
 		return Icon;
 	}
 	else if (Function && Function->HasMetaData(NativeBrakeFunc))
 	{
-		static FSlateIcon Icon("EditorStyle", "GraphEditor.BreakStruct_16x");
+		static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.BreakStruct_16x");
 		return Icon;
 	}
 	// Check to see if the function is calling an function that could be an event, display the event icon instead.
 	else if (Function && UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function))
 	{
-		static FSlateIcon Icon("EditorStyle", "GraphEditor.Event_16x");
+		static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Event_16x");
 		return Icon;
 	}
 	else
 	{
 		OutColor = GetPalletteIconColor(Function);
 
-		static FSlateIcon Icon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+		static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 		return Icon;
 	}
 }
@@ -1964,6 +1986,18 @@ void UK2Node_CallFunction::FixupSelfMemberContext()
 	}
 }
 
+void UK2Node_CallFunction::SuppressDeprecationWarning() const
+{
+	if (UFunction* Function = GetTargetFunction())
+	{
+		FString PathName = Function->GetPathName();
+		UBlueprintEditorProjectSettings* BlueprintEditorProjectSettings = GetMutableDefault<UBlueprintEditorProjectSettings>();
+		BlueprintEditorProjectSettings->SuppressedDeprecationMessages.Add(MoveTemp(PathName));
+		BlueprintEditorProjectSettings->SaveConfig();
+		BlueprintEditorProjectSettings->TryUpdateDefaultConfigFile("", false);
+	}
+}
+
 void UK2Node_CallFunction::PostPasteNode()
 {
 	Super::PostPasteNode();
@@ -2129,7 +2163,7 @@ void UK2Node_CallFunction::ValidateNodeDuringCompilation(class FCompilerResultsL
 			const bool bCanTreatAsError = Blueprint->GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::EnforceBlueprintFunctionVisibility;
 
 			const bool bIsProtected = (Function->FunctionFlags & FUNC_Protected) != 0;
-			const bool bFuncBelongsToSubClass = Blueprint->SkeletonGeneratedClass->IsChildOf(Function->GetOuterUClass());
+			const bool bFuncBelongsToSubClass = Blueprint->SkeletonGeneratedClass && Blueprint->SkeletonGeneratedClass->IsChildOf(Function->GetOuterUClass());
 			if (bIsProtected && !bFuncBelongsToSubClass)
 			{
 				if(bCanTreatAsError)
@@ -3283,69 +3317,97 @@ bool UK2Node_CallFunction::CanJumpToDefinition() const
 {
 	const UFunction* TargetFunction = GetTargetFunction();
 	const bool bNativeFunction = (TargetFunction != nullptr) && (TargetFunction->IsNative());
-	return bNativeFunction || (GetJumpTargetForDoubleClick() != nullptr);
+	const bool bCanJumpToNativeFunction = bNativeFunction && ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed();
+	return bCanJumpToNativeFunction || (GetJumpTargetForDoubleClick() != nullptr);
 }
 
 void UK2Node_CallFunction::JumpToDefinition() const
 {
-	// For native functions, try going to the function definition in C++ if available
-	if (UFunction* TargetFunction = GetTargetFunction())
+	if (ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
 	{
-		if (TargetFunction->IsNative())
+		// For native functions, try going to the function definition in C++ if available
+		if (UFunction* TargetFunction = GetTargetFunction())
 		{
-			// First try the nice way that will get to the right line number
-			bool bSucceeded = false;
-			const bool bNavigateToNativeFunctions = GetDefault<UBlueprintEditorSettings>()->bNavigateToNativeFunctionsFromCallNodes;
-			
-			if(bNavigateToNativeFunctions) 
+			if (TargetFunction->IsNative())
 			{
-				if(FSourceCodeNavigation::CanNavigateToFunction(TargetFunction))
-				{
-					bSucceeded = FSourceCodeNavigation::NavigateToFunction(TargetFunction);
-				}
+				// First try the nice way that will get to the right line number
+				bool bSucceeded = false;
+				const bool bNavigateToNativeFunctions = GetDefault<UBlueprintEditorSettings>()->bNavigateToNativeFunctionsFromCallNodes;
 
-				// Failing that, fall back to the older method which will still get the file open assuming it exists
-				if (!bSucceeded)
+				if (bNavigateToNativeFunctions)
 				{
-					FString NativeParentClassHeaderPath;
-					const bool bFileFound = FSourceCodeNavigation::FindClassHeaderPath(TargetFunction, NativeParentClassHeaderPath) && (IFileManager::Get().FileSize(*NativeParentClassHeaderPath) != INDEX_NONE);
-					if (bFileFound)
+					if (FSourceCodeNavigation::CanNavigateToFunction(TargetFunction))
 					{
-						const FString AbsNativeParentClassHeaderPath = FPaths::ConvertRelativePathToFull(NativeParentClassHeaderPath);
-						bSucceeded = FSourceCodeNavigation::OpenSourceFile(AbsNativeParentClassHeaderPath);
+						bSucceeded = FSourceCodeNavigation::NavigateToFunction(TargetFunction);
+					}
+
+					// Failing that, fall back to the older method which will still get the file open assuming it exists
+					if (!bSucceeded)
+					{
+						FString NativeParentClassHeaderPath;
+						const bool bFileFound = FSourceCodeNavigation::FindClassHeaderPath(TargetFunction, NativeParentClassHeaderPath) && (IFileManager::Get().FileSize(*NativeParentClassHeaderPath) != INDEX_NONE);
+						if (bFileFound)
+						{
+							const FString AbsNativeParentClassHeaderPath = FPaths::ConvertRelativePathToFull(NativeParentClassHeaderPath);
+							bSucceeded = FSourceCodeNavigation::OpenSourceFile(AbsNativeParentClassHeaderPath);
+						}
 					}
 				}
-			}
-			else
-			{	
-				// Inform user that the function is native, give them opportunity to enable navigation to native
-				// functions:
-				FNotificationInfo Info(LOCTEXT("NavigateToNativeDisabled", "Navigation to Native (c++) Functions Disabled"));
-				Info.ExpireDuration = 10.0f;
-				Info.CheckBoxState = bNavigateToNativeFunctions ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-			
-				Info.CheckBoxStateChanged = FOnCheckStateChanged::CreateStatic(
-					[](ECheckBoxState NewState)
-					{
-						const FScopedTransaction Transaction(LOCTEXT("ChangeNavigateToNativeFunctionsFromCallNodes", "Change Navigate to Native Functions from Call Nodes Setting"));
-	
-						UBlueprintEditorSettings* MutableEditorSetings = GetMutableDefault<UBlueprintEditorSettings>();
-						MutableEditorSetings->Modify();
-						MutableEditorSetings->bNavigateToNativeFunctionsFromCallNodes = (NewState == ECheckBoxState::Checked) ? true : false;
-						MutableEditorSetings->SaveConfig();
-					}
-				);
-				Info.CheckBoxText = LOCTEXT("EnableNavigationToNative", "Navigate to Native Functions from Blueprint Call Nodes?");
-			
-				FSlateNotificationManager::Get().AddNotification(Info);
-			}
+				else
+				{
+					// Inform user that the function is native, give them opportunity to enable navigation to native
+					// functions:
+					FNotificationInfo Info(LOCTEXT("NavigateToNativeDisabled", "Navigation to Native (c++) Functions Disabled"));
+					Info.ExpireDuration = 10.0f;
+					Info.CheckBoxState = bNavigateToNativeFunctions ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 
-			return;
+					Info.CheckBoxStateChanged = FOnCheckStateChanged::CreateStatic(
+						[](ECheckBoxState NewState)
+						{
+							const FScopedTransaction Transaction(LOCTEXT("ChangeNavigateToNativeFunctionsFromCallNodes", "Change Navigate to Native Functions from Call Nodes Setting"));
+
+							UBlueprintEditorSettings* MutableEditorSetings = GetMutableDefault<UBlueprintEditorSettings>();
+							MutableEditorSetings->Modify();
+							MutableEditorSetings->bNavigateToNativeFunctionsFromCallNodes = (NewState == ECheckBoxState::Checked) ? true : false;
+							MutableEditorSetings->SaveConfig();
+						}
+					);
+					Info.CheckBoxText = LOCTEXT("EnableNavigationToNative", "Navigate to Native Functions from Blueprint Call Nodes?");
+
+					FSlateNotificationManager::Get().AddNotification(Info);
+				}
+
+				return;
+			}
 		}
 	}
 
 	// Otherwise, fall back to the inherited behavior which should go to the function entry node
 	Super::JumpToDefinition();
+}
+
+void UK2Node_CallFunction::GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
+{
+	Super::GetNodeContextMenuActions(Menu, Context);
+
+	if (HasDeprecatedReference())
+	{
+		FText MenuEntryTitle = LOCTEXT("SuppressFunctionDeprecationWarningTitle", "Suppress Deprecation Warning");
+		FText MenuEntryTooltip = LOCTEXT("SuppressFunctionDeprecationWarningTooltip", "Adds this function to the suppressed deprecation warnings list in the Bluperint Editor Project Settings for this project.");
+
+		FToolMenuSection& Section = Menu->AddSection("K2NodeCallFunction", LOCTEXT("FunctionHeader", "Function"));
+		Section.AddMenuEntry(
+			"SuppressDeprecationWarning",
+			MenuEntryTitle,
+			MenuEntryTooltip,
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateUObject(this, &UK2Node_CallFunction::SuppressDeprecationWarning),
+				FCanExecuteAction::CreateUObject(this, &UK2Node_CallFunction::HasDeprecatedReference),
+				FIsActionChecked()
+			)
+		);
+	}
 }
 
 FString UK2Node_CallFunction::GetPinMetaData(FName InPinName, FName InKey)

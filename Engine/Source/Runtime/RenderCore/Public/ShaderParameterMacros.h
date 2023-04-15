@@ -10,7 +10,8 @@
 #include "ShaderParameterMetadata.h"
 #include "RenderGraphAllocator.h"
 #include "Algo/Reverse.h"
-
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 
 class FRDGTexture;
 class FRDGTextureSRV;
@@ -114,11 +115,11 @@ public:
 	/** Creates a uniform buffer with the given value, and returns a structured reference to it. */
 	static TUniformBufferRef<TBufferStruct> CreateUniformBufferImmediate(const TBufferStruct& Value, EUniformBufferUsage Usage, EUniformBufferValidation Validation = EUniformBufferValidation::ValidateResources)
 	{
-		check(IsInRenderingThread() || IsInRHIThread());
 		return TUniformBufferRef<TBufferStruct>(RHICreateUniformBuffer(&Value, TBufferStruct::FTypeInfo::GetStructMetadata()->GetLayoutPtr(), Usage, Validation));
 	}
 
 	/** Creates a uniform buffer with the given value, and returns a structured reference to it. */
+	UE_DEPRECATED(5.1, "Local uniform buffers are now deprecated. Use RHICreateUniformBuffer instead.")
 	static FLocalUniformBuffer CreateLocalUniformBuffer(FRHICommandList& RHICmdList, const TBufferStruct& Value, EUniformBufferUsage Usage)
 	{
 		return RHICmdList.BuildLocalUniformBuffer(&Value, sizeof(TBufferStruct), TBufferStruct::FTypeInfo::GetStructMetadata()->GetLayoutPtr());
@@ -147,7 +148,7 @@ class alignas(SHADER_PARAMETER_STRUCT_ALIGNMENT) FUniformBufferBinding
 public:
 	FUniformBufferBinding() = default;
 
-	FORCEINLINE FUniformBufferRHIRef GetUniformBuffer() const
+	FORCEINLINE const FUniformBufferRHIRef& GetUniformBuffer() const
 	{
 		return UniformBuffer;
 	}
@@ -206,9 +207,9 @@ public:
 #endif
 	}
 
-	FORCEINLINE const TUniformBufferRef<TBufferStruct>& GetUniformBuffer() const
+	FORCEINLINE TUniformBufferRef<TBufferStruct> GetUniformBuffer() const
 	{
-		return static_cast<const TUniformBufferRef<TBufferStruct>&>(FUniformBufferBinding::GetUniformBuffer());
+		return TUniformBufferRef<TBufferStruct>(FUniformBufferBinding::GetUniformBuffer());
 	}
 
 	FORCEINLINE TRDGUniformBuffer<TBufferStruct>* operator->() const
@@ -541,7 +542,7 @@ struct FRenderTargetBinding
 		check(Validate());
 	}
 
-	void GetMipIndex(uint8 InMipIndex)
+	void SetMipIndex(uint8 InMipIndex)
 	{
 		MipIndex = InMipIndex;
 		check(Validate());
@@ -552,6 +553,9 @@ struct FRenderTargetBinding
 		ArraySlice = InArraySlice;
 		check(Validate());
 	}
+
+	UE_DEPRECATED(5.1, "GetMipIndex has been renamed to SetMipIndex.")
+	void GetMipIndex(uint8 InMipIndex) { SetMipIndex(InMipIndex); }
 
 private:
 	/** Intentionally kept private to force setting the load action in the constructor. */
@@ -988,6 +992,21 @@ struct TShaderParameterTypeInfo<FIntVector>
 };
 
 template<>
+struct TShaderParameterTypeInfo<FUintVector3>
+{
+	static constexpr EUniformBufferBaseType BaseType = UBMT_UINT32;
+	static constexpr int32 NumRows = 1;
+	static constexpr int32 NumColumns = 3;
+	static constexpr int32 NumElements = 0;
+	static constexpr int32 Alignment = 16;
+	static constexpr bool bIsStoredInConstantBuffer = true;
+
+	using TAlignedType = TAlignedTypedef<FUintVector3, Alignment>::Type;
+
+	static const FShaderParametersMetadata* GetStructMetadata() { return nullptr; }
+};
+
+template<>
 struct TShaderParameterTypeInfo<FIntVector4>
 {
 	static constexpr EUniformBufferBaseType BaseType = UBMT_INT32;
@@ -1028,6 +1047,21 @@ struct TShaderParameterTypeInfo<FIntRect>
 	static constexpr bool bIsStoredInConstantBuffer = true;
 
 	using TAlignedType = TAlignedTypedef<FIntRect, Alignment>::Type;
+
+	static const FShaderParametersMetadata* GetStructMetadata() { return nullptr; }
+};
+
+template<>
+struct TShaderParameterTypeInfo<FQuat4f>
+{
+	static constexpr EUniformBufferBaseType BaseType = UBMT_FLOAT32;
+	static constexpr int32 NumRows = 1;
+	static constexpr int32 NumColumns = 4;
+	static constexpr int32 NumElements = 0;
+	static constexpr int32 Alignment = 16;
+	static constexpr bool bIsStoredInConstantBuffer = true;
+
+	using TAlignedType = TAlignedTypedef<FQuat4f, Alignment>::Type;
 
 	static const FShaderParametersMetadata* GetStructMetadata() { return nullptr; }
 };
@@ -1263,13 +1297,13 @@ struct TShaderParameterStructTypeInfo<StructType[InNumElements]>
 		struct zzNextMemberId##MemberName { enum { HasDeclaredResource = zzMemberId##MemberName::HasDeclaredResource || !TypeInfo::bIsStoredInConstantBuffer }; }; \
 		static zzFuncPtr zzAppendMemberGetPrev(zzNextMemberId##MemberName, TArray<FShaderParametersMetadata::FMember>* Members) \
 		{ \
-			static_assert(TypeInfo::bIsStoredInConstantBuffer || TIsArrayOrRefOfType<decltype(OptionalShaderType), TCHAR>::Value, "No shader type for " #MemberName "."); \
+			static_assert(TypeInfo::bIsStoredInConstantBuffer || TIsArrayOrRefOfTypeByPredicate<decltype(OptionalShaderType), TIsCharEncodingCompatibleWithTCHAR>::Value, "No shader type for " #MemberName "."); \
 			static_assert(\
 				(STRUCT_OFFSET(zzTThisStruct, MemberName) & (TypeInfo::Alignment - 1)) == 0, \
 				"Misaligned uniform buffer struct member " #MemberName "."); \
 			Members->Add(FShaderParametersMetadata::FMember( \
 				TEXT(#MemberName), \
-				OptionalShaderType, \
+				(const TCHAR*)OptionalShaderType, \
 				__LINE__, \
 				STRUCT_OFFSET(zzTThisStruct,MemberName), \
 				EUniformBufferBaseType(BaseType), \
@@ -1379,6 +1413,23 @@ extern RENDERCORE_API FShaderParametersMetadata* FindUniformBufferStructByShader
 		sizeof(StructTypeName), \
 		StructTypeName::zzGetMembers())
 
+#define IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT_EX2(StructTypeName,ShaderVariableName,StaticSlotName,BindingFlagsEnum,UsageFlags) \
+	static_assert(EnumHasAnyFlags(EUniformBufferBindingFlags::BindingFlagsEnum, EUniformBufferBindingFlags::Static), "Shader bindings must include 'Static'."); \
+	FShaderParametersMetadata StructTypeName::StaticStructMetadata( \
+		FShaderParametersMetadata::EUseCase::UniformBuffer, \
+		EUniformBufferBindingFlags::BindingFlagsEnum, \
+		TEXT(#StructTypeName), \
+		TEXT(#StructTypeName), \
+		TEXT(ShaderVariableName), \
+		TEXT(#StaticSlotName), \
+		StructTypeName::FTypeInfo::FileName, \
+		StructTypeName::FTypeInfo::FileLine, \
+		sizeof(StructTypeName), \
+		StructTypeName::zzGetMembers(), \
+		false, \
+		nullptr, \
+		(uint32)UsageFlags)
+
 /** Implements the same contract as IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT, with the addition of the 'StaticAndShader' binding
  *  flag. This means that the uniform buffer may be bound statically or through SetShaderParameters. The uniform buffer is NOT
  *  removed from the parameter map, which means it is possible to end up with both global and shader bindings. The RHI validation
@@ -1387,6 +1438,9 @@ extern RENDERCORE_API FShaderParametersMetadata* FindUniformBufferStructByShader
  */
 #define IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(StructTypeName,ShaderVariableName,StaticSlotName) \
 	IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT_EX(StructTypeName, ShaderVariableName, StaticSlotName, StaticAndShader)
+
+#define IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT_EX(StructTypeName,ShaderVariableName,StaticSlotName,UsageFlags) \
+	IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT_EX2(StructTypeName, ShaderVariableName, StaticSlotName, StaticAndShader, UsageFlags)
 
  /** Implements a uniform buffer tied to a static binding slot. The third parameter is the name of the slot.
   *  Multiple uniform buffers can be associated to a slot; only one uniform buffer can be bound to a slot
@@ -1714,15 +1768,15 @@ const TCHAR* GetShaderParameterMacroName(EUniformBufferBaseType ShaderParameterB
 
 /** Deprecated buffer macros. */
 #define SHADER_PARAMETER_RDG_BUFFER_UPLOAD(MemberName) \
-	DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER_UPLOAD has been deprecated. Use RDG_BUFFER_ACCESS(Buffer, ERHIAccess::CopyDest) instead.") \
+	UE_DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER_UPLOAD has been deprecated. Use RDG_BUFFER_ACCESS(Buffer, ERHIAccess::CopyDest) instead.") \
 	RDG_BUFFER_ACCESS(MemberName, ERHIAccess::CopyDest)
 
 #define SHADER_PARAMETER_RDG_BUFFER(ShaderType,MemberName) \
-	DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER has been deprecated. Use RDG_BUFFER_ACCESS with an explicit RHI state instead.") \
+	UE_DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER has been deprecated. Use RDG_BUFFER_ACCESS with an explicit RHI state instead.") \
 	RDG_BUFFER_ACCESS(MemberName, ERHIAccess::SRVMask | ERHIAccess::IndirectArgs)
 
 #define SHADER_PARAMETER_RDG_BUFFER_ARRAY(ShaderType,MemberName, ArrayDecl) \
-	DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER_ARRAY has been deprecated. Use RDG_BUFFER_ACCESS_ARRAY instead.")
+	UE_DEPRECATED_MACRO(5.0, "SHADER_PARAMETER_RDG_BUFFER_ARRAY has been deprecated. Use RDG_BUFFER_ACCESS_ARRAY instead.")
 
 
 

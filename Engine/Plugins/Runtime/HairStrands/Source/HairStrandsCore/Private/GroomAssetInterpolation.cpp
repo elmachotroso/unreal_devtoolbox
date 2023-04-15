@@ -2,6 +2,8 @@
 
 #include "GroomAssetInterpolation.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GroomAssetInterpolation)
+
 FHairDecimationSettings::FHairDecimationSettings()
 {
 	CurveDecimation = 1;
@@ -16,6 +18,14 @@ FHairInterpolationSettings::FHairInterpolationSettings()
 	InterpolationDistance = EHairInterpolationWeight::Parametric;
 	bRandomizeGuide = false;
 	bUseUniqueGuide = false;
+}
+
+FHairDeformationSettings::FHairDeformationSettings()
+{
+	bCanEditRigging = false;
+	bEnableRigging = false;
+	NumCurves = 10;
+	NumPoints = 4;
 }
 
 FHairGroupsInterpolation::FHairGroupsInterpolation()
@@ -87,6 +97,15 @@ bool FHairGroupsInterpolation::operator==(const FHairGroupsInterpolation& A) con
 		InterpolationSettings == A.InterpolationSettings;
 }
 
+bool FHairDeformationSettings::operator==(const FHairDeformationSettings& A) const
+{
+	return
+		bEnableRigging == A.bEnableRigging &&
+		NumCurves == A.NumCurves &&
+		NumPoints == A.NumPoints &&
+		bCanEditRigging == A.bCanEditRigging;
+}
+
 void FHairGroupsInterpolation::BuildDDCKey(FArchive& Ar)
 {
 	Ar << DecimationSettings.CurveDecimation;
@@ -97,6 +116,10 @@ void FHairGroupsInterpolation::BuildDDCKey(FArchive& Ar)
 	Ar << InterpolationSettings.InterpolationDistance;
 	Ar << InterpolationSettings.bRandomizeGuide;
 	Ar << InterpolationSettings.bUseUniqueGuide;
+	Ar << RiggingSettings.NumCurves;
+	Ar << RiggingSettings.NumPoints;
+	Ar << RiggingSettings.bEnableRigging;
+	Ar << RiggingSettings.bCanEditRigging;
 }
 
 void FHairGroupsLOD::BuildDDCKey(FArchive& Ar)

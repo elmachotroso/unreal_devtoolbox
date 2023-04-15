@@ -25,6 +25,7 @@ DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnBeforePopupDelegate, FString, FString
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnCreateWindowDelegate, const TWeakPtr<IWebBrowserWindow>&, const TWeakPtr<IWebBrowserPopupFeatures>&);
 DECLARE_DELEGATE_RetVal_OneParam(bool, FOnCloseWindowDelegate, const TWeakPtr<IWebBrowserWindow>&);
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IToolTip>, FOnCreateToolTip, const FText&);
+DECLARE_DELEGATE_FourParams(FOnConsoleMessageDelegate, const FString& /*Message*/, const FString& /*Source*/, int32 /*Line*/, EWebBrowserConsoleLogSeverity /*Severity*/);
 
 #if WITH_CEF3
 typedef SViewport SWebBrowserWidget;
@@ -45,10 +46,12 @@ public:
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnhandledKeyUp, const FKeyEvent& /*KeyEvent*/);
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnhandledKeyChar, const FCharacterEvent& /*CharacterEvent*/);
 
+
 	SLATE_BEGIN_ARGS(SWebBrowserView)
 		: _InitialURL(TEXT("https://www.google.com"))
 		, _ShowErrorMessage(true)
 		, _SupportsTransparency(false)
+		, _InterceptLoadRequests(true)
 		, _SupportsThumbMouseButtonNavigation(true)
 		, _BackgroundColor(255,255,255,255)
 		, _BrowserFrameRate(24)
@@ -72,6 +75,9 @@ public:
 
 		/** Should this browser window support transparency. */
 		SLATE_ARGUMENT(bool, SupportsTransparency)
+
+		/** Should this browser window intercept resource loading requests. If false the BrowserContext will instead. Defaults to True. */
+		SLATE_ARGUMENT(bool, InterceptLoadRequests)
 
 		/** Whether to allow forward and back navigation via the mouse thumb buttons. */
 		SLATE_ARGUMENT(bool, SupportsThumbMouseButtonNavigation)
@@ -147,6 +153,9 @@ public:
 
 		/** Called to allow the handling of any key char events not handled by the browser. */
 		SLATE_EVENT(FOnUnhandledKeyChar, OnUnhandledKeyChar)
+		
+		/** Called for each console message */
+		SLATE_EVENT(FOnConsoleMessageDelegate, OnConsoleMessage)
 
 	SLATE_END_ARGS()
 
@@ -231,7 +240,7 @@ public:
 	 * Properties and Functions will be accessible from JavaScript side.
 	 * As all communication with the rendering procesis asynchronous, return values (both for properties and function results) are wrapped into JS Future objects.
 	 *
-	 * @param Name The name of the object. The object will show up as window.ue4.{Name} on the javascript side. If there is an existing object of the same name, this object will replace it. If bIsPermanent is false and there is an existing permanent binding, the permanent binding will be restored when the temporary one is removed.
+	 * @param Name The name of the object. The object will show up as window.ue.{Name} on the javascript side. If there is an existing object of the same name, this object will replace it. If bIsPermanent is false and there is an existing permanent binding, the permanent binding will be restored when the temporary one is removed.
 	 * @param Object The object instance.
 	 * @param bIsPermanent If true, the object will be visible to all pages loaded through this browser widget, otherwise, it will be deleted when navigating away from the current page. Non-permanent bindings should be registered from inside an OnLoadStarted event handler in order to be available before JS code starts loading.
 	 */
@@ -268,6 +277,16 @@ public:
 
 	/** Set parent SWindow for this browser. */
 	void SetParentWindow(TSharedPtr<SWindow> Window);
+
+	/** Update the underlying browser widget to match the KB focus in slate.
+		This is used to work around a CEF bug that loses focus state on navigations*/
+	void SetBrowserKeyboardFocus();
+
+	/** Close the underlying browser object before we destruct this view. 
+	    This will block until that object is fully destroyed.
+		Calling this is optional, CEF has object lifetime requirements that mean on shutdown you must destroy browsers before exit.*/
+	void CloseBrowser();
+
 private:
 
 	void SetupParentWindowHandlers();
@@ -342,6 +361,7 @@ private:
 	bool UnhandledKeyChar(const FCharacterEvent& CharacterEvent);
 
 	bool HandleDrag(const FPointerEvent& MouseEvent);
+	void HandleConsoleMessage(const FString& Message, const FString& Source, int32 Line, EWebBrowserConsoleLogSeverity Serverity);
 
 	TOptional<FSlateRenderTransform> GetPopupRenderTransform() const;
 private:
@@ -415,7 +435,7 @@ private:
 	/** A delegate that is invoked when the browser detects drag event in within drag region */
 	FOnDragWindow OnDragWindow;
 	
-		/** A delegate for handling key down events not handled by browser. */
+	/** A delegate for handling key down events not handled by browser. */
 	FOnUnhandledKeyDown OnUnhandledKeyDown;
 
 	/** A delegate for handling key up events not handled by browser. */
@@ -423,6 +443,9 @@ private:
 
 	/** A delegate for handling key char events not handled by browser. */
 	FOnUnhandledKeyChar OnUnhandledKeyChar;
+	
+	/** A delegate that is invoked for each console message */
+	FOnConsoleMessageDelegate OnConsoleMessage;
 
 protected:
 	bool HandleSuppressContextMenu();

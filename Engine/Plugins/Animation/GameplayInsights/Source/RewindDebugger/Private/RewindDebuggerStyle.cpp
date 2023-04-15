@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RewindDebuggerStyle.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleMacros.h"
@@ -36,6 +36,7 @@ FRewindDebuggerStyle::FRewindDebuggerStyle() :
 
 	// tab icon
 	Set("RewindDebugger.RewindIcon", new IMAGE_BRUSH("Rewind_24x", Icon16x16));
+	Set("RewindDebugger.RewindDetailsIcon", new IMAGE_BRUSH("RewindDetails_24x", Icon16x16));
 
 	// menu icon
 	Set("RewindDebugger.MenuIcon", new CORE_IMAGE_BRUSH_SVG("Slate/Starship/Common/menu", Icon16x16));

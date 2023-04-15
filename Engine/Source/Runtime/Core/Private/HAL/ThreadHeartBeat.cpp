@@ -13,6 +13,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "HAL/ExceptionHandling.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "Stats/Stats.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "ProfilingDebugging/CsvProfiler.h"
@@ -28,10 +29,6 @@
 
 #ifndef UE_ASSERT_ON_HANG
 	#define UE_ASSERT_ON_HANG 0
-#endif
-
-#ifndef NEEDS_DEBUG_INFO_ON_PRESENT_HANG
-#define NEEDS_DEBUG_INFO_ON_PRESENT_HANG 0
 #endif
 
 // Enabling AttempStuckThreadResuscitation will add a check for early hung thread detection and pass the ThreadId through the OnStuck
@@ -93,6 +90,8 @@ FThreadHeartBeat::FThreadHeartBeat()
 	, LastHungThreadId(InvalidThreadId)
 	, LastStuckThreadId(InvalidThreadId)
 	, bHangsAreFatal(false)
+	, GlobalSuspendCount(0)
+	, CheckpointSuspendCount(0)
 	, Clock(HangDetectorClock_MaxTimeStep_MS / 1000)
 {
 	// Start with the frame-present based hang detection disabled. This will be automatically enabled on
@@ -174,25 +173,11 @@ void FORCENOINLINE FThreadHeartBeat::OnPresentHang(double HangDuration)
 #if MINIMAL_FATAL_HANG_DETECTION
 
 	LastHungThreadId = FThreadHeartBeat::PresentThreadId;
+	FGenericCrashContext::SetEngineData(TEXT("HungThread"), TEXT("Present"));
 #if PLATFORM_SWITCH
 	FPlatformCrashContext::UpdateDynamicData();
 #endif
-#if NEEDS_DEBUG_INFO_ON_PRESENT_HANG
-	extern void GetRenderThreadSublistDispatchTaskDebugInfo(bool&, bool&, bool&, bool&, int32&);
 
-	bool bTmpIsNull;
-	bool bTmpIsComplete;
-	bool bTmpClearedOnGT;
-	bool bTmpClearedOnRT;
-	int32 TmpNumIncompletePrereqs;
-	GetRenderThreadSublistDispatchTaskDebugInfo(bTmpIsNull, bTmpIsComplete, bTmpClearedOnGT, bTmpClearedOnRT, TmpNumIncompletePrereqs);
-
-	volatile bool bIsNull = bTmpIsNull;
-	volatile bool bIsComplete = bTmpIsComplete;
-	volatile bool bClearedOnGT = bTmpClearedOnGT;
-	volatile bool bClearedOnRT = bTmpClearedOnRT;
-	volatile int32 NumIncompletePrereqs = TmpNumIncompletePrereqs;
-#endif
 	// We want to avoid all memory allocations if a hang is detected.
 	// Force a crash in a way that will generate a crash report.
 
@@ -214,9 +199,16 @@ void FORCENOINLINE FThreadHeartBeat::OnHang(double HangDuration, uint32 ThreadTh
 #if MINIMAL_FATAL_HANG_DETECTION
 
 	LastHungThreadId = ThreadThatHung;
+	FGenericCrashContext::SetEngineData(TEXT("HungThread"), LexToString(ThreadThatHung));
 #if PLATFORM_SWITCH
 	FPlatformCrashContext::UpdateDynamicData();
 #endif
+
+#if !UE_BUILD_SHIPPING
+	// Delegate implementation will be called from the hang detector thread and not from the hung thread
+	OnHangDelegate.ExecuteIfBound(ThreadThatHung);
+#endif
+
 	// We want to avoid all memory allocations if a hang is detected.
 	// Force a crash in a way that will generate a crash report.
 
@@ -275,7 +267,15 @@ void FORCENOINLINE FThreadHeartBeat::OnHang(double HangDuration, uint32 ThreadTh
 
 #if PLATFORM_USE_REPORT_ENSURE
 		UE_LOG(LogCore, Error, TEXT("%s"), *ErrorMessage);
-		GLog->PanicFlushThreadedLogs();
+
+		if (bHangsAreFatal)
+		{
+			GLog->Panic();
+		}
+		else
+		{
+			GLog->FlushThreadedLogs(EOutputDeviceRedirectorFlushOptions::Async);
+		}
 
 		// Skip macros and FDebug, we always want this to fire
 		ReportHang(*ErrorMessage, StackFrames, NumStackFrames, ThreadThatHung);
@@ -372,12 +372,7 @@ void FThreadHeartBeat::InitSettings()
 
 	// Default to 25 seconds if not overridden in config.
 	double NewHangDuration = 25.0;
-
-#if	PLATFORM_PRESENT_HANG_DETECTION_ON_BY_DEFAULT
-	double NewPresentDuration = 25.0;
-#else
 	double NewPresentDuration = 0.0;
-#endif //PLATFORM_PRESENT_HANG_DETECTION_ON_BY_DEFAULT
 
 	bool bNewHangsAreFatal = !!(UE_ASSERT_ON_HANG);
 
@@ -420,6 +415,23 @@ void FThreadHeartBeat::InitSettings()
 	CurrentPresentDuration = ConfigPresentDuration * HangDurationMultiplier;
 
 	bHangsAreFatal = bNewHangsAreFatal;
+
+	// Update the existing thread and present hang durations.
+	// Only increase existing thread's heartbeats.
+	// We don't want to decrease here, threads and present logic will pick up a smaller hang duration 
+	// the next time they call HeartBeat() or PresentFrame().
+	for (TPair<uint32, FHeartBeatInfo>& Pair : ThreadHeartBeat)
+	{
+		if (Pair.Value.HangDuration < CurrentHangDuration)
+		{
+			Pair.Value.HangDuration = CurrentHangDuration;
+		}
+	}
+	
+	if (PresentHeartBeat.HangDuration < CurrentPresentDuration)
+	{
+		PresentHeartBeat.HangDuration = CurrentPresentDuration;
+	}
 }
 
 void FThreadHeartBeat::HeartBeat(bool bReadConfig)
@@ -663,7 +675,7 @@ void FThreadHeartBeat::MonitorCheckpointStart(FName EndCheckpoint, double TimeTo
 		HeartBeatInfo.LastHeartBeatTime = Clock.Seconds();
 		HeartBeatInfo.HangDuration = TimeToReachCheckpoint;
 		HeartBeatInfo.HeartBeatName = EndCheckpoint;
-		HeartBeatInfo.SuspendedCount = 0;
+		HeartBeatInfo.SuspendedCount = CheckpointSuspendCount;
 	}
 #endif
 }
@@ -758,9 +770,11 @@ void FThreadHeartBeat::SuspendHeartBeat(bool bAllThreads)
 
 	// Suspend the checkpoint heartbeats
 	{
-		FScopeLock HeartBeatLock(&CheckpointHeartBeatCritical);
 		if (!bAllThreads)
 		{
+			FScopeLock HeartBeatLock(&CheckpointHeartBeatCritical);
+			check(CheckpointSuspendCount >= 0);
+			++CheckpointSuspendCount;
 			for (TPair<FName, FHeartBeatInfo>& HeartBeatEntry : CheckpointHeartBeat)
 			{
 				HeartBeatEntry.Value.Suspend();
@@ -777,9 +791,16 @@ void FThreadHeartBeat::ResumeHeartBeat(bool bAllThreads)
 	bool bLastThreadResumed = false;
 	{
 		FScopeLock HeartBeatLock(&HeartBeatCritical);
+
 		const double CurrentTime = Clock.Seconds();
 		if (bAllThreads)
 		{
+			if (GlobalSuspendCount.GetValue() == 0)
+			{
+				// Resume without matching Suspend, ignore it
+				return;
+			}
+		
 			if (GlobalSuspendCount.Decrement() == 0)
 			{
 				bLastThreadResumed = true;
@@ -805,8 +826,8 @@ void FThreadHeartBeat::ResumeHeartBeat(bool bAllThreads)
 
 	// Resume the checkpoint heartbeats
 	{
-		FScopeLock HeartBeatLock(&CheckpointHeartBeatCritical);
 		const double CurrentTime = Clock.Seconds();
+		FScopeLock HeartBeatLock(&CheckpointHeartBeatCritical);
 		if (bAllThreads)
 		{
 			if (bLastThreadResumed)
@@ -819,6 +840,8 @@ void FThreadHeartBeat::ResumeHeartBeat(bool bAllThreads)
 		}
 		else
 		{
+			check(CheckpointSuspendCount > 0);
+			CheckpointSuspendCount--;
 			for (TPair<FName, FHeartBeatInfo>& HeartBeatEntry : CheckpointHeartBeat)
 			{
 				HeartBeatEntry.Value.Resume(CurrentTime);
@@ -858,23 +881,6 @@ void FThreadHeartBeat::SetDurationMultiplier(double NewMultiplier)
 	InitSettings();
 
 	UE_LOG(LogCore, Display, TEXT("Setting hang detector multiplier to %.4fs. New hang duration: %.4fs. New present duration: %.4fs."), NewMultiplier, CurrentHangDuration, CurrentPresentDuration);
-
-	// Update the existing thread's hang durations.
-	for (TPair<uint32, FHeartBeatInfo>& Pair : ThreadHeartBeat)
-	{
-		// Only increase existing thread's heartbeats.
-		// We don't want to decrease here, otherwise reducing the multiplier could cause a false detection.
-		// Threads will pick up a smaller hang duration the next time they call HeartBeat().
-		if (Pair.Value.HangDuration < CurrentHangDuration)
-		{
-			Pair.Value.HangDuration = CurrentHangDuration;
-		}
-	}
-
-	if (PresentHeartBeat.HangDuration < CurrentPresentDuration)
-	{
-		PresentHeartBeat.HangDuration = CurrentPresentDuration;
-	}
 #endif
 }
 

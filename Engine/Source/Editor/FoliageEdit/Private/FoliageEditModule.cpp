@@ -3,14 +3,14 @@
 #include "FoliageEditModule.h"
 #include "Modules/ModuleManager.h"
 #include "Textures/SlateIcon.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "EditorModeRegistry.h"
 #include "EditorModes.h"
 #include "UnrealEdGlobals.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 const FName FoliageEditAppIdentifier = FName(TEXT("FoliageEdApp"));
 
@@ -49,7 +49,7 @@ public:
 		FEditorModeRegistry::Get().RegisterMode<FEdModeFoliage>(
 			FBuiltinEditorModes::EM_Foliage,
 			NSLOCTEXT("EditorModes", "FoliageMode", "Foliage"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.FoliageMode", "LevelEditor.FoliageMode.Small"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.FoliageMode", "LevelEditor.FoliageMode.Small"),
 			true, 400
 			);
 
@@ -163,8 +163,11 @@ public:
 
 		if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 		{
-			FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-			AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
+			IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+			if (AssetRegistry)
+			{
+				AssetRegistry->OnAssetRemoved().RemoveAll(this);
+			}
 		}
 	}
 

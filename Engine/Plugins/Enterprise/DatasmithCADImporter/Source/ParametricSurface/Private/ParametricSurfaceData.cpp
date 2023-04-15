@@ -26,16 +26,14 @@ bool UParametricSurfaceData::SetFile(const TCHAR* FilePath)
 void UParametricSurfaceData::SetImportParameters(const CADLibrary::FImportParameters& InSceneParameters)
 {
 	SceneParameters.ModelCoordSys = uint8(InSceneParameters.GetModelCoordSys());
-	SceneParameters.MetricUnit = InSceneParameters.GetMetricUnit();
-	SceneParameters.ScaleFactor = InSceneParameters.GetScaleFactor();
 }
 
 void UParametricSurfaceData::SetMeshParameters(const CADLibrary::FMeshParameters& InMeshParameters)
 {
 	MeshParameters.bNeedSwapOrientation = InMeshParameters.bNeedSwapOrientation;
 	MeshParameters.bIsSymmetric = InMeshParameters.bIsSymmetric;
-	MeshParameters.SymmetricNormal = InMeshParameters.SymmetricNormal;
-	MeshParameters.SymmetricOrigin = InMeshParameters.SymmetricOrigin;
+	MeshParameters.SymmetricNormal = (FVector) InMeshParameters.SymmetricNormal;
+	MeshParameters.SymmetricOrigin = (FVector) InMeshParameters.SymmetricOrigin;
 }
 
 void UParametricSurfaceData::Serialize(FArchive& Ar)

@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneParticleParameterTrack.h"
+#include "MovieScene.h"
 #include "MovieSceneCommonHelpers.h"
 #include "Evaluation/MovieSceneParticleParameterTemplate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneParticleParameterTrack)
 
 #define LOCTEXT_NAMESPACE "ParticleParameterTrack"
 
@@ -124,3 +127,4 @@ void UMovieSceneParticleParameterTrack::AddColorParameterKey( FName ParameterNam
 	NearestSection->AddColorParameterKey( ParameterName, Time, Value );
 }
 #undef LOCTEXT_NAMESPACE
+

@@ -540,30 +540,24 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 	Panel->AddSlot(0, Row)
 	[
 		SNew(STextBlock)
+	];
+
+	Panel->AddSlot(1, Row)
+	[
+		SNew(STextBlock)
 		.Margin(TitleMarginFirstColumn)
 		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-		.Text(LOCTEXT("Cache", "Cache"))
 		.ColorAndOpacity(TitleColor)
 		.Text(LOCTEXT("CacheType", "Cache Type"))
 	];
 
-	Panel->AddSlot(1, Row)
+	Panel->AddSlot(2, Row)
 	[
 		SNew(STextBlock)
 		.Margin(TitleMargin)
 		.ColorAndOpacity(TitleColor)
 		.Font(TitleFont)
 		.Text(LOCTEXT("Location", "Location"))
-	];
-
-	Panel->AddSlot(2, Row)
-	.HAlign(HAlign_Right)
-	[
-		SNew(STextBlock)
-		.Margin(TitleMargin)
-		.ColorAndOpacity(TitleColor)
-		.Font(TitleFont)
-		.Text(LOCTEXT("HitPercentage", "Hit%"))
 	];
 
 	Panel->AddSlot(3, Row)
@@ -573,7 +567,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		.Margin(TitleMargin)
 		.ColorAndOpacity(TitleColor)
 		.Font(TitleFont)
-		.Text(LOCTEXT("Read", "Read (MiB)"))
+		.Text(LOCTEXT("HitPercentage", "Hit%"))
 	];
 
 	Panel->AddSlot(4, Row)
@@ -583,16 +577,66 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		.Margin(TitleMargin)
 		.ColorAndOpacity(TitleColor)
 		.Font(TitleFont)
-		.Text(LOCTEXT("Write", "Write (MiB)"))
+		.Text(LOCTEXT("Read", "Read (MiB)"))
+		.AutoWrapText(true)
+		.WrapTextAt(66.0f)
 	];
 
 	Panel->AddSlot(5, Row)
+	.HAlign(HAlign_Right)
 	[
 		SNew(STextBlock)
 		.Margin(TitleMargin)
 		.ColorAndOpacity(TitleColor)
 		.Font(TitleFont)
-		.Text(LOCTEXT("Details", "Details"))
+		.Text(LOCTEXT("Write", "Write (MiB)"))
+		.AutoWrapText(true)
+		.WrapTextAt(66.0f)
+	];
+
+	Panel->AddSlot(6, Row)
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Margin(TitleMargin)
+		.ColorAndOpacity(TitleColor)
+		.Font(TitleFont)
+		.Text(LOCTEXT("Latency", "Latency (ms)"))
+		.AutoWrapText(true)
+		.WrapTextAt(66.0f)
+	];
+
+	Panel->AddSlot(7, Row)
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Margin(TitleMargin)
+		.ColorAndOpacity(TitleColor)
+		.Font(TitleFont)
+		.Text(LOCTEXT("Read Speed", "Read Speed (MiB/s)"))
+		.AutoWrapText(true)
+		.WrapTextAt(66.0f)
+	];
+
+	Panel->AddSlot(8, Row)
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Margin(TitleMargin)
+		.ColorAndOpacity(TitleColor)
+		.Font(TitleFont)
+		.Text(LOCTEXT("Write Speed", "Write Speed (MiB/s)"))
+		.AutoWrapText(true)
+		.WrapTextAt(66.0f)
+	];
+
+	Panel->AddSlot(9, Row)
+	[
+		SNew(STextBlock)
+		.Margin(TitleMargin)
+		.ColorAndOpacity(TitleColor)
+		.Font(TitleFont)
+		.Text(LOCTEXT("Name", "Name"))
 	];
 
 	Row++;
@@ -609,7 +653,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 
 		FDerivedDataCacheUsageStats Stats;
 
-		for (const auto& KVP : Node->Stats)
+		for (const auto& KVP : Node->UsageStats)
 		{
 			Stats.Combine(KVP.Value);
 		}
@@ -628,26 +672,67 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		SumTotalGetMB += TotalGetMB;
 		SumTotalPutMB += TotalPutMB;
 
-		Panel->AddSlot(0, Row)
+		TSharedPtr<SImage> StatusIcon;
+		switch (Node->GetCacheStatus())
+		{
+			case EDerivedDataCacheStatus::Information:
+				StatusIcon = SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Help"))
+					.ToolTipText(FText::FromString(Node->GetCacheStatusText()));
+			break;
+			case EDerivedDataCacheStatus::Warning:
+				StatusIcon = SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Warning"))
+					.ToolTipText(FText::FromString(Node->GetCacheStatusText()));
+			break;
+			case EDerivedDataCacheStatus::Error:
+				StatusIcon = SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Error"))
+					.ToolTipText(FText::FromString(Node->GetCacheStatusText()));
+			break;
+			case EDerivedDataCacheStatus::Deactivation:
+				StatusIcon = SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.X"))
+					.ToolTipText(FText::FromString(Node->GetCacheStatusText()));
+			break;
+
+		}
+
+		if (StatusIcon.IsValid())
+		{
+			Panel->AddSlot(0, Row)
+			[
+				SNew(SHorizontalBox)
+					.ToolTipText(FText::FromString(Node->GetCacheStatusText()))
+					// Status icon
+					+SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						StatusIcon.ToSharedRef()
+					]
+			];
+		}
+		else
+		{
+			Panel->AddSlot(0, Row)
+			[
+				SNew(SHorizontalBox)
+			];
+		}
+
+		Panel->AddSlot(1, Row)
 		[
 			SNew(STextBlock)
 			.Margin(DefaultMarginFirstColumn)
 			.Text(FText::FromString(Node->GetCacheType()))
 		];
 
-		Panel->AddSlot(1, Row)
+		Panel->AddSlot(2, Row)
 		[
 			SNew(STextBlock)
 			.Margin(DefaultMargin)
 			.Text(Node->IsLocal() ? LOCTEXT("Local", "Local") : LOCTEXT("Remote", "Remote"))
-		];
-
-		Panel->AddSlot(2, Row)
-		.HAlign(HAlign_Right)
-		[
-			SNew(STextBlock)
-			.Margin(DefaultMargin)
-			.Text(FText::FromString(SingleDecimalFormat(HitRate)))
 		];
 
 		Panel->AddSlot(3, Row)
@@ -655,7 +740,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		[
 			SNew(STextBlock)
 			.Margin(DefaultMargin)
-			.Text(FText::FromString(SingleDecimalFormat(TotalGetMB)))
+			.Text(FText::FromString(SingleDecimalFormat(HitRate)))
 		];
 
 		Panel->AddSlot(4, Row)
@@ -663,10 +748,51 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		[
 			SNew(STextBlock)
 			.Margin(DefaultMargin)
-			.Text(FText::FromString(SingleDecimalFormat(TotalPutMB)))
+			.Text(FText::FromString(SingleDecimalFormat(TotalGetMB)))
 		];
 
 		Panel->AddSlot(5, Row)
+		.HAlign(HAlign_Right)
+		[
+			SNew(STextBlock)
+			.Margin(DefaultMargin)
+			.Text(FText::FromString(SingleDecimalFormat(TotalPutMB)))
+		];
+
+		if (Node->SpeedStats.LatencyMS)
+		{
+			Panel->AddSlot(6, Row)
+			.HAlign(HAlign_Right)
+			[
+				SNew(STextBlock)
+				.Margin(DefaultMargin)
+				.Text(FText::FromString(SingleDecimalFormat(Node->SpeedStats.LatencyMS)))
+			];
+		}
+
+		if (Node->SpeedStats.ReadSpeedMBs)
+		{
+			Panel->AddSlot(7, Row)
+			.HAlign(HAlign_Right)
+			[
+				SNew(STextBlock)
+				.Margin(DefaultMargin)
+				.Text(FText::FromString(SingleDecimalFormat(Node->SpeedStats.ReadSpeedMBs)))
+			];
+		}
+
+		if (Node->SpeedStats.WriteSpeedMBs)
+		{
+			Panel->AddSlot(8, Row)
+			.HAlign(HAlign_Right)
+			[
+				SNew(STextBlock)
+				.Margin(DefaultMargin)
+				.Text(FText::FromString(SingleDecimalFormat(Node->SpeedStats.WriteSpeedMBs)))
+			];
+		}
+
+		Panel->AddSlot(9, Row)
 		[
 			SNew(STextBlock)
 			.Margin(DefaultMargin)
@@ -676,7 +802,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		Row++;
 	}
 
-	Panel->AddSlot(0, Row)
+	Panel->AddSlot(1, Row)
 	[
 		SNew(STextBlock)
 		.Margin(TitleMarginFirstColumn)
@@ -685,7 +811,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		.Text(LOCTEXT("Total", "Total"))
 	];
 
-	Panel->AddSlot(3, Row)
+	Panel->AddSlot(4, Row)
 	.HAlign(HAlign_Right)
 	[
 		SNew(STextBlock)
@@ -695,7 +821,7 @@ TSharedRef<SWidget> SDerivedDataCacheStatisticsDialog::GetGridPanel()
 		.Text(FText::FromString(SingleDecimalFormat(SumTotalGetMB)))
 	];
 
-	Panel->AddSlot(4, Row)
+	Panel->AddSlot(5, Row)
 	.HAlign(HAlign_Right)
 	[
 		SNew(STextBlock)

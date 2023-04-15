@@ -14,6 +14,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "Interfaces/Interface_AssetUserData.h"
 #include "UObject/StructOnScope.h"
+#include "PropertyPairsMap.h"
 #include "ComponentInstanceDataCache.h"
 #include "ActorComponent.generated.h"
 
@@ -164,6 +165,13 @@ protected:
 	UPROPERTY()
 	uint8 bNetAddressable:1;
 
+	/**
+	* When true the replication system will only replicate the registered subobjects list
+	* When false the replication system will instead call the virtual ReplicateSubObjects() function where the subobjects need to be manually replicated.
+	*/
+	UPROPERTY(Config, EditDefaultsOnly, BlueprintReadOnly, Category=Replication, AdvancedDisplay)
+	uint8 bReplicateUsingRegisteredSubObjectList : 1;
+
 private:
 	/** Is this component currently replicating? Should the network code consider it for replication? Owning Actor must be replicating first! */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Replicated, Category=ComponentReplication,meta=(DisplayName = "Component Replicates", AllowPrivateAccess = "true"))
@@ -264,6 +272,9 @@ private:
 	/** Indicates that InitializeComponent has been called, but UninitializeComponent has not yet */
 	uint8 bHasBeenInitialized:1;
 
+	/** Indicates that ReadyForReplication has been called  */
+	uint8 bIsReadyForReplication:1;
+
 	/** Indicates that BeginPlay has been called, but EndPlay has not yet */
 	uint8 bHasBegunPlay:1;
 
@@ -290,7 +301,11 @@ private:
 	/** Tracks whether the component has been added to the world's pre end of frame sync list */
 	uint8 bMarkedForPreEndOfFrameSync : 1;
 
+	/** Whether to use use the async physics tick with this component. */
+	uint8 bAsyncPhysicsTickEnabled : 1;
+
 public:
+
 	/** Describes how a component instance will be created */
 	UPROPERTY()
 	EComponentCreationMethod CreationMethod;
@@ -330,6 +345,9 @@ public:
 	/** Removes specified properties from the list of UCS-modified properties */
 	void RemoveUCSModifiedProperties(const TArray<FProperty*>& Properties);
 
+	/** Clears the component's UCS modified properties */
+	void ClearUCSModifiedProperties();
+
 	/** True if this component can be modified when it was inherited from a parent actor class */
 	bool IsEditableWhenInherited() const;
 
@@ -338,6 +356,9 @@ public:
 
 	/** Indicates that InitializeComponent has been called, but UninitializeComponent has not yet */
 	bool HasBeenInitialized() const { return bHasBeenInitialized; }
+
+	/** Indicates that ReadyForReplication has been called */
+	bool IsReadyForReplication() const { return bIsReadyForReplication; }
 
 	/** Indicates that BeginPlay has been called, but EndPlay has not yet */
 	bool HasBegunPlay() const { return bHasBegunPlay; }
@@ -391,9 +412,14 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Components|Activation")
 	FActorComponentDeactivateSignature OnComponentDeactivated;
 
+#if WITH_EDITORONLY_DATA
 private:
 	UPROPERTY()
-	TArray<FSimpleMemberReference> UCSModifiedProperties;
+	TArray<FSimpleMemberReference> UCSModifiedProperties_DEPRECATED;
+#endif
+
+	static FRWLock AllUCSModifiedPropertiesLock;
+	static TMap<UActorComponent*, TArray<FSimpleMemberReference>> AllUCSModifiedProperties;
 
 public:
 	/**
@@ -463,14 +489,47 @@ public:
 		return bReplicates;
 	}
 
-	/** Allows a component to replicate other subobject on the actor  */
+	/** 
+	* Allows a component to replicate other subobject on the actor.
+	* Must return true if any data gets serialized into the bunch.
+	* This method is used only when bReplicateUsingRegisteredSubObjectList is false.
+	* Otherwise this function is not called and only the ReplicatedSubObjects list is used.
+	*/
 	virtual bool ReplicateSubobjects(class UActorChannel *Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags);
+
+	/** 
+	* Returns if this component is replicating subobjects via the registration list or via the virtual ReplicateSubObjects method.
+	* Note: the owning actor of this component must also have it's bReplicateUsingRegisteredSubObjectList flag set to true.
+	*/
+	bool IsUsingRegisteredSubObjectList() const { return bReplicateUsingRegisteredSubObjectList; }
+
+	/** Returns the replication condition for the component. Only works if the actor owning the component has bReplicateUsingRegisteredSubObjectList enabled. */
+	virtual ELifetimeCondition GetReplicationCondition() const { return GetIsReplicated() ? COND_None : COND_Never;  }
 
 	/** Called on the component right before replication occurs */
 	virtual void PreReplication(IRepChangedPropertyTracker & ChangedPropertyTracker);
 
 	/** Returns true if this type of component can ever replicate, override to disable the default behavior */
 	virtual bool GetComponentClassCanReplicate() const;
+
+	/**
+	* Register a SubObject that will get replicated along with the actor component.
+	* The subobject needs to be manually removed from the list before it gets deleted.
+	* @param SubObject The subobject to replicate
+	* @param NetCondition Optional condition to select which type of connection we will replicate the object to.
+	*/
+	void AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition = COND_None);
+
+	/**
+	* Unregister a SubObject so it stops being replicated.
+	* @param SubObject The subobject to remove
+	*/
+	void RemoveReplicatedSubObject(UObject* SubObject);
+
+	/**
+	* Tells if the object is registered to be replicated by this actor component.
+	*/
+	bool IsReplicatedSubObjectRegistered(const UObject* SubObject) const;
 
 #if WITH_EDITORONLY_DATA
 	/** Returns whether this component is an editor-only object or not */
@@ -529,6 +588,17 @@ public:
 
 	/** Allows components to wait on outstanding tasks prior to sending EOF update data. Executed on Game Thread and may await tasks. */
 	virtual void OnPreEndOfFrameSync() {}
+
+#if UE_WITH_IRIS
+	/** Register all replication fragments */
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+	
+	/** Called when we want to start replicating this component */
+	virtual void BeginReplication();
+
+	/** Tell component to end replication */
+	virtual void EndReplication();
+#endif // UE_WITH_IRIS
 
 private:
 	/** Cached pointer to owning actor */
@@ -629,6 +699,15 @@ public:
 	virtual void InitializeComponent();
 
 	/**
+	 * ReadyForReplication gets called on replicated components when their owning actor is officially ready for replication.
+	 * Called after InitializeComponent but before BeginPlay. From there it will only be set false when the component is destroyed.
+	 * This is where you want to register your replicated subobjects if you already possess some. 
+	 * A component can get replicated before HasBegunPlay() is true if inside a tick or in BeginPlay() an RPC is called on it.
+	 * Requires component to be registered, initialized and set to replicate.
+	 */
+	virtual void ReadyForReplication();
+
+	/**
 	 * Begins Play for the component. 
 	 * Called when the owning Actor begins play or when the component is created if the Actor has already begun play.
 	 * Actor BeginPlay normally happens right after PostInitializeComponents but can be delayed for networked or child actors.
@@ -675,6 +754,15 @@ public:
 	 * @param ThisTickFunction - Internal tick function struct that caused this to run
 	 */
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction);
+
+	/**
+	 * Override this function to implement custom logic to be executed every physics step.
+	 * Only executes if the component is registered, and also bAsyncPhysicsTick must be set to true.
+	 *	
+	 * @param DeltaTime - The sim time associated with each step
+	 * @param SimTime - This is the total sim time since the sim began
+	 */
+	virtual void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) { ReceiveAsyncPhysicsTick(DeltaTime, SimTime); }
 	
 	/** 
 	 * Set up a tick function for a component in the standard way. 
@@ -786,6 +874,11 @@ public:
 	 * externally generated HLODs.
 	 */
 	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const { return nullptr; }
+
+	/**
+	 * Add properties to the component owner's actor desc.
+	 */
+	virtual void GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const {}
 #endif // WITH_EDITOR
 
 	/**
@@ -904,6 +997,7 @@ public:
 	virtual bool Rename( const TCHAR* NewName=NULL, UObject* NewOuter=NULL, ERenameFlags Flags=REN_None ) override;
 	virtual void PostRename(UObject* OldOuter, const FName OldName) override;
 	virtual void Serialize(FArchive& Ar) override;
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 #if WITH_EDITOR
 	virtual bool Modify( bool bAlwaysMarkDirty = true ) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
@@ -990,6 +1084,10 @@ public:
 	/** Event called every frame if tick is enabled */
 	UFUNCTION(BlueprintImplementableEvent, meta=(DisplayName = "Tick"))
 	void ReceiveTick(float DeltaSeconds);
+
+	/** Event called every async physics tick if bAsyncPhysicsTickEnabled is true */
+	UFUNCTION(BlueprintImplementableEvent, meta = (DisplayName = "Async Physics Tick"))
+	void ReceiveAsyncPhysicsTick(float DeltaSeconds, float SimSeconds);
 	
 	/** 
 	 *  Called by owner actor on position shifting
@@ -1027,6 +1125,9 @@ protected:
 	 *		already been registered. Setting bForceUpdate to true overrides that check */
 	void HandleCanEverAffectNavigationChange(bool bForceUpdate = false);
 
+	/** Sets bAsyncPhysicsTickEnabled which determines whether to use use the async physics tick with this component. */
+	void SetAsyncPhysicsTickEnabled(bool bEnabled);
+
 private:
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** This is the old name of the tick function. We just want to avoid mistakes with an attempt to override this */
@@ -1035,9 +1136,10 @@ private:
 
 	void ClearNeedEndOfFrameUpdate_Internal();
 
+	void RegisterAsyncPhysicsTickEnabled(bool bRegister);
+
 	friend struct FMarkComponentEndOfFrameUpdateState;
 	friend struct FSetUCSSerializationIndex;
-	friend struct FActorComponentInstanceData;
 	friend class FActorComponentDetails;
 	friend class FComponentReregisterContextBase;
 	friend class FComponentRecreateRenderStateContext;

@@ -15,6 +15,7 @@
 
 // *** enable/disable LLM here ***
 #if !defined(ENABLE_LOW_LEVEL_MEM_TRACKER) || !LLM_ENABLED_ON_PLATFORM 
+	#undef ENABLE_LOW_LEVEL_MEM_TRACKER
 	#define ENABLE_LOW_LEVEL_MEM_TRACKER (LLM_ENABLED_ON_PLATFORM && !UE_BUILD_SHIPPING && (!UE_BUILD_TEST || ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST) && WITH_ENGINE && 1)
 #endif
 
@@ -42,9 +43,14 @@
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
 #include "HAL/CriticalSection.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
 #include "Templates/AlignmentTemplates.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+#include <atomic>
 
 #if DO_CHECK
 
@@ -119,6 +125,7 @@ enum class ELLMTagSet : uint8
 	Max,	// note: check out FLowLevelMemTracker::ShouldReduceThreads and IsAssetTagForAssets if you add any asset-style tagsets
 };
 
+// Do not add to these macros. Please use the LLM_DECLARE_TAG family of macros below to create new tags.
 #define LLM_ENUM_GENERIC_TAGS(macro) \
 	macro(Untagged,								"Untagged",						NAME_None,													NAME_None,										-1)\
 	macro(Paused,								"Paused",						NAME_None,													NAME_None,										-1)\
@@ -164,7 +171,7 @@ enum class ELLMTagSet : uint8
 	macro(AudioSynthesis,						"AudioSynthesis",				GET_STATFNAME(STAT_AudioSynthesisLLM),						GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
 	macro(RealTimeCommunications,				"RealTimeCommunications",		GET_STATFNAME(STAT_RealTimeCommunicationsLLM),				NAME_None,										-1)\
 	macro(FName,								"FName",						GET_STATFNAME(STAT_FNameLLM),								GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
-	macro(Networking,							"Networking",					GET_STATFNAME(STAT_NetworkingLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	macro(Networking,							"Networking",					GET_STATFNAME(STAT_NetworkingLLM),							GET_STATFNAME(STAT_NetworkingSummaryLLM),		-1)\
 	macro(Meshes,								"Meshes",						GET_STATFNAME(STAT_MeshesLLM),								GET_STATFNAME(STAT_MeshesSummaryLLM),			-1)\
 	macro(Stats,								"Stats",						GET_STATFNAME(STAT_StatsLLM),								GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(Shaders,								"Shaders",						GET_STATFNAME(STAT_ShadersLLM),								GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
@@ -223,7 +230,7 @@ enum class ELLMTagSet : uint8
 	macro(ConfigSystem,							"ConfigSystem",					GET_STATFNAME(STAT_ConfigSystemLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(InitUObject,							"InitUObject",					GET_STATFNAME(STAT_InitUObjectLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(VideoRecording,						"VideoRecording",				GET_STATFNAME(STAT_VideoRecordingLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
-	macro(Replays,								"Replays",						GET_STATFNAME(STAT_ReplaysLLM),								GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	macro(Replays,								"Replays",						GET_STATFNAME(STAT_ReplaysLLM),								GET_STATFNAME(STAT_NetworkingSummaryLLM),		ELLMTag::Networking)\
 	macro(MaterialInstance,						"MaterialInstance",				GET_STATFNAME(STAT_MaterialInstanceLLM),					GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(SkeletalMesh,							"SkeletalMesh",					GET_STATFNAME(STAT_SkeletalMeshLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			ELLMTag::Meshes)\
 	macro(InstancedMesh,						"InstancedMesh",				GET_STATFNAME(STAT_InstancedMeshLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			ELLMTag::Meshes)\
@@ -249,7 +256,7 @@ enum class ELLMTag : LLM_TAG_TYPE
 
 	//------------------------------
 	// Platform tags
-	PlatformTagStart = 108,
+	PlatformTagStart = 111,
 	PlatformTagEnd = 149,
 
 	//------------------------------
@@ -259,7 +266,7 @@ enum class ELLMTag : LLM_TAG_TYPE
 
 	// anything above this value is treated as an FName for a stat section
 };
-static_assert( ELLMTag::GenericTagCount <= ELLMTag::PlatformTagStart, "too many LLM tags defined"); 
+static_assert( ELLMTag::GenericTagCount <= ELLMTag::PlatformTagStart, "too many LLM tags defined -- Instead of adding a new tag and updating the limits, please use the LLM_DECLARE_TAG macros below"); 
 
 static constexpr uint32 LLM_TAG_COUNT = 256;
 static constexpr uint32 LLM_CUSTOM_TAG_START = (int32)ELLMTag::PlatformTagStart;
@@ -351,6 +358,9 @@ extern FName LLMGetTagStat(ELLMTag Tag);
 #define LLM_DECLARE_TAG(UniqueNameWithUnderscores) extern FLLMTagDeclaration PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores)
 #define LLM_DECLARE_TAG_API(UniqueNameWithUnderscores, ModuleAPI) extern ModuleAPI FLLMTagDeclaration PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores)
 
+/** Get the unique Name of a Tag, suitable for passing to LLM functions such as OnLowLevelAlloc that take a Tag UniqueName. */
+#define LLM_TAG_NAME(UniqueNameWithUnderscores) (PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores).GetUniqueName())
+
 /**
  * The BootStrap versions of LLM_DEFINE_TAG, LLM_SCOPE_BYTAG, and LLM_DECLARE_TAG support use in scopes during global
  * c++ constructors, before Main. These tags are slightly more expensive (even when LLM is disabled) in all
@@ -377,19 +387,19 @@ namespace UE
 namespace LLMPrivate
 {
 
-	class FTagData;
-	class FTagDataArray;
-	class FTagDataNameMap;
+	class FLLMCsvProfilerWriter;
 	class FLLMCsvWriter;
 	class FLLMThreadState;
 	class FLLMTraceWriter;
-	class FLLMCsvProfilerWriter;
 	class FLLMTracker;
+	class FTagData;
+	class FTagDataArray;
+	class FTagDataNameMap;
 
 	namespace AllocatorPrivate
 	{
-		struct FPage;
 		struct FBin;
+		struct FPage;
 	}
 	/**
 	 * The allocator LLM uses to allocate internal memory. Uses platform defined
@@ -461,7 +471,8 @@ namespace LLMPrivate
 		Declare,
 		EnumTag,
 		CustomEnumTag,
-		FunctionAPI
+		FunctionAPI,
+		ImplicitParent
 	};
 }
 }
@@ -546,25 +557,53 @@ public:
 	void RegisterPlatformTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
 	void RegisterProjectTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
     
+	// Get all tags being tracked
+	TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags();
+
+	// Get all tags being tracked by the given tracker
+	TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags(ELLMTracker Tracker);
+
 	// look up the ELLMTag associated with the given display name
-	bool FindTagByName( const TCHAR* Name, uint64& OutTag ) const;
+	bool FindTagByName(const TCHAR* Name, uint64& OutTag) const;
 
 	UE_DEPRECATED(4.27, "Use FindTagDisplayName instead")
 	const TCHAR* FindTagName(uint64 Tag) const;
+
 	// get the display name for the given ELLMTag
 	FName FindTagDisplayName(uint64 Tag) const;
 
+	// Get the display name for the given FTagData
+	FName GetTagDisplayName(const UE::LLMPrivate::FTagData* TagData) const;
+
+	// Get the path name for the given FTagData from a chain of its parents' display names
+	FString GetTagDisplayPathName(const UE::LLMPrivate::FTagData* TagData) const;
+
+	// Get the unique identifier name for the given FTagData
+	FName GetTagUniqueName(const UE::LLMPrivate::FTagData* TagData) const;
+
 	// Get the amount of memory for an ELLMTag from the given tracker
-	int64 GetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag);
+	int64 GetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, bool bPeakAmount = false);
+
+	// Get the amount of memory for a FTagData from the given tracker
+	int64 GetTagAmountForTracker(ELLMTracker Tracker, const UE::LLMPrivate::FTagData* TagData, bool bPeakAmount = false);
 
 	// Set the amount of memory for an ELLMTag for a given tracker, optionally updating the total tracked memory too
-	void SetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, int64 Amount, bool bAddToTotal );
+	void SetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, int64 Amount, bool bAddToTotal);
 
 	// Dump the display name of the current TagData for the given tracker to the output
-	uint64 DumpTag( ELLMTracker Tracker, const char* FileName, int LineNumber );
+	uint64 DumpTag(ELLMTracker Tracker, const char* FileName, int LineNumber);
 
 	// Publishes the active LLM stats in the active frame, useful for single targeted LLM snapshots
 	void PublishDataSingleFrame();
+
+	enum class EDumpFormat
+	{
+		PlainText,
+		CSV,
+	};
+	void DumpToLog(EDumpFormat DumpFormat = EDumpFormat::PlainText, FOutputDevice* OutputDevice = nullptr);
+
+	void OnPreFork();
 
 private:
 	FLowLevelMemTracker();

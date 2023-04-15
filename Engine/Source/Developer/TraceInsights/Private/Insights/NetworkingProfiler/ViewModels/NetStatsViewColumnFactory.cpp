@@ -144,7 +144,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateLevelColumn
 	Column.SetDescription(LOCTEXT("Level_ColumnDesc", "Level of net event instances"));
 
 	Column.SetFlags(ETableColumnFlags::CanBeHidden |
-					ETableColumnFlags::ShouldBeVisible |
+					//ETableColumnFlags::ShouldBeVisible |
 					ETableColumnFlags::CanBeFiltered);
 
 	Column.SetHorizontalAlignment(HAlign_Right);
@@ -217,6 +217,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateInstanceCou
 	//TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FNetEventNodeSortingByInstanceCount>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -266,6 +267,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateTotalInclus
 	//TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FNetEventNodeSortingByTotalInclusiveSize>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -284,7 +286,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateMaxInclusiv
 	Column.SetDescription(LOCTEXT("MaxInclusive_ColumnDesc", "Maximum inclusive size (bits) of selected net event instances"));
 
 	Column.SetFlags(ETableColumnFlags::CanBeHidden |
-					//ETableColumnFlags::ShouldBeVisible |
+					ETableColumnFlags::ShouldBeVisible |
 					ETableColumnFlags::CanBeFiltered);
 
 	Column.SetHorizontalAlignment(HAlign_Right);
@@ -311,6 +313,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateMaxInclusiv
 
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -329,7 +332,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateAverageIncl
 	Column.SetDescription(LOCTEXT("AvgInclusive_ColumnDesc", "Average inclusive size (bits) of selected net event instances"));
 
 	Column.SetFlags(ETableColumnFlags::CanBeHidden |
-					//ETableColumnFlags::ShouldBeVisible |
+					ETableColumnFlags::ShouldBeVisible |
 					ETableColumnFlags::CanBeFiltered);
 
 	Column.SetHorizontalAlignment(HAlign_Right);
@@ -356,6 +359,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateAverageIncl
 
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -405,6 +409,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateTotalExclus
 	//TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value(ColumnRef));
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FNetEventNodeSortingByTotalExclusiveSize>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -423,7 +428,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateMaxExclusiv
 	Column.SetDescription(LOCTEXT("MaxExclusive_ColumnDesc", "Maximum exclusive size (bits) of selected net event instances"));
 
 	Column.SetFlags(ETableColumnFlags::CanBeHidden |
-					//ETableColumnFlags::ShouldBeVisible |
+					ETableColumnFlags::ShouldBeVisible |
 					ETableColumnFlags::CanBeFiltered);
 
 	Column.SetHorizontalAlignment(HAlign_Right);
@@ -450,6 +455,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateMaxExclusiv
 
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }
@@ -496,6 +502,7 @@ TSharedRef<Insights::FTableColumn> FNetStatsViewColumnFactory::CreateAverageExcl
 
 	TSharedRef<ITableCellValueSorter> Sorter = MakeShared<FSorterByInt64Value>(ColumnRef);
 	Column.SetValueSorter(Sorter);
+	Column.SetInitialSortMode(EColumnSortMode::Descending);
 
 	return ColumnRef;
 }

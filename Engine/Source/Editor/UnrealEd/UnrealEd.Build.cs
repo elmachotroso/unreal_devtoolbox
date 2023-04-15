@@ -7,20 +7,17 @@ public class UnrealEd : ModuleRules
 {
 	public UnrealEd(ReadOnlyTargetRules Target) : base(Target)
 	{
-		if(Target.Type != TargetType.Editor)
+		if(!Target.bCompileAgainstEditor)
 		{
 			throw new BuildException("Unable to instantiate UnrealEd module for non-editor targets.");
 		}
 
 		PrivatePCHHeaderFile = "Private/UnrealEdPrivatePCH.h";
-
 		SharedPCHHeaderFile = "Public/UnrealEdSharedPCH.h";
 
 		PrivateIncludePaths.AddRange(
 			new string[]
 			{
-				"Editor/UnrealEd/Private",
-				"Editor/UnrealEd/Private/Settings",
 				"Editor/PackagesDialog/Public",
 				"Developer/TargetPlatform/Public",
 			}
@@ -52,7 +49,6 @@ public class UnrealEd : ModuleRules
 				"AudioEditor",
 				"ViewportSnapping",
 				"SourceCodeAccess",
-				"IntroTutorials",
 				"OutputLog",
 				"Landscape",
 				"LocalizationService",
@@ -70,7 +66,13 @@ public class UnrealEd : ModuleRules
 				"VirtualTexturingEditor",
 				"TextureBuild",
 				"ToolWidgets",
-				"CSVtoSVG"
+				"CSVtoSVG",
+				"HotReload",
+				"StaticMeshEditor",
+				"WorkspaceMenuStructure",
+				"LandscapeEditor",
+				"Blutility",
+				"SlateReflector"
 			}
 		);
 
@@ -89,7 +91,6 @@ public class UnrealEd : ModuleRules
 				"Slate",
 				"SlateCore",
 				"EditorFramework",
-				"EditorStyle",
 				"SourceControl",
 				"UncontrolledChangelists",
 				"UnrealEdMessages",
@@ -126,6 +127,7 @@ public class UnrealEd : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"ImageCore",
 				"AssetRegistry",
 				"AssetTagsEditor",
 				"BSPUtils",
@@ -136,10 +138,11 @@ public class UnrealEd : ModuleRules
 				"CinematicCamera",
 				"CurveEditor",
 				"ContentBrowserData",
+				"DataLayerEditor",
 				"DerivedDataCache",
+				"Zen",
 				"DesktopPlatform",
 				"LauncherPlatform",
-				"EditorStyle",
 				"EngineSettings",
 				"IESFile",
 				"ImageWrapper",
@@ -212,7 +215,9 @@ public class UnrealEd : ModuleRules
 				"AnimationBlueprintLibrary",
 				"MaterialBaking",
 				"CookOnTheFly",
+				"CookOnTheFlyNetServer",
 				"Zen",
+				"BuildSettings",
 			}
 		);
 
@@ -244,7 +249,6 @@ public class UnrealEd : ModuleRules
 				"SettingsEditor",
 				"StringTableEditor",
 				"Blutility",
-				"IntroTutorials",
 				"WorkspaceMenuStructure",
 				"PlacementMode",
 				"MeshUtilities",
@@ -265,6 +269,8 @@ public class UnrealEd : ModuleRules
 				"VirtualTexturingEditor",
 				"WorldPartitionEditor",
 				"CSVtoSVG",
+				"SourceControlWindowExtender",
+				"AnimationSettings"
 			}
 		);
 
@@ -316,6 +322,7 @@ public class UnrealEd : ModuleRules
 				"AssetRegistry",
 				"AssetTagsEditor",
 				"CollectionManager",
+				"ContentBrowser",
 				"BlueprintGraph",
 				"AddContentDialog",
 				"MeshUtilities",
@@ -327,6 +334,8 @@ public class UnrealEd : ModuleRules
 				"Engine",
 				"SourceControl",
 				"UncontrolledChangelists",
+				"PropertyEditor",
+				"ClassViewer",
 			}
 		);
 

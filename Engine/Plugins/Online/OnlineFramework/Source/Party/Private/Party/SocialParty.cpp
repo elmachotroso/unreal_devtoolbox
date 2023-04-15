@@ -16,6 +16,8 @@
 #include "GameFramework/PlayerState.h"
 #include "Interfaces/OnlinePartyInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SocialParty)
+
 //////////////////////////////////////////////////////////////////////////
 // FPartyRepData
 //////////////////////////////////////////////////////////////////////////
@@ -133,6 +135,7 @@ ECrossplayPreference GetCrossplayPreferenceFromJoinData(const FOnlinePartyData& 
 	return ECrossplayPreference::NoSelection;
 }
 
+// DEPRECATED - Use the new join in progress flow with USocialParty::RequestJoinInProgress.
 FPartyJoinApproval USocialParty::EvaluateJIPRequest(const FUniqueNetId& PlayerId) const
 {
 	FPartyJoinApproval JoinApproval;
@@ -318,7 +321,7 @@ bool USocialParty::IsInviteRateLimited(const USocialUser& User, ESocialSubsystem
 	return false;
 }
 
-bool USocialParty::TryInviteUser(const USocialUser& UserToInvite, const ESocialPartyInviteMethod InviteMethod)
+bool USocialParty::TryInviteUser(const USocialUser& UserToInvite, const ESocialPartyInviteMethod InviteMethod, const FString& MetaData)
 {
 	bool bSentInvite = false;
 	ESocialPartyInviteFailureReason CanInviteResult = CanInviteUserInternal(UserToInvite);
@@ -369,8 +372,9 @@ bool USocialParty::TryInviteUser(const USocialUser& UserToInvite, const ESocialP
 		if ((!bSentInvite || bMustSendPrimaryInvite) && UserPrimaryId.IsValid() && !IsInviteRateLimited(UserToInvite, ESocialSubsystem::Primary))
 		{
 			// Primary subsystem invites can be sent directly to the user via the party interface
+			const FPartyInvitationRecipient Recipient(*UserPrimaryId, MetaData);
 			const IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-			const bool bSentPrimaryInvite = PartyInterface->SendInvitation(*OwningLocalUserId, GetPartyId(), *UserPrimaryId);
+			const bool bSentPrimaryInvite = PartyInterface->SendInvitation(*OwningLocalUserId, GetPartyId(), Recipient);
 			ESocialPartyInviteFailureReason FailureReason = bSentPrimaryInvite ? ESocialPartyInviteFailureReason::Success : ESocialPartyInviteFailureReason::PartyInviteFailed;
 			OnInviteSentInternal(ESocialSubsystem::Primary, UserToInvite, bSentPrimaryInvite, FailureReason, InviteMethod);
 			bSentInvite |= bSentPrimaryInvite;
@@ -468,21 +472,26 @@ void USocialParty::InitializeParty(const TSharedRef<const FOnlineParty>& InOssPa
 
 void USocialParty::InitializePartyInternal()
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialParty_InitializePartyInternal);
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 	PartyInterface->AddOnPartyConfigChangedDelegate_Handle(FOnPartyConfigChangedDelegate::CreateUObject(this, &USocialParty::HandlePartyConfigChanged));
 	PartyInterface->AddOnPartyDataReceivedDelegate_Handle(FOnPartyDataReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyDataReceived));
 	PartyInterface->AddOnPartyJoinRequestReceivedDelegate_Handle(FOnPartyJoinRequestReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyJoinRequestReceived));
-	PartyInterface->AddOnPartyJIPRequestReceivedDelegate_Handle(FOnPartyJIPRequestReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyJIPRequestReceived));
 	PartyInterface->AddOnQueryPartyJoinabilityReceivedDelegate_Handle(FOnQueryPartyJoinabilityReceivedDelegate::CreateUObject(this, &USocialParty::HandleJoinabilityQueryReceived));
 	PartyInterface->AddOnPartyExitedDelegate_Handle(FOnPartyExitedDelegate::CreateUObject(this, &USocialParty::HandlePartyLeft));
 	PartyInterface->AddOnPartyStateChangedDelegate_Handle(FOnPartyStateChangedDelegate::CreateUObject(this, &USocialParty::HandlePartyStateChanged));
 
 	PartyInterface->AddOnPartyMemberJoinedDelegate_Handle(FOnPartyMemberJoinedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJoined));
-	PartyInterface->AddOnPartyJIPResponseDelegate_Handle(FOnPartyJIPResponseDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJIP));
 	PartyInterface->AddOnPartyMemberDataReceivedDelegate_Handle(FOnPartyMemberDataReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberDataReceived));
 	PartyInterface->AddOnPartyMemberPromotedDelegate_Handle(FOnPartyMemberPromotedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberPromoted));
 	PartyInterface->AddOnPartyMemberExitedDelegate_Handle(FOnPartyMemberExitedDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberExited));
 	PartyInterface->AddOnPartySystemStateChangeDelegate_Handle(FOnPartySystemStateChangeDelegate::CreateUObject(this, &USocialParty::HandlePartySystemStateChange));
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	PartyInterface->AddOnPartyJIPRequestReceivedDelegate_Handle(FOnPartyJIPRequestReceivedDelegate::CreateUObject(this, &USocialParty::HandlePartyJIPRequestReceived));
+	PartyInterface->AddOnPartyJIPResponseDelegate_Handle(FOnPartyJIPResponseDelegate::CreateUObject(this, &USocialParty::HandlePartyMemberJIP));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	// Create a UPartyMember for every existing member on the OSS party
 	TArray<FOnlinePartyMemberConstRef> OssPartyMembers;
 	PartyInterface->GetPartyMembers(*OwningLocalUserId, GetPartyId(), OssPartyMembers);
@@ -683,7 +692,7 @@ UPartyMember* USocialParty::GetOrCreatePartyMember(const FUniqueNetId& MemberId)
 	if (ensure(MemberId.IsValid()))
 	{
 		const FUniqueNetIdRepl MemberIdRepl(MemberId.AsShared());
-		if (UPartyMember** ExistingMember = PartyMembersById.Find(MemberIdRepl))
+		if (TObjectPtr<UPartyMember>* ExistingMember = PartyMembersById.Find(MemberIdRepl))
 		{
 			PartyMember = *ExistingMember;
 		}
@@ -755,7 +764,7 @@ void USocialParty::HandlePartyJoinRequestReceived(const FUniqueNetId& LocalUserI
 		PendingApproval.bIsJIPApproval = false;
 		PendingApprovals.Enqueue(PendingApproval);
 
-		if (!ReservationBeaconClient && JoinApproval.GetApprovalAction() == EApprovalAction::EnqueueAndStartBeacon)
+		if (!ReservationBeaconClient.Get() && JoinApproval.GetApprovalAction() == EApprovalAction::EnqueueAndStartBeacon)
 		{
 			ConnectToReservationBeacon();
 		}
@@ -795,12 +804,13 @@ void USocialParty::RemovePlayerFromReservationBeacon(const FUniqueNetId& LocalUs
 	PendingApprovals.Enqueue(PendingApproval);
 
 
-	if (!ReservationBeaconClient)
+	if (!ReservationBeaconClient.Get())
 	{
 		ConnectToReservationBeacon();
 	}
 }
 
+// DEPRECATED - Use the new join in progress flow with USocialParty::RequestJoinInProgress.
 void USocialParty::HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& SenderId)
 {
 	if (!IsLocalPlayerPartyLeader() || PartyId != GetPartyId())
@@ -809,8 +819,10 @@ void USocialParty::HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId
 	}
 
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-	
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FPartyJoinApproval JoinApproval = EvaluateJIPRequest(SenderId);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	if (JoinApproval.GetApprovalAction() == EApprovalAction::Enqueue ||
 		JoinApproval.GetApprovalAction() == EApprovalAction::EnqueueAndStartBeacon)
@@ -834,7 +846,7 @@ void USocialParty::HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId
 		PendingApproval.bIsJIPApproval = true;
 		PendingApprovals.Enqueue(MoveTemp(PendingApproval));
 
-		if (!ReservationBeaconClient && JoinApproval.GetApprovalAction() == EApprovalAction::EnqueueAndStartBeacon)
+		if (!ReservationBeaconClient.Get() && JoinApproval.GetApprovalAction() == EApprovalAction::EnqueueAndStartBeacon)
 		{
 			ConnectToReservationBeacon();
 		}
@@ -844,10 +856,11 @@ void USocialParty::HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId
 		const bool bIsApproved = JoinApproval.CanJoin();
 		UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with %s"), *PartyId.ToString(), *SenderId.ToString(), bIsApproved ? TEXT("approved") : TEXT("denied"));
 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		PartyInterface->ApproveJIPRequest(LocalUserId, PartyId, SenderId, bIsApproved, JoinApproval.GetDenialReason());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
-
 
 void USocialParty::HandleJoinabilityQueryReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const IOnlinePartyPendingJoinRequestInfo& JoinRequestInfo)
 {
@@ -940,6 +953,7 @@ void USocialParty::HandlePartyMemberJoined(const FUniqueNetId& LocalUserId, cons
 	}
 }
 
+// DEPRECATED - Use the new join in progress flow with USocialParty::RequestJoinInProgress.
 void USocialParty::HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success, int32 DeniedResultCode)
 {
 	if (PartyId == GetPartyId())
@@ -1005,9 +1019,11 @@ void USocialParty::HandleMemberInitialized(UPartyMember* Member)
 	{
 		Member->GetRepData().OnPlatformDataUniqueIdChanged().AddUObject(this, &USocialParty::HandleMemberPlatformUniqueIdChanged, Member);
 		Member->GetRepData().OnPlatformDataSessionIdChanged().AddUObject(this, &USocialParty::HandleMemberSessionIdChanged, Member);
-
 		HandleMemberPlatformUniqueIdChanged(Member->GetRepData().GetPlatformDataUniqueId(), Member);
 	}
+
+	Member->GetRepData().OnJoinInProgressDataRequestChanged().AddUObject(this, &USocialParty::HandleJoinInProgressDataRequestChanged, Member);
+	Member->GetRepData().OnJoinInProgressDataResponsesChanged().AddUObject(this, &USocialParty::HandleJoinInProgressDataResponsesChanged, Member);
 }
 
 void USocialParty::HandleMemberPlatformUniqueIdChanged(const FUniqueNetIdRepl& NewPlatformUniqueId, UPartyMember* Member)
@@ -1146,7 +1162,7 @@ void USocialParty::HandlePartyMemberExited(const FUniqueNetId& LocalUserId, cons
 {
 	if (PartyId == GetPartyId())
 	{
-		if (UPartyMember** FoundPartyMember = PartyMembersById.Find(MemberId.AsShared()))
+		if (TObjectPtr<UPartyMember>* FoundPartyMember = PartyMembersById.Find(MemberId.AsShared()))
 		{
 			if (LocalUserId == MemberId)
 			{
@@ -1347,7 +1363,7 @@ void USocialParty::UpdatePartyConfig(bool bResetAccessKey)
 
 UPartyMember* USocialParty::GetMemberInternal(const FUniqueNetIdRepl& MemberId) const
 {
-	UPartyMember* const* Member = PartyMembersById.Find(MemberId);
+	TObjectPtr<UPartyMember> const* Member = PartyMembersById.Find(MemberId);
 	return Member ? *Member : nullptr;
 }
 
@@ -1441,7 +1457,8 @@ bool USocialParty::IsPartyLeaderLocal() const
 bool USocialParty::IsNetDriverFromReservationBeacon(const UNetDriver* const InNetDriver) const
 {
 	const FName NetDriverName = InNetDriver->NetDriverName;
-	return (ReservationBeaconClient && NetDriverName == ReservationBeaconClient->GetNetDriverName()) || (NetDriverName == LastReservationBeaconClientNetDriverName);
+	APartyBeaconClient* LocalReservationBeaconClient = ReservationBeaconClient.Get();
+	return (LocalReservationBeaconClient && NetDriverName == LocalReservationBeaconClient->GetNetDriverName()) || (NetDriverName == LastReservationBeaconClientNetDriverName);
 }
 
 FString USocialParty::ToDebugString() const
@@ -1470,8 +1487,14 @@ TSubclassOf<UPartyMember> USocialParty::GetDesiredMemberClass(bool bLocalPlayer)
 	return UPartyMember::StaticClass();
 }
 
+bool USocialParty::InitializeBeaconEncryptionData(AOnlineBeaconClient& BeaconClient, const FString& SessionId)
+{
+	return true;
+}
+
 void USocialParty::HandlePartyStateChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EPartyState PartyState, EPartyState PreviousPartyState)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialParty_HandlePartyStateChanged);
 	if (PartyState == EPartyState::Disconnected)
 	{
 		// If we transition to the disconnected state, then we are lacking an XMPP connection (or logged out of MCP?)
@@ -1487,7 +1510,8 @@ void USocialParty::HandlePartyStateChanged(const FUniqueNetId& LocalUserId, cons
 
 void USocialParty::ConnectToReservationBeacon()
 {
-	if (IsLocalPlayerPartyLeader() && !ReservationBeaconClient)
+	APartyBeaconClient* LocalReservationBeaconClient = ReservationBeaconClient.Get();
+	if (IsLocalPlayerPartyLeader() && !LocalReservationBeaconClient)
 	{
 		FPendingMemberApproval NextApproval;
 		if (PendingApprovals.Peek(NextApproval))
@@ -1509,34 +1533,40 @@ void USocialParty::ConnectToReservationBeacon()
 					if (ensure(SessionInterface->GetResolvedConnectString(PartyGameSessionName, URL, NAME_BeaconPort)))
 					{
 						// Reconnect to the reservation beacon to maintain our place in the game (just until actual joined, holds place for all party members)
-						ReservationBeaconClient = World->SpawnActor<APartyBeaconClient>(ReservationBeaconClientClass);
-						if (ReservationBeaconClient)
+						LocalReservationBeaconClient = World->SpawnActor<APartyBeaconClient>(ReservationBeaconClientClass);
+						if (LocalReservationBeaconClient)
 						{
-							UE_LOG(LogParty, Verbose, TEXT("Party [%s] created reservation beacon [%s]."), *ToDebugString(), *ReservationBeaconClient->GetName());
+							// Save as weak pointer.
+							ReservationBeaconClient = LocalReservationBeaconClient;
 
-							ReservationBeaconClient->OnHostConnectionFailure().BindUObject(this, &USocialParty::HandleBeaconHostConnectionFailed);
-							ReservationBeaconClient->OnReservationRequestComplete().BindUObject(this, &USocialParty::HandleReservationRequestComplete);
+							UE_LOG(LogParty, Verbose, TEXT("Party [%s] created reservation beacon [%s]."), *ToDebugString(), *LocalReservationBeaconClient->GetName());
 
-							TArray<FPlayerReservation> ReservationAsArray;
-							ReservationAsArray.Reserve(NextApproval.Members.Num());
-							for (const FPendingMemberApproval::FMemberInfo& MemberInfo : NextApproval.Members)
+							if (InitializeBeaconEncryptionData(*ReservationBeaconClient, Session->GetSessionIdStr()))
 							{
-								FPlayerReservation& Reservation = ReservationAsArray.Emplace_GetRef();
-								Reservation.UniqueId = MemberInfo.MemberId;
-								Reservation.Platform = MemberInfo.Platform;
+								LocalReservationBeaconClient->OnHostConnectionFailure().BindUObject(this, &USocialParty::HandleBeaconHostConnectionFailed);
+								LocalReservationBeaconClient->OnReservationRequestComplete().BindUObject(this, &USocialParty::HandleReservationRequestComplete);
 
-								if (!NextApproval.bIsJIPApproval && MemberInfo.JoinData.IsValid())
+								TArray<FPlayerReservation> ReservationAsArray;
+								ReservationAsArray.Reserve(NextApproval.Members.Num());
+								for (const FPendingMemberApproval::FMemberInfo& MemberInfo : NextApproval.Members)
 								{
-									const ECrossplayPreference CrossplayPreference = GetCrossplayPreferenceFromJoinData(*MemberInfo.JoinData);
-									Reservation.bAllowCrossplay = (CrossplayPreference == ECrossplayPreference::OptedIn);
+									FPlayerReservation& Reservation = ReservationAsArray.Emplace_GetRef();
+									Reservation.UniqueId = MemberInfo.MemberId;
+									Reservation.Platform = MemberInfo.Platform;
+
+									if (!NextApproval.bIsJIPApproval && MemberInfo.JoinData.IsValid())
+									{
+										const ECrossplayPreference CrossplayPreference = GetCrossplayPreferenceFromJoinData(*MemberInfo.JoinData);
+										Reservation.bAllowCrossplay = (CrossplayPreference == ECrossplayPreference::OptedIn);
+									}
+									else
+									{
+										Reservation.bAllowCrossplay = true; // This will not matter since we are JIP, and the session already has crossplay set.
+									}
 								}
-								else
-								{
-									Reservation.bAllowCrossplay = true; // This will not matter since we are JIP, and the session already has crossplay set.
-								}
+
+								bStartedConnection = ReservationBeaconClient->RequestReservationUpdate(URL, Session->GetSessionIdStr(), GetPartyLeader()->GetPrimaryNetId(), ReservationAsArray, NextApproval.bIsPlayerRemoval);
 							}
-
-							bStartedConnection = ReservationBeaconClient->RequestReservationUpdate(URL, Session->GetSessionIdStr(), GetPartyLeader()->GetPrimaryNetId(), ReservationAsArray, NextApproval.bIsPlayerRemoval);
 						}
 					}
 				}
@@ -1563,7 +1593,11 @@ void USocialParty::RejectAllPendingJoinRequests()
 		UE_LOG(LogParty, Verbose, TEXT("[%s] Responding to approval request for %s with denied"), *PartyId.ToString(), *PrimaryJoiningUserId.ToDebugString());
 		if (PendingApproval.bIsJIPApproval)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			PartyInterface->ApproveJIPRequest(*PendingApproval.RecipientId, PartyId, PrimaryJoiningUserId, false, (int32)EPartyJoinDenialReason::Busy);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			RespondToJoinInProgressRequest(PendingApproval, EPartyJoinDenialReason::Busy);
 		}
 		else
 		{
@@ -1574,7 +1608,8 @@ void USocialParty::RejectAllPendingJoinRequests()
 
 void USocialParty::HandleBeaconHostConnectionFailed()
 {
-	UE_LOG(LogParty, Verbose, TEXT("Host connection failed for reservation beacon [%s]"), ReservationBeaconClient ? *ReservationBeaconClient->GetName() : TEXT(""));
+	APartyBeaconClient* LocalReservationBeaconClient = ReservationBeaconClient.Get();
+	UE_LOG(LogParty, Verbose, TEXT("Host connection failed for reservation beacon [%s]"), LocalReservationBeaconClient ? *LocalReservationBeaconClient->GetName() : TEXT(""));
 
 	// empty the queue, denying all requests
 	RejectAllPendingJoinRequests();
@@ -1590,7 +1625,7 @@ APartyBeaconClient* USocialParty::CreateReservationBeaconClient()
 	LastReservationBeaconClientNetDriverName = NAME_None;
 	ReservationBeaconClient = World->SpawnActor<APartyBeaconClient>(ReservationBeaconClientClass);
 	
-	return ReservationBeaconClient;
+	return ReservationBeaconClient.Get();
 }
 
 ASpectatorBeaconClient* USocialParty::CreateSpectatorBeaconClient()
@@ -1602,7 +1637,7 @@ ASpectatorBeaconClient* USocialParty::CreateSpectatorBeaconClient()
 	LastSpectatorBeaconClientNetDriverName = NAME_None;
 	SpectatorBeaconClient = World->SpawnActor<ASpectatorBeaconClient>(SpectatorBeaconClientClass);
 
-	return SpectatorBeaconClient;
+	return SpectatorBeaconClient.Get();
 }
 
 void USocialParty::PumpApprovalQueue()
@@ -1611,7 +1646,8 @@ void USocialParty::PumpApprovalQueue()
 	FPendingMemberApproval NextApproval;
 	if (PendingApprovals.Peek(NextApproval))
 	{
-		if (ensure(ReservationBeaconClient))
+		APartyBeaconClient* LocalReservationBeaconClient = ReservationBeaconClient.Get();
+		if (ensure(LocalReservationBeaconClient))
 		{
 			TArray<FPlayerReservation> PlayersToAdd;
 			PlayersToAdd.Reserve(NextApproval.Members.Num());
@@ -1634,7 +1670,7 @@ void USocialParty::PumpApprovalQueue()
 					NewPlayerRes.bAllowCrossplay = true;
 				}
 			}
-			ReservationBeaconClient->RequestReservationUpdate(GetPartyLeader()->GetPrimaryNetId(), PlayersToAdd);
+			LocalReservationBeaconClient->RequestReservationUpdate(GetPartyLeader()->GetPrimaryNetId(), PlayersToAdd);
 		}
 		else
 		{
@@ -1665,7 +1701,11 @@ void USocialParty::HandleReservationRequestComplete(EPartyReservationResult::Typ
 			if (PendingApproval.bIsJIPApproval)
 			{
 				// This player is already in our party. ApproveJIPRequest
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				PartyInterface->ApproveJIPRequest(*PendingApproval.RecipientId, GetPartyId(), *PendingApproval.Members[0].MemberId, bReservationApproved, DenialReason);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+				RespondToJoinInProgressRequest(PendingApproval, DenialReason.GetReason());
 			}
 			else if (PendingApproval.bIsPlayerRemoval)
 			{
@@ -1689,28 +1729,28 @@ void USocialParty::HandleReservationRequestComplete(EPartyReservationResult::Typ
 
 void USocialParty::CleanupReservationBeacon()
 {
-	if (ReservationBeaconClient)
+	if (APartyBeaconClient* LocalReservationBeaconClient = ReservationBeaconClient.Get())
 	{
-		UE_LOG(LogParty, Verbose, TEXT("Party reservation beacon cleanup while in state %s, pending approvals: %s"), ToString(ReservationBeaconClient->GetConnectionState()), !PendingApprovals.IsEmpty() ? TEXT("true") : TEXT("false"));
+		UE_LOG(LogParty, Verbose, TEXT("Party reservation beacon cleanup while in state %s, pending approvals: %s"), ToString(LocalReservationBeaconClient->GetConnectionState()), !PendingApprovals.IsEmpty() ? TEXT("true") : TEXT("false"));
 
-		LastReservationBeaconClientNetDriverName = ReservationBeaconClient->GetNetDriverName();
-		ReservationBeaconClient->OnHostConnectionFailure().Unbind();
-		ReservationBeaconClient->OnReservationRequestComplete().Unbind();
-		ReservationBeaconClient->DestroyBeacon();
+		LastReservationBeaconClientNetDriverName = LocalReservationBeaconClient->GetNetDriverName();
+		LocalReservationBeaconClient->OnHostConnectionFailure().Unbind();
+		LocalReservationBeaconClient->OnReservationRequestComplete().Unbind();
+		LocalReservationBeaconClient->DestroyBeacon();
 		ReservationBeaconClient = nullptr;
 	}
 }
 
 void USocialParty::CleanupSpectatorBeacon()
 {
-	if (SpectatorBeaconClient)
+	if (ASpectatorBeaconClient* LocalSpectatorBeaconClient = SpectatorBeaconClient.Get())
 	{
 		UE_LOG(LogParty, Verbose, TEXT("Spectator reservation beacon cleanup while in state %s, pending approvals: %s"), ToString(SpectatorBeaconClient->GetConnectionState()), !PendingApprovals.IsEmpty() ? TEXT("true") : TEXT("false"));
 
-		LastReservationBeaconClientNetDriverName = SpectatorBeaconClient->GetNetDriverName();
-		SpectatorBeaconClient->OnHostConnectionFailure().Unbind();
-		SpectatorBeaconClient->OnReservationRequestComplete().Unbind();
-		SpectatorBeaconClient->DestroyBeacon();
+		LastReservationBeaconClientNetDriverName = LocalSpectatorBeaconClient->GetNetDriverName();
+		LocalSpectatorBeaconClient->OnHostConnectionFailure().Unbind();
+		LocalSpectatorBeaconClient->OnReservationRequestComplete().Unbind();
+		LocalSpectatorBeaconClient->DestroyBeacon();
 		SpectatorBeaconClient = nullptr;
 	}
 }
@@ -1895,4 +1935,191 @@ bool USocialParty::ShouldAlwaysJoinPlatformSession(const FSessionId& SessionId) 
 void USocialParty::JoinSessionCompleteAnalytics(const FSessionId& SessionId, const FString& JoinBootableGroupSessionResult)
 {
 	// Work is to be done in the override
+}
+
+void USocialParty::RequestJoinInProgress(const UPartyMember& TargetMember, const FOnRequestJoinInProgressComplete& CompletionDelegate)
+{
+	// Only allow one join attempt at a time
+	if (RequestJoinInProgressComplete.IsSet())
+	{
+		UE_LOG(LogParty, Warning, TEXT("RequestJoinInProgress: Request already in progress"));
+		GetWorld()->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateLambda([CompletionDelegate]() {
+			CompletionDelegate.ExecuteIfBound(EPartyJoinDenialReason::Busy);
+		}));
+		return;
+	}
+
+	RequestJoinInProgressComplete = CompletionDelegate;
+	FPartyMemberJoinInProgressRequest Request;
+	Request.Target = TargetMember.GetPrimaryNetId();
+	Request.Time = FDateTime::UtcNow().ToUnixTimestamp();
+
+	UE_LOG(LogParty, Verbose, TEXT("RequestJoinInProgress: Sending request Target=%s Time=%d"), *Request.Target.ToDebugString(), Request.Time);
+	GetOwningLocalMember().GetMutableRepData().SetJoinInProgressDataRequest(Request);
+	RunJoinInProgressTimer();
+}
+
+void USocialParty::HandleJoinInProgressDataRequestChanged(const FPartyMemberJoinInProgressRequest& Request, UPartyMember* Member)
+{
+	if (Request.Time == 0 || !IsLocalPlayerPartyLeader())
+	{
+		// Ignore if this is not an active request or if we're not the party leader.
+		return;
+	}
+
+	const UPartyMember* TargetPartyMember = GetPartyMember(Request.Target);
+	if (!TargetPartyMember)
+	{
+		UE_LOG(LogParty, Warning, TEXT("HandleJoinInProgressDataRequestChanged: Could not find member for request Target=%s Time=%d"), *Request.Target.ToDebugString(), Request.Time);
+		return;
+	}
+
+	if (!TargetPartyMember->IsLocalPlayer())
+	{
+		// Request was not sent to us.
+		return;
+	}
+
+	UE_LOG(LogParty, Verbose, TEXT("HandleJoinInProgressDataRequestChanged: Received request Requester=%s Time=%d"), *Member->GetPrimaryNetId().ToDebugString(), Request.Time);
+	FPendingMemberApproval PendingApproval;
+	PendingApproval.RecipientId = OwningLocalUserId;
+	PendingApproval.Members.Emplace(Member->GetPrimaryNetId(), Member->GetRepData().GetPlatformDataPlatform());
+	PendingApproval.bIsJIPApproval = true;
+	PendingApproval.JoinInProgressRequestTime = Request.Time;
+	PendingApprovals.Enqueue(MoveTemp(PendingApproval));
+	if (!ReservationBeaconClient.Get())
+	{
+		ConnectToReservationBeacon();
+	}
+}
+
+void USocialParty::RespondToJoinInProgressRequest(const FPendingMemberApproval& PendingApproval, const EPartyJoinDenialReason DenialReason)
+{
+	if (PendingApproval.Members.IsEmpty() || PendingApproval.JoinInProgressRequestTime == 0)
+	{
+		return;
+	}
+
+	const UPartyMember* RequestingMember = GetPartyMember(PendingApproval.Members[0].MemberId);
+	if (!RequestingMember)
+	{
+		UE_LOG(LogParty, Warning, TEXT("RespondToJoinInProgressRequest: Could not find member for approval MemberId=%s"), *PendingApproval.Members[0].MemberId.ToDebugString());
+		return;
+	}
+
+	FPartyMemberJoinInProgressResponse Response;
+	Response.Requester = RequestingMember->GetPrimaryNetId();
+	Response.RequestTime = PendingApproval.JoinInProgressRequestTime;
+	Response.ResponseTime = FDateTime::UtcNow().ToUnixTimestamp();
+	Response.DenialReason = static_cast<uint8>(DenialReason);
+
+	UE_LOG(LogParty, Verbose, TEXT("RespondToJoinInProgressRequest: Sending response Requester=%s RequestTime=%d ResponseTime=%d DenialReason=%s"),
+		*Response.Requester.ToDebugString(), Response.RequestTime, Response.ResponseTime, ToString(DenialReason));
+	TArray<FPartyMemberJoinInProgressResponse> Responses = GetOwningLocalMember().GetRepData().GetJoinInProgressDataResponses();
+	Responses.Add(Response);
+	GetOwningLocalMember().GetMutableRepData().SetJoinInProgressDataResponses(Responses);
+	RunJoinInProgressTimer();
+}
+
+void USocialParty::HandleJoinInProgressDataResponsesChanged(const TArray<FPartyMemberJoinInProgressResponse>& Responses, UPartyMember* Member)
+{
+	if (!RequestJoinInProgressComplete.IsSet())
+	{
+		// Skip if we're not waiting for a response.
+		return;
+	}
+
+	const FPartyMemberJoinInProgressRequest Request = GetOwningLocalMember().GetRepData().GetJoinInProgressDataRequest();
+
+	for (const FPartyMemberJoinInProgressResponse& Response : Responses)
+	{
+		if (Response.RequestTime != Request.Time)
+		{
+			// Response was not for us.
+			continue;
+		}
+
+		const UPartyMember* RequestingMember = GetPartyMember(Response.Requester);
+		const EPartyJoinDenialReason DenialReason = static_cast<EPartyJoinDenialReason>(Response.DenialReason);
+
+		if (!RequestingMember)
+		{
+			UE_LOG(LogParty, Warning, TEXT("HandleJoinInProgressDataResponsesChanged: Could not find member for response Requester=%s RequestTime=%d ResponseTime=%d DenialReason=%s"),
+				*Response.Requester.ToDebugString(), Response.RequestTime, Response.ResponseTime, ToString(DenialReason));
+			continue;
+		}
+
+		if (!RequestingMember->IsLocalPlayer())
+		{
+			// Response was not for us.
+			continue;
+		}
+
+		// Responses are ordered newest first, so use the first one we find.
+		const int64 Now = FDateTime::UtcNow().ToUnixTimestamp();
+		UE_LOG(LogParty, Verbose, TEXT("HandleJoinInProgressDataResponsesChanged: Received response Requester=%s RequestTime=%d ResponseTime=%d DenialReason=%s RTT=%d"),
+			*Response.Requester.ToDebugString(), Response.RequestTime, Response.ResponseTime, ToString(DenialReason), Now - Response.RequestTime);
+		CallJoinInProgressComplete(DenialReason);
+		break;
+	}
+}
+
+void USocialParty::CallJoinInProgressComplete(const EPartyJoinDenialReason DenialReason)
+{
+	if (RequestJoinInProgressComplete.IsSet())
+	{
+		FOnRequestJoinInProgressComplete CompletionDelegate = MoveTemp(RequestJoinInProgressComplete.GetValue());
+		RequestJoinInProgressComplete.Reset();
+		CompletionDelegate.ExecuteIfBound(DenialReason);
+	}
+}
+
+void USocialParty::RunJoinInProgressTimer()
+{
+	UE_LOG(LogParty, VeryVerbose, TEXT("RunJoinInProgressTimer: Checking for stale data"));
+
+	const int64 Now = FDateTime::UtcNow().ToUnixTimestamp();
+	int64 NextTimer = 0;
+
+	FPartyMemberJoinInProgressRequest Request = GetOwningLocalMember().GetRepData().GetJoinInProgressDataRequest();
+	if (Request.Time > 0)
+	{
+		const int64 Expires = Request.Time + JoinInProgressRequestTimeout;
+		if (Expires <= Now)
+		{
+			UE_LOG(LogParty, Verbose, TEXT("RunJoinInProgressTimer: Removing request data"));
+			CallJoinInProgressComplete(EPartyJoinDenialReason::JoinAttemptAborted);
+			Request.Target = FUniqueNetIdRepl::Invalid();
+			Request.Time = 0;
+			GetOwningLocalMember().GetMutableRepData().SetJoinInProgressDataRequest(Request);
+		}
+		else
+		{
+			NextTimer = Expires - Now;
+		}
+	}
+
+	const TArray<FPartyMemberJoinInProgressResponse>& Responses = GetOwningLocalMember().GetRepData().GetJoinInProgressDataResponses();
+	TArray<FPartyMemberJoinInProgressResponse> ResponsesToKeep;
+	for (const FPartyMemberJoinInProgressResponse& Response : Responses)
+	{
+		const int64 Expires = Response.ResponseTime + JoinInProgressResponseTimeout;
+		if (Expires > Now)
+		{
+			ResponsesToKeep.Add(Response);
+			NextTimer = NextTimer ? FMath::Min(NextTimer, Expires - Now) : Expires - Now;
+		}
+	}
+
+	if (Responses.Num() != ResponsesToKeep.Num())
+	{
+		UE_LOG(LogParty, Verbose, TEXT("RunJoinInProgressTimer: Removing response data, %d remaining"), ResponsesToKeep.Num());
+		GetOwningLocalMember().GetMutableRepData().SetJoinInProgressDataResponses(ResponsesToKeep);
+	}
+
+	if (NextTimer > 0)
+	{
+		UE_LOG(LogParty, Verbose, TEXT("RunJoinInProgressTimer: Running again in %d seconds"), NextTimer);
+		GetWorld()->GetTimerManager().SetTimer(JoinInProgressTimerHandle, this, &USocialParty::RunJoinInProgressTimer, static_cast<float>(NextTimer));
+	}
 }

@@ -9,6 +9,7 @@
 #include "MetasoundFacade.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundDataTypeRegistrationMacro.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundStandardNodesCategories.h"
 #include "MetasoundStandardNodesNames.h"
@@ -223,6 +224,7 @@ namespace Metasound
 
 			void operator()(const FGeneratorArgs& InArgs)
 			{
+				float Nyquist = InArgs.SampleRate / 2.0f;
 				int32 RemainingSamplesInBlock = InArgs.AlignedBuffer.Num();
 				float* Out = InArgs.AlignedBuffer.GetData();
 				const float* FM = InArgs.FM.GetData();
@@ -236,7 +238,7 @@ namespace Metasound
 					{
 						while (RemainingSamplesInBlock > 0)
 						{
-							const float PerSampleFreq = InArgs.FrequencyHz + *FM++;
+							const float PerSampleFreq = FMath::Clamp(InArgs.FrequencyHz + *FM++, -Nyquist, Nyquist);
 							const float DeltaPhase = PerSampleFreq * OneOverSampleRate;
 
 							Wrap(Phase);
@@ -258,7 +260,7 @@ namespace Metasound
 					{
 						while (RemainingSamplesInBlock > 0)
 						{
-							const float ModulatedFreqSum = CurrentFreq + *FM++;
+							const float ModulatedFreqSum = FMath::Clamp(CurrentFreq + *FM++, -Nyquist, Nyquist);
 							const float DeltaPhase = ModulatedFreqSum * OneOverSampleRate;
 
 							Wrap(Phase);
@@ -527,39 +529,40 @@ namespace Metasound
 		using FTrianglePolysmoothWithFm = TGenerateBlockFM<FTriangleGenerator>;
 	}
 
+	namespace OscillatorCommonVertexNames
+	{
+		METASOUND_PARAM(EnabledPin, "Enabled", "Enable the oscillator.")
+		METASOUND_PARAM(BiPolarPin, "Bi Polar", "If the output is Bi-Polar (-1..1) or Uni-Polar (0..1)")
+		METASOUND_PARAM(FrequencyModPin, "Modulation","Modulation Frequency Input (for doing FM)")
+		METASOUND_PARAM(OscBaseFrequencyPin, "Frequency", "Base Frequency of Oscillator in Hz.")
+		METASOUND_PARAM(OscPhaseResetPin, "Sync", "Phase Reset")
+		METASOUND_PARAM(PhaseOffsetPin, "Phase Offset", "Phase Offset In Degrees (0..360)")
+		METASOUND_PARAM(GlideFactorPin, "Glide", "The amount of glide to use when changing frequencies. 0.0 = no glide, 1.0 = lots of glide.")
+		METASOUND_PARAM(AudioOutPin, "Audio", "The output audio")
+	}
+
 	// Base class of Oscillator factories which holds common the interface.
 	class FOscilatorFactoryBase : public IOperatorFactory
 	{
 	public:
-		// Common pins
-		static constexpr const TCHAR* EnabledPinName = TEXT("Enabled");
-		static constexpr const TCHAR* FrequencyModPinName = TEXT("Modulation");
-		static constexpr const TCHAR* BaseFrequencyPinName = TEXT("Frequency");
-		static constexpr const TCHAR* PhaseResetPinName = TEXT("Sync");
-		static constexpr const TCHAR* PhaseOffsetPinName = TEXT("Phase Offset");
-		static constexpr const TCHAR* GlideFactorPinName = TEXT("Glide");
-		static constexpr const TCHAR* AudioOutPinName = TEXT("Audio");
-		static constexpr const TCHAR* BiPolarPinName = TEXT("Bi Polar");
-		static constexpr const TCHAR* MinOutputValuePinName = TEXT("Min Value");
-		static constexpr const TCHAR* MaxOutputValuePinName = TEXT("Max Value");
-
-
 		// Common to all Oscillators.
 		static FVertexInterface GetCommmonVertexInterface()
 		{
+			using namespace OscillatorCommonVertexNames; 
+
 			static const FVertexInterface Interface
 			{
 				FInputVertexInterface{
-					TInputDataVertexModel<bool>(EnabledPinName, METASOUND_LOCTEXT("OscActivateDescription", "Enable the oscillator."), true),
-					TInputDataVertexModel<bool>(BiPolarPinName, METASOUND_LOCTEXT("OscBaseBiPolarDescription", "If the output is Bi-Polar (-1..1) or Uni-Polar (0..1)"), true),
-					TInputDataVertexModel<float>(BaseFrequencyPinName, METASOUND_LOCTEXT("OscBaseFrequencyDescription", "Base Frequency of Oscillator in HZ"), 440.f),
-					TInputDataVertexModel<FAudioBuffer>(FrequencyModPinName, METASOUND_LOCTEXT("OscModFrequencyDescription", "Modulation Frequency Input (for doing FM)")),
-					TInputDataVertexModel<FTrigger>(PhaseResetPinName, METASOUND_LOCTEXT("OscPhaseResetDescription", "Phase Reset")),
-					TInputDataVertexModel<float>(PhaseOffsetPinName, METASOUND_LOCTEXT("OscPhaseOffsetDescription", "Phase Offset In Degrees (0..360)"), 0.f),
-					TInputDataVertexModel<float>(GlideFactorPinName, METASOUND_LOCTEXT("OscGlideFactorDescription", "The amount of glide to use when changing frequencies. 0.0 = no glide, 1.0 = lots of glide."), 0.f)
+					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(EnabledPin), true),
+					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(BiPolarPin), true),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(OscBaseFrequencyPin), 440.f),
+					TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(FrequencyModPin)),
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(OscPhaseResetPin)),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(PhaseOffsetPin), 0.f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(GlideFactorPin), 0.f)
 				},
 				FOutputVertexInterface{
-					TOutputDataVertexModel<FAudioBuffer>(TEXT("Audio"), METASOUND_LOCTEXT("AudioTooltip", "The output audio"))
+					TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(AudioOutPin))
 				}
 			};
 			return Interface;
@@ -601,20 +604,24 @@ namespace Metasound
 
 		FDataReferenceCollection GetInputs() const override
 		{
+			using namespace OscillatorCommonVertexNames; 
+
 			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::EnabledPinName, Enabled);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::BaseFrequencyPinName, BaseFrequency);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::PhaseOffsetPinName, PhaseOffset);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::PhaseResetPinName, PhaseReset);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::GlideFactorPinName, GlideFactor);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::BiPolarPinName, BiPolar);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(EnabledPin), Enabled);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OscBaseFrequencyPin), BaseFrequency);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), PhaseOffset);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OscPhaseResetPin), PhaseReset);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(GlideFactorPin), GlideFactor);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(BiPolarPin), BiPolar);
 			return InputDataReferences;
 		}
 
 		FDataReferenceCollection GetOutputs() const override
 		{
+			using namespace OscillatorCommonVertexNames;
+			
 			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(FOscilatorFactoryBase::AudioOutPinName, AudioBuffer);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(AudioOutPin), AudioBuffer);
 			return OutputDataReferences;
 		}
 
@@ -704,8 +711,10 @@ namespace Metasound
 
 		FDataReferenceCollection GetInputs() const override
 		{
+			using namespace OscillatorCommonVertexNames; 
+
 			FDataReferenceCollection Inputs = Super::GetInputs();
-			Inputs.AddDataReadReference(FOscilatorFactoryBase::FrequencyModPinName, Fm);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(FrequencyModPin), Fm);
 			return Inputs;
 		}
 
@@ -762,13 +771,16 @@ namespace Metasound
 		DEFINE_METASOUND_ENUM_ENTRY(ESineGenerationType::Wavetable, "WavetableDescription", "Wavetable", "WavetableDescriptionTT", "Uses a wavetable to generate the sine"),
 	DEFINE_METASOUND_ENUM_END()
 
+	namespace SineOscilatorVertexNames
+	{
+		METASOUND_PARAM(SineType, "Type", "Type of the Sinewave Generator")
+	}
+
 	class FSineOscilatorNode::FFactory : public FOscilatorFactoryBase
 	{
 	public:
 		FFactory() = default;
 		
-		static constexpr const TCHAR* SineTypePin = TEXT("Type");
-
 		static const FNodeClassMetadata& GetNodeInfo()
 		{
 			auto InitNodeInfo = []() -> FNodeClassMetadata
@@ -783,6 +795,7 @@ namespace Metasound
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = { METASOUND_LOCTEXT("OscSineKeyword", "Osc"), METASOUND_LOCTEXT("FMSineKeyword", "FM"), METASOUND_LOCTEXT("SineSynthesisKeyword", "Synthesis") };
 				return Info;
 			};
 			static const FNodeClassMetadata Info = InitNodeInfo();
@@ -790,11 +803,13 @@ namespace Metasound
 		}
 		static const FVertexInterface& GetVertexInterface()
 		{
+			using namespace SineOscilatorVertexNames; 
+
 			auto MakeInterface = []() -> FVertexInterface
 			{
 				FVertexInterface Interface = GetCommmonVertexInterface();
 				Interface.GetInputInterface().Add(
-					TInputDataVertexModel<FEnumSineGenerationType>(SineTypePin, METASOUND_LOCTEXT("SineTypeDescription", "Type of the Sinewave Generator"), static_cast<int32>(ESineGenerationType::Wavetable))
+					TInputDataVertex<FEnumSineGenerationType>(METASOUND_GET_PARAM_NAME_AND_METADATA(SineType), static_cast<int32>(ESineGenerationType::Wavetable))
 				);
 				return Interface;
 			};
@@ -802,33 +817,36 @@ namespace Metasound
 			return Interface;
 		}
 		
-		TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override
+		TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 		{
 			const FSineOscilatorNode& SineNode = static_cast<const FSineOscilatorNode&>(InParams.Node);
-			const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
+			const FInputVertexInterfaceData& InputData = InParams.InputData;
 			const FOperatorSettings& Settings = InParams.OperatorSettings;
 			using namespace Generators;
+			using namespace OscillatorCommonVertexNames; 
+			using namespace SineOscilatorVertexNames;
+			
 			FOscillatorOperatorConstructParams OpParams
 			{
 				Settings,
-				InputCol.GetDataReadReferenceOrConstruct<bool>(EnabledPinName, SineNode.GetDefaultEnablement()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(BaseFrequencyPinName, SineNode.GetDefaultFrequency()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(PhaseOffsetPinName, SineNode.GetDefaultPhaseOffset()),
-				InputCol.GetDataReadReferenceOrConstruct<FTrigger>(PhaseResetPinName, Settings),
-				InputCol.GetDataReadReferenceOrConstruct<float>(GlideFactorPinName, SineNode.GetDefaultGlideFactor()),
-				InputCol.GetDataReadReferenceOrConstruct<bool>(BiPolarPinName, true)
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(EnabledPin), SineNode.GetDefaultEnablement()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(OscBaseFrequencyPin), SineNode.GetDefaultFrequency()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), SineNode.GetDefaultPhaseOffset()),
+				InputData.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(OscPhaseResetPin), Settings),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(GlideFactorPin), SineNode.GetDefaultGlideFactor()),
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(BiPolarPin), true)
 			};
 
 			// TODO: Make this a static prop. For now its a pin.
 			
 			// Check to see if we have an FM input connected.
-			bool bHasFM = InputCol.ContainsDataReadReference<FAudioBuffer>(FrequencyModPinName);			
-			FEnumSineGenerationTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumSineGenerationType>(SineTypePin, ESineGenerationType::Wavetable);
+			bool bHasFM = InputData.IsVertexBound(METASOUND_GET_PARAM_NAME(FrequencyModPin));
+			FEnumSineGenerationTypeReadRef Type = InputData.GetOrConstructDataReadReference<FEnumSineGenerationType>(METASOUND_GET_PARAM_NAME(SineType), ESineGenerationType::Wavetable);
 			if (bHasFM)
 			{
 
 				// FM Oscillators.
-				FAudioBufferReadRef FmBuffer = InputCol.GetDataReadReference<FAudioBuffer>(FrequencyModPinName);
+				FAudioBufferReadRef FmBuffer = InputData.GetDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 				switch (*Type)
 				{
 				default:
@@ -850,7 +868,6 @@ namespace Metasound
 			} // HasFM
 			return nullptr;
 		}
-	private:
 	};
 
 	FSineOscilatorNode::FSineOscilatorNode(const FVertexName& InInstanceName, const FGuid& InInstanceID, float InDefaultFrequency, float InDefautlGlideFactor, bool bInDefaultEnablement)
@@ -882,15 +899,18 @@ namespace Metasound
 		DEFINE_METASOUND_ENUM_ENTRY(ESawGenerationType::Trivial, "SawTrivialDescription", "Trivial", "TrivialDescriptionTT", "The most basic raw implementation"),
 		//DEFINE_METASOUND_ENUM_ENTRY(ESawGenerationType::Wavetable, "SawWavetableDescription", "Wavetable", "SawWavetableDescriptionTT", "Use a Wavetable iterpolation to generate the Waveform")
 	DEFINE_METASOUND_ENUM_END()
+	
+	namespace SawOscilatorVertexNames
+	{
+		METASOUND_PARAM(SawType, "Type", "Type of the Saw Generator")
+	}
 
 	class FSawOscilatorNode::FFactory : public FOscilatorFactoryBase
 	{
 	public:
-		static constexpr const TCHAR* SawTypePin = TEXT("Type");
-		
 		FFactory() = default;
 
-		TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override;
+		TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override;
 
 		static const FNodeClassMetadata& GetNodeInfo()
 		{
@@ -906,53 +926,57 @@ namespace Metasound
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = { METASOUND_LOCTEXT("OscSawKeyword", "Osc"), METASOUND_LOCTEXT("FMSawKeyword", "FM"), METASOUND_LOCTEXT("SawSynthesisKeyword", "Synthesis") };
 				return Info;
 			};
 			static const FNodeClassMetadata Info = InitNodeInfo();
 			return Info;
 		}
+
 		static const FVertexInterface& GetVertexInterface()
 		{
+			using namespace SawOscilatorVertexNames;
+
 			auto MakeInterface = []() -> FVertexInterface
 			{
 				FVertexInterface Interface = GetCommmonVertexInterface();
 				Interface.GetInputInterface().Add(
-					TInputDataVertexModel<FEnumSawGenerationType>(SawTypePin, METASOUND_LOCTEXT("Saw Type", "Which type of Saw Generator to Create"))
+					TInputDataVertex<FEnumSawGenerationType>(METASOUND_GET_PARAM_NAME_AND_METADATA(SawType))
 				);
 				return Interface;
 			};
 			static const FVertexInterface Interface = MakeInterface();
 			return Interface;
 		}
-
-	private:
 	};
 
-	TUniquePtr<Metasound::IOperator> FSawOscilatorNode::FFactory::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)
+	TUniquePtr<Metasound::IOperator> FSawOscilatorNode::FFactory::CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults)
 	{
 		const FSawOscilatorNode& Node = static_cast<const FSawOscilatorNode&>(InParams.Node);
-		const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
+		const FInputVertexInterfaceData& InputData = InParams.InputData;
 		const FOperatorSettings& Settings = InParams.OperatorSettings;
-		using namespace Generators;		
+		using namespace Generators;
+		using namespace OscillatorCommonVertexNames;
+		using namespace SawOscilatorVertexNames;
 
-		FSawGenerationTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumSawGenerationType>(SawTypePin);
+		FSawGenerationTypeReadRef Type = InputData.GetOrConstructDataReadReference<FEnumSawGenerationType>(METASOUND_GET_PARAM_NAME(SawType));
 
 		FOscillatorOperatorConstructParams OpParams
 		{
 			Settings,
-			InputCol.GetDataReadReferenceOrConstruct<bool>(EnabledPinName, Node.GetDefaultEnablement()),
-			InputCol.GetDataReadReferenceOrConstruct<float>(BaseFrequencyPinName, Node.GetDefaultFrequency()),
-			InputCol.GetDataReadReferenceOrConstruct<float>(PhaseOffsetPinName, Node.GetDefaultPhaseOffset()),
-			InputCol.GetDataReadReferenceOrConstruct<FTrigger>(PhaseResetPinName, Settings),
-			InputCol.GetDataReadReferenceOrConstruct<float>(GlideFactorPinName, Node.GetDefaultGlideFactor()),
-			InputCol.GetDataReadReferenceOrConstruct<bool>(BiPolarPinName, true)
+			InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(EnabledPin), Node.GetDefaultEnablement()),
+			InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(OscBaseFrequencyPin), Node.GetDefaultFrequency()),
+			InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), Node.GetDefaultPhaseOffset()),
+			InputData.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(OscPhaseResetPin), Settings),
+			InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(GlideFactorPin), Node.GetDefaultGlideFactor()),
+			InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(BiPolarPin), true)
 		};
 
-		bool bHasFM = InputCol.ContainsDataReadReference<FAudioBuffer>(FrequencyModPinName);
+		bool bHasFM = InputData.IsVertexBound(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 
 		if (bHasFM)
 		{
-			FAudioBufferReadRef FmBuffer = InputCol.GetDataReadReference<FAudioBuffer>(FrequencyModPinName);
+			FAudioBufferReadRef FmBuffer = InputData.GetDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 			switch (*Type)
 			{
 			default:
@@ -1070,40 +1094,46 @@ namespace Metasound
 		FAudioBufferReadRef FM;
 	};
 
+	namespace SquareOscillatorVertexNames
+	{
+		METASOUND_PARAM(SquarePulseWidthPin, "Pulse Width", "The Width of the square part of the wave")
+		METASOUND_PARAM(SquareTypePin, "Type", "The generator type to make the squarewave")
+	}
+
 	class FSquareOscilatorNode::FFactory : public FOscilatorFactoryBase
 	{
 	public:
 		FFactory() = default;
 
-		static constexpr const TCHAR* PulseWidthPinName = TEXT("Pulse Width");
-		static constexpr const TCHAR* SquareTypePinName = TEXT("Type");
-
-		TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override
+		TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 		{
+			using namespace SquareOscillatorVertexNames;
+
 			const FSquareOscilatorNode& Node = static_cast<const FSquareOscilatorNode&>(InParams.Node);
-			const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
+			const FInputVertexInterfaceData& InputData = InParams.InputData;
 			const FOperatorSettings& Settings = InParams.OperatorSettings;
 			using namespace Generators;
+			using namespace OscillatorCommonVertexNames; 
 
 			FOscillatorOperatorConstructParams OpParams
 			{
 				Settings,
-				InputCol.GetDataReadReferenceOrConstruct<bool>(EnabledPinName, Node.GetDefaultEnablement()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(BaseFrequencyPinName, Node.GetDefaultFrequency()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(PhaseOffsetPinName, Node.GetDefaultPhaseOffset()),
-				InputCol.GetDataReadReferenceOrConstruct<FTrigger>(PhaseResetPinName, Settings),
-				InputCol.GetDataReadReferenceOrConstruct<float>(GlideFactorPinName, Node.GetDefaultGlideFactor()),
-				InputCol.GetDataReadReferenceOrConstruct<bool>(BiPolarPinName, true)
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(EnabledPin), Node.GetDefaultEnablement()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(OscBaseFrequencyPin), Node.GetDefaultFrequency()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), Node.GetDefaultPhaseOffset()),
+				InputData.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(OscPhaseResetPin), Settings),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(GlideFactorPin), Node.GetDefaultGlideFactor()),
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(BiPolarPin), true)
 			};
+			
+			FSquareGenerationTypeReadRef Type = InputData.GetOrConstructDataReadReference<FEnumSquareGenerationType>(METASOUND_GET_PARAM_NAME(SquareTypePin));
 
-			FSquareGenerationTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumSquareGenerationType>(SquareTypePinName);
-
-			bool bHasFM = InputCol.ContainsDataReadReference<FAudioBuffer>(FrequencyModPinName);
-			FFloatReadRef PulseWidth = InputCol.GetDataReadReferenceOrConstruct<float>(PulseWidthPinName, 0.5f);
+			bool bHasFM = InputData.IsVertexBound(METASOUND_GET_PARAM_NAME(FrequencyModPin));
+			FFloatReadRef PulseWidth = InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(SquarePulseWidthPin), 0.5f);
 
 			if (bHasFM)
 			{
-				FAudioBufferReadRef FmBuffer = InputCol.GetDataReadReference<FAudioBuffer>(FrequencyModPinName);
+				FAudioBufferReadRef FmBuffer = InputData.GetDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 				switch (*Type)
 				{
 				default:				
@@ -1137,6 +1167,7 @@ namespace Metasound
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = { METASOUND_LOCTEXT("OscSquareKeyword", "Osc"), METASOUND_LOCTEXT("FMSquareKeyword", "FM"), METASOUND_LOCTEXT("SquareSynthesisKeyword", "Synthesis") };
 				return Info;
 			};
 			static const FNodeClassMetadata Info = InitNodeInfo();
@@ -1144,11 +1175,13 @@ namespace Metasound
 		}
 		static const FVertexInterface& GetVertexInterface()
 		{
+			using namespace SquareOscillatorVertexNames; 
+
 			auto MakeInterface = []() -> FVertexInterface
 			{
 				FVertexInterface Interface = GetCommmonVertexInterface();
-				Interface.GetInputInterface().Add(TInputDataVertexModel<FEnumSquareGenerationType>(SquareTypePinName, METASOUND_LOCTEXT("SquareTypeDescription", "The generator type to make the squarewave")));
-				Interface.GetInputInterface().Add(TInputDataVertexModel<float>(PulseWidthPinName, METASOUND_LOCTEXT("PhaseWidthDescription", "The Width of the square part of the wave"), 0.5f));
+				Interface.GetInputInterface().Add(TInputDataVertex<FEnumSquareGenerationType>(METASOUND_GET_PARAM_NAME_AND_METADATA(SquareTypePin)));
+				Interface.GetInputInterface().Add(TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(SquarePulseWidthPin), 0.5f));
 				return Interface;
 			};
 			static const FVertexInterface Interface = MakeInterface();
@@ -1186,38 +1219,43 @@ namespace Metasound
 		//DEFINE_METASOUND_ENUM_ENTRY(ETriangleGenerationType::Wavetable, "TriangleWavetableDescription", "Wavetable", "TriangleWavetableDescriptionTT", "Use a Wavetable iterpolation to generate the Waveform")
 	DEFINE_METASOUND_ENUM_END()
 
+	namespace TriangleOscilatorVertexNames
+	{
+		METASOUND_PARAM(TriangeTypePin, "Type", "The generator type to make the triangle wave")
+	}
+
 	class FTriangleOscilatorNode::FFactory : public FOscilatorFactoryBase
 	{
 	public:
 		FFactory() = default;
 
-		static constexpr const TCHAR* TriangeTypePinName = TEXT("Type");
-
-		TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override
+		TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 		{
 			const FTriangleOscilatorNode& Node = static_cast<const FTriangleOscilatorNode&>(InParams.Node);
-			const FDataReferenceCollection& InputCol = InParams.InputDataReferences;
+			const FInputVertexInterfaceData& InputData = InParams.InputData;
 			const FOperatorSettings& Settings = InParams.OperatorSettings;
 			using namespace Generators;
+			using namespace OscillatorCommonVertexNames;
+			using namespace TriangleOscilatorVertexNames;
 			
-			FTriangleGenerationTypeReadRef Type = InputCol.GetDataReadReferenceOrConstruct<FEnumTriangleGenerationType>(TriangeTypePinName);
+			FTriangleGenerationTypeReadRef Type = InputData.GetOrConstructDataReadReference<FEnumTriangleGenerationType>(METASOUND_GET_PARAM_NAME(TriangeTypePin));
 		
 			FOscillatorOperatorConstructParams OpParams
 			{
 				Settings,
-				InputCol.GetDataReadReferenceOrConstruct<bool>(EnabledPinName, Node.GetDefaultEnablement()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(BaseFrequencyPinName, Node.GetDefaultFrequency()),
-				InputCol.GetDataReadReferenceOrConstruct<float>(PhaseOffsetPinName, Node.GetDefaultPhaseOffset()),
-				InputCol.GetDataReadReferenceOrConstruct<FTrigger>(PhaseResetPinName, Settings),
-				InputCol.GetDataReadReferenceOrConstruct<float>(GlideFactorPinName, Node.GetDefaultGlideFactor()),
-				InputCol.GetDataReadReferenceOrConstruct<bool>(BiPolarPinName, true)
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(EnabledPin), Node.GetDefaultEnablement()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(OscBaseFrequencyPin), Node.GetDefaultFrequency()),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), Node.GetDefaultPhaseOffset()),
+				InputData.GetOrConstructDataReadReference<FTrigger>(METASOUND_GET_PARAM_NAME(OscPhaseResetPin), Settings),
+				InputData.GetOrConstructDataReadReference<float>(METASOUND_GET_PARAM_NAME(GlideFactorPin), Node.GetDefaultGlideFactor()),
+				InputData.GetOrConstructDataReadReference<bool>(METASOUND_GET_PARAM_NAME(BiPolarPin), true)
 			};
 
-			bool bHasFM = InputCol.ContainsDataReadReference<FAudioBuffer>(FrequencyModPinName);
+			bool bHasFM = InputData.IsVertexBound(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 			
 			if (bHasFM)
 			{
-				FAudioBufferReadRef FmBuffer = InputCol.GetDataReadReference<FAudioBuffer>(FrequencyModPinName);
+				FAudioBufferReadRef FmBuffer = InputData.GetDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(FrequencyModPin));
 				switch (*Type)
 				{
 				default:
@@ -1251,25 +1289,28 @@ namespace Metasound
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = {METASOUND_LOCTEXT("OscTriKeyword", "Osc"), METASOUND_LOCTEXT("FMTriKeyword", "FM"), METASOUND_LOCTEXT("TriSynthesisKeyword", "Synthesis") };
 				return Info;
 			};
 			static const FNodeClassMetadata Info = InitNodeInfo();
 			return Info;
 		}
+
 		static const FVertexInterface& GetVertexInterface()
 		{
+			using namespace TriangleOscilatorVertexNames; 
+
 			auto MakeInterface = []() -> FVertexInterface
 			{
 				FVertexInterface Interface = GetCommmonVertexInterface();
 				Interface.GetInputInterface().Add(
-					TInputDataVertexModel<FEnumTriangleGenerationType>(TriangeTypePinName, METASOUND_LOCTEXT("TriangleTypeDescription", "The generator type to make the triangle wave"))
+					TInputDataVertex<FEnumTriangleGenerationType>(METASOUND_GET_PARAM_NAME_AND_METADATA(TriangeTypePin))
 				);
 				return Interface;
 			};
 			static const FVertexInterface Interface = MakeInterface();
 			return Interface;
 		}
-	private:
 	};
 	
 	FTriangleOscilatorNode::FTriangleOscilatorNode(const FVertexName& InInstanceName, const FGuid& InInstanceID, float InDefaultFrequency, float InDefaultGlideFactor, bool bInDefaultEnablement)
@@ -1305,29 +1346,43 @@ namespace Metasound
 		DEFINE_METASOUND_ENUM_ENTRY(ELfoWaveshapeType::Square, "LfoWaveShapeSquareDescription", "Square", "LfoWaveShapeSquareDescriptionTT", "Square shape Low Frequency Oscillator")
 	DEFINE_METASOUND_ENUM_END()
 
+	namespace LfoVertexNames
+	{
+		// Common pins
+		METASOUND_PARAM(WaveshapePin, "Shape", "Waveshape of the LFO")
+		METASOUND_PARAM(LfoOutPin, "Out", "Output of the LFO (blockrate)")
+		METASOUND_PARAM(LfoBaseFrequencyPin, "Frequency", "Frequency of LFO (Hz), clamped at blockrate")
+
+		METASOUND_PARAM(MinOutputValuePin, "Min Value", "The minimum output value.")
+		METASOUND_PARAM(MaxOutputValuePin, "Max Value", "The maximum output value.")
+		METASOUND_PARAM(LfoPhaseResetPin, "Sync", "Phase Reset (block rate only)")
+		METASOUND_PARAM(PhaseOffsetPin, "Phase Offset", "Phase Offset In Degrees (0..360)")
+		METASOUND_PARAM(LfoPulseWidthPin, "Pulse Width", "Pulse Width (0..1)")
+	}
+
+	static const TArray<FText> LFOKeywords = { METASOUND_LOCTEXT("SineKeyword", "Sine"), METASOUND_LOCTEXT("SquareKeyword", "Square"), METASOUND_LOCTEXT("TriangleKeyword", "Triangle"), METASOUND_LOCTEXT("SawKeyword", "Saw"), METASOUND_LOCTEXT("OscLFOKeyword", "Oscillator"), METASOUND_LOCTEXT("ModulateKeyword", "Modulate")};
+
 	// Blockrate All-Purpose Oscillator
 	class FLfoOperator : public TExecutableOperator<FLfoOperator>
 	{
 	public:
-		// Common pins
-		static constexpr const TCHAR* WaveshapePinName = TEXT("Shape");
-		static constexpr const TCHAR* LfoOutPinName = TEXT("Out");
-	
 		static const FVertexInterface& GetVertexInterface()
 		{
+			using namespace LfoVertexNames; 
+
 			static const FVertexInterface Interface
 			{
 				FInputVertexInterface{
-					TInputDataVertexModel<float>(FOscilatorFactoryBase::BaseFrequencyPinName, METASOUND_LOCTEXT("LfoFrequencyDescription", "Frequency of LFO (Hz), clamped at blockrate"), 5.f),
-					TInputDataVertexModel<FEnumLfoWaveshapeType>(WaveshapePinName, METASOUND_LOCTEXT("LfoShapeDescription", "Waveshape of the LFO")),
-					TInputDataVertexModel<float>(FOscilatorFactoryBase::MinOutputValuePinName, METASOUND_LOCTEXT("LfoMinValueDescription", "The minimum output value."), -1.0f),
-					TInputDataVertexModel<float>(FOscilatorFactoryBase::MaxOutputValuePinName, METASOUND_LOCTEXT("LfoMaxValueDescription", "The maximum output value."), 1.0f),
-					TInputDataVertexModel<FTrigger>(FOscilatorFactoryBase::PhaseResetPinName, METASOUND_LOCTEXT("LfoPhaseResetDescription", "Phase Reset (block rate only)")),
-					TInputDataVertexModel<float>(FOscilatorFactoryBase::PhaseOffsetPinName, METASOUND_LOCTEXT("LfoPhaseOffsetDescription", "Phase Offset In Degrees (0..360)"), 0.f),
-					TInputDataVertexModel<float>(FSquareOscilatorNode::FFactory::PulseWidthPinName, METASOUND_LOCTEXT("LfoPulseWidthDescription", "Pulse Width (0..1)"), 0.5f)
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(LfoBaseFrequencyPin), 5.f),
+					TInputDataVertex<FEnumLfoWaveshapeType>(METASOUND_GET_PARAM_NAME_AND_METADATA(WaveshapePin)),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(MinOutputValuePin), -1.0f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(MaxOutputValuePin), 1.0f),
+					TInputDataVertex<FTrigger>(METASOUND_GET_PARAM_NAME_AND_METADATA(LfoPhaseResetPin)),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(PhaseOffsetPin), 0.f),
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(LfoPulseWidthPin), 0.5f)
 				},
 				FOutputVertexInterface{
-					TOutputDataVertexModel<float>(LfoOutPinName, METASOUND_LOCTEXT("LfoOutputDescription", "Output of the LFO (blockrate)"))
+					TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(LfoOutPin))
 				}
 			};
 			return Interface;
@@ -1347,6 +1402,7 @@ namespace Metasound
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = LFOKeywords;
 				return Info;
 			};
 			static const FNodeClassMetadata Info = InitNodeInfo();
@@ -1360,15 +1416,17 @@ namespace Metasound
 			const FOperatorSettings& Settings = InParams.OperatorSettings;
 			const FInputVertexInterface& InputInterface = GetVertexInterface().GetInputInterface();
 
+			using namespace LfoVertexNames;
+
 			return MakeUnique<FLfoOperator>(
 				  Settings
-				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, FOscilatorFactoryBase::BaseFrequencyPinName, Settings)
-				, InputCol.GetDataReadReferenceOrConstruct<FEnumLfoWaveshapeType>(WaveshapePinName)
-				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, FOscilatorFactoryBase::MinOutputValuePinName, Settings)
-				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, FOscilatorFactoryBase::MaxOutputValuePinName, Settings)
-				, InputCol.GetDataReadReferenceOrConstruct<FTrigger>(FOscilatorFactoryBase::PhaseResetPinName, Settings)
-				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface,FOscilatorFactoryBase::PhaseOffsetPinName, Settings)
-				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface,FSquareOscilatorNode::FFactory::PulseWidthPinName, Settings)
+				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(LfoBaseFrequencyPin), Settings)
+				, InputCol.GetDataReadReferenceOrConstruct<FEnumLfoWaveshapeType>(METASOUND_GET_PARAM_NAME(WaveshapePin))
+				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(MinOutputValuePin), Settings)
+				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(MaxOutputValuePin), Settings)
+				, InputCol.GetDataReadReferenceOrConstruct<FTrigger>(METASOUND_GET_PARAM_NAME(LfoPhaseResetPin), Settings)
+				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(PhaseOffsetPin), Settings)
+				, InputCol.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(LfoPulseWidthPin), Settings)
 			);
 		}
 
@@ -1390,21 +1448,25 @@ namespace Metasound
 
 		FDataReferenceCollection GetInputs() const override
 		{
+			using namespace LfoVertexNames;
+
 			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::BaseFrequencyPinName, Frequency);
-			InputDataReferences.AddDataReadReference(WaveshapePinName, Waveshape);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::MinOutputValuePinName, MinValue);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::MaxOutputValuePinName, MaxValue);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::PhaseOffsetPinName, PhaseOffset);
-			InputDataReferences.AddDataReadReference(FOscilatorFactoryBase::PhaseResetPinName, PhaseReset);
-			InputDataReferences.AddDataReadReference(FSquareOscilatorNode::FFactory::PulseWidthPinName, PulseWidth);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(LfoBaseFrequencyPin), Frequency);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(WaveshapePin), Waveshape);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(MinOutputValuePin), MinValue);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(MaxOutputValuePin), MaxValue);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(PhaseOffsetPin), PhaseOffset);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(LfoPhaseResetPin), PhaseReset);
+			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(LfoPulseWidthPin), PulseWidth);
 			return InputDataReferences;
 		}
 
 		FDataReferenceCollection GetOutputs() const override
 		{
+			using namespace LfoVertexNames;
+
 			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(LfoOutPinName, Output);
+			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(LfoOutPin), Output);
 			return OutputDataReferences;
 		}
 

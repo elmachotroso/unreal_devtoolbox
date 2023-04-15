@@ -5,6 +5,7 @@
 #include "Chaos/DynamicParticles.h"
 #include "Chaos/Core.h"
 #include "Chaos/Vector.h"
+#include "Chaos/UniformGrid.h"
 
 namespace Chaos
 {
@@ -49,11 +50,28 @@ class FGraphColoring
 		int32 ThirdNode;
 	};
 
+	struct FGraphTetEdge : FGraph3dEdge
+	{
+		FGraphTetEdge()
+			: FourthNode(INDEX_NONE)
+		{
+		}
+
+		int32 FourthNode;
+	};
+
   public:
 	template<typename T>
 	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 2>>& Graph, const TDynamicParticles<T, 3>& InParticles);
 	template<typename T>
 	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 3>>& Graph, const TDynamicParticles<T, 3>& InParticles);
+	template<typename T>
+	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 4>>& Graph, const TDynamicParticles<T, 3>& InParticles);
+	template<typename T>
+	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoringAllDynamic(const TArray<TVec4<int32>>& Graph, const Chaos::TDynamicParticles<T, 3>& InParticles);
 };
+
+template<typename T> 
+CHAOS_API void ComputeGridBasedGraphSubColoringPointer(const TArray<TArray<int32>>& ElementsPerColor, const TMPMGrid<T>& Grid, const int32 GridSize, TArray<TArray<int32>>*& PreviousColoring, const TArray<TArray<int32>>& ConstraintsNodesSet, TArray<TArray<TArray<int32>>>& ElementsPerSubColors);
 
 }

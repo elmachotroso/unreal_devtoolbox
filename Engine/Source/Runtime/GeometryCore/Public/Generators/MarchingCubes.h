@@ -5,18 +5,33 @@
 #pragma once
 
 #include "Async/ParallelFor.h"
-#include "Misc/ScopeLock.h"
-
+#include "BoxTypes.h"
+#include "CompGeom/PolygonTriangulation.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/Map.h"
+#include "HAL/CriticalSection.h"
+#include "IndexTypes.h"
+#include "IntBoxTypes.h"
+#include "IntVectorTypes.h"
+#include "Math/UnrealMathSSE.h"
 #include "Math/UnrealMathUtility.h"
+#include "Math/Vector.h"
+#include "MathUtil.h"
 #include "MeshShapeGenerator.h"
 #include "Misc/AssertionMacros.h"
-
-#include "Spatial/DenseGrid3.h"
+#include "Misc/ScopeLock.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Spatial/BlockedDenseGrid3.h"
-
-#include "CompGeom/PolygonTriangulation.h"
-
+#include "Spatial/DenseGrid3.h"
+#include "Templates/Function.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
 #include "Util/IndexUtil.h"
+#include "VectorTypes.h"
+
+#include <atomic>
 
 namespace UE
 {
@@ -130,7 +145,7 @@ public:
 
 		if (bEnableValueCaching)
 		{
-			BlockedCornerValuesGrid = FBlockedDenseGrid3f(CellDimensions.X + 1, CellDimensions.Y + 1, CellDimensions.Z + 1, FMathf::MaxReal);
+			BlockedCornerValuesGrid.Reset(CellDimensions.X + 1, CellDimensions.Y + 1, CellDimensions.Z + 1, FMathf::MaxReal);
 		}
 		InitHashTables();
 		ResetMesh();
@@ -170,11 +185,11 @@ public:
 		{
 			if (bEnableValueCaching)
 			{
-				BlockedCornerValuesGrid = FBlockedDenseGrid3f(CellDimensions.X + 1, CellDimensions.Y + 1, CellDimensions.Z + 1, FMathf::MaxReal);
+				BlockedCornerValuesGrid.Reset(CellDimensions.X + 1, CellDimensions.Y + 1, CellDimensions.Z + 1, FMathf::MaxReal);
 			}
 			if (bParallelCompute)
 			{
-				BlockedDoneCells = FBlockedDenseGrid3i(CellDimensions.X, CellDimensions.Y, CellDimensions.Z, 0);
+				BlockedDoneCells.Reset(CellDimensions.X, CellDimensions.Y, CellDimensions.Z, 0);
 			}
 		}
 		else
@@ -305,7 +320,7 @@ protected:
 	// Hash table for edge vertices
 	//
 
-	int64 NumEdgeVertexSections = 64;
+	const int64 NumEdgeVertexSections = 64;
 	TArray<TMap<int64, int>> EdgeVertexSections;
 	TArray<FCriticalSection> EdgeVertexSectionLocks;
 	
@@ -518,9 +533,9 @@ protected:
 	void InitHashTables()
 	{
 		EdgeVertexSections.Reset();
-		EdgeVertexSections.SetNum(NumEdgeVertexSections);
+		EdgeVertexSections.SetNum((int32)NumEdgeVertexSections);
 		EdgeVertexSectionLocks.Reset();
-		EdgeVertexSectionLocks.SetNum(NumEdgeVertexSections);
+		EdgeVertexSectionLocks.SetNum((int32)NumEdgeVertexSections);
 	}
 
 
@@ -605,7 +620,7 @@ protected:
 		FGridCell Cell;
 		int vertTArray[12];
 
-		BlockedDoneCells = FBlockedDenseGrid3i(CellDimensions.X, CellDimensions.Y, CellDimensions.Z, 0);
+		BlockedDoneCells.Reset(CellDimensions.X, CellDimensions.Y, CellDimensions.Z, 0);
 
 		TArray<FVector3i> stack;
 
@@ -911,14 +926,14 @@ protected:
 	 */
 	void ResetMesh()
 	{
-		VertexSectionLocks.SetNum(NumVertexSections);
+		VertexSectionLocks.SetNum((int32)NumVertexSections);
 		VertexSectionLists.Reset();
-		VertexSectionLists.SetNum(NumVertexSections);
+		VertexSectionLists.SetNum((int32)NumVertexSections);
 		VertexCounter = 0;
 
-		TriangleSectionLocks.SetNum(NumTriangleSections);
+		TriangleSectionLocks.SetNum((int32)NumTriangleSections);
 		TriangleSectionLists.Reset();
-		TriangleSectionLists.SetNum(NumTriangleSections);
+		TriangleSectionLists.SetNum((int32)NumTriangleSections);
 	}
 
 	/**

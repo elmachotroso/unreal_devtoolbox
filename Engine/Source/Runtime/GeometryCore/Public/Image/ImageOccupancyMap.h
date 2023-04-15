@@ -8,6 +8,7 @@
 #include "Image/ImageTile.h"
 #include "Spatial/MeshAABBTree3.h"
 #include "Sampling/GridSampler.h"
+#include "MathUtil.h"
 
 namespace UE
 {
@@ -118,13 +119,14 @@ public:
 		// make flat mesh
 		TMeshAABBTree3<MeshType> FlatSpatial(&UVSpaceMesh, true);
 
-		const int32 LinearImageSize = Tile.Num();
-		const int32 LinearSampleSize = Tile.Num() * PixelSampler.Num();
-		TexelType.Init(EmptyTexel, LinearSampleSize);
+		const int64 LinearImageSize = Tile.Num();
 		TexelInteriorSamples.Init(0, LinearImageSize);
+		TexelQueryUVChart.Init(IndexConstants::InvalidID, LinearImageSize);
+		
+		const int64 LinearSampleSize = Tile.Num() * PixelSampler.Num();
+		TexelType.Init(EmptyTexel, LinearSampleSize);
 		TexelQueryUV.Init(FVector2f::Zero(), LinearSampleSize);
 		TexelQueryTriangle.Init(IndexConstants::InvalidID, LinearSampleSize);
-		TexelQueryUVChart.Init(IndexConstants::InvalidID, LinearImageSize);
 
 		const FVector2d TexelSize = Dimensions.GetTexelSize();
 		const double TexelDiag = TexelSize.Length();
@@ -249,7 +251,9 @@ public:
 	) const
 	{
 		int64 N = Dimensions.Num();
-		PassBuffer.SetNum(N);
+		checkSlow(N <= TMathUtilConstants<int32>::MaxReal); // TArray< , FDefaultAllocator>::SetNum(int32 ), so max Dimension ~ 65k x 65k
+		int32 N32 =  int32(N);
+		PassBuffer.SetNum( N32 );
 		
 		ParallelFor(Dimensions.GetHeight(), 
 			[this, &BeginTexel, & AccumulateTexel, &CompleteTexel, &WeightFunction, FilterWidth, &PassBuffer]
@@ -257,7 +261,7 @@ public:
 		{
 			for (int32 ImgX = 0; ImgX < Dimensions.GetWidth(); ++ImgX)
 			{
-				int64 LinearIdx = Dimensions.GetIndex(ImgX, ImgY);
+				int32 LinearIdx = (int32)Dimensions.GetIndex(ImgX, ImgY);
 				if (TexelType[LinearIdx] != EmptyTexel)
 				{
 					TexelValueType AccumValue = BeginTexel(LinearIdx);
@@ -295,7 +299,7 @@ public:
 		});
 
 		// write results
-		for (int64 k = 0; k < N; ++k)
+		for (int32 k = 0; k < N32; ++k)
 		{
 			if (TexelType[k] != EmptyTexel)
 			{
@@ -312,7 +316,7 @@ protected:
 	void InitializePixelSampler(const int32 SamplesPerPixelIn)
 	{
 		const float GridDimensionFloat = SamplesPerPixelIn > 0 ? static_cast<float>(SamplesPerPixelIn) : 1.0f;
-		const int32 GridDimension = FMathf::Clamp(FMathf::Sqrt(GridDimensionFloat), 1.0f, GridDimensionFloat);
+		const int32 GridDimension = FMath::FloorToInt32(FMathf::Clamp(FMathf::Sqrt(GridDimensionFloat), 1.0f, GridDimensionFloat));
 		PixelSampler = FGridSampler(GridDimension);
 	}
 

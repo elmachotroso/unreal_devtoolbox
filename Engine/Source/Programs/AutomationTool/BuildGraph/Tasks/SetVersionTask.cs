@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace AutomationTool.Tasks
 {
@@ -70,7 +71,7 @@ namespace AutomationTool.Tasks
 	/// Updates the local version files (Engine/Source/Runtime/Launch/Resources/Version.h, Engine/Build/Build.version, and Engine/Source/Programs/Shared/Metadata.cs) with the given version information.
 	/// </summary>
 	[TaskElement("SetVersion", typeof(SetVersionTaskParameters))]
-	public class SetVersionTask : CustomTask
+	public class SetVersionTask : BgTaskImpl
 	{
 		/// <summary>
 		/// Parameters for the task
@@ -92,7 +93,7 @@ namespace AutomationTool.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Update the version files
 			List<FileReference> VersionFiles = UnrealBuild.StaticUpdateVersionFiles(Parameters.Change, Parameters.CompatibleChange, Parameters.Branch, Parameters.Build, Parameters.Licensee, Parameters.Promoted, !Parameters.SkipWrite);
@@ -105,6 +106,7 @@ namespace AutomationTool.Tasks
 
 			// Add them to the list of build products
 			BuildProducts.UnionWith(VersionFiles);
+			return Task.CompletedTask;
 		}
 
 		/// <summary>
@@ -131,6 +133,40 @@ namespace AutomationTool.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			return FindTagNamesFromList(Parameters.Tag);
+		}
+	}
+
+	/// <summary>
+	/// Task wrapper methods
+	/// </summary>
+	public static partial class StandardTasks
+	{
+		/// <summary>
+		/// Execute a task instance
+		/// </summary>
+		/// <param name="Task"></param>
+		/// <returns></returns>
+		public static async Task<FileSet> ExecuteAsync(BgTaskImpl Task)
+		{
+			HashSet<FileReference> BuildProducts = new HashSet<FileReference>();
+			await Task.ExecuteAsync(new JobContext(null!), BuildProducts, new Dictionary<string, HashSet<FileReference>>());
+			return FileSet.FromFiles(Unreal.RootDirectory, BuildProducts);
+		}
+
+		/// <summary>
+		/// Updates the current engine version
+		/// </summary>
+		public static async Task<FileSet> SetVersionAsync(int Change, string Branch, int? CompatibleChange = null, string Build = null, bool? Licensee = null, bool? Promoted = null, bool? SkipWrite = null)
+		{
+			SetVersionTaskParameters Parameters = new SetVersionTaskParameters();
+			Parameters.Change = Change;
+			Parameters.CompatibleChange = CompatibleChange ?? Parameters.CompatibleChange;
+			Parameters.Branch = Branch ?? Parameters.Branch;
+			Parameters.Branch = Build ?? Parameters.Build;
+			Parameters.Licensee = Licensee ?? Parameters.Licensee;
+			Parameters.Promoted = Promoted ?? Parameters.Promoted;
+			Parameters.SkipWrite = SkipWrite ?? Parameters.SkipWrite;
+			return await ExecuteAsync(new SetVersionTask(Parameters));
 		}
 	}
 }

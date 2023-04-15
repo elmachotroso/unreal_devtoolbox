@@ -6,6 +6,8 @@
 #include "AjaDeviceProvider.h"
 #include "AjaMediaOutput.h"
 #include "AjaMediaOutputModule.h"
+#include "Misc/CoreDelegates.h"
+#include "Engine/Engine.h"
 #include "HAL/Event.h"
 #include "HAL/IConsoleManager.h"
 #include "IAjaMediaOutputModule.h"
@@ -19,9 +21,10 @@
 #if WITH_EDITOR
 #include "AnalyticsEventAttribute.h"
 #include "EngineAnalytics.h"
+#include "Interfaces/IMainFrameModule.h"
 #endif
 
-TAutoConsoleVariable<int32> CVarAjaEnableGPUDirect(
+static TAutoConsoleVariable<int32> CVarAjaEnableGPUDirect(
 	TEXT("Aja.EnableGPUDirect"), 0,
 	TEXT("Whether to enable GPU direct for faster video frame copies. (Experimental)"),
 	ECVF_RenderThreadSafe);
@@ -221,6 +224,27 @@ UAjaMediaCapture::UAjaMediaCapture()
 	, WakeUpEvent(nullptr)
 {
 	bGPUTextureTransferAvailable = ((FAjaMediaOutputModule*)&IAjaMediaOutputModule::Get())->IsGPUTextureTransferAvailable();
+
+#if WITH_EDITOR
+	// In editor, an asset re-save dialog can prevent AJA from cleaning up in the regular PreExit callback,
+	// So we have to do our cleanup before the regular callback is called.
+	IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+	CanCloseEditorDelegateHandle = MainFrame.RegisterCanCloseEditor(IMainFrameModule::FMainFrameCanCloseEditor::CreateUObject(this, &UAjaMediaCapture::CleanupPreEditorExit));
+#else
+	FCoreDelegates::OnEnginePreExit.AddUObject(this, &UAjaMediaCapture::OnEnginePreExit);
+#endif
+}
+
+UAjaMediaCapture::~UAjaMediaCapture()
+{
+#if WITH_EDITOR
+	if (IMainFrameModule* MainFrame = FModuleManager::GetModulePtr<IMainFrameModule>("MainFrame"))
+	{
+		MainFrame->UnregisterCanCloseEditor(CanCloseEditorDelegateHandle);
+	}
+#else
+	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
+#endif
 }
 
 bool UAjaMediaCapture::ValidateMediaOutput() const
@@ -235,31 +259,23 @@ bool UAjaMediaCapture::ValidateMediaOutput() const
 	return true;
 }
 
-bool UAjaMediaCapture::CaptureSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
+bool UAjaMediaCapture::InitializeCapture()
 {
 	UAjaMediaOutput* AjaMediaSource = CastChecked<UAjaMediaOutput>(MediaOutput);
 	const bool bResult = InitAJA(AjaMediaSource);
 	if (bResult)
 	{
-		ApplyViewportTextureAlpha(InSceneViewport);
 #if WITH_EDITOR
-		AjaMediaCaptureAnalytics::SendCaptureEvent(AjaMediaSource->GetRequestedSize(), FrameRate, TEXT("SceneViewport"));
+		AjaMediaCaptureAnalytics::SendCaptureEvent(AjaMediaSource->GetRequestedSize(), FrameRate, GetCaptureSourceType());
 #endif
 	}
 	return bResult;
 }
 
-bool UAjaMediaCapture::CaptureRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget)
+bool UAjaMediaCapture::PostInitializeCaptureViewport(TSharedPtr<FSceneViewport>& InSceneViewport)
 {
-	UAjaMediaOutput* AjaMediaSource = CastChecked<UAjaMediaOutput>(MediaOutput);
-	bool bResult = InitAJA(AjaMediaSource);
-#if WITH_EDITOR
-	if (bResult)
-	{
-		AjaMediaCaptureAnalytics::SendCaptureEvent(AjaMediaSource->GetRequestedSize(), FrameRate, TEXT("RenderTarget"));
-	}
-#endif
-	return bResult;
+	ApplyViewportTextureAlpha(InSceneViewport);
+	return true;
 }
 
 bool UAjaMediaCapture::UpdateSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
@@ -283,11 +299,11 @@ void UAjaMediaCapture::StopCaptureImpl(bool bAllowPendingFrameToBeProcess)
 			// Prevent the rendering thread from copying while we are stopping the capture.
 			FScopeLock ScopeLock(&RenderThreadCriticalSection);
 
-			ENQUEUE_RENDER_COMMAND(BlackmagicMediaCaptureInitialize)(
+			ENQUEUE_RENDER_COMMAND(AjaMediaCaptureInitialize)(
 			[this](FRHICommandListImmediate& RHICmdList) mutable
 			{
 				// Unregister texture before closing channel.
-				if (ShouldCaptureRHITexture())
+				if (ShouldCaptureRHIResource())
 				{
 					for (FTextureRHIRef& Texture : TexturesToRelease)
 					{
@@ -320,28 +336,9 @@ void UAjaMediaCapture::StopCaptureImpl(bool bAllowPendingFrameToBeProcess)
 	}
 }
 
-bool UAjaMediaCapture::ShouldCaptureRHITexture() const
+bool UAjaMediaCapture::ShouldCaptureRHIResource() const
 {
 	return bGPUTextureTransferAvailable && CVarAjaEnableGPUDirect.GetValueOnAnyThread() == 1;
-}
-
-void UAjaMediaCapture::BeforeFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
-{
-	if (ShouldCaptureRHITexture())
-	{
-		if (!TexturesToRelease.Contains(InTexture))
-		{
-			TexturesToRelease.Add(InTexture);
-
-			FRHITexture2D* Texture = InTexture->GetTexture2D();
-			AJA::FRegisterDMATextureArgs Args;
-			Args.RHITexture = Texture->GetNativeResource();
-			//Args.InRHIResourceMemory = Texture->GetNativeResource(); todo: VulkanTexture->Surface->GetAllocationHandle for Vulkan
-			AJA::RegisterDMATexture(Args);
-		}
-	}
-
-	AJA::LockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
 }
 
 void UAjaMediaCapture::ApplyViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport)
@@ -383,6 +380,23 @@ void UAjaMediaCapture::RestoreViewportTextureAlpha(TSharedPtr<FSceneViewport> In
 	}
 }
 
+bool UAjaMediaCapture::CleanupPreEditorExit()
+{
+	OnEnginePreExit();
+	return true;
+}
+
+void UAjaMediaCapture::OnEnginePreExit()
+{
+	if (OutputChannel)
+	{
+		// Close the aja channel in the another thread.
+		OutputChannel->Uninitialize();
+		OutputChannel.Reset();
+		OutputCallback.Reset();
+	}
+}
+
 bool UAjaMediaCapture::HasFinishedProcessing() const
 {
 	return Super::HasFinishedProcessing() || !OutputChannel;
@@ -406,17 +420,11 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 	FrameRate = InAjaMediaOutput->GetRequestedFrameRate();
 	PortName = FAjaDeviceProvider().ToText(InAjaMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection).ToString();
 
-	if (ShouldCaptureRHITexture())
+	if (ShouldCaptureRHIResource())
 	{
 		if (InAjaMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard != EMediaIOStandardType::Progressive)
 		{
 			UE_LOG(LogAjaMediaOutput, Warning, TEXT("GPU DMA is not supported with interlaced, defaulting to regular path."));
-			bGPUTextureTransferAvailable = false;
-		}
-
-		if (InAjaMediaOutput->PixelFormat != EAjaMediaOutputPixelFormat::PF_8BIT_YUV)
-		{
-			UE_LOG(LogAjaMediaOutput, Warning, TEXT("GPU DMA is not supported with pixel format 10 Bit YUV, defaulting to regular path."));
 			bGPUTextureTransferAvailable = false;
 		}
 	}
@@ -450,7 +458,7 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 	ChannelOptions.PixelFormat = AjaMediaCaptureUtils::ConvertPixelFormat(InAjaMediaOutput->PixelFormat, ChannelOptions.bUseKey);
 	ChannelOptions.TimecodeFormat =  AjaMediaCaptureUtils::ConvertTimecode(InAjaMediaOutput->TimecodeFormat);
 	ChannelOptions.OutputReferenceType = AjaMediaCaptureUtils::Convert(InAjaMediaOutput->OutputConfiguration.OutputReference);
-	ChannelOptions.bUseGPUDMA = ShouldCaptureRHITexture();
+	ChannelOptions.bUseGPUDMA = ShouldCaptureRHIResource();
 
 	bOutputAudio = InAjaMediaOutput->bOutputAudio;
 	
@@ -489,7 +497,7 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 		WakeUpEvent = FPlatformProcess::GetSynchEventFromPool(bIsManualReset);
 	}
 
-	if (ShouldCaptureRHITexture())
+	if (ShouldCaptureRHIResource())
 	{
 		UE_LOG(LogAjaMediaOutput, Display, TEXT("Aja capture started using GPU Direct"));
 	}
@@ -500,7 +508,7 @@ bool UAjaMediaCapture::InitAJA(UAjaMediaOutput* InAjaMediaOutput)
 void UAjaMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UAjaMediaCapture::OnFrameCaptured_RenderingThread);
-	
+
 	// Prevent the rendering thread from copying while we are stopping the capture.
 	FScopeLock ScopeLock(&RenderThreadCriticalSection);
 	if (OutputChannel)
@@ -517,6 +525,7 @@ void UAjaMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& I
 		AJA::AJAOutputFrameBufferData FrameBuffer;
 		FrameBuffer.Timecode = Timecode;
 		FrameBuffer.FrameIdentifier = InBaseData.SourceFrameNumber;
+		FrameBuffer.bEvenFrame = GFrameCounterRenderThread % 2 == 0;
 
 		bool bSetVideoResult = false;
 		{
@@ -546,7 +555,7 @@ void UAjaMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& I
 	}
 }
 
-void UAjaMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptureBaseData& InBaseData,	TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
+void UAjaMediaCapture::OnRHIResourceCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UAjaMediaCapture::OnFrameCaptured_RenderingThread);
 	
@@ -554,11 +563,6 @@ void UAjaMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptureBaseDa
 	FScopeLock ScopeLock(&RenderThreadCriticalSection);
 	if (OutputChannel)
 	{
-		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(UAjaMediaCapture::OnFrameCaptured_RenderingThread::UnlockDMATexture);
-			AJA::UnlockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
-		}
-
 		const AJA::FTimecode Timecode = AjaMediaCaptureDevice::ConvertToAJATimecode(InBaseData.SourceFrameTimecode, InBaseData.SourceFrameTimecodeFramerate.AsDecimal(), FrameRate.AsDecimal());
 		
 		AJA::AJAOutputFrameBufferData FrameBuffer;
@@ -585,6 +589,31 @@ void UAjaMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptureBaseDa
 	{
 		SetState(EMediaCaptureState::Error);
 	}
+}
+
+void UAjaMediaCapture::LockDMATexture_RenderThread(FTextureRHIRef InTexture)
+{
+	if (ShouldCaptureRHIResource())
+	{
+		if (!TexturesToRelease.Contains(InTexture))
+		{
+			TexturesToRelease.Add(InTexture);
+
+			FRHITexture2D* Texture = InTexture->GetTexture2D();
+			AJA::FRegisterDMATextureArgs Args;
+			Args.RHITexture = Texture->GetNativeResource();
+			//Args.InRHIResourceMemory = Texture->GetNativeResource(); todo: VulkanTexture->Surface->GetAllocationHandle for Vulkan
+			AJA::RegisterDMATexture(Args);
+		}
+	}
+
+	AJA::LockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
+}
+
+void UAjaMediaCapture::UnlockDMATexture_RenderThread(FTextureRHIRef InTexture)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UAjaMediaCapture::OnFrameCaptured_RenderingThread::UnlockDMATexture);
+	AJA::UnlockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
 }
 
 void UAjaMediaCapture::WaitForSync_RenderingThread() const

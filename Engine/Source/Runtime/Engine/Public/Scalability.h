@@ -41,11 +41,15 @@ namespace Scalability
 		TArray<float> CPUBenchmarkSteps;
 		TArray<float> GPUBenchmarkSteps;
 
-		FQualityLevels()
+		// Allows us to avoid SetDefaults for static init variables, as SetDefaults is not defined to call during static int
+		FQualityLevels(bool bSetDefaults = true)
 			: CPUBenchmarkResults(-1.0f)
 			, GPUBenchmarkResults(-1.0f)
 		{
-			SetDefaults();
+			if (bSetDefaults)
+			{
+				SetDefaults();
+			}
 		}
 		
 		bool operator==(const FQualityLevels& Other ) const
@@ -146,7 +150,7 @@ namespace Scalability
 	};
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnScalabilitySettingsChanged, const Scalability::FQualityLevels&);
-	static FOnScalabilitySettingsChanged OnScalabilitySettingsChanged;
+	ENGINE_API extern FOnScalabilitySettingsChanged OnScalabilitySettingsChanged;
 
 	/** This is the only suggested way to set the current state - don't set CVars directly **/
 	ENGINE_API void SetQualityLevels(const FQualityLevels& QualityLevels, bool bForce = false);

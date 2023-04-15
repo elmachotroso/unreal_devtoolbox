@@ -6,7 +6,7 @@ using UnrealBuildTool;
 
 public class OodleNetworkHandlerComponent : ModuleRules 
 {
-	protected virtual string OodleVersion { get { return "2.9.5"; } }
+	protected virtual string OodleVersion { get { return "2.9.8"; } }
 
 	// Platform Extensions need to override these
 	protected virtual string LibRootDirectory { get { return ModuleDirectory; } }
@@ -31,8 +31,6 @@ public class OodleNetworkHandlerComponent : ModuleRules
 		PublicDependencyModuleNames.Add("NetCore");
 		PublicDependencyModuleNames.Add("Engine");
 		PublicDependencyModuleNames.Add("Analytics");
-
-		PrivatePCHHeaderFile = "Private/OodleNetworkHandlerComponentPCH.h";
 
 		// We depend on the .udic files, otherwise those dictionaries don't pass-through to final builds!
 		RuntimeDependencies.Add("$(ProjectDir)/Content/Oodle/...", StagedFileType.UFS);
@@ -80,6 +78,7 @@ public class OodleNetworkHandlerComponent : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
+			// NOTE: Simulator builds should use .sim.a files but we're not building sim as of this writing
 			ReleaseLib = "liboo2netios.a";
 			DebugLib = "liboo2netios_dbg.a";
 		}

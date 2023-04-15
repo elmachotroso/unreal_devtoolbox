@@ -6,6 +6,8 @@
 #include "Widgets/Layout/SBox.h"
 #include "Components/SizeBoxSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SizeBox)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -15,9 +17,11 @@ USizeBox::USizeBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
-	MinAspectRatio = 1;
-	MaxAspectRatio = 1;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	MinAspectRatio = 1.f;
+	MaxAspectRatio = 1.f;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void USizeBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -39,6 +43,12 @@ TSharedRef<SWidget> USizeBox::RebuildWidget()
 	return MySizeBox.ToSharedRef();
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+float USizeBox::GetWidthOverride() const
+{
+	return WidthOverride;
+}
+
 void USizeBox::SetWidthOverride(float InWidthOverride)
 {
 	bOverride_WidthOverride = true;
@@ -56,6 +66,11 @@ void USizeBox::ClearWidthOverride()
 	{
 		MySizeBox->SetWidthOverride(FOptionalSize());
 	}
+}
+
+float USizeBox::GetHeightOverride() const
+{
+	return HeightOverride;
 }
 
 void USizeBox::SetHeightOverride(float InHeightOverride)
@@ -77,6 +92,11 @@ void USizeBox::ClearHeightOverride()
 	}
 }
 
+float USizeBox::GetMinDesiredWidth() const
+{
+	return MinDesiredWidth;
+}
+
 void USizeBox::SetMinDesiredWidth(float InMinDesiredWidth)
 {
 	bOverride_MinDesiredWidth = true;
@@ -94,6 +114,11 @@ void USizeBox::ClearMinDesiredWidth()
 	{
 		MySizeBox->SetMinDesiredWidth(FOptionalSize());
 	}
+}
+
+float USizeBox::GetMinDesiredHeight() const
+{
+	return MinDesiredHeight;
 }
 
 void USizeBox::SetMinDesiredHeight(float InMinDesiredHeight)
@@ -115,6 +140,11 @@ void USizeBox::ClearMinDesiredHeight()
 	}
 }
 
+float USizeBox::GetMaxDesiredWidth() const
+{
+	return MaxDesiredWidth;
+}
+
 void USizeBox::SetMaxDesiredWidth(float InMaxDesiredWidth)
 {
 	bOverride_MaxDesiredWidth = true;
@@ -132,6 +162,11 @@ void USizeBox::ClearMaxDesiredWidth()
 	{
 		MySizeBox->SetMaxDesiredWidth(FOptionalSize());
 	}
+}
+
+float USizeBox::GetMaxDesiredHeight() const
+{
+	return MaxDesiredHeight;
 }
 
 void USizeBox::SetMaxDesiredHeight(float InMaxDesiredHeight)
@@ -153,6 +188,11 @@ void USizeBox::ClearMaxDesiredHeight()
 	}
 }
 
+float USizeBox::GetMinAspectRatio() const
+{
+	return MinAspectRatio;
+}
+
 void USizeBox::SetMinAspectRatio(float InMinAspectRatio)
 {
 	bOverride_MinAspectRatio = true;
@@ -170,6 +210,11 @@ void USizeBox::ClearMinAspectRatio()
 	{
 		MySizeBox->SetMinAspectRatio(FOptionalSize());
 	}
+}
+
+float USizeBox::GetMaxAspectRatio() const
+{
+	return MaxAspectRatio;
 }
 
 void USizeBox::SetMaxAspectRatio(float InMaxAspectRatio)
@@ -267,6 +312,7 @@ void USizeBox::SynchronizeProperties()
 		ClearMaxAspectRatio();
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 UClass* USizeBox::GetSlotClass() const
 {

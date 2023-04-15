@@ -1,11 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Lights.h"
+
+#include "LightmapRayTracing.h"
+#include "Scene.h"
 #include "RenderGraphBuilder.h"
 #include "ReflectionEnvironment.h"
+#include "RectLightTextureManager.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "UObject/UObjectIterator.h"
+#include "RenderGraphUtils.h"
 
 RENDERER_API void PrepareSkyTexture_Internal(
 	FRDGBuilder& GraphBuilder,
+	ERHIFeatureLevel::Type FeatureLevel,
 	FReflectionUniformParameters& Parameters,
 	uint32 Size,
 	FLinearColor SkyColor,
@@ -38,38 +46,56 @@ FLocalLightRenderState& FLightRenderStateRef::Resolve()
 	return LightRenderStateArray.ResolveAsLocalLightRenderState(*this);
 }
 
-FDirectionalLightBuildInfo::FDirectionalLightBuildInfo(UDirectionalLightComponent* DirectionalLightComponent)
+FLocalLightBuildInfo::FLocalLightBuildInfo(ULightComponent* LightComponent)
 {
-	const bool bCastStationaryShadows = DirectionalLightComponent->CastShadows && DirectionalLightComponent->CastStaticShadows && !DirectionalLightComponent->HasStaticLighting();
+	bStationary = LightComponent->Mobility == EComponentMobility::Stationary;
+	bCastShadow = LightComponent->CastShadows && LightComponent->CastStaticShadows;
+	ShadowMapChannel = LightComponent->PreviewShadowMapChannel;
+	LightComponentMapBuildData = MakeShared<FLightComponentMapBuildData>();
+	LightComponentMapBuildData->ShadowMapChannel = ShadowMapChannel;
+}
 
+FLocalLightRenderState::FLocalLightRenderState(ULightComponent* LightComponent)
+{
+	bStationary = LightComponent->Mobility == EComponentMobility::Stationary;
+	bCastShadow = LightComponent->CastShadows && LightComponent->CastStaticShadows;
+	ShadowMapChannel = LightComponent->PreviewShadowMapChannel;
+}
+
+FDirectionalLightBuildInfo::FDirectionalLightBuildInfo(UDirectionalLightComponent* DirectionalLightComponent)
+	: FLocalLightBuildInfo(DirectionalLightComponent)
+{
 	ComponentUObject = DirectionalLightComponent;
-	bStationary = bCastStationaryShadows;
-	ShadowMapChannel = DirectionalLightComponent->PreviewShadowMapChannel;
-	LightComponentMapBuildData = MakeUnique<FLightComponentMapBuildData>();
-	LightComponentMapBuildData->ShadowMapChannel = DirectionalLightComponent->PreviewShadowMapChannel;
 }
 
 FDirectionalLightRenderState::FDirectionalLightRenderState(UDirectionalLightComponent* DirectionalLightComponent)
+	: FLocalLightRenderState(DirectionalLightComponent)
 {
-	const bool bCastStationaryShadows = DirectionalLightComponent->CastShadows && DirectionalLightComponent->CastStaticShadows && !DirectionalLightComponent->HasStaticLighting();
-
-	bStationary = bCastStationaryShadows;
 	Color = DirectionalLightComponent->GetColoredLightBrightness();
+	
+	if (DirectionalLightComponent->IsUsedAsAtmosphereSunLight())
+	{
+		for (USkyAtmosphereComponent* SkyAtmosphere : TObjectRange<USkyAtmosphereComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
+		{
+			if (SkyAtmosphere->GetWorld() == DirectionalLightComponent->GetWorld())
+			{
+				FAtmosphereSetup AtmosphereSetup(*SkyAtmosphere);
+				FLinearColor SunLightAtmosphereTransmittance = AtmosphereSetup.GetTransmittanceAtGroundLevel(-DirectionalLightComponent->GetDirection());
+				Color *= SunLightAtmosphereTransmittance;
+				break; // We only register the first we find
+			}
+		}
+	}
+	
 	Direction = DirectionalLightComponent->GetDirection();
 	LightSourceAngle = DirectionalLightComponent->LightSourceAngle;
 	LightSourceSoftAngle = DirectionalLightComponent->LightSourceSoftAngle;
-	ShadowMapChannel = DirectionalLightComponent->PreviewShadowMapChannel;
 }
 
 FPointLightBuildInfo::FPointLightBuildInfo(UPointLightComponent* PointLightComponent)
+	: FLocalLightBuildInfo(PointLightComponent)
 {
-	const bool bCastStationaryShadows = PointLightComponent->CastShadows && PointLightComponent->CastStaticShadows && !PointLightComponent->HasStaticLighting();
-
 	ComponentUObject = PointLightComponent;
-	bStationary = bCastStationaryShadows;
-	ShadowMapChannel = PointLightComponent->PreviewShadowMapChannel;
-	LightComponentMapBuildData = MakeUnique<FLightComponentMapBuildData>();
-	LightComponentMapBuildData->ShadowMapChannel = PointLightComponent->PreviewShadowMapChannel;
 	Position = PointLightComponent->GetLightPosition();
 	AttenuationRadius = PointLightComponent->AttenuationRadius;
 }
@@ -80,10 +106,8 @@ bool FPointLightBuildInfo::AffectsBounds(const FBoxSphereBounds& InBounds) const
 }
 
 FPointLightRenderState::FPointLightRenderState(UPointLightComponent* PointLightComponent)
+	: FLocalLightRenderState(PointLightComponent)
 {
-	const bool bCastStationaryShadows = PointLightComponent->CastShadows && PointLightComponent->CastStaticShadows && !PointLightComponent->HasStaticLighting();
-
-	bStationary = bCastStationaryShadows;
 	Color = PointLightComponent->GetColoredLightBrightness();
 	Position = PointLightComponent->GetLightPosition();
 	Direction = PointLightComponent->GetDirection();
@@ -102,14 +126,9 @@ FPointLightRenderState::FPointLightRenderState(UPointLightComponent* PointLightC
 }
 
 FSpotLightBuildInfo::FSpotLightBuildInfo(USpotLightComponent* SpotLightComponent)
+	: FLocalLightBuildInfo(SpotLightComponent)
 {
-	const bool bCastStationaryShadows = SpotLightComponent->CastShadows && SpotLightComponent->CastStaticShadows && !SpotLightComponent->HasStaticLighting();
-
 	ComponentUObject = SpotLightComponent;
-	bStationary = bCastStationaryShadows;
-	ShadowMapChannel = SpotLightComponent->PreviewShadowMapChannel;
-	LightComponentMapBuildData = MakeUnique<FLightComponentMapBuildData>();
-	LightComponentMapBuildData->ShadowMapChannel = SpotLightComponent->PreviewShadowMapChannel;
 	Position = SpotLightComponent->GetLightPosition();
 	Direction = SpotLightComponent->GetDirection();
 	AttenuationRadius = SpotLightComponent->AttenuationRadius;
@@ -147,10 +166,8 @@ bool FSpotLightBuildInfo::AffectsBounds(const FBoxSphereBounds& InBounds) const
 }
 
 FSpotLightRenderState::FSpotLightRenderState(USpotLightComponent* SpotLightComponent)
+	: FLocalLightRenderState(SpotLightComponent)
 {
-	const bool bCastStationaryShadows = SpotLightComponent->CastShadows && SpotLightComponent->CastStaticShadows && !SpotLightComponent->HasStaticLighting();
-
-	bStationary = bCastStationaryShadows;
 	Color = SpotLightComponent->GetColoredLightBrightness();
 	Position = SpotLightComponent->GetLightPosition();
 	Direction = SpotLightComponent->GetDirection();
@@ -177,14 +194,9 @@ FSpotLightRenderState::FSpotLightRenderState(USpotLightComponent* SpotLightCompo
 }
 
 FRectLightBuildInfo::FRectLightBuildInfo(URectLightComponent* RectLightComponent)
+	: FLocalLightBuildInfo(RectLightComponent)
 {
-	const bool bCastStationaryShadows = RectLightComponent->CastShadows && RectLightComponent->CastStaticShadows && !RectLightComponent->HasStaticLighting();
-
 	ComponentUObject = RectLightComponent;
-	bStationary = bCastStationaryShadows;
-	ShadowMapChannel = RectLightComponent->PreviewShadowMapChannel;
-	LightComponentMapBuildData = MakeUnique<FLightComponentMapBuildData>();
-	LightComponentMapBuildData->ShadowMapChannel = RectLightComponent->PreviewShadowMapChannel;
 	Position = RectLightComponent->GetLightPosition();
 	AttenuationRadius = RectLightComponent->AttenuationRadius;
 }
@@ -195,10 +207,8 @@ bool FRectLightBuildInfo::AffectsBounds(const FBoxSphereBounds& InBounds) const
 }
 
 FRectLightRenderState::FRectLightRenderState(URectLightComponent* RectLightComponent)
+	: FLocalLightRenderState(RectLightComponent)
 {
-	const bool bCastStationaryShadows = RectLightComponent->CastShadows && RectLightComponent->CastStaticShadows && !RectLightComponent->HasStaticLighting();
-
-	bStationary = bCastStationaryShadows;
 	Color = RectLightComponent->GetColoredLightBrightness();
 	Position = RectLightComponent->GetLightPosition();
 	Direction = RectLightComponent->GetDirection();
@@ -213,6 +223,22 @@ FRectLightRenderState::FRectLightRenderState(URectLightComponent* RectLightCompo
 	AttenuationRadius = RectLightComponent->AttenuationRadius;
 	ShadowMapChannel = RectLightComponent->PreviewShadowMapChannel;
 	IESTexture = RectLightComponent->IESTexture ? RectLightComponent->IESTexture->GetResource() : nullptr;
+	SourceTexture = RectLightComponent->SourceTexture;
+}
+
+void FRectLightRenderState::RenderThreadInit()
+{
+	AtlasSlotIndex = RectLightAtlas::AddRectLightTexture(SourceTexture);
+
+	const RectLightAtlas::FAtlasSlotDesc Slot = RectLightAtlas::GetRectLightAtlasSlot(AtlasSlotIndex);
+	RectLightAtlasUVOffset = Slot.UVOffset;
+	RectLightAtlasUVScale = Slot.UVScale;
+	RectLightAtlasMaxLevel = Slot.MaxMipLevel;
+}
+
+void FRectLightRenderState::RenderThreadFinalize()
+{
+	RectLightAtlas::RemoveRectLightTexture(AtlasSlotIndex);
 }
 
 FLightRenderParameters FDirectionalLightRenderState::GetLightShaderParameters() const
@@ -234,7 +260,9 @@ FLightRenderParameters FDirectionalLightRenderState::GetLightShaderParameters() 
 	LightParameters.SourceRadius = FMath::Sin(0.5f * FMath::DegreesToRadians(LightSourceAngle));
 	LightParameters.SoftSourceRadius = 0; // Irrelevant when tracing shadow rays. FMath::Sin(0.5f * FMath::DegreesToRadians(LightSourceSoftAngle));
 	LightParameters.SourceLength = 0.0f;
-	LightParameters.SourceTexture = GWhiteTexture->TextureRHI; // Irrelevant when tracing shadow rays
+	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
 
 	return LightParameters;
 }
@@ -249,7 +277,9 @@ FLightRenderParameters FPointLightRenderState::GetLightShaderParameters() const
 	LightParameters.InvRadius = 1.0f / AttenuationRadius;
 	LightParameters.Color = Color;
 	LightParameters.SourceRadius = SourceRadius;
-
+	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
 	return LightParameters;
 }
 
@@ -264,6 +294,9 @@ FLightRenderParameters FSpotLightRenderState::GetLightShaderParameters() const
 	LightParameters.InvRadius = 1.0f / AttenuationRadius;
 	LightParameters.Color = Color;
 	LightParameters.SourceRadius = SourceRadius;
+	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
+	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
 
 	return LightParameters;
 }
@@ -283,14 +316,13 @@ FLightRenderParameters FRectLightRenderState::GetLightShaderParameters() const
 
 	LightParameters.SourceRadius = SourceWidth * 0.5f;
 	LightParameters.SourceLength = SourceHeight * 0.5f;
-	LightParameters.SourceTexture =  GWhiteTexture->TextureRHI;
 	LightParameters.RectLightBarnCosAngle = FMath::Cos(FMath::DegreesToRadians(BarnDoorAngle));
 	LightParameters.RectLightBarnLength = BarnDoorLength;
-
+	
 	return LightParameters;
 }
 
-void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdList)
+void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel)
 {
 	FRDGBuilder GraphBuilder(RHICmdList);
 
@@ -312,6 +344,7 @@ void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdLis
 
 	PrepareSkyTexture_Internal(
 		GraphBuilder,
+		FeatureLevel,
 		Parameters,
 		Size,
 		SkyColor,
@@ -327,6 +360,411 @@ void FSkyLightRenderState::PrepareSkyTexture(FRHICommandListImmediate& RHICmdLis
 	GraphBuilder.QueueTextureExtraction(SkylightPdf, &PathTracingSkylightPdf);
 
 	GraphBuilder.Execute();
+}
+
+void FDirectionalLightRenderState::RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& Scene)
+{
+	if (!Scene.SetupRayTracingScene())
+	{
+		return;
+	}
+	
+	FVector XAxis, YAxis;
+	Direction.FindBestAxisVectors(XAxis, YAxis);
+	// Create a coordinate system for the dominant directional light, with the z axis corresponding to the light's direction
+	FMatrix WorldToLight = FBasisVectorMatrix(XAxis, YAxis, Direction, FVector4(0, 0, 0));
+
+	const FBox LightSpaceImportanceBounds = Scene.CombinedImportanceVolume.TransformBy(WorldToLight);
+
+	const float ClampedResolutionScale = 1.0f;
+	const float StaticShadowDepthMapTransitionSampleDistanceX = 10;
+	const float StaticShadowDepthMapTransitionSampleDistanceY = 10;
+	
+	int32 ShadowMapSizeX = FMath::TruncToInt(FMath::Max(LightSpaceImportanceBounds.GetExtent().X * 2.0f * ClampedResolutionScale / StaticShadowDepthMapTransitionSampleDistanceX, 4.0f));
+	int32 ShadowMapSizeY = FMath::TruncToInt(FMath::Max(LightSpaceImportanceBounds.GetExtent().Y * 2.0f * ClampedResolutionScale / StaticShadowDepthMapTransitionSampleDistanceY, 4.0f));
+
+	const uint64 StaticShadowDepthMapMaxSamples = 16777216;
+	
+	// Clamp the number of dominant shadow samples generated if necessary while maintaining aspect ratio
+	if ((uint64)ShadowMapSizeX * (uint64)ShadowMapSizeY > StaticShadowDepthMapMaxSamples)
+	{
+		const float AspectRatio = ShadowMapSizeX / (float)ShadowMapSizeY;
+		ShadowMapSizeY = FMath::TruncToInt(FMath::Sqrt(StaticShadowDepthMapMaxSamples / AspectRatio));
+		ShadowMapSizeX = FMath::TruncToInt(StaticShadowDepthMapMaxSamples / (float)ShadowMapSizeY);
+	}
+
+	FRDGBuilder GraphBuilder(RHICmdList);
+	
+	FRDGTextureRef DepthMapTexture = GraphBuilder.CreateTexture(
+		FRDGTextureDesc::Create2D(
+			FIntPoint{ShadowMapSizeX, ShadowMapSizeY},
+			PF_R16F,
+			FClearValueBinding::DepthFar,
+			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV
+		), TEXT("GPULMStaticShadowDepthMap"));
+
+	FStaticShadowDepthMapTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStaticShadowDepthMapTracingRGS::FParameters>();
+	PassParameters->ViewUniformBuffer = Scene.ReferenceView->ViewUniformBuffer;
+	PassParameters->TLAS = Scene.RayTracingSceneSRV;
+	PassParameters->ShadowMapSize = FIntPoint{ShadowMapSizeX, ShadowMapSizeY};
+	PassParameters->StaticShadowDepthMapSuperSampleFactor = 1;
+	PassParameters->LightSpaceImportanceBoundsMin = FVector3f(LightSpaceImportanceBounds.Min);
+	PassParameters->LightSpaceImportanceBoundsMax = FVector3f(LightSpaceImportanceBounds.Max);
+	PassParameters->LightToWorld = FMatrix44f(WorldToLight.InverseFast());
+	PassParameters->MaxPossibleDistance = LightSpaceImportanceBounds.Max.Z - LightSpaceImportanceBounds.Min.Z;
+	PassParameters->DepthMapTexture = GraphBuilder.CreateUAV(DepthMapTexture);
+
+	FStaticShadowDepthMapTracingRGS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(0);
+	auto RayGenShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector);
+	ClearUnusedGraphResources(RayGenShader, PassParameters);
+	
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("StaticShadowDepthMapTracing"),
+		PassParameters,
+		ERDGPassFlags::Compute,
+		[PassParameters, RayGenShader, RayTracingSceneRHI = Scene.RayTracingScene, RayTracingPipelineState = Scene.RayTracingPipelineState](FRHIRayTracingCommandList& RHICmdList)
+	{
+		FRayTracingShaderBindingsWriter GlobalResources;
+		SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
+
+		RHICmdList.RayTraceDispatch(RayTracingPipelineState, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, PassParameters->ShadowMapSize.X, PassParameters->ShadowMapSize.Y);
+	}
+	);
+
+	FRHIGPUTextureReadback DepthMapTextureReadback(TEXT("GPULMStaticShadowDepthMapReadback"));
+	
+	AddEnqueueCopyPass(GraphBuilder, &DepthMapTextureReadback, DepthMapTexture);
+	
+	GraphBuilder.Execute();
+
+	RHICmdList.BlockUntilGPUIdle();
+
+	check(DepthMapTextureReadback.IsReady());
+
+	int32 RowPitchInPixels;
+	FFloat16* LockedData = (FFloat16*)DepthMapTextureReadback.Lock(RowPitchInPixels);
+	LightComponentMapBuildData->DepthMap.Empty();
+	LightComponentMapBuildData->DepthMap.DepthSamples.AddZeroed(ShadowMapSizeX * ShadowMapSizeY);
+	for (int32 Y = 0; Y < ShadowMapSizeY; Y++)
+	{
+		for (int32 X = 0; X < ShadowMapSizeX; X++)
+		{
+			LightComponentMapBuildData->DepthMap.DepthSamples[Y * ShadowMapSizeX + X] = LockedData[Y * RowPitchInPixels + X];
+		}
+	}
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeX = ShadowMapSizeX;
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeY = ShadowMapSizeY;
+	WorldToLight *= FTranslationMatrix(-LightSpaceImportanceBounds.Min) * FScaleMatrix(FVector(1.0) / (LightSpaceImportanceBounds.Max - LightSpaceImportanceBounds.Min));
+	LightComponentMapBuildData->DepthMap.WorldToLight = WorldToLight;
+	DepthMapTextureReadback.Unlock();
+	
+	Scene.DestroyRayTracingScene();
+}
+
+void FSpotLightRenderState::RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& Scene)
+{
+	if (!Scene.SetupRayTracingScene())
+	{
+		return;
+	}
+	
+	FVector XAxis, YAxis;
+	Direction.FindBestAxisVectors(XAxis, YAxis);
+	// Create a coordinate system for the dominant directional light, with the z axis corresponding to the light's direction
+	FMatrix WorldToLight = FTranslationMatrix(-Position) * FBasisVectorMatrix(XAxis, YAxis, Direction, FVector4(0, 0, 0));
+
+	// Distance from the light's direction axis to the edge of the cone at the radius of the light
+	const float HalfCrossSectionLength = AttenuationRadius * FMath::Tan(FMath::Acos(SpotAngles.X));
+	
+	const FBox LightSpaceImportanceBounds
+	{
+		FVector{-HalfCrossSectionLength, -HalfCrossSectionLength, 0},
+		FVector{HalfCrossSectionLength, HalfCrossSectionLength, AttenuationRadius},
+	};
+	
+	const float ClampedResolutionScale = 1.0f;
+	const float StaticShadowDepthMapTransitionSampleDistanceX = 10;
+	const float StaticShadowDepthMapTransitionSampleDistanceY = 10;
+	
+	int32 ShadowMapSizeX = FMath::TruncToInt(FMath::Max(HalfCrossSectionLength * ClampedResolutionScale / StaticShadowDepthMapTransitionSampleDistanceX, 4.0f));
+	int32 ShadowMapSizeY = ShadowMapSizeX;
+
+	const uint64 StaticShadowDepthMapMaxSamples = 16777216;
+	
+	// Clamp the number of dominant shadow samples generated if necessary while maintaining aspect ratio
+	if ((uint64)ShadowMapSizeX * (uint64)ShadowMapSizeY > StaticShadowDepthMapMaxSamples)
+	{
+		const float AspectRatio = ShadowMapSizeX / (float)ShadowMapSizeY;
+		ShadowMapSizeY = FMath::TruncToInt(FMath::Sqrt(StaticShadowDepthMapMaxSamples / AspectRatio));
+		ShadowMapSizeX = FMath::TruncToInt(StaticShadowDepthMapMaxSamples / (float)ShadowMapSizeY);
+	}
+
+	FRDGBuilder GraphBuilder(RHICmdList);
+	
+	FRDGTextureRef DepthMapTexture = GraphBuilder.CreateTexture(
+		FRDGTextureDesc::Create2D(
+			FIntPoint{ShadowMapSizeX, ShadowMapSizeY},
+			PF_R16F,
+			FClearValueBinding::DepthFar,
+			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV
+		), TEXT("GPULMStaticShadowDepthMap"));
+
+	const float MaxPossibleDistance = LightSpaceImportanceBounds.Max.Z - LightSpaceImportanceBounds.Min.Z;
+	const FMatrix LightToWorld = WorldToLight.InverseFast();
+
+	FStaticShadowDepthMapTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStaticShadowDepthMapTracingRGS::FParameters>();
+	PassParameters->ViewUniformBuffer = Scene.ReferenceView->ViewUniformBuffer;
+	PassParameters->TLAS = Scene.RayTracingSceneSRV;
+	PassParameters->ShadowMapSize = FIntPoint{ShadowMapSizeX, ShadowMapSizeY};
+	PassParameters->StaticShadowDepthMapSuperSampleFactor = 1;
+	PassParameters->LightSpaceImportanceBoundsMin = FVector3f(LightSpaceImportanceBounds.Min);
+	PassParameters->LightSpaceImportanceBoundsMax = FVector3f(LightSpaceImportanceBounds.Max);
+	PassParameters->LightToWorld = FMatrix44f(LightToWorld);
+	PassParameters->WorldToLight = FMatrix44f(WorldToLight);
+	PassParameters->MaxPossibleDistance = MaxPossibleDistance;
+	PassParameters->DepthMapTexture = GraphBuilder.CreateUAV(DepthMapTexture);
+
+	FStaticShadowDepthMapTracingRGS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(1);
+	auto RayGenShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector);
+	ClearUnusedGraphResources(RayGenShader, PassParameters);
+	
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("StaticShadowDepthMapTracing"),
+		PassParameters,
+		ERDGPassFlags::Compute,
+		[PassParameters, RayGenShader, RayTracingSceneRHI = Scene.RayTracingScene, RayTracingPipelineState = Scene.RayTracingPipelineState](FRHIRayTracingCommandList& RHICmdList)
+	{
+		FRayTracingShaderBindingsWriter GlobalResources;
+		SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
+
+		RHICmdList.RayTraceDispatch(RayTracingPipelineState, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, PassParameters->ShadowMapSize.X, PassParameters->ShadowMapSize.Y);
+	}
+	);
+
+	FRHIGPUTextureReadback DepthMapTextureReadback(TEXT("GPULMStaticShadowDepthMapReadback"));
+	
+	AddEnqueueCopyPass(GraphBuilder, &DepthMapTextureReadback, DepthMapTexture);
+	
+	GraphBuilder.Execute();
+
+	RHICmdList.BlockUntilGPUIdle();
+
+	check(DepthMapTextureReadback.IsReady());
+
+	int32 RowPitchInPixels;
+	FFloat16* LockedData = (FFloat16*)DepthMapTextureReadback.Lock(RowPitchInPixels);
+	LightComponentMapBuildData->DepthMap.Empty();
+	LightComponentMapBuildData->DepthMap.DepthSamples.AddZeroed(ShadowMapSizeX * ShadowMapSizeY);
+	for (int32 Y = 0; Y < ShadowMapSizeY; Y++)
+	{
+		for (int32 X = 0; X < ShadowMapSizeX; X++)
+		{
+			LightComponentMapBuildData->DepthMap.DepthSamples[Y * ShadowMapSizeX + X] = LockedData[Y * RowPitchInPixels + X];
+		}
+	}
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeX = ShadowMapSizeX;
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeY = ShadowMapSizeY;
+	WorldToLight *=
+		// Perspective projection sized to the spotlight cone
+		FPerspectiveMatrix(FMath::Acos(SpotAngles.X), 1, 1, 0, AttenuationRadius)
+		// Convert from NDC to texture space, normalize Z
+		* FMatrix(
+			FPlane(.5,	0,		0,											0),
+			FPlane(0,	.5,	0,											0),
+			FPlane(0,	0,		1.0 / LightSpaceImportanceBounds.Max.Z,	0),
+			FPlane(.5,	.5,	0,											1));
+	LightComponentMapBuildData->DepthMap.WorldToLight = WorldToLight;
+	DepthMapTextureReadback.Unlock();
+	
+	Scene.DestroyRayTracingScene();
+}
+
+void FPointLightRenderState::RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& Scene)
+{
+	if (!Scene.SetupRayTracingScene())
+	{
+		return;
+	}
+
+	const float ClampedResolutionScale = 1.0f;
+	const float StaticShadowDepthMapTransitionSampleDistanceX = 10;
+	const float StaticShadowDepthMapTransitionSampleDistanceY = 10;
+	
+	int32 ShadowMapSizeX = FMath::TruncToInt(FMath::Max(AttenuationRadius * 4 * ClampedResolutionScale / StaticShadowDepthMapTransitionSampleDistanceX, 4.0f));
+	int32 ShadowMapSizeY = ShadowMapSizeX;
+
+	const uint64 StaticShadowDepthMapMaxSamples = 16777216;
+	
+	// Clamp the number of dominant shadow samples generated if necessary while maintaining aspect ratio
+	if ((uint64)ShadowMapSizeX * (uint64)ShadowMapSizeY > StaticShadowDepthMapMaxSamples)
+	{
+		const float AspectRatio = ShadowMapSizeX / (float)ShadowMapSizeY;
+		ShadowMapSizeY = FMath::TruncToInt(FMath::Sqrt(StaticShadowDepthMapMaxSamples / AspectRatio));
+		ShadowMapSizeX = FMath::TruncToInt(StaticShadowDepthMapMaxSamples / (float)ShadowMapSizeY);
+	}
+
+	FRDGBuilder GraphBuilder(RHICmdList);
+	
+	FRDGTextureRef DepthMapTexture = GraphBuilder.CreateTexture(
+		FRDGTextureDesc::Create2D(
+			FIntPoint{ShadowMapSizeX, ShadowMapSizeY},
+			PF_R16F,
+			FClearValueBinding::DepthFar,
+			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV
+		), TEXT("GPULMStaticShadowDepthMap"));
+
+	FStaticShadowDepthMapTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStaticShadowDepthMapTracingRGS::FParameters>();
+	PassParameters->ViewUniformBuffer = Scene.ReferenceView->ViewUniformBuffer;
+	PassParameters->TLAS = Scene.RayTracingSceneSRV;
+	PassParameters->ShadowMapSize = FIntPoint{ShadowMapSizeX, ShadowMapSizeY};
+	PassParameters->StaticShadowDepthMapSuperSampleFactor = 1;
+	PassParameters->LightSpaceImportanceBoundsMin = FVector3f{EForceInit::ForceInitToZero};
+	PassParameters->LightSpaceImportanceBoundsMax = FVector3f{EForceInit::ForceInitToZero};
+	PassParameters->LightToWorld = FTranslationMatrix44f(FVector3f(Position));
+	PassParameters->WorldToLight = FTranslationMatrix44f(-FVector3f(Position));
+	PassParameters->MaxPossibleDistance = AttenuationRadius;
+	PassParameters->DepthMapTexture = GraphBuilder.CreateUAV(DepthMapTexture);
+
+	FStaticShadowDepthMapTracingRGS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(2);
+	auto RayGenShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector);
+	ClearUnusedGraphResources(RayGenShader, PassParameters);
+	
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("StaticShadowDepthMapTracing"),
+		PassParameters,
+		ERDGPassFlags::Compute,
+		[PassParameters, RayGenShader, RayTracingSceneRHI = Scene.RayTracingScene, RayTracingPipelineState = Scene.RayTracingPipelineState](FRHIRayTracingCommandList& RHICmdList)
+	{
+		FRayTracingShaderBindingsWriter GlobalResources;
+		SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
+
+		RHICmdList.RayTraceDispatch(RayTracingPipelineState, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, PassParameters->ShadowMapSize.X, PassParameters->ShadowMapSize.Y);
+	}
+	);
+
+	FRHIGPUTextureReadback DepthMapTextureReadback(TEXT("GPULMStaticShadowDepthMapReadback"));
+	
+	AddEnqueueCopyPass(GraphBuilder, &DepthMapTextureReadback, DepthMapTexture);
+	
+	GraphBuilder.Execute();
+
+	RHICmdList.BlockUntilGPUIdle();
+
+	check(DepthMapTextureReadback.IsReady());
+
+	int32 RowPitchInPixels;
+	FFloat16* LockedData = (FFloat16*)DepthMapTextureReadback.Lock(RowPitchInPixels);
+	LightComponentMapBuildData->DepthMap.Empty();
+	LightComponentMapBuildData->DepthMap.DepthSamples.AddZeroed(ShadowMapSizeX * ShadowMapSizeY);
+	for (int32 Y = 0; Y < ShadowMapSizeY; Y++)
+	{
+		for (int32 X = 0; X < ShadowMapSizeX; X++)
+		{
+			LightComponentMapBuildData->DepthMap.DepthSamples[Y * ShadowMapSizeX + X] = LockedData[Y * RowPitchInPixels + X];
+		}
+	}
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeX = ShadowMapSizeX;
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeY = ShadowMapSizeY;
+	LightComponentMapBuildData->DepthMap.WorldToLight = FMatrix::Identity;
+	DepthMapTextureReadback.Unlock();
+	
+	Scene.DestroyRayTracingScene();
+}
+
+void FRectLightRenderState::RenderStaticShadowDepthMap(FRHICommandListImmediate& RHICmdList, FSceneRenderState& Scene)
+{
+	if (!Scene.SetupRayTracingScene())
+	{
+		return;
+	}
+
+	const float ClampedResolutionScale = 1.0f;
+	const float StaticShadowDepthMapTransitionSampleDistanceX = 10;
+	const float StaticShadowDepthMapTransitionSampleDistanceY = 10;
+	
+	int32 ShadowMapSizeX = FMath::TruncToInt(FMath::Max(AttenuationRadius * 4 * ClampedResolutionScale / StaticShadowDepthMapTransitionSampleDistanceX, 4.0f));
+	int32 ShadowMapSizeY = ShadowMapSizeX;
+
+	const uint64 StaticShadowDepthMapMaxSamples = 16777216;
+	
+	// Clamp the number of dominant shadow samples generated if necessary while maintaining aspect ratio
+	if ((uint64)ShadowMapSizeX * (uint64)ShadowMapSizeY > StaticShadowDepthMapMaxSamples)
+	{
+		const float AspectRatio = ShadowMapSizeX / (float)ShadowMapSizeY;
+		ShadowMapSizeY = FMath::TruncToInt(FMath::Sqrt(StaticShadowDepthMapMaxSamples / AspectRatio));
+		ShadowMapSizeX = FMath::TruncToInt(StaticShadowDepthMapMaxSamples / (float)ShadowMapSizeY);
+	}
+
+	FRDGBuilder GraphBuilder(RHICmdList);
+	
+	FRDGTextureRef DepthMapTexture = GraphBuilder.CreateTexture(
+		FRDGTextureDesc::Create2D(
+			FIntPoint{ShadowMapSizeX, ShadowMapSizeY},
+			PF_R16F,
+			FClearValueBinding::DepthFar,
+			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::UAV
+		), TEXT("GPULMStaticShadowDepthMap"));
+
+	FStaticShadowDepthMapTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStaticShadowDepthMapTracingRGS::FParameters>();
+	PassParameters->ViewUniformBuffer = Scene.ReferenceView->ViewUniformBuffer;
+	PassParameters->TLAS = Scene.RayTracingSceneSRV;
+	PassParameters->ShadowMapSize = FIntPoint{ShadowMapSizeX, ShadowMapSizeY};
+	PassParameters->StaticShadowDepthMapSuperSampleFactor = 1;
+	PassParameters->LightSpaceImportanceBoundsMin = FVector3f{EForceInit::ForceInitToZero};
+	PassParameters->LightSpaceImportanceBoundsMax = FVector3f{EForceInit::ForceInitToZero};
+	PassParameters->LightToWorld = FTranslationMatrix44f(FVector3f(Position));
+	PassParameters->WorldToLight = FTranslationMatrix44f(-FVector3f(Position));
+	PassParameters->MaxPossibleDistance = AttenuationRadius;
+	PassParameters->DepthMapTexture = GraphBuilder.CreateUAV(DepthMapTexture);
+
+	FStaticShadowDepthMapTracingRGS::FPermutationDomain PermutationVector;
+	PermutationVector.Set<FStaticShadowDepthMapTracingRGS::FLightType>(2);
+	auto RayGenShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FStaticShadowDepthMapTracingRGS>(PermutationVector);
+	ClearUnusedGraphResources(RayGenShader, PassParameters);
+	
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("StaticShadowDepthMapTracing"),
+		PassParameters,
+		ERDGPassFlags::Compute,
+		[PassParameters, RayGenShader, RayTracingSceneRHI = Scene.RayTracingScene, RayTracingPipelineState = Scene.RayTracingPipelineState](FRHIRayTracingCommandList& RHICmdList)
+	{
+		FRayTracingShaderBindingsWriter GlobalResources;
+		SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
+
+		RHICmdList.RayTraceDispatch(RayTracingPipelineState, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, PassParameters->ShadowMapSize.X, PassParameters->ShadowMapSize.Y);
+	}
+	);
+
+	FRHIGPUTextureReadback DepthMapTextureReadback(TEXT("GPULMStaticShadowDepthMapReadback"));
+	
+	AddEnqueueCopyPass(GraphBuilder, &DepthMapTextureReadback, DepthMapTexture);
+	
+	GraphBuilder.Execute();
+
+	RHICmdList.BlockUntilGPUIdle();
+
+	check(DepthMapTextureReadback.IsReady());
+
+	int32 RowPitchInPixels;
+	FFloat16* LockedData = (FFloat16*)DepthMapTextureReadback.Lock(RowPitchInPixels);
+	LightComponentMapBuildData->DepthMap.Empty();
+	LightComponentMapBuildData->DepthMap.DepthSamples.AddZeroed(ShadowMapSizeX * ShadowMapSizeY);
+	for (int32 Y = 0; Y < ShadowMapSizeY; Y++)
+	{
+		for (int32 X = 0; X < ShadowMapSizeX; X++)
+		{
+			LightComponentMapBuildData->DepthMap.DepthSamples[Y * ShadowMapSizeX + X] = LockedData[Y * RowPitchInPixels + X];
+		}
+	}
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeX = ShadowMapSizeX;
+	LightComponentMapBuildData->DepthMap.ShadowMapSizeY = ShadowMapSizeY;
+	LightComponentMapBuildData->DepthMap.WorldToLight = FMatrix::Identity;
+	DepthMapTextureReadback.Unlock();
+	
+	Scene.DestroyRayTracingScene();
 }
 
 }

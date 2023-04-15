@@ -5,7 +5,6 @@
 #if !CRASH_REPORT_UNATTENDED_ONLY
 
 #include "CrashReportClientStyle.h"
-#include "Styling/SlateStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SThrobber.h"
 #include "CrashDescription.h"
@@ -46,6 +45,7 @@ void SCrashReportClient::Construct(const FArguments& InArgs, const TSharedRef<FC
 {
 	CrashReportClient = Client;
 	bHasUserCommentErrors = false;
+	bHideSubmitAndRestart = InArgs._bHideSubmitAndRestart;
 
 	FText CrashDetailedMessage = LOCTEXT("CrashDetailed", "We are very sorry that this crash occurred. Our goal is to prevent crashes like this from occurring in the future. Please help us track down and fix this crash by providing detailed information about what you were doing so that we may reproduce the crash and fix it quickly. You can also log a Bug Report with us using the <a id=\"browser\" href=\"https://epicsupport.force.com/unrealengine/s/\" style=\"Hyperlink\">Bug Submission Form</> and work directly with support staff to report this issue.\n\nThanks for your help in improving the Unreal Engine.");
 	if (FPrimaryCrashProperties::Get()->IsValid())
@@ -85,7 +85,7 @@ void SCrashReportClient::ConstructDetailedDialog(const TSharedRef<FCrashReportCl
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FCoreStyle::Get().GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FCrashReportClientStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
@@ -119,7 +119,6 @@ void SCrashReportClient::ConstructDetailedDialog(const TSharedRef<FCrashReportCl
 				SNew( SRichTextBlock )
 				.Text(CrashDetailedMessage)
 				.AutoWrapText(true)
-				.DecoratorStyleSet( &FCoreStyle::Get() )
 				+ SRichTextBlock::HyperlinkDecorator( TEXT("browser"), FSlateHyperlinkRun::FOnClick::CreateStatic( &OnBrowserLinkClicked ) )
 			]
 
@@ -320,8 +319,8 @@ void SCrashReportClient::ConstructDetailedDialog(const TSharedRef<FCrashReportCl
 					.Text(LOCTEXT("SendAndRestartEditor", "Send and Restart"))
 					.OnClicked(Client, &FCrashReportClient::SubmitAndRestart)
 					.IsEnabled(this, &SCrashReportClient::IsSendEnabled)
-					.Visibility( FCrashReportCoreConfig::Get().GetHideRestartOption() ? EVisibility::Collapsed : EVisibility::Visible )
-				]			
+					.Visibility( bHideSubmitAndRestart || FCrashReportCoreConfig::Get().GetHideRestartOption() ? EVisibility::Collapsed : EVisibility::Visible )
+				]
 			]
 		]
 	];
@@ -330,13 +329,20 @@ void SCrashReportClient::ConstructDetailedDialog(const TSharedRef<FCrashReportCl
 void SCrashReportClient::ConstructSimpleDialog(const TSharedRef<FCrashReportClient>& Client, const FText& CrashDetailedMessage)
 {
 	FString CrashedAppName = FPrimaryCrashProperties::Get()->IsValid() ? FPrimaryCrashProperties::Get()->GameName : TEXT("");
-	CrashedAppName.RemoveFromStart(TEXT("UE4-"));
+	// GameNames have taken on a number of prefixes over the years. Try to strip them all off.
+	if (!CrashedAppName.RemoveFromStart(TEXT("UE4-")))
+	{
+		if (!CrashedAppName.RemoveFromStart(TEXT("UE5-")))
+		{
+			CrashedAppName.RemoveFromStart(TEXT("UE-"));
+		}
+	}
 	CrashedAppName.RemoveFromEnd(TEXT("Game"));
 
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FCoreStyle::Get().GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FCrashReportClientStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
@@ -362,7 +368,6 @@ void SCrashReportClient::ConstructSimpleDialog(const TSharedRef<FCrashReportClie
 				SNew( SRichTextBlock )
 				.Text(CrashDetailedMessage)
 				.AutoWrapText(true)
-				.DecoratorStyleSet( &FCoreStyle::Get() )
 				+ SRichTextBlock::HyperlinkDecorator( TEXT("browser"), FSlateHyperlinkRun::FOnClick::CreateStatic( &OnBrowserLinkClicked ) )
 			]
 

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -24,16 +25,16 @@ namespace UnrealBuildTool
 
 	class TVOSProvisioningData : IOSProvisioningData
 	{
-		public TVOSProvisioningData(TVOSProjectSettings ProjectSettings, bool bForDistribution)
-			: base(ProjectSettings, true, bForDistribution)
+		public TVOSProvisioningData(TVOSProjectSettings ProjectSettings, bool bForDistribution, ILogger Logger)
+			: base(ProjectSettings, true, bForDistribution, Logger)
 		{
 		}
 	}
 
 	class TVOSPlatform : IOSPlatform
     {
-		public TVOSPlatform(UEBuildPlatformSDK InSDK)
-			: base(InSDK, UnrealTargetPlatform.TVOS)
+		public TVOSPlatform(UEBuildPlatformSDK InSDK, ILogger Logger)
+			: base(InSDK, UnrealTargetPlatform.TVOS, Logger)
 		{
 		}
 
@@ -56,7 +57,6 @@ namespace UnrealBuildTool
 				Target.GlobalDefinitions.Remove("HAS_METAL=0");
 				Target.GlobalDefinitions.Add("HAS_METAL=1");
 				Target.ExtraModuleNames.Add("MetalRHI");
-				Target.ExtraModuleNames.Add("AGXRHI");
 			}
 		}
 
@@ -77,7 +77,7 @@ namespace UnrealBuildTool
 
 		protected override IOSProvisioningData CreateProvisioningData(IOSProjectSettings ProjectSettings, bool bForDistribution)
 		{
-			return new TVOSProvisioningData((TVOSProjectSettings)ProjectSettings, bForDistribution);
+			return new TVOSProvisioningData((TVOSProjectSettings)ProjectSettings, bForDistribution, Logger);
 		}
 
 		public override void ModifyModuleRulesForOtherPlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
@@ -100,7 +100,7 @@ namespace UnrealBuildTool
 				}
 			}
 		}
-    
+
 		/// <summary>
 		/// Setup the target environment for building
 		/// </summary>
@@ -125,12 +125,12 @@ namespace UnrealBuildTool
 		public override UEToolChain CreateToolChain(ReadOnlyTargetRules Target)
 		{
 			TVOSProjectSettings ProjectSettings = ((TVOSPlatform)UEBuildPlatform.GetBuildPlatform(UnrealTargetPlatform.TVOS)).ReadProjectSettings(Target.ProjectFile);
-			return new TVOSToolChain(Target, ProjectSettings);
+			return new TVOSToolChain(Target, ProjectSettings, Logger);
 		}
 
 		public override void Deploy(TargetReceipt Receipt)
 		{
-			new UEDeployTVOS().PrepTargetForDeployment(Receipt);
+			new UEDeployTVOS(Logger).PrepTargetForDeployment(Receipt);
 		}
 	}
 
@@ -144,12 +144,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Register the platform with the UEBuildPlatform class
 		/// </summary>
-		public override void RegisterBuildPlatforms()
+		public override void RegisterBuildPlatforms(ILogger Logger)
 		{
-			ApplePlatformSDK SDK = new IOSPlatformSDK();
+			ApplePlatformSDK SDK = new IOSPlatformSDK(Logger);
 		
 			// Register this build platform for IOS
-			UEBuildPlatform.RegisterBuildPlatform(new TVOSPlatform(SDK));
+			UEBuildPlatform.RegisterBuildPlatform(new TVOSPlatform(SDK, Logger), Logger);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.TVOS, UnrealPlatformGroup.Apple);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.TVOS, UnrealPlatformGroup.IOS);
 		}

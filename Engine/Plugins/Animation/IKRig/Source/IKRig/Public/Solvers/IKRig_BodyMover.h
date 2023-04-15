@@ -22,7 +22,7 @@ public:
 	FName BoneName;
 
 	/** Scale the influence this effector has on the body. Range is 0-10. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Effector", meta = (ClampMin = "0", ClampMa = "10", UIMin = "0.0", UIMax = "10.0"))
+	UPROPERTY(EditAnywhere, Category = "Body Mover Effector", meta = (ClampMin = "0", ClampMax = "10", UIMin = "0.0", UIMax = "10.0"))
 	float InfluenceMultiplier = 1.0f;
 };
 
@@ -89,14 +89,15 @@ public:
 	virtual void Solve(FIKRigSkeleton& IKRigSkeleton, const FIKRigGoalContainer& Goals) override;
 
 	virtual FName GetRootBone() const override { return RootBone; };
-#if WITH_EDITOR
+	virtual void RemoveGoal(const FName& GoalName) override;
 	virtual void UpdateSolverSettings(UIKRigSolver* InSettings) override;
+
+#if WITH_EDITOR
 	virtual FText GetNiceName() const override;
 	virtual bool GetWarningMessage(FText& OutWarningMessage) const override;
 	virtual bool IsBoneAffectedBySolver(const FName& BoneName, const FIKRigSkeleton& IKRigSkeleton) const override;
 	// goals
 	virtual void AddGoal(const UIKRigEffectorGoal& NewGoal) override;
-	virtual void RemoveGoal(const FName& GoalName) override;
 	virtual void RenameGoal(const FName& OldName, const FName& NewName) override;
 	virtual void SetGoalBone(const FName& GoalName, const FName& NewBoneName) override;
 	virtual bool IsGoalConnected(const FName& GoalName) const override;
@@ -110,13 +111,6 @@ public:
 private:
 
 	int32 GetIndexOfGoal(const FName& OldName) const;
-
-	static void ExtractRotation(
-	    const FVector& DX,
-	    const FVector& DY,
-	    const FVector& DZ,
-	    FQuat &Q,
-	    const unsigned int maxIter);
 
 	int32 BodyBoneIndex;
 };

@@ -480,7 +480,9 @@ FPostProcessSettings::FPostProcessSettings()
 
 	AutoExposureApplyPhysicalCameraExposure = 1;
 
-	LocalExposureContrastScale = 1.0f;
+	LocalExposureContrastScale_DEPRECATED = 1.0f;
+	LocalExposureHighlightContrastScale = 1.0f;
+	LocalExposureShadowContrastScale = 1.0f;
 	LocalExposureDetailStrength = 1.0f;
 	LocalExposureBlurredLuminanceBlend = 0.6f;
 	LocalExposureBlurredLuminanceKernelSizePercent = 50.0f;
@@ -528,6 +530,7 @@ FPostProcessSettings::FPostProcessSettings()
 	DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::Lumen;
 	IndirectLightingColor = FLinearColor(1.0f, 1.0f, 1.0f);
 	IndirectLightingIntensity = 1.0f;
+	LumenSurfaceCacheResolution = 1.0f;
 	LumenSceneLightingQuality = 1;
 	LumenSceneDetail = 1.0f;
 	LumenSceneViewDistance = 20000.0f;
@@ -535,6 +538,9 @@ FPostProcessSettings::FPostProcessSettings()
 	LumenFinalGatherQuality = 1;
 	LumenFinalGatherLightingUpdateSpeed = 1;
 	LumenMaxTraceDistance = 20000.0f;
+	LumenDiffuseColorBoost = 1.0f;
+	LumenSkylightLeaking = 0.0f;
+	LumenFullSkylightLeakingDistance = 1000.0f;
 
 	ColorGradingIntensity = 1.0f;
 	RayTracingGIType = ERayTracingGlobalIlluminationType::Disabled;
@@ -546,6 +552,7 @@ FPostProcessSettings::FPostProcessSettings()
 	DepthOfFieldMinFstop = 1.2f;
 	DepthOfFieldBladeCount = FPostProcessSettings::kDefaultDepthOfFieldBladeCount;
 	DepthOfFieldSensorWidth = 24.576f;			// APS-C
+	DepthOfFieldSqueezeFactor = 1.0f;
 	DepthOfFieldDepthBlurAmount = 1.0f;
 	DepthOfFieldDepthBlurRadius = 0.0f;
 	DepthOfFieldFocalRegion = 0.0f;
@@ -576,6 +583,7 @@ FPostProcessSettings::FPostProcessSettings()
 	ReflectionMethod = EReflectionMethod::Lumen;
 	LumenReflectionQuality = 1;
 	LumenRayLightingMode = ELumenRayLightingModeOverride::Default;
+	LumenFrontLayerTranslucencyReflections = false;
 	ScreenSpaceReflectionIntensity = 100.0f;
 	ScreenSpaceReflectionQuality = 50.0f;
 	ScreenSpaceReflectionMaxRoughness = 0.6f;
@@ -593,11 +601,12 @@ FPostProcessSettings::FPostProcessSettings()
 	RayTracingTranslucencyRefraction = 1;
 
 	PathTracingMaxBounces = 32;
-	PathTracingSamplesPerPixel = 16384;
+	PathTracingSamplesPerPixel = 2048;
 	PathTracingFilterWidth = 3.0f;
 	PathTracingEnableEmissive = 1;
 	PathTracingMaxPathExposure = 30.0f;
 	PathTracingEnableReferenceDOF = 0;
+	PathTracingEnableReferenceAtmosphere = 0;
 	PathTracingEnableDenoiser = 1;
 	
 	bMobileHQGaussian = false;
@@ -696,7 +705,9 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_AutoExposureApplyPhysicalCameraExposure(Settings.bOverride_AutoExposureApplyPhysicalCameraExposure)
 	, bOverride_HistogramLogMin(Settings.bOverride_HistogramLogMin)
 	, bOverride_HistogramLogMax(Settings.bOverride_HistogramLogMax)
-	, bOverride_LocalExposureContrastScale(Settings.bOverride_LocalExposureContrastScale)
+	, bOverride_LocalExposureContrastScale_DEPRECATED(Settings.bOverride_LocalExposureContrastScale_DEPRECATED)
+	, bOverride_LocalExposureHighlightContrastScale(Settings.bOverride_LocalExposureHighlightContrastScale)
+	, bOverride_LocalExposureShadowContrastScale(Settings.bOverride_LocalExposureShadowContrastScale)
 	, bOverride_LocalExposureDetailStrength(Settings.bOverride_LocalExposureDetailStrength)
 	, bOverride_LocalExposureBlurredLuminanceBlend(Settings.bOverride_LocalExposureBlurredLuminanceBlend)
 	, bOverride_LocalExposureBlurredLuminanceKernelSizePercent(Settings.bOverride_LocalExposureBlurredLuminanceKernelSizePercent)
@@ -746,6 +757,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_DepthOfFieldMinFstop(Settings.bOverride_DepthOfFieldMinFstop)
 	, bOverride_DepthOfFieldBladeCount(Settings.bOverride_DepthOfFieldBladeCount)
 	, bOverride_DepthOfFieldSensorWidth(Settings.bOverride_DepthOfFieldSensorWidth)
+	, bOverride_DepthOfFieldSqueezeFactor(Settings.bOverride_DepthOfFieldSqueezeFactor)
 	, bOverride_DepthOfFieldDepthBlurRadius(Settings.bOverride_DepthOfFieldDepthBlurRadius)
 	, bOverride_DepthOfFieldDepthBlurAmount(Settings.bOverride_DepthOfFieldDepthBlurAmount)
 	, bOverride_DepthOfFieldFocalRegion(Settings.bOverride_DepthOfFieldFocalRegion)
@@ -787,7 +799,12 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
     , bOverride_LumenFinalGatherQuality(Settings.bOverride_LumenFinalGatherQuality)
     , bOverride_LumenFinalGatherLightingUpdateSpeed(Settings.bOverride_LumenFinalGatherLightingUpdateSpeed)
     , bOverride_LumenMaxTraceDistance(Settings.bOverride_LumenMaxTraceDistance)
+	, bOverride_LumenDiffuseColorBoost(Settings.bOverride_LumenDiffuseColorBoost)
+	, bOverride_LumenSkylightLeaking(Settings.bOverride_LumenSkylightLeaking)
+	, bOverride_LumenFullSkylightLeakingDistance(Settings.bOverride_LumenFullSkylightLeakingDistance)
 	, bOverride_LumenRayLightingMode(Settings.bOverride_LumenRayLightingMode)
+	, bOverride_LumenFrontLayerTranslucencyReflections(Settings.bOverride_LumenFrontLayerTranslucencyReflections)
+	, bOverride_LumenSurfaceCacheResolution(Settings.bOverride_LumenSurfaceCacheResolution)
 	, bOverride_RayTracingGI(Settings.bOverride_RayTracingGI)
 	, bOverride_RayTracingGIMaxBounces(Settings.bOverride_RayTracingGIMaxBounces)
 	, bOverride_RayTracingGISamplesPerPixel(Settings.bOverride_RayTracingGISamplesPerPixel)
@@ -797,6 +814,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_PathTracingEnableEmissive(Settings.bOverride_PathTracingEnableEmissive)
 	, bOverride_PathTracingMaxPathExposure(Settings.bOverride_PathTracingMaxPathExposure)
 	, bOverride_PathTracingEnableReferenceDOF(Settings.bOverride_PathTracingEnableReferenceDOF)
+	, bOverride_PathTracingEnableReferenceAtmosphere(Settings.bOverride_PathTracingEnableReferenceAtmosphere)
 	, bOverride_PathTracingEnableDenoiser(Settings.bOverride_PathTracingEnableDenoiser)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
@@ -876,12 +894,17 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, LumenFinalGatherQuality(Settings.LumenFinalGatherQuality)
 	, LumenFinalGatherLightingUpdateSpeed(Settings.LumenFinalGatherLightingUpdateSpeed)
 	, LumenMaxTraceDistance(Settings.LumenMaxTraceDistance)
+	, LumenDiffuseColorBoost(Settings.LumenDiffuseColorBoost)
+	, LumenSkylightLeaking(Settings.LumenSkylightLeaking)
+	, LumenFullSkylightLeakingDistance(Settings.LumenFullSkylightLeakingDistance)
+	, LumenSurfaceCacheResolution(Settings.LumenSurfaceCacheResolution)
 	, RayTracingGIType(Settings.RayTracingGIType)
 	, RayTracingGIMaxBounces(Settings.RayTracingGIMaxBounces)
 	, RayTracingGISamplesPerPixel(Settings.RayTracingGISamplesPerPixel)
 	, ReflectionMethod(Settings.ReflectionMethod)
 	, LumenReflectionQuality(Settings.LumenReflectionQuality)
 	, LumenRayLightingMode(Settings.LumenRayLightingMode)
+	, LumenFrontLayerTranslucencyReflections(Settings.LumenFrontLayerTranslucencyReflections)
 	, ScreenSpaceReflectionIntensity(Settings.ScreenSpaceReflectionIntensity)
 	, ScreenSpaceReflectionQuality(Settings.ScreenSpaceReflectionQuality)
 	, ScreenSpaceReflectionMaxRoughness(Settings.ScreenSpaceReflectionMaxRoughness)
@@ -911,7 +934,9 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, HistogramLogMin(Settings.HistogramLogMin)
 	, HistogramLogMax(Settings.HistogramLogMax)
 	, AutoExposureCalibrationConstant_DEPRECATED(Settings.AutoExposureCalibrationConstant_DEPRECATED)
-	, LocalExposureContrastScale(Settings.LocalExposureContrastScale)
+	, LocalExposureContrastScale_DEPRECATED(Settings.LocalExposureContrastScale_DEPRECATED)
+	, LocalExposureHighlightContrastScale(Settings.LocalExposureHighlightContrastScale)
+	, LocalExposureShadowContrastScale(Settings.LocalExposureShadowContrastScale)
 	, LocalExposureDetailStrength(Settings.LocalExposureDetailStrength)
 	, LocalExposureBlurredLuminanceBlend(Settings.LocalExposureBlurredLuminanceBlend)
 	, LocalExposureBlurredLuminanceKernelSizePercent(Settings.LocalExposureBlurredLuminanceKernelSizePercent)
@@ -954,6 +979,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, ColorGradingIntensity(Settings.ColorGradingIntensity)
 	, ColorGradingLUT(Settings.ColorGradingLUT)
 	, DepthOfFieldSensorWidth(Settings.DepthOfFieldSensorWidth)
+	, DepthOfFieldSqueezeFactor(Settings.DepthOfFieldSqueezeFactor)
 	, DepthOfFieldFocalDistance(Settings.DepthOfFieldFocalDistance)
 	, DepthOfFieldDepthBlurAmount(Settings.DepthOfFieldDepthBlurAmount)
 	, DepthOfFieldDepthBlurRadius(Settings.DepthOfFieldDepthBlurRadius)
@@ -983,6 +1009,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, PathTracingEnableEmissive(Settings.PathTracingEnableEmissive)
 	, PathTracingMaxPathExposure(Settings.PathTracingMaxPathExposure)
 	, PathTracingEnableReferenceDOF(Settings.PathTracingEnableReferenceDOF)
+	, PathTracingEnableReferenceAtmosphere(Settings.PathTracingEnableReferenceAtmosphere)
 	, PathTracingEnableDenoiser(Settings.PathTracingEnableDenoiser)
 
 	, ScreenPercentage_DEPRECATED(Settings.ScreenPercentage_DEPRECATED)

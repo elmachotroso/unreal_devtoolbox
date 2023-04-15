@@ -10,12 +10,17 @@
 /* FSlateDrawBuffer interface
  *****************************************************************************/
 
-FSlateDrawBuffer::~FSlateDrawBuffer()
-{
-}
+FSlateDrawBuffer::FSlateDrawBuffer()
+	: bIsLocked(false)
+	, bIsLockedBySlateThread(false)
+	, ResourceVersion(0)
+{ }
 
 FSlateWindowElementList& FSlateDrawBuffer::AddWindowElementList(TSharedRef<SWindow> ForWindow)
 {
+	ensureMsgf(IsLocked(), TEXT("The SlateDrawBuffer should be lock before modifying it."));
+	FScopeLock ScopeLock(&GCLock);
+
 	for ( int32 WindowIndex = 0; WindowIndex < WindowElementListsPool.Num(); ++WindowIndex )
 	{
 		TSharedRef<FSlateWindowElementList> ExistingElementList = WindowElementListsPool[WindowIndex];
@@ -25,6 +30,7 @@ FSlateWindowElementList& FSlateDrawBuffer::AddWindowElementList(TSharedRef<SWind
 			WindowElementLists.Add(ExistingElementList);
 			WindowElementListsPool.RemoveAtSwap(WindowIndex);
 
+			ensureMsgf(ExistingElementList->GetBatchData().GetNumFinalBatches() == 0, TEXT("The Buffer should have been clear when it was locked."));
 			ExistingElementList->ResetElementList();
 
 			return *ExistingElementList;
@@ -40,12 +46,16 @@ FSlateWindowElementList& FSlateDrawBuffer::AddWindowElementList(TSharedRef<SWind
 
 void FSlateDrawBuffer::RemoveUnusedWindowElement(const TArray<SWindow*>& AllWindows)
 {
+	ensureMsgf(IsLocked(), TEXT("The SlateDrawBuffer should be lock before modifying it."));
+	FScopeLock ScopeLock(&GCLock);
+
 	// Remove any window elements that are no longer valid.
 	for (int32 WindowIndex = 0; WindowIndex < WindowElementLists.Num(); ++WindowIndex)
 	{
 		SWindow* CandidateWindow = WindowElementLists[WindowIndex]->GetPaintWindow();
 		if (!CandidateWindow || !AllWindows.Contains(CandidateWindow))
 		{
+			WindowElementLists[WindowIndex]->ResetElementList();
 			WindowElementLists.RemoveAtSwap(WindowIndex);
 			--WindowIndex;
 		}
@@ -54,19 +64,36 @@ void FSlateDrawBuffer::RemoveUnusedWindowElement(const TArray<SWindow*>& AllWind
 
 bool FSlateDrawBuffer::Lock()
 {
-	return FPlatformAtomics::InterlockedCompareExchange(&Locked, 1, 0) == 0;
+	bool ExpectedValue = false;
+	bool bIsLock = bIsLocked.compare_exchange_strong(ExpectedValue, true);
+	if (bIsLock)
+	{
+		bIsLockedBySlateThread = IsInSlateThread();
+	}
+	return bIsLock;
 }
 
 void FSlateDrawBuffer::Unlock()
 {
-	FPlatformAtomics::InterlockedExchange(&Locked, 0);
+	ensureMsgf(IsLocked(), TEXT("The SlateDrawBuffer should be lock before modifying it."));
+	FScopeLock ScopeLock(&GCLock);
+
+	// Rendering doesn't need the batch data anymore
+	for (TSharedRef<FSlateWindowElementList>& ExistingElementList : WindowElementLists)
+	{
+		ExistingElementList->ResetElementList();
+	}
+
+	bIsLocked = false;
 }
 
 void FSlateDrawBuffer::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	// Locked buffers are the only ones that are currently referencing objects.  If unlocked, the element list is not in-use and contains to-be-cleared data
-	if(Locked != 0)
+	// Locked buffers are the only ones that are currently referencing objects.
+	//If unlocked, the element list is not in-use and contains "to-be-cleared" data.
+	if(bIsLocked && !bIsLockedBySlateThread)
 	{
+		FScopeLock ScopeLock(&GCLock);
 		for (TSharedRef<FSlateWindowElementList>& ElementList : WindowElementLists)
 		{
 			ElementList->AddReferencedObjects(Collector);
@@ -76,6 +103,9 @@ void FSlateDrawBuffer::AddReferencedObjects(FReferenceCollector& Collector)
 
 void FSlateDrawBuffer::ClearBuffer()
 {
+	ensureMsgf(IsLocked(), TEXT("The SlateDrawBuffer should be lock before modifying it."));
+	FScopeLock ScopeLock(&GCLock);
+
 	// Remove any window elements that are no longer valid.
 	for (int32 WindowIndex = 0; WindowIndex < WindowElementListsPool.Num(); ++WindowIndex)
 	{
@@ -101,6 +131,8 @@ void FSlateDrawBuffer::ClearBuffer()
 
 void FSlateDrawBuffer::UpdateResourceVersion(uint32 NewResourceVersion)
 {
+	ensureMsgf(IsLocked(), TEXT("The SlateDrawBuffer should be lock before modifying it."));
+
 	if (IsInGameThread() && NewResourceVersion != ResourceVersion)
 	{
 		WindowElementListsPool.Empty();

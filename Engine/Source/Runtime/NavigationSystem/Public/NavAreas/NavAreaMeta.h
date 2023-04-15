@@ -3,12 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Templates/SubclassOf.h"
 #include "NavAreas/NavArea.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "NavAreaMeta.generated.h"
 
 class AActor;
+class UObject;
 
 /** A convenience class for an area that has IsMetaArea() == true.
  *	Do not use this class when determining whether an area class is "meta". 
@@ -20,10 +23,4 @@ class NAVIGATIONSYSTEM_API UNavAreaMeta : public UNavArea
 
 public:
 	UNavAreaMeta(const FObjectInitializer& ObjectInitializer);
-
-	UE_DEPRECATED(4.20, "UNavAreaMeta::PickAreaClass is deprecated. Use UNavArea::PickAreaClassForAgent instead")
-	static TSubclassOf<UNavArea> PickAreaClass(TSubclassOf<UNavArea> AreaClass, const AActor* Actor, const FNavAgentProperties& NavAgent);
-
-	UE_DEPRECATED(4.20, "UNavAreaMeta::PickAreaClass is deprecated. Use UNavArea::PickAreaClassForAgent instead")
-	virtual TSubclassOf<UNavArea> PickAreaClass(const AActor* Actor, const FNavAgentProperties& NavAgent);
 };

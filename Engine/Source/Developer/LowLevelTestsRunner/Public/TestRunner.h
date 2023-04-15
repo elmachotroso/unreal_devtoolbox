@@ -20,21 +20,7 @@
 #pragma warning(disable : 4005)
 #endif
 
-static bool bCatchIsRunning = false;
-static bool bGAllowLogging = true;
-static bool bMultithreaded = true;
-
-/**
- * Setup phase before all tests.
- */
-void Setup();
-
-/**
- * Teardown phase after all tests.
- */
-void Teardown();
-
-#if PLATFORM_SWITCH
+#if __cplusplus
 	extern "C" const char* GetProcessExecutablePath();
 #else
 	const char* GetProcessExecutablePath();

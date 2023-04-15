@@ -1,20 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "DerivedDataBackendInterface.h"
+#include "DerivedDataLegacyCacheStore.h"
 
 #if WITH_S3_DDC_BACKEND
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/WindowsHWrapper.h"
-	#include "Windows/AllowWindowsPlatformTypes.h"
+#if PLATFORM_MICROSOFT
+	#include "Microsoft/WindowsHWrapper.h"
+	#include "Microsoft/AllowMicrosoftPlatformTypes.h"
 #endif
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/HideWindowsPlatformTypes.h"
+#if PLATFORM_MICROSOFT
+	#include "Microsoft/HideMicrosoftPlatformTypes.h"
 #endif
 
-#include "Algo/AllOf.h"
 #include "Async/ParallelFor.h"
-#include "DerivedDataBackendCorruptionWrapper.h"
+#include "DerivedDataBackendInterface.h"
 #include "DerivedDataCacheRecord.h"
 #include "DerivedDataCachePrivate.h"
 #include "DerivedDataCacheUsageStats.h"
@@ -23,14 +22,12 @@
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
-#include "HAL/Runnable.h"
 #include "HashingArchiveProxy.h"
 #include "Memory/SharedBuffer.h"
 #include "Misc/Base64.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
-#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
 #include "ProfilingDebugging/CountersTrace.h"
@@ -40,7 +37,6 @@
 #include "Serialization/CompactBinaryValidation.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "Serialization/MemoryReader.h"
 
 #include "curl/curl.h"
 
@@ -62,24 +58,13 @@
 namespace UE::DerivedData
 {
 
-TRACE_DECLARE_INT_COUNTER(S3DDC_Exist, TEXT("S3DDC Exist"));
-TRACE_DECLARE_INT_COUNTER(S3DDC_ExistHit, TEXT("S3DDC Exist Hit"));
 TRACE_DECLARE_INT_COUNTER(S3DDC_Get, TEXT("S3DDC Get"));
 TRACE_DECLARE_INT_COUNTER(S3DDC_GetHit, TEXT("S3DDC Get Hit"));
-TRACE_DECLARE_INT_COUNTER(S3DDC_BytesRecieved, TEXT("S3DDC Bytes Recieved"));
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void BuildPathForLegacyCache(const TCHAR* const CacheKey, FStringBuilderBase& Path);
 void BuildPathForCachePackage(const FCacheKey& CacheKey, FStringBuilderBase& Path);
 void BuildPathForCacheContent(const FIoHash& RawHash, FStringBuilderBase& Path);
-
-static FString BuildPathForLegacyCache(const TCHAR* CacheKey)
-{
-	TStringBuilder<256> Path;
-	BuildPathForLegacyCache(CacheKey, Path);
-	return FString(Path);
-}
 
 class FStringAnsi
 {
@@ -192,18 +177,18 @@ bool IsSuccessfulHttpResponse(long ResponseCode)
 
 struct IRequestCallback
 {
-	virtual ~IRequestCallback() { }
+	virtual ~IRequestCallback() = default;
 	virtual bool Update(int NumBytes, int TotalBytes) = 0;
 };
 
 /**
  * Backend for a read-only AWS S3 based caching service.
  **/
-class FS3CacheStore final : public FDerivedDataBackendInterface
+class FS3CacheStore final : public ILegacyCacheStore
 {
 public:
 	/**
-	 * Creates the backend, checks health status and attempts to acquire an access token.
+	 * Creates the cache store, checks health status and attempts to acquire an access token.
 	 *
 	 * @param  InRootManifestPath   Local path to the JSON manifest in the workspace containing a list of files to download
 	 * @param  InBaseUrl            Base URL for the bucket, with trailing slash (eg. https://foo.s3.us-east-1.amazonaws.com/)
@@ -212,34 +197,16 @@ public:
 	 * @param  InCachePath          Path to cache the DDC files
 	 */
 	FS3CacheStore(const TCHAR* InRootManifestPath, const TCHAR* InBaseUrl, const TCHAR* InRegion, const TCHAR* InCanaryObjectKey, const TCHAR* InCachePath);
-	~FS3CacheStore() final;
+
+	inline const FString& GetName() const { return BaseUrl; }
 
 	/**
-	 * Checks is backend is usable (reachable and accessible).
+	 * Checks if cache store is usable (reachable and accessible).
 	 * @return true if usable
 	 */
-	bool IsUsable() const;
+	inline bool IsUsable() const { return bEnabled; }
 
-	/* S3 Cache cannot be written to*/
-	bool IsWritable() const final { return false; }
-
-	/* S3 Cache does not try to write back to lower caches (e.g. Shared DDC) */
-	bool BackfillLowerCacheLevels() const final { return false; }
-
-	bool CachedDataProbablyExists(const TCHAR* CacheKey) final;
-	bool GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData) final;
-	EPutStatus PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists) final;
-	void RemoveCachedData(const TCHAR* CacheKey, bool bTransient) final;
-	TSharedRef<FDerivedDataCacheStatsNode> GatherUsageStats() const final;
-
-	FString GetName() const final;
-	ESpeedClass GetSpeedClass() const final;
-	TBitArray<> TryToPrefetch(TConstArrayView<FString> CacheKeys) final;
-	bool WouldCache(const TCHAR* CacheKey, TArrayView<const uint8> InData) final;
-
-	bool ApplyDebugOptions(FBackendDebugOptions& InOptions) final;
-
-	EBackendLegacyMode GetLegacyMode() const final { return EBackendLegacyMode::ValueWithLegacyFallback; }
+	// ICacheStore
 
 	void Put(
 		TConstArrayView<FCachePutRequest> Requests,
@@ -261,6 +228,11 @@ public:
 		TConstArrayView<FCacheGetChunkRequest> Requests,
 		IRequestOwner& Owner,
 		FOnCacheGetChunkComplete&& OnComplete) final;
+
+	// ILegacyCacheStore
+
+	void LegacyStats(FDerivedDataCacheStatsNode& OutNode) final;
+	bool LegacyDebugOptions(FBackendDebugOptions& Options) final;
 
 private:
 	struct FBundle;
@@ -324,18 +296,8 @@ private:
 	bool DownloadManifest(const FRootManifest& RootManifest, FFeedbackContext* Context);
 	void RemoveUnusedBundles();
 	void ReadBundle(FBundle& Bundle);
-	bool FindBundleEntry(const TCHAR* CacheKey, const FBundle*& OutBundle, const FBundleEntry*& OutBundleEntry) const;
 
-	/* Debug helpers */
-	bool DidSimulateMiss(const TCHAR* InKey);
-	bool ShouldSimulateMiss(const TCHAR* InKey);
-
-	/** Debug Options */
 	FBackendDebugOptions DebugOptions;
-
-	/** Keys we ignored due to miss rate settings */
-	FCriticalSection MissedKeysCS;
-	TSet<FName> DebugMissedKeys;
 };
 
 /**
@@ -1053,112 +1015,10 @@ FS3CacheStore::FS3CacheStore(const TCHAR* InRootManifestPath, const TCHAR* InBas
 	}
 }
 
-FS3CacheStore::~FS3CacheStore()
+void FS3CacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
-}
-
-bool FS3CacheStore::IsUsable() const
-{
-	return bEnabled;
-}
-
-bool FS3CacheStore::CachedDataProbablyExists(const TCHAR* CacheKey)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Exist);
-	TRACE_COUNTER_ADD(S3DDC_Exist, int64(1));
-	COOK_STAT(auto Timer = UsageStats.TimeProbablyExists());
-
-	const FBundle* Bundle;
-	const FBundleEntry* BundleEntry;
-
-	if (ShouldSimulateMiss(CacheKey))
-	{
-		return false;
-	}
-
-	if (!FindBundleEntry(CacheKey, Bundle, BundleEntry))
-	{
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("S3DerivedDataBackend: Cache miss on %s (probably)"), CacheKey);
-		return false;
-	}
-
-	TRACE_COUNTER_ADD(S3DDC_ExistHit, int64(1));
-	COOK_STAT(Timer.AddHit(BundleEntry->Length));
-	return true;
-}
-
-bool FS3CacheStore::GetCachedData(const TCHAR* CacheKey, TArray<uint8>& OutData)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Get);
-	TRACE_COUNTER_ADD(S3DDC_Get, int64(1));
-	COOK_STAT(auto Timer = UsageStats.TimeGet());
-
-	if (ShouldSimulateMiss(CacheKey))
-	{
-		return false;
-	}
-
-	const FBundle* Bundle;
-	const FBundleEntry* BundleEntry;
-	if (FindBundleEntry(CacheKey, Bundle, BundleEntry))
-	{
-		TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Bundle->LocalFile));
-		if (Reader.IsValid() && !Reader->IsError())
-		{
-			TRACE_COUNTER_ADD(S3DDC_GetHit, int64(1));
-			COOK_STAT(Timer.AddHit(BundleEntry->Length));
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("S3DerivedDataBackend: Cache hit on %s"), CacheKey);
-			OutData.SetNum(BundleEntry->Length);
-			Reader->Seek(BundleEntry->Offset);
-			Reader->Serialize(OutData.GetData(), BundleEntry->Length);
-			if (FCorruptionWrapper::ReadTrailer(OutData, *BaseUrl, CacheKey))
-			{
-				return true;
-			}
-		}
-	}
-
-	UE_LOG(LogDerivedDataCache, Verbose, TEXT("S3DerivedDataBackend: Cache miss on %s"), CacheKey);
-	return false;
-}
-
-FDerivedDataBackendInterface::EPutStatus FS3CacheStore::PutCachedData(const TCHAR* CacheKey, TArrayView<const uint8> InData, bool bPutEvenIfExists)
-{
-	// Not implemented
-	return EPutStatus::NotCached;
-}
-
-void FS3CacheStore::RemoveCachedData(const TCHAR* CacheKey, bool bTransient)
-{
-	// Not implemented
-}
-
-TSharedRef<FDerivedDataCacheStatsNode> FS3CacheStore::GatherUsageStats() const
-{
-	TSharedRef<FDerivedDataCacheStatsNode> Usage =
-		MakeShared<FDerivedDataCacheStatsNode>(TEXT("S3"), BaseUrl, /*bIsLocal*/ false);
-	Usage->Stats.Add(TEXT(""), UsageStats);
-	return Usage;
-}
-
-FString FS3CacheStore::GetName() const
-{
-	return BaseUrl;
-}
-
-FDerivedDataBackendInterface::ESpeedClass FS3CacheStore::GetSpeedClass() const
-{
-	return ESpeedClass::Local;
-}
-
-TBitArray<> FS3CacheStore::TryToPrefetch(TConstArrayView<FString> CacheKeys)
-{
-	return CachedDataProbablyExistsBatch(CacheKeys);
-}
-
-bool FS3CacheStore::WouldCache(const TCHAR* CacheKey, TArrayView<const uint8> InData)
-{
-	return false;
+	OutNode = {TEXT("S3"), BaseUrl, /*bIsLocal*/ false};
+	OutNode.UsageStats.Add(TEXT(""), UsageStats);
 }
 
 bool FS3CacheStore::DownloadManifest(const FRootManifest& RootManifest, FFeedbackContext* Context)
@@ -1313,60 +1173,10 @@ void FS3CacheStore::ReadBundle(FBundle& Bundle)
 	}
 }
 
-bool FS3CacheStore::FindBundleEntry(const TCHAR* CacheKey, const FBundle*& OutBundle, const FBundleEntry*& OutBundleEntry) const
-{
-	FSHAHash Hash;
-
-	auto AnsiString = StringCast<ANSICHAR>(*BuildPathForLegacyCache(CacheKey).ToUpper());
-	FSHA1::HashBuffer(AnsiString.Get(), AnsiString.Length(), Hash.Hash);
-
-	for (const FBundle& Bundle : Bundles)
-	{
-		const FBundleEntry* Entry = Bundle.Entries.Find(Hash);
-		if (Entry != nullptr)
-		{
-			OutBundle = &Bundle;
-			OutBundleEntry = Entry;
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool FS3CacheStore::ApplyDebugOptions(FBackendDebugOptions& InOptions)
+bool FS3CacheStore::LegacyDebugOptions(FBackendDebugOptions& InOptions)
 {
 	DebugOptions = InOptions;
 	return true;
-}
-
-bool FS3CacheStore::DidSimulateMiss(const TCHAR* InKey)
-{
-	if (DebugOptions.RandomMissRate == 0 && DebugOptions.SimulateMissTypes.IsEmpty())
-	{
-		return false;
-	}
-	FScopeLock Lock(&MissedKeysCS);
-	return DebugMissedKeys.Contains(FName(InKey));
-}
-
-bool FS3CacheStore::ShouldSimulateMiss(const TCHAR* InKey)
-{
-	// once missed, always missed
-	if (DidSimulateMiss(InKey))
-	{
-		return true;
-	}
-
-	if (DebugOptions.ShouldSimulateMiss(InKey))
-	{
-		FScopeLock Lock(&MissedKeysCS);
-		UE_LOG(LogDerivedDataCache, Verbose, TEXT("Simulating miss in %s for %s"), *GetName(), InKey);
-		DebugMissedKeys.Add(FName(InKey));
-		return true;
-	}
-
-	return false;
 }
 
 FOptionalCacheRecord FS3CacheStore::GetCacheRecordOnly(
@@ -1390,16 +1200,15 @@ FOptionalCacheRecord FS3CacheStore::GetCacheRecordOnly(
 		return FOptionalCacheRecord();
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
-	//		*GetName(), *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return FOptionalCacheRecord();
-	//}
+	if (DebugOptions.ShouldSimulateGetMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
+			*GetName(), *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return FOptionalCacheRecord();
+	}
 
 	TStringBuilder<256> Path;
 	BuildCachePackagePath(Key, Path);
-
 
 	FOptionalCacheRecord Record;
 	{
@@ -1499,12 +1308,12 @@ bool FS3CacheStore::GetCacheValueOnly(
 		return false;
 	}
 
-	//if (ShouldSimulateMiss(Key))
-	//{
-	//	UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
-	//		*CachePath, *WriteToString<96>(Key), Name.Len(), Name.GetData());
-	//	return false;
-	//}
+	if (DebugOptions.ShouldSimulateGetMiss(Key))
+	{
+		UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%.*s'"),
+			*GetName(), *WriteToString<96>(Key), Name.Len(), Name.GetData());
+		return false;
+	}
 
 	TStringBuilder<256> Path;
 	BuildCachePackagePath(Key, Path);
@@ -1749,7 +1558,7 @@ bool FS3CacheStore::LoadFile(
 	}
 
 	const double ReadDuration = FPlatformTime::Seconds() - StartTime;
-	const double ReadSpeed = ReadDuration > 0.001 ? (ReadSize / ReadDuration) / (1024.0 * 1024.0) : 0.0;
+	const double ReadSpeed = ReadDuration > 0.001 ? ((double)ReadSize / ReadDuration) / (1024.0 * 1024.0) : 0.0;
 
 	UE_LOG(LogDerivedDataCache, VeryVerbose,
 		TEXT("%s: Loaded %s from '%.*s' (%" INT64_FMT " bytes, %.02f secs, %.2f MiB/s)"),
@@ -1816,22 +1625,25 @@ void FS3CacheStore::Get(
 {
 	for (const FCacheGetRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Get);
-		TRACE_COUNTER_INCREMENT(S3DDC_Get);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
-		EStatus Status = EStatus::Ok;
-		if (FOptionalCacheRecord Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status))
+		EStatus Status = EStatus::Error;
+		FOptionalCacheRecord Record;
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*GetName(), *WriteToString<96>(Request.Key), *Request.Name);
-			TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
-			COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
-			OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
+			TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Get);
+			TRACE_COUNTER_INCREMENT(S3DDC_Get);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			if ((Record = GetCacheRecord(Request.Name, Request.Key, Request.Policy, Status)))
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*GetName(), *WriteToString<96>(Request.Key), *Request.Name);
+				TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
+				COOK_STAT(Timer.AddHit(Private::GetCacheRecordCompressedSize(Record.Get())));
+			}
+			else
+			{
+				Record = FCacheRecordBuilder(Request.Key).Build();
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(Status));
-		}
+		OnComplete({Request.Name, MoveTemp(Record).Get(), Request.UserData, Status});
 	}
 }
 
@@ -1850,22 +1662,22 @@ void FS3CacheStore::GetValue(
 {
 	for (const FCacheGetValueRequest& Request : Requests)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Get);
-		TRACE_COUNTER_INCREMENT(S3DDC_Get);
-		COOK_STAT(auto Timer = UsageStats.TimeGet());
+		bool bOk;
 		FValue Value;
-		if (GetCacheValue(Request.Name, Request.Key, Request.Policy, Value))
 		{
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*GetName(), *WriteToString<96>(Request.Key), *Request.Name);
-			TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
-			COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
-			OnComplete({Request.Name, Request.Key, Value, Request.UserData, EStatus::Ok});
+			TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_GetValue);
+			TRACE_COUNTER_INCREMENT(S3DDC_Get);
+			COOK_STAT(auto Timer = UsageStats.TimeGet());
+			bOk = GetCacheValue(Request.Name, Request.Key, Request.Policy, Value);
+			if (bOk)
+			{
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*GetName(), *WriteToString<96>(Request.Key), *Request.Name);
+				TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
+				COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
+			}
 		}
-		else
-		{
-			OnComplete(Request.MakeResponse(EStatus::Error));
-		}
+		OnComplete({Request.Name, Request.Key, Value, Request.UserData, bOk ? EStatus::Ok : EStatus::Error});
 	}
 }
 
@@ -1886,69 +1698,70 @@ void FS3CacheStore::GetChunks(
 	FOptionalCacheRecord Record;
 	for (const FCacheGetChunkRequest& Request : SortedRequests)
 	{
-		const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
-		TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_Get);
-		TRACE_COUNTER_INCREMENT(S3DDC_Get);
-		COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
-		if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
+		EStatus Status = EStatus::Error;
+		FSharedBuffer Buffer;
+		uint64 RawSize = 0;
 		{
-			ValueReader.ResetSource();
-			ValueAr.Reset();
-			ValueKey = {};
-			ValueId.Reset();
-			Value.Reset();
-			bHasValue = false;
-			if (Request.Id.IsValid())
+			TRACE_CPUPROFILER_EVENT_SCOPE(S3DDC_GetChunks);
+			TRACE_COUNTER_INCREMENT(S3DDC_Get);
+			const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
+			COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
+			if (!(bHasValue && ValueKey == Request.Key && ValueId == Request.Id) || ValueReader.HasSource() < !bExistsOnly)
 			{
-				if (!(Record && Record.Get().GetKey() == Request.Key))
+				ValueReader.ResetSource();
+				ValueAr.Reset();
+				ValueKey = {};
+				ValueId.Reset();
+				Value.Reset();
+				bHasValue = false;
+				if (Request.Id.IsValid())
 				{
-					FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
-					PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
-					Record.Reset();
-					Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
-				}
-				if (Record)
-				{
-					if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+					if (!(Record && Record.Get().GetKey() == Request.Key))
 					{
-						bHasValue = true;
-						Value = ValueWithId;
-						ValueId = Request.Id;
-						ValueKey = Request.Key;
-						GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						FCacheRecordPolicyBuilder PolicyBuilder(ECachePolicy::None);
+						PolicyBuilder.AddValuePolicy(Request.Id, Request.Policy);
+						Record.Reset();
+						Record = GetCacheRecordOnly(Request.Name, Request.Key, PolicyBuilder.Build());
+					}
+					if (Record)
+					{
+						if (const FValueWithId& ValueWithId = Record.Get().GetValue(Request.Id))
+						{
+							bHasValue = true;
+							Value = ValueWithId;
+							ValueId = Request.Id;
+							ValueKey = Request.Key;
+							GetCacheContent(Request.Name, Request.Key, ValueId, Value, Request.Policy, ValueReader, ValueAr);
+						}
+					}
+				}
+				else
+				{
+					ValueKey = Request.Key;
+					bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
+					if (bHasValue)
+					{
+						GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
 					}
 				}
 			}
-			else
+			if (bHasValue)
 			{
-				ValueKey = Request.Key;
-				bHasValue = GetCacheValueOnly(Request.Name, Request.Key, Request.Policy, Value);
-				if (bHasValue)
+				const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
+				RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
+				UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
+					*GetName(), *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
+				TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
+				COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
+				if (!bExistsOnly)
 				{
-					GetCacheContent(Request.Name, Request.Key, Request.Id, Value, Request.Policy, ValueReader, ValueAr);
+					Buffer = ValueReader.Decompress(RawOffset, RawSize);
 				}
+				Status = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
 			}
 		}
-		if (bHasValue)
-		{
-			const uint64 RawOffset = FMath::Min(Value.GetRawSize(), Request.RawOffset);
-			const uint64 RawSize = FMath::Min(Value.GetRawSize() - RawOffset, Request.RawSize);
-			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Cache hit for %s from '%s'"),
-				*GetName(), *WriteToString<96>(Request.Key, '/', Request.Id), *Request.Name);
-			TRACE_COUNTER_INCREMENT(S3DDC_GetHit);
-			COOK_STAT(Timer.AddHit(!bExistsOnly ? RawSize : 0));
-			FSharedBuffer Buffer;
-			if (!bExistsOnly)
-			{
-				Buffer = ValueReader.Decompress(RawOffset, RawSize);
-			}
-			const EStatus ChunkStatus = bExistsOnly || Buffer.GetSize() == RawSize ? EStatus::Ok : EStatus::Error;
-			OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
-				RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, ChunkStatus});
-			continue;
-		}
-
-		OnComplete(Request.MakeResponse(EStatus::Error));
+		OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
+			RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, Status});
 	}
 }
 

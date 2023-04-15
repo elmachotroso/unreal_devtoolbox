@@ -4,23 +4,29 @@
 
 #include "Algo/Count.h"
 #include "Algo/Find.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "ActorFolder.h"
 #include "ActorFolderDesc.h"
 #include "AssetToolsModule.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISourceControlModule.h"
 #include "SourceControlAssetDataCache.h"
 #include "SourceControlHelpers.h"
+#include "SSourceControlFileDialog.h"
 
 #include "Widgets/SOverlay.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Images/SLayeredImage.h"
 #include "Widgets/Layout/SBox.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlChangelist"
 
 //////////////////////////////////////////////////////////////////////////
+
 FChangelistTreeItemPtr IChangelistTreeItem::GetParent() const
 {
 	return Parent;
@@ -31,13 +37,13 @@ const TArray<FChangelistTreeItemPtr>& IChangelistTreeItem::GetChildren() const
 	return Children;
 }
 
-void IChangelistTreeItem::AddChild(FChangelistTreeItemRef Child)
+void IChangelistTreeItem::AddChild(TSharedRef<IChangelistTreeItem> Child)
 {
 	Child->Parent = AsShared();
 	Children.Add(MoveTemp(Child));
 }
 
-void IChangelistTreeItem::RemoveChild(const FChangelistTreeItemRef& Child)
+void IChangelistTreeItem::RemoveChild(const TSharedRef<IChangelistTreeItem>& Child)
 {
 	if (Children.Remove(Child))
 	{
@@ -45,64 +51,69 @@ void IChangelistTreeItem::RemoveChild(const FChangelistTreeItemRef& Child)
 	}
 }
 
-//////////////////////////////////////////////////////////////////////////
-FText FShelvedChangelistTreeItem::GetDisplayText() const
+static FString RetrieveAssetName(const FAssetData& InAssetData)
 {
-	return LOCTEXT("SourceControl_ShelvedFiles", "Shelved Items");
-}
+	static const FName NAME_ActorLabel(TEXT("ActorLabel"));
 
-//////////////////////////////////////////////////////////////////////////
-FFileTreeItem::FFileTreeItem(FSourceControlStateRef InFileState, bool bBeautifyPaths, bool bIsShelvedFile)
-	: FileState(InFileState)
-	, MinTimeBetweenUpdate(FTimespan::FromSeconds(5.f))
-	, LastUpdateTime()
-	, bAssetsUpToDate(false)
-{
-	Type = (bIsShelvedFile ? IChangelistTreeItem::ShelvedFile : IChangelistTreeItem::File);
-	CheckBoxState = ECheckBoxState::Checked;
-
-	// Initialize asset data first
-
-	if (bBeautifyPaths)
+	if (InAssetData.FindTag(NAME_ActorLabel))
 	{
-		FSourceControlAssetDataCache& AssetDataCache = ISourceControlModule::Get().GetAssetDataCache();
-		bAssetsUpToDate = AssetDataCache.GetAssetDataArray(FileState, Assets);
+		FString ResultAssetName = TEXT("");
+
+		InAssetData.GetTagValue(NAME_ActorLabel, ResultAssetName);
+		return ResultAssetName;
 	}
-	else
+	else if (InAssetData.AssetClassPath == UActorFolder::StaticClass()->GetClassPathName())
 	{
-		// We do not need to wait for AssetData from the cache.
-		bAssetsUpToDate = true;
+		FString ActorFolderPath = UActorFolder::GetAssetRegistryInfoFromPackage(InAssetData.PackageName).GetDisplayName();
+		if (!ActorFolderPath.IsEmpty())
+		{
+			return ActorFolderPath;
+		}
 	}
 
-	RefreshAssetInformation();
+	return InAssetData.AssetName.ToString();
 }
 
-void FFileTreeItem::RefreshAssetInformation()
+static FString RetrieveAssetPath(const FAssetData& InAssetData)
+{
+	int32 LastDot = -1;
+	FString Path = InAssetData.GetObjectPathString();
+
+	// Strip asset name from object path
+	if (Path.FindLastChar('.', LastDot))
+	{
+		Path.LeftInline(LastDot);
+	}
+
+	return Path;
+}
+
+static void RefreshAssetInformationInternal(const TArray<FAssetData>& Assets, const FString& InFilename, FString& OutAssetName, FString& OutAssetPath, FString& OutAssetType, FText& OutPackageName, FColor& OutAssetTypeColor)
 {
 	// Initialize display-related members
-	FString Filename = FileState->GetFilename();
+	FString Filename = InFilename;
 	FString TempAssetName = SSourceControlCommon::GetDefaultAssetName().ToString();
 	FString TempAssetPath = Filename;
 	FString TempAssetType = SSourceControlCommon::GetDefaultAssetType().ToString();
 	FString TempPackageName = Filename;
 	FColor TempAssetColor = FColor(		// Copied from ContentBrowserCLR.cpp
-								   127 + FColor::Red.R / 2,	// Desaturate the colors a bit (GB colors were too.. much)
-								   127 + FColor::Red.G / 2,
-								   127 + FColor::Red.B / 2,
-								   200); // Opacity
+		127 + FColor::Red.R / 2,	// Desaturate the colors a bit (GB colors were too.. much)
+		127 + FColor::Red.G / 2,
+		127 + FColor::Red.B / 2,
+		200); // Opacity
 
-	if (Assets.IsValid() && (Assets->Num() > 0))
+	if (Assets.Num() > 0)
 	{
 		auto IsNotRedirector = [](const FAssetData& InAssetData) { return !InAssetData.IsRedirector(); };
-		int32 NumUserFacingAsset = Algo::CountIf(*Assets, IsNotRedirector);
+		int32 NumUserFacingAsset = Algo::CountIf(Assets, IsNotRedirector);
 
 		if (NumUserFacingAsset == 1)
 		{
-			const FAssetData& AssetData = *Algo::FindByPredicate(*Assets, IsNotRedirector);
+			const FAssetData& AssetData = *Algo::FindByPredicate(Assets, IsNotRedirector);
 
 			TempAssetName = RetrieveAssetName(AssetData);
 			TempAssetPath = RetrieveAssetPath(AssetData);
-			TempAssetType = AssetData.AssetClass.ToString();
+			TempAssetType = AssetData.AssetClassPath.ToString();
 
 			const FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
 			const TSharedPtr<IAssetTypeActions> AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(AssetData.GetClass()).Pin();
@@ -118,12 +129,12 @@ void FFileTreeItem::RefreshAssetInformation()
 		}
 		else
 		{
-			TempAssetName = RetrieveAssetName((*Assets)[0]);
-			TempAssetPath = RetrieveAssetPath((*Assets)[0]);
+			TempAssetName = RetrieveAssetName(Assets[0]);
+			TempAssetPath = RetrieveAssetPath(Assets[0]);
 
-			for (int32 i = 1; i < Assets->Num(); ++i)
+			for (int32 i = 1; i < Assets.Num(); ++i)
 			{
-				TempAssetName += TEXT(";") + RetrieveAssetName((*Assets)[i]);
+				TempAssetName += TEXT(";") + RetrieveAssetName(Assets[i]);
 			}
 
 			TempAssetType = SSourceControlCommon::GetDefaultMultipleAsset().ToString();
@@ -153,11 +164,95 @@ void FFileTreeItem::RefreshAssetInformation()
 	}
 
 	// Finally, assign the temp variables to the member variables
-	AssetName = FText::FromString(TempAssetName);
-	AssetPath = FText::FromString(TempAssetPath);
-	AssetType = FText::FromString(TempAssetType);
-	AssetTypeColor = TempAssetColor;
-	PackageName = FText::FromString(TempPackageName);
+	OutAssetName = TempAssetName;
+	OutAssetPath = TempAssetPath;
+	OutAssetType = TempAssetType;
+	OutAssetTypeColor = TempAssetColor;
+	OutPackageName = FText::FromString(TempPackageName);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FString IFileViewTreeItem::DefaultStrValue; // Default is an empty string.
+FDateTime IFileViewTreeItem::DefaultDateTimeValue; // Default is FDateTime::MinValue().
+
+void IFileViewTreeItem::SetLastModifiedDateTime(const FDateTime& Timestamp)
+{
+	LastModifiedDateTime = Timestamp;
+	if (Timestamp != FDateTime::MinValue())
+	{
+		LastModifiedTimestampText = FText::AsDateTime(Timestamp, EDateTimeStyle::Short);
+	}
+	else
+	{
+		LastModifiedTimestampText = FText::GetEmpty();
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FFileTreeItem::FFileTreeItem(FSourceControlStateRef InFileState, bool bBeautifyPaths, bool bIsShelvedFile)
+	: IFileViewTreeItem(bIsShelvedFile ? IChangelistTreeItem::ShelvedFile : IChangelistTreeItem::File)
+	, FileState(InFileState)
+	, MinTimeBetweenUpdate(FTimespan::FromSeconds(5.f))
+	, LastUpdateTime()
+	, bAssetsUpToDate(false)
+{
+	CheckBoxState = ECheckBoxState::Checked;
+
+	// Initialize asset data first
+
+	if (bBeautifyPaths)
+	{
+		FSourceControlAssetDataCache& AssetDataCache = ISourceControlModule::Get().GetAssetDataCache();
+		bAssetsUpToDate = AssetDataCache.GetAssetDataArray(FileState, Assets);
+	}
+	else
+	{
+		// We do not need to wait for AssetData from the cache.
+		bAssetsUpToDate = true;
+	}
+
+	RefreshAssetInformation();
+}
+
+int32 FFileTreeItem::GetIconSortingPriority() const
+{
+	if (!FileState->IsCurrent())        { return 0; } // First if sorted in ascending order.
+	if (FileState->IsUnknown())         { return 1; }
+	if (FileState->IsConflicted())      { return 2; }
+	if (FileState->IsCheckedOutOther()) { return 3; }
+	if (FileState->IsCheckedOut())      { return 4; }
+	if (FileState->IsDeleted())         { return 5; }
+	if (FileState->IsAdded())           { return 6; }
+	else                                { return 7; }
+}
+
+const FString& FFileTreeItem::GetCheckedOutBy() const
+{
+	CheckedOutBy.Reset();
+	FileState->IsCheckedOutOther(&CheckedOutBy);
+	return CheckedOutBy;
+}
+
+FText FFileTreeItem::GetCheckedOutByUser() const
+{
+	return FText::FromString(GetCheckedOutBy());
+}
+
+void FFileTreeItem::RefreshAssetInformation()
+{
+	// Initialize display-related members
+	static TArray<FAssetData> NoAssets;
+	RefreshAssetInformationInternal(Assets.IsValid() ? *Assets : NoAssets, FileState->GetFilename(), AssetNameStr, AssetPathStr, AssetTypeStr, PackageName, AssetTypeColor);
+	AssetName = FText::FromString(AssetNameStr);
+	AssetPath = FText::FromString(AssetPathStr);
+	AssetType = FText::FromString(AssetTypeStr);
+}
+
+FText FFileTreeItem::GetAssetName() const
+{
+	return AssetName;
 }
 
 FText FFileTreeItem::GetAssetName()
@@ -179,110 +274,38 @@ FText FFileTreeItem::GetAssetName()
 	return AssetName;
 }
 
-FString FFileTreeItem::RetrieveAssetName(const FAssetData& InAssetData) const
+//////////////////////////////////////////////////////////////////////////
+
+FText FShelvedChangelistTreeItem::GetDisplayText() const
 {
-	static const FName NAME_ActorLabel(TEXT("ActorLabel"));
-	static const FName NAME_ActorFolder(TEXT("ActorFolder"));
-
-	if (InAssetData.FindTag(NAME_ActorLabel))
-	{
-		FString ResultAssetName = TEXT("");
-		
-		InAssetData.GetTagValue(NAME_ActorLabel, ResultAssetName);
-		return ResultAssetName;
-	}
-	else if (InAssetData.AssetClass == NAME_ActorFolder)
-	{
-		FString ActorFolderPath = UActorFolder::GetAssetRegistryInfoFromPackage(InAssetData.PackageName).GetDisplayName();
-		if (!ActorFolderPath.IsEmpty())
-		{
-			return ActorFolderPath;
-		}
-	}
-	
-	return InAssetData.AssetName.ToString();
-}
-
-FString FFileTreeItem::RetrieveAssetPath(const FAssetData& InAssetData) const
-{
-	int32 LastDot = -1;
-	FString Path = InAssetData.ObjectPath.ToString();
-
-	// Strip asset name from object path
-	if (Path.FindLastChar('.', LastDot))
-	{
-		Path.LeftInline(LastDot);
-	}
-
-	return Path;
+	return FText::Format(LOCTEXT("SourceControl_ShelvedFiles", "Shelved Items ({0})"), Children.Num());
 }
 
 //////////////////////////////////////////////////////////////////////////
 
 FOfflineFileTreeItem::FOfflineFileTreeItem(const FString& InFilename)
-	: Assets()
+	: IFileViewTreeItem(IChangelistTreeItem::OfflineFile)
+	, Assets()
+	, Filename(InFilename)
 	, PackageName(FText::FromString(InFilename)) 
 	, AssetName(SSourceControlCommon::GetDefaultAssetName())
 	, AssetPath()
 	, AssetType(SSourceControlCommon::GetDefaultAssetType())
 	, AssetTypeColor()
 {
-	Type = IChangelistTreeItem::OfflineFile;
 	FString TempString;
 
 	USourceControlHelpers::GetAssetData(InFilename, Assets);
 
-	if (Assets.Num() > 0)
-	{
-		const FAssetData& AssetData = Assets[0];
-		AssetPath = FText::FromName(AssetData.ObjectPath);
+	RefreshAssetInformation();
+}
 
-		// Find name, asset type & color only if there is exactly one asset
-		if (Assets.Num() == 1)
-		{
-			static FName NAME_ActorLabel(TEXT("ActorLabel"));
-			if (AssetData.FindTag(NAME_ActorLabel))
-			{
-				AssetData.GetTagValue(NAME_ActorLabel, AssetName);
-			}
-			else
-			{
-				AssetName = FText::FromName(AssetData.AssetName);
-			}
-
-			AssetType = FText::FromName(AssetData.AssetClass);
-
-			const FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-			const TSharedPtr<IAssetTypeActions> AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(AssetData.GetClass()).Pin();
-			if (AssetTypeActions.IsValid())
-			{
-				AssetTypeColor = AssetTypeActions->GetTypeColor();
-			}
-			else
-			{
-				AssetTypeColor = FColor::White;
-			}
-		}
-		else
-		{
-			AssetType = SSourceControlCommon::GetDefaultMultipleAsset();
-			AssetTypeColor = FColor::White;
-		}
-
-		// Beautify the package name
-		PackageName = AssetPath;
-	}
-	else if (FPackageName::TryConvertFilenameToLongPackageName(InFilename, TempString))
-	{
-		PackageName = FText::FromString(TempString);
-		// Fake asset name, asset path from the package name
-		AssetPath = PackageName;
-	}
-	else
-	{
-		AssetName = FText::FromString(FPaths::GetCleanFilename(InFilename));
-		AssetType = FText::Format(SSourceControlCommon::GetDefaultUnknownAssetType(), FText::FromString(FPaths::GetExtension(InFilename).ToUpper()));
-	}
+void FOfflineFileTreeItem::RefreshAssetInformation()
+{
+	RefreshAssetInformationInternal(Assets, Filename, AssetNameStr, AssetPathStr, AssetTypeStr, PackageName, AssetTypeColor);
+	AssetName = FText::FromString(AssetNameStr);
+	AssetPath = FText::FromString(AssetPathStr);
+	AssetType = FText::FromString(AssetTypeStr);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -291,7 +314,7 @@ namespace SSourceControlCommon
 
 TSharedRef<SWidget> GetSCCFileWidget(FSourceControlStateRef InFileState, bool bIsShelvedFile)
 {
-	const FSlateBrush* IconBrush = FEditorStyle::GetBrush("ContentBrowser.ColumnViewAssetIcon");
+	const FSlateBrush* IconBrush = FAppStyle::GetBrush("ContentBrowser.ColumnViewAssetIcon");
 
 	// Make icon overlays (eg, SCC and dirty status) a reasonable size in relation to the icon size (note: it is assumed this icon is square)
 	const float ICON_SCALING_FACTOR = 0.7f;
@@ -317,6 +340,7 @@ TSharedRef<SWidget> GetSCCFileWidget(FSourceControlStateRef InFileState, bool bI
 			.HeightOverride(IconOverlaySize)
 			[
 				SNew(SLayeredImage, InFileState->GetIcon())
+				.ToolTipText(InFileState->GetDisplayTooltip())
 			]
 		];
 }
@@ -340,6 +364,77 @@ FText GetDefaultMultipleAsset()
 {
 	return LOCTEXT("SourceCOntrol_ManyAssetType", "Multiple Assets");
 }
+
+/** Wraps the execution of a changelist operations with a slow task. */
+void ExecuteChangelistOperationWithSlowTaskWrapper(const FText& Message, const TFunction<void()>& ChangelistTask)
+{
+	// NOTE: This is a ugly workaround for P4 because the generic popup feedback operations in FScopedSourceControlProgress() was supressed for all synchrounous
+	//       operations. For other source control providers, the popup still shows up and showing a slow task and the FScopedSourceControlProgress at the same
+	//       time is a bad user experience. Until we fix source control popup situation in general in the Editor, this hack is in place to avoid the double popup.
+	//       At the time of writing, the other source control provider that supports changelists is Plastic.
+	if (ISourceControlModule::Get().GetProvider().GetName() == "Perforce")
+	{
+		FScopedSlowTask Progress(0.f, Message);
+		Progress.MakeDialog();
+		ChangelistTask();
+	}
+	else
+	{
+		ChangelistTask();
+	}
+}
+
+/** Wraps the execution of an uncontrolled changelist operations with a slow task. */
+void ExecuteUncontrolledChangelistOperationWithSlowTaskWrapper(const FText& Message, const TFunction<void()>& UncontrolledChangelistTask)
+{
+	ExecuteChangelistOperationWithSlowTaskWrapper(Message, UncontrolledChangelistTask);
+}
+
+/** Displays toast notification to report the status of task. */
+void DisplaySourceControlOperationNotification(const FText& Message, SNotificationItem::ECompletionState CompletionState)
+{
+	if (Message.IsEmpty())
+	{
+		return;
+	}
+
+	FNotificationInfo NotificationInfo(Message);
+	NotificationInfo.ExpireDuration = 6.0f;
+	NotificationInfo.Hyperlink = FSimpleDelegate::CreateLambda([]() { FGlobalTabmanager::Get()->TryInvokeTab(FName("OutputLog")); });
+	NotificationInfo.HyperlinkText = LOCTEXT("ShowOutputLogHyperlink", "Show Output Log");
+	FSlateNotificationManager::Get().AddNotification(NotificationInfo)->SetCompletionState(CompletionState);
+}
+
+bool OpenConflictDialog(const TArray<FSourceControlStateRef>& InFilesConflicts)
+{
+	TSharedPtr<SWindow> Window;
+	TSharedPtr<SSourceControlFileDialog> SourceControlFileDialog;
+
+	Window = SNew(SWindow)
+			 .Title(LOCTEXT("CheckoutPackagesDialogTitle", "Check Out Assets"))
+			 .SizingRule(ESizingRule::UserSized)
+			 .ClientSize(FVector2D(1024.0f, 512.0f))
+			 .SupportsMaximize(false)
+			 .SupportsMinimize(false)
+			 [
+			 	SNew(SBorder)
+			 	.Padding(4.f)
+			 	.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			 	[
+			 		SAssignNew(SourceControlFileDialog, SSourceControlFileDialog)
+			 		.Message(LOCTEXT("CheckoutPackagesDialogMessage", "Conflict detected in the following assets:"))
+			 		.Warning(LOCTEXT("CheckoutPackagesWarnMessage", "Warning: These assets are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."))
+			 		.Files(InFilesConflicts)
+			 	]
+			 ];
+
+	SourceControlFileDialog->SetWindow(Window);
+	Window->SetWidgetToFocusOnActivate(SourceControlFileDialog);
+	GEditor->EditorAddModalWindow(Window.ToSharedRef());
+
+	return SourceControlFileDialog->IsProceedButtonPressed();
+}
+
 
 } // end of namespace SSourceControlCommon
 

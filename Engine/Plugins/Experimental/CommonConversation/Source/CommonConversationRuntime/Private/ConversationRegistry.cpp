@@ -2,7 +2,7 @@
 
 #include "ConversationRegistry.h"
 #include "CommonConversationRuntimeLogging.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/AssetManager.h"
 #include "Stats/StatsMisc.h"
 #include "ConversationNode.h"
@@ -12,6 +12,8 @@
 #include "ConversationContext.h"
 #include "Engine/StreamableManager.h"
 #include "GameFeaturesSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ConversationRegistry)
 
 //======================================================================================
 
@@ -178,12 +180,12 @@ void UConversationRegistry::GameFeatureStateModified()
 	}
 }
 
-void UConversationRegistry::OnGameFeatureActivating(const UGameFeatureData* GameFeatureData)
+void UConversationRegistry::OnGameFeatureActivating(const UGameFeatureData* GameFeatureData, const FString& PluginURL)
 {
 	GameFeatureStateModified();
 }
 
-void UConversationRegistry::OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context)
+void UConversationRegistry::OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context, const FString& PluginURL)
 {
 	GameFeatureStateModified();
 }
@@ -353,7 +355,7 @@ TArray<FPrimaryAssetId> UConversationRegistry::GetPrimaryAssetIdsForEntryPoint(F
 
 	UE_LOG(LogCommonConversationRuntime, Verbose, TEXT("For EntryPoint [%s], Found [%s]"),
 		*EntryPoint.ToString(),
-		*FString::JoinBy(AssetsWithTheEntryPoint, TEXT(", "), [](const FPrimaryAssetId& PrimaryAssetId) { return *PrimaryAssetId.ToString(); })
+		*FString::JoinBy(AssetsWithTheEntryPoint, TEXT(", "), [](const FPrimaryAssetId& PrimaryAssetId) { return PrimaryAssetId.ToString(); })
 	);
 
 	return AssetsWithTheEntryPoint;
@@ -416,7 +418,7 @@ void UConversationRegistry::BuildDependenciesGraph()
 			TArray<FConversationEntryList> EntryTags;
 
 			FArrayProperty* ArrayProperty = FindFProperty<FArrayProperty>(UConversationDatabase::StaticClass(), GET_MEMBER_NAME_CHECKED(UConversationDatabase, EntryTags));
-			ArrayProperty->ImportText(*EntryTagsString, &EntryTags, 0, nullptr);
+			ArrayProperty->ImportText_Direct(*EntryTagsString, &EntryTags, nullptr, 0);
 
 			for (const FConversationEntryList& Entry : EntryTags)
 			{
@@ -431,7 +433,7 @@ void UConversationRegistry::BuildDependenciesGraph()
 			TArray<FGuid> NodeIds;
 
 			FArrayProperty* ArrayProperty = FindFProperty<FArrayProperty>(UConversationDatabase::StaticClass(), GET_MEMBER_NAME_CHECKED(UConversationDatabase, InternalNodeIds));
-			ArrayProperty->ImportText(*InternalNodeIds, &NodeIds, 0, nullptr);
+			ArrayProperty->ImportText_Direct(*InternalNodeIds, &NodeIds, nullptr, 0);
 
 			for (FGuid& NodeId : NodeIds)
 			{
@@ -468,7 +470,7 @@ void UConversationRegistry::BuildDependenciesGraph()
 			TArray<FGuid> NodeIds;
 
 			FArrayProperty* ArrayProperty = FindFProperty<FArrayProperty>(UConversationDatabase::StaticClass(), GET_MEMBER_NAME_CHECKED(UConversationDatabase, LinkedToNodeIds));
-			ArrayProperty->ImportText(*LinkedToNodeIds, &NodeIds, 0, nullptr);
+			ArrayProperty->ImportText_Direct(*LinkedToNodeIds, &NodeIds, nullptr, 0);
 
 			//@TODO: CONVERSATION: Register that we need to link to other graphs here.
 		}

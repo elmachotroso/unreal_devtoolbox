@@ -1,16 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Algo/Compare.h"
-#include "Compression/OodleDataCompression.h"
 #include "Containers/Set.h"
 #include "DerivedDataCacheKey.h"
+#include "DerivedDataCacheKeyFilter.h"
 #include "DerivedDataLegacyCacheStore.h"
 #include "HAL/CriticalSection.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
 #include "Misc/FileHelper.h"
+#include "String/Find.h"
 #include "Templates/Tuple.h"
 #include "Templates/UniquePtr.h"
 
@@ -30,6 +33,35 @@ public:
 		, bPutOnError(bInPutOnError)
 	{
 		check(InnerCache);
+
+		const TCHAR* const CommandLine = FCommandLine::Get();
+
+		const bool bDefaultMatch = FParse::Param(CommandLine, TEXT("DDC-Verify")) ||
+			String::FindFirst(CommandLine, TEXT("-DDC-Verify="), ESearchCase::IgnoreCase) == INDEX_NONE;
+		float DefaultRate = bDefaultMatch ? 100.0f : 0.0f;
+		FParse::Value(CommandLine, TEXT("-DDC-VerifyRate="), DefaultRate);
+
+		Filter = FCacheKeyFilter::Parse(CommandLine, TEXT("-DDC-Verify="), DefaultRate);
+
+		uint32 Salt;
+		if (FParse::Value(CommandLine, TEXT("-DDC-VerifySalt="), Salt))
+		{
+			if (Salt == 0)
+			{
+				UE_LOG(LogDerivedDataCache, Warning,
+					TEXT("Verify: Ignoring salt of 0. The salt must be a positive integer."));
+			}
+			else
+			{
+				Filter.SetSalt(Salt);
+			}
+		}
+
+		if (Filter)
+		{
+			UE_LOG(LogDerivedDataCache, Display,
+				TEXT("Verify: Using salt -DDC-VerifySalt=%u to filter cache keys to verify."), Filter.GetSalt());
+		}
 	}
 
 	void Put(
@@ -56,24 +88,6 @@ public:
 		TConstArrayView<FCacheGetChunkRequest> Requests,
 		IRequestOwner& Owner,
 		FOnCacheGetChunkComplete&& OnComplete) final;
-
-	void LegacyPut(
-		TConstArrayView<FLegacyCachePutRequest> Requests,
-		IRequestOwner& Owner,
-		FOnLegacyCachePutComplete&& OnComplete) final;
-
-	void LegacyGet(
-		TConstArrayView<FLegacyCacheGetRequest> Requests,
-		IRequestOwner& Owner,
-		FOnLegacyCacheGetComplete&& OnComplete) final;
-
-	void LegacyDelete(
-		TConstArrayView<FLegacyCacheDeleteRequest> Requests,
-		IRequestOwner& Owner,
-		FOnLegacyCacheDeleteComplete&& OnComplete) final
-	{
-		InnerCache->LegacyDelete(Requests, Owner, MoveTemp(OnComplete));
-	}
 
 	void LegacyStats(FDerivedDataCacheStatsNode& OutNode) final
 	{
@@ -104,15 +118,6 @@ private:
 		FRWLock Lock;
 	};
 
-	struct FVerifyLegacyPutState
-	{
-		TArray<FLegacyCachePutRequest> ForwardRequests;
-		TArray<FLegacyCachePutRequest> VerifyRequests;
-		FOnLegacyCachePutComplete OnComplete;
-		int32 ActiveRequests = 0;
-		FRWLock Lock;
-	};
-
 	void GetMetaComplete(IRequestOwner& Owner, FVerifyPutState* State, FCacheGetResponse&& Response);
 	void GetDataComplete(IRequestOwner& Owner, FVerifyPutState* State, FCacheGetResponse&& Response);
 	void GetComplete(IRequestOwner& Owner, FVerifyPutState* State);
@@ -120,10 +125,6 @@ private:
 	void GetMetaComplete(IRequestOwner& Owner, FVerifyPutValueState* State, FCacheGetValueResponse&& Response);
 	void GetDataComplete(IRequestOwner& Owner, FVerifyPutValueState* State, FCacheGetValueResponse&& Response);
 	void GetComplete(IRequestOwner& Owner, FVerifyPutValueState* State);
-
-	void GetMetaComplete(IRequestOwner& Owner, FVerifyLegacyPutState* State, FLegacyCacheGetResponse&& Response);
-	void GetDataComplete(IRequestOwner& Owner, FVerifyLegacyPutState* State, FLegacyCacheGetResponse&& Response);
-	void GetComplete(IRequestOwner& Owner, FVerifyLegacyPutState* State);
 
 	static bool CompareRecords(const FCacheRecord& PutRecord, const FCacheRecord& GetRecord, const FSharedString& Name);
 
@@ -138,8 +139,9 @@ private:
 
 private:
 	ILegacyCacheStore* InnerCache;
-	FCriticalSection SynchronizationObject;
+	FCriticalSection AlreadyTestedLock;
 	TSet<FCacheKey> AlreadyTested;
+	FCacheKeyFilter Filter;
 	bool bPutOnError;
 };
 
@@ -151,12 +153,16 @@ void FCacheStoreVerify::Put(
 	TUniquePtr<FVerifyPutState> State = MakeUnique<FVerifyPutState>();
 	State->VerifyRequests.Reserve(Requests.Num());
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
+		FScopeLock Lock(&AlreadyTestedLock);
 		for (const FCachePutRequest& Request : Requests)
 		{
-			bool bAlreadyTested = false;
-			AlreadyTested.Add(Request.Record.GetKey(), &bAlreadyTested);
-			(bAlreadyTested ? State->ForwardRequests : State->VerifyRequests).Add(Request);
+			const FCacheKey& Key = Request.Record.GetKey();
+			bool bForward = !Filter.IsMatch(Key);
+			if (!bForward)
+			{
+				AlreadyTested.Add(Key, &bForward);
+			}
+			(bForward ? State->ForwardRequests : State->VerifyRequests).Add(Request);
 		}
 	}
 
@@ -197,7 +203,7 @@ void FCacheStoreVerify::GetMetaComplete(IRequestOwner& Owner, FVerifyPutState* S
 		};
 		if (Algo::CompareBy(Request.Record.GetValues(), Response.Record.GetValues(), MakeValueTuple))
 		{
-			UE_LOG(LogDerivedDataCache, Log,
+			UE_LOG(LogDerivedDataCache, Verbose,
 				TEXT("Verify: Data in the cache matches newly generated data for %s from '%s'."),
 				*WriteToString<96>(Request.Record.GetKey()), *Request.Name);
 			State->OnComplete(Request.MakeResponse(EStatus::Ok));
@@ -233,7 +239,7 @@ void FCacheStoreVerify::GetDataComplete(IRequestOwner& Owner, FVerifyPutState* S
 	{
 		if (CompareRecords(Request.Record, Response.Record, Request.Name))
 		{
-			UE_LOG(LogDerivedDataCache, Log,
+			UE_LOG(LogDerivedDataCache, Verbose,
 				TEXT("Verify: Data in the cache matches newly generated data for %s from '%s'."),
 				*WriteToString<96>(Request.Record.GetKey()), *Request.Name);
 			State->OnComplete(Request.MakeResponse(EStatus::Ok));
@@ -288,11 +294,11 @@ void FCacheStoreVerify::Get(
 	ForwardRequests.Reserve(Requests.Num());
 	VerifyRequests.Reserve(Requests.Num());
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
+		FScopeLock Lock(&AlreadyTestedLock);
 		for (const FCacheGetRequest& Request : Requests)
 		{
-			bool bAlreadyTested = AlreadyTested.Contains(Request.Key);
-			(bAlreadyTested ? ForwardRequests : VerifyRequests).Add(Request);
+			const bool bForward = !Filter.IsMatch(Request.Key) || AlreadyTested.Contains(Request.Key);
+			(bForward ? ForwardRequests : VerifyRequests).Add(Request);
 		}
 	}
 
@@ -312,12 +318,15 @@ void FCacheStoreVerify::PutValue(
 	TUniquePtr<FVerifyPutValueState> State = MakeUnique<FVerifyPutValueState>();
 	State->VerifyRequests.Reserve(Requests.Num());
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
+		FScopeLock Lock(&AlreadyTestedLock);
 		for (const FCachePutValueRequest& Request : Requests)
 		{
-			bool bAlreadyTested = false;
-			AlreadyTested.Add(Request.Key, &bAlreadyTested);
-			(bAlreadyTested ? State->ForwardRequests : State->VerifyRequests).Add(Request);
+			bool bForward = !Filter.IsMatch(Request.Key);
+			if (!bForward)
+			{
+				AlreadyTested.Add(Request.Key, &bForward);
+			}
+			(bForward ? State->ForwardRequests : State->VerifyRequests).Add(Request);
 		}
 	}
 
@@ -353,7 +362,7 @@ void FCacheStoreVerify::GetMetaComplete(IRequestOwner& Owner, FVerifyPutValueSta
 	{
 		if (Request.Value.GetRawHash() == Response.Value.GetRawHash())
 		{
-			UE_LOG(LogDerivedDataCache, Log,
+			UE_LOG(LogDerivedDataCache, Verbose,
 				TEXT("Verify: Data in the cache matches newly generated data for %s from '%s'."),
 				*WriteToString<96>(Request.Key), *Request.Name);
 			State->OnComplete(Request.MakeResponse(EStatus::Ok));
@@ -369,7 +378,7 @@ void FCacheStoreVerify::GetMetaComplete(IRequestOwner& Owner, FVerifyPutValueSta
 	}
 	else
 	{
-		UE_LOG(LogDerivedDataCache, Warning,
+		UE_LOG(LogDerivedDataCache, Display,
 			TEXT("Verify: Cache did not contain a value for %s from '%s'."),
 			*WriteToString<96>(Request.Key), *Request.Name);
 		FWriteScopeLock Lock(State->Lock);
@@ -387,7 +396,7 @@ void FCacheStoreVerify::GetDataComplete(IRequestOwner& Owner, FVerifyPutValueSta
 	{
 		if (Request.Value.GetRawHash() == Response.Value.GetRawHash())
 		{
-			UE_LOG(LogDerivedDataCache, Log,
+			UE_LOG(LogDerivedDataCache, Verbose,
 				TEXT("Verify: Data in the cache matches newly generated data for %s from '%s'."),
 				*WriteToString<96>(Request.Key), *Request.Name);
 			State->OnComplete(Request.MakeResponse(EStatus::Ok));
@@ -415,7 +424,7 @@ void FCacheStoreVerify::GetDataComplete(IRequestOwner& Owner, FVerifyPutValueSta
 	}
 	else
 	{
-		UE_LOG(LogDerivedDataCache, Warning,
+		UE_LOG(LogDerivedDataCache, Display,
 			TEXT("Verify: Cache did not contain a value for %s from '%s'."),
 			*WriteToString<96>(Request.Key), *Request.Name);
 		FWriteScopeLock Lock(State->Lock);
@@ -448,11 +457,11 @@ void FCacheStoreVerify::GetValue(
 	ForwardRequests.Reserve(Requests.Num());
 	VerifyRequests.Reserve(Requests.Num());
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
+		FScopeLock Lock(&AlreadyTestedLock);
 		for (const FCacheGetValueRequest& Request : Requests)
 		{
-			bool bAlreadyTested = AlreadyTested.Contains(Request.Key);
-			(bAlreadyTested ? ForwardRequests : VerifyRequests).Add(Request);
+			const bool bForward = !Filter.IsMatch(Request.Key) || AlreadyTested.Contains(Request.Key);
+			(bForward ? ForwardRequests : VerifyRequests).Add(Request);
 		}
 	}
 
@@ -474,11 +483,11 @@ void FCacheStoreVerify::GetChunks(
 	ForwardRequests.Reserve(Requests.Num());
 	VerifyRequests.Reserve(Requests.Num());
 	{
-		FScopeLock ScopeLock(&SynchronizationObject);
+		FScopeLock Lock(&AlreadyTestedLock);
 		for (const FCacheGetChunkRequest& Request : Requests)
 		{
-			bool bAlreadyTested = AlreadyTested.Contains(Request.Key);
-			(bAlreadyTested ? ForwardRequests : VerifyRequests).Add(Request);
+			const bool bForward = !Filter.IsMatch(Request.Key) || AlreadyTested.Contains(Request.Key);
+			(bForward ? ForwardRequests : VerifyRequests).Add(Request);
 		}
 	}
 
@@ -487,134 +496,6 @@ void FCacheStoreVerify::GetChunks(
 	if (!ForwardRequests.IsEmpty())
 	{
 		InnerCache->GetChunks(ForwardRequests, Owner, MoveTemp(OnComplete));
-	}
-}
-
-void FCacheStoreVerify::LegacyPut(
-	const TConstArrayView<FLegacyCachePutRequest> Requests,
-	IRequestOwner& Owner,
-	FOnLegacyCachePutComplete&& OnComplete)
-{
-	TUniquePtr<FVerifyLegacyPutState> State = MakeUnique<FVerifyLegacyPutState>();
-	State->VerifyRequests.Reserve(Requests.Num());
-	{
-		FScopeLock ScopeLock(&SynchronizationObject);
-		for (const FLegacyCachePutRequest& Request : Requests)
-		{
-			bool bAlreadyTested = false;
-			AlreadyTested.Add(Request.Key.GetKey(), &bAlreadyTested);
-			(bAlreadyTested ? State->ForwardRequests : State->VerifyRequests).Add(Request);
-		}
-	}
-
-	if (State->VerifyRequests.IsEmpty())
-	{
-		return InnerCache->LegacyPut(State->ForwardRequests, Owner, MoveTemp(OnComplete));
-	}
-
-	TArray<FLegacyCacheGetRequest> GetDataRequests;
-	GetDataRequests.Reserve(State->VerifyRequests.Num());
-	{
-		uint64 PutIndex = 0;
-		const ECachePolicy GetPolicy = ECachePolicy::Query;
-		for (const FLegacyCachePutRequest& PutRequest : State->VerifyRequests)
-		{
-			GetDataRequests.Add({PutRequest.Name, PutRequest.Key, GetPolicy, PutIndex++});
-		}
-	}
-
-	State->OnComplete = MoveTemp(OnComplete);
-	State->ActiveRequests = GetDataRequests.Num();
-	InnerCache->LegacyGet(GetDataRequests, Owner, [this, &Owner, State = State.Release()](FLegacyCacheGetResponse&& MetaResponse)
-	{
-		GetDataComplete(Owner, State, MoveTemp(MetaResponse));
-	});
-}
-
-void FCacheStoreVerify::GetDataComplete(IRequestOwner& Owner, FVerifyLegacyPutState* State, FLegacyCacheGetResponse&& Response)
-{
-	FLegacyCachePutRequest& Request = State->VerifyRequests[int32(Response.UserData)];
-
-	if (Response.Status == EStatus::Ok)
-	{
-		const FLegacyCacheValue& NewValue = Request.Value;
-		const FLegacyCacheValue& OldValue = Response.Value;
-		if (NewValue.GetRawHash() == OldValue.GetRawHash())
-		{
-			UE_LOG(LogDerivedDataCache, Log,
-				TEXT("Verify: Data in the cache matches newly generated data for %s from '%s'."),
-				*WriteToString<96>(Request.Key.GetKey()), *Request.Name);
-			State->OnComplete(Request.MakeResponse(EStatus::Ok));
-		}
-		else
-		{
-			LogChangedValue(Request.Name, Request.Key.GetKey(), FValueId::Null,
-				NewValue.GetRawHash(), OldValue.GetRawHash(),
-				NewValue.GetRawData(), OldValue.GetRawData());
-			if (bPutOnError)
-			{
-				// Ask to overwrite existing values to potentially eliminate the mismatch.
-				UE_LOG(LogDerivedDataCache, Display,
-					TEXT("Verify: Writing newly generated data to the cache for %s from '%s'."),
-					*WriteToString<96>(Request.Key.GetKey()), *Request.Name);
-				Request.Policy &= ~ECachePolicy::Query;
-				FWriteScopeLock Lock(State->Lock);
-				State->ForwardRequests.Add(MoveTemp(Request));
-			}
-			else
-			{
-				State->OnComplete(Request.MakeResponse(EStatus::Ok));
-			}
-		}
-	}
-	else
-	{
-		UE_LOG(LogDerivedDataCache, Warning,
-			TEXT("Verify: Cache did not contain a value for %s from '%s'."),
-			*WriteToString<96>(Request.Key.GetKey()), *Request.Name);
-		FWriteScopeLock Lock(State->Lock);
-		State->ForwardRequests.Add(MoveTemp(Request));
-	}
-
-	GetComplete(Owner, State);
-}
-
-void FCacheStoreVerify::GetComplete(IRequestOwner& Owner, FVerifyLegacyPutState* State)
-{
-	if (FWriteScopeLock Lock(State->Lock); --State->ActiveRequests > 0)
-	{
-		return;
-	}
-	if (!State->ForwardRequests.IsEmpty())
-	{
-		InnerCache->LegacyPut(State->ForwardRequests, Owner, MoveTemp(State->OnComplete));
-	}
-	delete State;
-}
-
-void FCacheStoreVerify::LegacyGet(
-	const TConstArrayView<FLegacyCacheGetRequest> Requests,
-	IRequestOwner& Owner,
-	FOnLegacyCacheGetComplete&& OnComplete)
-{
-	TArray<FLegacyCacheGetRequest, TInlineAllocator<8>> ForwardRequests;
-	TArray<FLegacyCacheGetRequest, TInlineAllocator<8>> VerifyRequests;
-	ForwardRequests.Reserve(Requests.Num());
-	VerifyRequests.Reserve(Requests.Num());
-	{
-		FScopeLock ScopeLock(&SynchronizationObject);
-		for (const FLegacyCacheGetRequest& Request : Requests)
-		{
-			bool bAlreadyTested = AlreadyTested.Contains(Request.Key.GetKey());
-			(bAlreadyTested ? ForwardRequests : VerifyRequests).Add(Request);
-		}
-	}
-
-	CompleteWithStatus(VerifyRequests, OnComplete, EStatus::Error);
-
-	if (!ForwardRequests.IsEmpty())
-	{
-		InnerCache->LegacyGet(ForwardRequests, Owner, MoveTemp(OnComplete));
 	}
 }
 

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Containers/ArrayView.h"
+#include "UObject/NameTypes.h"
 #include "Widgets/SCompoundWidget.h"
 #include "WorkflowOrientedApp/WorkflowTabFactory.h"
 
@@ -10,7 +12,7 @@ struct FFrame;
 
 namespace CallStackViewer
 {
-	void KISMET_API UpdateDisplayedCallstack(const TArray<const FFrame*>& ScriptStack);
+	void KISMET_API UpdateDisplayedCallstack(TArrayView<const FFrame* const> ScriptStack);
 	FName GetTabName();
 	void RegisterTabSpawner(FTabManager& TabManager);
 }

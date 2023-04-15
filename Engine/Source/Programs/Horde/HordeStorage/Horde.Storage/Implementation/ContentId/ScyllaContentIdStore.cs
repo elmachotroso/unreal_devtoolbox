@@ -1,23 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Cassandra;
 using Cassandra.Mapping;
 using Datadog.Trace;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
+using ContentId = Jupiter.Implementation.ContentId;
 
 namespace Horde.Storage.Implementation
 {
     public class ScyllaContentIdStore : IContentIdStore
     {
         private readonly ISession _session;
-        private readonly IBlobStore _blobStore;
-        private Mapper _mapper;
+        private readonly IBlobService _blobStore;
+        private readonly Mapper _mapper;
 
-        public ScyllaContentIdStore(IScyllaSessionManager scyllaSessionManager, IBlobStore blobStore)
+        public ScyllaContentIdStore(IScyllaSessionManager scyllaSessionManager, IBlobService blobStore)
         {
             _session = scyllaSessionManager.GetSessionForReplicatedKeyspace();
             _blobStore = blobStore;
@@ -33,43 +34,62 @@ namespace Horde.Storage.Implementation
             ));
         }
 
-
-        public async Task<BlobIdentifier[]?> Resolve(NamespaceId ns, BlobIdentifier contentId)
+        public async Task<BlobIdentifier[]?> Resolve(NamespaceId ns, ContentId contentId, bool mustBeContentId)
         {
-            using Scope scope = Tracer.Instance.StartActive("ScyllaContentIdStore.ResolveContentId");
+            using IScope scope = Tracer.Instance.StartActive("ScyllaContentIdStore.ResolveContentId");
             scope.Span.ResourceName = contentId.ToString();
 
-            Task<bool> blobStoreExistsTask = _blobStore.Exists(ns, contentId);
-
-            // lower content_weight means its a better candidate to resolve to
-            foreach (ScyllaContentId? resolvedContentId in await _mapper.FetchAsync<ScyllaContentId>("WHERE content_id = ? ORDER BY content_weight DESC", new ScyllaBlobIdentifier(contentId)))
+            BlobIdentifier contentIdBlob = contentId.AsBlobIdentifier();
+            Task<bool>? blobStoreExistsTask = null;
+            if (!mustBeContentId)
             {
-                if (resolvedContentId == null)
-                    throw new InvalidContentIdException(contentId);
-                
-                BlobIdentifier[] blobs = resolvedContentId.Chunks.Select(b => b.AsBlobIdentifier()).ToArray();
-
-                {
-                    using Scope _ = Tracer.Instance.StartActive("ScyllaContentIdStore.FindMissingBlobs");
-
-                    BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(ns, blobs);
-                    if (missingBlobs.Length == 0)
-                        return blobs;
-                }
-                // blobs are missing continue testing with the next content id in the weighted list as that might exist
+                blobStoreExistsTask = _blobStore.Exists(ns, contentIdBlob);
             }
 
-            // if no content id is found, but we have a blob that matches the content id (so a unchunked and uncompressed version of the data) we use that instead
-            bool contentIdBlobExists = await blobStoreExistsTask;
+            {
+                using IScope contentIdFetchScope = Tracer.Instance.StartActive("ScyllaContentIdStore.FetchContentId");
+                scope.Span.ResourceName = contentId.ToString();
 
-            if (contentIdBlobExists)
-                return new[] { contentId };
+                // lower content_weight means its a better candidate to resolve to
+                foreach (ScyllaContentId? resolvedContentId in await _mapper.FetchAsync<ScyllaContentId>("WHERE content_id = ? ORDER BY content_weight DESC", new ScyllaBlobIdentifier(contentId)))
+                {
+                    if (resolvedContentId == null)
+                    {
+                        throw new InvalidContentIdException(contentId);
+                    }
 
+                    BlobIdentifier[] blobs = resolvedContentId.Chunks.Select(b => b.AsBlobIdentifier()).ToArray();
+
+                    {
+                        using IScope _ = Tracer.Instance.StartActive("ScyllaContentIdStore.FindMissingBlobs");
+
+                        BlobIdentifier[] missingBlobs = await _blobStore.FilterOutKnownBlobs(ns, blobs);
+                        if (missingBlobs.Length == 0)
+                        {
+                            return blobs;
+                        }
+                    }
+                    // blobs are missing continue testing with the next content id in the weighted list as that might exist
+                }
+            }
+            
+
+            if (!mustBeContentId)
+            {
+                // if no content id is found, but we have a blob that matches the content id (so a unchunked and uncompressed version of the data) we use that instead
+                bool contentIdBlobExists = await blobStoreExistsTask!;
+
+                if (contentIdBlobExists)
+                {
+                    return new[] { contentIdBlob };
+                }
+            }
+            
             // unable to resolve the content id
             return null;
         }
 
-        public async Task Put(NamespaceId ns, BlobIdentifier contentId, BlobIdentifier blobIdentifier, int contentWeight)
+        public async Task Put(NamespaceId ns, ContentId contentId, BlobIdentifier blobIdentifier, int contentWeight)
         {
             await _mapper.UpdateAsync<ScyllaContentId>("SET chunks = ? WHERE content_id = ? AND content_weight = ?", new [] {new ScyllaBlobIdentifier(blobIdentifier)}, new ScyllaBlobIdentifier(contentId), contentWeight);
         }

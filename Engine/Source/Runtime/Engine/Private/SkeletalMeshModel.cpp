@@ -10,24 +10,25 @@
 #include "UObject/UE5MainStreamObjectVersion.h"
 
 FSkeletalMeshModel::FSkeletalMeshModel()
-	: bGuidIsHash(false)	
+	: bGuidIsHash(false)
 {
 }
 
-void FSkeletalMeshModel::Serialize(FArchive& Ar, USkeletalMesh* Owner)
+void FSkeletalMeshModel::Serialize(FArchive& Ar, USkinnedAsset* Owner)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FSkeletalMeshModel::Serialize"), STAT_SkeletalMeshModel_Serialize, STATGROUP_LoadTime);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FSkeletalMeshCustomVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
 	bool bIsEditorDataStripped = false;
-	if (Ar.IsSaving() || Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::AllowSkeletalMeshToReduceTheBaseLOD)
+	if (Ar.IsSaving() || (Ar.IsLoading() && Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::AllowSkeletalMeshToReduceTheBaseLOD))
 	{
 		FStripDataFlags StripFlags(Ar);
 		bIsEditorDataStripped = StripFlags.IsEditorDataStripped();
 	}
 
 	LODModels.Serialize(Ar, Owner);
-
-	Ar.UsingCustomVersion(FSkeletalMeshCustomVersion::GUID);
-	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	// For old content without a GUID, generate one now from the data
 	if (Ar.IsLoading() && Ar.CustomVer(FSkeletalMeshCustomVersion::GUID) < FSkeletalMeshCustomVersion::SplitModelAndRenderData)
@@ -81,7 +82,7 @@ void FSkeletalMeshModel::Serialize(FArchive& Ar, USkeletalMesh* Owner)
 			}
 		}
 
-		if (Ar.IsSaving() || (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::ConvertReductionBaseSkeletalMeshBulkDataToInlineReductionCacheData))
+		if (Ar.IsSaving() || (Ar.IsLoading() && Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::ConvertReductionBaseSkeletalMeshBulkDataToInlineReductionCacheData))
 		{
 			Ar << InlineReductionCacheDatas;
 		}
@@ -113,7 +114,7 @@ void FSkeletalMeshModel::GenerateNewGUID()
 }
 
 
-void FSkeletalMeshModel::GenerateGUIDFromHash(USkeletalMesh* Owner)
+void FSkeletalMeshModel::GenerateGUIDFromHash(USkinnedAsset* Owner)
 {
 	// Build the hash from the path name + the contents of the bulk data.
 	FSHA1 Sha;
@@ -130,7 +131,7 @@ void FSkeletalMeshModel::GenerateGUIDFromHash(USkeletalMesh* Owner)
 	}
 	Sha.Final();
 
-	// Retrieve the hash and use it to construct a pseudo-GUID. 
+	// Retrieve the hash and use it to construct a pseudo-GUID.
 	uint32 Hash[5];
 	Sha.GetHash((uint8*)Hash);
 	SkeletalMeshModelGUID = FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
@@ -168,7 +169,7 @@ FString FSkeletalMeshModel::GetLODModelIdString() const
 		Sha.Update((uint8*)IDArray.GetData(), IDArray.Num() * IDArray.GetTypeSize());
 	}
 	Sha.Final();
-	// Retrieve the hash and use it to construct a pseudo-GUID. 
+	// Retrieve the hash and use it to construct a pseudo-GUID.
 	uint32 Hash[5];
 	Sha.GetHash((uint8*)Hash);
 	return FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]).ToString(EGuidFormats::Digits);

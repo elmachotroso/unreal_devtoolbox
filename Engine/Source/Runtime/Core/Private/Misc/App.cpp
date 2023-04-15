@@ -10,6 +10,7 @@
 #include "UObject/DevObjectVersion.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/NetworkVersion.h"
+#include "Misc/SecureHash.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogApp, Log, All);
 
@@ -335,9 +336,9 @@ void FApp::PrintStartupLogMessages()
 	UE_LOG(LogInit, Log, TEXT("OS: %s (%s), CPU: %s, GPU: %s"), *OSLabel, *OSVersion, *FPlatformMisc::GetCPUBrand(), *FPlatformMisc::GetPrimaryGPUBrand());
 
 #if PLATFORM_64BITS
-	UE_LOG(LogInit, Log, TEXT("Compiled (64-bit): %s %s"), ANSI_TO_TCHAR(__DATE__), ANSI_TO_TCHAR(__TIME__));
+	UE_LOG(LogInit, Log, TEXT("Compiled (64-bit): %s %s"), BuildSettings::GetBuildDate(), BuildSettings::GetBuildTime());
 #else
-	UE_LOG(LogInit, Log, TEXT("Compiled (32-bit): %s %s"), ANSI_TO_TCHAR(__DATE__), ANSI_TO_TCHAR(__TIME__));
+	UE_LOG(LogInit, Log, TEXT("Compiled (32-bit): %s %s"), BuildSettings::GetBuildDate(), BuildSettings::GetBuildTime());
 #endif
 
 	// Print compiler version info
@@ -372,4 +373,30 @@ void FApp::PrintStartupLogMessages()
 	UE_LOG(LogInit, Log, TEXT("Installed Engine Build: %d"), FApp::IsEngineInstalled() ? 1 : 0);
 
 	FDevVersionRegistration::DumpVersionsToLog();
+}
+
+FString FApp::GetZenStoreProjectId()
+{
+	FString ProjectId;
+	if (FParse::Value(FCommandLine::Get(), TEXT("-ZenStoreProject="), ProjectId))
+	{
+		return ProjectId;
+	}
+
+#if PLATFORM_DESKTOP
+	if (FPaths::IsProjectFilePathSet())
+	{
+		FString ProjectFilePath = FPaths::GetProjectFilePath();
+		FPaths::NormalizeFilename(ProjectFilePath);
+		FString AbsProjectFilePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ProjectFilePath);
+		FTCHARToUTF8 AbsProjectFilePathUTF8(*AbsProjectFilePath);
+
+		FString HashString = FMD5::HashBytes((unsigned char*)AbsProjectFilePathUTF8.Get(), AbsProjectFilePathUTF8.Length()).Left(8);
+		return FString::Printf(TEXT("%s.%.8s"), FApp::GetProjectName(), *HashString);
+	}
+	UE_LOG(LogInit, Fatal, TEXT("GetZenStoreProjectId() called before having a valid project file path"));
+#else
+	UE_LOG(LogInit, Fatal, TEXT("-ZenStoreProject command line argument is required to run from Zen"));
+#endif
+	return FString();
 }

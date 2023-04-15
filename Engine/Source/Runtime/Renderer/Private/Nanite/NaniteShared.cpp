@@ -10,7 +10,11 @@
 DEFINE_LOG_CATEGORY(LogNanite);
 DEFINE_GPU_STAT(NaniteDebug);
 
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNaniteUniformParameters, "Nanite");
+IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(Nanite);
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FNaniteUniformParameters, "Nanite", Nanite);
+
+IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(NaniteRayTracing);
+IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(FNaniteRayTracingUniformParameters, "NaniteRayTracing", NaniteRayTracing);
 
 extern float GNaniteMaxPixelsPerEdge;
 extern float GNaniteMinPixelsPerEdgeHW;
@@ -63,6 +67,18 @@ void FPackedView::UpdateLODScales()
 	LODScales = FVector2f(LODScale, LODScaleHW);
 }
 
+FMatrix44f FPackedView::CalcTranslatedWorldToSubpixelClip(const FMatrix44f& TranslatedWorldToClip, const FIntRect& ViewRect)
+{
+	const FVector2f SubpixelScale = FVector2f(0.5f * ViewRect.Width() * NANITE_SUBPIXEL_SAMPLES,
+		-0.5f * ViewRect.Height() * NANITE_SUBPIXEL_SAMPLES);
+
+	const FVector2f SubpixelOffset = FVector2f((0.5f * ViewRect.Width() + ViewRect.Min.X) * NANITE_SUBPIXEL_SAMPLES,
+		(0.5f * ViewRect.Height() + ViewRect.Min.Y) * NANITE_SUBPIXEL_SAMPLES);
+
+	return TranslatedWorldToClip * FScaleMatrix44f(FVector3f(SubpixelScale, 1.0f))* FTranslationMatrix44f(FVector3f(SubpixelOffset, 0.0f));
+}
+
+
 FPackedView CreatePackedView( const FPackedViewParams& Params )
 {
 	// NOTE: There is some overlap with the logic - and this should stay consistent with - FSceneView::SetupViewRectUniformBufferParameters
@@ -73,17 +89,20 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	const FLargeWorldRenderPosition AbsoluteViewOrigin(Params.ViewMatrices.GetViewOrigin());
 	const FVector ViewTileOffset = AbsoluteViewOrigin.GetTileOffset();
 
-	FPackedView PackedView;
+	const FIntRect& ViewRect = Params.ViewRect;
+	const FVector4f ViewSizeAndInvSize(ViewRect.Width(), ViewRect.Height(), 1.0f / float(ViewRect.Width()), 1.0f / float(ViewRect.Height()));
 
+	FPackedView PackedView;
 	PackedView.TranslatedWorldToView		= FMatrix44f(Params.ViewMatrices.GetOverriddenTranslatedViewMatrix());	// LWC_TODO: Precision loss? (and below)
 	PackedView.TranslatedWorldToClip		= FMatrix44f(Params.ViewMatrices.GetTranslatedViewProjectionMatrix());
+	PackedView.TranslatedWorldToSubpixelClip= FPackedView::CalcTranslatedWorldToSubpixelClip(PackedView.TranslatedWorldToClip, Params.ViewRect);
 	PackedView.ViewToClip					= RelativeMatrices.ViewToClip;
 	PackedView.ClipToRelativeWorld			= RelativeMatrices.ClipToRelativeWorld;
 	PackedView.PreViewTranslation			= FVector4f(FVector3f(Params.ViewMatrices.GetPreViewTranslation() + ViewTileOffset)); // LWC_TODO: precision loss
 	PackedView.WorldCameraOrigin			= FVector4f(FVector3f(Params.ViewMatrices.GetViewOrigin() - ViewTileOffset), 0.0f);
 	PackedView.ViewForwardAndNearPlane		= FVector4f((FVector3f)Params.ViewMatrices.GetOverriddenTranslatedViewMatrix().GetColumn(2), Params.ViewMatrices.ComputeNearPlane());
 	PackedView.ViewTilePosition				= AbsoluteViewOrigin.GetTile();
-	PackedView.Padding0						= 0u;
+	PackedView.RangeBasedCullingDistance	= Params.RangeBasedCullingDistance;
 	PackedView.MatrixTilePosition			= RelativeMatrices.TilePosition;
 	PackedView.Padding1						= 0u;
 
@@ -93,8 +112,6 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	PackedView.PrevClipToRelativeWorld		= RelativeMatrices.PrevClipToRelativeWorld;
 	PackedView.PrevPreViewTranslation		= FVector4f(FVector3f(Params.PrevViewMatrices.GetPreViewTranslation() + ViewTileOffset)); // LWC_TODO: precision loss
 
-	const FIntRect& ViewRect = Params.ViewRect;
-	const FVector4f ViewSizeAndInvSize(ViewRect.Width(), ViewRect.Height(), 1.0f / float(ViewRect.Width()), 1.0f / float(ViewRect.Height()));
 
 	PackedView.ViewRect = FIntVector4(ViewRect.Min.X, ViewRect.Min.Y, ViewRect.Max.X, ViewRect.Max.Y);
 	PackedView.ViewSizeAndInvSize = ViewSizeAndInvSize;
@@ -143,7 +160,8 @@ FPackedView CreatePackedViewFromViewInfo
 	uint32 Flags,
 	uint32 StreamingPriorityCategory,
 	float MinBoundsRadius,
-	float LODScaleFactor
+	float LODScaleFactor,
+	const FIntRect* InHZBTestViewRect
 )
 {
 	FPackedViewParams Params;
@@ -155,7 +173,8 @@ FPackedView CreatePackedViewFromViewInfo
 	Params.StreamingPriorityCategory = StreamingPriorityCategory;
 	Params.MinBoundsRadius = MinBoundsRadius;
 	Params.LODScaleFactor = LODScaleFactor;
-	Params.HZBTestViewRect = View.PrevViewInfo.ViewRect;
+	// Note - it is incorrect to use ViewRect as it is in a different space, but keeping this for backward compatibility reasons with other callers
+	Params.HZBTestViewRect = InHZBTestViewRect ? *InHZBTestViewRect : View.PrevViewInfo.ViewRect;
 	return CreatePackedView(Params);
 }
 
@@ -167,6 +186,7 @@ void FGlobalResources::InitRHI()
 #if !UE_BUILD_SHIPPING
 		FeedbackManager = new FFeedbackManager();
 #endif
+		PickingBuffers.AddZeroed(MaxPickingBuffers);
 	}
 }
 
@@ -176,14 +196,23 @@ void FGlobalResources::ReleaseRHI()
 	{
 		LLM_SCOPE_BYTAG(Nanite);
 
+		for (int32 BufferIndex = 0; BufferIndex < PickingBuffers.Num(); ++BufferIndex)
+		{
+			if (PickingBuffers[BufferIndex])
+			{
+				delete PickingBuffers[BufferIndex];
+				PickingBuffers[BufferIndex] = nullptr;
+			}
+		}
+
+		PickingBuffers.Reset();
+
 		MainPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 		PostPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 
 		MainAndPostNodesAndClusterBatchesBuffer.SafeRelease();
 
 		StatsBuffer.SafeRelease();
-
-		StructureBufferStride8.SafeRelease();
 
 #if !UE_BUILD_SHIPPING
 		delete FeedbackManager;
@@ -195,13 +224,6 @@ void FGlobalResources::ReleaseRHI()
 void FGlobalResources::Update(FRDGBuilder& GraphBuilder)
 {
 	check(DoesPlatformSupportNanite(GMaxRHIShaderPlatform));
-
-	if (!StructureBufferStride8.IsValid())
-	{
-		FRDGBufferDesc StructureBufferStride8Desc = FRDGBufferDesc::CreateStructuredDesc(8, 1);
-		GetPooledFreeBuffer(GraphBuilder.RHICmdList, StructureBufferStride8Desc, StructureBufferStride8, TEXT("Nanite.StructureBufferStride8"));
-		check(StructureBufferStride8.IsValid());
-	}
 }
 
 uint32 FGlobalResources::GetMaxCandidateClusters()

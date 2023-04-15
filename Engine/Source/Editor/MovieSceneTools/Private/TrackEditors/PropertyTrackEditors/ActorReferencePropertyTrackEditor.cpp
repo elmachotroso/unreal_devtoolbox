@@ -1,26 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/PropertyTrackEditors/ActorReferencePropertyTrackEditor.h"
+
 #include "GameFramework/Actor.h"
+#include "ISequencer.h"
+#include "KeyPropertyParams.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "MovieSceneObjectBindingID.h"
 #include "MovieSceneSpawnableAnnotation.h"
+#include "MovieSceneTrackEditor.h"
+#include "Sections/MovieSceneActorReferenceSection.h"
+#include "Templates/Casts.h"
+
+class ISequencerTrackEditor;
+class UMovieSceneSection;
+class UObject;
 
 
 TSharedRef<ISequencerTrackEditor> FActorReferencePropertyTrackEditor::CreateTrackEditor( TSharedRef<ISequencer> OwningSequencer )
 {
 	return MakeShareable(new FActorReferencePropertyTrackEditor(OwningSequencer));
-}
-
-void FActorReferencePropertyTrackEditor::OnAnimatedPropertyChanged( const FPropertyChangedParams& PropertyChangedParams )
-{
-	// Override the params by always manually adding a key/track so that we don't reference other spawnables and their levels. Override only if it's set to autokey, so that if a key is manually forced, it will still be created
-	ESequencerKeyMode OverrideKeyMode = PropertyChangedParams.KeyMode;
-	if (OverrideKeyMode == ESequencerKeyMode::AutoKey)
-	{
-		OverrideKeyMode = ESequencerKeyMode::ManualKey;
-	}
-	FPropertyChangedParams OverridePropertyChangedParams(PropertyChangedParams.ObjectsThatChanged, PropertyChangedParams.PropertyPath, PropertyChangedParams.StructPathToKey, OverrideKeyMode);
-
-	FPropertyTrackEditor::OnAnimatedPropertyChanged( OverridePropertyChangedParams );
 }
 
 void FActorReferencePropertyTrackEditor::GenerateKeysFromPropertyChanged( const FPropertyChangedParams& PropertyChangedParams, UMovieSceneSection* SectionToKey, FGeneratedTrackKeys& OutGeneratedKeys )

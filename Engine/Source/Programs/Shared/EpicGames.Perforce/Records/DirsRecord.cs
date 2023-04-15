@@ -1,11 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace EpicGames.Perforce
 {
 	/// <summary>
@@ -17,7 +11,7 @@ namespace EpicGames.Perforce
 		/// The directory name
 		/// </summary>
 		[PerforceTag("dir")]
-		public string Dir;
+		public string Dir { get; set; }
 
 		/// <summary>
 		/// Private constructor for serialization

@@ -20,6 +20,9 @@ UDisplayClusterBlueprint::UDisplayClusterBlueprint()
 	: ConfigData(nullptr), AssetVersion(0)
 {
 	BlueprintType = BPTYPE_Normal;
+#if WITH_EDITORONLY_DATA
+	bRunConstructionScriptOnInteractiveChange = false;
+#endif
 }
 
 #if WITH_EDITOR
@@ -217,7 +220,7 @@ void UDisplayClusterBlueprint::PrepareConfigForExport()
 	
 	// Extract CDO cameras (no screens in the CDO)
 	// Get list of cameras
-	CDO->GetComponents<UDisplayClusterCameraComponent>(CameraComponents);
+	CDO->GetComponents(CameraComponents);
 
 	// Extract BP components
 

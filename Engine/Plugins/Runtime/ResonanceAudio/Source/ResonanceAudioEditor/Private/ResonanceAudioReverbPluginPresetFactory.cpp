@@ -4,8 +4,12 @@
 
 #include "ResonanceAudioReverbPluginPresetFactory.h"
 #include "ResonanceAudioReverb.h"
+
+#include "AudioAnalytics.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ResonanceAudioReverbPluginPresetFactory)
 
 FText FAssetTypeActions_ResonanceAudioReverbPluginPreset::GetName() const
 {
@@ -49,6 +53,7 @@ UResonanceAudioReverbPluginPresetFactory::UResonanceAudioReverbPluginPresetFacto
 
 UObject* UResonanceAudioReverbPluginPresetFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName InName, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
+	Audio::Analytics::RecordEvent_Usage(TEXT("ResonanceAudio.ReverbPresetCreated"));
 	return NewObject<UResonanceAudioReverbPluginPreset>(InParent, InName, Flags);
 }
 
@@ -56,3 +61,4 @@ uint32 UResonanceAudioReverbPluginPresetFactory::GetMenuCategories() const
 {
 	return EAssetTypeCategories::Sounds;
 }
+

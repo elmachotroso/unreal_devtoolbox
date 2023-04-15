@@ -187,7 +187,7 @@ void UModel::Serialize( FArchive& Ar )
 	Super::Serialize( Ar );
 
 	const int32 StripVertexBufferFlag = 1;
-	FStripDataFlags StripFlags( Ar, GetOuter() && GetOuter()->IsA(ABrush::StaticClass()) ? StripVertexBufferFlag : FStripDataFlags::None );
+	FStripDataFlags StripFlags( Ar, GetOuter() && GetOuter()->IsA(ABrush::StaticClass()) ? StripVertexBufferFlag : static_cast<int32>(FStripDataFlags::EStrippedData::None) );
 
 	Ar << Bounds;
 
@@ -409,63 +409,63 @@ void UModel::PostEditUndo()
 	Super::PostEditUndo();
 }
 
-void UModel::ModifySurf( int32 InIndex, bool UpdateMaster )
+void UModel::ModifySurf( int32 InIndex, bool UpdateBrushes )
 {
 	Modify();
 
 	FBspSurf& Surf = Surfs[InIndex];
-	if( UpdateMaster && Surf.Actor )
+	if( UpdateBrushes && Surf.Actor )
 	{
 		Surf.Actor->Brush->Modify();
 	}
 }
 
-void UModel::ModifyAllSurfs( bool UpdateMaster )
+void UModel::ModifyAllSurfs( bool UpdateBrushes )
 {
 	Modify();
 
-	if (UpdateMaster)
+	if (UpdateBrushes)
 	{
-		TArray<UModel*> MasterModels;
-		MasterModels.Reset(Surfs.Num());
+		TArray<UModel*> Brushes;
+		Brushes.Reset(Surfs.Num());
 
 		for (const FBspSurf& Surf : Surfs)
 		{
 			if (Surf.Actor)
 			{
 				check(Surf.Actor->Brush);
-				MasterModels.AddUnique(Surf.Actor->Brush);
+				Brushes.AddUnique(Surf.Actor->Brush);
 			}
 		}
 
-		for (UModel* MasterModel : MasterModels)
+		for (UModel* Brush: Brushes)
 		{
-			MasterModel->Modify();
+			Brush->Modify();
 		}
 	}
 }
 
-void UModel::ModifySelectedSurfs( bool UpdateMaster )
+void UModel::ModifySelectedSurfs( bool UpdateBrushes )
 {
 	Modify();
 
-	if (UpdateMaster)
+	if (UpdateBrushes)
 	{
-		TArray<UModel*> MasterModels;
-		MasterModels.Reset(Surfs.Num());
+		TArray<UModel*> Brushes;
+		Brushes.Reset(Surfs.Num());
 
 		for (const FBspSurf& Surf : Surfs)
 		{
 			if (Surf.Actor && (Surf.PolyFlags & PF_Selected))
 			{
 				check(Surf.Actor->Brush);
-				MasterModels.AddUnique(Surf.Actor->Brush);
+				Brushes.AddUnique(Surf.Actor->Brush);
 			}
 		}
 
-		for (UModel* MasterModel : MasterModels)
+		for (UModel* Brush : Brushes)
 		{
-			MasterModel->Modify();
+			Brush->Modify();
 		}
 	}
 }
@@ -542,7 +542,7 @@ void UModel::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 
 IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine",
 	{
-		Class->ClassAddReferencedObjects = &UModel::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UModel);
 		Class->EmitObjectReference(STRUCT_OFFSET(UModel, Polys), TEXT("Polys"));
 		const uint32 SkipIndexIndex = Class->EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
 		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
@@ -555,7 +555,7 @@ IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine
 
 IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine",
 	{
-		Class->ClassAddReferencedObjects = &UModel::AddReferencedObjects;
+		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UModel);
 		const uint32 SkipIndexIndex = Class->EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
 		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
 		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Actor), TEXT("Actor"));

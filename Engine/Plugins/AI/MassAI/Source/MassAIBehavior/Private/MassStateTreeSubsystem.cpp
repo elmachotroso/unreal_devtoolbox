@@ -8,20 +8,42 @@
 void UMassStateTreeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	
 }
 
-FMassStateTreeHandle UMassStateTreeSubsystem::RegisterStateTreeAsset(UStateTree* StateTree)
+FMassStateTreeInstanceHandle UMassStateTreeSubsystem::AllocateInstanceData(const UStateTree* StateTree)
 {
-	// Return already registered asset if found.
-	int32 Index = RegisteredStateTrees.IndexOfByPredicate([StateTree](UStateTree* ExistingStateTree) -> bool { return ExistingStateTree == StateTree; });
-	if (Index != INDEX_NONE)
+	if (StateTree == nullptr)
 	{
-		return FMassStateTreeHandle::Make(uint16(Index));
+		return FMassStateTreeInstanceHandle();
 	}
-	// Add new, check that it fits the StateTree handle.
-	Index = RegisteredStateTrees.Add(StateTree);
-	check(Index < int32(MAX_uint16));
-	return FMassStateTreeHandle::Make(uint16(Index));
+	
+	int32 Index = 0;
+	if (InstanceDataFreelist.Num() > 0)
+	{
+		Index = InstanceDataFreelist.Pop();
+	}
+	else
+	{
+		Index = InstanceDataArray.Num();
+		InstanceDataArray.AddDefaulted();
+	}
+
+	FMassStateTreeInstanceDataItem& Item = InstanceDataArray[Index];
+	Item.InstanceData.Reset();
+	
+	return FMassStateTreeInstanceHandle::Make(Index, Item.Generation);
 }
 
+void UMassStateTreeSubsystem::FreeInstanceData(const FMassStateTreeInstanceHandle Handle)
+{
+	if (!IsValidHandle(Handle))
+	{
+		return;
+	}
+
+	FMassStateTreeInstanceDataItem& Item = InstanceDataArray[Handle.GetIndex()];
+	Item.InstanceData.Reset();
+	Item.Generation++;
+
+	InstanceDataFreelist.Add(Handle.GetIndex());
+}

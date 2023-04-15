@@ -28,8 +28,8 @@
 #include "UObject/MetaData.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Package.h"
-#include "AssetRegistryModule.h"
-#include "ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
 #include "Animation/Skeleton.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Editor/EditorPerProjectUserSettings.h"
@@ -46,6 +46,10 @@ DEFINE_LOG_CATEGORY(LogFbx);
 #define GeneratedLODNameSuffix "_GeneratedLOD_"
 namespace UnFbx
 {
+
+static bool GDisableAutomaticPhysicsAssetCreation = false;
+static FAutoConsoleVariableRef DisableAutomaticPhysicsAssetCreationCVar(TEXT("FbxImport.DisableAutomaticPhysicsAssetCreation"),
+	GDisableAutomaticPhysicsAssetCreation, TEXT("Prevents physics assets from being created automatically by FBX import (False: disabled, True: enabled"));
 
 TSharedPtr<FFbxImporter> FFbxImporter::StaticInstance;
 
@@ -101,7 +105,7 @@ FBXImportOptions* GetImportOptions( UnFbx::FFbxImporter* FbxImporter, UFbxImport
 			// Look in the current target directory to see if we have a skeleton
 			FARFilter Filter;
 			Filter.PackagePaths.Add(*FPaths::GetPath(FullPath));
-			Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+			Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 			TArray<FAssetData> SkeletonAssets;
@@ -123,6 +127,11 @@ FBXImportOptions* GetImportOptions( UnFbx::FFbxImporter* FbxImporter, UFbxImport
 		else
 		{
 			ImportUI->PhysicsAsset = NULL;
+		}
+
+		if (GDisableAutomaticPhysicsAssetCreation)
+		{
+			ImportUI->bCreatePhysicsAsset = false;
 		}
 
 		if(bForceImportType)
@@ -482,6 +491,7 @@ void ApplyImportUIToImportOptions(UFbxImportUI* ImportUI, FBXImportOptions& InOu
 		// only re-sample if they don't want to use default sample rate
 		InOutImportOptions.bResample					= !ImportUI->AnimSequenceImportData->bUseDefaultSampleRate;
 		InOutImportOptions.ResampleRate					= ImportUI->AnimSequenceImportData->CustomSampleRate;
+		InOutImportOptions.bSnapToClosestFrameBoundary	= ImportUI->AnimSequenceImportData->bSnapToClosestFrameBoundary;
 		InOutImportOptions.bPreserveLocalTransform		= ImportUI->AnimSequenceImportData->bPreserveLocalTransform;
 		InOutImportOptions.bDeleteExistingMorphTargetCurves = ImportUI->AnimSequenceImportData->bDeleteExistingMorphTargetCurves;
 		InOutImportOptions.bRemoveRedundantKeys			= ImportUI->AnimSequenceImportData->bRemoveRedundantKeys;
@@ -524,8 +534,9 @@ FFbxImporter::FFbxImporter()
 	, ImportOptions(NULL)
 	, GeometryConverter(NULL)
 	, SdkManager(NULL)
-	, Importer( NULL )
+	, Importer(NULL)
 	, bFirstMesh(true)
+	, FbxCreator(UnFbx::EFbxCreator::Unknow)
 	, Logger(NULL)
 {
 	// Create the SdkManager
@@ -544,6 +555,14 @@ FFbxImporter::FFbxImporter()
 	ImportOptions->MaterialBasePath = NAME_None;
 	
 	CurPhase = NOTSTARTED;
+
+	//The FFbxImporter is a singleton is constructor is protected
+	//We must release the resource in the pre-exit delegate because in some cases the
+	//Instance is not valid anymore when the destructor get called (i.e. when we build the editor in monolithic)
+	FCoreDelegates::OnPreExit.AddLambda([]()
+	{
+		FFbxImporter::GetInstance()->CleanUp();
+	});
 }
 	
 //-------------------------------------------------------------------------
@@ -551,7 +570,7 @@ FFbxImporter::FFbxImporter()
 //-------------------------------------------------------------------------
 FFbxImporter::~FFbxImporter()
 {
-	CleanUp();
+	//The clean up should have been done in the pre-exit core delegate implement in the FFbxImporter constructor
 }
 
 //-------------------------------------------------------------------------
@@ -603,6 +622,8 @@ void FFbxImporter::PartialCleanUp()
 //-------------------------------------------------------------------------
 void FFbxImporter::ReleaseScene()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FFbxImporter::ReleaseScene);
+
 	if (Importer)
 	{
 		Importer->Destroy();
@@ -1736,7 +1757,7 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("AnimOpt SetMaterialDriveParameterOnCustomAttribute"), CaptureImportOptions->bSetMaterialDriveParameterOnCustomAttribute));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("AnimOpt MaterialCurveSuffixes"), CaptureImportOptions->MaterialCurveSuffixes));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("AnimOpt ResampleRate"), CaptureImportOptions->ResampleRate));
-							
+							Attribs.Add(FAnalyticsEventAttribute(TEXT("AnimOpt SnapToClosestFrameBoundary"), CaptureImportOptions->bSnapToClosestFrameBoundary));
 						};
 						
 						if (ImportOptions->ImportType == FBXIT_SkeletalMesh)
@@ -1779,6 +1800,13 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 	}
 	
 	return Result;
+}
+
+void FFbxImporter::SetScene(FbxScene* InScene)
+{
+	ClearAllCaches();
+	Scene = InScene;
+	FbxCreator = EFbxCreator::Unknow;
 }
 
 FString FFbxImporter::MakeName(const ANSICHAR* Name)

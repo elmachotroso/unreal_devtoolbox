@@ -283,14 +283,15 @@ struct FScopedDetailTickStats
 
 
 private:
-	/** Object to track. 
-		Not GC safe, but we won't have anything in-flight during GC so that should be moot
-	*/
+	/** Detailed tick stats to update. */
+	FDetailedTickStats& DetailedTickStats;
+	/**
+	 * Object to track.
+	 * Not GC safe, but we won't have anything in-flight during GC so that should be moot.
+	 */
 	UObject* Object;
 	/** Tick start time. */
 	uint32 StartCycles;
-	/** Detailed tick stats to update. */
-	FDetailedTickStats& DetailedTickStats;
 	/** Whether object should be tracked. false e.g. when recursion is involved. */
 	bool bShouldTrackObject;
 	/** Whether object class should be tracked. false e.g. when recursion is involved. */
@@ -356,20 +357,8 @@ public:
 ENGINE_API FString appGetStartupMap(const TCHAR* CommandLine);
 
 // Calculate the average frame time by using the stats system.
-inline void CalculateFPSTimings()
-{
-	extern ENGINE_API float GAverageFPS;
-	extern ENGINE_API float GAverageMS;
-	// Calculate the average frame time via continued averaging.
-	static double LastTime = 0.0;
-	double CurrentTime = FPlatformTime::Seconds();
-	const float FrameTimeMS = (float)((CurrentTime - LastTime) * 1000.0);
-	// A 3/4, 1/4 split gets close to a simple 10 frame moving average
-	GAverageMS = GAverageMS * 0.75f + FrameTimeMS * 0.25f;
-	LastTime = CurrentTime;
-	// Calculate average framerate.
-	GAverageFPS = 1000.f / GAverageMS;
-}
+ENGINE_API void CalculateFPSTimings();
+
 
 /** @return The font to use for rendering stats display. */
 extern ENGINE_API UFont* GetStatsFont();
@@ -388,12 +377,21 @@ class FFrameEndSync
 	FRenderCommandFence Fence[2];
 	/** Current index into events array. */
 	int32 EventIndex;
+	/** cleanup delegate for engine pre-exit */
+	FDelegateHandle CleanupDelegate;
+
 public:
+	ENGINE_API FFrameEndSync();
+	ENGINE_API ~FFrameEndSync();
+
 	/**
 	 * Syncs the game thread with the render thread. Depending on passed in bool this will be a total
 	 * sync or a one frame lag.
 	 */
 	ENGINE_API void Sync( bool bAllowOneFrameThreadLag );
+
+private:
+	void Cleanup();
 };
 
 
@@ -427,6 +425,7 @@ struct FCachedSystemScalabilityCVars
 	float ViewDistanceScaleSquared;
 	int32 FieldOfViewAffectsHLOD;
 	float StaticMeshLODDistanceScale;
+	float SkeletalMeshOverlayDistanceScale;
 
 	float CalculateFieldOfViewDistanceScale(const float FieldOfView) const
 	{
@@ -494,6 +493,9 @@ ENGINE_API extern int32 GUnbuiltHLODCount;
 
 // Update the debugging aid GPlayInEditorContextString based on the current world context (does nothing in WITH_EDITOR=0 builds)
 ENGINE_API void UpdatePlayInEditorWorldDebugString(const FWorldContext* WorldContext);
+
+// Returns the Debug string for a given world (Standalone, Listen Server, Client #, etc)
+ENGINE_API FString GetDebugStringForWorld(const UWorld* World);
 
 // Used to temporarily override GPlayInEditorID, correctly updating the debug string and other state as necessary
 struct ENGINE_API FTemporaryPlayInEditorIDOverride

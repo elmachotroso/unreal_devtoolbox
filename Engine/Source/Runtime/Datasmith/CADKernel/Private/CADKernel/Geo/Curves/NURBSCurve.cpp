@@ -10,7 +10,7 @@
 #include "Algo/ForEach.h"
 #include "Algo/Reverse.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 { 
 
 FNURBSCurve::FNURBSCurve(int32 InDegre, const TArray<double>& InNodalVector, const TArray<FPoint>& InPoles, const TArray<double>& InWeights, int8 InDimension)
@@ -51,12 +51,21 @@ TSharedPtr<FEntityGeom> FNURBSCurve::ApplyMatrix(const FMatrixH& InMatrix) const
 	TArray<FPoint> TransformedPoles;
 
 	TransformedPoles.Reserve(Poles.Num());
-	for (FPoint Pole : Poles) 
+	for (const FPoint& Pole : Poles) 
 	{
 		TransformedPoles.Emplace(InMatrix.Multiply(Pole));
 	}
 
 	return FEntity::MakeShared<FNURBSCurve>(Degree, NodalVector, TransformedPoles, Weights, Dimension);
+}
+
+void FNURBSCurve::Offset(const FPoint& OffsetDirection)
+{
+	for (FPoint& Pole : Poles)
+	{
+		Pole += OffsetDirection;
+	}
+	Finalize();
 }
 
 #ifdef CADKERNEL_DEV
@@ -200,4 +209,4 @@ void FNURBSCurve::Invert()
 	Finalize();
 }
 
-} // namespace CADKernel
+} // namespace UE::CADKernel

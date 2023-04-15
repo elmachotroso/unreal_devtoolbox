@@ -4,6 +4,8 @@
 #include "Containers/Map.h"
 #include "UObject/Object.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(IAudioModulation)
+
 
 namespace Audio
 {
@@ -83,6 +85,7 @@ namespace Audio
 		, bRequiresConversion(InParam.bRequiresConversion)
 	#if WITH_EDITORONLY_DATA
 		, UnitDisplayName(MoveTemp(InParam.UnitDisplayName))
+		, ClassName(MoveTemp(InParam.ClassName))
 	#endif // WITH_EDITORONLY_DATA
 		, MixFunction(MoveTemp(InParam.MixFunction))
 		, UnitFunction(MoveTemp(InParam.UnitFunction))
@@ -98,6 +101,7 @@ namespace Audio
 		, bRequiresConversion(InParam.bRequiresConversion)
 #if WITH_EDITORONLY_DATA
 		, UnitDisplayName(InParam.UnitDisplayName)
+		, ClassName(InParam.ClassName)
 #endif // WITH_EDITORONLY_DATA
 		, MixFunction(InParam.MixFunction)
 		, UnitFunction(InParam.UnitFunction)
@@ -115,6 +119,7 @@ namespace Audio
 
 #if WITH_EDITORONLY_DATA
 		UnitDisplayName = InParam.UnitDisplayName;
+		ClassName = InParam.ClassName;
 #endif // WITH_EDITORONLY_DATA
 
 		MixFunction = InParam.MixFunction;
@@ -134,6 +139,7 @@ namespace Audio
 
 	#if WITH_EDITORONLY_DATA
 		UnitDisplayName = MoveTemp(InParam.UnitDisplayName);
+		ClassName = MoveTemp(InParam.ClassName);
 	#endif // WITH_EDITORONLY_DATA
 
 		MixFunction = MoveTemp(InParam.MixFunction);
@@ -385,3 +391,4 @@ TUniquePtr<Audio::IModulatorSettings> USoundModulatorBase::CreateProxySettings()
 	checkNoEntry();
 	return TUniquePtr<Audio::IModulatorSettings>();
 }
+

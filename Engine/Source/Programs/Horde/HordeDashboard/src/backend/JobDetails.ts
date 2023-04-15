@@ -5,8 +5,9 @@ import { getTheme, mergeStyles, mergeStyleSets } from '@fluentui/react/lib/Styli
 import backend from '.';
 import { getBatchInitElapsed, getNiceTime, getStepElapsed, getStepETA, getStepFinishTime, getStepTimingDelta } from '../base/utilities/timeUtils';
 import { getBatchText } from '../components/JobDetailCommon';
-import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobStepRefResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GetTemplateResponse, GroupData, IssueData, JobData, JobStepBatchState, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
+import { AgentData, ArtifactData, BatchData, EventData, GetGroupResponse, GetJobStepRefResponse, GetJobTimingResponse, GetLabelResponse, GetLabelStateResponse, GetLabelTimingInfoResponse, GetTemplateResponse, GroupData, IssueData, JobData, JobState, JobStepBatchState, JobStepError, JobStepOutcome, JobStepState, LabelState, NodeData, ReportPlacement, StepData, StreamData, TestData } from './Api';
 import { projectStore } from './ProjectStore';
+import moment from 'moment';
 
 const theme = getTheme();
 
@@ -18,6 +19,9 @@ export type JobLabel = GetLabelResponse & {
 
 const defaultUpdateMS = 5000;
 
+/**
+ * @deprecated This class evolved over time to be a fragile grab bag of methods related to jobs.  
+ */
 export class JobDetails {
 
     constructor(id?: string, logId?: string, stepId?: string, isLogView?: boolean) {
@@ -31,6 +35,38 @@ export class JobDetails {
 
     get name(): string | undefined {
         return this.jobdata?.name;
+    }
+
+    get targets(): string[] {
+
+        const detailArgs = this?.jobdata?.arguments;
+
+        if (!detailArgs) {
+            return [];
+        }
+
+        const targets: string[] = [];
+
+        if (detailArgs && detailArgs.length) {
+
+            const targetArgs = detailArgs.map(arg => arg.trim()).filter(arg => arg.toLowerCase().startsWith("-target="));
+
+            targetArgs.forEach(t => {
+
+                const index = t.indexOf("=");
+                if (index === -1) {
+                    return;
+                }
+                const target = t.slice(index + 1)?.trim();
+
+                if (target) {
+                    targets.push(target);
+                }
+            });
+        }
+
+        return targets;
+
     }
 
     async set(id: string, logId: string | undefined = undefined, stepId: string | undefined = undefined, labelIdx: number | undefined, updateMS = defaultUpdateMS, callback?: (details: JobDetails) => void, eventsCallback?: (details: JobDetails) => void) {
@@ -63,7 +99,9 @@ export class JobDetails {
 
                 this.stepId = stepId;
                 this.labelIdx = labelIdx;
-                requests.push(this.getIssues());
+                if (!this.suppressIssues) {
+                    requests.push(this.getIssues());
+                }
 
                 this.history = undefined;
 
@@ -189,7 +227,7 @@ export class JobDetails {
 
     get aborted(): boolean {
 
-        return this.jobdata?.abortedByUser ? true : false;
+        return this.jobdata?.abortedByUserInfo?.id ? true : false;
     }
 
     stepByName(name: string): StepData | undefined {
@@ -330,7 +368,7 @@ export class JobDetails {
 
     }
 
-    getStepName(stepId: string | undefined, includeRetry:boolean = true): string {
+    getStepName(stepId: string | undefined, includeRetry: boolean = true): string {
 
         if (!stepId) {
             return "";
@@ -364,6 +402,55 @@ export class JobDetails {
             return -1;
         }
         return this.labels.indexOf(label);
+    }
+
+    stepPrice(stepId: string): number | undefined {
+
+        const step = this.stepById(stepId);
+        const batch = this.batchByStepId(stepId);
+
+        /*
+        if (batch) {
+            batch.agentRate = 5.0;
+        }
+        */
+
+        if (!step || !batch || !batch.agentRate || !step.startTime || !step.finishTime) {
+            return undefined;
+        }
+
+        const start = moment(step.startTime);
+        const end = moment(step.finishTime);
+        const hours = moment.duration(end.diff(start)).asHours();
+        const price = hours * batch.agentRate;
+
+        return price ? price : undefined;
+    }
+
+    jobPrice(): number | undefined {
+
+        if (!this.batches || this.jobdata?.state !== JobState.Complete) {
+            return undefined;
+        }
+
+        let price = 0;
+
+        this.batches.forEach(b => {
+
+            /*
+            b.agentRate = 5.0;
+            */
+
+            if (b.agentRate && b.startTime && b.finishTime) {
+                const start = moment(b.startTime);
+                const end = moment(b.finishTime);
+                const hours = moment.duration(end.diff(start)).asHours();
+                price += hours * b.agentRate;
+
+            }
+        });
+
+        return price ? price : undefined;
     }
 
     labelByIndex(idxIn: number | string | undefined | null): JobLabel | undefined {
@@ -676,6 +763,7 @@ export class JobDetails {
             }
 
         });
+        
         this.jobdata?.batches?.forEach(b => {
             b.steps.forEach(s => s.reports?.forEach(r => {
                 if (s.id === this.stepId) {
@@ -734,7 +822,7 @@ export class JobDetails {
                 this.updateTimingInfo++;
                 this.updateTimingInfo %= 3;
             }
-            
+
             if (doTiming) {
                 requests.push(backend.getJobTiming(this.id));
             }
@@ -799,7 +887,9 @@ export class JobDetails {
 
             if (!this.isLogView) {
                 requests.push(backend.getJobTestData(this.id!));
-                requests.push(this.getIssues());
+                if (!this.suppressIssues) {
+                    requests.push(this.getIssues());
+                }
                 requests.push(this.queryReports());
             }
 
@@ -949,6 +1039,8 @@ export class JobDetails {
 
     fatalError?: string;
 
+    suppressIssues: boolean = false;
+
     private static templates = new Map<string, GetTemplateResponse>();
 }
 
@@ -1050,6 +1142,15 @@ export const getBatchSummaryMarkdown = (jobDetails: JobDetails, batchId: string)
 
     if (!summaryText) {
         summaryText = getBatchText({ batch: batch, agentId: batch?.agentId, agentType: agentType, agentPool: agentPool }) ?? "";
+
+        if (summaryText && batch.state === JobStepBatchState.Starting) {
+            summaryText += " batch is the starting state";
+        }
+
+        if (summaryText && batch.state === JobStepBatchState.Stopping) {
+            summaryText += " batch is the stopping state";
+        }
+
         if (!summaryText) {
             summaryText = batch?.agentId ?? (batch?.state ?? "Batch is unassigned");
         }
@@ -1074,7 +1175,7 @@ export const getStepSummaryMarkdown = (jobDetails: JobDetails, stepId: string): 
     const text: string[] = [];
 
     if (jobDetails.jobdata) {
-        text.push(`Job created by ${jobDetails.jobdata.startedByUser ? jobDetails.jobdata.startedByUser : "scheduler"}`);
+        text.push(`Job created by ${jobDetails.jobdata.startedByUserInfo ? jobDetails.jobdata.startedByUserInfo.name : "scheduler"}`);
     }
 
     const batchText = () => {
@@ -1090,35 +1191,41 @@ export const getStepSummaryMarkdown = (jobDetails: JobDetails, stepId: string): 
 
     };
 
-    if (step.retryByUser) {
+    if (step.retriedByUserInfo) {
         const retryId = jobDetails.getRetryStepId(step.id);
         if (retryId) {
-            text.push(`[Step was retried by ${step.retryByUser}](/job/${jobDetails.id!}?step=${retryId})`);
+            text.push(`[Step was retried by ${step.retriedByUserInfo.name}](/job/${jobDetails.id!}?step=${retryId})`);
         } else {
-            text.push(`Step was retried by ${step.retryByUser}`);
+            text.push(`Step was retried by ${step.retriedByUserInfo.name}`);
         }
-
     }
 
-    if (step.state === JobStepState.Skipped) {
-        eta.display = eta.server = "";
-        text.push("The step was skipped");
-    } else if (step.state === JobStepState.Aborted) {
+    if (step.abortRequested || step.state === JobStepState.Aborted) {
         eta.display = eta.server = "";
         let aborted = "";
-        if (step.abortByUser) {
+        if (step.abortedByUserInfo) {
             aborted = "This step was aborted";
-            aborted += ` by ${step.abortByUser}.`;
-        }
-        else if (jobDetails.jobdata?.abortedByUser) {
+            aborted += ` by ${step.abortedByUserInfo.name}.`;
+        } else if (jobDetails.jobdata?.abortedByUserInfo) {
             aborted = "The job was aborted";
-            aborted += ` by ${jobDetails.jobdata?.abortedByUser}.`;
+            aborted += ` by ${jobDetails.jobdata?.abortedByUserInfo.name}.`;
+        } else {
+            aborted = "The step was aborted";
+            
+            if (step.error === JobStepError.TimedOut) {
+                aborted = "The step was aborted due to reaching the maximum run time limit";
+            }
         }
         text.push(aborted);
+    } else if (step.state === JobStepState.Skipped) {
+        eta.display = eta.server = "";
+        text.push("The step was skipped");
     } else if (step.state === JobStepState.Ready || step.state === JobStepState.Waiting) {
 
         text.push(batchText() ?? `The step is pending in ${step.state} state`);
-    } else if (batch?.agentId) {
+    }
+
+    if (batch?.agentId) {
 
         if (step.startTime) {
             const str = getNiceTime(step.startTime);
@@ -1143,7 +1250,9 @@ export const getStepSummaryMarkdown = (jobDetails: JobDetails, stepId: string): 
         }
 
     } else {
-        text.push(batchText() ?? "Step does not have a batch.");
+        if (!step.abortRequested) {
+            text.push(batchText() ?? "Step does not have a batch.");
+        }
     }
 
     if (eta.display) {

@@ -26,12 +26,34 @@ struct FCustomPrimitiveData
 {
 	GENERATED_USTRUCT_BODY()
 
+	inline bool operator==(const FCustomPrimitiveData& Other) const
+	{
+		return Data == Other.Data;
+	}
+
 	static constexpr int32 NumCustomPrimitiveDataFloat4s = 9; // Must match NUM_CUSTOM_PRIMITIVE_DATA in SceneData.ush
 	static constexpr int32 NumCustomPrimitiveDataFloats = NumCustomPrimitiveDataFloat4s * 4;
 
 	UPROPERTY(EditAnywhere, Category=Rendering)
 	TArray<float> Data;
 };
+
+enum class EPrimitiveDirtyState : uint8
+{
+	None                  = 0U,
+	ChangedId             = (1U << 0U),
+	ChangedTransform      = (1U << 1U),
+	ChangedStaticLighting = (1U << 2U),
+	ChangedOther          = (1U << 3U),
+	/** The Added flag is a bit special, as it is used to skip invalidations in the VSM, and thus must only be set if the primitive is in fact added
+	 * (a previous remove must have been processed by GPU scene, or it is new). If in doubt, don't set this. */
+	 Added                = (1U << 4U),
+	 Removed              = (1U << 5U), // Only used to make sure we don't process something that has been marked as Removed (more a debug feature, can be trimmed if need be)
+	 ChangedAll = ChangedId | ChangedTransform | ChangedStaticLighting | ChangedOther,
+	 /** Mark all data as changed and set Added flag. Must ONLY be used when a primitive is added, c.f. Added, above. */
+	 AddedMask = ChangedAll | Added,
+};
+ENUM_CLASS_FLAGS(EPrimitiveDirtyState);
 
 /** 
  * Class used to identify UPrimitiveComponents on the rendering thread without having to pass the pointer around, 
@@ -69,17 +91,28 @@ public:
 class FSceneViewStateReference
 {
 public:
-	FSceneViewStateReference() :
-		Reference(NULL)
-	{}
+	FSceneViewStateReference()
+	: Reference(nullptr), ShareOriginTarget(nullptr), ShareOriginRefCount(0)
+	{
+	}
 
 	ENGINE_API virtual ~FSceneViewStateReference();
 
-	/** Allocates the Scene view state. */
+	/**
+	 * Allocates the Scene view state.
+	 */
 	ENGINE_API void Allocate(ERHIFeatureLevel::Type FeatureLevel);
 
 	UE_DEPRECATED(5.0, "Allocate must be called with an appropriate RHI Feature Level")
 	ENGINE_API void Allocate();
+
+	/**
+	  * Mark that a view state shares an origin with another view state, allowing sharing of some internal state, saving memory and performance.
+	  * Typically used for cube map faces.  Must be called before "Allocate" is called on the source view state (best practice is to call
+	  * immediately after creating the view state).  Multiple view states can point to the same shared origin (for example, the first face of a
+	  * cube map), but sharing can't be nested.  Sharing view states must be destroyed before the Target is destroyed.
+	  */
+	ENGINE_API void ShareOrigin(FSceneViewStateReference* Target);
 
 	/** Destorys the Scene view state. */
 	ENGINE_API void Destroy();
@@ -102,7 +135,14 @@ private:
 	FSceneViewStateInterface* Reference;
 	TLinkedList<FSceneViewStateReference*> GlobalListLink;
 
+	FSceneViewStateReference* ShareOriginTarget;
+
+	/** Number of other view states that share this view state's origin. */
+	int32 ShareOriginRefCount;
+
 	static TLinkedList<FSceneViewStateReference*>*& GetSceneViewStateList();
+
+	void AllocateInternal(ERHIFeatureLevel::Type FeatureLevel);
 };
 
 /** different light component types */
@@ -125,7 +165,7 @@ enum ELightMapInteractionType
 	LMIT_GlobalVolume = 1,
 	LMIT_Texture = 2,
 
-	LMIT_NumBits= 3
+	LMIT_NumBits = 3
 };
 
 enum EShadowMapInteractionType
@@ -161,8 +201,8 @@ enum EMaterialProperty
 	MP_EmissiveColor = 0 UMETA(DisplayName = "Emissive"),
 	MP_Opacity UMETA(DisplayName = "Opacity"),
 	MP_OpacityMask UMETA(DisplayName = "Opacity Mask"),
-	MP_DiffuseColor UMETA(Hidden),			// used in Lightmass, not exposed to user, computed from: BaseColor, Metallic
-	MP_SpecularColor UMETA(Hidden),			// used in Lightmass, not exposed to user, derived from: SpecularColor, Metallic, Specular
+	MP_DiffuseColor UMETA(Hidden),			// used in Lightmass, not exposed to user, computed from: BaseColor, Metallic				Also used in Strata which uses Albedo/F0 parameterrization
+	MP_SpecularColor UMETA(Hidden),			// used in Lightmass, not exposed to user, derived from: SpecularColor, Metallic, Specular	Also used in Strata which uses Albedo/F0 parameterrization
 	MP_BaseColor UMETA(DisplayName = "Diffuse"),
 	MP_Metallic UMETA(DisplayName = "Metallic"),
 	MP_Specular UMETA(DisplayName = "Specular"),

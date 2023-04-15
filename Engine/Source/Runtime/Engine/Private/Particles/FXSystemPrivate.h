@@ -11,6 +11,7 @@
 #include "VectorField.h"
 #include "ParticleSortingGPU.h"
 #include "GPUSortManager.h"
+#include "ParticleVertexFactory.h"
 
 class FCanvas;
 class FGlobalDistanceFieldParameterData;
@@ -56,17 +57,14 @@ enum EParticleCollisionShaderMode
 };
 
 /** Helper function to determine whether the given particle collision shader mode is supported on the given shader platform */
-inline bool IsParticleCollisionModeSupported(EShaderPlatform InPlatform, EParticleCollisionShaderMode InCollisionShaderMode, bool bForCaching = false)
+inline bool IsParticleCollisionModeSupported(EShaderPlatform InPlatform, EParticleCollisionShaderMode InCollisionShaderMode)
 {
 	switch (InCollisionShaderMode)
 	{
 	case PCM_None:
 		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::ES3_1);
 	case PCM_DepthBuffer:
-		// we only need to check for simple forward if we're NOT currently attempting to cache the shader
-		// since SF is a runtime change, we need to compile the shader regardless, because we could be switching to deferred at any time
-		return (IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5))
-			&& (bForCaching || !IsSimpleForwardShadingEnabled(InPlatform));
+		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
 	case PCM_DistanceField:
 		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
 	}
@@ -117,6 +115,74 @@ struct FNewParticle
 	float RandomOrbit;
 	/** The offset at which to inject the new particle. */
 	FVector2f Offset;
+};
+
+
+/**
+ * Vertex factory for render sprites from GPU simulated particles.
+ */
+class FGPUSpriteVertexFactory : public FParticleVertexFactoryBase
+{
+	DECLARE_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory);
+
+public:
+	FGPUSpriteVertexFactory(ERHIFeatureLevel::Type InFeatureLevel)
+		: FParticleVertexFactoryBase(InFeatureLevel)
+	{
+	}
+
+	/** Emitter uniform buffer. */
+	FRHIUniformBuffer* EmitterUniformBuffer;
+	/** Emitter uniform buffer for dynamic parameters. */
+	FUniformBufferRHIRef EmitterDynamicUniformBuffer;
+	/** Buffer containing unsorted particle indices. */
+	FRHIShaderResourceView* UnsortedParticleIndicesSRV;
+	/** Texture containing positions for all particles. */
+	FRHITexture2D* PositionTextureRHI;
+	/** Texture containing velocities for all particles. */
+	FRHITexture2D* VelocityTextureRHI;
+	/** Texture containint attributes for all particles. */
+	FRHITexture2D* AttributesTextureRHI;
+	/** LWC tile offset, will be 0,0,0 for localspace emitters. */
+	FVector3f LWCTile;
+
+	FGPUSpriteVertexFactory()
+		: FParticleVertexFactoryBase(PVFT_MAX, ERHIFeatureLevel::Num)
+		, UnsortedParticleIndicesSRV(0)
+		, PositionTextureRHI(nullptr)
+		, VelocityTextureRHI(nullptr)
+		, AttributesTextureRHI(nullptr)
+		, LWCTile(FVector3f::ZeroVector)
+	{}
+
+	/**
+	 * Constructs render resources for this vertex factory.
+	 */
+	virtual void InitRHI() override;
+	virtual bool RendersPrimitivesAsCameraFacingSprites() const override { return true; }
+
+	/**
+	 * Set the source vertex buffer that contains particle indices.
+	 */
+	void SetUnsortedParticleIndicesSRV(FRHIShaderResourceView* VertexBuffer)
+	{
+		UnsortedParticleIndicesSRV = VertexBuffer;
+	}
+
+	/**
+	 * Should we cache the material's shadertype on this platform with this vertex factory?
+	 */
+	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+
+	/**
+	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
+	 */
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	/**
+	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
+	 */
+	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
 };
 
 /*-----------------------------------------------------------------------------

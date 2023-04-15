@@ -1,14 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Api;
-using HordeServer.Utilities;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Streams;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Models
+namespace Horde.Build.Notifications
 {
 	using StreamId = StringId<IStream>;
 	using TemplateRefId = StringId<TemplateRef>;

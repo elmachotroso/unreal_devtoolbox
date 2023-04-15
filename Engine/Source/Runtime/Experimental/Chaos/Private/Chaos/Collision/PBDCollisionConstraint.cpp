@@ -3,9 +3,9 @@
 #include "Chaos/Collision/CollisionConstraintAllocator.h"
 #include "Chaos/Collision/PBDCollisionConstraintHandle.h"
 #include "Chaos/Collision/SolverCollisionContainer.h"
-#include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/Evolution/SolverBody.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
+#include "Chaos/Island/IslandManager.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/PBDCollisionConstraints.h"
@@ -18,6 +18,12 @@
 
 namespace Chaos
 {
+	namespace CVars
+	{
+		extern FRealSingle CCDEnableThresholdBoundsScale;
+		extern FRealSingle CCDAllowedDepthBoundsScale;
+	}
+
 	extern bool bChaos_Collision_EnableManifoldGJKInject;
 	extern bool bChaos_Collision_EnableManifoldGJKReplace;
 
@@ -43,6 +49,9 @@ namespace Chaos
 	// NOTE: This is currently disabled - margins for convex-trimesh cause bigger problems than the EPA issue
 	FRealSingle Chaos_Collision_ConvexZeroMargin = 0.0f;
 	FAutoConsoleVariableRef CVarChaos_Collision_ConvexZeroMargin(TEXT("p.Chaos.Collision.ConvexZeroMargin"), Chaos_Collision_ConvexZeroMargin, TEXT(""));
+
+	FRealSingle Chaos_Collision_Stiffness = -1.0f;
+	FAutoConsoleVariableRef CVarChaos_Collision_Stiffness(TEXT("p.Chaos.Collision.Stiffness"), Chaos_Collision_Stiffness, TEXT("Override the collision solver stiffness (if >= 0)"));
 
 	struct FCollisionTolerances
 	{
@@ -77,9 +86,9 @@ namespace Chaos
 		//sort constraints by the smallest particle idx in them first
 		//if the smallest particle idx is the same for both, use the other idx
 
-		if (L.GetCCDType() != R.GetCCDType())
+		if (L.GetCCDEnabled() != R.GetCCDEnabled())
 		{
-			return L.GetCCDType() < R.GetCCDType();
+			return L.GetCCDEnabled();
 		}
 
 		const FParticleID ParticleIdxs[] = { L.Particle[0]->ParticleID(), L.Particle[1]->ParticleID() };
@@ -100,7 +109,7 @@ namespace Chaos
 		return false;
 	}
 
-	void FPBDCollisionConstraint::MakeInline(
+	void FPBDCollisionConstraint::Make(
 		FGeometryParticleHandle* Particle0,
 		const FImplicitObject* Implicit0,
 		const FPerShapeData* Shape0,
@@ -128,37 +137,15 @@ namespace Chaos
 		OutConstraint.Setup(ECollisionCCDType::Disabled, ShapesType, ImplicitLocalTransform0, ImplicitLocalTransform1, InCullDistance, bInUseManifold);
 	}
 
-	TUniquePtr<FPBDCollisionConstraint> FPBDCollisionConstraint::Make(
-		FGeometryParticleHandle* Particle0,
-		const FImplicitObject* Implicit0,
-		const FPerShapeData* Shape0,
-		const FBVHParticles* Simplicial0,
-		const FRigidTransform3& ImplicitLocalTransform0,
-		FGeometryParticleHandle* Particle1,
-		const FImplicitObject* Implicit1,
-		const FPerShapeData* Shape1,
-		const FBVHParticles* Simplicial1,
-		const FRigidTransform3& ImplicitLocalTransform1,
-		const FReal InCullDistance,
-		const bool bInUseManifold,
-		const EContactShapesType ShapesType)
-	{
-		FPBDCollisionConstraint* Constraint = new FPBDCollisionConstraint(Particle0, Implicit0, Shape0, Simplicial0, Particle1, Implicit1, Shape1, Simplicial1);
-		
-		Constraint->Setup(ECollisionCCDType::Disabled, ShapesType, ImplicitLocalTransform0, ImplicitLocalTransform1, InCullDistance, bInUseManifold);
-
-		return TUniquePtr<FPBDCollisionConstraint>(Constraint);
-	}
-
 	FPBDCollisionConstraint FPBDCollisionConstraint::MakeTriangle(const FImplicitObject* Implicit0)
 	{
 		FPBDCollisionConstraint Constraint;
-		Constraint.InitMarginsAndTolerances(Implicit0->GetCollisionType(), ImplicitObjectType::Triangle, Implicit0->GetMargin(), FReal(0));
+		Constraint.InitMarginsAndTolerances(Implicit0->GetCollisionType(), ImplicitObjectType::Triangle, FRealSingle(Implicit0->GetMargin()), FRealSingle(0));
 		return Constraint;
 	}
 
-	FPBDCollisionConstraint FPBDCollisionConstraint::MakeCopy(
-		const FPBDCollisionConstraint& Source)
+	// Used by the resim system. Constraints copied this way will later be returned via RestoreFrom()
+	FPBDCollisionConstraint FPBDCollisionConstraint::MakeCopy(const FPBDCollisionConstraint& Source)
 	{
 		// @todo(chaos): The resim cache version probably doesn't need all the data, so maybe try to cut this down?
 		FPBDCollisionConstraint Constraint = Source;
@@ -167,7 +154,26 @@ namespace Chaos
 		// @todo(chaos): this should probably be handled by the copy constructor
 		Constraint.GetContainerCookie().ClearContainerData();
 
+		// We are not in the constraint graph, even if Source was
+		Constraint.SetConstraintGraphIndex(INDEX_NONE);
+
 		return Constraint;
+	}
+
+	// Used by the resim system. Restore a constraint from the past that we saved with MakeCopy
+	void FPBDCollisionConstraint::RestoreFrom(const FPBDCollisionConstraint& Source)
+	{
+		// We do not want to overwrite these properties because they are managed by the systems
+		// where the constraint is registsred (allocator, container, graph).
+		const FPBDCollisionConstraintContainerCookie Cookie = ContainerCookie;
+		const int32 ConstraintGraphIndex = GetConstraintGraphIndex();
+
+		// Copy everything
+		*this = Source;
+
+		// Restore the system state
+		ContainerCookie = Cookie;
+		SetConstraintGraphIndex(ConstraintGraphIndex);
 	}
 
 	FPBDCollisionConstraint::FPBDCollisionConstraint()
@@ -176,16 +182,13 @@ namespace Chaos
 		, Implicit{ nullptr, nullptr }
 		, Shape{ nullptr, nullptr }
 		, Simplicial{ nullptr, nullptr }
-		, Manifold()
+		, Material()
 		, Stiffness(1)
 		, AccumulatedImpulse(0)
-		, TimeOfImpact(0)
 		, ContainerCookie()
 		, ShapesType(EContactShapesType::Unknown)
-		, CCDType(ECollisionCCDType::Disabled)
-		, ShapeWorldTransform0()
-		, ShapeWorldTransform1()
-		, CullDistance(TNumericLimits<FReal>::Max())
+		, ShapeWorldTransforms{ FRigidTransform3(), FRigidTransform3() }
+		, CullDistance(TNumericLimits<FRealSingle>::Max())
 		, CollisionMargins{ 0, 0 }
 		, CollisionTolerance(0)
 		, ClosestManifoldPointIndex(INDEX_NONE)
@@ -197,6 +200,9 @@ namespace Chaos
 		, GJKWarmStartData()
 		, SavedManifoldPoints()
 		, ManifoldPoints()
+		, CCDTimeOfImpact(0)
+		, CCDEnablePenetration(0)
+		, CCDTargetPenetration(0)
 	{
 	}
 
@@ -214,16 +220,13 @@ namespace Chaos
 		, Implicit{ Implicit0, Implicit1 }
 		, Shape{ Shape0, Shape1 }
 		, Simplicial{ Simplicial0, Simplicial1 }
-		, Manifold()
+		, Material()
 		, Stiffness(1)
 		, AccumulatedImpulse(0)
-		, TimeOfImpact(0)
 		, ContainerCookie()
 		, ShapesType(EContactShapesType::Unknown)
-		, CCDType(ECollisionCCDType::Disabled)
-		, ShapeWorldTransform0()
-		, ShapeWorldTransform1()
-		, CullDistance(TNumericLimits<FReal>::Max())
+		, ShapeWorldTransforms{ FRigidTransform3(), FRigidTransform3() }
+		, CullDistance(TNumericLimits<FRealSingle>::Max())
 		, CollisionMargins{ 0, 0 }
 		, CollisionTolerance(0)
 		, ClosestManifoldPointIndex(INDEX_NONE)
@@ -235,7 +238,18 @@ namespace Chaos
 		, GJKWarmStartData()
 		, SavedManifoldPoints()
 		, ManifoldPoints()
+		, CCDTimeOfImpact(0)
+		, CCDEnablePenetration(0)
+		, CCDTargetPenetration(0)
 	{
+	}
+
+	FPBDCollisionConstraint::~FPBDCollisionConstraint()
+	{
+#if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
+		// Make sure we have been dropped by the graph
+		ensure(GetConstraintGraphIndex() == INDEX_NONE);
+#endif
 	}
 
 	void FPBDCollisionConstraint::Setup(
@@ -246,30 +260,47 @@ namespace Chaos
 		const FReal InCullDistance,
 		const bool bInUseManifold)
 	{
-		CCDType = InCCDType;
-
 		ShapesType = InShapesType;
 
 		ImplicitTransform[0] = InImplicitLocalTransform0;
 		ImplicitTransform[1] = InImplicitLocalTransform1;
 
-		CullDistance = InCullDistance;
+		CullDistance = FRealSingle(InCullDistance);
 
-		// Are we allowing manifolds? If manifolds are enabled, we will build a one-shot manifold
-		// if supported by the shape pair, otherwise an incremental manifold will be created and
-		// we call collision detection every iteration to add new points (this is expensive).
-		// NOTE: bUseIncrementalManifold will get set to false later if we add a one-shot manifold
-		Flags.bUseManifold = bInUseManifold;
-		Flags.bUseIncrementalManifold = bInUseManifold;
+		// Initialize the is-probe and is-probe-unmodified flags to the same value.
+		// Contact modification may change bIsProbe but we want to store the unmodified value
+		// so that it can be reset between frames.
+		Flags.bIsProbe = (Shape[0] && Shape[0]->GetIsProbe()) || (Shape[1] && Shape[1]->GetIsProbe());
+		Flags.bIsProbeUnmodified = Flags.bIsProbe;
 
-		const FReal Margin0 = GetImplicit0()->GetMargin();
-		const FReal Margin1 = GetImplicit1()->GetMargin();
+		// If this currently a CCD contact (this may change on later ticks)
+		Flags.bCCDEnabled = (InCCDType == ECollisionCCDType::Enabled);
+
+		// Initialize tolerances that depend on shape type etc, also the bIsQuadratic flags
+		const FRealSingle Margin0 = FRealSingle(GetImplicit0()->GetMargin());
+		const FRealSingle Margin1 = FRealSingle(GetImplicit1()->GetMargin());
 		const EImplicitObjectType ImplicitType0 = GetInnerType(GetImplicit0()->GetCollisionType());
 		const EImplicitObjectType ImplicitType1 = GetInnerType(GetImplicit1()->GetCollisionType());
 		InitMarginsAndTolerances(ImplicitType0, ImplicitType1, Margin0, Margin1);
+
+		// Are we allowing manifolds?
+		Flags.bUseManifold = bInUseManifold;
+		Flags.bUseIncrementalManifold = false;
+
+		// Only levelsets use incremental collision manifolds
+		if (bInUseManifold && ((ImplicitType0 == ImplicitObjectType::LevelSet) || (ImplicitType1 == ImplicitObjectType::LevelSet)))
+		{
+			Flags.bUseIncrementalManifold = true;
+		}
+
+		// Debug testing for solver stiffness
+		if (Chaos_Collision_Stiffness >= 0)
+		{
+			SetStiffness(Chaos_Collision_Stiffness);
+		}
 	}
 
-	void FPBDCollisionConstraint::InitMarginsAndTolerances(const EImplicitObjectType ImplicitType0, const EImplicitObjectType ImplicitType1, const FReal Margin0, const FReal Margin1)
+	void FPBDCollisionConstraint::InitMarginsAndTolerances(const EImplicitObjectType ImplicitType0, const EImplicitObjectType ImplicitType1, const FRealSingle Margin0, const FRealSingle Margin1)
 	{
 		// Set up the margins and tolerances to be used during the narrow phase.
 		// When convex margins are enabled, at least one shape in a collision will always have a margin.
@@ -277,8 +308,10 @@ namespace Chaos
 		// The collision tolerance is used for knowing whether a new contact matches an existing one.
 		//
 		// Margins: (Assuming convex margins are enabled...)
-		// If we have two polygonal shapes, we use the smallest of the two margins (unless one shape has zero margin, e.g. triangle).
-		// If we have a quadratic shape versus a polygonal shape, we use a zero margin on the polygoinal shape.
+		// If a polygonal shape is not dynamic, its margin is zero.
+		// Triangles always have zero margin (they are never dynamic anyway)
+		// If we have two polygonal shapes, we use the smallest of the two margins unless one shape has zero margin.
+		// If we have a quadratic shape versus a polygonal shape, we use a zero margin on the polygonal shape.
 		// Note: If we have a triangle, it is always the second shape (currently we do not support triangle-triangle collision)
 		//
 		// CollisionTolerance:
@@ -287,36 +320,42 @@ namespace Chaos
 		//
 		const bool bIsQuadratic0 = ((ImplicitType0 == ImplicitObjectType::Sphere) || (ImplicitType0 == ImplicitObjectType::Capsule));
 		const bool bIsQuadratic1 = ((ImplicitType1 == ImplicitObjectType::Sphere) || (ImplicitType1 == ImplicitObjectType::Capsule));
-		
+
 		// @todo(chaos): should probably be tunable. Used to use the same settings as the margin scale (for convex), but we want to support zero
 		// margins, but still have a non-zero CollisionTolerance (it is used for matching contact points for friction and manifold reuse)
-		const FReal ToleranceScale = 0.1f;
-		const FReal QuadraticToleranceScale = 0.05f;
+		const FRealSingle ToleranceScale = 0.1f;
+		const FRealSingle QuadraticToleranceScale = 0.05f;
 		
 		if (!bIsQuadratic0 && !bIsQuadratic1)
 		{
-			const FReal MaxSize0 = ((Implicit[0] != nullptr) && Implicit[0]->HasBoundingBox()) ? Implicit[0]->BoundingBox().Extents().GetAbsMax() : FReal(0);
-			const FReal MaxSize1 = ((Implicit[1] != nullptr) && Implicit[1]->HasBoundingBox()) ? Implicit[1]->BoundingBox().Extents().GetAbsMax() : FReal(0);
-			const FReal MaxSize = FMath::Min(MaxSize0, MaxSize1);
+			// Only dynamic polytopes objects use margins
+			const bool bIsDynamic0 = (GetParticle0() != nullptr) && (FConstGenericParticleHandle(GetParticle0())->IsDynamic());
+			const bool bIsDynamic1 = (GetParticle1() != nullptr) && (FConstGenericParticleHandle(GetParticle1())->IsDynamic());
+			const FRealSingle DynamicMargin0 = bIsDynamic0 ? FRealSingle(Margin0) : FRealSingle(0);
+			const FRealSingle DynamicMargin1 = bIsDynamic1 ? FRealSingle(Margin1) : FRealSingle(0);
+
+			const FRealSingle MaxSize0 = ((Implicit[0] != nullptr) && Implicit[0]->HasBoundingBox()) ? FRealSingle(Implicit[0]->BoundingBox().Extents().GetAbsMax()) : FRealSingle(0);
+			const FRealSingle MaxSize1 = ((Implicit[1] != nullptr) && Implicit[1]->HasBoundingBox()) ? FRealSingle(Implicit[1]->BoundingBox().Extents().GetAbsMax()) : FRealSingle(0);
+			const FRealSingle MaxSize = FMath::Min(MaxSize0, MaxSize1);
 			CollisionTolerance = ToleranceScale * MaxSize;
 
 			// If one shape has a zero margin, enforce a minimum margin to avoid the EPA degenerate case. E.g., Box-Triangle
 			// If both shapes have a margin, use the smaller margin on both shapes. E.g., Box-Box
 			// We should never see both shapes with zero margin, but if we did we'd end up with a zero margin
-			const FReal MinMargin = Chaos_Collision_ConvexZeroMargin;
-			if (Margin0 == FReal(0))
+			const FRealSingle MinMargin = Chaos_Collision_ConvexZeroMargin;
+			if (DynamicMargin0 == FRealSingle(0))
 			{
 				CollisionMargins[0] = 0;
-				CollisionMargins[1] = FMath::Max(MinMargin, Margin1);
+				CollisionMargins[1] = FMath::Max(MinMargin, DynamicMargin1);
 			}
-			else if (Margin1 == FReal(0))
+			else if (DynamicMargin1 == FRealSingle(0))
 			{
-				CollisionMargins[0] = FMath::Max(MinMargin, Margin0);
+				CollisionMargins[0] = FMath::Max(MinMargin, DynamicMargin0);
 				CollisionMargins[1] = 0;
 			}
 			else
 			{
-				CollisionMargins[0] = FMath::Min(Margin0, Margin1);
+				CollisionMargins[0] = FMath::Min(DynamicMargin0, DynamicMargin1);
 				CollisionMargins[1] = CollisionMargins[0];
 			}
 		}
@@ -343,21 +382,47 @@ namespace Chaos
 		Flags.bIsQuadratic1 = bIsQuadratic1;
 	}
 
+	void FPBDCollisionConstraint::InitCCDThreshold()
+	{
+		// Calculate the depth at which we enforce CCD constraints, and the amount of penetration to leave when resolving a CCD constraint.
+		const FRealSingle MinBounds0 = FConstGenericParticleHandle(Particle[0])->CCDEnabled() ? FRealSingle(Implicit[0]->BoundingBox().Extents().GetAbsMin()) : FRealSingle(0);
+		const FRealSingle MinBounds1 = FConstGenericParticleHandle(Particle[1])->CCDEnabled() ? FRealSingle(Implicit[1]->BoundingBox().Extents().GetAbsMin()) : FRealSingle(0);
+		const FRealSingle MinBounds = FMath::Max(MinBounds0, MinBounds1);
+		CCDEnablePenetration = MinBounds * CVars::CCDEnableThresholdBoundsScale;
+		CCDTargetPenetration = FMath::Min(MinBounds * CVars::CCDAllowedDepthBoundsScale, CCDEnablePenetration);
+	}
+
+	bool FPBDCollisionConstraint::IsSleeping() const
+	{
+		if (ContainerCookie.MidPhase != nullptr)
+		{
+			return ContainerCookie.MidPhase->IsSleeping();
+		}
+		return false;
+	}
+
 	void FPBDCollisionConstraint::SetIsSleeping(const bool bInIsSleeping)
 	{
 		// This actually sets the sleeping state on all constraints between the same particle pair so calling this with multiple
 		// constraints on the same particle pair is a little wasteful. It early-outs on subsequent calls, but still not ideal.
 		// @todo(chaos): we only need to set sleeping on particle pairs or particles, not constraints (See UpdateSleepState in IslandManager.cpp)
 		check(ContainerCookie.MidPhase != nullptr);
-		ContainerCookie.MidPhase->SetIsSleeping(bInIsSleeping);
+		ContainerCookie.MidPhase->SetIsSleeping(bInIsSleeping, ConcreteContainer()->GetConstraintAllocator().GetCurrentEpoch());
+	}
+
+	void FPBDCollisionConstraint::UpdateParticleTransform(FGeometryParticleHandle* InParticle)
+	{
+		// We need to update the friction anchors based on how much the user moved the particle, but
+		// it's easier to just reset the friction state altogether, and possibly the expected behaviour anyway
+		ResetManifold();
 	}
 
 	FVec3 FPBDCollisionConstraint::CalculateWorldContactLocation() const
 	{
 		if (ClosestManifoldPointIndex != INDEX_NONE)
 		{
-			const FVec3 WorldContact0 = GetShapeWorldTransform0().TransformPositionNoScale(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactPoints[0]);
-			const FVec3 WorldContact1 = GetShapeWorldTransform1().TransformPositionNoScale(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactPoints[1]);
+			const FVec3 WorldContact0 = GetShapeWorldTransform0().TransformPositionNoScale(FVec3(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactPoints[0]));
+			const FVec3 WorldContact1 = GetShapeWorldTransform1().TransformPositionNoScale(FVec3(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactPoints[1]));
 			return FReal(0.5) * (WorldContact0 + WorldContact1);
 		}
 		return FVec3(0);
@@ -367,7 +432,7 @@ namespace Chaos
 	{
 		if (ClosestManifoldPointIndex != INDEX_NONE)
 		{
-			return GetShapeWorldTransform1().TransformVectorNoScale(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactNormal);
+			return GetShapeWorldTransform1().TransformVectorNoScale(FVec3(ManifoldPoints[ClosestManifoldPointIndex].ContactPoint.ShapeContactNormal));
 		}
 		return FVec3(0, 0, 1);
 	}
@@ -464,10 +529,10 @@ namespace Chaos
 	void FPBDCollisionConstraint::UpdateManifoldPointPhi(const int32 ManifoldPointIndex)
 	{
 		FManifoldPoint& ManifoldPoint = ManifoldPoints[ManifoldPointIndex];
-		const FVec3 WorldContact0 = GetShapeWorldTransform0().TransformPositionNoScale(ManifoldPoint.ContactPoint.ShapeContactPoints[0]);
-		const FVec3 WorldContact1 = GetShapeWorldTransform1().TransformPositionNoScale(ManifoldPoint.ContactPoint.ShapeContactPoints[1]);
-		const FVec3 WorldContactNormal = GetShapeWorldTransform1().TransformVectorNoScale(ManifoldPoint.ContactPoint.ShapeContactNormal);
-		ManifoldPoint.ContactPoint.Phi = FVec3::DotProduct(WorldContact0 - WorldContact1, WorldContactNormal);
+		const FVec3 WorldContact0 = GetShapeWorldTransform0().TransformPositionNoScale(FVec3(ManifoldPoint.ContactPoint.ShapeContactPoints[0]));
+		const FVec3 WorldContact1 = GetShapeWorldTransform1().TransformPositionNoScale(FVec3(ManifoldPoint.ContactPoint.ShapeContactPoints[1]));
+		const FVec3 WorldContactNormal = GetShapeWorldTransform1().TransformVectorNoScale(FVec3(ManifoldPoint.ContactPoint.ShapeContactNormal));
+		ManifoldPoint.ContactPoint.Phi = FRealSingle(FVec3::DotProduct(WorldContact0 - WorldContact1, WorldContactNormal));
 	}
 
 	void FPBDCollisionConstraint::UpdateManifoldContacts()
@@ -498,13 +563,11 @@ namespace Chaos
 				P1->RotationOfMass().UnrotateVector(ImplicitTransform[1].GetLocation() - P1->CenterOfMass()),
 				P1->RotationOfMass().Inverse() * ImplicitTransform[1].GetRotation());
 
-			ShapeWorldTransform0 = ShapeCoMRelativeTransform0 * ParticleCoMTransform0;
-			ShapeWorldTransform1 = ShapeCoMRelativeTransform1 * ParticleCoMTransform1;
+			ShapeWorldTransforms[0] = ShapeCoMRelativeTransform0 * ParticleCoMTransform0;
+			ShapeWorldTransforms[1] = ShapeCoMRelativeTransform1 * ParticleCoMTransform1;
 		}
 
-		Flags.bDisabled = false;
 		ClosestManifoldPointIndex = INDEX_NONE;
-		Manifold.Reset();
 
 		for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < ManifoldPoints.Num(); ManifoldPointIndex++)
 		{
@@ -531,7 +594,7 @@ namespace Chaos
 			return;
 		}
 
-		if (Flags.bUseIncrementalManifold)
+		if (Flags.bUseManifold)
 		{
 			// See if the manifold point already exists
 			int32 ManifoldPointIndex = FindManifoldPoint(ContactPoint);
@@ -571,10 +634,8 @@ namespace Chaos
 	void FPBDCollisionConstraint::ResetActiveManifoldContacts()
 	{
 		ClosestManifoldPointIndex = INDEX_NONE;
-		Manifold.Reset();
 		ManifoldPoints.Reset();
 		ExpectedNumManifoldPoints = 0;
-		Flags.bDisabled = false;
 		Flags.bWasManifoldRestored = false;
 	}
 
@@ -588,12 +649,9 @@ namespace Chaos
 
 		// Reset current closest point
 		ClosestManifoldPointIndex = INDEX_NONE;
-		Flags.bDisabled = false;
-		Manifold.Reset();
 
 		// How many manifold points we expect. E.g., for Box-box this will be 4 or 1 depending on whether
-		// we have a face or edge contact. We don't reuse the manifold if we lose points after culling
-		// here and potentially adding the new narrow phase result (See TryAddManifoldContact).
+		// we have a face or edge contact. We don't reuse the manifold if we lose points after culling here
 		ExpectedNumManifoldPoints = ManifoldPoints.Num();
 		Flags.bWasManifoldRestored = false;
 
@@ -604,11 +662,11 @@ namespace Chaos
 			// The transform check is necessary regardless of how many points we have left in the manifold because
 			// as a body moves/rotates we may have to change which faces/edges are colliding. We can't know if the face/edge
 			// will change until we run the closest-point checks (GJK) in the narrow phase.
-			const FVec3 Shape1ToShape0Translation = ShapeWorldTransform0.GetTranslation() - ShapeWorldTransform1.GetTranslation();
+			const FVec3 Shape1ToShape0Translation = ShapeWorldTransforms[0].GetTranslation() - ShapeWorldTransforms[1].GetTranslation();
 			const FVec3 TranslationDelta = Shape1ToShape0Translation - LastShapeWorldPositionDelta;
 			if (TranslationDelta.IsNearlyZero(ShapePositionTolerance))
 			{
-				const FRotation3 Shape1toShape0Rotation = ShapeWorldTransform0.GetRotation().Inverse() * ShapeWorldTransform1.GetRotation();
+				const FRotation3 Shape1toShape0Rotation = ShapeWorldTransforms[0].GetRotation().Inverse() * ShapeWorldTransforms[1].GetRotation();
 				const FRotation3 OriginalShape1toShape0Rotation = LastShapeWorldRotationDelta;
 				const FReal RotationOverlap = FRotation3::DotProduct(Shape1toShape0Rotation, LastShapeWorldRotationDelta);
 				if (RotationOverlap > ShapeRotationThreshold)
@@ -629,7 +687,7 @@ namespace Chaos
 		int32 ManifoldPointToRemove = INDEX_NONE;
 		if (ManifoldPoints.Num() > 0)
 		{
-			const FRigidTransform3 Shape0ToShape1Transform = ShapeWorldTransform0.GetRelativeTransformNoScale(ShapeWorldTransform1);
+			const FRigidTransform3 Shape0ToShape1Transform = ShapeWorldTransforms[0].GetRelativeTransformNoScale(ShapeWorldTransforms[1]);
 			
 			// Update or prune manifold points. If we would end up removing more than 1 point, we just throw the 
 			// whole manifold away because it will get rebuilt in the narrow phasee anyway.
@@ -639,7 +697,7 @@ namespace Chaos
 
 				// Calculate the world-space contact location and separation at the current shape transforms
 				// @todo(chaos): this should use the normal owner. Currently we assume body 1 is the owner
-				const FVec3 Contact0In1 = Shape0ToShape1Transform.TransformPositionNoScale(ManifoldPoint.InitialShapeContactPoints[0]);
+				const FVec3 Contact0In1 = Shape0ToShape1Transform.TransformPositionNoScale(FVec3(ManifoldPoint.InitialShapeContactPoints[0]));
 				const FVec3& Contact1In1 = ManifoldPoint.InitialShapeContactPoints[1];
 				const FVec3& ContactNormalIn1 = ManifoldPoint.ContactPoint.ShapeContactNormal;
 
@@ -654,8 +712,8 @@ namespace Chaos
 					// Recalculate the contact points at the new location
 					// @todo(chaos): we should reproject the contact on the plane owner
 					const FVec3 ShapeContactPoint1 = Contact0In1 - ContactPhi * ContactNormalIn1;
-					ManifoldPoint.ContactPoint.ShapeContactPoints[1] = ShapeContactPoint1;
-					ManifoldPoint.ContactPoint.Phi = ContactPhi;
+					ManifoldPoint.ContactPoint.ShapeContactPoints[1] = FVec3f(ShapeContactPoint1);
+					ManifoldPoint.ContactPoint.Phi = FRealSingle(ContactPhi);
 					ManifoldPoint.Flags.bWasRestored = true;
 					ManifoldPoint.Flags.bWasReplaced = false;
 					if (ManifoldPoint.ContactPoint.Phi < GetPhi())
@@ -966,7 +1024,7 @@ namespace Chaos
 
 	ECollisionConstraintDirection FPBDCollisionConstraint::GetConstraintDirection(const FReal Dt) const
 	{
-		if (GetDisabled())
+		if (GetDisabled() || GetIsProbe())
 		{
 			return NoRestingDependency;
 		}
@@ -983,7 +1041,7 @@ namespace Chaos
 		FVec3 GravityDirection = ConcreteContainer()->GetGravityDirection();
 		FReal GravitySize = ConcreteContainer()->GetGravitySize();
 		// When gravity is zero, we still want to sort the constraints instead of having a random order. In this case, set gravity to default gravity.
-		if (GravitySize < SMALL_NUMBER)
+		if (GravitySize < UE_SMALL_NUMBER)
 		{
 			GravityDirection = FVec3(0, 0, -1);
 			GravitySize = 980.f;

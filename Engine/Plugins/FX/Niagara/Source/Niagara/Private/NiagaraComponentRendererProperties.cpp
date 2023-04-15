@@ -7,14 +7,16 @@
 #include "NiagaraComponent.h"
 #include "Modules/ModuleManager.h"
 #if WITH_EDITOR
-#include "Editor.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
 #include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
 #endif
+#include "NiagaraCustomVersion.h"
 #include "NiagaraSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraComponentRendererProperties)
 
 static float GNiagaraComponentRenderComponentCountWarning = 50;
 static FAutoConsoleVariableRef CVarNiagaraComponentRenderComponentCountWarning(
@@ -171,9 +173,10 @@ FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFQuatDef()
 TArray<TWeakObjectPtr<UNiagaraComponentRendererProperties>> UNiagaraComponentRendererProperties::ComponentRendererPropertiesToDeferredInit;
 
 UNiagaraComponentRendererProperties::UNiagaraComponentRendererProperties()
-	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true), bOnlyCreateComponentsOnParticleSpawn(true), bOnlyActivateNewlyAquiredComponents(true)
+	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true), bOnlyActivateNewlyAquiredComponents(true)
 #if WITH_EDITORONLY_DATA
 	, bVisualizeComponents(true)
+	, bOnlyCreateComponentsOnParticleSpawn_DEPRECATED(true)
 #endif
 	, TemplateComponent(nullptr)
 {
@@ -198,20 +201,28 @@ void UNiagaraComponentRendererProperties::PostLoad()
 {
 	Super::PostLoad();
 	ENiagaraRendererSourceDataMode InSourceMode = ENiagaraRendererSourceDataMode::Particles;
+
+#if WITH_EDITORONLY_DATA
+	const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+	if (NiagaraVer < FNiagaraCustomVersion::ComponentRendererSpawnProperty)
+	{
+		bCreateComponentFirstParticleFrame = bOnlyCreateComponentsOnParticleSpawn_DEPRECATED;
+	}
+#endif
 	
 	const TArray<FNiagaraVariable>& OldTypes = FNiagaraConstants::GetOldPositionTypeVariables();
 	for (FNiagaraComponentPropertyBinding& Binding : PropertyBindings)
 	{
 		Binding.AttributeBinding.PostLoad(InSourceMode);
 
-		// Move old bindings over to new position type 
+		// Move old bindings over to new position type
 		for (FNiagaraVariable OldVarType : OldTypes)
 		{
-			if (Binding.AttributeBinding.GetParamMapBindableVariable() == OldVarType)
+			if (Binding.AttributeBinding.GetParamMapBindableVariable() == (const FNiagaraVariableBase&)OldVarType)
 			{
 				FNiagaraVariable NewVarType(FNiagaraTypeDefinition::GetPositionDef(), OldVarType.GetName());
 				Binding.AttributeBinding.Setup(NewVarType, NewVarType, InSourceMode);
-				Binding.PropertyType = FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetVec3Struct());
+				Binding.PropertyType = GetFVectorDef();
 				break;
 			}
 		}
@@ -242,8 +253,8 @@ void UNiagaraComponentRendererProperties::PostLoad()
 
 void UNiagaraComponentRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)
 {
-	UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>();
-	if (SrcEmitter)
+	FVersionedNiagaraEmitter SrcEmitter = GetOuterEmitter();
+	if (SrcEmitter.Emitter)
 	{
 		EnabledBinding.CacheValues(SrcEmitter, InSourceMode);
 		RendererVisibilityTagBinding.CacheValues(SrcEmitter, InSourceMode);
@@ -298,7 +309,7 @@ bool FindFunctionParameterDefaultValue(const UFunction* Function, const FPropert
 		// If the parameter is a class then try and get the full name as the metadata might just be the short name
 		if (Param->IsA<FClassProperty>() && !FPackageName::IsValidObjectPath(OutString))
 		{
-			if (UClass* DefaultClass = FindObject<UClass>(ANY_PACKAGE, *OutString, true))
+			if (UClass* DefaultClass = UClass::TryFindTypeSlow<UClass>(OutString, EFindFirstObjectOptions::ExactClass))
 			{
 				OutString = DefaultClass->GetPathName();
 			}
@@ -485,7 +496,8 @@ void UNiagaraComponentRendererProperties::CreateTemplateComponent()
 	TemplateComponent->SetComponentTickEnabled(false);
 
 	// set some defaults on the component
-	bool IsWorldSpace = EmitterPtr ? !EmitterPtr->bLocalSpace : true;
+	FVersionedNiagaraEmitterData* EmitterData = EmitterPtr.GetEmitterData();
+	bool IsWorldSpace = EmitterData ? !EmitterData->bLocalSpace : true;
 	TemplateComponent->SetAbsolute(IsWorldSpace, IsWorldSpace, IsWorldSpace);
 }
 
@@ -496,8 +508,7 @@ void UNiagaraComponentRendererProperties::OnObjectsReplacedCallback(const TMap<U
 	// When a custom component class is recompiled in the editor, we need to switch to the new template component object
 	if (TemplateComponent)
 	{
-		UObject* const* Replacement = ReplacementsMap.Find(TemplateComponent);
-		if (Replacement)
+		if (UObject* const* Replacement = ReplacementsMap.Find(TemplateComponent))
 		{
 			TemplateComponent = Cast<USceneComponent>(*Replacement);
 			UpdateSetterFunctions();
@@ -523,7 +534,7 @@ bool UNiagaraComponentRendererProperties::HasPropertyBinding(FName PropertyName)
 
 void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& e)
 {
-	FName PropertyName = (e.Property != NULL) ? e.Property->GetFName() : NAME_None;
+	FName PropertyName = (e.Property != nullptr) ? e.Property->GetFName() : NAME_None;
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UNiagaraComponentRendererProperties, ComponentType))
 	{
 		PropertyBindings.Empty();
@@ -538,7 +549,7 @@ void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropert
 			FNiagaraComponentPropertyBinding PositionBinding;
 			PositionBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_PARTICLES_POSITION);
 			PositionBinding.PropertyName = FName("RelativeLocation");
-			PositionBinding.PropertyType = FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetVec3Struct());
+			PositionBinding.PropertyType = GetFVectorDef();
 			PropertyBindings.Add(PositionBinding);
 
 			FNiagaraComponentPropertyBinding ScaleBinding;
@@ -570,7 +581,7 @@ void UNiagaraComponentRendererProperties::GetRendererTooltipWidgets(const FNiaga
 	OutWidgets.Add(Tooltip);
 }
 
-void UNiagaraComponentRendererProperties::GetRendererFeedback(UNiagaraEmitter* InEmitter,	TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings,	TArray<FNiagaraRendererFeedback>& OutInfo) const
+void UNiagaraComponentRendererProperties::GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const
 {
 	OutInfo.Add(FNiagaraRendererFeedback(FText::FromString(TEXT("The component renderer is still a very experimental feature that offers great flexibility, \nbut is *not* optimized for performance or safety. \nWith great power comes great responsibility."))));
 
@@ -581,10 +592,10 @@ void UNiagaraComponentRendererProperties::GetRendererFeedback(UNiagaraEmitter* I
 		OutErrors.Add(FNiagaraRendererFeedback(ErrorDescription, ErrorSummary));
 	}
 
-	if (InEmitter && TemplateComponent)
+	FVersionedNiagaraEmitterData* EmitterData = EmitterPtr.GetEmitterData();
+	if (InEmitter.Emitter && TemplateComponent && EmitterData)
 	{
-		const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
-		if (Settings)
+		if (const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>())
 		{
 			for (const TPair<FString, FText>& Pair : Settings->ComponentRendererWarningsPerClass)
 			{
@@ -596,8 +607,8 @@ void UNiagaraComponentRendererProperties::GetRendererFeedback(UNiagaraEmitter* I
 			}
 		}
 
-		bool IsWorldSpace = !InEmitter->bLocalSpace;
-		FNiagaraRendererFeedbackFix LocalspaceFix = FNiagaraRendererFeedbackFix::CreateLambda([InEmitter]() {	InEmitter->bLocalSpace = !InEmitter->bLocalSpace; });
+		bool IsWorldSpace = !EmitterData->bLocalSpace;
+		FNiagaraRendererFeedbackFix LocalspaceFix = FNiagaraRendererFeedbackFix::CreateLambda([EmitterData]() {	EmitterData->bLocalSpace = !EmitterData->bLocalSpace; });
 		if (TemplateComponent->IsUsingAbsoluteLocation() != IsWorldSpace && !HasPropertyBinding(FName("bAbsoluteLocation")))
 		{
 			FText ErrorDescription = LOCTEXT("NiagaraComponentLocalspaceLocationWarning", "The component location is configured to use a different localspace setting than the emitter.");
@@ -639,8 +650,8 @@ FText UNiagaraComponentRendererProperties::GetWidgetDisplayName() const
 
 TArray<FNiagaraVariable> UNiagaraComponentRendererProperties::GetBoundAttributes() const
 {
-	TArray<FNiagaraVariable> BoundAttributes;
-	BoundAttributes.Reserve(PropertyBindings.Num() + (bAssignComponentsOnParticleID ? 2 : 1));
+	TArray<FNiagaraVariable> BoundAttributes = Super::GetBoundAttributes();
+	BoundAttributes.Reserve(BoundAttributes.Num() + PropertyBindings.Num() + (bAssignComponentsOnParticleID ? 2 : 1));
 
 	BoundAttributes.Add(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED);
 	if (bAssignComponentsOnParticleID)

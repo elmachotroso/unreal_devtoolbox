@@ -158,14 +158,14 @@ void FDisplayClusterConfiguratorNodeSelection::ResetOptions()
 	Options.Reset();
 	if (UDisplayClusterConfigurationData* ConfigData = GetConfigData())
 	{
-		for (const TTuple<FString, UDisplayClusterConfigurationClusterNode*>& Node : ConfigData->Cluster->Nodes)
+		for (const TTuple<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Node : ConfigData->Cluster->Nodes)
 		{
 			if (OperationMode == ClusterNodes)
 			{
 				Options.Add(MakeShared<FString>(Node.Value->GetName()));
 				continue;
 			}
-			for (const TTuple<FString, UDisplayClusterConfigurationViewport*>& Viewport : Node.Value->Viewports)
+			for (const TTuple<FString, TObjectPtr<UDisplayClusterConfigurationViewport>>& Viewport : Node.Value->Viewports)
 			{
 				Options.Add(MakeShared<FString>(Viewport.Value->GetName()));
 			}
@@ -318,6 +318,7 @@ void FDisplayClusterConfiguratorPerViewportColorGradingCustomization::SetHeader(
 
 void FDisplayClusterConfiguratorPerViewportColorGradingCustomization::SetChildren(const TSharedRef<IPropertyHandle>& InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
+	TSharedPtr<IPropertyHandle> NameHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerViewportColorGrading, Name);
 	TSharedPtr<IPropertyHandle> IsEnabledHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerViewportColorGrading, bIsEnabled);
 	TSharedPtr<IPropertyHandle> IsEntireClusterPostProcessHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerViewportColorGrading, bIsEntireClusterEnabled);
 	TSharedPtr<IPropertyHandle> PostProcessSettingsHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerViewportColorGrading, ColorGradingSettings);
@@ -330,6 +331,7 @@ void FDisplayClusterConfiguratorPerViewportColorGradingCustomization::SetChildre
 		return bCond1;
 	});
 
+	InChildBuilder.AddProperty(NameHandle.ToSharedRef());
 	InChildBuilder.AddProperty(IsEnabledHandle.ToSharedRef());
 	InChildBuilder.AddProperty(IsEntireClusterPostProcessHandle.ToSharedRef());
 	InChildBuilder.AddProperty(PostProcessSettingsHandle.ToSharedRef()).EditCondition(IsEnabledEditCondition, nullptr);
@@ -364,6 +366,7 @@ void FDisplayClusterConfiguratorPerNodeColorGradingCustomization::SetHeader(cons
 
 void FDisplayClusterConfiguratorPerNodeColorGradingCustomization::SetChildren(const TSharedRef<IPropertyHandle>& InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
+	TSharedPtr<IPropertyHandle> NameHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerNodeColorGrading, Name);
 	TSharedPtr<IPropertyHandle> IsEnabledHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerNodeColorGrading, bIsEnabled);
 	TSharedPtr<IPropertyHandle> IsEntireClusterPostProcessHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerNodeColorGrading, bEntireClusterColorGrading);
 	TSharedPtr<IPropertyHandle> IsAllNodesPostProcessHandle = GET_CHILD_HANDLE(FDisplayClusterConfigurationViewport_PerNodeColorGrading, bAllNodesColorGrading);
@@ -377,6 +380,7 @@ void FDisplayClusterConfiguratorPerNodeColorGradingCustomization::SetChildren(co
 		return bCond1;
 	});
 
+	InChildBuilder.AddProperty(NameHandle.ToSharedRef());
 	InChildBuilder.AddProperty(IsEnabledHandle.ToSharedRef());
 	InChildBuilder.AddProperty(IsEntireClusterPostProcessHandle.ToSharedRef());
 	InChildBuilder.AddProperty(IsAllNodesPostProcessHandle.ToSharedRef());

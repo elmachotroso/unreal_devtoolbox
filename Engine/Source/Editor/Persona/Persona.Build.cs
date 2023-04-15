@@ -6,9 +6,6 @@ public class Persona : ModuleRules
 {
     public Persona(ReadOnlyTargetRules Target) : base(Target)
     {
-        PrivateIncludePaths.Add("Editor/Persona/Private");  // For PCH includes (because they don't work with relative paths, yet)
-        PrivateIncludePaths.Add("Editor/Persona/Private/AnimTimeline");
-
         PublicIncludePathModuleNames.AddRange(
             new string[] {
                 "SkeletonEditor",
@@ -20,6 +17,7 @@ public class Persona : ModuleRules
         PublicDependencyModuleNames.AddRange(
             new string[] {
                 "AdvancedPreviewScene",
+                "AnimationEditMode",
             }
         );
 
@@ -33,6 +31,7 @@ public class Persona : ModuleRules
                 "MeshReductionInterface",
                 "SequenceRecorder",
                 "AnimationBlueprintEditor",
+                "EditorInteractiveToolsFramework",
 			}
 		);
 
@@ -77,7 +76,8 @@ public class Persona : ModuleRules
                 "Sequencer",
 				"StatusBar",
 				"ToolWidgets",
-			}
+				"InteractiveToolsFramework",
+            }
         );
 
         DynamicallyLoadedModuleNames.AddRange(

@@ -5,9 +5,11 @@
 #include "Engine/ChildConnection.h"
 #include "GameFramework/GameModeBase.h"
 #include "MassCommonTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassClientBubbleHandler.h"
 #include "MassClientBubbleInfoBase.h"
+#include "MassReplicationSettings.h"
+#include "MassEntityUtils.h"
 
 
 uint32 UMassReplicationSubsystem::CurrentNetMassCounter = 0;
@@ -17,14 +19,12 @@ void UMassReplicationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 
 	World = GetWorld();
-
 	check(World);
 
 	MassLODSubsystem = Collection.InitializeDependency<UMassLODSubsystem>();
-
 	check(MassLODSubsystem);
 
-	EntitySystem = UWorld::GetSubsystem<UMassEntitySubsystem>(GetWorld());
+	EntityManager = UE::Mass::Utils::GetEntityManagerChecked(*World).AsShared();
 }
 
 void UMassReplicationSubsystem::Deinitialize()
@@ -41,19 +41,24 @@ void UMassReplicationSubsystem::Deinitialize()
 	// make sure all the other data is reset
 	ClientHandleManager.Reset();
 	BubbleInfoArray.Reset();
-	ClientsViewerHandles.Reset();
+	ClientsReplicationInfo.Reset();
 	ClientToViewerHandleArray.Reset();
 	ViewerToClientHandleArray.Reset();
 
 	World = nullptr;
 	MassLODSubsystem = nullptr;
-	EntitySystem = nullptr;
+	EntityManager.Reset();
+}
+
+UMassReplicationSubsystem::UMassReplicationSubsystem()
+ : ReplicationGrid(GetDefault<UMassReplicationSettings>()->GetReplicationGridCellSize())
+{
 }
 
 FMassNetworkID UMassReplicationSubsystem::GetNetIDFromHandle(const FMassEntityHandle Handle) const
 {
-	check(EntitySystem);
-	const FMassNetworkIDFragment& Data = EntitySystem->GetFragmentDataChecked<FMassNetworkIDFragment>(Handle);
+	check(EntityManager);
+	const FMassNetworkIDFragment& Data = EntityManager->GetFragmentDataChecked<FMassNetworkIDFragment>(Handle);
 	return Data.NetID;
 }
 
@@ -249,7 +254,7 @@ void UMassReplicationSubsystem::SynchronizeClientViewers(const TArray<FViewerInf
 		FMassViewerHandle ViewerHandle;
 	};
 
-	// go through the ClientsViewerHandles and check validity and store the valid ones into a map
+	// go through the ClientReplicationInfo and check validity and store the valid ones into a map
 	typedef TMap<APlayerController*, FMassClientViewerHandle> FViewerMap;
 
 	FViewerMap ClientViewerMap;
@@ -261,13 +266,13 @@ void UMassReplicationSubsystem::SynchronizeClientViewers(const TArray<FViewerInf
 			//as this is a fresh handle then we only need to check against !IsInvalid
 			if (ClientHandle.IsValid())
 			{
-				FClientViewerHandles& ClientViewers = ClientsViewerHandles[ClientHandle.GetIndex()];
+				FMassClientReplicationInfo& ClientReplicationInfo = ClientsReplicationInfo[ClientHandle.GetIndex()];
 
 				int32 ViewerIdx = 0;
 
-				while (ViewerIdx < ClientViewers.Handles.Num())
+				while (ViewerIdx < ClientReplicationInfo.Handles.Num())
 				{
-					const FMassViewerHandle& ClientViewer = ClientViewers.Handles[ViewerIdx];
+					const FMassViewerHandle& ClientViewer = ClientReplicationInfo.Handles[ViewerIdx];
 
 					APlayerController* Controller = MassLODSubsystem->GetPlayerControllerFromViewerHandle(ClientViewer);
 
@@ -285,7 +290,7 @@ void UMassReplicationSubsystem::SynchronizeClientViewers(const TArray<FViewerInf
 					}
 					else //remove invalid ClientViewer, but dont increment the ViewerIdx
 					{
-						ClientViewers.Handles.RemoveAt(ViewerIdx, 1, /* bAllowShrinking */ false);
+						ClientReplicationInfo.Handles.RemoveAt(ViewerIdx, 1, /* bAllowShrinking */ false);
 					}
 				}
 			}
@@ -315,12 +320,12 @@ void UMassReplicationSubsystem::SynchronizeClientViewers(const TArray<FViewerInf
 						check(MassLODSubsystem->IsValidViewer(ParentViewerClientPair.ViewerHandle));
 						check(ClientHandleManager.IsValidHandle(ParentViewerClientPair.ClientHandle));
 
-						// remove APlayerController from the ClientViewerMap and Add the viewer to the ClientsViewerHandles
+						// remove APlayerController from the ClientViewerMap and Add the viewer to the ClientsReplicationInfo
 						ClientViewerMap.Remove(Viewer.PlayerController);
 
-						FClientViewerHandles& ClientViewers = ClientsViewerHandles[ParentViewerClientPair.ClientHandle.GetIndex()];
+						FMassClientReplicationInfo& ClientReplicationInfo = ClientsReplicationInfo[ParentViewerClientPair.ClientHandle.GetIndex()];
 
-						ClientViewers.Handles.Add(Viewer.Handle);
+						ClientReplicationInfo.Handles.Add(Viewer.Handle);
 					}
 				}
 			}
@@ -333,9 +338,9 @@ void UMassReplicationSubsystem::SynchronizeClientViewers(const TArray<FViewerInf
 		{
 			const FMassClientViewerHandle& HandleData = Itr->Value;
 
-			FClientViewerHandles& ClientViewers = ClientsViewerHandles[HandleData.ClientHandle.GetIndex()];
+			FMassClientReplicationInfo& ClientReplicationInfo = ClientsReplicationInfo[HandleData.ClientHandle.GetIndex()];
 
-			ClientViewers.Handles.RemoveSingle(HandleData.ViewerHandle);
+			ClientReplicationInfo.Handles.RemoveSingle(HandleData.ViewerHandle);
 		}
 	}
 }
@@ -369,7 +374,7 @@ void UMassReplicationSubsystem::SynchronizeClientsAndViewers()
 	{
 		const int32 NumItems = ClientHandleManager.ShrinkHandles();
 		 
-		ClientsViewerHandles.RemoveAt(NumItems, ClientsViewerHandles.Num() - NumItems, /* bAllowShrinking */ false);
+		ClientsReplicationInfo.RemoveAt(NumItems, ClientsReplicationInfo.Num() - NumItems, /* bAllowShrinking */ false);
 		ClientToViewerHandleArray.RemoveAt(NumItems, ClientToViewerHandleArray.Num() - NumItems, /* bAllowShrinking */ false);
 
 		for (FMassClientBubbleInfoData& InfoData : BubbleInfoArray)
@@ -527,7 +532,7 @@ void UMassReplicationSubsystem::DebugCheckArraysAreInSync()
 {
 #if UE_DEBUG_REPLICATION
 
-	checkf((ClientToViewerHandleArray.Num() == ClientsViewerHandles.Num()), TEXT("Client arrays out of sync with each other!"));
+	checkf((ClientToViewerHandleArray.Num() == ClientsReplicationInfo.Num()), TEXT("Client arrays out of sync with each other!"));
 
 	const int32 NumEntries = (BubbleInfoArray.Num() > 0) ? BubbleInfoArray[0].Bubbles.Num() : 0;
 
@@ -535,7 +540,7 @@ void UMassReplicationSubsystem::DebugCheckArraysAreInSync()
 	{
 		FMassClientBubbleInfoData& InfoDataOuter = BubbleInfoArray[IdxOuter];
 
-		checkf((InfoDataOuter.Bubbles.Num() == ClientsViewerHandles.Num()), TEXT("BubbleInfoArray arrays out of sync with ClientsViewerHandles!"));
+		checkf((InfoDataOuter.Bubbles.Num() == ClientsReplicationInfo.Num()), TEXT("BubbleInfoArray arrays out of sync with ClientsReplicationInfo!"));
 		checkf(InfoDataOuter.Bubbles.Num() == NumEntries, TEXT("Bubbles have different numbers of items!"));
 
 		for (int32 IdxInner = IdxOuter + 1; IdxInner < BubbleInfoArray.Num(); ++IdxInner)
@@ -613,12 +618,12 @@ void UMassReplicationSubsystem::AddClient(FMassViewerHandle ViewerHandle, APlaye
 	// check if the handle is a new entry in the free list arrays or uses an existing entry
 	if (ClientHandle.GetIndex() == ClientToViewerHandleArray.Num())
 	{
-		ClientsViewerHandles.AddDefaulted();
+		ClientsReplicationInfo.AddDefaulted();
 		ClientToViewerHandleArray.Emplace(ViewerHandle, ClientHandle);
 	}
 	else
 	{
-		checkf(ClientsViewerHandles[ClientHandle.GetIndex()].Handles.Num() == 0, TEXT("ClientsViewerHandles being replaced must have zero entries, they should have been removed first!"));
+		checkf(ClientsReplicationInfo[ClientHandle.GetIndex()].IsEmpty(), TEXT("ClientsReplicationInfo being replaced must have been reset prior to being reused!"));
 
 		FViewerClientPair& ClientToViewerHandleItem = ClientToViewerHandleArray[ClientHandle.GetIndex()];
 
@@ -627,8 +632,8 @@ void UMassReplicationSubsystem::AddClient(FMassViewerHandle ViewerHandle, APlaye
 		ClientToViewerHandleItem = ViewerClientPair;
 	}
 
-	FClientViewerHandles& ClientViewers = ClientsViewerHandles[ClientHandle.GetIndex()];
-	ClientViewers.Handles.Add(ViewerHandle);
+	FMassClientReplicationInfo& ClientReplicationInfo = ClientsReplicationInfo[ClientHandle.GetIndex()];
+	ClientReplicationInfo.Handles.Add(ViewerHandle);
 
 	for (FMassClientBubbleInfoData& InfoData : BubbleInfoArray)
 	{
@@ -644,7 +649,7 @@ void UMassReplicationSubsystem::AddClient(FMassViewerHandle ViewerHandle, APlaye
 		}
 		else
 		{
-			AMassClientBubbleInfoBase*& BubbleUpdate = InfoData.Bubbles[ClientHandle.GetIndex()];
+			TObjectPtr<AMassClientBubbleInfoBase>& BubbleUpdate = InfoData.Bubbles[ClientHandle.GetIndex()];
 			checkf(BubbleUpdate == nullptr, TEXT("ClientBubble being replaced must be nullptr it should have been removed first!"));
 
 			BubbleUpdate = ClientBubbleInfo;
@@ -665,10 +670,13 @@ void UMassReplicationSubsystem::RemoveClient(FMassClientHandle ClientHandle)
 	checkf(ClientToViewerHandleItem.ViewerHandle.IsValid(), TEXT("Invalid ViewerHandle! ClientHandle is out of sync with ClientToViewerHandleArray!"));
 	checkf(ClientToViewerHandleItem.ClientHandle == ClientHandle, TEXT("ClientHandle is out of sync with ClientToViewerHandleArray!"));
 
-	FClientViewerHandles& ClientViewerHandles = ClientsViewerHandles[ClientHandle.GetIndex()];
+	{
+		FMassClientReplicationInfo& ClientReplicationInfo = ClientsReplicationInfo[ClientHandle.GetIndex()];
 
-	checkf(ClientViewerHandles.Handles.Num() > 0, TEXT("There should always be atleast one client viewer handle (the parent NetConnection)"));
-	ClientViewerHandles.Handles.Reset();
+		checkf(ClientReplicationInfo.Handles.Num() > 0, TEXT("There should always be atleast one client viewer handle (the parent NetConnection)"));
+
+		ClientReplicationInfo.Reset();
+	}
 
 	checkf(ViewerToClientHandleArray.IsValidIndex(ClientToViewerHandleItem.ViewerHandle.GetIndex()), TEXT("ViewerHandle is out of sync with ViewerToClientHandleArray!"));
 	FViewerClientPair& ViewerToClientHandleItem = ViewerToClientHandleArray[ClientToViewerHandleItem.ViewerHandle.GetIndex()];
@@ -681,7 +689,7 @@ void UMassReplicationSubsystem::RemoveClient(FMassClientHandle ClientHandle)
 	for (FMassClientBubbleInfoData& InfoData : BubbleInfoArray)
 	{
 		checkf(InfoData.Bubbles.IsValidIndex(ClientHandle.GetIndex()), TEXT("ClientHandle is out of sync with Bubbles!"));
-		AMassClientBubbleInfoBase*& BubbleInfoItem = InfoData.Bubbles[ClientHandle.GetIndex()];
+		TObjectPtr<AMassClientBubbleInfoBase>& BubbleInfoItem = InfoData.Bubbles[ClientHandle.GetIndex()];
 
 		if ((World != nullptr) && (BubbleInfoItem != nullptr))
 		{

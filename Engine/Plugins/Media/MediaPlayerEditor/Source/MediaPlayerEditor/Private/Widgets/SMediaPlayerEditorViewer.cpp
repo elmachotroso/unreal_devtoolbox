@@ -11,7 +11,7 @@
 #include "MediaPlayer.h"
 #include "MediaPlaylist.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -63,7 +63,9 @@ SMediaPlayerEditorViewer::~SMediaPlayerEditorViewer()
 /* SMediaPlayerEditorPlayer interface
  *****************************************************************************/
 
-void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer, const TSharedRef<ISlateStyle>& InStyle)
+void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer& InMediaPlayer,
+	UMediaTexture* InMediaTexture, const TSharedRef<ISlateStyle>& InStyle,
+	bool bInIsSoundEnabled)
 {
 	MediaPlayer = &InMediaPlayer;
 	Style = InStyle;
@@ -255,6 +257,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 					[
 						// url area
 						SNew(SHorizontalBox)
+							.Visibility(InArgs._bShowUrl ? EVisibility::Visible : EVisibility::Collapsed)
 
 						+ SHorizontalBox::Slot()
 							.AutoWidth()
@@ -267,7 +270,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 										SNew(SImage)
 											.Image(InStyle->GetBrush("MediaPlayerEditor.SourceButton"))
 									]
-									.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+									.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 									.ForegroundColor(FSlateColor::UseForeground())
 									.MenuContent()
 									[
@@ -337,7 +340,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 							.Padding(0.0f)
 							[
 								// movie area
-								SNew(SMediaPlayerEditorViewport, InMediaPlayer, InStyle)
+								SAssignNew(PlayerViewport, SMediaPlayerEditorViewport, InMediaPlayer, InMediaTexture, InStyle, bInIsSoundEnabled)
 							]
 					]
 
@@ -348,7 +351,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 					[
 						// playback controls
 						SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							.ForegroundColor(FLinearColor::Gray)
 							.Padding(6.0f)
 							[
@@ -515,7 +518,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 																	.Text(LOCTEXT("OptionsButton", "Playback Options"))
 															]
 													]
-													.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+													.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 													.ForegroundColor(FSlateColor::UseForeground())
 													.MenuContent()
 													[
@@ -531,7 +534,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 			[
 				// drag & drop indicator
 				SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 					.BorderBackgroundColor_Lambda([this]() -> FLinearColor {
 						return DragValid
 							? FLinearColor(0.0f, 1.0f, 0.0f, 0.15f)
@@ -546,6 +549,13 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 	];
 }
 
+void SMediaPlayerEditorViewer::EnableMouseControl(bool bIsEnabled)
+{
+	if (PlayerViewport.IsValid())
+	{
+		PlayerViewport->EnableMouseControl(bIsEnabled);
+	}
+}
 
 /* SWidget interface
  *****************************************************************************/

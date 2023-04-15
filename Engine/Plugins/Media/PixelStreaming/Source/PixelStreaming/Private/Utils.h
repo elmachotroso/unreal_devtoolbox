@@ -2,100 +2,169 @@
 
 #pragma once
 
-#include "RHI.h"
-#include "CommonRenderResources.h"
-#include "ScreenRendering.h"
-#include "RHIStaticStates.h"
-#include "Modules/ModuleManager.h"
-#include "PixelStreamingPrivate.h"
+#include "WebRTCIncludes.h"
+#include "Async/Async.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonSerializer.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "CoreMinimal.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/CommandLine.h"
 
-namespace UE
+namespace UE::PixelStreaming
 {
-	namespace PixelStreaming
+	template <typename T>
+	inline void CommandLineParseValue(const TCHAR* Match, TAutoConsoleVariable<T>& CVar)
 	{
-		inline void CopyTexture(FTexture2DRHIRef SourceTexture, FTexture2DRHIRef DestinationTexture, FGPUFenceRHIRef& CopyFence)
+		T Value;
+		if (FParse::Value(FCommandLine::Get(), Match, Value))
+			CVar->Set(Value, ECVF_SetByCommandline);
+	};
+
+	inline void CommandLineParseValue(const TCHAR* Match, TAutoConsoleVariable<FString>& CVar, bool bStopOnSeparator = false)
+	{
+		FString Value;
+		if (FParse::Value(FCommandLine::Get(), Match, Value, bStopOnSeparator))
+			CVar->Set(*Value, ECVF_SetByCommandline);
+	};
+
+	inline void CommandLineParseOption(const TCHAR* Match, TAutoConsoleVariable<bool>& CVar)
+	{
+		FString ValueMatch(Match);
+		ValueMatch.Append(TEXT("="));
+		FString Value;
+		if (FParse::Value(FCommandLine::Get(), *ValueMatch, Value))
 		{
-			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-
-			IRendererModule* RendererModule = &FModuleManager::GetModuleChecked<IRendererModule>("Renderer");
-
-			// #todo-renderpasses there's no explicit resolve here? Do we need one?
-			FRHIRenderPassInfo RPInfo(DestinationTexture, ERenderTargetActions::Load_Store);
-
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyBackbuffer"));
-
+			if (Value.Equals(FString(TEXT("true")), ESearchCase::IgnoreCase))
 			{
-				RHICmdList.SetViewport(0, 0, 0.0f, DestinationTexture->GetSizeX(), DestinationTexture->GetSizeY(), 1.0f);
-
-				FGraphicsPipelineStateInitializer GraphicsPSOInit;
-				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-				GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-				GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-				// New engine version...
-				FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-				TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
-				TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-
-				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-
-				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-
-				if (DestinationTexture->GetSizeX() != SourceTexture->GetSizeX() || DestinationTexture->GetSizeY() != SourceTexture->GetSizeY())
-				{
-					PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SourceTexture);
-				}
-				else
-				{
-					PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
-				}
-
-				RendererModule->DrawRectangle(RHICmdList, 0, 0, // Dest X, Y
-					DestinationTexture->GetSizeX(),				// Dest Width
-					DestinationTexture->GetSizeY(),				// Dest Height
-					0, 0,										// Source U, V
-					1, 1,										// Source USize, VSize
-					DestinationTexture->GetSizeXY(),			// Target buffer size
-					FIntPoint(1, 1),							// Source texture size
-					VertexShader, EDRF_Default);
+				CVar->Set(true, ECVF_SetByCommandline);
 			}
+			else if (Value.Equals(FString(TEXT("false")), ESearchCase::IgnoreCase))
+			{
+				CVar->Set(false, ECVF_SetByCommandline);
+			}
+		}
+		else if (FParse::Param(FCommandLine::Get(), Match))
+		{
+			CVar->Set(true, ECVF_SetByCommandline);
+		}
+	}
 
-			RHICmdList.EndRenderPass();
+	template <typename T>
+	void DoOnGameThread(T&& Func)
+	{
+		if (IsInGameThread())
+		{
+			Func();
+		}
+		else
+		{
+			AsyncTask(ENamedThreads::GameThread, [Func]() { Func(); });
+		}
+	}
 
-			RHICmdList.WriteGPUFence(CopyFence);
+	template <typename T>
+	void DoOnGameThreadAndWait(uint32 Timeout, T&& Func)
+	{
+		if (IsInGameThread())
+		{
+			Func();
+		}
+		else
+		{
+			FEvent* TaskEvent = FPlatformProcess::GetSynchEventFromPool();
+			AsyncTask(ENamedThreads::GameThread, [Func, TaskEvent]() {
+				Func();
+				TaskEvent->Trigger();
+			});
+			TaskEvent->Wait(Timeout);
+			FPlatformProcess::ReturnSynchEventToPool(TaskEvent);
+		}
+	}
+#if WEBRTC_VERSION == 84
+	inline webrtc::SdpVideoFormat CreateH264Format(webrtc::H264::Profile profile, webrtc::H264::Level level)
+	{
+		const absl::optional<std::string> ProfileString =
+			webrtc::H264::ProfileLevelIdToString(webrtc::H264::ProfileLevelId(profile, level));
+		check(ProfileString);
+		return webrtc::SdpVideoFormat(
+			cricket::kH264CodecName,
+			{ { cricket::kH264FmtpProfileLevelId, *ProfileString },
+				{ cricket::kH264FmtpLevelAsymmetryAllowed, "1" },
+				{ cricket::kH264FmtpPacketizationMode, "1" } });
 
-			RHICmdList.ImmediateFlush(EImmediateFlushType::WaitForOutstandingTasksOnly);
+	}
+#elif WEBRTC_VERSION == 96
+	inline webrtc::SdpVideoFormat CreateH264Format(webrtc::H264Profile profile, webrtc::H264Level level)
+	{
+		const absl::optional<std::string> ProfileString =
+			webrtc::H264ProfileLevelIdToString(webrtc::H264ProfileLevelId(profile, level));
+		check(ProfileString);
+		return webrtc::SdpVideoFormat(
+			cricket::kH264CodecName,
+			{ { cricket::kH264FmtpProfileLevelId, *ProfileString },
+				{ cricket::kH264FmtpLevelAsymmetryAllowed, "1" },
+				{ cricket::kH264FmtpPacketizationMode, "1" } });
+
+	}
+#endif
+	inline void MemCpyStride(void* Dest, const void* Src, size_t DestStride, size_t SrcStride, size_t Height)
+	{
+		char* DestPtr = static_cast<char*>(Dest);
+		const char* SrcPtr = static_cast<const char*>(Src);
+		size_t Row = Height;
+		while (Row--)
+		{
+			FMemory::Memcpy(DestPtr + DestStride * Row, SrcPtr + SrcStride * Row, DestStride);
+		}
+	}
+
+	inline size_t SerializeToBuffer(rtc::CopyOnWriteBuffer& Buffer, size_t Pos, const void* Data, size_t DataSize)
+	{
+#if WEBRTC_VERSION == 84
+		FMemory::Memcpy(&Buffer[Pos], Data, DataSize);
+#elif WEBRTC_VERSION == 96
+		FMemory::Memcpy(Buffer.MutableData() + Pos, Data, DataSize);
+#endif
+		return Pos + DataSize;
+	}
+
+	inline void ExtendJsonWithField(const FString& Descriptor, FString FieldName, FString StringValue, FString& NewDescriptor, bool& Success)
+	{
+		TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+
+		if (!Descriptor.IsEmpty())
+		{
+			TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(Descriptor);
+			if (!FJsonSerializer::Deserialize(JsonReader, JsonObject) || !JsonObject.IsValid())
+			{
+				Success = false;
+				return;
+			}
 		}
 
-		inline FTexture2DRHIRef CreateTexture(uint32 Width, uint32 Height)
+		TSharedRef<FJsonValueString> JsonValueObject = MakeShareable(new FJsonValueString(StringValue));
+		JsonObject->SetField(FieldName, JsonValueObject);
+
+		TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> JsonWriter = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&NewDescriptor);
+		Success = FJsonSerializer::Serialize(JsonObject.ToSharedRef(), JsonWriter);
+	}
+
+	inline void ExtractJsonFromDescriptor(FString Descriptor, FString FieldName, FString& StringValue, bool& Success)
+	{
+		TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+
+		TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<>::Create(Descriptor);
+		if (FJsonSerializer::Deserialize(JsonReader, JsonObject) && JsonObject.IsValid())
 		{
-			// Create empty texture
-			FRHIResourceCreateInfo CreateInfo(TEXT("BlankTexture"));
-
-			FTexture2DRHIRef Texture;
-			FString RHIName = GDynamicRHI->GetName();
-
-			if (RHIName == TEXT("Vulkan"))
-			{
-				Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_RenderTargetable | TexCreate_External, ERHIAccess::Present, CreateInfo);
-			}
-			else
-			{
-				Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable, ERHIAccess::CopyDest, CreateInfo);
-			}
-			return Texture;
+			const TSharedPtr<FJsonObject>* JsonObjectPtr = &JsonObject;
+			Success = (*JsonObjectPtr)->TryGetStringField(FieldName, StringValue);
 		}
-
-		inline void ReadTextureToCPU(FRHICommandListImmediate& RHICmdList, FTexture2DRHIRef& TextureRef, TArray<FColor>& OutPixels)
+		else
 		{
-			FIntRect Rect(0, 0, TextureRef->GetSizeX(), TextureRef->GetSizeY());
-			RHICmdList.ReadSurfaceData(TextureRef, Rect, OutPixels, FReadSurfaceDataFlags());
+			Success = false;
 		}
-
-	} // namespace PixelStreaming
-} // namespace UE
+	}
+} // namespace UE::PixelStreaming

@@ -7,9 +7,9 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Widgets/SToolTip.h"
-#include "Editor/ContentBrowser/Public/ContentBrowserDelegates.h"
+#include "ContentBrowserDelegates.h"
 #include "AssetManagerEditorModule.h"
 
 class FUICommandList;

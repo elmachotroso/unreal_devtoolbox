@@ -6,6 +6,8 @@
 #include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceVector4Curve)
+
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/ITargetPlatform.h"
 #endif
@@ -46,21 +48,26 @@ void UNiagaraDataInterfaceVector4Curve::Serialize(FArchive& Ar)
 	{
 		UpdateLUT(true);
 
-		FRichCurve TempXCurve;
-		FRichCurve TempYCurve;
-		FRichCurve TempZCurve;
-		FRichCurve TempWCurve;
-		Exchange(XCurve, TempXCurve);
-		Exchange(YCurve, TempYCurve);
-		Exchange(ZCurve, TempZCurve);
-		Exchange(WCurve, TempWCurve);
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
+		Exchange(WCurve, WCurveCookedEditorCache);
 
 		Super::Serialize(Ar);
 
-		Exchange(XCurve, TempXCurve);
-		Exchange(YCurve, TempYCurve);
-		Exchange(ZCurve, TempZCurve);
-		Exchange(WCurve, TempWCurve);
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
+		Exchange(WCurve, WCurveCookedEditorCache);
+	}
+	else if (bUseLUT && Ar.IsLoading() && GetOutermost()->HasAnyPackageFlags(PKG_Cooked))
+	{
+		Super::Serialize(Ar);
+
+		Exchange(XCurve, XCurveCookedEditorCache);
+		Exchange(YCurve, YCurveCookedEditorCache);
+		Exchange(ZCurve, ZCurveCookedEditorCache);
+		Exchange(WCurve, WCurveCookedEditorCache);
 	}
 	else
 #endif
@@ -176,26 +183,11 @@ void UNiagaraDataInterfaceVector4Curve::GetFunctions(TArray<FNiagaraFunctionSign
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceVector4Curve::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
-	FString TimeToLUTFrac = TEXT("TimeToLUTFraction_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString Sample = TEXT("SampleCurve_") + ParamInfo.DataInterfaceHLSLSymbol;
-	FString NumSamples = TEXT("CurveLUTNumMinusOne_") + ParamInfo.DataInterfaceHLSLSymbol;
-	OutHLSL += FString::Printf(TEXT("\
-void %s(in float In_X, out float4 Out_Value) \n\
-{ \n\
-	float RemappedX = %s(In_X) * %s; \n\
-	float Prev = floor(RemappedX); \n\
-	float Next = Prev < %s ? Prev + 1.0 : Prev; \n\
-	float Interp = RemappedX - Prev; \n\
-	Prev *= %u; \n\
-	Next *= %u; \n\
-	float4 A = float4(%s(Prev), %s(Prev + 1), %s(Prev + 2), %s(Prev + 3)); \n\
-	float4 B = float4(%s(Next), %s(Next + 1), %s(Next + 2), %s(Next + 3)); \n\
-	Out_Value = lerp(A, B, Interp); \n\
-}\n")
-, *FunctionInfo.InstanceName, *TimeToLUTFrac, *NumSamples, *NumSamples, CurveLUTNumElems, CurveLUTNumElems
-, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample, *Sample);
-
-	return true;
+	if (FunctionInfo.DefinitionName == SampleCurveName)
+	{
+		return true;
+	}
+	return false;
 }
 #endif
 
@@ -221,8 +213,8 @@ FORCEINLINE_DEBUGGABLE FVector4 UNiagaraDataInterfaceVector4Curve::SampleCurveIn
 	float NextEntry = PrevEntry < LUTNumSamplesMinusOne ? PrevEntry + 1.0f : PrevEntry;
 	float Interp = RemappedX - PrevEntry;
 
-	int32 AIndex = PrevEntry * CurveLUTNumElems;
-	int32 BIndex = NextEntry * CurveLUTNumElems;
+	int32 AIndex = (int32)(PrevEntry * (float)CurveLUTNumElems);
+	int32 BIndex = (int32)(NextEntry * (float)CurveLUTNumElems);
 	FVector4 A = FVector4(ShaderLUT[AIndex], ShaderLUT[AIndex + 1], ShaderLUT[AIndex + 2], ShaderLUT[AIndex + 3]);
 	FVector4 B = FVector4(ShaderLUT[BIndex], ShaderLUT[BIndex + 1], ShaderLUT[BIndex + 2], ShaderLUT[BIndex + 3]);
 	return FMath::Lerp(A, B, Interp);
@@ -255,3 +247,4 @@ void UNiagaraDataInterfaceVector4Curve::SampleCurve(FVectorVMExternalFunctionCon
 		*SamplePtrA.GetDestAndAdvance() = Sample.W;
 	}
 }
+

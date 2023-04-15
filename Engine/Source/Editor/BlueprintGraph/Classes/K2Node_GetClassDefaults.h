@@ -2,15 +2,27 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Delegates/IDelegateInstance.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
+#include "KismetCompilerMisc.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_GetClassDefaults.generated.h"
 
 class FBlueprintActionDatabaseRegistrar;
+class FName;
+class FProperty;
 class UBlueprint;
+class UClass;
 class UEdGraph;
 class UEdGraphPin;
+class UObject;
 
 UCLASS(MinimalAPI)
 class UK2Node_GetClassDefaults : public UK2Node
@@ -30,13 +42,13 @@ class UK2Node_GetClassDefaults : public UK2Node
 	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	virtual void ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin UK2Node Interface
 	virtual bool IsNodePure() const override { return true; }
 	virtual bool ShouldShowNodeProperties() const override { return true; }
 	virtual void ReallocatePinsDuringReconstruction(TArray<UEdGraphPin*>& OldPins) override;
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual class FNodeHandlingFunctor* CreateNodeHandler(class FKismetCompilerContext& CompilerContext) const override;
 	virtual void ExpandNode(class FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph) override;
 	virtual void GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const override;
@@ -88,7 +100,7 @@ private:
 	static FName ClassPinName;
 
 	/** Blueprint that we subscribed OnBlueprintChangedDelegate and OnBlueprintCompiledDelegate to */
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TObjectPtr<UBlueprint> BlueprintSubscribedTo;
 
 	/** Blueprint.OnChanged delegate handle */

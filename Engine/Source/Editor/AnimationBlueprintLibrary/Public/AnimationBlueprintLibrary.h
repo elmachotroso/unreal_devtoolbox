@@ -2,20 +2,47 @@
 
 #pragma once
 
-#include "Kismet/BlueprintFunctionLibrary.h"
-#include "Animation/AnimEnums.h"
 #include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimEnums.h"
 #include "Animation/AnimMetaData.h"
+#include "Animation/AnimTypes.h"
+#include "Animation/SmartName.h"
 #include "AnimationGraph.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "Math/Color.h"
+#include "Math/Quat.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
 
 #include "AnimationBlueprintLibrary.generated.h"
 
+class UAnimBlueprint;
+class UAnimBoneCompressionSettings;
+class UAnimCompress;
+class UAnimCurveCompressionSettings;
+class UAnimGraphNode_Base;
+class UAnimMetaData;
+class UAnimMontage;
+class UAnimNotify;
+class UAnimNotifyState;
+class UAnimSequence;
+class UAnimSequenceBase;
+class UAnimationAsset;
+class UAnimationGraph;
+class UObject;
+class USkeletalMesh;
+class USkeleton;
+struct FFrame;
 struct FQualifiedFrameTime;
 struct FRawAnimSequenceTrack;
-class UAnimCompress;
-class USkeleton;
-class UAnimBoneCompressionSettings;
-class UAnimCurveCompressionSettings;
 
 UENUM()
 enum class ESmartNameContainerType : uint8
@@ -49,6 +76,10 @@ public:
 	/** Retrieves the Names of the individual ATracks for the given Animation Sequence */
 	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Animation")
 	static void GetAnimationTrackNames(const UAnimSequenceBase* AnimationSequenceBase, TArray<FName>& TrackNames);
+
+	/** Retrieves the Names of the Animation Slots used in the given Montage */
+	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Montage")
+	static void GetMontageSlotNames(const UAnimMontage* AnimationMontage, TArray<FName>& SlotNames);
 
 	/** Retrieves the Names of the individual float curves for the given Animation Sequence */
 	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Animation")
@@ -355,7 +386,7 @@ public:
 	/** Apply all the changes made to Bone Tracks to Finalize. This triggers recompression. Note that this is expensive, but will require to get correct compressed data */
 	UE_DEPRECATED(5.0, "FinalizeBoneAnimation has been deprecated, use UAnimDataController instead")
 	UFUNCTION(BlueprintCallable, Category = "AnimationBlueprintLibrary|Curves", meta=(DeprecatedFunction, DeprecationMessage="FinalizeBoneAnimation has been deprecated, use UAnimDataController instead"))
-	static void FinalizeBoneAnimation(UAnimSequence* AnimationSequence);
+	static void FinalizeBoneAnimation(UAnimSequence* AnimationSequence) {}
 
 	// Smart name helper functions
 
@@ -482,6 +513,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Helpers")
 	static bool EvaluateRootBoneTimecodeAttributesAtTime(const UAnimSequenceBase* AnimationSequenceBase, const float EvalTime, FQualifiedFrameTime& OutQualifiedFrameTime);
 
+	/** Evaluates the subframe timecode attribute (e.g. "TCSubframe") of the root bone and returns the resulting value.
+	 *
+	 *  Since the subframe component of FFrameTime is clamped to the range [0.0, 1.0), it cannot accurately represent the use
+	 *  case where the timecode metadata represents subframe values as whole numbered subframes instead of as a percentage of a
+	 *  frame the way the engine does. The subframe component of the FQualifiedFrameTime returned by
+	 *  EvaluateRootBoneTimecodeAttributesAtTime() may not reflect the authored subframe metadata in that case.
+	 * 
+	 *  This function allows access to the subframe values that were actually authored in the timecode metadata.
+	 *
+	 *  @param AnimationSequenceBase: Anim sequence for which to evaluate the root bone subframe attribute.
+	 *  @param EvalTime: Time (in seconds) at which to evaluate the subframe timecode bone attribute.
+	 *  @param OutSubframe: Resulting subframe value from evaluation. If no subframe timecode attribute is present
+	 *      on the bone or if it cannot be evaluated, the output parameter will not be modified.
+	 *  @return: true if the root bone had a subframe timecode attribute that could be evaluated and a value was set, or false otherwise.
+	 */
+	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Helpers")
+	static bool EvaluateRootBoneTimecodeSubframeAttributeAtTime(const UAnimSequenceBase* AnimationSequenceBase, const float EvalTime, float& OutSubframe);
+
 	/** Finds the Bone Path from the given Bone to the Root Bone */
 	UFUNCTION(BlueprintPure, Category = "AnimationBlueprintLibrary|Helpers")
 	static void FindBonePathToRoot(const UAnimSequenceBase* AnimationSequenceBase, FName BoneName, TArray<FName>& BonePath);
@@ -493,4 +542,15 @@ public:
 	/** Returns all Animation Graph Nodes of the provided Node Class contained by the Animation Blueprint */
 	UFUNCTION(BlueprintCallable, Category=Animation, meta=(ScriptMethod))
 	static void GetNodesOfClass(UAnimBlueprint* AnimationBlueprint, TSubclassOf<UAnimGraphNode_Base> NodeClass, TArray<UAnimGraphNode_Base*>& GraphNodes, bool bIncludeChildClasses = true);
+
+	/**
+	 * Adds an Animation Asset override for the provided AnimationBlueprint, replacing any instance of Target with Override
+	 *
+	 * @param AnimBlueprint					The Animation Blueprint to add/set the Override for
+	 * @param Target						The Animation Asset to add an override for (overrides all instances of the asset)
+	 * @param Override						The Animation Asset to used to override the Target with (types have to match)
+	 * @param bPrintAppliedOverrides		Flag whether or not to print the applied overrides
+	 */
+	UFUNCTION(BlueprintCallable, Category=Animation, meta = (ScriptMethod))
+	static void AddNodeAssetOverride(UAnimBlueprint* AnimBlueprint, const UAnimationAsset* Target, UAnimationAsset* Override, bool bPrintAppliedOverrides = false);
 };

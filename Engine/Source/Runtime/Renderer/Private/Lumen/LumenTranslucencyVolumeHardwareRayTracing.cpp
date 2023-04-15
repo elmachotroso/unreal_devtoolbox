@@ -33,11 +33,11 @@ static TAutoConsoleVariable<int32> CVarLumenTranslucencyVolumeHardwareRayTracing
 
 namespace Lumen
 {
-	bool UseHardwareRayTracedTranslucencyVolume()
+	bool UseHardwareRayTracedTranslucencyVolume(const FSceneViewFamily& ViewFamily)
 	{
 #if RHI_RAYTRACING
 		return IsRayTracingEnabled()
-			&& Lumen::UseHardwareRayTracing()
+			&& Lumen::UseHardwareRayTracing(ViewFamily)
 			&& (CVarLumenTranslucencyVolumeHardwareRayTracing.GetValueOnRenderThread() != 0);
 #else
 		return false;
@@ -47,10 +47,9 @@ namespace Lumen
 
 #if RHI_RAYTRACING
 
-class FLumenTranslucencyVolumeHardwareRayTracingRGS : public FLumenHardwareRayTracingRGS
+class FLumenTranslucencyVolumeHardwareRayTracing : public FLumenHardwareRayTracingShaderBase
 {
-	DECLARE_GLOBAL_SHADER(FLumenTranslucencyVolumeHardwareRayTracingRGS)
-	SHADER_USE_ROOT_PARAMETER_STRUCT(FLumenTranslucencyVolumeHardwareRayTracingRGS, FLumenHardwareRayTracingRGS)
+	DECLARE_LUMEN_RAYTRACING_SHADER(FLumenTranslucencyVolumeHardwareRayTracing, Lumen::ERayTracingShaderDispatchSize::DispatchSize1D)
 
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("USE_RADIANCE_CACHE");
 
@@ -60,27 +59,30 @@ class FLumenTranslucencyVolumeHardwareRayTracingRGS : public FLumenHardwareRayTr
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float3>, RWVolumeTraceRadiance)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float>, RWVolumeTraceHitDistance)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHardwareRayTracingRGS::FSharedParameters, SharedParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHardwareRayTracingShaderBase::FSharedParameters, SharedParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingVolumeParameters, VolumeParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingVolumeTraceSetupParameters, TraceSetupParameters)
 		SHADER_PARAMETER(uint32, MaxTraversalIterations)
 	END_SHADER_PARAMETER_STRUCT()
 
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, Lumen::ERayTracingShaderDispatchType ShaderDispatchType, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FLumenHardwareRayTracingRGS::ModifyCompilationEnvironment(Parameters, Lumen::ESurfaceCacheSampling::AlwaysResidentPages, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("UE_RAY_TRACING_DISPATCH_1D"), 1);
-		OutEnvironment.SetDefine(TEXT("UE_RAY_TRACING_LIGHTWEIGHT_CLOSEST_HIT_SHADER"), 1);
+		FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(Parameters, ShaderDispatchType, Lumen::ESurfaceCacheSampling::AlwaysResidentPages, OutEnvironment);
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FLumenTranslucencyVolumeHardwareRayTracingRGS, "/Engine/Private/Lumen/LumenTranslucencyVolumeHardwareRayTracing.usf", "LumenTranslucencyVolumeHardwareRayTracingRGS", SF_RayGen);
+IMPLEMENT_LUMEN_RAYGEN_AND_COMPUTE_RAYTRACING_SHADERS(FLumenTranslucencyVolumeHardwareRayTracing)
 
-void FDeferredShadingSceneRenderer::PrepareLumenHardwareRayTracingTranslucencyVolume(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
+IMPLEMENT_GLOBAL_SHADER(FLumenTranslucencyVolumeHardwareRayTracingRGS, "/Engine/Private/Lumen/LumenTranslucencyVolumeHardwareRayTracing.usf", "LumenTranslucencyVolumeHardwareRayTracingRGS", SF_RayGen);
+IMPLEMENT_GLOBAL_SHADER(FLumenTranslucencyVolumeHardwareRayTracingCS, "/Engine/Private/Lumen/LumenTranslucencyVolumeHardwareRayTracing.usf", "LumenTranslucencyVolumeHardwareRayTracingCS", SF_Compute);
+
+void FDeferredShadingSceneRenderer::PrepareLumenHardwareRayTracingTranslucencyVolumeLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
-	extern int32 GLumenTranslucencyVolumeRadianceCache;
+	if (Lumen::UseHardwareRayTracedTranslucencyVolume(*View.Family))
 	{
+		extern int32 GLumenTranslucencyVolumeRadianceCache;
+
 		FLumenTranslucencyVolumeHardwareRayTracingRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FLumenTranslucencyVolumeHardwareRayTracingRGS::FRadianceCache>(GLumenTranslucencyVolumeRadianceCache != 0);
 		TShaderRef<FLumenTranslucencyVolumeHardwareRayTracingRGS> RayGenerationShader = View.ShaderMap->GetShader<FLumenTranslucencyVolumeHardwareRayTracingRGS>(PermutationVector);
@@ -94,7 +96,7 @@ void FDeferredShadingSceneRenderer::PrepareLumenHardwareRayTracingTranslucencyVo
 void HardwareRayTraceTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
-	FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingInputs& TracingInputs,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
 	FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters,
@@ -104,6 +106,7 @@ void HardwareRayTraceTranslucencyVolume(
 {
 #if RHI_RAYTRACING
 	bool bUseMinimalPayload = true;
+	bool bInlineRayTracing = Lumen::UseHardwareInlineRayTracing(*View.Family);
 
 	// Cast rays
 	{
@@ -111,7 +114,7 @@ void HardwareRayTraceTranslucencyVolume(
 
 		SetLumenHardwareRayTracingSharedParameters(
 			GraphBuilder,
-			GetSceneTextureParameters(GraphBuilder),
+			GetSceneTextureParameters(GraphBuilder, View),
 			View,
 			TracingInputs,
 			&PassParameters->SharedParameters);
@@ -126,26 +129,33 @@ void HardwareRayTraceTranslucencyVolume(
 
 		FLumenTranslucencyVolumeHardwareRayTracingRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FLumenTranslucencyVolumeHardwareRayTracingRGS::FRadianceCache>(RadianceCacheParameters.RadianceProbeIndirectionTexture != nullptr);
-		TShaderRef<FLumenTranslucencyVolumeHardwareRayTracingRGS> RayGenerationShader = View.ShaderMap->GetShader<FLumenTranslucencyVolumeHardwareRayTracingRGS>(PermutationVector);
-
-		ClearUnusedGraphResources(RayGenerationShader, PassParameters);
 
 		const FIntPoint DispatchResolution(VolumeTraceRadiance->Desc.Extent * FIntPoint(VolumeTraceRadiance->Desc.Depth, 1));
 
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("HardwareRayTracing %ux%u", DispatchResolution.X, DispatchResolution.Y),
-			PassParameters,
-			ERDGPassFlags::Compute,
-			[PassParameters, &View, RayGenerationShader, DispatchResolution, bUseMinimalPayload](FRHIRayTracingCommandList& RHICmdList)
-			{
-				FRayTracingShaderBindingsWriter GlobalResources;
-				SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
+		if (bInlineRayTracing)
+		{
+			const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(DispatchResolution, FLumenTranslucencyVolumeHardwareRayTracingCS::GetThreadGroupSize());
 
-				FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
-				FRayTracingPipelineState* RayTracingPipeline = bUseMinimalPayload ? View.LumenHardwareRayTracingMaterialPipeline : View.RayTracingMaterialPipeline;
-				RHICmdList.RayTraceDispatch(RayTracingPipeline, RayGenerationShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, DispatchResolution.X, DispatchResolution.Y);
-			}
-		);
+			TShaderRef<FLumenTranslucencyVolumeHardwareRayTracingCS> ComputeShader = View.ShaderMap->GetShader<FLumenTranslucencyVolumeHardwareRayTracingCS>(PermutationVector);
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("HardwareRayTracing (inline) %ux%u", DispatchResolution.X, DispatchResolution.Y),
+				ComputeShader,
+				PassParameters,
+				GroupCount);
+		}
+		else
+		{
+			TShaderRef<FLumenTranslucencyVolumeHardwareRayTracingRGS> RayGenerationShader = View.ShaderMap->GetShader<FLumenTranslucencyVolumeHardwareRayTracingRGS>(PermutationVector);
+			AddLumenRayTraceDispatchPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("HardwareRayTracing (raygen) %ux%u", DispatchResolution.X, DispatchResolution.Y),
+				RayGenerationShader,
+				PassParameters,
+				DispatchResolution,
+				View,
+				bUseMinimalPayload);
+		}
 	}
 
 #else

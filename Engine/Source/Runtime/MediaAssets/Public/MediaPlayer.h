@@ -13,6 +13,7 @@
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
 #include "Misc/Guid.h"
+#include "Misc/Variant.h"
 #include "Engine/LatentActionManager.h"
 #include "MediaPlayerOptions.h"
 #include "IMediaTimeSource.h"
@@ -848,7 +849,7 @@ public:
 	 * Delay of the player's time.
 	 *
 	 * This setting can be used to manually sync multiple sources.
-	 * Set to 1 seconds, if you would like that Player to play 1 second behind his current time.
+	 * Set to 1 seconds, if you would like that Player to play 1 second behind its current time.
 	 * If the value is too big, it is possible that the player would not hold that frame for that long.
 	 * @return true on success, false otherwise.
 	 * @see GetTimeDelay
@@ -965,6 +966,40 @@ public:
 	}
 
 	/**
+	 * Get information about the media that is playing.
+	 * Not all formats support all information.
+	 * Some possible common information is in this file,
+	 * look for MediaInfoNameSourceNumMips for example.
+	 *
+	 * @param	InfoName		Name of the information we want.
+	 * @returns					Requested information, or empty if not available.
+	 */
+	FVariant GetMediaInfo(FName InfoName) const;
+
+	/**
+	 * Templated version of GetMediaInfo.
+	 * No need to deal with variants.
+	 * 
+	 * @param	T			Type of the information.
+	 * @param	Result		If the information is found and is the correct type, then this will be
+	 *						set to its value. It will not be set otherwise.
+	 * @param	InfoName	Name of the information.
+	 * @returns				True if the information is found, false if not.
+	 */
+	template<typename T>
+	bool GetMediaInfo(T& Result, FName InfoName) const
+	{
+		FVariant Variant = GetMediaInfo(InfoName);
+		if (Variant.GetType() == TVariantTraits<T>::GetType())
+		{
+			Result = Variant.GetValue<T>();
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
 	 * Get the media player facade that manages low-level media players
 	 *
 	 * @return The media player facade.
@@ -1037,6 +1072,14 @@ public:
 #endif
 
 public:
+	/**
+	 * These are possible common information for use with GetMediaInfo.
+	 * They also decsribe the type of data that will be needed to retrieve the information.
+	 */
+	 /** Number of mip map levels in the source. Int32.*/
+	static FLazyName MediaInfoNameSourceNumMips;
+	/** Number of tiles (X and Y) in the source. IntPoint.*/
+	static FLazyName MediaInfoNameSourceNumTiles;
 
 	/**
 	 * Duration of samples to cache ahead of the play head.

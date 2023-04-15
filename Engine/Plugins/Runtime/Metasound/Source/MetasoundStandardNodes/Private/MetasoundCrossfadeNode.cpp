@@ -4,6 +4,7 @@
 #include "MetasoundAudioBuffer.h"
 #include "CoreMinimal.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "Internationalization/Text.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundFacade.h"
@@ -25,17 +26,8 @@ namespace Metasound
 {
 	namespace CrossfadeVertexNames
 	{
-		const FVertexName GetInputCrossfadeValueName()
-		{
-			static const FVertexName CrossfadeName = TEXT("Crossfade Value");
-			return CrossfadeName;
-		}
-
-		const FText GetInputCrossfadeValueDescription()
-		{
-			static const FText Desc = METASOUND_LOCTEXT("InputCrossfadeValueDesc", "Crossfade value to crossfade across inputs. Output will be the float value between adjacent whole number values.");
-			return Desc;
-		}
+		METASOUND_PARAM(InputCrossfadeValue, "Crossfade Value", "Crossfade value to crossfade across inputs. Output will be the float value between adjacent whole number values.")
+		METASOUND_PARAM(OutputTrigger, "Out", "Output value.")
 
 		const FVertexName GetInputName(uint32 InIndex)
 		{
@@ -47,16 +39,9 @@ namespace Metasound
 			return METASOUND_LOCTEXT_FORMAT("CrossfadeInputDesc", "Cross fade {0} input.", InIndex);
 		}
 
-		const FVertexName& GetOutputName()
+		const FText GetInputDisplayName(uint32 InIndex)
 		{
-			static const FVertexName Name = TEXT("Out");
-			return Name;
-		}
-
-		const FText& GetOutputDescription()
-		{
-			static const FText Desc = METASOUND_LOCTEXT("TriggerAccumulateOutputTriggerDesc", "Triggered when all input triggers have been triggered. Call Reset to reset the state or use \"Auto Reset\"");
-			return Desc;
+			return METASOUND_LOCTEXT_FORMAT("CrossfadeInputDisplayName", "In {0}", InIndex);
 		}
 	}
 
@@ -122,7 +107,7 @@ namespace Metasound
 
 			// Zero the output buffer so we can mix into it
 			OutAudioBuffer.Zero();
-			float* OutAudioBufferPtr = OutAudioBuffer.GetData();
+			TArrayView<float> OutAudioBufferView(OutAudioBuffer.GetData(), OutAudioBuffer.Num());
 
 			// Now write to the scratch buffers w/ fade buffer fast given the new inputs
 			for (int32 i = 0; i < NumInputs; ++i)
@@ -132,10 +117,11 @@ namespace Metasound
 				{
 					// Copy the input to the output
 					const FAudioBufferReadRef& InBuff = InAudioBuffersValues[i];
+					TArrayView<const float> BufferView((*InBuff).GetData(), NumFramesPerBlock);
 					const float* BufferPtr = (*InBuff).GetData();
 
 					// mix in and fade to the target gain values
-					Audio::MixInBufferFast(BufferPtr, OutAudioBufferPtr, NumFramesPerBlock, PrevGains[i], CurrentGains[i]);
+					Audio::ArrayMixIn(BufferView, OutAudioBufferView, PrevGains[i], CurrentGains[i]);
 				}
 			}
 
@@ -162,15 +148,21 @@ namespace Metasound
 			{
 				FInputVertexInterface InputInterface;
 
-				InputInterface.Add(TInputDataVertexModel<float>(GetInputCrossfadeValueName(), GetInputCrossfadeValueDescription()));
+				InputInterface.Add(TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputCrossfadeValue)));
 
 				for (uint32 i = 0; i < NumInputs; ++i)
 				{
-					InputInterface.Add(TInputDataVertexModel<ValueType>(GetInputName(i), GetInputDescription(i)));
+					const FDataVertexMetadata InputMetadata
+					{
+						GetInputDescription(i),
+						GetInputDisplayName(i)
+					};
+
+					InputInterface.Add(TInputDataVertex<ValueType>(GetInputName(i), InputMetadata));
 				}
 
 				FOutputVertexInterface OutputInterface;
-				OutputInterface.Add(TOutputDataVertexModel<ValueType>(GetOutputName(), GetOutputDescription()));
+				OutputInterface.Add(TOutputDataVertex<ValueType>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputTrigger)));
 
 				return FVertexInterface(InputInterface, OutputInterface);
 			};
@@ -217,7 +209,7 @@ namespace Metasound
 			const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 			const FDataReferenceCollection& InputCollection = InParams.InputDataReferences;
 
-			FFloatReadRef CrossfadeValue = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, GetInputCrossfadeValueName(), InParams.OperatorSettings);
+			FFloatReadRef CrossfadeValue = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputCrossfadeValue), InParams.OperatorSettings);
 
 			TArray<TDataReadReference<ValueType>> InputValues;
 			for (uint32 i = 0; i < NumInputs; ++i)
@@ -244,7 +236,7 @@ namespace Metasound
 		{
 			using namespace CrossfadeVertexNames;
 			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(GetInputCrossfadeValueName(), CrossfadeValue);
+			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputCrossfadeValue), CrossfadeValue);
 			for (uint32 i = 0; i < NumInputs; ++i)
 			{
 				Inputs.AddDataReadReference(GetInputName(i), InputValues[i]);
@@ -257,7 +249,7 @@ namespace Metasound
 			using namespace CrossfadeVertexNames;
 
 			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(GetOutputName(), OutputValue);
+			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTrigger), OutputValue);
 
 			return Outputs;
 		}

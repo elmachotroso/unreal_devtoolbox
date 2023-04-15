@@ -2,9 +2,10 @@
 
 #include "MemAllocGroupingByCallstack.h"
 #include "TraceServices/Model/Callstack.h"
-#include "CallstackFormatting.h"
 
 // Insights
+#include "Insights/Common/AsyncOperationProgress.h"
+#include "Insights/MemoryProfiler/ViewModels/CallstackFormatting.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocNode.h"
 
 #define LOCTEXT_NAMESPACE "Insights::FMemAllocGroupingByCallstack"
@@ -42,7 +43,7 @@ FMemAllocGroupingByCallstack::~FMemAllocGroupingByCallstack()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const
+void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const
 {
 	ParentGroup.ClearChildren();
 
@@ -53,11 +54,12 @@ void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& N
 	CallstackGroups.Add(Root);
 
 	FTableTreeNode* UnsetGroupPtr = nullptr;
+	FTableTreeNode* EmptyCallstackGroupPtr = nullptr;
 	TMap<const TraceServices::FCallstack*, FCallstackGroup*> GroupMapByCallstack; // Callstack* -> FCallstackGroup*
 
 	for (FTableTreeNodePtr NodePtr : Nodes)
 	{
-		if (bCancelGrouping)
+		if (InAsyncOperationProgress.ShouldCancelAsyncOp())
 		{
 			return;
 		}
@@ -69,6 +71,7 @@ void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& N
 		}
 
 		FCallstackGroup* GroupPtr = Root;
+		int32 NumFrames = -1;
 
 		const FMemAllocNode& MemAllocNode = static_cast<const FMemAllocNode&>(*NodePtr);
 		const FMemoryAlloc* Alloc = MemAllocNode.GetMemAlloc();
@@ -83,14 +86,22 @@ void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& N
 			}
 			else if (Callstack)
 			{
-				const int32 NumFrames = static_cast<int32>(Callstack->Num());
+				NumFrames = static_cast<int32>(Callstack->Num());
+				check(NumFrames <= 256); // see Callstack->Frame(uint8)
+
 				for (int32 FrameDepth = NumFrames - 1; FrameDepth >= 0; --FrameDepth)
 				{
-					const TraceServices::FStackFrame* Frame = Callstack->Frame(bIsInverted ? NumFrames - FrameDepth - 1 : FrameDepth);
+					const TraceServices::FStackFrame* Frame = Callstack->Frame(static_cast<uint8>(bIsInverted ? NumFrames - FrameDepth - 1 : FrameDepth));
 					check(Frame != nullptr);
 
 					if (bIsGroupingByFunction)
 					{
+						// Skip noise for inverted callstack
+						if (bIsInverted && Frame->Symbol->FilterStatus.load() == TraceServices::EResolvedSymbolFilterStatus::Filtered)
+						{
+							continue;
+						}
+
 						const FName GroupName = GetGroupName(Frame);
 
 						// Merge with parent group, if it has the same name (i.e. same function).
@@ -130,13 +141,24 @@ void FMemAllocGroupingByCallstack::GroupNodes(const TArray<FTableTreeNodePtr>& N
 					}
 				}
 
-				GroupMapByCallstack.Add(Callstack, GroupPtr);
+				if (NumFrames > 0)
+				{
+					GroupMapByCallstack.Add(Callstack, GroupPtr);
+				}
 			}
 		}
 
 		if (GroupPtr != Root)
 		{
 			GroupPtr->Node->AddChildAndSetGroupPtr(NodePtr);
+		}
+		else if (NumFrames == 0)
+		{
+			if (!EmptyCallstackGroupPtr)
+			{
+				EmptyCallstackGroupPtr = CreateEmptyCallstackGroup(InParentTable, ParentGroup);
+			}
+			EmptyCallstackGroupPtr->AddChildAndSetGroupPtr(NodePtr);
 		}
 		else
 		{
@@ -170,11 +192,11 @@ FName FMemAllocGroupingByCallstack::GetGroupName(const TraceServices::FStackFram
 	}
 	else if (Result == TraceServices::ESymbolQueryResult::Pending)
 	{
-		return FName(FString::Printf(TEXT("0x%X [...]"), Frame->Addr), 0);
+		return FName(FString::Printf(TEXT("%s!0x%X [...]"), Frame->Symbol->Module, Frame->Addr), 0);
 	}
 	else
 	{
-		return FName(FString::Printf(TEXT("0x%X"), Frame->Addr), 0);
+		return FName(FString::Printf(TEXT("%s!0x%X"), Frame->Symbol->Module, Frame->Addr), 0);
 	}
 }
 
@@ -183,7 +205,7 @@ FName FMemAllocGroupingByCallstack::GetGroupName(const TraceServices::FStackFram
 FText FMemAllocGroupingByCallstack::GetGroupTooltip(const TraceServices::FStackFrame* Frame) const
 {
 	TStringBuilder<1024> String;
-	FormatStackFrame(*Frame, String, EStackFrameFormatFlags::Module | EStackFrameFormatFlags::FileAndLine);
+	FormatStackFrame(*Frame, String, EStackFrameFormatFlags::ModuleSymbolFileAndLine);
 	return FText::FromString(FString(String));
 }
 
@@ -218,6 +240,17 @@ FMemAllocGroupingByCallstack::FCallstackGroup* FMemAllocGroupingByCallstack::Cre
 FTableTreeNode* FMemAllocGroupingByCallstack::CreateUnsetGroup(TWeakPtr<FTable> ParentTable, FTableTreeNode& Parent) const
 {
 	static FName NotAvailableName(TEXT("N/A"));
+	FTableTreeNodePtr NodePtr = MakeShared<FTableTreeNode>(NotAvailableName, ParentTable);
+	NodePtr->SetExpansion(false);
+	Parent.AddChildAndSetGroupPtr(NodePtr);
+	return NodePtr.Get();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FTableTreeNode* FMemAllocGroupingByCallstack::CreateEmptyCallstackGroup(TWeakPtr<FTable> ParentTable, FTableTreeNode& Parent) const
+{
+	static FName NotAvailableName(GetEmptyCallstackString());
 	FTableTreeNodePtr NodePtr = MakeShared<FTableTreeNode>(NotAvailableName, ParentTable);
 	NodePtr->SetExpansion(false);
 	Parent.AddChildAndSetGroupPtr(NodePtr);

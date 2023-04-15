@@ -5,6 +5,13 @@
 #include "CoreMinimal.h"
 #include "Engine/Texture.h"
 
+/***
+*
+* DDSLoader is deprecated
+* Use DDSFile instead or DDS ImageWrapper
+*
+*/
+
 class UTexture2D;
 
 enum EDDSFlags
@@ -86,6 +93,9 @@ struct FDDS10FileHeader
 };
 #pragma pack(pop)
 
+// @todo Oodle : deprecate old DDSLoader after it is removed from InterchangeDDSTranslator 
+// 
+//class UE_DEPRECATED(5.1, "Use DDSFile instead") FDDSLoadHelper;
 class FDDSLoadHelper
 {
 public:

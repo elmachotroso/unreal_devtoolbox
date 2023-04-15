@@ -2,9 +2,9 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetRegistryState.h"
 #include "Serialization/ArchiveStackTrace.h"
 #include "Serialization/PackageWriter.h"
-#include "AssetRegistry/AssetRegistryState.h"
 
 /** A CookedPackageWriter that diffs output from the current cook with the file that was saved in the previous cook. */
 class FDiffPackageWriter : public ICookedPackageWriter
@@ -20,7 +20,7 @@ public:
 		return Result;
 	}
 	virtual void BeginPackage(const FBeginPackageInfo& Info) override;
-	virtual TFuture<FMD5Hash> CommitPackage(FCommitPackageInfo&& Info) override;
+	virtual void CommitPackage(FCommitPackageInfo&& Info) override;
 	virtual void WritePackageData(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive,
 		const TArray<FFileRegion>& FileRegions) override;
 	virtual void WriteBulkData(const FBulkDataInfo& Info, const FIoBuffer& BulkData,
@@ -70,10 +70,6 @@ public:
 	{
 		Inner->EndCook();
 	}
-	virtual void Flush() override
-	{
-		Inner->Flush();
-	}
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override
 	{
 		return Inner->LoadPreviousAssetRegistry();
@@ -99,7 +95,10 @@ public:
 		Inner->UpdateSaveArguments(SaveArgs);
 	}
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;
-
+	virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
+	{
+		return Inner->GetPackageHashes();
+	}
 private:
 	void ParseCmds();
 	void ParseDumpObjList(FString InParams);
@@ -137,7 +136,7 @@ public:
 		return Inner->GetCapabilities();
 	}
 	virtual void BeginPackage(const FBeginPackageInfo& Info) override;
-	virtual TFuture<FMD5Hash> CommitPackage(FCommitPackageInfo&& Info) override
+	virtual void CommitPackage(FCommitPackageInfo&& Info) override
 	{
 		return Inner->CommitPackage(MoveTemp(Info));
 	}
@@ -196,10 +195,6 @@ public:
 	{
 		Inner->EndCook();
 	}
-	virtual void Flush() override
-	{
-		Inner->Flush();
-	}
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override
 	{
 		return Inner->LoadPreviousAssetRegistry();
@@ -222,11 +217,13 @@ public:
 	}
 	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs) override;
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;
-
+	virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
+	{
+		return Inner->GetPackageHashes();
+	}
 private:
 	enum class EDiffMode : uint8
 	{
-		LDM_Algo,
 		LDM_Consistent,
 	};
 
@@ -237,8 +234,6 @@ private:
 	FSavePackageResultStruct OtherResult;
 	FBeginPackageInfo BeginInfo;
 	TUniquePtr<ICookedPackageWriter> Inner;
-	IConsoleVariable* EnableNewSave = nullptr;
-	int32 CurrentEnableNewSaveValue = 0;
-	EDiffMode DiffMode = EDiffMode::LDM_Algo;
+	EDiffMode DiffMode = EDiffMode::LDM_Consistent;
 	bool bHasStartedSecondSave = false;
 };

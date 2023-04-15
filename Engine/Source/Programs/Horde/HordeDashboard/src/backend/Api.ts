@@ -66,7 +66,20 @@ export enum JobStepOutcome {
 	Warnings = "Warnings",
 
 	// Finished Succesfully
-	Success = "Success"
+	Success = "Success",
+
+	// Unspecified, skipped, aborted, etc
+	Unspecified = "Unspecified"
+}
+
+/// Systemic error codes for a job failing
+export enum JobStepError {
+	/// No systemic error
+	None = "None",
+	/// Step did not complete in the required amount of time
+	TimedOut = "TimedOut",
+	/// Step is in paused state so was skipped
+	Paused = "Paused"
 }
 
 // The state of a particular run
@@ -75,11 +88,17 @@ export enum JobStepBatchState {
 	// Waiting for dependencies of at least one jobstep to complete
 	Waiting = "Waiting",
 
+	// Getting ready to execute
+	Starting = "Starting",
+
 	// Ready to execute
 	Ready = "Ready",
 
 	// Currently running
 	Running = "Running",
+
+	// Getting ready to execute
+	Stopping = "Stopping",
 
 	// All steps have finished executing
 	Complete = "Complete"
@@ -116,7 +135,11 @@ export enum JobStepBatchError {
 	LostConnection = "LostConnection",
 
 	/** Lease terminated prematurely */
-	Incomplete = "Incomplete"
+	Incomplete = "Incomplete",
+
+	/** An error ocurred while executing the lease. Cannot be retried. */
+	ExecutionError = "ExecutionError"
+
 
 }
 
@@ -251,7 +274,26 @@ export type LogLineData = {
 	lines?: LogLine[];
 };
 
+export type JobStreamQuery = {
+	filter?: string;
+	template?: string[];
+	preflightStartedByUserId?: string,
+	includePreflight?: boolean,
+	maxCreateTime?: string;
+	modifiedAfter?: string;
+	index?: number;
+	count?: number;
+	consistentRead?: boolean;
+
+};
+
+export type AgentQuery = {
+	modifiedAfter?: string;
+	poolId?: string;
+}
+
 export type JobQuery = {
+	id?: string[],
 	filter?: string;
 	streamId?: string;
 	name?: string;
@@ -261,15 +303,24 @@ export type JobQuery = {
 	minChange?: number;
 	maxChange?: number;
 	preflightChange?: number;
-	includePreflight?: boolean,
-	preflightStartedByUserId?: string,
-	startedByUserId?: string,
+	preflightOnly?: boolean;
+	includePreflight?: boolean;
+	preflightStartedByUserId?: string;
+	startedByUserId?: string;
 	minCreateTime?: string;
 	maxCreateTime?: string;
 	modifiedAfter?: string;
 	index?: number;
 	count?: number;
 };
+
+export type JobTimingsQuery = {
+	streamId?: string;
+	template?: string[];
+	filter?: string;
+	count?: number;
+};
+
 
 export type IssueQuery = {
 	jobId?: string;
@@ -282,10 +333,22 @@ export type IssueQuery = {
 	maxChange?: number;
 	index?: number;
 	count?: number;
-	userId?: string;
+	ownerId?: string;
 	resolved?: boolean;
 	promoted?: boolean;
 }
+
+export type IssueQueryV2 = {
+	id?: string[];
+	streamId?: string;
+	minChange?: number;
+	maxChange?: number;
+	resolved?: boolean;
+	index?: number;
+	count?: number;
+	filter?: string;
+}
+
 
 export type UsersQuery = {
 	ids?: string[];
@@ -313,6 +376,25 @@ export enum IssueSeverity {
 
 	/** This issue represents an error */
 	Error = "Error"
+}
+
+/** Setting information required by dashboard */
+export type GetDashboardConfigResponse = {
+
+	/** The name of the external issue service */
+	externalIssueServiceName?: string;
+
+	/** The url of the external issue service */
+	externalIssueServiceUrl?: string;
+
+	/** The url of the perforce swarm installation */
+	perforceSwarmUrl?: string;
+
+	/** Help email address that users can contact with issues */
+	helpEmailAddress?: string;
+
+	/** Help slack channel that users can use for issues */
+	helpSlackChannel?: string;
 }
 
 /**Parameters to register a new agent */
@@ -362,7 +444,12 @@ export type UpdateAgentRequest = {
 	/**Boolean to request a conform */
 	requestConform?: boolean;
 
+	/** Request that a full conform be performed, removing all intermediate files */
+	requestFullConform?: boolean;
+
 	requestRestart?: boolean;
+
+	requestShutdown?: boolean;
 
 	/**Per-agent override for the desired client version */
 	forceVersion?: string;
@@ -411,6 +498,21 @@ export type UpdatePoolRequest = {
 
 	/**New name of the pool */
 	name?: string;
+
+	/** Whether to enable autoscaling for this pool */
+	enableAutoscaling?: boolean;
+
+	/// Frequency to run conforms, in hours, set 0 to disable
+	conformInterval?: number;
+		
+	/** Pool sizing strategy */
+	sizeStrategy?: PoolSizeStrategy;
+		
+	/** The minimum nunmber of agents to retain in this pool */
+	minAgents?: number;
+
+	/** The minimum number of idle agents in this pool, if autoscaling is enabled */
+	numReserveAgents?: number;
 
 	/**Arbitrary properties associated with this event */
 	properties?: { [key: string]: string };
@@ -609,6 +711,9 @@ export type GetAgentResponse = {
 	/** Whether agent is pending conform */
 	pendingConform: boolean;
 
+	/** Whether a full conform job is pending */
+	pendingFullConform: boolean;
+
 	/** Conform attempt count */
 	conformAttemptCount?: number;
 
@@ -618,9 +723,56 @@ export type GetAgentResponse = {
 	/** Next conform attempt time */
 	nextConformTime?: Date | string;
 
+	/** The reason for the last shutdown */
+	lastShutdownReason: string;
+
+	/** Whether a shutdown is pending */
+	pendingShutdown: boolean;
+
 	/** agent workspaces */
 	workspaces: GetAgentWorkspaceResponse[];
 
+}
+
+export type Condition = {
+
+	/// The condition text
+	text: string;
+
+	/// Error produced when parsing the condition
+	error?: string;
+
+}
+
+/// Available pool sizing strategies
+export enum PoolSizeStrategy
+{
+	/// Strategy based on lease utilization
+	LeaseUtilization = "LeaseUtilization",
+	
+	/// Strategy based on size of job build queue
+	JobQueue = "JobQueue",
+	
+	/// No-op strategy used as fallback/default behavior
+	NoOp = "NoOp"
+}
+
+/** Here for API completeness, though empty class on server */
+export type LeaseUtilizationSettings = {
+
+}
+
+export type JobQueueSettings = {
+
+	/// Factor translating queue size to additional agents to grow the pool with
+	/// The result is always rounded up to nearest integer. 
+	/// Example: if there are 20 jobs in queue, a factor 0.25 will result in 5 new agents being added (20 * 0.25)
+	scaleOutFactor: number;
+
+	/// Factor by which to shrink the pool size with when queue is empty
+	/// The result is always rounded up to nearest integer.
+	/// Example: when the queue size is zero, a default value of 0.9 will shrink the pool by 10% (current agent count * 0.9)
+	scaleInFactor: number;
 }
 
 /**Information about an agent */
@@ -631,6 +783,39 @@ export type GetPoolResponse = {
 
 	/**Friendly name of the agent */
 	name: string;
+
+	/// Condition for agents to be auto-added to the pool
+	condition?: Condition;
+
+	/// Whether to enable autoscaling for this pool
+	enableAutoscaling: boolean;
+
+	/// Frequency to run conforms, in hours, set 0 to disable
+	conformInterval?: number;
+		
+	/// Cooldown time between scale-out events in seconds
+	scaleOutCooldown?: number;
+
+	/// Cooldown time between scale-in events in seconds
+	scaleInCooldown?: number;
+
+	/// Pool sizing strategy to be used for this pool
+	sizeStrategy?: PoolSizeStrategy;
+
+	/// Settings for lease utilization pool sizing strategy (if used)
+	leaseUtilizationSettings?: LeaseUtilizationSettings;
+
+	/// Settings for job queue pool sizing strategy (if used) 
+	jobQueueSettings?: JobQueueSettings;
+
+	/// The minimum nunmber of agents to retain in this pool
+	minAgents?: number;
+
+	/// The minimum number of idle agents in this pool, if autoscaling is enabled
+	numReserveAgents?: number;
+
+	/// List of workspaces that this agent contains
+	workspaces: GetAgentWorkspaceResponse[];
 
 	/**Arbitrary properties associated with this event */
 	properties?: { [key: string]: string };
@@ -806,14 +991,11 @@ export type CreateJobRequest = {
 	/** Whether to automatically submit the preflighted change on completion */
 	autoSubmit?: boolean;
 
+	/** Whether to update issues based on the outcome of this job */
+	updateIssues?: boolean;
+
 	/** Nodes for the new job */
 	groups?: CreateGroupRequest[];
-
-	/** Aggregates for the new job */
-	aggregates?: CreateAggregateRequest[];
-
-	/** Labels for the new job*/
-	labels?: CreateLabelRequest[];
 
 	/** Arguments for the job */
 	arguments?: string[];
@@ -887,6 +1069,9 @@ export type GetJobResponse = {
 	/** The preflight changelist number */
 	preflightChange?: number;
 
+	/** Description of the preflight */
+	preflightDescription?: string;
+
 	/** The template type */
 	templateId?: string;
 
@@ -896,14 +1081,8 @@ export type GetJobResponse = {
 	/** Hash of the graph for this job */
 	graphHash?: string;
 
-	/** @deprecated The user that started this job */
-	startedByUser?: string;
-
 	/** The user that started this job */
 	startedByUserInfo?: GetThinUserInfoResponse;
-
-	/** @deprecated The user that aborted this job */
-	abortedByUser?: string;
 
 	/** The user that started this job */
 	abortedByUserInfo?: GetThinUserInfoResponse;
@@ -946,6 +1125,9 @@ export type GetJobResponse = {
 
 	/**The last update time for this job*/
 	updateTime: Date | string;
+
+	/** Whether to update issues based on the outcome of this job */
+	updateIssues?: boolean;
 
 	/**  Custom permissions for this object */
 	acl?: GetAclResponse;
@@ -992,17 +1174,14 @@ export type GetStepResponse = {
 	/**Current outcome of the jobstep */
 	outcome: JobStepOutcome;
 
+	/**Error describing additional context for why a step failed to complete*/
+	error: JobStepError;
+
 	/** If the step has been requested to abort	*/
 	abortRequested?: boolean;
 
-	/** @deprecated Name of the user that requested the abort of this step */
-	abortByUser?: string;
-
 	/* The user that requested the abort of this step */
 	abortedByUserInfo?: GetThinUserInfoResponse;
-
-	/** @deprecated Name of the user that requested this step be run again */
-	retryByUser?: string;
 
 	/* The user that retried this step */
 	retriedByUserInfo?: GetThinUserInfoResponse;
@@ -1093,6 +1272,9 @@ export type GetBatchResponse = {
 
 	/**The agent assigned to execute this group */
 	agentId?: string;
+
+	/** The USD rate of an agent hour */
+	agentRate?: number;
 
 	/**The agent session holding this lease */
 	sessionId?: string;
@@ -1696,8 +1878,44 @@ export type GetWorkspaceTypeResponse = {
 }
 
 
+/** State information for a step in the stream */
+export type GetTemplateStepStateResponse = {
+
+	/**Name of the step */
+	name: string;
+
+	/**User who paused the step */
+	pausedByUserInfo?: GetThinUserInfoResponse;
+
+	/**The UTC time when the step was paused*/
+	pauseTimeUtc?: Date | string;
+}
+
+/**  Updates an existing stream template ref */
+export type UpdateTemplateRefRequest = {
+
+	/** Step states to update */
+	stepStates?: UpdateStepStateRequest[];
+
+}
+
+/** Step state update request */
+export type UpdateStepStateRequest = {
+
+	/** Name of the step */
+	name: string;
+
+	/** User who paused the step */
+	pausedByUserId?: string;
+
+}
+
 /**Information about a template in this stream */
 export type GetTemplateRefResponse = {
+
+	/** The name of the template */
+	name: string;
+
 	/**Unique id of this template ref */
 	id: string;
 
@@ -1707,8 +1925,8 @@ export type GetTemplateRefResponse = {
 	/// The schedule for this ref
 	schedule?: GetScheduleResponse;
 
-	name: string;
-
+	/** Step state for template in stream */
+	stepStates?: GetTemplateStepStateResponse[];
 }
 
 /** Specifies defaults for running a preflight */
@@ -1724,6 +1942,18 @@ export type DefaultPreflightRequest = {
 	changeTemplateId?: string;
 }
 
+
+/**  Configuration for an issue workflow */
+export type WorkflowConfig = {
+
+	/** Identifier for this workflow */
+	id: string;
+
+	/** Name of the tab to post summary data to */
+	summaryTab?: string;
+
+}
+
 /**Response describing a stream */
 export type GetStreamResponse = {
 
@@ -1735,6 +1965,12 @@ export type GetStreamResponse = {
 
 	/**Name of the stream */
 	name: string;
+
+	/**The config file path on the server*/
+	configPath?: string;
+
+	/**Revision of the config file */
+	configRevision?: string;
 
 	/**List of tabs to display for this stream*/
 	tabs: GetStreamTabResponse[];
@@ -1756,6 +1992,9 @@ export type GetStreamResponse = {
 
 	/**Properties for this stream */
 	properties: { [key: string]: string };
+
+	/** Workflows for this stream */
+	workflows: WorkflowConfig[];
 
 	/** Custom permissions for this object */
 	acl?: GetAclResponse;
@@ -1789,6 +2028,9 @@ export type CreateTemplateRequest = {
 
 	/**Whether to allow preflights of this template */
 	allowPreflights: boolean;
+
+	/**Whether always update issues regardless of how job was created */
+	updateIssues: boolean;
 
 	/**Array of nodes for this job */
 	groups: CreateGroupRequest[];
@@ -1838,6 +2080,9 @@ export enum ParameterType {
 /**Base class for template parameters */
 export type ParameterData = {
 	type: ParameterType;
+
+	// client side key, with group encoding
+	parameterKey?: string;
 }
 
 /**Used to group a number of other parameters */
@@ -1953,6 +2198,9 @@ export type GetTemplateResponse = {
 	/**Whether to allow preflights of this template */
 	allowPreflights: boolean;
 
+	/**Whether to always update issues on jobs that use this template */
+	updateIssues: boolean;
+
 	/**List of node groups for this job */
 	groups: CreateGroupRequest[];
 
@@ -1974,9 +2222,6 @@ export type GetChangeSummaryResponse = {
 
 	/**  The source changelist number */
 	number: number;
-
-	/**  @deprecated Name of the user that authored this change */
-	author: string;
 
 	/**  The description text */
 	description: string;
@@ -2273,14 +2518,21 @@ export type GetGraphResponse = {
 
 }
 
-/**The timing info for  */
+/**The timing info for a job*/
 export type GetJobTimingResponse = {
+	
+	/** The job response */
+	jobResponse: JobData;
 
 	/**Timing info for each step */
 	steps: { [key: string]: GetStepTimingInfoResponse };
 
 	/**Timing information for each label */
 	labels: GetLabelTimingInfoResponse[];
+}
+/** batch timing info */
+export type FindJobTimingsResponse = {
+	timings: { [jobId: string]: GetJobTimingResponse };
 }
 
 /**Information about the timing info for a label */
@@ -2499,6 +2751,9 @@ export type GetIssueSpanResponse = {
 	/**The previous build  */
 	lastSuccess?: GetIssueStepResponse;
 
+	/// Workflow that this span belongs to
+	workflowId?: string;
+
 	/**The failing builds for a particular event */
 	steps: GetIssueStepResponse[];
 
@@ -2615,17 +2870,8 @@ export type GetIssueResponse = {
 	/**Whether the issue is promoted */
 	promoted: boolean;
 
-	/** @deprecated Owner of the issue */
-	owner?: string;
-
-	/** @deprecated Owner id of the issue */
-	ownerId?: string;
-
 	/** Owner of the issue */
 	ownerInfo: GetThinUserInfoResponse;
-
-	/** @deprecated User that nominated the current owner */
-	nominatedBy?: string;
 
 	/** Use that nominated the current owner */
 	nominatedByInfo: GetThinUserInfoResponse;
@@ -2638,12 +2884,6 @@ export type GetIssueResponse = {
 
 	/**Time at which the issue was resolved */
 	resolvedAt?: Date | string;
-
-	/** @deprecated Name of the user that resolved the issue */
-	resolvedBy?: string;
-
-	/** @deprecated User id of the person that resolved the issue */
-	resolvedById?: string;
 
 	/** Use info for the person that resolved the issue */
 	resolvedByInfo: GetThinUserInfoResponse;
@@ -2659,15 +2899,20 @@ export type GetIssueResponse = {
 
 	affectedStreams: GetIssueAffectedStreamResponse[];
 
-	/** @deprecated User id's of the Most likely suspects for causing this issue */
-	primarySuspectIds: string[];
-
 	/** Use info for the person that resolved the issue */
 	primarySuspectsInfo: GetThinUserInfoResponse[];
 
-
 	/** Whether to show alerts for this issue */
 	showDesktopAlerts: boolean;
+
+	/** External issue tracking */
+	externalIssueKey?: string;
+
+	/** User info for who quarantined issue */
+	quarantinedByUserInfo?: GetThinUserInfoResponse;
+
+	/** The UTC time when the issue was quarantined */
+	quarantineTimeUtc?: Date | string;
 
 }
 
@@ -2707,6 +2952,12 @@ export type UpdateIssueRequest = {
 	/** List of spans to remove from this issue */
 	removeSpans?: string[];
 
+	/** An external issue key*/
+	externalIssueKey?: string;
+
+	/** Id of user quarantining issue */
+	quarantinedById?: string;
+
 }
 
 export type GetUtilizationTelemetryStream = {
@@ -2725,6 +2976,8 @@ export type GetUtilizationTelemetryPool = {
 	adminTime: number;
 
 	otherTime: number;
+
+	hibernatingTime?: number | undefined;
 
 	streams: GetUtilizationTelemetryStream[];
 }
@@ -2757,6 +3010,8 @@ export enum DashboardPreference {
 	ColorError = "ColorError",
 	ColorRunning = "ColorRunning",
 	LocalCache = "LocalCache",
+	LeftAlignLog = "LeftAlignLog",
+	CompactViews = "CompactViews"
 }
 
 export type DashboardSettings = {
@@ -2799,9 +3054,6 @@ export type GetUserResponse = {
 	/** Claims for the user */
 	claims?: UserClaim[];
 
-	/** Whether to enable slack notifications for this user */
-	enableIssueNotifications?: boolean;
-
 	/** Whether to enable experimental features for this user */
 	enableExperimentalFeatures?: boolean;
 
@@ -2841,9 +3093,6 @@ export type UpdateUserRequest = {
 
 	/** Job ids to remove from the pinned list */
 	removePinnedJobIds?: string[];
-
-	/** Whether to enable slack notifications for this user */
-	enableIssueNotifications?: boolean;
 
 	/** Whether to enable experimental features for this user */
 	enableExperimentalFeatures?: boolean;
@@ -3407,7 +3656,7 @@ export type NamespaceConfig = {
 	buckets: BucketConfig[];
 
 	/// Access control for this namespace
-	//UpdateAclRequest? Acl { get; set; }
+	//UpdateAclRequest? Acl;
 }
 
 /// Configuration for a bucket
@@ -3438,7 +3687,7 @@ export type GlobalConfig = {
 	storage?: StorageConfig;
 
 	/// Access control list
-	// public UpdateAclRequest ? Acl { get; set; }
+	// public UpdateAclRequest ? Acl;
 }
 
 
@@ -3489,7 +3738,7 @@ export type ProjectConfig = {
 	streams: StreamConfigRef[];
 
 	/// Acl entries
-	// public UpdateAclRequest? Acl { get; set; }
+	// public UpdateAclRequest? Acl;
 }
 
 
@@ -3639,17 +3888,17 @@ export type StreamConfig = {
 	/// <summary>
 	/// Custom permissions for this object
 	/// </summary>
-	// public UpdateAclRequest ? Acl { get; set; }
+	// public UpdateAclRequest ? Acl;
 
 	/// <summary>
 	/// Pause stream builds until specified date
 	/// </summary>
-	/// public DateTime ? PausedUntil { get; set; }
+	/// public DateTime ? PausedUntil;
 
 	/// <summary>
 	/// Reason for pausing builds of the stream
 	/// </summary>
-	// public string ? PauseComment { get; set; }
+	// public string ? PauseComment;
 }
 
 /// Parameters to update server settings
@@ -3687,3 +3936,236 @@ export type GetServerInfoResponse = {
 	singleInstance: boolean;
 }
 
+/// Information about a span within an issue
+export type FindIssueSpanResponse = {
+
+	/// Unique id of this span
+	id: string;
+
+	/// The template containing this step
+	templateId: string;
+
+	/// Name of the step
+	name: string;
+
+	/// Workflow for this span
+	workflowId?: string;
+
+	/// The previous build 
+	lastSuccess?: GetIssueStepResponse;
+
+	/// The following successful build
+	nextSuccess?: GetIssueStepResponse;
+
+}
+
+/// Stores information about a build health issue
+export type FindIssueResponse = {
+	/// The unique object id
+	id: number;
+
+	/// Time at which the issue was created
+	createdAt: Date | string;
+
+	/// Time at which the issue was retrieved
+	RetrievedAt: Date | string;
+
+	/// The associated project for the issue
+	project?: string;
+
+	/// The summary text for this issue
+	summary: string;
+
+	/// Detailed description text
+	description?: string;
+
+	/// Severity of this issue
+	severity: IssueSeverity;
+
+	/// Current severity in the queried stream
+	streamSeverity?: IssueSeverity;
+
+	/// Whether the issue is promoted
+	promoted: boolean;
+
+	/// Owner of the issue
+	owner?: GetThinUserInfoResponse;
+
+	/// Owner of the issue
+	mominatedBy?: GetThinUserInfoResponse;
+
+	/// Time that the issue was acknowledged
+	acknowledgedAt?: Date | string;
+
+	/// Changelist that fixed this issue
+	fixChange?: number;
+
+	/// Time at which the issue was resolved
+	resolvedAt?: Date | string;
+
+	/// User that resolved the issue
+	resolvedBy?: GetThinUserInfoResponse;
+
+	/// Time at which the issue was verified
+	verifiedAt?: Date | string;
+
+	/// Time that the issue was last seen
+	lastSeenAt: Date | string;
+
+	/// Spans for this issue
+	spans: FindIssueSpanResponse[];
+
+	/** External issue tracking */
+	externalIssueKey?: string;
+
+	/** User who quarantined the issue */
+	quarantinedBy?: GetThinUserInfoResponse;
+
+	/** The UTC time when the issue was quarantined */
+	quarantineTimeUtc?: Date | string;
+
+	/** Workflows for which this issue is open */
+	openWorkflows: string[];
+
+}
+
+export type GetAgentSoftwareChannelResponse = {
+	name?: string;
+	modifiedBy?: string;
+	modifiedTime: string;
+	version?: string;
+}
+
+/// External Issue Response
+export type GetExternalIssueResponse = {
+
+	/** The external issue key */
+	key: string;
+
+	/** The issue link on external tracking site */
+	link?: string;
+
+	/** The issue status name, "To Do", "In Progress", etc*/
+	statusName?: string;
+
+	/** The issue resolution name, "Fixed", "Closed", etc*/
+	resolutionName?: string;
+
+	/** The issue priority name, "1 - Critical", "2 - Major", etc*/
+	priorityName?: string;
+
+	/** The current assignee's user name*/
+	assigneeName?: string;
+
+	/** The current assignee's display name*/
+	assigneeDisplayName?: string;
+
+	/** The current assignee's email address*/
+	assigneeEmailAddress?: string;
+}
+
+/** Request an issue to be created on external issue tracking system */
+export type CreateExternalIssueRequest = {
+
+	/** Horde issue which is linked to external issue */
+	issueId: number;
+
+	/** Summary text for external issue */
+	summary: string;
+
+	/** A stream this this issue */
+	streamId: string;
+
+	/** External issue project id */
+	projectId: string;
+
+	/** External issue component id */
+	componentId: string;
+
+	/** External issue type id */
+	issueTypeId: string;
+
+	/** Optional description text for external issue */
+	description?: string;
+
+	/** Optional link to Horde issue */
+	hordeIssueLink?: string;
+}
+
+/** Response for externally created issue */
+export type CreateExternalIssueResponse = {
+
+	/** External issue tracking key	 */
+	key: string;
+
+	/**  Link to issue on external tracking site */
+	link?: string;
+}
+
+/// External issue project information
+export type GetExternalIssueProjectResponse = {
+
+	/// The project key	
+	projectKey: string;
+
+	/// The name of the project
+	name: string;
+
+	/// The id of the project
+	id: string;
+
+	/// component id => name
+	components: Record<string, string>;
+
+	/// IssueType id => name
+	issueTypes: Record<string, string>;
+}
+
+/// Create a notice which will display on the dashboard
+export type CreateNoticeRequest = {
+
+	/**  Message to display	*/
+	message: string;
+}
+
+/// Parameters required to update a notice
+export type UpdateNoticeRequest = {
+
+	/** The id of the notice to update */
+	id: string;
+
+	/** Start time to display this message */
+	startTime?: Date | string;
+
+	/** Finish time to display this message */
+	finishTime?: Date | String;
+
+	/** Message to display */
+	message?: string;
+}
+
+
+export type GetNoticeResponse = {
+
+	/** The id of the notice for user created notices */
+	id?: string;
+
+	/** Start time to display this message */
+	startTime?: Date | String;
+
+	/** Finish time to display this message */
+	finishTime?: Date | String;
+
+	/** Whether this notice is for scheduled downtime */
+	scheduledDowntime: boolean;
+
+	/** Whether the notice is currently active */
+	active: boolean;
+
+	/** Message to display */
+	message?: string;
+
+	/** User id who created the notice, otherwise null if a system message */
+	createdByUser?: GetThinUserInfoResponse;
+
+}

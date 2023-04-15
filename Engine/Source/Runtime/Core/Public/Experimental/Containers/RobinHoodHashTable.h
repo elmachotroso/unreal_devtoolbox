@@ -38,11 +38,16 @@ public:
 		return Hash != Other.Hash;
 	}
 
+	using IntType = uint32;
+
+	inline IntType AsUInt() const
+	{
+		return Hash;
+	}
+
 private:
 	template<typename, typename, typename, typename>
 	friend class RobinHoodHashTable_Private::TRobinHoodHashTable;
-
-	using IntType = uint32;
 
 	inline explicit FHashType(IntType InHash) : Hash(InHash)
 	{
@@ -57,11 +62,6 @@ private:
 	inline bool IsFree() const
 	{
 		return Hash == InvalidHash;
-	}
-
-	inline IntType AsUInt() const
-	{
-		return Hash;
 	}
 
 	static constexpr const IntType InvalidHash = (IntType(1)) << (sizeof(IntType) * 8 - 1);
@@ -230,6 +230,7 @@ namespace RobinHoodHashTable_Private
 	class TKeyValue
 	{
 		using FindValueType = ValueType*;
+		using FindValueTypeConst = const ValueType *;
 		using ElementType = TPair<const KeyType, ValueType>;
 
 		template<typename, typename, typename, typename>
@@ -245,6 +246,11 @@ namespace RobinHoodHashTable_Private
 		ElementType Pair;
 
 		inline FindValueType FindImpl()
+		{
+			return &Pair.Value;
+		}
+
+		inline FindValueTypeConst FindImpl() const
 		{
 			return &Pair.Value;
 		}
@@ -275,6 +281,7 @@ namespace RobinHoodHashTable_Private
 	class TKeyValue<KeyType, FUnitType>
 	{
 		using FindValueType = const KeyType*;
+		using FindValueTypeConst = FindValueType;
 		using ElementType = const KeyType;
 
 		template<typename, typename, typename, typename>
@@ -311,6 +318,7 @@ namespace RobinHoodHashTable_Private
 		using InlineOneAllocatorType = TInlineAllocator<1, HashMapAllocator>;
 		using KeyValueType = RobinHoodHashTable_Private::TKeyValue<KeyType, ValueType>;
 		using FindValueType = typename KeyValueType::FindValueType;
+		using FindValueTypeConst = typename KeyValueType::FindValueTypeConst;
 		using ElementType = typename KeyValueType::ElementType;
 		using IndexType = uint32;
 		using SizeType = SIZE_T;
@@ -929,7 +937,7 @@ namespace RobinHoodHashTable_Private
 			return nullptr;
 		}
 
-		const FindValueType Find(const KeyType& Key) const
+		FindValueTypeConst Find(const KeyType& Key) const
 		{
 			FHashElementId Id = FindId(Key);
 			if (Id.IsValid())
@@ -1128,6 +1136,7 @@ class TRobinHoodHashMap : public RobinHoodHashTable_Private::TRobinHoodHashTable
 	using Base = typename RobinHoodHashTable_Private::TRobinHoodHashTable<KeyType, ValueType, Hasher, HashMapAllocator>;
 	using IndexType = typename Base::IndexType;
 	using FindValueType = typename Base::FindValueType;
+	using FindValueTypeConst = typename Base::FindValueTypeConst;
 
 public:
 	TRobinHoodHashMap() : Base()
@@ -1412,6 +1421,7 @@ class TRobinHoodHashSet : public RobinHoodHashTable_Private::TRobinHoodHashTable
 	using Base = typename RobinHoodHashTable_Private::TRobinHoodHashTable<KeyType, Unit, Hasher, HashMapAllocator>;
 	using IndexType = typename Base::IndexType;
 	using FindValueType = typename Base::FindValueType;
+	using FindValueTypeConst = typename Base::FindValueTypeConst;
 
 public:
 	TRobinHoodHashSet() : Base()

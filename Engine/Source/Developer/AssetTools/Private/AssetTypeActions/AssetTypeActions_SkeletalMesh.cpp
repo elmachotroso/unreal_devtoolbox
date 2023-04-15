@@ -14,15 +14,15 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Factories/SkeletonFactory.h"
 #include "EditorFramework/AssetImportData.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
 #include "PhysicsAssetUtils.h"
 #include "AssetTools.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SSkeletonWidget.h"
-#include "Editor/PhysicsAssetEditor/Public/PhysicsAssetEditorModule.h"
+#include "PhysicsAssetEditorModule.h"
 #include "PersonaModule.h"
 #include "ContentBrowserModule.h"
 #include "AnimationEditorUtils.h"
@@ -154,14 +154,14 @@ public:
 			.Padding(8.0f, 4.0f, 8.0f, 4.0f)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0,0)
 				[
 					SNew(SButton) 
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgMergeSkeleton::ChangeAllOptions, true)
 					.Text(LOCTEXT("SkeletonMergeSelectAll", "Select All"))
 				]
@@ -169,7 +169,7 @@ public:
 				[
 					SNew(SButton) 
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgMergeSkeleton::ChangeAllOptions, false)
 					.Text(LOCTEXT("SkeletonMergeDeselectAll", "Deselect All"))
 				]
@@ -186,14 +186,14 @@ public:
 			.Padding(8.0f, 4.0f, 8.0f, 4.0f)
 			[
 				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 				+SUniformGridPanel::Slot(0,0)
 				[
 					SNew(SButton) 
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked( this, &SDlgMergeSkeleton::OnButtonClick, FDlgMergeSkeleton::Confirm )
 					.Text(LOCTEXT("SkeletonMergeOk", "OK"))
 				]
@@ -201,7 +201,7 @@ public:
 				[
 					SNew(SButton) 
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked( this, &SDlgMergeSkeleton::OnButtonClick, FDlgMergeSkeleton::Cancel )
 					.Text(LOCTEXT("SkeletonMergeCancel", "Cancel"))
 				]
@@ -347,7 +347,7 @@ FDlgMergeSkeleton::FDlgMergeSkeleton( USkeletalMesh* InMesh, USkeleton* InSkelet
 
 		TSharedPtr<SBorder> DialogWrapper = 
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(4.0f)
 			[
 				SAssignNew(DialogWidget, SDlgMergeSkeleton)
@@ -474,15 +474,6 @@ void FAssetTypeActions_SkeletalMesh::GetActions(const TArray<UObject*>& InObject
 		false,
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.LOD")
 		);
-	
-#if WITH_APEX_CLOTHING
-	Section.AddMenuEntry(
-		"ImportClothing_Entry",
-		LOCTEXT("ImportClothing_Entry", "Import Clothing Asset..."),
-		LOCTEXT("ImportClothing_ToolTip", "Import a clothing asset from a supported file on disk into this skeletal mesh."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_SkeletalMesh::ExecuteImportClothing, Meshes)));
-#endif  // #if WITH_APEX_CLOTHING
 
 	// skeleton menu
 	Section.AddSubMenu(
@@ -497,6 +488,8 @@ void FAssetTypeActions_SkeletalMesh::GetActions(const TArray<UObject*>& InObject
 
 void FAssetTypeActions_SkeletalMesh::FillCreateMenu(UToolMenu* Menu, TArray<TWeakObjectPtr<USkeletalMesh>> Meshes) const
 {
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	if (AssetTools.IsAssetClassSupported(UPhysicsAsset::StaticClass()))
 	{
 		FToolMenuSection& Section = Menu->AddSection("CreatePhysicsAsset", LOCTEXT("CreatePhysicsAssetMenuHeading", "Physics Asset"));
 		Section.AddSubMenu(
@@ -593,37 +586,24 @@ EVisibility FAssetTypeActions_SkeletalMesh::GetThumbnailSkinningOverlayVisibilit
 		return EVisibility::Collapsed;
 	}
 
-	//Prevent loading all assets when we display the thumbnail
-	//The tags cannot change until the asset is loaded in memory
-	if (!AssetData.IsAssetLoaded())
-	{
-		FAssetDataTagMapSharedView::FFindTagResult Result = AssetData.TagsAndValues.FindTag(GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, LastImportContentType));
-		if (Result.IsSet() && Result.GetValue() == TEXT("FBXICT_Geometry"))
-		{
-			//Show the icon
-			return EVisibility::HitTestInvisible;
-		}
-		return EVisibility::Collapsed;
-	}
+	//Prevent loading assets when we display the thumbnail use the asset registry tags
 
-	//The object is loaded we can use the memory value of the object to set the overlay
-	UObject* Obj = AssetData.GetAsset();
-	if(USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Obj))
+	//Legacy fbx code
+	FAssetDataTagMapSharedView::FFindTagResult Result = AssetData.TagsAndValues.FindTag(GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, LastImportContentType));
+	if (Result.IsSet() && Result.GetValue() == TEXT("FBXICT_Geometry"))
 	{
-		// Don't block on asset compilation just for overlay, the thumbnail is refreshed anyway once the compilation is complete.
-		if (!SkeletalMesh->IsCompiling())
-		{
-			UAssetImportData* GenericImportData = SkeletalMesh->GetAssetImportData();
-			if (GenericImportData != nullptr)
-			{
-				UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(GenericImportData);
-				if (ImportData != nullptr && ImportData->LastImportContentType == EFBXImportContentType::FBXICT_Geometry)
-				{
-					return EVisibility::HitTestInvisible;
-				}
-			}
-		}
+		//Show the icon
+		return EVisibility::HitTestInvisible;
 	}
+#if WITH_EDITORONLY_DATA
+	//Generic Interchange code
+	Result = AssetData.TagsAndValues.FindTag(NSSkeletalMeshSourceFileLabels::GetSkeletalMeshLastImportContentTypeMetadataKey());
+	if (Result.IsSet() && Result.GetValue().Equals(NSSkeletalMeshSourceFileLabels::GeometryMetaDataValue()))
+	{
+		//Show the icon
+		return EVisibility::HitTestInvisible;
+	}
+#endif
 	return EVisibility::Collapsed;
 }
 
@@ -638,12 +618,12 @@ void FAssetTypeActions_SkeletalMesh::OnAssetRemoved(const FAssetData& AssetData)
 
 TSharedPtr<SWidget> FAssetTypeActions_SkeletalMesh::GetThumbnailOverlay(const FAssetData& AssetData) const
 {
-	const FSlateBrush* Icon = FEditorStyle::GetBrush("ClassThumbnailOverlays.SkeletalMesh_NeedSkinning");
+	const FSlateBrush* Icon = FAppStyle::GetBrush("ClassThumbnailOverlays.SkeletalMesh_NeedSkinning");
 
 	ThumbnailSkinningOverlayAssetNames.AddUnique(AssetData.GetFullName());
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetNoBrush())
+		.BorderImage(FAppStyle::GetNoBrush())
 		.Visibility(this, &FAssetTypeActions_SkeletalMesh::GetThumbnailSkinningOverlayVisibility, AssetData)
 		.Padding(FMargin(0.0f, 0.0f, 3.0f, 3.0f))
 		.HAlign(HAlign_Right)
@@ -865,21 +845,6 @@ void FAssetTypeActions_SkeletalMesh::ExecuteImportMeshLOD(UObject* Mesh, int32 L
 	}
 }
 
-#if WITH_APEX_CLOTHING
-void FAssetTypeActions_SkeletalMesh::ExecuteImportClothing(TArray<TWeakObjectPtr<USkeletalMesh>> Objects)
-{
-	if(Objects.Num() > 0)
-	{
-		USkeletalMesh* TargetMesh = Objects[0].Get();
-
-		if(TargetMesh)
-		{
-			ApexClothingUtils::PromptAndImportClothing(TargetMesh);
-		}
-	}
-}
-#endif  // #if WITH_APEX_CLOTHING
-
 void FAssetTypeActions_SkeletalMesh::FillSkeletonMenu(FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<USkeletalMesh>> Meshes) const
 {
 	MenuBuilder.BeginSection("SkeletonMenu", LOCTEXT("SkeletonMenuHeading", "Skeleton"));
@@ -930,7 +895,7 @@ void FAssetTypeActions_SkeletalMesh::AssignSkeletonToMesh(USkeletalMesh* SkelMes
 	WidgetWindow->SetContent
 		(
 			SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(SkeletonSelectorWindow, SSkeletonSelectorWindow)
 					.Object(SkelMesh)

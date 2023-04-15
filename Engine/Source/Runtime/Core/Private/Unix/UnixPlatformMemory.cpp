@@ -23,11 +23,7 @@
 #include "HAL/MallocStomp.h"
 #include "HAL/PlatformMallocCrash.h"
 
-#if PLATFORM_FREEBSD
-	#include <kvm.h>
-#else
-	#include <sys/sysinfo.h>
-#endif
+#include <sys/sysinfo.h>
 #include <sys/file.h>
 #include <sys/mman.h>
 
@@ -50,6 +46,13 @@
 
 // Set rather to use BinnedMalloc2 for binned malloc, can be overridden below
 #define USE_MALLOC_BINNED2 (1)
+
+// Set to 1 if we should try to use /proc/self/smaps_rollup in FUnixPlatformMemory::GetExtendedStats().
+// There is a potential tradeoff in that smaps_rollup appears to be quite a bit faster in
+//   straight testing, but it also looks like it blocks mmap() calls on other threads until it finishes.
+#ifndef USE_PROC_SELF_SMAPS_ROLLUP
+#define USE_PROC_SELF_SMAPS_ROLLUP 0
+#endif
 
 // Used in UnixPlatformStackwalk to skip the crash handling callstack frames.
 bool CORE_API GFullCrashCallstack = false;
@@ -99,6 +102,14 @@ bool GMemoryRangeDecommitIsNoOp = (UE_SERVER == 0);
 
 void FUnixPlatformMemory::Init()
 {
+	// Only allow this method to be called once
+	{
+		static bool bInitDone = false;
+		if (bInitDone)
+			return;
+		bInitDone = true;
+	}
+
 	FGenericPlatformMemory::Init();
 
 	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
@@ -110,6 +121,8 @@ void FUnixPlatformMemory::Init()
 	UE_LOG(LogInit, Log, TEXT(" - VirtualMemoryAllocator pools will grow at scale %g"), GVMAPoolScale);
 	UE_LOG(LogInit, Log, TEXT(" - MemoryRangeDecommit() will %s"), 
 		GMemoryRangeDecommitIsNoOp ? TEXT("be a no-op (re-run with -vmapoolevict to change)") : TEXT("will evict the memory from RAM (re-run with -novmapoolevict to change)"));
+	UE_LOG(LogInit, Log, TEXT(" - PageSize %zu"), MemoryConstants.PageSize);
+	UE_LOG(LogInit, Log, TEXT(" - BinnedPageSize %zu"), MemoryConstants.BinnedPageSize);
 }
 
 bool FUnixPlatformMemory::HasForkPageProtectorEnabled()
@@ -139,156 +152,156 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned2;
 	}
-	else 
+	else
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned;
 	}
-	
+
+	// Mimalloc is now the default allocator for editor and programs because it has shown
+	// both great performance and as much as half the memory usage of TBB after
+	// heavy editor workloads. See CL 15887498 description for benchmarks.
+#if (WITH_EDITORONLY_DATA || IS_PROGRAM) && PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
+	AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+#endif
+
+	// Allow overriding on the command line.
+	// We get here before main due to global ctors, so need to do some hackery to get command line args
+	if (FILE* CmdLineFile = fopen("/proc/self/cmdline", "r"))
+	{
+		char * Arg = nullptr;
+		size_t Size = 0;
+		while(getdelim(&Arg, &Size, 0, CmdLineFile) != -1)
+		{
+#if PLATFORM_SUPPORTS_JEMALLOC
+			if (FCStringAnsi::Stricmp(Arg, "-jemalloc") == 0)
+			{
+				AllocatorToUse = EMemoryAllocatorToUse::Jemalloc;
+				break;
+			}
+#endif // PLATFORM_SUPPORTS_JEMALLOC
+			if (FCStringAnsi::Stricmp(Arg, "-ansimalloc") == 0)
+			{
+				// see FPlatformMisc::GetProcessDiagnostics()
+				AllocatorToUse = EMemoryAllocatorToUse::Ansi;
+				break;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-binnedmalloc") == 0)
+			{
+				AllocatorToUse = EMemoryAllocatorToUse::Binned;
+				break;
+			}
+
+#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
+			if (FCStringAnsi::Stricmp(Arg, "-mimalloc") == 0)
+			{
+				AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+				break;
+			}
+#endif
+
+			if (FCStringAnsi::Stricmp(Arg, "-binnedmalloc2") == 0)
+			{
+				AllocatorToUse = EMemoryAllocatorToUse::Binned2;
+				break;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-fullcrashcallstack") == 0)
+			{
+				GFullCrashCallstack = true;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-useksm") == 0)
+			{
+				GUseKSM = true;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-ksmmergeall") == 0)
+			{
+				GKSMMergeAllPages = true;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-noensuretiming") == 0)
+			{
+				GTimeEnsures = false;
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-noexclusivelockonwrite") == 0)
+			{
+				GAllowExclusiveLockOnWrite = false;
+			}
+
+			const char SignalToDefaultCmd[] = "-sigdfl=";
+			if (const char* Cmd = FCStringAnsi::Stristr(Arg, SignalToDefaultCmd))
+			{
+				int32 SignalToDefault = FCStringAnsi::Atoi(Cmd + sizeof(SignalToDefaultCmd) - 1);
+
+				// Valid signals are only from 1 -> SIGRTMAX
+				if (SignalToDefault > SIGRTMAX)
+				{
+					SignalToDefault = 0;
+				}
+
+				GSignalToDefault = FMath::Max(SignalToDefault, 0);
+			}
+
+			const char CrashHandlerStackSize[] = "-crashhandlerstacksize=";
+			if (const char* Cmd = FCStringAnsi::Stristr(Arg, CrashHandlerStackSize))
+			{
+				GCrashHandlerStackSize = FCStringAnsi::Atoi64(Cmd + sizeof(CrashHandlerStackSize) - 1);
+			}
+
+			const char FileMapCacheCmd[] = "-filemapcachesize=";
+			if (const char* Cmd = FCStringAnsi::Stristr(Arg, FileMapCacheCmd))
+			{
+				int32 Max = FCStringAnsi::Atoi(Cmd + sizeof(FileMapCacheCmd) - 1);
+				GMaxNumberFileMappingCache = FMath::Clamp(Max, 0, MaximumAllowedMaxNumFileMappingCache);
+			}
+
+#if UE_USE_MALLOC_REPLAY_PROXY
+			if (FCStringAnsi::Stricmp(Arg, "-mallocsavereplay") == 0)
+			{
+				bAddReplayProxy = true;
+			}
+#endif // UE_USE_MALLOC_REPLAY_PROXY
+#if WITH_MALLOC_STOMP
+			if (FCStringAnsi::Stricmp(Arg, "-stompmalloc") == 0)
+			{
+				// see FPlatformMisc::GetProcessDiagnostics()
+				AllocatorToUse = EMemoryAllocatorToUse::Stomp;
+				break;
+			}
+#endif // WITH_MALLOC_STOMP
+
+			const char VMAPoolScaleSwitch[] = "-vmapoolscale=";
+			if (const char* Cmd = FCStringAnsi::Stristr(Arg, VMAPoolScaleSwitch))
+			{
+				float PoolScale = FCStringAnsi::Atof(Cmd + sizeof(VMAPoolScaleSwitch) - 1);
+				GVMAPoolScale = FMath::Max(PoolScale, 1.0f);
+			}
+
+			if (FCStringAnsi::Stricmp(Arg, "-vmapoolevict") == 0)
+			{
+				GMemoryRangeDecommitIsNoOp = false;
+			}
+			if (FCStringAnsi::Stricmp(Arg, "-novmapoolevict") == 0)
+			{
+				GMemoryRangeDecommitIsNoOp = true;
+			}
+			if (FCStringAnsi::Stricmp(Arg, "-protectforkedpages") == 0)
+			{
+				GEnableProtectForkedPages = true;
+			}
+		}
+		free(Arg);
+		fclose(CmdLineFile);
+	}
+
+	// This was moved to the fact that we aboved the command line statements above to *include* other things besides allocator only switches
+	// Moving here allows the other globals to be set, while we override the ANSI allocator still no matter the command line options
 	if (FORCE_ANSI_ALLOCATOR)
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
-	}
-	else
-	{
-		// Mimalloc is now the default allocator for editor and programs because it has shown
-		// both great performance and as much as half the memory usage of TBB after
-		// heavy editor workloads. See CL 15887498 description for benchmarks.
-#if (WITH_EDITORONLY_DATA || IS_PROGRAM) && PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
-		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
-#endif
-
-		// Allow overriding on the command line.
-		// We get here before main due to global ctors, so need to do some hackery to get command line args
-		if (FILE* CmdLineFile = fopen("/proc/self/cmdline", "r"))
-		{
-			char * Arg = nullptr;
-			size_t Size = 0;
-			while(getdelim(&Arg, &Size, 0, CmdLineFile) != -1)
-			{
-#if PLATFORM_SUPPORTS_JEMALLOC
-				if (FCStringAnsi::Stricmp(Arg, "-jemalloc") == 0)
-				{
-					AllocatorToUse = EMemoryAllocatorToUse::Jemalloc;
-					break;
-				}
-#endif // PLATFORM_SUPPORTS_JEMALLOC
-				if (FCStringAnsi::Stricmp(Arg, "-ansimalloc") == 0)
-				{
-					// see FPlatformMisc::GetProcessDiagnostics()
-					AllocatorToUse = EMemoryAllocatorToUse::Ansi;
-					break;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-binnedmalloc") == 0)
-				{
-					AllocatorToUse = EMemoryAllocatorToUse::Binned;
-					break;
-				}
-
-#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
-				if (FCStringAnsi::Stricmp(Arg, "-mimalloc") == 0)
-				{
-					AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
-					break;
-				}
-#endif
-
-				if (FCStringAnsi::Stricmp(Arg, "-binnedmalloc2") == 0)
-				{
-					AllocatorToUse = EMemoryAllocatorToUse::Binned2;
-					break;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-fullcrashcallstack") == 0)
-				{
-					GFullCrashCallstack = true;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-useksm") == 0)
-				{
-					GUseKSM = true;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-ksmmergeall") == 0)
-				{
-					GKSMMergeAllPages = true;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-noensuretiming") == 0)
-				{
-					GTimeEnsures = false;
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-noexclusivelockonwrite") == 0)
-				{
-					GAllowExclusiveLockOnWrite = false;
-				}
-
-				const char SignalToDefaultCmd[] = "-sigdfl=";
-				if (const char* Cmd = FCStringAnsi::Stristr(Arg, SignalToDefaultCmd))
-				{
-					int32 SignalToDefault = FCStringAnsi::Atoi(Cmd + sizeof(SignalToDefaultCmd) - 1);
-
-					// Valid signals are only from 1 -> SIGRTMAX
-					if (SignalToDefault > SIGRTMAX)
-					{
-						SignalToDefault = 0;
-					}
-
-					GSignalToDefault = FMath::Max(SignalToDefault, 0);
-				}
-
-				const char CrashHandlerStackSize[] = "-crashhandlerstacksize=";
-				if (const char* Cmd = FCStringAnsi::Stristr(Arg, CrashHandlerStackSize))
-				{
-					GCrashHandlerStackSize = FCStringAnsi::Atoi64(Cmd + sizeof(CrashHandlerStackSize) - 1);
-				}
-
-				const char FileMapCacheCmd[] = "-filemapcachesize=";
-				if (const char* Cmd = FCStringAnsi::Stristr(Arg, FileMapCacheCmd))
-				{
-					int32 Max = FCStringAnsi::Atoi(Cmd + sizeof(FileMapCacheCmd) - 1);
-					GMaxNumberFileMappingCache = FMath::Clamp(Max, 0, MaximumAllowedMaxNumFileMappingCache);
-				}
-
-#if UE_USE_MALLOC_REPLAY_PROXY
-				if (FCStringAnsi::Stricmp(Arg, "-mallocsavereplay") == 0)
-				{
-					bAddReplayProxy = true;
-				}
-#endif // UE_USE_MALLOC_REPLAY_PROXY
-#if WITH_MALLOC_STOMP
-				if (FCStringAnsi::Stricmp(Arg, "-stompmalloc") == 0)
-				{
-					// see FPlatformMisc::GetProcessDiagnostics()
-					AllocatorToUse = EMemoryAllocatorToUse::Stomp;
-					break;
-				}
-#endif // WITH_MALLOC_STOMP
-
-				const char VMAPoolScaleSwitch[] = "-vmapoolscale=";
-				if (const char* Cmd = FCStringAnsi::Stristr(Arg, VMAPoolScaleSwitch))
-				{
-					float PoolScale = FCStringAnsi::Atof(Cmd + sizeof(VMAPoolScaleSwitch) - 1);
-					GVMAPoolScale = FMath::Max(PoolScale, 1.0f);
-				}
-
-				if (FCStringAnsi::Stricmp(Arg, "-vmapoolevict") == 0)
-				{
-					GMemoryRangeDecommitIsNoOp = false;
-				}
-				if (FCStringAnsi::Stricmp(Arg, "-novmapoolevict") == 0)
-				{
-					GMemoryRangeDecommitIsNoOp = true;
-				}
-				if (FCStringAnsi::Stricmp(Arg, "-protectforkedpages") == 0)
-				{
-					GEnableProtectForkedPages = true;
-				}
-			}
-			free(Arg);
-			fclose(CmdLineFile);
-		}
 	}
 
 	FMalloc * Allocator = NULL;
@@ -653,261 +666,267 @@ void FUnixPlatformMemory::FPlatformVirtualMemoryBlock::Decommit(size_t InOffset,
 	}
 }
 
-
-namespace UnixPlatformMemory
+struct FProcField
 {
-	/**
-	 * @brief Returns value in bytes from a status line
-	 * @param Line in format "Blah:  10000 kB" - needs to be writable as it will modify it
-	 * @return value in bytes (10240000, i.e. 10000 * 1024 for the above example)
-	 */
-	uint64 GetBytesFromStatusLine(char * Line)
+	const ANSICHAR* Name = nullptr;
+	uint64* Addr = nullptr;
+	uint32 NameLen = 0;
+
+	FProcField(const ANSICHAR *NameIn, uint64* AddrIn)
+		: Name(NameIn), Addr(AddrIn)
 	{
-		check(Line);
-		int Len = strlen(Line);
-
-		// Len should be long enough to hold at least " kB\n"
-		const int kSuffixLength = 4;	// " kB\n"
-		if (Len <= kSuffixLength)
-		{
-			return 0;
-		}
-
-		const int NewLen = Len - kSuffixLength;
-
-		// let's check that this is indeed "kB"
-		char * Suffix = &Line[NewLen];
-		if (strcmp(Suffix, " kB\n") != 0)
-		{
-			// Unix the kernel changed the format, huh?
-			return 0;
-		}
-
-		// kill the kB
-		*Suffix = 0;
-
-        // find the beginning of the number
-		for (const char* NumberBegin = Line; NumberBegin < Suffix; ++NumberBegin)
-		{
-			if (isdigit(*NumberBegin))
-			{
-				return atoll(NumberBegin) * 1024ULL;
-			}
-		}
-
-		// we were unable to find whitespace in front of the number
-		return 0;
+		NameLen = FCStringAnsi::Strlen(Name);
 	}
+};
+
+static uint64 ParseProcFieldsChunk(ANSICHAR *Buffer, uint64 BufferSize, FProcField *ProcFields, uint32 NumFields, uint32 &NumFieldsFound)
+{
+	uint64 ParsePos = 0;
+
+	for (uint64 Idx = 0; Idx < BufferSize; Idx++)
+	{
+		if (Buffer[Idx] == '\n')
+		{
+			const ANSICHAR *Line = Buffer + ParsePos;
+
+			Buffer[Idx] = 0;
+
+			for (uint32 IdxField = 0; IdxField < NumFields; IdxField++)
+			{
+				uint32 NameLen = ProcFields[IdxField].NameLen;
+
+				if (!FCStringAnsi::Strncmp(Line, ProcFields[IdxField].Name, NameLen))
+				{
+					*ProcFields[IdxField].Addr = atoll(Line + NameLen) * 1024ULL;
+					NumFieldsFound++;
+					break;
+				}
+			}
+
+			ParsePos = Idx + 1;
+		}
+	}
+
+	// If we didn't find any linefeeds, skip the entire chunk
+	return ParsePos ? ParsePos : BufferSize;
 }
 
-FPlatformMemoryStats FUnixPlatformMemory::GetStats()
+static uint32 ReadProcFields(const char *FileName, FProcField *ProcFields, uint32 NumFields)
 {
-	FPlatformMemoryStats MemoryStats;	// will init from constants
+	uint32 NumFieldsFound = 0;
 
-#if PLATFORM_FREEBSD
-
-	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
-
-	size_t size = sizeof(SIZE_T);
-
-	SIZE_T SysFreeCount = 0;
-	sysctlbyname("vm.stats.vm.v_free_count", &SysFreeCount, &size, NULL, 0);
-
-	SIZE_T SysActiveCount = 0;
-	sysctlbyname("vm.stats.vm.v_active_count", &SysActiveCount, &size, NULL, 0);
-
-	// Get swap info from kvm api
-	kvm_t* Kvm = kvm_open(NULL, "/dev/null", NULL, O_RDONLY, NULL);
-	struct kvm_swap KvmSwap;
-	kvm_getswapinfo(Kvm, &KvmSwap, 1, 0);
-	kvm_close(Kvm);
-
-	MemoryStats.AvailablePhysical = SysFreeCount * MemoryConstants.PageSize;
-	MemoryStats.AvailableVirtual = (KvmSwap.ksw_total - KvmSwap.ksw_used) * MemoryConstants.PageSize;
-	MemoryStats.UsedPhysical = SysActiveCount * MemoryConstants.PageSize;
-	MemoryStats.UsedVirtual = KvmSwap.ksw_used * MemoryConstants.PageSize;
-
-#else
-
-	// open to all kind of overflows, thanks to Unix approach of exposing system stats via /proc and lack of proper C API
-	// And no, sysinfo() isn't useful for this (cannot get the same value for MemAvailable through it for example).
-
-	if (FILE* FileGlobalMemStats = fopen("/proc/meminfo", "r"))
+	int Fd = open(FileName, O_RDONLY);
+	if (Fd >= 0)
 	{
-		int FieldsSetSuccessfully = 0;
-		uint64 MemFree = 0, Cached = 0;
-		do
+		const uint32 ChunkSize = 512;
+		ANSICHAR Buffer[ChunkSize];
+		uint64 BytesAvailableInChunk = 0;
+
+		for (;;)
 		{
-			char LineBuffer[256] = {0};
-			char *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), FileGlobalMemStats);
-			if (Line == nullptr)
+			ssize_t BytesRead;
+			uint64 BytesToRead = ChunkSize - BytesAvailableInChunk;
+
+			do
 			{
-				break;	// eof or an error
+				BytesRead = read(Fd, Buffer + BytesAvailableInChunk, BytesToRead);
+			} while (BytesRead < 0 && errno == EINTR);
+
+			if (BytesRead <= 0)
+			{
+				break;
 			}
 
-			// if we have MemAvailable, favor that (see http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=34e431b0ae398fc54ea69ff85ec700722c9da773)
-			if (strstr(Line, "MemAvailable:") == Line)
+			BytesAvailableInChunk += BytesRead;
+
+			uint64 BytesParsed = ParseProcFieldsChunk(Buffer, BytesAvailableInChunk, ProcFields, NumFields, NumFieldsFound);
+			checkf(BytesParsed <= BytesAvailableInChunk, TEXT("BytesParsed more than BytesAvailableInChunk %u %u"), BytesParsed, BytesAvailableInChunk);
+
+			if (BytesRead < BytesToRead || NumFieldsFound == NumFields)
 			{
-				MemoryStats.AvailablePhysical = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
+				break;
 			}
-			else if (strstr(Line, "SwapFree:") == Line)
+
+			BytesAvailableInChunk -= BytesParsed;
+			memmove(Buffer, Buffer + BytesParsed, BytesAvailableInChunk);
+		}
+
+		close(Fd);
+
+		if (NumFieldsFound != NumFields)
+		{
+			static bool bLogOnceMissing = false;
+			if (!bLogOnceMissing)
 			{
-				MemoryStats.AvailableVirtual = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-			else if (strstr(Line, "MemFree:") == Line)
-			{
-				MemFree = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-			else if (strstr(Line, "Cached:") == Line)
-			{
-				Cached = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
+				// Note: We can't use UE_LOG or TCHAR_TO_UTF8 since these routines may not be initialized yet and
+				// allocate memory. This function could get called via FMemory::GCreateMalloc or signal handlers
+				// and we will potentiall crash in these cases calling UE_LOG or TCHAR_TO_UTF8.
+				fprintf(stderr, "Warning: ReadProcFields: %u of %u fields found in %s.\n",
+						NumFieldsFound, NumFields, FileName);
+				fflush(stderr);
+				bLogOnceMissing = true;
 			}
 		}
-		while(FieldsSetSuccessfully < 4);
+	}
+	else
+	{
+		static bool bLogOnceFileNotFound = false;
+		if (!bLogOnceFileNotFound)
+		{
+			fprintf(stderr, "Warning: ReadProcFields failed opening %s (Err %d).\n", FileName, errno);
+			fflush(stderr);
+			bLogOnceFileNotFound = true;
+		}
+	}
 
+	return NumFieldsFound;
+}
+
+// struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
+//   uint64 AvailablePhysical; /** The amount of physical memory currently available, in bytes. */			MemAvailable (or MemFree + Cached)
+//   uint64 AvailableVirtual;  /** The amount of virtual memory currently available, in bytes. */			SwapFree
+//   uint64 UsedPhysical;      /** The amount of physical memory used by the process, in bytes. */			VmRSS
+//   uint64 PeakUsedPhysical;  /** The peak amount of physical memory used by the process, in bytes. */	VmHWM
+//   uint64 UsedVirtual;       /** Total amount of virtual memory used by the process. */					VmSize
+//   uint64 PeakUsedVirtual;   /** The peak amount of virtual memory used by the process. */				VmPeak
+FPlatformMemoryStats FUnixPlatformMemory::GetStats()
+{
+	uint64 MemFree = 0;
+	uint64 Cached = 0;
+	FPlatformMemoryStats MemoryStats;
+
+	FProcField SMapsFields[] =
+	{
+		// An estimate of how much memory is available for starting new applications, without swapping.
+		{ "MemAvailable:", &MemoryStats.AvailablePhysical },
+		// Amount of swap space that is currently unused.
+		{ "SwapFree:",     &MemoryStats.AvailableVirtual },
+		{ "MemFree:",      &MemFree },
+		{ "Cached:",       &Cached },
+	};
+	if (ReadProcFields("/proc/meminfo", SMapsFields, UE_ARRAY_COUNT(SMapsFields)))
+	{
 		// if we didn't have MemAvailable (kernels < 3.14 or CentOS 6.x), use free + cached as a (bad) approximation
 		if (MemoryStats.AvailablePhysical == 0)
 		{
 			MemoryStats.AvailablePhysical = FMath::Min(MemFree + Cached, MemoryStats.TotalPhysical);
 		}
-
-		fclose(FileGlobalMemStats);
 	}
 
-	// again /proc "API" :/
-	if (FILE* ProcMemStats = fopen("/proc/self/status", "r"))
+	FProcField SMapsFields2[] =
 	{
-		int FieldsSetSuccessfully = 0;
-		do
-		{
-			char LineBuffer[256] = {0};
-			char *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcMemStats);
-			if (Line == nullptr)
-			{
-				break;	// eof or an error
-			}
-
-			if (strstr(Line, "VmPeak:") == Line)
-			{
-				MemoryStats.PeakUsedVirtual = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-			else if (strstr(Line, "VmSize:") == Line)
-			{
-				MemoryStats.UsedVirtual = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-			else if (strstr(Line, "VmHWM:") == Line)
-			{
-				MemoryStats.PeakUsedPhysical = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-			else if (strstr(Line, "VmRSS:") == Line)
-			{
-				MemoryStats.UsedPhysical = UnixPlatformMemory::GetBytesFromStatusLine(Line);
-				++FieldsSetSuccessfully;
-			}
-		}
-		while(FieldsSetSuccessfully < 4);
-
-		fclose(ProcMemStats);
+		{ "VmPeak:", &MemoryStats.PeakUsedVirtual },
+		{ "VmSize:", &MemoryStats.UsedVirtual },      // In /proc/self/statm (Field 1)
+		{ "VmHWM:",  &MemoryStats.PeakUsedPhysical },
+		{ "VmRSS:",  &MemoryStats.UsedPhysical },     // In /proc/self/statm (Field 2)
+	};
+	if (ReadProcFields("/proc/self/status", SMapsFields2, UE_ARRAY_COUNT(SMapsFields2)))
+	{
+		// sanitize stats as sometimes peak < used for some reason
+		MemoryStats.PeakUsedVirtual = FMath::Max(MemoryStats.PeakUsedVirtual, MemoryStats.UsedVirtual);
+		MemoryStats.PeakUsedPhysical = FMath::Max(MemoryStats.PeakUsedPhysical, MemoryStats.UsedPhysical);
 	}
-
-#endif // PLATFORM_FREEBSD
-
-	// sanitize stats as sometimes peak < used for some reason
-	MemoryStats.PeakUsedVirtual = FMath::Max(MemoryStats.PeakUsedVirtual, MemoryStats.UsedVirtual);
-	MemoryStats.PeakUsedPhysical = FMath::Max(MemoryStats.PeakUsedPhysical, MemoryStats.UsedPhysical);
 
 	return MemoryStats;
 }
 
-FExtendedPlatformMemoryStats FUnixPlatformMemory::GetExtendedStats()
+static uint64 ParseSMapsFileChunk(ANSICHAR *Buffer, uint64 BufferSize, FProcField *ProcFields, uint32 NumFields)
 {
-	const ANSICHAR Shared_CleanStr[] = "Shared_Clean:";
-	const ANSICHAR Shared_DirtyStr[] = "Shared_Dirty:";
-	const ANSICHAR Private_CleanStr[] = "Private_Clean:";
-	const ANSICHAR Private_DirtyStr[] = "Private_Dirty:";
-	FExtendedPlatformMemoryStats MemoryStats = { 0 };
+	uint64 ParsePos = 0;
 
-	// ~ 1.06ms per call on my Threadripper 3990X w/ Debian Testing 5.15.0-2-amd64
-	if (FILE* ProcSMapsRollup = fopen("/proc/self/smaps_rollup", "r"))
+	for (uint64 Idx = 0; Idx < BufferSize; Idx++)
 	{
-		struct
+		if (Buffer[Idx] == '\n')
 		{
-			const ANSICHAR* Name;
-			uint32 NameLen;
-			SIZE_T* Addr;
-		} SMapsFields[] =
-		{
-			{ Shared_CleanStr,  sizeof(Shared_CleanStr) - 1,  &MemoryStats.Shared_Clean },
-			{ Shared_DirtyStr,  sizeof(Shared_DirtyStr) - 1,  &MemoryStats.Shared_Dirty },
-			{ Private_CleanStr, sizeof(Private_CleanStr) - 1, &MemoryStats.Private_Clean },
-			{ Private_DirtyStr, sizeof(Private_DirtyStr) - 1, &MemoryStats.Private_Dirty },
-		};
-		const uint32 NumFields = UE_ARRAY_COUNT(SMapsFields);
-		uint32 FieldsFound = 0;
+			const ANSICHAR *Line = Buffer + ParsePos;
 
-		while (FieldsFound < NumFields)
-		{
-			ANSICHAR LineBuffer[256];
-			ANSICHAR *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcSMapsRollup);
+			Buffer[Idx] = 0;
 
-			if (Line == nullptr)
+			for (uint32 IdxField = 0; IdxField < NumFields; IdxField++)
 			{
-				// eof or an error
-				break;
-			}
+				uint32 NameLen = ProcFields[IdxField].NameLen;
 
-			for (uint32 i = 0; i < NumFields; i++)
-			{
-				if (!FCStringAnsi::Strncmp(SMapsFields[i].Name, Line, SMapsFields[i].NameLen))
+				if (!FCStringAnsi::Strncmp(Line, ProcFields[IdxField].Name, NameLen))
 				{
-					*SMapsFields[i].Addr = atoll(Line + SMapsFields[i].NameLen) * 1024ULL;
-					FieldsFound++;
+					*ProcFields[IdxField].Addr += atoll(Line + NameLen) * 1024ULL;
 					break;
 				}
 			}
+
+			ParsePos = Idx + 1;
 		}
-
-		fclose(ProcSMapsRollup);
 	}
-	// ~ 6.8ms per call on my Threadripper 3990X w/ Debian Testing 5.15.0-2-amd64 in TestPAL.
-	// Potentially far higher though.
-	else if (FILE* ProcSMaps = fopen("/proc/self/smaps", "r"))
+
+	// If we didn't find any linefeeds, skip the entire chunk
+	return ParsePos ? ParsePos : BufferSize;
+}
+
+FExtendedPlatformMemoryStats FUnixPlatformMemory::GetExtendedStats()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_GetExtendedStats);
+	
+	const ANSICHAR Shared_CleanStr[]  = "Shared_Clean:";
+	const ANSICHAR Shared_DirtyStr[]  = "Shared_Dirty:";
+	const ANSICHAR Private_CleanStr[] = "Private_Clean:";
+	const ANSICHAR Private_DirtyStr[] = "Private_Dirty:";
+
+	FExtendedPlatformMemoryStats MemoryStats = { 0 };
+
+	FProcField SMapsFields[] =
 	{
-		do
+		{ Shared_CleanStr,  (uint64 *)&MemoryStats.Shared_Clean },
+		{ Shared_DirtyStr,  (uint64 *)&MemoryStats.Shared_Dirty },
+		{ Private_CleanStr, (uint64 *)&MemoryStats.Private_Clean },
+		{ Private_DirtyStr, (uint64 *)&MemoryStats.Private_Dirty },
+	};
+
+#if USE_PROC_SELF_SMAPS_ROLLUP
+	// ~ 1.06ms per call on my Threadripper 3990X w/ Debian Testing 5.15.0-2-amd64
+	// Note that testing shows us opening smaps_rollup on a thread while another thread is
+	//  calling mmap() can cause large spikes (30+ms) in the mmap.
+	if (!ReadProcFields("/proc/self/smaps_rollup", SMapsFields, UE_ARRAY_COUNT(SMapsFields)))
+#endif
+	{
+		int Fd = open("/proc/self/smaps", O_RDONLY);
+
+		if (Fd >= 0)
 		{
-			ANSICHAR LineBuffer[256] = { 0 };
-			ANSICHAR *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcSMaps);
-			if (Line == nullptr)
+			const uint32 ChunkSize = 512;
+			ANSICHAR Buffer[ChunkSize];
+			uint64 BytesAvailableInChunk = 0;
+
+			for (;;)
 			{
-				break;	// eof or an error
+				ssize_t BytesRead;
+				uint64 BytesToRead = ChunkSize - BytesAvailableInChunk;
+
+				do
+				{
+					QUICK_SCOPE_CYCLE_COUNTER(STAT_GetExtendedStats_FileRead);
+					BytesRead = read(Fd, Buffer + BytesAvailableInChunk, BytesToRead);
+				} while (BytesRead < 0 && errno == EINTR);
+
+				if (BytesRead <= 0)
+				{
+					break;
+				}
+
+				BytesAvailableInChunk += BytesRead;
+
+				uint64 BytesParsed = ParseSMapsFileChunk(Buffer, BytesAvailableInChunk, SMapsFields, UE_ARRAY_COUNT(SMapsFields));
+				checkf(BytesParsed <= BytesAvailableInChunk, TEXT("BytesParsed more than BytesAvailableInChunk %u %u"), BytesParsed, BytesAvailableInChunk);
+
+				if (BytesRead < BytesToRead)
+				{
+					break;
+				}
+
+				BytesAvailableInChunk -= BytesParsed;
+				memmove(Buffer, Buffer + BytesParsed, BytesAvailableInChunk);
 			}
 
-			if (strstr(Line, Shared_CleanStr) == Line)
-			{
-				MemoryStats.Shared_Clean += UnixPlatformMemory::GetBytesFromStatusLine(Line);
-			}
-			else if (strstr(Line, Shared_DirtyStr) == Line)
-			{
-				MemoryStats.Shared_Dirty += UnixPlatformMemory::GetBytesFromStatusLine(Line);
-			}
-			if (strstr(Line, Private_CleanStr) == Line)
-			{
-				MemoryStats.Private_Clean += UnixPlatformMemory::GetBytesFromStatusLine(Line);
-			}
-			else if (strstr(Line, Private_DirtyStr) == Line)
-			{
-				MemoryStats.Private_Dirty += UnixPlatformMemory::GetBytesFromStatusLine(Line);
-			}
-		} while (!feof(ProcSMaps));
-
-		fclose(ProcSMaps);
+			close(Fd);
+		}
 	}
 
 	return MemoryStats;
@@ -919,28 +938,6 @@ const FPlatformMemoryConstants& FUnixPlatformMemory::GetConstants()
 
 	if( MemoryConstants.TotalPhysical == 0 )
 	{
-#if PLATFORM_FREEBSD
-
-		size_t Size = sizeof(SIZE_T);
-
-		SIZE_T SysPageCount = 0;
-		sysctlbyname("vm.stats.vm.v_page_count", &SysPageCount, &Size, NULL, 0);
-
-		SIZE_T SysPageSize = 0;
-		sysctlbyname("vm.stats.vm.v_page_size", &SysPageSize, &Size, NULL, 0);
-
-		// Get swap info from kvm api
-		kvm_t* Kvm = kvm_open(NULL, "/dev/null", NULL, O_RDONLY, NULL);
-		struct kvm_swap KvmSwap;
-		kvm_getswapinfo(Kvm, &KvmSwap, 1, 0);
-		kvm_close(Kvm);
-
-		MemoryConstants.TotalPhysical = SysPageCount * SysPageSize;
-		MemoryConstants.TotalVirtual = KvmSwap.ksw_total * SysPageSize;
-		MemoryConstants.PageSize = SysPageSize;
-
-#else
- 
 		// Gather platform memory stats.
 		struct sysinfo SysInfo;
 		unsigned long long MaxPhysicalRAMBytes = 0;
@@ -954,8 +951,6 @@ const FPlatformMemoryConstants& FUnixPlatformMemory::GetConstants()
 
 		MemoryConstants.TotalPhysical = MaxPhysicalRAMBytes;
 		MemoryConstants.TotalVirtual = MaxVirtualRAMBytes;
-
-#endif // PLATFORM_FREEBSD
 
 		MemoryConstants.PageSize = sysconf(_SC_PAGESIZE);
 		MemoryConstants.BinnedPageSize = FMath::Max((SIZE_T)65536, MemoryConstants.PageSize);

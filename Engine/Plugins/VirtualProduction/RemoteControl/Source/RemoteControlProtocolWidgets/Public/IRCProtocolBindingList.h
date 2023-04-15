@@ -20,4 +20,13 @@ public:
 
 	/** Get the set of entities which is awaiting state and waiting for binding */
 	virtual FRemoteControlProtocolEntitySet GetAwaitingProtocolEntities() const = 0;
+
+	/** Start recording incoming protocol message handler */
+	virtual void OnStartRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity) = 0;
+
+	/** Stop recording incoming protocol message handler */
+	virtual void OnStopRecording(TSharedPtr<TStructOnScope<FRemoteControlProtocolEntity>> InEntity) = 0;
+
+	/** Refresh protocol binding list. Returns false if the backing widget wasn't valid. */
+	virtual bool Refresh(bool bNavigateToEnd = false) = 0;
 };

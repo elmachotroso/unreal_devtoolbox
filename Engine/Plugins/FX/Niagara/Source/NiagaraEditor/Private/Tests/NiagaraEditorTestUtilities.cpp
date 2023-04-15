@@ -11,18 +11,20 @@
 #include "NiagaraSystemFactoryNew.h"
 
 #include "Modules/ModuleManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 UNiagaraEmitter* FNiagaraEditorTestUtilities::CreateEmptyTestEmitter()
 {
 	UNiagaraEmitter* Emitter = NewObject<UNiagaraEmitter>();
+	Emitter->CheckVersionDataAvailable();
 	UNiagaraScriptSource* ScriptSource = NewObject<UNiagaraScriptSource>(Emitter);
 	UNiagaraGraph* Graph = NewObject<UNiagaraGraph>(ScriptSource);
 
 	ScriptSource->NodeGraph = Graph;
-	Emitter->GraphSource = ScriptSource;
-	Emitter->SpawnScriptProps.Script->SetLatestSource(ScriptSource);
-	Emitter->UpdateScriptProps.Script->SetLatestSource(ScriptSource);
+	FVersionedNiagaraEmitterData* Data = Emitter->GetLatestEmitterData();
+	Data->GraphSource = ScriptSource;
+	Data->SpawnScriptProps.Script->SetLatestSource(ScriptSource);
+	Data->UpdateScriptProps.Script->SetLatestSource(ScriptSource);
 
 	FNiagaraStackGraphUtilities::ResetGraphForOutput(*Graph, ENiagaraScriptUsage::EmitterSpawnScript, FGuid());
 	FNiagaraStackGraphUtilities::ResetGraphForOutput(*Graph, ENiagaraScriptUsage::EmitterUpdateScript, FGuid());
@@ -36,7 +38,7 @@ UNiagaraSystem* FNiagaraEditorTestUtilities::CreateTestSystemForEmitter(UNiagara
 {
 	UNiagaraSystem* System = NewObject<UNiagaraSystem>((UObject*)GetTransientPackage(), NAME_None, RF_Transient);
 	UNiagaraSystemFactoryNew::InitializeSystem(System, false);
-	System->AddEmitterHandle(*Emitter, Emitter->GetFName());
+	System->AddEmitterHandle(*Emitter, Emitter->GetFName(), FGuid());
 	return System;
 }
 
@@ -57,6 +59,6 @@ TSharedRef<FNiagaraSystemViewModel> FNiagaraEditorTestUtilities::CreateTestSyste
 UNiagaraEmitter* FNiagaraEditorTestUtilities::LoadEmitter(FString AssetPath)
 {
 	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 	return Cast<UNiagaraEmitter>(AssetData.GetAsset());
 }

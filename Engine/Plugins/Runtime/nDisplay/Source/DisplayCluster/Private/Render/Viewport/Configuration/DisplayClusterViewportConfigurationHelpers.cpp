@@ -14,6 +14,9 @@
 #include "DisplayClusterConfigurationTypes_ICVFX.h"
 #include "DisplayClusterConfigurationTypes_PostRender.h"
 
+#include "IDisplayCluster.h"
+#include "Cluster/IDisplayClusterClusterManager.h"
+
 #include "ShaderParameters/DisplayClusterShaderParameters_PostprocessBlur.h"
 #include "ShaderParameters/DisplayClusterShaderParameters_GenerateMips.h"
 #include "ShaderParameters/DisplayClusterShaderParameters_Override.h"
@@ -200,6 +203,25 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 		DstViewport.RenderSettings.StereoGPUIndex = InRenderSettings.StereoGPUIndex;
 		DstViewport.RenderSettings.RenderTargetRatio = InRenderSettings.RenderTargetRatio;
 		DstViewport.RenderSettings.RenderFamilyGroup = InRenderSettings.RenderFamilyGroup;
+	}
+
+	// Set media related configuration (runtime only for now)
+	if (IDisplayCluster::Get().GetOperationMode() == EDisplayClusterOperationMode::Cluster)
+	{
+		const FDisplayClusterConfigurationMedia& MediaSettings = InConfigurationViewport.RenderSettings.Media;
+
+		const FString ThisClusterNodeId = IDisplayCluster::Get().GetClusterMgr()->GetNodeId();
+		const bool bThisNodeSharesMedia = MediaSettings.IsMediaSharingUsed() && MediaSettings.MediaSharingNode.Equals(ThisClusterNodeId, ESearchCase::IgnoreCase);
+
+		// Don't render the viewport if media input assigned
+		DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaSettings.IsMediaSharingUsed() ?
+			!bThisNodeSharesMedia :
+			!!MediaSettings.MediaSource;
+
+		// Mark this viewport is going to be captured by a capture device
+		DstViewport.RenderSettings.bIsBeingCaptured = MediaSettings.IsMediaSharingUsed() ?
+			bThisNodeSharesMedia :
+			!!MediaSettings.MediaOutput;
 	}
 
 	// FDisplayClusterConfigurationViewport_ICVFX property:

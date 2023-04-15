@@ -17,8 +17,7 @@
 #include "PhysicsEngine/BodyInstance.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "PhysicsPublic.h"
-#include "IPhysXCooking.h"
-#include "PhysXCookHelper.h"
+
 #include "Misc/RuntimeErrors.h"
 #include "Engine/Engine.h"
 #include "UObject/UObjectThreadContext.h"
@@ -26,9 +25,9 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
-#if WITH_CHAOS
-	#include "Experimental/ChaosDerivedData.h"
-#endif
+#include "PhysicsEngine/Experimental/ChaosDerivedData.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MRMeshComponent)
 
 // See ISpatialAcceleration.h, the header is not included to avoid having a dependency on Chaos
 #ifndef CHAOS_SERIALIZE_OUT
@@ -36,7 +35,7 @@
 #endif
 
 // When using the Chaos code path, we're using a private class FChaosDerivedDataCooker which is not exported
-#define SUPPORTS_PHYSICS_COOKING WITH_PHYSX && (PHYSICS_INTERFACE_PHYSX || (WITH_CHAOS && CHAOS_SERIALIZE_OUT && IS_MONOLITHIC))
+#define SUPPORTS_PHYSICS_COOKING (CHAOS_SERIALIZE_OUT && IS_MONOLITHIC)
 
 DECLARE_CYCLE_STAT(TEXT("MrMesh SetCollisionProfileName"), STAT_MrMesh_SetCollisionProfileName, STATGROUP_Physics);
 DECLARE_CYCLE_STAT(TEXT("Update Collision"), STAT_UpdateCollision, STATGROUP_MRMESH);
@@ -446,7 +445,7 @@ private:
 							Mesh.MaterialRenderProxy = MaterialProxy;
 
 							FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-							DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), GetLocalToWorld(), InfiniteBounds, InfiniteBounds, true, false, DrawsVelocity(), false);
+							DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), GetLocalToWorld(), InfiniteBounds, InfiniteBounds, true, false, AlwaysHasVelocity());
 							BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 							BatchElement.FirstIndex = 0;
@@ -1226,6 +1225,16 @@ void UMRMeshBodyHolder::Cleanup()
 	BodyInstance.TermBody();
 }
 
+bool UMRMeshBodyHolder::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	if (BrickDataReceipt.IsValid() && Indices->Num() > 0)
+	{
+		OutTriMeshEstimates.VerticeCount = PositionData->Num();
+	}
+
+	return true;
+}
+
 bool UMRMeshBodyHolder::GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData)
 {
 	if (BrickDataReceipt.IsValid() && Indices->Num() > 0)
@@ -1277,3 +1286,4 @@ void UMRMeshBodyHolder::FinishPhysicsAsyncCook(bool bSuccess, UBodySetup* Finish
 		MRMeshComponent->SuggestNavMeshUpdate();
 	}
 }
+

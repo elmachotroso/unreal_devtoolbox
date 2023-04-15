@@ -7,6 +7,8 @@
 #include "MovieRenderPipelineCoreModule.h"
 #include "MoviePipelineUtils.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineGameOverrideSetting)
+
 void UMoviePipelineGameOverrideSetting::SetupForPipelineImpl(UMoviePipeline* InPipeline)
 {
 	// Store the cvar values and apply the ones from this setting
@@ -92,6 +94,11 @@ void UMoviePipelineGameOverrideSetting::ApplyCVarSettings(const bool bOverrideVa
 		// This CVAR only exists if the D3D12RHI module is loaded
 		MOVIEPIPELINE_STORE_AND_OVERRIDE_CVAR_INT_IF_EXIST(PreviousGPUTimeout, TEXT("r.D3D12.GPUTimeout"), 0, bOverrideValues);
 	}
+
+	if (bFlushStreamingManagers)
+	{
+		MOVIEPIPELINE_STORE_AND_OVERRIDE_CVAR_INT(PreviousStreamingManagerSyncState, TEXT("r.Streaming.SyncStatesWhenBlocking"), 1, bOverrideValues);
+	}
 	
 #if WITH_EDITOR
 	// To make sure the GeometryCache streamer doesn't skip frames and doesn't pop up notification during rendering
@@ -114,6 +121,14 @@ void UMoviePipelineGameOverrideSetting::ApplyCVarSettings(const bool bOverrideVa
 
 	// To make sure that the world partition streaming doesn't end up in critical streaming performances and stops streaming low priority cells.
 	MOVIEPIPELINE_STORE_AND_OVERRIDE_CVAR_INT(PreviousIgnoreStreamingPerformance, TEXT("wp.Runtime.BlockOnSlowStreaming"), 0, bOverrideValues);
+
+	// Remove any minimum delta time requirements from Chaos Physics to ensure accuracy at high Temporal Sample counts
+	MOVIEPIPELINE_STORE_AND_OVERRIDE_CVAR_FLOAT(PreviousChaosImmPhysicsMinStepTime, TEXT("p.Chaos.ImmPhys.MinStepTime"), 0, bOverrideValues);
+
+	// MRQ's 0 -> 0.99 -> 0 evaluation for motion blur emulation can occasionally cause it to be detected as a redundant update and thus never updated
+	// which causes objects to render in the wrong position on the first frame (and without motion blur). This disables an optimization that detects
+	// the redundant updates so the update will get sent through anyways even though it thinks it's a duplicate (but it's not).
+	MOVIEPIPELINE_STORE_AND_OVERRIDE_CVAR_INT(PreviousSkipRedundantTransformUpdate, TEXT("r.SkipRedundantTransformUpdate"), 0, bOverrideValues);
 }
 
 void UMoviePipelineGameOverrideSetting::BuildNewProcessCommandLineArgsImpl(TArray<FString>& InOutUnrealURLParams, TArray<FString>& InOutCommandLineArgs, TArray<FString>& InOutDeviceProfileCvars, TArray<FString>& InOutExecCmds) const
@@ -184,6 +199,11 @@ void UMoviePipelineGameOverrideSetting::BuildNewProcessCommandLineArgsImpl(TArra
 	{
 		InOutDeviceProfileCvars.Add(TEXT("r.D3D12.GPUTimeout=0"));
 	}
+
+	if (bFlushStreamingManagers)
+	{
+		InOutDeviceProfileCvars.Add(TEXT("r.Streaming.SyncStatesWhenBlocking=1"));
+	}
 	
 #if WITH_EDITOR
 	{
@@ -196,5 +216,10 @@ void UMoviePipelineGameOverrideSetting::BuildNewProcessCommandLineArgsImpl(TArra
 		InOutDeviceProfileCvars.Add(FString::Printf(TEXT("a.URO.Enable=%d"), 0));
 	}
 
+	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("au.NeverMuteNonRealtimeAudioDevices=%d"), 1));
 	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("r.SkyLight.RealTimeReflectionCapture.TimeSlice=%d"), 0));
+	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("r.VolumetricRenderTarget=%d"), 0));
+	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("wp.Runtime.BlockOnSlowStreaming=%d"), 0));
+	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("p.Chaos.ImmPhys.MinStepTime=%d"), 0));
+	InOutDeviceProfileCvars.Add(FString::Printf(TEXT("r.SkipRedundantTransformUpdate=%d"), 0));
 }

@@ -15,6 +15,7 @@
 
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "IDetailChildrenBuilder.h"
 #include "DetailWidgetRow.h"
 #include "IDetailGroup.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -1093,12 +1094,24 @@ public:
 	}
 
 #if WITH_EDITOR
-	
-	static void ConstructGroupedTransformRows(
-		IDetailCategoryBuilder& InCategory,
+
+	static IDetailGroup& ConstructDetailGroup(IDetailCategoryBuilder& InBuilder, FName GroupName, const FText& LocalizedDisplayName)
+	{
+		return InBuilder.AddGroup(GroupName, LocalizedDisplayName, false, true);
+	}
+
+	static IDetailGroup& ConstructDetailGroup(IDetailChildrenBuilder& InBuilder, FName GroupName, const FText& LocalizedDisplayName)
+	{
+		return InBuilder.AddGroup(GroupName, LocalizedDisplayName);
+	}
+
+	template<typename BuilderType = IDetailCategoryBuilder>
+	static FDetailWidgetRow& ConstructGroupedTransformRows(
+		BuilderType& InBuilder,
 		const FText& InLabel,
 		const FText& InTooltip,
-		typename SAdvancedTransformInputBox<TransformType>::FArguments WidgetArgs
+		typename SAdvancedTransformInputBox<TransformType>::FArguments WidgetArgs,
+		TSharedPtr<SWidget> NameContent = TSharedPtr<SWidget>()
 		)
 	{
 		auto ConstructComponentWidgetRow = [WidgetArgs](FDetailWidgetRow& WidgetRow, ESlateTransformComponent::Type InComponent)
@@ -1164,18 +1177,23 @@ public:
 			}			
 		};
 		
-		IDetailGroup& Group = InCategory.AddGroup(*InLabel.ToString(), InLabel, false, true);
+		IDetailGroup& Group = ConstructDetailGroup(InBuilder, *InLabel.ToString(), InLabel);
 		FDetailWidgetRow& HeaderRow = Group.HeaderRow();
 		ConstructComponentWidgetRow(HeaderRow, ESlateTransformComponent::Max);
 
+		if(!NameContent.IsValid())
+		{
+			SAssignNew(NameContent, STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(InLabel)
+			.ToolTipText(InTooltip);
+		}
+		
 		HeaderRow
 		.Visibility(WidgetArgs._Visibility)
 		.NameContent()
 		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.Text(InLabel)
-			.ToolTipText(InTooltip)
+			NameContent.ToSharedRef()
 		];
 
 		if(WidgetArgs._ConstructLocation)
@@ -1195,6 +1213,8 @@ public:
 			FDetailWidgetRow& WidgetRow = Group.AddWidgetRow();
 			ConstructComponentWidgetRow(WidgetRow, ESlateTransformComponent::Scale);
 		}
+
+		return HeaderRow;
 	}
 
 #endif

@@ -2,10 +2,8 @@
 
 #include "GroomCache.h"
 #include "GroomAsset.h"
-#include "Misc/ScopeRWLock.h"
 
-TMap<UGroomCache*, FPackageFileVersion> GroomCacheArchiveVersion;
-FRWLock GroomCacheArchiveVersionLock;
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GroomCache)
 
 void UGroomCache::Serialize(FArchive& Ar)
 {
@@ -13,10 +11,7 @@ void UGroomCache::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
-		// Unloaded GroomCache will not be removed from the map since there's no function to hook to
-		// so there will be stale entries, but they won't be streamed from since they are unloaded
-		FWriteScopeLock Lock(GroomCacheArchiveVersionLock);
-		GroomCacheArchiveVersion.Add(this, Ar.UEVer());
+		ArchiveVersion = Ar.UEVer();
 	}
 
 	int32 NumChunks = Chunks.Num();
@@ -100,7 +95,7 @@ void UGroomCache::GetFrameIndicesAtTime(float Time, bool bLooping, bool bIsPlayi
 	}
 
 	OutFrameIndex = GetFrameIndexAtTime(Time, bLooping);
-	OutNextFrameIndex = FMath::Min(OutFrameIndex + 1, NumFrames);
+	OutNextFrameIndex = FMath::Min(OutFrameIndex + 1, NumFrames - 1); // -1 since index is 0-based
 
 	const float FrameDuration = GroomCacheInfo.AnimationInfo.SecondsPerFrame;
 	if (FMath::IsNearlyZero(FrameDuration))
@@ -220,12 +215,9 @@ bool UGroomCache::GetGroomDataAtFrameIndex(int32 FrameIndex, FGroomCacheAnimatio
 		TRACE_CPUPROFILER_EVENT_SCOPE(UGroomCache::GetGroomDataAtFrameIndex_Serialize);
 		FMemoryReader Ar(TempBytes, true);
 		// Propagate the GroomCache archive version to the memory archive for proper serialization
+		if (ArchiveVersion.IsSet())
 		{
-			FReadScopeLock Lock(GroomCacheArchiveVersionLock);
-			if (FPackageFileVersion* Version = GroomCacheArchiveVersion.Find(this))
-			{
-				Ar.SetUEVer(*Version);
-			}
+			Ar.SetUEVer(ArchiveVersion.GetValue());
 		}
 		AnimData.Serialize(Ar);
 	}
@@ -291,3 +283,4 @@ void FGroomCacheProcessor::TransferChunks(UGroomCache* GroomCache)
 {
 	GroomCache->Chunks = MoveTemp(Chunks);
 }
+

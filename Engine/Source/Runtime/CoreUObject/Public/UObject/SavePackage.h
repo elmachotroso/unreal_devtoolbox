@@ -3,28 +3,42 @@
 #pragma once
 
 #include "Containers/Array.h"
-#include "Containers/Set.h"
 #include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "Logging/LogMacros.h"
 #include "Misc/DateTime.h"
+#include "Misc/Optional.h"
+#include "Misc/OutputDeviceError.h"
 #include "ObjectMacros.h"
+#include "Serialization/ArchiveCookData.h"
 #include "Serialization/FileRegions.h"
 #include "Serialization/PackageWriter.h"
 #include "Templates/UniquePtr.h"
+#include "Templates/UnrealTemplate.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Package.h"
+
+class ITargetPlatform;
+class UObject;
 
 #if !defined(UE_WITH_SAVEPACKAGE)
 #	define UE_WITH_SAVEPACKAGE 1
 #endif
 
 class FArchive;
+class FArchiveDiffMap;
+class FCbFieldView;
+class FCbWriter;
 class FIoBuffer;
-struct FObjectSaveContextData;
+class FOutputDevice;
 class FPackagePath;
 class FSavePackageContext;
-class FArchiveDiffMap;
-class FOutputDevice;
 class IPackageWriter;
+struct FObjectSaveContextData;
 
 /**
  * Struct to encapsulate arguments specific to saving one package
@@ -42,8 +56,15 @@ struct FPackageSaveInfo
  */
 struct FSavePackageArgs
 {
-	/* The platform being saved for when cooking, or nullptr if not cooking. */
+	UE_DEPRECATED(5.1, "TargetPlatform is now on the ArchiveCookData, use GetTargetPlatform() or IsCooking()")
 	const ITargetPlatform* TargetPlatform = nullptr;
+
+	/* nullptr if not cooking, passed to the FArchive */
+	FArchiveCookData* ArchiveCookData = nullptr;
+
+	bool IsCooking() const { return ArchiveCookData != nullptr; }
+	const ITargetPlatform* GetTargetPlatform() const { return ArchiveCookData ? &ArchiveCookData->TargetPlatform : nullptr; }
+	
 	/**
 	 * For all objects which are not referenced[either directly, or indirectly] through the InAsset provided
 	 * to the Save call (See UPackage::Save), only objects that contain any of these flags will be saved.
@@ -69,6 +90,8 @@ struct FSavePackageArgs
 	FSavePackageContext* SavePackageContext = nullptr;
 	UE_DEPRECATED(5.0, "FArchiveDiffMap is no longer used; it is now implemented by DiffPackageWriter.")
 	FArchiveDiffMap* DiffMap = nullptr;
+	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time and it will be removed.")
+	TOptional<FGuid> OutputPackageGuid;
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	FSavePackageArgs() = default;
@@ -76,6 +99,31 @@ struct FSavePackageArgs
 	FSavePackageArgs(FSavePackageArgs&&) = default;
 	FSavePackageArgs& operator=(const FSavePackageArgs&) = default;
 	FSavePackageArgs& operator=(FSavePackageArgs&&) = default;
+
+	FSavePackageArgs(
+		const ITargetPlatform* InTargetPlatform,
+		FArchiveCookData* InArchiveCookData,
+		EObjectFlags InTopLevelFlags,
+		uint32 InSaveFlags,
+		bool bInForceByteSwapping,
+		bool bInWarnOfLongFilename,
+		bool bInSlowTask,
+		FDateTime InFinalTimeStamp,
+		FOutputDevice* InError,
+		FSavePackageContext* InSavePackageContext = nullptr
+	)
+	: TargetPlatform(InTargetPlatform)
+	, ArchiveCookData(InArchiveCookData)
+	, TopLevelFlags(InTopLevelFlags)
+	, SaveFlags(InSaveFlags)
+	, bForceByteSwapping(bInForceByteSwapping)
+	, bWarnOfLongFilename(bInWarnOfLongFilename)
+	, bSlowTask(bInSlowTask)
+	, FinalTimeStamp(InFinalTimeStamp)
+	, Error(InError)
+	, SavePackageContext(InSavePackageContext)
+	{
+	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 };
 
@@ -168,6 +216,19 @@ namespace UE::SavePackageUtilities
 	COREUOBJECT_API void StartSavingEDLCookInfoForVerification();
 	COREUOBJECT_API void VerifyEDLCookInfo(bool bFullReferencesExpected = true);
 	COREUOBJECT_API void EDLCookInfoAddIterativelySkippedPackage(FName LongPackageName);
+	COREUOBJECT_API void EDLCookInfoMoveToCompactBinaryAndClear(FCbWriter& Writer, bool& bOutHasData);
+	COREUOBJECT_API bool EDLCookInfoAppendFromCompactBinary(FCbFieldView Field);
+
+
+#if WITH_EDITOR
+	/** void FAddResaveOnDemandPackage(FName SystemName, FName PackageName); */
+	DECLARE_DELEGATE_TwoParams(FAddResaveOnDemandPackage, FName, FName);
+	/**
+	 * Low-level systems execute this delegate during automated resave-on-demand to request that a package be resaved.
+	 * Automated resave managers like the ResavePackagesCommandlet subscribe to it to know which packages to save.
+	 */
+	extern COREUOBJECT_API FAddResaveOnDemandPackage OnAddResaveOnDemandPackage;
+#endif
 }
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogSavePackage, Log, All);

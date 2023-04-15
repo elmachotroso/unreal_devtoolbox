@@ -5,10 +5,12 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -25,15 +27,10 @@ namespace UnrealBuildTool
 		delegate void AddElementDelegate(object TargetObject, object? ValueObject); 
 
 		/// <summary>
-		/// Caches information about a field with a [ConfigFile] attribute in a type
+		/// Caches information about a member with a [ConfigFile] attribute in a type
 		/// </summary>
-		class ConfigField
+		abstract class ConfigMember
 		{
-			/// <summary>
-			/// The field with the config attribute
-			/// </summary>
-			public FieldInfo FieldInfo;
-
 			/// <summary>
 			/// The attribute instance
 			/// </summary>
@@ -52,13 +49,100 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Constructor
 			/// </summary>
+			/// <param name="Attribute"></param>
+			public ConfigMember(ConfigFileAttribute Attribute)
+			{
+				this.Attribute = Attribute;
+			}
+
+			/// <summary>
+			/// Returns Reflection.MemberInfo describing the target class member.
+			/// </summary>
+			public abstract MemberInfo               MemberInfo { get; }
+
+			/// <summary>
+			/// Returns Reflection.Type of the target class member.
+			/// </summary>
+			public abstract Type                     Type       { get; }
+
+			/// <summary>
+			/// Returns the value setter of the target class member.
+			/// </summary>
+			public abstract Action<object?, object?> SetValue   { get; }
+
+			/// <summary>
+			/// Returns the value getter of the target class member.
+			/// </summary>
+			public abstract Func<object?, object?>   GetValue   { get; }
+		}
+
+		/// <summary>
+		/// Caches information about a field with a [ConfigFile] attribute in a type
+		/// </summary>
+		class ConfigField : ConfigMember
+		{
+			/// <summary>
+			/// Reflection description of the field with the config attribute.
+			/// </summary>
+			private FieldInfo FieldInfo;
+
+			/// <summary>
+			/// Constructor
+			/// </summary>
 			/// <param name="FieldInfo"></param>
 			/// <param name="Attribute"></param>
 			public ConfigField(FieldInfo FieldInfo, ConfigFileAttribute Attribute)
+				: base(Attribute)
 			{
 				this.FieldInfo = FieldInfo;
-				this.Attribute = Attribute;
 			}
+
+			public override MemberInfo               MemberInfo => FieldInfo;
+			public override Type                     Type       => FieldInfo.FieldType;
+			public override Action<object?, object?> SetValue   => FieldInfo.SetValue;
+			public override Func<object?, object?>   GetValue   => FieldInfo.GetValue;
+		}
+
+		/// <summary>
+		/// Caches information about a property with a [ConfigFile] attribute in a type
+		/// </summary>
+		class ConfigProperty : ConfigMember
+		{
+			/// <summary>
+			/// Reflection description of the property with the config attribute.
+			/// </summary>
+			private PropertyInfo PropertyInfo;
+
+			/// <summary>
+			/// Constructor
+			/// </summary>
+			/// <param name="PropertyInfo"></param>
+			/// <param name="Attribute"></param>
+			public ConfigProperty(PropertyInfo PropertyInfo, ConfigFileAttribute Attribute)
+				: base(Attribute)
+			{
+				this.PropertyInfo = PropertyInfo;
+			}
+
+			public override MemberInfo               MemberInfo => PropertyInfo;
+			public override Type                     Type       => PropertyInfo.PropertyType;
+			public override Action<object?, object?> SetValue   => PropertyInfo.SetValue;
+			public override Func<object?, object?>   GetValue   => PropertyInfo.GetValue;
+		}
+
+		/// <summary>
+		/// Allowed modification types allowed for default config files
+		/// </summary>
+		public enum ConfigDefaultUpdateType
+		{
+			/// <summary>
+			/// Used for non-array types, this will replace a setting, or it will add a setting if it doesn't exist
+			/// </summary>
+			SetValue,
+			/// <summary>
+			/// Used to add an array entry to the end of any existing array entries, or will add to the end of the section
+			/// </summary>
+			AddArrayEntry,
 		}
 
 		/// <summary>
@@ -135,7 +219,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Cache of config fields by type
 		/// </summary>
-		static Dictionary<Type, List<ConfigField>> TypeToConfigFields = new Dictionary<Type, List<ConfigField>>();
+		static Dictionary<Type, List<ConfigMember>> TypeToConfigMembers = new Dictionary<Type, List<ConfigMember>>();
 
 		/// <summary>
 		/// Attempts to read a config file (or retrieve it from the cache)
@@ -171,12 +255,17 @@ namespace UnrealBuildTool
 		/// <param name="ProjectDir">The project directory to read the hierarchy for</param>
 		/// <param name="Platform">Which platform to read platform-specific config files for</param>
 		/// <param name="CustomConfig">Optional override config directory to search, for support of multiple target types</param>
+		/// <param name="CustomArgs">Optional list of command line arguments</param>
 		/// <returns>The requested config hierarchy</returns>
-		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig = "")
+		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig = "", string[]? CustomArgs = null)
 		{
 			// Handle command line overrides
 			List<String> OverrideStrings = new List<String>();
 			string[] CmdLine = Environment.GetCommandLineArgs();
+			if (CustomArgs != null)
+			{
+				CmdLine = CmdLine.Concat(CustomArgs).ToArray();
+			}
 			string IniConfigArgPrefix = "-ini:" + Enum.GetName(typeof(ConfigHierarchyType), Type) + ":";
 			string CustomConfigPrefix = "-CustomConfig=";
 			foreach (string CmdLineArg in CmdLine)
@@ -235,46 +324,56 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="TargetObjectType">Type to get configurable fields for</param>
 		/// <returns>List of config fields for the given type</returns>
-		static List<ConfigField> FindConfigFieldsForType(Type TargetObjectType)
+		static List<ConfigMember> FindConfigMembersForType(Type TargetObjectType)
 		{
-			List<ConfigField>? Fields;
-			lock(TypeToConfigFields)
+			List<ConfigMember>? Members;
+			lock(TypeToConfigMembers)
 			{
-				if (!TypeToConfigFields.TryGetValue(TargetObjectType, out Fields))
+				if (!TypeToConfigMembers.TryGetValue(TargetObjectType, out Members))
 				{
-					Fields = new List<ConfigField>();
+					Members = new List<ConfigMember>();
 					if(TargetObjectType.BaseType != null)
 					{
-						Fields.AddRange(FindConfigFieldsForType(TargetObjectType.BaseType));
+						Members.AddRange(FindConfigMembersForType(TargetObjectType.BaseType));
 					}
 					foreach (FieldInfo FieldInfo in TargetObjectType.GetFields(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
 					{
-						IEnumerable<ConfigFileAttribute> Attributes = FieldInfo.GetCustomAttributes<ConfigFileAttribute>();
-						foreach (ConfigFileAttribute Attribute in Attributes)
-						{
-							// Copy the field 
-							ConfigField Setter = new ConfigField(FieldInfo, Attribute);
-
-							// Check if the field type implements ICollection<>. If so, we can take multiple values.
-							foreach (Type InterfaceType in FieldInfo.FieldType.GetInterfaces())
-							{
-								if (InterfaceType.IsGenericType && InterfaceType.GetGenericTypeDefinition() == typeof(ICollection<>))
-								{
-									MethodInfo MethodInfo = InterfaceType.GetRuntimeMethod("Add", new Type[] { InterfaceType.GenericTypeArguments[0] })!;
-									Setter.AddElement = (Target, Value) => { MethodInfo.Invoke(Setter.FieldInfo.GetValue(Target), new object?[] { Value }); };
-									Setter.ElementType = InterfaceType.GenericTypeArguments[0];
-									break;
-								}
-							}
-
-							// Add it to the output list
-							Fields.Add(Setter);
-						}
+						ProcessConfigTypeMember<FieldInfo>(TargetObjectType, FieldInfo, Members, (FieldInfo, Attribute) => new ConfigField(FieldInfo, Attribute));
 					}
-					TypeToConfigFields.Add(TargetObjectType, Fields);
+					foreach (PropertyInfo PropertyInfo in TargetObjectType.GetProperties(BindingFlags.Instance | BindingFlags.GetField | BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+					{
+						ProcessConfigTypeMember<PropertyInfo>(TargetObjectType, PropertyInfo, Members, (PropertyInfo, Attribute) => new ConfigProperty(PropertyInfo, Attribute));
+					}
+					TypeToConfigMembers.Add(TargetObjectType, Members);
 				}
 			}
-			return Fields;
+			return Members;
+		}
+
+		static void ProcessConfigTypeMember<MEMBER>(Type TargetType, MEMBER MemberInfo, List<ConfigMember> Members, Func<MEMBER, ConfigFileAttribute, ConfigMember> CreateConfigMember)
+			where MEMBER : System.Reflection.MemberInfo
+		{
+			IEnumerable<ConfigFileAttribute> Attributes = MemberInfo.GetCustomAttributes<ConfigFileAttribute>();
+			foreach (ConfigFileAttribute Attribute in Attributes)
+			{
+				// Copy the field 
+				ConfigMember Setter = CreateConfigMember(MemberInfo, Attribute);
+
+				// Check if the field type implements ICollection<>. If so, we can take multiple values.
+				foreach (Type InterfaceType in Setter.Type.GetInterfaces())
+				{
+					if (InterfaceType.IsGenericType && InterfaceType.GetGenericTypeDefinition() == typeof(ICollection<>))
+					{
+						MethodInfo MethodInfo = InterfaceType.GetRuntimeMethod("Add", new Type[] { InterfaceType.GenericTypeArguments[0] })!;
+						Setter.AddElement = (Target, Value) => { MethodInfo.Invoke(Setter.GetValue(Target), new object?[] { Value }); };
+						Setter.ElementType = InterfaceType.GenericTypeArguments[0];
+						break;
+					}
+				}
+
+				// Add it to the output list
+				Members.Add(Setter);
+			}
 		}
 
 		/// <summary>
@@ -297,28 +396,28 @@ namespace UnrealBuildTool
 		/// <param name="ConfigValues">Will be populated with config values that were retrieved. May be null.</param>
 		internal static void ReadSettings(DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, object TargetObject, Dictionary<ConfigDependencyKey, IReadOnlyList<string>?>? ConfigValues)
 		{
-			List<ConfigField> Fields = FindConfigFieldsForType(TargetObject.GetType());
-			foreach(ConfigField Field in Fields)
+			List<ConfigMember> Members = FindConfigMembersForType(TargetObject.GetType());
+			foreach(ConfigMember Member in Members)
 			{
 				// Read the hierarchy listed
-				ConfigHierarchy Hierarchy = ReadHierarchy(Field.Attribute.ConfigType, ProjectDir, Platform);
+				ConfigHierarchy Hierarchy = ReadHierarchy(Member.Attribute.ConfigType, ProjectDir, Platform);
 
 				// Get the key name
-				string KeyName = Field.Attribute.KeyName ?? Field.FieldInfo.Name;
+				string KeyName = Member.Attribute.KeyName ?? Member.MemberInfo.Name;
 
 				// Get the value(s) associated with this key
 				IReadOnlyList<string>? Values;
-				Hierarchy.TryGetValues(Field.Attribute.SectionName, KeyName, out Values);
+				Hierarchy.TryGetValues(Member.Attribute.SectionName, KeyName, out Values);
 
 				// Parse the values from the config files and update the target object
-				if (Field.AddElement == null)
+				if (Member.AddElement == null)
 				{
 					if(Values != null && Values.Count == 1)
 					{
 						object? Value;
-						if(TryParseValue(Values[0], Field.FieldInfo.FieldType, out Value))
+						if(TryParseValue(Values[0], Member.Type, out Value))
 						{
-							Field.FieldInfo.SetValue(TargetObject, Value);
+							Member.SetValue(TargetObject, Value);
 						}
 					}
 				}
@@ -329,9 +428,9 @@ namespace UnrealBuildTool
 						foreach(string Item in Values)
 						{
 							object? Value;
-							if(TryParseValue(Item, Field.ElementType!, out Value))
+							if(TryParseValue(Item, Member.ElementType!, out Value))
 							{
-								Field.AddElement(TargetObject, Value);
+								Member.AddElement(TargetObject, Value);
 							}
 						}
 					}
@@ -340,7 +439,7 @@ namespace UnrealBuildTool
 				// Save the dependency
 				if (ConfigValues != null)
 				{
-					ConfigDependencyKey Key = new ConfigDependencyKey(Field.Attribute.ConfigType, ProjectDir, Platform, Field.Attribute.SectionName, KeyName);
+					ConfigDependencyKey Key = new ConfigDependencyKey(Member.Attribute.ConfigType, ProjectDir, Platform, Member.Attribute.SectionName, KeyName);
 					ConfigValues[Key] = Values;
 				}
 			}
@@ -452,5 +551,159 @@ namespace UnrealBuildTool
 				throw new Exception("Unsupported type for [ConfigFile] attribute");
 			}
 		}
+
+
+		#region Updating Default Config file support
+
+		/// <summary>
+		/// Calculates the path to where the project's Default config of the type given (ie DefaultEngine.ini)
+		/// </summary>
+		/// <param name="ConfigType">Game, Engine, etc</param>
+		/// <param name="ProjectDir">Project directory, used to find Config/Default[Type].ini</param>
+		public static FileReference GetDefaultConfigFileReference(ConfigHierarchyType ConfigType, DirectoryReference ProjectDir)
+		{
+			return FileReference.Combine(ProjectDir, "Config", $"Default{ConfigType}.ini");
+		}
+
+		/// <summary>
+		/// Updates a section in a Default***.ini, and will write it out. If the file is not writable, p4 can attempt to check it out.
+		/// </summary>
+		/// <param name="ConfigType">Game, Engine, etc</param>
+		/// <param name="ProjectDir">Project directory, used to find Config/Default[Type].ini</param>
+		/// <param name="UpdateType">How to modify the secion</param>
+		/// <param name="Section">Name of the section with the Key in it</param>
+		/// <param name="Key">Key to update</param>
+		/// <param name="Value">Value to write for te Key</param>
+		/// <param name="Logger">Logger for output</param>
+		/// <returns></returns>		
+		public static bool WriteSettingToDefaultConfig(ConfigHierarchyType ConfigType, DirectoryReference ProjectDir, ConfigDefaultUpdateType UpdateType, string Section, string Key, string Value, ILogger Logger)
+		{
+			FileReference DefaultConfigFile = GetDefaultConfigFileReference(ConfigType, ProjectDir);
+
+			if (!FileReference.Exists(DefaultConfigFile))
+			{
+				Logger.LogWarning("Failed to find config file '{DefaultConfigFile}' to update", DefaultConfigFile);
+				return false;
+			}
+
+			if (File.GetAttributes(DefaultConfigFile.FullName).HasFlag(FileAttributes.ReadOnly))
+			{
+				Logger.LogWarning("Config file '{ConfigFile}' is read-only, unable to write setting {Key}", DefaultConfigFile.FullName, Key);
+				return false;
+			}
+
+			// generate the section header
+			string SectionString = $"[{Section}]";
+
+			// genrate the line we are going to write to the config
+			string KeyWithEquals = $"{Key}=";
+			string LineToWrite = (UpdateType == ConfigDefaultUpdateType.AddArrayEntry ? "+" : "");
+			LineToWrite += KeyWithEquals + Value;
+
+
+			// read in all the lines so we can insert or replace one
+			List<string> Lines = File.ReadAllLines(DefaultConfigFile.FullName).ToList();
+
+			// look for the section
+			int SectionIndex = -1;
+			for (int Index = 0; Index < Lines.Count; Index++)
+			{
+				if (Lines[Index].Trim().Equals(SectionString, StringComparison.InvariantCultureIgnoreCase))
+				{
+					SectionIndex = Index;
+					break;
+				}
+			}
+
+			// if section not found, just append to the end
+			if (SectionIndex == -1)
+			{
+				Lines.Add(SectionString);
+				Lines.Add(LineToWrite);
+
+				File.WriteAllLines(DefaultConfigFile.FullName, Lines);
+				return true;
+			}
+
+
+			// find the last line in the section with the prefix
+			int LastIndexOfPrefix = -1;
+			int NextSectionIndex = -1;
+			for (int Index = SectionIndex + 1; Index < Lines.Count; Index++)
+			{
+				string Line = Lines[Index];
+				if (Line.StartsWith('+') || Line.StartsWith('-') || Line.StartsWith('.') || Line.StartsWith('!'))
+				{
+					Line = Line.Substring(1);
+				}
+
+				// look for last array entry in case of multiples (or the only line for non-array type)
+				if (Line.StartsWith(KeyWithEquals, StringComparison.InvariantCultureIgnoreCase))
+				{
+					LastIndexOfPrefix = Index;
+				}
+				else if (Lines[Index].StartsWith("["))
+				{
+					NextSectionIndex = Index;
+					// we found another section, so break out
+					break;
+				}
+			}
+
+			// now we know enough to either insert or replace a line
+
+			// if we never found the key, we will insert at the end of the section
+			if (LastIndexOfPrefix == -1)
+			{
+				// if we didn't find a next section, thjen we will insert at the end of the file
+				if (NextSectionIndex == -1)
+				{
+					NextSectionIndex = Lines.Count;
+				}
+
+				// move past blank lines between sections
+				while (string.IsNullOrWhiteSpace(Lines[NextSectionIndex - 1]))
+				{
+					NextSectionIndex--;
+				}
+				// insert before the next section (or end of file)
+				Lines.Insert(NextSectionIndex, LineToWrite);
+			}
+			// otherwise, insert after, or replace, a line, depending on type
+			else
+			{
+				if (UpdateType == ConfigDefaultUpdateType.AddArrayEntry)
+				{
+					Lines.Insert(LastIndexOfPrefix + 1, LineToWrite);
+				}
+				else
+				{
+					Lines[LastIndexOfPrefix] = LineToWrite;
+				}
+			}
+
+			// now the lines are updated, we can overwrite the file
+			File.WriteAllLines(DefaultConfigFile.FullName, Lines);
+			return true;
+		}
+
+		/// <summary>
+		/// Invalidates the hierarchy internal caches so that next call to ReadHierarchy will re-read from disk
+		/// but existing ones will still be valid with old values
+		/// </summary>
+		public static void InvalidateCaches()
+		{
+			lock (LocationToConfigFile)
+			{
+				LocationToConfigFile.Clear();
+			}
+
+			lock (HierarchyKeyToHierarchy)
+			{
+				HierarchyKeyToHierarchy.Clear();
+			}
+		}
+
+		#endregion
 	}
 }

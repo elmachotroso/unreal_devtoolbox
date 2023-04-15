@@ -16,6 +16,7 @@
 #include "SceneView.h"
 #include "PrimitiveUniformShaderParameters.h"
 #include "DrawDebugHelpers.h"
+#include "Math/CapsuleShape.h"
 
 class FLightSceneInfo;
 class FLightSceneProxy;
@@ -39,9 +40,10 @@ namespace Nanite
 class FSimpleLightEntry
 {
 public:
-	FVector Color;
+	FVector3f Color;
 	float Radius;
 	float Exponent;
+	float InverseExposureBlend = 0.0f;
 	float VolumetricScatteringIntensity;
 	bool bAffectTranslucency;
 };
@@ -70,11 +72,11 @@ class FSimpleLightArray
 {
 public:
 	/** Data per simple dynamic light instance, independent of view */
-	TArray<FSimpleLightEntry, TMemStackAllocator<>> InstanceData;
+	TArray<FSimpleLightEntry, SceneRenderingAllocator> InstanceData;
 	/** Per-view data for each light */
-	TArray<FSimpleLightPerViewEntry, TMemStackAllocator<>> PerViewData;
+	TArray<FSimpleLightPerViewEntry, SceneRenderingAllocator> PerViewData;
 	/** Indices into the per-view data for each light. */
-	TArray<FSimpleLightInstacePerViewIndexData, TMemStackAllocator<>> InstancePerViewDataIndices;
+	TArray<FSimpleLightInstacePerViewIndexData, SceneRenderingAllocator> InstancePerViewDataIndices;
 
 public:
 
@@ -114,28 +116,36 @@ public:
 	FVector2D LightingAtlasLocation = FVector2D(ForceInit);
 	FIntRect HeightfieldRect; // Default initialized
 
+	uint32 GPUSceneInstanceIndex = 0;
 	int32 NumSubsections = 0;
 	FVector4 SubsectionScaleAndBias = FVector4(ForceInit);
 	int32 VisibilityChannel;
 
-	FHeightfieldComponentDescription(const FMatrix& InLocalToWorld) :
-		LocalToWorld(InLocalToWorld), 
+	FHeightfieldComponentDescription(const FMatrix& InLocalToWorld, uint32 InGPUSceneInstanceIndex) :
+		LocalToWorld(InLocalToWorld),
+		GPUSceneInstanceIndex(InGPUSceneInstanceIndex),
 		VisibilityChannel(-1)
 	{}
 };
+
+extern bool IsOptimizedWPO();
 
 extern bool CacheShadowDepthsFromPrimitivesUsingWPO();
 
 enum class ERayTracingPrimitiveFlags : uint8
 {
-	// Visibility flags
+	// Visibility flags:
+
 	// This type of geometry is not supported in ray tracing and all proxies will be excluded
 	// If a proxy decides to return UnsupportedProxyType it must be consistent across all proxies of this type
+	// This value is used for primitives that return false from FPrimitiveSceneProxy::IsRayTracingRelevant().
 	UnsupportedProxyType = 0 << 0,
+
 	// This scene proxy will be excluded, because it decides to be invisible in ray tracing (probably due to other flags)
 	Excluded = 1 << 0,
 
-	// Caching flags
+	// Caching flags:
+
 	// Fully dynamic (the ray tracing representation of this scene proxy will be polled every frame)
 	Dynamic = 1 << 1,
 	// Ray tracing mesh commmands generated from this proxy's materials can be cached
@@ -143,7 +153,8 @@ enum class ERayTracingPrimitiveFlags : uint8
 	// Instances from this proxy can be cached
 	CacheInstances = 1 << 3,
 
-	// Misc flags
+	// Misc flags:
+
 	// Static meshes with multiple LODs will want to select a LOD index based on screen size
 	ComputeLOD = 1 << 4, 
 
@@ -217,6 +228,9 @@ public:
 	void SetIsBeingMovedByEditor_GameThread(bool bIsBeingMoved);
 #endif	// WITH_EDITOR
 
+	/** Enqueue updated setting for evaluation of World Position Offset. */
+	void SetEvaluateWorldPositionOffset_GameThread(bool bEvaluate);
+
 	/** @return True if the primitive is visible in the given View. */
 	ENGINE_API bool IsShown(const FSceneView* View) const;
 
@@ -260,7 +274,7 @@ public:
 	virtual void GetMeshDescription(int32 LODIndex, TArray<FMeshBatch>& OutMeshElements) const {}
 
 	/** Gathers shadow shapes from this proxy. */
-	virtual void GetShadowShapes(TArray<FCapsuleShape3f>& CapsuleShapes) const {}		// LWC_TODO: Precision loss? Forcing float variant of FCapsuleShape3f.
+	virtual void GetShadowShapes(FVector PreViewTranslation, TArray<FCapsuleShape3f>& OutCapsuleShapes) const {}
 
 #if RHI_RAYTRACING
 	// TODO: remove these individual functions in favor of ERayTracingPrimitiveFlags
@@ -357,7 +371,7 @@ public:
 		SelfShadowBias = 0;
 	}
 
-	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const
+	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const
 	{
 	}
 
@@ -541,6 +555,7 @@ public:
 	inline bool IsLocalToWorldDeterminantNegative() const { return bIsLocalToWorldDeterminantNegative; }
 	inline const FBoxSphereBounds& GetBounds() const { return Bounds; }
 	inline const FBoxSphereBounds& GetLocalBounds() const { return LocalBounds; }
+	inline float GetBoundsScale() const { return BoundsScale; }
 	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const { OutBounds = LocalBounds; }
 	inline FName GetOwnerName() const { return OwnerName; }
 	inline FName GetResourceName() const { return ResourceName; }
@@ -554,7 +569,6 @@ public:
 	inline int32 GetVisibilityId() const { return VisibilityId; }
 	inline int16 GetTranslucencySortPriority() const { return TranslucencySortPriority; }
 	inline float GetTranslucencySortDistanceOffset() const { return TranslucencySortDistanceOffset; }
-	inline bool HasMotionBlurVelocityMeshes() const { return bHasMotionBlurVelocityMeshes; }
 
 	inline int32 GetVirtualTextureLodBias() const { return VirtualTextureLodBias; }
 	inline int32 GetVirtualTextureCullMips() const { return VirtualTextureCullMips; }
@@ -572,8 +586,6 @@ public:
 	{ 
 		return Mobility == EComponentMobility::Movable || !bGoodCandidateForCachedShadowmap; 
 	}
-
-	bool IsUsingWPOMaterial() const { return bUsingWPOMaterial; }
 
 	inline ELightmapType GetLightmapType() const { return LightmapType; }
 	inline bool IsStatic() const { return Mobility == EComponentMobility::Static; }
@@ -612,6 +624,7 @@ public:
 	inline bool WritesVirtualTexture(URuntimeVirtualTexture* VirtualTexture) const { return RuntimeVirtualTextures.Find(VirtualTexture) != INDEX_NONE; }
 	inline bool AffectsDynamicIndirectLighting() const { return bAffectDynamicIndirectLighting; }
 	inline bool AffectsDistanceFieldLighting() const { return bAffectDistanceFieldLighting; }
+	inline bool AffectsIndirectLightingWhileHidden() const { return bAffectIndirectLightingWhileHidden; }
 	inline EIndirectLightingCacheQuality GetIndirectLightingCacheQuality() const { return IndirectLightingCacheQuality; }
 	inline bool CastsVolumetricTranslucentShadow() const { return bCastVolumetricTranslucentShadow; }
 	inline bool CastsContactShadow() const { return bCastContactShadow; }
@@ -683,12 +696,10 @@ public:
 	}
 
 	inline bool UseEditorCompositing(const FSceneView* View) const { return GIsEditor && bUseEditorCompositing && !View->bIsGameView; }
-	inline bool IsBeingMovedByEditor() const { return bIsBeingMovedByEditor; }
 	inline const FVector& GetActorPosition() const { return ActorPosition; }
 	inline const bool ReceivesDecals() const { return bReceivesDecals; }
 	inline bool WillEverBeLit() const { return bWillEverBeLit; }
 	inline bool HasValidSettingsForStaticLighting() const { return bHasValidSettingsForStaticLighting; }
-	inline bool AlwaysHasVelocity() const { return bAlwaysHasVelocity; }
 	inline bool SupportsDistanceFieldRepresentation() const { return bSupportsDistanceFieldRepresentation; }
 	inline bool SupportsMeshCardRepresentation() const { return bSupportsMeshCardRepresentation; }
 	inline bool SupportsHeightfieldRepresentation() const { return bSupportsHeightfieldRepresentation; }
@@ -711,11 +722,15 @@ public:
 
 	static constexpr int32 InvalidRayTracingGroupId = -1;
 
-	/** Returns whether draws velocity in base pass. */
-	inline bool DrawsVelocity() const
-	{
-		return IsMovable() || IsBeingMovedByEditor();
-	}
+	inline bool EvaluateWorldPositionOffset() const { return bEvaluateWorldPositionOffset; }
+	inline bool AnyMaterialHasWorldPositionOffset() const { return bAnyMaterialHasWorldPositionOffset; }
+	
+	/** Returns true if this proxy can change transform so that we should cache previous transform for calculating velocity. */
+	inline bool HasDynamicTransform() const { return IsMovable() || bIsBeingMovedByEditor; }
+	/** Returns true if this proxy can write velocity. This is used for setting velocity relevance. */
+	inline bool DrawsVelocity() const { return HasDynamicTransform() || bAlwaysHasVelocity || bHasWorldPositionOffsetVelocity; }
+	/** Returns true if this proxy should write velocity even when the transform isn't changing. Usually this is combined with a check for the transform changing. */
+	inline bool AlwaysHasVelocity() const {	return bAlwaysHasVelocity || (bHasWorldPositionOffsetVelocity && EvaluateWorldPositionOffset()); }
 
 #if WITH_EDITOR
 	inline int32 GetNumUncachedStaticLightingInteractions() { return NumUncachedStaticLightingInteractions; }
@@ -802,6 +817,30 @@ public:
 
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const
 	{
+		return false;
+	}
+
+	/**
+	 * Retrieves the instance draw distance range (mostly only used by objects whose instances are culled on the GPU)
+	 * 
+	 * @param OutDistanceMinMax	contains the min/max camera distance of the primitive's instances when enabled
+	 * @return bool 			true if camera distance culling is enabled for this primitive's instances
+	 **/
+	virtual bool GetInstanceDrawDistanceMinMax(FVector2f& OutDistanceMinMax) const
+	{
+		OutDistanceMinMax = FVector2f(0.0f);
+		return false;
+	}
+
+	/**
+	 * Retrieves the per-instance world position offset disable distance
+	 * 
+	 * @param OutWPODisableDistance	contains the distance from the camera at which the primitive's instances disable WPO
+	 * @return bool 				true if WPO disable distance is enabled for this primitive's instances
+	 **/
+	virtual bool GetInstanceWorldPositionOffsetDisableDistance(float& OutWPODisableDistance) const
+	{
+		OutWPODisableDistance = 0.0f;
 		return false;
 	}
 
@@ -961,7 +1000,7 @@ public:
 	 * @param UVChannelIndices (OUT)	The related index for each (array size = TEXSTREAM_MAX_NUM_TEXTURES_PER_MATERIAL / 4)
 	 * @return							Whether scales were computed or not.
 	 */
-	ENGINE_API virtual bool GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const class FMaterialRenderProxy* MaterialRenderProxy, FVector4f* OneOverScales, struct FIntVector4* UVChannelIndices) const;
+	ENGINE_API virtual bool GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const class FMaterialRenderProxy* MaterialRenderProxy, FVector4f* OneOverScales, FIntVector4* UVChannelIndices) const;
 #endif
 
 	/**
@@ -1060,9 +1099,6 @@ private:
 	/** true if ViewOwnerDepthPriorityGroup should be used. */
 	uint8 bUseViewOwnerDepthPriorityGroup : 1;
 
-	/** true if the primitive has motion blur velocity meshes */
-	uint8 bHasMotionBlurVelocityMeshes : 1;
-
 	/** DPG this prim belongs to. */
 	uint8 StaticDepthPriorityGroup : SDPG_NumBits;
 
@@ -1106,9 +1142,6 @@ protected:
 	/** Whether this proxy's mesh is unlikely to be constantly changing. */
 	uint8 bGoodCandidateForCachedShadowmap : 1;
 
-	/** Whether this proxy's mesh uses WPO materials. */
-	uint8 bUsingWPOMaterial : 1;
-
 	/** Whether the primitive should be statically lit but has unbuilt lighting, and a preview should be used. */
 	uint8 bNeedsUnbuiltPreviewLighting : 1;
 
@@ -1126,6 +1159,9 @@ protected:
 
 	/** True if the primitive influences dynamic indirect lighting. */
 	uint8 bAffectDynamicIndirectLighting : 1;
+
+	/** True if the primitive should affect indirect lighting even when hidden. */
+	uint8 bAffectIndirectLightingWhileHidden : 1;
 
 	uint8 bAffectDistanceFieldLighting : 1;
 
@@ -1201,6 +1237,12 @@ protected:
 	/** Whether this proxy is a Nanite mesh. */
 	uint8 bIsNaniteMesh : 1;
 
+	/** Whether the primitive is a HierarchicalInstancedStaticMesh. */
+	uint8 bIsHierarchicalInstancedStaticMesh : 1;
+
+	/** Whether the primitive is landscape grass. */
+	uint8 bIsLandscapeGrass : 1;
+
 	/** True if all meshes (AKA all vertex factories) drawn by this proxy support GPU scene (default is false). */
 	uint8 bSupportsGPUScene : 1;
 
@@ -1212,6 +1254,15 @@ protected:
 
 	/** Whether the instances on the primitive need to update transforms during GPU Scene update. */
 	uint8 bShouldUpdateGPUSceneTransforms : 1;
+
+	/** Whether the primitive should evaluate any World Position Offset. */
+	uint8 bEvaluateWorldPositionOffset : 1;
+
+	/** Whether the primitive has any materials with World Position Offset, and some conditions around velocity are met. */
+	uint8 bHasWorldPositionOffsetVelocity : 1;
+
+	/** Whether the primitive has any materials with World Position Offset. */
+	uint8 bAnyMaterialHasWorldPositionOffset : 1;
 
 	/** Whether the primitive should always be considered to have velocities, even if it hasn't moved. */
 	uint8 bAlwaysHasVelocity : 1;
@@ -1387,6 +1438,9 @@ private:
 	/** The primitive's minimum cull distance. */
 	float MinDrawDistance;
 
+	/** The primitive's bounds scale. */
+	float BoundsScale;
+
 	/** The primitive's uniform buffer. */
 	TUniformBufferRef<FPrimitiveUniformShaderParameters> UniformBuffer;
 
@@ -1457,3 +1511,5 @@ ENGINE_API extern bool SupportsCachingMeshDrawCommands(const FMeshBatch& MeshBat
 ENGINE_API extern bool SupportsNaniteRendering(const FVertexFactory* RESTRICT VertexFactory, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy);
 
 ENGINE_API extern bool SupportsNaniteRendering(const FVertexFactory* RESTRICT VertexFactory, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, const class FMaterialRenderProxy* MaterialRenderProxy, ERHIFeatureLevel::Type FeatureLevel);
+
+ENGINE_API extern bool SupportsNaniteRendering(const class FVertexFactoryType* RESTRICT VertexFactoryType, const class FMaterial& Material, ERHIFeatureLevel::Type FeatureLevel);

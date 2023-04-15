@@ -1,27 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeCommon;
-using HordeServer.Models;
-using HordeServer.Services;
-using HordeServer.Utilities;
-using MessagePack.Formatters;
-using Microsoft.AspNetCore.Connections.Features;
-using Microsoft.Extensions.Logging;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization;
-using MongoDB.Bson.Serialization.Attributes;
-using MongoDB.Driver;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Linq;
-using System.Linq.Expressions;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Transactions;
+using Horde.Build.Auditing;
+using Horde.Build.Jobs;
+using Horde.Build.Jobs.Graphs;
+using Horde.Build.Logs;
+using Horde.Build.Streams;
+using Horde.Build.Users;
+using Horde.Build.Utilities;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
-namespace HordeServer.Collections
+namespace Horde.Build.Issues
 {
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
@@ -43,79 +36,80 @@ namespace HordeServer.Collections
 		/// <inheritdoc/>
 		public CaseInsensitiveStringSet? RejectKeys { get; set; }
 
+		/// <inheritdoc/>
+		public CaseInsensitiveStringSet? Metadata { get; set; }
+
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Type">The type of issue</param>
-		/// <param name="Keys">Keys which uniquely identify this issue</param>
-		/// <param name="RejectKeys">Keys which should not match with this issue</param>
-		public NewIssueFingerprint(string Type, IEnumerable<string> Keys, IEnumerable<string>? RejectKeys)
+		/// <param name="type">The type of issue</param>
+		/// <param name="keys">Keys which uniquely identify this issue</param>
+		/// <param name="rejectKeys">Keys which should not match with this issue</param>
+		/// <param name="metadata">Additional metadata added by the issue handler</param>
+		public NewIssueFingerprint(string type, IEnumerable<string> keys, IEnumerable<string>? rejectKeys, IEnumerable<string>? metadata)
 		{
-			this.Type = Type;
-			this.Keys = new CaseInsensitiveStringSet(Keys);
+			Type = type;
+			Keys = new CaseInsensitiveStringSet(keys);
 
-			if (RejectKeys != null && RejectKeys.Any())
+			if (rejectKeys != null && rejectKeys.Any())
 			{
-				this.RejectKeys = new CaseInsensitiveStringSet(RejectKeys);
+				RejectKeys = new CaseInsensitiveStringSet(rejectKeys);
+			}
+			if (metadata != null && metadata.Any())
+			{
+				Metadata = new CaseInsensitiveStringSet(metadata);
 			}
 		}
 
 		/// <summary>
 		/// Copy constructor
 		/// </summary>
-		/// <param name="Other">The fingerprint to copy from</param>
-		public NewIssueFingerprint(IIssueFingerprint Other)
-			: this(Other.Type, Other.Keys, Other.RejectKeys)
+		/// <param name="other">The fingerprint to copy from</param>
+		public NewIssueFingerprint(IIssueFingerprint other)
+			: this(other.Type, other.Keys, other.RejectKeys, other.Metadata)
 		{
 		}
 
 		/// <summary>
 		/// Merges another fingerprint into this one
 		/// </summary>
-		/// <param name="Other">The other fingerprint to merge with</param>
-		public NewIssueFingerprint MergeWith(IIssueFingerprint Other)
+		/// <param name="other">The other fingerprint to merge with</param>
+		public void MergeWith(IIssueFingerprint other)
 		{
-			NewIssueFingerprint Result = new NewIssueFingerprint(this);
-
-			Result.Keys.UnionWith(Other.Keys);
-			if (Other.RejectKeys != null)
+			Keys.UnionWith(other.Keys);
+			if (other.RejectKeys != null)
 			{
-				if (Result.RejectKeys == null)
-				{
-					Result.RejectKeys = new CaseInsensitiveStringSet();
-				}
-				Result.RejectKeys.UnionWith(Other.RejectKeys);
+				RejectKeys ??= new CaseInsensitiveStringSet();
+				RejectKeys.UnionWith(other.RejectKeys);
 			}
-
-			return Result;
+			if (other.Metadata != null)
+			{
+				Metadata ??= new CaseInsensitiveStringSet();
+				Metadata.UnionWith(other.Metadata);
+			}
 		}
 
 		/// <inheritdoc/>
-		public override bool Equals(object? Other) => Equals(Other as IIssueFingerprint);
+		public override bool Equals(object? other) => Equals(other as IIssueFingerprint);
 
 		/// <inheritdoc/>
-		public bool Equals(IIssueFingerprint? OtherFingerprint)
+		public bool Equals(IIssueFingerprint? otherFingerprint)
 		{
-			if(OtherFingerprint == null || !Type.Equals(OtherFingerprint.Type, StringComparison.Ordinal) || !Keys.SetEquals(OtherFingerprint.Keys))
+			if (!ReferenceEquals(this, otherFingerprint))
 			{
-				return false;
-			}
-
-			if (RejectKeys == null)
-			{
-				if (OtherFingerprint.RejectKeys != null && OtherFingerprint.RejectKeys.Count > 0)
+				if (otherFingerprint == null || !Type.Equals(otherFingerprint.Type, StringComparison.Ordinal) || !Keys.SetEquals(otherFingerprint.Keys))
+				{
+					return false;
+				}
+				if (!ContentsEqual(RejectKeys, otherFingerprint.RejectKeys))
+				{
+					return false;
+				}
+				if (!ContentsEqual(Metadata, otherFingerprint.Metadata))
 				{
 					return false;
 				}
 			}
-			else
-			{
-				if (OtherFingerprint.RejectKeys == null || !RejectKeys.SetEquals(OtherFingerprint.RejectKeys))
-				{
-					return false;
-				}
-			}
-
 			return true;
 		}
 
@@ -125,42 +119,57 @@ namespace HordeServer.Collections
 		/// <returns>The hashcode value</returns>
 		public override int GetHashCode()
 		{
-			int Result = StringComparer.Ordinal.GetHashCode(Type);
-			foreach (string Key in Keys)
+			int result = StringComparer.Ordinal.GetHashCode(Type);
+			return HashCode.Combine(result, GetContentsHash(Keys), GetContentsHash(RejectKeys), GetContentsHash(Metadata));
+		}
+
+		/// <summary>
+		/// Checks if the contents of two sets are equal
+		/// </summary>
+		/// <param name="setA"></param>
+		/// <param name="setB"></param>
+		/// <returns></returns>
+		static bool ContentsEqual(CaseInsensitiveStringSet? setA, CaseInsensitiveStringSet? setB)
+		{
+			if (setA == null || setA.Count == 0)
 			{
-				Result = HashCode.Combine(Result, Key);
+				return setB == null || setB.Count == 0;
 			}
-			if (RejectKeys != null)
+			else
 			{
-				foreach (string RejectKey in RejectKeys)
+				return setB != null && setA.SetEquals(setB);
+			}
+		}
+
+		/// <summary>
+		/// Gets the hash of the contents of a case insensitive set
+		/// </summary>
+		/// <param name="set"></param>
+		/// <returns></returns>
+		static int GetContentsHash(CaseInsensitiveStringSet? set)
+		{
+			int value = 0;
+			if (set != null)
+			{
+				foreach (string element in set)
 				{
-					Result = HashCode.Combine(Result, RejectKey);
+					value = HashCode.Combine(value, StringComparer.OrdinalIgnoreCase.GetHashCode(element));
 				}
 			}
-			return Result;
+			return value;
 		}
 
 		/// <summary>
 		/// Merges two fingerprints togetherthis issue fingerprint with another
 		/// </summary>
-		/// <param name="A">The first fingerprint</param>
-		/// <param name="B">The second fingerprint to merge with</param>
+		/// <param name="a">The first fingerprint</param>
+		/// <param name="b">The second fingerprint to merge with</param>
 		/// <returns>Merged fingerprint</returns>
-		public static NewIssueFingerprint Merge(IIssueFingerprint A, IIssueFingerprint B)
+		public static NewIssueFingerprint Merge(IIssueFingerprint a, IIssueFingerprint b)
 		{
-			NewIssueFingerprint NewFingerprint = new NewIssueFingerprint(A);
-			NewFingerprint.Keys.UnionWith(B.Keys);
-
-			if (B.RejectKeys != null)
-			{
-				if (NewFingerprint.RejectKeys == null)
-				{
-					NewFingerprint.RejectKeys = new CaseInsensitiveStringSet();
-				}
-				NewFingerprint.RejectKeys.UnionWith(B.RejectKeys);
-			}
-
-			return NewFingerprint;
+			NewIssueFingerprint newFingerprint = new NewIssueFingerprint(a);
+			newFingerprint.MergeWith(b);
+			return newFingerprint;
 		}
 
 		/// <inheritdoc/>
@@ -205,14 +214,14 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public NewIssueSpanData(StreamId StreamId, string StreamName, TemplateRefId TemplateRefId, string NodeName, NewIssueFingerprint Fingerprint, NewIssueStepData FirstFailure)
+		public NewIssueSpanData(StreamId streamId, string streamName, TemplateRefId templateRefId, string nodeName, NewIssueFingerprint fingerprint, NewIssueStepData firstFailure)
 		{
-			this.StreamId = StreamId;
-			this.StreamName = StreamName;
-			this.TemplateRefId = TemplateRefId;
-			this.NodeName = NodeName;
-			this.Fingerprint = Fingerprint;
-			this.FirstFailure = FirstFailure;
+			StreamId = streamId;
+			StreamName = streamName;
+			TemplateRefId = templateRefId;
+			NodeName = nodeName;
+			Fingerprint = fingerprint;
+			FirstFailure = firstFailure;
 		}
 	}
 
@@ -245,53 +254,62 @@ namespace HordeServer.Collections
 		/// <inheritdoc cref="IIssueStep.LogId"/>
 		public LogId? LogId { get; set; }
 
+		/// <inheritdoc cref="IIssueStep.Annotations"/>
+		public NodeAnnotations? Annotations { get; set; }
+
 		/// <inheritdoc cref="IIssueStep.PromoteByDefault"/>
 		public bool PromoteByDefault { get; set; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Change">The changelist number for this job</param>
-		/// <param name="Severity">Severity of the issue in this step</param>
-		/// <param name="JobName">The job name</param>
-		/// <param name="JobId">The unique job id</param>
-		/// <param name="BatchId">The batch id</param>
-		/// <param name="StepId">The step id</param>
-		/// <param name="StepTime">Time that the step started</param>
-		/// <param name="LogId">Unique id of the log file for this step</param>
-		/// <param name="Promoted">Whether this step is promoted</param>
-		public NewIssueStepData(int Change, IssueSeverity Severity, string JobName, JobId JobId, SubResourceId BatchId, SubResourceId StepId, DateTime StepTime, LogId? LogId, bool Promoted)
+		/// <param name="change">The changelist number for this job</param>
+		/// <param name="severity">Severity of the issue in this step</param>
+		/// <param name="jobName">The job name</param>
+		/// <param name="jobId">The unique job id</param>
+		/// <param name="batchId">The batch id</param>
+		/// <param name="stepId">The step id</param>
+		/// <param name="stepTime">Time that the step started</param>
+		/// <param name="logId">Unique id of the log file for this step</param>
+		/// <param name="annotations">Annotations for this step</param>
+		/// <param name="promoted">Whether this step is promoted</param>
+		public NewIssueStepData(int change, IssueSeverity severity, string jobName, JobId jobId, SubResourceId batchId, SubResourceId stepId, DateTime stepTime, LogId? logId, IReadOnlyNodeAnnotations? annotations, bool promoted)
 		{
-			this.Change = Change;
-			this.Severity = Severity;
-			this.JobName = JobName;
-			this.JobId = JobId;
-			this.BatchId = BatchId;
-			this.StepId = StepId;
-			this.StepTime = StepTime;
-			this.LogId = LogId;
-			this.PromoteByDefault = Promoted;
+			Change = change;
+			Severity = severity;
+			JobName = jobName;
+			JobId = jobId;
+			BatchId = batchId;
+			StepId = stepId;
+			StepTime = stepTime;
+			LogId = logId;
+			if (annotations != null)
+			{
+				Annotations = new NodeAnnotations(annotations);
+			}
+			PromoteByDefault = promoted;
 		}
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Job">The job being built</param>
-		/// <param name="Batch">Batch of the job for the step</param>
-		/// <param name="Step">The step being built</param>
-		/// <param name="Severity">Severity of the issue in this step</param>
-		/// <param name="Promoted">Whether this step is promoted</param>
-		public NewIssueStepData(IJob Job, IJobStepBatch Batch, IJobStep Step, IssueSeverity Severity, bool Promoted)
-			: this(Job.Change, Severity, Job.Name, Job.Id, Batch.Id, Step.Id, Step.StartTimeUtc ?? default, Step.LogId, Promoted)
+		/// <param name="job">The job being built</param>
+		/// <param name="batch">Batch of the job for the step</param>
+		/// <param name="step">The step being built</param>
+		/// <param name="severity">Severity of the issue in this step</param>
+		/// <param name="annotations">Annotations for this step</param>
+		/// <param name="promoted">Whether this step is promoted</param>
+		public NewIssueStepData(IJob job, IJobStepBatch batch, IJobStep step, IssueSeverity severity, IReadOnlyNodeAnnotations? annotations, bool promoted)
+			: this(job.Change, severity, job.Name, job.Id, batch.Id, step.Id, step.StartTimeUtc ?? default, step.LogId, annotations, promoted)
 		{
 		}
 
 		/// <summary>
 		/// Constructor for sentinel steps
 		/// </summary>
-		/// <param name="JobStepRef">The jobstep reference</param>
-		public NewIssueStepData(IJobStepRef JobStepRef)
-			: this(JobStepRef.Change, IssueSeverity.Unspecified, JobStepRef.JobName, JobStepRef.Id.JobId, JobStepRef.Id.BatchId, JobStepRef.Id.StepId, JobStepRef.StartTimeUtc, JobStepRef.LogId, false)
+		/// <param name="jobStepRef">The jobstep reference</param>
+		public NewIssueStepData(IJobStepRef jobStepRef)
+			: this(jobStepRef.Change, IssueSeverity.Unspecified, jobStepRef.JobName, jobStepRef.Id.JobId, jobStepRef.Id.BatchId, jobStepRef.Id.StepId, jobStepRef.StartTimeUtc, jobStepRef.LogId, null, false)
 		{
 		}
 	}
@@ -310,12 +328,12 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="AuthorId">Author of the change</param>
-		/// <param name="Change">The changelist number</param>
-		public NewIssueSuspectData(UserId AuthorId, int Change)
+		/// <param name="authorId">Author of the change</param>
+		/// <param name="change">The changelist number</param>
+		public NewIssueSuspectData(UserId authorId, int change)
 		{
-			this.AuthorId = AuthorId;
-			this.Change = Change;
+			AuthorId = authorId;
+			Change = change;
 		}
 	}
 
@@ -336,12 +354,12 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Change">The changelist number</param>
-		/// <param name="AuthorId">Author of the change</param>
-		public NewIssueSpanSuspectData(int Change, UserId AuthorId)
+		/// <param name="change">The changelist number</param>
+		/// <param name="authorId">Author of the change</param>
+		public NewIssueSpanSuspectData(int change, UserId authorId)
 		{
-			this.Change = Change;
-			this.AuthorId = AuthorId;
+			Change = change;
+			AuthorId = authorId;
 		}
 	}
 
@@ -353,16 +371,22 @@ namespace HordeServer.Collections
 		/// <inheritdoc cref="IIssueStream.StreamId"/>
 		public StreamId StreamId { get; set; }
 
+		/// <inheritdoc cref="IIssueStream.MergeOrigin"/>
+		public bool? MergeOrigin { get; set; }
+
 		/// <inheritdoc cref="IIssueStream.ContainsFix"/>
 		public bool? ContainsFix { get; set; }
+
+		/// <inheritdoc cref="IIssueStream.FixFailed"/>
+		public bool? FixFailed { get; set; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="StreamId"></param>
-		public NewIssueStream(StreamId StreamId)
+		/// <param name="streamId"></param>
+		public NewIssueStream(StreamId streamId)
 		{
-			this.StreamId = StreamId;
+			StreamId = streamId;
 		}
 	}
 
@@ -382,80 +406,82 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Creates a new issue
 		/// </summary>
-		/// <param name="Summary">Summary text for the issue</param>
+		/// <param name="summary">Summary text for the issue</param>
 		/// <returns>The new issue instance</returns>
-		Task<IIssue> AddIssueAsync(string Summary);
+		Task<IIssue> AddIssueAsync(string summary);
 
 		/// <summary>
 		/// Retrieves and issue by id
 		/// </summary>
-		/// <param name="IssueId">Unique id of the issue</param>
+		/// <param name="issueId">Unique id of the issue</param>
 		/// <returns>The issue matching the given id, or null</returns>
-		Task<IIssue?> GetIssueAsync(int IssueId);
+		Task<IIssue?> GetIssueAsync(int issueId);
 
 		/// <summary>
 		/// Finds the suspects for an issue
 		/// </summary>
-		/// <param name="Issue">The issue to retrieve suspects for</param>
+		/// <param name="issueId">The issue to retrieve suspects for</param>
 		/// <returns>List of suspects</returns>
-		Task<List<IIssueSuspect>> FindSuspectsAsync(IIssue Issue);
+		Task<List<IIssueSuspect>> FindSuspectsAsync(int issueId);
 
 		/// <summary>
 		/// Searches for open issues
 		/// </summary>
-		/// <param name="Ids">Set of issue ids to find</param>
-		/// <param name="UserId">The user to find issues for</param>
-		/// <param name="StreamId">The stream affected by the issue</param>
-		/// <param name="MinChange">Minimum changelist affected by the issue</param>
-		/// <param name="MaxChange">Maximum changelist affected by the issue</param>
-		/// <param name="Resolved">Include issues that are now resolved</param>
-		/// <param name="Promoted">Include only promoted issues</param>
-		/// <param name="Index">Index within the results to return</param>
-		/// <param name="Count">Number of results</param>
+		/// <param name="ids">Set of issue ids to find</param>
+		/// <param name="ownerId">The user to find issues for</param>
+		/// <param name="streamId">The stream affected by the issue</param>
+		/// <param name="minChange">Minimum changelist affected by the issue</param>
+		/// <param name="maxChange">Maximum changelist affected by the issue</param>
+		/// <param name="resolved">Include issues that are now resolved</param>
+		/// <param name="promoted">Include only promoted issues</param>
+		/// <param name="index">Index within the results to return</param>
+		/// <param name="count">Number of results</param>
 		/// <returns>List of streams open in the given stream at the given changelist</returns>
-		Task<List<IIssue>> FindIssuesAsync(IEnumerable<int>? Ids = null, UserId? UserId = null, StreamId? StreamId = null, int? MinChange = null, int? MaxChange = null, bool? Resolved = null, bool? Promoted = null, int? Index = null, int? Count = null);
+		Task<List<IIssue>> FindIssuesAsync(IEnumerable<int>? ids = null, UserId? ownerId = null, StreamId? streamId = null, int? minChange = null, int? maxChange = null, bool? resolved = null, bool? promoted = null, int? index = null, int? count = null);
 
 		/// <summary>
 		/// Searches for open issues
 		/// </summary>
-		/// <param name="Changes">List of suspect changes</param>
+		/// <param name="changes">List of suspect changes</param>
 		/// <returns>List of issues that are affected by the given changes</returns>
-		Task<List<IIssue>> FindIssuesForChangesAsync(List<int> Changes);
+		Task<List<IIssue>> FindIssuesForChangesAsync(List<int> changes);
 
 		/// <summary>
 		/// Try to update the state of an issue
 		/// </summary>
-		/// <param name="Issue">The issue to update</param>
-		/// <param name="NewSeverity">New severity for the issue</param>
-		/// <param name="NewSummary">New summary for the issue</param>
-		/// <param name="NewUserSummary">New user summary for the issue</param>
-		/// <param name="NewDescription">New description for the issue</param>
-		/// <param name="NewPromoted">New promoted state of the issue</param>
-		/// <param name="NewOwnerId">New owner of the issue</param>
-		/// <param name="NewNominatedById">Person that nominated the new owner</param>
-		/// <param name="NewAcknowledged">Whether the issue has been acknowledged</param>
-		/// <param name="NewDeclinedById">Name of a user that has declined the issue</param>
-		/// <param name="NewFixChange">Fix changelist for the issue. Pass 0 to clear the fix changelist, -1 for systemic issue.</param>
-		/// <param name="NewResolvedById">User that resolved the issue (may be ObjectId.Empty to clear)</param>
-		/// <param name="NewExcludeSpanIds">List of span ids to exclude from this issue</param>
-		/// <param name="NewLastSeenAt"></param>
+		/// <param name="issue">The issue to update</param>
+		/// <param name="newSeverity">New severity for the issue</param>
+		/// <param name="newSummary">New summary for the issue</param>
+		/// <param name="newUserSummary">New user summary for the issue</param>
+		/// <param name="newDescription">New description for the issue</param>
+		/// <param name="newPromoted">New promoted state of the issue</param>
+		/// <param name="newOwnerId">New owner of the issue</param>
+		/// <param name="newNominatedById">Person that nominated the new owner</param>
+		/// <param name="newAcknowledged">Whether the issue has been acknowledged</param>
+		/// <param name="newDeclinedById">Name of a user that has declined the issue</param>
+		/// <param name="newFixChange">Fix changelist for the issue. Pass 0 to clear the fix changelist, -1 for systemic issue.</param>
+		/// <param name="newResolvedById">User that resolved the issue (may be ObjectId.Empty to clear)</param>
+		/// <param name="newExcludeSpanIds">List of span ids to exclude from this issue</param>
+		/// <param name="newLastSeenAt"></param>
+		/// <param name="newExternalIssueKey">Issue key for external issue tracking</param>
+		/// <param name="newQuarantinedById">The user that quarantined the issue</param>
 		/// <returns>True if the issue was updated</returns>
-		Task<IIssue?> TryUpdateIssueAsync(IIssue Issue, IssueSeverity? NewSeverity = null, string? NewSummary = null, string? NewUserSummary = null, string? NewDescription = null, bool? NewPromoted = null, UserId? NewOwnerId = null, UserId? NewNominatedById = null, bool? NewAcknowledged = null, UserId? NewDeclinedById = null, int? NewFixChange = null, UserId? NewResolvedById = null, List<ObjectId>? NewExcludeSpanIds = null, DateTime? NewLastSeenAt = null);
+		Task<IIssue?> TryUpdateIssueAsync(IIssue issue, IssueSeverity? newSeverity = null, string? newSummary = null, string? newUserSummary = null, string? newDescription = null, bool? newPromoted = null, UserId? newOwnerId = null, UserId? newNominatedById = null, bool? newAcknowledged = null, UserId? newDeclinedById = null, int? newFixChange = null, UserId? newResolvedById = null, List<ObjectId>? newExcludeSpanIds = null, DateTime? newLastSeenAt = null, string? newExternalIssueKey = null, UserId? newQuarantinedById = null);
 
 		/// <summary>
 		/// Updates derived data for an issue (ie. data computed from the spans attached to it). Also clears the issue's 'modified' state.
 		/// </summary>
-		/// <param name="Issue">Issue to update</param>
-		/// <param name="NewSummary">New summary for the issue</param>
-		/// <param name="NewSeverity">New severity for the issue</param>
-		/// <param name="NewFingerprints">New fingerprints for the issue</param>
-		/// <param name="NewStreams">New streams for the issue</param>
-		/// <param name="NewSuspects">New suspects for the issue</param>
-		/// <param name="NewResolvedAt">Time for the last resolved change</param>
-		/// <param name="NewVerifiedAt">Time that the issue was resolved</param>
-		/// <param name="NewLastSeenAt">Last time the issue was seen</param>
+		/// <param name="issue">Issue to update</param>
+		/// <param name="newSummary">New summary for the issue</param>
+		/// <param name="newSeverity">New severity for the issue</param>
+		/// <param name="newFingerprints">New fingerprints for the issue</param>
+		/// <param name="newStreams">New streams for the issue</param>
+		/// <param name="newSuspects">New suspects for the issue</param>
+		/// <param name="newResolvedAt">Time for the last resolved change</param>
+		/// <param name="newVerifiedAt">Time that the issue was resolved</param>
+		/// <param name="newLastSeenAt">Last time the issue was seen</param>
 		/// <returns>Updated issue, or null if the issue is modified in the interim</returns>
-		Task<IIssue?> TryUpdateIssueDerivedDataAsync(IIssue Issue, string NewSummary, IssueSeverity NewSeverity, List<NewIssueFingerprint> NewFingerprints, List<NewIssueStream> NewStreams, List<NewIssueSuspectData> NewSuspects, DateTime? NewResolvedAt, DateTime? NewVerifiedAt, DateTime NewLastSeenAt);
+		Task<IIssue?> TryUpdateIssueDerivedDataAsync(IIssue issue, string newSummary, IssueSeverity newSeverity, List<NewIssueFingerprint> newFingerprints, List<NewIssueStream> newStreams, List<NewIssueSuspectData> newSuspects, DateTime? newResolvedAt, DateTime? newVerifiedAt, DateTime newLastSeenAt);
 
 		#endregion
 
@@ -464,53 +490,67 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Creates a new span from the given failure
 		/// </summary>
-		/// <param name="IssueId">The issue that the span belongs to</param>
-		/// <param name="NewSpan">Information about the new span</param>
+		/// <param name="issueId">The issue that the span belongs to</param>
+		/// <param name="newSpan">Information about the new span</param>
 		/// <returns>New span, or null if the sequence token is not valid</returns>
-		Task<IIssueSpan> AddSpanAsync(int IssueId, NewIssueSpanData NewSpan);
+		Task<IIssueSpan> AddSpanAsync(int issueId, NewIssueSpanData newSpan);
 
 		/// <summary>
 		/// Gets a particular span
 		/// </summary>
-		/// <param name="SpanId">Unique id of the span</param>
+		/// <param name="spanId">Unique id of the span</param>
 		/// <returns>New span, or null if the sequence token is not valid</returns>
-		Task<IIssueSpan?> GetSpanAsync(ObjectId SpanId);
+		Task<IIssueSpan?> GetSpanAsync(ObjectId spanId);
 
 		/// <summary>
 		/// Updates the given span. Note that data in the span's issue may be derived from this, and the issue should be updated afterwards.
 		/// </summary>
-		/// <param name="Span">Span to update</param>
-		/// <param name="NewLastSuccess">New last successful step</param>
-		/// <param name="NewFailure">New failed step</param>
-		/// <param name="NewNextSuccess">New next successful step</param>
-		/// <param name="NewSuspects">New suspects for the span</param>
-		/// <param name="NewIssueId">The new issue id for this span</param>
+		/// <param name="span">Span to update</param>
+		/// <param name="newLastSuccess">New last successful step</param>
+		/// <param name="newFailure">New failed step</param>
+		/// <param name="newNextSuccess">New next successful step</param>
+		/// <param name="newSuspects">New suspects for the span</param>
+		/// <param name="newIssueId">The new issue id for this span</param>
 		/// <returns>The updated span, or null on failure</returns>
-		Task<IIssueSpan?> TryUpdateSpanAsync(IIssueSpan Span, NewIssueStepData? NewLastSuccess = null, NewIssueStepData? NewFailure = null, NewIssueStepData? NewNextSuccess = null, List<NewIssueSpanSuspectData>? NewSuspects = null, int? NewIssueId = null);
+		Task<IIssueSpan?> TryUpdateSpanAsync(IIssueSpan span, NewIssueStepData? newLastSuccess = null, NewIssueStepData? newFailure = null, NewIssueStepData? newNextSuccess = null, List<NewIssueSpanSuspectData>? newSuspects = null, int? newIssueId = null);
 
 		/// <summary>
 		/// Gets all the spans for a particular issue
 		/// </summary>
-		/// <param name="IssueId">Issue id</param>
+		/// <param name="issueId">Issue id</param>
 		/// <returns>List of spans</returns>
-		Task<List<IIssueSpan>> FindSpansAsync(int IssueId);
+		Task<List<IIssueSpan>> FindSpansAsync(int issueId);
 
 		/// <summary>
 		/// Retrieves multiple spans
 		/// </summary>
-		/// <param name="SpanIds">The span ids</param>
+		/// <param name="spanIds">The span ids</param>
 		/// <returns>List of spans</returns>
-		Task<List<IIssueSpan>> FindSpansAsync(IEnumerable<ObjectId> SpanIds);
+		Task<List<IIssueSpan>> FindSpansAsync(IEnumerable<ObjectId> spanIds);
 
 		/// <summary>
 		/// Finds the open issues for a given stream
 		/// </summary>
-		/// <param name="StreamId">The stream id</param>
-		/// <param name="TemplateId">The template id</param>
-		/// <param name="Name">Name of the node</param>
-		/// <param name="Change">Changelist number to query</param>
+		/// <param name="streamId">The stream id</param>
+		/// <param name="templateId">The template id</param>
+		/// <param name="name">Name of the node</param>
+		/// <param name="change">Changelist number to query</param>
 		/// <returns>List of open issues</returns>
-		Task<List<IIssueSpan>> FindOpenSpansAsync(StreamId StreamId, TemplateRefId TemplateId, string Name, int Change);
+		Task<List<IIssueSpan>> FindOpenSpansAsync(StreamId streamId, TemplateRefId templateId, string name, int change);
+
+		/// <summary>
+		/// Searches for open issues
+		/// </summary>
+		/// <param name="ids">Set of issue ids to find</param>
+		/// <param name="issueIds">The issue ids to retrieve spans for</param>
+		/// <param name="streamId">The stream affected by the issue</param>
+		/// <param name="minChange">Minimum changelist affected by the issue</param>
+		/// <param name="maxChange">Maximum changelist affected by the issue</param>
+		/// <param name="resolved">Include issues that are now resolved</param>
+		/// <param name="index">Index within the results to return</param>
+		/// <param name="count">Number of results</param>
+		/// <returns>List of streams open in the given stream at the given changelist</returns>
+		Task<List<IIssueSpan>> FindSpansAsync(IEnumerable<ObjectId>? ids = null, IEnumerable<int>? issueIds = null, StreamId? streamId = null, int? minChange = null, int? maxChange = null, bool? resolved = null, int? index = null, int? count = null);
 
 		#endregion
 
@@ -519,34 +559,97 @@ namespace HordeServer.Collections
 		/// <summary>
 		/// Adds a new step
 		/// </summary>
-		/// <param name="SpanId">Initial span for the step</param>
-		/// <param name="NewStep">Information about the new step</param>
+		/// <param name="spanId">Initial span for the step</param>
+		/// <param name="newStep">Information about the new step</param>
 		/// <returns>New step object</returns>
-		Task<IIssueStep> AddStepAsync(ObjectId SpanId, NewIssueStepData NewStep);
+		Task<IIssueStep> AddStepAsync(ObjectId spanId, NewIssueStepData newStep);
 
 		/// <summary>
 		/// Find steps for the given spans
 		/// </summary>
-		/// <param name="SpanIds">Span ids</param>
+		/// <param name="spanIds">Span ids</param>
 		/// <returns>List of steps</returns>
-		Task<List<IIssueStep>> FindStepsAsync(IEnumerable<ObjectId> SpanIds);
+		Task<List<IIssueStep>> FindStepsAsync(IEnumerable<ObjectId> spanIds);
 
 		/// <summary>
 		/// Find steps for the given spans
 		/// </summary>
-		/// <param name="JobId">The job id</param>
-		/// <param name="BatchId">The batch id</param>
-		/// <param name="StepId">The step id</param>
+		/// <param name="jobId">The job id</param>
+		/// <param name="batchId">The batch id</param>
+		/// <param name="stepId">The step id</param>
 		/// <returns>List of steps</returns>
-		Task<List<IIssueStep>> FindStepsAsync(JobId JobId, SubResourceId? BatchId, SubResourceId? StepId);
+		Task<List<IIssueStep>> FindStepsAsync(JobId jobId, SubResourceId? batchId, SubResourceId? stepId);
 
 		#endregion
 
 		/// <summary>
 		/// Gets the logger for a particular issue
 		/// </summary>
-		/// <param name="IssueId">The issue id</param>
+		/// <param name="issueId">The issue id</param>
 		/// <returns>Logger for this issue</returns>
-		IAuditLogChannel<int> GetLogger(int IssueId);
+		IAuditLogChannel<int> GetLogger(int issueId);
+	}
+
+	/// <summary>
+	/// Extension methods for issues
+	/// </summary>
+	public static class IssueCollectionExtensions
+	{
+		/// <summary>
+		/// Find suspects for the given issue
+		/// </summary>
+		/// <param name="issueCollection"></param>
+		/// <param name="issue"></param>
+		/// <returns></returns>
+		public static Task<List<IIssueSuspect>> FindSuspectsAsync(this IIssueCollection issueCollection, IIssue issue)
+		{
+			return issueCollection.FindSuspectsAsync(issue.Id);
+		}
+
+		/// <summary>
+		/// Find steps for the given spans
+		/// </summary>
+		/// <param name="issueCollection"></param>
+		/// <param name="spanId">Span ids</param>
+		/// <returns>List of steps</returns>
+		public static Task<List<IIssueStep>> FindStepsAsync(this IIssueCollection issueCollection, ObjectId spanId)
+		{
+			return issueCollection.FindStepsAsync(new[] { spanId });
+		}
+
+		/// <summary>
+		/// Searches for open issues affecting a job
+		/// </summary>
+		/// <param name="issueCollection"></param>
+		/// <param name="job"></param>
+		/// <param name="graph"></param>
+		/// <param name="stepId"></param>
+		/// <param name="batchId"></param>
+		/// <param name="labelIdx"></param>
+		/// <param name="ownerId"></param>
+		/// <param name="resolved">Whether to include results that are resolved</param>
+		/// <param name="promoted">Whether to filter by promoted issues</param>
+		/// <param name="index">Index within the results to return</param>
+		/// <param name="count">Number of results</param>
+		/// <returns></returns>
+		public static async Task<List<IIssue>> FindIssuesForJobAsync(this IIssueCollection issueCollection, IJob job, IGraph graph, SubResourceId? stepId = null, SubResourceId? batchId = null, int? labelIdx = null, UserId? ownerId = null, bool? resolved = null, bool? promoted = null, int? index = null, int? count = null)
+		{
+			List<IIssueStep> steps = await issueCollection.FindStepsAsync(job.Id, batchId, stepId);
+			List<IIssueSpan> spans = await issueCollection.FindSpansAsync(steps.Select(x => x.SpanId));
+
+			if (labelIdx != null)
+			{
+				HashSet<string> nodeNames = new HashSet<string>(job.GetNodesForLabel(graph, labelIdx.Value).Select(x => graph.GetNode(x).Name));
+				spans.RemoveAll(x => !nodeNames.Contains(x.NodeName));
+			}
+
+			List<int> issueIds = new List<int>(spans.Select(x => x.IssueId));
+			if (issueIds.Count == 0)
+			{
+				return new List<IIssue>();
+			}
+
+			return await issueCollection.FindIssuesAsync(ids: issueIds, ownerId: ownerId, resolved: resolved, promoted: promoted, index: index, count: count);
+		}
 	}
 }

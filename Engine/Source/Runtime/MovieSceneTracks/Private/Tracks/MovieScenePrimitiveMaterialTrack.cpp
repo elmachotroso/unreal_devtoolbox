@@ -3,8 +3,9 @@
 #include "Tracks/MovieScenePrimitiveMaterialTrack.h"
 #include "Tracks/MovieSceneMaterialTrack.h"
 #include "Sections/MovieScenePrimitiveMaterialSection.h"
-#include "Evaluation/MovieScenePrimitiveMaterialTemplate.h"
 #include "Evaluation/MovieSceneEvaluationTrack.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScenePrimitiveMaterialTrack)
 
 
 UMovieScenePrimitiveMaterialTrack::UMovieScenePrimitiveMaterialTrack(const FObjectInitializer& ObjInit)
@@ -26,13 +27,12 @@ bool UMovieScenePrimitiveMaterialTrack::SupportsType(TSubclassOf<UMovieSceneSect
 	return SectionClass == UMovieScenePrimitiveMaterialSection::StaticClass();
 }
 
-FMovieSceneEvalTemplatePtr UMovieScenePrimitiveMaterialTrack::CreateTemplateForSection(const UMovieSceneSection& InSection) const
+int32 UMovieScenePrimitiveMaterialTrack::GetMaterialIndex() const
 {
-	return FMovieScenePrimitiveMaterialTemplate(*CastChecked<UMovieScenePrimitiveMaterialSection>(&InSection), *this);
+	return MaterialIndex;
 }
 
-void UMovieScenePrimitiveMaterialTrack::PostCompile(FMovieSceneEvaluationTrack& OutTrack, const FMovieSceneTrackCompilerArgs& Args) const
+void UMovieScenePrimitiveMaterialTrack::SetMaterialIndex(int32 InMaterialIndex)
 {
-	// Must evaluate before material parameter tracks
-	OutTrack.SetEvaluationPriority(UMovieSceneComponentMaterialTrack::EvaluationPriority + 1);
+	MaterialIndex = InMaterialIndex;
 }

@@ -2,7 +2,7 @@
 
 #include "STimecodeSynchronizerWidget.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #include "Fonts/FontMeasure.h"
 
@@ -29,12 +29,12 @@ STimecodeSynchronizerBarWidget::STimecodeSynchronizerBarWidget()
 	, CurrentFrameWidth(10)
 	, CurrentFrameValue(0)
 	, CurrentFrame(0)
-	, CurrentMasterIndex(0)
+	, CurrentOwnerIndex(0)
 	, MinOldestFrameTime(0)
 	, MaxOldestFrameTime(0)
 	, MinNewestFrameTime(0)
 	, MaxNewestFrameTime(0)
-	, DarkBrush(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+	, DarkBrush(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 	, BrightBrush(&FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox").BackgroundImageNormal)
 	, FontMeasureService(FSlateApplication::Get().GetRenderer()->GetFontMeasureService())
 	, FontInfo(FCoreStyle::GetDefaultFontStyle("Regular", TimecodeSynchronizerBarWidget::TextSize))
@@ -105,7 +105,7 @@ void STimecodeSynchronizerBarWidget::Tick(const FGeometry& InAllottedGeometry, c
 		CurrentFrameValue = TimecodeSynchronizer->GetCurrentSystemFrameTime().GetFrame().Value;
 		CurrentFrameRate = TimecodeSynchronizer->GetFrameRate();
 		CurrentFrame = TimecodeSynchronizer->GetCurrentSystemFrameTime().GetFrame().Value * CurrentFrameWidth;
-		CurrentMasterIndex = TimecodeSynchronizer->GetActiveMasterSynchronizationTimecodedSourceIndex();
+		CurrentOwnerIndex = TimecodeSynchronizer->GetActiveMainSynchronizationTimecodedSourceIndex();
 	}
 }
 
@@ -241,7 +241,7 @@ int32 STimecodeSynchronizerBarWidget::OnPaint(const FPaintArgs& InArgs, const FG
 					OutDrawElements,
 					InLayerId,
 					LeftJustification,
-					FString::Printf(TEXT("[%d] - %s %s (%d)"), i, *DisplayData[i].Name, (i == CurrentMasterIndex) ? TEXT(" - Master") : TEXT(""), (DisplayData[i].NewestFrameTime - DisplayData[i].OldestFrameTime) / CurrentFrameWidth),
+					FString::Printf(TEXT("[%d] - %s %s (%d)"), i, *DisplayData[i].Name, (i == CurrentOwnerIndex) ? TEXT(" - Owner") : TEXT(""), (DisplayData[i].NewestFrameTime - DisplayData[i].OldestFrameTime) / CurrentFrameWidth),
 					FBox2D(FVector2D(TextMinX, MinY), FVector2D(TextMaxX, MaxY)),
 					InWidgetStyle);
 			}
@@ -338,7 +338,7 @@ void STimecodeSynchronizerWidget::Construct(const FArguments& InArgs, UTimecodeS
 		[
 			SNew(SBorder)
 			.Padding(FMargin(3))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SSplitter)
 				.Orientation(Orient_Horizontal)

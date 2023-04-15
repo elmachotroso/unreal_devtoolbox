@@ -23,6 +23,9 @@
 #include "HitProxies.h"
 #include "Interfaces/Interface_AsyncCompilation.h"
 #include "HLOD/HLODBatchingPolicy.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "Engine/OverlapInfo.h"
+#endif
 #include "PrimitiveComponent.generated.h"
 
 class AController;
@@ -35,6 +38,7 @@ struct FCollisionShape;
 struct FConvexVolume;
 struct FEngineShowFlags;
 struct FNavigableGeometryExport;
+struct FPSOPrecacheParams;
 
 namespace PrimitiveComponentCVars
 {
@@ -163,34 +167,15 @@ struct FRendererStencilMaskEvaluation
 	}
 };
 
-/*
- * Predicate for comparing FOverlapInfos when exact weak object pointer index/serial numbers should match, assuming one is not null and not invalid.
- * Compare to operator== for WeakObjectPtr which does both HasSameIndexAndSerialNumber *and* IsValid() checks on both pointers.
- */
-struct FFastOverlapInfoCompare
+// TODO: Add sleep and wake state change types to this enum, so that the
+// OnComponentWake and OnComponentSleep delegates may be deprecated.
+// Doing so would save a couple bytes per primitive component.
+UENUM(BlueprintType)
+enum class EComponentPhysicsStateChange : uint8
 {
-	FFastOverlapInfoCompare(const FOverlapInfo& BaseInfo)
-		: MyBaseInfo(BaseInfo)
-	{
-	}
-
-	bool operator() (const FOverlapInfo& Info)
-	{
-		return MyBaseInfo.OverlapInfo.Component.HasSameIndexAndSerialNumber(Info.OverlapInfo.Component)
-			&& MyBaseInfo.GetBodyIndex() == Info.GetBodyIndex();
-	}
-
-	bool operator() (const FOverlapInfo* Info)
-	{
-		return MyBaseInfo.OverlapInfo.Component.HasSameIndexAndSerialNumber(Info->OverlapInfo.Component)
-			&& MyBaseInfo.GetBodyIndex() == Info->GetBodyIndex();
-	}
-
-private:
-	const FOverlapInfo& MyBaseInfo;
-
+	Created,
+	Destroyed
 };
-
 
 /**
  * Delegate for notification of blocking collision against a specific component.  
@@ -207,6 +192,8 @@ DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FComponentWakeSignature, UPr
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FComponentSleepSignature, UPrimitiveComponent, OnComponentSleep, UPrimitiveComponent*, SleepingComponent, FName, BoneName);
 /** Delegate for notification when collision settings change. */
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_OneParam(FComponentCollisionSettingsChangedSignature, UPrimitiveComponent, OnComponentCollisionSettingsChangedEvent, UPrimitiveComponent*, ChangedComponent);
+/** Delegate for physics state created */
+DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FComponentPhysicsStateChanged, UPrimitiveComponent, OnComponentPhysicsStateChanged, UPrimitiveComponent*, ChangedComponent, EComponentPhysicsStateChange, StateChange);
 
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_OneParam( FComponentBeginCursorOverSignature, UPrimitiveComponent, OnBeginCursorOver, UPrimitiveComponent*, TouchedComponent );
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_OneParam( FComponentEndCursorOverSignature, UPrimitiveComponent, OnEndCursorOver, UPrimitiveComponent*, TouchedComponent );
@@ -232,9 +219,12 @@ public:
 	 * Default UObject constructor.
 	 */
 	UPrimitiveComponent(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+	UPrimitiveComponent(FVTableHelper& Helper);
+	~UPrimitiveComponent();
 
 	// Rendering
-	
+	static FName RVTActorDescProperty;
+
 	/**
 	 * The minimum distance at which the primitive should be rendered, 
 	 * measured in world space units from the center of the primitive's bounding sphere to the camera position.
@@ -338,6 +328,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components")
 	void SetLightingChannels(bool bChannel0, bool bChannel1, bool bChannel2);
 
+	/** Invalidates Lumen surface cache and forces it to be refreshed. Useful to make material updates more responsive. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Lighting")
+	void InvalidateLumenSurfaceCache();
+
 private:
 	UPROPERTY(EditAnywhere, BlueprintGetter = GetGenerateOverlapEvents, BlueprintSetter = SetGenerateOverlapEvents, Category = Collision)
 	uint8 bGenerateOverlapEvents : 1;
@@ -374,10 +368,6 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=LOD)
 	uint8 bAllowCullDistanceVolume:1;
 
-	/** True if the primitive has motion blur velocity meshes */
-	UPROPERTY()
-	uint8 bHasMotionBlurVelocityMeshes:1;
-	
 	/** If true, this component will be visible in reflection captures. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
 	uint8 bVisibleInReflectionCaptures:1;
@@ -395,7 +385,7 @@ public:
 	uint8 bRenderInMainPass:1;
 
 	/** If true, this component will be rendered in the depth pass even if it's not rendered in the main pass */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering, meta = (EditCondition = "!bRenderInMainPass"))
 	uint8 bRenderInDepthPass:1;
 
 	/** Whether the primitive receives decals. */
@@ -450,9 +440,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay)
 	uint8 bEmissiveLightSource:1;
 
-	/** Controls whether the primitive should inject light into the Light Propagation Volume.  This flag is only used if CastShadow is true. **/
+	/** Controls whether the primitive should inject light into the Light Propagation Volume.  This flag is only used if CastShadow is true. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, meta=(EditCondition="CastShadow"))
 	uint8 bAffectDynamicIndirectLighting:1;
+
+	/** Controls whether the primitive should affect indirect lighting when hidden. This flag is only used if bAffectDynamicIndirectLighting is true. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting, meta=(EditCondition="bAffectDynamicIndirectLighting", DisplayName = "Affect Indirect Lighting While Hidden"))
+	uint8 bAffectIndirectLightingWhileHidden:1;
 
 	/** Controls whether the primitive should affect dynamic distance field lighting methods.  This flag is only used if CastShadow is true. **/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay)
@@ -616,6 +610,10 @@ protected:
 
 	UPROPERTY()
 	uint8 bHasNoStreamableTextures : 1;
+
+#if WITH_EDITOR
+	bool bIgnoreBoundsForEditorFocus = false;
+#endif
 
 public:
 	/** If true then DoCustomNavigableGeometryExport will be called to collect navigable geometry of this component. */
@@ -838,6 +836,12 @@ public:
 	void SetLastRenderTime(float InLastRenderTime);
 	float GetLastRenderTime() const { return LastRenderTime; }
 	float GetLastRenderTimeOnScreen() const { return LastRenderTimeOnScreen; }
+
+	/**
+	 * Setup the parameter struct used to precache the PSOs used by this component. 
+	 * Precaching uses certain component attributes to derive the shader or state used to render the component such as static lighting, cast shadows, ...
+	 */
+	virtual void SetupPrecachePSOParams(FPSOPrecacheParams& Params);
 
 	/**
 	 * Set of actors to ignore during component sweeps in MoveComponent().
@@ -1129,7 +1133,12 @@ public:
 	 * Whether or not the bounds of this component should be considered when focusing the editor camera to an actor with this component in it.
 	 * Useful for debug components which need a bounds for rendering but don't contribute to the visible part of the mesh in a meaningful way
 	 */
-	virtual bool IgnoreBoundsForEditorFocus() const { return false; }
+	virtual bool IgnoreBoundsForEditorFocus() const { return bIgnoreBoundsForEditorFocus; }
+	
+	/**
+	 * Set if we should ignore bounds when focusing the editor camera.
+	*/
+	void SetIgnoreBoundsForEditorFocus(bool bIgnore) { bIgnoreBoundsForEditorFocus = bIgnore; }
 #endif
 
 	/** Update current physics volume for this component, if bShouldUpdatePhysicsVolume is true. Overridden to use the overlaps to find the physics volume. */
@@ -1214,6 +1223,12 @@ public:
 	 */
 	FComponentCollisionSettingsChangedSignature OnComponentCollisionSettingsChangedEvent;
 
+	/**
+	 *	Event called when physics state is created or destroyed for this component
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Physics")
+	FComponentPhysicsStateChanged OnComponentPhysicsStateChanged;
+
 	/** Event called when the mouse cursor is moved over this component and mouse over events are enabled in the player controller */
 	UPROPERTY(BlueprintAssignable, Category="Input|Mouse Input")
 	FComponentBeginCursorOverSignature OnBeginCursorOver;
@@ -1267,6 +1282,12 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category="Rendering|Material")
 	virtual class UMaterialInterface* GetMaterial(int32 ElementIndex) const;
+
+	/** Returns the material to show in the editor details panel as being used. */
+	virtual class UMaterialInterface* GetEditorMaterial(int32 ElementIndex) const 
+	{ 
+		return GetMaterial(ElementIndex);
+	}
 
 	/**
 	 * Changes the material applied to an element of the mesh.
@@ -1805,6 +1826,8 @@ public:
 	/** Return true if primitive can skip getting texture streaming render asset info. */
 	bool CanSkipGetTextureStreamingRenderAssetInfo() const;
 
+	virtual float GetStreamingScale() const { return 1.f; }
+
 	/** Returns true if the component is static and has the right static mesh setup to support lightmaps. */
 	virtual bool HasValidSettingsForStaticLighting(bool bOverlookInvalidComponents) const 
 	{
@@ -1957,6 +1980,18 @@ public:
 	*/
 	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true, int32 Index = INDEX_NONE) const;
 
+	/**
+	 * Returns BodyInstanceAsyncPhysicsTickHandle of the component. For use in the Async Physics Tick event
+	*
+	* @param BoneName				Used to get body associated with specific bone. NAME_None automatically gets the root most body
+	* @param bGetWelded				If the component has been welded to another component and bGetWelded is true we return the single welded BodyInstance that is used in the simulation
+	* @param Index					Index used in Components with multiple body instances
+	*
+	* @return		Returns the BodyInstanceAsyncPhysicsTickHandle based on various states (does component have multiple bodies? Is the body welded to another body?)
+	*/
+	UFUNCTION(BlueprintPure, Category = "Physics")
+		FBodyInstanceAsyncPhysicsTickHandle GetBodyInstanceAsyncPhysicsTickHandle(FName BoneName = NAME_None, bool bGetWelded = true, int32 Index = -1) const;
+
 	/** 
 	 * Returns The square of the distance to closest Body Instance surface. 
 	 *
@@ -2070,6 +2105,16 @@ public:
 	 */
 	virtual FTransform GetComponentTransformFromBodyInstance(FBodyInstance* UseBI);	
 
+	/**
+	 * Would this primitive be shown with these rendering flags.
+	 * 
+	 * @Note: Currently this only implemented properly for the editor selectable primitives.
+	 */
+	virtual bool IsShown(const FEngineShowFlags& ShowFlags) const;
+
+	/** Returns false if this primitive should never output velocity based on its WPO state. */
+	virtual bool SupportsWorldPositionOffsetVelocity() const { return true; }
+
 #if WITH_EDITOR
 	/**
 	 * Determines whether the supplied bounding box intersects with the component.
@@ -2082,7 +2127,20 @@ public:
 	 *
 	 * @return	true if the supplied bounding box is determined to intersect the component (partially or wholly)
 	 */
+	UE_DEPRECATED(5.1, "This function is deprecated. Use the function IsShown and the overload that doesn't take an EngineShowFlags instead.")
 	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const;
+
+	/**
+	 * Determines whether the supplied bounding box intersects with the component.
+	 * Used by the editor in orthographic viewports.
+	 *
+	 * @param	InSelBBox						Bounding box to test against
+	 * @param	bConsiderOnlyBSP				If only BSP geometry should be tested
+	 * @param	bMustEncompassEntireComponent	Whether the component bounding box must lay wholly within the supplied bounding box
+	 *
+	 * @return	true if the supplied bounding box is determined to intersect the component (partially or wholly)
+	 */
+	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const;
 
 	/**
 	 * Determines whether the supplied frustum intersects with the component.
@@ -2095,7 +2153,20 @@ public:
 	 *
 	 * @return	true if the supplied bounding box is determined to intersect the component (partially or wholly)
 	 */
+	UE_DEPRECATED(5.1, "This function is deprecated. Use the function IsShown and the overload that doesn't take an EngineShowFlags instead.")
 	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const;
+
+	/**
+	 * Determines whether the supplied frustum intersects with the component.
+	 * Used by the editor in perspective viewports.
+	 *
+	 * @param	InFrustum						Frustum to test against
+	 * @param	bConsiderOnlyBSP				If only BSP geometry should be tested
+	 * @param	bMustEncompassEntireComponent	Whether the component bounding box must lay wholly within the supplied bounding box
+	 *
+	 * @return	true if the supplied bounding box is determined to intersect the component (partially or wholly)
+	 */
+	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InFrustum, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const;
 #endif
 
 protected:
@@ -2132,6 +2203,7 @@ public:
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 #if WITH_EDITOR
 	virtual void CheckForErrors() override;
+	virtual void GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const;
 #endif // WITH_EDITOR	
 	//~ End UActorComponent Interface
 
@@ -2249,7 +2321,7 @@ public:
 	/**
 	 * Pushes new selection state to the render thread primitive proxy
 	 */
-	void PushSelectionToProxy();
+	virtual void PushSelectionToProxy();
 
 	/**
 	 * Pushes new LevelInstance editing state to the render thread primitive proxy.
@@ -2448,6 +2520,9 @@ protected:
 	/** Called when the BodyInstance ResponseToChannels, CollisionEnabled or bNotifyRigidBodyCollision changes, in case subclasses want to use that information. */
 	virtual void OnComponentCollisionSettingsChanged(bool bUpdateOverlaps=true);
 
+	/** Called when bGenerateOverlapEvents changes, in case subclasses want to use that information. */
+	virtual void OnGenerateOverlapEventsChanged();
+
 	/** Ends all current component overlaps. Generally used when destroying this component or when it can no longer generate overlaps. */
 	void ClearComponentOverlaps(bool bDoNotifies, bool bSkipNotifySelf);
 
@@ -2460,7 +2535,7 @@ public:
 	 * Applies RigidBodyState only if it needs to be updated
 	 * NeedsUpdate flag will be removed from UpdatedState after all velocity corrections are finished
 	 */
-	void SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, const FName BoneName = NAME_None);
+	void SetRigidBodyReplicatedTarget(FRigidBodyState& UpdatedState, const FName BoneName = NAME_None, int32 ServerFrame = 0, int32 ServerHandle = 0);
 
 	/** 
 	 *	Get the state of the rigid body responsible for this Actor's physics, and fill in the supplied FRigidBodyState struct based on it.

@@ -2,6 +2,7 @@
 
 #include "SMemAllocTableTreeView.h"
 
+#include "Containers/Set.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "ISourceCodeAccessModule.h"
@@ -9,13 +10,18 @@
 #include "Modules/ModuleManager.h"
 #include "SlateOptMacros.h"
 #include "Styling/AppStyle.h"
-#include "TraceServices/AnalysisService.h"
-#include "TraceServices/Model/AllocationsProvider.h"
-#include "TraceServices/Model/Callstack.h"
-#include "TraceServices/Model/Modules.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/SToolTip.h"
+
+// TraceServices
+#include "Common/ProviderLock.h"
+#include "TraceServices/Model/AllocationsProvider.h"
+#include "TraceServices/Model/Callstack.h"
+#include "TraceServices/Model/Definitions.h"
+#include "TraceServices/Model/MetadataProvider.h"
+#include "TraceServices/Model/Modules.h"
+#include "TraceServices/Model/Strings.h"
 
 // Insights
 #include "Insights/InsightsStyle.h"
@@ -24,6 +30,7 @@
 #include "Insights/MemoryProfiler/ViewModels/MemAllocGroupingByCallstack.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocGroupingByHeap.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocGroupingBySize.h"
+#include "Insights/MemoryProfiler/ViewModels/MemAllocGroupingByTag.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocNode.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocTable.h"
 #include "Insights/MemoryProfiler/ViewModels/MemorySharedState.h"
@@ -41,13 +48,13 @@ namespace Insights
 {
 
 const int SMemAllocTableTreeView::FullCallStackIndex = 0x0000FFFFF;
+const int SMemAllocTableTreeView::LLMFilterIndex = 0x0000FFFFE;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 SMemAllocTableTreeView::SMemAllocTableTreeView()
 {
 	bRunInAsyncMode = true;
-	InitAvailableViewPresets();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -144,7 +151,7 @@ void SMemAllocTableTreeView::RebuildTree(bool bResync)
 						continue;
 					}
 
-					FName NodeName(Alloc->bIsBlock ? BaseHeapName : BaseNodeName, Alloc->GetStartEventIndex() + 1);
+					FName NodeName(Alloc->bIsBlock ? BaseHeapName : BaseNodeName, static_cast<int32>(Alloc->GetStartEventIndex() + 1));
 					FMemAllocNodePtr NodePtr = MakeShared<FMemAllocNode>(NodeName, MemAllocTable, AllocIndex);
 					TableTreeNodes.Add(NodePtr);
 				}
@@ -256,7 +263,7 @@ void SMemAllocTableTreeView::StartQuery()
 
 	{
 		const TraceServices::IAllocationsProvider& Provider = *AllocationsProvider;
-		TraceServices::IAllocationsProvider::FReadScopeLock _(Provider);
+		TraceServices::FProviderReadScopeLock _(Provider);
 		TraceServices::IAllocationsProvider::FQueryParams Params = { Rule->GetValue(), TimeMarkers[0], TimeMarkers[1], TimeMarkers[2], TimeMarkers[3] };
 		Query = Provider.StartQuery(Params);
 	}
@@ -298,6 +305,29 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 	}
 	const TraceServices::IAllocationsProvider& Provider = *AllocationsProvider;
 
+	const TraceServices::ICallstacksProvider* CallstacksProvider = TraceServices::ReadCallstacksProvider(*Session.Get());
+
+	const TraceServices::IMetadataProvider* MetadataProvider = TraceServices::ReadMetadataProvider(*Session.Get());
+
+	uint16 AssetMetadataType = 0;
+	const TraceServices::FMetadataSchema* Schema = nullptr;
+	if (MetadataProvider)
+	{
+		TraceServices::FProviderReadScopeLock MetadataProviderReadLock(*MetadataProvider);
+		AssetMetadataType = MetadataProvider->GetRegisteredMetadataType(TEXT("Asset"));
+		if (AssetMetadataType == TraceServices::IMetadataProvider::InvalidMetadataId)
+		{
+			// If AssetMetadataType is not valid then we do not need to further check the Asset metadata for each allocation.
+			MetadataProvider = nullptr;
+		}
+		else
+		{
+			Schema = MetadataProvider->GetRegisteredMetadataSchema(AssetMetadataType);
+		}
+	}
+
+	const TraceServices::IDefinitionProvider* DefinitionProvider = TraceServices::ReadDefinitionProvider(*Session.Get());
+
 	constexpr double MaxPollTime = 0.03; // Stop getting results after 30 ms so we don't tank the frame rate too much.
 	FStopwatch TotalStopwatch;
 	TotalStopwatch.Start();
@@ -325,7 +355,7 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 		TSharedPtr<Insights::FMemAllocTable> MemAllocTable = GetMemAllocTable();
 		if (MemAllocTable)
 		{
-			TraceServices::IAllocationsProvider::FReadScopeLock _(Provider);
+			TraceServices::FProviderReadScopeLock _(Provider);
 
 			TArray<FMemoryAlloc>& Allocs = MemAllocTable->GetAllocs();
 
@@ -348,24 +378,75 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 				const uint32 AllocCount = Result->Num();
 				TotalAllocCount += AllocCount;
 
-				uint64 AllocsDestIndex = Allocs.Num();
+				int32 AllocsDestIndex = Allocs.Num();
 				Allocs.AddUninitialized(AllocCount);
+
 				for (uint32 AllocIndex = 0; AllocIndex < AllocCount; ++AllocIndex, ++AllocsDestIndex)
 				{
 					const TraceServices::IAllocationsProvider::FAllocation* Allocation = Result->Get(AllocIndex);
 					FMemoryAlloc& Alloc = Allocs[AllocsDestIndex];
+
 					Alloc.StartEventIndex = Allocation->GetStartEventIndex();
 					Alloc.EndEventIndex = Allocation->GetEndEventIndex();
+
 					Alloc.StartTime = Allocation->GetStartTime();
 					Alloc.EndTime = Allocation->GetEndTime();
+
 					Alloc.Address = Allocation->GetAddress();
 					Alloc.Size = int64(Allocation->GetSize());
-					Alloc.Tag = Provider.GetTagName(Allocation->GetTag());
-					Alloc.Callstack = Allocation->GetCallstack();
+
+					Alloc.TagId = Allocation->GetTag();
+					Alloc.Tag = Provider.GetTagFullPath(Allocation->GetTag());
+
+					Alloc.Asset = nullptr;
+					Alloc.ClassName = nullptr;
+					const uint32 MetadataId = Allocation->GetMetadataId();
+					if (MetadataId != TraceServices::IMetadataProvider::InvalidMetadataId && MetadataProvider && DefinitionProvider)
+					{
+						TraceServices::FProviderReadScopeLock MetadataProviderReadLock(*MetadataProvider);
+						MetadataProvider->EnumerateMetadata(Allocation->GetThreadId(), MetadataId,
+							[AssetMetadataType, Schema, &Alloc, DefinitionProvider](uint32 StackDepth, uint16 Type, const void* Data, uint32 Size) -> bool
+							{
+								if (Type == AssetMetadataType)
+								{
+									TraceServices::IDefinitionProvider::FReadScopeLock DefinitionProviderReadLock(*DefinitionProvider);
+									const auto Reader = Schema->Reader();
+									const auto AssetNameRef = Reader.GetValueAs<UE::Trace::FEventRef32>((uint8*)Data, 0);
+									const auto AssetName = DefinitionProvider->Get<TraceServices::FStringDefinition>(*AssetNameRef);
+									if (AssetName)
+									{
+										Alloc.Asset = AssetName->Display;
+									}
+									const auto ClassNameRef = Reader.GetValueAs<UE::Trace::FEventRef32>((uint8*)Data, 1);
+									const auto ClassName = DefinitionProvider->Get<TraceServices::FStringDefinition>(*ClassNameRef);
+									if (ClassName)
+									{
+										Alloc.ClassName = ClassName->Display;
+									}
+									return false;
+								}
+								return true;
+							});
+					}
+
+					if (CallstacksProvider)
+					{
+						Alloc.Callstack = CallstacksProvider->GetCallstack(Allocation->GetCallstackId());
+						check(Alloc.Callstack != nullptr);
+
+						Alloc.FreeCallstack = CallstacksProvider->GetCallstack(Allocation->GetFreeCallstackId());
+						check(Alloc.FreeCallstack != nullptr);
+					}
+					else
+					{
+						Alloc.Callstack = nullptr;
+						Alloc.FreeCallstack = nullptr;
+					}
+
 					Alloc.RootHeap = Allocation->GetRootHeap();
 					Alloc.bIsBlock = Allocation->IsHeap();
-					check(Alloc.Callstack != nullptr);
 
+					Alloc.bIsDecline = false;
 					if (Rule->GetValue() == TraceServices::IAllocationsProvider::EQueryRule::aAfaBf)
 					{
 						if (Alloc.StartTime <= TimeMarkers[0] && Alloc.EndTime <= TimeMarkers[1]) // decline
@@ -477,9 +558,9 @@ TSharedPtr<SWidget> SMemAllocTableTreeView::ConstructToolbar()
 		.VAlign(VAlign_Center)
 		[
 			SNew(SBox)
-			.MinDesiredWidth(150)
+			.MinDesiredWidth(150.0f)
 			[
-				SAssignNew(PresetComboBox, SComboBox<TSharedRef<IViewPreset>>)
+				SAssignNew(PresetComboBox, SComboBox<TSharedRef<ITableTreeViewPreset>>)
 				.ToolTipText(this, &SMemAllocTableTreeView::ViewPreset_GetSelectedToolTipText)
 				.OptionsSource(GetAvailableViewPresets())
 				.OnSelectionChanged(this, &SMemAllocTableTreeView::ViewPreset_OnSelectionChanged)
@@ -491,7 +572,7 @@ TSharedPtr<SWidget> SMemAllocTableTreeView::ConstructToolbar()
 			]
 		];
 
-	//for (const TSharedRef<IViewPreset>& ViewPreset : AvailableViewPresets)
+	//for (const TSharedRef<ITableTreeViewPreset>& ViewPreset : AvailableViewPresets)
 	//{
 	//	Box->AddSlot()
 	//		.AutoWidth()
@@ -500,7 +581,7 @@ TSharedPtr<SWidget> SMemAllocTableTreeView::ConstructToolbar()
 	//			SNew(SButton)
 	//			.Text(ViewPreset->GetName())
 	//			.ToolTipText(ViewPreset->GetToolTip())
-	//			.OnClicked(this, &SMemAllocTableTreeView::OnApplyViewPreset, (const IViewPreset*)&ViewPreset.Get())
+	//			.OnClicked(this, &SMemAllocTableTreeView::OnApplyViewPreset, (const ITableTreeViewPreset*)&ViewPreset.Get())
 	//		];
 	//}
 
@@ -522,7 +603,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 	// Default View
 
-	class FDefaultViewPreset : public IViewPreset
+	class FDefaultViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -548,13 +629,14 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 			check(InAvailableGroupings[0]->Is<FTreeNodeGroupingFlat>());
 			InOutCurrentGroupings.Add(InAvailableGroupings[0]);
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
-			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
-			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
-			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,     true, 100.0f });
-			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,      true, 120.0f });
-			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId, true, 550.0f });
+			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),               true, 200.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,         true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,          true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,           true, 120.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId,      true, 550.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::CallstackSizeColumnId, true, 100.0f });
 		}
 	};
 	AvailableViewPresets.Add(MakeShared<FDefaultViewPreset>());
@@ -562,7 +644,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 	// Detailed View
 
-	class FDetailedViewPreset : public IViewPreset
+	class FDetailedViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -588,7 +670,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 			check(InAvailableGroupings[0]->Is<FTreeNodeGroupingFlat>());
 			InOutCurrentGroupings.Add(InAvailableGroupings[0]);
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),                 true, 200.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::StartEventIndexColumnId, true, 100.0f });
@@ -603,6 +685,8 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,            true, 100.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,             true, 120.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId,        true, 550.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::SourceFileColumnId,      true, 550.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::CallstackSizeColumnId,   true, 100.0f });
 		}
 	};
 	AvailableViewPresets.Add(MakeShared<FDetailedViewPreset>());
@@ -610,7 +694,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 	// Heap Breakdown View
 
-	class FHeapViewPreset : public IViewPreset
+	class FHeapViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -646,7 +730,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 				InOutCurrentGroupings.Add(*HeapGrouping);
 			}
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 400.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
@@ -660,7 +744,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 	// Size Breakdown View
 
-	class FSizeViewPreset : public IViewPreset
+	class FSizeViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -696,7 +780,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 				InOutCurrentGroupings.Add(*SizeGrouping);
 			}
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::AddressColumnId,  true, 120.0f });
@@ -711,7 +795,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 	// Tag Breakdown View
 
-	class FTagViewPreset : public IViewPreset
+	class FTagViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -740,15 +824,14 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 			const TSharedPtr<FTreeNodeGrouping>* TagGrouping = InAvailableGroupings.FindByPredicate(
 				[](TSharedPtr<FTreeNodeGrouping>& Grouping)
 				{
-					return Grouping->Is<FTreeNodeGroupingByUniqueValue>() &&
-						   Grouping->As<FTreeNodeGroupingByUniqueValue>().GetColumnId() == FMemAllocTableColumns::TagColumnId;
+					return Grouping->Is<FMemAllocGroupingByTag>();
 				});
 			if (TagGrouping)
 			{
 				InOutCurrentGroupings.Add(*TagGrouping);
 			}
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
@@ -759,9 +842,122 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	AvailableViewPresets.Add(MakeShared<FTagViewPreset>());
 
 	//////////////////////////////////////////////////
+	// Asset Breakdown View
+
+	class FAssetViewPreset : public ITableTreeViewPreset
+	{
+	public:
+		virtual FText GetName() const override
+		{
+			return LOCTEXT("Asset_PresetName", "Asset");
+		}
+		virtual FText GetToolTip() const override
+		{
+			return LOCTEXT("Asset_PresetToolTip", "Asset Breakdown View\nConfigure the tree view to show a breakdown of allocations by their Asset tag.");
+		}
+		virtual FName GetSortColumn() const override
+		{
+			return FTable::GetHierarchyColumnId();
+		}
+		virtual EColumnSortMode::Type GetSortMode() const override
+		{
+			return EColumnSortMode::Type::Ascending;
+		}
+		virtual void SetCurrentGroupings(const TArray<TSharedPtr<FTreeNodeGrouping>>& InAvailableGroupings, TArray<TSharedPtr<FTreeNodeGrouping>>& InOutCurrentGroupings) const override
+		{
+			InOutCurrentGroupings.Reset();
+
+			check(InAvailableGroupings[0]->Is<FTreeNodeGroupingFlat>());
+			InOutCurrentGroupings.Add(InAvailableGroupings[0]);
+
+			const TSharedPtr<FTreeNodeGrouping>* AssetGrouping = InAvailableGroupings.FindByPredicate(
+				[](TSharedPtr<FTreeNodeGrouping>& Grouping)
+				{
+					return Grouping->Is<FTreeNodeGroupingByPathBreakdown>() &&
+						   Grouping->As<FTreeNodeGroupingByPathBreakdown>().GetColumnId() == FMemAllocTableColumns::AssetColumnId;
+				});
+			if (AssetGrouping)
+			{
+				InOutCurrentGroupings.Add(*AssetGrouping);
+			}
+		}
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
+		{
+			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,     true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,      true, 120.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId, true, 400.0f });
+		}
+	};
+	AvailableViewPresets.Add(MakeShared<FAssetViewPreset>());
+
+	//////////////////////////////////////////////////
+	// Class Name Breakdown View
+
+	class FClassNameViewPreset : public ITableTreeViewPreset
+	{
+	public:
+		virtual FText GetName() const override
+		{
+			return LOCTEXT("ClassName_PresetName", "Class Name");
+		}
+		virtual FText GetToolTip() const override
+		{
+			return LOCTEXT("ClassName_PresetToolTip", "Class Breakdown View\nConfigure the tree view to show a breakdown of allocations by their Class name.");
+		}
+		virtual FName GetSortColumn() const override
+		{
+			return FTable::GetHierarchyColumnId();
+		}
+		virtual EColumnSortMode::Type GetSortMode() const override
+		{
+			return EColumnSortMode::Type::Ascending;
+		}
+		virtual void SetCurrentGroupings(const TArray<TSharedPtr<FTreeNodeGrouping>>& InAvailableGroupings, TArray<TSharedPtr<FTreeNodeGrouping>>& InOutCurrentGroupings) const override
+		{
+			InOutCurrentGroupings.Reset();
+
+			check(InAvailableGroupings[0]->Is<FTreeNodeGroupingFlat>());
+			InOutCurrentGroupings.Add(InAvailableGroupings[0]);
+
+			const TSharedPtr<FTreeNodeGrouping>* ClassNameGrouping = InAvailableGroupings.FindByPredicate(
+				[](TSharedPtr<FTreeNodeGrouping>& Grouping)
+				{
+					return Grouping->Is<FTreeNodeGroupingByUniqueValueCString>() &&
+						   Grouping->As<FTreeNodeGroupingByUniqueValueCString>().GetColumnId() == FMemAllocTableColumns::ClassNameColumnId;
+				});
+			if (ClassNameGrouping)
+			{
+				InOutCurrentGroupings.Add(*ClassNameGrouping);
+			}
+
+			const TSharedPtr<FTreeNodeGrouping>* AssetGrouping = InAvailableGroupings.FindByPredicate(
+				[](TSharedPtr<FTreeNodeGrouping>& Grouping)
+				{
+					return Grouping->Is<FTreeNodeGroupingByUniqueValueCString>() &&
+						   Grouping->As<FTreeNodeGroupingByUniqueValueCString>().GetColumnId() == FMemAllocTableColumns::AssetColumnId;
+				});
+			if (AssetGrouping)
+			{
+				InOutCurrentGroupings.Add(*AssetGrouping);
+			}
+		}
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
+		{
+			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,     true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,      true, 120.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId, true, 400.0f });
+		}
+	};
+	AvailableViewPresets.Add(MakeShared<FClassNameViewPreset>());
+
+	//////////////////////////////////////////////////
 	// (Inverted) Callstack Breakdown View
 
-	class FCallstackViewPreset : public IViewPreset
+	class FCallstackViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		FCallstackViewPreset(bool bIsInverted)
@@ -808,7 +1004,7 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 				InOutCurrentGroupings.Add(*CallstackGrouping);
 			}
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 400.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
@@ -824,9 +1020,9 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	AvailableViewPresets.Add(MakeShared<FCallstackViewPreset>(true));
 
 	//////////////////////////////////////////////////
-	// Memory Page Breakdown View
+	// Address (4K Page) Breakdown View
 
-	class FPageViewPreset : public IViewPreset
+	class FPageViewPreset : public ITableTreeViewPreset
 	{
 	public:
 		virtual FText GetName() const override
@@ -863,12 +1059,13 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 				InOutCurrentGroupings.Add(*MemoryPageGrouping);
 			}
 		}
-		virtual void GetColumnConfigSet(TArray<FColumnConfig>& InOutConfigSet) const override
+		virtual void GetColumnConfigSet(TArray<FTableColumnConfig>& InOutConfigSet) const override
 		{
 			InOutConfigSet.Add({ FTable::GetHierarchyColumnId(),          true, 200.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::AddressColumnId,  true, 120.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::CountColumnId,    true, 100.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::SizeColumnId,     true, 100.0f });
+			InOutConfigSet.Add({ FMemAllocTableColumns::TagColumnId,      true, 120.0f });
 			InOutConfigSet.Add({ FMemAllocTableColumns::FunctionColumnId, true, 400.0f });
 		}
 	};
@@ -877,94 +1074,6 @@ void SMemAllocTableTreeView::InitAvailableViewPresets()
 	//////////////////////////////////////////////////
 
 	SelectedViewPreset = AvailableViewPresets[0];
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-FReply SMemAllocTableTreeView::OnApplyViewPreset(const IViewPreset* InPreset)
-{
-	ApplyViewPreset(*InPreset);
-	return FReply::Handled();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void SMemAllocTableTreeView::ApplyViewPreset(const IViewPreset& InPreset)
-{
-	ColumnBeingSorted = InPreset.GetSortColumn();
-	ColumnSortMode = InPreset.GetSortMode();
-	UpdateCurrentSortingByColumn();
-
-	PreChangeGroupings();
-	InPreset.SetCurrentGroupings(AvailableGroupings, CurrentGroupings);
-	PostChangeGroupings();
-
-	TArray<FColumnConfig> ColumnConfigSet;
-	InPreset.GetColumnConfigSet(ColumnConfigSet);
-	ApplyColumnConfig(ColumnConfigSet);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void SMemAllocTableTreeView::ApplyColumnConfig(const TArrayView<FColumnConfig>& InColumnConfigSet)
-{
-	// TODO: Reorder columns as in the config set.
-	// Currenly we only apply visibility and column width.
-	for (const TSharedRef<FTableColumn>& ColumnRef : Table->GetColumns())
-	{
-		FTableColumn& Column = ColumnRef.Get();
-		const FName ColumnId = Column.GetId();
-		const FColumnConfig* ConfigPtr = InColumnConfigSet.FindByPredicate([ColumnId](const FColumnConfig& Config) { return ColumnId == Config.ColumnId; });
-		if (ConfigPtr && ConfigPtr->bIsVisible)
-		{
-			ShowColumn(Column);
-			if (ConfigPtr->Width > 0.0f)
-			{
-				TreeViewHeaderRow->SetColumnWidth(ColumnId, ConfigPtr->Width);
-			}
-		}
-		else
-		{
-			HideColumn(Column);
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void SMemAllocTableTreeView::ViewPreset_OnSelectionChanged(TSharedPtr<IViewPreset> InPreset, ESelectInfo::Type SelectInfo)
-{
-	SelectedViewPreset = InPreset;
-	if (InPreset.IsValid())
-	{
-		ApplyViewPreset(*InPreset);
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-TSharedRef<SWidget> SMemAllocTableTreeView::ViewPreset_OnGenerateWidget(TSharedRef<IViewPreset> InPreset)
-{
-	return SNew(STextBlock)
-		.Text(InPreset->GetName())
-		.ToolTipText(InPreset->GetToolTip())
-		.Margin(2.0f);
-}
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-FText SMemAllocTableTreeView::ViewPreset_GetSelectedText() const
-{
-	return SelectedViewPreset ? SelectedViewPreset->GetName() : LOCTEXT("Custom_ToolTip", "Custom");
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-FText SMemAllocTableTreeView::ViewPreset_GetSelectedToolTipText() const
-{
-	return SelectedViewPreset ? SelectedViewPreset->GetToolTip() : LOCTEXT("CustomPreset_ToolTip", "Custom Preset");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1057,35 +1166,48 @@ void SMemAllocTableTreeView::InternalCreateGroupings()
 {
 	Insights::STableTreeView::InternalCreateGroupings();
 
+	AvailableGroupings.RemoveAll(
+		[](TSharedPtr<FTreeNodeGrouping>& Grouping)
+		{
+			if (Grouping->Is<FTreeNodeGroupingByUniqueValue>())
+			{
+				const FName ColumnId = Grouping->As<FTreeNodeGroupingByUniqueValue>().GetColumnId();
+				if (ColumnId == FMemAllocTableColumns::StartEventIndexColumnId ||
+					ColumnId == FMemAllocTableColumns::EndEventIndexColumnId ||
+					ColumnId == FMemAllocTableColumns::CountColumnId)
+				{
+					return true;
+				}
+			}
+			else if (Grouping->Is<FTreeNodeGroupingByPathBreakdown>())
+			{
+				const FName ColumnId = Grouping->As<FTreeNodeGroupingByPathBreakdown>().GetColumnId();
+				if (ColumnId == FMemAllocTableColumns::FunctionColumnId ||
+					ColumnId == FMemAllocTableColumns::ClassNameColumnId)
+				{
+					return true;
+				}
+			}
+			return false;
+		});
+
 	int32 Index = 1; // after the Flat ("All") grouping
 
 	AvailableGroupings.Insert(MakeShared<FMemAllocGroupingBySize>(), Index++);
 
-	TSharedPtr<FTreeNodeGrouping>* TagGroupingPtr = AvailableGroupings.FindByPredicate(
-		[](TSharedPtr<FTreeNodeGrouping>& Grouping)
-		{
-			return Grouping->Is<FTreeNodeGroupingByUniqueValue>() &&
-				   Grouping->As<FTreeNodeGroupingByUniqueValue>().GetColumnId() == FMemAllocTableColumns::TagColumnId;
-		});
-	if (TagGroupingPtr)
+	const TraceServices::IAllocationsProvider* AllocationsProvider = Session.IsValid() ? TraceServices::ReadAllocationsProvider(*Session.Get()) : nullptr;
+
+	if (AllocationsProvider)
 	{
-		TSharedPtr<FTreeNodeGroupingByUniqueValue> TagGrouping = StaticCastSharedPtr<FTreeNodeGroupingByUniqueValue>(*TagGroupingPtr);
-		AvailableGroupings.Remove(TagGrouping);
-		//TODO: TagGrouping->SetShortName(LOCTEXT("Grouping_ByTag_ShortName", "LLM Tag"));
-		//TODO: TagGrouping->SetTitleName(LOCTEXT("Grouping_ByTag_TitleName", "By LLM Tag"));
-		AvailableGroupings.Insert(TagGrouping, Index++);
+		AvailableGroupings.Insert(MakeShared<FMemAllocGroupingByTag>(*AllocationsProvider), Index++);
 	}
 
 	AvailableGroupings.Insert(MakeShared<FMemAllocGroupingByCallstack>(false, bIsCallstackGroupingByFunction), Index++);
 	AvailableGroupings.Insert(MakeShared<FMemAllocGroupingByCallstack>(true, bIsCallstackGroupingByFunction), Index++);
 
-	if (Session.IsValid())
+	if (AllocationsProvider)
 	{
-		const TraceServices::IAllocationsProvider* AllocationsProvider = TraceServices::ReadAllocationsProvider(*Session.Get());
-		if (AllocationsProvider)
-		{
-			AvailableGroupings.Insert(MakeShared<FMemAllocGroupingByHeap>(*AllocationsProvider), Index++);
-		}
+		AvailableGroupings.Insert(MakeShared<FMemAllocGroupingByHeap>(*AllocationsProvider), Index++);
 	}
 }
 
@@ -1133,6 +1255,12 @@ bool SMemAllocTableTreeView::ApplyCustomAdvancedFilters(const FTableTreeNodePtr&
 		Context.SetFilterData<FString>(FullCallStackIndex, MemNodePtr->GetFullCallstack().ToString());
 	}
 
+	if (FilterConfigurator && FilterConfigurator->IsKeyUsed(LLMFilterIndex))
+	{
+		FMemAllocNodePtr MemNodePtr = StaticCastSharedPtr<FMemAllocNode>(NodePtr);
+		Context.SetFilterData<FString>(LLMFilterIndex, MemNodePtr->GetMemAlloc()->GetTag());
+	}
+
 	return true;
 }
 
@@ -1144,6 +1272,43 @@ void SMemAllocTableTreeView::AddCustomAdvancedFilters()
 
 	AvailableFilters->Add(MakeShared<FFilter>(FullCallStackIndex, LOCTEXT("FullCallstack", "Full Callstack"), LOCTEXT("SearchFullCallstack", "Search in all the callstack frames"), EFilterDataType::String, FFilterService::Get()->GetStringOperators()));
 	Context.AddFilterData<FString>(FullCallStackIndex, FString());
+
+	TSharedPtr<FFilterWithSuggestions> LLMCategoryFilter = MakeShared<FFilterWithSuggestions>(static_cast<int32>(LLMFilterIndex), LOCTEXT("LLMTag", "LLM Tag"), LOCTEXT("LLMTag", "LLM Tag"), EFilterDataType::String, FFilterService::Get()->GetStringOperators());
+	Context.AddFilterData<FString>(LLMFilterIndex, FString());
+	LLMCategoryFilter->Callback = [this](const FString& Text, TArray<FString>& OutSuggestions)
+	{
+		this->PopulateLLMTagSuggestionList(Text, OutSuggestions);
+	};
+
+	AvailableFilters->Add(LLMCategoryFilter);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemAllocTableTreeView::PopulateLLMTagSuggestionList(const FString& Text, TArray<FString>& OutSuggestions)
+{
+	const TraceServices::IAllocationsProvider* AllocationsProvider = TraceServices::ReadAllocationsProvider(*Session.Get());
+	if (!AllocationsProvider)
+	{
+		return;
+	}
+
+	TraceServices::FProviderReadScopeLock _(*AllocationsProvider);
+
+	// Use a Set to avoid duplicate tag names.
+	TSet<FString> Suggestions;
+	AllocationsProvider->EnumerateTags([&Suggestions, &Text](const TCHAR* Display, const TCHAR* FullPath, TraceServices::TagIdType CurrentTag, TraceServices::TagIdType ParentTag)
+	{
+		if (Text.IsEmpty() || FCString::Stristr(FullPath, *Text))
+		{
+			Suggestions.Add(FullPath);
+		}
+
+		return true;
+	});
+
+	OutSuggestions = Suggestions.Array();
+	OutSuggestions.Sort();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1241,33 +1406,244 @@ ECheckBoxState SMemAllocTableTreeView::CallstackGroupingByFunction_IsChecked() c
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+TSharedPtr<FMemAllocNode> SMemAllocTableTreeView::GetSingleSelectedMemAllocNode() const
+{
+	if (TreeView->GetNumItemsSelected() == 1)
+	{
+		FMemAllocNodePtr SelectedTreeNode = StaticCastSharedPtr<FMemAllocNode>(TreeView->GetSelectedItems()[0]);
+		if (SelectedTreeNode.IsValid() && !SelectedTreeNode->IsGroup())
+		{
+			return SelectedTreeNode;
+		}
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void SMemAllocTableTreeView::ExtendMenu(FMenuBuilder& MenuBuilder)
 {
-	MenuBuilder.BeginSection("CallstackFrame", LOCTEXT("ContextMenu_Section_CallstackFrame", "Callstack Frame"));
+	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+	ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+
+	FMemAllocNodePtr SingleSelectedMemAllocNode = GetSingleSelectedMemAllocNode();
+	if (SingleSelectedMemAllocNode.IsValid() && CountSourceFiles(*SingleSelectedMemAllocNode) > 0)
 	{
-		ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
-		ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+		MenuBuilder.BeginSection("Allocation", LOCTEXT("ContextMenu_Section_OpenSource", "Allocation"));
+		{
+			FText ItemLabel = FText::Format(LOCTEXT("ContextMenu_Open_SubMenu", "Open in {0}"), SourceCodeAccessor.GetNameText());
+			FText ItemToolTip = FText::Format(LOCTEXT("ContextMenu_Open_Desc_SubMenu", "Open source file of selected callstack frame in {0}."), SourceCodeAccessor.GetNameText());
 
-		FText ItemLabel = FText::Format(LOCTEXT("ContextMenu_Open", "Open in {0}"), SourceCodeAccessor.GetNameText());
-		FText FileName = GetSelectedCallstackFrameFileName();
-		FText ItemToolTip = FText::Format(LOCTEXT("ContextMenu_Open_Desc", "Open source file of selected callstack frame in {0}.\n{1}"), SourceCodeAccessor.GetNameText(), FileName);
+			MenuBuilder.AddSubMenu
+			(
+				ItemLabel,
+				ItemToolTip,
+				FNewMenuDelegate::CreateSP(this, &SMemAllocTableTreeView::BuildOpenSourceSubMenu),
+				false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), SourceCodeAccessor.GetOpenIconName())
+			);
+		}
+		MenuBuilder.EndSection();
+	}
+	else
+	{
+		MenuBuilder.BeginSection("CallstackFrame", LOCTEXT("ContextMenu_Section_CallstackFrame", "Callstack Frame"));
+		{
+			FText ItemLabel = FText::Format(LOCTEXT("ContextMenu_Open", "Open in {0}"), SourceCodeAccessor.GetNameText());
+			FText FileName = GetSelectedCallstackFrameFileName();
+			FText ItemToolTip = FText::Format(LOCTEXT("ContextMenu_Open_Desc", "Open source file of selected callstack frame in {0}.\n{1}"), SourceCodeAccessor.GetNameText(), FileName);
 
-		FUIAction Action_OpenIDE
-		(
-			FExecuteAction::CreateSP(this, &SMemAllocTableTreeView::OpenCallstackFrameSourceFileInIDE),
-			FCanExecuteAction::CreateSP(this, &SMemAllocTableTreeView::CanOpenCallstackFrameSourceFileInIDE)
-		);
-		MenuBuilder.AddMenuEntry
-		(
-			ItemLabel,
-			ItemToolTip,
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), SourceCodeAccessor.GetOpenIconName()),
-			Action_OpenIDE,
-			NAME_None,
-			EUserInterfaceActionType::Button
-		);
+			FUIAction Action_OpenIDE
+			(
+				FExecuteAction::CreateSP(this, &SMemAllocTableTreeView::OpenCallstackFrameSourceFileInIDE),
+				FCanExecuteAction::CreateSP(this, &SMemAllocTableTreeView::CanOpenCallstackFrameSourceFileInIDE)
+			);
+			MenuBuilder.AddMenuEntry
+			(
+				ItemLabel,
+				ItemToolTip,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), SourceCodeAccessor.GetOpenIconName()),
+				Action_OpenIDE,
+				NAME_None,
+				EUserInterfaceActionType::Button
+			);
+		}
+		MenuBuilder.EndSection();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+uint32 SMemAllocTableTreeView::CountSourceFiles(FMemAllocNode& MemAllocNode)
+{
+	if (MemAllocNode.IsGroup())
+	{
+		return 0;
+	}
+
+	const FMemoryAlloc* Alloc = MemAllocNode.GetMemAlloc();
+	if (!Alloc || !Alloc->Callstack)
+	{
+		return 0;
+	}
+
+	uint32 NumSourceFiles = 0;
+	const uint32 NumCallstackFrames = Alloc->Callstack->Num();
+	check(NumCallstackFrames <= 256); // see Callstack->Frame(uint8)
+	for (uint32 FrameIndex = 0; FrameIndex < NumCallstackFrames; ++FrameIndex)
+	{
+		const TraceServices::FStackFrame* Frame = Alloc->Callstack->Frame(static_cast<uint8>(FrameIndex));
+		if (Frame && Frame->Symbol && Frame->Symbol->File)
+		{
+			++NumSourceFiles;
+		}
+	}
+	return NumSourceFiles;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemAllocTableTreeView::BuildOpenSourceSubMenu(FMenuBuilder& MenuBuilder)
+{
+	MenuBuilder.BeginSection("OpenSource");
+	{
+		uint32 NumSourceFiles = 0;
+
+		FMemAllocNodePtr MemAllocNode = GetSingleSelectedMemAllocNode();
+		if (MemAllocNode.IsValid())
+		{
+			const FMemoryAlloc* Alloc = MemAllocNode->GetMemAlloc();
+			if (Alloc && Alloc->Callstack)
+			{
+				ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+				ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+
+				const uint32 NumCallstackFrames = Alloc->Callstack->Num();
+				check(NumCallstackFrames <= 256); // see Callstack->Frame(uint8)
+				for (uint32 FrameIndex = 0; FrameIndex < NumCallstackFrames; ++FrameIndex)
+				{
+					const TraceServices::FStackFrame* Frame = Alloc->Callstack->Frame(static_cast<uint8>(FrameIndex));
+					if (Frame && Frame->Symbol && Frame->Symbol->File)
+					{
+						FText ItemLabel;
+						FText ItemToolTip;
+						if (Frame->Symbol->GetResult() == TraceServices::ESymbolQueryResult::OK)
+						{
+							FText FileName;
+							constexpr int32 MaxFileNameLen = 120;
+							const int32 FileNameLen = FCString::Strlen(Frame->Symbol->File);
+							if (FileNameLen > MaxFileNameLen)
+							{
+								FString FileNameStr = TEXT("...") + FString(MaxFileNameLen, Frame->Symbol->File + (FileNameLen - MaxFileNameLen));
+								FileName = FText::FromString(FileNameStr);
+							}
+							else
+							{
+								FileName = FText::FromString(Frame->Symbol->File);
+							}
+
+							FText SymbolName;
+							constexpr int32 MaxSymbolNameLen = 100;
+							const int32 SymbolNameLen = FCString::Strlen(Frame->Symbol->Name);
+							if (SymbolNameLen > MaxSymbolNameLen)
+							{
+								FString SymbolNameStr = TEXT("...") + FString(MaxSymbolNameLen, Frame->Symbol->Name + (SymbolNameLen - MaxSymbolNameLen));
+								SymbolName = FText::FromString(SymbolNameStr);
+							}
+							else
+							{
+								SymbolName = FText::FromString(Frame->Symbol->Name);
+							}
+
+							ItemLabel = FText::Format(LOCTEXT("ContextMenu_OpenSource_Fmt1", "{0} ({1}) \u2192 {2}"),
+								FileName,
+								FText::AsNumber(Frame->Symbol->Line),
+								SymbolName);
+
+							ItemToolTip = FText::Format(LOCTEXT("ContextMenu_OpenSource_Desc_Fmt1", "Open source file of selected callstack frame in {0}.\n{1} (line {2})\n\u2192 {3}"),
+								SourceCodeAccessor.GetNameText(),
+								FText::FromString(Frame->Symbol->File),
+								FText::AsNumber(Frame->Symbol->Line),
+								FText::FromString(Frame->Symbol->Name));
+						}
+						else
+						{
+							ItemLabel = FText::Format(LOCTEXT("ContextMenu_OpenSource_Fmt2", "{0} ({1}) \u2192 {2}"),
+								FText::FromString(Frame->Symbol->Module),
+								FText::FromString(FString::Printf(TEXT("0x%X"), Frame->Addr)),
+								FText::FromString(TraceServices::QueryResultToString(Frame->Symbol->GetResult())));
+
+							ItemToolTip = FText::Format(LOCTEXT("ContextMenu_OpenSource_Desc_Fmt2", "Open source file of selected callstack frame in {0}."),
+								SourceCodeAccessor.GetNameText());
+						}
+
+						const bool bFileExists = FPaths::FileExists(Frame->Symbol->File);
+
+						FUIAction Action_OpenIDE
+						(
+							FExecuteAction::CreateSP(this, &SMemAllocTableTreeView::OpenSourceFileInIDE, Frame->Symbol->File, uint32(Frame->Symbol->Line)),
+							FCanExecuteAction::CreateLambda([bFileExists]() { return bFileExists; })
+						);
+						MenuBuilder.AddMenuEntry
+						(
+							ItemLabel,
+							ItemToolTip,
+							FSlateIcon(),
+							Action_OpenIDE,
+							NAME_None,
+							EUserInterfaceActionType::Button
+						);
+
+						++NumSourceFiles;
+					}
+				}
+			}
+		}
+
+		if (NumSourceFiles == 0)
+		{
+			struct FLocal
+			{
+				static bool ReturnFalse()
+				{
+					return false;
+				}
+			};
+
+			FUIAction DummyUIAction;
+			DummyUIAction.CanExecuteAction = FCanExecuteAction::CreateStatic(&FLocal::ReturnFalse);
+
+			MenuBuilder.AddMenuEntry
+			(
+				LOCTEXT("ContextMenu_OpenSourceNA", "No Source File Available"),
+				TAttribute<FText>(),
+				FSlateIcon(),
+				DummyUIAction,
+				NAME_None,
+				EUserInterfaceActionType::None
+			);
+		}
 	}
 	MenuBuilder.EndSection();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemAllocTableTreeView::OpenSourceFileInIDE(const TCHAR* InFile, uint32 Line) const
+{
+	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+
+	const FString File = InFile;
+
+	if (FPaths::FileExists(File))
+	{
+		ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+		SourceCodeAccessor.OpenFileAtLine(File, Line);
+	}
+	else
+	{
+		SourceCodeAccessModule.OnOpenFileFailed().Broadcast(File);
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1296,19 +1672,7 @@ void SMemAllocTableTreeView::OpenCallstackFrameSourceFileInIDE()
 
 			if (Frame->Symbol && Frame->Symbol->File)
 			{
-				const FString File = Frame->Symbol->File;
-				const uint32 Line = Frame->Symbol->Line;
-
-				ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
-				if (FPaths::FileExists(File))
-				{
-					ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
-					SourceCodeAccessor.OpenFileAtLine(File, Line);
-				}
-				else
-				{
-					SourceCodeAccessModule.OnOpenFileFailed().Broadcast(File);
-				}
+				OpenSourceFileInIDE(Frame->Symbol->File, Frame->Symbol->Line);
 			}
 		}
 	}

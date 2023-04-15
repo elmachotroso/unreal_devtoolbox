@@ -2,9 +2,29 @@
 
 #pragma once
 
-#include "RenderGraphResources.h"
-#include "RenderGraphEvent.h"
+#include "Containers/Array.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/SortedMap.h"
+#include "Containers/StaticArray.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "MultiGPU.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "RenderGraphAllocator.h"
+#include "RenderGraphDefinitions.h"
+#include "RenderGraphEvent.h"
+#include "RenderGraphParameter.h"
+#include "RenderGraphResources.h"
+#include "ShaderParameterMacros.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/EnableIf.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
 
 using FRDGTransitionQueue = TArray<const FRHITransition*, TInlineAllocator<8>>;
 
@@ -75,9 +95,9 @@ public:
 	FRDGBarrierBatchBegin(ERHIPipeline PipelinesToBegin, ERHIPipeline PipelinesToEnd, const TCHAR* DebugName, FRDGPass* DebugPass);
 	FRDGBarrierBatchBegin(ERHIPipeline PipelinesToBegin, ERHIPipeline PipelinesToEnd, const TCHAR* DebugName, FRDGPassesByPipeline DebugPasses);
 
-	void AddTransition(FRDGParentResourceRef Resource, const FRHITransitionInfo& Info);
+	void AddTransition(FRDGViewableResource* Resource, const FRHITransitionInfo& Info);
 
-	void AddAlias(FRDGParentResourceRef Resource, const FRHITransientAliasingInfo& Info);
+	void AddAlias(FRDGViewableResource* Resource, const FRHITransientAliasingInfo& Info);
 
 	void SetUseCrossPipelineFence()
 	{
@@ -112,8 +132,8 @@ private:
 
 #if RDG_ENABLE_DEBUG
 	FRDGPassesByPipeline DebugPasses;
-	TArray<FRDGParentResource*, FRDGArrayAllocator> DebugTransitionResources;
-	TArray<FRDGParentResource*, FRDGArrayAllocator> DebugAliasingResources;
+	TArray<FRDGViewableResource*, FRDGArrayAllocator> DebugTransitionResources;
+	TArray<FRDGViewableResource*, FRDGArrayAllocator> DebugAliasingResources;
 	const TCHAR* DebugName;
 	ERHIPipeline DebugPipelinesToBegin;
 	ERHIPipeline DebugPipelinesToEnd;
@@ -142,6 +162,10 @@ public:
 	{
 		Dependencies.Reserve(TransitionBatchCount);
 	}
+
+	FRDGBarrierBatchEndId GetId() const;
+
+	bool IsPairedWith(const FRDGBarrierBatchBegin& BeginBatch) const;
 
 private:
 	TArray<FRDGBarrierBatchBegin*, TInlineAllocator<4, FRDGArrayAllocator>> Dependencies;
@@ -290,12 +314,10 @@ public:
 	}
 #endif
 
-#if RDG_GPU_SCOPES
 	FRDGGPUScopes GetGPUScopes() const
 	{
 		return GPUScopes;
 	}
-#endif
 
 #if WITH_MGPU
 	FRHIGPUMask GetGPUMask() const
@@ -365,19 +387,10 @@ protected:
 			/** Whether the pass is allowed to execute in parallel. */
 			uint32 bParallelExecuteAllowed : 1;
 
-			/** Whether this pass has non-RDG UAV outputs. */
-			uint32 bHasExternalOutputs : 1;
-
 			/** Whether this pass is a sentinel (prologue / epilogue) pass. */
 			uint32 bSentinel : 1;
 
-			/** Whether this pass has been culled. */
-			uint32 bCulled : 1;
-
-			/** Whether this pass does not contain parameters. */
-			uint32 bEmptyParameters : 1;
-
-			/** If set, dispatches to the RHI thread before executing this pass. */
+			/** If set, dispatches to the RHI thread after executing this pass. */
 			uint32 bDispatchAfterExecute : 1;
 
 			/** If set, the pass should set its command list stat. */
@@ -400,6 +413,18 @@ protected:
 
 			/** If set, marks that a pass is executing in parallel. */
 			uint32 bParallelExecute : 1;
+
+			/** Whether this pass does not contain parameters. */
+			uint32 bEmptyParameters : 1;
+
+			/** Whether this pass has external UAVs that are not tracked by RDG. */
+			uint32 bHasExternalOutputs : 1;
+
+			/** Whether this pass has been culled. */
+			uint32 bCulled : 1;
+
+			/** Whether this pass is used for external access transitions. */
+			uint32 bExternalAccessPass : 1;
 		};
 		uint32 PacketBits2 = 0;
 	};
@@ -434,8 +459,8 @@ protected:
 		}
 
 		FRDGTextureRef Texture = nullptr;
-		FRDGTextureTransientSubresourceState State;
-		FRDGTextureTransientSubresourceStateIndirect MergeState;
+		FRDGTextureSubresourceState State;
+		FRDGTextureSubresourceStateIndirect MergeState;
 		uint16 ReferenceCount = 0;
 	};
 
@@ -458,6 +483,21 @@ protected:
 	TArray<FBufferState, FRDGArrayAllocator> BufferStates;
 	TArray<FRDGViewHandle, FRDGArrayAllocator> Views;
 	TArray<FRDGUniformBufferHandle, FRDGArrayAllocator> UniformBuffers;
+
+	struct FExternalAccessOp
+	{
+		FExternalAccessOp() = default;
+
+		FExternalAccessOp(FRDGViewableResource* InResource, FRDGViewableResource::EAccessMode InMode)
+			: Resource(InResource)
+			, Mode(InMode)
+		{}
+
+		FRDGViewableResource* Resource;
+		FRDGViewableResource::EAccessMode Mode;
+	};
+
+	TArray<FExternalAccessOp, FRDGArrayAllocator> ExternalAccessOps;
 
 	/** Lists of pass parameters scheduled for begin during execution of this pass. */
 	TArray<FRDGPass*, TInlineAllocator<1, FRDGArrayAllocator>> ResourcesToBegin;
@@ -487,13 +527,11 @@ protected:
 	FRDGCPUScopeOpArrays CPUScopeOps;
 #endif
 
-#if RDG_GPU_SCOPES
 	FRDGGPUScopes GPUScopes;
 	FRDGGPUScopeOpArrays GPUScopeOpsPrologue;
 	FRDGGPUScopeOpArrays GPUScopeOpsEpilogue;
-#endif
 
-#if RDG_GPU_SCOPES && RDG_ENABLE_TRACE
+#if RDG_GPU_DEBUG_SCOPES && RDG_ENABLE_TRACE
 	const FRDGEventScope* TraceEventScope = nullptr;
 #endif
 
@@ -525,13 +563,28 @@ class TRDGLambdaPass
 	struct TLambdaTraits<ReturnType(ClassType::*)(ArgType&) const>
 	{
 		using TRHICommandList = ArgType;
+		using TRDGPass = void;
 	};
 	template <typename ReturnType, typename ClassType, typename ArgType>
 	struct TLambdaTraits<ReturnType(ClassType::*)(ArgType&)>
 	{
 		using TRHICommandList = ArgType;
+		using TRDGPass = void;
+	};
+	template <typename ReturnType, typename ClassType, typename ArgType1, typename ArgType2>
+	struct TLambdaTraits<ReturnType(ClassType::*)(const ArgType1*, ArgType2&) const>
+	{
+		using TRHICommandList = ArgType2;
+		using TRDGPass = ArgType1;
+	};
+	template <typename ReturnType, typename ClassType, typename ArgType1, typename ArgType2>
+	struct TLambdaTraits<ReturnType(ClassType::*)(const ArgType1*, ArgType2&)>
+	{
+		using TRHICommandList = ArgType2;
+		using TRDGPass = ArgType1;
 	};
 	using TRHICommandList = typename TLambdaTraits<ExecuteLambdaType>::TRHICommandList;
+	using TRDGPass = typename TLambdaTraits<ExecuteLambdaType>::TRDGPass;
 
 public:
 	static const bool kSupportsAsyncCompute = TIsSame<TRHICommandList, FRHIComputeCommandList>::Value;
@@ -556,12 +609,24 @@ public:
 	}
 
 private:
+	template<class T>
+	typename TEnableIf<!TIsSame<T, FRDGPass>::Value, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
+	{
+		ExecuteLambda(static_cast<TRHICommandList&>(RHICmdList));
+	}
+
+	template<class T>
+	typename TEnableIf<TIsSame<T, FRDGPass>::Value, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
+	{
+		ExecuteLambda(this, static_cast<TRHICommandList&>(RHICmdList));
+	}
+
 	void Execute(FRHIComputeCommandList& RHICmdList) override
 	{
 		check(!kSupportsRaster || RHICmdList.IsGraphics());
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FRDGPass_Execute);
 		RHICmdList.SetStaticUniformBuffers(ParameterStruct.GetStaticUniformBuffers());
-		ExecuteLambda(static_cast<TRHICommandList&>(RHICmdList));
+		ExecuteLambdaFunc<TRDGPass>(static_cast<TRHICommandList&>(RHICmdList));
 	}
 
 	ExecuteLambdaType ExecuteLambda;
@@ -598,4 +663,10 @@ private:
 	FEmptyShaderParameters EmptyShaderParameters;
 };
 
-#include "RenderGraphParameters.inl"
+#include "RenderGraphParameters.inl" // IWYU pragma: export
+
+class FRDGBuilder;
+class FRDGPass;
+class FRDGTrace;
+class FRDGUserValidation;
+class FShaderParametersMetadata;

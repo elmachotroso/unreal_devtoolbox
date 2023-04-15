@@ -7,6 +7,7 @@
 #include "Misc/Crc.h"
 
 #include "GeometryCollection/GeometryCollectionConvexPropertiesInterface.h"
+#include "GeometryCollection/ManagedArrayAccessor.h"
 
 namespace Chaos
 {
@@ -116,7 +117,10 @@ public:
 		FS_None = 0,
 
 		// identify nodes that should be removed from the simulation instead of becoming a fractured body
-		FS_RemoveOnFracture = 0x00000004
+		FS_RemoveOnFracture = 0x00000004,
+
+		FS_IgnoreCollisionInParentCluster = 0x00000008
+
 	};
 	//
 	//
@@ -126,6 +130,7 @@ public:
 	 * Create a GeometryCollection from Vertex and Indices arrays
 	 */
 	static FGeometryCollection* NewGeometryCollection(const TArray<float>& RawVertexArray, const TArray<int32>& RawIndicesArray, bool ReverseVertexOrder = true);
+	static void Init(FGeometryCollection* Collection, const TArray<float>& RawVertexArray, const TArray<int32>& RawIndicesArray, bool ReverseVertexOrder = true);
 
 	/**
 	* Create a GeometryCollection from Vertex, Indices, BoneMap, Transform, BoneHierarchy arrays
@@ -179,11 +184,19 @@ public:
 	//
 	//
 
+	// Initialize any interfaces on the geometry collection (i.e., the FGeometryCollectionConvexPropertiesInterface)
+	virtual void InitializeInterfaces();
+
 
 	/**
 	*  Update bounding box entries for the geometry
 	*/
 	void UpdateBoundingBox();
+
+	/**  
+	* GetBoundingBox 
+	*/
+	FBoxSphereBounds GetBoundingBox() const;
 
 	/**
 	 * Update the visibility of specified geometry nodes
@@ -236,7 +249,6 @@ public:
 
 	/** Connection of leaf geometry */
 	TArray<TArray<int32>> ConnectionGraph();
-
 
 	//
 	//
@@ -305,11 +317,13 @@ protected:
 	/**
 	* Update Face Attributes based on changes in the group.
 	*/
+	bool BuildFaceToGeometryMapping(bool InSaved=false);
 	void UpdateFaceGroupElements();
 
 	/**
-	* Update Vertex Attributes based on changes in the group.
+	* Build and Update Vertex Attributes based on changes in the group.
 	*/
+	bool BuildVertexToGeometryMapping(bool InSaved = false);
 	void UpdateVerticesGroupElements();
 
 	/** 
@@ -335,3 +349,37 @@ FORCEINLINE Chaos::FChaosArchive& operator<<(Chaos::FChaosArchive& Ar, FGeometry
 	Value.Serialize(Ar);
 	return Ar;
 }
+
+class CHAOS_API FGeometryCollectionMeshFacade
+{
+public:
+	FGeometryCollectionMeshFacade(FManagedArrayCollection& InCollection);
+
+	/** 
+	 * returns true if all the necessary attributes are present
+	 * if not then the API can be used to create  
+	 */
+	bool IsValid() const;	
+
+	/**
+	 * Add the necessary attributes if they are missing
+	 */
+	void AddAttributes();
+
+	TManagedArrayAccessor<FVector3f> Vertex;
+	TManagedArrayAccessor<FVector3f> TangentU;
+	TManagedArrayAccessor<FVector3f> TangentV;
+	TManagedArrayAccessor<FVector3f> Normal;
+	TManagedArrayAccessor<TArray<FVector2f>> UVs;
+	TManagedArrayAccessor<FLinearColor> Color;
+	TManagedArrayAccessor<int32> BoneMap;
+	TManagedArrayAccessor<int32> VertexStart;
+	TManagedArrayAccessor<int32> VertexCount;
+
+	TManagedArrayAccessor<FIntVector> Indices;
+	TManagedArrayAccessor<bool> Visible;
+	TManagedArrayAccessor<int32> MaterialIndex;
+	TManagedArrayAccessor<int32> MaterialID;
+	TManagedArrayAccessor<int32> FaceStart;
+	TManagedArrayAccessor<int32> FaceCount;
+};

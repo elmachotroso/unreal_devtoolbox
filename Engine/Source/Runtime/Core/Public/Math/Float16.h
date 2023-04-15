@@ -32,6 +32,9 @@ class FFloat16
 {
 public:
 
+	/* Float16 can store values in [-MaxF16Float,MaxF16Float] */
+	constexpr static float MaxF16Float = 65504.f;
+
 	uint16 Encoded;
 
 	/** Default constructor */
@@ -52,16 +55,42 @@ public:
 	/** Convert from Fp16 to Fp32. */
 	operator float() const;
 
-	/** Convert from Fp32 to Fp16. (RTNE) */
+	/** Convert from Fp32 to Fp16, round-to-nearest-even. (RTNE)
+	Stores values out of range as +-Inf */
 	void Set(float FP32Value);
 	
-	/** Convert from Fp32 to Fp16. (backward-compatible truncate conversion) */
+	/*Convert from Fp32 to Fp16, round-to-nearest-even. (RTNE)
+	Clamps values out of range as +-MaxF16Float */
+	void SetClamped(float FP32Value)
+	{
+		Set( FMath::Clamp(FP32Value,-MaxF16Float,MaxF16Float) );
+	}
+
+	/** Convert from Fp32 to Fp16, truncating low bits. 
+	(backward-compatible conversion; was used by Set() previously)
+	Clamps values out of range to [-MaxF16Float,MaxF16Float] */
 	void SetTruncate(float FP32Value);
 
+	/** Set to 0.0 **/
+	void SetZero()
+	{
+		Encoded = 0;
+	}
+	
+	/** Set to 1.0 **/
+	void SetOne()
+	{
+		Encoded = 0x3c00;
+	}
+
+	/** Return float clamp in [0,MaxF16Float] , no negatives or infinites or nans returned **/
+	FFloat16 GetClampedNonNegativeAndFinite() const;
+	
 	/** Convert from Fp16 to Fp32. */
 	float GetFloat() const;
 
-	/** Is the float negative without converting */
+	/** Is the float negative without converting
+	NOTE: returns true for negative zero! */
 	bool IsNegative() const
 	{
 		// negative if sign bit is on
@@ -123,6 +152,7 @@ FORCEINLINE FFloat16::operator float() const
 }
 
 
+// NOTE: Set() on values out of F16 max range store them as +-Inf
 FORCEINLINE void FFloat16::Set(float FP32Value)
 {
 	// FPlatformMath::StoreHalf follows RTNE (round-to-nearest-even) rounding default convention
@@ -137,6 +167,7 @@ FORCEINLINE float FFloat16::GetFloat() const
 }
 
 
+// NOTE: SetTruncate() on values out of F16 max range store them as +-Inf
 FORCEINLINE void FFloat16::SetTruncate(float FP32Value)
 {
 
@@ -200,4 +231,19 @@ FORCEINLINE void FFloat16::SetTruncate(float FP32Value)
 	}
 
 	Encoded = FP16.Encoded;
+}
+
+/** Return float clamp in [0,MaxF16Float] , no negatives or infinites or nans returned **/
+FORCEINLINE FFloat16 FFloat16::GetClampedNonNegativeAndFinite() const
+{
+	FFloat16 ReturnValue;
+	
+	if ( Encoded < 0x7c00 ) // normal and non-negative, just pass through
+		ReturnValue.Encoded = Encoded;
+	else if ( Encoded == 0x7c00 ) // infinity turns into largest normal
+		ReturnValue.Encoded = 0x7bff;
+	else // NaNs or anything negative turns into 0
+		ReturnValue.Encoded = 0;
+
+	return ReturnValue;
 }

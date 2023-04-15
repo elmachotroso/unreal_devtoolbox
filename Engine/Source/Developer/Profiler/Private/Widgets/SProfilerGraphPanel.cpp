@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProfilerGraphPanel.h"
+
+#if STATS
+
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScrollBar.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/SDataGraph.h"
 #include "Widgets/SProfilerMiniView.h"
 #include "Widgets/SProfilerThreadView.h"
@@ -48,7 +51,7 @@ void SProfilerGraphPanel::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(2.0f)
 		[
 			SNew(SHorizontalBox)
@@ -285,3 +288,5 @@ void SProfilerGraphPanel::SetScrollBarState()
 
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

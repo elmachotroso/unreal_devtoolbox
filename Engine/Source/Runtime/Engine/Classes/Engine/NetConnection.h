@@ -22,7 +22,7 @@
 #include "ProfilingDebugging/Histogram.h"
 #include "Containers/ArrayView.h"
 #include "Containers/CircularBuffer.h"
-#include "Net/Core/Trace/Config.h"
+#include "Net/Core/Trace/NetTraceConfig.h"
 #include "ReplicationDriver.h"
 #include "Analytics/EngineNetAnalytics.h"
 #include "Net/Common/Packets/PacketTraits.h"
@@ -32,17 +32,26 @@
 #include "Net/Core/Connection/NetCloseResult.h"
 #include "Net/NetConnectionFaultRecovery.h"
 #include "Net/TrafficControl.h"
+#include "HAL/LowLevelMemTracker.h"
 
 #include "NetConnection.generated.h"
 
 #define NETCONNECTION_HAS_SETENCRYPTIONKEY 1
+
+LLM_DECLARE_TAG_API(NetConnection, ENGINE_API);
 
 class FInternetAddr;
 class FObjectReplicator;
 class StatelessConnectHandlerComponent;
 class UActorChannel;
 class UChildConnection;
+class ULevelStreaming;
 struct FEncryptionKeyResponse;
+
+namespace UE::Net
+{
+	class FNetPing;
+}
 
 typedef TMap<TWeakObjectPtr<AActor>, UActorChannel*, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<AActor>, UActorChannel*>> FActorChannelMap;
 
@@ -283,10 +292,11 @@ public:
 	UPROPERTY()
 	int32	MaxPacket;						// Maximum packet size.
 
-	UE_DEPRECATED(4.25, "Please use IsInternalAck/SetInternalAck instead")
+private:
 	UPROPERTY()
 	uint32 InternalAck:1;					// Internally ack all packets, for 100% reliable connections.
 
+public:
 	bool IsInternalAck() const { return bInternalAck; }
 	void SetInternalAck(bool bValue) 
 	{ 
@@ -310,13 +320,26 @@ public:
 		bForceInitialDirty = bValue;
 	}
 
+	/**	Used to allow connections to ignore the bunch size limitation applied before splitting into partial bunch packets, 
+	*	or when receiving partial bunches to reassemble.
+	* 
+	*	!!!WARNING!!!  This is a security risk as the connection will accept much larger bunches before hitting the 
+	*	reliable buffer limit, or the array/string serialization limit.
+	*/
+	bool IsUnlimitedBunchSizeAllowed() const { return bUnlimitedBunchSizeAllowed; }
+	void SetUnlimitedBunchSizeAllowed(bool bValue)
+	{
+		bUnlimitedBunchSizeAllowed = bValue;
+	}
+
 	/** Destructor */
 	ENGINE_API virtual ~UNetConnection() {};
 
 private:
-	uint32 bInternalAck : 1;	// Internally ack all packets, for 100% reliable connections.
-	uint32 bReplay : 1;			// Flag to indicate a replay connection, independent of reliability
-	uint32 bForceInitialDirty : 1;	// Force all properties dirty on initial replication
+	uint32 bInternalAck : 1;				// Internally ack all packets, for 100% reliable connections.
+	uint32 bReplay : 1;						// Flag to indicate a replay connection, independent of reliability
+	uint32 bForceInitialDirty : 1;			// Force all properties dirty on initial replication
+	uint32 bUnlimitedBunchSizeAllowed : 1;	// Ignore the value of net.MaxConstructedPartialBunchSizeBytes
 
 public:
 	struct FURL			URL;				// URL of the other side.
@@ -405,16 +428,7 @@ public:
 	int32			TickCount;				// Count of ticks.
 	uint32			LastProcessedFrame;   // The last frame where we gathered and processed actors for this connection
 
-	/** The last time an ack was received */
-	UE_DEPRECATED(4.25, "Please use GetLastRecvAckTime() instead.")
-	float			LastRecvAckTime;
-
 	double GetLastRecvAckTime() const { return LastRecvAckTimestamp; }
-
-	/** Time when connection request was first initiated */
-	UE_DEPRECATED(4.25, "Please use GetConnectTime() instead.")
-	float			ConnectTime;
-
 	double GetConnectTime() const { return ConnectTimestamp; }
 
 private:
@@ -545,8 +559,6 @@ public:
 	double			OutLagTime[256];				// For lag measuring.
 	int32			OutLagPacketId[256];			// For lag measuring.
 	uint8			OutBytesPerSecondHistory[256];	// For saturation measuring.
-	UE_DEPRECATED(4.25, "RemoteSaturation is not calculated anymore and is now deprecated")
-	float			RemoteSaturation;
 	int32			InPacketId;						// Full incoming packet index.
 	int32			OutPacketId;					// Most recently sent packet.
 	int32 			OutAckPacketId;					// Most recently acked outgoing packet.
@@ -554,9 +566,16 @@ public:
 	bool			bLastHasServerFrameTime;
 
 	// Channel table.
+
+	UPROPERTY(config)
+	int32 DefaultMaxChannelSize;
+
+	UE_DEPRECATED(5.1, "Deprecated in favor of DefaultMaxChannelSize config property.")
 	static const int32 DEFAULT_MAX_CHANNEL_SIZE;
 
+	UE_DEPRECATED(5.1, "No longer used")
 	int32 MaxChannelSize;
+
 	TArray<UChannel*>	Channels;
 	TArray<int32>		OutReliable;
 	TArray<int32>		InReliable;
@@ -683,6 +702,12 @@ public:
 
 	void AddDestructionInfo(FActorDestructionInfo* DestructionInfo)
 	{
+#if UE_WITH_IRIS
+		if (Driver && Driver->GetReplicationSystem())
+		{
+			return;
+		}
+#endif // UE_WITH_IRIS
 		if (ReplicationConnectionDriver)
 		{
 			ReplicationConnectionDriver->NotifyAddDestructionInfo(DestructionInfo);
@@ -695,6 +720,12 @@ public:
 
 	void RemoveDestructionInfo(FActorDestructionInfo* DestructionInfo)
 	{
+#if UE_WITH_IRIS
+		if (Driver && Driver->GetReplicationSystem())
+		{
+			return;
+		}
+#endif // UE_WITH_IRIS
 		if (ReplicationConnectionDriver)
 		{
 			ReplicationConnectionDriver->NotifyRemoveDestructionInfo(DestructionInfo);
@@ -707,6 +738,12 @@ public:
 	
 	void ResetDestructionInfos()
 	{
+#if UE_WITH_IRIS
+		if (Driver && Driver->GetReplicationSystem())
+		{
+			return;
+		}
+#endif // UE_WITH_IRIS
 		if (ReplicationConnectionDriver)
 		{
 			ReplicationConnectionDriver->NotifyResetDestructionInfo();
@@ -728,15 +765,16 @@ private:
 	 */
 	TSet<FNetworkGUID>	DestroyedStartupOrDormantActorGUIDs;
 
+	/** On the server, the package names of streaming levels that the client has told us it is making visible */
+	TSet<FName> ClientMakingVisibleLevelNames;
+
 public:
 
 	/** This holds a list of actor channels that want to fully shutdown, but need to continue processing bunches before doing so */
 	TMap<FNetworkGUID, TArray<class UActorChannel*>> KeepProcessingActorChannelBunchesMap;
 
 	/** A list of replicators that belong to recently dormant actors/objects */
-	TMap< UObject*, TSharedRef< FObjectReplicator > > DormantReplicatorMap;
-
-	
+	TMap<FObjectKey, TSharedRef<FObjectReplicator>> DormantReplicatorMap;	
 
 	ENGINE_API FName GetClientWorldPackageName() const { return ClientWorldPackageName; }
 
@@ -749,8 +787,10 @@ public:
 	 */
 	TSet<FName> ClientVisibleLevelNames;
 
-	/** Called by PlayerController to tell connection about client level visiblity change */
+	/** Called by PlayerController to tell connection about client level visibility change */
 	ENGINE_API void UpdateLevelVisibility(const struct FUpdateLevelVisibilityLevelInfo& LevelVisibility);
+
+	ENGINE_API const TSet<FName>& GetClientMakingVisibleLevelNames() const { return ClientMakingVisibleLevelNames; }
 	
 #if DO_ENABLE_NET_TEST
 
@@ -889,10 +929,6 @@ public:
 	ENGINE_API virtual void FlushNet(bool bIgnoreSimulation = false);
 
 	/** Poll the connection. If it is timed out, close it. */
-	UE_DEPRECATED(4.26, "Now takes DeltaSeconds")
-	ENGINE_API virtual void Tick() { Tick(0.0f); }
-
-	/** Poll the connection. If it is timed out, close it. */
 	ENGINE_API virtual void Tick(float DeltaSeconds);
 
 	/** Return whether this channel is ready for sending. */
@@ -1022,32 +1058,14 @@ public:
 	ENGINE_API virtual void NotifyAnalyticsProvider();
 
 	/**
-	 * Sets the encryption key and enables encryption.
-	 */
-	UE_DEPRECATED(4.24, "Use SetEncryptionData instead.")
-	ENGINE_API void EnableEncryptionWithKey(TArrayView<const uint8> Key);
-	
-	/**
 	 * Sets the encryption data and enables encryption.
 	 */
 	ENGINE_API void EnableEncryption(const FEncryptionData& EncryptionData);
 
 	/**
-	 * Sets the encryption key, enables encryption, and sends the encryption ack to the client.
-	 */
-	UE_DEPRECATED(4.24, "Use SetEncryptionData instead.")
-	ENGINE_API void EnableEncryptionWithKeyServer(TArrayView<const uint8> Key);
-
-	/**
 	 * Sets the encryption data, enables encryption, and sends the encryption ack to the client.
 	 */
 	ENGINE_API void EnableEncryptionServer(const FEncryptionData& EncryptionData);
-
-	/**
-	 * Sets the key for the underlying encryption packet handler component, but doesn't modify encryption enabled state.
-	 */
-	UE_DEPRECATED(4.24, "Use SetEncryptionData instead.")
-	ENGINE_API void SetEncryptionKey(TArrayView<const uint8> Key);
 
 	/**
 	 * Sets the data for the underlying encryption packet handler component, but doesn't modify encryption enabled state.
@@ -1208,6 +1226,8 @@ public:
 	/** Removes a channel from the ticking list directly */
 	void StopTickingChannel(UChannel* Channel) { ChannelsToTick.Remove(Channel); }
 
+	int32 GetNumTickingChannels() const { return ChannelsToTick.Num(); }
+
 	FORCEINLINE FHistogram GetNetHistogram() const { return NetConnectionHistogram; }
 
 	/** Whether or not a client packet has been received - used serverside, to delay any packet sends */
@@ -1227,13 +1247,6 @@ public:
 	/** Returns the online platform name for the player on this connection. Only valid for client connections on servers. */
 	ENGINE_API FName GetPlayerOnlinePlatformName() const { return PlayerOnlinePlatformName; }
 	
-	/**
-	 * Sets whether or not we should ignore bunches that would attempt to open channels that are already open.
-	 * Should only be used with InternalAck.
-	 */
-	UE_DEPRECATED(4.26, "Please call SetAllowExistingChannelIndex instead.")
-	void SetIgnoreAlreadyOpenedChannels(bool bInIgnoreAlreadyOpenedChannels) { SetAllowExistingChannelIndex(bInIgnoreAlreadyOpenedChannels); }
-
 	/** Sets whether we handle opening channels with an index that already exists, used by replays to fast forward the packet stream */
 	void SetAllowExistingChannelIndex(bool bAllow);
 
@@ -1267,7 +1280,12 @@ public:
 	/** Returns the OutgoingBunches array, only to be used by UChannel::SendBunch */
 	TArray<FOutBunch *>& GetOutgoingBunches() { return OutgoingBunches; }
 
-	/** Removes Actor and its replicated components from DormantReplicatorMap. */
+	/** Add a replicator to the dormancy map and release its strong pointer to its object */
+	void AddDormantReplicator(UObject* Object, const TSharedRef<FObjectReplicator>& Replicator);
+	
+	/** Find a dormant replicator for the channel actor or one of its subobjects. Removes it from the map if found. */
+	TSharedPtr<FObjectReplicator> FindAndRemoveDormantReplicator(UObject* Object);
+
 	void CleanupDormantReplicatorsForActor(AActor* Actor);
 
 	/** Removes stale entries from DormantReplicatorMap. */
@@ -1411,6 +1429,9 @@ public:
 
 	ENGINE_API virtual void NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason);
 
+	/** Update FNetLevelVisibilityTransactionId for server instigated level streaming */
+	FNetLevelVisibilityTransactionId UpdateLevelStreamStatusChangedTransactionId(const ULevelStreaming* LevelObject, const FName PackageName, bool bShouldBeVisible);
+
 protected:
 
 	bool GetPendingCloseDueToSocketSendFailure() const
@@ -1453,10 +1474,13 @@ private:
 	FName PlayerOnlinePlatformName;
 
 	/** This is an acceleration set that is derived from ClientWorldPackageName and ClientVisibleLevelNames. We use this to quickly test an AActor*'s visibility while replicating. */
-	mutable TMap<UObject*, bool> ClientVisibleActorOuters;
+	mutable TMap<FName, bool> ClientVisibleActorOuters;
 
 	/** This is used to capture visibility updates while the server is in transition and deffer the update until the server has completed the transition */
 	TMap<FName, FUpdateLevelVisibilityLevelInfo> PendingUpdateLevelVisibility;
+
+	/** This is used to track any pending streaming status requests the server has sent */
+	TMap<FName, FNetLevelVisibilityTransactionId> ClientPendingStreamingStatusRequest;
 
 private:
 
@@ -1464,7 +1488,7 @@ private:
 	void UpdateLevelVisibilityInternal(const struct FUpdateLevelVisibilityLevelInfo& LevelVisibility);
 
 	/** Called internally to update cached acceleration map */
-	bool UpdateCachedLevelVisibility(ULevel* Level) const;
+	bool UpdateCachedLevelVisibility(const FName& PackageName) const;
 
 	/** Updates entire cached LevelVisibility map */
 	void UpdateAllCachedLevelVisibility() const;
@@ -1637,6 +1661,9 @@ private:
 	/** Whether or not this NetConnection has already received an NMT_CloseReason message */
 	bool bReceivedCloseReason = false;
 
+	/** Ping collection and calculation */
+	TPimplPtr<UE::Net::FNetPing> NetPing;
+
 
 	int32 GetFreeChannelIndex(const FName& ChName) const;
 
@@ -1657,6 +1684,30 @@ public:
 		return &FaultRecovery;
 	}
 
+	UE::Net::FNetPing* GetNetPing()
+	{
+		return NetPing.Get();
+	}
+
+	/**
+	 * Sends an NMT_CloseReason message, with the specified close reason or close reason chain.
+	 * Called automatically by UNetConnection::Close, but should be called beforehand if sending a packet that will trigger a remote close.
+	 *
+	 * @param CloseReason	The close reason or close reason chain to send
+	 */
+	void SendCloseReason(FNetCloseResult&& CloseReason)
+	{
+		SendCloseReason(static_cast<FNetResult&&>(MoveTemp(CloseReason)));
+	}
+
+	/**
+	 * Sends an NMT_CloseReason message, with the specified close reason or close reason chain.
+	 * Called automatically by UNetConnection::Close, but should be called beforehand if sending a packet that will trigger a remote close.
+	 *
+	 * @param CloseReason	The close reason or close reason chain to send
+	 */
+	ENGINE_API void SendCloseReason(FNetResult&& CloseReason);
+
 	/**
 	 * Handles parsing/validation and logging of NMT_CloseReason messages
 	 *
@@ -1674,6 +1725,8 @@ private:
 
 protected:
 	TOptional<FNetworkCongestionControl> NetworkCongestionControl;
+
+	void InitChannelData();
 };
 
 struct FScopedRepContext

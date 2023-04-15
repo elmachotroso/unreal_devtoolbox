@@ -5,7 +5,7 @@
  */
 
 #include "WorldPartition/WorldPartitionLevelHelper.h"
-#include "WorldPartition/WorldPartitionPackageCache.h"
+#include "WorldPartition/WorldPartitionPackageHelper.h"
 
 #if WITH_EDITOR
 
@@ -13,13 +13,77 @@
 #include "Model.h"
 #include "UnrealEngine.h"
 #include "UObject/UObjectHash.h"
-#include "GameFramework/WorldSettings.h"
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartition.h"
-#include "StaticMeshCompiler.h"
+#include "WorldPartition/WorldPartitionPackageHelper.h"
+#include "AssetCompilingManager.h"
 #include "LevelUtils.h"
 #include "Templates/SharedPointer.h"
+#include "ActorFolder.h"
+
+FWorldPartitionLevelHelper& FWorldPartitionLevelHelper::Get()
+{
+	static FWorldPartitionLevelHelper Instance;
+	return Instance;
+}
+
+FWorldPartitionLevelHelper::FWorldPartitionLevelHelper()
+{
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FWorldPartitionLevelHelper::PreGarbageCollect);
+}
+
+void FWorldPartitionLevelHelper::PreGarbageCollect()
+{
+	for (TWeakObjectPtr<UPackage>& PackageToUnload : PreGCPackagesToUnload)
+	{
+		// Test if WeakObjectPtr is valid since clean up could have happened outside of this helper
+		if (PackageToUnload.IsValid())
+		{
+			FWorldPartitionPackageHelper::UnloadPackage(PackageToUnload.Get());
+		}
+	}
+	PreGCPackagesToUnload.Reset();
+}
+
+void FWorldPartitionLevelHelper::AddReference(UPackage* InPackage, FPackageReferencer* InReferencer)
+{
+	check(InPackage);
+	FPackageReference& RefInfo = PackageReferences.FindOrAdd(InPackage->GetFName());
+	check(RefInfo.Package == nullptr || RefInfo.Package == InPackage);
+	RefInfo.Package = InPackage;
+	RefInfo.Referencers.Add(InReferencer);
+	PreGCPackagesToUnload.Remove(InPackage);
+}
+
+void FWorldPartitionLevelHelper::RemoveReferences(FPackageReferencer* InReferencer)
+{
+	for (auto It = PackageReferences.CreateIterator(); It; ++It)
+	{
+		FPackageReference& RefInfo = It->Value;
+		RefInfo.Referencers.Remove(InReferencer);
+		if (RefInfo.Referencers.Num() == 0)
+		{
+			// Test if WeakObjectPtr is valid since clean up could have happened outside of this helper
+			if (RefInfo.Package.IsValid())
+			{
+				PreGCPackagesToUnload.Add(RefInfo.Package);
+			}
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void FWorldPartitionLevelHelper::FPackageReferencer::AddReference(UPackage* InPackage)
+{
+	FWorldPartitionLevelHelper::Get().AddReference(InPackage, this);
+}
+
+void FWorldPartitionLevelHelper::FPackageReferencer::RemoveReferences()
+{
+	FWorldPartitionLevelHelper::Get().RemoveReferences(this);
+}
+
 
  /**
   * Defaults World's initialization values for World Partition StreamingLevels
@@ -42,14 +106,14 @@ UWorld::InitializationValues FWorldPartitionLevelHelper::GetWorldInitializationV
 /**
  * Moves external actors into the given level
  */
-void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPartitionRuntimeCellObjectMapping>& InChildPackages, ULevel* InLevel)
+void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPartitionRuntimeCellObjectMapping>& InChildPackages, ULevel* InLevel, TArray<UPackage*>& OutModifiedPackages)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FWorldPartitionLevelHelper::MoveExternalActorsToLevel);
 
 	// We can't have async compilation still going on while we move actors as this is going to ResetLoaders which will move bulkdata around that
 	// might still be used by async compilation. 
 	// #TODO_DC Revisit once virtualbulkdata are enabled
-	FStaticMeshCompilingManager::Get().FinishAllCompilation();
+	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	check(InLevel);
 	UPackage* LevelPackage = InLevel->GetPackage();
@@ -66,7 +130,8 @@ void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPa
 		AActor* Actor = FindObject<AActor>(nullptr, *PackageObjectMapping.LoadedPath.ToString());
 		if (Actor)
 		{
-			UPackage* ActorExternalPackage = Actor->IsPackageExternal() ? Actor->GetPackage() : nullptr;
+			UPackage* ActorExternalPackage = Actor->GetExternalPackage();
+			check(ActorExternalPackage);
 
 			const bool bSameOuter = (InLevel == Actor->GetOuter());
 			Actor->SetPackageExternal(false, false);
@@ -85,20 +150,18 @@ void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPa
 			}
 
 			// Include objects found in the source actor package in the destination level package
-			// @todo_ow: Generalize this case and handle properly the case of LevelInstance (LI actor's package is the duplicated LI package, i.e. not an external actor package)
-			if (ActorExternalPackage)
+			TArray<UObject*> Objects;
+			const bool bIncludeNestedSubobjects = false;
+			GetObjectsWithOuter(ActorExternalPackage, Objects, bIncludeNestedSubobjects);
+			for (UObject* Object : Objects)
 			{
-				TArray<UObject*> Objects;
-				const bool bIncludeNestedSubobjects = false;
-				GetObjectsWithOuter(ActorExternalPackage, Objects, bIncludeNestedSubobjects);
-				for (UObject* Object : Objects)
+				if (Object->GetFName() != NAME_PackageMetaData)
 				{
-					if (Object->GetFName() != NAME_PackageMetaData)
-					{
-						Object->Rename(nullptr, LevelPackage, REN_ForceNoResetLoaders);
-					}
+					Object->Rename(nullptr, LevelPackage, REN_ForceNoResetLoaders);
 				}
 			}
+
+			OutModifiedPackages.Add(ActorExternalPackage);
 		}
 		else
 		{
@@ -147,22 +210,42 @@ FString FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(const FAc
 	return InSubPathString;
 }
 
-FString FWorldPartitionLevelHelper::AddActorContainerIDToActorPath(const FActorContainerID& InContainerID, const FString& InActorPath)
+FString FWorldPartitionLevelHelper::GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, int32 InPIEInstanceID)
+{
+	FString ContainerPackageName = InPackageName;
+	if (InPIEInstanceID != INDEX_NONE)
+	{
+		ContainerPackageName = UWorld::ConvertToPIEPackageName(ContainerPackageName, InPIEInstanceID);
+	}
+
+	return FString::Printf(TEXT("/Temp%s_%s"), *ContainerPackageName, *InContainerID.ToString());
+}
+
+bool FWorldPartitionLevelHelper::RemapActorPath(const FActorContainerID& InContainerID, const FString& InActorPath, FString& OutActorPath)
 {
 	if (!InContainerID.IsMainContainer())
 	{
 		const FSoftObjectPath SoftObjectPath(InActorPath);
+		const FString LongPackageName = SoftObjectPath.GetLongPackageName();
+			
+		const FString ContainerPackageString = GetContainerPackage(InContainerID, LongPackageName, INDEX_NONE);	
 		const FString NewSubPathString = FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(InContainerID, SoftObjectPath.GetSubPathString());
-		return FSoftObjectPath(SoftObjectPath.GetAssetPathName(), NewSubPathString).ToString();
+
+		FNameBuilder NewAssetPathBuilder;
+		SoftObjectPath.GetAssetPath().AppendString(NewAssetPathBuilder);
+		NewAssetPathBuilder.ReplaceAt(0, LongPackageName.Len(), ContainerPackageString);
+
+		OutActorPath = FSoftObjectPath(FTopLevelAssetPath(NewAssetPathBuilder.ToView()), NewSubPathString).ToString();
+		return true;
 	}
 
-	return InActorPath;
+	return false;
 }
 
 /**
  * Creates an empty Level used in World Partition
  */
-ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorld* InWorld, const FString& InWorldAssetName, UPackage* InPackage)
+ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorldPartitionRuntimeCell* Cell, const UWorld* InWorld, const FString& InWorldAssetName, UPackage* InPackage)
 {
 	// Create or use given package
 	UPackage* CellPackage = nullptr;
@@ -204,8 +287,7 @@ ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorld*
 	check(NewLevel->Model);
 	check(!NewLevel->bIsVisible);
 
-	// Mark the level as a runtime cell
-	NewLevel->bIsWorldPartitionRuntimeCell = true;
+	NewLevel->WorldPartitionRuntimeCell = Cell;
 	
 	// Mark the level package as fully loaded
 	CellPackage->MarkAsFullyLoaded();
@@ -224,7 +306,7 @@ ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorld*
 	return NewLevel;
 }
 
-bool FWorldPartitionLevelHelper::LoadActors(ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FWorldPartitionPackageCache& InPackageCache, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext* InOutInstancingContext /*=nullptr*/)
+bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FWorldPartitionLevelHelper::FPackageReferencer& InPackageReferencer, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext InstancingContext)
 {
 	UPackage* DestPackage = InDestLevel ? InDestLevel->GetPackage() : nullptr;
 	FString ShortLevelPackageName = DestPackage? FPackageName::GetShortName(DestPackage->GetFName()) : FString();
@@ -237,59 +319,140 @@ bool FWorldPartitionLevelHelper::LoadActors(ULevel* InDestLevel, TArrayView<FWor
 	TSharedPtr<FLoadProgress> LoadProgress = MakeShared<FLoadProgress>();
 
 	// Actors to load
-	TArray<FString> ActorPackageInstanceNames;
-	ActorPackageInstanceNames.Reserve(InActorPackages.Num());
 	TArray<FWorldPartitionRuntimeCellObjectMapping*> ActorPackages;
 	ActorPackages.Reserve(InActorPackages.Num());
 
-	// Levels to Load with actors to duplicate
-	TMap<FActorContainerID, TArray<FWorldPartitionRuntimeCellObjectMapping*>> PackagesToDuplicate;
-	check(!InDestLevel || InOutInstancingContext);
-
+	TMap<FActorContainerID, FLinkerInstancingContext> LinkerInstancingContexts;
+	// Add Main container context
+	LinkerInstancingContexts.Add(FActorContainerID::GetMainContainerID(), MoveTemp(InstancingContext));
+			
 	for (FWorldPartitionRuntimeCellObjectMapping& PackageObjectMapping : InActorPackages)
 	{
-		if (PackageObjectMapping.ContainerID.IsMainContainer())
+		FLinkerInstancingContext* Context = LinkerInstancingContexts.Find(PackageObjectMapping.ContainerID);
+		if (!Context)
 		{
-			if (InOutInstancingContext)
-			{
-				FString ObjectPath = PackageObjectMapping.Package.ToString();
-				FString ActorPackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
-				FString ActorPackageInstanceName = FString::Printf(TEXT("%s_%s"), *ActorPackageName, *ShortLevelPackageName);
+			check(!PackageObjectMapping.ContainerID.IsMainContainer());
+		
+			const int32 PIEInstanceID = InDestLevel ? InDestLevel->GetPackage()->GetPIEInstanceID() : INDEX_NONE;
+			const FName ContainerPackageInstanceName(GetContainerPackage(PackageObjectMapping.ContainerID, PackageObjectMapping.ContainerPackage.ToString(), PIEInstanceID));
 
-				ActorPackageInstanceNames.Add(ActorPackageInstanceName);
-				InOutInstancingContext->AddMapping(FName(*ActorPackageName), FName(*ActorPackageInstanceName));
-			}
-			ActorPackages.Add(&PackageObjectMapping);
+			FLinkerInstancingContext& NewContext = LinkerInstancingContexts.Add(PackageObjectMapping.ContainerID);
+			NewContext.AddTag(ULevel::DontLoadExternalObjectsTag);
+			NewContext.AddPackageMapping(PackageObjectMapping.ContainerPackage, ContainerPackageInstanceName);
+			Context = &NewContext;
 		}
-		else
+		
+		const FName ContainerPackageInstanceName = Context->RemapPackage(PackageObjectMapping.ContainerPackage);
+		if (PackageObjectMapping.ContainerPackage != ContainerPackageInstanceName)
 		{
-			// When loading LevelInstances we duplicate the package 
-			PackagesToDuplicate.FindOrAdd(PackageObjectMapping.ContainerID).Add(&PackageObjectMapping);
+			const FString ActorPackageName = FPackageName::ObjectPathToPackageName(PackageObjectMapping.Package.ToString());
+			const FString ActorPackageInstanceName = ULevel::GetExternalActorPackageInstanceName(ContainerPackageInstanceName.ToString(), ActorPackageName);
+
+			Context->AddPackageMapping(FName(*ActorPackageName), FName(*ActorPackageInstanceName));
 		}
+		ActorPackages.Add(&PackageObjectMapping);
 	}
 
-	LoadProgress->NumPendingLoadRequests = ActorPackages.Num() + PackagesToDuplicate.Num();
+	LoadProgress->NumPendingLoadRequests = ActorPackages.Num();
 
-	for (int32 ChildIndex = 0; ChildIndex < ActorPackages.Num(); ChildIndex++)
+	for (FWorldPartitionRuntimeCellObjectMapping* PackageObjectMapping : ActorPackages)
 	{
-		const FWorldPartitionRuntimeCellObjectMapping& PackageObjectMapping = *ActorPackages[ChildIndex];
-		const FString ActorPackageName = FPackageName::ObjectPathToPackageName(PackageObjectMapping.Package.ToString());
-		FName ActorName = *FPaths::GetExtension(PackageObjectMapping.Path.ToString());
-
-		FLoadPackageAsyncDelegate CompletionCallback = FLoadPackageAsyncDelegate::CreateLambda([LoadProgress, ActorName, InDestLevel, InCompletionCallback](const FName& LoadedPackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
+		FLoadPackageAsyncDelegate CompletionCallback = FLoadPackageAsyncDelegate::CreateLambda([LoadProgress, PackageObjectMapping, &InPackageReferencer, InOwningWorld, InDestLevel, InCompletionCallback](const FName& LoadedPackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
 		{
+			const FName ActorName = *FPaths::GetExtension(PackageObjectMapping->Path.ToString());
 			check(LoadProgress->NumPendingLoadRequests);
 			LoadProgress->NumPendingLoadRequests--;
+
+			// In PIE, we make sure to clear RF_Standalone flag on objects in external packages (UMetaData) 
+			// This guarantees that external packages of actors that are destroyed during the PIE session will
+			// properly get GC'ed and will allow future edits/modifications of OFPA actors.
+			if (LoadedPackage && InDestLevel && InDestLevel->GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
+			{
+				ForEachObjectWithPackage(LoadedPackage, [](UObject* Object)
+				{
+					Object->ClearFlags(RF_Standalone);
+					return true;
+				}, false);
+			}
 
 			AActor* Actor = LoadedPackage ? FindObject<AActor>(LoadedPackage, *ActorName.ToString()) : nullptr;
 
 			if (Actor)
 			{
+				const UWorld* ContainerWorld = PackageObjectMapping->ContainerID.IsMainContainer() ? InOwningWorld : Actor->GetTypedOuter<UWorld>();
+				
+				TOptional<FName> SrcActorFolderPath;
+
+				// Make sure Source level actor folder fixup was called
+				if (ContainerWorld->PersistentLevel->IsUsingActorFolders())
+				{ 
+					if (!ContainerWorld->PersistentLevel->LoadedExternalActorFolders.IsEmpty())
+					{
+						ContainerWorld->PersistentLevel->bFixupActorFoldersAtLoad = false;
+						ContainerWorld->PersistentLevel->FixupActorFolders();
+					}
+				
+					// Since actor's level doesn't necessarily uses actor folders, access Folder Guid directly
+					const bool bDirectAccess = true;
+					const FGuid ActorFolderGuid = Actor->GetFolderGuid(bDirectAccess);
+					// Resolve folder guid from source container level and resolve/backup the folder path
+					if (UActorFolder* SrcFolder = ContainerWorld->PersistentLevel->GetActorFolder(ActorFolderGuid))
+					{
+						SrcActorFolderPath = SrcFolder->GetPath();
+					}
+				}
+
+				if (!PackageObjectMapping->ContainerID.IsMainContainer())
+				{					
+					// Add Cache handle on world so it gets unloaded properly
+					InPackageReferencer.AddReference(ContainerWorld->GetPackage());
+										
+					FString SourceWorldPath, RemappedWorldPath;
+					ContainerWorld->GetSoftObjectPathMapping(SourceWorldPath, RemappedWorldPath);
+
+					// Rename through UObject to avoid changing Actor's external packaging and folder properties
+					Actor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *Actor->GetName(), *PackageObjectMapping->ContainerID.ToString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+					// Handle child actors
+					Actor->ForEachComponent<UChildActorComponent>(true, [InDestLevel, PackageObjectMapping](UChildActorComponent* ChildActorComponent)
+					{
+						if (AActor* ChildActor = ChildActorComponent->GetChildActor())
+						{
+							ChildActor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *ChildActor->GetName(), *PackageObjectMapping->ContainerID.ToString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+						}
+					});
+					
+					FLevelUtils::FApplyLevelTransformParams TransformParams(nullptr, PackageObjectMapping->ContainerTransform);
+					TransformParams.Actor = Actor;
+					TransformParams.bDoPostEditMove = false;
+					FLevelUtils::ApplyLevelTransform(TransformParams);
+						
+					// Path to use when searching for this actor in MoveExternalActorsToLevel
+					PackageObjectMapping->LoadedPath = *Actor->GetPathName();
+
+					// Fixup any FSoftObjectPath from this Actor (and its SubObjects) in this container to another object in the same container with a ContainerID suffix that can be remapped to
+					// to a Cell in the StreamingPolicy (this relies on the fact that the _DUP package doesn't get fixed up)
+					FSoftObjectPathFixupArchive FixupArchive([&](FSoftObjectPath& Value)
+					{
+						if (!Value.IsNull() && Value.GetAssetPathString().Equals(RemappedWorldPath, ESearchCase::IgnoreCase))
+						{
+							Value.SetSubPathString(AddActorContainerIDToSubPathString(PackageObjectMapping->ContainerID, Value.GetSubPathString()));
+						}
+					});
+					FixupArchive.Fixup(Actor);
+				}
+
 				if (InDestLevel)
 				{
+					// Propagate resolved actor folder path
+					check(!InDestLevel->IsUsingActorFolders());
+					if (SrcActorFolderPath.IsSet())
+					{
+						Actor->SetFolderPath(*SrcActorFolderPath);
+					}
+
 					check(Actor->IsPackageExternal());
 					InDestLevel->Actors.Add(Actor);
-					check(Actor->GetLevel() == InDestLevel);
+					checkf(Actor->GetLevel() == InDestLevel, TEXT("Levels mismatch, got : %s, expected: %s\nActor: %s\nActorFullName: %s\nActorPackage: %s"), *InDestLevel->GetFullName(), *Actor->GetLevel()->GetFullName(), *Actor->GetActorNameOrLabel(), *Actor->GetFullName(), *Actor->GetPackage()->GetFullName());
 
 					// Handle child actors
 					Actor->ForEachComponent<UChildActorComponent>(true, [InDestLevel](UChildActorComponent* ChildActorComponent)
@@ -301,7 +464,7 @@ bool FWorldPartitionLevelHelper::LoadActors(ULevel* InDestLevel, TArrayView<FWor
 						}
 					});
 				}
-								
+
 				UE_LOG(LogEngine, Verbose, TEXT(" ==> Loaded %s (remaining: %d)"), *Actor->GetFullName(), LoadProgress->NumPendingLoadRequests);
 			}
 			else
@@ -317,129 +480,29 @@ bool FWorldPartitionLevelHelper::LoadActors(ULevel* InDestLevel, TArrayView<FWor
 			}
 		});
 
+		FName PackageToLoad(*FPackageName::ObjectPathToPackageName(PackageObjectMapping->Package.ToString()));
+		const FLinkerInstancingContext& ContainerInstancingContext = LinkerInstancingContexts.FindChecked(PackageObjectMapping->ContainerID);
+		FName PackageName = ContainerInstancingContext.RemapPackage(PackageToLoad);
+
 		if (bInLoadAsync)
 		{
-			FPackagePath PackagePath = FPackagePath::FromPackageNameChecked(*ActorPackageName);
+			FPackagePath PackagePath = FPackagePath::FromPackageNameChecked(PackageToLoad);
+
 			check(DestPackage);
 			const EPackageFlags PackageFlags = DestPackage->HasAnyPackageFlags(PKG_PlayInEditor) ? PKG_PlayInEditor : PKG_None;
-			::LoadPackageAsync(PackagePath, FName(*ActorPackageInstanceNames[ChildIndex]), CompletionCallback, PackageFlags, DestPackage->GetPIEInstanceID(), 0, InOutInstancingContext);
+			::LoadPackageAsync(PackagePath, PackageName, CompletionCallback, PackageFlags, DestPackage->GetPIEInstanceID(), 0, &ContainerInstancingContext);
 		}
 		else
 		{
 			UPackage* InstancingPackage = nullptr;
-			if(InOutInstancingContext)
-			{ 
-				InstancingPackage = CreatePackage(*ActorPackageInstanceNames[ChildIndex]);
+			if (PackageName != PackageToLoad)
+			{
+				InstancingPackage = CreatePackage(*PackageName.ToString());
 			}
 
-			UPackage* Package = LoadPackage(InstancingPackage, *ActorPackageName, LOAD_None, nullptr, InOutInstancingContext);
-			CompletionCallback.Execute(*ActorPackageName, Package, Package ? EAsyncLoadingResult::Succeeded : EAsyncLoadingResult::Failed);
+			UPackage* Package = LoadPackage(InstancingPackage, *PackageToLoad.ToString(), LOAD_None, nullptr, &ContainerInstancingContext);
+			CompletionCallback.Execute(PackageToLoad, Package, Package ? EAsyncLoadingResult::Succeeded : EAsyncLoadingResult::Failed);
 		}
-	}
-
-	for (auto& Pair : PackagesToDuplicate)
-	{
-		FString PackageToLoadFrom = Pair.Value[0]->ContainerPackage.ToString();
-		FLoadPackageAsyncDelegate CompletionCallback = FLoadPackageAsyncDelegate::CreateLambda([LoadProgress, ContainerInstanceID = Pair.Key, Mappings = MoveTemp(Pair.Value), InDestLevel, &InPackageCache, InCompletionCallback](const FName& LoadedPackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
-		{
-			check(LoadProgress->NumPendingLoadRequests);
-			LoadProgress->NumPendingLoadRequests--;
-
-			if (LoadedPackage)
-			{
-				FName DuplicatePackageName(*FString::Printf(TEXT("%s_%s"), *LoadedPackage->GetName(), *ContainerInstanceID.ToString()));
-				UPackage* DuplicatedPackage = InPackageCache.FindPackage(DuplicatePackageName);
-				UWorld* DuplicatedWorld = nullptr;
-
-				// Check that existing Package contains all actors (might be a previously used Dup package when loading unloaded cells)
-				if (DuplicatedPackage)
-				{
-					DuplicatedWorld = UWorld::FindWorldInPackage(DuplicatedPackage);
-					for (auto Mapping : Mappings)
-					{
-						FString ActorName = FPaths::GetExtension(Mapping->Path.ToString());
-						if (!FindObject<AActor>(DuplicatedWorld->PersistentLevel, *ActorName))
-						{
-							InPackageCache.TrashPackage(DuplicatedPackage);
-							DuplicatedPackage = nullptr;
-							DuplicatedWorld = nullptr;
-							break;
-						}
-					}
-				}
-
-				// Package wasn't found or was missing actors
-				if (!DuplicatedPackage)
-				{
-					DuplicatedPackage = InPackageCache.DuplicateWorldPackage(LoadedPackage, DuplicatePackageName);
-					check(DuplicatedPackage);
-					DuplicatedWorld = UWorld::FindWorldInPackage(DuplicatedPackage);
-				}
-
-				// Get Source Path for this world (ReplaceFrom)
-				UWorld* LoadedWorld = UWorld::FindWorldInPackage(LoadedPackage);
-				FString SourceWorldPath, RemappedWorldPath;
-				LoadedWorld->GetSoftObjectPathMapping(SourceWorldPath, RemappedWorldPath);
-				
-				for (auto Mapping : Mappings)
-				{
-					FString ActorName = FPaths::GetExtension(Mapping->Path.ToString());
-					AActor* DuplicatedActor = FindObject<AActor>(DuplicatedWorld->PersistentLevel, *ActorName);
-					// Possible actor isn't found if Actor package failed to load because of missing dependencies (ex: deleted Blueprint)
-					if (DuplicatedActor)
-					{
-						AWorldSettings* WorldSettings = DuplicatedActor->GetLevel()->GetWorldSettings();
-						FTransform Transform = FTransform(WorldSettings->LevelInstancePivotOffset) * Mapping->ContainerTransform;
-
-						DuplicatedActor->Rename(*FString::Printf(TEXT("%s_%s"), *DuplicatedActor->GetName(), *Mapping->ContainerID.ToString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
-						USceneComponent* RootComponent = DuplicatedActor->GetRootComponent();
-
-						FLevelUtils::FApplyLevelTransformParams TransformParams(nullptr, Transform);
-						TransformParams.Actor = DuplicatedActor;
-						TransformParams.bDoPostEditMove = false;
-						FLevelUtils::ApplyLevelTransform(TransformParams);
-
-						// Path to use when searching for this actor in MoveExternalActorsToLevel
-						Mapping->LoadedPath = *DuplicatedActor->GetPathName();
-						
-						// Fixup any FSoftObjectPath from this Actor (and its SubObjects) in this container to another object in the same container with a ContainerID suffix that can be remapped to
-						// to a Cell in the StreamingPolicy (this relies on the fact that the _DUP package doesn't get fixed up)
-						FSoftObjectPathFixupArchive FixupArchive([&](FSoftObjectPath& Value)
-						{
-							if (!Value.IsNull() && Value.GetAssetPathString().Equals(SourceWorldPath, ESearchCase::IgnoreCase))
-							{
-								Value.SetSubPathString(AddActorContainerIDToSubPathString(Mapping->ContainerID, Value.GetSubPathString()));
-							}
-						});
-						FixupArchive.Fixup(DuplicatedActor);
-
-						UE_LOG(LogEngine, Verbose, TEXT(" ==> Duplicated %s (remaining: %d)"), *DuplicatedActor->GetFullName(), LoadProgress->NumPendingLoadRequests);
-					}
-					else
-					{
-						Mapping->LoadedPath = NAME_None;
-						LoadProgress->NumFailedLoadedRequests++;
-						UE_LOG(LogEngine, Warning, TEXT("Failed to find actor %s in package %s"), *ActorName, *LoadedPackageName.ToString());
-					}
-				}
-			}
-			else
-			{
-				UE_LOG(LogEngine, Warning, TEXT("Failed to load %s"), *LoadedPackageName.ToString());
-				LoadProgress->NumFailedLoadedRequests++;
-			}
-
-			if (!LoadProgress->NumPendingLoadRequests)
-			{
-				InCompletionCallback(!LoadProgress->NumFailedLoadedRequests);
-			}
-		});
-
-		// Prefix with /Temp so package doesn't appear in Content, PostFix the Package so that we don't load over the original package
-		FName PackageDuplicateSeedName(*FString::Printf(TEXT("/Temp%s_DUP"), *PackageToLoadFrom));
-		
-		// Use package cache here because level instances can load the same levels across cells we want to avoid Loading the same package multiple times...
-		InPackageCache.LoadPackage(PackageDuplicateSeedName, *PackageToLoadFrom, CompletionCallback, /*bLoadAsync*/bInLoadAsync, /*bInWorldPackage*/true);
 	}
 
 	return (LoadProgress->NumPendingLoadRequests == 0);

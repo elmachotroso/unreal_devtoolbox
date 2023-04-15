@@ -2,15 +2,17 @@
 
 #include "DMXEditorStyle.h"
 
-#include "EditorStyleSet.h"
 #include "Engine/Font.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IPluginManager.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateStyleMacros.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/StyleColors.h"
 
+
+#define EDITOR_IMAGE_BRUSH_SVG( RelativePath, ... ) FSlateVectorImageBrush(FPaths::EngineContentDir() / "Editor/Slate" / RelativePath + TEXT(".svg"), __VA_ARGS__ )
 
 FDMXEditorStyle::FDMXEditorStyle()
 	: FSlateStyleSet("DMXEditorStyle")
@@ -26,6 +28,8 @@ FDMXEditorStyle::FDMXEditorStyle()
 	static const FVector2D Icon51x30(51.f, 30.f);
 	static const FVector2D Icon51x31(51.f, 31.f);
 
+	const FSlateColor SelectorColor = FAppStyle::GetSlateColor("SelectorColor");
+
 	const TSharedPtr<FSlateStyleSet> Style = MakeShared<FSlateStyleSet>(GetStyleSetName());
 
 	static const TCHAR* DMXEnginePluginName = TEXT("DMXEngine");
@@ -36,13 +40,23 @@ FDMXEditorStyle::FDMXEditorStyle()
 	}
 	SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
-	// Default color brushes
+	// Color brushes
 	{
 		Set("DMXEditor.WhiteBrush", new FSlateColorBrush(FLinearColor(1.f, 1.f, 1.f, 1.f)));
 		Set("DMXEditor.BlackBrush", new FSlateColorBrush(FLinearColor(0.f, 0.f, 0.f, 1.f)));
 	}
 
-	// Default Fonts
+	// Border Brushes
+	{
+		Set("DMXEditor.RoundedPropertyBorder", new FSlateRoundedBoxBrush(FLinearColor::Black, 4.f));
+
+		Set("FixturePatcher.FragmentBorder.Normal", new BORDER_BRUSH("FixturePatch_Border_Normal_8x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.L", new BORDER_BRUSH("FixturePatch_Border_L_8x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.R", new BORDER_BRUSH("FixturePatch_Border_R_8x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.TB", new BORDER_BRUSH("FixturePatch_Border_TB_8x", 2.f / 8.f));
+	}
+
+	// Fonts
 	{
 		static const TCHAR* FontPathRoboto = TEXT("Font'/Engine/EngineFonts/Roboto.Roboto'");
 		static const UFont* FontRoboto = Cast<UFont>(StaticLoadObject(UFont::StaticClass(), nullptr, FontPathRoboto));
@@ -67,9 +81,11 @@ FDMXEditorStyle::FDMXEditorStyle()
 	{ 
 		Set("Icons.DMXLibrary", new IMAGE_BRUSH_SVG("DMXLibrary_20", Icon20x20));
 
-		{
-			Set("Icons.DMXLibrarySettings", new CORE_IMAGE_BRUSH_SVG("Starship/Common/settings", Icon16x16));
-		}
+		Set("Icons.DMXLibrarySettings", new CORE_IMAGE_BRUSH_SVG("Starship/Common/settings", Icon16x16));
+
+		Set("Icons.DMXLibraryToolbar.Import", new CORE_IMAGE_BRUSH_SVG("Starship/Common/import", Icon20x20));
+		Set("Icons.DMXLibraryToolbar.Export", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Export", Icon20x20));
+
 		Set("Icons.FixtureType", new IMAGE_BRUSH_SVG("FixtureType_16", Icon16x16));
 		Set("Icons.FixturePatch", new IMAGE_BRUSH_SVG("FixturePatch_16", Icon16x16));
 
@@ -122,13 +138,24 @@ FDMXEditorStyle::FDMXEditorStyle()
 		static const FLinearColor DefaultFaderFillColor = FLinearColor::FromSRGBColor(FColor::FromHex("00aeef"));
 		static const FLinearColor DefeaultFaderForeColor = FLinearColor::FromSRGBColor(FColor::FromHex("ffffff"));
 
-		Set("DMXEditor.OutputConsole.Fader", FSpinBoxStyle(FEditorStyle::GetWidgetStyle<FSpinBoxStyle>("SpinBox"))
-			.SetBackgroundBrush(CORE_BOX_BRUSH("Slate/Common/Spinbox", FMargin(4.f / 16.f), DefaultFaderBackColor))
-			.SetHoveredBackgroundBrush(CORE_BOX_BRUSH("Slate/Common/Spinbox", FMargin(4.f / 16.f), DefaultFaderBackColor))
-			.SetActiveFillBrush(CORE_BOX_BRUSH("Slate/Common/Spinbox_Fill", FMargin(4.f / 16.f), DefaultFaderFillColor))
-			.SetInactiveFillBrush(CORE_BOX_BRUSH("Slate/Common/Spinbox_Fill", FMargin(4.f / 16.f), DefaultFaderFillColor))
+		Set("DMXEditor.OutputConsole.Fader", FSpinBoxStyle(FAppStyle::GetWidgetStyle<FSpinBoxStyle>("SpinBox"))
+			.SetBackgroundBrush(CORE_BOX_BRUSH("Common/Spinbox", FMargin(4.f / 16.f), DefaultFaderBackColor))
+			.SetHoveredBackgroundBrush(CORE_BOX_BRUSH("Common/Spinbox", FMargin(4.f / 16.f), DefaultFaderBackColor))
+			.SetActiveFillBrush(CORE_BOX_BRUSH("Common/Spinbox_Fill", FMargin(4.f / 16.f), DefaultFaderFillColor))
+			.SetInactiveFillBrush(CORE_BOX_BRUSH("Common/Spinbox_Fill", FMargin(4.f / 16.f), DefaultFaderFillColor))
 			.SetForegroundColor(DefeaultFaderForeColor)
 			.SetArrowsImage(FSlateNoResource()));
+	}
+
+	// Fixture List
+	{
+		Set("MVRFixtureList.Row", FTableRowStyle()
+			.SetEvenRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .2f)))
+			.SetOddRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .3f)))
+			.SetEvenRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .4f)))
+			.SetOddRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .5f)))
+			.SetSelectorFocusedBrush(CORE_BORDER_BRUSH("Common/Selector", FMargin(4.f / 16.f), FLinearColor(1.f, 1.f, 1.f, .8f)))
+		);
 	}
 
 	FSlateStyleRegistry::RegisterSlateStyle(*this);
@@ -180,3 +207,5 @@ void FDMXEditorStyle::ReloadTextures()
 		FSlateApplication::Get().GetRenderer()->ReloadTextureResources();
 	}
 }
+
+#undef EDITOR_IMAGE_BRUSH_SVG

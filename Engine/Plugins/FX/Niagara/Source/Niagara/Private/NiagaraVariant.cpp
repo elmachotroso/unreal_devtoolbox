@@ -3,6 +3,8 @@
 #include "NiagaraVariant.h"
 #include "NiagaraDataInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraVariant)
+
 FNiagaraVariant::FNiagaraVariant()
 {
 	CurrentMode = ENiagaraVariantMode::None;
@@ -130,4 +132,12 @@ bool FNiagaraVariant::operator==(const FNiagaraVariant& Other) const
 bool FNiagaraVariant::operator!=(const FNiagaraVariant& Other) const
 {
 	return !(operator==(Other));
+}
+
+bool FNiagaraVariant::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
+{
+	return InVisitor->UpdateName(TEXT("NiagaraVariant.Object"), Object ? Object->GetFName() : NAME_None)
+		&& InVisitor->UpdateName(TEXT("NiagaraVariant.DataInterface"), DataInterface ? DataInterface->GetFName() : NAME_None)
+		&& InVisitor->UpdateArray(TEXT("NiagaraVariant.Bytes"), Bytes.GetData(), Bytes.Num())
+		&& InVisitor->UpdatePOD<uint8>(TEXT("NiagaraVariant.CurrentMode"), static_cast<uint8>(CurrentMode));
 }

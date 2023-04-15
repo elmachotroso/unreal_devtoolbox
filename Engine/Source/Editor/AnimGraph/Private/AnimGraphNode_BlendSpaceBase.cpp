@@ -28,7 +28,7 @@ FLinearColor UAnimGraphNode_BlendSpaceBase::GetNodeTitleColor() const
 
 FSlateIcon UAnimGraphNode_BlendSpaceBase::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", "ClassIcon.BlendSpace");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.BlendSpace");
 }
 
 void UAnimGraphNode_BlendSpaceBase::CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex) const
@@ -119,7 +119,7 @@ void UAnimGraphNode_BlendSpaceBase::CustomizeDetails(IDetailLayoutBuilder& InDet
 
 FText UAnimGraphNode_BlendSpaceBase::GetMenuCategory() const
 {
-	return LOCTEXT("BlendSpaceCategory_Label", "BlendSpaces");
+	return LOCTEXT("BlendSpaceCategory_Label", "Animation|Blend Spaces");
 }
 
 bool UAnimGraphNode_BlendSpaceBase::IsAimOffsetBlendSpace(const UClass* BlendSpaceClass)

@@ -33,11 +33,21 @@ void FRemoteControlPresetEditorToolkit::InitRemoteControlPresetEditor(const EToo
 	// Required, will cause the previous toolkit to close bringing down the RemoteControlPreset and unsubscribing the
 	// tab spawner. Without this, the InitAssetEditor call below will trigger an ensure as the RemoteControlPreset
 	// tab ID will already be registered within EditorTabManager
-	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
-	TSharedPtr<FTabManager> EditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
-	if (EditorTabManager->FindExistingLiveTab(FRemoteControlUIModule::RemoteControlPanelTabName).IsValid())
+	TSharedPtr<FTabManager> HostTabManager;
+
+	if (InitToolkitHost.IsValid())
 	{
-		EditorTabManager->TryInvokeTab(FRemoteControlUIModule::RemoteControlPanelTabName)->RequestCloseTab();
+		HostTabManager = InitToolkitHost->GetTabManager();
+	}
+	else
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+		HostTabManager = LevelEditorModule.GetLevelEditorTabManager();
+	}
+
+	if (HostTabManager.IsValid() && HostTabManager->FindExistingLiveTab(FRemoteControlUIModule::RemoteControlPanelTabName).IsValid())
+	{
+		HostTabManager->TryInvokeTab(FRemoteControlUIModule::RemoteControlPanelTabName)->RequestCloseTab();
 	}
 
 	RegisterTabSpawners(InitToolkitHost->GetTabManager().ToSharedRef());
@@ -78,22 +88,20 @@ FRemoteControlPresetEditorToolkit::~FRemoteControlPresetEditorToolkit()
 
 void FRemoteControlPresetEditorToolkit::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)
 {
-	WorkspaceMenuCategory = InTabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_RemoteControlPanel", "Remote Control Panel"));
+	// In case of double registration
+	if (!InTabManager->HasTabSpawner(FRemoteControlUIModule::RemoteControlPanelTabName))
+	{
+		WorkspaceMenuCategory = InTabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_RemoteControlPanel", "Remote Control Panel"));
 
-	InTabManager->RegisterTabSpawner(FRemoteControlUIModule::RemoteControlPanelTabName, FOnSpawnTab::CreateSP(this, &FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnPanelTab))
-		.SetDisplayName(LOCTEXT("RemoteControlPanelMainTab", "Remote Control Panel"))
-		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings.Small"));
-
-	InTabManager->RegisterTabSpawner(FRemoteControlUIModule::EntityDetailsTabName, FOnSpawnTab::CreateSP(this, &FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnDetailsTab))
-		.SetDisplayName(LOCTEXT("RemoteControlPanelDetailsTab", "Entity Details"))
-		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
+		InTabManager->RegisterTabSpawner(FRemoteControlUIModule::RemoteControlPanelTabName, FOnSpawnTab::CreateSP(this, &FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnPanelTab))
+			.SetDisplayName(LOCTEXT("RemoteControlPanelMainTab", "Remote Control Panel"))
+			.SetGroup(WorkspaceMenuCategory.ToSharedRef())
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details"));
+	}
 }
 
 void FRemoteControlPresetEditorToolkit::UnregisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)
 {
-	InTabManager->UnregisterTabSpawner(FRemoteControlUIModule::EntityDetailsTabName);
 	InTabManager->UnregisterTabSpawner(FRemoteControlUIModule::RemoteControlPanelTabName);
 }
 
@@ -133,7 +141,9 @@ TSharedRef<SDockTab> FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnPan
 {
 	check(Args.GetTabId() == FRemoteControlUIModule::RemoteControlPanelTabName);
 
+	/*
 	FText TabName;
+	
 	if (Preset)
 	{
 		TabName = FText::FromString(Preset->GetName());
@@ -142,24 +152,13 @@ TSharedRef<SDockTab> FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnPan
 	{
 		TabName = LOCTEXT("ControlPanelLabel", "Control Panel");
 	}
+	*/
 
 	return SNew(SDockTab)
-		.Label(TabName)
+		.Label(LOCTEXT("RCPanelTabName", "Remote Control"))
 		.TabColorScale(GetTabColorScale())	
 		[
 			PanelTab.ToSharedRef()
-		];
-}
-
-TSharedRef<SDockTab> FRemoteControlPresetEditorToolkit::HandleTabManagerSpawnDetailsTab(const FSpawnTabArgs& Args)
-{
-	check(Args.GetTabId() == FRemoteControlUIModule::EntityDetailsTabName);
-
-	return SNew(SDockTab)
-		.Label(LOCTEXT("ControlPanelEntityDetailsLabel", "Entity Details"))
-		.TabColorScale(GetTabColorScale())	
-		[
-			SNullWidget::NullWidget
 		];
 }
 
@@ -176,14 +175,35 @@ void FRemoteControlPresetEditorToolkit::InvokePanelTab()
 		}
 	};
 
-	// Create a new DockTab and add the RemoteControlPreset widget to it.
-	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
-	TSharedPtr<FTabManager> EditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+	TSharedPtr<FTabManager> HostTabManager;	
 
-	if (TSharedPtr<SDockTab> Tab = EditorTabManager->TryInvokeTab(FRemoteControlUIModule::RemoteControlPanelTabName))
+	if (ToolkitHost.IsValid())
 	{
-		Tab->SetContent(PanelTab.ToSharedRef());
-		Tab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateStatic(&Local::OnRemoteControlPresetClosed, TWeakPtr<IAssetEditorInstance>(SharedThis(this))));
+		HostTabManager = ToolkitHost.Pin()->GetTabManager();
+	}
+	else
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+		HostTabManager = LevelEditorModule.GetLevelEditorTabManager();
+	}
+
+	// Create a new DockTab and add the RemoteControlPreset widget to it.
+	if (HostTabManager.IsValid())
+	{
+		if (TSharedPtr<SDockTab> Tab = HostTabManager->TryInvokeTab(FRemoteControlUIModule::RemoteControlPanelTabName))
+		{
+			Tab->SetContent(PanelTab.ToSharedRef());
+			Tab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateStatic(&Local::OnRemoteControlPresetClosed, TWeakPtr<IAssetEditorInstance>(SharedThis(this))));
+
+			// Force the parent window to have minimum width.
+			TSharedPtr<SWindow> Window = Tab->GetParentWindow();
+			if (Window.IsValid())
+			{
+				FWindowSizeLimits SizeLimits = Window->GetSizeLimits();
+				SizeLimits.SetMinWidth(SRemoteControlPanel::MinimumPanelWidth);
+				Window->SetSizeLimits(SizeLimits);
+			}
+		}
 	}
 }
 

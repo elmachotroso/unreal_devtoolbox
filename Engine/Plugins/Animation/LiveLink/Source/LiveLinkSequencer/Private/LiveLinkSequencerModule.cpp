@@ -3,7 +3,7 @@
 #include "Interfaces/IPluginManager.h"
 
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Features/IModularFeatures.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ISequencerModule.h"
@@ -24,7 +24,7 @@
 #include "Templates/SubclassOf.h"
 #include "Widgets/Docking/SDockTab.h"
 
-
+LLM_DEFINE_TAG(LiveLink_LiveLinkSequencer);
 DEFINE_LOG_CATEGORY(LogLiveLinkSequencer);
 
 
@@ -63,6 +63,8 @@ public:
 
 	virtual void StartupModule() override
 	{
+		LLM_SCOPE_BYTAG(LiveLink_LiveLinkSequencer);
+
 		static FName LiveLinkSequencerStyle(TEXT("LiveLinkSequencerStyle"));
 		StyleSet = MakeShared<FSlateStyleSet>(LiveLinkSequencerStyle);
 
@@ -100,6 +102,8 @@ public:
 
 	virtual void ShutdownModule() override
 	{
+		LLM_SCOPE_BYTAG(LiveLink_LiveLinkSequencer);
+
 		UnregisterTakeRecorderSourceMenuExtender();
 
 		FModuleManager::Get().OnModulesChanged().Remove(ModulesChangedHandle);
@@ -182,6 +186,10 @@ private:
 
 	static void AddLiveLinkSource(UTakeRecorderSources* Sources,  const FName& SubjectName)
 	{
+		FScopedTransaction Transaction(LOCTEXT("AddLiveLinkSource","Add Live Link Source"));
+
+		Sources->Modify();
+
 		UTakeRecorderLiveLinkSource* NewSource = Sources->AddSource<UTakeRecorderLiveLinkSource>();
 		NewSource->SubjectName = SubjectName;
 	}

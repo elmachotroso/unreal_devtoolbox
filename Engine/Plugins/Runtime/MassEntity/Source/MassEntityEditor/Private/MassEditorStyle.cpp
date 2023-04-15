@@ -4,7 +4,7 @@
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Interfaces/IPluginManager.h"
 
 #define IMAGE_BRUSH( RelativePath, ... ) FSlateImageBrush( StyleSet->RootToContentDir( RelativePath, TEXT( ".png" ) ), __VA_ARGS__ )
@@ -36,13 +36,13 @@ void FMassEntityEditorStyle::Initialize()
 	StyleSet->SetContentRoot(FPaths::EngineContentDir() / TEXT("Editor/Slate"));
 	StyleSet->SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
-	const FScrollBarStyle ScrollBar = FEditorStyle::GetWidgetStyle<FScrollBarStyle>("ScrollBar");
-	const FTextBlockStyle& NormalText = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText");
+	const FScrollBarStyle ScrollBar = FAppStyle::GetWidgetStyle<FScrollBarStyle>("ScrollBar");
+	const FTextBlockStyle& NormalText = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText");
 
 	// State
 	{
 		FTextBlockStyle StateIcon = FTextBlockStyle(NormalText)
-			.SetFont(FEditorStyle::Get().GetFontStyle("FontAwesome.12"))
+			.SetFont(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
 			.SetColorAndOpacity(FLinearColor(230.0f / 255.0f, 230.0f / 255.0f, 230.0f / 255.0f, 0.5f));
 		StyleSet->Set("Mass.Icon", StateIcon);
 
@@ -52,6 +52,7 @@ void FMassEntityEditorStyle::Initialize()
 		StyleSet->Set("Mass.State.Title", StateTitle);
 
 		FEditableTextBoxStyle StateTitleEditableText = FEditableTextBoxStyle()
+			.SetTextStyle(NormalText)
 			.SetFont(TTF_CORE_FONT("Fonts/Roboto-Bold", 10))
 			.SetBackgroundImageNormal(BOX_BRUSH("Common/TextBox", FMargin(4.0f / 16.0f)))
 			.SetBackgroundImageHovered(BOX_BRUSH("Common/TextBox_Hovered", FMargin(4.0f / 16.0f)))
@@ -73,6 +74,7 @@ void FMassEntityEditorStyle::Initialize()
 		StyleSet->Set("Mass.Task.Title", TaskTitle);
 
 		FEditableTextBoxStyle TaskTitleEditableText = FEditableTextBoxStyle()
+			.SetTextStyle(NormalText)
 			.SetFont(TTF_CORE_FONT("Fonts/Roboto-Regular", 9))
 			.SetBackgroundImageNormal(BOX_BRUSH("Common/TextBox", FMargin(4.0f / 16.0f)))
 			.SetBackgroundImageHovered(BOX_BRUSH("Common/TextBox_Hovered", FMargin(4.0f / 16.0f)))
@@ -95,7 +97,7 @@ void FMassEntityEditorStyle::Initialize()
 	}
 
 	const FLinearColor SelectionColor = FColor(0, 0, 0, 32);
-	const FTableRowStyle& NormalTableRowStyle = FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
+	const FTableRowStyle& NormalTableRowStyle = FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
 	StyleSet->Set("Mass.Selection",
 		FTableRowStyle(NormalTableRowStyle)
 		.SetActiveBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, SelectionColor))

@@ -178,7 +178,16 @@ TSharedRef<SWidget> SPropertyEditorEditInline::GenerateClassPicker()
 	FProperty* Property = PropertyNode->GetProperty();
 	ClassFilter->ObjProperty = CastField<FObjectPropertyBase>( Property );
 	ClassFilter->IntProperty = CastField<FInterfaceProperty>( Property );
-	Options.bShowNoneOption = !(Property->PropertyFlags & CPF_NoClear);
+	
+	bool bContainerHasNoClear = false;
+	if(PropertyNode->GetArrayIndex() != INDEX_NONE)
+	{
+		if(const TSharedPtr<FPropertyNode>& ParentNode = PropertyNode->GetParentNodeSharedPtr())
+		{
+			bContainerHasNoClear = ParentNode->GetProperty()->HasAllPropertyFlags(CPF_NoClear);
+		}
+	}
+	Options.bShowNoneOption = !Property->HasAllPropertyFlags(CPF_NoClear) && !bContainerHasNoClear;
 
 	FObjectPropertyNode* ObjectPropertyNode = PropertyNode->FindObjectItemParent();
 	if( ObjectPropertyNode )
@@ -245,7 +254,7 @@ void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
 					NewObjectName = ObjectName;
 
 					ConstructorHelpers::StripObjectClass(DefaultValue);
-					NewObjectTemplate = StaticFindObject(InClass, ANY_PACKAGE, *DefaultValue);
+					NewObjectTemplate = StaticFindObject(InClass, nullptr, *DefaultValue);
 				}
 			}
 		}
@@ -302,7 +311,12 @@ void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
 
 					UObject* NewUObject = NewObject<UObject>(UseOuter, InClass, *NewObjectName, MaskedOuterFlags, NewObjectTemplate);
 
-					NewValue = NewUObject->GetPathName();
+					// Wrap the value in quotes before setting - in some cases for editinline-instanced values, the outer object path
+					// can potentially contain a space token (e.g. if the outer object was instanced as a Blueprint template object
+					// based on a user-facing variable name). While technically such characters should not be allowed, historically there
+					// has been no issue with most tokens in the INVALID_OBJECTNAME_CHARACTERS set being present in in-memory object names,
+					// other than some systems failing to resolve the object's path if the string representation of the value is not quoted.
+					NewValue = FString::Printf(TEXT("\"%s\""), *NewUObject->GetPathName().ReplaceQuotesWithEscapedQuotes());
 				}
 			}
 			else
@@ -322,7 +336,7 @@ void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
 				// Move the old subobject to the transient package so GetObjectsWithOuter will not return it
 				// This is particularly important for UActorComponent objects so resetting owned components on the parent doesn't find it
 				ConstructorHelpers::StripObjectClass(PrevPerObjectValues[Index]);
-				if (UObject* SubObject = StaticFindObject(UObject::StaticClass(), ANY_PACKAGE, *PrevPerObjectValues[Index]))
+				if (UObject* SubObject = StaticFindObject(UObject::StaticClass(), nullptr, *PrevPerObjectValues[Index]))
 				{
 					SubObject->Rename(nullptr, GetTransientOuterForRename(SubObject->GetClass()), REN_DontCreateRedirectors);
 				}

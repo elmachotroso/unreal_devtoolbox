@@ -1,12 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/TextFormatter.h"
-#include "Misc/ScopeLock.h"
+
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformProcess.h"
+#include "Internationalization/CulturePointer.h"
+#include "Internationalization/Internationalization.h"
 #include "Internationalization/TextFormatArgumentModifier.h"
 #include "Internationalization/TextHistory.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/Char.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/ExpressionParser.h"
+#include "Misc/ExpressionParserTypes.inl"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/ScopeRWLock.h"
 #include "Stats/Stats.h"
-#include "HAL/PlatformProcess.h"
+#include "Stats/Stats2.h"
+#include "Templates/Less.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/ValueOrError.h"
+#include "Trace/Detail/Channel.h"
 
 #define LOCTEXT_NAMESPACE "TextFormatter"
 
@@ -188,7 +209,7 @@ TOptional<FExpressionError> ParseArgumentModifier(const FTextFormatPatternDefini
 	// Parse out the argument modifier parameter text
 	TOptional<FStringToken> Parameters;
 	{
-		TCHAR QuoteChar = 0;
+		TCHAR QuoteChar = TEXT('\0');
 		int32 NumConsecutiveSlashes = 0;
 		Parameters = Stream.ParseToken([&](TCHAR InC)
 		{
@@ -202,7 +223,7 @@ TOptional<FExpressionError> ParseArgumentModifier(const FTextFormatPatternDefini
 				{
 					if (NumConsecutiveSlashes%2 == 0)
 					{
-						QuoteChar = 0;
+						QuoteChar = TEXT('\0');
 					}
 				}
 				else
@@ -336,6 +357,11 @@ struct FPrivateTextFormatArguments
 class FTextFormatData
 {
 public:
+	/**
+	 * Get the common "empty" instance to use for a default constructed FTextFormat.
+	 */
+	static TSharedRef<FTextFormatData, ESPMode::ThreadSafe> GetSharedEmptyInstance();
+
 	/**
 	 * Construct an instance from an FText.
 	 * The text will be immediately compiled. 
@@ -536,22 +562,22 @@ private:
 
 
 FTextFormat::FTextFormat()
-	: TextFormatData(new FTextFormatData(FText(), FTextFormatPatternDefinition::GetDefault()))
+	: TextFormatData(FTextFormatData::GetSharedEmptyInstance())
 {
 }
 
 FTextFormat::FTextFormat(const FText& InText)
-	: TextFormatData(new FTextFormatData(CopyTemp(InText), FTextFormatPatternDefinition::GetDefault()))
+	: TextFormatData(MakeShared<FTextFormatData, ESPMode::ThreadSafe>(CopyTemp(InText), FTextFormatPatternDefinition::GetDefault()))
 {
 }
 
 FTextFormat::FTextFormat(const FText& InText, FTextFormatPatternDefinitionConstRef InCustomPatternDef)
-	: TextFormatData(new FTextFormatData(CopyTemp(InText), MoveTemp(InCustomPatternDef)))
+	: TextFormatData(MakeShared<FTextFormatData, ESPMode::ThreadSafe>(CopyTemp(InText), MoveTemp(InCustomPatternDef)))
 {
 }
 
 FTextFormat::FTextFormat(FString&& InString, FTextFormatPatternDefinitionConstRef InCustomPatternDef)
-	: TextFormatData(new FTextFormatData(MoveTemp(InString), MoveTemp(InCustomPatternDef)))
+	: TextFormatData(MakeShared<FTextFormatData, ESPMode::ThreadSafe>(MoveTemp(InString), MoveTemp(InCustomPatternDef)))
 {
 }
 
@@ -615,6 +641,12 @@ void FTextFormat::GetFormatArgumentNames(TArray<FString>& OutArgumentNames) cons
 	TextFormatData->GetFormatArgumentNames(OutArgumentNames);
 }
 
+
+TSharedRef<FTextFormatData, ESPMode::ThreadSafe> FTextFormatData::GetSharedEmptyInstance()
+{
+	static const TSharedRef<FTextFormatData> EmptyInstance = MakeShared<FTextFormatData, ESPMode::ThreadSafe>(FText(), FTextFormatPatternDefinition::GetDefault());
+	return EmptyInstance;
+}
 
 FTextFormatData::FTextFormatData(FText&& InText, FTextFormatPatternDefinitionConstRef InPatternDef)
 	: SourceType(ESourceType::Text)
@@ -930,19 +962,19 @@ FTextFormatter& FTextFormatter::Get()
 
 void FTextFormatter::RegisterTextArgumentModifier(const FTextFormatString& InKeyword, FCompileTextArgumentModifierFuncPtr InCompileFunc)
 {
-	FScopeLock Lock(&TextArgumentModifiersCS);
+	FWriteScopeLock Lock(TextArgumentModifiersRW);
 	TextArgumentModifiers.Add(InKeyword, MoveTemp(InCompileFunc));
 }
 
 void FTextFormatter::UnregisterTextArgumentModifier(const FTextFormatString& InKeyword)
 {
-	FScopeLock Lock(&TextArgumentModifiersCS);
+	FWriteScopeLock Lock(TextArgumentModifiersRW);
 	TextArgumentModifiers.Remove(InKeyword);
 }
 
 FTextFormatter::FCompileTextArgumentModifierFuncPtr FTextFormatter::FindTextArgumentModifier(const FTextFormatString& InKeyword) const
 {
-	FScopeLock Lock(&TextArgumentModifiersCS);
+	FReadScopeLock Lock(TextArgumentModifiersRW);
 	return TextArgumentModifiers.FindRef(InKeyword);
 }
 

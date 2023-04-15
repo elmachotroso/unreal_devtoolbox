@@ -11,9 +11,12 @@
 #include "Mechanics/CurveControlPointsMechanic.h"
 #include "Properties/MeshMaterialProperties.h"
 #include "ModelingObjectsCreationAPI.h"
+#include "SceneManagement.h" // FPrimitiveDrawInterface
 #include "Selection/ToolSelectionUtil.h"
 #include "ToolSceneQueriesUtil.h"
 #include "ToolSetupUtil.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DrawAndRevolveTool)
 
 using namespace UE::Geometry;
 
@@ -165,6 +168,16 @@ void UDrawAndRevolveTool::Setup()
 
 	UpdateRevolutionAxis();
 
+	FViewCameraState InitialCameraState;
+	GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(InitialCameraState);
+	if (FVector::DistSquared(InitialCameraState.Position, Settings->DrawPlaneOrigin) > FarDrawPlaneThreshold * FarDrawPlaneThreshold)
+	{
+		bHasFarPlaneWarning = true;
+		GetToolManager()->DisplayMessage(
+			LOCTEXT("FarDrawPlane", "The axis of revolution is far from the camera. Note that you can ctrl-click to place the axis on a visible surface."),
+			EToolMessageLevel::UserWarning);
+	}
+
 	// The plane mechanic lets us update the plane in which we draw the profile curve, as long as we haven't
 	// started adding points to it already.
 	FFrame3d ProfileDrawPlane(Settings->DrawPlaneOrigin, Settings->DrawPlaneOrientation.Quaternion());
@@ -185,6 +198,11 @@ void UDrawAndRevolveTool::Setup()
 			ControlPointsMechanic->SetPlane(PlaneMechanic->Plane);
 		}
 		UpdateRevolutionAxis();
+		if (bHasFarPlaneWarning) // if the user has changed the plane, no longer need a warning
+		{
+			bHasFarPlaneWarning = false;
+			GetToolManager()->DisplayMessage(FText(), EToolMessageLevel::UserWarning);
+		}
 		});
 
 	ControlPointsMechanic->SetPlane(PlaneMechanic->Plane);
@@ -223,6 +241,7 @@ void UDrawAndRevolveTool::Shutdown(EToolShutdownType ShutdownType)
 	{
 		if (ShutdownType == EToolShutdownType::Accept)
 		{
+			Preview->PreviewMesh->CalculateTangents(); // Copy tangents from the PreviewMesh
 			GenerateAsset(Preview->Shutdown());
 		}
 		else
@@ -326,6 +345,13 @@ void UDrawAndRevolveTool::Render(IToolsContextRenderAPI* RenderAPI)
 {
 	GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(CameraState);
 
+	if (bHasFarPlaneWarning && FVector::DistSquared(CameraState.Position, Settings->DrawPlaneOrigin) < FarDrawPlaneThreshold * FarDrawPlaneThreshold)
+	{
+		// if camera is now closer to the axis, no longer need a warning
+		bHasFarPlaneWarning = false;
+		GetToolManager()->DisplayMessage(FText(), EToolMessageLevel::UserWarning);
+	}
+
 	if (PlaneMechanic != nullptr)
 	{
 		PlaneMechanic->Render(RenderAPI);
@@ -352,3 +378,4 @@ void UDrawAndRevolveTool::Render(IToolsContextRenderAPI* RenderAPI)
 }
 
 #undef LOCTEXT_NAMESPACE
+

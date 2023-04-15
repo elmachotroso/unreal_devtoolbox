@@ -14,8 +14,8 @@
 #include "EdGraphSchema_K2.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Editor/UnrealEd/Public/Kismet2/CompilerResultsLog.h"
-#include "Editor/KismetCompiler/Public/KismetCompilerModule.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompilerModule.h"
 
 #define LOCTEXT_NAMESPACE "Structure"
 
@@ -188,21 +188,24 @@ bool FStructureEditorUtils::CanHaveAMemberVariableOfType(const UUserDefinedStruc
 {
 	if ((VarType.PinCategory == UEdGraphSchema_K2::PC_Struct) && Struct)
 	{
-		if (const UScriptStruct* SubCategoryStruct = Cast<const UScriptStruct>(VarType.PinSubCategoryObject.Get()))
+		if (const UObject* TypeObject = VarType.PinSubCategoryObject.Get())
 		{
-			const EStructureError Result = IsStructureValid(SubCategoryStruct, Struct, OutMsg);
-			if (EStructureError::Ok != Result)
+			if (const UScriptStruct* SubCategoryStruct = Cast<const UScriptStruct>(TypeObject))
 			{
+				const EStructureError Result = IsStructureValid(SubCategoryStruct, Struct, OutMsg);
+				if (EStructureError::Ok != Result)
+				{
+					return false;
+				}
+			}
+			else
+			{
+				if (OutMsg)
+				{
+					*OutMsg = LOCTEXT("StructureIncorrectStructType", "Incorrect struct type in a structure member variable.").ToString();
+				}
 				return false;
 			}
-		}
-		else
-		{
-			if (OutMsg)
-			{
-				*OutMsg = LOCTEXT("StructureIncorrectStructType", "Incorrect struct type in a structure member variable.").ToString();
-			}
-			return false;
 		}
 	}
 	else if ((VarType.PinCategory == UEdGraphSchema_K2::PC_Exec) 
@@ -215,18 +218,6 @@ bool FStructureEditorUtils::CanHaveAMemberVariableOfType(const UUserDefinedStruc
 			*OutMsg = LOCTEXT("StructureIncorrectTypeCategory", "Incorrect type for a structure member variable.").ToString();
 		}
 		return false;
-	}
-	else
-	{
-		const UClass* PinSubCategoryClass = Cast<const UClass>(VarType.PinSubCategoryObject.Get());
-		if (PinSubCategoryClass && PinSubCategoryClass->IsChildOf(UBlueprint::StaticClass()))
-		{
-			if (OutMsg)
-			{
-				*OutMsg = LOCTEXT("StructureUseBlueprintReferences", "Struct cannot use any blueprint references").ToString();
-			}
-			return false;
-		}
 	}
 	return true;
 }
@@ -374,6 +365,29 @@ bool FStructureEditorUtils::RenameVariable(UUserDefinedStruct* Struct, FGuid Var
 	return false;
 }
 
+
+bool FStructureEditorUtils::RenameVariable(UUserDefinedStruct* Struct, const FString& OldDisplayNameStr, const FString& NewDisplayNameStr)
+{
+	if (Struct)
+	{
+		if (TArray<FStructVariableDescription>* VarDescArray = GetVarDescPtr(Struct))
+		{
+			FStructVariableDescription* VarDesc = VarDescArray->FindByPredicate(
+				[&OldDisplayNameStr](const FStructVariableDescription& Var)
+				{
+					return Var.FriendlyName == OldDisplayNameStr;
+				}
+			);
+
+			if (VarDesc)
+			{
+				return RenameVariable(Struct, VarDesc->VarGuid, NewDisplayNameStr);
+			}
+		}
+	}
+
+	return false;
+}
 
 bool FStructureEditorUtils::ChangeVariableType(UUserDefinedStruct* Struct, FGuid VarGuid, const FEdGraphPinType& NewType)
 {
@@ -554,6 +568,7 @@ void FStructureEditorUtils::OnStructureChanged(UUserDefinedStruct* Struct, EStru
 		Struct->Status = EUserDefinedStructureStatus::UDSS_Dirty;
 		CompileStructure(Struct);
 		Struct->MarkPackageDirty();
+		Struct->OnChanged();
 	}
 }
 

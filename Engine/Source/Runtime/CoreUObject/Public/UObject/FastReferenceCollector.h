@@ -15,6 +15,7 @@
 #include "Async/ParallelFor.h"
 #include "UObject/UObjectArray.h"
 #include "UObject/FastReferenceCollectorOptions.h"
+#include "UObject/DynamicallyTypedValue.h"
 
 struct FStackEntry;
 
@@ -502,7 +503,7 @@ private:
 		{
 			return ESubsequentsMode::TrackSubsequents;
 		}
-		void DoTask(ENamedThreads::Type CurrentThread, FGraphEventRef& MyCompletionGraphEvent)
+		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 		{
 			Owner->ProcessObjectArray(*ArrayStruct, MyCompletionGraphEvent);
 		}
@@ -700,8 +701,6 @@ private:
 	 */
 	void ProcessObjectArray(FGCArrayStruct& InObjectsToSerializeStruct, const FGraphEventRef& MyCompletionGraphEvent)
 	{
-		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("TFastReferenceCollector::ProcessObjectArray"), STAT_FFastReferenceCollector_ProcessObjectArray, STATGROUP_GC);
-
 		UObject* CurrentObject = nullptr;
 
 		const int32 MinDesiredObjectsPerSubTask = ReferenceProcessor.GetMinDesiredObjectsPerSubTask(); // sometimes there will be less, a lot less
@@ -1282,6 +1281,17 @@ private:
 									ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, TokenType, false);
 								}
 							}
+						}
+					}
+					break;
+					case GCRT_DynamicallyTypedValue:
+					{
+						TokenReturnCount = ReferenceInfo.ReturnCount;
+						UE::FDynamicallyTypedValue* DynamicallyTypedValue = (UE::FDynamicallyTypedValue*)(StackEntryData + ReferenceInfo.Offset);
+						DynamicallyTypedValue->GetType().MarkReachable();
+						if (DynamicallyTypedValue->GetType().GetContainsReferences() != UE::FDynamicallyTypedValueType::EContainsReferences::DoesNot)
+						{
+							DynamicallyTypedValue->GetType().MarkValueReachable(DynamicallyTypedValue->GetDataPointer(), ReferenceCollector);
 						}
 					}
 					break;

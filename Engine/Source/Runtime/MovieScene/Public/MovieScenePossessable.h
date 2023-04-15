@@ -2,13 +2,28 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "CoreTypes.h"
 #include "Misc/Guid.h"
-#include "IMovieScenePlayer.h"
 #include "MovieSceneObjectBindingID.h"
 #include "MovieSceneSequenceID.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPtr.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "IMovieScenePlayer.h"
+#endif
+
 #include "MovieScenePossessable.generated.h"
+
+class IMovieScenePlayer;
+class UClass;
+class UMovieScene;
+struct FMovieSceneSequenceID;
 
 /**
  * MovieScenePossessable is a "typed slot" used to allow the MovieScene to control an already-existing object
@@ -118,15 +133,15 @@ public:
 		return ParentGuid;
 	}
 
+	UE_DEPRECATED(5.1, "Please use the overload that takes a UMovieScene* to ensure that events are triggered correctly")
+	MOVIESCENE_API void SetParent(const FGuid& InParentGuid);
+
 	/**
 	 * Set the guid of this possessable's parent
 	 *
 	 * @param InParentGuid The guid of this possessable's parent.
 	 */
-	void SetParent(const FGuid& InParentGuid)
-	{
-		ParentGuid = InParentGuid;
-	}
+	MOVIESCENE_API void SetParent(const FGuid& InParentGuid, UMovieScene* Owner);
 
 	/** Array of tags that can be used for grouping and categorizing. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Actor)

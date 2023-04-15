@@ -119,6 +119,7 @@ namespace Metasound
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
 			Info.DefaultInterface = DeclareVertexInterface();
 			Info.CategoryHierarchy.Emplace(NodeCategories::Music);
+			Info.Keywords.Add(METASOUND_LOCTEXT("QuantizerPitchKeyword", "Pitch"));
 
 			return Info;
 		};
@@ -133,12 +134,12 @@ namespace Metasound
 	{
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
-				TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteIn), 60.0f),
-				TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamRootNote), 0.0f),
-				TInputDataVertexModel<ScaleDegreeArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegrees))
+				TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteIn), 60.0f),
+				TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamRootNote), 0.0f),
+				TInputDataVertex<ScaleDegreeArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegrees))
 			),
 			FOutputVertexInterface(
-				TOutputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteOutput))
+				TOutputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteOutput))
 				)
 			);
 

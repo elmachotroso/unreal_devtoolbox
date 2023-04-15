@@ -6,6 +6,12 @@ public class LevelEditor : ModuleRules
 {
 	public LevelEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PrivateIncludePaths.AddRange(
+			new string[] {
+				System.IO.Path.Combine(GetModuleDirectory("SceneOutliner"), "Private"),
+			}
+		);
+
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetTools",
@@ -13,19 +19,21 @@ public class LevelEditor : ModuleRules
 				"MainFrame",
                 "PlacementMode",
 				"SlateReflector",
-                "IntroTutorials",
                 "AppFramework",
                 "PortalServices",
                 "Persona",
 				"DataLayerEditor",
 				"MergeActors",
+				"Layers",
+				"WorldBrowser",
+				"NewLevelDialog",
+				"LocalizationDashboard",
 			}
 		);
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
 				"Settings",
-				"IntroTutorials",
 				"HeadMountedDisplay",
 				"UnrealEd",
 				"VREditor",
@@ -44,7 +52,6 @@ public class LevelEditor : ModuleRules
 				"InputCore",
 				"Slate",
 				"SlateCore",
-				"EditorStyle",
 				"Engine",
 				"MessageLog",
 				"SourceControl",
@@ -87,6 +94,7 @@ public class LevelEditor : ModuleRules
 				"DerivedDataEditor",
 				"EditorWidgets",
 				"ToolWidgets",
+				"VirtualizationEditor",
 			}
 		);
 
@@ -106,13 +114,11 @@ public class LevelEditor : ModuleRules
 				"NewLevelDialog",
 				"DeviceProfileEditor",
                 "PlacementMode",
-                "IntroTutorials",
 				"HeadMountedDisplay",
 				"VREditor",
                 "Persona",
 				"LevelAssetEditor",
-				"MergeActors",
-
+				"MergeActors"
 			}
 		);
 

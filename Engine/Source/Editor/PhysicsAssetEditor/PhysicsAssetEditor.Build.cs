@@ -13,13 +13,6 @@ public class PhysicsAssetEditor : ModuleRules
             }
         );
 
-        PrivateIncludePaths.AddRange(
-            new string[] {
-                "Editor/PhysicsAssetEditor/Private",
-                "Editor/PhysicsAssetEditor/Private/PhysicsAssetGraph",
-            }
-        );
-
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -29,7 +22,6 @@ public class PhysicsAssetEditor : ModuleRules
 				"RenderCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"LevelEditor",
 				"EditorFramework",
 				"UnrealEd",
@@ -47,6 +39,8 @@ public class PhysicsAssetEditor : ModuleRules
 				"PhysicsUtilities",
 				"MeshUtilitiesCommon",
 				"ApplicationCore",
+				"EditorStyle",
+				"ToolWidgets"
 			}
         );
 

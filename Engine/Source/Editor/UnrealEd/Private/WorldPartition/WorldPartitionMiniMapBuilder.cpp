@@ -9,25 +9,25 @@
 #include "AssetCompilingManager.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "Misc/FileHelper.h"
 #include "Factories/TextureFactory.h"
 #include "SourceControlHelpers.h"
 #include "UObject/SavePackage.h"
 #include "UObject/StrongObjectPtr.h"
 
-#include "ISourceControlModule.h"
-#include "ISourceControlProvider.h"
-#include "SourceControlOperations.h"
-
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/DataLayer/ActorDataLayer.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODActorDesc.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHandle.h"
 #include "WorldPartition/WorldPartitionMiniMap.h"
 #include "WorldPartition/WorldPartitionMiniMapHelper.h"
+#include "WorldPartition/WorldPartitionMiniMapVolume.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionMiniMapBuilder, All, All);
 
@@ -38,11 +38,11 @@ UWorldPartitionMiniMapBuilder::UWorldPartitionMiniMapBuilder(const FObjectInitia
 
 bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlHelper& PackageHelper)
 {
-	bAutoSubmit = FParse::Param(FCommandLine::Get(), TEXT("AutoSubmit"));
-	
+	// Find or create the minimap actor
 	if (WorldMiniMap == nullptr)
 	{
 		WorldMiniMap = FWorldPartitionMiniMapHelper::GetWorldPartitionMiniMap(World, true);
+		IterativeCellSize = WorldMiniMap->BuilderCellSize;
 	}
 
 	if (!WorldMiniMap)
@@ -51,25 +51,46 @@ bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlH
 		return false;
 	}
 
-	// Reset minimap resources
-	WorldMiniMap->MiniMapTexture = nullptr;
-	MiniMapTiles.Empty();
+	// Dump bitmaps for debugging purpose
+	bDebugCapture = FParse::Param(FCommandLine::Get(), TEXT("DebugCapture"));
 
-	AWorldDataLayers* WorldDataLayers = World->GetWorldDataLayers();
+	// World bounds to process
+	IterativeWorldBounds = WorldMiniMap->GetMiniMapWorldBounds();
 
-	if (WorldDataLayers == nullptr)
+	// Compute minimap resolution
+	WorldMiniMap->GetMiniMapResolution(MinimapImageSizeX, MinimapImageSizeY, WorldUnitsPerPixel);
+
+	// Create minimap texture
 	{
-		UE_LOG(LogWorldPartitionMiniMapBuilder, Error, TEXT("Failed to retrieve WorldDataLayers."));
-		return false;
+		TStrongObjectPtr<UTextureFactory> Factory(NewObject<UTextureFactory>());
+		WorldMiniMap->MiniMapTexture = Factory->CreateTexture2D(WorldMiniMap, TEXT("MinimapTexture"), RF_NoFlags);
+		WorldMiniMap->MiniMapTexture->Source.Init(MinimapImageSizeX, MinimapImageSizeY, 1, 1, TSF_BGRA8);
+		WorldMiniMap->MiniMapWorldBounds = IterativeWorldBounds;
+		MiniMapSourcePtr = WorldMiniMap->MiniMapTexture->Source.LockMip(0);
 	}
 
-	for (const FActorDataLayer& ActorDataLayer : WorldMiniMap->ExcludedDataLayers)
+	// Compute world to minimap transform
 	{
-		const UDataLayer* DataLayer = WorldDataLayers->GetDataLayerFromName(ActorDataLayer.Name);
+		WorldToMinimap = FReversedZOrthoMatrix(IterativeWorldBounds.Min.X, IterativeWorldBounds.Max.X, IterativeWorldBounds.Min.Y, IterativeWorldBounds.Max.Y, 1.0f, 0.0f);
 
-		if (DataLayer != nullptr)
+		FVector3d Translation(IterativeWorldBounds.Max.X / IterativeWorldBounds.GetSize().X, IterativeWorldBounds.Max.Y / IterativeWorldBounds.GetSize().Y, 0);
+		FVector3d Scaling(MinimapImageSizeX, MinimapImageSizeY, 1);
+
+		WorldToMinimap *= FTranslationMatrix(Translation);
+		WorldToMinimap *= FScaleMatrix(Scaling);
+	}
+
+	// Gather excluded data layers
+	{
+		UDataLayerSubsystem* DataLayerSubSystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World);
+		for (const FActorDataLayer& ActorDataLayer : WorldMiniMap->ExcludedDataLayers)
 		{
-			ExcludedDataLayerLabels.Add(DataLayer->GetDataLayerLabel());
+			const UDataLayerInstance* DataLayerInstance = DataLayerSubSystem->GetDataLayerInstance(ActorDataLayer.Name);
+
+			if (DataLayerInstance != nullptr)
+			{
+				ExcludedDataLayerShortNames.Add(FName(DataLayerInstance->GetDataLayerShortName()));
+			}
 		}
 	}
 
@@ -78,19 +99,72 @@ bool UWorldPartitionMiniMapBuilder::PreRun(UWorld* World, FPackageSourceControlH
 
 bool UWorldPartitionMiniMapBuilder::RunInternal(UWorld* World, const FCellInfo& InCellInfo, FPackageSourceControlHelper& PackageHelper)
 {
-	EditorBounds = InCellInfo.EditorBounds;
-	IterativeCellSize = InCellInfo.IterativeCellSize;
+	check(World != nullptr);
 
-	FString TextureName = FString::Format(TEXT("MinimapTile_{0}_{1}_{2}"), { InCellInfo.Location.X, InCellInfo.Location.Y, InCellInfo.Location.Z });
+	// Clamp input bounds
+	const FBox ClampedBounds = InCellInfo.Bounds.Overlap(IterativeWorldBounds);
 
-	UTexture2D* TileTexture = nullptr;
-	FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(World, WorldMiniMap, WorldMiniMap->MiniMapTileSize, TileTexture, TextureName, InCellInfo.Bounds);
+	// World X,Y to minimap X,Y
+	const FVector3d MinimapMin = WorldToMinimap.TransformPosition(ClampedBounds.Min);
+	const FVector3d MinimapMax = WorldToMinimap.TransformPosition(ClampedBounds.Max);
 
-	FMinimapTile MinimapTile;
-	MinimapTile.Texture = TStrongObjectPtr<UTexture2D>(TileTexture);
-	MinimapTile.Coordinates.X = InCellInfo.Location.X;
-	MinimapTile.Coordinates.Y = InCellInfo.Location.Y;
-	MiniMapTiles.Add(MoveTemp(MinimapTile));
+	int32 XMin = static_cast<int32>(FMath::Max(FMath::Floor(MinimapMin.X), 0));
+	int32 YMin = static_cast<int32>(FMath::Max(FMath::Floor(MinimapMin.Y), 0));
+	int32 XMax = static_cast<int32>(FMath::Max(FMath::Floor(MinimapMax.X), 0));
+	int32 YMax = static_cast<int32>(FMath::Max(FMath::Floor(MinimapMax.Y), 0));
+
+	const FIntVector2 DstMin(XMin, YMin);
+	const FIntVector2 DstMax(XMax, YMax);
+
+	const uint32 CaptureWidthPixels = DstMax.X - DstMin.X;
+	const uint32 CaptureHeightPixels = DstMax.Y - DstMin.Y;
+
+	// Capture a tile if the region to capture is not empty
+	if (CaptureWidthPixels > 0 && CaptureHeightPixels > 0)
+	{
+		FString TextureName = FString::Format(TEXT("MinimapTile_{0}_{1}_{2}"), { InCellInfo.Location.X, InCellInfo.Location.Y, InCellInfo.Location.Z });
+
+		UTexture2D* TileTexture = NewObject<UTexture2D>(GetTransientPackage(), FName(TextureName), RF_Transient);
+		TileTexture->Source.Init(CaptureWidthPixels, CaptureHeightPixels, 1, 1, TSF_BGRA8);
+		TileTexture->PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;
+
+		FWorldPartitionMiniMapHelper::CaptureBoundsMiniMapToTexture(World, GetTransientPackage(), CaptureWidthPixels, CaptureHeightPixels, TileTexture, TextureName, ClampedBounds, WorldMiniMap->CaptureSource, WorldMiniMap->CaptureWarmupFrames);
+
+		// Copy captured image to VT minimap
+		const uint32 BPP = TileTexture->Source.GetBytesPerPixel();
+		const uint32 CopyWidthBytes = CaptureWidthPixels * BPP;
+
+		const uint8* SrcDataPtr = TileTexture->Source.LockMipReadOnly(0);
+		check(SrcDataPtr);
+
+		const uint32 DstDataStrideBytes = WorldMiniMap->MiniMapTexture->Source.GetSizeX() * BPP;
+		uint8* const DstDataPtr = MiniMapSourcePtr + (DstMin.Y * DstDataStrideBytes) + (DstMin.X * BPP);
+		check(DstDataPtr);
+
+		for (uint32 RowIdx = 0; RowIdx < CaptureHeightPixels; ++RowIdx)
+		{
+			uint8* DstCopy = DstDataPtr + DstDataStrideBytes * RowIdx;
+			const uint8* SrcCopy = SrcDataPtr + CopyWidthBytes * RowIdx;
+			
+			check(DstCopy >= DstDataPtr);
+			check(DstCopy + CopyWidthBytes <= DstDataPtr + WorldMiniMap->MiniMapTexture->Source.CalcMipSize(0));
+
+			check(SrcCopy >= SrcDataPtr);
+			check(SrcCopy + CopyWidthBytes <= SrcDataPtr + TileTexture->Source.CalcMipSize(0));
+
+			FMemory::Memcpy(DstCopy, SrcCopy, CopyWidthBytes);
+		}
+
+		// Write tile bitmap for debugging purpose
+		if (bDebugCapture)
+		{
+			const FString DirectoryPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir() + TEXT("Minimap"));
+			FString MinimapDebugImagePath = DirectoryPath / World->GetName() + "_" + TextureName + ".bmp";
+			FFileHelper::CreateBitmap(*MinimapDebugImagePath, TileTexture->Source.GetSizeX(), TileTexture->Source.GetSizeY(), (FColor*)SrcDataPtr);
+		}
+
+		TileTexture->Source.UnlockMip(0);
+	}
 
 	return true;
 }
@@ -105,88 +179,39 @@ bool UWorldPartitionMiniMapBuilder::PostRun(UWorld* World, FPackageSourceControl
 	// Make sure all assets and textures are ready
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
-	WorldMiniMap->MiniMapWorldBounds = EditorBounds;
-
-	if (MiniMapTiles.IsEmpty())
+	// Finalize texture
 	{
-		UE_LOG(LogWorldPartitionMiniMapBuilder, Error, TEXT("No tiles were rendered, cannot compose Virtual Texture."));
-		return false;
-	}
+		// Write minimap bitmap for debugging purpose
+		if (bDebugCapture)
+		{
+			const FString DirectoryPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir() + TEXT("Minimap"));
+			FString MinimapDebugImagePath = DirectoryPath / World->GetName() + "-Minimap.bmp";
+			FFileHelper::CreateBitmap(*MinimapDebugImagePath, WorldMiniMap->MiniMapTexture->Source.GetSizeX(), WorldMiniMap->MiniMapTexture->Source.GetSizeY(), (FColor*)MiniMapSourcePtr);
+		}
 
-	FIntVector2 MinTileCoords(INT32_MAX);
-	FIntVector2 MaxTileCoords(-INT32_MAX);
-	for (const FMinimapTile& Tile : MiniMapTiles)
-	{
-		MinTileCoords = FIntVector2(FMath::Min(MinTileCoords.X, Tile.Coordinates.X), FMath::Min(MinTileCoords.Y, Tile.Coordinates.Y));
-		MaxTileCoords = FIntVector2(FMath::Max(MaxTileCoords.X, Tile.Coordinates.X), FMath::Max(MaxTileCoords.Y, Tile.Coordinates.Y));
-	}
-
-	const FIntVector2 NumTilesCoords = FIntVector2(MaxTileCoords.X - MinTileCoords.X + 1, MaxTileCoords.Y - MinTileCoords.Y + 1);
-	const int32 MinimapTileSize = WorldMiniMap->MiniMapTileSize;
-	const int32 MinimapImageSizeX = NumTilesCoords.X * MinimapTileSize;
-	const int32 MinimapImageSizeY = NumTilesCoords.Y * MinimapTileSize;
-	
-	// Copy all tiles to the final minimap texture
-	{
-		TStrongObjectPtr<UTextureFactory> Factory(NewObject<UTextureFactory>());
-		UTexture2D* MiniMapTexture = Factory->CreateTexture2D(WorldMiniMap, TEXT("MinimapTexture"), RF_NoFlags);
-		MiniMapTexture->Source.Init(MinimapImageSizeX, MinimapImageSizeY, 1, 1, TSF_BGRA8);
-
-	    const uint32 DstDataStride = MiniMapTexture->Source.GetSizeX() * MiniMapTexture->Source.GetBytesPerPixel();
-	    uint8* DstDataBasePtr = MiniMapTexture->Source.LockMip(0);
-    
-	    for (const FMinimapTile& Tile : MiniMapTiles)
-	    {
-		    const uint32 SrcDataStride = MinimapTileSize * Tile.Texture->Source.GetBytesPerPixel();
-		    const uint8* SrcDataPtr = Tile.Texture->Source.LockMipReadOnly(0);
-    
-		    const int32 TileOffsetX = Tile.Coordinates.X - MinTileCoords.X;
-		    const int32 TileOffsetY = Tile.Coordinates.Y - MinTileCoords.Y;
-    
-		    uint8* DstDataPtr = DstDataBasePtr + (TileOffsetY * MinimapTileSize * DstDataStride) + (TileOffsetX * SrcDataStride);
-    
-		    for (int RowIdx = 0; RowIdx < MinimapTileSize; ++RowIdx)
-		    {
-			    FMemory::Memcpy(DstDataPtr + DstDataStride * RowIdx,
-							    SrcDataPtr + SrcDataStride * RowIdx,
-							    SrcDataStride);
-		    }
-    
-		    Tile.Texture->Source.UnlockMip(0);
-	    }
-
-		MiniMapTexture->Source.UnlockMip(0);
-		MiniMapTexture->PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;	// Required for VTs
-		MiniMapTexture->AdjustMinAlpha = 1.f;
-		MiniMapTexture->LODGroup = TEXTUREGROUP_UI;
-		MiniMapTexture->VirtualTextureStreaming = true;
-		MiniMapTexture->UpdateResource();
-
-		WorldMiniMap->MiniMapTexture = MiniMapTexture;
+		WorldMiniMap->MiniMapTexture->Source.UnlockMip(0);
+		WorldMiniMap->MiniMapTexture->PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;	// Required for VTs
+		WorldMiniMap->MiniMapTexture->AdjustMinAlpha = 1.f;
+		WorldMiniMap->MiniMapTexture->LODGroup = TEXTUREGROUP_UI;
+		WorldMiniMap->MiniMapTexture->VirtualTextureStreaming = true;
+		WorldMiniMap->MiniMapTexture->UpdateResource();
 	}
 
 	// Compute relevant UV space for the minimap
 	{
-		FBox2D MinimapWorldBounds = FBox2D({ EditorBounds.Min.X, EditorBounds.Min.Y }, { EditorBounds.Max.X, EditorBounds.Max.Y });
-		FBox2D ImageWorldBounds = FBox2D(FVector2D(MinTileCoords.X, MinTileCoords.Y) * IterativeCellSize, FVector2D(MaxTileCoords.X + 1, MaxTileCoords.Y + 1) * IterativeCellSize);
-
 		FVector2D TexturePOW2ScaleFactor = FVector2D((float)MinimapImageSizeX / FMath::RoundUpToPowerOfTwo(MinimapImageSizeX),
 			(float)MinimapImageSizeY / FMath::RoundUpToPowerOfTwo(MinimapImageSizeY));
 
-		FBox2D UVOffset(FVector2D((MinimapWorldBounds.Min - ImageWorldBounds.Min) / ImageWorldBounds.GetSize()),
-			FVector2D((MinimapWorldBounds.Max - ImageWorldBounds.Min) / ImageWorldBounds.GetSize()));
-
-		UVOffset.Min *= TexturePOW2ScaleFactor;
-		UVOffset.Max *= TexturePOW2ScaleFactor;
-
-		WorldMiniMap->UVOffset = UVOffset;
+		WorldMiniMap->UVOffset.Min = FVector2d(0, 0);
+		WorldMiniMap->UVOffset.Max = TexturePOW2ScaleFactor;
+		WorldMiniMap->UVOffset.bIsValid = true;
 	}
 
 	// Make sure the minimap texture is ready before saving
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	// Save MiniMap Package
-	auto WorldMiniMapExternalPackage = WorldMiniMap->GetExternalPackage();
+	UPackage* WorldMiniMapExternalPackage = WorldMiniMap->GetExternalPackage();
 	FString PackageFileName = SourceControlHelpers::PackageFilename(WorldMiniMapExternalPackage);
 
 	if (!PackageHelper.Checkout(WorldMiniMapExternalPackage))
@@ -197,7 +222,6 @@ bool UWorldPartitionMiniMapBuilder::PostRun(UWorld* World, FPackageSourceControl
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Standalone;
-	SaveArgs.SaveFlags = SAVE_Async;
 	if (!UPackage::SavePackage(WorldMiniMapExternalPackage, nullptr, *PackageFileName, SaveArgs))
 	{
 		UE_LOG(LogWorldPartitionMiniMapBuilder, Error, TEXT("Error saving package %s."), *WorldMiniMapExternalPackage->GetName());
@@ -210,24 +234,6 @@ bool UWorldPartitionMiniMapBuilder::PostRun(UWorld* World, FPackageSourceControl
 		return false;
 	}
 
-	UPackage::WaitForAsyncFileWrites();
-
-	if (bAutoSubmit)
-	{
-		FText ChangelistDescription = FText::FromString(FString::Printf(TEXT("Rebuilt minimap for \"%s\" at %s"), *World->GetName(), *FEngineVersion::Current().ToString()));
-
-		TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
-		CheckInOperation->SetDescription(ChangelistDescription);
-		if (ISourceControlModule::Get().GetProvider().Execute(CheckInOperation, PackageFileName) != ECommandResult::Succeeded)
-		{
-			UE_LOG(LogWorldPartitionMiniMapBuilder, Error, TEXT("Failed to submit minimap (%s) to source control."), *PackageFileName);
-			return false;
-		}
-		else
-		{
-			UE_LOG(LogWorldPartitionMiniMapBuilder, Display, TEXT("#### Submitted minimap (%s) to source control ####"), *PackageFileName);
-		}
-	}
-
-	return true;
+	const FString ChangeDescription = FString::Printf(TEXT("Rebuilt minimap for %s"), *World->GetName());
+	return AutoSubmitFiles({ PackageFileName }, ChangeDescription);
 }

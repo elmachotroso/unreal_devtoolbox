@@ -140,6 +140,16 @@ namespace UnrealBuildTool
 		public LocalizationTargetDescriptor[]? LocalizationTargets;
 
 		/// <summary>
+		/// The Verse path to the root of this plugin's content directory
+		/// </summary>
+		public string? VersePath;
+
+		/// <summary>
+		/// Origin/visibility of Verse code in this plugin's Content/Verse folder
+		/// </summary>
+		public VerseScope VerseScope = VerseScope.User;
+
+		/// <summary>
 		/// Whether this plugin should be enabled by default for all projects
 		/// </summary>
 		public Nullable<bool> bEnabledByDefault;
@@ -288,6 +298,14 @@ namespace UnrealBuildTool
 				LocalizationTargets = Array.ConvertAll(LocalizationTargetsArray, x => LocalizationTargetDescriptor.FromJsonObject(x));
 			}
 
+			RawObject.TryGetStringField("VersePath", out VersePath);
+
+			VerseScope PluginVerseScope;
+			if (RawObject.TryGetEnumField<VerseScope>("VerseScope", out PluginVerseScope))
+			{
+				VerseScope = PluginVerseScope;
+			}
+
 			bool bEnabledByDefaultValue;
 			if(RawObject.TryGetBoolField("EnabledByDefault", out bEnabledByDefaultValue))
 			{
@@ -382,7 +400,15 @@ namespace UnrealBuildTool
 			{
 				Writer.WriteValue("EngineVersion", EngineVersion);
 			}
-			if(bEnabledByDefault.HasValue)
+			if (!String.IsNullOrEmpty(VersePath))
+			{
+				Writer.WriteValue("VersePath", VersePath);
+			}
+			if (VerseScope != VerseScope.User)
+			{
+				Writer.WriteValue("VerseScope", VerseScope.ToString());
+			}
+			if (bEnabledByDefault.HasValue)
 			{
 				Writer.WriteValue("EnabledByDefault", bEnabledByDefault.Value);
 			}

@@ -37,6 +37,8 @@ FSimpleMulticastDelegate UGameplayTagsManager::OnEditorRefreshGameplayTagTree;
 #include "UObject/StrongObjectPtr.h"
 #include "Async/Async.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayTagsManager)
+
 const FName UGameplayTagsManager::NAME_Categories("Categories");
 const FName UGameplayTagsManager::NAME_GameplayTagFilter("GameplayTagFilter");
 
@@ -44,6 +46,7 @@ const FName UGameplayTagsManager::NAME_GameplayTagFilter("GameplayTagFilter");
 
 DECLARE_CYCLE_STAT(TEXT("Load Gameplay Tags"), STAT_GameplayTags_LoadGameplayTags, STATGROUP_GameplayTags);
 DECLARE_FLOAT_ACCUMULATOR_STAT(TEXT("Add Tag *.ini Search Path"), STAT_GameplayTags_AddTagIniSearchPath, STATGROUP_GameplayTags);
+DECLARE_FLOAT_ACCUMULATOR_STAT(TEXT("Remove Tag *.ini Search Path"), STAT_GameplayTags_RemoveTagIniSearchPath, STATGROUP_GameplayTags);
 
 #if !(UE_BUILD_SHIPPING)
 
@@ -177,6 +180,7 @@ UGameplayTagsManager::UGameplayTagsManager(const FObjectInitializer& ObjectIniti
 	bShouldWarnOnInvalidTags = true;
 	bShouldClearInvalidTags = false;
 	bDoneAddingNativeTags = false;
+	bShouldAllowUnloadingTags = false;
 	NetIndexFirstBitSegment = 16;
 	NetIndexTrueBitNum = 16;
 	NumBitsForContainerSize = 6;
@@ -259,7 +263,7 @@ void UGameplayTagsManager::AddTagIniSearchPath(const FString& RootDir)
 			{
 				const FName TagSource = FName(*FPaths::GetCleanFilename(IniFilePath));
 				PathInfo->SourcesInPath.Add(TagSource);
-				PathInfo->TagIniList.Add(IniFilePath);
+				PathInfo->TagIniList.Add(FConfigCacheIni::NormalizeConfigIniPath(IniFilePath));
 			}
 		}
 		
@@ -284,12 +288,32 @@ void UGameplayTagsManager::AddTagIniSearchPath(const FString& RootDir)
 
 		PathInfo->bWasAddedToTree = true;
 
-		if (!bIsConstructingGameplayTagTree)
-		{
-			InvalidateNetworkIndex();
-			IGameplayTagsModule::OnGameplayTagTreeChanged.Broadcast();
-		}
+		HandleGameplayTagTreeChanged(false);
 	}
+}
+
+bool UGameplayTagsManager::RemoveTagIniSearchPath(const FString& RootDir)
+{
+	SCOPE_SECONDS_ACCUMULATOR(STAT_GameplayTags_RemoveTagIniSearchPath);
+
+	if (!ShouldUnloadTags())
+	{
+		// Can't unload at all
+		return false;
+	}
+
+	FGameplayTagSearchPathInfo* PathInfo = RegisteredSearchPaths.Find(RootDir);
+
+	if (PathInfo)
+	{
+		// Clear out the path and then recreate the tree
+		RegisteredSearchPaths.Remove(RootDir);
+
+		HandleGameplayTagTreeChanged(true);
+
+		return true;
+	}
+	return false;
 }
 
 void UGameplayTagsManager::GetTagSourceSearchPaths(TArray<FString>& OutPaths)
@@ -528,6 +552,18 @@ void UGameplayTagsManager::ConstructGameplayTagTree()
 			bShouldClearInvalidTags = MutableDefault->ClearInvalidTags;
 			NumBitsForContainerSize = MutableDefault->NumBitsForContainerSize;
 			NetIndexFirstBitSegment = MutableDefault->NetIndexFirstBitSegment;
+
+#if WITH_EDITOR
+			if (GIsEditor)
+			{
+				bShouldAllowUnloadingTags = MutableDefault->AllowEditorTagUnloading;
+			}
+			else
+#endif
+			{
+				bShouldAllowUnloadingTags = MutableDefault->AllowGameTagUnloading;
+			}
+
 		}
 
 		if (ShouldUseFastReplication())
@@ -538,7 +574,7 @@ void UGameplayTagsManager::ConstructGameplayTagTree()
 
 		{
 			SCOPE_LOG_GAMEPLAYTAGS(TEXT("UGameplayTagsManager::ConstructGameplayTagTree: GameplayTagTreeChangedEvent.Broadcast"));
-			IGameplayTagsModule::OnGameplayTagTreeChanged.Broadcast();
+			BroadcastOnGameplayTagTreeChanged();
 		}
 	}
 }
@@ -578,11 +614,11 @@ void UGameplayTagsManager::ConstructNetIndex()
 		checkf( Found, TEXT("Tag %s not found in NetworkGameplayTagNodeIndex"), *Tag.ToString() );
 	}
 
-	InvalidTagNetIndex = NetworkGameplayTagNodeIndex.Num()+1;
+	InvalidTagNetIndex = IntCastChecked<uint16, int32>(NetworkGameplayTagNodeIndex.Num() + 1);
 	NetIndexTrueBitNum = FMath::CeilToInt(FMath::Log2(static_cast<float>(InvalidTagNetIndex)));
 	
 	// This should never be smaller than NetIndexTrueBitNum
-	NetIndexFirstBitSegment = FMath::Min<int64>(NetIndexFirstBitSegment, NetIndexTrueBitNum);
+	NetIndexFirstBitSegment = FMath::Min<int32>(GetDefault<UGameplayTagsSettings>()->NetIndexFirstBitSegment, NetIndexTrueBitNum);
 
 	// This is now sorted and it should be the same on both client and server
 	if (NetworkGameplayTagNodeIndex.Num() >= INVALID_TAGNETINDEX)
@@ -642,6 +678,20 @@ FGameplayTagNetIndex UGameplayTagsManager::GetNetIndexFromTag(const FGameplayTag
 	return InvalidTagNetIndex;
 }
 
+void UGameplayTagsManager::PushDeferOnGameplayTagTreeChangedBroadcast()
+{
+	++bDeferBroadcastOnGameplayTagTreeChanged;
+}
+
+void UGameplayTagsManager::PopDeferOnGameplayTagTreeChangedBroadcast()
+{
+	if (!--bDeferBroadcastOnGameplayTagTreeChanged && bShouldBroadcastDeferredOnGameplayTagTreeChanged)
+	{
+		bShouldBroadcastDeferredOnGameplayTagTreeChanged = false;
+		IGameplayTagsModule::OnGameplayTagTreeChanged.Broadcast();
+	}
+}
+
 bool UGameplayTagsManager::ShouldImportTagsFromINI() const
 {
 	UGameplayTagsSettings* MutableDefault = GetMutableDefault<UGameplayTagsSettings>();
@@ -659,6 +709,26 @@ bool UGameplayTagsManager::ShouldImportTagsFromINI() const
 	}
 
 	return MutableDefault->ImportTagsFromConfig;
+}
+
+bool UGameplayTagsManager::ShouldUnloadTags() const
+{
+#if WITH_EDITOR
+	if (bShouldAllowUnloadingTags && GIsEditor && GEngine)
+	{
+		// Check if we have an active PIE index without linking GEditor, and compare to game setting
+		FWorldContext* PIEWorldContext = GEngine->GetWorldContextFromPIEInstance(0);
+		UGameplayTagsSettings* MutableDefault = GetMutableDefault<UGameplayTagsSettings>();
+
+		if (PIEWorldContext && !MutableDefault->AllowGameTagUnloading)
+		{
+			UE_LOG(LogGameplayTags, Warning, TEXT("Ignoring request to unload tags during Play In Editor because AllowGameTagUnloading=false"));
+			return false;
+		}
+	}
+#endif
+
+	return bShouldAllowUnloadingTags;
 }
 
 void UGameplayTagsManager::GetRestrictedTagConfigFiles(TArray<FString>& RestrictedConfigFiles) const
@@ -1074,6 +1144,49 @@ void UGameplayTagsManager::MarkChildrenOfNodeConflict(TSharedPtr<FGameplayTagNod
 #endif
 }
 
+void UGameplayTagsManager::BroadcastOnGameplayTagTreeChanged()
+{
+	if (bDeferBroadcastOnGameplayTagTreeChanged)
+	{
+		bShouldBroadcastDeferredOnGameplayTagTreeChanged = true;
+	}
+	else
+	{
+		IGameplayTagsModule::OnGameplayTagTreeChanged.Broadcast();
+	}
+}
+
+void UGameplayTagsManager::HandleGameplayTagTreeChanged(bool bRecreateTree)
+{
+	// Don't do anything during a reconstruct or before initial native tags are done loading
+	if (!bIsConstructingGameplayTagTree && bDoneAddingNativeTags)
+	{
+		if (bRecreateTree)
+		{
+#if WITH_EDITOR
+			if (GIsEditor)
+			{
+				// In the editor refresh everything
+				EditorRefreshGameplayTagTree();
+				return;
+			}
+#endif
+			DestroyGameplayTagTree();
+			ConstructGameplayTagTree();
+		}
+		else
+		{
+			// Refresh if we're done adding tags
+			if (ShouldUseFastReplication())
+			{
+				InvalidateNetworkIndex();
+			}
+
+			BroadcastOnGameplayTagTreeChanged();
+		}
+	}
+}
+
 UGameplayTagsManager::~UGameplayTagsManager()
 {
 	DestroyGameplayTagTree();
@@ -1102,44 +1215,45 @@ int32 UGameplayTagsManager::InsertTagIntoNodeArray(FName Tag, FName FullTag, TSh
 	int32 WhereToInsert = INDEX_NONE;
 
 	// See if the tag is already in the array
-	for (int32 CurIdx = 0; CurIdx < NodeArray.Num(); ++CurIdx)
+
+	// LowerBoundBy returns Position of the first element >= Value, may be position after last element in range
+	int32 LowerBoundIndex = Algo::LowerBoundBy(NodeArray, Tag,
+		[](const TSharedPtr<FGameplayTagNode>& N) -> FName { return N->GetSimpleTagName(); },
+		[](const FName& A, const FName& B) { return A != B && UE::ComparisonUtility::CompareWithNumericSuffix(A, B) < 0; });
+
+	if (LowerBoundIndex < NodeArray.Num())
 	{
-		FGameplayTagNode* CurrNode = NodeArray[CurIdx].Get();
-		if (CurrNode)
+		FGameplayTagNode* CurrNode = NodeArray[LowerBoundIndex].Get();
+		if (CurrNode->GetSimpleTagName() == Tag)
 		{
-			FName SimpleTagName = CurrNode->GetSimpleTagName();
-			if (SimpleTagName == Tag)
-			{
-				FoundNodeIdx = CurIdx;
+			FoundNodeIdx = LowerBoundIndex;
 #if WITH_EDITORONLY_DATA
-				// If we are explicitly adding this tag then overwrite the existing children restrictions with whatever is in the ini
-				// If we restrict children in the input data, make sure we restrict them in the existing node. This applies to explicit and implicitly defined nodes
-				if (bAllowNonRestrictedChildren == false || bIsExplicitTag)
-				{
-					// check if the tag is explicitly being created in more than one place.
-					if (CurrNode->bIsExplicitTag && bIsExplicitTag)
-					{
-						// restricted tags always get added first
-						// 
-						// There are two possibilities if we're adding a restricted tag. 
-						// If the existing tag is non-restricted the restricted tag should take precedence. This may invalidate some child tags of the existing tag.
-						// If the existing tag is restricted we have a conflict. This is explicitly not allowed.
-						if (bIsRestrictedTag)
-						{
-							
-						}
-					}
-					CurrNode->bAllowNonRestrictedChildren = bAllowNonRestrictedChildren;
-					CurrNode->bIsExplicitTag = CurrNode->bIsExplicitTag || bIsExplicitTag;
-				}
-#endif				
-				break;
-			}
-			else if (UE::ComparisonUtility::CompareWithNumericSuffix(Tag, SimpleTagName) < 0 && WhereToInsert == INDEX_NONE)
+			// If we are explicitly adding this tag then overwrite the existing children restrictions with whatever is in the ini
+			// If we restrict children in the input data, make sure we restrict them in the existing node. This applies to explicit and implicitly defined nodes
+			if (bAllowNonRestrictedChildren == false || bIsExplicitTag)
 			{
-				// Insert new node before this
-				WhereToInsert = CurIdx;
+				// check if the tag is explicitly being created in more than one place.
+				if (CurrNode->bIsExplicitTag && bIsExplicitTag)
+				{
+					// restricted tags always get added first
+					// 
+					// There are two possibilities if we're adding a restricted tag. 
+					// If the existing tag is non-restricted the restricted tag should take precedence. This may invalidate some child tags of the existing tag.
+					// If the existing tag is restricted we have a conflict. This is explicitly not allowed.
+					if (bIsRestrictedTag)
+					{
+
+					}
+				}
+				CurrNode->bAllowNonRestrictedChildren = bAllowNonRestrictedChildren;
+				CurrNode->bIsExplicitTag = CurrNode->bIsExplicitTag || bIsExplicitTag;
 			}
+#endif				
+		}
+		else
+		{
+			// Insert new node before this
+			WhereToInsert = LowerBoundIndex;
 		}
 	}
 
@@ -1199,7 +1313,7 @@ void UGameplayTagsManager::PrintReplicationIndices()
 {
 	VerifyNetworkIndex();
 
-	UE_LOG(LogGameplayTags, Display, TEXT("::PrintReplicationIndices (TOTAL %d"), GameplayTagNodeMap.Num());
+	UE_LOG(LogGameplayTags, Display, TEXT("::PrintReplicationIndices (TOTAL %d)"), GameplayTagNodeMap.Num());
 
 	for (auto It : GameplayTagNodeMap)
 	{
@@ -1915,24 +2029,22 @@ FGameplayTag UGameplayTagsManager::AddNativeGameplayTag(FName TagName, const FSt
 
 void UGameplayTagsManager::AddNativeGameplayTag(FNativeGameplayTag* TagSource)
 {
+	// This adds it to the temporary tree, but expects the caller to add it to FNativeGameplayTag::GetRegisteredNativeTags for later refreshes
 	AddTagTableRow(TagSource->GetGameplayTagTableRow(), FGameplayTagSource::GetNativeName());
-	InvalidateNetworkIndex();
-	IGameplayTagsModule::OnGameplayTagTreeChanged.Broadcast();
+
+	HandleGameplayTagTreeChanged(false);
 }
 
 void UGameplayTagsManager::RemoveNativeGameplayTag(const FNativeGameplayTag* TagSource)
 {
-	// TODO This is awful, need to invalidate the tag tree, not rebuild it.
+	if (!ShouldUnloadTags())
 	{
-#if WITH_EDITOR
-		EditorRefreshGameplayTagTree();
-#else
-	//TODO - Removing tags isn't really a thing right now, but setting this up for the future.
-	//DestroyGameplayTagTree();
-	//ConstructGameplayTagTree();
-	//OnEditorRefreshGameplayTagTree.Broadcast();
-#endif
+		// Ignore if not allowed right now
+		return;
 	}
+
+	// ~FNativeGameplayTag already removed the tag from the global list, so recreate the tree
+	HandleGameplayTagTreeChanged(true);
 }
 
 void UGameplayTagsManager::CallOrRegister_OnDoneAddingNativeTagsDelegate(FSimpleMulticastDelegate::FDelegate Delegate)
@@ -2279,3 +2391,4 @@ void FGameplayTagNode::ResetNode()
 }
 
 #undef LOCTEXT_NAMESPACE
+

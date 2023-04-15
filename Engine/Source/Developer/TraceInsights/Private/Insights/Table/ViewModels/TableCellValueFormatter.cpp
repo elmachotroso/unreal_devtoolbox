@@ -32,6 +32,13 @@ FText FTableCellValueFormatter::FormatValueForTooltip(const FTableColumn& Column
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+FText FTableCellValueFormatter::FormatValueForGrouping(const FTableColumn& Column, const FBaseTreeNode& Node) const
+{
+	return FormatValueForTooltip(Column.GetValue(Node));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 TSharedPtr<IToolTip> FTableCellValueFormatter::GetCustomTooltip(const FTableColumn& Column, const FBaseTreeNode& Node) const
 {
 	return SNew(SToolTip)
@@ -73,6 +80,38 @@ FText FBoolValueFormatterAsOnOff::FormatValue(const TOptional<FTableCellValue>& 
 	if (InValue.IsSet())
 	{
 		return FText::FromString(InValue.GetValue().Bool ? TEXT("On") : TEXT("Off"));
+	}
+	return FText::GetEmpty();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText FInt64ValueFormatterAsUInt32InfinteNumber::FormatValue(const TOptional<FTableCellValue>& InValue) const
+{
+	if (InValue.IsSet())
+	{
+		const int64 Value = InValue.GetValue().Int64;
+		if (Value == int64(uint32(~0)))
+		{
+			return LOCTEXT("AsUInt32InfinteNumber_Inf", "∞");
+		}
+		return FText::AsNumber(Value);
+	}
+	return FText::GetEmpty();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText FInt64ValueFormatterAsUInt32InfinteNumber::FormatValueForTooltip(const TOptional<FTableCellValue>& InValue) const
+{
+	if (InValue.IsSet())
+	{
+		const int64 Value = InValue.GetValue().Int64;
+		if (Value == int64(uint32(~0)))
+		{
+			return FText::Format(LOCTEXT("AsUInt32InfinteNumber_Inf_Fmt", "{0} (∞)"), FText::AsNumber(Value));
+		}
+		return FText::AsNumber(Value);
 	}
 	return FText::GetEmpty();
 }

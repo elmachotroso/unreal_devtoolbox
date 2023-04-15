@@ -4,10 +4,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ShaderParameters.h"
-#include "Shader.h"
 #include "GlobalShader.h"
+#include "HAL/Platform.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "PixelFormat.h"
+#include "RHICommandList.h"
+#include "RHIDefinitions.h"
+#include "Serialization/MemoryLayout.h"
+#include "Shader.h"
+#include "ShaderCore.h"
+#include "ShaderParameterMacros.h"
+#include "ShaderParameterStruct.h"
 #include "ShaderParameterUtils.h"
+#include "ShaderParameters.h"
+#include "ShaderPermutation.h"
+
+class FPointerTableBase;
 
 /**
  * Vertex shader for rendering a single, constant color.
@@ -65,24 +78,36 @@ private:
 class RENDERCORE_API FOneColorPS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FOneColorPS);
-public:
-	
-	FOneColorPS( )	{ }
-	FOneColorPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-	:	FGlobalShader( Initializer )
+	SHADER_USE_PARAMETER_STRUCT(FOneColorPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, RENDERCORE_API)
+		SHADER_PARAMETER_ARRAY(FLinearColor, DrawColorMRT, [MaxSimultaneousRenderTargets])
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+
+	void FillParameters(FParameters& Parameters, const FLinearColor* Colors, int32 NumColors)
 	{
-		//ColorParameter.Bind( Initializer.ParameterMap, TEXT("DrawColorMRT"), SPF_Mandatory);
+		check(NumColors <= MaxSimultaneousRenderTargets);
+
+		int32 Index = 0;
+
+		for (; Index < NumColors; ++Index)
+		{
+			Parameters.DrawColorMRT[Index] = Colors[Index];
+		}
+
+		for (; Index < MaxSimultaneousRenderTargets; ++Index)
+		{
+			Parameters.DrawColorMRT[Index] = FLinearColor::Black;
+		}
 	}
 
-	void SetColors(FRHICommandList& RHICmdList, const FLinearColor* Colors, int32 NumColors);
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	static void SetColors(FRHICommandList& RHICmdList, const TShaderMapRef<FOneColorPS>& Shader, const FLinearColor* Colors, int32 NumColors)
 	{
-		return true;
+		FParameters Parameters;
+		Shader->FillParameters(Parameters, Colors, NumColors);
+		SetShaderParameters(RHICmdList, Shader, Shader.GetPixelShader(), Parameters);
 	}
-
-	/** The parameter to use for setting the draw Color. */
-	//LAYOUT_FIELD(FShaderParameter, ColorParameter);
 };
 
 /**
@@ -124,6 +149,13 @@ public:
 		{
 			OutEnvironment.SetRenderTargetOutputFormat(0, PF_A32B32G32R32F);
 		}
+	}
+
+	static void SetColors(FRHICommandList& RHICmdList, const TShaderMapRef<TOneColorPixelShaderMRT>& Shader, const FLinearColor* Colors, int32 NumColors)
+	{
+		FParameters Parameters;
+		Shader->FillParameters(Parameters, Colors, NumColors);
+		SetShaderParameters(RHICmdList, Shader, Shader.GetPixelShader(), Parameters);
 	}
 };
 

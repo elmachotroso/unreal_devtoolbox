@@ -10,7 +10,7 @@
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "HAL/PlatformProcess.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "Widgets/SWindow.h"
@@ -18,7 +18,6 @@
 #include "UObject/UObjectAnnotation.h"
 #include "Engine/Brush.h"
 #include "Model.h"
-#include "Editor/Transactor.h"
 #include "Engine/Engine.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Settings/LevelEditorViewportSettings.h"
@@ -30,13 +29,14 @@
 #include "Subsystems/SubsystemCollection.h"
 #include "RHI.h"
 #include "UnrealEngine.h"
+#include "Templates/PimplPtr.h"
 #include "Templates/UniqueObj.h"
+#include "Editor/AssetReferenceFilter.h"
 
 #include "EditorEngine.generated.h"
 
 class APlayerStart;
 class Error;
-class AMatineeActor;
 class FEditorViewportClient;
 class FEditorWorldManager;
 class FMessageLog;
@@ -65,12 +65,19 @@ class USkeleton;
 class USoundBase;
 class USoundNode;
 class UTextureRenderTarget2D;
+class UTransactor;
+class FTransactionObjectEvent;
+struct FEdge;
+struct FTransactionContext;
+struct FEditorTransactionDeltaContext;
 struct FTypedElementHandle;
 struct FAnalyticsEventAttribute;
+struct FAssetCompileData;
 class UEditorWorldExtensionManager;
 class ITargetDevice;
 class ULevelEditorDragDropHandler;
 class UTypedElementSelectionSet;
+class IProjectExternalContentInterface;
 
 //
 // Things to set in mapSetBrush.
@@ -204,26 +211,33 @@ struct FPreviewPlatformInfo
 {
 	FPreviewPlatformInfo()
 	:	PreviewFeatureLevel(ERHIFeatureLevel::SM5)
+	,	ShaderPlatform(EShaderPlatform::SP_NumPlatforms)
 	,	PreviewPlatformName(NAME_None)
 	,	PreviewShaderFormatName(NAME_None)
 	,	bPreviewFeatureLevelActive(false)
+	,	PreviewShaderPlatformName(NAME_None)
 	{}
 
-	FPreviewPlatformInfo(ERHIFeatureLevel::Type InFeatureLevel, FName InPreviewPlatformName = NAME_None, FName InPreviewShaderFormatName = NAME_None, FName InDeviceProfileName = NAME_None, bool InbPreviewFeatureLevelActive = false)
+	FPreviewPlatformInfo(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform = EShaderPlatform::SP_NumPlatforms, FName InPreviewPlatformName = NAME_None, FName InPreviewShaderFormatName = NAME_None, FName InDeviceProfileName = NAME_None, bool InbPreviewFeatureLevelActive = false, FName InShaderPlatformName = NAME_None)
 	:	PreviewFeatureLevel(InFeatureLevel)
+	,	ShaderPlatform(InShaderPlatform)
 	,	PreviewPlatformName(InPreviewPlatformName)
 	,	PreviewShaderFormatName(InPreviewShaderFormatName)
 	,	DeviceProfileName(InDeviceProfileName)
 	,	bPreviewFeatureLevelActive(InbPreviewFeatureLevelActive)
+	,	PreviewShaderPlatformName(InShaderPlatformName)
 	{}
 
 	/** The feature level we should use when loading or creating a new world */
 	ERHIFeatureLevel::Type PreviewFeatureLevel;
 
+	/** The ShaderPlatform to be used when in preview */
+	EShaderPlatform ShaderPlatform;
+
 	/** The the platform to preview, or NAME_None if there is no preview platform */
 	FName PreviewPlatformName;
 
-	/** The shader platform to preview, or NAME_None if there is no shader preview platform */
+	/** The shader Format to preview, or NAME_None if there is no shader preview format */
 	FName PreviewShaderFormatName;
 
 	/** The device profile to preview. */
@@ -231,11 +245,14 @@ struct FPreviewPlatformInfo
 
 	/** Is feature level preview currently active */
 	bool bPreviewFeatureLevelActive;
+	
+	/** Preview Shader Platform Name */
+	FName PreviewShaderPlatformName;
 
 	/** Checks if two FPreviewPlatformInfos are for the same preview platform. Note, this does NOT compare the bPreviewFeatureLevelActive flag */
 	bool Matches(const FPreviewPlatformInfo& Other) const
 	{
-		return PreviewFeatureLevel == Other.PreviewFeatureLevel && PreviewPlatformName == Other.PreviewPlatformName && PreviewShaderFormatName == Other.PreviewShaderFormatName && DeviceProfileName == Other.DeviceProfileName;
+		return PreviewFeatureLevel == Other.PreviewFeatureLevel && ShaderPlatform == Other.ShaderPlatform && PreviewPlatformName == Other.PreviewPlatformName && PreviewShaderFormatName == Other.PreviewShaderFormatName && DeviceProfileName == Other.DeviceProfileName && PreviewShaderPlatformName == Other.PreviewShaderPlatformName;
 	}
 
 	/** Return platform name like "Android", or NAME_None if none is set or the preview feature level is not active */
@@ -256,15 +273,6 @@ struct FPreviewPlatformInfo
 struct FAssetReferenceFilterContext
 {
 	TArray<FAssetData> ReferencingAssets;
-};
-
-/** Used in filtering allowed references between assets. Implement a subclass of this and return it in OnMakeAssetReferenceFilter */
-class IAssetReferenceFilter
-{
-public:
-	virtual ~IAssetReferenceFilter() { }
-	/** Filter function to pass/fail an asset. Called in some situations that are performance-sensitive so is expected to be fast. */
-	virtual bool PassesFilter(const FAssetData& AssetData, FText* OutOptionalFailureReason = nullptr) const = 0;
 };
 
 /**
@@ -412,6 +420,14 @@ public:
 	UPROPERTY()
 	uint32 bRequestEndPlayMapQueued:1;
 
+	/** True if we should ignore noting any changes to selection on undo/redo */
+	UPROPERTY()
+	uint32 bIgnoreSelectionChange:1;
+
+	/** True if we should suspend notifying clients post undo/redo */
+	UPROPERTY()
+	uint32 bSuspendBroadcastPostUndoRedo:1;
+
 	/** True if we should not display notifications about undo/redo */
 	UPROPERTY()
 	uint32 bSquelchTransactionNotification:1;
@@ -427,7 +443,7 @@ public:
 	/** When Simulating In Editor, a pointer to the original (non-simulating) editor world */
 	UPROPERTY()
 	TObjectPtr<class UWorld> EditorWorld;
-	
+
 	/** When Simulating In Editor, an array of all actors that were selected when it began*/
 	UPROPERTY()
 	TArray<TWeakObjectPtr<class AActor> > ActorsThatWereSelected;
@@ -519,6 +535,9 @@ public:
 	/** The feature level and platform we should use when loading or creating a new world */
 	FPreviewPlatformInfo PreviewPlatform;
 	
+	/** Cached ShaderPlatform so the editor can go back to after previewing */
+	EShaderPlatform CachedEditorShaderPlatform;
+
 	/** A delegate that is called when the preview feature level changes. Primarily used to switch a viewport's feature level. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPreviewFeatureLevelChanged, ERHIFeatureLevel::Type);
 	FPreviewFeatureLevelChanged PreviewFeatureLevelChanged;
@@ -526,6 +545,10 @@ public:
 	/** A delegate that is called when the preview platform changes. */
 	DECLARE_MULTICAST_DELEGATE(FPreviewPlatformChanged);
 	FPreviewPlatformChanged PreviewPlatformChanged;
+
+	/** An array of delegates that can force disable throttling cpu usage if any of them return false. */
+	DECLARE_DELEGATE_RetVal(bool, FShouldDisableCPUThrottling);
+	TArray<FShouldDisableCPUThrottling> ShouldDisableCPUThrottlingDelegates;
 
 	/** A delegate that is called when the bugitgo command is used. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FPostBugItGoCalled, const FVector& Loc, const FRotator& Rot);
@@ -735,7 +758,6 @@ public:
 	void BroadcastObjectReimported(UObject* InObject);
 
 	//~ Begin UObject Interface.
-	virtual void BeginDestroy() override;
 	virtual void FinishDestroy() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
@@ -744,6 +766,7 @@ public:
 	//~ Begin UEngine Interface.
 public:
 	virtual void Init(IEngineLoop* InEngineLoop) override;
+	virtual void PreExit() override;
 	virtual float GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing = true) const override;
 	virtual void Tick(float DeltaSeconds, bool bIdleMode) override;
 	virtual bool ShouldDrawBrushWireframe(AActor* InActor) override;
@@ -773,14 +796,12 @@ private:
 	virtual TSharedPtr<SViewport> GetGameViewportWidget() const override;
 	virtual void TriggerStreamingDataRebuild() override;
 
-	// deprecated in 4.26
-	virtual bool NetworkRemapPath(UNetDriver* Driver, FString& Str, bool bReading = true) override;
 	virtual bool NetworkRemapPath(UNetConnection* Connection, FString& Str, bool bReading = true) override;
 	virtual bool NetworkRemapPath(UPendingNetGame* PendingNetGame, FString& Str, bool bReading = true) override;
 
 	virtual bool AreEditorAnalyticsEnabled() const override;
 	virtual void CreateStartupAnalyticsAttributes(TArray<FAnalyticsEventAttribute>& StartSessionAttributes) const override;
-	virtual void VerifyLoadMapWorldCleanup() override;
+	virtual void CheckAndHandleStaleWorldObjectReferences(FWorldContext* InWorldContext) override;
 
 	/** Called during editor init and whenever the vanilla status might have changed, to set the flag on the base class */
 	void UpdateIsVanillaProduct();
@@ -1021,10 +1042,11 @@ public:
 
 	/**
 	 * Moves all viewport cameras to focus on the provided bounding box.
-	 * @param	BoundingBox				Target box
-	 * @param	bActiveViewportOnly		If true, move/reorient only the active viewport.
+	 * @param	BoundingBox					Target box
+	 * @param	bActiveViewportOnly			If true, move/reorient only the active viewport.
+	 * @param	DrawDebubBoxTimeInSeconds	If greater than 0 a debug box is drawn representing the bounding box.It will be drawn for specified time.
 	 */
-	void MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActiveViewportOnly) const;
+	void MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActiveViewportOnly, float DrawDebugBoxTimeInSeconds = 0.f) const;
 
 	/** 
 	 * Snaps an element in a direction.  Optionally will align with the trace normal.
@@ -1235,15 +1257,18 @@ public:
 	 * 
 	 * @param Factory - the Factory to use to create Actors
 	 */
-	void ReplaceSelectedActors(UActorFactory* Factory, const FAssetData& AssetData);
+	void ReplaceSelectedActors(UActorFactory* Factory, const FAssetData& AssetData, bool bCopySourceProperties = true);
 
 	/**
 	 * Replaces specified Actors with the same number of a different kind of Actor using the specified factory to spawn the new Actors
 	 * note that only Location, Rotation, Drawscale, Drawscale3D, Tag, and Group are copied from the old Actors
 	 * 
 	 * @param Factory - the Factory to use to create Actors
+	 * @param AssetData - the asset to feed the Factory
+	 * @param ActorsToReplace - Actors to replace
+	 * @param OutNewActors - Actors that were created
 	 */
-	void ReplaceActors(UActorFactory* Factory, const FAssetData& AssetData, const TArray<AActor*>& ActorsToReplace);
+	void ReplaceActors(UActorFactory* Factory, const FAssetData& AssetData, const TArray<AActor*>& ActorsToReplace, TArray<AActor*>* OutNewActors = nullptr, bool bCopySourceProperties = true);
 
 	/**
 	 * Converts passed in brushes into a single static mesh actor. 
@@ -1377,14 +1402,20 @@ public:
 	*
 	* returns true if poly not available
 	*/
+	static bool polyFindBrush(UModel* InModel, int32 iSurf, FPoly &Poly);
+
+	UE_DEPRECATED(5.1, "polyFindMaster is deprecated; please use polyFindBrush instead")
 	virtual bool polyFindMaster( UModel* InModel, int32 iSurf, FPoly& Poly );
 
 	/**
-	 * Update a the master brush EdPoly corresponding to a newly-changed
+	 * Update a the brush EdPoly corresponding to a newly-changed
 	 * poly to reflect its new properties.
 	 *
 	 * Doesn't do any transaction tracking.
 	 */
+	static void polyUpdateBrush(UModel* Model, int32 iSurf, bool bUpdateTexCoords, bool bOnlyRefreshSurfaceMaterials);
+
+	UE_DEPRECATED(5.1, "polyUpdateMaster is deprecated; please use polyUpdateBrush instead")
 	virtual void polyUpdateMaster( UModel* Model, int32 iSurf, bool bUpdateTexCoords, bool bOnlyRefreshSurfaceMaterials );
 
 	/**
@@ -1409,7 +1440,7 @@ public:
 	 * Sets and clears all Bsp node flags.  Affects all nodes, even ones that don't
 	 * really exist.
 	 */
-	virtual void polySetAndClearPolyFlags( UModel* Model, uint32 SetBits, uint32 ClearBits, bool SelectedOnly, bool UpdateMaster );
+	virtual void polySetAndClearPolyFlags( UModel* Model, uint32 SetBits, uint32 ClearBits, bool SelectedOnly, bool UpdateBrush );
 
 	// Selection.
 	virtual void SelectActor(AActor* Actor, bool bInSelected, bool bNotify, bool bSelectEvenIfHidden = false, bool bForceRefresh = false) {}
@@ -2109,8 +2140,10 @@ public:
 
 	/**
 	 * Syncs the selected actors objects to the content browser
+	 * 
+	 * @param bAllowOverrideMetadata If true, allows an asset to define "BrowseToAssetOverride" in its metadata to sync to an asset other than itself
 	 */
-	void SyncToContentBrowser();
+	void SyncToContentBrowser(bool bAllowOverrideMetadata = true);
 
 	/**
 	 * Syncs the selected actors' levels to the content browser
@@ -2159,12 +2192,6 @@ public:
 	 * Deselects the currently selected actor(s) levels in the level browser
 	 */
 	void DeselectLevelInLevelBrowser();
-
-	/**
-	 * Selects all actors controlled by currently selected MatineeActor
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	void SelectAllActorsControlledByMatinee() {}
 
 	/**
 	 * Selects all actors with the same class as the current selection
@@ -2343,35 +2370,6 @@ public:
 	void ConvertActorsFromClass( UClass* FromClass, UClass* ToClass );
 
 	/**
-	 * Gets a delegate that is executed when a matinee is requested to be opened
-	 *
-	 * The first parameter is the matinee actor
-	 *
-	 * @return The event delegate.
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldOpenMatineeCallback, AMatineeActor*)
-	FShouldOpenMatineeCallback& OnShouldOpenMatinee() { return ShouldOpenMatineeCallback; }
-
-	/** 
-	 * Show a (Suppressable) warning dialog to remind the user he is about to lose his undo buffer 
-	 *
-	 * @param MatineeActor	The actor we wish to check (can be null)
-	 * @returns true if the user wishes to proceed
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	bool ShouldOpenMatinee(AMatineeActor* MatineeActor) const { return false; }
-
-	/** 
-	 * Open the Matinee tool to edit the supplied MatineeActor. Will check that MatineeActor has an InterpData attached.
-	 *
-	 * @param MatineeActor	The actor we wish to edit
-	 * @param bWarnUser		If true, calls ShouldOpenMatinee as part of the open process
-	 */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	void OpenMatinee(class AMatineeActor* MatineeActor, bool bWarnUser = true) {}
-
-	/**
 	* Update any outstanding reflection captures
 	*/
 	void BuildReflectionCaptures(UWorld* World = GWorld);
@@ -2427,8 +2425,17 @@ public:
 	 * Gets all objects which can be synced to in content browser for current selection
 	 *
 	 * @param Objects	Array to be filled with objects which can be browsed to
+	 * @param bAllowOverrideMetadata If true, allows an asset to define "BrowseToAssetOverride" in its metadata to sync to an asset other than itself
 	 */
-	void GetObjectsToSyncToContentBrowser( TArray<UObject*>& Objects );
+	UE_DEPRECATED(5.1, "Use GetAssetsToSyncToContentBrowser instead")
+	void GetObjectsToSyncToContentBrowser(TArray<UObject*>& Objects, bool bAllowBrowseToAssetOverride = true);
+	/**
+	 * Gets all assets which can be synced to in content browser for current selection
+	 *
+	 * @param Assets	Array to be filled with assets which can be browsed to
+	 * @param bAllowOverrideMetadata If true, allows an asset to define "BrowseToAssetOverride" in its metadata to sync to an asset other than itself
+	 */
+	void GetAssetsToSyncToContentBrowser(TArray<FAssetData>& Assets, bool bAllowBrowseToAssetOverride = true);
 
 	/**
 	 * Gets all levels which can be synced to in content browser for current selection
@@ -2445,6 +2452,13 @@ public:
 	*/
 	void GetReferencedAssetsForEditorSelection(TArray<UObject*>& Objects, const bool bIgnoreOtherAssetsIfBPReferenced = false);
 
+	/**
+	* Queries for a list of assets that are soft referenced by the current editor selection (actors, surfaces, etc.)
+	*
+	* @param	SoftObjects							Array to be filled with asset objects referenced soft by the current editor selection
+	*/
+	void GetSoftReferencedAssetsForEditorSelection(TArray<FSoftObjectPath>& SoftObjects);
+
 	/** Returns a filter to restruct what assets show up in asset pickers based on what the selection is used for (i.e. what will reference the assets) */
 	DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IAssetReferenceFilter>, FOnMakeAssetReferenceFilter, const FAssetReferenceFilterContext& /*Context*/);
 	FOnMakeAssetReferenceFilter& OnMakeAssetReferenceFilter() { return OnMakeAssetReferenceFilterDelegate; }
@@ -2453,6 +2467,16 @@ public:
 	DECLARE_DELEGATE_RetVal(ULevelEditorDragDropHandler*, FOnCreateLevelEditorDragDropHandler);
 	FOnCreateLevelEditorDragDropHandler& OnCreateLevelEditorDragDropHandler() { return OnCreateLevelEditorDragDropHandlerDelegate; }
 	ULevelEditorDragDropHandler* GetLevelEditorDragDropHandler() const;
+
+	/** 
+	 * Gets the interface to manage project references to external content
+	 * @note the returned pointer cannot be null
+	 */
+	IProjectExternalContentInterface* GetProjectExternalContentInterface();
+
+	/** Delegate to override the IProjectExternalContentInterface */
+	DECLARE_DELEGATE_RetVal(IProjectExternalContentInterface*, FProjectExternalContentInterfaceGetter);
+	FProjectExternalContentInterfaceGetter ProjectExternalContentInterfaceGetter;
 
 private:
 	UPROPERTY()
@@ -2781,23 +2805,7 @@ public:
 
 private:
 
-	/** Internal struct to hold undo/redo transaction object context */
-	struct FTransactionDeltaContext
-	{
-		FGuid	OuterOperationId;
-		int32	OperationDepth;
-		TArray<TPair<UObject*, FTransactionObjectEvent>> TransactionObjects;
-
-		void Reset()
-		{
-			OuterOperationId.Invalidate();
-			TransactionObjects.Empty();
-			OperationDepth = 0;
-		}
-
-		FTransactionDeltaContext() = default;
-	};
-	FTransactionDeltaContext CurrentUndoRedoContext;
+	TPimplPtr<FEditorTransactionDeltaContext> CurrentUndoRedoContext;
 
 	/** List of all viewport clients */
 	TArray<class FEditorViewportClient*> AllViewportClients;
@@ -2867,9 +2875,6 @@ private:
 
 	/** Broadcasts to allow selection of unloaded actors */
 	FSelectUnloadedActorsEvent SelectUnloadedActorsEvent;
-
-	/** Delegate to be called when a matinee is requested to be opened */
-	FShouldOpenMatineeCallback ShouldOpenMatineeCallback;	
 
 	/** Reference to owner of the current popup */
 	TWeakPtr<class SWindow> PopupWindow;
@@ -3090,7 +3095,7 @@ protected:
 	/** Stores the position of the window for that instance index. Doesn't save it to the CDO until the play session ends. */
 	void StoreWindowSizeAndPositionForInstanceIndex(const int32 InInstanceIndex, const FIntPoint& InSize, const FIntPoint& InPosition);
 	/** Returns the stored position at that index. */
-	void GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySettings& InEditorPlaySettings, const int32 InInstanceIndex, FIntPoint& OutSize, FIntPoint& OutPosition);
+	void GetWindowSizeAndPositionForInstanceIndex(ULevelEditorPlaySettings& InEditorPlaySettings, const int32 InInstanceIndex, const FWorldContext& InWorldContext, FIntPoint& OutSize, FIntPoint& OutPosition);
 
 	/** Start the queued Play Session Request. After this is called the queued play session request will be cleared. */
 	virtual void StartQueuedPlaySessionRequestImpl();
@@ -3134,10 +3139,6 @@ private:
 
 protected:
 
-	/** Called when Matinee is opened */
-	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
-	virtual void OnOpenMatinee(){};
-
 	/**
 	 * Invalidates all editor viewports and hit proxies, used when global changes like Undo/Redo may have invalidated state everywhere
 	 */
@@ -3165,6 +3166,9 @@ private:
 	/** Handler for when an asset is created (used to detect world duplication after PostLoad) */
 	void OnAssetCreated( UObject* Asset );
 
+	/** Handler for when an asset finishes compiling (used to notify AssetRegistry to update tags after Load) */
+	void OnAssetPostCompile(const TArray<FAssetCompileData>& CompiledAssets);
+
 	/** Handler for when a world is duplicated in the editor */
 	void InitializeNewlyCreatedInactiveWorld(UWorld* World);
 
@@ -3178,8 +3182,6 @@ public:
 	/** Function to run the Play On command for automation testing. */
 	UE_DEPRECATED(4.25, "Use RequestPlaySession and StartQueuedPlaySessionRequest instead.")
 	void AutomationPlayUsingLauncher(const FString& InLauncherDeviceId);	
-
-	virtual void HandleTravelFailure(UWorld* InWorld, ETravelFailure::Type FailureType, const FString& ErrorString);
 
 	void AutomationLoadMap(const FString& MapName, bool bForceReload, FString* OutError);
 
@@ -3227,7 +3229,7 @@ protected:
 
 protected:
 
-	UPROPERTY(EditAnywhere, config, Category = Advanced, meta = (MetaClass = "ActorGroupingUtils"))
+	UPROPERTY(EditAnywhere, config, Category = Advanced, meta = (MetaClass = "/Script/UnrealEd.ActorGroupingUtils"))
 	FSoftClassPath ActorGroupingUtilsClassName;
 
 	UPROPERTY()
@@ -3238,6 +3240,9 @@ private:
 	/** Delegate handle for game viewport close requests in PIE sessions. */
 	FDelegateHandle ViewportCloseRequestedDelegateHandle;
 
+	/** Minimized Windows during PIE */
+	TArray<TWeakPtr<SWindow>> MinimizedWindowsDuringPIE;
+
 public:
 	/**
 	 * Get a Subsystem of specified type
@@ -3245,7 +3250,7 @@ public:
 	UEditorSubsystem* GetEditorSubsystemBase(TSubclassOf<UEditorSubsystem> SubsystemClass) const
 	{
 		checkSlow(this != nullptr);
-		return EditorSubsystemCollection->GetSubsystem<UEditorSubsystem>(SubsystemClass);
+		return EditorSubsystemCollection.GetSubsystem<UEditorSubsystem>(SubsystemClass);
 	}
 
 	/**
@@ -3255,7 +3260,7 @@ public:
 	TSubsystemClass* GetEditorSubsystem() const
 	{
 		checkSlow(this != nullptr);
-		return EditorSubsystemCollection->GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EditorSubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 	/**
@@ -3266,15 +3271,11 @@ public:
 	template <typename TSubsystemClass>
 	const TArray<TSubsystemClass*>& GetEditorSubsystemArray() const
 	{
-		return EditorSubsystemCollection->GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EditorSubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 private:
-	// TUniqueObj is used here to work around a hot reload issue caused by FSubsystemCollection inheriting FGCObject.
-	// When hot reload occurs, the CDO for this type can be reconstructed over the same object at the same address without
-	// destroying it first, which breaks FGCObject.
-	// TUniquePtr makes sure the object is allocated on the heap, giving it a unique address.
-	TUniqueObj<FSubsystemCollection<UEditorSubsystem>> EditorSubsystemCollection;
+	FObjectSubsystemCollection<UEditorSubsystem> EditorSubsystemCollection;
 
 	// DEPRECATED VARIABLES ONLY
 public:

@@ -45,7 +45,7 @@ FMovieScenePreAnimatedState::~FMovieScenePreAnimatedState()
 	}
 }
 
-void FMovieScenePreAnimatedState::Initialize(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FInstanceHandle InInstanceHandle)
+void FMovieScenePreAnimatedState::Initialize(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FRootInstanceHandle InInstanceHandle)
 {
 	// If we're re-using a pre-animated state class and it was previously
 	// capturing global state make sure to decrement that request
@@ -59,8 +59,6 @@ void FMovieScenePreAnimatedState::Initialize(UMovieSceneEntitySystemLinker* Link
 
 	bCapturingGlobalPreAnimatedState = false;
 
-	WeakObjectStorage = nullptr;
-	WeakMasterStorage = nullptr;
 	TemplateMetaData = nullptr;
 	EvaluationHookMetaData = nullptr;
 
@@ -207,7 +205,13 @@ void FMovieScenePreAnimatedState::RestorePreAnimatedState(UObject& Object, TFunc
 {
 	using namespace UE::MovieScene;
 
-	TSharedPtr<FAnimTypePreAnimatedStateObjectStorage> ObjectStorage = WeakObjectStorage.Pin();
+	UMovieSceneEntitySystemLinker* Linker = WeakLinker.Get();
+	if (!Linker)
+	{
+		return;
+	}
+
+	TSharedPtr<FAnimTypePreAnimatedStateObjectStorage> ObjectStorage = Linker->PreAnimatedState.FindStorage(FAnimTypePreAnimatedStateObjectStorage::StorageID);
 	if (!ObjectStorage)
 	{
 		return;
@@ -217,9 +221,9 @@ void FMovieScenePreAnimatedState::RestorePreAnimatedState(UObject& Object, TFunc
 	{
 		TFunctionRef<bool(FMovieSceneAnimTypeID)>* Filter;
 
-		virtual bool CanRestore(const FPreAnimatedObjectTokenTraits::FAnimatedKey& InKey) const override
+		virtual bool CanRestore(const FPreAnimatedObjectTokenTraits::KeyType& InKey) const override
 		{
-			return (*Filter)(InKey.AnimTypeID);
+			return (*Filter)(InKey.Get<1>());
 		}
 	} RestoreMask;
 	RestoreMask.Filter = &InFilter;

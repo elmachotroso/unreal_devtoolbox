@@ -9,10 +9,13 @@
 #include "Misc/Parse.h"
 #include "UObject/PropertyHelper.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 IMPLEMENT_FIELD(FFieldPathProperty)
+
+FFieldPathProperty::FFieldPathProperty(FFieldVariant InOwner, const UECodeGen_Private::FFieldPathPropertyParams& Prop)
+	: FFieldPathProperty_Super(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop)
+{
+	PropertyClass = Prop.PropertyClassFunc();
+}
 
 #if WITH_EDITORONLY_DATA
 FFieldPathProperty::FFieldPathProperty(UField* InField)
@@ -81,9 +84,18 @@ void FFieldPathProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Val
 	Slot << *FieldPtr;
 }
 
-void FFieldPathProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FFieldPathProperty::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
-	const FFieldPath& Value = GetPropertyValue(PropertyValue);
+	FFieldPath Value;
+	
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		GetValue_InContainer(PropertyValueOrContainer, &Value);
+	}
+	else
+	{
+		Value = GetPropertyValue(PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType));
+	}
 
 	if (PortFlags & PPF_ExportCpp)
 	{
@@ -110,11 +122,10 @@ void FFieldPathProperty::ExportTextItem( FString& ValueStr, const void* Property
 	}
 }
 
-const TCHAR* FFieldPathProperty::ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const
+const TCHAR* FFieldPathProperty::ImportText_Internal( const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText ) const
 {
 	check(Buffer);
-	FFieldPath* PathPtr = GetPropertyValuePtr(Data);
-	check(PathPtr);
+	FFieldPath ImportedPath;
 	FString PathName;
 
 	if (!(PortFlags & PPF_Delimited))
@@ -146,13 +157,22 @@ const TCHAR* FFieldPathProperty::ImportText_Internal( const TCHAR* Buffer, void*
 			FString UnquotedPathName;
 			if (!FParse::QuotedString(*PathName, UnquotedPathName))
 			{
-				UE_LOG(LogProperty, Warning, TEXT("FieldPathProperty: Bad quoted string: %s"), *PathName);
+				ErrorText->Logf(ELogVerbosity::Warning, TEXT("FieldPathProperty: Bad quoted string: %s"), *PathName);
 				return nullptr;
 			}
 			PathName = MoveTemp(UnquotedPathName);
 		}
-		PathPtr->Generate(*PathName);
-	}
+		ImportedPath.Generate(*PathName);
+		if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+		{
+			SetValue_InContainer(ContainerOrPropertyPtr, ImportedPath);
+		}
+		else
+		{
+			FFieldPath* PathPtr = GetPropertyValuePtr(PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType));
+			*PathPtr = ImportedPath;
+		}
+	}	
 
 	return Buffer;
 }
@@ -167,7 +187,7 @@ FString FFieldPathProperty::GetCPPMacroType(FString& ExtendedTypeText) const
 {
 	check(PropertyClass);
 	ExtendedTypeText = FString::Printf(TEXT("TFieldPath<F%s>"), *PropertyClass->GetName());
-	return TEXT("STRUCT");
+	return TEXT("TFIELDPATH");
 }
 
 FString FFieldPathProperty::GetCPPTypeForwardDeclaration() const
@@ -193,5 +213,3 @@ bool FFieldPathProperty::SupportsNetSharedSerialization() const
 {
 	return false;
 }
-
-#include "UObject/DefineUPropertyMacros.h"

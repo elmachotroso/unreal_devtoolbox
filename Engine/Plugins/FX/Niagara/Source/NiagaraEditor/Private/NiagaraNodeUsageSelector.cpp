@@ -5,6 +5,8 @@
 #include "NiagaraHlslTranslator.h"
 #include "Widgets/Layout/SSeparator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeUsageSelector)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeUsageSelector"
 
 UNiagaraNodeUsageSelector::UNiagaraNodeUsageSelector(const FObjectInitializer& ObjectInitializer)
@@ -63,11 +65,6 @@ void UNiagaraNodeUsageSelector::AddOptionPin(const FNiagaraVariable& OutputVaria
 	NewPin->PinFriendlyName = GetOptionPinFriendlyName(OutputVariable);
 }
 
-bool UNiagaraNodeUsageSelector::ShouldHideEnumEntry(UEnum* Enum, int32 Index) const
-{
-	return Enum->HasMetaData(TEXT("Hidden"), Index) || Enum->HasMetaData(TEXT("Spacer"), Index);
-}
-
 TArray<int32> UNiagaraNodeUsageSelector::GetOptionValues() const
 {
 	TArray<int32> OptionValues;
@@ -112,7 +109,7 @@ TArray<int32> UNiagaraNodeUsageSelector::GetOptionValues() const
 
 FText UNiagaraNodeUsageSelector::GetOptionPinFriendlyName(const FNiagaraVariable& Variable) const
 {
-	return FText::FromString(Variable.GetName().ToString());
+	return FText::AsCultureInvariant(Variable.GetName().ToString());
 }
 
 FString UNiagaraNodeUsageSelector::GetInputCaseName(int32 Case) const
@@ -334,12 +331,12 @@ void UNiagaraNodeUsageSelector::Compile(class FHlslNiagaraTranslator* Translator
 	}
 }
 
-UEdGraphPin* UNiagaraNodeUsageSelector::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage MasterUsage) const 
+UEdGraphPin* UNiagaraNodeUsageSelector::GetPassThroughPin(const UEdGraphPin* LocallyOwnedOutputPin, ENiagaraScriptUsage InUsage) const
 {
 	check(Pins.Contains(LocallyOwnedOutputPin) && LocallyOwnedOutputPin->Direction == EGPD_Output);
 
 	ENiagaraScriptGroup UsageGroup = ENiagaraScriptGroup::Max;
-	if (UNiagaraScript::ConvertUsageToGroup(MasterUsage, UsageGroup))
+	if (UNiagaraScript::ConvertUsageToGroup(InUsage, UsageGroup))
 	{
 		int32 VarIdx = 0;
 		for (int64 i = 0; i < (int64)ENiagaraScriptGroup::Max; i++)
@@ -584,3 +581,4 @@ FText UNiagaraNodeUsageSelector::GetNodeTitle(ENodeTitleType::Type TitleType) co
 }
 
 #undef LOCTEXT_NAMESPACE
+

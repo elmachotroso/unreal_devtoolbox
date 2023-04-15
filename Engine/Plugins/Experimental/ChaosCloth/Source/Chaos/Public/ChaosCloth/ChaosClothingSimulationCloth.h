@@ -35,6 +35,8 @@ namespace Chaos
 			FRealSingle InMinPerParticleMass,
 			const TVec2<FRealSingle>& InEdgeStiffness,
 			const TVec2<FRealSingle>& InBendingStiffness,
+			FRealSingle InBucklingRatio,
+			const TVec2<FRealSingle>& InBucklingStiffness,
 			bool bInUseBendingElements,
 			const TVec2<FRealSingle>& InAreaStiffness,
 			FRealSingle InVolumeStiffness,
@@ -46,7 +48,9 @@ namespace Chaos
 			const TVec2<FRealSingle>& InAnimDriveStiffness,
 			const TVec2<FRealSingle>& InAnimDriveDamping,
 			FRealSingle InShapeTargetStiffness,
-			bool bInUseXPBDConstraints,
+			bool bInUseXPBDEdgeConstraints,
+			bool bInUseXPBDBendingConstraints,
+			bool bInUseXPBDAreaConstraints,
 			FRealSingle InGravityScale,
 			bool bIsGravityOverridden,
 			const TVec3<FRealSingle>& InGravityOverride,
@@ -56,6 +60,7 @@ namespace Chaos
 			const TVec2<FRealSingle>& InDrag,
 			const TVec2<FRealSingle>& InLift,
 			bool bInUseLegacyWind,
+			const TVec2<FRealSingle>& InPressure,
 			FRealSingle InDampingCoefficient,
 			FRealSingle InLocalDampingCoefficient,
 			FRealSingle InCollisionThickness,
@@ -63,6 +68,8 @@ namespace Chaos
 			bool bInUseCCD,
 			bool bInUseSelfCollisions,
 			FRealSingle InSelfCollisionThickness,
+			FRealSingle InSelfCollisionFrictionCoefficient,
+			bool bInUseSelfIntersections,
 			bool bInUseLegacyBackstop,
 			bool bInUseLODIndexOverride,
 			int32 InLODIndexOverride);
@@ -81,8 +88,9 @@ namespace Chaos
 		void SetLongRangeAttachmentProperties(const TVec2<FRealSingle>& InTetherStiffness, const TVec2<FRealSingle>& InTetherScale) { TetherStiffness = InTetherStiffness; TetherScale = InTetherScale;  }
 		void SetCollisionProperties(FRealSingle InCollisionThickness, FRealSingle InFrictionCoefficient, bool bInUseCCD, FRealSingle InSelfCollisionThickness) { CollisionThickness = InCollisionThickness; FrictionCoefficient = InFrictionCoefficient; bUseCCD = bInUseCCD; SelfCollisionThickness = InSelfCollisionThickness; }
 		void SetBackstopProperties(bool bInEnableBackstop) { bEnableBackstop = bInEnableBackstop; }
-		void SetDampingProperties(FRealSingle InDampingCoefficient) { DampingCoefficient = InDampingCoefficient; }
+		void SetDampingProperties(FRealSingle InDampingCoefficient, FRealSingle InLocalDampingCoefficient = 0.f) { DampingCoefficient = InDampingCoefficient; LocalDampingCoefficient = InLocalDampingCoefficient; }
 		void SetAerodynamicsProperties(const TVec2<FRealSingle>& InDrag, const TVec2<FRealSingle>& InLift, FRealSingle InAirDensity, const FVec3& InWindVelocity) { Drag = InDrag; Lift = InLift; InAirDensity = AirDensity; WindVelocity = InWindVelocity; }
+		void SetPressureProperties(const TVec2<FRealSingle>& InPressure) { Pressure = InPressure; }
 		void SetGravityProperties(FRealSingle InGravityScale, bool bInIsGravityOverridden, const FVec3& InGravityOverride) { GravityScale = InGravityScale; bIsGravityOverridden = bInIsGravityOverridden; GravityOverride = InGravityOverride; }
 		void SetAnimDriveProperties(const TVec2<FRealSingle>& InAnimDriveStiffness, const TVec2<FRealSingle>& InAnimDriveDamping) { AnimDriveStiffness = InAnimDriveStiffness; AnimDriveDamping = InAnimDriveDamping; }
 		void GetAnimDriveProperties(TVec2<FRealSingle>& OutAnimDriveStiffness, TVec2<FRealSingle>& OutAnimDriveDamping) { OutAnimDriveStiffness = AnimDriveStiffness; OutAnimDriveDamping = AnimDriveDamping; }
@@ -110,9 +118,11 @@ namespace Chaos
 		TConstArrayView<Softs::FSolverVec3> GetAnimationNormals(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's positions for this cloth current LOD, not thread safe, call must be done right after the solver update.
 		TConstArrayView<Softs::FSolverVec3> GetParticlePositions(const FClothingSimulationSolver* Solver) const;
+		// Return the solver's velocities for this cloth current LOD, not thread safe, call must be done right after the solver update.
+		TConstArrayView<Softs::FSolverVec3> GetParticleVelocities(const FClothingSimulationSolver* Solver) const;
 		// Return the solver's normals for this cloth current LOD, not thread safe, call must be done right after the solver update.
 		TConstArrayView<Softs::FSolverVec3> GetParticleNormals(const FClothingSimulationSolver* Solver) const;
-		// Return the solver's normals for this cloth current LOD, not thread safe, call must be done right after the solver update.
+		// Return the solver's inverse masses for this cloth current LOD, not thread safe, call must be done right after the solver update.
 		TConstArrayView<Softs::FSolverReal> GetParticleInvMasses(const FClothingSimulationSolver* Solver) const;
 		// Return the current gravity as applied by the solver using the various overrides, not thread safe, call must be done right after the solver update.
 		TVec3<FRealSingle> GetGravity(const FClothingSimulationSolver* Solver) const;
@@ -193,6 +203,8 @@ namespace Chaos
 		FRealSingle MinPerParticleMass;
 		TVec2<FRealSingle> EdgeStiffness;
 		TVec2<FRealSingle> BendingStiffness;
+		FRealSingle BucklingRatio;
+		TVec2<FRealSingle> BucklingStiffness;
 		bool bUseBendingElements;
 		TVec2<FRealSingle> AreaStiffness;
 		FRealSingle VolumeStiffness;
@@ -204,7 +216,9 @@ namespace Chaos
 		TVec2<FRealSingle> AnimDriveStiffness;  // Animatable
 		TVec2<FRealSingle> AnimDriveDamping;  // Animatable
 		FRealSingle ShapeTargetStiffness;
-		bool bUseXPBDConstraints;
+		bool bUseXPBDEdgeConstraints;
+		bool bUseXPBDBendingConstraints;
+		bool bUseXPBDAreaConstraints;
 		FRealSingle GravityScale;
 		bool bIsGravityOverridden;
 		TVec3<FRealSingle> GravityOverride;
@@ -216,6 +230,7 @@ namespace Chaos
 		FVec3 WindVelocity;
 		FRealSingle AirDensity;
 		bool bUseLegacyWind;
+		TVec2<FRealSingle> Pressure;
 		FRealSingle DampingCoefficient;
 		FRealSingle LocalDampingCoefficient;
 		FRealSingle CollisionThickness;
@@ -223,6 +238,8 @@ namespace Chaos
 		bool bUseCCD;
 		bool bUseSelfCollisions;
 		FRealSingle SelfCollisionThickness;
+		FRealSingle SelfCollisionFrictionCoefficient;
+		bool bUseSelfIntersections;
 		bool bEnableBackstop;
 		bool bUseLegacyBackstop;
 		bool bUseLODIndexOverride;

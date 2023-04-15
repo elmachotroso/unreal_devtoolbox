@@ -29,7 +29,6 @@ namespace Chaos
 	class IRewindCallback;
 
 	extern CHAOS_API int32 GSingleThreadedPhysics;
-
 	extern CHAOS_API int32 UseAsyncInterpolation;
 	extern CHAOS_API int32 ForceDisableAsyncPhysics;
 	extern CHAOS_API FRealSingle AsyncInterpolationMultiplier;
@@ -70,19 +69,64 @@ namespace Chaos
 	};
 
 	/**
-	 * Task responsible for processing the command buffer of a single solver and advancing it by
-	 * a specified delta before completing.
+	 * Task responsible for processing the command buffer of a single solver and preparing data before solver task and callbacks are run
+	 */
+	class CHAOS_API FPhysicsSolverProcessPushDataTask
+	{
+	public:
+
+		FPhysicsSolverProcessPushDataTask(FPhysicsSolverBase& InSolver, FPushPhysicsData* InPushData)
+			: Solver(InSolver)
+			, PushData(InPushData){}
+
+		TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FPhysicsSolverProcessPushDataTask, STATGROUP_TaskGraphTasks); }
+		static ENamedThreads::Type GetDesiredThread();
+		static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent) { ProcessPushData(); }
+		void ProcessPushData();
+
+	private:
+
+		FPhysicsSolverBase& Solver;
+		FPushPhysicsData* PushData;
+	};
+
+	/**
+	 * Task responsible for triggering any game thread callbacks before solver can advance (not scheduled if none are registered)
+	 */
+	class CHAOS_API FPhysicsSolverFrozenGTPreSimCallbacks
+	{
+	public:
+
+		FPhysicsSolverFrozenGTPreSimCallbacks(FPhysicsSolverBase& InSolver) : Solver(InSolver) {}
+
+		TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FPhysicsSolverFrozenGTPreSimCallbacks, STATGROUP_TaskGraphTasks); }
+		static ENamedThreads::Type GetDesiredThread() { return ENamedThreads::SetTaskPriority(ENamedThreads::GameThread, ENamedThreads::HighTaskPriority); }
+		static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent) { GTPreSimCallbacks(); }
+		void GTPreSimCallbacks();
+
+	private:
+
+		FPhysicsSolverBase& Solver;
+	};
+
+	/**
+	 * Task responsible for advancing the solver once data has been prepared and GT callbacks have fired
 	 */
 	class CHAOS_API FPhysicsSolverAdvanceTask
 	{
 	public:
 
-		FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, FPushPhysicsData& PushData);
+		FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, FPushPhysicsData* InPushData)
+			: Solver(InSolver)
+			, PushData(InPushData)
+		{}
 
-		TStatId GetStatId() const;
+		TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FPhysicsSolverAdvanceTask, STATGROUP_TaskGraphTasks); }
 		static ENamedThreads::Type GetDesiredThread();
-		static ESubsequentsMode::Type GetSubsequentsMode();
-		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent);
+		static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent) { AdvanceSolver(); }
 		void AdvanceSolver();
 
 	private:
@@ -91,6 +135,24 @@ namespace Chaos
 		FPushPhysicsData* PushData;
 	};
 
+	struct CHAOS_API FAllSolverTasks
+	{
+		FAllSolverTasks(FPhysicsSolverBase& InSolver, FPushPhysicsData* PushData)
+			: ProcessPushData(InSolver, PushData)
+			, GTPreSimCallbacks(InSolver)
+			, AdvanceTask(InSolver, PushData)
+			, Solver(InSolver)
+		{
+		}
+
+		FPhysicsSolverProcessPushDataTask ProcessPushData;
+		FPhysicsSolverFrozenGTPreSimCallbacks GTPreSimCallbacks;
+		FPhysicsSolverAdvanceTask AdvanceTask;
+
+		void AdvanceSolver();
+
+		FPhysicsSolverBase& Solver;
+	};
 
 	class FPersistentPhysicsTask;
 
@@ -103,8 +165,54 @@ namespace Chaos
 		TaskGraph,
 		SingleThread
 	};
+	
+	/** Base solver class storing events that will be used by the derived solver during the solve.
+	 * Currently used by caching but could be used for any other pre/post solve works that need to be done.  */
+	class CHAOS_API FPhysicsSolverEvents
+	{
 
-	class CHAOS_API FPhysicsSolverBase
+	public:
+
+		/** Only allow construction with valid parameters as well as restricting to module construction */
+		virtual ~FPhysicsSolverEvents() { ClearCallbacks(); }
+		
+		/** Events */
+		/** Pre advance is called before any physics processing or simulation happens in a given physics update */
+		FDelegateHandle AddPreAdvanceCallback(FSolverPreAdvance::FDelegate InDelegate);
+		bool            RemovePreAdvanceCallback(FDelegateHandle InHandle);
+
+		/** Pre buffer happens after the simulation has been advanced (particle positions etc. will have been updated) but GT results haven't been prepared yet */
+		FDelegateHandle AddPreBufferCallback(FSolverPreAdvance::FDelegate InDelegate);
+		bool            RemovePreBufferCallback(FDelegateHandle InHandle);
+
+		/** Post advance happens after all processing and results generation has been completed */
+		FDelegateHandle AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate);
+		bool            RemovePostAdvanceCallback(FDelegateHandle InHandle);
+
+		/** Teardown happens as the solver is destroyed or streamed out */
+		FDelegateHandle AddTeardownCallback(FSolverTeardown::FDelegate InDelegate);
+		bool            RemoveTeardownCallback(FDelegateHandle InHandle);
+
+		/** Clear all the callbacks*/
+		void            ClearCallbacks() 
+		{
+			EventPostSolve.Clear(); 
+			EventPreBuffer.Clear(); 
+			EventPostSolve.Clear(); 
+			EventTeardown.Clear();
+		}
+	
+	protected:
+			
+		/** Storage for events, see the Add/Remove pairs above for event timings */
+		FSolverPreAdvance EventPreSolve;
+		FSolverPreBuffer EventPreBuffer;
+		FSolverPostAdvance EventPostSolve;
+		FSolverTeardown EventTeardown;
+	};
+
+
+	class CHAOS_API FPhysicsSolverBase : public FPhysicsSolverEvents
 	{
 	public:
 
@@ -154,15 +262,46 @@ namespace Chaos
 
 		/** Creates a new sim callback object of the type given. Caller expected to free using FreeSimCallbackObject_External*/
 		template <typename TSimCallbackObjectType>
-		inline TSimCallbackObjectType* CreateAndRegisterSimCallbackObject_External(bool bContactModification = false, bool bRegisterRewindCallback = false)
+		inline TSimCallbackObjectType* CreateAndRegisterSimCallbackObject_External()
 		{
 			auto NewCallbackObject = new TSimCallbackObjectType();
-			RegisterSimCallbackObject_External(NewCallbackObject, bContactModification);
-			if (bRegisterRewindCallback)
+			//If at least one callback is on frozen GT we mark it as such
+			//Note this is never cleaned up (to avoid race conditions of register/unregister).
+			//Expectation is that there's typically just one of these on frozen gt that triggers all the fixed tick on gt (maybe two if another system wants direct control)
+			//This means we don't expect to optimize for the case where a gt callback goes away half way through sim
+			if (NewCallbackObject->HasOption(ESimCallbackOptions::RunOnFrozenGameThread))
+			{
+				bSolverHasFrozenGameThreadCallbacks = true;
+			}
+
+			RegisterSimCallbackObject_External(NewCallbackObject);
+			if (NewCallbackObject->HasOption(ESimCallbackOptions::Rewind))
 			{
 				EnqueueSimcallbackRewindRegisteration(NewCallbackObject);
 			}
 			return NewCallbackObject;
+		}
+
+		template <typename TSimCallbackObjectType>
+		UE_DEPRECATED(5.1, "Use version with no arguments, and provide TOptions bitmask parameter to TSimCallbackObject instead.")
+		TSimCallbackObjectType* CreateAndRegisterSimCallbackObject_External(bool bContactModification, bool bRegisterRewindCallback = false)
+		{
+			TSimCallbackObjectType* CallbackObject = CreateAndRegisterSimCallbackObject_External<TSimCallbackObjectType>();
+			ESimCallbackOptions& Options = CallbackObject->Options;
+
+			if (bContactModification) {
+				Options |= ESimCallbackOptions::ContactModification;
+			} else {
+				Options &= ~ESimCallbackOptions::ContactModification;
+			}
+
+			if (bRegisterRewindCallback) {
+				Options |= ESimCallbackOptions::Rewind;
+			} else {
+				Options &= ~ESimCallbackOptions::Rewind;
+			}
+
+			return CallbackObject;
 		}
 
 		void EnqueueSimcallbackRewindRegisteration(ISimCallbackObject* Callback);
@@ -275,6 +414,8 @@ namespace Chaos
 
 		void EnableAsyncMode(FReal FixedDt);
 		
+		FReal GetAsyncDeltaTime() const { return AsyncDt; } 
+		
 		void DisableAsyncMode();
 		
 		virtual void ConditionalApplyRewind_Internal(){}
@@ -301,13 +442,31 @@ namespace Chaos
 		}
 #endif
 
-		void ApplyCallbacks_Internal(const FReal SimTime, const FReal Dt)
+		//Tells us if we're on the frozen game thread. This is needed for knowing which data to read/write to
+		//The IsInGameThread check is so that other threads (e.g audio thread) which might be running queries in parallel will continue to use the correct interpolated GT data
+		bool IsGameThreadFrozen() const { return bGameThreadFrozen; }
+
+		void SetGameThreadFrozen(bool InGameThreadFrozen)
+		{
+			bGameThreadFrozen = InGameThreadFrozen;
+		}
+
+		void ApplyCallbacks_Internal()
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(ApplySimCallbacks);
-			for (ISimCallbackObject* Callback : SimCallbackObjects)
+
+			//if delta time is 0 we are flushing data, user callbacks should not be triggered because there is no sim
+			if(MLastDt > 0)
 			{
-				Callback->SetSimAndDeltaTime_Internal(SimTime, Dt);
-				Callback->PreSimulate_Internal();
+				const FReal SimTime = GetSolverTime();
+				for (ISimCallbackObject* Callback : SimCallbackObjects)
+				{
+					if (Callback->HasOption(ESimCallbackOptions::RunOnFrozenGameThread) == bGameThreadFrozen)
+					{
+						Callback->SetSimAndDeltaTime_Internal(SimTime, MLastDt);
+						Callback->PreSimulate_Internal();
+					}
+				}
 			}
 		}
 
@@ -354,7 +513,7 @@ namespace Chaos
 		void SetMinDeltaTime_External(float InMinDeltaTime)
 		{
 			// a value approaching zero is not valid/desired
-			MMinDeltaTime = FMath::Max(InMinDeltaTime, SMALL_NUMBER);
+			MMinDeltaTime = FMath::Max(InMinDeltaTime, UE_SMALL_NUMBER);
 		}
 
 		float GetMaxDeltaTime_External() const
@@ -402,6 +561,14 @@ namespace Chaos
 			}
 		}
 
+		/**/
+		void SetSolverTime(const FReal InTime) { MTime = InTime; }
+		const FReal GetSolverTime() const { return MTime; }
+
+
+		/**/
+		FReal GetLastDt() const { return MLastDt; }
+
 	protected:
 		/** Mode that the results buffers should be set to (single, double, triple) */
 		EMultiBufferMode BufferMode;
@@ -422,7 +589,8 @@ namespace Chaos
 		FPhysicsSolverBase& operator =(const FPhysicsSolverBase& InCopy) = delete;
 		FPhysicsSolverBase& operator =(FPhysicsSolverBase&& InSteal) = delete;
 
-		virtual void AdvanceSolverBy(const FReal Dt, const FSubStepInfo& SubStepInfo = FSubStepInfo()) = 0;
+		virtual void PrepareAdvanceBy(const FReal Dt) = 0;
+		virtual void AdvanceSolverBy(const FSubStepInfo& SubStepInfo = FSubStepInfo()) = 0;
 		virtual void PushPhysicsState(const FReal Dt, const int32 NumSteps, const int32 NumExternalSteps) = 0;
 		virtual void ProcessPushedData_Internal(FPushPhysicsData& PushDataArray) = 0;
 		virtual void SetExternalTimestampConsumed_Internal(const int32 Timestamp) = 0;
@@ -439,6 +607,8 @@ namespace Chaos
 
 	TArray<ISimCallbackObject*> SimCallbackObjects;
 	TArray<ISimCallbackObject*> ContactModifiers;
+	TArray<ISimCallbackObject*> RegistrationWatchers;
+	TArray<ISimCallbackObject*> UnregistrationWatchers;
 
 	TUniquePtr<FRewindData> MRewindData;
 	TUniquePtr<IRewindCallback> MRewindCallback;
@@ -447,15 +617,19 @@ namespace Chaos
 
 	FGraphEventRef PendingTasks;
 
+	bool bSolverHasFrozenGameThreadCallbacks = false;
+	bool bGameThreadFrozen = false;
+	FReal MLastDt = FReal(0);
+	FReal MTime = FReal(0);
+
 	private:
 
 		//This is private because the user should never create their own callback object
 		//The lifetime management should always be done by solver to ensure callbacks are accessing valid memory on async tasks
-		void RegisterSimCallbackObject_External(ISimCallbackObject* SimCallbackObject, bool bContactModification = false)
+		void RegisterSimCallbackObject_External(ISimCallbackObject* SimCallbackObject)
 		{
 			ensure(SimCallbackObject->Solver == nullptr);	//double register?
 			SimCallbackObject->SetSolver_External(this);
-			SimCallbackObject->SetContactModification(bContactModification);
 			MarshallingManager.RegisterSimCallbackObject_External(SimCallbackObject);
 		}
 
@@ -480,6 +654,7 @@ namespace Chaos
 		TUniquePtr<FPhysSceneLock> ExternalDataLock_External;
 
 		friend FChaosSolversModule;
+		friend FPhysicsSolverProcessPushDataTask;
 		friend FPhysicsSolverAdvanceTask;
 
 		template<ELockType>
@@ -496,33 +671,12 @@ namespace Chaos
 		TArray<FGeometryParticle*> UniqueIdxToGTParticles;
 
 	public:
-		/** Events */
-		/** Pre advance is called before any physics processing or simulation happens in a given physics update */
-		FDelegateHandle AddPreAdvanceCallback(FSolverPreAdvance::FDelegate InDelegate);
-		bool            RemovePreAdvanceCallback(FDelegateHandle InHandle);
-
-		/** Pre buffer happens after the simulation has been advanced (particle positions etc. will have been updated) but GT results haven't been prepared yet */
-		FDelegateHandle AddPreBufferCallback(FSolverPreAdvance::FDelegate InDelegate);
-		bool            RemovePreBufferCallback(FDelegateHandle InHandle);
-
-		/** Post advance happens after all processing and results generation has been completed */
-		FDelegateHandle AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate);
-		bool            RemovePostAdvanceCallback(FDelegateHandle InHandle);
-
-		/** Teardown happens as the solver is destroyed or streamed out */
-		FDelegateHandle AddTeardownCallback(FSolverTeardown::FDelegate InDelegate);
-		bool            RemoveTeardownCallback(FDelegateHandle InHandle);
 
 		/** Get the lock used for external data manipulation. A better API would be to use scoped locks so that getting a write lock is non-const */
 		//NOTE: this is a const operation so that you can acquire a read lock on a const solver. The assumption is that non-const write operations are already marked non-const
 		FPhysSceneLock& GetExternalDataLock_External() const { return *ExternalDataLock_External; }
 
 	protected:
-		/** Storage for events, see the Add/Remove pairs above for event timings */
-		FSolverPreAdvance EventPreSolve;
-		FSolverPreBuffer EventPreBuffer;
-		FSolverPostAdvance EventPostSolve;
-		FSolverTeardown EventTeardown;
 
 		void TrackGTParticle_External(FGeometryParticle& Particle);
 		void ClearGTParticle_External(FGeometryParticle& Particle);
@@ -533,7 +687,7 @@ namespace Chaos
 	private:
 		// instead of running advance task in single threaded, put in array for manual execution control for unit tests.
 		bool bStealAdvanceTasksForTesting;
-		TArray<FPhysicsSolverAdvanceTask> StolenSolverAdvanceTasks;
+		TArray<FAllSolverTasks> StolenSolverAdvanceTasks;
 	public:
 		void SetStealAdvanceTasks_ForTesting(bool bInStealAdvanceTasksForTesting);
 		void PopAndExecuteStolenAdvanceTask_ForTesting();

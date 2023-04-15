@@ -2,11 +2,14 @@
 
 #include "AudioSynesthesiaNRTFactory.h"
 
+#include "AudioAnalytics.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "Modules/ModuleManager.h"
 #include "AudioSynesthesiaClassFilter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioSynesthesiaNRTFactory)
 
 #define LOCTEXT_NAMESPACE "AudioSynesthesiaEditor"
 
@@ -55,8 +58,11 @@ UObject* UAudioSynesthesiaNRTFactory::FactoryCreateNew(UClass* InClass, UObject*
 	if (AudioSynesthesiaNRTClass != nullptr)
 	{
 		NewAudioSynesthesiaNRT = NewObject<UAudioSynesthesiaNRT>(InParent, AudioSynesthesiaNRTClass, InName, Flags);
+
+		Audio::Analytics::RecordEvent_Usage(TEXT("AudioSynesthesia.NRTCreated"));
 	}
 	return NewAudioSynesthesiaNRT;
 }
 
 #undef LOCTEXT_NAMESPACE
+

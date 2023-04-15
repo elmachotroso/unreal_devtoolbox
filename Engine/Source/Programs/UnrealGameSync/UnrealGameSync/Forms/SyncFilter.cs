@@ -14,145 +14,135 @@ namespace UnrealGameSync
 {
 	partial class SyncFilter : Form
 	{
-		Dictionary<Guid, WorkspaceSyncCategory> UniqueIdToCategory;
-		public string[] GlobalView;
-		public Dictionary<Guid, bool> GlobalSyncCategories;
-		public bool bGlobalSyncAllProjects;
-		public bool bGlobalIncludeAllProjectsInSolution;
-		public string[] WorkspaceView;
-		public Dictionary<Guid, bool> WorkspaceSyncCategories;
-		public bool? bWorkspaceSyncAllProjects;
-		public bool? bWorkspaceIncludeAllProjectsInSolution;
+		Dictionary<Guid, WorkspaceSyncCategory> _uniqueIdToCategory;
+		public FilterSettings GlobalFilter;
+		public FilterSettings WorkspaceFilter;
 
-		public SyncFilter(Dictionary<Guid, WorkspaceSyncCategory> InUniqueIdToCategory, string[] InGlobalView, Dictionary<Guid, bool> InGlobalSyncCategories, bool bInGlobalProjectOnly, bool bInGlobalIncludeAllProjectsInSolution, string[] InWorkspaceView, Dictionary<Guid, bool> InWorkspaceSyncCategories, bool? bInWorkspaceProjectOnly, bool? bInWorkspaceIncludeAllProjectsInSolution)
+		public SyncFilter(Dictionary<Guid, WorkspaceSyncCategory> inUniqueIdToCategory, FilterSettings inGlobalFilter, FilterSettings inWorkspaceFilter)
 		{
 			InitializeComponent();
 
-			UniqueIdToCategory = InUniqueIdToCategory;
-			GlobalSyncCategories = InGlobalSyncCategories;
-			GlobalView = InGlobalView;
-			bGlobalSyncAllProjects = bInGlobalProjectOnly;
-			bGlobalIncludeAllProjectsInSolution = bInGlobalIncludeAllProjectsInSolution;
-			WorkspaceSyncCategories = InWorkspaceSyncCategories;
-			WorkspaceView = InWorkspaceView;
-			bWorkspaceSyncAllProjects = bInWorkspaceProjectOnly;
-			bWorkspaceIncludeAllProjectsInSolution = bInWorkspaceIncludeAllProjectsInSolution;
+			_uniqueIdToCategory = inUniqueIdToCategory;
+			GlobalFilter = inGlobalFilter;
+			WorkspaceFilter = inWorkspaceFilter;
 
-			Dictionary<Guid, bool> SyncCategories = WorkspaceSyncCategory.GetDefault(UniqueIdToCategory.Values);
+			Dictionary<Guid, bool> syncCategories = WorkspaceSyncCategory.GetDefault(_uniqueIdToCategory.Values);
 
-			WorkspaceSyncCategory.ApplyDelta(SyncCategories, InGlobalSyncCategories);
-			GlobalControl.SetView(GlobalView);
-			SetExcludedCategories(GlobalControl.CategoriesCheckList, UniqueIdToCategory, SyncCategories);
-			GlobalControl.SyncAllProjects.Checked = bGlobalSyncAllProjects;
-			GlobalControl.IncludeAllProjectsInSolution.Checked = bGlobalIncludeAllProjectsInSolution;
+			WorkspaceSyncCategory.ApplyDelta(syncCategories, GlobalFilter.GetCategories());
+			GlobalControl.SetView(GlobalFilter.View.ToArray());
+			SetExcludedCategories(GlobalControl.CategoriesCheckList, _uniqueIdToCategory, syncCategories);
+			GlobalControl.SyncAllProjects.Checked = GlobalFilter.AllProjects ?? false;
+			GlobalControl.IncludeAllProjectsInSolution.Checked = GlobalFilter.AllProjectsInSln ?? false;
 
-			WorkspaceSyncCategory.ApplyDelta(SyncCategories, InWorkspaceSyncCategories);
-			WorkspaceControl.SetView(WorkspaceView);
-			SetExcludedCategories(WorkspaceControl.CategoriesCheckList, UniqueIdToCategory, SyncCategories);
-			WorkspaceControl.SyncAllProjects.Checked = bWorkspaceSyncAllProjects ?? bGlobalSyncAllProjects;
-			WorkspaceControl.IncludeAllProjectsInSolution.Checked = bWorkspaceIncludeAllProjectsInSolution ?? bGlobalIncludeAllProjectsInSolution;
+			WorkspaceSyncCategory.ApplyDelta(syncCategories, WorkspaceFilter.GetCategories());
+			WorkspaceControl.SetView(WorkspaceFilter.View.ToArray());
+			SetExcludedCategories(WorkspaceControl.CategoriesCheckList, _uniqueIdToCategory, syncCategories);
+			WorkspaceControl.SyncAllProjects.Checked = WorkspaceFilter.AllProjects ?? GlobalFilter.AllProjects ?? false;
+			WorkspaceControl.IncludeAllProjectsInSolution.Checked = WorkspaceFilter.AllProjectsInSln ?? GlobalFilter.AllProjectsInSln ?? false;
 
 			GlobalControl.CategoriesCheckList.ItemCheck += GlobalControl_CategoriesCheckList_ItemCheck;
 			GlobalControl.SyncAllProjects.CheckStateChanged += GlobalControl_SyncAllProjects_CheckStateChanged;
 			GlobalControl.IncludeAllProjectsInSolution.CheckStateChanged += GlobalControl_IncludeAllProjectsInSolution_CheckStateChanged;
 		}
 
-		private void GlobalControl_CategoriesCheckList_ItemCheck(object sender, ItemCheckEventArgs e)
+		private void GlobalControl_CategoriesCheckList_ItemCheck(object? sender, ItemCheckEventArgs e)
 		{
 			WorkspaceControl.CategoriesCheckList.SetItemCheckState(e.Index, e.NewValue);
 		}
 
-		private void GlobalControl_SyncAllProjects_CheckStateChanged(object sender, EventArgs e)
+		private void GlobalControl_SyncAllProjects_CheckStateChanged(object? sender, EventArgs e)
 		{
 			WorkspaceControl.SyncAllProjects.Checked = GlobalControl.SyncAllProjects.Checked;
 		}
 
-		private void GlobalControl_IncludeAllProjectsInSolution_CheckStateChanged(object sender, EventArgs e)
+		private void GlobalControl_IncludeAllProjectsInSolution_CheckStateChanged(object? sender, EventArgs e)
 		{
 			WorkspaceControl.IncludeAllProjectsInSolution.Checked = GlobalControl.IncludeAllProjectsInSolution.Checked;
 		}
 
-		private static void SetExcludedCategories(CheckedListBox ListBox, Dictionary<Guid, WorkspaceSyncCategory> UniqueIdToFilter, Dictionary<Guid, bool> CategoryIdToSetting)
+		private static void SetExcludedCategories(CheckedListBox listBox, Dictionary<Guid, WorkspaceSyncCategory> uniqueIdToFilter, Dictionary<Guid, bool> categoryIdToSetting)
 		{
-			ListBox.Items.Clear();
-			foreach(WorkspaceSyncCategory Filter in UniqueIdToFilter.Values)
+			listBox.Items.Clear();
+			foreach(WorkspaceSyncCategory filter in uniqueIdToFilter.Values)
 			{
-				if (!Filter.bHidden)
+				if (!filter.Hidden)
 				{
-					CheckState State = CheckState.Checked;
-					if (!CategoryIdToSetting[Filter.UniqueId])
+					CheckState state = CheckState.Checked;
+					if (!categoryIdToSetting[filter.UniqueId])
 					{
-						State = CheckState.Unchecked;
+						state = CheckState.Unchecked;
 					}
-					ListBox.Items.Add(Filter, State);
+					listBox.Items.Add(filter, state);
 				}
 			}
 		}
 
-		private void GetExcludedCategories(out Dictionary<Guid, bool> NewGlobalSyncCategories, out Dictionary<Guid, bool> NewWorkspaceSyncCategories)
+		private void GetSettings(out FilterSettings newGlobalFilter, out FilterSettings newWorkspaceFilter)
 		{
-			Dictionary<Guid, bool> DefaultSyncCategories = WorkspaceSyncCategory.GetDefault(UniqueIdToCategory.Values);
+			Dictionary<Guid, bool> defaultSyncCategories = WorkspaceSyncCategory.GetDefault(_uniqueIdToCategory.Values);
 
-			Dictionary<Guid, bool> GlobalSyncCategories = GetCategorySettings(GlobalControl.CategoriesCheckList, this.GlobalSyncCategories);
-			NewGlobalSyncCategories = WorkspaceSyncCategory.GetDelta(DefaultSyncCategories, GlobalSyncCategories);
+			newGlobalFilter = new FilterSettings();
+			newGlobalFilter.View = GlobalControl.GetView().ToList();
+			newGlobalFilter.AllProjects = GlobalControl.SyncAllProjects.Checked;
+			newGlobalFilter.AllProjectsInSln = GlobalControl.IncludeAllProjectsInSolution.Checked;
 
-			Dictionary<Guid, bool> WorkspaceSyncCategories = GetCategorySettings(WorkspaceControl.CategoriesCheckList, this.WorkspaceSyncCategories);
-			NewWorkspaceSyncCategories = WorkspaceSyncCategory.GetDelta(GlobalSyncCategories, WorkspaceSyncCategories);
+			Dictionary<Guid, bool> globalSyncCategories = GetCategorySettings(GlobalControl.CategoriesCheckList, GlobalFilter.GetCategories());
+			newGlobalFilter.SetCategories(WorkspaceSyncCategory.GetDelta(defaultSyncCategories, globalSyncCategories));
+
+			newWorkspaceFilter = new FilterSettings();
+			newWorkspaceFilter.View = WorkspaceControl.GetView().ToList();
+			newWorkspaceFilter.AllProjects = (WorkspaceControl.SyncAllProjects.Checked == newGlobalFilter.AllProjects) ? (bool?)null : WorkspaceControl.SyncAllProjects.Checked;
+			newWorkspaceFilter.AllProjectsInSln = (WorkspaceControl.IncludeAllProjectsInSolution.Checked == newGlobalFilter.AllProjectsInSln) ? (bool?)null : WorkspaceControl.IncludeAllProjectsInSolution.Checked;
+
+			Dictionary<Guid, bool> workspaceSyncCategories = GetCategorySettings(WorkspaceControl.CategoriesCheckList, WorkspaceFilter.GetCategories());
+			newWorkspaceFilter.SetCategories(WorkspaceSyncCategory.GetDelta(globalSyncCategories, workspaceSyncCategories));
 		}
 
-		private Dictionary<Guid, bool> GetCategorySettings(CheckedListBox ListBox, IEnumerable<KeyValuePair<Guid, bool>> OriginalSettings)
+		private Dictionary<Guid, bool> GetCategorySettings(CheckedListBox listBox, IEnumerable<KeyValuePair<Guid, bool>> originalSettings)
 		{
-			Dictionary<Guid, bool> Result = new Dictionary<Guid, bool>();
-			for(int Idx = 0; Idx < ListBox.Items.Count; Idx++)
+			Dictionary<Guid, bool> result = new Dictionary<Guid, bool>();
+			for(int idx = 0; idx < listBox.Items.Count; idx++)
 			{
-				Guid UniqueId = ((WorkspaceSyncCategory)ListBox.Items[Idx]).UniqueId;
-				if (!Result.ContainsKey(UniqueId))
+				Guid uniqueId = ((WorkspaceSyncCategory)listBox.Items[idx]).UniqueId;
+				if (!result.ContainsKey(uniqueId))
 				{
-					Result[UniqueId] = ListBox.GetItemCheckState(Idx) == CheckState.Checked;
+					result[uniqueId] = listBox.GetItemCheckState(idx) == CheckState.Checked;
 				}
 			}
-			foreach (KeyValuePair<Guid, bool> OriginalSetting in OriginalSettings)
+			foreach (KeyValuePair<Guid, bool> originalSetting in originalSettings)
 			{
-				if (!UniqueIdToCategory.ContainsKey(OriginalSetting.Key))
+				if (!_uniqueIdToCategory.ContainsKey(originalSetting.Key))
 				{
-					Result[OriginalSetting.Key] = OriginalSetting.Value;
+					result[originalSetting.Key] = originalSetting.Value;
 				}
 			}
-			return Result;
+			return result;
 		}
 
-		private static string[] GetView(TextBox FilterText)
+		private static string[] GetView(TextBox filterText)
 		{
-			List<string> NewLines = new List<string>(FilterText.Lines);
-			while (NewLines.Count > 0 && NewLines.Last().Trim().Length == 0)
+			List<string> newLines = new List<string>(filterText.Lines);
+			while (newLines.Count > 0 && newLines.Last().Trim().Length == 0)
 			{
-				NewLines.RemoveAt(NewLines.Count - 1);
+				newLines.RemoveAt(newLines.Count - 1);
 			}
-			return NewLines.Count > 0 ? FilterText.Lines : new string[0];
+			return newLines.Count > 0 ? filterText.Lines : new string[0];
 		}
 
 		private void OkButton_Click(object sender, EventArgs e)
 		{
-			string[] NewGlobalView = GlobalControl.GetView();
-			string[] NewWorkspaceView = WorkspaceControl.GetView();
+			GetSettings(out FilterSettings newGlobalFilter, out FilterSettings newWorkspaceFilter);
 
-			if(NewGlobalView.Any(x => x.Contains("//")) || NewWorkspaceView.Any(x => x.Contains("//")))
+			if(newGlobalFilter.View.Any(x => x.Contains("//")) || newWorkspaceFilter.View.Any(x => x.Contains("//")))
 			{
 				if(MessageBox.Show(this, "Custom views should be relative to the stream root (eg. -/Engine/...).\r\n\r\nFull depot paths (eg. //depot/...) will not match any files.\r\n\r\nAre you sure you want to continue?", "Invalid view", MessageBoxButtons.OKCancel) != System.Windows.Forms.DialogResult.OK)
 				{
 					return;
 				}
 			}
-		
-			GlobalView = NewGlobalView;
-			bGlobalSyncAllProjects = GlobalControl.SyncAllProjects.Checked;
-			bGlobalIncludeAllProjectsInSolution = GlobalControl.IncludeAllProjectsInSolution.Checked;
 
-			WorkspaceView = NewWorkspaceView;
-			bWorkspaceSyncAllProjects = (WorkspaceControl.SyncAllProjects.Checked == bGlobalSyncAllProjects)? (bool?)null : WorkspaceControl.SyncAllProjects.Checked;
-			bWorkspaceIncludeAllProjectsInSolution = (WorkspaceControl.IncludeAllProjectsInSolution.Checked == bGlobalIncludeAllProjectsInSolution)? (bool?)null : WorkspaceControl.IncludeAllProjectsInSolution.Checked;
-
-			GetExcludedCategories(out GlobalSyncCategories, out WorkspaceSyncCategories);
+			GlobalFilter = newGlobalFilter;
+			WorkspaceFilter = newWorkspaceFilter;
 
 			DialogResult = DialogResult.OK;
 		}
@@ -164,16 +154,14 @@ namespace UnrealGameSync
 
 		private void ShowCombinedView_Click(object sender, EventArgs e)
 		{
-			Dictionary<Guid, bool> NewGlobalSyncCategories;
-			Dictionary<Guid, bool> NewWorkspaceSyncCategories;
-			GetExcludedCategories(out NewGlobalSyncCategories, out NewWorkspaceSyncCategories);
+			GetSettings(out FilterSettings newGlobalFilter, out FilterSettings newWorkspaceFilter);
 
-			string[] Filter = UserSettings.GetCombinedSyncFilter(UniqueIdToCategory, GlobalControl.GetView(), NewGlobalSyncCategories, WorkspaceControl.GetView(), NewWorkspaceSyncCategories);
-			if(Filter.Length == 0)
+			string[] filter = UserSettings.GetCombinedSyncFilter(_uniqueIdToCategory, newGlobalFilter, newWorkspaceFilter);
+			if(filter.Length == 0)
 			{
-				Filter = new string[]{ "All files will be synced." };
+				filter = new string[]{ "All files will be synced." };
 			}
-			MessageBox.Show(String.Join("\r\n", Filter), "Combined View");
+			MessageBox.Show(String.Join("\r\n", filter), "Combined View");
 		}
 	}
 }

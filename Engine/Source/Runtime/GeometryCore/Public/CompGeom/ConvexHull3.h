@@ -2,20 +2,28 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Set.h"
 #include "CoreMinimal.h"
-#include "VectorTypes.h"
+#include "HalfspaceTypes.h"
 #include "IndexTypes.h"
 #include "LineTypes.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "MathUtil.h"
 #include "PlaneTypes.h"
-#include "HalfspaceTypes.h"
+#include "Templates/Function.h"
+#include "Templates/UnrealTemplate.h"
 #include "Util/ProgressCancel.h"
+#include "VectorTypes.h"
+
+class FProgressCancel;
 
 namespace UE {
 namespace Geometry {
 
 using namespace UE::Math;
-
-template <typename RealType> struct TConvexHull3Internal;
 
 /**
  * Helper class to find the dimensions spanned by a point cloud
@@ -35,13 +43,13 @@ struct GEOMETRYCORE_API TExtremePoints3
 	TVector<RealType> Origin{ 0,0,0 };
 	TVector<RealType> Basis[3]{ {0,0,0}, {0,0,0}, {0,0,0} };
 
-	TExtremePoints3(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc = [](int32 Idx) {return true; }, double Epsilon = 0)
+	TExtremePoints3(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc = [](int32 Idx) {return true; }, RealType Epsilon = TMathUtil<RealType>::Epsilon)
 	{
 		Init(NumPoints, GetPointFunc, FilterFunc, Epsilon);
 	}
 
 private:
-	void Init(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc, double Epsilon = 0);
+	void Init(int32 NumPoints, TFunctionRef<TVector<RealType>(int32)> GetPointFunc, TFunctionRef<bool(int32)> FilterFunc, RealType Epsilon = TMathUtil<RealType>::Epsilon);
 };
 
 /**
@@ -51,6 +59,10 @@ template<typename RealType>
 class GEOMETRYCORE_API TConvexHull3
 {
 public:
+
+	/// Whether neighbors for the hull triangles should be computed/saved.
+	/// If true, can call GetTriangleNeighbors() after Solve().
+	bool bSaveTriangleNeighbors = false;
 
 	/**
 	 * Generate convex hull as long as input is not degenerate
@@ -121,6 +133,22 @@ public:
 	TArray<FIndex3i> const& GetTriangles() const
 	{
 		return Hull;
+	}
+
+	/**
+	 * Only valid if bSaveTriangleNeighbors was true when Solve() was called
+	 * @return Neighbors of each hull triangle, in edge order -- i.e., Nbr.A is the triangle across edge(Tri.A, Tri.B)
+	 */
+	TArray<FIndex3i> const& GetTriangleNeighbors() const
+	{
+		ensure(bSaveTriangleNeighbors && Hull.Num() == HullNeighbors.Num());
+		return HullNeighbors;
+	}
+
+	/** @return convex hull triangles by a move */
+	TArray<FIndex3i>&& MoveTriangles()
+	{
+		return MoveTemp(Hull);
 	}
 
 	/** 
@@ -210,6 +238,8 @@ protected:
 
 	int NumHullPoints = 0;
 	TArray<FIndex3i> Hull;
+	// We can optionally also return the hull triangle adjacencies
+	TArray<FIndex3i> HullNeighbors;
 	
 };
 

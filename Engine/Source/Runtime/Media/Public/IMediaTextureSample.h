@@ -3,15 +3,16 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "IMediaTimeSource.h"
 #include "Math/Color.h"
 #include "Math/IntPoint.h"
+#include "Math/MathFwd.h"
 #include "Math/Matrix.h"
 #include "Math/Plane.h"
 #include "Misc/Optional.h"
 #include "Misc/Timecode.h"
 #include "Misc/Timespan.h"
 #include "Templates/SharedPointer.h"
-#include "IMediaTimeSource.h"
 
 #if WITH_ENGINE
 	class FRHITexture;
@@ -91,6 +92,18 @@ namespace MediaTextureSampleFormat
 	 MEDIA_API const TCHAR* EnumToString(const EMediaTextureSampleFormat InSampleFormat);
 };
 
+/** Description of how the media texture sample is tiled (only used by tiled image sequences currently).*/
+struct FMediaTextureTilingDescription
+{
+	FIntPoint TileNum = FIntPoint::ZeroValue;
+	FIntPoint TileSize = FIntPoint::ZeroValue;
+	int32 TileBorderSize = 0;
+
+	FORCEINLINE bool IsValid() const
+	{
+		return TileNum.X > 0 && TileNum.Y > 0 && TileSize.X > 0 && TileSize.Y > 0;
+	}
+};
 
 enum class EMediaOrientation
 {
@@ -116,7 +129,6 @@ enum class EMediaOrientation
 class IMediaTextureSample
 {
 public:
-
 	/**
 	 * Get the sample's frame buffer.
 	 *
@@ -147,6 +159,17 @@ public:
 	virtual uint8 GetNumMips() const
 	{
 		return 1;
+	}
+
+	/**
+	 * Get tile information (number, size and border size) of the sample.
+	 *
+	 * @return TileInfo struct
+	 * @note Default implementation provided as most samples will not feature tiles
+	 */
+	virtual FMediaTextureTilingDescription GetTilingDescription() const
+	{
+		return FMediaTextureTilingDescription();
 	}
 
 	/**

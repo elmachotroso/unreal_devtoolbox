@@ -24,6 +24,8 @@
 #include "Math/UnrealMathUtility.h"
 #include "UObject/ObjectSaveContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODProxy)
+
 #if WITH_EDITOR
 
 void UHLODProxy::SetMap(const UWorld* InMap)
@@ -113,7 +115,9 @@ void UHLODProxy::Clean()
 	if (GetDefault<UHierarchicalLODSettings>()->bSaveLODActorsToHLODPackages)
 	{
 		UWorld* World = Cast<UWorld>(OwningMap.ToSoftObjectPath().ResolveObject());
-		if (World)
+
+		// Don't check HLODs for levels that are not visible, as they haven't got any LODActors yet, which means they'll always get cleaned out and dirtied.
+		if (World && World->PersistentLevel->bIsVisible)
 		{
 			UpdateHLODDescs(World->PersistentLevel);
 		}
@@ -288,7 +292,7 @@ void UHLODProxy::ExtractStaticMeshComponentsFromLODActor(const ALODActor* LODAct
 			}
 			else
 			{
-				ChildActor->GetComponents<UStaticMeshComponent>(ChildComponents);
+				ChildActor->GetComponents(ChildComponents);
 			}
 
 			InOutComponents.Append(ChildComponents);
@@ -312,7 +316,7 @@ void UHLODProxy::ExtractComponents(const ALODActor* LODActor, TArray<UPrimitiveC
 			}
 			else
 			{
-				Actor->GetComponents<UStaticMeshComponent>(Components);
+				Actor->GetComponents(Components);
 			}
 
 			Components.RemoveAll([&](UStaticMeshComponent* Val)
@@ -409,10 +413,11 @@ static void AppendRoundedTransform(const FRotator& ComponentRotation, const FVec
 	Ar << Location;
 
 	FRotator Rotator(ComponentRotation.GetDenormalized());
-	FIntVector Rotation(FMath::RoundToInt(Rotator.Pitch), FMath::RoundToInt(Rotator.Yaw), FMath::RoundToInt(Rotator.Roll));
+	const int32 MAX_DEGREES = 360;
+	FIntVector Rotation(FMath::RoundToInt(Rotator.Pitch) % MAX_DEGREES, FMath::RoundToInt(Rotator.Yaw) % MAX_DEGREES, FMath::RoundToInt(Rotator.Roll) % MAX_DEGREES);
 	Ar << Rotation;
 
-	float SCALE_FACTOR = 100;
+	const float SCALE_FACTOR = 100;
 	FIntVector Scale(FMath::RoundToInt(ComponentScale.X * SCALE_FACTOR), FMath::RoundToInt(ComponentScale.Y * SCALE_FACTOR), FMath::RoundToInt(ComponentScale.Z * SCALE_FACTOR));
 	Ar << Scale;
 }
@@ -422,7 +427,7 @@ static void AppendRoundedTransform(const FTransform& InTransform, FArchive& Ar)
 	AppendRoundedTransform(InTransform.Rotator(), InTransform.GetLocation(), InTransform.GetScale3D(), Ar);
 }
 
-static int32 GetTransformCRC(const FTransform& InTransform, uint32 InCRC = 0)
+uint32 UHLODProxy::GetCRC(const FTransform& InTransform, uint32 InCRC)
 {
 	FArchiveCrc32 Ar(InCRC);
 	AppendRoundedTransform(InTransform, Ar);
@@ -456,6 +461,11 @@ uint32 UHLODProxy::GetCRC(UStaticMeshComponent* InComponent, uint32 InCRC, const
 	InComponent->GetLightMapResolution(Width, Height);
 	Ar << Width;
 	Ar << Height;
+
+	if (!InComponent->GetCustomPrimitiveData().Data.IsEmpty())
+	{
+		Ar << InComponent->GetCustomPrimitiveData();
+	}
 	
 	// incorporate vertex colors
 	for(FStaticMeshComponentLODInfo& LODInfo : InComponent->LODData)
@@ -488,7 +498,7 @@ uint32 UHLODProxy::GetCRC(UStaticMeshComponent* InComponent, uint32 InCRC, const
 }
 
 // Key that forms the basis of the HLOD proxy key. Bump this key (i.e. generate a new GUID) when you want to force a rebuild of ALL HLOD proxies
-#define HLOD_PROXY_BASE_KEY		TEXT("1623F71084794B7A925C65D479104CA6")
+#define HLOD_PROXY_BASE_KEY		TEXT("498A8FFD64744FA3B2E7C7589581F91A")
 
 FName UHLODProxy::GenerateKeyForActor(const ALODActor* LODActor, bool bMustUndoLevelTransform)
 {
@@ -502,7 +512,17 @@ FName UHLODProxy::GenerateKeyForActor(const ALODActor* LODActor, bool bMustUndoL
 	if (HierarchicalLODSetups.IsValidIndex(LODActor->LODLevel - 1))
 	{
 		const FHierarchicalSimplification& HLODSettings = HierarchicalLODSetups[LODActor->LODLevel - 1];
-		bConsiderPhysicData = HLODSettings.bSimplifyMesh ? HLODSettings.ProxySetting.bCreateCollision : HLODSettings.MergeSetting.bMergePhysicsData;
+		switch (HLODSettings.SimplificationMethod)
+		{
+		case EHierarchicalSimplificationMethod::Simplify:
+			bConsiderPhysicData = HLODSettings.ProxySetting.bCreateCollision;
+			break;
+		case EHierarchicalSimplificationMethod::Merge:
+			bConsiderPhysicData = HLODSettings.MergeSetting.bMergePhysicsData;
+			break;
+		default:
+			bConsiderPhysicData = false;
+		}
 	}
 	
 	// Base us off the unique object ID
@@ -529,7 +549,7 @@ FName UHLODProxy::GenerateKeyForActor(const ALODActor* LODActor, bool bMustUndoL
 		}
 
 		// HLODBakingTransform
-		CRC = GetTransformCRC(LODActor->GetLevel()->GetWorldSettings()->HLODBakingTransform, CRC);
+		CRC = GetCRC(LODActor->GetLevel()->GetWorldSettings()->HLODBakingTransform, CRC);
 
 		// screen size + override
 		{
@@ -745,10 +765,14 @@ bool UHLODProxy::SetHLODBakingTransform(const FTransform& InTransform)
 {
 	bool bChanged = false;
 
+	int32 NewTransformCRC = GetCRC(InTransform);
+
 	for (auto ItHLODActor = HLODActors.CreateIterator(); ItHLODActor; ++ItHLODActor)
 	{
 		UHLODProxyDesc* HLODProxyDesc = ItHLODActor.Key();
-		if (!HLODProxyDesc->HLODBakingTransform.Equals(InTransform))
+
+		int32 OldTransformCRC = GetCRC(HLODProxyDesc->HLODBakingTransform);
+		if (OldTransformCRC != NewTransformCRC)
 		{
 			HLODProxyDesc->HLODBakingTransform = InTransform;
 			bChanged = true;
@@ -806,3 +830,4 @@ bool UHLODProxy::ContainsDataForActor(const ALODActor* InLODActor) const
 }
 
 #endif
+

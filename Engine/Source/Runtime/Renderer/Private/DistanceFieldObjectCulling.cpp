@@ -77,14 +77,15 @@ void CullObjectsToView(FRDGBuilder& GraphBuilder, FScene* Scene, const FViewInfo
 		auto* PassParameters = GraphBuilder.AllocParameters<FCullObjectsForViewCS::FParameters>();
 
 		PassParameters->CulledObjectBufferParameters = CulledObjectBufferParameters;
-		PassParameters->ObjectBufferParameters = DistanceField::SetupObjectBufferParameters(Scene->DistanceFieldSceneData);
+		PassParameters->ObjectBufferParameters = DistanceField::SetupObjectBufferParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->NumConvexHullPlanes = View.ViewFrustum.Planes.Num();
 
 		for (int32 i = 0; i < View.ViewFrustum.Planes.Num(); i++)
 		{
-			PassParameters->ViewFrustumConvexHull[i] = FVector4f((FVector3f)View.ViewFrustum.Planes[i], View.ViewFrustum.Planes[i].W);
+			const FPlane4f Plane(View.ViewFrustum.Planes[i].TranslateBy(View.ViewMatrices.GetPreViewTranslation()));
+			PassParameters->ViewFrustumConvexHull[i] = FVector4f(FVector3f(Plane), Plane.W);
 		}
 
 		PassParameters->ObjectBoundingGeometryIndexCount = StencilingGeometry::GLowPolyStencilSphereIndexBuffer.GetIndexCount();
@@ -254,7 +255,7 @@ void ScatterTilesToObjects(
 	const FTileIntersectionParameters& TileIntersectionParameters,
 	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer)
 {
-	FDistanceFieldObjectBufferParameters DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(DistanceFieldSceneData);
+	FDistanceFieldObjectBufferParameters DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(GraphBuilder, DistanceFieldSceneData);
 
 	FObjectCullPS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FObjectCullPS::FCountingPass>(bCountingPass);
@@ -266,7 +267,7 @@ void ScatterTilesToObjects(
 	PassParameters->VS.View = GetShaderBinding(View.ViewUniformBuffer);
 	PassParameters->VS.DistanceFieldObjectBuffers = DistanceFieldObjectBuffers;
 	PassParameters->VS.DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-	PassParameters->VS.DistanceFieldAtlas = DistanceField::SetupAtlasParameters(DistanceFieldSceneData);
+	PassParameters->VS.DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, DistanceFieldSceneData);
 	PassParameters->VS.AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 
 	{
@@ -281,7 +282,7 @@ void ScatterTilesToObjects(
 	PassParameters->PS.TileIntersectionParameters = TileIntersectionParameters;
 	PassParameters->PS.DistanceFieldObjectBuffers = DistanceFieldObjectBuffers;
 	PassParameters->PS.DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-	PassParameters->PS.DistanceFieldAtlas = DistanceField::SetupAtlasParameters(DistanceFieldSceneData);
+	PassParameters->PS.DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, DistanceFieldSceneData);
 	PassParameters->PS.AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 	PassParameters->PS.NumGroups = FVector2f(TileListGroupSize.X, TileListGroupSize.Y);
 
@@ -301,7 +302,7 @@ void ScatterTilesToObjects(
 		bCountingPass ? RDG_EVENT_NAME("CountTileObjectIntersections") : RDG_EVENT_NAME("CullTilesToObjects"),
 		PassParameters,
 		ERDGPassFlags::Raster,
-		[PassParameters, VertexShader, PixelShader, &View, TileListGroupSize, ObjectIndirectArguments](FRHICommandListImmediate& RHICmdList)
+		[PassParameters, VertexShader, PixelShader, &View, TileListGroupSize, ObjectIndirectArguments](FRHICommandList& RHICmdList)
 		{
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -353,7 +354,7 @@ void BuildTileObjectLists(
 
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildTileList");
 
-	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer = FSceneTextures::Get(GraphBuilder).UniformBuffer;
+	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer = GetViewFamilyInfo(Views).GetSceneTextures().UniformBuffer;
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
@@ -392,7 +393,7 @@ void BuildTileObjectLists(
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->TileIntersectionParameters = TileIntersectionParameters;
 			PassParameters->DistanceFieldCulledObjectBuffers = CulledObjectBufferParameters;
-			PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(Scene->DistanceFieldSceneData);
+			PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, Scene->DistanceFieldSceneData);
 			PassParameters->SceneTextures = SceneTexturesUniformBuffer;
 
 			auto ComputeShader = View.ShaderMap->GetShader<FComputeCulledTilesStartOffsetCS>();

@@ -3,28 +3,18 @@
 #include "NiagaraNodeParameterMapBase.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraEditorUtilities.h"
-#include "SNiagaraGraphNodeConvert.h"
-#include "INiagaraCompiler.h"
 #include "NiagaraNodeOutput.h"
 #include "ScopedTransaction.h"
 #include "SNiagaraGraphPinAdd.h"
 #include "NiagaraGraph.h"
 #include "NiagaraComponent.h"
-#include "EdGraphSchema_Niagara.h"
 #include "NiagaraScript.h"
-#include "NiagaraScriptSource.h"
 #include "NiagaraConstants.h"
-#include "NiagaraParameterCollection.h"
-#include "Widgets/SNiagaraParameterMapView.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "ToolMenus.h"
 #include "NiagaraScriptVariable.h"
-#include "Widgets/SNiagaraParameterName.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
-#include "IAssetTools.h"
-#include "AssetRegistryModule.h"
-
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeParameterMapBase)
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeParameterMapBase"
 
@@ -257,7 +247,7 @@ bool UNiagaraNodeParameterMapBase::HandleDropOperation(TSharedPtr<FDragDropOpera
 
 void UNiagaraNodeParameterMapBase::OnPinRenamed(UEdGraphPin* RenamedPin, const FString& OldName)
 {
-	RenamedPin->PinFriendlyName = FText::FromName(RenamedPin->PinName);
+	RenamedPin->PinFriendlyName = FText::AsCultureInvariant(RenamedPin->PinName.ToString());
 
 	FPinCollectorArray InOrOutPins;
 	if (RenamedPin->Direction == EEdGraphPinDirection::EGPD_Input)

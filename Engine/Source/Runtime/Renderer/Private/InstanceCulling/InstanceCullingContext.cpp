@@ -51,6 +51,13 @@ static bool IsInstanceOrderPreservationAllowed(ERHIFeatureLevel::Type FeatureLev
 	return GInstanceCullingAllowOrderPreservation && FeatureLevel > ERHIFeatureLevel::ES3_1;
 }
 
+static uint32 PackDrawCommandDesc(bool bMaterialUsesWorldPositionOffset, uint32 MeshLODIndex)
+{
+	uint32 PackedData = bMaterialUsesWorldPositionOffset ? 1U : 0U;
+	PackedData |= ((MeshLODIndex & 0x000000FFU) << 1U);
+	return PackedData;
+}
+
 FMeshDrawCommandOverrideArgs GetMeshDrawCommandOverrideArgs(const FInstanceCullingDrawParams& InstanceCullingDrawParams)
 {
 	FMeshDrawCommandOverrideArgs Result;
@@ -361,10 +368,10 @@ public:
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneLightmapData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneLightmapData)
 		SHADER_PARAMETER(uint32, InstanceSceneDataSOAStride)
 		SHADER_PARAMETER(uint32, GPUSceneFrameNumber)
 		SHADER_PARAMETER(uint32, GPUSceneNumInstances)
@@ -373,7 +380,7 @@ public:
 
 		SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceProcessingGPULoadBalancer::FShaderParameters, LoadBalancerParameters)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< FInstanceCullingContext::FDrawCommandDesc >, DrawCommandDescs)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint32 >, DrawCommandDescs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< FInstanceCullingContext::FPayloadData >, InstanceCullingPayloads)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint32 >, ViewIds)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< Nanite::FPackedView >, InViews)
@@ -544,17 +551,19 @@ void FInstanceCullingContext::BuildRenderingCommands(
 
 	PassParametersTmp.InstanceCullingPayloads = GraphBuilder.CreateSRV(CreateStructuredBuffer(GraphBuilder, TEXT("InstanceCulling.PayloadData"), PayloadData));
 
+	const FGPUSceneResourceParameters GPUSceneParameters = GPUScene.GetShaderParameters();
+
 	// Because the view uniforms are not set up by the time this runs
 	// PassParametersTmp.View = View.ViewUniformBuffer;
 	// Set up global GPU-scene data instead...
-	PassParametersTmp.GPUSceneInstanceSceneData = GPUScene.InstanceSceneDataBuffer.SRV;
-	PassParametersTmp.GPUSceneInstancePayloadData = GPUScene.InstancePayloadDataBuffer.SRV;
-	PassParametersTmp.GPUScenePrimitiveSceneData = GPUScene.PrimitiveBuffer.SRV;
-	PassParametersTmp.GPUSceneLightmapData = GPUScene.LightmapDataBuffer.SRV;
+	PassParametersTmp.GPUSceneInstanceSceneData = GPUSceneParameters.GPUSceneInstanceSceneData;
+	PassParametersTmp.GPUSceneInstancePayloadData = GPUSceneParameters.GPUSceneInstancePayloadData;
+	PassParametersTmp.GPUScenePrimitiveSceneData = GPUSceneParameters.GPUScenePrimitiveSceneData;
+	PassParametersTmp.GPUSceneLightmapData = GPUSceneParameters.GPUSceneLightmapData;
 	PassParametersTmp.InstanceSceneDataSOAStride = GPUScene.InstanceSceneDataSOAStride;
-	PassParametersTmp.GPUSceneFrameNumber = GPUScene.GetSceneFrameNumber();
-	PassParametersTmp.GPUSceneNumInstances = GPUScene.GetNumInstances();
-	PassParametersTmp.GPUSceneNumPrimitives = GPUScene.GetNumPrimitives();
+	PassParametersTmp.GPUSceneFrameNumber = GPUSceneParameters.GPUSceneFrameNumber;
+	PassParametersTmp.GPUSceneNumInstances = GPUSceneParameters.NumInstances;
+	PassParametersTmp.GPUSceneNumPrimitives = GPUSceneParameters.NumScenePrimitives;
 	PassParametersTmp.GPUSceneNumLightmapDataItems = GPUScene.GetNumLightmapDataItems();
 	PassParametersTmp.DynamicInstanceIdOffset = DynamicInstanceIdOffset;
 	PassParametersTmp.DynamicInstanceIdMax = DynamicInstanceIdOffset + DynamicInstanceIdNum;
@@ -861,17 +870,19 @@ FInstanceCullingDeferredContext *FInstanceCullingContext::CreateDeferredContext(
 		DeferredContext->InstanceDataBuffer = InstanceIdOffsetBuffer;
 	}
 
+	const FGPUSceneResourceParameters GPUSceneParameters = GPUScene.GetShaderParameters();
+
 	// Because the view uniforms are not set up by the time this runs
 	// PassParameters->View = View.ViewUniformBuffer;
 	// Set up global GPU-scene data instead...
-	PassParametersTmp.GPUSceneInstanceSceneData = GPUScene.InstanceSceneDataBuffer.SRV;
-	PassParametersTmp.GPUSceneInstancePayloadData = GPUScene.InstancePayloadDataBuffer.SRV;
-	PassParametersTmp.GPUScenePrimitiveSceneData = GPUScene.PrimitiveBuffer.SRV;
-	PassParametersTmp.GPUSceneLightmapData = GPUScene.LightmapDataBuffer.SRV;
+	PassParametersTmp.GPUSceneInstanceSceneData = GPUSceneParameters.GPUSceneInstanceSceneData;
+	PassParametersTmp.GPUSceneInstancePayloadData = GPUSceneParameters.GPUSceneInstancePayloadData;
+	PassParametersTmp.GPUScenePrimitiveSceneData = GPUSceneParameters.GPUScenePrimitiveSceneData;
+	PassParametersTmp.GPUSceneLightmapData = GPUSceneParameters.GPUSceneLightmapData;
 	PassParametersTmp.InstanceSceneDataSOAStride = GPUScene.InstanceSceneDataSOAStride;
-	PassParametersTmp.GPUSceneFrameNumber = GPUScene.GetSceneFrameNumber();
-	PassParametersTmp.GPUSceneNumInstances = GPUScene.GetNumInstances();
-	PassParametersTmp.GPUSceneNumPrimitives = GPUScene.GetNumPrimitives();
+	PassParametersTmp.GPUSceneFrameNumber = GPUSceneParameters.GPUSceneFrameNumber;
+	PassParametersTmp.GPUSceneNumInstances = GPUSceneParameters.NumInstances;
+	PassParametersTmp.GPUSceneNumPrimitives = GPUSceneParameters.NumScenePrimitives;
 	PassParametersTmp.GPUSceneNumLightmapDataItems = GPUScene.GetNumLightmapDataItems();
 
 	PassParametersTmp.DrawCommandDescs = GraphBuilder.CreateSRV(DrawCommandDescsRDG);
@@ -1106,6 +1117,17 @@ void FInstanceCullingContext::AddClearIndirectArgInstanceCountPass(FRDGBuilder& 
 	}
 }
 
+void FInstanceCullingContext::SetupDrawCommands(
+	FMeshCommandOneFrameArray& VisibleMeshDrawCommandsInOut,
+	bool bCompactIdenticalCommands,
+	int32& MaxInstances,
+	int32& VisibleMeshDrawCommandsNum,
+	int32& NewPassVisibleMeshDrawCommandsNum)
+{
+	TArrayView<const FStateBucketAuxData> StateBucketsAuxData;
+	SetupDrawCommands(StateBucketsAuxData, VisibleMeshDrawCommandsInOut, bCompactIdenticalCommands, MaxInstances, VisibleMeshDrawCommandsNum, NewPassVisibleMeshDrawCommandsNum);
+}
+
 /**
  * Allocate indirect arg slots for all meshes to use instancing,
  * add commands that populate the indirect calls and index & id buffers, and
@@ -1113,6 +1135,7 @@ void FInstanceCullingContext::AddClearIndirectArgInstanceCountPass(FRDGBuilder& 
  * NOTE: VisibleMeshDrawCommandsInOut can only become shorter.
  */
 void FInstanceCullingContext::SetupDrawCommands(
+	TArrayView<const FStateBucketAuxData> StateBucketsAuxData,
 	FMeshCommandOneFrameArray& VisibleMeshDrawCommandsInOut,
 	bool bCompactIdenticalCommands,
 	// Stats
@@ -1174,7 +1197,7 @@ void FInstanceCullingContext::SetupDrawCommands(
 		const FMeshDrawCommand* RESTRICT MeshDrawCommand = VisibleMeshDrawCommand.MeshDrawCommand;
 
 		const bool bSupportsGPUSceneInstancing = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::HasPrimitiveIdStreamIndex);
-		const bool bMaterialMayModifyPosition = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::MaterialMayModifyPosition);
+		const bool bMaterialUsesWorldPositionOffset = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::MaterialUsesWorldPositionOffset);
 		const bool bForceInstanceCulling = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::ForceInstanceCulling);
 		const bool bPreserveInstanceOrder = bOrderPreservationEnabled && EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::PreserveInstanceOrder);
 		const bool bUseIndirectDraw = bAlwaysUseIndirectDraws || bForceInstanceCulling || (VisibleMeshDrawCommand.NumRuns > 0 || MeshDrawCommand->NumInstances > 1);
@@ -1209,8 +1232,14 @@ void FInstanceCullingContext::SetupDrawCommands(
 				DrawCmd.bUseIndirect = bUseIndirectDraw;
 				
 				CurrentIndirectArgsOffset = AllocateIndirectArgs(MeshDrawCommand);
-				DrawCommandDescs.Emplace(FDrawCommandDesc{bMaterialMayModifyPosition});
-
+				
+				uint32 MeshLODIndex = 0;
+				if (StateBucketsAuxData.IsValidIndex(VisibleMeshDrawCommand.StateBucketId))
+				{
+					MeshLODIndex = StateBucketsAuxData[VisibleMeshDrawCommand.StateBucketId].MeshLODIndex;
+				}
+				DrawCommandDescs.Add(PackDrawCommandDesc(bMaterialUsesWorldPositionOffset, MeshLODIndex));
+				
 				if (bUseIndirectDraw)
 				{
 					DrawCmd.IndirectArgsOffsetOrNumInstances = CurrentIndirectArgsOffset * FInstanceCullingContext::IndirectArgsNumWords * sizeof(uint32);

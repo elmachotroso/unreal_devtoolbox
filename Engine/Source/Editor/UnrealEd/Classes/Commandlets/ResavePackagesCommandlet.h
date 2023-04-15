@@ -52,7 +52,7 @@ protected:
 	int32 MaxPackagesToResave;
 
 	/** allows users to save only packages with a particular class in them (useful for fixing content) */
-	TArray<FName> ResaveClasses;
+	TArray<FString> ResaveClasses;
 
 	// If non-empty, this substring has to be present in the package name for the commandlet to process it
 	FString PackageSubstring;
@@ -105,6 +105,9 @@ protected:
 	/** Only save packages containing bulkdata payloads that have been virtualized **/
 	bool bOnlyVirtualized;
 
+	/** Only save packages containing FPayloadTrailers **/
+	bool bOnlyPayloadTrailers;
+
 	/** Should we build navigation data for the packages we are saving? **/
 	bool bShouldBuildNavigationData;
 
@@ -126,6 +129,7 @@ protected:
 	FString ForceHLODSetupAsset;
 	FString HLODSkipToMap;
 	bool bForceUATEnvironmentVariableSet;
+	bool bResaveOnDemand = false;
 
 	/** Running count of packages that got modified and will need to be resaved */
 	int32 PackagesConsideredForResave;
@@ -151,6 +155,11 @@ protected:
 	/** A queue containing source control operations to be performed in batches. */
 	TPimplPtr<class FQueuedSourceControlOperations> SourceControlQueue;
 
+	/** If running resaveondemand, only packages reported into this set are resaved. */
+	TSet<FName> ResaveOnDemandPackages;
+	TSet<FName> ResaveOnDemandSystems;
+	FCriticalSection ResaveOnDemandPackagesLock;
+
 	/**
 	 * Evaluates the command-line to determine which maps to check.  By default all maps are checked
 	 * Provides child classes with a chance to initialize any variables, parse the command line, etc.
@@ -163,6 +172,8 @@ protected:
 	virtual int32 InitializeResaveParameters( const TArray<FString>& Tokens, TArray<FString>& MapPathNames );
 
 	void ParseSourceControlOptions(const TArray<FString>& Tokens);
+
+	void OnAddResaveOnDemandPackage(FName SystemName, FName PackageName);
 
 	/** Loads and saves a single package */
 	virtual void LoadAndSaveOnePackage(const FString& Filename);
@@ -249,6 +260,9 @@ protected:
 
 	// Print out a message only if running in very verbose mode
 	void VerboseMessage(const FString& Message);
+
+	/** Parse commandline to decide whether resaveondemand is activated for the given system. */
+	TSet<FName> ParseResaveOnDemandSystems();
 
 public:		
 	//~ Begin UCommandlet Interface

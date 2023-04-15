@@ -22,13 +22,23 @@
 #include "ActorDescTreeItem.h"
 #include "FolderTreeItem.h"
 #include "WorldTreeItem.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/ActorDescContainer.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
+#include "LevelInstance/LevelInstanceInterface.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "SceneOutlinerModule"
 
 /* FSceneOutlinerModule interface
  *****************************************************************************/
+
+FSceneOutlinerModule::FSceneOutlinerModule()
+: ColumnPermissionList(MakeShareable(new FNamePermissionList()))
+{
+	ColumnPermissionList->OnFilterChanged().AddLambda([this]() { ColumnPermissionListChanged.Broadcast(); });
+}
 
 void FSceneOutlinerModule::StartupModule()
 {
@@ -79,10 +89,9 @@ TSharedRef<ISceneOutliner> FSceneOutlinerModule::CreateActorPicker(const FSceneO
 			Params.bHideComponents = true;
 			Params.bHideLevelInstanceHierarchy = true;
 			Params.bHideUnloadedActors = true;
+			Params.bHideEmptyFolders = true;
 			return new FActorPickingMode(Params, OnItemPicked);
 		});
-
-	
 
 	FSceneOutlinerInitializationOptions InitOptions(InInitOptions);
 	InitOptions.ModeFactory = ModeFactory;
@@ -118,6 +127,7 @@ TSharedRef<ISceneOutliner> FSceneOutlinerModule::CreateComponentPicker(const FSc
 			Params.bHideActorWithNoComponent = true;
 			Params.bHideLevelInstanceHierarchy = true;
 			Params.bHideUnloadedActors = true;
+			Params.bHideEmptyFolders = true;
 			return new FActorPickingMode(Params, OnItemPicked);
 		});
 
@@ -141,19 +151,33 @@ TSharedRef< ISceneOutliner > FSceneOutlinerModule::CreateActorBrowser(const FSce
 
 	FSceneOutlinerInitializationOptions InitOptions(InInitOptions);
 	InitOptions.ModeFactory = ModeFactory;
+
 	if (InitOptions.ColumnMap.Num() == 0)
 	{
 		InitOptions.UseDefaultColumns();
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Gutter(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Gutter_Localized()));
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::ActorInfo(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 20, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::ActorInfo_Localized()));
 		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::SourceControl(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Invisible, 30, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::SourceControl_Localized()));
-		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Pinned(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 5, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Pinned_Localized()));
-		CreateActorInfoColumns(InitOptions);
+
+		// TODO: Figure out a better way to get the current world
+		UWorld* WorldPtr = GEditor->GetEditorWorldContext().World();
+
+		if (WorldPtr)
+		{
+			// We don't want the pinned column in non wp levels
+			if (WorldPtr->IsPartitionedWorld())
+			{
+				InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Pinned(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 5, FCreateSceneOutlinerColumn(), true, TOptional<float>(), FSceneOutlinerBuiltInColumnTypes::Pinned_Localized()));
+			}
+			CreateActorInfoColumns(InitOptions, WorldPtr);
+		}
+		
 	}
+
 	return CreateSceneOutliner(InitOptions);
 }
 
-void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOptions& InInitOptions) const
+void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOptions& InInitOptions, UWorld *WorldPtr) const
 {
 	FGetTextForItem MobilityInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
 	{
@@ -187,21 +211,6 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 		return FString();
 	});
 
-	FGetTextForItem LevelInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
-	{
-		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
-		{
-			AActor* Actor = ActorItem->Actor.Get();
-			if (!Actor)
-			{
-				return FString();
-			}
-
-			return FPackageName::GetShortName(Actor->GetOutermostObject()->GetName());
-		}
-		return FString();
-	});
-
 	FGetTextForItem LayerInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
 	{
 		FString Result;
@@ -231,43 +240,99 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 	FGetTextForItem DataLayerInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
 	{
 		TStringBuilder<128> Builder;
+		TSet<FString> DataLayerShortNames;
 
-		TArray<const UDataLayer*> DataLayerObjects;
+		auto BuildDataLayers = [&Builder, &DataLayerShortNames](const auto& DataLayerInstances, bool bPartOfOtherLevel)
+		{
+			for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
+			{
+				bool bIsAlreadyInSet = false;
+				DataLayerShortNames.Add(DataLayerInstance->GetDataLayerShortName(), &bIsAlreadyInSet);
+				if (!bIsAlreadyInSet)
+				{
+					if (Builder.Len())
+					{
+						Builder += TEXT(", ");
+					}
+					// Put a '*' in front of DataLayers that are not part of of the main world
+					if (bPartOfOtherLevel)
+					{
+						Builder += "*";
+					}
+					Builder += DataLayerInstance->GetDataLayerShortName();
+				}
+			}
+		};
 
+		auto BuildDataLayersWithContext = [BuildDataLayers](const ISceneOutlinerTreeItem& Item, bool bUseLevelContext)
+		{
+			if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
+			{
+				if (AActor* Actor = ActorItem->Actor.Get())
+				{
+					BuildDataLayers(bUseLevelContext ? Actor->GetDataLayerInstancesForLevel() : Actor->GetDataLayerInstances(), bUseLevelContext);
+				}
+			}
+			else if (const FActorDescTreeItem* ActorDescItem = Item.CastTo<FActorDescTreeItem>())
+			{
+				if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get(); ActorDesc && !ActorDesc->GetDataLayerInstanceNames().IsEmpty())
+				{
+					if (const UActorDescContainer* ActorDescContainer = ActorDescItem->ActorDescHandle.Container.Get())
+					{
+						const UWorld* World = ActorDescContainer->GetWorld();
+						if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(World))
+						{
+							TSet<const UDataLayerInstance*> DataLayerInstances;
+							DataLayerInstances.Append(DataLayerSubsystem->GetDataLayerInstances(ActorDesc->GetDataLayerInstanceNames()));
+							if (ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(World))
+							{
+								UWorld* OuterWorld = ActorDescContainer->GetTypedOuter<UWorld>();
+								// Add parent container Data Layer Instances
+								AActor* CurrentActor = OuterWorld ? Cast<AActor>(LevelInstanceSubsystem->GetOwningLevelInstance(OuterWorld->PersistentLevel)) : nullptr;
+								while (CurrentActor)
+								{
+									DataLayerInstances.Append(bUseLevelContext ? CurrentActor->GetDataLayerInstancesForLevel() : CurrentActor->GetDataLayerInstances());
+									CurrentActor = Cast<AActor>(LevelInstanceSubsystem->GetParentLevelInstance(CurrentActor));
+								};
+							}
+							BuildDataLayers(DataLayerInstances, bUseLevelContext);
+						}
+					}
+				}
+			}
+		};
+
+		// List Actor's DataLayers part of the owning world, then those only part of the actor level
+		BuildDataLayersWithContext(Item, false);
+		BuildDataLayersWithContext(Item, true);
+
+		return Builder.ToString();
+	});
+
+	FGetTextForItem SubPackageInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
+	{
 		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 		{
-			AActor* Actor = ActorItem->Actor.Get();
-
-			if (Actor)
+			if (AActor* Actor = ActorItem->Actor.Get())
 			{
-				DataLayerObjects = Actor->GetDataLayerObjects();
+				if (const ILevelInstanceInterface* ActorAsLevelInstance = Cast<ILevelInstanceInterface>(Actor))
+				{
+					return ActorAsLevelInstance->GetWorldAssetPackage();
+				}
 			}
 		}
 		else if (const FActorDescTreeItem* ActorDescItem = Item.CastTo<FActorDescTreeItem>())
 		{
-			if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get(); ActorDesc && !ActorDesc->GetDataLayers().IsEmpty())
+			if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get())
 			{
-				const UActorDescContainer* ActorDescContainer = ActorDescItem->ActorDescHandle.Container.Get();
-				const UWorld* World = ActorDescContainer ? ActorDescContainer->GetWorld() : nullptr;
-				const AWorldDataLayers* WorldDataLayers = World ? World->GetWorldDataLayers() : nullptr;
-			
-				if (WorldDataLayers)
+				if (FName LevelPackage = ActorDesc->GetLevelPackage(); !LevelPackage.IsNone())
 				{
-					DataLayerObjects = WorldDataLayers->GetDataLayerObjects(ActorDesc->GetDataLayers());
+					return ActorDesc->GetLevelPackage().ToString();
 				}
 			}
 		}
 
-		for (const UDataLayer* DataLayer : DataLayerObjects)
-		{
-			if (Builder.Len())
-			{
-				Builder += TEXT(", ");
-			}
-			Builder += DataLayer->GetDataLayerLabel().ToString();
-		}
-		
-		return Builder.ToString();
+		return FString();
 	});
 
 	FGetTextForItem SocketInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
@@ -276,12 +341,10 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 		{
 			AActor* Actor = ActorItem->Actor.Get();
 
-			if (!Actor)
+			if (Actor)
 			{
-				return FString();
+				return Actor->GetAttachParentSocketName().ToString();
 			}
-
-			return Actor->GetAttachParentSocketName().ToString();
 		}
 		
 		return FString();
@@ -321,7 +384,7 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 		return FString();
 	});
 
-	FGetTextForItem PackageShortNameInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
+	FGetTextForItem LevelInfoText = FGetTextForItem::CreateLambda([](const ISceneOutlinerTreeItem& Item) -> FString
 	{
 		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 		{
@@ -345,7 +408,6 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 			}
 		}
 
-
 		return FString();
 	});
 
@@ -354,12 +416,10 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 		{
 			AActor* Actor = ActorItem->Actor.Get();
-			if (!Actor)
+			if (Actor)
 			{
-				return FString();
+				return FString::Printf(TEXT("%7d"), Actor->GetNumUncachedStaticLightingInteractions());
 			}
-
-			return FString::Printf(TEXT("%7d"), Actor->GetNumUncachedStaticLightingInteractions());
 		}
 		return FString();
 	});
@@ -381,13 +441,25 @@ void FSceneOutlinerModule::CreateActorInfoColumns(FSceneOutlinerInitializationOp
 				ColumnName));
 	};
 
-	AddTextInfoColumn("Mobility", LOCTEXT("SceneOutlinerMobilityColumn", "Mobility"), MobilityInfoText);
-	AddTextInfoColumn("Level", LOCTEXT("SceneOutlinerLevelColumn", "Level"), LevelInfoText);
-	AddTextInfoColumn("Layer", LOCTEXT("SceneOutlinerLayerColumn", "Layer"), LayerInfoText);
-	AddTextInfoColumn("Data Layer", LOCTEXT("SceneOutlinerDataLayerColumn", "Data Layer"), DataLayerInfoText);
-	AddTextInfoColumn("ID Name", LOCTEXT("SceneOutlinerIDColumn", "ID Name"), InternalNameInfoText);
-	AddTextInfoColumn("Package Short Name", LOCTEXT("SceneOutlinerPackageShortNameColumn", "Package Short Name"), PackageShortNameInfoText);
-	AddTextInfoColumn("Uncached Lights", LOCTEXT("SceneOutlinerUncachedLightsColumn", "# Uncached Lights"), UncachedLightsInfoText);
+	// The "Level" column should be named "Package Short Name" in wp enabled levels
+	auto LevelColumnName = TAttribute<FText>::CreateLambda([WorldPtr]() -> FText
+	{
+		if (WorldPtr && WorldPtr->IsPartitionedWorld())
+		{
+			return FSceneOutlinerBuiltInColumnTypes::PackageShortName_Localized();
+		}
+
+		return FSceneOutlinerBuiltInColumnTypes::Level_Localized();
+	});
+
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::Mobility(), FSceneOutlinerBuiltInColumnTypes::Mobility_Localized(), MobilityInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::Level(), LevelColumnName, LevelInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::Layer(), FSceneOutlinerBuiltInColumnTypes::Layer_Localized(), LayerInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::DataLayer(), FSceneOutlinerBuiltInColumnTypes::DataLayer_Localized(), DataLayerInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::SubPackage(), FSceneOutlinerBuiltInColumnTypes::SubPackage_Localized(), SubPackageInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::Socket(), FSceneOutlinerBuiltInColumnTypes::Socket_Localized(), SocketInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::IDName(), FSceneOutlinerBuiltInColumnTypes::IDName_Localized(), InternalNameInfoText);
+	AddTextInfoColumn(FSceneOutlinerBuiltInColumnTypes::UncachedLights(), FSceneOutlinerBuiltInColumnTypes::UncachedLights_Localized(), UncachedLightsInfoText);
 }
 
 IMPLEMENT_MODULE(FSceneOutlinerModule, SceneOutliner);

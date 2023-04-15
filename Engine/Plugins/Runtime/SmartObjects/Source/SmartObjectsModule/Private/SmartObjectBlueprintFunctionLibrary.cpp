@@ -3,10 +3,10 @@
 #include "SmartObjectBlueprintFunctionLibrary.h"
 #include "SmartObjectSubsystem.h"
 #include "BlackboardKeyType_SOClaimHandle.h"
-#include "Blueprint/AIBlueprintHelperLibrary.h"
-#include "AI/AITask_UseSmartObject.h"
-#include "AbilitySystemBlueprintLibrary.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/BTFunctionLibrary.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectBlueprintFunctionLibrary)
 
 //----------------------------------------------------------------------//
 // USmartObjectBlueprintFunctionLibrary 
@@ -28,27 +28,6 @@ void USmartObjectBlueprintFunctionLibrary::SetValueAsSOClaimHandle(UBlackboardCo
 	}
 	const FBlackboard::FKey KeyID = BlackboardComponent->GetKeyID(KeyName);
 	BlackboardComponent->SetValue<UBlackboardKeyType_SOClaimHandle>(KeyID, Value);
-}
-
-bool USmartObjectBlueprintFunctionLibrary::K2_UseSmartObject(AActor* Avatar, AActor* SmartObject)
-{
-	if (Avatar == nullptr || SmartObject == nullptr)
-	{
-		return false;
-	}
-
-	AAIController* AIController = UAIBlueprintHelperLibrary::GetAIController(Avatar);
-	if (AIController != nullptr)
-	{
-		UAITask_UseSmartObject* Task = UAITask_UseSmartObject::UseSmartObject(AIController, SmartObject, nullptr);
-		if (Task != nullptr)
-		{
-			Task->ReadyForActivation();
-		}
-		return Task != nullptr;
-	}
-
-	return false;
 }
 
 bool USmartObjectBlueprintFunctionLibrary::K2_SetSmartObjectEnabled(AActor* SmartObject, const bool bEnabled)
@@ -74,15 +53,16 @@ bool USmartObjectBlueprintFunctionLibrary::K2_SetSmartObjectEnabled(AActor* Smar
 		: Subsystem->UnregisterSmartObjectActor(*SmartObject);
 }
 
-//----------------------------------------------------------------------//
-// DEPRECATED 
-//----------------------------------------------------------------------//
-bool USmartObjectBlueprintFunctionLibrary::K2_AddLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags)
+void USmartObjectBlueprintFunctionLibrary::SetBlackboardValueAsSOClaimHandle(UBTNode* NodeOwner, const FBlackboardKeySelector& Key, const FSmartObjectClaimHandle& Value)
 {
-	return UAbilitySystemBlueprintLibrary::AddLooseGameplayTags(Actor, GameplayTags);
+	if (UBlackboardComponent* BlackboardComp = UBTFunctionLibrary::GetOwnersBlackboard(NodeOwner))
+	{
+		BlackboardComp->SetValue<UBlackboardKeyType_SOClaimHandle>(Key.SelectedKeyName, Value);
+	}
 }
 
-bool USmartObjectBlueprintFunctionLibrary::K2_RemoveLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags)
+FSmartObjectClaimHandle USmartObjectBlueprintFunctionLibrary::GetBlackboardValueAsSOClaimHandle(UBTNode* NodeOwner, const FBlackboardKeySelector& Key)
 {
-	return UAbilitySystemBlueprintLibrary::RemoveLooseGameplayTags(Actor, GameplayTags);
+	UBlackboardComponent* BlackboardComp = UBTFunctionLibrary::GetOwnersBlackboard(NodeOwner);
+	return BlackboardComp ? BlackboardComp->GetValue<UBlackboardKeyType_SOClaimHandle>(Key.SelectedKeyName) : FSmartObjectClaimHandle::InvalidHandle;
 }

@@ -14,25 +14,21 @@ namespace AutomationTool.Benchmark
 {
 	class BenchmarkNopCompileTask : BenchmarkBuildTask
 	{
-		BenchmarkBuildTask PreTask;
 
-		public BenchmarkNopCompileTask(FileReference InProjectFile, string InTarget, UnrealTargetPlatform InPlatform, BuildOptions InOptions)
-			: base(InProjectFile, InTarget, InPlatform, InOptions)
+
+		private string _TaskName;
+		public override string TaskName
 		{
-			PreTask = new BenchmarkBuildTask(InProjectFile, InTarget, InPlatform, InOptions);
-			TaskModifiers.Add("nopcompile");
+			get
+			{
+				return _TaskName;
+			}
 		}
 
-		protected override bool PerformPrequisites()
+		public BenchmarkNopCompileTask(FileReference InProjectFile, string InTarget, UnrealTargetPlatform InPlatform, XGETaskOptions InXGEOptions)
+			: base(InProjectFile, InTarget, InPlatform, InXGEOptions, "", 0)
 		{
-			if (!base.PerformPrequisites())
-			{
-				return false;
-			}
-
-			PreTask.Run();
-						
-			return !PreTask.Failed;
+			_TaskName = string.Format("Nop {0} {1}", InTarget, InPlatform);
 		}
 	}
 }

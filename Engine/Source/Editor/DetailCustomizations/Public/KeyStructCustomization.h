@@ -3,9 +3,16 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "InputCoreTypes.h"
 #include "IPropertyTypeCustomization.h"
+#include "InputCoreTypes.h"
+#include "Misc/Optional.h"
 #include "PropertyHandle.h"
+#include "SKeySelector.h"
+#include "Templates/SharedPointer.h"
+
+class IPropertyHandle;
+class SWidget;
+struct FKey;
 
 /**
  * Implements a details panel customization for FKey structures.
@@ -25,6 +32,26 @@ public:
 	// TODO: Is there a better way?
 	void CustomizeHeaderOnlyWithButton(TSharedRef<class IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils, TSharedRef<SWidget> Button);
 
+	/** Sets a bool for whether the key selector should be enabled or not */
+	void SetEnableKeySelector(bool bKeySelectorEnabled);
+	/** Sets a bool for whether the information Icon for a combo trigger is displayed or not */ 
+	void SetDisplayIcon(bool bShouldDisplayIcon)
+	{
+		bDisplayIcon = bShouldDisplayIcon;
+	}
+
+	/** Gets bEnableKeySelector bool */
+	bool GetEnableKeySelector() const
+	{
+		return bEnableKeySelector;
+	}
+	
+	/** Gets bDisplayIcon bool */
+    bool GetDisplayIcon() const
+    {
+    	return bDisplayIcon;
+    }
+
 public:
 
 	/**
@@ -35,6 +62,10 @@ public:
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance( );
 
 protected:
+	/** Whether the information icon for combo triggers is displayed or not */
+	bool bDisplayIcon = false;
+	/** Whether the key selector should be enabled or not */
+	bool bEnableKeySelector = true;
 
 	/** Gets the current Key being edited. */
 	TOptional<FKey> GetCurrentKey() const;
@@ -44,4 +75,7 @@ protected:
 
 	/** Holds a handle to the property being edited. */
 	TSharedPtr<IPropertyHandle> PropertyHandle;
+	
+	/** shared pointer to the Key Selector. */
+    TSharedPtr<SKeySelector> KeySelector = nullptr;
 };

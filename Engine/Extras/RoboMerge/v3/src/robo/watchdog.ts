@@ -2,7 +2,7 @@
 
 import * as Sentry from '@sentry/node';
 import { OnUncaughtException, OnUnhandledRejection } from '@sentry/node/dist/integrations';
-import { ChildProcess, fork, ForkOptions } from 'child_process';
+import { ChildProcess, fork, ForkOptions, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import { Analytics } from '../common/analytics';
@@ -13,7 +13,7 @@ import { VersionReader } from '../common/version';
 import { branchesRequests, RoboServer } from './roboserver';
 import { Session } from './session';
 
-const tlsKeyFilename = 'rm-2021-05.key'
+const tlsKeyFilename = 'rm-2022-05.key'
 
 // Begin by intializing our logger and version reader
 const watchdogStartupLogger = new ContextualLogger('Watchdog Startup')
@@ -126,6 +126,15 @@ class Watchdog {
 		this.respawnTimer = null
 		this.memUsageTimer = setInterval(() => {
 			if (this.analytics) {
+				spawn('du', ['-s', '/src']).stdout.on('data', data => {
+					const match = data.toString().match(/(\d+)/)
+					if (match) {
+						const sizeBytes = parseInt(match[1])
+						if (!isNaN(sizeBytes)) {
+							this.analytics.reportDiskUsage('watchdog', sizeBytes)
+						}
+					}
+				})
 				this.analytics.reportMemoryUsage('watchdog', process.memoryUsage().heapUsed)
 				this.analytics.reportBranchesRequests(branchesRequests)
 			}

@@ -7,7 +7,7 @@
 #include "MetalState.h"
 #include "MetalResources.h"
 #include "MetalViewport.h"
-#include "RHICoreShader.h"
+#include "RHICore.h"
 
 #define UE_METAL_RHI_SUPPORT_CLEAR_UAV_WITH_BLIT_ENCODER	1
 
@@ -35,12 +35,6 @@ public:
 	/** Get the profiler pointer */
 	FORCEINLINE class FMetalProfiler* GetProfiler() const { return Profiler; }
 
-	/**
-	 *Sets the current compute shader.  Mostly for compliance with platforms
-	 *that require shader setting before resource binding.
-	 */
-	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) override;
-	
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) override;
 	
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) final override;
@@ -235,13 +229,9 @@ protected:
 	uint32 PendingNumPrimitives;
 
 	template <typename TRHIShader>
-	void ApplyStaticUniformBuffers(TRHIShader* Shader)
-	{
-		if (Shader)
-		{
-			UE::RHICore::ApplyStaticUniformBuffers(this, Shader, Shader->StaticSlots, Shader->Bindings.ShaderResourceTable.ResourceTableLayoutHashes, GlobalUniformBuffers);
-		}
-	}
+	void ApplyStaticUniformBuffers(TRHIShader* Shader);
+
+	void ResolveTexture(UE::RHICore::FResolveTextureInfo Info);
 
 	TArray<FRHIUniformBuffer*> GlobalUniformBuffers;
 
@@ -261,7 +251,6 @@ public:
 	virtual ~FMetalRHIComputeContext();
 	
 	virtual void RHISetAsyncComputeBudget(EAsyncComputeBudget Budget) final override;
-	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) final override;
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) final override;
 	virtual void RHISubmitCommandsHint() final override;
 };

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "ScenePrivate.h"
 #include "VolumetricLightmap.h"
 #include "GPULightmassModule.h"
 #include "GPULightmassSettings.h"
@@ -34,6 +33,7 @@ public:
 	void StartRecordingVisibleTiles();
 	void EndRecordingVisibleTiles();
 
+	// Game thread objects. Must be destroyed in GameThreadDestroy()
 	TSharedPtr<SNotificationItem> LightBuildNotification;
 	int32 LightBuildPercentage;
 	
@@ -52,4 +52,5 @@ private:
 	void OnStationaryLightChannelReassigned(ULightComponentBase* InComponent, int32 NewShadowMapChannel);
 	void OnLightmassImportanceVolumeModified();
 	void OnMaterialInvalidated(FMaterialRenderProxy* Material);
+	void OnSkyAtmosphereModified();
 };

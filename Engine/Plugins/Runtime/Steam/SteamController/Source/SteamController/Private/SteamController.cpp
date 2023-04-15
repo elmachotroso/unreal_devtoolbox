@@ -6,6 +6,7 @@
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Modules/ModuleManager.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "IInputDevice.h"
@@ -13,6 +14,7 @@
 #include "ISteamControllerPlugin.h"
 #include "SteamControllerPrivate.h"
 #include "SteamSharedModule.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "GameFramework/InputSettings.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSteamController, Log, All);
@@ -45,7 +47,8 @@ public:
 		// [RCL] 2015-01-23 FIXME: move to some other code than constructor so we can handle failures more gracefully
 		if (SteamAPIHandle.IsValid() && (SteamInput() != nullptr))
 		{
-			bSteamControllerInitialized = SteamInput()->Init();
+			const bool bManuallyCallRunFrame = false;
+			bSteamControllerInitialized = SteamInput()->Init(bManuallyCallRunFrame);
 
 			InputSettings = GetDefault<UInputSettings>();
 			if (InputSettings != nullptr)
@@ -145,23 +148,27 @@ public:
 			static FString ControllerName(TEXT("SteamController"));
 			FInputDeviceScope InputScope(this, SystemName, i, ControllerName);
 
+			FPlatformUserId UserId = FPlatformMisc::GetPlatformUserForUserIndex(i);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			IPlatformInputDeviceMapper::Get().RemapControllerIdToPlatformUserAndDevice(i, UserId, DeviceId);
+
 			for (auto It = DigitalActionHandlesMap.CreateConstIterator(); It; ++It)
 			{
 				FName DigitalActionName = It.Key();
 				ControllerDigitalActionData_t DigitalActionData = SteamInput()->GetDigitalActionData(ControllerHandle, It.Value());
 				if (ControllerState.DigitalStatusMap[DigitalActionName] == false && DigitalActionData.bState)
 				{
- 					MessageHandler->OnControllerButtonPressed(DigitalNamesToKeysMap[DigitalActionName].GetFName(), i, false);
+ 					MessageHandler->OnControllerButtonPressed(DigitalNamesToKeysMap[DigitalActionName].GetFName(), UserId, DeviceId, false);
 					ControllerState.DigitalRepeatTimeMap[DigitalActionName] = FPlatformTime::Seconds() + ButtonRepeatDelay;
 				}
 				else if (ControllerState.DigitalStatusMap[DigitalActionName] == true && !DigitalActionData.bState)
 				{
-					MessageHandler->OnControllerButtonReleased(DigitalNamesToKeysMap[DigitalActionName].GetFName(), i, false);
+					MessageHandler->OnControllerButtonReleased(DigitalNamesToKeysMap[DigitalActionName].GetFName(), UserId, DeviceId, false);
 				}
 				else if (ControllerState.DigitalStatusMap[DigitalActionName] == true && DigitalActionData.bState && ControllerState.DigitalRepeatTimeMap[DigitalActionName] <= CurrentTime)
 				{
 					ControllerState.DigitalRepeatTimeMap[DigitalActionName] += ButtonRepeatDelay;
-					MessageHandler->OnControllerButtonPressed(DigitalNamesToKeysMap[DigitalActionName].GetFName(), i, true);
+					MessageHandler->OnControllerButtonPressed(DigitalNamesToKeysMap[DigitalActionName].GetFName(), UserId, DeviceId, true);
 				}
 
 				ControllerState.DigitalStatusMap[DigitalActionName] = DigitalActionData.bState;
@@ -181,38 +188,38 @@ public:
 				{
 					if (ControllerState.AnalogStatusMap[It.Key()].x != AnalogActionData.x)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftX.GetFName(), i, AnalogActionData.x);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftX.GetFName(), UserId, DeviceId, AnalogActionData.x);
 					}
 					
 					if (ControllerState.AnalogStatusMap[It.Key()].y != AnalogActionData.y)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftY.GetFName(), i, AnalogActionData.y);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftY.GetFName(), UserId, DeviceId, AnalogActionData.y);
 					}
 				}
 				else if (AxisNamesToKeysMap[AnalogActionName] == EKeys::Gamepad_RightX || AxisNamesToKeysMap[AnalogActionName] == EKeys::Gamepad_RightY)
 				{
 					if (ControllerState.AnalogStatusMap[It.Key()].x != AnalogActionData.x)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightX.GetFName(), i, AnalogActionData.x);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightX.GetFName(), UserId, DeviceId, AnalogActionData.x);
 					}
 
 					if (ControllerState.AnalogStatusMap[It.Key()].y != AnalogActionData.y)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightY.GetFName(), i, AnalogActionData.y);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightY.GetFName(), UserId, DeviceId, AnalogActionData.y);
 					}
 				}
 				else if (AxisNamesToKeysMap[AnalogActionName] == EKeys::Gamepad_LeftTriggerAxis)
 				{
 					if (ControllerState.AnalogStatusMap[It.Key()].x != AnalogActionData.x)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftTriggerAxis.GetFName(), i, AnalogActionData.x);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_LeftTriggerAxis.GetFName(), UserId, DeviceId, AnalogActionData.x);
 					}
 				}
 				else if (AxisNamesToKeysMap[AnalogActionName] == EKeys::Gamepad_RightTriggerAxis)
 				{
 					if (ControllerState.AnalogStatusMap[It.Key()].x != AnalogActionData.x)
 					{
-						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightTriggerAxis.GetFName(), i, AnalogActionData.x);
+						MessageHandler->OnControllerAnalog(EKeys::Gamepad_RightTriggerAxis.GetFName(), UserId, DeviceId, AnalogActionData.x);
 					}
 				}
 				ControllerState.AnalogStatusMap[AnalogActionName] = AnalogActionData;
@@ -271,12 +278,12 @@ public:
 		// of a "stronger" vibration
 		if (ForceFeedbackValues.LeftLarge > 0.f)
 		{
-			Controller->TriggerHapticPulse(ControllerHandles[ControllerId], ESteamControllerPad::k_ESteamControllerPad_Left, ForceFeedbackValues.LeftLarge * 4000.0f);
+			Controller->Legacy_TriggerHapticPulse(ControllerHandles[ControllerId], ESteamControllerPad::k_ESteamControllerPad_Left, ForceFeedbackValues.LeftLarge * 4000.0f);
 		}
 
 		if (ForceFeedbackValues.RightLarge > 0.f)
 		{
-			Controller->TriggerHapticPulse(ControllerHandles[ControllerId], ESteamControllerPad::k_ESteamControllerPad_Right, ForceFeedbackValues.RightLarge * 4000.0f);
+			Controller->Legacy_TriggerHapticPulse(ControllerHandles[ControllerId], ESteamControllerPad::k_ESteamControllerPad_Right, ForceFeedbackValues.RightLarge * 4000.0f);
 		}
 	}
 

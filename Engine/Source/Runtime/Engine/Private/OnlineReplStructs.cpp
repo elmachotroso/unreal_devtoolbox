@@ -14,6 +14,8 @@
 #include "Net/OnlineEngineInterface.h"
 #include "Misc/ConfigCacheIni.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineReplStructs)
+
 namespace
 {
 	static const FString InvalidUniqueNetIdStr = TEXT("INVALID");
@@ -125,7 +127,7 @@ void FUniqueNetIdRepl::MakeReplicationData()
 	{
 		EUniqueIdEncodingFlags EncodingFlags = (EUniqueIdEncodingFlags::IsEncoded | EUniqueIdEncodingFlags::IsEmpty);
 
-		ReplicationBytes.Empty();
+		ReplicationBytes.Empty(sizeof(EncodingFlags));
 		FMemoryWriter Writer(ReplicationBytes);
 		Writer << EncodingFlags;
 	}
@@ -178,7 +180,7 @@ void FUniqueNetIdRepl::MakeReplicationDataV1()
 		if (EnumHasAllFlags(EncodingFlags, EUniqueIdEncodingFlags::IsEncoded))
 		{
 			uint8 EncodedSize = static_cast<uint8>(EncodedSize32);
-			const int32 TotalBytes = sizeof(EncodingFlags) + sizeof(EncodedSize) + EncodedSize;
+			const int32 TotalBytes = sizeof(EncodingFlags) + sizeof(EncodedSize) + EncodedSize; // no optimization for TypeHash_Other
 			ReplicationBytes.Empty(TotalBytes);
 
 			FMemoryWriter Writer(ReplicationBytes);
@@ -199,7 +201,8 @@ void FUniqueNetIdRepl::MakeReplicationDataV1()
 		}
 		else
 		{
-			ReplicationBytes.Empty(Length);
+			const int32 TotalBytes = sizeof(EncodingFlags) + sizeof(Length) + Length * sizeof(TCHAR); // no optimization for TypeHash_Other
+			ReplicationBytes.Empty(TotalBytes);
 
 			FMemoryWriter Writer(ReplicationBytes);
 			Writer << EncodingFlags;
@@ -216,7 +219,7 @@ void FUniqueNetIdRepl::MakeReplicationDataV1()
 	{
 		EUniqueIdEncodingFlags EncodingFlags = (EUniqueIdEncodingFlags::IsEncoded | EUniqueIdEncodingFlags::IsEmpty);
 
-		ReplicationBytes.Empty();
+		ReplicationBytes.Empty(sizeof(EncodingFlags));
 		FMemoryWriter Writer(ReplicationBytes);
 		Writer << EncodingFlags;
 	}
@@ -227,12 +230,13 @@ void FUniqueNetIdRepl::MakeReplicationDataV2()
 	EUniqueIdEncodingFlags EncodingFlags = EUniqueIdEncodingFlags::IsEncoded;
 	EncodingFlags |= static_cast<EUniqueIdEncodingFlags>(TypeHash_V2 << 3);
 
-	UE::Online::FOnlineAccountIdHandle Handle = GetV2();
-	UE::Online::EOnlineServices OnlineServicesType = Handle.GetOnlineServicesType();
-	TArray<uint8> ReplicationData = UE::Online::FOnlineIdRegistryRegistry::Get().ToReplicationData(Handle);
+	UE::Online::FAccountId AccountId = GetV2();
+	UE::Online::EOnlineServices OnlineServicesType = AccountId.GetOnlineServicesType();
+	TArray<uint8> ReplicationData = UE::Online::FOnlineIdRegistryRegistry::Get().ToReplicationData(AccountId);
 	check(!ReplicationData.IsEmpty());
 
-	ReplicationBytes.Empty();
+	const int32 TotalBytes = sizeof(EncodingFlags) + sizeof(OnlineServicesType) + sizeof(TArray<uint8>::SizeType) + ReplicationData.Num();
+	ReplicationBytes.Empty(TotalBytes);
 	FMemoryWriter Writer(ReplicationBytes);
 	Writer << EncodingFlags;
 	Writer << OnlineServicesType;
@@ -445,9 +449,9 @@ void FUniqueNetIdRepl::NetSerializeLoadV2(FArchive& Ar, const EUniqueIdEncodingF
 	TArray<uint8> ReplicationData;
 	Ar << ReplicationData;
 
-	const UE::Online::FOnlineAccountIdHandle Handle = UE::Online::FOnlineIdRegistryRegistry::Get().ToAccountId(OnlineServicesType, ReplicationData);
-	check(Handle.IsValid());
-	SetAccountId(Handle);
+	const UE::Online::FAccountId AccountId = UE::Online::FOnlineIdRegistryRegistry::Get().ToAccountId(OnlineServicesType, ReplicationData);
+	check(AccountId.IsValid());
+	SetAccountId(AccountId);
 }
 
 bool FUniqueNetIdRepl::Serialize(FArchive& Ar)
@@ -930,3 +934,4 @@ void TestUniqueIdRepl(UWorld* InWorld)
 
 #endif
 }
+

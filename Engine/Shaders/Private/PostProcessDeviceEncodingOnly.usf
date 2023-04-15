@@ -15,18 +15,6 @@
 #include "TonemapCommon.ush"
 #include "ScreenPass.ush"
 
-/** Values of DIM_OUTPUT_DEVICE (matching C++'s ETonemapperOutputDevice) */
-#define TONEMAPPER_OUTPUT_sRGB 0
-#define TONEMAPPER_OUTPUT_Rec709 1
-#define TONEMAPPER_OUTPUT_ExplicitGammaMapping 2
-#define TONEMAPPER_OUTPUT_ACES1000nitST2084 3
-#define TONEMAPPER_OUTPUT_ACES2000nitST2084 4
-#define TONEMAPPER_OUTPUT_ACES1000nitScRGB 5
-#define TONEMAPPER_OUTPUT_ACES2000nitScRGB 6
-#define TONEMAPPER_OUTPUT_LinearEXR 7
-#define TONEMAPPER_OUTPUT_NoToneCurve 8
-#define TONEMAPPER_OUTPUT_WithToneCurve 9
-
 #ifndef DIM_OUTPUT_DEVICE
 	#define DIM_OUTPUT_DEVICE (TONEMAPPER_OUTPUT_sRGB)
 #endif
@@ -43,6 +31,15 @@ uint bOutputInHDR;
 
 uint OutputDevice;
 uint OutputGamut;
+float OutputMaxLuminance;
+
+float4 ACESMinMaxData;
+float4 ACESMidData;
+float4 ACESCoefsLow_0;
+float4 ACESCoefsHigh_0;
+float ACESCoefsLow_4;
+float ACESCoefsHigh_4;
+float ACESSceneColorMultiplier;
 
 uint GetOutputDevice()
 {
@@ -70,13 +67,6 @@ float4 DeviceEncodingOnlyCommonPS(
 
 	half4 SceneColor = SampleSceneColor(SceneUV);
 
-	// AP1 to Working space matrices
-	const float3x3 sRGB_2_AP1 = mul( XYZ_2_AP1_MAT, mul( D65_2_D60_CAT, sRGB_2_XYZ_MAT ) );
-	const float3x3 AP1_2_sRGB = mul( XYZ_2_sRGB_MAT, mul( D60_2_D65_CAT, AP1_2_XYZ_MAT ) );
-
-	const float3x3 AP0_2_AP1 = mul( XYZ_2_AP1_MAT, AP0_2_XYZ_MAT );
-	const float3x3 AP1_2_AP0 = mul( XYZ_2_AP0_MAT, AP1_2_XYZ_MAT );
-
 	const float3x3 AP1_2_Output  = OuputGamutMappingMatrix( OutputGamut );
 
 	// Apply "gamma" curve adjustment.
@@ -88,34 +78,50 @@ float4 DeviceEncodingOnlyCommonPS(
 	BRANCH
 
 	// sRGB, user specified gamut
-	if( GetOutputDevice() == 0 )
+	if( GetOutputDevice() == TONEMAPPER_OUTPUT_sRGB)
 	{		
 		// Convert from sRGB to specified output gamut	
 		// float3 OutputGamutColor = mul( AP1_2_Output, mul( sRGB_2_AP1, FilmColor ) );
 
 		// FIXME: Workaround for UE-29935, pushing all colors with a 0 component to black output
 		// Default parameters seem to cancel out (sRGB->XYZ->AP1->XYZ->sRGB), so should be okay for a temp fix
-		float3 OutputGamutColor = FilmColor;
+		float3 OutputGamutColor = WorkingColorSpace.bIsSRGB ? FilmColor : mul( AP1_2_Output, mul( (float3x3)WorkingColorSpace.ToAP1, FilmColor ) );
 
 		// Apply conversion to sRGB (this must be an exact sRGB conversion else darks are bad).
 		OutDeviceColor = LinearToSrgb( OutputGamutColor );
 	}
 
 	// Rec 709, user specified gamut
-	else if( GetOutputDevice() == 1 )
+	else if( GetOutputDevice() == TONEMAPPER_OUTPUT_Rec709)
 	{
 		// Convert from sRGB to specified output gamut
-		float3 OutputGamutColor = mul( AP1_2_Output, mul( sRGB_2_AP1, FilmColor ) );
+		float3 OutputGamutColor = mul( AP1_2_Output, mul( (float3x3)WorkingColorSpace.ToAP1, FilmColor ) );
 
 		// Didn't profile yet if the branching version would be faster (different linear segment).
 		OutDeviceColor = LinearTo709Branchless( OutputGamutColor );
 	}
 
 	// ACES 1000nit transform with PQ/2084 encoding, user specified gamut 
-	else if( GetOutputDevice() == 3 || GetOutputDevice() == 5 )
-	{		
+	else if( GetOutputDevice() == TONEMAPPER_OUTPUT_ACES1000nitST2084 )
+	{		 
 		// 1000 nit ODT
-		float3 ODTColor = ACESOutputTransforms1000( FilmColor );
+		FACESTonemapParams AcesParams = ComputeACESTonemapParams(ACESMinMaxData, ACESMidData, ACESCoefsLow_0, ACESCoefsHigh_0, ACESCoefsLow_4, ACESCoefsHigh_4, ACESSceneColorMultiplier);
+		float3 ODTColor = ACESOutputTransforms1000( FilmColor, (float3x3)WorkingColorSpace.ToAP0, AcesParams);
+
+		// Convert from AP1 to specified output gamut
+		ODTColor = mul( AP1_2_Output, ODTColor );
+
+		// Apply conversion to ST-2084 (Dolby PQ)
+		OutDeviceColor = LinearToST2084( ODTColor );
+	}
+	 
+	// ACES 2000nit transform with PQ/2084 encoding, user specified gamut 
+	else if( GetOutputDevice() == TONEMAPPER_OUTPUT_ACES2000nitST2084 )
+	{		
+		FACESTonemapParams AcesParams = ComputeACESTonemapParams(ACESMinMaxData, ACESMidData, ACESCoefsLow_0, ACESCoefsHigh_0, ACESCoefsLow_4, ACESCoefsHigh_4, ACESSceneColorMultiplier);
+		
+		// 2000 nit ODT
+		float3 ODTColor = ACESOutputTransforms2000( FilmColor, (float3x3)WorkingColorSpace.ToAP0, AcesParams);
 
 		// Convert from AP1 to specified output gamut
 		ODTColor = mul( AP1_2_Output, ODTColor );
@@ -124,43 +130,54 @@ float4 DeviceEncodingOnlyCommonPS(
 		OutDeviceColor = LinearToST2084( ODTColor );
 	}
 
-	// ACES 2000nit transform with PQ/2084 encoding, user specified gamut 
-	else if( GetOutputDevice() == 4 || GetOutputDevice() == 6 )
-	{		
-		// 2000 nit ODT
-		float3 ODTColor = ACESOutputTransforms2000( FilmColor );
-
-		// Convert from AP1 to specified output gamut
-		ODTColor = mul( AP1_2_Output, ODTColor );
-
-		// Apply conversion to ST-2084 (Dolby PQ)
-		OutDeviceColor = LinearToST2084( ODTColor );
-	}	
-	
-	else if( GetOutputDevice() == 7 )
+	// ACES 1000nit transform to linear ScRGB
+	else if(GetOutputDevice() == TONEMAPPER_OUTPUT_ACES1000nitScRGB)
 	{
-		float3 OutputGamutColor = mul( AP1_2_Output, mul( sRGB_2_AP1, FilmColor ) );
+		FACESTonemapParams AcesParams = ComputeACESTonemapParams(ACESMinMaxData, ACESMidData, ACESCoefsLow_0, ACESCoefsHigh_0, ACESCoefsLow_4, ACESCoefsHigh_4, ACESSceneColorMultiplier);
+
+		// 1000 nit ODT
+		float3 ODTColor = ACESOutputTransforms1000( FilmColor, (float3x3)WorkingColorSpace.ToAP0, AcesParams);
+
+		// Apply conversion to ScRGB
+		OutDeviceColor = ST2084ToScRGB( LinearToST2084( ODTColor ), TONEMAPPER_OUTPUT_ACES1000nitScRGB, OutputMaxLuminance );
+	}
+
+	// ACES 2000nit transform to linear ScRGB
+	else if(GetOutputDevice() == TONEMAPPER_OUTPUT_ACES2000nitScRGB)
+	{
+		FACESTonemapParams AcesParams = ComputeACESTonemapParams(ACESMinMaxData, ACESMidData, ACESCoefsLow_0, ACESCoefsHigh_0, ACESCoefsLow_4, ACESCoefsHigh_4, ACESSceneColorMultiplier);
+
+		// 2000 nit ODT
+		float3 ODTColor = ACESOutputTransforms2000( FilmColor, (float3x3)WorkingColorSpace.ToAP0, AcesParams);
+
+		// Apply conversion to ScRGB
+		OutDeviceColor = ST2084ToScRGB( LinearToST2084( ODTColor ), TONEMAPPER_OUTPUT_ACES2000nitScRGB, OutputMaxLuminance );
+	}
+	
+	else if( GetOutputDevice() == TONEMAPPER_OUTPUT_LinearEXR)
+	{
+		float3 OutputGamutColor = mul( AP1_2_Output, mul( (float3x3)WorkingColorSpace.ToAP1, FilmColor ) );
 		OutDeviceColor = LinearToST2084( OutputGamutColor );
 	}
 	// Linear HDR, including all color correction, but no tone curve
-	else if( GetOutputDevice() == 8 ) 
+	else if( GetOutputDevice() == TONEMAPPER_OUTPUT_NoToneCurve)
 	{
 		OutDeviceColor = FilmColor;
 	}
 	// "Linear" including all color correction and the tone curve, but no device gamma
-	else if (GetOutputDevice() == 9)
+	else if (GetOutputDevice() == TONEMAPPER_OUTPUT_WithToneCurve)
 	{
-		float3 OutputGamutColor = mul(AP1_2_Output, mul(sRGB_2_AP1, SceneColor.rgb)); 
+		float3 OutputGamutColor = mul( AP1_2_Output, mul( (float3x3)WorkingColorSpace.ToAP1, SceneColor.rgb ) ); 
 
 		OutDeviceColor = OutputGamutColor;
 	}
 
-	// OutputDevice == 2
+	// OutputDevice == TONEMAPPER_OUTPUT_ExplicitGammaMapping
 	// Gamma 2.2, user specified gamut
 	else
 	{
 		// Convert from sRGB to specified output gamut
-		float3 OutputGamutColor = mul( AP1_2_Output, mul( sRGB_2_AP1, FilmColor ) );
+		float3 OutputGamutColor = mul( AP1_2_Output, mul( (float3x3)WorkingColorSpace.ToAP1, FilmColor ) );
 
 		// This is different than the prior "gamma" curve adjustment (but reusing the variable).
 		// For displays set to a gamma colorspace.

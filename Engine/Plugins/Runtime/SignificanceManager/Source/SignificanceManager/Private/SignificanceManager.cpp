@@ -6,6 +6,9 @@
 #include "GameFramework/HUD.h"
 #include "Engine/Engine.h"
 #include "Async/ParallelFor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SignificanceManager)
+
 #if ALLOW_CONSOLE
 #include "Engine/Console.h"
 #include "ConsoleSettings.h"
@@ -140,6 +143,8 @@ void USignificanceManager::BeginDestroy()
 	}
 	ManagedObjects.Reset();
 	ManagedObjectsByTag.Reset();
+	ObjArray.Reset();
+	ObjWithSequentialPostWork.Reset();
 }
 
 UWorld* USignificanceManager::GetWorld()const
@@ -170,7 +175,7 @@ void USignificanceManager::RegisterManagedObject(FManagedObjectInfo* ObjectInfo)
 
 	if (ObjectInfo->GetPostSignificanceType() == EPostSignificanceType::Sequential)
 	{
-		++ManagedObjectsWithSequentialPostWork;
+		ObjWithSequentialPostWork.Add({ ObjectInfo, ObjectInfo->GetSignificance() });
 	}
 
 	// Calculate initial significance
@@ -186,6 +191,7 @@ void USignificanceManager::RegisterManagedObject(FManagedObjectInfo* ObjectInfo)
 	}
 
 	ManagedObjects.Add(Object, ObjectInfo);
+	ObjArray.Add(ObjectInfo);
 	TArray<FManagedObjectInfo*>& ManagedObjectInfos = ManagedObjectsByTag.FindOrAdd(ObjectInfo->GetTag());
 
 	if (ManagedObjectInfos.Num() > 0)
@@ -226,6 +232,17 @@ void USignificanceManager::RegisterManagedObject(FManagedObjectInfo* ObjectInfo)
 	}
 }
 
+void USignificanceManager::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	USignificanceManager* This = CastChecked<USignificanceManager>(InThis);
+	// Do not allow eliminating references here so that we don't have to deal with cleaning up management info during GC.
+	// All managed objects should be removed from the significance manager before being marked for explicit destruction.
+	Collector.AllowEliminatingReferences(false);
+	// This explicit template instantiation prevents the use of the overload which expects the map's value type to be a UObject*
+	Collector.AddReferencedObjects<UObject, FManagedObjectInfo*>(This->ManagedObjects, This);
+	Collector.AllowEliminatingReferences(true);
+}
+
 void USignificanceManager::UnregisterObject(UObject* Object)
 {
 	DEC_DWORD_STAT(STAT_SignificanceManager_NumObjects);
@@ -236,8 +253,14 @@ void USignificanceManager::UnregisterObject(UObject* Object)
 	{
 		if (ObjectInfo->GetPostSignificanceType() == EPostSignificanceType::Sequential)
 		{
-			--ManagedObjectsWithSequentialPostWork;
+			const int32 Index = ObjWithSequentialPostWork.IndexOfByPredicate([ObjectInfo](const FSequentialPostWorkPair& WorkPair) { return WorkPair.ObjectInfo == ObjectInfo; });
+			if (Index != -1)
+			{
+				ObjWithSequentialPostWork.RemoveAtSwap(Index, 1, false);
+			}
 		}
+
+		ObjArray.RemoveSwap(ObjectInfo, false);
 
 		TArray<FManagedObjectInfo*>& ObjectsWithTag = ManagedObjectsByTag.FindChecked(ObjectInfo->GetTag());
 		if (ObjectsWithTag.Num() == 1)
@@ -267,8 +290,14 @@ void USignificanceManager::UnregisterAll(FName Tag)
 		{
 			if (ManagedObj->GetPostSignificanceType() == EPostSignificanceType::Sequential)
 			{
-				--ManagedObjectsWithSequentialPostWork;
+				const int32 Index = ObjWithSequentialPostWork.IndexOfByPredicate([ManagedObj](const FSequentialPostWorkPair& WorkPair) { return WorkPair.ObjectInfo == ManagedObj; });
+				if (Index != -1)
+				{
+					ObjWithSequentialPostWork.RemoveAtSwap(Index, 1, false);
+				}
 			}
+
+			ObjArray.RemoveSwap(ManagedObj, false);
 			ManagedObjects.Remove(ManagedObj->GetObject());
 			if (ManagedObj->PostSignificanceFunction != nullptr)
 			{
@@ -402,39 +431,32 @@ void USignificanceManager::Update(TArrayView<const FTransform> InViewpoints)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_SignificanceManager_SignificanceUpdate);
 
-		check(ObjArray.Num() == 0 && ObjWithSequentialPostWork.Num() == 0);
-
-		ObjArray.Reserve(ManagedObjects.Num());
-		ObjWithSequentialPostWork.Reserve(ManagedObjectsWithSequentialPostWork);
-
-		for (const TPair<UObject*, FManagedObjectInfo*>& ManagedObjectPair : ManagedObjects)
+		// Update old significance values
+		for (FSequentialPostWorkPair& SequentialPostWorkPair : ObjWithSequentialPostWork)
 		{
-			FManagedObjectInfo* ObjectInfo = ManagedObjectPair.Value;
-			ObjArray.Add(ObjectInfo);
-			if (ObjectInfo->GetPostSignificanceType() == EPostSignificanceType::Sequential)
-			{
-				ObjWithSequentialPostWork.Add({ ObjectInfo,ObjectInfo->GetSignificance() });
-			}
+			SequentialPostWorkPair.OldSignificance = SequentialPostWorkPair.ObjectInfo->GetSignificance();
 		}
 
-		ParallelFor(ObjArray.Num(),
+		// Copy the data we'll be working on this frame to avoid issues if objects are registered/unregistered while it runs.
+		// We don't need to clear them afterwards as we always overwrite them fully.
+		ObjArrayCopy = ObjArray;
+		ObjWithSequentialPostWorkCopy = ObjWithSequentialPostWork;
+
+		ParallelFor(ObjArrayCopy.Num(),
 			[&](int32 Index)
 		{
-			FManagedObjectInfo* ObjectInfo = ObjArray[Index];
+			FManagedObjectInfo* ObjectInfo = ObjArrayCopy[Index];
 
 			checkSlow(ObjectInfo->GetObject()->IsValidLowLevel());
 
 			ObjectInfo->UpdateSignificance(Viewpoints,bSortSignificanceAscending);
 		});
 
-		for (const FSequentialPostWorkPair& SequentialPostWorkPair : ObjWithSequentialPostWork)
+		for (const FSequentialPostWorkPair& SequentialPostWorkPair : ObjWithSequentialPostWorkCopy)
 		{
 			FManagedObjectInfo* ObjectInfo = SequentialPostWorkPair.ObjectInfo; 
 			ObjectInfo->PostSignificanceFunction(ObjectInfo, SequentialPostWorkPair.OldSignificance, ObjectInfo->GetSignificance(), false);
 		}
-
-		ObjArray.Reset();
-		ObjWithSequentialPostWork.Reset();
 	}
 
 	{
@@ -500,3 +522,4 @@ void USignificanceManager::OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDe
 		}
 	}
 }
+

@@ -15,12 +15,6 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				}
-			);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
@@ -45,6 +39,9 @@ namespace UnrealBuildTool.Rules
 					"MassSignals",
 					"MassLOD",
 					"StructUtils",
+					"StructUtils",
+					"MassSmartObjects",
+					"SmartObjectsModule",
 				}
 			);
 
@@ -54,15 +51,7 @@ namespace UnrealBuildTool.Rules
 				PublicDependencyModuleNames.Add("MassEntityEditor");
 			}
 
-			if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
-			{
-				PrivateDependencyModuleNames.Add("GameplayDebugger");
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
-			}
-			else
-			{
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
-			}
+			SetupGameplayDebuggerSupport(Target);
 		}
 	}
 }

@@ -13,15 +13,6 @@ public class TextureEditor : ModuleRules
 			}
 		);
 
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/TextureEditor/Private",
-				"Editor/TextureEditor/Private/Menus",
-				"Editor/TextureEditor/Private/Models",
-				"Editor/TextureEditor/Private/Widgets",
-			}
-		);
-
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Settings",
@@ -41,7 +32,6 @@ public class TextureEditor : ModuleRules
 				"RHI",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
                 "PropertyEditor",

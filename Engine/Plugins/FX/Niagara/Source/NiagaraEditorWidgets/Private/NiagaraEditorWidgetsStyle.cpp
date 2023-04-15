@@ -8,8 +8,8 @@
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Styling/StarshipCoreStyle.h"
-#include "Classes/EditorStyleSettings.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
 
@@ -150,6 +150,11 @@ FNiagaraEditorWidgetsStyle::FNiagaraEditorWidgetsStyle() : FSlateStyleSet("Niaga
 		.SetFont(SystemOverviewItemFont);
 	Set("NiagaraEditor.SystemOverview.ItemText", SystemOverviewItemText);
 
+	FSlateFontInfo SystemOverviewZoomedOutNodeFont = DEFAULT_FONT("Regular", 45);
+	FTextBlockStyle SystemOverviewZoomedOutNodeText = FTextBlockStyle(NormalText)
+		.SetFont(SystemOverviewZoomedOutNodeFont);
+	Set("NiagaraEditor.SystemOverview.ZoomedOutNodeFont", SystemOverviewZoomedOutNodeText);
+
 	FSlateFontInfo SystemOverviewAlternateItemFont = DEFAULT_FONT("Italic", 9);
 	FTextBlockStyle SystemOverviewAlternateItemText = FTextBlockStyle(NormalText)
 		.SetFont(SystemOverviewAlternateItemFont);
@@ -225,11 +230,17 @@ FNiagaraEditorWidgetsStyle::FNiagaraEditorWidgetsStyle() : FSlateStyleSet("Niaga
 	Set("NiagaraEditor.SystemOverview.CheckBoxBorder", new CORE_BOX_BRUSH("Common/GroupBorderLight", FMargin(4.0f / 16.0f)));
 	Set("NiagaraEditor.SystemOverview.NodeBackgroundBorder", new BOX_BRUSH("Icons/SystemOverviewNodeBackground", FMargin(1.0f / 4.0f)));
 	Set("NiagaraEditor.SystemOverview.NodeBackgroundColor", FLinearColor(FColor(48, 48, 48)));
+	Set("NiagaraEditor.SystemOverview.AffectedAssetsWarningColor", FLinearColor(FColor(255, 184, 0)));
 
 	Set("NiagaraEditor.Scalability.EffectType.bAllowCullingForLocalPlayers", new IMAGE_BRUSH_SVG("Icons/Scalability/CullDistance_20", Icon20x20));
 	Set("NiagaraEditor.Scalability.EffectType.UpdateFrequency", new IMAGE_BRUSH_SVG("Icons/Scalability/Update", Icon20x20));
 	Set("NiagaraEditor.Scalability.EffectType.CullReaction",  new IMAGE_BRUSH_SVG("Icons/Scalability/CullReaction_20", Icon20x20));
 	Set("NiagaraEditor.Scalability.EffectType.SignificanceHandler",  new IMAGE_BRUSH_SVG("Icons/Scalability/SignificanceHandler_20", Icon20x20));
+
+
+	Set("NiagaraEditor.Stack.ReadIcon", new IMAGE_BRUSH_SVG("Icons/Read_Icon", Icon16x16));
+	Set("NiagaraEditor.Stack.ReadWriteIcon", new IMAGE_BRUSH_SVG("Icons/Read_Write_Icon", Icon16x16));
+	Set("NiagaraEditor.Stack.WriteIcon", new IMAGE_BRUSH_SVG("Icons/Write_Icon", Icon16x16));
 
 	FTextBlockStyle EffectTypeScalabilityPropertyTextStyle = FTextBlockStyle(NormalText)
 		.SetFont(DEFAULT_FONT("Regular", 8))

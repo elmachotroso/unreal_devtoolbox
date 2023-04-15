@@ -150,34 +150,29 @@ namespace mtlpp
 			ns::String Ver;
 			switch(options.GetLanguageVersion())
 			{
+				case LanguageVersion::Version3_0:
+					Ver = @"3.0";
+					break;
 				case LanguageVersion::Version2_4:
 					Ver = @"2.4";
 					break;
-				case LanguageVersion::Version2_3:
-					Ver = @"2.3";
-					break;
-				case LanguageVersion::Version2_2:
-					Ver = @"2.2";
-					break;
-                case LanguageVersion::Version2_1:
-                    Ver = @"2.1";
+                case LanguageVersion::Version2_3:
+                    Ver = @"2.3";
                     break;
-                case LanguageVersion::Version2_0:
-                    Ver = @"2.0";
+                case LanguageVersion::Version2_2:
+                    Ver = @"2.2";
                     break;
-                case LanguageVersion::Version1_2:
-                    Ver = @"1.2";
-                    break;
-                case LanguageVersion::Version1_1:
-                    Ver = @"1.1";
-                    break;
-                case LanguageVersion::Version1_0:
-				default:
-					Ver = @"2.2";
+
+                default:
+					Ver = @"2.4";
 					break;
 			}
 			
 			ns::String Std([NSString stringWithFormat:@"-std=%@-metal%@", PlatformStandards[(int)options.Platform].GetPtr(), Ver.GetPtr()]);
+            if([Ver isEqualToString:@"3.0"])
+            {
+                Std =([NSString stringWithFormat:@"-std=metal%@", Ver.GetPtr()]);
+            }
 			ns::String Math = options.IsFastMathEnabled() ? @"-ffast-math" : @"-fno-fast-math";
 			ns::String Debug = options.KeepDebugInfo ? @"-gline-tables-only" : @"";
 			ns::String MinOS = options.MinOS[0] > 0 ? [NSString stringWithFormat:@"-m%@-version-min=%d.%d", PlatformNames[(int)options.Platform].GetPtr(), options.MinOS[0], options.MinOS[1]] : @"";

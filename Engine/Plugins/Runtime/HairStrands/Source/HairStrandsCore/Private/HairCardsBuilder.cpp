@@ -17,7 +17,7 @@
 #include "Containers/ResourceArray.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "HAL/ConsoleManager.h"
-#include "ShaderDebug.h"
+#include "ShaderPrint.h"
 #include "Async/ParallelFor.h"
 #include "Misc/ScopedSlowTask.h"
 #include "CommonRenderResources.h"
@@ -118,7 +118,7 @@ class FHairCardAtlasTextureRectPS : public FGlobalShader
 	using FPermutationDomain = TShaderPermutationDomain<FOutput>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderDrawParameters)
 		SHADER_PARAMETER(FVector3f, Raster_MinBound)
 		SHADER_PARAMETER(FVector3f, Raster_MaxBound)
 		
@@ -159,7 +159,7 @@ static void AddCardsTracingPass(
 	const bool bClear,
 	const FHairCardsProceduralAtlas& InAtlas,
 	const FHairCardsProceduralAtlas::Rect& Rect,
-	const FShaderDrawDebugData* ShaderDrawData,
+	const FShaderPrintData* ShaderPrintData,
 	const uint32 TotalVertexCount,
 	FRHIShaderResourceView* InStrandsVertexBuffer,
 	FRHIShaderResourceView* InStrandsAttributeBuffer,
@@ -192,9 +192,9 @@ static void AddCardsTracingPass(
 	ParametersPS->Curve_PositionBuffer = InStrandsVertexBuffer;
 	ParametersPS->Curve_AttributeBuffer = InStrandsAttributeBuffer;
 
-	if (ShaderDrawData)
+	if (ShaderPrintData)
 	{
-		ShaderDrawDebug::SetParameters(GraphBuilder, *ShaderDrawData, ParametersPS->ShaderDrawParameters);
+		ShaderPrint::SetParameters(GraphBuilder, *ShaderPrintData, ParametersPS->ShaderDrawParameters);
 	}
 
 	if (bOutputCoverageOnly)
@@ -278,7 +278,7 @@ static void AddHairCardAtlasTexturePass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
 	const FHairCardsProceduralAtlas& InAtlas,
-	const FShaderDrawDebugData* ShaderDrawData,
+	const FShaderPrintData* ShaderPrintData,
 	const uint32 TotalVertexCount,
 	FRHIShaderResourceView* InStrandsVertexBuffer,
 	FRHIShaderResourceView* InStrandsAttributeBuffer,
@@ -300,7 +300,7 @@ static void AddHairCardAtlasTexturePass(
 			bClear,
 			InAtlas,
 			Rect,
-			ShaderDrawData,
+			ShaderPrintData,
 			TotalVertexCount,
 			InStrandsVertexBuffer,
 			InStrandsAttributeBuffer,
@@ -318,7 +318,7 @@ static void AddHairCardAtlasTexturePass(
 			bClear,
 			InAtlas,
 			Rect,
-			ShaderDrawData,
+			ShaderPrintData,
 			TotalVertexCount,
 			InStrandsVertexBuffer,
 			InStrandsAttributeBuffer,
@@ -2837,26 +2837,101 @@ namespace HairCards
 		OutGuides.StrandsCurves.SetNum(NumCards);
 		OutGuides.BoundingBox.Init();
 
-
 		InCards.CoordU.SetNum(InCards.Positions.Num());
+		InCards.LocalUVs.SetNum(InCards.Positions.Num());
 
 		const float GuideRadius = 0.01f;
+
+		// Find the principal direction of the atlas by comparing the number of segment along U and along V
+		bool bIsMainDirectionU = true;
+		{
+			uint32 MainDirectionUCount = 0;
+			uint32 ValidCount = 0;
+			FVector4f TriangleUVs[3];
+			for (uint32 CardIt = 0; CardIt < NumCards; ++CardIt)
+			{
+				const uint32 NumTriangles = InCards.IndexCounts[CardIt] / 3;
+				const uint32 VertexOffset = InCards.IndexOffsets[CardIt];
+				struct FIndexAndCoord { uint32 Index; float TexCoord; };
+				struct FSimilarUVVertices
+				{
+					float TexCoord = 0;
+					TArray<uint32> Indices;
+					TArray<FIndexAndCoord> AllIndices; // Store vertex index and Tex.coord perpendicular to the principal axis (stored in TexCoord)
+				};
+				TArray<FSimilarUVVertices> SimilarVertexU;
+				TArray<FSimilarUVVertices> SimilarVertexV;
+
+				auto AddSimilarUV = [](TArray<FSimilarUVVertices>& In, uint32 Index, float TexCoord, float MinorTexCoord, float Threshold)
+				{
+					bool bFound = false;
+					for (int32 It = 0, Count = In.Num(); It < Count; ++It)
+					{
+						if (FMath::Abs(In[It].TexCoord - TexCoord) < Threshold)
+						{
+							// We add only unique vertices per segment, so that the average position land in the center of the cards
+							In[It].Indices.AddUnique(Index);
+							In[It].AllIndices.Add({ Index, MinorTexCoord });
+							bFound = true;
+							break;
+						}
+					}
+
+					if (!bFound)
+					{
+						FSimilarUVVertices& SimilarUV = In.AddDefaulted_GetRef();
+						SimilarUV.TexCoord = TexCoord;
+						SimilarUV.Indices.Add(Index);
+						SimilarUV.AllIndices.Add({ Index, MinorTexCoord });
+					}
+				};
+
+				// Iterate over all triangles of a cards, and find vertices which share either same U or same V. We add them to separate lists. 
+				// We then use the following heuristic: the main axis will have more segments. This is what determine the principal axis of the cards
+				const float UVCoordTreshold = 1.f / 1024.f; // 1 pixel for a 1k texture
+				for (uint32 TriangleIt = 0; TriangleIt < NumTriangles; ++TriangleIt)
+				{
+					const uint32 VertexIndexOffset = VertexOffset + TriangleIt * 3;
+					for (uint32 VertexIt = 0; VertexIt < 3; ++VertexIt)
+					{
+						const uint32 VertexIndex = InCards.Indices[VertexIndexOffset + VertexIt];
+						const FVector4f UV = TriangleUVs[VertexIt] = InCards.UVs[VertexIndex];
+						AddSimilarUV(SimilarVertexU, VertexIndex, UV.X, UV.Y, UVCoordTreshold);
+						AddSimilarUV(SimilarVertexV, VertexIndex, UV.Y, UV.X, UVCoordTreshold);
+					}
+				}
+
+				// Use global UV orientation
+				// Use global segment count orientation
+
+				// Find the perpendicular direction by comparing the number of segment along U and along V
+				const bool bIsValid = SimilarVertexU.Num() != SimilarVertexV.Num() ? 1u : 0u;
+				if (bIsValid)
+				{
+					++ValidCount;
+					MainDirectionUCount += SimilarVertexU.Num() > SimilarVertexV.Num() ? 1u : 0u;
+				}
+			}
+
+			bIsMainDirectionU = (float(MainDirectionUCount) / float(FMath::Max(1u,ValidCount))) > 0.5f;
+		}
 
 		FVector4f TriangleUVs[3];
 		for (uint32 CardIt = 0; CardIt < NumCards; ++CardIt)
 		{
 			const uint32 NumTriangles = InCards.IndexCounts[CardIt] / 3;
 			const uint32 VertexOffset = InCards.IndexOffsets[CardIt];
+			struct FIndexAndCoord { uint32 Index; float TexCoord; };
 			struct FSimilarUVVertices
 			{
 				float TexCoord = 0;
 				TArray<uint32> Indices;
-				TArray<uint32> AllIndices;
+				TArray<FIndexAndCoord> AllIndices; // Store vertex index and Tex.coord perpendicular to the principal axis (stored in TexCoord)
 			};
 			TArray<FSimilarUVVertices> SimilarVertexU;
 			TArray<FSimilarUVVertices> SimilarVertexV;
 
-			auto AddSimilarUV = [](TArray<FSimilarUVVertices>& In, uint32 Index, float TexCoord, float Threshold)
+			auto AddSimilarUV = [](TArray<FSimilarUVVertices>& In, uint32 Index, float TexCoord, float MinorTexCoord, float Threshold)
 			{
 				bool bFound = false;
 				for (int32 It = 0, Count = In.Num(); It < Count; ++It)
@@ -2865,7 +2940,7 @@ namespace HairCards
 					{
 						// We add only unique vertices per segment, so that the average position land in the center of the cards
 						In[It].Indices.AddUnique(Index);
-						In[It].AllIndices.Add(Index);
+						In[It].AllIndices.Add({Index, MinorTexCoord});
 						bFound = true;
 						break;
 					}
@@ -2876,12 +2951,12 @@ namespace HairCards
 					FSimilarUVVertices& SimilarUV = In.AddDefaulted_GetRef();
 					SimilarUV.TexCoord = TexCoord;
 					SimilarUV.Indices.Add(Index);
-					SimilarUV.AllIndices.Add(Index);
+					SimilarUV.AllIndices.Add({Index, MinorTexCoord});
 				}
 			};
 
-			// Iterate overa all the triangles of a cards, and find vertices which share either same U or same V. We add them to seperate lists. 
-			// We then use the heuristic that, the main axis will have more segments. This is what determine the principal axis of the cards
+			// Iterate over all triangles of a cards, and find vertices which share either same U or same V. We add them to separate lists. 
+			// We then use the following heuristic: the main axis will have more segments. This is what determine the principal axis of the cards
 			const float UVCoordTreshold = 1.f / 1024.f; // 1 pixel for a 1k texture
 			for (uint32 TriangleIt = 0; TriangleIt < NumTriangles; ++TriangleIt)
 			{
@@ -2890,13 +2965,12 @@ namespace HairCards
 				{
 					const uint32 VertexIndex = InCards.Indices[VertexIndexOffset + VertexIt];
 					const FVector4f UV = TriangleUVs[VertexIt] = InCards.UVs[VertexIndex];
-					AddSimilarUV(SimilarVertexU, VertexIndex, UV.X, UVCoordTreshold);
-					AddSimilarUV(SimilarVertexV, VertexIndex, UV.Y, UVCoordTreshold);
+					AddSimilarUV(SimilarVertexU, VertexIndex, UV.X, UV.Y, UVCoordTreshold);
+					AddSimilarUV(SimilarVertexV, VertexIndex, UV.Y, UV.X, UVCoordTreshold);
 				}
 			}
 
 			// Find the perpendicular direction by comparing the number of segment along U and along V
-			const bool bIsMainDirectionU = SimilarVertexU.Num() >= SimilarVertexV.Num();
 			TArray<FVector3f> CenterPoints;
 			{
 				// Sort vertices along the main axis so that, when we iterate through them, we get a correct linear ordering
@@ -2905,6 +2979,29 @@ namespace HairCards
 				{
 					return A.TexCoord < B.TexCoord;
 				});
+
+				// For each group of vertex with similar 'principal' tex coord, sort them with growing 'perpendicular/secondary' tex coord
+				for (FSimilarUVVertices& Similar : SimilarVertex)
+				{
+					Similar.AllIndices.Sort([](const FIndexAndCoord& A, const FIndexAndCoord& B)
+					{
+						return A.TexCoord < B.TexCoord;
+					});
+
+					// Compute normalize coordinate
+					float MinTexCoord = Similar.AllIndices[0].TexCoord;
+					float MaxTexCoord = Similar.AllIndices[0].TexCoord;
+					for (const FIndexAndCoord& A : Similar.AllIndices)
+					{
+						MinTexCoord = FMath::Min(A.TexCoord, MinTexCoord);
+						MaxTexCoord = FMath::Max(A.TexCoord, MaxTexCoord);
+					}
+					MaxTexCoord = FMath::Max(MaxTexCoord, MinTexCoord + KINDA_SMALL_NUMBER);
+					for (FIndexAndCoord& A : Similar.AllIndices)
+					{
+						A.TexCoord = (A.TexCoord - MinTexCoord) / (MaxTexCoord - MinTexCoord);
+					}
+				}
 
 				CenterPoints.Reserve(SimilarVertex.Num());
 				FVector3f PrevCenterPoint = FVector3f::ZeroVector;
@@ -2927,9 +3024,11 @@ namespace HairCards
 					}
 
 					// Update neighbor vertex with current length (to compute the parametric distance at the end)
-					for (uint32 VertexIndex : Similar.AllIndices)
+					for (const FIndexAndCoord& VertexIndex : Similar.AllIndices)
 					{
-						InCards.CoordU[VertexIndex] = TotalLength;
+						InCards.CoordU[VertexIndex.Index] = TotalLength;
+						InCards.LocalUVs[VertexIndex.Index].X = TotalLength;
+						InCards.LocalUVs[VertexIndex.Index].Y = VertexIndex.TexCoord;
 					}
 
 					CenterPoints.Add(CenterPoint);
@@ -2944,6 +3043,7 @@ namespace HairCards
 						for (uint32 VertexIndex : Similar.Indices)
 						{
 							InCards.CoordU[VertexIndex] /= TotalLength;
+							InCards.LocalUVs[VertexIndex].X = InCards.CoordU[VertexIndex];
 						}
 					}
 				}
@@ -3335,7 +3435,7 @@ namespace FHairCardsBuilder
 FString GetVersion()
 {
 	// Important to update the version when cards building or importing changes
-	return TEXT("9e");
+	return TEXT("9g");
 }
 
 void AllocateAtlasTexture(UTexture2D* Out, const FIntPoint& Resolution, uint32 MipCount, EPixelFormat PixelFormat, ETextureSourceFormat SourceFormat)
@@ -3466,7 +3566,7 @@ void BuildGeometry(
 	{
 		check(FMath::IsFinite(Out.Cards.Positions[PointIt].X) && FMath::IsFinite(Out.Cards.Positions[PointIt].Y) && FMath::IsFinite(Out.Cards.Positions[PointIt].Z));
 		Out.RenderData.Positions[PointIt] = FVector4f(Out.Cards.Positions[PointIt], *((float*)&Out.Cards.CardIndices[PointIt]));
-		Out.RenderData.UVs[PointIt] = Out.Cards.UVs[PointIt];
+		Out.RenderData.UVs[PointIt] = FVector4f(Out.Cards.UVs[PointIt]);
 		Out.RenderData.Normals[PointIt * 2] = FVector4f(Out.Cards.Tangents[PointIt], 0);
 		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4f(Out.Cards.Normals[PointIt], 1);
 
@@ -3539,13 +3639,13 @@ void BuildGeometry(
 	Out.RenderData.CardsStrandsPositions.SetNum(StrandsPointCount);
 	for (uint32 PointIt = 0; PointIt < StrandsPointCount; ++PointIt)
 	{
-		Out.RenderData.CardsStrandsPositions[PointIt] = Out.Atlas.StrandsPositions[PointIt];
+		Out.RenderData.CardsStrandsPositions[PointIt] = FVector4f(Out.Atlas.StrandsPositions[PointIt]);
 	}
 
 	Out.RenderData.CardsStrandsAttributes.SetNum(StrandsPointCount);
 	for (uint32 PointIt = 0; PointIt < StrandsPointCount; ++PointIt)
 	{
-		Out.RenderData.CardsStrandsAttributes[PointIt] = Out.Atlas.StrandsAttributes[PointIt];
+		Out.RenderData.CardsStrandsAttributes[PointIt] = FVector4f(Out.Atlas.StrandsAttributes[PointIt]);
 	}
 
 	// Interpolation data
@@ -3716,7 +3816,7 @@ bool InternalImportGeometry(
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
 		OutBulk.Positions[PointIt] = FVector4f(Out.Cards.Positions[PointIt], 0);
-		OutBulk.UVs[PointIt] = Out.Cards.UVs[PointIt];
+		OutBulk.UVs[PointIt] = FVector4f(Out.Cards.UVs[PointIt]);
 		OutBulk.Normals[PointIt * 2] = FVector4f(Out.Cards.Tangents[PointIt], 0);
 		OutBulk.Normals[PointIt * 2 + 1] = FVector4f(Out.Cards.Normals[PointIt], TangentFrameSigns[PointIt]);
 		OutBulk.Materials[PointIt] = 0;
@@ -3859,10 +3959,12 @@ bool InternalImportGeometry(
 		}
 
 		// 2. Extract cards root points
+		struct FRootIndexAndPosition { uint32 Index; FVector3f Position; };
 		struct FCardsRootData
 		{
-			FVector3f Position;
-			uint32  CardsIndex;
+			FRootIndexAndPosition Root0;
+			FRootIndexAndPosition Root1;
+			uint32 CardsIndex;
 		};
 		TArray<FCardsRootData> CardsRoots;
 		{
@@ -3872,43 +3974,74 @@ bool InternalImportGeometry(
 				const uint32 CardsIndexCount = Out.Cards.IndexCounts[CardIt];
 				const uint32 CardsIndexOffset = Out.Cards.IndexOffsets[CardIt];
 
-				uint32 AverageCount = 0;
-				FVector3f AverageRootPosition = FVector3f::ZeroVector;
+				// Extract card vertices which are roots points
+				TArray<FRootIndexAndPosition> RootPositions;
 				for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
 				{
 					const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
 					if (Out.Cards.CoordU[VertexIndex] == 0)
 					{
-						AverageRootPosition += Out.Cards.Positions[VertexIndex];
-						++AverageCount;
+						RootPositions.Add({VertexIndex, Out.Cards.Positions[VertexIndex]});
 					}
 				}
 
-				FCardsRootData& Cards = CardsRoots.AddDefaulted_GetRef();
-				Cards.CardsIndex = CardIt;
-				Cards.Position = AverageCount > 0 ? AverageRootPosition / AverageCount : FVector3f::ZeroVector;
+				// Select the two most representative root points
+				if (RootPositions.Num() > 0)
+				{
+					FCardsRootData& Cards = CardsRoots.AddDefaulted_GetRef();
+					Cards.CardsIndex = CardIt;
+					if (RootPositions.Num() == 1)
+					{
+						Cards.Root0 = RootPositions[0];
+						Cards.Root1 = RootPositions[0];
+					}
+					else if (RootPositions.Num() == 2)
+					{
+						const bool bInvert = Out.Cards.LocalUVs[RootPositions[0].Index].Y > Out.Cards.LocalUVs[RootPositions[1].Index].Y;
+						Cards.Root0 = bInvert ? RootPositions[1] : RootPositions[0];
+						Cards.Root1 = bInvert ? RootPositions[0] : RootPositions[1];
+					}
+					else
+					{
+						// Sort according to local V coord
+						RootPositions.Sort([&](const FRootIndexAndPosition& A, const FRootIndexAndPosition& B)
+						{
+							return Out.Cards.LocalUVs[A.Index].Y < Out.Cards.LocalUVs[B.Index].Y;
+						});
+
+						Cards.Root0 = RootPositions[0];
+						Cards.Root1 = RootPositions[RootPositions.Num()-1];
+					}
+				}
 			}
 		}
-
+		
 		// 3. Find cards root / curve root
+		for (const FCardsRootData& CardsRoot : CardsRoots)
 		{
-			for (const FCardsRootData& CardsRoot : CardsRoots)
+			for (uint32 CardsRootPositionIndex=0; CardsRootPositionIndex <2; CardsRootPositionIndex++)
 			{
 				// 3.1 Find closet root UV
 				// /!\ N^2 loop: the number of cards should be relatively small
-				uint32 CurveIndex = ~0;
-				float ClosestDistance = FLT_MAX;
-				FVector2f RootUV = FVector2f::ZeroVector;
-				for (const FStrandsRootData& StrandsRoot : StrandsRoots)
+				auto FindRootUV = [&](const FVector3f CardsRootPosition)
 				{
-					const float Distance = FVector3f::Distance(StrandsRoot.Position, CardsRoot.Position);
-					if (Distance < ClosestDistance)
+					uint32 CurveIndex = ~0;
+					float ClosestDistance = FLT_MAX;
+					FVector2f RootUV = FVector2f::ZeroVector;
+					for (const FStrandsRootData& StrandsRoot : StrandsRoots)
 					{
-						ClosestDistance = Distance;
-						CurveIndex = StrandsRoot.CurveIndex;
-						RootUV = StrandsRoot.RootUV;
+						const float Distance = FVector3f::Distance(StrandsRoot.Position, CardsRootPosition);
+						if (Distance < ClosestDistance)
+						{
+							ClosestDistance = Distance;
+							CurveIndex = StrandsRoot.CurveIndex;
+							RootUV = StrandsRoot.RootUV;
+						}
 					}
-				}
+					return RootUV;
+				};
+				const FVector2f RootUV0 = FindRootUV(CardsRoot.Root0.Position);
+				const FVector2f RootUV1 = FindRootUV(CardsRoot.Root1.Position);
 
 				// 3.2 Apply root UV to all cards vertices
 				{
@@ -3917,6 +4050,21 @@ bool InternalImportGeometry(
 					for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
 					{
 						const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
+
+						// Linearly interpolate between the two roots based on the local V coordinate 
+						// * LocalU is along the card 
+						// * LocalV is across the card
+						//  U
+						//  ^  ____
+						//  | |    |
+						//  | |____| Card
+						//  | |    |
+						//  | |____|
+						//     ----> V
+						// Root0  Root1
+						const float TexCoordV = Out.Cards.LocalUVs[VertexIndex].Y;
+						const FVector2f RootUV = FMath::Lerp(RootUV0, RootUV1, TexCoordV);
+
 						Out.Cards.UVs[VertexIndex].Z = RootUV.X;
 						Out.Cards.UVs[VertexIndex].W = RootUV.Y;
 						OutBulk.UVs[VertexIndex].Z   = RootUV.X;
@@ -4014,24 +4162,23 @@ static void AddCardsTextureReadbackPass(
 		check(OutTexture->Source.GetSizeX() == Resolution.X);
 		check(OutTexture->Source.GetSizeY() == Resolution.Y);
 
-		FRHIResourceCreateInfo CreateInfo(TEXT("CardsTextureReadbackPass_StagingTexture"));
-		FTexture2DRHIRef StagingTexture = RHICreateTexture2D(
-			InputTexture->Desc.Extent.X,
-			InputTexture->Desc.Extent.Y,
-			InputTexture->Desc.Format,
-			InputTexture->Desc.NumMips,
-			1, TexCreate_CPUReadback, CreateInfo);
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("CardsTextureReadbackPass_StagingTexture"), InputTexture->Desc.Extent, InputTexture->Desc.Format)
+			.SetNumMips(InputTexture->Desc.NumMips)
+			.SetFlags(ETextureCreateFlags::CPUReadback);
+
+		FTextureRHIRef StagingTexture = RHICreateTexture(Desc);
 
 		FRHICopyTextureInfo CopyInfo;
 		CopyInfo.NumMips = InputTexture->Desc.NumMips;
 		RHICmdList.CopyTexture(
 			InputTexture->GetRHI(),
-			StagingTexture->GetTexture2D(),
+			StagingTexture,
 			CopyInfo);
 
 		// Flush, to ensure that all texture generation is done
-		GDynamicRHI->RHISubmitCommandsAndFlushGPU();
-		GDynamicRHI->RHIBlockUntilGPUIdle();
+		RHICmdList.SubmitCommandsAndFlushGPU();
+		RHICmdList.BlockUntilGPUIdle();
 
 		// don't think we can mark package as a dirty in the package build
 #if WITH_EDITORONLY_DATA
@@ -4067,7 +4214,7 @@ static void AddCardsTextureReadbackPass(
 void RunHairCardsAtlasQueries(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
-	const FShaderDrawDebugData* DebugShaderData)
+	const FShaderPrintData* DebugShaderData)
 {
 	FHairCardsBuilder::FCardsAtlasQuery Q;
 	while (FHairCardsBuilder::GCardsAtlasQuery.Dequeue(Q))

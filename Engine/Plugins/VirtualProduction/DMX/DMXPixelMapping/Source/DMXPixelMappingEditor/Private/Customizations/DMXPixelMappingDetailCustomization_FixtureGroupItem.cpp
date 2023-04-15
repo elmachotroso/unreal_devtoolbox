@@ -38,14 +38,13 @@ void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CustomizeDetails(IDet
 	IDetailCategoryBuilder& OutputSettingsCategory = DetailLayout->EditCategory("Output Settings", FText::GetEmpty(), ECategoryPriority::Important);
 
 	// Hide absolute postition property handles
-	// Hide absolute postition property handles
-	TSharedPtr<IPropertyHandle> PositionXPropertyHandle = InDetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, PositionX));
+	TSharedPtr<IPropertyHandle> PositionXPropertyHandle = InDetailLayout.GetProperty(UDMXPixelMappingOutputComponent::GetPositionXPropertyName());
 	InDetailLayout.HideProperty(PositionXPropertyHandle);
-	TSharedPtr<IPropertyHandle> PositionYPropertyHandle = InDetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, PositionY));
+	TSharedPtr<IPropertyHandle> PositionYPropertyHandle = InDetailLayout.GetProperty(UDMXPixelMappingOutputComponent::GetPositionYPropertyName());
 	InDetailLayout.HideProperty(PositionYPropertyHandle);
-	TSharedPtr<IPropertyHandle> SizeXPropertyHandle = InDetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, SizeX));
+	TSharedPtr<IPropertyHandle> SizeXPropertyHandle = InDetailLayout.GetProperty(UDMXPixelMappingOutputComponent::GetSizeXPropertyName());
 	InDetailLayout.HideProperty(SizeXPropertyHandle);
-	TSharedPtr<IPropertyHandle> SizeYPropertyHandle = InDetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, SizeY));
+	TSharedPtr<IPropertyHandle> SizeYPropertyHandle = InDetailLayout.GetProperty(UDMXPixelMappingOutputComponent::GetSizeYPropertyName());
 	InDetailLayout.HideProperty(SizeXPropertyHandle);
 
 	// Add Function and ColorMode properties at the beginning
@@ -309,6 +308,8 @@ void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CreateModulatorDetail
 					DetailsViewArgs.bAllowSearch = false;
 					DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 					DetailsViewArgs.bHideSelectionTip = false;
+					DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
+
 					TSharedRef<IDetailsView> DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 					DetailsView->SetObjects(ModulatorsToEdit);
 
@@ -325,7 +326,7 @@ void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CreateModulatorDetail
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("ModulatorMultipleValues", "Multiple Values"))
-						.Font(IDetailLayoutBuilder::GetDetailFont())
+							.Font(IDetailLayoutBuilder::GetDetailFont())
 						];
 
 					break;

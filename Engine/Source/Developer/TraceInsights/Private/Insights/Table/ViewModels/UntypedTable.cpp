@@ -26,7 +26,7 @@ public:
 
 	virtual const TOptional<FTableCellValue> GetValue(const FTableColumn& Column, const FBaseTreeNode& Node) const
 	{
-		ensure(Node.GetTypeName() == FTableTreeNode::TypeName);
+		ensure(Node.Is<FTableTreeNode>());
 		const FTableTreeNode& TableTreeNode = static_cast<const FTableTreeNode&>(Node);
 
 		if (!Node.IsGroup()) // Table Row Node
@@ -107,7 +107,7 @@ bool AreTableLayoutsEqual(const TraceServices::ITableLayout& TableLayoutA, const
 		return false;
 	}
 
-	int32 ColumnCount = TableLayoutA.GetColumnCount();
+	int32 ColumnCount = static_cast<int32>(TableLayoutA.GetColumnCount());
 	for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 	{
 		if (TableLayoutA.GetColumnType(ColumnIndex) != TableLayoutB.GetColumnType(ColumnIndex))
@@ -159,7 +159,7 @@ bool FUntypedTable::UpdateSourceTable(TSharedPtr<TraceServices::IUntypedTable> I
 void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout)
 {
 	ensure(GetColumnCount() == 0);
-	const int32 ColumnCount = TableLayout.GetColumnCount();
+	const int32 ColumnCount = static_cast<int32>(TableLayout.GetColumnCount());
 
 	//////////////////////////////////////////////////
 	// Hierarchy Column
@@ -208,6 +208,7 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 
 		TSharedPtr<ITableCellValueFormatter> FormatterPtr;
 		TSharedPtr<ITableCellValueSorter> SorterPtr;
+		EColumnSortMode::Type InitialSortMode = EColumnSortMode::Ascending;
 
 		switch (ColumnType)
 		{
@@ -219,6 +220,7 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 			//else // if (Hint == AsTrueFalse)
 			FormatterPtr = MakeShared<FBoolValueFormatterAsTrueFalse>();
 			SorterPtr = MakeShared<FSorterByBoolValue>(ColumnRef);
+			InitialSortMode = EColumnSortMode::Ascending;
 			break;
 
 		case TraceServices::TableColumnType_Int:
@@ -238,6 +240,7 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 				FormatterPtr = MakeShared<FInt64ValueFormatterAsNumber>();
 			}
 			SorterPtr = MakeShared<FSorterByInt64Value>(ColumnRef);
+			InitialSortMode = EColumnSortMode::Descending;
 			break;
 
 		case TraceServices::TableColumnType_Float:
@@ -251,10 +254,12 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Time)
 			{
 				FormatterPtr = MakeShared<FFloatValueFormatterAsTimeAuto>();
+				InitialSortMode = EColumnSortMode::Ascending;
 			}
 			else
 			{
 				FormatterPtr = MakeShared<FFloatValueFormatterAsNumber>();
+				InitialSortMode = EColumnSortMode::Descending;
 			}
 			SorterPtr = MakeShared<FSorterByFloatValue>(ColumnRef);
 			break;
@@ -270,10 +275,12 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Time)
 			{
 				FormatterPtr = MakeShared<FDoubleValueFormatterAsTimeAuto>();
+				InitialSortMode = EColumnSortMode::Ascending;
 			}
 			else
 			{
 				FormatterPtr = MakeShared<FDoubleValueFormatterAsNumber>();
+				InitialSortMode = EColumnSortMode::Descending;
 			}
 			SorterPtr = MakeShared<FSorterByDoubleValue>(ColumnRef);
 			break;
@@ -284,6 +291,7 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 			InitialColumnWidth = FMath::Max(120.0f, 6.0f * ColumnNameStr.Len());
 			FormatterPtr = MakeShared<FCStringValueFormatterAsText>();
 			SorterPtr = MakeShared<FSorterByCStringValue>(ColumnRef);
+			InitialSortMode = EColumnSortMode::Ascending;
 			break;
 		}
 
@@ -309,6 +317,7 @@ void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout
 		}
 
 		Column.SetValueSorter(SorterPtr);
+		Column.SetInitialSortMode(InitialSortMode);
 
 		AddColumn(ColumnRef);
 	}

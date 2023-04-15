@@ -2,15 +2,26 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/Array.h"
+#include "Containers/ContainersFwd.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
 #include "Memory/MemoryFwd.h"
+#include "Memory/MemoryView.h"
 #include "Serialization/CompactBinary.h"
+
+#include <type_traits>
+
+class FCompositeBuffer;
+class FSharedBuffer;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class FArchive;
 class FCbAttachment;
+class FName;
 struct FDateTime;
 struct FGuid;
 struct FIoHash;
@@ -449,6 +460,21 @@ CORE_API FCbWriter& operator<<(FCbWriter& Writer, FTimespan Value);
 inline FCbWriter& operator<<(FCbWriter& Writer, const FCbObjectId& Value)
 {
 	Writer.AddObjectId(Value);
+	return Writer;
+}
+
+CORE_API FCbWriter& operator<<(FCbWriter& Writer, FName Value);
+
+template <typename T, typename Allocator,
+	std::void_t<decltype(std::declval<FCbWriter&>() << std::declval<const T&>())>* = nullptr>
+inline FCbWriter& operator<<(FCbWriter& Writer, const TArray<T, Allocator>& Value)
+{
+	Writer.BeginArray();
+	for (const T& Element : Value)
+	{
+		Writer << Element;
+	}
+	Writer.EndArray();
 	return Writer;
 }
 

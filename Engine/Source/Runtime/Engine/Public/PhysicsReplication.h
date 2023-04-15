@@ -8,16 +8,22 @@
 #pragma once
 
 #include "Engine/EngineTypes.h"
+#include "Engine/ReplicatedState.h"
 #include "Physics/PhysicsInterfaceDeclares.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
-#if WITH_CHAOS
 #include "Chaos/Particles.h"
-#endif
 
 namespace Chaos
 {
 	struct FSimCallbackInput;
 }
+
+#if !UE_BUILD_SHIPPING
+namespace PhysicsReplicationCVars
+{
+	extern ENGINE_API int32 LogPhysicsReplicationHardSnaps;
+}
+#endif
 
 class FPhysScene_PhysX;
 
@@ -25,7 +31,8 @@ struct FReplicatedPhysicsTarget
 {
 	FReplicatedPhysicsTarget() :
 		ArrivedTimeSeconds(0.0f),
-		AccumulatedErrorSeconds(0.0f)
+		AccumulatedErrorSeconds(0.0f),
+		ServerFrame(0)
 	{ }
 
 	/** The target state replicated by server */
@@ -44,23 +51,33 @@ struct FReplicatedPhysicsTarget
 	FVector PrevPosTarget;
 	FVector PrevPos;
 
+	/** ServerFrame this target was replicated on (must be converted to local frame prior to client-side use) */
+	int32 ServerFrame;
+
 #if !UE_BUILD_SHIPPING
 	FDebugFloatHistory ErrorHistory;
 #endif
 };
 
-#if WITH_CHAOS
+struct ErrorCorrectionData
+{
+	float LinearVelocityCoefficient;
+	float AngularVelocityCoefficient;
+	float PositionLerp;
+	float AngleLerp;
+};
+
 /** Final computed desired state passed into the physics sim */
 struct FAsyncPhysicsDesiredState
 {
 	FTransform WorldTM;
 	FVector LinearVelocity;
 	FVector AngularVelocity;
-	FSingleParticlePhysicsProxy* Proxy;
-	Chaos::EObjectStateType ObjectState;
+	Chaos::FSingleParticlePhysicsProxy* Proxy;
+	TOptional<ErrorCorrectionData> ErrorCorrection;
 	bool bShouldSleep;
+	int32 ServerFrame;
 };
-#endif
 
 struct FBodyInstance;
 struct FRigidBodyErrorCorrection;
@@ -75,11 +92,16 @@ public:
 	FPhysicsReplication(FPhysScene* PhysScene);
 	virtual ~FPhysicsReplication();
 
+	/** Helper method so the Skip Replication CVar can be check elsewhere (including game extensions to this class) */
+	static bool ShouldSkipPhysicsReplication();
+
 	/** Tick and update all body states according to replicated targets */
 	void Tick(float DeltaSeconds);
 
 	/** Sets the latest replicated target for a body instance */
-	virtual void SetReplicatedTarget(UPrimitiveComponent* Component, FName BoneName, const FRigidBodyState& ReplicatedTarget);
+	UE_DEPRECATED(5.1, "SetReplicatedTarget now takes the ServerFrame.  Please update calls and overloads.")
+	virtual void SetReplicatedTarget(UPrimitiveComponent* Component, FName BoneName, const FRigidBodyState& ReplicatedTarget) { SetReplicatedTarget(Component, BoneName, ReplicatedTarget, 0); }
+	virtual void SetReplicatedTarget(UPrimitiveComponent* Component, FName BoneName, const FRigidBodyState& ReplicatedTarget, int32 ServerFrame);
 
 	/** Remove the replicated target*/
 	virtual void RemoveReplicatedTarget(UPrimitiveComponent* Component);
@@ -91,7 +113,8 @@ protected:
 	virtual void OnTargetRestored(TWeakObjectPtr<UPrimitiveComponent> Component, const FReplicatedPhysicsTarget& Target) {}
 
 	/** Called when a dynamic rigid body receives a physics update */
-	virtual bool ApplyRigidBodyState(float DeltaSeconds, FBodyInstance* BI, FReplicatedPhysicsTarget& PhysicsTarget, const FRigidBodyErrorCorrection& ErrorCorrection, const float PingSecondsOneWay);
+	virtual bool ApplyRigidBodyState(float DeltaSeconds, FBodyInstance* BI, FReplicatedPhysicsTarget& PhysicsTarget, const FRigidBodyErrorCorrection& ErrorCorrection, const float PingSecondsOneWay, int32 LocalFrame, int32 NumPredictedFrames);
+	virtual bool ApplyRigidBodyState(float DeltaSeconds, FBodyInstance* BI, FReplicatedPhysicsTarget& PhysicsTarget, const FRigidBodyErrorCorrection& ErrorCorrection, const float PingSecondsOneWay, bool* bDidHardSnap = nullptr); // deprecated path with no localframe/numpredicted
 
 	UWorld* GetOwningWorld();
 	const UWorld* GetOwningWorld() const;
@@ -104,20 +127,16 @@ private:
 	/** Get the ping from  */
 	float GetOwnerPing(const AActor* const Owner, const FReplicatedPhysicsTarget& Target) const;
 
-#if WITH_CHAOS
 	static void ApplyAsyncDesiredState(float DeltaSeconds, const FAsyncPhysicsRepCallbackData* Input);
-#endif
 
 private:
 	TMap<TWeakObjectPtr<UPrimitiveComponent>, FReplicatedPhysicsTarget> ComponentToTargets;
 	FPhysScene* PhysScene;
 
-#if WITH_CHAOS
 	FPhysicsReplicationAsyncCallback* AsyncCallback;
 	
 	void PrepareAsyncData_External(const FRigidBodyErrorCorrection& ErrorCorrection);	//prepare async data for writing. Call on external thread (i.e. game thread)
 	FAsyncPhysicsRepCallbackData* CurAsyncData;	//async data being written into before we push into callback
 	friend FPhysicsReplicationAsyncCallback;
-#endif
 
 };

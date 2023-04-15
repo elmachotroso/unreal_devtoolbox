@@ -69,7 +69,10 @@ class ULandscapeLayerInfoObject : public UObject
 #if WITH_EDITOR
 	//~ Begin UObject Interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditUndo() override;
 	virtual void PostLoad() override;
 	//~ End UObject Interface
 #endif
+
+	LANDSCAPE_API FLinearColor GenerateLayerUsageDebugColor() const;
 };

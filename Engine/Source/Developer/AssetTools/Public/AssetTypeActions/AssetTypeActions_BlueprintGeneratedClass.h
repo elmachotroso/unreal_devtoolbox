@@ -18,9 +18,10 @@ public:
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_BlueprintGeneratedClass", "Compiled Blueprint Class"); }
 	virtual FColor GetTypeColor() const override { return FColor(133, 173, 255); }
 	virtual UClass* GetSupportedClass() const override;
-	virtual bool HasActions(const TArray<UObject*>& InObjects) const override { return true; }
 	virtual void GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section) override;
-	virtual uint32 GetCategories() override { return EAssetTypeCategories::Blueprint | EAssetTypeCategories::Basic; }
+
+	// We don't want BPGCs to show up in CB/Ref viewer filters since the BP filters already include them
+	virtual uint32 GetCategories() override { return EAssetTypeCategories::None; }
 	// @todo
 	//virtual class UThumbnailInfo* GetThumbnailInfo(UObject* Asset) const override;
 	// End IAssetTypeActions Implementation

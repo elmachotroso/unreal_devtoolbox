@@ -4,7 +4,7 @@
 #include "ImgMediaPrivate.h"
 
 #include "Misc/ScopeLock.h"
-
+#include "IImgMediaModule.h"
 #include "IImgMediaReader.h"
 #include "ImgMediaLoader.h"
 
@@ -33,13 +33,15 @@ FImgMediaLoaderWork::FImgMediaLoaderWork(const TSharedRef<FImgMediaLoader, ESPMo
  *****************************************************************************/
 
 void FImgMediaLoaderWork::Initialize(int32 InFrameNumber,
-	int32 InMipLevel, const FImgMediaTileSelection& InTileSelection,
+	TMap<int32, FImgMediaTileSelection> InMipTiles,
 	TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> InExistingFrame)
 {
 	FrameNumber = InFrameNumber;
-	MipLevel = InMipLevel;
-	TileSelection = InTileSelection;
+	MipTiles = MoveTemp(InMipTiles);
 	ExistingFrame = InExistingFrame;
+
+	// Ensure that we start from mip0 when iterating the map for consistency
+	MipTiles.KeySort(TLess<int32>());
 }
 
 
@@ -49,14 +51,16 @@ void FImgMediaLoaderWork::Initialize(int32 InFrameNumber,
 void FImgMediaLoaderWork::Abandon()
 {
 	SCOPE_CYCLE_COUNTER(STAT_ImgMedia_LoaderAbandonWork);
+	CSV_EVENT(ImgMedia, TEXT("LoaderAbandon %d"), FrameNumber);
 
-	Finalize(nullptr);
+	Finalize(nullptr, 0.0f);
 }
 
 
 void FImgMediaLoaderWork::DoThreadedWork()
 {
 	TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame;
+	float WorkTime = 0.0f;
 	UE_LOG(LogImgMedia, Verbose, TEXT("Loader %p: Starting to read %i"), this, FrameNumber);
 
 	if (FrameNumber == INDEX_NONE)
@@ -66,6 +70,7 @@ void FImgMediaLoaderWork::DoThreadedWork()
 	else
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ImgMedia_LoaderReadFrame);
+		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ImgMedia_LoaderReadFrame %d"), FrameNumber));
 
 		// read the image frame
 		if (ExistingFrame == nullptr)
@@ -75,27 +80,33 @@ void FImgMediaLoaderWork::DoThreadedWork()
 		else
 		{
 			Frame = ExistingFrame;
+			Frame->NumTilesRead = 0;
 		}
 
-		if (!Reader->ReadFrame(FrameNumber, MipLevel, TileSelection, Frame))
+		double StartTime = FPlatformTime::Seconds();
+		if(!Reader->ReadFrame(FrameNumber, MipTiles, Frame))
 		{
 			if (ExistingFrame == nullptr)
 			{
 				Frame.Reset();
 			}
 		}
+		else
+		{
+			WorkTime = FPlatformTime::Seconds() - StartTime;
+		}
 	}
 
 	SCOPE_CYCLE_COUNTER(STAT_ImgMedia_LoaderFinalizeWork);
 
-	Finalize(Frame);
+	Finalize(Frame, WorkTime);
 }
 
 
 /* FImgMediaLoaderWork implementation
  *****************************************************************************/
 
-void FImgMediaLoaderWork::Finalize(TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame)
+void FImgMediaLoaderWork::Finalize(TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame, float WorkTime)
 {
 	ExistingFrame.Reset();
 
@@ -103,7 +114,7 @@ void FImgMediaLoaderWork::Finalize(TSharedPtr<FImgMediaFrame, ESPMode::ThreadSaf
 
 	if (Owner.IsValid())
 	{
-		Owner->NotifyWorkComplete(*this, FrameNumber, Frame);
+		Owner->NotifyWorkComplete(*this, FrameNumber, Frame, WorkTime);
 	}
 	else
 	{

@@ -11,13 +11,6 @@ namespace UnrealBuildTool.Rules
 
 			PublicIncludePathModuleNames.Add("Engine");
 
-			PrivateIncludePaths.AddRange(
-				new string[]
-				{
-					"Runtime/AudioMixer/Private",
-				}
-			);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -38,7 +31,9 @@ namespace UnrealBuildTool.Rules
 					"AudioPlatformConfiguration",
 					"SoundFieldRendering",
 					"AudioExtensions",
-					"AudioLinkEngine"
+					"AudioLinkCore",
+					"AudioLinkEngine",
+					"HeadMountedDisplay"
 				}
 			);
 

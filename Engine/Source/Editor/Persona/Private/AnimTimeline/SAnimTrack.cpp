@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SAnimTrack.h"
+#include "AnimTimeline/SAnimTrack.h"
 #include "Rendering/DrawElements.h"
-#include "EditorStyleSet.h"
-#include "SAnimOutliner.h"
-#include "SAnimTrackResizeArea.h"
+#include "Styling/AppStyle.h"
+#include "AnimTimeline/SAnimOutliner.h"
+#include "AnimTimeline/SAnimTrackResizeArea.h"
 #include "Widgets/SOverlay.h"
 
 void SAnimTrack::Construct(const FArguments& InArgs, const TSharedRef<FAnimTimelineTrack>& InTrack, const TSharedRef<SAnimOutliner>& InOutliner)
@@ -47,7 +47,7 @@ int32 SAnimTrack::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeome
 						FVector2D(0, 0),
 						FVector2D(AllottedGeometry.GetLocalSize().X, TotalNodeHeight)
 					),
-					FEditorStyle::GetBrush(BorderName),
+					FAppStyle::GetBrush(BorderName),
 					ESlateDrawEffect::None,
 					FLinearColor(1.0f, 1.0f, 1.0f, 0.05f)
 				);

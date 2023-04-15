@@ -16,6 +16,7 @@
 #include "RHI.h"
 #include "RenderResource.h"
 #include "Serialization/BulkData.h"
+#include "Serialization/DerivedData.h"
 #include "Engine/TextureDefines.h"
 #include "UnrealClient.h"
 #include "Templates/UniquePtr.h"
@@ -32,6 +33,7 @@ class FTexture2DResource;
 class FTexture3DResource;
 class FTexture2DArrayResource;
 class FVirtualTexture2DResource;
+struct IPooledRenderTarget;
 
 /** Maximum number of slices in texture source art. */
 #define MAX_TEXTURE_SOURCE_SLICES 6
@@ -42,42 +44,47 @@ class FVirtualTexture2DResource;
 struct FTexture2DMipMap
 {
 	/** Width of the mip-map. */
-	int32 SizeX;
+	int32 SizeX = 0;
 	/** Height of the mip-map. */
-	int32 SizeY;
+	int32 SizeY = 0;
 	/** Depth of the mip-map. */
-	int32 SizeZ;
+	int32 SizeZ = 0;
 
-	/** Bulk data if stored in the package. */
+	/** Reference to the data for the mip if it can be streamed. */
+	UE::FDerivedData DerivedData;
+
+	/** Stores the data for the mip when it is loaded. */
 	FByteBulkData BulkData;
 
-	/** Default constructor. */
-	FTexture2DMipMap()
-		: SizeX(0)
-		, SizeY(0)
-		, SizeZ(0)
-	{
-	}
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FTexture2DMipMap() = default;
+	FTexture2DMipMap(FTexture2DMipMap&&) = default;
+	FTexture2DMipMap(const FTexture2DMipMap&) = default;
+	FTexture2DMipMap& operator=(FTexture2DMipMap&&) = default;
+	FTexture2DMipMap& operator=(const FTexture2DMipMap&) = default;
+	~FTexture2DMipMap() = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Serialization. */
 	ENGINE_API void Serialize(FArchive& Ar, UObject* Owner, int32 MipIndex);
 
 #if WITH_EDITORONLY_DATA
-	/** The file region type appropriate for this mip's pixel format. */
+	/** The file region type appropriate for the pixel format of this mip-map. */
 	EFileRegionType FileRegionType = EFileRegionType::None;
 
-	/** Whether this mip is stored in the derived data cache. */
+	UE_DEPRECATED(5.1, "Use DerivedData.HasData().")
 	bool bPagedToDerivedData = false;
 
-	bool IsPagedToDerivedData() const { return bPagedToDerivedData; }
-	void SetPagedToDerivedData(bool InValue) { bPagedToDerivedData = InValue; }
+	/** Whether this mip-map is stored in the derived data cache. */
+	inline bool IsPagedToDerivedData() const { return DerivedData.HasData(); }
 
-	/**
-	 * Place mip-map data in the derived data cache associated with the provided
-	 * key.
-	 */
-	int64 StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName, bool bReplaceExistingDDC);
+	UE_DEPRECATED(5.1, "Setting DerivedData is sufficient to control this state.")
+	inline void SetPagedToDerivedData(bool InValue)
+	{
+	}
 
+	/** Place mip-map data in the derived data cache associated with the provided key. */
+	int64 StoreInDerivedDataCache(FStringView Key, FStringView Name, bool bReplaceExisting);
 #endif // #if WITH_EDITORONLY_DATA
 };
 
@@ -120,17 +127,17 @@ public:
 		return TextureRHI.IsValid() && !!(TextureRHI->GetFlags() & TexCreate_Virtual);
 	}
 
-	FORCEINLINE FRHITexture2D* GetTexture2DRHI() const
+	FORCEINLINE FRHITexture* GetTexture2DRHI() const
 	{
 		return TextureRHI.IsValid() ? TextureRHI->GetTexture2D() : nullptr;
 	}
 
-	FORCEINLINE FRHITexture3D* GetTexture3DRHI() const
+	FORCEINLINE FRHITexture* GetTexture3DRHI() const
 	{
 		return TextureRHI.IsValid() ? TextureRHI->GetTexture3D() : nullptr;
 	}
 
-	FORCEINLINE FRHITexture2DArray* GetTexture2DArrayRHI() const
+	FORCEINLINE FRHITexture* GetTexture2DArrayRHI() const
 	{
 		return TextureRHI.IsValid() ? TextureRHI->GetTexture2DArray() : nullptr;
 	}
@@ -154,23 +161,24 @@ protected :
 class FVirtualTexture2DResource : public FTextureResource
 {
 public:
-	FVirtualTexture2DResource(const UTexture2D* InOwner, struct FVirtualTextureBuiltData* InVTData, int32 FirstMipToUse);
-	virtual ~FVirtualTexture2DResource();
+	ENGINE_API FVirtualTexture2DResource();
+	ENGINE_API FVirtualTexture2DResource(const UTexture2D* InOwner, struct FVirtualTextureBuiltData* InVTData, int32 FirstMipToUse);
+	ENGINE_API virtual ~FVirtualTexture2DResource();
 
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
-	
+	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void ReleaseRHI() override;
+
 	// Dynamic cast methods.
 	ENGINE_API virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return this; }
 	// Dynamic cast methods (const).
 	ENGINE_API virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return this; }
 
 #if WITH_EDITOR
-	void InitializeEditorResources(class IVirtualTexture* InVirtualTexture);
+	ENGINE_API virtual void InitializeEditorResources(class IVirtualTexture* InVirtualTexture);
 #endif
 
-	virtual uint32 GetSizeX() const override;
-	virtual uint32 GetSizeY() const override;
+	ENGINE_API virtual uint32 GetSizeX() const override;
+	ENGINE_API virtual uint32 GetSizeY() const override;
 
 	const FVirtualTextureProducerHandle& GetProducerHandle() const { return ProducerHandle; }
 
@@ -186,19 +194,19 @@ public:
 	ENGINE_API class IAllocatedVirtualTexture* AcquireAllocatedVT();
 	ENGINE_API void ReleaseAllocatedVT();
 
-	ENGINE_API EPixelFormat GetFormat(uint32 LayerIndex) const;
-	ENGINE_API FIntPoint GetSizeInBlocks() const;
-	ENGINE_API uint32 GetNumTilesX() const;
-	ENGINE_API uint32 GetNumTilesY() const;
-	ENGINE_API uint32 GetNumMips() const;
-	ENGINE_API uint32 GetNumLayers() const;
-	ENGINE_API uint32 GetTileSize() const; //no borders
-	ENGINE_API uint32 GetBorderSize() const;
+	ENGINE_API virtual EPixelFormat GetFormat(uint32 LayerIndex) const;
+	ENGINE_API virtual FIntPoint GetSizeInBlocks() const;
+	ENGINE_API virtual uint32 GetNumTilesX() const;
+	ENGINE_API virtual uint32 GetNumTilesY() const;
+	ENGINE_API virtual uint32 GetNumMips() const;
+	ENGINE_API virtual uint32 GetNumLayers() const;
+	ENGINE_API virtual uint32 GetTileSize() const; //no borders
+	ENGINE_API virtual uint32 GetBorderSize() const;
 	uint32 GetAllocatedvAddress() const;
 
-	ENGINE_API FIntPoint GetPhysicalTextureSize(uint32 LayerIndex) const;
+	ENGINE_API virtual FIntPoint GetPhysicalTextureSize(uint32 LayerIndex) const;
 
-private:
+protected:
 	class IAllocatedVirtualTexture* AllocatedVT;
 	struct FVirtualTextureBuiltData* VTData;
 	const UTexture2D* TextureOwner;
@@ -227,6 +235,10 @@ public:
 
 	/** Returns the Texture2DRHI, which can be used for locking/unlocking the mips. */
 	ENGINE_API FTexture2DRHIRef GetTexture2DRHI();
+
+#if !UE_SERVER
+	ENGINE_API void WriteRawToTexture_RenderThread(TArrayView64<const uint8> RawData);
+#endif
 
 private:
 	/** The owner of this resource. */
@@ -270,6 +282,11 @@ public:
 	static void ResetNeedsUpdate()
 	{
 		bNeedsUpdate = true;
+	}
+
+	static bool IsUpdateNeeded()
+	{
+		return bNeedsUpdate;
 	}
 
 protected:
@@ -389,6 +406,13 @@ public:
 		return ClearColor;
 	}
 
+	FORCEINLINE EPixelFormat GetFormat() const
+	{
+		return Format;
+	}
+
+	ETextureCreateFlags GetCreateFlags();
+
 	// FTextureRenderTargetResource interface
 
 	/** 
@@ -450,11 +474,6 @@ public:
 	 */
 	virtual float GetDisplayGamma() const override;
 
-	/** 
-	 * @return TextureRHI for rendering 
-	 */
-	FTexture2DRHIRef GetTextureRHI() { return Texture2DRHI; }
-
 	/**
 	 * @return UnorderedAccessView for rendering
 	 */
@@ -474,6 +493,7 @@ private:
 	/** The UTextureRenderTarget2D which this resource represents. */
 	const class UTextureRenderTarget2D* Owner;
 	/** Texture resource used for rendering with and resolving to */
+	UE_DEPRECATED(5.1, "Texture2DRHI is deprecated. Use TextureRHI instead.")
 	FTexture2DRHIRef Texture2DRHI;
 	/** Optional Unordered Access View for the resource, automatically created if bCanCreateUAV is true */
 	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
@@ -541,11 +561,6 @@ public:
 	 */
 	virtual FIntPoint GetSizeXY() const override;
 
-	/** 
-	 * @return TextureRHI for rendering 
-	 */
-	FTextureCubeRHIRef GetTextureRHI() { return TextureCubeRHI; }
-
 	/**
 	 * @return UnorderedAccessView for rendering
 	 */
@@ -588,13 +603,15 @@ protected:
 private:
 	/** The UTextureRenderTargetCube which this resource represents. */
 	const class UTextureRenderTargetCube* Owner;
-	/** Texture resource used for rendering with and resolving to */
-	FTextureCubeRHIRef TextureCubeRHI;
-	/** Target surfaces for each cube face */
-	FTexture2DRHIRef CubeFaceSurfaceRHI;
 
-	/** Represents the current render target (from one of the cube faces)*/
-	FTextureCubeRHIRef RenderTargetCubeRHI;
+	UE_DEPRECATED(5.1, "TextureCubeRHI is deprecated. Use TextureRHI instead.")
+	FTextureRHIRef TextureCubeRHI;
+
+	UE_DEPRECATED(5.1, "CubeFaceSurfaceRHI is deprecated. Use TextureRHI instead.")
+	FTextureRHIRef CubeFaceSurfaceRHI;
+
+	UE_DEPRECATED(5.1, "RenderTargetCubeRHI is deprecated. Use TextureRHI instead.")
+	FTextureRHIRef RenderTargetCubeRHI;
 
 	/** Optional Unordered Access View for the resource, automatically created if bCanCreateUAV is true */
 	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
@@ -604,10 +621,10 @@ private:
 };
 
 /** Gets the name of a format for the given LayerIndex */
-ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, bool bSupportCompressedVolumeTexture, int32 Unused_BlockSize, bool bSupportFilteredFloat32Textures);
 
 /** Gets an array of format names for each layer in the texture */
-ENGINE_API void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+ENGINE_API void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, bool bSupportCompressedVolumeTexture, int32 Unused_BlockSize, bool bSupportFilteredFloat32Textures);
 
 // returns all the texture formats which can be returned by GetDefaultTextureFormatName
-ENGINE_API void GetAllDefaultTextureFormats( const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats, bool bSupportDX11TextureFormats);
+ENGINE_API void GetAllDefaultTextureFormats( const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats);

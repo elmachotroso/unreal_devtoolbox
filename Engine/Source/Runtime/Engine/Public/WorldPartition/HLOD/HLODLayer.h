@@ -47,25 +47,23 @@ public:
 
 	/** Duplicate the provided HLOD layers setup */
 	static UHLODLayer* DuplicateHLODLayersSetup(UHLODLayer* HLODLayer, const FString& DestinationPath, const FString& Prefix);
-#endif
 
-#if WITH_EDITORONLY_DATA
 	EHLODLayerType GetLayerType() const { return LayerType; }
+	void SetLayerType(EHLODLayerType InLayerType) { LayerType = InLayerType; }
 	const TSubclassOf<UHLODBuilder> GetHLODBuilderClass() const { return HLODBuilderClass; }
 	const UHLODBuilderSettings* GetHLODBuilderSettings() const { return HLODBuilderSettings; }
 	FName GetRuntimeGrid(uint32 InHLODLevel) const;
 	int32 GetCellSize() const { return !bIsSpatiallyLoaded ? 0 : CellSize; }
-	float GetLoadingRange() const { return !bIsSpatiallyLoaded ? WORLD_MAX : LoadingRange; }
+	double GetLoadingRange() const { return !bIsSpatiallyLoaded ? WORLD_MAX : LoadingRange; }
 	const TSoftObjectPtr<UHLODLayer>& GetParentLayer() const;
 	const void SetParentLayer(const TSoftObjectPtr<UHLODLayer>& InParentLayer);
 	bool IsSpatiallyLoaded() const { return bIsSpatiallyLoaded; }
+	void SetIsSpatiallyLoaded(bool bInIsSpatiallyLoaded) { bIsSpatiallyLoaded = bInIsSpatiallyLoaded; }
 
 	bool DoesRequireWarmup() const;
 
 	static FName GetRuntimeGridName(uint32 InLODLevel, int32 InCellSize, double InLoadingRange);
-#endif
 
-#if WITH_EDITOR
 private:
 	//~ Begin UObject Interface.
 	virtual void PostLoad() override;
@@ -73,14 +71,13 @@ private:
 	//~ End UObject Interface.
 #endif
 
-#if WITH_EDITORONLY_DATA
 private:
 	/** Type of HLOD generation to use */
 	UPROPERTY(EditAnywhere, Config, Category=HLOD)
 	EHLODLayerType LayerType;
 
 	/** HLODBuilder class */
-	UPROPERTY(EditAnywhere, Config, Category=HLOD, meta = (EditConditionHides, EditCondition = "LayerType == EHLODLayerType::Custom"))
+	UPROPERTY(EditAnywhere, Config, Category=HLOD, meta = (DisplayName = "HLOD Builder Class", EditConditionHides, EditCondition = "LayerType == EHLODLayerType::Custom"))
 	TSubclassOf<UHLODBuilder> HLODBuilderClass;
 
 	UPROPERTY(VisibleAnywhere, Export, NoClear, Category=HLOD, meta = (EditInline, NoResetToDefault))
@@ -89,9 +86,6 @@ private:
 	/** Whether HLOD actors generated for this layer will be spatially loaded */
 	UPROPERTY(EditAnywhere, Config, Category=HLOD)
 	uint32 bIsSpatiallyLoaded : 1;
-
-	UPROPERTY()
-	uint32 bAlwaysLoaded_DEPRECATED : 1;
 
 	/** Cell size of the runtime grid created to encompass HLOD actors generated for this HLOD Layer */
 	UPROPERTY(EditAnywhere, Config, Category=HLOD, meta = (EditConditionHides, EditCondition = "bIsSpatiallyLoaded"))
@@ -105,7 +99,10 @@ private:
 	UPROPERTY(EditAnywhere, Config, Category=HLOD, meta = (EditConditionHides, EditCondition = "bIsSpatiallyLoaded"))
 	TSoftObjectPtr<UHLODLayer> ParentLayer;
 
-public:
+private:
+	friend class FWorldPartitionHLODUtilities;
+
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FMeshMergingSettings MeshMergeSettings_DEPRECATED;
 	UPROPERTY()
@@ -113,6 +110,8 @@ public:
 	UPROPERTY()
 	FMeshApproximationSettings MeshApproximationSettings_DEPRECATED;
 	UPROPERTY()
-	TSoftObjectPtr<UMaterial> HLODMaterial_DEPRECATED;
+	TSoftObjectPtr<UMaterialInterface> HLODMaterial_DEPRECATED;
+	UPROPERTY()
+	uint32 bAlwaysLoaded_DEPRECATED : 1;
 #endif
 };

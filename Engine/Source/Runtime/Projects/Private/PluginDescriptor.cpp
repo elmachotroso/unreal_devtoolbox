@@ -77,6 +77,7 @@ const FString& FPluginDescriptor::GetFileExtension()
 
 FPluginDescriptor::FPluginDescriptor()
 	: Version(0)
+	, VerseScope(EVerseScope::User)
 	, EnabledByDefault(EPluginEnabledByDefault::Unspecified)
 	, bCanContainContent(false)
 	, bCanContainVerse(false)
@@ -210,10 +211,30 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText* OutFailReason /*=
 		return false;
 	}
 
+	Object.TryGetStringField(TEXT("VersePath"), VersePath);
+
+	// Read the Verse scope
+	TSharedPtr<FJsonValue> VerseScopeValue = Object.TryGetField(TEXT("VerseScope"));
+	if (VerseScopeValue.IsValid() && VerseScopeValue->Type == EJson::String)
+	{
+		if(TOptional<EVerseScope::Type> MaybeVerseScope = EVerseScope::FromString(*VerseScopeValue->AsString()))
+		{
+			VerseScope = *MaybeVerseScope;
+		}
+		else
+		{
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("PluginWithInvalidVerseScope", "Plugin entry 'VerseScope' specified an unrecognized value '{1}'"), FText::FromString(VerseScopeValue->AsString()));
+			}
+			return false;
+		}
+	}
+
 	bool bEnabledByDefault;
 	if(Object.TryGetBoolField(TEXT("EnabledByDefault"), bEnabledByDefault))
 	{
-		EnabledByDefault = bEnabledByDefault? EPluginEnabledByDefault::Enabled : EPluginEnabledByDefault::Disabled;
+		EnabledByDefault = bEnabledByDefault ? EPluginEnabledByDefault::Enabled : EPluginEnabledByDefault::Disabled;
 	}
 
 	Object.TryGetBoolField(TEXT("CanContainContent"), bCanContainContent);
@@ -281,7 +302,7 @@ void FPluginDescriptor::Write(TJsonWriter<>& Writer) const
 	{
 		FJsonObject::Duplicate(/*Source=*/ CachedJson, /*Dest=*/ PluginJsonObject);
 	}
-#endif
+#endif //if WITH_EDITOR
 
 	UpdateJson(*PluginJsonObject);
 
@@ -318,6 +339,16 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	else
 	{
 		JsonObject.RemoveField(TEXT("EditorCustomVirtualPath"));
+	}
+
+	if (!VersePath.IsEmpty())
+	{
+		JsonObject.SetStringField(TEXT("VersePath"), VersePath);
+	}
+
+	if (VerseScope != EVerseScope::User)
+	{
+		JsonObject.SetStringField(TEXT("VerseScope"), EVerseScope::ToString(VerseScope));
 	}
 
 	if (EnabledByDefault != EPluginEnabledByDefault::Unspecified)
@@ -425,7 +456,7 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	{
 		JsonObject.SetField(KVP.Key, FJsonValue::Duplicate(KVP.Value));
 	}
-#endif
+#endif //if WITH_EDITOR
 }
 
 bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText* OutFailReason /*= nullptr*/) const

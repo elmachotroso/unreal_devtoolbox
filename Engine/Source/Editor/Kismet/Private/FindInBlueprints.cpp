@@ -1,41 +1,99 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "FindInBlueprints.h"
-#include "Layout/WidgetPath.h"
+
+#include "BlueprintEditor.h"
+#include "BlueprintEditorModule.h"
+#include "BlueprintEditorTabs.h"
+#include "CoreGlobals.h"
+#include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Level.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/World.h"
+#include "FiBSearchInstance.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Images/SThrobber.h"
-#include "Widgets/Notifications/SProgressBar.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Text/SMultiLineEditableText.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
-#include "Engine/BlueprintGeneratedClass.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node_Event.h"
+#include "Framework/SlateDelegates.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformTime.h"
+#include "IDocumentation.h"
+#include "ImaginaryBlueprintData.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_Variable.h"
+#include "K2Node_Event.h"
 #include "K2Node_MacroInstance.h"
+#include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
-#include "Engine/SCS_Node.h"
-#include "BlueprintEditor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Widgets/SToolTip.h"
-#include "IDocumentation.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "Framework/Commands/GenericCommands.h"
-#include "ImaginaryBlueprintData.h"
-#include "FiBSearchInstance.h"
-#include "BlueprintEditorTabs.h"
-#include "HAL/PlatformApplicationMisc.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Docking/SDockTab.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Layout/BasicLayoutWidgetSlot.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/EnumClassFlags.h"
 #include "SWarningOrErrorBox.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateTypes.h"
 #include "Styling/StyleColors.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Trace/Detail/Channel.h"
+#include "Types/SlateConstants.h"
+#include "Types/SlateStructs.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Images/SThrobber.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Notifications/SProgressBar.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/SMultiLineEditableText.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class SWidget;
+class UActorComponent;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "FindInBlueprints"
 
@@ -215,7 +273,7 @@ FText FFindInBlueprintsResult::GetDisplayString() const
 // FFindInBlueprintsGraphNode
 
 FFindInBlueprintsGraphNode::FFindInBlueprintsGraphNode()
-	: Glyph("EditorStyle", "")
+	: Glyph(FAppStyle::GetAppStyleSetName(), "")
 	, Class(nullptr)
 {
 }
@@ -308,7 +366,19 @@ void FFindInBlueprintsGraphNode::FinalizeSearchData()
 {
 	if(!ClassName.IsEmpty())
 	{
-		Class = FindObject<UClass>(ANY_PACKAGE, *ClassName, true);
+		// Check the node subclasses and look for one with the same short name
+		TArray<UClass*> NodeClasses;
+		GetDerivedClasses(UEdGraphNode::StaticClass(), NodeClasses, /*bRecursive=*/true);
+
+		for (UClass* FoundClass : NodeClasses)
+		{
+			if (FoundClass->GetName() == ClassName)
+			{
+				Class = FoundClass;
+				break;
+			}
+		}
+
 		ClassName.Empty();
 	}
 }
@@ -371,25 +441,35 @@ void FFindInBlueprintsPin::FinalizeSearchData()
 {
 	if(!PinType.PinSubCategory.IsNone())
 	{
-		PinType.PinSubCategoryObject = FindObject<UClass>(ANY_PACKAGE, *PinType.PinSubCategory.ToString(), true);
-		if(!PinType.PinSubCategoryObject.IsValid())
+		// This can either be a full path to an object, or a short name specific to the category
+		if (FPackageName::IsShortPackageName(PinType.PinSubCategory))
 		{
-			PinType.PinSubCategoryObject = FindObject<UScriptStruct>(UObject::StaticClass(), *PinType.PinSubCategory.ToString());
+			// This could also be an old class name without the full path, but it's fine to ignore in that case
 		}
-
-		if (PinType.PinSubCategoryObject.IsValid())
+		else
 		{
-			PinType.PinSubCategory = NAME_None;
+			PinType.PinSubCategoryObject = FindObject<UObject>(UObject::StaticClass(), *PinType.PinSubCategory.ToString());
+			if (PinType.PinSubCategoryObject.IsValid())
+			{
+				PinType.PinSubCategory = NAME_None;
+			}
 		}
 	}
 
 	if(!SchemaName.IsEmpty())
 	{
-		UClass* SchemaClass = FindObject<UClass>(ANY_PACKAGE, *SchemaName, true);
-		if(SchemaClass)
+		// Get all subclasses of schema and find the one with a matching short name
+		TArray<UClass*> SchemaClasses;
+		GetDerivedClasses(UEdGraphSchema::StaticClass(), SchemaClasses, /*bRecursive=*/true);
+
+		for (UClass* FoundClass : SchemaClasses)
 		{
-			UEdGraphSchema* Schema = SchemaClass->GetDefaultObject<UEdGraphSchema>();
-			IconColor = Schema->GetPinTypeColor(PinType);
+			if (FoundClass->GetName() == SchemaName)
+			{
+				UEdGraphSchema* Schema = FoundClass->GetDefaultObject<UEdGraphSchema>();
+				IconColor = Schema->GetPinTypeColor(PinType);
+				break;
+			}
 		}
 
 		SchemaName.Empty();
@@ -487,17 +567,20 @@ FText FFindInBlueprintsProperty::GetCategory() const
 
 void FFindInBlueprintsProperty::FinalizeSearchData()
 {
-	if(!PinType.PinSubCategory.IsNone())
+	if (!PinType.PinSubCategory.IsNone())
 	{
-		PinType.PinSubCategoryObject = FindObject<UClass>(ANY_PACKAGE, *PinType.PinSubCategory.ToString(), true);
-		if(!PinType.PinSubCategoryObject.IsValid())
+		// This can either be a full path to an object, or a short name specific to the category
+		if (FPackageName::IsShortPackageName(PinType.PinSubCategory))
 		{
-			PinType.PinSubCategoryObject = FindObject<UScriptStruct>(UObject::StaticClass(), *PinType.PinSubCategory.ToString());
+			// This could also be an old class name without the full path, but it's fine to ignore in that case
 		}
-
-		if (PinType.PinSubCategoryObject.IsValid())
+		else
 		{
-			PinType.PinSubCategory = NAME_None;
+			PinType.PinSubCategoryObject = FindObject<UObject>(UObject::StaticClass(), *PinType.PinSubCategory.ToString());
+			if (PinType.PinSubCategoryObject.IsValid())
+			{
+				PinType.PinSubCategory = NAME_None;
+			}
 		}
 	}
 }
@@ -542,11 +625,11 @@ TSharedRef<SWidget> FFindInBlueprintsGraph::CreateIcon() const
 	const FSlateBrush* Brush = NULL;
 	if(GraphType == GT_Function)
 	{
-		Brush = FEditorStyle::GetBrush(TEXT("GraphEditor.Function_16x"));
+		Brush = FAppStyle::GetBrush(TEXT("GraphEditor.Function_16x"));
 	}
 	else if(GraphType == GT_Macro)
 	{
-		Brush = FEditorStyle::GetBrush(TEXT("GraphEditor.Macro_16x"));
+		Brush = FAppStyle::GetBrush(TEXT("GraphEditor.Macro_16x"));
 	}
 
 	return 	SNew(SImage)
@@ -636,7 +719,7 @@ void SFindInBlueprints::Construct( const FArguments& InArgs, TSharedPtr<FBluepri
 					.ToolTipText(LOCTEXT("OpenInGlobalFindResultsButtonTooltip", "Find in all Blueprints"))
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "FindResults.FindInBlueprints")
+						.TextStyle(FAppStyle::Get(), "FindResults.FindInBlueprints")
 						.Text(FText::FromString(FString(TEXT("\xf1e5"))) /*fa-binoculars*/)
 					]
 				]
@@ -725,26 +808,26 @@ void SFindInBlueprints::ConditionallyAddCacheBar()
 		if(MainVerticalBox.IsValid() && !CacheBarSlot.IsValid())
 		{
 			// Create a single string of all the Blueprint paths that failed to cache, on separate lines
-			FString PackageList;
-			TSet<FName> FailedToCacheList = FFindInBlueprintSearchManager::Get().GetFailedToCachePathList();
-			for (FName Package : FailedToCacheList)
+			FString PathList;
+			TSet<FSoftObjectPath> FailedToCacheList = FFindInBlueprintSearchManager::Get().GetFailedToCachePathList();
+			for (const FSoftObjectPath& Path : FailedToCacheList)
 			{
-				PackageList += Package.ToString() + TEXT("\n");
+				PathList += Path.ToString() + TEXT("\n");
 			}
 
 			// Lambda to put together the popup menu detailing the failed to cache paths
-			auto OnDisplayCacheFailLambda = [](TWeakPtr<SWidget> InParentWidget, FString InPackageList)->FReply
+			auto OnDisplayCacheFailLambda = [](TWeakPtr<SWidget> InParentWidget, FString InPathList)->FReply
 			{
 				if (InParentWidget.IsValid())
 				{
 					TSharedRef<SWidget> DisplayWidget = 
 						SNew(SBox)
-						.MaxDesiredHeight(512)
-						.MaxDesiredWidth(512)
+						.MaxDesiredHeight(512.0f)
+						.MaxDesiredWidth(512.0f)
 						.Content()
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							[
 								SNew(SScrollBox)
 								+SScrollBox::Slot()
@@ -752,7 +835,7 @@ void SFindInBlueprints::ConditionallyAddCacheBar()
 									SNew(SMultiLineEditableText)
 									.AutoWrapText(true)
 									.IsReadOnly(true)
-									.Text(FText::FromString(InPackageList))
+									.Text(FText::FromString(InPathList))
 								]
 							]
 						];
@@ -806,7 +889,7 @@ void SFindInBlueprints::ConditionallyAddCacheBar()
 							[
 								SNew(SButton)
 								.Text(LOCTEXT("ShowFailedPackages", "Show Failed Packages"))
-								.OnClicked(FOnClicked::CreateLambda(OnDisplayCacheFailLambda, TWeakPtr<SWidget>(SharedThis(this)), PackageList))
+								.OnClicked(FOnClicked::CreateLambda(OnDisplayCacheFailLambda, TWeakPtr<SWidget>(SharedThis(this)), PathList))
 								.Visibility(this, &SFindInBlueprints::GetCacheBarWidgetVisibility, EFiBCacheBarWidget::ShowCacheFailuresButton)
 								.ToolTip(IDocumentation::Get()->CreateToolTip(
 									LOCTEXT("FailedCache_Tooltip", "Displays a list of packages that failed to save."),
@@ -1050,7 +1133,8 @@ void SFindInBlueprints::MakeSearchQuery(FString InSearchString, bool bInIsFindWi
 		TreeView->RequestTreeRefresh();
 		HighlightText = FText::FromString( InSearchString );
 
-		if (bInIsFindWithinBlueprint)
+		if (bInIsFindWithinBlueprint
+			&& ensureMsgf(BlueprintEditorPtr.IsValid(), TEXT("A local search was requested, but this widget does not support it.")))
 		{
 			const double StartTime = FPlatformTime::Seconds();
 
@@ -1066,7 +1150,7 @@ void SFindInBlueprints::MakeSearchQuery(FString InSearchString, bool bInIsFindWi
 			FString ParentClass;
 			if (FProperty* ParentClassProp = Blueprint->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UBlueprint, ParentClass)))
 			{
-				ParentClassProp->ExportTextItem(ParentClass, ParentClassProp->ContainerPtrToValuePtr<uint8>(Blueprint), nullptr, Blueprint, 0);
+				ParentClassProp->ExportTextItem_Direct(ParentClass, ParentClassProp->ContainerPtrToValuePtr<uint8>(Blueprint), nullptr, Blueprint, 0);
 			}
 
 			TArray<FString> Interfaces;
@@ -1175,16 +1259,12 @@ TSharedRef<ITableRow> SFindInBlueprints::OnGenerateRow( FSearchResult InItem, co
 	if (bIsACategoryWidget)
 	{
 		return SNew( STableRow< TSharedPtr<FFindInBlueprintsResult> >, OwnerTable )
+			.Style( &FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("ShowParentsTableView.Row") )
+			.Padding(FMargin(2.f, 3.f, 2.f, 3.f))
 			[
-				SNew(SBorder)
-				.VAlign(VAlign_Center)
-				.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
-				.Padding(FMargin(2.0f))
-				[
-					SNew(STextBlock)
-					.Text(InItem.Get(), &FFindInBlueprintsResult::GetDisplayString)
-					.ToolTipText(LOCTEXT("BlueprintCatSearchToolTip", "Blueprint"))
-				]
+				SNew(STextBlock)
+				.Text(InItem.Get(), &FFindInBlueprintsResult::GetDisplayString)
+				.ToolTipText(LOCTEXT("BlueprintCatSearchToolTip", "Blueprint"))
 			];
 	}
 	else // Functions/Event/Pin widget
@@ -1206,6 +1286,7 @@ TSharedRef<ITableRow> SFindInBlueprints::OnGenerateRow( FSearchResult InItem, co
 		FText Tooltip = FText::Format(LOCTEXT("BlueprintResultSearchToolTip", "{Category} : {DisplayTitle}"), Args);
 
 		return SNew( STableRow< TSharedPtr<FFindInBlueprintsResult> >, OwnerTable )
+			.Style( &FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("ShowParentsTableView.Row") )
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -1444,7 +1525,7 @@ const FSlateBrush* SFindInBlueprints::GetCacheBarImage() const
 	if ((IsCacheInProgress() || bKeepCacheBarProgressVisible) && !FFindInBlueprintSearchManager::Get().IsUnindexedCacheInProgress())
 	{
 		// Allow the content area to show through for a non-unindexed operation.
-		ReturnBrush = FEditorStyle::GetBrush("NoBorder");
+		ReturnBrush = FAppStyle::GetBrush("NoBorder");
 	}
 	return ReturnBrush;
 }
@@ -1495,10 +1576,10 @@ FText SFindInBlueprints::GetCacheBarCurrentAssetName() const
 {
 	if (IsCacheInProgress())
 	{
-		LastCachedAssetName = FFindInBlueprintSearchManager::Get().GetCurrentCacheBlueprintName();
+		LastCachedAssetPath = FFindInBlueprintSearchManager::Get().GetCurrentCacheBlueprintPath();
 	}
 
-	return FText::FromName(LastCachedAssetName);
+	return FText::FromString(LastCachedAssetPath.ToString());
 }
 
 void SFindInBlueprints::OnCacheStarted(EFiBCacheOpType InOpType, EFiBCacheOpFlags InOpFlags)

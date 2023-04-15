@@ -102,6 +102,15 @@ bool FDetailGroup::GetExpansionState() const
 	return false;
 }
 
+TOptional<FResetToDefaultOverride> FDetailGroup::GetCustomResetToDefault() const
+{
+	if (HeaderCustomization.IsValid())
+	{
+		return HeaderCustomization->PropertyRow->GetCustomResetToDefault();
+	}
+	return TOptional<FResetToDefaultOverride>();
+}
+
 TSharedPtr<FDetailPropertyRow> FDetailGroup::GetHeaderPropertyRow() const
 {
 	return HeaderCustomization.IsValid() ? HeaderCustomization->PropertyRow : nullptr;
@@ -214,7 +223,7 @@ TSharedRef<SWidget> FDetailGroup::MakeNameWidget()
 {
 	return
 		SNew( SButton )
-		.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+		.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 		.ContentPadding(FMargin(0,2,0,2))
 		.OnClicked( this, &FDetailGroup::OnNameClicked )				
 		.ForegroundColor( FSlateColor::UseForeground() )

@@ -5,9 +5,11 @@
 #include "SEditorViewportViewMenuContext.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ToolMenus.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorViewportCommands.h"
 #include "RayTracingDebugVisualizationMenuCommands.h"
+#include "GPUSkinCacheVisualizationMenuCommands.h"
+#include "GPUSkinCache.h"
 #include "RenderResource.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewportViewMenu"
@@ -56,6 +58,10 @@ FText SEditorViewportViewMenu::GetViewMenuLabel() const
 		else if (ViewMode == VMI_VisualizeVirtualShadowMap)
 		{
 			Label = ViewportClient->GetCurrentVirtualShadowMapVisualizationModeDisplayName();
+		}
+		else if (ViewMode == VMI_VisualizeGPUSkinCache)
+		{
+			Label = ViewportClient->GetCurrentGPUSkinCacheVisualizationModeDisplayName();
 		}
 		// For any other category, return its own name
 		else
@@ -152,7 +158,7 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 
 						{
 							FToolMenuSection& Section = Menu->AddSection("OptimizationViewmodes", LOCTEXT("OptimizationSubMenuHeader", "Optimization Viewmodes"));
-							if (FeatureLevel == ERHIFeatureLevel::SM5)
+							if (FeatureLevel >= ERHIFeatureLevel::SM5)
 							{
 								Section.AddMenuEntry(BaseViewportCommands.LightComplexityMode, UViewModeUtils::GetViewModeDisplayName(VMI_LightComplexity));
 								if (IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"))->GetValueOnAnyThread() != 0)
@@ -222,7 +228,7 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 								);
 						})),
 					EUserInterfaceActionType::RadioButton,
-					/* bInOpenSubMenuOnClick = */ false, FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.QuadOverdrawMode"));
+					/* bInOpenSubMenuOnClick = */ false, FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.QuadOverdrawMode"));
 			}
 
 #if RHI_RAYTRACING
@@ -268,7 +274,31 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 								return (ViewMode == VMI_LODColoration || ViewMode == VMI_HLODColoration);
 						})),
 					EUserInterfaceActionType::RadioButton,
-					/* bInOpenSubMenuOnClick = */ false, FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.GroupLODColorationMode"));
+					/* bInOpenSubMenuOnClick = */ false, FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.GroupLODColorationMode"));
+			}
+
+			if (GEnableGPUSkinCache)
+			{
+				Section.AddSubMenu(
+					"VisualizeGPUSkinCacheViewMode",
+					LOCTEXT("VisualizeGPUSkinCacheViewModeDisplayName", "GPU Skin Cache"),
+					LOCTEXT("GPUSkinCacheVisualizationMenu_ToolTip", "Select a mode for GPU Skin Cache visualization."),
+					FNewMenuDelegate::CreateStatic(&FGPUSkinCacheVisualizationMenuCommands::BuildVisualisationSubMenu),
+					FUIAction(
+						FExecuteAction(),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([this]()
+						{
+							const TSharedRef<SEditorViewport> ViewportRef = Viewport.Pin().ToSharedRef();
+							const TSharedPtr<FEditorViewportClient> ViewportClient = ViewportRef->GetViewportClient();
+							check(ViewportClient.IsValid());
+							return ViewportClient->IsViewModeEnabled(VMI_VisualizeGPUSkinCache);
+						})
+					),
+					EUserInterfaceActionType::RadioButton,
+					/* bInOpenSubMenuOnClick = */ false,
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.VisualizeGPUSkinCacheMode")
+				);
 			}
 		}
 

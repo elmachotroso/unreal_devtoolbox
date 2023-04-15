@@ -56,8 +56,11 @@ private:
 	TSet<const UPrimitiveComponent*> PhysicsInitializedSimulatingComponents;
 
 	UPROPERTY()
-	TArray<UBuoyancyComponent*> BuoyancyComponents;
+	TArray<TObjectPtr<UBuoyancyComponent>> BuoyancyComponents;
 	TArray<UBuoyancyComponent*> BuoyancyComponentsActive;
+	
+	// List of buoyancy components to defer registration until this buoyancy manager is fully initialized.
+	TArray<TWeakObjectPtr<UBuoyancyComponent>> BuoyancyComponentsToRegister;
 
 	FBuoyancyManagerAsyncCallback* AsyncCallback;
 	int32 Timestamp;

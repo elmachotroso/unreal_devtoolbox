@@ -24,9 +24,9 @@
 #include "ShaderPrintParameters.h"
 #include "ShaderPrint.h"
 #include "VirtualShadowMaps/VirtualShadowMapArray.h"
-
-#include "SceneFilterRendering.h"
-#include "PostProcessing.h"
+#include "PostProcess/SceneFilterRendering.h"
+#include "PostProcess/PostProcessing.h"
+#include "Strata/Strata.h"
 
 // This is used to switch on and off the clustered deferred shading implementation, that uses the light grid to perform shading.
 int32 GUseClusteredDeferredShading = 0;
@@ -94,24 +94,30 @@ class FClusteredShadingPS : public FGlobalShader
 
 	class FVisualizeLightCullingDim : SHADER_PERMUTATION_BOOL("VISUALIZE_LIGHT_CULLING");
 	class FHairStrandsLighting : SHADER_PERMUTATION_BOOL("USE_HAIR_LIGHTING");
-	using FPermutationDomain = TShaderPermutationDomain<FVisualizeLightCullingDim, FHairStrandsLighting>;
+	class FStrataTileType : SHADER_PERMUTATION_INT("STRATA_TILETYPE", 3);
+	using FPermutationDomain = TShaderPermutationDomain<FVisualizeLightCullingDim, FHairStrandsLighting, FStrataTileType>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, Forward)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintUniformBuffer)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ShadowMaskBits)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FVirtualShadowMapSamplingParameters, VirtualShadowMapSamplingParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(Strata::FStrataTilePassVS::FParameters, StrataTile)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, HairTransmittanceBuffer)
-
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+		if (!Strata::IsStrataEnabled() && PermutationVector.Get<FStrataTileType>() != 0)
+		{
+			return false;
+		}
 		// OLATODO: what level do we actually need for this?
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
@@ -121,6 +127,9 @@ class FClusteredShadingPS : public FGlobalShader
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		FForwardLightingParameters::ModifyCompilationEnvironment(Parameters.Platform, OutEnvironment);
 		FVirtualShadowMapArray::SetShaderDefines(OutEnvironment);
+
+		// Occupancy is very poor on this shader - this helps a bit in the mean time
+		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
 };
 
@@ -129,6 +138,7 @@ IMPLEMENT_GLOBAL_SHADER(FClusteredShadingPS, "/Engine/Private/ClusteredDeferredS
 enum class EClusterPassInputType : uint8
 {
 	GBuffer,
+	Strata,
 	HairStrands
 };
 
@@ -138,60 +148,88 @@ static void InternalAddClusteredDeferredShadingPass(
 	const FMinimalSceneTextures& SceneTextures,
 	const FSortedLightSetSceneInfo &SortedLightsSet,
 	EClusterPassInputType InputType,
+	EStrataTileType TileType,
 	FRDGTextureRef ShadowMaskBits,
 	FVirtualShadowMapArray& VirtualShadowMapArray,
-	FRDGBufferSRVRef HairTransmittanceBuffer)
+	FRDGBufferSRVRef HairTransmittanceBuffer,
+	FStrataSceneData* StrataSceneData)
 {
 	check(SortedLightsSet.ClusteredSupportedEnd > 0);
 	const FIntPoint SceneTextureExtent = SceneTextures.Config.Extent;
 	const bool bHairStrands = InputType == EClusterPassInputType::HairStrands;
+	const bool bStrata = Strata::IsStrataEnabled();
 	
 	FClusteredShadingPS::FParameters *PassParameters = GraphBuilder.AllocParameters<FClusteredShadingPS::FParameters>();
 	PassParameters->View = View.ViewUniformBuffer;
 	PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
 	PassParameters->Forward = View.ForwardLightingResources.ForwardLightUniformBuffer;
 	PassParameters->SceneTextures = SceneTextures.UniformBuffer;
-	PassParameters->ShadowMaskBits = ShadowMaskBits;
+	PassParameters->ShadowMaskBits = ShadowMaskBits ? ShadowMaskBits : GSystemTextures.GetZeroUIntDummy(GraphBuilder);
 	PassParameters->VirtualShadowMapSamplingParameters = VirtualShadowMapArray.GetSamplingParameters(GraphBuilder);
 	PassParameters->HairTransmittanceBuffer = HairTransmittanceBuffer;
-
-	ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, PassParameters->ShaderDrawParameters);
-	ShaderPrint::SetParameters(GraphBuilder, View, PassParameters->ShaderPrintUniformBuffer);
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+	ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintUniformBuffer);
 
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneTextures.Color.Target, ERenderTargetLoadAction::ELoad);
 	if (bHairStrands)
 	{
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(View.HairStrandsViewData.VisibilityData.SampleLightingTexture, ERenderTargetLoadAction::ELoad);
 	}
+	if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+	{
+		check(StrataSceneData);
+		PassParameters->RenderTargets[1] = FRenderTargetBinding(StrataSceneData->SeparatedOpaqueRoughRefractionSceneColor, ERenderTargetLoadAction::ELoad);
+		PassParameters->RenderTargets[2] = FRenderTargetBinding(StrataSceneData->SeparatedSubSurfaceSceneColor, ERenderTargetLoadAction::ELoad);
+	}
 
+	// VS - Strata tile parameters
+	EPrimitiveType PrimitiveType = PT_TriangleList;
+	PassParameters->StrataTile = Strata::SetTileParameters(GraphBuilder, View, TileType, PrimitiveType);
+	
+	const TCHAR* TileTypeName = ToString(TileType);
 	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("ClusteredDeferredShading(%s), #Lights: %d", bHairStrands ? TEXT("HairStrands") : TEXT("GBuffer"), SortedLightsSet.ClusteredSupportedEnd),
+		RDG_EVENT_NAME("Light::ClusteredDeferredShading(%s,Lights:%d,Tile:%s)", bHairStrands ? TEXT("HairStrands") : (bStrata ? TEXT("Strata") : TEXT("GBuffer")), SortedLightsSet.ClusteredSupportedEnd, TileTypeName),
 		PassParameters,
 		ERDGPassFlags::Raster,
-		[PassParameters, &View, SceneTextureExtent, bHairStrands](FRHICommandListImmediate& InRHICmdList)
+		[PassParameters, &View, SceneTextureExtent, bHairStrands, bStrata, TileType, PrimitiveType](FRHICommandListImmediate& InRHICmdList)
 	{
 		TShaderMapRef<FClusteredShadingVS> HairVertexShader(View.ShaderMap);
 		TShaderMapRef<FPostProcessVS> VertexShader(View.ShaderMap);
 
+		Strata::FStrataTilePassVS::FPermutationDomain VSPermutationVector;
+		VSPermutationVector.Set<Strata::FStrataTilePassVS::FEnableDebug>(false);
+		VSPermutationVector.Set<Strata::FStrataTilePassVS::FEnableTexCoordScreenVector>(true);
+		TShaderMapRef<Strata::FStrataTilePassVS> TileVertexShader(View.ShaderMap, VSPermutationVector);
+
 		FClusteredShadingPS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FClusteredShadingPS::FVisualizeLightCullingDim>(View.Family->EngineShowFlags.VisualizeLightCulling);
 		PermutationVector.Set<FClusteredShadingPS::FHairStrandsLighting>(bHairStrands);
+		PermutationVector.Set<FClusteredShadingPS::FStrataTileType>(bStrata ? TileType : 0);
 		TShaderMapRef<FClusteredShadingPS> PixelShader(View.ShaderMap, PermutationVector);
 		{
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
 			InRHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 			// Additive blend to accumulate lighting contributions.
-			GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI();
+			if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+			{
+				GraphicsPSOInit.BlendState = TStaticBlendState<
+					CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One,
+					CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One,
+					CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI();
+			}
+			else
+			{
+				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI();
+			}
 
 			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = bHairStrands ? HairVertexShader.GetVertexShader() : VertexShader.GetVertexShader();
+			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = bHairStrands ? HairVertexShader.GetVertexShader() : (bStrata ? TileVertexShader.GetVertexShader() : VertexShader.GetVertexShader());
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
+			GraphicsPSOInit.PrimitiveType = PrimitiveType;
 			SetGraphicsPipelineState(InRHICmdList, GraphicsPSOInit, 0);
 		}
 
@@ -208,6 +246,11 @@ static void InternalAddClusteredDeferredShadingPass(
 			SetShaderParameters(InRHICmdList, HairVertexShader, HairVertexShader.GetVertexShader(), VertexParameters);
 			InRHICmdList.SetStreamSource(0, nullptr, 0);
 			InRHICmdList.DrawPrimitive(0, 1, 1);
+		}
+		else if (bStrata)
+		{
+			SetShaderParameters(InRHICmdList, TileVertexShader, TileVertexShader.GetVertexShader(), PassParameters->StrataTile);
+			InRHICmdList.DrawPrimitiveIndirect(PassParameters->StrataTile.TileIndirectBuffer->GetIndirectRHICallBuffer(), Strata::TileTypeDrawIndirectArgOffset(TileType));
 		}
 		else
 		{
@@ -240,15 +283,62 @@ void FDeferredShadingSceneRenderer::AddClusteredDeferredShadingPass(
 		{
 			FViewInfo& View = Views[ViewIndex];
 
-			InternalAddClusteredDeferredShadingPass(
-				GraphBuilder,
-				View,
-				SceneTextures,
-				SortedLightsSet,
-				EClusterPassInputType::GBuffer,
-				ShadowMaskBits,
-				VirtualShadowMapArray,
-				nullptr);
+			FStrataSceneData* StrataSceneData = nullptr;
+
+			if (Strata::IsStrataEnabled())
+			{
+				StrataSceneData = &Scene->StrataSceneData;
+
+				InternalAddClusteredDeferredShadingPass(
+					GraphBuilder,
+					View,
+					SceneTextures,
+					SortedLightsSet,
+					EClusterPassInputType::Strata,
+					EStrataTileType::EComplex,
+					ShadowMaskBits,
+					VirtualShadowMapArray,
+					nullptr,
+					StrataSceneData);
+
+				InternalAddClusteredDeferredShadingPass(
+					GraphBuilder,
+					View,
+					SceneTextures,
+					SortedLightsSet,
+					EClusterPassInputType::Strata,
+					EStrataTileType::ESingle,
+					ShadowMaskBits,
+					VirtualShadowMapArray,
+					nullptr,
+					StrataSceneData);
+
+				InternalAddClusteredDeferredShadingPass(
+					GraphBuilder,
+					View,
+					SceneTextures,
+					SortedLightsSet,
+					EClusterPassInputType::Strata,
+					EStrataTileType::ESimple,
+					ShadowMaskBits,
+					VirtualShadowMapArray,
+					nullptr, 
+					StrataSceneData);
+			}
+			else
+			{
+				InternalAddClusteredDeferredShadingPass(
+					GraphBuilder,
+					View,
+					SceneTextures,
+					SortedLightsSet,
+					EClusterPassInputType::GBuffer,
+					EStrataTileType::ECount,
+					ShadowMaskBits,
+					VirtualShadowMapArray,
+					nullptr,
+					StrataSceneData);
+			}
 
 			if (HairStrands::HasViewHairStrandsData(View))
 			{
@@ -259,9 +349,11 @@ void FDeferredShadingSceneRenderer::AddClusteredDeferredShadingPass(
 					SceneTextures,
 					SortedLightsSet,
 					EClusterPassInputType::HairStrands,
+					EStrataTileType::ECount,
 					HairStrandsShadowMaskBits,
 					VirtualShadowMapArray,
-					GraphBuilder.CreateSRV(TransmittanceMask.TransmittanceMask, FHairStrandsTransmittanceMaskData::Format));
+					GraphBuilder.CreateSRV(TransmittanceMask.TransmittanceMask, FHairStrandsTransmittanceMaskData::Format),
+					StrataSceneData);
 			}
 		}
 	}

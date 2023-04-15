@@ -3,6 +3,8 @@
 #include "Kismet/BlueprintPathsLibrary.h"
 #include "Misc/Paths.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BlueprintPathsLibrary)
+
 UBlueprintPathsLibrary::UBlueprintPathsLibrary(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -380,7 +382,7 @@ FString UBlueprintPathsLibrary::ConvertRelativePathToFull(const FString& InPath,
 {
 	if (InBasePath.Len() > 0)
 	{
-		return FPaths::ConvertRelativePathToFull(InPath, InBasePath);
+		return FPaths::ConvertRelativePathToFull(InBasePath, InPath);
 	}
 	else
 	{

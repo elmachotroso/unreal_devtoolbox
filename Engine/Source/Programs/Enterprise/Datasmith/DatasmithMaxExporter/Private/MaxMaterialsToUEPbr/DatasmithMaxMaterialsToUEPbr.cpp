@@ -11,7 +11,11 @@
 #include "MaxMaterialsToUEPbr/DatasmithMaxCoronaMaterialsToUEPbr.h"
 #include "MaxMaterialsToUEPbr/DatasmithMaxScanlineMaterialsToUEPbr.h"
 #include "MaxMaterialsToUEPbr/DatasmithMaxVrayMaterialsToUEPbr.h"
+#include "MaxMaterialsToUEPbr/DatasmithMaxPhysicalMaterialToUEPbr.h"
+#include "MaxMaterialsToUEPbr/DatasmithMaxMentalMaterialToUEPbr.h"
 
+
+DatasmithMaxDirectLink::FMaterialConversionContext* FDatasmithMaxMaterialsToUEPbrManager::Context = nullptr;
 
 FDatasmithMaxMaterialsToUEPbr* FDatasmithMaxMaterialsToUEPbrManager::GetMaterialConverter( Mtl* Material )
 {
@@ -43,6 +47,12 @@ FDatasmithMaxMaterialsToUEPbr* FDatasmithMaxMaterialsToUEPbrManager::GetMaterial
 		static FDatasmithMaxVRayBlendMaterialToUEPbr VrayBlendConverter = FDatasmithMaxVRayBlendMaterialToUEPbr();
 		MaterialConverter = &VrayBlendConverter;
 	}
+	else if ( MaterialClassID == VRAYLIGHTMATCLASS )
+	{
+		static FDatasmithMaxVRayLightMaterialToUEPbr CoronaConverter = FDatasmithMaxVRayLightMaterialToUEPbr();
+		MaterialConverter = &CoronaConverter;
+	}
+	
 	else if ( MaterialClassID == STANDARDMATCLASS )
 	{
 		static FDatasmithMaxScanlineMaterialsToUEPbr ScanlineConverter = FDatasmithMaxScanlineMaterialsToUEPbr();
@@ -63,15 +73,63 @@ FDatasmithMaxMaterialsToUEPbr* FDatasmithMaxMaterialsToUEPbrManager::GetMaterial
 		static FDatasmithMaxCoronaBlendMaterialToUEPbr CoronaConverter = FDatasmithMaxCoronaBlendMaterialToUEPbr();
 		MaterialConverter = &CoronaConverter;
 	}
+	else if ( MaterialClassID == CORONALIGHTMATCLASS )
+	{
+		static FDatasmithMaxCoronaLightMaterialToUEPbr CoronaConverter = FDatasmithMaxCoronaLightMaterialToUEPbr();
+		MaterialConverter = &CoronaConverter;
+	}
+	else if ( MaterialClassID == CORONAPHYSICALMTLCLASS )
+	{
+		static FDatasmithMaxCoronaPhysicalMaterialToUEPbr CoronaConverter = FDatasmithMaxCoronaPhysicalMaterialToUEPbr();
+		MaterialConverter = &CoronaConverter;
+	}
+	else if (MaterialClassID == PHYSICALMATCLASS)
+	{
+		static FDatasmithMaxPhysicalMaterialToUEPbr PhysicalConverter = FDatasmithMaxPhysicalMaterialToUEPbr();
+		MaterialConverter = &PhysicalConverter;
+	}
+	else if (MaterialClassID == ARCHDESIGNMATCLASS)
+	{
+		static FDatasmithMaxMentalMaterialToUEPbr PhysicalConverter = FDatasmithMaxMentalMaterialToUEPbr();
+		MaterialConverter = &PhysicalConverter;
+	}
+	else if (MaterialClassID == XREFMATCLASS)
+	{
+		MaterialConverter = GetMaterialConverter(FDatasmithMaxMatHelper::GetRenderedXRefMaterial(Material));
+	}
 
 	if ( MaterialConverter && MaterialConverter->IsSupported( Material ) )
 	{
+		ensure(Context);
+		MaterialConverter->Context = Context;
 		return MaterialConverter;
 	}
-	else
+	return nullptr;
+}
+
+void FDatasmithMaxMaterialsToUEPbrManager::AddDatasmithMaterial(TSharedRef<IDatasmithScene> DatasmithScene, Mtl* Material, TSharedPtr<IDatasmithBaseMaterialElement> DatasmithMaterial)
+{
+	if (!DatasmithMaterial)
 	{
-		return nullptr;
+		return;
 	}
+
+	if (!Context)
+	{
+		return;
+	}
+
+	Context->MaterialsCollectionTracker.AddDatasmithMaterialForUsedMaterial(DatasmithScene, Material, DatasmithMaterial);
+
+}
+
+const TCHAR* FDatasmithMaxMaterialsToUEPbrManager::GetDatasmithMaterialName(Mtl* Material)
+{
+	if (Context)
+	{
+		return Context->MaterialsCollectionTracker.GetMaterialName(Material);
+	}
+	return Material->GetName().data();
 }
 
 FDatasmithMaxMaterialsToUEPbr::FDatasmithMaxMaterialsToUEPbr()
@@ -134,6 +192,14 @@ bool FDatasmithMaxMaterialsToUEPbr::IsTexmapSupported( Texmap* InTexmap ) const
 	return bIsTexmapSupported;
 }
 
+void FDatasmithMaxMaterialsToUEPbr::AddConvertedMap(const DatasmithMaxTexmapParser::FMapParameter& MapParameter)
+{
+	if (Context)
+	{
+		Context->TexmapsConverted.Add(MapParameter.Map);
+	}
+}
+
 IDatasmithMaterialExpression* FDatasmithMaxMaterialsToUEPbr::ConvertTexmap( const DatasmithMaxTexmapParser::FMapParameter& MapParameter )
 {
 	if ( !MapParameter.bEnabled || !MapParameter.Map || FMath::IsNearlyZero( MapParameter.Weight ) )
@@ -157,6 +223,8 @@ IDatasmithMaterialExpression* FDatasmithMaxMaterialsToUEPbr::ConvertTexmap( cons
 		DatasmithMaxLogger::Get().AddUnsupportedMap(MapParameter.Map);
 		return nullptr;
 	}
+
+	AddConvertedMap(MapParameter);
 
 	// Check if the texmap has a texture ouput
 	TextureOutput* TexOutput = nullptr;

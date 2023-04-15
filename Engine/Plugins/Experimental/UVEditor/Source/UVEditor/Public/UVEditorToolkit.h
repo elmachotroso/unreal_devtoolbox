@@ -16,6 +16,7 @@ class SWidget;
 class UInteractiveToolsContext;
 class UInputRouter;
 class UUVToolViewportButtonsAPI;
+class UUVTool2DViewportAPI;
 
 /**
  * The toolkit is supposed to act as the UI manager for the asset editor. It's responsible 
@@ -49,7 +50,10 @@ public:
 	virtual FText GetToolkitToolTipText() const override;
 	virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager) override;
 	virtual bool OnRequestClose() override;
+	virtual void OnClose() override;
 	virtual void SaveAsset_Execute() override;
+	virtual bool CanSaveAsset() const override;
+	virtual bool CanSaveAssetAs() const override;
 	void OnToolkitHostingStarted(const TSharedRef<IToolkit>& Toolkit) override;
 	void OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit) override;
 
@@ -89,6 +93,8 @@ protected:
 
 	TWeakPtr<SEditorViewport> UVEditor2DViewport;
 	UUVToolViewportButtonsAPI* ViewportButtonsAPI = nullptr;
+
+	UUVTool2DViewportAPI* UVTool2DViewportAPI = nullptr;
 
 	TSharedPtr<FUVEditorModeUILayer> ModeUILayer;
 	TSharedPtr<FWorkspaceItem> UVEditorMenuCategory;

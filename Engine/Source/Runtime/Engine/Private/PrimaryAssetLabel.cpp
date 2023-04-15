@@ -5,7 +5,9 @@
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "Engine/AssetManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PrimaryAssetLabel)
 
 #if WITH_EDITOR
 #include "CollectionManagerTypes.h"
@@ -46,7 +48,7 @@ void UPrimaryAssetLabel::UpdateAssetBundleData()
 		TArray<FAssetData> DirectoryAssets;
 		AssetRegistry.GetAssetsByPath(PackagePath, DirectoryAssets, true);
 
-		TArray<FSoftObjectPath> NewPaths;
+		TArray<FTopLevelAssetPath> NewPaths;
 
 		for (const FAssetData& AssetData : DirectoryAssets)
 		{
@@ -54,7 +56,7 @@ void UPrimaryAssetLabel::UpdateAssetBundleData()
 
 			if (!AssetRef.IsNull())
 			{
-				NewPaths.Add(AssetRef);
+				NewPaths.Add(AssetRef.GetAssetPath());
 			}
 		}
 
@@ -64,19 +66,18 @@ void UPrimaryAssetLabel::UpdateAssetBundleData()
 
 	if (AssetCollection.CollectionName != NAME_None)
 	{
-		TArray<FSoftObjectPath> NewPaths;
-		TArray<FName> CollectionAssets;
+		TArray<FTopLevelAssetPath> NewPaths;
+		TArray<FSoftObjectPath> CollectionAssets;
 		ICollectionManager& CollectionManager = FCollectionManagerModule::GetModule().Get();
 		CollectionManager.GetAssetsInCollection(AssetCollection.CollectionName, ECollectionShareType::CST_All, CollectionAssets);
 		for (int32 Index = 0; Index < CollectionAssets.Num(); ++Index)
 		{
 			FAssetData FoundAsset = Manager.GetAssetRegistry().GetAssetByObjectPath(CollectionAssets[Index]);
-
 			FSoftObjectPath AssetRef = Manager.GetAssetPathForData(FoundAsset);
 
 			if (!AssetRef.IsNull())
 			{
-				NewPaths.Add(AssetRef);
+				NewPaths.Add(AssetRef.GetAssetPath());
 			}
 		}
 
@@ -89,3 +90,4 @@ void UPrimaryAssetLabel::UpdateAssetBundleData()
 	Manager.SetPrimaryAssetRules(PrimaryAssetId, Rules);
 }
 #endif
+

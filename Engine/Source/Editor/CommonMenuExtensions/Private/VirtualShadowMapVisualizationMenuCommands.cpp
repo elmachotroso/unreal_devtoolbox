@@ -1,14 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VirtualShadowMapVisualizationMenuCommands.h"
-#include "VirtualShadowMapVisualizationData.h"
-#include "Containers/UnrealString.h"
-#include "Framework/Commands/InputChord.h"
-#include "Materials/Material.h"
-#include "Internationalization/Text.h"
-#include "Templates/Function.h"
-#include "EditorStyleSet.h"
+
+#include "Delegates/Delegate.h"
 #include "EditorViewportClient.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/IConsoleManager.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "UObject/UnrealNames.h"
+#include "VirtualShadowMapVisualizationData.h"
 
 int32 GVirtualShadowMapVisualizeAdvanced = 0;
 static FAutoConsoleVariableRef CVarVirtualShadowMapVisualizeAdvanced(
@@ -25,7 +32,7 @@ FVirtualShadowMapVisualizationMenuCommands::FVirtualShadowMapVisualizationMenuCo
 		TEXT("VirtualShadowMapVisualizationMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "VirtualShadowMapVisualizationMenu", "VirtualShadowMa Visualization"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	),
 	CommandMap()
 {

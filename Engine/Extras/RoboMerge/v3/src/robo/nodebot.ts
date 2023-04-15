@@ -4,8 +4,9 @@ import * as Sentry from '@sentry/node';
 import { _nextTick } from '../common/helper';
 import { ContextualLogger } from '../common/logger';
 import { Mailer, MailParams, Recipients } from '../common/mailer';
-import { Change, ConflictedResolveNFile, PerforceContext, RoboWorkspace } from '../common/perforce';
+import { Change, ConflictedResolveNFile, PerforceContext, RoboWorkspace, coercePerforceWorkspace } from '../common/perforce';
 import { IPCControls, NodeBotInterface, QueuedChange, ReconsiderArgs } from './bot-interfaces';
+import { ApprovalOptions } from './branchdefs'
 import { BlockagePauseInfo, BranchStatus } from './status-types';
 import { AlreadyIntegrated, Blockage, Branch, BranchArg, BranchGraphInterface, ChangeInfo, EndIntegratingToGateEvent, Failure } from './branch-interfaces';
 import { MergeAction, OperationResult, PendingChange, resolveBranchArg, StompedRevision, StompVerification, StompVerificationFile }  from './branch-interfaces';
@@ -348,7 +349,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		if (fromQueue.timestamp) {
 			logMessage += ` (delay: ${Math.round((Date.now() - fromQueue.timestamp) / 1000)})`
 		}
-		
+	
 		let specifiedTargetBranch : Branch | null = null
 		if (fromQueue.targetBranchName) {
 			specifiedTargetBranch = this._getBranch(fromQueue.targetBranchName)
@@ -414,7 +415,18 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			change.forceStompChanges = true
 		}
 		change.additionalDescriptionText = fromQueue.description
-		change.commandOverride = fromQueue.commandOverride
+		if (fromQueue.commandOverride) {
+			change.commandOverride = fromQueue.commandOverride
+		}
+		// regular reconsiders, make sure edge target is included
+		else if (specifiedTargetBranch && !change.forceCreateAShelf && !change.forceStompChanges) {
+			// new behaviour: make target explicit
+			const bg = this.branchGraph
+			
+			const botNameOrAlias = bg.config.aliases.length > 0 ? bg.config.aliases[0] : bg.botname
+			change.commandOverride = `#robomerge[${botNameOrAlias}] ${specifiedTargetBranch.upperName}`
+			change.accumulateCommandOverride = true
+		}
 
 		// process just this change
 		await this._processAndMergeCl(new Map<string, EdgeBot>(this.edges), change, true, fromQueue.who, fromQueue.workspace, specifiedTargetBranch)
@@ -1282,6 +1294,24 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		for (let changeIndex = 0; changeIndex < changes.length; ++changeIndex) {
 			const change = changes[changeIndex]
+
+			// If the user of a change is robomerge or this is a change submitted via swarm on behalf of someone
+			// don't process the change for a minute to give the change owner command time to be processed
+			if ((Date.now() - ((change.time || 0) * 1000)) < 60000) {
+				if (change.user === "robomerge") {
+					this.nodeBotLogger.info(`Delaying processing of ${change.change} while robomerge changes owner.  Now: ${Date.now()} Change time: ${change.time}`)
+					return
+				}
+				else if (change.client.startsWith("swarm-")) {
+					this.nodeBotLogger.info(`Delaying processing of ${change.change} to give swarm time to change owner.  Now: ${Date.now()} Change time: ${change.time}`)
+					return
+				}
+			}
+
+			if (change.user === "robomerge") {
+				this.nodeBotLogger.warn(`Processing change ${change.change} by user robomerge. Now: ${Date.now()} Change time: ${change.time}`)
+            }
+
 			const changeResult = await this._processAndMergeCl(availableEdges, change, false)
 
 			// Exit immediately on syntax errors
@@ -1331,12 +1361,23 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		optOwnerOverride?: string, optWorkspaceOverride?: RoboWorkspace, optTargetBranch?: Branch | null
 	) : Promise<EdgeMergeResults> {
 		const result = await this._createChangeInfo(change, availableEdges, optOwnerOverride, optWorkspaceOverride, optTargetBranch)
-		if (result.info) {
-			return await this._mergeClViaEdges(availableEdges, result.info, ignoreEdgePauseState)
+		if (!result.info) {
+			const emResult = new EdgeMergeResults()
+			emResult.errors = result.errors
+			return emResult
 		}
-		const emResult = new EdgeMergeResults()
-		emResult.errors = result.errors
-		return emResult
+
+		// should also do this for #manual changes (set up some testing around those first)
+		if (change.forceCreateAShelf && optWorkspaceOverride) {
+			// see if we need to talk to an edge server to create the shelf
+			const edgeServer = await this.p4.getWorkspaceEdgeServer(
+				coercePerforceWorkspace(optWorkspaceOverride)!.name)
+			if (edgeServer) {
+				result.info.edgeServerToHostShelf = edgeServer
+			}
+		}
+
+		return await this._mergeClViaEdges(availableEdges, result.info, ignoreEdgePauseState)
 	}
 
 	private async _createChangeInfo(
@@ -1409,18 +1450,6 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 						// remove action from targets
 						info.targets.splice(info.targets.indexOf(action), 1)
-					}
-				}
-			}
-		}
-
-		if (info.targets) {
-			for (const target of info.targets) {
-				if (this.getImmediateEdge(target.branch)!.incognitoMode) {
-
-					if (target.flags.has('review')) {
-						info.errors = info.errors || []
-						info.errors.push(`Target ${target.branch.name} flagged for review - not allowed in incognito mode`)
 					}
 				}
 			}
@@ -1560,7 +1589,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			isDefaultBot: this.branch.isDefaultBot,
 			graphBotName: this.graphBotName,
 			cl: change.change,
-			aliasUpper: (this.branchGraph.config.alias || '').toUpperCase(),
+			aliasesUpper: this.branchGraph.config.aliases.map(s => s.toUpperCase()),
 			macros: this.branchGraph.config.macros,
 			logger: this.nodeBotLogger
 		})
@@ -1569,7 +1598,14 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 		const commandOverride = (change.commandOverride || '').trim()
 		if (commandOverride) {
-			parsedLines.override(parse(commandOverride.split('|').map(s => s.trim())))
+
+			const parsedOverride = parse(commandOverride.split('|').map(s => s.trim()))
+			if (change.accumulateCommandOverride) {
+				parsedLines.append(parsedOverride)
+			}
+			else {
+				parsedLines.override(parsedOverride)
+			}
 		}
 
 		// Author is always CL user
@@ -1606,11 +1642,9 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			source: parsedLines.source,
 			description,
 			propagatingNullMerge: parsedLines.propagatingNullMerge,
-			forceCreateAShelf,
-			sendNoShelfEmail,
+			forceCreateAShelf, sendNoShelfEmail,
 
 			forceStompChanges, additionalDescriptionText,
-			hasOkForGithubTag: parsedLines.hasOkForGithubTag,
 			overriddenCommand: commandOverride,
 			macros: parsedLines.expandedMacros
 		}
@@ -1726,7 +1760,7 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 			const targetEdge = availableEdges.get(target.branch.upperName)
 
-			// If the edge requested is currently no available this tick, simply log that we skipped it and move on
+			// If the edge requested is currently not available this tick, simply log that we skipped it and move on
 			if (!targetEdge) {
 				this.nodeBotLogger.verbose(`No available edges can serve CL ${info.cl} -> ${target.branch.name} this tick.`)
 				continue
@@ -1844,30 +1878,34 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 			message += '\n' + failure.summary 
 			this._sendError(new Recipients(owner), shortMessage, message)
+			return false
 		}
-		else {
-			// see if we've already sent an email for this one
-			const existingBlockage = this.conflicts.find(targetBranch, pending.change.source_cl)
-			const blockageOccurred = existingBlockage ? existingBlockage.time : new Date
 
-			const ownerEmail = this.p4.getEmail(owner)
-			const blockage: Blockage = {change: pending.change, action: pending.action, failure, owner, ownerEmail, time: blockageOccurred}
+		return this.findOrCreateBlockage(failure, pending, shortMessage)
+	}
 
-			if (existingBlockage) {
-				this.nodeBotLogger.info(shortMessage + ' (already notified)')
+	findOrCreateBlockage(failure: Failure, pending: PendingChange, shortMessage: string, approval?: {settings: ApprovalOptions, shelfCl: number}) {
+		const owner = getIntegrationOwner(pending) || pending.change.author
 
-				this.conflicts.updateBlockage(blockage)
-			}
-			else {
-				if (this.tickJournal && (failure.kind === 'Merge conflict' || failure.kind === 'Exclusive check-out')) {
-					++this.tickJournal.conflicts;
-				}
+		// see if we've already created a notification for this one
+		const existingBlockage = this.conflicts.find(pending.action.branch, pending.change.source_cl)
+		const blockageOccurred = existingBlockage ? existingBlockage.time : new Date
 
-				this.conflicts.onBlockage(blockage)
-				return true
-			}
+		const ownerEmail = this.p4.getEmail(owner)
+		const blockage: Blockage = {change: pending.change, action: pending.action, failure, owner, ownerEmail, time: blockageOccurred, approval}
+
+		if (existingBlockage) {
+			this.nodeBotLogger.info(shortMessage + ' (already notified)')
+
+			this.conflicts.updateBlockage(blockage)
+			return false
 		}
-		return false
+		if (this.tickJournal && (failure.kind === 'Merge conflict' || failure.kind === 'Exclusive check-out')) {
+			++this.tickJournal.conflicts;
+		}
+
+		this.conflicts.onBlockage(blockage)
+		return true
 	}
 
 	private sendNagEmails() {

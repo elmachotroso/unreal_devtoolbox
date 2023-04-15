@@ -13,12 +13,14 @@
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
 #include "MovieSceneCommonHelpers.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCVarTrackInstance)
+
 namespace UE
 {
 namespace MovieScene
 {
 
-struct FPreAnimatedCVarTraits
+struct FPreAnimatedCVarTraits : FDefaultPreAnimatedStateTraits
 {
 	using KeyType     = FString;
 	using StorageType = FString;
@@ -162,3 +164,4 @@ void UMovieSceneCVarTrackInstance::OnEndUpdateInputs()
 void UMovieSceneCVarTrackInstance::OnDestroyed()
 {
 }
+

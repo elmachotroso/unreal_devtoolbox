@@ -1,20 +1,65 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimSequenceDetails.h"
-#include "Animation/AnimSequence.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/SViewport.h"
-#include "Animation/DebugSkelMeshComponent.h"
-#include "Viewports.h"
-#include "PropertyHandle.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
+
 #include "AnimMontageSegmentDetails.h"
 #include "AnimPreviewInstance.h"
+#include "Animation/AnimEnums.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/AnimSingleNodeInstance.h"
+#include "Animation/AnimTypes.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Editor/UnrealEdTypes.h"
+#include "EditorViewportClient.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/World.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/BoxSphereBounds.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "PreviewScene.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SSearchableComboBox.h"
+#include "SceneInterface.h"
 #include "Slate/SceneViewport.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "Viewports.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SViewport.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+struct FGeometry;
 
 #define LOCTEXT_NAMESPACE	"AnimSequenceDetails"
 
@@ -92,7 +137,9 @@ void FAnimSequenceDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	}
 
 	// add widget for editing retarget source
-	AnimationCategory.AddCustomRow(RetargetSourceNameHandler->GetPropertyDisplayName())
+	AnimationCategory
+	.AddCustomRow(RetargetSourceNameHandler->GetPropertyDisplayName())
+	.RowTag(RetargetSourceNameHandler->GetProperty()->GetFName())
 	.NameContent()
 	[
 		RetargetSourceNameHandler->CreatePropertyNameWidget()
@@ -116,7 +163,9 @@ void FAnimSequenceDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		]	
 	];
 
-	AnimationCategory.AddCustomRow(RetargetSourceAssetHandle->GetPropertyDisplayName())
+	AnimationCategory
+	.AddCustomRow(RetargetSourceAssetHandle->GetPropertyDisplayName())
+	.RowTag(RetargetSourceAssetHandle->GetProperty()->GetFName())
 	.NameContent()
 	[
 		RetargetSourceAssetHandle->CreatePropertyNameWidget()
@@ -505,7 +554,7 @@ void SAnimationRefPoseViewport::InitSkeleton()
 		}();
 		
 		const bool bInvalidPreviewInstance = PreviewAnimInstance == nullptr || PreviewAnimInstance->GetCurrentAsset() != PreviewAnimationSequence;
-		const bool bPreviewMeshMismatch = PreviewComponent->SkeletalMesh != PreviewSkeletalMesh;
+		const bool bPreviewMeshMismatch = PreviewComponent->GetSkeletalMeshAsset() != PreviewSkeletalMesh;
 		if(bInvalidPreviewInstance || bPreviewMeshMismatch)
 		{
 			PreviewComponent->SetSkeletalMesh(PreviewSkeletalMesh);
@@ -568,7 +617,7 @@ void SAnimationRefPoseViewport::Tick( const FGeometry& AllottedGeometry, const d
 		{
 			Description->SetText( FText::Format( LOCTEXT( "IncorrectSkeleton", "The preview asset doesn't work for the skeleton '{0}'" ), FText::FromString( TargetSkeletonName ) ) );
 		}
-		else if ( Component->SkeletalMesh == NULL )
+		else if ( Component->GetSkeletalMeshAsset() == NULL )
 		{
 			Description->SetText( FText::Format( LOCTEXT( "NoMeshFound", "No skeletal mesh found for skeleton '{0}'" ), FText::FromString( TargetSkeletonName ) ) );
 		}

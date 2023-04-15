@@ -16,6 +16,7 @@ class FNiagaraSystemInstance;
 class FNiagaraSystemSimulation;
 class FNiagaraGpuComputeDispatchInterface;
 class FNiagaraGPUSystemTick;
+class UNiagaraSimCache;
 class FNiagaraSystemGpuComputeProxy;
 
 using FNiagaraSystemInstancePtr = TSharedPtr<FNiagaraSystemInstance, ESPMode::ThreadSafe>;
@@ -70,6 +71,7 @@ class NIAGARA_API FNiagaraSystemInstance
 	friend class FNiagaraSystemSimulation;
 	friend class FNiagaraGPUSystemTick;
 	friend class FNiagaraDebugHud;
+	friend class UNiagaraSimCache;
 
 public:
 	DECLARE_DELEGATE(FOnPostTick);
@@ -168,6 +170,11 @@ public:
 	void Reset(EResetMode Mode);
 
 	void ManualTick(float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent);
+
+	/** Ticks the system using the a SimCache. */
+	void SimCacheTick_GameThread(UNiagaraSimCache* SimCache, float DesiredAge, float DeltaSeconds, const FGraphEventRef& MyCompletionGraphEvent);
+	/** Concurrent work for SimCache tick */
+	void SimCacheTick_Concurrent(UNiagaraSimCache* SimCache);
 
 	/** Initial phase of system instance tick. Must be executed on the game thread. */
 	void Tick_GameThread(float DeltaSeconds);
@@ -280,14 +287,21 @@ public:
 		return nullptr;
 	}
 
+	template<typename TDataType>
+	FORCEINLINE TDataType* FindTypedDataInterfaceInstanceData(const UNiagaraDataInterface* Interface)
+	{
+		if (auto* InstDataOffsetPair = DataInterfaceInstanceDataOffsets.FindByPredicate([&](auto& Pair) { return Pair.Key.Get() == Interface; }))
+		{
+			return reinterpret_cast<TDataType*>(&DataInterfaceInstanceData[InstDataOffsetPair->Value]);
+		}
+		return nullptr;
+	}
+
 	FORCEINLINE const FNiagaraPerInstanceDIFuncInfo& GetPerInstanceDIFunction(ENiagaraSystemSimulationScript ScriptType, int32 FuncIndex)const { return PerInstanceDIFunctions[(int32)ScriptType][FuncIndex]; }
 
 	void EvaluateBoundFunction(FName FunctionName, bool& UsedOnCpu, bool& UsedOnGpu) const;
 
 #if WITH_EDITORONLY_DATA
-	bool UsesEmitter(const UNiagaraEmitter* Emitter) const;
-	bool UsesScript(const UNiagaraScript* Script) const;
-	//bool UsesDataInterface(UNiagaraDataInterface* Interface);
 	bool UsesCollection(const UNiagaraParameterCollection* Collection) const;
 #endif
 

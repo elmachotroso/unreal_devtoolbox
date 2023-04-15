@@ -14,8 +14,12 @@
 #include "GroupTopology.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "Operations/OffsetMeshRegion.h"
+#include "Operations/InsetMeshRegion.h"
 #include "Operations/MeshBevel.h"
 #include "UDynamicMesh.h"
+#include "GeometryScript/MeshSelectionFunctions.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshModelingFunctions)
 
 using namespace UE::Geometry;
 
@@ -255,6 +259,129 @@ protected:
 
 
 
+namespace UELocal
+{
+	static void ApplyPolygroupModeToNewTriangles(
+		FDynamicMesh3& EditMesh,
+		TArray<int32>& NewTriangles,
+		FGeometryScriptMeshEditPolygroupOptions GroupOptions)
+	{
+		if (GroupOptions.GroupMode == EGeometryScriptMeshEditPolygroupMode::PreserveExisting)
+		{
+			return;
+		}
+		else if (GroupOptions.GroupMode == EGeometryScriptMeshEditPolygroupMode::SetConstant)
+		{
+			for (int32 tid : NewTriangles)
+			{
+				EditMesh.SetTriangleGroup(tid, GroupOptions.ConstantGroup);
+			}
+		}
+		else  // EGeometryScriptMeshEditPolygroupMode::AutoGenerateNew
+		{
+			TMap<int32, int32> NewGroups;
+			for (int32 tid : NewTriangles)
+			{
+				int32 GroupID = EditMesh.GetTriangleGroup(tid);
+				int32* Found = NewGroups.Find(GroupID);
+				if (Found == nullptr)
+				{
+					int32 NewGroupID = EditMesh.AllocateTriangleGroup();
+					NewGroups.Add(GroupID, NewGroupID);
+					EditMesh.SetTriangleGroup(tid, NewGroupID);
+				}
+				else
+				{
+					EditMesh.SetTriangleGroup(tid, *Found);
+				}
+			}
+		}
+	}
+
+}
+
+
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshDisconnectFaces(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
+	bool bAllowBowtiesInOutput,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshDisconnectFaces_InvalidInput", "ApplyMeshDisconnectFaces: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
+	{
+		TArray<int32> Triangles;
+		Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+		if (Triangles.Num() == 0)
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshDisconnectFaces_NoTriangles", "ApplyMeshDisconnectFaces: Disconnect Area contains 0 triangles"));
+		}
+		else
+		{
+			FDynamicMeshEditor Editor(&EditMesh);
+			Editor.DisconnectTriangles(Triangles, !bAllowBowtiesInOutput);
+		}
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshDuplicateFaces(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
+	FGeometryScriptMeshSelection& NewSelection,
+	FGeometryScriptMeshEditPolygroupOptions GroupOptions,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshDuplicateFaces_InvalidInput", "ApplyMeshDuplicateFaces: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TArray<int32> NewTriangles;
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
+	{
+		TArray<int32> Triangles;
+		Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+		if (Triangles.Num() == 0)
+		{
+			UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshDuplicateFaces_NoTriangles", "ApplyMeshDuplicateFaces: Disconnect Area contains 0 triangles"));
+		}
+		else
+		{
+			FDynamicMeshEditor Editor(&EditMesh);
+			FMeshIndexMappings Mappings; 
+			FDynamicMeshEditResult EditResult;
+			Editor.AppendTriangles(&EditMesh, Triangles, Mappings, EditResult);
+			NewTriangles = MoveTemp(EditResult.NewTriangles);
+
+			UELocal::ApplyPolygroupModeToNewTriangles(EditMesh, NewTriangles, GroupOptions);
+		}
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	UGeometryScriptLibrary_MeshSelectionFunctions::ConvertIndexArrayToMeshSelection(
+		TargetMesh, NewTriangles, EGeometryScriptMeshSelectionType::Triangles, NewSelection);
+
+	return TargetMesh;
+}
+
+
+
+
+
+
 
 UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshOffset(
 	UDynamicMesh* TargetMesh,
@@ -385,38 +512,383 @@ UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshShell(
 
 
 
-
-
-
-UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude(
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshExtrude_Compatibility_5p0(
 	UDynamicMesh* TargetMesh,
 	FGeometryScriptMeshExtrudeOptions Options,
 	UGeometryScriptDebug* Debug)
 {
+	FGeometryScriptMeshLinearExtrudeOptions ConvertOptions;
+	ConvertOptions.Distance = Options.ExtrudeDistance;
+	ConvertOptions.Direction = Options.ExtrudeDirection;
+	ConvertOptions.UVScale = Options.UVScale;
+	ConvertOptions.bSolidsToShells = Options.bSolidsToShells;
+
+	return ApplyMeshLinearExtrudeFaces(TargetMesh, ConvertOptions, FGeometryScriptMeshSelection(), Debug);
+}
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshLinearExtrudeFaces(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshLinearExtrudeOptions Options,
+	FGeometryScriptMeshSelection Selection,
+	UGeometryScriptDebug* Debug)
+{
 	if (TargetMesh == nullptr)
 	{
-		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshExtrude_InvalidInput", "ApplyMeshExtrude: TargetMesh is Null"));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshLinearExtrudeFaces_InvalidInput", "ApplyMeshLinearExtrudeFaces: TargetMesh is Null"));
 		return TargetMesh;
 	}
-	FVector3d ExtrudeVec = (double)Options.ExtrudeDistance * (FVector3d)Options.ExtrudeDirection;
 
 	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
 	{
-		FOffsetMeshRegion Extruder(&EditMesh);
-		for (int32 tid : EditMesh.TriangleIndicesItr())
+		auto ApplyExtrudeArea = [&EditMesh, &Options](TArray<int32>&& Triangles)
 		{
-			Extruder.Triangles.Add(tid);
-		}
-		Extruder.OffsetPositionFunc = [ExtrudeVec](const FVector3d& Position, const FVector3d& VertexVector, int VertexID)
-		{
-			return Position + ExtrudeVec;
-		};
-		Extruder.bIsPositiveOffset = (Options.ExtrudeDistance > 0);
-		
-		Extruder.UVScaleFactor = Options.UVScale;
-		Extruder.bOffsetFullComponentsAsSolids = Options.bSolidsToShells;
+			FOffsetMeshRegion Extruder(&EditMesh);
+			Extruder.Triangles = MoveTemp(Triangles);
+			if (Extruder.Triangles.Num() > 0)
+			{
+				FVector3d UseDirection = Options.Direction;
+				if (Options.DirectionMode == EGeometryScriptLinearExtrudeDirection::AverageFaceNormal)
+				{
+					UseDirection = FVector3d::Zero();
+					for (int32 tid : Extruder.Triangles)
+					{
+						FVector3d Normal, Centroid; double Area;
+						EditMesh.GetTriInfo(tid, Normal, Area, Centroid);
+						UseDirection += Area * Normal;
+					}
+					if (Normalize(UseDirection) <= 0)
+					{
+						UseDirection = Options.Direction;
+					}
+				}
+				UseDirection *= Options.Distance;
 
-		Extruder.Apply();
+				Extruder.OffsetPositionFunc = [UseDirection](const FVector3d& Position, const FVector3d& VertexVector, int VertexID)
+				{
+					return Position + UseDirection;
+				};
+				Extruder.bIsPositiveOffset = (Options.Distance > 0);
+				Extruder.UVScaleFactor = Options.UVScale;
+				Extruder.bOffsetFullComponentsAsSolids = Options.bSolidsToShells;
+				Extruder.Apply();
+				for (FOffsetMeshRegion::FOffsetInfo& OffsetInfo : Extruder.OffsetRegions)
+				{
+					UELocal::ApplyPolygroupModeToNewTriangles(EditMesh, OffsetInfo.OffsetTids, Options.GroupOptions);
+				}
+			}
+		};
+
+		TArray<int32> Triangles;
+		if (Selection.GetNumSelected() == 0)
+		{
+			for (int32 tid : EditMesh.TriangleIndicesItr())
+			{
+				Triangles.Add(tid);
+			}
+		}
+		else
+		{
+			Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+		}
+
+		if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerPolygroup)
+		{
+			TMap<int32, TArray<int32>> PolygroupTris;
+			for (int32 tid : Triangles)
+			{
+				int32 gid = EditMesh.GetTriangleGroup(tid);
+				TArray<int32>* Found = PolygroupTris.Find(gid);
+				if (Found != nullptr)
+				{
+					Found->Add(tid);
+				}
+				else
+				{
+					TArray<int32> Temp;
+					Temp.Add(tid);
+					PolygroupTris.Add(gid, Temp);
+				}
+			}
+
+			for (TPair<int32, TArray<int32>> Pair : PolygroupTris)
+			{
+				ApplyExtrudeArea(MoveTemp(Pair.Value));
+			}
+		}
+		else if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerTriangle)
+		{
+			for (int32 tid : Triangles)
+			{
+				TArray<int32> Temp;
+				Temp.Add(tid);
+				ApplyExtrudeArea(MoveTemp(Temp));
+			}
+		}
+		else
+		{
+			ApplyExtrudeArea(MoveTemp(Triangles));
+		}
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
+
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshOffsetFaces(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshOffsetFacesOptions Options,
+	FGeometryScriptMeshSelection Selection,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshOffsetFaces_InvalidInput", "ApplyMeshOffsetFaces: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
+	{
+		auto ApplyOffsetArea = [&EditMesh, &Options](TArray<int32>&& Triangles)
+		{
+			FOffsetMeshRegion Extruder(&EditMesh);
+			Extruder.Triangles = MoveTemp(Triangles);
+			if (Extruder.Triangles.Num() > 0)
+			{
+				Extruder.OffsetPositionFunc = [Options](const FVector3d& Pos, const FVector3d& VertexVector, int32 VertexID) {
+					return Pos + Options.Distance * VertexVector;
+				};
+
+				if (Options.OffsetType == EGeometryScriptOffsetFacesType::VertexNormal)
+				{
+					Extruder.ExtrusionVectorType = FOffsetMeshRegion::EVertexExtrusionVectorType::VertexNormal;
+				}
+				else if (Options.OffsetType == EGeometryScriptOffsetFacesType::FaceNormal)
+				{
+					Extruder.ExtrusionVectorType = FOffsetMeshRegion::EVertexExtrusionVectorType::SelectionTriNormalsAngleWeightedAverage;
+				}
+				else
+				{
+					Extruder.ExtrusionVectorType = FOffsetMeshRegion::EVertexExtrusionVectorType::SelectionTriNormalsAngleWeightedAdjusted;
+				}
+
+				Extruder.DefaultOffsetDistance = Options.Distance;
+				Extruder.bIsPositiveOffset = (Options.Distance > 0);
+				Extruder.UVScaleFactor = Options.UVScale;
+				Extruder.bOffsetFullComponentsAsSolids = Options.bSolidsToShells;
+				Extruder.Apply();
+				for (FOffsetMeshRegion::FOffsetInfo& OffsetInfo : Extruder.OffsetRegions)
+				{
+					UELocal::ApplyPolygroupModeToNewTriangles(EditMesh, OffsetInfo.OffsetTids, Options.GroupOptions);
+				}
+			}
+		};
+
+		TArray<int32> Triangles;
+		if (Selection.GetNumSelected() == 0)
+		{
+			for (int32 tid : EditMesh.TriangleIndicesItr())
+			{
+				Triangles.Add(tid);
+			}
+		}
+		else
+		{
+			Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+		}
+
+		if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerPolygroup)
+		{
+			TMap<int32, TArray<int32>> PolygroupTris;
+			for (int32 tid : Triangles)
+			{
+				int32 gid = EditMesh.GetTriangleGroup(tid);
+				TArray<int32>* Found = PolygroupTris.Find(gid);
+				if (Found != nullptr)
+				{
+					Found->Add(tid);
+				}
+				else
+				{
+					TArray<int32> Temp;
+					Temp.Add(tid);
+					PolygroupTris.Add(gid, Temp);
+				}
+			}
+
+			for (TPair<int32, TArray<int32>> Pair : PolygroupTris)
+			{
+				ApplyOffsetArea(MoveTemp(Pair.Value));
+			}
+		}
+		else if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerTriangle)
+		{
+			for (int32 tid : Triangles)
+			{
+				TArray<int32> Temp;
+				Temp.Add(tid);
+				ApplyOffsetArea(MoveTemp(Temp));
+			}
+		}
+		else
+		{
+			ApplyOffsetArea(MoveTemp(Triangles));
+		}
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshInsetOutsetFaces(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshInsetOutsetFacesOptions Options,
+	FGeometryScriptMeshSelection Selection,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshInsetOutsetFaces_InvalidInput", "ApplyMeshInsetOutsetFaces: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh) 
+	{
+		auto ApplyInsetOutsetArea = [&EditMesh, &Options](TArray<int32>&& Triangles)
+		{
+			FInsetMeshRegion InsetOutset(&EditMesh);
+			InsetOutset.Triangles = MoveTemp(Triangles);
+			if (InsetOutset.Triangles.Num() > 0)
+			{
+				InsetOutset.InsetDistance = Options.Distance;
+				InsetOutset.bReproject = (Options.Distance < 0) ? false : Options.bReproject;
+				InsetOutset.Softness = Options.Softness;
+				InsetOutset.bSolveRegionInteriors = !Options.bBoundaryOnly;
+				InsetOutset.AreaCorrection = Options.AreaScale;
+				InsetOutset.Apply();
+
+				for (FInsetMeshRegion::FInsetInfo& InsetInfo : InsetOutset.InsetRegions)
+				{
+					UELocal::ApplyPolygroupModeToNewTriangles(EditMesh, InsetInfo.InitialTriangles, Options.GroupOptions);
+				}
+			}
+		};
+
+		TArray<int32> Triangles;
+		if (Selection.GetNumSelected() == 0)
+		{
+			for (int32 tid : EditMesh.TriangleIndicesItr())
+			{
+				Triangles.Add(tid);
+			}
+		}
+		else
+		{
+			Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+		}
+
+		if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerPolygroup)
+		{
+			TMap<int32, TArray<int32>> PolygroupTris;
+			for (int32 tid : Triangles)
+			{
+				int32 gid = EditMesh.GetTriangleGroup(tid);
+				TArray<int32>* Found = PolygroupTris.Find(gid);
+				if (Found != nullptr)
+				{
+					Found->Add(tid);
+				}
+				else
+				{
+					TArray<int32> Temp;
+					Temp.Add(tid);
+					PolygroupTris.Add(gid, Temp);
+				}
+			}
+
+			for (TPair<int32, TArray<int32>> Pair : PolygroupTris)
+			{
+				ApplyInsetOutsetArea(MoveTemp(Pair.Value));
+			}
+		}
+		else if (Options.AreaMode == EGeometryScriptPolyOperationArea::PerTriangle)
+		{
+			for (int32 tid : Triangles)
+			{
+				TArray<int32> Temp;
+				Temp.Add(tid);
+				ApplyInsetOutsetArea(MoveTemp(Temp));
+			}
+		}
+		else
+		{
+			ApplyInsetOutsetArea(MoveTemp(Triangles));
+		}
+
+	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+
+	return TargetMesh;
+}
+
+
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshBevelSelection(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptMeshSelection Selection,
+	EGeometryScriptMeshBevelSelectionMode BevelMode,
+	FGeometryScriptMeshBevelSelectionOptions Options,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("ApplyMeshBevelSelection_InvalidInput", "ApplyMeshBevelSelection: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+	{
+		FMeshBevel Bevel;
+		Bevel.InsetDistance = Options.BevelDistance;
+		Bevel.MaterialIDMode = (Options.bInferMaterialID) ? FMeshBevel::EMaterialIDMode::InferMaterialID : FMeshBevel::EMaterialIDMode::ConstantMaterialID;
+		Bevel.SetConstantMaterialID = Options.SetMaterialID;
+
+		TUniquePtr<FGroupTopology> GroupTopology;
+
+		if (BevelMode == EGeometryScriptMeshBevelSelectionMode::TriangleArea)
+		{
+			TArray<int32> Triangles;
+			Selection.ConvertToMeshIndexArray(EditMesh, Triangles, EGeometryScriptIndexType::Triangle);
+			Bevel.InitializeFromTriangleSet(EditMesh, Triangles);
+		}
+		else
+		{
+			int32 NumRequiredAdjacentGroups = (BevelMode == EGeometryScriptMeshBevelSelectionMode::SharedPolygroupEdges) ? 2 : 1;
+
+			TArray<int32> GroupIDs;
+			Selection.ConvertToMeshIndexArray(EditMesh, GroupIDs, EGeometryScriptIndexType::PolygroupID);
+			GroupTopology = MakeUnique<FGroupTopology>(&EditMesh, true);
+			TArray<int32> GroupEdgeIDs;
+			int32 NumEdges = GroupTopology->Edges.Num();
+			for ( int32 GroupEdgeID = 0; GroupEdgeID < NumEdges; ++GroupEdgeID )
+			{
+				FIndex2i EdgeGroupIDs = GroupTopology->Edges[GroupEdgeID].Groups;
+				int32 NumAdjacentGroups = (GroupIDs.Contains(EdgeGroupIDs.A) ? 1 : 0) + (GroupIDs.Contains(EdgeGroupIDs.B) ? 1 : 0);
+				if (NumAdjacentGroups >= NumRequiredAdjacentGroups )
+				{
+					GroupEdgeIDs.Add(GroupEdgeID);
+				}
+			}
+			Bevel.InitializeFromGroupTopologyEdges(EditMesh, *GroupTopology, GroupEdgeIDs);
+		}
+
+		Bevel.Apply(EditMesh, nullptr);
 
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 
@@ -447,7 +919,6 @@ UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshPolygroupBe
 		if (Options.bApplyFilterBox)
 		{
 			FAxisAlignedBox3d QueryBox(Options.FilterBox);
-			FTransformSRT3d InvTransform(Options.FilterBoxTransform.Inverse());
 			TSet<int32> FoundEdges;
 
 			// find all mesh edges inside filter shape
@@ -455,7 +926,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshPolygroupBe
 			FDynamicMeshAABBTree3 Spatial(&EditMesh, true);
 			FDynamicMeshAABBTree3::FTreeTraversal EdgeTraversal;
 			EdgeTraversal.NextBoxF = [&QueryBox](const FAxisAlignedBox3d& Box, int Depth) { return Box.Intersects(QueryBox); };
-			EdgeTraversal.NextTriangleF = [&QueryBox, &InvTransform, &FoundEdges, &EditMesh, &Options](int TriangleID)
+			EdgeTraversal.NextTriangleF = [&QueryBox, &FoundEdges, &EditMesh, &Options](int TriangleID)
 			{
 				FIndex3i Edges = EditMesh.GetTriEdges(TriangleID);
 				for (int32 j = 0; j < 3; ++j)
@@ -464,8 +935,8 @@ UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshPolygroupBe
 					{
 						FVector3d A, B;
 						EditMesh.GetEdgeV(Edges[j], A, B);
-						A = InvTransform.TransformPosition(A);
-						B = InvTransform.TransformPosition(B);
+						A = Options.FilterBoxTransform.InverseTransformPosition(A);
+						B = Options.FilterBoxTransform.InverseTransformPosition(B);
 						bool bIntersects = (Options.bFullyContained) ?
 							(QueryBox.Contains(A) && QueryBox.Contains(B)) :
 							(QueryBox.Contains(A) || QueryBox.Contains(B));
@@ -545,3 +1016,4 @@ UDynamicMesh* UGeometryScriptLibrary_MeshModelingFunctions::ApplyMeshPolygroupBe
 
 
 #undef LOCTEXT_NAMESPACE
+

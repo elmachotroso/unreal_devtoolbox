@@ -7,6 +7,7 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
+#include "GeometryCollection/GeometryCollectionEngineConversion.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "Engine/Selection.h"
@@ -14,6 +15,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionFactory)
 
 #define LOCTEXT_NAMESPACE "GeometryCollection"
 
@@ -43,8 +46,8 @@ void AppendActorComponentsRecursive(
 {
 	FTransform ActorTransform = Actor->GetTransform();
 
-	TArray<UStaticMeshComponent *> StaticMeshComponents;
-	Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents);
+	TArray<UStaticMeshComponent*> StaticMeshComponents;
+	Actor->GetComponents(StaticMeshComponents);
 	if (StaticMeshComponents.Num() > 0)
 	{
 		for (int Index = 0; Index < StaticMeshComponents.Num(); Index++)
@@ -59,24 +62,24 @@ void AppendActorComponentsRecursive(
 		}
 	}
 
-	TArray < USkeletalMeshComponent * > SkeletalMeshComponents;
-	Actor->GetComponents<USkeletalMeshComponent>(SkeletalMeshComponents);
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+	Actor->GetComponents(SkeletalMeshComponents);
 	if (SkeletalMeshComponents.Num() > 0)
 	{
 		for (int Index = 0; Index < SkeletalMeshComponents.Num(); Index++)
 		{
-			if (SkeletalMeshComponents[Index]->SkeletalMesh)
+			if (SkeletalMeshComponents[Index]->GetSkeletalMeshAsset())
 			{
 				SkeletalMeshList.Add(GeometryCollectionSkeletalMeshConversionTuple(
-					SkeletalMeshComponents[Index]->SkeletalMesh,
+					SkeletalMeshComponents[Index]->GetSkeletalMeshAsset(),
 					SkeletalMeshComponents[Index],
 					SkeletalMeshComponents[Index]->GetComponentTransform()));
 			}
 		}
 	}
 
-	TArray<UGeometryCollectionComponent *> GeometryCollectionComponents;
-	Actor->GetComponents<UGeometryCollectionComponent>(GeometryCollectionComponents);
+	TArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
+	Actor->GetComponents(GeometryCollectionComponents);
 	if (GeometryCollectionComponents.Num() > 0)
 	{
 		for (int Index = 0; Index < GeometryCollectionComponents.Num(); Index++)
@@ -92,7 +95,7 @@ void AppendActorComponentsRecursive(
 	}
 
 	TArray<UChildActorComponent*> ChildActorComponents;
-	Actor->GetComponents<UChildActorComponent>(ChildActorComponents);
+	Actor->GetComponents(ChildActorComponents);
 	for (UChildActorComponent* ChildComponent : ChildActorComponents)
 	{
 		AActor* ChildActor = ChildComponent->GetChildActor();
@@ -154,12 +157,12 @@ UObject* UGeometryCollectionFactory::FactoryCreateNew(UClass* Class, UObject* In
 
 	for (GeometryCollectionStaticMeshConversionTuple & StaticMeshData : StaticMeshList)
 	{
-		FGeometryCollectionConversion::AppendStaticMesh(StaticMeshData.Get<0>(), StaticMeshData.Get<1>(), StaticMeshData.Get<2>(), NewGeometryCollection, false);
+		FGeometryCollectionEngineConversion::AppendStaticMesh(StaticMeshData.Get<0>(), StaticMeshData.Get<1>(), StaticMeshData.Get<2>(), NewGeometryCollection, false);
 	}
 
 	for (GeometryCollectionSkeletalMeshConversionTuple & SkeletalMeshData : SkeletalMeshList)
 	{
-		FGeometryCollectionConversion::AppendSkeletalMesh(SkeletalMeshData.Get<0>(), SkeletalMeshData.Get<1>(), SkeletalMeshData.Get<2>(), NewGeometryCollection, false);
+		FGeometryCollectionEngineConversion::AppendSkeletalMesh(SkeletalMeshData.Get<0>(), SkeletalMeshData.Get<1>(), SkeletalMeshData.Get<2>(), NewGeometryCollection, false);
 	}
 
 	for (GeometryCollectionTuple & GeometryCollectionData : GeometryCollectionList)
@@ -192,6 +195,7 @@ UObject* UGeometryCollectionFactory::FactoryCreateNew(UClass* Class, UObject* In
 }
 
 #undef LOCTEXT_NAMESPACE
+
 
 
 

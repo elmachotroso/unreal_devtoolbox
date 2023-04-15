@@ -3,19 +3,19 @@
 #include "Animation/MovieSceneMarginPropertySystem.h"
 #include "Animation/MovieSceneUMGComponentTypes.h"
 #include "Systems/FloatChannelEvaluatorSystem.h"
-#include "Systems/MovieScenePiecewiseFloatBlenderSystem.h"
+#include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneMarginPropertySystem)
 
 
 UMovieSceneMarginPropertySystem::UMovieSceneMarginPropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneUMGComponentTypes::Get()->Margin);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 {
-		DefineImplicitPrerequisite(UMovieScenePiecewiseFloatBlenderSystem::StaticClass(), GetClass());
+		DefineImplicitPrerequisite(UMovieScenePiecewiseDoubleBlenderSystem::StaticClass(), GetClass());
 		DefineImplicitPrerequisite(UFloatChannelEvaluatorSystem::StaticClass(), GetClass());
 	}
 	}
@@ -24,4 +24,5 @@ void UMovieSceneMarginPropertySystem::OnRun(FSystemTaskPrerequisites& InPrerequi
 	{
 	Super::OnRun(InPrerequisites, Subsequents);
 	}
+
 

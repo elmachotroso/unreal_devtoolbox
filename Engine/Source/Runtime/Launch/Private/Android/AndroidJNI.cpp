@@ -214,7 +214,6 @@ void FJavaWrapper::FindGooglePlayBillingMethods(JNIEnv* Env)
 	AndroidThunkJava_IapQueryInAppPurchases = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapQueryInAppPurchases", "([Ljava/lang/String;)Z", bIsStoreOptional);
 	AndroidThunkJava_IapBeginPurchase = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapBeginPurchase", "(Ljava/lang/String;Ljava/lang/String;)Z", bIsStoreOptional);
 	AndroidThunkJava_IapIsAllowedToMakePurchases = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapIsAllowedToMakePurchases", "()Z", bIsStoreOptional);
-	AndroidThunkJava_IapRestorePurchases = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapRestorePurchases", "([Ljava/lang/String;[Z)Z", bIsStoreOptional);
 	AndroidThunkJava_IapConsumePurchase = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapConsumePurchase", "(Ljava/lang/String;)Z", bIsStoreOptional);
 	AndroidThunkJava_IapQueryExistingPurchases = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_IapQueryExistingPurchases", "()Z", bIsStoreOptional);
 }
@@ -445,7 +444,6 @@ jmethodID FJavaWrapper::AndroidThunkJava_IapSetupService;
 jmethodID FJavaWrapper::AndroidThunkJava_IapQueryInAppPurchases;
 jmethodID FJavaWrapper::AndroidThunkJava_IapBeginPurchase;
 jmethodID FJavaWrapper::AndroidThunkJava_IapIsAllowedToMakePurchases;
-jmethodID FJavaWrapper::AndroidThunkJava_IapRestorePurchases;
 jmethodID FJavaWrapper::AndroidThunkJava_IapQueryExistingPurchases;
 jmethodID FJavaWrapper::AndroidThunkJava_IapConsumePurchase;
 
@@ -489,8 +487,7 @@ void EngineCrashHandler(const FGenericCrashContext& GenericContext)
 
 		if (GLog)
 		{
-			GLog->SetCurrentThreadAsMasterThread();
-			GLog->Flush();
+			GLog->Panic();
 		}
 		
 		if (GWarn)
@@ -1443,36 +1440,6 @@ bool AndroidThunkCpp_Iap_IsAllowedToMakePurchases()
 	return bResult;
 }
 
-bool AndroidThunkCpp_Iap_RestorePurchases(const TArray<FString>& ProductIDs, const TArray<bool>& bConsumable)
-{
-	FPlatformMisc::LowLevelOutputDebugString(TEXT("[JNI] - AndroidThunkCpp_Iap_RestorePurchases"));
-	bool bResult = false;
-
-	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
-	{
-		CHECK_JNI_METHOD(FJavaWrapper::AndroidThunkJava_IapRestorePurchases);
-
-		// Populate some java types with the provided product information
-		auto ProductIDArray = NewScopedJavaObject(Env, (jobjectArray)Env->NewObjectArray(ProductIDs.Num(), FJavaWrapper::JavaStringClass, NULL));
-		auto ConsumeArray = NewScopedJavaObject(Env, (jbooleanArray)Env->NewBooleanArray(ProductIDs.Num()));
-
-		jboolean* ConsumeArrayValues = Env->GetBooleanArrayElements(*ConsumeArray, 0);
-		for (uint32 Param = 0; Param < ProductIDs.Num(); Param++)
-		{
-			auto StringValue = FJavaHelper::ToJavaString(Env, ProductIDs[Param]);
-			Env->SetObjectArrayElement(*ProductIDArray, Param, *StringValue);
-
-			ConsumeArrayValues[Param] = bConsumable[Param];
-		}
-		Env->ReleaseBooleanArrayElements(*ConsumeArray, ConsumeArrayValues, 0);
-
-		// Execute the java code for this operation
-		bResult = FJavaWrapper::CallBooleanMethod(Env, FJavaWrapper::GoogleServicesThis, FJavaWrapper::AndroidThunkJava_IapRestorePurchases, *ProductIDArray, *ConsumeArray);
-	}
-
-	return bResult;
-}
-
 void AndroidThunkCpp_UseSurfaceViewWorkaround()
 {
 	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
@@ -2078,6 +2045,35 @@ JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_RouteServiceIntent(JNIEnv*
 JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnThermalStatusChangedListener(JNIEnv* jenv, jobject thiz, jint Status)
 {
 	FAndroidStats::OnThermalStatusChanged(Status);
+
+	FCoreDelegates::ETemperatureSeverity Severity;
+	switch (Status)
+	{
+	case 0:
+	case 1:
+		Severity = FCoreDelegates::ETemperatureSeverity::Good;
+		break;
+
+	case 2:
+		Severity = FCoreDelegates::ETemperatureSeverity::Bad;
+		break;
+
+	case 3:
+	case 4:
+		Severity = FCoreDelegates::ETemperatureSeverity::Serious;
+		break;
+
+	case 5:
+	case 6:
+		Severity = FCoreDelegates::ETemperatureSeverity::Critical;
+		break;
+
+	default:
+		Severity = FCoreDelegates::ETemperatureSeverity::Unknown;
+		break;
+	}
+
+	FCoreDelegates::OnTemperatureChange.Broadcast(Severity);
 }
 
 static void OnTrimMessage(int MemoryTrimValue)

@@ -12,8 +12,6 @@ import Kronos
 import GameController
 
 class StartViewController : BaseViewController {
-    
-    static var DefaultPort = UInt16(2049)
 
     @IBOutlet weak var headerView : HeaderView!
     @IBOutlet weak var versionLabel : UILabel!
@@ -29,15 +27,15 @@ class StartViewController : BaseViewController {
     @IBOutlet weak var connectingView : UIVisualEffectView!
 
     private var tapGesture : UITapGestureRecognizer!
-    private var oscConnection : OSCTCPConnection?
     
-    public var multicastWatchdogSocket  : GCDAsyncUdpSocket?
-    
-    private var liveLink : LiveLink?
-    private var liveLinkTimer : Timer?
+    private var streamingConnection : StreamingConnection?
+    private var _liveLinkTimer : Timer?
+
     
     @objc dynamic let appSettings = AppSettings.shared
     private var observers = [NSKeyValueObservation]()
+    
+    private var gameController : GCController?
 
     var ipAddressIsDemoMode : Bool {
         self.ipAddress.text == "demo.mode"
@@ -106,90 +104,51 @@ class StartViewController : BaseViewController {
         
         // any change to the subject name will remove & re-add the camera subject.
         observers.append(observe(\.appSettings.liveLinkSubjectName, options: [.old,.new], changeHandler: { object, change in
-            self.liveLink?.removeCameraSubject(change.oldValue!)
-            self.liveLink?.addCameraSubject(self.appSettings.liveLinkSubjectName)
-        }))
-        observers.append(observe(\.appSettings.engineVersion, options: [.old,.new], changeHandler: { object, change in
-            if LiveLink.initialized {
-                self.restartView.isHidden = !LiveLink.requiresRestart
+            if let sc = self.streamingConnection {
+                sc.subjectName = self.appSettings.liveLinkSubjectName
             }
         }))
 
+        // initial & value changes for the connection type instantiates a new StreamingConnection object
+        observers.append(observe(\.appSettings.connectionType, options: [.initial, .old,.new], changeHandler: { object, change in
+            
+            self.streamingConnection = nil
 
+            let connectionType = self.appSettings.connectionType
+            if let connectionClass = Bundle.main.classNamed("VCAM.\(connectionType)StreamingConnection") as? StreamingConnection.Type {
+                self.streamingConnection = connectionClass.init(subjectName: self.appSettings.liveLinkSubjectName)
+                self.streamingConnection?.delegate = self
+            }
+
+        }))
+
+        NotificationCenter.default.addObserver(self, selector: #selector(gameControllerDidConnectNotification), name: .GCControllerDidConnect, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(gameControllerDidDisconnectNotification), name: .GCControllerDidDisconnect, object: nil)
+        
+        self.gameController = GCController.controllers().first
+        if let gc = self.gameController {
+            if gc.isAttachedToDevice {
+                gc.playerIndex = .index1
+            }
+        }
     }
     
-    func restartLiveLink() {
 
-        do {
-            try LiveLink.initialize(self)
-
-        } catch LiveLinkError.unknownEngineVersion {
-
-            // if there is no engine version (first run), then we ask the user to choose.
-            let askVersionAlert = UIAlertController(title: NSLocalizedString("version-title", value:"Engine Version", comment: "Title of an settings screen."),
-                                                    message: NSLocalizedString("version-choose", value:"Choose the version of Unreal Engine you will be connecting to. This selection can be modified later in the app's settings.", comment: "Message for seelecting the correct version of unreal engine."), preferredStyle: .alert)
-            askVersionAlert.addAction(UIAlertAction(title: "Unreal Engine 4", style: .default, handler: { _ in
-                LiveLink.engineVersion = .ue4
-                self.restartLiveLink()
-            }))
-            askVersionAlert.addAction(UIAlertAction(title: "Unreal Engine 5", style: .default, handler: { _ in
-                LiveLink.engineVersion = .ue5
-                self.restartLiveLink()
-            }))
-            self.present(askVersionAlert, animated: true)
-            return
-        } catch {
-            
-        }
-        
-        // stop the provider & restart livelink here
-        if self.liveLink != nil {
-            Log.info("Restarting Messaging Engine.")
-            try? LiveLink.restart()
-            self.liveLink = nil
-        }
-
-        Log.info("Initializing LiveLink Provider.")
-
-        self.liveLink = try? LiveLink("VCAM IOS")
-        self.liveLink?.addCameraSubject(AppSettings.shared.liveLinkSubjectName)
-
-        if let videoViewController = self.presentedViewController as? VideoViewController {
-            if !self.ipAddressIsDemoMode {
-                videoViewController.liveLink = self.liveLink
-            }
-        }
-
-        multicastWatchdogSocket?.close()
-        Log.info("Starting multicast watchdog.")
-        multicastWatchdogSocket = GCDAsyncUdpSocket(delegate: self, delegateQueue: DispatchQueue.main)
-        do {
-            try multicastWatchdogSocket?.enableReusePort(true)
-            try multicastWatchdogSocket?.bind(toPort: 6665)
-            try multicastWatchdogSocket?.joinMulticastGroup("230.0.0.1")
-            try multicastWatchdogSocket?.beginReceiving()
-        } catch {
-            Log.info("Error creating watchdog : \(error.localizedDescription)")
-        }
-    }
     
     override func viewWillAppear(_ animated : Bool) {
         
         self.connectingView.isHidden = true
         self.headerView.start()
+
+        self.streamingConnection?.delegate = self
         
-        liveLinkTimer?.invalidate()
-        liveLinkTimer = Timer.scheduledTimer(withTimeInterval: 1.0/10.0, repeats: true, block: { timer in
-            self.liveLink?.updateSubject(AppSettings.shared.liveLinkSubjectName, transform: simd_float4x4(), time: Timecode.create().toTimeInterval())
+        _liveLinkTimer = Timer.scheduledTimer(withTimeInterval: 1.0/10.0, repeats: true, block: { timer in
+            self.streamingConnection?.sendTransform(simd_float4x4(), atTime: Timecode.create().toTimeInterval())
         })
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
-        if !LiveLink.initialized {
-            restartLiveLink();
-        }
     }
     
     override func viewDidDisappear(_ animated: Bool) {
@@ -207,15 +166,13 @@ class StartViewController : BaseViewController {
             if let vc = segue.destination as? VideoViewController {
                 
                 // stop the timer locally which is sending LL identity xform
-                liveLinkTimer?.invalidate()
-                liveLinkTimer = nil
+                _liveLinkTimer?.invalidate()
+                _liveLinkTimer = nil
 
-                self.oscConnection?.delegate = vc
-                vc.oscConnection = self.oscConnection
+                self.streamingConnection?.delegate = vc
+                vc.streamingConnection = self.streamingConnection
                 
-                vc.liveLink = self.liveLink
-
-                self.oscConnection = nil
+                vc.gameController = self.gameController
             }
         }
     }
@@ -267,6 +224,7 @@ class StartViewController : BaseViewController {
 
         } else {
 
+            // show the connection view
             self.connectingView.isHidden = false
             self.connectingView.alpha = 0.0
             UIView.animate(withDuration: 0.2) {
@@ -274,15 +232,12 @@ class StartViewController : BaseViewController {
             }
             
             showConnectingAlertView(mode: .connecting) {
-                self.oscConnection = nil
                 self.hideConnectingView() { }
             }
 
-            let (host,port) = NetUtility.hostAndPortFromAddress(self.ipAddress.text!)
-            
             do {
-                self.oscConnection = nil
-                self.oscConnection = try OSCTCPConnection(host:host, port:port ?? StartViewController.DefaultPort, delegate: self)
+                self.streamingConnection?.destination = self.ipAddress.text!
+                try self.streamingConnection?.connect()
                 
             } catch {
                 
@@ -310,6 +265,23 @@ class StartViewController : BaseViewController {
     @IBAction func textFieldChanged(_ sender : Any?) {
         self.connect.isEnabled = !self.ipAddress.text!.isEmpty
     }
+    
+    @objc func gameControllerDidConnectNotification(_ notification: NSNotification) {
+        
+        self.gameController = notification.object as? GCController
+        self.gameController?.playerIndex = .index1
+        
+        if let videoViewController = self.presentedViewController as? VideoViewController {
+            videoViewController.gameController = self.gameController
+        }
+    }
+
+    @objc func gameControllerDidDisconnectNotification(_ notification: NSNotification) {
+        if let gc = notification.object as? GCController {
+            Log.info("gameControllerDidDisconnectNotification \(gc.vendorName ?? "Unknown controller")")
+        }
+    }
+
 }
 
 extension StartViewController : UIGestureRecognizerDelegate {
@@ -332,20 +304,3 @@ extension StartViewController : UITextFieldDelegate {
     }
 }
 
-extension StartViewController : GCDAsyncUdpSocketDelegate {
-
-    func udpSocketDidClose(_ sock: GCDAsyncUdpSocket, withError error: Error?) {
-        Log.error("Multicast watchdog closed : restarting LiveLink.")
-        restartLiveLink()
-    }
-}
-
-extension StartViewController : UE5LiveLinkLogDelegate, UE4LiveLinkLogDelegate {
-
-    func ue5LogMessage(_ message: String!) {
-        Log.info(message)
-    }
-    func ue4LogMessage(_ message: String!) {
-        Log.info(message)
-    }
-}

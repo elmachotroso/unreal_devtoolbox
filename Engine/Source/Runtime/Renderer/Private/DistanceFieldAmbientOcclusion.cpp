@@ -146,9 +146,9 @@ FDistanceFieldAOParameters::FDistanceFieldAOParameters(float InOcclusionMaxDista
 	}
 }
 
-FIntPoint GetBufferSizeForAO()
+FIntPoint GetBufferSizeForAO(const FViewInfo& View)
 {
-	return FIntPoint::DivideAndRoundDown(GetSceneTextureExtent(), GAODownsampleFactor);
+	return FIntPoint::DivideAndRoundDown(View.GetSceneTexturesConfig().Extent, GAODownsampleFactor);
 }
 
 // Sample set restricted to not self-intersect a surface based on cone angle .475882232
@@ -257,7 +257,7 @@ FDFAOUpsampleParameters DistanceField::SetupAOUpsampleParameters(const FViewInfo
 {
 	const float DistanceFadeScaleValue = 1.0f / ((1.0f - GAOViewFadeDistanceScale) * GetMaxAOViewDistance());
 
-	const FIntPoint AOBufferSize = GetBufferSizeForAO();
+	const FIntPoint AOBufferSize = GetBufferSizeForAO(View);
 	const FVector2f UVMax(
 		(View.ViewRect.Width() / GAODownsampleFactor - 0.51f) / AOBufferSize.X, // 0.51 - so bilateral gather4 won't sample invalid texels
 		(View.ViewRect.Height() / GAODownsampleFactor - 0.51f) / AOBufferSize.Y);
@@ -322,7 +322,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("DOWNSAMPLE_FACTOR"), GAODownsampleFactor);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEX"), GDistanceFieldAOTileSizeX);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEY"), GDistanceFieldAOTileSizeY);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 	}
 };
 
@@ -352,7 +351,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("DOWNSAMPLE_FACTOR"), GAODownsampleFactor);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEX"), GDistanceFieldAOTileSizeX);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZEY"), GDistanceFieldAOTileSizeY);
-		OutEnvironment.SetDefine(TEXT("STRATA_ENABLED"), Strata::IsStrataEnabled() ? 1u : 0u);
 	}
 };
 
@@ -378,7 +376,7 @@ void ComputeDistanceFieldNormal(
 			auto* PassParameters = GraphBuilder.AllocParameters<FComputeDistanceFieldNormalCS::FParameters>();
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->SceneTextures = SceneTexturesUniformBuffer;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			PassParameters->AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 			PassParameters->RWDistanceFieldNormal = GraphBuilder.CreateUAV(DistanceFieldNormal);
 
@@ -397,7 +395,7 @@ void ComputeDistanceFieldNormal(
 			auto* PassParameters = GraphBuilder.AllocParameters<FComputeDistanceFieldNormalPS::FParameters>();
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->SceneTextures = SceneTexturesUniformBuffer;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View.StrataSceneData);
+			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			PassParameters->AOParameters = DistanceField::SetupAOShaderParameters(Parameters);
 			PassParameters->RenderTargets[0] = FRenderTargetBinding(DistanceFieldNormal, ViewIndex == 0 ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad);
 
@@ -434,7 +432,7 @@ void ComputeDistanceFieldNormal(
 					0, 0,
 					View.ViewRect.Width(), View.ViewRect.Height(),
 					FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
-					GetSceneTextureExtent(),
+					View.GetSceneTexturesConfig().Extent,
 					VertexShader);
 			});
 		}
@@ -676,7 +674,7 @@ bool ShouldRenderDeferredDynamicSkyLight(const FScene* Scene, const FSceneViewFa
 		&& !Scene->SkyLight->bHasStaticLighting
 		&& ViewFamily.EngineShowFlags.SkyLighting
 		&& Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM5
-		&& !IsAnyForwardShadingEnabled(Scene->GetShaderPlatform())
+		&& !IsForwardShadingEnabled(Scene->GetShaderPlatform())
 		&& !ViewFamily.EngineShowFlags.VisualizeLightCulling
 		&& !ShouldRenderRayTracingSkyLight(Scene->SkyLight); // Disable diffuse sky contribution if evaluated by RT Sky;
 }
@@ -745,7 +743,7 @@ bool FSceneRenderer::ShouldPrepareGlobalDistanceField() const
 			|| ((Views.Num() > 0) && Views[0].bUsesGlobalDistanceField)
 			|| ((FXSystem != nullptr) && FXSystem->UsesGlobalDistanceField()));
 
-	bShouldPrepareForAO = bShouldPrepareForAO || (IsLumenEnabled(Views[0]) && Lumen::UseVoxelLighting(*Views[0].Family));
+	bShouldPrepareForAO = bShouldPrepareForAO || (IsLumenEnabled(Views[0]) && Lumen::UseGlobalSDFObjectGrid(*Views[0].Family));
 
 	return bShouldPrepareForAO && UseGlobalDistanceField();
 }
@@ -809,7 +807,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldLighting(
 	FRDGTextureRef DistanceFieldNormal = nullptr;
 
 	{
-		const FIntPoint BufferSize = GetBufferSizeForAO();
+		const FIntPoint BufferSize = GetBufferSizeForAO(View);
 		const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(BufferSize, PF_FloatRGBA, FClearValueBinding::Transparent, GFastVRamConfig.DistanceFieldNormal | TexCreate_RenderTargetable | TexCreate_UAV | TexCreate_ShaderResource);
 		DistanceFieldNormal = GraphBuilder.CreateTexture(Desc, TEXT("DistanceFieldNormal"));
 	}

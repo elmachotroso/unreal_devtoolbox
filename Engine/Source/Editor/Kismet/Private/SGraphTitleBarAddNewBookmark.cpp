@@ -1,18 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphTitleBarAddNewBookmark.h"
+
 #include "BlueprintEditor.h"
 #include "BlueprintEditorSettings.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "EditorStyleSet.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "Engine/Blueprint.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "SPrimaryButton.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateStructs.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "SPrimaryButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SGraphTitleBarAddNewBookmark"
 
@@ -30,7 +49,7 @@ void SGraphTitleBarAddNewBookmark::Construct(const FArguments& InArgs)
 	.MenuContent()
 	[
 		SNew(SBox)
-		.MinDesiredWidth(300)
+		.MinDesiredWidth(300.0f)
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
@@ -41,7 +60,7 @@ void SGraphTitleBarAddNewBookmark::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.Text(this, &SGraphTitleBarAddNewBookmark::GetPopupTitleText)
-				.Font(FEditorStyle::GetFontStyle("StandardDialog.LargeFont"))
+				.Font(FAppStyle::GetFontStyle("StandardDialog.LargeFont"))
 			]
 			+ SVerticalBox::Slot()
 			.Padding(8, 4, 8, 8)
@@ -91,9 +110,9 @@ void SGraphTitleBarAddNewBookmark::Construct(const FArguments& InArgs)
 				.HAlign(HAlign_Right)
 				[
 					SNew(SUniformGridPanel)
-					.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-					.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-					.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+					.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+					.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+					.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 					+ SUniformGridPanel::Slot(0, 0)
 					[
 						SNew(SButton)
@@ -116,7 +135,7 @@ void SGraphTitleBarAddNewBookmark::Construct(const FArguments& InArgs)
 			]
 		]
 	]
-	.ComboButtonStyle(FEditorStyle::Get(), "SimpleComboButton")
+	.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
 	.ToolTipText(LOCTEXT("AddBookmarkButtonToolTip", "Bookmark Current Location"))
 	.OnComboBoxOpened(this, &SGraphTitleBarAddNewBookmark::OnComboBoxOpened);
 

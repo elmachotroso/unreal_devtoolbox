@@ -1,8 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Units/Math/RigUnit_MathQuaternion.h"
+#include "Units/Math/RigUnit_MathTransform.h"
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
+#include "Math/ControlRigMathLibrary.h"
+#include "Units/Core/RigUnit_CoreDispatch.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_MathQuaternion)
 
 FRigUnit_MathQuaternionFromAxisAndAngle_Execute()
 {
@@ -28,6 +33,22 @@ FRigUnit_MathQuaternionFromRotator_Execute()
 	Result = FQuat(Rotator);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathQuaternionFromRotator::GetUpgradeInfo() const
+{
+	FRigUnit_MathQuaternionFromRotatorV2 NewNode;
+	NewNode.Value = Rotator;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Rotator"), TEXT("Value"));
+	return Info;
+}
+
+FRigUnit_MathQuaternionFromRotatorV2_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Result = FQuat(Value);
+}
+
 FRigUnit_MathQuaternionFromTwoVectors_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -36,7 +57,7 @@ FRigUnit_MathQuaternionFromTwoVectors_Execute()
 		Result = FQuat::Identity;
 		return;
 	}
-	Result = FQuat::FindBetweenVectors(A, B).GetNormalized();
+	Result = FControlRigMathLibrary::FindQuatBetweenVectors(A, B);
 }
 
 FRigUnit_MathQuaternionToAxisAndAngle_Execute()
@@ -75,6 +96,27 @@ FRigUnit_MathQuaternionScale_Execute()
 	Value = FQuat(Axis, Angle * Scale);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathQuaternionScale::GetUpgradeInfo() const
+{
+	FRigUnit_MathQuaternionScaleV2 NewNode;
+	NewNode.Value = Value;
+	NewNode.Factor = Scale;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Scale"), TEXT("Factor"));
+	Info.AddRemappedPin(TEXT("Value"), TEXT("Result"), false, true);
+	return Info;
+}
+
+FRigUnit_MathQuaternionScaleV2_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	FVector Axis = FVector::ZeroVector;
+	float Angle = 0.f;
+	Value.ToAxisAndAngle(Axis, Angle);
+	Result = FQuat(Axis, Angle * Factor);
+}
+
 FRigUnit_MathQuaternionToEuler_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -111,16 +153,32 @@ FRigUnit_MathQuaternionEquals_Execute()
 	Result = A == B;
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathQuaternionEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreEquals::StaticStruct());
+}
+
 FRigUnit_MathQuaternionNotEquals_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = A != B;
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathQuaternionNotEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreNotEquals::StaticStruct());
+}
+
 FRigUnit_MathQuaternionSelectBool_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = Condition ? IfTrue : IfFalse;
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathQuaternionSelectBool::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_MathQuaternionDot_Execute()
@@ -138,7 +196,7 @@ FRigUnit_MathQuaternionUnit_Execute()
 FRigUnit_MathQuaternionRotateVector_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
-	Result = Quaternion.RotateVector(Vector);
+	Result = Transform.RotateVector(Vector);
 }
 
 FRigUnit_MathQuaternionGetAxis_Execute()
@@ -182,3 +240,26 @@ FRigUnit_MathQuaternionSwingTwist_Execute()
 FRigUnit_MathQuaternionRotationOrder_Execute()
 {
 }
+
+FRigUnit_MathQuaternionMakeRelative_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Local = Parent.Inverse() * Global;
+	Local.Normalize();
+}
+
+FRigUnit_MathQuaternionMakeAbsolute_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Global = Parent * Local;
+	Global.Normalize();
+}
+
+FRigUnit_MathQuaternionMirrorTransform_Execute()
+{
+	FTransform Transform = FTransform::Identity;
+	Transform.SetRotation(Value);
+	FRigUnit_MathTransformMirrorTransform::StaticExecute(RigVMExecuteContext, Transform, MirrorAxis, AxisToFlip, CentralTransform, Transform, Context);
+	Result = Transform.GetRotation();
+}
+

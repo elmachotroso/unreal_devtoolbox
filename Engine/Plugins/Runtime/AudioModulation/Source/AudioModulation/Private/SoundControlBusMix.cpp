@@ -10,6 +10,8 @@
 #include "Engine/World.h"
 #include "SoundControlBus.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundControlBusMix)
+
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -39,8 +41,6 @@ void USoundControlBusMix::BeginDestroy()
 {
 	using namespace AudioModulation;
 
-	Super::BeginDestroy();
-
 	if (UWorld* World = GetWorld())
 	{
 		FAudioDeviceHandle AudioDevice = World->GetAudioDevice();
@@ -57,6 +57,9 @@ void USoundControlBusMix::BeginDestroy()
 			}
 		}
 	}
+
+	// Call parent destroy at end to ensure object is in a valid state for the modulation manager to clean up first
+	Super::BeginDestroy();
 }
 
 void USoundControlBusMix::ActivateMix()
@@ -182,3 +185,4 @@ void USoundControlBusMix::SoloMix()
 }
 
 #undef LOCTEXT_NAMESPACE // AudioModulation
+

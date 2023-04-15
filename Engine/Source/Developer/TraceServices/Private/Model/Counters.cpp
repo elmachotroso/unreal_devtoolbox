@@ -41,7 +41,7 @@ static void EnumerateCounterValuesInternal(const TCounterData<CounterType>& Coun
 			{
 				if (!bFirstValue && bIncludeExternalBounds)
 				{
-					Callback(LastTime, LastValue);
+					Callback(LastTime, static_cast<EnumerationType>(LastValue));
 				}
 				bFirstEnumeratedValue = false;
 			}
@@ -49,11 +49,11 @@ static void EnumerateCounterValuesInternal(const TCounterData<CounterType>& Coun
 			{
 				if (bIncludeExternalBounds)
 				{
-					Callback(Time, CurrentValue);
+					Callback(Time, static_cast<EnumerationType>(CurrentValue));
 				}
 				break;
 			}
-			Callback(Time, CurrentValue);
+			Callback(Time, static_cast<EnumerationType>(CurrentValue));
 		}
 		LastTime = Time;
 		LastValue = CurrentValue;
@@ -177,7 +177,12 @@ bool FCounterProvider::ReadCounter(uint32 CounterId, TFunctionRef<void(const ICo
 	return true;
 }
 
-IEditableCounter* FCounterProvider::CreateCounter()
+const ICounter* FCounterProvider::GetCounter(IEditableCounter* EditableCounter)
+{
+	return static_cast<FCounter*>(EditableCounter);
+}
+
+IEditableCounter* FCounterProvider::CreateEditableCounter()
 {
 	FCounter* Counter = new FCounter(Session.GetLinearAllocator(), FrameProvider.GetFrameStartTimes(TraceFrameType_Game));
 	Counters.Add(Counter);
@@ -194,9 +199,9 @@ const ICounterProvider& ReadCounterProvider(const IAnalysisSession& Session)
 	return *Session.ReadProvider<ICounterProvider>(FCounterProvider::ProviderName);
 }
 
-ICounterProvider& EditCounterProvider(IAnalysisSession& Session)
+IEditableCounterProvider& EditCounterProvider(IAnalysisSession& Session)
 {
-	return *Session.EditProvider<ICounterProvider>(FCounterProvider::ProviderName);
+	return *Session.EditProvider<IEditableCounterProvider>(FCounterProvider::ProviderName);
 }
 
 } // namespace TraceServices

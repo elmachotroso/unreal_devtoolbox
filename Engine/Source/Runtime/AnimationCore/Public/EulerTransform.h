@@ -3,7 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "UObject/ObjectMacros.h"
+
 #include "EulerTransform.generated.h"
+
+class UScriptStruct;
+template <class T> struct TBaseStructure;
 
 UENUM()
 enum class EEulerRotationOrder : uint8
@@ -20,6 +31,8 @@ USTRUCT(BlueprintType)
 struct ANIMATIONCORE_API FEulerTransform
 {
 	GENERATED_BODY()
+
+	typedef FVector::FReal FReal;
 
 	/**
 	 * The identity transformation (Rotation = FRotator::ZeroRotator, Translation = FVector::ZeroVector, Scale = (1,1,1)).
@@ -47,23 +60,12 @@ struct ANIMATIONCORE_API FEulerTransform
 	{
 	}
 
-	FORCEINLINE FEulerTransform(const FTransform& InTransform)
+	FORCEINLINE explicit FEulerTransform(const FTransform& InTransform)
 		: Location(InTransform.GetLocation())
 		, Rotation(InTransform.GetRotation().Rotator())
 		, Scale(InTransform.GetScale3D())
 	{
 
-	}
-
-	FORCEINLINE FEulerTransform& operator =(const FTransform& InTransform)
-	{
-		FromFTransform(InTransform);
-		return *this;
-	}
-
-	FORCEINLINE operator FTransform() const
-	{
-		return ToFTransform();
 	}
 
 	/** The translation of this transform */
@@ -90,6 +92,14 @@ struct ANIMATIONCORE_API FEulerTransform
 		Location = InTransform.GetLocation();
 		Rotation = InTransform.GetRotation().Rotator();
 		Scale = InTransform.GetScale3D();
+	}
+
+	// Test if all components of the transforms are equal, within a tolerance.
+	FORCEINLINE bool Equals(const FEulerTransform& Other, FReal Tolerance = KINDA_SMALL_NUMBER) const
+	{
+		return Location.Equals(Other.Location, Tolerance) &&
+			Rotation.Equals(Other.Rotation, Tolerance) &&
+			Scale.Equals(Other.Scale, Tolerance);
 	}
 
 	FORCEINLINE const FVector& GetLocation() const { return Location; }

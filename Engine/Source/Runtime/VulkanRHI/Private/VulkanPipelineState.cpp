@@ -12,6 +12,7 @@
 #include "VulkanPendingState.h"
 #include "VulkanPipeline.h"
 #include "VulkanLLM.h"
+#include "RHICoreShader.h"
 
 enum
 {
@@ -326,6 +327,9 @@ bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets(FVulka
 				{
 					const VkDescriptorSet DescriptorSet = DescriptorSetHandles[Set];
 					DSWriter[Set].SetDescriptorSet(DescriptorSet);
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
+					DSWriter[Set].CheckAllWritten();
+#endif
 					++NumSets;
 				}
 
@@ -347,6 +351,31 @@ bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets(FVulka
 	return true;
 }
 
+template <typename TRHIShader>
+void FVulkanCommandListContext::ApplyStaticUniformBuffers(TRHIShader* Shader)
+{
+	if (Shader)
+	{
+		const auto& StaticSlots = Shader->StaticSlots;
+		const auto& UBInfos = Shader->GetCodeHeader().UniformBuffers;
+
+		for (int32 BufferIndex = 0; BufferIndex < StaticSlots.Num(); ++BufferIndex)
+		{
+			const FUniformBufferStaticSlot Slot = StaticSlots[BufferIndex];
+
+			if (IsUniformBufferStaticSlotValid(Slot))
+			{
+				FRHIUniformBuffer* Buffer = GlobalUniformBuffers[Slot];
+				UE::RHICore::ValidateStaticUniformBuffer(Buffer, Slot, UBInfos[BufferIndex].LayoutHash);
+
+				if (Buffer)
+				{
+					RHISetShaderUniformBuffer(Shader, BufferIndex, Buffer);
+				}
+			}
+		}
+	}
+}
 
 void FVulkanCommandListContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState)
 {
@@ -378,6 +407,31 @@ void FVulkanCommandListContext::RHISetGraphicsPipelineState(FRHIGraphicsPipeline
 #endif
 		ApplyStaticUniformBuffers(static_cast<FVulkanPixelShader*>(Pipeline->VulkanShaders[ShaderStage::Pixel]));
 	}
+}
+
+void FVulkanCommandListContext::RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState)
+{
+	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
+	if (CmdBuffer->IsInsideRenderPass())
+	{
+		if (GVulkanSubmitAfterEveryEndRenderPass)
+		{
+			CommandBufferManager->SubmitActiveCmdBuffer();
+			CommandBufferManager->PrepareForNewActiveCommandBuffer();
+			CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
+		}
+	}
+
+	if (CmdBuffer->CurrentDescriptorPoolSetContainer == nullptr)
+	{
+		CmdBuffer->CurrentDescriptorPoolSetContainer = &Device->GetDescriptorPoolsManager().AcquirePoolSetContainer();
+	}
+
+	//#todo-rco: Set PendingGfx to null
+	FVulkanComputePipeline* ComputePipeline = ResourceCast(ComputePipelineState);
+	PendingComputeState->SetComputePipeline(ComputePipeline);
+
+	ApplyStaticUniformBuffers(const_cast<FVulkanComputeShader*>(ComputePipeline->GetShader()));
 }
 
 
@@ -426,16 +480,16 @@ void FVulkanDescriptorSetWriter::CheckAllWritten()
 	}
 	else
 	{
-		int32 Last = int32(WrittenMask.Num()-1);
+		const int32 Last = int32(WrittenMask.Num()-1);
 		for(int32 i = 0; !bFail && i < Last; ++i)
 		{
 			uint64 Mask = WrittenMask[i];
 			bFail = bFail || Mask != 0xffffffff; 
 		}
 
-		uint32 TailCount = Writes % 32;
+		const uint32 TailCount = Writes - (Last * 32);
 		check(TailCount != 0);
-		uint32 TailMask = (1llu << TailCount)-1;
+		const uint32 TailMask = (1llu << TailCount)-1;
 		bFail = bFail || TailMask != WrittenMask[Last];
 	}
 

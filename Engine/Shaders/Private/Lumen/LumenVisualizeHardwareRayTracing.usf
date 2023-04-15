@@ -9,7 +9,7 @@
 #include "LumenTracingCommon.ush"
 #include "LumenVisualize.ush"
 
-#if LUMEN_HARDWARE_RAYTRACING
+#if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
 #include "LumenHardwareRayTracingCommon.ush"
 #endif
 
@@ -159,9 +159,6 @@ void FLumenVisualizeCreateRaysCS(
 		uint2 TraceCoord = TileData.TileCoord * THREADGROUP_SIZE_2D + ThreadIndex;
 		if (all(TraceCoord < OutputViewSize))
 		{
-			float2 ViewportUV = (TraceCoord + 0.5f) / OutputViewSize;
-			uint2 InputScreenCoord = ViewportUV * InputViewSize + InputViewOffset;
-
 			bool bIsRayValid = true;
 
 			if (bIsRayValid)
@@ -361,16 +358,18 @@ void FLumenVisualizeBucketRaysByMaterialIdCS(
 	FRayDataPacked RayDataPackedCache[NUM_ELEMENTS / THREADGROUP_SIZE_1D];
 	FTraceDataLocal TraceDataCache[NUM_ELEMENTS / THREADGROUP_SIZE_1D];
 
-	for (int i = GroupThreadId; i < NUM_ELEMENTS; i += THREADGROUP_SIZE_1D)
 	{
-		uint RayIndex = GroupOffset + i;
-		if (RayIndex < RayAllocator[0])
+		for (int i = GroupThreadId; i < NUM_ELEMENTS; i += THREADGROUP_SIZE_1D)
 		{
-			RayDataPackedCache[i / THREADGROUP_SIZE_1D] = RayDataPacked[RayIndex];
-			TraceDataCache[i / THREADGROUP_SIZE_1D] = UnpackTraceData(TraceDataPacked[RayIndex]);
-			uint BinIndex = TraceDataCache[i / THREADGROUP_SIZE_1D].MaterialId % NUM_BINS;
+			uint RayIndex = GroupOffset + i;
+			if (RayIndex < RayAllocator[0])
+			{
+				RayDataPackedCache[i / THREADGROUP_SIZE_1D] = RayDataPacked[RayIndex];
+				TraceDataCache[i / THREADGROUP_SIZE_1D] = UnpackTraceData(TraceDataPacked[RayIndex]);
+				uint BinIndex = TraceDataCache[i / THREADGROUP_SIZE_1D].MaterialId % NUM_BINS;
 
-			InterlockedAdd(BinSize[BinIndex], 1, Hash[i / THREADGROUP_SIZE_1D]);
+				InterlockedAdd(BinSize[BinIndex], 1, Hash[i / THREADGROUP_SIZE_1D]);
+			}
 		}
 	}
 
@@ -386,23 +385,25 @@ void FLumenVisualizeBucketRaysByMaterialIdCS(
 
 	GroupMemoryBarrierWithGroupSync();
 
-	for (int i = GroupThreadId; i < NUM_ELEMENTS; i += THREADGROUP_SIZE_1D)
 	{
-		uint RayIndex = GroupOffset + i;
-		if (RayIndex < RayAllocator[0])
+		for (int i = GroupThreadId; i < NUM_ELEMENTS; i += THREADGROUP_SIZE_1D)
 		{
-			uint BinIndex = TraceDataCache[i / THREADGROUP_SIZE_1D].MaterialId % NUM_BINS;
-			uint OutputIndex = GroupOffset + BinOffset[BinIndex] + Hash[i / THREADGROUP_SIZE_1D];
+			uint RayIndex = GroupOffset + i;
+			if (RayIndex < RayAllocator[0])
+			{
+				uint BinIndex = TraceDataCache[i / THREADGROUP_SIZE_1D].MaterialId % NUM_BINS;
+				uint OutputIndex = GroupOffset + BinOffset[BinIndex] + Hash[i / THREADGROUP_SIZE_1D];
 
-			RWRayDataPacked[OutputIndex] = RayDataPackedCache[i / THREADGROUP_SIZE_1D];
-			RWTraceDataPacked[OutputIndex] = PackTraceData(TraceDataCache[i / THREADGROUP_SIZE_1D]);
+				RWRayDataPacked[OutputIndex] = RayDataPackedCache[i / THREADGROUP_SIZE_1D];
+				RWTraceDataPacked[OutputIndex] = PackTraceData(TraceDataCache[i / THREADGROUP_SIZE_1D]);
+			}
 		}
 	}
 }
 
 RWTexture2D<float3> RWRadiance;
 
-#if LUMEN_HARDWARE_RAYTRACING
+#if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
 
 #ifndef DIM_LIGHTING_MODE
 #define DIM_LIGHTING_MODE LIGHTING_FROM_SURFACE_CACHE
@@ -414,6 +415,11 @@ RWTexture2D<float3> RWRadiance;
 
 RaytracingAccelerationStructure TLAS;
 
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
 uint ThreadCount;
 uint GroupCount;
 uint LightingMode;
@@ -424,10 +430,10 @@ float3 FarFieldReferencePos;
 float FarFieldDitheredStartDistanceFactor;
 uint ApplySkylightStage;
 
-RAY_TRACING_ENTRY_RAYGEN(LumenVisualizeHardwareRayTracingRGS)
+LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 {
-	uint ThreadIndex = DispatchRaysIndex().x;
-	uint GroupIndex = DispatchRaysIndex().y;
+	uint ThreadIndex = DispatchThreadIndex.x;
+	uint GroupIndex = DispatchThreadIndex.y;
 
 	uint DispatchedThreads = ThreadCount * GroupCount;
 	uint IterationCount = (RayAllocator[0] + DispatchedThreads - 1) / DispatchedThreads;
@@ -457,7 +463,7 @@ RAY_TRACING_ENTRY_RAYGEN(LumenVisualizeHardwareRayTracingRGS)
 		// We are rendering after TAAU, remove jitter
 		BufferUV += View.TemporalAAJitter.xy * View.ScreenPositionScaleBias.xy;
 
-		RayDesc Ray = CreatePrimaryRay(BufferUV);
+		FRayDesc Ray = CreatePrimaryRay(BufferUV);
 		Ray.TMax = min(Ray.TMax, DitheredMaxTraceDistance);
 #if DIM_TRACE_MODE == TRACE_MODE_HIT_LIGHTING_RETRACE
 		FTraceDataLocal TraceData = UnpackTraceData(TraceDataPacked[RayIndex]);
@@ -487,6 +493,7 @@ RAY_TRACING_ENTRY_RAYGEN(LumenVisualizeHardwareRayTracingRGS)
 			MaxTranslucentSkipCount,
 			MaxTraversalIterations,
 			bHiResSurface);
+		Context.bAlphaMasking = true;
 		Context.FarFieldMaxTraceDistance = MaxTraceDistance;
 		Context.FarFieldReferencePos = FarFieldReferencePos;
 #if DIM_TRACE_MODE == TRACE_MODE_FAR_FIELD_RETRACE
@@ -494,6 +501,12 @@ RAY_TRACING_ENTRY_RAYGEN(LumenVisualizeHardwareRayTracingRGS)
 #endif // DIM_TRACE_MODE
 
 #if DIM_TRACE_MODE == TRACE_MODE_DEFAULT_TRACE
+
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+		Context.HitGroupData = HitGroupData;
+		Context.RayTracingSceneMetadata = RayTracingSceneMetadata;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
 		FRayTracedLightingResult Result = TraceAndCalculateRayTracedLightingFromSurfaceCache(Ray, Context);
 #else
 		FRayTracedLightingResult Result = TraceAndCalculateRayTracedLighting(Ray, Context, HitLightingMode);
@@ -527,9 +540,11 @@ RAY_TRACING_ENTRY_RAYGEN(LumenVisualizeHardwareRayTracingRGS)
 		{
 			FConeTraceResult TraceResult = (FConeTraceResult)0;
 			TraceResult.Transparency = 1;
-			EvaluateSkyRadianceForCone(Ray.Direction, 0.0f, TraceResult);
+			ApplySkylightToTraceResult(Ray.Direction, TraceResult);
 			Result.Radiance = TraceResult.Lighting;
 		}
+
+		//Result.Radiance += GetSkylightLeaking(Ray.Direction, Result.TraceHitDistance);
 
 		Result.Radiance *= View.PreExposure;
 

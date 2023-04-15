@@ -11,6 +11,8 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovementComponent)
+
 #define LOCTEXT_NAMESPACE "MovementComponent"
 DEFINE_LOG_CATEGORY_STATIC(LogMovement, Log, All);
 
@@ -799,7 +801,7 @@ void UMovementComponent::TwoWallAdjust(FVector& OutDelta, const FHitResult& Hit,
 		{
 			Delta = FVector::ZeroVector;
 		}
-		else if ( FMath::Abs((HitNormal | OldHitNormal) - 1.f) < KINDA_SMALL_NUMBER )
+		else if ( FMath::Abs((HitNormal | OldHitNormal) - 1.f) < UE_KINDA_SMALL_NUMBER )
 		{
 			// we hit the same wall again even after adjusting to move along it the first time
 			// nudge away from it (this can happen due to precision issues)
@@ -821,3 +823,4 @@ void UMovementComponent::AddRadialImpulse(const FVector& Origin, float Radius, f
 }
 
 #undef LOCTEXT_NAMESPACE
+

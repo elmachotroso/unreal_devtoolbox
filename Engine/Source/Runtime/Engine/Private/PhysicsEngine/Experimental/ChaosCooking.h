@@ -7,8 +7,6 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "PhysicsEngine/BodySetup.h"
 
-#if WITH_CHAOS
-
 struct FTriMeshCollisionData;
 
 namespace Chaos
@@ -42,9 +40,15 @@ namespace Chaos
 		void CookAsync(FSimpleDelegateGraphTask::FDelegate CompletionDelegate);
 		bool HasWork() const;
 
+		// CancelCookAsync is not guaranteed to have any effect on the work done.
+		// If it is called the cook work may be abandoned and the CookAsync may return early.
+		// If bCancel is true in the CompletionDelegate the results must be ignored.
+		void CancelCookAsync() { bCanceled = true; }
+		bool WasCanceled() const { return bCanceled; }
+
 	private:
 		UBodySetup* SourceSetup;
 		FCookBodySetupInfo CookInfo;
+		std::atomic<bool> bCanceled;
 	};
 }
-#endif

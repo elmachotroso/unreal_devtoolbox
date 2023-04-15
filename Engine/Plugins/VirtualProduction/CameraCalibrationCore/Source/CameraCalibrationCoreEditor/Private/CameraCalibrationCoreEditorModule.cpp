@@ -8,8 +8,8 @@
 #include "ActorFactories/ActorFactory.h"
 #include "CalibrationPointComponent.h"
 #include "CalibrationPointComponentDetails.h"
+#include "CameraCalibrationCheckerboard.h"
 #include "CameraCalibrationCoreEditorStyle.h"
-#include "DistortionHandlerPickerDetailCustomization.h"
 #include "Editor.h"
 #include "IPlacementModeModule.h"
 #include "LensFile.h"
@@ -17,6 +17,7 @@
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 
+LLM_DEFINE_TAG(CameraCalibrationCore_CameraCalibrationCoreEditor);
 #define LOCTEXT_NAMESPACE "CameraCalibrationCoreEditor"
 
 DEFINE_LOG_CATEGORY(LogCameraCalibrationCoreEditor);
@@ -24,14 +25,11 @@ DEFINE_LOG_CATEGORY(LogCameraCalibrationCoreEditor);
 
 void FCameraCalibrationCoreEditorModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(CameraCalibrationCore_CameraCalibrationCoreEditor);
+
 	FCameraCalibrationCoreEditorStyle::Get();
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
-	PropertyEditorModule.RegisterCustomPropertyTypeLayout(
-		FDistortionHandlerPicker::StaticStruct()->GetFName(), 
-		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDistortionHandlerPickerDetailCustomization::MakeInstance)
-	);
 
 	PropertyEditorModule.RegisterCustomClassLayout(
 		UCalibrationPointComponent::StaticClass()->GetFName(),
@@ -43,14 +41,14 @@ void FCameraCalibrationCoreEditorModule::StartupModule()
 
 void FCameraCalibrationCoreEditorModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(CameraCalibrationCore_CameraCalibrationCoreEditor);
+
 	if (!IsEngineExitRequested() && GEditor && UObjectInitialized())
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
 		PropertyModule.UnregisterCustomClassLayout(ULensFile::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomClassLayout(UCalibrationPointComponent::StaticClass()->GetFName());
-
-		PropertyModule.UnregisterCustomPropertyTypeLayout(FDistortionHandlerPicker::StaticStruct()->GetFName());
 
 		UnregisterPlacementModeItems();
 	}
@@ -101,6 +99,7 @@ void FCameraCalibrationCoreEditorModule::RegisterPlacementModeItems()
 {
 	auto RegisterPlaceActors = [&]() -> void
 	{
+		LLM_SCOPE_BYTAG(CameraCalibrationCore_CameraCalibrationCoreEditor)
 		if (!GEditor)
 		{
 			return;
@@ -115,24 +114,15 @@ void FCameraCalibrationCoreEditorModule::RegisterPlacementModeItems()
 		}
 
 		// Register the Checkerboard
-		{
-			FAssetData CheckerboardAssetData(
-				TEXT("/Script/CameraCalibrationCore.CameraCalibrationCheckerboard"),
-				TEXT("/CameraCalibrationCore"),
-				TEXT("CameraCalibrationCheckerboard"),
-				TEXT("Actor")
-			);
-		
-			PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
-				*UActorFactory::StaticClass(),
-				CheckerboardAssetData,
-				NAME_None,
-				NAME_None,
-				TOptional<FLinearColor>(),
-				TOptional<int32>(),
-				NSLOCTEXT("PlacementMode", "Checkerboard", "Checkerboard")
-			)));
-		}
+		PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
+			*ACameraCalibrationCheckerboard::StaticClass(),
+			FAssetData(ACameraCalibrationCheckerboard::StaticClass()),
+			NAME_None,
+			NAME_None,
+			TOptional<FLinearColor>(),
+			TOptional<int32>(),
+			NSLOCTEXT("PlacementMode", "Checkerboard", "Checkerboard")
+		)));
 	};
 
 	if (FApp::CanEverRender())

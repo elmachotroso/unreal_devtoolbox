@@ -8,7 +8,7 @@
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/UI/Message.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 double FCompositeCurve::LocalToGlobalCoordinate(int32 CurveIndex, double Coordinate) const
@@ -182,6 +182,14 @@ TSharedPtr<FEntityGeom> FCompositeCurve::ApplyMatrix(const FMatrixH& InMatrix) c
 	}
 
 	return FEntity::MakeShared<FCompositeCurve>(TransformedCurves);
+}
+
+void FCompositeCurve::Offset(const FPoint& OffsetDirection)
+{
+	for (FOrientedCurve& Curve : Curves)
+	{
+		Curve.Entity->Offset(OffsetDirection);
+	}
 }
 
 #ifdef CADKERNEL_DEV

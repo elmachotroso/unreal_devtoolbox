@@ -1,14 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteVisualizationMenuCommands.h"
-#include "NaniteVisualizationData.h"
-#include "Containers/UnrealString.h"
-#include "Framework/Commands/InputChord.h"
-#include "Materials/Material.h"
-#include "Internationalization/Text.h"
-#include "Templates/Function.h"
-#include "EditorStyleSet.h"
+
+#include "Delegates/Delegate.h"
 #include "EditorViewportClient.h"
+#include "Framework/Commands/InputChord.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/IConsoleManager.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "NaniteVisualizationData.h"
+#include "Styling/AppStyle.h"
+#include "UObject/UnrealNames.h"
 
 int32 GNaniteVisualizeAdvanced = 0;
 static FAutoConsoleVariableRef CVarNaniteVisualizeAdvanced(
@@ -25,7 +32,7 @@ FNaniteVisualizationMenuCommands::FNaniteVisualizationMenuCommands()
 		TEXT("NaniteVisualizationMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "NaniteVisualizationMenu", "Nanite Visualization"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	),
 	CommandMap()
 {

@@ -5,7 +5,7 @@
 #include "Containers/UnrealString.h"
 #include "VideoCommon.h"
 
-#if PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK) || PLATFORM_HOLOLENS
+#if PLATFORM_MICROSOFT
 
 namespace AVEncoder
 {
@@ -30,11 +30,7 @@ inline const FString GetComErrorDescription(HRESULT Res)
 	}
 }
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/AllowWindowsPlatformTypes.h"
-#elif PLATFORM_XBOXONE
-	#include "XboxCommonAllowPlatformTypes.h"
-#endif
+#include "Microsoft/AllowMicrosoftPlatformTypes.h"
 
 // macro to deal with COM calls inside a function that returns `false` on error
 #define CHECK_HR(COM_call)\
@@ -80,11 +76,7 @@ inline const FString GetComErrorDescription(HRESULT Res)
 		}\
 	}
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	#include "Windows/HideWindowsPlatformTypes.h"
-#elif PLATFORM_XBOXONE
-	#include "XboxCommonHidePlatformTypes.h"
-#endif
+#include "Microsoft/HideMicrosoftPlatformTypes.h"
 
 // following commented include causes name clash between UE4 and Windows `IMediaEventSink`,
 // we just need a couple of GUIDs from there so the solution is to duplicate them below
@@ -107,10 +99,6 @@ const GUID CLSID_VideoProcessorMFT = { 0x88753b26, 0x5b24, 0x49bd, { 0xb2, 0xe7,
 //#if PLATFORM_WINDOWS
 //
 //ID3D11Device* GetUE4DxDevice();
-//
-//#elif PLATFORM_XBOXONE
-//
-//ID3D12Device* GetUE4DxDevice();
 //
 //#endif
 
@@ -163,6 +151,6 @@ const GUID CLSID_VideoProcessorMFT = { 0x88753b26, 0x5b24, 0x49bd, { 0xb2, 0xe7,
 } // namespace AVEncoder
 
 
-#endif // PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+#endif // PLATFORM_MICROSOFT
 
 

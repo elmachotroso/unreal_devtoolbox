@@ -3,7 +3,7 @@
 #include "AssetTypeActions/AssetTypeActions_AnimCurveCompressionSettings.h"
 #include "Animation/AnimSequence.h"
 #include "Misc/MessageDialog.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/UObjectIterator.h"
@@ -36,7 +36,7 @@ void FAssetTypeActions_AnimCurveCompressionSettings::AddToolbarExtension(FToolBa
 		NAME_None,
 		LOCTEXT("AnimCurveCompressionSettings_Compress", "Compress"),
 		LOCTEXT("AnimCurveCompressionSettings_CompressTooltip", "All animation sequences that use these settings will be compressed."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.ApplyCompression")
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.ApplyCompression")
 		);
 	Builder.EndSection();
 }
@@ -54,7 +54,7 @@ void FAssetTypeActions_AnimCurveCompressionSettings::GetActions(const TArray<UOb
 		"AnimCurveCompressionSettings_Compress",
 		LOCTEXT("AnimCurveCompressionSettings_Compress", "Compress"),
 		LOCTEXT("AnimCurveCompressionSettings_CompressTooltip", "All animation sequences that use these settings will be compressed."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.ApplyCompression.Small"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.ApplyCompression.Small"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimCurveCompressionSettings::ExecuteCompression, SettingAssets[0])
 		)
@@ -109,6 +109,15 @@ void FAssetTypeActions_AnimCurveCompressionSettings::ExecuteCompression(TWeakObj
 		LoadingAnimSlowTask.EnterProgressFrame();
 		AnimSeq->RequestSyncAnimRecompression(false);
 	}
+}
+
+const TArray<FText>& FAssetTypeActions_AnimCurveCompressionSettings::GetSubMenus() const
+{
+	static const TArray<FText> SubMenus
+	{
+		LOCTEXT("AnimAdvancedSubMenu", "Advanced")
+	};
+	return SubMenus;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -2,11 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "CoreMinimal.h"
-#include "SNodePanel.h"
+#include "Internationalization/Text.h"
+#include "Math/Vector2D.h"
 #include "SGraphNode.h"
+#include "SNodePanel.h"
+#include "Templates/SharedPointer.h"
 
 class SToolTip;
+class UObject;
+struct FGraphInformationPopupInfo;
+struct FLinearColor;
+struct FNodeInfoContext;
+struct FOverlayBrushInfo;
+struct FSlateBrush;
 
 class GRAPHEDITOR_API SGraphNodeK2Base : public SGraphNode
 {
@@ -20,6 +31,7 @@ public:
 	virtual void GetOverlayBrushes(bool bSelected, const FVector2D WidgetSize, TArray<FOverlayBrushInfo>& Brushes) const override;
 	virtual void GetNodeInfoPopups(FNodeInfoContext* Context, TArray<FGraphInformationPopupInfo>& Popups) const override;
 	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override;
+	virtual void GetDiffHighlightBrushes(const FSlateBrush*& BackgroundOut, const FSlateBrush*& ForegroundOut) const override;
 	void PerformSecondPassLayout(const TMap< UObject*, TSharedRef<SNode> >& NodeToWidgetLookup) const override;
 
 protected :

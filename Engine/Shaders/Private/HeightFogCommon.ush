@@ -60,7 +60,7 @@ float3 ComputeInscatteringColor(float3 CameraToReceiver, float CameraToReceiverL
 #endif
 
 #if PROJECT_SUPPORT_SKY_ATMOSPHERE_AFFECTS_HEIGHFOG
-	Inscattering += View.SkyAtmosphereHeightFogContribution * Texture2DSampleLevel(View.DistantSkyLightLutTexture, View.DistantSkyLightLutTextureSampler, float2(0.5f, 0.5f), 0.0f).rgb;
+	Inscattering += FogStruct.SkyAtmosphereAmbientContributionColorScale.rgb * View.SkyAtmosphereHeightFogContribution.xxx * Texture2DSampleLevel(View.DistantSkyLightLutTexture, View.DistantSkyLightLutTextureSampler, float2(0.5f, 0.5f), 0.0f).rgb;
 #endif
 
 	return Inscattering;
@@ -88,7 +88,7 @@ half4 GetExponentialHeightFog(float3 WorldPositionRelativeToCamera, float Exclud
 	float3 CameraToReceiver = WorldPositionRelativeToCamera;
 	CameraToReceiver.z += LWCHackToFloat(PrimaryView.WorldCameraOrigin).z - WorldObserverOrigin.z; // Compensate this vector for clamping the observer height 
 	float CameraToReceiverLengthSqr = dot(CameraToReceiver, CameraToReceiver);
-	float CameraToReceiverLengthInv = rsqrt(CameraToReceiverLengthSqr);
+	float CameraToReceiverLengthInv = rsqrt(max(CameraToReceiverLengthSqr, 0.00000001f));
 	float CameraToReceiverLength = CameraToReceiverLengthSqr * CameraToReceiverLengthInv;
 	half3 CameraToReceiverNormalized = CameraToReceiver * CameraToReceiverLengthInv;
 
@@ -208,14 +208,13 @@ half4 GetExponentialHeightFog(float3 WorldPositionRelativeToCamera, float Exclud
 
 half4 CalculateHeightFog(float3 WorldPositionRelativeToCamera)
 {
-	float3 WorldPosition = WorldPositionRelativeToCamera + ResolvedView.TranslatedWorldCameraOrigin - LWCHackToFloat(ResolvedView.PreViewTranslation);
-	
 	float ExcludeDistance = 0;
 
 #if PERMUTATION_SUPPORT_VOLUMETRIC_FOG
-	float InvCosAngle = length(WorldPositionRelativeToCamera) / dot(WorldPositionRelativeToCamera, View.ViewForward);
 	// Volumetric fog covers up to MaxDistance along ViewZ, exclude analytical fog from this range
-	ExcludeDistance = max(View.VolumetricFogMaxDistance * InvCosAngle, 0);
+	float CosAngle = dot(normalize(WorldPositionRelativeToCamera), View.ViewForward);
+	float InvCosAngle = (CosAngle > FLT_EPSILON) ? rcp(CosAngle) : 0;
+	ExcludeDistance = View.VolumetricFogMaxDistance * InvCosAngle;
 #endif
 
 	float4 FogInscatteringAndOpacity = GetExponentialHeightFog(WorldPositionRelativeToCamera, ExcludeDistance);
@@ -228,26 +227,37 @@ half4 CalculateHeightFog(float3 WorldPositionRelativeToCamera)
 	#define SharedIntegratedLightScatteringSampler FogStruct.IntegratedLightScatteringSampler
 #endif
 
-float4 CombineVolumetricFog(float4 GlobalFog, float3 VolumeUV, uint EyeIndex)
+float4 CombineVolumetricFog(float4 GlobalFog, float3 VolumeUV, uint EyeIndex, float SceneDepth)
 {
 	float4 VolumetricFogLookup = float4(0, 0, 0, 1);
 
 #if PERMUTATION_SUPPORT_VOLUMETRIC_FOG
+	float VolFogStartDistance = 0.0f;
 	if (FogStruct.ApplyVolumetricFog > 0)
 	{
 	#if INSTANCED_STEREO
 		if (EyeIndex == 0)
 		{
+			VolFogStartDistance = FogStruct.VolumetricFogStartDistance;
 			VolumetricFogLookup = Texture3DSampleLevel(FogStruct.IntegratedLightScattering, SharedIntegratedLightScatteringSampler, VolumeUV, 0);
 		}
 		else
 		{
+			VolFogStartDistance = FogStructISR.VolumetricFogStartDistance;
 			VolumetricFogLookup = Texture3DSampleLevel(FogStructISR.IntegratedLightScattering, SharedIntegratedLightScatteringSampler, VolumeUV, 0);
 		}
 	#else
+		VolFogStartDistance = FogStruct.VolumetricFogStartDistance;
 		VolumetricFogLookup = Texture3DSampleLevel(FogStruct.IntegratedLightScattering, SharedIntegratedLightScatteringSampler, VolumeUV, 0);
 	#endif
+
+		// IntegratedLightScattering is pre-exposed, remove pre exposure now so that it can correctly be applied later
+		VolumetricFogLookup.rgb *= View.OneOverPreExposure;
 	}
+
+	// Do not apply the Froxel volumetric texture in front of the fog start distance. (the soft fading occur in FinalIntegrationCS).
+	// We go with a quickly increasing step function because the soft fade in from start distance occurs in FinalIntegrationCS.
+	VolumetricFogLookup = lerp(float4(0, 0, 0, 1), VolumetricFogLookup, saturate((SceneDepth - VolFogStartDistance) * 100000000.0f));
 #endif
 
 	// Visualize depth distribution

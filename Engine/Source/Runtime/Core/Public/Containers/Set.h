@@ -488,6 +488,7 @@ public:
 	{
 		if (Elements.Compact())
 		{
+			HashSize = Allocator::GetNumberOfHashBuckets(Elements.Num());
 			Rehash();
 		}
 	}
@@ -497,6 +498,7 @@ public:
 	{
 		if (Elements.CompactStable())
 		{
+			HashSize = Allocator::GetNumberOfHashBuckets(Elements.Num());
 			Rehash();
 		}
 	}
@@ -535,9 +537,9 @@ public:
 	 * Only returns the size of allocations made directly by the container, not the elements themselves.
 	 * @return number of bytes allocated by this container
 	 */
-	FORCEINLINE uint32 GetAllocatedSize( void ) const
+	FORCEINLINE SIZE_T GetAllocatedSize( void ) const
 	{
-		return Elements.GetAllocatedSize() + (HashSize * sizeof(FSetElementId));
+		return Elements.GetAllocatedSize() + Hash.GetAllocatedSize(HashSize, sizeof(FSetElementId));
 	}
 
 	/** Tracks the container's memory use through an archive. */
@@ -717,7 +719,7 @@ public:
 	 * @param	bIsAlreadyInSetPtr	[out]	Optional pointer to bool that will be set depending on whether element is already in set
 	 * @return	A handle to the element stored in the set.
 	 */
-	template <typename ArgsType>
+	template <typename ArgsType = ElementType>
 	FSetElementId Emplace(ArgsType&& Args, bool* bIsAlreadyInSetPtr = nullptr)
 	{
 		// Create a new element.
@@ -741,7 +743,7 @@ public:
 	 * @param	bIsAlreadyInSetPtr	[out]	Optional pointer to bool that will be set depending on whether element is already in set
 	 * @return	A handle to the element stored in the set.
 	 */
-	template <typename ArgsType>
+	template <typename ArgsType = ElementType>
 	FSetElementId EmplaceByHash(uint32 KeyHash, ArgsType&& Args, bool* bIsAlreadyInSetPtr = nullptr)
 	{
 		// Create a new element.
@@ -757,7 +759,17 @@ public:
 	}
 
 	template<typename ViewSizeType>
-	void Append(const TArrayView<ElementType, ViewSizeType>& InElements)
+	void Append(TArrayView<ElementType, ViewSizeType> InElements)
+	{
+		Reserve(Elements.Num() + InElements.Num());
+		for (const ElementType& Element : InElements)
+		{
+			Add(Element);
+		}
+	}
+
+	template<typename ViewSizeType>
+	void Append(TArrayView<const ElementType, ViewSizeType> InElements)
 	{
 		Reserve(Elements.Num() + InElements.Num());
 		for (const ElementType& Element : InElements)
@@ -1515,10 +1527,8 @@ private:
 	FORCEINLINE bool ShouldRehash(int32 NumHashedElements,int32 DesiredHashSize,bool bAllowShrinking = false) const
 	{
 		// If the hash hasn't been created yet, or is smaller than the desired hash size, rehash.
-		return (NumHashedElements > 0 &&
-				(!HashSize ||
-				HashSize < DesiredHashSize ||
-				(HashSize > DesiredHashSize && bAllowShrinking)));
+		// If shrinking is allowed and the hash is bigger than the desired hash size, rehash.
+		return ((NumHashedElements > 0 && HashSize < DesiredHashSize) || (bAllowShrinking && HashSize > DesiredHashSize));
 	}
 
 	/**

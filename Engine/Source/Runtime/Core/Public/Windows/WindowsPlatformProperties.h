@@ -78,6 +78,11 @@ struct FWindowsPlatformProperties
 		return IS_DEDICATED_SERVER;
 	}
 
+	static FORCEINLINE bool SupportsMemoryMappedFiles()
+	{
+		return true;
+	}
+
 	static FORCEINLINE bool SupportsAudioStreaming()
 	{
 		return !IsServerOnly();
@@ -86,6 +91,11 @@ struct FWindowsPlatformProperties
 	static FORCEINLINE bool SupportsMeshLODStreaming()
 	{
 		return !IsServerOnly() && !HasEditorOnlyData();
+	}
+
+	static FORCEINLINE bool SupportsRayTracing()
+	{
+		return true;
 	}
 
 	static FORCEINLINE bool SupportsGrayscaleSRGB()

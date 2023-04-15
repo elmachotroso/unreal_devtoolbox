@@ -72,7 +72,7 @@ public:
 	FBoneReference CurrentBone;
 
 	// IBoneReferenceSkeletonProvider
-	USkeleton* GetSkeleton(bool& bInvalidSkeletonIsError) override;
+	USkeleton* GetSkeleton(bool& bInvalidSkeletonIsError, const IPropertyHandle* PropertyHandle) override;
 
 	TObjectPtr<USkeletalMesh> SkeletalMesh;
 };

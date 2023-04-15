@@ -2,18 +2,41 @@
 
 
 #include "K2Node_CustomEvent.h"
-#include "Classes/EditorStyleSettings.h"
-#include "Engine/BlueprintGeneratedClass.h"
+
+#include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintEventNodeSpawner.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/MemberReference.h"
+#include "FindInBlueprintManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
 #include "K2Node_BaseMCDelegate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-
-#include "Kismet2/Kismet2NameValidators.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "BlueprintNodeSpawner.h"
-#include "BlueprintEventNodeSpawner.h"
-#include "BlueprintActionDatabaseRegistrar.h"
-#include "FindInBlueprintManager.h"
+#include "Kismet2/Kismet2NameValidators.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Script.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+
+struct FLinearColor;
 
 #define LOCTEXT_NAMESPACE "K2Node_CustomEvent"
 
@@ -67,29 +90,65 @@ public:
 		: FKismetNameValidator(CustomEventIn->GetBlueprint(), CustomEventIn->CustomFunctionName)
 		, CustomEvent(CustomEventIn)
 	{
-		check(CustomEvent != NULL);
+		check(CustomEvent != nullptr);
 	}
 
 	// Begin INameValidatorInterface
 	virtual EValidatorResult IsValid(FString const& Name, bool bOriginal = false) override
 	{
+		UBlueprint* Blueprint = CustomEvent->GetBlueprint();
+		check(Blueprint != nullptr);
+
 		EValidatorResult NameValidity = FKismetNameValidator::IsValid(Name, bOriginal);
 		if ((NameValidity == EValidatorResult::Ok) || (NameValidity == EValidatorResult::ExistingName))
 		{
-			UBlueprint* Blueprint = CustomEvent->GetBlueprint();
-			check(Blueprint != NULL);
-
 			UFunction* ParentFunction = FindUField<UFunction>(Blueprint->ParentClass, *Name);
 			// if this custom-event is overriding a function belonging to the blueprint's parent
-			if (ParentFunction != NULL)
+			if (ParentFunction != nullptr)
 			{
 				UK2Node_CustomEvent const* OverriddenEvent = FindCustomEventNodeFromFunction(ParentFunction);
 				// if the function that we're overriding isn't another custom event,
 				// then we can't name it this (only allow custom-event to override other custom-events)
-				if (OverriddenEvent == NULL)
+				if (OverriddenEvent == nullptr)
 				{
 					NameValidity = EValidatorResult::AlreadyInUse;
 				}		
+			}
+		}
+		else if (NameValidity == EValidatorResult::AlreadyInUse)
+		{
+			auto Predicate_EventGraphs = [Name](const TObjectPtr<UEdGraph>& InEventGraph) -> bool
+			{
+				return InEventGraph && InEventGraph->HasAnyFlags(RF_Transient) && InEventGraph->GetName() == Name;
+			};
+
+			// Allow a transient event subgraph (compiler artifact) that matches the existing name
+			// to pass if there are no other event nodes that would use this name at compile time.
+			// This type of collision is a false positive that won't result in a conflict, because
+			// the custom event node won't enter the Blueprint's namespace until the next compile,
+			// and the compiler will regenerate the transient event subgraphs array on a full pass.
+			if (Blueprint->EventGraphs.FindByPredicate(Predicate_EventGraphs))
+			{
+				TArray<UK2Node_Event*> AllEventNodes;
+				FBlueprintEditorUtils::GetAllNodesOfClass<UK2Node_Event>(Blueprint, AllEventNodes);
+				UK2Node_Event** MatchingNodePtr = AllEventNodes.FindByPredicate([Name](UK2Node_Event* InEventNode)
+				{
+					if (InEventNode->bOverrideFunction)
+					{
+						return InEventNode->EventReference.GetMemberName().ToString() == Name;
+					}
+					else if (InEventNode->CustomFunctionName != NAME_None)
+					{
+						return InEventNode->CustomFunctionName.ToString() == Name;
+					}
+					
+					return false;
+				});
+
+				if (!MatchingNodePtr || *MatchingNodePtr == CustomEvent)
+				{
+					NameValidity = EValidatorResult::Ok;
+				}
 			}
 		}
 		return NameValidity;
@@ -457,8 +516,8 @@ UK2Node_CustomEvent* UK2Node_CustomEvent::CreateFromFunction(FVector2D GraphPosi
 			}
 		}
 
-		CustomEventNode->NodePosX = GraphPosition.X;
-		CustomEventNode->NodePosY = GraphPosition.Y;
+		CustomEventNode->NodePosX = static_cast<int32>(GraphPosition.X);
+		CustomEventNode->NodePosY = static_cast<int32>(GraphPosition.Y);
 		CustomEventNode->SnapToGrid(GetDefault<UEditorStyleSettings>()->GridSnapSize);
 	}
 
@@ -511,7 +570,7 @@ FString UK2Node_CustomEvent::GetDocumentationExcerptName() const
 
 FSlateIcon UK2Node_CustomEvent::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", bCallInEditor ? "GraphEditor.CallInEditorEvent_16x" : "GraphEditor.CustomEvent_16x");
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), bCallInEditor ? "GraphEditor.CallInEditorEvent_16x" : "GraphEditor.CustomEvent_16x");
 }
 
 void UK2Node_CustomEvent::AutowireNewNode(UEdGraphPin* FromPin)

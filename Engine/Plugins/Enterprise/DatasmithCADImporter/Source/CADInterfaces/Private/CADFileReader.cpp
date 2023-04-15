@@ -7,10 +7,6 @@
 #include "HAL/FileManager.h"
 #include "Templates/TypeHash.h"
 
-#ifdef USE_KERNEL_IO_SDK
-#include "CoreTechFileParser.h"
-#endif
-
 #ifdef USE_TECHSOFT_SDK
 #include "TechSoftFileParser.h"
 #include "TechSoftFileParserCADKernelTessellator.h"
@@ -21,26 +17,14 @@ namespace CADLibrary
 	FCADFileReader::FCADFileReader(const FImportParameters& ImportParams, FFileDescriptor& InFile, const FString& EnginePluginsPath, const FString& InCachePath)
 		: CADFileData(ImportParams, InFile, InCachePath)
 	{
-#ifdef USE_KERNEL_IO_SDK
-		if (FImportParameters::GCADLibrary == TEXT("KernelIO"))
-		{
-			CADParser = MakeUnique<FCoreTechFileParser>(CADFileData, EnginePluginsPath);
-		}
-#endif
-#if defined(USE_KERNEL_IO_SDK) && defined(USE_TECHSOFT_SDK)
-		else
-#endif
 #ifdef USE_TECHSOFT_SDK
-		if (FImportParameters::GCADLibrary == TEXT("TechSoft"))
+		if (FImportParameters::bGDisableCADKernelTessellation)
 		{
-			if (FImportParameters::bGDisableCADKernelTessellation)
-			{
-				CADParser = MakeUnique<FTechSoftFileParser>(CADFileData, EnginePluginsPath);
-			}
-			else
-			{
-				CADParser = MakeUnique<FTechSoftFileParserCADKernelTessellator>(CADFileData, EnginePluginsPath);
-			}
+			CADParser = MakeUnique<FTechSoftFileParser>(CADFileData, EnginePluginsPath);
+		}
+		else
+		{
+			CADParser = MakeUnique<FTechSoftFileParserCADKernelTessellator>(CADFileData, EnginePluginsPath);
 		}
 #endif
 	}
@@ -126,16 +110,16 @@ namespace CADLibrary
 			bool bNeedToProceed = true;
 
 			FString CADFileCachePath = CADFileData.GetCADCachePath();
-			if (!FImportParameters::bGOverwriteCache && IFileManager::Get().FileExists(*CADFileCachePath))
+			if (IFileManager::Get().FileExists(*CADFileCachePath))
 			{
-				FString MeshArchiveFilePath = CADFileData.GetMeshArchiveFilePath();
-				if (IFileManager::Get().FileExists(*MeshArchiveFilePath)) // the file has been proceed with same meshing parameters
+				CADFileData.GetCADFileDescription().SetCacheFile(CADFileCachePath);
+				if (!FImportParameters::bGOverwriteCache)
 				{
-					bNeedToProceed = false;
-				}
-				else // the file has been converted into CT file but meshed with different parameters
-				{
-					CADFileData.GetCADFileDescription().SetCacheFile(CADFileCachePath);
+					FString MeshArchiveFilePath = CADFileData.GetMeshArchiveFilePath();
+					if (IFileManager::Get().FileExists(*MeshArchiveFilePath)) // the file has been proceed with same meshing parameters
+					{
+						bNeedToProceed = false;
+					}
 				}
 			}
 
@@ -143,6 +127,10 @@ namespace CADLibrary
 			{
 				// The file has been yet proceed, get ExternalRef
 				CADFileData.LoadSceneGraphArchive();
+				// update the ExternalRef path according to the current file path
+				// Indeed, the loaded file can be in another folder with differents other files
+				// Without the update, this is the files in the other folder that will be proceed 
+				CADFileData.UpdateExternalRefPath();
 				return ECADParsingResult::ProcessOk;
 			}
 		}

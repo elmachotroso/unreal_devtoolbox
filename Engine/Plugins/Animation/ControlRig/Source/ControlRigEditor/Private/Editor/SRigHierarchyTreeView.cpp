@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SRigHierarchyTreeView.h"
-#include "EditorStyleSet.h"
+#include "Editor/SRigHierarchyTreeView.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Slate/Private/Widgets/Views/SListPanel.h"
+#include "Widgets/Views/SListPanel.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Editor/EditorEngine.h"
@@ -15,6 +15,10 @@
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "ControlRig.h"
 #include "ControlRigEditorStyle.h"
+#include "Editor/SRigHierarchy.h"
+#include "Settings/ControlRigSettings.h"
+#include "Graph/ControlRigGraphSchema.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "SRigHierarchyTreeView"
 
@@ -29,7 +33,10 @@ FRigTreeDisplaySettings FRigTreeDelegates::DefaultDisplaySettings;
 FRigTreeElement::FRigTreeElement(const FRigElementKey& InKey, TWeakPtr<SRigHierarchyTreeView> InTreeView, bool InSupportsRename, ERigTreeFilterResult InFilterResult)
 {
 	Key = InKey;
+	ChannelName = NAME_None;
 	bIsTransient = false;
+	bIsAnimationChannel = false;
+	bIsProcedural = false;
 	bSupportsRename = InSupportsRename;
 	FilterResult = InFilterResult;
 
@@ -37,9 +44,19 @@ FRigTreeElement::FRigTreeElement(const FRigElementKey& InKey, TWeakPtr<SRigHiera
 	{
 		if(const URigHierarchy* Hierarchy = InTreeView.Pin()->GetRigTreeDelegates().GetHierarchy())
 		{
-			if(const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(Key))
+			if(const FRigBaseElement* Element = Hierarchy->Find(Key))
 			{
-				bIsTransient = ControlElement->Settings.bIsTransientControl;
+				bIsProcedural = Element->IsProcedural();
+				
+				if(const FRigControlElement* ControlElement = Cast<FRigControlElement>(Element))
+				{
+					bIsTransient = ControlElement->Settings.bIsTransientControl;
+					bIsAnimationChannel = ControlElement->IsAnimationChannel();
+					if(bIsAnimationChannel)
+					{
+						ChannelName = ControlElement->GetDisplayName();
+					}
+				}
 			}
 
 			const FRigTreeDisplaySettings& Settings = InTreeView.Pin()->GetRigTreeDelegates().GetDisplaySettings();
@@ -49,9 +66,9 @@ FRigTreeElement::FRigTreeElement(const FRigElementKey& InKey, TWeakPtr<SRigHiera
 }
 
 
-TSharedRef<ITableRow> FRigTreeElement::MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings)
+TSharedRef<ITableRow> FRigTreeElement::MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings, bool bPinned)
 {
-	return SNew(SRigHierarchyItem, InOwnerTable, InRigTreeElement, InTreeView, InSettings);
+	return SNew(SRigHierarchyItem, InOwnerTable, InRigTreeElement, InTreeView, InSettings, bPinned);
 }
 
 void FRigTreeElement::RequestRename()
@@ -76,13 +93,16 @@ void FRigTreeElement::RefreshDisplaySettings(const URigHierarchy* InHierarchy, c
 	{
 		IconColor = FilterResult == ERigTreeFilterResult::Shown ? FSlateColor::UseForeground() : FSlateColor(FLinearColor::Gray * 0.5f);
 	}
-	TextColor = FilterResult == ERigTreeFilterResult::Shown ? FSlateColor::UseForeground() : FSlateColor(FLinearColor::Gray * 0.5f);
+
+	TextColor = FilterResult == ERigTreeFilterResult::Shown ?
+		(InHierarchy->IsProcedural(Key) ? FSlateColor(FLinearColor(0.9f, 0.8f, 0.4f)) : FSlateColor::UseForeground()) :
+		(InHierarchy->IsProcedural(Key) ? FSlateColor(FLinearColor(0.9f, 0.8f, 0.4f) * 0.5f) : FSlateColor(FLinearColor::Gray * 0.5f));
 }
 
 //////////////////////////////////////////////////////////////
 /// SRigHierarchyItem
 ///////////////////////////////////////////////////////////
-void SRigHierarchyItem::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings)
+void SRigHierarchyItem::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable, TSharedRef<FRigTreeElement> InRigTreeElement, TSharedPtr<SRigHierarchyTreeView> InTreeView, const FRigTreeDisplaySettings& InSettings, bool bPinned)
 {
 	WeakRigTreeElement = InRigTreeElement;
 	Delegates = InTreeView->GetRigTreeDelegates();
@@ -172,6 +192,10 @@ FText SRigHierarchyItem::GetName() const
 		static const FText TemporaryControl = FText::FromString(TEXT("Temporary Control"));
 		return TemporaryControl;
 	}
+	if(WeakRigTreeElement.Pin()->bIsAnimationChannel)
+	{
+		return FText::FromName(WeakRigTreeElement.Pin()->ChannelName);
+	}
 	return (FText::FromName(WeakRigTreeElement.Pin()->Key.Name));
 }
 
@@ -186,7 +210,7 @@ void SRigHierarchyTreeView::Construct(const FArguments& InArgs)
 	STreeView<TSharedPtr<FRigTreeElement>>::FArguments SuperArgs;
 	SuperArgs.TreeItemsSource(&RootElements);
 	SuperArgs.SelectionMode(ESelectionMode::Multi);
-	SuperArgs.OnGenerateRow(this, &SRigHierarchyTreeView::MakeTableRowWidget);
+	SuperArgs.OnGenerateRow(this, &SRigHierarchyTreeView::MakeTableRowWidget, false);
 	SuperArgs.OnGetChildren(this, &SRigHierarchyTreeView::HandleGetChildrenForTree);
 	SuperArgs.OnSelectionChanged(FOnRigTreeSelectionChanged::CreateRaw(&Delegates, &FRigTreeDelegates::HandleSelectionChanged));
 	SuperArgs.OnContextMenuOpening(Delegates.OnContextMenuOpening);
@@ -196,6 +220,15 @@ void SRigHierarchyTreeView::Construct(const FArguments& InArgs)
 	SuperArgs.HighlightParentNodesForSelection(true);
 	SuperArgs.ItemHeight(24);
 	SuperArgs.AllowInvisibleItemSelection(true);  //without this we deselect everything when we filter or we collapse
+	
+	SuperArgs.ShouldStackHierarchyHeaders_Lambda([]() -> bool {
+		return UControlRigEditorSettings::Get()->bShowStackedHierarchy;
+	});
+	SuperArgs.OnGeneratePinnedRow(this, &SRigHierarchyTreeView::MakeTableRowWidget, true);
+	SuperArgs.MaxPinnedItems_Lambda([]() -> int32
+	{
+		return FMath::Max<int32>(1, UControlRigEditorSettings::Get()->MaxStackSize);
+	});
 
 	STreeView<TSharedPtr<FRigTreeElement>>::Construct(SuperArgs);
 }
@@ -224,6 +257,18 @@ bool SRigHierarchyTreeView::AddElement(FRigElementKey InKey, FRigElementKey InPa
 	if(ElementMap.Contains(InKey))
 	{
 		return false;
+	}
+
+	// skip transient controls
+	if(const URigHierarchy* Hierarchy = Delegates.GetHierarchy())
+	{
+		if(const FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(InKey))
+		{
+			if(ControlElement->Settings.bIsTransientControl)
+			{
+				return false;
+			}
+		}
 	}
 
 	const FRigTreeDisplaySettings& Settings = Delegates.GetDisplaySettings();
@@ -379,24 +424,23 @@ bool SRigHierarchyTreeView::AddElement(const FRigBaseElement* InElement)
 		if(const URigHierarchy* Hierarchy = Delegates.GetHierarchy())
 		{
 			FRigElementKey ParentKey = Hierarchy->GetFirstParent(InElement->GetKey());
-			if(Settings.bShowDynamicHierarchy)
+
+			TArray<FRigElementWeight> ParentWeights = Hierarchy->GetParentWeightArray(InElement->GetKey());
+			if(ParentWeights.Num() > 0)
 			{
-				TArray<FRigElementWeight> ParentWeights = Hierarchy->GetParentWeightArray(InElement->GetKey());
-				if(ParentWeights.Num() > 0)
+				TArray<FRigElementKey> ParentKeys = Hierarchy->GetParents(InElement->GetKey());
+				check(ParentKeys.Num() == ParentWeights.Num());
+				for(int32 ParentIndex=0;ParentIndex<ParentKeys.Num();ParentIndex++)
 				{
-					TArray<FRigElementKey> ParentKeys = Hierarchy->GetParents(InElement->GetKey());
-					check(ParentKeys.Num() == ParentWeights.Num());
-					for(int32 ParentIndex=0;ParentIndex<ParentKeys.Num();ParentIndex++)
+					if(ParentWeights[ParentIndex].IsAlmostZero())
 					{
-						if(ParentWeights[ParentIndex].IsAlmostZero())
-						{
-							continue;
-						}
-						ParentKey = ParentKeys[ParentIndex];
-						break;
+						continue;
 					}
+					ParentKey = ParentKeys[ParentIndex];
+					break;
 				}
 			}
+
 			if (ParentKey.IsValid())
 			{
 				if(const FRigBaseElement* ParentElement = Hierarchy->Find(ParentKey))
@@ -469,8 +513,10 @@ bool SRigHierarchyTreeView::ReparentElement(FRigElementKey InKey, FRigElementKey
 		ParentMap.Add(InKey, InParentKey);
 
 		TSharedPtr<FRigTreeElement>* FoundParent = ElementMap.Find(InParentKey);
-		check(FoundParent);
-		FoundParent->Get()->Children.Add(*FoundItem);
+		if(FoundParent)
+		{
+			FoundParent->Get()->Children.Add(*FoundItem);
+		}
 	}
 	else
 	{
@@ -623,10 +669,10 @@ void SRigHierarchyTreeView::SetExpansionRecursive(TSharedPtr<FRigTreeElement> In
 }
 
 TSharedRef<ITableRow> SRigHierarchyTreeView::MakeTableRowWidget(TSharedPtr<FRigTreeElement> InItem,
-	const TSharedRef<STableViewBase>& OwnerTable)
+	const TSharedRef<STableViewBase>& OwnerTable, bool bPinned)
 {
 	const FRigTreeDisplaySettings& Settings = Delegates.GetDisplaySettings();
-	return InItem->MakeTreeRowWidget(OwnerTable, InItem.ToSharedRef(), SharedThis(this), Settings);
+	return InItem->MakeTreeRowWidget(OwnerTable, InItem.ToSharedRef(), SharedThis(this), Settings, bPinned);
 }
 
 void SRigHierarchyTreeView::HandleGetChildrenForTree(TSharedPtr<FRigTreeElement> InItem,
@@ -678,13 +724,36 @@ TPair<const FSlateBrush*, FSlateColor> SRigHierarchyItem::GetBrushForElementType
 	{
 		case ERigElementType::Control:
 		{
-			Brush = FControlRigEditorStyle::Get().GetBrush("ControlRig.Tree.Control");
 			if(const FRigControlElement* Control = InHierarchy->Find<FRigControlElement>(InKey))
 			{
-				FLinearColor ShapeColor = Control->Settings.ShapeColor;
+				FLinearColor ShapeColor = FLinearColor::White;
+				
+				if(Control->Settings.SupportsShape())
+				{
+					if(Control->Settings.AnimationType == ERigControlAnimationType::ProxyControl)
+					{
+						Brush = FControlRigEditorStyle::Get().GetBrush("ControlRig.Tree.ProxyControl");
+					}
+					else
+					{
+						Brush = FControlRigEditorStyle::Get().GetBrush("ControlRig.Tree.Control");
+					}
+					ShapeColor = Control->Settings.ShapeColor;
+				}
+				else
+				{
+					static FName TypeIcon(TEXT("Kismet.VariableList.TypeIcon"));
+					Brush = FAppStyle::GetBrush(TypeIcon);
+					ShapeColor = GetColorForControlType(Control->Settings.ControlType, Control->Settings.ControlEnum);
+				}
+				
 				// ensure the alpha is always visible
 				ShapeColor.A = 1.f;
 				Color = FSlateColor(ShapeColor);
+			}
+			else
+			{
+				Brush = FControlRigEditorStyle::Get().GetBrush("ControlRig.Tree.Control");
 			}
 			break;
 		}
@@ -742,6 +811,66 @@ TPair<const FSlateBrush*, FSlateColor> SRigHierarchyItem::GetBrushForElementType
 	return TPair<const FSlateBrush*, FSlateColor>(Brush, Color);
 }
 
+FLinearColor SRigHierarchyItem::GetColorForControlType(ERigControlType InControlType, UEnum* InControlEnum)
+{
+	FEdGraphPinType PinType;
+	switch(InControlType)
+	{
+		case ERigControlType::Bool:
+		{
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(RigVMTypeUtils::BoolTypeName, nullptr);
+			break;
+		}
+		case ERigControlType::Float:
+		{
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(RigVMTypeUtils::FloatTypeName, nullptr);
+			break;
+		}
+		case ERigControlType::Integer:
+		{
+			if(InControlEnum)
+			{
+				PinType = RigVMTypeUtils::PinTypeFromCPPType(NAME_None, InControlEnum);
+			}
+			else
+			{
+				PinType = RigVMTypeUtils::PinTypeFromCPPType(RigVMTypeUtils::Int32TypeName, nullptr);
+			}
+			break;
+		}
+		case ERigControlType::Vector2D:
+		{
+			UScriptStruct* Struct = TBaseStructure<FVector2D>::Get(); 
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(*RigVMTypeUtils::GetUniqueStructTypeName(Struct), Struct);
+			break;
+		}
+		case ERigControlType::Position:
+		case ERigControlType::Scale:
+		{
+			UScriptStruct* Struct = TBaseStructure<FVector>::Get(); 
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(*RigVMTypeUtils::GetUniqueStructTypeName(Struct), Struct);
+			break;
+		}
+		case ERigControlType::Rotator:
+		{
+			UScriptStruct* Struct = TBaseStructure<FRotator>::Get(); 
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(*RigVMTypeUtils::GetUniqueStructTypeName(Struct), Struct);
+			break;
+		}
+		case ERigControlType::Transform:
+		case ERigControlType::TransformNoScale:
+		case ERigControlType::EulerTransform:
+		default:
+		{
+			UScriptStruct* Struct = TBaseStructure<FTransform>::Get(); 
+			PinType = RigVMTypeUtils::PinTypeFromCPPType(*RigVMTypeUtils::GetUniqueStructTypeName(Struct), Struct);
+			break;
+		}
+	}
+	const UControlRigGraphSchema* Schema = GetDefault<UControlRigGraphSchema>();
+	return Schema->GetPinTypeColor(PinType);
+}
+
 void SRigHierarchyItem::OnNameCommitted(const FText& InText, ETextCommit::Type InCommitType) const
 {
 	// for now only allow enter
@@ -785,7 +914,7 @@ void SSearchableRigHierarchyTreeView::Construct(const FArguments& InArgs)
 		.HAlign(HAlign_Fill)
 		.Padding(0.0f)
 		[
-			SNew(SSearchBox)
+			SAssignNew(SearchBox, SSearchBox)
 			.InitialText(InArgs._InitialFilterText)
 			.OnTextChanged(this, &SSearchableRigHierarchyTreeView::OnFilterTextChanged)
 		]
@@ -801,7 +930,7 @@ void SSearchableRigHierarchyTreeView::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Padding(2.0f)
-				.BorderImage(FEditorStyle::GetBrush("SCSEditor.TreePanel"))
+				.BorderImage(FAppStyle::GetBrush("SCSEditor.TreePanel"))
 				[
 					SAssignNew(TreeView, SRigHierarchyTreeView)
 					.RigTreeDelegates(TreeDelegates)

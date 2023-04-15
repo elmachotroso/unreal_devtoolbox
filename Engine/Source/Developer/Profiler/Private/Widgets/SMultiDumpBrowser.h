@@ -3,6 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
+#if STATS
+
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "ProfilerManager.h"
 #include "Widgets/SCompoundWidget.h"
@@ -12,7 +15,7 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Input/SEditableTextBox.h"
 
 /**
@@ -136,3 +139,5 @@ protected:
 
 	FString TotalsFilteringText;
 };
+
+#endif // STATS

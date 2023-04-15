@@ -10,6 +10,8 @@
 #include "DatasmithVariantElements.h"
 #include "IDatasmithSceneElements.h"
 
+#include "Algo/MinElement.h"
+#include "Algo/MaxElement.h"
 #include "Algo/Sort.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -20,6 +22,7 @@
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
 #include "UObject/NameTypes.h"
+#include "UVMapSettings.h"
 
 static const float DATASMITH_FORMAT_VERSION = 0.24f; // Major.Minor - A change in the major version means that backward compatibility is broken
 
@@ -172,9 +175,10 @@ int32 FDatasmithUtils::GetEnterpriseVersionAsInt()
 	return MajorVersion + MinorVersion + PatchVersion;
 }
 
-FString FDatasmithUtils::GetEnterpriseVersionAsString()
+FString FDatasmithUtils::GetEnterpriseVersionAsString(bool bWithChangelist)
 {
-	return FEngineVersion::Current().ToString( EVersionComponent::Patch );
+	EVersionComponent Format = (bWithChangelist && FEngineVersion::Current().HasChangelist()) ? EVersionComponent::Changelist : EVersionComponent::Patch;
+	return FEngineVersion::Current().ToString(Format);
 }
 
 float FDatasmithUtils::GetDatasmithFormatVersionAsFloat()
@@ -207,12 +211,10 @@ const TCHAR* FDatasmithUtils::GetShortAppName()
 	return TEXT("Datasmith");
 }
 
-double FDatasmithUtils::AreaTriangle3D(FVector v0, FVector v1, FVector v2)
+float FDatasmithUtils::AreaTriangle3D(const FVector3f& v0, const FVector3f& v1, const FVector3f& v2)
 {
-	FVector TriangleNormal = (v1 - v2) ^ (v0 - v2);
-	double Area = TriangleNormal.Size() * 0.5;
-
-	return Area;
+	FVector3f TriangleNormal = (v1 - v2) ^ (v0 - v2);
+	return TriangleNormal.Size() * 0.5f;
 }
 
 bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMesh, bool bValidateRawMesh)
@@ -228,7 +230,7 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 
 	for ( int32 i = 0; i < Mesh.GetVerticesCount(); ++i )
 	{
-		RawMesh.VertexPositions.Add( (FVector3f)Mesh.GetVertex( i ) );
+		RawMesh.VertexPositions.Add( Mesh.GetVertex( i ) );
 	}
 
 	RawMesh.FaceMaterialIndices.Reserve( Mesh.GetFacesCount() );
@@ -254,7 +256,7 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 
 		for ( int32 j = 0; j < 3; ++j )
 		{
-			RawMesh.WedgeTangentZ.Add( (FVector3f)Mesh.GetNormal( FaceIndex * 3 + j ) );
+			RawMesh.WedgeTangentZ.Add( Mesh.GetNormal( FaceIndex * 3 + j ) );
 		}
 	}
 
@@ -293,117 +295,74 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 	return true;
 }
 
-bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescription& MeshDescription)
+bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescription& MeshDescription, EUvGenerationPolicy UvGen)
 {
-	MeshDescription.Empty();
+	FRawMesh RawMesh;
+	bool bGenerateDefaultUvs = DsMesh.GetUVChannelsCount() == 0 && UvGen != EUvGenerationPolicy::Ignore;
+	if (bGenerateDefaultUvs)
+	{
+		DsMesh.AddUVChannel();
+		DsMesh.SetUVCount(0, 1); // we need one valid uv value so that default UVIndex (which is 0) points to a valid location
+	}
 
-	FStaticMeshAttributes Attributes(MeshDescription);
-	TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
-	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-
-	// Prepared for static mesh usage ?
-	if (!ensure(VertexPositions.IsValid())
-	 || !ensure(VertexInstanceNormals.IsValid())
-	 || !ensure(VertexInstanceUVs.IsValid())
-	 || !ensure(PolygonGroupImportedMaterialSlotNames.IsValid()) )
+	if (!ToRawMesh(DsMesh, RawMesh))
 	{
 		return false;
 	}
 
-	// Reserve space for attributes.
-	int32 VertexCount = DsMesh.GetVerticesCount();
-	int32 TriangleCount = DsMesh.GetFacesCount();
-	int32 VertexInstanceCount = 3 * TriangleCount;
-	int32 MaterialCount = DsMesh.GetMaterialsCount();
-	MeshDescription.ReserveNewVertices(VertexCount);
-	MeshDescription.ReserveNewVertexInstances(VertexInstanceCount);
-	MeshDescription.ReserveNewEdges(VertexInstanceCount);
-	MeshDescription.ReserveNewPolygons(TriangleCount);
-	MeshDescription.ReserveNewPolygonGroups(MaterialCount);
+	// ToRawMesh() produces meshes whose material indices are in fact Ids, eg. can be any random int, instead of the compact set {0, 1, 2, ...}.
+	// we have to remap ids to compact indices in order to generate MeshDescriptions with the correct amount of polygon groups.
+	// The following steps ensure that
+	// - Slot names are FNames that are the literal representation of the original materialId (so that the importer can map materials)
+	// - MeshDescription creation receives a RawMesh with a compact set of materialIndices (in RawMesh.FaceMaterialIndices)
 
-	// At least one UV set must exist.
-	int32 DsUVCount = DsMesh.GetUVChannelsCount();
-	int32 MeshDescUVCount = FMath::Max(1, DsUVCount);
-	VertexInstanceUVs.SetNumChannels(MeshDescUVCount);
+	TMap<int32, FName> MaterialMap;
+	TSet<int32> MaterialIds{RawMesh.FaceMaterialIndices};
 
-	//Fill the vertex array
-	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+	int32* Min = Algo::MinElement(MaterialIds);
+	int32* Max = Algo::MaxElement(MaterialIds);
+	bool bCanUseIdsDirectly = Min && Max && *Min == 0 && *Max == MaterialIds.Num()-1; // We can skip the remapping when ids are already indices
+
+	if (bCanUseIdsDirectly)
 	{
-		FVertexID AddedVertexId = MeshDescription.CreateVertex();
-		VertexPositions[AddedVertexId] = (FVector3f)DsMesh.GetVertex(VertexIndex);
+		for (int32 MaterialId : MaterialIds)
+		{
+			MaterialMap.Add(MaterialId, *FString::FromInt(MaterialId));
+		}
+	}
+	else
+	{
+		TMap<int32, int32> IDsToIndices;
+		for (int32 MaterialId : MaterialIds)
+		{
+			int32 MaterialIndex = MaterialMap.Num();
+			IDsToIndices.Add(MaterialId, MaterialIndex);
+
+			MaterialMap.Add(MaterialIndex, *FString::FromInt(MaterialId));
+		}
+		for (auto& OldId : RawMesh.FaceMaterialIndices)
+		{
+			OldId = IDsToIndices[OldId];
+		}
 	}
 
-	TMap<int32, FPolygonGroupID> PolygonGroupMapping;
-	auto GetOrCreatePolygonGroupId = [&](int32 MaterialIndex)
+	FStaticMeshAttributes Attributes(MeshDescription);
+	Attributes.Register();
+	FStaticMeshOperations::ConvertFromRawMesh(RawMesh, MeshDescription, MaterialMap);
+
+	if (bGenerateDefaultUvs)
 	{
-		FPolygonGroupID& PolyGroupId = PolygonGroupMapping.FindOrAdd(MaterialIndex);
-		if (PolyGroupId == INDEX_NONE)
+		FBox MeshBoundingBox = MeshDescription.ComputeBoundingBox();
+		FUVMapParameters UVParameters(MeshBoundingBox.GetCenter(), FQuat::Identity, MeshBoundingBox.GetSize(), FVector::OneVector, FVector2D::UnitVector);
+		TMap<FVertexInstanceID, FVector2D> TexCoords;
+		FStaticMeshOperations::GenerateBoxUV(MeshDescription, UVParameters, TexCoords);
+
+		TVertexInstanceAttributesRef<FVector2f> UVs = FStaticMeshAttributes(MeshDescription).GetVertexInstanceUVs();
+		for (const auto& Pair : TexCoords)
 		{
-			PolyGroupId = MeshDescription.CreatePolygonGroup();
-			FName ImportedSlotName = *FString::FromInt(MaterialIndex); // No access to DatasmithMeshHelper::DefaultSlotName
-			PolygonGroupImportedMaterialSlotNames[PolyGroupId] = ImportedSlotName;
+			UVs.Set(Pair.Key, 0, (FVector2f)Pair.Value);
 		}
-		return PolyGroupId;
-	};
-
-	// corner informations
-	const int32 CornerCount = 3; // only triangles in DatasmithMesh
-	FVector CornerPositions[3];
-	TArray<FVertexInstanceID> CornerVertexInstanceIDs;
-	CornerVertexInstanceIDs.SetNum(3);
-	FVertexID CornerVertexIDs[3];
-	TArray<uint32> FaceSmoothingMasks;
-	for (int32 PolygonIndex = 0; PolygonIndex < TriangleCount; PolygonIndex++)
-	{
-		// face basics info
-		int32 MaterialIndex;
-		int32 VertexIndex[3];
-		DsMesh.GetFace(PolygonIndex, VertexIndex[0], VertexIndex[1], VertexIndex[2], MaterialIndex);
-		for (int32 CornerIndex = 0; CornerIndex < CornerCount; CornerIndex++)
-		{
-			CornerVertexIDs[CornerIndex] = FVertexID(VertexIndex[CornerIndex]);
-			CornerPositions[CornerIndex] = (FVector)VertexPositions[CornerVertexIDs[CornerIndex]];
-		}
-
-		// Create Vertex instances
-		for (int32 CornerIndex = 0; CornerIndex < CornerCount; CornerIndex++)
-		{
-			CornerVertexInstanceIDs[CornerIndex] = MeshDescription.CreateVertexInstance(CornerVertexIDs[CornerIndex]);
-		}
-
-		// UVs attributes
-		for (int32 UVChannelIndex = 0; UVChannelIndex < DsUVCount; ++UVChannelIndex)
-		{
-			int32 UV[3];
-			DsMesh.GetFaceUV(PolygonIndex, UVChannelIndex, UV[0], UV[1], UV[2]);
-			for (int32 CornerIndex = 0; CornerIndex < CornerCount; ++CornerIndex)
-			{
-				check(UV[CornerIndex] < DsMesh.GetUVCount(UVChannelIndex))
-				FVector2D UVVector = DsMesh.GetUV(UVChannelIndex, UV[CornerIndex]);
-				if (!UVVector.ContainsNaN())
-				{
-					VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], UVChannelIndex, FVector2f(UVVector));
-				}
-			}
-		}
-
-		for (int32 CornerIndex = 0; CornerIndex < CornerCount; CornerIndex++)
-		{
-			VertexInstanceNormals[CornerVertexInstanceIDs[CornerIndex]] = (FVector3f)DsMesh.GetNormal(3 * PolygonIndex + CornerIndex);
-		}
-
-		// smoothing information
-		FaceSmoothingMasks.Add(DsMesh.GetFaceSmoothingMask(PolygonIndex));
-
-		// Create in-mesh Polygon
-		const FPolygonGroupID PolygonGroupID = GetOrCreatePolygonGroupId(MaterialIndex);
-		const FPolygonID NewPolygonID = MeshDescription.CreatePolygon(PolygonGroupID, CornerVertexInstanceIDs);
 	}
-
-	FStaticMeshOperations::ConvertSmoothGroupToHardEdges(FaceSmoothingMasks, MeshDescription);
-
 	return true;
 }
 
@@ -430,6 +389,87 @@ bool FDatasmithMeshUtils::IsUVChannelValid(const FDatasmithMesh& DsMesh, const i
 	}
 
 	return true;
+}
+
+void CreateDefaultUVs( FDatasmithMesh& Mesh )
+{
+	if ( Mesh.GetUVChannelsCount() > 0 )
+	{
+		return;
+	}
+
+	// Get the mesh description to generate BoxUV.
+	FMeshDescription MeshDescription;
+	FStaticMeshAttributes(MeshDescription).Register();
+	FDatasmithMeshUtils::ToMeshDescription(Mesh, MeshDescription, FDatasmithMeshUtils::Ignore);
+	FUVMapParameters UVParameters(
+		FVector(Mesh.GetExtents().GetCenter()),
+		FQuat::Identity,
+		FVector(Mesh.GetExtents().GetSize()),
+		FVector::OneVector,
+		FVector2D::UnitVector
+	);
+	TMap<FVertexInstanceID, FVector2D> TexCoords;
+	FStaticMeshOperations::GenerateBoxUV(MeshDescription, UVParameters, TexCoords);
+
+	// Put the results in a map to determine the number of unique values.
+	TMap<FVector2D, TArray<int32>> UniqueTexCoordMap;
+	for (const TPair<FVertexInstanceID, FVector2D>& Pair : TexCoords)
+	{
+		TArray<int32>& MappedIndices = UniqueTexCoordMap.FindOrAdd(Pair.Value);
+		MappedIndices.Add(Pair.Key.GetValue());
+	}
+
+	//Set the UV values
+	Mesh.AddUVChannel();
+	Mesh.SetUVCount(0, UniqueTexCoordMap.Num());
+	int32 UVIndex = 0;
+	TArray<int32> IndicesMapping;
+	IndicesMapping.AddZeroed(TexCoords.Num());
+	for (const TPair<FVector2D, TArray<int32>>& UniqueCoordPair : UniqueTexCoordMap)
+	{
+		Mesh.SetUV(0, UVIndex, UniqueCoordPair.Key.X, UniqueCoordPair.Key.Y);
+		for (int32 IndicesIndex : UniqueCoordPair.Value)
+		{
+			IndicesMapping[IndicesIndex] = UVIndex;
+		}
+		UVIndex++;
+	}
+
+	//Map the UV indices.
+	for (int32 FaceIndex = 0; FaceIndex < Mesh.GetFacesCount(); ++FaceIndex)
+	{
+		const int32 IndicesOffset = FaceIndex * 3;
+		check(IndicesOffset + 2 < IndicesMapping.Num());
+		Mesh.SetFaceUV(FaceIndex, 0, IndicesMapping[IndicesOffset + 0], IndicesMapping[IndicesOffset + 1], IndicesMapping[IndicesOffset + 2]);
+	}
+}
+
+void FDatasmithMeshUtils::CreateDefaultUVsWithLOD(FDatasmithMesh& Mesh)
+{
+	CreateDefaultUVs( Mesh );
+
+	for ( int32 LODIndex = 0; LODIndex < Mesh.GetLODsCount(); ++LODIndex )
+	{
+		if ( FDatasmithMesh* LODMesh = Mesh.GetLOD( LODIndex ) )
+		{
+			CreateDefaultUVs( *LODMesh );
+		}
+	}
+}
+
+void FDatasmithMeshUtils::ExtractVertexPositions(const FMeshDescription& Mesh, TArray<FVector3f>& OutPositions)
+{
+	FStaticMeshConstAttributes Attributes(Mesh);
+	const TVertexAttributesConstRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
+	if (VertexPositions.IsValid())
+	{
+		OutPositions.Reserve(VertexPositions.GetNumElements());
+		for (const FVertexID VertexID : Mesh.Vertices().GetElementIDs())
+		{
+			OutPositions.Add(VertexPositions[VertexID]);
+		}
+	}
 }
 
 bool FDatasmithTextureUtils::CalculateTextureHash(const TSharedPtr<class IDatasmithTextureElement>& TextureElement)
@@ -767,7 +807,7 @@ namespace DatasmithSceneUtilsImpl
 		return EDatasmithTextureMode::Diffuse;
 	};
 
-	void CheckMasterMaterialTextures( IDatasmithScene& Scene )
+	void CheckMaterialInstanceTextures( IDatasmithScene& Scene )
 	{
 		TSet<FString> ProcessedTextures;
 
@@ -778,9 +818,9 @@ namespace DatasmithSceneUtilsImpl
 		{
 			const TSharedPtr< IDatasmithBaseMaterialElement >& BaseMaterial = Scene.GetMaterial( MaterialIndex );
 
-			if ( BaseMaterial->IsA( EDatasmithElementType::MasterMaterial ) )
+			if ( BaseMaterial->IsA( EDatasmithElementType::MaterialInstance ) )
 			{
-				const TSharedPtr< IDatasmithMasterMaterialElement >& Material = StaticCastSharedPtr< IDatasmithMasterMaterialElement >( BaseMaterial );
+				const TSharedPtr< IDatasmithMaterialInstanceElement >& Material = StaticCastSharedPtr< IDatasmithMaterialInstanceElement >( BaseMaterial );
 
 				for ( int32 i = 0; i < Material->GetPropertiesCount(); ++i )
 				{
@@ -954,6 +994,18 @@ namespace DatasmithSceneUtilsImpl
 			ScanMaterialIDElement( LightActorElement->GetLightFunctionMaterial().Get() );
 		}
 
+		void ScanDecalActorElement(IDatasmithDecalActorElement* DecalActorElement)
+		{
+			if (const TCHAR* DecalMaterialName = DecalActorElement->GetDecalMaterialPathName())
+			{
+				if (TSharedPtr<IDatasmithElement>* MaterialElementPtr = AssetElementMapping.Find(MaterialPrefix + DecalMaterialName))
+				{
+					TSharedPtr<IDatasmithBaseMaterialElement> MaterialElement = StaticCastSharedPtr<IDatasmithBaseMaterialElement>(*MaterialElementPtr);
+					ReferencedMaterials.Add(MaterialElement);
+				}
+			}
+		}
+
 		void ParseSceneActor( const TSharedPtr<IDatasmithActorElement>& ActorElement )
 		{
 			if (!ActorElement.IsValid())
@@ -971,6 +1023,10 @@ namespace DatasmithSceneUtilsImpl
 			{
 				ScanLightActorElement(static_cast<IDatasmithLightActorElement*>(ActorElement.Get()));
 			}
+			else if (ActorElement->IsA(EDatasmithElementType::Decal))
+			{
+				ScanDecalActorElement(static_cast<IDatasmithDecalActorElement*>(ActorElement.Get()));
+			}
 
 			for (int32 Index = 0; Index < ActorElement->GetChildrenCount(); ++Index)
 			{
@@ -986,7 +1042,7 @@ namespace DatasmithSceneUtilsImpl
 			}
 		}
 
-		void ScanMasterMaterialElement(IDatasmithMasterMaterialElement* MaterialElement)
+		void ScanMaterialInstanceElement(IDatasmithMaterialInstanceElement* MaterialElement)
 		{
 			for ( int32 Index = 0; Index < MaterialElement->GetPropertiesCount(); ++Index )
 			{
@@ -1000,6 +1056,24 @@ namespace DatasmithSceneUtilsImpl
 					{
 						ReferencedTextures.Add(TexturePathName);
 					}
+				}
+			}
+		}
+
+		void ScanDecalMaterialElement(IDatasmithDecalMaterialElement* MaterialElement)
+		{
+			if (const TCHAR* DiffuseTextureName = MaterialElement->GetDiffuseTexturePathName())
+			{
+				if (DiffuseTextureName[0] != '/')
+				{
+					ReferencedTextures.Add(DiffuseTextureName);
+				}
+			}
+			if (const TCHAR* NormalTextureName = MaterialElement->GetNormalTexturePathName())
+			{
+				if (NormalTextureName[0] != '/')
+				{
+					ReferencedTextures.Add(NormalTextureName);
 				}
 			}
 		}
@@ -1185,7 +1259,10 @@ namespace DatasmithSceneUtilsImpl
 			TFunction<void(TSharedPtr<IDatasmithElement>&&, const FString&)> AddAsset;
 			AddAsset = [this](TSharedPtr<IDatasmithElement>&& InElementPtr, const FString& AssetPrefix) -> void
 			{
-				AssetElementMapping.Add(AssetPrefix + InElementPtr->GetName(), MoveTemp(InElementPtr));
+				if (InElementPtr)
+				{
+					AssetElementMapping.Add(AssetPrefix + InElementPtr->GetName(), MoveTemp(InElementPtr));
+				}
 			};
 
 			for (int32 Index = 0; Index < Scene->GetTexturesCount(); ++Index)
@@ -1232,9 +1309,13 @@ namespace DatasmithSceneUtilsImpl
 				{
 					ScanPbrMaterialElement(static_cast< IDatasmithUEPbrMaterialElement* >( MaterialElement.Get() ));
 				}
-				else if ( MaterialElement->IsA( EDatasmithElementType::MasterMaterial ) )
+				else if ( MaterialElement->IsA( EDatasmithElementType::MaterialInstance ) )
 				{
-					ScanMasterMaterialElement(static_cast< IDatasmithMasterMaterialElement* >( MaterialElement.Get() ));
+					ScanMaterialInstanceElement(static_cast< IDatasmithMaterialInstanceElement* >( MaterialElement.Get() ));
+				}
+				else if (MaterialElement->IsA(EDatasmithElementType::DecalMaterial))
+				{
+					ScanDecalMaterialElement(static_cast<IDatasmithDecalMaterialElement*>(MaterialElement.Get()));
 				}
 				else if ( MaterialElement->IsA( EDatasmithElementType::Material ) )
 				{
@@ -1489,7 +1570,6 @@ namespace DatasmithSceneUtilsImpl
 void FDatasmithSceneUtils::CleanUpScene(TSharedRef<IDatasmithScene> Scene, bool bRemoveUnused)
 {
 	using namespace DatasmithSceneUtilsImpl;
-	using namespace DirectLink;
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithSceneUtils::CleanUpScene);
 
@@ -1498,7 +1578,7 @@ void FDatasmithSceneUtils::CleanUpScene(TSharedRef<IDatasmithScene> Scene, bool 
 		FixIesTextures(*Scene, Scene->GetActor(Index));
 	}
 
-	CheckMasterMaterialTextures(*Scene);
+	CheckMaterialInstanceTextures(*Scene);
 
 	CleanUpEnvironments(Scene);
 
@@ -1651,47 +1731,5 @@ FTransform FDatasmithUtils::ConvertTransform(EModelCoordSystem SourceCoordSystem
 	}
 }
 
-
-FMatrix FDatasmithUtils::GetSymmetricMatrix(const FVector& Origin, const FVector& Normal)
-{
-	//Calculate symmetry matrix
-	//(Px, Py, Pz) = normal
-	// -Px² + Pz² + Py²  |  - 2 * Px * Py     |  - 2 * Px * Pz
-	// - 2 * Py * Px     |  - Py² + Px² + Pz² |  - 2 * Py * Pz
-	// - 2 * Pz * Px     |  - 2 * Pz * Py     |  - Pz² + Py² + Px²
-
-	FVector LocOrigin = Origin;
-
-	float NormalXSqr, NormalYSqr, NormalZSqr;
-	NormalXSqr = Normal.X * Normal.X;
-	NormalYSqr = Normal.Y * Normal.Y;
-	NormalZSqr = Normal.Z * Normal.Z;
-
-	FMatrix OSymmetricMatrix;
-	OSymmetricMatrix.SetIdentity();
-	FVector Axis0(-NormalXSqr + NormalZSqr + NormalYSqr, -2 * Normal.X * Normal.Y, -2 * Normal.X * Normal.Z);
-	FVector Axis1(-2 * Normal.Y * Normal.X, -NormalYSqr + NormalXSqr + NormalZSqr, -2 * Normal.Y * Normal.Z);
-	FVector Axis2(-2 * Normal.Z * Normal.X, -2 * Normal.Z * Normal.Y, -NormalZSqr + NormalYSqr + NormalXSqr);
-	OSymmetricMatrix.SetAxes(&Axis0, &Axis1, &Axis2);
-
-	FMatrix SymmetricMatrix;
-	SymmetricMatrix.SetIdentity();
-
-	//Translate to 0, 0, 0
-	LocOrigin *= -1.;
-	SymmetricMatrix.SetOrigin(LocOrigin);
-
-	//// Apply Symmetric
-	SymmetricMatrix *= OSymmetricMatrix;
-
-	//Translate to original position
-	LocOrigin *= -1.;
-	FMatrix OrigTranslation;
-	OrigTranslation.SetIdentity();
-	OrigTranslation.SetOrigin(LocOrigin);
-	SymmetricMatrix *= OrigTranslation;
-
-	return SymmetricMatrix;
-}
 
 

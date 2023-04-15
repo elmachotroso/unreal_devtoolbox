@@ -20,9 +20,18 @@ namespace Chaos
 	using FMatrix33 = PMatrix<FReal, 3, 3>;
 	using FMatrix44 = PMatrix<FReal, 4, 4>;
 	using FRigidTransform3 = TRigidTransform<FReal, 3>;
-	using FRigidTransformRealSingle3 = TRigidTransform<FRealSingle, 3>;
 
 	using FAABB3 = TAABB<FReal, 3>;
+
+	using FVec2f = TVector<FRealSingle, 2>;
+	using FVec3f = TVector<FRealSingle, 3>;
+	using FRotation3f = TRotation<FRealSingle, 3>;
+	using FRigidTransform3f = TRigidTransform<FRealSingle, 3>;
+
+	using FAABB3f = TAABB<FRealSingle, 3>;
+
+	// @todo(chaos): deprecate this and use FRigidTransform3f
+	using FRigidTransformRealSingle3 = TRigidTransform<FRealSingle, 3>;
 
 	template <typename T>
 	using TVec2 = TVector<T, 2>;
@@ -42,6 +51,14 @@ namespace Chaos
 	// NOTE: if you get a merge conflict on the GUID, you must replace it with a new GUID - do not accept the source or target
 	// or you will likely get DDC version conflicts resulting in crashes during load.
 	// Core version string for Chaos data. Any DDC builder dependent on Chaos for serialization should depend on this version
-	static const FString ChaosVersionString = TEXT("6809AC86-276B-4AB2-B777-382005E80FAE");
+	static const TCHAR* const ChaosVersionGUID = TEXT("3366E325-8C79-4356-916E-B8432589888D");
 
+	inline FString GetChaosVersionStringInner()
+	{
+		return FString(ChaosVersionGUID);
+	}
+
+#define ChaosVersionString \
+	UE_DEPRECATED_MACRO(5.1, "ChaosVersionString is deprecated, please use ChaosVersionGUID instead") \
+	GetChaosVersionStringInner()
 }

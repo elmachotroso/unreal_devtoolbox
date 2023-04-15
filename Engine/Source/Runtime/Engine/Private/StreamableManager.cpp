@@ -87,7 +87,7 @@ public:
 			}
 			if (!DelegatesForHandle->Head)
 			{
-				PendingDelegatesByHandle.Remove(AssociatedHandle);
+				RemovePendingDelegateInternal(AssociatedHandle);
 			}
 		}
 
@@ -143,7 +143,7 @@ public:
 					}
 					if (!DelegatesForHandle->Head)
 					{
-						PendingDelegatesByHandle.Remove(CurrentNode->RelatedHandle);
+						RemovePendingDelegateInternal(CurrentNode->RelatedHandle);
 					}
 				}
 				CurrentNode = NextNode;
@@ -290,6 +290,17 @@ private:
 			}
 		}
 	};
+
+	inline void RemovePendingDelegateInternal(TSharedPtr<FStreamableHandle> Handle)
+	{
+		// requires DataLock by caller
+		PendingDelegatesByHandle.Remove(Handle);
+		if (PendingDelegatesByHandle.IsEmpty())
+		{
+			// release potentially big allocation after huge batches of streaming requests
+			PendingDelegatesByHandle.Empty(128);
+		}
+	}
 
 	FPendingDelegateList PendingDelegates;
 	TMap<TSharedPtr<FStreamableHandle>, FPendingDelegateList> PendingDelegatesByHandle;
@@ -477,38 +488,10 @@ UObject* FStreamableHandle::GetLoadedAsset() const
 
 void FStreamableHandle::GetLoadedAssets(TArray<UObject *>& LoadedAssets) const
 {
-	if (HasLoadCompleted())
+	ForEachLoadedAsset([&LoadedAssets](UObject* LoadedAsset)
 	{
-		for (const FSoftObjectPath& Ref : RequestedAssets)
-		{
-			// Try manager, should be faster and will handle redirects better
-			if (IsActive())
-			{
-				LoadedAssets.Add(OwningManager->GetStreamed(Ref));
-			}
-			else
-			{
-				LoadedAssets.Add(Ref.ResolveObject());
-			}
-		}
-
-		// Check child handles
-		for (const TSharedPtr<FStreamableHandle>& ChildHandle : ChildHandles)
-		{
-			for (const FSoftObjectPath& Ref : ChildHandle->RequestedAssets)
-			{
-				// Try manager, should be faster and will handle redirects better
-				if (IsActive())
-				{
-					LoadedAssets.Add(OwningManager->GetStreamed(Ref));
-				}
-				else
-				{
-					LoadedAssets.Add(Ref.ResolveObject());
-				}
-			}
-		}
-	}
+		LoadedAssets.Add(LoadedAsset);
+	});
 }
 
 void FStreamableHandle::GetLoadedCount(int32& LoadedCount, int32& RequestedCount) const
@@ -1284,7 +1267,12 @@ FStreamable* FStreamableManager::StreamInternal(const FSoftObjectPath& InTargetN
 			{
 				Existing->bLoadFailed = false;
 				Existing->bAsyncLoadRequestOutstanding = true;
-				LoadPackageAsync(PackagePath, NAME_None /* PackageNameToCreate */, FLoadPackageAsyncDelegate::CreateSP(Handle, &FStreamableHandle::AsyncLoadCallbackWrapper, TargetName), PKG_None /* InPackageFlags */, Priority);
+				LoadPackageAsync(PackagePath,
+					NAME_None /* PackageNameToCreate */,
+					FLoadPackageAsyncDelegate::CreateSP(Handle, &FStreamableHandle::AsyncLoadCallbackWrapper, TargetName),
+					PKG_None /* InPackageFlags */,
+					INDEX_NONE /* InPIEInstanceID */,
+					Priority /* InPackagePriority */);
 			}
 		}
 	}
@@ -1317,7 +1305,7 @@ TSharedPtr<FStreamableHandle> FStreamableManager::RequestAsyncLoad(TArray<FSoftO
 			--NumValidRequests;
 			continue;
 		}
-		else if (FPackageName::IsShortPackageName(TargetName.GetAssetPathName()))
+		else if (FPackageName::IsShortPackageName(TargetName.GetLongPackageFName()))
 		{
 			UE_LOG(LogStreamableManager, Error, TEXT("RequestAsyncLoad(%s) called with invalid package name %s"), *DebugName, *TargetName.ToString());
 			NewRequest->CancelHandle();
@@ -1550,7 +1538,7 @@ void FStreamableManager::AsyncLoadCallback(FSoftObjectPath TargetName)
 		{
 			// Async load failed to find the object
 			Existing->bLoadFailed = true;
-			UE_LOG(LogStreamableManager, Verbose, TEXT("    Failed async load."), *TargetName.ToString());
+			UE_LOG(LogStreamableManager, Verbose, TEXT("    Failed async load for %s"), *TargetName.ToString());
 		}
 	}
 	else

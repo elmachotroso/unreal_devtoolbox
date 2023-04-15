@@ -1,15 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	DataLayer.cpp: UDataLayer class implementation
+	DataLayer.cpp: UDEPRECATED_DataLayer class implementation
 =============================================================================*/
 
 #include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerUtils.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataLayer)
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
-UDataLayer::UDataLayer(const FObjectInitializer& ObjectInitializer)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+UDEPRECATED_DataLayer::UDEPRECATED_DataLayer(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 , bIsInitiallyActive_DEPRECATED(false)
@@ -23,10 +28,9 @@ UDataLayer::UDataLayer(const FObjectInitializer& ObjectInitializer)
 , bIsRuntime(false)
 , InitialRuntimeState(EDataLayerRuntimeState::Unloaded)
 , DebugColor(FColor::Black)
-{
-}
+{}
 
-void UDataLayer::PostLoad()
+void UDEPRECATED_DataLayer::PostLoad()
 {
 	Super::PostLoad();
 
@@ -40,25 +44,21 @@ void UDataLayer::PostLoad()
 	bIsVisible = bIsInitiallyVisible;
 
 	// Sanitize Label
-	DataLayerLabel = UDataLayer::GetSanitizedDataLayerLabel(DataLayerLabel);
+	DataLayerLabel = FDataLayerUtils::GetSanitizedDataLayerLabel(DataLayerLabel);
 
 	if (DebugColor == FColor::Black)
 	{
-		FRandomStream RandomStream(GetFName());
-		const uint8 R = (uint8)(RandomStream.GetFraction() * 255.f);
-		const uint8 G = (uint8)(RandomStream.GetFraction() * 255.f);
-		const uint8 B = (uint8)(RandomStream.GetFraction() * 255.f);
-		DebugColor = FColor(R, G, B);
+		DebugColor = FColor::MakeRandomSeededColor(GetTypeHash(GetName()));
 	}
 #endif
 
-	if (Parent)
+	if (Parent_DEPRECATED)
 	{
-		Parent->AddChild(this);
+		Parent_DEPRECATED->AddChild(this);
 	}
 }
 
-bool UDataLayer::IsInitiallyVisible() const
+bool UDEPRECATED_DataLayer::IsInitiallyVisible() const
 {
 #if WITH_EDITOR
 	return bIsInitiallyVisible;
@@ -67,7 +67,7 @@ bool UDataLayer::IsInitiallyVisible() const
 #endif
 }
 
-bool UDataLayer::IsVisible() const
+bool UDEPRECATED_DataLayer::IsVisible() const
 {
 #if WITH_EDITOR
 	return bIsVisible;
@@ -76,17 +76,11 @@ bool UDataLayer::IsVisible() const
 #endif
 }
 
-FName UDataLayer::GetSanitizedDataLayerLabel(FName InDataLayerLabel)
-{
-	// Removes all quotes as well as whitespace characters from the startand end
-	return FName(InDataLayerLabel.ToString().TrimStartAndEnd().Replace(TEXT("\""), TEXT("")));
-}
-
-bool UDataLayer::IsEffectiveVisible() const
+bool UDEPRECATED_DataLayer::IsEffectiveVisible() const
 {
 #if WITH_EDITOR
 	bool bResult = IsVisible();
-	const UDataLayer* ParentDataLayer = GetParent();
+	const UDEPRECATED_DataLayer* ParentDataLayer = GetParent();
 	while (ParentDataLayer && bResult)
 	{
 		bResult = bResult && ParentDataLayer->IsVisible();
@@ -98,11 +92,11 @@ bool UDataLayer::IsEffectiveVisible() const
 #endif
 }
 
-void UDataLayer::AddChild(UDataLayer* InDataLayer)
+void UDEPRECATED_DataLayer::AddChild(UDEPRECATED_DataLayer* InDataLayer)
 {
 	Modify();
-	checkSlow(!Children.Contains(InDataLayer));
-	Children.Add(InDataLayer);
+	checkSlow(!Children_DEPRECATED.Contains(InDataLayer));
+	Children_DEPRECATED.Add(InDataLayer);
 #if WITH_EDITOR
 	if (IsRuntime())
 	{
@@ -113,10 +107,10 @@ void UDataLayer::AddChild(UDataLayer* InDataLayer)
 
 #if WITH_EDITOR
 
-bool UDataLayer::IsEffectiveLoadedInEditor() const
+bool UDEPRECATED_DataLayer::IsEffectiveLoadedInEditor() const
 {
 	bool bResult = IsLoadedInEditor();
-	const UDataLayer* ParentDataLayer = GetParent();
+	const UDEPRECATED_DataLayer* ParentDataLayer = GetParent();
 	while (ParentDataLayer && bResult)
 	{
 		bResult = bResult && ParentDataLayer->IsLoadedInEditor();
@@ -125,7 +119,7 @@ bool UDataLayer::IsEffectiveLoadedInEditor() const
 	return bResult;
 }
 
-bool UDataLayer::IsLocked() const
+bool UDEPRECATED_DataLayer::IsLocked() const
 {
 	if (bIsLocked)
 	{
@@ -135,16 +129,16 @@ bool UDataLayer::IsLocked() const
 	return IsRuntime() && !GetOuterAWorldDataLayers()->GetAllowRuntimeDataLayerEditing();
 }
 
-bool UDataLayer::CanEditChange(const FProperty* InProperty) const
+bool UDEPRECATED_DataLayer::CanEditChange(const FProperty* InProperty) const
 {
-	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDataLayer, bIsRuntime)) ||
-		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDataLayer, InitialRuntimeState)) ||
-		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDataLayer, DebugColor)))
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDEPRECATED_DataLayer, bIsRuntime)) ||
+		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDEPRECATED_DataLayer, InitialRuntimeState)) ||
+		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDEPRECATED_DataLayer, DebugColor)))
 	{
-		if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDataLayer, bIsRuntime))
+		if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDEPRECATED_DataLayer, bIsRuntime))
 		{
 			// If DataLayer is Runtime because of its parent being Runtime, we don't allow modifying 
-			if (Parent && Parent->IsRuntime())
+			if (Parent_DEPRECATED && Parent_DEPRECATED->IsRuntime())
 			{
 				check(IsRuntime());
 				return false;
@@ -156,9 +150,9 @@ bool UDataLayer::CanEditChange(const FProperty* InProperty) const
 	return Super::CanEditChange(InProperty);
 }
 
-void UDataLayer::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+void UDEPRECATED_DataLayer::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	static const FName NAME_IsRuntime = GET_MEMBER_NAME_CHECKED(UDataLayer, bIsRuntime);
+	static const FName NAME_IsRuntime = GET_MEMBER_NAME_CHECKED(UDEPRECATED_DataLayer, bIsRuntime);
 	FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
 	if (MemberPropertyName == NAME_IsRuntime)
@@ -168,12 +162,12 @@ void UDataLayer::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
-bool UDataLayer::CanParent(const UDataLayer* InParent) const
+bool UDEPRECATED_DataLayer::CanParent(const UDEPRECATED_DataLayer* InParent) const
 {
-	return (this != InParent) && (Parent != InParent);
+	return (this != InParent) && (Parent_DEPRECATED != InParent);
 }
 
-void UDataLayer::SetParent(UDataLayer* InParent)
+void UDEPRECATED_DataLayer::SetParent(UDEPRECATED_DataLayer* InParent)
 {
 	if (!CanParent(InParent))
 	{
@@ -181,18 +175,18 @@ void UDataLayer::SetParent(UDataLayer* InParent)
 	}
 
 	Modify();
-	if (Parent)
+	if (Parent_DEPRECATED)
 	{
-		Parent->RemoveChild(this);
+		Parent_DEPRECATED->RemoveChild(this);
 	}
-	Parent = InParent;
-	if (Parent)
+	Parent_DEPRECATED = InParent;
+	if (Parent_DEPRECATED)
 	{
-		Parent->AddChild(this);
+		Parent_DEPRECATED->AddChild(this);
 	}
 }
 
-void UDataLayer::SetChildParent(UDataLayer* InParent)
+void UDEPRECATED_DataLayer::SetChildParent(UDEPRECATED_DataLayer* InParent)
 {
 	if (this == InParent)
 	{
@@ -200,37 +194,25 @@ void UDataLayer::SetChildParent(UDataLayer* InParent)
 	}
 
 	Modify();
-	while (Children.Num())
+	while (Children_DEPRECATED.Num())
 	{
-		Children[0]->SetParent(InParent);
+		Children_DEPRECATED[0]->SetParent(InParent);
 	};
 }
 
-void UDataLayer::RemoveChild(UDataLayer* InDataLayer)
+void UDEPRECATED_DataLayer::RemoveChild(UDEPRECATED_DataLayer* InDataLayer)
 {
 	Modify();
-	check(Children.Contains(InDataLayer));
-	Children.RemoveSingle(InDataLayer);
+	check(Children_DEPRECATED.Contains(InDataLayer));
+	Children_DEPRECATED.RemoveSingle(InDataLayer);
 }
 
-const TCHAR* UDataLayer::GetDataLayerIconName() const
+const TCHAR* UDEPRECATED_DataLayer::GetDataLayerIconName() const
 {
 	return IsRuntime() ? TEXT("DataLayer.Runtime") : TEXT("DataLayer.Editor");
 }
 
-void UDataLayer::SetDataLayerLabel(FName InDataLayerLabel)
-{
-	FName DataLayerLabelSanitized = UDataLayer::GetSanitizedDataLayerLabel(InDataLayerLabel);
-	if (DataLayerLabel != DataLayerLabelSanitized)
-	{
-		Modify();
-		AWorldDataLayers* WorldDataLayers = GetOuterAWorldDataLayers();
-		check(!WorldDataLayers || !WorldDataLayers->GetDataLayerFromLabel(DataLayerLabelSanitized))
-		DataLayerLabel = DataLayerLabelSanitized;
-	}
-}
-
-void UDataLayer::SetVisible(bool bInIsVisible)
+void UDEPRECATED_DataLayer::SetVisible(bool bInIsVisible)
 {
 	if (bIsVisible != bInIsVisible)
 	{
@@ -239,7 +221,7 @@ void UDataLayer::SetVisible(bool bInIsVisible)
 	}
 }
 
-void UDataLayer::SetIsInitiallyVisible(bool bInIsInitiallyVisible)
+void UDEPRECATED_DataLayer::SetIsInitiallyVisible(bool bInIsInitiallyVisible)
 {
 	if (bIsInitiallyVisible != bInIsInitiallyVisible)
 	{
@@ -248,7 +230,7 @@ void UDataLayer::SetIsInitiallyVisible(bool bInIsInitiallyVisible)
 	}
 }
 
-void UDataLayer::SetIsRuntime(bool bInIsRuntime)
+void UDEPRECATED_DataLayer::SetIsRuntime(bool bInIsRuntime)
 {
 	if (bIsRuntime != bInIsRuntime)
 	{
@@ -259,18 +241,18 @@ void UDataLayer::SetIsRuntime(bool bInIsRuntime)
 	}
 }
 
-void UDataLayer::PropagateIsRuntime()
+void UDEPRECATED_DataLayer::PropagateIsRuntime()
 {
 	if (IsRuntime())
 	{
-		for (UDataLayer* Child : Children)
+		for (UDEPRECATED_DataLayer* Child : Children_DEPRECATED)
 		{
 			Child->SetIsRuntime(true);
 		}
 	}
 }
 
-void UDataLayer::SetIsLoadedInEditor(bool bInIsLoadedInEditor, bool bInFromUserChange)
+void UDEPRECATED_DataLayer::SetIsLoadedInEditor(bool bInIsLoadedInEditor, bool bInFromUserChange)
 {
 	if (bIsLoadedInEditor != bInIsLoadedInEditor)
 	{
@@ -280,16 +262,16 @@ void UDataLayer::SetIsLoadedInEditor(bool bInIsLoadedInEditor, bool bInFromUserC
 	}
 }
 
-FText UDataLayer::GetDataLayerText(const UDataLayer* InDataLayer)
+FText UDEPRECATED_DataLayer::GetDataLayerText(const UDEPRECATED_DataLayer* InDataLayer)
 {
 	return InDataLayer ? FText::FromName(InDataLayer->GetDataLayerLabel()) : LOCTEXT("InvalidDataLayerLabel", "<None>");
 }
 
 #endif
 
-void UDataLayer::ForEachChild(TFunctionRef<bool(const UDataLayer*)> Operation) const
+void UDEPRECATED_DataLayer::ForEachChild(TFunctionRef<bool(const UDEPRECATED_DataLayer*)> Operation) const
 {
-	for (UDataLayer* Child : Children)
+	for (UDEPRECATED_DataLayer* Child : Children_DEPRECATED)
 	{
 		if (!Operation(Child))
 		{
@@ -297,5 +279,7 @@ void UDataLayer::ForEachChild(TFunctionRef<bool(const UDataLayer*)> Operation) c
 		}
 	}
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef LOCTEXT_NAMESPACE

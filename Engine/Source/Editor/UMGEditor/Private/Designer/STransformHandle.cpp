@@ -5,7 +5,7 @@
 #include "Widgets/Layout/SBox.h"
 
 #if WITH_EDITOR
-	#include "EditorStyleSet.h"
+	#include "Styling/AppStyle.h"
 #endif // WITH_EDITOR
 #include "Slate/WidgetTransform.h"
 #include "Components/Widget.h"
@@ -36,7 +36,7 @@ void STransformHandle::Construct(const FArguments& InArgs, IUMGDesigner* InDesig
 	[
 		SNew(SImage)
 		.Visibility(this, &STransformHandle::GetHandleVisibility)
-		.Image(FEditorStyle::Get().GetBrush("UMGEditor.TransformHandle"))
+		.Image(FAppStyle::Get().GetBrush("UMGEditor.TransformHandle"))
 	];
 }
 
@@ -138,7 +138,7 @@ FReply STransformHandle::OnMouseMove(const FGeometry& MyGeometry, const FPointer
 		ETransformMode::Type TransformMode = Designer->GetTransformMode();
 		if ( TransformMode == ETransformMode::Render )
 		{
-			FWidgetTransform PreviewRenderTransform = Preview->RenderTransform;
+			FWidgetTransform PreviewRenderTransform = Preview->GetRenderTransform();
 
 			static const FName RenderTransformName(TEXT("RenderTransform"));
 
@@ -163,7 +163,7 @@ void STransformHandle::Resize(UCanvasPanelSlot* Slot, const FVector2D& Direction
 	}
 
 	FMargin Offsets = StartingOffsets;
-	const FAnchorData& LayoutData = Slot->LayoutData;
+	const FAnchorData LayoutData = Slot->GetLayout();
 
 	FVector2D Movement = Amount * Direction;
 	FVector2D PositionMovement = Movement * ( FVector2D(1.0f, 1.0f) - LayoutData.Alignment );

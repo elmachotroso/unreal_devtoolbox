@@ -1,12 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SScrubControlPanel.h"
+
+#include "EditorWidgetsModule.h"
+#include "HAL/PlatformMath.h"
+#include "ITransportControl.h"
+#include "Layout/Children.h"
+#include "Layout/Clipping.h"
+#include "Layout/Margin.h"
+#include "Math/Vector2D.h"
 #include "Modules/ModuleManager.h"
-#include "Widgets/SBoxPanel.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
-#include "EditorStyleSet.h"
-#include "Editor/EditorWidgets/Public/EditorWidgetsModule.h"
+#include "Widgets/SBoxPanel.h"
 
 
 #define LOCTEXT_NAMESPACE "SScrubControlPanel"
@@ -72,6 +81,7 @@ void SScrubControlPanel::Construct( const SScrubControlPanel::FArguments& InArgs
 				.bAllowZoom(InArgs._bAllowZoom)
 				.DraggableBars(InArgs._DraggableBars)
 				.OnBarDrag(InArgs._OnBarDrag)
+				.OnBarCommit(InArgs._OnBarCommit)
 			]
 		]
 
@@ -89,8 +99,8 @@ void SScrubControlPanel::Construct( const SScrubControlPanel::FArguments& InArgs
 		.AutoWidth()
 		[
 			SNew(SBorder)
-			.Padding(0)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.Padding(0.0f)
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.Visibility(this, &SScrubControlPanel::GetRealtimeControlVisibility, false)
 			[
 				EditorWidgetsModule.CreateTransportControl(TransportControlArgs)
@@ -101,8 +111,8 @@ void SScrubControlPanel::Construct( const SScrubControlPanel::FArguments& InArgs
 		.AutoWidth()
 		[
 			SNew(SBorder)
-			.Padding(0)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.Padding(0.0f)
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.Visibility(this, &SScrubControlPanel::GetRealtimeControlVisibility, true)
 			[
 				EditorWidgetsModule.CreateTransportControl(TransportControlArgsForRealtimeStreamingMode)

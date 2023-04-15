@@ -10,6 +10,7 @@
 #include "ActorPartitionSubsystem.generated.h"
 
 class FBaseActorPartition;
+class UWorldPartition;
 
 #if WITH_EDITOR
 /**
@@ -139,14 +140,14 @@ public:
 		{
 			return FBox(
 				FVector(
-					InCellCoord.X * InGridSize,
-					InCellCoord.Y * InGridSize,
-					InCellCoord.Z * InGridSize
+					static_cast<FVector::FReal>(InCellCoord.X * InGridSize),
+					static_cast<FVector::FReal>(InCellCoord.Y * InGridSize),
+					static_cast<FVector::FReal>(InCellCoord.Z * InGridSize)
 				),
 				FVector(
-					InCellCoord.X * InGridSize + InGridSize,
-					InCellCoord.Y * InGridSize + InGridSize,
-					InCellCoord.Z * InGridSize + InGridSize
+					static_cast<FVector::FReal>(InCellCoord.X * InGridSize + InGridSize),
+					static_cast<FVector::FReal>(InCellCoord.Y * InGridSize + InGridSize),
+					static_cast<FVector::FReal>(InCellCoord.Z * InGridSize + InGridSize)
 				)
 			);
 		}
@@ -178,8 +179,10 @@ private:
 
 #if WITH_EDITOR
 	void OnActorPartitionHashInvalidated(const FCellCoord& Hash);
+	void OnWorldPartitionInitialized(UWorldPartition* InWorldPartition);
 
 	void InitializeActorPartition();
+	void UninitializeActorPartition();
 
 	TMap<FCellCoord, TMap<FActorPartitionIdentifier, TWeakObjectPtr<APartitionActor>>> PartitionedActors;
 	TUniquePtr<FBaseActorPartition> ActorPartition;

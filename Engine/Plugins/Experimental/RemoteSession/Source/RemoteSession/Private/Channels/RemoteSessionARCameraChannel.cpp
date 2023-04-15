@@ -74,7 +74,6 @@ public:
 	{
 		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL"), 1);
-		OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL_MOBILE"), 0);
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL_BEFORE_TONEMAP"), (Parameters.MaterialParameters.BlendableLocation != BL_AfterTonemapping) ? 1 : 0);
 	}
 };
@@ -146,8 +145,8 @@ private:
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override;
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
-	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
-	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
+	virtual void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
 	virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily) override;
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 	//~ISceneViewExtension interface
@@ -186,7 +185,7 @@ void FARCameraSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 
 }
 
-void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
 	if (VertexBufferRHI == nullptr || !VertexBufferRHI.IsValid())
 	{
@@ -227,7 +226,7 @@ void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRHICommandListImme
 	PPMaterial = Channel.GetPostProcessMaterial();
 }
 
-void FARCameraSceneViewExtension::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+void FARCameraSceneViewExtension::PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily)
 {
 
 }
@@ -268,7 +267,8 @@ void FARCameraSceneViewExtension::RenderARCamera_RenderThread(FRDGBuilder& Graph
 
 	auto* PassParameters = GraphBuilder.AllocParameters<FRenderARCameraPassParameters>();
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(ViewFamilyTexture, ERenderTargetLoadAction::ELoad);
-	PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, InView.FeatureLevel, ESceneTextureSetupMode::None);
+	check(InView.bIsViewInfo);
+	PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, ((const FViewInfo&)InView).GetSceneTexturesChecked(), InView.FeatureLevel, ESceneTextureSetupMode::None);
 
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("ARCameraOverlay"),
@@ -561,11 +561,11 @@ void FRemoteSessionARCameraChannel::UpdateRenderingTexture()
 		FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, DecompressedImage->Width, DecompressedImage->Height);
 		TArray<uint8>* TextureData = new TArray<uint8>(MoveTemp(DecompressedImage->ImageData));
 
-		RenderingTextures[NextImage]->UpdateTextureRegions(0, 1, Region, 4 * DecompressedImage->Width, sizeof(FColor), TextureData->GetData(), [this, NextImage](auto InTextureData, auto InRegions)
+		RenderingTextures[NextImage]->UpdateTextureRegions(0, 1, Region, 4 * DecompressedImage->Width, sizeof(FColor), TextureData->GetData(), [this, NextImage, TextureData](auto InTextureData, auto InRegions)
 		{
 			RenderingTextureIndex.Set(NextImage);
 			RenderingTexturesUpdateCount[NextImage].Decrement();
-			delete InTextureData;
+			delete TextureData;
 			delete InRegions;
 		});
 	} //-V773

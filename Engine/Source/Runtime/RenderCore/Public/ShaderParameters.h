@@ -6,13 +6,28 @@
 
 #pragma once
 
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Serialization/MemoryLayout.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
 #include "RHI.h"
+#include "RHIDefinitions.h"
+#include "Serialization/Archive.h"
+#include "Serialization/MemoryLayout.h"
 
+class FPointerTableBase;
+class FRHIComputeShader;
+class FRHITexture;
+class FRHIUnorderedAccessView;
 class FShaderParameterMap;
 class FShaderParametersMetadata;
+struct FRWBuffer;
+struct FRWBufferStructured;
 struct FShaderCompilerEnvironment;
+
+enum class EShaderParameterType : uint8;
+DECLARE_INTRINSIC_TYPE_LAYOUT(EShaderParameterType);
 
 RENDERCORE_API void CacheUniformBufferIncludes(TMap<const TCHAR*, struct FCachedUniformBufferDeclaration>& Cache, EShaderPlatform Platform);
 
@@ -38,7 +53,7 @@ public:
 
 	RENDERCORE_API void Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName, EShaderParameterFlags Flags = SPF_Optional);
 	friend RENDERCORE_API FArchive& operator<<(FArchive& Ar,FShaderParameter& P);
-	bool IsBound() const { return NumBytes > 0; }
+	FORCEINLINE bool IsBound() const { return NumBytes > 0; }
 	
 	inline bool IsInitialized() const 
 	{ 
@@ -61,26 +76,22 @@ class FShaderResourceParameter
 {
 	DECLARE_EXPORTED_TYPE_LAYOUT(FShaderResourceParameter, RENDERCORE_API, NonVirtual);
 public:
-	FShaderResourceParameter()
-	:	BaseIndex(0)
-	,	NumResources(0) 
-	{}
+	FShaderResourceParameter() = default;
 
 	RENDERCORE_API void Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags = SPF_Optional);
 	friend RENDERCORE_API FArchive& operator<<(FArchive& Ar,FShaderResourceParameter& P);
-	bool IsBound() const { return NumResources > 0; }
 
-	inline bool IsInitialized() const 
-	{ 
-		return true;
-	}
+	inline bool IsBound() const { return NumResources > 0; }
+	inline bool IsInitialized() const { return true; }
 
-	uint32 GetBaseIndex() const { return BaseIndex; }
-	uint32 GetNumResources() const { return NumResources; }
+	inline uint32 GetBaseIndex() const { return BaseIndex; }
+	inline uint32 GetNumResources() const { return NumResources; }
+	inline EShaderParameterType GetType() const { return Type; }
 
 private:
-	LAYOUT_FIELD(uint16, BaseIndex);
-	LAYOUT_FIELD(uint16, NumResources);
+	LAYOUT_FIELD_INITIALIZED(uint16, BaseIndex, 0);
+	LAYOUT_FIELD_INITIALIZED(uint8, NumResources, 0);
+	LAYOUT_FIELD_INITIALIZED(EShaderParameterType, Type, {});
 };
 
 /** A class that binds either a UAV or SRV of a resource. */
@@ -101,12 +112,12 @@ public:
 		checkf(!(SRVParameter.GetNumResources() && UAVParameter.GetNumResources()),TEXT("Shader binds SRV and UAV of the same resource: %s"),BaseName);
 	}
 
-	bool IsBound() const
+	FORCEINLINE bool IsBound() const
 	{
 		return SRVParameter.IsBound() || UAVParameter.IsBound();
 	}
 
-	bool IsUAVBound() const
+	FORCEINLINE bool IsUAVBound() const
 	{
 		return UAVParameter.IsBound();
 	}
@@ -159,7 +170,7 @@ public:
 		return Ar;
 	}
 
-	bool IsBound() const { return BaseIndex != 0xffff; }
+	FORCEINLINE bool IsBound() const { return BaseIndex != 0xffff; }
 
 	void Serialize(FArchive& Ar)
 	{

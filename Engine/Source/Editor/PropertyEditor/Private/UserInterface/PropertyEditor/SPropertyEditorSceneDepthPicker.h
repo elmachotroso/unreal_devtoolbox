@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Input/Reply.h"
 #include "SceneDepthPickerMode.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SButton.h"
+
+struct FGeometry;
+struct FKeyEvent;
 
 class SPropertyEditorSceneDepthPicker : public SButton
 {

@@ -5,6 +5,9 @@
 #include "RHI.h"
 #include "GPUSkinVertexFactory.h"
 #include "ColorSpace.h"
+#include "SceneManagement.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RendererSettings)
 
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
@@ -12,6 +15,10 @@
 #include "UnrealEdMisc.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/PlatformFileManager.h"
+
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Docking/TabManager.h"
 
 /** The editor object. */
 extern UNREALED_API class UEditorEngine* GEditor;
@@ -70,6 +77,7 @@ URendererSettings::URendererSettings(const FObjectInitializer& ObjectInitializer
 	bSupportPointLightWholeSceneShadows = true;
 	bSupportSkyAtmosphere = true;
 	bSupportSkinCacheShaders = false;
+	bSkipCompilingGPUSkinVF = false;
 	GPUSimulationTextureSizeX = 1024;
 	GPUSimulationTextureSizeY = 1024;
 	bEnableRayTracing = 0;
@@ -84,6 +92,7 @@ URendererSettings::URendererSettings(const FObjectInitializer& ObjectInitializer
 	GreenChromaticityCoordinate = FVector2D::ZeroVector;
 	BlueChromaticityCoordinate = FVector2D::ZeroVector;
 	WhiteChromaticityCoordinate = FVector2D::ZeroVector;
+	bEnableVirtualTextureOpacityMask = false;
 }
 
 void URendererSettings::PostInitProperties()
@@ -95,6 +104,8 @@ void URendererSettings::PostInitProperties()
 	UpdateWorkingColorSpaceAndChromaticities();
 
 #if WITH_EDITOR
+	CheckForMissingShaderModels();
+
 	if (IsTemplate())
 	{
 		ImportConsoleVariableValues();
@@ -181,6 +192,17 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			}
 		}
 
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders)
+			&& !bSupportSkinCacheShaders
+			&& bSkipCompilingGPUSkinVF)
+		{
+			FString FullPath = FPaths::ConvertRelativePathToFull(GetDefaultConfigFilename());
+			FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*FullPath, false);
+
+			bSkipCompilingGPUSkinVF = 0;
+			UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, bSkipCompilingGPUSkinVF));
+		}
+
 		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, DynamicGlobalIllumination) 
 			&& DynamicGlobalIllumination == EDynamicGlobalIlluminationMethod::Lumen)
 		{
@@ -224,17 +246,29 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			}
 		}
 
+		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableStrata)))
+		{
+			if (bEnableStrata)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Strata Experimental", "Warning: Strata is experimental. Be aware that any materials saved when Strata is enabled won't be rendered correctly if Strata is disabled later on."));
+			}
+		}
+
 		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, StrataBytePerPixel)))
 		{
+			const uint32 MinStrataBytePerPixel = 20u;
+			const uint32 MaxStrataBytePerPixel = 128u;
+			if (StrataBytePerPixel < MinStrataBytePerPixel || StrataBytePerPixel > MaxStrataBytePerPixel)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Strata Byte Per Pixel", "Strata `byte-per-pixel` must be between 20 and 128."));
+			}
 			// We enforce at least 20 bytes per pixel because this is the minimal Strata GBuffer footprint of the simplest material.
-			StrataBytePerPixel = FMath::Clamp(StrataBytePerPixel, 20u, 128u);
-
+			StrataBytePerPixel = FMath::Clamp(StrataBytePerPixel, MinStrataBytePerPixel, MaxStrataBytePerPixel);
 		}
 
 		ExportValuesToConsoleVariables(PropertyChangedEvent.Property);
 
-		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, ReflectionCaptureResolution) ||
-			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bReflectionCaptureCompression))) &&
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, ReflectionCaptureResolution) &&
 			PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 		{
 			if (GEditor != nullptr)
@@ -273,6 +307,11 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 		{
 			UpdateWorkingColorSpaceAndChromaticities();
 		}
+
+		if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(URendererSettings, ShadowMapMethod))
+		{
+			CheckForMissingShaderModels();
+		}
 	}
 }
 
@@ -287,6 +326,12 @@ bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 	{
 		//only allow DISABLE of skincache shaders if raytracing is also disabled as skincache is a dependency of raytracing.
 		return !bSupportSkinCacheShaders || !bEnableRayTracing;
+	}
+
+	// the bSkipCompilingGPUSkinVF setting can only be edited if the skin cache is on.
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSkipCompilingGPUSkinVF)))
+	{
+		return bSupportSkinCacheShaders;
 	}
 
 	// the following settings can only be edited if ray tracing is enabled
@@ -309,7 +354,80 @@ bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 		return !bForwardShading;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// only allow changing ExtendDefaultLuminanceRange if it was disabled.
+	// we don't want new projects disabling this setting but still allow existing projects to enable it.
+	static bool bCanEditExtendDefaultLuminanceRange = !bExtendDefaultLuminanceRangeInAutoExposureSettings;
+
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bExtendDefaultLuminanceRangeInAutoExposureSettings)))
+	{
+		return bCanEditExtendDefaultLuminanceRange;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	return true;
+}
+
+void URendererSettings::CheckForMissingShaderModels()
+{
+	// Don't show the SM6 toasts on non-Windows platforms to avoid confusion around platform requirements.
+#if PLATFORM_WINDOWS
+	if (GIsEditor && ShadowMapMethod == EShadowMapMethod::VirtualShadowMaps)
+	{
+		TArray<FString> D3D11TargetedShaderFormats;
+		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D11TargetedShaderFormats"), D3D11TargetedShaderFormats, GEngineIni);
+
+		TArray<FString> D3D12TargetedShaderFormats;
+		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("D3D12TargetedShaderFormats"), D3D12TargetedShaderFormats, GEngineIni);
+
+		TArray<FString> TargetedRHIs;
+		GConfig->GetArray(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("TargetedRHIs"), TargetedRHIs, GEngineIni);
+
+		if (TargetedRHIs.Contains(TEXT("PCD3D_SM6")))
+		{
+			D3D12TargetedShaderFormats.AddUnique(TEXT("PCD3D_SM6"));
+		}
+
+		const bool bProjectUsesD3D = (D3D11TargetedShaderFormats.Num() + D3D12TargetedShaderFormats.Num()) > 0;
+
+		if (bProjectUsesD3D && !D3D12TargetedShaderFormats.Contains(TEXT("PCD3D_SM6")))
+		{
+			auto DismissNotification = [this]()
+			{
+				if (TSharedPtr<SNotificationItem> NotificationPin = ShaderModelNotificationPtr.Pin())
+				{
+					NotificationPin->SetCompletionState(SNotificationItem::CS_None);
+					NotificationPin->ExpireAndFadeout();
+					ShaderModelNotificationPtr.Reset();
+				}
+			};
+
+			auto OpenProjectSettings = []()
+			{
+				FGlobalTabmanager::Get()->TryInvokeTab(FName("ProjectSettings"));
+			};
+
+			FNotificationInfo Info(LOCTEXT("NeedProjectSettings", "Missing Project Settings!"));
+			Info.bFireAndForget = false;
+			Info.FadeOutDuration = 0.0f;
+			Info.ExpireDuration = 0.0f;
+			Info.WidthOverride = FOptionalSize();
+
+			Info.ButtonDetails.Add(FNotificationButtonInfo(
+				LOCTEXT("GuidelineDismiss", "Dismiss"),
+				LOCTEXT("GuidelineDismissTT", "Dismiss this notification."),
+				FSimpleDelegate::CreateLambda(DismissNotification),
+				SNotificationItem::CS_None));
+
+			Info.Text = LOCTEXT("NeedProjectSettings", "Missing Project Settings!");
+			Info.SubText = LOCTEXT("VirtualShadowMapsNeedsSM6Setting", "Shader Model 6 (SM6) is required to use Virtual Shadow Maps. Please enable this in:\n  Project Settings -> Platforms -> Windows -> D3D12 Targeted Shader Formats\nVirtual shadow maps will not work until this is enabled.");
+			Info.HyperlinkText = LOCTEXT("ProjectSettingsHyperlinkText", "Open Project Settings");
+			Info.Hyperlink = FSimpleDelegate::CreateLambda(OpenProjectSettings);
+
+			ShaderModelNotificationPtr = FSlateNotificationManager::Get().AddNotification(Info);
+		}
+	}
+#endif // PLATFORM_WINDOWS
 }
 #endif // #if WITH_EDITOR
 
@@ -392,6 +510,15 @@ void URendererSettings::UpdateWorkingColorSpaceAndChromaticities()
 	{
 		FColorSpace::GetWorking().GetChromaticities(RedChromaticityCoordinate, GreenChromaticityCoordinate, BlueChromaticityCoordinate, WhiteChromaticityCoordinate);
 	}
+	
+	FColorSpace UpdatedColorSpace = FColorSpace::GetWorking();
+
+	ENQUEUE_RENDER_COMMAND(WorkingColorSpaceCommand)(
+		[UpdatedColorSpace](FRHICommandList&)
+		{
+			// Set or update the global uniform buffer for Working Color Space conversions.
+			GDefaultWorkingColorSpaceUniformBuffer.Update(UpdatedColorSpace);
+		});
 }
 
 
@@ -426,3 +553,4 @@ void URendererOverrideSettings::PostEditChangeProperty(FPropertyChangedEvent& Pr
 #endif // #if WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE
+

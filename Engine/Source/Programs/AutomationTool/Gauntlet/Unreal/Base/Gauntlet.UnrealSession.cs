@@ -379,7 +379,7 @@ namespace Gauntlet
 					{
 						App.Kill();
 						// Apps that are still running have timed out => fail
-						IDeviceUsageReporter.RecordEnd(App.Device.Name, (UnrealTargetPlatform)App.Device.Platform, IDeviceUsageReporter.EventType.Test, IDeviceUsageReporter.EventState.Success);
+						IDeviceUsageReporter.RecordEnd(App.Device.Name, App.Device.Platform, IDeviceUsageReporter.EventType.Test, IDeviceUsageReporter.EventState.Success);
 					});
 				}
 
@@ -389,7 +389,7 @@ namespace Gauntlet
 					ClosedApps.ForEach(App =>
 					{
 						// Apps that have already exited have 'succeeded'
-						IDeviceUsageReporter.RecordEnd(App.Device.Name, (UnrealTargetPlatform)App.Device.Platform, IDeviceUsageReporter.EventType.Test, IDeviceUsageReporter.EventState.Failure);
+						IDeviceUsageReporter.RecordEnd(App.Device.Name, App.Device.Platform, IDeviceUsageReporter.EventType.Test, IDeviceUsageReporter.EventState.Failure);
 					});
 				}
 			}
@@ -487,6 +487,16 @@ namespace Gauntlet
 		public string Sandbox { get; set; }
 
 		/// <summary>
+		/// Whether or not we should retain our devices this pass
+		/// </summary>
+		public bool ShouldRetainDevices { get; set; }
+
+		/// <summary>
+		/// Record of our installations in case we want to re-use them in a later pass
+		/// </summary>
+		public Dictionary<UnrealSessionRole, IAppInstall> RolesToInstalls;
+
+		/// <summary>
 		/// Constructor that takes a build source and a number of roles
 		/// </summary>
 		/// <param name="InSource"></param>
@@ -566,7 +576,16 @@ namespace Gauntlet
 				RequiredDeviceTypes[C.Constraint]++;
 			});
 
-			return UnrealDeviceReservation.TryReserveDevices(RequiredDeviceTypes, RolesNeedingDevices.Count());
+
+			if (UnrealDeviceReservation.ReservedDevices != null && UnrealDeviceReservation.ReservedDevices.Count > 0
+				&& ShouldRetainDevices)
+			{
+				return true;
+			}
+			else
+			{
+				return UnrealDeviceReservation.TryReserveDevices(RequiredDeviceTypes, RolesNeedingDevices.Count());
+			}
 		}
 
 		/// <summary>
@@ -731,42 +750,79 @@ namespace Gauntlet
 
 					// todo - should this be elsewhere?
 					AppConfig.Sandbox = Sandbox;
-
-					IAppInstall Install = null;
-
-					IDeviceUsageReporter.RecordStart(Device.Name, (UnrealTargetPlatform)Device.Platform, IDeviceUsageReporter.EventType.Device, IDeviceUsageReporter.EventState.Success);
-					IDeviceUsageReporter.RecordStart(Device.Name, (UnrealTargetPlatform)Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Success, BuildSource.BuildName);
-					try
-					{
-						Install = Device.InstallApplication(AppConfig);
-						IDeviceUsageReporter.RecordEnd(Device.Name, (UnrealTargetPlatform)Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Success);
-					}
-					catch (System.Exception Ex)
-					{
-						// Warn, ignore the device, and do not continue
-						Log.Info("Failed to install app onto device {0} for role {1}. {2}. Will retry with new device", Device, Role, Ex);
-						UnrealDeviceReservation.MarkProblemDevice(Device);
-						InstallSuccess = false;
-						IDeviceUsageReporter.RecordEnd(Device.Name, (UnrealTargetPlatform)Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Failure);
-						break;
-					}
 					
-
-					if (Globals.CancelSignalled)
+					IAppInstall Install = null;
+					bool bReinstallPerPass = Globals.Params.ParseParam("ReinstallPerPass");
+					if (RolesToInstalls == null || !RolesToInstalls.ContainsKey(Role) || bReinstallPerPass)
 					{
-						break;
+						// Tag the device for report result
+						if(BuildHostPlatform.Current.Platform != Device.Platform)
+						{
+							AppConfig.CommandLineParams.Add("DeviceTag", Device.Name);
+						}
+
+						IDeviceUsageReporter.RecordStart(Device.Name, Device.Platform, IDeviceUsageReporter.EventType.Device, IDeviceUsageReporter.EventState.Success);
+						IDeviceUsageReporter.RecordStart(Device.Name, Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Success, BuildSource.BuildName);
+						try
+						{
+							Install = Device.InstallApplication(AppConfig);
+							IDeviceUsageReporter.RecordEnd(Device.Name, Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Success);
+						}
+						catch (System.Exception Ex)
+						{
+							// Warn, ignore the device, and do not continue
+							string ErrorMessage = string.Format("Failed to install app onto device {0} for role {1}. {2}. Will retry with new device", Device, Role, Ex);
+							if (ErrorMessage.Contains("not enough space"))
+							{
+								Log.Warning(ErrorMessage);
+								if (Device.Platform == BuildHostPlatform.Current.Platform)
+								{
+									// If on desktop platform, we are not retrying.
+									// It is unlikely that space is going to be made and InstallBuildParallel has marked the build path as problematic.
+									SessionRetries = 0;
+								}
+							}
+							else
+							{
+								Log.Info(ErrorMessage);
+							}
+							UnrealDeviceReservation.MarkProblemDevice(Device);
+							InstallSuccess = false;
+							IDeviceUsageReporter.RecordEnd(Device.Name, Device.Platform, IDeviceUsageReporter.EventType.Install, IDeviceUsageReporter.EventState.Failure);
+							break;
+						}
+
+
+						if (Globals.CancelSignalled)
+						{
+							break;
+						}
+
+						// Device has app installed, give role a chance to configure device
+						Role.ConfigureDevice?.Invoke(Device);
+
+						InstallsToRoles[Install] = Role;
+
+						if(RolesToInstalls == null)
+						{
+							RolesToInstalls = new Dictionary<UnrealSessionRole, IAppInstall>();
+						}
+						if (!bReinstallPerPass)
+						{
+							RolesToInstalls[Role] = Install;
+						}
 					}
-
-					// Device has app installed, give role a chance to configure device
-					Role.ConfigureDevice?.Invoke(Device);
-
-					InstallsToRoles[Install] = Role;
+					else
+					{
+						Install = RolesToInstalls[Role];
+						InstallsToRoles[Install] = Role;
+						Log.Info("Using previous install of {0} on {1}", Install.Name, Install.Device.Name);
+					}
 				}
 
 				if (InstallSuccess == false)
 				{
-					// release all devices
-					UnrealDeviceReservation.ReleaseDevices();
+					ReleaseSessionDevices();
 
 					if (SessionRetries == 0)
 					{
@@ -793,8 +849,9 @@ namespace Gauntlet
 
 						try
 						{
+							Log.Info("Starting {0} on {1}", InstallRoleKV.Value, CurrentInstall.Device);
 							IAppInstance Instance = CurrentInstall.Run();
-							IDeviceUsageReporter.RecordStart(Instance.Device.Name, (UnrealTargetPlatform)Instance.Device.Platform, IDeviceUsageReporter.EventType.Test);
+							IDeviceUsageReporter.RecordStart(Instance.Device.Name, Instance.Device.Platform, IDeviceUsageReporter.EventType.Test);
 
 							if (Instance != null || Globals.CancelSignalled)
 							{
@@ -825,8 +882,7 @@ namespace Gauntlet
 							// mark that device as a problem
 							UnrealDeviceReservation.MarkProblemDevice(CurrentInstall.Device);
 
-							// release all devices
-							UnrealDeviceReservation.ReleaseDevices();
+							ReleaseSessionDevices();
 
 							if (SessionRetries == 0)
 							{
@@ -862,19 +918,39 @@ namespace Gauntlet
 			return LaunchSession();
 		}
 
-		/// <summary>
-		/// Shuts down the current session (if any)
+		///<summary>
+		/// Shuts down any running apps
 		/// </summary>
-		/// <returns></returns>
-		public void ShutdownSession()
+		public void ShutdownInstance()
 		{
 			if (SessionInstance != null)
 			{
 				SessionInstance.Dispose();
 				SessionInstance = null;
 			}
+		}
 
+		/// <summary>
+		/// Shuts down the current session (if any)
+		/// </summary>
+		/// <returns></returns>
+		public void ShutdownSession()
+		{
+			ShutdownInstance();
+
+			if (!ShouldRetainDevices)
+			{
+				ReleaseSessionDevices();
+			}
+		}
+
+		public void ReleaseSessionDevices()
+		{
 			UnrealDeviceReservation.ReleaseDevices();
+			if (RolesToInstalls != null)
+			{
+				RolesToInstalls.Clear();
+			}
 		}
 
 		/// <summary>
@@ -894,10 +970,15 @@ namespace Gauntlet
 
 			Directory.CreateDirectory(InDestArtifactPath);
 
-			// Don't archive editor data, there can be a *lot* of stuff in that saved folder!
-			bool IsEditor = InRunningRole.Role.RoleType.UsesEditor();
-
 			bool IsDevBuild = InContext.TestParams.ParseParam("dev");
+			bool IsEditorBuild = InRunningRole.Role.RoleType.UsesEditor();
+
+			// Unless there was a crash on a builder don't archive editor data (there can be a *lot* of stuff in their).
+			bool SkipArchivingAssets = IsDevBuild ||
+										(IsEditorBuild && 
+											(CommandUtils.IsBuildMachine == false || InRunningRole.AppInstance.ExitCode == 0)
+										);
+
 
 			string DestSavedDir = InDestArtifactPath;
 			string SourceSavedDir = "";
@@ -989,8 +1070,19 @@ namespace Gauntlet
 			});
 
 			// don't archive data in dev mode, because peoples saved data could be huuuuuuuge!
-			if (IsEditor == false)
+			if (SkipArchivingAssets)
 			{
+				if (IsEditorBuild)
+				{
+					Log.Info("Skipping archival of assets for editor {0}", RoleName);
+				}
+				else if (IsDevBuild)
+				{
+					Log.Info("Skipping archival of assets for dev build");
+				}
+			}
+			else
+			{ 
 				LogLevel OldLevel = Log.Level;
 				Log.Level = LogLevel.Normal;
 
@@ -1005,17 +1097,6 @@ namespace Gauntlet
 				}
 
 				Log.Level = OldLevel;
-			}
-			else
-			{
-				if (IsEditor)
-				{
-					Log.Info("Skipping archival of assets for editor {0}", RoleName);
-				}
-				else if (IsDevBuild)
-				{
-					Log.Info("Skipping archival of assets for dev build");
-				}
 			}
 
 			foreach (EIntendedBaseCopyDirectory ArtifactDir in InRunningRole.Role.AdditionalArtifactDirectories)
@@ -1165,20 +1246,31 @@ namespace Gauntlet
 					Log.VeryVerbose("Calling SaveRoleArtifacts, Role: {0}  Artifact Path: {1}", App.ToString(), App.AppInstance.ArtifactPath);
 					UnrealRoleArtifacts Artifacts = null;
 					ITargetDevice device = App.AppInstance.Device;
-					IDeviceUsageReporter.RecordStart(device.Name, (UnrealTargetPlatform)device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts);
+					IDeviceUsageReporter.RecordStart(device.Name, device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts);
 					try
 					{
 						Artifacts = SaveRoleArtifacts(Context, App, DestPath);
 					}
-					catch (Exception)
+					catch (Exception SaveArtifactsException)
 					{
 						// Caught an exception -> report failure
-						IDeviceUsageReporter.RecordEnd(device.Name, (UnrealTargetPlatform)device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts, IDeviceUsageReporter.EventState.Failure);
-						// Pass exception to the surrounding try/catch in UnrealTestNode while preserving the original callstack
-						throw;
+						IDeviceUsageReporter.RecordEnd(device.Name, device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts, IDeviceUsageReporter.EventState.Failure);
+
+						// Retry once only, after rebooting device, if artifacts couldn't be saved.
+						if (SaveArtifactsException.Message.Contains("A retry should be performed"))
+						{
+							Log.Info("Rebooting device and retrying save role artifacts once.");
+							App.AppInstance.Device.Reboot();
+							Artifacts = SaveRoleArtifacts(Context, App, DestPath);
+						}
+						else
+						{
+							// Pass exception to the surrounding try/catch in UnrealTestNode while preserving the original callstack
+							throw;
+						}
 					}
 					// Did not catch -> successful reporting
-					IDeviceUsageReporter.RecordEnd(device.Name, (UnrealTargetPlatform)device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts, IDeviceUsageReporter.EventState.Success);
+					IDeviceUsageReporter.RecordEnd(device.Name, device.Platform, IDeviceUsageReporter.EventType.SavingArtifacts, IDeviceUsageReporter.EventState.Success);
 
 					if (Artifacts != null)
 					{

@@ -157,6 +157,12 @@ FAnimBlueprintCompilerContext::FAnimBlueprintCompilerContext(UAnimBlueprint* Sou
 	// Regenerate temporary stub functions
 	// We do this here to catch the standard and 'fast' (compilation manager) compilation paths
 	CreateAnimGraphStubFunctions();
+
+	// Stash any existing sparse class data struct here, as we may regenerate it
+	if (AnimBlueprint->GeneratedClass && AnimBlueprint->GeneratedClass->GetSparseClassDataStruct())
+	{
+		OldSparseClassDataStruct = AnimBlueprint->GeneratedClass->GetSparseClassDataStruct();
+	}
 }
 
 FAnimBlueprintCompilerContext::~FAnimBlueprintCompilerContext()
@@ -1335,8 +1341,13 @@ void FAnimBlueprintCompilerContext::SpawnNewClass(const FString& NewClassName)
 	});
 }
 
-void FAnimBlueprintCompilerContext::OnPostCDOCompiled()
+void FAnimBlueprintCompilerContext::OnPostCDOCompiled(const UObject::FPostCDOCompiledContext& Context)
 {
+	if (Context.bIsSkeletonOnly)
+	{
+		return;
+	}
+
 	UAnimBlueprintGeneratedClass* NewAnimBlueprintClass = GetNewAnimBlueprintClass();
 	NewAnimBlueprintClass->OnPostLoadDefaults(NewAnimBlueprintClass->ClassDefaultObject);
 }
@@ -1353,9 +1364,6 @@ void FAnimBlueprintCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedCla
 	UScriptStruct* CurrentSparseClassDataStruct = AnimBlueprintClassToClean->GetSparseClassDataStruct();
 	if(CurrentSparseClassDataStruct && CurrentSparseClassDataStruct->GetOuter() == AnimBlueprintClassToClean)
 	{
-		// Stash a reference to patch the linker later in RecreateSparseClassData
-		OldSparseClassDataStruct = CurrentSparseClassDataStruct;
-
 		// Only 'clear' (which renames the struct aside) if we own the sparse class data
 		// We do this because this could be a parent classes struct and we dont want to be 
 		// altering other classes during compilation
@@ -1437,7 +1445,7 @@ void FAnimBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 	for (FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
 	{
-		if (InterfaceDesc.Interface->IsChildOf<UAnimLayerInterface>())
+		if (InterfaceDesc.Interface != nullptr && InterfaceDesc.Interface->IsChildOf<UAnimLayerInterface>())
 		{
 			for (UEdGraph* Graph : InterfaceDesc.Graphs)
 			{

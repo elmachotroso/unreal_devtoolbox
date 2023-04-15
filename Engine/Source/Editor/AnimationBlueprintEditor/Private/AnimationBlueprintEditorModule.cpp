@@ -1,16 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationBlueprintEditorModule.h"
-#include "AnimationGraphFactory.h"
-#include "AnimationBlueprintEditorSettings.h"
+
 #include "Animation/AnimInstance.h"
 #include "AnimationBlueprintEditor.h"
+#include "AnimationBlueprintEditorSettings.h"
+#include "AnimationGraphFactory.h"
+#include "BlueprintEditor.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraphSchema_K2.h"
-#include "K2Node_CallFunction.h"
-#include "Animation/AnimBlueprint.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
+#include "EdGraphUtilities.h"
+#include "Engine/Blueprint.h"
+#include "HAL/Platform.h"
 #include "ISettingsModule.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CallFunction.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "MessageLogInitializationOptions.h"
+#include "MessageLogModule.h"
+#include "Misc/AssertionMacros.h"
+#include "Modules/ModuleManager.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+
+class IAnimationBlueprintEditor;
+class IToolkitHost;
 
 IMPLEMENT_MODULE( FAnimationBlueprintEditorModule, AnimationBlueprintEditor);
 
@@ -70,7 +90,7 @@ TSharedRef<IAnimationBlueprintEditor> FAnimationBlueprintEditorModule::CreateAni
 
 void FAnimationBlueprintEditorModule::OnNewBlueprintCreated(UBlueprint* InBlueprint)
 {
-	if (ensure(InBlueprint->UbergraphPages.Num() > 0))
+	if (InBlueprint->UbergraphPages.Num() > 0)
 	{
 		UEdGraph* EventGraph = InBlueprint->UbergraphPages[0];
 

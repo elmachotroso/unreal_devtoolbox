@@ -52,12 +52,12 @@ FString FSocialInteraction_JoinParty::GetSlashCommandToken()
 bool FSocialInteraction_JoinParty::CanExecute(const USocialUser& User)
 {
 	FJoinPartyResult MockJoinResult = User.CheckPartyJoinability(IOnlinePartySystem::GetPrimaryPartyTypeId());
-	return MockJoinResult.WasSuccessful();
+	return MockJoinResult.WasSuccessful() && User.IsFriend();
 }
 
 void FSocialInteraction_JoinParty::ExecuteInteraction(USocialUser& User)
 {
-	User.JoinParty(IOnlinePartySystem::GetPrimaryPartyTypeId());
+	User.JoinParty(IOnlinePartySystem::GetPrimaryPartyTypeId(), PartyJoinMethod::Presence);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -76,12 +76,12 @@ FString FSocialInteraction_RequestToJoinParty::GetSlashCommandToken()
 
 bool FSocialInteraction_RequestToJoinParty::CanExecute(const USocialUser& User)
 {
-	return User.CanRequestToJoin();
+	return User.CanRequestToJoin() && User.IsFriend();
 }
 
 void FSocialInteraction_RequestToJoinParty::ExecuteInteraction(USocialUser& User)
 {
-	User.GetOwningToolkit().RequestToJoinParty(User);
+	User.RequestToJoinParty(PartyJoinMethod::RequestToJoin);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -154,7 +154,7 @@ bool FSocialInteraction_AcceptPartyInvite::CanExecute(const USocialUser& User)
 
 void FSocialInteraction_AcceptPartyInvite::ExecuteInteraction(USocialUser& User)
 {
-	User.JoinParty(IOnlinePartySystem::GetPrimaryPartyTypeId());
+	User.JoinParty(IOnlinePartySystem::GetPrimaryPartyTypeId(), PartyJoinMethod::Invitation);
 }
 
 //////////////////////////////////////////////////////////////////////////

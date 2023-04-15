@@ -8,6 +8,7 @@
 #include "MeshPassProcessor.inl"
 #include "MeshMaterialShader.h"
 #include "LightMapRendering.h"
+#include "Materials/Material.h"
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLightmapGBufferParams, )
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ScratchTilePoolLayer0)
@@ -22,6 +23,7 @@ struct FLightmapElementData : public FMeshMaterialShaderElementData
 	FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias;
 	int32 RenderPassIndex;
 	FIntPoint ScratchTilePoolOffset;
+	int32 bMaterialTwoSided = 0;
 
 	FLightmapElementData(const FLightCacheInterface* LCI) : LCI(LCI) {}
 };
@@ -63,7 +65,8 @@ protected:
 		if (EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
 			&& IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5)
 			&& bAllowStaticLighting
-			&& Parameters.VertexFactoryType->SupportsStaticLighting())
+			&& Parameters.VertexFactoryType->SupportsStaticLighting()
+			&& Parameters.MaterialParameters.bIsSpecialEngineMaterial)
 		{
 			return true;
 		}
@@ -108,6 +111,7 @@ class FLightmapGBufferPS : public FMeshMaterialShader
 	DECLARE_SHADER_TYPE(FLightmapGBufferPS, MeshMaterial);
 
 	LAYOUT_FIELD(FShaderParameter, ScratchTilePoolOffset)
+	LAYOUT_FIELD(FShaderParameter, bMaterialTwoSided)
 public:
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
@@ -117,7 +121,8 @@ public:
 		if (EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData)
 			&& IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5)
 			&& bAllowStaticLighting
-			&& Parameters.VertexFactoryType->SupportsStaticLighting())
+			&& Parameters.VertexFactoryType->SupportsStaticLighting()
+			&& Parameters.MaterialParameters.bIsSpecialEngineMaterial)
 		{
 			return true;
 		}
@@ -142,6 +147,7 @@ public:
 		: FMeshMaterialShader(Initializer)
 	{
 		ScratchTilePoolOffset.Bind(Initializer.ParameterMap, TEXT("ScratchTilePoolOffset"));
+		bMaterialTwoSided.Bind(Initializer.ParameterMap, TEXT("bMaterialTwoSided"));
 	}
 
 	void GetShaderBindings(
@@ -156,6 +162,7 @@ public:
 	{
 		FMeshMaterialShader::GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, ShaderBindings);
 		ShaderBindings.Add(ScratchTilePoolOffset, ShaderElementData.ScratchTilePoolOffset);
+		ShaderBindings.Add(bMaterialTwoSided, ShaderElementData.bMaterialTwoSided);
 	}
 };
 
@@ -171,7 +178,6 @@ public:
 		FIntPoint ScratchTilePoolOffset
 	)
 		: FMeshPassProcessor(InScene, InView->GetFeatureLevel(), InView, InDrawListContext)
-		, DrawRenderState(*InView)
 		, VirtualTexturePhysicalTileCoordinateScaleAndBias(VirtualTexturePhysicalTileCoordinateScaleAndBias)
 		, RenderPassIndex(RenderPassIndex)
 		, ScratchTilePoolOffset(ScratchTilePoolOffset)
@@ -182,37 +188,49 @@ public:
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final
 	{
-		const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-		const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, FallbackMaterialRenderProxyPtr);
-		const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
-
-		if (MeshBatch.bUseForMaterial
-			&& (!PrimitiveSceneProxy || PrimitiveSceneProxy->ShouldRenderInMainPass()))
+		if (MeshBatch.bUseForMaterial)
 		{
-			Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, MaterialRenderProxy, Material);
+			bool bMaterialTwoSided = false;
+			if (MeshBatch.MaterialRenderProxy && MeshBatch.MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel))
+			{
+				bMaterialTwoSided = MeshBatch.MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel)->IsTwoSided();
+			}
+			
+			const FMaterialRenderProxy& DefaultProxy = *UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+			const FMaterial& DefaultMaterial = *DefaultProxy.GetMaterialNoFallback(FeatureLevel);
+
+			Process(MeshBatch, BatchElementMask, StaticMeshId, bMaterialTwoSided, PrimitiveSceneProxy, DefaultProxy, DefaultMaterial);
 		}
 	}
 
 private:
-	void Process(
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		int32 StaticMeshId,
+		bool bMaterialTwoSided,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource)
 	{
 		const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
 
+		FMaterialShaderTypes ShaderTypes;
+		ShaderTypes.AddShaderType<FLightmapGBufferVS>();
+		ShaderTypes.AddShaderType<FLightmapGBufferPS>();
+
+		FMaterialShaders MaterialShaders;
+		verify(MaterialResource.TryGetShaders(ShaderTypes, MeshBatch.VertexFactory->GetType(), MaterialShaders));
+		
 		TMeshProcessorShaders<
 			FLightmapGBufferVS,
 			FLightmapGBufferPS> Shaders;
 
-		Shaders.VertexShader = MaterialResource.GetShader<FLightmapGBufferVS>(VertexFactory->GetType());
-		Shaders.PixelShader = MaterialResource.GetShader<FLightmapGBufferPS>(VertexFactory->GetType());
+		MaterialShaders.TryGetVertexShader(Shaders.VertexShader);
+		MaterialShaders.TryGetPixelShader(Shaders.PixelShader);
 
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, MaterialResource, OverrideSettings);
+		ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MaterialResource, OverrideSettings);
 		ERasterizerCullMode MeshCullMode = CM_None;
 
 		FLightmapElementData ShaderElementData(MeshBatch.LCI);
@@ -220,6 +238,7 @@ private:
 		ShaderElementData.VirtualTexturePhysicalTileCoordinateScaleAndBias = VirtualTexturePhysicalTileCoordinateScaleAndBias;
 		ShaderElementData.RenderPassIndex = RenderPassIndex;
 		ShaderElementData.ScratchTilePoolOffset = ScratchTilePoolOffset;
+		ShaderElementData.bMaterialTwoSided = bMaterialTwoSided;
 
 		FMeshDrawCommandSortKey SortKey {};
 
@@ -236,6 +255,8 @@ private:
 			SortKey,
 			EMeshPassFeatures::Default,
 			ShaderElementData);
+
+		return true;
 	}
 
 private:

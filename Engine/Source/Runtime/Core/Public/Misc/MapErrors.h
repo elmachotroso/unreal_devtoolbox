@@ -3,9 +3,9 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "UObject/NameTypes.h"
-#include "Templates/SharedPointer.h"
 #include "Logging/TokenizedMessage.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
 
 /**
  * This file contains known map errors that can be referenced by name.
@@ -143,6 +143,9 @@ struct CORE_API FMapErrors
    
 	/** Component is a static type but has invalid lightmap settings!  Indirect lighting will be black.  Common causes are lightmap resolution of 0, LightmapCoordinateIndex out of bounds. */
 	static FLazyName StaticComponentHasInvalidLightmapSettings;
+   
+	/** Component is a using CastVolumetricTranslucentShadow but this feature is disabled for the project! Turn on r.Shadow.TranslucentPerObject.ProjectEnabled in a project ini if required. */
+	static FLazyName PrimitiveComponentHasInvalidTranslucentShadowSetting;
 
 	/** Navigation */
 
@@ -193,6 +196,9 @@ struct CORE_API FMapErrors
 
 	/** More overridden materials {Count} on static mesh component than are referenced {Count} in source mesh {StaticMesh}: **TODO** */
     static FLazyName MoreMaterialsThanReferenced;
+
+	/** More Nanite overridden materials {Count} on static mesh component than are referenced {Count} in source mesh {StaticMesh}: **TODO** */
+	static FLazyName MoreNaniteMaterialsThanReferenced;
 
 	 /** {Count} element(s) with zero triangles in static mesh {StaticMesh}: **TODO** */
     static FLazyName ElementsWithZeroTriangles;

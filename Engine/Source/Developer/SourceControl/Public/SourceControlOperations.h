@@ -2,13 +2,23 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
 #include "Containers/StringFwd.h"
-#include "Memory/SharedBuffer.h"
+#include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "HAL/PlatformCrt.h"
 #include "ISourceControlChangelist.h"
-#include "SourceControlPreferences.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Memory/SharedBuffer.h"
 #include "SourceControlOperationBase.h"
+#include "SourceControlPreferences.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 
 #define LOCTEXT_NAMESPACE "SourceControl"
 
@@ -94,12 +104,25 @@ public:
 		return SuccessMessage;
 	}
 
+	void SetKeepCheckedOut( const bool bInKeepCheckedOut )
+	{
+		bKeepCheckedOut = bInKeepCheckedOut;
+	}
+
+	bool GetKeepCheckedOut()
+	{
+		return bKeepCheckedOut;
+	}
+
 protected:
 	/** Description of the checkin */
 	FText Description;
 
 	/** A short message listing changelist/revision we submitted, if successful */
 	FText SuccessMessage;
+
+	/** Keep files checked-out after checking in */
+	bool bKeepCheckedOut = false;
 };
 
 /**
@@ -118,6 +141,51 @@ public:
 	{
 		return LOCTEXT("SourceControl_CheckOut", "Checking file(s) out of Source Control...");
 	}
+};
+
+/**
+ * Operation used to get the file list of a folder out of source control
+ */
+class FGetFileList : public FSourceControlOperationBase
+{
+public:
+	// ISourceControlOperation interface
+	virtual FName GetName() const override
+	{
+		return "GetFileList";
+	}
+
+	virtual FText GetInProgressString() const override
+	{
+		return LOCTEXT("SourceControl_GetFileList", "Getting file list out of Source Control...");
+	}
+
+	void SetIncludeDeleted( const bool bInIncludeDeleted )
+	{
+		bIncludeDeleted = bInIncludeDeleted;
+	}
+
+	bool GetIncludeDeleted()
+	{
+		return bIncludeDeleted;
+	}
+
+	const TArray<FString>& GetFilesList() const
+	{
+		return FilesList;
+	}
+
+	void SetFilesList(TArray<FString>&& InFilesList)
+	{
+		FilesList = MoveTemp(InFilesList);
+	}
+
+protected:
+	/** Include deleted files in the list. */
+	bool bIncludeDeleted = false;
+
+	/** Stored result of the operation */
+	TArray<FString> FilesList;
 };
 
 /**
@@ -286,9 +354,11 @@ public:
 		: bUpdateHistory(false)
 		, bGetOpenedOnly(false)
 		, bUpdateModifiedState(false)
+		, bUpdateModifiedStateToLocalRevision(false)
 		, bCheckingAllFiles(false)
 		, bForceQuiet(false)
 		, bForceUpdate(false)
+		, bSetRequireDirPathEndWithSeparator(false)
 	{
 	}
 
@@ -318,6 +388,11 @@ public:
 		bUpdateModifiedState = bInUpdateModifiedState;
 	}
 
+	void SetUpdateModifiedStateToLocalRevision(bool bInUpdateModifiedStateToLocalRevision)
+	{
+		bUpdateModifiedStateToLocalRevision = bInUpdateModifiedStateToLocalRevision;
+	}
+
 	void SetCheckingAllFiles( bool bInCheckingAllFiles )
 	{
 		bCheckingAllFiles = bInCheckingAllFiles;
@@ -326,6 +401,22 @@ public:
 	void SetQuiet(bool bInQuiet)
 	{
 		bForceQuiet = bInQuiet;
+	}
+
+	/** 
+	 * Sets the method that the operation will use to determine if a path
+	 * references a file or a directory. For more details @see IsDirectoryPath()
+	 * 
+	 * @param bFlag When true the operation will check the path and assume that it
+	 *				is a directory if the path ends with '/' or '\' and a file if it 
+	 *				does not.
+	 *				When false (the default) the operation will poll the file system
+	 *				with the path to see if it is a file or a directory.
+	 * 
+	 */
+	void SetRequireDirPathEndWithSeparator(bool bFlag)
+	{
+		bSetRequireDirPathEndWithSeparator = bFlag;
 	}
 
 	void SetForceUpdate(const bool bInForceUpdate)
@@ -348,6 +439,11 @@ public:
 		return bUpdateModifiedState;
 	}
 
+	bool ShouldUpdateModifiedStateToLocalRevision() const
+	{
+		return bUpdateModifiedStateToLocalRevision;
+	}
+
 	bool ShouldCheckAllFiles() const
 	{
 		return bCheckingAllFiles;
@@ -363,6 +459,19 @@ public:
 		return bForceUpdate;
 	}
 
+	/** 
+	 * Returns if the given path should be considered a directory or not.
+	 * If bSetRequireDirPathEndWithSeparator is not set (the default) then
+	 * we will poll the file system. However in some cases this can be very
+	 * slow, in which case bSetRequireDirPathEndWithSeparator can be set 
+	 * to true and we require that any directory path must be terminated
+	 * by a path separator (/ or \) so that we can tell by simply looking at
+	 * the path itself.
+	 * This is opt in behavior to avoid breaking existing 3rd party code that
+	 * relies on the default behavior.
+	 */
+	SOURCECONTROL_API bool IsDirectoryPath(const FString& Path) const;
+
 protected:
 	/** Whether to update history */
 	bool bUpdateHistory;
@@ -373,6 +482,9 @@ protected:
 	/** Whether to update the modified state - expensive */
 	bool bUpdateModifiedState;
 
+	/** Whether to update the modified state against local revision - only used when bUpdateModifiedState is true */
+	bool bUpdateModifiedStateToLocalRevision;
+
 	/** Hint that we are intending on checking all files in the project - some providers can optimize for this */
 	bool bCheckingAllFiles;
 
@@ -381,6 +493,9 @@ protected:
 
 	/** Forces the verification for provided files - providers can ignore files not opened/edited without it */
 	bool bForceUpdate;
+
+	/** If we should assume paths ending in a separator are directory paths or do we need to check with the file system? */
+	bool bSetRequireDirPathEndWithSeparator;
 };
 
 /**
@@ -405,10 +520,24 @@ public:
 		Destination = InDestination;
 	}
 
+	void SetDestination(FString&& InDestination)
+	{
+		Destination = MoveTemp(InDestination);
+	}
+
 	const FString& GetDestination() const
 	{
 		return Destination;
 	}
+
+	enum class ECopyMethod
+	{
+		Branch,  // The new file is branched from the original file
+		Add      // The new file has no relation to the original file
+	};
+
+	/** Whether a relationship to the original file should be maintained */
+	ECopyMethod CopyMethod = ECopyMethod::Branch; 
 
 protected:
 	/** Destination path of the copy operation */
@@ -452,6 +581,61 @@ public:
 };
 
 /**
+ * Operation used to retrieve submitted changelist(s).
+ */
+class FGetSubmittedChangelists : public FSourceControlOperationBase
+{
+public:
+	// ISourceControlOperation interface
+	virtual FName GetName() const override
+	{
+		return "GetSubmittedChangelists"; 
+	}
+
+	virtual FText GetInProgressString() const override
+	{
+		return LOCTEXT("SourceControl_GetSubmittedChangelists", "Retrieving submitted changelist(s) from Source Control...");
+	}
+};
+
+/**
+ * This operations query the source control to extract all the details available for a given changelist. The operations returns a collection of key/value corresponding to the details available. 
+ * The list of key/value is specific to the source control implementation.
+ */
+class FGetChangelistDetails : public FSourceControlOperationBase
+{
+public:
+	// ISourceControlOperation interface
+	virtual FName GetName() const override
+	{
+		return "GetChangelistDetails";
+	}
+
+	virtual FText GetInProgressString() const override
+	{
+		return LOCTEXT("SourceControl_GetChangelistDetails", "Retrieving changelist details from Source Control...");
+	}
+
+	const FString& GetChangelistNumber() { return ChangelistNumber; }
+
+	const TArray<TMap<FString, FString>>& GetChangelistDetails() { return OutChangelistDetails; }
+	
+	void SetChangelistNumber(const FString& InChangelistNumber)
+	{
+		ChangelistNumber = InChangelistNumber;
+	}
+
+	void SetChangelistDetails(TArray<TMap<FString, FString>>&& InChangelistDetails)
+	{
+		OutChangelistDetails = MoveTemp(InChangelistDetails);
+	}
+
+private:
+	FString ChangelistNumber;
+	TArray<TMap<FString, FString>> OutChangelistDetails;
+};
+
+/**
  * Operation used to update the source control status of changelist(s)
  */
 class FUpdatePendingChangelistsStatus : public FSourceControlOperationBase
@@ -489,6 +673,12 @@ public:
 	}
 
 	void SetChangelistsToUpdate(const TArray<FSourceControlChangelistRef>& InChangelistsToUpdate)
+	{
+		ChangelistsToUpdate = InChangelistsToUpdate;
+		bUpdateAllChangelists = false;
+	}
+
+	void SetChangelistsToUpdate(const TArrayView<FSourceControlChangelistRef>& InChangelistsToUpdate)
 	{
 		ChangelistsToUpdate = InChangelistsToUpdate;
 		bUpdateAllChangelists = false;
@@ -813,11 +1003,23 @@ public:
 	/**
 	 * Constructor
 	 * 
-	 * @param InWorkspaceName	The name of the workspace to create
-	 * @param InWorkspaceRoom	The file path to the workspace root (can be relative to the project)
+	 * @param WorkspaceName	The name of the workspace to create
+	 * @param WorkspaceRoom	The file path to the workspace root (can be relative to the project)
 	 */
-	SOURCECONTROL_API FCreateWorkspace(FStringView InWorkspaceName, FStringView InWorkspaceRoot);
+	SOURCECONTROL_API FCreateWorkspace(FStringView WorkspaceName, FStringView WorkspaceRoot);
 	
+	/** Set the description to be used by the workspace, if left unset then the default description will be used */
+	void SetDescription(FStringView Desciption)
+	{
+		WorkspaceDescription = Desciption;
+	}
+
+	/** Set the stream to be used by the workspace, if left unset then a classic depot with ClientView will be used */
+	void SetStream(FStringView Stream)
+	{
+		WorkspaceStream = Stream;
+	}
+
 	/**
 	 * Add a new mapping for the client spec in the native format of the current source control provider.
 	 * These will be written to the client spec in the order that they are added.
@@ -830,6 +1032,13 @@ public:
 		ClientView.Emplace(DepotPath, ClientPath);
 	}
 
+	/** Remove all currently set client-view mappings */
+	void ClearClientViewMappings()
+	{
+		ClientView.Empty();
+	}
+
+	/** Set the type of workspace to be created. @see FCreateWorkspace::EType */
 	void SetType(EType InType)
 	{
 		Type = InType;
@@ -843,6 +1052,16 @@ public:
 	const FString& GetWorkspaceRoot() const
 	{
 		return WorkspaceRoot;
+	}
+
+	const FString& GetWorkspaceDescription() const
+	{
+		return WorkspaceDescription;
+	}
+
+	const FString& GetWorkspaceStream() const
+	{
+		return WorkspaceStream;
 	}
 
 	const TArray<FClientViewMapping> GetClientView() const
@@ -871,6 +1090,9 @@ protected:
 
 	FString WorkspaceName;
 	FString WorkspaceRoot;
+
+	FString WorkspaceDescription;
+	FString WorkspaceStream;
 
 	EType Type = EType::Writeable;
 
@@ -914,6 +1136,56 @@ public:
 protected:
 
 	FString WorkspaceName;
+};
+
+/**
+ * This operation uses p4v print command to get file from specified depot by shelved changelist or file revision returns a package filename
+ */
+class FGetFile : public FSourceControlOperationBase
+{
+public:
+
+	FGetFile(const FString& InChangelistNumber, const FString& InRevisionNumber, const FString& InDepotFilePath, bool bInIsShelve = false)
+		: ChangelistNumber(InChangelistNumber)
+		, RevisionNumber(InRevisionNumber)
+		, DepotFilePath(InDepotFilePath)
+		, bIsShelve(bInIsShelve)
+	{}
+
+	// ISourceControlOperation interface
+	virtual FName GetName() const override
+	{
+		return "GetFile";
+	}
+
+	virtual FText GetInProgressString() const override
+	{
+		return LOCTEXT("SourceControl_GetFile", "Retrieving file from source control...");
+	}
+
+	const FString& GetChangelistNumber() const { return ChangelistNumber; }
+
+	const FString& GetRevisionNumber() const { return RevisionNumber; }
+
+	const FString& GetDepotFilePath() const { return DepotFilePath; }
+
+	bool IsShelve() const { return bIsShelve; }
+
+	const FString& GetOutPackageFilename() const { return OutPackageFilename; }
+
+	void SetOutPackageFilename(const FString& InOutPackageFilename)
+	{
+		OutPackageFilename = InOutPackageFilename;
+	}
+
+private:
+
+	FString ChangelistNumber;
+	FString RevisionNumber;
+	FString DepotFilePath;
+	bool bIsShelve;
+
+	FString OutPackageFilename;
 };
 
 #undef LOCTEXT_NAMESPACE

@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourceControlHelpers.h"
+#include "Algo/Transform.h"
 #include "ISourceControlState.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
-#include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
 #include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlProvider.h"
@@ -15,8 +16,15 @@
 #include "Logging/MessageLog.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 
-#define LOCTEXT_NAMESPACE "SourceControlHelpers"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SourceControlHelpers)
 
+#if WITH_EDITOR
+#include "Editor.h"
+#include "PackageTools.h"
+#include "ObjectTools.h"
+#endif
+
+#define LOCTEXT_NAMESPACE "SourceControlHelpers"
 
 namespace SourceControlHelpersInternal
 {
@@ -111,7 +119,7 @@ FString ConvertFileToQualifiedPath(const FString& InFile, bool bSilent, bool bAl
 	}
 
 	// Package paths
-	if (SCFile[0] == TEXT('/') && FPackageName::IsValidLongPackageName(SCFile, /*bIncludeReadOnlyRoots*/false))//	if (SCFile[0] == TEXT('/') && FPackageName::IsValidPath(SCFile))
+	if (SCFile[0] == TEXT('/') && FPackageName::IsValidLongPackageName(SCFile, /*bIncludeReadOnlyRoots*/false))
 	{
 		// Assume it is a package
 		bool bPackage = true;
@@ -739,8 +747,6 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 		return false;
 	}
 
-	bool bDelete = false;
-
 	if (SCState->IsSourceControlled())
 	{
 		bool bAdded = SCState->IsAdded();
@@ -782,8 +788,10 @@ bool USourceControlHelpers::MarkFileForDelete(const FString& InFile, bool bSilen
 		// Don't bother checking if it exists since Delete doesn't care.
 		return FileManager.Delete(*SCFile, false, true);
 	}
-
-	return false;
+	else
+	{
+		return true; 
+	}
 }
 
 
@@ -896,6 +904,143 @@ bool USourceControlHelpers::RevertFile(const FString& InFile, bool bSilent)
 	return Result == ECommandResult::Succeeded;
 }
 
+#if WITH_EDITOR
+bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString>& InFilenames, const TFunctionRef<bool(const TArray<FString>&)>& InOperation)
+{
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	TArray<UPackage*> LoadedPackages;
+	TArray<FString> PackageNames;
+	TArray<FString> PackageFilenames;
+	TArray<FString> FilteredActorPackages;
+	bool bSuccess = false;
+
+	// Normalize packagenames and filenames
+	for (const FString& Filename : InFilenames)
+	{
+		FString Result;
+		
+		if (FPackageName::TryConvertFilenameToLongPackageName(Filename, Result))
+		{
+			PackageNames.Add(MoveTemp(Result));
+		}
+		else
+		{
+			PackageNames.Add(Filename);
+		}
+	}
+
+	// Remove packages if they are loaded actors or world
+	PackageNames.RemoveAll([&FilteredActorPackages, &LoadedPackages](const FString& PackageName) -> bool
+	{
+		UPackage* Package = FindPackage(NULL, *PackageName);
+		
+		if (Package != nullptr)
+		{
+			if (UWorld::IsWorldOrExternalActorPackage(Package))
+			{
+				FilteredActorPackages.Emplace(PackageName);
+				return true; // remove the package
+			}
+
+			LoadedPackages.Add(Package);
+		}
+
+		return false; // do not remove the package
+	});
+
+	if (!FilteredActorPackages.IsEmpty())
+	{
+		TStringBuilder<2048> Builder;
+		Builder.Join(FilteredActorPackages, TEXT(", "));
+		const FString Packages = Builder.ToString();
+
+		UE_LOG(LogSourceControl, Warning, TEXT("This operation could not complete on the following map or external packages, please unload them before retrying : %s"), *Packages);
+		return false;
+	}
+
+	// Prepare the packages to be reverted...
+	for (UPackage* Package : LoadedPackages)
+	{
+		// Detach the linkers of any loaded packages so that SCC can overwrite the files...
+		if (!Package->IsFullyLoaded())
+		{
+			FlushAsyncLoading();
+			Package->FullyLoad();
+		}
+		ResetLoaders(Package);
+	}
+
+	PackageFilenames = SourceControlHelpers::PackageFilenames(PackageNames);
+
+	// Apply Operation
+	bSuccess = InOperation(PackageFilenames);
+
+	// Reverting may have deleted some packages, so we need to delete those and unload them rather than re-load them...
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<UObject*> ObjectsToDelete;
+	LoadedPackages.RemoveAll([&](UPackage* InPackage) -> bool
+	{
+		const FString PackageExtension = InPackage->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
+		const FString PackageFilename = FPackageName::LongPackageNameToFilename(InPackage->GetName(), PackageExtension);
+		if (!FPaths::FileExists(PackageFilename))
+		{
+			TArray<FAssetData> Assets;
+			AssetRegistryModule.Get().GetAssetsByPackageName(*InPackage->GetName(), Assets);
+
+			for (const FAssetData& Asset : Assets)
+			{
+				if (UObject* ObjectToDelete = Asset.FastGetAsset())
+				{
+					ObjectsToDelete.Add(ObjectToDelete);
+				}
+			}			
+			return true; // remove package
+		}
+		return false; // keep package
+	});
+
+	// Hot-reload the new packages...
+	FText OutReloadErrorMsg;
+	const bool bInteractive = true;
+	UPackageTools::ReloadPackages(LoadedPackages, OutReloadErrorMsg, EReloadPackagesInteractionMode::Interactive);
+	if (!OutReloadErrorMsg.IsEmpty())
+	{
+		UE_LOG(LogSourceControl, Warning, TEXT("%s"), *OutReloadErrorMsg.ToString());
+	}
+
+	// Delete and Unload assets...
+	if(ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete) != ObjectsToDelete.Num())
+	{ 
+		UE_LOG(LogSourceControl, Warning, TEXT("Failed to unload some assets."));
+	}
+	
+	// Re-cache the SCC state...
+	SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
+
+	return bSuccess;
+}
+
+bool USourceControlHelpers::RevertAndReloadPackages(const TArray<FString>& InFilenames)
+{
+	auto RevertOperation = [](const TArray<FString>& InFilenames) -> bool
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+
+		auto OperationCompleteCallback = FSourceControlOperationComplete::CreateLambda([](const FSourceControlOperationRef& Operation, ECommandResult::Type InResult)
+		{
+			if (Operation->GetName() == TEXT("Revert"))
+			{
+				TSharedRef<FRevert> RevertOperation = StaticCastSharedRef<FRevert>(Operation);
+				ISourceControlModule::Get().GetOnFilesDeleted().Broadcast(RevertOperation->GetDeletedFiles());
+			}
+		});
+
+		return SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), InFilenames, EConcurrency::Synchronous, OperationCompleteCallback) == ECommandResult::Succeeded;
+	};
+
+	return ApplyOperationAndReloadPackages(InFilenames, RevertOperation);
+}
+#endif //!WITH_EDITOR
 
 bool USourceControlHelpers::RevertFiles(const TArray<FString>& InFiles,	bool bSilent)
 {
@@ -930,7 +1075,7 @@ bool USourceControlHelpers::RevertFiles(const TArray<FString>& InFiles,	bool bSi
 
 		// Less error checking and info is made for multiple files than the single file version.
 		// This multi-file version could be made similarly more sophisticated.
-		if (SCState->IsCheckedOut() || SCState->IsAdded())
+		if (SCState->CanRevert())
 		{
 			SCFilesToRevert.Add(SCFile);
 		}
@@ -1007,7 +1152,7 @@ bool USourceControlHelpers::RevertUnchangedFiles(const TArray<FString>& InFiles,
 }
 
 
-bool USourceControlHelpers::CheckInFile(const FString& InFile, const FString& InDescription, bool bSilent)
+bool USourceControlHelpers::CheckInFile(const FString& InFile, const FString& InDescription, bool bSilent, bool bKeepCheckedOut)
 {
 	// Determine file type and ensure it is in form source control wants
 	FString SCFile = SourceControlHelpersInternal::ConvertFileToQualifiedPath(InFile, bSilent);
@@ -1028,13 +1173,15 @@ bool USourceControlHelpers::CheckInFile(const FString& InFile, const FString& In
 	TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOp = ISourceControlOperation::Create<FCheckIn>();
 	CheckInOp->SetDescription(FText::FromString(InDescription));
 
+	CheckInOp->SetKeepCheckedOut(bKeepCheckedOut);
+
 	ECommandResult::Type Result = Provider->Execute(CheckInOp, SCFile);
 
 	return Result == ECommandResult::Succeeded;
 }
 
 
-bool USourceControlHelpers::CheckInFiles(const TArray<FString>& InFiles, const FString& InDescription, bool bSilent)
+bool USourceControlHelpers::CheckInFiles(const TArray<FString>& InFiles, const FString& InDescription, bool bSilent, bool bKeepCheckedOut)
 {
 	// If we have nothing to process, exit immediately
 	if (InFiles.IsEmpty())
@@ -1058,6 +1205,8 @@ bool USourceControlHelpers::CheckInFiles(const TArray<FString>& InFiles, const F
 	// This multi-file version could be made similarly more sophisticated.
 	TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOp = ISourceControlOperation::Create<FCheckIn>();
 	CheckInOp->SetDescription(FText::FromString(InDescription));
+
+	CheckInOp->SetKeepCheckedOut(bKeepCheckedOut);
 
 	ECommandResult::Type Result = Provider->Execute(CheckInOp, FilePaths);
 
@@ -1099,7 +1248,6 @@ bool USourceControlHelpers::CopyFile(const FString& InSourcePath, const FString&
 
 	return Result == ECommandResult::Succeeded;
 }
-
 
 FSourceControlState USourceControlHelpers::QueryFileState(const FString& InFile, bool bSilent)
 {
@@ -1177,7 +1325,109 @@ FSourceControlState USourceControlHelpers::QueryFileState(const FString& InFile,
 	return State;
 }
 
+void USourceControlHelpers::AsyncQueryFileState(FQueryFileStateDelegate FileStateCallback, const FString& InFile, bool bSilent)
+{
+	// Determine file type and ensure it is in form source control wants
+	FString SCFile = SourceControlHelpersInternal::ConvertFileToQualifiedPath(InFile, bSilent);
 
+	if (SCFile.IsEmpty())
+	{
+		return;
+	}
+
+	if (ISourceControlProvider* Provider = SourceControlHelpersInternal::VerifySourceControl(bSilent))
+	{
+		// Make sure we update the modified state of the files (Perforce requires this
+		// since can be a more expensive test).
+		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
+		UpdateStatusOperation->SetUpdateModifiedState(true);
+
+		ISourceControlModule::Get().GetProvider().Execute(UpdateStatusOperation, SCFile, EConcurrency::Asynchronous,
+			FSourceControlOperationComplete::CreateLambda([FileStateCallback, Provider, SCFile, InFile, bSilent](const FSourceControlOperationRef& InOperation, ECommandResult::Type InResult)
+		{
+			FSourceControlState State;
+			const FSourceControlStatePtr SCState = Provider->GetState(SCFile, EStateCacheUsage::Use);
+
+			if (!SCState.IsValid())
+			{
+				// Improper or invalid SCC state
+				FFormatNamedArguments Arguments;
+				Arguments.Add(TEXT("InFile"), FText::FromString(InFile));
+				Arguments.Add(TEXT("SCFile"), FText::FromString(SCFile));
+				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotDetermineState", "Could not determine source control state of file '{InFile}' ({SCFile})."), Arguments), bSilent);
+
+				FileStateCallback.ExecuteIfBound(State);
+				return;
+			}
+
+			State.bIsValid = true;
+
+			// Copy over state info
+			// - make these assignments a method of FSourceControlState if anything else sets a state
+			State.bIsUnknown = SCState->IsUnknown();
+			State.bIsSourceControlled = SCState->IsSourceControlled();
+			State.bCanCheckIn = SCState->CanCheckIn();
+			State.bCanCheckOut = SCState->CanCheckout();
+			State.bIsCheckedOut = SCState->IsCheckedOut();
+			State.bIsCurrent = SCState->IsCurrent();
+			State.bIsAdded = SCState->IsAdded();
+			State.bIsDeleted = SCState->IsDeleted();
+			State.bIsIgnored = SCState->IsIgnored();
+			State.bCanEdit = SCState->CanEdit();
+			State.bCanDelete = SCState->CanDelete();
+			State.bCanAdd = SCState->CanAdd();
+			State.bIsConflicted = SCState->IsConflicted();
+			State.bCanRevert = SCState->CanRevert();
+			State.bIsModified = SCState->IsModified();
+			State.bIsCheckedOutOther = SCState->IsCheckedOutOther();
+
+			if (State.bIsCheckedOutOther)
+			{
+				SCState->IsCheckedOutOther(&State.CheckedOutOther);
+			}
+
+			FileStateCallback.ExecuteIfBound(State);
+		}));
+	}
+}
+
+bool USourceControlHelpers::GetFilesInDepotAtPath(const FString& PathToDirectory, TArray<FString>& OutFilesList, bool bIncludeDeleted, bool bSilent)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(USourceControlHelpers::GetFilesInDepotAtPath);
+
+	bool bSuccess = false;
+	if (ISourceControlModule::Get().IsEnabled())
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+		if (SourceControlProvider.IsAvailable())
+		{
+			FString CorrectedPath = PathToDirectory.Replace(TEXT("/Game"), TEXT(""), ESearchCase::CaseSensitive);
+			FString FullPath = FPaths::ProjectContentDir() / CorrectedPath;
+			FPaths::RemoveDuplicateSlashes(FullPath);
+
+			TArray<FString> FileArray;
+			FileArray.Add(FullPath);
+
+			TSharedRef<FGetFileList, ESPMode::ThreadSafe> Operation = ISourceControlOperation::Create<FGetFileList>();
+			Operation->SetIncludeDeleted(bIncludeDeleted);
+
+			ECommandResult::Type Result = SourceControlProvider.Execute(Operation, FileArray, EConcurrency::Synchronous);
+			bSuccess = (Result == ECommandResult::Succeeded);
+
+			if (!bSuccess)
+			{
+				FFormatNamedArguments Arguments;
+				Arguments.Add(TEXT("PathToDirectory"), FText::FromString(PathToDirectory));
+				SourceControlHelpersInternal::LogError(FText::Format(LOCTEXT("CouldNotGetFileList", "Could not get file list under path: {PathToDirectory}."), Arguments), bSilent);
+			}
+			else
+			{
+				OutFilesList = Operation->GetFilesList();
+			}
+		}
+	}
+	return bSuccess;
+}
 
 static FString PackageFilename_Internal( const FString& InPackageName )
 {
@@ -1416,26 +1666,38 @@ bool USourceControlHelpers::CopyFileUnderSourceControl( const FString& InDestFil
 	return CheckoutOrMarkForAdd(InDestFile, InFileDescription, FOnPostCheckOut::CreateStatic(&Local::CopyFile, InSourceFile), OutFailReason);
 }
 
-
-bool USourceControlHelpers::BranchPackage( UPackage* DestPackage, UPackage* SourcePackage, EStateCacheUsage::Type StateCacheUsage )
+namespace
 {
-	if(ISourceControlModule::Get().IsEnabled())
+	bool CopyPackage_Internal(UPackage* DestPackage, UPackage* SourcePackage, FCopy::ECopyMethod CopyMethod, EStateCacheUsage::Type StateCacheUsage)
 	{
-		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-
-		const FString SourceFilename = PackageFilename(SourcePackage);
-		const FString DestFilename = PackageFilename(DestPackage);
-		FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(SourceFilename, StateCacheUsage);
-		if(SourceControlState.IsValid() && SourceControlState->IsSourceControlled())
+		if (ISourceControlModule::Get().IsEnabled())
 		{
-			TSharedRef<FCopy, ESPMode::ThreadSafe> CopyOperation = ISourceControlOperation::Create<FCopy>();
-			CopyOperation->SetDestination(DestFilename);
-			
-			return (SourceControlProvider.Execute(CopyOperation, SourceFilename) == ECommandResult::Succeeded);
-		}
-	}
+			ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 
-	return false;
+			const FString SourceFilename = USourceControlHelpers::PackageFilename(SourcePackage);
+			FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(SourceFilename, StateCacheUsage);
+			if (SourceControlState.IsValid() && SourceControlState->IsSourceControlled())
+			{
+				TSharedRef<FCopy, ESPMode::ThreadSafe> CopyOperation = ISourceControlOperation::Create<FCopy>();
+				CopyOperation->SetDestination(USourceControlHelpers::PackageFilename(DestPackage));
+				CopyOperation->CopyMethod = CopyMethod;
+
+				return (SourceControlProvider.Execute(CopyOperation, SourceFilename) == ECommandResult::Succeeded);
+			}
+		}
+
+		return false;
+	}
+}
+
+bool USourceControlHelpers::BranchPackage(UPackage* DestPackage, UPackage* SourcePackage, EStateCacheUsage::Type StateCacheUsage)
+{
+	return CopyPackage_Internal(DestPackage, SourcePackage, FCopy::ECopyMethod::Branch, StateCacheUsage);
+}
+
+bool USourceControlHelpers::CopyPackage(UPackage* DestPackage, UPackage* SourcePackage, EStateCacheUsage::Type StateCacheUsage)
+{
+	return CopyPackage_Internal(DestPackage, SourcePackage, FCopy::ECopyMethod::Add, StateCacheUsage);
 }
 
 
@@ -1450,8 +1712,8 @@ const FString& USourceControlHelpers::GetSettingsIni()
 		static FString SourceControlSettingsIni;
 		if (SourceControlSettingsIni.Len() == 0)
 		{
-			const FString SourceControlSettingsDir = FPaths::GeneratedConfigDir();
-			FConfigCacheIni::LoadGlobalIniFile(SourceControlSettingsIni, TEXT("SourceControlSettings"), nullptr, false, false, true, true, *SourceControlSettingsDir);
+			FConfigContext Context = FConfigContext::ReadIntoGConfig();
+			Context.Load(TEXT("SourceControlSettings"), SourceControlSettingsIni);
 		}
 		return SourceControlSettingsIni;
 	}
@@ -1463,8 +1725,9 @@ const FString& USourceControlHelpers::GetGlobalSettingsIni()
 	static FString SourceControlGlobalSettingsIni;
 	if (SourceControlGlobalSettingsIni.Len() == 0)
 	{
-		const FString SourceControlSettingsDir = FPaths::EngineSavedDir() + TEXT("Config/");
-		FConfigCacheIni::LoadGlobalIniFile(SourceControlGlobalSettingsIni, TEXT("SourceControlSettings"), nullptr, false, false, true, true, *SourceControlSettingsDir);
+		FConfigContext Context = FConfigContext::ReadIntoGConfig();
+		Context.GeneratedConfigDir = FPaths::EngineSavedDir() + TEXT("Config/");
+		Context.Load(TEXT("SourceControlSettings"), SourceControlGlobalSettingsIni);
 	}
 	return SourceControlGlobalSettingsIni;
 }
@@ -1505,7 +1768,7 @@ bool USourceControlHelpers::GetAssetData(const FString & InFileName, const FStri
 		// Assets are already in the cache, we can query dependencies directly
 		if (bGetDependencies)
 		{
-			AssetRegistryModule.Get().GetDependencies(*InPackageName, *OutDependencies);
+			AssetRegistryModule.Get().GetDependencies(*InPackageName, *OutDependencies, UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::EDependencyQuery::Hard);
 		}
 
 		return true;
@@ -1619,3 +1882,4 @@ ISourceControlProvider& FScopedSourceControl::GetProvider()
 
 
 #undef LOCTEXT_NAMESPACE
+

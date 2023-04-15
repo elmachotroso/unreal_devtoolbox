@@ -6,6 +6,7 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
+#include "SWarningOrErrorBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
@@ -46,7 +47,7 @@ void FLandscapeEditorDetailCustomization_ImportExport::CustomizeDetails(IDetailL
 		+ SUniformGridPanel::Slot(0, 0)
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "RadioButton")
+			.Style(FAppStyle::Get(), "RadioButton")
 			.IsChecked_Static(&FLandscapeEditorDetailCustomization_ImportExport::ModeIsChecked, EImportExportMode::Import)
 			.OnCheckStateChanged_Static(&FLandscapeEditorDetailCustomization_ImportExport::OnModeChanged, EImportExportMode::Import)
 			[
@@ -57,7 +58,7 @@ void FLandscapeEditorDetailCustomization_ImportExport::CustomizeDetails(IDetailL
 		+ SUniformGridPanel::Slot(1, 0)
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "RadioButton")
+			.Style(FAppStyle::Get(), "RadioButton")
 			.IsChecked_Static(&FLandscapeEditorDetailCustomization_ImportExport::ModeIsChecked, EImportExportMode::Export)
 			.OnCheckStateChanged_Static(&FLandscapeEditorDetailCustomization_ImportExport::OnModeChanged, EImportExportMode::Export)
 			[
@@ -72,21 +73,24 @@ void FLandscapeEditorDetailCustomization_ImportExport::CustomizeDetails(IDetailL
 	
 	PropertyHandle_ImportHeightmapFilename->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([PropertyHandle_ImportHeightmapFilename]()
 	{
-		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ImportHeightmapFilename);
+		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ImportHeightmapFilename, /*bForExport = */false);
 		FLandscapeEditorDetailCustomization_ImportExport::OnImportHeightmapFilenameChanged();
 	}));
 
 	PropertyHandle_ExportHeightmapFilename->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([PropertyHandle_ExportHeightmapFilename]()
 	{
-		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ExportHeightmapFilename);
+		FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ExportHeightmapFilename, /*bForExport = */true);
 	}));
-
+	
 	TSharedRef<IPropertyHandle> PropertyHandle_HeightmapImportResult = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ImportLandscape_HeightmapImportResult));
 	TSharedRef<IPropertyHandle> PropertyHandle_HeightmapErrorMessage = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ImportLandscape_HeightmapErrorMessage));
 	DetailBuilder.HideProperty(PropertyHandle_HeightmapImportResult);
 	DetailBuilder.HideProperty(PropertyHandle_HeightmapErrorMessage);
 		
 	TSharedRef<IPropertyHandle> PropertyHandle_ExportEditLayer = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, bExportEditLayer));
+	TSharedRef<IPropertyHandle> PropertyHandle_ExportSingleFile = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, bExportSingleFile));
+	DetailBuilder.HideProperty(PropertyHandle_ExportEditLayer);
+	DetailBuilder.HideProperty(PropertyHandle_ExportSingleFile);
 
 	auto AddHeightmapFileName = [&](TSharedRef<IPropertyHandle> PropertyHandle_HeightmapFilename, TAttribute<EVisibility> PropertyVisibility)
 	{
@@ -156,7 +160,38 @@ void FLandscapeEditorDetailCustomization_ImportExport::CustomizeDetails(IDetailL
 	ImportExportCategory.AddProperty(PropertyHandle_ImportType).Visibility(MakeAttributeLambda([]() { return FLandscapeEditorDetailCustomization_ImportExport::GetImportExportVisibility(true); }));
 
 	TSharedRef<IPropertyHandle> PropertyHandle_FlipYAxis = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, bFlipYAxis));
-	ImportExportCategory.AddProperty(PropertyHandle_FlipYAxis).Visibility(MakeAttributeLambda([]() { return (IsImporting() && !GetEditorMode()->UseSingleFileImport()) ? EVisibility::Visible : EVisibility::Collapsed; }));
+	PropertyHandle_FlipYAxis->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([]() { FLandscapeEditorDetailCustomization_ImportExport::OnImportHeightmapFilenameChanged(); }));
+	ImportExportCategory.AddProperty(PropertyHandle_FlipYAxis).Visibility(MakeAttributeLambda([]() { return (!GetEditorMode()->UseSingleFileImport()) ? EVisibility::Visible : EVisibility::Collapsed; }));
+
+	TSharedPtr<SToolTip> ExportSingleFileTooltip = SNew(SToolTip)
+		.Text(PropertyHandle_ExportSingleFile->GetToolTipText());
+
+	ImportExportCategory.AddProperty(PropertyHandle_ExportSingleFile)
+		.Visibility(MakeAttributeLambda([]() { return FLandscapeEditorDetailCustomization_ImportExport::GetImportExportVisibility(false); }))
+		.IsEnabled(MakeAttributeLambda([]() { return FLandscapeEditorDetailCustomization_ImportExport::GetExportSingleFileIsEnabled(); }))
+		.CustomWidget()
+		.NameContent()
+		[
+			SNew(SBox)
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0, 0, 2, 0))
+			[
+				SNew(STextBlock)
+				.Text(PropertyHandle_ExportSingleFile->GetPropertyDisplayName())
+				.Font(DetailBuilder.GetDetailFont())
+				.ToolTip(ExportSingleFileTooltip)
+			]
+		]
+		.ValueContent()
+		[
+			SNew(SCheckBox)
+			.IsChecked_Static(&FLandscapeEditorDetailCustomization_ImportExport::GetExportSingleFileCheckState)
+			.OnCheckStateChanged_Lambda([this, PropertyHandle_ExportHeightmapFilename](ECheckBoxState NewCheckState) 
+				{ 
+					FLandscapeEditorDetailCustomization_ImportExport::OnExportSingleFileCheckStateChanged(NewCheckState);
+					FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(PropertyHandle_ExportHeightmapFilename, /*bForExport = */true);
+				})
+		];
 
 	ImportExportCategory.AddProperty(PropertyHandle_ExportEditLayer).Visibility(MakeAttributeLambda([this]()
 	{
@@ -218,8 +253,44 @@ void FLandscapeEditorDetailCustomization_ImportExport::CustomizeDetails(IDetailL
 			.IsEnabled_Static(&GetImportExportButtonIsEnabled)
 		]
 	];
+
+	ImportExportCategory.AddCustomRow(FText::GetEmpty())
+	[
+		SNew(SWarningOrErrorBox)
+		.Message(this, &FLandscapeEditorDetailCustomization_ImportExport::GetImportExportLandscapeErrorText)
+	]
+	.Visibility(TAttribute<EVisibility>(this, &FLandscapeEditorDetailCustomization_ImportExport::GetImportExportLandscapeErrorVisibility));
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+bool FLandscapeEditorDetailCustomization_ImportExport::GetExportSingleFileIsEnabled()
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	check(LandscapeEdMode);
+	// The single file option only makes sense for landscapes where multiple file import is an option : 
+	return !LandscapeEdMode->UseSingleFileImport();
+}
+
+ECheckBoxState FLandscapeEditorDetailCustomization_ImportExport::GetExportSingleFileCheckState()
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	check(LandscapeEdMode);
+	return (LandscapeEdMode->UseSingleFileImport() || (LandscapeEdMode->UISettings &&  LandscapeEdMode->UISettings->bExportSingleFile)) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FLandscapeEditorDetailCustomization_ImportExport::OnExportSingleFileCheckStateChanged(ECheckBoxState NewCheckState)
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	check(LandscapeEdMode);
+
+	if (LandscapeEdMode->UISettings)
+	{
+		if (NewCheckState != ECheckBoxState::Undetermined)
+		{
+			LandscapeEdMode->UISettings->bExportSingleFile = (NewCheckState == ECheckBoxState::Checked);
+		}
+	}
+}
 
 EVisibility FLandscapeEditorDetailCustomization_ImportExport::GetImportExportVisibility(bool bImport)
 {
@@ -243,15 +314,15 @@ ECheckBoxState FLandscapeEditorDetailCustomization_ImportExport::GetHeightmapSel
 	return IsHeightmapEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
-void FLandscapeEditorDetailCustomization_ImportExport::OnHeightmapSelectedCheckStateChanged(ECheckBoxState CheckState)
+void FLandscapeEditorDetailCustomization_ImportExport::OnHeightmapSelectedCheckStateChanged(ECheckBoxState NewCheckedState)
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 	check(LandscapeEdMode != nullptr);
 	if (LandscapeEdMode->UISettings)
 	{
-		if (CheckState != ECheckBoxState::Undetermined)
+		if (NewCheckedState != ECheckBoxState::Undetermined)
 		{
-			LandscapeEdMode->UISettings->bHeightmapSelected = CheckState == ECheckBoxState::Checked;
+			LandscapeEdMode->UISettings->bHeightmapSelected = (NewCheckedState == ECheckBoxState::Checked);
 		}
 	}
 }
@@ -270,11 +341,30 @@ void FLandscapeEditorDetailCustomization_ImportExport::OnModeChanged(ECheckBoxSt
 		FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 		check(LandscapeEdMode != nullptr);
 		LandscapeEdMode->ImportExportMode = Value;
+
+		if (Value == EImportExportMode::Import)
+		{
+			if (ULandscapeInfo* LandscapeInfo = LandscapeEdMode->CurrentToolTarget.LandscapeInfo.Get())
+			{
+				FVector LocalPosition(LandscapeEdMode->UISettings->ImportLandscape_GizmoLocalPosition.X, LandscapeEdMode->UISettings->ImportLandscape_GizmoLocalPosition.Y, 0.0f);
+				FVector GizmoPosition = LandscapeInfo->GetLandscapeProxy()->LandscapeActorToWorld().TransformPosition(LocalPosition);
+				if (ALandscapeGizmoActiveActor* GizmoActor = LandscapeEdMode->CurrentGizmoActor.Get())
+				{
+					GizmoActor->SetActorLocation(GizmoPosition);
+				}
+			}
+		}
 	}
 }
 
 EVisibility FLandscapeEditorDetailCustomization_ImportExport::GetImportResultErrorVisibility(TSharedRef<IPropertyHandle> PropertyHandle_Result)
 {
+	// Not relevant when exporting : 
+	if (!IsImporting())
+	{
+		return EVisibility::Collapsed;
+	}
+
 	ELandscapeImportResult ImportResult;
 	FPropertyAccess::Result Result = PropertyHandle_Result->GetValue((uint8&)ImportResult);
 
@@ -379,11 +469,12 @@ void FLandscapeEditorDetailCustomization_ImportExport::OnImportHeightmapFilename
 	LandscapeEdMode->UISettings->OnImportHeightmapFilenameChanged();
 }
 
-void FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(TSharedRef<IPropertyHandle> PropertyHandle_Filename)
+void FLandscapeEditorDetailCustomization_ImportExport::FormatFilename(TSharedRef<IPropertyHandle> PropertyHandle_Filename, bool bForExport)
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 	check(LandscapeEdMode != nullptr);
-	if (!LandscapeEdMode->UseSingleFileImport())
+	// No need to format the file name if single file import/export is enabled
+	if (!LandscapeEdMode->UseSingleFileImport() && (!bForExport || !LandscapeEdMode->UISettings->bExportSingleFile))
 	{
 		// If selected file as the _xN_yM suffix remove it
 		FString	FilePath;
@@ -471,7 +562,7 @@ FReply FLandscapeEditorDetailCustomization_ImportExport::OnImportExportButtonCli
 		}
 		else
 		{
-			auto BuildExportFileName = [](const FString& Filename, FIntPoint FileOffset, bool bUseOffset)
+			auto BuildExportFileName = [](const FString& Filename, const FIntPoint& FileOffset, bool bUseOffset)
 			{
 				if (bUseOffset)
 				{
@@ -483,45 +574,63 @@ FReply FLandscapeEditorDetailCustomization_ImportExport::OnImportExportButtonCli
 				return Filename;
 			};
 
+			auto PerformExport = [BuildExportFileName](ULandscapeEditorObject* InLandscapeEditorSettings, ULandscapeInfo* InLandscapeInfo, const FIntRect& InExportRegion, const FIntPoint& InFileOffset, bool bInUseOffset)
+			{
+				if (InLandscapeEditorSettings->bHeightmapSelected)
+				{
+					FString ExportFilename = BuildExportFileName(InLandscapeEditorSettings->HeightmapExportFilename, InFileOffset, bInUseOffset);
+					InLandscapeInfo->ExportHeightmap(ExportFilename, InExportRegion);
+				}
+
+				for (const FLandscapeImportLayer& ImportLayer : InLandscapeEditorSettings->ImportLandscape_Layers)
+				{
+					if (ImportLayer.bSelected)
+					{
+						FString ExportFilename = BuildExportFileName(ImportLayer.ExportFilePath, InFileOffset, bInUseOffset);
+						InLandscapeInfo->ExportLayer(ImportLayer.LayerInfo, ExportFilename, InExportRegion);
+					}
+				}
+			};
+
 			FScopedSetLandscapeEditingLayer Scope(LandscapeInfo->LandscapeActor.Get(), LandscapeEdMode->UISettings->bExportEditLayer ? LandscapeEdMode->GetCurrentLayerGuid() : FGuid());
 
-			LandscapeInfo->ForAllLandscapeProxies([LandscapeInfo, LandscapeEdMode, LandscapeExtent, BuildExportFileName](ALandscapeProxy* LandscapeProxy)
+			ALandscape* Landscape = LandscapeInfo->LandscapeActor.Get();
+			check(Landscape);
+			if (LandscapeEdMode->UseSingleFileImport() || LandscapeEdMode->UISettings->bExportSingleFile)
 			{
+				// For single file export, export the whole landscape (main actor) : 
 				FIntRect ExportRegion;
-				if (LandscapeInfo->GetLandscapeExtent(LandscapeProxy, ExportRegion))
+				if (LandscapeInfo->GetLandscapeExtent(ExportRegion))
 				{
-					FIntPoint FileOffset;
-					if (!LandscapeEdMode->UseSingleFileImport())
+					PerformExport(LandscapeEdMode->UISettings, LandscapeInfo, ExportRegion, FIntPoint(), /*bInUseOffset = */false);
+				}
+			}
+			else
+			{
+				// For multiple file export, export each landscape proxy individually :
+				LandscapeInfo->ForAllLandscapeProxies([LandscapeInfo, Landscape, LandscapeEdMode, LandscapeExtent, BuildExportFileName, PerformExport](ALandscapeProxy* LandscapeProxy)
+				{
+					FIntRect ExportRegion;
+					if (LandscapeInfo->GetLandscapeExtent(LandscapeProxy, ExportRegion))
 					{
-						ALandscape* Landscape = LandscapeInfo->LandscapeActor.Get();
-						check(Landscape);
-						FileOffset = FIntPoint((ExportRegion.Min.X - LandscapeExtent.Min.X) / Landscape->GridSize,
-								(ExportRegion.Min.Y - LandscapeExtent.Min.Y) / Landscape->GridSize);
+						const int32 YCoord = LandscapeEdMode->UISettings->bFlipYAxis ? LandscapeExtent.Max.Y - ExportRegion.Max.Y : ExportRegion.Min.Y - LandscapeExtent.Min.Y;
+						FIntPoint FileOffset = FIntPoint((ExportRegion.Min.X - LandscapeExtent.Min.X) / Landscape->GridSize,
+							YCoord / Landscape->GridSize);
 
 						// Remove the shared line/column that this proxy has with its neighbors because it 
 						// will be included by the neighbor or lost if there is none (that could become an option to avoid that loss)
 						ExportRegion.Max.X -= 1;
 						ExportRegion.Max.Y -= 1;
-					}
-											
 
-					if (LandscapeEdMode->UISettings->bHeightmapSelected)
-					{
-						FString ExportFilename = BuildExportFileName(LandscapeEdMode->UISettings->HeightmapExportFilename, FileOffset, !LandscapeEdMode->UseSingleFileImport());
-						LandscapeInfo->ExportHeightmap(ExportFilename, ExportRegion);
+						PerformExport(LandscapeEdMode->UISettings, LandscapeInfo, ExportRegion, FileOffset, /*bInUseOffset = */true);
 					}
-					
-					for (const FLandscapeImportLayer& ImportLayer : LandscapeEdMode->UISettings->ImportLandscape_Layers)
-					{
-						if (ImportLayer.bSelected)
-						{
-							FString ExportFilename = BuildExportFileName(ImportLayer.ExportFilePath, FileOffset, !LandscapeEdMode->UseSingleFileImport());
-							LandscapeInfo->ExportLayer(ImportLayer.LayerInfo, ExportFilename, ExportRegion);
-						}
-					}
-				}
-			});
-			
+				});
+			}
+
+			FIntRect Extent;
+			LandscapeInfo->GetLandscapeExtent(Extent);
+			// Set the import gizmo location to landscape minx/miny
+			LandscapeEdMode->UISettings->ImportLandscape_GizmoLocalPosition = Extent.Min;
 		}
 	}
 
@@ -576,7 +685,31 @@ bool FLandscapeEditorDetailCustomization_ImportExport::GetImportExportButtonIsEn
 		}
 	}
 
-	return bHasOneSelection;
+	return bHasOneSelection && LandscapeEdMode->IsLandscapeResolutionCompliant();
+}
+
+EVisibility FLandscapeEditorDetailCustomization_ImportExport::GetImportExportLandscapeErrorVisibility() const
+{
+	FEdModeLandscape* EdMode = GetEditorMode();
+	
+	if (EdMode != nullptr)
+	{
+		return EdMode->IsLandscapeResolutionCompliant() ? EVisibility::Hidden : EVisibility::Visible;
+	}
+
+	return EVisibility::Hidden;
+}
+
+FText FLandscapeEditorDetailCustomization_ImportExport::GetImportExportLandscapeErrorText() const
+{
+	FEdModeLandscape* EdMode = GetEditorMode();
+
+	if (EdMode != nullptr)
+	{
+		return EdMode->GetLandscapeResolutionErrorText();
+	}
+
+	return FText::GetEmpty();
 }
 
 TSharedRef<SWidget> FLandscapeEditorDetailCustomization_ImportExport::GetImportLandscapeResolutionMenu()

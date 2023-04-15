@@ -179,7 +179,7 @@ class CONTROLRIG_API UControlRigComponent : public UPrimitiveComponent
 public:
 
 	/** The class of control rig to instantiate */
-	UPROPERTY(EditAnywhere, Category = ControlRig, meta = (DisallowCreateNew))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ControlRig, meta = (DisallowCreateNew), BlueprintSetter = SetControlRigClass)
 	TSubclassOf<UControlRig> ControlRigClass;
 
 	/** Event fired just before this component's ControlRig is initialized */
@@ -191,12 +191,12 @@ public:
 	FControlRigComponentDelegate OnPostInitializeDelegate;
 
 	/** Event fired before this component's ControlRig is setup */
-	UPROPERTY(BlueprintAssignable, Category = "ControlRig", meta = (DisplayName = "On Pre Setup"))
-	FControlRigComponentDelegate OnPreSetupDelegate;
+	UPROPERTY(BlueprintAssignable, Category = "ControlRig", meta = (DisplayName = "On Pre Construction"))
+	FControlRigComponentDelegate OnPreConstructionDelegate;
 
 	/** Event fired after this component's ControlRig is setup */
-	UPROPERTY(BlueprintAssignable, Category = "ControlRig", meta = (DisplayName = "On Post Setup"))
-	FControlRigComponentDelegate OnPostSetupDelegate;
+	UPROPERTY(BlueprintAssignable, Category = "ControlRig", meta = (DisplayName = "On Post Construction"))
+	FControlRigComponentDelegate OnPostConstructionDelegate;
 
 	/** Event fired before this component's ControlRig's forwards solve */
 	UPROPERTY(BlueprintAssignable, Category = "ControlRig", meta = (DisplayName = "On Pre Forwards Solve"))
@@ -212,6 +212,8 @@ public:
 #endif
 
 	virtual void BeginDestroy() override;
+
+	virtual void Serialize(FArchive& Ar) override;
 	//~ End UObject Interface
 	
 	//~ Begin UActorComponent Interface
@@ -247,10 +249,10 @@ public:
 	void OnPostInitialize(UControlRigComponent* Component);
 
 	UFUNCTION(BlueprintNativeEvent, Category = "ControlRig", CallInEditor)
-	void OnPreSetup(UControlRigComponent* Component);
+	void OnPreConstruction(UControlRigComponent* Component);
 
 	UFUNCTION(BlueprintNativeEvent, Category = "ControlRig", CallInEditor)
-	void OnPostSetup(UControlRigComponent* Component);
+	void OnPostConstruction(UControlRigComponent* Component);
 
 	UFUNCTION(BlueprintNativeEvent, Category = "ControlRig", CallInEditor, meta = (DisplayName = "On Pre Forwards Solve"))
 	void OnPreForwardsSolve(UControlRigComponent* Component);
@@ -258,7 +260,7 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "ControlRig", CallInEditor, meta = (DisplayName = "On Post Forwards Solve"))
 	void OnPostForwardsSolve(UControlRigComponent* Component);
 
-	/** Initializes the rig's memory and calls the setup event */
+	/** Initializes the rig's memory and calls the construction event */
 	UFUNCTION(BlueprintCallable, Category = "ControlRig")
 	void Initialize();
 
@@ -267,6 +269,9 @@ public:
 	void Update(float DeltaTime = 0.f);
 
 	UPROPERTY(EditAnywhere, Category = "Animation")
+	TArray<FControlRigComponentMappedElement> UserDefinedElements;
+
+	UPROPERTY(VisibleAnywhere, Category = "Animation")
 	TArray<FControlRigComponentMappedElement> MappedElements;
 
 	/** Removes all mapped elements from the component */
@@ -317,9 +322,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Animation")
 	bool bResetTransformBeforeTick;
 
-	/** When checked the initial transforms on bones, nulls and controls are reset prior to a setup event */
+	/** When checked the initial transforms on bones, nulls and controls are reset prior to a construction event */
 	UPROPERTY(EditAnywhere, Category = "Animation")
-	bool bResetInitialsBeforeSetup;
+	bool bResetInitialsBeforeConstruction;
 
 	/** When checked this ensures to run the rig's update on the component's tick automatically */
 	UPROPERTY(EditAnywhere, Category = "Animation")
@@ -594,6 +599,12 @@ public:
 		
 	void SetControlRig(UControlRig* ControlRig);
 
+	UFUNCTION(BlueprintCallable, Category = "ControlRig")
+	void SetControlRigClass(TSubclassOf<UControlRig> InControlRigClass);
+
+	UFUNCTION(BlueprintCallable, Category = "ControlRig")
+	void SetObjectBinding(UObject* InObjectToBind);
+
 private:
 
 	struct FCachedSkeletalMeshComponentSettings
@@ -634,8 +645,8 @@ private:
 	static FName GetComponentNameWithinActor(UActorComponent* InComponent);
 
 	void HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPreSetupEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPostSetupEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
+	void HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
+	void HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
 	void HandleControlRigPreForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
 	void HandleControlRigPostForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
 	void HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
@@ -662,6 +673,8 @@ private:
 	TArray<int32> InputElementIndices;
 	TArray<FTransform> InputTransforms;
 	TArray<FTransform> LastInputTransforms;
+
+	TSharedPtr<IControlRigObjectBinding> ObjectBinding;
 
 	friend class FControlRigSceneProxy;
 };

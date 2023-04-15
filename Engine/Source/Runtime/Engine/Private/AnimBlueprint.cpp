@@ -3,8 +3,11 @@
 #include "Animation/AnimBlueprint.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimBlueprint)
+
 #if WITH_EDITOR
-#include "Settings/EditorExperimentalSettings.h"
+#include "Settings/AnimBlueprintSettings.h"
 #include "Modules/ModuleManager.h"
 #endif
 #if WITH_EDITORONLY_DATA
@@ -215,6 +218,46 @@ void UAnimBlueprint::SetObjectBeingDebugged(UObject* NewObject)
 	AnimationEditorUtils::SetupDebugLinkedAnimInstances(this, NewObject);
 
 	Super::SetObjectBeingDebugged(NewObject);
+}
+
+bool UAnimBlueprint::SupportsEventGraphs() const
+{
+	return GetDefault<UAnimBlueprintSettings>()->bAllowEventGraphs;
+}
+
+bool UAnimBlueprint::SupportsAnimLayers() const
+{
+	return true;
+}
+
+bool UAnimBlueprint::SupportsDelegates() const
+{
+	return GetDefault<UAnimBlueprintSettings>()->bAllowDelegates;
+}
+
+bool UAnimBlueprint::SupportsMacros() const
+{
+	return GetDefault<UAnimBlueprintSettings>()->bAllowMacros;
+}
+
+bool UAnimBlueprint::AllowFunctionOverride(const UFunction* const InFunction) const
+{
+	check(InFunction);
+
+	if (!GetDefault<UAnimBlueprintSettings>()->bRestrictBaseFunctionOverrides)
+	{
+		return true;
+	}
+
+	UClass* OwnerClass = InFunction->GetOwnerClass();
+	if (OwnerClass == UAnimInstance::StaticClass())
+	{
+		return GetDefault<UAnimBlueprintSettings>()->BaseFunctionOverrideAllowList.Contains(InFunction->GetFName());
+	}
+	else
+	{
+		return true;
+	}
 }
 
 #endif

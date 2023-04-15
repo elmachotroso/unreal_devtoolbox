@@ -4,6 +4,10 @@
 #include "HAL/FileManager.h"
 #include "DirectoryWatcherPrivate.h"
 
+#if !UE_BUILD_SHIPPING
+#include "Misc/CoreMisc.h"
+#endif
+
 // To see inotify watch events:
 //   TestPAL dirwatcher -LogCmds="LogDirectoryWatcher VeryVerbose"
 
@@ -204,18 +208,22 @@ void FDirectoryWatchRequestLinux::WatchDirectoryTree(const FString & RootAbsolut
 	}
 
 	// If this isn't our root watch directory or under it, don't watch
-	if (!RootAbsolutePath.StartsWith(WatchDirectory, ESearchCase::CaseSensitive) ||
-		(!bWatchSubtree && (RootAbsolutePath != WatchDirectory)))
+	if (!RootAbsolutePath.StartsWith(WatchDirectory, ESearchCase::CaseSensitive))
 	{
 		return;
 	}
-
-	UE_LOG(LogDirectoryWatcher, VeryVerbose, TEXT("Watching tree '%s'"), *RootAbsolutePath);
 
 	if (FileChangesPtr)
 	{
 		FileChangesPtr->Emplace(FFileChangeData(RootAbsolutePath, FFileChangeData::FCA_Added), true);
 	}
+
+	if (!bWatchSubtree && (RootAbsolutePath != WatchDirectory))
+	{
+		return;
+	}
+
+	UE_LOG(LogDirectoryWatcher, VeryVerbose, TEXT("Watching tree '%s'"), *RootAbsolutePath);
 
 	TArray<FString> AllFiles;
 	if (bWatchSubtree)

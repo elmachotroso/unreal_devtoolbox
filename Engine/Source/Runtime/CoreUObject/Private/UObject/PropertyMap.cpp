@@ -12,9 +12,6 @@
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 #include "UObject/UObjectThreadContext.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 namespace UEMapProperty_Private
 {
 	/**
@@ -157,7 +154,7 @@ namespace UEMapProperty_Private
 		for (;;)
 		{
 			const uint8* PairA = MapHelperA.GetPairPtr(IndexA);
-			if (!AnyEqual(MapHelperA, FirstIndexA, FirstNum - Num, PairA, PortFlags) && !RangesContainSameAmountsOfVal(MapHelperA, IndexA, MapHelperB, IndexB, Num, PairA, PortFlags))
+			if (!AnyEqual(MapHelperA, FirstIndexA, FirstNum - Num, PairA, PortFlags) && !RangesContainSameAmountsOfVal(MapHelperA, FirstIndexA, MapHelperB, FirstIndexB, FirstNum, PairA, PortFlags))
 			{
 				return false;
 			}
@@ -168,14 +165,10 @@ namespace UEMapProperty_Private
 				return true;
 			}
 
+			++IndexA;
 			while (!MapHelperA.IsValidIndex(IndexA))
 			{
 				++IndexA;
-			}
-
-			while (!MapHelperB.IsValidIndex(IndexB))
-			{
-				++IndexB;
 			}
 		}
 	}
@@ -194,13 +187,25 @@ FMapProperty::FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFl
 }
 
 FMapProperty::FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, EMapPropertyFlags InMapFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: FMapProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
 	// These are expected to be set post-construction by AddCppProperty
 	KeyProp   = nullptr;
 	ValueProp = nullptr;
 
 	MapFlags = InMapFlags;
+}
+
+FMapProperty::FMapProperty(FFieldVariant InOwner, const UECodeGen_Private::FMapPropertyParams& Prop)
+	: FMapProperty_Super(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop)
+{
+	// These are expected to be set post-construction by AddCppProperty
+	KeyProp = nullptr;
+	ValueProp = nullptr;
+
+	MapFlags = Prop.MapFlags;
 }
 
 #if WITH_EDITORONLY_DATA
@@ -334,7 +339,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Delete any explicitly-removed elements
 		int32 NumKeysToRemove = 0;
-		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
+		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(TEXT("KeysToRemove"), NumKeysToRemove);
 
 		if (!Defaults || MapHelper.Num() == 0) // Faster loading path when loading into an empty map
 		{
@@ -355,7 +360,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 			}
 
 			int32 NumEntries = 0;
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(TEXT("Entries"), NumEntries);
 
 			// Empty and reserve then deserialize pairs directly into map memory
 			MapHelper.EmptyValues(NumEntries);
@@ -366,11 +371,11 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), MapHelper.GetKeyPtr(Index));
+					KeyProp->SerializeItem(EntryRecord.EnterField(TEXT("Key")), MapHelper.GetKeyPtr(Index));
 				}
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), MapHelper.GetValuePtr(Index));
+					ValueProp->SerializeItem(EntryRecord.EnterField(TEXT("Value")), MapHelper.GetValuePtr(Index));
 				}
 			}
 
@@ -408,7 +413,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 			}
 
 			int32 NumEntries = 0;
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(TEXT("Entries"), NumEntries);
 
 			// Allocate temporary key space if we haven't allocated it already above
 			if (NumEntries != 0 && !TempKeyValueStorage)
@@ -425,7 +430,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 				// Read key into temporary storage
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyValueStorage);
+					KeyProp->SerializeItem(EntryRecord.EnterField(TEXT("Key")), TempKeyValueStorage);
 				}
 
 				void* ValuePtr = MapHelper.FindOrAdd(TempKeyValueStorage);
@@ -433,7 +438,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 				// Deserialize value into hash map-owned memory
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePtr);
+					ValueProp->SerializeItem(EntryRecord.EnterField(TEXT("Value")), ValuePtr);
 				}
 			}
 		}
@@ -466,7 +471,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Write out the missing keys
 		int32 MissingKeysNum = Indices.Num();
-		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), MissingKeysNum);
+		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(TEXT("KeysToRemove"), MissingKeysNum);
 		{
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
 			for (int32 Index : Indices)
@@ -497,7 +502,7 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 			// Write out differences from defaults
 			int32 Num = Indices.Num();
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), Num);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(TEXT("Entries"), Num);
 			for (int32 Index : Indices)
 			{
 				uint8* ValuePairPtr = MapHelper.GetPairPtrWithoutCheck(Index);
@@ -505,18 +510,18 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), ValuePairPtr);
+					KeyProp->SerializeItem(EntryRecord.EnterField(TEXT("Key")), ValuePairPtr);
 				}
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePairPtr + MapLayout.ValueOffset);
+					ValueProp->SerializeItem(EntryRecord.EnterField(TEXT("Value")), ValuePairPtr + MapLayout.ValueOffset);
 				}
 			}
 		}
 		else
 		{
 			int32 Num = MapHelper.Num();
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), Num);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(TEXT("Entries"), Num);
 
 			for (int32 Index = 0; Num; ++Index)
 			{
@@ -528,11 +533,11 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 					{
 						FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-						KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), ValuePairPtr);
+						KeyProp->SerializeItem(EntryRecord.EnterField(TEXT("Key")), ValuePairPtr);
 					}
 					{
 						FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-						ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePairPtr + MapLayout.ValueOffset);
+						ValueProp->SerializeItem(EntryRecord.EnterField(TEXT("Value")), ValuePairPtr + MapLayout.ValueOffset);
 					}
 
 					--Num;
@@ -628,7 +633,7 @@ FString FMapProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	return TEXT("TMAP");
 }
 
-void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
+void FMapProperty::ExportText_Internal(FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -639,7 +644,26 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
 
-	FScriptMapHelper MapHelper(this, PropertyValue);
+	uint8* TempMapStorage = nullptr;
+	void* PropertyValuePtr = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		// Allocate temporary map as we first need to initialize it with the value provided by the getter function and then export it
+		TempMapStorage = (uint8*)AllocateAndInitializeValue();
+		PropertyValuePtr = TempMapStorage;
+		FProperty::GetValue_InContainer(ContainerOrPropertyPtr, PropertyValuePtr);
+	}
+	else
+	{
+		PropertyValuePtr = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+	}
+
+	ON_SCOPE_EXIT
+	{
+		DestroyAndFreeValue(TempMapStorage);
+	};
+
+	FScriptMapHelper MapHelper(this, PropertyValuePtr);
 
 	if (MapHelper.Num() == 0)
 	{
@@ -691,7 +715,7 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 				}
 
 				ValueStr += TEXT("[");
-				KeyProp->ExportTextItem(ValueStr, PropData, nullptr, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				KeyProp->ExportText_Internal(ValueStr, PropData, EPropertyPointerType::Direct, nullptr, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 				ValueStr += TEXT("] ");
 
 				// Always use struct defaults if the inner is a struct, for symmetry with the import of array inner struct defaults
@@ -703,7 +727,7 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 					PropDefault = PropData;
 				}
 
-				ValueProp->ExportTextItem(ValueStr, PropData + MapLayout.ValueOffset, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				ValueProp->ExportText_Internal(ValueStr, PropData + MapLayout.ValueOffset, EPropertyPointerType::Direct, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				--Count;
 			}
@@ -729,7 +753,7 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 
 				ValueStr += TEXT("(");
 
-				KeyProp->ExportTextItem(ValueStr, PropData, nullptr, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				KeyProp->ExportText_Internal(ValueStr, PropData, EPropertyPointerType::Direct, nullptr, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				ValueStr += TEXT(", ");
 
@@ -742,7 +766,7 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 					PropDefault = PropData;
 				}
 
-				ValueProp->ExportTextItem(ValueStr, PropData + MapLayout.ValueOffset, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				ValueProp->ExportText_Internal(ValueStr, PropData + MapLayout.ValueOffset, EPropertyPointerType::Direct, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				ValueStr += TEXT(")");
 
@@ -754,12 +778,34 @@ void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 	}
 }
 
-const TCHAR* FMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FMapProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
 
-	FScriptMapHelper MapHelper(this, Data);
+	FScriptMapHelper MapHelper(this, PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType));
+	uint8* TempMapStorage = nullptr;
+
+	ON_SCOPE_EXIT
+	{
+		if (TempMapStorage)
+		{
+			// TempMap is used by property setter so if it was allocated call the setter now
+			FProperty::SetValue_InContainer(ContainerOrPropertyPtr, TempMapStorage);
+
+			// Destroy and free the temp map used by property setter
+			DestroyAndFreeValue(TempMapStorage);
+		}
+	};
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		// Allocate temporary map as we first need to initialize it with the parsed items and then use the setter to update the property
+		TempMapStorage = (uint8*)AllocateAndInitializeValue();
+		// Reinitialize the map helper with the temp value
+		MapHelper = FScriptMapHelper(this, TempMapStorage);
+	}
+
 	MapHelper.EmptyValues();
 
 	// If we export an empty array we export an empty string, so ensure that if we're passed an empty string
@@ -807,7 +853,7 @@ const TCHAR* FMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, 
 
 		// Parse the key
 		SkipWhitespace(Buffer);
-		Buffer = KeyProp->ImportText(Buffer, TempPairStorage, PortFlags | PPF_Delimited, Parent, ErrorText);
+		Buffer = KeyProp->ImportText_Internal(Buffer, TempPairStorage, EPropertyPointerType::Direct, Parent, PortFlags | PPF_Delimited, ErrorText);
 		if (!Buffer)
 		{
 			return nullptr;
@@ -824,7 +870,7 @@ const TCHAR* FMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, 
 
 		// Parse the value
 		SkipWhitespace(Buffer);
-		Buffer = ValueProp->ImportText(Buffer, TempPairStorage + MapLayout.ValueOffset, PortFlags | PPF_Delimited, Parent, ErrorText);
+		Buffer = ValueProp->ImportText_Internal(Buffer, TempPairStorage + MapLayout.ValueOffset, EPropertyPointerType::Direct, Parent, PortFlags | PPF_Delimited, ErrorText);
 		if (!Buffer)
 		{
 			return nullptr;
@@ -1074,7 +1120,7 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			// instance that was being written. Presumably we were constructed from our defaults and must now remove 
 			// any of the elements that were not present when we saved this Map:
 			int32 NumKeysToRemove = 0;
-			FStructuredArchive::FArray KeysToRemoveArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
+			FStructuredArchive::FArray KeysToRemoveArray = ValueRecord.EnterArray(TEXT("KeysToRemove"), NumKeysToRemove);
 
 			if( NumKeysToRemove != 0 )
 			{
@@ -1108,7 +1154,7 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			}
 
 			int32 NumEntries = 0;
-			FStructuredArchive::FArray EntriesArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
+			FStructuredArchive::FArray EntriesArray = ValueRecord.EnterArray(TEXT("Entries"), NumEntries);
 
 			if( bConversionSucceeded )
 			{
@@ -1122,7 +1168,7 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 
 					FStructuredArchive::FRecord FirstPropertyRecord = EntriesArray.EnterElement().EnterRecord();
 
-					if( SerializeOrConvert( KeyProp, KeyPropertyTag, FirstPropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyValueStorage, DefaultsStruct ) )
+					if( SerializeOrConvert( KeyProp, KeyPropertyTag, FirstPropertyRecord.EnterField(TEXT("Key")), TempKeyValueStorage, DefaultsStruct ) )
 					{
 						// Add a new default value if the key doesn't currently exist in the map
 						bool bKeyAlreadyPresent = true;
@@ -1138,14 +1184,14 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 						KeyProp->CopyCompleteValue_InContainer(NextPairPtr, TempKeyValueStorage);
 
 						// Deserialize value
-						if( SerializeOrConvert( ValueProp, ValuePropertyTag, FirstPropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), NextPairPtr, DefaultsStruct ) )
+						if( SerializeOrConvert( ValueProp, ValuePropertyTag, FirstPropertyRecord.EnterField(TEXT("Value")), NextPairPtr, DefaultsStruct ) )
 						{
 							// first entry went fine, convert the rest:
 							for(int32 I = 1; I < NumEntries; ++I)
 							{
 								FStructuredArchive::FRecord PropertyRecord = EntriesArray.EnterElement().EnterRecord();
 
-								verify( SerializeOrConvert( KeyProp, KeyPropertyTag, PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyValueStorage, DefaultsStruct ) );
+								verify( SerializeOrConvert( KeyProp, KeyPropertyTag, PropertyRecord.EnterField(TEXT("Key")), TempKeyValueStorage, DefaultsStruct ) );
 								NextPairIndex = MapHelper.FindMapIndexWithKey(TempKeyValueStorage);
 								if (NextPairIndex == INDEX_NONE)
 								{
@@ -1155,7 +1201,7 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 								NextPairPtr = MapHelper.GetPairPtrWithoutCheck(NextPairIndex);
 								// This copy is unnecessary when the key was already in the map:
 								KeyProp->CopyCompleteValue_InContainer(NextPairPtr, TempKeyValueStorage);
-								verify( SerializeOrConvert( ValueProp, ValuePropertyTag, PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), NextPairPtr, DefaultsStruct ) );
+								verify( SerializeOrConvert( ValueProp, ValuePropertyTag, PropertyRecord.EnterField(TEXT("Value")), NextPairPtr, DefaultsStruct ) );
 							}
 						}
 						else
@@ -1269,4 +1315,30 @@ void FMapProperty::GetInnerFields(TArray<FField*>& OutFields)
 	}
 }
 
-#include "UObject/DefineUPropertyMacros.h"
+void* FMapProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const
+{
+	FScriptMapHelper MapHelper(this, InValueAddress);
+	checkf(Inner == KeyProp || Inner == ValueProp, TEXT("Inner property must be either KeyProp or ValueProp"));
+
+	for (int32 MapIndex = 0, Num = MapHelper.Num(), LocalIndex = Index; LocalIndex >= 0 && Num > 0; ++MapIndex)
+	{
+		if (MapHelper.IsValidIndex(MapIndex))
+		{
+			if (LocalIndex == 0)
+			{
+				if (Inner == KeyProp)
+				{
+					return MapHelper.GetKeyPtr(MapIndex);
+				}
+				else
+				{
+					return MapHelper.GetValuePtr(MapIndex);
+				}
+			}
+			LocalIndex--;
+			Num--;
+		}
+	}
+	checkf(false, TEXT("Map element index (%d) out of range"), Index);
+	return nullptr;
+}

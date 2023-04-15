@@ -5,7 +5,7 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "MediaSource.h"
 #include "MediaPlaylist.h"
@@ -24,7 +24,7 @@ void SMediaPlaylistEditorMedia::Construct(const FArguments& InArgs, UMediaPlayli
 	// initialize asset picker
 	FAssetPickerConfig AssetPickerConfig;
 	{
-		AssetPickerConfig.Filter.ClassNames.Add(UMediaSource::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UMediaSource::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.bAllowDragging = false;
 		AssetPickerConfig.bAutohideSearchBar = true;
@@ -41,7 +41,7 @@ void SMediaPlaylistEditorMedia::Construct(const FArguments& InArgs, UMediaPlayli
 	ChildSlot
 	[
 		SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.ToolTipText(LOCTEXT("DoubleClickToAddToolTip", "Double-click a media source to add it to the play list."))
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)

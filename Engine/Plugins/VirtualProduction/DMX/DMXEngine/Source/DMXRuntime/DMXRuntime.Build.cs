@@ -13,19 +13,33 @@ public class DMXRuntime : ModuleRules
 			{
 				"Core",
                 "CoreUObject",
-                "Engine",
+				"DatasmithContent",
+				"Engine",
 				"DMXProtocol",
 				"JsonUtilities",
-
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"AssetRegistry",
+				"DMXFixtureActorInterface",
 				"Json",
 				"MovieScene",
+				"Projects",
+				"XmlParser",
 			}
 		);
+
+		if (Target.bBuildEditor == true)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"UnrealEd",
+				}
+			);
+		}
 	}
 }

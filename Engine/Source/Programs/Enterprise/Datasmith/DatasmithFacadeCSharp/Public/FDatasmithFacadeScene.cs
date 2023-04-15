@@ -83,6 +83,8 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
 			return new FDatasmithFacadeActorMesh(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Camera:
 			return new FDatasmithFacadeActorCamera(objectPtr, true);
+		case FDatasmithFacadeActor.EActorType.Decal:
+			return new FDatasmithFacadeActorDecal(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Actor:
 			return new FDatasmithFacadeActor(objectPtr, true);
 		case FDatasmithFacadeActor.EActorType.Unsupported:
@@ -131,8 +133,10 @@ public class FDatasmithFacadeScene : global::System.IDisposable {
 		{
 		case FDatasmithFacadeBaseMaterial.EDatasmithMaterialType.UEPbrMaterial:
 			return new FDatasmithFacadeUEPbrMaterial(objectPtr, true);
-		case FDatasmithFacadeBaseMaterial.EDatasmithMaterialType.MasterMaterial:
-			return new FDatasmithFacadeMasterMaterial(objectPtr, true);
+		case FDatasmithFacadeBaseMaterial.EDatasmithMaterialType.MaterialInstance:
+			return new FDatasmithFacadeMaterialInstance(objectPtr, true);
+		case FDatasmithFacadeBaseMaterial.EDatasmithMaterialType.DecalMaterial:
+			return new FDatasmithFacadeDecalMaterial(objectPtr, true);
 		case FDatasmithFacadeBaseMaterial.EDatasmithMaterialType.Unsupported:
 		default:
 			return null;

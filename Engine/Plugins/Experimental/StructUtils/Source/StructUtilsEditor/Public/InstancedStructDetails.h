@@ -75,10 +75,12 @@ private:
 	void OnStructValuePostChange();
 	void OnStructHandlePostChange();
 
-	/** Sync the current state of the editable struct instance to/from the source instance(s) */
+	/** Sync the current state of the editable struct instance from the source instance(s) */
 	void SyncEditableInstanceFromSource(bool* OutStructMismatch = nullptr);
-	void SyncEditableInstanceToSource(bool* OutStructMismatch = nullptr);
 
+	/** Outer objects at the time of PreChangeProperties */
+	TArray<FString> PreChangeOuterObjectNames;
+	
 	/** Handle to the struct property being edited */
 	TSharedPtr<IPropertyHandle> StructProperty;
 

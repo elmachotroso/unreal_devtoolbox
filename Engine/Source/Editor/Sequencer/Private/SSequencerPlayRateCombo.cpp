@@ -66,7 +66,7 @@ void SSequencerPlayRateCombo::Construct(const FArguments& InArgs, TWeakPtr<FSequ
 				SNew(STextBlock)
 				.Visibility(this, &SSequencerPlayRateCombo::GetFrameLockedVisibility)
 				.TextStyle(&SequencerToolBarStyle.LabelStyle)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(FEditorFontGlyphs::Lock)
 			]
 
@@ -92,7 +92,7 @@ void SSequencerPlayRateCombo::Construct(const FArguments& InArgs, TWeakPtr<FSequ
 				.ToolTipText(this, &SSequencerPlayRateCombo::GetFrameRateIsMultipleOfErrorDescription)
 				.Visibility(this, &SSequencerPlayRateCombo::GetFrameRateIsMultipleOfErrorVisibility)
 				.TextStyle(&SequencerToolBarStyle.LabelStyle)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(FEditorFontGlyphs::Exclamation_Triangle)
 			]
 
@@ -105,7 +105,7 @@ void SSequencerPlayRateCombo::Construct(const FArguments& InArgs, TWeakPtr<FSequ
 				.ToolTipText(this, &SSequencerPlayRateCombo::GetFrameRateMismatchErrorDescription)
 				.Visibility(this, &SSequencerPlayRateCombo::GetFrameRateMismatchErrorVisibility)
 				.TextStyle(&SequencerToolBarStyle.LabelStyle)
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(FEditorFontGlyphs::Exclamation_Triangle)
 			]
 		]
@@ -194,6 +194,8 @@ FText SSequencerPlayRateCombo::GetFrameRateMismatchErrorDescription() const
 			return FText();
 		}
 
+		TArray<FText> SubSequenceDisplayRates;
+
 		for (const TTuple<FMovieSceneSequenceID, FMovieSceneSubSequenceData>& Pair : Hierarchy->AllSubSequenceData())
 		{
 			UMovieSceneSequence* SubSequence = Pair.Value.GetSequence();
@@ -203,14 +205,24 @@ FText SSequencerPlayRateCombo::GetFrameRateMismatchErrorDescription() const
 			{
 				FFrameRate SubDisplayRate = MovieScene->GetDisplayRate();
 
-				const FCommonFrameRateInfo* DisplayRateInfo = FCommonFrameRates::Find(DisplayRate);
 				const FCommonFrameRateInfo* SubDisplayRateInfo = FCommonFrameRates::Find(SubDisplayRate);
 
-				FText DisplayRateText = DisplayRateInfo ? DisplayRateInfo->DisplayName : FText::Format(LOCTEXT("DisplayRateFormat", "{0} fps"), DisplayRate.AsDecimal());
 				FText SubDisplayRateText = SubDisplayRateInfo ? SubDisplayRateInfo->DisplayName : FText::Format(LOCTEXT("SubDisplayRateFormat", "{0} fps"), SubDisplayRate.AsDecimal());
 
-				return FText::Format(LOCTEXT("FrameRateMismatchDescription", "At least one mismatch in display rate: {0} is at {1} and {2} is at {3}"), Sequencer->GetRootMovieSceneSequence()->GetDisplayName(), DisplayRateText, SubSequence->GetDisplayName(), SubDisplayRateText);
+				FText SubSequenceDescription = FText::Format(LOCTEXT("SubSequenceFrameRateMismatchDescription", "\t{0} is at {1}"), SubSequence->GetDisplayName(), SubDisplayRateText);
+				SubSequenceDisplayRates.Add(SubSequenceDescription);
 			}
+		}
+
+		if (SubSequenceDisplayRates.Num() != 0)
+		{
+			const FCommonFrameRateInfo* DisplayRateInfo = FCommonFrameRates::Find(DisplayRate);
+			FText DisplayRateText = DisplayRateInfo ? DisplayRateInfo->DisplayName : FText::Format(LOCTEXT("DisplayRateFormat", "{0} fps"), DisplayRate.AsDecimal());		
+		
+			FText Description = FText::Format(LOCTEXT("FrameRateMismatchDescription", "Mismatch in display rate: {0} is at {1}"), Sequencer->GetRootMovieSceneSequence()->GetDisplayName(), DisplayRateText);
+			SubSequenceDisplayRates.Insert(Description, 0);
+
+			return FText::Join(FText::FromString(TEXT("\n")), SubSequenceDisplayRates);
 		}
 	}
 
@@ -452,7 +464,7 @@ void SSequencerPlayRateCombo::PopulateCustomClockSourceMenu(FMenuBuilder& MenuBu
 	auto AssetClockSourceMenu = [this](FMenuBuilder& ActorMenuBuilder)
 	{
 		FAssetPickerConfig AssetPickerConfig;
-		AssetPickerConfig.Filter.ClassNames.Add(UMovieSceneCustomClockSource::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(UMovieSceneCustomClockSource::StaticClass()->GetClassPathName());
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda([this](const FAssetData& In){ this->SetCustomClockSource(In.GetAsset()); });
@@ -568,17 +580,17 @@ const FSlateBrush* SSequencerPlayRateCombo::GetClockSourceImage() const
 				case EUpdateClockSource::Tick:
 					return nullptr;
 				case EUpdateClockSource::Platform:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.Platform");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.Platform");
 				case EUpdateClockSource::Audio:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.Audio");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.Audio");
 				case EUpdateClockSource::RelativeTimecode:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.RelativeTimecode");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.RelativeTimecode");
 				case EUpdateClockSource::Timecode:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.Timecode");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.Timecode");
 				case EUpdateClockSource::PlayEveryFrame:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.PlayEveryFrame");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.PlayEveryFrame");
 				case EUpdateClockSource::Custom:
-					return FEditorStyle::GetBrush("Sequencer.ClockSource.Custom");
+					return FAppStyle::GetBrush("Sequencer.ClockSource.Custom");
 				default:
 					return nullptr;
 			}

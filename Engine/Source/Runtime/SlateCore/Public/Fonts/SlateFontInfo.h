@@ -50,7 +50,7 @@ struct SLATECORE_API FFontOutlineSettings
 	bool bApplyOutlineToDropShadows;
 
 	/** Optional material to apply to the outline */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="MaterialInterface"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="/Script/Engine.MaterialInterface"))
 	TObjectPtr<UObject> OutlineMaterial;
 
 	/** The color of the outline for any character in this font */
@@ -134,11 +134,11 @@ struct SLATECORE_API FSlateFontInfo
 	GENERATED_USTRUCT_BODY()
 
 	/** The font object (valid when used from UMG or a Slate widget style asset) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="Font", DisplayName="Font Family"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="/Script/Engine.Font", DisplayName="Font Family"))
 	TObjectPtr<const UObject> FontObject;
 
 	/** The material to use when rendering this font */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="MaterialInterface"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="/Script/Engine.MaterialInterface"))
 	TObjectPtr<UObject> FontMaterial;
 
 	/** Settings for applying an outline to a font */
@@ -163,6 +163,10 @@ struct SLATECORE_API FSlateFontInfo
 	/** The uniform spacing (or tracking) between all characters in the text. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(ClampMin=-1000, ClampMax=10000))
 	int32 LetterSpacing = 0;
+
+	/** A skew amount to apply to the text. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(ClampMin=-5, ClampMax=5))
+	float SkewAmount = 0.0f;
 
 	/** The font fallback level. Runtime only, don't set on shared FSlateFontInfo, as it may change the font elsewhere (make a copy). */
 	EFontFallback FontFallback;
@@ -246,7 +250,8 @@ public:
 			&& OutlineSettings.IsIdenticalToForCaching(Other.OutlineSettings)
 			&& CompositeFont == Other.CompositeFont
 			&& TypefaceFontName == Other.TypefaceFontName
-			&& Size == Other.Size;
+			&& Size == Other.Size
+			&& SkewAmount == Other.SkewAmount;
 	}
 
 	inline bool IsIdenticalTo(const FSlateFontInfo& Other) const
@@ -257,7 +262,8 @@ public:
 			&& CompositeFont == Other.CompositeFont
 			&& TypefaceFontName == Other.TypefaceFontName
 			&& Size == Other.Size
-			&& LetterSpacing == Other.LetterSpacing;
+			&& LetterSpacing == Other.LetterSpacing
+			&& SkewAmount == Other.SkewAmount;
 	}
 
 	inline bool operator==(const FSlateFontInfo& Other) const
@@ -279,6 +285,9 @@ public:
 	/** Get the font size clamp for the font renderer (on 16bits) */
 	uint16 GetClampSize() const;
 
+	/** Get the skew amount clamp for the text shaper */
+	float GetClampSkew() const;
+
 	/**
 	 * Calculates a type hash value for a font info.
 	 *
@@ -296,6 +305,7 @@ public:
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.CompositeFont));
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.TypefaceFontName));
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.Size));
+		Hash = HashCombine(Hash, GetTypeHash(FontInfo.SkewAmount));
 		return Hash;
 	}
 

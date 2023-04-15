@@ -14,9 +14,9 @@
 
 #if WITH_TEXT_ARCHIVE_SUPPORT
 
-FJsonArchiveInputFormatter::FJsonArchiveInputFormatter(FArchive& InInner, TFunction<UObject* (const FString&)> InResolveObjectName) 
+FJsonArchiveInputFormatter::FJsonArchiveInputFormatter(FArchive& InInner, TFunction<UObject* (const FPackageIndex)> InResolveObject) 
 	: Inner(InInner)
-	, ResolveObjectName(InResolveObjectName)
+	, ResolveObject(InResolveObject)
 {
 	Inner.SetIsTextFormat(true);
 	Inner.ArAllowLazyLoading = false;
@@ -62,16 +62,6 @@ void FJsonArchiveInputFormatter::EnterRecord()
 	ObjectStack.Emplace(Value->AsObject(), ValueStack.Num());
 }
 
-void FJsonArchiveInputFormatter::EnterRecord_TextOnly(TArray<FString>& OutFieldNames)
-{
-	EnterRecord();
-	ObjectStack.Top().JsonObject->Values.GetKeys(OutFieldNames);
-	for(int32 Idx = 0; Idx < OutFieldNames.Num(); Idx++)
-	{
-		OutFieldNames[Idx] = UnescapeFieldName(*OutFieldNames[Idx]);
-	}
-}
-
 void FJsonArchiveInputFormatter::LeaveRecord()
 {
 	check(ValueStack.Num() == ObjectStack.Top().ValueCountOnCreation);
@@ -84,12 +74,6 @@ void FJsonArchiveInputFormatter::EnterField(FArchiveFieldName Name)
 	TSharedPtr<FJsonValue> Field = NewObject->TryGetField(EscapeFieldName(Name.Name));
 	check(Field.IsValid());
 	ValueStack.Add(Field);
-}
-
-void FJsonArchiveInputFormatter::EnterField_TextOnly(FArchiveFieldName Name, EArchiveValueType& OutType)
-{
-	EnterField(Name);
-	OutType = GetValueType(*ValueStack.Top());
 }
 
 void FJsonArchiveInputFormatter::LeaveField()
@@ -142,11 +126,6 @@ void FJsonArchiveInputFormatter::EnterArrayElement()
 	check(ArrayValuesRemainingStack.Top() > 0);
 }
 
-void FJsonArchiveInputFormatter::EnterArrayElement_TextOnly(EArchiveValueType& OutType)
-{
-	OutType = GetValueType(*ValueStack.Top());
-}
-
 void FJsonArchiveInputFormatter::LeaveArrayElement()
 {
 	ValueStack.Pop();
@@ -159,11 +138,6 @@ void FJsonArchiveInputFormatter::EnterStream()
 	EnterArray(NumElements);
 }
 
-void FJsonArchiveInputFormatter::EnterStream_TextOnly(int32& NumElements)
-{
-	EnterArray(NumElements);
-}
-
 void FJsonArchiveInputFormatter::LeaveStream()
 {
 	LeaveArray();
@@ -171,11 +145,6 @@ void FJsonArchiveInputFormatter::LeaveStream()
 
 void FJsonArchiveInputFormatter::EnterStreamElement()
 {
-}
-
-void FJsonArchiveInputFormatter::EnterStreamElement_TextOnly(EArchiveValueType& OutType)
-{
-	OutType = GetValueType(*ValueStack.Top());
 }
 
 void FJsonArchiveInputFormatter::LeaveStreamElement()
@@ -200,12 +169,6 @@ void FJsonArchiveInputFormatter::EnterMapElement(FString& OutName)
 {
 	OutName = UnescapeFieldName(*MapIteratorStack.Top()->Key);
 	ValueStack.Add(MapIteratorStack.Top()->Value);
-}
-
-void FJsonArchiveInputFormatter::EnterMapElement_TextOnly(FString& OutName, EArchiveValueType& OutType)
-{
-	EnterMapElement(OutName);
-	OutType = GetValueType(*ValueStack.Top());
 }
 
 void FJsonArchiveInputFormatter::LeaveMapElement()
@@ -378,10 +341,11 @@ void FJsonArchiveInputFormatter::Serialize(FName& Value)
 void FJsonArchiveInputFormatter::Serialize(UObject*& Value)
 {
 	FString StringValue;
-	const TCHAR Prefix[] = TEXT("Object:");
-	if (ValueStack.Top()->TryGetString(StringValue) && StringValue.StartsWith(Prefix))
+	if (ValueStack.Top()->TryGetString(StringValue))
 	{
-		Value = ResolveObjectName(*StringValue + UE_ARRAY_COUNT(Prefix) - 1);
+		FPackageIndex ObjectIndex;
+		LexFromString(ObjectIndex, *StringValue);
+		Value = ResolveObject(ObjectIndex);
 	}
 	else
 	{
@@ -413,7 +377,7 @@ void FJsonArchiveInputFormatter::Serialize(FSoftObjectPtr& Value)
 void FJsonArchiveInputFormatter::Serialize(FSoftObjectPath& Value)
 {
 	FString StringValue;
-	const TCHAR Prefix[] = TEXT("Object:");
+	const auto& Prefix = TEXT("Object:");
 	if (ValueStack.Top()->TryGetString(StringValue) && StringValue.StartsWith(Prefix))
 	{
 		Value.SetPath(*StringValue + UE_ARRAY_COUNT(Prefix) - 1);
@@ -427,7 +391,7 @@ void FJsonArchiveInputFormatter::Serialize(FSoftObjectPath& Value)
 void FJsonArchiveInputFormatter::Serialize(FLazyObjectPtr& Value)
 {
 	FString StringValue;
-	const TCHAR Prefix[] = TEXT("Lazy:");
+	const auto& Prefix = TEXT("Lazy:");
 	if (ValueStack.Top()->TryGetString(StringValue) && StringValue.StartsWith(Prefix))
 	{
 		FUniqueObjectGuid Guid;
@@ -442,16 +406,9 @@ void FJsonArchiveInputFormatter::Serialize(FLazyObjectPtr& Value)
 
 void FJsonArchiveInputFormatter::Serialize(FObjectPtr& Value)
 {
-	FString StringValue;
-	const TCHAR Prefix[] = TEXT("Object:");
-	if (ValueStack.Top()->TryGetString(StringValue) && StringValue.StartsWith(Prefix))
-	{
-		Value = ResolveObjectName(*StringValue + UE_ARRAY_COUNT(Prefix) - 1);
-	}
-	else
-	{
-		Value = nullptr;
-	}
+	UObject* Object;
+	Serialize(Object);
+	Value = Object;
 }
 
 void FJsonArchiveInputFormatter::Serialize(TArray<uint8>& Data)

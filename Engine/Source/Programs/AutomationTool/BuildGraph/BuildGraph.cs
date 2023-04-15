@@ -18,6 +18,8 @@ using OpenTracing.Util;
 using UnrealBuildBase;
 using UnrealBuildTool;
 using System.Threading.Tasks;
+using EpicGames.BuildGraph.Expressions;
+using AutomationTool.Tasks;
 
 namespace AutomationTool
 {
@@ -102,55 +104,48 @@ namespace AutomationTool
 	}
 
 	/// <summary>
-	/// Implementation of <see cref="IBgScriptReaderContext"/> which reads files from disk
+	/// Environment for graph evaluation
 	/// </summary>
-	class ScriptReaderFileContext : IBgScriptReaderContext
+	public class BgEnvironment
 	{
-		/// <inheritdoc/>
-		public object GetNativePath(string Path)
-		{
-			return FileReference.Combine(Unreal.RootDirectory, Path).FullName;
-		}
+		/// <summary>
+		/// The stream being built
+		/// </summary>
+		public BgString Stream { get; set; }
 
-		/// <inheritdoc/>
-		public Task<bool> ExistsAsync(string Path)
-		{
-			try
-			{
-				return Task.FromResult(FileReference.Exists(FileReference.Combine(Unreal.RootDirectory, Path)) || DirectoryReference.Exists(DirectoryReference.Combine(Unreal.RootDirectory, Path)));
-			}
-			catch
-			{
-				return Task.FromResult(false);
-			}
-		}
+		/// <summary>
+		/// Current changelist
+		/// </summary>
+		public BgInt Change { get; }
 
-		/// <inheritdoc/>
-		public async Task<byte[]> ReadAsync(string Path)
-		{
-			try
-			{
-				FileReference File = FileReference.Combine(Unreal.RootDirectory, Path);
-				if (FileReference.Exists(File))
-				{
-					return await FileReference.ReadAllBytesAsync(File);
-				}
-			}
-			catch
-			{
-			}
-			return null;
-		}
+		/// <summary>
+		/// Current code changelist
+		/// </summary>
+		public BgInt CodeChange { get; }
 
-		/// <inheritdoc/>
-		public Task<string[]> FindAsync(string Pattern)
-		{
-			FileFilter Filter = new FileFilter();
-			Filter.AddRule(Pattern, FileFilterType.Include);
+		/// <summary>
+		/// Whether the graph is being run on a build machine
+		/// </summary>
+		public BgBool IsBuildMachine { get; }
 
-			List<string> Files = Filter.ApplyToDirectory(Unreal.RootDirectory, true).ConvertAll(x => x.MakeRelativeTo(Unreal.RootDirectory).Replace('\\', '/'));
-			Files.Sort(StringComparer.OrdinalIgnoreCase);
-			return Task.FromResult(Files.ToArray());
+		/// <summary>
+		/// The current engine version
+		/// </summary>
+		public (BgInt Major, BgInt Minor, BgInt Patch) EngineVersion { get; }
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="P4Env"></param>
+		internal BgEnvironment(P4Environment P4Env)
+		{
+			this.Stream = P4Env?.Branch ?? "Unknown";
+			this.Change = P4Env?.Changelist ?? 0;
+			this.CodeChange = P4Env?.CodeChangelist ?? 0;
+			this.IsBuildMachine = CommandUtils.IsBuildMachine;
+
+			ReadOnlyBuildVersion Version = ReadOnlyBuildVersion.Current;
+			this.EngineVersion = (Version.MajorVersion, Version.MinorVersion, Version.PatchVersion);
 		}
 	}
 
@@ -160,7 +155,7 @@ namespace AutomationTool
 	/// Build graphs are declared using an XML script using syntax similar to MSBuild, ANT or NAnt, and consist of the following components:
 	///
 	/// - Tasks:        Building blocks which can be executed as part of the build process. Many predefined tasks are provided ('Cook', 'Compile', 'Copy', 'Stage', 'Log', 'PakFile', etc...), and additional tasks may be 
-	///                 added be declaring classes derived from AutomationTool.CustomTask in other UAT modules. 
+	///                 added be declaring classes derived from AutomationTool.BuildTask in other UAT modules. 
 	/// - Nodes:        A named sequence of tasks which are executed in order to produce outputs. Nodes may have dependencies on other nodes for their outputs before they can be executed. Declared with the 'Node' element.
 	/// - Agents:		A machine which can execute a sequence of nodes, if running as part of a build system. Has no effect when building locally. Declared with the 'Agent' element.
 	/// - Triggers:     Container for agents which should only be executed when explicitly triggered (using the -Trigger=... or -SkipTriggers command line argument). Declared with the 'Trigger' element.
@@ -185,45 +180,41 @@ namespace AutomationTool
 	/// elements as you type.
 	/// </summary>
 	[Help("Tool for creating extensible build processes in UE which can be run locally or in parallel across a build farm.")]
-	[Help("Script=<FileName>", "Path to the script describing the graph")]
-	[Help("Target=<Name>", "Name of the node or output tag to be built")]
-	[Help("Schema", "Generates a schema to the default location")]
-	[Help("Schema=<FileName>", "Generate a schema describing valid script documents, including all the known tasks")]
-	[Help("ImportSchema=<FileName>", "Imports a schema from an existing schema file")]
-	[Help("Set:<Property>=<Value>", "Sets a named property to the given value")]
-	[Help("Branch=<Value>", "Overrides the auto-detection of the current branch")]
-	[Help("Clean", "Cleans all cached state of completed build nodes before running")]
-	[Help("CleanNode=<Name>[+<Name>...]", "Cleans just the given nodes before running")]
-	[Help("Resume", "Resumes a local build from the last node that completed successfully")]
-	[Help("ListOnly", "Shows the contents of the preprocessed graph, but does not execute it")]
-	[Help("ShowDiagnostics", "When running with -ListOnly, causes diagnostic messages entered when parsing the graph to be shown")]
-	[Help("ShowDeps", "Show node dependencies in the graph output")]
-	[Help("ShowNotifications", "Show notifications that will be sent for each node in the output")]
-	[Help("Trigger=<Name>", "Executes only nodes behind the given trigger")]
-	[Help("SkipTrigger=<Name>[+<Name>...]", "Skips the given triggers, including all the nodes behind them in the graph")]
-	[Help("SkipTriggers", "Skips all triggers")]
-	[Help("TokenSignature=<Name>", "Specifies the signature identifying the current job, to be written to tokens for nodes that require them. Tokens are ignored if this parameter is not specified.")]
-	[Help("SkipTargetsWithoutTokens", "Excludes targets which we can't acquire tokens for, rather than failing")]
-	[Help("Preprocess=<FileName>", "Writes the preprocessed graph to the given file")]
-	[Help("Export=<FileName>", "Exports a JSON file containing the preprocessed build graph, for use as part of a build system")]
-	[Help("HordeExport=<FileName>", "Exports a JSON file containing the full build graph for use by Horde.")]
-	[Help("PublicTasksOnly", "Only include built-in tasks in the schema, excluding any other UAT modules")]
-	[Help("SharedStorageDir=<DirName>", "Sets the directory to use to transfer build products between agents in a build farm")]
-	[Help("SingleNode=<Name>", "Run only the given node. Intended for use on a build system after running with -Export.")]
-	[Help("WriteToSharedStorage", "Allow writing to shared storage. If not set, but -SharedStorageDir is specified, build products will read but not written")]
+	[ParamHelp("Script=<FileName>", "Path to the script describing the graph", ParamType = typeof(File), Required = true)]
+	[ParamHelp("Target=<Name>", "Name of the node or output tag to be built")]
+	[ParamHelp("Schema", "Generates a schema to the default location", ParamType = typeof(bool))]
+	[ParamHelp("Schema=<FileName>", "Generate a schema describing valid script documents, including all the known tasks", ParamType = typeof(string))]
+	[ParamHelp("ImportSchema=<FileName>", "Imports a schema from an existing schema file", ParamType = typeof(File))]
+	[ParamHelp("Set:<Property>=<Value>", "Sets a named property to the given value", Action = ParamHelpAttribute.ParamAction.Append, Flag = "-Set:")]
+	[ParamHelp("Branch=<Value>", "Overrides the auto-detection of the current branch")]
+	[ParamHelp("Clean", "Cleans all cached state of completed build nodes before running", ParamType = typeof(bool), Deprecated = true)]
+	[ParamHelp("CleanNode=<Name>[+<Name>...]", "Cleans just the given nodes before running", MultiSelectSeparator = "+")]
+	[ParamHelp("Resume", "Resumes a local build from the last node that completed successfully", ParamType = typeof(bool))]
+	[ParamHelp("ListOnly", "Shows the contents of the preprocessed graph, but does not execute it", ParamType = typeof(bool), DefaultValue = false)]
+	[ParamHelp("ShowDiagnostics", "When running with -ListOnly, causes diagnostic messages entered when parsing the graph to be shown", ParamType = typeof(bool))]
+	[ParamHelp("ShowDeps", "Show node dependencies in the graph output", ParamType = typeof(bool))]
+	[ParamHelp("ShowNotifications", "Show notifications that will be sent for each node in the output", ParamType = typeof(bool))]
+	[ParamHelp("Trigger=<Name>", "Executes only nodes behind the given trigger")]
+	[ParamHelp("SkipTrigger=<Name>[+<Name>...]", "Skips the given triggers, including all the nodes behind them in the graph", MultiSelectSeparator = "+")]
+	[ParamHelp("SkipTriggers", "Skips all triggers", ParamType = typeof(bool))]
+	[ParamHelp("TokenSignature=<Name>", "Specifies the signature identifying the current job, to be written to tokens for nodes that require them. Tokens are ignored if this parameter is not specified.")]
+	[ParamHelp("SkipTargetsWithoutTokens", "Excludes targets which we can't acquire tokens for, rather than failing", ParamType = typeof(bool))]
+	[ParamHelp("Preprocess=<FileName>", "Writes the preprocessed graph to the given file", ParamType = typeof(File))]
+	[ParamHelp("Export=<FileName>", "Exports a JSON file containing the preprocessed build graph, for use as part of a build system", ParamType = typeof(File))]
+	[ParamHelp("HordeExport=<FileName>", "Exports a JSON file containing the full build graph for use by Horde.", ParamType = typeof(File))]
+	[ParamHelp("PublicTasksOnly", "Only include built-in tasks in the schema, excluding any other UAT modules", ParamType = typeof(bool))]
+	[ParamHelp("SharedStorageDir=<DirName>", "Sets the directory to use to transfer build products between agents in a build farm", ParamType = typeof(Directory))]
+	[ParamHelp("SingleNode=<Name>", "Run only the given node. Intended for use on a build system after running with -Export.")]
+	[ParamHelp("WriteToSharedStorage", "Allow writing to shared storage. If not set, but -SharedStorageDir is specified, build products will read but not written", ParamType = typeof(bool))]
 	public class BuildGraph : BuildCommand
 	{
 		/// <summary>
-		/// Context object for reading scripts and evaluating conditions
-		/// </summary>
-		ScriptReaderFileContext Context { get; } = new ScriptReaderFileContext();
-
-		/// <summary>
 		/// Main entry point for the BuildGraph command
 		/// </summary>
-		public override ExitCode Execute()
+		public override async Task<ExitCode> ExecuteAsync()
 		{
 			// Parse the command line parameters
+			string ClassName = ParseParamValue("Class", null);
 			string ScriptFileName = ParseParamValue("Script", null);
 			string[] TargetNames = ParseParamValues("Target").SelectMany(x => x.Split(';', '+').Select(y => y.Trim()).Where(y => y.Length > 0)).ToArray();
 			string DocumentationFileName = ParseParamValue("Documentation", null);
@@ -245,7 +236,6 @@ namespace AutomationTool
 			bool bSkipValidation = ParseParam("SkipValidation");
 			string ReportName = ParseParamValue("ReportName", null);
 			string BranchOverride = ParseParamValue("Branch", null);
-
 
 			GraphPrintOptions PrintOptions = GraphPrintOptions.ShowCommandLineOptions;
 			if(ParseParam("ShowDeps"))
@@ -369,56 +359,83 @@ namespace AutomationTool
 				return ExitCode.Success;
 			}
 
-			// Import schema if one is passed in
-			BgScriptSchema Schema;
-			if (ImportSchemaFileName != null)
+			// Create the graph
+			BgGraphDef Graph;
+			if (ClassName != null)
 			{
-				Schema = BgScriptSchema.Import(FileReference.FromString(ImportSchemaFileName));
+				// Find all the graph builders
+				Dictionary<string, Type> NameToType = new Dictionary<string, Type>();
+				FindAvailableGraphs(NameToType);
+
+				Type BuilderType;
+				if (!NameToType.TryGetValue(ClassName, out BuilderType))
+				{
+					Logger.LogError("Unable to find graph '{GraphName}'", ClassName);
+					Logger.LogInformation("");
+					Logger.LogInformation("Available graphs:");
+					foreach (string Name in NameToType.Keys.OrderBy(x => x))
+					{
+						Logger.LogInformation("  {GraphName}", Name);
+					}
+					return ExitCode.Error_Unknown;
+				}
+
+				BgGraphBuilder Builder = (BgGraphBuilder)Activator.CreateInstance(BuilderType);
+				BgGraph GraphSpec = Builder.CreateGraph(new BgEnvironment(P4Enabled ? P4Env : null));
+
+				(byte[] Data, BgThunkDef[] Methods) = BgCompiler.Compile(GraphSpec);
+
+				BgInterpreter Interpreter = new BgInterpreter(Data, Methods, Arguments);
+				Interpreter.Disassemble(Logger);
+				Graph = ((BgObjectDef)Interpreter.Evaluate()).Deserialize<BgGraphExpressionDef>().ToGraphDef();
 			}
 			else
 			{
-				// Add any primitive types
-				List<(Type, ScriptSchemaStandardType)> PrimitiveTypes = new List<(Type, ScriptSchemaStandardType)>();
-				PrimitiveTypes.Add((typeof(FileReference), ScriptSchemaStandardType.BalancedString));
-				PrimitiveTypes.Add((typeof(DirectoryReference), ScriptSchemaStandardType.BalancedString));
-				PrimitiveTypes.Add((typeof(UnrealTargetPlatform), ScriptSchemaStandardType.BalancedString));
-				PrimitiveTypes.Add((typeof(MCPPlatform), ScriptSchemaStandardType.BalancedString));
-
-				// Create a schema for the given tasks
-				Schema = new BgScriptSchema(NameToTask.Values, PrimitiveTypes);
-				if (SchemaFileName != null)
+				// Import schema if one is passed in
+				BgScriptSchema Schema;
+				if (ImportSchemaFileName != null)
 				{
-					FileReference FullSchemaFileName = new FileReference(SchemaFileName);
-					LogInformation("Writing schema to {0}...", FullSchemaFileName.FullName);
-					Schema.Export(FullSchemaFileName);
-					if (ScriptFileName == null)
+					Schema = BgScriptSchema.Import(FileReference.FromString(ImportSchemaFileName));
+				}
+				else
+				{
+					// Add any primitive types
+					List<(Type, ScriptSchemaStandardType)> PrimitiveTypes = new List<(Type, ScriptSchemaStandardType)>();
+					PrimitiveTypes.Add((typeof(FileReference), ScriptSchemaStandardType.BalancedString));
+					PrimitiveTypes.Add((typeof(DirectoryReference), ScriptSchemaStandardType.BalancedString));
+					PrimitiveTypes.Add((typeof(UnrealTargetPlatform), ScriptSchemaStandardType.BalancedString));
+					PrimitiveTypes.Add((typeof(MCPPlatform), ScriptSchemaStandardType.BalancedString));
+
+					// Create a schema for the given tasks
+					Schema = new BgScriptSchema(NameToTask.Values, PrimitiveTypes);
+					if (SchemaFileName != null)
 					{
-						return ExitCode.Success;
+						FileReference FullSchemaFileName = new FileReference(SchemaFileName);
+						LogInformation("Writing schema to {0}...", FullSchemaFileName.FullName);
+						Schema.Export(FullSchemaFileName);
+						if (ScriptFileName == null)
+						{
+							return ExitCode.Success;
+						}
 					}
 				}
-			}
 
-			// Check there was a script specified
-			if(ScriptFileName == null)
-			{
-				LogError("Missing -Script= parameter for BuildGraph");
-				return ExitCode.Error_Unknown;
-			}
+				// Check there was a script specified
+				if (ScriptFileName == null)
+				{
+					LogError("Missing -Script= parameter for BuildGraph");
+					return ExitCode.Error_Unknown;
+				}
 
-			// Normalize the script filename
-			FileReference FullScriptFile = FileReference.Combine(Unreal.RootDirectory, ScriptFileName);
-			if (!FullScriptFile.IsUnderDirectory(Unreal.RootDirectory))
-			{
-				LogError("BuildGraph scripts must be under the UE root directory");
-				return ExitCode.Error_Unknown;
-			}
-			ScriptFileName = FullScriptFile.MakeRelativeTo(Unreal.RootDirectory).Replace('\\', '/');
+				// Normalize the script filename
+				FileReference FullScriptFile = FileReference.Combine(Unreal.RootDirectory, ScriptFileName);
 
-			// Read the script from disk
-			BgGraph Graph = BgScriptReader.ReadAsync(Context, ScriptFileName, Arguments, DefaultProperties, PreprocessedFileName != null, Schema, Logger, SingleNodeName).Result;
-			if(Graph == null)
-			{
-				return ExitCode.Error_Unknown;
+				// Read the script from disk
+				Graph = BgScriptReader.ReadAsync(FullScriptFile, Arguments, DefaultProperties, Schema, Logger, SingleNodeName).Result;
+				if (Graph == null)
+				{
+					return ExitCode.Error_Unknown;
+				}
 			}
 
 			// Export the graph for Horde
@@ -440,7 +457,7 @@ namespace AutomationTool
 			}
 
 			// Convert the supplied target references into nodes 
-			HashSet<BgNode> TargetNodes = new HashSet<BgNode>();
+			HashSet<BgNodeDef> TargetNodes = new HashSet<BgNodeDef>();
 			if(TargetNames.Length == 0)
 			{
 				if (!bListOnly && SingleNodeName == null)
@@ -467,7 +484,7 @@ namespace AutomationTool
 
 				foreach (string TargetName in NodesToResolve)
 				{
-					BgNode[] Nodes;
+					BgNodeDef[] Nodes;
 					if(!Graph.TryResolveReference(TargetName, out Nodes))
 					{
 						LogError("Target '{0}' is not in graph", TargetName);
@@ -487,7 +504,7 @@ namespace AutomationTool
 				if (SingleNodeName == null)
 				{
 					CommandUtils.LogInformation("Required tokens:");
-					foreach(BgNode Node in TargetNodes)
+					foreach(BgNodeDef Node in TargetNodes)
 					{
 						foreach(FileReference RequiredToken in Node.RequiredTokens)
 						{
@@ -520,13 +537,13 @@ namespace AutomationTool
 					if(bSkipTargetsWithoutTokens)
 					{
 						// Find all the nodes we're going to skip
-						HashSet<BgNode> SkipNodes = new HashSet<BgNode>();
+						HashSet<BgNodeDef> SkipNodes = new HashSet<BgNodeDef>();
 						foreach(IGrouping<string, FileReference> MissingTokensForBuild in MissingTokens.GroupBy(x => x.Value, x => x.Key))
 						{
 							LogInformation("Skipping the following nodes due to {0}:", MissingTokensForBuild.Key);
 							foreach(FileReference MissingToken in MissingTokensForBuild)
 							{
-								foreach(BgNode SkipNode in TargetNodes.Where(x => x.RequiredTokens.Contains(MissingToken) && SkipNodes.Add(x)))
+								foreach(BgNodeDef SkipNode in TargetNodes.Where(x => x.RequiredTokens.Contains(MissingToken) && SkipNodes.Add(x)))
 								{
 									LogInformation("    {0}", SkipNode);
 								}
@@ -538,7 +555,7 @@ namespace AutomationTool
 						{
 							TargetNodes.ExceptWith(SkipNodes);
 							LogInformation("Remaining target nodes:");
-							foreach(BgNode TargetNode in TargetNodes)
+							foreach(BgNodeDef TargetNode in TargetNodes)
 							{
 								LogInformation("    {0}", TargetNode);
 							}
@@ -552,7 +569,7 @@ namespace AutomationTool
 					{
 						foreach(KeyValuePair<FileReference, string> Pair in MissingTokens)
 						{
-							List<BgNode> SkipNodes = TargetNodes.Where(x => x.RequiredTokens.Contains(Pair.Key)).ToList();
+							List<BgNodeDef> SkipNodes = TargetNodes.Where(x => x.RequiredTokens.Contains(Pair.Key)).ToList();
 							LogError("Cannot run {0} due to previous build: {1}", String.Join(", ", SkipNodes), Pair.Value);
 						}
 						foreach(FileReference CreatedToken in CreatedTokens)
@@ -585,7 +602,7 @@ namespace AutomationTool
 			}
 
 			// If we're just building a single node, find it 
-			BgNode SingleNode = null;
+			BgNodeDef SingleNode = null;
 			if(SingleNodeName != null && !Graph.NameToNode.TryGetValue(SingleNodeName, out SingleNode))
 			{
 				LogError("Node '{0}' is not in the trimmed graph", SingleNodeName);
@@ -595,29 +612,30 @@ namespace AutomationTool
 			// If we just want to show the contents of the graph, do so and exit.
 			if(bListOnly)
 			{ 
-				HashSet<BgNode> CompletedNodes = FindCompletedNodes(Graph, Storage);
+				HashSet<BgNodeDef> CompletedNodes = FindCompletedNodes(Graph, Storage);
 				Graph.Print(CompletedNodes, PrintOptions, Log.Logger);
 			}
 
 			// Print out all the diagnostic messages which still apply, unless we're running a step as part of a build system or just listing the contents of the file. 
 			if(SingleNode == null && (!bListOnly || bShowDiagnostics))
 			{
-				foreach(BgGraphDiagnostic Diagnostic in Graph.Diagnostics)
+				List<BgDiagnosticDef> Diagnostics = Graph.GetAllDiagnostics();
+				foreach (BgDiagnosticDef Diagnostic in Diagnostics)
 				{
-					if(Diagnostic.EventType == LogEventType.Console)
+					if(Diagnostic.Level == LogLevel.Information)
 					{
-						CommandUtils.LogWarning("{0}({1}): {2}", Diagnostic.Location.File, Diagnostic.Location.LineNumber, Diagnostic.Message);
+						CommandUtils.LogInformation("{0}({1}): {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
-					else if(Diagnostic.EventType == LogEventType.Warning)
+					else if(Diagnostic.Level == LogLevel.Warning)
 					{
-						CommandUtils.LogWarning("{0}({1}): warning: {2}", Diagnostic.Location.File, Diagnostic.Location.LineNumber, Diagnostic.Message);
+						CommandUtils.LogWarning("{0}({1}): warning: {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
 					else
 					{
-						CommandUtils.LogError("{0}({1}): error: {2}", Diagnostic.Location.File, Diagnostic.Location.LineNumber, Diagnostic.Message);
+						CommandUtils.LogError("{0}({1}): error: {2}", Diagnostic.File, Diagnostic.Line, Diagnostic.Message);
 					}
 				}
-				if(Graph.Diagnostics.Any(x => x.EventType == LogEventType.Error))
+				if (Diagnostics.Any(x => x.Level == LogLevel.Error))
 				{
 					return ExitCode.Error_Unknown;
 				}
@@ -626,24 +644,24 @@ namespace AutomationTool
 			// Export the graph to a file
 			if(ExportFileName != null)
 			{
-				HashSet<BgNode> CompletedNodes = FindCompletedNodes(Graph, Storage);
+				HashSet<BgNodeDef> CompletedNodes = FindCompletedNodes(Graph, Storage);
 				Graph.Print(CompletedNodes, PrintOptions, Log.Logger);
 				Graph.Export(new FileReference(ExportFileName), CompletedNodes);
 				return ExitCode.Success;
 			}
 
 			// Create tasks for the entire graph
-			Dictionary<BgTask, CustomTask> TaskInfoToTask = new Dictionary<BgTask, CustomTask>();
+			Dictionary<BgNodeDef, BgNodeExecutor> NodeToExecutor = new Dictionary<BgNodeDef, BgNodeExecutor>();
 			if (bSkipValidation && SingleNode != null)
 			{
-				if (!CreateTaskInstances(Graph, SingleNode, NameToTask, TaskInfoToTask))
+				if (!BindNodes(SingleNode, NameToTask, Graph.TagNameToNodeOutput, NodeToExecutor))
 				{
 					return ExitCode.Error_Unknown;
 				}
 			}
 			else
 			{
-				if (!CreateTaskInstances(Graph, NameToTask, TaskInfoToTask))
+				if (!BindNodes(Graph, NameToTask, NodeToExecutor))
 				{
 					return ExitCode.Error_Unknown;
 				}
@@ -654,14 +672,14 @@ namespace AutomationTool
 			{
 				if(SingleNode != null)
 				{
-					if(!BuildNode(new JobContext(this), Graph, SingleNode, TaskInfoToTask, Storage, bWithBanner: true))
+					if(!await BuildNodeAsync(new JobContext(this), Graph, SingleNode, NodeToExecutor, Storage, bWithBanner: true))
 					{
 						return ExitCode.Error_Unknown;
 					}
 				}
 				else
 				{
-					if(!BuildAllNodes(new JobContext(this), Graph, TaskInfoToTask, Storage))
+					if(!await BuildAllNodesAsync(new JobContext(this), Graph, NodeToExecutor, Storage))
 					{
 						return ExitCode.Error_Unknown;
 					}
@@ -670,177 +688,62 @@ namespace AutomationTool
 			return ExitCode.Success;
 		}
 
-		bool CreateTaskInstances(BgGraph Graph, Dictionary<string, ScriptTaskBinding> NameToTask, Dictionary<BgTask, CustomTask> TaskInfoToTask)
+		bool BindNodes(BgGraphDef Graph, Dictionary<string, ScriptTaskBinding> NameToTask, Dictionary<BgNodeDef, BgNodeExecutor> NodeToExecutor)
 		{
 			bool bResult = true;
-			foreach (BgAgent Agent in Graph.Agents)
+			foreach (BgAgentDef Agent in Graph.Agents)
 			{
-				foreach (BgNode Node in Agent.Nodes)
+				foreach (BgNodeDef Node in Agent.Nodes)
 				{
-					bResult &= CreateTaskInstances(Graph, Node, NameToTask, TaskInfoToTask);
+					bResult &= BindNodes(Node, NameToTask, Graph.TagNameToNodeOutput, NodeToExecutor);
 				}
 			}
 			return bResult;
 		}
 
-		bool CreateTaskInstances(BgGraph Graph, BgNode Node, Dictionary<string, ScriptTaskBinding> NameToTask, Dictionary<BgTask, CustomTask> TaskInfoToTask)
+		bool BindNodes(BgNodeDef Node, Dictionary<string, ScriptTaskBinding> NameToTask, Dictionary<string, BgNodeOutput> TagNameToNodeOutput, Dictionary<BgNodeDef, BgNodeExecutor> NodeToExecutor)
 		{
-			bool bResult = true;
-			foreach (BgTask TaskInfo in Node.Tasks)
+			if (Node is BgScriptNode ScriptNode)
 			{
-				CustomTask Task = BindTask(Node, TaskInfo, NameToTask, Graph.TagNameToNodeOutput);
-				if (Task == null)
-				{
-					bResult = false;
-				}
-				else
-				{
-					TaskInfoToTask.Add(TaskInfo, Task);
-				}
+				BgScriptNodeExecutor executor = new BgScriptNodeExecutor(ScriptNode);
+				NodeToExecutor[Node] = executor;
+				return executor.Bind(NameToTask, TagNameToNodeOutput, Logger);
 			}
-			return bResult;
-		}
-
-		CustomTask BindTask(BgNode Node, BgTask TaskInfo, Dictionary<string, ScriptTaskBinding> NameToTask, IReadOnlyDictionary<string, BgNodeOutput> TagNameToNodeOutput)
-		{
-			// Get the reflection info for this element
-			ScriptTaskBinding Task;
-			if (!NameToTask.TryGetValue(TaskInfo.Name, out Task))
+			else if (Node is BgNodeExpressionDef BytecodeNode)
 			{
-				OutputBindingError(TaskInfo, "Unknown task '{TaskName}'", TaskInfo.Name);
-				return null;
-			}
-
-			// Check all the required parameters are present
-			bool bHasRequiredAttributes = true;
-			foreach (ScriptTaskParameterBinding Parameter in Task.NameToParameter.Values)
-			{
-				if (!Parameter.bOptional && !TaskInfo.Arguments.ContainsKey(Parameter.Name))
-				{
-					OutputBindingError(TaskInfo, "Missing required attribute - {AttrName}", Parameter.Name);
-					bHasRequiredAttributes = false;
-				}
-			}
-
-			// Read all the attributes into a parameters object for this task
-			object ParametersObject = Activator.CreateInstance(Task.ParametersClass);
-			foreach ((string Name, string Value) in TaskInfo.Arguments)
-			{
-				// Get the field that this attribute should be written to in the parameters object
-				ScriptTaskParameterBinding Parameter;
-				if (!Task.NameToParameter.TryGetValue(Name, out Parameter))
-				{
-					OutputBindingError(TaskInfo, "Unknown attribute '{AttrName}'", Name);
-					continue;
-				}
-
-				// If it's a collection type, split it into separate values
-				if (Parameter.CollectionType == null)
-				{
-					// Parse it and assign it to the parameters object
-					object FieldValue = ParseValue(Value, Parameter.ValueType);
-					Parameter.FieldInfo.SetValue(ParametersObject, FieldValue);
-				}
-				else
-				{
-					// Get the collection, or create one if necessary
-					object CollectionValue = Parameter.FieldInfo.GetValue(ParametersObject);
-					if (CollectionValue == null)
-					{
-						CollectionValue = Activator.CreateInstance(Parameter.FieldInfo.FieldType);
-						Parameter.FieldInfo.SetValue(ParametersObject, CollectionValue);
-					}
-
-					// Parse the values and add them to the collection
-					List<string> ValueStrings = CustomTask.SplitDelimitedList(Value);
-					foreach (string ValueString in ValueStrings)
-					{
-						object ElementValue = ParseValue(ValueString, Parameter.ValueType);
-						Parameter.CollectionType.InvokeMember("Add", BindingFlags.InvokeMethod | BindingFlags.Instance | BindingFlags.Public, null, CollectionValue, new object[] { ElementValue });
-					}
-				}
-			}
-
-			// Construct the task
-			if (!bHasRequiredAttributes)
-			{
-				return null;
-			}
-
-			// Add it to the list
-			CustomTask NewTask = (CustomTask)Activator.CreateInstance(Task.TaskClass, ParametersObject);
-
-			// Set up the source location for diagnostics
-			NewTask.SourceLocation = TaskInfo.Location;
-
-			// Make sure all the read tags are local or listed as a dependency
-			foreach (string ReadTagName in NewTask.FindConsumedTagNames())
-			{
-				BgNodeOutput Output;
-				if (TagNameToNodeOutput.TryGetValue(ReadTagName, out Output))
-				{
-					if (Output != null && Output.ProducingNode != Node && !Node.Inputs.Contains(Output))
-					{
-						OutputBindingError(TaskInfo, "The tag '{TagName}' is not a dependency of node '{Node}'", ReadTagName, Node.Name);
-					}
-				}
-			}
-
-			// Make sure all the written tags are local or listed as an output
-			foreach (string ModifiedTagName in NewTask.FindProducedTagNames())
-			{
-				BgNodeOutput Output;
-				if (TagNameToNodeOutput.TryGetValue(ModifiedTagName, out Output))
-				{
-					if (Output != null && !Node.Outputs.Contains(Output))
-					{
-						OutputBindingError(TaskInfo, "The tag '{0}' is created by '{1}', and cannot be modified downstream", Output.TagName, Output.ProducingNode.Name);
-					}
-				}
-			}
-			return NewTask;
-		}
-
-		/// <summary>
-		/// Parse a value of the given type
-		/// </summary>
-		/// <param name="ValueText">The text to parse</param>
-		/// <param name="ValueType">Type of the value to parse</param>
-		/// <returns>Value that was parsed</returns>
-		object ParseValue(string ValueText, Type ValueType)
-		{
-			// Parse it and assign it to the parameters object
-			if (ValueType.IsEnum)
-			{
-				return Enum.Parse(ValueType, ValueText);
-			}
-			else if (ValueType == typeof(Boolean))
-			{
-				return BgCondition.EvaluateAsync(ValueText, Context).Result;
-			}
-			else if (ValueType == typeof(FileReference))
-			{
-				return CustomTask.ResolveFile(ValueText);
-			}
-			else if (ValueType == typeof(DirectoryReference))
-			{
-				return CustomTask.ResolveDirectory(ValueText);
-			}
-
-			TypeConverter Converter = TypeDescriptor.GetConverter(ValueType);
-			if (Converter.CanConvertFrom(typeof(string)))
-			{
-				return Converter.ConvertFromString(ValueText);
+				BgBytecodeNodeExecutor executor = new BgBytecodeNodeExecutor(BytecodeNode);
+				NodeToExecutor[Node] = executor;
+				return executor.Bind(Logger);
 			}
 			else
 			{
-				return Convert.ChangeType(ValueText, ValueType);
+				throw new NotImplementedException();
 			}
 		}
 
-		void OutputBindingError(BgTask Task, string Format, params object[] Args)
+		static void FindAvailableGraphs(Dictionary<string, Type> NameToType)
 		{
-			Logger.LogScriptError(Task.Location, Format, Args);
+			foreach (Assembly LoadedAssembly in ScriptManager.AllScriptAssemblies)
+			{
+				Type[] Types;
+				try
+				{
+					Types = LoadedAssembly.GetTypes();
+				}
+				catch (ReflectionTypeLoadException ex)
+				{
+					LogWarning("Exception {0} while trying to get types from assembly {1}. LoaderExceptions: {2}", ex, LoadedAssembly, string.Join("\n", ex.LoaderExceptions.Select(x => x.Message)));
+					continue;
+				}
+
+				foreach (Type Type in Types)
+				{
+					if (Type.IsSubclassOf(typeof(BgGraphBuilder)))
+					{
+						NameToType.Add(Type.Name, Type);
+					}
+				}
+			}
 		}
 
 		/// <summary>
@@ -873,9 +776,9 @@ namespace AutomationTool
 				{
 					foreach(TaskElementAttribute ElementAttribute in Type.GetCustomAttributes<TaskElementAttribute>())
 					{
-						if(!Type.IsSubclassOf(typeof(CustomTask)))
+						if(!Type.IsSubclassOf(typeof(BgTaskImpl)))
 						{
-							CommandUtils.LogError("Class '{0}' has TaskElementAttribute, but is not derived from 'Task'", Type.Name);
+							CommandUtils.LogError("Class '{0}' has TaskElementAttribute, but is not derived from 'BgTaskImpl'", Type.Name);
 							return false;
 						}
 						if(NameToTask.ContainsKey(ElementAttribute.Name))
@@ -984,10 +887,10 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Graph">The graph instance</param>
 		/// <param name="Storage">The temp storage backend which stores the shared state</param>
-		HashSet<BgNode> FindCompletedNodes(BgGraph Graph, TempStorage Storage)
+		HashSet<BgNodeDef> FindCompletedNodes(BgGraphDef Graph, TempStorage Storage)
 		{
-			HashSet<BgNode> CompletedNodes = new HashSet<BgNode>();
-			foreach(BgNode Node in Graph.Agents.SelectMany(x => x.Nodes))
+			HashSet<BgNodeDef> CompletedNodes = new HashSet<BgNodeDef>();
+			foreach(BgNodeDef Node in Graph.Agents.SelectMany(x => x.Nodes))
 			{
 				if(Storage.IsComplete(Node.Name))
 				{
@@ -1002,17 +905,18 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="Graph">The graph instance</param>
+		/// <param name="NodeToExecutor">Map from node to executor</param>
 		/// <param name="Storage">The temp storage backend which stores the shared state</param>
 		/// <returns>True if everything built successfully</returns>
-		bool BuildAllNodes(JobContext Job, BgGraph Graph, Dictionary<BgTask, CustomTask> TaskInfoToTask, TempStorage Storage)
+		async Task<bool> BuildAllNodesAsync(JobContext Job, BgGraphDef Graph, Dictionary<BgNodeDef, BgNodeExecutor> NodeToExecutor, TempStorage Storage)
 		{
 			// Build a flat list of nodes to execute, in order
-			BgNode[] NodesToExecute = Graph.Agents.SelectMany(x => x.Nodes).ToArray();
+			BgNodeDef[] NodesToExecute = Graph.Agents.SelectMany(x => x.Nodes).ToArray();
 
 			// Check the integrity of any local nodes that have been completed. It's common to run formal builds locally between regular development builds, so we may have 
 			// stale local state. Rather than failing later, detect and clean them up now.
-			HashSet<BgNode> CleanedNodes = new HashSet<BgNode>();
-			foreach(BgNode NodeToExecute in NodesToExecute)
+			HashSet<BgNodeDef> CleanedNodes = new HashSet<BgNodeDef>();
+			foreach(BgNodeDef NodeToExecute in NodesToExecute)
 			{
 				if(NodeToExecute.InputDependencies.Any(x => CleanedNodes.Contains(x)) || !Storage.CheckLocalIntegrity(NodeToExecute.Name, NodeToExecute.Outputs.Select(x => x.TagName)))
 				{
@@ -1023,13 +927,13 @@ namespace AutomationTool
 
 			// Execute them in order
 			int NodeIdx = 0;
-			foreach(BgNode NodeToExecute in NodesToExecute)
+			foreach(BgNodeDef NodeToExecute in NodesToExecute)
 			{
 				LogInformation("****** [{0}/{1}] {2}", ++NodeIdx, NodesToExecute.Length, NodeToExecute.Name);
 				if(!Storage.IsComplete(NodeToExecute.Name))
 				{
 					LogInformation("");
-					if(!BuildNode(Job, Graph, NodeToExecute, TaskInfoToTask, Storage, bWithBanner: false))
+					if(!await BuildNodeAsync(Job, Graph, NodeToExecute, NodeToExecutor, Storage, bWithBanner: false))
 					{
 						return false;
 					} 
@@ -1045,11 +949,11 @@ namespace AutomationTool
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="Graph">The graph to which the node belongs. Used to determine which outputs need to be transferred to temp storage.</param>
 		/// <param name="Node">The node to build</param>
-		/// <param name="TaskInfoToTask">Map from task info instance to task instance</param>
+		/// <param name="NodeToExecutor">Map from node to executor</param>
 		/// <param name="Storage">The temp storage backend which stores the shared state</param>
 		/// <param name="bWithBanner">Whether to write a banner before and after this node's log output</param>
 		/// <returns>True if the node built successfully, false otherwise.</returns>
-		bool BuildNode(JobContext Job, BgGraph Graph, BgNode Node, Dictionary<BgTask, CustomTask> TaskInfoToTask, TempStorage Storage, bool bWithBanner)
+		async Task<bool> BuildNodeAsync(JobContext Job, BgGraphDef Graph, BgNodeDef Node, Dictionary<BgNodeDef, BgNodeExecutor> NodeToExecutor, TempStorage Storage, bool bWithBanner)
 		{
 			DirectoryReference RootDir = new DirectoryReference(CommandUtils.CmdEnv.LocalRoot);
 
@@ -1106,7 +1010,7 @@ namespace AutomationTool
 				Console.WriteLine();
 				CommandUtils.LogInformation("========== Starting: {0} ==========", Node.Name);
 			}
-			if(!ExecuteTasks(Node, Job, TaskInfoToTask, TagNameToFileSet))
+			if(!await NodeToExecutor[Node].ExecuteAsync(Job, TagNameToFileSet))
 			{
 				return false;
 			}
@@ -1128,15 +1032,25 @@ namespace AutomationTool
 			}
 			if(ModifiedFiles.Count > 0)
 			{
-				throw new AutomationException("Build {0} from a previous step have been modified:\n{1}", (ModifiedFiles.Count == 1)? "product" : "products", String.Join("\n", ModifiedFiles.Select(x => x.Value)));
+				string modifiedFileList = "";
+				if (ModifiedFiles.Count < 100)
+				{
+					modifiedFileList = String.Join("\n", ModifiedFiles.Select(x => x.Value));
+				}
+				else
+				{
+					modifiedFileList = String.Join("\n", ModifiedFiles.Take(100).Select(x => x.Value));
+					modifiedFileList += $"{Environment.NewLine}And {ModifiedFiles.Count - 100} more.";
+				}
+				throw new AutomationException("Build {0} from a previous step have been modified:\n{1}", (ModifiedFiles.Count == 1)? "product" : "products", modifiedFileList);
 			}
 
 			// Determine all the output files which are required to be copied to temp storage (because they're referenced by nodes in another agent)
 			HashSet<FileReference> ReferencedOutputFiles = new HashSet<FileReference>();
-			foreach(BgAgent Agent in Graph.Agents)
+			foreach(BgAgentDef Agent in Graph.Agents)
 			{
 				bool bSameAgent = Agent.Nodes.Contains(Node);
-				foreach(BgNode OtherNode in Agent.Nodes)
+				foreach(BgNodeDef OtherNode in Agent.Nodes)
 				{
 					if(!bSameAgent)
 					{
@@ -1227,78 +1141,6 @@ namespace AutomationTool
 
 			// Mark the node as succeeded
 			Storage.MarkAsComplete(Node.Name);
-			return true;
-		}
-
-		/// <summary>
-		/// Build all the tasks for this node
-		/// </summary>
-		/// <param name="Job">Information about the current job</param>
-		/// <param name="TaskInfoToTask">Map from TaskInfo to Task object</param>
-		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include. Should be set to contain the node inputs on entry.</param>
-		/// <returns>Whether the task succeeded or not. Exiting with an exception will be caught and treated as a failure.</returns>
-		bool ExecuteTasks(BgNode Node, JobContext Job, Dictionary<BgTask, CustomTask> TaskInfoToTask, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
-		{
-			List<CustomTask> Tasks = Node.Tasks.ConvertAll(x => TaskInfoToTask[x]);
-
-			// Run each of the tasks in order
-			HashSet<FileReference> BuildProducts = TagNameToFileSet[Node.DefaultOutput.TagName];
-			for (int Idx = 0; Idx < Tasks.Count; Idx++)
-			{
-				using (IScope Scope = GlobalTracer.Instance.BuildSpan("Task").WithTag("resource", Tasks[Idx].GetTraceName()).StartActive())
-				{
-					ITaskExecutor Executor = Tasks[Idx].GetExecutor();
-					if (Executor == null)
-					{
-						// Execute this task directly
-						try
-						{
-							Tasks[Idx].GetTraceMetadata(Scope.Span, "");
-							Tasks[Idx].Execute(Job, BuildProducts, TagNameToFileSet);
-						}
-						catch (Exception Ex)
-						{
-							ExceptionUtils.AddContext(Ex, "while executing task {0}", Tasks[Idx].GetTraceString());
-							if (Tasks[Idx].SourceLocation != null)
-							{
-								ExceptionUtils.AddContext(Ex, "at {0}({1})", Tasks[Idx].SourceLocation.File, Tasks[Idx].SourceLocation.LineNumber);
-							}
-							throw;
-						}
-					}
-					else
-					{
-						Tasks[Idx].GetTraceMetadata(Scope.Span, "1.");
-
-						// The task has a custom executor, which may be able to execute several tasks simultaneously. Try to add the following tasks.
-						int FirstIdx = Idx;
-						while (Idx + 1 < Tasks.Count && Executor.Add(Tasks[Idx + 1]))
-						{
-							Idx++;
-							Tasks[Idx].GetTraceMetadata(Scope.Span, string.Format("{0}.", 1 + Idx - FirstIdx));
-						}
-						try
-						{
-							Executor.Execute(Job, BuildProducts, TagNameToFileSet);
-						}
-						catch (Exception Ex)
-						{
-							for (int TaskIdx = FirstIdx; TaskIdx <= Idx; TaskIdx++)
-							{
-								ExceptionUtils.AddContext(Ex, "while executing {0}", Tasks[TaskIdx].GetTraceString());
-							}
-							if (Tasks[FirstIdx].SourceLocation != null)
-							{
-								ExceptionUtils.AddContext(Ex, "at {0}({1})", Tasks[FirstIdx].SourceLocation.File, Tasks[FirstIdx].SourceLocation.LineNumber);
-							}
-							throw;
-						}
-					}
-				}
-			}
-
-			// Remove anything that doesn't exist, since these files weren't explicitly tagged
-			BuildProducts.RemoveWhere(x => !FileReference.Exists(x));
 			return true;
 		}
 
@@ -1400,24 +1242,34 @@ namespace AutomationTool
 							XmlElement ParameterElement;
 							if (MemberNameToElement.TryGetValue("F:" + Parameter.FieldInfo.DeclaringType.FullName + "." + Parameter.Name, out ParameterElement))
 							{
-								string TypeName = Parameter.FieldInfo.FieldType.Name;
+								Type FieldType = Parameter.FieldInfo.FieldType;
+								if (FieldType.IsGenericType && FieldType.GetGenericTypeDefinition() == typeof(Nullable<>))
+								{
+									FieldType = FieldType.GetGenericArguments()[0];
+								}
+
+								string TypeName;
 								if (Parameter.ValidationType != TaskParameterValidationType.Default)
 								{
-									StringBuilder NewTypeName = new StringBuilder(Parameter.ValidationType.ToString());
-									for (int Idx = 1; Idx < NewTypeName.Length; Idx++)
-									{
-										if (Char.IsLower(NewTypeName[Idx - 1]) && Char.IsUpper(NewTypeName[Idx]))
-										{
-											NewTypeName.Insert(Idx, ' ');
-										}
-									}
-									TypeName = NewTypeName.ToString();
+									TypeName = Parameter.ValidationType.ToString();
+								}
+								else if (FieldType == typeof(int))
+								{
+									TypeName = "Integer";
+								}
+								else if (FieldType == typeof(HashSet<DirectoryReference>))
+								{
+									TypeName = "DirectoryList";
+								}
+								else
+								{
+									TypeName = FieldType.Name;
 								}
 
 								string[] Columns = new string[4];
 								Columns[0] = ParameterName;
 								Columns[1] = TypeName;
-								Columns[2] = Parameter.bOptional ? "Optional" : "Required";
+								Columns[2] = Parameter.Optional ? "Optional" : "Required";
 								Columns[3] = ConvertToMarkdown(ParameterElement.SelectSingleNode("summary"));
 								Rows.Add(Columns);
 							}
@@ -1523,7 +1375,7 @@ namespace AutomationTool
 								Writer.WriteLine("      <tr>");
 								Writer.WriteLine("         <td>{0}</td>", ParameterName);
 								Writer.WriteLine("         <td>{0}</td>", TypeName);
-								Writer.WriteLine("         <td>{0}</td>", Parameter.bOptional? "Optional" : "Required");
+								Writer.WriteLine("         <td>{0}</td>", Parameter.Optional? "Optional" : "Required");
 								Writer.WriteLine("         <td>{0}</td>", ParameterElement.SelectSingleNode("summary").InnerXml.Trim());
 								Writer.WriteLine("      </tr>");
 							}

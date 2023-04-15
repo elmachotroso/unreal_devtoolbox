@@ -89,11 +89,6 @@ struct FNoLightMapPolicy
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
-	}
 };
 
 enum ELightmapQuality
@@ -140,11 +135,6 @@ struct TLightMapPolicy
 			&& Parameters.VertexFactoryType->SupportsStaticLighting()
 			&& (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnAnyThread() != 0)
 			&& (Parameters.MaterialParameters.bIsUsedWithStaticLighting || Parameters.MaterialParameters.bIsSpecialEngineMaterial);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -209,6 +199,23 @@ public:
 		LAYOUT_FIELD(FShaderUniformBufferParameter, TranslucentSelfShadowBufferParameter);
 	};
 
+	class ComputeParametersType
+	{
+		DECLARE_INLINE_TYPE_LAYOUT(ComputeParametersType, NonVirtual);
+	public:
+		void Bind(const FShaderParameterMap& ParameterMap)
+		{
+			TranslucentSelfShadowBufferParameter.Bind(ParameterMap, TEXT("TranslucentSelfShadow"));
+		}
+
+		void Serialize(FArchive& Ar)
+		{
+			Ar << TranslucentSelfShadowBufferParameter;
+		}
+
+		LAYOUT_FIELD(FShaderUniformBufferParameter, TranslucentSelfShadowBufferParameter);
+	};
+
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		return Parameters.MaterialParameters.ShadingModels.IsLit() &&
@@ -219,11 +226,6 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("TRANSLUCENT_SELF_SHADOWING"),TEXT("1"));
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 
 	/** Initialization constructor. */
@@ -242,6 +244,15 @@ public:
 		FMeshDrawSingleShaderBindings& ShaderBindings)
 	{
 		ShaderBindings.Add(PixelShaderParameters->TranslucentSelfShadowBufferParameter, ShaderElementData);
+	}
+
+	static void GetComputeShaderBindings(
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const ElementDataType& ShaderElementData,
+		const ComputeParametersType* ComputeShaderParameters,
+		FMeshDrawSingleShaderBindings& ShaderBindings)
+	{
+		ShaderBindings.Add(ComputeShaderParameters->TranslucentSelfShadowBufferParameter, ShaderElementData);
 	}
 
 	friend bool operator==(const FSelfShadowedTranslucencyPolicy A,const FSelfShadowedTranslucencyPolicy B)
@@ -288,11 +299,6 @@ struct FCachedVolumeIndirectLightingPolicy
 	{
 		OutEnvironment.SetDefine(TEXT("CACHED_VOLUME_INDIRECT_LIGHTING"),TEXT("1"));
 	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
-	}
 };
 
 
@@ -310,163 +316,7 @@ struct FCachedPointIndirectLightingPolicy
 	}
 
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-
-	static bool RequiresSkylight()
-	{
-		return false;
-	}
 };
-
-/**
- * Renders the base pass without outputting to GBuffers, used to support low end hardware where deferred shading is too expensive.
- */
-struct FSimpleNoLightmapLightingPolicy : public FNoLightMapPolicy
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& FNoLightMapPolicy::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		FNoLightMapPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return true;
-	}
-};
-
-/**
- * Renders lightmaps without outputting to GBuffers, used to support low end hardware where deferred shading is too expensive.
- */
-struct FSimpleLightmapOnlyLightingPolicy : public TLightMapPolicy<HQ_LIGHTMAP>
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-
-		return AllowStaticLightingVar->GetValueOnAnyThread() != 0
-			&& PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& TLightMapPolicy<HQ_LIGHTMAP>::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		TLightMapPolicy<HQ_LIGHTMAP>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return true;
-	}
-};
-
-/**
- * Renders an unshadowed directional light in the base pass, used to support low end hardware where deferred shading is too expensive.
- */
-struct FSimpleDirectionalLightLightingPolicy
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& Parameters.MaterialParameters.ShadingModels.IsLit();
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_DIRECTIONAL_LIGHT"),TEXT("1"));
-	}
-
-	static bool RequiresSkylight()
-	{
-		return true;
-	}
-};
-
-/**
- * Renders a stationary directional light in the base pass with distance field precomputed shadows without outputting to GBuffers, used to support low end hardware where deferred shading is too expensive.
- */
-struct FSimpleStationaryLightPrecomputedShadowsLightingPolicy : public TDistanceFieldShadowsAndLightMapPolicy<HQ_LIGHTMAP>
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-
-		return AllowStaticLightingVar->GetValueOnAnyThread() != 0
-			&& PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& TDistanceFieldShadowsAndLightMapPolicy<HQ_LIGHTMAP>::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_DIRECTIONAL_LIGHT"),TEXT("1"));
-		TDistanceFieldShadowsAndLightMapPolicy<HQ_LIGHTMAP>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return true;
-	}
-};
-
-/**
- * Renders a stationary directional light in the base pass with single sample shadows without outputting to GBuffers, used to support low end hardware where deferred shading is too expensive.
- */
-struct FSimpleStationaryLightSingleSampleShadowsLightingPolicy : public FCachedPointIndirectLightingPolicy
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-
-		return AllowStaticLightingVar->GetValueOnAnyThread() != 0
-			&& PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& FCachedPointIndirectLightingPolicy::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_DIRECTIONAL_LIGHT"),TEXT("1"));
-		FCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return true;
-	}
-};
-
-struct FSimpleStationaryLightVolumetricLightmapShadowsLightingPolicy : public FPrecomputedVolumetricLightmapLightingPolicy
-{
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-
-		return AllowStaticLightingVar->GetValueOnAnyThread() != 0
-			&& PlatformSupportsSimpleForwardShading(Parameters.Platform)
-			&& FPrecomputedVolumetricLightmapLightingPolicy::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_SHADING"),TEXT("1"));
-		OutEnvironment.SetDefine(TEXT("SIMPLE_FORWARD_DIRECTIONAL_LIGHT"),TEXT("1"));
-		FPrecomputedVolumetricLightmapLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-};
-
-FORCEINLINE_DEBUGGABLE int32 GetMobileMaxShadowCascades()
-{
-	static const auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.CSM.MaxMobileCascades"));
-	return CVar ? FMath::Clamp(CVar->GetValueOnAnyThread(), 0, MAX_MOBILE_SHADOWCASCADES) : MAX_MOBILE_SHADOWCASCADES;
-}
 
 FORCEINLINE_DEBUGGABLE bool MobileUseCSMShaderBranch()
 {
@@ -480,7 +330,6 @@ struct FMobileDirectionalLightAndCSMPolicy
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DIRECTIONAL_LIGHT_CSM"), TEXT("1"));
-		OutEnvironment.SetDefine(TEXT(PREPROCESSOR_TO_STRING(MAX_MOBILE_SHADOWCASCADES)), GetMobileMaxShadowCascades());
 		OutEnvironment.SetDefine(TEXT("MOBILE_USE_CSM_BRANCH"), MobileUseCSMShaderBranch());
 	}
 	
@@ -500,17 +349,13 @@ struct FMobileDirectionalLightAndCSMPolicy
 			Parameters.MaterialParameters.ShadingModels.IsLit() && 
 			!IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode);
 	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
-	}
 };
 
 /** Mobile Specific: Combines a distance field shadow with LQ lightmaps. */
 class FMobileDistanceFieldShadowsAndLQLightMapPolicy : public TDistanceFieldShadowsAndLightMapPolicy<LQ_LIGHTMAP>
 {
 	typedef TDistanceFieldShadowsAndLightMapPolicy<LQ_LIGHTMAP>	Super;
+
 public:
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
@@ -522,11 +367,6 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -554,14 +394,8 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DIRECTIONAL_LIGHT_CSM"), TEXT("1"));
-		OutEnvironment.SetDefine(TEXT(PREPROCESSOR_TO_STRING(MAX_MOBILE_SHADOWCASCADES)), GetMobileMaxShadowCascades());
 
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -569,6 +403,7 @@ public:
 struct FMobileDirectionalLightCSMAndLightMapPolicy : public TLightMapPolicy< LQ_LIGHTMAP >
 {
 	typedef TLightMapPolicy<LQ_LIGHTMAP> Super;
+
 public:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
@@ -584,14 +419,8 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DIRECTIONAL_LIGHT_CSM"), TEXT("1"));
-		OutEnvironment.SetDefine(TEXT(PREPROCESSOR_TO_STRING(MAX_MOBILE_SHADOWCASCADES)), GetMobileMaxShadowCascades());
 
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -609,11 +438,6 @@ struct FMobileDirectionalLightAndSHIndirectPolicy
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -640,14 +464,8 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DIRECTIONAL_LIGHT_CSM"), TEXT("1"));
-		OutEnvironment.SetDefine(TEXT(PREPROCESSOR_TO_STRING(MAX_MOBILE_SHADOWCASCADES)), GetMobileMaxShadowCascades());
 
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -670,11 +488,6 @@ struct FMobileMovableDirectionalLightWithLightmapPolicy : public TLightMapPolicy
 		OutEnvironment.SetDefine(TEXT("MOVABLE_DIRECTIONAL_LIGHT"), TEXT("1"));
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
-	}
 };
 
 /** Mobile Specific: Combines a movable directional light with LQ lightmaps and CSM */
@@ -695,14 +508,8 @@ struct FMobileMovableDirectionalLightCSMWithLightmapPolicy : public FMobileMovab
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("DIRECTIONAL_LIGHT_CSM"), TEXT("1"));
-		OutEnvironment.SetDefine(TEXT(PREPROCESSOR_TO_STRING(MAX_MOBILE_SHADOWCASCADES)), GetMobileMaxShadowCascades());
 
 		Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	static bool RequiresSkylight()
-	{
-		return false;
 	}
 };
 
@@ -713,12 +520,6 @@ enum ELightMapPolicyType
 	LMP_PRECOMPUTED_IRRADIANCE_VOLUME_INDIRECT_LIGHTING,
 	LMP_CACHED_VOLUME_INDIRECT_LIGHTING,
 	LMP_CACHED_POINT_INDIRECT_LIGHTING,
-	LMP_SIMPLE_NO_LIGHTMAP,
-	LMP_SIMPLE_LIGHTMAP_ONLY_LIGHTING,
-	LMP_SIMPLE_DIRECTIONAL_LIGHT_LIGHTING,
-	LMP_SIMPLE_STATIONARY_PRECOMPUTED_SHADOW_LIGHTING,
-	LMP_SIMPLE_STATIONARY_SINGLESAMPLE_SHADOW_LIGHTING,
-	LMP_SIMPLE_STATIONARY_VOLUMETRICLIGHTMAP_SHADOW_LIGHTING,
 	LMP_LQ_LIGHTMAP,
 	LMP_HQ_LIGHTMAP,
 	LMP_DISTANCE_FIELD_SHADOWS_AND_HQ_LIGHTMAP,
@@ -770,6 +571,7 @@ public:
 #if RHI_RAYTRACING
 	typedef FUniformLightMapPolicyShaderParametersType RayHitGroupParametersType;
 #endif
+	typedef FUniformLightMapPolicyShaderParametersType ComputeParametersType;
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
@@ -801,6 +603,12 @@ public:
 		FMeshDrawSingleShaderBindings& RayHitGroupBindings
 	) const;
 #endif // RHI_RAYTRACING
+
+	static void GetComputeShaderBindings(
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const ElementDataType& ShaderElementData,
+		const ComputeParametersType* PixelShaderParameters,
+		FMeshDrawSingleShaderBindings& ShaderBindings);
 
 	friend bool operator==(const FUniformLightMapPolicy A,const FUniformLightMapPolicy B)
 	{
@@ -834,18 +642,6 @@ public:
 			return FCachedVolumeIndirectLightingPolicy::ShouldCompilePermutation(Parameters);
 		case LMP_CACHED_POINT_INDIRECT_LIGHTING:
 			return FCachedPointIndirectLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_NO_LIGHTMAP:
-			return FSimpleNoLightmapLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_LIGHTMAP_ONLY_LIGHTING:
-			return FSimpleLightmapOnlyLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_DIRECTIONAL_LIGHT_LIGHTING:
-			return FSimpleDirectionalLightLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_STATIONARY_PRECOMPUTED_SHADOW_LIGHTING:
-			return FSimpleStationaryLightPrecomputedShadowsLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_STATIONARY_SINGLESAMPLE_SHADOW_LIGHTING:
-			return FSimpleStationaryLightSingleSampleShadowsLightingPolicy::ShouldCompilePermutation(Parameters);
-		case LMP_SIMPLE_STATIONARY_VOLUMETRICLIGHTMAP_SHADOW_LIGHTING:
-			return FSimpleStationaryLightVolumetricLightmapShadowsLightingPolicy::ShouldCompilePermutation(Parameters);
 		case LMP_LQ_LIGHTMAP:
 			return TLightMapPolicy<LQ_LIGHTMAP>::ShouldCompilePermutation(Parameters);
 		case LMP_HQ_LIGHTMAP:
@@ -901,24 +697,6 @@ public:
 		case LMP_CACHED_POINT_INDIRECT_LIGHTING:
 			FCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 			break;
-		case LMP_SIMPLE_NO_LIGHTMAP:
-			return FSimpleNoLightmapLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
-		case LMP_SIMPLE_LIGHTMAP_ONLY_LIGHTING:
-			return FSimpleLightmapOnlyLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
-		case LMP_SIMPLE_DIRECTIONAL_LIGHT_LIGHTING:
-			FSimpleDirectionalLightLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
-		case LMP_SIMPLE_STATIONARY_PRECOMPUTED_SHADOW_LIGHTING:
-			return FSimpleStationaryLightPrecomputedShadowsLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
-		case LMP_SIMPLE_STATIONARY_SINGLESAMPLE_SHADOW_LIGHTING:
-			return FSimpleStationaryLightSingleSampleShadowsLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
-		case LMP_SIMPLE_STATIONARY_VOLUMETRICLIGHTMAP_SHADOW_LIGHTING:
-			return FSimpleStationaryLightVolumetricLightmapShadowsLightingPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-			break;
 		case LMP_LQ_LIGHTMAP:
 			TLightMapPolicy<LQ_LIGHTMAP>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 			break;
@@ -966,23 +744,6 @@ public:
 			break;
 		}
 	}
-
-	static bool RequiresSkylight()
-	{
-		CA_SUPPRESS(6326);
-		switch (Policy)
-		{
-		// Simple forward
-		case LMP_SIMPLE_NO_LIGHTMAP:
-		case LMP_SIMPLE_LIGHTMAP_ONLY_LIGHTING:
-		case LMP_SIMPLE_DIRECTIONAL_LIGHT_LIGHTING:
-		case LMP_SIMPLE_STATIONARY_PRECOMPUTED_SHADOW_LIGHTING:
-		case LMP_SIMPLE_STATIONARY_SINGLESAMPLE_SHADOW_LIGHTING:
-			return true;
-		default:
-			return false;
-		};
-	}
 };
 
 struct FSelfShadowLightCacheElementData
@@ -1016,6 +777,23 @@ public:
 		}
 	};
 
+	class ComputeParametersType : public FUniformLightMapPolicyShaderParametersType, public FSelfShadowedTranslucencyPolicy::ComputeParametersType
+	{
+		DECLARE_INLINE_TYPE_LAYOUT_EXPLICIT_BASES(ComputeParametersType, NonVirtual, FUniformLightMapPolicyShaderParametersType, FSelfShadowedTranslucencyPolicy::ComputeParametersType);
+	public:
+		void Bind(const FShaderParameterMap& ParameterMap)
+		{
+			FUniformLightMapPolicyShaderParametersType::Bind(ParameterMap);
+			FSelfShadowedTranslucencyPolicy::ComputeParametersType::Bind(ParameterMap);
+		}
+
+		void Serialize(FArchive& Ar)
+		{
+			FUniformLightMapPolicyShaderParametersType::Serialize(Ar);
+			FSelfShadowedTranslucencyPolicy::ComputeParametersType::Serialize(Ar);
+		}
+	};
+
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		static IConsoleVariable* AllowStaticLightingVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AllowStaticLighting"));
@@ -1042,6 +820,12 @@ public:
 		const ElementDataType& ShaderElementData,
 		const PixelParametersType* PixelShaderParameters,
 		FMeshDrawSingleShaderBindings& ShaderBindings);
+
+	static void GetComputeShaderBindings(
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const ElementDataType& ShaderElementData,
+		const ComputeParametersType* ComputeShaderParameters,
+		FMeshDrawSingleShaderBindings& ShaderBindings);
 };
 
 class FSelfShadowedVolumetricLightmapPolicy : public FSelfShadowedTranslucencyPolicy
@@ -1063,6 +847,23 @@ public:
 		{
 			FUniformLightMapPolicyShaderParametersType::Serialize(Ar);
 			FSelfShadowedTranslucencyPolicy::PixelParametersType::Serialize(Ar);
+		}
+	};
+
+	class ComputeParametersType : public FUniformLightMapPolicyShaderParametersType, public FSelfShadowedTranslucencyPolicy::ComputeParametersType
+	{
+		DECLARE_INLINE_TYPE_LAYOUT_EXPLICIT_BASES(ComputeParametersType, NonVirtual, FUniformLightMapPolicyShaderParametersType, FSelfShadowedTranslucencyPolicy::ComputeParametersType);
+	public:
+		void Bind(const FShaderParameterMap& ParameterMap)
+		{
+			FUniformLightMapPolicyShaderParametersType::Bind(ParameterMap);
+			FSelfShadowedTranslucencyPolicy::ComputeParametersType::Bind(ParameterMap);
+		}
+
+		void Serialize(FArchive& Ar)
+		{
+			FUniformLightMapPolicyShaderParametersType::Serialize(Ar);
+			FSelfShadowedTranslucencyPolicy::ComputeParametersType::Serialize(Ar);
 		}
 	};
 
@@ -1095,5 +896,11 @@ public:
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 		const ElementDataType& ShaderElementData,
 		const PixelParametersType* PixelShaderParameters,
+		FMeshDrawSingleShaderBindings& ShaderBindings);
+
+	static void GetComputeShaderBindings(
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const ElementDataType& ShaderElementData,
+		const ComputeParametersType* ComputeShaderParameters,
 		FMeshDrawSingleShaderBindings& ShaderBindings);
 };

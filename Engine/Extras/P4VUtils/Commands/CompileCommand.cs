@@ -34,7 +34,7 @@ namespace P4VUtils.Commands
 				return 1;
 			}
 
-			PerforceConnection Perforce = new PerforceConnection(null, null, null, Logger);
+			using PerforceConnection Perforce = new PerforceConnection(null, null, null, Logger);
 			bool Result = await BuildAsync(Perforce, Change, Args.Skip(2), Logger);
 			return Result ? 0 : 1;
 		}
@@ -50,7 +50,7 @@ namespace P4VUtils.Commands
 
 			List<FileReference> LocalFiles = new List<FileReference>();
 
-			List<WhereRecord> WhereRecords = await Perforce.WhereAsync(ChangeRecord.Files.ToArray(), CancellationToken.None);
+			List<WhereRecord> WhereRecords = await Perforce.WhereAsync(ChangeRecord.Files.ToArray(), CancellationToken.None).ToListAsync();
 			foreach (WhereRecord WhereRecord in WhereRecords)
 			{
 				if(WhereRecord.Path != null)
@@ -152,7 +152,9 @@ namespace P4VUtils.Commands
 			using (ManagedProcessGroup Group = new ManagedProcessGroup())
 			using (ManagedProcess Process = new ManagedProcess(Group, ShellFileName, ShellArguments, null, null, System.Diagnostics.ProcessPriorityClass.Normal))
 			{
+#pragma warning disable CA2000 // Dispose objects before losing scope
 				await Process.CopyToAsync(Console.OpenStandardOutput(), CancellationToken.None);
+#pragma warning restore CA2000 // Dispose objects before losing scope
 			}
 
 			return true;

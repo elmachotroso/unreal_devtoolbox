@@ -14,6 +14,8 @@ FDMXInputPortConfigParams::FDMXInputPortConfigParams(const FDMXInputPortConfig& 
 	: PortName(InputPortConfig.GetPortName())
 	, ProtocolName(InputPortConfig.GetProtocolName())
 	, CommunicationType(InputPortConfig.GetCommunicationType())
+	, bAutoCompleteDeviceAddressEnabled(InputPortConfig.IsAutoCompleteDeviceAddressEnabled())
+	, AutoCompleteDeviceAddress(InputPortConfig.GetAutoCompleteDeviceAddress())
 	, DeviceAddress(InputPortConfig.GetDeviceAddress())
 	, LocalUniverseStart(InputPortConfig.GetLocalUniverseStart())
 	, NumUniverses(InputPortConfig.GetNumUniverses())
@@ -41,6 +43,8 @@ FDMXInputPortConfig::FDMXInputPortConfig(const FGuid& InPortGuid, const FDMXInpu
 	: PortName(InitializationData.PortName)
 	, ProtocolName(InitializationData.ProtocolName)
 	, CommunicationType(InitializationData.CommunicationType)
+	, bAutoCompleteDeviceAddressEnabled(InitializationData.bAutoCompleteDeviceAddressEnabled)
+	, AutoCompleteDeviceAddress(InitializationData.AutoCompleteDeviceAddress)
 	, DeviceAddress(InitializationData.DeviceAddress)
 	, LocalUniverseStart(InitializationData.LocalUniverseStart)
 	, NumUniverses(InitializationData.NumUniverses)
@@ -124,7 +128,7 @@ void FDMXInputPortConfig::MakeValid()
 
 FString FDMXInputPortConfig::GetDeviceAddress() const
 {
-	// Allow to override the listener ip from commandline
+	// Return the Command Line Device Address if it is set
 	const FString DMXInputPortCommandLine = FString::Printf(TEXT("dmxinputportip=%s:"), *PortName);
 	FString OverrideIP;
 	FParse::Value(FCommandLine::Get(), *DMXInputPortCommandLine, OverrideIP);
@@ -132,5 +136,17 @@ FString FDMXInputPortConfig::GetDeviceAddress() const
 	{
 		return OverrideIP;
 	}
+
+	// Return the Auto Complete Device Address if that's enabled
+	if (bAutoCompleteDeviceAddressEnabled)
+	{
+		FString NetworkInterfaceCardIPAddress;
+		if (FDMXProtocolUtils::FindLocalNetworkInterfaceCardIPAddress(AutoCompleteDeviceAddress, NetworkInterfaceCardIPAddress))
+		{
+			return NetworkInterfaceCardIPAddress;
+		}
+	}
+
+	// Return the Device Address
 	return DeviceAddress;
 }

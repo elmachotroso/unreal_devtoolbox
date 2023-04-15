@@ -2,11 +2,14 @@
 
 #pragma once
 
+#include "CoreMinimal.h"
 #include "GeometryCollection/ManagedArray.h"
 #include "GeometryCollection/ManagedArrayTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "GeometryCollection/GeometryCollectionSection.h"
+
+#include "ManagedArrayCollection.generated.h"
 
 class FSimulationProperties;
 
@@ -37,19 +40,20 @@ namespace Chaos
 *
 *
 */
-class CHAOS_API FManagedArrayCollection
+USTRUCT()
+struct CHAOS_API FManagedArrayCollection
 {
+	GENERATED_USTRUCT_BODY()
 	friend FSimulationProperties;
 
 public:
-
 	FManagedArrayCollection();
 	virtual ~FManagedArrayCollection() {}
 
-	FManagedArrayCollection(const FManagedArrayCollection&) = delete;
-	FManagedArrayCollection& operator=(const FManagedArrayCollection&) = delete;
+	FManagedArrayCollection(const FManagedArrayCollection& In) { In.CopyTo(this); }
+	FManagedArrayCollection& operator=(const FManagedArrayCollection& In) { Reset(); In.CopyTo(this); return *this; }
 	FManagedArrayCollection(FManagedArrayCollection&&) = default;
-	FManagedArrayCollection& operator=(FManagedArrayCollection&&) = default;
+	FManagedArrayCollection& operator=(FManagedArrayCollection&&)= default;
 
 	static int8 Invalid;
 	typedef EManagedArrayType EArrayType;
@@ -75,6 +79,22 @@ public:
 
 		bool bDoValidation ;
 		bool bReindexDependentAttibutes;
+	};
+
+	struct FManagedType
+	{
+		FManagedType(EManagedArrayType InType, FName InName, FName InGroup)
+			: Type(InType), Name(InName), Group(InGroup) {}
+		EManagedArrayType Type = EManagedArrayType::FNoneType;
+		FName Name = "";
+		FName Group = "";
+	};
+
+	template<class T>
+	struct TManagedType : FManagedType
+	{
+		TManagedType(FName InName, FName InGroup) :
+			FManagedType(ManagedArrayType<T>(), InName, InGroup) {}			
 	};
 
 	/**
@@ -106,8 +126,43 @@ public:
 			}
 			Map.Add(FManagedArrayCollection::MakeMapKey(Name, Group), MoveTemp(Value));
 		}
-		return GetAttribute<T>(Name, Group);
+		return ModifyAttribute<T>(Name, Group);
 	}
+
+	/**
+	* Duplicate the ManagedArrayCollection as the specified templated type
+	* @return unowned pointer to new collection.
+	*/
+	template<class T = FManagedArrayCollection>
+	T* NewCopy() const
+	{
+		T* Collection = new T();
+		CopyTo(Collection);
+		return Collection;
+	}
+
+	void CopyTo(FManagedArrayCollection* Collection) const
+	{
+		if (!Map.IsEmpty())
+		{
+			for (const TTuple<FKeyType, FValueType>& Entry : Map)
+			{
+				if (!Collection->HasGroup(Entry.Key.Get<1>()))
+				{
+					Collection->AddGroup(Entry.Key.Get<1>());
+				}
+
+				if (NumElements(Entry.Key.Get<1>()) != Collection->NumElements(Entry.Key.Get<1>()))
+				{
+					ensure(!Collection->NumElements(Entry.Key.Get<1>()));
+					Collection->AddElements(NumElements(Entry.Key.Get<1>()), Entry.Key.Get<1>());
+				}
+
+				Collection->CopyAttribute(*this, Entry.Key.Get<0>(), Entry.Key.Get<1>());
+			}
+		}
+	}
+
 
 	/**
 	* Add an external attribute of Type(T) to the group for size management. Lifetime is managed by the caller, must make sure the array is alive when the collection is
@@ -160,6 +215,15 @@ public:
 	* @return starting index of the new ManagedArray<T> entries.
 	*/
 	int32 AddElements(int32 NumberElements, FName Group);
+
+	/**
+	* Insert elements to a group
+	* @param NumberElements - The number of array entries to add
+	* @param Position - The position in the managed array where to insert entries.
+	* @param Group - The group to append entries to.
+	* @return starting index of the new ManagedArray<T> entries (same as Position).
+	*/
+	int32 InsertElements(int32 NumberElements, int32 Position, FName Group);
 
 	/**
 	* Returns attribute(Name) of Type(T) from the group
@@ -228,31 +292,64 @@ public:
 	};
 
 	/**
-	* Returns attribute access of Type(T) from the group
+	* Returns attribute access of Type(T) from the group for modification
+	* this will mark the collection dirty
 	* @param Name - The name of the attribute
 	* @param Group - The group that manages the attribute
 	* @return ManagedArray<T> &
 	*/
 	template<typename T>
-	TManagedArray<T>& GetAttribute(FName Name, FName Group)
+	TManagedArray<T>& ModifyAttribute(FName Name, FName Group)
 	{
 		check(HasAttribute(Name, Group))
-		FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
-		return *(static_cast<TManagedArray<T>*>(Map[Key].Value));
-	};
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		FManagedArrayBase* ManagedArray = Map[Key].Value;
+		ManagedArray->MarkDirty();
+		return *(static_cast<TManagedArray<T>*>(ManagedArray));
+	}
+	
+	/**
+	* Returns attribute access of Type(T) from the group
+	* @param Name - The name of the attribute
+	* @param Group - The group that manages the attribute
+	* @return ManagedArray<T> &
+	*/
+	
+	// template<typename T>
+	// UE_DEPRECATED(5.0, "non const GetAttribute() version is now deprecated, use ModifyAttribute instead")
+	// TManagedArray<T>& GetAttribute(FName Name, FName Group)
+	// {
+	// 	check(HasAttribute(Name, Group))
+	// 	const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	// 	return *(static_cast<TManagedArray<T>*>(Map[Key].Value));
+	// };
 
 	template<typename T>
 	const TManagedArray<T>& GetAttribute(FName Name, FName Group) const
 	{
 		check(HasAttribute(Name, Group))
-		FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
 		return *(static_cast<TManagedArray<T>*>(Map[Key].Value));
 	};
+
+	/**
+	* Clear the internal data. 
+	*/
+	virtual void Reset() { Map.Reset(); GroupInfo.Reset(); MakeDirty(); }
+
 
 	/**
 	* Remove the element at index and reindex the dependent arrays 
 	*/
 	virtual void RemoveElements(const FName & Group, const TArray<int32> & SortedDeletionList, FProcessingParameters Params = FProcessingParameters());
+
+	/**
+	* Remove the elements at Position and reindex the dependent arrays 
+	* @param Group - The group that manages the attributes
+	* @param NumberElements - The number of array entries to remove
+	* @param Position - The position from which to remove entries
+	*/
+	virtual void RemoveElements(const FName& Group, int32 NumberElements, int32 Position);
 
 
 	/**
@@ -283,11 +380,32 @@ public:
 	bool HasAttribute(FName Name, FName Group) const;
 
 	/**
+	* Check for the existence of a attribute
+	* @param TArray<ManagedType> - Attributes to search for
+	*/
+	bool HasAttributes(const TArray<FManagedType>& Types) const;
+
+	/**
 	* Check for the existence of a group
 	* @param Group - The group name
 	*/
 	FORCEINLINE bool HasGroup(FName Group) const { return GroupInfo.Contains(Group); }
 
+	/**
+	* Check if an attribute is dirty
+	* @param Name - The name of the attribute
+	* @param Group - The group that manages the attribute
+	*/
+	bool IsAttributeDirty(FName Name, FName Group) const;
+
+	/**
+	* Check if an attribute is persistent - ie its data will be serialized
+	* If the attribute does not exists this will return false
+	* @param Name - The name of the attribute
+	* @param Group - The group that manages the attribute
+	*/
+	bool IsAttributePersistent(FName Name, FName Group) const;
+	
 	/**
 	*
 	*/
@@ -299,11 +417,19 @@ public:
 	void RemoveDependencyFor(FName Group);
 
 	/**
-	* Copy an attribute. Will perform an implicit group sync. Attribute must exist in both MasterCollection and this collection
+	* Copy an attribute. Will perform an implicit group sync. Attribute must exist in both InCollection and this collection
 	* @param Name - The name of the attribute
 	* @param Group - The group that manages the attribute
 	*/
 	void CopyAttribute(const FManagedArrayCollection& InCollection, FName Name, FName Group);
+
+	/**
+	* Copy an attribute. Will perform an implicit group sync.
+	* @param SrcName - The name of the attribute being copied from
+	* @param DestName - The name of the attribute being copied to
+	* @param Group - The group that manages the attribute
+	*/
+	void CopyAttribute(const FManagedArrayCollection& InCollection, FName SrcName, FName DestName, FName Group);
 
 	/**
 	* Copy attributes that match the input collection. This is a utility to easily sync collections
@@ -395,6 +521,7 @@ private:
 		return FKeyType(Name, Group);
 	};
 
+	friend struct FManagedArrayCollectionValueTypeWrapper;
 	struct FValueType
 	{
 		EArrayType ArrayType;
@@ -418,7 +545,21 @@ private:
 			, bExternalValue(false)
 			, Value(&In) {};
 
-		
+		FValueType(const FValueType& Other)
+			: ArrayType(Other.ArrayType)
+			, GroupIndexDependency(Other.GroupIndexDependency)
+			, Saved(Other.Saved)
+			, bExternalValue(false)
+			, Value(nullptr)
+		{
+			if (Other.Value)
+			{
+				this->Value = NewManagedTypedArray(this->ArrayType);
+				this->Value->Resize(Other.Value->Num());
+				this->Value->Init(*Other.Value);
+			}
+		};
+
 		FValueType(FValueType&& Other)
 			: ArrayType(Other.ArrayType)
 			, GroupIndexDependency(Other.GroupIndexDependency)
@@ -440,8 +581,24 @@ private:
 			}
 		}
 
-		FValueType(const FValueType&) = delete;	//no copies because we are treating this as a simple unique ptr (not using TUniquePtr because it's only true when bExternalValue is false)
-		FValueType& operator=(const FValueType& Other) = delete;
+
+		FValueType& operator=(const FValueType& Other) 
+		{
+			this->ArrayType = Other.ArrayType;
+			this->GroupIndexDependency = Other.GroupIndexDependency;
+			this->Saved = Other.Saved;
+			this->bExternalValue = false;
+			this->Value = nullptr;
+			if (Other.Value)
+			{
+				this->Value = NewManagedTypedArray(this->ArrayType);
+				this->Value->Resize(Other.Value->Num());
+				this->Value->Init(*Other.Value);
+			}
+			return *this;
+		}
+
+
 	};
 
 	virtual void SetDefaults(FName Group, uint32 StartSize, uint32 NumElements) {};

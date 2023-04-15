@@ -6,7 +6,7 @@
 #include "LevelVariantSetsActor.h"
 
 #include "ActorFactories/ActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 #define LOCTEXT_NAMESPACE "ALevelVariantSetsActorFactory"
 
@@ -24,7 +24,7 @@ bool ULevelVariantSetsActorFactory::CanCreateActorFrom( const FAssetData& AssetD
 		return true;
 	}
 
-	if ( AssetData.IsValid() && !AssetData.GetClass()->IsChildOf( ULevelVariantSets::StaticClass() ) )
+	if ( AssetData.IsValid() && !AssetData.IsInstanceOf( ULevelVariantSets::StaticClass() ) )
 	{
 		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoLevelVariantSetsAsset", "A valid variant sets asset must be specified.");
 		return false;

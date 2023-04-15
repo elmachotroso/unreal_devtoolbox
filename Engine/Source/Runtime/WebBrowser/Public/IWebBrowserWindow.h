@@ -33,11 +33,49 @@ enum class EWebBrowserConsoleLogSeverity
 	Fatal
 };
 
+
+enum class EWebTransitionSource
+{
+	Unknown,
+	/** Source is a link click or the JavaScript window.open function. */
+	Link,
+	/** Source is some other "explicit" navigation action such as creating a new browser or using the LoadURL function. */
+	Explicit,
+	/** Source is a subframe navigation. */
+	AutoSubframe,
+	/** Source is a subframe navigation explicitly requested by the user. */
+	ManualSubframe,
+	/** Source is a form submission by the user. */
+	FormSubmit,
+	/** Source is a "reload" of the page via the Reload function */
+	Reload
+};
+
+enum class EWebTransitionSourceQualifier
+{
+	Unknown,
+	/** Attempted to visit a URL but was blocked. */
+	Blocked,
+	/** Used the Forward or Back function to navigate among browsing history. */
+	ForwardBack,
+	/** The beginning of a navigation chain. */
+	ChainStart,
+	/** The last transition in a redirect chain. */
+	ChainEnd,
+	/** Redirects caused by JavaScript or a meta refresh tag on the page. */
+	ClientRedirect,
+	/** Used to test whether a transition involves a redirect. */
+	ServerRedirect
+};
+
+
 struct FWebNavigationRequest
 {
 	bool bIsRedirect;
 	bool bIsMainFrame;
 	bool bIsExplicitTransition;
+	EWebTransitionSource TransitionSource;
+	EWebTransitionSourceQualifier TransitionSourceQualifier;
 };
 
 /**
@@ -217,6 +255,17 @@ public:
 	virtual FReply OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup) = 0;
 
 	/**
+	 * Called when a touch gesture is performed.
+	 *
+	 * @param MyGeometry The Geometry of the browser
+	 * @param GestureEvent Information about the input event
+	 * @param bIsPopup True if the coordinates are relative to a popup menu window, otherwise false.
+	 *
+	 * @return FReply::Handled() if the mouse event was handled, FReply::Unhandled() oterwise
+	 */
+	virtual FReply OnTouchGesture(const FGeometry& MyGeometry, const FPointerEvent& GestureEvent, bool bIsPopup) = 0;
+
+	/**
 	 * The system asks each widget under the mouse to provide a cursor. This event is bubbled.
 	 * 
 	 * @return FCursorReply::Unhandled() if the event is not handled; return FCursorReply::Cursor() otherwise.
@@ -267,15 +316,16 @@ public:
 	 * Close this window so that it can no longer be used.
 	 *
 	 * @param bForce Designates whether the web browser close should be forced.
+	 * @param bBlockTillClosed Don't return until this browser object is fully closed.
 	 */
-	virtual void CloseBrowser(bool bForce) = 0;
+	virtual void CloseBrowser(bool bForce, bool bBlockTillClosed = false) = 0;
 
 	/** 
 	 * Expose a UObject instance to the browser runtime.
 	 * Properties and Functions will be accessible from JavaScript side.
 	 * As all communication with the rendering procesis asynchronous, return values (both for properties and function results) are wrapped into JS Future objects.
 	 *
-	 * @param Name The name of the object. The object will show up as window.ue4.{Name} on the javascript side. If there is an existing object of the same name, this object will replace it. If bIsPermanent is false and there is an existing permanent binding, the permanent binding will be restored when the temporary one is removed.
+	 * @param Name The name of the object. The object will show up as window.ue.{Name} on the javascript side. If there is an existing object of the same name, this object will replace it. If bIsPermanent is false and there is an existing permanent binding, the permanent binding will be restored when the temporary one is removed.
 	 * @param Object The object instance.
 	 * @param bIsPermanent If true, the object will be visible to all pages loaded through this browser widget, otherwise, it will be deleted when navigating away from the current page. Non-permanent bindings should be registered from inside an OnLoadStarted event handler in order to be available before JS code starts loading.
 	 */
@@ -355,7 +405,7 @@ public:
 
 	/** A delegate that is invoked before the browser loads a resource. Its primary purpose is to inject headers into the request. */
 	typedef TMap<FString, FString> FRequestHeaders;
-	DECLARE_DELEGATE_ThreeParams(FOnBeforeResourceLoadDelegate, FString /*Url*/, FString /*ResourceType*/, FRequestHeaders& /*AdditionalHeaders*/);
+	DECLARE_DELEGATE_FourParams(FOnBeforeResourceLoadDelegate, FString /*Url*/, FString /*ResourceType*/, FRequestHeaders& /*AdditionalHeaders*/, const bool /*AllowUserCredentials*/);
 	virtual FOnBeforeResourceLoadDelegate& OnBeforeResourceLoad() = 0;
 
 	/** A delegate that is invoked on completion of browser resource loads. Its primary purpose is to allow response to failures. */
@@ -363,7 +413,7 @@ public:
 	virtual FOnResourceLoadCompleteDelegate& OnResourceLoadComplete() = 0;
 
 	/** A delegate that is invoked for each console message */
-	DECLARE_DELEGATE_FourParams(FOnConsoleMessageDelegate, const FString& /*Message*/, const FString& /*Source*/, int /*Line*/, EWebBrowserConsoleLogSeverity /*severity*/);
+	DECLARE_DELEGATE_FourParams(FOnConsoleMessageDelegate, const FString& /*Message*/, const FString& /*Source*/, int32 /*Line*/, EWebBrowserConsoleLogSeverity /*severity*/);
 	virtual FOnConsoleMessageDelegate& OnConsoleMessage() = 0;
 
 	/** A delegate that is invoked when an existing browser requests creation of a new browser window. */

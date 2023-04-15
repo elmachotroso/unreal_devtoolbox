@@ -3,15 +3,28 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UnrealType.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphNodeUtils.h"
+#include "Internationalization/Text.h"
 #include "K2Node_Event.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+
 #include "K2Node_ComponentBoundEvent.generated.h"
 
+class FArchive;
+class FMulticastDelegateProperty;
+class FObjectProperty;
+class UBlueprint;
+class UClass;
 class UDynamicBlueprintBinding;
 class UEdGraph;
+class UObject;
 
 UCLASS(MinimalAPI)
 class UK2Node_ComponentBoundEvent : public UK2Node_Event
@@ -42,6 +55,8 @@ class UK2Node_ComponentBoundEvent : public UK2Node_Event
 	virtual FText GetTooltipText() const override;
 	virtual FString GetDocumentationLink() const override;
 	virtual FString GetDocumentationExcerptName() const override;
+	virtual bool HasDeprecatedReference() const override;
+	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin K2Node Interface
@@ -57,16 +72,15 @@ class UK2Node_ComponentBoundEvent : public UK2Node_Event
 	/** Return the delegate property that this event is bound to */
 	BLUEPRINTGRAPH_API FMulticastDelegateProperty* GetTargetDelegateProperty() const;
 
+	/** Gets the proper display name for the property */
+	BLUEPRINTGRAPH_API FText GetTargetDelegateDisplayName() const;
+
 	BLUEPRINTGRAPH_API void InitializeComponentBoundEventParams(FObjectProperty const* InComponentProperty, const FMulticastDelegateProperty* InDelegateProperty);
 
 private:
 
 	/** Returns true if there is an FObjectProperty on this blueprint with a name that matches ComponentPropertyName */
 	bool IsDelegateValid() const;
-
-	/** Cached display name for the delegate property */
-	UPROPERTY()
-	FText DelegatePropertyDisplayName;
 
 	/** Constructing FText strings can be costly, so we cache the node's title */
 	FNodeTextCache CachedNodeTitle;

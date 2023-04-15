@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
 using StackExchange.Redis;
 using System;
-using System.Collections.Generic;
-using System.Text;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,51 +14,68 @@ namespace EpicGames.Redis.Utility
 	/// </summary>
 	public class RedisLock : IAsyncDisposable, IDisposable
 	{
-		IDatabase Database;
-		RedisKey Key;
-		CancellationTokenSource? CancellationSource;
-		Task? BackgroundTask;
+		readonly IDatabase _database;
+		readonly RedisKey _key;
+		CancellationTokenSource? _cancellationSource;
+		Task? _backgroundTask;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Database"></param>
-		/// <param name="Key"></param>
-		public RedisLock(IDatabase Database, RedisKey Key)
+		/// <param name="database"></param>
+		/// <param name="key"></param>
+		public RedisLock(IDatabase database, RedisKey key)
 		{
-			this.Database = Database;
-			this.Key = Key;
+			_database = database;
+			_key = key;
 		}
 
 		/// <inheritdoc/>
 		public void Dispose()
 		{
-			DisposeAsync().AsTask().Wait();
+			Dispose(true);
+			GC.SuppressFinalize(this);
+		}
+
+		/// <summary>
+		/// Dispose pattern
+		/// </summary>
+		/// <param name="disposing"></param>
+		protected virtual void Dispose(bool disposing)
+		{
+			if (disposing)
+			{
+				DisposeAsync().AsTask().Wait();
+			}
 		}
 
 		/// <inheritdoc/>
 		public async ValueTask DisposeAsync()
 		{
-			if (BackgroundTask != null)
+			_cancellationSource?.Cancel();
+			if (_backgroundTask != null)
 			{
-				CancellationSource!.Cancel();
-				await BackgroundTask;
-				CancellationSource.Dispose();
-				BackgroundTask = null;
+				await _backgroundTask;
 			}
+			_backgroundTask?.Dispose();
+			_cancellationSource?.Dispose();
+			_backgroundTask = null;
+			_cancellationSource = null;
+			GC.SuppressFinalize(this);
 		}
 
 		/// <summary>
 		/// Attempts to acquire the lock for the given period of time. The lock will be renewed once half of this interval has elapsed.
 		/// </summary>
-		/// <param name="Duration">Time after which the lock expires</param>
+		/// <param name="duration">Time after which the lock expires</param>
+		/// <param name="releaseOnDispose">Whether the lock should be released when disposed. If false, the lock will be held for the given time, but not renewed once disposed.</param>
 		/// <returns>True if the lock was acquired, false if another service already has it</returns>
-		public async ValueTask<bool> AcquireAsync(TimeSpan Duration)
+		public async ValueTask<bool> AcquireAsync(TimeSpan duration, bool releaseOnDispose = true)
 		{
-			if (await Database.StringSetAsync(Key, RedisValue.EmptyString, Duration, When.NotExists))
+			if (await _database.StringSetAsync(_key, RedisValue.EmptyString, duration, When.NotExists))
 			{
-				CancellationSource = new CancellationTokenSource();
-				BackgroundTask = Task.Run(() => RenewAsync(Duration, CancellationSource.Token));
+				_cancellationSource = new CancellationTokenSource();
+				_backgroundTask = Task.Run(() => RenewAsync(duration, releaseOnDispose, _cancellationSource.Token));
 				return true;
 			}
 			return false;
@@ -67,20 +84,31 @@ namespace EpicGames.Redis.Utility
 		/// <summary>
 		/// Background task which renews the lock while the service is running
 		/// </summary>
-		/// <param name="Duration"></param>
-		/// <param name="CancellationToken"></param>
+		/// <param name="duration"></param>
+		/// <param name="releaseOnDispose">Whether the lock should be released when the cancellation token is fired</param>
+		/// <param name="cancellationToken"></param>
 		/// <returns></returns>
-		async Task RenewAsync(TimeSpan Duration, CancellationToken CancellationToken)
+		async Task RenewAsync(TimeSpan duration, bool releaseOnDispose, CancellationToken cancellationToken)
 		{
+			Stopwatch timer = Stopwatch.StartNew();
 			for (; ; )
 			{
-				await Task.Delay(Duration / 2, CancellationToken).ContinueWith(x => { }); // Do not throw
-				if (CancellationToken.IsCancellationRequested)
+				await Task.Delay(duration / 2, cancellationToken).ContinueWith(x => { }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default); // Do not throw
+
+				if (cancellationToken.IsCancellationRequested)
 				{
-					await Database.StringSetAsync(Key, RedisValue.Null);
+					timer.Stop();
+					if (releaseOnDispose || timer.Elapsed > duration)
+					{
+						await _database.StringSetAsync(_key, RedisValue.Null);
+					}
+					else
+					{
+						await _database.StringSetAsync(_key, RedisValue.EmptyString, duration - timer.Elapsed, When.Exists);
+					}
 					break;
 				}
-				if (!await Database.StringSetAsync(Key, RedisValue.EmptyString, Duration, When.Exists))
+				if (!await _database.StringSetAsync(_key, RedisValue.EmptyString, duration, When.Exists))
 				{
 					break;
 				}
@@ -97,11 +125,11 @@ namespace EpicGames.Redis.Utility
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Database"></param>
-		/// <param name="BaseKey"></param>
-		/// <param name="Value"></param>
-		public RedisLock(IDatabase Database, RedisKey BaseKey, T Value)
-			: base(Database, BaseKey.Append(RedisSerializer.Serialize<T>(Value).AsKey()))
+		/// <param name="database"></param>
+		/// <param name="baseKey"></param>
+		/// <param name="value"></param>
+		public RedisLock(IDatabase database, RedisKey baseKey, T value)
+			: base(database, baseKey.Append(RedisSerializer.Serialize<T>(value).AsKey()))
 		{
 		}
 	}

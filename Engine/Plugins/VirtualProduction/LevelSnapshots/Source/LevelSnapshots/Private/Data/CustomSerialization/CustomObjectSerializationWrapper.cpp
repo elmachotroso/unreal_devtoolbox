@@ -5,9 +5,9 @@
 #include "Archive/ApplySnapshotToEditorArchive.h"
 #include "Archive/LoadSnapshotObjectArchive.h"
 #include "CustomSerialization/CustomSerializationDataManager.h"
-#include "Data/Util/SnapshotObjectUtil.h"
 #include "Data/Util/SnapshotUtil.h"
-#include "Data/Util/Restoration/ActorUtil.h"
+#include "Data/Util/WorldData/SnapshotObjectUtil.h"
+#include "Data/Util/WorldData/ActorUtil.h"
 #include "Data/WorldSnapshotData.h"
 #include "Interfaces/ICustomObjectSnapshotSerializer.h"
 #include "LevelSnapshotsLog.h"
@@ -40,7 +40,7 @@ namespace UE::LevelSnapshots::Private::Internal
 		}
 
 		FCustomSerializationDataReader SerializationDataReader = FCustomSerializationDataReader(FCustomSerializationDataGetter_ReadOnly::CreateLambda([SerializationDataGetter](){ return SerializationDataGetter();}), WorldData);
-		CustomSerializer->PreApplySnapshotProperties(SnapshotObject, SerializationDataReader);
+		CustomSerializer->PreApplyToSnapshotObject(SnapshotObject, SerializationDataReader);
 		return FRestoreObjectScope([SnapshotObject, SerializationDataGetter, &WorldData, &Cache, &ProcessObjectDependency, LocalisationSnapshotPackage, SerializationDataReader, CustomSerializer]()
 		{
 			for (int32 i = 0; i < SerializationDataReader.GetNumSubobjects(); ++i)
@@ -60,7 +60,7 @@ namespace UE::LevelSnapshots::Private::Internal
 				CustomSerializer->OnPostSerializeSnapshotSubobject(SnapshotSubobject, *MetaData, SerializationDataReader);
 			}
 
-			CustomSerializer->PostApplySnapshotProperties(SnapshotObject, SerializationDataReader);
+			CustomSerializer->PostApplyToSnapshotObject(SnapshotObject, SerializationDataReader);
 		});	
 	}
 
@@ -84,7 +84,7 @@ namespace UE::LevelSnapshots::Private::Internal
 		}
 		
 		FCustomSerializationDataReader SerializationDataReader = FCustomSerializationDataReader(FCustomSerializationDataGetter_ReadOnly::CreateLambda([SerializationDataGetter](){ return SerializationDataGetter(); }), WorldData);
-		CustomSerializer->PreApplySnapshotProperties(EditorObject, SerializationDataReader);
+		CustomSerializer->PreApplyToEditorObject(EditorObject, SerializationDataReader, SelectionMap);
 		return FRestoreObjectScope([SnapshotObject, EditorObject, &WorldData, &Cache, &SelectionMap, LocalisationSnapshotPackage, SerializationDataGetter, SerializationDataReader, CustomSerializer]()
 		{
 			for (int32 i = 0; i < SerializationDataReader.GetNumSubobjects(); ++i)
@@ -122,14 +122,16 @@ namespace UE::LevelSnapshots::Private::Internal
 				}
 
 				const FCustomSubobjectRestorationInfo* RestorationInfo = SelectionMap.GetObjectSelection(EditorObject).GetCustomSubobjectSelection();
-				if (RestorationInfo && RestorationInfo->CustomSnapshotSubobjectsToRestore.Contains(SnapshotSubobject))
+				const bool bWasMissingFromExistingActor = RestorationInfo && RestorationInfo->CustomSnapshotSubobjectsToRestore.Contains(SnapshotSubobject);
+				const bool bWasActorRecreated = SelectionMap.GetDeletedActorsToRespawn().Contains(EditorSubobject->GetTypedOuter<AActor>());
+				if (bWasMissingFromExistingActor || bWasActorRecreated)
 				{
 					// Recursively check whether subobjects also have a registered ICustomObjectSnapshotSerializer
 					const FRestoreObjectScope FinishRestore = PreObjectRestore_EditorWorld(SnapshotSubobject, EditorSubobject, WorldData, Cache, SelectionMap, LocalisationSnapshotPackage,
 						[&WorldData, OriginalPath = MetaData->GetOriginalPath()](){ return UE::LevelSnapshots::Private::FindCustomSubobjectData(WorldData, OriginalPath);} );
 
 					FCustomSerializationData* SerializationData = SerializationDataGetter();
-					FApplySnapshotToEditorArchive::ApplyToRecreatedEditorWorldObject(SerializationData->Subobjects[i], WorldData, Cache, EditorSubobject, SelectionMap);
+					FApplySnapshotToEditorArchive::ApplyToEditorWorldObjectRecreatedWithArchetype(SerializationData->Subobjects[i], WorldData, Cache, EditorSubobject, SelectionMap);
 					CustomSerializer->OnPostSerializeEditorSubobject(EditorSubobject, *MetaData, SerializationDataReader);
 					continue;
 				}
@@ -137,12 +139,12 @@ namespace UE::LevelSnapshots::Private::Internal
 				UE_LOG(LogLevelSnapshots, Warning, TEXT("Editor subobject %s was not restored"), *EditorSubobject->GetPathName());	
 			}
 
-			CustomSerializer->PostApplySnapshotProperties(EditorObject, SerializationDataReader);
+			CustomSerializer->PostApplyToEditorObject(EditorObject, SerializationDataReader, SelectionMap);
 		});	
 	}
 }
 
-void UE::LevelSnapshots::Private::TakeSnapshotForActor(
+void UE::LevelSnapshots::Private::TakeSnapshotOfActorCustomSubobjects(
 	AActor* EditorActor,
 	FCustomSerializationData& ActorSerializationData,
 	FWorldSnapshotData& WorldData)

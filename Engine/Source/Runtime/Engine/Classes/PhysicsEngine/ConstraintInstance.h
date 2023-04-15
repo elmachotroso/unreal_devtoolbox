@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/EnumClassFlags.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Class.h"
 #include "EngineDefines.h"
@@ -19,6 +20,26 @@ struct FBodyInstance;
 class FMaterialRenderProxy;
 class FPrimitiveDrawInterface;
 class FMaterialRenderProxy;
+class UPhysicsAsset;
+
+UENUM()
+enum class EConstraintTransformComponentFlags : uint8
+{
+	None = 0,
+
+	ChildPosition = 1 << 0,
+	ChildRotation = 1 << 1,
+	ParentPosition = 1 << 2,
+	ParentRotation = 1 << 3,
+
+	AllChild = ChildPosition | ChildRotation,
+	AllParent = ParentPosition | ParentRotation,
+	AllPosition = ChildPosition | ParentPosition,
+	AllRotation = ChildRotation | ParentRotation,
+	All = AllChild | AllParent
+};
+
+ENUM_CLASS_FLAGS(EConstraintTransformComponentFlags);
 
 /** Container for properties of a physics constraint that can be easily swapped at runtime. This is useful for switching different setups when going from ragdoll to standup for example */
 USTRUCT()
@@ -26,26 +47,26 @@ struct ENGINE_API FConstraintProfileProperties
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** [PhysX only] Linear tolerance value in world units. If the distance error exceeds this tolerence limit, the body will be projected. */
-	UPROPERTY()
+	/** If the joint error is above this distance after the solve phase, the child body will be teleported to fix the error. Only used if bEnableProjection is true. */
+	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0"))
 	float ProjectionLinearTolerance;
 
-	/** [PhysX only] Angular tolerance value in world units. If the distance error exceeds this tolerence limit, the body will be projected. */
-	UPROPERTY()
+	/** If the joint error is above this distance after the solve phase, the child body will be teleported to fix the error. Only used if bEnableProjection is true. */
+	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0"))
 	float ProjectionAngularTolerance;
 
-	/**  How much linear projection to apply [0-1] */
+	/**  How much semi-physical linear projection correction to apply [0-1]. Only used if bEnableProjection is true and if hard limits are used. */
 	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ProjectionLinearAlpha;
 
-	/** How much angular projection to apply [0-1] */
+	/** How much semi-physical angular projection correction to apply [0-1]. Only used if bEnableProjection is true and if hard limits are used. */
 	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ProjectionAngularAlpha;
 
 	/** 
 	 * How much shock propagation to apply [0-1]. Shock propagation increases the mass of the parent body for the last iteration of the
 	 * position and velocity solve phases. This can help stiffen up joint chains, but is also prone to introducing energy down the chain
-	 * especially at high alpha.
+	 * especially at high alpha. Only used in bEnableShockPropagation is true.
 	 */
 	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ShockPropagationAlpha;
@@ -79,12 +100,6 @@ struct ENGINE_API FConstraintProfileProperties
 	UPROPERTY(EditAnywhere, Category = Angular)
 	FTwistConstraint TwistLimit;
 
-	UPROPERTY(EditAnywhere, Category = Linear)
-	FLinearDriveConstraint LinearDrive;
-
-	UPROPERTY(EditAnywhere, Category = Angular)
-	FAngularDriveConstraint AngularDrive;
-
 	// Disable collision between bodies joined by this constraint.
 	UPROPERTY(EditAnywhere, Category = Constraint)
 	uint8 bDisableCollision : 1;
@@ -94,47 +109,30 @@ struct ENGINE_API FConstraintProfileProperties
 	uint8 bParentDominates : 1;
 
 	/**
-	* NOTE: RigidBody AnimNode only. Projection is not applied to ragdoll physics in the main scene. For Ragdolls, ShockPropagation has a similar effect
-	* and is more compatible with the world solver.
-	* 
-	* Projection is a post-solve position and angular fixup where the parent body in the constraint is treated as having infinite mass and the child body is
-	* translated and rotated to resolve any remaining errors using a semi-physical correction. This can be used to make constraint chains significantly stiffer 
-	* at lower iteration counts. Increasing iterations would have the same effect, but be much more expensive. Projection only works well if the chain is not 
-	* interacting with other objects (e.g., through collisions) because the projection of the bodies in the chain will cause other constraints to be violated. 
-	* Likewise, if a body is influenced by multiple constraints, then enabling projection on more than one constraint may lead to unexpected results - the 
-	* "last" constraint would win but the order in which constraints are solved cannot be directly controlled.
-	* 
-	* Projection is fairly expensive compared to a single position iteration, so if you can get the behaviour you need by adding a couple iterations, that
-	* is probably a better approach.
-	*
-	*
-	* Note: projection is only applied to hard-limit constraints, anf not applied to constraints with soft limits.
-	*/
-	UPROPERTY(EditAnywhere, Category = Projection)
-	uint8 bEnableLinearProjection : 1;
-
-	/**
-	 * NOTE: RigidBody AnimNode only. See coments on bEnableLinearProjection
-	*/
-	UPROPERTY(EditAnywhere, Category = Projection)
-	uint8 bEnableAngularProjection : 1;
-
-	/**
 	 * Shock propagation increases the mass of the parent body for the last iteration of the position and velocity solve phases. 
 	 * This can help stiffen up joint chains, but is also prone to introducing energy down the chain especially at high alpha.
-	 * 
-	 * NOTE: This is intended to be used for world constraints, not RigidBody AnimNodes which have the Projection system.
+	 * It also does not work well if there are collisions on the bodies preventing the joints from correctly resolving - this 
+	 * can lead to jitter, especially if collision shock propagation is also enabled.
 	 */
 	UPROPERTY(EditAnywhere, Category = Projection)
 	uint8 bEnableShockPropagation : 1;
 
-	// HIDDEN - TO BE DEPRECATED
-	UPROPERTY()
+	/**
+	* Projection is a post-solve position and angular fixup consisting of two correction procedures. First, if the constraint limits are exceeded
+	* by more that the Linear or Angular Tolerance, the bodies are teleported to eliminate the error. Second, if the constraint limits are exceeded
+	* by less than the tolerance, a semi-physical correction is applied,  with the parent body in the constraint is treated as having infinite mass.
+	* The teleport tolerance are controlled by ProjectionLinearTolerance and ProjectionAngularTolerance. The semi-physical correction is controlled
+	* by ProjectionLinearAlpha and ProjectionAnguilarAlpha. You may have one, none, or both systems enabled at the same time.
+	*
+	* Projection only works well if the chain is not interacting with other objects (e.g., through collisions) because the projection of the bodies in
+	* the chain will cause other constraints to be violated. Likewise, if a body is influenced by multiple constraints, then enabling projection on more
+	* than one constraint may lead to unexpected results - the  "last" constraint would win but the order in which constraints are solved cannot be directly controlled.
+	*
+	* Note that the semi-physical projection (ProjectionLinearAlpha and ProjectionAngularAlpha) is only applied to hard-limit constraints and not those with
+	* soft limits because the soft limit is the point at which the soft-constraint (spring) kicks in, and not really a limit on how far the joint can be separated.
+	*/
+	UPROPERTY(EditAnywhere, Category = Projection)
 	uint8 bEnableProjection : 1;
-
-	// HIDDEN - TO BE DEPRECATED
-	UPROPERTY()
-	uint8 bEnableSoftProjection : 1;
 
 	/** Whether it is possible to break the joint with angular force. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Angular)
@@ -151,6 +149,12 @@ struct ENGINE_API FConstraintProfileProperties
 	/** Whether it is possible to reset spring rest length from the linear deformation. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear)
 	uint8 bLinearPlasticity : 1;
+
+	UPROPERTY(EditAnywhere, Category = Linear)
+	FLinearDriveConstraint LinearDrive;
+
+	UPROPERTY(EditAnywhere, Category = Angular)
+	FAngularDriveConstraint AngularDrive;
 
 	/** Whether linear plasticity has a operation mode [free]*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear)
@@ -243,32 +247,38 @@ struct ENGINE_API FConstraintInstance : public FConstraintInstanceBase
 	UPROPERTY(EditAnywhere, Category=Constraint)
 	FName ConstraintBone2;
 
+private:
+	/** The component scale passed in during initialization*/
+	float LastKnownScale;
+
+public:
+
 	///////////////////////////// Body1 ref frame
 	
 	/** Location of constraint in Body1 reference frame (usually the "child" body for skeletal meshes). */
-	UPROPERTY(EditAnywhere, Category=Constraint)
+	UPROPERTY(EditAnywhere, Category = Constraint)
 	FVector Pos1;
 
 	/** Primary (twist) axis in Body1 reference frame. */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Constraint)
 	FVector PriAxis1;
 
-	/** Seconday axis in Body1 reference frame. Orthogonal to PriAxis1. */
-	UPROPERTY()
+	/** Secondary axis in Body1 reference frame. Orthogonal to PriAxis1. */
+	UPROPERTY(EditAnywhere, Category = Constraint)
 	FVector SecAxis1;
 
 	///////////////////////////// Body2 ref frame
 	
 	/** Location of constraint in Body2 reference frame (usually the "parent" body for skeletal meshes). */
-	UPROPERTY(EditAnywhere, Category=Constraint)
+	UPROPERTY(EditAnywhere, Category= Constraint)
 	FVector Pos2;
 
 	/** Primary (twist) axis in Body2 reference frame. */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Constraint)
 	FVector PriAxis2;
 
-	/** Seconday axis in Body2 reference frame. Orthogonal to PriAxis2. */
-	UPROPERTY()
+	/** Secondary axis in Body2 reference frame. Orthogonal to PriAxis2. */
+	UPROPERTY(EditAnywhere, Category = Constraint)
 	FVector SecAxis2;
 
 	/** Specifies the angular offset between the two frames of reference. By default limit goes from (-Angle, +Angle)
@@ -294,12 +304,6 @@ public:
 	const FPhysicsConstraintHandle& GetPhysicsConstraintRef() const;
 
 	FChaosUserData UserData;
-
-private:
-	/** The component scale passed in during initialization*/
-	float LastKnownScale;
-
-public:
 
 	/** Constructor **/
 	FConstraintInstance();
@@ -764,8 +768,14 @@ public:
 	/** Set the linear drive's strength parameters */
 	void SetLinearDriveParams(float InPositionStrength, float InVelocityStrength, float InForceLimit);
 
-	/** Get the linear drive's strength parameters */
+	/** Set the linear drive's strength parameters per-axis */
+	void SetLinearDriveParams(const FVector& InPositionStrength, const FVector& InVelocityStrength, const FVector& InForceLimit);
+
+	/** Get the linear drive's strength parameters. Assumes all axes are the same so only returns the X values */
 	void GetLinearDriveParams(float& OutPositionStrength, float& OutVelocityStrength, float& OutForceLimit);
+
+	/** Get the linear drive's strength parameters. */
+	void GetLinearDriveParams(FVector& OutPositionStrength, FVector& OutVelocityStrength, FVector& OutForceLimit);
 
 	/** Set which twist and swing orientation drives are enabled. Only applicable when Twist And Swing drive mode is used */
 	void SetOrientationDriveTwistAndSwing(bool bInEnableTwistDrive, bool bInEnableSwingDrive);
@@ -818,7 +828,7 @@ public:
 		return ProfileInstance.AngularDrive.IsVelocityDriveEnabled();
 	}
 	
-	/** Set the angular drive's angular velocity target*/
+	/** Set the angular drive's angular velocity target (in revolutions per second)*/
 	void SetAngularVelocityTarget(const FVector& InVelTarget);
 
 	/** Get the angular drive's angular velocity target*/
@@ -928,10 +938,10 @@ public:
 	void DisableProjection();
 
 	/** Set projection parameters */
-	void SetProjectionParams(bool bEnableLinearProjection, bool bEnableAngularProjection, float ProjectionLinearAlphaOrTolerance, float ProjectionAngularAlphaOrTolerance);
+	void SetProjectionParams(bool bEnableProjection, float ProjectionLinearAlpha, float ProjectionAngularAlpha, float ProjectionLinearTolerance, float ProjectionAngularTolerance);
 
 	/** Get projection parameters */
-	void GetProjectionAlphasOrTolerances(float& ProjectionLinearAlphaOrTolerance, float& ProjectionAngularAlphaOrTolerance) const;
+	void GetProjectionParams(float& ProjectionLinearAlpha, float& ProjectionAngularAlpha, float& ProjectionLinearTolerance, float& ProjectionAngularTolerance) const;
 
 	/** Set the shock propagation amount [0, 1] */
 	void SetShockPropagationParams(bool bEnableShockPropagation, float ShockPropagationAlpha);
@@ -1001,6 +1011,18 @@ private:
 	void UpdateDriveTarget();
 
 public:
+
+#if WITH_EDITORONLY_DATA
+
+	/** Returns this constraint's default transform relative to its parent bone. */
+	FTransform CalculateDefaultParentTransform(const UPhysicsAsset* const PhysicsAsset) const;
+
+	/** Returns this constraint's default transform relative to its child bone. */
+	FTransform CalculateDefaultChildTransform() const;
+
+	/** Set the constraint transform components specified by the SnapFlags to their default values (derived from the parent and child bone transforms). */
+	void SnapTransformsToDefault(const EConstraintTransformComponentFlags SnapFlags, const UPhysicsAsset* const PhysicsAsset);
+#endif // WITH_EDITORONLY_DATA
 
 	///////////////////////////// DEPRECATED
 	// Most of these properties have moved inside the ProfileInstance member (FConstraintProfileProperties struct)

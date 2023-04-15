@@ -13,6 +13,8 @@
 #include "DynamicMesh/MeshNormals.h"
 #include "NormalFlowRemesher.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RemeshMeshOp)
+
 using namespace UE::Geometry;
 
 TUniquePtr<FRemesher> FRemeshMeshOp::CreateRemesher(ERemeshType Type, FDynamicMesh3* TargetMesh)
@@ -23,6 +25,7 @@ TUniquePtr<FRemesher> FRemeshMeshOp::CreateRemesher(ERemeshType Type, FDynamicMe
 	{
 		TUniquePtr<FQueueRemesher> QueueRemesher = MakeUnique<FQueueRemesher>(TargetMesh);
 		QueueRemesher->MaxRemeshIterations = MaxRemeshIterations;
+		QueueRemesher->MinActiveEdgeFraction = MinActiveEdgeFraction;
 		return QueueRemesher;
 	}
 	case ERemeshType::FullPass:
@@ -33,6 +36,7 @@ TUniquePtr<FRemesher> FRemeshMeshOp::CreateRemesher(ERemeshType Type, FDynamicMe
 	{
 		TUniquePtr<FNormalFlowRemesher> NormalFlowRemesher = MakeUnique<FNormalFlowRemesher>(TargetMesh);
 		NormalFlowRemesher->MaxRemeshIterations = MaxRemeshIterations;
+		NormalFlowRemesher->MinActiveEdgeFraction = 0;		// disable convergence check for NormalFlow remeshing
 		NormalFlowRemesher->NumExtraProjectionIterations = ExtraProjectionIterations;
 		NormalFlowRemesher->MaxTriangleCount = FMath::Max(0, TriangleCountHint);
 		NormalFlowRemesher->FaceProjectionPassesPerRemeshIteration = FaceProjectionPassesPerRemeshIteration;
@@ -114,17 +118,45 @@ void FRemeshMeshOp::CalculateResult(FProgressCancel* Progress)
 	bool bIsUniformSmooth = (Remesher->SmoothType == FRemesher::ESmoothTypes::Uniform);
 
 	Remesher->bPreventNormalFlips = bPreventNormalFlips;
+	Remesher->bPreventTinyTriangles = bPreventTinyTriangles;
 
 	Remesher->DEBUG_CHECK_LEVEL = 0;
 
-	FMeshConstraints constraints;
-	FMeshConstraintsUtil::ConstrainAllBoundariesAndSeams(constraints, *TargetMesh,
-														 MeshBoundaryConstraint,
-														 GroupBoundaryConstraint,
-														 MaterialBoundaryConstraint,
-														 true, !bPreserveSharpEdges);
+	FMeshConstraints Constraints;
+	constexpr bool bAllowSeamSplits = true;
+	const bool bAllowSeamCollapse = !bPreserveSharpEdges;
+	const bool bAllowSeamSmoothing = !bPreserveSharpEdges;
 
-	Remesher->SetExternalConstraints(MoveTemp(constraints));
+	FMeshConstraintsUtil::ConstrainAllBoundariesAndSeams(Constraints,
+		*TargetMesh,
+		MeshBoundaryConstraint,
+		GroupBoundaryConstraint,
+		MaterialBoundaryConstraint,
+		bAllowSeamSplits,
+		bAllowSeamSmoothing,
+		bAllowSeamCollapse);
+
+	if (bReprojectConstraints)
+	{
+		Constraints.ProjectionData.ProjectionCurves.Reset();
+
+		if ( MeshBoundaryConstraint != EEdgeRefineFlags::NoConstraint )
+		{
+			FMeshConstraintsUtil::SetBoundaryConstraintsWithProjection(Constraints, FMeshConstraintsUtil::EBoundaryType::Mesh, *TargetMesh, BoundaryCornerAngleThreshold);
+		}
+
+		if (GroupBoundaryConstraint != EEdgeRefineFlags::NoConstraint)
+		{
+			FMeshConstraintsUtil::SetBoundaryConstraintsWithProjection(Constraints, FMeshConstraintsUtil::EBoundaryType::Group, *TargetMesh, BoundaryCornerAngleThreshold);
+		}
+
+		if (MaterialBoundaryConstraint != EEdgeRefineFlags::NoConstraint)
+		{
+			FMeshConstraintsUtil::SetBoundaryConstraintsWithProjection(Constraints, FMeshConstraintsUtil::EBoundaryType::MaterialID, *TargetMesh, BoundaryCornerAngleThreshold);
+		}
+	}
+
+	Remesher->SetExternalConstraints(MoveTemp(Constraints));
 
 	if (ProjectionTarget == nullptr)
 	{
@@ -208,4 +240,19 @@ void FRemeshMeshOp::CalculateResult(FProgressCancel* Progress)
 			CopyVertexNormalsToOverlay(*TargetMesh, *TargetMesh->Attributes()->PrimaryNormals());
 		}
 	}
+}
+
+
+
+double FRemeshMeshOp::CalculateTargetEdgeLength(const FDynamicMesh3* Mesh, int TargetTriCount, double PrecomputedMeshArea)
+{
+	double InitialMeshArea = PrecomputedMeshArea;
+	if (InitialMeshArea <= 0)
+	{
+		InitialMeshArea = TMeshQueries<FDynamicMesh3>::GetVolumeArea(*Mesh).Y;
+	}
+
+	double TargetTriArea = InitialMeshArea / (double)TargetTriCount;
+	double EdgeLen = TriangleUtil::EquilateralEdgeLengthForArea(TargetTriArea);
+	return (double)FMath::RoundToInt(EdgeLen*100.0) / 100.0;
 }

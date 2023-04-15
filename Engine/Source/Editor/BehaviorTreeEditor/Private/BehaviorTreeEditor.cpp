@@ -2,67 +2,117 @@
 
 #include "BehaviorTreeEditor.h"
 
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Engine/Blueprint.h"
-#include "Widgets/Layout/SBorder.h"
-#include "UObject/ObjectSaveContext.h"
-#include "UObject/Package.h"
-#include "BehaviorTree/BTDecorator.h"
-#include "BehaviorTree/BTCompositeNode.h"
-#include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
-#include "Editor/UnrealEdEngine.h"
-#include "BlackboardDataFactory.h"
-#include "Engine/BlueprintGeneratedClass.h"
-#include "UnrealEdGlobals.h"
-#include "Kismet2/KismetEditorUtilities.h"
-#include "WorkflowOrientedApp/WorkflowTabFactory.h"
-#include "WorkflowOrientedApp/WorkflowTabManager.h"
-#include "WorkflowOrientedApp/WorkflowUObjectDocuments.h"
-#include "ClassViewerModule.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "BehaviorTreeEditorTypes.h"
-#include "BehaviorTreeDecoratorGraphNode_Logic.h"
-#include "BehaviorTreeGraph.h"
-#include "BehaviorTreeGraphNode_Decorator.h"
-#include "BehaviorTreeGraphNode_Root.h"
-#include "EdGraphSchema_BehaviorTree.h"
+#include "AIGraphNode.h"
+#include "AIGraphTypes.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "PropertyEditorModule.h"
-#include "BehaviorTreeEditorModule.h"
-#include "BehaviorTreeDebugger.h"
-#include "FindInBT.h"
-#include "IDetailsView.h"
-#include "GraphEditorActions.h"
-#include "ScopedTransaction.h"
-#include "BehaviorTreeColors.h"
-
 #include "BehaviorTree/BTCompositeNode.h"
-#include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BehaviorTree.h"
-#include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
-#include "BehaviorTree/Tasks/BTTask_BlueprintBase.h"
+#include "BehaviorTree/BehaviorTreeComponent.h"
+#include "BehaviorTree/BehaviorTreeTypes.h"
+#include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Decorators/BTDecorator_BlueprintBase.h"
 #include "BehaviorTree/Services/BTService_BlueprintBase.h"
-
-
-#include "BehaviorTreeEditorModes.h"
-#include "BehaviorTreeEditorToolbar.h"
-#include "BehaviorTreeEditorTabFactories.h"
+#include "BehaviorTree/Tasks/BTTask_BlueprintBase.h"
+#include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
+#include "BehaviorTreeColors.h"
+#include "BehaviorTreeDebugger.h"
+#include "BehaviorTreeDecoratorGraphNode_Logic.h"
 #include "BehaviorTreeEditorCommands.h"
+#include "BehaviorTreeEditorModes.h"
+#include "BehaviorTreeEditorModule.h"
+#include "BehaviorTreeEditorTabFactories.h"
 #include "BehaviorTreeEditorTabs.h"
+#include "BehaviorTreeEditorToolbar.h"
+#include "BehaviorTreeEditorTypes.h"
 #include "BehaviorTreeEditorUtils.h"
+#include "BehaviorTreeGraph.h"
+#include "BehaviorTreeGraphNode.h"
+#include "BehaviorTreeGraphNode_CompositeDecorator.h"
+#include "BehaviorTreeGraphNode_Decorator.h"
+#include "BehaviorTreeGraphNode_Root.h"
 #include "BehaviorTreeGraphNode_SubtreeTask.h"
-#include "DetailCustomizations/BlackboardDataDetails.h"
-#include "SBehaviorTreeBlackboardView.h"
-#include "SBehaviorTreeBlackboardEditor.h"
+#include "BlackboardDataFactory.h"
+#include "BlueprintUtilities.h"
 #include "ClassViewerFilter.h"
-#include "AssetRegistryModule.h"
-#include "IContentBrowserSingleton.h"
+#include "ClassViewerModule.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "ContentBrowserModule.h"
-#include "Widgets/Docking/SDockTab.h"
+#include "Delegates/Delegate.h"
+#include "DetailCustomizations/BlackboardDataDetails.h"
+#include "DetailsViewArgs.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_BehaviorTree.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/World.h"
+#include "FindInBT.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "GraphEditorActions.h"
+#include "HAL/PlatformCrt.h"
+#include "IAssetTools.h"
+#include "IContentBrowserSingleton.h"
+#include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Layout/Margin.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorDelegates.h"
+#include "PropertyEditorModule.h"
+#include "SBehaviorTreeBlackboardEditor.h"
+#include "SBehaviorTreeBlackboardView.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectBaseUtility.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UnrealEdGlobals.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+#include "WorkflowOrientedApp/WorkflowCentricApplication.h"
+#include "WorkflowOrientedApp/WorkflowTabManager.h"
+#include "WorkflowOrientedApp/WorkflowUObjectDocuments.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "BehaviorTreeEditor"
 
@@ -571,7 +621,7 @@ TSharedRef<SGraphEditor> FBehaviorTreeEditor::CreateGraphEditorWidget(UEdGraph* 
 	// Make title bar
 	TSharedRef<SWidget> TitleBarWidget = 
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
+		.BorderImage( FAppStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
 		.HAlign(HAlign_Fill)
 		[
 			SNew(SHorizontalBox)
@@ -581,7 +631,7 @@ TSharedRef<SGraphEditor> FBehaviorTreeEditor::CreateGraphEditorWidget(UEdGraph* 
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("BehaviorTreeGraphLabel", "Behavior Tree"))
-				.TextStyle( FEditorStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
+				.TextStyle( FAppStyle::Get(), TEXT("GraphBreadcrumbButtonText") )
 			]
 		];
 
@@ -629,7 +679,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnProperties()
 			[
 				SNew(SBorder)
 				.BorderBackgroundColor(BehaviorTreeColors::NodeBody::InjectedSubNode)
-				.BorderImage(FEditorStyle::GetBrush("Graph.StateNode.Body"))
+				.BorderImage(FAppStyle::GetBrush("Graph.StateNode.Body"))
 				.Visibility(this, &FBehaviorTreeEditor::GetInjectedNodeVisibility)
 				.Padding(FMargin(5.0f))
 				[
@@ -643,7 +693,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnProperties()
 			[
 				SNew(SBorder)
 				.BorderBackgroundColor(BehaviorTreeColors::NodeBody::InjectedSubNode)
-				.BorderImage(FEditorStyle::GetBrush("Graph.StateNode.Body"))
+				.BorderImage(FAppStyle::GetBrush("Graph.StateNode.Body"))
 				.Visibility(this, &FBehaviorTreeEditor::GetRootLevelNodeVisibility)
 				.Padding(FMargin(5.0f))
 				[
@@ -657,7 +707,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnProperties()
 			[
 				SNew(SBorder)
 				.BorderBackgroundColor(BehaviorTreeColors::NodeBorder::HighlightAbortRange0)
-				.BorderImage( FEditorStyle::GetBrush( "Graph.StateNode.Body" ) )
+				.BorderImage( FAppStyle::GetBrush( "Graph.StateNode.Body" ) )
 				.Visibility(this, &FBehaviorTreeEditor::GetRangeLowerVisibility)
 				.Padding(FMargin(5.0f))
 				[
@@ -671,7 +721,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnProperties()
 			[
 				SNew(SBorder)
 				.BorderBackgroundColor(BehaviorTreeColors::NodeBorder::HighlightAbortRange1)
-				.BorderImage( FEditorStyle::GetBrush( "Graph.StateNode.Body" ) )
+				.BorderImage( FAppStyle::GetBrush( "Graph.StateNode.Body" ) )
 				.Visibility(this, &FBehaviorTreeEditor::GetRangeSelfVisibility)
 				.Padding(FMargin(5.0f))
 				[
@@ -1106,7 +1156,12 @@ void FBehaviorTreeEditor::OnFinishedChangingProperties(const FPropertyChangedEve
 		MyGraph->UpdateInjectedNodes();
 		MyGraph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags);
 	}
-	BehaviorTree->BTGraph->GetSchema()->ForceVisualizationCacheClear();
+
+	const TSharedPtr<SGraphEditor> FocusedGraphEd = UpdateGraphEdPtr.Pin();
+	if (FocusedGraphEd.IsValid() && FocusedGraphEd->GetCurrentGraph())
+	{
+		FocusedGraphEd->GetCurrentGraph()->GetSchema()->ForceVisualizationCacheClear();
+	}
 }
 
 void FBehaviorTreeEditor::OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)

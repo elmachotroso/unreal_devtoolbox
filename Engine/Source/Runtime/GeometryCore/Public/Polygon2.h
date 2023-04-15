@@ -12,7 +12,8 @@
 #include "LineTypes.h"
 #include "MathUtil.h"
 #include "Intersection/IntrSegment2Segment2.h"
-#include "Util/DynamicVector.h"
+#include "Curve/CurveUtil.h"
+#include "Algo/Reverse.h"
 
 namespace UE
 {
@@ -23,41 +24,44 @@ using namespace UE::Math;
 
 /**
  * TPolygon2 is a 2D polygon represented as a list of Vertices.
- * 
- * @todo move operators
  */
 template<typename T>
 class TPolygon2
 {
+
 protected:
 	/** The list of vertices/corners of the polygon */
 	TArray<TVector2<T>> Vertices;
 
-	/** A counter that is incremented every time the polygon vertices are modified */
-	int Timestamp;
+	/** A counter that is incremented every time the polygon vertices are modified. */
+	UE_DEPRECATED(5.1, "Timestamps for TPolygon2 were not being used and will be removed in the future")
+	int Timestamp = 0;
 
 public:
 
-	TPolygon2() : Timestamp(0)
+	TPolygon2()
 	{
 	}
 
-	/**
-	 * Construct polygon that is a copy of another polygon
-	 */
-	TPolygon2(const TPolygon2& Copy) : Vertices(Copy.Vertices), Timestamp(Copy.Timestamp)
-	{
-	}
+	// Note: We need all 5 of these explicitly defaulted just because of the deprecated Timestamp member
+	// Once Timestamp is deleted, we can delete these as well
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	~TPolygon2() = default;
+	TPolygon2(const TPolygon2& Other) = default;
+	TPolygon2(TPolygon2&& Other) noexcept = default;
+	TPolygon2& operator=(const TPolygon2& Other) = default;
+	TPolygon2& operator=(TPolygon2&& Other) noexcept = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Construct polygon with given list of vertices
 	 */
-	TPolygon2(const TArray<TVector2<T>>& VertexList) : Vertices(VertexList), Timestamp(0)
+	TPolygon2(const TArray<TVector2<T>>& VertexList) : Vertices(VertexList)
 	{
 	}
 
 	template<typename OtherVertexType>
-	TPolygon2(const TArray<OtherVertexType>& VertexList) : Timestamp(0)
+	TPolygon2(const TArray<OtherVertexType>& VertexList)
 	{
 		Vertices.Reserve(VertexList.Num());
 		for (const OtherVertexType& OtherVtx : VertexList)
@@ -70,7 +74,7 @@ public:
 	/**
 	 * Construct polygon with given indices into a vertex array
 	 */
-	TPolygon2(TArrayView<const TVector2<T>> VertexArray, TArrayView<const int32> VertexIndices) : Timestamp(0)
+	TPolygon2(TArrayView<const TVector2<T>> VertexArray, TArrayView<const int32> VertexIndices)
 	{
 		Vertices.SetNum(VertexIndices.Num());
 		for (int32 Idx = 0; Idx < VertexIndices.Num(); Idx++)
@@ -80,9 +84,12 @@ public:
 	}
 
 	/** @return the Timestamp for the polygon, which is updated every time the polygon is modified */
+	UE_DEPRECATED(5.1, "Timestamps for TPolygon2 were not being used and will be removed in the future")
 	int GetTimestamp() const 
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return Timestamp;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	/**
@@ -133,7 +140,7 @@ public:
 	void AppendVertex(const TVector2<T>& Position)
 	{
 		Vertices.Add(Position);
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 	/**
@@ -142,7 +149,7 @@ public:
 	void AppendVertices(const TArray<TVector2<T>>& NewVertices)
 	{
 		Vertices.Append(NewVertices);
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 	/**
@@ -151,7 +158,7 @@ public:
 	void Set(int VertexIndex, const TVector2<T>& Position)
 	{
 		Vertices[VertexIndex] = Position;
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 	/**
@@ -160,7 +167,7 @@ public:
 	void RemoveVertex(int VertexIndex)
 	{
 		Vertices.RemoveAt(VertexIndex);
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 	/**
@@ -169,7 +176,7 @@ public:
 	void SetVertices(const TArray<TVector2<T>>& NewVertices)
 	{
 		Vertices = NewVertices;
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 
@@ -178,12 +185,8 @@ public:
 	 */
 	void Reverse()
 	{
-		int32 j = Vertices.Num()-1;
-		for (int32 VertexIndex = 0; VertexIndex < j; VertexIndex++, j--)
-		{
-			Swap(Vertices[VertexIndex], Vertices[j]);
-		}
-		Timestamp++;
+		Algo::Reverse(Vertices);
+		IncrementDeprecatedTimestamp();
 	}
 
 
@@ -193,9 +196,7 @@ public:
 	 */
 	TVector2<T> GetTangent(int VertexIndex) const
 	{
-		TVector2<T> next = Vertices[(VertexIndex + 1) % Vertices.Num()];
-		TVector2<T> prev = Vertices[VertexIndex == 0 ? Vertices.Num() - 1 : VertexIndex - 1];
-		return Normalized(next - prev);
+		return CurveUtil::Tangent<T, TVector2<T>, true>(Vertices, VertexIndex);
 	}
 
 
@@ -216,21 +217,7 @@ public:
 	 */
 	TVector2<T> GetNormal_FaceAvg(int VertexIndex) const
 	{
-		TVector2<T> next = Vertices[(VertexIndex + 1) % Vertices.Num()];
-		TVector2<T> prev = Vertices[VertexIndex == 0 ? Vertices.Num() - 1 : VertexIndex - 1];
-		next -= Vertices[VertexIndex]; Normalize(next);
-		prev -= Vertices[VertexIndex]; Normalize(prev);
-
-		TVector2<T> n = (PerpCW(next) - PerpCW(prev));
-		T len = Normalize(n);
-		if (len == 0) 
-		{
-			return Normalized(next + prev);   // this gives right direction for degenerate angle
-		}
-		else 
-		{
-			return n;
-		}
+		return CurveUtil::GetNormal_FaceAvg2<T, TVector2<T>, true>(Vertices, VertexIndex);
 	}
 
 
@@ -239,9 +226,7 @@ public:
 	 */
 	TAxisAlignedBox2<T> Bounds() const
 	{
-		TAxisAlignedBox2<T> box = TAxisAlignedBox2<T>::Empty();
-		box.Contain(Vertices);
-		return box;
+		return TAxisAlignedBox2<T>(Vertices);
 	}
 
 	
@@ -322,19 +307,7 @@ public:
 	 */
 	T SignedArea() const
 	{
-		T fArea = 0;
-		int N = Vertices.Num();
-		if (N == 0)
-		{
-			return 0;
-		}
-		for (int i = 0; i < N; ++i) 
-		{
-			const TVector2<T>& v1 = Vertices[i];
-			const TVector2<T>& v2 = Vertices[(i + 1) % N];
-			fArea += v1.X * v2.Y - v1.Y * v2.X;
-		}
-		return fArea * 0.5;
+		return CurveUtil::SignedArea2<T, TVector2<T>>(Vertices);
 	}
 
 	/**
@@ -350,40 +323,25 @@ public:
 	 */
 	T Perimeter() const
 	{
-		T fPerim = 0;
-		int N = Vertices.Num();
-		for (int i = 0; i < N; ++i)
-		{
-			fPerim += Distance(Vertices[i], Vertices[(i + 1) % N]);
-		}
-		return fPerim;
+		return CurveUtil::ArcLength<T, TVector2<T>>(Vertices, true);
 	}
 
 
 	/**
 	 * Get the previous and next vertex positions for a given vertex of the Polygon
 	 */
-	void NeighbourPoints(int iVertex, TVector2<T> &PrevNbrOut, TVector2<T> &NextNbrOut) const
+	void NeighbourPoints(int VertexIdx, TVector2<T>& OutPrevNbr, TVector2<T>& OutNextNbr) const
 	{
-		int N = Vertices.Num();
-		PrevNbrOut = Vertices[(iVertex == 0) ? N - 1 : iVertex - 1];
-		NextNbrOut = Vertices[(iVertex + 1) % N];
+		CurveUtil::GetPrevNext<T, TVector2<T>, true>(Vertices, VertexIdx, OutPrevNbr, OutNextNbr);
 	}
 
 
 	/**
 	 * Get the vectors from a given vertex to the previous and next Vertices, optionally normalized
 	 */
-	void NeighbourVectors(int iVertex, TVector2<T> &ToPrevOut, TVector2<T> &ToNextOut, bool bNormalize = false) const
+	void NeighbourVectors(int VertexIdx, TVector2<T>& OutToPrev, TVector2<T>& OutToNext, bool bNormalize = false) const
 	{
-		int N = Vertices.Num();
-		ToPrevOut = Vertices[(iVertex == 0) ? N - 1 : iVertex - 1] - Vertices[iVertex];
-		ToNextOut = Vertices[(iVertex + 1) % N] - Vertices[iVertex];
-		if (bNormalize) 
-		{
-			Normalize(ToPrevOut);
-			Normalize(ToNextOut);
-		}
+		CurveUtil::GetVectorsToPrevNext<T, TVector2<T>, true>(Vertices, VertexIdx, OutToPrev, OutToNext, bNormalize);
 	}
 
 
@@ -403,16 +361,17 @@ public:
 	 */
 	T WindingIntegral(const TVector2<T>& QueryPoint) const
 	{
-		T sum = 0;
-		int N = Vertices.Num();
-		TVector2<T> a = Vertices[0] - QueryPoint, b = TVector2<T>::Zero();
-		for (int i = 0; i < N; ++i) 
-		{
-			b = Vertices[(i + 1) % N] - QueryPoint;
-			sum += TMathUtil<T>::Atan2(a.X * b.Y - a.Y * b.X, a.X * b.X + a.Y * b.Y);
-			a = b;
-		}
-		return sum / FMathd::TwoPi;
+		return CurveUtil::WindingIntegral2<T, TVector2<T>>(Vertices, QueryPoint);
+	}
+
+	/**
+	 * @param RadiansTolerance		Maximum turn in the 'wrong' direction that will still be considered convex (in radians)
+	 * @param bDegenerateIsConvex	What to return for degenerate input (less than 3 points or equivalent due to repeated points)
+	 * @return						true if polygon is convex
+	 */
+	bool IsConvex(T RadiansTolerance = TMathUtil<T>::ZeroTolerance, bool bDegenerateIsConvex = true)
+	{
+		return CurveUtil::IsConvex2<T, TVector2<T>>(Vertices, RadiansTolerance, bDegenerateIsConvex);
 	}
 
 
@@ -421,39 +380,7 @@ public:
 	 */
 	bool Contains(const TVector2<T>& QueryPoint) const
 	{
-		int nWindingNumber = 0;
-
-		int N = Vertices.Num();
-		if (N == 0)
-		{
-			return false;
-		}
-		TVector2<T> a = Vertices[0], b = TVector2<T>::Zero();
-		for (int i = 0; i < N; ++i) 
-		{
-			b = Vertices[(i + 1) % N];
-
-			if (a.Y <= QueryPoint.Y)     // y <= P.Y (below)
-			{
-				if (b.Y > QueryPoint.Y)									// an upward crossing
-				{
-					if (Orient(a, b, QueryPoint) > 0)  // P left of edge
-						++nWindingNumber;                       // have a valid up intersect
-				}
-			}
-			else     // y > P.Y  (above)
-			{
-				if (b.Y <= QueryPoint.Y)									// a downward crossing
-				{
-					if (Orient(a, b, QueryPoint) < 0)  // P right of edge
-					{
-						--nWindingNumber;						// have a valid down intersect
-					}
-				}
-			}
-			a = b;
-		}
-		return nWindingNumber != 0;
+		return CurveUtil::Contains2<T, TVector2<T>>(Vertices, QueryPoint);
 	}
 
 	/**
@@ -541,6 +468,14 @@ public:
 			}
 		}
 		return true;
+	}
+	
+	/**
+	 * Clip polygon to the given bounds. Note that if the polygon is not convex, it may have overlapping edges at the bounds.
+	 */
+	void ClipConvex(const TAxisAlignedBox2<T>& Bounds)
+	{
+		CurveUtil::ClipConvexToBounds<T, TVector2<T>, true, 2>(Vertices, Bounds.Min, Bounds.Max);
 	}
 
 
@@ -759,7 +694,7 @@ public:
 		{
 			Vertices[i] += Translate;
 		}
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 		return *this;
 	}
 
@@ -774,7 +709,7 @@ public:
 		{
 			Vertices[i] = Scale * (Vertices[i] - Origin) + Origin;
 		}
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 		return *this;
 	}
 
@@ -790,7 +725,7 @@ public:
 		{
 			Vertices[i] = TransformFunc(Vertices[i]);
 		}
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 		return *this;
 	}
 
@@ -825,7 +760,7 @@ public:
 			Vertices[k] = NewVertices[k];
 		}
 
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 
@@ -860,7 +795,7 @@ public:
 			Vertices[k] = NewVertices[k];
 		}
 
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 
@@ -1020,7 +955,7 @@ public:
 			}
 		}
 
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 		return;
 	}
 
@@ -1086,7 +1021,7 @@ public:
 			iCur = iNext;
 		} while (iCur != 0);
 
-		Timestamp++;
+		IncrementDeprecatedTimestamp();
 	}
 
 
@@ -1155,6 +1090,16 @@ public:
 		}
 
 		return Circle;
+	}
+
+private:
+
+	// Note: this function will be removed when Timestamp is removed
+	inline void IncrementDeprecatedTimestamp()
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Timestamp++;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
 

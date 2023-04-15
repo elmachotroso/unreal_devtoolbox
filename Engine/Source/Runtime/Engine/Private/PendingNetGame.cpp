@@ -16,12 +16,16 @@
 #include "Net/NetworkProfiler.h"
 #include "Net/DataChannel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PendingNetGame)
+
 void UPendingNetGame::Initialize(const FURL& InURL)
 {
 	NetDriver = NULL;
 	URL = InURL;
 	bSuccessfullyConnected = false;
 	bSentJoinRequest = false;
+	bLoadedMapSuccessfully = false;
+	bFailedTravel = false;
 }
 
 UPendingNetGame::UPendingNetGame(const FObjectInitializer& ObjectInitializer)
@@ -98,20 +102,49 @@ void UPendingNetGame::SendInitialJoin()
 		{
 			uint8 IsLittleEndian = uint8(PLATFORM_LITTLE_ENDIAN);
 			check(IsLittleEndian == !!IsLittleEndian); // should only be one or zero
-			
-			uint32 LocalNetworkVersion = FNetworkVersion::GetLocalNetworkVersion();
 
-			UE_LOG(LogNet, Log, TEXT( "UPendingNetGame::SendInitialJoin: Sending hello. %s" ), *ServerConn->Describe());
-
+			const int32 AllowEncryption = CVarNetAllowEncryption.GetValueOnGameThread();
 			FString EncryptionToken;
-			if (CVarNetAllowEncryption.GetValueOnGameThread() != 0)
+
+			if (AllowEncryption != 0)
 			{
 				EncryptionToken = URL.GetOption(TEXT("EncryptionToken="), TEXT(""));
 			}
 
-			FNetControlMessage<NMT_Hello>::Send(ServerConn, IsLittleEndian, LocalNetworkVersion, EncryptionToken);
+			bool bEncryptionRequirementsFailure = false;
 
-			ServerConn->FlushNet();
+			if (EncryptionToken.IsEmpty())
+			{
+				EEncryptionFailureAction FailureResult = EEncryptionFailureAction::Default;
+
+				if (FNetDelegates::OnReceivedNetworkEncryptionFailure.IsBound())
+				{
+					FailureResult = FNetDelegates::OnReceivedNetworkEncryptionFailure.Execute(ServerConn);
+				}
+
+				const bool bGameplayDisableEncryptionCheck = FailureResult == EEncryptionFailureAction::AllowConnection;
+
+				bEncryptionRequirementsFailure = NetDriver->IsEncryptionRequired() && !bGameplayDisableEncryptionCheck;
+			}
+			
+			if (!bEncryptionRequirementsFailure)
+			{
+				uint32 LocalNetworkVersion = FNetworkVersion::GetLocalNetworkVersion();
+
+				UE_LOG(LogNet, Log, TEXT("UPendingNetGame::SendInitialJoin: Sending hello. %s"), *ServerConn->Describe());
+
+				EEngineNetworkRuntimeFeatures LocalNetworkFeatures = NetDriver->GetNetworkRuntimeFeatures();
+				FNetControlMessage<NMT_Hello>::Send(ServerConn, IsLittleEndian, LocalNetworkVersion, EncryptionToken, LocalNetworkFeatures);
+
+
+				ServerConn->FlushNet();
+			}
+			else
+			{
+				UE_LOG(LogNet, Error, TEXT("UPendingNetGame::SendInitialJoin: EncryptionToken is empty when 'net.AllowEncryption' requires it."));
+
+				ConnectionError = TEXT("EncryptionToken not set.");
+			}
 		}
 	}
 }
@@ -138,26 +171,27 @@ void UPendingNetGame::AddReferencedObjects(UObject* InThis, FReferenceCollector&
 	Super::AddReferencedObjects( This, Collector );
 }
 
-void UPendingNetGame::LoadMapCompleted(UEngine* Engine, FWorldContext& Context, bool bLoadedMapSuccessfully, const FString& LoadMapError)
+bool UPendingNetGame::LoadMapCompleted(UEngine* Engine, FWorldContext& Context, bool bInLoadedMapSuccessfully, const FString& LoadMapError)
 {
+	bLoadedMapSuccessfully = bInLoadedMapSuccessfully;
 	if (!bLoadedMapSuccessfully || LoadMapError != TEXT(""))
 	{
-		// we can't guarantee the current World is in a valid state, so travel to the default map
-		Engine->BrowseToDefaultMap(Context);
-		Engine->BroadcastTravelFailure(Context.World(), ETravelFailure::LoadMapFailure, LoadMapError);
-		check(Context.World() != NULL);
+		// this is handled in the TickWorldTravel
+		return false;
 	}
-	else
-	{
-		// Show connecting message, cause precaching to occur.
-		Engine->TransitionType = ETransitionType::Connecting;
+	return true;
+}
 
-		Engine->RedrawViewports(false);
+void UPendingNetGame::TravelCompleted(UEngine* Engine, FWorldContext& Context)
+{
+	// Show connecting message, cause precaching to occur.
+	Engine->TransitionType = ETransitionType::Connecting;
 
-		// Send join.
-		Context.PendingNetGame->SendJoin();
-		Context.PendingNetGame->NetDriver = NULL;
-	}
+	Engine->RedrawViewports(false);
+
+	// Send join.
+	Context.PendingNetGame->SendJoin();
+	Context.PendingNetGame->NetDriver = NULL;
 }
 
 EAcceptConnection::Type UPendingNetGame::NotifyAcceptingConnection()
@@ -184,18 +218,32 @@ void UPendingNetGame::NotifyControlMessage(UNetConnection* Connection, uint8 Mes
 	switch (MessageType)
 	{
 		case NMT_Upgrade:
+		{
 			// Report mismatch.
 			uint32 RemoteNetworkVersion;
 
-			if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion))
+			EEngineNetworkRuntimeFeatures RemoteNetworkFeatures = EEngineNetworkRuntimeFeatures::None;
+
+			if (FNetControlMessage<NMT_Upgrade>::Receive(Bunch, RemoteNetworkVersion, RemoteNetworkFeatures))
 			{
+				TStringBuilder<128> RemoteFeaturesDescription;
+				FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(RemoteNetworkFeatures, RemoteFeaturesDescription);
+
+				TStringBuilder<128> LocalFeaturesDescription;
+				FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(NetDriver->GetNetworkRuntimeFeatures(), LocalFeaturesDescription);
+
+				UE_LOG(LogNet, Error, TEXT("Server is incompatible with the local version of the game: RemoteNetworkVersion=%u, RemoteNetworkFeatures=%s vs LocalNetworkVersion=%u, LocalNetworkFeatures=%s"), 
+					RemoteNetworkVersion, RemoteFeaturesDescription.ToString(),
+					FNetworkVersion::GetLocalNetworkVersion(), LocalFeaturesDescription.ToString()
+				);
+
 				// Upgrade
 				ConnectionError = NSLOCTEXT("Engine", "ClientOutdated", "The match you are trying to join is running an incompatible version of the game.  Please try upgrading your game version.").ToString();
 				GEngine->BroadcastNetworkFailure(NULL, NetDriver, ENetworkFailure::OutdatedClient, ConnectionError);
 			}
 
 			break;
-
+		}
 		case NMT_Failure:
 		{
 			// our connection attempt failed for some reason, for example a synchronization mismatch (bad GUID, etc) or because the server rejected our join attempt (too many players, etc)
@@ -220,7 +268,7 @@ void UPendingNetGame::NotifyControlMessage(UNetConnection* Connection, uint8 Mes
 					Connection->OwningActor ? *Connection->OwningActor->GetName() : TEXT("No Owner"),
 					*ConnectionError);
 
-				Connection->Close();
+				Connection->Close(ENetCloseResult::FailureReceived);
 			}
 
 			break;
@@ -373,20 +421,7 @@ void UPendingNetGame::FinalizeEncryptedConnection(const FEncryptionKeyResponse& 
 		{
 			if (Response.Response == EEncryptionResponse::Success)
 			{
-				// handle deprecated path where only the key is set
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				if ((Response.EncryptionKey.Num() > 0) && (Response.EncryptionData.Key.Num() == 0))
-				{
-					FEncryptionData ResponseData = Response.EncryptionData;
-					ResponseData.Key = Response.EncryptionKey;
-
-					Connection->EnableEncryption(ResponseData);
-				}
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
-				else
-				{
-					Connection->EnableEncryption(Response.EncryptionData);
-				}
+				Connection->EnableEncryption(Response.EncryptionData);
 			}
 			else
 			{
@@ -509,3 +544,4 @@ void UPendingNetGame::SendJoin()
 	FNetControlMessage<NMT_Join>::Send(NetDriver->ServerConnection);
 	NetDriver->ServerConnection->FlushNet(true);
 }
+

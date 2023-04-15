@@ -8,6 +8,8 @@
 //@TODO: Just for log category
 #include "GameFeaturesSubsystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameFeatureAction_AddComponents)
+
 #define LOCTEXT_NAMESPACE "GameFeatures"
 
 //////////////////////////////////////////////////////////////////////
@@ -51,11 +53,11 @@ void UGameFeatureAction_AddComponents::AddAdditionalAssetBundleData(FAssetBundle
 		{
 			if (Entry.bClientComponent)
 			{
-				AssetBundleData.AddBundleAsset(UGameFeaturesSubsystemSettings::LoadStateClient, Entry.ComponentClass.ToSoftObjectPath());
+				AssetBundleData.AddBundleAsset(UGameFeaturesSubsystemSettings::LoadStateClient, Entry.ComponentClass.ToSoftObjectPath().GetAssetPath());
 			}
 			if (Entry.bServerComponent)
 			{
-				AssetBundleData.AddBundleAsset(UGameFeaturesSubsystemSettings::LoadStateServer, Entry.ComponentClass.ToSoftObjectPath());
+				AssetBundleData.AddBundleAsset(UGameFeaturesSubsystemSettings::LoadStateServer, Entry.ComponentClass.ToSoftObjectPath().GetAssetPath());
 			}
 		}
 	}
@@ -111,6 +113,7 @@ void UGameFeatureAction_AddComponents::AddToWorld(const FWorldContext& WorldCont
 				{
 					if (!Entry.ActorClass.IsNull())
 					{
+						UE_SCOPED_ENGINE_ACTIVITY(TEXT("Adding component to world %s (%s)"), *World->GetDebugDisplayName(), *Entry.ComponentClass.ToString());
 						TSubclassOf<UActorComponent> ComponentClass = Entry.ComponentClass.LoadSynchronous();
 						if (ComponentClass)
 						{
@@ -145,3 +148,4 @@ void UGameFeatureAction_AddComponents::HandleGameInstanceStart(UGameInstance* Ga
 //////////////////////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

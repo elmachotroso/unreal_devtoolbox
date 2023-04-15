@@ -8,6 +8,8 @@
 #include "ILandscapeSplineInterface.h"
 #include "LandscapeSplineActor.generated.h"
 
+class ALandscape;
+
 UCLASS(MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories = (Display, Attachment, Physics, Debug, Lighting, Input))
 class ALandscapeSplineActor : public AActor, public ILandscapeSplineInterface
 {
@@ -17,17 +19,24 @@ protected:
 	/** Guid for LandscapeInfo **/
 	UPROPERTY()
 	FGuid LandscapeGuid;
+
+#if WITH_EDITORONLY_DATA
+	/** Landscape **/
+	UPROPERTY()
+	TObjectPtr<ALandscape> LandscapeActor;
+#endif
 	
 public:
 	virtual FGuid GetLandscapeGuid() const override { return LandscapeGuid; }
-	void SetLandscapeGuid(const FGuid& Guid) { LandscapeGuid = Guid; }
 	virtual ULandscapeSplinesComponent* GetSplinesComponent() const override;
 	virtual FTransform LandscapeActorToWorld() const override;
 	virtual ULandscapeInfo* GetLandscapeInfo() const override;
 		
 #if WITH_EDITOR
-	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
-	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
+	LANDSCAPE_API bool HasGeneratedLandscapeSplineMeshesActors() const;
+	void SetLandscapeGuid(const FGuid& InGuid);
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return true; }
+	virtual void GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const override;
 
 	void GetSharedProperties(ULandscapeInfo* InLandscapeInfo);
 
@@ -42,7 +51,9 @@ public:
 	// Interface existes for backward compatibility. Should already be created since its this actor's root component.
 	virtual void CreateSplineComponent() override { check(false); }
 	virtual void CreateSplineComponent(const FVector& Scale3D) override { check(false); }
+
+private:
+	LANDSCAPE_API void SetLandscapeActor(ALandscape* InLandscapeActor);
+	friend class UWorldPartitionLandscapeSplineMeshesBuilder;
 #endif
 };
-
-DEFINE_ACTORDESC_TYPE(ALandscapeSplineActor, FLandscapeSplineActorDesc);

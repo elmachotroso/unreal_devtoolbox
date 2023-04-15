@@ -1,9 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditModes/ObserveBoneEditMode.h"
+
+#include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_ObserveBone.h"
-#include "IPersonaPreviewScene.h"
+#include "Animation/AnimTypes.h"
 #include "Animation/DebugSkelMeshComponent.h"
+#include "BoneContainer.h"
+#include "BoneControllers/AnimNode_ObserveBone.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "Engine/SkeletalMesh.h"
+#include "IPersonaPreviewScene.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Templates/Casts.h"
+#include "UObject/ObjectPtr.h"
+
+class USkeleton;
 
 void FObserveBoneEditMode::EnterMode(class UAnimGraphNode_Base* InEditorNode, struct FAnimNode_Base* InRuntimeNode)
 {
@@ -40,7 +55,7 @@ ECoordSystem FObserveBoneEditMode::GetWidgetCoordinateSystem() const
 FVector FObserveBoneEditMode::GetWidgetLocation() const
 {
 	USkeletalMeshComponent* SkelComp = GetAnimPreviewScene().GetPreviewMeshComponent();
-	USkeleton* Skeleton = SkelComp->SkeletalMesh->GetSkeleton();
+	USkeleton* Skeleton = SkelComp->GetSkeletalMeshAsset()->GetSkeleton();
 	FVector WidgetLoc = FVector::ZeroVector;
 
 	int32 MeshBoneIndex = SkelComp->GetBoneIndex(GraphNode->Node.BoneToObserve.BoneName);

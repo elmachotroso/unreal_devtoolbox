@@ -10,10 +10,25 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "CommonAnimTypes.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "EulerTransform.h"
+#include "Math/Quat.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/TransformVectorized.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/Archive.h"
+#include "Serialization/StructuredArchiveAdapters.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealNames.h"
+
 #include "Constraint.generated.h"
 
 struct FMultiTransformBlendHelper;
@@ -101,6 +116,12 @@ struct ANIMATIONCORE_API FFilterOptionPerAxis
 	{
 		// if none of them is set, it's not valid
 		return bX || bY || bZ;
+	}
+	
+	bool HasNoEffect() const
+	{
+		// if all of them are set the filter won't affect anything
+		return bX && bY && bZ;
 	}
 };
 
@@ -300,7 +321,7 @@ struct ANIMATIONCORE_API FTransformConstraint
 /// new changes of constraints
 
 /** Constraint Types*/
-UENUM()
+UENUM(BlueprintType)
 enum class EConstraintType : uint8
 {
 	/** Transform Constraint */
@@ -378,13 +399,14 @@ struct TStructOpsTypeTraits<FConstraintDescriptionEx> : public TStructOpsTypeTra
 };
 
 /** Transform Constraint Types*/
-UENUM()
+UENUM(Blueprintable)
 enum class ETransformConstraintType : uint8
 {
 	Translation,
 	Rotation,
 	Scale, 
-	Parent
+	Parent,
+	LookAt
 };
 
 /** A description of how to apply a simple transform constraint */

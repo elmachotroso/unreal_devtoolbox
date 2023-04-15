@@ -24,11 +24,11 @@ struct FGameplayCueNotifyData
 	UPROPERTY(EditAnywhere, Category=GameplayCue)
 	FGameplayTag GameplayCueTag;
 
-	UPROPERTY(EditAnywhere, Category=GameplayCue, meta=(AllowedClasses="GameplayCueNotify"))
+	UPROPERTY(EditAnywhere, Category=GameplayCue, meta=(AllowedClasses="/Script/GameplayAbilities.GameplayCueNotify_Static, /Script/GameplayAbilities.GameplayCueNotify_Actor"))
 	FSoftObjectPath GameplayCueNotifyObj;
 
 	UPROPERTY(transient)
-	UClass* LoadedGameplayCueClass;
+	TObjectPtr<UClass> LoadedGameplayCueClass;
 
 	int32 ParentDataIdx;
 };

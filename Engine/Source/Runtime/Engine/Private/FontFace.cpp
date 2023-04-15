@@ -13,6 +13,8 @@
 #include "UObject/EditorObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FontFace)
+
 DEFINE_LOG_CATEGORY_STATIC(LogFontFace, Log, All);
 
 UFontFace::UFontFace()
@@ -22,6 +24,7 @@ UFontFace::UFontFace()
 
 void UFontFace::Serialize(FArchive& Ar)
 {
+	LLM_SCOPE_BYNAME(TEXT("FontFaceData"));
 	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
@@ -219,3 +222,4 @@ FString UFontFace::GetCookedFilename() const
 	const FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, TEXT(".uasset"));
 	return FPaths::GetPath(PackageFilename) / GetName() + TEXT(".ufont");
 }
+

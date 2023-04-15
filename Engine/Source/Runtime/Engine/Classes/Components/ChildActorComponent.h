@@ -56,6 +56,9 @@ public:
 	FGuid ChildActorGUID;
 #endif
 
+	// The saved properties for the ChildActor itself
+	TSharedPtr<FActorInstanceData> ActorInstanceData;
+
 	// The component instance data cache for the ChildActor spawned by this component
 	TSharedPtr<FComponentInstanceDataCache> ComponentInstanceData;
 };
@@ -168,13 +171,17 @@ public:
 	virtual void OnUnregister() override;
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
 	virtual void BeginPlay() override;
+	virtual bool IsHLODRelevant() const override;
+#if WITH_EDITOR
+	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const override;
+#endif
 	//~ End ActorComponent Interface.
 
 	/** Apply the component instance data to the child actor component */
 	void ApplyComponentInstanceData(FChildActorComponentInstanceData* ComponentInstanceData, const ECacheApplyPhase CacheApplyPhase);
 
 	/** Create the child actor */
-	virtual void CreateChildActor();
+	virtual void CreateChildActor(TFunction<void(AActor*)> CustomizerFunc = nullptr);
 
 	AActor* GetChildActor() const { return ChildActor; }
 	AActor* GetChildActorTemplate() const { return ChildActorTemplate; }
@@ -193,8 +200,19 @@ public:
 	void SetEditorTreeViewVisualizationMode(EChildActorComponentTreeViewVisualizationMode InMode);
 #endif
 
+#if UE_WITH_IRIS
+	/** Register all replication fragments */
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+#endif // UE_WITH_IRIS
+
+
 private:
 	bool IsChildActorReplicated() const;
+
+	bool IsBeingRemovedFromLevel() const;
+
+	UFUNCTION()
+	void OnChildActorDestroyed(AActor* DestroyedActor);
 };
 
 struct FActorParentComponentSetter

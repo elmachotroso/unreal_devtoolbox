@@ -122,7 +122,7 @@ void SkeletalMeshImportUtils::ProcessImportMeshMaterials(TArray<FSkeletalMateria
 		{
 			const FString& MaterialName = ImportedMaterial.MaterialImportName;
 			MaterialNameNoSkin = MaterialName;
-			Material = FindObject<UMaterialInterface>(ANY_PACKAGE, *MaterialName);
+			Material = FindFirstObject<UMaterialInterface>(*MaterialName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("ProcessImportMeshMaterials"));
 			if (Material == nullptr)
 			{
 				SkinOffset = MaterialName.Find(TEXT("_skin"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
@@ -132,7 +132,7 @@ void SkeletalMeshImportUtils::ProcessImportMeshMaterials(TArray<FSkeletalMateria
 					if (SkinXXNumber.IsNumeric())
 					{
 						MaterialNameNoSkin = MaterialName.LeftChop(MaterialName.Len() - SkinOffset);
-						Material = FindObject<UMaterialInterface>(ANY_PACKAGE, *MaterialNameNoSkin);
+						Material = FindFirstObject<UMaterialInterface>(*MaterialNameNoSkin, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("ProcessImportMeshMaterials"));
 					}
 				}
 			}
@@ -315,13 +315,17 @@ TSharedPtr<FExistingSkelMeshData> SkeletalMeshImportUtils::SaveExistingSkelMeshD
 	{
 		ExistingMeshDataPtr->ExistingUMetaDataTagValues = *MetaDataTagValues;
 	}
+	
 	ExistingMeshDataPtr->UseMaterialNameSlotWorkflow = InternalImportUtils::IsUsingMaterialSlotNameWorkflow(SourceSkeletalMesh->GetAssetImportData());
 	ExistingMeshDataPtr->MinLOD = SourceSkeletalMesh->GetMinLod();
+	ExistingMeshDataPtr->QualityLevelMinLOD = SourceSkeletalMesh->GetQualityLevelMinLod();
 	ExistingMeshDataPtr->DisableBelowMinLodStripping = SourceSkeletalMesh->GetDisableBelowMinLodStripping();
 	ExistingMeshDataPtr->bOverrideLODStreamingSettings = SourceSkeletalMesh->GetOverrideLODStreamingSettings();
 	ExistingMeshDataPtr->bSupportLODStreaming = SourceSkeletalMesh->GetSupportLODStreaming();
 	ExistingMeshDataPtr->MaxNumStreamedLODs = SourceSkeletalMesh->GetMaxNumStreamedLODs();
 	ExistingMeshDataPtr->MaxNumOptionalLODs = SourceSkeletalMesh->GetMaxNumOptionalLODs();
+
+	ExistingMeshDataPtr->ExistingStreamableRenderAssetData.Save(SourceSkeletalMesh);
 
 	const TArray<FSkeletalMaterial>& SourceMaterials = SourceSkeletalMesh->GetMaterials();
 	//Add the existing Material slot name data
@@ -616,11 +620,14 @@ void SkeletalMeshImportUtils::RestoreExistingSkelMeshData(const TSharedPtr<const
 
 	int32 SafeReimportLODIndex = ReimportLODIndex < 0 ? 0 : ReimportLODIndex;
 	SkeletalMesh->SetMinLod(MeshData->MinLOD);
+	SkeletalMesh->SetQualityLevelMinLod(MeshData->QualityLevelMinLOD);
 	SkeletalMesh->SetDisableBelowMinLodStripping(MeshData->DisableBelowMinLodStripping);
 	SkeletalMesh->SetOverrideLODStreamingSettings(MeshData->bOverrideLODStreamingSettings);
 	SkeletalMesh->SetSupportLODStreaming(MeshData->bSupportLODStreaming);
 	SkeletalMesh->SetMaxNumStreamedLODs(MeshData->MaxNumStreamedLODs);
 	SkeletalMesh->SetMaxNumOptionalLODs(MeshData->MaxNumOptionalLODs);
+
+	MeshData->ExistingStreamableRenderAssetData.Restore(SkeletalMesh);
 
 	FSkeletalMeshModel* SkeletalMeshImportedModel = SkeletalMesh->GetImportedModel();
 

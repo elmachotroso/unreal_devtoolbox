@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "StateTreeTypes.h"
 #include "StateTreeSchema.generated.h"
 
 /**
@@ -21,17 +21,14 @@ class STATETREEMODULE_API UStateTreeSchema : public UObject
 
 public:
 
-	/** @return Returns the script struct the storage struct will be derived from. */
-	virtual UScriptStruct* GetStorageSuperStruct() const { return nullptr; }
-
 	/** @return True if specified struct is supported */
 	virtual bool IsStructAllowed(const UScriptStruct* InScriptStruct) const { return false; }
 
 	/** @return True if specified class is supported */
-	virtual bool IsClassAllowed(const UClass* InScriptStruct) const { return false; };
+	virtual bool IsClassAllowed(const UClass* InScriptStruct) const { return false; }
 
 	/** @return True if specified struct/class is supported as external data */
-	virtual bool IsExternalItemAllowed(const UStruct& InStruct) const { return false; };
+	virtual bool IsExternalItemAllowed(const UStruct& InStruct) const { return false; }
 
 	/**
 	 * Helper function to check if a class is any of the Blueprint extendable item classes (Eval, Task, Condition).
@@ -39,6 +36,9 @@ public:
 	 * @return True if the class is a StateTree item Blueprint base class.
 	 */
 	bool IsChildOfBlueprintBase(const UClass* InClass) const;
+
+	/** @return List of context objects (UObjects or UScriptStructs) enforced by the schema. They must be provided at runtime through the execution context. */
+	virtual TConstArrayView<FStateTreeExternalDataDesc> GetContextDataDescs() const { return {}; }
 
 #if WITH_EDITOR
 	

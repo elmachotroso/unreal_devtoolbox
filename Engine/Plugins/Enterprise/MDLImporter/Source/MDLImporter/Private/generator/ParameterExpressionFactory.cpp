@@ -229,6 +229,10 @@ namespace Generator
 					check(InGroups.Num() == 1);
 					SetMaterialExpressionGroup(InGroups[0], ParameterExpression);
 				}
+				else if (AnnotationName.StartsWith(TEXT("::nvidia::core_definitions::dimension(")))
+				{
+					// Skip annotation which we can't apply, to avoid confusing warning for the user
+				}
 				else
 				{
 					LogMessages.Emplace(MDLImporterLogging::EMessageSeverity::Warning, TEXT("Parameter Ignored: ") + AnnotationName);
@@ -392,7 +396,7 @@ namespace Generator
 				{
 					Common::FTextureProperty Property;
 					Property.Path    = Mdl::Util::GetTextureFileName(MDLTexture.get());
-					float Gamma      = MDLTexture->get_effective_gamma();
+					float Gamma      = MDLTexture->get_effective_gamma(0, 0);
 					Property.bIsSRGB = Gamma != 1.0;
 					if (!FPaths::GetExtension(Property.Path).IsEmpty())
 					{
@@ -440,7 +444,7 @@ namespace Generator
 				{
 					if (Connection.GetConnectionType() == EConnectionType::Expression)
 					{
-						CurrentMaterial->Expressions.Remove(Connection.GetExpressionUnused());
+						CurrentMaterial->GetExpressionCollection().RemoveExpression(Connection.GetExpressionUnused());
 						Connection.DestroyExpression();
 					}
 				}

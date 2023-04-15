@@ -2,22 +2,22 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-
 #include "Delegates/Delegate.h"
-
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
 #include "Misc/FrameRate.h"
 #include "Misc/FrameTime.h"
 #include "Misc/QualifiedFrameTime.h"
+#include "UObject/ObjectMacros.h"
 
 #include "ITimedDataInput.generated.h"
 
-
-struct FSlateBrush;
 class ITimedDataInput;
 class ITimedDataInputChannel;
 class SWidget;
+struct FSlateBrush;
 
 
 UENUM()
@@ -30,7 +30,6 @@ enum class ETimedDataInputEvaluationType : uint8
 	/** The input is evaluated from the engine's time. Note that the engine's time is relative to FPlatformTime::Seconds. */
 	PlatformTime,
 };
-
 
 UENUM()
 enum class ETimedDataInputState : uint8
@@ -93,6 +92,8 @@ public:
 	static double ConvertFrameOffsetInSecondOffset(double Frames, FFrameRate Rate);
 	
 public:
+	virtual ~ITimedDataInput() {}
+	
 	/** Get the name used when displayed. */
 	virtual FText GetDisplayName() const = 0;
 
@@ -111,7 +112,7 @@ public:
 	/** Set the offset in seconds used at evaluation. */
 	virtual void SetEvaluationOffsetInSeconds(double Offset) = 0;
 
-	/** Get the frame rate at which the samples is produce. */
+	/** Get the frame rate at which the samples are produced. */
 	virtual FFrameRate GetFrameRate() const = 0;
 
 	/** Does channel from this input support a different buffer size than it's input. */
@@ -128,6 +129,18 @@ public:
 
 	/** Remove channel from the input */
 	virtual void RemoveChannel(ITimedDataInputChannel* Channel) = 0;
+
+	/** Whether this input supports sub frames. */
+	virtual bool SupportsSubFrames() const
+	{
+		return true;
+	}
+
+	/** Convert second offset to frame offset using this input's framerate. */
+	double ConvertSecondOffsetInFrameOffset(double Seconds) const;
+
+	/** Convert frame offset to second offset using this input's framerate. */
+	double ConvertFrameOffsetInSecondOffset(double Frames) const;
 
 #if WITH_EDITOR
 	/** Get the icon that represent the input. */

@@ -12,7 +12,7 @@
 #include "Blueprint/BlueprintSupport.h"
 #include "HAL/IConsoleManager.h"
 #include "PropertyPathHelpers.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/EngineTypes.h"
 
 #include "DataSourceFilter.h"
@@ -33,7 +33,7 @@ void FSourceFilteringTraceModule::TraceFilterClasses()
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	TArray<FAssetData> Filters;
-	TMultiMap<FName, FString> TagValues = { { FBlueprintTags::NativeParentClassPath, FString::Printf(TEXT("%s'%s'"), *UClass::StaticClass()->GetName(), *UDataSourceFilter::StaticClass()->GetPathName()) } };
+	TMultiMap<FName, FString> TagValues = { { FBlueprintTags::NativeParentClassPath, FObjectPropertyBase::GetExportPath(UDataSourceFilter::StaticClass()) } };
 	AssetRegistryModule.Get().GetAssetsByTagValues(TagValues, Filters);
 
 	for (const FAssetData& AssetData : Filters)
@@ -75,9 +75,6 @@ void FSourceFilteringTraceModule::StartupModule()
 #if SOURCE_FILTER_TRACE_ENABLED
 	FTraceWorldFiltering::Initialize();
 	FTraceSourceFiltering::Initialize();
-
-	// Forcefully enable the source trace channel
-	UE::Trace::ToggleChannel(TEXT("TraceSourceFiltersChannel"), true);
 
 #if WITH_EDITOR
 	// Add callback to trace out Filter Classes once the Asset Registry has finished loading 

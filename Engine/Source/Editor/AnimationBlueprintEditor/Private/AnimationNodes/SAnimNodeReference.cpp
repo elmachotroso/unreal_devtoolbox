@@ -2,13 +2,24 @@
 
 #include "SAnimNodeReference.h"
 
-#include "SLevelOfDetailBranchNode.h"
-#include "EditorStyleSet.h"
+#include "Delegates/Delegate.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "K2Node_AnimNodeReference.h"
+#include "Layout/Margin.h"
 #include "SGraphPin.h"
-#include "Widgets/Layout/SWrapBox.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Templates/Casts.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+class UEdGraphPin;
 
 #define LOCTEXT_NAMESPACE "SAnimNodeReferenceNode"
 
@@ -46,7 +57,7 @@ TSharedRef<SWidget> SAnimNodeReference::UpdateTitleWidget(FText InTitleText, TSh
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("NodeSubTitle", "Anim Node Reference"))
-				.TextStyle(&FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimGraph.AnimNodeReference.Subtitle"))
+				.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimGraph.AnimNodeReference.Subtitle"))
 			]
 		];
 

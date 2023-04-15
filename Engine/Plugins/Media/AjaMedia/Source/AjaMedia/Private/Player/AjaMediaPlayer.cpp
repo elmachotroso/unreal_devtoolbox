@@ -4,16 +4,18 @@
 #include "AjaMediaPrivate.h"
 
 #include "AJA.h"
+#include "Async/Async.h"
 #include "MediaIOCoreEncodeTime.h"
 #include "MediaIOCoreFileWriter.h"
 #include "MediaIOCoreSamples.h"
-
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformProcess.h"
 #include "IAjaMediaModule.h"
 #include "IMediaEventSink.h"
 #include "IMediaOptions.h"
+
 #include "Misc/ScopeLock.h"
+#include "RenderCommandFence.h"
 #include "Stats/Stats2.h"
 #include "Styling/SlateStyle.h"
 
@@ -22,7 +24,6 @@
 #include "AjaMediaSettings.h"
 #include "AjaMediaTextureSample.h"
 
-#include "AjaMediaAllowPlatformTypes.h"
 
 #if WITH_EDITOR
 #include "EngineAnalytics.h"
@@ -51,9 +52,9 @@ static FAutoConsoleCommand AjaWriteOutputRawDataCmd(
 
 FAjaMediaPlayer::FAjaMediaPlayer(IMediaEventSink& InEventSink)
 	: Super(InEventSink)
-	, AudioSamplePool(new FAjaMediaAudioSamplePool)
-	, MetadataSamplePool(new FAjaMediaBinarySamplePool)
-	, TextureSamplePool(new FAjaMediaTextureSamplePool)
+	, AudioSamplePool(MakeUnique<FAjaMediaAudioSamplePool>())
+	, MetadataSamplePool(MakeUnique<FAjaMediaBinarySamplePool>())
+	, TextureSamplePool(MakeUnique<FAjaMediaTextureSamplePool>())
 	, MaxNumAudioFrameBuffer(8)
 	, MaxNumMetadataFrameBuffer(8)
 	, MaxNumVideoFrameBuffer(8)
@@ -75,15 +76,13 @@ FAjaMediaPlayer::FAjaMediaPlayer(IMediaEventSink& InEventSink)
 	, SupportedSampleTypes(EMediaIOSampleType::None)
 	, bPauseRequested(false)
 {
+	DeviceProvider = MakePimpl<FAjaDeviceProvider>();
 }
 
 
 FAjaMediaPlayer::~FAjaMediaPlayer()
 {
 	Close();
-	delete AudioSamplePool;
-	delete MetadataSamplePool;
-	delete TextureSamplePool;
 }
 
 
@@ -109,158 +108,31 @@ bool FAjaMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 		return false;
 	}
 
-	AJA::AJADeviceOptions DeviceOptions(Options->GetMediaOption(AjaMediaOption::DeviceIndex, (int64)0));
+	const EMediaIOAutoDetectableTimecodeFormat Timecode = (EMediaIOAutoDetectableTimecodeFormat)(Options->GetMediaOption(AjaMediaOption::TimecodeFormat, (int64)EMediaIOAutoDetectableTimecodeFormat::None));
+	const bool bAutoDetectTimecode = Timecode == EMediaIOAutoDetectableTimecodeFormat::Auto;
+	const bool bAutoDetectVideoFormat = bAutoDetect;
 
-	// Read options
-	AJA::AJAInputOutputChannelOptions AjaOptions(TEXT("MediaPlayer"), Options->GetMediaOption(AjaMediaOption::PortIndex, (int64)0));
-	AjaOptions.CallbackInterface = this;
-	AjaOptions.bOutput = false;
+	if (!bAutoDetectTimecode)
 	{
-		const EMediaIOTransportType TransportType = (EMediaIOTransportType)(Options->GetMediaOption(AjaMediaOption::TransportType, (int64)EMediaIOTransportType::SingleLink));
-		const EMediaIOQuadLinkTransportType QuadTransportType = (EMediaIOQuadLinkTransportType)(Options->GetMediaOption(AjaMediaOption::QuadTransportType, (int64)EMediaIOQuadLinkTransportType::SquareDivision));
-		switch(TransportType)
-		{
-		case EMediaIOTransportType::SingleLink:
-			AjaOptions.TransportType = AJA::ETransportType::TT_SdiSingle;
-			break;
-		case EMediaIOTransportType::DualLink:
-			AjaOptions.TransportType = AJA::ETransportType::TT_SdiDual;
-			break;
-		case EMediaIOTransportType::QuadLink:
-			AjaOptions.TransportType = QuadTransportType == EMediaIOQuadLinkTransportType::SquareDivision ? AJA::ETransportType::TT_SdiQuadSQ : AJA::ETransportType::TT_SdiQuadTSI;
-			break;
-		case EMediaIOTransportType::HDMI:
-			AjaOptions.TransportType = AJA::ETransportType::TT_Hdmi;
-			break;
-		}
+		TimecodeFormat = UE::MediaIO::FromAutoDetectableTimecodeFormat(Timecode);
 	}
+	if (bAutoDetectTimecode || bAutoDetectVideoFormat)
 	{
-		const EMediaIOTimecodeFormat Timecode = (EMediaIOTimecodeFormat)(Options->GetMediaOption(AjaMediaOption::TimecodeFormat, (int64)EMediaIOTimecodeFormat::None));
-		bUseFrameTimecode = Timecode != EMediaIOTimecodeFormat::None;
-		AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_None;
-		switch (Timecode)
-		{
-		case EMediaIOTimecodeFormat::None:
-			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_None;
-			break;
-		case EMediaIOTimecodeFormat::LTC:
-			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_LTC;
-			break;
-		case EMediaIOTimecodeFormat::VITC:
-			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_VITC1;
-			break;
-		default:
-			break;
-		}
-		bEncodeTimecodeInTexel = Options->GetMediaOption(AjaMediaOption::EncodeTimecodeInTexel, false);
+		DeviceProvider->AutoDetectConfiguration(FAjaDeviceProvider::FOnConfigurationAutoDetected::CreateRaw(this, &FAjaMediaPlayer::OnAutoDetected, Url, Options, bAutoDetectVideoFormat, bAutoDetectTimecode));
+		return true;
 	}
+	else
 	{
-		const EAjaMediaAudioChannel AudioChannelOption = (EAjaMediaAudioChannel)(Options->GetMediaOption(AjaMediaOption::AudioChannel, (int64)EAjaMediaAudioChannel::Channel8));
-		AjaOptions.NumberOfAudioChannel = (AudioChannelOption == EAjaMediaAudioChannel::Channel8) ? 8 : 6;
+		AJA::AJAInputOutputChannelOptions AjaOptions(TEXT("MediaPlayer"), Options->GetMediaOption(AjaMediaOption::PortIndex, (int64)0));
+		return Open_Internal(Url, Options, AjaOptions);
 	}
-	{
-		AjaOptions.VideoFormatIndex = Options->GetMediaOption(AjaMediaOption::AjaVideoFormat, (int64)0);
-		LastVideoFormatIndex = AjaOptions.VideoFormatIndex;
-	}
-	{
-		const EAjaMediaSourceColorFormat ColorFormat = (EAjaMediaSourceColorFormat)(Options->GetMediaOption(AjaMediaOption::ColorFormat, (int64)EAjaMediaSourceColorFormat::YUV2_8bit));
-		switch(ColorFormat)
-		{
-		case EAjaMediaSourceColorFormat::YUV2_8bit:
-			if (AjaOptions.bUseKey)
-			{
-				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_ARGB;
-			}
-			else
-			{
-				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_YCBCR;
-			}
-			break;
-		case EAjaMediaSourceColorFormat::YUV_10bit:
-			if (AjaOptions.bUseKey)
-			{
-				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_10BIT_RGB;
-			}
-			else
-			{
-				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_10BIT_YCBCR;
-			}
-			break;
-		default:
-			AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_ARGB;
-			break;
-		}
-
-		bIsSRGBInput = Options->GetMediaOption(AjaMediaOption::SRGBInput, false);
-	}
-	{
-		AjaOptions.bUseAncillary = bUseAncillary = Options->GetMediaOption(AjaMediaOption::CaptureAncillary, false);
-		AjaOptions.bUseAudio = bUseAudio = Options->GetMediaOption(AjaMediaOption::CaptureAudio, false);
-		AjaOptions.bUseVideo = bUseVideo = Options->GetMediaOption(AjaMediaOption::CaptureVideo, true);
-		AjaOptions.bUseAutoCirculating = Options->GetMediaOption(AjaMediaOption::CaptureWithAutoCirculating, true);
-		AjaOptions.bUseKey = false;
-		AjaOptions.bBurnTimecode = false;
-		AjaOptions.BurnTimecodePercentY = 80;
-
-		//Adjust supported sample types based on what's being captured
-		SupportedSampleTypes = AjaOptions.bUseVideo ? EMediaIOSampleType::Video : EMediaIOSampleType::None;
-		SupportedSampleTypes |= AjaOptions.bUseAudio ? EMediaIOSampleType::Audio : EMediaIOSampleType::None;
-		SupportedSampleTypes |= AjaOptions.bUseAncillary ? EMediaIOSampleType::Metadata : EMediaIOSampleType::None;
-		Samples->EnableTimedDataChannels(this, SupportedSampleTypes);
-	}
-
-	bVerifyFrameDropCount = Options->GetMediaOption(AjaMediaOption::LogDropFrame, true);
-	MaxNumAudioFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxAudioFrameBuffer, (int64)8);
-	MaxNumMetadataFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxAncillaryFrameBuffer, (int64)8);
-	MaxNumVideoFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxVideoFrameBuffer, (int64)8);
-
-	check(InputChannel == nullptr);
-	InputChannel = new AJA::AJAInputChannel();
-	if (!InputChannel->Initialize(DeviceOptions, AjaOptions))
-	{
-		UE_LOG(LogAjaMedia, Warning, TEXT("The AJA port couldn't be opened."));
-		CurrentState = EMediaState::Error;
-		AjaThreadNewState = EMediaState::Error;
-		delete InputChannel;
-		InputChannel = nullptr;
-	}
-
-	// Setup our different supported channels based on source settings
-	SetupSampleChannels();
-
-	// configure format information for base class
-	AudioTrackFormat.BitsPerSample = 32;
-	AudioTrackFormat.NumChannels = 0;
-	AudioTrackFormat.SampleRate = 48000;
-	AudioTrackFormat.TypeName = FString(TEXT("PCM"));
-
-	// finalize
-	CurrentState = EMediaState::Preparing;
-	AjaThreadNewState = EMediaState::Preparing;
-	EventSink.ReceiveMediaEvent(EMediaEvent::MediaConnecting);
-
-#if WITH_EDITOR
-	if (FEngineAnalytics::IsAvailable())
-	{
-		TArray<FAnalyticsEventAttribute> EventAttributes;
-		
-		const int64 ResolutionWidth = Options->GetMediaOption( FMediaIOCoreMediaOption::ResolutionWidth, (int64)1920);
-		const int64 ResolutionHeight = Options->GetMediaOption( FMediaIOCoreMediaOption::ResolutionHeight, (int64)1080);
-		
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionWidth"), FString::Printf(TEXT("%d"), ResolutionWidth)));
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionHeight"), FString::Printf(TEXT("%d"), ResolutionHeight)));
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("FrameRate"), *VideoFrameRate.ToPrettyText().ToString()));
-		
-		FEngineAnalytics::GetProvider().RecordEvent(TEXT("MediaFramework.AjaSourceOpened"), EventAttributes);
-	}
-#endif
-	
-	return true;
 }
 
 void FAjaMediaPlayer::Close()
 {
 	AjaThreadNewState = EMediaState::Closed;
+
+	DeviceProvider->EndAutoDetectConfiguration();
 
 	if (InputChannel)
 	{
@@ -273,6 +145,9 @@ void FAjaMediaPlayer::Close()
 	MetadataSamplePool->Reset();
 	TextureSamplePool->Reset();
 
+	UnregisterSampleBuffers();
+	UnregisterTextures();
+
 	//Disable all our channels from the monitor
 	Samples->EnableTimedDataChannels(this, EMediaIOSampleType::None);
 
@@ -283,7 +158,6 @@ void FAjaMediaPlayer::Close()
 
 	Super::Close();
 }
-
 
 FGuid FAjaMediaPlayer::GetPlayerPluginGUID() const
 {
@@ -472,12 +346,53 @@ void FAjaMediaPlayer::OnInitializationCompleted(bool bSucceed)
 
 void FAjaMediaPlayer::OnCompletion(bool bSucceed)
 {
-	AjaThreadNewState = bSucceed ? EMediaState::Closed : EMediaState::Error;
+	if (bAutoDetect)
+	{
+		AjaThreadNewState = EMediaState::Paused; 
+	}
+	else
+	{
+		AjaThreadNewState = bSucceed ? EMediaState::Closed : EMediaState::Error;
+	}
 }
 
+void FAjaMediaPlayer::OnFormatChange(AJA::FAJAVideoFormat Format)
+{
+	const AJA::AJAVideoFormats::VideoFormatDescriptor Descriptor = AJA::AJAVideoFormats::GetVideoFormat(Format);
+
+	FMediaIOMode MediaIOMode;
+	MediaIOMode.DeviceModeIdentifier = Format;
+	MediaIOMode.FrameRate = VideoFrameRate;
+	MediaIOMode.Resolution = VideoTrackFormat.Dim;
+
+	EMediaIOStandardType Standard = EMediaIOStandardType::Progressive;
+	if (Descriptor.bIsInterlacedStandard)
+	{
+		Standard = EMediaIOStandardType::Interlaced;
+	}
+	else if (Descriptor.bIsPsfStandard)
+	{
+		Standard = EMediaIOStandardType::ProgressiveSegmentedFrame;
+	}
+
+	MediaIOMode.Standard = Standard;
+	VideoTrackFormat.TypeName = MediaIOMode.GetModeName().ToString();
+
+	AJA::AJAInputOutputChannelOptions Options = InputChannel->GetOptions();
+	AJA::AJADeviceOptions DeviceOptions = InputChannel->GetDeviceOptions();
+
+	UE_LOG(LogAjaMedia, Display, TEXT("New configuration was detected for AjaMediaPlayer: %s"), *VideoTrackFormat.TypeName);
+
+	Close();
+	AsyncTask(ENamedThreads::GameThread, [this, DeviceOptions, Options]()
+	{
+		OpenFromFormatChange(DeviceOptions, Options);
+	});
+}
 
 bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData& InRequestBuffer, AJA::AJARequestedInputBufferData& OutRequestedBuffer)
 {
+
 	SCOPE_CYCLE_COUNTER(STAT_AJA_MediaPlayer_RequestFrame);
 
 	// Do not request a video buffer if the frame is interlaced. We need 2 samples and we need to process them.
@@ -512,17 +427,35 @@ bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData&
 	// Video
 	if (bUseVideo && InRequestBuffer.VideoBufferSize > 0 && InRequestBuffer.bIsProgressivePicture)
 	{
+		const bool bCanUseGPUTextureTransfer = CanUseGPUTextureTransfer();
+
+		if (bCanUseGPUTextureTransfer)
+		{
+			if (!Textures.Num())
+			{
+				UE_LOG(LogAjaMedia, Error, TEXT("No texture available while doing a gpu texture transfer."));
+				return false;
+			}
+		}
+
 		AjaThreadCurrentTextureSample = TextureSamplePool->AcquireShared();
-		OutRequestedBuffer.VideoBuffer = reinterpret_cast<uint8_t*>(AjaThreadCurrentTextureSample->RequestBuffer(InRequestBuffer.VideoBufferSize));
+		AjaThreadCurrentTextureSample->RequestBuffer(InRequestBuffer.VideoBufferSize);
+
+		if (bCanUseGPUTextureTransfer)
+		{
+			PreGPUTransfer(AjaThreadCurrentTextureSample);
+		}
+
+		OutRequestedBuffer.VideoBuffer = reinterpret_cast<uint8_t*>(AjaThreadCurrentTextureSample->GetMutableBuffer());
 	}
 
 	return true;
 }
 
-
 bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInputFrame, const AJA::AJAAncillaryFrameData& InAncillaryFrame, const AJA::AJAAudioFrameData& InAudioFrame, const AJA::AJAVideoFrameData& InVideoFrame)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AJA_MediaPlayer_ProcessFrame);
+
 
 	if ((AjaThreadNewState != EMediaState::Playing) && (AjaThreadNewState != EMediaState::Paused))
 	{
@@ -675,7 +608,13 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 
 		if (bAjaWriteOutputRawDataCmdEnable)
 		{
-			MediaIOCoreFileWriter::WriteRawFile(OutputFilename, reinterpret_cast<uint8*>(InVideoFrame.VideoBuffer), InVideoFrame.Stride * InVideoFrame.Height);
+			MediaIOCoreFileWriter::WriteRawFile(
+				OutputFilename, 
+				reinterpret_cast<uint8*>(InVideoFrame.VideoBuffer), 
+				InVideoFrame.Stride * InVideoFrame.Height,
+				false // bAppend
+			);
+
 			bAjaWriteOutputRawDataCmdEnable = false;
 		}
 
@@ -683,7 +622,14 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 		{
 			if (AjaThreadCurrentTextureSample->SetProperties(InVideoFrame.Stride, InVideoFrame.Width, InVideoFrame.Height, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, bIsSRGBInput))
 			{
-				Samples->AddVideo(AjaThreadCurrentTextureSample.ToSharedRef());
+				if (CanUseGPUTextureTransfer())
+				{
+					ExecuteGPUTransfer(AjaThreadCurrentTextureSample);
+				}
+				else
+				{
+					Samples->AddVideo(AjaThreadCurrentTextureSample.ToSharedRef());
+				}
 			}
 		}
 		else
@@ -699,13 +645,19 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			else
 			{
 				bool bEven = true;
+
+				if (FMediaIOCorePlayerBase::CVarExperimentalFieldFlipFix.GetValueOnAnyThread())
+				{
+					bEven = GFrameCounterRenderThread % 2 != FMediaIOCorePlayerBase::CVarFlipInterlaceFields.GetValueOnAnyThread();
+				}
+
 				if (TextureSample->InitializeInterlaced_Halfed(InVideoFrame, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, bEven, bIsSRGBInput))
 				{
 					Samples->AddVideo(TextureSample);
 				}
 
 				auto TextureSampleOdd = TextureSamplePool->AcquireShared();
-				bEven = false;
+				bEven = !bEven;
 				if (TextureSampleOdd->InitializeInterlaced_Halfed(InVideoFrame, VideoSampleFormat, DecodedTimeF2, VideoFrameRate, DecodedTimecodeF2, bEven, bIsSRGBInput))
 				{
 					Samples->AddVideo(TextureSampleOdd);
@@ -721,7 +673,6 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 
 	return true;
 }
-
 
 bool FAjaMediaPlayer::OnOutputFrameCopied(const AJA::AJAOutputFrameData& InFrameData)
 {
@@ -750,6 +701,239 @@ void FAjaMediaPlayer::SetupSampleChannels()
 	Samples->InitializeMetadataBuffer(MetadataSettings);
 }
 
+void FAjaMediaPlayer::AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample)
+{
+	Samples->AddVideo(InSample);
+}
+
+bool FAjaMediaPlayer::Open_Internal(const FString& Url, const IMediaOptions* Options, AJA::AJAInputOutputChannelOptions AjaOptions)
+{
+	AJA::AJADeviceOptions DeviceOptions(Options->GetMediaOption(AjaMediaOption::DeviceIndex, (int64)0));
+
+	AjaOptions.CallbackInterface = this;
+	AjaOptions.bOutput = false;
+	{
+		const EMediaIOTransportType TransportType = (EMediaIOTransportType)(Options->GetMediaOption(AjaMediaOption::TransportType, (int64)EMediaIOTransportType::SingleLink));
+		const EMediaIOQuadLinkTransportType QuadTransportType = (EMediaIOQuadLinkTransportType)(Options->GetMediaOption(AjaMediaOption::QuadTransportType, (int64)EMediaIOQuadLinkTransportType::SquareDivision));
+		switch (TransportType)
+		{
+		case EMediaIOTransportType::SingleLink:
+			AjaOptions.TransportType = AJA::ETransportType::TT_SdiSingle;
+			break;
+		case EMediaIOTransportType::DualLink:
+			AjaOptions.TransportType = AJA::ETransportType::TT_SdiDual;
+			break;
+		case EMediaIOTransportType::QuadLink:
+			AjaOptions.TransportType = QuadTransportType == EMediaIOQuadLinkTransportType::SquareDivision ? AJA::ETransportType::TT_SdiQuadSQ : AJA::ETransportType::TT_SdiQuadTSI;
+			break;
+		case EMediaIOTransportType::HDMI:
+			AjaOptions.TransportType = AJA::ETransportType::TT_Hdmi;
+			break;
+		}
+	}
+	{
+		bUseFrameTimecode = TimecodeFormat != EMediaIOTimecodeFormat::None;
+		AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_None;
+		switch (TimecodeFormat)
+		{
+		case EMediaIOTimecodeFormat::None:
+			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_None;
+			break;
+		case EMediaIOTimecodeFormat::LTC:
+			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_LTC;
+			break;
+		case EMediaIOTimecodeFormat::VITC:
+			AjaOptions.TimecodeFormat = AJA::ETimecodeFormat::TCF_VITC1;
+			break;
+		default:
+			break;
+		}
+		bEncodeTimecodeInTexel = Options->GetMediaOption(AjaMediaOption::EncodeTimecodeInTexel, false);
+	}
+	{
+		const EAjaMediaAudioChannel AudioChannelOption = (EAjaMediaAudioChannel)(Options->GetMediaOption(AjaMediaOption::AudioChannel, (int64)EAjaMediaAudioChannel::Channel8));
+		AjaOptions.NumberOfAudioChannel = (AudioChannelOption == EAjaMediaAudioChannel::Channel8) ? 8 : 6;
+	}
+	{
+		if (!bAutoDetect)
+		{
+			AjaOptions.VideoFormatIndex = Options->GetMediaOption(AjaMediaOption::AjaVideoFormat, (int64)0);
+		}
+	}
+	{
+		AjaColorFormat = (EAjaMediaSourceColorFormat)(Options->GetMediaOption(AjaMediaOption::ColorFormat, (int64)EAjaMediaSourceColorFormat::YUV2_8bit));
+		switch (AjaColorFormat)
+		{
+		case EAjaMediaSourceColorFormat::YUV2_8bit:
+			if (AjaOptions.bUseKey)
+			{
+				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_ARGB;
+			}
+			else
+			{
+				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_YCBCR;
+			}
+			break;
+		case EAjaMediaSourceColorFormat::YUV_10bit:
+			if (AjaOptions.bUseKey)
+			{
+				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_10BIT_RGB;
+			}
+			else
+			{
+				AjaOptions.PixelFormat = AJA::EPixelFormat::PF_10BIT_YCBCR;
+			}
+			break;
+		default:
+			AjaOptions.PixelFormat = AJA::EPixelFormat::PF_8BIT_ARGB;
+			break;
+		}
+
+		bIsSRGBInput = Options->GetMediaOption(AjaMediaOption::SRGBInput, false);
+	}
+	{
+		AjaOptions.bUseAncillary = bUseAncillary = Options->GetMediaOption(AjaMediaOption::CaptureAncillary, false);
+		AjaOptions.bUseAudio = bUseAudio = Options->GetMediaOption(AjaMediaOption::CaptureAudio, false);
+		AjaOptions.bUseVideo = bUseVideo = Options->GetMediaOption(AjaMediaOption::CaptureVideo, true);
+		AjaOptions.bUseAutoCirculating = Options->GetMediaOption(AjaMediaOption::CaptureWithAutoCirculating, true);
+		AjaOptions.bUseKey = false;
+		AjaOptions.bBurnTimecode = false;
+		AjaOptions.BurnTimecodePercentY = 80;
+		AjaOptions.bAutoDetectFormat = bAutoDetect;
+
+		//Adjust supported sample types based on what's being captured
+		SupportedSampleTypes = AjaOptions.bUseVideo ? EMediaIOSampleType::Video : EMediaIOSampleType::None;
+		SupportedSampleTypes |= AjaOptions.bUseAudio ? EMediaIOSampleType::Audio : EMediaIOSampleType::None;
+		SupportedSampleTypes |= AjaOptions.bUseAncillary ? EMediaIOSampleType::Metadata : EMediaIOSampleType::None;
+		Samples->EnableTimedDataChannels(this, SupportedSampleTypes);
+	}
+
+	bVerifyFrameDropCount = Options->GetMediaOption(AjaMediaOption::LogDropFrame, true);
+	MaxNumAudioFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxAudioFrameBuffer, (int64)8);
+	MaxNumMetadataFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxAncillaryFrameBuffer, (int64)8);
+	MaxNumVideoFrameBuffer = Options->GetMediaOption(AjaMediaOption::MaxVideoFrameBuffer, (int64)8);
+
+	check(InputChannel == nullptr);
+	InputChannel = new AJA::AJAInputChannel();
+	if (!InputChannel->Initialize(DeviceOptions, AjaOptions))
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The AJA port couldn't be opened."));
+		CurrentState = EMediaState::Error;
+		AjaThreadNewState = EMediaState::Error;
+		delete InputChannel;
+		InputChannel = nullptr;
+	}
+
+	// Setup our different supported channels based on source settings
+	SetupSampleChannels();
+
+	// configure format information for base class
+	AudioTrackFormat.BitsPerSample = 32;
+	AudioTrackFormat.NumChannels = 0;
+	AudioTrackFormat.SampleRate = 48000;
+	AudioTrackFormat.TypeName = FString(TEXT("PCM"));
+
+	// finalize
+	CurrentState = EMediaState::Preparing;
+	AjaThreadNewState = EMediaState::Preparing;
+	EventSink.ReceiveMediaEvent(EMediaEvent::MediaConnecting);
+
+#if WITH_EDITOR
+	if (FEngineAnalytics::IsAvailable())
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionWidth"), FString::Printf(TEXT("%d"), VideoTrackFormat.Dim.X)));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ResolutionHeight"), FString::Printf(TEXT("%d"), VideoTrackFormat.Dim.Y)));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("FrameRate"), *VideoFrameRate.ToPrettyText().ToString()));
+
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("MediaFramework.AjaSourceOpened"), EventAttributes);
+	}
+#endif
+
+	return true;
+}
+
+void FAjaMediaPlayer::OpenFromFormatChange(AJA::AJADeviceOptions DeviceOptions, AJA::AJAInputOutputChannelOptions AjaOptions)
+{
+	{
+		//Adjust supported sample types based on what's being captured
+		SupportedSampleTypes = AjaOptions.bUseVideo ? EMediaIOSampleType::Video : EMediaIOSampleType::None;
+		SupportedSampleTypes |= AjaOptions.bUseAudio ? EMediaIOSampleType::Audio : EMediaIOSampleType::None;
+		SupportedSampleTypes |= AjaOptions.bUseAncillary ? EMediaIOSampleType::Metadata : EMediaIOSampleType::None;
+		Samples->EnableTimedDataChannels(this, SupportedSampleTypes);
+	}
+
+	check(InputChannel == nullptr);
+	InputChannel = new AJA::AJAInputChannel();
+	if (!InputChannel->Initialize(DeviceOptions, AjaOptions))
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("The AJA port couldn't be opened."));
+		CurrentState = EMediaState::Error;
+		AjaThreadNewState = EMediaState::Error;
+		delete InputChannel;
+		InputChannel = nullptr;
+	}
+
+	// Setup our different supported channels based on source settings
+	SetupSampleChannels();
+
+	// Configure format information for base class
+
+	// Finalize
+	CurrentState = EMediaState::Preparing;
+	AjaThreadNewState = EMediaState::Preparing;
+	EventSink.ReceiveMediaEvent(EMediaEvent::MediaConnecting);
+}
+
+void FAjaMediaPlayer::OnAutoDetected(TArray<FAjaDeviceProvider::FMediaIOConfigurationWithTimecodeFormat> Configurations, FString Url, const IMediaOptions* Options, bool bAutoDetectVideoFormat, bool bAutoDetectTimecodeFormat)
+{
+	bool bConfigurationFound = false;
+	const int64 PortIndex = Options->GetMediaOption(AjaMediaOption::PortIndex, (int64)0);
+	const int64 DeviceIndex = Options->GetMediaOption(AjaMediaOption::DeviceIndex, (int64)0);
+	AJA::AJAInputOutputChannelOptions AjaOptions(TEXT("MediaPlayer"), PortIndex);
+
+	for (const FAjaDeviceProvider::FMediaIOConfigurationWithTimecodeFormat& Configuration : Configurations)
+	{
+		if (Configuration.Configuration.MediaConnection.Device.DeviceIdentifier == DeviceIndex
+			&& Configuration.Configuration.MediaConnection.PortIdentifier == PortIndex)
+		{
+			bConfigurationFound = true;
+			if (bAutoDetectVideoFormat)
+			{
+				VideoFrameRate = Configuration.Configuration.MediaMode.FrameRate;
+				FIntPoint Resolution = Configuration.Configuration.MediaMode.Resolution;
+
+				VideoTrackFormat.Dim = Resolution;
+				VideoTrackFormat.FrameRates = TRange<float>(VideoFrameRate.AsDecimal());
+				VideoTrackFormat.FrameRate = VideoFrameRate.AsDecimal();
+				VideoTrackFormat.TypeName = Configuration.Configuration.MediaMode.GetModeName().ToString();
+			
+				AjaOptions.VideoFormatIndex = Configuration.Configuration.MediaMode.DeviceModeIdentifier;
+				UE_LOG(LogAjaMedia, Display, TEXT("New configuration was detected for AjaMediaPlayer: %s"), *VideoTrackFormat.TypeName);
+			}
+
+			if (bAutoDetectTimecodeFormat)
+			{
+				TimecodeFormat = Configuration.TimecodeFormat;
+			}
+			
+			//Setup base sampling settings
+			BaseSettings.FrameRate = VideoFrameRate;
+			break;
+		}
+	}
+			
+	if (!bConfigurationFound)
+	{
+		UE_LOG(LogAjaMedia, Warning, TEXT("No configuration was detected for MediaPlayer."));
+		Close();
+		return;
+	}
+
+	Open_Internal(Url, Options, AjaOptions);
+}
+
 bool FAjaMediaPlayer::SetRate(float Rate)
 {
 	if (FMath::IsNearlyEqual(Rate, 1.0f))
@@ -768,5 +952,3 @@ bool FAjaMediaPlayer::SetRate(float Rate)
 }
 
 #undef LOCTEXT_NAMESPACE
-
-#include "AjaMediaHidePlatformTypes.h"

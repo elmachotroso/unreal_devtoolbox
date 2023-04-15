@@ -1,21 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "SControlRigControlViews.h"
+#include "EditMode/SControlRigControlViews.h"
 #include "ControlRig.h"
 #include "Tools/ControlRigPose.h"
 #include "Widgets/Input/SEditableTextBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "Editor/EditorEngine.h"
 #include "AssetViewUtils.h"
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
 #include "AssetThumbnail.h"
 #include "FileHelpers.h"
 #include "Tools/ControlRigPoseMirrorSettings.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "EditorModeManager.h"
 #include "Widgets/Input/SButton.h"
 #include "LevelEditor.h"
@@ -40,8 +40,7 @@ void FControlRigView::CaptureThumbnail(UObject* Asset)
 
 		TArray<FAssetData> SelectedAssets;
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		FName PathName = *Asset->GetPathName();
-		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(PathName);
+		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(Asset));
 		SelectedAssets.Emplace(AssetData);
 		AssetViewUtils::CaptureThumbnailFromViewport(Viewport, SelectedAssets);
 
@@ -137,7 +136,7 @@ void SControlRigAssetEditableTextBox::OnNameTextCommitted(const FText& NewText, 
 		{
 
 			IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
-			FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FName(*Asset->GetPathName()));
+			FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(Asset.Get()));
 			const FString PackagePath = FPackageName::GetLongPackagePath(Asset->GetOutermost()->GetName());
 
 			//Need to save asset before renaming else may lose snapshot
@@ -232,7 +231,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 				.Value(0.33f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
@@ -277,7 +276,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 				.Value(0.33f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
@@ -374,7 +373,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 							.Padding(3.f)
 							[
 								SNew(SBorder)
-								.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+								.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 								.Padding(FMargin(3.0f, 2.0f))
 								.Visibility(EVisibility::HitTestInvisible)
 								[
@@ -387,7 +386,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 							.Padding(1.0f)
 								[
 									SNew(SBorder)
-									.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+									.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 								.Padding(FMargin(3.0f, 0.0f))
 								.Visibility(EVisibility::HitTestInvisible)
 								[
@@ -406,7 +405,7 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 				.Value(0.33f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
@@ -438,14 +437,16 @@ void SControlRigPoseView::Construct(const FArguments& InArgs)
 				]
 				*/
 			]
-			
-
 	];
 
 	if (FControlRigEditMode* EditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName)))
 	{
 		EditMode->OnControlRigAddedOrRemoved().AddRaw(this, &SControlRigPoseView::HandleControlAdded);
-		HandleControlAdded(GetControlRig(), true);
+		TArray<UControlRig*> ControlRigs = GetControlRigs();
+		for (UControlRig* ControlRig : ControlRigs)
+		{
+			HandleControlAdded(ControlRig, true);
+		}
 	}
 }
 
@@ -454,16 +455,23 @@ SControlRigPoseView::~SControlRigPoseView()
 	if (FControlRigEditMode* EditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName)))
 	{
 		EditMode->OnControlRigAddedOrRemoved().RemoveAll(this);
-		if (EditMode->GetControlRig(true))
+		TArray<UControlRig*> EditModeRigs = EditMode->GetControlRigsArray(false /*bIsVisible*/);
+		for (UControlRig* ControlRig : EditModeRigs)
 		{
-			EditMode->GetControlRig(true)->ControlSelected().RemoveAll(this);
+			if (ControlRig)
+			{
+				ControlRig->ControlSelected().RemoveAll(this);
+			}
 		}
 	}
 	else
 	{
-		if (CurrentControlRig.IsValid())
+		for (TWeakObjectPtr<UControlRig>& CurrentControlRig: CurrentControlRigs)
 		{
-			(CurrentControlRig.Get())->ControlSelected().RemoveAll(this);
+			if (CurrentControlRig.IsValid())
+			{
+				(CurrentControlRig.Get())->ControlSelected().RemoveAll(this);
+			}
 		}
 	}
 }
@@ -524,9 +532,16 @@ bool SControlRigPoseView::IsMirrorEnabled() const
 
 FReply SControlRigPoseView::OnPastePose()
 {
-	if (GetControlRig() && PoseAsset.IsValid())
+	if (PoseAsset.IsValid())
 	{
-		PoseAsset->PastePose(GetControlRig(), bIsKey,bIsMirror);
+		TArray<UControlRig*> ControlRigs = GetControlRigs();
+		for (UControlRig* ControlRig : ControlRigs)
+		{
+			if (ControlRig)
+			{
+				PoseAsset->PastePose(ControlRig, bIsKey, bIsMirror);
+			}
+		}
 	}
 	return FReply::Handled();
 }
@@ -535,10 +550,13 @@ FReply SControlRigPoseView::OnSelectControls()
 {	
 	if (PoseAsset.IsValid())
 	{
-		UControlRig* ControlRig = GetFirstControlRigInLevelSequence(GetControlRig());
-		if (ControlRig)
+		TArray<UControlRig*> ControlRigs = GetControlRigs();
+		for (UControlRig* ControlRig : ControlRigs)
 		{
-			PoseAsset->SelectControls(ControlRig, bIsMirror);
+			if (ControlRig)
+			{
+				PoseAsset->SelectControls(ControlRig, bIsMirror);
+			}
 		}
 	}
 	return FReply::Handled();
@@ -546,20 +564,24 @@ FReply SControlRigPoseView::OnSelectControls()
 
 void SControlRigPoseView::OnPoseBlendChanged(float ChangedVal)
 {
-	UControlRig* ControlRig = GetControlRig();
-	if (ControlRig && PoseAsset.IsValid())
+	if (PoseAsset.IsValid())
 	{
-
-		PoseBlendValue = ChangedVal;
-		if (!bIsBlending)
+		TArray<UControlRig*> ControlRigs = GetControlRigs();
+		for (UControlRig* ControlRig : ControlRigs)
 		{
-			bIsBlending = true;
-			PoseAsset->GetCurrentPose(ControlRig,TempPose);
+			if (ControlRig)
+			{
+				PoseBlendValue = ChangedVal;
+				if (!bIsBlending)
+				{
+					bIsBlending = true;
+					PoseAsset->GetCurrentPose(ControlRig, TempPose);
+				}
+
+				PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, false, bIsMirror, PoseBlendValue);
+				PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, false, bIsMirror, PoseBlendValue);
+			}
 		}
-
-		PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, false, bIsMirror, PoseBlendValue);
-		PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, false, bIsMirror, PoseBlendValue);
-
 	}
 }
 void SControlRigPoseView::OnBeginSliderMovement()
@@ -582,15 +604,25 @@ void SControlRigPoseView::OnEndSliderMovement(float NewValue)
 
 void SControlRigPoseView::OnPoseBlendCommited(float ChangedVal, ETextCommit::Type Type)
 {
-	UControlRig* ControlRig = GetControlRig();
-	if (ControlRig && PoseAsset.IsValid())
+	if (PoseAsset.IsValid())
 	{
-		FScopedTransaction ScopedTransaction(LOCTEXT("PastePoseTransaction", "Paste Pose"));
-		PoseBlendValue = ChangedVal;
-		PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, bIsKey, bIsMirror, PoseBlendValue);
-		PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, bIsKey, bIsMirror, PoseBlendValue);
-		bIsBlending = false;
-		PoseBlendValue = 0.0f;
+		TArray<UControlRig*> ControlRigs = GetControlRigs();
+		if (ControlRigs.Num() > 0)
+		{
+			FScopedTransaction ScopedTransaction(LOCTEXT("PastePoseTransaction", "Paste Pose"));
+			for (UControlRig* ControlRig : ControlRigs)
+			{
+				if (ControlRig)
+				{
+					PoseBlendValue = ChangedVal;
+					PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, bIsKey, bIsMirror, PoseBlendValue);
+					PoseAsset->BlendWithInitialPoses(TempPose, ControlRig, bIsKey, bIsMirror, PoseBlendValue);
+					bIsBlending = false;
+					PoseBlendValue = 0.0f;
+
+				}
+			}
+		}
 	}
 }
 
@@ -626,41 +658,30 @@ TSharedRef<SWidget> SControlRigPoseView::GetThumbnailWidget()
 		];
 }
 
-UControlRig* SControlRigPoseView::GetFirstControlRigInLevelSequence(UControlRig* ControlRig)
+TArray<UControlRig*> SControlRigPoseView::GetControlRigs()
 {
-	if (ControlRig == nullptr)
+	FControlRigEditMode* EditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
+	TArray<UControlRig*> NewControlRigs;
+	if (EditMode)
 	{
-		ULevelSequence* LevelSequence = ULevelSequenceEditorBlueprintLibrary::GetFocusedLevelSequence();
-		if (LevelSequence)
+		NewControlRigs =  EditMode->GetControlRigsArray(false /*bIsVisible*/);
+	}
+	for (TWeakObjectPtr<UControlRig> ControlRigPtr : CurrentControlRigs)
+	{
+		if (ControlRigPtr.IsValid())
 		{
-			TArray<FControlRigSequencerBindingProxy> Proxies = UControlRigSequencerEditorLibrary::GetControlRigs(LevelSequence);
-			if (Proxies.Num() > 0)
+			if (NewControlRigs.Contains(ControlRigPtr.Get()) == false)
 			{
-				//MZ TODO when we have Mutliple Control Rig's active select more than one.
-				ControlRig = Proxies[0].ControlRig;
+				(ControlRigPtr.Get())->ControlSelected().RemoveAll(this);
 			}
 		}
 	}
-	return ControlRig;
-}
-
-UControlRig* SControlRigPoseView::GetControlRig()
-{
-	UControlRig* NewControlRig = nullptr;
-	if (FControlRigEditMode* EditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName)))
+	if (EditMode)
 	{
-		NewControlRig =  EditMode->GetControlRig(true);
+		CurrentControlRigs = EditMode->GetControlRigs();
 	}
-	if (NewControlRig != CurrentControlRig)
-	{
-		if (CurrentControlRig.IsValid())
-		{
-			(CurrentControlRig.Get())->ControlSelected().RemoveAll(this);
-
-		}
-	}
-	CurrentControlRig = NewControlRig;
-	return NewControlRig;
+	
+	return NewControlRigs;
 }
 
 /* We may want to list the Controls in it (design said no but animators said yes)
@@ -684,7 +705,6 @@ void SControlRigPoseView::HandleControlAdded(UControlRig* ControlRig, bool bIsAd
 		{
 			(ControlRig)->ControlSelected().RemoveAll(this);
 			(ControlRig)->ControlSelected().AddRaw(this, &SControlRigPoseView::HandleControlSelected);
-			CurrentControlRig = ControlRig;
 		}
 		else
 		{
@@ -701,41 +721,47 @@ void SControlRigPoseView::HandleControlSelected(UControlRig* Subject, FRigContro
 
 void SControlRigPoseView::UpdateStatusBlocks()
 {
-	UControlRig* ControlRig = GetControlRig();
 	FText StatusText1;
 	FText StatusText2;
-
-	if (PoseAsset.IsValid() && ControlRig)
+	TArray<UControlRig*> ControlRigs = GetControlRigs();
+	if (PoseAsset.IsValid() && ControlRigs.Num() > 0)
 	{
+
 		FFormatNamedArguments NamedArgs;
 		TArray<FName> ControlNames = PoseAsset->GetControlNames();
 		NamedArgs.Add("Total", ControlNames.Num());
-		TArray<FName> SelectedNames = ControlRig->CurrentControlSelection();
-		NamedArgs.Add("Selected", SelectedNames.Num());
+		int32 TotalSelected = 0;
 		uint32 Matching = 0;
 		uint32 MirrorMatching = 0;
-		
-		for (const FName& ControlName : ControlNames)
+		for (UControlRig* ControlRig : ControlRigs)
 		{
-			for (const FName& SelectedName : SelectedNames)
+
+			TArray<FName> SelectedNames = ControlRig->CurrentControlSelection();
+			TotalSelected += SelectedNames.Num();
+			for (const FName& ControlName : ControlNames)
 			{
-				if (SelectedName == ControlName)
+				for (const FName& SelectedName : SelectedNames)
 				{
-					++Matching;
-					if (SControlRigPoseView::bIsMirror)
+					if (SelectedName == ControlName)
 					{
-						if (PoseAsset->DoesMirrorMatch(ControlRig,ControlName))
+						++Matching;
+						if (SControlRigPoseView::bIsMirror)
 						{
-							++MirrorMatching;
+							if (PoseAsset->DoesMirrorMatch(ControlRig, ControlName))
+							{
+								++MirrorMatching;
+							}
 						}
 					}
 				}
 			}
 		}
+
+		NamedArgs.Add("Selected", TotalSelected);//SelectedNames.Num());
 		NamedArgs.Add("Matching", Matching);
 		NamedArgs.Add("MirrorMatching", MirrorMatching);
 
-		if(SControlRigPoseView::bIsMirror)
+		if (SControlRigPoseView::bIsMirror)
 		{
 			StatusText1 = FText::Format(LOCTEXT("NumberControlsAndMatch", "{Total} Controls Matching {Matching} of {Selected} Selected"), NamedArgs);
 			StatusText2 = FText::Format(LOCTEXT("NumberMirroredMatch", " {MirrorMatching} Mirror String Matches"), NamedArgs);

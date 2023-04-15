@@ -8,6 +8,8 @@
 #include "UObject/PropertyPortFlags.h"
 #include "Engine/InheritableComponentHandler.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SCS_Node)
+
 //////////////////////////////////////////////////////////////////////////
 // USCS_Node
 
@@ -332,7 +334,10 @@ void USCS_Node::PreloadChain()
 
 	if (ComponentTemplate && ComponentTemplate->HasAnyFlags(RF_NeedLoad))
 	{
-		ComponentTemplate->GetLinker()->Preload(ComponentTemplate);
+		if (ensureMsgf(ComponentTemplate->GetLinker(), TEXT("Failed to find linker for %s, likely a circular dependency"), *ComponentTemplate->GetPathName()))
+		{
+			ComponentTemplate->GetLinker()->Preload(ComponentTemplate);
+		}
 	}
 
 	for( TArray<USCS_Node*>::TIterator ChildIt(ChildNodes); ChildIt; ++ChildIt )
@@ -657,3 +662,4 @@ EDataValidationResult USCS_Node::IsDataValid(TArray<FText>& ValidationErrors)
 }
 
 #endif // WITH_EDITOR
+

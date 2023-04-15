@@ -7,10 +7,13 @@
 #include "Algo/Transform.h"
 #include "IAudioParameterInterfaceRegistry.h"
 #include "Logging/LogMacros.h"
+#include "MetasoundFrontendDocumentVersioning.h"
 #include "MetasoundFrontend.h"
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundLog.h"
 #include "MetasoundVertex.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundFrontendDocument)
 
 namespace Metasound
 {
@@ -20,6 +23,11 @@ namespace Metasound
 	{
 		namespace DisplayStyle
 		{
+			namespace EdgeAnimation
+			{
+				const FLinearColor DefaultColor = FLinearColor::Transparent;
+			}
+
 			namespace NodeLayout
 			{
 				const FVector2D DefaultOffsetX { 300.0f, 0.0f };
@@ -82,8 +90,110 @@ namespace Metasound
 
 			return false;
 		}
-	}
+
+		EMetasoundFrontendVertexAccessType CoreVertexAccessTypeToFrontendVertexAccessType(Metasound::EVertexAccessType InAccessType)
+		{
+			switch (InAccessType)
+			{
+				case EVertexAccessType::Value:
+					return EMetasoundFrontendVertexAccessType::Value;
+
+				case EVertexAccessType::Reference:
+				default:
+					return EMetasoundFrontendVertexAccessType::Reference;
+			}
+		}
+	} // namespace DocumentPrivate
 } // namespace Metasound
+
+#if WITH_EDITORONLY_DATA
+void FMetasoundFrontendDocumentModifyContext::ClearDocumentModified()
+{
+	bDocumentModified = false;
+}
+
+bool FMetasoundFrontendDocumentModifyContext::GetDocumentModified() const
+{
+	return bDocumentModified;
+}
+
+bool FMetasoundFrontendDocumentModifyContext::GetForceRefreshViews() const
+{
+	return bForceRefreshViews;
+}
+
+const TSet<FName>& FMetasoundFrontendDocumentModifyContext::GetInterfacesModified() const
+{
+	return InterfacesModified;
+}
+
+const TSet<FGuid>& FMetasoundFrontendDocumentModifyContext::GetMemberIDsModified() const
+{
+	return MemberIDsModified;
+}
+
+const TSet<FGuid>& FMetasoundFrontendDocumentModifyContext::GetNodeIDsModified() const
+{
+	return NodeIDsModified;
+}
+
+void FMetasoundFrontendDocumentModifyContext::Reset()
+{
+	bDocumentModified = false;
+	bForceRefreshViews = false;
+	InterfacesModified.Empty();
+	MemberIDsModified.Empty();
+	NodeIDsModified.Empty();
+}
+
+void FMetasoundFrontendDocumentModifyContext::SetDocumentModified()
+{
+	bDocumentModified = true;
+}
+
+void FMetasoundFrontendDocumentModifyContext::SetForceRefreshViews()
+{
+	bDocumentModified = true;
+	bForceRefreshViews = true;
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddInterfaceModified(FName InInterfaceModified)
+{
+	bDocumentModified = true;
+	InterfacesModified.Add(InInterfaceModified);
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddInterfacesModified(const TSet<FName>& InInterfacesModified)
+{
+	bDocumentModified = true;
+	InterfacesModified.Append(InInterfacesModified);
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddMemberIDModified(const FGuid& InMemberIDModified)
+{
+	bDocumentModified = true;
+	MemberIDsModified.Add(InMemberIDModified);
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddMemberIDsModified(const TSet<FGuid>& InMemberIDsModified)
+{
+	bDocumentModified = true;
+	MemberIDsModified.Append(InMemberIDsModified);
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddNodeIDModified(const FGuid& InNodeIDModified)
+{
+	bDocumentModified = true;
+	NodeIDsModified.Add(InNodeIDModified);
+}
+
+void FMetasoundFrontendDocumentModifyContext::AddNodeIDsModified(const TSet<FGuid>& InNodesModified)
+{
+	bDocumentModified = true;
+	NodeIDsModified.Append(InNodesModified);
+}
+#endif // WITH_EDITORONLY_DATA
+
 
 FMetasoundFrontendNodeInterface::FMetasoundFrontendNodeInterface(const FMetasoundFrontendClassInterface& InClassInterface)
 {
@@ -143,7 +253,25 @@ void FMetasoundFrontendClassVertex::SplitName(FName& OutNamespace, FName& OutPar
 
 bool FMetasoundFrontendClassVertex::IsFunctionalEquivalent(const FMetasoundFrontendClassVertex& InLHS, const FMetasoundFrontendClassVertex& InRHS)
 {
-	return FMetasoundFrontendVertex::IsFunctionalEquivalent(InLHS, InRHS);
+	return FMetasoundFrontendVertex::IsFunctionalEquivalent(InLHS, InRHS) && (InLHS.AccessType == InRHS.AccessType);
+}
+
+bool FMetasoundFrontendClassVertex::CanConnectVertexAccessTypes(EMetasoundFrontendVertexAccessType InFromType, EMetasoundFrontendVertexAccessType InToType)
+{
+	// Reroute nodes can have undefined access type, so if either is unset, then connection is valid.
+	if (EMetasoundFrontendVertexAccessType::Unset != InFromType && EMetasoundFrontendVertexAccessType::Unset != InToType)
+	{
+		if (EMetasoundFrontendVertexAccessType::Value == InToType)
+		{
+			// If the input vertex accesses by "Value" then the output vertex 
+			// must also access by "Value" to enforce unexpected consequences 
+			// of connecting data which varies over time to an input which only
+			// evaluates the data during operator initialization.
+			return (EMetasoundFrontendVertexAccessType::Value == InFromType);
+		}
+	}
+
+	return true;
 }
 
 FMetasoundFrontendClassName::FMetasoundFrontendClassName(const FName& InNamespace, const FName& InName, const FName& InVariant)
@@ -198,25 +326,30 @@ FMetasoundFrontendClassInterface FMetasoundFrontendClassInterface::GenerateClass
 		FMetasoundFrontendInterfaceStyle InputStyle;
 #endif // WITH_EDITOR
 
-		for (const TPair<FVertexName, FInputDataVertex>& InputTuple : InputInterface)
+		// Reserve memory to minimize memory use in ClassInterface.Inputs array.
+		ClassInterface.Inputs.Reserve(InputInterface.Num());
+
+
+		for (const FInputDataVertex& InputVertex : InputInterface)
 		{
 			FMetasoundFrontendClassInput ClassInput;
 
-			const FInputDataVertex& InputVertex = InputTuple.Value;
-			ClassInput.Name = InputVertex.GetVertexName();
-			ClassInput.TypeName = InputVertex.GetDataTypeName();
+			ClassInput.Name = InputVertex.VertexName;
+			ClassInput.TypeName = InputVertex.DataTypeName;
 			ClassInput.VertexID = FGuid::NewGuid();
+			ClassInput.AccessType = Metasound::DocumentPrivate::CoreVertexAccessTypeToFrontendVertexAccessType(InputVertex.AccessType);
 
-			const FDataVertexMetadata& VertexMetadata = InputVertex.GetMetadata();
 
 #if WITH_EDITOR
+			const FDataVertexMetadata& VertexMetadata = InputVertex.Metadata;
+
 			ClassInput.Metadata.SetSerializeText(false);
 			ClassInput.Metadata.SetDisplayName(VertexMetadata.DisplayName);
 			ClassInput.Metadata.SetDescription(VertexMetadata.Description);
 			ClassInput.Metadata.bIsAdvancedDisplay = VertexMetadata.bIsAdvancedDisplay;
 
 			// Advanced display items are pushed to bottom of sort order
-			ClassInput.Metadata.SortOrderIndex = InputInterface.GetSortOrderIndex(InputTuple.Key);
+			ClassInput.Metadata.SortOrderIndex = InputInterface.GetSortOrderIndex(InputVertex.VertexName);
 			if (ClassInput.Metadata.bIsAdvancedDisplay)
 			{
 				ClassInput.Metadata.SortOrderIndex += InputInterface.Num();
@@ -251,24 +384,29 @@ FMetasoundFrontendClassInterface FMetasoundFrontendClassInterface::GenerateClass
 		FMetasoundFrontendInterfaceStyle OutputStyle;
 #endif // WITH_EDITOR
 
-		for (const TPair<FVertexName, FOutputDataVertex>& OutputTuple : OutputInterface)
+		// Reserve memory to minimize memory use in ClassInterface.Outputs array.
+		ClassInterface.Outputs.Reserve(OutputInterface.Num());
+
+		for (const FOutputDataVertex& OutputVertex: OutputInterface)
 		{
 			FMetasoundFrontendClassOutput ClassOutput;
 
-			ClassOutput.Name = OutputTuple.Value.GetVertexName();
-			ClassOutput.TypeName = OutputTuple.Value.GetDataTypeName();
-			ClassOutput.VertexID = FGuid::NewGuid();
 
-			const FDataVertexMetadata& VertexMetadata = OutputTuple.Value.GetMetadata();
+			ClassOutput.Name = OutputVertex.VertexName;
+			ClassOutput.TypeName = OutputVertex.DataTypeName;
+			ClassOutput.VertexID = FGuid::NewGuid();
+			ClassOutput.AccessType = Metasound::DocumentPrivate::CoreVertexAccessTypeToFrontendVertexAccessType(OutputVertex.AccessType);
 
 #if WITH_EDITOR
+			const FDataVertexMetadata& VertexMetadata = OutputVertex.Metadata;
+
 			ClassOutput.Metadata.SetSerializeText(false);
 			ClassOutput.Metadata.SetDisplayName(VertexMetadata.DisplayName);
 			ClassOutput.Metadata.SetDescription(VertexMetadata.Description);
 			ClassOutput.Metadata.bIsAdvancedDisplay = VertexMetadata.bIsAdvancedDisplay;
 
 			// Advanced display items are pushed to bottom below non-advanced
-			ClassOutput.Metadata.SortOrderIndex = OutputInterface.GetSortOrderIndex(OutputTuple.Key);
+			ClassOutput.Metadata.SortOrderIndex = OutputInterface.GetSortOrderIndex(OutputVertex.VertexName);
 			if (ClassOutput.Metadata.bIsAdvancedDisplay)
 			{
 				ClassOutput.Metadata.SortOrderIndex += OutputInterface.Num();
@@ -288,11 +426,14 @@ FMetasoundFrontendClassInterface FMetasoundFrontendClassInterface::GenerateClass
 #endif // WITH_EDITOR
 	}
 
-	for (auto& EnvTuple : InVertexInterface.GetEnvironmentInterface())
+	// Reserve size to minimize memory use in ClassInterface.Environment array
+	ClassInterface.Environment.Reserve(InVertexInterface.GetEnvironmentInterface().Num());
+
+	for (const FEnvironmentVertex& EnvVertex : InVertexInterface.GetEnvironmentInterface())
 	{
 		FMetasoundFrontendClassEnvironmentVariable EnvVar;
 
-		EnvVar.Name = EnvTuple.Value.GetVertexName();
+		EnvVar.Name = EnvVertex.VertexName;
 		EnvVar.bIsRequired = true;
 
 		ClassInterface.Environment.Add(EnvVar);
@@ -460,9 +601,11 @@ bool FMetasoundFrontendClass::CacheGraphDependencyMetadataFromRegistry(FMetasoun
 }
 #endif // WITH_EDITOR
 
+#if WITH_EDITORONLY_DATA
 FMetasoundFrontendClassStyle FMetasoundFrontendClassStyle::GenerateClassStyle(const Metasound::FNodeDisplayStyle& InNodeDisplayStyle)
 {
 	FMetasoundFrontendClassStyle Style;
+
 	Style.Display.bShowName = InNodeDisplayStyle.bShowName;
 	Style.Display.bShowInputNames = InNodeDisplayStyle.bShowInputNames;
 	Style.Display.bShowOutputNames = InNodeDisplayStyle.bShowOutputNames;
@@ -470,6 +613,7 @@ FMetasoundFrontendClassStyle FMetasoundFrontendClassStyle::GenerateClassStyle(co
 
 	return Style;
 }
+#endif // WITH_EDITORONLY_DATA
 
 FMetasoundFrontendClassMetadata FMetasoundFrontendClassMetadata::GenerateClassMetadata(const Metasound::FNodeClassMetadata& InNodeClassMetadata, EMetasoundFrontendClassType InType)
 {
@@ -526,9 +670,31 @@ FMetasoundFrontendGraphClass::FMetasoundFrontendGraphClass()
 	Metadata.SetType(EMetasoundFrontendClassType::Graph);
 }
 
+FMetasoundFrontendVersionNumber FMetasoundFrontendDocument::GetMaxVersion()
+{
+	return Metasound::Frontend::FVersionDocument::GetMaxVersion();
+}
+
 FMetasoundFrontendDocument::FMetasoundFrontendDocument()
 {
 	RootGraph.ID = FGuid::NewGuid();
 	RootGraph.Metadata.SetType(EMetasoundFrontendClassType::Graph);
 	ArchetypeVersion = FMetasoundFrontendVersion::GetInvalid();
 }
+
+const TCHAR* LexToString(EMetasoundFrontendVertexAccessType InVertexAccess)
+{
+	switch (InVertexAccess)
+	{
+		case EMetasoundFrontendVertexAccessType::Value:
+			return TEXT("Value");
+			
+		case EMetasoundFrontendVertexAccessType::Reference:
+			return TEXT("Reference");
+
+		case EMetasoundFrontendVertexAccessType::Unset:
+		default:
+			return TEXT("Unset");
+	}
+}
+

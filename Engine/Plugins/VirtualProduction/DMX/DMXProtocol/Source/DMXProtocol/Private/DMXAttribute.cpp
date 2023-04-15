@@ -6,38 +6,10 @@
 
 #include "Modules/ModuleManager.h"
 
-IMPLEMENT_DMX_NAMELISTITEM_STATICVARS(FDMXAttributeName)
-
-IMPLEMENT_DMX_NAMELISTITEM_GetAllValues(FDMXAttributeName)
-{
-	TArray<FName> PossibleValues;
-
-	if (const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>())
-	{
-		PossibleValues.Reserve(DMXSettings->Attributes.Num());
-
-		for (const FDMXAttribute& Attribute : DMXSettings->Attributes)
-		{
-			PossibleValues.Emplace(Attribute.Name);
-		}
-	}
-
-	return PossibleValues;
-}
-
-IMPLEMENT_DMX_NAMELISTITEM_IsValid(FDMXAttributeName)
-{
-	const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>();
-	for (const FDMXAttribute& SettingsAttribute : DMXSettings->Attributes)
-	{
-		if (InName == SettingsAttribute.Name)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+const bool FDMXAttributeName::bCanBeNone = true;
+FSimpleMulticastDelegate FDMXAttributeName::OnValuesChanged;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FDMXAttributeName::FDMXAttributeName()
 {
@@ -64,17 +36,7 @@ FDMXAttributeName::FDMXAttributeName(const FDMXAttribute& InAttribute)
 
 FDMXAttributeName::FDMXAttributeName(const FName& NameAttribute)
 {
-	const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>();
-	for (const FDMXAttribute& SettingsAttribute : DMXSettings->Attributes)
-	{
-		if (SettingsAttribute.Name.IsEqual(NameAttribute))
-		{
-			Name = SettingsAttribute.Name;
-			return;
-		}
-	}
-
-	Name = FDMXNameListItem::None;	
+	Name = NameAttribute;
 }
 
 void FDMXAttributeName::SetFromName(const FName& InName)
@@ -82,14 +44,15 @@ void FDMXAttributeName::SetFromName(const FName& InName)
 	*this = InName;
 }
 
-const FDMXAttribute& FDMXAttributeName::GetAttribute() const
+FDMXAttribute FDMXAttributeName::GetAttribute() const
 {
-	static const FDMXAttribute FailureAttribute;
-
+	FDMXAttribute Attribute;
+	Attribute.Name = Name;
+	return Attribute;
 	const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>();
-	if (DMXSettings == nullptr)
+	if (!DMXSettings)
 	{
-		return FailureAttribute;
+		return Attribute;
 	}
 
 	for (const FDMXAttribute& SettingsAttribute : DMXSettings->Attributes)
@@ -100,17 +63,38 @@ const FDMXAttribute& FDMXAttributeName::GetAttribute() const
 		}
 	}
 
-	return FailureAttribute;
+	return Attribute;
+}
+
+TArray<FName> FDMXAttributeName::GetPredefinedValues()
+{
+	TArray<FName> Result;
+	const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>();
+	if (!DMXSettings)
+	{
+		return Result;
+	}
+
+	for (const FDMXAttribute& Attribute : DMXSettings->Attributes)
+	{
+		Result.Add(Attribute.Name);
+	}
+	return Result;
+}
+
+TArray<FName> FDMXAttributeName::GetPossibleValues()
+{
+	return GetPredefinedValues();
 }
 
 FString UDMXAttributeNameConversions::Conv_DMXAttributeToString(const FDMXAttributeName& InAttribute)
 {
-	return InAttribute.GetName().ToString();
+	return InAttribute.Name.ToString();
 }
 
 FName UDMXAttributeNameConversions::Conv_DMXAttributeToName(const FDMXAttributeName& InAttribute)
 {
-	return InAttribute.GetName();
+	return InAttribute.Name;
 }
 
 TArray<FString> FDMXAttribute::GetKeywords() const

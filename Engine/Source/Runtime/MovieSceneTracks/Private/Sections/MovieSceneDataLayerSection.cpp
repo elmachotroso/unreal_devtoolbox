@@ -2,7 +2,9 @@
 
 #include "Sections/MovieSceneDataLayerSection.h"
 #include "MovieSceneTracksComponentTypes.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneDataLayerSection)
 
 UMovieSceneDataLayerSection::UMovieSceneDataLayerSection(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -54,3 +56,4 @@ void UMovieSceneDataLayerSection::ImportEntityImpl(UMovieSceneEntitySystemLinker
 		.Add(FMovieSceneTracksComponentTypes::Get()->DataLayer, ComponentData)
 	);
 }
+

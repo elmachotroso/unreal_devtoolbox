@@ -13,6 +13,8 @@
 #include "CanvasTypes.h"
 #include "HAL/FileManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraPerfBaseline)
+
 #define LOCTEXT_NAMESPACE "NiagaraPerformanceBaselines"
 
 #if NIAGARA_PERF_BASELINES
@@ -272,7 +274,10 @@ UNiagaraSystem* UNiagaraBaselineController::GetSystem()
 void UNiagaraBaselineController_Basic::OnBeginTest_Implementation()
 {
 	Super::OnBeginTest_Implementation();
-	SpawnedComponents.SetNumZeroed(NumInstances);
+	if(NumInstances > 0)
+	{
+		SpawnedComponents.SetNumZeroed(NumInstances);
+	}
 }
 
 bool UNiagaraBaselineController_Basic::OnTickTest_Implementation()
@@ -1320,3 +1325,4 @@ void UNiagaraBaselineController_Basic::OnOwnerTick_Implementation(float DeltaTim
 
 
 #undef LOCTEXT_NAMESPACE
+

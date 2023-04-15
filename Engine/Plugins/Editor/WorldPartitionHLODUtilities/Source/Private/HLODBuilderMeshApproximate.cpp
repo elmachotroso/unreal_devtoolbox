@@ -20,7 +20,7 @@
 #include "Engine/HLODProxy.h"
 #include "Serialization/ArchiveCrc32.h"
 
-#include "HLODBuilderInstancing.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilderMeshApproximate)
 
 
 UHLODBuilderMeshApproximate::UHLODBuilderMeshApproximate(const FObjectInitializer& ObjectInitializer)
@@ -73,29 +73,10 @@ TArray<UActorComponent*> UHLODBuilderMeshApproximate::Build(const FHLODBuildCont
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UHLODBuilderMeshApproximate::Build);
 
-	TArray<UStaticMeshComponent*> StaticMeshComponents;
-	TArray<UActorComponent*> InstancedComponents;
-
-	// Filter the input components
-	for (UStaticMeshComponent* SubComponent : FilterComponents<UStaticMeshComponent>(InSourceComponents))
-	{
-		switch (SubComponent->HLODBatchingPolicy)
-		{
-		case EHLODBatchingPolicy::None:
-			StaticMeshComponents.Add(SubComponent);
-			break;
-		case EHLODBatchingPolicy::Instancing:
-			InstancedComponents.Add(SubComponent);
-			break;
-		case EHLODBatchingPolicy::MeshSection:
-			InstancedComponents.Add(SubComponent);
-			UE_LOG(LogHLODBuilder, Warning, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the UHLODBuilderMeshSimplify builder."));
-			break;
-		}
-	}
+	TArray<UPrimitiveComponent*> PrimitiveComponents = FilterComponents<UPrimitiveComponent>(InSourceComponents);
 
 	TSet<AActor*> Actors;
-	Algo::Transform(StaticMeshComponents, Actors, [](UPrimitiveComponent* PrimitiveComponent) { return PrimitiveComponent->GetOwner(); });
+	Algo::Transform(PrimitiveComponents, Actors, [](UPrimitiveComponent* PrimitiveComponent) { return PrimitiveComponent->GetOwner(); });
 	
 	IGeometryProcessingInterfacesModule& GeomProcInterfaces = FModuleManager::Get().LoadModuleChecked<IGeometryProcessingInterfacesModule>("GeometryProcessingInterfaces");
 	IGeometryProcessing_ApproximateActors* ApproxActorsAPI = GeomProcInterfaces.GetApproximateActorsImplementation();
@@ -105,8 +86,14 @@ TArray<UActorComponent*> UHLODBuilderMeshApproximate::Build(const FHLODBuildCont
 	//
 
 	const UHLODBuilderMeshApproximateSettings* MeshApproximateSettings = CastChecked<UHLODBuilderMeshApproximateSettings>(HLODBuilderSettings);
-	const FMeshApproximationSettings& UseSettings = MeshApproximateSettings->MeshApproximationSettings;
-	UMaterial* HLODMaterial = MeshApproximateSettings->HLODMaterial.LoadSynchronous();
+	FMeshApproximationSettings UseSettings = MeshApproximateSettings->MeshApproximationSettings; // Make a copy as we may tweak some values
+	UMaterialInterface* HLODMaterial = MeshApproximateSettings->HLODMaterial.LoadSynchronous();
+
+	// When using automatic textuse sizing based on draw distance, use the MinVisibleDistance for this HLOD.
+	if (UseSettings.MaterialSettings.TextureSizingType == TextureSizingType_AutomaticFromMeshDrawDistance)
+	{
+		UseSettings.MaterialSettings.MeshMinDrawDistance = InHLODBuildContext.MinVisibleDistance;
+	}
 
 	IGeometryProcessing_ApproximateActors::FOptions Options = ApproxActorsAPI->ConstructOptions(UseSettings);
 	Options.BasePackagePath = InHLODBuildContext.AssetsOuter->GetPackage()->GetName();
@@ -124,45 +111,11 @@ TArray<UActorComponent*> UHLODBuilderMeshApproximate::Build(const FHLODBuildCont
 	Options.bUsePackedMRS = true;
 	Options.PackedMRSTexParamName = FName("PackedTexture");
 
-	// Gather bounds of the input components
-	auto GetActorsBounds = [&]() -> FBoxSphereBounds
-	{
-		FBoxSphereBounds Bounds;
-		bool bFirst = true;
-
-		for (UPrimitiveComponent* Component : StaticMeshComponents)
-		{
-			FBoxSphereBounds ComponentBounds = Component->Bounds;
-			Bounds = bFirst ? ComponentBounds : Bounds + ComponentBounds;
-			bFirst = false;
-		}
-
-		return Bounds;
-	};
-	
 	// Compute texel density if needed, depending on the TextureSizingType setting
-	ETextureSizingType TextureSizingType = UseSettings.MaterialSettings.TextureSizingType;
-	float TexelDensityPerMeter = 0.0f;
-
-	IGeometryProcessing_ApproximateActors::ETextureSizePolicy TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TextureSize;
-	if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromTexelDensity)
-	{
-		TexelDensityPerMeter = UseSettings.MaterialSettings.TargetTexelDensityPerMeter;
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
+	if (UseSettings.MaterialSettings.ResolveTexelDensity(PrimitiveComponents, Options.MeshTexelDensity))
+	{ 
+		Options.TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
 	}
-	else if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromMeshScreenSize)
-	{
-		TexelDensityPerMeter = FMaterialUtilities::ComputeRequiredTexelDensityFromScreenSize(UseSettings.MaterialSettings.MeshMaxScreenSizePercent, GetActorsBounds().SphereRadius);
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
-	}
-	else if (TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromMeshDrawDistance)
-	{
-		TexelDensityPerMeter = FMaterialUtilities::ComputeRequiredTexelDensityFromDrawDistance(UseSettings.MaterialSettings.MeshMinDrawDistance, GetActorsBounds().SphereRadius);
-		TextureSizePolicy = IGeometryProcessing_ApproximateActors::ETextureSizePolicy::TexelDensity;
-	}
-
-	Options.MeshTexelDensity = TexelDensityPerMeter;
-	Options.TextureSizePolicy = TextureSizePolicy;
 
 	// run actor approximation computation
 	IGeometryProcessing_ApproximateActors::FResults Results;
@@ -203,7 +156,7 @@ TArray<UActorComponent*> UHLODBuilderMeshApproximate::Build(const FHLODBuildCont
 					SwitchParameter.ParameterInfo.Name = ParamName;
 					SwitchParameter.Value = true;
 					SwitchParameter.bOverride = true;
-					StaticParameterSet.StaticSwitchParameters.Add(SwitchParameter);
+					StaticParameterSet.EditorOnly.StaticSwitchParameters.Add(SwitchParameter);
 				}
 			};
 
@@ -225,12 +178,6 @@ TArray<UActorComponent*> UHLODBuilderMeshApproximate::Build(const FHLODBuildCont
 		}
 	}
 
-	// Batch instances
-	if (InstancedComponents.Num())
-	{
-		UHLODBuilderInstancing* InstancingHLODBuilder = NewObject<UHLODBuilderInstancing>();
-		Components.Append(InstancingHLODBuilder->Build(InHLODBuildContext, InstancedComponents));
-	}
-
 	return Components;
 }
+

@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using MongoDB.Bson;
 using System.Collections.Generic;
+using MongoDB.Bson;
 
-namespace HordeServer.Models
+namespace Horde.Build.Users
 {
 	/// <summary>
 	/// A service account used for authenticating during server-to-server communication
@@ -34,10 +34,10 @@ namespace HordeServer.Models
 		/// <summary>
 		/// Add a claim
 		/// </summary>
-		/// <param name="Type">Type of claim</param>
-		/// <param name="Value">Value of claim</param>
+		/// <param name="type">Type of claim</param>
+		/// <param name="value">Value of claim</param>
 		/// <returns></returns>
-		public void AddClaim(string Type, string Value);
+		public void AddClaim(string type, string value);
 		
 		/// <summary>
 		/// Get list of claims

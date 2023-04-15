@@ -3,8 +3,7 @@
 #include "../Common.ush"
 #include "../SceneTextureParameters.ush"
 #include "../DeferredShadingCommon.ush"
-#include "../ShaderDrawDebug.ush"
-#include "../ShaderPrintCommon.ush"
+#include "../ShaderPrint.ush"
 #include "HairStrandsVisibilityCommon.ush"
 #include "HairStrandsVoxelPageCommon.ush"
 #include "HairStrandsDeepShadowCommonStruct.ush"
@@ -99,7 +98,7 @@ void MainVS(
 	if (bIsGPUDriven)
 	{
 		FDeepShadowViewInfo DeepShadowViewInfo = DeepShadowViewInfoBuffer[AtlasSlotIndex];
-		TranslatedWorldToClipMatrix = DeepShadowViewInfo.TranslatedWorldToClip;
+		TranslatedWorldToClipMatrix = DeepShadowViewInfo.TranslatedWorldToClipScaledBiased;
 	}
 
 	OutTranslatedWorldPosition = TranslatedWorldPosition;
@@ -129,9 +128,9 @@ void MainPS(
 
 	FVirtualVoxelCommonDesc CommonDesc;
 	CommonDesc.PageCountResolution = VirtualVoxel.PageCountResolution;
-	CommonDesc.VoxelWorldSize = VirtualVoxel.VoxelWorldSize;
 	CommonDesc.PageTextureResolution = VirtualVoxel.PageTextureResolution;
 	CommonDesc.PageResolution = VirtualVoxel.PageResolution;
+	CommonDesc.PageResolutionLog2 = VirtualVoxel.PageResolutionLog2;
 
 	const FPackedVirtualVoxelNodeDesc PackedNode = VirtualVoxel.NodeDescBuffer[MacroGroupId];
 	const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(PackedNode, VirtualVoxel.PageResolution);
@@ -166,7 +165,7 @@ void MainPS(
 		if (bIsGPUDriven)
 		{
 			FDeepShadowViewInfo DeepShadowViewInfo = DeepShadowViewInfoBuffer[AtlasSlotIndex];
-			TranslatedWorldToClipMatrix = DeepShadowViewInfo.TranslatedWorldToClip;
+			TranslatedWorldToClipMatrix = DeepShadowViewInfo.TranslatedWorldToClipScaledBiased;
 		}
 		const float3 HitP = TranslatedWP0 + normalize(TranslatedWP1 - TranslatedWP0) * TraversalResult.HitT;
 		float4 ClipP = mul(float4(HitP, 1), TranslatedWorldToClipMatrix);

@@ -4,6 +4,7 @@
 
 #include "VectorTypes.h"
 #include "FrameTypes.h"
+#include "SceneView.h"
 #include "Image/ImageBuilder.h"
 #include "Image/ImageDimensions.h"
 
@@ -12,6 +13,24 @@ namespace UE
 {
 namespace Geometry
 {
+
+struct FSpatialPhotoParams
+{
+	/** Coordinate system of the view camera - X() is forward, Z() is up */
+	FFrame3d Frame;
+
+	/** Near-plane distance for the camera, image pixels lie on this plane */
+	double NearPlaneDist = 1.0;
+
+	/** Horizontal Field-of-View of the camera in degrees (full FOV, so generally calculations will use half this value) */
+	double HorzFOVDegrees = 90.0;
+
+	/** Pixel dimensions of the photo image */
+	FImageDimensions Dimensions;
+
+	/** Useful to to unproject the DeviceDepth render capture */
+	FViewMatrices ViewMatrices;
+};
 
 /**
  * TSpatialPhoto represents a 2D image located in 3D space, ie the image plus camera parameters, 
@@ -81,6 +100,26 @@ public:
 		const PixelType& DefaultValue
 	) const;
 
+	PixelType ComputeSample(
+		const int& PhotoIndex,
+		const FVector2d& PhotoCoords,
+		const PixelType& DefaultValue
+	) const;
+	
+	PixelType ComputeSampleNearest(
+		const int& PhotoIndex,
+		const FVector2d& PhotoCoords,
+		const PixelType& DefaultValue
+	) const;
+
+	bool ComputeSampleLocation(
+		const FVector3d& Position, 
+		const FVector3d& Normal, 
+		TFunctionRef<bool(const FVector3d&,const FVector3d&)> VisibilityFunction,
+		int& PhotoIndex,
+		FVector2d& PhotoCoords
+	) const;
+
 protected:
 	TArray<TSharedPtr<TSpatialPhoto<PixelType>, ESPMode::ThreadSafe>> Photos;
 };
@@ -88,25 +127,25 @@ typedef TSpatialPhotoSet<FVector4f, float> FSpatialPhotoSet4f;
 typedef TSpatialPhotoSet<FVector3f, float> FSpatialPhotoSet3f;
 typedef TSpatialPhotoSet<float, float> FSpatialPhotoSet1f;
 
-
-
-
 template<typename PixelType, typename RealType>
-PixelType TSpatialPhotoSet<PixelType, RealType>::ComputeSample(
+bool TSpatialPhotoSet<PixelType, RealType>::ComputeSampleLocation(
 	const FVector3d& Position, 
 	const FVector3d& Normal, 
 	TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction,
-	const PixelType& DefaultValue ) const
+	int& PhotoIndex,
+	FVector2d& PhotoCoords) const
 {
 	double DotTolerance = -0.1;		// dot should be negative for normal pointing towards photo
 
-	PixelType BestSample = DefaultValue;
+	PhotoIndex = IndexConstants::InvalidID;
+	PhotoCoords = FVector2d(0., 0.);
+
 	double MinDot = 1.0;
 
 	int32 NumPhotos = Num();
-	for (int32 pi = 0; pi < NumPhotos; ++pi)
+	for (int32 Index = 0; Index < NumPhotos; ++Index)
 	{
-		const TSpatialPhoto<PixelType>& Photo = *Photos[pi];
+		const TSpatialPhoto<PixelType>& Photo = *Photos[Index];
 		check(Photo.Dimensions.IsSquare());
 
 		FVector3d ViewDirection = Photo.Frame.X();
@@ -139,19 +178,71 @@ PixelType TSpatialPhotoSet<PixelType, RealType>::ComputeSample(
 				double v = -(PlaneY / ViewPlaneHeightWorld);
 				if (FMathd::Abs(u) < 1 && FMathd::Abs(v) < 1)
 				{
-					double x = (u/2.0 + 0.5) * (double)Photo.Dimensions.GetWidth();
-					double y = (v/2.0 + 0.5) * (double)Photo.Dimensions.GetHeight();
-					PixelType Sample = Photo.Image.template BilinearSample<RealType>(FVector2d(x, y), DefaultValue);
-
+					PhotoCoords.X = (u/2.0 + 0.5) * (double)Photo.Dimensions.GetWidth();
+					PhotoCoords.Y = (v/2.0 + 0.5) * (double)Photo.Dimensions.GetHeight();
+					PhotoIndex = Index;
 					MinDot = ViewDot;
-					BestSample = Sample;
 				}
 			}
 		}
 	}
 
-	return BestSample;
+	return PhotoIndex != IndexConstants::InvalidID;
 }
+
+template<typename PixelType, typename RealType>
+PixelType TSpatialPhotoSet<PixelType, RealType>::ComputeSample(
+	const FVector3d& Position, 
+	const FVector3d& Normal, 
+	TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction,
+	const PixelType& DefaultValue ) const
+{
+	PixelType Result = DefaultValue;
+	
+	int PhotoIndex;
+	FVector2d PhotoCoords;
+	if (ComputeSampleLocation(Position, Normal, VisibilityFunction, PhotoIndex, PhotoCoords))
+	{
+		// TODO This bilinear sampling causes artefacts when it blends pixels from different depths (hence unrelated
+		// values), we could fix this with some kind of rejection strategy. Search :BilinearSamplingDepthArtefacts 
+		const TSpatialPhoto<PixelType>& Photo = *Photos[PhotoIndex];
+		Result = Photo.Image.template BilinearSample<RealType>(PhotoCoords, DefaultValue);
+	}
+	
+	return Result;
+}
+
+template<typename PixelType, typename RealType>
+PixelType TSpatialPhotoSet<PixelType, RealType>::ComputeSample(
+	const int& PhotoIndex, 
+	const FVector2d& PhotoCoords, 
+	const PixelType& DefaultValue) const
+{
+	// TODO See the task tagged :BilinearSamplingDepthArtefacts
+	const TSpatialPhoto<PixelType>& Photo = *Photos[PhotoIndex];
+	return Photo.Image.template BilinearSample<RealType>(PhotoCoords, DefaultValue);
+}
+
+
+template<typename PixelType, typename RealType>
+PixelType TSpatialPhotoSet<PixelType, RealType>::ComputeSampleNearest(
+	const int& PhotoIndex, 
+	const FVector2d& PhotoCoords, 
+	const PixelType& DefaultValue) const
+{
+	const TSpatialPhoto<PixelType>& Photo = *Photos[PhotoIndex];
+
+	FVector2d UVCoords;
+	UVCoords.X = PhotoCoords.X / Photo.Image.GetDimensions().GetWidth();
+	UVCoords.Y = PhotoCoords.Y / Photo.Image.GetDimensions().GetHeight();
+	if (UVCoords.X < 0. || UVCoords.X > 1. || UVCoords.Y < 0. || UVCoords.Y > 1.)
+	{
+		return DefaultValue;
+	}
+
+	return Photo.Image.NearestSampleUV(UVCoords);
+}
+
 
 
 } // end namespace UE::Geometry

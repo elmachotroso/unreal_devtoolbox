@@ -14,6 +14,11 @@
 #include "ProfilingDebugging/MiscTrace.h"
 #include "Async/Fundamental/Scheduler.h"
 #include "Tasks/Pipe.h"
+#include "Experimental/Coroutine/Coroutine.h"
+
+#if PLATFORM_WINDOWS
+#include "Microsoft/MinimalWindowsApi.h"
+#endif
 
 #include <atomic>
 
@@ -54,6 +59,13 @@ int32 FTaskTagScope::GetStaticThreadId()
 thread_local ETaskTag FTaskTagScope::ActiveTaskTag = ETaskTag::EStaticInit;
 static std::atomic_int ActiveNamedThreads {};
 
+ETaskTag FTaskTagScope::SwapTag(ETaskTag Tag)
+{
+	ETaskTag ReturnValue = ActiveTaskTag;
+	ActiveTaskTag = Tag;
+	return ReturnValue;
+}
+
 void FTaskTagScope::SetTagNone()
 {
 	ActiveTaskTag = ETaskTag::ENone;
@@ -73,7 +85,20 @@ FTaskTagScope::FTaskTagScope(bool InTagOnlyIfNone, ETaskTag InTag) : Tag(InTag),
 	{
 		checkf(Tag == ETaskTag::EGameThread, TEXT("The Gamethread can only be tagged on the inital thread of the application"));
 #if !IS_RUNNING_GAMETHREAD_ON_EXTERNAL_THREAD
-		ensureMsgf(IsRunningDuringStaticInit(), TEXT("Static initialization should have happened on the same thread as the main thread"));
+#	if PLATFORM_WINDOWS && DO_CHECK
+		// When RenderDoc injects its DLL it first creates this process in a suspended
+		// state where PE loading is not complete and no static DLL dependencies have
+		// been loaded (i.e. no static-init executed). RenderDoc then remotely creates
+		// a thread to load renderdoc.dll and it is this thread that then completes
+		// the PE loading process prior to calling the thread's entry point. This
+		// results static initialisation unexpectedly happening on RenderDoc's injection
+		// thread and the ensure below fails.
+		static bool bRenderDocDetected = (Windows::LoadLibraryW(L"renderdoc.dll") != nullptr);
+		if (!bRenderDocDetected)
+#	endif
+		{
+			ensureMsgf(IsRunningDuringStaticInit(), TEXT("Static initialization should have happened on the same thread as the main thread"));
+		}
 #endif
 	}
 
@@ -152,9 +177,12 @@ CORE_API bool IsInGameThread()
 {
 	if (GIsGameThreadIdInitialized)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		bool newValue = FTaskTagScope::IsCurrentTag(ETaskTag::EGameThread) || FTaskTagScope::IsRunningDuringStaticInit();
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-		if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+		if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() &&
+			!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() &&
+			!UE::Tasks::Private::IsThreadRetractingTask())
 		{
 			const uint32 CurrentThreadId = FPlatformTLS::GetCurrentThreadId();
 			bool oldValue = CurrentThreadId == GGameThreadId;
@@ -163,6 +191,7 @@ CORE_API bool IsInGameThread()
 		}
 #endif
 		return newValue;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return true;
@@ -175,10 +204,13 @@ CORE_API bool IsInParallelGameThread()
 
 CORE_API bool IsInSlateThread()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// If this explicitly is a slate thread, not just the main thread running slate
 	bool newValue = FTaskTagScope::IsCurrentTag(ETaskTag::ESlateThread);
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() &&
+		!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() &&
+		!UE::Tasks::Private::IsThreadRetractingTask())
 	{
 		bool oldValue = GSlateLoadingThreadId != 0 && FPlatformTLS::GetCurrentThreadId() == GSlateLoadingThreadId;
 		ensureMsgf(oldValue == newValue, TEXT("oldValue(%i) newValue(%i) If this check fails make sure that there is a FTaskTagScope(ETaskTag::ESlateThread) as as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(%x)"), oldValue, newValue, FTaskTagScope::GetCurrentTag());
@@ -186,6 +218,7 @@ CORE_API bool IsInSlateThread()
 	}
 #endif
 	return newValue;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 // tasks pipe that arranges audio tasks execution one after another so no synchronisation between them is required
@@ -219,7 +252,9 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		? FTaskTagScope::IsCurrentTag(ETaskTag::EGameThread)
 		: FTaskTagScope::IsCurrentTag(ETaskTag::EAudioThread);
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() &&
+		!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() &&
+		!UE::Tasks::Private::IsThreadRetractingTask())
 	{
 		bool oldValue = FPlatformTLS::GetCurrentThreadId() == ((nullptr == GAudioThread || GIsAudioThreadSuspended.load(std::memory_order_relaxed)) ? GGameThreadId : GAudioThread->GetThreadID());
 		ensureMsgf(oldValue == newValue, TEXT("oldValue(%i) newValue(%i) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EAudioThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(%x)"), oldValue, newValue, FTaskTagScope::GetCurrentTag());
@@ -241,7 +276,7 @@ CORE_API bool IsInActualRenderingThread()
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bool newValue = FTaskTagScope::IsCurrentTag(ETaskTag::ERenderingThread);
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() && !CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask())
 	{
 		bool oldValue = FPlatformTLS::GetCurrentThreadId() == GRenderThreadId;
 		ensureMsgf(oldValue == newValue, TEXT("oldValue(%i) newValue(%i) If this check fails make sure that there is a FTaskTagScope(ETaskTag::ERenderingThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(%x)"), oldValue, newValue, FTaskTagScope::GetCurrentTag());
@@ -262,7 +297,9 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		: FTaskTagScope::IsCurrentTag(ETaskTag::ERenderingThread);
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() && 
+		!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() && 
+		!UE::Tasks::Private::IsThreadRetractingTask())
 	{
 		const uint32 CurrentThreadId = FPlatformTLS::GetCurrentThreadId();
 		bool oldValue = ((GRenderThreadId == 0) || bLocalIsLoadingThreadSuspended) ? (CurrentThreadId == GGameThreadId) || FTaskTagScope::IsRunningDuringStaticInit() : (CurrentThreadId == GRenderThreadId);
@@ -293,7 +330,9 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	}
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting())
+	if (!LowLevelTasks::FSchedulerTls::IsBusyWaiting() &&
+		!CoroTask_Detail::FCoroLocalState::IsCoroLaunchedTask() &&
+		!UE::Tasks::Private::IsThreadRetractingTask())
 	{
 		const uint32 CurrentThreadId = FPlatformTLS::GetCurrentThreadId();
 		bool oldValue = ((GRenderThreadId == 0) || bLocalIsLoadingThreadSuspended) ?  true : CurrentThreadId != GGameThreadId;
@@ -328,6 +367,10 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+CORE_API bool IsInParallelRHIThread()
+{
+	return FTaskTagScope::IsCurrentTag(ETaskTag::EParallelRhiThread);
+}
 // Fake threads
 
 // Core version of IsInAsyncLoadingThread
@@ -526,7 +569,7 @@ const FString& FThreadManager::GetThreadNameInternal(uint32 ThreadId)
 	return NoThreadName;
 }
 
-#if PLATFORM_WINDOWS || PLATFORM_MAC
+#if PLATFORM_SUPPORTS_ALL_THREAD_BACKTRACES
 static void GetAllThreadStackBackTraces_ProcessSingle(
 	uint32 CurThreadId,
 	uint32 ThreadId,
@@ -1350,6 +1393,24 @@ FTlsAutoCleanup* FThreadSingletonInitializer::TryGet(uint32& TlsSlot)
 	}
 
 	FTlsAutoCleanup* ThreadSingleton = (FTlsAutoCleanup*)FPlatformTLS::GetTlsValue(TlsSlot);
+	return ThreadSingleton;
+}
+
+FTlsAutoCleanup* FThreadSingletonInitializer::Inject(FTlsAutoCleanup* Instance, uint32& TlsSlot)
+{
+	if (TlsSlot == 0xFFFFFFFF)
+	{
+		const uint32 ThisTlsSlot = FPlatformTLS::AllocTlsSlot();
+		check(FPlatformTLS::IsValidTlsSlot(ThisTlsSlot));
+		const uint32 PrevTlsSlot = FPlatformAtomics::InterlockedCompareExchange( (int32*)&TlsSlot, (int32)ThisTlsSlot, 0xFFFFFFFF );
+		if (PrevTlsSlot != 0xFFFFFFFF)
+		{
+			FPlatformTLS::FreeTlsSlot( ThisTlsSlot );
+		}
+	}
+
+	FTlsAutoCleanup* ThreadSingleton = (FTlsAutoCleanup*)FPlatformTLS::GetTlsValue(TlsSlot);
+	FPlatformTLS::SetTlsValue(TlsSlot, Instance);
 	return ThreadSingleton;
 }
 

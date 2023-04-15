@@ -2,8 +2,6 @@
 
 using EpicGames.Core;
 using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace EpicGames.Serialization.Converters
 {
@@ -11,29 +9,29 @@ namespace EpicGames.Serialization.Converters
 	/// Converter for list types
 	/// </summary>
 	/// <typeparam name="T"></typeparam>
-	class CbNullableConverter<T> : CbConverter<Nullable<T>> where T : struct
+	class CbNullableConverter<T> : CbConverterBase<Nullable<T>> where T : struct
 	{
 		/// <inheritdoc/>
-		public override T? Read(CbField Field)
+		public override T? Read(CbField field)
 		{
-			return CbSerializer.Deserialize<T>(Field);
+			return CbSerializer.Deserialize<T>(field);
 		}
 
 		/// <inheritdoc/>
-		public override void Write(CbWriter Writer, T? Nullable)
+		public override void Write(CbWriter writer, T? nullable)
 		{
-			if (Nullable.HasValue)
+			if (nullable.HasValue)
 			{
-				CbSerializer.Serialize<T>(Writer, Nullable.Value);
+				CbSerializer.Serialize<T>(writer, nullable.Value);
 			}
 		}
 
 		/// <inheritdoc/>
-		public override void WriteNamed(CbWriter Writer, Utf8String Name, T? Nullable)
+		public override void WriteNamed(CbWriter writer, Utf8String name, T? nullable)
 		{
-			if (Nullable.HasValue)
+			if (nullable.HasValue)
 			{
-				CbSerializer.Serialize<T>(Writer, Name, Nullable.Value);
+				CbSerializer.Serialize<T>(writer, name, nullable.Value);
 			}
 		}
 	}
@@ -44,12 +42,12 @@ namespace EpicGames.Serialization.Converters
 	class CbNullableConverterFactory : CbConverterFactory
 	{
 		/// <inheritdoc/>
-		public override CbConverter? CreateConverter(Type Type)
+		public override ICbConverter? CreateConverter(Type type)
 		{
-			if (Type.IsGenericType && Type.GetGenericTypeDefinition() == typeof(Nullable<>))
+			if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
 			{
-				Type ConverterType = typeof(CbNullableConverter<>).MakeGenericType(Type.GenericTypeArguments);
-				return (CbConverter)Activator.CreateInstance(ConverterType)!;
+				Type converterType = typeof(CbNullableConverter<>).MakeGenericType(type.GenericTypeArguments);
+				return (ICbConverter)Activator.CreateInstance(converterType)!;
 			}
 			return null;
 		}

@@ -19,8 +19,14 @@
 #include "Particles/ParticleSystem.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+#include "Components/PrimitiveComponent.h"
+
+#include "NiagaraDataInterfacePlatformSet.h"
+
 
 #include "NiagaraSystem.generated.h"
+
+class FNiagaraAsyncCompileTask;
 
 #if WITH_EDITORONLY_DATA
 class UNiagaraEditorDataBase;
@@ -148,105 +154,6 @@ struct FNiagaraSystemCompiledData
 };
 
 USTRUCT()
-struct FEmitterCompiledScriptPair
-{
-	GENERATED_USTRUCT_BODY()
-	
-	bool bResultsReady = false;
-	UNiagaraEmitter* Emitter = nullptr;
-	UNiagaraScript* CompiledScript = nullptr;
-	uint32 PendingJobID = INDEX_NONE; // this is the ID for any active shader compiler worker job
-	FNiagaraVMExecutableDataId CompileId;
-	TSharedPtr<FNiagaraVMExecutableData> CompileResults;
-};
-
-UENUM()
-enum class ENiagaraCompilationState : uint8
-{
-	CheckDDC,
-	Precompile,
-	StartCompileJob,
-	AwaitResult,
-	ProcessResult,
-	PutToDDC,
-	Finished,
-	Aborted
-};
-
-struct FNiagaraLazyPrecompileReference
-{
-	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> GetPrecompileData(UNiagaraScript* ForScript);
-	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> GetPrecompileDuplicateData(UNiagaraEmitter* OwningEmitter, UNiagaraScript* TargetScript);
-	
-	UNiagaraSystem* System = nullptr;
-	TArray<UNiagaraScript*> Scripts;
-	TMap<UNiagaraScript*, int32> EmitterScriptIndex;
-	TArray<TObjectPtr<UObject>> CompilationRootObjects;
-
-private:
-	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> SystemPrecompiledData;
-	TMap<UNiagaraScript*, TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe>> EmitterMapping;
-	TArray<TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe>> PrecompileDuplicateDatas;
-};
-
-struct FNiagaraAsyncTaskSharedData
-{
-	FNiagaraAsyncTaskSharedData();
-	~FNiagaraAsyncTaskSharedData();
-	
-	
-};
-
-class FNiagaraAsyncCompileTask
-{
-#if WITH_EDITORONLY_DATA
-public:
-	FString DDCKey;
-	FString AssetPath;
-	FString UniqueEmitterName;
-	uint32 TaskHandle = 0;
-
-	double StartTaskTime = 0;
-	double DDCFetchTime = 0;
-	double StartCompileTime = 0;
-	bool bWaitForCompileJob = false;
-	bool bUsedShaderCompilerWorker = false;
-	bool bFetchedGCObjects = false;
-	UNiagaraSystem* OwningSystem;
-	FEmitterCompiledScriptPair ScriptPair;
-	TArray<FNiagaraVariable> EncounteredExposedVars;
-
-	ENiagaraCompilationState CurrentState;
-
-	TSharedPtr<FNiagaraVMExecutableData> ExeData;
-	TArray<uint8> DDCOutData;
-
-	// this data is shared between the ddc thread and the game thread that starts the compilation
-	TSharedPtr<FNiagaraLazyPrecompileReference, ESPMode::ThreadSafe> PrecompileReference;
-	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> ComputedPrecompileData;
-	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> ComputedPrecompileDuplicateData;
-
-	FNiagaraAsyncCompileTask(UNiagaraSystem* InOwningSystem, FString InAssetPath, const FEmitterCompiledScriptPair& InScriptPair);
-
-	const FEmitterCompiledScriptPair& GetScriptPair() const { return ScriptPair; };
-	void WaitAndResolveResult();
-	void AbortTask();
-
-	void CheckDDCResult();
-	void PutToDDC();
-	void ProcessCurrentState();
-	void MoveToState(ENiagaraCompilationState NewState);
-	bool IsDone() const;
-
-	void PrecompileData();
-	void StartCompileJob();
-	bool AwaitResult();
-	void ProcessResult();
-
-#endif
-};
-
-USTRUCT()
 struct FNiagaraSystemCompileRequest
 {
 	GENERATED_USTRUCT_BODY()
@@ -286,7 +193,7 @@ struct FNiagaraRendererExecutionIndex
 };
 
 /** Container for multiple emitters that combine together to create a particle system effect.*/
-UCLASS(BlueprintType)
+UCLASS(BlueprintType, meta= (LoadBehavior = "LazyOnDemand"))
 class NIAGARA_API UNiagaraSystem : public UFXSystemAsset, public INiagaraParameterDefinitionsSubscriber
 {
 	GENERATED_UCLASS_BODY()
@@ -295,6 +202,7 @@ public:
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSystemCompiled, UNiagaraSystem*);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSystemPostEditChange, UNiagaraSystem*);
+	DECLARE_MULTICAST_DELEGATE(FOnScalabilityChanged)
 #endif
 	//TestChange
 
@@ -304,6 +212,9 @@ public:
 	void PostInitProperties();
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override; 
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual void BeginDestroy() override;
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
 	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
@@ -324,7 +235,8 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	//~ Begin INiagaraParameterDefinitionsSubscriber interface
-	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return ParameterDefinitionsSubscriptions; };
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return ParameterDefinitionsSubscriptions; }
+	
 	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return ParameterDefinitionsSubscriptions; };
 
 	/** Get all UNiagaraScriptSourceBase of this subscriber. */
@@ -341,11 +253,15 @@ public:
 	 */
 	virtual TArray<INiagaraParameterDefinitionsSubscriber*> GetOwnedParameterDefinitionsSubscribers() override;
 	//~ End INiagaraParameterDefinitionsSubscriber interface
+
+	virtual bool ChangeEmitterVersion(const FVersionedNiagaraEmitter& Emitter, const FGuid& NewVersion);
 #endif 
 
 	/** Gets an array of the emitter handles. */
-	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles();
+	TArray<FNiagaraEmitterHandle>& GetEmitterHandles();
 	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles()const;
+	
+	FNiagaraSystemScalabilityOverrides& GetScalabilityOverrides(){return SystemScalabilityOverrides; }
 
 private:
 	bool IsValidInternal() const;
@@ -361,7 +277,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Adds a new emitter handle to this System.  The new handle exposes an Instance value which is a copy of the
 		original asset. */
-	FNiagaraEmitterHandle AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName);
+	FNiagaraEmitterHandle AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName, FGuid EmitterVersion);
 
 	/** Adds a new emitter handle to this system without copying the original asset. This should only be used for temporary systems and never for live assets. */
 	void AddEmitterHandleDirect(FNiagaraEmitterHandle& EmitterHandleToAdd);
@@ -415,7 +331,13 @@ public:
 	template<typename TAction>
 	void ForEachScript(TAction Func) const;
 
+	/** Performs the passed action for all FNiagaraPlatformSets used by this system. Some may not be owned by this system. */
+	template<typename TAction>
+	void ForEachPlatformSet(TAction Func);
+
 	bool AllowScalabilityForLocalPlayerFX()const;
+
+	void PrecachePSOs();
 
 private:
 	bool IsReadyToRunInternal() const;
@@ -434,6 +356,10 @@ public:
 	FORCEINLINE bool NeedsDeterminism() const { return bDeterminism; }
 	FORCEINLINE int32 GetRandomSeed() const { return RandomSeed; }
 
+	FORCEINLINE void SetWarmupTime(float InWarmupTime) { WarmupTime = InWarmupTime; ResolveWarmupTickCount(); }
+	FORCEINLINE void SetWarmupTickDelta(float InWarmupTickDelta) { WarmupTickDelta = InWarmupTickDelta; ResolveWarmupTickCount(); }
+	void ResolveWarmupTickCount();
+
 #if STATS
 	FNiagaraStatDatabase& GetStatData() { return StatDatabase; }
 #endif
@@ -443,7 +369,7 @@ public:
 	bool HasOutstandingCompilationRequests(bool bIncludingGPUShaders = false) const;
 
 	/** Determines if this system has the supplied emitter as an editable and simulating emitter instance. */
-	bool ReferencesInstanceEmitter(UNiagaraEmitter& Emitter);
+	bool ReferencesInstanceEmitter(const FVersionedNiagaraEmitter& Emitter) const;
 
 	/** Updates the system's rapid iteration parameters from a specific emitter. */
 	void RefreshSystemParametersFromEmitter(const FNiagaraEmitterHandle& EmitterHandle);
@@ -472,6 +398,9 @@ public:
 	/** Delegate called on PostEditChange.*/
 	FOnSystemPostEditChange& OnSystemPostEditChange();
 
+	/** Delegate called on effect type or effect type value change */
+	FOnScalabilityChanged& OnScalabilityChanged();
+
 	/** Gets editor specific data stored with this system. */
 	UNiagaraEditorDataBase* GetEditorData();
 
@@ -484,10 +413,6 @@ public:
 	/** Internal: The thumbnail image.*/
 	UPROPERTY()
 	TObjectPtr<class UTexture2D> ThumbnailImage;
-
-	/** Internal: Indicates the thumbnail image is out of date.*/
-	UPROPERTY()
-	uint32 ThumbnailImageOutOfDate : 1;
 
 	/** Deprecated library exposure bool. Use the LibraryVisibility enum instead. FNiagaraEditorUtilities has accessor functions that takes deprecation into account */
 	UPROPERTY()
@@ -538,13 +463,16 @@ public:
 	bool UsesCollection(const UNiagaraParameterCollection* Collection)const;
 
 	bool SupportsLargeWorldCoordinates() const { return bSupportLargeWorldCoordinates && bLwcEnabledSettingCached; }
+	FORCEINLINE bool ShouldDisableExperimentalVM() const { return bDisableExperimentalVM; }
+
 #if WITH_EDITORONLY_DATA
-	bool UsesEmitter(const UNiagaraEmitter* Emitter) const;
+	bool UsesEmitter(UNiagaraEmitter* Emitter) const;
+	bool UsesEmitter(const FVersionedNiagaraEmitter& VersionedEmitter) const;
 	bool UsesScript(const UNiagaraScript* Script)const; 
 	void ForceGraphToRecompileOnNextCheck();
 
-	static void RequestCompileForEmitter(UNiagaraEmitter* InEmitter);
-	static void RecomputeExecutionOrderForEmitter(UNiagaraEmitter* InEmitter);
+	static void RequestCompileForEmitter(const FVersionedNiagaraEmitter& InEmitter);
+	static void RecomputeExecutionOrderForEmitter(const FVersionedNiagaraEmitter& InEmitter);
 	static void RecomputeExecutionOrderForDataInterface(class UNiagaraDataInterface* DataInterface);
 
 	FORCEINLINE bool ShouldUseRapidIterationParameters() const { return bCompileForEdit ? !bBakeOutRapidIteration : !bBakeOutRapidIterationOnCook; }
@@ -619,6 +547,12 @@ public:
 	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="CustomDepthStencilWriteMask"))
 	uint8 bOverrideCustomDepthStencilWriteMask : 1;
 
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="TranslucencySortPriority"))
+	uint8 bOverrideTranslucencySortPriority : 1;
+
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="TranslucencySortDistanceOffset"))
+	uint8 bOverrideTranslucencySortDistanceOffset : 1;
+
 	/**
 	When enabled this is the default value set on the component.
 	Controls whether the primitive component should cast a shadow or not.
@@ -640,6 +574,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rendering", meta=(DisplayName="Default Render CustomDepth Pass", EditCondition="bOverrideRenderCustomDepth"))
 	uint8 bRenderCustomDepth : 1;
 
+	/** If true, disables experimental VM, if available */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (DisplayName = "Disable Experimental VM"))
+	uint8 bDisableExperimentalVM : 1;
+
 	/**
 	When enabled this is the default value set on the component.
 	Mask used for stencil buffer writes.
@@ -653,16 +591,29 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Rendering", meta=(DisplayName="Default CustomDepthStencil Value", editcondition="bOverrideCustomDepthStencilWriteMask", UIMin = "0", UIMax = "255"))
 	int32 CustomDepthStencilValue = 0;
-	//////////////////////////////////////////////////////////////////////////
+
+	/**
+	When enabled this is the default value set on the component.
+	Adjusts the translucent object sorting priority, see PrimitiveComponent description for more details.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Rendering", meta=(editcondition="bOverrideTranslucencySortPriority"))
+	int32 TranslucencySortPriority = 0;
+
+	/**
+	When enabled this is the default value set on the component.
+	Modifies the sort distance for translucent objects, see PrimitiveComponent description for more details.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Rendering", meta=(editcondition="bOverrideTranslucencySortDistanceOffset"))
+	float TranslucencySortDistanceOffset = 0.0f;
 
 	/** Computes emitter priorities based on the dependency information. */
 	bool ComputeEmitterPriority(int32 EmitterIdx, TArray<int32, TInlineAllocator<32>>& EmitterPriorities, const TBitArray<TInlineAllocator<32>>& EmitterDependencyGraph);
 
 	/** Queries all the data interfaces in the array for emitter dependencies. */
-	void FindDataInterfaceDependencies(UNiagaraEmitter* Emitter, UNiagaraScript* Script, TArray<class UNiagaraEmitter*>& Dependencies);
+	void FindDataInterfaceDependencies(FVersionedNiagaraEmitterData* EmitterData, UNiagaraScript* Script, TArray<FVersionedNiagaraEmitter>& Dependencies);
 
 	/** Looks at all the event handlers in the emitter to determine which other emitters it depends on. */
-	void FindEventDependencies(UNiagaraEmitter* Emitter, TArray<UNiagaraEmitter*>& Dependencies);
+	void FindEventDependencies(FVersionedNiagaraEmitterData* EmitterData, TArray<FVersionedNiagaraEmitter>& Dependencies);
 
 	/** Computes the order in which the emitters in the Emitters array will be ticked and stores the results in EmitterExecutionOrder. */
 	void ComputeEmittersExecutionOrder();
@@ -720,6 +671,7 @@ public:
 #if WITH_EDITOR
 	void SetEffectType(UNiagaraEffectType* EffectType);
 
+	FNiagaraSystemScalabilityOverrides& GetSystemScalabilityOverrides() { return SystemScalabilityOverrides; }
 	FORCEINLINE bool GetOverrideScalabilitySettings()const { return bOverrideScalabilitySettings; }
 	FORCEINLINE void SetOverrideScalabilitySettings(bool bOverride) { bOverrideScalabilitySettings = bOverride; }
 
@@ -728,9 +680,10 @@ public:
 #endif
 	UNiagaraEffectType* GetEffectType()const;
 	FORCEINLINE const FNiagaraSystemScalabilitySettings& GetScalabilitySettings()const { return CurrentScalabilitySettings; }
+	const FNiagaraSystemScalabilityOverride& GetCurrentOverrideSettings() const;
 	FORCEINLINE bool NeedsSortedSignificanceCull()const{ return bNeedsSortedSignificanceCull; }
 	
-	void OnScalabilityCVarChanged();
+	void UpdateScalability();
 
 	FORCEINLINE ENiagaraCullProxyMode GetCullProxyMode()const { return GetScalabilitySettings().CullProxyMode; }
 
@@ -768,6 +721,9 @@ public:
 	const TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe>& GetCachedTraversalData() const;
 	void InvalidateCachedData();
 	void GraphSourceChanged();
+
+	/** Resets internal data leaving it in a state which would have minimal cost to exist in headless builds (servers) */
+	void ResetToEmptySystem();
 #endif
 
 private:
@@ -778,6 +734,8 @@ private:
 	*   If bWait is true then this *blocks* the game thread (and ui) until all shader compilations are finished.
 	*/
 	bool QueryCompileComplete(bool bWait, bool bDoPost, bool bDoNotApply = false);
+
+	void BroadcastOnSystemCompiled();
 
 	void PreProcessWaitingDDCTasks(bool bProcessForWait);
 
@@ -796,11 +754,8 @@ private:
 	const FName GetEmitterVariableAliasName(const FNiagaraVariable& InEmitterVar, const UNiagaraEmitter* InEmitter) const;
 
 	/** Helper for filling in attribute datasets per emitter. */
-	void InitEmitterDataSetCompiledData(FNiagaraDataSetCompiledData& DataSetToInit, const UNiagaraEmitter* InAssociatedEmitter, const FNiagaraEmitterHandle& InAssociatedEmitterHandle);
+	void InitEmitterDataSetCompiledData(FNiagaraDataSetCompiledData& DataSetToInit, const FNiagaraEmitterHandle& InAssociatedEmitterHandle);
 	void PrepareRapidIterationParametersForCompilation();
-
-	/** Resets internal data leaving it in a state which would have minimal cost to exist in headless builds (servers) */
-	void ResetToEmptySystem();
 #endif
 
 	void ResolveScalabilitySettings();
@@ -812,21 +767,21 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "System")
 	TObjectPtr<UNiagaraEffectType> EffectType;
 
-	UPROPERTY(EditAnywhere, Category = "Scalability")
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta=(DisplayInScalabilityContext))
 	bool bOverrideScalabilitySettings;
 
 	/** Controls whether we should override the Effect Type value for bAllowCullingForLocalPlayers. */
-	UPROPERTY(EditAnywhere, Category = "Override", meta = (InlineEditConditionToggle, EditCondition = bOverrideScalabilitySettings))
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (InlineEditConditionToggle, EditCondition = bOverrideScalabilitySettings))
 	uint32 bOverrideAllowCullingForLocalPlayers : 1;
 	
 	/** The override value for bAllowCullingForLocalPlayers from the Effect Type. */
-	UPROPERTY(EditAnywhere, Category = "Override", meta = (EditCondition = bOverrideAllowCullingForLocalPlayers))
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition = bOverrideAllowCullingForLocalPlayers))
 	uint32 bAllowCullingForLocalPlayersOverride : 1;
 
 	UPROPERTY()
 	TArray<FNiagaraSystemScalabilityOverride> ScalabilityOverrides_DEPRECATED;
 
-	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition="bOverrideScalabilitySettings"))
+	UPROPERTY(EditAnywhere, Category = "Scalability", meta = (EditCondition="bOverrideScalabilitySettings", DisplayInScalabilityContext))
 	FNiagaraSystemScalabilityOverrides SystemScalabilityOverrides;
 
 	/** Handles to the emitter this System will simulate. */
@@ -882,6 +837,9 @@ protected:
 
 	/** A multicast delegate which is called whenever this system's properties are changed. */
 	FOnSystemPostEditChange OnSystemPostEditChangeDelegate;
+
+	/** A multicast delegate that is called whenever the effect type or the effect type values are changed */
+	FOnScalabilityChanged OnScalabilityChangedDelegate;
 #endif
 
 	/** The fixed bounding box value. bFixedBounds is the condition whether the fixed bounds can be edited. */
@@ -1042,15 +1000,61 @@ FORCEINLINE void UNiagaraSystem::UnregisterActiveInstance()
 
 template<typename TAction>
 void UNiagaraSystem::ForEachScript(TAction Func) const
-{	
+{
 	Func(SystemSpawnScript);
 	Func(SystemUpdateScript);
-			
+
 	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
 	{
-		if (UNiagaraEmitter* Emitter = Handle.GetInstance())
+		if (FVersionedNiagaraEmitterData* EmitterData = Handle.GetEmitterData())
 		{
-			Emitter->ForEachScript(Func);
+			EmitterData->ForEachScript(Func);
+		}
+	}
+}
+
+/** Performs the passed action for all FNiagaraPlatformSets in this system. */
+template<typename TAction>
+void UNiagaraSystem::ForEachPlatformSet(TAction Func)
+{
+	//Handle our scalability overrides
+	for (FNiagaraSystemScalabilityOverride& Override : SystemScalabilityOverrides.Overrides)
+	{
+		Func(Override.Platforms);
+	}
+
+	//Handle and platform set User DIs.
+	for (UNiagaraDataInterface* DI : GetExposedParameters().GetDataInterfaces())
+	{
+		if (UNiagaraDataInterfacePlatformSet* PlatformSetDI = Cast<UNiagaraDataInterfacePlatformSet>(DI))
+		{
+			Func(PlatformSetDI->Platforms);
+		}
+	}
+
+	//Handle all platform set DIs held in scripts for this system.
+	auto HandleScript = [Func](UNiagaraScript* NiagaraScript)
+	{
+		if (NiagaraScript)
+		{
+			for (const FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo : NiagaraScript->GetCachedDefaultDataInterfaces())
+			{
+				if (UNiagaraDataInterfacePlatformSet* PlatformSetDI = Cast<UNiagaraDataInterfacePlatformSet>(DataInterfaceInfo.DataInterface))
+				{
+					Func(PlatformSetDI->Platforms);
+				}
+			}
+		}
+	};
+	HandleScript(SystemSpawnScript);
+	HandleScript(SystemUpdateScript);
+
+	//Finally handle all our emitters.
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (FVersionedNiagaraEmitterData* Emitter = Handle.GetEmitterData())
+		{
+			Emitter->ForEachPlatformSet(Func);
 		}
 	}
 }

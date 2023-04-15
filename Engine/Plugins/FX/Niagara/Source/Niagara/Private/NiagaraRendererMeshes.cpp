@@ -1,28 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraRendererMeshes.h"
-#include "ParticleResources.h"
-#include "NiagaraDataSet.h"
-#include "NiagaraEmitterInstance.h"
-#include "NiagaraStats.h"
-#include "NiagaraComponent.h"
 #include "Async/ParallelFor.h"
 #include "Engine/StaticMesh.h"
-#include "NiagaraSortingGPU.h"
+#include "FXRenderingUtils.h"
+#include "IXRTrackingSystem.h"
+#include "NiagaraComponent.h"
+#include "NiagaraCullProxyComponent.h"
+#include "NiagaraDataSet.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraGPURayTracingTransformsShader.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraSortingGPU.h"
+#include "NiagaraStats.h"
+#include "ParticleResources.h"
+#include "PipelineStateCache.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingDynamicGeometryCollection.h"
 #include "RayTracingInstance.h"
-#include "Renderer/Private/ScenePrivate.h"
-#include "PipelineStateCache.h"
-#include "NiagaraCullProxyComponent.h"
-#include "IXRTrackingSystem.h"
-#include "FXRenderingUtils.h"
+#include "ScenePrivate.h"
 
 DECLARE_CYCLE_STAT(TEXT("Generate Mesh Vertex Data [GT]"), STAT_NiagaraGenMeshVertexData, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Meshes [RT]"), STAT_NiagaraRenderMeshes, STATGROUP_Niagara);
-DECLARE_CYCLE_STAT(TEXT("Render Meshes - Allocate GPU Data [RT]"), STAT_NiagaraRenderMeshes_AllocateGPUData, STATGROUP_Niagara);
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumMeshesRenderer"), STAT_NiagaraNumMeshes, STATGROUP_Niagara);
 DECLARE_DWORD_COUNTER_STAT(TEXT("NumMeshVerts"), STAT_NiagaraNumMeshVerts, STATGROUP_Niagara);
@@ -79,14 +77,16 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	LockedAxis = Properties->LockedAxis;
 	LockedAxisSpace = Properties->LockedAxisSpace;
 	SortMode = Properties->SortMode;
+	bSortHighPrecision = UNiagaraRendererProperties::IsSortHighPrecision(Properties->SortPrecision);
 	bSortOnlyWhenTranslucent = Properties->bSortOnlyWhenTranslucent;
-	bGpuLowLatencyTranslucency = Properties->bGpuLowLatencyTranslucency;
+	bGpuLowLatencyTranslucency = UNiagaraRendererProperties::IsGpuTranslucentThisFrame(Properties->GpuTranslucentLatency);
 	bOverrideMaterials = Properties->bOverrideMaterials;
 	SubImageSize = FVector2f(Properties->SubImageSize);	// LWC_TODO: Precision loss
 	bSubImageBlend = Properties->bSubImageBlend;
 	bEnableFrustumCulling = Properties->bEnableFrustumCulling;
 	bEnableCulling = bEnableFrustumCulling;
 	DistanceCullRange = FVector2f(0, FLT_MAX);
+	DistanceCullRangeSquared = FVector2f(0, FLT_MAX);
 	RendererVisibility = Properties->RendererVisibility;
 	bAccurateMotionVectors = Properties->NeedsPreciseMotionVectors();
 	MaxSectionCount = 0;
@@ -94,6 +94,7 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 	if (Properties->bEnableCameraDistanceCulling)
 	{
 		DistanceCullRange = FVector2f(Properties->MinCameraDistance, Properties->MaxCameraDistance);
+		DistanceCullRangeSquared = DistanceCullRange* DistanceCullRange;
 		bEnableCulling = true;
 	}
 
@@ -105,20 +106,29 @@ FNiagaraRendererMeshes::FNiagaraRendererMeshes(ERHIFeatureLevel::Type FeatureLev
 
 	const FNiagaraDataSet& Data = Emitter->GetData();
 
-	RendererVisTagOffset = INDEX_NONE;
 	int32 FloatOffset;
 	int32 HalfOffset;
-	if (Data.GetVariableComponentOffsets(Properties->RendererVisibilityTagBinding.GetDataSetBindableVariable(), FloatOffset, RendererVisTagOffset, HalfOffset))
+
+	ParticleRendererVisTagOffset = INDEX_NONE;
+	EmitterRendererVisTagOffset = INDEX_NONE;
+	if (Properties->RendererVisibilityTagBinding.CanBindToHostParameterMap())
 	{
-		// If the renderer visibility tag is bound, we have to do it in the culling pass
-		bEnableCulling = true;
+		EmitterRendererVisTagOffset = Emitter->GetRendererBoundVariables().IndexOf(Properties->RendererVisibilityTagBinding.GetParamMapBindableVariable());
+	}
+	else if (Data.GetVariableComponentOffsets(Properties->RendererVisibilityTagBinding.GetDataSetBindableVariable(), FloatOffset, ParticleRendererVisTagOffset, HalfOffset))
+	{
+		bEnableCulling |= ParticleRendererVisTagOffset != INDEX_NONE;
 	}
 
-	MeshIndexOffset = INDEX_NONE;
-	if (Data.GetVariableComponentOffsets(Properties->MeshIndexBinding.GetDataSetBindableVariable(), FloatOffset, MeshIndexOffset, HalfOffset))
+	ParticleMeshIndexOffset = INDEX_NONE;
+	EmitterMeshIndexOffset = INDEX_NONE;
+	if (Properties->MeshIndexBinding.CanBindToHostParameterMap())
 	{
-		// If the mesh index is bound, we have to do it in the culling pass
-		bEnableCulling = true;
+		EmitterMeshIndexOffset = Emitter->GetRendererBoundVariables().IndexOf(Properties->MeshIndexBinding.GetParamMapBindableVariable());
+	}
+	else if (Data.GetVariableComponentOffsets(Properties->MeshIndexBinding.GetDataSetBindableVariable(), FloatOffset, ParticleMeshIndexOffset, HalfOffset))
+	{
+		bEnableCulling = ParticleMeshIndexOffset != INDEX_NONE;
 	}
 
 	MaterialParamValidMask = Properties->MaterialParamValidMask;
@@ -187,7 +197,7 @@ void FNiagaraRendererMeshes::Initialize(const UNiagaraRendererProperties* InProp
 			MeshData.Rotation = FQuat4f(MeshProperties.Rotation.Quaternion());
 			MeshData.LocalBounds = Mesh->GetExtendedBounds().GetBox();
 
-			// Create an index remap from mesh material index to it's index in the master material list
+			// Create an index remap from mesh material index to it's index in the base material list
 			TArray<UMaterialInterface*> MeshMaterials;
 			Properties->GetUsedMeshMaterials(SourceMeshIndex, Emitter, MeshMaterials);
 			for (auto MeshMaterial : MeshMaterials)
@@ -305,6 +315,18 @@ void FNiagaraRendererMeshes::PrepareParticleMeshRenderData(FParticleMeshRenderDa
 		return;
 	}
 
+	// If the visibility tag comes from a parameter map, so we can evaluate it here and just early out if it doesn't match up
+	if (EmitterRendererVisTagOffset != INDEX_NONE && ParticleMeshRenderData.DynamicDataMesh->ParameterDataBound.IsValidIndex(EmitterRendererVisTagOffset))
+	{
+		int32 VisTag = 0;
+		FMemory::Memcpy(&VisTag, ParticleMeshRenderData.DynamicDataMesh->ParameterDataBound.GetData() + EmitterRendererVisTagOffset, sizeof(int32));
+		if (RendererVisibility != VisTag)
+		{
+			ParticleMeshRenderData.SourceParticleData = nullptr;
+			return;
+		}
+	}
+
 	// Particle source mode
 	if (SourceMode == ENiagaraRendererSourceDataMode::Particles)
 	{
@@ -378,27 +400,25 @@ void FNiagaraRendererMeshes::PrepareParticleRenderBuffers(FParticleMeshRenderDat
 	{
 		if ( SimTarget == ENiagaraSimTarget::CPUSim )
 		{
-			SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes_AllocateGPUData);
-
 			// Determine what integer attributes we need to copy to the GPU for culling
 			TArray<uint32, TInlineAllocator<2>> IntParamsToCopy;
 			if (ParticleMeshRenderData.bNeedsCull || ParticleMeshRenderData.bUseGPUScene)
 			{
 				if (ParticleMeshRenderData.bSortCullOnGpu || ParticleMeshRenderData.bUseGPUScene)
 				{
-					if (RendererVisTagOffset != INDEX_NONE)
+					if (ParticleRendererVisTagOffset != INDEX_NONE)
 					{
-						ParticleMeshRenderData.RendererVisTagOffset = IntParamsToCopy.Add(RendererVisTagOffset);
+						ParticleMeshRenderData.RendererVisTagOffset = IntParamsToCopy.Add(ParticleRendererVisTagOffset);
 					}
-					if (MeshIndexOffset != INDEX_NONE)
+					if (ParticleMeshIndexOffset != INDEX_NONE)
 					{
-						ParticleMeshRenderData.MeshIndexOffset = IntParamsToCopy.Add(MeshIndexOffset);
+						ParticleMeshRenderData.MeshIndexOffset = IntParamsToCopy.Add(ParticleMeshIndexOffset);
 					}
 				}
 				else
 				{
-					ParticleMeshRenderData.RendererVisTagOffset = RendererVisTagOffset;
-					ParticleMeshRenderData.MeshIndexOffset = MeshIndexOffset;
+					ParticleMeshRenderData.RendererVisTagOffset = ParticleRendererVisTagOffset;
+					ParticleMeshRenderData.MeshIndexOffset = ParticleMeshIndexOffset;
 				}
 			}
 
@@ -421,8 +441,8 @@ void FNiagaraRendererMeshes::PrepareParticleRenderBuffers(FParticleMeshRenderDat
 			ParticleMeshRenderData.ParticleHalfDataStride = ParticleMeshRenderData.SourceParticleData->GetHalfStride() / sizeof(FFloat16);
 			ParticleMeshRenderData.ParticleIntDataStride = ParticleMeshRenderData.SourceParticleData->GetInt32Stride() / sizeof(int32);
 
-			ParticleMeshRenderData.RendererVisTagOffset = RendererVisTagOffset;
-			ParticleMeshRenderData.MeshIndexOffset = MeshIndexOffset;
+			ParticleMeshRenderData.RendererVisTagOffset = ParticleRendererVisTagOffset;
+			ParticleMeshRenderData.MeshIndexOffset = ParticleMeshIndexOffset;
 		}
 	}
 	else
@@ -442,7 +462,7 @@ void FNiagaraRendererMeshes::InitializeSortInfo(const FParticleMeshRenderData& P
 
 	OutSortInfo.ParticleCount = ParticleMeshRenderData.SourceParticleData->GetNumInstances();
 	OutSortInfo.SortMode = SortMode;
-	OutSortInfo.SetSortFlags(GNiagaraGPUSortingUseMaxPrecision != 0, ParticleMeshRenderData.SourceParticleData->GetGPUDataReadyStage());
+	OutSortInfo.SetSortFlags(bSortHighPrecision, ParticleMeshRenderData.SourceParticleData->GetGPUDataReadyStage());
 	OutSortInfo.bEnableCulling = ParticleMeshRenderData.bNeedsCull;
 	OutSortInfo.RendererVisTagAttributeOffset = ParticleMeshRenderData.RendererVisTagOffset;
 	OutSortInfo.MeshIndexAttributeOffset = ParticleMeshRenderData.MeshIndexOffset;
@@ -635,7 +655,7 @@ uint32 FNiagaraRendererMeshes::PerformSortAndCull(FParticleMeshRenderData& Parti
 		else
 		{
 			FGlobalDynamicReadBuffer::FAllocation SortedIndices;
-			SortedIndices = ReadBuffer.AllocateInt32(NumInstances);
+			SortedIndices = ReadBuffer.AllocateUInt32(NumInstances);
 			NumInstances = SortAndCullIndices(SortInfo, *ParticleMeshRenderData.SourceParticleData, SortedIndices);
 			ParticleMeshRenderData.ParticleSortedIndicesSRV = SortedIndices.SRV;
 			ParticleMeshRenderData.ParticleSortedIndicesOffset = 0;
@@ -657,7 +677,7 @@ FNiagaraMeshCommonParameters FNiagaraRendererMeshes::CreateCommonShaderParams(co
 	Params.NiagaraParticleDataFloat	= ParticleMeshRenderData.ParticleFloatSRV;
 	Params.NiagaraParticleDataHalf 	= ParticleMeshRenderData.ParticleHalfSRV;
 	Params.NiagaraParticleDataInt 	= ParticleMeshRenderData.ParticleIntSRV;
-	Params.NiagaraFloatDataStride 	= ParticleMeshRenderData.ParticleFloatDataStride;
+	Params.NiagaraFloatDataStride 	= FMath::Max(ParticleMeshRenderData.ParticleFloatDataStride, ParticleMeshRenderData.ParticleHalfDataStride);
 	Params.NiagaraIntDataStride 	= ParticleMeshRenderData.ParticleIntDataStride;
 	
 	Params.SortedIndices 			= ParticleMeshRenderData.ParticleSortedIndicesSRV;
@@ -665,6 +685,7 @@ FNiagaraMeshCommonParameters FNiagaraRendererMeshes::CreateCommonShaderParams(co
 
 	Params.SystemLWCTile			= SceneProxy.GetLWCRenderTile();
 	Params.bLocalSpace 				= bUseLocalSpace;
+	Params.AccurateMotionVectors	= bAccurateMotionVectors;
 	Params.DeltaSeconds 			= View.Family->Time.GetDeltaWorldTimeSeconds();
 	Params.FacingMode 				= (uint32)FacingMode;	
 
@@ -890,16 +911,20 @@ FNiagaraMeshUniformBufferRef FNiagaraRendererMeshes::CreateVFUniformBuffer(const
 					break;
 				case ENiagaraMeshVFLayout::Type::DynamicParam0:
 					FMemory::Memcpy(&Params.DefaultDynamicMaterialParameter0, ParameterBoundData + VFBoundOffsetsInParamStore[i], sizeof(FVector4f));
+					Params.MaterialParamValidMask |= 0x1;
 					break;
 				case ENiagaraMeshVFLayout::Type::DynamicParam1:
 					FMemory::Memcpy(&Params.DefaultDynamicMaterialParameter1, ParameterBoundData + VFBoundOffsetsInParamStore[i], sizeof(FVector4f));
+					Params.MaterialParamValidMask |= 0x2;
 					break;
 				case ENiagaraMeshVFLayout::Type::DynamicParam2:
 					FMemory::Memcpy(&Params.DefaultDynamicMaterialParameter2, ParameterBoundData + VFBoundOffsetsInParamStore[i], sizeof(FVector4f));
+					Params.MaterialParamValidMask |= 0x4;
 					break;
 				case ENiagaraMeshVFLayout::Type::DynamicParam3:
 					FMemory::Memcpy(&Params.DefaultDynamicMaterialParameter3, ParameterBoundData + VFBoundOffsetsInParamStore[i], sizeof(FVector4f));
-					break;					
+					Params.MaterialParamValidMask |= 0x8;
+					break;
 				case ENiagaraMeshVFLayout::Type::CustomSorting:
 					// unsupported for now...
 					break;
@@ -945,7 +970,7 @@ void FNiagaraRendererMeshes::SetupElementForGPUScene(
 		GPUSceneRes.GPUWriteParams.RendererVisibility 		= RendererVisibility;
 		GPUSceneRes.GPUWriteParams.VisibilityTagDataOffset 	= ParticleMeshRenderData.RendererVisTagOffset;
 		GPUSceneRes.GPUWriteParams.LocalBoundingCenter		= (FVector3f)MeshData.LocalBounds.GetCenter();
-		GPUSceneRes.GPUWriteParams.DistanceCullRangeSquared = DistanceCullRange * DistanceCullRange;
+		GPUSceneRes.GPUWriteParams.DistanceCullRangeSquared = DistanceCullRangeSquared;
 		GPUSceneRes.GPUWriteParams.bNeedsPrevTransform		= bNeedsPrevTransform ? 1 : 0;
 
 		// We need to set this flag to force the system to always cull individual instances, because we may need to discard instances that are:
@@ -1062,7 +1087,7 @@ void FNiagaraRendererMeshes::CreateMeshBatchForSection(
 	FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
 	if (ParticleMeshRenderData.bUseGPUScene)
 	{
-		BatchElement.PrimitiveUniformBufferResource = &SceneProxy.GetCustomUniformBufferResource(IsMotionBlurEnabled(), MeshData.LocalBounds);
+		BatchElement.PrimitiveUniformBufferResource = SceneProxy.GetCustomUniformBufferResource(IsMotionBlurEnabled(), MeshData.LocalBounds);
 	}
 	else
 	{
@@ -1160,12 +1185,18 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 		return;
 	}
 
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes);
 #if STATS
 	FScopeCycleCounter EmitterStatsCounter(EmitterStatID);
 #endif
 
 	PrepareParticleRenderBuffers(ParticleMeshRenderData, Collector.GetDynamicReadBuffer());
+
+	// If mesh index comes from the parameter store grab the information now
+	int32 EmitterModeMeshIndex = INDEX_NONE;
+	if (EmitterMeshIndexOffset != INDEX_NONE && ParticleMeshRenderData.DynamicDataMesh->ParameterDataBound.IsValidIndex(EmitterMeshIndexOffset))
+	{
+		FMemory::Memcpy(&EmitterModeMeshIndex, ParticleMeshRenderData.DynamicDataMesh->ParameterDataBound.GetData() + EmitterMeshIndexOffset, sizeof(int32));
+	}
 
 	// Generate mesh batches per view
 	const int32 NumViews = Views.Num();
@@ -1212,6 +1243,12 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 					break;
 				}
 
+				// Emitter mode mesh index binding
+				if (EmitterModeMeshIndex != INDEX_NONE && MeshIndex != EmitterModeMeshIndex)
+				{
+					continue;
+				}
+
 				const FMeshData& MeshData = Meshes[MeshIndex];
 
 				// @TODO : support multiple LOD
@@ -1224,19 +1261,11 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 				const FStaticMeshLODResources& LODModel = MeshData.RenderData->LODResources[LODIndex];
 				const int32 SectionCount = LODModel.Sections.Num();
 
-				FMeshCollectorResourcesBase* CollectorResources;
-				if (bAccurateMotionVectors)
-				{
-					CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResourcesEx>();
-				}
-				else
-				{
-					CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResources>();
-				}				
+				FMeshCollectorResources* CollectorResources = &Collector.AllocateOneFrameResource<FMeshCollectorResources>();
 
 				// Get the next vertex factory to use
 				// TODO: Find a way to safely pool these such that they won't be concurrently accessed by multiple views
-				FNiagaraMeshVertexFactory& VertexFactory = CollectorResources->GetVertexFactory();
+				FNiagaraMeshVertexFactory& VertexFactory = CollectorResources->VertexFactory;
 				VertexFactory.SetParticleFactoryType(NVFT_Mesh);
 				VertexFactory.SetMeshIndex(MeshIndex);
 				VertexFactory.SetLODIndex(LODIndex);
@@ -1264,14 +1293,8 @@ void FNiagaraRendererMeshes::GetDynamicMeshElements(const TArray<const FSceneVie
 					{
 						const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
 						const uint32 RemappedMaterialIndex = MeshData.MaterialRemapTable[Section.MaterialIndex];
-						if (!ParticleMeshRenderData.DynamicDataMesh->Materials.IsValidIndex(RemappedMaterialIndex))
-						{
-							// This should never occur. Otherwise, the section data changed since initialization
-							continue;
-						}
-
-						FMaterialRenderProxy* MaterialProxy = ParticleMeshRenderData.DynamicDataMesh->Materials[RemappedMaterialIndex];
-						if (Section.NumTriangles == 0 || MaterialProxy == NULL)
+						FMaterialRenderProxy* MaterialProxy = ParticleMeshRenderData.DynamicDataMesh->Materials.IsValidIndex(RemappedMaterialIndex) ? ParticleMeshRenderData.DynamicDataMesh->Materials[RemappedMaterialIndex] : UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+						if (Section.NumTriangles == 0 || MaterialProxy == nullptr)
 						{
 							//@todo. This should never occur, but it does occasionally.
 							continue;
@@ -1345,7 +1368,7 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 	FParticleMeshRenderData ParticleMeshRenderData;
 	PrepareParticleMeshRenderData(ParticleMeshRenderData, *View->Family, Context.RayTracingMeshResourceCollector, DynamicDataRender, SceneProxy, true);
 
-	if (ParticleMeshRenderData.SourceParticleData == nullptr)
+	if (ParticleMeshRenderData.SourceParticleData == nullptr || Meshes.Num() == 0)
 	{
 		return;
 	}
@@ -1354,8 +1377,6 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 	ParticleMeshRenderData.bNeedsSort = false;
 	ParticleMeshRenderData.bNeedsCull = false;
 	ParticleMeshRenderData.bSortCullOnGpu = false;
-
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderMeshes);
 
 	PrepareParticleRenderBuffers(ParticleMeshRenderData, Context.RayTracingMeshResourceCollector.GetDynamicReadBuffer());
 
@@ -1367,10 +1388,12 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		InitializeSortInfo(ParticleMeshRenderData, *SceneProxy, *View, ViewIndex, bIsInstancedStereo, SortInfo);
 	}
 
+	OutRayTracingInstances.Reserve(Meshes.Num());
+
 	for (int32 MeshIndex = 0; MeshIndex < Meshes.Num(); ++MeshIndex)
 	{
 		// No binding for mesh index we only render the first mesh not all of them
-		if ( (MeshIndex > 0) && (MeshIndexOffset == INDEX_NONE) )
+		if ( (MeshIndex > 0) && (ParticleMeshIndexOffset == INDEX_NONE) )
 		{
 			break;
 		}
@@ -1388,19 +1411,11 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		FRayTracingInstance RayTracingInstance;
 		RayTracingInstance.Geometry = &Geometry;
 
-		FMeshCollectorResourcesBase* CollectorResources;
-		if (bAccurateMotionVectors)
-		{
-			CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResourcesEx>();
-		}
-		else
-		{
-			CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResources>();
-		}
+		FMeshCollectorResources* CollectorResources = &Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FMeshCollectorResources>();
 
 		// Get the next vertex factory to use
 		// TODO: Find a way to safely pool these such that they won't be concurrently accessed by multiple views
-		FNiagaraMeshVertexFactory& VertexFactory = CollectorResources->GetVertexFactory();
+		FNiagaraMeshVertexFactory& VertexFactory = CollectorResources->VertexFactory;
 		VertexFactory.SetParticleFactoryType(NVFT_Mesh);
 		VertexFactory.SetMeshIndex(MeshIndex);
 		VertexFactory.SetLODIndex(LODIndex);
@@ -1422,6 +1437,8 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		FNiagaraMeshUniformBufferRef VFUniformBuffer = CreateVFUniformBuffer(ParticleMeshRenderData, CommonParameters);
 		VertexFactory.SetUniformBuffer(VFUniformBuffer);
 		CollectorResources->UniformBuffer = VFUniformBuffer;
+
+		RayTracingInstance.Materials.Reserve(LODModel.Sections.Num());
 
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
@@ -1477,7 +1494,7 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 			MeshBatch.Elements[0].VisualizeElementIndex = SectionIndex;
 #endif
 
-			RayTracingInstance.Materials.Add(MeshBatch);
+			RayTracingInstance.Materials.Add(MoveTemp(MeshBatch));
 		}
 
 		if (RayTracingInstance.Materials.Num() == 0 || LODModel.Sections.Num() != RayTracingInstance.Materials.Num())
@@ -1556,7 +1573,7 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 
 			RayTracingInstance.InstanceTransforms.Add(InstanceTransform);
 		}
-		else 
+		else
 		{
 			TConstArrayView<FNiagaraRendererVariableInfo> VFVariables = ParticleMeshRenderData.RendererLayout->GetVFVariables_RenderThread();
 			if (SimTarget == ENiagaraSimTarget::CPUSim)
@@ -1586,8 +1603,8 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 				const float* RESTRICT QuatArrayZ = reinterpret_cast<const float*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrFloat(TransformBaseCompOffset + 2));
 				const float* RESTRICT QuatArrayW = reinterpret_cast<const float*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrFloat(TransformBaseCompOffset + 3));
 
-				const int32* RESTRICT RenderVisibilityData = RendererVisTagOffset == INDEX_NONE ? nullptr : reinterpret_cast<const int32*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrInt32(RendererVisTagOffset));
-				const int32* RESTRICT MeshIndexData = MeshIndexOffset == INDEX_NONE ? nullptr : reinterpret_cast<const int32*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrInt32(MeshIndexOffset));
+				const int32* RESTRICT RenderVisibilityData = ParticleRendererVisTagOffset == INDEX_NONE ? nullptr : reinterpret_cast<const int32*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrInt32(ParticleRendererVisTagOffset));
+				const int32* RESTRICT MeshIndexData = ParticleMeshIndexOffset == INDEX_NONE ? nullptr : reinterpret_cast<const int32*>(ParticleMeshRenderData.SourceParticleData->GetComponentPtrInt32(ParticleMeshIndexOffset));
 
 				auto GetInstancePosition = [&PositionX, &PositionY, &PositionZ](int32 Idx)
 				{
@@ -1661,8 +1678,14 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 				const TRefCountPtr<FRDGPooledBuffer>& ExternalBuffer = Context.GraphBuilder.ConvertToExternalBuffer(InstanceGPUTransformsBufferRef);
 				RayTracingInstance.InstanceGPUTransformsSRV = ExternalBuffer->GetOrCreateSRV(FRHIBufferSRVCreateInfo());
 
-				FNiagaraGPURayTracingTransformsCS::FParameters* PassParameters = Context.GraphBuilder.AllocParameters< FNiagaraGPURayTracingTransformsCS::FParameters>();
+				const FLargeWorldRenderPosition AbsoluteViewOrigin(View->ViewMatrices.GetViewOrigin());
+				const FVector ViewTileOffset = AbsoluteViewOrigin.GetTileOffset();
+				const FVector RelativePreViewTranslation = View->ViewMatrices.GetPreViewTranslation() + ViewTileOffset;
+				const FVector3f ViewTilePosition = AbsoluteViewOrigin.GetTile();
 
+				const FLargeWorldRenderPosition LocalTransformOrigin(LocalTransform.GetOrigin());
+
+				FNiagaraGPURayTracingTransformsCS::FParameters* PassParameters = Context.GraphBuilder.AllocParameters< FNiagaraGPURayTracingTransformsCS::FParameters>();
 				{
 					PassParameters->ParticleDataFloatStride		= ParticleMeshRenderData.ParticleFloatDataStride;
 					//PassParameters.ParticleDataHalfStride		= ParticleMeshRenderData.ParticleHalfDataStride;
@@ -1674,11 +1697,12 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 					PassParameters->RotationDataOffset			= VFVariables[ENiagaraMeshVFLayout::Rotation].GetGPUOffset();
 					PassParameters->ScaleDataOffset				= VFVariables[ENiagaraMeshVFLayout::Scale].GetGPUOffset();
 					PassParameters->bLocalSpace					= bUseLocalSpace ? 1 : 0;
-					PassParameters->RenderVisibilityOffset		= RendererVisTagOffset;
-					PassParameters->MeshIndexOffset				= MeshIndexOffset;
+					PassParameters->RenderVisibilityOffset		= ParticleRendererVisTagOffset;
+					PassParameters->MeshIndexOffset				= ParticleMeshIndexOffset;
 					PassParameters->RenderVisibilityValue		= RendererVisibility;
 					PassParameters->MeshIndexValue				= MeshData.SourceMeshIndex;
-					PassParameters->LocalTransform				= FMatrix44f(LocalTransform);		// LWC_TODO: Precision loss
+					PassParameters->LocalTransform				= FLargeWorldRenderScalar::MakeToRelativeWorldMatrix(LocalTransformOrigin.GetTileOffset(), LocalTransform);
+					PassParameters->LocalTransformTile			= LocalTransformOrigin.GetTile();
 					PassParameters->DefaultPosition				= CommonParameters.DefaultPosition;
 					PassParameters->DefaultRotation				= FVector4f(0.0f, 0.0f, 0.0f, 1.0f);
 					PassParameters->DefaultScale				= FVector3f(1.0f, 1.0f, 1.0f);
@@ -1689,6 +1713,9 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 					PassParameters->ParticleDataIntBuffer		= ParticleMeshRenderData.ParticleIntSRV;
 					PassParameters->GPUInstanceCountBuffer		= ComputeDispatchInterface->GetGPUInstanceCounterManager().GetInstanceCountBuffer().SRV;
 					PassParameters->TLASTransforms				= ExternalBuffer->GetOrCreateUAV(FRHIBufferUAVCreateInfo());
+
+					PassParameters->ViewTilePosition			= ViewTilePosition;
+					PassParameters->RelativePreViewTranslation	= FVector3f(RelativePreViewTranslation);
 				}
 
 				Context.GraphBuilder.AddPass(
@@ -1709,7 +1736,7 @@ void FNiagaraRendererMeshes::GetDynamicRayTracingInstances(FRayTracingMaterialGa
 		}
 
 		RayTracingInstance.BuildInstanceMaskAndFlags(FeatureLevel);
-		OutRayTracingInstances.Add(RayTracingInstance);
+		OutRayTracingInstances.Add(MoveTemp(RayTracingInstance));
 	}
 }
 #endif
@@ -1780,9 +1807,9 @@ FNiagaraDynamicDataBase* FNiagaraRendererMeshes::GenerateDynamicData(const FNiag
 		DynamicData->ParameterDataBound = ParameterData.GetParameterDataArray();
 	}
 
-	if (DynamicData && Properties->MaterialParameterBindings.Num() != 0)
+	if (DynamicData && Properties->MaterialParameters.HasAnyBindings())
 	{
-		ProcessMaterialParameterBindings(MakeArrayView(Properties->MaterialParameterBindings), Emitter, MakeArrayView(BaseMaterials_GT));
+		ProcessMaterialParameterBindings(Properties->MaterialParameters, Emitter, MakeArrayView(BaseMaterials_GT));
 	}
 
 	return DynamicData;

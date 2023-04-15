@@ -18,6 +18,7 @@
 #include "SlateOptMacros.h"
 #include "Styling/AppStyle.h"
 #include "Styling/StyleColors.h"
+#include "TraceServices/Model/Log.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -741,6 +742,8 @@ void SLogView::InitCommandList()
 
 void SLogView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	LLM_SCOPE_BYTAG(Insights);
+
 	int32 NewMessageCount = 0;
 
 	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
@@ -1363,8 +1366,8 @@ TSharedRef<SWidget> SLogView::MakeCategoryFilterMenu()
 	CreateCategoriesFilterMenuSection(MenuBuilder);
 	MenuBuilder.EndSection();
 
-	const float MaxMenuHeight = FMath::Clamp(this->GetCachedGeometry().GetLocalSize().Y - 40.0f, 100.0f, 500.0f);
-	return MenuBuilder.MakeWidget(nullptr, MaxMenuHeight);
+	const float MaxMenuHeight = FMath::Clamp(static_cast<float>(this->GetCachedGeometry().GetLocalSize().Y) - 40.0f, 100.0f, 500.0f);
+	return MenuBuilder.MakeWidget(nullptr, FMath::RoundToInt(MaxMenuHeight));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1829,7 +1832,7 @@ void SLogView::SaveLogsToFile(bool bSaveLogsInSelectedRangeOnly) const
 			LOCTEXT("SaveLogsToFileTitle", "Save Logs").ToString(),
 			DefaultBrowsePath,
 			TEXT(""),
-			TEXT("Tab-Separated Values (*.tsv)|*.tsv|Text Files (*.txt)|*.txt|Comma-Separated Values (*.csv)|*.csv|All Files (*.*)|*.*"),
+			TEXT("Comma-Separated Values (*.csv)|*.csv|Tab-Separated Values (*.tsv)|*.tsv|Text Files (*.txt)|*.txt|All Files (*.*)|*.*"),
 			EFileDialogFlags::None,
 			SaveFilenames
 		);

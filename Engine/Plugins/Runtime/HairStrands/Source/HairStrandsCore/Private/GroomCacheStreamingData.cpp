@@ -140,9 +140,6 @@ void FGroomCacheStreamingData::PrefetchData(UGroomComponent *Component)
 	UpdateStreamingStatus(true);
 }
 
-extern TMap<UGroomCache*, FPackageFileVersion> GroomCacheArchiveVersion;
-extern FRWLock GroomCacheArchiveVersionLock;
-
 void FGroomCacheStreamingData::UpdateStreamingStatus(bool bAsyncDeletionAllowed)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheStreamingData::UpdateStreamingStatus);
@@ -202,12 +199,9 @@ void FGroomCacheStreamingData::UpdateStreamingStatus(bool bAsyncDeletionAllowed)
 						TArrayView<uint8> TempView(ReadBuffer, DataSize);
 						FMemoryReaderView Ar(TempView, true);
 						// Propagate the GroomCache archive version to the memory archive for proper serialization
+						if (GroomCache->ArchiveVersion.IsSet())
 						{
-							FReadScopeLock Lock(GroomCacheArchiveVersionLock);
-							if (FPackageFileVersion* Version = GroomCacheArchiveVersion.Find(GroomCache))
-							{
-								Ar.SetUEVer(*Version);
-							}
+							Ar.SetUEVer(GroomCache->ArchiveVersion.GetValue());
 						}
 						AnimData->Serialize(Ar);
 

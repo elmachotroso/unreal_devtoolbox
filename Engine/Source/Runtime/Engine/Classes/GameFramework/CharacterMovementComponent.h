@@ -456,7 +456,7 @@ public:
 	uint8 bRunPhysicsWithNoController:1;
 
 	/**
-	 * Force the Character in MOVE_Walking to do a check for a valid floor even if he hasn't moved. Cleared after next floor check.
+	 * Force the Character in MOVE_Walking to do a check for a valid floor even if it hasn't moved. Cleared after next floor check.
 	 * Normally if bAlwaysCheckFloor is false we try to avoid the floor check unless some conditions are met, but this can be used to force the next check to always run.
 	 */
 	UPROPERTY(Category="Character Movement: Walking", VisibleInstanceOnly, BlueprintReadWrite, AdvancedDisplay)
@@ -1058,6 +1058,9 @@ protected:
 
 public:
 
+	/** Returns if the character rotation should be corrected on clients when sending a server move response correction. */
+	virtual bool ShouldCorrectRotation() const { return false; }
+
 	UPROPERTY(Category="Character Movement: Avoidance", EditAnywhere, BlueprintReadOnly, meta=(ForceUnits=cm))
 	float AvoidanceConsiderationRadius;
 
@@ -1067,6 +1070,17 @@ public:
 	 */
 	UPROPERTY(Transient)
 	FVector RequestedVelocity;
+
+	/**
+	 * Velocity requested by path following during last Update
+	 * Updated when we consume the value
+	 */
+	UPROPERTY(Transient)
+	FVector LastUpdateRequestedVelocity;
+
+	/** Returns velocity requested by path following */
+	UFUNCTION(BlueprintCallable, Category="Pawn|Components|CharacterMovement", meta=(Keywords="Velocity RequestedVelocity"))
+	FVector GetLastUpdateRequestedVelocity() const;
 
 	/** No default value, for now it's assumed to be valid if GetAvoidanceManager() returns non-NULL. */
 	UPROPERTY(Category="Character Movement: Avoidance", VisibleAnywhere, BlueprintReadOnly, AdvancedDisplay)
@@ -1216,6 +1230,7 @@ public:
 
 	// Begin UObject Interface
 	virtual void Serialize(FArchive& Archive) override;
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	// End UObject Interface
 
 	//Begin UActorComponent Interface
@@ -1513,7 +1528,7 @@ public:
 	 * @param remainingTime - DeltaTime to complete transition to swimming
 	 * @param Iterations - physics iteration count
 	 */
-	void StartSwimming(FVector OldLocation, FVector OldVelocity, float timeTick, float remainingTime, int32 Iterations);
+	virtual void StartSwimming(FVector OldLocation, FVector OldVelocity, float timeTick, float remainingTime, int32 Iterations);
 
 	/* Swimming uses gravity - but scaled by (1.f - buoyancy) */
 	float Swim(FVector Delta, FHitResult& Hit);
@@ -2364,7 +2379,7 @@ public:
 	virtual void ClientAckGoodMove_Implementation(float TimeStamp);
 
 	/* Replicate position correction to client, associated with a timestamped servermove.  Client will replay subsequent moves after applying adjustment. */
-	virtual void ClientAdjustPosition_Implementation(float TimeStamp, FVector NewLoc, FVector NewVel, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode);
+	virtual void ClientAdjustPosition_Implementation(float TimeStamp, FVector NewLoc, FVector NewVel, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, TOptional<FRotator> OptionalRotation = TOptional<FRotator>());
 
 	/* Bandwidth saving version, when velocity is zeroed */
 	virtual void ClientVeryShortAdjustPosition_Implementation(float TimeStamp, FVector NewLoc, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode);
@@ -2511,7 +2526,24 @@ protected:
 	 */
 	FCharacterMoveResponseDataContainer& GetMoveResponseDataContainer() const { return *MoveResponseDataContainerPtr; }
 
+	/**
+	 * Used internally to save the SavedMove currently being replayed on the client so it is accessible to any functions that might need it.
+	 * @see: ClientUpdatePositionAfterServerUpdate 
+	 */
+	void SetCurrentReplayedSavedMove(FSavedMove_Character* SavedMove) { CurrentReplayedSavedMove = SavedMove; }
+	
+public:
+
+	/**
+	 * Gets the SavedMove being replayed on the client after a correction is received.
+	 * @see: ClientUpdatePositionAfterServerUpdate
+	 */
+	const FSavedMove_Character* GetCurrentReplayedSavedMove() const { return CurrentReplayedSavedMove; }
+
 private:
+
+	/** Current SavedMove being replayed on the client after a correction is received */
+	FSavedMove_Character* CurrentReplayedSavedMove = nullptr;
 
 	//////////////////////////////////////////////////////////////////////////
 	// Server move data
@@ -2596,7 +2628,7 @@ protected:
 	void RestorePreAdditiveRootMotionVelocity();
 
 	/** Applies root motion from root motion sources to velocity (override and additive) */
-	void ApplyRootMotionToVelocity(float deltaTime);
+	virtual void ApplyRootMotionToVelocity(float deltaTime);
 
 	/** Reduces former base velocity according to FormerBaseVelocityDecayHalfLife */
 	void DecayFormerBaseVelocity(float deltaTime);
@@ -2817,6 +2849,8 @@ public:
 
 	TWeakObjectPtr<class UAnimMontage> RootMotionMontage;
 	float RootMotionTrackPosition;
+	float RootMotionPreviousTrackPosition;
+	float RootMotionPlayRateWithScale;
 	FRootMotionMovementParams RootMotionMovement;
 
 	FRootMotionSourceGroup SavedRootMotion;
@@ -2872,6 +2906,9 @@ public:
 	/** Packs control rotation for network transport */
 	virtual void GetPackedAngles(uint32& YawAndPitchPack, uint8& RollPack) const;
 
+	/** Allows references to be considered during GC */
+	virtual void AddStructReferencedObjects(FReferenceCollector& Collector) const;
+
 	// Bit masks used by GetCompressedFlags() to encode movement information.
 	enum CompressedFlags
 	{
@@ -2915,10 +2952,15 @@ public:
 
 class ENGINE_API FNetworkPredictionData_Client_Character : public FNetworkPredictionData_Client, protected FNoncopyable
 {
+	using Super = FNetworkPredictionData_Client;
+
 public:
 
 	FNetworkPredictionData_Client_Character(const UCharacterMovementComponent& ClientMovement);
 	virtual ~FNetworkPredictionData_Client_Character();
+
+	/** Allows references to be considered during GC */
+	void AddStructReferencedObjects(FReferenceCollector& Collector) const override;
 
 	/** Client timestamp of last time it sent a servermove() to the server. This is an increasing timestamp from the owning UWorld. Used for holding off on sending movement updates to save bandwidth. */
 	float ClientUpdateTime;
@@ -2936,9 +2978,6 @@ public:
 
 	int32 MaxFreeMoveCount;					// Limit on size of free list
 	int32 MaxSavedMoveCount;				// Limit on the size of the saved move buffer
-
-	/** RootMotion saved while animation is updated, so we can store it and replay if needed in case of a position correction. */
-	FRootMotionMovementParams RootMotionMovement;
 
 	uint32 bUpdatePosition:1; // when true, update the position (via ClientUpdatePosition)
 

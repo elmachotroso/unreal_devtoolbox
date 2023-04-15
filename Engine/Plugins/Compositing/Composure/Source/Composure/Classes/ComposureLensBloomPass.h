@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
-#include "Classes/Engine/Scene.h"
+#include "Engine/Scene.h"
 #include "ComposurePostProcessPass.h"
 #include "ComposurePostProcessingPassProxy.h" // for UComposurePostProcessPassPolicy
 #include "ComposureLensBloomPass.generated.h"
@@ -39,7 +39,7 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UMaterialInstanceDynamic* TonemapperReplacingMID;
+	TObjectPtr<UMaterialInstanceDynamic> TonemapperReplacingMID;
 };
 
 /**
@@ -57,7 +57,7 @@ public:
 	FLensBloomSettings Settings;
 
 	UPROPERTY(EditAnywhere, Category = "Tonemapper Settings", AdvancedDisplay)
-	UMaterialInterface* ReplacementMaterial;
+	TObjectPtr<UMaterialInterface> ReplacementMaterial;
 
 	UPROPERTY(EditAnywhere, Category = "Tonemapper Settings", AdvancedDisplay)
 	FName BloomIntensityParamName;
@@ -68,5 +68,5 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	UMaterialInstanceDynamic* TonemapperReplacmentMID;
+	TObjectPtr<UMaterialInstanceDynamic> TonemapperReplacmentMID;
 };

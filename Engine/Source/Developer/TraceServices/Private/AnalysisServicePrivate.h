@@ -3,8 +3,10 @@
 #pragma once
 
 #include "AnalysisCache.h"
+#include "TraceServices/Model/AnalysisSession.h"
 #include "TraceServices/AnalysisService.h"
 #include "Containers/HashTable.h"
+#include "Common/SlabAllocator.h"
 #include "Common/StringStore.h"
 #include "Trace/Analysis.h"
 
@@ -61,7 +63,7 @@ public:
 	virtual void WriteAccessCheck() override { return Lock.WriteAccessCheck(); }
 
 	virtual void AddAnalyzer(UE::Trace::IAnalyzer* Analyzer) override;
-	virtual void AddProvider(const FName& Name, IProvider* Provider) override;
+	virtual void AddProvider(const FName& Name, TSharedPtr<IProvider> Provider, TSharedPtr<IEditableProvider> EditableProvider = nullptr) override;
 
 	const TArray<UE::Trace::IAnalyzer*> ReadAnalyzers() { return Analyzers; }
 
@@ -78,8 +80,7 @@ private:
 	FStringStore StringStore;
 	FAnalysisCache Cache;
 	TArray<UE::Trace::IAnalyzer*> Analyzers;
-	TArray<IProvider*> Providers;
-	TMap<FName, IProvider*> ProvidersMap;
+	TMap<FName, TTuple<TSharedPtr<IProvider>, TSharedPtr<IEditableProvider>>> Providers;
 	mutable TUniquePtr<UE::Trace::IInDataStream> DataStream;
 	mutable UE::Trace::FAnalysisProcessor Processor;
 };

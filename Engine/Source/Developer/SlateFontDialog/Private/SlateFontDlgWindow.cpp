@@ -4,14 +4,18 @@
 
 #include "Fonts/CompositeFont.h"
 
+#include "Framework/Docking/TabManager.h"
+
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 
+#include "SlateOptMacros.h"
+
 #include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Colors/SColorBlock.h"
-
-#include "EditorStyleSet.h"
+#include "Widgets/Layout/SGridPanel.h"
 
 #include <fontconfig.h>
 
@@ -321,11 +325,11 @@ void FSlateFontDlgWindow::OpenFontWindow(FString& OutFontName, float& OutHeight,
 					{
 						if (NewState == ECheckBoxState::Checked)
 						{
-							SampleTextStyle.SetStrikeBrush(*FEditorStyle::GetBrush("DefaultTextUnderline"));
+							SampleTextStyle.SetStrikeBrush(*FAppStyle::Get().GetBrush("DefaultTextUnderline"));
 						}
 						else
 						{
-							SampleTextStyle.SetStrikeBrush(*FEditorStyle::GetBrush("NoBrush"));
+							SampleTextStyle.SetStrikeBrush(*FAppStyle::Get().GetBrush("NoBrush"));
 						}
 
 						SampleTextBlock->SetTextStyle(&SampleTextStyle);
@@ -357,12 +361,12 @@ void FSlateFontDlgWindow::OpenFontWindow(FString& OutFontName, float& OutHeight,
 					{
 						if (NewState == ECheckBoxState::Checked)
 						{
-							SampleTextStyle.SetUnderlineBrush(*FEditorStyle::GetBrush("DefaultTextUnderline"));
+							SampleTextStyle.SetUnderlineBrush(*FAppStyle::Get().GetBrush("DefaultTextUnderline"));
 							EnumAddFlags(OutFlags, EFontImportFlags::EnableUnderline);
 						}
 						else
 						{
-							SampleTextStyle.SetUnderlineBrush(*FEditorStyle::GetBrush("NoBrush"));
+							SampleTextStyle.SetUnderlineBrush(*FAppStyle::Get().GetBrush("NoBrush"));
 							EnumRemoveFlags(OutFlags, EFontImportFlags::EnableUnderline);
 						}
 
@@ -399,7 +403,7 @@ void FSlateFontDlgWindow::OpenFontWindow(FString& OutFontName, float& OutHeight,
 			.HAlign(HAlign_Left)
 			[
 				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "Menu.Button")
+				.ButtonStyle(FAppStyle::Get(), "Menu.Button")
 				.OnClicked_Raw(this, &FSlateFontDlgWindow::OpenColorPicker)
 				[
 					SNew(SOverlay)

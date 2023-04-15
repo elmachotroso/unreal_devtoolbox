@@ -12,6 +12,8 @@
 #include "AnimationCompression.h"
 #include "AnimEncoding.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCompress)
+
 DEFINE_LOG_CATEGORY(LogAnimationCompression);
 
 UAnimCompress::UAnimCompress(const FObjectInitializer& ObjectInitializer)
@@ -703,9 +705,9 @@ void UAnimCompress::DecompressBone(FAnimSequenceDecompressionContext& DecompCont
 
 #if WITH_EDITOR
 
-void UAnimCompress::PopulateDDCKey(FArchive& Ar)
+void UAnimCompress::PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar)
 {
-	Super::PopulateDDCKey(Ar);
+	Super::PopulateDDCKey(KeyArgs, Ar);
 
 	uint8 TCF, RCF, SCF;
 	TCF = (uint8)TranslationCompressionFormat.GetValue();

@@ -16,13 +16,9 @@ const FName FNiagaraDataInterfaceArrayImplHelper::Function_SetArrayElemName(TEXT
 const FName FNiagaraDataInterfaceArrayImplHelper::Function_AddName(TEXT("Add"));
 const FName FNiagaraDataInterfaceArrayImplHelper::Function_RemoveLastElemName(TEXT("RemoveLastElem"));
 
-int32 GNiagaraArraySupportRW = 0;
-static FAutoConsoleVariableRef CVarNiagaraArraySupportRW(
-	TEXT("fx.NiagaraArraySupportRW"),
-	GNiagaraArraySupportRW,
-	TEXT("Allows the GPU to RW to the array, this comes with the caveat that all arrays will use a UAV slot."),
-	ECVF_Default
-);
+const FName FNiagaraDataInterfaceArrayImplHelper::Function_AtomicAddName("AtomicAdd");
+const FName FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMinName("AtomicMin");
+const FName FNiagaraDataInterfaceArrayImplHelper::Function_AtomicMaxName("AtomicMax");
 
 #if WITH_EDITORONLY_DATA
 bool FNiagaraDataInterfaceArrayImplHelper::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
@@ -69,9 +65,19 @@ bool FNiagaraDataInterfaceArrayImplHelper::UpgradeFunctionCall(FNiagaraFunctionS
 }
 #endif
 
-bool FNiagaraDataInterfaceArrayImplHelper::SupportsGpuRW()
+bool FNiagaraDataInterfaceArrayImplHelper::IsRWFunction(const FName FunctionName)
 {
-	return GNiagaraArraySupportRW != 0;
-}
+	static const TSet<FName> RWFunctions =
+	{
+		Function_ClearName,
+		Function_ResizeName,
+		Function_SetArrayElemName,
+		Function_AddName,
+		Function_RemoveLastElemName,
 
-IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_ArrayImpl);
+		Function_AtomicAddName,
+		Function_AtomicMinName,
+		Function_AtomicMaxName,
+	};
+	return RWFunctions.Contains(FunctionName);
+}

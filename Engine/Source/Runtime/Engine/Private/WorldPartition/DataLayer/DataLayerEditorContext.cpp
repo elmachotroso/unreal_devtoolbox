@@ -4,73 +4,38 @@
 
 #if WITH_EDITOR
 
-#include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "Engine/World.h"
 
 /*
  * FDataLayerEditorContext
  */
-FDataLayerEditorContext::FDataLayerEditorContext(UWorld* InWorld, const TArray<FName>& InDataLayers)
+FDataLayerEditorContext::FDataLayerEditorContext(UWorld* InWorld, const TArray<FName>& InDataLayerInstances)
 	: Hash(FDataLayerEditorContext::EmptyHash)
 {
-	const AWorldDataLayers* WorldDataLayers = InWorld->GetWorldDataLayers();
-	if (!WorldDataLayers)
+	UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(InWorld);
+	if (!DataLayerSubsystem)
 	{
 		return;
 	}
 
-	for (const FName& DataLayerName : InDataLayers)
+	for (const FName& DataLayerInstanceName : InDataLayerInstances)
 	{
-		if (const UDataLayer* DataLayerObject = WorldDataLayers->GetDataLayerFromName(DataLayerName))
+		if (const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
 		{
-			DataLayers.AddUnique(DataLayerObject->GetFName());
+			DataLayerInstances.AddUnique(DataLayerInstance->GetDataLayerFName());
 		}
 	}
 
-	if (DataLayers.Num())
+	if (DataLayerInstances.Num())
 	{
-		DataLayers.Sort([](const FName& A, const FName& B) { return A.ToString() < B.ToString(); });
-		for (FName LayerName : DataLayers)
+		DataLayerInstances.Sort([](const FName& A, const FName& B) { return A.ToString() < B.ToString(); });
+		for (FName InstanceName : DataLayerInstances)
 		{
-			Hash = FCrc::StrCrc32(*LayerName.ToString(), Hash);
+			Hash = FCrc::StrCrc32(*InstanceName.ToString(), Hash);
 		}
 		check(Hash != FDataLayerEditorContext::EmptyHash);
-	}
-}
-
-/*
- * FScopeChangeDataLayerEditorContext
- */
-
-FScopeChangeDataLayerEditorContext::FScopeChangeDataLayerEditorContext(UWorld* InWorld, const FDataLayerEditorContext& InContext)
-	: World(InWorld)
-{
-	Initialize(InContext);
-}
-
-FScopeChangeDataLayerEditorContext::FScopeChangeDataLayerEditorContext(UWorld* InWorld, const FActorDataLayer& InContextDataLayer)
-	: World(InWorld)
-{
-	const AWorldDataLayers* WorldDataLayers = InWorld->GetWorldDataLayers();
-	Initialize(FDataLayerEditorContext(InWorld, WorldDataLayers ? WorldDataLayers->GetDataLayerNames({ InContextDataLayer }) : TArray<FName>()));
-}
-
-void FScopeChangeDataLayerEditorContext::Initialize(const FDataLayerEditorContext& InContext)
-{
-	if (const UDataLayerSubsystem* DataLayerSubsystem = World.Get() ? World->GetSubsystem<UDataLayerSubsystem>() : nullptr)
-	{
-		OldContext = DataLayerSubsystem->GetDataLayerEditorContext();
-		DataLayerSubsystem->DataLayerEditorContext = InContext;
-	}
-}
-
-FScopeChangeDataLayerEditorContext::~FScopeChangeDataLayerEditorContext()
-{
-	if (const UDataLayerSubsystem* DataLayerSubsystem = World.Get() ? World->GetSubsystem<UDataLayerSubsystem>() : nullptr)
-	{
-		DataLayerSubsystem->DataLayerEditorContext = OldContext;
 	}
 }
 

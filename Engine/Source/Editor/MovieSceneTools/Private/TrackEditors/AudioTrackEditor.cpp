@@ -15,7 +15,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBox.h"
 #include "SequencerSectionPainter.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Sound/SoundCue.h"
 #include "UnrealEdGlobals.h"
@@ -30,10 +30,9 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "SequencerUtilities.h"
-#include "AssetRegistryModule.h"
-#include "MatineeImportTools.h"
-#include "Matinee/InterpTrackSound.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ISectionLayoutBuilder.h"
+#include "MovieSceneToolHelpers.h"
 
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "Misc/QualifiedFrameTime.h"
@@ -721,7 +720,7 @@ int32 FAudioSection::OnPaintSection( FSequencerSectionPainter& Painter ) const
 
 	const FTimeToPixel& TimeToPixelConverter = Painter.GetTimeConverter();
 
-	static const FSlateBrush* GenericDivider = FEditorStyle::GetBrush("Sequencer.GenericDivider");
+	static const FSlateBrush* GenericDivider = FAppStyle::GetBrush("Sequencer.GenericDivider");
 
 	if (!Section.HasStartFrame() || !Section.HasEndFrame())
 	{
@@ -926,7 +925,7 @@ void FAudioTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AddTrack", "Audio Track"),
 		LOCTEXT("AddTooltip", "Adds a new master audio track that can play sounds."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Audio"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Sequencer.Tracks.Audio"),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FAudioTrackEditor::HandleAddAudioTrackMenuEntryExecute)
 		)
@@ -958,17 +957,9 @@ bool FAudioTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 }
 
 
-void CopyInterpSoundTrack(TSharedRef<ISequencer> Sequencer, UInterpTrackSound* MatineeSoundTrack, UMovieSceneAudioTrack* AudioTrack)
-{
-	if (FMatineeImportTools::CopyInterpSoundTrack(MatineeSoundTrack, AudioTrack))
-	{
-		Sequencer.Get().NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
-	}
-}
-
 const FSlateBrush* FAudioTrackEditor::GetIconBrush() const
 {
-	return FEditorStyle::GetBrush("Sequencer.Tracks.Audio");
+	return FAppStyle::GetBrush("Sequencer.Tracks.Audio");
 }
 
 bool FAudioTrackEditor::IsResizable(UMovieSceneTrack* InTrack) const
@@ -1007,13 +998,30 @@ bool FAudioTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequen
 		return false;
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return false;
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return false;
+	}
+
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
 
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		if (USoundBase* Sound = Cast<USoundBase>(AssetData.GetAsset()))
 		{
-			FFrameRate TickResolution = GetSequencer()->GetFocusedTickResolution();
+			FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
 			FFrameNumber LengthInFrames = TickResolution.AsFrameNumber(Sound->GetDuration());
 			DragDropParams.FrameRange = TRange<FFrameNumber>(DragDropParams.FrameNumber, DragDropParams.FrameNumber + LengthInFrames);
 			return true;
@@ -1038,6 +1046,18 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeq
 		return FReply::Unhandled();
 	}
 	
+	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
+	if (!SequencerPtr)
+	{
+		return FReply::Unhandled();
+	}
+
+	UMovieSceneSequence* FocusedSequence = SequencerPtr->GetFocusedMovieSceneSequence();
+	if (!FocusedSequence)
+	{
+		return FReply::Unhandled();
+	}
+
 	UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(DragDropParams.Track);
 
 	const FScopedTransaction Transaction(LOCTEXT("DropAssets", "Drop Assets"));
@@ -1049,6 +1069,11 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeq
 	bool bAnyDropped = false;
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
 	{
+		if (!MovieSceneToolHelpers::IsValidAsset(FocusedSequence, AssetData))
+		{
+			continue;
+		}
+
 		USoundBase* Sound = Cast<USoundBase>(AssetData.GetAsset());
 
 		if (Sound)
@@ -1056,7 +1081,7 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeq
 			if (DragDropParams.TargetObjectGuid.IsValid())
 			{
 				TArray<TWeakObjectPtr<>> OutObjects;
-				for (TWeakObjectPtr<> Object : GetSequencer()->FindObjectsInCurrentSequence(DragDropParams.TargetObjectGuid))
+				for (TWeakObjectPtr<> Object : SequencerPtr->FindObjectsInCurrentSequence(DragDropParams.TargetObjectGuid))
 				{
 					OutObjects.Add(Object);
 				}
@@ -1255,11 +1280,13 @@ void FAudioTrackEditor::HandleAddAttachedAudioTrackMenuEntryExecute(FMenuBuilder
 
 TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(FOnAssetSelected OnAssetSelected, FOnAssetEnterPressed OnAssetEnterPressed)
 {
+	UMovieSceneSequence* Sequence = GetSequencer() ? GetSequencer()->GetFocusedMovieSceneSequence() : nullptr;
+
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	TArray<FName> ClassNames;
-	ClassNames.Add(USoundBase::StaticClass()->GetFName());
-	TSet<FName> DerivedClassNames;
-	AssetRegistryModule.Get().GetDerivedClassNames(ClassNames, TSet<FName>(), DerivedClassNames);
+	TArray<FTopLevelAssetPath> ClassNames;
+	ClassNames.Add(USoundBase::StaticClass()->GetClassPathName());
+	TSet<FTopLevelAssetPath> DerivedClassNames;
+	AssetRegistryModule.Get().GetDerivedClassNames(ClassNames, TSet<FTopLevelAssetPath>(), DerivedClassNames);
 
 	FMenuBuilder MenuBuilder(true, nullptr);
 
@@ -1269,11 +1296,12 @@ TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(FOnAssetSelected OnAsse
 		AssetPickerConfig.OnAssetEnterPressed = OnAssetEnterPressed;
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-		for (auto ClassName : DerivedClassNames)
+		for (FTopLevelAssetPath ClassName : DerivedClassNames)
 		{
-			AssetPickerConfig.Filter.ClassNames.Add(ClassName);
+			AssetPickerConfig.Filter.ClassPaths.Add(ClassName);
 		}
 		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
+		AssetPickerConfig.AdditionalReferencingAssets.Add(FAssetData(Sequence));
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));

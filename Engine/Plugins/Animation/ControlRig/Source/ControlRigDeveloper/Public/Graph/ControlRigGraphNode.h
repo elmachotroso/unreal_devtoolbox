@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "EdGraph/EdGraphNodeUtils.h"
 #include "K2Node.h"
 #include "UObject/SoftObjectPath.h"
@@ -40,10 +41,10 @@ private:
 	FString ModelNodePath;
 
 	UPROPERTY(transient)
-	TObjectPtr<URigVMNode> CachedModelNode;
+	TWeakObjectPtr<URigVMNode> CachedModelNode;
 
 	UPROPERTY(transient)
-	TMap<FString, TObjectPtr<URigVMPin>> CachedModelPins;
+	TMap<FString, TWeakObjectPtr<URigVMPin>> CachedModelPins;
 
 	/** The property we represent. For template nodes this represents the struct/property type name. */
 	UPROPERTY()
@@ -135,6 +136,9 @@ public:
 
 	URigVMPin* GetModelPinFromPinPath(const FString& InPinPath) const;
 
+	/** Add a new element to the aggregate node referred to by the property path */
+	void HandleAddAggregateElement(const FString& InNodePath);
+
 	/** Add a new array element to the array referred to by the property path */
 	void HandleAddArrayElement(FString InPinPath);
 	
@@ -150,6 +154,10 @@ public:
 	FNodeTitleDirtied& GetNodeTitleDirtied() { return NodeTitleDirtied; }
 
 	int32 GetInstructionIndex(bool bAsInput) const;
+
+	const FRigVMTemplate* GetTemplate() const;
+
+	void ClearErrorInfo();
 
 protected:
 
@@ -193,6 +201,8 @@ private:
 	FORCEINLINE int32 GetNodeTopologyVersion() const { return NodeTopologyVersion; }
 	int32 NodeTopologyVersion;
 
+	void ConfigurePin(UEdGraphPin* EdGraphPin, URigVMPin* ModelPin, bool bHidden, bool bConnectable);
+
 	FLinearColor CachedTitleColor;
 	FLinearColor CachedNodeColor;
 
@@ -219,7 +229,10 @@ private:
 
 	FNodeTitleDirtied NodeTitleDirtied;
 
+	mutable const FRigVMTemplate* CachedTemplate;
+
 	friend class SControlRigGraphNode;
 	friend class FControlRigArgumentLayout;
 	friend class FControlRigGraphDetails;
+	friend class UControlRigTemplateNodeSpawner;
 };

@@ -74,10 +74,10 @@ public:
 	void CachePreviewMesh();
 
 	/** Accessor for mesh view mode, allows access for simulation and non-simulation modes */
-	EPhysicsAssetEditorRenderMode GetCurrentMeshViewMode(bool bSimulation);
+	EPhysicsAssetEditorMeshViewMode GetCurrentMeshViewMode(bool bSimulation);
 
 	/** Accessor for collision view mode, allows access for simulation and non-simulation modes */
-	EPhysicsAssetEditorRenderMode GetCurrentCollisionViewMode(bool bSimulation);
+	EPhysicsAssetEditorCollisionViewMode GetCurrentCollisionViewMode(bool bSimulation);
 
 	/** Accessor for constraint view mode, allows access for simulation and non-simulation modes */
 	EPhysicsAssetEditorConstraintViewMode GetCurrentConstraintViewMode(bool bSimulation);
@@ -96,7 +96,7 @@ public:
 	FTransform GetConstraintWorldTM(const FSelection* Constraint, EConstraintFrame::Type Frame) const;
 
 	/** Get the world transform of the specified constraint */
-	FTransform GetConstraintWorldTM(const UPhysicsConstraintTemplate* ConstraintSetup, EConstraintFrame::Type Frame, float Scale = 1.f) const;
+	FTransform GetConstraintWorldTM(const UPhysicsConstraintTemplate* const ConstraintSetup, const EConstraintFrame::Type Frame, const float Scale = 1.0f) const;
 
 	/** Get the world transform of the specified constraint */
 	FTransform GetConstraintMatrix(int32 ConstraintIndex, EConstraintFrame::Type Frame, float Scale) const;
@@ -112,12 +112,12 @@ public:
     {
         SetConstraintRelTM(GetSelectedConstraint(), RelTM);
     }
-	
+
 	/** Snaps a constraint at the specified index to it's bone */
-	void SnapConstraintToBone(int32 ConstraintIndex);
+	void SnapConstraintToBone(const int32 ConstraintIndex, const EConstraintTransformComponentFlags ComponentFlags = EConstraintTransformComponentFlags::All);
 
 	/** Snaps the specified constraint to it's bone */
-	void SnapConstraintToBone(FConstraintInstance& ConstraintInstance);
+	void SnapConstraintToBone(FConstraintInstance& ConstraintInstance, const EConstraintTransformComponentFlags ComponentFlags = EConstraintTransformComponentFlags::All);
 
 	/** Deletes the currently selected constraints */
 	void DeleteCurrentConstraint();
@@ -145,6 +145,12 @@ public:
 	bool IsBodySelected(const FSelection& Body) const;
 	void ToggleSelectionType(bool bIgnoreUserConstraints = true);
 	void ToggleShowSelected();
+	bool IsBodyHidden(const int32 BodyIndex) const;
+	bool IsConstraintHidden(const int32 ConstraintIndex) const;
+	void HideBody(const int32 BodyIndex);
+	void ShowBody(const int32 BodyIndex);
+	void HideConstraint(const int32 ConstraintIndex);
+	void ShowConstraint(const int32 ConstraintIndex);
 	void ShowAll();
 	void HideAll();
 	void HideAllBodies();
@@ -154,9 +160,11 @@ public:
 	void ToggleShowOnlySelected();
 	void ShowSelected();
 	void HideSelected();
-	void SetSelectedBodyAnyPrim(int32 BodyIndex, bool bSelected);
-	void SetSelectedBodiesAnyPrim(const TArray<int32>& BodiesIndices, bool bSelected);
-	void SetSelectedBodiesAllPrim(const TArray<int32>& BodiesIndices, bool bSelected);
+	void SetSelectedBodyAnyPrimitive(int32 BodyIndex, bool bSelected);
+	void SetSelectedBodiesAnyPrimitive(const TArray<int32>& BodiesIndices, bool bSelected);
+	void SetSelectedBodiesAllPrimitive(const TArray<int32>& BodiesIndices, bool bSelected);
+	void SetSelectedBodiesPrimitivesWithCollisionType(const TArray<int32>& BodiesIndices, const ECollisionEnabled::Type CollisionType, bool bSelected);
+	void SetSelectedBodiesPrimitives(const TArray<int32>& BodiesIndices, bool bSelected, const TFunction<bool(const TArray<FSelection>&, const int32 BodyIndex, const FKShapeElem&)>& Predicate);
 	void DeleteCurrentPrim();
 	void DeleteBody(int32 DelBodyIndex, bool bRefreshComponent=true);
 	void RefreshPhysicsAssetChange(const UPhysicsAsset* InPhysAsset, bool bFullClothRefresh = true);
@@ -164,7 +172,11 @@ public:
 	void MakeNewConstraints(int32 ParentBodyIndex, const TArray<int32>& ChildBodyIndices);
 	void MakeNewConstraint(int32 ParentBodyIndex, int32 ChildBodyIndex);
 	void CopySelectedBodiesAndConstraintsToClipboard(int32& OutNumCopiedBodies, int32& OutNumCopiedConstraints);
+	bool CanPasteBodiesAndConstraintsFromClipboard() const;
 	void PasteBodiesAndConstraintsFromClipboard(int32& OutNumPastedBodies, int32& OutNumPastedConstraints);
+	void CopySelectedShapesToClipboard(int32& OutNumCopiedShapes, int32& OutNumBodiesCopiedFrom);
+	bool CanPasteShapesFromClipboard() const;
+	void PasteShapesFromClipboard(int32& OutNumPastedShapes, int32& OutNumBodiesPastedInto);
 	void CopyBodyProperties();
 	void CopyConstraintProperties();
 	void PasteBodyProperties();
@@ -315,8 +327,6 @@ public:
 
 	TArray<FSelection> SelectedBodies;
 
-	TArray<int32> HiddenBodies;
-	TArray<int32> HiddenConstraints;
 	FSelection * GetSelectedBody()
 	{
 		int32 Count = SelectedBodies.Num();
@@ -337,13 +347,15 @@ public:
 		return Count ? &SelectedConstraints[Count - 1] : NULL;
 	}
 
+	struct FPhysicsAssetRenderSettings* GetRenderSettings() const;
+
 	/** Show flags */
 	bool bShowCOM;
 
 	/** Misc toggles */
 	bool bRunningSimulation;
 	bool bNoGravitySimulation;
-	
+
 	/** Manipulation (rotate, translate, scale) */
 	bool bManipulating;
 

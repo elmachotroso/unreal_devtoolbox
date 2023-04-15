@@ -205,12 +205,12 @@ class ENGINE_API UKismetTextLibrary : public UBlueprintFunctionLibrary
 	static FText Conv_Int64ToText(int64 Value, bool bAlwaysSign = false, bool bUseGrouping = true, int32 MinimumIntegralDigits = 1, int32 MaximumIntegralDigits = 324);
 
 	/** Converts a passed in double to text based on formatting options */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Text (Double)", AdvancedDisplay = "1", BlueprintAutocast), Category = "Utilities|Text")
-	static FText Conv_DoubleToText(double InDouble, TEnumAsByte<ERoundingMode> RoundingMode, bool bAlwaysSign = false, bool bUseGrouping = true, int32 MinimumIntegralDigits = 1, int32 MaximumIntegralDigits = 324, int32 MinimumFractionalDigits = 0, int32 MaximumFractionalDigits = 3);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Text (Float)", AdvancedDisplay = "1", BlueprintAutocast), Category = "Utilities|Text")
+	static FText Conv_DoubleToText(double Value, TEnumAsByte<ERoundingMode> RoundingMode, bool bAlwaysSign = false, bool bUseGrouping = true, int32 MinimumIntegralDigits = 1, int32 MaximumIntegralDigits = 324, int32 MinimumFractionalDigits = 0, int32 MaximumFractionalDigits = 3);
 	
 	// Default values are duplicated from FNumberFormattingOptions and should be replicated in all functions and in the struct when changed!
 	/** Converts a passed in float to text based on formatting options */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Text (Float)", AdvancedDisplay = "1", BlueprintAutocast), Category="Utilities|Text")
+	UE_DEPRECATED(5.1, "This method has been deprecated and will be removed.")
 	static FText Conv_FloatToText(float Value, TEnumAsByte<ERoundingMode> RoundingMode, bool bAlwaysSign = false, bool bUseGrouping = true, int32 MinimumIntegralDigits = 1, int32 MaximumIntegralDigits = 324, int32 MinimumFractionalDigits = 0, int32 MaximumFractionalDigits = 3);
 	
 	/**
@@ -275,7 +275,7 @@ class ENGINE_API UKismetTextLibrary : public UBlueprintFunctionLibrary
 
 	/**
 	 * Attempts to create a text instance from a string table ID and key.
-	 * @note This exists to allow programmatic ‎look-up of a string table entry from dynamic content - you should favor setting your string table reference on a text property or pin wherever possible as it is significantly more robust (see "Make Literal Text").
+	 * @note This exists to allow programmatic look-up of a string table entry from dynamic content - you should favor setting your string table reference on a text property or pin wherever possible as it is significantly more robust (see "Make Literal Text").
 	 * @return The found text, or a dummy text if the entry could not be found.
 	 */
 	UFUNCTION(BlueprintPure, Category="Utilities|Text", meta=(DisplayName="Make Text from String Table (Advanced)"))

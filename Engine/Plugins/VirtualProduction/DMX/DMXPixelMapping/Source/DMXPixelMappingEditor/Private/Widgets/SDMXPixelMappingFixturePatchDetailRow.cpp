@@ -4,7 +4,7 @@
 
 #include "Library/DMXEntityFixturePatch.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PropertyHandle.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
@@ -37,36 +37,42 @@ void SDMXPixelMappingFixturePatchDetailRow::Construct(const FArguments& InArgs)
 		.Padding(-3.f) // Need to overdraw to avoid having gaps between the detail rows
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
 			.BorderBackgroundColor_Lambda([this]()
 				{
 					return bHighlight ? HighlightBGColor : NormalBGColor;
 				})
 			[
-				SAssignNew(FixturePatchNameTextBlock, STextBlock)
-				.Text_Lambda([FixturePatch]()
-					{
-						const UDMXEntityFixtureType* FixtureType = FixturePatch.IsValid() ? FixturePatch->GetFixtureType() : nullptr;
-						const FDMXFixtureMode* FixtureModePtr = FixturePatch.IsValid() ? FixturePatch->GetActiveMode() : nullptr;
-						if (FixtureType && FixtureModePtr)
+				SNew(SBorder)
+				.BorderImage(FAppStyle::GetBrush("NoBorder"))
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Left)
+				[
+					SAssignNew(FixturePatchNameTextBlock, STextBlock)
+					.Text_Lambda([FixturePatch]()
 						{
-							if (FixtureModePtr->bFixtureMatrixEnabled)
+							const UDMXEntityFixtureType* FixtureType = FixturePatch.IsValid() ? FixturePatch->GetFixtureType() : nullptr;
+							const FDMXFixtureMode* FixtureModePtr = FixturePatch.IsValid() ? FixturePatch->GetActiveMode() : nullptr;
+							if (FixtureType && FixtureModePtr)
 							{
-								return FText::Format(LOCTEXT("MatrixFixturePatchName", "Matrix: {0}"), FText::FromString(FixturePatch->Name));
+								if (FixtureModePtr->bFixtureMatrixEnabled)
+								{
+									return FText::Format(LOCTEXT("MatrixFixturePatchName", "Matrix: {0}"), FText::FromString(FixturePatch->Name));
+								}
+								else
+								{
+									return FText::FromString(FixturePatch->Name);
+								}
 							}
-							else
-							{
-								return FText::FromString(FixturePatch->Name);
-							}
-						}
-						// The user object should take care of not showing invalid patches.
-						return FText::GetEmpty();
-					})
-				.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
-				.ColorAndOpacity_Lambda([this]()
-					{
-						return bHighlight ? FLinearColor::Black : FLinearColor::White;
-					})
+							// The user object should take care of not showing invalid patches.
+							return FText::GetEmpty();
+						})
+					.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
+					.ColorAndOpacity_Lambda([this]()
+						{
+							return bHighlight ? FLinearColor::Black : FLinearColor::White;
+						})
+				]
 			]
 		]
 	];

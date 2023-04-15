@@ -31,8 +31,7 @@ static_assert(EHandKeypoint::LittleTip == static_cast<EHandKeypoint>(XR_HAND_JOI
 //static TAutoConsoleVariable<int32> CVarEnableOpenXRHandTrackingDebug(TEXT("OpenXR.debug.EnableEyetrackingDebug"), 1, TEXT("0 - Eyetracking debug visualizations are disabled. 1 - Eyetracking debug visualizations are enabled."));
 
 class FOpenXRHandTrackingModule :
-	public IOpenXRHandTrackingModule,
-	public IOpenXRExtensionPlugin
+	public IOpenXRHandTrackingModule
 {
 public:
 	FOpenXRHandTrackingModule()
@@ -43,7 +42,6 @@ public:
 	virtual void StartupModule() override
 	{
 		IOpenXRHandTrackingModule::StartupModule();
-		RegisterOpenXRExtensionModularFeature();
 
 		// HACK: Generic Application might not be instantiated at this point so we create the input device with a
 		// dummy message handler. When the Generic Application creates the input device it passes a valid message
@@ -335,7 +333,7 @@ bool FOpenXRHandTracking::GetControllerOrientationAndPosition(const int32 Contro
 		// This can only be done in the game thread since it uses the UEnum directly
 		if (IsInGameThread())
 		{
-			const UEnum* EnumPtr = FindObject<UEnum>(ANY_PACKAGE, TEXT("EHandKeypoint"), true);
+			const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/HeadMountedDisplay.EHandKeypoint"), true);
 			check(EnumPtr != nullptr);
 			bool bUseRightHand = false;
 			FString SourceString = MotionSource.ToString();
@@ -437,7 +435,7 @@ void FOpenXRHandTracking::EnumerateSources(TArray<FMotionControllerSource>& Sour
 
 	SourcesOut.Empty(EHandKeypointCount * 2);
 
-	const UEnum* EnumPtr = FindObject<UEnum>(ANY_PACKAGE, TEXT("EHandKeypoint"), true);
+	const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/HeadMountedDisplay.EHandKeypoint"), true);
 	check(EnumPtr != nullptr);
 	for (int32 Keypoint = 0; Keypoint < EHandKeypointCount; Keypoint++)
 	{
@@ -551,6 +549,11 @@ bool FOpenXRHandTracking::GetKeypointState(EControllerHand Hand, EHandKeypoint K
 bool FOpenXRHandTracking::GetAllKeypointStates(EControllerHand Hand, TArray<FVector>& OutPositions, TArray<FQuat>& OutRotations, TArray<float>& OutRadii) const
 {
 	if (!bHandTrackingAvailable)
+	{
+		return false;
+	}
+
+	if (Hand != EControllerHand::Left && Hand != EControllerHand::Right)
 	{
 		return false;
 	}

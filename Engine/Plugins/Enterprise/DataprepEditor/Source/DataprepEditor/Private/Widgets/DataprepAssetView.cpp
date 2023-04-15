@@ -18,6 +18,7 @@
 #include "K2Node_AddComponent.h"
 #include "PropertyEditorModule.h"
 
+#include "DetailColumnSizeData.h"
 #include "DetailLayoutBuilder.h"
 #include "EditorFontGlyphs.h"
 #include "Modules/ModuleManager.h"
@@ -46,7 +47,7 @@ namespace DataprepEditorUtils
 {
 	FSlateFontInfo GetGlyphFont()
 	{
-		return FEditorStyle::Get().GetFontStyle( "FontAwesome.11" );
+		return FAppStyle::Get().GetFontStyle( "FontAwesome.11" );
 	}
 }
 
@@ -81,12 +82,22 @@ void SGraphNodeDetailsWidget::Construct(const FArguments& InArgs)
 
 	PropertyView = EditModule.CreateDetailView(DetailsViewArgs);
 
-	PropertyView->GetIsPropertyEditingEnabledDelegate().BindSP(this, &SGraphNodeDetailsWidget::GetCanEditProperties);
+	// Enable selection (copy/paste) for metadata property only
+
+	PropertyView->GetIsCustomRowReadOnlyDelegate().BindLambda([this](const FName InRowName, const FName InParentName) -> bool
+		{
+			return !bCanEditProperties;
+		});
+
+	PropertyView->GetIsPropertyReadOnlyDelegate().BindLambda([this](const FPropertyAndParent& PNP) -> bool
+		{
+			return !bCanEditProperties && (PNP.Property.GetName() != TEXT("MetaData"));
+		});
 
 	DetailsSplitter = SNew(SSplitter)
 		.MinimumSlotHeight(80.0f)
 		.Orientation(Orient_Vertical)
-		.Style(FEditorStyle::Get(), "SplitterDark")
+		.Style(FAppStyle::Get(), "SplitterDark")
 		.PhysicalSplitterHandleSize(2.0f)
 		+ SSplitter::Slot()
 		.Value(.2f)
@@ -118,7 +129,7 @@ void SGraphNodeDetailsWidget::Construct(const FArguments& InArgs)
 		[
 			SAssignNew(ContextualEditingBorderWidget, SBorder)
 			.Padding(0)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		]
 	];
 }
@@ -403,7 +414,7 @@ TSharedRef<ITableRow> SDataprepAssetView::OnGenerateRowForCategoryTree( TSharedR
 	else
 	{
 		ConsumerWidget = SNew( STextBlock )
-			.Font( FEditorStyle::GetFontStyle("BoldFont") )
+			.Font( FAppStyle::GetFontStyle("BoldFont") )
 			.Text( LOCTEXT( "NoConsumer", "No consumer found" ) )
 			.Margin( 5.0f )
 			.ColorAndOpacity( FLinearColor(1, 0, 0, 1) );
@@ -656,7 +667,7 @@ void SDataprepAssetView::Construct( const FArguments& InArgs, UDataprepAssetInte
 	[
 		SNew(SBorder)
 		.Padding(4.0f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SHorizontalBox)
 			+SHorizontalBox::Slot()

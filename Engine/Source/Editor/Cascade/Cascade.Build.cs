@@ -6,12 +6,6 @@ public class Cascade : ModuleRules
 {
 	public Cascade(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/Cascade/Private"
-			}
-		);
-
 		PublicIncludePaths.AddRange(
 			new string[] {
 				"Editor/DistCurveEditor/Public",
@@ -28,11 +22,11 @@ public class Cascade : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"DistCurveEditor",
 				"EditorFramework",
 				"UnrealEd",
 				"RHI",
+				"RenderCore",
 				"PhysicsCore"
 			}
 		);

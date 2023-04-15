@@ -33,10 +33,10 @@ void FMacConsoleOutputDevice::SaveToINI()
 	{
 		NSRect Frame = [ConsoleHandle frame];
 
-		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleWidth"), Frame.size.width, IniFilename);
-		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleHeight"), Frame.size.height, IniFilename);
-		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleX"), Frame.origin.x, IniFilename);
-		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleY"), Frame.origin.y, IniFilename);
+		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleWidth"), FMath::TruncToInt(Frame.size.width), IniFilename);
+		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleHeight"), FMath::TruncToInt(Frame.size.height), IniFilename);
+		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleX"), FMath::TruncToInt(Frame.origin.x), IniFilename);
+		GConfig->SetInt(TEXT("DebugMac"), TEXT("ConsoleY"), FMath::TruncToInt(Frame.origin.y), IniFilename);
 	}
 }
 
@@ -290,7 +290,7 @@ void FMacConsoleOutputDevice::SetDefaultTextColor()
 		UE_LOG(LogCore, Warning, TEXT("*** INTERRUPTED *** : Console Window Closed, Shutting Down"));
 		if (GLog)
 		{
-			GLog->PanicFlushThreadedLogs();
+			GLog->Panic();
 		}
 		_Exit(0);
 	}

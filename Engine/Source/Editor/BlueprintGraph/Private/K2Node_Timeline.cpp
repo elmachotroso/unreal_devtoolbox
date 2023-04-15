@@ -2,27 +2,47 @@
 
 
 #include "K2Node_Timeline.h"
-#include "Engine/Blueprint.h"
-#include "Curves/CurveFloat.h"
-#include "Components/TimelineComponent.h"
-#include "Curves/CurveLinearColor.h"
-#include "Curves/CurveVector.h"
-#include "Engine/TimelineTemplate.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraphSchema_K2.h"
-#include "K2Node_Composite.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
-#include "K2Node_VariableGet.h"
-#include "Kismet2/BlueprintEditorUtils.h"
 
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintNodeSpawner.h"
+#include "Components/TimelineComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "Curves/CurveFloat.h"
+#include "Curves/CurveLinearColor.h"
+#include "Curves/CurveVector.h"
+#include "Delegates/Delegate.h"
 #include "DiffResults.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "Engine/TimelineTemplate.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_Composite.h"
+#include "K2Node_VariableGet.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/Kismet2NameValidators.h"
 #include "KismetCastingUtils.h"
-#include "KismetCompilerMisc.h"
+#include "KismetCompiledFunctionContext.h"
 #include "KismetCompiler.h"
+#include "KismetCompilerMisc.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_Timeline"
 
@@ -460,7 +480,7 @@ void FindExactTimelineDifference(struct FDiffResults& Results, FDiffSingleResult
 
 		Result.Diff = EDiffType::TIMELINE_NUM_TRACKS;
 		Result.ToolTip =  FText::Format(LOCTEXT("DIF_TimelineNumTracksToolTip", "The number of {TrackType} tracks in Timeline '{NodeName}' has changed"), Args);
-		Result.DisplayColor = FLinearColor(0.05f,0.261f,0.775f);
+		Result.Category = EDiffType::MODIFICATION;
 		Result.DisplayString = FText::Format(LOCTEXT("DIF_TimelineNumTracks", "{TrackType} Track Count '{NodeName}'"), Args);
 		Results.Add(Result);
 		return;
@@ -479,7 +499,7 @@ void FindExactTimelineDifference(struct FDiffResults& Results, FDiffSingleResult
 
 			Result.Diff = EDiffType::TIMELINE_TRACK_MODIFIED;
 			Result.ToolTip =  FText::Format(LOCTEXT("DIF_TimelineTrackModifiedToolTip", "Track '{TrackName}' of Timeline '{NodeName}' was Modified"), Args);
-			Result.DisplayColor = FLinearColor(0.75f,0.1f,0.15f);
+			Result.Category = EDiffType::MODIFICATION;
 			Result.DisplayString = FText::Format(LOCTEXT("DIF_TimelineTrackModified", "Track Modified '{TrackName}'"), Args);
 			Results.Add(Result);
 			break;
@@ -515,7 +535,7 @@ void UK2Node_Timeline::FindDiffs( class UEdGraphNode* OtherNode, struct FDiffRes
 			Args.Add(TEXT("NodeName"), NodeName);
 
 			Diff.ToolTip =  FText::Format(LOCTEXT("DIF_TimelineAutoPlayToolTip", "Timeline '{NodeName}' had its AutoPlay state changed"), Args);
-			Diff.DisplayColor = FLinearColor(0.15f,0.61f,0.15f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_TimelineAutoPlay", "Timeline AutoPlay Changed '{NodeName}'"), Args);
 			Results.Add(Diff);
 		}
@@ -528,7 +548,7 @@ void UK2Node_Timeline::FindDiffs( class UEdGraphNode* OtherNode, struct FDiffRes
 			Args.Add(TEXT("NodeName"), NodeName);
 
 			Diff.ToolTip =  FText::Format(LOCTEXT("DIF_TimelineLoopingToolTip", "Timeline '{NodeName}' had its looping state changed"), Args);
-			Diff.DisplayColor = FLinearColor(0.75f,0.1f,0.75f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString =  FText::Format(LOCTEXT("DIF_TimelineLooping", "Timeline Loop Changed '{NodeName}'"), Args);
 			Results.Add(Diff);
 		}
@@ -543,7 +563,7 @@ void UK2Node_Timeline::FindDiffs( class UEdGraphNode* OtherNode, struct FDiffRes
 
 			Diff.Diff = EDiffType::TIMELINE_LENGTH;
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_TimelineLengthToolTip", "Length of Timeline '{NodeName}' has changed. Was {TimelineLength1}, but is now {TimelineLength2}"), Args);
-			Diff.DisplayColor = FLinearColor(0.25f,0.1f,0.15f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString =  FText::Format(LOCTEXT("DIF_TimelineLength", "Timeline Length '{NodeName}' [{TimelineLength1} -> {TimelineLength2}]"), Args);
 			Results.Add(Diff);
 		}
@@ -556,7 +576,7 @@ void UK2Node_Timeline::FindDiffs( class UEdGraphNode* OtherNode, struct FDiffRes
 			Args.Add(TEXT("NodeName"), NodeName);
 
 			Diff.ToolTip = FText::Format(LOCTEXT("DIF_TimelineIgnoreDilationToolTip", "Timeline '{NodeName}' had its ignore time dilation state changed"), Args);
-			Diff.DisplayColor = FLinearColor(0.75f, 0.1f, 0.75f);
+			Diff.Category = EDiffType::MODIFICATION;
 			Diff.DisplayString = FText::Format(LOCTEXT("DIF_TimelineIgnoreDilation", "Timeline IgnoreTimeDilation Changed '{NodeName}'"), Args);
 			Results.Add(Diff);
 		}
@@ -652,7 +672,7 @@ FName UK2Node_Timeline::GetCornerIcon() const
 
 FSlateIcon UK2Node_Timeline::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Timeline_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Timeline_16x");
 	return Icon;
 }
 

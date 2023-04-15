@@ -21,10 +21,14 @@ namespace UnrealBuildTool.Rules
 					"Slate",
 					"DeveloperSettings",
 				});
+			
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+			{
+				PrivateDependencyModuleNames.Add("DrawPrimitiveDebugger");
+			}
 
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					"Developer/GameplayDebugger/Private",
 					"Developer/Settings/Public",
 				});
 
@@ -32,7 +36,7 @@ namespace UnrealBuildTool.Rules
 			{
 				PrivateDependencyModuleNames.AddRange(
 					new string[] {
-						"EditorStyle",
+						
 						"EditorFramework",
 						"UnrealEd",
 						"LevelEditor",
@@ -40,7 +44,9 @@ namespace UnrealBuildTool.Rules
 					});
 			}
 
-			if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
+			SetupIrisSupport(Target);
+
+			if (Target.bUseGameplayDebugger)
 			{
 				PrecompileForTargets = PrecompileTargetsType.Any;
 			}

@@ -1,19 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_NotifiesPanel.h"
+#include "AnimTimeline/AnimTimelineTrack_NotifiesPanel.h"
 #include "SAnimNotifyPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Layout/SBox.h"
 #include "PersonaUtils.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "AnimTimelineTrack_Notifies.h"
+#include "AnimTimeline/AnimTimelineTrack_Notifies.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Layout/SBorder.h"
-#include "SAnimOutlinerItem.h"
+#include "AnimTimeline/SAnimOutlinerItem.h"
 #include "Animation/AnimMontage.h"
-#include "AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_NotifiesPanel"
 
@@ -75,8 +75,8 @@ void FAnimTimelineTrack_NotifiesPanel::RefreshOutlinerWidget()
 
 		SlotBox->SetContent(
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Sequencer.Section.BackgroundTint"))
-			.BorderBackgroundColor(FEditorStyle::GetColor("AnimTimeline.Outliner.ItemColor"))
+			.BorderImage(FAppStyle::GetBrush("Sequencer.Section.BackgroundTint"))
+			.BorderBackgroundColor(FAppStyle::GetColor("AnimTimeline.Outliner.ItemColor"))
 			[
 				SAssignNew(HorizontalBox, SHorizontalBox)
 				+SHorizontalBox::Slot()

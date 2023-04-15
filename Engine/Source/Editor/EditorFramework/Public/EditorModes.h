@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Logging/LogMacros.h"
 #include "MaterialShared.h"
+#include "Math/Color.h"
 #include "SceneManagement.h"
 #include "Tools/Modes.h"
 
@@ -20,9 +22,6 @@ namespace FBuiltinEditorModes
 
 	/** Placement mode */
 	EDITORFRAMEWORK_API extern const FEditorModeID EM_Placement;
-
-	/** Interpolation editing. */
-	EDITORFRAMEWORK_API extern const FEditorModeID EM_InterpEdit;
 
 	/** Mesh paint tool */
 	EDITORFRAMEWORK_API extern const FEditorModeID EM_MeshPaint;

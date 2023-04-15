@@ -9,6 +9,7 @@
 #include "SLevelViewport.h"
 #include "EditorModeManager.h"
 #include "FractureEditorMode.h"
+#include "Modules/ModuleManager.h"
 
 #include "FractureToolContext.h"
 #include "FractureSelectionTools.h"
@@ -19,6 +20,8 @@
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "GeometryCollection/GeometryCollectionProximityUtility.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureTool)
 
 
 DEFINE_LOG_CATEGORY(LogFractureTool);
@@ -99,7 +102,7 @@ bool UFractureActionTool::IsGeometryCollectionSelected()
 		if (Actor)
 		{
 			TInlineComponentArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
-			Actor->GetComponents<UGeometryCollectionComponent>(GeometryCollectionComponents, true);
+			Actor->GetComponents(GeometryCollectionComponents, true);
 
 			if (GeometryCollectionComponents.Num() > 0)
 			{
@@ -119,7 +122,7 @@ bool UFractureActionTool::IsStaticMeshSelected()
 		if (Actor)
 		{
 			TInlineComponentArray<UStaticMeshComponent*> StaticMeshComponents;
-			Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents, true);
+			Actor->GetComponents(StaticMeshComponents, true);
 
 			if (StaticMeshComponents.Num() > 0)
 			{
@@ -307,6 +310,7 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 		{
 			FGeometryCollectionEdit EditCollection(FractureContext.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic, !ExecuteUpdatesShape());
 
+			int32 InitialNumTransforms = FractureContext.GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup);
 			int32 FirstNewGeometryIndex = ExecuteFracture(FractureContext);
 			
 			if (FirstNewGeometryIndex > INDEX_NONE)
@@ -325,10 +329,21 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 				}
 
 				FractureContext.SetSelection(NewTransforms);
-
-				Toolkit->RegenerateHistogram();
+			}
+			else
+			{
+				// either no update was done, or the updated range was not expressible as a final geometry index
+				// -- in the latter case, selection may become invalid, so we should clear it
+				int32 NumTransforms = FractureContext.GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup);
+				TArray<int32>& Selection = FractureContext.GetSelection();
+				if (InitialNumTransforms != NumTransforms)
+				{
+					Selection.Empty();
+				}
+				FractureContext.Sanitize(false);
 			}
 			
+			Toolkit->RegenerateHistogram();
 
 			FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FractureContext.GetGeometryCollection().Get(), -1);
 
@@ -403,3 +418,4 @@ FVector FVisualizationMappings::GetExplodedVector(int32 MappingIdx, const UGeome
 	}
 	return FVector::ZeroVector;
 }
+

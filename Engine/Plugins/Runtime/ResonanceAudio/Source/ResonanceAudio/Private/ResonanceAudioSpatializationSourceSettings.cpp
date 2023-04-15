@@ -4,13 +4,15 @@
 
 #include "ResonanceAudioSpatializationSourceSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ResonanceAudioSpatializationSourceSettings)
+
 #if WITH_EDITOR
-#include "ResonanceAudioDirectivityVisualizer.h"
-#include "ResonanceAudioSettings.h"
-#include "Runtime/Engine/Classes/Components/AudioComponent.h"
+#include "Components/AudioComponent.h"
 #include "Editor.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelEditorViewport.h"
+#include "ResonanceAudioDirectivityVisualizer.h"
+#include "ResonanceAudioSettings.h"
 #endif // WITH_EDITOR
 
 
@@ -142,3 +144,4 @@ void UResonanceAudioSpatializationSourceSettings::SetSoundSourceSpread(float InS
 {
 	Spread = InSpread;
 }
+

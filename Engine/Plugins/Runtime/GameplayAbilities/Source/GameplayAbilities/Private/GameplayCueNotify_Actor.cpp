@@ -6,8 +6,11 @@
 #include "Components/TimelineComponent.h"
 #include "AbilitySystemStats.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "GameplayCueManager.h"
 #include "GameplayCueNotifyTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueNotify_Actor)
 
 
 namespace FAbilitySystemTweaks
@@ -208,7 +211,7 @@ void AGameplayCueNotify_Actor::HandleGameplayCue(AActor* MyTarget, EGameplayCueE
 		}
 	}
 
-	// If cvar is enabled, check that the target no longer has the matched tag before doing remove logic. This is a simple way of supporting stacking, such that if an actor has two sources giving him the same GC tag, it will not be removed when the first one is removed.
+	// If cvar is enabled, check that the target no longer has the matched tag before doing remove logic. This is a simple way of supporting stacking, such that if an actor has two sources giving it the same GC tag, it will not be removed when the first one is removed.
 	if (GameplayCueNotifyTagCheckOnRemove > 0 && EventType == EGameplayCueEvent::Removed)
 	{
 		if (IGameplayTagAssetInterface* TagInterface = Cast<IGameplayTagAssetInterface>(MyTarget))
@@ -404,3 +407,4 @@ void AGameplayCueNotify_Actor::ReuseAfterRecycle()
 {
 	SetActorHiddenInGame(false);
 }
+

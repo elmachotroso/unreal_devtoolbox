@@ -37,6 +37,7 @@ struct FPaths::FStaticData
 	FString         UserFolder;
 	TArray<FString> EngineLocalizationPaths;
 	TArray<FString> EditorLocalizationPaths;
+	TArray<FString> CookedEditorLocalizationPaths;
 	TArray<FString> PropertyNameLocalizationPaths;
 	TArray<FString> ToolTipLocalizationPaths;
 	TArray<FString> GameLocalizationPaths;
@@ -51,6 +52,7 @@ struct FPaths::FStaticData
 	bool bUserFolderInitialized                    = false;
 	bool bEngineLocalizationPathsInitialized       = false;
 	bool bEditorLocalizationPathsInitialized       = false;
+	bool bCookedEditorLocalizationPathsInitialized = false;
 	bool bPropertyNameLocalizationPathsInitialized = false;
 	bool bToolTipLocalizationPathsInitialized      = false;
 	bool bGameLocalizationPathsInitialized         = false;
@@ -395,11 +397,7 @@ FString FPaths::SourceConfigDir()
 
 FString FPaths::GeneratedConfigDir()
 {
-#if PLATFORM_MAC // @todo, move this to Mac FPlatformMisc.
-	return FPlatformProcess::UserPreferencesDir();
-#else
 	return FPlatformMisc::GeneratedConfigDir();
-#endif
 }
 
 FString FPaths::SandboxesDir()
@@ -434,14 +432,8 @@ FString FPaths::AudioCaptureDir()
 
 FString FPaths::ProjectLogDir()
 {
-#if PLATFORM_PS4
-	const FString* OverrideDir = FPS4PlatformFile::GetOverrideLogDirectory();
-	if (OverrideDir != nullptr)
-	{
-		return *OverrideDir;
-	}
-#elif PLATFORM_SWITCH
-	const FString* OverrideDir = FSwitchPlatformFile::GetOverrideLogDirectory();
+#if defined(OVERRIDE_LOG_DIRECTORY_PLATFORM)
+	const FString* OverrideDir = OVERRIDE_LOG_DIRECTORY_PLATFORM::GetOverrideLogDirectory();
 	if (OverrideDir != nullptr)
 	{
 		return *OverrideDir;
@@ -572,6 +564,22 @@ const TArray<FString>& FPaths::GetEditorLocalizationPaths()
 	}
 
 	return StaticData.EditorLocalizationPaths;
+}
+
+const TArray<FString>& FPaths::GetCookedEditorLocalizationPaths()
+{
+	FStaticData& StaticData = TLazySingleton<FStaticData>::Get();
+
+	if (!StaticData.bCookedEditorLocalizationPathsInitialized)
+	{
+		if (GConfig && GConfig->IsReadyForUse())
+		{
+			GConfig->GetArray(TEXT("Internationalization"), TEXT("CookedLocalizationPaths"), StaticData.CookedEditorLocalizationPaths, GEditorIni);
+			StaticData.bCookedEditorLocalizationPathsInitialized = true;
+		}
+	}
+
+	return StaticData.CookedEditorLocalizationPaths;
 }
 
 const TArray<FString>& FPaths::GetPropertyNameLocalizationPaths()
@@ -1045,12 +1053,15 @@ bool FPaths::IsDrive(const FString& InPath)
 	return false;
 }
 
+#if WITH_EDITOR
+const TCHAR* FPaths::GameFeatureRootPrefix()
+{
+	return TEXT("root:/");
+}
+#endif
+
 bool FPaths::IsRelative(const FString& InPath)
 {
-#if WITH_EDITOR
-	static const TCHAR RootPrefix[] = TEXT("root:/");
-#endif // WITH_EDITOR
-
 	// The previous implementation of this function seemed to handle normalized and unnormalized paths, so this one does too for legacy reasons.
 	const uint32 PathLen = InPath.Len();
 	const bool IsRooted = PathLen &&
@@ -1059,7 +1070,7 @@ bool FPaths::IsRelative(const FString& InPath)
 			((InPath[0] == '\\') && (InPath[1] == '\\'))					// Root of the current directory on Windows. Also covers "\\" for UNC or "network" paths.
 			|| (InPath[1] == ':' && FChar::IsAlpha(InPath[0]))				// Starts with "<DriveLetter>:"
 #if WITH_EDITOR
-			|| (InPath.StartsWith(RootPrefix, ESearchCase::IgnoreCase))		// Feature packs use this
+			|| (InPath.StartsWith(GameFeatureRootPrefix(), ESearchCase::IgnoreCase))
 #endif // WITH_EDITOR
 			))
 		);
@@ -1089,7 +1100,7 @@ void FPaths::NormalizeDirectoryName(FString& InPath)
 
 bool FPaths::CollapseRelativeDirectories(FString& InPath)
 {
-	const TCHAR ParentDir[] = TEXT("/..");
+	const auto& ParentDir = TEXT("/..");
 	const int32 ParentDirLength = UE_ARRAY_COUNT( ParentDir ) - 1; // To avoid hardcoded values
 
 	for (;;)
@@ -1397,7 +1408,7 @@ FString FPaths::GetInvalidFileSystemChars()
 	// # isn't legal. Used for revision specifiers in P4/SVN, and also not allowed on Windows anyway
 	// @ isn't legal. Used for revision/label specifiers in P4/SVN
 	// ^ isn't legal. While the file-system won't complain about this character, Visual Studio will			
-	static const TCHAR RestrictedChars[] = TEXT("/?:&\\*\"<>|%#@^");
+	static const TCHAR* RestrictedChars = TEXT("/?:&\\*\"<>|%#@^");
 	return RestrictedChars;
 }
 

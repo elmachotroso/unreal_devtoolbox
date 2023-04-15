@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "DSP/SineWaveTableOsc.h"
 #include "MetasoundFacade.h"
 #include "Internationalization/Text.h"
@@ -50,6 +50,8 @@ namespace Metasound
 				Info.Author = PluginAuthor;
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
+				Info.CategoryHierarchy.Emplace(NodeCategories::Generators);
+				Info.Keywords = { METASOUND_LOCTEXT("AdditiveSynthesisKeyword", "Synthesis") };
 
 				return Info;
 			};
@@ -64,15 +66,15 @@ namespace Metasound
 
 			static const FVertexInterface Interface(
 				FInputVertexInterface(
-					TInputDataVertexModel<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(BaseFrequency), 440.0f),
-					TInputDataVertexModel<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(HarmonicMultipliers)),
-					TInputDataVertexModel<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(Amplitudes)),
-					TInputDataVertexModel<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(Phases)),
-					TInputDataVertexModel<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(PanAmounts))
+					TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(BaseFrequency), 440.0f),
+					TInputDataVertex<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(HarmonicMultipliers)),
+					TInputDataVertex<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(Amplitudes)),
+					TInputDataVertex<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(Phases)),
+					TInputDataVertex<FInputFloatArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(PanAmounts))
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(LeftAudioOut)),
-					TOutputDataVertexModel<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(RightAudioOut))
+					TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(LeftAudioOut)),
+					TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(RightAudioOut))
 				)
 			);
 
@@ -242,8 +244,11 @@ namespace Metasound
 				float NewRightGain = RightPanGain * BaseGain;
 
 				// Mix into output buffer
-				Audio::MixInBufferFast(ScratchBuffer.GetData(), LeftAudioOut->GetData(), NumSamples, NewLeftGain);
-				Audio::MixInBufferFast(ScratchBuffer.GetData(), RightAudioOut->GetData(), NumSamples, NewRightGain);
+				TArrayView<const float> ScratchBufferView(ScratchBuffer.GetData(), NumSamples);
+				TArrayView<float> LeftAudioOutView(LeftAudioOut->GetData(), NumSamples);
+				TArrayView<float> RightAudioOutView(RightAudioOut->GetData(), NumSamples);
+				Audio::ArrayMixIn(ScratchBufferView, LeftAudioOutView, NewLeftGain);
+				Audio::ArrayMixIn(ScratchBufferView, RightAudioOutView, NewRightGain);
 			}
 		}
 

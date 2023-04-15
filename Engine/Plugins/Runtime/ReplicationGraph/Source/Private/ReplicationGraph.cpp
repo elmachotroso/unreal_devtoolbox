@@ -62,9 +62,19 @@
 #include "Net/Core/Trace/NetTrace.h"
 #include "Engine/ServerStatReplicator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ReplicationGraph)
+
 #if USE_SERVER_PERF_COUNTERS
 #include "PerfCountersModule.h"
 #endif
+
+namespace UE::Net::Private
+{
+	// Maintain pre-large world bounds for now, since the GridSpatialization2D node
+	// uses a densely-stored grid and risks very high memory usage at large coordinates.
+	constexpr double RepGraphWorldMax = UE_OLD_WORLD_MAX;
+	constexpr double RepGraphHalfWorldMax = UE_OLD_HALF_WORLD_MAX;
+}
 
 int32 CVar_RepGraph_Pause = 0;
 static FAutoConsoleVariableRef CVarRepGraphPause(TEXT("Net.RepGraph.Pause"), CVar_RepGraph_Pause,
@@ -151,6 +161,7 @@ CSV_DEFINE_CATEGORY(ReplicationGraphVisibleLevels, WITH_SERVER_CODE);
 CSV_DEFINE_CATEGORY(ReplicationGraphForcedUpdates, WITH_SERVER_CODE);
 CSV_DEFINE_CATEGORY(ReplicationGraphCleanMS, WITH_SERVER_CODE);
 CSV_DEFINE_CATEGORY(ReplicationGraphCleanNumReps, WITH_SERVER_CODE);
+CSV_DEFINE_CATEGORY(ReplicationGraphRedundantMS, WITH_SERVER_CODE);
 
 CSV_DEFINE_CATEGORY(ReplicationGraph, WITH_SERVER_CODE);
 
@@ -189,6 +200,7 @@ REPGRAPH_DEVCVAR_SHIPCONST(int32, "Net.RepGraph.ActorChannelWarnThreshold", CVar
 TMap<FActorConnectionPair, int32> ActorChannelCreateCounter;
 TMap<FActorConnectionPair, int32> ActorChannelDestroyCounter;
 
+#if WITH_SERVER_CODE
 static TAutoConsoleVariable<FString> CVarRepGraphConditionalPairActorName(TEXT("Net.RepGraph.ConditionalPairName"), TEXT(""), TEXT(""), ECVF_Default );
 void UpdateActorConnectionCounter(AActor* InActor, UNetConnection* InConnection, TMap<FActorConnectionPair, int32>& Counter)
 {
@@ -215,6 +227,7 @@ void UpdateActorConnectionCounter(AActor* InActor, UNetConnection* InConnection,
 	}
 #endif
 }
+#endif // WITH_SERVER_CODE
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -299,6 +312,9 @@ void UReplicationGraph::Serialize(FArchive& Ar)
 
 void UReplicationGraph::InitForNetDriver(UNetDriver* InNetDriver)
 {
+#if WITH_SERVER_CODE
+	LLM_SCOPE_BYTAG(NetRepGraph);
+
 	NetDriver = InNetDriver;
 
 	InitGlobalActorClassSettings();
@@ -308,6 +324,7 @@ void UReplicationGraph::InitForNetDriver(UNetDriver* InNetDriver)
 	{
 		AddClientConnection(ClientConnection);
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraph::TearDown()
@@ -380,6 +397,7 @@ void UReplicationGraph::RemoveConnectionGraphNode(UReplicationGraphNode* GraphNo
 
 UNetReplicationGraphConnection* UReplicationGraph::FindOrAddConnectionManager(UNetConnection* NetConnection)
 {
+#if WITH_SERVER_CODE
 	check(NetConnection);
 
 	// Children do not have a connection manager, this is handled by their parent.
@@ -415,10 +433,14 @@ UNetReplicationGraphConnection* UReplicationGraph::FindOrAddConnectionManager(UN
 	UNetReplicationGraphConnection* NewManager = CreateClientConnectionManagerInternal(NetConnection);
 	PendingConnections.Add(NewManager);
 	return NewManager;
+#else
+	return nullptr;
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraph::AddClientConnection(UNetConnection* NetConnection)
 {
+#if WITH_SERVER_CODE
 	// Children do not have a connection manager, do not proceed with this function in this case.
 	// Default behavior never calls this function with child connections anyways, so this is really only here for protection.
 	if (NetConnection->GetUChildConnection() != nullptr)
@@ -443,6 +465,7 @@ void UReplicationGraph::AddClientConnection(UNetConnection* NetConnection)
 
 	// Create it
 	Connections.Add(CreateClientConnectionManagerInternal(NetConnection));
+#endif // WITH_SERVER_CODE
 }
 
 UNetReplicationGraphConnection* UReplicationGraph::CreateClientConnectionManagerInternal(UNetConnection* Connection)
@@ -547,6 +570,7 @@ void UReplicationGraph::SetRepDriverWorld(UWorld* InWorld)
 
 void UReplicationGraph::InitializeActorsInWorld(UWorld* InWorld)
 {
+#if WITH_SERVER_CODE
 	check(GraphGlobals.IsValid());
 	checkf(GraphGlobals->World == InWorld, TEXT("UReplicationGraph::InitializeActorsInWorld world mismatch. %s vs %s"), *GetPathNameSafe(GraphGlobals->World), *GetPathNameSafe(InWorld));
 
@@ -565,10 +589,14 @@ void UReplicationGraph::InitializeActorsInWorld(UWorld* InWorld)
 			});
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraph::InitializeForWorld(UWorld* World)
 {
+#if WITH_SERVER_CODE
+	LLM_SCOPE_BYTAG(NetRepGraph);
+
 	ActiveNetworkActors.Reset();
 	GlobalActorReplicationInfoMap.ResetActorMap();
 
@@ -593,10 +621,12 @@ void UReplicationGraph::InitializeForWorld(UWorld* World)
 			}
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraph::AddNetworkActor(AActor* Actor)
 {
+	LLM_SCOPE_BYTAG(NetRepGraph);
 	QUICK_SCOPE_CYCLE_COUNTER(UReplicationGraph_AddNetworkActor);
 
 	if (IsActorValidForReplicationGather(Actor) == false)
@@ -686,7 +716,9 @@ void UReplicationGraph::ForceNetUpdate(AActor* Actor)
 	if (FGlobalActorReplicationInfo* RepInfo = GlobalActorReplicationInfoMap.Find(Actor))
 	{
 		RepInfo->ForceNetUpdateFrame = ReplicationGraphFrame;
+#if REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 		RepInfo->Events.ForceNetUpdate.Broadcast(Actor, *RepInfo);
+#endif // REPGRAPH_ENABLE_FORCENETUPDATE_DELEGATE
 
 		CSVTracker.PostActorForceUpdated(Actor->GetClass());
 	}
@@ -864,6 +896,8 @@ FNativeClassAccumulator NoChangeClassAccumulator;
 
 int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 {
+	LLM_SCOPE_BYTAG(NetRepGraph);
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (CVar_RepGraph_Pause)
 	{
@@ -915,6 +949,7 @@ int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 		}
 	};
 
+#if WITH_SERVER_CODE
 	// -------------------------------------------------------
 	//	PREPARE (Global)
 	// -------------------------------------------------------
@@ -1017,6 +1052,8 @@ int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 		ConnectionManager->GetClientVisibleLevelNames(AllVisibleLevelNames);
 		const FConnectionGatherActorListParameters Parameters(ConnectionViewers, *ConnectionManager, AllVisibleLevelNames, FrameNum, GatheredReplicationListsForConnection);
 
+		UNetReplicationGraphConnection::FRepGraphDestructionViewerInfoArray DestructionViewersInfo;
+
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(NET_ReplicateActors_GatherForConnection);
 
@@ -1037,6 +1074,14 @@ int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 				// No lists were returned, kind of weird but not fatal. Early out because code below assumes at least 1 list
 				UE_LOG(LogReplicationGraph, Warning, TEXT("No Replication Lists were returned for connection"));
 				return 0;
+			}
+
+			for( const FNetViewer& NetViewer : ConnectionViewers )
+			{
+				FLastLocationGatherInfo* LastInfoForViewer = ConnectionManager->LastGatherLocations.FindByKey<UNetConnection*>(NetViewer.Connection);
+				check(LastInfoForViewer);
+
+				DestructionViewersInfo.Emplace(UNetReplicationGraphConnection::FRepGraphDestructionViewerInfo(NetViewer.ViewLocation, LastInfoForViewer->LastOutOfRangeLocationCheck));
 			}
 		}
 
@@ -1117,7 +1162,7 @@ int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 			// ------------------------------------------
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(NET_ReplicateActors_ReplicateDestructionInfos);
-				ConnectionManager->ReplicateDestructionInfos(ConnectionViewers, DestructionSettings.DestructInfoMaxDistanceSquared);
+				ConnectionManager->ReplicateDestructionInfos(DestructionViewersInfo, DestructionSettings);
 			}
 
 			// ------------------------------------------
@@ -1164,11 +1209,13 @@ int32 UReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 	PostServerReplicateStats(FrameReplicationStats);
 
 	CSVTracker.EndReplicationFrame();
+#endif // WITH_SERVER_CODE
 	return 0;
 }
 
 void UReplicationGraph::ReplicateActorListsForConnections_Default(UNetReplicationGraphConnection* ConnectionManager, FGatheredReplicationActorLists& GatheredReplicationListsForConnection, FNetViewerArray& Viewers)
 {
+#if WITH_SERVER_CODE
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	const bool bEnableFullActorPrioritizationDetails = DO_REPGRAPH_DETAILS(bEnableFullActorPrioritizationDetailsAllConnections || ConnectionManager->bEnableFullActorPrioritizationDetails);
 	const bool bDoDistanceCull = (CVar_RepGraph_SkipDistanceCull == 0);
@@ -1419,10 +1466,12 @@ void UReplicationGraph::ReplicateActorListsForConnections_Default(UNetReplicatio
 		UE_LOG(LogReplicationGraph, Display, TEXT("Gathered Lists: %d Gathered Actors: %d  PrioritizedActors: %d"), NumGatheredListsOnConnection, NumGatheredActorsOnConnection, NumPrioritizedActorsOnConnection);
 		UE_LOG(LogReplicationGraph, Display, TEXT("Connection Loaded Streaming Levels: %d"), NetConnection->ClientVisibleLevelNames.Num());
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraph::ReplicateActorsForConnection(UNetConnection* NetConnection, FPerConnectionActorInfoMap& ConnectionActorInfoMap, UNetReplicationGraphConnection* ConnectionManager, const uint32 FrameNum)
 {
+#if WITH_SERVER_CODE
 	QUICK_SCOPE_CYCLE_COUNTER(NET_ReplicateActors_ReplicateActorsForConnection);
 
 	for (int32 ActorIdx = 0; ActorIdx < PrioritizedReplicationList.Items.Num(); ++ActorIdx)
@@ -1456,6 +1505,7 @@ void UReplicationGraph::ReplicateActorsForConnection(UNetConnection* NetConnecti
 			break;
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 struct FScopedQueuedBits
@@ -1509,6 +1559,7 @@ struct FScopedFastPathTracker
 
 void UReplicationGraph::ReplicateActorListsForConnections_FastShared(UNetReplicationGraphConnection* ConnectionManager, FGatheredReplicationActorLists& GatheredReplicationListsForConnection, FNetViewerArray& Viewers)
 {
+#if WITH_SERVER_CODE
 	if (CVar_RepGraph_EnableFastSharedPath == false)
 	{
 		return;
@@ -1623,12 +1674,14 @@ void UReplicationGraph::ReplicateActorListsForConnections_FastShared(UNetReplica
 			}
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 REPGRAPH_DEVCVAR_SHIPCONST(int32, "Net.RepGraph.FastShared.ForceFull", CVar_RepGraph_FastShared_ForceFull, 0, "Redirects calls to ReplicateSingleActor_FastShared to ReplicateSingleActor");
 
 int64 UReplicationGraph::ReplicateSingleActor_FastShared(AActor* Actor, FConnectionReplicationActorInfo& ConnectionData, FGlobalActorReplicationInfo& GlobalActorInfo, UNetReplicationGraphConnection& ConnectionManager, const uint32 FrameNum)
 {
+#if WITH_SERVER_CODE
 	UNetConnection* NetConnection = ConnectionManager.NetConnection;
 
 	// No matter what we consider this FastShared rep to happen. Even if the actor doesn't produce a bunch or its empty or stale, etc. We still consider this replication to have happened
@@ -1728,7 +1781,7 @@ int64 UReplicationGraph::ReplicateSingleActor_FastShared(AActor* Actor, FConnect
 
 	if (OutBunch.GetNumBits() <= 0)
 	{
-		// Empty bunch - no need to send. This means we aren't fast repping this guy this frame
+		// Empty bunch - no need to send. This means we aren't fast repping this actor this frame
 		return 0;
 	}
 
@@ -1740,26 +1793,22 @@ int64 UReplicationGraph::ReplicateSingleActor_FastShared(AActor* Actor, FConnect
 
 	// SendIt
 	{
-		TGuardValue<bool> Guard(ActorChannel->bHoldQueuedExportBunchesAndGUIDs, true);		// Don't export queued GUIDs in fast path
+		FGuardValue_Bitfield(ActorChannel->bHoldQueuedExportBunchesAndGUIDs, true);
 		
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && (UE_NET_TRACE_ENABLED)
-		// If we want to trace the actual contents of the shared path, we need to create a temporary collector associated with the shared bunch, collect the shared data and report it every time it is reused
-		// For now we just set the debug name of the the bunch to be able to give some context on what this bunch contains
-		if (OutBunch.DebugString.IsEmpty())
-		{
-			OutBunch.DebugString = FString(TEXT("ReplicateSingleActor_FastShared"));
-		}
-#endif
 		ActorChannel->SendBunch(&OutBunch, false);
 	}
 
 	ensureAlwaysMsgf(OutBunch.bHasMustBeMappedGUIDs == 0, TEXT("FastShared bHasMustBeMappedGUIDs! %s"), *Actor->GetPathName());
 
 	return OutBunch.GetNumBits();
+#else
+	return 0;
+#endif // WITH_SERVER_CODE
 }
 
 int64 UReplicationGraph::ReplicateSingleActor(AActor* Actor, FConnectionReplicationActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalActorInfo, FPerConnectionActorInfoMap& ConnectionActorInfoMap, UNetReplicationGraphConnection& ConnectionManager, const uint32 FrameNum)
 {
+#if WITH_SERVER_CODE
 	RG_QUICK_SCOPE_CYCLE_COUNTER(NET_ReplicateActors_ReplicateSingleActor);
 
 	// These checks will happen anyway in UActorChannel::ReplicateActor, but we need to be able to detect them to prevent crashes.
@@ -1784,6 +1833,8 @@ int64 UReplicationGraph::ReplicateSingleActor(AActor* Actor, FConnectionReplicat
 		return 0;
 	}
 
+	FReplicationGraphCSVTracker::EActorFlags CSVFlags = FReplicationGraphCSVTracker::EActorFlags::None;
+
 	if (LIKELY(ActorInfo.Channel))
 	{
 		if (UNLIKELY(ActorInfo.Channel->Closing))
@@ -1795,6 +1846,17 @@ int64 UReplicationGraph::ReplicateSingleActor(AActor* Actor, FConnectionReplicat
 		{
 			return 0;
 		}
+
+		// If this actor has passed the repgraph last-rep-frame check for normal replication,
+		// repgraph thinks the actor has not been replicated to this connection yet this frame.
+		// However, if the actor was replicated due to an RPC opening a new channel, repgraph is unaware
+		// and will attempt to replicate it here.
+#if REPGRAPH_CSV_TRACKER
+		if (ActorInfo.Channel->LastUpdateTime == NetDriver->GetElapsedTime())
+		{
+			CSVFlags |= FReplicationGraphCSVTracker::EActorFlags::AlreadyReplicatedThisFrame;
+		}
+#endif
 	}
 
 	FrameReplicationStats.NumReplicatedActors++;
@@ -1887,7 +1949,12 @@ int64 UReplicationGraph::ReplicateSingleActor(AActor* Actor, FConnectionReplicat
 	const bool bIsTrafficActorDiscovery = ActorDiscoveryMaxBitsPerFrame > 0 && (ActorInfo.Channel && ActorInfo.Channel->SpawnAcked == false);
 	const bool bIsActorDiscoveryBudgetFull = bIsTrafficActorDiscovery && (ConnectionManager.QueuedBitsForActorDiscovery >= ActorDiscoveryMaxBitsPerFrame);
 
-	CSVTracker.PostReplicateActor(ActorClass, DeltaReplicateActorTimeSeconds, BitsWritten, bIsTrafficActorDiscovery && !bIsActorDiscoveryBudgetFull);
+	if (bIsTrafficActorDiscovery && !bIsActorDiscoveryBudgetFull)
+	{
+		CSVFlags |= FReplicationGraphCSVTracker::EActorFlags::IsInDiscovery;
+	}
+
+	CSVTracker.PostReplicateActor(ActorClass, DeltaReplicateActorTimeSeconds, BitsWritten, CSVFlags);
 
 	// ----------------------------
 	//	Dependent actors
@@ -1940,6 +2007,9 @@ int64 UReplicationGraph::ReplicateSingleActor(AActor* Actor, FConnectionReplicat
 	}
 
 	return BitsWritten;
+#else
+	return 0;
+#endif //WITH_SERVER_CODE
 }
 
 void UReplicationGraph::HandleStarvedActorList(const FPrioritizedRepList& List, int32 StartIdx, FPerConnectionActorInfoMap& ConnectionActorInfoMap, uint32 FrameNum)
@@ -1983,6 +2053,7 @@ void UReplicationGraph::UpdateActorChannelCloseFrameNum(AActor* Actor, FConnecti
 
 bool UReplicationGraph::ProcessRemoteFunction(class AActor* Actor, UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack, class UObject* SubObject )
 {
+#if WITH_SERVER_CODE
 	// ----------------------------------
 	// Setup
 	// ----------------------------------
@@ -2037,14 +2108,50 @@ bool UReplicationGraph::ProcessRemoteFunction(class AActor* Actor, UFunction* Fu
 
 			// It sucks we have to a temp writer like this, but we don't know how big the payload will be until we serialize it
 			FNetBitWriter TempWriter(nullptr, 0);
+
+#if UE_NET_TRACE_ENABLED
+			// Create trace collector if tracing is enabled for the target bunch
+			FNetTraceCollector* Collector = GetTraceCollector(*FastSharedReplicationBunch);
+			if (Collector)
+			{
+				Collector->Reset();
+			}
+			else
+			{
+				Collector = UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace);
+				SetTraceCollector(*FastSharedReplicationBunch, Collector);
+			}
+
+			// We use the collector from the shared bunch
+			SetTraceCollector(TempWriter, Collector);
+#endif // UE_NET_TRACE_ENABLED
+
 			TSharedPtr<FRepLayout> RepLayout = NetDriver->GetFunctionRepLayout( Function );
 			RepLayout->SendPropertiesForRPC(Function, FastSharedReplicationChannel, TempWriter, Parameters);
 
 			FNetBitWriter TempBlockWriter(nullptr, 0);
+
+#if UE_NET_TRACE_ENABLED
+			// Ugliness to get data reported correctly, we basically fold the data from TempWriter into TempBlockWriter and then to Bunch
+			// Create trace collector if tracing is enabled for the target bunch			
+			SetTraceCollector(TempBlockWriter, Collector ? UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace) : nullptr);
+#endif // UE_NET_TRACE_ENABLED
+
 			FastSharedReplicationChannel->WriteFieldHeaderAndPayload( TempBlockWriter, ClassCache, FieldCache, nullptr, TempWriter, true );
 
+#if UE_NET_TRACE_ENABLED
+			// As we have used the collector we need to reset it before injecting the final data
+			if (Collector)
+			{
+				Collector->Reset();
+			}
+			UE_NET_TRACE_OBJECT_SCOPE(FastSharedReplicationChannel->ActorNetGUID, *FastSharedReplicationBunch, Collector, ENetTraceVerbosity::Trace);
+#endif
 			FastSharedReplicationChannel->WriteContentBlockPayload( TargetObj, *FastSharedReplicationBunch, false, TempBlockWriter );
 			
+			// Release temporary collector
+			UE_NET_TRACE_DESTROY_COLLECTOR(GetTraceCollector(TempBlockWriter));
+
 			FastSharedReplicationBunch = nullptr;
 			FastSharedReplicationChannel = nullptr;
 			FastSharedReplicationFuncName = NAME_None;
@@ -2246,6 +2353,7 @@ bool UReplicationGraph::ProcessRemoteFunction(class AActor* Actor, UFunction* Fu
 	{
 		UE_LOG(LogNet, Warning, TEXT("UReplicationGraph::ProcessRemoteFunction: No owning connection for actor %s. Function %s will not be processed."), *Actor->GetName(), *Function->GetName());
 	}
+#endif // WITH_SERVER_CODE
 
 	// return true because we don't want the net driver to do anything else
 	return true;
@@ -2374,7 +2482,7 @@ void UNetReplicationGraphConnection::Serialize(FArchive& Ar)
 		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UNetReplicationGraphConnection::Serialize");
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ActorInfoMap", ActorInfoMap.CountBytes(Ar));
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ActorInfoMap", OnClientVisibleLevelNameAddMap.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("OnClientVisibleLevelNameAddMap", OnClientVisibleLevelNameAddMap.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingDestructionInfoList",
 			PendingDestructInfoList.CountBytes(Ar);
@@ -2405,6 +2513,7 @@ void UNetReplicationGraphConnection::TearDown()
 }
 void UNetReplicationGraphConnection::NotifyActorChannelAdded(AActor* Actor, class UActorChannel* Channel)
 {
+#if WITH_SERVER_CODE
 	UpdateActorConnectionCounter(Actor, Channel->Connection, ActorChannelCreateCounter);
 
 	if (RepGraphConditionalActorBreakpoint(Actor, Channel->Connection))
@@ -2428,6 +2537,7 @@ void UNetReplicationGraphConnection::NotifyActorChannelAdded(AActor* Actor, clas
 
 	ActorInfo.Channel = Channel;
 	ActorInfoMap.AddChannel(Actor, Channel);
+#endif // WITH_SERVER_CODE
 }
 
 void UNetReplicationGraphConnection::NotifyActorChannelRemoved(AActor* Actor)
@@ -2522,7 +2632,11 @@ void UNetReplicationGraphConnection::RemoveConnectionGraphNode(UReplicationGraph
 bool UNetReplicationGraphConnection::PrepareForReplication()
 {
 	NetConnection->ViewTarget = NetConnection->PlayerController ? NetConnection->PlayerController->GetViewTarget() : ToRawPtr(NetConnection->OwningActor);
-
+	
+	UWorld* CurrentWorld = GetWorld();
+	UPackage* CurrentWorldPackage = CurrentWorld ? CurrentWorld->GetPackage() : nullptr;
+	bool bConnectionHasCorrectWorld = CurrentWorldPackage ? NetConnection->GetClientWorldPackageName() == CurrentWorldPackage->GetFName() : true;
+	
 	// Set any children viewtargets
 	for (int32 i = 0; i < NetConnection->Children.Num(); ++i)
 	{
@@ -2530,11 +2644,12 @@ bool UNetReplicationGraphConnection::PrepareForReplication()
 		CurChild->ViewTarget = CurChild->PlayerController ? CurChild->PlayerController->GetViewTarget() : ToRawPtr(CurChild->OwningActor);
 	}
 
-	return (NetConnection->GetConnectionState() != USOCK_Closed) && (NetConnection->ViewTarget != nullptr);
+	return (NetConnection->GetConnectionState() != USOCK_Closed) && (NetConnection->ViewTarget != nullptr) && bConnectionHasCorrectWorld;
 }
 
 void UNetReplicationGraphConnection::NotifyAddDestructionInfo(FActorDestructionInfo* DestructInfo)
 {
+#if WITH_SERVER_CODE
 	if (DestructInfo->StreamingLevelName != NAME_None)
 	{
 		if (NetConnection->ClientVisibleLevelNames.Contains(DestructInfo->StreamingLevelName) == false)
@@ -2563,10 +2678,12 @@ void UNetReplicationGraphConnection::NotifyAddDestructionInfo(FActorDestructionI
 
 	PendingDestructInfoList.Emplace( FCachedDestructInfo(DestructInfo) );
 	//UE_LOG(LogReplicationGraph, Display, TEXT("::NotifyAddDestructionInfo. Connection: %s. DestructInfo: %s. NewTotal: %d"), *NetConnection->Describe(), *DestructInfo->PathName, PendingDestructInfoList.Num());
+#endif // WITH_SERVER_CODE
 }
 
 void UNetReplicationGraphConnection::NotifyAddDormantDestructionInfo(AActor* Actor)
 {
+#if WITH_SERVER_CODE
 	if (Actor && NetConnection && NetConnection->Driver && NetConnection->Driver->GuidCache)
 	{
 		ULevel* Level = Actor->GetLevel();
@@ -2601,6 +2718,7 @@ void UNetReplicationGraphConnection::NotifyAddDormantDestructionInfo(AActor* Act
 			Info.PathName = Actor->GetName();
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UNetReplicationGraphConnection::NotifyRemoveDestructionInfo(FActorDestructionInfo* DestructInfo)
@@ -2705,28 +2823,37 @@ void UNetReplicationGraphConnection::NotifyClientVisibleLevelNamesAdd(FName Leve
 	}
 }
 
-int64 UNetReplicationGraphConnection::ReplicateDestructionInfos(const FNetViewerArray& Viewers, const float DestructInfoMaxDistanceSquared)
+int64 UNetReplicationGraphConnection::ReplicateDestructionInfos(const FRepGraphDestructionViewerInfoArray& DestructionViewersInfo, const FReplicationGraphDestructionSettings& DestructionSettings)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(ReplicateDestructionInfos);
-
 	int64 NumBits = 0;
+#if WITH_SERVER_CODE
+
 	for (int32 idx=PendingDestructInfoList.Num()-1; idx >=0; --idx)
 	{
 		FCachedDestructInfo& Info = PendingDestructInfoList[idx];
 		FActorDestructionInfo* DestructInfo = Info.DestructionInfo;
 		bool bSendDestructionInfo = false;
+		bool bAddToOutOfRangeList = true;
 
 		if (!DestructInfo->bIgnoreDistanceCulling)
 		{
 			// Only send destruction info if the viewers are close enough to the destroyed actor
-			for (const FNetViewer& CurViewer : Viewers)
+			for (const FRepGraphDestructionViewerInfo& Viewer : DestructionViewersInfo)
 			{
-				const float DistSquared = FVector::DistSquared2D(Info.CachedPosition, CurViewer.ViewLocation);
+				const float DistSquared = FVector::DistSquared2D(Info.CachedPosition, Viewer.ViewerLocation);
 
-				if (DistSquared < DestructInfoMaxDistanceSquared)
+				if (DistSquared < DestructionSettings.DestructInfoMaxDistanceSquared)
 				{
 					bSendDestructionInfo = true;
 					break;
+				}
+
+				const float OutOfRangeDistSquared = FVector::DistSquared2D(Info.CachedPosition, Viewer.LastOutOfRangeLocationCheck);
+				
+				// Add the actor to the OutOfRangeList only if it is outside the range from the next check. If not, keep it in the destruction list to be evaluated next frame.
+				if (OutOfRangeDistSquared <= DestructionSettings.MaxPendingListDistanceSquared)
+				{
+					bAddToOutOfRangeList = false;
 				}
 			}
 		}
@@ -2741,23 +2868,24 @@ int64 UNetReplicationGraphConnection::ReplicateDestructionInfos(const FNetViewer
 				TrackedDestructionInfoPtrs.Remove(DestructInfo);
 			}
 		}
-		else
+		else if (bAddToOutOfRangeList)
 		{
 			// Add the far actor to the out of range list so we don't evaluate it every frame
 			OutOfRangeDestroyedActors.Emplace(MoveTemp(Info));
 			PendingDestructInfoList.RemoveAtSwap(idx, 1, false);
 		}
 	}
-
+#endif // #if WITH_SERVER_CODE
 	return NumBits;
 }
 
 int64 UNetReplicationGraphConnection::ReplicateDormantDestructionInfos()
 {
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(ReplicateDormantDestructionInfos);
-	QUICK_SCOPE_CYCLE_COUNTER(ReplicateDormantDestructionInfos);
 
 	int64 NumBits = 0;
+
+#if WITH_SERVER_CODE
 
 	if (NetConnection && NetConnection->Driver)
 	{
@@ -2778,6 +2906,7 @@ int64 UNetReplicationGraphConnection::ReplicateDormantDestructionInfos()
 		PendingDormantDestructList.Reset();
 		TrackedDormantDestructionInfos.Reset();
 	}
+#endif // WITH_SERVER_CODE
 
 	return NumBits;
 }
@@ -2826,7 +2955,7 @@ void UNetReplicationGraphConnection::OnUpdateViewerLocation(FLastLocationGatherI
 
 			const float ActorDistSquared = FVector::DistSquared2D(CachedInfo.CachedPosition, Viewer.ViewLocation);
 				
-			if (ActorDistSquared < DestructionSettings.DestructInfoMaxDistanceSquared)
+			if (ActorDistSquared <= DestructionSettings.MaxPendingListDistanceSquared)
 			{
 				// Swap the info into the Pending List to get it replicated
 				PendingDestructInfoList.Emplace(MoveTemp(CachedInfo));
@@ -2855,6 +2984,18 @@ void UNetReplicationGraphConnection::SetActorNotDormantOnConnection(AActor* InAc
 UReplicationGraphNode::UReplicationGraphNode()
 {
 
+}
+
+void UReplicationGraphNode::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsCountingMemory())
+	{
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UReplicationGraphNode::Serialize");
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("AllChildNodes", AllChildNodes.CountBytes(Ar));
+	}
 }
 
 void UReplicationGraphNode::NotifyResetAllNetworkActors()
@@ -3052,6 +3193,19 @@ void FStreamingLevelActorListCollection::TearDown()
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 
+void UReplicationGraphNode_ActorList::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsCountingMemory())
+	{
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UReplicationGraphNode_ActorList::Serialize");
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ReplicationActorList", ReplicationActorList.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("StreamingLevelCollection", StreamingLevelCollection.CountBytes(Ar));
+	}
+}
+
 void UReplicationGraphNode_ActorList::NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo)
 {
 	UE_CLOG(CVar_RepGraph_LogActorAdd>0, LogReplicationGraph, Display, TEXT("UReplicationGraphNode_ActorList::NotifyAddNetworkActor %s on %s."), *ActorInfo.Actor->GetFullName(), *GetPathName());
@@ -3192,6 +3346,29 @@ void UReplicationGraphNode_ActorList::LogActorList(FReplicationGraphDebugInfo& D
 
 UReplicationGraphNode_ActorListFrequencyBuckets::FSettings UReplicationGraphNode_ActorListFrequencyBuckets::DefaultSettings;
 
+void UReplicationGraphNode_ActorListFrequencyBuckets::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsCountingMemory())
+	{
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UReplicationGraphNode_ActorListFrequencyBuckets::Serialize");
+		if (Settings.IsValid())
+		{
+			GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Settings", Settings->CountBytes(Ar));
+		}
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("NonStreamingCollection",
+			NonStreamingCollection.CountBytes(Ar);
+			for (const FActorRepListRefView& RepList : NonStreamingCollection)
+			{
+				RepList.CountBytes(Ar);
+			}
+		);
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("StreamingLevelCollection", StreamingLevelCollection.CountBytes(Ar));
+	}
+}
+
 void UReplicationGraphNode_ActorListFrequencyBuckets::NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo)
 {
 	UE_CLOG(CVar_RepGraph_LogActorAdd>0, LogReplicationGraph, Display, TEXT("UReplicationGraphNode_ActorListFrequencyBuckets::NotifyAddNetworkActor %s on %s."), *ActorInfo.Actor->GetFullName(), *GetPathName());
@@ -3284,6 +3461,7 @@ void UReplicationGraphNode_ActorListFrequencyBuckets::NotifyResetAllNetworkActor
 
 void UReplicationGraphNode_ActorListFrequencyBuckets::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+#if WITH_SERVER_CODE
 	const FSettings& MySettings = GetSettings();
 	const uint32 ReplicationFrameNum = Params.ReplicationFrameNum;
 	if (MySettings.EnableFastPath)
@@ -3315,6 +3493,7 @@ void UReplicationGraphNode_ActorListFrequencyBuckets::GatherActorListsForConnect
 	}
 
 	StreamingLevelCollection.Gather(Params);
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_ActorListFrequencyBuckets::SetNonStreamingCollectionSize(const int32 NewSize)
@@ -3488,6 +3667,7 @@ FORCEINLINE bool ReplicatesEveryFrame(const FConnectionReplicationActorInfo& Con
 
 void UReplicationGraphNode_DynamicSpatialFrequency::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+#if WITH_SERVER_CODE
 	repCheck(GraphGlobals.IsValid());
 
 	UReplicationGraph* RepGraph = GraphGlobals->ReplicationGraph;
@@ -3671,10 +3851,13 @@ void UReplicationGraphNode_DynamicSpatialFrequency::GatherActorListsForConnectio
 			UE_LOG(LogReplicationGraph, Display, TEXT("Uncapped bandwidth usage of UReplicationGraphNode_DynamicSpatialFrequency = %d bits -> %d bytes -> %.2f KBytes/sec"), BitsWritten, (BitsWritten+7) >> 3,  ((float)((BitsWritten+7)>>3)/1024.f) * GraphGlobals->ReplicationGraph->NetDriver->NetServerMaxTickRate);
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 REPGRAPH_DEVCVAR_SHIPCONST(int32, "Net.RepGraph.DynamicSpatialFrequency.Draw", CVar_RepGraph_DynamicSpatialFrequency_Draw, 0, "");
-REPGRAPH_DEVCVAR_SHIPCONST(int32, "Net.RepGraph.DynamicSpatialFrequency.ForceMaxFreq", CVar_RepGraph_DynamicSpatialFrequency_ForceMaxFreq, 0, "Forces DSF to set max frame replication periods on all actors (1 frame rep periods). 1 = default replication. 2 = fast path. 3 = Both (effectively, default)");
+
+int32 CVar_RepGraph_DynamicSpatialFrequency_ForceMaxFreq = 0;
+static FAutoConsoleVariableRef CVarRepGraphDynamicSpatialFrequencyForceMaxFreq(TEXT("Net.RepGraph.DynamicSpatialFrequency.ForceMaxFreq"), CVar_RepGraph_DynamicSpatialFrequency_ForceMaxFreq, TEXT("Forces DSF to set max frame replication periods on all actors (1 frame rep periods). 1 = default replication. 2 = fast path. 3 = Both (effectively, default)"), ECVF_Default);
 
 FORCEINLINE uint32 CalcDynamicReplicationPeriod(const float FinalPCT, const uint32 MinRepPeriod, const uint32 MaxRepPeriod, uint16& OutReplicationPeriodFrame, uint32& OutNextReplicationFrame, const uint32 LastRepFrameNum, const uint32 FrameNum, bool ForFastPath)
 {
@@ -3724,9 +3907,10 @@ void UReplicationGraphNode_DynamicSpatialFrequency::CalcFrequencyForActor(AActor
 
 void UReplicationGraphNode_DynamicSpatialFrequency::CalcFrequencyForActor(AActor* Actor, UReplicationGraph* RepGraph, UNetConnection* NetConnection, FGlobalActorReplicationInfo& GlobalInfo, FPerConnectionActorInfoMap& ConnectionMap, FSettings& MySettings, const FNetViewerArray& Viewers, const uint32 FrameNum, int32 ExistingItemIndex)
 {
+#if WITH_SERVER_CODE
 	FConnectionReplicationActorInfo& ConnectionInfo = ConnectionMap.FindOrAdd(Actor);
 
-	// If we need to filter out the actor and he is already in the SortedReplicationList, we need to remove it (instead of just skipping/returning).
+	// If we need to filter out the actor and it is already in the SortedReplicationList, we need to remove it (instead of just skipping/returning).
 	auto RemoveExistingItem = [&ExistingItemIndex, this]()
 	{
 		if (ExistingItemIndex != INDEX_NONE)
@@ -3873,13 +4057,13 @@ void UReplicationGraphNode_DynamicSpatialFrequency::CalcFrequencyForActor(AActor
 
 			if (FramesTillReplicate < 0)
 			{
-				// This actor is ready to go (or overdue). Add him to the replication list that we will sort
+				// This actor is ready to go (or overdue). Add it to the replication list that we will sort
 				AddOrUpdateItem(Actor, FramesTillReplicate, EnableFastPath, &GlobalInfo, &ConnectionInfo);
 			}
 
 			else if (FramesTillReplicate == 0)
 			{
-				// This actor is also ready to go but we may need to count him as a 'replicates this frame and not every frame' actor
+				// This actor is also ready to go but we may need to count it as a 'replicates this frame and not every frame' actor
 				if (ReplicatesEveryFrame(ConnectionInfo, EnableFastPath) == false)
 				{
 					//UE_LOG(LogReplicationGraph, Display, TEXT("  THIS[%d]: %s. Def: %d (%d) Fast: %d (%d)"), FrameNum, *Actor->GetName(), ConnectionInfo.NextReplicationFrameNum, ConnectionInfo.ReplicationPeriodFrame, ConnectionInfo.FastPath_NextReplicationFrameNum, ConnectionInfo.FastPath_ReplicationPeriodFrame);
@@ -3913,6 +4097,7 @@ void UReplicationGraphNode_DynamicSpatialFrequency::CalcFrequencyForActor(AActor
 	// No zone was found. This is bad
 	UE_LOG(LogReplicationGraph, Warning, TEXT("UReplicationGraphNode_DynamicSpatialFrequency::CalcFrequencyForActor: %s was not placed in any valid zone. Viewer: %s DotP: %.2f "), *Actor->GetName(), ((LowestDistanceViewer->Connection != nullptr) ? *LowestDistanceViewer->Connection->GetName() : TEXT("INVALID")), DotP);
 	RemoveExistingItem();
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_DynamicSpatialFrequency::GatherActors(const FActorRepListRefView& RepList, FGlobalActorReplicationInfoMap& GlobalMap, FPerConnectionActorInfoMap& ConnectionMap, const FConnectionGatherActorListParameters& Params, UNetConnection* NetConnection)
@@ -4000,6 +4185,7 @@ void UReplicationGraphNode_ConnectionDormancyNode::TearDown()
 
 void UReplicationGraphNode_ConnectionDormancyNode::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+#if WITH_SERVER_CODE
 	RG_QUICK_SCOPE_CYCLE_COUNTER(RepGraphNode_ConnectionDormancy_Gather);
 
 	LastGatheredFrame = Params.ReplicationFrameNum;
@@ -4031,10 +4217,12 @@ void UReplicationGraphNode_ConnectionDormancyNode::GatherActorListsForConnection
 			UE_LOG(LogReplicationGraph, Verbose, TEXT("Level Not Loaded %s. (Client has %d levels loaded)"), *StreamingList.StreamingLevelName.ToString(), Params.ClientVisibleLevelNamesRef.Num());
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_ConnectionDormancyNode::ConditionalGatherDormantActorsForConnection(FActorRepListRefView& ConnectionList, const FConnectionGatherActorListParameters& Params, FActorRepListRefView* RemovedList)
 {
+#if WITH_SERVER_CODE
 	FPerConnectionActorInfoMap& ConnectionActorInfoMap = Params.ConnectionManager.ActorInfoMap;
 	FGlobalActorReplicationInfoMap* GlobalActorReplicationInfoMap = GraphGlobals->GlobalActorReplicationInfoMap;
 
@@ -4054,7 +4242,7 @@ void UReplicationGraphNode_ConnectionDormancyNode::ConditionalGatherDormantActor
 				ConnectionActorInfo.SetCullDistanceSquared(GlobalInfo.Settings.GetCullDistanceSquared());
 			}
 
-			// He can be removed
+			// It can be removed
 			ConnectionList.RemoveAtSwap(idx);
 			if (RemovedList)
 			{
@@ -4080,6 +4268,7 @@ void UReplicationGraphNode_ConnectionDormancyNode::ConditionalGatherDormantActor
 			TrickleStartCounter--;		
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 bool ContainsReverse(const FActorRepListRefView& List, FActorRepListType Actor)
@@ -4097,7 +4286,7 @@ bool ContainsReverse(const FActorRepListRefView& List, FActorRepListType Actor)
 
 void UReplicationGraphNode_ConnectionDormancyNode::NotifyActorDormancyFlush(FActorRepListType Actor)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(ConnectionDormancyNode_NotifyActorDormancyFlush);
+	RG_QUICK_SCOPE_CYCLE_COUNTER(ConnectionDormancyNode_NotifyActorDormancyFlush);
 
 	FNewReplicatedActorInfo ActorInfo(Actor);
 
@@ -4193,7 +4382,7 @@ bool UReplicationGraphNode_ConnectionDormancyNode::IsNodeObsolete(uint32 Current
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 
-float UReplicationGraphNode_DormancyNode::MaxZForConnection = WORLD_MAX;
+FVector::FReal UReplicationGraphNode_DormancyNode::MaxZForConnection = UE::Net::Private::RepGraphWorldMax;
 
 void UReplicationGraphNode_DormancyNode::CallFunctionOnValidConnectionNodes(FConnectionDormancyNodeFunction Function)
 {
@@ -4265,7 +4454,7 @@ void UReplicationGraphNode_DormancyNode::AddDormantActor(const FNewReplicatedAct
 	};
 	CallFunctionOnValidConnectionNodes(AddActorFunction);
 
-	// Tell us if this guy flushes net dormancy so we force him back on connection lists
+	// Tell us if this item flushes net dormancy so we force it back on connection lists
 	if (!GlobalInfo.Events.DormancyFlush.IsBoundToObject(this))
 	{
 		GlobalInfo.Events.DormancyFlush.AddUObject(this, &UReplicationGraphNode_DormancyNode::OnActorDormancyFlush);
@@ -4296,6 +4485,7 @@ void UReplicationGraphNode_DormancyNode::RemoveDormantActor(const FNewReplicated
 
 void UReplicationGraphNode_DormancyNode::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+#if WITH_SERVER_CODE
 	int32 NumViewersAboveMaxZ = 0;
 	for (const FNetViewer& CurViewer : Params.Viewers)
 	{
@@ -4323,7 +4513,7 @@ void UReplicationGraphNode_DormancyNode::GatherActorListsForConnection(const FCo
 		ConnectionNode = CreateConnectionNode(Params);
 		ConnectionNode->GatherActorListsForConnection(Params);
 	}
-	
+#endif // WITH_SERVER_CODE
 }
 
 UReplicationGraphNode_ConnectionDormancyNode* UReplicationGraphNode_DormancyNode::GetExistingConnectionNode(const FConnectionGatherActorListParameters& Params)
@@ -4354,7 +4544,7 @@ UReplicationGraphNode_ConnectionDormancyNode* UReplicationGraphNode_DormancyNode
 	UReplicationGraphNode_ConnectionDormancyNode* ConnectionNode = CreateChildNode<UReplicationGraphNode_ConnectionDormancyNode>();
 	ConnectionNodes.Add(RepGraphConnection) = ConnectionNode;
 
-	// Copy our master lists to the connection node
+	// Copy our main lists to the connection node
 	ConnectionNode->DeepCopyActorListsFrom(this);
 
 	ConnectionNode->InitConnectionNode(RepGraphConnection, Params.ReplicationFrameNum);
@@ -4461,11 +4651,11 @@ void UReplicationGraphNode_GridCell::AddStaticActor(const FNewReplicatedActorInf
 	}
 	else
 	{	
-		// Put him in our non dormancy list
+		// Put it in our non dormancy list
 		Super::NotifyAddNetworkActor(ActorInfo);
 	}
 
-	// We need to be told if this actor changes dormancy so we can move him between nodes. Unless our parent is going to do it.
+	// We need to be told if this actor changes dormancy so we can move it between nodes. Unless our parent is going to do it.
 	if (!bParentNodeHandlesDormancyChange)
 	{
 		ActorRepInfo.Events.DormancyChange.AddUObject(this, &UReplicationGraphNode_GridCell::OnStaticActorNetDormancyChange);
@@ -4571,14 +4761,6 @@ UReplicationGraphNode_DormancyNode* UReplicationGraphNode_GridCell::GetDormancyN
 void UReplicationGraphNode_GridCell::GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const
 {
 	Super::GetAllActorsInNode_Debugging(OutArray);
-	if (DynamicNode)
-	{
-		DynamicNode->GetAllActorsInNode_Debugging(OutArray);
-	}
-	if (DormancyNode)
-	{
-		DormancyNode->GetAllActorsInNode_Debugging(OutArray);
-	}
 }
 
 int32 CVar_RepGraph_DebugNextNewActor = 0;
@@ -4589,10 +4771,28 @@ static FAutoConsoleVariableRef CVarRepGraphDebugNextActor(TEXT("Net.RepGraph.Spa
 UReplicationGraphNode_GridSpatialization2D::UReplicationGraphNode_GridSpatialization2D()
 	: CellSize(0.f)
 	, SpatialBias(ForceInitToZero)
+	, ConnectionMaxZ(UE::Net::Private::RepGraphWorldMax)
 	, GridBounds(ForceInitToZero)
 {
 	bRequiresPrepareForReplicationCall = true;
 	bDestroyDormantDynamicActors = CVar_RepGraph_GridSpatialization2D_DestroyDormantDynamicActorsDefault != 0;
+}
+
+void UReplicationGraphNode_GridSpatialization2D::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsCountingMemory())
+	{
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UReplicationGraphNode_GridSpatialization2D::Serialize");
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ClassRebuildDenyList", ClassRebuildDenyList.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DynamicSpatializedActors", DynamicSpatializedActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("StaticSpatializedActors", StaticSpatializedActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PendingStaticSpatializedActors", PendingStaticSpatializedActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Grid", Grid.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("GatheredNodes", GatheredNodes.CountBytes(Ar));
+	}
 }
 
 void UReplicationGraphNode_GridSpatialization2D::NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo)
@@ -4842,15 +5042,19 @@ void UReplicationGraphNode_GridSpatialization2D::GetGridNodesForActor(FActorRepL
 
 void UReplicationGraphNode_GridSpatialization2D::SetBiasAndGridBounds(const FBox& GridBox)
 {
+	using namespace UE::Net::Private;
+
 	const FVector2D BoxMin2D = FVector2D(GridBox.Min);
 	const FVector2D BoxMax2D = FVector2D(GridBox.Max);
 	
 	SpatialBias = BoxMin2D;
-	GridBounds = FBox( FVector(BoxMin2D, -HALF_WORLD_MAX), FVector(BoxMax2D, HALF_WORLD_MAX) );
+	GridBounds = FBox( FVector(BoxMin2D, -RepGraphHalfWorldMax), FVector(BoxMax2D, RepGraphHalfWorldMax) );
 }
 
 UReplicationGraphNode_GridSpatialization2D::FActorCellInfo UReplicationGraphNode_GridSpatialization2D::GetCellInfoForActor(FActorRepListType Actor, const FVector& Location3D, float CullDistance)
 {
+	using namespace UE::Net::Private;
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (CullDistance <= 0.f)
 	{
@@ -4861,12 +5065,17 @@ UReplicationGraphNode_GridSpatialization2D::FActorCellInfo UReplicationGraphNode
 	FVector ClampedLocation = Location3D;
 
 	// Sanity check the actor's location. If it's garbage, we could end up with a gigantic allocation in GetGridNodesForActor as we adjust the grid.
-	if (Location3D.X < -HALF_WORLD_MAX || Location3D.X > HALF_WORLD_MAX ||
-		Location3D.Y < -HALF_WORLD_MAX || Location3D.Y > HALF_WORLD_MAX ||
-		Location3D.Z < -HALF_WORLD_MAX || Location3D.Z > HALF_WORLD_MAX)
+	if (Location3D.X < -RepGraphHalfWorldMax || Location3D.X > RepGraphHalfWorldMax ||
+		Location3D.Y < -RepGraphHalfWorldMax || Location3D.Y > RepGraphHalfWorldMax ||
+		Location3D.Z < -RepGraphHalfWorldMax || Location3D.Z > RepGraphHalfWorldMax)
 	{
 		UE_LOG(LogReplicationGraph, Warning, TEXT("GetCellInfoForActor: Actor %s is outside world bounds with a location of %s. Clamping grid location to world bounds."), *GetFullNameSafe(Actor), *Location3D.ToString());
-		ClampedLocation = Location3D.BoundToCube(HALF_WORLD_MAX);
+		ClampedLocation = Location3D.BoundToCube(RepGraphHalfWorldMax);
+	}
+
+	if (!ensureMsgf(!ClampedLocation.ContainsNaN(), TEXT("GetCellInfoForActor: Actor %s has an invalid location of %s, defaulting to the origin."), *GetFullNameSafe(Actor), *ClampedLocation.ToString()))
+	{
+		ClampedLocation = FVector::ZeroVector;
 	}
 
 	FActorCellInfo CellInfo;
@@ -4984,6 +5193,7 @@ static FAutoConsoleVariableRef CVarRepGraphSpatialBiasCreep(TEXT("Net.RepGraph.S
 
 void UReplicationGraphNode_GridSpatialization2D::PrepareForReplication()
 {
+#if	WITH_SERVER_CODE
 	RG_QUICK_SCOPE_CYCLE_COUNTER(UReplicationGraphNode_GridSpatialization2D_PrepareForReplication);
 
 	FGlobalActorReplicationInfoMap* GlobalRepMap = GraphGlobals.IsValid() ? GraphGlobals->GlobalActorReplicationInfoMap : nullptr;
@@ -5382,6 +5592,7 @@ void UReplicationGraphNode_GridSpatialization2D::PrepareForReplication()
 
 		bNeedsRebuild = false;
 	}
+#endif // WITH_SERVER_CODE
 }
 
 // Small structure to make it easier to keep track of 
@@ -5399,6 +5610,9 @@ struct FPlayerGridCellInformation
 
 void UReplicationGraphNode_GridSpatialization2D::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+	using namespace UE::Net::Private;
+
+#if WITH_SERVER_CODE
 	TArray<FLastLocationGatherInfo>& LastLocationArray = Params.ConnectionManager.LastGatherLocations;
 	TArray<FVector2D, FReplicationGraphConnectionsAllocator> UniqueCurrentLocations;
 
@@ -5422,7 +5636,7 @@ void UReplicationGraphNode_GridSpatialization2D::GatherActorListsForConnection(c
 		else
 		{
 			// Prevent extreme locations from causing the Grid to grow too large
-			ClampedViewLoc = ClampedViewLoc.BoundToCube(HALF_WORLD_MAX);
+			ClampedViewLoc = ClampedViewLoc.BoundToCube(RepGraphHalfWorldMax);
 		}
 
 		// Find out what bucket the view is in
@@ -5467,7 +5681,7 @@ void UReplicationGraphNode_GridSpatialization2D::GatherActorListsForConnection(c
 		else
 		{
 			// Prevent extreme locations from causing the Grid to grow too large
-			LastLocationForConnection = LastLocationForConnection.BoundToCube(HALF_WORLD_MAX);
+			LastLocationForConnection = LastLocationForConnection.BoundToCube(RepGraphHalfWorldMax);
 		}
 
 		// Try to determine the previous location of the user.
@@ -5601,6 +5815,7 @@ void UReplicationGraphNode_GridSpatialization2D::GatherActorListsForConnection(c
 			}
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_GridSpatialization2D::NotifyActorCullDistChange(AActor* Actor, FGlobalActorReplicationInfo& GlobalInfo, float OldDist)
@@ -5626,7 +5841,7 @@ void UReplicationGraphNode_GridSpatialization2D::NotifyActorCullDistChange(AActo
 	}
 	else if (FCachedDynamicActorInfo* DynamicActorInfo = DynamicSpatializedActors.Find(Actor))
 	{
-		// Pull dynamic actor out of the grid. We will put him back on the next gather
+		// Pull dynamic actor out of the grid. We will put it back on the next gather
 		
 		FActorCellInfo& PreviousCellInfo = DynamicActorInfo->CellInfo;
 		if (PreviousCellInfo.IsValid())
@@ -5730,8 +5945,23 @@ void UReplicationGraphNode_AlwaysRelevant::GatherActorListsForConnection(const F
 
 // -------------------------------------------------------
 
+void UReplicationGraphNode_TearOff_ForConnection::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsCountingMemory())
+	{
+		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UReplicationGraphNode_TearOff_ForConnection::Serialize");
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("TearOffActors", TearOffActors.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ReplicationActorList", ReplicationActorList.CountBytes(Ar));
+	}
+}
+
 void UReplicationGraphNode_TearOff_ForConnection::GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params)
 {
+#if WITH_SERVER_CODE
+
 	if (TearOffActors.Num() > 0)
 	{
 		ReplicationActorList.Reset();
@@ -5777,6 +6007,7 @@ void UReplicationGraphNode_TearOff_ForConnection::GatherActorListsForConnection(
 			Params.OutGatheredReplicationLists.AddReplicationActorList(ReplicationActorList);
 		}
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_TearOff_ForConnection::NotifyTearOffActor(AActor* Actor, uint32 FrameNum)
@@ -5791,6 +6022,7 @@ void UReplicationGraphNode_AlwaysRelevant_ForConnection::GatherActorListsForConn
 	// Call super to add any actors that were explicitly given to use via NotifyAddNetworkActor
 	Super::GatherActorListsForConnection(Params);
 
+#if WITH_SERVER_CODE
 	auto UpdateActor = [&](AActor* NewActor, AActor*& LastActor)
 	{
 		if (NewActor != LastActor)
@@ -5800,7 +6032,7 @@ void UReplicationGraphNode_AlwaysRelevant_ForConnection::GatherActorListsForConn
 				// Zero out new actor cull distance
 				Params.ConnectionManager.ActorInfoMap.FindOrAdd(NewActor).SetCullDistanceSquared(0.f);
 			}
-			if (LastActor)
+			if (IsValid(LastActor))
 			{
 				// Reset previous actor culldistance
 				FConnectionReplicationActorInfo& ActorInfo = Params.ConnectionManager.ActorInfoMap.FindOrAdd(LastActor);
@@ -5858,6 +6090,7 @@ void UReplicationGraphNode_AlwaysRelevant_ForConnection::GatherActorListsForConn
 	{
 		Params.OutGatheredReplicationLists.AddReplicationActorList(ReplicationActorList);
 	}
+#endif // WITH_SERVER_CODE
 }
 
 void UReplicationGraphNode_AlwaysRelevant_ForConnection::TearDown()
@@ -5875,6 +6108,7 @@ void UReplicationGraphNode_AlwaysRelevant_ForConnection::OnCollectActorRepListSt
 }
 
 // -------------------------------------------------------
+#if WITH_SERVER_CODE
 
 FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintChannelCounters(TEXT("Net.RepGraph.PrintActorChannelCounters"),TEXT(""),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
@@ -5903,3 +6137,6 @@ FAutoConsoleCommandWithWorldAndArgs ChangeActorDiscoveryBudget(TEXT("Net.RepGrap
 		It->SetActorDiscoveryBudget(BudgetInKBPS);
 	}
 }));
+
+#endif // WITH_SERVER_CODE
+

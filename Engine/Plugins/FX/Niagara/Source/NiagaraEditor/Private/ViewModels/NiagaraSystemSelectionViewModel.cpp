@@ -11,7 +11,8 @@
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraSystemEditorData.h"
-#include "NiagaraEmitterHandle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSystemSelectionViewModel)
 
 FGuid StackEntryToEmitterGuid(UNiagaraStackEntry* StackEntry)
 {
@@ -458,7 +459,7 @@ void UNiagaraSystemSelectionViewModel::UpdateExternalSelectionState()
 	bSystemIsSelected = false;
 	TArray<FGuid> OldSelectedEmitterHandleIds = SelectedEmitterHandleIds;
 	SelectedEmitterHandleIds.Empty();
-	TArray<UNiagaraEmitter*> SelectedEmitters;
+	TArray<FVersionedNiagaraEmitter> SelectedEmitters;
 	for (const FSelectionEntry& SelectionEntry : SelectionEntries)
 	{
 		if (SelectionEntry.Entry->GetEmitterViewModel().IsValid())
@@ -472,7 +473,7 @@ void UNiagaraSystemSelectionViewModel::UpdateExternalSelectionState()
 	}
 
 	int32 NumRemoved = 0;
-	for (UNiagaraEmitter* SelectedEmitter : SelectedEmitters)
+	for (const FVersionedNiagaraEmitter& SelectedEmitter : SelectedEmitters)
 	{
 		FGuid EmitterId = GetSystemViewModel()->GetEmitterHandleViewModelForEmitter(SelectedEmitter)->GetId();
 		NumRemoved += OldSelectedEmitterHandleIds.Remove(EmitterId);

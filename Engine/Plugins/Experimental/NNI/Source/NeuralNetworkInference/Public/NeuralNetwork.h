@@ -117,6 +117,13 @@ public:
 	 */
 	bool IsLoaded() const;
 
+
+	/**
+	 *  Save ONNX network to disk. 
+	 * @return whether the network was successfully saved.
+	 */
+	bool Save(const FString& OutModelFilePath) const;
+
 	/**
 	 * Getter and setter functions for DeviceType, InputDeviceType, and OutputDeviceType:
 	 * - GetDeviceType() returns DeviceType.
@@ -240,7 +247,13 @@ public:
 
 	/**
 	 * Run() executes the forward pass of the current UNeuralNetwork given an inference context created with CreateInferenceContext().
-	 * This should be called on the render thread.
+	 * This version assumes CPU inference.
+	 */
+	void Run(int32 ContextHandle);
+
+	/**
+	 * Run() executes the forward pass of the current UNeuralNetwork given an inference context created with CreateInferenceContext().
+	 * This version assumes GPU inference and should be called on the render thread.
 	 */
 	void Run(class FRDGBuilder& GraphBuilder, int32 ContextHandle);
 

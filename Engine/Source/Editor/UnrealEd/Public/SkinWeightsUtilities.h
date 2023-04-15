@@ -27,7 +27,7 @@ public:
 	* @Param ProfileName - The name of the profile to associate the imported skin weight
 	* @param bReregisterComponent - if true the component using the skeletal mesh will all be re register.
 	*/
-	static bool ImportAlternateSkinWeight(USkeletalMesh* SkeletalMesh, const FString& Path, int32 TargetLODIndex, const FName& ProfileName);
+	static bool ImportAlternateSkinWeight(USkeletalMesh* SkeletalMesh, const FString& Path, int32 TargetLODIndex, const FName& ProfileName, const bool bIsReimport);
 	
 	/**
 	* This function reimport all skin weights profile for a specified LOD. Return true if the weights are successfully updates.
@@ -42,9 +42,9 @@ public:
 	static bool RemoveSkinnedWeightProfileData(USkeletalMesh* SkeletalMesh, const FName& ProfileName, int32 LODIndex);
 
 	/*
-	 * Ask user a FBX file path for a particular LOD
+	 * Ask user a file path for a particular LOD
 	 */
-	static FString PickSkinWeightFBXPath(int32 LODIndex, USkeletalMesh* SkeletalMesh);
+	static FString PickSkinWeightPath(int32 LODIndex, USkeletalMesh* SkeletalMesh);
 private:
 	FSkinWeightsUtilities() {}
 };

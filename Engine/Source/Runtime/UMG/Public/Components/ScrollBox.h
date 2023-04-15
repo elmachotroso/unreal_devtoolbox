@@ -31,12 +31,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Style", meta=( DisplayName="Bar Style" ))
 	FScrollBarStyle WidgetBarStyle;
 
-	UPROPERTY()
-	TObjectPtr<USlateWidgetStyleAsset> Style_DEPRECATED;
-
-	UPROPERTY()
-	TObjectPtr<USlateWidgetStyleAsset> BarStyle_DEPRECATED;
-
 	/** The orientation of the scrolling and stacking in the box. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	TEnumAsByte<EOrientation> Orientation;
@@ -165,6 +159,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	float GetScrollOffsetOfEnd() const;
 
+	/** Gets the fraction currently visible in the scrollbox */
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	float GetViewFraction() const;
+
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	float GetViewOffsetFraction() const;
 
@@ -191,7 +189,6 @@ public:
 	//~ Begin UObject Interface
 #if WITH_EDITORONLY_DATA
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void PostLoad() override;
 #endif // if WITH_EDITORONLY_DATA
 	//~ End UObject Interface
 

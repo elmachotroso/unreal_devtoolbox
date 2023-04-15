@@ -11,16 +11,18 @@
 #include "Modules/ModuleManager.h"
 #include "LevelEditor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderBlueprintLibrary)
+
 namespace
 {
 	static UTakeRecorderPanel* CurrentTakeRecorderPanel;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderPanelChanged TakeRecorderPanelChanged;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderPreInitialize TakeRecorderPreInitialize;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderStarted TakeRecorderStarted;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderStopped TakeRecorderStopped;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderFinished TakeRecorderFinished;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderCancelled TakeRecorderCancelled;
-	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderMarkedFrameAdded TakeRecorderMarkedFrameAdded;
+	static FOnTakeRecorderPanelChanged TakeRecorderPanelChanged;
+	static FOnTakeRecorderPreInitialize TakeRecorderPreInitialize;
+	static FOnTakeRecorderStarted TakeRecorderStarted;
+	static FOnTakeRecorderStopped TakeRecorderStopped;
+	static FOnTakeRecorderFinished TakeRecorderFinished;
+	static FOnTakeRecorderCancelled TakeRecorderCancelled;
+	static FOnTakeRecorderMarkedFrameAdded TakeRecorderMarkedFrameAdded;
 }
 
 
@@ -80,6 +82,12 @@ FTakeRecorderParameters UTakeRecorderBlueprintLibrary::GetDefaultParameters()
 	DefaultParams.Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
 
 	return DefaultParams;
+}
+
+void UTakeRecorderBlueprintLibrary::SetDefaultParameters(const FTakeRecorderParameters& InDefaultParameters)
+{
+	GetMutableDefault<UTakeRecorderUserSettings>()->Settings = InDefaultParameters.User;
+	GetMutableDefault<UTakeRecorderProjectSettings>()->Settings = InDefaultParameters.Project;
 }
 
 bool UTakeRecorderBlueprintLibrary::IsRecording()

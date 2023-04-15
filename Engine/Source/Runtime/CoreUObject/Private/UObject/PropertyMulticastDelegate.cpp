@@ -9,10 +9,13 @@
 #include "UObject/LinkerPlaceholderFunction.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 FMulticastScriptDelegate::FInvocationList FMulticastDelegateProperty::EmptyList;
+
+FMulticastDelegateProperty::FMulticastDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop, EPropertyFlags AdditionalPropertyFlags /*= CPF_None*/)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop, AdditionalPropertyFlags)
+{
+	SignatureFunction = Prop.SignatureFunctionFunc ? Prop.SignatureFunctionFunc() : nullptr;
+}
 
 #if WITH_EDITORONLY_DATA
 FMulticastDelegateProperty::FMulticastDelegateProperty(UField* InField)
@@ -127,14 +130,12 @@ bool FMulticastDelegateProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Ma
 
 FString FMulticastDelegateProperty::GetCPPType( FString* ExtendedTypeText/*=NULL*/, uint32 CPPExportFlags/*=0*/ ) const
 {
-#if HACK_HEADER_GENERATOR
 	// We have this test because sometimes the delegate hasn't been set up by FixupDelegateProperties at the time
 	// we need the type for an error message.  We deliberately format it so that it's unambiguously not CPP code, but is still human-readable.
 	if (!SignatureFunction)
 	{
 		return FString(TEXT("{multicast delegate type}"));
 	}
-#endif
 
 	FString UnmangledFunctionName = SignatureFunction->GetName().LeftChop( FString( HEADER_GENERATED_DELEGATE_SIGNATURE_SUFFIX ).Len() );
 	const UClass* OwnerClass = SignatureFunction->GetOwnerClass();
@@ -178,7 +179,7 @@ FString FMulticastDelegateProperty::GetCPPTypeForwardDeclaration() const
 }
 
 
-void FMulticastDelegateProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FMulticastDelegateProperty::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -186,13 +187,24 @@ void FMulticastDelegateProperty::ExportTextItem( FString& ValueStr, const void* 
 		return;
 	}
 
-	const FMulticastScriptDelegate::FInvocationList& InvocationList = GetInvocationList(PropertyValue);
+	const FMulticastScriptDelegate::FInvocationList* InvocationList = nullptr;
+	
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		FMulticastScriptDelegate Delegate;
+		GetValue_InContainer(PropertyValueOrContainer, &Delegate);
+		InvocationList = &GetInvocationList(&Delegate);
+	}
+	else
+	{
+		InvocationList = &GetInvocationList(PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType));
+	}
 
 	// Start delegate array with open paren
 	ValueStr += TEXT( "(" );
 
 	bool bIsFirstFunction = true;
-	for (FMulticastScriptDelegate::FInvocationList::TConstIterator CurInvocation(InvocationList); CurInvocation; ++CurInvocation)
+	for (FMulticastScriptDelegate::FInvocationList::TConstIterator CurInvocation(*InvocationList); CurInvocation; ++CurInvocation)
 	{
 		if (CurInvocation->IsBound())
 		{
@@ -373,6 +385,11 @@ void FMulticastDelegateProperty::AddReferencedObjects(FReferenceCollector& Colle
 
 IMPLEMENT_FIELD(FMulticastDelegateProperty)
 
+FMulticastInlineDelegateProperty::FMulticastInlineDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop)
+	: TProperty_MulticastDelegate(InOwner, Prop)
+{
+}
+
 const FMulticastScriptDelegate* FMulticastInlineDelegateProperty::GetMulticastDelegate(const void* PropertyValue) const
 {
 	return (const FMulticastScriptDelegate*)PropertyValue;
@@ -393,12 +410,27 @@ void FMulticastInlineDelegateProperty::SerializeItem(FStructuredArchive::FSlot S
 	FArchiveUObjectFromStructuredArchive Adapter(Slot);
 	FArchive& Ar = Adapter.GetArchive();
 	Ar << *GetPropertyValuePtr(Value);
+	Adapter.Close();
 }
 
-const TCHAR* FMulticastInlineDelegateProperty::ImportText_Internal(const TCHAR* Buffer, void* PropertyValue, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FMulticastInlineDelegateProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
-	FMulticastScriptDelegate& MulticastDelegate = (*(FMulticastScriptDelegate*)PropertyValue);
-	return ImportDelegateFromText(MulticastDelegate, Buffer, Parent, ErrorText);
+	const TCHAR* Result = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		FMulticastScriptDelegate MulticastDelegate;		
+		Result = ImportDelegateFromText(MulticastDelegate, Buffer, Parent, ErrorText);
+		if (Result)
+		{
+			SetValue_InContainer(ContainerOrPropertyPtr, MulticastDelegate);
+		}
+	}
+	else
+	{
+		FMulticastScriptDelegate& MulticastDelegate = *(FMulticastScriptDelegate*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+		Result = ImportDelegateFromText(MulticastDelegate, Buffer, Parent, ErrorText);
+	}
+	return Result;	
 }
 
 void ResolveDelegateReference(const FMulticastInlineDelegateProperty* InlineProperty, UObject*& Parent, void*& PropertyValue)
@@ -440,6 +472,11 @@ void FMulticastInlineDelegateProperty::ClearDelegate(UObject* Parent, void* Prop
 }
 
 IMPLEMENT_FIELD(FMulticastInlineDelegateProperty)
+
+FMulticastSparseDelegateProperty::FMulticastSparseDelegateProperty(FFieldVariant InOwner, const UECodeGen_Private::FMulticastDelegatePropertyParams& Prop)
+	: TProperty_MulticastDelegate(InOwner, Prop)
+{
+}
 
 const FMulticastScriptDelegate* FMulticastSparseDelegateProperty::GetMulticastDelegate(const void* PropertyValue) const
 {
@@ -543,25 +580,32 @@ void FMulticastSparseDelegateProperty::SerializeItemInternal(FArchive& Ar, void*
 	}
 }
 
-const TCHAR* FMulticastSparseDelegateProperty::ImportText_Internal(const TCHAR* Buffer, void* PropertyValue, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FMulticastSparseDelegateProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 	FMulticastScriptDelegate Delegate;
 	const TCHAR* Result = ImportDelegateFromText(Delegate, Buffer, Parent, ErrorText);
 
 	if (Result)
 	{
-		FSparseDelegate& SparseDelegate = *(FSparseDelegate*)PropertyValue;
-		USparseDelegateFunction* SparseDelegateFunc = CastChecked<USparseDelegateFunction>(SignatureFunction);
-
-		if (Delegate.IsBound())
+		if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
 		{
-			FSparseDelegateStorage::SetMulticastDelegate(Parent, SparseDelegateFunc->DelegateName, MoveTemp(Delegate));
-			SparseDelegate.bIsBound = true;
+			FProperty::SetValue_InContainer(ContainerOrPropertyPtr, &Delegate);
 		}
 		else
 		{
-			FSparseDelegateStorage::Clear(Parent, SparseDelegateFunc->DelegateName);
-			SparseDelegate.bIsBound = false;
+			FSparseDelegate& SparseDelegate = *(FSparseDelegate*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+			USparseDelegateFunction* SparseDelegateFunc = CastChecked<USparseDelegateFunction>(SignatureFunction);
+
+			if (Delegate.IsBound())
+			{
+				FSparseDelegateStorage::SetMulticastDelegate(Parent, SparseDelegateFunc->DelegateName, MoveTemp(Delegate));
+				SparseDelegate.bIsBound = true;
+			}
+			else
+			{
+				FSparseDelegateStorage::Clear(Parent, SparseDelegateFunc->DelegateName);
+				SparseDelegate.bIsBound = false;
+			}
 		}
 	}
 
@@ -612,5 +656,3 @@ void FMulticastSparseDelegateProperty::ClearDelegate(UObject* Parent, void* Prop
 }
 
 IMPLEMENT_FIELD(FMulticastSparseDelegateProperty)
-
-#include "UObject/DefineUPropertyMacros.h"

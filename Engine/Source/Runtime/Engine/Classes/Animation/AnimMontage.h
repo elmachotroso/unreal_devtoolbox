@@ -12,8 +12,9 @@
 #include "UObject/Object.h"
 #include "Animation/AnimLinkableElement.h"
 #include "Animation/AnimTypes.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Animation/BlendProfile.h"
-#include "Animation/Skeleton.h"
+#endif
 #include "Animation/AnimationAsset.h"
 #include "AlphaBlend.h"
 #include "Animation/AnimCompositeBase.h"
@@ -23,7 +24,10 @@
 class UAnimInstance;
 class UAnimMontage;
 class UAnimSequence;
+class UBlendProfile;
 class USkeletalMeshComponent;
+
+enum class EBlendProfileMode : uint8;
 
 
 /**
@@ -243,7 +247,7 @@ public:
 	void Initialize(const struct FAnimMontageInstance& InAnimInstance);
 
 	void AddEvaluationTime(float InDeltaTime) { TimeRemaining += InDeltaTime; }
-	bool HasTimeRemaining() const { return (TimeRemaining > SMALL_NUMBER); }
+	bool HasTimeRemaining() const { return (TimeRemaining > UE_SMALL_NUMBER); }
 	float GetRemainingTime() const { return TimeRemaining; }
 	EMontageSubStepResult Advance(float& InOut_P_Original, const FBranchingPointMarker** OutBranchingPointMarkerPtr);
 	bool HasReachedEndOfSection() const { return bReachedEndOfSection; }
@@ -265,14 +269,14 @@ private:
 
 	/** 
 		Finds montage position in 'target' space, given current position in 'original' space.
-		This means given a montage position, we find his play back time.
+		This means given a montage position, we find its playback time.
 		This should only be used for montage position, as we cache results and lazily update it for performance.
 	*/
 	float FindMontagePosition_Target(float In_P_Original);
 
 	/**
 		Finds montage position in 'original' space, given current position in 'target' space.
-		This means given a montage play back time, we find his actual position.
+		This means given a montage playback time, we find its actual position.
 		This should only be used for montage position, as we cache results and lazily update it for performance.
 	*/
 	float FindMontagePosition_Original(float In_P_Target);
@@ -592,16 +596,16 @@ public:
 	static UAnimMontage* PreviewSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimInstance* AnimInstance, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bFireNotifies, bool bPlaying);
 };
 
-/* 
+/**
  * Any property you're adding to AnimMontage and parent class has to be considered for Child Asset
- * 
+ *
  * Child Asset is considered to be only asset mapping feature using everything else in the class
  * For example, you can just use all parent's setting  for the montage, but only remap assets
  * This isn't magic bullet unfortunately and it is consistent effort of keeping the data synced with parent
- * If you add new property, please make sure those property has to be copied for children. 
+ * If you add new property, please make sure those property has to be copied for children.
  * If it does, please add the copy in the function RefreshParentAssetData
  */
-UCLASS(config=Engine, hidecategories=(UObject, Length), MinimalAPI, BlueprintType)
+UCLASS(config=Engine, hidecategories=(UObject, Length), MinimalAPI, BlueprintType, meta= (LoadBehavior = "LazyOnDemand"))
 class UAnimMontage : public UAnimCompositeBase
 {
 	GENERATED_UCLASS_BODY()
@@ -769,11 +773,17 @@ public:
 	// @todo document
 	ENGINE_API float GetSectionLength(int32 SectionIndex) const;
 	
-	/** Get SectionIndex from SectionName */
+	/** Get SectionIndex from SectionName. Returns INDEX_None if not found */
+	UFUNCTION(BlueprintPure, Category = "Montage")
 	ENGINE_API int32 GetSectionIndex(FName InSectionName) const;
 	
-	/** Get SectionName from SectionIndex in TArray */
+	/** Get SectionName from SectionIndex. Returns NAME_None if not found */
+	UFUNCTION(BlueprintPure, Category = "Montage")
 	ENGINE_API FName GetSectionName(int32 SectionIndex) const;
+
+	/** Returns the number of sections this montage has */
+	UFUNCTION(BlueprintPure, Category = "Montage")
+	ENGINE_API int32 GetNumSections() const { return CompositeSections.Num(); }
 
 	/** @return true if valid section */
 	UFUNCTION(BlueprintCallable, Category = "Montage")

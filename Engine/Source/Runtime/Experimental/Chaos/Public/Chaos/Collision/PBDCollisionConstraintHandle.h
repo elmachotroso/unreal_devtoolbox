@@ -11,8 +11,7 @@ namespace Chaos
 {
 	class FPBDCollisionConstraints;
 	class FPBDCollisionConstraint;
-	class FPBDIslandSolverData;
-	class FPBDCollisionSolverContainer;
+	class FPBDCollisionContainerSolver;
 
 	/**
 	 * @brief Whether we should run CCD (swept collision) or not
@@ -44,6 +43,7 @@ namespace Chaos
 	/**
 	 * @brief A handle to a contact constraint.
 	 * @note This is an intrusive handle, so you can use a contact pointer as a handle.
+	 * @todo(chaos): remove this class - it can just be a "using FPBDCollisionConstraintHandle = FPBDCollisionConstraint"
 	*/
 	class CHAOS_API FPBDCollisionConstraintHandle : public TIntrusiveConstraintHandle<FPBDCollisionConstraint>
 	{
@@ -73,25 +73,18 @@ namespace Chaos
 		UE_DEPRECATED(4.27, "Use GetContact()")
 		FPBDCollisionConstraint& GetSweptPointContact() { return GetContact(); }
 
-		ECollisionCCDType GetCCDType() const;
+		bool GetCCDEnabled() const;
 
-		virtual void SetEnabled(bool InEnabled) override;
+		virtual void SetEnabled(bool InEnabled) override final;
 
-		virtual bool IsEnabled() const override;
+		virtual bool IsEnabled() const override final;
 
-		//FVec3 GetContactLocation() const;
+		virtual bool IsProbe() const override final;
 
 		FVec3 GetAccumulatedImpulse() const;
 
-		TVector<const TGeometryParticleHandle<FReal, 3>*, 2> GetConstrainedParticles() const;
-
-		TVector<TGeometryParticleHandle<FReal, 3>*, 2> GetConstrainedParticles();
-
-		void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
-		void GatherInput(FReal Dt, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
-
-		FSolverBody* GetSolverBody0();
-		FSolverBody* GetSolverBody1();
+		// Declared final so that TPBDConstraintGraphRuleImpl::AddToGraph() does not need to hit vtable
+		virtual FParticlePair GetConstrainedParticles() const override final;
 
 		const FPBDCollisionConstraints* ConcreteContainer() const;
 		FPBDCollisionConstraints* ConcreteContainer();

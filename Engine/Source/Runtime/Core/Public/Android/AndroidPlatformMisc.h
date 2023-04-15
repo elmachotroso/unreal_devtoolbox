@@ -37,7 +37,9 @@ struct CORE_API FAndroidMisc : public FGenericPlatformMisc
 	static void PlatformTearDown();
 	static void PlatformHandleSplashScreen(bool ShowSplashScreen);
     static EDeviceScreenOrientation GetDeviceOrientation() { return DeviceOrientation; }
+	UE_DEPRECATED(5.1, "SetDeviceOrientation is deprecated. Use SetAllowedDeviceOrientation instead.")
 	static void SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation);
+	static void SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation);
     
 	FORCEINLINE static int32 GetMaxPathLength()
 	{
@@ -57,10 +59,7 @@ struct CORE_API FAndroidMisc : public FGenericPlatformMisc
 
 public:
 
-	static bool AllowThreadHeartBeat()
-	{
-		return false;
-	}
+	static bool AllowThreadHeartBeat();
 
 	struct FCPUStatTime{
 		uint64_t			TotalTime;
@@ -184,7 +183,7 @@ public:
 #endif
 	static bool IsSupportedAndroidDevice();
 	static void SetForceUnsupported(bool bInOverride);
-	static TMap<FString, FString> GetConfigRulesTMap();
+	static const TMap<FString, FString>& GetConfigRulesTMap();
 	static FString* GetConfigRulesVariable(const FString& Key);
 
 	/* HasVulkanDriverSupport
@@ -219,7 +218,7 @@ public:
 
 	// To help track down issues with failing crash handler.
 	static FString GetFatalSignalMessage(int Signal, siginfo* Info);
-	static void OverrideFatalSignalHandler(void (*FatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context));
+	static void OverrideFatalSignalHandler(void (*FatalSignalHandlerOverrideFunc)(int Signal, struct siginfo* Info, void* Context, uint32 CrashingThreadId));
 	// To help track down issues with failing crash handler.
 
 	static bool IsInSignalHandler();
@@ -278,6 +277,8 @@ public:
 	// Returns CPU temperature read from one of the configurable CPU sensors via android.CPUThermalSensorFilePath CVar or AndroidEngine.ini, [ThermalSensors] section.
 	// Doesn't guarantee to work on all devices. Some devices require root access rights to read sensors information, in that case 0.0 will be returned
 	static float GetCPUTemperature();
+
+	static void UpdateDeviceOrientation();
 
 	static void SaveDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation) { DeviceOrientation = NewDeviceOrentation; }
 

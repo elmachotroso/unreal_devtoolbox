@@ -8,8 +8,9 @@
 #include "HAL/PreprocessorHelpers.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/EnableIf.h"
-#include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
 #include "Templates/IsValidVariadicFunctionArg.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 #include "Misc/VarArgs.h"
 
 #if (DO_CHECK || DO_GUARD_SLOW || DO_ENSURE) && !PLATFORM_CPU_ARM_FAMILY
@@ -45,6 +46,7 @@ struct CORE_API FDebug
 {
 	/** Logs final assert message and exits the program. */
 	static void VARARGS AssertFailed(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Format = TEXT(""), ...);
+	static void AssertFailedV(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Format, va_list Args);
 
 	/** Triggers a fatal error, using the error formatted to GErrorHist via a previous call to FMsg*/
 	static void ProcessFatalError(void* ProgramCounter);
@@ -111,12 +113,12 @@ public:
 
 	/** Failed assertion handler.  Warning: May be called at library startup time. */
 	template <typename FmtType, typename... Types>
-	static FORCEINLINE typename TEnableIf<TIsArrayOrRefOfType<FmtType, TCHAR>::Value, bool>::Type OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const FmtType& FormattedMsg, Types... Args)
+	static FORCEINLINE bool OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const FmtType& FormattedMsg, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to ensureMsgf");
 
-		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, ProgramCounter, FormattedMsg, Args...);
+		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, ProgramCounter, (const TCHAR*)FormattedMsg, Args...);
 	}
 
 #endif // DO_CHECK || DO_GUARD_SLOW
@@ -154,9 +156,9 @@ public:
 //		const FmtType& Format,
 //		Types... Args)
 //	{
-//		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+//		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array.");
 //		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to CheckVerifyFailed()");
-//		return CheckVerifyFailedImpl(Expr, File, Line, ProgramCounter, Format, Args...);
+//		return CheckVerifyFailedImpl(Expr, File, Line, ProgramCounter, (const TCHAR*)Format, Args...);
 //	}
 //#endif
 
@@ -170,10 +172,21 @@ RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, Ar
 }
 
 #if !UE_BUILD_SHIPPING
-#define _DebugBreakAndPromptForRemote() \
+#define UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE() \
 	if (!FPlatformMisc::IsDebuggerPresent()) { FPlatformMisc::PromptForRemoteDebugging(false); } UE_DEBUG_BREAK();
 #else
-	#define _DebugBreakAndPromptForRemote()
+	#define UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE()
+#endif // !UE_BUILD_SHIPPING
+
+#define _DebugBreakAndPromptForRemote() \
+	UE_DEPRECATED_MACRO(5.1, "Use UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE.")
+
+#if !UE_BUILD_SHIPPING
+	extern CORE_API bool GIgnoreDebugger;
+	// This is named with PLATFORM_ prefix because UE_DEBUG_BREAK* are conditional on a debugger being detected, and PLATFORM_BREAK isn't
+	#define PLATFORM_BREAK_IF_DESIRED() if (LIKELY(!GIgnoreDebugger)) { PLATFORM_BREAK(); }
+#else
+	#define PLATFORM_BREAK_IF_DESIRED() PLATFORM_BREAK();
 #endif // !UE_BUILD_SHIPPING
 
 
@@ -203,7 +216,7 @@ RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, Ar
 					} \
 				}; \
 				Impl::ExecCheckImplInternal(); \
-				PLATFORM_BREAK(); \
+				PLATFORM_BREAK_IF_DESIRED(); \
 				CA_ASSUME(false); \
 			} \
 		}
@@ -223,11 +236,11 @@ RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, Ar
 		{ \
 			if(UNLIKELY(!(expr))) \
 			{ \
-				DispatchCheckVerify([&] () UE_DEBUG_SECTION \
+				DispatchCheckVerify([] (const auto& LFormat, const auto&... UE_LOG_Args) UE_DEBUG_SECTION \
 				{ \
-					FDebug::CheckVerifyFailedImpl(#expr, __FILE__, __LINE__, PLATFORM_RETURN_ADDRESS(), format, ##__VA_ARGS__); \
-				}); \
-				PLATFORM_BREAK(); \
+					FDebug::CheckVerifyFailedImpl(#expr, __FILE__, __LINE__, PLATFORM_RETURN_ADDRESS(), LFormat, UE_LOG_Args...); \
+				}, format, ##__VA_ARGS__); \
+				PLATFORM_BREAK_IF_DESIRED(); \
 				CA_ASSUME(false); \
 			} \
 		}
@@ -324,7 +337,7 @@ RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, Ar
 #if DO_ENSURE && !USING_CODE_ANALYSIS // The Visual Studio 2013 analyzer doesn't understand these complex conditionals
 
 	#define UE_ENSURE_IMPL(Capture, Always, InExpression, ...) \
-		(LIKELY(!!(InExpression)) || (DispatchCheckVerify<bool>([Capture] () FORCENOINLINE UE_DEBUG_SECTION \
+		(LIKELY(!!(InExpression)) || (DispatchCheckVerify<bool>([Capture] () UE_DEBUG_SECTION \
 		{ \
 			static bool bExecuted = false; \
 			if ((!bExecuted || Always) && FPlatformMisc::IsEnsureAllowed()) \
@@ -339,7 +352,7 @@ RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, Ar
 				return true; \
 			} \
 			return false; \
-		}) && ([] () { PLATFORM_BREAK(); } (), false)))
+		}) && ([] () { PLATFORM_BREAK_IF_DESIRED(); } (), false)))
 
 	#define ensure(           InExpression                ) UE_ENSURE_IMPL( , false, InExpression, TEXT(""))
 	#define ensureMsgf(       InExpression, InFormat, ... ) UE_ENSURE_IMPL(&, false, InExpression, InFormat, ##__VA_ARGS__)
@@ -419,13 +432,13 @@ CORE_API void VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line
 
 #define LowLevelFatalError(Format, ...) \
 	{ \
-		static_assert(TIsArrayOrRefOfType<decltype(Format), TCHAR>::Value, "Formatting string must be a TCHAR array."); \
-		DispatchCheckVerify([&] () FORCENOINLINE UE_DEBUG_SECTION \
+		static_assert(TIsArrayOrRefOfTypeByPredicate<decltype(Format), TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array."); \
+		DispatchCheckVerify([] (const auto& LFormat, const auto&... UE_LOG_Args) UE_DEBUG_SECTION \
 		{ \
 			void* ProgramCounter = PLATFORM_RETURN_ADDRESS(); \
-			LowLevelFatalErrorHandler(__FILE__, __LINE__, ProgramCounter, Format, ##__VA_ARGS__); \
-			_DebugBreakAndPromptForRemote(); \
+			LowLevelFatalErrorHandler(__FILE__, __LINE__, ProgramCounter, (const TCHAR*)LFormat, UE_LOG_Args...); \
+			UE_DEBUG_BREAK_AND_PROMPT_FOR_REMOTE(); \
 			FDebug::ProcessFatalError(ProgramCounter); \
-		}); \
+		}, Format, ##__VA_ARGS__); \
 	}
 

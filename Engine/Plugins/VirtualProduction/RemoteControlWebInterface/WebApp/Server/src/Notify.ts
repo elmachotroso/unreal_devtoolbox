@@ -12,6 +12,7 @@ export namespace Notify {
 
     io.sockets.on('connection', (socket: socketio.Socket) => {
       socket
+        .on('client', onPing)
         .on('view', onViewChange)
         .on('value', UnrealEngine.setPayloadValue)
         .on('execute', UnrealEngine.executeFunction)
@@ -29,7 +30,7 @@ export namespace Notify {
     });
   }
 
-  export function emit(what: 'presets' | 'payloads' | 'connected' | 'loading', ...args: any[]) {
+  export function emit(what: 'presets' | 'payloads' | 'connected' | 'loading' | 'opened', ...args: any[]) {
     io.emit(what, ...args);
   }
 
@@ -45,5 +46,13 @@ export namespace Notify {
 
   export function emitValuesChanges(preset: string, changes: { [key: string]: PropertyValue }) {
     io.emit('values', preset, changes);
+  }
+
+  export function emitPassphraseChanged(wrongPassphrase: string) {
+    io.emit('passphrase', wrongPassphrase);
+  }
+
+  export function onPing(time: number) {
+    io.emit('pong', time, new Date().getTime());
   }
 }

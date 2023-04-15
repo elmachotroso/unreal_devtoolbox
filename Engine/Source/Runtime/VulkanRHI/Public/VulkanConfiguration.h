@@ -100,18 +100,6 @@
 	#define VULKAN_ENABLE_LRU_CACHE								0
 #endif
 
-#ifdef VK_KHR_maintenance1
-	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER1					1
-#else
-	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER1					0
-#endif
-
-#ifdef VK_KHR_maintenance2
-	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER2					1
-#else
-	#define VULKAN_SUPPORTS_MAINTENANCE_LAYER2					0
-#endif
-
 #ifdef VK_EXT_validation_cache
 	#define VULKAN_SUPPORTS_VALIDATION_CACHE					1
 #else
@@ -154,10 +142,6 @@
 
 #ifndef VULKAN_DELETE_STALE_CMDBUFFERS
 	#define VULKAN_DELETE_STALE_CMDBUFFERS						1
-#endif
-
-#ifndef VULKAN_SUPPORTS_COLOR_CONVERSIONS
-	#define VULKAN_SUPPORTS_COLOR_CONVERSIONS					0
 #endif
 
 #ifndef VULKAN_SUPPORTS_AMD_BUFFER_MARKER
@@ -337,6 +321,13 @@
 	#define VULKAN_SUPPORTS_SHADER_VIEWPORT_INDEX_LAYER	0
 #endif
 
+#ifndef VULKAN_SUPPORTS_DESCRIPTOR_INDEXING
+	#ifdef VK_EXT_descriptor_indexing
+		#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING	(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
+	#else
+		#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING	0
+	#endif
+#endif
 
 #ifndef VULKAN_OBJECT_TRACKING 
 #define VULKAN_OBJECT_TRACKING 0 //Track objects created and memory used. use r.vulkan.dumpmemory to dump to console
@@ -361,6 +352,14 @@ VULKANRHI_API DECLARE_LOG_CATEGORY_EXTERN(LogVulkanRHI, Log, All);
 
 #if !defined(NV_AFTERMATH)
 	#define NV_AFTERMATH 0
+#endif
+
+
+#ifndef VK_TYPE_TO_STRING
+#	define VK_TYPE_TO_STRING(Type, Value) *FString::Printf(TEXT("%u"), (uint32)Value)
+#endif
+#ifndef VK_FLAGS_TO_STRING
+#	define VK_FLAGS_TO_STRING(Type, Value) *FString::Printf(TEXT("%u"), (uint32)Value)
 #endif
 
 

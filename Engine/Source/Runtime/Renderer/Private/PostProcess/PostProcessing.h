@@ -6,6 +6,7 @@
 #include "TranslucentRendering.h"
 #include "SystemTextures.h"
 #include "ScenePrivate.h"
+#include "DeferredShadingRenderer.h"
 
 class FSceneTextureParameters;
 class FVirtualShadowMapArray;
@@ -43,22 +44,20 @@ struct FPostProcessingInputs
 
 void AddPostProcessingPasses(
 	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
+	const FViewInfo& View, int32 ViewIndex,
 	bool bAnyLumenActive,
+	EReflectionsMethod ReflectionsMethod,
 	const FPostProcessingInputs& Inputs,
 	const Nanite::FRasterResults* NaniteRasterResults,
 	FInstanceCullingManager& InstanceCullingManager,
 	FVirtualShadowMapArray* VirtualShadowMapArray,
-	struct FLumenSceneFrameTemporaries& LumenFrameTemporaries);
+	struct FLumenSceneFrameTemporaries& LumenFrameTemporaries,
+	const FSceneWithoutWaterTextures& SceneWithoutWaterTextures,
+	FScreenPassTexture TSRMoireInput);
 
 void AddDebugViewPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FPostProcessingInputs& Inputs, const Nanite::FRasterResults* NaniteRasterResults);
 
-#if !(UE_BUILD_SHIPPING)
-
 void AddVisualizeCalibrationMaterialPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FPostProcessingInputs& Inputs, const UMaterialInterface* InMaterialInterface);
-
-#endif
-
 
 struct FMobilePostProcessingInputs
 {

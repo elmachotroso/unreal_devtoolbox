@@ -1,15 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataLayerOutlinerIsLoadedInEditorColumn.h"
+
+#include "Containers/Array.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
 #include "DataLayerTreeItem.h"
+#include "Engine/World.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "ISceneOutlinerTreeItem.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Views/STreeView.h"
-#include "DataLayerTransaction.h"
-#include "EditorStyleSet.h"
-#include "Editor.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
@@ -30,7 +48,7 @@ SHeaderRow::FColumn::FArguments FDataLayerOutlinerIsLoadedInEditorColumn::Constr
 		.DefaultTooltip(FText::FromName(GetColumnID()))
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::GetBrush(TEXT("DataLayer.LoadedInEditor")))
+			.Image(FAppStyle::GetBrush(TEXT("DataLayer.LoadedInEditor")))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		];
 }
@@ -46,25 +64,31 @@ const TSharedRef<SWidget> FDataLayerOutlinerIsLoadedInEditorColumn::ConstructRow
 			.VAlign(VAlign_Center)
 			[
 				SNew(SCheckBox)
-				.IsEnabled_Lambda([this, TreeItem]()
+				.IsEnabled_Lambda([TreeItem]()
 				{
 					FDataLayerTreeItem* DataLayerTreeItem = TreeItem->CastTo<FDataLayerTreeItem>();
-					const UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer();
-					const UDataLayer* ParentDataLayer = DataLayer ? DataLayer->GetParent() : nullptr;
+					const UDataLayerInstance* DataLayer = DataLayerTreeItem->GetDataLayer();
+					const UDataLayerInstance* ParentDataLayer = DataLayer ? DataLayer->GetParent() : nullptr;
 					const bool bIsParentLoaded = ParentDataLayer ? ParentDataLayer->IsEffectiveLoadedInEditor() : true;
 					return bIsParentLoaded && DataLayer && DataLayer->GetWorld() && !DataLayer->GetWorld()->IsPlayInEditor();
 				})
-				.IsChecked_Lambda([this, TreeItem]()
+				.Visibility_Lambda([TreeItem]()
 				{
 					FDataLayerTreeItem* DataLayerTreeItem = TreeItem->CastTo<FDataLayerTreeItem>();
-					UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer();
+					const UDataLayerInstance* DataLayerInstance = DataLayerTreeItem->GetDataLayer();
+					return DataLayerInstance && !DataLayerInstance->IsReadOnly() ? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				.IsChecked_Lambda([TreeItem]()
+				{
+					FDataLayerTreeItem* DataLayerTreeItem = TreeItem->CastTo<FDataLayerTreeItem>();
+					UDataLayerInstance* DataLayer = DataLayerTreeItem->GetDataLayer();
 					return DataLayer && DataLayer->IsEffectiveLoadedInEditor() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 				})
 				.OnCheckStateChanged_Lambda([this, TreeItem](ECheckBoxState NewState)
 				{
 					bool bNewState = (NewState == ECheckBoxState::Checked);
 					FDataLayerTreeItem* DataLayerTreeItem = TreeItem->CastTo<FDataLayerTreeItem>();
-					if (UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer())
+					if (UDataLayerInstance* DataLayer = DataLayerTreeItem->GetDataLayer())
 					{
 						UWorld* World = DataLayer->GetWorld();
 						UDataLayerEditorSubsystem* DataLayerEditorSubsystem = UDataLayerEditorSubsystem::Get();
@@ -74,23 +98,23 @@ const TSharedRef<SWidget> FDataLayerOutlinerIsLoadedInEditorColumn::ConstructRow
 							// Toggle IsLoadedInEditor flag of selected DataLayers to the same state as the given DataLayer
 							const bool bIsLoadedInEditor = DataLayer->IsLoadedInEditor();
 
-							TArray<UDataLayer*> AllSelectedDataLayers;
+							TArray<UDataLayerInstance*> AllSelectedDataLayers;
 							for (auto& SelectedItem : Tree.GetSelectedItems())
 							{
 								FDataLayerTreeItem* SelectedDataLayerTreeItem = SelectedItem->CastTo<FDataLayerTreeItem>();
-								UDataLayer* SelectedDataLayer = SelectedDataLayerTreeItem ? SelectedDataLayerTreeItem->GetDataLayer() : nullptr;
+								UDataLayerInstance* SelectedDataLayer = SelectedDataLayerTreeItem ? SelectedDataLayerTreeItem->GetDataLayer() : nullptr;
 								if (SelectedDataLayer && SelectedDataLayer->IsLoadedInEditor() == bIsLoadedInEditor)
 								{
 									AllSelectedDataLayers.Add(SelectedDataLayer);
 								}
 							}
 
-							const FScopedDataLayerTransaction Transaction(LOCTEXT("ToggleDataLayersIsLoadedInEditor", "Toggle Data Layers Dynamically Loaded In Editor Flag"), World);
+							const FScopedTransaction Transaction(LOCTEXT("ToggleDataLayersIsLoadedInEditor", "Toggle Data Layers Dynamically Loaded In Editor Flag"));
 							DataLayerEditorSubsystem->ToggleDataLayersIsLoadedInEditor(AllSelectedDataLayers, /*bIsFromUserChange*/true);
 						}
 						else
 						{
-							const FScopedDataLayerTransaction Transaction(LOCTEXT("ToggleDataLayerIsLoadedInEditor", "Toggle Data Layer Dynamically Loaded In Editor Flag"), World);
+							const FScopedTransaction Transaction(LOCTEXT("ToggleDataLayerIsLoadedInEditor", "Toggle Data Layer Dynamically Loaded In Editor Flag"));
 							DataLayerEditorSubsystem->ToggleDataLayerIsLoadedInEditor(DataLayer, /*bIsFromUserChange*/true);
 						}
 					}

@@ -2,17 +2,53 @@
 
 
 #include "SGraphNodeKnot.h"
-#include "SCommentBubble.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "GraphEditorSettings.h"
-#include "SGraphPanel.h"
+
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Delegates/Delegate.h"
 #include "DragConnection.h"
-#include "K2Node_Knot.h"
-#include "ScopedTransaction.h"
-#include "Kismet2/BlueprintEditorUtils.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "GenericPlatform/ICursor.h"
+#include "GraphEditorSettings.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "Input/Reply.h"
+#include "InputCoreTypes.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SCommentBubble.h"
+#include "SGraphNode.h"
+#include "SGraphPanel.h"
+#include "SGraphPin.h"
+#include "SNodePanel.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+
+class FText;
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 namespace SKnotNodeDefinitions
 {
@@ -163,27 +199,6 @@ void FAmbivalentDirectionDragConnection::ValidateGraphPinList(TArray<UEdGraphPin
 /////////////////////////////////////////////////////
 // SGraphPinKnot
 
-class SGraphPinKnot : public SGraphPin
-{
-public:
-	SLATE_BEGIN_ARGS(SGraphPinKnot) {}
-	SLATE_END_ARGS()
-
-	void Construct(const FArguments& InArgs, UEdGraphPin* InPin);
-
-	// SWidget interface
-	virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
-	// End of SWidget interface
-
-protected:
-	// Begin SGraphPin interface
-	virtual TSharedRef<SWidget>	GetDefaultValueWidget() override;
-	virtual TSharedRef<FDragDropOperation> SpawnPinDragEvent(const TSharedRef<SGraphPanel>& InGraphPanel, const TArray< TSharedRef<SGraphPin> >& InStartingPins) override;
-	virtual FReply OnPinMouseDown(const FGeometry& SenderGeometry, const FPointerEvent& MouseEvent) override;
-	virtual FSlateColor GetPinColor() const override;
-	// End SGraphPin interface
-};
-
 void SGraphPinKnot::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
 {
 	SGraphPin::Construct(SGraphPin::FArguments().SideToSideMargin(0.0f), InPin);
@@ -319,7 +334,7 @@ void SGraphNodeKnot::UpdateGraphNode()
 	//@TODO: Keyboard focus on edit doesn't work unless the node is visible, but the text is just the comment and it's already shown in a bubble, so Transparent black it is...
 	InlineEditableText = SNew(SInlineEditableTextBlock)
 		.ColorAndOpacity(FLinearColor::Transparent)
-		.Style(FEditorStyle::Get(), "Graph.Node.NodeTitleInlineEditableText")
+		.Style(FAppStyle::Get(), "Graph.Node.NodeTitleInlineEditableText")
 		.Text(this, &SGraphNodeKnot::GetEditableNodeTitleAsText)
 		.OnVerifyTextChanged(this, &SGraphNodeKnot::OnVerifyNameTextChanged)
 		.OnTextCommitted(this, &SGraphNodeKnot::OnNameTextCommited)
@@ -398,7 +413,7 @@ void SGraphNodeKnot::UpdateGraphNode()
 
 const FSlateBrush* SGraphNodeKnot::GetShadowBrush(bool bSelected) const
 {
-	return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FEditorStyle::GetNoBrush();
+	return bSelected ? FAppStyle::GetBrush(TEXT("Graph.Node.ShadowSelected")) : FAppStyle::GetNoBrush();
 }
 
 TSharedPtr<SGraphPin> SGraphNodeKnot::CreatePinWidget(UEdGraphPin* Pin) const

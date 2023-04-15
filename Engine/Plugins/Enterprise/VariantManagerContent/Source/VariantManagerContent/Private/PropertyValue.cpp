@@ -23,9 +23,6 @@
 #include "Editor.h"
 #endif
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 #define LOCTEXT_NAMESPACE "PropertyValue"
 
 DEFINE_LOG_CATEGORY(LogVariantContent);
@@ -909,7 +906,7 @@ FString UPropertyValue::GetEnumDocumentationLink()
 			{
 
 				const FString& EnumName = LeafProperty->GetMetaData(TEXT("Enum"));
-				Enum = FindObject<UEnum>(ANY_PACKAGE, *EnumName, true);
+				Enum = UClass::TryFindTypeSlow<UEnum>(EnumName, EFindFirstObjectOptions::ExactClass);
 			}
 
 			if(Enum)
@@ -1486,7 +1483,7 @@ void UPropertyValue::ApplyViaFunctionSetter(UObject* TargetObject)
 		FString* Defaults = PropertySetterParameterDefaults.Find(PropertyParam->GetName());
 		if (Defaults)
 		{
-			const TCHAR* Result = PropertyParam->ImportText( **Defaults, PropertyParam->ContainerPtrToValuePtr<uint8>(Parms), ExportFlags, NULL );
+			const TCHAR* Result = PropertyParam->ImportText_Direct( **Defaults, PropertyParam->ContainerPtrToValuePtr<uint8>(Parms), NULL, ExportFlags );
 			if (!Result)
 			{
 				UE_LOG(LogVariantContent, Error, TEXT("Failed at applying the default value for parameter '%s' of PropertyValue '%s'"), *PropertyParam->GetName(), *GetFullDisplayString());
@@ -1871,5 +1868,3 @@ void UPropertyValueVisibility::Serialize(FArchive& Ar)
 }
 
 #undef LOCTEXT_NAMESPACE
-
-#include "UObject/DefineUPropertyMacros.h"

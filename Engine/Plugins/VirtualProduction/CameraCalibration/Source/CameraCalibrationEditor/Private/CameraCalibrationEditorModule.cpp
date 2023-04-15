@@ -118,7 +118,7 @@ void FCameraCalibrationEditorModule::RegisterPlacementModeItems()
 				TEXT("/CameraCalibration/Devices/Tracker/BP_UE_Tracker"),
 				TEXT("/CameraCalibration/Devices/Tracker"),
 				TEXT("BP_UE_Tracker"),
-				TEXT("Blueprint")
+				FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("Blueprint"))
 			);
 
 			PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
@@ -135,7 +135,7 @@ void FCameraCalibrationEditorModule::RegisterPlacementModeItems()
 				TEXT("/CameraCalibration/Devices/Tracker/BP_UE_Tracker3"),
 				TEXT("/CameraCalibration/Devices/Tracker"),
 				TEXT("BP_UE_Tracker3"),
-				TEXT("Blueprint")
+				FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("Blueprint"))
 			);
 
 			PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
@@ -169,7 +169,7 @@ void FCameraCalibrationEditorModule::RegisterOverlayMaterials()
 	{
 		// Register all overlay materials defined in this module
 		UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
-		SubSystem->RegisterOverlayMaterial(TEXT("Crosshair"), TEXT("/CameraCalibration/Materials/M_Crosshair.M_Crosshair"));
+		SubSystem->RegisterOverlayMaterial(TEXT("Crosshair"), FSoftObjectPath(TEXT("/CameraCalibration/Materials/M_Crosshair.M_Crosshair")));
 	};
 
 	if (FApp::CanEverRender())

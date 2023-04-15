@@ -53,12 +53,13 @@ public:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return Parameters.VertexFactoryType->SupportsRayTracingDynamicGeometry() && ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		return Parameters.VertexFactoryType->SupportsRayTracingDynamicGeometry() && IsRayTracingEnabledForProject(Parameters.Platform) && RHISupportsRayTracing(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
+		OutEnvironment.SetDefine(TEXT("USE_INSTANCE_CULLING_DATA"), 0);
 	}
 
 	void GetShaderBindings(
@@ -251,7 +252,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 
 		int32 DataOffset = 0;
 		FMeshDrawSingleShaderBindings SingleShaderBindings = ShaderBindings.GetSingleShaderBindings(SF_Compute, DataOffset);
-		FMeshPassProcessorRenderState DrawRenderState(View->ViewUniformBuffer);
+		FMeshPassProcessorRenderState DrawRenderState;
 		Shader->GetShaderBindings(Scene, Scene->GetFeatureLevel(), PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, SingleShaderBindings);
 
 		FVertexInputStreamArray DummyArray;
@@ -368,7 +369,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	}
 }
 
-void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandList& ParentCmdList, FRHIBuffer* ScratchBuffer)
+void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHICommandListImmediate& ParentCmdList, FRHIBuffer* ScratchBuffer)
 {
 #if WANTS_DRAW_MESH_EVENTS
 #define SCOPED_DRAW_OR_COMPUTE_EVENT(ParentCmdList, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&ParentCmdList, FColor(0), TEXT(#Name));
@@ -420,6 +421,7 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 			TransitionsAfter.Reserve(DispatchCommands.Num());
 			OverlapUAVs.Reserve(DispatchCommands.Num());
 			const FRWBuffer* LastBuffer = nullptr;
+			TSet<const FRWBuffer*> TransitionedBuffers;
 			for (FMeshComputeDispatchCommand& Cmd : DispatchCommands)
 			{
 				if (Cmd.TargetBuffer == nullptr)
@@ -442,17 +444,19 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 
 				LastBuffer = Cmd.TargetBuffer;
 
-				// Looks like the resource can get here in either UAVCompute or SRVMask mode, so we'll have to use Unknown until we can have better tracking.
-				TransitionsBefore.Add(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-				TransitionsAfter.Add(FRHITransitionInfo(UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+				// In case different shaders use different TargetBuffer we want to add transition only once
+				bool bAlreadyInSet = false;
+				TransitionedBuffers.FindOrAdd(LastBuffer, &bAlreadyInSet);
+				if (!bAlreadyInSet)
+				{
+					// Looks like the resource can get here in either UAVCompute or SRVMask mode, so we'll have to use Unknown until we can have better tracking.
+					TransitionsBefore.Add(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+					TransitionsAfter.Add(FRHITransitionInfo(UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+				}
 			}
 
-			TArray<FRHICommandList*> CommandLists;
-			TArray<int32> CmdListNumDraws;
-			TArray<FGraphEventRef> CmdListPrerequisites;
-
-			auto AllocateCommandList = [&ParentCmdList, &CommandLists, &CmdListNumDraws, &CmdListPrerequisites]
-			(uint32 ExpectedNumDraws, TStatId StatId)->FRHIComputeCommandList&
+			TArray<FRHICommandListImmediate::FQueuedCommandList, TInlineAllocator<1>> QueuedCommandLists;
+			auto AllocateCommandList = [&ParentCmdList, &QueuedCommandLists](uint32 ExpectedNumDraws, TStatId StatId) -> FRHIComputeCommandList&
 			{
 			#if USE_RAY_TRACING_DYNAMIC_GEOMETRY_PARALLEL_COMMAND_LISTS
 				if (ParentCmdList.Bypass())
@@ -461,11 +465,13 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 				}
 				else
 				{
-					FRHIComputeCommandList& Result = *CommandLists.Add_GetRef(new FRHICommandList(ParentCmdList.GetGPUMask()));
-					Result.ExecuteStat = StatId;
-					CmdListNumDraws.Add(ExpectedNumDraws);
-					CmdListPrerequisites.AddDefaulted();
-					return Result;
+					FRHIComputeCommandList* RHICmdList = new FRHIComputeCommandList(ParentCmdList.GetGPUMask());
+					RHICmdList->SwitchPipeline(ERHIPipeline::Graphics);
+					RHICmdList->SetExecuteStat(StatId);
+
+					QueuedCommandLists.Emplace(RHICmdList, ExpectedNumDraws);
+
+					return *RHICmdList;
 				}
 			#else // USE_RAY_TRACING_DYNAMIC_GEOMETRY_PARALLEL_COMMAND_LISTS
 				return ParentCmdList;
@@ -491,7 +497,7 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 					FRHIComputeShader* ComputeShader = Shader.GetComputeShader();
 					if (CurrentShader != ComputeShader)
 					{
-						RHICmdList.SetComputeShader(ComputeShader);
+						SetComputePipelineState(RHICmdList, ComputeShader);
 						CurrentBuffer = nullptr;
 						CurrentShader = ComputeShader;
 
@@ -513,20 +519,17 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 				// Make sure buffers are readable again and disable UAV overlap.
 				RHICmdList.EndUAVOverlap(OverlapUAVs);
 				RHICmdList.Transition(TransitionsAfter);
+
+				if (&RHICmdList != &ParentCmdList)
+				{
+					RHICmdList.FinishRecording();
+				}
 			}
 
 			// Need to kick parallel translate command lists?
-			if (CommandLists.Num() > 0)
+			if (QueuedCommandLists.Num() > 0)
 			{
-				ParentCmdList.QueueParallelAsyncCommandListSubmit(
-					CmdListPrerequisites.GetData(), // AnyThreadCompletionEvents
-					false,  // bIsPrepass
-					CommandLists.GetData(), //CmdLists
-					CmdListNumDraws.GetData(), // NumDrawsIfKnown
-					CommandLists.Num(), // Num
-					0, // MinDrawsPerTranslate
-					false // bSpewMerge
-				);
+				ParentCmdList.QueueAsyncCommandListSubmit(QueuedCommandLists, FRHICommandListImmediate::ETranslatePriority::Normal);
 			}
 
 			if (BuildParams.Num() > 0)
@@ -561,7 +564,7 @@ uint32 FRayTracingDynamicGeometryCollection::ComputeScratchBufferSize()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRayTracingDynamicGeometryCollection::ComputeScratchBufferSize);
 
-	const uint64 ScratchAlignment = GRHIRayTracingAccelerationStructureAlignment;
+	const uint64 ScratchAlignment = GRHIRayTracingScratchBufferAlignment;
 
 	uint32 BLASScratchSize = 0;
 

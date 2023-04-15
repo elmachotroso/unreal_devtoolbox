@@ -6,6 +6,8 @@
 #include "Widgets/Input/SVirtualJoystick.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TouchInterface)
+
 UTouchInterface::UTouchInterface(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -39,7 +41,7 @@ void UTouchInterface::Activate(TSharedPtr<SVirtualJoystick> VirtualJoystick)
 			SlateControl->Center = Control.Center;
 			SlateControl->VisualSize = Control.VisualSize;
 			SlateControl->ThumbSize = Control.ThumbSize;
-			if (Control.InputScale.SizeSquared() > FMath::Square(DELTA))
+			if (Control.InputScale.SizeSquared() > FMath::Square(UE_DELTA))
 			{
 				SlateControl->InputScale = Control.InputScale;
 			}
@@ -52,3 +54,4 @@ void UTouchInterface::Activate(TSharedPtr<SVirtualJoystick> VirtualJoystick)
 		VirtualJoystick->SetControls(SlateControls);
 	}
 }
+

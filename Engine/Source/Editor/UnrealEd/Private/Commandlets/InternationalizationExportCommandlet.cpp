@@ -1,10 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/InternationalizationExportCommandlet.h"
+
+#include "Commandlets/Commandlet.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "CoreTypes.h"
+#include "Internationalization/Text.h"
+#include "LocTextHelper.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "PortableObjectPipeline.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/Package.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
 #include "UObject/Class.h"
+#include "UObject/UObjectGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogInternationalizationExportCommandlet, Log, All);
 
@@ -111,7 +121,7 @@ int32 UInternationalizationExportCommandlet::Main(const FString& Params)
 		FString TextCollapseModeName;
 		if (GetStringFromConfig(*SectionName, TEXT("LocalizedTextCollapseMode"), TextCollapseModeName, ConfigPath))
 		{
-			UEnum* LocalizedTextCollapseModeEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ELocalizedTextCollapseMode"));
+			UEnum* LocalizedTextCollapseModeEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Localization.ELocalizedTextCollapseMode"));
 			const int64 TextCollapseModeInt = LocalizedTextCollapseModeEnum->GetValueByName(*TextCollapseModeName);
 			if (TextCollapseModeInt != INDEX_NONE)
 			{
@@ -126,7 +136,7 @@ int32 UInternationalizationExportCommandlet::Main(const FString& Params)
 		FString POFormatName;
 		if (GetStringFromConfig(*SectionName, TEXT("POFormat"), POFormatName, ConfigPath))
 		{
-			UEnum* POFormatEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EPortableObjectFormat"));
+			UEnum* POFormatEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Localization.EPortableObjectFormat"));
 			const int64 POFormatInt = POFormatEnum->GetValueByName(*POFormatName);
 			if (POFormatInt != INDEX_NONE)
 			{

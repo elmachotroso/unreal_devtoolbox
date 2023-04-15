@@ -9,6 +9,7 @@
 
 FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(FMovieScenePreAnimatedState* InPreAnimatedState, const FMovieSceneEvaluationKey& InEvalKey, bool bInWantsRestoreState)
 	: Variant(TInPlaceType<FMovieSceneEvaluationKey>(), InEvalKey)
+	, WeakLinker(InPreAnimatedState ? InPreAnimatedState->GetLinker() : nullptr)
 	, OptionalSequencePreAnimatedState(InPreAnimatedState)
 	, bWantsRestoreState(bInWantsRestoreState)
 {
@@ -18,6 +19,7 @@ FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(FMovieScenePreA
 }
 FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(FMovieScenePreAnimatedState* InPreAnimatedState, const UObject* InEvalHook, FMovieSceneSequenceID InSequenceID, bool bInWantsRestoreState)
 	: Variant(TInPlaceType<FEvalHookType>(), FEvalHookType{InEvalHook, InSequenceID} )
+	, WeakLinker(InPreAnimatedState ? InPreAnimatedState->GetLinker() : nullptr)
 	, OptionalSequencePreAnimatedState(InPreAnimatedState)
 	, bWantsRestoreState(bInWantsRestoreState)
 {
@@ -27,6 +29,7 @@ FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(FMovieScenePreA
 }
 FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(UMovieSceneEntitySystemLinker* InLinker, UMovieSceneTrackInstance* InTrackInstance, bool bInWantsRestoreState)
 	: Variant(TInPlaceType<UMovieSceneTrackInstance*>(), InTrackInstance)
+	, WeakLinker(InLinker)
 	, OptionalSequencePreAnimatedState(nullptr)
 	, bWantsRestoreState(bInWantsRestoreState)
 {
@@ -36,6 +39,7 @@ FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(UMovieSceneEnti
 }
 FScopedPreAnimatedCaptureSource::FScopedPreAnimatedCaptureSource(UMovieSceneEntitySystemLinker* InLinker, const FMovieSceneTrackInstanceInput& TrackInstanceInput)
 	: Variant(TInPlaceType<FMovieSceneTrackInstanceInput>(), TrackInstanceInput)
+	, WeakLinker(InLinker)
 	, OptionalSequencePreAnimatedState(nullptr)
 {
 	EMovieSceneCompletionMode CompletionMode = TrackInstanceInput.Section->GetCompletionMode();
@@ -55,7 +59,7 @@ FScopedPreAnimatedCaptureSource::~FScopedPreAnimatedCaptureSource()
 	GetCaptureSourcePtr() = PrevCaptureSource;
 }
 
-FScopedPreAnimatedCaptureSource*& HACK_GetCaptureSourcePtr()
+FScopedPreAnimatedCaptureSource*& FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr()
 {
 	// Implemented as a static thread-local for now since there are some tests that run without a linker,
 	// so we can't put this on UMovieSceneEntitySystemLinker::PreAnimatedState where it should probably belong
@@ -63,12 +67,7 @@ FScopedPreAnimatedCaptureSource*& HACK_GetCaptureSourcePtr()
 	return GCaptureSource;
 }
 
-FScopedPreAnimatedCaptureSource*& FScopedPreAnimatedCaptureSource::GetCaptureSourcePtr()
-{
-	return HACK_GetCaptureSourcePtr();
-}
-
-UE::MovieScene::FInstanceHandle FScopedPreAnimatedCaptureSource::GetRootInstanceHandle(UMovieSceneEntitySystemLinker* Linker) const
+UE::MovieScene::FRootInstanceHandle FScopedPreAnimatedCaptureSource::GetRootInstanceHandle(UMovieSceneEntitySystemLinker* Linker) const
 {
 	if (OptionalSequencePreAnimatedState)
 	{
@@ -79,12 +78,15 @@ UE::MovieScene::FInstanceHandle FScopedPreAnimatedCaptureSource::GetRootInstance
 	{
 		return Linker->GetInstanceRegistry()->GetInstance(TrackInstanceInput->InstanceHandle).GetRootInstanceHandle();
 	}
-	return UE::MovieScene::FInstanceHandle();
+	return UE::MovieScene::FRootInstanceHandle();
 }
 
 void FScopedPreAnimatedCaptureSource::BeginTracking(const UE::MovieScene::FPreAnimatedStateMetaData& MetaData, UMovieSceneEntitySystemLinker* Linker)
 {
 	using namespace UE::MovieScene;
+
+	ensureMsgf(!WeakLinker.IsValid() || WeakLinker.Get() == Linker, 
+			TEXT("Attempting to track state on a capture source related to a different linker. Are you missing setting a scoped capture source?"));
 
 	if (FMovieSceneEvaluationKey* EvalKey = Variant.TryGet<FMovieSceneEvaluationKey>())
 	{

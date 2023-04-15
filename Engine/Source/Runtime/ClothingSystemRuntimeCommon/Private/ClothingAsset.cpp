@@ -33,6 +33,8 @@
 #include "GPUSkinPublicDefs.h"
 #include "GPUSkinVertexFactory.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ClothingAsset)
+
 DEFINE_LOG_CATEGORY(LogClothingAsset)
 #define LOCTEXT_NAMESPACE "ClothingAsset"
 
@@ -833,7 +835,7 @@ void UClothingAssetCommon::ReregisterComponentsUsingClothing()
 		{
 			if(USkeletalMeshComponent* Component = *It)
 			{
-				if(Component->SkeletalMesh == OwnerMesh)
+				if(Component->GetSkeletalMeshAsset() == OwnerMesh)
 				{
 					FComponentReregisterContext Context(Component);
 					// Context goes out of scope, causing Component to be re-registered
@@ -851,7 +853,7 @@ void UClothingAssetCommon::ForEachInteractorUsingClothing(TFunction<void(UClothi
 		{
 			if(USkeletalMeshComponent* Component = *It)
 			{
-				if(Component->SkeletalMesh == OwnerMesh)
+				if(Component->GetSkeletalMeshAsset() == OwnerMesh)
 				{
 					if(UClothingSimulationInteractor* CurInteractor = Component->GetClothingSimulationInteractor())
 					{
@@ -978,14 +980,6 @@ void UClothingAssetCommon::CalculateReferenceBoneIndex()
 {
 	// Starts at root
 	ReferenceBoneIndex = 0;
-
-#if WITH_APEX_CLOTHING
-	const TSubclassOf<class UClothingSimulationFactory> ClothingSimulationFactory = UClothingSimulationFactory::GetDefaultClothingSimulationFactoryClass();
-	if (ClothingSimulationFactory->GetName() == TEXT("ClothingSimulationFactoryNv"))
-	{
-		return;
-	}
-#endif
 
 	// Find the root bone for this clothing asset (common bone for all used bones)
 	typedef TArray<int32> BoneIndexArray;
@@ -1310,6 +1304,29 @@ void UClothingAssetCommon::PostLoad()
 #endif  // #if WITH_EDITORONLY_DATA
 }
 
+#if WITH_EDITORONLY_DATA
+void UClothingAssetCommon::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	const TArray<IClothingSimulationFactoryClassProvider*> ClassProviders =
+		IModularFeatures::Get().GetModularFeatureImplementations<IClothingSimulationFactoryClassProvider>(IClothingSimulationFactoryClassProvider::FeatureName);
+	for (IClothingSimulationFactoryClassProvider* Provider : ClassProviders)
+	{
+		check(Provider);
+		if (UClass* const ClothingSimulationFactoryClass = *TSubclassOf<class UClothingSimulationFactory>(Provider->GetClothingSimulationFactoryClass()))
+		{
+			const UClothingSimulationFactory* const ClothingSimulationFactory = ClothingSimulationFactoryClass->GetDefaultObject<UClothingSimulationFactory>();
+			for (TSubclassOf<UClothConfigBase> ClothConfigClass : ClothingSimulationFactory->GetClothConfigClasses())
+			{
+				OutConstructClasses.Add(FTopLevelAssetPath(ClothConfigClass));
+			}
+		}
+	}
+	// OutConstructClasses.Add(FTopLevelAssetPath(UChaosClothSharedSimConfig::StaticClass()));
+	//OutConstructClasses.Add(FTopLevelAssetPath(UChaosClothConfig::StaticClass()));
+}
+#endif
+
 void UClothingAssetCommon::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
@@ -1424,16 +1441,15 @@ void UClothingAssetCommon::PropagateSharedConfigs(bool bMigrateSharedConfigToCon
 			}
 		}
 
-		// Migrate the common shared configs' deprecated parameters to all per cloth configs
-		if (bMigrateSharedConfigToConfig)
+		// Migrate the common shared configs' deprecated parameters to all per cloth configs, and fix the shared config ownership
+		for (const TPair<FName, TObjectPtr<UClothConfigBase>>& ClothSharedConfigItem : ClothConfigs)
 		{
-			// Iterate through all this asset's shared configs
-			for (const auto& ClothSharedConfigItem : ClothConfigs)
+			if (UClothSharedConfigCommon* const ClothSharedConfig = Cast<UClothSharedConfigCommon>(ClothSharedConfigItem.Value))
 			{
-				if (const UClothSharedConfigCommon* const ClothSharedConfig = Cast<UClothSharedConfigCommon>(ClothSharedConfigItem.Value))
+				// Migrate from this shared config to non shared configs if needed
+				if (bMigrateSharedConfigToConfig)
 				{
-					// Iterate through all this asset's configs, and migrate from the shared ones
-					for (const auto& ClothConfigItem : ClothConfigs)
+					for (const TPair<FName, TObjectPtr<UClothConfigBase>>& ClothConfigItem : ClothConfigs)
 					{
 						if (Cast<UClothSharedConfigCommon>(ClothConfigItem.Value))
 						{
@@ -1444,6 +1460,11 @@ void UClothingAssetCommon::PropagateSharedConfigs(bool bMigrateSharedConfigToCon
 							ClothConfig->MigrateFrom(ClothSharedConfig);
 						}
 					}
+				}
+				// Fix the shared config outer if it is still a common asset (the config must belong to the skeletal mesh, as it is shared between assets)
+				if (ClothSharedConfig->GetOuter() != SkeletalMesh)
+				{
+					ClothSharedConfig->Rename(nullptr, SkeletalMesh, REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 				}
 			}
 		}
@@ -1606,3 +1627,4 @@ void UClothingAssetCommon::PostEditChangeChainProperty(FPropertyChangedChainEven
 
 
 #undef LOCTEXT_NAMESPACE
+

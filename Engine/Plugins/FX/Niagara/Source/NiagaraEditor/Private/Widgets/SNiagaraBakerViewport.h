@@ -23,7 +23,7 @@ public:
 	// SEditorViewport interface
 	void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override;
-	TSharedPtr<SWidget> MakeViewportToolbar() override;
+	//TSharedPtr<SWidget> MakeViewportToolbar() override;
 	// SEditorViewport interface
 
 	// ICommonEditorViewportToolbarInfoProvider interface
@@ -33,31 +33,6 @@ public:
 	// ICommonEditorViewportToolbarInfoProvider interface
 
 	void RefreshView(const float RelativeTime, const float DeltaTime);
-
-	bool IsAlphaBlendEnabled() const;
-	void SetAlphaBlendEnabled(bool bEnabled);
-
-	bool IsCheckerboardEnabled() const;
-	void SetCheckerboardEnabled(bool bEnabled);
-
-	bool IsInfoTextEnabled() const;
-	void SetInfoTextEnabled(bool bEnabled);
-
-	bool IsPreviewViewEnabled() const;
-	void SetPreviewViewEnabled(bool bEnabled);
-
-	bool IsBakerViewEnabled() const;
-	void SetBakerViewEnabled(bool bEnabled);
-
-	ENiagaraBakerViewMode GetCameraMode() const;
-	void SetCameraMode(ENiagaraBakerViewMode Mode);
-	bool IsCameraMode(ENiagaraBakerViewMode Mode) const;
-
-	FText GetCameraModeText(ENiagaraBakerViewMode Mode) const;
-	FName GetCameraModeIconName(ENiagaraBakerViewMode Mode) const;
-
-	FText GetActiveCameraModeText() const { return GetCameraModeText(GetCameraMode()); }
-	const struct FSlateBrush* GetActiveCameraModeIcon() const;
 
 private:
 	TWeakPtr<FNiagaraBakerViewModel>		WeakViewModel;

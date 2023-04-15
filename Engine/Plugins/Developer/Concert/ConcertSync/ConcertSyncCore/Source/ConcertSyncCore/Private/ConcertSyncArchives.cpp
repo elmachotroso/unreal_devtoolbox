@@ -8,6 +8,8 @@
 #include "Misc/PackageName.h"
 #include "Misc/EngineVersion.h"
 #include "Serialization/CustomVersion.h"
+#include "Serialization/ObjectReader.h"
+#include "Serialization/ObjectWriter.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
 #include "UObject/LinkerLoad.h"
@@ -24,47 +26,209 @@ static const FName SkipAssetsMarker = TEXT("SKIPASSETS");
 
 namespace ConcertSyncUtil
 {
-	bool ShouldSkipTransientProperty(const FProperty* Property)
+
+bool CanExportProperty(const FProperty* Property, const bool InIncludeEditorOnlyData)
+{
+	auto CanExportTransientProperty = [Property]()
 	{
-		if (Property->HasAnyPropertyFlags(CPF_Transient))
+		const UConcertSyncConfig* SyncConfig = GetDefault<UConcertSyncConfig>();
+		return SyncConfig->AllowedTransientProperties.ContainsByPredicate([Property](const TFieldPath<FProperty>& TransactionProperty)
 		{
-			const UConcertSyncConfig* SyncConfig = GetDefault<UConcertSyncConfig>();
-			for (const TFieldPath<FProperty>& TransactionProperty : SyncConfig->AllowedTransientProperties)
-			{
-				FProperty* FilterProperty = TransactionProperty.Get();
-				if (Property == FilterProperty)
-				{
-					// Allowed transient property, do not skip
-					return false;
-				}
-			}
-			// Not allowed transient property, skip
-			return true;
+			FProperty* FilterProperty = TransactionProperty.Get();
+			return Property == FilterProperty;
+		});
+	};
+
+	return (!Property->IsEditorOnlyProperty() || InIncludeEditorOnlyData)
+		&& (!Property->HasAnyPropertyFlags(CPF_NonTransactional))
+		&& (!Property->HasAnyPropertyFlags(CPF_Transient) || CanExportTransientProperty());
+}
+
+void GatherDefaultSubobjectPaths(const UObject* Obj, TSet<FSoftObjectPath>& OutSubobjects)
+{
+	ForEachObjectWithOuter(Obj, [&OutSubobjects](UObject* InnerObj)
+	{
+		if (InnerObj->HasAnyFlags(RF_DefaultSubObject) || InnerObj->IsDefaultSubobject())
+		{
+			OutSubobjects.Emplace(InnerObj);
 		}
-		// Non transient property, might not skip
-		return false;
+	});
+}
+
+void ResetObjectPropertiesToArchetypeValues(UObject* Object, const bool InIncludeEditorOnlyData)
+{
+	class FArchetypePropertyWriter : public FObjectWriter
+	{
+	public:
+		FArchetypePropertyWriter(const UObject* Obj, TArray<uint8>& OutBytes, TSet<FSoftObjectPath>& OutObjectsToSkip, const bool InIncludeEditorOnlyData)
+			: FObjectWriter(OutBytes)
+		{
+			ArIgnoreClassRef = true;
+			ArIgnoreArchetypeRef = true;
+			ArNoDelta = true;
+
+			SetFilterEditorOnly(!InIncludeEditorOnlyData);
+
+			GatherDefaultSubobjectPaths(Obj, OutObjectsToSkip);
+
+			Obj->SerializeScriptProperties(*this);
+		}
+	};
+
+	class FArchetypePropertyReader : public FObjectReader
+	{
+	public:
+		FArchetypePropertyReader(UObject* Obj, const TArray<uint8>& InBytes, const TSet<FSoftObjectPath>& InObjectsToSkip, const bool InIncludeEditorOnlyData)
+			: FObjectReader(InBytes)
+		{
+			ArIgnoreClassRef = true;
+			ArIgnoreArchetypeRef = true;
+
+			SetFilterEditorOnly(!InIncludeEditorOnlyData);
+
+#if USE_STABLE_LOCALIZATION_KEYS
+			if (GIsEditor && !(ArPortFlags & (PPF_DuplicateVerbatim | PPF_DuplicateForPIE)))
+			{
+				SetLocalizationNamespace(TextNamespaceUtil::EnsurePackageNamespace(Obj));
+			}
+#endif // USE_STABLE_LOCALIZATION_KEYS
+
+			ObjectsToSkip = InObjectsToSkip;
+			GatherDefaultSubobjectPaths(Obj, ObjectsToSkip);
+
+			Obj->SerializeScriptProperties(*this);
+		}
+
+		virtual FArchive& operator<<(UObject*& Value) override
+		{
+			UObject* Tmp = nullptr;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value, Tmp))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+		virtual FArchive& operator<<(FObjectPtr& Value) override
+		{
+			FObjectPtr Tmp = nullptr;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value.Get(), Tmp.Get()))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+		virtual FArchive& operator<<(FLazyObjectPtr& Value) override
+		{
+			FLazyObjectPtr Tmp;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value.Get(), Tmp.Get()))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+		virtual FArchive& operator<<(FSoftObjectPtr& Value) override
+		{
+			FSoftObjectPtr Tmp;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value.ToSoftObjectPath(), Tmp.ToSoftObjectPath()))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+		virtual FArchive& operator<<(FSoftObjectPath& Value) override
+		{
+			FSoftObjectPath Tmp;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value, Tmp))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+		virtual FArchive& operator<<(FWeakObjectPtr& Value) override
+		{
+			FWeakObjectPtr Tmp;
+			FObjectReader::operator<<(Tmp);
+
+			if (CanOverwriteObject(Value.Get(), Tmp.Get()))
+			{
+				Value = Tmp;
+			}
+
+			return *this;
+		}
+
+	private:
+		bool CanOverwriteObject(const FSoftObjectPath& CurObj, const FSoftObjectPath& NewObj) const
+		{
+			return !ObjectsToSkip.Contains(CurObj) && !ObjectsToSkip.Contains(NewObj);
+		}
+
+		TSet<FSoftObjectPath> ObjectsToSkip;
+	};
+
+	if (const UObject* ObjectArchetype = Object->GetArchetype())
+	{
+		TArray<uint8> ArchetypeData;
+		TSet<FSoftObjectPath> ArchetypeObjectsToSkip;
+		FArchetypePropertyWriter(ObjectArchetype, ArchetypeData, ArchetypeObjectsToSkip, InIncludeEditorOnlyData);
+		FArchetypePropertyReader(Object, ArchetypeData, ArchetypeObjectsToSkip, InIncludeEditorOnlyData);
 	}
 }
 
+} // namespace ConcertSyncUtil
+
 FString FConcertSyncWorldRemapper::RemapObjectPathName(const FString& InObjectPathName) const
 {
+	if (RemapDelegate.IsBound())
+	{
+		FString Result = InObjectPathName;
+		RemapDelegate.Execute(Result);
+		return MoveTemp(Result);
+	}
+
 	return HasMapping() ? InObjectPathName.Replace(*SourceWorldPathName, *DestWorldPathName) : InObjectPathName;
 }
 
 bool FConcertSyncWorldRemapper::ObjectBelongsToWorld(const FString& InObjectPathName) const
 {
+	if (ObjectPathBelongsToWorldDelegate.IsBound() && ObjectPathBelongsToWorldDelegate.Execute(FStringView(InObjectPathName)))
+	{
+		return true;
+	}
+
 	return HasMapping() && (InObjectPathName.StartsWith(SourceWorldPathName) || InObjectPathName.StartsWith(DestWorldPathName));
 }
 
 bool FConcertSyncWorldRemapper::HasMapping() const
 {
-	return SourceWorldPathName.Len() > 0 && DestWorldPathName.Len() > 0;
+	return RemapDelegate.IsBound() || (SourceWorldPathName.Len() > 0 && DestWorldPathName.Len() > 0);
 }
 
-FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable* InLocalIdentifierTable, UObject* InObj, TArray<uint8>& OutBytes, const bool InIncludeEditorOnlyData, const bool InSkipAssets)
+FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable* InLocalIdentifierTable, UObject* InObj, TArray<uint8>& OutBytes, const bool InIncludeEditorOnlyData, const bool InSkipAssets, const FConcertSyncRemapObjectPath& InRemapDelegate)
 	: FConcertIdentifierWriter(InLocalIdentifierTable, OutBytes, /*bIsPersistent*/false)
 	, bSkipAssets(InSkipAssets)
 	, ShouldSkipPropertyFunc()
+	, RemapObjectPathDelegate(InRemapDelegate)
 {
 	ArIgnoreClassRef = false;
 	ArIgnoreArchetypeRef = false;
@@ -82,30 +246,35 @@ FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable*
 #endif // USE_STABLE_LOCALIZATION_KEYS
 }
 
-void FConcertSyncObjectWriter::SerializeObject(UObject* InObject, const TArray<FName>* InPropertyNamesToWrite)
+FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable* InLocalIdentifierTable, UObject* InObj, TArray<uint8>& OutBytes, const bool InIncludeEditorOnlyData, const bool InSkipAssets)
+	: FConcertSyncObjectWriter(InLocalIdentifierTable, InObj, OutBytes, InIncludeEditorOnlyData, InSkipAssets, FConcertSyncRemapObjectPath())
 {
-	if (InPropertyNamesToWrite)
+}
+
+void FConcertSyncObjectWriter::SerializeObject(const UObject* InObject, const TArray<const FProperty*>* InPropertiesToWrite)
+{
+	if (InPropertiesToWrite)
 	{
-		ShouldSkipPropertyFunc = [InObject, InPropertyNamesToWrite](const FProperty* InProperty) -> bool
+		ShouldSkipPropertyFunc = [InObject, InPropertiesToWrite](const FProperty* InProperty) -> bool
 		{
-			return InProperty->GetOwnerStruct() == InObject->GetClass() && !InPropertyNamesToWrite->Contains(InProperty->GetFName());
+			return !InPropertiesToWrite->Contains(InProperty);
 		};
 
-		InObject->Serialize(*this);
+		const_cast<UObject*>(InObject)->Serialize(*this);
 
 		ShouldSkipPropertyFunc = FShouldSkipPropertyFunc();
 	}
 	else
 	{
-		InObject->Serialize(*this);
+		const_cast<UObject*>(InObject)->Serialize(*this);
 	}
 }
 
-void FConcertSyncObjectWriter::SerializeProperty(FProperty* InProp, UObject* InObject)
+void FConcertSyncObjectWriter::SerializeProperty(const FProperty* InProp, const UObject* InObject)
 {
 	for (int32 Idx = 0; Idx < InProp->ArrayDim; ++Idx)
 	{
-		InProp->SerializeItem(FStructuredArchiveFromArchive(*this).GetSlot(), InProp->ContainerPtrToValuePtr<void>(InObject, Idx));
+		InProp->SerializeItem(FStructuredArchiveFromArchive(*this).GetSlot(), InProp->ContainerPtrToValuePtr<void>(const_cast<UObject*>(InObject), Idx));
 	}
 }
 
@@ -114,7 +283,16 @@ FArchive& FConcertSyncObjectWriter::operator<<(UObject*& Obj)
 	FName ObjPath;
 	if (Obj)
 	{
-		ObjPath = (Obj->IsAsset() && bSkipAssets) ? SkipAssetsMarker : *Obj->GetPathName();
+		if (bSkipAssets && Obj->IsAsset())
+		{
+			ObjPath = SkipAssetsMarker;
+		}
+		else
+		{
+			FString ObjectPathString = Obj->GetPathName();
+			RemapObjectPathDelegate.ExecuteIfBound(ObjectPathString);
+			ObjPath = FName(ObjectPathString);
+		}
 	}
 
 	*this << ObjPath;
@@ -146,7 +324,17 @@ FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPtr& AssetPtr)
 
 FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPath& AssetPtr)
 {
-	FName ObjPath = bSkipAssets ? SkipAssetsMarker : *AssetPtr.ToString();
+	FName ObjPath;
+	if (bSkipAssets)
+	{
+		ObjPath = SkipAssetsMarker;
+	}
+	else
+	{
+		FString ObjectPathString = AssetPtr.ToString();
+		RemapObjectPathDelegate.ExecuteIfBound(ObjectPathString);
+		ObjPath = FName(ObjectPathString);
+	}
 	*this << ObjPath;
 	return *this;
 }
@@ -165,8 +353,8 @@ FString FConcertSyncObjectWriter::GetArchiveName() const
 
 bool FConcertSyncObjectWriter::ShouldSkipProperty(const FProperty* InProperty) const
 {
-	return (ShouldSkipPropertyFunc && ShouldSkipPropertyFunc(InProperty)) || 
-		ConcertSyncUtil::ShouldSkipTransientProperty(InProperty);
+	return (ShouldSkipPropertyFunc && ShouldSkipPropertyFunc(InProperty))
+		|| (!ConcertSyncUtil::CanExportProperty(InProperty, !IsFilterEditorOnly()));
 }
 
 FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes)
@@ -212,7 +400,7 @@ void FConcertSyncObjectReader::SerializeObject(UObject* InObject)
 	InObject->Serialize(*this);
 }
 
-void FConcertSyncObjectReader::SerializeProperty(FProperty* InProp, UObject* InObject)
+void FConcertSyncObjectReader::SerializeProperty(const FProperty* InProp, UObject* InObject)
 {
 	for (int32 Idx = 0; Idx < InProp->ArrayDim; ++Idx)
 	{
@@ -236,20 +424,23 @@ FArchive& FConcertSyncObjectReader::operator<<(UObject*& Obj)
 		// Always attempt to find an in-memory object first as we may be calling this function while a load is taking place
 		Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ResolvedObjPath);
 
-		// We do not attempt to load objects within the current world as they may not have been created yet, 
-		// and we don't want to trigger a reload of the world package (when iterative cooking is enabled)
-		const bool bAllowLoad = !WorldRemapper.ObjectBelongsToWorld(ResolvedObjPath);
-		if (!Obj && bAllowLoad)
+		if (!Obj)
 		{
-			// If the outer name is a package path that isn't currently loaded, then we need to try loading it to avoid 
-			// creating an in-memory version of the package (which would prevent the real package ever loading)
-			if (FPackageName::IsValidLongPackageName(ResolvedObjPath))
+			// We do not attempt to load objects within the current world as they may not have been created yet, 
+			// and we don't want to trigger a reload of the world package (when iterative cooking is enabled)
+			const bool bAllowLoad = !WorldRemapper.ObjectBelongsToWorld(ResolvedObjPath);
+			if (bAllowLoad)
 			{
-				Obj = LoadPackage(nullptr, *ResolvedObjPath, LOAD_NoWarn);
-			}
-			else
-			{
-				Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ResolvedObjPath);
+				// If the outer name is a package path that isn't currently loaded, then we need to try loading it to avoid 
+				// creating an in-memory version of the package (which would prevent the real package ever loading)
+				if (FPackageName::IsValidLongPackageName(ResolvedObjPath))
+				{
+					Obj = LoadPackage(nullptr, *ResolvedObjPath, LOAD_NoWarn);
+				}
+				else
+				{
+					Obj = StaticLoadObject(UObject::StaticClass(), nullptr, *ResolvedObjPath);
+				}
 			}
 		}
 	}
@@ -276,7 +467,7 @@ FArchive& FConcertSyncObjectReader::operator<<(FLazyObjectPtr& LazyObjectPtr)
 
 FArchive& FConcertSyncObjectReader::operator<<(FObjectPtr& Obj)
 {
-	UObject* RawObj = nullptr;
+	UObject* RawObj = Obj.Get();
 	*this << RawObj;
 	Obj = RawObj;
 	return *this;

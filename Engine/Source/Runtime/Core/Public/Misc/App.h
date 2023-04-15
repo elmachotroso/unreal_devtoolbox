@@ -2,20 +2,26 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Templates/UnrealTemplate.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
-#include "Misc/Parse.h"
-#include "UObject/NameTypes.h"
 #include "CoreGlobals.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
-#include "Misc/Guid.h"
-#include "Misc/CoreMisc.h"
-#include "Misc/CommandLine.h"
-#include "Misc/Optional.h"
-#include "Misc/QualifiedFrameTime.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/Build.h"
+#include "Misc/CString.h"
+#include "Misc/CommandLine.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/FrameRate.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "Misc/Parse.h"
+#include "Misc/QualifiedFrameTime.h"
+#include "Misc/Timecode.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
 
 /**
  * Provides information about the application.
@@ -210,6 +216,13 @@ public:
 	{
 		SessionUsers.Remove(UserName);
 	}
+
+	/**
+	 * Gets the Zen store project id for the current application instance.
+	 *
+	 * @return Zen store project id.
+	 */
+	static FString GetZenStoreProjectId();
 
 	/**
 	 * Gets the globally unique identifier of this application instance.

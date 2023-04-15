@@ -2,13 +2,28 @@
 
 
 #include "K2Node_VariableSet.h"
-#include "GameFramework/Actor.h"
-#include "Engine/BlueprintGeneratedClass.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
-#include "K2Node_VariableGet.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/MemberReference.h"
+#include "GameFramework/Actor.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_VariableGet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "KismetCompiler.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
 #include "VariableSetHandler.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_VariableSet"
@@ -296,14 +311,15 @@ bool UK2Node_VariableSet::HasLocalRepNotify() const
 
 bool UK2Node_VariableSet::ShouldFlushDormancyOnSet() const
 {
-	if (!GetVariableSourceClass()->IsChildOf(AActor::StaticClass()))
+	const UClass* VariableSourceClass = GetVariableSourceClass();
+	if (VariableSourceClass == nullptr || !VariableSourceClass->IsChildOf(AActor::StaticClass()))
 	{
 		return false;
 	}
 
 	// Flush net dormancy before setting a replicated property
-	FProperty *Property = FindFProperty<FProperty>(GetVariableSourceClass(), GetVarName());
-	return (Property != NULL && (Property->PropertyFlags & CPF_Net));
+	FProperty* Property = FindFProperty<FProperty>(VariableSourceClass, GetVarName());
+	return (Property && (Property->PropertyFlags & CPF_Net));
 }
 
 bool UK2Node_VariableSet::IsNetProperty() const
@@ -314,8 +330,7 @@ bool UK2Node_VariableSet::IsNetProperty() const
 
 FName UK2Node_VariableSet::GetRepNotifyName() const
 {
-	FProperty * Property = GetPropertyForVariable();
-	if (Property)
+	if (FProperty* Property = GetPropertyForVariable())
 	{
 		return Property->RepNotifyFunc;
 	}

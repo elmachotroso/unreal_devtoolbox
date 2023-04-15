@@ -2,7 +2,7 @@
 
 #include "EdGraphSchema_Niagara.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraphNode_Comment.h"
 #include "GraphEditorSettings.h"
 #include "INiagaraEditorTypeUtilities.h"
@@ -39,12 +39,14 @@
 #include "ObjectEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "ToolMenus.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Settings/EditorStyleSettings.h"
 #include "Framework/Commands/UIAction.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "Textures/SlateIcon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EdGraphSchema_Niagara)
 
 #define LOCTEXT_NAMESPACE "NiagaraSchema"
 
@@ -79,7 +81,7 @@ const FName UEdGraphSchema_Niagara::PinCategoryStaticEnum("StaticEnum");
 namespace NiagaraNodeNumbers
 {
 	// Maximum distance a drag can be off a node edge to require 'push off' from node
-	const int32 NiagaraMinNodeDistance = 60;
+	constexpr int32 NiagaraMinNodeDistance = 60;
 }
 
 UEdGraphNode* FNiagaraSchemaAction_NewNode::PerformAction(class UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode/* = true*/)
@@ -212,19 +214,24 @@ UEdGraphSchema_Niagara::UEdGraphSchema_Niagara(const FObjectInitializer& ObjectI
 {
 }
 
-TSharedPtr<FNiagaraSchemaAction_NewNode> AddNewNodeAction(TArray<TSharedPtr<FNiagaraSchemaAction_NewNode> >& NewActions, const FText& Category, const FText& DisplayName, const FName& InternalName, const FText& Tooltip, FText Keywords = FText(), int32 SectionID = 0)
+TSharedPtr<FNiagaraAction_NewNode> AddNewNodeMenuAction(
+	TArray<TSharedPtr<FNiagaraAction_NewNode>>& NewActions,
+	UEdGraphNode* InNodeTemplate,
+	const FText& DisplayName,
+	ENiagaraMenuSections Section,
+	TArray<FString> NestedCategories,
+	const FText& Tooltip,
+	FText Keywords = FText(),
+	FNiagaraActionSourceData SourceData = FNiagaraActionSourceData(
+		EScriptSource::Niagara, FText::FromString(TEXT("Niagara")), true))
 {
-	TSharedPtr<FNiagaraSchemaAction_NewNode> NewAction = MakeShared<FNiagaraSchemaAction_NewNode>(Category, DisplayName, InternalName, Tooltip, 0, Keywords, SectionID);
-	NewActions.Add(NewAction);
-
-	return NewAction;
-}
-
-TSharedPtr<FNiagaraAction_NewNode> AddNewNodeMenuAction(TArray<TSharedPtr<FNiagaraAction_NewNode>>& NewActions, UEdGraphNode* InNodeTemplate, const FText& DisplayName, ENiagaraMenuSections Section, TArray<FString> NestedCategories, const FText& Tooltip, FText Keywords = FText(), FNiagaraActionSourceData
-                                            SourceData = FNiagaraActionSourceData(EScriptSource::Niagara, FText::FromString(TEXT("Niagara")), true))
-{
+	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
 	TSharedPtr<FNiagaraAction_NewNode> NewAction = MakeShared<FNiagaraAction_NewNode>(DisplayName, Section, NestedCategories, Tooltip, Keywords);
-	NewAction->NodeTemplate = InNodeTemplate;
+	if (ensureMsgf(InNodeTemplate == nullptr || NiagaraEditorSettings->IsAllowedClass(InNodeTemplate->GetClass()),
+		TEXT("Can not create a menu action for a node of class %s."), *InNodeTemplate->GetClass()->GetName()))
+	{
+		NewAction->NodeTemplate = InNodeTemplate;
+	}
 	NewAction->SourceData = SourceData;
 	NewActions.Add(NewAction);
 
@@ -280,7 +287,7 @@ const UNiagaraGraph* GetAlternateGraph(const UNiagaraGraph* NiagaraGraph)
 		UNiagaraScript* Script = Cast<UNiagaraScript>(ScriptSource->GetOuter());
 		if (Script != nullptr)
 		{
-			UNiagaraEmitter* EmitterProperties = Cast<UNiagaraEmitter>(Script->GetOuter());
+			FVersionedNiagaraEmitterData* EmitterProperties = Script->GetOuterEmitter().GetEmitterData();
 			if (EmitterProperties != nullptr)
 			{
 				if (EmitterProperties->SpawnScriptProps.Script == Script)
@@ -396,11 +403,17 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	bool bAllowSelectNodes = true;
 	bool bAllowStaticSwitchNodes = true;
 
+	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
+
+	TOptional<FNiagaraTypeDefinition> FromType;
+	TOptional<EEdGraphPinDirection> FromDirection;
+
 	UNiagaraDataInterface* FromPinDataInterface = nullptr;
 	if ( FromPin )
 	{
-		FNiagaraTypeDefinition PinType = PinToTypeDefinition(FromPin);
-		if (const UClass* FromPinClass = PinType.GetClass() )
+		FromType = PinToTypeDefinition(FromPin);
+		FromDirection = FromPin->Direction;
+		if (const UClass* FromPinClass = FromType->GetClass() )
 		{
 			bAllowOpNodes = false;
 			bAllowFunctionNodes = false;
@@ -421,21 +434,60 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 	
 	// Add operations (add / mul / etc)
-	if (bAllowOpNodes && (GbAllowAllNiagaraNodesInEmitterGraphs || bModuleGraph || bFunctionGraph || bSystemGraph))
+	if (bAllowOpNodes &&
+		(GbAllowAllNiagaraNodesInEmitterGraphs || bModuleGraph || bFunctionGraph || bSystemGraph) &&
+		NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeOp::StaticClass()))
 	{
 		const TArray<FNiagaraOpInfo>& OpInfos = FNiagaraOpInfo::GetOpInfoArray();
+
+		bool bFilterTypes = false;
+		if(FromType.IsSet() && FromDirection.IsSet())
+		{
+			bFilterTypes = true;
+		}
 		
 		for (const FNiagaraOpInfo& OpInfo : OpInfos)
 		{
-			// todo suggestion info per op?
-			UNiagaraNodeOp* OpNode = NewObject<UNiagaraNodeOp>(OwnerOfTemporaries);
-			OpNode->OpName = OpInfo.Name;
-			AddNewNodeMenuAction(NewActions, OpNode, OpInfo.FriendlyName, ENiagaraMenuSections::General, {OpInfo.Category.ToString()}, OpInfo.Description,  OpInfo.Keywords);
+			bool bAddOp = true;
+			if(bFilterTypes)
+			{
+				bAddOp = false;
+				if(FromDirection == EGPD_Output)
+				{
+					for(const FNiagaraOpInOutInfo& InputInfo : OpInfo.Inputs)
+					{
+						if(FNiagaraTypeDefinition::TypesAreAssignable(InputInfo.DataType, FromType.GetValue()))
+						{
+							bAddOp = true;
+							break;
+						}
+					}
+				}
+				else
+				{
+					for(const FNiagaraOpInOutInfo& OutputInfo : OpInfo.Outputs)
+					{
+						if(FNiagaraTypeDefinition::TypesAreAssignable(FromType.GetValue(), OutputInfo.DataType))
+						{
+							bAddOp = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if(bAddOp)
+			{
+				// todo suggestion info per op?
+				UNiagaraNodeOp* OpNode = NewObject<UNiagaraNodeOp>(OwnerOfTemporaries);
+				OpNode->OpName = OpInfo.Name;
+				AddNewNodeMenuAction(NewActions, OpNode, OpInfo.FriendlyName, ENiagaraMenuSections::General, {OpInfo.Category.ToString()}, OpInfo.Description,  OpInfo.Keywords);
+			}
 		}
 	}
 
 	// Add custom code
-	if (bAllowCustomNode)
+	if (bAllowCustomNode && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeCustomHlsl::StaticClass()))
 	{
 		const FText DisplayName = LOCTEXT("CustomHLSLNode","Custom Hlsl");
 		const FText TooltipDesc = LOCTEXT("CustomHlslPopupTooltip", "Add a node with custom hlsl content");
@@ -457,14 +509,16 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 
 		bool bIsInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(ScriptAsset);
 		const FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(ScriptAsset.AssetName, bIsInLibrary);
-		const FText TooltipDesc = FNiagaraEditorUtilities::FormatScriptDescription(AssetDesc, ScriptAsset.ObjectPath, bIsInLibrary);
+		const FText TooltipDesc = FNiagaraEditorUtilities::FormatScriptDescription(AssetDesc, ScriptAsset.GetSoftObjectPath(), bIsInLibrary);
 		const TTuple<EScriptSource, FText> Source = FNiagaraEditorUtilities::GetScriptSource(ScriptAsset);
 		FNiagaraActionSourceData SourceData(Source.Key, Source.Value, true);
 		
 		const ENiagaraMenuSections Section = bSuggested ? ENiagaraMenuSections::Suggested: ENiagaraMenuSections::General;
 
 		UNiagaraNodeFunctionCall* FunctionCallNode = NewObject<UNiagaraNodeFunctionCall>(OwnerOfTemporaries);
-		FunctionCallNode->FunctionScriptAssetObjectPath = ScriptAsset.ObjectPath;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FunctionCallNode->FunctionScriptAssetObjectPath = ScriptAsset.GetSoftObjectPath().ToFName();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		TSharedPtr<FNiagaraAction_NewNode> Action = AddNewNodeMenuAction(NewActions, FunctionCallNode, DisplayName, Section, Categories, TooltipDesc, Keywords, SourceData);
 		Action->bIsInLibrary = bIsInLibrary;
@@ -473,7 +527,9 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	};
 
 	//Add functions
-	if (bAllowFunctionNodes && (GbAllowAllNiagaraNodesInEmitterGraphs || bModuleGraph || bFunctionGraph || bDynamicInputGraph))
+	if (bAllowFunctionNodes &&
+		(GbAllowAllNiagaraNodesInEmitterGraphs || bModuleGraph || bFunctionGraph || bDynamicInputGraph) &&
+		NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeFunctionCall::StaticClass()))
 	{
 		TArray<FAssetData> FunctionScriptAssets;
 		FNiagaraEditorUtilities::FGetFilteredScriptAssetsOptions FunctionScriptFilterOptions;
@@ -488,7 +544,8 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 
 	//Add modules
-	if (bAllowModuleNodes && !bFunctionGraph && !bModuleGraph && !bDynamicInputGraph)
+	if (bAllowModuleNodes && !bFunctionGraph && !bModuleGraph && !bDynamicInputGraph &&
+		NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeFunctionCall::StaticClass()))
 	{
 		TArray<FAssetData> ModuleScriptAssets;
 		FNiagaraEditorUtilities::FGetFilteredScriptAssetsOptions ModuleScriptFilterOptions;
@@ -504,13 +561,16 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 
 	//Add event read and writes nodes
-	if (bAllowEventNodes && bModuleGraph)
+	if (bAllowEventNodes && bModuleGraph &&
+		NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeReadDataSet::StaticClass()) &&
+		NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeWriteDataSet::StaticClass()))
 	{
 		const FText MenuCat = LOCTEXT("NiagaraEventMenuCat", "Events");
 		TArray<FString> ReadCategories = {MenuCat.ToString(), LOCTEXT("NiagaraEventCategory_Read", "Read").ToString()};
 		TArray<FString> WriteCategories = {MenuCat.ToString(), LOCTEXT("NiagaraEventCategory_Write", "Write").ToString()};
 
-		const TArray<FNiagaraTypeDefinition>& PayloadTypes = FNiagaraTypeRegistry::GetRegisteredPayloadTypes();
+		TArray<FNiagaraTypeDefinition> PayloadTypes;
+		FNiagaraEditorUtilities::GetAllowedPayloadTypes(PayloadTypes);
 		for (const FNiagaraTypeDefinition& PayloadType : PayloadTypes)
 		{
 			if (PayloadType.IsInternalType())
@@ -560,7 +620,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 		UsageTypesToAdd.Add(ENiagaraScriptUsage::SystemUpdateScript);
 	}
 
-	if (UsageTypesToAdd.Num() != 0)
+	if (UsageTypesToAdd.Num() != 0 && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeOutput::StaticClass()))
 	{
 		for (ENiagaraScriptUsage Usage : UsageTypesToAdd)
 		{
@@ -587,6 +647,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 
 
 	// Add Convert Nodes
+	if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeConvert::StaticClass()))
 	{
 		FNiagaraTypeDefinition PinType = FNiagaraTypeDefinition::GetGenericNumericDef();
 
@@ -602,13 +663,13 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 			FText BreakCat = LOCTEXT("NiagaraBreak", "Break");
 
 			FText DescFmt = LOCTEXT("NiagaraMakeBreakFmt", "{0}");
-			auto MakeBreakType = [&](FNiagaraTypeDefinition Type, bool bMake)
+			auto MakeBreakType = [&](FNiagaraTypeDefinition Type, bool bMake, bool bInLibrary)
 			{
 				FText DisplayName = Type.GetNameText();
 				FText Desc = FText::Format(DescFmt, DisplayName);
 				
 				UNiagaraNodeConvert* ConvertNode = NewObject<UNiagaraNodeConvert>(OwnerOfTemporaries);
-				AddNewNodeMenuAction(NewActions, ConvertNode, DisplayName, ENiagaraMenuSections::General, {bMake ? MakeCat.ToString() : BreakCat.ToString()}, FText::GetEmpty(), FText::GetEmpty());
+				TSharedPtr<FNiagaraAction_NewNode> Action = AddNewNodeMenuAction(NewActions, ConvertNode, DisplayName, ENiagaraMenuSections::General, {bMake ? MakeCat.ToString() : BreakCat.ToString()}, FText::GetEmpty(), FText::GetEmpty());
 				if (bMake)
 				{
 					ConvertNode->InitAsMake(Type);
@@ -617,6 +678,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 				{
 					ConvertNode->InitAsBreak(Type);
 				}
+				Action->bIsInLibrary = bInLibrary;
 			};
 
 			// we don't allow make on the following types
@@ -625,9 +687,12 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 			NoMakeAllowed.Add(FNiagaraTypeDefinition::GetParameterMapDef());
 			
 			// Dynamic Makes from type registry. Should include the pin type as well.
+			TArray<FNiagaraTypeDefinition> CandidateTypes;
+			FNiagaraEditorUtilities::GetAllowedTypes(CandidateTypes);
 			for (const FNiagaraTypeDefinition& CandidateType : FNiagaraTypeRegistry::GetRegisteredTypes())
 			{
 				bool bAddMake = false;
+				bool bIsInLibrary = true;
 				
 				if(!CandidateType.IsValid() || CandidateType.IsUObject() || NoMakeAllowed.Contains(CandidateType))
 				{
@@ -643,12 +708,15 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 						// we are checking here if the candidate type has a property that is the same as our pin
 						for (TFieldIterator<FProperty> CandidatePropertyIt(CandidateType.GetStruct(), EFieldIteratorFlags::IncludeSuper); CandidatePropertyIt; ++CandidatePropertyIt)
 						{
-							FNiagaraTypeDefinition CandidatePropertyType = GetTypeDefForProperty(*CandidatePropertyIt);
-							if(FNiagaraTypeDefinition::TypesAreAssignable(CandidatePropertyType, PinType))
+							if (IsValidNiagaraPropertyType(*CandidatePropertyIt))
 							{
-								bAddMake = true;
-								break;
-						}
+								FNiagaraTypeDefinition CandidatePropertyType = GetTypeDefForProperty(*CandidatePropertyIt);
+								if(FNiagaraTypeDefinition::TypesAreAssignable(CandidatePropertyType, PinType))
+								{
+									bAddMake = true;
+									break;
+								}
+							}
 						}
 					}
 					else
@@ -669,11 +737,17 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 				else
 				{
 					bAddMake = true;
+					if (!FNiagaraTypeRegistry::GetRegisteredParameterTypes().Contains(CandidateType) &&
+						!FNiagaraTypeRegistry::GetRegisteredPayloadTypes().Contains(CandidateType) && 
+						!FNiagaraTypeRegistry::GetUserDefinedTypes().Contains(CandidateType))
+					{
+						bIsInLibrary = false;
+					}
 				}
 
 				if(bAddMake)
 				{
-					MakeBreakType(CandidateType, true);
+					MakeBreakType(CandidateType, true, bIsInLibrary);
 				}
 			}
 			
@@ -685,7 +759,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 				{
 					if(FromPin->Direction == EGPD_Output)
 					{
-						MakeBreakType(PinType, false);
+						MakeBreakType(PinType, false, true);
 					}					
 				}
 			}				
@@ -762,26 +836,31 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	if (bAllowParameterMapGetSetNodes)
 	{
 		FText MenuCat = FText::FromString("Parameter Map");
+		if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeParameterMapGet::StaticClass()))
 		{
 			FString Name = TEXT("Parameter Map Get");
 			UNiagaraNodeParameterMapGet* BaseNode = NewObject<UNiagaraNodeParameterMapGet>(OwnerOfTemporaries);
 			AddNewNodeMenuAction(NewActions, BaseNode, FText::FromString(Name), ENiagaraMenuSections::Suggested, {MenuCat.ToString()}, FText::GetEmpty(), FText::GetEmpty());
 		}
+		if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeParameterMapSet::StaticClass()))
 		{
 			FString Name = TEXT("Parameter Map Set");
 			UNiagaraNodeParameterMapSet* BaseNode = NewObject<UNiagaraNodeParameterMapSet>(OwnerOfTemporaries);
 			AddNewNodeMenuAction(NewActions, BaseNode, FText::FromString(Name), ENiagaraMenuSections::Suggested, {MenuCat.ToString()}, FText::GetEmpty(), FText::GetEmpty());
 		}
+		if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeParameterMapFor::StaticClass()))
 		{
 			FString Name = TEXT("Parameter Map For");
 			UNiagaraNodeParameterMapFor* BaseNode = NewObject<UNiagaraNodeParameterMapFor>(OwnerOfTemporaries);
 			AddNewNodeMenuAction(NewActions, BaseNode, FText::FromString(Name), ENiagaraMenuSections::General, {MenuCat.ToString()}, FText::GetEmpty(), FText::GetEmpty());
 		}
+		if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeParameterMapForWithContinue::StaticClass()))
 		{
 			FString Name = TEXT("Parameter Map For With Continue");
 			UNiagaraNodeParameterMapForWithContinue* BaseNode = NewObject<UNiagaraNodeParameterMapForWithContinue>(OwnerOfTemporaries);
 			AddNewNodeMenuAction(NewActions, BaseNode, FText::FromString(Name), ENiagaraMenuSections::General, { MenuCat.ToString() }, FText::GetEmpty(), FText::GetEmpty());
 		}
+		if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeParameterMapForIndex::StaticClass()))
 		{
 			FString Name = TEXT("Parameter Map For Current Index");
 			UNiagaraNodeParameterMapForIndex* BaseNode = NewObject<UNiagaraNodeParameterMapForIndex>(OwnerOfTemporaries);
@@ -790,6 +869,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 
 	// Handle comment nodes
+	if (NiagaraEditorSettings->IsAllowedClass(UEdGraphNode_Comment::StaticClass()))
 	{
 		FText MenuCat = FText::FromString("Comments");
 
@@ -801,7 +881,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 
 	// Handle output tag nodes
-	if ( bAllowOutputTagNodes )
+	if (bAllowOutputTagNodes && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeOutputTag::StaticClass()))
 	{
 		FText MenuCat = FText::FromString("Compiler Tagging");
 
@@ -813,7 +893,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	}
 	
 	//Add all input node options for input pins or no pin.
-	if (FromPin == nullptr || FromPin->Direction == EGPD_Input)
+	if ((FromPin == nullptr || FromPin->Direction == EGPD_Input) && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeInput::StaticClass()))
 	{
 		TArray<UNiagaraNodeInput*> InputNodes;
 		NiagaraGraph->GetNodesOfClass(InputNodes);
@@ -870,8 +950,9 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 			{
 				const FText MenuDescFmt = LOCTEXT("Add ParameterFmt", "Add {0} Parameter");
 				const FText AddParameterCategory = LOCTEXT("AddParameterCat", "Add Parameter");
-				const TArray<FNiagaraTypeDefinition>& RegisteredTypes = FNiagaraTypeRegistry::GetRegisteredParameterTypes();
-				for (FNiagaraTypeDefinition Type : RegisteredTypes)
+				TArray<FNiagaraTypeDefinition> RegisteredTypes;
+				FNiagaraEditorUtilities::GetAllowedParameterTypes(RegisteredTypes);
+				for (const FNiagaraTypeDefinition& Type : RegisteredTypes)
 				{
 					if (Type.IsUObject() && Type.IsDataInterface() == false)
 					{
@@ -922,6 +1003,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	const FText UtilMenuCat = LOCTEXT("NiagaraUsageSelectorMenuCat", "Utility");
 
 	// Add reroute node
+	if (NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeReroute::StaticClass()))
 	{
 		const FText RerouteMenuDesc = LOCTEXT("NiagaraRerouteMenuDesc", "Reroute");
 		
@@ -931,7 +1013,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 	
 	// Add select node
 	// Note: Data Interfaces are not supported for this type
-	if ( bAllowSelectNodes )
+	if (bAllowSelectNodes && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeSelect::StaticClass()))
 	{
 		const FText SelectMenuDesc = LOCTEXT("NiagaraSelectMenuDesc", "Select / If");
 		
@@ -941,7 +1023,7 @@ TArray<TSharedPtr<FNiagaraAction_NewNode>> UEdGraphSchema_Niagara::GetGraphActio
 
 	// Add static switch node
 	// Note: Data Interfaces are not supported for this type
-	if ( bAllowStaticSwitchNodes )
+	if (bAllowStaticSwitchNodes && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeStaticSwitch::StaticClass()))
 	{
 		const FText UsageSelectorMenuDesc = LOCTEXT("NiagaraStaticSwitchMenuDesc", "Static Switch");
 		
@@ -1028,7 +1110,7 @@ const FPinConnectionResponse UEdGraphSchema_Niagara::CanCreateConnection(const U
 			}
 			else if (FNiagaraTypeDefinition::TypesAreAssignable(PinTypeInput, PinTypeOutput, GetDefault<UNiagaraSettings>()->bEnforceStrictStackTypes == false))
 			{
-				// if we have a lossy conversion but are assignable, let the user connect but inform him
+				// if we have a lossy conversion but are assignable, let the user connect but inform them
 				if(FNiagaraTypeDefinition::IsLossyConversion(PinTypeOutput, PinTypeInput))
 				{
 					FText ConvertMessage = FText::Format(ConvertLossyText, PinTypeOutput.GetNameText(), PinTypeInput.GetNameText());
@@ -1071,29 +1153,55 @@ const FPinConnectionResponse UEdGraphSchema_Niagara::CanCreateConnection(const U
 			UNiagaraNodeWithDynamicPins* NodeA = Cast<UNiagaraNodeWithDynamicPins>(PinA->GetOwningNode());
 			UNiagaraNodeWithDynamicPins* NodeB = Cast<UNiagaraNodeWithDynamicPins>(PinB->GetOwningNode());
 			
-			// TODO: This shouldn't be handled explicitly here.
-			bool bPinAIsAddAndAcceptsPinB =
-				PinA->PinType.PinCategory == PinCategoryMisc && PinA->PinType.PinSubCategory == UNiagaraNodeWithDynamicPins::AddPinSubCategory &&
-				(
-					PinB->PinType.PinCategory == PinCategoryType &&
-					NodeA && PinToTypeDefinition(PinB) == FNiagaraTypeDefinition::GetGenericNumericDef() ?
-					NodeA->AllowNiagaraTypeForAddPin(PinToTypeDefinition(PinB)) : PinToTypeDefinition(PinB) != FNiagaraTypeDefinition::GetGenericNumericDef()
-				)
-				&& PinToTypeDefinition(PinB) != FNiagaraTypeDefinition::GetParameterMapDef();
+			// Handle Direct connection or Inferred connection between numerics
+			FNiagaraTypeDefinition PinAType = PinToTypeDefinition(PinA);
+			FNiagaraTypeDefinition PinBType = PinToTypeDefinition(PinB);
+			FNiagaraTypeDefinition PinATypeAlt = PinAType;
+			FNiagaraTypeDefinition PinBTypeAlt = PinBType;
 
-			bool bPinBIsAddAndAcceptsPinA =
-				PinB->PinType.PinCategory == PinCategoryMisc && PinB->PinType.PinSubCategory == UNiagaraNodeWithDynamicPins::AddPinSubCategory &&
-				(
-                    PinA->PinType.PinCategory == PinCategoryType &&
-                    NodeB && PinToTypeDefinition(PinA) == FNiagaraTypeDefinition::GetGenericNumericDef() ?
-                    NodeB->AllowNiagaraTypeForAddPin(PinToTypeDefinition(PinA)) : PinToTypeDefinition(PinA) != FNiagaraTypeDefinition::GetGenericNumericDef()
-                )
-				&& PinToTypeDefinition(PinA) != FNiagaraTypeDefinition::GetParameterMapDef();
+			if (PinA->GetOwningNode())
+			{
+				UNiagaraGraph* Graph = Cast< UNiagaraGraph>(PinA->GetOwningNode()->GetGraph());
+				if (Graph)
+				{
+					PinATypeAlt = Graph->GetCachedNumericConversion(PinA);
+				}
+			}
 
-			if (bPinAIsAddAndAcceptsPinB == false && bPinBIsAddAndAcceptsPinA == false)
+			if (PinB->GetOwningNode())
+			{
+				UNiagaraGraph* Graph = Cast< UNiagaraGraph>(PinB->GetOwningNode()->GetGraph());
+				if (Graph)
+				{
+					PinBTypeAlt = Graph->GetCachedNumericConversion(PinB);
+				}
+			}
+
+
+			auto CanConnect = [](const UEdGraphPin* SrcPin, const UEdGraphPin* DestPin, const FNiagaraTypeDefinition& DestPinType, UNiagaraNodeWithDynamicPins* SrcNode)->bool{
+				return SrcPin->PinType.PinCategory == PinCategoryMisc && SrcPin->PinType.PinSubCategory == UNiagaraNodeWithDynamicPins::AddPinSubCategory &&
+					(
+						DestPin->PinType.PinCategory == PinCategoryType &&
+						SrcNode && DestPinType == FNiagaraTypeDefinition::GetGenericNumericDef() ?
+						SrcNode->AllowNiagaraTypeForAddPin(DestPinType) : DestPinType != FNiagaraTypeDefinition::GetGenericNumericDef()
+						)
+					&& PinToTypeDefinition(DestPin) != FNiagaraTypeDefinition::GetParameterMapDef();
+			};
+
+			bool bPinAIsAddAndAcceptsPinB = CanConnect(PinA, PinB, PinBType, NodeA);
+			bool bPinAIsAddAndAcceptsPinBAlt = CanConnect(PinA, PinB, PinBTypeAlt, NodeA);
+
+			bool bPinBIsAddAndAcceptsPinA = CanConnect(PinB, PinA, PinAType, NodeB);
+			bool bPinBIsAddAndAcceptsPinAAlt = CanConnect(PinB, PinA, PinATypeAlt, NodeB);
+
+			// Disallow only if both paths are invalid. I.e. a Numeric that doesn't have an inferred type doesn't match, 
+			// but one that does have an inferred type can match.
+			if (bPinAIsAddAndAcceptsPinB == false && bPinBIsAddAndAcceptsPinA == false && 
+				bPinAIsAddAndAcceptsPinBAlt == false && bPinBIsAddAndAcceptsPinAAlt == false)
 			{
 				return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, TypesAreNotCompatibleText);
 			}
+
 		}
 		else
 		{
@@ -1678,6 +1786,10 @@ FEdGraphPinType UEdGraphSchema_Niagara::TypeDefinitionToPinType(FNiagaraTypeDefi
 
 	}
 }
+bool UEdGraphSchema_Niagara::IsPinStatic(const UEdGraphPin* Pin)
+{
+	return Pin->PinType.PinCategory == PinCategoryStaticEnum || Pin->PinType.PinCategory == PinCategoryStaticClass || Pin->PinType.PinCategory == PinCategoryStaticType;
+}
 
 bool UEdGraphSchema_Niagara::IsPinWildcard(const UEdGraphPin* Pin)
 {
@@ -1847,6 +1959,18 @@ UNiagaraParameterCollection* UEdGraphSchema_Niagara::VariableIsFromParameterColl
 	return nullptr;
 }
 
+bool UEdGraphSchema_Niagara::IsValidNiagaraPropertyType(const FProperty* Property) const
+{
+	return Property != nullptr &&
+		(Property->IsA(FFloatProperty::StaticClass()) ||
+		Property->IsA(FDoubleProperty::StaticClass()) ||
+		Property->IsA(FIntProperty::StaticClass()) ||
+		Property->IsA(FBoolProperty::StaticClass()) ||
+		Property->IsA(FEnumProperty::StaticClass()) ||
+		Property->IsA(FStructProperty::StaticClass()) ||
+		Property->IsA(FUInt16Property::StaticClass()));
+}
+
 FNiagaraTypeDefinition UEdGraphSchema_Niagara::GetTypeDefForProperty(const FProperty* Property)const
 {
 	if (Property->IsA(FFloatProperty::StaticClass()) || Property->IsA(FDoubleProperty::StaticClass()))
@@ -1875,7 +1999,7 @@ FNiagaraTypeDefinition UEdGraphSchema_Niagara::GetTypeDefForProperty(const FProp
 		return FNiagaraTypeDefinition::GetHalfDef();
 	}
 
-	check(0);
+	checkf(false, TEXT("Could not find type for Property(%s) Type(%s)"), *Property->GetName(), *Property->GetClass()->GetName());
 	return FNiagaraTypeDefinition::GetFloatDef();//Some invalid type?
 }
 
@@ -2304,7 +2428,16 @@ void FNiagaraConnectionDrawingPolicy::DetermineWiringStyle(UEdGraphPin* OutputPi
 				}
 			}
 		}
+
+		if(OutputPin && InputPin)
+		{
+			if(OutputPin->bOrphanedPin || InputPin->bOrphanedPin)
+			{
+				Params.WireColor = FLinearColor::Red;
+			}
+		}
 	}
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -9,7 +9,7 @@
 
 class UBinkMediaPlayer;
 class FBinkMediaPlayer;
-enum EPixelFormat;
+enum EPixelFormat : uint8;
 enum TextureAddress;
 
 /**
@@ -41,6 +41,7 @@ class BINKMEDIAPLAYER_API UBinkMediaTexture : public UTexture
 	virtual float GetSurfaceHeight() const override { return CachedDimensions.Y; }
 	virtual float GetSurfaceDepth() const override { return 0; }
 	virtual uint32 GetSurfaceArraySize() const override { return 0; }
+	virtual ETextureClass GetTextureClass() const { return ETextureClass::Other2DNoSource; }
 
 	// UObject overrides.
 
@@ -72,7 +73,7 @@ class BINKMEDIAPLAYER_API UBinkMediaTexture : public UTexture
 
 	/** The MediaPlayer asset to stream video from. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=MediaPlayer)
-	UBinkMediaPlayer *MediaPlayer;
+	TObjectPtr<UBinkMediaPlayer> MediaPlayer;
 
 	/** The Pixel Format for the texture. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=MediaPlayer)

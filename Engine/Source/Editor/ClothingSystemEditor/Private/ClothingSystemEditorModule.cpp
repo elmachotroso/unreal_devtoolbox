@@ -1,13 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothingSystemEditorModule.h"
-#include "ClothingSystemEditorInterfaceModule.h"
 
-#include "ClothingSimulationFactoryNv.h"
-#include "SimulationEditorExtenderNv.h"
 #include "ClothingAssetFactory.h"
-#include "Modules/ModuleManager.h"
 #include "Features/IModularFeatures.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/Class.h"
 
 IMPLEMENT_MODULE(FClothingSystemEditorModule, ClothingSystemEditor);
 
@@ -19,19 +17,11 @@ FClothingSystemEditorModule::FClothingSystemEditorModule()
 void FClothingSystemEditorModule::StartupModule()
 {
 	IModularFeatures::Get().RegisterModularFeature(IClothingAssetFactoryProvider::FeatureName, this);
-
-#if WITH_NVCLOTH
-	IModularFeatures::Get().RegisterModularFeature(FClothingSystemEditorInterfaceModule::ExtenderFeatureName, &NvEditorExtender);
-#endif
 }
 
 void FClothingSystemEditorModule::ShutdownModule()
 {
 	IModularFeatures::Get().UnregisterModularFeature(IClothingAssetFactoryProvider::FeatureName, this);
-
-#if WITH_NVCLOTH
-	IModularFeatures::Get().UnregisterModularFeature(FClothingSystemEditorInterfaceModule::ExtenderFeatureName, &NvEditorExtender);
-#endif
 }
 
 UClothingAssetFactoryBase* FClothingSystemEditorModule::GetFactory()

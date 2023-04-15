@@ -2,16 +2,17 @@
 
 #pragma once
 
+#include "ActiveGameplayEffectHandle.h"
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "Templates/SubclassOf.h"
 #include "Engine/NetSerialization.h"
+#include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
 #include "AttributeSet.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
-#include "AbilitySystemLog.h"
 #include "GameplayEffectTypes.generated.h"
 
 #define SKILL_SYSTEM_AGGREGATOR_DEBUG 1
@@ -28,6 +29,11 @@ class UGameplayAbility;
 struct FActiveGameplayEffect;
 struct FGameplayEffectModCallbackData;
 struct FGameplayEffectSpec;
+struct FHitResult;
+namespace UE::Net
+{
+	struct FGameplayEffectContextHandleAccessorForNetSerializer;
+}
 
 /** Wrappers to convert enum to string. These are fairly slow */
 GAMEPLAYABILITIES_API FString EGameplayModOpToString(int32 Type);
@@ -158,88 +164,6 @@ enum class EGameplayEffectStackingType : uint8
 };
 
 
-/**
- * This handle is required for things outside of FActiveGameplayEffectsContainer to refer to a specific active GameplayEffect
- *	For example if a skill needs to create an active effect and then destroy that specific effect that it created, it has to do so
- *	through a handle. a pointer or index into the active list is not sufficient.
- */
-USTRUCT(BlueprintType)
-struct GAMEPLAYABILITIES_API FActiveGameplayEffectHandle
-{
-	GENERATED_USTRUCT_BODY()
-
-	FActiveGameplayEffectHandle()
-		: Handle(INDEX_NONE),
-		bPassedFiltersAndWasExecuted(false)
-	{
-
-	}
-
-	FActiveGameplayEffectHandle(int32 InHandle)
-		: Handle(InHandle),
-		bPassedFiltersAndWasExecuted(true)
-	{
-
-	}
-
-	/** True if this is tracking an active ongoing gameplay effect */
-	bool IsValid() const
-	{
-		return Handle != INDEX_NONE;
-	}
-
-	/** True if this applied a gameplay effect. This can be true when it is not valid if it applied an instant effect */
-	bool WasSuccessfullyApplied() const
-	{
-		return bPassedFiltersAndWasExecuted;
-	}
-
-	/** Creates a new handle, will be set to successfully applied */
-	static FActiveGameplayEffectHandle GenerateNewHandle(UAbilitySystemComponent* OwningComponent);
-
-	/** Resets the map that supports GetOwningAbilitySystemComponent */
-	static void ResetGlobalHandleMap();
-
-	/** Returns the ability system component that created this handle */
-	UAbilitySystemComponent* GetOwningAbilitySystemComponent();
-	const UAbilitySystemComponent* GetOwningAbilitySystemComponent() const;
-
-	/** Remove this from the GetOwningAbilitySystemComponent map */
-	void RemoveFromGlobalMap();
-
-	bool operator==(const FActiveGameplayEffectHandle& Other) const
-	{
-		return Handle == Other.Handle;
-	}
-
-	bool operator!=(const FActiveGameplayEffectHandle& Other) const
-	{
-		return Handle != Other.Handle;
-	}
-
-	friend uint32 GetTypeHash(const FActiveGameplayEffectHandle& InHandle)
-	{
-		return InHandle.Handle;
-	}
-
-	FString ToString() const
-	{
-		return FString::Printf(TEXT("%d"), Handle);
-	}
-
-	void Invalidate()
-	{
-		Handle = INDEX_NONE;
-	}
-
-private:
-
-	UPROPERTY()
-	int32 Handle;
-
-	UPROPERTY()
-	bool bPassedFiltersAndWasExecuted;
-};
 
 
 /** Data that describes what happened in an attribute modification. This is passed to ability set callbacks */
@@ -485,11 +409,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	}
 
 	/** Returns debug string */
-	virtual FString ToString() const
-	{
-		const AActor* InstigatorPtr = Instigator.Get();
-		return (InstigatorPtr ? InstigatorPtr->GetName() : FString(TEXT("NONE")));
-	}
+	virtual FString ToString() const;
 
 	/** Returns the actual struct used for serialization, subclasses must override this! */
 	virtual UScriptStruct* GetScriptStruct() const
@@ -881,6 +801,8 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContextHandle
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
 private:
+	friend UE::Net::FGameplayEffectContextHandleAccessorForNetSerializer;
+
 	TSharedPtr<FGameplayEffectContext> Data;
 };
 
@@ -917,7 +839,7 @@ struct FGameplayEffectRemovalInfo
 
 
 /** Metadata about a gameplay cue execution */
-USTRUCT(BlueprintType, meta = (HasNativeBreak = "GameplayAbilities.AbilitySystemBlueprintLibrary.BreakGameplayCueParameters", HasNativeMake = "GameplayAbilities.AbilitySystemBlueprintLibrary.MakeGameplayCueParameters"))
+USTRUCT(BlueprintType, meta = (HasNativeBreak = "/Script/GameplayAbilities.AbilitySystemBlueprintLibrary.BreakGameplayCueParameters", HasNativeMake = "/Script/GameplayAbilities.AbilitySystemBlueprintLibrary.MakeGameplayCueParameters"))
 struct GAMEPLAYABILITIES_API FGameplayCueParameters
 {
 	GENERATED_USTRUCT_BODY()
@@ -1003,6 +925,9 @@ struct GAMEPLAYABILITIES_API FGameplayCueParameters
 	UPROPERTY(BlueprintReadWrite, Category = GameplayCue)
 	bool bReplicateLocationWhenUsingMinimalRepProxy = false;
 
+	/** If originating from a GameplayEffect, whether that GameplayEffect is still Active */
+	bool bGameplayEffectActive = true;
+
 	/** Optimized serializer */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
@@ -1038,16 +963,16 @@ namespace EGameplayCueEvent
 	/** Indicates what type of action happened to a specific gameplay cue tag. Sometimes you will get multiple events at once */
 	enum Type
 	{
-		/** Called when GameplayCue is activated */
+		/** Called when a GameplayCue with duration is first activated, this will only be called if the client witnessed the activation */
 		OnActive,
 
-		/** Called when GameplayCue is active, even if it wasn't actually just applied (Join in progress, etc) */
+		/** Called when a GameplayCue with duration is first seen as active, even if it wasn't actually just applied (Join in progress, etc) */
 		WhileActive,
 
-		/** Called when a GameplayCue is executed: instant effects or periodic tick */
+		/** Called when a GameplayCue is executed, this is used for instant effects or periodic ticks */
 		Executed,
 
-		/** Called when GameplayCue is removed */
+		/** Called when a GameplayCue with duration is removed */
 		Removed
 	};
 }
@@ -1584,11 +1509,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectSpecHandle
 		return Data.IsValid();
 	}
 
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
-	{
-		ABILITY_LOG(Fatal, TEXT("FGameplayEffectSpecHandle should not be NetSerialized"));
-		return false;
-	}
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
 	/** Comparison operator */
 	bool operator==(FGameplayEffectSpecHandle const& Other) const
@@ -1636,22 +1557,7 @@ struct GAMEPLAYABILITIES_API FMinimalReplicationTagCountMap
 		TagMap.FindOrAdd(Tag)++;
 	}
 
-	void RemoveTag(const FGameplayTag& Tag)
-	{
-		MapID++;
-		int32& Count = TagMap.FindOrAdd(Tag);
-		Count--;
-		if (Count == 0)
-		{
-			// Remove from map so that we do not replicate
-			TagMap.Remove(Tag);
-		}
-		else if (Count < 0)
-		{
-			ABILITY_LOG(Error, TEXT("FMinimapReplicationTagCountMap::RemoveTag called on Tag %s and count is now < 0"), *Tag.ToString());
-			Count = 0;
-		}
-	}
+	void RemoveTag(const FGameplayTag& Tag);
 
 	void AddTags(const FGameplayTagContainer& Container)
 	{
@@ -1687,7 +1593,7 @@ struct GAMEPLAYABILITIES_API FMinimalReplicationTagCountMap
 	TMap<FGameplayTag, int32>	TagMap;
 
 	UPROPERTY()
-	class UAbilitySystemComponent* Owner;
+	TObjectPtr<class UAbilitySystemComponent> Owner;
 
 	/** Comparison operator */
 	bool operator==(FMinimalReplicationTagCountMap const& Other) const

@@ -8,10 +8,10 @@
 #include "USDStageImportOptions.h"
 
 #include "AssetImportTask.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetSelection.h"
 #include "Editor.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "JsonObjectConverter.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ObjectTools.h"
@@ -32,7 +32,7 @@ UUsdStageImportFactory::UUsdStageImportFactory(const FObjectInitializer& ObjectI
 	bEditorImport = true;
 	bText = false;
 
-	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
+	for ( const FString& Extension : UnrealUSDWrapper::GetNativeFileFormats() )
 	{
 		Formats.Add( FString::Printf( TEXT( "%s; Universal Scene Description files" ), *Extension ) );
 	}
@@ -46,6 +46,9 @@ UObject* UUsdStageImportFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 	{
 		ImportContext.ImportOptions = Cast<UUsdStageImportOptions>( AssetImportTask->Options );
 	}
+
+	// When importing from file we don't want to use any opened stage
+	ImportContext.bReadFromStageCache = false;
 
 #if USE_USD_SDK
 	const FString InitialPackagePath =InParent ? InParent->GetName() : TEXT( "/Game/" );
@@ -64,7 +67,7 @@ UObject* UUsdStageImportFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 		GEditor->BroadcastLevelActorListChanged();
 		GEditor->RedrawLevelEditingViewports();
 
-		ImportedObject = ImportContext.ImportedAsset ? ImportContext.ImportedAsset : Cast<UObject>( ImportContext.SceneActor );
+		ImportedObject = ImportContext.ImportedAsset ? ToRawPtr(ImportContext.ImportedAsset) : Cast<UObject>( ImportContext.SceneActor );
 	}
 	else
 	{
@@ -93,7 +96,7 @@ bool UUsdStageImportFactory::FactoryCanImport(const FString& Filename)
 
 void UUsdStageImportFactory::CleanUp()
 {
-	ImportContext = FUsdStageImportContext();
+	ImportContext.Reset();
 	Super::CleanUp();
 }
 

@@ -14,9 +14,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"RenderCore",
-					"MeshDescription",
-					"MeshDescriptionOperations",
-					"GraphColor",
+					"NaniteUtilities",
 					"QuadricMeshReduction",
 				}
 			);
@@ -24,6 +22,7 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePathModuleNames.Add("MeshUtilitiesCommon");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "metis");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "MikkTSpace");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "Embree3");
 		}
 	}
 }

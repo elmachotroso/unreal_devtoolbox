@@ -32,6 +32,9 @@ namespace Metasound
 
 		/** Whether or not to show output names in visual layout. */
 		bool bShowOutputNames = true;
+
+		/** Whether or not to show input literals in visual layout. */
+		bool bShowLiterals = true;
 	};
 
 	/** Name of a node class.
@@ -268,12 +271,12 @@ namespace Metasound
 	/** Make a FNodeDataVertexKey from an FOutputDataSource. */
 	FORCEINLINE FNodeDataVertexKey MakeSourceDataVertexKey(const FOutputDataSource& InSource)
 	{
-		return FNodeDataVertexKey(InSource.Node, InSource.Vertex.GetVertexName());
+		return FNodeDataVertexKey(InSource.Node, InSource.Vertex.VertexName);
 	}
 
 	FORCEINLINE FNodeDataVertexKey MakeDestinationDataVertexKey(const FInputDataDestination& InDestination)
 	{
-		return FNodeDataVertexKey(InDestination.Node, InDestination.Vertex.GetVertexName());
+		return FNodeDataVertexKey(InDestination.Node, InDestination.Vertex.VertexName);
 	}
 
 	/** FDataEdge

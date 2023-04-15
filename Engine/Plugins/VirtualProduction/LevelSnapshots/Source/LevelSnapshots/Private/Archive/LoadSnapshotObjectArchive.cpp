@@ -5,7 +5,7 @@
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
 #include "WorldSnapshotData.h"
-#include "Data/Util/SnapshotObjectUtil.h"
+#include "Data/Util/WorldData/SnapshotObjectUtil.h"
 
 #include "Serialization/ObjectWriter.h"
 #include "Internationalization/TextNamespaceUtil.h"
@@ -52,7 +52,7 @@ void UE::LevelSnapshots::Private::FLoadSnapshotObjectArchive::ApplyToSnapshotWor
 	FLevelSnapshotsModule::GetInternalModuleInstance().OnPostLoadSnapshotObject({ InObjectToRestore, InSharedData });
 }
 
-UObject* UE::LevelSnapshots::Private::FLoadSnapshotObjectArchive::ResolveObjectDependency(int32 ObjectIndex) const
+UObject* UE::LevelSnapshots::Private::FLoadSnapshotObjectArchive::ResolveObjectDependency(int32 ObjectIndex, UObject* CurrentValue) const
 {
 	FString LocalizationNamespace;
 #if USE_STABLE_LOCALIZATION_KEYS
@@ -67,4 +67,8 @@ UE::LevelSnapshots::Private::FLoadSnapshotObjectArchive::FLoadSnapshotObjectArch
 	: Super(InObjectData, InSharedData, true, InSerializedObject)
 	, ProcessObjectDependency(ProcessObjectDependency)
 	, Cache(Cache)
-{}
+{
+#if UE_BUILD_DEBUG
+	UE_LOG(LogLevelSnapshots, VeryVerbose, TEXT("FLoadSnapshotObjectArchive: %s (%s)"), *InSerializedObject->GetPathName(), *InSerializedObject->GetClass()->GetPathName());
+#endif
+}

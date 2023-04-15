@@ -6,12 +6,12 @@
 #include "NiagaraCommon.h"
 #include "UObject/StructOnScope.h"
 #include "Misc/Attribute.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "NiagaraActions.h"
 #include "NiagaraGraph.h"
 #include "NiagaraEditorSettings.h"
-#include "UpgradeNiagaraScriptResults.h"
-#include "EdGraph/EdGraphSchema.h"
+#include "ViewModels/NiagaraSystemScalabilityViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
 
 class UNiagaraNodeInput;
 class UNiagaraNodeOutput;
@@ -41,6 +41,8 @@ enum class EScriptSource : uint8;
 struct FNiagaraNamespaceMetadata;
 class FNiagaraParameterHandle;
 class INiagaraParameterDefinitionsSubscriberViewModel;
+struct FNiagaraScriptVersionUpgradeContext;
+class UUpgradeNiagaraEmitterContext;
 
 enum class ENiagaraFunctionDebugState : uint8;
 
@@ -152,7 +154,7 @@ namespace FNiagaraEditorUtilities
 
 	TSharedPtr<SWidget> CreateInlineErrorText(TAttribute<FText> ErrorMessage, TAttribute<FText> ErrorTooltip);
 
-	void CompileExistingEmitters(const TArray<UNiagaraEmitter*>& AffectedEmitters);
+	void CompileExistingEmitters(const TArray<FVersionedNiagaraEmitter>& AffectedEmitters);
 
 	bool TryGetEventDisplayName(UNiagaraEmitter* Emitter, FGuid EventUsageId, FText& OutEventDisplayName);
 
@@ -178,8 +180,8 @@ namespace FNiagaraEditorUtilities
 
 	void PreprocessFunctionGraph(const UEdGraphSchema_Niagara* Schema, UNiagaraGraph* Graph, TArrayView<UEdGraphPin* const> CallInputs, TArrayView<UEdGraphPin* const> CallOutputs, ENiagaraScriptUsage ScriptUsage, const FCompileConstantResolver& ConstantResolver);
 
-	bool PODPropertyAppendCompileHash(const void* Container, FProperty* Property, const FString& PropertyName, struct FNiagaraCompileHashVisitor* InVisitor);
-	bool NestedPropertiesAppendCompileHash(const void* Container, const UStruct* Struct, EFieldIteratorFlags::SuperClassFlags IteratorFlags, const FString& BaseName, struct FNiagaraCompileHashVisitor* InVisitor);
+	bool PODPropertyAppendCompileHash(const void* Container, FProperty* Property, FStringView PropertyName, struct FNiagaraCompileHashVisitor* InVisitor);
+	bool NestedPropertiesAppendCompileHash(const void* Container, const UStruct* Struct, EFieldIteratorFlags::SuperClassFlags IteratorFlags, FStringView BaseName, struct FNiagaraCompileHashVisitor* InVisitor);
 
 	/** Options for the GetScriptsByFilter function. 
 	** @Param ScriptUsageToInclude Only return Scripts that have this usage
@@ -224,7 +226,7 @@ namespace FNiagaraEditorUtilities
 	 * @param The emitter to search for in the system.
 	 * @returns The emitter handle for the supplied emitter, or nullptr if the emitter isn't owned by this system.
 	 */
-	const FNiagaraEmitterHandle* GetEmitterHandleForEmitter(UNiagaraSystem& System, UNiagaraEmitter& Emitter);
+	const FNiagaraEmitterHandle* GetEmitterHandleForEmitter(UNiagaraSystem& System, const FVersionedNiagaraEmitter& Emitter);
 
 	NIAGARAEDITOR_API ENiagaraScriptLibraryVisibility GetScriptAssetVisibility(const FAssetData& ScriptAssetData);
 
@@ -232,6 +234,8 @@ namespace FNiagaraEditorUtilities
 	NIAGARAEDITOR_API bool GetTemplateSpecificationFromTag(const FAssetData& Data, ENiagaraScriptTemplateSpecification& OutTemplateSpecification);
 
 	NIAGARAEDITOR_API bool IsScriptAssetInLibrary(const FAssetData& ScriptAssetData);
+
+	NIAGARAEDITOR_API bool IsEnginePluginAsset(const FAssetData& InAssetData);
 
 	NIAGARAEDITOR_API int32 GetWeightForItem(const TSharedPtr<FNiagaraMenuAction_Generic>& Item, const TArray<FString>& FilterTerms);
 
@@ -243,7 +247,7 @@ namespace FNiagaraEditorUtilities
 
 	NIAGARAEDITOR_API FText FormatScriptName(FName Name, bool bIsInLibrary);
 
-	NIAGARAEDITOR_API FText FormatScriptDescription(FText Description, FName Path, bool bIsInLibrary);
+	NIAGARAEDITOR_API FText FormatScriptDescription(FText Description, const FSoftObjectPath& Path, bool bIsInLibrary);
 
 	NIAGARAEDITOR_API FText FormatVariableDescription(FText Description, FText Name, FText Type);
 
@@ -253,7 +257,7 @@ namespace FNiagaraEditorUtilities
 
 	TArray<UNiagaraComponent*> GetComponentsThatReferenceSystemViewModel(const FNiagaraSystemViewModel& ReferencedSystemViewModel);
 
-	NIAGARAEDITOR_API const FGuid AddEmitterToSystem(UNiagaraSystem& InSystem, UNiagaraEmitter& InEmitterToAdd, bool bCreateCopy = true);
+	NIAGARAEDITOR_API const FGuid AddEmitterToSystem(UNiagaraSystem& InSystem, UNiagaraEmitter& InEmitterToAdd, FGuid EmitterVersion, bool bCreateCopy = true);
 
 	void RemoveEmittersFromSystemByEmitterHandleId(UNiagaraSystem& InSystem, TSet<FGuid> EmitterHandleIdsToDelete);
 
@@ -273,11 +277,15 @@ namespace FNiagaraEditorUtilities
 	 */
 	bool AddParameter(FNiagaraVariable& NewParameterVariable, FNiagaraParameterStore& TargetParameterStore, UObject& ParameterStoreOwner, UNiagaraStackEditorData* StackEditorData);
 
+	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> GetScriptVariableForUserParameter(const FNiagaraVariable& UserParameter, TSharedPtr<FNiagaraSystemViewModel> SystemViewModel);
+	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> GetScriptVariableForUserParameter(const FNiagaraVariable& UserParameter, UNiagaraSystem& System);
+	NIAGARAEDITOR_API TObjectPtr<UNiagaraScriptVariable> FindScriptVariableForUserParameter(const FGuid& UserParameterGuid, UNiagaraSystem& System);
+	
 	NIAGARAEDITOR_API bool AddEmitterContextMenuActions(FMenuBuilder& MenuBuilder, const TSharedPtr<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel);
 
 	void ShowParentEmitterInContentBrowser(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel);
 
-	void OpenParentEmitterForEdit(TSharedRef<FNiagaraEmitterViewModel> Emitter);
+	NIAGARAEDITOR_API void OpenParentEmitterForEdit(TSharedRef<FNiagaraEmitterViewModel> Emitter);
 	ECheckBoxState GetSelectedEmittersEnabledCheckState(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
 	void ToggleSelectedEmittersEnabled(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
 
@@ -333,10 +341,62 @@ namespace FNiagaraEditorUtilities
 	// Executes python upgrade scripts on the given source node for all the given in-between versions
 	void RunPythonUpgradeScripts(UNiagaraNodeFunctionCall* SourceNode, const TArray<FVersionedNiagaraScriptData*>& UpgradeVersionData, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, FString& OutWarnings);
 
+	// Executes python upgrade scripts on the given source node for all the given in-between versions
+	void RunPythonUpgradeScripts(UUpgradeNiagaraEmitterContext* UpgradeContext);
+
+	// Changes the referenced parent version and optionally runs the python upgrade scripts
+	NIAGARAEDITOR_API void SwitchParentEmitterVersion(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, TSharedRef<FNiagaraSystemViewModel> SystemViewModel, const FGuid& NewVersionGuid);
+
 	void RefreshAllScriptsFromExternalChanges(FRefreshAllScriptsFromExternalChangesArgs Args);
 
 	DECLARE_DELEGATE_OneParam(FNodeVisitor, UEdGraphNode* /*VisitedNode*/);
 	void VisitAllNodesConnectedToInputs(UEdGraphNode* StartNode, FNodeVisitor Visitor);
+	
+	NIAGARAEDITOR_API float GetScalabilityTintAlpha(FNiagaraEmitterHandle* EmitterHandle);
+
+	enum class ETrackAssetResult
+	{
+		// do not count this asset
+		Ignore,
+
+		// count this asset
+		Count,
+
+		// count this asset and also check assets referencing it
+		CountRecursive
+	};
+
+	NIAGARAEDITOR_API int GetReferencedAssetCount(const FAssetData& SourceAsset, TFunction<ETrackAssetResult(const FAssetData&)> Predicate);
+	
+	/** Gets a list of the registered types which are allowed in the current editor context.  This API should be 
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered user variable types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedUserVariableTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered system variable types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedSystemVariableTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered emitter variable types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedEmitterVariableTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered particle variable types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedParticleVariableTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered parameter types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedParameterTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	/** Gets a list of the registered payload types which are allowed in the current editor context.  This API should be
+		called when providing a list types to the user instead of getting the type list directly from the type registry. */
+	void GetAllowedPayloadTypes(TArray<FNiagaraTypeDefinition>& OutAllowedTypes);
+
+	bool IsEnumIndexVisible(const UEnum* Enum, int32 Index);
 };
 
 namespace FNiagaraParameterUtilities
@@ -398,7 +458,7 @@ namespace FNiagaraParameterUtilities
 
 	NIAGARAEDITOR_API bool TestCanRenameWithMessage(FName ParameterName, FText& OutMessage);
 
-	NIAGARAEDITOR_API TSharedRef<SWidget> GetParameterWidget(FNiagaraVariable Variable, bool bShowValue);
+	NIAGARAEDITOR_API TSharedRef<SWidget> GetParameterWidget(FNiagaraVariable Variable, bool bAddTypeIcon, bool bShowValue);
 	
 	/** Creates a tooltip based on a parameter. Also shows the value, if allocated and enabled. */
 	NIAGARAEDITOR_API TSharedRef<SToolTip> GetTooltipWidget(FNiagaraVariable Variable, bool bShowValue = true, TSharedPtr<SWidget> AdditionalVerticalWidget = nullptr,  TSharedPtr<SWidget> AdditionalHorizontalWidget = nullptr);
@@ -411,4 +471,32 @@ namespace FNiagaraParameterDefinitionsUtilities
 	TArray<const UNiagaraScriptVariable*>  FindReservedParametersByName(const FName ParameterName);
 	int32 GetNumParametersReservedForName(const FName ParameterName);
 	EParameterDefinitionMatchState GetDefinitionMatchStateForParameter(const FNiagaraVariableBase& Parameter);
+	void TrySubscribeScriptVarToDefinitionByName(UNiagaraScriptVariable* ScriptVar, INiagaraParameterDefinitionsSubscriberViewModel* OwningDefinitionSubscriberViewModel);
 };
+
+class FNiagaraEnumIndexVisibilityCache
+{
+public:
+	static bool GetVisibility(const UEnum* InEnum, int32 InIndex);
+
+private:
+	struct FEnumIndexPair
+	{
+		FEnumIndexPair(const UEnum* InEnum, int32 InIndex) : Enum(InEnum), Index(InIndex) { }
+		bool operator==(const FEnumIndexPair& Other) const
+		{
+			return Enum == Other.Enum && Index == Other.Index;
+		}
+		const UEnum* Enum;
+		int32 Index;
+	};
+
+	friend FORCEINLINE uint32 GetTypeHash(const FEnumIndexPair& EnumIndexPair)
+	{
+		return HashCombineFast(GetTypeHash(EnumIndexPair.Enum), GetTypeHash(EnumIndexPair.Index));
+	}
+
+	static TMap<FEnumIndexPair, bool> Cache;
+	static FCriticalSection CacheLock;
+};
+

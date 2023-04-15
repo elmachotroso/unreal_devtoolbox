@@ -10,9 +10,6 @@
 #include "Misc/ScopeExit.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 namespace UESetProperty_Private
 {
 	/**
@@ -139,7 +136,7 @@ namespace UESetProperty_Private
 		for (;;)
 		{
 			const uint8* ElementA = SetHelperA.GetElementPtr(IndexA);
-			if (!AnyEqual(SetHelperA, FirstIndexA, FirstNum - Num, ElementA, PortFlags) && !RangesContainSameAmountsOfVal(SetHelperA, IndexA, SetHelperB, IndexB, Num, ElementA, PortFlags))
+			if (!AnyEqual(SetHelperA, FirstIndexA, FirstNum - Num, ElementA, PortFlags) && !RangesContainSameAmountsOfVal(SetHelperA, FirstIndexA, SetHelperB, FirstIndexB, FirstNum, ElementA, PortFlags))
 			{
 				return false;
 			}
@@ -150,15 +147,12 @@ namespace UESetProperty_Private
 				return true;
 			}
 
+			++IndexA;
 			while (!SetHelperA.IsValidIndex(IndexA))
 			{
 				++IndexA;
 			}
 
-			while (!SetHelperB.IsValidIndex(IndexB))
-			{
-				++IndexB;
-			}
 		}
 	}
 }
@@ -173,7 +167,16 @@ FSetProperty::FSetProperty(FFieldVariant InOwner, const FName& InName, EObjectFl
 }
 
 FSetProperty::FSetProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 : FSetProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+{
+	// This is expected to be set post-construction by AddCppProperty
+	ElementProp = nullptr;
+}
+
+FSetProperty::FSetProperty(FFieldVariant InOwner, const UECodeGen_Private::FSetPropertyParams& Prop)
+	: FSetProperty_Super(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithOffset&)Prop)
 {
 	// This is expected to be set post-construction by AddCppProperty
 	ElementProp = nullptr;
@@ -291,7 +294,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Delete any explicitly-removed elements
 		int32 NumElementsToRemove = 0;
-		FStructuredArchive::FArray ElementsToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("ElementsToRemove")), NumElementsToRemove);
+		FStructuredArchive::FArray ElementsToRemoveArray = Record.EnterArray(TEXT("ElementsToRemove"), NumElementsToRemove);
 
 		if (!Defaults || SetHelper.Num() == 0) // Faster loading path when loading elements into an empty set
 		{
@@ -312,7 +315,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 			}
 
 			int32 Num = 0;
-			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(TEXT("Elements"), Num);
 
 			// Empty and reserve then deserialize elements directly into set memory
 			SetHelper.EmptyElements(Num);
@@ -355,7 +358,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 			}
 
 			int32 Num = 0;
-			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(TEXT("Elements"), Num);
 
 			// Allocate temporary key space if we haven't allocated it already above
 			if (Num != 0 && !TempElementStorage)
@@ -413,7 +416,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Write out the removed elements
 		int32 RemovedElementsNum = Indices.Num();
-		FStructuredArchive::FArray RemovedElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("ElementsToRemove")), RemovedElementsNum);
+		FStructuredArchive::FArray RemovedElementsArray = Record.EnterArray(TEXT("ElementsToRemove"), RemovedElementsNum);
 		
 		{
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
@@ -445,7 +448,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 			// Write out differences from defaults
 			int32 Num = Indices.Num();
-			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(TEXT("Elements"), Num);
 
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
 			for (int32 Index : Indices)
@@ -458,7 +461,7 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 		else
 		{
 			int32 Num = SetHelper.Num();
-			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(TEXT("Elements"), Num);
 
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
 			for (int32 Index = 0; Num; ++Index)
@@ -544,7 +547,7 @@ FString FSetProperty::GetCPPTypeForwardDeclaration() const
 	return ElementProp->GetCPPTypeForwardDeclaration();
 }
 
-void FSetProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
+void FSetProperty::ExportText_Internal(FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -554,7 +557,26 @@ void FSetProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 
 	checkSlow(ElementProp);
 
-	FScriptSetHelper SetHelper(this, PropertyValue);
+	uint8* TempSetStorage = nullptr;
+	void* PropertyValuePtr = nullptr;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		// Allocate temporary map as we first need to initialize it with the value provided by the getter function and then export it
+		TempSetStorage = (uint8*)AllocateAndInitializeValue();
+		PropertyValuePtr = TempSetStorage;
+		FProperty::GetValue_InContainer(ContainerOrPropertyPtr, PropertyValuePtr);
+	}
+	else
+	{
+		PropertyValuePtr = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
+	}
+
+	ON_SCOPE_EXIT
+	{
+		DestroyAndFreeValue(TempSetStorage);
+	};
+
+	FScriptSetHelper SetHelper(this, PropertyValuePtr);
 
 	if (SetHelper.Num() == 0)
 	{
@@ -615,7 +637,7 @@ void FSetProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 					PropDefault = PropData;
 				}
 
-				ElementProp->ExportTextItem(ValueStr, PropData, PropDefault, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				ElementProp->ExportTextItem_Direct(ValueStr, PropData, PropDefault, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				--Count;
 			}
@@ -647,7 +669,7 @@ void FSetProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 					PropDefault = PropData;
 				}
 
-				ElementProp->ExportTextItem(ValueStr, PropData, PropDefault, Parent, PortFlags | PPF_Delimited, ExportRootScope);
+				ElementProp->ExportTextItem_Direct(ValueStr, PropData, PropDefault, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				--Count;
 			}
@@ -657,11 +679,44 @@ void FSetProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 	}
 }
 
-const TCHAR* FSetProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FSetProperty::ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const
 {
 	checkSlow(ElementProp);
 
-	FScriptSetHelper SetHelper(this, Data);
+	FScriptSetHelper SetHelper(this, PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType));
+	uint8* TempSetStorage = nullptr;
+	uint8* TempElementStorage = nullptr;
+	bool bSuccess = true;
+
+	ON_SCOPE_EXIT
+	{
+		FMemory::Free(TempElementStorage);
+
+		// If we are returning because of an error, remove any already-added elements from the map before returning
+		// to ensure we're not left with a partial state.
+		if (!bSuccess)
+		{
+			SetHelper.EmptyElements();
+		}
+
+		if (TempSetStorage)
+		{
+			// TempSet is used by property setter so if it was allocated call the setter now
+			FProperty::SetValue_InContainer(ContainerOrPropertyPtr, TempSetStorage);
+
+			// Destroy and free the temp set used by property setter
+			DestroyAndFreeValue(TempSetStorage);
+		}
+	};
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		// Allocate temporary set as we first need to initialize it with the parsed items and then use the setter to update the property
+		TempSetStorage = (uint8*)AllocateAndInitializeValue();
+		// Reinitialize the set helper with the temp value
+		SetHelper = FScriptSetHelper(this, TempSetStorage);
+	}
+
 	SetHelper.EmptyElements();
 
 	// If we export an empty array we export an empty string, so ensure that if we're passed an empty string
@@ -677,21 +732,11 @@ const TCHAR* FSetProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, 
 		return Buffer + 1;
 	}
 
-	uint8* TempElementStorage = (uint8*)FMemory::Malloc(ElementProp->ElementSize);
+	TempElementStorage = (uint8*)FMemory::Malloc(ElementProp->ElementSize);
+	// From this point failure should empty the set
+	bSuccess = false;
 
-	bool bSuccess = false;
-	ON_SCOPE_EXIT
-	{
-		FMemory::Free(TempElementStorage);
-
-		// If we are returning because of an error, remove any already-added elements from the map before returning
-		// to ensure we're not left with a partial state.
-		if (!bSuccess)
-		{
-			SetHelper.EmptyElements();
-		}
-	};
-
+	check(ElementProp->GetOffset_ForInternal() == 0);
 	for (;;)
 	{
 		ElementProp->InitializeValue(TempElementStorage);
@@ -701,7 +746,7 @@ const TCHAR* FSetProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, 
 		};
 
 		// Read key into temporary storage
-		Buffer = ElementProp->ImportText(Buffer, TempElementStorage, PortFlags | PPF_Delimited, Parent, ErrorText);
+		Buffer = ElementProp->ImportText_Direct(Buffer, TempElementStorage, Parent, PortFlags | PPF_Delimited, ErrorText);
 		if (!Buffer)
 		{
 			return nullptr;
@@ -899,7 +944,7 @@ EConvertFromTypeResult FSetProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			// instance that was being written. Presumably we were constructed from our defaults and must now remove 
 			// any of the elements that were not present when we saved this Set:
 			int32 NumElementsToRemove = 0;
-			FStructuredArchive::FArray ElementsToRemoveArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("ElementsToRemove")), NumElementsToRemove);
+			FStructuredArchive::FArray ElementsToRemoveArray = ValueRecord.EnterArray(TEXT("ElementsToRemove"), NumElementsToRemove);
 
 			if(NumElementsToRemove)
 			{
@@ -932,7 +977,7 @@ EConvertFromTypeResult FSetProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			}
 
 			int32 Num = 0;
-			FStructuredArchive::FArray ElementsArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+			FStructuredArchive::FArray ElementsArray = ValueRecord.EnterArray(TEXT("Elements"), Num);
 
 			if(bConversionSucceeded)
 			{
@@ -1049,4 +1094,23 @@ void FSetProperty::GetInnerFields(TArray<FField*>& OutFields)
 	}
 }
 
-#include "UObject/DefineUPropertyMacros.h"
+void* FSetProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const
+{
+	FScriptSetHelper SetHelper(this, InValueAddress);
+	checkf(Inner == ElementProp, TEXT("Inner property must be identical to ElementProp"));
+
+	for (int32 SetIndex = 0, Num = SetHelper.Num(), LocalIndex = Index; LocalIndex >= 0 && Num > 0; ++SetIndex)
+	{
+		if (SetHelper.IsValidIndex(SetIndex))
+		{
+			if (LocalIndex == 0)
+			{
+				return SetHelper.GetElementPtr(SetIndex);
+			}
+			LocalIndex--;
+			Num--;
+		}
+	}
+	checkf(false, TEXT("Set element index (%d) out of range"), Index);
+	return nullptr;
+}

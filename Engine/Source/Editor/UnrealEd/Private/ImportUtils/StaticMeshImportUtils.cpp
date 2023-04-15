@@ -579,12 +579,18 @@ bool StaticMeshImportUtils::AddConvexGeomFromVertices( const TArray<FVector3f>& 
 	}
 
 	FKConvexElem* ConvexElem = new(AggGeom->ConvexElems) FKConvexElem();
-	ConvexElem->VertexData = LWC::ConvertArrayType<FVector>(Verts);	// LWC_TODO: Perf pessimization
+	ConvexElem->VertexData = UE::LWC::ConvertArrayType<FVector>(Verts);	// LWC_TODO: Perf pessimization
 	ConvexElem->UpdateElemBox();
 
 	return true;
 }
 
+TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMeshData(UStaticMesh* ExistingMesh, bool bImportMaterials, int32 LodIndex)
+{
+	UnFbx::FBXImportOptions ImportOptions;
+	ImportOptions.bImportMaterials = bImportMaterials;
+	return SaveExistingStaticMeshData(ExistingMesh, &ImportOptions, LodIndex);
+}
 
 TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMeshData(UStaticMesh* ExistingMesh, UnFbx::FBXImportOptions* ImportOptions, int32 LodIndex)
 {
@@ -649,6 +655,32 @@ TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMes
 		}
 	}
 
+	
+	/******************************************
+	 * Nanite Begin
+	 */
+
+	//Nanite Save the settings
+	ExistingMeshDataPtr->ExistingNaniteSettings = ExistingMesh->NaniteSettings;
+
+	//Nanite Save the source model
+	const FStaticMeshSourceModel& HiResSourceModel = ExistingMesh->GetHiResSourceModel();
+	ExistingMeshDataPtr->HiResSourceData.ExistingBuildSettings = HiResSourceModel.BuildSettings;
+	ExistingMeshDataPtr->HiResSourceData.ExistingReductionSettings = HiResSourceModel.ReductionSettings;
+	ExistingMeshDataPtr->HiResSourceData.ExistingScreenSize = HiResSourceModel.ScreenSize;
+	ExistingMeshDataPtr->HiResSourceData.ExistingSourceImportFilename = HiResSourceModel.SourceImportFilename;
+		
+	//Nanite Save the hi res mesh description
+	if(const FMeshDescription* HiResMeshDescription = ExistingMesh->GetHiResMeshDescription())
+	{
+		ExistingMeshDataPtr->HiResSourceData.ExistingMeshDescription = MakeUnique<FMeshDescription>(*HiResMeshDescription);
+	}
+
+	/*
+	 * Nanite End
+	 ******************************************/
+
+
 	int32 TotalMaterialIndex = ExistingMeshDataPtr->ExistingMaterials.Num();
 	for (int32 SourceModelIndex = 0; SourceModelIndex < ExistingMesh->GetNumSourceModels(); SourceModelIndex++)
 	{
@@ -701,7 +733,7 @@ TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMes
 			ExistingLODData.ExistingReductionSettings.PercentVertices = 1.0f;
 			ExistingLODData.ExistingReductionSettings.MaxDeviation = 0.0f;
 		}
-		ExistingLODData.ExistingScreenSize = SourceModel.ScreenSize.Default;
+		ExistingLODData.ExistingScreenSize = SourceModel.ScreenSize;
 		ExistingLODData.ExistingSourceImportFilename = SourceModel.SourceImportFilename;
 
 		const FMeshDescription* MeshDescription = ExistingMesh->GetMeshDescription(SourceModelIndex);
@@ -736,6 +768,13 @@ TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMes
 	ExistingMeshDataPtr->ExistingAllowCpuAccess = ExistingMesh->bAllowCPUAccess;
 	ExistingMeshDataPtr->ExistingPositiveBoundsExtension = (FVector3f)ExistingMesh->GetPositiveBoundsExtension();
 	ExistingMeshDataPtr->ExistingNegativeBoundsExtension = (FVector3f)ExistingMesh->GetNegativeBoundsExtension();
+
+	ExistingMeshDataPtr->ExistingSupportPhysicalMaterialMasks = ExistingMesh->bSupportPhysicalMaterialMasks;
+	ExistingMeshDataPtr->ExistingSupportGpuUniformlyDistributedSampling = ExistingMesh->bSupportGpuUniformlyDistributedSampling;
+	ExistingMeshDataPtr->ExistingSupportRayTracing = ExistingMesh->bSupportRayTracing;
+	ExistingMeshDataPtr->ExistingForceMiplevelsToBeResident = ExistingMesh->bGlobalForceMipLevelsToBeResident;
+	ExistingMeshDataPtr->ExistingNeverStream = ExistingMesh->NeverStream;
+	ExistingMeshDataPtr->ExistingNumCinematicMipLevels = ExistingMesh->NumCinematicMipLevels;
 
 	UFbxStaticMeshImportData* ImportData = Cast<UFbxStaticMeshImportData>(ExistingMesh->AssetImportData);
 	if (ImportData && ExistingMeshDataPtr->UseMaterialNameSlotWorkflow)
@@ -993,7 +1032,7 @@ void StaticMeshImportUtils::RestoreExistingMeshData(const TSharedPtr<const FExis
 	TArray<FName> RemapMaterialName;
 	RemapMaterialName.AddZeroed(NewMesh->GetStaticMaterials().Num());
 
-	//If user is attended, ask him to verify the match is good
+	//If user is attended, ask them to verify the match is good
 	UnFbx::EFBXReimportDialogReturnOption ReturnOption;
 	//Ask the user to match the materials conflict
 	UnFbx::FFbxImporter::PrepareAndShowMaterialConflictDialog<FStaticMaterial>(ExistingMeshDataPtr->ExistingMaterials, NewMesh->GetStaticMaterials(), RemapMaterial, RemapMaterialName, bCanShowDialog, false, bForceConflictingMaterialReset, ReturnOption);
@@ -1240,7 +1279,7 @@ void StaticMeshImportUtils::RestoreExistingMeshData(const TSharedPtr<const FExis
 		{
 			NewMesh->SetBodySetup(ExistingMeshDataPtr->ExistingBodySetup);
 		}
-		else
+		else if (NewMesh->GetBodySetup() != ExistingMeshDataPtr->ExistingBodySetup)
 		{
 			// New collision geometry, but we still want the original settings and the generated collisions
 			NewMesh->GetBodySetup()->CopyBodySetupProperty(ExistingMeshDataPtr->ExistingBodySetup);
@@ -1266,6 +1305,45 @@ void StaticMeshImportUtils::RestoreExistingMeshData(const TSharedPtr<const FExis
 	NewMesh->SetNegativeBoundsExtension((FVector)ExistingMeshDataPtr->ExistingNegativeBoundsExtension);
 
 	NewMesh->ComplexCollisionMesh = ExistingMeshDataPtr->ExistingComplexCollisionMesh;
+
+	NewMesh->bSupportPhysicalMaterialMasks = ExistingMeshDataPtr->ExistingSupportPhysicalMaterialMasks;
+	NewMesh->bSupportGpuUniformlyDistributedSampling = ExistingMeshDataPtr->ExistingSupportGpuUniformlyDistributedSampling;
+	NewMesh->bSupportRayTracing = ExistingMeshDataPtr->ExistingSupportRayTracing;
+	NewMesh->bGlobalForceMipLevelsToBeResident = ExistingMeshDataPtr->ExistingForceMiplevelsToBeResident;
+	NewMesh->NeverStream = ExistingMeshDataPtr->ExistingNeverStream;
+	NewMesh->NumCinematicMipLevels = ExistingMeshDataPtr->ExistingNumCinematicMipLevels;
+
+	/******************************************
+	 * Nanite Begin
+	 */
+
+	 //Nanite Restore the settings
+	NewMesh->NaniteSettings = ExistingMeshDataPtr->ExistingNaniteSettings;
+
+	//Nanite Save the source model
+	FStaticMeshSourceModel& HiResSourceModel = NewMesh->GetHiResSourceModel();
+	HiResSourceModel.BuildSettings = ExistingMeshDataPtr->HiResSourceData.ExistingBuildSettings;
+	HiResSourceModel.ReductionSettings = ExistingMeshDataPtr->HiResSourceData.ExistingReductionSettings;
+	HiResSourceModel.ScreenSize = ExistingMeshDataPtr->HiResSourceData.ExistingScreenSize;
+	HiResSourceModel.SourceImportFilename = ExistingMeshDataPtr->HiResSourceData.ExistingSourceImportFilename;
+
+	//Nanite Restore the hires mesh description
+	if (ExistingMeshDataPtr->HiResSourceData.ExistingMeshDescription.IsValid())
+	{
+		FMeshDescription* HiResMeshDescription = NewMesh->GetHiResMeshDescription();
+		if (HiResMeshDescription == nullptr)
+		{
+			HiResMeshDescription = NewMesh->CreateHiResMeshDescription();
+		}
+		check(HiResMeshDescription);
+		NewMesh->ModifyHiResMeshDescription();
+		*HiResMeshDescription = MoveTemp(*ExistingMeshDataPtr->HiResSourceData.ExistingMeshDescription);
+		NewMesh->CommitHiResMeshDescription();
+	}
+
+	/*
+	 * Nanite End
+	 ******************************************/	
 }
 
 #undef LOCTEXT_NAMESPACE

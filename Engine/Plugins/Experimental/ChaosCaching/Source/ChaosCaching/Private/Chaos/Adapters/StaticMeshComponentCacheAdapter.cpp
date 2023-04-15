@@ -33,7 +33,7 @@ namespace Chaos
 
 	uint8 FStaticMeshCacheAdapter::GetPriority() const
 	{
-		return EngineAdapterPriotityBegin;
+		return EngineAdapterPriorityBegin;
 	}
 
 	void RecordToCacheInternal(FSingleParticlePhysicsProxy* InProxy, const FTransform& InRootTransform, FPendingFrameWrite& OutFrame, Chaos::FReal InTime)
@@ -59,14 +59,11 @@ namespace Chaos
 
 	void FStaticMeshCacheAdapter::Record_PostSolve(UPrimitiveComponent* InComponent, const FTransform& InRootTransform, FPendingFrameWrite& OutFrame, Chaos::FReal InTime) const
 	{
-#if WITH_CHAOS
-
 		UStaticMeshComponent* MeshComp = CastChecked<UStaticMeshComponent>(InComponent);
 
 		FSingleParticlePhysicsProxy* PhysProxy = MeshComp->BodyInstance.ActorHandle;
 
 		RecordToCacheInternal(PhysProxy, InRootTransform, OutFrame, InTime);
-#endif // WITH_CHAOS
 	}
 
 	void PlayFromCacheInternal(FSingleParticlePhysicsProxy* InProxy, UChaosCache* InCache, FPlaybackTickRecord& TickRecord, TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids) 
@@ -87,7 +84,8 @@ namespace Chaos
 				Context.bEvaluateCurves = false;
 				Context.bEvaluateEvents = false;
 
-				FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context);
+				// Note: static mesh don't use the concept of MassToLocal transforms, passing nullptr
+				FCacheEvaluationResult EvaluatedResult = InCache->Evaluate(Context, nullptr);
 
 				// Either 0 or 1 result, 0 for nothing in the eval track - 1 if there was.
 				if(EvaluatedResult.Transform.Num() == 1)
@@ -103,14 +101,11 @@ namespace Chaos
 
 	void FStaticMeshCacheAdapter::Playback_PreSolve(UPrimitiveComponent* InComponent, UChaosCache* InCache, Chaos::FReal InTime, FPlaybackTickRecord& TickRecord, TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids) const
 	{
-#if WITH_CHAOS
-
 		UStaticMeshComponent* MeshComp = CastChecked<UStaticMeshComponent>(InComponent);
 
 		FSingleParticlePhysicsProxy* PhysProxy = MeshComp->BodyInstance.ActorHandle;
 
 		PlayFromCacheInternal(PhysProxy, InCache, TickRecord, OutUpdatedRigids);
-#endif // WITH_CHAOS
 	}
 
 	FGuid FStaticMeshCacheAdapter::GetGuid() const
@@ -129,8 +124,6 @@ namespace Chaos
 
 	Chaos::FPhysicsSolver* FStaticMeshCacheAdapter::GetComponentSolver(UPrimitiveComponent* InComponent) const
 	{
-#if WITH_CHAOS
-
 		if(InComponent && InComponent->GetWorld())
 		{
 			UWorld* ComponentWorld = InComponent->GetWorld();
@@ -140,11 +133,15 @@ namespace Chaos
 				return WorldScene->GetSolver();
 			}
 		}
-#endif // WITH_CHAOS
 
 		return nullptr;
 	}
-
+	
+	Chaos::FPhysicsSolverEvents* FStaticMeshCacheAdapter::BuildEventsSolver(UPrimitiveComponent* InComponent) const
+	{
+		return GetComponentSolver(InComponent);
+	}
+	
 	void FStaticMeshCacheAdapter::SetRestState(UPrimitiveComponent* InComponent, UChaosCache* InCache, const FTransform& InRootTransform, Chaos::FReal InTime) const
 	{
 		if (!InCache || InCache->GetDuration() == 0.0f)
@@ -163,7 +160,7 @@ namespace Chaos
 			Context.bEvaluateEvents = false;
 
 			FTransform RestTransform;
-			InCache->EvaluateSingle(0, TickRecord, &RestTransform, nullptr);
+			InCache->EvaluateSingle(0, TickRecord, nullptr, &RestTransform, nullptr);
 
 			// Evaluated transform is in CacheManager space.
 			InComponent->SetWorldTransform(RestTransform * InRootTransform, false);
@@ -179,14 +176,10 @@ namespace Chaos
 	{
 		EnsureIsInGameThreadContext();
 
-
-#if WITH_CHAOS
-
 		if(Cast<UStaticMeshComponent>(InComponent) && InComponent->GetBodyInstance() && InComponent->GetBodyInstance()->ActorHandle)
 		{
 			FPhysInterface_Chaos::SetIsKinematic_AssumesLocked(InComponent->GetBodyInstance()->ActorHandle, true);
 		}
-#endif // WITH_CHAOS
 
 		return true;
 	}

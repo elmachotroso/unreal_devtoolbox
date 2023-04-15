@@ -4,7 +4,12 @@
 
 #include "Algo/Accumulate.h"
 #include "Algo/AllOf.h"
+#include "HAL/PlatformString.h"
+#include "Math/UnrealMathUtility.h"
+#include "Memory/MemoryView.h"
+#include "Misc/AssertionMacros.h"
 #include "Templates/Function.h"
+#include "Templates/RemoveReference.h"
 
 void FCompositeBuffer::Reset()
 {
@@ -113,8 +118,8 @@ void FCompositeBuffer::IterateRange(uint64 Offset, uint64 Size, TFunctionRef<voi
 void FCompositeBuffer::IterateRange(uint64 Offset, uint64 Size,
 	TFunctionRef<void (FMemoryView View, const FSharedBuffer& ViewOuter)> Visitor) const
 {
-	checkf(Offset + Size <= GetSize(), TEXT("Failed to access %" UINT64_FMT " bytes at offset %" UINT64_FMT)
-		TEXT(" of a composite buffer containing %" UINT64_FMT " bytes."), Size, Offset, GetSize());
+	checkf(Offset + Size <= GetSize(), TEXT("Failed to access %" UINT64_FMT " bytes at offset %" UINT64_FMT
+		" of a composite buffer containing %" UINT64_FMT " bytes."), Size, Offset, GetSize());
 	for (const FSharedBuffer& Segment : Segments)
 	{
 		if (const uint64 SegmentSize = Segment.GetSize(); Offset <= SegmentSize)
@@ -136,4 +141,30 @@ void FCompositeBuffer::IterateRange(uint64 Offset, uint64 Size,
 			Offset -= SegmentSize;
 		}
 	}
+}
+
+bool FCompositeBuffer::EqualBytes(const FCompositeBuffer& Other) const
+{
+	const uint64 Size = GetSize();
+	if (Size != Other.GetSize())
+	{
+		return false;
+	}
+	uint64 Offset = 0;
+	for (const FSharedBuffer& Segment : Segments)
+	{
+		bool bEqual = true;
+		FMemoryView SegmentView = Segment.GetView();
+		Other.IterateRange(Offset, Segment.GetSize(), [&bEqual, &SegmentView](FMemoryView OtherView)
+		{
+			bEqual = bEqual && SegmentView.Left(OtherView.GetSize()).EqualBytes(OtherView);
+			SegmentView += OtherView.GetSize();
+		});
+		Offset += Segment.GetSize();
+		if (!bEqual)
+		{
+			return false;
+		}
+	}
+	return true;
 }

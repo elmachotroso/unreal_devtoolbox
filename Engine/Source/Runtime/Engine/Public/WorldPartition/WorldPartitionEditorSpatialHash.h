@@ -17,6 +17,17 @@ class ENGINE_API UWorldPartitionEditorSpatialHash : public UWorldPartitionEditor
 #if WITH_EDITOR
 	friend class SWorldPartitionEditorGridSpatialHash;
 
+	struct FCell
+	{
+	public:
+		FCell()
+			: Bounds(ForceInitToZero)
+		{}
+
+		FBox Bounds;
+		TSet<FWorldPartitionHandle> Actors;
+	};
+
 	struct FCellCoord
 	{
 		FCellCoord(int64 InX, int64 InY, int64 InZ, int32 InLevel)
@@ -70,7 +81,7 @@ class ENGINE_API UWorldPartitionEditorSpatialHash : public UWorldPartitionEditor
 	inline FCellCoord GetCellCoords(const FVector& InPos, int32 Level) const
 	{
 		check(Level >= 0);
-		const int32 CellSizeForLevel = CellSize * (1 << Level);
+		const int64 CellSizeForLevel = (int64)CellSize * (1LL << Level);
 		return FCellCoord(
 			FMath::FloorToInt(InPos.X / CellSizeForLevel),
 			FMath::FloorToInt(InPos.Y / CellSizeForLevel),
@@ -82,21 +93,21 @@ class ENGINE_API UWorldPartitionEditorSpatialHash : public UWorldPartitionEditor
 	inline FBox GetCellBounds(const FCellCoord& InCellCoord) const
 	{
 		check(InCellCoord.Level >= 0);
-		const int32 CellSizeForLevel = CellSize * (1 << InCellCoord.Level);
+		const int64 CellSizeForLevel = (int64)CellSize * (1LL << InCellCoord.Level);
 		const FVector Min = FVector(
-			InCellCoord.X * CellSizeForLevel, 
-			InCellCoord.Y * CellSizeForLevel, 
-			InCellCoord.Z * CellSizeForLevel
+			static_cast<FVector::FReal>(InCellCoord.X * CellSizeForLevel), 
+			static_cast<FVector::FReal>(InCellCoord.Y * CellSizeForLevel), 
+			static_cast<FVector::FReal>(InCellCoord.Z * CellSizeForLevel)
 		);
-		const FVector Max = Min + FVector(CellSizeForLevel);
+		const FVector Max = Min + FVector(static_cast<double>(CellSizeForLevel));
 		return FBox(Min, Max);
 	}
 
 	inline int32 GetLevelForBox(const FBox& Box) const
 	{
 		const FVector Extent = Box.GetExtent();
-		const float MaxLength = Extent.GetMax() * 2.0;
-		return FMath::CeilToInt(FMath::Max<float>(FMath::Log2(MaxLength / CellSize), 0));
+		const FVector::FReal MaxLength = Extent.GetMax() * 2.0;
+		return FMath::CeilToInt32(FMath::Max<FVector::FReal>(FMath::Log2(MaxLength / CellSize), 0));
 	}
 
 	inline int32 ForEachIntersectingCells(const FBox& InBounds, int32 Level, TFunctionRef<void(const FCellCoord&)> InOperation) const
@@ -106,11 +117,11 @@ class ENGINE_API UWorldPartitionEditorSpatialHash : public UWorldPartitionEditor
 		FCellCoord MinCellCoords(GetCellCoords(InBounds.Min, Level));
 		FCellCoord MaxCellCoords(GetCellCoords(InBounds.Max, Level));
 
-		for (int32 z=MinCellCoords.Z; z<=MaxCellCoords.Z; z++)
+		for (int64 z=MinCellCoords.Z; z<=MaxCellCoords.Z; z++)
 		{
-			for (int32 y=MinCellCoords.Y; y<=MaxCellCoords.Y; y++)
+			for (int64 y=MinCellCoords.Y; y<=MaxCellCoords.Y; y++)
 			{
-				for (int32 x=MinCellCoords.X; x<=MaxCellCoords.X; x++)
+				for (int64 x=MinCellCoords.X; x<=MaxCellCoords.X; x++)
 				{
 					InOperation(FCellCoord(x, y, z, Level));
 					NumCells++;
@@ -175,62 +186,49 @@ class ENGINE_API UWorldPartitionEditorSpatialHash : public UWorldPartitionEditor
 public:
 	virtual ~UWorldPartitionEditorSpatialHash() {}
 
-	// UObject interface begin
-	virtual void PostLoad() override;
-	// UObject interface end
-
 	// UWorldPartitionEditorHash interface begin
 	virtual void Initialize() override;
 	virtual void SetDefaultValues() override;
 	virtual FName GetWorldPartitionEditorName() const override;
 	virtual FBox GetEditorWorldBounds() const override;
+	virtual FBox GetRuntimeWorldBounds() const override;
+	virtual FBox GetNonSpatialBounds() const override;
 	virtual void Tick(float DeltaSeconds) override;
 
 	virtual void HashActor(FWorldPartitionHandle& InActorHandle) override;
 	virtual void UnhashActor(FWorldPartitionHandle& InActorHandle) override;
 
-	virtual int32 ForEachIntersectingActor(const FBox& Box, TFunctionRef<void(FWorldPartitionActorDesc*)> InOperation) override;
-	virtual int32 ForEachIntersectingCell(const FBox& Box, TFunctionRef<void(UWorldPartitionEditorCell*)> InOperation) override;
-	virtual int32 ForEachCell(TFunctionRef<void(UWorldPartitionEditorCell*)> InOperation) override;
-	virtual UWorldPartitionEditorCell* GetAlwaysLoadedCell() override;
-
-	virtual uint32 GetWantedEditorCellSize() const override;
-	virtual void SetEditorWantedCellSize(uint32 InCellSize) override;
-
-	virtual void AddBackReference(const FGuid& Reference, UWorldPartitionEditorCell* Cell, const FGuid& Source) override;
-	virtual void RemoveBackReference(const FGuid& Reference, UWorldPartitionEditorCell* Cell, const FGuid& Source) override;
-		
+	virtual int32 ForEachIntersectingActor(const FBox& Box, TFunctionRef<void(FWorldPartitionActorDesc*)> InOperation, const FForEachIntersectingActorParams& Params = FForEachIntersectingActorParams()) override;
 	// UWorldPartitionEditorHash interface end
 #endif
 
 #if WITH_EDITORONLY_DATA
 private:
-	FBox GetActorBounds(const FWorldPartitionHandle& InActorHandle) const;
-	bool IsActorAlwaysLoaded(const FWorldPartitionHandle& InActorHandle) const;
-	int32 ForEachIntersectingCellInner(const FBox& Box, const FCellCoord& CellCoord, TFunctionRef<void(UWorldPartitionEditorCell*)> InOperation);
+	int32 ForEachIntersectingCell(const FBox& Box, TFunctionRef<void(FCell*)> InOperation, int32 MinimumLevel = 0);
+	int32 ForEachIntersectingCellInner(const FBox& Box, const FCellCoord& CellCoord, TFunctionRef<void(FCell*)> InOperation, int32 MinimumLevel = 0);
 
 	UPROPERTY(Config)
 	int32 CellSize;
 
-	UPROPERTY()
-	int32 WantedCellSize;
+	// Dynamic sparse octree structure
+	typedef TTuple<FCellNode, TUniquePtr<FCell>> FCellNodeElement;
+	typedef TMap<FCellCoord, FCellNodeElement> FCellNodeHashLevel;
+	TArray<FCellNodeHashLevel, TInlineAllocator<20>> HashLevels;
 
-	TMap<FCellCoord, FCellNode> HashNodes;
-	TMap<FCellCoord, UWorldPartitionEditorCell*> HashCells;
+	TSet<FCell*> Cells;
+	TUniquePtr<FCell> AlwaysLoadedCell;
 	
-	TMultiMap<FGuid, TTuple<UWorldPartitionEditorCell*, FGuid>>	BackReferences;
-
-	UPROPERTY(Transient)
-	TSet<TObjectPtr<UWorldPartitionEditorCell>> Cells;
-	
-	FBox Bounds;
+	FBox EditorBounds;
+	FBox RuntimeBounds;
+	FBox NonSpatialBounds;
 	bool bBoundsDirty;
-	
-	UPROPERTY(Transient)
-	TObjectPtr<UWorldPartitionEditorCell> AlwaysLoadedCell;
+
+#if DO_CHECK
+	TMap<FGuid, FBox> HashedActors;
+#endif
 
 public:
-	UPROPERTY(Config, meta = (AllowedClasses = "Texture2D, MaterialInterface"))
+	UPROPERTY(Config, meta = (AllowedClasses = "/Script/Engine.Texture2D, /Script/Engine.MaterialInterface"))
 	FSoftObjectPath WorldImage;
 
 	UPROPERTY(Config)

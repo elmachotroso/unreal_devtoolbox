@@ -25,7 +25,7 @@ public class DisplayClusterConfigurator : ModuleRules
 				"BlueprintGraph",
 				"GraphEditor",
 				"EditorFramework",
-				"EditorStyle",
+				
 				"EditorSubsystem",
 				"EditorWidgets",
 				"Engine",
@@ -34,9 +34,9 @@ public class DisplayClusterConfigurator : ModuleRules
 				"Kismet",
 				"KismetCompiler",
 				"MainFrame",
+				"MediaAssets",
 				"MessageLog",
 				"PinnedCommandList",
-				"PlacementMode",
 				"Projects",
 				"PropertyEditor",
 				"Serialization",
@@ -48,7 +48,6 @@ public class DisplayClusterConfigurator : ModuleRules
 				"SubobjectEditor",
 				"SubobjectDataInterface",
 				"ToolWidgets",
-				"VPUtilitiesEditor",
 				"ProceduralMeshComponent",
 			});
 	}

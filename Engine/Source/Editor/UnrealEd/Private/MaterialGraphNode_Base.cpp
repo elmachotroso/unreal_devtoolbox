@@ -17,6 +17,12 @@ UMaterialGraphNode_Base::UMaterialGraphNode_Base(const FObjectInitializer& Objec
 {
 }
 
+int32 UMaterialGraphNode_Base::GetSourceIndexForInputIndex(int32 InputIndex) const
+{
+	// For most node types, SourceIndex==InputIndex
+	return InputIndex;
+}
+
 UEdGraphPin* UMaterialGraphNode_Base::GetInputPin(int32 InputIndex) const
 {
 	for (UEdGraphPin* Pin : Pins)
@@ -24,6 +30,21 @@ UEdGraphPin* UMaterialGraphNode_Base::GetInputPin(int32 InputIndex) const
 		if (Pin->PinType.PinCategory != UMaterialGraphSchema::PC_Exec &&
 			Pin->Direction == EGPD_Input &&
 			Pin->SourceIndex == InputIndex)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* UMaterialGraphNode_Base::GetInputPin(const FName& PinName) const
+{
+	// Return the first input pin matching the name
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->PinType.PinCategory != UMaterialGraphSchema::PC_Exec &&
+			Pin->Direction == EGPD_Input &&
+			Pin->PinName == PinName)
 		{
 			return Pin;
 		}
@@ -262,13 +283,29 @@ void UMaterialGraphNode_Base::ReconstructNode()
 		UEdGraphPin* NewPin = nullptr;
 		if (OldPin->PinType.PinCategory == UMaterialGraphSchema::PC_Exec)
 		{
-			if (OldPin->Direction == EGPD_Input) NewPin = GetExecInputPin();
-			else NewPin = GetExecOutputPin(OldPin->SourceIndex);
+			if (OldPin->Direction == EGPD_Input) 
+			{
+				NewPin = GetExecInputPin();
+			}
+			else 
+			{
+				NewPin = GetExecOutputPin(OldPin->SourceIndex);
+			}
 		}
 		else
 		{
-			if (OldPin->Direction == EGPD_Input) NewPin = GetInputPin(OldPin->SourceIndex);
-			else NewPin = GetOutputPin(OldPin->SourceIndex);
+			if (OldPin->Direction == EGPD_Input)
+			{
+				NewPin = GetInputPin(OldPin->PinName);
+				if (NewPin == nullptr)
+				{
+					NewPin = GetInputPin(OldPin->SourceIndex);
+				}
+			}
+			else 
+			{
+				NewPin = GetOutputPin(OldPin->SourceIndex);
+			}
 		}
 		if (NewPin)
 		{

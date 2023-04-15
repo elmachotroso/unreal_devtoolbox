@@ -14,7 +14,7 @@
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STreeView.h"
 #include "Widgets/Views/STableRow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Factories/FbxAnimSequenceImportData.h"
 #include "IDocumentation.h"
 #include "PropertyEditorModule.h"
@@ -76,12 +76,12 @@ void SFbxMaterialConflictWindow::Construct(const FArguments& InArgs)
 				+ SScrollBox::Slot()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot()
 						.FillHeight(1.0f)
-						.Padding(2)
+						.Padding(2.0f)
 						[
 							SNew(SVerticalBox)
 							+ SVerticalBox::Slot()
@@ -131,11 +131,11 @@ TSharedPtr<SWidget> SFbxMaterialConflictWindow::ConstructMaterialComparison()
 	FText MaterialCompareInstruction = bIsPreviewConflict ? LOCTEXT("SFbxMaterialConflictWindow_MaterialCompareDocumentationPreview", "Material conflict preview mode") : LOCTEXT("SFbxMaterialConflictWindow_MaterialCompareDocumentation", "To fix a material match, right click on the reimport asset material.");
 	FText MaterialCompareInstructionTooltip = bIsPreviewConflict ? LOCTEXT("SFbxMaterialConflictWindow_MaterialCompareDocumentationPreviewTooltip", "This is only a conflict preview, the material conflict dialog will show up during import to allow you to fix those conflicts.") : LOCTEXT("SFbxMaterialConflictWindow_MaterialCompareDocumentationTooltip", "To fix a material match, right click on the reimport asset material.\nUse the [Clear] option in the context menu to clear a material match.");
 	return SNew(SBox)
-	.MaxDesiredHeight(500)
+	.MaxDesiredHeight(500.0f)
 	[
 		SNew(SBorder)
 		.Padding(FMargin(3))
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 			+SVerticalBox::Slot()
@@ -150,13 +150,13 @@ TSharedPtr<SWidget> SFbxMaterialConflictWindow::ConstructMaterialComparison()
 					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
 					.IsFocusable(false)
-					.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+					.ButtonStyle(FAppStyle::Get(), "NoBorder")
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 					.Text(LOCTEXT("SFbxMaterialConflictWindow_MaterialCompareHeader", "Materials"))
 				]
 			]

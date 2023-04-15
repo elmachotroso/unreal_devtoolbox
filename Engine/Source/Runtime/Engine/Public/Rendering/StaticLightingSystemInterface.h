@@ -3,8 +3,9 @@
 #pragma once
 #include "Components/PrimitiveComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
 
-// TODO: Remove the 'V2' suffix after the renderer version is removed
+class FMaterialRenderProxy;
 
 class ENGINE_API IStaticLightingSystem
 {
@@ -17,12 +18,7 @@ public:
 
 class ENGINE_API IStaticLightingSystemImpl
 {
-public:
-	virtual bool SupportsRealtimePreview() { return false; }
-	virtual IStaticLightingSystem* CreateStaticLightingSystemForWorld(UWorld* InWorld) { return nullptr; }
-	
-	virtual IStaticLightingSystem* AllocateStaticLightingSystemForWorld(UWorld* InWorld) { return nullptr; }
-	virtual void RemoveStaticLightingSystemForWorld(UWorld* InWorld) {}
+public:	
 	virtual IStaticLightingSystem* GetStaticLightingSystemForWorld(UWorld* InWorld) { return nullptr; }
 
 	virtual void EditorTick() {}
@@ -45,9 +41,12 @@ public:
 	static FStationaryLightChannelReassignmentSignature OnStationaryLightChannelReassigned;
 	static FLightmassImportanceVolumeModifiedSignature OnLightmassImportanceVolumeModified;
 	static FMaterialInvalidationSignature OnMaterialInvalidated;
+	static FSimpleMulticastDelegate OnSkyAtmosphereModified;
+	
 	static const class FMeshMapBuildData* GetPrimitiveMeshMapBuildData(const UPrimitiveComponent* Component, int32 LODIndex = 0);
 	static const class FLightComponentMapBuildData* GetLightComponentMapBuildData(const ULightComponent* Component);
 	static const class FPrecomputedVolumetricLightmap* GetPrecomputedVolumetricLightmap(UWorld* World);
+	
 	static void EditorTick();
 	static void GameTick(float DeltaSeconds);
 	static bool IsStaticLightingSystemRunning();
@@ -57,7 +56,6 @@ public:
 	void RegisterImplementation(FName Name, IStaticLightingSystemImpl* Impl);
 	void UnregisterImplementation(FName Name);
 	IStaticLightingSystemImpl* GetPreferredImplementation();
-	bool ShouldOperateOnWorld(UWorld* InWorld);
 
 private:
 	TMap<FName, IStaticLightingSystemImpl*> Implementations;

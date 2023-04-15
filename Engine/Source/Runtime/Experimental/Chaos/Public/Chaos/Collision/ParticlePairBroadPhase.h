@@ -2,7 +2,7 @@
 #pragma once
 
 #include "Chaos/BoundingVolumeUtilities.h"
-#include "Chaos/Collision/NarrowPhase.h"
+#include "Chaos/Collision/ParticlePairMidPhase.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDRigidsSOAs.h"
@@ -20,7 +20,6 @@ namespace Chaos
 	{
 	public:
 		using FParticleHandle = TGeometryParticleHandle<FReal, 3>;
-		using FParticlePair = TVector<FParticleHandle*, 2>;
 		using FAABB = FAABB3;
 
 		FBasicBroadPhase(const TArray<FParticlePair>* InParticlePairs, const TArray<FParticleHandle*>* InParticlesA, const TArray<FParticleHandle*>* InParticlesB)
@@ -33,9 +32,18 @@ namespace Chaos
 		/**
 		 *
 		 */
-		void ProduceOverlaps(FReal Dt, FNarrowPhase& NarrowPhase)
+		void ProduceOverlaps(
+			FReal Dt, 
+			FCollisionConstraintAllocator* Allocator,
+			const FCollisionDetectorSettings& Settings)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_Collisions_ParticlePairBroadPhase);
+
+			Allocator->SetMaxContexts(1);
+
+			FCollisionContext Context;
+			Context.SetSettings(Settings);
+			Context.Allocator = Allocator->GetContextAllocator(0);
 
 			if (ParticlePairs != nullptr)
 			{
@@ -47,7 +55,7 @@ namespace Chaos
 
 					if ((ParticleA != nullptr) && (ParticleB != nullptr))
 					{
-						ProduceOverlaps(Dt, NarrowPhase, ParticleA, ParticleB, ParticleA);
+						ProduceOverlaps(Dt, Context, ParticleA, ParticleB, ParticleA);
 					}
 				}
 			}
@@ -62,7 +70,7 @@ namespace Chaos
 						{
 							if (ParticleB != nullptr)
 							{
-								ProduceOverlaps(Dt, NarrowPhase, ParticleA, ParticleB, ParticleA);
+								ProduceOverlaps(Dt, Context, ParticleA, ParticleB, ParticleA);
 							}
 						}
 					}
@@ -73,7 +81,7 @@ namespace Chaos
 	private:
 		inline void ProduceOverlaps(
 			FReal Dt,
-			FNarrowPhase& NarrowPhase,
+			const FCollisionContext& Context,
 			FParticleHandle* ParticleA,
 			FParticleHandle* ParticleB,
 			FParticleHandle* SearchParticle)
@@ -82,7 +90,11 @@ namespace Chaos
 			const FAABB3& Box1 = ParticleB->WorldSpaceInflatedBounds();
 			if (Box0.Intersects(Box1))
 			{
-				NarrowPhase.GenerateCollisions(Dt, ParticleA, ParticleB, SearchParticle, true);
+				FParticlePairMidPhase* MidPhase = Context.GetAllocator()->GetMidPhase(ParticleA, ParticleB, SearchParticle, Context);
+				if (MidPhase != nullptr)
+				{
+					MidPhase->GenerateCollisions(Context.GetSettings().BoundsExpansion, Dt, Context);
+				}
 			}
 		}
 

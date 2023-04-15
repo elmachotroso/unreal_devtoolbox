@@ -6,16 +6,17 @@ namespace UnrealBuildTool.Rules
     {
         public ControlRigEditor(ReadOnlyTargetRules Target) : base(Target)
         {
-            PrivateIncludePaths.AddRange(
+			PrivateIncludePaths.AddRange(
                 new string[] {
-                    "ControlRigEditor/Private",
-                    "ControlRigEditor/Private/Sequencer",
-                    "ControlRigEditor/Private/EditMode",
-                    "ControlRigEditor/Private/Graph",
-                    "ControlRigEditor/Private/Editor",
-                    "../../../../Source/Editor/UnrealEd/Private", 
-					"../../../../Source/Developer/MessageLog/Private", //compatibility for FBX importer
-					"ControlRigEditor/Private/Tools"
+					System.IO.Path.Combine(GetModuleDirectory("AssetTools"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("ControlRig"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("Kismet"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("MessageLog"), "Private"), //compatibility for FBX importer
+					System.IO.Path.Combine(GetModuleDirectory("Persona"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("SceneOutliner"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("Slate"), "Private"),
+					System.IO.Path.Combine(GetModuleDirectory("UnrealEd"), "Private"),
 				}
 			);
 
@@ -44,6 +45,7 @@ namespace UnrealBuildTool.Rules
                     "ControlRig",
                     "ControlRigDeveloper",
                     "Kismet",
+					"KismetCompiler",
                     "EditorStyle",
 					"EditorWidgets",
                     "ApplicationCore",
@@ -54,6 +56,7 @@ namespace UnrealBuildTool.Rules
                     "MovieScene",
                     "MovieSceneTracks",
                     "MovieSceneTools",
+                    "SequencerCore",
                     "Sequencer",
 					"LevelSequenceEditor",
                     "ClassViewer",
@@ -85,6 +88,9 @@ namespace UnrealBuildTool.Rules
 					"AdvancedPreviewScene",
 					"ToolWidgets",
                     "AnimationWidgets",
+                    "ActorPickerMode",
+                    "Constraints",
+                    "AnimationEditMode"
 				}
             );
 

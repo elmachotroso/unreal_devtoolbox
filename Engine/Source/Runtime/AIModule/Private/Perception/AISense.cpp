@@ -15,6 +15,8 @@
 #include "Perception/AISense_Prediction.h"
 #include "Perception/AISense_Touch.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AISense)
+
 #if WITH_GAMEPLAY_DEBUGGER
 #include "GameplayDebuggerTypes.h"
 #include "GameplayDebuggerCategory.h"
@@ -211,10 +213,10 @@ void UAISenseConfig_Sight::DescribeSelfToGameplayDebugger(const UAIPerceptionCom
 
 	// don't call Super implementation on purpose, replace color description line
 	DebuggerCategory->AddTextLine(
-		FString::Printf(TEXT("%s: {%s}%s {white}rangeIN:{%s}%s {white} rangeOUT:{%s}%s"), *GetSenseName(),
+		FString::Printf(TEXT("%s: {%s}%s {white}rangeIN:{%s} %.2f (%s) {white} rangeOUT:{%s} %.2f (%s)"), *GetSenseName(),
 			*GetDebugColor().ToString(), *DescribeColorHelper(GetDebugColor()),
-			*SightRangeColor.ToString(), *DescribeColorHelper(SightRangeColor),
-			*LoseSightRangeColor.ToString(), *DescribeColorHelper(LoseSightRangeColor))
+			*SightRangeColor.ToString(), SightRadius, *DescribeColorHelper(SightRangeColor),
+			*LoseSightRangeColor.ToString(), LoseSightRadius, *DescribeColorHelper(LoseSightRangeColor))
 		);
 
 	const AActor* BodyActor = PerceptionComponent->GetBodyActor();
@@ -325,3 +327,4 @@ TSubclassOf<UAISense> UAISenseConfig_Touch::GetSenseImplementation() const
 {
 	return UAISense_Touch::StaticClass();
 }
+

@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "CADKernel/Geo/Curves/BoundedCurve.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FBoundedCurve::EvaluatePoint(double Coordinate, FCurvePoint& OutPoint, int32 DerivativeOrder) const
@@ -40,7 +40,7 @@ TSharedPtr<FCurve> FBoundedCurve::MakeBoundedCurve(const FLinearBoundary& InBoun
 		NewBoundary.Max = UMax;
 	}
 
-	if((NewBoundary.Min -SMALL_NUMBER)<UMin && (NewBoundary.Max +SMALL_NUMBER)>UMax)
+	if((NewBoundary.Min -DOUBLE_SMALL_NUMBER)<UMin && (NewBoundary.Max +DOUBLE_SMALL_NUMBER)>UMax)
 	{
 		return FEntity::MakeShared<FBoundedCurve>(*this);
 	}
@@ -57,6 +57,11 @@ TSharedPtr<FEntityGeom> FBoundedCurve::ApplyMatrix(const FMatrixH& InMatrix) con
 	}
 
 	return FEntity::MakeShared<FBoundedCurve>(TransformedCurve.ToSharedRef(), Boundary, Dimension);
+}
+
+void FBoundedCurve::Offset(const FPoint& OffsetDirection)
+{
+	Curve->Offset(OffsetDirection);
 }
 
 #ifdef CADKERNEL_DEV

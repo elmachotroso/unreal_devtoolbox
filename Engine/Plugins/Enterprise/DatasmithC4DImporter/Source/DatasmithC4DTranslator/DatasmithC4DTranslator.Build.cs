@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.IO;
-using EpicGames.Core;
 
 namespace UnrealBuildTool.Rules
 {
@@ -10,6 +9,7 @@ namespace UnrealBuildTool.Rules
 		public DatasmithC4DTranslator(ReadOnlyTargetRules Target) : base(Target)
 		{
 			bLegalToDistributeObjectCode = true;
+			bUseUnity = false;
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
@@ -19,10 +19,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"DatasmithCore",
 					"Engine",
-					"Json",
 					"MeshDescription",
-					"Slate",
-					"SlateCore",
 					"StaticMeshDescription",
 					"Imath",
 				}
@@ -34,6 +31,9 @@ namespace UnrealBuildTool.Rules
 					new string[]
 					{
 						"DatasmithExporter",
+						"Slate",
+						"SlateCore",
+						"EditorStyle",
 					}
 				);
 			}
@@ -46,12 +46,7 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			string DsC4DDynamicLocatation = Path.Combine(PluginDirectory, "Source", "DatasmithC4DDynamicImporter");
-			if (Directory.Exists(DsC4DDynamicLocatation))
-			{
-				PublicIncludePaths.Add(Path.Combine(DsC4DDynamicLocatation, "Public"));
-				PublicDefinitions.Add("_CHECK_DYNAMIC_IMPORTER_");
-			}
+
 
 			// Set up the C4D Melange SDK includes and libraries.
 			string MelangeSDKLocation = Path.Combine(EngineDirectory, "Restricted/NotForLicensees/Source/ThirdParty/Enterprise/Melange/20.004_RBMelange20.0_259890");

@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "Sound/SoundEffectSource.h"
+#include "Containers/Set.h"
 #include "DSP/Chorus.h"
+#include "Sound/SoundEffectSource.h"
 #include "Sound/SoundModulationDestination.h"
 
 #include "SourceEffectChorus.generated.h"
@@ -62,27 +63,27 @@ struct SYNTHESIS_API FSourceEffectChorusSettings
 	float Spread = 0.0f;
 
 	// The depth of the chorus effect
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Depth", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Depth", AudioParamClass = "SoundModulationParameter", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	FSoundModulationDestinationSettings DepthModulation;
 
 	// The frequency of the chorus effect
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Frequency", AudioParam = "LowRateFrequency", UIMin = "0.0", UIMax = "5.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Frequency", AudioParam = "LowRateFrequency", AudioParamClass = "SoundModulationParameterFrequency", UIMin = "0.0", UIMax = "5.0"))
 	FSoundModulationDestinationSettings FrequencyModulation;
 
 	// The feedback of the chorus effect
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Feedback", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Feedback", AudioParamClass = "SoundModulationParameter", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	FSoundModulationDestinationSettings FeedbackModulation;
 
 	// The wet level of the chorus effect
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Wet Level", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Wet Level", AudioParamClass = "SoundModulationParameter", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	FSoundModulationDestinationSettings WetModulation;
 
 	// The dry level of the chorus effect
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Dry Level", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Dry Level", AudioParamClass = "SoundModulationParameter", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	FSoundModulationDestinationSettings DryModulation;
 
 	// The spread of the effect (larger means greater difference between left and right delay lines)
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Spread", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SourceEffect|Preset", meta = (DisplayName = "Spread", AudioParamClass = "SoundModulationParameter", ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	FSoundModulationDestinationSettings SpreadModulation;
 
 	FSourceEffectChorusSettings()
@@ -114,6 +115,13 @@ public:
 	void SetWetModulator(const USoundModulatorBase* InModulator);
 	void SetDryModulator(const USoundModulatorBase* InModulator);
 	void SetSpreadModulator(const USoundModulatorBase* InModulator);
+
+	void SetDepthModulators(const TSet<USoundModulatorBase*>& InModulators);
+	void SetFeedbackModulators(const TSet<USoundModulatorBase*>& InModulators);
+	void SetSpreadModulators(const TSet<USoundModulatorBase*>& InModulators);
+	void SetDryModulators(const TSet<USoundModulatorBase*>& InModulators);
+	void SetWetModulators(const TSet<USoundModulatorBase*>& InModulators);
+	void SetFrequencyModulators(const TSet<USoundModulatorBase*>& InModulators);
 
 protected:
 	Audio::FChorus Chorus;
@@ -147,10 +155,16 @@ public:
 	void SetDepthModulator(const USoundModulatorBase* Modulator);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetDepthModulators(const TSet<USoundModulatorBase*>& Modulators);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetFeedback(float Feedback);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetFeedbackModulator(const USoundModulatorBase* Modulator);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetFeedbackModulators(const TSet<USoundModulatorBase*>& Modulators);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetFrequency(float Frequency);
@@ -159,10 +173,16 @@ public:
 	void SetFrequencyModulator(const USoundModulatorBase* Modulator);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetFrequencyModulators(const TSet<USoundModulatorBase*>& Modulators);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetWet(float WetAmount);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetWetModulator(const USoundModulatorBase* Modulator);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetWetModulators(const TSet<USoundModulatorBase*>& Modulators);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetDry(float DryAmount);
@@ -171,10 +191,16 @@ public:
 	void SetDryModulator(const USoundModulatorBase* Modulator);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetDryModulators(const TSet<USoundModulatorBase*>& Modulators);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetSpread(float Spread);
 
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
 	void SetSpreadModulator(const USoundModulatorBase* Modulator);
+
+	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")
+	void SetSpreadModulators(const TSet<USoundModulatorBase*>& Modulators);
 
 	// Sets just base (i.e. carrier) setting values without modifying modulation source references
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects|Chorus")

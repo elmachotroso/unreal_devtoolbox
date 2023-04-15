@@ -24,11 +24,25 @@
 			"Name": "CameraCalibrationCoreEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CameraCalibrationCoreMovieScene",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CameraCalibrationCoreSequencer",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		},
+		{
+			"Name": "LiveLink",
 			"Enabled": true
 		}
 	]

@@ -129,6 +129,29 @@ END
 // remains consistent on all systems.
 IDI_ICONUE              ICON                    "UE.ico"
 
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// String Table
+//
+
+STRINGTABLE
+BEGIN
+    IDS_SYNC_NAME    "Sync"
+    IDS_SYNC_DESC    "Synchronize with Direct Link"
+    IDS_CONNECTIONS_NAME    "Connections"
+    IDS_CONNECTIONS_DESC    "Manage Connections"
+    IDS_AUTOSYNC_NAME    "AutoSync"
+    IDS_AUTOSYNC_DESC    "Toggle Direct Link Auto Sync"
+    IDS_EXPORT_NAME    "Export"
+    IDS_EXPORT_DESC    "Export to Datasmith file"
+    IDS_SHOWLOG_NAME    "Log"
+    IDS_SHOWLOG_DESC    "Show Messages"
+    IDS_DATASMITH_CATEGORY "Datasmith"
+    IDS_EXPORT_SELECTED_NAME    "Export Selected"
+    IDS_EXPORT_SELECTED_DESC    "Export Selected objects to Datasmith file"
+END
+
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////
 
@@ -169,7 +192,7 @@ BEGIN
             VALUE "LegalCopyright", "Copyright Epic Games, Inc. All Rights Reserved."
             VALUE "OriginalFilename", "DatasmithMaxExporter.dle"
             VALUE "ProductName", "Unreal Engine"
-            VALUE "ProductVersion", "4.21.0-0+UE4"
+            VALUE "ProductVersion", "5.0"
         END
     END
     BLOCK "VarFileInfo"

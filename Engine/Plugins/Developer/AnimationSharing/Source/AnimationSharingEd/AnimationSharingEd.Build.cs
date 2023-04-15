@@ -20,14 +20,8 @@ public class AnimationSharingEd : ModuleRules
                 "Slate",
                 "SlateCore",
                 "PropertyEditor",
-                "EditorStyle"
             }
 		);
-
-        PrivateIncludePaths.AddRange(
-            new string[] {
-                "AnimationSharingEd/Private"
-         });       
     }
 
 }

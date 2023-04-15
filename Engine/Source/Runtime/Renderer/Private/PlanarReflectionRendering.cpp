@@ -240,12 +240,6 @@ void PrefilterPlanarReflection(
 			FIntPoint UV = View.ViewRect.Min;
 			FIntPoint UVSize = View.ViewRect.Size();
 
-			if (RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[View.FeatureLevel]) && !IsMobileHDR())
-			{
-				UV.Y = UV.Y + UVSize.Y;
-				UVSize.Y = -UVSize.Y;
-			}
-
 			FDeferredLightVS::FParameters ParametersVS = FDeferredLightVS::GetParameters(View, 
 				0, 0,
 				View.ViewRect.Width(), View.ViewRect.Height(),
@@ -282,40 +276,30 @@ static void UpdatePlanarReflectionContents_RenderThread(
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RenderPlanarReflection);
 
-	// We need to execute the pre-render view extensions before we do any view dependent work.
-	FSceneRenderer::ViewExtensionPreRender_RenderThread(RHICmdList, SceneRenderer);
-
-	SceneRenderer->RenderThreadBegin(RHICmdList);
-
-	// Make sure we render to the same set of GPUs as the main scene renderer.
-	if (MainSceneRenderer->ViewFamily.RenderTarget != nullptr)
 	{
-		RenderTarget->SetActiveGPUMask(MainSceneRenderer->ViewFamily.RenderTarget->GetGPUMask(RHICmdList));
-	}
-	else
-	{
-		RenderTarget->SetActiveGPUMask(FRHIGPUMask::GPU0());
-	}
+		FBox PlanarReflectionBounds = SceneProxy->WorldBounds;
+		bool bIsInAnyFrustum = false;
 
-	FBox PlanarReflectionBounds = SceneProxy->WorldBounds;
-
-	bool bIsInAnyFrustum = false;
-	for (int32 ViewIndex = 0; ViewIndex < MainSceneRenderer->Views.Num(); ++ViewIndex)
-	{
-		FViewInfo& View = MainSceneRenderer->Views[ViewIndex];
-		if (MirrorPlane.PlaneDot(View.ViewMatrices.GetViewOrigin()) > 0)
+		for (int32 ViewIndex = 0; ViewIndex < MainSceneRenderer->Views.Num(); ++ViewIndex)
 		{
-			if (View.ViewFrustum.IntersectBox(PlanarReflectionBounds.GetCenter(), PlanarReflectionBounds.GetExtent()))
+			FViewInfo& View = MainSceneRenderer->Views[ViewIndex];
+			if (MirrorPlane.PlaneDot(View.ViewMatrices.GetViewOrigin()) > 0)
 			{
-				bIsInAnyFrustum = true;
-				break;
+				if (View.ViewFrustum.IntersectBox(PlanarReflectionBounds.GetCenter(), PlanarReflectionBounds.GetExtent()))
+				{
+					bIsInAnyFrustum = true;
+					break;
+				}
 			}
 		}
-	}
 
-	if (bIsInAnyFrustum)
-	{
+		if (!bIsInAnyFrustum)
+		{
+			return;
+		}
+
 		bool bIsVisibleInAnyView = true;
+
 		for (int32 ViewIndex = 0; ViewIndex < MainSceneRenderer->Views.Num(); ++ViewIndex)
 		{
 			FViewInfo& View = MainSceneRenderer->Views[ViewIndex];
@@ -348,75 +332,94 @@ static void UpdatePlanarReflectionContents_RenderThread(
 			}
 		}
 
-		if (bIsVisibleInAnyView)
+		if (!bIsVisibleInAnyView)
 		{
-			// update any resources that needed a deferred update
-			FDeferredUpdateResource::UpdateResources(RHICmdList);
+			return;
+		}
+	}
 
-			{
+	SceneRenderer->RenderThreadBegin(RHICmdList);
+
+	FUniformExpressionCacheAsyncUpdateScope AsyncUpdateScope;
+
+	// update any resources that needed a deferred update
+	FDeferredUpdateResource::UpdateResources(RHICmdList);
+
+	const ERHIFeatureLevel::Type FeatureLevel = SceneRenderer->FeatureLevel;
+	FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("PlanarReflection"), FSceneRenderer::GetRDGParalelExecuteFlags(FeatureLevel));
+
+	// We need to execute the pre-render view extensions before we do any view dependent work.
+	FSceneRenderer::ViewExtensionPreRender_RenderThread(GraphBuilder, SceneRenderer);
+
+	// Make sure we render to the same set of GPUs as the main scene renderer.
+	if (MainSceneRenderer->ViewFamily.RenderTarget != nullptr)
+	{
+		RenderTarget->SetActiveGPUMask(MainSceneRenderer->ViewFamily.RenderTarget->GetGPUMask(RHICmdList));
+	}
+	else
+	{
+		RenderTarget->SetActiveGPUMask(FRHIGPUMask::GPU0());
+	}
+
+	{
 #if WANTS_DRAW_MESH_EVENTS
-				FString EventName;
-				OwnerName.ToString(EventName);
-				SCOPED_DRAW_EVENTF(RHICmdList, SceneCapture, TEXT("PlanarReflection %s"), *EventName);
+		FString EventName;
+		OwnerName.ToString(EventName);
+		RDG_EVENT_SCOPE(GraphBuilder, "PlanarReflection %s", *EventName);
 #else
-				SCOPED_DRAW_EVENT(RHICmdList, UpdatePlanarReflectionContent_RenderThread);
+		RDG_EVENT_SCOPE(GraphBuilder, "UpdatePlanarReflectionContent_RenderThread");
 #endif
-				const ERHIFeatureLevel::Type FeatureLevel = SceneRenderer->FeatureLevel;
-				FRDGBuilder GraphBuilder(RHICmdList, RDG_EVENT_NAME("PlanarReflection"), FSceneRenderer::GetRDGParalelExecuteFlags(FeatureLevel));
+		// Reflection view late update
+		if (SceneRenderer->Views.Num() > 1)
+		{
+			const FMirrorMatrix MirrorMatrix(MirrorPlane);
+			for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
+			{
+				FViewInfo& ReflectionViewToUpdate = SceneRenderer->Views[ViewIndex];
+				const FViewInfo& UpdatedParentView = MainSceneRenderer->Views[ViewIndex];
 
-				// Reflection view late update
-				if (SceneRenderer->Views.Num() > 1)
-				{
-					const FMirrorMatrix MirrorMatrix(MirrorPlane);
-					for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
-					{
-						FViewInfo& ReflectionViewToUpdate = SceneRenderer->Views[ViewIndex];
-						const FViewInfo& UpdatedParentView = MainSceneRenderer->Views[ViewIndex];
+				ReflectionViewToUpdate.UpdatePlanarReflectionViewMatrix(UpdatedParentView, MirrorMatrix);
+			}
+		}
 
-						ReflectionViewToUpdate.UpdatePlanarReflectionViewMatrix(UpdatedParentView, MirrorMatrix);
-					}
-				}
+		// Render the scene normally
+		{
+			RDG_RHI_EVENT_SCOPE(GraphBuilder, RenderScene);
+			SceneRenderer->Render(GraphBuilder);
+		}
 
-				// Render the scene normally
-				{
-					RDG_RHI_EVENT_SCOPE(GraphBuilder, RenderScene);
-					SceneRenderer->Render(GraphBuilder);
-				}
+		SceneProxy->RenderTarget = RenderTarget;
 
-				SceneProxy->RenderTarget = RenderTarget;
+		// Update the view rects into the planar reflection proxy.
+		for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
+		{
+			// Make sure screen percentage has correctly been set on render thread.
+			check(SceneRenderer->Views[ViewIndex].ViewRect.Area() > 0);
+			SceneProxy->ViewRect[ViewIndex] = SceneRenderer->Views[ViewIndex].ViewRect;
+		}
 
-				// Update the view rects into the planar reflection proxy.
-				for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
-				{
-					// Make sure screen percentage has correctly been set on render thread.
-					check(SceneRenderer->Views[ViewIndex].ViewRect.Area() > 0);
-					SceneProxy->ViewRect[ViewIndex] = SceneRenderer->Views[ViewIndex].ViewRect;
-				}
+		FRDGTextureRef ReflectionOutputTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(RenderTarget->TextureRHI, TEXT("ReflectionOutputTexture")));
+		GraphBuilder.SetTextureAccessFinal(ReflectionOutputTexture, ERHIAccess::SRVGraphics);
 
-				FRDGTextureRef ReflectionOutputTexture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(RenderTarget->TextureRHI, TEXT("ReflectionOutputTexture")));
-				GraphBuilder.SetTextureAccessFinal(ReflectionOutputTexture, ERHIAccess::SRVGraphics);
+		FSceneTextureShaderParameters SceneTextureParameters = CreateSceneTextureShaderParameters(GraphBuilder, &SceneRenderer->GetActiveSceneTextures(), SceneRenderer->FeatureLevel, ESceneTextureSetupMode::SceneDepth);
+		const FMinimalSceneTextures& SceneTextures = SceneRenderer->GetActiveSceneTextures();
 
-				FSceneTextureShaderParameters SceneTextureParameters = CreateSceneTextureShaderParameters(GraphBuilder, SceneRenderer->FeatureLevel, ESceneTextureSetupMode::SceneDepth);
-				const FMinimalSceneTextures& SceneTextures = FSceneTextures::Get(GraphBuilder);
-
-				for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
-				{
-					FViewInfo& View = SceneRenderer->Views[ViewIndex];
-					RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
-					if (MainSceneRenderer->Scene->GetShadingPath() == EShadingPath::Deferred)
-					{
-						PrefilterPlanarReflection<true>(GraphBuilder, View, SceneTextureParameters, SceneProxy, SceneTextures.Color.Resolve, ReflectionOutputTexture);
-					}
-					else
-					{
-						PrefilterPlanarReflection<false>(GraphBuilder, View, SceneTextureParameters, SceneProxy, SceneTextures.Color.Resolve, ReflectionOutputTexture);
-					}
-				}
-
-				GraphBuilder.Execute();
+		for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
+		{
+			FViewInfo& View = SceneRenderer->Views[ViewIndex];
+			RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+			if (MainSceneRenderer->Scene->GetShadingPath() == EShadingPath::Deferred)
+			{
+				PrefilterPlanarReflection<true>(GraphBuilder, View, SceneTextureParameters, SceneProxy, SceneTextures.Color.Resolve, ReflectionOutputTexture);
+			}
+			else
+			{
+				PrefilterPlanarReflection<false>(GraphBuilder, View, SceneTextureParameters, SceneProxy, SceneTextures.Color.Resolve, ReflectionOutputTexture);
 			}
 		}
 	}
+
+	GraphBuilder.Execute();
 
 	SceneRenderer->RenderThreadEnd(RHICmdList);
 }
@@ -432,9 +435,6 @@ static void UpdatePlanarReflectionContentsWithoutRendering_RenderThread(
 	const FName OwnerName)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RenderPlanarReflection);
-
-	// We need to execute the pre-render view extensions before we do any view dependent work.
-	FSceneRenderer::ViewExtensionPreRender_RenderThread(RHICmdList, SceneRenderer);
 
 	SceneRenderer->RenderThreadBegin(RHICmdList);
 
@@ -505,7 +505,8 @@ extern void SetupViewFamilyForSceneCapture(
 	bool bIsPlanarReflection,
 	FPostProcessSettings* PostProcessSettings,
 	float PostProcessBlendWeight,
-	const AActor* ViewActor);
+	const AActor* ViewActor,
+	int32 CubemapFaceIndex);
 
 void FScene::UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureComponent, FSceneRenderer& MainSceneRenderer)
 {
@@ -515,8 +516,8 @@ void FScene::UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureC
 		FIntPoint DesiredBufferSize = FSceneRenderer::GetDesiredInternalBufferSize(MainSceneRenderer.ViewFamily);
 		FVector2D DesiredPlanarReflectionTextureSizeFloat = FVector2D(DesiredBufferSize.X, DesiredBufferSize.Y) * FMath::Clamp(CaptureComponent->ScreenPercentage / 100.f, 0.25f, 1.f);
 		FIntPoint DesiredPlanarReflectionTextureSize;
-		DesiredPlanarReflectionTextureSize.X = FMath::Clamp(FMath::CeilToInt(DesiredPlanarReflectionTextureSizeFloat.X), 1, static_cast<int32>(DesiredBufferSize.X));
-		DesiredPlanarReflectionTextureSize.Y = FMath::Clamp(FMath::CeilToInt(DesiredPlanarReflectionTextureSizeFloat.Y), 1, static_cast<int32>(DesiredBufferSize.Y));
+		DesiredPlanarReflectionTextureSize.X = FMath::Clamp(FMath::CeilToInt32(DesiredPlanarReflectionTextureSizeFloat.X), 1, static_cast<int32>(DesiredBufferSize.X));
+		DesiredPlanarReflectionTextureSize.Y = FMath::Clamp(FMath::CeilToInt32(DesiredPlanarReflectionTextureSizeFloat.Y), 1, static_cast<int32>(DesiredBufferSize.Y));
 
 		const bool bIsMobilePixelProjectedReflectionEnabled = IsMobilePixelProjectedReflectionEnabled(GetShaderPlatform());
 
@@ -634,7 +635,8 @@ void FScene::UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureC
 			SceneCaptureViewInfo, CaptureComponent->MaxViewDistanceOverride,
 			/* bUseFauxOrthoViewPos = */ false, /* bCaptureSceneColor = */ true, /* bIsPlanarReflection = */ true,
 			&PostProcessSettings, 1.0f,
-			/*ViewActor =*/ nullptr);
+			/*ViewActor =*/ nullptr,
+			/*CubemapFaceIndex =*/ INDEX_NONE);
 
 		// Fork main renderer's screen percentage interface to have exactly same settings.
 		ViewFamily.EngineShowFlags.ScreenPercentage = MainSceneRenderer.ViewFamily.EngineShowFlags.ScreenPercentage;
@@ -901,7 +903,7 @@ void FDeferredShadingSceneRenderer::RenderDeferredPlanarReflections(FRDGBuilder&
 				View.ViewRect.Min.X, View.ViewRect.Min.Y,
 				View.ViewRect.Width(), View.ViewRect.Height(),
 				View.ViewRect.Size(),
-				GetSceneTextureExtent(),
+				View.GetSceneTexturesConfig().Extent,
 				VertexShader,
 				EDRF_UseTriangleOptimization);
 		}

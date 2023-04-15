@@ -32,20 +32,34 @@ namespace Chaos
 			//case 4: prev has no dirty data and next does. In this case interpolate from gt data to next
 			//case 5: prev has no dirty data and next was overwritten. In this case do nothing as the overwritten data wins, and also particle may be deleted
 
-			const FChaosInterpolationResults& Results = PullResultsManager->PullAsyncPhysicsResults_External(ResultsTime);
-			LatestData = Results.Next;
-			//todo: go wide
-			const int32 SolverTimestamp = Results.Next ? Results.Next->SolverTimestamp : INDEX_NONE;
-			for(const FChaosRigidInterpolationData& RigidInterp : Results.RigidInterpolations)
+			TArray<const FChaosInterpolationResults*> ResultsPerChannel = PullResultsManager->PullAsyncPhysicsResults_External(ResultsTime);
+			for(int32 ChannelIdx = 0; ChannelIdx < ResultsPerChannel.Num(); ++ChannelIdx)
 			{
-				if(FSingleParticlePhysicsProxy* Proxy = RigidInterp.Prev.GetProxy())
+				const FChaosInterpolationResults& Results = *ResultsPerChannel[ChannelIdx];
+				LatestData = Results.Next;
+				//todo: go wide
+				const int32 SolverTimestamp = Results.Next ? Results.Next->SolverTimestamp : INDEX_NONE;
+
+				// single particles
+				for (const FChaosRigidInterpolationData& RigidInterp : Results.RigidInterpolations)
 				{
-					if (Proxy->PullFromPhysicsState(RigidInterp.Prev, SolverTimestamp, &RigidInterp.Next, &Results.Alpha, &RigidInterp.LeashAlpha))
+					if (FSingleParticlePhysicsProxy* Proxy = RigidInterp.Prev.GetProxy())
 					{
-						RigidFunc(Proxy);
+						if (Proxy->PullFromPhysicsState(RigidInterp.Prev, SolverTimestamp, &RigidInterp.Next, &Results.Alpha))
+						{
+							RigidFunc(Proxy);
+						}
 					}
 				}
 				
+				// geometry collections
+				for (const FChaosGeometryCollectionInterpolationData& GCInterp : Results.GeometryCollectionInterpolations)
+				{
+					if (FGeometryCollectionPhysicsProxy* Proxy = GCInterp.Prev.GetProxy())
+					{
+						Proxy->PullFromPhysicsState(GCInterp.Prev, SolverTimestamp, &GCInterp.Next, &Results.Alpha);
+					}
+				}
 			}
 		}
 		else
@@ -58,6 +72,8 @@ namespace Chaos
 			LatestData = Results.Next;
 			//todo: go wide
 			const int32 SolverTimestamp = Results.Next ? Results.Next->SolverTimestamp : INDEX_NONE;
+
+			// Single particles
 			for (const FChaosRigidInterpolationData& RigidInterp : Results.RigidInterpolations)
 				{
 					if (FSingleParticlePhysicsProxy* Proxy = RigidInterp.Prev.GetProxy())
@@ -69,22 +85,21 @@ namespace Chaos
 					}
 				}
 
+			// geometry collections
+			for (const FChaosGeometryCollectionInterpolationData& GCInterp : Results.GeometryCollectionInterpolations)
+			{
+				if (FGeometryCollectionPhysicsProxy* Proxy = GCInterp.Prev.GetProxy())
+				{
+					Proxy->PullFromPhysicsState(GCInterp.Next, SolverTimestamp);
+				}
+			}
+			
 		}
 
 		//no interpolation for GC or joints at the moment
 		if(LatestData)
 		{
-			const int32 SyncTimestamp = LatestData->SolverTimestamp;
-			for (const FDirtyGeometryCollectionData& DirtyData : LatestData->DirtyGeometryCollections)
-			{
-				if (auto Proxy = DirtyData.GetProxy())
-				{
-					Proxy->PullFromPhysicsState(DirtyData, SyncTimestamp);
-				}
-			}
-
-			//latest data may be used multiple times during interpolation, so for non interpolated GC we clear it
-			LatestData->DirtyGeometryCollections.Reset();
+			 const int32 SyncTimestamp = LatestData->SolverTimestamp;
 
 			//
 			// @todo(chaos) : Add Dirty Constraints Support

@@ -12,7 +12,9 @@
 #include "Widgets/FixtureType/SDMXFixtureTypeFunctionsEditorFunctionRow.h"
 #include "Widgets/FixtureType/SDMXFixtureTypeFunctionsEditorMatrixRow.h"
 
-#include "EditorStyleSet.h"
+#include "Algo/Copy.h"
+#include "Algo/Find.h"
+#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/Commands/UICommandList.h"
@@ -133,7 +135,7 @@ void SDMXFixtureTypeFunctionsEditor::RebuildList()
 				TArray<TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>> SelectedItems;
 				for (const int32 SelectedFunctionIndex : SelectedFunctionIndices)
 				{
-					const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = ListSource.FindByPredicate([SelectedFunctionIndex](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
+					const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = Algo::FindByPredicate(ListSource, [SelectedFunctionIndex](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
 						{
 							if (Item->GetType() == FDMXFixtureTypeFunctionsEditorItemBase::EItemType::Function)
 							{
@@ -152,7 +154,7 @@ void SDMXFixtureTypeFunctionsEditor::RebuildList()
 
 				if (FixtureTypeSharedData->IsFixtureMatrixSelected())
 				{
-					const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedMatrixPtr = ListSource.FindByPredicate([](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
+					const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedMatrixPtr = Algo::FindByPredicate(ListSource, [](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
 						{
 							return Item->GetType() == FDMXFixtureTypeFunctionsEditorItemBase::EItemType::Matrix;
 						});
@@ -331,10 +333,10 @@ void SDMXFixtureTypeFunctionsEditor::UpdateItemsStatus()
 	}
 	for (const TTuple<FDMXAttributeName, TSet<TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>>>& OccupiedAttribueToItemsPair : OccupiedAttributeToItemsMap)
 	{
-		if (OccupiedAttribueToItemsPair.Value.Num() > 1 && FDMXAttributeName::IsValid(OccupiedAttribueToItemsPair.Key.GetName()))
+		if (OccupiedAttribueToItemsPair.Value.Num() > 1 && OccupiedAttribueToItemsPair.Key.Name != NAME_None)
 		{
 			// Create the warning status
-			FText NewWarningStatus = FText::Format(LOCTEXT("ConflictingAttributesWarning", "Ambiguous Attribute '{0}' used in:"), FText::FromName(OccupiedAttribueToItemsPair.Key.GetName()));
+			FText NewWarningStatus = FText::Format(LOCTEXT("ConflictingAttributesWarning", "Ambiguous Attribute '{0}' used in:"), FText::FromName(OccupiedAttribueToItemsPair.Key.Name));
 
 			for (const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& ConflictingItem : OccupiedAttribueToItemsPair.Value)
 			{
@@ -368,7 +370,7 @@ void SDMXFixtureTypeFunctionsEditor::OnFixtureTypeChanged(const UDMXEntityFixtur
 
 TSharedRef<SHeaderRow> SDMXFixtureTypeFunctionsEditor::GenerateHeaderRow()
 {
-	const float StatusColumnWidth = FMath::Max(FEditorStyle::GetBrush("Icons.Warning")->GetImageSize().X + 6.f, FEditorStyle::GetBrush("Icons.Error")->GetImageSize().X + 6.f);
+	const float StatusColumnWidth = FMath::Max(FAppStyle::Get().GetBrush("Icons.Warning")->GetImageSize().X + 6.f, FAppStyle::Get().GetBrush("Icons.Error")->GetImageSize().X + 6.f);
 
 	HeaderRow = SNew(SHeaderRow);
 	SHeaderRow::FColumn::FArguments ColumnArgs;
@@ -405,15 +407,15 @@ TSharedRef<SHeaderRow> SDMXFixtureTypeFunctionsEditor::GenerateHeaderRow()
 	if (const UDMXEditorSettings* EditorSettings = GetDefault<UDMXEditorSettings>())
 	{
 		const float NameColumnWidth = EditorSettings->FixtureTypeFunctionsEditorSettings.NameColumnWidth;
-		if (NameColumnWidth > 0.f)
+		if (NameColumnWidth > 10.f)
 		{
 			HeaderRow->SetColumnWidth("Name", NameColumnWidth);
 		}
 
 		const float AttributeColumnWidth = EditorSettings->FixtureTypeFunctionsEditorSettings.AttributeColumnWidth;
-		if (AttributeColumnWidth > 0.f)
+		if (AttributeColumnWidth > 10.f)
 		{
-			HeaderRow->SetColumnWidth("Attribute", AttributeColumnWidth);
+			HeaderRow->SetColumnWidth(FDMXFixtureTypeFunctionsEditorCollumnIDs::Attribute, AttributeColumnWidth);
 		}
 	}
 
@@ -427,12 +429,12 @@ void SDMXFixtureTypeFunctionsEditor::SaveHeaderRowSettings()
 	{
 		for (const SHeaderRow::FColumn& Column : HeaderRow->GetColumns())
 		{
-			if (Column.ColumnId == "Name")
+			if (Column.ColumnId == FDMXFixtureTypeFunctionsEditorCollumnIDs::Name)
 			{
 				EditorSettings->FixtureTypeFunctionsEditorSettings.NameColumnWidth = Column.Width.Get();
 
 			}
-			else if (Column.ColumnId == "Attribute")
+			else if (Column.ColumnId == FDMXFixtureTypeFunctionsEditorCollumnIDs::Attribute)
 			{
 				EditorSettings->FixtureTypeFunctionsEditorSettings.AttributeColumnWidth = Column.Width.Get();
 			}
@@ -475,8 +477,33 @@ void SDMXFixtureTypeFunctionsEditor::OnListSelectionChanged(TSharedPtr<FDMXFixtu
 {
 	if (SelectInfo != ESelectInfo::Direct)
 	{
-		const bool bMatrixSelected = IsMatrixSelected();
-		FixtureTypeSharedData->SetFunctionAndMatrixSelection(GetSelectionAsFunctionIndices(), bMatrixSelected);
+		const TArray<int32> SelectedFunctionIndicies = GetSelectionAsFunctionIndices();
+
+		if (SelectedFunctionIndicies.IsEmpty())
+		{
+			// Never clear selection
+			TArray<TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>> ItemsToSelect;
+			Algo::CopyIf(ListSource, ItemsToSelect, [&SelectedFunctionIndicies](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
+				{
+					if (Item->GetType() == FDMXFixtureTypeFunctionsEditorItemBase::EItemType::Function)
+					{
+						const TSharedPtr<FDMXFixtureTypeFunctionsEditorFunctionItem> FunctionItem = StaticCastSharedPtr<FDMXFixtureTypeFunctionsEditorFunctionItem>(Item);
+						return SelectedFunctionIndicies.Contains(FunctionItem->GetFunctionIndex());
+					}
+
+					return false;
+				});
+
+			if (ItemsToSelect.Num() > 0)
+			{
+				ListView->SetItemSelection(ItemsToSelect, true);
+			}
+		}
+		else
+		{
+			const bool bMatrixSelected = IsMatrixSelected();
+			FixtureTypeSharedData->SetFunctionAndMatrixSelection(SelectedFunctionIndicies, bMatrixSelected);
+		}
 	}
 	else
 	{
@@ -490,7 +517,7 @@ void SDMXFixtureTypeFunctionsEditor::OnSharedDataFunctionOrMatrixSelectionChange
 	TArray<TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>> NewSelection;
 	for (int32 SelectedFunctionIndex : SelectedFunctionIndices)
 	{
-		const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = ListSource.FindByPredicate([SelectedFunctionIndex](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
+		const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = Algo::FindByPredicate(ListSource, [SelectedFunctionIndex](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
 			{
 				if (Item->GetType() == FDMXFixtureTypeFunctionsEditorItemBase::EItemType::Function)
 				{
@@ -508,7 +535,7 @@ void SDMXFixtureTypeFunctionsEditor::OnSharedDataFunctionOrMatrixSelectionChange
 
 	if (FixtureTypeSharedData->IsFixtureMatrixSelected())
 	{
-		const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = ListSource.FindByPredicate([](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
+		const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>* SelectedItemPtr = Algo::FindByPredicate(ListSource, [](const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& Item)
 			{
 				return Item->GetType() == FDMXFixtureTypeFunctionsEditorItemBase::EItemType::Matrix;
 			});
@@ -794,7 +821,7 @@ void SDMXFixtureTypeFunctionsEditor::OnRenameItem()
 	if (SelectedFunctionItems.Num() == 1)
 	{
 		const TSharedPtr<FDMXFixtureTypeFunctionsEditorItemBase>& SelectedItem = SelectedFunctionItems[0];
-		const TSharedPtr<SDMXFixtureTypeFunctionsEditorFunctionRow>* SelectedRowPtr = FunctionRows.FindByPredicate([SelectedItem](const TSharedPtr<SDMXFixtureTypeFunctionsEditorFunctionRow>& FunctionRow)
+		const TSharedPtr<SDMXFixtureTypeFunctionsEditorFunctionRow>* SelectedRowPtr = Algo::FindByPredicate(FunctionRows, [SelectedItem](const TSharedPtr<SDMXFixtureTypeFunctionsEditorFunctionRow>& FunctionRow)
 			{
 				return FunctionRow->GetFunctionItem() == SelectedItem;
 			});

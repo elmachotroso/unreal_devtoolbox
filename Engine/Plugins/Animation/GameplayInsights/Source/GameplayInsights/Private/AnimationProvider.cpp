@@ -14,6 +14,7 @@ FAnimationProvider::FAnimationProvider(TraceServices::IAnalysisSession& InSessio
 	, SkeletalMeshPoseTransforms(InSession.GetLinearAllocator(), 256)
 	, SkeletalMeshCurves(InSession.GetLinearAllocator(), 256)
 	, SkeletalMeshParentIndices(InSession.GetLinearAllocator(), 256)
+	, PoseWatchRequiredBones(InSession.GetLinearAllocator(), 256)
 	, bHasAnyData(false)
 {
 	GameplayProvider.OnObjectEndPlay().AddRaw(this, &FAnimationProvider::HandleObjectEndPlay);
@@ -72,6 +73,40 @@ void FAnimationProvider::GetSkeletalMeshComponentSpacePose(const FSkeletalMeshPo
 		for(SourceTransformIndex = StartTransformIndex; SourceTransformIndex < EndTransformIndex; ++SourceTransformIndex, ++TargetTransformIndex)
 		{
 			OutTransforms[TargetTransformIndex] = SkeletalMeshPoseTransforms[SourceTransformIndex];
+		}
+	}
+}
+
+void FAnimationProvider::GetPoseWatchData(const FPoseWatchMessage& InMessage, TArray<FTransform>& BoneTransforms, TArray<uint16>& RequiredBones) const
+{
+	Session.ReadAccessCheck();
+
+	// Pre-alloc arrays
+	BoneTransforms.Empty();
+	BoneTransforms.SetNumUninitialized(InMessage.NumBoneTransforms);
+
+	RequiredBones.Empty();
+	RequiredBones.SetNumUninitialized(InMessage.NumRequiredBones);
+
+	// Write into BoneTransforms
+	{
+		uint64 StartTransformIndex = InMessage.BoneTransformsStartIndex;
+		uint64 EndTransformIndex = InMessage.BoneTransformsStartIndex + InMessage.NumBoneTransforms;
+		int32 TargetTransformIndex = 0;
+		for (uint64 SourceTransformIndex = StartTransformIndex; SourceTransformIndex < EndTransformIndex; ++SourceTransformIndex, ++TargetTransformIndex)
+		{
+			BoneTransforms[TargetTransformIndex] = SkeletalMeshPoseTransforms[SourceTransformIndex];
+		}
+	}
+
+	// Write into RequiredBones
+	{
+		uint64 StartIndex = InMessage.RequiredBonesStartIndex;
+		uint64 EndIndex = InMessage.RequiredBonesStartIndex + InMessage.NumRequiredBones;
+		int32 TargetIndex = 0;
+		for (uint64 SourceIndex = StartIndex; SourceIndex < EndIndex; ++SourceIndex, ++TargetIndex)
+		{
+			RequiredBones[TargetIndex] = PoseWatchRequiredBones[SourceIndex];
 		}
 	}
 }
@@ -148,10 +183,7 @@ void FAnimationProvider::EnumerateAnimGraphTimelines(TFunctionRef<void(uint64 Ob
 	
 	for(auto& IndexMapping : ObjectIdToAnimGraphTimelines)
 	{
-		for (const TSharedRef<TraceServices::TIntervalTimeline<FAnimGraphMessage>>& Timeline : AnimGraphTimelines)
-		{
-			Callback(IndexMapping.Key, AnimGraphTimelines[IndexMapping.Value].Get());
-		}
+		Callback(IndexMapping.Key, AnimGraphTimelines[IndexMapping.Value].Get());
 	}
 }
 
@@ -359,6 +391,23 @@ bool FAnimationProvider::ReadAnimSyncTimeline(uint64 InObjectId, TFunctionRef<vo
 	return false;
 }
 
+bool FAnimationProvider::ReadPoseWatchTimeline(uint64 InObjectId, TFunctionRef<void(const PoseWatchTimeline&)> Callback) const
+{
+	Session.ReadAccessCheck();
+
+	const uint32* IndexPtr = ObjectIdToPoseWatchTimelines.Find(InObjectId);
+	if (IndexPtr != nullptr)
+	{
+		if (*IndexPtr < uint32(PoseWatchTimelines.Num()))
+		{
+			Callback(*PoseWatchTimelines[*IndexPtr]);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 const FSkeletalMeshInfo* FAnimationProvider::FindSkeletalMeshInfo(uint64 InObjectId) const
 {
 	Session.ReadAccessCheck();
@@ -440,7 +489,7 @@ bool FAnimationProvider::HasAnyData() const
 	return bHasAnyData;
 }
 
-void FAnimationProvider::AppendTickRecord(uint64 InAnimInstanceId, double InTime, uint64 InAssetId, int32 InNodeId, float InBlendWeight, float InPlaybackTime, float InRootMotionWeight, float InPlayRate, float InBlendSpacePositionX, float InBlendSpacePositionY, float InBlendSpaceFilteredPositionX, float InBlendSpaceFilteredPositionY, uint16 InFrameCounter, bool bInLooping, bool bInIsBlendSpace)
+void FAnimationProvider::AppendTickRecord(uint64 InAnimInstanceId, double InProfileTime, double InRecordingTime, uint64 InAssetId, int32 InNodeId, float InBlendWeight, float InPlaybackTime, float InRootMotionWeight, float InPlayRate, float InBlendSpacePositionX, float InBlendSpacePositionY, float InBlendSpaceFilteredPositionX, float InBlendSpaceFilteredPositionY, uint16 InFrameCounter, bool bInLooping, bool bInIsBlendSpace)
 {
 	Session.WriteAccessCheck();
 
@@ -467,6 +516,7 @@ void FAnimationProvider::AppendTickRecord(uint64 InAnimInstanceId, double InTime
 	FTickRecordMessage Message;
 	Message.AnimInstanceId = InAnimInstanceId;
 	Message.AssetId = InAssetId;
+	Message.RecordingTime = InRecordingTime;
 	Message.NodeId = InNodeId;
 	Message.BlendWeight = InBlendWeight;
 	Message.PlaybackTime = InPlaybackTime;
@@ -480,9 +530,9 @@ void FAnimationProvider::AppendTickRecord(uint64 InAnimInstanceId, double InTime
 	Message.bLooping = bInLooping;
 	Message.bIsBlendSpace = bInIsBlendSpace;
 
-	TimelineStorage->Timeline->AppendEvent(InTime, Message);
+	TimelineStorage->Timeline->AppendEvent(InProfileTime, Message);
 
-	Session.UpdateDurationSeconds(InTime);
+	Session.UpdateDurationSeconds(InProfileTime);
 }
 
 void FAnimationProvider::AppendSkeletalMesh(uint64 InObjectId, const TArrayView<const int32>& InParentIndices)
@@ -508,7 +558,7 @@ void FAnimationProvider::AppendSkeletalMesh(uint64 InObjectId, const TArrayView<
 	}
 }
 
-void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 InMeshId, double InTime, uint16 InLodIndex, uint16 InFrameCounter, const TArrayView<const FTransform>& InPose, const TArrayView<const FSkeletalMeshNamedCurve>& InCurves)
+void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 InMeshId, double InProfileTime, double InRecordingTime, uint16 InLodIndex, uint16 InFrameCounter, const TArrayView<const FTransform>& InPose, const TArrayView<const FSkeletalMeshNamedCurve>& InCurves)
 {
 	Session.WriteAccessCheck();
 
@@ -533,10 +583,11 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 	if(NumEvents > 0)
 	{
 		// Add end event at current time
-		TimelineStorage->Timeline->EndEvent(NumEvents - 1, InTime);
+		TimelineStorage->Timeline->EndEvent(NumEvents - 1, InProfileTime);
 	}
 
 	FSkeletalMeshPoseMessage Message;
+	Message.RecordingTime = InRecordingTime;
 	Message.ComponentToWorld = InPose[0];
 	Message.TransformStartIndex = SkeletalMeshPoseTransforms.Num();
 	Message.CurveStartIndex = SkeletalMeshCurves.Num();
@@ -548,7 +599,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 	Message.LodIndex = InLodIndex;
 	Message.FrameCounter = InFrameCounter;
 
-	TimelineStorage->Timeline->AppendBeginEvent(InTime, Message);
+	TimelineStorage->Timeline->AppendBeginEvent(InProfileTime, Message);
 
 	for(int32 TransformIndex = 1; TransformIndex < InPose.Num(); ++TransformIndex)
 	{
@@ -561,7 +612,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 		TimelineStorage->AllCurveIds.Add(Curve.Id);
 	}
 
-	Session.UpdateDurationSeconds(InTime);
+	Session.UpdateDurationSeconds(InProfileTime);
 }
 
 // support for deserializing LWC/non LWC Transforms from builds with non-matching LWC setting
@@ -609,7 +660,7 @@ static FTransform ConvertTransform(int TransformSize, const float* TransformFloa
 	return FTransform(Rotation, Translation, Scale3D);
 }
 
-void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 InMeshId, double InTime, uint16 InLodIndex, uint16 InFrameCounter, const TArrayView<const float>& InComponentToWorldRaw, const TArrayView<const float>& InPoseRaw, const TArrayView<const uint32>& InCurveIds, const TArrayView<const float>& InCurveValues)
+void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 InMeshId, double InProfileTime, double InRecordingTime, uint16 InLodIndex, uint16 InFrameCounter, const TArrayView<const float>& InComponentToWorldRaw, const TArrayView<const float>& InPoseRaw, const TArrayView<const uint32>& InCurveIds, const TArrayView<const float>& InCurveValues)
 {
 	Session.WriteAccessCheck();
 
@@ -634,7 +685,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 	if(NumEvents > 0)
 	{
 		// Add end event at current time
-		TimelineStorage->Timeline->EndEvent(NumEvents - 1, InTime);
+		TimelineStorage->Timeline->EndEvent(NumEvents - 1, InProfileTime);
 	}
 
 	const int32 NumCurves = InCurveIds.Num();
@@ -656,6 +707,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 	const int PoseTransformCount = InPoseRaw.Num()/CaptureTransformSize;
 
 	FSkeletalMeshPoseMessage Message;
+	Message.RecordingTime = InRecordingTime;
 	Message.ComponentToWorld = ComponentToWorld;
 	Message.TransformStartIndex = SkeletalMeshPoseTransforms.Num();
 	Message.CurveStartIndex = SkeletalMeshCurves.Num();
@@ -667,7 +719,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 	Message.LodIndex = InLodIndex;
 	Message.FrameCounter = InFrameCounter;
 
-	TimelineStorage->Timeline->AppendBeginEvent(InTime, Message);
+	TimelineStorage->Timeline->AppendBeginEvent(InProfileTime, Message);
 
 	if (CaptureTransformSize == LocalTransformSize)
 	{
@@ -690,7 +742,7 @@ void FAnimationProvider::AppendSkeletalMeshComponent(uint64 InObjectId, uint64 I
 		TimelineStorage->AllCurveIds.Add(InCurveIds[CurveIndex]);
 	}
 
-	Session.UpdateDurationSeconds(InTime);
+	Session.UpdateDurationSeconds(InProfileTime);
 }
 
 void FAnimationProvider::AppendName(uint32 InId, const TCHAR* InName)
@@ -1097,7 +1149,7 @@ void FAnimationProvider::AppendStateMachineState(uint64 InAnimInstanceId, double
 	Session.UpdateDurationSeconds(InTime);
 }
 
-void FAnimationProvider::AppendNotify(uint64 InAnimInstanceId, double InTime, uint64 InAssetId, uint64 InNotifyId, uint32 InNameId, float InNotifyTime, float InNotifyDuration, EAnimNotifyMessageType InNotifyEventType)
+void FAnimationProvider::AppendNotify(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint64 InAssetId, uint64 InNotifyId, uint32 InNameId, float InNotifyTime, float InNotifyDuration, EAnimNotifyMessageType InNotifyEventType)
 {
 	Session.WriteAccessCheck();
 
@@ -1136,6 +1188,7 @@ void FAnimationProvider::AppendNotify(uint64 InAnimInstanceId, double InTime, ui
 		if(InNotifyEventType == EAnimNotifyMessageType::Begin)
 		{
 			FAnimNotifyMessage Message;
+			Message.RecordingTime = InRecordingTime;
 			Message.AnimInstanceId = InAnimInstanceId;
 			Message.AssetId = InAssetId;
 			Message.NotifyId = InNotifyId;
@@ -1169,6 +1222,7 @@ void FAnimationProvider::AppendNotify(uint64 InAnimInstanceId, double InTime, ui
 
 		FAnimNotifyMessage Message;
 		Message.AnimInstanceId = InAnimInstanceId;
+		Message.RecordingTime = InRecordingTime;
 		Message.AssetId = InAssetId;
 		Message.NotifyId = InNotifyId;
 		Message.NameId = InNameId;
@@ -1183,7 +1237,7 @@ void FAnimationProvider::AppendNotify(uint64 InAnimInstanceId, double InTime, ui
 	Session.UpdateDurationSeconds(InTime);
 }
 
-void FAnimationProvider::AppendMontage(uint64 InAnimInstanceId, double InTime, uint64 InMontageId, uint32 InCurrentSectionNameId, uint32 InNextSectionNameId, float InWeight, float InDesiredWeight, float InPosition, uint16 InFrameCounter)
+void FAnimationProvider::AppendMontage(uint64 InAnimInstanceId, double InProfileTime, double InRecoringTime, uint64 InMontageId, uint32 InCurrentSectionNameId, uint32 InNextSectionNameId, float InWeight, float InDesiredWeight, float InPosition, uint16 InFrameCounter)
 {
 	Session.WriteAccessCheck();
 
@@ -1207,6 +1261,7 @@ void FAnimationProvider::AppendMontage(uint64 InAnimInstanceId, double InTime, u
 	TimelineStorage->AllMontageIds.Add(InMontageId);
 
 	FAnimMontageMessage Message;
+	Message.RecordingTime = InRecoringTime;
 	Message.AnimInstanceId = InAnimInstanceId;
 	Message.MontageId = InMontageId;
 	Message.CurrentSectionNameId = InCurrentSectionNameId;
@@ -1216,9 +1271,9 @@ void FAnimationProvider::AppendMontage(uint64 InAnimInstanceId, double InTime, u
 	Message.Position = InPosition;
 	Message.FrameCounter = InFrameCounter;
 
-	TimelineStorage->Timeline->AppendEvent(InTime, Message);
+	TimelineStorage->Timeline->AppendEvent(InProfileTime, Message);
 
-	Session.UpdateDurationSeconds(InTime);
+	Session.UpdateDurationSeconds(InProfileTime);
 }
 
 void FAnimationProvider::AppendSync(uint64 InAnimInstanceId, double InTime, int32 InSourceNodeId, uint32 InGroupNameId)
@@ -1246,6 +1301,71 @@ void FAnimationProvider::AppendSync(uint64 InAnimInstanceId, double InTime, int3
 	Message.GroupNameId = InGroupNameId;
 
 	Timeline->AppendEvent(InTime, Message);
+
+	Session.UpdateDurationSeconds(InTime);
+}
+
+void FAnimationProvider::AppendPoseWatch(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint64 PoseWatchId, const TArrayView<const float>& BoneTransformsRaw, const TArrayView<const uint16>& RequiredBones, const TArrayView<const float>& WorldTransformRaw, const bool bIsEnabled)
+{
+	Session.WriteAccessCheck();
+
+	bHasAnyData = true;
+
+	TSharedPtr<TraceServices::TPointTimeline<FPoseWatchMessage>> Timeline;
+	uint32* IndexPtr = ObjectIdToPoseWatchTimelines.Find(InAnimInstanceId);
+	if (IndexPtr != nullptr)
+	{
+		check(PoseWatchTimelines.IsValidIndex(*IndexPtr));
+		Timeline = PoseWatchTimelines[*IndexPtr];
+	}
+	else
+	{
+		Timeline = MakeShared<TraceServices::TPointTimeline<FPoseWatchMessage>>(Session.GetLinearAllocator());
+		ObjectIdToPoseWatchTimelines.Add(InAnimInstanceId, PoseWatchTimelines.Num());
+		PoseWatchTimelines.Add(Timeline.ToSharedRef());
+	}
+
+	FTransform WorldTransform;
+	FMemory::Memcpy(&WorldTransform, &WorldTransformRaw[0], sizeof(FTransform));
+
+	FPoseWatchMessage Message;
+	Message.RecordingTime = InRecordingTime;
+	Message.AnimInstanceId = InAnimInstanceId;
+	Message.PoseWatchId = PoseWatchId;
+	Message.BoneTransformsStartIndex = SkeletalMeshPoseTransforms.Num();
+	Message.NumBoneTransforms = BoneTransformsRaw.Num() / (sizeof(FTransform) / sizeof(float));
+	Message.WorldTransform = WorldTransform;
+	Message.RequiredBonesStartIndex = PoseWatchRequiredBones.Num();
+	Message.NumRequiredBones = RequiredBones.Num();
+	Message.bIsEnabled = bIsEnabled;
+
+	Timeline->AppendEvent(InTime, Message);
+
+	const int CaptureTransformSize = sizeof(FTransform) / sizeof(float); // TODO
+	const int LocalTransformSize = sizeof(FTransform) / sizeof(float);
+	const int PoseTransformCount = BoneTransformsRaw.Num() / CaptureTransformSize;
+
+	// Dump PoseBoneTransformsRaw into SkeletalMeshPoseTransforms
+	if (CaptureTransformSize == LocalTransformSize)
+	{
+		for (int i = 0; i < PoseTransformCount; i++)
+		{
+			FMemory::Memcpy(&SkeletalMeshPoseTransforms.PushBack(), &BoneTransformsRaw[CaptureTransformSize * i], sizeof(FTransform));
+		}
+	}
+	else
+	{
+		for (int i = 0; i < PoseTransformCount; i++)
+		{
+			SkeletalMeshPoseTransforms.PushBack() = ConvertTransform(CaptureTransformSize, &BoneTransformsRaw[CaptureTransformSize * i]);
+		}
+	}
+
+	// Dump RequiredBones into PoseWatchRequiredBones
+	for (const uint16 RequiredBone : RequiredBones)
+	{
+		PoseWatchRequiredBones.PushBack() = RequiredBone;
+	}
 
 	Session.UpdateDurationSeconds(InTime);
 }

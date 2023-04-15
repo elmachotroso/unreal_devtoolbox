@@ -15,24 +15,12 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"OpenXRHMD/Private",
                     EngineDir + "/Source/ThirdParty/OpenXR/include",
-                    EngineDir + "/Source/Runtime/Renderer/Private",
-                    EngineDir + "/Source/Runtime/OpenGLDrv/Private",
-                    EngineDir + "/Source/Runtime/VulkanRHI/Private",
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 					// ... add other private include paths required here ...
 				}
 				);
 
-            if (Target.Platform == UnrealTargetPlatform.Win64)
-            {
-                PrivateIncludePaths.Add(EngineDir + "/Source/Runtime/VulkanRHI/Private/Windows");
-            }
-			else if (Target.Platform == UnrealTargetPlatform.Android  || Target.Platform == UnrealTargetPlatform.Linux)
-            {
-                PrivateIncludePaths.Add(EngineDir + "/Source/Runtime/VulkanRHI/Private/" + Target.Platform);
-            }
-
 			PublicIncludePathModuleNames.Add("OpenXR");
-			
 
             PublicDependencyModuleNames.Add("HeadMountedDisplay");
 
@@ -45,7 +33,6 @@ namespace UnrealBuildTool.Rules
                     "BuildSettings",
                     "InputCore",
 					"RHI",
-					"RHICore",
 					"RenderCore",
 					"Renderer",
 					"RenderCore",
@@ -62,40 +49,19 @@ namespace UnrealBuildTool.Rules
                 PrivateDependencyModuleNames.Add("UnrealEd");
 			}
 
-            if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
+            if (Target.Platform == UnrealTargetPlatform.Win64)
             {
                 PrivateDependencyModuleNames.AddRange(new string[] {
 					"D3D11RHI",
 					"D3D12RHI"
 				});
 
-                // Required for some private headers needed for the rendering support.
-                PrivateIncludePaths.AddRange(
-                    new string[] {
-                            Path.Combine(EngineDir, @"Source\Runtime\Windows\D3D11RHI\Private"),
-                            Path.Combine(EngineDir, @"Source\Runtime\Windows\D3D11RHI\Private\Windows"),
-							Path.Combine(EngineDir, @"Source\Runtime\D3D12RHI\Private"),
-							Path.Combine(EngineDir, @"Source\Runtime\D3D12RHI\Private\Windows")
-								});
-
-                AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
-                AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
+                AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
             }
-
-			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-			}
 
             if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Android)
             {
-                PrivateDependencyModuleNames.AddRange(new string[] {
-                    "OpenGLDrv",
-                });
+                PrivateDependencyModuleNames.Add("OpenGLDrv");
 
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenGL");
 			}
@@ -103,41 +69,14 @@ namespace UnrealBuildTool.Rules
 			if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Android  
 			    || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
             {
-                PrivateDependencyModuleNames.AddRange(new string[] {
-                    "VulkanRHI"
-                });
+                PrivateDependencyModuleNames.Add("VulkanRHI");
 
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
 			}
 
 			if (Target.Platform == UnrealTargetPlatform.Android)
 			{
-				bool bAndroidOculusEnabled = false;
-				if (Target.ProjectFile != null)
-				{
-					ProjectDescriptor Project = ProjectDescriptor.FromFile(Target.ProjectFile);
-					if (Project.Plugins != null)
-					{
-						foreach (PluginReferenceDescriptor PluginDescriptor in Project.Plugins)
-						{
-							if ((PluginDescriptor.Name == "OculusVR") && PluginDescriptor.IsEnabledForPlatform(Target.Platform))
-							{
-								Log.TraceInformation("OpenXRHMD: Android Oculus plugin enabled, will use OculusMobile_APL.xml");
-								bAndroidOculusEnabled = true;
-								break;
-							}
-						}
-					}
-				}
-
-				if (!bAndroidOculusEnabled)
-				{
-					Log.TraceInformation("OpenXRHMD: Using OculusOpenXRLoader_APL.xml");
-
-					// If the Oculus plugin is not enabled we need to include our own APL
-					string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
-					AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "..", "..", "OculusOpenXRLoader_APL.xml"));
-				}
+				PrivateDependencyModuleNames.Add("OculusOpenXRLoader");
 			}
 		}
 	}

@@ -1,15 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KeyStructCustomization.h"
+
+#include "Containers/Array.h"
 #include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "InputCoreTypes.h"
 #include "InputSettingsDetails.h"
-#include "SKeySelector.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
+#include "Types/SlateEnums.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SBoxPanel.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "FKeyStructCustomization"
 
 /* FKeyStructCustomization static interface
  *****************************************************************************/
+
+void FKeyStructCustomization::SetEnableKeySelector(bool bKeySelectorEnabled)
+{
+	bEnableKeySelector = bKeySelectorEnabled;
+	if (KeySelector)
+	{
+		KeySelector->SetEnabledFromKeyStructCustomization(bEnableKeySelector);
+	}
+}
 
 TSharedRef<IPropertyTypeCustomization> FKeyStructCustomization::MakeInstance( )
 {
@@ -45,6 +69,19 @@ void FKeyStructCustomization::CustomizeHeaderOnlyWithButton(TSharedRef<class IPr
 {
 	PropertyHandle = StructPropertyHandle;
 
+	KeySelector = SNew(SKeySelector)
+		.CurrentKey(this, &FKeyStructCustomization::GetCurrentKey)
+		.OnKeyChanged(this, &FKeyStructCustomization::OnKeyChanged)
+		.Font(StructCustomizationUtils.GetRegularFont())
+		.AllowClear(!StructPropertyHandle->GetProperty()->HasAnyPropertyFlags(CPF_NoClear))
+		.FilterBlueprintBindable(false)
+		.IsEnabled_Lambda([this]() -> bool
+	    {
+		    return bEnableKeySelector;
+	    });
+	
+	KeySelector->SetEnabledFromKeyStructCustomization(bEnableKeySelector);
+	
 	// create struct header
 	HeaderRow.NameContent()
 	.MinDesiredWidth(125.0f)
@@ -52,29 +89,43 @@ void FKeyStructCustomization::CustomizeHeaderOnlyWithButton(TSharedRef<class IPr
 	[
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		//.AutoWidth()
 		[
-			SNew(SKeySelector)
-			.CurrentKey(this, &FKeyStructCustomization::GetCurrentKey)
-			.OnKeyChanged(this, &FKeyStructCustomization::OnKeyChanged)
-			.Font(StructCustomizationUtils.GetRegularFont())
-			.AllowClear(!StructPropertyHandle->GetProperty()->HasAnyPropertyFlags(CPF_NoClear))
-		    .FilterBlueprintBindable(false)
+			KeySelector.ToSharedRef()
 		]
 		+ SHorizontalBox::Slot()
-		.Padding(InputConstants::PropertyPadding)
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		.AutoWidth()
 		[
 			Button
 		]
+		+ SHorizontalBox::Slot()
+		.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
+			SNew(SImage)
+			.Visibility_Lambda([this]() {
+				return bDisplayIcon ? EVisibility::Visible : EVisibility::Hidden;
+			})
+			.Image(FAppStyle::GetBrush("Icons.Info"))
+			.ToolTipText(LOCTEXT("ComboTriggerKeyWarningText", "This Key is NOT part of the Combo. This action will be triggered when the actions in the Combo Actions array are completed."))
+			.ColorAndOpacity(FSlateColor::UseForeground())
+        ]
 	];
 }
 
 TOptional<FKey> FKeyStructCustomization::GetCurrentKey() const
 {
+	if (!bEnableKeySelector)
+	{
+		PropertyHandle->SetValueFromFormattedString(TEXT("None"));
+	}
+	
 	TArray<void*> StructPtrs;
 	PropertyHandle->AccessRawData(StructPtrs);
 

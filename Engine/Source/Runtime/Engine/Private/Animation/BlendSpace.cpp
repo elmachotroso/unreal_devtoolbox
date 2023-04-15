@@ -281,6 +281,14 @@ bool UBlendSpace::UpdateBlendSamples(const FVector& InBlendSpacePosition, float 
 	return bResult;
 }
 
+void UBlendSpace::ForEachImmutableSample(const TFunctionRef<void(const FBlendSample&)> Func) const
+{
+	for (const FBlendSample & Sample : SampleData)
+	{
+		Func(Sample);
+	}
+}
+
 void UBlendSpace::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQueue& NotifyQueue, FAnimAssetTickContext& Context) const
 {
 	check(Instance.BlendSpace.BlendSampleDataCache);
@@ -410,6 +418,12 @@ void UBlendSpace::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQ
 			}
 
 			float& NormalizedCurrentTime = *(Instance.TimeAccumulator);
+			if (Context.ShouldResyncToSyncGroup() && !Instance.BlendSpace.bIsEvaluator)
+			{
+				// Synchronize the asset player time to the other sync group members when (re)joining the group
+				NormalizedCurrentTime = Context.GetAnimationPositionRatio();
+			}
+
 			float NormalizedPreviousTime = NormalizedCurrentTime;
 
 			// @note for sync group vs non sync group
@@ -445,28 +459,31 @@ void UBlendSpace::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQ
 					FBlendSampleData& SampleDataItem = SampleDataList[HighestMarkerSyncWeightIndex];
 					const FBlendSample& Sample = SampleData[SampleDataItem.SampleDataIndex];
 
-					bool bResetMarkerDataOnFollowers = false;
-					if (!Instance.MarkerTickRecord->IsValid(Instance.bLooping))
+					if (Sample.Animation)
 					{
-						SampleDataItem.MarkerTickRecord.Reset();
-						bResetMarkerDataOnFollowers = true;
-						SampleDataItem.Time = NormalizedCurrentTime * Sample.Animation->GetPlayLength();
-					}
-					else if (!SampleDataItem.MarkerTickRecord.IsValid(Instance.bLooping) && Context.MarkerTickContext.GetMarkerSyncStartPosition().IsValid())
-					{
-						Sample.Animation->GetMarkerIndicesForPosition(Context.MarkerTickContext.GetMarkerSyncStartPosition(), true, SampleDataItem.MarkerTickRecord.PreviousMarker, SampleDataItem.MarkerTickRecord.NextMarker, SampleDataItem.Time, Instance.MirrorDataTable);
-					}
+						bool bResetMarkerDataOnFollowers = false;
+						if (!Instance.MarkerTickRecord->IsValid(Instance.bLooping))
+						{
+							SampleDataItem.MarkerTickRecord.Reset();
+							bResetMarkerDataOnFollowers = true;
+							SampleDataItem.Time = NormalizedCurrentTime * Sample.Animation->GetPlayLength();
+						}
+						else if (!SampleDataItem.MarkerTickRecord.IsValid(Instance.bLooping) && Context.MarkerTickContext.GetMarkerSyncStartPosition().IsValid())
+						{
+							Sample.Animation->GetMarkerIndicesForPosition(Context.MarkerTickContext.GetMarkerSyncStartPosition(), true, SampleDataItem.MarkerTickRecord.PreviousMarker, SampleDataItem.MarkerTickRecord.NextMarker, SampleDataItem.Time, Instance.MirrorDataTable);
+						}
 
-					const float NewDeltaTime = Context.GetDeltaTime() * Instance.PlayRateMultiplier * Sample.RateScale * Sample.Animation->RateScale;
-					if (!FMath::IsNearlyZero(NewDeltaTime))
-					{
-						Context.SetLeaderDelta(NewDeltaTime);
-						Sample.Animation->TickByMarkerAsLeader(SampleDataItem.MarkerTickRecord, Context.MarkerTickContext, SampleDataItem.Time, SampleDataItem.PreviousTime, NewDeltaTime, Instance.bLooping, Instance.MirrorDataTable);
-						check(!Instance.bLooping || Context.MarkerTickContext.IsMarkerSyncStartValid());
-						TickFollowerSamples(SampleDataList, HighestMarkerSyncWeightIndex, Context, bResetMarkerDataOnFollowers, Instance.MirrorDataTable);
+						const float NewDeltaTime = Context.GetDeltaTime() * Instance.PlayRateMultiplier * Sample.RateScale * Sample.Animation->RateScale;
+						if (!FMath::IsNearlyZero(NewDeltaTime))
+						{
+							Context.SetLeaderDelta(NewDeltaTime);
+							Sample.Animation->TickByMarkerAsLeader(SampleDataItem.MarkerTickRecord, Context.MarkerTickContext, SampleDataItem.Time, SampleDataItem.PreviousTime, NewDeltaTime, Instance.bLooping, Instance.MirrorDataTable);
+							check(!Instance.bLooping || Context.MarkerTickContext.IsMarkerSyncStartValid());
+							TickFollowerSamples(SampleDataList, HighestMarkerSyncWeightIndex, Context, bResetMarkerDataOnFollowers, Instance.MirrorDataTable);
+						}
+						NormalizedCurrentTime = SampleDataItem.Time / Sample.Animation->GetPlayLength();
+						*Instance.MarkerTickRecord = SampleDataItem.MarkerTickRecord;
 					}
-					NormalizedCurrentTime = SampleDataItem.Time / Sample.Animation->GetPlayLength();
-					*Instance.MarkerTickRecord = SampleDataItem.MarkerTickRecord;
 				}
 				else
 				{
@@ -494,17 +511,20 @@ void UBlendSpace::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQ
 					FBlendSampleData& SampleDataItem = SampleDataList[HighestWeightIndex];
 					const FBlendSample& Sample = SampleData[SampleDataItem.SampleDataIndex];
 
-					if (Context.GetDeltaTime() != 0.f)
+					if (Sample.Animation)
 					{
-						if (!Instance.MarkerTickRecord->IsValid(Instance.bLooping))
+						if (Context.GetDeltaTime() != 0.f)
 						{
-							SampleDataItem.Time = NormalizedCurrentTime * Sample.Animation->GetPlayLength();
-						}
+							if (!Instance.MarkerTickRecord->IsValid(Instance.bLooping))
+							{
+								SampleDataItem.Time = NormalizedCurrentTime * Sample.Animation->GetPlayLength();
+							}
 
-						TickFollowerSamples(SampleDataList, -1, Context, false, Instance.MirrorDataTable);
+							TickFollowerSamples(SampleDataList, -1, Context, false, Instance.MirrorDataTable);
+						}
+						*Instance.MarkerTickRecord = SampleDataItem.MarkerTickRecord;
+						NormalizedCurrentTime = SampleDataItem.Time / Sample.Animation->GetPlayLength();
 					}
-					*Instance.MarkerTickRecord = SampleDataItem.MarkerTickRecord;
-					NormalizedCurrentTime = SampleDataItem.Time / Sample.Animation->GetPlayLength();
 				}
 				else
 				{
@@ -520,13 +540,17 @@ void UBlendSpace::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQ
 			{
 				FAnimNotifyContext NotifyContext(Instance);
 				float ClampedNormalizedPreviousTime = FMath::Clamp<float>(NormalizedPreviousTime, 0.f, 1.f);
-				const float ClampedNormalizedCurrentTime = FMath::Clamp<float>(NormalizedCurrentTime, 0.f, 1.f);
+				float ClampedNormalizedCurrentTime = FMath::Clamp<float>(NormalizedCurrentTime, 0.f, 1.f);
 
 				if (Instance.BlendSpace.bIsEvaluator && !Instance.BlendSpace.bTeleportToTime)
 				{
 					// When running under an evaluator the time is being set explicitly and we want to add on the deltas.
-					// Note that this could take ClampedNormalizedPreviousTime out of the 0-1 range
 					ClampedNormalizedPreviousTime -= ExtraNormalizedDeltaTime;
+					ClampedNormalizedPreviousTime = ClampedNormalizedPreviousTime < 0.0f ? ClampedNormalizedPreviousTime + 1.0f : ClampedNormalizedPreviousTime;
+
+					// Also when under an evaluator, since the time is explicitly set before the update is called, the desired 
+					// current time is actually what we recorded before advancing time (effectively ignoring whatever was added).
+					ClampedNormalizedCurrentTime = FMath::Clamp<float>(NormalizedPreviousTime, 0.f, 1.f);
 				}
 
 				const bool bGenerateNotifies = (NormalizedCurrentTime != NormalizedPreviousTime) && NotifyTriggerMode != ENotifyTriggerMode::None;
@@ -721,7 +745,10 @@ TSharedPtr<IInterpolationIndexProvider::FPerBoneInterpolationData> UBlendSpace::
 	return MakeShareable<FSortedPerBoneInterpolationData>(Data);
 }
 
-int32 UBlendSpace::GetPerBoneInterpolationIndex(const FCompactPoseBoneIndex& InCompactPoseBoneIndex, const FBoneContainer& RequiredBones, const IInterpolationIndexProvider::FPerBoneInterpolationData* Data) const
+int32 UBlendSpace::GetPerBoneInterpolationIndex(
+	const FCompactPoseBoneIndex&                                  InCompactPoseBoneIndex, 
+	const FBoneContainer&                                         RequiredBones, 
+	const IInterpolationIndexProvider::FPerBoneInterpolationData* Data) const
 {
 	if (!ensure(Data))
 	{
@@ -734,18 +761,17 @@ int32 UBlendSpace::GetPerBoneInterpolationIndex(const FCompactPoseBoneIndex& InC
 		const FPerBoneInterpolation& PerBoneInterpolation = SortedData[Iter].PerBoneBlend;
 		int32 OriginalIndex = SortedData[Iter].OriginalIndex;
 		const FBoneReference& SmoothedBone = PerBoneInterpolation.BoneReference;
-		if (SmoothedBone.IsValidToEvaluate(RequiredBones))
+		FCompactPoseBoneIndex SmoothedBoneCompactPoseIndex = 
+			RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(SmoothedBone.GetSkeletonPoseIndex(RequiredBones));
+		if (SmoothedBoneCompactPoseIndex == InCompactPoseBoneIndex)
 		{
-			FCompactPoseBoneIndex SmoothedBonePoseIndex = RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(SmoothedBone.GetSkeletonPoseIndex(RequiredBones));
-			if (SmoothedBonePoseIndex == InCompactPoseBoneIndex)
-			{
-				return OriginalIndex;
-			}
-			// Returns true if BoneIndex is a child of SmoothedBonePoseIndex. Searches up from BoneIndex
-			if (RequiredBones.BoneIsChildOf(InCompactPoseBoneIndex, SmoothedBonePoseIndex))
-			{
-				return OriginalIndex;
-			}
+			return OriginalIndex;
+		}
+		// BoneIsChildOf returns true if InCompactPoseBoneIndex is a child of SmoothedBoneCompactPoseIndex. 
+		if (SmoothedBoneCompactPoseIndex != INDEX_NONE && 
+			RequiredBones.BoneIsChildOf(InCompactPoseBoneIndex, SmoothedBoneCompactPoseIndex))
+		{
+			return OriginalIndex;
 		}
 	}
 	return INDEX_NONE;
@@ -888,18 +914,32 @@ void UBlendSpace::GetAnimationPose_Internal(TArray<FBlendSampleData>& BlendSampl
 
 	if (PerBoneBlend.Num() > 0)
 	{
-		if (bRotationBlendInMeshSpace)
+		bool bValidAdditive = IsValidAdditive();
+
+		if (bAllowMeshSpaceBlending && !bContainsRotationOffsetMeshSpaceSamples)
 		{
-			FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(ChildrenPosesView, ChildrenCurves, ChildrenAttributes, this, BlendSampleDataCache, OutAnimationPoseData);
+			// Why blend in mesh space when there are per-bone smoothing settings? Because then we
+			// can blend between two aim poses (for example), with the hands moving faster towards
+			// the target than the spine. This results in nice organic looking movement, rather than
+			// everything moving at the same rate. However, note that if the samples contain mesh-space
+			// rotations then the regular blend will already happen in mesh space automatically.
+			FAnimationRuntime::BlendPosesTogetherPerBoneInMeshSpace(
+				ChildrenPosesView, ChildrenCurves, ChildrenAttributes,
+				this, BlendSampleDataCache, OutAnimationPoseData);
 		}
 		else
 		{
-			FAnimationRuntime::BlendPosesTogetherPerBone(ChildrenPosesView, ChildrenCurves, ChildrenAttributes, this, BlendSampleDataCache, OutAnimationPoseData);
+			FAnimationRuntime::BlendPosesTogetherPerBone(
+				ChildrenPosesView, ChildrenCurves, ChildrenAttributes,
+				this, BlendSampleDataCache, OutAnimationPoseData);
 		}
 	}
 	else
 	{
-		FAnimationRuntime::BlendPosesTogether(ChildrenPosesView, ChildrenCurves, ChildrenAttributes, ChildrenWeights, OutAnimationPoseData);
+		// We could allow mesh space blending here, when there are no per-bone smoothing settings. However, it's
+		// unlikely that it would actually provide a benefit, but is a lot more expensive.
+		FAnimationRuntime::BlendPosesTogether(
+			ChildrenPosesView, ChildrenCurves, ChildrenAttributes, ChildrenWeights, OutAnimationPoseData);
 	}
 
 	// Once all the accumulation and blending has been done, normalize rotations.
@@ -1050,44 +1090,29 @@ bool UBlendSpace::GetSamplesFromBlendInput(
 	return (OutSampleDataList.Num() != 0);
 }
 
-void UBlendSpace::InitializeFilter(FBlendFilter* Filter) const
+void UBlendSpace::InitializeFilter(FBlendFilter* Filter, int NumDimensions) const
 {
 	if (Filter)
 	{
-		Filter->FilterPerAxis.Empty();
-
-		int32 NumActiveAxes = 0;
-		for (int32 FilterIndex = 0; FilterIndex != 3; ++FilterIndex)
+		Filter->FilterPerAxis.SetNum(NumDimensions);
+		for (int32 FilterIndex = 0; FilterIndex != NumDimensions; ++FilterIndex)
 		{
-			if(InterpolationParam[FilterIndex].InterpolationTime > 0.0f)
-			{
-				NumActiveAxes = FMath::Max(NumActiveAxes, FilterIndex + 1);
-			}
-		}
-
-		if(NumActiveAxes > 0)
-		{
-			Filter->FilterPerAxis.SetNum(NumActiveAxes);
-			
-			for (int32 FilterIndex = 0; FilterIndex < Filter->FilterPerAxis.Num(); ++FilterIndex)
-			{
-				Filter->FilterPerAxis[FilterIndex].Initialize(InterpolationParam[FilterIndex].InterpolationTime,
-															  InterpolationParam[FilterIndex].InterpolationType,
-															  InterpolationParam[FilterIndex].DampingRatio,
-															  BlendParameters[FilterIndex].Min,
-															  BlendParameters[FilterIndex].Max,
-															  InterpolationParam[FilterIndex].MaxSpeed,
-															  !BlendParameters[FilterIndex].bWrapInput);
-			}
+			Filter->FilterPerAxis[FilterIndex].Initialize(InterpolationParam[FilterIndex].InterpolationTime,
+														  InterpolationParam[FilterIndex].InterpolationType,
+														  InterpolationParam[FilterIndex].DampingRatio,
+														  BlendParameters[FilterIndex].Min,
+														  BlendParameters[FilterIndex].Max,
+														  InterpolationParam[FilterIndex].MaxSpeed,
+														  !BlendParameters[FilterIndex].bWrapInput);
 		}
 	}
 }
 
 void UBlendSpace::UpdateFilterParams(FBlendFilter* Filter) const
 {
-	if (Filter && Filter->IsValid())
+	if (Filter)
 	{
-		for (int32 FilterIndex = 0; FilterIndex < Filter->FilterPerAxis.Num(); ++FilterIndex)
+		for (int32 FilterIndex = 0; FilterIndex != Filter->FilterPerAxis.Num(); ++FilterIndex)
 		{
 			Filter->FilterPerAxis[FilterIndex].SetParams(InterpolationParam[FilterIndex].DampingRatio,
 			                                             BlendParameters[FilterIndex].Min,
@@ -1224,15 +1249,7 @@ void UBlendSpace::ValidateSampleData()
 		}
 	}
 
-	// Set the space for blending
-	if (IsAsset())
-	{
-		bRotationBlendInMeshSpace = ContainsMatchingSamples(AAT_RotationOffsetMeshSpace);
-	}
-	else
-	{
-		bRotationBlendInMeshSpace = IsValidAdditive();
-	}
+	bContainsRotationOffsetMeshSpaceSamples = ContainsMatchingSamples(AAT_RotationOffsetMeshSpace);
 
 	SampleIndexWithMarkers = bAllMarkerPatternsMatch ? SampleWithMarkers : INDEX_NONE;
 
@@ -1626,7 +1643,7 @@ const FEditorElement* UBlendSpace::GetGridSampleInternal(int32 Index) const
 // easing in/out, so aim for twice this speed (i.e. smooth over half the time)
 static float SmoothingTimeFromSpeed(float Speed)
 {
-	return 1.0f / (EULERS_NUMBER * Speed);
+	return 1.0f / (UE_EULERS_NUMBER * Speed);
 }
 
 static void SmoothWeight(float& Output, float& OutputRate, float Input, float InputRate, float Target, float DeltaTime, float Speed, bool bUseEaseInOut)
@@ -1788,31 +1805,34 @@ FVector UBlendSpace::FilterInput(FBlendFilter* Filter, const FVector& BlendInput
 	if(Filter)
 	{
 #if WITH_EDITOR
-		// Check
-		for (int32 AxisIndex = 0; AxisIndex < Filter->FilterPerAxis.Num(); ++AxisIndex)
+		if (Filter->FilterPerAxis.IsEmpty())
 		{
-			if (Filter->FilterPerAxis[AxisIndex].NeedsUpdate(InterpolationParam[AxisIndex].InterpolationType,
-															 InterpolationParam[AxisIndex].InterpolationTime))
+			InitializeFilter(Filter);
+		}
+		else
+		{
+			for (int32 AxisIndex = 0; AxisIndex < Filter->FilterPerAxis.Num(); ++AxisIndex)
 			{
-				InitializeFilter(Filter);
-				break;
+				if (Filter->FilterPerAxis[AxisIndex].NeedsUpdate(InterpolationParam[AxisIndex].InterpolationType,
+																 InterpolationParam[AxisIndex].InterpolationTime))
+				{
+					InitializeFilter(Filter);
+					break;
+				}
 			}
 		}
 		// Note that if we expose the damping ratio etc as pins, this should be called outside of the editor too.
 		UpdateFilterParams(Filter);
 #endif
-		if(Filter->IsValid())
+		for (int32 AxisIndex = 0; AxisIndex < Filter->FilterPerAxis.Num(); ++AxisIndex)
 		{
-			for (int32 AxisIndex = 0; AxisIndex < Filter->FilterPerAxis.Num(); ++AxisIndex)
+			if (BlendParameters[AxisIndex].bWrapInput)
 			{
-				if (BlendParameters[AxisIndex].bWrapInput)
-				{
-					Filter->FilterPerAxis[AxisIndex].WrapToValue(
-						BlendInput[AxisIndex], BlendParameters[AxisIndex].Max - BlendParameters[AxisIndex].Min);
-				}
-				FilteredBlendInput[AxisIndex] = Filter->FilterPerAxis[AxisIndex].UpdateAndGetFilteredData(
-					BlendInput[AxisIndex], DeltaTime);
+				Filter->FilterPerAxis[AxisIndex].WrapToValue(
+					BlendInput[AxisIndex], BlendParameters[AxisIndex].Max - BlendParameters[AxisIndex].Min);
 			}
+			FilteredBlendInput[AxisIndex] = Filter->FilterPerAxis[AxisIndex].UpdateAndGetFilteredData(
+				BlendInput[AxisIndex], DeltaTime);
 		}
 	}
 	return FilteredBlendInput;
@@ -1838,9 +1858,9 @@ bool UBlendSpace::ContainsMatchingSamples(EAdditiveAnimationType AdditiveType) c
 bool UBlendSpace::IsSameSamplePoint(const FVector& SamplePointA, const FVector& SamplePointB) const
 {
 #if 1
-	return FMath::IsNearlyEqual(SamplePointA.X, SamplePointB.X, (FVector::FReal)KINDA_SMALL_NUMBER)
-		&& FMath::IsNearlyEqual(SamplePointA.Y, SamplePointB.Y, (FVector::FReal)KINDA_SMALL_NUMBER)
-		&& FMath::IsNearlyEqual(SamplePointA.Z, SamplePointB.Z, (FVector::FReal)KINDA_SMALL_NUMBER);
+	return FMath::IsNearlyEqual(SamplePointA.X, SamplePointB.X, (FVector::FReal)UE_KINDA_SMALL_NUMBER)
+		&& FMath::IsNearlyEqual(SamplePointA.Y, SamplePointB.Y, (FVector::FReal)UE_KINDA_SMALL_NUMBER)
+		&& FMath::IsNearlyEqual(SamplePointA.Z, SamplePointB.Z, (FVector::FReal)UE_KINDA_SMALL_NUMBER);
 #else
 	if (DimensionIndices.Num() == 0 || DimensionIndices.Num() > 3)
 	{
@@ -1901,7 +1921,17 @@ void UBlendSpace::UpdateBlendSpacesUsingAnimSequence(UAnimSequenceBase* Sequence
 
 TArray<FName>* UBlendSpace::GetUniqueMarkerNames()
 {
-	return (SampleIndexWithMarkers != INDEX_NONE && SampleData.Num() > 0) ? SampleData[SampleIndexWithMarkers].Animation->GetUniqueMarkerNames() : nullptr;
+	if (SampleIndexWithMarkers != INDEX_NONE
+		&& SampleData.Num() > SampleIndexWithMarkers)
+	{
+		FBlendSample& BlendSample = SampleData[SampleIndexWithMarkers];
+		if (BlendSample.Animation != nullptr)
+		{
+			return BlendSample.Animation->GetUniqueMarkerNames();
+		}
+	}
+
+	return nullptr;
 }
 
 void UBlendSpace::GetRawSamplesFromBlendInput(const FVector& BlendInput, TArray<FGridBlendSample, TInlineAllocator<4> >& OutBlendSamples) const
@@ -2520,7 +2550,7 @@ void FBlendSpaceData::GetSamples2D(
 #endif
 		const FBlendSpaceTriangle* Triangle = &Triangles[InOutTriangleIndex];
 		// Look for the edge which has the target point most outside it
-		float LargestDistance = KINDA_SMALL_NUMBER;
+		float LargestDistance = UE_KINDA_SMALL_NUMBER;
 		int32 LargestEdgeIndex = -1;
 		for (int32 VertexIndex = 0; VertexIndex != FBlendSpaceTriangle::NUM_VERTICES; ++VertexIndex)
 		{

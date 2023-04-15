@@ -9,6 +9,8 @@
 
 #include "EditorFramework/AssetImportData.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CurveTable)
+
 DEFINE_LOG_CATEGORY(LogCurveTable);
 
 DECLARE_CYCLE_STAT(TEXT("CurveTableRowHandle Eval"),STAT_CurveTableRowHandleEval,STATGROUP_Engine);
@@ -119,7 +121,11 @@ void UCurveTable::Serialize(FArchive& Ar)
 		}
 
 		bool bCouldConvertToSimpleCurves = bUpgradingCurveTable;
-		RowMap.Reserve(NumRows);
+
+		// copy any previous curves to free after replacing.
+		TMap<FName, FRealCurve*> TempMap(RowMap);
+
+		RowMap.Empty(NumRows);
 		for (int32 RowIdx = 0; RowIdx < NumRows; RowIdx++)
 		{
 			// Load row name
@@ -184,6 +190,11 @@ void UCurveTable::Serialize(FArchive& Ar)
 				Curve.Value = NewCurve;
 			}
 		}
+
+		for (TPair<FName, FRealCurve*>& Curve : TempMap)
+		{
+			delete Curve.Value;
+		}
 	}
 	else if (Ar.IsSaving())
 	{
@@ -215,7 +226,7 @@ void UCurveTable::Serialize(FArchive& Ar)
 				FRichCurve* Curve = (FRichCurve*)RowIt.Value();
 				if (Ar.IsCooking() && Ar.IsPersistent() && !Ar.IsObjectReferenceCollector() && !Ar.ShouldSkipBulkData() && CVar_CurveTable_RemoveRedundantKeys > 0)
 				{
-					Curve->RemoveRedundantKeys(0.f);
+					Curve->RemoveRedundantAutoTangentKeys(0.f);
 				}
 				FRichCurve::StaticStruct()->SerializeTaggedProperties(Ar, (uint8*)Curve, FRichCurve::StaticStruct(), nullptr);
 			}
@@ -578,6 +589,30 @@ FSimpleCurve& UCurveTable::AddSimpleCurve(FName RowName)
 	return *Result;
 }
 
+void UCurveTable::RenameRow(FName& CurveName, FName& NewCurveName)
+{
+	if (CurveName != NewCurveName && !RowMap.Contains(NewCurveName))
+	{
+		if (FRealCurve** Curve = RowMap.Find(CurveName))
+		{
+			RowMap.Add(NewCurveName, *Curve);
+			RowMap.Remove(CurveName);
+		}
+	}
+}
+
+void UCurveTable::DeleteRow(FName& CurveName)
+{
+	if (RowMap.Contains(CurveName))
+	{
+		FRealCurve** Curve = RowMap.Find(CurveName);
+		RowMap.Remove(CurveName);
+		if (Curve != nullptr && *Curve != nullptr)
+		{
+			delete *Curve;
+		}
+	}	
+}
 
 /** */
 void GetCurveValues(const TArray<const TCHAR*>& Cells, TArray<float>& Values)
@@ -976,6 +1011,7 @@ void UCurveTable::MakeTransactional()
 void UCurveTable::OnCurveChanged(const TArray<FRichCurveEditInfo>& ChangedCurveEditInfos)
 {
 	CURVETABLE_CHANGE_SCOPE();
+	OnCurveTableChanged().Broadcast();
 }
 
 bool UCurveTable::IsValidCurve(FRichCurveEditInfo CurveInfo)
@@ -1090,3 +1126,4 @@ void FCurveTableRowHandle::PostSerialize(const FArchive& Ar)
 		Ar.MarkSearchableName(CurveTable, RowName);
 	}
 }
+

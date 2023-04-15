@@ -12,6 +12,7 @@
 #include "Async/Async.h"
 #include "Templates/SharedPointer.h"
 #include "HAL/ThreadSafeBool.h"
+#include "LocalFileNetworkReplayStreaming.generated.h"
 
 class FNetworkReplayVersion;
 class FLocalFileNetworkReplayStreamer;
@@ -143,6 +144,13 @@ public:
 	virtual void	Seek(int64 InPos) override;
 	virtual bool	AtEnd() override;
 
+	void Reset()
+	{
+		Buffer.Reset();
+		Pos = 0;
+		bAtEndOfReplay = false;
+	}
+
 	TArray<uint8>	Buffer;
 	int32			Pos;
 	bool			bAtEndOfReplay;
@@ -224,11 +232,34 @@ namespace EQueuedLocalFileRequestType
 	}
 };
 
+UENUM()
+enum class ELocalFileReplayResult : uint32
+{
+	Success,
+	InvalidReplayInfo,
+	StreamChunkIndexMismatch,
+	DecompressBuffer,
+	CompressionNotSupported,
+	DecryptBuffer,
+	EncryptionNotSupported,
+	Unknown,
+};
+
+DECLARE_NETRESULT_ENUM(ELocalFileReplayResult);
+
+LOCALFILENETWORKREPLAYSTREAMING_API const TCHAR* LexToString(ELocalFileReplayResult Enum);
+
 class FCachedFileRequest
 {
 public:
 	FCachedFileRequest(const TArray<uint8>& InRequestData, const double InLastAccessTime) 
 		: RequestData(InRequestData)
+		, LastAccessTime(InLastAccessTime)
+	{
+	}
+
+	FCachedFileRequest(TArray<uint8>&& InRequestData, const double InLastAccessTime)
+		: RequestData(MoveTemp(InRequestData))
 		, LastAccessTime(InLastAccessTime)
 	{
 	}
@@ -376,8 +407,12 @@ public:
 	DelegateResultType DelegateResult;
 	FLocalFileReplayInfo ReplayInfo;
 	TArray<uint8> DataBuffer;
+
+	UE_DEPRECATED(5.1, "No longer used")
 	bool bAsyncError = false;
-};
+
+	ELocalFileReplayResult AsyncError = ELocalFileReplayResult::Success;
+};	
 
 template <typename DelegateResultType>
 class TGenericCachedLocalFileRequest : public TGenericQueuedLocalFileRequest<TLocalFileRequestCommonData<DelegateResultType>>
@@ -409,6 +444,8 @@ protected:
 /** Local file streamer that supports playback/recording to a single file on disk */
 class LOCALFILENETWORKREPLAYSTREAMING_API FLocalFileNetworkReplayStreamer : public INetworkReplayStreamer, public TSharedFromThis<FLocalFileNetworkReplayStreamer>
 {
+	using FLocalFileReplayResult = UE::Net::TNetResult<ELocalFileReplayResult>;
+
 public:
 	FLocalFileNetworkReplayStreamer();
 	FLocalFileNetworkReplayStreamer(const FString& InDemoSavePath);
@@ -435,7 +472,6 @@ public:
 	virtual void DeleteFinishedStream( const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate ) override;
 	virtual void EnumerateStreams( const FNetworkReplayVersion& InReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate ) override;
 	virtual void EnumerateRecentStreams( const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate ) override;
-	virtual ENetworkReplayError::Type GetLastError() const override;
 	virtual void AddUserToReplay(const FString& UserString) override;
 	virtual void AddEvent(const uint32 TimeInMS, const FString& Group, const FString& Meta, const TArray<uint8>& Data) override;
 	virtual void AddOrUpdateEvent(const FString& Name, const uint32 TimeInMS, const FString& Group, const FString& Meta, const TArray<uint8>& Data) override;
@@ -456,6 +492,7 @@ public:
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const FRenameReplayCallback& Delegate) override;
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const int32 UserIndex, const FRenameReplayCallback& Delegate) override;
 	virtual FString	GetReplayID() const override { return CurrentStreamName; }
+	virtual EReplayStreamerState GetReplayStreamerState() const override { return StreamerState; }
 	virtual void SetTimeBufferHintSeconds(const float InTimeBufferHintSeconds) override {}
 	virtual void RefreshHeader() override;
 	virtual void DownloadHeader(const FDownloadHeaderCallback& Delegate) override;
@@ -463,9 +500,6 @@ public:
 	virtual bool IsCheckpointTypeSupported(EReplayCheckpointType CheckpointType) const override;
 
 	virtual bool SupportsCompression() const { return false; }
-
-	UE_DEPRECATED(4.25, "No longer used")
-	virtual int32 GetDecompressedSize(FArchive& InCompressed) const;
 
 	virtual bool DecompressBuffer(const TArray<uint8>& InCompressed, TArray<uint8>& OutBuffer) const { return false; }
 	virtual bool CompressBuffer(const TArray<uint8>& InBuffer, TArray<uint8>& OutCompressed) const { return false; }
@@ -575,7 +609,15 @@ protected:
 	bool IsFileRequestPendingOrInProgress(const EQueuedLocalFileRequestType::Type RequestType) const;
 	void CancelStreamingRequests();
 
-	void SetLastError(const ENetworkReplayError::Type InLastError);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.1, "No longer used")
+	void SetLastError(const ENetworkReplayError::Type InLastError) 
+	{ 
+		SetLastError(ELocalFileReplayResult::Unknown); 
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	void SetLastError(FLocalFileReplayResult&& Result);
 
 	void ConditionallyFlushStream();
 	void ConditionallyLoadNextChunk();
@@ -597,15 +639,7 @@ protected:
 	}
 
 	bool ReadReplayInfo(const FString& StreamName, FLocalFileReplayInfo& OutReplayInfo, EReadReplayInfoFlags Flags) const;
-
-	UE_DEPRECATED(4.25, "Now takes a set of read flags")
-	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo) const;
-
 	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, EReadReplayInfoFlags Flags) const;
-
-	UE_DEPRECATED(4.25, "Now takes a set of read flags")
-	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, struct FLocalFileSerializationInfo& SerializationInfo) const;
-
 	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, struct FLocalFileSerializationInfo& SerializationInfo, EReadReplayInfoFlags Flags) const;
 
 	bool WriteReplayInfo(const FString& StreamName, const FLocalFileReplayInfo& ReplayInfo);
@@ -625,6 +659,8 @@ protected:
 	virtual TSharedPtr<FArchive> CreateLocalFileWriterForOverwrite(const FString& InFilename) const;
 
 	FString GetDemoPath() const;
+	// Must be relative to the base demo path
+	virtual TArrayView<const FString> GetAdditionalRelativeDemoPaths() const { return {}; }
 	FString GetDemoFullFilename(const FString& FileName) const;
 
 	// Returns a name formatted as "demoX", where X is between 1 and MAX_DEMOS, inclusive.
@@ -641,18 +677,8 @@ protected:
 	/* Handle to the archive that will read/write checkpoint files */
 	FLocalFileStreamFArchive CheckpointAr;
 
-	/** EStreamerState - Overall state of the streamer */
-	enum class EStreamerState
-	{
-		Idle,					// The streamer is idle. Either we haven't started streaming yet, or we are done
-		Recording,				// We are in the process of recording a replay to disk
-		Playback,				// We are in the process of playing a replay from disk
-	};
-
 	/** Overall state of the streamer */
-	EStreamerState StreamerState;
-
-	ENetworkReplayError::Type StreamerLastError;
+	EReplayStreamerState StreamerState;
 
 	/** Remember the name of the current stream, if any. */
 	FString CurrentStreamName;
@@ -660,6 +686,7 @@ protected:
 	FString DemoSavePath;
 
 	void AddRequestToCache(int32 ChunkIndex, const TArray<uint8>& RequestData);
+	void AddRequestToCache(int32 ChunkIndex, TArray<uint8>&& RequestData);
 	void CleanupRequestCache();
 
 	bool bCacheFileReadsInMemory;
@@ -668,10 +695,12 @@ protected:
 
 	void UpdateCurrentReplayInfo(FLocalFileReplayInfo& ReplayInfo);
 
+	virtual int32 GetDecompressedSizeBackCompat(FArchive& InCompressed) const;
+
 public:
 	static const FString& GetDefaultDemoSavePath();
 	static FString GetDemoFullFilename(const FString& DemoPath, const FString& FileName);
-	static bool CleanUpOldReplays(const FString& DemoPath = GetDefaultDemoSavePath());
+	static bool CleanUpOldReplays(const FString& DemoPath = GetDefaultDemoSavePath(), TArrayView<const FString> AdditionalRelativeDemoPaths = {});
 	static bool GetDemoFreeStorageSpace(uint64& DiskFreeSpace, const FString& DemoPath);
 
 

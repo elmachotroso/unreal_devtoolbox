@@ -12,6 +12,7 @@
 #include "BlueprintNodeSpawner.h"
 #include "EditorCategoryUtils.h"
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "Styling/AppStyle.h"
 #include "GameFramework/InputSettings.h"
 #include "Editor.h"								// for FEditorDelegates::OnEnableGestureRecognizerChanged
 
@@ -196,7 +197,7 @@ FText UK2Node_InputKey::GetTooltipText() const
 
 FSlateIcon UK2Node_InputKey::GetIconAndTint(FLinearColor& OutColor) const
 {
-	return FSlateIcon("EditorStyle", EKeys::GetMenuCategoryPaletteIcon(InputKey.GetMenuCategory()));
+	return FSlateIcon(FAppStyle::GetAppStyleSetName(), EKeys::GetMenuCategoryPaletteIcon(InputKey.GetMenuCategory()));
 }
 
 bool UK2Node_InputKey::IsCompatibleWithGraph(UEdGraph const* Graph) const

@@ -75,11 +75,14 @@ void FControlRigBlueprintUtils::ForAllRigUnits(TFunction<void(UScriptStruct*)> I
 	// Run over all unit types
 	for(TObjectIterator<UStruct> StructIt; StructIt; ++StructIt)
 	{
-		if(StructIt->IsChildOf(FRigUnit::StaticStruct()) && !StructIt->HasMetaData(FRigVMStruct::AbstractMetaName))
+		if (*StructIt)
 		{
-			if (UScriptStruct* ScriptStruct = Cast<UScriptStruct>(*StructIt))
+			if(StructIt->IsChildOf(FRigUnit::StaticStruct()) && !StructIt->HasMetaData(FRigVMStruct::AbstractMetaName))
 			{
-				InFunction(ScriptStruct);
+				if (UScriptStruct* ScriptStruct = Cast<UScriptStruct>(*StructIt))
+				{
+					InFunction(ScriptStruct);
+				}
 			}
 		}
 	}
@@ -98,7 +101,7 @@ void FControlRigBlueprintUtils::HandleRefreshAllNodes(UBlueprint* InBlueprint)
 
 	if(UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(InBlueprint))
 	{
-		if (RigBlueprint->GetModel() == nullptr)
+		if (RigBlueprint->GetDefaultModel() == nullptr)
 		{
 			return;
 		}

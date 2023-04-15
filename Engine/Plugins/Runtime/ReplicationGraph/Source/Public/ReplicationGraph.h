@@ -78,6 +78,8 @@ public:
 
 	UReplicationGraphNode();
 
+	virtual void Serialize(FArchive& Ar) override;
+
 	/** Called when a network actor is spawned or an actor changes replication status */
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& Actor ) PURE_VIRTUAL(UReplicationGraphNode::NotifyAddNetworkActor, );
 	
@@ -122,6 +124,18 @@ public:
 		return NewNode;
 	}
 
+	/** Allocates and initializes ChildNode of a specific type T with a given base name. This is what you will want to call in your FCreateChildNodeFuncs.  */
+	template< class T >
+	T* CreateChildNode(FName NodeBaseName)
+	{
+		FName UniqueNodeName = MakeUniqueObjectName(this, T::StaticClass(), NodeBaseName);
+		T* NewNode = NewObject<T>(this, UniqueNodeName);
+		NewNode->Initialize(GraphGlobals);
+		AllChildNodes.Add(NewNode);
+		return NewNode;
+	}
+
+
 	/** Node removal behavior */
 	enum class NodeOrdering
 	{
@@ -156,7 +170,7 @@ protected:
 // -----------------------------------
 
 
-struct FStreamingLevelActorListCollection
+struct REPLICATIONGRAPH_API FStreamingLevelActorListCollection
 {
 	void AddActor(const FNewReplicatedActorInfo& ActorInfo);
 	bool RemoveActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound, UReplicationGraphNode* Outer);
@@ -185,9 +199,14 @@ struct FStreamingLevelActorListCollection
 	static const int32 NumInlineAllocations = 4;
 	TArray<FStreamingLevelActors, TInlineAllocator<NumInlineAllocations>> StreamingLevelLists;
 
-	void CountBytes(FArchive& Ar)
+	void CountBytes(FArchive& Ar) const
 	{
 		StreamingLevelLists.CountBytes(Ar);
+
+		for (const FStreamingLevelActors& List : StreamingLevelLists)
+		{
+			List.ReplicationActorList.CountBytes(Ar);
+		}
 	}
 };
 
@@ -200,6 +219,7 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_ActorList : public UReplication
 	GENERATED_BODY()
 
 public:
+	virtual void Serialize(FArchive& Ar) override;
 
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo) override;
 	
@@ -263,6 +283,11 @@ public:
 		};
 
 		TArray<FBucketThresholds, TInlineAllocator<4>> BucketThresholds;
+
+		void CountBytes(FArchive& Ar) const 
+		{
+			BucketThresholds.CountBytes(Ar);
+		}
 	};
 
 	/** Default settings for all nodes. By being static, this allows games to easily override the settings are all nodes without having to subclass every graph node class */
@@ -274,6 +299,8 @@ public:
 	const FSettings& GetSettings() const { return Settings.IsValid() ? *Settings.Get() : DefaultSettings; }
 	
 	UReplicationGraphNode_ActorListFrequencyBuckets() { if (!HasAnyFlags(RF_ClassDefaultObject)) { SetNonStreamingCollectionSize(GetSettings().NumBuckets); } }
+
+	virtual void Serialize(FArchive& Ar) override;
 
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo) override;
 	
@@ -471,7 +498,7 @@ private:
 };
 
 
-/** Stores per-connection copies of a master actor list. Skips and removes elements from per connection list that are fully dormant */
+/** Stores per-connection copies of a main actor list. Skips and removes elements from per connection list that are fully dormant */
 UCLASS()
 class REPLICATIONGRAPH_API UReplicationGraphNode_DormancyNode : public UReplicationGraphNode_ActorList
 {
@@ -480,7 +507,7 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_DormancyNode : public UReplicat
 public:
 
 	/** Connection Z location has to be < this for ConnectionsNodes to be made. */
-	static float MaxZForConnection; 
+	static FVector::FReal MaxZForConnection; 
 
 public:
 
@@ -570,6 +597,8 @@ public:
 
 	UReplicationGraphNode_GridSpatialization2D();
 
+	virtual void Serialize(FArchive& Ar) override;
+
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& Actor) override;	
 	virtual bool NotifyRemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound=true) override;
 	virtual void NotifyResetAllNetworkActors() override;
@@ -590,7 +619,7 @@ public:
 	
 	float		CellSize;
 	FVector2D	SpatialBias;
-	float		ConnectionMaxZ = WORLD_MAX; // Connection locations have to be <= to this to pull from the grid
+	double		ConnectionMaxZ; // Connection locations have to be <= to this to pull from the grid
 
 	/** When the GridBounds is set we limit the creation of cells to be exclusively inside the passed region.
 	    Viewers who gather nodes outside this region will be clamped to the closest cell inside the box.
@@ -839,6 +868,7 @@ class REPLICATIONGRAPH_API UReplicationGraphNode_TearOff_ForConnection : public 
 	GENERATED_BODY()
 
 public:
+	virtual void Serialize(FArchive& Ar) override;
 
 	virtual void NotifyAddNetworkActor(const FNewReplicatedActorInfo& ActorInfo) override { }
 	virtual bool NotifyRemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound=true) override { return false; }
@@ -937,6 +967,16 @@ public:
 	T* CreateNewNode()
 	{
 		T* NewNode = NewObject<T>(this);
+		InitNode(NewNode);
+		return NewNode;
+	}
+
+	/** Creates a new node for the graph with a given base name. This and UReplicationNode::CreateChildNode should be the only things that create the graph node UObjects */
+	template< class T >
+	T* CreateNewNode(FName NodeBaseName)
+	{
+		FName UniqueNodeName = MakeUniqueObjectName(this, T::StaticClass(), NodeBaseName);
+		T* NewNode = NewObject<T>(this, UniqueNodeName);
 		InitNode(NewNode);
 		return NewNode;
 	}
@@ -1072,6 +1112,11 @@ protected:
 	bool bEnableFullActorPrioritizationDetailsAllConnections = false;
 #endif
 
+private:
+	/** Whether or not a connection was saturated during an update. */
+	bool bWasConnectionSaturated = false;
+
+protected:
 	/** Default Replication Path */
 	void ReplicateActorListsForConnections_Default(UNetReplicationGraphConnection* ConnectionManager, FGatheredReplicationActorLists& GatheredReplicationListsForConnection, FNetViewerArray& Viewers);
 
@@ -1115,9 +1160,6 @@ private:
 
 	/** Collect replication data during ServerReplicateActors */
 	FFrameReplicationStats FrameReplicationStats;
-
-	/** Whether or not a connection was saturated during an update. */
-	bool bWasConnectionSaturated = false;
 
 	/** Internal frame counter for replication. This is only updated by us. The one of UNetDriver can be updated by RPC calls and is only used to invalidate shared property CLs/serialiation data. */
 	uint32 ReplicationGraphFrame = 0;
@@ -1195,10 +1237,10 @@ public:
 	bool bEnableFullActorPrioritizationDetails = false;
 #endif
 
+	bool bEnableDebugging;
+
 	UPROPERTY()
 	TObjectPtr<class AReplicationGraphDebugActor> DebugActor = nullptr;
-
-	bool bEnableDebugging;
 
 	/** Index of the connection in the global list. Will be reassigned when any client disconnects so it is a key that can be referenced only during a single tick */
 	int32 ConnectionOrderNum;
@@ -1259,6 +1301,21 @@ private:
 
 	friend UReplicationGraph;
 
+	/** Holds relevant data when parsing deleted actors that could be sent to a viewer */
+	struct FRepGraphDestructionViewerInfo
+	{
+		FRepGraphDestructionViewerInfo() = default;
+		FRepGraphDestructionViewerInfo(const FVector& InViewerLocation, const FVector& InOutOfRangeLocationCheck)
+			: ViewerLocation(InViewerLocation)
+			, LastOutOfRangeLocationCheck(InOutOfRangeLocationCheck)
+		{ }
+
+		FVector ViewerLocation;
+		FVector	LastOutOfRangeLocationCheck;
+	};
+
+	typedef TArray< FRepGraphDestructionViewerInfo, TInlineAllocator<REPGRAPH_VIEWERS_PER_CONNECTION> > FRepGraphDestructionViewerInfoArray;
+
 	// ----------------------------------------
 
 	/** Called right after this is created to associate with the owning Graph */
@@ -1275,7 +1332,7 @@ private:
 
 	bool PrepareForReplication();
 
-	int64 ReplicateDestructionInfos(const FNetViewerArray& InViewers, const float DestructInfoMaxDistanceSquared);
+	int64 ReplicateDestructionInfos(const FRepGraphDestructionViewerInfoArray& DestructionViewersInfo, const FReplicationGraphDestructionSettings& DestructionSettings);
 	
 	int64 ReplicateDormantDestructionInfos();
 
@@ -1411,8 +1468,10 @@ struct FReplicationGraphDestructionSettings
 	FReplicationGraphDestructionSettings(float InDestructInfoMaxDistanceSquared, float InOutOfRangeDistanceCheckThresholdSquared)
 		: DestructInfoMaxDistanceSquared(InDestructInfoMaxDistanceSquared)
 		, OutOfRangeDistanceCheckThresholdSquared(InOutOfRangeDistanceCheckThresholdSquared)
+		, MaxPendingListDistanceSquared(DestructInfoMaxDistanceSquared + OutOfRangeDistanceCheckThresholdSquared)
 	{ }
 
 	float DestructInfoMaxDistanceSquared;
 	float OutOfRangeDistanceCheckThresholdSquared;
+	float MaxPendingListDistanceSquared; 
 };

@@ -10,6 +10,8 @@
 #include "Particles/ParticleEmitter.h"
 #include "Particles/ParticlePerfStatsManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ParticleSystemManager)
+
 DECLARE_STATS_GROUP(TEXT("Particle World Manager"), STATGROUP_PSCWorldMan, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("PSC Manager Tick [GT]"), STAT_PSCMan_Tick, STATGROUP_PSCWorldMan);
 DECLARE_CYCLE_STAT(TEXT("PSC Manager Async Batch [CNC]"), STAT_PSCMan_AsyncBatch, STATGROUP_PSCWorldMan);
@@ -174,7 +176,7 @@ void FParticleSystemWorldManager::OnWorldInit(UWorld* World, const UWorld::Initi
 #if !UE_BUILD_SHIPPING
 	if (TickGroupEnum == nullptr)
 	{
-		TickGroupEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ETickingGroup"));
+		TickGroupEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ETickingGroup"));
 	}
 #endif
 	FParticleSystemWorldManager* NewWorldMan = new FParticleSystemWorldManager(World);
@@ -256,18 +258,38 @@ void FParticleSystemWorldManager::AddReferencedObjects(FReferenceCollector& Coll
 
 		for (int32 PSCIndex = 0; PSCIndex < ManagedPSCs.Num(); ++PSCIndex)
 		{
-			//UE_LOG(LogParticles, Warning, TEXT("| Add Ref %d - 0x%p |"), PSCIndex, ManagedPSCs[PSCIndex]);
-			Collector.AddReferencedObject(ManagedPSCs[PSCIndex]);
-			if (PSCTickData[PSCIndex].PrereqComponent)
+			// If a managed component is streamed out or destroyed, drop references to it and its prerequisite			
+			if (IsValid(ManagedPSCs[PSCIndex]))
+			{
+				Collector.AddReferencedObject(ManagedPSCs[PSCIndex]);
+			}
+			else
+			{
+				ManagedPSCs[PSCIndex] = nullptr; // Null entries will be cleaned up after GC
+			}
+
+			// If prerequisite has been marked for deletion forget it
+			if (IsValid(PSCTickData[PSCIndex].PrereqComponent))
 			{
 				Collector.AddReferencedObject(PSCTickData[PSCIndex].PrereqComponent);
+			}
+			else
+			{
+				PSCTickData[PSCIndex].PrereqComponent = nullptr; 
 			}
 		}
 
 		for (int32 PSCIndex = 0; PSCIndex < PendingRegisterPSCs.Num(); ++PSCIndex)
 		{
-			//UE_LOG(LogParticles, Warning, TEXT("| Add Pending PSC Ref %d - 0x%p |"), PSCIndex, PendingRegisterPSCs[PSCIndex]);
-			Collector.AddReferencedObject(PendingRegisterPSCs[PSCIndex]);
+			if (IsValid(PendingRegisterPSCs[PSCIndex]))
+			{
+				//UE_LOG(LogParticles, Warning, TEXT("| Add Pending PSC Ref %d - 0x%p |"), PSCIndex, PendingRegisterPSCs[PSCIndex]);
+				Collector.AddReferencedObject(PendingRegisterPSCs[PSCIndex]);
+			}
+			else
+			{
+				PendingRegisterPSCs[PSCIndex] = nullptr; // Array will be emptied next time we handled pending entries
+			}
 		}
 	}
 	else
@@ -411,7 +433,7 @@ void FParticleSystemWorldManager::UnregisterComponent(UParticleSystemComponent* 
 
 void FParticleSystemWorldManager::AddPSC(UParticleSystemComponent* PSC)
 {
-	if (PSC)
+	if (IsValid(PSC))  // Don't add PSC if it has been marked for deletion
 	{
 		int32 Handle = ManagedPSCs.Add(PSC);
 		PSCTickData.AddDefaulted();
@@ -831,7 +853,7 @@ void FParticleSystemWorldManagerTickFunction::ExecuteTick(float DeltaTime, enum 
 
 FString FParticleSystemWorldManagerTickFunction::DiagnosticMessage()
 {
-	static const UEnum* EnumType = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ETickingGroup"));
+	static const UEnum* EnumType = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Engine.ETickingGroup"));
 
 	return TEXT("FParticleSystemManager::Tick(") + EnumType->GetNameStringByIndex(static_cast<uint32>(TickGroup)) + TEXT(")");
 }

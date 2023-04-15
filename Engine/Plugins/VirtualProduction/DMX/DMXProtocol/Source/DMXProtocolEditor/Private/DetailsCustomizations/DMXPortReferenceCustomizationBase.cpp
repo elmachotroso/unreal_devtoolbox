@@ -12,14 +12,13 @@
 #include "Widgets/SDMXPortSelector.h"
 
 #include "DetailWidgetRow.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h" 
 #include "IPropertyUtilities.h"
 #include "Misc/Guid.h" 
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Text/STextBlock.h" 
-
 
 #define LOCTEXT_NAMESPACE "DMXPortConfigCustomizationBase"
 
@@ -28,14 +27,10 @@ FDMXPortReferenceCustomizationBase::FDMXPortReferenceCustomizationBase()
 
 void FDMXPortReferenceCustomizationBase::CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
-	const bool bDisplayResetToDefault = false;
-	const FText DisplayNameOverride = FText::GetEmpty();
-	const FText DisplayToolTipOverride = FText::GetEmpty();
-
 	HeaderRow
 	.NameContent()
 	[
-		StructPropertyHandle->CreatePropertyNameWidget(DisplayNameOverride, DisplayToolTipOverride, bDisplayResetToDefault)
+		StructPropertyHandle->CreatePropertyNameWidget()
 	];
 }
 
@@ -46,10 +41,6 @@ void FDMXPortReferenceCustomizationBase::CustomizeChildren(TSharedRef<IPropertyH
 	// Hide the 'reset to default' option
 	StructPropertyHandle->MarkResetToDefaultCustomized();
 
-	// Create the info content border, so the port can set its info during its construction
-	SAssignNew(InfoContentBorder, SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"));
-
 	// Add the port selector row
 	EDMXPortSelectorMode PortSelectorMode = IsInputPort() ? EDMXPortSelectorMode::SelectFromAvailableInputs : EDMXPortSelectorMode::SelectFromAvailableOutputs;
 
@@ -58,7 +49,7 @@ void FDMXPortReferenceCustomizationBase::CustomizeChildren(TSharedRef<IPropertyH
 		.NameContent()
 		[
 			SNew(STextBlock)
-			.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+			.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 			.Text(LOCTEXT("PortLabel", "Port"))
 		]
 		.ValueContent()
@@ -66,13 +57,6 @@ void FDMXPortReferenceCustomizationBase::CustomizeChildren(TSharedRef<IPropertyH
 			SAssignNew(PortSelector, SDMXPortSelector)
 			.Mode(PortSelectorMode)
 			.OnPortSelected(this, &FDMXPortReferenceCustomizationBase::OnPortSelected)
-		];
-
-	// Add the info row
-	ChildBuilder.AddCustomRow(LOCTEXT("PortInfoSearchString", "Info"))
-		.WholeRowContent()
-		[
-			InfoContentBorder.ToSharedRef()
 		];
 
 	// Four possible states here that all need be handled:

@@ -21,6 +21,8 @@
 #include "Interfaces/OnlinePresenceInterface.h"
 #include "Interfaces/OnlineExternalUIInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SocialUser)
+
 #define LOCTEXT_NAMESPACE "SocialUser"
 
 //////////////////////////////////////////////////////////////////////////
@@ -514,6 +516,22 @@ bool USocialUser::IsFriendshipPending(ESocialSubsystem SubsystemType) const
 	return FriendInviteStatus == EInviteStatus::PendingInbound || FriendInviteStatus == EInviteStatus::PendingOutbound;
 }
 
+bool USocialUser::IsAnyInboundFriendshipPending() const
+{
+	for (const TPair<ESocialSubsystem, FSubsystemUserInfo>& SubsystemInfoPair : SubsystemInfoByType)
+	{
+		if (const FOnlineFriend* OnlineFriend = SubsystemInfoPair.Value.FriendInfo.Pin().Get())
+		{
+			const EInviteStatus::Type FriendInviteStatus = OnlineFriend->GetInviteStatus();
+			if (FriendInviteStatus == EInviteStatus::PendingInbound)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 const FOnlineUserPresence* USocialUser::GetFriendPresenceInfo(ESocialSubsystem SubsystemType) const
 {
 	const FSubsystemUserInfo* SubsystemInfo = SubsystemInfoByType.Find(SubsystemType);
@@ -730,7 +748,7 @@ void USocialUser::GetRichPresenceText(FText& OutRichPresence) const
 	{
 		OutRichPresence = LOCTEXT("UserStatus_Blocked", "Blocked");
 	}
-	else if (IsFriend())
+	else if (IsFriend() || IsLocalUser())
 	{
 		const FOnlineUserPresence* PrimaryPresence = GetFriendPresenceInfo(ESocialSubsystem::Primary);
 		if (PrimaryPresence && !PrimaryPresence->Status.StatusStr.IsEmpty())
@@ -887,9 +905,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId) const
 {
+	JoinParty(PartyTypeId, PartyJoinMethod::Unspecified);
+}
+
+void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId, const FName& JoinMethod) const
+{
 	const bool bHasSentInvite = HasSentPartyInvite(PartyTypeId);
-	
-	GetOwningToolkit().GetSocialManager().JoinParty(*this, PartyTypeId, USocialManager::FOnJoinPartyAttemptComplete());
+
+	GetOwningToolkit().GetSocialManager().JoinParty(*this, PartyTypeId, USocialManager::FOnJoinPartyAttemptComplete(), JoinMethod);
 
 	// Regardless of the outcome, note that the invite was accepted (deletes it from the OSS party system)
 	if (bHasSentInvite)
@@ -930,11 +953,11 @@ bool USocialUser::CanInviteToParty(const FOnlinePartyTypeId& PartyTypeId) const
 	return false;
 }
 
-bool USocialUser::InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod) const
+bool USocialUser::InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod, const FString& MetaData) const
 {
 	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(PartyTypeId))
 	{
-		return Party->TryInviteUser(*this, InviteMethod);
+		return Party->TryInviteUser(*this, InviteMethod, MetaData);
 	}
 	return false;
 }
@@ -1068,11 +1091,6 @@ void USocialUser::HandlePartyInviteRemoved(const IOnlinePartyJoinInfo& Invite, E
 	GetOwningToolkit().NotifyPartyInviteRemoved(*this, Invite);
 }
 
-void USocialUser::HandleRequestToJoinSent(const FDateTime& ExpiresAt)
-{
-	NotifyRequestToJoinSent(ExpiresAt);
-}
-
 void USocialUser::HandleRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request)
 {
 	NotifyRequestToJoinReceived(Request);
@@ -1083,11 +1101,22 @@ void USocialUser::HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo
 	NotifyRequestToJoinRemoved(Request, Reason);
 }
 
+void USocialUser::RequestToJoinParty()
+{
+	RequestToJoinParty(PartyJoinMethod::Unspecified);
+}
+
+void USocialUser::RequestToJoinParty(const FName& JoinMethod)
+{
+	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+	PartyInterface->RequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), IOnlinePartySystem::GetPrimaryPartyTypeId(), *GetUserId(ESocialSubsystem::Primary), FOnRequestToJoinPartyComplete::CreateUObject(this, &USocialUser::HandlePartyRequestToJoinSent, JoinMethod));
+}
+
 void USocialUser::AcceptRequestToJoinParty() const
 {
 	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(IOnlinePartySystem::GetPrimaryPartyTypeId()))
 	{
-		Party->TryInviteUser(*this);
+		Party->TryInviteUser(*this, ESocialPartyInviteMethod::Other, TEXT("RequestToJoin"));
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 		PartyInterface->ClearRequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), Party->GetPartyId(), *GetUserId(ESocialSubsystem::Primary), EPartyRequestToJoinRemovedReason::Accepted);
 	}
@@ -1100,6 +1129,23 @@ void USocialUser::DismissRequestToJoinParty() const
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 		PartyInterface->ClearRequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), Party->GetPartyId(), *GetUserId(ESocialSubsystem::Primary), EPartyRequestToJoinRemovedReason::Dismissed);
 	}
+}
+
+void USocialUser::HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result, FName JoinMethod)
+{
+	UE_LOG(LogParty, VeryVerbose, TEXT("%s - User [%s] sent a join request to [%s] with result[%s]"), ANSI_TO_TCHAR(__FUNCTION__), *LocalUserId.ToDebugString(), *PartyLeaderId.ToDebugString(), ToString(Result));
+
+	if (Result == ERequestToJoinPartyCompletionResult::Succeeded)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		NotifyRequestToJoinSent(ExpiresAt);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+		GetOwningToolkit().OnPartyRequestToJoinSent().Broadcast(*this);
+	}
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	GetOwningToolkit().OnRequestToJoinPartyComplete(PartyLeaderId, Result);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 TSharedPtr<const IOnlinePartyJoinInfo> USocialUser::GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const
@@ -1316,7 +1362,8 @@ void USocialUser::SetSubsystemId(ESocialSubsystem SubsystemType, const FUniqueNe
 			if (UserInterface.IsValid())
 			{
 				TSharedPtr<FOnlineUser> UserInfo = UserInterface->GetUserInfo(OwningToolkit.GetLocalUserNum(), *SubsystemId);
-				if (UserInfo.IsValid())
+				//If this is our local user, we always want to get the freshest data, to make sure any updates to the account (linking, name changes, etc.) are seen on re-login
+				if (UserInfo.IsValid() && !IsLocalUser())
 				{
 					SetUserInfo(SubsystemType, UserInfo.ToSharedRef());
 				}
@@ -1349,11 +1396,7 @@ void USocialUser::SetUserInfo(ESocialSubsystem SubsystemType, const TSharedRef<F
 			{
 				if (IOnlineSubsystem* MissingOSS = GetOwningToolkit().GetSocialOss(Subsystem))
 				{
-					auto FindPlatformDescriptionByOssName = [MissingOSS](const FSocialPlatformDescription& TestPlatformDescription)
-					{
-						return TestPlatformDescription.OnlineSubsystem == MissingOSS->GetSubsystemName();
-					};
-					if (const FSocialPlatformDescription* PlatformDescription = USocialSettings::GetSocialPlatformDescriptions().FindByPredicate(FindPlatformDescriptionByOssName))
+					if (const FSocialPlatformDescription* PlatformDescription = USocialSettings::GetSocialPlatformDescriptionForOnlineSubsystem(MissingOSS->GetSubsystemName()))
 					{
 						if (!PlatformDescription->ExternalAccountType.IsEmpty())
 						{
@@ -1411,6 +1454,17 @@ void USocialUser::HandleSetNicknameComplete(int32 LocalUserNum, const FUniqueNet
 FString USocialUser::SanitizePresenceString(FString InString) const
 {
 	return InString;
+}
+
+void USocialUser::PopulateSortParameterList(TArray<int64>& OutSortParams) const
+{
+	const int32 TotalSortParams = 3;
+	OutSortParams.Reset(TotalSortParams);
+
+	// Parameters are prioritized by the first member added to the list being the highest priority
+	OutSortParams.Add(GetCustomSortValuePrimary());
+	OutSortParams.Add(GetCustomSortValueSecondary());
+	OutSortParams.Add(GetCustomSortValueTertiary());
 }
 
 #undef LOCTEXT_NAMESPACE

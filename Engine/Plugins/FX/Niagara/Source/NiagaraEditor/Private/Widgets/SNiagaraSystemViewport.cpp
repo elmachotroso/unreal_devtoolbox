@@ -16,6 +16,8 @@
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstance.h"
+#include "NiagaraSystemGpuComputeProxy.h"
 #include "NiagaraSystemEditorData.h"
 #include "SNiagaraSystemViewportToolBar.h"
 #include "UnrealEdGlobals.h"
@@ -57,6 +59,7 @@ public:
 	void DrawInstructionCounts(UNiagaraSystem* ParticleSystem, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight);
 	void DrawParticleCounts(UNiagaraComponent* Component, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight);
 	void DrawEmitterExecutionOrder(UNiagaraComponent* Component, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight);
+	void DrawGpuTickInformation(UNiagaraComponent* Component, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight);
 
 	TWeakPtr<SNiagaraSystemViewport> NiagaraViewportPtr;
 	bool bCaptureScreenShot;
@@ -82,7 +85,7 @@ FNiagaraSystemViewportClient::FNiagaraSystemViewportClient(FAdvancedPreviewScene
 	DrawHelper.GridColorAxis = FColor(80,80,80);
 	DrawHelper.GridColorMajor = FColor(72,72,72);
 	DrawHelper.GridColorMinor = FColor(64,64,64);
-	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+	DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 	ShowWidget(false);
 
 	FEditorViewportClient::SetViewMode(VMI_Lit);
@@ -143,10 +146,17 @@ void FNiagaraSystemViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 		if (NiagaraViewport->GetDrawElement(SNiagaraSystemViewport::EDrawElements::ParticleCounts) && Component)
 		{
 			DrawParticleCounts(Component, Canvas, CurrentX, CurrentY, Font, FontHeight);
+			CurrentY += FontHeight;
 		}
 		if (NiagaraViewport->GetDrawElement(SNiagaraSystemViewport::EDrawElements::EmitterExecutionOrder) && Component)
 		{
 			DrawEmitterExecutionOrder(Component, Canvas, CurrentX, CurrentY, Font, FontHeight);
+			CurrentY += FontHeight;
+		}
+		if (NiagaraViewport->GetDrawElement(SNiagaraSystemViewport::EDrawElements::GpuTickInformation) && Component)
+		{
+			DrawGpuTickInformation(Component, Canvas, CurrentX, CurrentY, Font, FontHeight);
+			CurrentY += FontHeight;
 		}
 	}
 
@@ -188,8 +198,8 @@ void FNiagaraSystemViewportClient::DrawInstructionCounts(UNiagaraSystem* Particl
 
 	for (const FNiagaraEmitterHandle& EmitterHandle : ParticleSystem->GetEmitterHandles())
 	{
-		UNiagaraEmitter* Emitter = EmitterHandle.GetInstance();
-		if (Emitter == nullptr)
+		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
+		if (EmitterData == nullptr)
 		{
 			continue;
 		}
@@ -198,7 +208,7 @@ void FNiagaraSystemViewportClient::DrawInstructionCounts(UNiagaraSystem* Particl
 		CurrentY += FontHeight;
 
 		TArray<UNiagaraScript*> EmitterScripts;
-		Emitter->GetScripts(EmitterScripts);
+		EmitterData->GetScripts(EmitterScripts);
 
 		for (UNiagaraScript* Script : EmitterScripts)
 		{
@@ -250,7 +260,7 @@ void FNiagaraSystemViewportClient::DrawParticleCounts(UNiagaraComponent* Compone
 		{
 			const FName EmitterName = EmitterInstance->GetEmitterHandle().GetName();
 			const int32 CurrentCount = EmitterInstance->GetNumParticles();
-			const int32 MaxCount = EmitterInstance->GetEmitterHandle().GetInstance()->GetMaxParticleCountEstimate();
+			const int32 MaxCount = EmitterInstance->GetEmitterHandle().GetEmitterData()->GetMaxParticleCountEstimate();
 			const bool IsIsolated = EmitterInstance->GetEmitterHandle().IsIsolated();
 			const bool IsEnabled = EmitterInstance->GetEmitterHandle().GetIsEnabled();
 			const ENiagaraExecutionState ExecutionState = EmitterInstance->GetExecutionState();
@@ -273,19 +283,19 @@ void FNiagaraSystemViewportClient::DrawParticleCounts(UNiagaraComponent* Compone
 
 		for (const FNiagaraEmitterHandle& EmitterHandle : NiagaraSystem->GetEmitterHandles())
 		{
-			UNiagaraEmitter* Emitter = EmitterHandle.GetInstance();
-			if (Emitter == nullptr)
+			FVersionedNiagaraEmitterData* EmitterData = EmitterHandle.GetEmitterData();
+			if (EmitterData == nullptr)
 			{
 				continue;
 			}
 
-			const bool bEmitterCompiling = bSystemCompiling || !Emitter->IsReadyToRun();
+			const bool bEmitterCompiling = bSystemCompiling || !EmitterData->IsReadyToRun();
 			if (!bEmitterCompiling)
 			{
 				continue;
 			}
 
-			FString CompilingText = FString::Printf(TEXT("%s - %s"), *FText::FromString("Compiling Emitter").ToString(), *Emitter->GetName());
+			FString CompilingText = FString::Printf(TEXT("%s - %s"), *FText::FromString("Compiling Emitter").ToString(), *EmitterHandle.GetUniqueInstanceName());
 			Canvas->DrawShadowedString(CurrentX, CurrentY, *CompilingText, Font, FLinearColor::Yellow);
 			CurrentY += FontHeight;
 		}
@@ -308,11 +318,71 @@ void FNiagaraSystemViewportClient::DrawEmitterExecutionOrder(UNiagaraComponent* 
 		for (const FNiagaraEmitterExecutionIndex& EmitterExecIndex : ExecutionOrder)
 		{
 			const FNiagaraEmitterHandle& EmitterHandle = NiagaraSystem->GetEmitterHandle(EmitterExecIndex.EmitterIndex);
-			if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance())
+			if (FVersionedNiagaraEmitterData* NiagaraEmitter = EmitterHandle.GetEmitterData())
 			{
 				Canvas->DrawShadowedString(CurrentX, CurrentY, *FString::Printf(TEXT("%d - %s"), ++DisplayIndex, NiagaraEmitter->GetDebugSimName()), Font, FLinearColor::White);
 				CurrentY += FontHeight;
 			}
+		}
+	}
+}
+
+void FNiagaraSystemViewportClient::DrawGpuTickInformation(UNiagaraComponent* Component, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight)
+{
+	FNiagaraSystemInstanceControllerConstPtr SystemInstanceController = Component->GetSystemInstanceController();
+	if (SystemInstanceController.IsValid() == false)
+	{
+		return;
+	}
+
+	FNiagaraSystemInstance* SystemInstance = SystemInstanceController->GetSystemInstance_Unsafe();
+	if (SystemInstance == nullptr)
+	{
+		return;
+	}
+
+	Canvas->DrawShadowedString(CurrentX, CurrentY, TEXT("Gpu Tick Information"), Font, FLinearColor::White);
+	CurrentY += FontHeight;
+
+	if (SystemInstance->IsReadyToRun())
+	{
+		if (const FNiagaraSystemGpuComputeProxy* ComputeProxy = SystemInstance->GetSystemGpuComputeProxy())
+		{
+			static UEnum* GpuComputeTickStageEnum = StaticEnum<ENiagaraGpuComputeTickStage::Type>();
+			const ENiagaraGpuComputeTickStage::Type GpuTickStage = ComputeProxy->GetComputeTickStage();
+			const FLinearColor TextColor = GpuTickStage == ENiagaraGpuComputeTickStage::First ? FLinearColor::White : FLinearColor::Yellow;
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, *FString::Printf(TEXT("GpuTickStage = %s"), *GpuComputeTickStageEnum->GetNameStringByValue(GpuTickStage)), Font, TextColor);
+			CurrentY += FontHeight;
+		}
+		else
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("No GPU Emitters"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
+		}
+		if (SystemInstance->RequiresDistanceFieldData())
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("RequiresDistanceFieldData"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
+		}
+		if (SystemInstance->RequiresDepthBuffer())
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("RequiresDepthBuffer"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
+		}
+		if (SystemInstance->RequiresEarlyViewData())
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("RequiresEarlyViewData"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
+		}
+		if (SystemInstance->RequiresViewUniformBuffer())
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("RequiresViewUniformBuffer"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
+		}
+		if (SystemInstance->RequiresRayTracingScene())
+		{
+			Canvas->DrawShadowedString(CurrentX + 5.0f, CurrentY, TEXT("RequiresRayTracingScene"), Font, FLinearColor::White);
+			CurrentY += FontHeight;
 		}
 	}
 }
@@ -394,6 +464,7 @@ void SNiagaraSystemViewport::Construct(const FArguments& InArgs)
 	DrawFlags |= Settings->IsShowParticleCountsInViewport() ? EDrawElements::ParticleCounts : 0;
 	DrawFlags |= Settings->IsShowInstructionsCount() ? EDrawElements::InstructionCounts : 0;
 	DrawFlags |= Settings->IsShowEmitterExecutionOrder() ? EDrawElements::EmitterExecutionOrder : 0;
+	DrawFlags |= Settings->IsShowGpuTickInformation() ? EDrawElements::GpuTickInformation : 0;
 
 	bShowBackground = false;
 	PreviewComponent = nullptr;
@@ -592,6 +663,18 @@ void SNiagaraSystemViewport::BindCommands()
 	);
 
 	CommandList->MapAction(
+		Commands.ToggleGpuTickInformation,
+		FExecuteAction::CreateLambda([Viewport = this]()
+		{
+			Viewport->ToggleDrawElement(EDrawElements::GpuTickInformation);
+			GetMutableDefault<UNiagaraEditorSettings>()->SetShowGpuTickInformation(Viewport->GetDrawElement(EDrawElements::GpuTickInformation));
+			Viewport->RefreshViewport();
+		}),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([Viewport = this]() -> bool { return Viewport->GetDrawElement(EDrawElements::GpuTickInformation); })
+	);
+
+	CommandList->MapAction(
 		Commands.TogglePreviewBackground,
 		FExecuteAction::CreateSP( this, &SNiagaraSystemViewport::TogglePreviewBackground ),
 		FCanExecuteAction(),
@@ -776,7 +859,7 @@ FNiagaraBaselineViewportClient::FNiagaraBaselineViewportClient(FAdvancedPreviewS
 	DrawHelper.GridColorAxis = FColor(80,80,80);
 	DrawHelper.GridColorMajor = FColor(72,72,72);
 	DrawHelper.GridColorMinor = FColor(64,64,64);
-	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
+	DrawHelper.PerspectiveGridSize = UE_OLD_HALF_WORLD_MAX1;
 	ShowWidget(false);
 
 	SetViewMode(VMI_Lit);

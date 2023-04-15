@@ -20,7 +20,6 @@
 #include "Kismet2/ComponentEditorUtils.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
-#include "Matinee/MatineeActor.h"
 #include "ScopedTransaction.h"
 
 #include "LevelUtils.h"
@@ -30,7 +29,7 @@
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "DragAndDrop/CollectionDragDropOp.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "SnappingUtils.h"
@@ -678,7 +677,7 @@ namespace AssetUtil
 		return ExtractAssetDataFromDrag(DragDropEvent.GetOperation());
 	}
 
-	TArray<FAssetData> ExtractAssetDataFromDrag(const TSharedPtr<FDragDropOperation>& Operation)
+	TArray<FAssetData> ExtractAssetDataFromDrag(const TSharedPtr<const FDragDropOperation>& Operation)
 	{
 		TArray<FAssetData> DroppedAssetData;
 
@@ -689,8 +688,8 @@ namespace AssetUtil
 
 		if (Operation->IsOfType<FExternalDragOperation>())
 		{
-			TSharedPtr<FExternalDragOperation> DragDropOp = StaticCastSharedPtr<FExternalDragOperation>(Operation);
-			if ( DragDropOp->HasText() )
+			TSharedPtr<const FExternalDragOperation> DragDropOp = StaticCastSharedPtr<const FExternalDragOperation>(Operation);
+			if (DragDropOp->HasText())
 			{
 				TArray<FString> DroppedAssetStrings;
 				const TCHAR AssetDelimiter[] = { AssetMarshalDefs::AssetDelimiter, TEXT('\0') };
@@ -703,7 +702,7 @@ namespace AssetUtil
 				{
 					if (DroppedAssetString.Len() < NAME_SIZE && FName::IsValidXName(DroppedAssetString, INVALID_OBJECTPATH_CHARACTERS))
 					{
-						FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FName(*DroppedAssetString));
+						FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(DroppedAssetString));
 						if (AssetData.IsValid())
 						{
 							DroppedAssetData.Add(AssetData);
@@ -714,13 +713,13 @@ namespace AssetUtil
 		}
 		else if (Operation->IsOfType<FCollectionDragDropOp>())
 		{
-			TSharedPtr<FCollectionDragDropOp> DragDropOp = StaticCastSharedPtr<FCollectionDragDropOp>( Operation );
-			DroppedAssetData.Append( DragDropOp->GetAssets() );
+			TSharedPtr<const FCollectionDragDropOp> DragDropOp = StaticCastSharedPtr<const FCollectionDragDropOp>(Operation);
+			DroppedAssetData.Append(DragDropOp->GetAssets());
 		}
 		else if (Operation->IsOfType<FAssetDragDropOp>())
 		{
-			TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
-			DroppedAssetData.Append( DragDropOp->GetAssets() );
+			TSharedPtr<const FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<const FAssetDragDropOp>(Operation);
+			DroppedAssetData.Append(DragDropOp->GetAssets());
 		}
 
 		return DroppedAssetData;
@@ -789,14 +788,15 @@ void FActorFactoryAssetProxy::GenerateActorFactoryMenuItems( const FAssetData& A
 UActorFactory* FActorFactoryAssetProxy::GetFactoryForAsset( const FAssetData& AssetData, bool bRequireValidObject/*=false*/ )
 {
 	UObject* Asset = NULL;
+	UClass* AssetClass = AssetData.GetClass();
 	
 	if ( AssetData.IsAssetLoaded() )
 	{
 		Asset = AssetData.GetAsset();
 	}
-	else if ( !bRequireValidObject )
+	else if ( !bRequireValidObject && AssetClass )
 	{
-		Asset = AssetData.GetClass()->GetDefaultObject();
+		Asset = AssetClass->GetDefaultObject();
 	}
 
 	return FActorFactoryAssetProxy::GetFactoryForAssetObject( Asset );
@@ -834,7 +834,7 @@ AActor* FActorFactoryAssetProxy::AddActorForAsset( UObject* AssetObj, bool Selec
 {
 	AActor* Result = NULL;
 
-	const FAssetData AssetData( AssetObj );
+	const FAssetData AssetData(AssetObj, FAssetData::ECreationFlags::AllowBlueprintClass);
 	FText UnusedErrorMessage;
 	if ( AssetObj != NULL )
 	{

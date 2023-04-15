@@ -106,7 +106,7 @@ void FLazyObjectPtr::PossiblySerializeObjectGuid(UObject *Object, FStructuredArc
 	if (UnderlyingArchive.IsSaving() || UnderlyingArchive.IsCountingMemory())
 	{
 		FUniqueObjectGuid Guid = GuidAnnotation.GetAnnotation(Object);
-		TOptional<FStructuredArchiveSlot> GuidSlot = Record.TryEnterField(SA_FIELD_NAME(TEXT("Guid")), Guid.IsValid());
+		TOptional<FStructuredArchiveSlot> GuidSlot = Record.TryEnterField(TEXT("Guid"), Guid.IsValid());
 		if (GuidSlot.IsSet())
 		{
 			if (UnderlyingArchive.GetPortFlags() & PPF_DuplicateForPIE)
@@ -119,7 +119,7 @@ void FLazyObjectPtr::PossiblySerializeObjectGuid(UObject *Object, FStructuredArc
 	}
 	else if (UnderlyingArchive.IsLoading())
 	{
-		TOptional<FStructuredArchiveSlot> GuidSlot = Record.TryEnterField(SA_FIELD_NAME(TEXT("Guid")), false);
+		TOptional<FStructuredArchiveSlot> GuidSlot = Record.TryEnterField(TEXT("Guid"), false);
 		if (GuidSlot.IsSet())
 		{
 			FUniqueObjectGuid Guid;
@@ -147,8 +147,13 @@ void FLazyObjectPtr::PossiblySerializeObjectGuid(UObject *Object, FStructuredArc
 #if WITH_EDITOR
 						else if (Object->GetOutermostObject()->GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
 						{
-							Guid = RemapGuid(Guid, Object->GetOutermostObject()->GetPackage()->GetPIEInstanceID());
-							GuidAnnotation.AddAnnotation(Object, Guid);
+							int32 PIEInstanceID = Object->GetOutermostObject()->GetPackage()->GetPIEInstanceID();
+
+							if (PIEInstanceID != INDEX_NONE)
+							{
+								Guid = RemapGuid(Guid, PIEInstanceID);
+								GuidAnnotation.AddAnnotation(Object, Guid);
+							}
 						}
 #endif
 						else

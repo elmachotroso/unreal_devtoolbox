@@ -18,6 +18,11 @@ class DMXFIXTURES_API UDMXFixtureComponentColor : public UDMXFixtureComponent
 public:
 	UDMXFixtureComponentColor();
 
+	//~ Begin DMXFixtureComponent interface
+	virtual void PushNormalizedValuesPerAttribute(const FDMXNormalizedAttributeValueMap& ValuePerAttribute) override;
+	virtual void GetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames) override;
+	//~ End DMXFixtureComponent interface
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "DMX Channel")
 	FDMXAttributeName DMXChannel1;
 

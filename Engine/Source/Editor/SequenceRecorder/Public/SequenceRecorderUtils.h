@@ -7,8 +7,8 @@
 #include "MovieScene.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ObjectTools.h"
 
 class AActor;
@@ -35,7 +35,7 @@ static AssetType* MakeNewAsset(const FString& BaseAssetPath, const FString& Base
 	AssetPath += Dot + AssetName;
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	// if object with same name exists, try a different name until we don't find one
 	int32 ExtensionIndex = 0;
@@ -43,7 +43,7 @@ static AssetType* MakeNewAsset(const FString& BaseAssetPath, const FString& Base
 	{
 		AssetName = FString::Printf(TEXT("%s_%d"), *BaseAssetName, ExtensionIndex);
 		AssetPath = (BaseAssetPath / AssetName) + Dot + AssetName;
-		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 		ExtensionIndex++;
 	}
@@ -79,7 +79,7 @@ static UObject* DuplicateAsset(const FString& BaseAssetPath, const FString& Base
 	AssetPath += Dot + AssetName;
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	// if object with same name exists, try a different name until we don't find one
 	int32 ExtensionIndex = 0;
@@ -87,7 +87,7 @@ static UObject* DuplicateAsset(const FString& BaseAssetPath, const FString& Base
 	{
 		AssetName = FString::Printf(TEXT("%s_%d"), *BaseAssetName, ExtensionIndex);
 		AssetPath = (BaseAssetPath / AssetName) + Dot + AssetName;
-		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 		ExtensionIndex++;
 	}
@@ -115,7 +115,7 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	AssetPath += Dot + AssetName;
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 	// if object with same name exists, try a different name until we don't find one
 	int32 ExtensionIndex = 0;
@@ -123,7 +123,7 @@ static FString MakeNewAssetName(const FString& BaseAssetPath, const FString& Bas
 	{
 		AssetName = FString::Printf(TEXT("%s_%d"), *BaseAssetName, ExtensionIndex);
 		AssetPath = (BaseAssetPath / AssetName) + Dot + AssetName;
-		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*AssetPath);
+		AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 
 		ExtensionIndex++;
 	}
@@ -150,7 +150,7 @@ static bool DoesTakeExist(const FString& AssetPath, const FString& ActorName, co
 
 	const FString Dot(TEXT("."));
 	FString FullPath = TakePath + Dot + TakeName;
-	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*FullPath);
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(FullPath));
 
 	return AssetData.IsValid();
 }
@@ -203,8 +203,9 @@ SEQUENCERECORDER_API AActor* GetAttachment(AActor* InActor, FName& SocketName, F
  * 
  * @param: PreviewComponent - this component should contains SingleNodeInstance with time-line based asset, currently support AnimSequence or AnimComposite
  * @param: NewAsset - this is the asset that should be recorded. This will reset all animation data internally
+ * @param: bShowMessage - show a notification of new asset creation
  */
-SEQUENCERECORDER_API bool RecordSingleNodeInstanceToAnimation(USkeletalMeshComponent* PreviewComponent, UAnimSequence* NewAsset);
+SEQUENCERECORDER_API bool RecordSingleNodeInstanceToAnimation(USkeletalMeshComponent* PreviewComponent, UAnimSequence* NewAsset, bool bShowMessage = true);
 
 /**
  * Get timecode source

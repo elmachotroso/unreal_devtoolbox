@@ -15,6 +15,7 @@
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
 #include "ComponentInstanceDataCache.h"
+#include "Util/WorldData/ClassDataUtil.h"
 
 class AActor;
 class UActorComponent;
@@ -90,9 +91,11 @@ namespace UE::LevelSnapshots::Private
 				if (ComponentOuter)
 				{
 					Component = AllocateComponent(ComponentPath, SubobjectData, ComponentData, ComponentOuter);
-			
-					// UActorComponent::PostInitProperties implicitly calls AddOwnedComponent but we have to manually add it to the other arrays
-					AddToCorrectComponentArray(ComponentData, Component);
+					if (Component)
+					{
+						// UActorComponent::PostInitProperties implicitly calls AddOwnedComponent but we have to manually add it to the other arrays
+						AddToCorrectComponentArray(ComponentData, Component);
+					}
 				}
 			}
 		
@@ -103,7 +106,14 @@ namespace UE::LevelSnapshots::Private
 
 		UActorComponent* AllocateComponent(const FSoftObjectPath& ComponentPath, FSubobjectSnapshotData& SubobjectData, const FComponentSnapshotData& ComponentData, UObject* ComponentOuter) const
 		{
-			UClass* ComponentClass = SubobjectData.Class.TryLoadClass<UActorComponent>();
+			const FSoftClassPath ClassPath = GetClass(SubobjectData, WorldData);
+			UClass* ComponentClass = ClassPath.TryLoadClass<UActorComponent>();
+			if (!ComponentClass)
+			{
+				UE_LOG(LogLevelSnapshots, Error, TEXT("Failed to load class %s"), *ClassPath.ToString())
+				return nullptr;
+			}
+			
 			const FName ComponentName = *UE::LevelSnapshots::Private::ExtractLastSubobjectName(ComponentPath);
 			const EObjectFlags ObjectFlags = SubobjectData.GetObjectFlags();
 			if constexpr (TDerived::IsRestoringIntoSnapshotWorld())

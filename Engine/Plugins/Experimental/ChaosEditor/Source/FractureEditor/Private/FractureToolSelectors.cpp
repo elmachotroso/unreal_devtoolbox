@@ -9,6 +9,8 @@
 #include "GeometryCollection/GeometryCollection.h"
 #include "FractureSelectionTools.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolSelectors)
+
 
 #define LOCTEXT_NAMESPACE "FractureToolSelectionOps"
 
@@ -300,6 +302,70 @@ void UFractureToolSelectInvert::Execute(TWeakPtr<FFractureEditorModeToolkit> InT
 	if (InToolkit.IsValid())
 	{
 		SelectByMode(InToolkit.Pin().Get(), GeometryCollection::ESelectionMode::InverseGeometry);
+	}
+}
+
+
+
+
+FText UFractureToolSelectLeaf::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("Fracture", "FractureToolSelectLeaf", "Select Leaves"));
+}
+
+FText UFractureToolSelectLeaf::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("Fracture", "FractureToolSelectLeafTooltip", "Select leaf bones that represent rigid bodies at current level"));
+}
+
+FSlateIcon UFractureToolSelectLeaf::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.SelectLeaf");
+}
+
+void UFractureToolSelectLeaf::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "SelectLeaf", "Leaf", "Select (rigid) leaf bones at current level.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->SelectLeaves = UICommandInfo;
+}
+
+void UFractureToolSelectLeaf::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		SelectByMode(InToolkit.Pin().Get(), GeometryCollection::ESelectionMode::Leaves);
+	}
+}
+
+
+
+
+FText UFractureToolSelectCluster::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("Fracture", "FractureToolSelectCluster", "Select Clusters"));
+}
+
+FText UFractureToolSelectCluster::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("Fracture", "FractureToolSelectClusterTooltip", "Select cluster bones at current level"));
+}
+
+FSlateIcon UFractureToolSelectCluster::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.SelectCluster");
+}
+
+void UFractureToolSelectCluster::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "SelectCluster", "Cluster", "Select cluster bones at current level.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->SelectClusters = UICommandInfo;
+}
+
+void UFractureToolSelectCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		SelectByMode(InToolkit.Pin().Get(), GeometryCollection::ESelectionMode::Clusters);
 	}
 }
 

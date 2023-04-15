@@ -86,11 +86,11 @@ public:
 
 	/** Subsystems can't have any Blueprint implementations, so we attach this class for any BP logic that we to provide. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Virtual Production")
-	UVPScoutingSubsystemHelpersBase* VPSubsystemHelpers;
+	TObjectPtr<UVPScoutingSubsystemHelpersBase> VPSubsystemHelpers;
 
 	/** GestureManager that manage some user input in VR editor. */
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Virtual Production")
-	UVPScoutingSubsystemGestureManagerBase* GestureManager;
+	TObjectPtr<UVPScoutingSubsystemGestureManagerBase> GestureManager;
 
 	/** bool to keep track of whether the settings menu panel in the main menu is open*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Main Menu")
@@ -210,7 +210,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Virtual Production")
 	static void SetIsHelperSystemEnabled(const bool bInIsHelperSystemEnabled);
 
-	/** Exit VR Mode  */
+	/** Get VR Editor Mode object */
+	UFUNCTION(BlueprintPure, Category = "Virtual Production")
+	static UVREditorMode* GetVREditorMode();
+
+	/** Enter VR Mode */
+	UFUNCTION(BlueprintCallable, Category = "Virtual Production")
+	static bool EnterVRMode();
+
+	/** Exit VR Mode */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Production")
 	static void ExitVRMode();
 
@@ -224,11 +232,11 @@ public:
 
 	/** Whether rotation grid snapping is enabled */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Production")
-		static bool IsRotationGridSnappingEnabled();
+	static bool IsRotationGridSnappingEnabled();
 
 	/** Toggle rotation grid snapping */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Production")
-		static void ToggleRotationGridSnapping();
+	static void ToggleRotationGridSnapping();
 
 private:
 

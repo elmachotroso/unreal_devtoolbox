@@ -432,7 +432,7 @@ void FDetailLayoutBuilderImpl::GenerateDetailLayout()
 	}
 
 	TSharedPtr<FComplexPropertyNode> RootNodePinned = RootNode.Pin();
-	if (DetailsView && DetailsView->GetRootObjectCustomization() && RootNodePinned->GetInstancesNum())
+	if (DetailsView && DetailsView->GetRootObjectCustomization() && RootNodePinned->GetInstancesNum() && !bLayoutForExternalRoot)
 	{
 		FObjectPropertyNode* ObjectNode = RootNodePinned->AsObjectNode();
 
@@ -852,7 +852,7 @@ void FDetailLayoutBuilderImpl::GetStructsBeingCustomized( TArray< TSharedPtr<FSt
 	}
 }
 
-const TSharedRef< IPropertyUtilities > FDetailLayoutBuilderImpl::GetPropertyUtilities() const
+TSharedRef< IPropertyUtilities > FDetailLayoutBuilderImpl::GetPropertyUtilities() const
 {
 	return PropertyDetailsUtilities.Pin().ToSharedRef();
 }
@@ -931,4 +931,27 @@ void FDetailLayoutBuilderImpl::RegisterInstancedCustomPropertyTypeLayout(FName P
 void FDetailLayoutBuilderImpl::SortCategories(const FOnCategorySortOrderFunction& InSortFunction)
 {
 	CategorySortOrderFunctions.Add(InSortFunction);
+}
+
+void FDetailLayoutBuilderImpl::SetPropertyGenerationAllowListPaths(const TSet<FString>& InPropertyGenerationAllowListPaths)
+{
+	PropertyGenerationAllowListPaths = InPropertyGenerationAllowListPaths;
+}
+
+bool FDetailLayoutBuilderImpl::IsPropertyPathAllowed(const FString& InPath) const
+{
+	if (PropertyGenerationAllowListPaths.IsEmpty())
+	{
+		return true;
+	}
+
+	for (const FString& PropertyName : PropertyGenerationAllowListPaths)
+	{
+		if (PropertyName.StartsWith(InPath))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }

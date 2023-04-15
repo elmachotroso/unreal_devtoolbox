@@ -6,12 +6,16 @@ using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
 using Blake3;
+using EpicGames.Core;
+using EpicGames.Serialization;
 using Newtonsoft.Json;
+using JsonWriter = Newtonsoft.Json.JsonWriter;
 
 namespace Jupiter.Implementation
 {
     [JsonConverter(typeof(BlobIdentifierConverter))]
     [TypeConverter(typeof(BlobIdentifierTypeConverter))]
+    [CbConverter(typeof(BlobIdentifierCbConverter))]
     public class BlobIdentifier : ContentHash,  IEquatable<BlobIdentifier>
     {
         // multi thread the hashing for blobs larger then this size
@@ -36,7 +40,9 @@ namespace Jupiter.Implementation
         public bool Equals(BlobIdentifier? other)
         {
             if (other == null)
+            {
                 return false;
+            }
 
             return Comparer.Equals(Identifier, other.Identifier);
         }
@@ -53,7 +59,7 @@ namespace Jupiter.Implementation
                 return true;
             }
 
-            if (obj.GetType() != this.GetType())
+            if (obj.GetType() != GetType())
             {
                 return false;
             }
@@ -71,7 +77,7 @@ namespace Jupiter.Implementation
             return _stringIdentifier;
         }
 
-        public new static BlobIdentifier FromBlob(byte[] blobMemory)
+        public static new BlobIdentifier FromBlob(byte[] blobMemory)
         {
             Hash blake3Hash;
             if (blobMemory.Length < MultiThreadedSize)
@@ -88,7 +94,7 @@ namespace Jupiter.Implementation
             }
             
             // we only keep the first 20 bytes of the Blake3 hash
-            Span<byte> hash = blake3Hash.AsSpan().Slice(0, 20);
+            Span<byte> hash = blake3Hash.AsSpanUnsafe().Slice(0, 20);
             return new BlobIdentifier(hash.ToArray());
         }
 
@@ -109,7 +115,7 @@ namespace Jupiter.Implementation
             }
 
             // we only keep the first 20 bytes of the Blake3 hash
-            Span<byte> hash = blake3Hash.AsSpan().Slice(0, 20);
+            Span<byte> hash = blake3Hash.AsSpanUnsafe().Slice(0, 20);
             return new BlobIdentifier(hash.ToArray());
         }
 
@@ -132,8 +138,18 @@ namespace Jupiter.Implementation
             Hash blake3Hash = hasher.Finalize();
 
             // we only keep the first 20 bytes of the Blake3 hash
-            byte[] hash = blake3Hash.AsSpan().Slice(0, 20).ToArray();
+            byte[] hash = blake3Hash.AsSpanUnsafe().Slice(0, 20).ToArray();
             return new BlobIdentifier(hash);
+        }
+
+        public static BlobIdentifier FromIoHash(IoHash blobIdentifier)
+        {
+            return new BlobIdentifier(blobIdentifier.ToByteArray());
+        }
+
+        public IoHash AsIoHash()
+        {
+            return new IoHash(HashData);
         }
     }
 
@@ -150,27 +166,48 @@ namespace Jupiter.Implementation
   
         public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)  
         {
-            if (value is string)
+            if (value is string s)
             {
-                return new BlobIdentifier((string) value);
+                return new BlobIdentifier(s);
             }
 
             return base.ConvertFrom(context, culture, value);  
         }  
     }
 
-    public class BlobIdentifierConverter : JsonConverter<BlobIdentifier>
+    public class BlobIdentifierConverter : JsonConverter<BlobIdentifier?>
     {
         public override void WriteJson(JsonWriter writer, BlobIdentifier? value, JsonSerializer serializer)
         {
             writer.WriteValue(value!.ToString());
         }
 
-        public override BlobIdentifier ReadJson(JsonReader reader, Type objectType, BlobIdentifier? existingValue, bool hasExistingValue, Newtonsoft.Json.JsonSerializer serializer)
+        public override BlobIdentifier? ReadJson(JsonReader reader, Type objectType, BlobIdentifier? existingValue, bool hasExistingValue, JsonSerializer serializer)
         {
+            if (reader.TokenType == JsonToken.Null)
+            {
+                return null;
+            }
+
             string? s = (string?)reader.Value;
+
+            if (s == null)
+            {
+                return null;
+            }
 
             return new BlobIdentifier(s!);
         }
+    }
+
+    public class BlobIdentifierCbConverter : CbConverterBase<BlobIdentifier>
+    {
+        public override BlobIdentifier Read(CbField field) => new BlobIdentifier(field.AsHash().ToByteArray());
+
+        /// <inheritdoc/>
+        public override void Write(CbWriter writer, BlobIdentifier value) => writer.WriteBinaryAttachmentValue(new IoHash(value.HashData));
+
+        /// <inheritdoc/>
+        public override void WriteNamed(CbWriter writer, Utf8String name, BlobIdentifier value) => writer.WriteBinaryAttachment(name, new IoHash(value.HashData));
     }
 }

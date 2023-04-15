@@ -157,6 +157,7 @@ namespace ValueExtender
 		for (TSharedPtr<SWidget> Widget : Widgets)
 		{
 			WidgetContainer->AddSlot()
+				.AutoHeight()
 			[
 				Widget.ToSharedRef()
 			];
@@ -168,6 +169,12 @@ namespace ValueExtender
 
 TSharedRef<SWidget> FMaterialItemView::CreateValueContent(IDetailLayoutBuilder& InDetailBuilder, const TArray<FAssetData>& OwnerAssetDataArray, UActorComponent* InActorComponent)
 {	
+	// Always consider the InActorComponent's asset location (BP, Level, etc.) as part of the OwnerAssetArray
+	TArray<FAssetData> AssetDataArray = OwnerAssetDataArray;
+	if (InActorComponent)
+	{
+		AssetDataArray.Add((FAssetData)InActorComponent->GetOuter());
+	}
 
 	return
 		SNew(SVerticalBox)
@@ -188,7 +195,7 @@ TSharedRef<SWidget> FMaterialItemView::CreateValueContent(IDetailLayoutBuilder& 
 				.OnObjectChanged(this, &FMaterialItemView::OnSetObject)
 				.ThumbnailPool(InDetailBuilder.GetThumbnailPool())
 				.DisplayCompactSize(true)
-				.OwnerAssetDataArray(OwnerAssetDataArray)
+				.OwnerAssetDataArray(AssetDataArray)
 				.CustomContentSlot()
 				[
 					SNew( SBox )
@@ -525,7 +532,7 @@ void FMaterialList::GenerateChildContent( IDetailChildrenBuilder& ChildrenBuilde
 							.HAlign( HAlign_Center )
 							[
 								SNew( SHyperlink )
-									.TextStyle( FEditorStyle::Get(), "MaterialList.HyperlinkStyle" )
+									.TextStyle( FAppStyle::Get(), "MaterialList.HyperlinkStyle" )
 									.Text( FText::Format(LOCTEXT("HideAllMaterialLinkText", "Hide All Materials on Element {ElementSlot}"), Arguments ) )
 									.OnNavigate( this, &FMaterialList::OnHideMaterialsForElement, CurrentSlot )
 							]
@@ -646,7 +653,7 @@ void FMaterialList::AddMaterialItem( FDetailWidgetRow& Row, int32 CurrentSlot, c
 				.VAlign(VAlign_Top)
 				[
 					SNew( SHyperlink )
-					.TextStyle( FEditorStyle::Get(), "MaterialList.HyperlinkStyle" )
+					.TextStyle( FAppStyle::Get(), "MaterialList.HyperlinkStyle" )
 					.Text( FText::Format(LOCTEXT("DisplayAllMaterialLinkText", "Display {NumMaterials} materials"), Arguments) )
 					.ToolTipText( LOCTEXT("DisplayAllMaterialLink_ToolTip","Display all materials. Drag and drop a material here to replace all materials.") )
 					.OnNavigate( this, &FMaterialList::OnDisplayMaterialsForElement, CurrentSlot )

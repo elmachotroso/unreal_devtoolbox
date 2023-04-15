@@ -5,10 +5,13 @@
 #include "WorldPartition/ActorPartition/PartitionActorDesc.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ActorPartitionSubsystem)
 
 DEFINE_LOG_CATEGORY_STATIC(LogActorPartitionSubsystem, All, All);
 
@@ -179,8 +182,7 @@ public:
 	FActorPartitionWorldPartition(UWorld* InWorld)
 		: FBaseActorPartition(InWorld)
 	{
-		WorldPartition = InWorld->GetWorldPartition();
-		check(WorldPartition);
+		check(InWorld->GetWorldPartition());
 	}
 
 	UActorPartitionSubsystem::FCellCoord GetActorPartitionHash(const FActorPartitionGetParams& GetParams) const override 
@@ -196,14 +198,14 @@ public:
 		bool bUnloadedActorExists = false;
 		auto FindActor = [&FoundActor, &bUnloadedActorExists, InCellCoord, InActorPartitionId, InGridSize, ThisWorld = World](const FWorldPartitionActorDesc* ActorDesc)
 		{
-			check(ActorDesc->GetActorClass()->IsChildOf(InActorPartitionId.GetClass()));
+			check(ActorDesc->GetActorNativeClass()->IsChildOf(InActorPartitionId.GetClass()));
 			FPartitionActorDesc* PartitionActorDesc = (FPartitionActorDesc*)ActorDesc;
 			if ((PartitionActorDesc->GridIndexX == InCellCoord.X) &&
 				(PartitionActorDesc->GridIndexY == InCellCoord.Y) &&
 				(PartitionActorDesc->GridIndexZ == InCellCoord.Z) &&
 				(PartitionActorDesc->GridSize == InGridSize) &&
 				(PartitionActorDesc->GridGuid == InActorPartitionId.GetGridGuid()) &&
-				(FDataLayerEditorContext(ThisWorld, PartitionActorDesc->GetDataLayers()).GetHash() == InActorPartitionId.GetDataLayerEditorContextHash()))
+				(FDataLayerEditorContext(ThisWorld, PartitionActorDesc->GetDataLayerInstanceNames()).GetHash() == InActorPartitionId.GetDataLayerEditorContextHash()))
 			{
 				AActor* DescActor = ActorDesc->GetActor();
 
@@ -223,6 +225,8 @@ public:
 			}
 			return true;
 		};
+
+		UWorldPartition* WorldPartition = World->GetWorldPartition();
 
 		FBox CellBounds = UActorPartitionSubsystem::FCellCoord::GetCellBounds(InCellCoord, InGridSize);
 		if (bInBoundsSearch)
@@ -252,7 +256,7 @@ public:
 				ActorNameBuilder += TEXT("_");
 			}
 
-			if (InActorPartitionId.GetClass()->GetDefaultObject<APartitionActor>()->ShouldIncludeGridSizeInName(World))
+			if (InActorPartitionId.GetClass()->GetDefaultObject<APartitionActor>()->ShouldIncludeGridSizeInName(World, InActorPartitionId))
 			{
 				ActorNameBuilder += FString::Printf(TEXT("%d_"), InGridSize);
 			}
@@ -279,6 +283,9 @@ public:
 				// if the actor is using an external package. We really just want to rename that actor out of the way so we can spawn the new one in
 				// the exact same package, keeping the package name intact.
 				ExistingActor->UObject::Rename(nullptr, nullptr, REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional | REN_ForceNoResetLoaders);
+				
+				// Reuse ActorGuid so that ActorDesc can be updated on save
+				SpawnParams.OverrideActorGuid = ExistingActor->GetActorGuid();
 			}
 						
 			FVector CellCenter(CellBounds.GetCenter());
@@ -318,9 +325,6 @@ public:
 			return true;
 			});
 	}
-
-private:
-	UWorldPartition* WorldPartition;
 };
 
 #endif // WITH_EDITOR
@@ -330,7 +334,7 @@ UActorPartitionSubsystem::UActorPartitionSubsystem()
 
 bool UActorPartitionSubsystem::IsLevelPartition() const
 {
-	return !GetWorld()->HasSubsystem<UWorldPartitionSubsystem>();
+	return !UWorld::IsPartitionedWorld(GetWorld());
 }
 
 #if WITH_EDITOR
@@ -345,9 +349,15 @@ void UActorPartitionSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 /** Implement this for deinitialization of instances of the system */
 void UActorPartitionSubsystem::Deinitialize()
 {
-	if (ActorPartition)
+	UninitializeActorPartition();
+}
+
+void UActorPartitionSubsystem::OnWorldPartitionInitialized(UWorldPartition* InWorldPartition)
+{
+	if (InWorldPartition->IsMainWorldPartition())
 	{
-		ActorPartition->GetOnActorPartitionHashInvalidated().Remove(ActorPartitionHashInvalidatedHandle);
+		UninitializeActorPartition();
+		InitializeActorPartition();
 	}
 }
 
@@ -371,12 +381,30 @@ void UActorPartitionSubsystem::InitializeActorPartition()
 	if (IsLevelPartition())
 	{
 		ActorPartition.Reset(new FActorPartitionLevel(GetWorld()));
+
+		// Specific use case where map is Converted to World Partition from a non World Partition template
+		if (GetWorld()->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
+		{
+			GetWorld()->OnWorldPartitionInitialized().AddUObject(this, &UActorPartitionSubsystem::OnWorldPartitionInitialized);
+		}
 	}
 	else
 	{
 		ActorPartition.Reset(new FActorPartitionWorldPartition(GetWorld()));
 	}
 	ActorPartitionHashInvalidatedHandle = ActorPartition->GetOnActorPartitionHashInvalidated().AddUObject(this, &UActorPartitionSubsystem::OnActorPartitionHashInvalidated);
+}
+
+void UActorPartitionSubsystem::UninitializeActorPartition()
+{
+	PartitionedActors.Empty();
+	if (ActorPartition)
+	{
+		ActorPartition->GetOnActorPartitionHashInvalidated().Remove(ActorPartitionHashInvalidatedHandle);
+	}
+
+	ActorPartition = nullptr;
+	GetWorld()->OnWorldPartitionInitialized().RemoveAll(this);
 }
 
 APartitionActor* UActorPartitionSubsystem::GetActor(const FActorPartitionGetParams& GetParams)
@@ -393,22 +421,18 @@ APartitionActor* UActorPartitionSubsystem::GetActor(const TSubclassOf<APartition
 	
 	auto WrappedInActorCreated = [World, InActorCreated](APartitionActor* PartitionActor)
 	{
-		if (UDataLayerSubsystem* DataLayerSubsystem = World->GetSubsystem<UDataLayerSubsystem>())
+		if(UDataLayerSubsystem* DataLayerSubsystem = World->GetSubsystem<UDataLayerSubsystem>())
 		{
-			if (const AWorldDataLayers* WorldDataLayers = World->GetWorldDataLayers())
+			for (UDataLayerInstance* DataLayer : DataLayerSubsystem->GetActorEditorContextDataLayers())
 			{
-				for (const FName& DataLayer : DataLayerSubsystem->GetDataLayerEditorContext().GetDataLayers())
-				{
-					PartitionActor->AddDataLayer(WorldDataLayers->GetDataLayerFromName(DataLayer));
-				}
+				PartitionActor->AddDataLayer(DataLayer);
 			}
 		}
-
 		InActorCreated(PartitionActor);
 	};
 
 	UDataLayerSubsystem* DataLayerSubsystem = World->GetSubsystem<UDataLayerSubsystem>();
-	FActorPartitionIdentifier ActorPartitionId(InActorClass, InGuid, DataLayerSubsystem ? DataLayerSubsystem->GetDataLayerEditorContext().GetHash() : FDataLayerEditorContext::EmptyHash);
+	FActorPartitionIdentifier ActorPartitionId(InActorClass, InGuid, DataLayerSubsystem ? DataLayerSubsystem->GetDataLayerEditorContextHash() : FDataLayerEditorContext::EmptyHash);
 	TMap<FActorPartitionIdentifier, TWeakObjectPtr<APartitionActor>>* ActorsPerId = PartitionedActors.Find(InCellCoords);
 	APartitionActor* FoundActor = nullptr;
 	if (!ActorsPerId)
@@ -447,3 +471,4 @@ APartitionActor* UActorPartitionSubsystem::GetActor(const TSubclassOf<APartition
 }
 
 #endif // WITH_EDITOR
+

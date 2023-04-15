@@ -7,6 +7,8 @@
 #include "GameFramework/Actor.h"
 #include "Evaluation/MovieSceneEvaluation.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneActorReferenceTemplate)
+
 
 namespace PropertyTemplate
 {
@@ -35,11 +37,6 @@ namespace PropertyTemplate
 		return InWeakPtr.Get();
 	}
 
-	static bool IsValueValid(UObject* InValue)
-	{
-		return InValue != nullptr;
-	}
-
 	template<> IMovieScenePreAnimatedTokenPtr CacheExistingState<UObject*, FMovieSceneObjectBindingID>(UObject& Object, FTrackInstancePropertyBindings& PropertyBindings)
 	{
 		return TCachedState<UObject*, TWeakObjectPtr<>>(PropertyBindings.GetCurrentValue<UObject*>(Object), PropertyBindings);
@@ -60,3 +57,4 @@ void FMovieSceneActorReferenceSectionTemplate::Evaluate(const FMovieSceneEvaluat
 	ActorReferenceData.Evaluate(Context.GetTime(), ObjectBinding);
 	ExecutionTokens.Add(TPropertyTrackExecutionToken<UObject*, FMovieSceneObjectBindingID>(ObjectBinding.Object));
 }
+

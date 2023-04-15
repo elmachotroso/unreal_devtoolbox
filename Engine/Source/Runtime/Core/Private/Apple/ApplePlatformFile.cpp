@@ -95,7 +95,8 @@ public:
 				else
 				{
 					TRACE_PLATFORMFILE_FAIL_CLOSE(FileHandle);
-					UE_LOG(LogInit, Warning, TEXT("Failed to properly close readable file: %s with errno: %d"), *Filename, errno);
+					UE_LOG(LogInit, Warning, TEXT("Failed to properly close readable file: %s with errno: %d: %s"),
+						*Filename, errno, UTF8_TO_TCHAR(strerror(errno)));
 				}
 				ActiveHandles[ HandleSlot ] = nullptr;
 			}
@@ -108,7 +109,8 @@ public:
                 int Result = fsync(FileHandle);
 				if (Result < 0)
 				{
-					UE_LOG(LogInit, Error, TEXT("Failed to properly flush writable file with errno: %d"), errno);
+					UE_LOG(LogInit, Error, TEXT("Failed to properly flush writable file with errno: %d: %s"),
+						errno, UTF8_TO_TCHAR(strerror(errno)));
 				}
             }
 			TRACE_PLATFORMFILE_BEGIN_CLOSE(FileHandle);
@@ -121,7 +123,8 @@ public:
 			else
 			{
 				TRACE_PLATFORMFILE_FAIL_CLOSE(FileHandle);
-				UE_LOG(LogInit, Warning, TEXT("Failed to properly close file with errno: %d"), errno);
+				UE_LOG(LogInit, Warning, TEXT("Failed to properly close file with errno: %d: %s"),
+					errno, UTF8_TO_TCHAR(strerror(errno)));
 			}
 		}
 		FileHandle = -1;
@@ -535,7 +538,7 @@ void FApplePlatformFile::SetTimeStamp(const TCHAR* Filename, const FDateTime Dat
 	// change the modification time only
 	struct utimbuf Times;
 	Times.actime = FileInfo.st_atime;
-	Times.modtime = (DateTime - MacEpoch).GetTotalSeconds();
+	Times.modtime = (time_t)(DateTime - MacEpoch).GetTotalSeconds();
 	utime(TCHAR_TO_UTF8(*NormalizeFilename(Filename)), &Times);
 }
 
@@ -565,9 +568,9 @@ IFileHandle* FApplePlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrit
 	if (Handle != -1)
 	{
 		TRACE_PLATFORMFILE_END_OPEN(Handle);
-#if PLATFORM_MAC && !UE_BUILD_SHIPPING
+#if PLATFORM_MAC && UE_EDITOR && !UE_BUILD_SHIPPING
 		// No blocking attempt shared lock, failure means we should not have opened the file for reading, protect against multiple instances and client/server versions
-		if(!bAllowWrite && flock(Handle, LOCK_NB | LOCK_SH) == -1)
+		if(flock(Handle, LOCK_NB | LOCK_SH) != 0)
 		{
 			TRACE_PLATFORMFILE_BEGIN_CLOSE(Handle);
 			int CloseResult = close(Handle);
@@ -620,8 +623,8 @@ IFileHandle* FApplePlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, 
 	{
 		TRACE_PLATFORMFILE_END_OPEN(Handle);
 #if PLATFORM_MAC && UE_EDITOR && !UE_BUILD_SHIPPING
-		// No blocking attempt exclusive lock, failure means we should not have opened the file for writing, protect against multiple instances and client/server versions
-		if(!bAllowRead && flock(Handle, LOCK_NB | LOCK_EX) == -1)
+		// No blocking attempt EXclusive lock, failure means we should not have opened the file for writing, protect against multiple instances and client/server versions
+		if(flock(Handle, LOCK_NB | LOCK_EX) != 0)
 		{
 			TRACE_PLATFORMFILE_BEGIN_CLOSE(Handle);
 			int CloseResult = close(Handle);
@@ -638,6 +641,12 @@ IFileHandle* FApplePlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, 
 			(void)CloseResult;
 #endif
 			return nullptr;
+		}
+		
+		// We have created the writer, if reading is required downgrade the lock to SHared
+		if(bAllowRead)
+		{
+			flock(Handle, LOCK_NB | LOCK_SH);
 		}
 #endif
 		
@@ -758,7 +767,7 @@ bool FApplePlatformFile::IterateDirectoryCommon(const TCHAR* Directory, const TF
 	{
 		Result = true;
 		struct dirent *Entry;
-		while ((Entry = readdir(Handle)) != NULL)
+		while (Result && (Entry = readdir(Handle)) != NULL)
 		{
 			if (FCStringAnsi::Strcmp(Entry->d_name, ".") && FCStringAnsi::Strcmp(Entry->d_name, "..") && FCStringAnsi::Strcmp(Entry->d_name, ".DS_Store"))
 			{

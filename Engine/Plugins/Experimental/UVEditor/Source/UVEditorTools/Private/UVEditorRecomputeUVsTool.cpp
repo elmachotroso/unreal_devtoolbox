@@ -5,13 +5,16 @@
 #include "ToolBuilderUtil.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "Polygroups/PolygroupUtil.h"
-#include "ParameterizationOps/RecomputeUVsOp.h"
 #include "ToolTargets/UVEditorToolMeshInput.h"
-#include "UVToolContextObjects.h"
+#include "ContextObjects/UVToolContextObjects.h"
 #include "ContextObjectStore.h"
 #include "MeshOpPreviewHelpers.h"
 #include "UVEditorToolAnalyticsUtils.h"
 #include "EngineAnalytics.h"
+#include "Operators/UVEditorRecomputeUVsOp.h"
+#include "UVEditorUXSettings.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UVEditorRecomputeUVsTool)
 
 using namespace UE::Geometry;
 
@@ -49,10 +52,21 @@ void UUVEditorRecomputeUVsTool::Setup()
 
 	// initialize our properties
 
-	Settings = NewObject<URecomputeUVsToolProperties>(this);
+	Settings = NewObject<UUVEditorRecomputeUVsToolProperties>(this);
 	Settings->RestoreProperties(this);
+	Settings->bUDIMCVAREnabled = (FUVEditorUXSettings::CVarEnablePrototypeUDIMSupport.GetValueOnGameThread() > 0);
 	AddToolPropertySource(Settings);
-	Factories.SetNum(Targets.Num());
+
+	UContextObjectStore* ContextStore = GetToolManager()->GetContextObjectStore();
+	UVToolSelectionAPI = ContextStore->FindContext<UUVToolSelectionAPI>();
+
+	UUVToolSelectionAPI::FHighlightOptions HighlightOptions;
+	HighlightOptions.bBaseHighlightOnPreviews = true;
+	HighlightOptions.bAutoUpdateUnwrap = true;
+
+	UVToolSelectionAPI->SetHighlightOptions(HighlightOptions);
+	UVToolSelectionAPI->SetHighlightVisible(true, false, true);
+
 
 	if (Targets.Num() == 1)
 	{
@@ -60,33 +74,60 @@ void UUVEditorRecomputeUVsTool::Setup()
 		PolygroupLayerProperties->RestoreProperties(this, TEXT("UVEditorRecomputeUVsTool"));
 		PolygroupLayerProperties->InitializeGroupLayers(Targets[0]->AppliedCanonical.Get());
 		PolygroupLayerProperties->WatchProperty(PolygroupLayerProperties->ActiveGroupLayer, [&](FName) { OnSelectedGroupLayerChanged(); });
-		AddToolPropertySource(PolygroupLayerProperties);
-		UpdateActiveGroupLayer();
+		AddToolPropertySource(PolygroupLayerProperties);		
 	}
 	else
 	{
 		Settings->bEnablePolygroupSupport = false;
-		Settings->IslandGeneration = ERecomputeUVsPropertiesIslandMode::ExistingUVs;
+		Settings->IslandGeneration = EUVEditorRecomputeUVsPropertiesIslandMode::ExistingUVs;
 	}
+	UpdateActiveGroupLayer(false);  /* Don't update factories that don't exist yet. */
 
-	
-	for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+	auto SetupOpFactory = [this](UUVEditorToolMeshInput& Target, const FUVToolSelection* Selection)
 	{
-		TObjectPtr<UUVEditorToolMeshInput> Target = Targets[TargetIndex];
-		Factories[TargetIndex] = NewObject<URecomputeUVsOpFactory>();
-		Factories[TargetIndex]->TargetTransform = (FTransform3d)Target->AppliedPreview->PreviewMesh->GetTransform();
-		Factories[TargetIndex]->Settings = Settings;
-		Factories[TargetIndex]->OriginalMesh = Target->AppliedCanonical;
-		Factories[TargetIndex]->InputGroups = ActiveGroupSet;
-		Factories[TargetIndex]->GetSelectedUVChannel = [Target]() { return Target->UVLayerIndex; };
+		TObjectPtr<UUVEditorRecomputeUVsOpFactory> Factory = NewObject<UUVEditorRecomputeUVsOpFactory>();
+		Factory->TargetTransform = (FTransform3d)Target.AppliedPreview->PreviewMesh->GetTransform();
+		Factory->Settings = Settings;
+		Factory->OriginalMesh = Target.AppliedCanonical;
+		Factory->InputGroups = ActiveGroupSet;
+		Factory->GetSelectedUVChannel = [&Target]() { return Target.UVLayerIndex; };
+		if (Selection)
+		{
+			Factory->Selection.Emplace(Selection->GetConvertedSelection(*Selection->Target->UnwrapCanonical,
+				                                                        UE::Geometry::FUVToolSelection::EType::Triangle).SelectedIDs);
+		}
 
-		Target->AppliedPreview->ChangeOpFactory(Factories[TargetIndex]);
-		Target->AppliedPreview->OnMeshUpdated.AddWeakLambda(this, [Target](UMeshOpPreviewWithBackgroundCompute* Preview) {
-			Target->UpdateUnwrapPreviewFromAppliedPreview();
-			});
+		Target.AppliedPreview->ChangeOpFactory(Factory);
+		Target.AppliedPreview->OnMeshUpdated.AddWeakLambda(this, [this, &Target](UMeshOpPreviewWithBackgroundCompute* Preview) {
+			if (Preview->HaveValidNonEmptyResult())
+			{
+				Target.UpdateUnwrapPreviewFromAppliedPreview();
 
-		Target->AppliedPreview->InvalidateResult();
+				this->UVToolSelectionAPI->RebuildUnwrapHighlight(Preview->PreviewMesh->GetTransform());
+			}
+			});		
+
+		Target.AppliedPreview->InvalidateResult();
+		return Factory;
+	};
+
+	if (UVToolSelectionAPI->HaveSelections())
+	{
+		Factories.Reserve(UVToolSelectionAPI->GetSelections().Num());
+		for (FUVToolSelection Selection : UVToolSelectionAPI->GetSelections())
+		{
+			Factories.Add(SetupOpFactory(*Selection.Target, &Selection));
+		}
 	}
+	else
+	{
+		Factories.Reserve(Targets.Num());
+		for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+		{
+			Factories.Add(SetupOpFactory(*Targets[TargetIndex], nullptr));
+		}
+	}
+	
 
 	SetToolDisplayName(LOCTEXT("ToolNameLocal", "UV Unwrap"));
 	GetToolManager()->DisplayMessage(
@@ -158,9 +199,9 @@ void UUVEditorRecomputeUVsTool::Shutdown(EToolShutdownType ShutdownType)
 	{
 		Target->AppliedPreview->ClearOpFactory();
 	}
-	for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+	for (int32 FactoryIndex = 0; FactoryIndex < Factories.Num(); ++FactoryIndex)
 	{
-		Factories[TargetIndex] = nullptr;
+		Factories[FactoryIndex] = nullptr;
 	}
 	Settings = nullptr;
 	Targets.Empty();
@@ -201,7 +242,7 @@ void UUVEditorRecomputeUVsTool::OnSelectedGroupLayerChanged()
 }
 
 
-void UUVEditorRecomputeUVsTool::UpdateActiveGroupLayer()
+void UUVEditorRecomputeUVsTool::UpdateActiveGroupLayer(bool bUpdateFactories)
 {
 	if (Targets.Num() == 1)
 	{
@@ -217,10 +258,16 @@ void UUVEditorRecomputeUVsTool::UpdateActiveGroupLayer()
 			ActiveGroupSet = MakeShared<UE::Geometry::FPolygroupSet, ESPMode::ThreadSafe>(Targets[0]->AppliedCanonical.Get(), FoundAttrib);
 		}
 	}
-	for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
+	else
 	{
-		if (Factories[TargetIndex]) {
-			Factories[TargetIndex]->InputGroups = ActiveGroupSet;
+		ActiveGroupSet = nullptr;
+	}
+
+	if (bUpdateFactories)
+	{
+		for (int32 FactoryIdx = 0; FactoryIdx < Factories.Num(); ++FactoryIdx)
+		{
+			Factories[FactoryIdx]->InputGroups = ActiveGroupSet;
 		}
 	}
 }
@@ -264,23 +311,23 @@ void UUVEditorRecomputeUVsTool::RecordAnalytics()
 	Attributes.Add(AnalyticsEventAttributeEnum(TEXT("Settings.AutoRotation"), Settings->AutoRotation));
 	
 	Attributes.Add(AnalyticsEventAttributeEnum(TEXT("Settings.UnwrapType"), Settings->UnwrapType));
-	if (Settings->UnwrapType == ERecomputeUVsPropertiesUnwrapType::IslandMerging || Settings->UnwrapType == ERecomputeUVsPropertiesUnwrapType::ExpMap)
+	if (Settings->UnwrapType == EUVEditorRecomputeUVsPropertiesUnwrapType::IslandMerging || Settings->UnwrapType == EUVEditorRecomputeUVsPropertiesUnwrapType::ExpMap)
 	{
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.SmoothingSteps"), Settings->SmoothingSteps));
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.SmoothingAlpha"), Settings->SmoothingAlpha));
 	}
-	if (Settings->UnwrapType == ERecomputeUVsPropertiesUnwrapType::IslandMerging)
+	if (Settings->UnwrapType == EUVEditorRecomputeUVsPropertiesUnwrapType::IslandMerging)
 	{
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.MergingDistortionThreshold"), Settings->MergingDistortionThreshold));
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.MergingAngleThreshold"), Settings->MergingAngleThreshold));
 	}
 	
 	Attributes.Add(AnalyticsEventAttributeEnum(TEXT("Settings.LayoutType"), Settings->LayoutType));
-	if (Settings->LayoutType == ERecomputeUVsPropertiesLayoutType::Repack)
+	if (Settings->LayoutType == EUVEditorRecomputeUVsPropertiesLayoutType::Repack)
 	{
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.TextureResolution"), Settings->TextureResolution));
 	}
-	if (Settings->LayoutType == ERecomputeUVsPropertiesLayoutType::NormalizeToBounds || Settings->LayoutType == ERecomputeUVsPropertiesLayoutType::NormalizeToWorld)
+	if (Settings->LayoutType == EUVEditorRecomputeUVsPropertiesLayoutType::NormalizeToBounds || Settings->LayoutType == EUVEditorRecomputeUVsPropertiesLayoutType::NormalizeToWorld)
 	{
 		Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.NormalizeScale"), Settings->NormalizeScale));
 	}
@@ -297,3 +344,4 @@ void UUVEditorRecomputeUVsTool::RecordAnalytics()
 }
 
 #undef LOCTEXT_NAMESPACE
+

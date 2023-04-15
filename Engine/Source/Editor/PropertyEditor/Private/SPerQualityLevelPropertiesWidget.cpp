@@ -9,7 +9,7 @@
 #include "Widgets/Input/SComboButton.h"
 #include "PlatformInfo.h"
 #include "Widgets/Layout/SWrapBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBox.h"
 #include "DetailLayoutBuilder.h"
 #include "Widgets/Images/SImage.h"
@@ -78,7 +78,7 @@ TSharedRef<SWidget> SOverridePropertiesWidget::MakeOverrideWidget(FName InName, 
 			[
 				SNew(SButton)
 				.ContentPadding(2.0f)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.OnClicked(this, &SOverridePropertiesWidget::RemoveEntry, InName)
 				.ToolTipText(FText::Format(NSLOCTEXT("SOverridePropertiesWidget", "RemoveOverrideFor", "Remove Override for {0}"), InDisplayText))
 				.ForegroundColor(FSlateColor::UseForeground())
@@ -87,7 +87,7 @@ TSharedRef<SWidget> SOverridePropertiesWidget::MakeOverrideWidget(FName InName, 
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Icons.Delete"))
+					.Image(FAppStyle::GetBrush("Icons.Delete"))
 				]
 			];
 	}
@@ -100,7 +100,7 @@ TSharedRef<SWidget> SOverridePropertiesWidget::MakeOverrideWidget(FName InName, 
 			[
 				SNew(SComboButton)
 				.Visibility_Lambda([this]() { return bAddedMenuItem ? EVisibility::Visible : EVisibility::Hidden; })
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 				.ContentPadding(2.0f)
 				.ForegroundColor(FSlateColor::UseForeground())
 				.HasDownArrow(false)
@@ -127,7 +127,7 @@ void SOverridePropertiesWidget::AddEntryToMenu(const FName& EntryName, const FTe
 	AddEntryMenuBuilder.AddMenuEntry(
 		MenuText,
 		MenuTooltipText,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "OverridePropertiesWidget.AddEntry"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "OverridePropertiesWidget.AddEntry"),
 		FUIAction(FExecuteAction::CreateSP(this, &SOverridePropertiesWidget::AddEntry, EntryName))
 	);
 }
@@ -176,7 +176,7 @@ void SPerQualityLevelPropertiesWidget::ConstructChildren()
 		AddMenuBuilder.BeginSection(Section, FText::FromString(TEXT("Quality Levels")));
 
 		int32 QualityLevelCount = 0;
-		while (QualityLevelCount < static_cast<int32>(QualityLevelProperty::EQualityLevels::Num))
+		while (QualityLevelCount < static_cast<int32>(EPerQualityLevels::Num))
 		{
 			FName QualityName = QualityLevelProperty::QualityLevelToFName(QualityLevelCount++);
 			const FTextFormat Format = NSLOCTEXT("SPerQualityLevelPropertiesWidget", "AddOverrideGroupFor", "Add Override specifically for {0}");

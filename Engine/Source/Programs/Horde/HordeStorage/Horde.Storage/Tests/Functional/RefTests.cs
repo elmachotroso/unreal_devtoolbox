@@ -8,7 +8,6 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
@@ -28,6 +27,8 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Serilog;
 using Serilog.Core;
+using EpicGames.Horde.Storage;
+using EpicGames.Serialization;
 
 namespace Horde.Storage.FunctionalTests.Ref
 {
@@ -35,7 +36,6 @@ namespace Horde.Storage.FunctionalTests.Ref
     [TestClass]
     public class MongoRefTests : RefTests
     {
-        private static readonly string MongoTestDatabase = "Europa_TestNamespace";
         private static MongoSettings? _mongoSettings;
         private MongoRefsStore? _refsStore;
 
@@ -49,18 +49,21 @@ namespace Horde.Storage.FunctionalTests.Ref
             _mongoSettings = provider.GetService<IOptionsMonitor<MongoSettings>>()!.CurrentValue;
 
             MongoClient client = GetMongoClient();
-            if (client.GetDatabase(MongoTestDatabase) != null)
+            foreach (NamespaceId ns in new[] {TestNamespace, LastAccessTestNamespace})
             {
-                await client.DropDatabaseAsync(MongoTestDatabase);
+                string dbName = $"Europa_{ns}";
+                if (client.GetDatabase(dbName) != null)
+                {
+                    await client.DropDatabaseAsync(dbName);
+                }
             }
 
-            
             //verify we are using the expected refs store
             IRefsStore? refStore = provider.GetService<IRefsStore>();
             Assert.IsTrue(RefStoreIs(refStore, typeof(MongoRefsStore)));
 
             _refsStore = new MongoRefsStore(provider.GetService<IOptionsMonitor<MongoSettings>>()!);
-            IBlobStore blobStore = (IBlobStore)provider.GetService(typeof(IBlobStore))!;
+            IBlobService blobStore = (IBlobService)provider.GetService(typeof(IBlobService))!;
 
             await SeedRefTestData(_refsStore, blobStore);
 
@@ -73,43 +76,89 @@ namespace Horde.Storage.FunctionalTests.Ref
 
         protected override async Task<RefRecord> GetTestRecord(BucketId bucket, KeyId name, IRefsStore.ExtraFieldsFlag fields)
         {
-            var record = await _refsStore!.Get(TestNamespace, bucket, name, fields);
+            RefRecord? record = await _refsStore!.Get(TestNamespace, bucket, name, fields);
             if (record == null)
+            {
                 throw new Exception("Unable to find record");
+            }
 
             return record;
         }
         protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
-            return new[] {new KeyValuePair<string, string>("Horde.Storage:RefDbImplementation", HordeStorageSettings.RefDbImplementations.Mongo.ToString())};
+            return new[] {new KeyValuePair<string, string>("Horde_Storage:RefDbImplementation", HordeStorageSettings.RefDbImplementations.Mongo.ToString())};
         }
     }
 
+    [TestClass]
+    public class MemoryRefTests : RefTests
+    {
+        private MemoryRefsStore? _refsStore;
+
+        protected override async Task SeedDb(IServiceProvider provider)
+        {
+            //verify we are using the expected refs store
+            IRefsStore? refStore = provider.GetService<IRefsStore>();
+            Assert.IsTrue(RefStoreIs(refStore, typeof(MemoryRefsStore)));
+            if (refStore is CachedRefStore cachedRefStore)
+            {
+                _refsStore = (MemoryRefsStore)cachedRefStore.BackingStore;
+            }
+            else
+            {
+                _refsStore = (MemoryRefsStore)refStore!;
+            }
+
+            IBlobService blobStore = (IBlobService)provider.GetService(typeof(IBlobService))!;
+
+            await SeedRefTestData(_refsStore, blobStore);
+
+        }
+
+        protected override Task TeardownDb(IServiceProvider provider)
+        {
+            return Task.CompletedTask;
+        }
+
+        protected override async Task<RefRecord> GetTestRecord(BucketId bucket, KeyId name, IRefsStore.ExtraFieldsFlag fields)
+        {
+            RefRecord? record = await _refsStore!.Get(TestNamespace, bucket, name, fields);
+            if (record == null)
+            {
+                throw new Exception("Unable to find record");
+            }
+
+            return record;
+        }
+        protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
+        {
+            return new[] {new KeyValuePair<string, string>("Horde_Storage:RefDbImplementation", HordeStorageSettings.RefDbImplementations.Memory.ToString())};
+        }
+    }
 
     [TestClass]
-    public class DynamoRefTests : RefTests
+    public class DynamoRefTests : RefTests, IDisposable
     {
         private DynamoDbRefsStore? _refStore;
         private readonly string[] _tablesToDelete = new[] {"Europa_Cache", "Europa_Namespace"};
 
         protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
         {
-            return new[] {new KeyValuePair<string, string>("Horde.Storage:RefDbImplementation", HordeStorageSettings.RefDbImplementations.DynamoDb.ToString())};
+            return new[] {new KeyValuePair<string, string>("Horde_Storage:RefDbImplementation", HordeStorageSettings.RefDbImplementations.DynamoDb.ToString())};
         }
 
         protected override async Task SeedDb(IServiceProvider provider)
         {
             IOptionsMonitor<DynamoDbSettings> dynamoSettings = provider.GetService<IOptionsMonitor<DynamoDbSettings>>()!;
-            IAmazonDynamoDB client = provider.GetService<IAmazonDynamoDB>()!;
 
             //verify we are using the expected refs store
-            var cacheStore = provider.GetService<IRefsStore>();
+            IRefsStore? cacheStore = provider.GetService<IRefsStore>();
             Assert.IsTrue(RefStoreIs(cacheStore, typeof(DynamoDbRefsStore)));
 
             _refStore = new DynamoDbRefsStore(dynamoSettings, provider.GetService<IAmazonDynamoDB>()!, provider.GetService<DynamoNamespaceStore>()!);
-            IBlobStore blobStore = (IBlobStore)provider.GetService(typeof(IBlobStore))!;
+            IBlobService blobService = provider.GetService<IBlobService>()!;
 
-            await SeedRefTestData(_refStore, blobStore);
+            await SeedRefTestData(_refStore, blobService);
         }
 
         protected override async Task TeardownDb(IServiceProvider provider)
@@ -129,18 +178,27 @@ namespace Horde.Storage.FunctionalTests.Ref
 
         protected override async Task<RefRecord> GetTestRecord(BucketId bucket, KeyId name, IRefsStore.ExtraFieldsFlag fields)
         {
-            var record = await _refStore!.Get(TestNamespace, bucket, name, fields);
+            RefRecord? record = await _refStore!.Get(TestNamespace, bucket, name, fields);
             if (record == null)
+            {
                 throw new Exception("Unable to find record");
+            }
 
             return record;
         }
 
-        // removing batch test using dynamo as it hangs the test runner for unknown reasons when run with a lot of other tests
-        [TestMethod]
-        public new Task Batch()
+        protected virtual void Dispose(bool disposing)
         {
-            return Task.CompletedTask;
+            if (disposing)
+            {
+                _refStore?.Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            System.GC.SuppressFinalize(this);
         }
     }
     
@@ -150,12 +208,13 @@ namespace Horde.Storage.FunctionalTests.Ref
         private static HttpClient? _httpClient;
         private static ILastAccessCache<RefRecord>? _lastAccessCache;
 
-        protected static readonly string TestObjectContents = "Test Object Data";
-        protected static readonly byte[] TestObjectData = Encoding.ASCII.GetBytes(TestObjectContents);
-        protected static readonly ContentHash TestObjectHash = ContentHash.FromBlob(TestObjectData);
-        protected static readonly BlobIdentifier TestObjectBlobHash = BlobIdentifier.FromContentHash(TestObjectHash);
-        
-        protected readonly NamespaceId TestNamespace = new NamespaceId("test-namespace");
+        private const string TestObjectContents = "Test Object Data";
+        private static readonly byte[] TestObjectData = Encoding.ASCII.GetBytes(TestObjectContents);
+        private static readonly ContentHash TestObjectHash = ContentHash.FromBlob(TestObjectData);
+        private static readonly BlobIdentifier TestObjectBlobHash = BlobIdentifier.FromContentHash(TestObjectHash);
+
+        protected NamespaceId TestNamespace { get; } = new NamespaceId("test-namespace");
+        protected NamespaceId LastAccessTestNamespace { get; } = new NamespaceId("test-namespace-last-access");
 
         [TestInitialize]
         public async Task Setup()
@@ -186,47 +245,52 @@ namespace Horde.Storage.FunctionalTests.Ref
             await SeedDb(server.Services);
         }
 
-        protected async Task SeedRefTestData(IRefsStore refsStore, IBlobStore blobStore)
+        protected async Task SeedRefTestData(IRefsStore refsStore, IBlobService blobStore)
         {
             // add the objects as if they were last accessed a day ago
             DateTime lastAccessTime = DateTime.Now.AddDays(-1);
 
             BucketId bucket = new BucketId("bucket");
 
-            await refsStore.Add(new RefRecord(TestNamespace, bucket, new KeyId("testObject"), blobs: new[] { TestObjectBlobHash },
-                lastAccessTime: lastAccessTime, contentHash: TestObjectHash, metadata: null));
-            await blobStore.PutObject(TestNamespace, TestObjectData, TestObjectBlobHash);
+            foreach (NamespaceId ns in new [] {TestNamespace, LastAccessTestNamespace})
+            {
+                await refsStore.Add(new RefRecord(ns, bucket, new KeyId("testObject"), blobs: new[] { TestObjectBlobHash },
+                    lastAccessTime: lastAccessTime, contentHash: TestObjectHash, metadata: null));
+                await blobStore.PutObject(ns, TestObjectData, TestObjectBlobHash);
 
-            // a object with metadata
-            await refsStore.Add(new RefRecord(TestNamespace, bucket, new KeyId("testObjectWithMetadata"), blobs: new[] { TestObjectBlobHash },
-                lastAccessTime: lastAccessTime, contentHash: TestObjectHash, metadata: new Dictionary<string, object>() {{"Foo", "Bar"}}));
-            await blobStore.PutObject(TestNamespace, TestObjectData, TestObjectBlobHash);
+                // a object with metadata
+                await refsStore.Add(new RefRecord(ns, bucket, new KeyId("testObjectWithMetadata"), blobs: new[] { TestObjectBlobHash },
+                    lastAccessTime: lastAccessTime, contentHash: TestObjectHash, metadata: new Dictionary<string, object>() {{"Foo", "Bar"}}));
+                await blobStore.PutObject(ns, TestObjectData, TestObjectBlobHash);
 
-            // the deletableObject should be slightly newer then testObject to control sorting for last access
-            await refsStore.Add(new RefRecord(TestNamespace, bucket, new KeyId("deletableObject"),
-                blobs: new[] { TestObjectBlobHash }, contentHash: TestObjectHash,lastAccessTime: lastAccessTime.AddMinutes(2), metadata: null));
-            await blobStore.PutObject(TestNamespace, TestObjectData, TestObjectBlobHash);
+                // the deletableObject should be slightly newer then testObject to control sorting for last access
+                await refsStore.Add(new RefRecord(ns, bucket, new KeyId("deletableObject"),
+                    blobs: new[] { TestObjectBlobHash }, contentHash: TestObjectHash,lastAccessTime: lastAccessTime.AddMinutes(2), metadata: null));
+                await blobStore.PutObject(ns, TestObjectData, TestObjectBlobHash);
 
-            byte[] contents = Encoding.ASCII.GetBytes("This content will only be hashed");
-            BlobIdentifier newContentIdentifier = BlobIdentifier.FromBlob(contents);
-            await refsStore.Add(new RefRecord(TestNamespace, bucket, new KeyId("notUploadedToIo"), blobs: new[] { newContentIdentifier },
-                lastAccessTime: lastAccessTime, contentHash: newContentIdentifier, metadata: null));
-            // this object should not be uploaded to IO, and is considered recently uploaded for last access filtering
-
+                byte[] contents = Encoding.ASCII.GetBytes("This content will only be hashed");
+                BlobIdentifier newContentIdentifier = BlobIdentifier.FromBlob(contents);
+                await refsStore.Add(new RefRecord(ns, bucket, new KeyId("notUploadedToIo"), blobs: new[] { newContentIdentifier },
+                    lastAccessTime: lastAccessTime, contentHash: newContentIdentifier, metadata: null));
+                // this object should not be uploaded to IO, and is considered recently uploaded for last access filtering 
+            }
         }
-
 
         [TestCleanup]
         public async Task Teardown()
         {
-            if (_server != null) 
+            if (_server != null)
+            {
                 await TeardownDb(_server.Services);
+            }
         }
 
-        protected bool RefStoreIs(IRefsStore? refStore, Type refStoreType)
+        protected static bool RefStoreIs(IRefsStore? refStore, Type refStoreType)
         {
             if (refStore == null)
+            {
                 return false;
+            }
 
             if (refStore.GetType() == refStoreType)
             {
@@ -252,7 +316,7 @@ namespace Horde.Storage.FunctionalTests.Ref
         [TestMethod]
         public async Task ListNamespaces()
         {
-            HttpResponseMessage response = await _httpClient!.GetAsync("api/v1/c/ddc");
+            HttpResponseMessage response = await _httpClient!.GetAsync(new Uri("api/v1/c/ddc", UriKind.Relative));
             response.EnsureSuccessStatusCode();
             GetNamespacesResponse content = await response.Content.ReadAsAsync<GetNamespacesResponse>();
 
@@ -268,9 +332,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             // fetch refs records once first so that any previous runs of tests are ignored
             List<(RefRecord, DateTime)> _ = await _lastAccessCache!.GetLastAccessedRecords();
 
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/testObject");
-            await response;
-            HttpResponseMessage result = response.Result;
+            HttpResponseMessage result = await _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObject", UriKind.Relative));
 
             result.EnsureSuccessStatusCode();
             RefResponse content = await result.Content.ReadAsAsync<RefResponse>();
@@ -290,33 +352,31 @@ namespace Horde.Storage.FunctionalTests.Ref
         [TestMethod]
         public async Task GetFullRefObjectAsCompactBinary()
         {
-            HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/c/ddc/{TestNamespace}/bucket/testObjectWithMetadata.uecb");
+            using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObjectWithMetadata.uecb", UriKind.Relative));
             HttpResponseMessage response = await _httpClient!.SendAsync(request);
 
             Assert.AreEqual(CustomMediaTypeNames.UnrealCompactBinary, response.Content.Headers.ContentType!.MediaType!);
             response.EnsureSuccessStatusCode();
 
             byte[] buffer = await response.Content.ReadAsByteArrayAsync();
-            ReadOnlyMemory<byte> memory = new ReadOnlyMemory<byte>(buffer);
-            CompactBinaryObject o = CompactBinaryObject.Load(ref memory);
-            List<CompactBinaryField> fields = o.GetFields().ToList();
-            Assert.AreEqual(4, fields.Count);
+            CbObject o = new CbObject(buffer);
+            List<CbField> fields = o.ToList();
+            Assert.AreEqual(5, fields.Count);
             Assert.AreEqual($"{TestNamespace}.bucket.testObjectWithMetadata", o["name"]!.AsString());
-            // we do not support serializing random dictionaries to compact binary
-            Assert.IsNull(o["metadata"]);
+
+            Assert.IsNotNull(o["contentHash"]);
 
             Assert.IsNotNull(o["lastAccessTime"]);
 
             Assert.IsNotNull(o["blob"]);
-            CollectionAssert.AreEqual(TestObjectData, o["blob"]!.AsBinary());
+            CollectionAssert.AreEqual(TestObjectData, o["blob"]!.AsBinary().ToArray());
         }
 
         [TestMethod]
         public async Task GetRefWithMetadata()
         {
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/testObjectWithMetadata");
-            await response;
-            HttpResponseMessage result = response.Result;
+            Task<HttpResponseMessage> response = _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObjectWithMetadata", UriKind.Relative));
+            HttpResponseMessage result = await response;
 
             result.EnsureSuccessStatusCode();
             RefResponse content = await result.Content.ReadAsAsync<RefResponse>();
@@ -332,9 +392,8 @@ namespace Horde.Storage.FunctionalTests.Ref
         [TestMethod]
         public async Task GetRefRawObject()
         {
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/testObject.raw");
-            await response;
-            HttpResponseMessage result = response.Result;
+            Task<HttpResponseMessage> response = _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObject.raw", UriKind.Relative));
+            HttpResponseMessage result = await response;
 
             result.EnsureSuccessStatusCode();
             byte[] content = await result.Content.ReadAsByteArrayAsync();
@@ -347,7 +406,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             // fetch refs records once first so that any previous runs of tests are ignored
             List<(RefRecord, DateTime)> _ = await _lastAccessCache!.GetLastAccessedRecords();
 
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/testObject?fields=name&fields=blobIdentifiers");
+            Task<HttpResponseMessage> response = _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObject?fields=name&fields=blobIdentifiers", UriKind.Relative));
             HttpResponseMessage result = await response;
 
             result.EnsureSuccessStatusCode();
@@ -370,7 +429,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             // fetch refs records once first so that any previous runs of tests are ignored
             List<(RefRecord, DateTime)> _ = await _lastAccessCache!.GetLastAccessedRecords();
 
-            Task<HttpResponseMessage> response = _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/testObject?fields=");
+            Task<HttpResponseMessage> response = _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/testObject?fields=", UriKind.Relative));
             HttpResponseMessage result = await response;
 
             result.EnsureSuccessStatusCode();
@@ -382,11 +441,10 @@ namespace Horde.Storage.FunctionalTests.Ref
             CollectionAssert.AreEqual(TestObjectData, content.Blob);
         }
 
-
         [TestMethod]
         public async Task GetNonExistentIoObject()
         {
-            HttpResponseMessage response = await _httpClient!.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/notUploadedToIo");
+            HttpResponseMessage response = await _httpClient!.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/notUploadedToIo", UriKind.Relative));
 
             Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -394,7 +452,6 @@ namespace Horde.Storage.FunctionalTests.Ref
             JToken? jsonResult = JsonConvert.DeserializeObject(content) as JToken;
             Assert.AreEqual("Object EBA4BE7385F365E6AC2354096A6CA2C5AF412A0F in test-namespace not found", jsonResult!["title"]!.ToString());
         }
-
 
         [TestMethod]
         public async Task PutRefObject()
@@ -406,8 +463,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = payload.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, payloadHash.ToString());
 
-            HttpResponseMessage result =
-                await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{TestNamespace}/bucket/newObject", requestContent);
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/newObject", UriKind.Relative), requestContent);
 
             result.EnsureSuccessStatusCode();
         }
@@ -421,10 +477,10 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = jsonObject.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, TestObjectHash.ToString());
 
-            HttpResponseMessage result = await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{TestNamespace}/bucket/newStructuredObject", requestContent);
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/newStructuredObject", UriKind.Relative), requestContent);
             result.EnsureSuccessStatusCode();
 
-            HttpResponseMessage getResponse = await _httpClient.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/newStructuredObject.raw");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/newStructuredObject.raw", UriKind.Relative));
             getResponse.EnsureSuccessStatusCode();
             await using MemoryStream ms = new MemoryStream();
             await getResponse.Content.CopyToAsync(ms);
@@ -435,7 +491,6 @@ namespace Horde.Storage.FunctionalTests.Ref
             Assert.AreEqual(TestObjectContents, roundTrippedPayload);
             CollectionAssert.AreEqual(TestObjectData, roundTrippedBuffer);
         }
-
 
         [TestMethod]
         public async Task PutGetLargeObject()
@@ -449,13 +504,11 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = payload.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, payloadHash.ToString());
 
-            HttpResponseMessage result =
-                await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{TestNamespace}/bucket/largeObject", requestContent);
+            HttpResponseMessage result = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/largeObject", UriKind.Relative), requestContent);
 
             result.EnsureSuccessStatusCode();
 
-
-            HttpResponseMessage getResponse = await _httpClient.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/largeObject.raw");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/largeObject.raw", UriKind.Relative));
             getResponse.EnsureSuccessStatusCode();
             await using MemoryStream ms = new MemoryStream();
             await getResponse.Content.CopyToAsync(ms);
@@ -470,20 +523,17 @@ namespace Horde.Storage.FunctionalTests.Ref
             CollectionAssert.AreEqual(payload, roundTrippedBuffer);
         }
 
-
         [TestMethod]
         public async Task DeleteRefObject()
         {
-            HttpResponseMessage deleteResponse =
-                await _httpClient!.DeleteAsync($"api/v1/c/ddc/{TestNamespace}/bucket/deletableObject");
+            HttpResponseMessage deleteResponse = await _httpClient!.DeleteAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/deletableObject", UriKind.Relative));
             deleteResponse.EnsureSuccessStatusCode();
         }
 
         [TestMethod]
         public async Task DeleteNonExistentObject()
         {
-            HttpResponseMessage deleteResponse =
-                await _httpClient!.DeleteAsync($"api/v1/c/ddc/{TestNamespace}/bucket/thisDoesNotExistForDelete");
+            HttpResponseMessage deleteResponse = await _httpClient!.DeleteAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/thisDoesNotExistForDelete", UriKind.Relative));
             Assert.AreEqual(System.Net.HttpStatusCode.BadRequest, deleteResponse.StatusCode);
         }
 
@@ -497,14 +547,11 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = payload.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, payloadHash.ToString());
 
-            HttpResponseMessage putResponse =
-                await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject",
-                    requestContent);
+            HttpResponseMessage putResponse = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject", UriKind.Relative), requestContent);
             putResponse.EnsureSuccessStatusCode();
             await putResponse.Content.ReadAsStringAsync();
 
-            HttpResponseMessage getResponse =
-                await _httpClient.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject", UriKind.Relative));
             getResponse.EnsureSuccessStatusCode();
             RefResponse content = await getResponse.Content.ReadAsAsync<RefResponse>();
             Assert.AreEqual(expected: $"{TestNamespace}.bucket.fullFlowObject", content.Name);
@@ -512,8 +559,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             Assert.IsNotNull(content.Blob);
             CollectionAssert.AreEqual(payload, content.Blob);
 
-            HttpResponseMessage deleteResponse =
-                await _httpClient.DeleteAsync($"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject");
+            HttpResponseMessage deleteResponse = await _httpClient.DeleteAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/fullFlowObject", UriKind.Relative));
             deleteResponse.EnsureSuccessStatusCode();
             Assert.AreEqual(System.Net.HttpStatusCode.NoContent, deleteResponse.StatusCode);
         }
@@ -530,15 +576,15 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = payload.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, payloadHash.ToString());
 
-            HttpResponseMessage putResponse = await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{deleteNamespace}/bucket/deleteNamespaceObject", requestContent);
+            HttpResponseMessage putResponse = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{deleteNamespace}/bucket/deleteNamespaceObject", UriKind.Relative), requestContent);
             putResponse.EnsureSuccessStatusCode();
             await putResponse.Content.ReadAsStringAsync();
 
-            HttpResponseMessage deleteResponse = await _httpClient.DeleteAsync($"api/v1/c/ddc/{deleteNamespace}");
+            HttpResponseMessage deleteResponse = await _httpClient.DeleteAsync(new Uri($"api/v1/c/ddc/{deleteNamespace}", UriKind.Relative));
             deleteResponse.EnsureSuccessStatusCode();
             Assert.AreEqual(System.Net.HttpStatusCode.NoContent, deleteResponse.StatusCode);
 
-            HttpResponseMessage getResponse = await _httpClient.GetAsync($"api/v1/c/ddc/{TestNamespace}/bucket/deleteNamespaceObject");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/bucket/deleteNamespaceObject", UriKind.Relative));
             Assert.AreEqual(System.Net.HttpStatusCode.BadRequest, getResponse.StatusCode);
         }
 
@@ -556,9 +602,7 @@ namespace Horde.Storage.FunctionalTests.Ref
             requestContent.Headers.ContentLength = payload.Length;
             requestContent.Headers.Add(CommonHeaders.HashHeaderName, payloadHash.ToString());
 
-            HttpResponseMessage putResponse =
-                await _httpClient!.PutAsync(requestUri: $"api/v1/c/ddc/{TestNamespace}/{bucket}/{key}",
-                    requestContent);
+            HttpResponseMessage putResponse = await _httpClient!.PutAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/{bucket}/{key}", UriKind.Relative), requestContent);
             putResponse.EnsureSuccessStatusCode();
             await putResponse.Content.ReadAsStringAsync();
 
@@ -567,15 +611,13 @@ namespace Horde.Storage.FunctionalTests.Ref
             Assert.IsTrue(initialLastAccessObject.LastAccessTime.HasValue);
             DateTime creationTime = initialLastAccessObject.LastAccessTime!.Value;
 
-            HttpResponseMessage getResponse =
-                await _httpClient.GetAsync($"api/v1/c/ddc/{TestNamespace}/{bucket}/{key}");
+            HttpResponseMessage getResponse = await _httpClient.GetAsync(new Uri($"api/v1/c/ddc/{TestNamespace}/{bucket}/{key}", UriKind.Relative));
             getResponse.EnsureSuccessStatusCode();
             RefResponse content = await getResponse.Content.ReadAsAsync<RefResponse>();
             Assert.AreEqual(expected: $"{TestNamespace}.bucket.lastAccessObject", content.Name);
 
-            StringContent jsonContent = new StringContent("", Encoding.UTF8, "application/json");
-            HttpResponseMessage lastAccessRollupResponse =
-                await _httpClient.PostAsync(requestUri: $"api/v1/admin/startLastAccessRollup", jsonContent);
+            using StringContent jsonContent = new StringContent("", Encoding.UTF8, "application/json");
+            HttpResponseMessage lastAccessRollupResponse = await _httpClient.PostAsync(new Uri($"api/v1/admin/startLastAccessRollup", UriKind.Relative), jsonContent);
             lastAccessRollupResponse.EnsureSuccessStatusCode();
 
             RefRecord doc = await GetTestRecord(bucket, key, IRefsStore.ExtraFieldsFlag.LastAccess);
@@ -587,18 +629,17 @@ namespace Horde.Storage.FunctionalTests.Ref
             Assert.AreEqual(0, records.Count);
         }
 
-
         [TestMethod]
         public async Task LastAccess()
         {
             IRefsStore refsStore = _server!.Services.GetService<IRefsStore>()!;
 
-            OldRecord[] emptyRecords = await refsStore.GetOldRecords(TestNamespace, TimeSpan.FromDays(7)).ToArrayAsync();
+            OldRecord[] emptyRecords = await refsStore.GetOldRecords(LastAccessTestNamespace, TimeSpan.FromDays(7)).ToArrayAsync();
             // no content older then 7 days as we just insert it
             Assert.AreEqual(0, emptyRecords.Length);
 
             // check content inserted in the last hour, which should return the 3 objects set as inserted a day ago, but not the one that just got inserted
-            OldRecord[] oldRecords = await refsStore.GetOldRecords(TestNamespace, TimeSpan.FromHours(1)).ToArrayAsync();
+            OldRecord[] oldRecords = await refsStore.GetOldRecords(LastAccessTestNamespace, TimeSpan.FromHours(1)).ToArrayAsync();
 
             List<KeyId> validRefs = new List<KeyId>()
             {
@@ -609,28 +650,21 @@ namespace Horde.Storage.FunctionalTests.Ref
             };
             foreach(OldRecord record in oldRecords)
             {
-                Assert.IsTrue(validRefs.Contains(record.RefName));
+                Assert.IsTrue(validRefs.Contains(record.RefName), $"ValidRefs did not contain ref {record.RefName}");
             }
 
             // we should have our 4 pre-seeded objects
             Assert.AreEqual(4, oldRecords.Length);
         }
 
-        public class LastAccessResponse
-        {
-            public class LastAccessRefRecord
-            {
-                public string Name { get; set; } = null!;
-                public string Bucket { get; set; } = null!;
-                public string Namespace { get; set; } = null!;
-            }
-
-            public LastAccessRefRecord[] Records { get; set; } = null!;
-        }
-
         [TestMethod]
         public async Task Batch()
         {
+            if (this is DynamoRefTests)
+            {
+                Assert.Inconclusive();
+            }
+
             // we chunk at 1 kb to lets generate a 3kb string
             string content = string.Concat(Enumerable.Repeat("Duplicate string", 200));
             byte[] payload = Encoding.ASCII.GetBytes(content);
@@ -802,7 +836,9 @@ namespace Horde.Storage.FunctionalTests.Ref
                     Assert.AreEqual(3, state);
                 }
                 else
+                {
                     throw new NotImplementedException();
+                }
             }
 
             // we have reached the end of the result thus the stream should be empty

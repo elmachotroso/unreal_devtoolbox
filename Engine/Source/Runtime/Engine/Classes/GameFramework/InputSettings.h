@@ -49,13 +49,43 @@ class ENGINE_API UInputSettings
 	UPROPERTY(config, EditAnywhere, Category = "ViewportProperties")
 	uint8 bCaptureMouseOnLaunch:1;
 
-	/** The default mouse lock state when the viewport acquires capture */
-	UPROPERTY(config)
-	uint8 bDefaultViewportMouseLock_DEPRECATED:1;
-
 	/** Enable the use of legacy input scales on the player controller (InputYawScale, InputPitchScale, and InputRollScale) */
 	UPROPERTY(config, EditAnywhere, Category = "Input")
 	uint8 bEnableLegacyInputScales:1;
+	
+	/**
+	 * If set to false, then the player controller's InputMotion function will never be called.
+	 * This will effectively disable any motion input (tilt, rotation, acceleration, etc) on
+	 * the GameViewportClient.
+	 * 
+	 * @see GameViewportClient::InputMotion
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	uint8 bEnableMotionControls:1;
+
+	/**
+	 * If true, then the PlayerController::InputKey function will only process an input event if it
+	 * came from an input device that is owned by the PlayerController's Platform User.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	uint8 bFilterInputByPlatformUser:1;
+
+	/**
+	 * If true, then the Player Controller will have it's Pressed Keys flushed when the input mode is changed
+	 * to Game and UI mode or the game viewport loses focus. The default behavior is true.
+	 * 
+	 * @see UGameViewportClient::LostFocus
+	 * @see APlayerController::ShouldFlushKeysWhenViewportFocusChanges
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	uint8 bShouldFlushPressedKeysOnViewportFocusLost:1;
+
+	/**
+	 * Should components that are dynamically added via the 'AddComponent' function at runtime have input delegates bound to them?
+	 * @see AActor::FinishAddComponent
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	uint8 bEnableDynamicComponentInputBinding:1;
 	
 	/** Should the touch input interface be shown always, or only when the platform has a touch screen? */
 	UPROPERTY(config, EditAnywhere, Category="Mobile")
@@ -131,12 +161,8 @@ private:
 
 public:
 	/** The default on-screen touch input interface for the game (can be null to disable the onscreen interface) */
-	UPROPERTY(config, EditAnywhere, Category="Mobile", meta=(AllowedClasses="TouchInterface"))
+	UPROPERTY(config, EditAnywhere, Category="Mobile", meta=(AllowedClasses="/Script/Engine.TouchInterface"))
 	FSoftObjectPath DefaultTouchInterface;
-
-	/** The key which opens the console. */
-	UPROPERTY(config)
-	FKey ConsoleKey_DEPRECATED;
 
 	/** The keys which open the console. */
 	UPROPERTY(config, EditAnywhere, Category="Console")

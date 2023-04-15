@@ -4,47 +4,100 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
-	interface IModalTask
+	[Flags]
+	enum ModalTaskFlags
 	{
-		bool Run(out string ErrorMessage);
+		None = 0,
+		Quiet = 1,
 	}
 
-	public enum ModalTaskResult
+	class ModalTask
 	{
-		Succeeded,
-		Failed,
-		Aborted,
-	}
+		public Task Task { get; }
 
-	static class ModalTask
-	{
-		public static ModalTaskResult Execute(IWin32Window Owner, IModalTask Task, string InTitle, string InMessage, out string ErrorMessage)
+		public bool Failed => Task.IsFaulted;
+		public bool Succeeded => Task.IsCompletedSuccessfully;
+
+		public Exception? Exception => Task.Exception?.InnerException;
+
+		public ModalTask(Task task)
 		{
-			ModalTaskWindow Window = new ModalTaskWindow(Task, InTitle, InMessage, (Owner == null)? FormStartPosition.CenterScreen : FormStartPosition.CenterParent);
-			Window.Complete += () => Window.Close();
-			Window.ShowDialog(Owner);
-			ErrorMessage = Window.ErrorMessage;
-			return Window.Result;
+			this.Task = task;
 		}
 
-		public static bool ExecuteAndShowError(IWin32Window Owner, IModalTask Task, string InTitle, string InMessage)
+		public string Error
 		{
-			string ErrorMessage;
-			ModalTaskResult Result = Execute(Owner, Task, InTitle, InMessage, out ErrorMessage);
-			if(Result != ModalTaskResult.Succeeded)
+			get
 			{
-				if (!String.IsNullOrEmpty(ErrorMessage))
+				if (Succeeded)
 				{
-					MessageBox.Show(ErrorMessage);
+					return "Succeeded.";
 				}
-				return false;
+
+				Exception? ex = Exception;
+				if (ex == null)
+				{
+					return "Failed.";
+				}
+				else if (ex is UserErrorException userEx)
+				{
+					return userEx.Message;
+				}
+				else
+				{
+					return $"Unhandled exception ({ex.Message})";
+				}
 			}
-			return true;
+		}
+
+		public static ModalTask? Execute(IWin32Window? owner, string title, string message, Func<CancellationToken, Task> taskFunc, ModalTaskFlags flags = ModalTaskFlags.None)
+		{
+			Func<CancellationToken, Task<int>> typedTaskFunc = async x => { await taskFunc(x); return 0; };
+			return Execute(owner, title, message, typedTaskFunc, flags);
+		}
+
+		public static ModalTask<T>? Execute<T>(IWin32Window? owner, string title, string message, Func<CancellationToken, Task<T>> taskFunc, ModalTaskFlags flags = ModalTaskFlags.None)
+		{
+			using (CancellationTokenSource cancellationSource = new CancellationTokenSource())
+			{
+				Task<T> backgroundTask = Task.Run(() => taskFunc(cancellationSource.Token));
+
+				ModalTaskWindow window = new ModalTaskWindow(title, message, (owner == null) ? FormStartPosition.CenterScreen : FormStartPosition.CenterParent, backgroundTask, cancellationSource);
+				if(owner == null)
+				{
+					window.ShowInTaskbar = true;
+				}
+				window.ShowDialog(owner);
+
+				if (backgroundTask.IsCanceled || (backgroundTask.Exception != null && backgroundTask.Exception.InnerException is OperationCanceledException))
+				{
+					return null;
+				}
+
+				ModalTask<T> result = new ModalTask<T>(backgroundTask);
+				if (result.Failed && (flags & ModalTaskFlags.Quiet) == 0)
+				{
+					MessageBox.Show(owner, result.Error, title);
+				}
+				return result;
+			}
+		}
+	}
+
+	class ModalTask<T> : ModalTask
+	{
+		public new Task<T> Task => (Task<T>)base.Task;
+
+		public T Result => Task.Result;
+
+		public ModalTask(Task<T> task) : base(task)
+		{
 		}
 	}
 }

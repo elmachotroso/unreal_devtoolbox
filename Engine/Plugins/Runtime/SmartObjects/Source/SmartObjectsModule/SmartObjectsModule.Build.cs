@@ -15,13 +15,13 @@ namespace UnrealBuildTool.Rules
 			new string[] {
 				"Core",
 				"CoreUObject",
+				"DeveloperSettings",
 				"Engine",
 				"AIModule",
-				"GameplayBehaviorsModule",
-				"GameplayTasks",
 				"GameplayTags",
 				"GameplayAbilities",
 				"MassEntity",
+				"RHI",
 				"StructUtils"
 			}
 			);
@@ -32,15 +32,7 @@ namespace UnrealBuildTool.Rules
 			}
 			);
 
-			if (Target.bBuildDeveloperTools || (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Configuration != UnrealTargetConfiguration.Test))
-			{
-				PrivateDependencyModuleNames.Add("GameplayDebugger");
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=1");
-			}
-			else
-			{
-				PublicDefinitions.Add("WITH_GAMEPLAY_DEBUGGER=0");
-			}
+			SetupGameplayDebuggerSupport(Target);
 		}
 	}
 }

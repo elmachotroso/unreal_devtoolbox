@@ -8,10 +8,6 @@
 #include "Components/PrimitiveComponent.h"
 #include "Collision.h"
 
-#if PHYSICS_INTERFACE_PHYSX
-#include "PhysXInterfaceWrapper.h"
-#endif
-
 #include "ChaosInterfaceWrapperCore.h"
 #include "Physics/Experimental/ChaosInterfaceWrapper.h"
 #include "Chaos/GeometryParticles.h"
@@ -87,29 +83,8 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::CalcQueryHitType(const FCo
 	return ECollisionQueryHitType::None;
 }
 
-#if PHYSICS_INTERFACE_PHYSX
-ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const physx::PxShape& Shape, const physx::PxActor& Actor)
-{
-	//SCOPE_CYCLE_COUNTER(STAT_Collision_PreFilter);
-	FCollisionFilterData ShapeFilter = PhysXInterface::GetQueryFilterData(Shape);
-
-	// We usually don't have ignore components so we try to avoid the virtual getSimulationFilterData() call below. 'word2' of shape sim filter data is componentID.
-	uint32 ComponentID = 0;
-	if (IgnoreComponents.Num() > 0)
-	{
-		ComponentID = PhysXInterface::GetSimulationFilterData(Shape).Word2;
-	}
-
-	FBodyInstance* BodyInstance = nullptr;
-#if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-	BodyInstance = PhysXInterface::GetUserData(Actor);
-#endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-
-	return PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance);
-}
-#endif
-
-ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const Chaos::FPerShapeData& Shape, const Chaos::FGeometryParticle& Actor)
+template <typename TParticle>
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterBaseImp(const FCollisionFilterData& FilterData, const Chaos::FPerShapeData& Shape, const TParticle& Actor)
 {
 	//SCOPE_CYCLE_COUNTER(STAT_Collision_PreFilter);
 
@@ -128,11 +103,25 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollis
 	}
 
 	FBodyInstance* BodyInstance = nullptr;
+
+	if constexpr (std::is_same<TParticle, Chaos::FGeometryParticle>::value)
+	{
 #if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-	BodyInstance = ChaosInterface::GetUserData(Actor);
+		BodyInstance = ChaosInterface::GetUserData(Actor);
 #endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
+	}
 
 	return PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance);
+}
+
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const Chaos::FPerShapeData& Shape, const Chaos::FGeometryParticle& Actor)
+{
+	return PreFilterBaseImp(FilterData, Shape, Actor);
+}
+
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const Chaos::FPerShapeData& Shape, const Chaos::FGeometryParticleHandle& Actor)
+{
+	return PreFilterBaseImp(FilterData, Shape, Actor);
 }
 
 ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const FCollisionFilterData& ShapeFilter, uint32 ComponentID, const FBodyInstance* BodyInstance)
@@ -258,22 +247,6 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FColli
 	}
 }
 
-#if PHYSICS_INTERFACE_PHYSX
-ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, const physx::PxQueryHit& Hit)
-{
-	// Unused in non-sweeps
-	if (!bIsSweep)
-	{
-		return ECollisionQueryHitType::None;
-	}
-
-	const FHitLocation& SweepHit = (const FHitLocation&)Hit;
-	const bool bIsOverlap = HadInitialOverlap(SweepHit);
-
-	return PostFilterImp(FilterData, bIsOverlap);
-}
-#endif
-
 ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, const ChaosInterface::FQueryHit& Hit)
 {
 	// Unused in non-sweeps
@@ -282,57 +255,22 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FColli
 		return ECollisionQueryHitType::None;
 	}
 
-	const ChaosInterface::FLocationHit& SweepHit = (const ChaosInterface::FLocationHit&)Hit;
+	const auto& SweepHit = static_cast<const ChaosInterface::FLocationHit&>(Hit);
 	const bool bIsOverlap = ChaosInterface::HadInitialOverlap(SweepHit);
 
 	return PostFilterImp(FilterData, bIsOverlap);
 }
 
-#if PHYSICS_INTERFACE_PHYSX
-
-PxQueryHitType::Enum FCollisionQueryFilterCallback::preFilter(const PxFilterData& filterData, const PxShape* shape, const PxRigidActor* actor, PxHitFlags& queryFlags)
-{
-	ensureMsgf(shape, TEXT("Invalid shape encountered in FCollisionQueryFilterCallback::preFilter, actor: %p, filterData: %x %x %x %x"), actor, filterData.word0, filterData.word1, filterData.word2, filterData.word3);
-
-	if (!shape)
-	{
-		// Early out to avoid crashing.
-		return U2PCollisionQueryHitType(PreFilterReturnValue = ECollisionQueryHitType::None);
-	}
-
-	FCollisionFilterData FilterData = P2UFilterData(filterData);
-	FCollisionFilterData ShapeFilter = P2UFilterData(shape->getQueryFilterData());
-
-	// We usually don't have ignore components so we try to avoid the virtual getSimulationFilterData() call below. 'word2' of shape sim filter data is componentID.
-	uint32 ComponentID = 0;
-	if (IgnoreComponents.Num() > 0)
-	{
-		ComponentID = shape->getSimulationFilterData().word2;
-	}
-
-	FBodyInstance* BodyInstance = nullptr;
-#if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-	BodyInstance = FPhysxUserData::Get<FBodyInstance>(actor->userData);
-#endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-
-	return U2PCollisionQueryHitType(PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance));
-}
-
-PxQueryHitType::Enum FCollisionQueryFilterCallback::postFilter(const PxFilterData& filterData, const PxQueryHit& hit)
+ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, const ChaosInterface::FPTQueryHit& Hit)
 {
 	// Unused in non-sweeps
 	if (!bIsSweep)
 	{
-		return PxQueryHitType::eNONE;
+		return ECollisionQueryHitType::None;
 	}
 
-	FCollisionFilterData FilterData = P2UFilterData(filterData);
+	const auto& SweepHit = static_cast<const ChaosInterface::FPTLocationHit&>(Hit);
+	const bool bIsOverlap = ChaosInterface::HadInitialOverlap(SweepHit);
 
-	PxSweepHit& SweepHit = (PxSweepHit&)hit;
-	const bool bIsOverlap = SweepHit.hadInitialOverlap();
-
-	const ECollisionQueryHitType HitType = PostFilterImp(FilterData, bIsOverlap);
-	return U2PCollisionQueryHitType(HitType);
+	return PostFilterImp(FilterData, bIsOverlap);
 }
-
-#endif

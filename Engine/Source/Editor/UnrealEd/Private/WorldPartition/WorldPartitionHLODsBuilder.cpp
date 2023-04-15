@@ -13,14 +13,13 @@
 #include "ActorFolder.h"
 #include "EngineUtils.h"
 #include "SourceControlHelpers.h"
-
 #include "ISourceControlModule.h"
-#include "ISourceControlProvider.h"
-#include "SourceControlOperations.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "DerivedDataCacheInterface.h"
 
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/HLOD/HLODActor.h"
@@ -28,6 +27,7 @@
 #include "WorldPartition/HLOD/HLODLayer.h"
 
 #include "Engine/StaticMesh.h"
+#include "Engine/LevelStreamingGCHelper.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 
@@ -160,31 +160,38 @@ UWorldPartitionHLODsBuilder::UWorldPartitionHLODsBuilder(const FObjectInitialize
 	: Super(ObjectInitializer)
 	, BuilderIdx(INDEX_NONE)
 	, BuilderCount(INDEX_NONE)
-	, HLODLevelToBuild(INDEX_NONE)
 	, DistributedBuildWorkingDir(FPaths::RootDir() / DistributedBuildWorkingDirName)
 	, DistributedBuildManifest(DistributedBuildWorkingDir / DistributedBuildManifestName)
 {
 	BuildOptions = FParse::Param(FCommandLine::Get(), TEXT("SetupHLODs")) ? EHLODBuildStep::HLOD_Setup : EHLODBuildStep::None;
 	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("BuildHLODs")) ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
+	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("RebuildHLODs")) ? EHLODBuildStep::HLOD_Build : EHLODBuildStep::None;
 	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("DeleteHLODs")) ? EHLODBuildStep::HLOD_Delete : EHLODBuildStep::None;
 	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("FinalizeHLODs")) ? EHLODBuildStep::HLOD_Finalize : EHLODBuildStep::None;
 	BuildOptions |= FParse::Param(FCommandLine::Get(), TEXT("DumpStats")) ? EHLODBuildStep::HLOD_Stats : EHLODBuildStep::None;
 
+	bResumeBuild = FParse::Value(FCommandLine::Get(), TEXT("ResumeBuild="), ResumeBuildIndex);
+
+	bDistributedBuild = FParse::Param(FCommandLine::Get(), TEXT("DistributedBuild"));
+	bForceBuild = FParse::Param(FCommandLine::Get(), TEXT("RebuildHLODs"));
+
+	FParse::Value(FCommandLine::Get(), TEXT("BuildManifest="), BuildManifest);
+	FParse::Value(FCommandLine::Get(), TEXT("BuilderIdx="), BuilderIdx);
+	FParse::Value(FCommandLine::Get(), TEXT("BuilderCount="), BuilderCount);
+	FParse::Value(FCommandLine::Get(), TEXT("BuildHLODLayer="), HLODLayerToBuild);
+	FParse::Value(FCommandLine::Get(), TEXT("BuildSingleHLOD="), HLODActorToBuild);
+
+	if (!HLODActorToBuild.IsNone() || !HLODLayerToBuild.IsNone())
+	{
+		BuildOptions = EHLODBuildStep::HLOD_Build;
+		bForceBuild = bForceBuild || !HLODActorToBuild.IsNone();
+	}
+	
 	// Default behavior without any option is to setup + build
 	if (BuildOptions == EHLODBuildStep::None)
 	{
 		BuildOptions = EHLODBuildStep::HLOD_Setup | EHLODBuildStep::HLOD_Build;
 	}
-
-	bResumeBuild = FParse::Value(FCommandLine::Get(), TEXT("ResumeBuild="), ResumeBuildIndex);
-
-	bDistributedBuild = FParse::Param(FCommandLine::Get(), TEXT("DistributedBuild"));
-
-	FParse::Value(FCommandLine::Get(), TEXT("BuildManifest="), BuildManifest);
-	FParse::Value(FCommandLine::Get(), TEXT("BuilderIdx="), BuilderIdx);
-	FParse::Value(FCommandLine::Get(), TEXT("BuilderCount="), BuilderCount);
-
-	FParse::Value(FCommandLine::Get(), TEXT("HLODLevel="), HLODLevelToBuild);
 
 	if (bDistributedBuild)
 	{
@@ -255,7 +262,7 @@ bool UWorldPartitionHLODsBuilder::ValidateParams() const
 		}
 	}
 
-	if (ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bSubmit && !ISourceControlModule::Get().GetProvider().IsEnabled())
+	if (ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bAutoSubmit && !ISourceControlModule::Get().GetProvider().IsEnabled())
 	{
 		UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Submit requires that a valid source control provider is enabled, exiting..."), *BuildManifest);
 		return false;
@@ -310,7 +317,7 @@ bool UWorldPartitionHLODsBuilder::RunInternal(UWorld* World, const FCellInfo& In
 		bRet = DeleteHLODActors();
 	}
 
-	if (bRet && ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bSubmit)
+	if (bRet && ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bAutoSubmit)
 	{
 		bRet = SubmitHLODActors();
 	}
@@ -330,9 +337,14 @@ bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 {
 	auto ActorFolderAddedDelegateHandle = GEngine->OnActorFolderAdded().AddLambda([this](UActorFolder* InActorFolder)
 	{
-		// We don't want the HLOD folders to be expanded by default
-		InActorFolder->SetIsInitiallyExpanded(false);
-		SourceControlHelper->Save(InActorFolder->GetPackage());
+		UPackage* ActorFolderPackage = InActorFolder->GetPackage();
+		const bool bIsTempPackage = FPackageName::IsTempPackage(ActorFolderPackage->GetName());
+		if (!bIsTempPackage)
+		{
+			// We don't want the HLOD folders to be expanded by default
+			InActorFolder->SetIsInitiallyExpanded(false);
+			SourceControlHelper->Save(InActorFolder->GetPackage());
+		}
 	});
 	
 	ON_SCOPE_EXIT
@@ -352,7 +364,7 @@ bool UWorldPartitionHLODsBuilder::SetupHLODActors()
 	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### World HLOD actors ####"));
 
 	int32 NumActors = 0;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
+	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
 	{
 		FWorldPartitionActorDesc* HLODActorDesc = *HLODIterator;
 		FString PackageName = HLODActorDesc->GetActorPackage().ToString();
@@ -468,13 +480,10 @@ bool UWorldPartitionHLODsBuilder::BuildHLODActors()
 
 		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("[%d / %d] Building HLOD actor %s..."), CurrentActor + 1, HLODActorsToBuild.Num(), *HLODActor->GetActorLabel());
 
-		if (HLODLevelToBuild == INDEX_NONE || HLODActor->GetLODLevel() == HLODLevelToBuild)
-		{
-			// Simulate an engine tick to make sure engine & render resources that are queued for deletion are processed.
-			FWorldPartitionHelpers::FakeEngineTick(WorldPartition->GetWorld());
+		// Simulate an engine tick to make sure engine & render resources that are queued for deletion are processed.
+		FWorldPartitionHelpers::FakeEngineTick(WorldPartition->GetWorld());
 
-			HLODActor->BuildHLOD();
-		}
+		HLODActor->BuildHLOD(bForceBuild);
 
 		UPackage* ActorPackage = HLODActor->GetPackage();
 		if (ActorPackage->IsDirty())
@@ -535,7 +544,7 @@ bool UWorldPartitionHLODsBuilder::DeleteHLODActors()
 	UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Deleting HLOD actors ####"));
 
 	TArray<FString> PackagesToDelete;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
+	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
 	{
 		FWorldPartitionActorDesc* HLODActorDesc = *HLODIterator;
 		FString PackageName = HLODActorDesc->GetActorPackage().ToString();
@@ -571,36 +580,12 @@ bool UWorldPartitionHLODsBuilder::DeleteHLODActors()
 
 bool UWorldPartitionHLODsBuilder::SubmitHLODActors()
 {
-	bool bRet = true;
-
 	// Ensure all files modified by the source control helper are taken into account
 	ModifiedFiles.Append(SourceControlHelper->GetModifiedFiles());
 
-	TArray<FString> FilesToSubmit = ModifiedFiles.GetAllFiles();
-
 	// Check in all modified files
-	if (FilesToSubmit.Num() > 0)
-	{
-		FText ChangelistDescription = FText::FromString(FString::Printf(TEXT("Rebuilt HLODs for \"%s\" at %s"), *WorldPartition->GetWorld()->GetName(), *FEngineVersion::Current().ToString()));
-
-		TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
-		CheckInOperation->SetDescription(ChangelistDescription);
-		bRet = ISourceControlModule::Get().GetProvider().Execute(CheckInOperation, FilesToSubmit) == ECommandResult::Succeeded;
-		if (!bRet)
-		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Failed to submit %d files to source control."), FilesToSubmit.Num());
-		}
-		else
-		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### Submitted %d files to source control ####"), FilesToSubmit.Num());
-		}
-	}
-	else
-	{
-		UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("#### No files to submit ####"));
-	}
-
-	return bRet;
+	const FString ChangeDescription = FString::Printf(TEXT("Rebuilt HLODs for %s"), *WorldPartition->GetWorld()->GetName());
+	return AutoSubmitFiles(ModifiedFiles.GetAllFiles(), ChangeDescription);
 }
 
 bool UWorldPartitionHLODsBuilder::DumpStats()
@@ -656,7 +641,7 @@ bool UWorldPartitionHLODsBuilder::DumpStats()
 
 	TArray<FHLODStat> HLODStats;
 
-	for (UActorDescContainer::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
+	for (UActorDescContainer::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
 	{
 		FWorldPartitionReference HLODActorRef(WorldPartition, HLODIterator->GetGuid());
 		AWorldPartitionHLOD* HLODActor = CastChecked<AWorldPartitionHLOD>(HLODActorRef->GetActor());
@@ -668,8 +653,7 @@ bool UWorldPartitionHLODsBuilder::DumpStats()
 		HLODStat.Name = HLODActor->GetActorLabel();
 		HLODStat.RuntimeGrid = HLODActor->GetRuntimeGrid();
 		HLODStat.bIsSpatiallyLoaded = HLODActor->GetIsSpatiallyLoaded();
-		HLODActor->GetGridIndices(HLODStat.GridLocationX, HLODStat.GridLocationY, HLODStat.GridLocationZ);
-		HLODStat.DataLayers = *FString::JoinBy(HLODActor->GetDataLayerObjects(), TEXT("| "), [](const UDataLayer* DataLayer) { return DataLayer->GetDataLayerLabel().ToString(); });
+		HLODStat.DataLayers = *FString::JoinBy(HLODActor->GetDataLayerInstances(), TEXT("| "), [](const UDataLayerInstance* DataLayer) { return DataLayer->GetDataLayerShortName(); });
 		HLODStat.HLODType = HLODActor->GetSubActorsHLODLayer()->GetLayerType();
 
 		HLODActor->ForEachComponent<UInstancedStaticMeshComponent>(false, [&](const UInstancedStaticMeshComponent* ISMC)
@@ -784,7 +768,7 @@ bool UWorldPartitionHLODsBuilder::GetHLODActorsToBuild(TArray<FGuid>& HLODActors
 		}
 		else
 		{
-			UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Missing section [%s] in config file \"%s\""), *SectionName, *BuildManifest);
+			UE_LOG(LogWorldPartitionHLODsBuilder, Log, TEXT("No section [%s] found in config file \"%s\", assuming no HLOD needs to be built."), *SectionName, *BuildManifest);
 			bRet = false;
 		}
 	}
@@ -801,8 +785,20 @@ TArray<TArray<FGuid>> UWorldPartitionHLODsBuilder::GetHLODWorkloads(int32 NumWor
 {
 	// Build a mapping of 1 HLOD[Level] -> N HLOD[Level - 1]
 	TMap<FGuid, TArray<FGuid>>	HLODParenting;
-	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition); HLODIterator; ++HLODIterator)
+	for (FActorDescList::TIterator<AWorldPartitionHLOD> HLODIterator(WorldPartition->GetActorDescContainer()); HLODIterator; ++HLODIterator)
 	{
+		// Filter by HLOD actor
+		if (!HLODActorToBuild.IsNone() && HLODIterator->GetActorLabel() != HLODActorToBuild)
+		{
+			continue;
+		}
+
+		// Filter by HLOD layer
+		if (!HLODLayerToBuild.IsNone() && HLODIterator->GetSourceHLODLayerName() != HLODLayerToBuild)
+		{
+			continue;
+		}
+
 		TArray<FGuid>& ChildHLODs = HLODParenting.Add(HLODIterator->GetGuid());
 
 		for (const FHLODSubActorDesc& SubActor : HLODIterator->GetSubActors())
@@ -810,7 +806,7 @@ TArray<TArray<FGuid>> UWorldPartitionHLODsBuilder::GetHLODWorkloads(int32 NumWor
 			if (SubActor.ContainerID.IsMainContainer())
 			{
 				FWorldPartitionActorDesc* SubActorDesc = WorldPartition->GetActorDesc(SubActor.ActorGuid);
-				if (SubActorDesc && SubActorDesc->GetActorClass()->IsChildOf<AWorldPartitionHLOD>())
+				if (SubActorDesc && SubActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
 				{
 					ChildHLODs.Add(SubActor.ActorGuid);
 				}
@@ -892,7 +888,7 @@ bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>&Workload)
 			return false;
 		}
 
-		if (!ActorDesc->GetActorClass()->IsChildOf<AWorldPartitionHLOD>())
+		if (!ActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
 		{
 			UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Unexpected actor guid found in HLOD workload, exiting..."));
 			return false;
@@ -909,7 +905,7 @@ bool UWorldPartitionHLODsBuilder::ValidateWorkload(const TArray<FGuid>&Workload)
 				// Invalid sub actor guid found, this is unexpected when running distributed builds as the build step is always preceeded by the setup step.
 				check(SubActorDesc || !bDistributedBuild);
 
-				if (SubActorDesc && SubActorDesc->GetActorClass()->IsChildOf<AWorldPartitionHLOD>())
+				if (SubActorDesc && SubActorDesc->GetActorNativeClass()->IsChildOf<AWorldPartitionHLOD>())
 				{
 					if (!ProcessedHLOD.Contains(SubActor.ActorGuid))
 					{

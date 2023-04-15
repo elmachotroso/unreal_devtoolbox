@@ -15,7 +15,7 @@
 
 /** Types of surfaces in the game, used by Physical Materials */
 UENUM(BlueprintType)
-enum EPhysicalSurface
+enum EPhysicalSurface : int
 {
 	SurfaceType_Default UMETA(DisplayName="Default"),
 	SurfaceType1 UMETA(Hidden),
@@ -197,8 +197,6 @@ enum ELinearConstraintMotion
     If(QueryIgnoreMask & ShapeFilter != 0) filter out */
 typedef uint8 FMaskFilter;
 
-#if WITH_CHAOS
-
 namespace Chaos
 {
 	class FBVHParticles;
@@ -375,7 +373,7 @@ public:
 	static void AttachShape(const FPhysicsActorHandle& InActor,const FPhysicsShapeHandle& InNewShape);
 	static void DetachShape(const FPhysicsActorHandle& InActor,FPhysicsShapeHandle& InShape,bool bWakeTouching = true);
 
-	static void SetSmoothEdgeCollisionsEnabled(const FPhysicsActorHandle& InActor, const bool bSmoothEdgeCollisionsEnabled);
+	static void SetSmoothEdgeCollisionsEnabled_AssumesLocked(const FPhysicsActorHandle& InActor, const bool bSmoothEdgeCollisionsEnabled);
 
 	static void AddDisabledCollisionsFor_AssumesLocked(const TMap<FPhysicsActorHandle, TArray< FPhysicsActorHandle > >& InMap);
 	static void RemoveDisabledCollisionsFor_AssumesLocked(TArray< FPhysicsActorHandle > & InPhysicsActors);
@@ -432,9 +430,7 @@ public:
 	static void SetMaxDepenetrationVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InMaxDepenetrationVelocity);
 
 	static FVector GetWorldVelocityAtPoint_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InPoint);
-#if WITH_CHAOS
 	static FVector GetWorldVelocityAtPoint_AssumesLocked(const Chaos::FRigidBodyHandle_Internal* InActorReference, const FVector& InPoint);
-#endif
 
 	static FTransform GetComTransform_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static FTransform GetComTransformLocal_AssumesLocked(const FPhysicsActorHandle& InActorReference);
@@ -465,6 +461,9 @@ public:
 	static void SetMass_AssumesLocked(FPhysicsActorHandle& InHandle,float InMass);
 	static void SetMassSpaceInertiaTensor_AssumesLocked(FPhysicsActorHandle& InHandle,const FVector& InTensor);
 	static void SetComLocalPose_AssumesLocked(const FPhysicsActorHandle& InHandle,const FTransform& InComLocalPose);
+
+	static bool IsInertiaConditioningEnabled_AssumesLocked(const FPhysicsActorHandle& InActorReference);
+	static void SetInertiaConditioningEnabled_AssumesLocked(const FPhysicsActorHandle& InActorReference, bool bEnabled);
 
 	static float GetStabilizationEnergyThreshold_AssumesLocked(const FPhysicsActorHandle& InHandle);
 	static void SetStabilizationEnergyThreshold_AssumesLocked(const FPhysicsActorHandle& InHandle,float InThreshold);
@@ -497,7 +496,7 @@ public:
 
 	static void SetCanVisualize(const FPhysicsConstraintHandle& InConstraintRef,bool bInCanVisualize);
 	static void SetCollisionEnabled(const FPhysicsConstraintHandle& InConstraintRef,bool bInCollisionEnabled);
-	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpha = 1.0f,float InAngularAlpha = 0.0f);
+	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpha = 1.0f,float InAngularAlpha = 0.0f, float InLinearTolerance = 0.0f, float InAngularToleranceDeg = 0.0f);
 	static void SetShockPropagationEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, bool bInShockPropagationEnabled, float InShockPropagationAlpha);
 	static void SetParentDominates_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInParentDominates);
 	static void SetBreakForces_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,float InLinearBreakForce,float InAngularBreakForce);
@@ -534,43 +533,11 @@ public:
 
 	// @todo(mlentine): Which of these do we need to support?
 	// Set the mask filter of a shape, which is an extra level of filtering during collision detection / query for extra channels like "Blue Team" and "Red Team"
-	static void SetMaskFilter(const FPhysicsShapeHandle& InShape,FMaskFilter InFilter) {}
+	static void SetMaskFilter(const FPhysicsShapeHandle& InShape,FMaskFilter InFilter);
 	static void SetSimulationFilter(const FPhysicsShapeHandle& InShape,const FCollisionFilterData& InFilter);
 	static void SetQueryFilter(const FPhysicsShapeHandle& InShape,const FCollisionFilterData& InFilter);
 	static void SetIsSimulationShape(const FPhysicsShapeHandle& InShape,bool bIsSimShape);
+	static void SetIsProbeShape(const FPhysicsShapeHandle& InShape,bool bIsProbeShape);
 	static void SetIsQueryShape(const FPhysicsShapeHandle& InShape,bool bIsQueryShape);
 	static void SetLocalTransform(const FPhysicsShapeHandle& InShape,const FTransform& NewLocalTransform);
 };
-
-#elif WITH_ENGINE //temp physx code to make moving code out of Engine easier
-
-/**
- * Wrapper for internal PhysX materials
- */
-
-
-namespace physx
-{
-class PxMaterial;
-}
-
-struct PHYSICSCORE_API FPhysicsMaterialHandle_PhysX
-{
-	FPhysicsMaterialHandle_PhysX() : Material(nullptr) {}
-	explicit FPhysicsMaterialHandle_PhysX(physx::PxMaterial* InMaterial) : Material(InMaterial) {}
-
-	bool IsValid() const { return Material != nullptr; }
-
-	physx::PxMaterial* Material;
-};
-
-class FChaosEngineInterface
-{
-public:
-	static FPhysicsMaterialHandle CreateMaterial(const UPhysicalMaterial* InMaterial);
-	static void UpdateMaterial(FPhysicsMaterialHandle_PhysX& InHandle,UPhysicalMaterial* InMaterial);
-	static void ReleaseMaterial(FPhysicsMaterialHandle_PhysX& InHandle);
-	static void SetUserData(FPhysicsMaterialHandle_PhysX& InHandle,void* InUserData);
-};
-
-#endif

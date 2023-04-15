@@ -46,15 +46,20 @@ bool FTcpDeserializedMessage::Deserialize(const TSharedPtr<FArrayReader, ESPMode
 
 	// message type info
 	{
-		FName MessageType;
+		FTopLevelAssetPath MessageType;
 		MessageReader << MessageType;
 
-		// @todo gmp: cache message types for faster lookup
-		TypeInfoPtr = FindObjectSafe<UScriptStruct>(ANY_PACKAGE, *MessageType.ToString());
+		while (IsGarbageCollectingAndLockingUObjectHashTables())
+		{
+			// Wait for garbage collector
+			FPlatformProcess::Sleep(0.1f);
+		}
+		TypeInfoPtr = FindObjectSafe<UScriptStruct>(MessageType);
 
 		TypeInfo = TypeInfoPtr;
 		if (!TypeInfo.IsValid(false, true))
 		{
+			UE_LOG(LogTcpMessaging, Verbose, TEXT("Lookup for Message Type '%s' failed during Deserialization."), *MessageType.ToString());
 			return false;
 		}
 	}

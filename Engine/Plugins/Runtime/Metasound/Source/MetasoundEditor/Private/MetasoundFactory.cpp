@@ -10,6 +10,8 @@
 #include "MetasoundFrontendTransform.h"
 #include "MetasoundSource.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundFactory)
+
 
 namespace Metasound
 {
@@ -72,13 +74,13 @@ UMetaSoundBaseFactory::UMetaSoundBaseFactory(const FObjectInitializer& ObjectIni
 UMetaSoundFactory::UMetaSoundFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	SupportedClass = UMetaSound::StaticClass();
+	SupportedClass = UMetaSoundPatch::StaticClass();
 }
 
 UObject* UMetaSoundFactory::FactoryCreateNew(UClass* InClass, UObject* InParent, FName InName, EObjectFlags InFlags, UObject* InContext, FFeedbackContext* InFeedbackContext)
 {
 	using namespace Metasound::FactoryPrivate;
-	return CreateNewMetaSoundObject<UMetaSound>(InParent, InName, InFlags, ReferencedMetaSoundObject);
+	return CreateNewMetaSoundObject<UMetaSoundPatch>(InParent, InName, InFlags, ReferencedMetaSoundObject);
 }
 
 UMetaSoundSourceFactory::UMetaSoundSourceFactory(const FObjectInitializer& ObjectInitializer)
@@ -100,3 +102,4 @@ UObject* UMetaSoundSourceFactory::FactoryCreateNew(UClass* InClass, UObject* InP
 
 	return NewSource;
 }
+

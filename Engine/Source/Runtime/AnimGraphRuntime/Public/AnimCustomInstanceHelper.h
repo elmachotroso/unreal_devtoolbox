@@ -30,8 +30,6 @@
 #include "AnimSequencerInstance.h"
 #include "SequencerAnimationSupport.h"
 
-
-PRAGMA_DISABLE_OPTIMIZATION
 class ANIMGRAPHRUNTIME_API FAnimCustomInstanceHelper
 {
 public:
@@ -274,7 +272,7 @@ public:
 
 			// Update space bases to reset it back to ref pose
 			InSkeletalMeshComponent->RefreshBoneTransforms();
-			InSkeletalMeshComponent->RefreshSlaveComponents();
+			InSkeletalMeshComponent->RefreshFollowerComponents();
 			InSkeletalMeshComponent->UpdateComponentToWorld();
 		}
 
@@ -289,4 +287,3 @@ private:
 	/** Helper function for BindToSkeletalMeshComponent */
 	static bool ShouldCreateCustomInstancePlayer(const USkeletalMeshComponent* SkeletalMeshComponent);
 };
-PRAGMA_ENABLE_OPTIMIZATION

@@ -1,14 +1,33 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Views/STreeView.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
 #include "PropertyPath.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/STreeView.h"
 
+class SWidget;
 class UBlueprint;
+class UObject;
+class UStruct;
 struct FRevisionInfo;
+template <typename ItemType> class STreeView;
 
 struct FResolvedProperty
 {
@@ -56,9 +75,17 @@ struct FPropertySoftPath
 
 	FPropertySoftPath( FPropertyPath InPropertyPath )
 	{
-		for( int32 i = 0, end = InPropertyPath.GetNumProperties(); i != end; ++i )
+		for (int32 PropertyIndex = 0, end = InPropertyPath.GetNumProperties(); PropertyIndex != end; ++PropertyIndex)
 		{
-			PropertyChain.Push(FChainElement(InPropertyPath.GetPropertyInfo(i).Property.Get()));
+			const FPropertyInfo& Info = InPropertyPath.GetPropertyInfo(PropertyIndex);
+			if (Info.ArrayIndex != INDEX_NONE)
+			{
+				PropertyChain.Push(FName(*FString::FromInt(Info.ArrayIndex)));
+			}
+			else
+			{
+				PropertyChain.Push(FChainElement(Info.Property.Get()));
+			}
 		}
 	}
 
@@ -144,6 +171,7 @@ private:
 			return !(*this == RHS);
 		}
 	};
+	static int32 TryReadIndex(const TArray<FChainElement>& LocalPropertyChain, int32& OutIndex);
 
 	friend uint32 GetTypeHash( FPropertySoftPath const& Path );
 	TArray<FChainElement> PropertyChain;
@@ -174,7 +202,7 @@ FORCEINLINE bool operator!=(const FSCSIdentifier& A, const FSCSIdentifier& B)
 FORCEINLINE uint32 GetTypeHash( FPropertySoftPath const& Path )
 {
 	uint32 Ret = 0;
-	for( const FPropertySoftPath::FChainElement& PropertyElement : Path.PropertyChain )
+	for (const FPropertySoftPath::FChainElement& PropertyElement : Path.PropertyChain)
 	{
 		Ret = Ret ^ GetTypeHash(PropertyElement.PropertyName);
 	}
@@ -263,7 +291,7 @@ namespace DiffUtils
 DECLARE_DELEGATE(FOnDiffEntryFocused);
 DECLARE_DELEGATE_RetVal(TSharedRef<SWidget>, FGenerateDiffEntryWidget);
 
-class FBlueprintDifferenceTreeEntry
+class KISMET_API FBlueprintDifferenceTreeEntry
 {
 public:
 	FBlueprintDifferenceTreeEntry(FOnDiffEntryFocused InOnFocus, FGenerateDiffEntryWidget InGenerateWidget, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> > InChildren = TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >())
@@ -275,16 +303,16 @@ public:
 	}
 
 	/** Displays message to user saying there are no differences */
-	KISMET_API static TSharedPtr<FBlueprintDifferenceTreeEntry> NoDifferencesEntry();
+	static TSharedPtr<FBlueprintDifferenceTreeEntry> NoDifferencesEntry();
 
 	/** Displays message to user warning that there may be undetected differences */
-	KISMET_API static TSharedPtr<FBlueprintDifferenceTreeEntry> UnknownDifferencesEntry();
+	static TSharedPtr<FBlueprintDifferenceTreeEntry> UnknownDifferencesEntry();
 
 	/** Create category message for the diff UI */
-	KISMET_API static TSharedPtr<FBlueprintDifferenceTreeEntry> CreateCategoryEntry(const FText& LabelText, const FText& ToolTipText, FOnDiffEntryFocused FocusCallback, const TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& Children, bool bHasDifferences);
+	static TSharedPtr<FBlueprintDifferenceTreeEntry> CreateCategoryEntry(const FText& LabelText, const FText& ToolTipText, FOnDiffEntryFocused FocusCallback, const TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& Children, bool bHasDifferences);
 
 	/** Create category message for the merge UI */
-	KISMET_API static TSharedPtr<FBlueprintDifferenceTreeEntry> CreateCategoryEntryForMerge(const FText& LabelText, const FText& ToolTipText, FOnDiffEntryFocused FocusCallback, const TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& Children, bool bHasRemoteDifferences, bool bHasLocalDifferences, bool bHasConflicts);
+	static TSharedPtr<FBlueprintDifferenceTreeEntry> CreateCategoryEntryForMerge(const FText& LabelText, const FText& ToolTipText, FOnDiffEntryFocused FocusCallback, const TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& Children, bool bHasRemoteDifferences, bool bHasLocalDifferences, bool bHasConflicts);
 	
 	FOnDiffEntryFocused OnFocus;
 	FGenerateDiffEntryWidget GenerateWidget;
@@ -313,7 +341,7 @@ namespace DiffViewUtils
 
 	KISMET_API FText PropertyDiffMessage(FSingleObjectDiffEntry Difference, FText ObjectName);
 	KISMET_API FText SCSDiffMessage(const FSCSDiffEntry& Difference, FText ObjectName);
-	KISMET_API FText GetPanelLabel(const UBlueprint* Blueprint, const FRevisionInfo& Revision, FText Label);
+	KISMET_API FText GetPanelLabel(const UObject* Asset, const FRevisionInfo& Revision, FText Label);
 
 	KISMET_API SHorizontalBox::FSlot::FSlotArguments Box(bool bIsPresent, FLinearColor Color);
 }

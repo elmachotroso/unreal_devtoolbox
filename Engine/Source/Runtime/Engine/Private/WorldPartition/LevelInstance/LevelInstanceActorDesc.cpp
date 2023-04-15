@@ -1,16 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/LevelInstance/LevelInstanceActorDesc.h"
-#include "WorldPartition/ActorDescContainer.h"
 
 #if WITH_EDITOR
 #include "Engine/World.h"
 #include "Engine/Level.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/ActorDescContainer.h"
+#include "WorldPartition/ErrorHandling/WorldPartitionStreamingGenerationErrorHandler.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "Logging/MessageLog.h"
+#include "Logging/TokenizedMessage.h"
+#include "Misc/MapErrors.h"
+#include "Misc/UObjectToken.h"
 
 static int32 GLevelInstanceDebugForceLevelStreaming = 0;
 static FAutoConsoleVariableRef CVarForceLevelStreaming(
@@ -18,43 +23,32 @@ static FAutoConsoleVariableRef CVarForceLevelStreaming(
 	GLevelInstanceDebugForceLevelStreaming,
 	TEXT("Set to 1 to force Level Instance to be streamed instead of embedded in World Partition grid."));
 
-struct FActorDescContainerInstance
-{
-	FActorDescContainerInstance()
-	: Container(nullptr)
-	, RefCount(0)
-	{}
-
-	UActorDescContainer* Container;
-	uint32 RefCount;
-};
-
-static TMap<FName, FActorDescContainerInstance> ActorDescContainers;
-
 FLevelInstanceActorDesc::FLevelInstanceActorDesc()
 	: DesiredRuntimeBehavior(ELevelInstanceRuntimeBehavior::Partitioned)
-	, LevelInstanceContainer(nullptr)
+	, LevelInstanceContainer(nullptr)	
 {}
 
 FLevelInstanceActorDesc::~FLevelInstanceActorDesc()
 {
-	check(!LevelInstanceContainer);
+	UnregisterContainerInstance();
+	check(!LevelInstanceContainer.IsValid());
 }
 
 void FLevelInstanceActorDesc::Init(const AActor* InActor)
 {
 	FWorldPartitionActorDesc::Init(InActor);
 
-	const ALevelInstance* LevelInstanceActor = CastChecked<ALevelInstance>(InActor);
-	LevelPackage = *LevelInstanceActor->GetWorldAssetPackage();
-	LevelInstanceTransform = LevelInstanceActor->GetActorTransform();
-	DesiredRuntimeBehavior = LevelInstanceActor->GetDesiredRuntimeBehavior();
+	const ILevelInstanceInterface* LevelInstance = CastChecked<ILevelInstanceInterface>(InActor);
+	LevelPackage = *LevelInstance->GetWorldAssetPackage();
+	LevelInstanceTransform = InActor->GetActorTransform();
+	DesiredRuntimeBehavior = LevelInstance->GetDesiredRuntimeBehavior();
 }
 
 void FLevelInstanceActorDesc::Init(const FWorldPartitionActorDescInitData& DescData)
 {
-	ALevelInstance* CDO = DescData.NativeClass->GetDefaultObject<ALevelInstance>();
-	DesiredRuntimeBehavior = CDO->GetDefaultRuntimeBehavior();
+	AActor* CDO = DescData.NativeClass->GetDefaultObject<AActor>();
+	ILevelInstanceInterface* LevelInstanceCDO = CastChecked<ILevelInstanceInterface>(CDO);
+	DesiredRuntimeBehavior = LevelInstanceCDO->GetDefaultRuntimeBehavior();
 
 	FWorldPartitionActorDesc::Init(DescData);
 }
@@ -74,44 +68,129 @@ bool FLevelInstanceActorDesc::Equals(const FWorldPartitionActorDesc* Other) cons
 	return false;
 }
 
+void FLevelInstanceActorDesc::UpdateBounds()
+{
+	ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(LevelInstanceContainer->GetWorld());
+	check(LevelInstanceSubsystem);
+
+	FTransform LevelInstancePivotOffsetTransform = FTransform(ULevel::GetLevelInstancePivotOffsetFromPackage(LevelPackage));
+	FTransform FinalLevelTransform = LevelInstancePivotOffsetTransform * LevelInstanceTransform;
+	FBox ContainerBounds = LevelInstanceSubsystem->GetContainerBounds(LevelPackage).TransformBy(FinalLevelTransform);
+
+	ContainerBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
+}
+
+void FLevelInstanceActorDesc::RegisterContainerInstance(UWorld* InWorld)
+{
+	if (InWorld)
+	{
+		check(!LevelInstanceContainer.IsValid());
+
+		if (IsContainerInstance())
+		{
+			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(InWorld);
+			check(LevelInstanceSubsystem);
+
+			LevelInstanceContainer = LevelInstanceSubsystem->RegisterContainer(LevelPackage);
+			check(LevelInstanceContainer.IsValid());
+
+			// Should only be called on RegisterContainerInstance before ActorDesc is hashed
+			UpdateBounds();
+		}
+	}
+}
+
+void FLevelInstanceActorDesc::UnregisterContainerInstance()
+{
+	if (LevelInstanceContainer.IsValid())
+	{
+		ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(LevelInstanceContainer->GetWorld());
+		check(LevelInstanceSubsystem);
+
+		LevelInstanceSubsystem->UnregisterContainer(LevelInstanceContainer.Get());
+		LevelInstanceContainer.Reset();
+	}
+}
+
 void FLevelInstanceActorDesc::SetContainer(UActorDescContainer* InContainer)
 {
 	FWorldPartitionActorDesc::SetContainer(InContainer);
 
 	if (Container)
 	{
-		check(!LevelInstanceContainer);
-
-		if (DesiredRuntimeBehavior == ELevelInstanceRuntimeBehavior::Partitioned && !GLevelInstanceDebugForceLevelStreaming)
-		{
-			if (!LevelPackage.IsNone() && ULevel::GetIsLevelUsingExternalActorsFromPackage(LevelPackage) && !ULevel::GetIsLevelPartitionedFromPackage(LevelPackage))
-			{
-				LevelInstanceContainer = RegisterActorDescContainer(LevelPackage, Container->GetWorld());
-				check(LevelInstanceContainer);
-			}
-		}
+		RegisterContainerInstance(Container->GetWorld());
 	}
 	else
 	{
-		if (LevelInstanceContainer)
-		{
-			UnregisterActorDescContainer(LevelInstanceContainer);
-			LevelInstanceContainer = nullptr;
-		}
+		UnregisterContainerInstance();		
 	}
+}
+
+bool FLevelInstanceActorDesc::IsContainerInstance() const
+{
+	if (DesiredRuntimeBehavior != ELevelInstanceRuntimeBehavior::Partitioned)
+	{
+		return false;
+	}
+	
+	if (GLevelInstanceDebugForceLevelStreaming)
+	{
+		return false;
+	}
+
+	if (LevelPackage.IsNone())
+	{
+		return false;
+	}
+	
+	if (!ULevel::GetIsLevelUsingExternalActorsFromPackage(LevelPackage))
+	{
+		return false;
+	}
+
+	return ULevelInstanceSubsystem::CanUsePackage(LevelPackage);
 }
 
 bool FLevelInstanceActorDesc::GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const
 {
-	if (LevelInstanceContainer)
+	if (LevelInstanceContainer.IsValid())
 	{
-		OutLevelContainer = LevelInstanceContainer;
-		OutLevelTransform = LevelInstanceTransform;
+		OutLevelContainer = LevelInstanceContainer.Get();
 		OutClusterMode = EContainerClusterMode::Partitioned;
+
+		// Apply level instance pivot offset
+		FTransform LevelInstancePivotOffsetTransform = FTransform(ULevel::GetLevelInstancePivotOffsetFromPackage(LevelInstanceContainer->GetContainerPackage()));
+		OutLevelTransform = LevelInstancePivotOffsetTransform * LevelInstanceTransform;
+
 		return true;
 	}
 
 	return false;
+}
+
+void FLevelInstanceActorDesc::CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const
+{
+	FWorldPartitionActorDesc::CheckForErrors(ErrorHandler);
+
+	FPackagePath WorldAssetPath;
+	if (!FPackagePath::TryFromPackageName(LevelPackage, WorldAssetPath) || !FPackageName::DoesPackageExist(WorldAssetPath))
+	{
+		ErrorHandler->OnLevelInstanceInvalidWorldAsset(this, LevelPackage, IStreamingGenerationErrorHandler::ELevelInstanceInvalidReason::WorldAssetNotFound);
+	}
+	else if (!ULevel::GetIsLevelUsingExternalActorsFromPackage(LevelPackage))
+	{
+		if (DesiredRuntimeBehavior != ELevelInstanceRuntimeBehavior::LevelStreaming)
+		{
+			ErrorHandler->OnLevelInstanceInvalidWorldAsset(this, LevelPackage, IStreamingGenerationErrorHandler::ELevelInstanceInvalidReason::WorldAssetNotUsingExternalActors);
+		}
+	}
+	else if (ULevel::GetIsLevelPartitionedFromPackage(LevelPackage))
+	{
+		if ((DesiredRuntimeBehavior != ELevelInstanceRuntimeBehavior::Partitioned) || !ULevel::GetPartitionedLevelCanBeUsedByLevelInstanceFromPackage(LevelPackage))
+		{
+			ErrorHandler->OnLevelInstanceInvalidWorldAsset(this, LevelPackage, IStreamingGenerationErrorHandler::ELevelInstanceInvalidReason::WorldAssetImcompatiblePartitioned);
+		}
+	}
 }
 
 void FLevelInstanceActorDesc::TransferFrom(const FWorldPartitionActorDesc* From)
@@ -119,8 +198,13 @@ void FLevelInstanceActorDesc::TransferFrom(const FWorldPartitionActorDesc* From)
 	FWorldPartitionActorDesc::TransferFrom(From);
 
 	FLevelInstanceActorDesc* FromLevelInstanceActorDesc = (FLevelInstanceActorDesc*)From;
-	LevelInstanceContainer = FromLevelInstanceActorDesc->LevelInstanceContainer;
-	FromLevelInstanceActorDesc->LevelInstanceContainer = nullptr;
+
+	// Use the Register/Unregister so callbacks are added/removed
+	if (FromLevelInstanceActorDesc->LevelInstanceContainer.IsValid())
+	{
+		RegisterContainerInstance(Container->World);
+		FromLevelInstanceActorDesc->UnregisterContainerInstance();
+	}
 }
 
 void FLevelInstanceActorDesc::Serialize(FArchive& Ar)
@@ -157,48 +241,20 @@ void FLevelInstanceActorDesc::Serialize(FArchive& Ar)
 		const bool bFixupOldVersion = (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::PackedLevelInstanceBoundsFix) && 
 									  (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::PackedLevelInstanceBoundsFix);
 
-		if (!LevelPackage.IsNone() && (GetActorClass()->GetDefaultObject<ALevelInstance>()->SupportsLoading() || bFixupOldVersion))
+		const AActor* CDO = GetActorNativeClass()->GetDefaultObject<AActor>();
+		const ILevelInstanceInterface* LevelInstanceCDO = CastChecked<ILevelInstanceInterface>(CDO);
+		if (!LevelPackage.IsNone() && (LevelInstanceCDO->IsLoadingEnabled() || bFixupOldVersion))
 		{
-			FBox OutBounds;
-			if (ULevelInstanceSubsystem::GetLevelInstanceBoundsFromPackage(LevelInstanceTransform, LevelPackage, OutBounds))
+			if (!IsContainerInstance())
 			{
-				OutBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
+				FBox OutBounds;
+				if (ULevelInstanceSubsystem::GetLevelInstanceBoundsFromPackage(LevelInstanceTransform, LevelPackage, OutBounds))
+				{
+					OutBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
+				}
 			}
 		}
 	}
 }
 
-void FLevelInstanceActorDesc::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	Collector.AddReferencedObject(LevelInstanceContainer);
-}
-
-UActorDescContainer* FLevelInstanceActorDesc::RegisterActorDescContainer(FName PackageName, UWorld* InWorld)
-{
-	FActorDescContainerInstance& ExistingContainerInstance = ActorDescContainers.FindOrAdd(PackageName);
-	UActorDescContainer* ActorDescContainer = ExistingContainerInstance.Container;
-	
-	if (ExistingContainerInstance.RefCount++ == 0)
-	{
-		ActorDescContainer = NewObject<UActorDescContainer>(GetTransientPackage());
-		ExistingContainerInstance.Container = ActorDescContainer;
-		
-		// This will potentially invalidate ExistingContainerInstance due to ActorDescContainers reallocation
-		ActorDescContainer->Initialize(InWorld, PackageName);
-	}
-
-	return ActorDescContainer;
-}
-
-void FLevelInstanceActorDesc::UnregisterActorDescContainer(UActorDescContainer* Container)
-{
-	FName PackageName = Container->GetContainerPackage();
-	FActorDescContainerInstance& ExistingContainerInstance = ActorDescContainers.FindChecked(PackageName);
-
-	if (ExistingContainerInstance.RefCount-- == 1)
-	{
-		ExistingContainerInstance.Container->Uninitialize();
-		ActorDescContainers.FindAndRemoveChecked(PackageName);
-	}
-}
 #endif

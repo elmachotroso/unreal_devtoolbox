@@ -4,10 +4,28 @@
 #include "Units/Math/RigUnit_MathTransform.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_MathMatrix)
+
 FRigUnit_MathMatrixFromTransform_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = Transform.ToMatrixWithScale();
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathMatrixFromTransform::GetUpgradeInfo() const
+{
+	FRigUnit_MathMatrixFromTransformV2 NewNode;
+	NewNode.Value = Transform;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Transform"), TEXT("Value"));
+	return Info;
+}
+
+FRigUnit_MathMatrixFromTransformV2_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Result = Value.ToMatrixWithScale();
 }
 
 FRigUnit_MathMatrixToTransform_Execute()
@@ -43,3 +61,4 @@ FRigUnit_MathMatrixInverse_Execute()
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = Value.Inverse();
 }
+

@@ -1,18 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "FbxOptionWindow.h"
+
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DetailsViewArgs.h"
+#include "Factories/FbxAnimSequenceImportData.h"
+#include "Framework/Application/SlateApplication.h"
+#include "IDetailsView.h"
+#include "IDocumentation.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/Interval.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
 #include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "SPrimaryButton.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateStructs.h"
+#include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/ObjectPtr.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "Factories/FbxAnimSequenceImportData.h"
-#include "IDocumentation.h"
-#include "PropertyEditorModule.h"
-#include "IDetailsView.h"
-#include "Framework/Application/SlateApplication.h"
-#include "SPrimaryButton.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FBXOption"
 
@@ -46,7 +62,7 @@ void SFbxOptionWindow::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Padding(FMargin(3))
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SHorizontalBox)
 					+SHorizontalBox::Slot()
@@ -119,7 +135,7 @@ void SFbxOptionWindow::Construct(const FArguments& InArgs)
 	ImportTypeDisplay->SetContent(
 		SNew(SBorder)
 		.Padding(FMargin(3))
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()

@@ -23,6 +23,11 @@
 			"Name": "MediaIOEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"
+		},
+		{
+			"Name": "GPUTextureTransfer",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
 		}
 	],
 	"DocsURL": "",

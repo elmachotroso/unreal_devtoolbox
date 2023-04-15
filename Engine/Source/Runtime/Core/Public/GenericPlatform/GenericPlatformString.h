@@ -3,27 +3,43 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Templates/EnableIf.h"
-#include "Traits/IsCharType.h"
 #include "GenericPlatform/GenericPlatformStricmp.h"
+#include "Templates/EnableIf.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
+#include "Traits/IsCharEncodingSimplyConvertibleTo.h"
+#include "Traits/IsCharType.h"
+#include "Traits/IsFixedWidthCharEncoding.h"
+
 #include <type_traits>
 
 namespace UE::Core::Private
 {
 	// The Dest parameter is just used for overload resolution
-	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const ANSICHAR* Src, int32 SrcLen);
-	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const WIDECHAR* Src, int32 SrcLen);
-	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const UCS2CHAR* Src, int32 SrcLen);
-	CORE_API int32 GetConvertedLength(const ANSICHAR* Dest, const UTF8CHAR* Src, int32 SrcLen);
-	CORE_API int32 GetConvertedLength(const WIDECHAR* Dest, const UTF8CHAR* Src, int32 SrcLen);
-	CORE_API int32 GetConvertedLength(const UCS2CHAR* Dest, const UTF8CHAR* Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const WIDECHAR*  Src);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const WIDECHAR*  Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const UCS2CHAR*  Src);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const UCS2CHAR*  Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const UTF32CHAR* Src);
+	CORE_API int32 GetConvertedLength(const UTF8CHAR* Dest, const UTF32CHAR* Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const ANSICHAR* Dest, const UTF8CHAR*  Src);
+	CORE_API int32 GetConvertedLength(const ANSICHAR* Dest, const UTF8CHAR*  Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const WIDECHAR* Dest, const UTF8CHAR*  Src);
+	CORE_API int32 GetConvertedLength(const WIDECHAR* Dest, const UTF8CHAR*  Src, int32 SrcLen);
+	CORE_API int32 GetConvertedLength(const UCS2CHAR* Dest, const UTF8CHAR*  Src);
+	CORE_API int32 GetConvertedLength(const UCS2CHAR* Dest, const UTF8CHAR*  Src, int32 SrcLen);
 
-	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const ANSICHAR* Src, int32 SrcLen);
-	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const WIDECHAR* Src, int32 SrcLen);
-	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const UCS2CHAR* Src, int32 SrcLen);
-	CORE_API ANSICHAR* Convert(ANSICHAR* Dest, int32 DestLen, const UTF8CHAR* Src, int32 SrcLen);
-	CORE_API WIDECHAR* Convert(WIDECHAR* Dest, int32 DestLen, const UTF8CHAR* Src, int32 SrcLen);
-	CORE_API UCS2CHAR* Convert(UCS2CHAR* Dest, int32 DestLen, const UTF8CHAR* Src, int32 SrcLen);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const WIDECHAR*  Src);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const WIDECHAR*  Src, int32 SrcLen);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const UCS2CHAR*  Src);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const UCS2CHAR*  Src, int32 SrcLen);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const UTF32CHAR* Src);
+	CORE_API UTF8CHAR* Convert(UTF8CHAR* Dest, int32 DestLen, const UTF32CHAR* Src, int32 SrcLen);
+	CORE_API ANSICHAR* Convert(ANSICHAR* Dest, int32 DestLen, const UTF8CHAR*  Src);
+	CORE_API ANSICHAR* Convert(ANSICHAR* Dest, int32 DestLen, const UTF8CHAR*  Src, int32 SrcLen);
+	CORE_API WIDECHAR* Convert(WIDECHAR* Dest, int32 DestLen, const UTF8CHAR*  Src);
+	CORE_API WIDECHAR* Convert(WIDECHAR* Dest, int32 DestLen, const UTF8CHAR*  Src, int32 SrcLen);
+	CORE_API UCS2CHAR* Convert(UCS2CHAR* Dest, int32 DestLen, const UTF8CHAR*  Src);
+	CORE_API UCS2CHAR* Convert(UCS2CHAR* Dest, int32 DestLen, const UTF8CHAR*  Src, int32 SrcLen);
 }
 
 // These will be moved inside GenericPlatformString.cpp when the platform layer handles UTF-16
@@ -47,18 +63,10 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	 * Tests whether an encoding has fixed-width characters
 	 */
 	template <typename Encoding>
+	UE_DEPRECATED(5.1, "FPlatformString::IsFixedWidthEncoding<T>() has been deprecated in favor of TIsFixedWidthCharEncoding_V<T>")
 	static constexpr bool IsFixedWidthEncoding()
 	{
-		static_assert(TIsCharType<Encoding>::Value, "Encoding is not a char type");
-
-		return
-			std::is_same_v<Encoding, ANSICHAR> ||
-			std::is_same_v<Encoding, UCS2CHAR> || // this may not be true when PLATFORM_UCS2CHAR_IS_UTF16CHAR == 1, but this is the legacy behavior
-			std::is_same_v<Encoding, WIDECHAR> || // the UCS2CHAR comment also applies to WIDECHAR
-#if PLATFORM_TCHAR_IS_CHAR16
-			std::is_same_v<Encoding, wchar_t>  || // the UCS2CHAR comment also applies to wchar_t
-#endif
-			std::is_same_v<Encoding, UTF32CHAR>;
+		return TIsFixedWidthCharEncoding_V<Encoding>;
 	}
 
 	/**
@@ -68,65 +76,20 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	 * UTF-8, but UTF-8 is not compatible with ANSI.
 	 */
 	template <typename SrcEncoding, typename DestEncoding>
+	UE_DEPRECATED(5.1, "FPlatformString::IsCharEncodingCompatibleWith<A, B>() has been deprecated in favor of TIsCharEncodingCompatibleWith_V<A, B>")
 	static constexpr bool IsCharEncodingCompatibleWith()
 	{
-		if constexpr (std::is_same_v<SrcEncoding, DestEncoding>)
-		{
-			return true;
-		}
-		else if constexpr (std::is_same_v<SrcEncoding, ANSICHAR> && std::is_same_v<DestEncoding, UTF8CHAR>)
-		{
-			return true;
-		}
-		else if constexpr (std::is_same_v<SrcEncoding, UCS2CHAR> && std::is_same_v<DestEncoding, UTF16CHAR>)
-		{
-			return true;
-		}
-		else if constexpr (std::is_same_v<SrcEncoding, WIDECHAR> && std::is_same_v<DestEncoding, UCS2CHAR>)
-		{
-			return true;
-		}
-		else if constexpr (std::is_same_v<SrcEncoding, UCS2CHAR> && std::is_same_v<DestEncoding, WIDECHAR>)
-		{
-			return true;
-		}
-#if PLATFORM_TCHAR_IS_CHAR16
-		else if constexpr (std::is_same_v<SrcEncoding, WIDECHAR> && std::is_same_v<DestEncoding, wchar_t>)
-		{
-			return true;
-		}
-		else if constexpr (std::is_same_v<SrcEncoding, wchar_t> && std::is_same_v<DestEncoding, WIDECHAR>)
-		{
-			return true;
-		}
-#endif
-		else
-		{
-			return false;
-		}
-	};
+		return TIsCharEncodingCompatibleWith_V<SrcEncoding, DestEncoding>;
+	}
 
 	/**
 	 * Tests whether you can simply (i.e. by assignment) encode code units from the source encoding as the destination encoding.
 	 */
 	template <typename SourceEncoding, typename DestEncoding>
+	UE_DEPRECATED(5.1, "FPlatformString::IsCharEncodingSimplyConvertibleTo<A, B>() has been deprecated in favor of TIsCharEncodingSimplyConvertibleTo_V<A, B>")
 	static constexpr bool IsCharEncodingSimplyConvertibleTo()
 	{
-		if constexpr (IsCharEncodingCompatibleWith<SourceEncoding, DestEncoding>())
-		{
-			// Binary-compatible conversions are always simple
-			return true;
-		}
-		else if constexpr (IsFixedWidthEncoding<SourceEncoding>() && sizeof(DestEncoding) >= sizeof(SourceEncoding))
-		{
-			// Converting from a fixed-width encoding to a wider or same encoding should always be possible,
-			// as should ANSICHAR->UTF8CHAR and UCS2CHAR->UTF16CHAR,
-			return true;
-		}
-		else
-		{
-			return false;
-		}
+		return TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding>;
 	}
 
 	/**
@@ -144,14 +107,14 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 		static_assert(TIsCharType<DestEncoding  >::Value, "Destination encoding is not a char type");
 
 		// This is only defined for fixed-width encodings, because codepoints cannot be represented in a single variable-width code unit.
-		static_assert(IsFixedWidthEncoding<SourceEncoding>(), "Source encoding is not fixed-width");
+		static_assert(TIsFixedWidthCharEncoding_V<SourceEncoding>, "Source encoding is not fixed-width");
 
-		if constexpr (IsCharEncodingSimplyConvertibleTo<SourceEncoding, DestEncoding>())
+		if constexpr (TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding>)
 		{
 			// Simple conversions mean conversion is always possible
 			return true;
 		}
-		else if constexpr (!IsFixedWidthEncoding<DestEncoding>())
+		else if constexpr (!TIsFixedWidthCharEncoding_V<DestEncoding>)
 		{
 			// Converting all codepoints to a variable-width encoding should always be possible
 			return true;
@@ -199,9 +162,9 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	 * Metafunction which tests whether a given character type represents a fixed-width encoding.
 	 */
 	template <typename T>
-	struct UE_DEPRECATED(5.0, "TIsFixedWidthEncoding is deprecated, use IsFixedWidthEncoding<T>() instead.") TIsFixedWidthEncoding
+	struct UE_DEPRECATED(5.0, "TIsFixedWidthEncoding is deprecated, use TIsFixedWidthCharEncoding_V<T> instead.") TIsFixedWidthEncoding
 	{
-		enum { Value = IsFixedWidthEncoding<T>() };
+		enum { Value = TIsFixedWidthCharEncoding_V<T> };
 	};
 
 
@@ -214,10 +177,105 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	 * Same size is a minimum requirement.
 	 */
 	template <typename EncodingA, typename EncodingB>
-	struct UE_DEPRECATED(5.0, "TAreEncodingsCompatible is deprecated, use IsCharEncodingCompatibleWith<SrcEncoding, DestEncoding>() instead.") TAreEncodingsCompatible
+	struct UE_DEPRECATED(5.0, "TAreEncodingsCompatible is deprecated, use TIsCharEncodingCompatibleWith_V<SrcEncoding, DestEncoding> instead.") TAreEncodingsCompatible
 	{
-		enum { Value = IsFixedWidthEncoding<EncodingA>() && IsFixedWidthEncoding<EncodingB>() && sizeof(EncodingA) == sizeof(EncodingB) };
+		enum { Value = TIsFixedWidthCharEncoding_V<EncodingA> && TIsFixedWidthCharEncoding_V<EncodingB> && sizeof(EncodingA) == sizeof(EncodingB) };
 	};
+
+
+	/**
+	 * Converts the null-terminated Src string range from SourceEncoding to DestEncoding and writes it to the [Dest, Dest+DestSize) range, including a null terminator.
+	 * If the Dest range is not big enough to hold the converted output, NULL is returned.  In this case, nothing should be assumed about the contents of Dest.
+	 *
+	 * @param Dest      The start of the destination buffer.
+	 * @param DestSize  The size of the destination buffer.
+	 * @param Src       The start of the string to convert.
+	 * @return          A pointer to one past the last-written element.
+	 */
+	template <typename SourceEncoding, typename DestEncoding>
+	static FORCEINLINE DestEncoding* Convert(DestEncoding* Dest, int32 DestSize, const SourceEncoding* Src)
+	{
+		if constexpr (TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding>)
+		{
+			for (;;)
+			{
+				if (DestSize == 0)
+				{
+					return nullptr;
+				}
+
+				if (!(*Dest++ = (DestEncoding)*Src++))
+				{
+					return Dest;
+				}
+
+				--DestSize;
+			}
+		}
+		else if constexpr (TIsFixedWidthCharEncoding_V<SourceEncoding> && TIsFixedWidthCharEncoding_V<DestEncoding>)
+		{
+			DestEncoding* DestCopy     = Dest;
+			DestEncoding* SrcCopy      = Src;
+			int32         DestSizeCopy = DestSize;
+
+			bool bInvalidChars = false;
+			for (;;)
+			{
+				if (DestSize == 0)
+				{
+					Dest = nullptr;
+					break;
+				}
+
+				SourceEncoding SrcCh = *Src++;
+				*Dest++ = (DestEncoding)SrcCh;
+				if (!SrcCh)
+				{
+					break;
+				}
+				bInvalidChars |= !CanConvertCodepoint<DestEncoding>(SrcCh);
+
+				--DestSize;
+			}
+
+			if (bInvalidChars)
+			{
+				for (;;)
+				{
+					if (DestSizeCopy == 0)
+					{
+						break;
+					}
+
+					SourceEncoding SrcCh = *SrcCopy++;
+					if (!SrcCh)
+					{
+						break;
+					}
+					if (!CanConvertCodepoint<DestEncoding>(SrcCh))
+					{
+						*DestCopy = UNICODE_BOGUS_CHAR_CODEPOINT;
+					}
+					++DestCopy;
+
+					--DestSizeCopy;
+				}
+
+				LogBogusChars<DestEncoding>(Src);
+			}
+
+			return Dest;
+		}
+		else
+		{
+			DestEncoding* Result = UE::Core::Private::Convert(Dest, DestSize, Src);
+			if (Result)
+			{
+				*Result++ = (DestEncoding)0;
+			}
+			return Result;
+		}
+	}
 
 	/**
 	 * Converts the [Src, Src+SrcSize) string range from SourceEncoding to DestEncoding and writes it to the [Dest, Dest+DestSize) range.
@@ -233,7 +291,7 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	template <typename SourceEncoding, typename DestEncoding>
 	static FORCEINLINE DestEncoding* Convert(DestEncoding* Dest, int32 DestSize, const SourceEncoding* Src, int32 SrcSize)
 	{
-		if constexpr (IsCharEncodingCompatibleWith<SourceEncoding, DestEncoding>())
+		if constexpr (TIsCharEncodingCompatibleWith_V<SourceEncoding, DestEncoding>)
 		{
 			if (DestSize < SrcSize)
 			{
@@ -242,7 +300,7 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 
 			return (DestEncoding*)Memcpy(Dest, Src, SrcSize * sizeof(SourceEncoding)) + SrcSize;
 		}
-		else if constexpr (IsCharEncodingSimplyConvertibleTo<SourceEncoding, DestEncoding>())
+		else if constexpr (TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding>)
 		{
 			const int32 Size = DestSize <= SrcSize ? DestSize : SrcSize;
 			for (int I = 0; I < Size; ++I)
@@ -253,7 +311,7 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 
 			return DestSize < SrcSize ? nullptr : Dest + Size;
 		}
-		else if constexpr (IsFixedWidthEncoding<SourceEncoding>() && IsFixedWidthEncoding<DestEncoding>())
+		else if constexpr (TIsFixedWidthCharEncoding_V<SourceEncoding> && TIsFixedWidthCharEncoding_V<DestEncoding>)
 		{
 			const int32 Size = DestSize <= SrcSize ? DestSize : SrcSize;
 			bool bInvalidChars = false;
@@ -287,6 +345,32 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 
 
 	/**
+	 * Returns the required buffer length for the null-terminated Src string when converted to the DestChar encoding.
+	 * The returned length includes the space for the null terminator (equivalent to strlen+1).
+	 * 
+	 * @param  Src  The start of the string to convert.
+	 * @return      The number of DestChar elements that Src will be converted into.
+	 */
+	template <typename DestEncoding, typename SourceEncoding>
+	static int32 ConvertedLength(const SourceEncoding* Src)
+	{
+		if constexpr (TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding> || (TIsFixedWidthCharEncoding_V<SourceEncoding> && TIsFixedWidthCharEncoding_V<DestEncoding>))
+		{
+			int32 Result = 0;
+			while (*Src)
+			{
+				++Src;
+				++Result;
+			}
+			return Result + 1;
+		}
+		else
+		{
+			return UE::Core::Private::GetConvertedLength((DestEncoding*)nullptr, Src) + 1;
+		}
+	}
+
+	/**
 	 * Returns the required buffer length for the [Src, Src+SrcSize) string when converted to the DestChar encoding.
 	 * The Src range should contain a null terminator if a null terminator is required in the output.
 	 * 
@@ -297,7 +381,7 @@ struct FGenericPlatformString : public FGenericPlatformStricmp
 	template <typename DestEncoding, typename SourceEncoding>
 	static int32 ConvertedLength(const SourceEncoding* Src, int32 SrcSize)
 	{
-		if constexpr (IsCharEncodingSimplyConvertibleTo<SourceEncoding, DestEncoding>() || (IsFixedWidthEncoding<SourceEncoding>() && IsFixedWidthEncoding<DestEncoding>()))
+		if constexpr (TIsCharEncodingSimplyConvertibleTo_V<SourceEncoding, DestEncoding> || (TIsFixedWidthCharEncoding_V<SourceEncoding> && TIsFixedWidthCharEncoding_V<DestEncoding>))
 		{
 			return SrcSize;
 		}
@@ -327,6 +411,15 @@ private:
 	 * @return      Dest
 	 */
 	static CORE_API void* Memcpy(void* Dest, const void* Src, SIZE_T Count);
+
+
+	/**
+	 * Logs a message about bogus characters which were detected during string conversion.
+	 *
+	 * @param Src     Pointer to the null-terminated string being converted.
+	 */
+	template <typename DestEncoding, typename SourceEncoding>
+	static CORE_API void LogBogusChars(const SourceEncoding* Src);
 
 
 	/**

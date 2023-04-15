@@ -34,6 +34,7 @@ enum class FNavigationSystemRunMode : uint8
 	SimulationMode,
 	PIEMode,
 	InferFromWorldMode,
+	EditorWorldPartitionBuildMode
 };
 
 namespace ENavigationLockReason
@@ -104,6 +105,8 @@ namespace FNavigationSystem
 	/** Discards all navigation data chunks in all sub-levels */
 	ENGINE_API void DiscardNavigationDataChunks(UWorld& InWorld);
 
+	ENGINE_API bool IsEditorRunMode(const FNavigationSystemRunMode Mode);
+	
 	template<typename TNavSys>
 	FORCEINLINE TNavSys* GetCurrent(UWorld* World)
 	{
@@ -140,12 +143,17 @@ namespace FNavigationSystem
 
 	ENGINE_API void OnComponentRegistered(UActorComponent& Comp);
 	ENGINE_API void OnComponentUnregistered(UActorComponent& Comp);
-
+	
+	ENGINE_API void RegisterComponent(UActorComponent& Comp);
+	ENGINE_API void UnregisterComponent(UActorComponent& Comp);
+	
 	ENGINE_API void RemoveActorData(AActor& Actor);
 
 	ENGINE_API bool HasComponentData(UActorComponent& Comp);
 	
 	ENGINE_API const FNavDataConfig& GetDefaultSupportedAgent();
+	ENGINE_API const FNavDataConfig& GetBiggestSupportedAgent(const UWorld* World);
+	ENGINE_API double GetWorldPartitionNavigationDataBuilderOverlap(const UWorld& World);
 
 	ENGINE_API TSubclassOf<UNavAreaBase> GetDefaultWalkableArea();
 	ENGINE_API TSubclassOf<UNavAreaBase> GetDefaultObstacleArea();
@@ -194,7 +202,9 @@ namespace FNavigationSystem
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FBoolControllerBasedSignature, const AController& /*Controller*/);
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FBoolActorComponentBasedSignature, UActorComponent& /*Comp*/);
 	DECLARE_DELEGATE_RetVal(TSubclassOf<UNavAreaBase>, FNavAreaBasedSignature);
-	DECLARE_DELEGATE_RetVal(const FNavDataConfig&, FNavDatConfigBasedSignature);
+	DECLARE_DELEGATE_RetVal(const FNavDataConfig&, FNavDataConfigBasedSignature);
+	DECLARE_DELEGATE_RetVal_OneParam(const FNavDataConfig&, FNavDataConfigAndWorldSignature, const UWorld* /*World*/);
+	DECLARE_DELEGATE_RetVal_OneParam(double, FDoubleWorldBasedSignature, const UWorld& /*World*/);
 	DECLARE_DELEGATE_TwoParams(FWorldByteBasedSignature, UWorld& /*World*/, uint8 /*Flags*/);
 	DECLARE_DELEGATE_TwoParams(FActorBooleBasedSignature, AActor& /*Actor*/, bool /*bUpdateAttachedActors*/);
 	DECLARE_DELEGATE_ThreeParams(FComponentBoundsChangeSignature, UActorComponent& /*Comp*/, const FBox& /*NewBounds*/, const FBox& /*DirtyArea*/)
@@ -202,7 +212,7 @@ namespace FNavigationSystem
 	DECLARE_DELEGATE_RetVal_OneParam(INavigationDataInterface*, FNavDataForActorSignature, const AActor& /*Actor*/);
 	DECLARE_DELEGATE_RetVal(TSubclassOf<AActor>, FNavDataClassFetchSignature);
 	DECLARE_DELEGATE_TwoParams(FWorldBoolBasedSignature, UWorld& /*World*/, const bool /*bShow*/);
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNavigationInitDoneSignature, const UNavigationSystemBase&);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNavigationInitSignature, const UNavigationSystemBase&);
 }
 
 
@@ -254,7 +264,8 @@ public:
 
 	virtual bool IsWorldInitDone() const PURE_VIRTUAL(UNavigationSystemBase::IsWorldInitDone, return false;);
 
-	static FNavigationSystem::FOnNavigationInitDoneSignature& OnNavigationInitDoneStaticDelegate();
+	static FNavigationSystem::FOnNavigationInitSignature& OnNavigationInitStartStaticDelegate();
+	static FNavigationSystem::FOnNavigationInitSignature& OnNavigationInitDoneStaticDelegate();
 
 protected:
 	/**	Sets the Transform the Navigation System will use when converting from FromCoordType
@@ -281,9 +292,12 @@ protected:
 	static FNavigationSystem::FActorBasedSignature& OnActorUnregisteredDelegate();
 	static FNavigationSystem::FActorComponentBasedSignature& OnComponentRegisteredDelegate();
 	static FNavigationSystem::FActorComponentBasedSignature& OnComponentUnregisteredDelegate();
+	static FNavigationSystem::FActorComponentBasedSignature& RegisterComponentDelegate();
+	static FNavigationSystem::FActorComponentBasedSignature& UnregisterComponentDelegate();
 	static FNavigationSystem::FActorBasedSignature& RemoveActorDataDelegate();
 	static FNavigationSystem::FBoolActorComponentBasedSignature& HasComponentDataDelegate();
-	static FNavigationSystem::FNavDatConfigBasedSignature& GetDefaultSupportedAgentDelegate();
+	static FNavigationSystem::FNavDataConfigBasedSignature& GetDefaultSupportedAgentDelegate();
+	static FNavigationSystem::FNavDataConfigAndWorldSignature& GetBiggestSupportedAgentDelegate();
 	static FNavigationSystem::FActorBooleBasedSignature& UpdateActorAndComponentDataDelegate();
 	static FNavigationSystem::FComponentBoundsChangeSignature& OnComponentBoundsChangedDelegate();
 	static FNavigationSystem::FNavDataForActorSignature& GetNavDataForActorDelegate();
@@ -297,6 +311,7 @@ protected:
 	static FNavigationSystem::FNavigationAutoUpdateEnableSignature& SetNavigationAutoUpdateEnableDelegate();
 	static FNavigationSystem::FWorldByteBasedSignature& AddNavigationUpdateLockDelegate();
 	static FNavigationSystem::FWorldByteBasedSignature& RemoveNavigationUpdateLockDelegate();
+	static FNavigationSystem::FDoubleWorldBasedSignature& GetWorldPartitionNavigationDataBuilderOverlapDelegate();
 #endif // WITH_EDITOR
 };
 

@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProfilerWindow.h"
+
+#if STATS
+
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
@@ -9,7 +12,7 @@
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/SProfilerToolbar.h"
 #include "Widgets/SFiltersAndPresets.h"
 #include "Widgets/SMultiDumpBrowser.h"
@@ -20,10 +23,11 @@
 #include "Widgets/Notifications/SNotificationList.h"
 
 #if WITH_EDITOR
-	#include "Runtime/Analytics/Analytics/Public/AnalyticsEventAttribute.h"
-	#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+	#include "AnalyticsEventAttribute.h"
+	#include "Interfaces/IAnalyticsProvider.h"
 	#include "EngineAnalytics.h"
 #endif // WITH_EDITOR
+#include "ProfilerStyle.h"
 
 
 #define LOCTEXT_NAMESPACE "SProfilerWindow"
@@ -187,7 +191,7 @@ void SProfilerWindow::Construct( const FArguments& InArgs )
 													.AutoWidth()
 														[
 															SNew(SImage)
-															.Image(FEditorStyle::GetBrush(TEXT("Profiler.Tab.FiltersAndPresets")))
+															.Image(FProfilerStyle::Get().GetBrush(TEXT("Profiler.Tab.FiltersAndPresets")))
 														]
 
 													+ SHorizontalBox::Slot()
@@ -222,14 +226,14 @@ void SProfilerWindow::Construct( const FArguments& InArgs )
 														.AutoWidth()
 														[
 															SNew(SImage)
-																.Image(FEditorStyle::GetBrush(TEXT("Profiler.Tab.FiltersAndPresets")))
+															.Image(FProfilerStyle::Get().GetBrush(TEXT("Profiler.Tab.FiltersAndPresets")))
 														]
 
 													+ SHorizontalBox::Slot()
 														.AutoWidth()
 														[
 															SNew(STextBlock)
-																.Text( LOCTEXT("FiltersAndPresetsLabel", "Filters And Presets") )
+															.Text( LOCTEXT("FiltersAndPresetsLabel", "Filters And Presets") )
 														]
 												]
 
@@ -266,7 +270,7 @@ void SProfilerWindow::Construct( const FArguments& InArgs )
 																.AutoWidth()
 																[
 																	SNew(SImage)
-																		.Image(FEditorStyle::GetBrush(TEXT("Profiler.Tab.GraphView")))
+																		.Image(FProfilerStyle::Get().GetBrush(TEXT("Profiler.Tab.GraphView")))
 																]
 
 															+ SHorizontalBox::Slot()
@@ -301,7 +305,7 @@ void SProfilerWindow::Construct( const FArguments& InArgs )
 				.VAlign(VAlign_Center)
 				[
 					SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("NotificationList.ItemBackground"))
+						.BorderImage(FProfilerStyle::Get().GetBrush("NotificationList.ItemBackground"))
 						.Padding(8.0f)
 						.Visibility(this, &SProfilerWindow::IsSessionOverlayVissible)
 						[
@@ -351,7 +355,7 @@ void SProfilerWindow::ManageEventGraphTab( const FGuid ProfilerInstanceID, const
 			.AutoWidth()
 			[
 				SNew(SImage)
-				.Image( FEditorStyle::GetBrush( TEXT("Profiler.Tab.EventGraph") ) )
+				.Image(FProfilerStyle::Get().GetBrush( TEXT("Profiler.Tab.EventGraph") ) )
 			]
 
 			+SHorizontalBox::Slot()
@@ -626,7 +630,7 @@ void SProfilerWindow::OpenProfilerSettings()
 	(*OverlaySettingsSlot)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("NotificationList.ItemBackground") )
+		.BorderImage(FProfilerStyle::Get().GetBrush("NotificationList.ItemBackground") )
 		.Padding( 8.0f )
 		[
 		 	SNew(SProfilerSettings)
@@ -672,3 +676,5 @@ void SProfilerWindow::ProfilerManager_OnViewModeChanged( EProfilerViewMode NewVi
 
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

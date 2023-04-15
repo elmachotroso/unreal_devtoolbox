@@ -24,9 +24,10 @@
 #include "UVEditorSubsystem.h"
 #include "UVEditorModule.h"
 #include "UVEditorStyle.h"
-#include "UVToolContextObjects.h"
+#include "ContextObjects/UVToolContextObjects.h"
 #include "UVEditorModeUILayer.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "UVEditorUXSettings.h"
 
 #include "SLevelViewport.h"
 
@@ -92,6 +93,13 @@ FUVEditorToolkit::FUVEditorToolkit(UAssetEditor* InOwningAssetEditor)
 	UVEditorModule->OnRegisterLayoutExtensions().Broadcast(*LayoutExtender);
 	StandaloneDefaultLayout->ProcessExtensions(*LayoutExtender);
 
+	// This API object serves as a communication point between the viewport toolbars and the tools.
+    // We create it here so that we can pass it both into the 2d & 3d viewports and when we initialize 
+    // the mode.
+	ViewportButtonsAPI = NewObject<UUVToolViewportButtonsAPI>();
+
+	UVTool2DViewportAPI = NewObject<UUVTool2DViewportAPI>();
+
 	// We could create the preview scenes in CreateEditorViewportClient() the way that FBaseAssetToolkit
 	// does, but it seems more intuitive to create them right off the bat and pass it in later. 
 	FPreviewScene::ConstructionValues PreviewSceneArgs;
@@ -105,7 +113,7 @@ FUVEditorToolkit::FUVEditorToolkit(UAssetEditor* InOwningAssetEditor)
 
 	LivePreviewTabContent = MakeShareable(new FEditorViewportTabContent());
 	LivePreviewViewportClient = MakeShared<FUVEditor3DViewportClient>(
-		LivePreviewEditorModeManager.Get(), LivePreviewScene.Get());
+		LivePreviewEditorModeManager.Get(), LivePreviewScene.Get(), nullptr, ViewportButtonsAPI);
 
 	LivePreviewViewportDelegate = [this](FAssetEditorViewportConstructionArgs InArgs)
 	{
@@ -113,10 +121,7 @@ FUVEditorToolkit::FUVEditorToolkit(UAssetEditor* InOwningAssetEditor)
 			.EditorViewportClient(LivePreviewViewportClient);
 	};
 
-	// This API object serves as a communication point between the viewport toolbars and the tools.
-	// We create it here so that we can pass it both into the 2d viewport and when we initialize 
-	// the mode.
-	ViewportButtonsAPI = NewObject<UUVToolViewportButtonsAPI>();
+
 }
 
 FUVEditorToolkit::~FUVEditorToolkit()
@@ -175,14 +180,21 @@ FText FUVEditorToolkit::GetToolkitToolTipText() const
 	ToolTipString += TEXT(": ");
 
 	const TArray<UObject*>* Objects = GetObjectsCurrentlyBeingEdited();
-	check(Objects && Objects->Num() > 0);
-	ToolTipString += GetLabelForObject((*Objects)[0]).ToString();
-	for (int32 i = 1; i < Objects->Num(); ++i)
+	if (Objects && Objects->Num() > 0)
 	{
-		ToolTipString += TEXT(", ");
-		ToolTipString += GetLabelForObject((*Objects)[i]).ToString();
+		ToolTipString += GetLabelForObject((*Objects)[0]).ToString();
+		for (int32 i = 1; i < Objects->Num(); ++i)
+		{
+			ToolTipString += TEXT(", ");
+			ToolTipString += GetLabelForObject((*Objects)[i]).ToString();
+		}
 	}
-
+	else
+	{
+		// This can occur if our targets have been deleted externally to the UV Editor.
+		// It's a bad state, but one we can avoid crashing in by doing this.
+		ToolTipString += TEXT("<NO OBJECT>");
+	}
 	return FText::FromString(ToolTipString);
 }
 
@@ -201,13 +213,13 @@ void FUVEditorToolkit::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabM
 	InTabManager->RegisterTabSpawner(ViewportTabID, FOnSpawnTab::CreateSP(this, &FUVEditorToolkit::SpawnTab_Viewport))
 		.SetDisplayName(LOCTEXT("2DViewportTabLabel", "2D Viewport"))
 		.SetGroup(UVEditorMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"));
 
 	InTabManager->RegisterTabSpawner(LivePreviewTabID, FOnSpawnTab::CreateSP(this, 
 		&FUVEditorToolkit::SpawnTab_LivePreview))
 		.SetDisplayName(LOCTEXT("3DViewportTabLabel", "3D Viewport"))
 		.SetGroup(UVEditorMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports"));
 }
 
 bool FUVEditorToolkit::OnRequestClose()
@@ -224,8 +236,29 @@ bool FUVEditorToolkit::OnRequestClose()
 		return true; 
 	}
 
+	bool bHasUnappliedChanges = UVMode->HaveUnappliedChanges();
+	bool bCanApplyChanges = UVMode->CanApplyChanges();
+
+	// Warn the user if there are unapplied changes *but* we can't currently save them.
+	if (bHasUnappliedChanges && !bCanApplyChanges)
+	{
+		EAppReturnType::Type YesNoReply = FMessageDialog::Open(EAppMsgType::YesNo,
+			NSLOCTEXT("UVEditor", "Prompt_UVEditorCloseCannotSave", "At least one of the assets has unapplied changes, however the UV Editor cannot currently apply changes due to current editor conditions. Do you still want to exit the UV Editor? (Selecting 'Yes' will cause all yet unapplied changes to be lost!)"));
+
+		switch (YesNoReply)
+		{
+		case EAppReturnType::Yes:
+			// exit without applying changes
+			break;
+
+		case EAppReturnType::No:
+			// don't exit
+			return false;
+		}
+	}
+
 	// Warn the user of any unapplied changes.
-	if (UVMode->HaveUnappliedChanges())
+	if (bHasUnappliedChanges && bCanApplyChanges)
 	{
 		TArray<TObjectPtr<UObject>> UnappliedAssets;
 		UVMode->GetAssetsWithUnappliedChanges(UnappliedAssets);
@@ -249,13 +282,18 @@ bool FUVEditorToolkit::OnRequestClose()
 		}
 	}
 
+	return FAssetEditorToolkit::OnRequestClose();
+}
+
+void FUVEditorToolkit::OnClose()
+{
 	// Give any active modes a chance to shutdown while the toolkit host is still alive
-    // This is super important to do, otherwise currently opened tabs won't be marked as "closed".
-    // This results in tabs not being properly recycled upon reopening the editor and tab
-    // duplication for each opening event.
+	// This is super important to do, otherwise currently opened tabs won't be marked as "closed".
+	// This results in tabs not being properly recycled upon reopening the editor and tab
+	// duplication for each opening event.
 	GetEditorModeManager().ActivateDefaultMode();
 
-	return FAssetEditorToolkit::OnRequestClose();
+	FAssetEditorToolkit::OnClose();
 }
 
 // These get called indirectly (via toolkit host) from the mode toolkit when the mode starts or ends a tool,
@@ -275,14 +313,29 @@ void FUVEditorToolkit::RemoveViewportOverlayWidget(TSharedRef<SWidget> InViewpor
 void FUVEditorToolkit::SaveAsset_Execute()
 {
 	UUVEditorMode* UVMode = Cast<UUVEditorMode>(EditorModeManager->GetActiveScriptableMode(UUVEditorMode::EM_UVEditorModeId));
-	check(UVMode);
-	if (UVMode->HaveUnappliedChanges())
+	if (ensure(UVMode) && UVMode->HaveUnappliedChanges())
 	{
 		UVMode->ApplyChanges();
 	}
 
 	FAssetEditorToolkit::SaveAsset_Execute();
 }
+
+bool FUVEditorToolkit::CanSaveAsset() const 
+{
+	UUVEditorMode* UVMode = Cast<UUVEditorMode>(EditorModeManager->GetActiveScriptableMode(UUVEditorMode::EM_UVEditorModeId));
+	if(ensure(UVMode))	
+	{
+		return UVMode->CanApplyChanges();
+	}
+	return false;	
+}
+
+bool FUVEditorToolkit::CanSaveAssetAs() const 
+{
+	return CanSaveAsset();
+}
+
 
 TSharedRef<SDockTab> FUVEditorToolkit::SpawnTab_LivePreview(const FSpawnTabArgs& Args)
 {
@@ -341,7 +394,7 @@ TSharedPtr<FEditorViewportClient> FUVEditorToolkit::CreateEditorViewportClient()
 	// Instead, we do viewport client adjustment in PostInitAssetEditor().
 	check(EditorModeManager.IsValid());
 	return MakeShared<FUVEditor2DViewportClient>(EditorModeManager.Get(), UnwrapScene.Get(), 
-		UVEditor2DViewport, ViewportButtonsAPI);
+		UVEditor2DViewport, ViewportButtonsAPI, UVTool2DViewportAPI);
 }
 
 // Called from FBaseAssetToolkit::CreateWidgets. The delegate call path goes through FAssetEditorToolkit::InitAssetEditor
@@ -378,6 +431,20 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	check(PinnedToolkitHost.IsValid());
 	ModeUILayer = MakeShareable(new FUVEditorModeUILayer(PinnedToolkitHost.Get()));
 	ModeUILayer->SetModeMenuCategory( UVEditorMenuCategory );
+
+	TArray<TObjectPtr<UObject>> ObjectsToEdit;
+	OwningAssetEditor->GetObjectsToEdit(ObjectsToEdit);
+
+	// TODO: get these when possible (from level editor selection, for instance), and set them to something reasonable otherwise.
+	TArray<FTransform> ObjectTransforms;
+	ObjectTransforms.SetNum(ObjectsToEdit.Num());
+
+	// This static method call initializes the variety of contexts that UVEditorMode needs to be available in
+	// the context store on Enter() to function properly.
+	UUVEditorMode::InitializeAssetEditorContexts(*EditorModeManager->GetInteractiveToolsContext()->ContextObjectStore, 
+		ObjectsToEdit, ObjectTransforms, *LivePreviewViewportClient, *LivePreviewEditorModeManager, 
+		*ViewportButtonsAPI, *UVTool2DViewportAPI);
+
 	// Currently, aside from setting up all the UI elements, the toolkit also kicks off the UV
 	// editor mode, which is the mode that the editor always works in (things are packaged into
 	// a mode so that they can be moved to another asset editor if necessary).
@@ -388,18 +455,6 @@ void FUVEditorToolkit::PostInitAssetEditor()
 		EditorModeManager->GetActiveScriptableMode(UUVEditorMode::EM_UVEditorModeId));
 	check(UVMode);
 
-	// The mode will need to be able to get to the live preview world, camera, input router, and viewport buttons.
-	UVMode->InitializeContexts(*LivePreviewViewportClient, *LivePreviewEditorModeManager, *ViewportButtonsAPI);
-
-	TArray<TObjectPtr<UObject>> ObjectsToEdit;
-	OwningAssetEditor->GetObjectsToEdit(ObjectsToEdit);
-
-	// TODO: get these when possible, set them otherwise.
-	TArray<FTransform> ObjectTransforms;
-	ObjectTransforms.SetNum(ObjectsToEdit.Num());
-
-	UVMode->InitializeTargets(ObjectsToEdit, ObjectTransforms);
-
 	// Regardless of how the user has modified the layout, we're going to make sure that we have
 	// a 2d viewport that will allow our mode to receive ticks.
     // We don't need to invoke the tool palette tab anymore, since this is handled by
@@ -407,6 +462,16 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	if (!TabManager->FindExistingLiveTab(ViewportTabID))
 	{
 		TabManager->TryInvokeTab(ViewportTabID);
+	}
+
+    // Note: We don't have to force the live viewport to be open, but if we don't, we need to
+	// make sure that any future live preview api functionality does not crash when the viewport
+	// is missing, because some viewport client functions are not robust to that case.For now,
+	// we'll just force it open because it is safer and seems to be more convenient for the user,
+	// since reopening the window can be unintuitive, whereas closing it is easy.
+	if (!TabManager->FindExistingLiveTab(LivePreviewTabID))
+	{
+		TabManager->TryInvokeTab(LivePreviewTabID);
 	}
 
 	// Add the "Apply Changes" button. It should actually be safe to do this almost
@@ -419,7 +484,7 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	ToolkitCommands->MapAction(
 		FUVEditorCommands::Get().ApplyChanges,
 		FExecuteAction::CreateUObject(UVMode, &UUVEditorMode::ApplyChanges),
-		FCanExecuteAction::CreateUObject(UVMode, &UUVEditorMode::HaveUnappliedChanges));
+		FCanExecuteAction::CreateUObject(UVMode, &UUVEditorMode::CanApplyChanges));
 	FName ParentToolbarName;
 	const FName ToolBarName = GetToolMenuToolbarName(ParentToolbarName);
 	UToolMenu* AssetToolbar = UToolMenus::Get()->ExtendMenu(ToolBarName);
@@ -447,7 +512,65 @@ void FUVEditorToolkit::PostInitAssetEditor()
 		FUIAction(),
 		FOnGetContent::CreateLambda([UVModeToolkit]()
 		{
-			return UVModeToolkit->CreateBackgroundSettingsWidget();
+			
+			TSharedRef<SVerticalBox> Container = SNew(SVerticalBox);
+
+			Container->AddSlot()
+				.AutoHeight()
+				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+				[
+					SNew(SBox)
+					.MinDesiredWidth(500)
+				[
+					UVModeToolkit->CreateGridSettingsWidget()
+				]
+				];
+
+			Container->AddSlot()
+				.AutoHeight()
+				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+				[
+					SNew(SBox)
+					.MinDesiredWidth(500)
+				[
+					UVModeToolkit->GetToolDisplaySettingsWidget()
+				]
+				];
+
+			bool bEnableUDIMSupport = (FUVEditorUXSettings::CVarEnablePrototypeUDIMSupport.GetValueOnGameThread() > 0);
+			if (bEnableUDIMSupport)
+			{
+				Container->AddSlot()
+					.AutoHeight()
+					.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+					[
+						SNew(SBox)
+						.MinDesiredWidth(500)
+					[
+						UVModeToolkit->CreateUDIMSettingsWidget()
+					]
+					];
+			}
+
+			Container->AddSlot()
+				.AutoHeight()
+				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+				[
+					SNew(SBox)
+					.MinDesiredWidth(500)
+				[
+					UVModeToolkit->CreateBackgroundSettingsWidget()
+				]
+				];
+
+			TSharedRef<SWidget> Widget = SNew(SBorder)
+				.HAlign(HAlign_Fill)
+				.Padding(4)
+				[
+					Container
+				];
+
+			return Widget;
 		}),
 		LOCTEXT("UVEditorBackgroundSettings_Label", "Display"),
 		LOCTEXT("UVEditorBackgroundSettings_ToolTip", "Change the background display settings"),
@@ -489,7 +612,7 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	UUVEditorSubsystem* UVSubsystem = GEditor->GetEditorSubsystem<UUVEditorSubsystem>();
 	if (UVSubsystem)
 	{
-		ScaleFactor = UUVEditorMode::GetUVMeshScalingFactor();
+		ScaleFactor = FUVEditorUXSettings::UVMeshScalingFactor;
 	}
 	ViewportClient->SetViewLocation(FVector(ScaleFactor / 2, ScaleFactor / 2, ScaleFactor));
 	ViewportClient->SetViewRotation(FRotator(-90, 0, 0));
@@ -509,6 +632,10 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	// TODO: This should not be hardcoded
 	LivePreviewViewportClient->SetViewLocation(FVector(-200, 100, 100));
 	LivePreviewViewportClient->SetLookAtLocation(FVector(0, 0, 0));
+
+	// Adjust camera view to focus on the scene
+	UVMode->FocusLivePreviewCameraOnSelection();
+
 
 	// Hook up the viewport command list to our toolkit command list so that hotkeys not
 	// handled by our toolkit would be handled by the viewport (to allow us to use

@@ -25,16 +25,53 @@
 #include "DesktopPlatformModule.h"
 #include "Interfaces/ITurnkeySupportModule.h"
 
-#if PHYSICS_INTERFACE_PHYSX
-#include "IPhysXCooking.h"
-#include "IPhysXCookingModule.h"
-#endif // PHYSICS_INTERFACE_PHYSX
-
 DEFINE_LOG_CATEGORY_STATIC(LogTargetPlatformManager, Log, All);
 
 // AutoSDKs needs the extra DDPI info
 #ifndef AUTOSDKS_ENABLED
 #define AUTOSDKS_ENABLED DDPI_HAS_EXTENDED_PLATFORMINFO_DATA
+#endif
+
+#if AUTOSDKS_ENABLED
+namespace UE::AutoSDK
+{
+static bool IsAutoSDKsEnabled()
+{
+	static const FString SDKRootEnvFar(TEXT("UE_SDKS_ROOT"));
+
+	FString SDKPath = FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar);
+
+	// AutoSDKs only enabled if UE_SDKS_ROOT is set.
+	if (SDKPath.Len() != 0)
+	{
+		return true;
+	}
+	return false;
+}
+
+// kick off a call to UBT nice and early so that it's results are hopefully ready when needed
+static FProcHandle AutoSDKSetupUBTProc;
+FDelayedAutoRegisterHelper GAutoSDKInit(EDelayedRegisterRunPhase::FileSystemReady, []
+	{
+		// amortize UBT cost by calling it once for all platforms, rather than once per platform.
+		if (IsAutoSDKsEnabled() && FParse::Param(FCommandLine::Get(), TEXT("Multiprocess")) == false)
+		{
+			FString UBTParams(TEXT("-Mode=SetupPlatforms"));
+			int32 UBTReturnCode = -1;
+			FString UBTOutput;
+
+			void* ReadPipe = nullptr;
+			void* WritePipe = nullptr;
+			AutoSDKSetupUBTProc = FDesktopPlatformModule::Get()->InvokeUnrealBuildToolAsync(UBTParams, *GLog, ReadPipe, WritePipe, true);
+			if (!AutoSDKSetupUBTProc.IsValid())
+			{
+				UE_LOG(LogTargetPlatformManager, Warning, TEXT("AutoSDK is enabled (UE_SDKS_ROOT is set), but failed to run UBT to check SDK status! Check your installation."));
+			}
+		}
+	}
+);
+
+}
 #endif
 
 
@@ -93,32 +130,27 @@ public:
 		, bForceCacheUpdate(true)
 		, bHasInitErrors(false)
 		, bIgnoreFirstDelegateCall(true)
+		, bSkipOneTextureFormatManagerInvalidate(false)
 	{
 #if WITH_EDITOR
+
 		ITurnkeySupportModule::Get().UpdateSdkInfo();
 #endif
 
 #if AUTOSDKS_ENABLED		
 		
 		// AutoSDKs only enabled if UE_SDKS_ROOT is set.
-		if (IsAutoSDKsEnabled())
+		if (UE::AutoSDK::IsAutoSDKsEnabled())
 		{					
-			DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FTargetPlatformManagerModule.StartAutoSDK" ), STAT_FTargetPlatformManagerModule_StartAutoSDK, STATGROUP_TargetPlatform );
-
-			// amortize UBT cost by calling it once for all platforms, rather than once per platform.
-			if (FParse::Param(FCommandLine::Get(), TEXT("Multiprocess"))==false)
+			if (UE::AutoSDK::AutoSDKSetupUBTProc.IsValid())
 			{
-				FString UBTParams(TEXT("-Mode=SetupPlatforms"));
-				int32 UBTReturnCode = -1;
-				FString UBTOutput;
-				if (!FDesktopPlatformModule::Get()->InvokeUnrealBuildToolSync(UBTParams, *GLog, true, UBTReturnCode, UBTOutput))
-				{
-					UE_LOG(LogTargetPlatformManager, Warning, TEXT("AutoSDK is enabled (UE_SDKS_ROOT is set), but failed to run UBT to check SDK status! Check your installation."));
-				}
+				SCOPED_BOOT_TIMING("FTargetPlatformManagerModule - WaitForUBTProc");
+				FPlatformProcess::WaitForProc(UE::AutoSDK::AutoSDKSetupUBTProc);
 			}
 
 			// we have to setup our local environment according to AutoSDKs or the ITargetPlatform's IsSDkInstalled calls may fail
 			// before we get a change to setup for a given platform.  Use the platforminfo list to avoid any kind of interdependency.
+			SCOPED_BOOT_TIMING("FTargetPlatformManagerModule.SetupAndValidateAutoSDK");
 			for (auto Pair: FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
 			{
 				if (Pair.Value.AutoSDKPath.Len() > 0)
@@ -128,7 +160,11 @@ public:
 			}
 		}
 #endif
+
 		TextureFormatManager = FModuleManager::LoadModulePtr<ITextureFormatManagerModule>("TextureFormat");
+
+		//TextureFormatManager->Invalidate() already done, don't do again now :
+		bSkipOneTextureFormatManagerInvalidate = true;
 
 		// Calling a virtual function from a constructor, but with no expectation that a derived implementation of this
 		// method would be called.  This is solely to avoid duplicating code in this implementation, not for polymorphism.
@@ -165,12 +201,20 @@ public:
 		GetActiveTargetPlatforms();
 
 		bForceCacheUpdate = false;
+		
+		if ( bSkipOneTextureFormatManagerInvalidate )
+		{
+			bSkipOneTextureFormatManagerInvalidate = false;
+		}
+		else if (!bHasInitErrors)
+		{
+			TextureFormatManager->Invalidate();
+		}
 
 		// If we've had an error due to an invalid target platform, don't do additional work
 		if (!bHasInitErrors)
 		{
 			GetAudioFormats();
-			TextureFormatManager->Invalidate();
 			GetShaderFormats();
 		}
 
@@ -235,13 +279,18 @@ public:
 
 	virtual ITargetPlatform* FindTargetPlatformWithSupport(FName SupportType, FName RequiredSupportedValue)
 	{
-		const TArray<ITargetPlatform*>& TargetPlatforms = GetTargetPlatforms();
-
-		for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
+		// first try to find an active target platform. if that fails, try all target platforms.
+		// this gives priority to the active target platform if multiple platforms support the same value
+		for (int Pass = 0; Pass < 2; Pass++)
 		{
-			if (TargetPlatforms[Index]->SupportsValueForType(SupportType, RequiredSupportedValue))
+			const TArray<ITargetPlatform*>& TargetPlatforms = (Pass == 0) ? GetActiveTargetPlatforms() : GetTargetPlatforms();
+
+			for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
 			{
-				return TargetPlatforms[Index];
+				if (TargetPlatforms[Index]->SupportsValueForType(SupportType, RequiredSupportedValue))
+				{
+					return TargetPlatforms[Index];
+				}
 			}
 		}
 
@@ -250,28 +299,7 @@ public:
 
 	virtual const TArray<ITargetPlatform*>& GetCookingTargetPlatforms() override
 	{
-		static bool bInitialized = false;
-		static TArray<ITargetPlatform*> Results;
-
-		if ( !bInitialized || bForceCacheUpdate )
-		{
-			Results = GetActiveTargetPlatforms();
-
-			FString PlatformStr;
-			if (FParse::Value(FCommandLine::Get(), TEXT("TARGETPLATFORM="), PlatformStr))
-			{
-				if (PlatformStr == TEXT("None"))
-				{
-					Results = Platforms;
-				}
-			}
-			else
-			{
-				Results = Platforms;
-			}
-		}
-
-		return Results;
+		return GetActiveTargetPlatforms();
 	}
 
 	virtual const TArray<ITargetPlatform*>& GetActiveTargetPlatforms() override
@@ -550,32 +578,6 @@ public:
 #endif
 	};
 
-	struct FTextureHintHelper
-	{
-		static ITextureFormat* GetFormatFromModule(ITextureFormatModule* Module)
-		{
-			return Module->GetTextureFormat();
-		}
-		static const TCHAR* GetAllModuleWildcard()
-		{
-			return TEXT("*TextureFormat*");
-		}
-		static const TCHAR* GetFormatDesc()
-		{
-			return TEXT("texture");
-		}
-#if WITH_ENGINE 
-		static void GetHintedModules(ITargetPlatform* Platform, TArray<FName>& Hints)
-		{
-			Platform->GetTextureFormatModuleHints(Hints);
-		}
-		static void GetRequiredFormats(ITargetPlatform* Platform, TArray<FName>& RequiredFormats)
-		{
-			Platform->GetAllTextureFormats(RequiredFormats);
-		}
-#endif
-	};
-
 	virtual const TArray<const IAudioFormat*>& GetAudioFormats() override
 	{
 		return GetFormatsWithHints<IAudioFormat, IAudioFormatModule, FAudioHintHelper>();
@@ -605,7 +607,7 @@ public:
 
 	virtual const TArray<const ITextureFormat*>& GetTextureFormats() override
 	{
-//		return GetFormatsWithHints<ITextureFormat, ITextureFormatModule, FTextureHintHelper>();
+		// note that this gets ALL ITextureFormat Modules, not just ones relevant to the current TargetPlatform
 		return TextureFormatManager->GetTextureFormats();
 	}
 
@@ -675,82 +677,16 @@ public:
 		static bool bInitialized = false;
 		static TArray<const IPhysXCooking*> Results;
 
-#if PHYSICS_INTERFACE_PHYSX
-		if (!bInitialized || bForceCacheUpdate)
-		{
-			bInitialized = true;
-			Results.Empty(Results.Num());
-			
-			TArray<FName> Modules;
-			FModuleManager::Get().FindModules(TEXT("PhysXCooking*"), Modules);
-			
-			if (!Modules.Num())
-			{
-				UE_LOG(LogTargetPlatformManager, Error, TEXT("No target PhysX formats found!"));
-			}
-
-			for (int32 Index = 0; Index < Modules.Num(); Index++)
-			{
-				IPhysXCookingModule* Module = FModuleManager::LoadModulePtr<IPhysXCookingModule>(Modules[Index]);
-				if (Module)
-				{
-					IPhysXCooking* Format = Module->GetPhysXCooking();
-					if (Format != nullptr)
-					{
-						Results.Add(Format);
-					}
-				}
-			}
-		}
-#endif // PHYSICS_INTERFACE_PHYSX
-
 		return Results;
 	}
 
 	virtual const IPhysXCooking* FindPhysXCooking(FName Name) override
 	{
-#if PHYSICS_INTERFACE_PHYSX 
-		const TArray<const IPhysXCooking*>& PhysXCooking = GetPhysXCooking();
-
-		for (int32 Index = 0; Index < PhysXCooking.Num(); Index++)
-		{
-			TArray<FName> Formats;
-
-			PhysXCooking[Index]->GetSupportedFormats(Formats);
-		
-			for (int32 FormatIndex = 0; FormatIndex < Formats.Num(); FormatIndex++)
-			{
-				if (Formats[FormatIndex] == Name)
-				{
-					return PhysXCooking[Index];
-				}
-			}
-		}
-#endif // PHYSICS_INTERFACE_PHYSX
-
 		return nullptr;
 	}
 
 protected:
 
-	/**
-	 * Checks whether AutoSDK is enabled.
-	 *
-	 * @return true if the SDK is enabled, false otherwise.
-	 */
-	bool IsAutoSDKsEnabled()
-	{
-		static const FString SDKRootEnvFar(TEXT("UE_SDKS_ROOT"));
-
-		FString SDKPath = FPlatformMisc::GetEnvironmentVariable(*SDKRootEnvFar);
-
-		// AutoSDKs only enabled if UE_SDKS_ROOT is set.
-		if (SDKPath.Len() != 0)
-		{
-			return true;
-		}
-		return false;
-	}
 
 	bool InitializeSinglePlatform(FName PlatformName, const FString& AutoSDKPath)
 	{
@@ -834,6 +770,9 @@ protected:
 		for (auto Pair : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
 		{
 			FName PlatformName = Pair.Key;
+
+			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*PlatformName.ToString());
+
 			const FDataDrivenPlatformInfo& Info = Pair.Value;
 
 			SlowTask.EnterProgressFrame(1);
@@ -911,7 +850,7 @@ protected:
 	{						
 #if AUTOSDKS_ENABLED
 		
-		if (!IsAutoSDKsEnabled())
+		if (!UE::AutoSDK::IsAutoSDKsEnabled())
 		{
 			return true;
 		}
@@ -1184,11 +1123,6 @@ protected:
 					// since Desktop is just packaging, we don't need an SDK, and UBT will return INVALID, since it doesn't build for it
 					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, PlatformInfo::EPlatformSDKStatus::Installed);
 				}
-				else if (PlatformName == TEXT("HoloLens"))
-				{
-					PlatformName = TEXT("HoloLens");
-					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
-				}
 				else
 				{
 					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
@@ -1297,6 +1231,9 @@ private:
 
 	// Flag to avoid redunant reloads
 	bool bIgnoreFirstDelegateCall;
+	
+	// Flag to avoid redunant reloads
+	bool bSkipOneTextureFormatManagerInvalidate;
 
 	// Holds the list of discovered platforms.
 	TArray<ITargetPlatform*> Platforms;

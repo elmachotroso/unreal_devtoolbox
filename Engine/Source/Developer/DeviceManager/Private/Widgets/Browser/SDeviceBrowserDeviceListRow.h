@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "HAL/PlatformProcess.h"
 #include "Internationalization/Text.h"
 #include "ITargetDeviceProxy.h"
@@ -86,11 +86,11 @@ public:
 
 			return SNew(SBox)
 				.Padding(FMargin(4.0f, 0.0f))
-				.WidthOverride(24)
-				.HeightOverride(24)
+				.WidthOverride(24.f)
+				.HeightOverride(24.f)
 				[
 					SNew(SImage)
-						.Image((PlatformInfo) ? FEditorStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
+						.Image((PlatformInfo) ? FAppStyle::GetBrush(PlatformInfo->GetIconStyleName(EPlatformIconSize::Normal)) : FStyleDefaults::GetNoBrush())
 				];
 		}
 		else if (ColumnName == TEXT("Name"))

@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
+
 namespace UnrealBuildTool.Rules
 {
 	public class MediaIOCore : ModuleRules
@@ -26,17 +28,23 @@ namespace UnrealBuildTool.Rules
 					"TimeManagement"
 				});
 
+			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 			PrivateIncludePaths.AddRange(
 				new string[] {
+					//required for FScreenPassVS and AddDrawScreenPass
+					Path.Combine(EngineDir, "Source", "Runtime", "Renderer", "Private")
 				});
 
-            PrivateDependencyModuleNames.AddRange(
+			PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
                     "AudioMixer",
 	                "AudioMixerCore",
+					"GPUTextureTransfer",
+					"ImageWrapper",
                     "RenderCore",
-                    "SignalProcessing",
+					"Renderer",
+                    "SignalProcessing", 
 	                "SoundFieldRendering"
 				});
 

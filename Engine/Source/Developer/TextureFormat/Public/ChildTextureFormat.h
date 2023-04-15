@@ -8,10 +8,22 @@
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryWriter.h"
 #include "TextureCompressorModule.h"
+#include "Algo/Unique.h"
+#include "TextureFormatManager.h"
 
 /**
  * Version of ITextureFormat that handles a child texture format that is used as a "post-process" after compressing textures, useful for
- * several platforms that need to modify already compressed texture data for optimal data
+ * several platforms that need to modify already compressed texture data for optimal data.
+ * 
+ * There are 3 ways a texture can get processed:
+ *		-- ITextureFormat::IsTiling returns true. This should only be for the old Oodle RAD Game Tools supplied texture encoder 
+ *			and is being deprecated in favor of the new built-in Oodle texture encoder (TextureFormatOodle). In this case,
+ *			the child format passes the images to the encoder to split apart prior to passing to the platform tools.
+ *		-- FChildTextureFormat::GetTiler returns nullptr. This is being phased out because the linear version of the input texture
+ *			gets encoded for each platform with a post process, wasting cook time. In this case the child format encodes
+ *			the "base" texture and then tiles it using the platform tools.
+ *		-- FChildTextureFormat::GetTiler returns a valid pointer. This is the most recent design. In this case, the child format 
+ *			is used as a holder of metadata and doesn't actually do any work (CompressImage class of functions not called).
  */
 class FChildTextureFormat : public ITextureFormat
 {
@@ -23,7 +35,45 @@ public:
 
 	}
 
+	virtual const FChildTextureFormat* GetChildFormat() const override final
+	{
+		return this;
+	}
+
+	/**
+	*	Return the texture tiler for this platform. If present, then the texture build process
+	*	will try to use the cached linear encoding for the texture as input rather than rebuilding
+	*	the linear texture prior to tiling. Confusingly, this can not happen if the base texture
+	*	formate returns true for SupportsTiling, as that refers to the texture encoder, not the format.
+	*/
+	virtual const ITextureTiler* GetTiler() const
+	{
+		return nullptr;
+	}
+
+	FName GetBaseFormatName(FName ChildFormatName) const
+	{
+		return FName(*(ChildFormatName.ToString().Replace(*FormatPrefix, TEXT(""))));
+	}
+
+	/**
+	 * Given a platform specific format name, get the texture format object that will do the encoding.
+	 */
+	const ITextureFormat* GetBaseFormatObject(FName FormatName) const
+	{
+		FName BaseFormatName = GetBaseFormatName(FormatName);
+
+		ITextureFormatManagerModule& TFM = GetTextureFormatManagerRef();
+		const ITextureFormat* FormatObject = TFM.FindTextureFormat(BaseFormatName);
+
+		checkf(FormatObject != nullptr, TEXT("Bad FormatName %s passed to FChildTextureFormat::GetBaseFormatObject()"));
+
+		return FormatObject;
+	}
+
+
 protected:
+
 	void AddBaseTextureFormatModules(const TCHAR* ModuleNameWildcard)
 	{
 		TArray<FName> Modules;
@@ -35,11 +85,22 @@ protected:
 			if ( TFModule != nullptr )
 			{
 				ITextureFormat* BaseFormat = TFModule->GetTextureFormat();
+				if ( BaseFormat != nullptr )
+				{
 				BaseFormat->GetSupportedFormats(BaseFormats);
 			}
 		}
-
-		SupportedFormatsCached.Reset();
+	}
+	}
+	
+	void FinishAddBaseTextureFormatModules() 
+	{
+		// make unique:		
+		BaseFormats.Sort( FNameFastLess() );
+		BaseFormats.SetNum( Algo::Unique( BaseFormats ) );
+		
+		check( SupportedFormatsCached.IsEmpty() );
+		SupportedFormatsCached.Empty(BaseFormats.Num());
 		for (FName BaseFormat : BaseFormats)
 		{
 			FName ChildFormat(*(FormatPrefix + BaseFormat.ToString()));
@@ -47,16 +108,12 @@ protected:
 		}
 	}
 
-	FName GetBaseFormatName(FName PlatformName) const
-	{
-		return FName(*(PlatformName.ToString().Replace(*FormatPrefix, TEXT(""))));
-	}
 
 	FCbObjectView GetBaseFormatConfigOverride(const FCbObjectView& ObjView) const
 	{
 		return ObjView.FindView("BaseTextureFormatConfig").AsObjectView();
 	}
-
+public:
 	FTextureBuildSettings GetBaseTextureBuildSettings(const FTextureBuildSettings& BuildSettings) const
 	{
 		FTextureBuildSettings BaseSettings = BuildSettings;
@@ -64,21 +121,7 @@ protected:
 		BaseSettings.FormatConfigOverride = GetBaseFormatConfigOverride(BuildSettings.FormatConfigOverride);
 		return BaseSettings;
 	}
-
-	/**
-	 * Given a platform specific format name, get the parent texture format object
-	 */
-	const ITextureFormat* GetBaseFormatObject(FName FormatName) const
-	{
-		FName BaseFormatName = GetBaseFormatName(FormatName);
-
-		ITextureFormatManagerModule& TFM = FModuleManager::LoadModuleChecked<ITextureFormatManagerModule>("TextureFormat");
-		const ITextureFormat* FormatObject = TFM.FindTextureFormat(BaseFormatName);
-
-		checkf(FormatObject != nullptr, TEXT("Bad FormatName %s passed to FChildTextureFormat::GetBaseFormatObject()"));
-
-		return FormatObject;
-	}
+protected:
 
 	/**
 	 * The final version is a combination of parent and child formats, 8 bits for each
@@ -152,14 +195,14 @@ public:
 		return BaseString + ChildString;
 	}
 
-	virtual EPixelFormat GetPixelFormatForImage(const FTextureBuildSettings& BuildSettings, const struct FImage& ExampleImage, bool bImageHasAlphaChannel) const override 
+	virtual EPixelFormat GetEncodedPixelFormat(const FTextureBuildSettings& InBuildSettings, bool bImageHasAlphaChannel) const
 	{
-		FTextureBuildSettings Settings = GetBaseTextureBuildSettings(BuildSettings);
-		return GetBaseFormatObject(BuildSettings.TextureFormatName)->GetPixelFormatForImage(Settings, ExampleImage, bImageHasAlphaChannel);
+		FTextureBuildSettings Settings = GetBaseTextureBuildSettings(InBuildSettings);
+		return GetBaseFormatObject(InBuildSettings.TextureFormatName)->GetEncodedPixelFormat(Settings, bImageHasAlphaChannel);
 	}
 
 	bool CompressBaseImage(
-		const FImage& InImage,
+		FImage& InImage,
 		const FTextureBuildSettings& BuildSettings,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
@@ -178,7 +221,7 @@ public:
 	}
 
 	bool CompressBaseImageTiled(
-		const FImage* Images,
+		FImage* Images,
 		uint32 NumImages,
 		const FTextureBuildSettings& BuildSettings,
 		FStringView DebugTexturePathName,

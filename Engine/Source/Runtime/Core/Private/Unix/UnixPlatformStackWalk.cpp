@@ -328,6 +328,33 @@ namespace
 			if (FPaths::IsRelative(info.dli_fname))
 			{
 				FCStringAnsi::Strcpy(ModuleSymbolPath, TCHAR_TO_UTF8(FPlatformProcess::BaseDir()));
+#if WITH_LOW_LEVEL_TESTS
+				// Low level tests live one level above the base directory in a folder <ModuleName>Tests
+				// Sometimes this folder can also be just <ModuleName> if the target was compiled with the tests
+				// TODO: This code needs work as its only hardcoded to allows finding the *.sym for Development config.
+				// Debug/Test/Shipping/ASan configs all fail here
+				ANSICHAR ModuleDirectory[UNIX_MAX_PATH + 1];
+
+				FCStringAnsi::Strcpy(ModuleDirectory, ModuleSymbolPath);
+				FCStringAnsi::Strcat(ModuleDirectory, "/");
+				FCStringAnsi::Strcat(ModuleDirectory, TCHAR_TO_UTF8(*FPaths::GetBaseFilename(out_SymbolInfo.ModuleName)));
+
+				// use stat instead of FPaths::DirectoryExists as it calls into a static global which may be dead at exit time
+				struct stat StatInfo;
+				if (stat(ModuleDirectory, &StatInfo) == 0)
+				{
+					FCStringAnsi::Strcat(ModuleSymbolPath, "/");
+					FCStringAnsi::Strcat(ModuleSymbolPath, TCHAR_TO_UTF8(*FPaths::GetBaseFilename(out_SymbolInfo.ModuleName)));
+					FCStringAnsi::Strcat(ModuleSymbolPath, "/");
+				}
+				else
+				{
+					FCStringAnsi::Strcat(ModuleSymbolPath, "/");
+					FCStringAnsi::Strcat(ModuleSymbolPath, TCHAR_TO_UTF8(*FPaths::GetBaseFilename(out_SymbolInfo.ModuleName)));
+					FCStringAnsi::Strcat(ModuleSymbolPath, "Tests");
+					FCStringAnsi::Strcat(ModuleSymbolPath, "/");
+				}
+#endif
 				FCStringAnsi::Strcat(ModuleSymbolPath, TCHAR_TO_UTF8(*FPaths::GetBaseFilename(out_SymbolInfo.ModuleName)));
 				FCStringAnsi::Strcat(ModuleSymbolPath, ".sym");
 			}
@@ -514,8 +541,12 @@ bool FUnixPlatformStackWalk::ProgramCounterToHumanReadableString( int32 CurrentC
 			// Get filename, source file and line number
 			FUnixCrashContext* UnixContext = static_cast< FUnixCrashContext* >( Context );
 
-			// for ensure, use the fast path - do not even attempt to get detailed info as it will result in long hitch
-			bool bAddDetailedInfo = UnixContext ? UnixContext->GetType() != ECrashContextType::Ensure : false;
+			// do not even attempt to get detailed info for continuable events (like ensure) as it will result in long hitch, use the fast path
+			bool bAddDetailedInfo = false;
+			if (UnixContext)
+			{
+				bAddDetailedInfo = !FPlatformCrashContext::IsTypeContinuable(UnixContext->GetType());
+			}
 
 			// Program counters in the backtrace point to the location from where the execution will be resumed (in all frames except the one where we crashed),
 			// which results in callstack pointing to the next lines in code. In order to determine the source line where the actual call happened, we need to go
@@ -743,8 +774,8 @@ namespace
 {
 	void WaitForSignalHandlerToFinishOrCrash(ThreadStackUserData& ThreadStack)
 	{
-		float EndWaitTimestamp = FPlatformTime::Seconds() + CVarUnixPlatformThreadCallStackMaxWait.AsVariable()->GetFloat();
-		float CurrentTimestamp = FPlatformTime::Seconds();
+		double EndWaitTimestamp = FPlatformTime::Seconds() + CVarUnixPlatformThreadCallStackMaxWait.AsVariable()->GetFloat();
+		double CurrentTimestamp = FPlatformTime::Seconds();
 
 		while (!ThreadStack.bDone)
 		{
@@ -927,44 +958,67 @@ void ReportGPUCrash(const TCHAR* ErrorMessage, void* ProgramCounter)
 	FPlatformMisc::RaiseException(1);
 }
 
-static FCriticalSection EnsureLock;
+static FCriticalSection ReportLock;
 static bool bReentranceGuard = false;
 
 void ReportEnsure(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
 	// Simple re-entrance guard.
-	EnsureLock.Lock();
+	ReportLock.Lock();
 
 	if (bReentranceGuard)
 	{
-		EnsureLock.Unlock();
+		ReportLock.Unlock();
 		return;
 	}
 
 	bReentranceGuard = true;
 
 	FUnixCrashContext EnsureContext(ECrashContextType::Ensure, ErrorMessage);
-	EnsureContext.InitFromEnsureHandler(ErrorMessage, ProgramCounter);
+	EnsureContext.InitFromDiagnostics(ProgramCounter);
 
 	EnsureContext.CaptureStackTrace(ProgramCounter);
-	EnsureContext.GenerateCrashInfoAndLaunchReporter(true);
+	EnsureContext.GenerateCrashInfoAndLaunchReporter();
 
 	bReentranceGuard = false;
-	EnsureLock.Unlock();
+	ReportLock.Unlock();
+}
+
+void ReportStall(const TCHAR* Message, uint32 ThreadId)
+{
+	// Simple re-entrance guard.
+	ReportLock.Lock();
+
+	if (bReentranceGuard)
+	{
+		ReportLock.Unlock();
+		return;
+	}
+
+	bReentranceGuard = true;
+
+	FUnixCrashContext StallContext(ECrashContextType::Stall, Message);
+	StallContext.InitFromDiagnostics();
+
+	StallContext.CaptureThreadStackTrace(ThreadId);
+	StallContext.GenerateCrashInfoAndLaunchReporter();
+
+	bReentranceGuard = false;
+	ReportLock.Unlock();
 }
 
 void ReportHang(const TCHAR* ErrorMessage, const uint64* StackFrames, int32 NumStackFrames, uint32 HungThreadId)
 {
-	EnsureLock.Lock();
+	ReportLock.Lock();
 	if (!bReentranceGuard)
 	{
 		bReentranceGuard = true;
 
-		FUnixCrashContext EnsureContext(ECrashContextType::Hang, ErrorMessage);
-		EnsureContext.SetPortableCallStack(StackFrames, NumStackFrames);
-		EnsureContext.GenerateCrashInfoAndLaunchReporter(true);
+		FUnixCrashContext HangContext(ECrashContextType::Hang, ErrorMessage);
+		HangContext.SetPortableCallStack(StackFrames, NumStackFrames);
+		HangContext.GenerateCrashInfoAndLaunchReporter();
 
 		bReentranceGuard = false;
 	}
-	EnsureLock.Unlock();
+	ReportLock.Unlock();
 }

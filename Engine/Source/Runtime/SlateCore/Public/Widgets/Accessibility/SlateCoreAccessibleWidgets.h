@@ -30,14 +30,18 @@ public:
 	virtual TSharedPtr<IAccessibleWidget> GetParent() override final;
 	virtual TSharedPtr<IAccessibleWidget> GetNextSibling() override final;
 	virtual TSharedPtr<IAccessibleWidget> GetPreviousSibling() override final;
+	virtual TSharedPtr<IAccessibleWidget> GetNextWidgetInHierarchy() override final;
+	virtual TSharedPtr<IAccessibleWidget> GetPreviousWidgetInHierarchy() override final;
 	virtual TSharedPtr<IAccessibleWidget> GetChildAt(int32 Index) override final;
 	virtual int32 GetNumberOfChildren() override final;
 	virtual FString GetClassName() const override final;
 	virtual bool IsEnabled() const override final;
 	virtual bool IsHidden() const override final;
 	virtual bool SupportsFocus() const override final;
-	virtual bool HasFocus() const override final;
-	virtual void SetFocus() override final;
+	virtual bool SupportsAccessibleFocus() const override final;
+	virtual bool CanCurrentlyAcceptAccessibleFocus() const override final;
+	virtual bool HasUserFocus(const FAccessibleUserIndex UserIndex) const override final;
+	virtual bool SetUserFocus(const FAccessibleUserIndex UserIndex) override final;
 
 	virtual EAccessibleWidgetType GetWidgetType() const override { return WidgetType; }
 	virtual FString GetWidgetName() const override;
@@ -93,7 +97,7 @@ public:
 	// IAccessibleWindow
 	virtual TSharedPtr<FGenericWindow> GetNativeWindow() const override;
 	virtual TSharedPtr<IAccessibleWidget> GetChildAtPosition(int32 X, int32 Y) override;
-	virtual TSharedPtr<IAccessibleWidget> GetFocusedWidget() const override;
+	virtual TSharedPtr<IAccessibleWidget> GetUserFocusedWidget(const FAccessibleUserIndex UserIndex) const override;
 	virtual void Close() override;
 	virtual bool SupportsDisplayState(EWindowDisplayState State) const override;
 	virtual EWindowDisplayState GetDisplayState() const override;

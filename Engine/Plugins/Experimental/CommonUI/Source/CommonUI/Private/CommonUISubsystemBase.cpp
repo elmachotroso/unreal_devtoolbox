@@ -5,7 +5,7 @@
 #include "Subsystems/SubsystemCollection.h"
 
 #include "Blueprint/UserWidget.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonInputSubsystem.h"
 #include "ICommonInputModule.h"
 #include "CommonInputSettings.h"
@@ -15,6 +15,8 @@
 #include "UObject/UObjectIterator.h"
 #include "Input/CommonUIActionRouterBase.h"
 #include "Engine/LocalPlayer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonUISubsystemBase)
 
 
 UCommonUISubsystemBase* UCommonUISubsystemBase::Get(const UWidget& Widget)
@@ -128,3 +130,17 @@ void UCommonUISubsystemBase::SetInputAllowed(bool bEnabled, const FName& Reason,
 		InputSubsystem->SetInputTypeFilter(ECommonInputType::Touch, Reason, !bEnabled);
 	}
 }
+
+bool UCommonUISubsystemBase::IsInputAllowed(const ULocalPlayer* LocalPlayer) const
+{
+	if (UCommonInputSubsystem* InputSubSystem = UCommonInputSubsystem::Get(LocalPlayer))
+	{
+		const bool bKeyboardAndMouseFiltered = InputSubSystem->GetInputTypeFilter(ECommonInputType::MouseAndKeyboard);
+		const bool bGamepadFiltered = InputSubSystem->GetInputTypeFilter(ECommonInputType::Gamepad);
+		const bool bTouchFiltered = InputSubSystem->GetInputTypeFilter(ECommonInputType::Touch);
+		return !bKeyboardAndMouseFiltered || !bGamepadFiltered || !bTouchFiltered;
+	}
+
+	return true;
+}
+

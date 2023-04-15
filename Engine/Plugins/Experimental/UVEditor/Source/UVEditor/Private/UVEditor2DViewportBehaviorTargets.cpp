@@ -16,7 +16,7 @@ FInputRayHit FUVEditor2DScrollBehaviorTarget::CanBeginClickDragSequence(const FI
 	// Verify that ray is facing the proper direction
 	if (PressPos.WorldRay.Direction.Z * PressPos.WorldRay.Origin.Z < 0)
 	{
-		return FInputRayHit(-PressPos.WorldRay.Origin.Z / PressPos.WorldRay.Direction.Z);
+		return FInputRayHit(static_cast<float>(-PressPos.WorldRay.Origin.Z / PressPos.WorldRay.Direction.Z));
 	}
 	return FInputRayHit();
 }
@@ -90,12 +90,12 @@ void FUVEditor2DMouseWheelZoomBehaviorTarget::OnMouseWheelScrollUp(const FInputD
 
 	FVector NewLocation = OriginalLocation + (ZoomInProportion * TToPlane * CurrentPos.WorldRay.Direction);
 
-	ViewportClient->OverrideFarClipPlane(NewLocation.Z - CameraFarPlaneWorldZ);
-	ViewportClient->OverrideNearClipPlane(NewLocation.Z * (1.0-CameraNearPlaneProportionZ));
+	ViewportClient->OverrideFarClipPlane(static_cast<float>(NewLocation.Z - CameraFarPlaneWorldZ));
+	ViewportClient->OverrideNearClipPlane(static_cast<float>(NewLocation.Z * (1.0-CameraNearPlaneProportionZ)));
 
 	// Don't zoom in so far that the XY plane lies in front of our near clipping plane, or else everything
 	// will suddenly disappear.
-	if (NewLocation.Z > ViewportClient->GetNearClipPlane())
+	if (NewLocation.Z > ViewportClient->GetNearClipPlane() && NewLocation.Z > ZoomInLimit)
 	{
 		ViewportClient->SetViewLocation(NewLocation);
 	}
@@ -107,10 +107,13 @@ void FUVEditor2DMouseWheelZoomBehaviorTarget::OnMouseWheelScrollDown(const FInpu
 	double TToPlane = -OriginalLocation.Z / CurrentPos.WorldRay.Direction.Z;
 	FVector NewLocation = OriginalLocation - (ZoomOutProportion * TToPlane * CurrentPos.WorldRay.Direction);
 
-	ViewportClient->OverrideFarClipPlane(NewLocation.Z - CameraFarPlaneWorldZ);
-	ViewportClient->OverrideNearClipPlane(NewLocation.Z * (1.0 - CameraNearPlaneProportionZ));
+	ViewportClient->OverrideFarClipPlane(static_cast<float>(NewLocation.Z - CameraFarPlaneWorldZ));
+	ViewportClient->OverrideNearClipPlane(static_cast<float>(NewLocation.Z * (1.0 - CameraNearPlaneProportionZ)));
 
-	ViewportClient->SetViewLocation(NewLocation);
+	if (NewLocation.Z < ZoomOutLimit)
+	{
+		ViewportClient->SetViewLocation(NewLocation);
+	}
 }
 
 void FUVEditor2DMouseWheelZoomBehaviorTarget::SetZoomAmount(double PercentZoomIn)
@@ -122,6 +125,12 @@ void FUVEditor2DMouseWheelZoomBehaviorTarget::SetZoomAmount(double PercentZoomIn
 	// Set the zoom out proportion such that (1 + ZoomOutProportion)(1 - ZoomInProportion) = 1
 	// so that zooming in and then zooming out will return to the same zoom level.
 	ZoomOutProportion = ZoomInProportion / (1 - ZoomInProportion);
+}
+
+void FUVEditor2DMouseWheelZoomBehaviorTarget::SetZoomLimits(double ZoomInLimitIn, double ZoomOutLimitIn)
+{
+	ZoomInLimit = ZoomInLimitIn;
+	ZoomOutLimit = ZoomOutLimitIn;
 }
 
 void FUVEditor2DMouseWheelZoomBehaviorTarget::SetCameraFarPlaneWorldZ(double CameraFarPlaneWorldZIn)

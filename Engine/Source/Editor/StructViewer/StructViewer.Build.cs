@@ -11,6 +11,7 @@ public class StructViewer : ModuleRules
 				"AssetRegistry",
                 "AssetTools",
 				"EditorWidgets",
+				"WorkspaceMenuStructure",
 			}
 		);
 
@@ -22,7 +23,6 @@ public class StructViewer : ModuleRules
                 "InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
 				"EditorFramework",
 				"UnrealEd",
 				"ContentBrowserData",

@@ -6,17 +6,11 @@ namespace UnrealBuildTool.Rules
 	{
 		public SequenceRecorder(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PublicIncludePaths.AddRange(
-				new string[] {
-				}
-				);
-
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					"Editor/SequenceRecorder/Private",
-					"Editor/SequenceRecorder/Private/Sections",
+	                "Editor/SceneOutliner/Private",
 				}
-				);
+			);
 
 			PublicDependencyModuleNames.AddRange(
 				new string[]
@@ -53,6 +47,7 @@ namespace UnrealBuildTool.Rules
                     "Kismet",
                     "LiveLinkInterface",
                     "SerializedRecorderInterface",
+					"SceneOutliner",
                 }
                 );
 

@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaIOCoreDefinitions.h"
+#include "IMediaIOCoreDeviceProvider.h"
 #include "Containers/ArrayView.h"
 #include "MediaIOCoreCommonDisplayMode.h"
 #include "Misc/FrameRate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MediaIOCoreDefinitions)
 
 #define LOCTEXT_NAMESPACE "MediaIOCoreDefinitions"
 
@@ -140,7 +143,7 @@ FText FMediaIOMode::GetModeName() const
 		}
 		return FMediaIOCommonDisplayModes::GetMediaIOCommonDisplayModeInfoName(Resolution.X, Resolution.Y, FieldFrameRate, Standard);
 	}
-	return LOCTEXT("Invalid", "<Invalid>");
+	return LOCTEXT("InvalidMode", "<Invalid>");
 }
 
 
@@ -279,4 +282,61 @@ bool FMediaIOOutputConfiguration::IsValid() const
 	return bResult;
 }
 
+bool FMediaIOVideoTimecodeConfiguration::IsValid() const
+{
+	return TimecodeFormat != EMediaIOAutoDetectableTimecodeFormat::None && MediaConfiguration.IsValid();
+}
+
+bool FMediaIOVideoTimecodeConfiguration::operator== (const FMediaIOVideoTimecodeConfiguration& Other) const
+{
+	return MediaConfiguration == Other.MediaConfiguration
+		&& TimecodeFormat == Other.TimecodeFormat;
+}
+
+FText FMediaIOVideoTimecodeConfiguration::ToText(bool bAutoDetected) const
+{
+	if (bAutoDetected)
+	{
+		const FText ConfigurationText = FText::Format(LOCTEXT("FMediaIOAutoDetectConfigurationToText", "{0} [device{1}/{2}{3}]")
+        			, FText::FromName(MediaConfiguration.MediaConnection.Device.DeviceName)
+        			, FText::AsNumber(MediaConfiguration.MediaConnection.Device.DeviceIdentifier)
+        			, IMediaIOCoreDeviceProvider::GetTransportName(MediaConfiguration.MediaConnection.TransportType, MediaConfiguration.MediaConnection.QuadTransportType)
+        			, FText::AsNumber(MediaConfiguration.MediaConnection.PortIdentifier)
+        		);
+		
+		return FText::Format(LOCTEXT("MediaTimecodeAutoDetectConfigurationRefText", "{0} / Auto"), ConfigurationText);
+	}
+	
+	if (IsValid())
+	{
+		FText Timecode = LOCTEXT("InvalidTimecode", "<Invalid>");
+		switch(TimecodeFormat)
+		{
+		case EMediaIOAutoDetectableTimecodeFormat::LTC:
+			Timecode = LOCTEXT("LTCLabel", "LTC");
+			break;
+		case EMediaIOAutoDetectableTimecodeFormat::VITC:
+			Timecode = LOCTEXT("VITCLabel", "VITC");
+			break;
+		}
+
+		FText ConfigurationText = FText::Format(LOCTEXT("FMediaIOConfigurationToText", "{0} - {1} [device{2}/{3}{4}/{5}]")
+			, MediaConfiguration.bIsInput ? LOCTEXT("In", "In") : LOCTEXT("Out", "Out")
+			, FText::FromName(MediaConfiguration.MediaConnection.Device.DeviceName)
+			, FText::AsNumber(MediaConfiguration.MediaConnection.Device.DeviceIdentifier)
+			, IMediaIOCoreDeviceProvider::GetTransportName(MediaConfiguration.MediaConnection.TransportType, MediaConfiguration.MediaConnection.QuadTransportType)
+			, FText::AsNumber(MediaConfiguration.MediaConnection.PortIdentifier)
+			, MediaConfiguration.MediaMode.GetModeName()
+		);
+
+		return FText::Format(LOCTEXT("MediaTimecodeConfigurationRefText", "{0}/{1}")
+			, ConfigurationText
+			, Timecode
+		);
+	}
+	return LOCTEXT("InvalidConfiguration", "<Invalid>");
+}
+
+
 #undef LOCTEXT_NAMESPACE
+

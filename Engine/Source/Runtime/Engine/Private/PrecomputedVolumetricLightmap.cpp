@@ -8,6 +8,7 @@
 #include "Stats/Stats.h"
 #include "EngineDefines.h"
 #include "UObject/RenderingObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "SceneManagement.h"
 #include "UnrealEngine.h"
 #include "Engine/MapBuildDataRegistry.h"
@@ -21,31 +22,21 @@ DECLARE_MEMORY_STAT(TEXT("Volumetric Lightmap"),STAT_VolumetricLightmapBuildData
 
 void FVolumetricLightmapDataLayer::CreateTexture(FIntVector Dimensions)
 {
-	FRHIResourceCreateInfo CreateInfo(TEXT("VolumetricLightmap"));
-	CreateInfo.BulkData = this;
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create3D(TEXT("VolumetricLightmap"), Dimensions, Format)
+		.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV)
+		.SetBulkData(this);
 
-	Texture = RHICreateTexture3D(
-		Dimensions.X, 
-		Dimensions.Y, 
-		Dimensions.Z, 
-		Format,
-		1,
-		TexCreate_ShaderResource | TexCreate_UAV,
-		CreateInfo);
+	Texture = RHICreateTexture(Desc);
 }
 
 void FVolumetricLightmapDataLayer::CreateTargetTexture(FIntVector Dimensions)
 {
-	FRHIResourceCreateInfo CreateInfo(TEXT("VolumetricLightmap"));
+	const FRHITextureCreateDesc Desc =
+		FRHITextureCreateDesc::Create3D(TEXT("VolumetricLightmap"), Dimensions, Format)
+		.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
 
-	Texture = RHICreateTexture3D(
-		Dimensions.X,
-		Dimensions.Y,
-		Dimensions.Z,
-		Format,
-		1,
-		TexCreate_ShaderResource | TexCreate_UAV,
-		CreateInfo);
+	Texture = RHICreateTexture(Desc);
 }
 
 void FVolumetricLightmapDataLayer::CreateUAV()
@@ -132,17 +123,12 @@ FArchive& operator<<(FArchive& Ar,FPrecomputedVolumetricLightmapData& Volume)
 	
 	if (Ar.CustomVer(FMobileObjectVersion::GUID) >= FMobileObjectVersion::LQVolumetricLightmapLayers)
 	{
-		if (Ar.IsCooking() && !Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::LowQualityLightmaps))
+		if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::MobileStationaryLocalLights && Ar.IsLoading())
 		{
-			// Don't serialize cooked LQ data if the cook target does not want it.
+			// Don't serialize cooked LQ data
 			FVolumetricLightmapDataLayer Dummy;
 			Ar << Dummy;
 			Ar << Dummy;
-		}
-		else
-		{
-			Ar << Volume.BrickData.LQLightColor;
-			Ar << Volume.BrickData.LQLightDirection;
 		}
 	}
 
@@ -154,12 +140,6 @@ FArchive& operator<<(FArchive& Ar,FPrecomputedVolumetricLightmapData& Volume)
 
 	if (Ar.IsLoading())
 	{
-		if (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 && !GIsEditor)
-		{
-			// drop LQ data for SM4+
-			Volume.BrickData.DiscardLowQualityLayers();
-		}
-
 		Volume.bTransient = false;
 
 		const SIZE_T VolumeBytes = Volume.GetAllocatedBytes();
@@ -852,7 +832,6 @@ FVolumetricLightmapBrickAtlas::FVolumetricLightmapBrickAtlas()
 template<class VolumetricLightmapBrickDataType>
 void CopyDataIntoAtlas(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, int32 SrcOffset, int32 DestOffset, int32 NumBricks, const VolumetricLightmapBrickDataType& SrcData, FVolumetricLightmapBrickTextureSet DestTextureSet)
 {
-	FMemMark Mark(FMemStack::Get());
 	TArray<FRHITransitionInfo, SceneRenderingAllocator> Infos;
 	Infos.Reserve(3 + UE_ARRAY_COUNT(SrcData.SHCoefficients));
 	Infos.Emplace(DestTextureSet.AmbientVector.UAV,             ERHIAccess::Unknown, ERHIAccess::UAVCompute);
@@ -867,41 +846,44 @@ void CopyDataIntoAtlas(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type Featu
 
 	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
 
+	for (int32 BatchOffset = 0; BatchOffset < NumBricks; BatchOffset += GRHIMaxDispatchThreadGroupsPerDimension.X)
 	{
-		FCopyResidentBricksCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FCopyResidentBricksCS::FHasSkyBentNormal>(SrcData.SkyBentNormal.Texture.IsValid());
+		{
+			FCopyResidentBricksCS::FPermutationDomain PermutationVector;
+			PermutationVector.Set<FCopyResidentBricksCS::FHasSkyBentNormal>(SrcData.SkyBentNormal.Texture.IsValid());
 
-		TShaderMapRef<FCopyResidentBricksCS> ComputeShader(GlobalShaderMap, PermutationVector);
+			TShaderMapRef<FCopyResidentBricksCS> ComputeShader(GlobalShaderMap, PermutationVector);
 
-		FCopyResidentBricksCS::FParameters Parameters;
+			FCopyResidentBricksCS::FParameters Parameters;
 
-		Parameters.StartPosInOldVolume = SrcOffset;
-		Parameters.StartPosInNewVolume = DestOffset;
+			Parameters.StartPosInOldVolume = BatchOffset + SrcOffset;
+			Parameters.StartPosInNewVolume = BatchOffset + DestOffset;
 
-		Parameters.AmbientVector = SrcData.AmbientVector.Texture;
-		Parameters.SkyBentNormal = SrcData.SkyBentNormal.Texture;
-		Parameters.DirectionalLightShadowing = SrcData.DirectionalLightShadowing.Texture;
+			Parameters.AmbientVector = SrcData.AmbientVector.Texture;
+			Parameters.SkyBentNormal = SrcData.SkyBentNormal.Texture;
+			Parameters.DirectionalLightShadowing = SrcData.DirectionalLightShadowing.Texture;
 
-		Parameters.OutAmbientVector = DestTextureSet.AmbientVector.UAV;
-		Parameters.OutSkyBentNormal = DestTextureSet.SkyBentNormal.UAV;
-		Parameters.OutDirectionalLightShadowing = DestTextureSet.DirectionalLightShadowing.UAV;
+			Parameters.OutAmbientVector = DestTextureSet.AmbientVector.UAV;
+			Parameters.OutSkyBentNormal = DestTextureSet.SkyBentNormal.UAV;
+			Parameters.OutDirectionalLightShadowing = DestTextureSet.DirectionalLightShadowing.UAV;
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FIntVector(NumBricks, 1, 1));
-	}
+			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FIntVector(FMath::Min(NumBricks, GRHIMaxDispatchThreadGroupsPerDimension.X), 1, 1));
+		}
 
-	for (int32 i = 0; i < UE_ARRAY_COUNT(SrcData.SHCoefficients); i++)
-	{
-		TShaderMapRef<FCopyResidentBrickSHCoefficientsCS> ComputeShader(GlobalShaderMap);
+		for (int32 i = 0; i < UE_ARRAY_COUNT(SrcData.SHCoefficients); i++)
+		{
+			TShaderMapRef<FCopyResidentBrickSHCoefficientsCS> ComputeShader(GlobalShaderMap);
 
-		FCopyResidentBrickSHCoefficientsCS::FParameters Parameters;
+			FCopyResidentBrickSHCoefficientsCS::FParameters Parameters;
 
-		Parameters.StartPosInOldVolume = SrcOffset;
-		Parameters.StartPosInNewVolume = DestOffset;
+			Parameters.StartPosInOldVolume = BatchOffset + SrcOffset;
+			Parameters.StartPosInNewVolume = BatchOffset + DestOffset;
 
-		Parameters.SHCoefficients = SrcData.SHCoefficients[i].Texture;
-		Parameters.OutSHCoefficients = DestTextureSet.SHCoefficients[i].UAV;
+			Parameters.SHCoefficients = SrcData.SHCoefficients[i].Texture;
+			Parameters.OutSHCoefficients = DestTextureSet.SHCoefficients[i].UAV;
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FIntVector(NumBricks, 1, 1));
+			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FIntVector(FMath::Min(NumBricks, GRHIMaxDispatchThreadGroupsPerDimension.X), 1, 1));
+		}
 	}
 
 	// Make all the resources readable again

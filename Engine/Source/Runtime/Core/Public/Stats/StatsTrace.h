@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/Build.h"
 #include "Trace/Config.h"
 
 #if !defined(STATSTRACE_ENABLED)
@@ -19,7 +20,7 @@ class FName;
 
 struct FStatsTrace
 {
-	CORE_API static void DeclareStat(const FName& Stat, const ANSICHAR* Name, const TCHAR* Description, bool IsFloatingPoint, bool IsMemory, bool ShouldClearEveryFrame);
+	CORE_API static void DeclareStat(const FName& Stat, const ANSICHAR* Name, const TCHAR* Description, const ANSICHAR* Group, bool IsFloatingPoint, bool IsMemory, bool ShouldClearEveryFrame);
 	CORE_API static void Increment(const FName& Stat);
 	CORE_API static void Decrement(const FName& Stat);
 	CORE_API static void Add(const FName& Stat, int64 Amount);

@@ -2,8 +2,8 @@
 //   Licenced under the Unreal Engine EULA 
 
 #include "BinkMovieStreamer.h"
-#include "BinkMediaPlayerPCH.h"
 
+#include "BinkMediaPlayerPrivate.h"
 #include "Rendering/RenderingCommon.h"
 #include "Slate/SlateTextures.h"
 #include "MoviePlayer.h"
@@ -11,6 +11,7 @@
 #include "RHIUtilities.h"
 #include "BinkMediaPlayer.h"
 #include "BinkFunctionLibrary.h"
+#include "HDRHelper.h"
 
 #include "OneColorShader.h"
 
@@ -131,26 +132,27 @@ bool FBinkMovieStreamer::Tick(float DeltaTime)
 		static const auto CVarDisplayOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
 		if (GRHISupportsHDROutput && CVarHDROutputEnabled->GetValueOnRenderThread() != 0)
 		{
-			int outDev = CVarDisplayOutputDevice->GetValueOnRenderThread();
+			EDisplayOutputFormat outDev = static_cast<EDisplayOutputFormat>(CVarDisplayOutputDevice->GetValueOnRenderThread());
+			float DisplayMaxLuminance = HDRGetDisplayMaximumLuminance();
 			switch (outDev)
 			{
-				// LDR
-			case 0:
-			case 1:
-			case 2:
+			// LDR
+			case EDisplayOutputFormat::SDR_sRGB:
+			case EDisplayOutputFormat::SDR_Rec709:
+			case EDisplayOutputFormat::SDR_ExplicitGammaMapping:
 				BinkPluginSetHdrSettings(bnk, 1, 1.0f, 80);
 				break;
-				// 1k nits
-			case 3:
-			case 5:
-				BinkPluginSetHdrSettings(bnk, 1, 1.0f, 1000);
+			// 1k nits
+			case EDisplayOutputFormat::HDR_ACES_1000nit_ST2084:
+			case EDisplayOutputFormat::HDR_ACES_1000nit_ScRGB:
+				BinkPluginSetHdrSettings(bnk, 1, 1.0f, DisplayMaxLuminance);
 				break;
-				// 2k nits
-			case 4:
-			case 6:
-				BinkPluginSetHdrSettings(bnk, 1, 1.0f, 2000);
+			// 2k nits
+			case EDisplayOutputFormat::HDR_ACES_2000nit_ST2084:
+			case EDisplayOutputFormat::HDR_ACES_2000nit_ScRGB:
+				BinkPluginSetHdrSettings(bnk, 1, 1.0f, DisplayMaxLuminance);
 				break;
-				// no tonemap
+			// no tonemap
 			default:
 				BinkPluginSetHdrSettings(bnk, 0, 1.0f, 1000);
 				break;

@@ -1,12 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/NetworkVersion.h"
-#include "Misc/App.h"
-#include "Misc/EngineVersion.h"
-#include "Runtime/Launch/Resources/Version.h"
-#include "Misc/NetworkGuid.h"
-#include "HAL/IConsoleManager.h"
+
 #include "BuildSettings.h"
+#include "HAL/IConsoleManager.h"
+#include "Logging/LogCategory.h"
+#include "Misc/App.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Crc.h"
+#include "Misc/EngineVersion.h"
+#include "Misc/NetworkGuid.h" // IWYU pragma: keep
+#include "Misc/Parse.h"
+#include "Trace/Detail/Channel.h"
+#include "Misc/StringBuilder.h"
 
 DEFINE_LOG_CATEGORY( LogNetVersion );
 
@@ -168,3 +176,21 @@ FNetworkReplayVersion FNetworkVersion::GetReplayVersion()
 
 	return FNetworkReplayVersion( FApp::GetProjectName(), ReplayVersion, GetReplayCompatibleChangelist() );
 }
+
+bool FNetworkVersion::AreNetworkRuntimeFeaturesCompatible(EEngineNetworkRuntimeFeatures LocalFeatures, EEngineNetworkRuntimeFeatures RemoteFeatures)
+{
+	return LocalFeatures == RemoteFeatures;
+}
+
+void FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(EEngineNetworkRuntimeFeatures FeaturesBitflag, FStringBuilderBase& OutVerboseDescription)
+{
+	if (EnumHasAnyFlags(FeaturesBitflag, EEngineNetworkRuntimeFeatures::IrisEnabled))
+	{
+		OutVerboseDescription.Append(TEXT("IrisReplication"));
+	}
+	else
+	{
+		OutVerboseDescription.Append(TEXT("LegacyReplication"));
+	}
+}
+

@@ -3,13 +3,16 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/Char.h"
 #include "GenericPlatform/GenericPlatformStricmp.h"
 #include "GenericPlatform/GenericPlatformString.h"
-#include <wchar.h>
-#include <string.h>
-#include <stdlib.h>
+#include "Misc/Char.h"
+
+// IWYU pragma: begin_exports
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+// IWYU pragma: end_exports
 
 #if PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION && !PLATFORM_TCHAR_IS_CHAR16
 

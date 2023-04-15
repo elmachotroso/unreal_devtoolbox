@@ -11,6 +11,8 @@
 #include "Templates/Casts.h"
 #include "Templates/UnrealTemplate.h"
 
+#include <type_traits>
+
 /**
  * FScriptInterface
  *
@@ -147,12 +149,28 @@ public:
 	/**
 	 * Assignment from an object type that implements the InterfaceType native interface class
 	 */
-	template <typename ObjectType, typename = decltype(ImplicitConv<UObject*>((ObjectType*)nullptr))>
-	TScriptInterface(ObjectType* SourceObject)
+	template <
+		typename U,
+		decltype(ImplicitConv<UObject*>(std::declval<U>()))* = nullptr
+	>
+	FORCEINLINE TScriptInterface(U&& Source)
 	{
+		UObject* SourceObject = ImplicitConv<UObject*>(Source);
 		SetObject(SourceObject);
 
 		InterfaceType* SourceInterface = Cast<InterfaceType>(SourceObject);
+		SetInterface(SourceInterface);
+	}
+
+	/**
+	 * Assignment from an object type that implements the InterfaceType native interface class
+	 */
+	template <typename ObjectType>
+	TScriptInterface(TObjectPtr<ObjectType> SourceObject)
+	{
+		SetObject(SourceObject);
+
+		InterfaceType* SourceInterface = Cast<InterfaceType>(ToRawPtr(SourceObject));
 		SetInterface(SourceInterface);
 	}
 
@@ -174,8 +192,21 @@ public:
 	/**
 	 * Assignment from an object type that implements the InterfaceType native interface class
 	 */
-	template <typename ObjectType, typename = decltype(ImplicitConv<UObject*>((ObjectType*)nullptr))>
-	TScriptInterface& operator=(ObjectType* SourceObject)
+	template <
+		typename U,
+		decltype(ImplicitConv<UObject*>(std::declval<U>()))* = nullptr
+	>
+	TScriptInterface& operator=(U&& Source)
+	{
+		*this = TScriptInterface(Source);
+		return *this;
+	}
+
+	/**
+	 * Assignment from an object type that implements the InterfaceType native interface class
+	 */
+	template <typename ObjectType>
+	TScriptInterface& operator=(TObjectPtr<ObjectType> SourceObject)
 	{
 		*this = TScriptInterface(SourceObject);
 		return *this;
@@ -184,11 +215,13 @@ public:
 	/**
 	 * Comparison operator, taking a pointer to InterfaceType
 	 */
-	FORCEINLINE bool operator==( const InterfaceType* Other ) const
+	template <typename OtherInterface, typename = decltype(ImplicitConv<InterfaceType*>((OtherInterface*)nullptr))>
+	FORCEINLINE bool operator==( const OtherInterface* Other ) const
 	{
 		return GetInterface() == Other;
 	}
-	FORCEINLINE bool operator!=( const InterfaceType* Other ) const
+	template <typename OtherInterface, typename = decltype(ImplicitConv<InterfaceType*>((OtherInterface*)nullptr))>
+	FORCEINLINE bool operator!=( const OtherInterface* Other ) const
 	{
 		return GetInterface() != Other;
 	}

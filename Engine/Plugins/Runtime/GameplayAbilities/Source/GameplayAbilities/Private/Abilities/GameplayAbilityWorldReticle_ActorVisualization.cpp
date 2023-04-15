@@ -3,6 +3,9 @@
 #include "Abilities/GameplayAbilityWorldReticle_ActorVisualization.h"
 #include "Abilities/GameplayAbilityTargetActor.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/MeshComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayAbilityWorldReticle_ActorVisualization)
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------------
 //
@@ -69,3 +72,4 @@ void AGameplayAbilityWorldReticle_ActorVisualization::EndPlay(const EEndPlayReas
 {
 	Super::EndPlay(EndPlayReason);
 }
+

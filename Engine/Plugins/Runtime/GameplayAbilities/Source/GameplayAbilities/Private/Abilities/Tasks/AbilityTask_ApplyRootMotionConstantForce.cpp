@@ -5,7 +5,11 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_ApplyRootMotionConstantForce)
 
 UAbilityTask_ApplyRootMotionConstantForce::UAbilityTask_ApplyRootMotionConstantForce(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -49,9 +53,10 @@ UAbilityTask_ApplyRootMotionConstantForce* UAbilityTask_ApplyRootMotionConstantF
 
 void UAbilityTask_ApplyRootMotionConstantForce::SharedInitAndApply()
 {
-	if (AbilitySystemComponent->AbilityActorInfo->MovementComponent.IsValid())
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (ASC && ASC->AbilityActorInfo->MovementComponent.IsValid())
 	{
-		MovementComponent = Cast<UCharacterMovementComponent>(AbilitySystemComponent->AbilityActorInfo->MovementComponent.Get());
+		MovementComponent = Cast<UCharacterMovementComponent>(ASC->AbilityActorInfo->MovementComponent.Get());
 		StartTime = GetWorld()->GetTimeSeconds();
 		EndTime = StartTime + Duration;
 
@@ -152,3 +157,4 @@ void UAbilityTask_ApplyRootMotionConstantForce::OnDestroy(bool AbilityIsEnding)
 
 	Super::OnDestroy(AbilityIsEnding);
 }
+

@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/UnrealString.h"
-#include "Logging/LogMacros.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
+#include "Logging/LogMacros.h"
 
 // The version number used for determining network compatibility. If zero, uses the engine compatible version.
 #define ENGINE_NET_VERSION  0
@@ -29,6 +29,16 @@ public:
 	uint32		NetworkVersion;
 	uint32		Changelist;
 };
+
+/**
+ * List of runtime features that can affect network compatibility between two connections
+ */
+enum class EEngineNetworkRuntimeFeatures : uint16
+{
+	None = 0,
+	IrisEnabled = 1 << None, // Are we running the Iris or Legacy network system
+};
+ENUM_CLASS_FLAGS(EEngineNetworkRuntimeFeatures);
 
 enum EEngineNetworkVersionHistory
 {
@@ -55,6 +65,13 @@ enum EEngineNetworkVersionHistory
 	HISTORY_MONTAGE_PLAY_INST_ID_SERIALIZATION = 21,// Bump version to support net serialization of FGameplayAbilityRepAnimMontage, addition of PlayInstanceId and removal of bForcePlayBit
 	HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES	= 22,// Bump version to support net serialization of double vector types
 	HISTORY_PACKED_VECTOR_LWC_SUPPORT = 23,			// Bump version to support quantized LWC FVector net serialization
+	HISTORY_PAWN_REMOTEVIEWPITCH = 24,				// Bump version to support serialization changes to RemoteViewPitch
+	HISTORY_REPMOVE_SERVERFRAME_AND_HANDLE = 25,	// Bump version to support serialization changes to RepMove so we can get the serverframe and physics handle associated with the object
+	HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE = 26,	// Bump version to support up to history 21 + HISTORY_PAWN_REMOTEVIEWPITCH.  DO NOT USE!!!
+	HISTORY_PLACEHOLDER = 27,						// Bump version to a placeholder.  This version is the same as HISTORY_REPMOVE_SERVERFRAME_AND_HANDLE
+	HISTORY_RUNTIME_FEATURES_COMPATIBILITY = 28,	// Bump version to add network runtime feature compatibility test to handshake (hello/upgrade) control messages
+	HISTORY_SOFTOBJECTPTR_NETGUIDS = 29,			// Bump version to support replicating SoftObjectPtrs by NetGuid instead of raw strings.
+	HISTORY_SUBOBJECT_DESTROY_FLAG = 30,			// Bump version to support subobject destruction message flags
 	// New history items go above here.
 
 	HISTORY_ENGINENETVERSION_PLUS_ONE,
@@ -124,6 +141,16 @@ struct CORE_API FNetworkVersion
 	*/
 	static void SetGameCompatibleNetworkProtocolVersion(uint32 GameCompatibleNetworkProtocolVersion);
 
+	/**
+	 * Compares if the connection's runtime features are compatible with each other
+	 */
+	static bool AreNetworkRuntimeFeaturesCompatible(EEngineNetworkRuntimeFeatures LocalFeatures, EEngineNetworkRuntimeFeatures RemoteFeatures);
+
+	/**
+	 * Build and return a string describing the status of the the network runtime features bitflag
+	 */
+	static void DescribeNetworkRuntimeFeaturesBitset(EEngineNetworkRuntimeFeatures FeaturesBitflag, FStringBuilderBase& OutVerboseDescription);
+	
 	/**
 	* Returns the project version used by networking
 	* 

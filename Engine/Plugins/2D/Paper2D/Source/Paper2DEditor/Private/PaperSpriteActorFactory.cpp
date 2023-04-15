@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperSpriteActorFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PaperSpriteActor.h"
 #include "PaperSprite.h"
 #include "PaperSpriteComponent.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PaperSpriteActorFactory)
 
 //////////////////////////////////////////////////////////////////////////
 // UPaperSpriteActorFactory
@@ -60,7 +62,7 @@ void UPaperSpriteActorFactory::PostCreateBlueprint(UObject* Asset, AActor* CDO)
 
 bool UPaperSpriteActorFactory::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if (AssetData.IsValid() && AssetData.GetClass()->IsChildOf(UPaperSprite::StaticClass()))
+	if (AssetData.IsValid() && AssetData.IsInstanceOf(UPaperSprite::StaticClass()))
 	{
 		return true;
 	}
@@ -70,3 +72,4 @@ bool UPaperSpriteActorFactory::CanCreateActorFrom(const FAssetData& AssetData, F
 		return false;
 	}
 }
+

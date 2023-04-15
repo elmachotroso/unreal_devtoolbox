@@ -2,6 +2,9 @@
 
 #include "GameplayPrediction.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemLog.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayPrediction)
 
 /** The key to understanding this function is that when a key is received by the server, we note which connection gave it to us. We only serialize the key back to that client.  */
 bool FPredictionKey::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
@@ -259,7 +262,7 @@ FScopedPredictionWindow::FScopedPredictionWindow(UAbilitySystemComponent* Abilit
 
 FScopedPredictionWindow::FScopedPredictionWindow(UAbilitySystemComponent* InAbilitySystemComponent, bool bCanGenerateNewKey)
 {
-	// On the server, this will do nothing since he is authoritative and doesn't need a prediction key for anything.
+	// On the server, this will do nothing since it is authoritative and doesn't need a prediction key for anything.
 	// On the client, this will generate a new prediction key if bCanGenerateNewKey is true, and we have a invalid prediction key.
 
 	ClearScopedPredictionKey = false;
@@ -379,3 +382,4 @@ FString FReplicatedPredictionKeyMap::GetDebugString() const
 
 	return HighKey.ToString();
 }
+

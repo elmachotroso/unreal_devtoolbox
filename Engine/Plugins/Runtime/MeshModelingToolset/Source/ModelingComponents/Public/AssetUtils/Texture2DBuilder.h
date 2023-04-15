@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "VectorTypes.h"
-#include "Image/ImageDimensions.h"
+#include "Engine/Texture2D.h"
 #include "Image/ImageBuilder.h"
-#include "Engine/Classes/Engine/Texture2D.h"
+#include "Image/ImageDimensions.h"
+#include "VectorTypes.h"
 
 namespace UE
 {
@@ -110,6 +110,14 @@ public:
 	 * Create a new UTexture2D 'over' an existing UTexture2D, with the given BuildType and Dimensions
 	 */
 	bool InitializeAndReplaceExistingTexture(UTexture2D* ExistingTexture, ETextureType BuildTypeIn, FImageDimensions DimensionsIn);
+
+
+	/**
+	 * Create a new UTexture2D 'over' an existing UTexture2D using the same texture settings
+	 * as a given source UTexture2D. This method only initializes the texture settings of ExistingTexture
+	 * to match those of SourceTexture. To populate texture data, use Copy(..).
+	 */
+	bool InitializeAndReplaceExistingTexture(UTexture2D* ExistingTexture, UTexture2D* SourceTexture);
 
 
 	/**

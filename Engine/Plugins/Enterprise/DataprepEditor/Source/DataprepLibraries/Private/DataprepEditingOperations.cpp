@@ -9,7 +9,7 @@
 
 #include "ActorEditorUtils.h"
 #include "ActorFactories/ActorFactory.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/ParallelFor.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
@@ -696,14 +696,14 @@ TSharedRef< SWidget > FDataprepSpawnActorsAtLocationDetails::CreateWidget()
 		.MaxWidth(100.0f)
 		[
 			SAssignNew(AssetPickerAnchor, SComboButton)
-			.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
+			.ButtonStyle(FAppStyle::Get(), "PropertyEditor.AssetComboStyle")
 			.ContentPadding(FMargin(2, 2, 2, 1))
 			.MenuPlacement(MenuPlacement_BelowAnchor)
 			.ButtonContent()
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "PropertyEditor.AssetClass")
-				.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+				.TextStyle(FAppStyle::Get(), "PropertyEditor.AssetClass")
+				.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 				.Text(this, &FDataprepSpawnActorsAtLocationDetails::OnGetComboTextValue)
 				.ToolTipText(this, &FDataprepSpawnActorsAtLocationDetails::GetObjectToolTip)
 			]
@@ -715,7 +715,7 @@ const FAssetData& FDataprepSpawnActorsAtLocationDetails::GetAssetData() const
 {
 	if (DataprepOperation->SelectedAsset)
 	{
-		if (!DataprepOperation->SelectedAsset->GetPathName().Equals(CachedAssetData.ObjectPath.ToString(), ESearchCase::CaseSensitive))
+		if (FSoftObjectPath(DataprepOperation->SelectedAsset) == CachedAssetData.GetSoftObjectPath())
 		{
 			// This always uses the exact object pointed at
 			CachedAssetData = FAssetData(DataprepOperation->SelectedAsset, true);
@@ -764,8 +764,8 @@ TSharedRef<SWidget> FDataprepSpawnActorsAtLocationDetails::GenerateAssetPicker()
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(UStaticMesh::StaticClass()->GetFName());
-	AssetPickerConfig.Filter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UStaticMesh::StaticClass()->GetClassPathName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 	AssetPickerConfig.bAllowNullSelection = true;
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &FDataprepSpawnActorsAtLocationDetails::OnAssetSelectedFromPicker);
@@ -779,7 +779,7 @@ TSharedRef<SWidget> FDataprepSpawnActorsAtLocationDetails::GenerateAssetPicker()
 		.WidthOverride(300)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 			]
@@ -1008,7 +1008,7 @@ namespace DatasmithEditingOperationsUtils
 					}
 
 					TInlineComponentArray<UStaticMeshComponent*> ComponentArray;
-					Actor->GetComponents<UStaticMeshComponent>(ComponentArray);
+					Actor->GetComponents(ComponentArray);
 
 					for(UStaticMeshComponent* MeshComponent : ComponentArray)
 					{

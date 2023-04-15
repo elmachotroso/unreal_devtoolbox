@@ -26,7 +26,7 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScript3DGridParameters
 	GENERATED_BODY()
 public:
 	/** SizeMethod determines how the parameters below will be interpreted to define the size of a 3D sampling/voxel grid */
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptGridSizingMethod SizeMethod = EGeometryScriptGridSizingMethod::GridResolution;
 
 	/** Use a specific grid cell size, and construct a grid with dimensions large enough to contain the target object */
@@ -44,20 +44,29 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptSolidifyOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FGeometryScript3DGridParameters GridParameters;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float WindingThreshold = 0.5;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bSolidAtBoundaries = true;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float ExtendBounds = 1.0;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	int SurfaceSearchSteps = 3;
+
+	/** When enabled, regions of the input mesh that have open boundaries (ie "shells") are thickened by extruding them into closed solids. This may be expensive on large meshes. */
+	UPROPERTY(BlueprintReadWrite, Category = Options)
+	bool bThickenShells = false;
+
+	/** Open Shells are Thickened by offsetting vertices along their averaged vertex normals by this amount. Dimension is but clamped to twice the grid cell size. */
+	UPROPERTY(BlueprintReadWrite, Category = Options)
+	double ShellThickness = 1.0;
+
 };
 
 
@@ -84,19 +93,19 @@ struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptMorphologyOptions
 {
 	GENERATED_BODY()
 public:
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FGeometryScript3DGridParameters SDFGridParameters;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	bool bUseSeparateMeshGrid = false;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	FGeometryScript3DGridParameters MeshGridParameters;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	EGeometryScriptMorphologicalOpType Operation = EGeometryScriptMorphologicalOpType::Dilate;
 
-	UPROPERTY(BlueprintReadWrite, Category = Options)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
 	float Distance = 1.0;
 
 };

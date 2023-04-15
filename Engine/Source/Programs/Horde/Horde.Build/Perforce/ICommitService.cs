@@ -1,33 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Models;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
-using EpicGames.Core;
-using MongoDB.Bson;
-using HordeServer.Utilities;
+using EpicGames.Horde.Storage;
+using Horde.Build.Streams;
+using Horde.Build.Utilities;
 
-namespace HordeServer.Commits
+namespace Horde.Build.Perforce
 {
-	using StreamId = StringId<IStream>;
-
 	/// <summary>
 	/// Provides information about commits
 	/// </summary>
-	interface ICommitService
+	public interface ICommitService
 	{
 		/// <summary>
-		/// Finds commits matching a set of criteria
+		/// Registers a delegate to be called when a new commit is added
 		/// </summary>
-		/// <param name="StreamId">The stream to query</param>
-		/// <param name="MinChange">Minimum change to query</param>
-		/// <param name="MaxChange">Maximum change to query</param>
-		/// <param name="Paths">Paths to filter by</param>
-		/// <param name="Index">Index of the first result to return</param>
-		/// <param name="Count">Maximum number of results to return</param>
-		/// <returns>List of commit objects</returns>
-		Task<List<ICommit>> FindCommitsAsync(StreamId StreamId, int? MinChange = null, int? MaxChange = null, string[]? Paths = null, int? Index = null, int? Count = null);
+		/// <param name="onAddCommit">Callback for a new commit being added</param>
+		/// <returns>Disposable handler.</returns>
+		IAsyncDisposable AddListener(Func<ICommit, Task> onAddCommit);
 	}
 }

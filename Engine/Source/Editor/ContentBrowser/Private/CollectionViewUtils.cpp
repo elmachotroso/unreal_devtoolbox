@@ -2,11 +2,20 @@
 
 
 #include "CollectionViewUtils.h"
-#include "Misc/Paths.h"
-#include "Misc/ConfigCacheIni.h"
-#include "ICollectionManager.h"
+
 #include "CollectionManagerModule.h"
-#include "EditorStyleSet.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "ICollectionManager.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Paths.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 
 #define LOCTEXT_NAMESPACE "CollectionView"
 
@@ -265,7 +274,7 @@ bool HasCustomColors(TArray<FLinearColor>* OutColors)
 FLinearColor GetDefaultColor()
 {
 	// Use the selection accent color as the default
-	const FSlateColor NewSlateColor = FEditorStyle::GetSlateColor("SelectionColor");
+	const FSlateColor NewSlateColor = FAppStyle::GetSlateColor("SelectionColor");
 	return NewSlateColor.IsColorSpecified() ? NewSlateColor.GetSpecifiedColor() : FLinearColor::White;
 }
 

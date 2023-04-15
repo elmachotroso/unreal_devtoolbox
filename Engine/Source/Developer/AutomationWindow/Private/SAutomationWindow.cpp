@@ -22,9 +22,9 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "EditorStyleSet.h"
 #include "SAutomationWindowCommandBar.h"
 #include "AutomationFilter.h"
+#include "AutomationGroupFilter.h"
 #include "AutomationPresetManager.h"
 #include "SAutomationTestItemContextMenu.h"
 #include "SAutomationTestItem.h"
@@ -32,7 +32,7 @@
 #if WITH_EDITOR
 	#include "Engine/World.h"
 	#include "FileHelpers.h"
-	#include "AssetRegistryModule.h"
+	#include "AssetRegistry/AssetRegistryModule.h"
 #endif
 
 #include "Widgets/Input/SSearchBox.h"
@@ -40,6 +40,8 @@
 #include "Widgets/Images/SThrobber.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "Internationalization/Regex.h"
+#include "AutomationWindowStyle.h"
+#include "AutomationControllerSettings.h"
 
 
 #define LOCTEXT_NAMESPACE "AutomationTest"
@@ -55,7 +57,7 @@ public:
 		: TCommands<FAutomationWindowCommands>(
 		TEXT("AutomationWindow"),
 		NSLOCTEXT("Contexts", "AutomationWindow", "Automation Window"),
-		NAME_None, FEditorStyle::GetStyleSetName()
+		NAME_None, FAutomationWindowStyle::Get().GetStyleSetName()
 		)
 	{
 	}
@@ -123,8 +125,11 @@ SAutomationWindow::~SAutomationWindow()
 #if WITH_EDITOR
 	if ( FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")) )
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().OnFileLoadProgressUpdated().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnFileLoadProgressUpdated().RemoveAll(this);
+		}
 	}
 #endif
 
@@ -143,7 +148,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 
 #if WITH_EDITOR
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	AssetRegistryModule.Get().OnFileLoadProgressUpdated().AddSP(this, &SAutomationWindow::OnAssetRegistryFileLoadProgress);
+	AssetRegistryModule.Get().OnFilesLoaded().AddSP(this, &SAutomationWindow::OnAssetRegistryFilesLoaded);
 #endif
 
 	TestPresetManager = MakeShareable(new FAutomationTestPresetManager());
@@ -168,9 +173,11 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 	// Create the search filter and set criteria
 	AutomationTextFilter = MakeShareable( new AutomationReportTextFilter( AutomationReportTextFilter::FItemToStringArray::CreateSP( this, &SAutomationWindow::PopulateReportSearchStrings ) ) );
 	AutomationGeneralFilter = MakeShareable( new FAutomationFilter() ); 
+	AutomationGroupFilter = MakeShareable( new FAutomationGroupFilter() );
 	AutomationFilters = MakeShareable( new AutomationFilterCollection() );
 	AutomationFilters->Add( AutomationTextFilter );
 	AutomationFilters->Add( AutomationGeneralFilter );
+	AutomationFilters->Add( AutomationGroupFilter );
 
 	bIsRequestingTests = false;
 
@@ -230,7 +237,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 			SNew(SImage)
 			.ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.4f))
 			.ToolTipText( LOCTEXT( "Smoke Test", "Smoke Test" ) )
-			.Image(FEditorStyle::GetBrush("Automation.SmokeTest"))
+			.Image(FAutomationWindowStyle::Get().GetBrush("Automation.SmokeTest"))
 		]
 
 		+ SHeaderRow::Column( AutomationTestWindowConstants::RequiredDeviceCount )
@@ -241,7 +248,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 		.VAlignCell(VAlign_Center)
 		[
 			SNew( SImage )
-			.Image( FEditorStyle::GetBrush("Automation.ParticipantsWarning") )
+			.Image(FAutomationWindowStyle::Get().GetBrush("Automation.ParticipantsWarning") )
 			.ToolTipText( LOCTEXT( "RequiredDeviceCountWarningToolTip", "Number of devices required." ) )
 		]
 
@@ -272,6 +279,19 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 	RequestedFilterComboList.Add(MakeShareable(new FString(TEXT("Standard Tests"))));
 	RequestedFilterComboList.Add(MakeShareable(new FString(TEXT("Negative Tests"))));
 
+	UAutomationControllerSettings* Settings = UAutomationControllerSettings::StaticClass()->GetDefaultObject<UAutomationControllerSettings>();
+	TArray<FAutomatedTestGroup> TestGroups = Settings->Groups;
+	GroupComboList.Empty();
+	GroupFiltersMap.Empty();
+	const FString AllGroups = TEXT("All Groups");
+	GroupComboList.Add(MakeShareable(new FString(AllGroups)));
+	GroupFiltersMap.Add(AllGroups, TArray<FAutomatedTestFilter>());
+	for (int TestGroupIdx = 0; TestGroupIdx < TestGroups.Num(); TestGroupIdx++)
+	{
+		GroupComboList.Add(MakeShareable(new FString(TestGroups[TestGroupIdx].Name)));
+		GroupFiltersMap.Add(TestGroups[TestGroupIdx].Name, TestGroups[TestGroupIdx].Filters);
+	}	
+	
 	TSharedRef<SNotificationList> NotificationList = SNew(SNotificationList) .Visibility( EVisibility::HitTestInvisible );
 
 	//build the actual guts of the window
@@ -344,6 +364,27 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 												[
 													SNew(STextBlock)
 													.Text(this, &SAutomationWindow::GetRequestedFilterComboText)
+												]
+											]
+										]
+
+										+ SHorizontalBox::Slot()
+										.AutoWidth()
+										.VAlign(VAlign_Center)
+										[
+											SNew(SBox)
+											.MinDesiredWidth(130.0f)
+											[
+												SAssignNew(GroupComboBox, SComboBox< TSharedPtr<FString> >)
+												.Visibility(this, &SAutomationWindow::HandleGroupsVisibility)
+												.OptionsSource(&GroupComboList)
+												.InitiallySelectedItem(GroupComboList[0])
+												.OnGenerateWidget(this, &SAutomationWindow::GenerateGroupComboItem)
+												.OnSelectionChanged(this, &SAutomationWindow::HandleGroupChanged)
+												.ContentPadding(FMargin(4.0, 1.0f))
+												[
+													SNew(STextBlock)
+													.Text(this, &SAutomationWindow::GetGroupComboText)
 												]
 											]
 										]
@@ -478,7 +519,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 								[
 									//list of results for the selected test
 									SNew(SBorder)
-									.BorderImage(FEditorStyle::GetBrush("MessageLog.ListBorder"))
+									.BorderImage(FAutomationWindowStyle::Get().GetBrush("Brushes.Panel"))
 									[
 										SNew(SScrollBox)
 										.Orientation(EOrientation::Orient_Horizontal)
@@ -499,7 +540,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 								.Padding(0.0f, 4.0f, 0.0f, 0.0f)
 								[
 									SNew(SBorder)
-									.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+									.BorderImage(FAutomationWindowStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 									.Padding(FMargin(8.0f, 6.0f))
 									[
 										// Add the command bar
@@ -526,7 +567,7 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 			.Padding( 15.0f )
 			[
 				SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("NotificationList.ItemBackground"))
+					.BorderImage(FAutomationWindowStyle::Get().GetBrush("NotificationList.ItemBackground"))
 					.Padding(8.0f)
 					.Visibility(this, &SAutomationWindow::HandleSelectSessionOverlayVisibility)
 					[
@@ -565,14 +606,14 @@ const FSlateBrush* SAutomationWindow::GetTestBackgroundBorderImage() const
 	switch(TestBackgroundType)
 	{
 	case EAutomationTestBackgroundStyle::Game:
-		return FEditorStyle::GetBrush("AutomationWindow.GameGroupBorder");
+		return FAutomationWindowStyle::Get().GetBrush("AutomationWindow.GameGroupBorder");
 
 	case EAutomationTestBackgroundStyle::Editor:
-		return FEditorStyle::GetBrush("AutomationWindow.EditorGroupBorder");
+		return FAutomationWindowStyle::Get().GetBrush("AutomationWindow.EditorGroupBorder");
 
 	case EAutomationTestBackgroundStyle::Unknown:
 	default:
-		return FEditorStyle::GetBrush("ToolPanel.GroupBorder");
+		return FAutomationWindowStyle::Get().GetBrush("ToolPanel.GroupBorder");
 	}
 }
 
@@ -648,7 +689,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 					FOnGetContent::CreateStatic( &SAutomationWindow::GenerateTestsOptionsMenuContent, InAutomationWindow ),
 					TAttribute<FText>(),
 					LOCTEXT( "TestOptionsToolTip", "Test Options" ),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "AutomationWindow.TestOptions"),
+					FSlateIcon(FAutomationWindowStyle::Get().GetStyleSetName(), "AutomationWindow.TestOptions"),
 					false);
 
 				// Added button for running the currently open level test.
@@ -658,7 +699,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 					NAME_None,
 					TAttribute<FText>(),
 					LOCTEXT("RunLevelTest_ToolTip", "If the currently loaded editor level is a test map, click this to select the test and run it immediately."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "AutomationWindow.RunTests"));
+					FSlateIcon(FAutomationWindowStyle::Get().GetStyleSetName(), "AutomationWindow.RunTests"));
 #endif
 
 				ToolbarBuilder.AddToolBarButton( FAutomationWindowCommands::Get().RefreshTests );
@@ -680,7 +721,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 					FOnGetContent::CreateStatic( &SAutomationWindow::GenerateGroupOptionsMenuContent, InAutomationWindow ),
 					LOCTEXT( "GroupOptions_Label", "Device Groups" ),
 					LOCTEXT( "GroupOptionsToolTip", "Device Group Options" ),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "AutomationWindow.GroupSettings"));
+					FSlateIcon(FAutomationWindowStyle::Get().GetStyleSetName(), "AutomationWindow.GroupSettings"));
 			}
 			ToolbarBuilder.EndSection();
 			ToolbarBuilder.BeginSection("Presets");
@@ -693,7 +734,6 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 
 	TSharedRef<SWidget> RunTests = 
 		SNew( SButton )
-		.ButtonStyle( FEditorStyle::Get(), "ToggleButton" )
 		.ToolTipText( LOCTEXT( "StartStop Tests", "Start / Stop tests" ) )
 		.OnClicked( this, &SAutomationWindow::RunTests )
 		.IsEnabled( this, &SAutomationWindow::IsAutomationRunButtonEnabled )
@@ -721,9 +761,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 					[
 						SNew( STextBlock )
 						.Text( this, &SAutomationWindow::OnGetNumEnabledTestsString )
-						.ColorAndOpacity( FLinearColor::White )
-						.ShadowOffset( FVector2D::UnitVector )
-						.Font( FEditorStyle::GetFontStyle( FName( "ToggleButton.LabelFont" ) ) )
+						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
 				+ SVerticalBox::Slot()
@@ -733,9 +771,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 					SNew( STextBlock )
 					.Visibility( this, &SAutomationWindow::GetLargeToolBarVisibility )
 					.Text( this, &SAutomationWindow::GetRunAutomationLabel )
-					.Font( FEditorStyle::GetFontStyle( FName( "ToggleButton.LabelFont" ) ) )
-					.ColorAndOpacity(FLinearColor::White)
-					.ShadowOffset( FVector2D::UnitVector )
+					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
 		];
@@ -805,14 +841,14 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 			.AutoWidth()
 			[
 				SNew( SButton )
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle(FAutomationWindowStyle::Get(), "NoBorder" )
 				.OnClicked( this, &SAutomationWindow::HandleNewPresetClicked )
 				.ToolTipText( LOCTEXT("AutomationPresetNewButtonTooltip", "Create a new preset") )
 				.IsEnabled(this, &SAutomationWindow::IsAddButtonEnabled)
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("AutomationWindow.PresetNew"))
+					.Image(FAutomationWindowStyle::Get().GetBrush("Icons.PlusCircle"))
 				]
 			]
 
@@ -821,14 +857,14 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 			.AutoWidth()
 			[
 				SNew( SButton )
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle(FAutomationWindowStyle::Get(), "NoBorder" )
 				.OnClicked( this, &SAutomationWindow::HandleSavePresetClicked )
 				.ToolTipText( LOCTEXT("AutomationPresetSaveButtonTooltip", "Save the current test list") )
 				.IsEnabled(this, &SAutomationWindow::IsSaveButtonEnabled)
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("AutomationWindow.PresetSave"))
+					.Image(FAutomationWindowStyle::Get().GetBrush("Icons.Save"))
 				]
 			]
 
@@ -838,14 +874,14 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 			[
 				// remove button
 				SNew(SButton)
-				.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+				.ButtonStyle(FAutomationWindowStyle::Get(), "NoBorder" )
 				.OnClicked( this, &SAutomationWindow::HandleRemovePresetClicked )
 				.ToolTipText(LOCTEXT("AutomationPresetRemoveButtonTooltip", "Remove the selected preset"))
 				.IsEnabled(this, &SAutomationWindow::IsRemoveButtonEnabled)
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("AutomationWindow.PresetRemove"))
+					.Image(FAutomationWindowStyle::Get().GetBrush("Icons.Delete"))
 				]
 			]
 		];
@@ -862,7 +898,7 @@ TSharedRef< SWidget > SAutomationWindow::MakeAutomationWindowToolBar( const TSha
 		[
 			SNew( SBorder )
 			.Padding(0)
-			.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+			.BorderImage(FAutomationWindowStyle::Get().GetBrush("NoBorder") )
 			.IsEnabled( FSlateApplication::Get().GetNormalExecutionAttribute() )
 			[
 				ToolbarBuilder.MakeWidget()
@@ -879,6 +915,11 @@ EVisibility SAutomationWindow::HandlePresetComboVisibility( ) const
 EVisibility SAutomationWindow::HandlePresetTextVisibility( ) const
 {
 	return bAddingTestPreset ? EVisibility::Visible : EVisibility::Hidden;
+}
+
+EVisibility SAutomationWindow::HandleGroupsVisibility() const
+{
+	return GroupComboList.Num() == 1 ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 bool SAutomationWindow::IsAddButtonEnabled() const
@@ -991,6 +1032,11 @@ void SAutomationWindow::HandleRequesteFilterChanged(TSharedPtr<FString> Item, ES
 	AutomationController->SetRequestedTestFlags(NewRequestedFlags);
 }
 
+void SAutomationWindow::HandleGroupChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo)
+{
+	AutomationGroupFilter->SetFilters(GroupFiltersMap[*Item.Get()]);
+	OnRefreshTestCallback();
+}
 
 void SAutomationWindow::ExpandEnabledTests( TSharedPtr< IAutomationReport > InReport )
 {
@@ -1059,6 +1105,17 @@ FText SAutomationWindow::GetRequestedFilterComboText() const
 	}
 }
 
+FText SAutomationWindow::GetGroupComboText() const
+{
+	if (GroupComboBox->GetSelectedItem().IsValid())
+	{
+		return FText::FromString(*GroupComboBox->GetSelectedItem());
+	}
+	else
+	{
+		return LOCTEXT("AutomationGroupComboLabel", "All Groups");
+	}
+}
 
 TSharedRef<SWidget> SAutomationWindow::GeneratePresetComboItem(TSharedPtr<FAutomationTestPreset> InItem)
 {
@@ -1075,6 +1132,12 @@ TSharedRef<SWidget> SAutomationWindow::GeneratePresetComboItem(TSharedPtr<FAutom
 }
 
 TSharedRef<SWidget> SAutomationWindow::GenerateRequestedFilterComboItem(TSharedPtr<FString> InItem)
+{
+	return SNew(STextBlock)
+		.Text(FText::FromString(*InItem));
+}
+
+TSharedRef<SWidget> SAutomationWindow::GenerateGroupComboItem(TSharedPtr<FString> InItem)
 {
 	return SNew(STextBlock)
 		.Text(FText::FromString(*InItem));
@@ -1208,10 +1271,25 @@ TSharedRef< SWidget > SAutomationWindow::GenerateTestsOptionsMenuContent( )
 		];
 
 
+	TSharedRef<SWidget> KeepPIEOpenWidget =
+		SNew(SCheckBox)
+		.IsChecked(this, &SAutomationWindow::KeepPIEOpenCheckBoxChecked)
+		.OnCheckStateChanged(this, &SAutomationWindow::HandleKeepPIEOpenBoxCheckStateChanged)
+		.Padding(FMargin(4.0f, 0.0f))
+		.ToolTipText(LOCTEXT("AutomationKeepPIEOpenTip", "If checked, the PIE will be kept open at the end of the test pass"))
+		.IsEnabled(this, &SAutomationWindow::IsAutomationControllerIdle)
+		.Content()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("AutomationKeepPIEOpenText", "Keep PIE open at the end"))
+		];
+
+
 	MenuBuilder.BeginSection("AutomationWindowRunTest", LOCTEXT("RunTestOptions", "Advanced Settings"));
 	{
 		MenuBuilder.AddWidget(NumTests, FText::GetEmpty());
 		MenuBuilder.AddWidget(SendAnalyticsWidget, FText::GetEmpty());
+		MenuBuilder.AddWidget(KeepPIEOpenWidget, FText::GetEmpty());
 	}
 	MenuBuilder.EndSection();
 
@@ -1226,6 +1304,16 @@ ECheckBoxState SAutomationWindow::IsSendAnalyticsCheckBoxChecked() const
 void SAutomationWindow::HandleSendAnalyticsBoxCheckStateChanged(ECheckBoxState CheckBoxState)
 {
 	AutomationController->SetSendAnalytics(CheckBoxState == ECheckBoxState::Checked);
+}
+
+ECheckBoxState SAutomationWindow::KeepPIEOpenCheckBoxChecked() const
+{
+	return AutomationController->KeepPIEOpen() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SAutomationWindow::HandleKeepPIEOpenBoxCheckStateChanged(ECheckBoxState CheckBoxState)
+{
+	AutomationController->SetKeepPIEOpen(CheckBoxState == ECheckBoxState::Checked);
 }
 
 TArray<FString> SAutomationWindow::SaveExpandedTestNames(TSet<TSharedPtr<IAutomationReport>> ExpandedItems)
@@ -1580,7 +1668,7 @@ void SAutomationWindow::RebuildPlatformIcons()
 		const FDataDrivenPlatformInfo* DDPI = TargetPlatformInfo ? TargetPlatformInfo->DataDrivenPlatformInfo : nullptr;
 		FName DeviceImageName = DDPI ? DDPI->GetIconStyleName(EPlatformIconSize::Normal) : NAME_None;
 
-		const FSlateBrush* ImageToUse = FAppStyle::Get().GetBrush(DeviceImageName);
+		const FSlateBrush* ImageToUse = FAutomationWindowStyle::Get().GetBrush(DeviceImageName);
 
 		PlatformsHBox->AddSlot()
 		.AutoWidth()
@@ -1590,7 +1678,7 @@ void SAutomationWindow::RebuildPlatformIcons()
 			+ SOverlay::Slot()
 			[
 				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("ErrorReporting.Box") )
+				.BorderImage(FAutomationWindowStyle::Get().GetBrush("ErrorReporting.Box") )
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
 				.Padding( FMargin(3,0) )
@@ -1659,9 +1747,10 @@ void SAutomationWindow::ClearAutomationUI ()
 TSharedRef<ITableRow> SAutomationWindow::OnGenerateWidgetForTest( TSharedPtr<IAutomationReport> InItem, const TSharedRef<STableViewBase>& OwnerTable )
 {
 	bIsRequestingTests = false;
-	return SNew( SAutomationTestItem, OwnerTable )
-		.TestStatus( InItem )
-		.ColumnWidth( ColumnWidth )
+	return SNew(SAutomationTestItem, OwnerTable)
+		.TestStatus(InItem)
+		.ColumnWidth(ColumnWidth)
+		.IsLocalSession(ActiveSession->IsStandalone())
 		.HighlightText(this, &SAutomationWindow::HandleAutomationHighlightText)
 		.OnCheckedStateChanged(this, &SAutomationWindow::HandleItemCheckBoxCheckedStateChanged);
 }
@@ -1689,8 +1778,8 @@ TSharedRef<ITableRow> SAutomationWindow::OnGenerateWidgetForLog(TSharedPtr<FAuto
 		MessageString.RightChopInline(FileAndLineRegexMatcher.GetMatchEnding(), false);
 
 		SourceLink = SNew(SHyperlink)
-			.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
-			.TextStyle(FEditorStyle::Get(), Message->Style)
+			.Style(FAutomationWindowStyle::Get(), "Common.GotoNativeCodeHyperlink")
+			.TextStyle(FAutomationWindowStyle::Get(), Message->Style)
 			.OnNavigate_Lambda([=] { FSlateApplication::Get().GotoLineInSource(FileName, LineNumber); })
 			.Text(FText::FromString(FileAndLineRegexMatcher.GetCaptureGroup(0)));
 	}
@@ -1711,7 +1800,7 @@ TSharedRef<ITableRow> SAutomationWindow::OnGenerateWidgetForLog(TSharedPtr<FAuto
 			.Padding(0)
 			[
 				SNew(STextBlock)
-				.TextStyle( FEditorStyle::Get(), Message->Style )
+				.TextStyle(FAutomationWindowStyle::Get(), Message->Style )
 				.Text(FText::FromString(MessageString))
 			]
 		];
@@ -2045,7 +2134,7 @@ const FSlateBrush* SAutomationWindow::GetRunAutomationIcon() const
 		Brush += TEXT( ".RunTests" );
 	}
 	Brush += GetSmallIconExtension();
-	return FEditorStyle::GetBrush( *Brush );
+	return FAutomationWindowStyle::Get().GetBrush( *Brush );
 }
 
 
@@ -2292,12 +2381,9 @@ bool SAutomationWindow::HandleMainContentIsEnabled() const
 #if WITH_EDITOR
 // React to asset registry finishing updating.
 // We only want to do this if there are no tests already listed, otherwise this fires every time you save a map for example.
-void SAutomationWindow::OnAssetRegistryFileLoadProgress(const IAssetRegistry::FFileLoadProgressUpdateData& ProgressUpdateData)
+void SAutomationWindow::OnAssetRegistryFilesLoaded()
 {
-	if ( ProgressUpdateData.NumAssetsProcessedByAssetRegistry == ProgressUpdateData.NumTotalAssets && IsAutomationControllerIdle() && AutomationController->GetReports().Num() == 0 )
-	{
-		ListTests();
-	}
+	ListTests();
 }
 #endif
 

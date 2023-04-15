@@ -2,39 +2,49 @@
 
 #pragma once
 
+#if WITH_EDITOR
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Containers/Map.h"
 
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/DataLayer/DataLayersID.h"
+#include "WorldPartition/HLOD/HLODStats.h"
 #include "WorldPartition/HLOD/HLODSubActor.h"
 
 class UHLODLayer;
+class AWorldPartitionHLOD;
 
 /**
  * ActorDesc for AWorldPartitionHLOD.
  */
 class ENGINE_API FHLODActorDesc : public FWorldPartitionActorDesc
 {
-#if WITH_EDITOR
 	friend class FHLODActorDescFactory;
 
 public:
+	typedef TMap<FName, int64>	FStats;
+
 	inline const TArray<FHLODSubActorDesc>& GetSubActors() const { return HLODSubActors; }
-	inline uint64 GetCellHash() const { return CellHash; }
+	inline const FName GetSourceCellName() const { return SourceCellName; }
+	inline const FName GetSourceHLODLayerName() const { return SourceHLODLayerName; }
+	inline const FStats& GetStats() const { return HLODStats; }
+	inline int64 GetStat(FName InStatName) const { return HLODStats.FindRef(InStatName); }
 
-	static uint64 ComputeCellHash(const FString HLODLayerName, uint64 GridIndexX, uint64 GridIndexY, uint64 GridIndexZ, FDataLayersID DataLayersID);
-
-	virtual bool ShouldBeLoadedByEditorCells() const { return false; }
+	int64 GetPackageSize() const;
+	static int64 GetPackageSize(const AWorldPartitionHLOD* InHLODActor);
 
 protected:
+	//~ Begin FWorldPartitionActorDesc Interface.
 	virtual void Init(const AActor* InActor) override;
 	virtual bool Equals(const FWorldPartitionActorDesc* Other) const override;
 	virtual void Serialize(FArchive& Ar) override;
+	virtual bool IsRuntimeRelevant(const FActorContainerID& InContainerID) const override { return !bIsForcedNonSpatiallyLoaded; }
+	//~ End FWorldPartitionActorDesc Interface.
 
 	TArray<FHLODSubActorDesc> HLODSubActors;
-
-	uint64 CellHash = 0;
-#endif
+	FName SourceCellName;
+	FName SourceHLODLayerName;
+	FStats HLODStats;
 };
+#endif

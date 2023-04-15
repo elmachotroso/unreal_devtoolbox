@@ -1,10 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InstallBundleManagerInterface.h"
-#include "InstallBundleUtils.h"
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "Containers/Map.h"
 #include "Containers/Ticker.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "InstallBundleManagerInterface.h"
+#include "InstallBundleTypes.h"
+//#include "InstallBundleUtils.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+
+class FName;
+class IInstallBundleManager;
+struct FInstallBundlePauseInfo;
+struct FInstallBundleProgress;
+struct FInstallBundleRequestResultInfo;
 
 //Handles calculating the bundle status by combining progress from all of its
 //Prerequisites. Allows you to display one progress percent that is weighted based on all
@@ -23,21 +36,6 @@ public:
 		Finished,
 		Count
 	};
-	friend const TCHAR* LexToString(ECombinedBundleStatus Status)
-	{
-		static const TCHAR* Strings[] =
-		{
-			TEXT("Unknown"),
-			TEXT("Initializing"),
-			TEXT("Updating"),
-			TEXT("Finishing"),
-			TEXT("Finished"),
-			TEXT("Count")
-		};
-
-		static_assert(InstallBundleUtil::CastToUnderlying(ECombinedBundleStatus::Count) == UE_ARRAY_COUNT(Strings) - 1, "");
-		return Strings[InstallBundleUtil::CastToUnderlying(Status)];
-	}
 
 	//provide all our needed combined status information in 1 struct
 	struct FCombinedProgress
@@ -99,3 +97,5 @@ private:
 	TWeakPtr<IInstallBundleManager> InstallBundleManager;
 	FTSTicker::FDelegateHandle TickHandle;
 };
+
+INSTALLBUNDLEMANAGER_API const TCHAR* LexToString(FInstallBundleCombinedProgressTracker::ECombinedBundleStatus Status);

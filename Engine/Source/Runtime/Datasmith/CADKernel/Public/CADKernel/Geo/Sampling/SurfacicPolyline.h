@@ -3,17 +3,28 @@
 
 #include "CADKernel/Core/Types.h"
 
+#include "CADKernel/Core/CADKernelArchive.h"
 #include "CADKernel/Geo/Curves/Curve.h"
+#include "CADKernel/Geo/GeoEnum.h"
+#include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Geo/Sampling/PolylineTools.h"
 #include "CADKernel/Geo/Surfaces/Surface.h"
+#include "CADKernel/Math/Boundary.h"
+#include "CADKernel/Math/MatrixH.h"
+#include "CADKernel/Math/Point.h"
 #include "CADKernel/UI/Display.h"
+#include "CADKernel/Utils/IndexOfCoordinateFinder.h"
 
 #include "Serialization/Archive.h"
+#include "Algo/AllOf.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
+class FCurve;
+class FEntityGeom;
 class FInfoEntity;
+class FSurface;
 
 class CADKERNEL_API FSurfacicPolyline
 {
@@ -23,7 +34,7 @@ public:
 	TArray<double> Coordinates;
 	TArray<FPoint2D> Points2D;
 	TArray<FPoint> Points3D;
-	TArray<FVector> Normals;
+	TArray<FVector3f> Normals;
 	TArray<FPoint> Tangents;
 
 	FSurfacicBoundary BoundingBox;
@@ -97,7 +108,7 @@ public:
 	FSurfacicTolerance ComputeTolerance(const double Tolerance3D, const FSurfacicTolerance& MinToleranceIso, const int32 Index) const
 	{
 		double Distance3D = Points3D[Index].Distance(Points3D[Index + 1]);
-		if (FMath::IsNearlyZero(Distance3D, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyZero(Distance3D, (double)DOUBLE_SMALL_NUMBER))
 		{
 			return FPoint2D::FarawayPoint;
 		}
@@ -111,7 +122,7 @@ public:
 	double ComputeLinearToleranceAt(const double Tolerance3D, const double MinLinearTolerance, const int32 Index) const
 	{
 		double Distance3D = Points3D[Index].Distance(Points3D[Index + 1]);
-		if (FMath::IsNearlyZero(Distance3D, (double)SMALL_NUMBER))
+		if (FMath::IsNearlyZero(Distance3D, (double)DOUBLE_SMALL_NUMBER))
 		{
 			return (Coordinates.Last() - Coordinates[0]) / 10.;
 		}
@@ -278,7 +289,7 @@ public:
 		return Points3D;
 	}
 
-	const TArray<FVector>& GetNormals() const
+	const TArray<FVector3f>& GetNormals() const
 	{
 		return Normals;
 	}
@@ -313,10 +324,28 @@ public:
 	/**
 	 * Get the sub polyline bounded by the input InBoundary in the orientation of the input InOrientation and append it to the output OutPoints
 	 */
+	void GetSubPolyline(const FLinearBoundary& InBoundary, TArray<double>& OutCoordinates, TArray<FPoint2D>& OutPoints) const
+	{
+		TPolylineApproximator<FPoint2D> Approximator(Coordinates, Points2D);
+		Approximator.GetSubPolyline(InBoundary, OutCoordinates, OutPoints);
+	}
+
+	/**
+	 * Get the sub polyline bounded by the input InBoundary in the orientation of the input InOrientation and append it to the output OutPoints
+	 */
 	void GetSubPolyline(const FLinearBoundary& InBoundary, const EOrientation InOrientation, TArray<FPoint>& OutPoints) const
 	{
 		TPolylineApproximator<FPoint> Approximator3D(Coordinates, Points3D);
 		Approximator3D.GetSubPolyline(InBoundary, InOrientation, OutPoints);
+	}
+
+	/**
+	 * Get the sub polyline bounded by the input InBoundary in the orientation of the input InOrientation and append it to the output OutPoints
+	 */
+	void GetSubPolyline(const FLinearBoundary& InBoundary, TArray<double>& OutCoordinates, TArray<FPoint>& OutPoints) const
+	{
+		TPolylineApproximator<FPoint> Approximator3D(Coordinates, Points3D);
+		Approximator3D.GetSubPolyline(InBoundary, OutCoordinates, OutPoints);
 	}
 
 	/**
@@ -421,7 +450,14 @@ public:
 		return Approximator.ComputeLengthOfSubPolyline(InBoundary);
 	}
 
+	bool IsIso(EIso Iso, double ErrorTolerance = DOUBLE_SMALL_NUMBER) const
+	{
+		FPoint2D StartPoint = Points2D[0];
+		return Algo::AllOf(Points2D, [&](const FPoint2D& Point) { 
+			return FMath::IsNearlyEqual(Point[Iso], StartPoint[Iso], ErrorTolerance);
+			});
+	}
+
 };
 
-} // ns CADKernel
-
+} // ns UE::CADKernel

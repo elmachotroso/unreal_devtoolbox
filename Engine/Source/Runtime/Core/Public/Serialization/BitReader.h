@@ -2,11 +2,13 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/AssertionMacros.h"
-#include "HAL/UnrealMemory.h"
-#include "Serialization/BitArchive.h"
 #include "Containers/Array.h"
+#include "CoreTypes.h"
+#include "HAL/UnrealMemory.h"
+#include "Misc/AssertionMacros.h"
+#include "Serialization/BitArchive.h"
+
+class FArchive;
 
 CORE_API void appBitsCpy( uint8* Dest, int32 DestBit, uint8* Src, int32 SrcBit, int32 BitCount );
 
@@ -34,6 +36,9 @@ public:
 	void SetData( FBitReader& Src, int64 CountBits );
 	void SetData( uint8* Src, int64 CountBits );
 	void SetData( TArray<uint8>&& Src, int64 CountBits );
+
+	/** Equivalent to SetData (reset position, copy from Src into internal buffer), but uses Reset not Empty to avoid a realloc if possible. */
+	void ResetData(FBitReader& Src, int64 CountBits);
 
 #if defined(_MSC_VER) && PLATFORM_DESKTOP
 #pragma warning( push )

@@ -12,9 +12,11 @@
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "EditorSupportDelegates.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -27,12 +29,18 @@
 #if WITH_EDITOR
 
 #include "Editor.h"
+#include "Misc/TransactionObjectEvent.h"
+#include "ActorTransactionAnnotation.h"
 #include "Engine/LevelStreaming.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/DataLayer/IDataLayerEditorModule.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "Folder.h"
 #include "ActorFolder.h"
 #include "WorldPersistentFolders.h"
+#include "Algo/Transform.h"
+#include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
 
@@ -54,11 +62,9 @@ void AActor::PreEditChange(FProperty* PropertyThatWillChange)
 	}
 
 	PreEditChangeDataLayers.Reset();
-	if (PropertyThatWillChange != nullptr &&
-		(PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayers) ||
-		 PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(FActorDataLayer, Name)))
+	if (PropertyThatWillChange != nullptr && PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayerAssets))
 	{
-		PreEditChangeDataLayers = DataLayers;
+		PreEditChangeDataLayers = DataLayerAssets;
 	}
 }
 
@@ -72,20 +78,18 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 
 	const bool bIsSpatiallyLoadedProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, bIsSpatiallyLoaded);
 	const bool bIsRuntimeGridProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, RuntimeGrid);
-	const bool bIsDataLayersProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayers);
+	const bool bIsDataLayersProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayerAssets);
 	const bool bIsHLODLayerProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, HLODLayer);
 
 	if (bIsSpatiallyLoadedProperty || bIsRuntimeGridProperty || bIsDataLayersProperty || bIsHLODLayerProperty)
 	{
 		if (!IsTemplate())
 		{
-			if (UWorld* World = GetTypedOuter<UWorld>())
+			UWorld* World = GetTypedOuter<UWorld>();
+			UWorldPartition* WorldPartition = World ? World->GetWorldPartition() : nullptr;
+			if (!WorldPartition || (!WorldPartition->IsStreamingEnabled() && !bIsDataLayersProperty))
 			{
-				const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
-				if (!bIsPartitionedWorld)
-				{
-					return false;
-				}
+				return false;
 			}
 		}
 	}
@@ -182,6 +186,7 @@ void AActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 			}
 			else
 			{
+				bHasRegisteredAllComponents = true;
 				PostRegisterAllComponents();
 			}
 		}
@@ -345,17 +350,23 @@ void AActor::DebugShowOneComponentHierarchy( USceneComponent* SceneComp, int32& 
 	}
 }
 
-TSharedRef<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::Create()
+FActorTransactionAnnotation::FDiffableComponentInfo::FDiffableComponentInfo(const UActorComponent* Component)
+	: ComponentSourceInfo(Component)
+	, DiffableComponent(UE::Transaction::DiffUtil::GetDiffableObject(Component, UE::Transaction::DiffUtil::FGetDiffableObjectOptions{ UE::Transaction::DiffUtil::EGetDiffableObjectMode::SerializeProperties }))
+{
+}
+
+TSharedRef<FActorTransactionAnnotation> FActorTransactionAnnotation::Create()
 {
 	return MakeShareable(new FActorTransactionAnnotation());
 }
 
-TSharedRef<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::Create(const AActor* InActor, const bool InCacheRootComponentData)
+TSharedRef<FActorTransactionAnnotation> FActorTransactionAnnotation::Create(const AActor* InActor, const bool InCacheRootComponentData)
 {
 	return MakeShareable(new FActorTransactionAnnotation(InActor, FComponentInstanceDataCache(InActor), InCacheRootComponentData));
 }
 
-TSharedPtr<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::CreateIfRequired(const AActor* InActor, const bool InCacheRootComponentData)
+TSharedPtr<FActorTransactionAnnotation> FActorTransactionAnnotation::CreateIfRequired(const AActor* InActor, const bool InCacheRootComponentData)
 {
 	// Don't create a transaction annotation for something that has no instance data, or a root component that's created by a construction script
 	FComponentInstanceDataCache TempComponentInstanceData(InActor);
@@ -371,12 +382,12 @@ TSharedPtr<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotat
 	return MakeShareable(new FActorTransactionAnnotation(InActor, MoveTemp(TempComponentInstanceData), InCacheRootComponentData));
 }
 
-AActor::FActorTransactionAnnotation::FActorTransactionAnnotation()
+FActorTransactionAnnotation::FActorTransactionAnnotation()
 {
 	ActorTransactionAnnotationData.bRootComponentDataCached = false;
 }
 
-AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData)
+FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData)
 {
 	ActorTransactionAnnotationData.ComponentInstanceData = MoveTemp(InComponentInstanceData);
 	ActorTransactionAnnotationData.Actor = InActor;
@@ -417,19 +428,182 @@ AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* I
 	{
 		ActorTransactionAnnotationData.bRootComponentDataCached = false;
 	}
+
+	// This code also runs when reconstructing actors, so only cache the diff data when we're creating or applying a transaction
+	if (GUndo || GIsTransacting)
+	{
+		TInlineComponentArray<UActorComponent*> Components;
+		FComponentInstanceDataCache::GetComponentHierarchy(InActor, Components);
+
+		const bool bIsChildActor = InActor->IsChildActor();
+		for (UActorComponent* Component : Components)
+		{
+			if (Component && (bIsChildActor || Component->IsCreatedByConstructionScript()))
+			{
+				DiffableComponentInfos.Emplace(Component);
+			}
+		}
+	}
 }
 
-void AActor::FActorTransactionAnnotation::AddReferencedObjects(FReferenceCollector& Collector)
+void FActorTransactionAnnotation::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	ActorTransactionAnnotationData.ComponentInstanceData.AddReferencedObjects(Collector);
 }
 
-void AActor::FActorTransactionAnnotation::Serialize(FArchive& Ar)
+void FActorTransactionAnnotation::Serialize(FArchive& Ar)
 {
 	Ar << ActorTransactionAnnotationData;
 }
 
-bool AActor::FActorTransactionAnnotation::HasInstanceData() const
+void FActorTransactionAnnotation::ComputeAdditionalObjectChanges(const ITransactionObjectAnnotation* OriginalAnnotation, TMap<UObject*, FTransactionObjectChange>& OutAdditionalObjectChanges)
+{
+	const FActorTransactionAnnotation* OriginalActorAnnotation = static_cast<const FActorTransactionAnnotation*>(OriginalAnnotation);
+
+	struct FDiffableComponentPair
+	{
+		UActorComponent* CurrentComponent = nullptr;
+		const UE::Transaction::FDiffableObject* OldDiffableComponent = nullptr;
+		const UE::Transaction::FDiffableObject* NewDiffableComponent = nullptr;
+	};
+
+	TArray<FDiffableComponentPair, TInlineAllocator<NumInlinedActorComponents>> DiffableComponentPairs;
+	if (const AActor* Actor = ActorTransactionAnnotationData.Actor.Get(/*bEvenIfPendingKill*/true))
+	{
+		TInlineComponentArray<UActorComponent*> Components;
+		FComponentInstanceDataCache::GetComponentHierarchy(Actor, Components);
+
+		if (Components.Num() > 0)
+		{
+			// Bitsets to avoid repeated testing of FDiffableComponentInfo that has already been matched to a known component
+			TBitArray<> OriginalDiffableComponentInfosToConsider(true, OriginalActorAnnotation ? OriginalActorAnnotation->DiffableComponentInfos.Num() : 0);
+			TBitArray<> DiffableComponentInfosToConsider(true, DiffableComponentInfos.Num());
+
+			const bool bIsChildActor = Actor->IsChildActor();
+			DiffableComponentPairs.Reserve(Components.Num());
+			for (UActorComponent* Component : Components)
+			{
+				if (Component && (bIsChildActor || Component->IsCreatedByConstructionScript()))
+				{
+					auto FindDiffableComponent = [Component](const TArray<FDiffableComponentInfo>& DiffableComponentInfosToSearch, TBitArray<>& DiffableComponentInfosBitset) -> const UE::Transaction::FDiffableObject*
+					{
+						const UObject* ComponentTemplate = Component->GetArchetype();
+						for (TConstSetBitIterator<> BitsetIt(DiffableComponentInfosBitset); BitsetIt; ++BitsetIt)
+						{
+							const FDiffableComponentInfo& PotentialDiffableComponentInfo = DiffableComponentInfosToSearch[BitsetIt.GetIndex()];
+							if (PotentialDiffableComponentInfo.ComponentSourceInfo.MatchesComponent(Component, ComponentTemplate))
+							{
+								DiffableComponentInfosBitset[BitsetIt.GetIndex()] = false;
+								return &PotentialDiffableComponentInfo.DiffableComponent;
+							}
+						}
+						return nullptr;
+					};
+
+					FDiffableComponentPair& DiffableComponentPair = DiffableComponentPairs.AddDefaulted_GetRef();
+					DiffableComponentPair.CurrentComponent = Component;
+					DiffableComponentPair.OldDiffableComponent = OriginalActorAnnotation ? FindDiffableComponent(OriginalActorAnnotation->DiffableComponentInfos, OriginalDiffableComponentInfosToConsider) : nullptr;
+					DiffableComponentPair.NewDiffableComponent = FindDiffableComponent(DiffableComponentInfos, DiffableComponentInfosToConsider);
+				}
+			}
+		}
+	}
+
+	if (DiffableComponentPairs.Num() > 0)
+	{
+		UE::Transaction::DiffUtil::FDiffableObjectArchetypeCache ArchetypeCache;
+		
+		auto ComputeAdditionalObjectChange = [&OutAdditionalObjectChanges, &ArchetypeCache](const UE::Transaction::FDiffableObject& OldDiffableComponent, const UE::Transaction::FDiffableObject& NewDiffableComponent, UActorComponent* CurrentComponent)
+		{
+			UE::Transaction::DiffUtil::FGenerateObjectDiffOptions DiffOptions;
+			DiffOptions.ArchetypeOptions.ObjectSerializationMode = UE::Transaction::DiffUtil::EGetDiffableObjectMode::SerializeProperties;
+			{
+				TSet<const FProperty*> PropertiesToSkip;
+
+				// Skip properties modified during construction when calculating the diff
+				CurrentComponent->GetUCSModifiedProperties(PropertiesToSkip);
+
+				// If this is the owning Actor's root scene component, always include relative transform properties as GetUCSModifiedProperties incorrectly considers them modified (due to changing during placement)
+				if (CurrentComponent->IsA<USceneComponent>())
+				{
+					const AActor* ComponentOwner = CurrentComponent->GetOwner();
+					if (ComponentOwner && ComponentOwner->GetRootComponent() == CurrentComponent)
+					{
+						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeLocationPropertyName()));
+						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeRotationPropertyName()));
+						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeScale3DPropertyName()));
+					}
+				}
+
+				// Always skip the construction information for managed components, as this is managed by the construction script
+				if (CurrentComponent->CreationMethod != EComponentCreationMethod::Instance)
+				{
+					static const FName NAME_CreationMethod = "CreationMethod";
+					static const FName NAME_UCSSerializationIndex = "UCSSerializationIndex";
+
+					PropertiesToSkip.Add(FindFProperty<FProperty>(UActorComponent::StaticClass(), NAME_CreationMethod));
+					PropertiesToSkip.Add(FindFProperty<FProperty>(UActorComponent::StaticClass(), NAME_UCSSerializationIndex));
+				}
+
+				DiffOptions.ShouldSkipProperty = [CurrentComponent, PropertiesToSkip = MoveTemp(PropertiesToSkip)](FName PropertyName) -> bool
+				{
+					if (const FProperty* Property = FindFProperty<FProperty>(CurrentComponent->GetClass(), PropertyName))
+					{
+						return Property->IsA<FMulticastDelegateProperty>()
+							|| PropertiesToSkip.Contains(Property);
+					}
+					return false;
+				};
+			}
+
+			FTransactionObjectDeltaChange ComponentDeltaChange = UE::Transaction::DiffUtil::GenerateObjectDiff(OldDiffableComponent, NewDiffableComponent, DiffOptions, &ArchetypeCache);
+			if (ComponentDeltaChange.HasChanged())
+			{
+				if (FTransactionObjectChange* ExistingComponentChange = OutAdditionalObjectChanges.Find(CurrentComponent))
+				{
+					ExistingComponentChange->DeltaChange.Merge(ComponentDeltaChange);
+				}
+				else
+				{
+					OutAdditionalObjectChanges.Add(CurrentComponent, FTransactionObjectChange{ OldDiffableComponent.ObjectInfo, MoveTemp(ComponentDeltaChange) });
+				}
+			}
+		};
+
+		for (const FDiffableComponentPair& DiffableComponentPair : DiffableComponentPairs)
+		{
+			check(DiffableComponentPair.CurrentComponent);
+
+			if (DiffableComponentPair.OldDiffableComponent && DiffableComponentPair.NewDiffableComponent)
+			{
+				// Component already existed; diff against its previous state
+				ComputeAdditionalObjectChange(*DiffableComponentPair.OldDiffableComponent, *DiffableComponentPair.NewDiffableComponent, DiffableComponentPair.CurrentComponent);
+			}
+			else if (DiffableComponentPair.OldDiffableComponent && !DiffableComponentPair.NewDiffableComponent)
+			{
+				// Component is deleted; just mark it as pending kill
+				UE::Transaction::FDiffableObject FakeDiffableComponent;
+				FakeDiffableComponent.SetObject(DiffableComponentPair.CurrentComponent);
+				FakeDiffableComponent.ObjectInfo.bIsPendingKill = true;
+
+				ComputeAdditionalObjectChange(*DiffableComponentPair.OldDiffableComponent, FakeDiffableComponent, DiffableComponentPair.CurrentComponent);
+			}
+			else if (DiffableComponentPair.NewDiffableComponent)
+			{
+				check(!DiffableComponentPair.OldDiffableComponent);
+
+				// Component is newly added; diff against its archetype
+				UE::Transaction::FDiffableObject FakeDiffableComponent;
+				FakeDiffableComponent.SetObject(DiffableComponentPair.CurrentComponent);
+				FakeDiffableComponent.ObjectInfo.bIsPendingKill = true;
+
+				ComputeAdditionalObjectChange(FakeDiffableComponent, *DiffableComponentPair.NewDiffableComponent, DiffableComponentPair.CurrentComponent);
+			}
+		}
+	}
+}
+
+bool FActorTransactionAnnotation::HasInstanceData() const
 {
 	return (ActorTransactionAnnotationData.bRootComponentDataCached || ActorTransactionAnnotationData.ComponentInstanceData.HasInstanceData());
 }
@@ -768,7 +942,7 @@ bool AActor::SupportsLayers() const
 		// Actors part of Level Instance are not valid for layers
 		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
-			if (ALevelInstance* LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(this))
+			if (ILevelInstanceInterface* LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(this))
 			{
 				return false;
 			}
@@ -794,6 +968,11 @@ bool AActor::IsListedInSceneOutliner() const
 }
 
 bool AActor::EditorCanAttachTo(const AActor* InParent, FText& OutReason) const
+{
+	return true;
+}
+
+bool AActor::EditorCanAttachFrom(const AActor* InChild, FText& OutReason) const
 {
 	return true;
 }
@@ -874,6 +1053,14 @@ TUniquePtr<FWorldPartitionActorDesc> AActor::CreateActorDesc() const
 	return ActorDesc;
 }
 
+void AActor::GetActorDescProperties(FPropertyPairsMap& PropertyPairsMap) const
+{
+	ForEachComponent<UActorComponent>(false, [&PropertyPairsMap](UActorComponent* Component)
+	{
+		Component->GetActorDescProperties(PropertyPairsMap);
+	});
+}
+
 TUniquePtr<class FWorldPartitionActorDesc> AActor::StaticCreateClassActorDesc(const TSubclassOf<AActor>& ActorClass)
 {
 	return CastChecked<AActor>(ActorClass->GetDefaultObject())->CreateClassActorDesc();
@@ -917,17 +1104,18 @@ const FString& AActor::GetActorLabel(bool bCreateIfNone) const
 		if (!FActorSpawnUtils::IsGloballyUniqueName(GetFName()))
 		{
 			// Don't bother adding a suffix for number '0'
-			const int32 NameNumber = NAME_INTERNAL_TO_EXTERNAL( GetFName().GetNumber() );
-			if( NameNumber != 0 )
+			if (const int32 NameNumber = GetFName().GetNumber(); NameNumber != NAME_NO_NUMBER_INTERNAL)
 			{
-				DefaultActorLabel.AppendInt(NameNumber);
+				DefaultActorLabel.AppendInt(NAME_INTERNAL_TO_EXTERNAL(NameNumber));
 			}
 		}
 
 		// Remember, there could already be an actor with the same label in the level.  But that's OK, because
 		// actor labels aren't supposed to be unique.  We just try to make them unique initially to help
 		// disambiguate when opening up a new level and there are hundreds of actors of the same type.
-		ActorLabel = MoveTemp(DefaultActorLabel);
+		AActor* MutableThis = const_cast<AActor*>(this);
+		MutableThis->ActorLabel = MoveTemp(DefaultActorLabel);
+		FCoreDelegates::OnActorLabelChanged.Broadcast(MutableThis);
 	}
 
 	return ActorLabel;
@@ -955,14 +1143,14 @@ void AActor::SetActorLabel(const FString& NewActorLabelDirty, bool bMarkDirty)
 				// Store new label
 				Modify(bMarkDirty);
 				ActorLabel = MoveTemp(NewActorLabel);
+
+				FPropertyChangedEvent PropertyEvent(FindFProperty<FProperty>(AActor::StaticClass(), "ActorLabel"));
+				PostEditChangeProperty(PropertyEvent);
+
+				FCoreDelegates::OnActorLabelChanged.Broadcast(this);
 			}
 		}
 	}
-
-	FPropertyChangedEvent PropertyEvent( FindFProperty<FProperty>( AActor::StaticClass(), "ActorLabel" ) );
-	PostEditChangeProperty(PropertyEvent);
-
-	FCoreDelegates::OnActorLabelChanged.Broadcast(this);
 }
 
 bool AActor::IsActorLabelEditable() const
@@ -972,18 +1160,35 @@ bool AActor::IsActorLabelEditable() const
 
 void AActor::ClearActorLabel()
 {
-	ActorLabel.Reset();
-	FCoreDelegates::OnActorLabelChanged.Broadcast(this);
+	if (!ActorLabel.IsEmpty())
+	{
+		ActorLabel.Reset();
+		FCoreDelegates::OnActorLabelChanged.Broadcast(this);
+	}
 }
 
 FFolder AActor::GetFolder() const
 {
-	return FFolder(GetFolderPath(), GetFolderRootObject());
+	// Favor building FFolder using guid (if available).
+	// The reason is that a lot of calling functions will try resolving at some point the UActorFolder* from the folder
+	// and the guid implementation is much faster.
+	if (GetWorld() && GetFolderGuid().IsValid())
+	{
+		if (UActorFolder* ActorFolder = GetActorFolder())
+		{
+			return ActorFolder->GetFolder();
+		}
+	}
+	return FFolder(GetFolderRootObject(), GetFolderPath());
 }
 
 FFolder::FRootObject AActor::GetFolderRootObject() const
 {
-	return FFolder::GetOptionalFolderRootObject(GetLevel()).Get(FFolder::GetDefaultRootObject());
+	if (GetWorld())
+	{
+		return FFolder::GetOptionalFolderRootObject(GetLevel()).Get(FFolder::GetInvalidRootObject());
+	}
+	return FFolder::GetInvalidRootObject();
 }
 
 static bool IsUsingActorFolders(const AActor* InActor)
@@ -1026,7 +1231,7 @@ bool AActor::CreateOrUpdateActorFolder()
 	if (!ActorFolder)
 	{
 		check(!FolderPath.IsNone());
-		ActorFolder = FWorldPersistentFolders::GetActorFolder(FFolder(FolderPath, GetFolderRootObject()), GetWorld(), /*bAllowCreate*/ true);
+		ActorFolder = FWorldPersistentFolders::GetActorFolder(FFolder(GetFolderRootObject(), FolderPath), GetWorld(), /*bAllowCreate*/ true);
 	}
 
 	// At this point, actor folder should always be valid
@@ -1045,14 +1250,14 @@ UActorFolder* AActor::GetActorFolder(bool bSkipDeleted) const
 	UActorFolder* ActorFolder = nullptr;
 	if (ULevel* Level = GetLevel())
 	{
-		if (FolderGuid.IsValid())
-		{
+	if (FolderGuid.IsValid())
+	{
 			ActorFolder = Level->GetActorFolder(FolderGuid, bSkipDeleted);
-		}
-		else if (!FolderPath.IsNone())
-		{
-			ActorFolder = Level->GetActorFolder(FolderPath, bSkipDeleted);
-		}
+	}
+	else if (!FolderPath.IsNone())
+	{
+			ActorFolder = Level->GetActorFolder(FolderPath);
+	}
 	}
 	return ActorFolder;
 }
@@ -1065,7 +1270,7 @@ void AActor::FixupActorFolder()
 	{
 		if (FolderGuid.IsValid())
 		{
-			UE_LOG(LogLevel, Warning, TEXT("Actor folder %s for actor %s encountered when not using actor folders"), *FolderGuid.ToString(), *GetName());
+			UE_LOG(LogActor, Warning, TEXT("Actor folder %s for actor %s encountered when not using actor folders"), *FolderGuid.ToString(), *GetName());
 			FolderGuid = FGuid();
 		}
 	}
@@ -1088,36 +1293,38 @@ void AActor::FixupActorFolder()
 			}
 		}
 
-		// If still invalid, warn and fallback to root
+		// If still invalid, fallback to root
 		if (!IsActorFolderValid())
 		{
-			UE_LOG(LogLevel, Warning, TEXT("Missing actor folder for actor %s"), *GetName());
+			// Here we don't warn anymore since there's a supported workflow where we allow to delete actor folders 
+			// even when referenced by actors (i.e. when the end result remains the root)
 			SetFolderGuidInternal(FGuid(), /*bBroadcastChange*/ false);
 		}
 
 		if (!FolderPath.IsNone())
 		{
-			UE_LOG(LogLevel, Warning, TEXT("Actor folder path %s for actor %s encountered when using actor folders"), *FolderPath.ToString(), *GetName());
+			UE_LOG(LogActor, Warning, TEXT("Actor folder path %s for actor %s encountered when using actor folders"), *FolderPath.ToString(), *GetName());
 			FolderPath = NAME_None;
 		}
 	}
 }
 
-FGuid AActor::GetFolderGuid() const
+FGuid AActor::GetFolderGuid(bool bDirectAccess) const
 {
-	return IsUsingActorFolders(this) ? FolderGuid : FGuid();
+	return bDirectAccess || IsUsingActorFolders(this) ? FolderGuid : FGuid();
 }
 
 FName AActor::GetFolderPath() const
 {
 	static const FName RootPath = FFolder::GetEmptyPath();
-	if (!FFolder::GetOptionalFolderRootObject(GetLevel()))
+	UWorld* World = GetWorld();
+	if (World && !FFolder::GetOptionalFolderRootObject(GetLevel()))
 	{
 		return RootPath;
 	}
 	if (IsUsingActorFolders(this))
 	{
-		if (UActorFolder* ActorFolder = GetActorFolder())
+		if (UActorFolder* ActorFolder = World ? GetActorFolder() : nullptr)
 		{
 			return ActorFolder->GetPath();
 		}
@@ -1134,7 +1341,7 @@ void AActor::SetFolderPath(const FName& InNewFolderPath)
 		UWorld* World = GetWorld();
 		if (!InNewFolderPath.IsNone() && World)
 		{
-			FFolder NewFolder(InNewFolderPath, GetFolderRootObject());
+			FFolder NewFolder(GetFolderRootObject(), InNewFolderPath);
 			ActorFolder = FWorldPersistentFolders::GetActorFolder(NewFolder, World);
 			if (!ActorFolder)
 			{
@@ -1192,6 +1399,36 @@ void AActor::SetFolderPath_Recursively(const FName& NewFolderPath)
 		InActor->SetFolderPath(NewFolderPath);
 		return true;
 	});
+}
+
+// Transfers some properties from the old actor
+// Ideally, this should be revisited to implement something more generic.
+void AActor::EditorReplacedActor(AActor* OldActor)
+{
+	ContentBundleGuid = OldActor->ContentBundleGuid;
+
+	SetActorLabel(OldActor->GetActorLabel());
+	Tags = OldActor->Tags;
+	
+	SetFolderPath(OldActor->GetFolderPath());
+	
+	if (CanChangeIsSpatiallyLoadedFlag())
+	{
+		SetIsSpatiallyLoaded(OldActor->bIsSpatiallyLoaded);
+	}
+
+	SetRuntimeGrid(OldActor->RuntimeGrid);
+
+	const bool bUseLevelContext = true;
+	const bool bIncludeParentDataLayers = false;
+	TArray<const UDataLayerInstance*> ConstDataLayerInstances = OldActor->GetDataLayerInstancesInternal(bUseLevelContext, bIncludeParentDataLayers);
+	if (!ConstDataLayerInstances.IsEmpty())
+	{
+		TArray<UDataLayerInstance*> DataLayerInstances;
+		Algo::Transform(ConstDataLayerInstances, DataLayerInstances, [](const UDataLayerInstance* ConstDataLayerInstance) { return const_cast<UDataLayerInstance*>(ConstDataLayerInstance); });
+		IDataLayerEditorModule& EditorModule = FModuleManager::LoadModuleChecked<IDataLayerEditorModule>("DataLayerEditor");
+		EditorModule.AddActorToDataLayers(this, DataLayerInstances);
+	}
 }
 
 void AActor::CheckForDeprecated()
@@ -1271,6 +1508,11 @@ bool AActor::GetReferencedContentObjects( TArray<UObject*>& Objects ) const
 	return true;
 }
 
+bool AActor::GetSoftReferencedContentObjects(TArray<FSoftObjectPath>& SoftObjects) const
+{
+	return false;
+}
+
 EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 {
 	// Do not run asset validation on external actors, validation will be caught through map check
@@ -1321,26 +1563,36 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 //---------------------------------------------------------------------------
 // DataLayers (begin)
 
-bool AActor::AddDataLayer(const UDataLayer* DataLayer)
+bool AActor::AddDataLayer(const UDataLayerInstance* DataLayerInstance)
+{
+	if (!SupportsDataLayer())
+	{
+		return false;
+	}
+	return DataLayerInstance->AddActor(this);
+}
+
+bool AActor::AddDataLayer(const UDataLayerAsset* DataLayerAsset)
 {
 	bool bActorWasModified = false;
-	if (SupportsDataLayer() && DataLayer && !ContainsDataLayer(DataLayer))
+	if (SupportsDataLayer() && DataLayerAsset && !DataLayerAssets.Contains(DataLayerAsset))
 	{
-		if (!bActorWasModified)
-		{
-			Modify();
-			bActorWasModified = true;
-		}
-
-		DataLayers.Emplace(DataLayer->GetFName());
+		Modify();
+		bActorWasModified = true;
+		DataLayerAssets.Add(DataLayerAsset);
 	}
 	return bActorWasModified;
 }
 
-bool AActor::RemoveDataLayer(const UDataLayer* DataLayer)
+bool AActor::RemoveDataLayer(const UDataLayerInstance* DataLayerInstance)
+{
+	return DataLayerInstance->RemoveActor(this);
+}
+
+bool AActor::RemoveDataLayer(const UDataLayerAsset* DataLayerAsset)
 {
 	bool bActorWasModified = false;
-	if (ContainsDataLayer(DataLayer))
+	if (DataLayerAsset && DataLayerAssets.Contains(DataLayerAsset))
 	{
 		if (!bActorWasModified)
 		{
@@ -1348,90 +1600,39 @@ bool AActor::RemoveDataLayer(const UDataLayer* DataLayer)
 			bActorWasModified = true;
 		}
 
-		DataLayers.Remove(FActorDataLayer(DataLayer->GetFName()));
+		DataLayerAssets.Remove(DataLayerAsset);
 	}
 	return bActorWasModified;
 }
 
 bool AActor::RemoveAllDataLayers()
 {
-	if (HasDataLayers())
+	if ((DataLayerAssets.Num() > 0) || (DataLayers.Num() > 0))
 	{
 		Modify();
+		DataLayerAssets.Empty();
 		DataLayers.Empty();
 		return true;
 	}
 	return false;
 }
 
-bool AActor::ContainsDataLayer(const UDataLayer* DataLayer) const
+TArray<FName> AActor::GetDataLayerInstanceNames() const
 {
-	return DataLayer && DataLayers.Contains(FActorDataLayer(DataLayer->GetFName()));
-}
-
-bool AActor::HasDataLayers() const
-{
-	return DataLayers.Num() > 0;
-}
-
-bool AActor::HasValidDataLayers() const
-{
-	if (const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+	TArray<FName> DataLayerInstanceNames;
+	TArray<const UDataLayerInstance*> DataLayerInstances = GetDataLayerInstances();
+	DataLayerInstanceNames.Reserve(DataLayerInstances.Num());
+	for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 	{
-		for (const FActorDataLayer& DataLayer : DataLayers)
-		{
-			if (const UDataLayer* DataLayerObject = WorldDataLayers->GetDataLayerFromName(DataLayer.Name))
-			{
-				return true;
-			}
-		}
+		DataLayerInstanceNames.Add(DataLayerInstance->GetDataLayerFName());
 	}
-	return false;
+	return DataLayerInstanceNames;
 }
 
-bool AActor::HasAllDataLayers(const TArray<const UDataLayer*>& InDataLayers) const
-{
-	if (DataLayers.Num() < InDataLayers.Num())
+TArray<const UDataLayerInstance*> AActor::GetDataLayerInstancesForLevel() const
 	{
-		return false;
-	}
-
-	for (const UDataLayer* DataLayer : InDataLayers)
-	{
-		if (!ContainsDataLayer(DataLayer))
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
-TArray<FName> AActor::GetDataLayerNames() const
-{
-	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
-	return WorldDataLayers ? WorldDataLayers->GetDataLayerNames(DataLayers) : TArray<FName>();
-}
-
-TArray<const UDataLayer*> AActor::GetDataLayerObjects() const
-{
-	return GetWorld() ? GetDataLayerObjects(GetWorld()->GetWorldDataLayers()) : TArray<const UDataLayer*>();
-}
-
-TArray<const UDataLayer*> AActor::GetDataLayerObjects(const AWorldDataLayers* WorldDataLayers) const
-{
-	return WorldDataLayers ? WorldDataLayers->GetDataLayerObjects(DataLayers) : TArray<const UDataLayer*>();
-}
-
-bool AActor::HasAnyOfDataLayers(const TArray<FName>& DataLayerNames) const
-{
-	for (const FActorDataLayer& DataLayer : DataLayers)
-	{
-		if (DataLayerNames.Contains(DataLayer.Name))
-		{
-			return true;
-		}
-	}
-	return false;
+	const bool bUseLevelContext = true;
+	return GetDataLayerInstancesInternal(bUseLevelContext);
 }
 
 void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
@@ -1440,27 +1641,34 @@ void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
 	{
 		if (!SupportsDataLayer())
 		{
+			DataLayerAssets.Empty();
 			DataLayers.Empty();
 			return;
 		}
 
-		if (GetWorld())
+		if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
 		{
-			if (const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+			if (!DataLayerSubsystem->CanResolveDataLayers())
 			{
+				return;
+			}
+
+			ULevel* Level = GetLevel();
+
 				if (bRevertChangesOnLockedDataLayer)
 				{
 					// Since it's not possible to prevent changes of particular elements of an array, rollback change on locked DataLayers.
-					TSet<FActorDataLayer> PreEdit(PreEditChangeDataLayers);
-					TSet<FActorDataLayer> PostEdit(DataLayers);
+					TSet<const UDataLayerAsset*> PreEdit(PreEditChangeDataLayers);
+					TSet<const UDataLayerAsset*> PostEdit(DataLayerAssets);
 
-					auto DifferenceContainsLockedDataLayers = [WorldDataLayers](const TSet<FActorDataLayer>& A, const TSet<FActorDataLayer>& B)
+				auto DifferenceContainsLockedDataLayers = [DataLayerSubsystem, Level](const TSet<const UDataLayerAsset*>& A, const TSet<const UDataLayerAsset*>& B)
 					{
-						TSet<FActorDataLayer> Diff = A.Difference(B);
-						for (const FActorDataLayer& ActorDataLayer : Diff)
+						TSet<const UDataLayerAsset*> Diff = A.Difference(B);
+						for (const UDataLayerAsset* DataLayerAsset : Diff)
 						{
-							const UDataLayer* DataLayer = WorldDataLayers->GetDataLayerFromName(ActorDataLayer);
-							if (DataLayer && DataLayer->IsLocked())
+						// We pass Actor Level when resolving the DataLayerInstance as we do the fixup relative to this level
+						const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerAsset, Level);
+							if (DataLayerInstance && DataLayerInstance->IsLocked())
 							{
 								return true;
 							}
@@ -1471,76 +1679,121 @@ void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
 					if (DifferenceContainsLockedDataLayers(PreEdit, PostEdit) || 
 						DifferenceContainsLockedDataLayers(PostEdit, PreEdit))
 					{
-						DataLayers = PreEditChangeDataLayers;
+						DataLayerAssets = PreEditChangeDataLayers;
 					}
 				}
 
-				TSet<FName> ExistingDataLayers;
-				for (int32 Index = 0; Index < DataLayers.Num();)
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			auto CleanupDataLayers = [this, DataLayerSubsystem, Level](auto& DataLayerArray)
 				{
-					const FName& DataLayer = DataLayers[Index].Name;
-					if (!WorldDataLayers->GetDataLayerFromName(DataLayer) || ExistingDataLayers.Contains(DataLayer))
+					using ArrayType = typename TRemoveReference<decltype(DataLayerArray)>::Type;
+					
+					ArrayType ExistingDataLayer;
+					for (int32 Index = 0; Index < DataLayerArray.Num();)
 					{
-						DataLayers.RemoveAtSwap(Index);
+					// We pass Actor Level when resolving the DataLayerInstance as we do the fixup relative to this level
+						auto& DataLayer = DataLayerArray[Index];
+					if (!DataLayerSubsystem->GetDataLayerInstance(DataLayer, Level) || ExistingDataLayer.Contains(DataLayer))
+						{
+							DataLayerArray.RemoveAtSwap(Index);
+						}
+						else
+						{
+							ExistingDataLayer.Add(DataLayer);
+							++Index;
+						}
 					}
-					else
-					{
-						ExistingDataLayers.Add(DataLayer);
-						++Index;
-					}
-				}
+				};
+
+				CleanupDataLayers(DataLayerAssets);
+				CleanupDataLayers(DataLayers);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 	}
-}
 
 bool AActor::IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& PropertyChangedEvent) const
 {
 	if (PropertyChangedEvent.Property != nullptr)
 	{
-		FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
-		const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
+		static const FName NAME_DataLayerAssets = GET_MEMBER_NAME_CHECKED(AActor, DataLayerAssets);
 
-		static const FName NAME_DataLayers = GET_MEMBER_NAME_CHECKED(AActor, DataLayers);
-		static const FName NAME_FActorDataLayerName = GET_MEMBER_NAME_CHECKED(FActorDataLayer, Name);
-
-		if (MemberPropertyName == NAME_DataLayers &&
-			PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet &&
-			PropertyChangedEvent.Property->GetFName() == NAME_FActorDataLayerName)
+		const FName PropertyName = PropertyChangedEvent.GetPropertyName();
+		if (PropertyName == NAME_DataLayerAssets &&
+			((PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet) ||
+				(PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayClear) ||
+				(PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)))
 		{
 			return true;
-		}
-		else
-		{
-			const FName PropertyName = PropertyChangedEvent.GetPropertyName();
-			if (PropertyName == NAME_DataLayers && 
-				((PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet) || 
-				 (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayClear) ||
-				 (PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)))
-			{
-				return true;
-			}
 		}
 	}
 	return false;
 }
 
-bool AActor::IsValidForDataLayer() const
+bool AActor::SupportsDataLayer() const
 {
-	UWorld* World = GetWorld();
-	if (!World)
+	ULevel* Level = GetLevel();
+	const bool bIsLevelNotPartitioned = Level ? !Level->bIsPartitioned : false;
+	return (!bIsLevelNotPartitioned &&
+			ActorTypeSupportsDataLayer() &&
+			!FActorEditorUtils::IsABuilderBrush(this) &&
+			!GetClass()->GetDefaultObject<AActor>()->bHiddenEd);
+}
+
+//~ Begin Deprecated
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+bool AActor::AddDataLayer(const FActorDataLayer& ActorDataLayer)
+{
+	if (SupportsDataLayer() && !ContainsDataLayer(ActorDataLayer))
 	{
-		return false;
+		Modify();
+		DataLayers.Add(ActorDataLayer);
+		return true;
 	}
 
-	const bool bIsPartitionedActor = UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
-	const bool bIsInEditorWorld = World->WorldType == EWorldType::Editor;
-	const bool bIsBuilderBrush = FActorEditorUtils::IsABuilderBrush(this);
-	const bool bIsHidden = GetClass()->GetDefaultObject<AActor>()->bHiddenEd;
-	const bool bIsValid = !bIsHidden && !bIsBuilderBrush && bIsInEditorWorld && bIsPartitionedActor;
-
-	return bIsValid;
+	return false;
 }
+
+bool AActor::RemoveDataLayer(const FActorDataLayer& ActorDataLayer)
+{
+	if (ContainsDataLayer(ActorDataLayer))
+	{
+		Modify();
+		DataLayers.Remove(ActorDataLayer);
+		return true;
+	}
+
+	return false;
+}
+
+bool AActor::AddDataLayer(const UDEPRECATED_DataLayer* DataLayer)
+{
+	if (SupportsDataLayer() && DataLayer)
+	{
+		return AddDataLayer(FActorDataLayer(DataLayer->GetFName()));
+	}
+	return false;
+}
+
+bool AActor::RemoveDataLayer(const UDEPRECATED_DataLayer* DataLayer)
+{
+	if (DataLayer)
+	{
+		return RemoveDataLayer(FActorDataLayer(DataLayer->GetFName()));
+	}
+	return false;
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+bool AActor::ContainsDataLayer(const FActorDataLayer& ActorDataLayer) const
+{
+	return DataLayers.Contains(ActorDataLayer);
+}
+
+//~ End Deprecated
 
 // DataLayers (end)
 //---------------------------------------------------------------------------

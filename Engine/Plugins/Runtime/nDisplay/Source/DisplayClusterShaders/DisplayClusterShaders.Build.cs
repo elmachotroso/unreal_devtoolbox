@@ -31,6 +31,11 @@ public class DisplayClusterShaders : ModuleRules
 		{
 			PrivateDependencyModuleNames.Add("UnrealEd");
 		}
+		
+		// NOTE: General rule is not to access the private folder of another module
+		PrivateIncludePaths.AddRange(new string[] {
+			System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+		});
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "UElibPNG");
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");

@@ -3,11 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Styling/SlateColor.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "KismetNodes/SGraphNodeK2Base.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 
+class FText;
+class SWidget;
 class UK2Node;
+struct FMargin;
+struct FSlateBrush;
 
 class GRAPHEDITOR_API SGraphNodeK2Var : public SGraphNodeK2Base
 {
@@ -18,6 +24,8 @@ public:
 	void Construct( const FArguments& InArgs, UK2Node* InNode );
 
 	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override;
+
+	virtual void GetDiffHighlightBrushes(const FSlateBrush*& BackgroundOut, const FSlateBrush*& ForegroundOut) const override;
 
 	// SGraphNode interface
 	virtual void UpdateGraphNode() override;

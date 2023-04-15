@@ -9,9 +9,6 @@
 #include "UObject/UnrealTypePrivate.h"
 #include "UObject/PropertyHelper.h"
 
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
-
 /*-----------------------------------------------------------------------------
 	FBoolProperty.
 -----------------------------------------------------------------------------*/
@@ -29,13 +26,55 @@ FBoolProperty::FBoolProperty(FFieldVariant InOwner, const FName& InName, EObject
 }
 
 FBoolProperty::FBoolProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, uint32 InBitMask, uint32 InElementSize, bool bIsNativeBool)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	: FProperty(InOwner, InName, InObjectFlags, InOffset, InFlags | CPF_HasGetValueTypeHash)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, FieldSize(0)
 	, ByteOffset(0)
 	, ByteMask(1)
 	, FieldMask(1)
 {
 	SetBoolSize(InElementSize, bIsNativeBool, InBitMask);
+}
+
+FBoolProperty::FBoolProperty(FFieldVariant InOwner, const UECodeGen_Private::FBoolPropertyParams& Prop)
+	: FProperty(InOwner, (const UECodeGen_Private::FPropertyParamsBaseWithoutOffset&)Prop)
+	, FieldSize(0)
+	, ByteOffset(0)
+	, ByteMask(1)
+	, FieldMask(1)
+{
+	auto DoDetermineBitfieldOffsetAndMask = [](uint32& Offset, uint32& BitMask, void (*SetBit)(void* Obj), const SIZE_T SizeOf)
+	{
+		TUniquePtr<uint8[]> Buffer = MakeUnique<uint8[]>(SizeOf);
+
+		SetBit(Buffer.Get());
+
+		// Here we are making the assumption that bitfields are aligned in the struct. Probably true.
+		// If not, it may be ok unless we are on a page boundary or something, but the check will fire in that case.
+		// Have faith.
+		for (uint32 TestOffset = 0; TestOffset < SizeOf; TestOffset++)
+		{
+			if (uint8 Mask = Buffer[TestOffset])
+			{
+				Offset = TestOffset;
+				BitMask = (uint32)Mask;
+				check(FMath::RoundUpToPowerOfTwo(BitMask) == BitMask); // better be only one bit on
+				break;
+			}
+		}
+	};
+
+	uint32 Offset = 0;
+	uint32 BitMask = 0;
+	if (Prop.SetBitFunc)
+	{
+		DoDetermineBitfieldOffsetAndMask(Offset, BitMask, Prop.SetBitFunc, Prop.SizeOfOuter);
+		check(BitMask);
+	}
+
+	SetOffset_Internal(Offset);
+	SetBoolSize(Prop.ElementSize, !!(Prop.Flags & UECodeGen_Private::EPropertyGenFlags::NativeBool), BitMask);
 }
 
 #if WITH_EDITORONLY_DATA
@@ -302,11 +341,20 @@ void FBoolProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) con
 #endif
 
 
-void FBoolProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
+void FBoolProperty::ExportText_Internal( FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	check(FieldSize != 0);
-	const uint8* ByteValue = (uint8*)PropertyValue + ByteOffset;
-	const bool bValue = 0 != ((*ByteValue) & FieldMask);
+	uint8 LocalByteValue = 0;
+	bool bValue = false;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		GetValue_InContainer(ContainerOrPropertyPtr, &bValue);
+	}
+	else
+	{
+		LocalByteValue = *((uint8*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType) + ByteOffset);
+		bValue = 0 != (LocalByteValue & FieldMask);
+	}
 	const TCHAR* Temp = nullptr;
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -318,7 +366,7 @@ void FBoolProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue
 	}
 	ValueStr += FString::Printf( TEXT("%s"), Temp );
 }
-const TCHAR* FBoolProperty::ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const
+const TCHAR* FBoolProperty::ImportText_Internal( const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText ) const
 {
 	FString Temp; 
 	Buffer = FPropertyHelpers::ReadToken( Buffer, Temp );
@@ -328,23 +376,44 @@ const TCHAR* FBoolProperty::ImportText_Internal( const TCHAR* Buffer, void* Data
 	}
 
 	check(FieldSize != 0);
-	uint8* ByteValue = (uint8*)Data + ByteOffset;
+	uint8 LocalByteValue = 0;
+	if (PropertyPointerType == EPropertyPointerType::Container && HasGetter())
+	{
+		bool bValue = false;
+		GetValue_InContainer(ContainerOrPropertyPtr, &bValue);
+		LocalByteValue = bValue ? FieldMask : 0;
+	}
+	else
+	{
+		LocalByteValue = *((uint8*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType) + ByteOffset);
+	}
 
 	const FCoreTexts& CoreTexts = FCoreTexts::Get();
 	if( Temp==TEXT("1") || Temp==TEXT("True") || Temp==*CoreTexts.True.ToString() || Temp == TEXT("Yes") || Temp == *CoreTexts.Yes.ToString() )
 	{
-		*ByteValue |= ByteMask;
+		LocalByteValue |= ByteMask;
 	}
 	else 
 	if( Temp==TEXT("0") || Temp==TEXT("False") || Temp==*CoreTexts.False.ToString() || Temp == TEXT("No") || Temp == *CoreTexts.No.ToString() )
 	{
-		*ByteValue &= ~FieldMask;
+		LocalByteValue &= ~FieldMask;
 	}
 	else
 	{
 		//UE_LOG(LogProperty, Log,  "Import: Failed to get bool" );
 		return NULL;
 	}
+
+	if (PropertyPointerType == EPropertyPointerType::Container && HasSetter())
+	{
+		bool bValue = 0 != (LocalByteValue & FieldMask);
+		SetValue_InContainer(ContainerOrPropertyPtr, &bValue);
+	}
+	else
+	{
+		*((uint8*)PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType) + ByteOffset) = LocalByteValue;
+	}
+
 	return Buffer;
 }
 bool FBoolProperty::Identical( const void* A, const void* B, uint32 PortFlags ) const
@@ -402,5 +471,3 @@ uint32 FBoolProperty::GetValueTypeHashInternal(const void* Src) const
 	uint8* SrcByteValue = (uint8*)Src + ByteOffset;
 	return GetTypeHash(*SrcByteValue & FieldMask);
 }
-
-#include "UObject/DefineUPropertyMacros.h"

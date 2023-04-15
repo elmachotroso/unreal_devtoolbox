@@ -66,7 +66,7 @@ public:
 	// Stored redundantly for stats after Data has been discarded
 	int32 DataSize;
 	EPixelFormat Format;
-	FTexture3DRHIRef Texture;
+	FTextureRHIRef Texture;
 	FUnorderedAccessViewRHIRef UAV;
 
 	bool bNeedsCPUAccess;
@@ -83,9 +83,6 @@ struct FVolumetricLightmapBasicBrickDataLayers
 class FVolumetricLightmapBrickData : public FVolumetricLightmapBasicBrickDataLayers
 {
 public:
-	// Mobile LQ layers:
-	FVolumetricLightmapDataLayer LQLightColor;
-	FVolumetricLightmapDataLayer LQLightDirection;
 
 	ENGINE_API int32 GetMinimumVoxelSize() const;
 
@@ -115,7 +112,6 @@ public:
 	SIZE_T GetAllocatedBytes() const
 	{
 		SIZE_T NumBytes = AmbientVector.DataSize + SkyBentNormal.DataSize + DirectionalLightShadowing.DataSize;
-		NumBytes += LQLightColor.Data.Num() + LQLightDirection.Data.Num();
 
 		for (int32 i = 0; i < UE_ARRAY_COUNT(SHCoefficients); i++)
 		{
@@ -136,13 +132,6 @@ public:
 
 		SkyBentNormal.bNeedsCPUAccess = InAccess;
 		DirectionalLightShadowing.bNeedsCPUAccess = InAccess;
-	}
-
-	// discard the layers used for low quality lightmap (LQ includes direct lighting from stationary lights).
-	void DiscardLowQualityLayers()
-	{
-		LQLightColor.Discard();
-		LQLightDirection.Discard();
 	}
 };
 

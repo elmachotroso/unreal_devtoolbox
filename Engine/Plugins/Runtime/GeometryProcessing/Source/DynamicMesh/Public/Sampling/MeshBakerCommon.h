@@ -9,6 +9,7 @@
 #include "Image/ImageTile.h"
 #include "Image/ImageBuilder.h"
 #include "MeshCurvature.h"
+#include "MeshMapEvaluator.h"
 
 
 namespace UE
@@ -96,6 +97,15 @@ class IMeshBakerDetailSampler
 public:
 	/** (Image, UVLayer) pair for detail textures */
 	using FBakeDetailTexture = TTuple<const TImageBuilder<FVector4f>*, int>;
+
+	enum class EBakeDetailNormalSpace
+	{
+		Tangent,
+		Object
+	};
+
+	/** (Image, NormalSpace, UVLayer) tuple for detail normal textures */
+	using FBakeDetailNormalTexture = TTuple<const TImageBuilder<FVector4f>*, int, EBakeDetailNormalSpace>;
 	
 	virtual ~IMeshBakerDetailSampler() = default;
 
@@ -105,17 +115,29 @@ public:
 	/** @return the triangle count of a given mesh. */
 	virtual int32 GetTriangleCount(const void* Mesh) const = 0;
 
+	/** Set the tangents for a given mesh */
+	virtual void SetTangents(const void* Mesh, FMeshTangentsd* Tangents)
+	{		
+	}
+
 	/** Associate a texture map and UV layer index for a given mesh in the detail set */
 	virtual void SetTextureMap(const void* Mesh, const FBakeDetailTexture& Map) = 0;
 
 	/** Associate a normal map and UV layer index for a given mesh in the detail set */
+	UE_DEPRECATED(5.1, "Use SetNormalTextureMap instead. This implementation assumes tangent normals.")
 	virtual void SetNormalMap(const void* Mesh, const FBakeDetailTexture& Map) = 0;
+
+	/** Associate a normal map and UV layer index for a given mesh in the detail set */
+	virtual void SetNormalTextureMap(const void* Mesh, const FBakeDetailNormalTexture& Map) = 0;
 
 	/** Retrieve a texture map and UV layer index from a given mesh in the detail set */
 	virtual const FBakeDetailTexture* GetTextureMap(const void* Mesh) const = 0;
 
 	/** Retrieve a normal map and UV layer index from a given mesh in the detail set */
+	UE_DEPRECATED(5.1, "Use GetNormalTextureMap instead. This implementation assumes tangent normals.")
 	virtual const FBakeDetailTexture* GetNormalMap(const void* Mesh) const = 0;
+
+	virtual const FBakeDetailNormalTexture* GetNormalTextureMap(const void* Mesh) const = 0;
 
 	/** @return true if identity correspondence is supported */
 	virtual bool SupportsIdentityCorrespondence() const = 0;
@@ -125,6 +147,22 @@ public:
 
 	/** @return true if triangle ray intersection correspondence is supported */
 	virtual bool SupportsRaycastCorrespondence() const = 0;
+
+	/** @return true if a user-defined correspondence test is supported */
+	virtual bool SupportsCustomCorrespondence() const
+	{
+		return false;
+	}
+
+	virtual void* ComputeCustomCorrespondence(const FMeshUVSampleInfo& SampleInfo, FMeshMapEvaluator::FCorrespondenceSample& ValueOut) const
+	{
+		return nullptr;
+	}
+
+	virtual bool IsValidCorrespondence(const FMeshMapEvaluator::FCorrespondenceSample& Sample) const
+	{
+		return Sample.DetailMesh && IsTriangle(Sample.DetailMesh, Sample.DetailTriID);
+	}
 
 	/**
 	 * @param Point query point
@@ -337,6 +375,11 @@ public:
 		return DynamicMesh->TriangleCount();
 	}
 
+	virtual void SetTangents(const void* Mesh, FMeshTangentsd* Tangents) override
+	{
+		DetailTangents = Tangents;
+	}
+
 	virtual void SetTextureMap(const void* Mesh, const FBakeDetailTexture& Map) override
 	{
 		DetailTextureMap = Map;
@@ -344,7 +387,12 @@ public:
 
 	virtual void SetNormalMap(const void* Mesh, const FBakeDetailTexture& Map) override
 	{
-		DetailNormalMap = Map;
+		DetailNormalTextureMap = FBakeDetailNormalTexture(Map.Key, Map.Value, EBakeDetailNormalSpace::Tangent);
+	}
+
+	virtual void SetNormalTextureMap(const void* Mesh, const FBakeDetailNormalTexture& Map) override
+	{
+		DetailNormalTextureMap = Map;
 	}
 
 	virtual const FBakeDetailTexture* GetTextureMap(const void* Mesh) const override
@@ -354,7 +402,12 @@ public:
 	
 	virtual const FBakeDetailTexture* GetNormalMap(const void* Mesh) const override
 	{
-		return &DetailNormalMap;
+		return nullptr;
+	}
+
+	virtual const FBakeDetailNormalTexture* GetNormalTextureMap(const void* Mesh) const override
+	{
+		return &DetailNormalTextureMap;
 	}
 
 	virtual bool SupportsIdentityCorrespondence() const override
@@ -554,7 +607,10 @@ protected:
 	const FDynamicMeshAABBTree3* DetailSpatial = nullptr;
 	const FMeshTangentsd* DetailTangents = nullptr;
 	FBakeDetailTexture DetailTextureMap = FBakeDetailTexture(nullptr, 0);
+
+	UE_DEPRECATED(5.1, "Use DetailNormalTextureMap instead.")
 	FBakeDetailTexture DetailNormalMap = FBakeDetailTexture(nullptr, 0);
+	FBakeDetailNormalTexture DetailNormalTextureMap = FBakeDetailNormalTexture(nullptr, 0, EBakeDetailNormalSpace::Tangent);
 };		
 	
 

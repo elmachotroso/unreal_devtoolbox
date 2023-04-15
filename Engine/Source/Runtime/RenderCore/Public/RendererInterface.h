@@ -44,23 +44,29 @@ namespace Nanite
 
 class FRHITransientTexture;
 
-// Shortcut for the allocator used by scene rendering.
-typedef TMemStackAllocator<> SceneRenderingAllocator;
-
-class SceneRenderingBitArrayAllocator
-	: public TInlineAllocator<4,SceneRenderingAllocator>
+struct FSceneRenderingBlockAllocationTag
 {
+	static constexpr uint32 BlockSize = 64 * 1024;		// Blocksize used to allocate from
+	static constexpr bool AllowOversizedBlocks = true;  // The allocator supports oversized Blocks and will store them in a seperate Block with counter 1
+	static constexpr bool RequiresAccurateSize = true;  // GetAllocationSize returning the accurate size of the allocation otherwise it could be relaxed to return the size to the end of the Block
+	static constexpr bool InlineBlockAllocation = false;  // Inline or Noinline the BlockAllocation which can have an impact on Performance
+	static constexpr const char* TagName = "SceneRenderingAllocator";
+
+	using Allocator = TBlockAllocationLockFreeCache<BlockSize, FOsAllocator>;
 };
 
-class SceneRenderingSparseArrayAllocator
-	: public TSparseArrayAllocator<SceneRenderingAllocator,SceneRenderingBitArrayAllocator>
-{
-};
+using FSceneRenderingBulkObjectAllocator = TConcurrentLinearBulkObjectAllocator<FSceneRenderingBlockAllocationTag>;
 
-class SceneRenderingSetAllocator
-	: public TSetAllocator<SceneRenderingSparseArrayAllocator,TInlineAllocator<1,SceneRenderingAllocator> >
-{
-};
+template <typename T>
+using FSceneRenderingAllocatorObject = TConcurrentLinearObject<T, FSceneRenderingBlockAllocationTag>;
+
+using FSceneRenderingAllocator = TConcurrentLinearAllocator<FSceneRenderingBlockAllocationTag>;
+using FSceneRenderingArrayAllocator = TConcurrentLinearArrayAllocator<FSceneRenderingBlockAllocationTag>;
+
+using SceneRenderingAllocator = TConcurrentLinearArrayAllocator<FSceneRenderingBlockAllocationTag>;
+using SceneRenderingBitArrayAllocator = TConcurrentLinearBitArrayAllocator<FSceneRenderingBlockAllocationTag>;
+using SceneRenderingSparseArrayAllocator = TConcurrentLinearSparseArrayAllocator<FSceneRenderingBlockAllocationTag>;
+using SceneRenderingSetAllocator = TConcurrentLinearSetAllocator<FSceneRenderingBlockAllocationTag>;
 
 /** All necessary data to create a render target from the pooled render targets. */
 struct FPooledRenderTargetDesc
@@ -548,9 +554,13 @@ struct IPooledRenderTarget
 	 * @return in bytes
 	 **/
 	virtual uint32 ComputeMemorySize() const = 0;
+
 	/** Get the low level internals (texture/surface) */
+	UE_DEPRECATED(5.1, "GetRenderTargetItem is deprecated. Use GetRHI() and GetUAV() instead.")
 	inline FSceneRenderTargetItem& GetRenderTargetItem() { return RenderTargetItem; }
+
 	/** Get the low level internals (texture/surface) */
+	UE_DEPRECATED(5.1, "GetRenderTargetItem is deprecated. Use GetRHI() and GetUAV() instead.")
 	inline const FSceneRenderTargetItem& GetRenderTargetItem() const { return RenderTargetItem; }
 
 	/** Returns if the render target is tracked by a pool. */
@@ -564,8 +574,7 @@ struct IPooledRenderTarget
 	virtual uint32 Release() = 0;
 	virtual uint32 GetRefCount() const = 0;
 
-	FRHITexture* GetRHI() const { return RenderTargetItem.GetRHI(); }
-
+	FRHITexture* GetRHI() const { return RenderTargetItem.TargetableTexture; }
 
 	UE_DEPRECATED(5.0, "Use GetRHI instead.")
 	FRHITexture* GetTargetableRHI() const { return GetRHI(); }
@@ -777,6 +786,7 @@ public:
 
 	/** Allocates a new instance of the private scene manager implementation of FSceneViewStateInterface */
 	virtual class FSceneViewStateInterface* AllocateViewState(ERHIFeatureLevel::Type FeatureLevel) = 0;
+	virtual class FSceneViewStateInterface* AllocateViewState(ERHIFeatureLevel::Type FeatureLevel, FSceneViewStateInterface* ShareOriginTarget) = 0;
 
 	UE_DEPRECATED(5.0, "AllocateViewState must be called with an appropriate RHI Feature Level")
 	inline FSceneViewStateInterface* AllocateViewState()
@@ -912,5 +922,8 @@ public:
 
 	/** Mark all the current scenes as needing to restart path tracer accumulation */
 	virtual void InvalidatePathTracedOutput() = 0;
+
+	/** Experimental:  Render multiple view families in a single scene render call.  All families must reference the same FScene.  Scene Capture not yet supported. */
+	virtual void BeginRenderingViewFamilies(FCanvas* Canvas, TArrayView<FSceneViewFamily*> ViewFamilies) = 0;
 };
 

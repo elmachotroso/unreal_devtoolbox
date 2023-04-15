@@ -21,8 +21,10 @@ class UPlayerInput;
 class FCommonAnalogCursor;
 class IInputProcessor;
 
+enum class EProcessHoldActionResult;
 class FActivatableTreeNode;
 class UCommonInputSubsystem;
+class UCommonInputActionDomain;
 struct FUIActionBinding;
 class FDebugDisplayInfo;
 struct FAutoCompleteCommand;
@@ -95,6 +97,8 @@ public:
 
 	bool IsWidgetInActiveRoot(const UCommonActivatableWidget* Widget) const;
 
+	void SetActiveUIInputConfig(const FUIInputConfig& NewConfig);
+
 //COMMONUI_SCOPE:
 public:
 	//@todo DanH: Not loving this bit of coupling, it really should to be possible for any widget to accomplish this (and the CommonUserWidget just does it automatically)
@@ -121,6 +125,10 @@ protected:
 	virtual void SetActiveRoot(FActivatableTreeRootPtr NewActiveRoot);
 	void SetForceResetActiveRoot(bool bInForceResetActiveRoot);
 
+	void UpdateLeafNodeAndConfig(FActivatableTreeRootPtr DesiredRoot, FActivatableTreeNodePtr DesiredLeafNode);
+
+	void RefreshActionDomainLeafNodeConfig();
+
 	bool bIsActivatableTreeEnabled = true;
 
 	TSharedPtr<FCommonAnalogCursor> AnalogCursor;
@@ -139,7 +147,6 @@ private:
 	FActivatableTreeNodePtr FindNodeRecursive(const FActivatableTreeNodePtr& CurrentNode, const UCommonActivatableWidget& Widget) const;
 	FActivatableTreeNodePtr FindNodeRecursive(const FActivatableTreeNodePtr& CurrentNode, const TSharedPtr<SWidget>& Widget) const;
 
-	void SetActiveUIInputConfig(const FUIInputConfig& NewConfig); 
 	void ApplyUIInputConfig(const FUIInputConfig& NewConfig, bool bForceRefresh);
 	void SetActiveUICameraConfig(const FUICameraConfig& NewConfig);
 	
@@ -147,7 +154,7 @@ private:
 	void ProcessRebuiltWidgets();
 	void AssembleTreeRecursive(const FActivatableTreeNodeRef& CurNode, TMap<UCommonActivatableWidget*, TArray<UCommonActivatableWidget*>>& WidgetsByDirectParent);
 
-	void HandleRootWidgetSlateReleased(UCommonActivatableWidget* ActivatableWidget);
+	void HandleRootWidgetSlateReleased(TWeakPtr<FActivatableTreeRoot> WeakRoot);
 	void HandleRootNodeActivated(TWeakPtr<FActivatableTreeRoot> WeakActivatedRoot);
 	void HandleRootNodeDeactivated(TWeakPtr<FActivatableTreeRoot> WeakDeactivatedRoot);
 	void HandleLeafmostActiveNodeChanged();
@@ -155,6 +162,9 @@ private:
 	void HandleSlateFocusChanging(const FFocusEvent& FocusEvent, const FWeakWidgetPath& OldFocusedWidgetPath, const TSharedPtr<SWidget>& OldFocusedWidget, const FWidgetPath& NewFocusedWidgetPath, const TSharedPtr<SWidget>& NewFocusedWidget);
 
 	void HandlePostGarbageCollect();
+
+	bool ProcessInputOnActionDomains(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent) const;
+	EProcessHoldActionResult ProcessHoldInputOnActionDomains(ECommonInputMode ActiveInputMode, FKey Key, EInputEvent InputEvent) const;
 
 	struct FPendingWidgetRegistration
 	{
@@ -199,4 +209,21 @@ private:
 	friend class FActionRouterDebugUtils;
 
 	mutable TArray<FKey> HeldKeys;
+
+	/** A wrapper around TArray that keeps RootList sorted by PaintLayer during insertion */
+	struct FActionDomainSortedRootList
+	{
+		TArray<FActivatableTreeRootRef> RootList;
+
+		// Inserts RootNode into RootList based on its paint layer
+		void Add(FActivatableTreeRootRef RootNode);
+
+		// Trivial removal
+		int32 Remove(FActivatableTreeRootRef RootNode);
+
+		// Trivial Contains check
+		bool Contains(FActivatableTreeRootRef RootNode) const;
+	};
+
+	TMap<TObjectPtr<UCommonInputActionDomain>, FActionDomainSortedRootList> ActionDomainRootNodes;
 };

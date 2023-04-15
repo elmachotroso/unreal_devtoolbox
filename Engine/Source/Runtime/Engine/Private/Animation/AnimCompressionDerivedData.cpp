@@ -13,6 +13,8 @@
 #include "Animation/AnimCurveCompressionSettings.h"
 #include "AnimationCompression.h"
 #include "UObject/Package.h"
+#include "Misc/CoreDelegates.h"
+#include "ProfilingDebugging/CookStats.h"
 
 #if WITH_EDITOR
 
@@ -35,11 +37,19 @@ const TCHAR* FDerivedDataAnimationCompression::GetVersionString() const
 	// This is a version string that mimics the old versioning scheme. If you
 	// want to bump this version, generate a new guid using VS->Tools->Create GUID and
 	// return it here. Ex.
-	return TEXT("5A39C0ABF95744778F168FC8DA1619D4");
+	return TEXT("3A3F9FBB7A4047278CABE35820CC44D7");
+}
+
+FString FDerivedDataAnimationCompression::GetDebugContextString() const
+{
+	check(DataToCompressPtr.IsValid());
+	return DataToCompressPtr->FullName;
 }
 
 bool FDerivedDataAnimationCompression::Build( TArray<uint8>& OutDataArray )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDerivedDataAnimationCompression::Build);
+
 	const double CompressionStartTime = FPlatformTime::Seconds();
 
 	check(DataToCompressPtr.IsValid());
@@ -50,6 +60,10 @@ bool FDerivedDataAnimationCompression::Build( TArray<uint8>& OutDataArray )
 	{
 		return false;
 	}
+
+	// Update UsageStats only when not running on the game thread since that thread times this at a higher level.
+	COOK_STAT(auto Timer = AnimSequenceCookStats::UsageStats.TimeSyncWork());
+	COOK_STAT(IsInGameThread() ? Timer.Cancel() : Timer.TrackCyclesOnly());
 
 	SCOPE_CYCLE_COUNTER(STAT_AnimCompressionDerivedData);
 	UE_LOG(LogAnimationCompression, Log, TEXT("Building Anim DDC data for %s"), *DataToCompress.FullName);
@@ -166,15 +180,22 @@ void FAsyncCompressedAnimationsManagement::Shutdown()
 
 void FAsyncCompressedAnimationsManagement::OnActiveCompressionFinished(int32 ActiveAnimIndex)
 {
+	COOK_STAT(auto Timer = AnimSequenceCookStats::UsageStats.TimeSyncWork());
+
 	FDerivedDataCacheInterface& DerivedDataCache = GetDerivedDataCacheRef();
 
 	FActiveAsyncCompressionTask& Task = ActiveAsyncCompressionTasks[ActiveAnimIndex];
 
-	if(Task.Sequence)
+	TArray<uint8> OutData;
+	bool bBuiltLocally = false;
+	const bool bOk = DerivedDataCache.GetAsynchronousResults(Task.AsyncHandle, OutData, &bBuiltLocally);
+
+	COOK_STAT(using EHitOrMiss = FCookStats::CallStats::EHitOrMiss);
+	COOK_STAT(Timer.AddHitOrMiss(bBuiltLocally ? EHitOrMiss::Miss : EHitOrMiss::Hit, OutData.Num()));
+
+	if (Task.Sequence)
 	{
-		TArray<uint8> OutData;
-		bool bBuiltLocally = false;
-		if (DerivedDataCache.GetAsynchronousResults(Task.AsyncHandle, OutData, &bBuiltLocally))
+		if (bOk)
 		{
 			Task.Sequence->ApplyCompressedData(Task.CacheKey, Task.bPerformFrameStripping, OutData);
 		}
@@ -258,6 +279,11 @@ void FAsyncCompressedAnimationsManagement::Tick(float DeltaTime)
 	{
 		QueuedAsyncCompressionWork.Empty(); //free memory
 	}
+}
+
+void FAsyncCompressedAnimationsManagement::TickCook(float DeltaTime, bool bCookCompete)
+{
+	Tick(DeltaTime);
 }
 
 void FAsyncCompressedAnimationsManagement::StartQueuedTasks(int32 MaxActiveTasks)

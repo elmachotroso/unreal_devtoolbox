@@ -2,9 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 /*-----------------------------------------------------------------------------
    FDistCurveEditorCommands
@@ -15,7 +20,7 @@ class FDistCurveEditorCommands : public TCommands<FDistCurveEditorCommands>
 public:
 	/** Constructor */
 	FDistCurveEditorCommands() 
-		: TCommands<FDistCurveEditorCommands>("CurveEditor", NSLOCTEXT("Contexts", "CurveEditor", "CurveEditor"), NAME_None, FEditorStyle::GetStyleSetName())
+		: TCommands<FDistCurveEditorCommands>("CurveEditor", NSLOCTEXT("Contexts", "CurveEditor", "CurveEditor"), NAME_None, FAppStyle::GetAppStyleSetName())
 	{
 	}
 

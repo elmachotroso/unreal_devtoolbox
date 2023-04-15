@@ -2,6 +2,7 @@
 
 #include "SNetworkingProfilerToolbar.h"
 
+#include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/SBoxPanel.h"
 
@@ -30,13 +31,11 @@ SNetworkingProfilerToolbar::~SNetworkingProfilerToolbar()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SNetworkingProfilerToolbar::Construct(const FArguments& InArgs, TSharedPtr<SNetworkingProfilerWindow> InProfilerWindow)
+void SNetworkingProfilerToolbar::Construct(const FArguments& InArgs, TSharedRef<SNetworkingProfilerWindow> InProfilerWindow)
 {
-	ProfilerWindow = InProfilerWindow;
-
 	struct Local
 	{
-		static void FillViewToolbar(TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow, FToolBarBuilder& ToolbarBuilder)
+		static void FillViewToolbar(FToolBarBuilder& ToolbarBuilder, const FArguments &InArgs, TSharedRef<SNetworkingProfilerWindow> ProfilerWindow)
 		{
 			ToolbarBuilder.BeginSection("View");
 			{
@@ -47,6 +46,9 @@ void SNetworkingProfilerToolbar::Construct(const FArguments& InArgs, TSharedPtr<
 					NAME_None, TAttribute<FText>(), TAttribute<FText>(),
 					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.PacketContentView.ToolBar"));
 				ToolbarBuilder.AddToolBarButton(FNetworkingProfilerCommands::Get().ToggleNetStatsViewVisibility,
+					NAME_None, TAttribute<FText>(), TAttribute<FText>(),
+					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.NetStatsView.ToolBar"));
+				ToolbarBuilder.AddToolBarButton(FNetworkingProfilerCommands::Get().ToggleNetStatsCountersViewVisibility,
 					NAME_None, TAttribute<FText>(), TAttribute<FText>(),
 					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.NetStatsView.ToolBar"));
 			}
@@ -70,9 +72,14 @@ void SNetworkingProfilerToolbar::Construct(const FArguments& InArgs, TSharedPtr<
 			//		FSlateIcon(FInsightsStyle::GetStyleSetName(), "NewNetworkingInsights.Icon"));
 			//}
 			//ToolbarBuilder.EndSection();
+
+			if (InArgs._ToolbarExtender.IsValid())
+			{
+				InArgs._ToolbarExtender->Apply("MainToolbar", EExtensionHook::First, ToolbarBuilder);
+			}
 		}
 
-		static void FillRightSideToolbar(FToolBarBuilder& ToolbarBuilder)
+		static void FillRightSideToolbar(FToolBarBuilder& ToolbarBuilder, const FArguments &InArgs)
 		{
 			ToolbarBuilder.BeginSection("Debug");
 			{
@@ -81,18 +88,23 @@ void SNetworkingProfilerToolbar::Construct(const FArguments& InArgs, TSharedPtr<
 					FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.Debug.ToolBar"));
 			}
 			ToolbarBuilder.EndSection();
+
+			if (InArgs._ToolbarExtender.IsValid())
+			{
+				InArgs._ToolbarExtender->Apply("RightSideToolbar", EExtensionHook::First, ToolbarBuilder);
+			}
 		}
 	};
 
-	TSharedPtr<FUICommandList> CommandList = ProfilerWindow->GetCommandList();
+	const TSharedPtr<FUICommandList> CommandList = InProfilerWindow->GetCommandList();
 
 	FSlimHorizontalToolBarBuilder ToolbarBuilder(CommandList.ToSharedRef(), FMultiBoxCustomization::None);
 	ToolbarBuilder.SetStyle(&FInsightsStyle::Get(), "PrimaryToolbar");
-	Local::FillViewToolbar(ProfilerWindow, ToolbarBuilder);
+	Local::FillViewToolbar(ToolbarBuilder, InArgs, InProfilerWindow);
 
 	FSlimHorizontalToolBarBuilder RightSideToolbarBuilder(CommandList.ToSharedRef(), FMultiBoxCustomization::None);
 	RightSideToolbarBuilder.SetStyle(&FInsightsStyle::Get(), "PrimaryToolbar");
-	Local::FillRightSideToolbar(RightSideToolbarBuilder);
+	Local::FillRightSideToolbar(RightSideToolbarBuilder, InArgs);
 
 	ChildSlot
 	[

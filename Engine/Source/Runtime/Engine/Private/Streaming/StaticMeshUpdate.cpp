@@ -175,7 +175,14 @@ void FStaticMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 				LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
 			{
 				FRayTracingGeometryInitializer Initializer;
-				Context.LODResourcesView[LODIdx]->SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+				if (Context.Mesh->HasValidNaniteData() && Nanite::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform))
+				{
+					FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName());
+				}
+				else
+				{
+					Context.LODResourcesView[LODIdx]->SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+				}
 				Initializer.Type = ERayTracingGeometryInitializerType::StreamingSource;
 				IntermediateRayTracingGeometry[LODIdx].SetInitializer(Initializer);
 				IntermediateRayTracingGeometry[LODIdx].CreateRayTracingGeometryFromCPUData(LODResource.RayTracingGeometry.RawData);
@@ -256,7 +263,14 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 				{
 					// Rebuild the initializer because it could have been reset during a previous release
 					FRayTracingGeometryInitializer Initializer;
-					LODResource.SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					if (Context.Mesh->HasValidNaniteData() && Nanite::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform))
+					{
+						FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					}
+					else
+					{
+						LODResource.SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					}
 					LODResource.RayTracingGeometry.SetInitializer(Initializer);
 
 					LODResource.RayTracingGeometry.RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority::Normal);
@@ -419,7 +433,6 @@ void FStaticMeshStreamIn_IO::FCancelIORequestsTask::DoWork()
 
 FStaticMeshStreamIn_IO::FStaticMeshStreamIn_IO(const UStaticMesh* InMesh, bool bHighPrio)
 	: FStaticMeshStreamIn(InMesh)
-	, IORequest(nullptr)
 	, bHighPrioIORequest(bHighPrio)
 {}
 
@@ -429,44 +442,13 @@ void FStaticMeshStreamIn_IO::Abort()
 	{
 		FStaticMeshStreamIn::Abort();
 
-		if (IORequest != nullptr)
+		if (BulkDataRequest.IsPending())
 		{
 			// Prevent the update from being considered done before this is finished.
 			// By checking that it was not already cancelled, we make sure this doesn't get called twice.
 			(new FAsyncCancelIORequestsTask(this))->StartBackgroundTask();
 		}
 	}
-}
-
-void FStaticMeshStreamIn_IO::SetAsyncFileCallback(const FContext& Context)
-{
-	AsyncFileCallback = [this, Context](bool bWasCancelled, IBulkDataIORequest*)
-	{
-		// At this point task synchronization would hold the number of pending requests.
-		TaskSynchronization.Decrement();
-
-		if (bWasCancelled)
-		{
-			// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
-			if (!bIsCancelled)
-			{
-				bFailedOnIOError = true;
-			}
-			MarkAsCancelled();
-		}
-
-#if !UE_BUILD_SHIPPING
-		// On some platforms the IO is too fast to test cancelation requests timing issues.
-		if (FRenderAssetStreamingSettings::ExtraIOLatency > 0 && TaskSynchronization.GetValue() == 0)
-		{
-			FPlatformProcess::Sleep(FRenderAssetStreamingSettings::ExtraIOLatency * .001f); // Slow down the streaming.
-		}
-#endif
-
-		// The tick here is intended to schedule the success or cancel callback.
-		// Using TT_None ensure gets which could create a dead lock.
-		Tick(FStaticMeshUpdate::TT_None);
-	};
 }
 
 void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
@@ -476,28 +458,50 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		return;
 	}
 
-	check(!IORequest && PendingFirstLODIdx < CurrentFirstLODIdx);
+	check(BulkDataRequest.IsNone() && PendingFirstLODIdx < CurrentFirstLODIdx);
 
 	const UStaticMesh* Mesh = Context.Mesh;
 	FStaticMeshRenderData* RenderData = Context.RenderData;
 	if (Mesh && RenderData)
 	{
-		SetAsyncFileCallback(Context);
-
-		FBulkDataInterface::BulkDataRangeArray BulkDataArray;
+		const int32 BatchCount = CurrentFirstLODIdx - PendingFirstLODIdx;
+		FBulkDataBatchRequest::FScatterGatherBuilder Batch = FBulkDataBatchRequest::ScatterGather(BatchCount);
 		for (int32 Index = PendingFirstLODIdx; Index < CurrentFirstLODIdx; ++Index)
 		{
-			BulkDataArray.Push(&Context.LODResourcesView[Index]->StreamingBulkData);
+			Batch.Read(Context.LODResourcesView[Index]->StreamingBulkData);
 		}
-
+		
 		// Increment as we push the request. If a request complete immediately, then it will call the callback
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
+		
+		const EAsyncIOPriorityAndFlags Priority = bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low;
+		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
+		{
+			TaskSynchronization.Decrement();
 
-		IORequest = FBulkDataInterface::CreateStreamingRequestForRange(
-			BulkDataArray,
-			bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low,
-			&AsyncFileCallback);
+			if (FBulkDataRequest::EStatus::Cancelled == Status)
+			{
+				// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
+				if (!bIsCancelled)
+				{
+					bFailedOnIOError = true;
+				}
+				MarkAsCancelled();
+			}
+
+#if !UE_BUILD_SHIPPING
+			// On some platforms the IO is too fast to test cancelation requests timing issues.
+			if (FRenderAssetStreamingSettings::ExtraIOLatency > 0 && TaskSynchronization.GetValue() == 0)
+			{
+				FPlatformProcess::Sleep(FRenderAssetStreamingSettings::ExtraIOLatency * .001f); // Slow down the streaming.
+			}
+#endif
+			// The tick here is intended to schedule the success or cancel callback.
+			// Using TT_None ensure gets which could create a dead lock.
+			Tick(FStaticMeshUpdate::TT_None);
+		},
+		BulkDataRequest);
 	}
 	else
 	{
@@ -507,17 +511,14 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 
 void FStaticMeshStreamIn_IO::ClearIORequest(const FContext& Context)
 {
-	if (IORequest != nullptr)
+	if (BulkDataRequest.IsPending())
 	{
-		// If clearing requests not yet completed, cancel and wait.
-		if (!IORequest->PollCompletion())
-		{
-			IORequest->Cancel();
-			IORequest->WaitCompletion();
-		}
-		delete IORequest;
-		IORequest = nullptr;
+		BulkDataRequest.Cancel();
+		BulkDataRequest.Wait();
 	}
+	
+	BulkDataRequest = FBulkDataBatchRequest();
+	BulkData = FIoBuffer();
 }
 
 void FStaticMeshStreamIn_IO::ReportIOError(const FContext& Context)
@@ -544,11 +545,9 @@ void FStaticMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 	FStaticMeshRenderData* RenderData = Context.RenderData;
 	if (!IsCancelled() && Mesh && RenderData)
 	{
-		check(IORequest->GetSize() >= 0 && IORequest->GetSize() <= TNumericLimits<uint32>::Max());
+		check(BulkData.GetSize() >= 0 && BulkData.GetSize() <= TNumericLimits<uint32>::Max());
 
-		TArrayView<uint8> Data(IORequest->GetReadResults(), IORequest->GetSize());
-
-		FMemoryReaderView Ar(Data, true);
+		FMemoryReaderView Ar(BulkData.GetView(), true);
 		for (int32 LODIdx = PendingFirstLODIdx; LODIdx < CurrentFirstLODIdx; ++LODIdx)
 		{
 			FStaticMeshLODResources& LODResource = *Context.LODResourcesView[LODIdx];
@@ -557,8 +556,8 @@ void FStaticMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 			LODResource.SerializeBuffers(Ar, const_cast<UStaticMesh*>(Mesh), DummyStripFlags, DummyBuffersSize);
 			check(DummyBuffersSize.CalcBuffersSize() == LODResource.BuffersSize);
 		}
-		
-		FMemory::Free(Data.GetData());// Free the memory we took ownership of via IORequest->GetReadResults()
+
+		BulkData = FIoBuffer();
 	}
 }
 
@@ -570,10 +569,9 @@ void FStaticMeshStreamIn_IO::Cancel(const FContext& Context)
 
 void FStaticMeshStreamIn_IO::CancelIORequest()
 {
-	if (IORequest)
+	if (BulkDataRequest.IsPending())
 	{
-		// Calling cancel will trigger the SetAsyncFileCallback() which will also try a tick but will fail.
-		IORequest->Cancel();
+		BulkDataRequest.Cancel();
 	}
 }
 

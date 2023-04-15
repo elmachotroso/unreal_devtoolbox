@@ -5,18 +5,26 @@
 =============================================================================*/
 
 #define SUPPORT_CONTACT_SHADOWS 1
+#define STRATA_SSS_TRANSMISSION USE_TRANSMISSION
+
+#if STRATA_ENABLED 
+  #if STRATA_TILETYPE == 0
+	#define STRATA_FASTPATH 1
+  #elif STRATA_TILETYPE == 1
+	#define STRATA_SINGLEPATH 1
+  #elif STRATA_TILETYPE == 2
+	// COMPLEX PATH
+  #else
+	#error Strata tile type non-implemented
+  #endif
+#endif
 
 #include "HairStrands/HairStrandsVisibilityCommonStruct.ush" 
 #include "Common.ush"
 
 #include "LargeWorldCoordinates.ush"
 
-#if STRATA_ENABLED
-#define STRATA_INLINE_SHADING 0
-#define STRATA_SSS_TRANSMISSION USE_TRANSMISSION
-#include "/Engine/Private/Strata/Strata.ush"
-#endif
-
+#include "Strata/Strata.ush"
 #include "DeferredShadingCommon.ush"
 #include "DeferredLightingCommon.ush"
 
@@ -36,18 +44,11 @@
 #include "VolumetricCloudCommon.ush"
 #endif
 
-#if STRATA_ENABLED
-  #if STRATA_TILETYPE == 0
-	#define STRATA_FASTPATH 1
-  #elif STRATA_TILETYPE == 1
-	#define STRATA_SINGLEPATH 1
-  #elif STRATA_TILETYPE == 2
-	// COMPLEX PATH
-  #else
-	#error Strata tile type non-implemented
-  #endif
-#include "/Engine/Private/Strata/StrataEvaluation.ush"
-#include "/Engine/Private/Strata/StrataDeferredLighting.ush"
+#include "Strata/StrataEvaluation.ush"
+#include "Strata/StrataDeferredLighting.ush"
+
+#if USE_VIRTUAL_SHADOW_MAP_MASK
+#include "VirtualShadowMaps/VirtualShadowMapMaskBitsCommon.ush"
 #endif
 
 struct FInputParams
@@ -94,7 +95,7 @@ FDeferredLightData SetupLightDataForStandardDeferred()
 	LightData.Tangent = DeferredLightUniforms.Tangent;
 	LightData.SpotAngles = DeferredLightUniforms.SpotAngles;
 	LightData.SourceRadius = DeferredLightUniforms.SourceRadius;
-	LightData.SourceLength = DeferredLightUniforms.SourceLength;
+	LightData.SourceLength = LIGHT_SOURCE_SHAPE > 0 ? DeferredLightUniforms.SourceLength : 0;
     LightData.SoftSourceRadius = DeferredLightUniforms.SoftSourceRadius;
 	LightData.SpecularScale = DeferredLightUniforms.SpecularScale;
 	LightData.ContactShadowLength = abs(DeferredLightUniforms.ContactShadowLength);
@@ -111,6 +112,9 @@ FDeferredLightData SetupLightDataForStandardDeferred()
 	
 	LightData.RectLightBarnCosAngle = DeferredLightUniforms.RectLightBarnCosAngle;
 	LightData.RectLightBarnLength = DeferredLightUniforms.RectLightBarnLength;
+	LightData.RectLightAtlasMaxLevel = DeferredLightUniforms.RectLightAtlasMaxLevel;
+	LightData.RectLightAtlasUVOffset = DeferredLightUniforms.RectLightAtlasUVOffset;
+	LightData.RectLightAtlasUVScale  = DeferredLightUniforms.RectLightAtlasUVScale;
 
 	LightData.HairTransmittance = InitHairTransmittanceData();
 	return LightData;
@@ -128,6 +132,37 @@ float GetExposure()
 {
 	return View.PreExposure;
 }
+
+#if USE_VIRTUAL_SHADOW_MAP_MASK
+// One pass projection
+Texture2D<uint4> ShadowMaskBits;
+int VirtualShadowMapId;
+#endif
+
+float4 GetLightAttenuationFromShadow(in FInputParams InputParams, float SceneDepth)
+{
+	float4 LightAttenuation = float4(1, 1, 1, 1);
+
+#if USE_VIRTUAL_SHADOW_MAP_MASK
+	if (VirtualShadowMapId != INDEX_NONE)
+	{
+		float ShadowMask = GetVirtualShadowMapMaskForLight(
+			ShadowMaskBits,
+			uint2(InputParams.PixelPos),
+			SceneDepth,
+			0,	// TODO: EyeIndex
+			VirtualShadowMapId);
+
+		// TODO: Subsurface...?
+		return ShadowMask.xxxx;
+	}
+	else
+#endif
+	{
+		return GetPerPixelLightAttenuation(InputParams.ScreenUV);
+	}
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -194,6 +229,16 @@ float4 StrataReadPrecomputedShadowFactors(FStrataPixelHeader StrataPixelHeader, 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Affect the light color by any other shadow/transmittance before the lighting is evaluated
+// in order to get a correct alpha channel containing important information for SSS.
+void UpdateLightDataColor(inout FDeferredLightData LightData, FInputParams InputParams, FDerivedParams DerivedParams)
+{
+	const float Attenuation = ComputeLightProfileMultiplier(DerivedParams.TranslatedWorldPosition, GetDeferredLightTranslatedWorldPosition(), -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
+	const float3 AttenuationRGB = Attenuation * GetAtmosphereAndCloudAttenuation(GetStableTranslatedLargeWorldPosition(InputParams.PixelPos, LookupDeviceZ(InputParams.ScreenUV)), InputParams.ScreenUV);
+
+	LightData.Color *= AttenuationRGB;
+}
+
 #if USE_HAIR_LIGHTING == 0
 
 void DeferredLightPixelMain(
@@ -205,10 +250,18 @@ void DeferredLightPixelMain(
 #endif
 	float4 SVPos			: SV_POSITION,
 	out float4 OutColor		: SV_Target0
+#if STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED
+	, out float3 OutOpaqueRoughRefractionSceneColor : SV_Target1
+	, out float3 OutSubSurfaceSceneColor : SV_Target2
+#endif
 	)
 {
 	const float2 PixelPos = SVPos.xy;
 	OutColor = 0;
+#if STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED
+	OutOpaqueRoughRefractionSceneColor = 0;
+	OutSubSurfaceSceneColor = 0;
+#endif
 
 	// Convert input data (directional/local light)
 	FInputParams InputParams = (FInputParams)0;
@@ -239,8 +292,7 @@ void DeferredLightPixelMain(
 		const FDerivedParams DerivedParams = GetDerivedParams(InputParams, SceneDepth);
 
 		FDeferredLightData LightData = SetupLightDataForStandardDeferred();
-
-		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
+		UpdateLightDataColor(LightData, InputParams, DerivedParams);
 
 		float3 V =-DerivedParams.CameraVector;
 		float3 L = LightData.Direction;	// Already normalized
@@ -251,31 +303,36 @@ void DeferredLightPixelMain(
 			LightMask = GetLocalLightAttenuation(DerivedParams.TranslatedWorldPosition, LightData, ToLight, L);
 		}
 
-		float4 Radiance = 0;
 		if (LightMask > 0)
 		{
-			FShadowTerms ShadowTerms = { StrataPixelHeader.MaterialAO, 1.0, 1.0, InitHairTransmittanceData() };
-			float4 LightAttenuation = GetPerPixelLightAttenuation(InputParams.ScreenUV);
+			FShadowTerms ShadowTerms = { StrataGetAO(StrataPixelHeader), 1.0, 1.0, InitHairTransmittanceData() };
+			float4 LightAttenuation = GetLightAttenuationFromShadow(InputParams, SceneDepth);
 
 			float Dither = InterleavedGradientNoise(InputParams.PixelPos, View.StateFrameIndexMod8);
 			const uint FakeShadingModelID = 0;
 			const float FakeContactShadowOpacity = 1.0f;
-			float4 PrecomputedShadowFactors = StrataReadPrecomputedShadowFactors(StrataPixelHeader, PixelPos);
+			float4 PrecomputedShadowFactors = StrataReadPrecomputedShadowFactors(StrataPixelHeader, PixelPos, SceneTexturesStruct.GBufferETexture);
 			GetShadowTerms(SceneDepth, PrecomputedShadowFactors, FakeShadingModelID, FakeContactShadowOpacity,
 				LightData, DerivedParams.TranslatedWorldPosition, L, LightAttenuation, Dither, ShadowTerms);
 
-			Radiance = StrataDeferredLighting(
+			FStrataDeferredLighting StrataLighting = StrataDeferredLighting(
 				LightData,
 				V,
 				L,
 				ToLight,
 				LightMask,
 				ShadowTerms,
-				RectTexture,
 				Strata.MaterialTextureArray,
 				StrataAddressing,
 				StrataPixelHeader);
+
+			OutColor += StrataLighting.SceneColor;
+#if STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED
+			OutOpaqueRoughRefractionSceneColor += StrataLighting.OpaqueRoughRefractionSceneColor;
+			OutSubSurfaceSceneColor += StrataLighting.SubSurfaceSceneColor;
+#endif
 		}
+	}
 
 #else // STRATA_ENABLED
 
@@ -291,6 +348,8 @@ void DeferredLightPixelMain(
 		const FDerivedParams DerivedParams = GetDerivedParams(InputParams, SceneDepth);
 
 		FDeferredLightData LightData = SetupLightDataForStandardDeferred();
+		UpdateLightDataColor(LightData, InputParams, DerivedParams);
+
 	 #if USE_HAIR_COMPLEX_TRANSMITTANCE
 		if (ScreenSpaceData.GBuffer.ShadingModelID == SHADINGMODELID_HAIR && ShouldUseHairComplexTransmittance(ScreenSpaceData.GBuffer))
 		{
@@ -300,23 +359,25 @@ void DeferredLightPixelMain(
 
 		float Dither = InterleavedGradientNoise(InputParams.PixelPos, View.StateFrameIndexMod8);
 
-		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
 		float SurfaceShadow = 1.0f;
+		
+		float4 LightAttenuation = GetLightAttenuationFromShadow(InputParams, SceneDepth);
+		float4 Radiance = GetDynamicLighting(DerivedParams.TranslatedWorldPosition, DerivedParams.CameraVector, ScreenSpaceData.GBuffer, ScreenSpaceData.AmbientOcclusion, ScreenSpaceData.GBuffer.ShadingModelID, LightData, LightAttenuation, Dither, uint2(InputParams.PixelPos), SurfaceShadow);
 
-		float4 Radiance = GetDynamicLighting(DerivedParams.TranslatedWorldPosition, DerivedParams.CameraVector, ScreenSpaceData.GBuffer, ScreenSpaceData.AmbientOcclusion, ScreenSpaceData.GBuffer.ShadingModelID, LightData, GetPerPixelLightAttenuation(InputParams.ScreenUV), Dither, uint2(InputParams.PixelPos), RectTexture, SurfaceShadow);
+		OutColor += Radiance;
+	}
 
 #endif // STRATA_ENABLED
-
-		const float  Attenuation = ComputeLightProfileMultiplier(DerivedParams.TranslatedWorldPosition, GetDeferredLightTranslatedWorldPosition(), -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
-
-		OutColor += (Radiance * Attenuation);
-		OutColor.rgb *= GetAtmosphereAndCloudAttenuation(GetStableTranslatedLargeWorldPosition(InputParams.PixelPos, LookupDeviceZ(InputParams.ScreenUV)), InputParams.ScreenUV);
-	}
 
 	// RGB:SceneColor Specular and Diffuse
 	// A:Non Specular SceneColor Luminance
 	// So we need PreExposure for both color and alpha
 	OutColor.rgba *= GetExposure();
+#if STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED 
+	// Idem
+	OutOpaqueRoughRefractionSceneColor *= GetExposure();
+	OutSubSurfaceSceneColor *= GetExposure();
+#endif
 }
 #endif
 
@@ -402,9 +463,8 @@ void DeferredLightPixelMain(
 	}
 	LightAttenuation = min(LightAttenuation, LightData.HairTransmittance.OpaqueVisibility.xxxx);
 
-	FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
 	float SurfaceShadow = 1.0f;
-	const float4 Radiance = GetDynamicLighting(TranslatedWorldPosition, CameraVector, HairScreenSpaceData.GBuffer, HairScreenSpaceData.AmbientOcclusion, HairScreenSpaceData.GBuffer.ShadingModelID, LightData, LightAttenuation, Dither, PixelCoord, RectTexture, SurfaceShadow);
+	const float4 Radiance = GetDynamicLighting(TranslatedWorldPosition, CameraVector, HairScreenSpaceData.GBuffer, HairScreenSpaceData.AmbientOcclusion, HairScreenSpaceData.GBuffer.ShadingModelID, LightData, LightAttenuation, Dither, PixelCoord, SurfaceShadow);
 	const float  Attenuation = ComputeLightProfileMultiplier(TranslatedWorldPosition, GetDeferredLightTranslatedWorldPosition(), -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
 	const float3 AtmosphericTransmittance = GetAtmosphereAndCloudAttenuation(GetStableTranslatedLargeWorldPosition(ScreenPosition, Sample.Depth), UV);
 

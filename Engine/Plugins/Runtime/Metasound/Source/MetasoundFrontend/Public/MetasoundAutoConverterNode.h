@@ -64,10 +64,10 @@ namespace Metasound
 
 			return FVertexInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FromDataType>(GetInputName(), InputDesc)
+					TInputDataVertex<FromDataType>(GetInputName(), FDataVertexMetadata{ InputDesc })
 				),
 				FOutputVertexInterface(
-					TOutputDataVertexModel<ToDataType>(GetOutputName(), OutputDesc)
+					TOutputDataVertex<ToDataType>(GetOutputName(), FDataVertexMetadata{ OutputDesc })
 				)
 			);
 		}
@@ -212,15 +212,15 @@ namespace Metasound
 			public:
 				FCoverterOperatorFactory() = default;
 
-				virtual TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override
+				virtual TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 				{
 					TDataWriteReference<ToDataType> WriteReference = TDataWriteReferenceFactory<ToDataType>::CreateAny(InParams.OperatorSettings);
 
 					const FVertexName& InputName = GetInputName();
-					const bool bContainsRef = InParams.InputDataReferences.ContainsDataReadReference<FromDataType>(InputName);
+					const bool bContainsRef = InParams.InputData.IsVertexBound(InputName);
 					if (bContainsRef)
 					{
-						TDataReadReference<FromDataType> ReadReference = InParams.InputDataReferences.GetDataReadReference<FromDataType>(InputName);
+						TDataReadReference<FromDataType> ReadReference = InParams.InputData.GetDataReadReference<FromDataType>(InputName);
 						return MakeUnique<FConverterOperator>(ReadReference, WriteReference);
 					}
 
@@ -234,7 +234,7 @@ namespace Metasound
 					if (ensure(InParams.Node.GetVertexInterface().ContainsInputVertex(InputName)))
 					{
 						FInputDataDestination Dest(InParams.Node, InParams.Node.GetVertexInterface().GetInputVertex(GetInputName()));
-						AddBuildError<FMissingInputDataReferenceError>(OutErrors, Dest);
+						AddBuildError<FMissingInputDataReferenceError>(OutResults.Errors, Dest);
 					}
 
 					return TUniquePtr<IOperator>(nullptr);

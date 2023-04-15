@@ -4,13 +4,12 @@
 
 #include "Delegates/IDelegateInstance.h"
 #include "MassProcessingTypes.h"
-#include "MassProcessingPhase.h"
+#include "MassProcessingPhaseManager.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "MassSimulationSubsystem.generated.h"
 
 
-class AMassSimulationLocalCoordinator;
-class UMassEntitySubsystem;
+struct FMassEntityManager;
 class UMassProcessingPhaseManager;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMassSim, Log, All);
@@ -24,7 +23,6 @@ public:
 	
 	UMassSimulationSubsystem(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
-	//UMassEntitySubsystem* GetEntitySubsystem() const { return CachedEntitySubsystem; }
 	const UMassProcessingPhaseManager& GetPhaseManager() const { check(PhaseManager); return *PhaseManager; }
 
 	FMassProcessingPhase::FOnPhaseEvent& GetOnProcessingPhaseStarted(const EMassProcessingPhase Phase) const;
@@ -34,7 +32,6 @@ public:
 	bool IsSimulationStarted() const { return bSimulationStarted; }
 
 protected:
-	virtual void PostInitProperties() override;
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void PostInitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
@@ -55,11 +52,10 @@ protected:
 
 protected:
 
-	UPROPERTY()
-	UMassEntitySubsystem* EntitySubsystem;
+	TSharedPtr<FMassEntityManager> EntityManager;
 
 	UPROPERTY()
-	UMassProcessingPhaseManager* PhaseManager;
+	TObjectPtr<UMassProcessingPhaseManager> PhaseManager;
 
 	inline static FOnSimulationStarted OnSimulationStarted={};
 

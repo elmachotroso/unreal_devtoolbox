@@ -72,15 +72,16 @@ public:
 	virtual FLinearColor GetNodeTitleColor() const override;
 	virtual FText GetTooltipText() const override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
+	virtual FText GetMenuCategory() const override;
 	virtual bool CanUserDeleteNode() const override;
 	virtual bool CanDuplicateNode() const override;
 	virtual void AllocateDefaultPins() override;
 	virtual void ReallocatePinsDuringReconstruction(TArray<UEdGraphPin*>& OldPins) override;
 	virtual void PostPlacedNewNode() override;
 	virtual bool IsCompatibleWithGraph(UEdGraph const* Graph) const override;
+	virtual bool HasExternalDependencies(TArray<UStruct*>* OptionalOutput) const override;
 
 	/** UK2Node interface */
-	virtual bool HasExternalDependencies(TArray<UStruct*>* OptionalOutput) const override;
 	virtual void ExpandNode(class FKismetCompilerContext& InCompilerContext, UEdGraph* InSourceGraph) override;
 
 	/** UAnimGraphNode_Base interface */
@@ -111,6 +112,9 @@ public:
 	void IterateFunctionParameters(TFunctionRef<void(const FName&, const FEdGraphPinType&)> InFunc) const;
 
 private:
+	friend class FAnimGraphDetails;
+	friend class UAnimationGraph;
+	
 	// Helper function for common code in AllocateDefaultPins and ReallocatePinsDuringReconstruction
 	void AllocatePinsInternal();
 
@@ -120,6 +124,9 @@ private:
 	/** Create pins from the stub function FunctionReference */
 	void CreatePinsFromStubFunction(const UFunction* Function);
 
+	/** Reconstruct any layer nodes in this BP post-edit */
+	static void ReconstructLayerNodes(UBlueprint* InBlueprint);
+	
 private:
 	/** UI helper functions */
 	void HandleInputPoseArrayChanged();

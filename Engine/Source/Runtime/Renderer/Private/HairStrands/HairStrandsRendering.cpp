@@ -16,8 +16,10 @@ static TRDGUniformBufferRef<FHairStrandsViewUniformParameters> InternalCreateHai
 	{
 		Parameters->HairCoverageTexture = In->CoverageTexture;
 		Parameters->HairOnlyDepthTexture = In->HairOnlyDepthTexture;
+		Parameters->HairOnlyDepthHZBParameters = In->HairOnlyDepthHZBParameters;
 		Parameters->HairOnlyDepthClosestHZBTexture = In->HairOnlyDepthClosestHZBTexture;
 		Parameters->HairOnlyDepthFurthestHZBTexture = In->HairOnlyDepthFurthestHZBTexture;
+		Parameters->HairOnlyDepthHZBSampler = TStaticSamplerState<SF_Point>::GetRHI();
 		Parameters->HairSampleOffset = In->NodeIndex;
 		Parameters->HairSampleData = GraphBuilder.CreateSRV(In->NodeData);
 		Parameters->HairSampleCoords = GraphBuilder.CreateSRV(In->NodeCoord, FHairStrandsVisibilityData::NodeCoordFormat);
@@ -25,27 +27,16 @@ static TRDGUniformBufferRef<FHairStrandsViewUniformParameters> InternalCreateHai
 		Parameters->HairSampleViewportResolution = In->SampleLightingViewportResolution;
 		Parameters->MaxSamplePerPixelCount = In->MaxSampleCount;
 
-		if (In->TileData.IsValid())
-		{
-			Parameters->HairTileData = In->TileData.GetTileBufferSRV(FHairStrandsTiles::ETileType::HairAll);
-			Parameters->HairTileCount = In->TileData.TileCountSRV;
-			Parameters->HairTileCountXY = In->TileData.TileCountXY;
-			Parameters->bHairTileValid = true;
-		}
-		else
-		{
-			FRDGBufferRef DummyBuffer = GSystemTextures.GetDefaultBuffer(GraphBuilder, 4);
-			FRDGBufferSRVRef DummyBufferR32SRV = GraphBuilder.CreateSRV(DummyBuffer, PF_R32_UINT);
-			FRDGBufferSRVRef DummyBufferRG16SRV = GraphBuilder.CreateSRV(DummyBuffer, PF_R16G16_UINT);
-			Parameters->HairTileData = DummyBufferRG16SRV;
-			Parameters->HairTileCount = DummyBufferR32SRV;
-			Parameters->HairTileCountXY = FIntPoint(0,0);
-			Parameters->bHairTileValid = false;
-		}
+		check(In->TileData.IsValid())
+		Parameters->HairTileData = In->TileData.GetTileBufferSRV(FHairStrandsTiles::ETileType::HairAll);
+		Parameters->HairTileCount = In->TileData.TileCountSRV;
+		Parameters->HairTileCountXY = In->TileData.TileCountXY;
+		Parameters->bHairTileValid = true;
 
 		if (!Parameters->HairOnlyDepthFurthestHZBTexture)
 		{
 			FRDGTextureRef BlackTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
+			Parameters->HairOnlyDepthHZBParameters = FVector4f::Zero();
 			Parameters->HairOnlyDepthFurthestHZBTexture = BlackTexture;
 			Parameters->HairOnlyDepthClosestHZBTexture = BlackTexture;
 		}
@@ -64,8 +55,10 @@ static TRDGUniformBufferRef<FHairStrandsViewUniformParameters> InternalCreateHai
 		FRDGBufferSRVRef DummyBufferRG16SRV = GraphBuilder.CreateSRV(DummyBuffer, PF_R16G16_UINT);
 
 		Parameters->HairOnlyDepthTexture = FarDepth;
+		Parameters->HairOnlyDepthHZBParameters = FVector4f::Zero();
 		Parameters->HairOnlyDepthFurthestHZBTexture = BlackTexture;
 		Parameters->HairOnlyDepthClosestHZBTexture = Parameters->HairOnlyDepthFurthestHZBTexture;
+		Parameters->HairOnlyDepthHZBSampler = TStaticSamplerState<SF_Point>::GetRHI();
 		Parameters->HairCoverageTexture = BlackTexture;
 		Parameters->HairSampleCount = ZeroR32_UINT;
 		Parameters->HairSampleOffset = ZeroR32_UINT;
@@ -85,7 +78,6 @@ static TRDGUniformBufferRef<FHairStrandsViewUniformParameters> InternalCreateHai
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FHairStrandsViewUniformParameters, "HairStrands");
 
 bool GetHairStrandsSkyLightingDebugEnable();
-bool IsHairStrandsAdaptiveVoxelAllocationEnable();
 void AddMeshDrawTransitionPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& ViewInfo,
@@ -118,21 +110,10 @@ void RenderHairPrePass(
 
 		const ERHIFeatureLevel::Type FeatureLevel = Scene->GetFeatureLevel();
 
-		// Allocate voxel page allocation readback buffers
-		const bool bAdaptiveAllocationEnable = IsHairStrandsAdaptiveVoxelAllocationEnable();
-		if (View.ViewState)
+		// Allocate state/feedback data if needed
+		if (View.ViewState && !View.ViewState->HairStrandsViewStateData.IsInit())
 		{
-			const bool bIsInit = View.ViewState->HairStrandsViewStateData.IsInit();
-			// Init resources if the adaptive allocation is enabled, but the resources are not initialized yet.
-			if (bAdaptiveAllocationEnable && !bIsInit)
-			{
-				View.ViewState->HairStrandsViewStateData.Init();
-			}
-			// Release resources if the adaptive allocation is disabled, but the resources are initialized.
-			else if (!bAdaptiveAllocationEnable && bIsInit)
-			{
-				View.ViewState->HairStrandsViewStateData.Release();
-			}
+			View.ViewState->HairStrandsViewStateData.Init();
 		}
 
 		//SCOPED_GPU_STAT(RHICmdList, HairRendering);
@@ -179,7 +160,7 @@ void RenderHairBasePass(
 			const bool bDebugSamplingEnable = GetHairStrandsSkyLightingDebugEnable();
 			if (bDebugSamplingEnable)
 			{
-				View.HairStrandsViewData.DebugData.Resources = FHairStrandsDebugData::CreateData(GraphBuilder);
+				View.HairStrandsViewData.DebugData.PlotData = FHairStrandsDebugData::CreatePlotData(GraphBuilder);
 			}
 		}
 		
@@ -199,12 +180,7 @@ void RenderHairBasePass(
 void FHairStrandsViewStateData::Init()
 {
 	// Voxel adaptive sizing
-	VoxelWorldSize = 0;
-	VoxelAllocatedPageCount = 0;
-	if (VoxelPageAllocationCountReadback == nullptr)
-	{
-		VoxelPageAllocationCountReadback = new FRHIGPUBufferReadback(TEXT("Hair.VoxelPageAllocationReadback"));
-	}
+	VoxelFeedbackBuffer = nullptr;
 	
 	// Track if hair strands positions has changed
 	PositionsChangedDatas.SetNum(4);
@@ -218,13 +194,7 @@ void FHairStrandsViewStateData::Init()
 void FHairStrandsViewStateData::Release()
 {
 	// Voxel adaptive sizing
-	VoxelWorldSize = 0;
-	VoxelAllocatedPageCount = 0;
-	if (VoxelPageAllocationCountReadback)
-	{
-		delete VoxelPageAllocationCountReadback;
-		VoxelPageAllocationCountReadback = nullptr;
-	}
+	VoxelFeedbackBuffer = nullptr;
 
 	// Track if hair strands positions has changed
 	for (FPositionChangedData& Data : PositionsChangedDatas)
@@ -306,19 +276,7 @@ bool HasViewHairStrandsData(const TArray<FViewInfo>& Views)
 	return false;
 }
 
-bool HasViewHairStrandsData(const TArrayView<FViewInfo>& Views)
-{
-	for (const FViewInfo& View : Views)
-	{
-		if (View.HairStrandsViewData.bIsValid)
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
-bool HasHairStrandsVisible(const TArrayView<FViewInfo>& Views)
+bool HasHairStrandsVisible(const TArray<FViewInfo>& Views)
 {
 	for (const FViewInfo& View : Views)
 	{
@@ -330,7 +288,7 @@ bool HasHairStrandsVisible(const TArrayView<FViewInfo>& Views)
 	return false;
 }
 
-bool HasHairCardsVisible(const TArrayView<FViewInfo>& Views)
+bool HasHairCardsVisible(const TArray<FViewInfo>& Views)
 {
 	for (const FViewInfo& View : Views)
 	{

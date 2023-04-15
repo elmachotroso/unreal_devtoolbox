@@ -16,6 +16,7 @@
 #include "HAL/IConsoleManager.h"
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
+#include "Editor/Transactor.h"
 #include "Misc/ConfigCacheIni.h"
 #include "TickableEditorObject.h"
 #endif
@@ -337,12 +338,13 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 	return true;
 }
 
+#if WITH_EDITORONLY_DATA
 void FEdGraphPinType::DeclareCustomVersions(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
 }
-
+#endif
 
 FEdGraphPinType FEdGraphPinType::GetPinTypeForTerminalType( const FEdGraphTerminalType& TerminalType )
 {
@@ -506,12 +508,9 @@ UEdGraphPin* UEdGraphPin::CreatePin(UEdGraphNode* InOwningNode)
 
 void UEdGraphPin::MakeLinkTo(UEdGraphPin* ToPin)
 {
-	Modify();
-
 	if (ToPin)
 	{
 		check(!bWasTrashed);
-		ToPin->Modify();
 
 		// Make sure we don't already link to it
 		if (!LinkedTo.Contains(ToPin))
@@ -521,6 +520,10 @@ void UEdGraphPin::MakeLinkTo(UEdGraphPin* ToPin)
 			// Check that the other pin does not link to us
 			ensureMsgf(!ToPin->LinkedTo.Contains(this), TEXT("%s"), *GetLinkInfoString( LOCTEXT("MakeLinkTo", "MakeLinkTo").ToString(), LOCTEXT("IsLinked", "is linked with pin").ToString(), ToPin));
 			ensureMsgf(MyNode->GetOuter() == ToPin->GetOwningNode()->GetOuter(), TEXT("%s"), *GetLinkInfoString( LOCTEXT("MakeLinkTo", "MakeLinkTo").ToString(), LOCTEXT("OuterMismatch", "has a different outer than pin").ToString(), ToPin)); // Ensure both pins belong to the same graph
+
+			// Notify owning nodes about upcoming change
+			Modify();
+			ToPin->Modify();
 
 			// Add to both lists
 			LinkedTo.Add(ToPin);
@@ -535,18 +538,24 @@ void UEdGraphPin::MakeLinkTo(UEdGraphPin* ToPin)
 
 void UEdGraphPin::BreakLinkTo(UEdGraphPin* ToPin)
 {
-	Modify();
-
 	if (ToPin)
 	{
-		ToPin->Modify();
-
 		// If we do indeed link to the passed in pin...
 		if (LinkedTo.Contains(ToPin))
 		{
-			// Check that the other pin links to us
-			ensureAlwaysMsgf(ToPin->LinkedTo.Contains(this), TEXT("%s"), *GetLinkInfoString(LOCTEXT("BreakLinkTo", "BreakLinkTo").ToString(), LOCTEXT("NotLinked", "not reciprocally linked with pin").ToString(), ToPin));
-			ToPin->LinkedTo.Remove(this);
+			Modify();
+
+			if (ToPin->LinkedTo.Contains(this))
+			{
+				ToPin->Modify();
+				ToPin->LinkedTo.Remove(this);
+			}
+			else if (OwningNode && !OwningNode->HasAnyFlags(RF_BeginDestroyed))
+			{
+				// Ensure that the other pin links to us but ignore it if our parent is invalid or being destroyed
+				ensureAlwaysMsgf(ToPin->LinkedTo.Contains(this), TEXT("%s"), *GetLinkInfoString(LOCTEXT("BreakLinkTo", "BreakLinkTo").ToString(), LOCTEXT("NotLinked", "not reciprocally linked with pin").ToString(), ToPin));
+			}
+
 			LinkedTo.Remove(ToPin);
 		}
 		else
@@ -746,9 +755,9 @@ bool UEdGraphPin::HasAnyConnections() const
 
 FString UEdGraphPin::GetDefaultAsString() const
 {
-	if(!DefaultObject.IsNullNoResolve())
+	if(DefaultObject)
 	{
-		return DefaultObject.GetPath();
+		return DefaultObject.GetPathName();
 	}
 	else if(!DefaultTextValue.IsEmpty())
 	{
@@ -760,6 +769,11 @@ FString UEdGraphPin::GetDefaultAsString() const
 	{
 		return DefaultValue;
 	}
+}
+
+bool UEdGraphPin::IsDefaultAsStringEmpty() const
+{
+	return !DefaultObject && DefaultTextValue.IsEmpty() && DefaultValue.IsEmpty();
 }
 
 FText UEdGraphPin::GetDefaultAsText() const
@@ -800,13 +814,13 @@ FText UEdGraphPin::GetDisplayName() const
 	}
 	else
 	{
-		DisplayName = (!PinFriendlyName.IsEmpty()) ? PinFriendlyName : FText::FromName(PinName);
+		DisplayName = (!PinFriendlyName.IsEmpty()) ? PinFriendlyName : FText::AsCultureInvariant(PinName.ToString());
 
 		bool bShouldUseLocalizedNodeAndPinNames = false;
 		GConfig->GetBool( TEXT("Internationalization"), TEXT("ShouldUseLocalizedNodeAndPinNames"), bShouldUseLocalizedNodeAndPinNames, GEditorSettingsIni );
 		if (!bShouldUseLocalizedNodeAndPinNames)
 		{
-			return FText::FromString(DisplayName.BuildSourceString());
+			return FText::AsCultureInvariant(DisplayName.BuildSourceString());
 		}
 	}
 	return DisplayName;
@@ -937,7 +951,7 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	if (PinName != DefaultPin.PinName)
 	{
 		ValueStr += PinHelpers::PinNameName + TEXT("=");
-		NamePropCDO->ExportTextItem(ValueStr, &PinName, nullptr, nullptr, PortFlags, nullptr);
+		NamePropCDO->ExportTextItem_Direct(ValueStr, &PinName, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
@@ -945,7 +959,7 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	if (!PinFriendlyName.EqualTo(DefaultPin.PinFriendlyName))
 	{
 		ValueStr += PinHelpers::PinFriendlyNameName + TEXT("=");
-		TextPropCDO->ExportTextItem(ValueStr, &PinFriendlyName, nullptr, nullptr, PortFlags, nullptr);
+		TextPropCDO->ExportTextItem_Direct(ValueStr, &PinFriendlyName, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -953,7 +967,7 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	if (PinToolTip != DefaultPin.PinToolTip)
 	{
 		ValueStr += PinHelpers::PinToolTipName + TEXT("=");
-		StrPropCDO->ExportTextItem(ValueStr, &PinToolTip, nullptr, nullptr, PortFlags, nullptr);
+		StrPropCDO->ExportTextItem_Direct(ValueStr, &PinToolTip, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
@@ -961,7 +975,7 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	{
 		const FString DirectionString = UEnum::GetValueAsString(TEXT("/Script/Engine.EEdGraphPinDirection"), Direction);
 		ValueStr += PinHelpers::DirectionName + TEXT("=");
-		StrPropCDO->ExportTextItem(ValueStr, &DirectionString, nullptr, nullptr, PortFlags, nullptr);
+		StrPropCDO->ExportTextItem_Direct(ValueStr, &DirectionString, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
@@ -973,7 +987,7 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 			FString PropertyStr;
 			const uint8* PropertyAddr = Prop->ContainerPtrToValuePtr<uint8>(&PinType);
 			const uint8* DefaultAddr = Prop->ContainerPtrToValuePtr<uint8>(&DefaultPin.PinType);
-			Prop->ExportTextItem(PropertyStr, PropertyAddr, DefaultAddr, NULL, PortFlags, nullptr);
+			Prop->ExportTextItem_Direct(PropertyStr, PropertyAddr, DefaultAddr, NULL, PortFlags, nullptr);
 
 			if (!PropertyStr.IsEmpty())
 			{
@@ -986,14 +1000,14 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	if (DefaultValue != DefaultPin.DefaultValue)
 	{
 		ValueStr += PinHelpers::DefaultValueName + TEXT("=");
-		StrPropCDO->ExportTextItem(ValueStr, &DefaultValue, nullptr, nullptr, PortFlags, nullptr);
+		StrPropCDO->ExportTextItem_Direct(ValueStr, &DefaultValue, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
 	if (AutogeneratedDefaultValue != DefaultPin.AutogeneratedDefaultValue)
 	{
 		ValueStr += PinHelpers::AutogeneratedDefaultValueName + TEXT("=");
-		StrPropCDO->ExportTextItem(ValueStr, &AutogeneratedDefaultValue, nullptr, nullptr, PortFlags, nullptr);
+		StrPropCDO->ExportTextItem_Direct(ValueStr, &AutogeneratedDefaultValue, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
@@ -1001,14 +1015,14 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 	{
 		const FString DefaultObjectPath = GetPathNameSafe(DefaultObject);
 		ValueStr += PinHelpers::DefaultObjectName + TEXT("=");
-		StrPropCDO->ExportTextItem(ValueStr, &DefaultObjectPath, nullptr, nullptr, PortFlags, nullptr);
+		StrPropCDO->ExportTextItem_Direct(ValueStr, &DefaultObjectPath, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
 	if (!DefaultTextValue.EqualTo(DefaultPin.DefaultTextValue))
 	{
 		ValueStr += PinHelpers::DefaultTextValueName + TEXT("=");
-		TextPropCDO->ExportTextItem(ValueStr, &DefaultTextValue, nullptr, nullptr, PortFlags, nullptr);
+		TextPropCDO->ExportTextItem_Direct(ValueStr, &DefaultTextValue, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 	}
 
@@ -1044,36 +1058,36 @@ bool UEdGraphPin::ExportTextItem(FString& ValueStr, int32 PortFlags) const
 
 		ValueStr += PinHelpers::bHiddenName + TEXT("=");
 		bool LocalHidden = bHidden;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalHidden, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalHidden, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		ValueStr += PinHelpers::bNotConnectableName + TEXT("=");
 		bool LocalNotConnectable = bNotConnectable;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalNotConnectable, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalNotConnectable, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		ValueStr += PinHelpers::bDefaultValueIsReadOnlyName + TEXT("=");
 		bool LocalDefaultValueIsReadOnly = bDefaultValueIsReadOnly;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalDefaultValueIsReadOnly, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalDefaultValueIsReadOnly, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		ValueStr += PinHelpers::bDefaultValueIsIgnoredName + TEXT("=");
 		bool LocalDefaultValueIsIgnored = bDefaultValueIsIgnored;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalDefaultValueIsIgnored, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalDefaultValueIsIgnored, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		// Intentionally not exporting bIsDiffing as it is transient
 
 		ValueStr += PinHelpers::bAdvancedViewName + TEXT("=");
 		bool LocalAdvancedView = bAdvancedView;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalAdvancedView, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalAdvancedView, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		// Intentionally not exporting bDisplayAsMutableRef as it is transient
 
 		ValueStr += PinHelpers::bOrphanedPinName + TEXT("=");
 		bool LocalOrphanedPin = bOrphanedPin;
-		BoolPropCDO->ExportTextItem(ValueStr, &LocalOrphanedPin, nullptr, nullptr, PortFlags, nullptr);
+		BoolPropCDO->ExportTextItem_Direct(ValueStr, &LocalOrphanedPin, nullptr, nullptr, PortFlags, nullptr);
 		ValueStr += PinHelpers::ExportTextPropDelimiter;
 
 		// Intentionally not exporting bSavePinIfOrphaned as it is transient
@@ -1160,25 +1174,25 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		}
 		else if (PropertyToken == PinHelpers::PinNameName)
 		{
-			Buffer = NamePropCDO->ImportText(Buffer, &PinName, PortFlags, Parent, ErrorText);
+			Buffer = NamePropCDO->ImportText_Direct(Buffer, &PinName, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 #if WITH_EDITORONLY_DATA
 		else if (PropertyToken == PinHelpers::PinFriendlyNameName)
 		{
-			Buffer = TextPropCDO->ImportText(Buffer, &PinFriendlyName, PortFlags, Parent, ErrorText);
+			Buffer = TextPropCDO->ImportText_Direct(Buffer, &PinFriendlyName, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 #endif //WITH_EDITORONLY_DATA
 		else if (PropertyToken == PinHelpers::PinToolTipName)
 		{
-			Buffer = StrPropCDO->ImportText(Buffer, &PinToolTip, PortFlags, Parent, ErrorText);
+			Buffer = StrPropCDO->ImportText_Direct(Buffer, &PinToolTip, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 		else if (PropertyToken == PinHelpers::DirectionName)
 		{
 			FString DirectionString;
-			Buffer = StrPropCDO->ImportText(Buffer, &DirectionString, PortFlags, Parent, ErrorText);
+			Buffer = StrPropCDO->ImportText_Direct(Buffer, &DirectionString, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			if (bParseSuccess)
 			{
@@ -1206,14 +1220,14 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 				if (FoundProp)
 				{
 					uint8* PropertyAddr = FoundProp->ContainerPtrToValuePtr<uint8>(&PinType);
-					Buffer = FoundProp->ImportText(Buffer, PropertyAddr, PortFlags, Parent, ErrorText);
+					Buffer = FoundProp->ImportText_Direct(Buffer, PropertyAddr, Parent, PortFlags, ErrorText);
 					bParseSuccess = (Buffer != nullptr);
 				}
 				// UE_DEPRECATED(4.17) - For some time bIsMap and bIsSet would have been in exported text and will cause issues if we don't handle them
 				else if (PropertyName == TEXT("bIsMap") || PropertyName == TEXT("bIsSet"))
 				{
 					bool bDummyBool = false;
-					Buffer = BoolPropCDO->ImportText(Buffer, &bDummyBool, PortFlags, Parent, ErrorText);
+					Buffer = BoolPropCDO->ImportText_Direct(Buffer, &bDummyBool, Parent, PortFlags, ErrorText);
 					bParseSuccess = (Buffer != nullptr);
 				}
 				else
@@ -1234,18 +1248,18 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		}
 		else if (PropertyToken == PinHelpers::DefaultValueName)
 		{
-			Buffer = StrPropCDO->ImportText(Buffer, &DefaultValue, PortFlags, Parent, ErrorText);
+			Buffer = StrPropCDO->ImportText_Direct(Buffer, &DefaultValue, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 		else if (PropertyToken == PinHelpers::AutogeneratedDefaultValueName)
 		{
-			Buffer = StrPropCDO->ImportText(Buffer, &AutogeneratedDefaultValue, PortFlags, Parent, ErrorText);
+			Buffer = StrPropCDO->ImportText_Direct(Buffer, &AutogeneratedDefaultValue, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 		else if (PropertyToken == PinHelpers::DefaultObjectName)
 		{
 			FString DefaultObjectString;
-			Buffer = StrPropCDO->ImportText(Buffer, &DefaultObjectString, PortFlags, Parent, ErrorText);
+			Buffer = StrPropCDO->ImportText_Direct(Buffer, &DefaultObjectString, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			if (bParseSuccess)
 			{
@@ -1262,7 +1276,7 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		}
 		else if (PropertyToken == PinHelpers::DefaultTextValueName)
 		{
-			Buffer = TextPropCDO->ImportText(Buffer, &DefaultTextValue, PortFlags, Parent, ErrorText);
+			Buffer = TextPropCDO->ImportText_Direct(Buffer, &DefaultTextValue, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 		}
 		else if (PropertyToken == PinHelpers::LinkedToName)
@@ -1289,28 +1303,28 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		else if (PropertyToken == PinHelpers::bHiddenName)
 		{
 			bool LocalHidden = bHidden;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalHidden, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalHidden, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			bHidden = LocalHidden;
 		}
 		else if (PropertyToken == PinHelpers::bNotConnectableName)
 		{
 			bool LocalNotConnectable = bNotConnectable;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalNotConnectable, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalNotConnectable, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			bNotConnectable = LocalNotConnectable;
 		}
 		else if (PropertyToken == PinHelpers::bDefaultValueIsReadOnlyName)
 		{
 			bool LocalDefaultValueIsReadOnly = bDefaultValueIsReadOnly;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalDefaultValueIsReadOnly, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalDefaultValueIsReadOnly, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			bDefaultValueIsReadOnly = LocalDefaultValueIsReadOnly;
 		}
 		else if (PropertyToken == PinHelpers::bDefaultValueIsIgnoredName)
 		{
 			bool LocalDefaultValueIsIgnored = bDefaultValueIsIgnored;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalDefaultValueIsIgnored, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalDefaultValueIsIgnored, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			bDefaultValueIsIgnored = LocalDefaultValueIsIgnored;
 		}
@@ -1318,7 +1332,7 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		else if (PropertyToken == PinHelpers::bAdvancedViewName)
 		{
 			bool LocalAdvancedView = bAdvancedView;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalAdvancedView, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalAdvancedView, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			bAdvancedView = LocalAdvancedView;
 		}
@@ -1326,7 +1340,7 @@ bool UEdGraphPin::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, class UO
 		else if (PropertyToken == PinHelpers::bOrphanedPinName)
 		{
 			bool LocalOrphanedPin = bOrphanedPin;
-			Buffer = BoolPropCDO->ImportText(Buffer, &LocalOrphanedPin, PortFlags, Parent, ErrorText);
+			Buffer = BoolPropCDO->ImportText_Direct(Buffer, &LocalOrphanedPin, Parent, PortFlags, ErrorText);
 			bParseSuccess = (Buffer != nullptr);
 			if (AreOrphanPinsEnabled())
 			{
@@ -1409,7 +1423,6 @@ UEdGraphPin::UEdGraphPin(UEdGraphNode* InOwningNode, const FGuid& PinIdGuid)
 	, bNotConnectable(false)
 	, bDefaultValueIsReadOnly(false)
 	, bDefaultValueIsIgnored(false)
-	, bIsDiffing(false)
 	, bAdvancedView(false)
 	, bDisplayAsMutableRef(false)
 	, bAllowFriendlyName(true)
@@ -1569,7 +1582,6 @@ void UEdGraphPin::InitFromDeprecatedPin(class UEdGraphPin_Deprecated* Deprecated
 	bNotConnectable = DeprecatedPin->bNotConnectable;
 	bDefaultValueIsReadOnly = DeprecatedPin->bDefaultValueIsReadOnly;
 	bDefaultValueIsIgnored = DeprecatedPin->bDefaultValueIsIgnored;
-	bIsDiffing = DeprecatedPin->bIsDiffing;
 	bAdvancedView = DeprecatedPin->bAdvancedView;
 	bDisplayAsMutableRef = DeprecatedPin->bDisplayAsMutableRef;
 	bUseBackwardsCompatForEmptyAutogeneratedValue = true; // If it is from deprecated pin format then it is definitely old enough to need this
@@ -1735,9 +1747,8 @@ bool UEdGraphPin::Serialize(FArchive& Ar)
 		if (Ar.IsTransacting())
 		{
 			BitField |= bDisplayAsMutableRef << (PersistentBits + 0);
-			BitField |= bIsDiffing << (PersistentBits + 1);
-			BitField |= bSavePinIfOrphaned << (PersistentBits + 2);
-			BitField |= bWasTrashed << (PersistentBits + 3);
+			BitField |= bSavePinIfOrphaned << (PersistentBits + 1);
+			BitField |= bWasTrashed << (PersistentBits + 2);
 		}
 
 		Ar << BitField;
@@ -1755,9 +1766,8 @@ bool UEdGraphPin::Serialize(FArchive& Ar)
 		if (Ar.IsTransacting())
 		{
 			bDisplayAsMutableRef = !!(BitField & (1 << (PersistentBits + 0)));
-			bIsDiffing = !!(BitField & (1 << (PersistentBits + 1)));
-			bSavePinIfOrphaned = !!(BitField & (1 << (PersistentBits + 2)));
-			bWasTrashed = !!(BitField & (1 << (PersistentBits + 3)));
+			bSavePinIfOrphaned = !!(BitField & (1 << (PersistentBits + 1)));
+			bWasTrashed = !!(BitField & (1 << (PersistentBits + 2)));
 		}
 
 		if (Ar.IsLoading() && Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::ChangeAssetPinsToString)
@@ -1782,12 +1792,15 @@ bool UEdGraphPin::Serialize(FArchive& Ar)
 	return true;
 }
 
-void UEdGraphPin::DeclareCustomVersions(FArchive& Ar)
+#if WITH_EDITORONLY_DATA
+void UEdGraphPin::DeclarePinCustomVersions(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 	FEdGraphPinType::DeclareCustomVersions(Ar);
 }
+#endif
 
 void UEdGraphPin::ConvertConnectedGhostNodesToRealNodes(UEdGraphNode* InNode)
 {

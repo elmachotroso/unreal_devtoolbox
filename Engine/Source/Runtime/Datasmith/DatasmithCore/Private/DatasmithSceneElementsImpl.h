@@ -72,6 +72,7 @@ class FDatasmithKeyValuePropertyImpl : public FDatasmithElementImpl< IDatasmithK
 {
 public:
 	FDatasmithKeyValuePropertyImpl(const TCHAR* InName);
+	virtual void SetName(const TCHAR* InName) override { Name = InName; }
 
 	EDatasmithKeyValuePropertyType GetPropertyType() const override { return PropertyType; }
 	void SetPropertyType( EDatasmithKeyValuePropertyType InType ) override;
@@ -108,7 +109,7 @@ public:
 	FDatasmithActorElementImpl(const TCHAR* InName, EDatasmithElementType InType);
 
 	virtual FVector GetTranslation() const override { return Translation.Get(); }
-	virtual void SetTranslation(float InX, float InY, float InZ, bool bKeepChildrenRelative) override { SetTranslation( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
+	virtual void SetTranslation(double InX, double InY, double InZ, bool bKeepChildrenRelative) override { SetTranslation( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
 	virtual void SetTranslation(const FVector& Value, bool bKeepChildrenRelative) override
 	{
 		if (bKeepChildrenRelative)
@@ -123,7 +124,7 @@ public:
 	}
 
 	virtual FVector GetScale() const override { return Scale.Get(); }
-	virtual void SetScale(float InX, float InY, float InZ, bool bKeepChildrenRelative) override { SetScale( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
+	virtual void SetScale(double InX, double InY, double InZ, bool bKeepChildrenRelative) override { SetScale( FVector( InX, InY, InZ ), bKeepChildrenRelative ); }
 	virtual void SetScale(const FVector& Value, bool bKeepChildrenRelative) override
 	{
 		if (bKeepChildrenRelative)
@@ -138,7 +139,7 @@ public:
 	}
 
 	virtual FQuat GetRotation() const override { return Rotation; }
-	virtual void SetRotation(float InX, float InY, float InZ, float InW, bool bKeepChildrenRelative) override { SetRotation( FQuat( InX, InY, InZ, InW ), bKeepChildrenRelative ); }
+	virtual void SetRotation(double InX, double InY, double InZ, double InW, bool bKeepChildrenRelative) override { SetRotation( FQuat( InX, InY, InZ, InW ), bKeepChildrenRelative ); }
 	virtual void SetRotation(const FQuat& Value, bool bKeepChildrenRelative) override
 	{
 		if (bKeepChildrenRelative)
@@ -190,11 +191,14 @@ public:
 		return Parent.View();
 	}
 
-	virtual void SetIsAComponent(bool Value) { UPDATE_BITFLAGS(Flags, Value, EActorFlags::IsAComponent); }
+	virtual void SetIsAComponent(bool Value) override { UPDATE_BITFLAGS(Flags, Value, EActorFlags::IsAComponent); }
 	virtual bool IsAComponent() const override { return !!(Flags & EActorFlags::IsAComponent); }
 
 	virtual void SetVisibility(bool bInVisibility) override { UPDATE_BITFLAGS(Flags, bInVisibility, EActorFlags::IsVisible); }
 	virtual bool GetVisibility() const override { return !!(Flags & EActorFlags::IsVisible); }
+
+	virtual void SetCastShadow(bool bInCastShadow) override { bCastShadow = bInCastShadow; }
+	virtual bool GetCastShadow() const override { return bCastShadow; }
 
 protected:
 	/** Converts all children's transforms to relative */
@@ -222,7 +226,7 @@ private:
 	TDatasmithReferenceProxy<IDatasmithActorElement> Parent;
 
 	TReflected<EActorFlags, uint8> Flags;
-	TReflected<int32> SelectionIdx;
+	TReflected<bool> bCastShadow;
 };
 
 template< typename InterfaceType >
@@ -235,7 +239,7 @@ inline FDatasmithActorElementImpl<T>::FDatasmithActorElementImpl(const TCHAR* In
 	, Scale(FVector::OneVector)
 	, Rotation(FQuat::Identity)
 	, Flags(EActorFlags::IsVisible)
-	, SelectionIdx(-1)
+	, bCastShadow(true)
 {
 	this->RegisterReferenceProxy(Children, "Children");
 	this->RegisterReferenceProxy(Parent,   "Parent"  );
@@ -245,8 +249,8 @@ inline FDatasmithActorElementImpl<T>::FDatasmithActorElementImpl(const TCHAR* In
 	Store.RegisterParameter(Rotation,     "Rotation"     );
 	Store.RegisterParameter(Layer,        "Layer"        );
 	Store.RegisterParameter(Tags,         "Tags"         ); // reflect as low prio for directlink
-	Store.RegisterParameter(SelectionIdx, "SelectionIdx" );
 	Store.RegisterParameter(Flags,        "Flags"        );
+	Store.RegisterParameter(bCastShadow,  "CastShadow"   );
 }
 
 template< typename T >
@@ -345,8 +349,8 @@ public:
 	virtual FMD5Hash GetFileHash() const override { return FileHash; }
 	virtual void SetFileHash(FMD5Hash Hash) override { FileHash = Hash; }
 
-	virtual void SetDimensions(const float InArea, const float InWidth, const float InHeight, const float InDepth) override { Area = InArea; Width = InWidth; Height = InHeight; Depth = InDepth;};
-	virtual FVector GetDimensions() const override { return FVector{ Width, Height, Depth }; }
+	virtual void SetDimensions(float InArea, float InWidth, float InHeight, float InDepth) override { Area = InArea; Width = InWidth; Height = InHeight; Depth = InDepth;};
+	virtual FVector3f GetDimensions() const override { return { Width, Height, Depth }; }
 
 	virtual float GetArea() const override { return Area; }
 	virtual float GetWidth() const override { return Width; }
@@ -382,6 +386,23 @@ private:
 	TReflected<int32>    LightmapSourceUV;
 	TDatasmithReferenceArrayProxy<IDatasmithMaterialIDElement> MaterialSlots;
 };
+
+/*
+ * Experimental Element that describes a cloth asset.
+ */
+class FDatasmithClothElementImpl : public FDatasmithElementImpl< IDatasmithClothElement >
+{
+public:
+	explicit FDatasmithClothElementImpl(const TCHAR* InName);
+
+public:
+	virtual const TCHAR* GetFile() const override { return *(FString&)File; }
+	virtual void SetFile(const TCHAR* InFile) override { File = InFile; }
+
+private:
+	TReflected<FString> File;
+};
+
 
 class FDatasmithMaterialIDElementImpl : public FDatasmithElementImpl< IDatasmithMaterialIDElement >
 {
@@ -1001,6 +1022,20 @@ private:
 	TReflected<FString> MaterialPathName;
 };
 
+
+class FDatasmithClothActorElementImpl : public FDatasmithActorElementImpl<IDatasmithClothActorElement>
+{
+public:
+	FDatasmithClothActorElementImpl(const TCHAR* InName);
+
+	virtual void SetCloth(const TCHAR* InCloth) override { Cloth = InCloth; }
+	virtual const TCHAR* GetCloth() const override { return *(FString&)Cloth; }
+
+private:
+	TReflected<FString> Cloth;
+};
+
+
 class FDatasmithEnvironmentElementImpl : public FDatasmithLightActorElementImpl< IDatasmithEnvironmentElement >
 {
 public:
@@ -1342,16 +1377,16 @@ private:// #ue_directlink_reflect
 	TArray< TSharedPtr< IDatasmithShaderElement > > Shaders;
 };
 
-class FDatasmithMasterMaterialElementImpl : public FDatasmithBaseMaterialElementImpl< IDatasmithMasterMaterialElement >
+class FDatasmithMaterialIntanceElementImpl : public FDatasmithBaseMaterialElementImpl< IDatasmithMaterialInstanceElement >
 {
 public:
-	FDatasmithMasterMaterialElementImpl(const TCHAR* InName);
+	FDatasmithMaterialIntanceElementImpl(const TCHAR* InName);
 
-	virtual EDatasmithMasterMaterialType GetMaterialType() const override { return MaterialType; }
-	virtual void SetMaterialType( EDatasmithMasterMaterialType InType ) override { MaterialType = InType; }
+	virtual EDatasmithReferenceMaterialType GetMaterialType() const override { return MaterialType; }
+	virtual void SetMaterialType( EDatasmithReferenceMaterialType InType ) override { MaterialType = InType; }
 
-	virtual EDatasmithMasterMaterialQuality GetQuality() const override { return Quality; }
-	virtual void SetQuality( EDatasmithMasterMaterialQuality InQuality ) override { Quality = InQuality; }
+	virtual EDatasmithReferenceMaterialQuality GetQuality() const override { return Quality; }
+	virtual void SetQuality( EDatasmithReferenceMaterialQuality InQuality ) override { Quality = InQuality; }
 
 	virtual const TCHAR* GetCustomMaterialPathName() const override { return *(FString&)CustomMaterialPathName; }
 	virtual void SetCustomMaterialPathName( const TCHAR* InPathName ) override { CustomMaterialPathName = InPathName; }
@@ -1366,8 +1401,8 @@ public:
 private:
 	TDatasmithReferenceArrayProxy<IDatasmithKeyValueProperty> Properties;
 
-	TReflected<EDatasmithMasterMaterialType, uint8> MaterialType;
-	TReflected<EDatasmithMasterMaterialQuality, uint8> Quality;
+	TReflected<EDatasmithReferenceMaterialType, uint8> MaterialType;
+	TReflected<EDatasmithReferenceMaterialQuality, uint8> Quality;
 
 	TReflected<FString> CustomMaterialPathName;
 };
@@ -1585,6 +1620,14 @@ public:
 	virtual void RemoveMeshAt(int32 InIndex) override;
 	virtual void EmptyMeshes() override { Meshes.Empty(); }
 
+	virtual void AddCloth(const TSharedPtr< IDatasmithClothElement >& InElement) override;
+	virtual int32 GetClothesCount() const override;
+	virtual TSharedPtr< IDatasmithClothElement > GetCloth(int32 InIndex) override;
+	virtual const TSharedPtr< IDatasmithClothElement >& GetCloth(int32 InIndex) const override;
+	virtual void RemoveCloth(const TSharedPtr< IDatasmithClothElement >& InElement) override;
+	virtual void RemoveClothAt(int32 InIndex) override;
+	virtual void EmptyClothes() override;
+
 	virtual void AddActor(const TSharedPtr< IDatasmithActorElement >& InActor) override { Actors.Add(InActor);  }
 	virtual int32 GetActorsCount() const override { return Actors.Num(); }
 	virtual TSharedPtr< IDatasmithActorElement > GetActor(int32 InIndex) override;
@@ -1615,12 +1658,7 @@ public:
 	virtual void SetUsePhysicalSky(bool bInUsePhysicalSky) override { bUseSky = bInUsePhysicalSky; }
 	virtual bool GetUsePhysicalSky() const override { return bUseSky; }
 
-	virtual void AddLODScreenSize( float ScreenSize ) override { LODScreenSizes.Get().Add( FMath::Clamp( ScreenSize, 0.f, 1.f ) ); }
-	virtual int32 GetLODScreenSizesCount() const override { return LODScreenSizes.Get().Num(); }
-	virtual float GetLODScreenSize(int32 InIndex) const override { return LODScreenSizes.Get().IsValidIndex( InIndex ) ? LODScreenSizes.Get()[InIndex] : 0.f; }
-
 	virtual void AddMetaData(const TSharedPtr< IDatasmithMetaDataElement >& InMetaData) override { MetaData.Add(InMetaData); GetElementToMetaDataCache().Add(InMetaData->GetAssociatedElement(), InMetaData); }
-
 	virtual int32 GetMetaDataCount() const override { return MetaData.Num(); }
 	virtual TSharedPtr< IDatasmithMetaDataElement > GetMetaData(int32 InIndex) override;
 	virtual const TSharedPtr< IDatasmithMetaDataElement >& GetMetaData(int32 InIndex) const override;
@@ -1647,18 +1685,16 @@ public:
 	virtual void AttachActorToSceneRoot(const TSharedPtr< IDatasmithActorElement >& Child, EDatasmithActorAttachmentRule AttachmentRule) override;
 
 private:
-	TMap< TSharedPtr< IDatasmithElement >, TSharedPtr< IDatasmithMetaDataElement> >& GetElementToMetaDataCache() const;
 
 	TDatasmithReferenceArrayProxy<IDatasmithActorElement>            Actors;
 	TDatasmithReferenceArrayProxy<IDatasmithMeshElement>             Meshes;
+	TDatasmithReferenceArrayProxy<IDatasmithClothElement>            Clothes;
 	TDatasmithReferenceArrayProxy<IDatasmithBaseMaterialElement>     Materials;
 	TDatasmithReferenceArrayProxy<IDatasmithTextureElement>          Textures;
 	TDatasmithReferenceArrayProxy<IDatasmithMetaDataElement>         MetaData;
 	TDatasmithReferenceArrayProxy<IDatasmithLevelSequenceElement>    LevelSequences;
 	TDatasmithReferenceArrayProxy<IDatasmithLevelVariantSetsElement> LevelVariantSets;
 	TDatasmithReferenceProxy<IDatasmithPostProcessElement>           PostProcess;
-
-	TReflected<TArray<float>> LODScreenSizes;
 
 	TReflected<FString> Hostname;
 	TReflected<FString> ExporterVersion;
@@ -1676,4 +1712,5 @@ private:
 
 	// Internal cache for faster metadata access per-element, should be accessed via GetMetaDataCache(), do not use directly.
 	mutable TMap< TSharedPtr< IDatasmithElement >, TSharedPtr< IDatasmithMetaDataElement> > ElementToMetaDataMap;
+	TMap< TSharedPtr< IDatasmithElement >, TSharedPtr< IDatasmithMetaDataElement> >& GetElementToMetaDataCache() const;
 };

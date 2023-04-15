@@ -1,20 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SScrubWidget.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Misc/Paths.h"
-#include "Rendering/DrawElements.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
+
+#include "Animation/AnimTypes.h"
+#include "Containers/UnrealString.h"
 #include "Fonts/FontMeasure.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GenericPlatform/GenericPlatformMath.h"
+#include "GenericPlatform/ICursor.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Geometry.h"
+#include "Layout/PaintGeometry.h"
+#include "Layout/WidgetPath.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/CString.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateRenderer.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
-#include "Animation/AnimTypes.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/WidgetStyle.h"
+#include "Templates/SharedPointer.h"
+#include "Textures/SlateIcon.h"
 #include "Widgets/Input/STextEntryPopup.h"
+
+class FSlateRect;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "ScrubWidget"
 
@@ -28,13 +48,13 @@ int32 SScrubWidget::GetDivider(float InputMinX, float InputMaxX, FVector2D Widge
 
 	float TimePerKey = Helper.TimePerKey();
 
-	float TotalWidgetWidth = TimeScaleInfo.WidgetSize.X;
-	int32 NumKeys = TimeScaleInfo.ViewInputRange / TimePerKey;
-	float KeyWidgetWidth = TotalWidgetWidth / (float)NumKeys;
+	float TotalWidgetWidth = static_cast<float>(TimeScaleInfo.WidgetSize.X);
+	int32 NumKeys = static_cast<int32>(TimeScaleInfo.ViewInputRange / TimePerKey);
+	float KeyWidgetWidth = TotalWidgetWidth / static_cast<float>(NumKeys);
 	int32 Divider = 1; 
 	if (KeyWidgetWidth > 0)
 	{
-		Divider = FMath::Max<int32>(50 / KeyWidgetWidth, 1);
+		Divider = FMath::Max<int32>(static_cast<int32>(50 / KeyWidgetWidth), 1);
 	}
 	return Divider;
 }
@@ -59,6 +79,7 @@ void SScrubWidget::Construct( const SScrubWidget::FArguments& InArgs )
 
 	DraggableBars = InArgs._DraggableBars;
 	OnBarDrag = InArgs._OnBarDrag;
+	OnBarCommit = InArgs._OnBarCommit;
 	bDisplayDrag = InArgs._DisplayDrag;
 	bDisplayAnimScrubBarEditing = InArgs._bDisplayAnimScrubBarEditing;
 	bMouseMovedDuringPanning = false;
@@ -74,12 +95,12 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 {
 	const bool bActiveFeedback = IsHovered() || bDragging;
 	const FSlateBrush* BackgroundImage = bActiveFeedback ?
-		FEditorStyle::GetBrush("SpinBox.Background.Hovered") :
-		FEditorStyle::GetBrush("SpinBox.Background");
+		FAppStyle::GetBrush("SpinBox.Background.Hovered") :
+		FAppStyle::GetBrush("SpinBox.Background");
 
 	const FSlateBrush* FillImage = bActiveFeedback ?
-		FEditorStyle::GetBrush("SpinBox.Fill.Hovered") :
-		FEditorStyle::GetBrush("SpinBox.Fill");
+		FAppStyle::GetBrush("SpinBox.Fill.Hovered") :
+		FAppStyle::GetBrush("SpinBox.Fill");
 
 	const int32 BackgroundLayer = LayerId;
 
@@ -91,7 +112,7 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 	const int32 TextLayer = BackgroundLayer + 1;
 
 	const FSlateBrush* StyleInfo = FAppStyle::Get().GetBrush("Brushes.Recessed");
-	const float GeomHeight = AllottedGeometry.GetLocalSize().Y;
+	const double GeomHeight = AllottedGeometry.GetLocalSize().Y;
 
 	const FTrackScaleInfo TimeScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, AllottedGeometry.GetLocalSize());
 
@@ -122,7 +143,7 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 					InWidgetStyle.GetColorAndOpacityTint()
 					);
 
-				const int32 FrameNumber = KeyVal;
+				const int32 FrameNumber = static_cast<int32>(KeyVal);
 				const FString FrameString = FString::Printf(TEXT("%d"), (FrameNumber));
 				const FVector2D TextOffset(XPos+2.f, 0.f);
 
@@ -139,7 +160,7 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 			}
  			else if (HalfDivider > 1.f)
  			{
- 				const float Height = GeomHeight;
+ 				const float Height = static_cast<float>(GeomHeight);
  				const FVector2D Offset(XPos, Height*0.25f);
  				const FVector2D Size(1, Height*0.5f);
  				// draw each box with key frame
@@ -160,8 +181,8 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 	{
 		const int32 ArrowLayer = TextLayer + 1;
 		{
-			const float XPos = TimeScaleInfo.InputToLocalX(ValueAttribute.Get());
-			const float Height = AllottedGeometry.GetLocalSize().Y;
+			const double XPos = TimeScaleInfo.InputToLocalX(ValueAttribute.Get());
+			const double Height = AllottedGeometry.GetLocalSize().Y;
 			const FVector2D Offset( XPos - Height*0.25f, 0.f );
 
 			FPaintGeometry MyGeometry =	AllottedGeometry.ToPaintGeometry( Offset, FVector2D(Height * 0.5f, Height) );
@@ -250,8 +271,8 @@ FReply SScrubWidget::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointe
 		bPanning = false;
 
 		FTrackScaleInfo TimeScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
-		FVector2D CursorPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition());
-		float NewValue = TimeScaleInfo.LocalXToInput(CursorPos.X);
+		float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition()).X);
+		float NewValue = TimeScaleInfo.LocalXToInput(CursorPosX);
 
 		if( !bMouseMovedDuringPanning )
 		{
@@ -264,6 +285,14 @@ FReply SScrubWidget::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointe
 		if(DraggingBar)
 		{
 			DraggingBar = false;
+
+			if(OnBarCommit.IsBound())
+			{
+				const float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X);
+				const FTrackScaleInfo ScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
+				const float NewDataPos = FMath::Clamp( ScaleInfo.LocalXToInput(CursorPosX), ViewInputMin.Get(), ViewInputMax.Get() );				
+				OnBarCommit.ExecuteIfBound(DraggableBarIndex, NewDataPos);
+			}			
 		}
 		else if( bDragging )
 		{
@@ -272,15 +301,14 @@ FReply SScrubWidget::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointe
 		else
 		{
 			FTrackScaleInfo TimeScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
-			FVector2D CursorPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition());
-			float NewValue = TimeScaleInfo.LocalXToInput(CursorPos.X);
+			float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition()).X);
+			float NewValue = static_cast<float>(TimeScaleInfo.LocalXToInput(CursorPosX));
 
-			CommitValue( NewValue, true, false );
+			CommitValue(NewValue, true, false);
 		}
 
 		bDragging = false;
 		return FReply::Handled().ReleaseMouseCapture();
-
 	}
 
 	return FReply::Unhandled();
@@ -292,15 +320,15 @@ FReply SScrubWidget::OnMouseMove( const FGeometry& MyGeometry, const FPointerEve
 	if(DraggingBar)
 	{
 		// Update bar if we are dragging
-		FVector2D CursorPos = MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() );
+		float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X);
 		FTrackScaleInfo ScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
-		float NewDataPos = FMath::Clamp( ScaleInfo.LocalXToInput(CursorPos.X), ViewInputMin.Get(), ViewInputMax.Get() );
+		float NewDataPos = FMath::Clamp(ScaleInfo.LocalXToInput(CursorPosX), ViewInputMin.Get(), ViewInputMax.Get());
 		OnBarDrag.ExecuteIfBound(DraggableBarIndex, NewDataPos);
 	}
 	else
 	{
 		// Update what bar we are hovering over
-		FVector2D CursorPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X);
 		FTrackScaleInfo ScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
 		DraggableBarIndex = INDEX_NONE;
 		if ( DraggableBars.IsBound() )
@@ -308,7 +336,7 @@ FReply SScrubWidget::OnMouseMove( const FGeometry& MyGeometry, const FPointerEve
 			const TArray<float>& DraggableBarsVal = DraggableBars.Get();
 			for ( int32 I=0; I < DraggableBarsVal.Num(); I++ )
 			{
-				if( FMath::Abs( ScaleInfo.InputToLocalX(DraggableBarsVal[I]) - CursorPos.X ) < 10 )
+				if(FMath::Abs( ScaleInfo.InputToLocalX(DraggableBarsVal[I]) - CursorPosX ) < 10)
 				{
 					DraggableBarIndex = I;
 					break;
@@ -323,7 +351,7 @@ FReply SScrubWidget::OnMouseMove( const FGeometry& MyGeometry, const FPointerEve
 		{
 			FTrackScaleInfo ScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
 			FVector2D ScreenDelta = MouseEvent.GetCursorDelta();
-			float InputDeltaX = ScreenDelta.X/ScaleInfo.PixelsPerInput;
+			float InputDeltaX = static_cast<float>(ScreenDelta.X / ScaleInfo.PixelsPerInput);
 
 			bMouseMovedDuringPanning |= !ScreenDelta.IsNearlyZero(0.001f);
 
@@ -345,7 +373,8 @@ FReply SScrubWidget::OnMouseMove( const FGeometry& MyGeometry, const FPointerEve
 		}
 		else if (!bDragging)
 		{
-			DistanceDragged += FMath::Abs(MouseEvent.GetCursorDelta().X);
+			float CursorDeltaX = static_cast<float>(FMath::Abs(MouseEvent.GetCursorDelta().X));
+			DistanceDragged += CursorDeltaX;
 			if ( DistanceDragged > FSlateApplication::Get().GetDragTriggerDistance() )
 			{
 				bDragging = true;
@@ -358,8 +387,8 @@ FReply SScrubWidget::OnMouseMove( const FGeometry& MyGeometry, const FPointerEve
 		else if (bDragging)
 		{
 			FTrackScaleInfo TimeScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, MyGeometry.GetLocalSize());
-			FVector2D CursorPos = MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition());
-			float NewValue = TimeScaleInfo.LocalXToInput(CursorPos.X);
+			float CursorPosX = static_cast<float>(MyGeometry.AbsoluteToLocal(MouseEvent.GetLastScreenSpacePosition()).X);
+			float NewValue = TimeScaleInfo.LocalXToInput(CursorPosX);
 
 			CommitValue( NewValue, true, false );
 		}
@@ -436,7 +465,7 @@ void SScrubWidget::CreateContextMenu(float CurrentFrameTime, const FPointerEvent
 		MenuBuilder.BeginSection("SequenceEditingContext", LOCTEXT("SequenceEditing", "Sequence Editing") );
 		{
 			float CurrentFrameFraction = CurrentFrameTime / SequenceLength.Get();
-			int32 CurrentFrameNumber = CurrentFrameFraction * NumOfKeys.Get();
+			int32 CurrentFrameNumber = static_cast<int32>(CurrentFrameFraction * NumOfKeys.Get());
 
 			FUIAction Action;
 			FText Label;

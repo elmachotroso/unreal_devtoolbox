@@ -19,6 +19,8 @@
 #include "ElectraPlayer.h"
 #include "ElectraPlayerPlatform.h"
 
+#include "IElectraHTTPStreamModule.h"
+
 DEFINE_LOG_CATEGORY(LogElectraPlayer);
 DEFINE_LOG_CATEGORY(LogElectraPlayerStats);
 
@@ -89,6 +91,9 @@ public:
 		IAudioDecoderAAC::FSystemConfiguration SysCfgAAC;
 		IAudioDecoderAAC::Startup(SysCfgAAC);
 
+		// The HTTP stream module is required.
+		FModuleManager::LoadModuleChecked<IElectraHTTPStreamModule>("ElectraHTTPStream");
+
 		bInitialized = true;
 	}
 
@@ -96,14 +101,25 @@ public:
 	{
 		if (bInitialized)
 		{
-			Electra::WaitForAllPlayersToHaveTerminated();
-			IAudioDecoderAAC::Shutdown();
-			IVideoDecoderH265::Shutdown();
-			IVideoDecoderH264::Shutdown();
-			FElectraRendererAudio::Shutdown();
-			FElectraRendererVideo::Shutdown();
-			Electra::Shutdown();
-			Electra::PlatformShutdown();
+			// Wait for players to have terminated. If this fails then do not shutdown the sub components
+			// to avoid potential hangs in there.
+			if (Electra::WaitForAllPlayersToHaveTerminated())
+			{
+				IAudioDecoderAAC::Shutdown();
+				IVideoDecoderH265::Shutdown();
+				IVideoDecoderH264::Shutdown();
+				FElectraRendererAudio::Shutdown();
+				FElectraRendererVideo::Shutdown();
+				Electra::Shutdown();
+				Electra::PlatformShutdown();
+			}
+			else
+			{
+				UE_LOG(LogElectraPlayer, Warning, TEXT("Shutting down with active player instances. This could lead to problems."));
+
+				// At least unbind all the application notification handlers.
+				Electra::Shutdown();
+			}
 			bInitialized = false;
 		}
 	}

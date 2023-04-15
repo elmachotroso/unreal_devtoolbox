@@ -16,6 +16,7 @@
 #include "CollisionQueryParams.h"
 #include "WorldCollision.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "EngineDefines.h"
 #include "Engine/Blueprint.h"
 #include "Engine/PendingNetGame.h"
@@ -38,6 +39,7 @@ class AGameModeBase;
 class AGameStateBase;
 class APhysicsVolume;
 class APlayerController;
+class AServerStreamingLevelsVisibility;
 class AWorldSettings;
 class UWorldPartition;
 class Error;
@@ -142,13 +144,11 @@ private:
 /** Contains all the timings of a gaming frame, to handle pause and time dilation (for instance bullet time) of the world. */
 struct ENGINE_API FGameTime
 {
-	using FTimeType = float;
-
 	FORCEINLINE_DEBUGGABLE FGameTime()
-		: RealTimeSeconds(FTimeType(0))
-		, WorldTimeSeconds(FTimeType(0))
-		, DeltaRealTimeSeconds(FTimeType(0))
-		, DeltaWorldTimeSeconds(FTimeType(0))
+		: RealTimeSeconds(0.0)
+		, WorldTimeSeconds(0.0)
+		, DeltaRealTimeSeconds(0.0f)
+		, DeltaWorldTimeSeconds(0.0f)
 	{ }
 
 	FGameTime(const FGameTime&) = default;
@@ -157,36 +157,36 @@ struct ENGINE_API FGameTime
 	// Returns the game time since GStartTime.
 	static FGameTime GetTimeSinceAppStart();
 
-	static FORCEINLINE_DEBUGGABLE FGameTime CreateUndilated(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds)
+	static FORCEINLINE_DEBUGGABLE FGameTime CreateUndilated(double InRealTimeSeconds, float InDeltaRealTimeSeconds)
 	{
 		return FGameTime::CreateDilated(InRealTimeSeconds, InDeltaRealTimeSeconds, InRealTimeSeconds, InDeltaRealTimeSeconds);
 	}
 
-	static FORCEINLINE_DEBUGGABLE FGameTime CreateDilated(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds, FTimeType InWorldTimeSeconds, FTimeType InDeltaWorldTimeSeconds)
+	static FORCEINLINE_DEBUGGABLE FGameTime CreateDilated(double InRealTimeSeconds, float InDeltaRealTimeSeconds, double InWorldTimeSeconds, float InDeltaWorldTimeSeconds)
 	{
 		return FGameTime(InRealTimeSeconds, InDeltaRealTimeSeconds, InWorldTimeSeconds, InDeltaWorldTimeSeconds);
 	}
 
 	/** Returns time in seconds since level began play, but IS NOT paused when the game is paused, and IS NOT dilated/clamped. */
-	FORCEINLINE_DEBUGGABLE FTimeType GetRealTimeSeconds() const
+	FORCEINLINE_DEBUGGABLE double GetRealTimeSeconds() const
 	{
 		return RealTimeSeconds;
 	}
 
 	/** Returns frame delta time in seconds with no adjustment for time dilation and pause. */
-	FORCEINLINE_DEBUGGABLE FTimeType GetDeltaRealTimeSeconds() const
+	FORCEINLINE_DEBUGGABLE float GetDeltaRealTimeSeconds() const
 	{
 		return DeltaRealTimeSeconds;
 	}
 
 	/** Returns time in seconds since level began play, but IS paused when the game is paused, and IS dilated/clamped. */
-	FORCEINLINE_DEBUGGABLE FTimeType GetWorldTimeSeconds() const
+	FORCEINLINE_DEBUGGABLE double GetWorldTimeSeconds() const
 	{
 		return WorldTimeSeconds;
 	}
 
 	/** Returns frame delta time in seconds adjusted by e.g. time dilation. */
-	FORCEINLINE_DEBUGGABLE FTimeType GetDeltaWorldTimeSeconds() const
+	FORCEINLINE_DEBUGGABLE float GetDeltaWorldTimeSeconds() const
 	{
 		return DeltaWorldTimeSeconds;
 	}
@@ -194,24 +194,24 @@ struct ENGINE_API FGameTime
 	/** Returns how much world time is slowed compared to real time. */
 	FORCEINLINE_DEBUGGABLE float GetTimeDilation() const
 	{
-		ensure(DeltaRealTimeSeconds > FTimeType(0));
-		return float(DeltaWorldTimeSeconds / DeltaRealTimeSeconds);
+		ensure(DeltaRealTimeSeconds > 0.0f);
+		return DeltaWorldTimeSeconds / DeltaRealTimeSeconds;
 	}
 
 	/** Returns whether the world time is paused. */
 	FORCEINLINE_DEBUGGABLE bool IsPaused() const
 	{
-		return DeltaWorldTimeSeconds == FTimeType(0);
+		return DeltaWorldTimeSeconds == 0.0f;
 	}
 
 private:
-	FTimeType RealTimeSeconds;
-	FTimeType WorldTimeSeconds;
+	double RealTimeSeconds;
+	double WorldTimeSeconds;
 
-	FTimeType DeltaRealTimeSeconds;
-	FTimeType DeltaWorldTimeSeconds;
+	float DeltaRealTimeSeconds;
+	float DeltaWorldTimeSeconds;
 
-	FORCEINLINE_DEBUGGABLE FGameTime(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds, FTimeType InWorldTimeSeconds, FTimeType InDeltaWorldTimeSeconds)
+	FORCEINLINE_DEBUGGABLE FGameTime(double InRealTimeSeconds, float InDeltaRealTimeSeconds, double InWorldTimeSeconds, float InDeltaWorldTimeSeconds)
 		: RealTimeSeconds(InRealTimeSeconds)
 		, WorldTimeSeconds(InWorldTimeSeconds)
 		, DeltaRealTimeSeconds(InDeltaRealTimeSeconds)
@@ -224,6 +224,7 @@ private:
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorSpawned, AActor*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorDestroyed, AActor*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFeatureLevelChanged, ERHIFeatureLevel::Type);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovieSceneSequenceTick, float);
 
@@ -313,6 +314,23 @@ public:
 	static FOnWorldUnregisteredWithAudioDevice OnWorldUnregisteredWithAudioDevice;
 };
 
+#if UE_WITH_IRIS
+/**
+* Struct that temporarily holds the Iris replication system and bridge.
+*/
+struct FIrisSystemHolder
+{
+	bool IsHolding() const { return ReplicationSystem != nullptr; }
+
+	void Clear()
+	{
+		ReplicationSystem = nullptr;
+	}
+
+	class UReplicationSystem* ReplicationSystem = nullptr;
+};
+#endif // UE_WITH_IRIS
+
 /** class that encapsulates seamless world traveling */
 class FSeamlessTravelHandler
 {
@@ -336,7 +354,7 @@ private:
 	/** The context we are running in. Can be used to get the FWorldContext from Engine*/
 	FName WorldContextHandle;
 	/** Real time which we started traveling at  */
-	double SeamlessTravelStartTime = 0.f;
+	double SeamlessTravelStartTime = 0.0;
 
 	/** copy data between the old world and the new world */
 	void CopyWorldData();
@@ -413,63 +431,6 @@ public:
 	ENGINE_API UWorld* Tick();
 };
 
-
-/**
- * Helper structure encapsulating functionality used to defer marking actors and their components as pending
- * kill till right before garbage collection by registering a callback.
- */
-struct ENGINE_API FLevelStreamingGCHelper
-{
-	/** Called when streamed out levels are going to be garbage collected  */
-	DECLARE_MULTICAST_DELEGATE(FOnGCStreamedOutLevelsEvent);
-	static FOnGCStreamedOutLevelsEvent OnGCStreamedOutLevels;
-
-	/**
-	 * Register with the garbage collector to receive callbacks pre and post garbage collection
-	 */
-	static void AddGarbageCollectorCallback();
-
-	/**
-	 * Request to be unloaded.
-	 *
-	 * @param InLevel	Level that should be unloaded
-	 */
-	static void RequestUnload( ULevel* InLevel );
-
-	/**
-	 * Cancel any pending unload requests for passed in Level.
-	 */
-	static void CancelUnloadRequest( ULevel* InLevel );
-
-	/** 
-	 * Prepares levels that are marked for unload for the GC call by marking their actors and components as
-	 * pending kill.
-	 */
-	static void PrepareStreamedOutLevelsForGC();
-
-	/**
-	 * Verify that the level packages are no longer around.
-	 */
-	static void VerifyLevelsGotRemovedByGC();
-	
-	/**
-	 * @return	The number of levels pending a purge by the garbage collector
-	 */
-	static int32 GetNumLevelsPendingPurge();
-
-	/**
-	 * Allows FLevelStreamingGCHelper to be used in a commandlet.
-	 */
-	static void EnableForCommandlet();
-	
-private:
-	/** Static array of levels that should be unloaded */
-	static TArray<TWeakObjectPtr<ULevel> > LevelsPendingUnload;
-	/** Static array of level packages that have been marked by PrepareStreamedOutLevelsForGC */
-	static TArray<FName> LevelPackageNames;
-	/** Static bool allows FLevelStreamingGCHelper to be used in a commandlet */
-	static bool bEnabledForCommandlet;
-};
 
 /** Saved editor viewport state information */
 USTRUCT()
@@ -636,6 +597,10 @@ private:
 
 	friend class UPackageMapClient;
 
+#if UE_WITH_IRIS
+	friend class UActorReplicationBridge;
+#endif // UE_WITH_IRIS
+
 	/* Is the actor remotely owned. This should only be set true by the package map when it is creating an actor on a client that was replicated from the server. */
 	uint8	bRemoteOwned:1;
 	
@@ -683,7 +648,10 @@ public:
 	ESpawnActorNameMode NameMode;
 
 	/* Flags used to describe the spawned actor/object instance. */
-	EObjectFlags ObjectFlags;		
+	EObjectFlags ObjectFlags;
+
+	/* Custom function allowing the caller to specific a function to execute post actor construction but before other systems see this actor spawn. */
+	TFunction<void(AActor*)> CustomPreSpawnInitalization;
 };
 
 /* World actors spawmning helper functions */
@@ -991,15 +959,24 @@ public:
 	void Reevaluate(ULevelStreaming* StreamingLevel);
 };
 
-/**
- * Scope can be used to force load all external objects when loading a world. 
- */
-struct ENGINE_API FScopedLoadAllExternalObjects
+struct FWorldCachedViewInfo
 {
-	FScopedLoadAllExternalObjects(FName InPackageName);
-	~FScopedLoadAllExternalObjects();
+	FMatrix ViewMatrix;
+	FMatrix ProjectionMatrix;
+	FMatrix ViewProjectionMatrix;
+	FMatrix ViewToWorld;
+};
 
-	FName PackageName;
+/**
+ * Helper class allows UWorldPartition to broadcast UWorld events 
+ */
+struct FWorldPartitionEvents
+{
+	friend UWorldPartition;
+
+private:
+	static void BroadcastWorldPartitionInitialized(UWorld* InWorld, UWorldPartition* InWorldPartition);
+	static void BroadcastWorldPartitionUninitialized(UWorld* InWorld, UWorldPartition* InWorldPartition);
 };
 
 /** 
@@ -1083,7 +1060,19 @@ private:
 	UPROPERTY(Transient, DuplicateTransient)
 	FStreamingLevelsToConsider StreamingLevelsToConsider;
 
+	UPROPERTY(Transient, DuplicateTransient)
+	TObjectPtr<AServerStreamingLevelsVisibility> ServerStreamingLevelsVisibility;
+
 public:
+
+	/** Returns whether the world supports for a client to use "making visible" transaction requests to the server. */
+	bool SupportsMakingVisibleTransactionRequests() const;
+
+	/** Returns whether the world supports for a client to use "making invisible" transaction requests to the server. */
+	bool SupportsMakingInvisibleTransactionRequests() const;
+
+	/** Returns the object used to query server streaming level visibility. */
+	const AServerStreamingLevelsVisibility* GetServerStreamingLevelsVisibility() const;
 
 	/** Return a const version of the streaming levels array */
 	const TArray<ULevelStreaming*>& GetStreamingLevels() const { return StreamingLevels; }
@@ -1150,6 +1139,10 @@ public:
 
 	/** Returns BlockTillLevelStreamingCompletedEpoch. */
 	int32 GetBlockTillLevelStreamingCompletedEpoch() const { return BlockTillLevelStreamingCompletedEpoch; }
+#if UE_WITH_IRIS
+	/** Store the Iris managers from the GameNetDriver to they can be restored into a different NetDriver later */
+	void StoreIrisAndClearReferences();
+#endif // UE_WITH_IRIS
 
 	/** Prefix we used to rename streaming levels, non empty in PIE and standalone preview */
 	UPROPERTY()
@@ -1159,6 +1152,12 @@ private:
 
 	/** Returns wether AddToWorld should be skipped on a given level */
 	bool CanAddLoadedLevelToWorld(ULevel* Level) const;
+
+	/** Stores whether the game world supports for a client to use "making visible" transaction requests to the server. */
+	mutable TOptional<bool> bSupportsMakingVisibleTransactionRequests;
+
+	/** Stores whether the game world supports for a client to use "making invisible" transaction requests to the server. */
+	mutable TOptional<bool> bSupportsMakingInvisibleTransactionRequests;
 
 	/** Pointer to the current level in the queue to be made visible, NULL if none are pending. */
 	UPROPERTY(Transient)
@@ -1196,6 +1195,11 @@ public:
 	/** View locations rendered in the previous frame, if any. */
 	TArray<FVector>								ViewLocationsRenderedLastFrame;
 
+	/** Cached view information from the last rendered frame. */
+	TArray<FWorldCachedViewInfo>				CachedViewInfoRenderedLastFrame;
+	/** WorldTimeSeconds when this world was last rendered. */
+	double										LastRenderTime = 0.0;
+
 	/** The current renderer feature level of this world */
 	TEnumAsByte<ERHIFeatureLevel::Type> FeatureLevel;
 
@@ -1230,7 +1234,7 @@ public:
 	 */
 	uint8 bPostTickComponentUpdate:1;
 
-	/** Whether world object has been initialized via Init()																	*/
+	/** Whether world object has been initialized via Init and has not yet had CleanupWorld called								*/
 	uint8 bIsWorldInitialized:1;
 
 	/** Is level streaming currently frozen?																					*/
@@ -1303,7 +1307,7 @@ public:
 	 */
 	uint8 bKismetScriptError:1;
 
-	// Kismet debugging flags - they can be only editor only, but they're uint32, so it doens't make much difference
+	// Kismet debugging flags - they can be only editor only, but they're uint32, so it doesn't make much difference
 	uint8 bDebugPauseExecution:1;
 
 	/** When set, camera is potentially moveable even when paused */
@@ -1346,8 +1350,8 @@ private:
 	/** Is there at least one material parameter collection instance waiting for a deferred update?								*/
 	uint8 bMaterialParameterCollectionInstanceNeedsDeferredUpdate : 1;
 
-	/** Whether world object has been initialized via Init and has not yet had CleanupWorld called								*/
-	uint8 bInitializedAndNeedsCleanup : 1;
+	/** Whether InitWorld was ever called on this world since its creation. Not cleared to false during CleanupWorld			*/
+	uint8 bHasEverBeenInitialized: 1;
 
 	/** Whether the world is currently in a BlockTillLevelStreamingCompleted() call */
 	uint32 IsInBlockTillLevelStreamingCompleted;
@@ -1380,7 +1384,7 @@ private:
 	TArray<TObjectPtr<class ULevel>>						Levels;
 
 	/** Array of level collections currently in this world. */
-	UPROPERTY(Transient, NonTransactional)
+	UPROPERTY(Transient, NonTransactional, Setter = None, Getter = None)
 	TArray<FLevelCollection>					LevelCollections;
 
 	/** Index of the level collection that's currently ticking. */
@@ -1499,12 +1503,7 @@ public:
 	/** Returns whether or not this world is currently ticking. See SetShouldTick. */
 	bool ShouldTick() const { return bShouldTick; }
 
-	static bool ShouldLoadAllExternalObjects(FName InPackageName) { return LoadAllExternalObjects.Contains(InPackageName); }
-
 private:
-	friend struct FScopedLoadAllExternalObjects;
-	static TSet<FName> LoadAllExternalObjects;
-
 	/** List of all the controllers in the world. */
 	TArray<TWeakObjectPtr<class AController> > ControllerList;
 
@@ -1521,13 +1520,12 @@ private:
 	FPhysScene*									PhysicsScene;
 	// Note that this should be merged with PhysScene going forward but is needed for now.
 public:
-#if INCLUDE_CHAOS
+
 	/** Current global physics scene. */
 	TSharedPtr<FPhysScene_Chaos> PhysicsScene_Chaos;
 
 	/** Default global physics scene. */
 	TSharedPtr<FPhysScene_Chaos> DefaultPhysicsScene_Chaos;
-#endif
 
 	/** Physics Field component. */
 	UPROPERTY(Transient)
@@ -1565,6 +1563,9 @@ private:
 	/** a delegate that broadcasts a notification before a newly spawned actor is initialized */
 	mutable FOnActorSpawned OnActorPreSpawnInitialization;
 
+	/** a delegate that broadcasts a notification whenever an actor is destroyed */
+	mutable FOnActorDestroyed OnActorDestroyed;
+
 	/** Reset Async Trace Buffer **/
 	void ResetAsyncTrace();
 
@@ -1574,16 +1575,21 @@ private:
 	/** Finish Async Trace Buffer **/
 	void FinishAsyncTrace();
 
+	/** Utility function that is used to ensure that a World has the correct singleton actor of the provided class */
+	void RepairSingletonActorOfClass(TSubclassOf<AActor> ActorClass);	
+	template <class T> void RepairSingletonActorOfClass() { RepairSingletonActorOfClass(T::StaticClass()); }
+
 	/** Utility function that is used to ensure that a World has the correct WorldSettings */
 	void RepairWorldSettings();
+
+	/** Utility function that is used to ensure that a World has the correct singleton actors*/
+	void RepairSingletonActors();
 
 	/** Utility function to cleanup streaming levels that point to invalid level packages */
 	void RepairStreamingLevels();
 
-#if INCLUDE_CHAOS
 	/** Utility function that is used to ensure that a World has the correct ChaosActor */
 	void RepairChaosActors();
-#endif
 
 #if WITH_EDITOR
 	/** Utility function to make sure there is a valid default builder brush */
@@ -1607,6 +1613,9 @@ private:
 	/** Event to gather up all net drivers and call PostTickDispatch at once */
 	FOnTickFlushEvent PostTickDispatchEvent;
 
+	/** Event called prior to calling TickFlush */
+	FOnNetTickEvent PreTickFlushEvent;
+
 	/** Event to gather up all net drivers and call TickFlush at once */
 	FOnNetTickEvent TickFlushEvent;
 	
@@ -1622,6 +1631,11 @@ private:
 	void BroadcastPostTickDispatch()
 	{
 		PostTickDispatchEvent.Broadcast();
+	}
+	/** PreTickFlush */
+	void BroadcastPreTickFlush(float DeltaTime)
+	{
+		PreTickFlushEvent.Broadcast(DeltaTime);
 	}
 	/** All registered net drivers TickFlush() */
 	void BroadcastTickFlush(float DeltaTime)
@@ -1644,6 +1658,28 @@ private:
 
 	/** Broadcasted on UWorld::BeginTearingDown */
 	FOnBeginTearingDownEvent BeginTearingDownEvent;
+
+	/** Broadcasted when WorldPartition gets initialized */
+	DECLARE_EVENT_OneParam(UWorld, FWorldPartitionInitializedEvent, UWorldPartition*);
+	
+	FWorldPartitionInitializedEvent OnWorldPartitionInitializedEvent;
+
+	void BroadcastWorldPartitionInitialized(UWorldPartition* InWorldPartition)
+	{
+		OnWorldPartitionInitializedEvent.Broadcast(InWorldPartition);
+	}
+
+	/** Broadcasted when WorldPartition gets uninitialized */
+	DECLARE_EVENT_OneParam(UWorld, FWorldPartitionUninitializedEvent, UWorldPartition*);
+
+	FWorldPartitionUninitializedEvent OnWorldPartitionUninitializedEvent;
+
+	void BroadcastWorldPartitionUninitialized(UWorldPartition* InWorldPartition)
+	{
+		OnWorldPartitionUninitializedEvent.Broadcast(InWorldPartition);
+	}
+
+	friend FWorldPartitionEvents;
 
 #if WITH_EDITOR
 
@@ -1736,16 +1772,16 @@ public:
 	double LastTimeUnbuiltLightingWasEncountered;
 
 	/**  Time in seconds since level began play, but IS paused when the game is paused, and IS dilated/clamped. */
-	float TimeSeconds;
+	double TimeSeconds;
 
 	/**  Time in seconds since level began play, but IS NOT paused when the game is paused, and IS dilated/clamped. */
-	float UnpausedTimeSeconds;
+	double UnpausedTimeSeconds;
 
 	/** Time in seconds since level began play, but IS NOT paused when the game is paused, and IS NOT dilated/clamped. */
-	float RealTimeSeconds;
+	double RealTimeSeconds;
 
 	/** Time in seconds since level began play, but IS paused when the game is paused, and IS NOT dilated/clamped. */
-	float AudioTimeSeconds;
+	double AudioTimeSeconds;
 
 	/** Frame delta time in seconds with no adjustment for time dilation. */
 	float DeltaRealTimeSeconds;
@@ -1754,7 +1790,7 @@ public:
 	float DeltaTimeSeconds;
 
 	/** time at which to start pause **/
-	float PauseDelay;
+	double PauseDelay;
 
 	/** Current location of this world origin */
 	FIntVector OriginLocation;
@@ -1771,6 +1807,9 @@ public:
 	/** All levels information from which our world is composed */
 	UPROPERTY()
 	TObjectPtr<class UWorldComposition> WorldComposition;
+
+	UPROPERTY()
+	TObjectPtr<class UContentBundleManager> ContentBundleManager;
 	
 	/** Whether we flushing level streaming state */ 
 	EFlushLevelStreamingType FlushLevelStreamingType;
@@ -2556,28 +2595,28 @@ public:
 	 *
 	 * @return time in seconds since world was brought up for play
 	 */
-	float GetTimeSeconds() const;
+	double GetTimeSeconds() const;
 
 	/**
 	* Returns time in seconds since world was brought up for play, IS NOT stopped when game pauses, IS dilated/clamped
 	*
 	* @return time in seconds since world was brought up for play
 	*/
-	float GetUnpausedTimeSeconds() const;
+	double GetUnpausedTimeSeconds() const;
 
 	/**
 	* Returns time in seconds since world was brought up for play, does NOT stop when game pauses, NOT dilated/clamped
 	*
 	* @return time in seconds since world was brought up for play
 	*/
-	float GetRealTimeSeconds() const;
+	double GetRealTimeSeconds() const;
 
 	/**
 	* Returns time in seconds since world was brought up for play, IS stopped when game pauses, NOT dilated/clamped
 	*
 	* @return time in seconds since world was brought up for play
 	*/
-	float GetAudioTimeSeconds() const;
+	double GetAudioTimeSeconds() const;
 
 	/**
 	 * Returns the frame delta time in seconds adjusted by e.g. time dilation.
@@ -2594,7 +2633,7 @@ public:
 	FGameTime GetTime() const;
 
 	/** Helper for getting the time since a certain time. */
-	float TimeSince( float Time ) const;
+	double TimeSince(double Time) const;
 
 	/** Creates a new physics scene for this world. */
 	void CreatePhysicsScene(const AWorldSettings* Settings = nullptr);
@@ -2671,6 +2710,22 @@ public:
 	*/
 	bool IsPartitionedWorld() const { return GetWorldPartition() != nullptr; }
 
+	/**
+	* Returns true if world contains an associated UWorldPartition object.
+	*/
+	static bool IsPartitionedWorld(const UWorld* InWorld)
+	{
+		if (InWorld)
+		{
+			return InWorld->IsPartitionedWorld();
+		}
+
+		return false;
+	}
+
+	FWorldPartitionInitializedEvent& OnWorldPartitionInitialized() { return OnWorldPartitionInitializedEvent; }
+	FWorldPartitionUninitializedEvent& OnWorldPartitionUninitialized() { return OnWorldPartitionUninitializedEvent; }
+		
 	/**
 	 * Returns the current levels BSP model.
 	 *
@@ -2756,6 +2811,12 @@ public:
 	/** Remove a listener for OnActorPreSpawnInitialization events */
 	void RemoveOnActorPreSpawnInitialization(FDelegateHandle InHandle) const;
 
+	/** Add a listener for OnActorDestroyed events */
+	FDelegateHandle AddOnActorDestroyedHandler(const FOnActorDestroyed::FDelegate& InHandler) const;
+
+	/** Remove a listener for OnActorDestroyed events */
+	void RemoveOnActorDestroyededHandler(FDelegateHandle InHandle) const;
+
 	/**
 	 * Returns whether the passed in actor is part of any of the loaded levels actors array.
 	 * Warning: Will return true for pending kill actors!
@@ -2786,6 +2847,9 @@ public:
 	virtual void FinishDestroy() override;
 	virtual bool IsReadyForFinishDestroy() override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual void PreDuplicate(FObjectDuplicationParameters& DupParams) override;
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
 	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveRootContext instead.")
@@ -2801,7 +2865,8 @@ public:
 #if WITH_EDITOR
 	virtual bool Rename(const TCHAR* NewName = NULL, UObject* NewOuter = NULL, ERenameFlags Flags = REN_None) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
-	virtual bool IsNameStableForNetworking() const override;	
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+	virtual bool IsNameStableForNetworking() const override;
 #endif
 	virtual bool ResolveSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bLoadIfExists) override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
@@ -2874,15 +2939,18 @@ public:
 	 *
 	 * @param Level				Level object we should add
 	 * @param LevelTransform	Transformation to apply to each actor in the level
+	 * @param bConsiderTimeLimie optional bool indicating if we should consider timelimit or not, default is true
+	 * @param TransactionId optional parameter that carries the current transaction id associated with calls updating LevelVisibility used when communicating level visibility with server
 	 */
-	void AddToWorld( ULevel* Level, const FTransform& LevelTransform = FTransform::Identity, bool bConsiderTimeLimit = true );
+	void AddToWorld(ULevel* Level, const FTransform& LevelTransform = FTransform::Identity, bool bConsiderTimeLimit = true, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId());
 
 	/** 
 	 * Dissociates the passed in level from the world. The removal is blocking.
 	 *
 	 * @param Level			Level object we should remove
+	 * @param TransactionId optional parameter that carries the current transaction id associated with calls updating LevelVisibility used when communicating level visibility with server
 	 */
-	void RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval = false );
+	void RemoveFromWorld(ULevel* Level, bool bAllowIncrementalRemoval = false, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId());
 
 	/**
 	 * Updates sub-levels (load/unload/show/hide) using streaming levels current state
@@ -3020,6 +3088,19 @@ public:
 	 * Initializes the world, associates the persistent level and sets the proper zones.
 	 */
 	void InitWorld(const InitializationValues IVS = InitializationValues());
+#if WITH_EDITOR
+	/**
+	 * InitWorld usually has to be balanced with CleanupWorld. If the KeepInitializedDuringLoadTag LinkerInstancingContext tag is present,
+	 * operations that need to call InitWorld during the Load of the World's package should break that rule and not call CleanupWorld.
+	 */
+	static const FName KeepInitializedDuringLoadTag;
+	UE_DEPRECATED(5.2, "Call IsInitialized instead.")
+	bool IsInitializedAndNeedsCleanup() const { return bIsWorldInitialized; }
+	/** Returns whether InitWorld has ever been called since this World was created.  */
+	bool HasEverBeenInitialized() const { return bHasEverBeenInitialized; }
+#endif
+	/** Returns whether InitWorld has been called without yet calling CleanupWorld.  */
+	bool IsInitialized() const { return bIsWorldInitialized; }
 
 	/**
 	 * Initializes a newly created world.
@@ -3052,6 +3133,7 @@ public:
 	/** Network Tick events */
 	FOnNetTickEvent& OnTickDispatch() { return TickDispatchEvent; }
 	FOnTickFlushEvent& OnPostTickDispatch() { return PostTickDispatchEvent; }	
+	FOnNetTickEvent& OnPreTickFlush() { return PreTickFlushEvent; }
 	FOnNetTickEvent& OnTickFlush() { return TickFlushEvent; }
 	FOnTickFlushEvent& OnPostTickFlush() { return PostTickFlushEvent; }
 
@@ -3277,7 +3359,7 @@ public:
 
 private:
 	/** Internal version of CleanupWorld. */
-	void CleanupWorldInternal(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld);
+	void CleanupWorldInternal(bool bSessionEnded, bool bCleanupResources, bool bWorldChanged);
 
 	/** Utility function to handle Exec/Console Commands related to the Trace Tags */
 	bool HandleTraceTagCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -3616,6 +3698,11 @@ public:
 
 private:
 
+#if UE_WITH_IRIS
+	/** Holds the Iris systems during the NetDriver transition that occurs when Forking */
+	FIrisSystemHolder IrisSystemHolder;
+#endif // UE_WITH_IRIS
+
 	/** Private version without inlining that does *not* check Dedicated server build flags (which should already have been done). */
 	ENetMode InternalGetNetMode() const;
 
@@ -3886,16 +3973,6 @@ public:
 	}
 
 	/**
-	 * Reinitialize all subsystems
-	 */
-	void ReinitializeSubSystems()
-	{
-		SubsystemCollection.Deinitialize();
-		SubsystemCollection.Initialize(this);
-		PostInitializeSubsystems();
-	}
-
-	/**
 	 * Get a Subsystem of specified type
 	 */
 	UWorldSubsystem* GetSubsystemBase(TSubclassOf<UWorldSubsystem> SubsystemClass) const
@@ -4053,7 +4130,7 @@ public:
 	FWorldPSCPool PSCPool;
 
 	//PSC Pooling END
-	FSubsystemCollection<UWorldSubsystem> SubsystemCollection;
+	FObjectSubsystemCollection<UWorldSubsystem> SubsystemCollection;
 };
 
 /** Global UWorld pointer. Use of this pointer should be avoided whenever possible. */
@@ -4081,6 +4158,7 @@ public:
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE_FiveParams(FWorldPreRenameEvent, UWorld* /*World*/, const TCHAR* /*InName*/, UObject* /*NewOuter*/, ERenameFlags /*Flags*/, bool& /*bShouldFailRename*/);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPostRenameEvent, UWorld*);
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FWorldCurrentLevelChangedEvent, ULevel* /*NewLevel*/, ULevel* /*OldLevel*/, UWorld* /*World*/);
 #endif // WITH_EDITOR
 
 	// Delegate type for level change events
@@ -4091,6 +4169,9 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWorldTickStart, UWorld*, ELevelTick, float);
 	static FOnWorldTickStart OnWorldTickStart;
+
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWorldTickEnd, UWorld*, ELevelTick, float);
+	static FOnWorldTickEnd OnWorldTickEnd;
 
 	// Delegate called before actors are ticked for each world. Delta seconds is already dilated and clamped.
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWorldPreActorTick, UWorld* /*World*/, ELevelTick/**Tick Type*/, float/**Delta Seconds*/);
@@ -4117,6 +4198,8 @@ public:
 
 	// Callback for world rename event (post)
 	static FWorldPostRenameEvent OnPostWorldRename;
+
+	static FWorldCurrentLevelChangedEvent OnCurrentLevelChanged;
 #endif // WITH_EDITOR
 
 	// Post duplication event.
@@ -4133,6 +4216,11 @@ public:
 
 	// Sent when a ULevel is added to the world via UWorld::AddToWorld
 	static FOnLevelChanged			LevelAddedToWorld;
+
+	// Sent before a ULevel is removed from the world via UWorld::RemoveFromWorld or 
+	// LoadMap (a NULL object means the LoadMap case, because all levels will be 
+	// removed from the world without a RemoveFromWorld call for each)
+	static FOnLevelChanged			PreLevelRemovedFromWorld;
 
 	// Sent when a ULevel is removed from the world via UWorld::RemoveFromWorld or 
 	// LoadMap (a NULL object means the LoadMap case, because all levels will be 
@@ -4198,23 +4286,23 @@ private:
 //////////////////////////////////////////////////////////////////////////
 // UWorld inlines:
 
-FORCEINLINE_DEBUGGABLE float UWorld::GetTimeSeconds() const
+FORCEINLINE_DEBUGGABLE double UWorld::GetTimeSeconds() const
 {
 	return TimeSeconds;
 }
 
-FORCEINLINE_DEBUGGABLE float UWorld::GetUnpausedTimeSeconds() const
+FORCEINLINE_DEBUGGABLE double UWorld::GetUnpausedTimeSeconds() const
 {
 	return UnpausedTimeSeconds;
 }
 
-FORCEINLINE_DEBUGGABLE float UWorld::GetRealTimeSeconds() const
+FORCEINLINE_DEBUGGABLE double UWorld::GetRealTimeSeconds() const
 {
 	checkSlow(!IsInActualRenderingThread());
 	return RealTimeSeconds;
 }
 
-FORCEINLINE_DEBUGGABLE float UWorld::GetAudioTimeSeconds() const
+FORCEINLINE_DEBUGGABLE double UWorld::GetAudioTimeSeconds() const
 {
 	return AudioTimeSeconds;
 }
@@ -4231,7 +4319,7 @@ FORCEINLINE_DEBUGGABLE FGameTime UWorld::GetTime() const
 		TimeSeconds, DeltaTimeSeconds);
 }
 
-FORCEINLINE_DEBUGGABLE float UWorld::TimeSince(float Time) const
+FORCEINLINE_DEBUGGABLE double UWorld::TimeSince(double Time) const
 {
 	return GetTimeSeconds() - Time;
 }

@@ -11,6 +11,8 @@
 
 #define UE_API DERIVEDDATACACHE_API
 
+template <typename FuncType> class TUniqueFunction;
+
 namespace UE::DerivedData { class IRequest; }
 namespace UE::DerivedData { enum class EPriority : uint8; }
 
@@ -80,6 +82,16 @@ public:
 	virtual EPriority GetPriority() const = 0;
 	/** Returns whether the owner has been canceled, which new requests are expected to check. */
 	virtual bool IsCanceled() const = 0;
+
+	/**
+	 * Launches a task that executes the task body when scheduled.
+	 *
+	 * The task inherits the current priority of this request owner.
+	 * The task is launched as a new request within this request owner.
+	 *
+	 * @note The debug name is not copied and must remain valid for the duration of the task.
+	 */
+	UE_API void LaunchTask(const TCHAR* DebugName, TUniqueFunction<void ()>&& TaskBody);
 };
 
 /**
@@ -115,6 +127,15 @@ public:
 	UE_API void Wait();
 	/** Poll whether the owner has any active requests or barriers. */
 	UE_API bool Poll() const;
+
+	/** Returns whether the owner has been canceled, which new requests are expected to check. */
+	inline bool IsCanceled() const { return Owner->IsCanceled(); }
+
+	/** Launches a task that executes the task body when scheduled. See IRequestOwner::LaunchTask. */
+	inline void LaunchTask(const TCHAR* DebugName, TUniqueFunction<void ()>&& TaskBody)
+	{
+		Owner->LaunchTask(DebugName, MoveTemp(TaskBody));
+	}
 
 	/** Access as a request owner. */
 	inline operator IRequestOwner&() { return *Owner; }

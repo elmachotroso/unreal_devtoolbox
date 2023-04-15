@@ -4,9 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SWidget.h"
-#include "Developer/Merge/Public/Merge.h"
+#include "Merge.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "AssetRegistry/AssetData.h"
+#include "IAssetTypeActions.generated.h"
 
 class IToolkitHost;
 
@@ -23,11 +24,19 @@ namespace EAssetTypeActivationMethod
 class IToolkitHost;
 
 /* Revision information for a single revision of a file in source control */
+USTRUCT(BlueprintType)
 struct FRevisionInfo
 {
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category="Asset Revision")
 	FString		Revision;
-	int32		Changelist;
-	FDateTime	Date;	
+
+	UPROPERTY(BlueprintReadWrite, Category="Asset Revision")
+	int32		Changelist = -1;
+
+	UPROPERTY(BlueprintReadWrite, Category="Asset Revision")
+	FDateTime	Date;
 
 	static inline FRevisionInfo InvalidRevision()
 	{
@@ -35,6 +44,18 @@ struct FRevisionInfo
 		return Ret;
 	}
 };
+
+#ifndef DEPRECATE_ASSET_TYPE_ACTIONS_NEEDING_LOADED_OBJECTS
+	#define DEPRECATE_ASSET_TYPE_ACTIONS_NEEDING_LOADED_OBJECTS 0
+#endif
+
+#ifndef DEPRECATE_ASSET_TYPE_ACTIONS_CALLING_GETACTIONS
+    #if DEPRECATE_ASSET_TYPE_ACTIONS_NEEDING_LOADED_OBJECTS
+	    #define DEPRECATE_ASSET_TYPE_ACTIONS_CALLING_GETACTIONS DEPRECATE_ASSET_TYPE_ACTIONS_NEEDING_LOADED_OBJECTS
+	#else
+	    #define DEPRECATE_ASSET_TYPE_ACTIONS_CALLING_GETACTIONS 0
+	#endif
+#endif
 
 /** AssetTypeActions provide actions and other information about asset types */
 class IAssetTypeActions : public TSharedFromThis<IAssetTypeActions>
@@ -51,15 +72,26 @@ public:
 
 	/** Returns the color associated with this type */
 	virtual FColor GetTypeColor() const = 0;
-
+	
 	/** Returns true if this class can supply actions for InObjects. */
-	virtual bool HasActions ( const TArray<UObject*>& InObjects ) const = 0;
+//   	UE_DEPRECATED(5.1, "HasActions is no longer used all IAssetTypeActions are assumed to need to have them and GetActions is just called instead.  GetActions is always called unless DEPRECATE_ASSET_TYPE_ACTIONS_CALLING_GETACTIONS is true.")
+   	virtual bool HasActions( const TArray<UObject*>& InObjects ) const { return true; }
 
+#if DEPRECATE_ASSET_TYPE_ACTIONS_NEEDING_LOADED_OBJECTS
 	/** Generates a menubuilder for the specified objects. */
-	virtual void GetActions( const TArray<UObject*>& InObjects, class FMenuBuilder& MenuBuilder ) = 0;
+	UE_DEPRECATED(5.1, "Look at 'HOW TO ADD ASSET EXTENSION MENUS' in IAssetTypeActions.h")
+	virtual void GetActions( const TArray<UObject*>& InObjects, class FMenuBuilder& MenuBuilder ) final { }
 
 	/** Generates a menu section for the specified objects. */
-	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) = 0;
+	UE_DEPRECATED(5.1, "Look at 'HOW TO ADD ASSET EXTENSION MENUS' in IAssetTypeActions.h")
+	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) final { }
+#else
+	/** Generates a menubuilder for the specified objects. */
+	virtual void GetActions( const TArray<UObject*>& InObjects, class FMenuBuilder& MenuBuilder ) { }
+
+	/** Generates a menu section for the specified objects. */
+	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) { }
+#endif
 
 	/** Opens the asset editor for the specified objects. If EditWithinLevelEditor is valid, the world-centric editor will be used. */
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) = 0;
@@ -141,4 +173,69 @@ public:
 
 	/** Is this asset type supported in the current session? */
 	virtual bool IsSupported() const = 0;
+
+	/** Returns class path name as a package + class FName pair */
+	virtual FTopLevelAssetPath GetClassPathName() const = 0;
+
+	/** Returns thumbnail brush unique for the given asset data.  Returning null falls back to class thumbnail brush. */
+	virtual const FSlateBrush* GetThumbnailBrush(const FAssetData& InAssetData, const FName InClassName) const = 0;
+
+	/** Returns icon brush unique for the given asset data.  Returning null falls back to class icon brush. */
+	virtual const FSlateBrush* GetIconBrush(const FAssetData& InAssetData, const FName InClassName) const = 0;
 };
+
+/**
+HOW TO ADD ASSET EXTENSION MENUS
+
+void FMyAssetEditorModule::StartupModule()
+{
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FSynthesisEditorModule::RegisterMenus));
+}
+
+void FSynthesisEditorModule::ShutdownModule()
+{
+	UToolMenus::UnRegisterStartupCallback(this);
+	UToolMenus::UnregisterOwner(this);
+}
+
+void FSynthesisEditorModule::RegisterMenus()
+{
+	FToolMenuOwnerScoped MenuOwner(this);
+	FAudioImpulseResponseExtension::RegisterMenus();
+}
+
+
+class FMyAssetExtension
+{
+public:
+	static void RegisterMenus();
+	static void ExecuteMenuAction(const struct FToolMenuContext& MenuContext);
+};
+
+void FMyAssetExtension::RegisterMenus()
+{
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.MyAsset");
+	
+	FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
+	Section.AddDynamicEntry("GetAssetActions_MyAsset", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	{
+		const TAttribute<FText> Label = LOCTEXT("MyAsset_DoTheThing", "Do the thing");
+		const TAttribute<FText> ToolTip = LOCTEXT("MyAsset_DoTheThingTooltip", "Does the thing.");
+		const FSlateIcon Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.MyAsset");
+		const FToolMenuExecuteAction UIAction = FToolMenuExecuteAction::CreateStatic(&FMyAssetExtension::ExecuteDoTheThing);
+
+		InSection.AddMenuEntry("MyAsset_DoTheThing", Label, ToolTip, Icon, UIAction);
+	}));
+}
+
+void FMyAssetExtension::ExecuteDoTheThing(const FToolMenuContext& MenuContext)
+{
+	if (const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(MenuContext))
+	{
+		for (UMyAsset* MyAsset : Context->LoadSelectedObjects<UMyAsset>())
+		{
+			// Do the actual thing...
+		}
+	}
+}
+*/

@@ -6,14 +6,12 @@
 #include "UObject/PropertyPortFlags.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/MeshComponent.h"
 #include "Exporters/Exporter.h"
 #include "Materials/Material.h"
-#include "Editor/UnrealEdEngine.h"
 #include "Components/DecalComponent.h"
-#include "UnrealEdGlobals.h"
 #include "ScopedTransaction.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -25,6 +23,10 @@
 #include "Styling/SlateIconFinder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "UnrealEdGlobals.h"
 
 #include "HAL/PlatformApplicationMisc.h"
 #include "ToolMenus.h"
@@ -102,12 +104,12 @@ protected:
 	virtual bool CanCreateClass(UClass* ObjectClass, bool& bOmitSubObjs) const override
 	{
 		// Allow actor component types to be created
-		bool bCanCreate = ObjectClass->IsChildOf(UActorComponent::StaticClass());
+		bool bCanCreate = ObjectClass && ObjectClass->IsChildOf(UActorComponent::StaticClass());
 
 		if (!bCanCreate)
 		{
 			// Also allow Blueprint-able actor types to pass, in order to enable proper creation of actor component types as subobjects. The actor instance will be discarded after processing.
-			bCanCreate = ObjectClass->IsChildOf(AActor::StaticClass()) && FKismetEditorUtilities::CanCreateBlueprintOfClass(ObjectClass);
+			bCanCreate = ObjectClass && ObjectClass->IsChildOf(AActor::StaticClass()) && FKismetEditorUtilities::CanCreateBlueprintOfClass(ObjectClass);
 		}
 		else
 		{
@@ -940,7 +942,9 @@ bool FComponentEditorUtils::AttemptApplyMaterialToComponent(USceneComponent* Sce
 	{
 		bResult = true;
 		const FScopedTransaction Transaction(LOCTEXT("DropTarget_UndoSetComponentMaterial", "Assign Material to Component (Drag and Drop)"));
+		FProperty* Property = FindFProperty<FProperty>(SceneComponent->GetClass(), MeshComponent ? "OverrideMaterials" : "DecalMaterial");
 		SceneComponent->Modify();
+		SceneComponent->PreEditChange(Property);
 
 		if (MeshComponent)
 		{
@@ -973,7 +977,8 @@ bool FComponentEditorUtils::AttemptApplyMaterialToComponent(USceneComponent* Sce
 		}
 
 		SceneComponent->MarkRenderStateDirty();
-		SceneComponent->PostEditChange();
+		FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ValueSet, { SceneComponent });
+		SceneComponent->PostEditChangeProperty(PropertyChangedEvent);
 		GEditor->OnSceneMaterialsModified();
 	}
 
@@ -1097,7 +1102,7 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(UToolMenu* Menu, con
 					"GoToAssetForComponent",
 					LOCTEXT("GoToAssetForComponent", "Find Class in Content Browser"),
 					LOCTEXT("GoToAssetForComponent_ToolTip", "Summons the content browser and goes to the class for this component."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
 					FUIAction(
 					FExecuteAction::CreateStatic(&FComponentEditorUtils::OnGoToComponentAssetInBrowser, Component->GetClass()->ClassGeneratedBy),
 					FCanExecuteAction()));
@@ -1105,6 +1110,7 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(UToolMenu* Menu, con
 		}
 		else
 		{
+			if (ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
 			{
 				FToolMenuSection& Section = Menu->AddSection("ComponentCode", LOCTEXT("ComponentCodeHeading", "C++"));
 				if (FSourceCodeNavigation::IsCompilerAvailable())
@@ -1128,7 +1134,7 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(UToolMenu* Menu, con
 						"GoToAssetForComponent",
 						LOCTEXT("GoToAssetForComponent", "Find Class in Content Browser"),
 						LOCTEXT("GoToAssetForComponent_ToolTip", "Summons the content browser and goes to the class for this component."),
-						FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
+						FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
 						FUIAction(
 						FExecuteAction::CreateStatic(&FComponentEditorUtils::OnGoToComponentAssetInBrowser, (UObject*)Component->GetClass()),
 						FCanExecuteAction()));

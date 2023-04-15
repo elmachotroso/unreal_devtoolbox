@@ -7,6 +7,9 @@
 #include "BaseGizmos/GizmoMath.h"
 #include "BaseGizmos/GizmoRenderingUtil.h"
 #include "BaseBehaviors/MouseHoverBehavior.h"
+#include "SceneManagement.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScalableConeGizmo)
 
 #define LOCTEXT_NAMESPACE "UScalableSphereGizmo"
 

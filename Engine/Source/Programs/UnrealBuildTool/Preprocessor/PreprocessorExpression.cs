@@ -56,7 +56,7 @@ namespace UnrealBuildTool
 			long Result = EvaluateTernary(Context, Tokens, ref Idx);
 			if (Idx != Tokens.Count)
 			{
-				throw new PreprocessorException(Context, "Garbage after end of expression");
+				throw new PreprocessorException(Context, $"Garbage after end of expression: {Token.Format(Tokens)}");
 			}
 			return Result;
 		}
@@ -84,7 +84,7 @@ namespace UnrealBuildTool
 				// Check for the colon in the middle
 				if(Tokens[Idx].Type != TokenType.Colon)
 				{
-					throw new PreprocessorException(Context, "Expected colon for conditional operator");
+					throw new PreprocessorException(Context, $"Expected colon for conditional operator, found {Tokens[Idx].Text}");
 				}
 
 				// Read the right expression
@@ -193,7 +193,7 @@ namespace UnrealBuildTool
 						Lhs %= Rhs;
 						break;
 					default:
-						throw new NotImplementedException(String.Format("Binary operator '{0}' has not been implemented", Operator.Type));
+						throw new NotImplementedException($"Binary operator '{Operator.Type}' has not been implemented");
 				}
 			}
 
@@ -232,39 +232,34 @@ namespace UnrealBuildTool
 					Identifier Text = Tokens[Idx].Identifier!;
 					if(Text == Identifiers.Sizeof)
 					{
-						throw new NotImplementedException();
+						throw new NotImplementedException(Text.ToString());
 					}
 					else if(Text == Identifiers.Alignof)
 					{
-						throw new NotImplementedException();
+						throw new NotImplementedException(Text.ToString());
 					}
-					else if (Text == Identifiers.__has_builtin)
+					else if (Text == Identifiers.__has_builtin || Text == Identifiers.__has_feature
+						|| Text == Identifiers.__has_warning || Text == Identifiers.__building_module
+						|| Text == Identifiers.__pragma || Text == Identifiers.__builtin_return_address
+						|| Text == Identifiers.__builtin_frame_address || Text == Identifiers.__has_keyword
+						|| Text == Identifiers.__has_extension || Text == Identifiers.__is_target_arch
+						|| Text == Identifiers.__is_identifier)
 					{
 						if (Tokens[Idx + 1].Type != TokenType.LeftParen || Tokens[Idx + 3].Type != TokenType.RightParen)
 						{
-							throw new NotImplementedException();
+							throw new NotImplementedException(Text.ToString());
 						}
 						Idx += 4;
 						return 0;
 					}
-					else if(Text == Identifiers.__has_feature)
+					else if (Text == Identifiers.__has_attribute || Text == Identifiers.__has_declspec_attribute
+						|| Text == Identifiers.__has_c_attribute || Text == Identifiers.__has_cpp_attribute
+						|| Text == Identifiers.__has_include || Text == Identifiers.__has_include_next)
 					{
-						if(Tokens[Idx + 1].Type != TokenType.LeftParen || Tokens[Idx + 3].Type != TokenType.RightParen)
-						{
-							throw new NotImplementedException();
-						}
-						Idx += 4;
+						Idx += Tokens.Count - Idx;
 						return 0;
 					}
-					else if(Text == Identifiers.__building_module)
-					{
-						if(Tokens[Idx + 1].Type != TokenType.LeftParen || Tokens[Idx + 3].Type != TokenType.RightParen)
-						{
-							throw new NotImplementedException();
-						}
-						Idx += 4;
-						return 0;
-					}
+
 					else
 					{
 						return EvaluatePrimary(Context, Tokens, ref Idx);
@@ -417,6 +412,12 @@ namespace UnrealBuildTool
 				{
 					Index++;
 				}
+			}
+			else if (Index + 2 < Literal.Length && (Literal[Index] == 'i' || Literal[Index] == 'I') && Literal[Index + 1] == '3' && Literal[Index + 2] == '2')
+			{
+				// 'I32' (Microsoft extension)
+				Index += 3;
+				bAllowTrailingUnsigned = false;
 			}
 			else if(Index + 2 < Literal.Length && (Literal[Index] == 'i' || Literal[Index] == 'I') && Literal[Index + 1] == '6' && Literal[Index + 2] == '4')
 			{

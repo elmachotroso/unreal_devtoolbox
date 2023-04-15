@@ -1,41 +1,140 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetRegistryArchive.h"
+
+#include "Algo/Sort.h"
 #include "AssetRegistryPrivate.h"
 #include "AssetRegistry/AssetRegistryState.h"
 
 
 constexpr uint32 AssetRegistryNumberedNameBit = 0x80000000;
 
-static void SerializeBundleEntries(FArchive& Ar, TArray<FAssetBundleEntry>& Entries)
+static void SaveBundleEntries(FArchive& Ar, TArray<FAssetBundleEntry*>& Entries)
+{
+	for (FAssetBundleEntry* EntryPtr : Entries)
+	{
+		FAssetBundleEntry& Entry = *EntryPtr;	
+		Ar << Entry.BundleName;
+
+		int32 Num = Entry.AssetPaths.Num();
+		Ar << Num;
+
+		TArray<FTopLevelAssetPath*> SortedPaths;
+		SortedPaths.Reserve(Num);
+		for (FTopLevelAssetPath& Path : Entry.AssetPaths)
+		{
+			SortedPaths.Add(&Path);
+		}
+		Algo::Sort(SortedPaths, [](FTopLevelAssetPath* A, FTopLevelAssetPath* B) { return A->Compare(*B) < 0; });
+		for (FTopLevelAssetPath* Path : SortedPaths)
+		{
+			// Serialize using FSoftObjectPath for backwards compatibility with FRedirectCollector code.
+			// We can investigate if any of this can be bypassed in future.
+
+			FSoftObjectPath TmpPath(*Path, {});
+			TmpPath.SerializePath(Ar);
+		}
+	}
+}
+
+static void LoadBundleEntries(FArchive& Ar, TArray<FAssetBundleEntry>& Entries)
 {
 	for (FAssetBundleEntry& Entry : Entries)
 	{
 		Ar << Entry.BundleName;
 
-		int32 Num = Entry.BundleAssets.Num();
+		int32 Num = 0;
 		Ar << Num;
-		Entry.BundleAssets.SetNum(Num);
+		Entry.AssetPaths.SetNum(Num);
 
-		for (FSoftObjectPath& Path : Entry.BundleAssets)
+		for (FTopLevelAssetPath& Path : Entry.AssetPaths)
 		{
-			Path.SerializePath(Ar);
+			FSoftObjectPath TmpPath;
+			TmpPath.SerializePath(Ar);
+			Path = TmpPath.GetAssetPath();
 		}
+
+#if WITH_EDITORONLY_DATA
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Entry.BundleAssets.Reserve(Entry.AssetPaths.Num());
+		for (const FTopLevelAssetPath& Path : Entry.AssetPaths)
+		{
+			Entry.BundleAssets.Add(FSoftObjectPath(Path, {}));
+		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
+	}
+}
+
+static void LoadBundleEntriesOldVersion(FArchive& Ar, TArray<FAssetBundleEntry>& Entries, FAssetRegistryVersion::Type Version)
+{
+	for (FAssetBundleEntry& Entry : Entries)
+	{
+		Ar << Entry.BundleName;
+
+		int32 Num = 0;
+		Ar << Num;
+		Entry.AssetPaths.SetNum(Num);
+
+		if (Version < FAssetRegistryVersion::RemoveAssetPathFNames)
+		{
+			for (FTopLevelAssetPath& Path : Entry.AssetPaths)
+			{
+				// This change is synchronized with a change to the format of FSoftObjectPath in EUnrealEngineObjectUE5Version::FSOFTOBJECTPATH_REMOVE_ASSET_PATH_FNAMES
+				// We have to manually deserialize the old format of FSoftObjectPath
+				FName AssetPathName;
+				Ar << AssetPathName;
+				FString SubPathString;
+				Ar << SubPathString;
+			
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				Path = FTopLevelAssetPath(AssetPathName);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
+		}
+		else
+		{
+			for (FTopLevelAssetPath& Path : Entry.AssetPaths)
+			{
+				FSoftObjectPath TmpPath;
+				TmpPath.SerializePath(Ar);
+				Path = TmpPath.GetAssetPath();
+			}
+		}
+		
+#if WITH_EDITORONLY_DATA
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Entry.BundleAssets.Reserve(Entry.AssetPaths.Num());
+		for (const FTopLevelAssetPath& Path : Entry.AssetPaths)
+		{
+			Entry.BundleAssets.Add(FSoftObjectPath(Path, {}));
+		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
 	}
 }
 
 static void SaveBundles(FArchive& Ar, const TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe>& Bundles)
 {
-	TArray<FAssetBundleEntry> Empty;
-	TArray<FAssetBundleEntry>& Entries = Bundles ? Bundles->Bundles : Empty;
+	TArray<FAssetBundleEntry*> SortedEntries;
+	if (Bundles)
+	{
+		TArray<FAssetBundleEntry>& Entries = Bundles->Bundles;
+		SortedEntries.Reserve(Entries.Num());
+		for (FAssetBundleEntry& Entry : Entries)
+		{
+			SortedEntries.Add(&Entry);
+		}
+		Algo::Sort(SortedEntries, [](FAssetBundleEntry* A, FAssetBundleEntry* B) { return A->BundleName.LexicalLess(B->BundleName); });
+	}
 
-	int32 Num = Entries.Num();
+	int32 Num = SortedEntries.Num();
 	Ar << Num;
 
-	SerializeBundleEntries(Ar, Entries);
+	SaveBundleEntries(Ar, SortedEntries);
 }
 
-static TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> LoadBundles(FArchive& Ar)
+static FORCEINLINE TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> LoadBundlesInternal(FArchive& Ar, FAssetRegistryVersion::Type Version)
 {
 	int32 Num;
 	Ar << Num;
@@ -44,12 +143,42 @@ static TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> LoadBundles(FArchive& A
 	{
 		FAssetBundleData Temp;
 		Temp.Bundles.SetNum(Num);
-		SerializeBundleEntries(Ar, Temp.Bundles);
+		if (Version == FAssetRegistryVersion::LatestVersion)
+		{
+			LoadBundleEntries(Ar, Temp.Bundles);
+		}
+		else
+		{
+			LoadBundleEntriesOldVersion(Ar, Temp.Bundles, Version);
+		}
 
 		return MakeShared<FAssetBundleData, ESPMode::ThreadSafe>(MoveTemp(Temp));
 	}
 
 	return TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe>();
+}
+
+static TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> LoadBundles(FArchive& Ar)
+{
+	return LoadBundlesInternal(Ar, FAssetRegistryVersion::LatestVersion);
+}
+
+static TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> LoadBundlesOldVersion(FArchive& Ar, FAssetRegistryVersion::Type Version)
+{
+	return LoadBundlesInternal(Ar, Version);
+}
+
+void FAssetRegistryHeader::SerializeHeader(FArchive& Ar)
+{
+	FAssetRegistryVersion::SerializeVersion(Ar, Version);
+	if (Version >= FAssetRegistryVersion::AddedHeader)
+	{
+		Ar << bFilterEditorOnlyData;
+	}
+	else if(Ar.IsLoading())
+	{
+		bFilterEditorOnlyData = false;		
+	}
 }
 
 #if ALLOW_NAME_BATCH_SAVING
@@ -64,13 +193,22 @@ FAssetRegistryWriter::FAssetRegistryWriter(const FAssetRegistryWriterOptions& Op
 , TargetAr(Out)
 {
 	check(!IsLoading());
+
+	// Copy requested serialization flags to intermediate archive. Technically the flags could change after this as TargetAr is a passed-in reference
+	SetArchiveState(TargetAr.GetArchiveState()); 
+
+	// The state copy explicitly clears this flag! 
+	SetFilterEditorOnly(TargetAr.IsFilterEditorOnly()); 
+
+	// The above function in FArchiveProxy seems broken - it only modifies the inner archive state, but this archive's state is what will be returned to serialization functions
+	FArchive::SetFilterEditorOnly(TargetAr.IsFilterEditorOnly()); 
 }
 
-static TArray<FNameEntryId> FlattenIndex(const TMap<FNameEntryId, uint32>& Names)
+static TArray<FDisplayNameEntryId> FlattenIndex(const TMap<FDisplayNameEntryId, uint32>& Names)
 {
-	TArray<FNameEntryId> Out;
+	TArray<FDisplayNameEntryId> Out;
 	Out.SetNumZeroed(Names.Num());
-	for (TPair<FNameEntryId, uint32> Pair : Names)
+	for (TPair<FDisplayNameEntryId, uint32> Pair : Names)
 	{
 		Out[Pair.Value] = Pair.Key;
 	}
@@ -91,7 +229,7 @@ FAssetRegistryWriter::~FAssetRegistryWriter()
 
 FArchive& FAssetRegistryWriter::operator<<(FName& Value)
 {
-	FNameEntryId EntryId = Value.GetDisplayIndex();
+	FDisplayNameEntryId EntryId(Value);
 
 	uint32 Index = Names.FindOrAdd(EntryId, Names.Num());
 	check((Index & AssetRegistryNumberedNameBit) == 0);
@@ -120,14 +258,17 @@ void FAssetRegistryWriter::SerializeTagsAndBundles(const FAssetData& Out)
 
 #endif
 
-FAssetRegistryReader::FAssetRegistryReader(FArchive& Inner, int32 NumWorkers)
+FAssetRegistryReader::FAssetRegistryReader(FArchive& Inner, int32 NumWorkers, FAssetRegistryHeader Header)
 	: FArchiveProxy(Inner)
 {
 	check(IsLoading());
 
+	SetFilterEditorOnly(Header.bFilterEditorOnlyData);
+	FArchive::SetFilterEditorOnly(Header.bFilterEditorOnlyData); // Workaround for bug in FArchiveProxy
+
 	if (NumWorkers > 0)
 	{
-		TFunction<TArray<FNameEntryId> ()> GetFutureNames = LoadNameBatchAsync(*this, NumWorkers);
+		TFunction<TArray<FDisplayNameEntryId> ()> GetFutureNames = LoadNameBatchAsync(*this, NumWorkers);
 
 		FixedTagPrivate::FAsyncStoreLoader StoreLoader;
 		Task = StoreLoader.ReadInitialDataAndKickLoad(*this, NumWorkers);
@@ -138,7 +279,7 @@ FAssetRegistryReader::FAssetRegistryReader(FArchive& Inner, int32 NumWorkers)
 	else
 	{
 		Names = LoadNameBatch(Inner);
-		Tags = FixedTagPrivate::LoadStore(*this);
+		Tags = FixedTagPrivate::LoadStore(*this, Header.Version);
 	}
 }
 
@@ -170,7 +311,7 @@ FArchive& FAssetRegistryReader::operator<<(FName& Out)
 		*this << Number;
 	}
 
-	Out = FName::CreateFromDisplayId(Names[Index], Number);
+	Out = Names[Index].ToName(Number);
 
 	return *this;
 }
@@ -186,6 +327,12 @@ void FAssetRegistryReader::SerializeTagsAndBundles(FAssetData& Out)
 {
 	Out.TagsAndValues = LoadTags(*this);
 	Out.TaggedAssetBundles = LoadBundles(*this);
+}
+
+void FAssetRegistryReader::SerializeTagsAndBundlesOldVersion(FAssetData& Out, FAssetRegistryVersion::Type Version)
+{
+	Out.TagsAndValues = LoadTags(*this);
+	Out.TaggedAssetBundles = LoadBundlesOldVersion(*this, Version);
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -219,16 +366,16 @@ bool FAssetRegistryTagSerializationTest::RunTest(const FString& Parameters)
 								{"Key_0",		"StringValue_0"}}));
 	LooseMaps.Add(MakeLooseMap({{"Name",		"NameValue"}, 
 								{"Name_0",		"NameValue_0"}}));
-	LooseMaps.Add(MakeLooseMap({{"FullPath",	"C\'P.O\'"}, 
+	LooseMaps.Add(MakeLooseMap({{"FullPath",	"/S/P.C\'P.O\'"}, 
 								{"PkgPath",		"P.O"},
 								{"ObjPath",		"O"}}));
-	LooseMaps.Add(MakeLooseMap({{"NumPath_0",	"C\'P.O_0\'"}, 
-								{"NumPath_1",	"C\'P_0.O\'"},
-								{"NumPath_2",	"C_0\'P.O\'"},
-								{"NumPath_3",	"C\'P_0.O_0\'"},
-								{"NumPath_4",	"C_0\'P_0.O\'"},
-								{"NumPath_5",	"C_0\'P.O_0\'"},
-								{"NumPath_6",	"C_0\'P_0.O_0\'"}}));
+	LooseMaps.Add(MakeLooseMap({{"NumPath_0",	"/S/P.C\'P.O_0\'"}, 
+								{"NumPath_1",	"/S/P.C\'P_0.O\'"},
+								{"NumPath_2",	"/S/P.C_0\'P.O\'"},
+								{"NumPath_3",	"/S/P.C\'P_0.O_0\'"},
+								{"NumPath_4",	"/S/P.C_0\'P_0.O\'"},
+								{"NumPath_5",	"/S/P.C_0\'P.O_0\'"},
+								{"NumPath_6",	"/S/P.C_0\'P_0.O_0\'"}}));
 	LooseMaps.Add(MakeLooseMap({{"SameSame",	"SameSame"}, 
 								{"AlsoSame",	"SameSame"}}));
 	LooseMaps.Add(MakeLooseMap({{"FilterKey1",	"FilterValue1"}, 
@@ -259,7 +406,8 @@ bool FAssetRegistryTagSerializationTest::RunTest(const FString& Parameters)
 
 	{
 		FMemoryReader DataReader(Data);
-		FAssetRegistryReader RegistryReader(DataReader);
+		FAssetRegistryHeader Header;
+		FAssetRegistryReader RegistryReader(DataReader, 0, Header);
 		for (FAssetDataTagMapSharedView& FixedMap : FixedMaps)
 		{
 			FixedMap = LoadTags(RegistryReader);
@@ -271,7 +419,8 @@ bool FAssetRegistryTagSerializationTest::RunTest(const FString& Parameters)
 	// Re-create second fixed tag store to test operator==(FMapHandle, FMapHandle)
 	{
 		FMemoryReader DataReader(Data);
-		FAssetRegistryReader RegistryReader(DataReader);
+		FAssetRegistryHeader Header;
+		FAssetRegistryReader RegistryReader(DataReader, 0, Header);
 
 		for (const FAssetDataTagMapSharedView& FixedMap1 : FixedMaps)
 		{

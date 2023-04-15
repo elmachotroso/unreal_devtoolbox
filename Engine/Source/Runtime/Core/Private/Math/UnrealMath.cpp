@@ -8,6 +8,7 @@
 #include "Stats/Stats.h"
 #include "Math/RandomStream.h"
 #include "UObject/PropertyPortFlags.h"
+#include "Math/IntRect.h"
 #include "Math/Matrix.h"
 #include "Math/Quat.h"
 #include "Math/Vector.h"
@@ -69,11 +70,6 @@ CORE_API const uint32 FMath::BitFlag[32] =
 	(1U << 24),	(1U << 25),	(1U << 26),	(1U << 27),
 	(1U << 28),	(1U << 29),	(1U << 30),	(1U << 31),
 };
-
-const FIntPoint FIntPoint::ZeroValue(0,0);
-const FIntPoint FIntPoint::NoneValue(INDEX_NONE,INDEX_NONE);
-const FIntVector FIntVector::ZeroValue(0,0,0);
-const FIntVector FIntVector::NoneValue(INDEX_NONE,INDEX_NONE,INDEX_NONE);
 
 template<typename T>
 bool UE::Math::TRotator<T>::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
@@ -316,7 +312,7 @@ FVector FMath::ClosestPointOnInfiniteLine(const FVector& LineStart, const FVecto
 {
 	const FVector::FReal A = (LineStart - Point) | (LineEnd - LineStart);
 	const FVector::FReal B = (LineEnd - LineStart).SizeSquared();
-	if (B < SMALL_NUMBER)
+	if (B < UE_SMALL_NUMBER)
 	{
 		return LineStart;
 	}
@@ -341,9 +337,9 @@ UE::Math::TVector<T> UE::Math::TRotator<T>::Vector() const
 {
 	// Extremely large but valid values (or invalid values from uninitialized vars) can cause SinCos to return NaN/Inf, so catch that here. Similar to what is done in FRotator::Quaternion().
 #if ENABLE_NAN_DIAGNOSTIC || (DO_CHECK && !UE_BUILD_SHIPPING)
-	if (FMath::Abs(Pitch) > FLOAT_NON_FRACTIONAL ||
-		FMath::Abs(Yaw  ) > FLOAT_NON_FRACTIONAL ||
-		FMath::Abs(Roll ) > FLOAT_NON_FRACTIONAL)
+	if (FMath::Abs(Pitch) > UE_FLOAT_NON_FRACTIONAL ||
+		FMath::Abs(Yaw  ) > UE_FLOAT_NON_FRACTIONAL ||
+		FMath::Abs(Roll ) > UE_FLOAT_NON_FRACTIONAL)
 	{
 		logOrEnsureNanError(TEXT("FRotator::Vector() provided with unreasonably large input values (%s), possible use of uninitialized variable?"), *ToString());
 	}
@@ -385,7 +381,7 @@ FQuat4f FRotator3f::Quaternion() const
 
 #if PLATFORM_ENABLE_VECTORINTRINSICS
 	const VectorRegister4Float Angles = MakeVectorRegisterFloat(Pitch, Yaw, Roll, 0.0f);
-	const VectorRegister4Float AnglesNoWinding = VectorMod(Angles, GlobalVectorConstants::Float360);
+	const VectorRegister4Float AnglesNoWinding = VectorMod360(Angles);
 	const VectorRegister4Float HalfAngles = VectorMultiply(AnglesNoWinding, GlobalVectorConstants::DEG_TO_RAD_HALF);
 
 	VectorRegister4Float SinAngles, CosAngles;
@@ -414,7 +410,7 @@ FQuat4f FRotator3f::Quaternion() const
 	const VectorRegister4Float Result = VectorAdd(LeftTerm, RightTerm);	
 	FQuat4f RotationQuat = FQuat4f::MakeFromVectorRegister(Result);
 #else
-	const float DEG_TO_RAD = PI/(180.f);
+	const float DEG_TO_RAD = UE_PI/(180.f);
 	const float RADS_DIVIDED_BY_2 = DEG_TO_RAD/2.f;
 	float SP, SY, SR;
 	float CP, CY, CR;
@@ -454,7 +450,7 @@ FQuat4d FRotator3d::Quaternion() const
 
 #if PLATFORM_ENABLE_VECTORINTRINSICS
 	const VectorRegister4Double Angles = MakeVectorRegisterDouble(Pitch, Yaw, Roll, 0.0);
-	const VectorRegister4Double AnglesNoWinding = VectorMod(Angles, GlobalVectorConstants::Double360);
+	const VectorRegister4Double AnglesNoWinding = VectorMod360(Angles);
 	const VectorRegister4Double HalfAngles = VectorMultiply(AnglesNoWinding, GlobalVectorConstants::DOUBLE_DEG_TO_RAD_HALF);
 
 	VectorRegister4Double SinAngles, CosAngles;
@@ -483,7 +479,7 @@ FQuat4d FRotator3d::Quaternion() const
 	const VectorRegister4Double Result = VectorAdd(LeftTerm, RightTerm);
 	FQuat4d RotationQuat = FQuat4d::MakeFromVectorRegister(Result);
 #else
-	const double DEG_TO_RAD = DOUBLE_PI / (180.0);
+	const double DEG_TO_RAD = UE_DOUBLE_PI / (180.0);
 	const double RADS_DIVIDED_BY_2 = DEG_TO_RAD / 2.0;
 	double SP, SY, SR;
 	double CP, CY, CR;
@@ -568,7 +564,7 @@ UE::Math::TRotator<T> UE::Math::TMatrix<T>::Rotator() const
 	const TVector		XAxis	= GetScaledAxis( EAxis::X );
 	const TVector		YAxis	= GetScaledAxis( EAxis::Y );
 	const TVector		ZAxis	= GetScaledAxis( EAxis::Z );
-	const T RadToDeg = T(180.0 / DOUBLE_PI);
+	const T RadToDeg = T(180.0 / UE_DOUBLE_PI);
 
 	TRotator Rotator	= TRotator(
 									FMath::Atan2( XAxis.Z, FMath::Sqrt(FMath::Square(XAxis.X)+FMath::Square(XAxis.Y)) ) * RadToDeg,
@@ -619,7 +615,7 @@ namespace Math
 		// but that isn't the case for us, so I went through different testing, and finally found the case 
 		// where both of world lives happily. 
 		const float SINGULARITY_THRESHOLD = 0.4999995f;
-		const float RAD_TO_DEG = (180.f / PI);
+		const float RAD_TO_DEG = (180.f / UE_PI);
 		float Pitch, Yaw, Roll;
 
 		if (SingularityTest < -SINGULARITY_THRESHOLD)
@@ -663,7 +659,7 @@ namespace Math
 		const double YawX = (1.0 - 2.0 * (FMath::Square(Y) + FMath::Square(Z)));
 
 		const double SINGULARITY_THRESHOLD = 0.4999995;
-		const double RAD_TO_DEG = (180.0 / DOUBLE_PI);
+		const double RAD_TO_DEG = (180.0 / UE_DOUBLE_PI);
 		double Pitch, Yaw, Roll;
 
 		if (SingularityTest < -SINGULARITY_THRESHOLD)
@@ -1042,7 +1038,7 @@ namespace Math
 
 		//UE_LOG(LogUnrealMath, Log,  TEXT("CosAngle: %f Angle: %f"), CosAngle, Angle );
 
-		if ( FMath::Abs(Angle) < T(KINDA_SMALL_NUMBER))
+		if ( FMath::Abs(Angle) < T(UE_KINDA_SMALL_NUMBER))
 		{
 			return quat1;
 		}
@@ -1106,7 +1102,7 @@ namespace Math
 			Q = *this;
 
 			// Make sure we have a non null SquareSum. It shouldn't happen with a quaternion, but better be safe.
-			if (Q.SizeSquared() <= (T)SMALL_NUMBER)
+			if (Q.SizeSquared() <= (T)UE_SMALL_NUMBER)
 			{
 				Q = TQuat<T>::Identity;
 			}
@@ -1128,7 +1124,7 @@ namespace Math
 			}
 		}
 
-		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES)
+		if (Ar.EngineNetVer() >= HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES && Ar.EngineNetVer() != HISTORY_21_AND_VIEWPITCH_ONLY_DO_NOT_USE)
 		{
 			Ar << Q.X << Q.Y << Q.Z;
 		}
@@ -1229,7 +1225,7 @@ namespace Math
 			const T Angle = FMath::Acos(W);
 			const T SinAngle = FMath::Sin(Angle);
 
-			if (FMath::Abs(SinAngle) >= T(SMALL_NUMBER))
+			if (FMath::Abs(SinAngle) >= T(UE_SMALL_NUMBER))
 			{
 				const T Scale = Angle / SinAngle;
 				Result.X = Scale * X;
@@ -1256,7 +1252,7 @@ namespace Math
 		TQuat<T>  Result;
 		Result.W = FMath::Cos(Angle);
 
-		if (FMath::Abs(SinAngle) >= T(SMALL_NUMBER))
+		if (FMath::Abs(SinAngle) >= T(UE_SMALL_NUMBER))
 		{
 			const T Scale = SinAngle / Angle;
 			Result.X = Scale * X;
@@ -1534,7 +1530,7 @@ struct SegmentDistToSegment_Solver
 		FVector::FReal N1;
 		FVector::FReal N2;
 
-		if (bLinesAreNearlyParallel || D < KINDA_SMALL_NUMBER)
+		if (bLinesAreNearlyParallel || D < UE_KINDA_SMALL_NUMBER)
 		{
 			// the lines are almost parallel
 			N1 = 0.f;	// force using point A on segment S1
@@ -1606,8 +1602,8 @@ struct SegmentDistToSegment_Solver
 		}
 
 		// finally do the division to get the points' location
-		const FVector::FReal T1 = (FMath::Abs(N1) < KINDA_SMALL_NUMBER ? 0.f : N1 / D1);
-		const FVector::FReal T2 = (FMath::Abs(N2) < KINDA_SMALL_NUMBER ? 0.f : N2 / D2);
+		const FVector::FReal T1 = (FMath::Abs(N1) < UE_KINDA_SMALL_NUMBER ? 0.f : N1 / D1);
+		const FVector::FReal T2 = (FMath::Abs(N2) < UE_KINDA_SMALL_NUMBER ? 0.f : N2 / D2);
 
 		// return the closest points
 		OutP1 = A1 + T1 * S1;
@@ -1647,7 +1643,7 @@ void FMath::SegmentDistToSegmentSafe(FVector A1, FVector B1, FVector A2, FVector
 		const	FVector::FReal	Dot12_norm = S1_norm | S2_norm;
 		const	FVector::FReal	D_norm	= Dot11_norm*Dot22_norm - Dot12_norm*Dot12_norm;	// always >= 0
 
-		Solver.bLinesAreNearlyParallel = D_norm < KINDA_SMALL_NUMBER;
+		Solver.bLinesAreNearlyParallel = D_norm < UE_KINDA_SMALL_NUMBER;
 		Solver.Solve(OutP1, OutP2);
 	}
 }
@@ -1666,7 +1662,7 @@ bool FMath::SegmentPlaneIntersection(const FVector& StartPoint, const FVector& E
 {
 	FVector::FReal T = FMath::GetTForSegmentPlaneIntersect(StartPoint, EndPoint, Plane);
 	// If the parameter value is not between 0 and 1, there is no intersection
-	if (T > -KINDA_SMALL_NUMBER && T < 1.f + KINDA_SMALL_NUMBER)
+	if (T > -UE_KINDA_SMALL_NUMBER && T < 1.f + UE_KINDA_SMALL_NUMBER)
 	{
 		out_IntersectionPoint = StartPoint + T * (EndPoint - StartPoint);
 		return true;
@@ -1766,7 +1762,7 @@ static bool ComputeProjectedSphereShaft(
 			FVector::FReal Pxa = -Pza * Nza / Nxa;
 			FVector4 P = ProjMatrix.TransformFVector4(FVector4(FVec4Real(Axis.X * Pxa),FVec4Real(Axis.Y * Pxa),FVec4Real(Pza),1));
 			FVector::FReal X = (Dot3(P,Axis) / P.W + 1.0f * AxisSign) / 2.0f * AxisSign;
-			if(FMath::IsNegative(Nxa) ^ FMath::IsNegative(AxisSign))
+			if((Nxa < FVector::FReal{0}) ^ (AxisSign < FVector::FReal{0}))
 			{
 				InOutMaxX = FMath::Min(FMath::CeilToInt32(ViewSizeX * X + ViewX),InOutMaxX);
 			}
@@ -1782,7 +1778,7 @@ static bool ComputeProjectedSphereShaft(
 			FVector::FReal Pxb = -Pzb * Nzb / Nxb;
 			FVector4 P = ProjMatrix.TransformFVector4(FVector4(FVec4Real(Axis.X * Pxb), FVec4Real(Axis.Y * Pxb),FVec4Real(Pzb),1));
 			FVector::FReal X = (Dot3(P,Axis) / P.W + 1.0f * AxisSign) / 2.0f * AxisSign;
-			if(FMath::IsNegative(Nxb) ^ FMath::IsNegative(AxisSign))
+			if((Nxb < FVector::FReal{0}) ^ (AxisSign < FVector::FReal{0}))
 			{
 				InOutMaxX = FMath::Min(FMath::CeilToInt32(ViewSizeX * X + ViewX),InOutMaxX);
 			}
@@ -1988,7 +1984,7 @@ FVector FMath::ComputeBaryCentric2D(const FVector& Point, const FVector& A, cons
 	const FVector TriNorm = (B-A) ^ (C-A);
 
 	// Check the size of the triangle is reasonable (TriNorm.Size() will be twice the triangle area)
-	if(TriNorm.SizeSquared() <= SMALL_NUMBER)
+	if(TriNorm.SizeSquared() <= UE_SMALL_NUMBER)
 	{
 		UE_LOG(LogUnrealMath, Warning, TEXT("Small triangle detected in FMath::ComputeBaryCentric2D(), can't compute valid barycentric coordinate."));
 		return FVector(0.0f, 0.0f, 0.0f);
@@ -2021,7 +2017,7 @@ FVector4 FMath::ComputeBaryCentric3D(const FVector& Point, const FVector& A, con
 	const FVector B3 = (D-A);
 
 	//check co-planarity of A,B,C,D
-	check( FMath::Abs(B1 | (B2 ^ B3)) > SMALL_NUMBER && "Coplanar points in FMath::ComputeBaryCentric3D()");
+	check( FMath::Abs(B1 | (B2 ^ B3)) > UE_SMALL_NUMBER && "Coplanar points in FMath::ComputeBaryCentric3D()");
 
 	//Transform Point into this new space
 	const FVector V = (Point - A);
@@ -2134,7 +2130,7 @@ void FMath::SphereDistToLine(FVector SphereOrigin, float SphereRadius, FVector L
 	const FVector::FReal C = LineOriginToSphereOrigin.SizeSquared() - FMath::Square(SphereRadius);
 	const FVector::FReal D	= FMath::Square(B) - 4.f * C;
 
-	if( D <= KINDA_SMALL_NUMBER )
+	if( D <= UE_KINDA_SMALL_NUMBER )
 	{
 		// line is not intersecting sphere (or is tangent at one point if D == 0 )
 		const FVector PointOnLine = LineOrigin + ( -B * 0.5f ) * NormalizedLineDir;
@@ -2269,7 +2265,7 @@ CORE_API FVector FMath::VInterpNormalRotationTo(const FVector& Current, const FV
 	DeltaQuat.ToAxisAndAngle(DeltaAxis, DeltaAngle);
 
 	// Find rotation step for this frame
-	const float RotationStepRadians = RotationSpeedDegrees * (PI / 180) * DeltaTime;
+	const float RotationStepRadians = RotationSpeedDegrees * (UE_PI / 180) * DeltaTime;
 
 	if( FMath::Abs(DeltaAngle) > RotationStepRadians )
 	{
@@ -2314,7 +2310,7 @@ CORE_API FVector FMath::VInterpTo( const FVector& Current, const FVector& Target
 	const FVector Dist = Target - Current;
 
 	// If distance is too small, just set the desired location
-	if( Dist.SizeSquared() < KINDA_SMALL_NUMBER )
+	if( Dist.SizeSquared() < UE_KINDA_SMALL_NUMBER )
 	{
 		return Target;
 	}
@@ -2355,7 +2351,7 @@ CORE_API FVector2D FMath::Vector2DInterpTo( const FVector2D& Current, const FVec
 	}
 
 	const FVector2D Dist = Target - Current;
-	if( Dist.SizeSquared() < KINDA_SMALL_NUMBER )
+	if( Dist.SizeSquared() < UE_KINDA_SMALL_NUMBER )
 	{
 		return Target;
 	}
@@ -2430,7 +2426,7 @@ CORE_API FLinearColor FMath::CInterpTo(const FLinearColor& Current, const FLinea
 	const float Dist = FLinearColor::Dist(Target, Current);
 
 	// If distance is too small, just set the desired color
-	if (Dist < KINDA_SMALL_NUMBER)
+	if (Dist < UE_KINDA_SMALL_NUMBER)
 	{
 		return Target;
 	}
@@ -2457,7 +2453,7 @@ CORE_API UE::Math::TQuat<T> FMath::QInterpConstantTo(const UE::Math::TQuat<T>& C
 	}
 
 	float DeltaInterpSpeed = FMath::Clamp<float>(DeltaTime * InterpSpeed, 0.f, 1.f);
-	float AngularDistance = FMath::Max<float>(SMALL_NUMBER, (float)(Target.AngularDistance(Current)));
+	float AngularDistance = FMath::Max<float>(UE_SMALL_NUMBER, (float)(Target.AngularDistance(Current)));
 	float Alpha = FMath::Clamp<float>(DeltaInterpSpeed / AngularDistance, 0.f, 1.f);
 
 	return UE::Math::TQuat<T>::Slerp(Current, Target, Alpha);
@@ -2493,9 +2489,9 @@ template CORE_API UE::Math::TQuat<double> FMath::QInterpTo<double>(const UE::Mat
 
 CORE_API float ClampFloatTangent( float PrevPointVal, float PrevTime, float CurPointVal, float CurTime, float NextPointVal, float NextTime )
 {
-	const float PrevToNextTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, NextTime - PrevTime );
-	const float PrevToCurTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, CurTime - PrevTime );
-	const float CurToNextTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, NextTime - CurTime );
+	const float PrevToNextTimeDiff = FMath::Max< float >( UE_KINDA_SMALL_NUMBER, NextTime - PrevTime );
+	const float PrevToCurTimeDiff = FMath::Max< float >( UE_KINDA_SMALL_NUMBER, CurTime - PrevTime );
+	const float CurToNextTimeDiff = FMath::Max< float >( UE_KINDA_SMALL_NUMBER, NextTime - CurTime );
 
 	float OutTangentVal = 0.0f;
 
@@ -2585,7 +2581,7 @@ FVector FMath::VRandCone(FVector const& Dir, float ConeHalfAngleRad)
 
 		// Get spherical coords that have an even distribution over the unit sphere
 		// Method described at http://mathworld.wolfram.com/SpherePointPicking.html	
-		float Theta = 2.f * PI * RandU;
+		float Theta = 2.f * UE_PI * RandU;
 		float Phi = FMath::Acos((2.f * RandV) - 1.f);
 
 		// restrict phi to [0, ConeHalfAngleRad]
@@ -2599,8 +2595,8 @@ FVector FMath::VRandCone(FVector const& Dir, float ConeHalfAngleRad)
 		FVector const DirZ = DirMat.GetScaledAxis( EAxis::X );		
 		FVector const DirY = DirMat.GetScaledAxis( EAxis::Y );
 
-		FVector Result = Dir.RotateAngleAxis(Phi * 180.f / PI, DirY);
-		Result = Result.RotateAngleAxis(Theta * 180.f / PI, DirZ);
+		FVector Result = Dir.RotateAngleAxis(Phi * 180.f / UE_PI, DirY);
+		Result = Result.RotateAngleAxis(Theta * 180.f / UE_PI, DirZ);
 
 		// ensure it's a unit vector (might not have been passed in that way)
 		Result = Result.GetSafeNormal();
@@ -2622,7 +2618,7 @@ FVector FMath::VRandCone(FVector const& Dir, float HorizontalConeHalfAngleRad, f
 
 		// Get spherical coords that have an even distribution over the unit sphere
 		// Method described at http://mathworld.wolfram.com/SpherePointPicking.html	
-		float Theta = 2.f * PI * RandU;
+		float Theta = 2.f * UE_PI * RandU;
 		float Phi = FMath::Acos((2.f * RandV) - 1.f);
 
 		// restrict phi to [0, ConeHalfAngleRad]
@@ -2641,8 +2637,8 @@ FVector FMath::VRandCone(FVector const& Dir, float HorizontalConeHalfAngleRad, f
 		FVector const DirZ = DirMat.GetScaledAxis( EAxis::X );		
 		FVector const DirY = DirMat.GetScaledAxis( EAxis::Y );
 
-		FVector Result = Dir.RotateAngleAxis(Phi * 180.f / PI, DirY);
-		Result = Result.RotateAngleAxis(Theta * 180.f / PI, DirZ);
+		FVector Result = Dir.RotateAngleAxis(Phi * 180.f / UE_PI, DirY);
+		Result = Result.RotateAngleAxis(Theta * 180.f / UE_PI, DirZ);
 
 		// ensure it's a unit vector (might not have been passed in that way)
 		Result = Result.GetSafeNormal();
@@ -3236,26 +3232,6 @@ float FMath::FixedTurn(float InCurrent, float InDesired, float InDeltaRate)
 			result -= FMath::Min((InCurrent + 360.f - InDesired), FMath::Abs(InDeltaRate));
 	}
 	return FRotator3f::ClampAxis(result);
-}
-
-float FMath::ClampAngle(float AngleDegrees, float MinAngleDegrees, float MaxAngleDegrees)
-{
-	float const MaxDelta = FRotator3f::ClampAxis(MaxAngleDegrees - MinAngleDegrees) * 0.5f;			// 0..180
-	float const RangeCenter = FRotator3f::ClampAxis(MinAngleDegrees + MaxDelta);						// 0..360
-	float const DeltaFromCenter = FRotator3f::NormalizeAxis(AngleDegrees - RangeCenter);				// -180..180
-
-	// maybe clamp to nearest edge
-	if (DeltaFromCenter > MaxDelta)
-	{
-		return FRotator3f::NormalizeAxis(RangeCenter + MaxDelta);
-	}
-	else if (DeltaFromCenter < -MaxDelta)
-	{
-		return FRotator3f::NormalizeAxis(RangeCenter - MaxDelta);
-	}
-
-	// already in range, just return it
-	return FRotator3f::NormalizeAxis(AngleDegrees);
 }
 
 void FMath::ApplyScaleToFloat(float& Dst, const FVector& DeltaScale, float Magnitude)

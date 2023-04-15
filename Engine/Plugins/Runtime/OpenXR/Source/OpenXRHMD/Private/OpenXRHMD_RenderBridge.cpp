@@ -12,7 +12,7 @@ bool FOpenXRRenderBridge::Present(int32& InOutSyncInterval)
 	if (OpenXRHMD)
 	{
 		OpenXRHMD->OnFinishRendering_RHIThread();
-		bNeedsNativePresent = !OpenXRHMD->IsStandaloneStereoOnlyDevice();
+		bNeedsNativePresent = !OpenXRHMD->IsStandaloneStereoOnlyDevice() && bNativePresent_RHIThread;
 	}
 
 	InOutSyncInterval = 0; // VSync off
@@ -41,17 +41,15 @@ public:
 
 	virtual void* GetGraphicsBinding() override
 	{
-		FD3D11Device* Device = GD3D11RHI->GetDevice();
-
 		Binding.type = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR;
 		Binding.next = nullptr;
-		Binding.device = Device;
+		Binding.device = GetID3D11DynamicRHI()->RHIGetDevice();
 		return &Binding;
 	}
 
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
 	{
-		return CreateSwapchain_D3D11(InSession, Format, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
+		return CreateSwapchain_D3D11(InSession, Format, OutActualFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
 	}
 
 private:
@@ -82,20 +80,16 @@ public:
 
 	virtual void* GetGraphicsBinding() override
 	{
-		FD3D12DynamicRHI* DynamicRHI = FD3D12DynamicRHI::GetD3DRHI();
-		ID3D12Device* Device = DynamicRHI->GetAdapter().GetD3DDevice();
-		ID3D12CommandQueue* Queue = DynamicRHI->RHIGetD3DCommandQueue();
-
 		Binding.type = XR_TYPE_GRAPHICS_BINDING_D3D12_KHR;
 		Binding.next = nullptr;
-		Binding.device = Device;
-		Binding.queue = Queue;
+		Binding.device = GetID3D12DynamicRHI()->RHIGetDevice(0);
+		Binding.queue = GetID3D12DynamicRHI()->RHIGetCommandQueue();
 		return &Binding;
 	}
 
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
 	{
-		return CreateSwapchain_D3D12(InSession, Format, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
+		return CreateSwapchain_D3D12(InSession, Format, OutActualFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
 	}
 
 private:
@@ -122,7 +116,8 @@ public:
 		Requirements.maxApiVersionSupported = 0;
 		XR_ENSURE(GetOpenGLGraphicsRequirementsKHR(InInstance, InSystem, &Requirements));
 
-		XrVersion RHIVersion = XR_MAKE_VERSION(FOpenGL::GetMajorVersion(), FOpenGL::GetMinorVersion(), 0);
+		IOpenGLDynamicRHI* RHI = GetIOpenGLDynamicRHI();
+		XrVersion RHIVersion = XR_MAKE_VERSION(RHI->RHIGetGLMajorVersion(), RHI->RHIGetGLMinorVersion(), 0);
 		if (RHIVersion < Requirements.minApiVersionSupported) //-V547
 		{
 			UE_LOG(LogHMD, Fatal, TEXT("The OpenGL API version does not meet the minimum version required by the OpenXR runtime"));
@@ -146,9 +141,9 @@ public:
 		return nullptr;
 	}
 
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
 	{
-		return CreateSwapchain_OpenGL(InSession, Format, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
+		return CreateSwapchain_OpenGL(InSession, Format, OutActualFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
 	}
 
 private:
@@ -178,7 +173,8 @@ public:
 		XR_ENSURE(GetOpenGLESGraphicsRequirementsKHR(InInstance, InSystem, &Requirements));
 
 #if PLATFORM_ANDROID
-		XrVersion RHIVersion = XR_MAKE_VERSION(FAndroidOpenGL::GLMajorVerion, FAndroidOpenGL::GLMinorVersion, 0);
+		IOpenGLDynamicRHI* RHI = GetIOpenGLDynamicRHI();
+		XrVersion RHIVersion = XR_MAKE_VERSION(RHI->RHIGetGLMajorVersion(), RHI->RHIGetGLMinorVersion(), 0);
 		if (RHIVersion < Requirements.minApiVersionSupported) //-V547
 		{
 			UE_LOG(LogHMD, Fatal, TEXT("The OpenGLES API version does not meet the minimum version required by the OpenXR runtime"));
@@ -194,19 +190,20 @@ public:
 	virtual void* GetGraphicsBinding() override
 	{
 #if PLATFORM_ANDROID
+		IOpenGLDynamicRHI* RHI = GetIOpenGLDynamicRHI();
 		Binding.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
 		Binding.next = nullptr;
-		Binding.display = AndroidEGL::GetInstance()->GetDisplay();
-		Binding.config = AndroidEGL::GetInstance()->GetConfig();
-		Binding.context = AndroidEGL::GetInstance()->GetRenderingContext()->eglContext;
+		Binding.display = RHI->RHIGetEGLDisplay();
+		Binding.config = RHI->RHIGetEGLConfig();
+		Binding.context = RHI->RHIGetEGLContext();
 		return &Binding;
 #endif
 		return nullptr;
 	}
 
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
 	{
-		return CreateSwapchain_OpenGLES(InSession, Format, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
+		return CreateSwapchain_OpenGLES(InSession, Format, OutActualFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
 	}
 
 private:
@@ -237,11 +234,14 @@ public:
 		Requirements.maxApiVersionSupported = 0;
 		XR_ENSURE(GetVulkanGraphicsRequirementsKHR(InInstance, InSystem, &Requirements));
 
+		IVulkanDynamicRHI* VulkanRHI = GetIVulkanDynamicRHI();
+		const uint32 VulkanVersion = VulkanRHI->RHIGetVulkanVersion();
+
 		// The extension uses the OpenXR version format instead of the Vulkan one
 		XrVersion RHIVersion = XR_MAKE_VERSION(
-			VK_VERSION_MAJOR(UE_VK_API_VERSION),
-			VK_VERSION_MINOR(UE_VK_API_VERSION),
-			VK_VERSION_PATCH(UE_VK_API_VERSION)
+			VK_VERSION_MAJOR(VulkanVersion),
+			VK_VERSION_MINOR(VulkanVersion),
+			VK_VERSION_PATCH(VulkanVersion)
 		);
 		if (RHIVersion < Requirements.minApiVersionSupported) //-V547
 		{
@@ -255,46 +255,36 @@ public:
 
 		PFN_xrGetVulkanGraphicsDeviceKHR GetVulkanGraphicsDeviceKHR;
 		XR_ENSURE(xrGetInstanceProcAddr(Instance, "xrGetVulkanGraphicsDeviceKHR", (PFN_xrVoidFunction*)&GetVulkanGraphicsDeviceKHR));
-		XR_ENSURE(GetVulkanGraphicsDeviceKHR(Instance, System, GVulkanRHI->GetInstance(), &Gpu));
+		XR_ENSURE(GetVulkanGraphicsDeviceKHR(Instance, System, VulkanRHI->RHIGetVkInstance(), &Gpu));
 	}
 
 	virtual void* GetGraphicsBinding() override
 	{
-		FVulkanDevice* Device = GVulkanRHI->GetDevice();
-		FVulkanQueue* Queue = Device->GetGraphicsQueue();
+		IVulkanDynamicRHI* VulkanRHI = GetIVulkanDynamicRHI();
 
 		Binding.type = XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR;
 		Binding.next = nullptr;
-		Binding.instance = GVulkanRHI->GetInstance();
-		Binding.physicalDevice = Device->GetPhysicalHandle();
-		Binding.device = Device->GetInstanceHandle();
-		Binding.queueFamilyIndex = Queue->GetFamilyIndex();
+		Binding.instance = VulkanRHI->RHIGetVkInstance();
+		Binding.physicalDevice = VulkanRHI->RHIGetVkPhysicalDevice();
+		Binding.device = VulkanRHI->RHIGetVkDevice();
+		Binding.queueFamilyIndex = VulkanRHI->RHIGetGraphicsQueueFamilyIndex();
 		Binding.queueIndex = 0;
 		return &Binding;
 	}
 
 	virtual uint64 GetGraphicsAdapterLuid() override
 	{
-#if VULKAN_SUPPORTS_DRIVER_PROPERTIES
-		if (!AdapterLuid && GVulkanRHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2)
+		if (!AdapterLuid)
 		{
-			VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
-			VkPhysicalDeviceProperties2KHR GpuProps2;
-			ZeroVulkanStruct(GpuProps2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR);
-			GpuProps2.pNext = &GpuIdProps;
-			ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR);
-
-			VulkanRHI::vkGetPhysicalDeviceProperties2KHR(Gpu, &GpuProps2);
-			check(GpuIdProps.deviceLUIDValid);
-			AdapterLuid = reinterpret_cast<const uint64&>(GpuIdProps.deviceLUID);
+			AdapterLuid = GetIVulkanDynamicRHI()->RHIGetGraphicsAdapterLUID(Gpu);
 		}
-#endif
+
 		return AdapterLuid;
 	}
 
-	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
+	virtual FXRSwapChainPtr CreateSwapchain(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding) override final
 	{
-		return CreateSwapchain_Vulkan(InSession, Format, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
+		return CreateSwapchain_Vulkan(InSession, Format, OutActualFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, ClearValueBinding);
 	}
 
 private:

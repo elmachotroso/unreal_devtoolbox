@@ -3,25 +3,26 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "RendererInterface.h"
-#include "Containers/Array.h"
-#include "Engine/EngineTypes.h"
-#include "Shader.h"
-#include "RenderResource.h"
-#include "RenderGraphResources.h"
 #include "HairStrandsMeshProjection.h"
-#include "GPUSkinCache.h"
 
-FHairStrandsProjectionMeshData::Section ConvertMeshSection(const FCachedGeometry::Section& In, const FTransform& T);
+struct FCachedGeometry;
+class UGeometryCacheComponent;
+class FGlobalShaderMap;
+class FRDGBuilder;
+class USkeletalMeshComponent;
+
+FHairStrandsProjectionMeshData::Section ConvertMeshSection(FCachedGeometry const& InCachedGeometry, int32 InSectionIndex);
 
 void BuildCacheGeometry(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap, 
-	USkeletalMeshComponent* SkeletalMeshComponent, 
-	FCachedGeometry& CachedGeometry);
+	const USkeletalMeshComponent* SkeletalMeshComponent, 
+	const bool bOutputTriangleData,
+	FCachedGeometry& OutCachedGeometry);
 
 void BuildCacheGeometry(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap, 
-	class UGeometryCacheComponent* GeometryCacheComponent, 
-	FCachedGeometry& CachedGeometry);
+	const UGeometryCacheComponent* GeometryCacheComponent,
+	const bool bOutputTriangleData,
+	FCachedGeometry& OutCachedGeometry);

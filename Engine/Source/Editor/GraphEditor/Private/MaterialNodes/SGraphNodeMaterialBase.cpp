@@ -1,27 +1,72 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialNodes/SGraphNodeMaterialBase.h"
-#include "Rendering/DrawElements.h"
-#include "UnrealClient.h"
-#include "RenderingThread.h"
-#include "Misc/App.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/SViewport.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "MaterialGraph/MaterialGraph.h"
+
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Engine/World.h"
+#include "GenericPlatform/ICursor.h"
+#include "GraphEditor.h"
+#include "GraphEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "Layout/Geometry.h"
+#include "Layout/Margin.h"
+#include "Layout/SlateRect.h"
+#include "MaterialGraph/MaterialGraph.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
-#include "GraphEditorSettings.h"
-#include "SGraphPanel.h"
-#include "TutorialMetaData.h"
-#include "Materials/MaterialExpressionMakeMaterialAttributes.h"
+#include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionBreakMaterialAttributes.h"
+#include "Materials/MaterialExpressionMakeMaterialAttributes.h"
+#include "Materials/MaterialFunction.h"
+#include "Math/Color.h"
+#include "Math/IntPoint.h"
+#include "Math/IntRect.h"
+#include "Misc/App.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "RHI.h"
+#include "RHICommandList.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
+#include "RenderingThread.h"
+#include "SGraphPanel.h"
+#include "SGraphPin.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/Casts.h"
+#include "TutorialMetaData.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UnrealClient.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SViewport.h"
+#include "Widgets/Text/STextBlock.h"
 
+class FWidgetStyle;
+class SWidget;
+struct FSlateBrush;
 
+static const FName NAME_Pin_NotConnectable("Graph.Pin.Dummy");
+static const FSlateBrush* CacheImg_Pin_NotConnectable = nullptr;
 
 /**
 * Simple representation of the backbuffer that the preview canvas renders to
@@ -221,7 +266,7 @@ void FPreviewElement::DrawRenderThread(FRHICommandListImmediate& RHICmdList, con
 		RenderTarget->SetRenderTargetTexture(*(FTexture2DRHIRef*)InWindowBackBuffer);
 		{
 			// Check realtime mode for whether to pass current time to canvas
-			float CurrentTime = bIsRealtime ? (FApp::GetCurrentTime() - GStartTime) : 0.0f;
+			double CurrentTime = bIsRealtime ? (FApp::GetCurrentTime() - GStartTime) : 0.0;
 			float DeltaTime = bIsRealtime ? FApp::GetDeltaTime() : 0.0f;
 
 			FCanvas Canvas(RenderTarget, NULL, FGameTime::CreateUndilated(CurrentTime, DeltaTime), GMaxRHIFeatureLevel);
@@ -272,7 +317,7 @@ void SGraphNodeMaterialBase::CreatePinWidgets()
 		bool bPinDesiresToBeHidden = CurPin->bHidden || (bHideNoConnectionPins && !bPinHasConections); 
 
 		UMaterialGraph* MaterialGraph = CastChecked<UMaterialGraph>(GraphNode->GetGraph());
-		if (MaterialNode && MaterialNode->MaterialExpression && MaterialGraph->MaterialFunction == nullptr)
+		if (MaterialNode && MaterialNode->MaterialExpression && MaterialGraph->MaterialFunction == nullptr && !MaterialGraph->MaterialInputs.IsEmpty())
 		{
 			bool bIsAMakeAttrNode = MaterialNode->MaterialExpression->IsA(UMaterialExpressionMakeMaterialAttributes::StaticClass());
 			bool bIsABreakAttrNode = MaterialNode->MaterialExpression->IsA(UMaterialExpressionBreakMaterialAttributes::StaticClass());
@@ -290,6 +335,16 @@ void SGraphNodeMaterialBase::CreatePinWidgets()
 		{
 			TSharedPtr<SGraphPin> NewPin = CreatePinWidget(CurPin);
 			check(NewPin.IsValid());
+
+			// Assign an custom icon to not connectible pins
+			if (CurPin->bNotConnectable)
+			{
+				if (!CacheImg_Pin_NotConnectable)
+				{
+					CacheImg_Pin_NotConnectable = FAppStyle::Get().GetBrush(NAME_Pin_NotConnectable);
+				}
+				NewPin->SetCustomPinIcon(CacheImg_Pin_NotConnectable, CacheImg_Pin_NotConnectable);
+			}
 
 			this->AddPin(NewPin.ToSharedRef());
 		}
@@ -309,6 +364,14 @@ void SGraphNodeMaterialBase::MoveTo(const FVector2D& NewPosition, FNodeSet& Node
 void SGraphNodeMaterialBase::AddPin( const TSharedRef<SGraphPin>& PinToAdd )
 {
 	PinToAdd->SetOwner( SharedThis(this) );
+
+	// Set visibility on advanced view pins
+	const UEdGraphPin* PinObj = PinToAdd->GetPinObj();
+	const bool bAdvancedParameter = (PinObj != nullptr) && PinObj->bAdvancedView;
+	if (bAdvancedParameter)
+	{
+		PinToAdd->SetVisibility(TAttribute<EVisibility>(PinToAdd, &SGraphPin::IsPinVisibleAsAdvanced));
+	}
 
 	if (PinToAdd->GetDirection() == EEdGraphPinDirection::EGPD_Input)
 	{
@@ -348,7 +411,25 @@ void SGraphNodeMaterialBase::CreateBelowPinControls(TSharedPtr<SVerticalBox> Mai
 {
 	if (GraphNode && MainBox.IsValid())
 	{
-		int32 LeftPinCount = InputPins.Num();
+		// Count the number of visible input pins on the left
+		int32 LeftPinCount = 0;
+		if (GraphNode->AdvancedPinDisplay == ENodeAdvancedPins::Hidden)
+		{
+			// Advanced view pins are hidden so exclude them from the pin count
+			for (int32 i = 0; i < InputPins.Num(); ++i)
+			{
+				const UEdGraphPin* PinObj = InputPins[i]->GetPinObj();
+				if (!PinObj->bAdvancedView)
+				{
+					LeftPinCount++;
+				}
+			}
+		}
+		else
+		{
+			LeftPinCount = InputPins.Num();
+		}
+
 		int32 RightPinCount = OutputPins.Num();
 
 		const float NegativeHPad = FMath::Max<float>(-Settings->PaddingTowardsNodeEdge, 0.0f);
@@ -405,7 +486,7 @@ void SGraphNodeMaterialBase::SetDefaultTitleAreaWidget(TSharedRef<SOverlay> Defa
 			.OnCheckStateChanged( this, &SGraphNodeMaterialBase::OnExpressionPreviewChanged )
 			.IsChecked( IsExpressionPreviewChecked() )
 			.Cursor(EMouseCursor::Default)
-			.Style(FEditorStyle::Get(), "Graph.Node.AdvancedView")
+			.Style(FAppStyle::Get(), "Graph.Node.AdvancedView")
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -424,7 +505,7 @@ TSharedRef<SWidget> SGraphNodeMaterialBase::CreateNodeContentArea()
 {
 	// NODE CONTENT AREA
 	return SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+		.BorderImage( FAppStyle::GetBrush("NoBorder") )
 		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Fill)
 		[
@@ -444,6 +525,14 @@ TSharedRef<SWidget> SGraphNodeMaterialBase::CreateNodeContentArea()
 				SAssignNew(RightNodeBox, SVerticalBox)
 			]
 		];
+}
+
+void SGraphNodeMaterialBase::OnAdvancedViewChanged(const ECheckBoxState NewCheckedState)
+{
+	SGraphNode::OnAdvancedViewChanged(NewCheckedState);
+
+	// Update the graph node so that the preview is recreated to update its position
+	UpdateGraphNode();
 }
 
 TSharedRef<SWidget> SGraphNodeMaterialBase::CreatePreviewWidget()
@@ -473,7 +562,7 @@ TSharedRef<SWidget> SGraphNodeMaterialBase::CreatePreviewWidget()
 			[
 				SNew(SBorder)
 				.Padding(CentralPadding)
-				.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+				.BorderImage( FAppStyle::GetBrush("NoBorder") )
 				[
 					SNew(SOverlay)
 					+ SOverlay::Slot()
@@ -531,7 +620,7 @@ ECheckBoxState SGraphNodeMaterialBase::IsExpressionPreviewChecked() const
 
 const FSlateBrush* SGraphNodeMaterialBase::GetExpressionPreviewArrow() const
 {
-	return FEditorStyle::GetBrush(MaterialNode->MaterialExpression->bCollapsed ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
+	return FAppStyle::GetBrush(MaterialNode->MaterialExpression->bCollapsed ? TEXT("Icons.ChevronDown") : TEXT("Icons.ChevronUp"));
 }
 
 void SGraphNodeMaterialBase::PopulateMetaTag(FGraphNodeMetaData* TagMeta) const

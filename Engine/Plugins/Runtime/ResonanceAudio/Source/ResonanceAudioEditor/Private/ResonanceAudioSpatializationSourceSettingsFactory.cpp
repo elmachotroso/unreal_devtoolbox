@@ -4,8 +4,13 @@
 
 #include "ResonanceAudioSpatializationSourceSettingsFactory.h"
 #include "ResonanceAudioSpatializationSourceSettings.h"
+#include "ResonanceAudioConstants.h"
+
+#include "AudioAnalytics.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ResonanceAudioSpatializationSourceSettingsFactory)
 
 FText FAssetTypeActions_ResonanceAudioSpatializationSourceSettings::GetName() const
 {
@@ -49,6 +54,7 @@ UResonanceAudioSpatializationSourceSettingsFactory::UResonanceAudioSpatializatio
 
 UObject* UResonanceAudioSpatializationSourceSettingsFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName InName, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
+	Audio::Analytics::RecordEvent_Usage(TEXT("ResonanceAudio.SpatializationSourceSettingsCreated"));
 	return Cast<UObject>(NewObject<UResonanceAudioSpatializationSourceSettings>(InParent, InName, Flags));
 }
 
@@ -56,3 +62,4 @@ uint32 UResonanceAudioSpatializationSourceSettingsFactory::GetMenuCategories() c
 {
 	return EAssetTypeCategories::Sounds;
 }
+

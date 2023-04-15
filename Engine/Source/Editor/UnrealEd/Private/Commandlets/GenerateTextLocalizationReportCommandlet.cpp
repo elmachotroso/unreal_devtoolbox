@@ -1,9 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/GenerateTextLocalizationReportCommandlet.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
-#include "Internationalization/LocKeyFuncs.h"
+
+#include "Commandlets/Commandlet.h"
+#include "CoreGlobals.h"
+#include "Internationalization/CulturePointer.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "LocTextHelper.h"
+#include "LocalizationSourceControlUtil.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/CString.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/DateTime.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGenerateTextLocalizationReportCommandlet, Log, All);
 
@@ -30,7 +42,6 @@ int32 UGenerateTextLocalizationReportCommandlet::Main(const FString& Params)
 	else
 	{
 		UE_LOG(LogGenerateTextLocalizationReportCommandlet, Error, TEXT("No config specified."));
-		return -1;
 	}
 
 	// Set config section.
@@ -91,7 +102,7 @@ int32 UGenerateTextLocalizationReportCommandlet::Main(const FString& Params)
 
 	if( bConflictReport )
 	{
-		if( !ProcessConflictReport( DestinationPath ) )
+		if( !ProcessConflictReport( DestinationPath) )
 		{
 			UE_LOG(LogGenerateTextLocalizationReportCommandlet, Error, TEXT("Failed to generate localization conflict report."));
 			return -1;
@@ -177,11 +188,39 @@ bool UGenerateTextLocalizationReportCommandlet::ProcessConflictReport(const FStr
 		UE_LOG(LogGenerateTextLocalizationReportCommandlet, Error, TEXT("No conflict report name specified."));
 		return false;
 	}
-
+	
+	EConflictReportFormat ConflictReportFormat = EConflictReportFormat::None;
+	static const FString TxtExtension = TEXT(".txt");
+	static const FString CSVExtension = TEXT(".csv");
+	FString FileExtension = FPaths::GetExtension(ConflictReportName, true);
+	if (FileExtension == TxtExtension)
+	{
+		ConflictReportFormat = EConflictReportFormat::Txt;
+	}
+	else if (FileExtension == CSVExtension)
+	{
+		ConflictReportFormat = EConflictReportFormat::CSV;
+	}
+	// This is an unsupported extension or an empty extension
+	else
+	{
+		// We default to csv 
+		ConflictReportFormat = EConflictReportFormat::CSV;
+		// We found a file extension somewhere in the specified name. 
+		if (!FileExtension.IsEmpty())
+		{
+			UE_LOG(LogGenerateTextLocalizationReportCommandlet, Warning, TEXT("The conflict report filename %s has an unsupported extension. Only .txt and .csv is supported at this time."), *ConflictReportName);
+		}
+		else
+		{
+			UE_LOG(LogGenerateTextLocalizationReportCommandlet, Warning, TEXT("The conflict report filename %s has no extension. Defaulting the report to be generated as a .csv file."), *ConflictReportName);
+		}
+		ConflictReportName = FPaths::SetExtension(ConflictReportName, CSVExtension);
+	}
 	const FString ReportFilePath = (DestinationPath / ConflictReportName);
 
 	FText ReportSaveError;
-	if (!GatherManifestHelper->SaveConflictReport(ReportFilePath, &ReportSaveError))
+	if (!GatherManifestHelper->SaveConflictReport(ReportFilePath, ConflictReportFormat , &ReportSaveError))
 	{
 		UE_LOG(LogGenerateTextLocalizationReportCommandlet, Error, TEXT("%s"), *ReportSaveError.ToString());
 		return false;

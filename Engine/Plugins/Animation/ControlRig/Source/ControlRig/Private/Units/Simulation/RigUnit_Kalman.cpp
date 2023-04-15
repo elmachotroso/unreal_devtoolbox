@@ -3,6 +3,8 @@
 #include "Units/Simulation/RigUnit_Kalman.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_Kalman)
+
 FRigUnit_KalmanFloat_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -17,9 +19,7 @@ FRigUnit_KalmanFloat_Execute()
 		return;
 	}
 
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(BufferSize);
-#endif
 
 	if (Context.State == EControlRigState::Init)
 	{
@@ -70,9 +70,7 @@ FRigUnit_KalmanVector_Execute()
 		return;
 	}
 
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(BufferSize);
-#endif
 
 	if (Context.State == EControlRigState::Init)
 	{
@@ -123,9 +121,7 @@ FRigUnit_KalmanTransform_Execute()
 		return;
 	}
 
-#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	Buffer.SetNum(BufferSize);
-#endif
 
 	if (Context.State == EControlRigState::Init)
 	{

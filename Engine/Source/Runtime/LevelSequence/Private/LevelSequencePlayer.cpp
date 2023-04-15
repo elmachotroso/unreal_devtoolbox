@@ -24,7 +24,11 @@
 #include "LevelSequenceActor.h"
 #include "Modules/ModuleManager.h"
 #include "LevelUtils.h"
-#include "Core/Public/ProfilingDebugging/CsvProfiler.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "LevelSequenceModule.h"
+#include "Generators/MovieSceneEasingCurves.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequencePlayer)
 
 /* ULevelSequencePlayer structors
  *****************************************************************************/
@@ -61,6 +65,8 @@ ULevelSequencePlayer* ULevelSequencePlayer::CreateLevelSequencePlayer(UObject* W
 	ALevelSequenceActor* Actor = World->SpawnActor<ALevelSequenceActor>(SpawnParams);
 
 	Actor->PlaybackSettings = Settings;
+	Actor->SequencePlayer->SetPlaybackSettings(Settings);
+
 	Actor->SetSequence(InLevelSequence);
 
 	Actor->InitializePlayer();
@@ -75,10 +81,10 @@ ULevelSequencePlayer* ULevelSequencePlayer::CreateLevelSequencePlayer(UObject* W
 /* ULevelSequencePlayer implementation
  *****************************************************************************/
 
-void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings)
+void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FLevelSequenceCameraSettings& InCameraSettings)
 {
 	// Never use the level to resolve bindings unless we're playing back within a streamed or instanced level
-	StreamedLevelAssetPath = NAME_None;
+	StreamedLevelAssetPath = FTopLevelAssetPath();
 
 	World = InLevel->OwningWorld;
 	Level = InLevel;
@@ -94,14 +100,12 @@ void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* I
 		int32 SlashPos = 0;
 		if (StreamedLevelPackage.FindLastChar('/', SlashPos) && SlashPos < StreamedLevelPackage.Len()-1)
 		{
-			// Construct the asset path by appending .MapName to the end for efficient comparison with FSoftObjectPath::GetAssetPathName
-			const TCHAR* Pair[] = { *StreamedLevelPackage, &StreamedLevelPackage[SlashPos+1] };
-			StreamedLevelAssetPath = *FString::Join(Pair, TEXT("."));
+			StreamedLevelAssetPath = FTopLevelAssetPath(*StreamedLevelPackage, &StreamedLevelPackage[SlashPos+1]);
 		}
 	}
 
 	SpawnRegister = MakeShareable(new FLevelSequenceSpawnRegister);
-	UMovieSceneSequencePlayer::Initialize(InLevelSequence, Settings);
+	UMovieSceneSequencePlayer::Initialize(InLevelSequence);
 }
 
 void ULevelSequencePlayer::ResolveBoundObjects(const FGuid& InBindingId, FMovieSceneSequenceID SequenceID, UMovieSceneSequence& InSequence, UObject* ResolutionContext, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
@@ -110,7 +114,7 @@ void ULevelSequencePlayer::ResolveBoundObjects(const FGuid& InBindingId, FMovieS
 
 	if (bAllowDefault)
 	{
-		if (StreamedLevelAssetPath != NAME_None && ResolutionContext && ResolutionContext->IsA<UWorld>())
+		if (StreamedLevelAssetPath.IsValid() && ResolutionContext && ResolutionContext->IsA<UWorld>())
 		{
 			ResolutionContext = Level.Get();
 		}
@@ -230,6 +234,14 @@ TTuple<EViewTargetBlendFunction, float> BuiltInEasingTypeToBlendFunction(EMovieS
 
 void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams)
 {
+	UCameraComponent* CameraComponent = MovieSceneHelpers::CameraComponentFromRuntimeObject(CameraObject);
+	if (CameraComponent && CameraComponent->GetOwner() != CameraObject)
+	{
+		CameraObject = CameraComponent->GetOwner();
+	}
+
+	CachedCameraComponent = CameraComponent;
+	
 	if (World == nullptr || World->GetGameInstance() == nullptr)
 	{
 		return;
@@ -245,14 +257,6 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 
 	// skip same view target
 	AActor* ViewTarget = PC->GetViewTarget();
-
-	UCameraComponent* CameraComponent = MovieSceneHelpers::CameraComponentFromRuntimeObject(CameraObject);
-	if (CameraComponent && CameraComponent->GetOwner() != CameraObject)
-	{
-		CameraObject = CameraComponent->GetOwner();
-	}
-
-	CachedCameraComponent = CameraComponent;
 
 	if (!CanUpdateCameraCut())
 	{
@@ -329,6 +333,11 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 	FViewTargetTransitionParams TransitionParams;
 	if (CameraCutParams.BlendType.IsSet())
 	{
+		UE_LOG(LogLevelSequence, Log, TEXT("Blending into new camera cut: '%s' -> '%s' (blend time: %f)"),
+			(ViewTarget ? *ViewTarget->GetName() : TEXT("None")),
+			(CameraObject ? *CameraObject->GetName() : TEXT("None")),
+			TransitionParams.BlendTime);
+
 		// Convert known easing functions to their corresponding view target blend parameters.
 		TTuple<EViewTargetBlendFunction, float> BlendFunctionAndExp = BuiltInEasingTypeToBlendFunction(CameraCutParams.BlendType.GetValue());
 		TransitionParams.BlendTime = CameraCutParams.BlendTime;
@@ -345,9 +354,15 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSc
 			const AActor* PendingViewTarget = PC->PlayerCameraManager->PendingViewTarget.Target;
 			if (CameraActor != nullptr && PendingViewTarget == CameraActor)
 			{
+				UE_LOG(LogLevelSequence, Log, TEXT("Camera transition aborted, we are already blending towards the intended camera"));
 				bDoSetViewTarget = false;
 			}
 		}
+	}
+	else
+	{
+		UE_LOG(LogLevelSequence, Log, TEXT("Starting new camera cut: '%s'"),
+			(CameraObject ? *CameraObject->GetName() : TEXT("None")));
 	}
 	if (bDoSetViewTarget)
 	{
@@ -564,3 +579,4 @@ void ULevelSequencePlayer::RewindForReplay()
 	NetSyncProps.LastKnownStatus = EMovieScenePlayerStatus::Stopped;
 	NetSyncProps.LastKnownNumLoops = 0;
 }
+

@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NameTableArchive.h"
-#include "AssetRegistryPrivate.h"
+
 #include "AssetRegistry/AssetRegistryState.h"
+#include "AssetRegistryPrivate.h"
+#include "UObject/NameTypes.h"
 
 
 class FNameTableErrorArchive : public FArchive
@@ -157,6 +159,13 @@ FArchive& FNameTableArchiveReader::operator<<(FName& OutName)
 }
 
 void FNameTableArchiveReader::SerializeTagsAndBundles(FAssetData& Out)
+{
+	FAssetDataTagMap Map;
+	*this << Map;
+	Out.SetTagsAndAssetBundles(MoveTemp(Map));
+}
+	
+void FNameTableArchiveReader::SerializeTagsAndBundlesOldVersion(FAssetData& Out, int32 Version)
 {
 	FAssetDataTagMap Map;
 	*this << Map;

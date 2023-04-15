@@ -1,84 +1,72 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/StateTreeEvaluatorBlueprintBase.h"
-#include "CoreMinimal.h"
 #include "StateTreeExecutionContext.h"
+#include "BlueprintNodeHelpers.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeEvaluatorBlueprintBase)
 
 //----------------------------------------------------------------------//
 //  UStateTreeEvaluatorBlueprintBase
 //----------------------------------------------------------------------//
 
-void UStateTreeEvaluatorBlueprintBase::EnterState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition)
+UStateTreeEvaluatorBlueprintBase::UStateTreeEvaluatorBlueprintBase(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
-	AActor* OwnerActor = GetOwnerActor(Context);
-	ReceiveEnterState(OwnerActor, ChangeType, Transition);
+	bHasTreeStart = BlueprintNodeHelpers::HasBlueprintFunction(TEXT("ReceiveTreeStart"), *this, *StaticClass());
+	bHasTreeStop = BlueprintNodeHelpers::HasBlueprintFunction(TEXT("ReceiveTreeStop"), *this, *StaticClass());
+	bHasTick = BlueprintNodeHelpers::HasBlueprintFunction(TEXT("ReceiveTick"), *this, *StaticClass());
 }
 
-void UStateTreeEvaluatorBlueprintBase::ExitState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition)
+void UStateTreeEvaluatorBlueprintBase::TreeStart(FStateTreeExecutionContext& Context)
 {
-	AActor* OwnerActor = GetOwnerActor(Context);
-	ReceiveExitState(OwnerActor, ChangeType, Transition);
+	if (bHasTreeStart)
+	{
+		FScopedCurrentContext(*this, Context);
+		ReceiveTreeStart();
+	}
 }
 
-void UStateTreeEvaluatorBlueprintBase::StateCompleted(FStateTreeExecutionContext& Context, const EStateTreeRunStatus CompletionStatus, const FStateTreeHandle CompletedState)
+void UStateTreeEvaluatorBlueprintBase::TreeStop(FStateTreeExecutionContext& Context)
 {
-	AActor* OwnerActor = GetOwnerActor(Context);
-	ReceiveStateCompleted(OwnerActor, CompletionStatus, CompletedState);
+	if (bHasTreeStop)
+	{
+		FScopedCurrentContext(*this, Context);
+		ReceiveTreeStop();
+	}
 }
 
-void UStateTreeEvaluatorBlueprintBase::Evaluate(FStateTreeExecutionContext& Context, const EStateTreeEvaluationType EvalType, const float DeltaTime)
+void UStateTreeEvaluatorBlueprintBase::Tick(FStateTreeExecutionContext& Context, const float DeltaTime)
 {
-	AActor* OwnerActor = GetOwnerActor(Context);
-	ReceiveEvaluate(OwnerActor, EvalType, DeltaTime);
+	if (bHasTick)
+	{
+		FScopedCurrentContext(*this, Context);
+		ReceiveTick(DeltaTime);
+	}
 }
 
 //----------------------------------------------------------------------//
 //  FStateTreeBlueprintEvaluatorWrapper
 //----------------------------------------------------------------------//
 
-bool FStateTreeBlueprintEvaluatorWrapper::Link(FStateTreeLinker& Linker)
+void FStateTreeBlueprintEvaluatorWrapper::TreeStart(FStateTreeExecutionContext& Context) const
 {
-	const UStateTreeEvaluatorBlueprintBase* EvalCDO = EvaluatorClass ? EvaluatorClass->GetDefaultObject<UStateTreeEvaluatorBlueprintBase>() : nullptr;
-	if (EvalCDO != nullptr)
-	{
-		EvalCDO->LinkExternalData(Linker, ExternalDataHandles);
-	}
-
-	return true;
-}
-
-void FStateTreeBlueprintEvaluatorWrapper::EnterState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const
-{
-	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceObjectInternal<UStateTreeEvaluatorBlueprintBase>(DataViewIndex);
+	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceDataPtr<UStateTreeEvaluatorBlueprintBase>(*this);
 	check(Instance);
-	
-	Instance->CopyExternalData(Context, ExternalDataHandles);
-	Instance->EnterState(Context, ChangeType, Transition);
+	Instance->TreeStart(Context);
 }
 
-void FStateTreeBlueprintEvaluatorWrapper::ExitState(FStateTreeExecutionContext& Context, const EStateTreeStateChangeType ChangeType, const FStateTreeTransitionResult& Transition) const
+void FStateTreeBlueprintEvaluatorWrapper::TreeStop(FStateTreeExecutionContext& Context) const
 {
-	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceObjectInternal<UStateTreeEvaluatorBlueprintBase>(DataViewIndex);
+	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceDataPtr<UStateTreeEvaluatorBlueprintBase>(*this);
 	check(Instance);
-	
-	Instance->CopyExternalData(Context, ExternalDataHandles);
-	Instance->ExitState(Context, ChangeType, Transition);
+	Instance->TreeStop(Context);
 }
 
-void FStateTreeBlueprintEvaluatorWrapper::StateCompleted(FStateTreeExecutionContext& Context, const EStateTreeRunStatus CompletionStatus, const FStateTreeHandle CompletedState) const
+void FStateTreeBlueprintEvaluatorWrapper::Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
-	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceObjectInternal<UStateTreeEvaluatorBlueprintBase>(DataViewIndex);
+	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceDataPtr<UStateTreeEvaluatorBlueprintBase>(*this);
 	check(Instance);
-	
-	Instance->CopyExternalData(Context, ExternalDataHandles);
-	Instance->StateCompleted(Context, CompletionStatus, CompletedState);
+	Instance->Tick(Context, DeltaTime);
 }
 
-void FStateTreeBlueprintEvaluatorWrapper::Evaluate(FStateTreeExecutionContext& Context, const EStateTreeEvaluationType EvalType, const float DeltaTime) const
-{
-	UStateTreeEvaluatorBlueprintBase* Instance = Context.GetInstanceObjectInternal<UStateTreeEvaluatorBlueprintBase>(DataViewIndex);
-	check(Instance);
-	
-	Instance->CopyExternalData(Context, ExternalDataHandles);
-	Instance->Evaluate(Context, EvalType, DeltaTime);
-}

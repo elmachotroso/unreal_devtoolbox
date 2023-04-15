@@ -29,11 +29,15 @@ struct FLevelEditorSequencerIntegrationOptions
 		: bRequiresLevelEvents(true)
 		, bRequiresActorEvents(false)
 		, bForceRefreshDetails(true)
+		, bAttachOutlinerColumns(true)
+		, bActivateSequencerEdMode(true)
 	{}
 
 	bool bRequiresLevelEvents : 1;
 	bool bRequiresActorEvents : 1;
 	bool bForceRefreshDetails : 1;
+	bool bAttachOutlinerColumns : 1;
+	bool bActivateSequencerEdMode : 1;
 };
 
 
@@ -100,6 +104,12 @@ private:
 
 	/** Called after any number of external actors has been saved. The sequencer puts everything back to its initial state. */
 	void OnPostSaveExternalActors(UWorld* World);
+
+	/** Called before asset validation is run on assets. The sequencer puts everything back to its initial state. */
+	void OnPreAssetValidation();
+	
+	/** Called after asset validation has finished. The sequencer re-evaluates to hide the fact we did this from users. */
+	void OnPostAssetValidation();
 
 	/** Called after a level has been added */
 	void OnLevelAdded(ULevel* InLevel, UWorld* InWorld);
@@ -172,6 +182,7 @@ private:
 private:
 
 	void ActivateSequencerEditorMode();
+	void DeactivateSequencerEditorMode();
 	void AddLevelViewportMenuExtender();
 	void ActivateDetailHandler(const FLevelEditorSequencerIntegrationOptions& Options);
 	void AttachOutlinerColumn();

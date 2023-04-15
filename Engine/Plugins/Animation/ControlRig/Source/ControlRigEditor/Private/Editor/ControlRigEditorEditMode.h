@@ -3,10 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "IPersonaEditMode.h"
 #include "Preferences/PersonaOptions.h"
-#include "Persona/Private/AnimationEditorViewportClient.h"
+#include "AnimationEditorViewportClient.h"
 
 #pragma once
 
@@ -28,7 +28,4 @@ public:
 
 	/** Drawing options */
 	UPersonaOptions* ConfigOption = nullptr;
-
-	/** Flag to know if a bone is visible or not */
-	TArray<bool> BoneHasSelectedChild;
 };

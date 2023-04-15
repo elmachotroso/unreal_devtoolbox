@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SProjectLauncherDeployTargets.h"
+#include "Widgets/Deploy/SProjectLauncherDeployTargets.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ITargetDeviceProxyManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
@@ -108,7 +108,7 @@ void SProjectLauncherDeployTargets::Construct(const FArguments& InArgs, const TS
 				.AutoWidth()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush(TEXT("Icons.Warning")))
+					.Image(FAppStyle::GetBrush(TEXT("Icons.Warning")))
 				]
 
 				+ SHorizontalBox::Slot()

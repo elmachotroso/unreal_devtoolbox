@@ -180,9 +180,9 @@ public:
 		ClassificationID = Other.ClassificationID;
 	}
 
-	FORCEINLINE FLidarPointCloudPoint Transform(const FTransform& Transform) const
+	FORCEINLINE FLidarPointCloudPoint Transform(const FTransform3f& Transform) const
 	{
-		return FLidarPointCloudPoint((FVector3f)Transform.TransformPosition((FVector)Location), Color, bVisible, ClassificationID);
+		return FLidarPointCloudPoint(Transform.TransformPosition(Location), Color, bVisible, ClassificationID);
 	}
 
 	bool operator==(const FLidarPointCloudPoint& P) const { return Location == P.Location && Color == P.Color && bVisible == P.bVisible && ClassificationID == P.ClassificationID && Normal == P.Normal; }
@@ -339,9 +339,7 @@ public:
 	FORCEINLINE void SetDirection(const FVector3f& NewDirection)
 	{
 		Direction = NewDirection;
-		InvDirection = FVector3f(Direction.X == 0 ? 0 : 1 / Direction.X,
-								Direction.Y == 0 ? 0 : 1 / Direction.Y,
-								Direction.Z == 0 ? 0 : 1 / Direction.Z);
+		InvDirection = Direction.Reciprocal();
 	}
 
 	/** An Efficient and Robust Ray-Box Intersection Algorithm. Amy Williams et al. 2004. */
@@ -427,6 +425,8 @@ enum class ELidarPointCloudColorationMode : uint8
 	None,
 	/** Uses imported RGB / Intensity data */
 	Data,
+	/** Uses imported RGB / Intensity data combined with Alpha mask from Classification Colors */
+	DataWithClassificationAlpha,
 	/** The cloud's color will be overridden with elevation-based color */
 	Elevation,
 	/** The cloud's color will be overridden with relative position-based color */

@@ -8,7 +8,7 @@
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "UnrealWidgetFwd.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
@@ -87,7 +87,7 @@ public:
 		"SplineComponentVisualizer",	// Context name for fast lookup
 		LOCTEXT("SplineComponentVisualizer", "Spline Component Visualizer"),	// Localized context name for displaying
 		NAME_None,	// Parent
-		FEditorStyle::GetStyleSetName()
+		FAppStyle::GetAppStyleSetName()
 	)
 	{
 	}
@@ -465,12 +465,12 @@ void FSplineComponentVisualizer::AddReferencedObjects(FReferenceCollector& Colle
 	}
 }
 
-static float GetDashSize(const FSceneView* View, const FVector& Start, const FVector& End, float Scale)
+static double GetDashSize(const FSceneView* View, const FVector& Start, const FVector& End, float Scale)
 {
-	const float StartW = View->WorldToScreen(Start).W;
-	const float EndW = View->WorldToScreen(End).W;
+	const double StartW = View->WorldToScreen(Start).W;
+	const double EndW = View->WorldToScreen(End).W;
 
-	const float WLimit = 10.0f;
+	const double WLimit = 10.0f;
 	if (StartW > WLimit || EndW > WLimit)
 	{
 		return FMath::Max(StartW, EndW) * Scale;
@@ -622,7 +622,7 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 				// For constant interpolation - don't draw ticks - just draw dotted line.
 				if (SplineInfo.Points[KeyIdx - 1].InterpMode == CIM_Constant)
 				{
-					const float DashSize = GetDashSize(View, OldKeyPos, NewKeyPos, 0.03f);
+					const double DashSize = GetDashSize(View, OldKeyPos, NewKeyPos, 0.03f);
 					if (DashSize > 0.0f)
 					{
 						DrawDashedLine(PDI, OldKeyPos, NewKeyPos, LineColor, DashSize, SDPG_World);
@@ -648,7 +648,7 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 					// Then draw a line for each substep.
 					constexpr int32 NumSteps = 20;
 					constexpr float PartialGradientProportion = 0.75f;
-					constexpr int32 PartialNumSteps = NumSteps * PartialGradientProportion;
+					constexpr int32 PartialNumSteps = (int32)(NumSteps * PartialGradientProportion);
 					const float SegmentLineThickness = GetDefault<ULevelEditorViewportSettings>()->SplineLineThicknessAdjustment;
 
 					for (int32 StepIdx = 1; StepIdx <= NumSteps; StepIdx++)
@@ -808,6 +808,14 @@ void FSplineComponentVisualizer::ChangeSelectionState(int32 Index, bool bIsCtrlH
 	{
 		SplineGeneratorPanel->OnSelectionUpdated();
 	}
+
+	if (Index != INDEX_NONE)
+	{
+		if (!DeselectedInEditorDelegateHandle.IsValid())
+		{
+			DeselectedInEditorDelegateHandle = GetEditedSplineComponent()->OnDeselectedInEditor.AddRaw(this, &FSplineComponentVisualizer::OnDeselectedInEditor);
+		}
+	}
 }
 
 
@@ -916,7 +924,7 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 				float SubsegmentStartKey = static_cast<float>(SelectedSegmentIndex);
 				FVector SubsegmentStart = SplineComp->GetLocationAtSplineInputKey(SubsegmentStartKey, ESplineCoordinateSpace::World);
 
-				float ClosestDistance = TNumericLimits<float>::Max();
+				double ClosestDistance = TNumericLimits<double>::Max();
 				FVector BestLocation = SubsegmentStart;
 
 				for (int32 Step = 1; Step < NumSubdivisions; Step++)
@@ -928,7 +936,7 @@ bool FSplineComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* InVi
 					FVector RayClosest;
 					FMath::SegmentDistToSegmentSafe(SubsegmentStart, SubsegmentEnd, Click.GetOrigin(), Click.GetOrigin() + Click.GetDirection() * 50000.0f, SplineClosest, RayClosest);
 
-					const float Distance = FVector::DistSquared(SplineClosest, RayClosest);
+					const double Distance = FVector::DistSquared(SplineClosest, RayClosest);
 					if (Distance < ClosestDistance)
 					{
 						ClosestDistance = Distance;
@@ -1143,7 +1151,8 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 		check(SelectionState);
 		if (SelectionState->GetSelectedTangentHandle() != INDEX_NONE)
 		{
-			return TransformSelectedTangent(DeltaTranslate);
+			// Transform the tangent using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
+			return TransformSelectedTangent(EPropertyChangeType::Interactive, DeltaTranslate);
 		}
 		else if (ViewportClient->IsAltPressed())
 		{
@@ -1189,14 +1198,15 @@ bool FSplineComponentVisualizer::HandleInputDelta(FEditorViewportClient* Viewpor
 		}
 		else
 		{
-			return TransformSelectedKeys(DeltaTranslate, DeltaRotate, DeltaScale);
+			// Transform the spline keys using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
+			return TransformSelectedKeys(EPropertyChangeType::Interactive, DeltaTranslate, DeltaRotate, DeltaScale);
 		}
 	}
 
 	return false;
 }
 
-bool FSplineComponentVisualizer::TransformSelectedTangent(const FVector& DeltaTranslate)
+bool FSplineComponentVisualizer::TransformSelectedTangent(EPropertyChangeType::Type InPropertyChangeType, const FVector& InDeltaTranslate)
 {
 	USplineComponent* SplineComp = GetEditedSplineComponent();
 	if (SplineComp != nullptr)
@@ -1210,7 +1220,7 @@ bool FSplineComponentVisualizer::TransformSelectedTangent(const FVector& DeltaTr
 		ESelectedTangentHandle SelectedTangentHandleType;
 		SelectionState->GetVerifiedSelectedTangentHandle(NumPoints, SelectedTangentHandle, SelectedTangentHandleType);
 
-		if (!DeltaTranslate.IsZero())
+		if (!InDeltaTranslate.IsZero())
 		{
 			SplineComp->Modify();
 
@@ -1221,16 +1231,16 @@ bool FSplineComponentVisualizer::TransformSelectedTangent(const FVector& DeltaTr
 			{
 				if (SelectedTangentHandleType == ESelectedTangentHandle::Leave)
 				{
-					EditedPoint.LeaveTangent += SplineComp->GetComponentTransform().InverseTransformVector(DeltaTranslate) / TangentScale;
+					EditedPoint.LeaveTangent += SplineComp->GetComponentTransform().InverseTransformVector(InDeltaTranslate) / TangentScale;
 				}
 				else
 				{
-					EditedPoint.ArriveTangent += SplineComp->GetComponentTransform().InverseTransformVector(-DeltaTranslate) / TangentScale;
+					EditedPoint.ArriveTangent += SplineComp->GetComponentTransform().InverseTransformVector(-InDeltaTranslate) / TangentScale;
 				}
 			}
 			else
 			{
-				const FVector Delta = (SelectedTangentHandleType == ESelectedTangentHandle::Leave) ? DeltaTranslate : -DeltaTranslate;
+				const FVector Delta = (SelectedTangentHandleType == ESelectedTangentHandle::Leave) ? InDeltaTranslate : -InDeltaTranslate;
 				const FVector Tangent = EditedPoint.LeaveTangent + SplineComp->GetComponentTransform().InverseTransformVector(Delta) / TangentScale;
 
 				EditedPoint.LeaveTangent = Tangent;
@@ -1243,7 +1253,7 @@ bool FSplineComponentVisualizer::TransformSelectedTangent(const FVector& DeltaTr
 		SplineComp->UpdateSpline();
 		SplineComp->bSplineHasBeenEdited = true;
 
-		NotifyPropertyModified(SplineComp, SplineCurvesProperty);
+		NotifyPropertyModified(SplineComp, SplineCurvesProperty, InPropertyChangeType);
 
 		return true;
 	}
@@ -1251,7 +1261,7 @@ bool FSplineComponentVisualizer::TransformSelectedTangent(const FVector& DeltaTr
 	return false;
 }
 
-bool FSplineComponentVisualizer::TransformSelectedKeys(const FVector& DeltaTranslate, const FRotator& DeltaRotate, const FVector& DeltaScale)
+bool FSplineComponentVisualizer::TransformSelectedKeys(EPropertyChangeType::Type InPropertyChangeType, const FVector& InDeltaTranslate, const FRotator& InDeltaRotate, const FVector& InDeltaScale)
 {
 	USplineComponent* SplineComp = GetEditedSplineComponent();
 	if (SplineComp != nullptr)
@@ -1280,65 +1290,65 @@ bool FSplineComponentVisualizer::TransformSelectedKeys(const FVector& DeltaTrans
 			FInterpCurvePoint<FVector>& EditedScalePoint = SplineScale.Points[SelectedKeyIndex];
 
 
-			if (!DeltaTranslate.IsZero())
+			if (!InDeltaTranslate.IsZero())
 			{
 				// Find key position in world space
 				const FVector CurrentWorldPos = SplineComp->GetComponentTransform().TransformPosition(EditedPoint.OutVal);
 				// Move in world space
-				const FVector NewWorldPos = CurrentWorldPos + DeltaTranslate;
+				const FVector NewWorldPos = CurrentWorldPos + InDeltaTranslate;
 
 				// Convert back to local space
 				EditedPoint.OutVal = SplineComp->GetComponentTransform().InverseTransformPosition(NewWorldPos);
 			}
 
-			if (!DeltaRotate.IsZero())
+			if (!InDeltaRotate.IsZero())
 			{
 				// Set point tangent as user controlled
 				EditedPoint.InterpMode = CIM_CurveUser;
 
 				// Rotate tangent according to delta rotation
 				FVector NewTangent = SplineComp->GetComponentTransform().GetRotation().RotateVector(EditedPoint.LeaveTangent); // convert local-space tangent vector to world-space
-				NewTangent = DeltaRotate.RotateVector(NewTangent); // apply world-space delta rotation to world-space tangent
+				NewTangent = InDeltaRotate.RotateVector(NewTangent); // apply world-space delta rotation to world-space tangent
 				NewTangent = SplineComp->GetComponentTransform().GetRotation().Inverse().RotateVector(NewTangent); // convert world-space tangent vector back into local-space
 				EditedPoint.LeaveTangent = NewTangent;
 				EditedPoint.ArriveTangent = NewTangent;
 
 				// Rotate spline rotation according to delta rotation
 				FQuat NewRot = SplineComp->GetComponentTransform().GetRotation() * EditedRotPoint.OutVal; // convert local-space rotation to world-space
-				NewRot = DeltaRotate.Quaternion() * NewRot; // apply world-space rotation
+				NewRot = InDeltaRotate.Quaternion() * NewRot; // apply world-space rotation
 				NewRot = SplineComp->GetComponentTransform().GetRotation().Inverse() * NewRot; // convert world-space rotation to local-space
 				EditedRotPoint.OutVal = NewRot;
 			}
 
-			if (DeltaScale.X != 0.0f)
+			if (InDeltaScale.X != 0.0f)
 			{
 				// Set point tangent as user controlled
 				EditedPoint.InterpMode = CIM_CurveUser;
 
-				const FVector NewTangent = EditedPoint.LeaveTangent * (1.0f + DeltaScale.X);
+				const FVector NewTangent = EditedPoint.LeaveTangent * (1.0f + InDeltaScale.X);
 				EditedPoint.LeaveTangent = NewTangent;
 				EditedPoint.ArriveTangent = NewTangent;
 			}
 
-			if (DeltaScale.Y != 0.0f)
+			if (InDeltaScale.Y != 0.0f)
 			{
 				// Scale in Y adjusts the scale spline
-				EditedScalePoint.OutVal.Y *= (1.0f + DeltaScale.Y);
+				EditedScalePoint.OutVal.Y *= (1.0f + InDeltaScale.Y);
 			}
 
-			if (DeltaScale.Z != 0.0f)
+			if (InDeltaScale.Z != 0.0f)
 			{
 				// Scale in Z adjusts the scale spline
-				EditedScalePoint.OutVal.Z *= (1.0f + DeltaScale.Z);
+				EditedScalePoint.OutVal.Z *= (1.0f + InDeltaScale.Z);
 			}
 		}
 
 		SplineComp->UpdateSpline();
 		SplineComp->bSplineHasBeenEdited = true;
 
-		NotifyPropertyModified(SplineComp, SplineCurvesProperty);
+		NotifyPropertyModified(SplineComp, SplineCurvesProperty, InPropertyChangeType);
 
-		if (!DeltaRotate.IsZero())
+		if (!InDeltaRotate.IsZero())
 		{
 			SelectionState->Modify();
 			SelectionState->SetCachedRotation(SplineComp->GetQuaternionAtSplinePoint(LastKeyIndexSelected, ESplineCoordinateSpace::World));
@@ -1653,7 +1663,7 @@ bool FSplineComponentVisualizer::HandleSnapTo(const bool bInAlign, const bool bI
 						EditedPoint.InterpMode = CIM_CurveUser;
 
 						// Get delta rotation between up vector and hit normal
-						FVector WorldUpVector = SplineComp->GetUpVectorAtSplineInputKey(KeyIdx, ESplineCoordinateSpace::World);
+						FVector WorldUpVector = SplineComp->GetUpVectorAtSplineInputKey((float)KeyIdx, ESplineCoordinateSpace::World);
 						FQuat DeltaRotate = FQuat::FindBetweenNormals(WorldUpVector, Hit.Normal);
 
 						// Rotate tangent according to delta rotation
@@ -1697,6 +1707,17 @@ bool FSplineComponentVisualizer::HandleSnapTo(const bool bInAlign, const bool bI
 	return false;
 }
 
+void FSplineComponentVisualizer::TrackingStopped(FEditorViewportClient* InViewportClient, bool bInDidMove)
+{
+	if (bInDidMove)
+	{
+		// After dragging, notify that the spline curves property has changed one last time, this time as a EPropertyChangeType::ValueSet :
+		USplineComponent* SplineComp = GetEditedSplineComponent();
+		check(SplineComp != nullptr);
+		NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::ValueSet);
+	}
+}
+
 void FSplineComponentVisualizer::OnSnapKeyToNearestSplinePoint(ESplineComponentSnapMode InSnapMode)
 {
 	const FScopedTransaction Transaction(LOCTEXT("SnapToNearestSplinePoint", "Snap To Nearest Spline Point"));
@@ -1717,17 +1738,17 @@ void FSplineComponentVisualizer::OnSnapKeyToNearestSplinePoint(ESplineComponentS
 	FInterpCurvePoint<FVector>& EditedPosition = SplineComp->GetSplinePointsPosition().Points[LastKeyIndexSelected];
 	const FVector WorldPos = SplineComp->GetComponentTransform().TransformPosition(EditedPosition.OutVal); // convert local-space position to world-space
 
-	float NearestDistanceSquared = 0.0f;
+	double NearestDistanceSquared = 0.0f;
 	USplineComponent* NearestSplineComp = nullptr;
 	int32 NearestKeyIndex = INDEX_NONE;
 
-	static const float SnapTol = 5000.0f;
-	float SnapTolSquared = SnapTol * SnapTol;
+	static const double SnapTol = 5000.0f;
+	double SnapTolSquared = SnapTol * SnapTol;
 
 	auto UpdateNearestKey = [WorldPos, SnapTolSquared, &NearestDistanceSquared, &NearestSplineComp, &NearestKeyIndex](USplineComponent* InSplineComp, int InKeyIdx)
 	{
 		const FVector TestKeyWorldPos = InSplineComp->GetLocationAtSplinePoint(InKeyIdx, ESplineCoordinateSpace::World);
-		float TestDistanceSquared = FVector::DistSquared(TestKeyWorldPos, WorldPos);
+		double TestDistanceSquared = FVector::DistSquared(TestKeyWorldPos, WorldPos);
 
 		if (TestDistanceSquared < SnapTolSquared && (NearestKeyIndex == INDEX_NONE || TestDistanceSquared < NearestDistanceSquared))
 		{
@@ -1908,15 +1929,15 @@ void FSplineComponentVisualizer::SnapKeyToTransform(const ESplineComponentSnapMo
 		if (InSnapMode == ESplineComponentSnapMode::AlignPerpendicularToTangent)
 		{
 			// Rotate tangent by 90 degrees
-			const FQuat DeltaRotate(WorldUpVector, HALF_PI);
+			const FQuat DeltaRotate(WorldUpVector, UE_HALF_PI);
 			NewTangent = DeltaRotate.RotateVector(NewTangent);
 		}
 
 		const FVector Tangent = SplineComp->GetComponentTransform().GetRotation().RotateVector(EditedPosition.ArriveTangent); // convert local-space tangent vectors to world-space
 
 		// Swap the tangents if they are not pointing in the same general direction
-		float CurrentAngle = FMath::Acos(FVector::DotProduct(Tangent, NewTangent) / Tangent.Size());
-		if (CurrentAngle > HALF_PI)
+		double CurrentAngle = FMath::Acos(FVector::DotProduct(Tangent, NewTangent) / Tangent.Size());
+		if (CurrentAngle > UE_HALF_PI)
 		{
 			NewTangent = SplineComp->GetComponentTransform().GetRotation().Inverse().RotateVector(NewTangent * -1.0f) * Tangent.Size(); // convert world-space tangent vectors into local-space
 		}
@@ -2258,7 +2279,7 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 
 	// When dragging from end point, maximum angle is 60 degrees from attached segment
 	// to determine whether to split existing segment or create a new point
-	static const float Angle60 = 1.0472;
+	static const double Angle60 = 1.0472;
 
 	// Insert duplicates into the list, highest index first, so that the lower indices remain the same
 	FInterpCurveVector& SplinePosition = SplineComp->GetSplinePointsPosition();
@@ -2269,7 +2290,7 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 
 	// Determine direction to insert new point				
 	bool bHasPrevKey = SplineComp->IsClosedLoop() || CurrentIndex > 0;
-	float PrevAngle = 0.0f;
+	double PrevAngle = 0.0f;
 	if (bHasPrevKey)
 	{
 		// Wrap index around for closed-looped splines
@@ -2287,7 +2308,7 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 	}
 
 	bool bHasNextKey = SplineComp->IsClosedLoop() || CurrentIndex + 1 < NumPoints;
-	float NextAngle = 0.0f;
+	double NextAngle = 0.0f;
 	if (bHasNextKey)
 	{
 		// Wrap index around for closed-looped splines
@@ -2444,21 +2465,21 @@ void FSplineComponentVisualizer::SplitSegment(const FVector& InWorldPos, int32 I
 	int32 SourceIndex = bCopyFromSegmentBeginIndex ? SegmentBeginIndex : SegmentEndIndex;
 
 	FInterpCurvePoint<FVector> NewPoint(
-		SegmentSplitIndex,
+		(float)SegmentSplitIndex,
 		SplinePos,
 		FVector::ZeroVector,
 		FVector::ZeroVector,
 		SplinePosition.Points[SourceIndex].InterpMode);
 
 	FInterpCurvePoint<FQuat> NewRotPoint(
-		SegmentSplitIndex,
+		(float)SegmentSplitIndex,
 		NewRot,
 		FQuat::Identity,
 		FQuat::Identity,
 		CIM_CurveAuto);
 
 	FInterpCurvePoint<FVector> NewScalePoint(
-		SegmentSplitIndex,
+		(float)SegmentSplitIndex,
 		NewScale,
 		FVector::ZeroVector,
 		FVector::ZeroVector,
@@ -2593,7 +2614,8 @@ void FSplineComponentVisualizer::UpdateSplitSegment(const FVector& InDrag)
 	SplineComp->UpdateSpline();
 	SplineComp->bSplineHasBeenEdited = true;
 
-	NotifyPropertyModified(SplineComp, SplineCurvesProperty);
+	// Transform the spline keys using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
+	NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::Interactive);
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
@@ -2634,21 +2656,21 @@ void FSplineComponentVisualizer::AddSegment(const FVector& InWorldPos, bool bApp
 	FVector LocalPos = SplineComp->GetComponentTransform().InverseTransformPosition(InWorldPos);
 
 	FInterpCurvePoint<FVector> NewPoint(
-		NewKeyIdx,
+		(float)NewKeyIdx,
 		LocalPos,
 		FVector::ZeroVector,
 		FVector::ZeroVector,
 		SplinePosition.Points[KeyIdx].InterpMode);
 
 	FInterpCurvePoint<FQuat> NewRotPoint(
-		NewKeyIdx,
+		(float)NewKeyIdx,
 		SplineRotation.Points[KeyIdx].OutVal,
 		FQuat::Identity,
 		FQuat::Identity,
 		CIM_CurveAuto);
 
 	FInterpCurvePoint<FVector> NewScalePoint(
-		NewKeyIdx,
+		(float)NewKeyIdx,
 		SplineScale.Points[KeyIdx].OutVal,
 		FVector::ZeroVector,
 		FVector::ZeroVector,
@@ -2722,7 +2744,8 @@ void FSplineComponentVisualizer::UpdateAddSegment(const FVector& InDrag)
 	SplineComp->UpdateSpline();
 	SplineComp->bSplineHasBeenEdited = true;
 
-	NotifyPropertyModified(SplineComp, SplineCurvesProperty);
+	// Transform the spline keys using an EPropertyChangeType::Interactive change. Later on, at the end of mouse tracking, a non-interactive change will be notified via void TrackingStopped :
+	NotifyPropertyModified(SplineComp, SplineCurvesProperty, EPropertyChangeType::Interactive);
 
 	GEditor->RedrawLevelEditingViewports(true);
 }
@@ -3367,9 +3390,21 @@ void FSplineComponentVisualizer::GenerateSelectSplinePointsSubMenu(FMenuBuilder&
 }
 void FSplineComponentVisualizer::GenerateSplinePointTypeSubMenu(FMenuBuilder& MenuBuilder) const
 {
-	MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToCurve);
-	MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToLinear);
-	MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToConstant);
+	const USplineComponent* SplineComp = GetEditedSplineComponent();
+	check(SplineComp);
+	const TArray<ESplinePointType::Type> EnabledSplinePointTypes = SplineComp->GetEnabledSplinePointTypes();
+	if (EnabledSplinePointTypes.Contains(ESplinePointType::Curve))
+	{
+		MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToCurve);
+	}
+	if (EnabledSplinePointTypes.Contains(ESplinePointType::Linear))
+	{
+		MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToLinear);
+	}
+	if (EnabledSplinePointTypes.Contains(ESplinePointType::Constant))
+	{
+		MenuBuilder.AddMenuEntry(FSplineComponentVisualizerCommands::Get().SetKeyToConstant);
+	}
 }
 
 void FSplineComponentVisualizer::GenerateTangentTypeSubMenu(FMenuBuilder& MenuBuilder) const
@@ -3444,6 +3479,16 @@ void FSplineComponentVisualizer::CreateSplineGeneratorPanel()
 		ExistingWindow->BringToFront();
 	}
 	ExistingWindow->SetContent(SplineGeneratorPanel.ToSharedRef());
+}
+
+void FSplineComponentVisualizer::OnDeselectedInEditor(TObjectPtr<USplineComponent> SplineComponent)
+{
+	if (DeselectedInEditorDelegateHandle.IsValid() && SplineComponent)
+	{
+		SplineComponent->OnDeselectedInEditor.Remove(DeselectedInEditorDelegateHandle);
+	}
+	DeselectedInEditorDelegateHandle.Reset();
+	EndEditing();
 }
 
 

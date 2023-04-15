@@ -4,6 +4,8 @@
 
 #include "FractureTool.h"
 
+#include "GeometryCollection/GeometryCollectionConvexUtility.h"
+
 #include "FractureToolConvex.generated.h"
 
 class FFractureToolContext;
@@ -20,19 +22,27 @@ public:
 		: Super(ObjInit)
 	{}
 
-	/** Fraction of the convex hulls for a transform that we can remove before instead using the hulls of the children */
-	UPROPERTY(EditAnywhere, Category = Automatic, meta = (DisplayName = "Can Remove Fraction", ClampMin = ".01", ClampMax = "1"))
-	double FractionAllowRemove = .5;
-
 	/** Fraction (of geometry volume) by which a cluster's convex hull volume can exceed the actual geometry volume before instead using the hulls of the children.  0 means the convex volume cannot exceed the geometry volume; 1 means the convex volume is allowed to be 100% larger (2x) the geometry volume. */
-	UPROPERTY(EditAnywhere, Category = Automatic, meta = (ClampMin = "0"))
+	UPROPERTY(EditAnywhere, Category = Automatic, meta = (DisplayName = "Allow Larger Hull Fraction", ClampMin = "0"))
 	double CanExceedFraction = .5;
 
 	/** We simplify the convex shape to keep points spaced at least this far apart (except to keep the hull from collapsing to zero volume) */
 	UPROPERTY(EditAnywhere, Category = Automatic, meta = (ClampMin = "0"))
 	double SimplificationDistanceThreshold = 10.0;
 
-	/** Delete convex hulls from selected clusters.  Does not affect hulls on leaves. */
+	/** Whether to automatically cut away overlapping parts of the convex hulls, to avoid the simulation 'popping' to fix the overlaps */
+	UPROPERTY(EditAnywhere, Category = AutomaticOverlapRemoval)
+	EConvexOverlapRemoval RemoveOverlaps = EConvexOverlapRemoval::All;
+
+	/** Overlap removal will be computed as if convex hulls were this percentage smaller (in range 0-100) */
+	UPROPERTY(EditAnywhere, Category = AutomaticOverlapRemoval, meta = (UIMin = "0", ClampMax = "99.9"))
+	double OverlapRemovalShrinkPercent = 0.0;
+
+	/** Fraction of the convex hulls for a cluster that we can remove before using the hulls of the children */
+	UPROPERTY(EditAnywhere, Category = AutomaticOverlapRemoval, meta = (DisplayName = "Max Removal Fraction", ClampMin = ".01", ClampMax = "1"))
+	double FractionAllowRemove = .5;
+
+		/** Delete convex hulls from selected clusters.  Does not affect hulls on leaves. */
 	UFUNCTION(CallInEditor, Category = Custom, meta = (DisplayName = "Delete From Selected"))
 	void DeleteFromSelected();
 
@@ -46,6 +56,32 @@ public:
 	/** Clear any manual adjustments to convex hulls on the selected bones */
 	UFUNCTION(CallInEditor, Category = Custom, meta = (DisplayName = "Clear Custom Convex"))
 	void ClearCustomConvex();
+};
+
+/**
+ * UFUNCTION actions to manage convex hulls generation for geometry collections
+ * (These are pulled out from the above settings object mainly to control their ordering in the properties panel)
+ */
+UCLASS(config = EditorPerProjectUserSettings)
+class UFractureConvexActions : public UFractureToolSettings
+{
+public:
+
+	GENERATED_BODY()
+
+	UFractureConvexActions(const FObjectInitializer& ObjInit)
+		: Super(ObjInit)
+	{}
+
+	/** Save settings as project defaults, to be used for all new geometry collections */
+	UFUNCTION(CallInEditor, Category = ProjectDefaults, meta = (DisplayName = "Save As Defaults"))
+	void SaveAsDefaults();
+
+	/** Set settings from current project defaults */
+	UFUNCTION(CallInEditor, Category = ProjectDefaults, meta = (DisplayName = "Set From Defaults"))
+	void SetFromDefaults();
+
+
 };
 
 
@@ -85,10 +121,16 @@ public:
 	void PromoteChildren();
 	void ClearCustomConvex();
 
+	virtual void Setup() override;
+
+
+	UPROPERTY(EditAnywhere, Category = Convex)
+	TObjectPtr<UFractureConvexSettings> ConvexSettings;
 
 protected:
-	UPROPERTY(EditAnywhere, Category = Slicing)
-	TObjectPtr<UFractureConvexSettings> ConvexSettings;
+
+	UPROPERTY(EditAnywhere, Category = Convex)
+	TObjectPtr<UFractureConvexActions> ConvexActions;
 
 	virtual void ClearVisualizations() override
 	{

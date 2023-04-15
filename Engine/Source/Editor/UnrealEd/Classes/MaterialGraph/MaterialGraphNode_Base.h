@@ -10,7 +10,7 @@
 class UEdGraphPin;
 class UEdGraphSchema;
 
-UCLASS(MinimalAPI)
+UCLASS(MinimalAPI, Optional)
 class UMaterialGraphNode_Base : public UEdGraphNode
 {
 	GENERATED_UCLASS_BODY()
@@ -21,6 +21,10 @@ class UMaterialGraphNode_Base : public UEdGraphNode
 	virtual void CreateOutputPins() {};
 	/** Is this the undeletable root node */
 	virtual bool IsRootNode() const {return false;}
+	/** Gets the object that owns this node, typically either a UMaterial, UMaterialFunction, UMaterialExpression */
+	virtual UObject* GetMaterialNodeOwner() const { return nullptr; }
+	/** Returns the SourceIndex associated with a particular FMaterialConnectionKey::InputIndex */
+	virtual int32 GetSourceIndexForInputIndex(int32 InputIndex) const;
 	/** Get a single Input Pin via its index */
 	UNREALED_API class UEdGraphPin* GetInputPin(int32 InputIndex) const;
 	/** Get a single Output Pin via its index */
@@ -63,4 +67,7 @@ protected:
 	virtual uint32 GetPinMaterialType(const UEdGraphPin* Pin) const;
 
 	void EmptyPins();
+
+	/** Return the first input pin matching the name */
+	class UEdGraphPin* GetInputPin(const FName& PinName) const;
 };

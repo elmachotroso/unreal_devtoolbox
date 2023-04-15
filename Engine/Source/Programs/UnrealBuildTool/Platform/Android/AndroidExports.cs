@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -25,6 +26,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <returns>The NDK Level</returns>
 		int GetNdkApiLevelInt(int MinNDK);
+
+		/// <summary>
+		/// Returns the Current NDK Version
+		/// </summary>
+		/// <returns>The NDK Version</returns>
+		UInt64 GetNdkVersionInt();
 	}
 
 	/// <summary>
@@ -83,7 +90,16 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public static IAndroidToolChain CreateToolChain(FileReference ProjectFile)
 		{
-			return new AndroidToolChain(ProjectFile, false, null, null);
+			return new AndroidToolChain(ProjectFile, null, null, Log.Logger);
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <returns></returns>
+		public static IAndroidToolChain CreateTempToolChain()
+		{
+			return new AndroidToolChain(null, null, null, Log.Logger);
 		}
 
 		/// <summary>
@@ -94,7 +110,7 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public static IAndroidDeploy CreateDeploymentHandler(FileReference ProjectFile, bool InForcePackageData)
 		{
-			return new UEDeployAndroid(ProjectFile, InForcePackageData);
+			return new UEDeployAndroid(ProjectFile, InForcePackageData, Log.Logger);
 		}
 
 		/// <summary>
@@ -121,10 +137,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="SourceFile"></param>
 		/// <param name="TargetFile"></param>
-		public static void StripSymbols(FileReference SourceFile, FileReference TargetFile)
+		/// <param name="Logger">Logger for output</param>
+		public static void StripSymbols(FileReference SourceFile, FileReference TargetFile, ILogger Logger)
 		{
-			AndroidToolChain ToolChain = new AndroidToolChain(null, false, null, null);
-			ToolChain.StripSymbols(SourceFile, TargetFile);
+			AndroidToolChain ToolChain = new AndroidToolChain(null, null, null, Logger);
+			ToolChain.StripSymbols(SourceFile, TargetFile, Logger);
 		}
 	}
 }

@@ -24,7 +24,6 @@
 CSV_DEFINE_CATEGORY(DistanceField, true);
 
 extern int32 GDFReverseAtlasAllocationOrder;
-extern int32 GDFShadowOffsetDataStructure;
 
 static TAutoConsoleVariable<int32> CVarBrickAtlasSizeXYInBricks(
 	TEXT("r.DistanceFields.BrickAtlasSizeXYInBricks"),
@@ -43,6 +42,13 @@ static TAutoConsoleVariable<int32> CVarTextureUploadLimitKBytes(
 	8192,	
 	TEXT("Max KB of distance field texture data to upload per frame from streaming requests."),
 	ECVF_RenderThreadSafe);
+
+int32 GDistanceFieldOffsetDataStructure = 0;
+static FAutoConsoleVariableRef CVarShadowOffsetDataStructure(
+	TEXT("r.DistanceFields.OffsetDataStructure"),
+	GDistanceFieldOffsetDataStructure,
+	TEXT("Which data structure to store offset in, 0 - base, 1 - buffer, 2 - texture"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 static int32 MinIndirectionAtlasSizeXYZ = 64;
 static FAutoConsoleVariableRef CVarMinIndirectionAtlasSizeXYZ(
@@ -165,7 +171,7 @@ class FScatterUploadDistanceFieldIndirectionAtlasCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FScatterUploadDistanceFieldIndirectionAtlasCS, FGlobalShader)
 		
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, RWIndirectionAtlas)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, RWIndirectionAtlas)
 		SHADER_PARAMETER_SRV(Buffer<uint>, IndirectionUploadIndices)
 		SHADER_PARAMETER_SRV(Buffer<float4>, IndirectionUploadData)
 		SHADER_PARAMETER(FIntVector, IndirectionAtlasSize)
@@ -199,8 +205,8 @@ class FCopyDistanceFieldIndirectionAtlasCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FCopyDistanceFieldIndirectionAtlasCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_UAV(RWTexture3D<float4>, RWIndirectionAtlas)
-		SHADER_PARAMETER_TEXTURE(Texture3D<float4>, DistanceFieldIndirectionAtlas)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, RWIndirectionAtlas)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float4>, DistanceFieldIndirectionAtlas)
 		SHADER_PARAMETER(FIntVector, IndirectionDimensions)
 		SHADER_PARAMETER(FIntVector, SrcPosition)
 		SHADER_PARAMETER(FIntVector, DstPosition)
@@ -234,13 +240,14 @@ class FComputeDistanceFieldAssetWantedMipsCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FComputeDistanceFieldAssetWantedMipsCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWDistanceFieldAssetWantedNumMips)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWDistanceFieldAssetStreamingRequests)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDistanceFieldObjectBufferParameters, DistanceFieldObjectBuffers)
 		SHADER_PARAMETER(int32, DebugForceNumMips)
-		SHADER_PARAMETER(FVector3f, Mip1WorldCenter)
+		SHADER_PARAMETER(FVector3f, Mip1WorldTranslatedCenter)
 		SHADER_PARAMETER(FVector3f, Mip1WorldExtent)
-		SHADER_PARAMETER(FVector3f, Mip2WorldCenter)
+		SHADER_PARAMETER(FVector3f, Mip2WorldTranslatedCenter)
 		SHADER_PARAMETER(FVector3f, Mip2WorldExtent)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -491,13 +498,13 @@ void FDistanceFieldSceneData::AsyncUpdate(FDistanceFieldAsyncUpdateParameters Up
 
 		uint32* DestIndirectionTable = nullptr;
 		FVector4f* DestIndirection2Table = nullptr;
-		if (GDFShadowOffsetDataStructure == 0)
+		if (GDistanceFieldOffsetDataStructure == 0)
 		{
 			DestIndirectionTable = (uint32*)IndirectionTableUploadBuffer.Add_GetRef(MipState.IndirectionTableOffset, NumIndirectionEntries);
 		}
-		else if (GDFShadowOffsetDataStructure == 1)
+		else if (GDistanceFieldOffsetDataStructure == 1)
 		{
-			DestIndirection2Table = (FVector4f*)Indirection2TableUploadBuffer.Add_GetRef(MipState.IndirectionTableOffset, NumIndirectionEntries);
+			DestIndirection2Table = (FVector4f*)IndirectionTableUploadBuffer.Add_GetRef(MipState.IndirectionTableOffset, NumIndirectionEntries);
 		}
 
 		// Add global allocated brick offset to indirection table entries as we upload them
@@ -523,11 +530,11 @@ void FDistanceFieldSceneData::AsyncUpdate(FDistanceFieldAsyncUpdateParameters Up
 				}
 			}
 			
-			if (GDFShadowOffsetDataStructure == 0)
+			if (GDistanceFieldOffsetDataStructure == 0)
 			{
 				DestIndirectionTable[i] = GlobalBrickIndex;
 			}
-			else if (GDFShadowOffsetDataStructure == 1)
+			else if (GDistanceFieldOffsetDataStructure == 1)
 			{
 				// This null check isn't really needed but to make static analysis happy
 				if (DestIndirection2Table)
@@ -535,7 +542,7 @@ void FDistanceFieldSceneData::AsyncUpdate(FDistanceFieldAsyncUpdateParameters Up
 					DestIndirection2Table[i] = BrickOffset;
 				}
 			}
-			else if (GDFShadowOffsetDataStructure == 2)
+			else if (GDistanceFieldOffsetDataStructure == 2)
 			{
 				const FIntVector IndirectionCoord = FIntVector(
 					i % MipState.IndirectionDimensions.X,
@@ -701,7 +708,7 @@ void FDistanceFieldSceneData::ProcessStreamingRequestsFromGPU(
 						check(AssetState.ReversedMips.Num() > 1);
 						const FDistanceFieldAssetMipState MipState = AssetState.ReversedMips.Pop();
 						
-						if (GDFShadowOffsetDataStructure == 0 || GDFShadowOffsetDataStructure == 1)
+						if (GDistanceFieldOffsetDataStructure == 0 || GDistanceFieldOffsetDataStructure == 1)
 						{
 							IndirectionTableAllocator.Free(MipState.IndirectionTableOffset, MipState.IndirectionDimensions.X * MipState.IndirectionDimensions.Y * MipState.IndirectionDimensions.Z);
 						}
@@ -813,7 +820,7 @@ void FDistanceFieldSceneData::ProcessReadRequests(
 
 		if (bReady)
 		{
-			ReadRequests.RemoveAt(RequestIndex);
+			ReadRequests.RemoveAtSwap(RequestIndex);
 			RequestIndex--;
 
 			if (AssetStateArray.IsValidId(ReadRequest.AssetSetId) 
@@ -845,8 +852,11 @@ void FDistanceFieldSceneData::ProcessReadRequests(
 	AssetDataUploads.Append(DistanceFieldAssetMipAdds);
 }
 
-void FDistanceFieldSceneData::ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap)
+FRDGTexture* FDistanceFieldSceneData::ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap)
 {
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
 	const int32 BrickAtlasSizeXYInBricks = CVarBrickAtlasSizeXYInBricks.GetValueOnRenderThread();
 	int32 DesiredZSizeInBricks = FMath::DivideAndRoundUp(DistanceFieldAtlasBlockAllocator.GetMaxSize() * GDistanceFieldBlockAllocatorSizeInBricks, BrickAtlasSizeXYInBricks * BrickAtlasSizeXYInBricks);
 
@@ -879,7 +889,7 @@ void FDistanceFieldSceneData::ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder
 			FCopyDistanceFieldAtlasCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FCopyDistanceFieldAtlasCS::FParameters>();
 
 			PassParameters->RWDistanceFieldBrickAtlas = GraphBuilder.CreateUAV(DistanceFieldBrickVolumeTextureRDG);
-			PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(*this);
+			PassParameters->DistanceFieldAtlas = DistanceField::SetupAtlasParameters(GraphBuilder, *this);
 
 			auto ComputeShader = GlobalShaderMap->GetShader<FCopyDistanceFieldAtlasCS>();
 
@@ -893,7 +903,10 @@ void FDistanceFieldSceneData::ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder
 
 		BrickTextureDimensionsInBricks = DesiredBrickTextureDimensionsInBricks;
 		DistanceFieldBrickVolumeTexture = GraphBuilder.ConvertToExternalTexture(DistanceFieldBrickVolumeTextureRDG);
+		return DistanceFieldBrickVolumeTextureRDG;
 	}
+
+	return GraphBuilder.RegisterExternalTexture(DistanceFieldBrickVolumeTexture);
 }
 
 static FIntVector CalculateDesiredSize(FIntVector CurrentSize, FIntVector RequiredSize)
@@ -922,8 +935,11 @@ static FIntVector CalculateDesiredSize(FIntVector CurrentSize, FIntVector Requir
 	return DesiredSize;
 }
 
-bool FDistanceFieldSceneData::ResizeIndirectionAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap)
+bool FDistanceFieldSceneData::ResizeIndirectionAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap, FRDGTexture*& OutTexture)
 {
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_ResizeIndirectionAtlasIfNeeded);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldSceneData::ResizeIndirectionAtlasIfNeeded);
 	
@@ -959,56 +975,48 @@ bool FDistanceFieldSceneData::ResizeIndirectionAtlasIfNeeded(FRDGBuilder& GraphB
 			PF_A2B10G10R10,
 			FClearValueBinding::Black,
 			TexCreate_ShaderResource | TexCreate_UAV | TexCreate_3DTiling);
-		FRDGTextureRef TextureRDG = GraphBuilder.CreateTexture(TextureDesc, TEXT("DistanceFields.DistanceFieldIndirectionAtlas"));
-		check(TextureRDG);
-		TRefCountPtr<IPooledRenderTarget> NewIndirectionAtlas = GraphBuilder.ConvertToExternalTexture(TextureRDG);
+		FRDGTextureRef NewIndirectAtlasRDG = GraphBuilder.CreateTexture(TextureDesc, TEXT("DistanceFields.DistanceFieldIndirectionAtlas"));
+		check(NewIndirectAtlasRDG);
 
 		if (IndirectionAtlas)
 		{
-			FRHIUnorderedAccessView* NewIndirectionAtlasUAV = NewIndirectionAtlas->GetRenderTargetItem().UAV;
+			TShaderMapRef<FCopyDistanceFieldIndirectionAtlasCS> ComputeShader(GlobalShaderMap);
 
-			AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("CopyDistanceFieldIndirectionAtlas"),
-				[LocalRelocations = MoveTemp(Relocations), OldIndirectionAtlas = MoveTemp(IndirectionAtlas), NewIndirectionAtlasUAV, GlobalShaderMap](FRHICommandListImmediate& RHICmdList)
+			FRDGTexture* OldIndirectAtlasRDG = GraphBuilder.RegisterExternalTexture(IndirectionAtlas);
+
+			FRDGTextureUAV* NewIndirectAtlasUAV = GraphBuilder.CreateUAV(NewIndirectAtlasRDG, ERDGUnorderedAccessViewFlags::SkipBarrier);
+
+			for (int32 RelocationIndex = 0; RelocationIndex < Relocations.Num(); ++RelocationIndex)
 			{
-				TShaderMapRef<FCopyDistanceFieldIndirectionAtlasCS> ComputeShader(GlobalShaderMap);
-				FCopyDistanceFieldIndirectionAtlasCS::FParameters PassParameters;
-				PassParameters.RWIndirectionAtlas = NewIndirectionAtlasUAV;
-				PassParameters.DistanceFieldIndirectionAtlas = OldIndirectionAtlas->GetRenderTargetItem().ShaderResourceTexture;
+				const FDistanceFieldAssetMipRelocation& Relocation = Relocations[RelocationIndex];
 
-				RHICmdList.Transition(FRHITransitionInfo(NewIndirectionAtlasUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-				RHICmdList.BeginUAVOverlap(NewIndirectionAtlasUAV);
+				auto* PassParameters = GraphBuilder.AllocParameters<FCopyDistanceFieldIndirectionAtlasCS::FParameters>();
+				PassParameters->RWIndirectionAtlas = NewIndirectAtlasUAV;
+				PassParameters->DistanceFieldIndirectionAtlas = OldIndirectAtlasRDG;
+				PassParameters->IndirectionDimensions = Relocation.IndirectionDimensions;
+				PassParameters->SrcPosition = Relocation.SrcPosition;
+				PassParameters->DstPosition = Relocation.DstPosition;
+				PassParameters->NumAssets = 1;
 
-				for (int32 RelocationIndex = 0; RelocationIndex < LocalRelocations.Num(); ++RelocationIndex)
-				{
-					const FDistanceFieldAssetMipRelocation& Relocation = LocalRelocations[RelocationIndex];
-					PassParameters.IndirectionDimensions = Relocation.IndirectionDimensions;
-					PassParameters.SrcPosition = Relocation.SrcPosition;
-					PassParameters.DstPosition = Relocation.DstPosition;
-					PassParameters.NumAssets = 1;
-
-					FComputeShaderUtils::Dispatch(
-						RHICmdList,
-						ComputeShader,
-						PassParameters,
-						FComputeShaderUtils::GetGroupCount(
-							Relocation.IndirectionDimensions.X * Relocation.IndirectionDimensions.Y * Relocation.IndirectionDimensions.Z,
-							FCopyDistanceFieldIndirectionAtlasCS::GetGroupSize()));
-				}
-
-				RHICmdList.EndUAVOverlap(NewIndirectionAtlasUAV);
-				RHICmdList.Transition(FRHITransitionInfo(NewIndirectionAtlasUAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
-			});
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("CopyDistanceFieldIndirectionAtlas (Index %d)", RelocationIndex),
+					ComputeShader,
+					PassParameters,
+					FComputeShaderUtils::GetGroupCount(
+						Relocation.IndirectionDimensions.X * Relocation.IndirectionDimensions.Y * Relocation.IndirectionDimensions.Z,
+						FCopyDistanceFieldIndirectionAtlasCS::GetGroupSize()));
+			}
 		}
 
-		IndirectionAtlas = MoveTemp(NewIndirectionAtlas);
+		IndirectionAtlas = GraphBuilder.ConvertToExternalTexture(NewIndirectAtlasRDG);
+		OutTexture = NewIndirectAtlasRDG;
 
 		UE_LOG(LogDistanceField, Log, TEXT("New indirection table size: %s (%s required)"), *IndirectionAtlas->GetDesc().GetSize().ToString(), *IndirectionAtlasLayout.GetSize().ToString());
-
 		return true;
 	}
 
+	OutTexture = GraphBuilder.RegisterExternalTexture(IndirectionAtlas);
 	return false;
 }
 
@@ -1070,6 +1078,8 @@ void FDistanceFieldSceneData::GenerateStreamingRequests(
 	// It is not safe to EnqueueCopy on a buffer that already has a pending copy.
 	if (ReadbackBuffersNumPending < MaxStreamingReadbackBuffers && NumObjectsInBuffer > 0)
 	{
+		RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
+
 		if (!StreamingRequestReadbackBuffers[ReadbackBuffersWriteIndex])
 		{
 			FRHIGPUBufferReadback* GPUBufferReadback = new FRHIGPUBufferReadback(TEXT("DistanceFields.StreamingRequestReadBack"));
@@ -1089,17 +1099,17 @@ void FDistanceFieldSceneData::GenerateStreamingRequests(
 
 		{
 			FComputeDistanceFieldAssetWantedMipsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FComputeDistanceFieldAssetWantedMipsCS::FParameters>();
-
+			PassParameters->View = View.ViewUniformBuffer;
 			checkf(DistanceField::NumMips == 3, TEXT("Shader needs to be updated"));
 			PassParameters->RWDistanceFieldAssetWantedNumMips = GraphBuilder.CreateUAV(WantedNumMips);
 			PassParameters->RWDistanceFieldAssetStreamingRequests = GraphBuilder.CreateUAV(StreamingRequestsBuffer);
-			PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(*this);
-			PassParameters->DebugForceNumMips = CVarDebugForceNumMips.GetValueOnRenderThread();
+			PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(GraphBuilder, *this);
+			PassParameters->DebugForceNumMips = FMath::Clamp(CVarDebugForceNumMips.GetValueOnRenderThread(), 0, DistanceField::NumMips);
 			extern int32 GAOGlobalDistanceFieldNumClipmaps;
 			// Request Mesh SDF mips based off of the Global SDF clipmaps
-			PassParameters->Mip1WorldCenter = (FVector3f)View.ViewMatrices.GetViewOrigin();
+			PassParameters->Mip1WorldTranslatedCenter = FVector3f(View.ViewMatrices.GetViewOrigin() + View.ViewMatrices.GetPreViewTranslation());
 			PassParameters->Mip1WorldExtent = FVector3f(GlobalDistanceField::GetClipmapExtent(GAOGlobalDistanceFieldNumClipmaps - 1, Scene, bLumenEnabled));
-			PassParameters->Mip2WorldCenter = (FVector3f)View.ViewMatrices.GetViewOrigin();
+			PassParameters->Mip2WorldTranslatedCenter = FVector3f(View.ViewMatrices.GetViewOrigin() + View.ViewMatrices.GetPreViewTranslation());
 			PassParameters->Mip2WorldExtent = FVector3f(GlobalDistanceField::GetClipmapExtent(FMath::Max<int32>(GAOGlobalDistanceFieldNumClipmaps / 2 - 1, 0), Scene, bLumenEnabled));
 
 			auto ComputeShader = GlobalShaderMap->GetShader<FComputeDistanceFieldAssetWantedMipsCS>();
@@ -1116,8 +1126,8 @@ void FDistanceFieldSceneData::GenerateStreamingRequests(
 			FGenerateDistanceFieldAssetStreamingRequestsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FGenerateDistanceFieldAssetStreamingRequestsCS::FParameters>();
 			PassParameters->RWDistanceFieldAssetStreamingRequests = GraphBuilder.CreateUAV(StreamingRequestsBuffer);
 			PassParameters->DistanceFieldAssetWantedNumMips = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(WantedNumMips));
-			PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(*this);
-			PassParameters->DistanceFieldAtlasParameters = DistanceField::SetupAtlasParameters(*this);
+			PassParameters->DistanceFieldObjectBuffers = DistanceField::SetupObjectBufferParameters(GraphBuilder, *this);
+			PassParameters->DistanceFieldAtlasParameters = DistanceField::SetupAtlasParameters(GraphBuilder, *this);
 			PassParameters->NumDistanceFieldAssets = NumAssets;
 			PassParameters->MaxNumStreamingRequests = MaxStreamingRequests;
 
@@ -1183,7 +1193,7 @@ void EncodeAssetData(const FDistanceFieldAssetState& AssetState, const int32 Rev
 	VolumeToIndirectionAdd.Y *= MipBuiltData.IndirectionDimensions.Y;
 	VolumeToIndirectionAdd.Z *= MipBuiltData.IndirectionDimensions.Z;
 
-	if (GDFShadowOffsetDataStructure != 0)
+	if (GDistanceFieldOffsetDataStructure != 0)
 	{
 		VolumeToIndirectionAdd.X += MipState.IndirectionAtlasOffset.X;
 		VolumeToIndirectionAdd.Y += MipState.IndirectionAtlasOffset.Y;
@@ -1195,14 +1205,17 @@ void EncodeAssetData(const FDistanceFieldAssetState& AssetState, const int32 Rev
 	OutAssetData[2] = VolumeToIndirectionAdd;
 }
 
-void FDistanceFieldSceneData::UploadAssetData(FRDGBuilder& GraphBuilder, const TArray<FDistanceFieldAssetMipId>& AssetDataUploads)
+void FDistanceFieldSceneData::UploadAssetData(FRDGBuilder& GraphBuilder, const TArray<FDistanceFieldAssetMipId>& AssetDataUploads, FRDGBuffer* AssetDataBufferRDG)
 {
 	if (AssetDataUploads.IsEmpty())
 	{
 		return;
 	}
 
-	AssetDataUploadBuffer.Init(AssetDataUploads.Num(), AssetDataMipStrideFloat4s * sizeof(FVector4f), true, TEXT("DistanceFields.DFAssetDataUploadBuffer"));
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
+	AssetDataUploadBuffer.Init(GraphBuilder, AssetDataUploads.Num(), AssetDataMipStrideFloat4s * sizeof(FVector4f), true, TEXT("DistanceFields.DFAssetDataAssetDataUploadBuffer"));
 
 	for (FDistanceFieldAssetMipId AssetMipUpload : AssetDataUploads)
 	{
@@ -1223,21 +1236,10 @@ void FDistanceFieldSceneData::UploadAssetData(FRDGBuilder& GraphBuilder, const T
 		}
 	}
 
-	AddPass(GraphBuilder, RDG_EVENT_NAME("UploadAssetData"), [this](FRHICommandListImmediate& RHICmdList)
-		{
-			RHICmdList.Transition({
-				FRHITransitionInfo(AssetDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute)
-				});
-
-			AssetDataUploadBuffer.ResourceUploadTo(RHICmdList, AssetDataBuffer, false);
-
-			RHICmdList.Transition({
-				FRHITransitionInfo(AssetDataBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask)
-				});
-		});
+	AssetDataUploadBuffer.ResourceUploadTo(GraphBuilder, AssetDataBufferRDG);
 }
 
-void FDistanceFieldSceneData::UploadAllAssetData(FRDGBuilder& GraphBuilder)
+void FDistanceFieldSceneData::UploadAllAssetData(FRDGBuilder& GraphBuilder, FRDGBuffer* AssetDataBufferRDG)
 {
 	uint32 NumUploads = AssetStateArray.Num() * DistanceField::NumMips;
 	if (NumUploads == 0)
@@ -1245,7 +1247,10 @@ void FDistanceFieldSceneData::UploadAllAssetData(FRDGBuilder& GraphBuilder)
 		return;
 	}
 
-	AssetDataUploadBuffer.Init(NumUploads, AssetDataMipStrideFloat4s * sizeof(FVector4f), true, TEXT("DistanceFields.DFAssetDataUploadBuffer"));
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
+	AssetDataUploadBuffer.Init(GraphBuilder, NumUploads, AssetDataMipStrideFloat4s * sizeof(FVector4f), true, TEXT("DistanceFields.DFAssetDataUploadBuffer"));
 
 	for (TSet<FDistanceFieldAssetState, TFDistanceFieldAssetStateFuncs>::TConstIterator It(AssetStateArray); It; ++It)
 	{
@@ -1271,22 +1276,12 @@ void FDistanceFieldSceneData::UploadAllAssetData(FRDGBuilder& GraphBuilder)
 		}
 	}
 
-	AddPass(GraphBuilder, RDG_EVENT_NAME("UploadAssetData"), [this](FRHICommandListImmediate& RHICmdList)
-		{
-			RHICmdList.Transition({
-				FRHITransitionInfo(AssetDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
-				});
-
-			AssetDataUploadBuffer.ResourceUploadTo(RHICmdList, AssetDataBuffer, false);
-
-			RHICmdList.Transition({
-				FRHITransitionInfo(AssetDataBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask),
-				});
-		});
+	AssetDataUploadBuffer.ResourceUploadTo(GraphBuilder, AssetDataBufferRDG);
 }
 
 void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
-	FRDGBuilder& GraphBuilder, 
+	FRDGBuilder& GraphBuilder,
+	FRDGExternalAccessQueue& ExternalAccessQueue,
 	const FViewInfo& View,
 	FScene* Scene,
 	bool bLumenEnabled,
@@ -1298,6 +1293,9 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldSceneData::UpdateDistanceFieldAtlas);
 	RDG_EVENT_SCOPE(GraphBuilder, "UpdateDistanceFieldAtlas");
 
+	// Mask should be set in FSceneRenderer::PrepareDistanceFieldScene before calling this
+	check(GraphBuilder.RHICmdList.GetGPUMask() == FRHIGPUMask::All());
+
 	TArray<FDistanceFieldAssetMipId> AssetDataUploads;
 
 	for (FSetElementId AssetSetId : DistanceFieldAssetRemoves)
@@ -1307,7 +1305,7 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 
 		for (const FDistanceFieldAssetMipState& MipState : AssetState.ReversedMips)
 		{
-			if (GDFShadowOffsetDataStructure == 0 || GDFShadowOffsetDataStructure == 1)
+			if (GDistanceFieldOffsetDataStructure == 0 || GDistanceFieldOffsetDataStructure == 1)
 			{
 				IndirectionTableAllocator.Free(MipState.IndirectionTableOffset, MipState.IndirectionDimensions.X * MipState.IndirectionDimensions.Y * MipState.IndirectionDimensions.Z);
 			}
@@ -1362,7 +1360,7 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 		NewMipState.IndirectionDimensions = MipBuiltData.IndirectionDimensions;
 		const int32 NumIndirectionEntries = NewMipState.IndirectionDimensions.X * NewMipState.IndirectionDimensions.Y * NewMipState.IndirectionDimensions.Z;
 		
-		if (GDFShadowOffsetDataStructure == 0 || GDFShadowOffsetDataStructure == 1)
+		if (GDistanceFieldOffsetDataStructure == 0 || GDistanceFieldOffsetDataStructure == 1)
 		{
 			NewMipState.IndirectionTableOffset = IndirectionTableAllocator.Allocate(NumIndirectionEntries);
 		}
@@ -1379,7 +1377,7 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 	}
 
 	// Now that DistanceFieldAtlasBlockAllocator has been modified, potentially resize the atlas
-	ResizeBrickAtlasIfNeeded(GraphBuilder, GlobalShaderMap);
+	FRDGTextureRef DistanceFieldBrickVolumeTextureRDG = ResizeBrickAtlasIfNeeded(GraphBuilder, GlobalShaderMap);
 
 	const uint32 NumAssets = AssetStateArray.GetMaxIndex();
 	const int32 AssetDataStrideFloat4s = DistanceField::NumMips * AssetDataMipStrideFloat4s;
@@ -1387,27 +1385,30 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 	bool bIndirectionAtlasResized = false;
 
 	const uint32 AssetDataSizeBytes = FMath::RoundUpToPowerOfTwo(NumAssets) * AssetDataStrideFloat4s * sizeof(FVector4f);
-	ResizeResourceIfNeeded(GraphBuilder.RHICmdList, AssetDataBuffer, AssetDataSizeBytes, TEXT("DistanceFields.AssetData"));
+	FRDGBuffer* AssetDataBufferRDG = ResizeStructuredBufferIfNeeded(GraphBuilder, AssetDataBuffer, AssetDataSizeBytes, TEXT("DistanceFields.AssetData"));
 
-	if (GDFShadowOffsetDataStructure == 0)
+	FRDGBuffer* IndirectionTableRDG = nullptr;
+	FRDGTexture* IndirectionAtlasRDG = nullptr;
+
+	if (GDistanceFieldOffsetDataStructure == 0)
 	{
 		const uint32 IndirectionTableSizeBytes = FMath::Max<uint32>(FMath::RoundUpToPowerOfTwo(IndirectionTableAllocator.GetMaxSize()) * sizeof(uint32), 16);
-		ResizeResourceIfNeeded(GraphBuilder.RHICmdList, IndirectionTable, IndirectionTableSizeBytes, TEXT("DistanceFields.IndirectionTable"));
+		IndirectionTableRDG = ResizeByteAddressBufferIfNeeded(GraphBuilder, IndirectionTable, IndirectionTableSizeBytes, TEXT("DistanceFields.IndirectionTable.Uint"));
 	}
-	else if (GDFShadowOffsetDataStructure == 1)
+	else if (GDistanceFieldOffsetDataStructure == 1)
 	{
 		const uint32 Indirection2TableNumElements = FMath::Max<uint32>(FMath::RoundUpToPowerOfTwo(IndirectionTableAllocator.GetMaxSize()), 16);
-		ResizeResourceIfNeeded(GraphBuilder.RHICmdList, Indirection2Table, PF_A2B10G10R10, Indirection2TableNumElements, TEXT("DistanceFields.Indirection2Table"));
+		IndirectionTableRDG = ResizeBufferIfNeeded(GraphBuilder, IndirectionTable, PF_A2B10G10R10, Indirection2TableNumElements, TEXT("DistanceFields.IndirectionTable.Float"));
 	}
 	else
 	{
-		bIndirectionAtlasResized = ResizeIndirectionAtlasIfNeeded(GraphBuilder, GlobalShaderMap);
+		bIndirectionAtlasResized = ResizeIndirectionAtlasIfNeeded(GraphBuilder, GlobalShaderMap, IndirectionAtlasRDG);
 	}
 
 	{
 		const FIntVector AtlasDimensions = BrickTextureDimensionsInBricks * DistanceField::BrickSize;
 		const SIZE_T AtlasSizeBytes = AtlasDimensions.X * AtlasDimensions.Y * AtlasDimensions.Z * GPixelFormats[DistanceField::DistanceFieldFormat].BlockBytes;
-		const SIZE_T IndirectionTableBytes = IndirectionTable.NumBytes;
+		const SIZE_T IndirectionTableBytes = TryGetSize(IndirectionTable);
 
 		const FIntVector IndirectionAtlasSize = IndirectionAtlas ? IndirectionAtlas->GetDesc().GetSize() : FIntVector::ZeroValue;
 		const SIZE_T IndirectionTextureBytes = IndirectionAtlasSize.X * IndirectionAtlasSize.Y * IndirectionAtlasSize.Z * GPixelFormats[PF_A2B10G10R10].BlockBytes;
@@ -1431,13 +1432,13 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 		if (NumIndirectionTableAdds > 0)
 		{
 			// Allocate staging buffer space for the indirection table compute scatter
-			if (GDFShadowOffsetDataStructure == 0)
+			if (GDistanceFieldOffsetDataStructure == 0)
 			{
-				IndirectionTableUploadBuffer.Init(NumIndirectionTableAdds, sizeof(uint32), false, TEXT("DistanceFields.IndirectionTableUploadBuffer"));
+				IndirectionTableUploadBuffer.Init(GraphBuilder, NumIndirectionTableAdds, sizeof(uint32), false, TEXT("DistanceFields.IndirectionTableUploadBuffer.Uint"));
 			}
-			else if (GDFShadowOffsetDataStructure == 1)
+			else if (GDistanceFieldOffsetDataStructure == 1)
 			{
-				Indirection2TableUploadBuffer.Init(NumIndirectionTableAdds, sizeof(FVector4f), true, TEXT("DistanceFields.Indirection2TableUploadBuffer"));
+				IndirectionTableUploadBuffer.Init(GraphBuilder, NumIndirectionTableAdds, sizeof(FVector4f), true, TEXT("DistanceFields.IndirectionFloatUploadBuffer.Float"));
 			}
 			else
 			{
@@ -1458,91 +1459,57 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 			UpdateParameters.BrickUploadCoordinatesPtr = AtlasUpload.BrickUploadCoordinatesPtr;
 		}
 
-		check(AsyncTaskEvents.IsEmpty());
-
 		if (NewReadRequests.Num() || ReadRequestsToUpload.Num() || ReadRequestsToCleanUp.Num())
 		{
 			UpdateParameters.NewReadRequests = MoveTemp(NewReadRequests);
 			UpdateParameters.ReadRequestsToUpload = MoveTemp(ReadRequestsToUpload);
 			UpdateParameters.ReadRequestsToCleanUp = MoveTemp(ReadRequestsToCleanUp);
 
-			// Kick off an async task to copy completed read requests into upload staging buffers, and issue new read requests
-			AsyncTaskEvents.Add(TGraphTask<FDistanceFieldStreamingUpdateTask>::CreateTask().ConstructAndDispatchWhenReady(UpdateParameters));
+			// TODO: We actually run this synchronously now after the RDG conversion, as it would otherwise immediately sync.
+			AsyncUpdate(UpdateParameters);
 		}
 
-		if (AsyncTaskEvents.Num() || NumBrickUploads > 0 || NumIndirectionTableAdds > 0)
+		if (NumBrickUploads > 0 || NumIndirectionTableAdds > 0)
 		{
-			AddPass(GraphBuilder, RDG_EVENT_NAME("WaitOnDistanceFieldStreamingUpdate"), [this, AtlasUpload, IndirectionAtlasUpload, NumBrickUploads, NumIndirectionTableAdds, GlobalShaderMap](FRHICommandListImmediate& RHICmdList)
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_WaitOnDistanceFieldStreamingUpdate);
+			TRACE_CPUPROFILER_EVENT_SCOPE(WaitOnDistanceFieldStreamingUpdate);
+
+			if (NumBrickUploads > 0)
 			{
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_WaitOnDistanceFieldStreamingUpdate);
-				TRACE_CPUPROFILER_EVENT_SCOPE(WaitOnDistanceFieldStreamingUpdate);
+				AtlasUpload.Unlock();
+			}
 
-				if (!AsyncTaskEvents.IsEmpty())
+			if (NumIndirectionTableAdds > 0)
+			{
+				if (GDistanceFieldOffsetDataStructure == 0 || GDistanceFieldOffsetDataStructure == 1)
 				{
-					// Block on the async task before RDG execution of compute scatter uploads
-					FTaskGraphInterface::Get().WaitUntilTasksComplete(AsyncTaskEvents, ENamedThreads::GetRenderThread_Local());
-					AsyncTaskEvents.Empty();
+					IndirectionTableUploadBuffer.ResourceUploadTo(GraphBuilder, IndirectionTableRDG);
+					ExternalAccessQueue.Add(IndirectionTableRDG, ERHIAccess::SRVMask, ERHIPipeline::All);
 				}
-
-				if (NumBrickUploads > 0)
+				else
 				{
-					AtlasUpload.Unlock();
+					IndirectionAtlasUpload.Unlock();
+
+					TShaderMapRef<FScatterUploadDistanceFieldIndirectionAtlasCS> ComputeShader(GlobalShaderMap);
+
+					auto* PassParameters = GraphBuilder.AllocParameters<FScatterUploadDistanceFieldIndirectionAtlasCS::FParameters>();
+					PassParameters->RWIndirectionAtlas = GraphBuilder.CreateUAV(IndirectionAtlasRDG);
+					PassParameters->IndirectionUploadIndices = IndirectionAtlasUpload.IndirectionUploadIndicesBuffer.SRV;
+					PassParameters->IndirectionUploadData = IndirectionAtlasUpload.IndirectionUploadDataBuffer.SRV;
+					PassParameters->IndirectionAtlasSize = IndirectionAtlasRDG->Desc.GetSize();
+					PassParameters->NumIndirectionUploads = NumIndirectionTableAdds;
+
+					FComputeShaderUtils::AddPass(
+						GraphBuilder,
+						RDG_EVENT_NAME("ScatterUploadDistanceFieldIndirectionAtlas"),
+						ComputeShader,
+						PassParameters,
+						FComputeShaderUtils::GetGroupCount(NumIndirectionTableAdds, FScatterUploadDistanceFieldIndirectionAtlasCS::GetGroupSize()));
+
+					ExternalAccessQueue.Add(IndirectionAtlasRDG, ERHIAccess::SRVMask);
 				}
-
-				if (NumIndirectionTableAdds > 0)
-				{
-					if (GDFShadowOffsetDataStructure == 0)
-					{
-						RHICmdList.Transition({
-						   FRHITransitionInfo(IndirectionTable.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute)
-							});
-
-						IndirectionTableUploadBuffer.ResourceUploadTo(RHICmdList, IndirectionTable, false);
-
-						RHICmdList.Transition({
-							FRHITransitionInfo(IndirectionTable.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask)
-							});
-					}
-					else if (GDFShadowOffsetDataStructure == 1)
-					{
-						RHICmdList.Transition({
-						   FRHITransitionInfo(Indirection2Table.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute)
-							});
-
-						Indirection2TableUploadBuffer.ResourceUploadTo(RHICmdList, Indirection2Table, false);
-
-						RHICmdList.Transition({
-							FRHITransitionInfo(Indirection2Table.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask)
-							});
-					}
-					else
-					{
-						IndirectionAtlasUpload.Unlock();
-
-						TShaderMapRef<FScatterUploadDistanceFieldIndirectionAtlasCS> ComputeShader(GlobalShaderMap);
-						FRHIUnorderedAccessView* IndirectionAtlasUAV = IndirectionAtlas->GetRenderTargetItem().UAV;
-						FScatterUploadDistanceFieldIndirectionAtlasCS::FParameters PassParameters;
-						PassParameters.RWIndirectionAtlas = IndirectionAtlasUAV;
-						PassParameters.IndirectionUploadIndices = IndirectionAtlasUpload.IndirectionUploadIndicesBuffer.SRV;
-						PassParameters.IndirectionUploadData = IndirectionAtlasUpload.IndirectionUploadDataBuffer.SRV;
-						PassParameters.IndirectionAtlasSize = IndirectionAtlas->GetDesc().GetSize();
-						PassParameters.NumIndirectionUploads = NumIndirectionTableAdds;
-
-						RHICmdList.Transition(FRHITransitionInfo(IndirectionAtlasUAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
-
-						FComputeShaderUtils::Dispatch(
-							RHICmdList,
-							ComputeShader,
-							PassParameters,
-							FComputeShaderUtils::GetGroupCount(NumIndirectionTableAdds, FScatterUploadDistanceFieldIndirectionAtlasCS::GetGroupSize()));
-
-						RHICmdList.Transition(FRHITransitionInfo(IndirectionAtlasUAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
-					}
-				}
-			});
+			}
 		}
-
-		FRDGTextureRef DistanceFieldBrickVolumeTextureRDG = GraphBuilder.RegisterExternalTexture(DistanceFieldBrickVolumeTexture, TEXT("DistanceFields.DistanceFieldBrickVolumeTexture"));
 
 		if (NumBrickUploads > 0)
 		{
@@ -1570,20 +1537,16 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 					PassParameters,
 					FComputeShaderUtils::GetGroupCount(FIntVector(DistanceField::BrickSize, DistanceField::BrickSize, NumBrickUploadsThisPass * DistanceField::BrickSize), FScatterUploadDistanceFieldAtlasCS::GetGroupSize()));
 			}
-
-			DistanceFieldBrickVolumeTexture = GraphBuilder.ConvertToExternalTexture(DistanceFieldBrickVolumeTextureRDG);
 		}
-
-		GraphBuilder.FinalizeTextureAccess(DistanceFieldBrickVolumeTextureRDG, ERHIAccess::SRVMask);
 	}
 	
 	if (bIndirectionAtlasResized)
 	{
-		UploadAllAssetData(GraphBuilder);
+		UploadAllAssetData(GraphBuilder, AssetDataBufferRDG);
 	}
 	else
 	{
-		UploadAssetData(GraphBuilder, AssetDataUploads);
+		UploadAssetData(GraphBuilder, AssetDataUploads, AssetDataBufferRDG);
 	}
 
 	GenerateStreamingRequests(GraphBuilder, View, Scene, bLumenEnabled, GlobalShaderMap);
@@ -1594,6 +1557,9 @@ void FDistanceFieldSceneData::UpdateDistanceFieldAtlas(
 		ListMeshDistanceFields(bDumpAssetStats);
 		GDistanceFieldAtlasLogStats = 0;
 	}
+
+	ExternalAccessQueue.Add(DistanceFieldBrickVolumeTextureRDG, ERHIAccess::SRVMask, ERHIPipeline::All);
+	ExternalAccessQueue.Add(AssetDataBufferRDG, ERHIAccess::SRVMask, ERHIPipeline::All);
 }
 
 void FDistanceFieldSceneData::ListMeshDistanceFields(bool bDumpAssetStats) const
@@ -1665,7 +1631,7 @@ void FDistanceFieldSceneData::ListMeshDistanceFields(bool bDumpAssetStats) const
 	const SIZE_T AtlasSizeBytes = AtlasDimensions.X * AtlasDimensions.Y * AtlasDimensions.Z * GPixelFormats[DistanceField::DistanceFieldFormat].BlockBytes;
 	const SIZE_T AtlasUsedBytes = DistanceFieldAtlasBlockAllocator.GetAllocatedSize() * GDistanceFieldBlockAllocatorSizeInBricks * BrickSizeBytes;
 	const float BlockAllocatorWasteMb = BlockAllocatorWasteBytes / 1024.0f / 1024.0f;
-	const SIZE_T IndirectionTableBytes = IndirectionTable.NumBytes;
+	const SIZE_T IndirectionTableBytes = TryGetSize(IndirectionTable);
 	const FIntVector IndirectionAtlasSize = IndirectionAtlas ? IndirectionAtlas->GetDesc().GetSize() : FIntVector::ZeroValue;
 	const SIZE_T IndirectionTextureBytes = IndirectionAtlasSize.X * IndirectionAtlasSize.Y * IndirectionAtlasSize.Z * GPixelFormats[PF_A2B10G10R10].BlockBytes;
 	const int32 BrickAtlasSizeXYInBricks = CVarBrickAtlasSizeXYInBricks.GetValueOnRenderThread();

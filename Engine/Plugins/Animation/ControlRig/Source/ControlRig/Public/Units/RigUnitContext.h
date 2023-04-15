@@ -8,9 +8,11 @@
 #include "Rigs/RigNameCache.h"
 #include "ControlRigLog.h"
 #include "AnimationDataSource.h"
+#include "Animation/AttributesRuntime.h"
 #include "Drawing/ControlRigDrawInterface.h"
 #include "GameFramework/Actor.h"
 #include "Components/SceneComponent.h"
+#include "RigUnitContext.generated.h"
 
 /** Current state of rig
 *	What  state Control Rig currently is
@@ -23,19 +25,49 @@ enum class EControlRigState : uint8
 	Invalid,
 };
 
+/**
+ * The type of interaction happening on a rig
+ */
+UENUM()
+enum class EControlRigInteractionType : uint8
+{
+	None = 0,
+	Translate = (1 << 0),
+	Rotate = (1 << 1),
+	Scale = (1 << 2),
+	All = Translate | Rotate | Scale
+};
+
+USTRUCT()
+struct CONTROLRIG_API FRigHierarchySettings
+{
+	GENERATED_BODY();
+
+	FRigHierarchySettings()
+		: ProceduralElementLimit(128)
+	{
+	}
+
+	// Sets the limit for the number of elements to create procedurally
+	UPROPERTY(EditAnywhere, Category = "Hierarchy Settings")
+	int32 ProceduralElementLimit;
+};
+
 /** Execution context that rig units use */
 struct FRigUnitContext
 {
 	/** default constructor */
 	FRigUnitContext()
-		: DrawInterface(nullptr)
+		: AnimAttributeContainer(nullptr)
+		, DrawInterface(nullptr)
 		, DrawContainer(nullptr)
 		, DataSourceRegistry(nullptr)
 		, DeltaTime(0.f)
 		, AbsoluteTime(0.f)
 		, State(EControlRigState::Invalid)
 		, Hierarchy(nullptr)
-		, bDuringInteraction(false)
+		, InteractionType((uint8)EControlRigInteractionType::None)
+		, ElementsBeingInteracted()
 		, ToWorldSpaceTransform(FTransform::Identity)
 		, OwningComponent(nullptr)
 		, OwningActor(nullptr)
@@ -47,6 +79,9 @@ struct FRigUnitContext
 	{
 	}
 
+	/** An external anim attribute container */
+	UE::Anim::FStackAttributeContainer* AnimAttributeContainer;
+	
 	/** The draw interface for the units to use */
 	FControlRigDrawInterface* DrawInterface;
 
@@ -71,8 +106,14 @@ struct FRigUnitContext
 	/** The current hierarchy being executed */
 	URigHierarchy* Hierarchy;
 
-	/** True if the rig is executing during an interaction */
-	bool bDuringInteraction;
+	/** The current hierarchy settings */
+	FRigHierarchySettings HierarchySettings;
+
+	/** The type of interaction currently happening on the rig (0 == None) */
+	uint8 InteractionType;
+
+	/** The elements being interacted with. */
+	TArray<FRigElementKey> ElementsBeingInteracted;
 
 	/** The current transform going from rig (global) space to world space */
 	FTransform ToWorldSpaceTransform;
@@ -157,13 +198,21 @@ struct FRigUnitContext
 	{
 		return ToWorldSpaceTransform.InverseTransformRotation(InRotation);
 	}
+
+	/**
+	 * Returns true if this context is currently being interacted on
+	 */
+	FORCEINLINE bool IsInteracting() const
+	{
+		return InteractionType != (uint8)EControlRigInteractionType::None;
+	}
 };
 
 #if WITH_EDITOR
 #define UE_CONTROLRIG_RIGUNIT_REPORT(Severity, Format, ...) \
 if(Context.Log != nullptr) \
 { \
-	Context.Log->Report(EMessageSeverity::Severity, RigVMExecuteContext.FunctionName, RigVMExecuteContext.InstructionIndex, FString::Printf((Format), ##__VA_ARGS__)); \
+	Context.Log->Report(EMessageSeverity::Severity, RigVMExecuteContext.GetFunctionName(), RigVMExecuteContext.GetInstructionIndex(), FString::Printf((Format), ##__VA_ARGS__)); \
 }
 #define UE_CONTROLRIG_RIGUNIT_LOG_MESSAGE(Format, ...) UE_CONTROLRIG_RIGUNIT_REPORT(Info, (Format), ##__VA_ARGS__)
 #define UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(Format, ...) UE_CONTROLRIG_RIGUNIT_REPORT(Warning, (Format), ##__VA_ARGS__)

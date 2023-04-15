@@ -118,6 +118,20 @@ void FAndroidCameraPlayer::Close()
 	}
 
 	CurrentState = EMediaState::Closed;
+
+	// remove delegates if registered
+	if (ResumeHandle.IsValid())
+	{
+		FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ResumeHandle);
+		ResumeHandle.Reset();
+	}
+
+	if (PauseHandle.IsValid())
+	{
+		FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(PauseHandle);
+		PauseHandle.Reset();
+	}
+
 	CurrentTime = FTimespan::Zero();
 
 	bLooping = false;
@@ -301,13 +315,16 @@ static void DoUpdateExternalCameraSampleExecute(TWeakPtr<FJavaAndroidCameraPlaye
 	FTextureRHIRef VideoTexture = PinnedJavaCameraPlayer->GetVideoTexture();
 	if (VideoTexture == nullptr)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("VideoTexture"));
-		VideoTexture = GDynamicRHI->RHICreateTextureExternal2D(1, 1, PF_R8G8B8A8, 1, 1, TexCreate_None, ERHIAccess::Unknown, CreateInfo);
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("VideoTexture"), 1, 1, PF_R8G8B8A8)
+			.SetFlags(ETextureCreateFlags::External);
+
+		VideoTexture = RHICreateTexture(Desc);
 		PinnedJavaCameraPlayer->SetVideoTexture(VideoTexture);
 
 		if (VideoTexture == nullptr)
 		{
-			UE_LOG(LogAndroidCamera, Warning, TEXT("CreateTextureExternal2D failed!"));
+			UE_LOG(LogAndroidCamera, Warning, TEXT("RHICreateTexture failed!"));
 			return;
 		}
 
@@ -744,11 +761,11 @@ void FAndroidCameraPlayer::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 	// register delegate if not registered
 	if (!ResumeHandle.IsValid())
 	{
-		ResumeHandle = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddRaw(this, &FAndroidCameraPlayer::HandleApplicationWillEnterBackground);
+		ResumeHandle = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddRaw(this, &FAndroidCameraPlayer::HandleApplicationHasEnteredForeground);
 	}
 	if (!PauseHandle.IsValid())
 	{
-		PauseHandle = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddRaw(this, &FAndroidCameraPlayer::HandleApplicationHasEnteredForeground);
+		PauseHandle = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddRaw(this, &FAndroidCameraPlayer::HandleApplicationWillEnterBackground);
 	}
 
 	// generate events
@@ -1502,7 +1519,7 @@ bool FAndroidCameraPlayer::SetRate(float Rate)
 /* FAndroidCameraPlayer callbacks
  *****************************************************************************/
 
-void FAndroidCameraPlayer::HandleApplicationHasEnteredForeground()
+void FAndroidCameraPlayer::HandleApplicationWillEnterBackground()
 {
 	/*
 	// check state in case changed before ticked
@@ -1514,7 +1531,7 @@ void FAndroidCameraPlayer::HandleApplicationHasEnteredForeground()
 }
 
 
-void FAndroidCameraPlayer::HandleApplicationWillEnterBackground()
+void FAndroidCameraPlayer::HandleApplicationHasEnteredForeground()
 {
 	/*
 	// check state in case changed before ticked

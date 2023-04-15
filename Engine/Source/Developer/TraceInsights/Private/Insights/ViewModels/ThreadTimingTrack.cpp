@@ -9,7 +9,9 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "Serialization/MemoryReader.h"
 #include "Styling/SlateBrush.h"
+#include "TraceServices/Model/LoadTimeProfiler.h"
 #include "TraceServices/Model/TasksProfiler.h"
+#include "TraceServices/Model/Threads.h"
 #include "Async/TaskGraphInterfaces.h"
 
 // Insights
@@ -18,6 +20,7 @@
 #include "Insights/InsightsManager.h"
 #include "Insights/InsightsStyle.h"
 #include "Insights/ITimingViewSession.h"
+#include "Insights/Log.h"
 #include "Insights/TimingProfilerManager.h"
 #include "Insights/ViewModels/Filters.h"
 #include "Insights/ViewModels/FilterConfigurator.h"
@@ -96,7 +99,7 @@ static void AppendMetadataToTooltip(FTooltipDrawState& Tooltip, TArrayView<const
 			break;
 		}
 
-		FString Key(Context.AsLength(), Context.AsCString());
+		FString Key(static_cast<int32>(Context.AsLength()), Context.AsCString());
 		Key += TEXT(":");
 
 		if (!CborReader.ReadNext(Context))
@@ -132,7 +135,7 @@ static void AppendMetadataToTooltip(FTooltipDrawState& Tooltip, TArrayView<const
 
 		case ECborCode::ByteString:
 			{
-				FAnsiStringView Value(Context.AsCString(), Context.AsLength());
+				FAnsiStringView Value(Context.AsCString(), static_cast<int32>(Context.AsLength()));
 				FString ValueStr(Value);
 				Tooltip.AddNameValueTextLine(Key, ValueStr);
 				continue;
@@ -241,7 +244,7 @@ static void AppendMetadataToString(FString& Str, TArrayView<const uint8>& Metada
 
 		case ECborCode::ByteString:
 			{
-				Str.AppendChars(Context.AsCString(), Context.AsLength());
+				Str.AppendChars(Context.AsCString(), static_cast<int32>(Context.AsLength()));
 				continue;
 			}
 		}
@@ -467,6 +470,8 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 			TimingProfilerTimelineCount = CurrentTimingProfilerTimelineCount;
 			LoadTimeProfilerTimelineCount = CurrentLoadTimeProfilerTimelineCount;
 
+			LLM_SCOPE_BYTAG(Insights);
+
 			// Check if we have a GPU track.
 			if (!GpuTrack.IsValid())
 			{
@@ -485,7 +490,7 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 				if (TimingProfilerProvider->GetGpu2TimelineIndex(GpuTimelineIndex))
 				{
 					Gpu2Track = MakeShared<FGpuTimingTrack>(*this, TEXT("GPU2"), nullptr, GpuTimelineIndex, FGpuTimingTrack::Gpu2ThreadId);
-					Gpu2Track->SetOrder(FTimingTrackOrder::Gpu);
+					Gpu2Track->SetOrder(FTimingTrackOrder::Gpu + 1);
 					Gpu2Track->SetVisibilityFlag(bShowHideAllGpuTracks);
 					InSession.AddScrollableTrack(Gpu2Track);
 				}
@@ -1207,13 +1212,21 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 
 					if (Task.CompletedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
 					{
-						TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.CompletedThreadId);
-						FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
-						InOutTooltip.AddNameValueTextLine(TEXT("Completed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.FinishedTimestamp, *TimeUtils::FormatTimeAuto(Task.CompletedTimestamp - Task.FinishedTimestamp), *TrackName));
+						TSharedPtr<FCpuTimingTrack> CompletedTrack = SharedState.GetCpuTrack(Task.CompletedThreadId);
+						FString CompletedTrackName = CompletedTrack.IsValid() ? CompletedTrack->GetName() : TEXT("Unknown");
+						InOutTooltip.AddNameValueTextLine(TEXT("Completed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.CompletedTimestamp, *TimeUtils::FormatTimeAuto(Task.CompletedTimestamp - Task.FinishedTimestamp), *CompletedTrackName));
+
+						if (Task.DestroyedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
+						{
+							TSharedPtr<FCpuTimingTrack> DestroyedTrack = SharedState.GetCpuTrack(Task.DestroyedThreadId);
+							FString DestroyedTrackName = DestroyedTrack.IsValid() ? DestroyedTrack->GetName() : TEXT("Unknown");
+							InOutTooltip.AddNameValueTextLine(TEXT("Destroyed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.DestroyedTimestamp, *TimeUtils::FormatTimeAuto(Task.DestroyedTimestamp - Task.CompletedTimestamp), *DestroyedTrackName));
+						}
 					}
 				}
 				InOutTooltip.AddNameValueTextLine(TEXT("Prerequisite tasks:"), FString::Printf(TEXT("%d"), Task.Prerequisites.Num()));
 				InOutTooltip.AddNameValueTextLine(TEXT("Subsequent tasks:"), FString::Printf(TEXT("%d"), Task.Subsequents.Num()));
+				InOutTooltip.AddNameValueTextLine(TEXT("Parent tasks:"), FString::Printf(TEXT("%d"), Task.ParentTasks.Num()));
 				InOutTooltip.AddNameValueTextLine(TEXT("Nested tasks:"), FString::Printf(TEXT("%d"), Task.NestedTasks.Num()));
 			};
 
@@ -1384,7 +1397,7 @@ const TSharedPtr<const ITimingEvent> FThreadTimingTrack::GetEvent(float InPosX, 
 	// If mouse is not above first sub-track or below last sub-track...
 	if (DY >= 0 && DY < TrackLanesHeight)
 	{
-		const int32 Depth = DY / (Layout.EventH + Layout.EventDY);
+		const int32 Depth = static_cast<int32>(DY / (Layout.EventH + Layout.EventDY));
 
 		const double SecondsPerPixel = 1.0 / Viewport.GetScaleX();
 
@@ -1497,8 +1510,30 @@ void FThreadTimingTrack::OnClipboardCopyEvent(const ITimingEvent& InSelectedEven
 		FTimerNodePtr TimerNodePtr = FTimingProfilerManager::Get()->GetTimerNode(TrackEvent.GetTimerId());
 		if (TimerNodePtr)
 		{
+			FString EventName = TimerNodePtr->GetName().ToString();
+
+			FTimingEventsTrackDrawStateBuilder::AppendDurationToEventName(EventName, TrackEvent.GetDuration());
+
+			const uint32 TimerIndex = TrackEvent.GetTimerIndex();
+			if (int32(TimerIndex) < 0) // has metadata?
+			{
+				TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+				check(Session.IsValid());
+
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+				const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
+				const TraceServices::ITimingProfilerTimerReader* TimerReader;
+				TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+
+				TArrayView<const uint8> Metadata = TimerReader->GetMetadata(TimerIndex);
+				if (Metadata.Num() > 0)
+				{
+					AppendMetadataToString(EventName, Metadata);
+				}
+			}
+
 			// Copy name of selected timing event to clipboard.
-			FPlatformApplicationMisc::ClipboardCopy(*TimerNodePtr->GetName().ToString());
+			FPlatformApplicationMisc::ClipboardCopy(*EventName);
 		}
 	}
 }
@@ -1712,6 +1747,8 @@ bool FThreadTimingTrack::TimerIndexToTimerId(uint32 InTimerIndex, uint32& OutTim
 
 void FThreadTimingTrack::OnFilterTrackClicked()
 {
+	LLM_SCOPE_BYTAG(Insights);
+
 	if (!FilterConfigurator.IsValid())
 	{
 		FilterConfigurator = MakeShared<FFilterConfigurator>();
@@ -1721,12 +1758,19 @@ void FThreadTimingTrack::OnFilterTrackClicked()
 		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::EndTime), LOCTEXT("EndTime", "End Time"), LOCTEXT("EndTime", "End Time"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
 		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::Duration), LOCTEXT("Duration", "Duration"), LOCTEXT("Duration", "Duration"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
 		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::TimerId), LOCTEXT("TimerId", "Timer Id"), LOCTEXT("TimerId", "Timer Id"), EFilterDataType::Int64, FFilterService::Get()->GetIntegerOperators()));
-
-		OnFilterChangesCommitedHandle = FilterConfigurator->GetOnChangesCommitedEvent().AddLambda([this]()
-			{
-				this->SetDirtyFlag();
-			});
 	}
+	else
+	{
+		FilterConfigurator->GetOnChangesCommitedEvent().Remove(OnFilterChangesCommitedHandle);
+
+		// Make a copy, so it will not affect other tracks that shares same filter.
+		FilterConfigurator = MakeShared<FFilterConfigurator>(*FilterConfigurator);
+	}
+
+	OnFilterChangesCommitedHandle = FilterConfigurator->GetOnChangesCommitedEvent().AddLambda([this]()
+		{
+			this->SetDirtyFlag();
+		});
 
 	FFilterService::Get()->CreateFilterConfiguratorWidget(FilterConfigurator);
 }
@@ -1772,16 +1816,11 @@ int32 FThreadTimingTrack::GetDepthAt(double Time) const
 
 void FThreadTimingTrack::SetFilterConfigurator(TSharedPtr<Insights::FFilterConfigurator> InFilterConfigurator)
 {
-	if (InFilterConfigurator.IsValid())
+	if (FilterConfigurator != InFilterConfigurator)
 	{
-		FilterConfigurator = MakeShared<Insights::FFilterConfigurator>(*InFilterConfigurator);
+		FilterConfigurator = InFilterConfigurator;
+		SetDirtyFlag();
 	}
-	else
-	{
-		FilterConfigurator.Reset();
-	}
-
-	SetDirtyFlag();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

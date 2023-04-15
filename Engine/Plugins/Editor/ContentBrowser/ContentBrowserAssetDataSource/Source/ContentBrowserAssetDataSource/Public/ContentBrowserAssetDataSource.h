@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "ContentBrowserDataSource.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "UObject/GCObject.h"
 #include "Misc/NamePermissionList.h"
 #include "ContentBrowserDataMenuContexts.h"
@@ -78,7 +78,7 @@ public:
 		const FContentBrowserDataCollectionFilter* CollectionFilter = nullptr;
 
 		const FPathPermissionList* PathPermissionList = nullptr;
-		const FNamePermissionList* ClassPermissionList = nullptr;
+		const FPathPermissionList* ClassPermissionList = nullptr;
 
 		FContentBrowserDataFilterList* FilterList = nullptr;
 		FContentBrowserCompiledAssetDataFilter* AssetDataFilter = nullptr;
@@ -212,6 +212,12 @@ public:
 
 	virtual bool BulkDeleteItems(TArrayView<const FContentBrowserItemData> InItems) override;
 
+	virtual bool CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg);
+
+	virtual bool PrivatizeItem(const FContentBrowserItemData& InItem) override;
+
+	virtual bool BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems) override;
+
 	virtual bool CanRenameItem(const FContentBrowserItemData& InItem, const FString* InNewName, FText* OutErrorMsg) override;
 
 	virtual bool RenameItem(const FContentBrowserItemData& InItem, const FString& InNewName, FContentBrowserItemData& OutNewItem) override;
@@ -240,7 +246,7 @@ public:
 
 	virtual bool HandleDragDropOnItem(const FContentBrowserItemData& InItem, const FDragDropEvent& InDragDropEvent) override;
 
-	virtual bool TryGetCollectionId(const FContentBrowserItemData& InItem, FName& OutCollectionId) override;
+	virtual bool TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId) override;
 
 	virtual bool Legacy_TryGetPackagePath(const FContentBrowserItemData& InItem, FName& OutPackagePath) override;
 
@@ -260,7 +266,7 @@ private:
 
 	bool IsRootContentPath(const FName InPackagePath) const;
 
-	static bool GetObjectPathsForCollections(ICollectionManager* CollectionManager, TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FName>& OutObjectPaths);
+	static bool GetObjectPathsForCollections(ICollectionManager* CollectionManager, TArrayView<const FCollectionNameType> InCollections, const bool bIncludeChildCollections, TArray<FSoftObjectPath>& OutObjectPaths);
 
 	FContentBrowserItemData CreateAssetFolderItem(const FName InFolderPath);
 

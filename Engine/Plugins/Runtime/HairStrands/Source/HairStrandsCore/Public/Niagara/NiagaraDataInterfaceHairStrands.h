@@ -5,6 +5,7 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceRW.h"
 #include "NiagaraCommon.h"
+#include "NiagaraRenderGraphUtils.h"
 #include "VectorVM.h"
 #include "GroomAsset.h"
 #include "GroomActor.h"
@@ -38,7 +39,7 @@ struct FNDIHairStrandsBuffer : public FRenderResource
 		const FHairStrandsDeformedRootResource* HairStrandsDeformedRootResource);
 
 	/** Transfer CPU datas to GPU */
-	void Transfer(const TStaticArray<float, 32 * NumScales>& InParamsScale);
+	void Transfer(FRDGBuilder& GraphBuilder, const TStaticArray<float, 32 * NumScales>& InParamsScale);
 
 	/** Init the buffer */
 	virtual void InitRHI() override;
@@ -50,16 +51,19 @@ struct FNDIHairStrandsBuffer : public FRenderResource
 	virtual FString GetFriendlyName() const override { return TEXT("FNDIHairStrandsBuffer"); }
 
 	/** Strand curves point offset buffer */
-	FRWBuffer CurvesOffsetsBuffer;
+	FNiagaraPooledRWBuffer CurvesOffsetsBuffer;
 
-	/** Deformed position buffer in case no ressource are there */
-	FRWBuffer DeformedPositionBuffer;
+	/** Deformed position buffer in case no resource are there */
+	TRefCountPtr<FRDGPooledBuffer> DeformedPositionBuffer;
 
 	/** Bounding Box Buffer*/
-	FRWBuffer BoundingBoxBuffer;
+	FNiagaraPooledRWBuffer BoundingBoxBuffer;
 
 	/** Params scale buffer */
-	FRWBuffer ParamsScaleBuffer;
+	FNiagaraPooledRWBuffer ParamsScaleBuffer;
+
+	/** Points curve index for fast query */
+	FNiagaraPooledRWBuffer PointsCurveBuffer;
 
 	/** The strand asset resource from which to sample */
 	const FHairStrandsRestResource* SourceRestResources;
@@ -81,6 +85,9 @@ struct FNDIHairStrandsBuffer : public FRenderResource
 
 	/** Valid geometry type for hair (strands, cards, mesh)*/
 	bool bValidGeometryType = false;
+
+	// For debug only
+	//FRHIGPUBufferReadback* ReadbackBuffer = nullptr;
 };
 
 /** Data stored per strand base instance*/
@@ -128,6 +135,7 @@ struct FNDIHairStrandsData
 		IterationCount = 20;
 
 		GravityVector = FVector(0.0, 0.0, -981.0);
+		GravityPreloading = 0.0;
 		AirDrag = 0.1;
 		AirVelocity = FVector(0, 0, 0);
 
@@ -197,6 +205,7 @@ struct FNDIHairStrandsData
 			IterationCount = OtherDatas->IterationCount;
 
 			GravityVector = OtherDatas->GravityVector;
+			GravityPreloading = OtherDatas->GravityPreloading;
 			AirDrag = OtherDatas->AirDrag;
 			AirVelocity = OtherDatas->AirVelocity;
 
@@ -296,6 +305,9 @@ struct FNDIHairStrandsData
 
 	/** Acceleration vector in cm/s2 to be used for the gravity*/
 	FVector GravityVector;
+	
+	/** Optimisation of the rest state configuration to compensate from the gravity */
+	float GravityPreloading;
 
 	/** Coefficient between 0 and 1 to be used for the air drag */
 	float AirDrag;
@@ -377,9 +389,6 @@ class HAIRSTRANDSCORE_API UNiagaraDataInterfaceHairStrands : public UNiagaraData
 	GENERATED_UCLASS_BODY()
 
 public:
-
-	DECLARE_NIAGARA_DI_PARAMETER();
-
 	/** Hair Strands Asset used to sample from when not overridden by a source actor from the scene. Also useful for previewing in the editor. */
 	UPROPERTY(EditAnywhere, Category = "Source")
 	TObjectPtr<UGroomAsset> DefaultSource;
@@ -406,6 +415,8 @@ public:
 	virtual bool HasPreSimulateTick() const override { return true; }
 	virtual bool HasTickGroupPrereqs() const override { return true; }
 	virtual ETickingGroup CalculateTickGroup(const void* PerInstanceData) const override;
+	virtual void SimCachePostReadFrame(void* OptionalPerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
+	virtual TArray<FNiagaraVariableBase> GetSimCacheRendererAttributes(UObject* UsageContext) const override;
 
 	/** GPU simulation  functionality */
 #if WITH_EDITORONLY_DATA
@@ -414,6 +425,10 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
+
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
 	/** Update the source component */
@@ -445,6 +460,8 @@ public:
 	void GetIterationCount(FVectorVMExternalFunctionContext& Context);
 
 	void GetGravityVector(FVectorVMExternalFunctionContext& Context);
+
+	void GetGravityPreloading(FVectorVMExternalFunctionContext& Context);
 
 	void GetAirDrag(FVectorVMExternalFunctionContext& Context);
 
@@ -650,114 +667,6 @@ public:
 	/** Get the sample state given an index */
 	void GetSampleState(FVectorVMExternalFunctionContext& Context);
 
-	/** Name of the world transform */
-	static const FString WorldTransformName;
-
-	/** Name of the bounding box offsets*/
-	static const FString BoundingBoxOffsetsName;
-
-	/** Name of the world inverse transform */
-	static const FString WorldInverseName;
-
-	/** Name of the world rotation */
-	static const FString WorldRotationName;
-
-	/** Name of the bone transform */
-	static const FString BoneTransformName;
-
-	/** Name of the bone inverse transform */
-	static const FString BoneInverseName;
-
-	/** Name of the world rotation */
-	static const FString BoneRotationName;
-
-	/** Name of the bone linear velocity */
-	static const FString BoneLinearVelocityName;
-
-	/** Name of the bone linear acceleration */
-	static const FString BoneLinearAccelerationName;
-
-	/** Name of the bone angular velocity */
-	static const FString BoneAngularVelocityName;
-
-	/** Name of the bone angular acceleration */
-	static const FString BoneAngularAccelerationName;
-
-	/** Name of the number of strands */
-	static const FString NumStrandsName;
-
-	/** Name of the strand size */
-	static const FString StrandSizeName;
-
-	/** Name of the points positions buffer */
-	static const FString DeformedPositionBufferName;
-
-	/** Name of the curves offsets buffer */
-	static const FString CurvesOffsetsBufferName;
-
-	/** Name of bounding box buffer */
-	static const FString BoundingBoxBufferName;
-
-	/** Name of the nodes positions buffer */
-	static const FString RestPositionBufferName;
-
-	/** Param to check if the roots have been attached to the skin */
-	static const FString InterpolationModeName;
-
-	/** Param to check if we need to update the rest pose */
-	static const FString RestUpdateName;
-
-	/** Param to check if the simulation is going to be run in local space */
-	static const FString LocalSimulationName;
-
-	/** boolean to check if we need to rest the simulation*/
-	static const FString ResetSimulationName;
-
-	/** Rest center of all the roots */
-	static const FString RestRootOffsetName;
-
-	/** Rest position of the triangle vertex A */
-	static const FString RestTrianglePositionAName;
-
-	/** Rest position of the triangle vertex B */
-	static const FString RestTrianglePositionBName;
-
-	/** Rest position of the triangle vertex C */
-	static const FString RestTrianglePositionCName;
-
-	/** Deformed center of all the roots */
-	static const FString DeformedRootOffsetName;
-
-	/** Deformed position of the triangle vertex A */
-	static const FString DeformedTrianglePositionAName;
-
-	/** Deformed position of the triangle vertex A */
-	static const FString DeformedTrianglePositionBName;
-
-	/** Deformed position of the triangle vertex A */
-	static const FString DeformedTrianglePositionCName;
-
-	/** Root barycentric coordinates */
-	static const FString RootBarycentricCoordinatesName;
-
-	/** Rest center of all the position */
-	static const FString RestPositionOffsetName;
-
-	/** Deformed center of all the position */
-	static const FString DeformedPositionOffsetName;
-
-	/** Number of samples for rbf interpolation */
-	static const FString SampleCountName;
-
-	/** Rbf sample weights */
-	static const FString MeshSampleWeightsName;
-
-	/** Rbf Sample rest positions */
-	static const FString RestSamplePositionsName;
-
-	/** Params scale buffer */
-	static const FString ParamsScaleBufferName;
-
 protected:
 	/** Copy one niagara DI to this */
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
@@ -779,7 +688,10 @@ struct FNDIHairStrandsProxy : public FNiagaraDataInterfaceProxy
 	void DestroyPerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	/** Launch all pre stage functions */
-	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;
+	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override;
+
+	/** MGPU buffer copy after simulation*/
+	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
 
 	/** List of proxy data for each system instances*/
 	TMap<FNiagaraSystemInstanceID, FNDIHairStrandsData> SystemInstancesToProxyData;

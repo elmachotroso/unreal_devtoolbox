@@ -16,6 +16,9 @@
 class UAnimSequence;
 struct FCompactPose;
 
+/**
+* Animation Composites serve as a way to combine multiple animations together and treat them as a single unit.
+*/
 UCLASS(config=Engine, hidecategories=UObject, MinimalAPI, BlueprintType)
 class UAnimComposite : public UAnimCompositeBase
 {
@@ -55,6 +58,7 @@ public:
 	virtual void InvalidateRecursiveAsset() override;
 	virtual bool ContainRecursive(TArray<UAnimCompositeBase*>& CurrentAccumulatedList) override;
 	virtual void SetCompositeLength(float InLength) override;
+	virtual void PostLoad() override;
 	//~End UAnimCompositeBase Interface
 };
 

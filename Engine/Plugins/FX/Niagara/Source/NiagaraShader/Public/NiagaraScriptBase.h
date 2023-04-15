@@ -17,7 +17,7 @@ enum class ENiagaraGpuDispatchType : uint8
 	/* Instances will distribute along X, Y & Z using platforms specific thread counts. */
 	ThreeD,
 	/* NumThreads will be determined manually. */
-	Custom,
+	Custom			UMETA(Hidden),
 };
 
 UENUM()
@@ -45,6 +45,18 @@ public:
 	UPROPERTY()
 	FName EnabledBinding;
 
+	/** Optional binding to manually specify the element count. */
+	UPROPERTY()
+	FName ElementCountXBinding;
+
+	/** Optional binding to manually specify the element count. */
+	UPROPERTY()
+	FName ElementCountYBinding;
+
+	/** Optional binding to manually specify the element count. */
+	UPROPERTY()
+	FName ElementCountZBinding;
+
 	/** The Data Interface that we iterate over for this stage. If None, then use particles.*/
 	UPROPERTY()
 	FName IterationSource;
@@ -64,6 +76,10 @@ public:
 	UPROPERTY()
 	uint32 bParticleIterationStateEnabled : 1;
 
+	/** When enabled the simulation stage uses element count provided by user to dispatch work. */
+	UPROPERTY()
+	uint32 bOverrideElementCount : 1;
+
 	/** When the value is not none this is the binding used for particle state iteration stages. */
 	UPROPERTY()
 	FName ParticleIterationStateBinding;
@@ -78,6 +94,11 @@ public:
 	/** DataInterfaces that we write to in this stage.*/
 	UPROPERTY()
 	TArray<FName> OutputDestinations;
+
+	/** DataInterfaces that we read from in this stage.*/
+	UPROPERTY()
+	TArray<FName> InputDataInterfaces;
+
 
 	/** The number of iterations for the stage. */
 	UPROPERTY()

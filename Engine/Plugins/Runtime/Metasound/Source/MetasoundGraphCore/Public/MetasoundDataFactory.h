@@ -754,6 +754,20 @@ namespace Metasound
 		static constexpr bool Value = FElementConstructorTraits::bIsConstructibleWithArgs || FElementConstructorTraits::bIsConstructibleWithSettingsAndArgs ;
 	};
 
+	/* Determines whether a DataType is an array type. */
+	template<typename DataType>
+	struct TIsArrayType
+	{
+		static constexpr bool Value = false;
+	};
+
+	/* Specialization for Array DataTypes. */
+	template<typename DataElementType>
+	struct TIsArrayType<TArray<DataElementType>>
+	{
+		static constexpr bool Value = true;
+	};
+
 	/** Determines whether a DataType supports construction using the given literal.
 	 *
 	 * @tparam DataType - The registered Metasound Data Type.
@@ -763,25 +777,28 @@ namespace Metasound
 	{
 		using TVariantConstructorTraits = DataFactoryPrivate::TDataTypeVariantConstructorTraits<DataType, FLiteral::FVariantType>;
 
-		static constexpr bool bIsParsableFromAnyLiteralType = 
-			TVariantConstructorTraits::bIsDefaultConstructible || 
-			TVariantConstructorTraits::bIsConstructibleWithSettings || 
-			TVariantConstructorTraits::bIsConstructibleWithArgs || 
-			TVariantConstructorTraits::bIsConstructibleWithSettingsAndArgs || 
-			TVariantConstructorTraits::bIsArrayDefaultConstructible || 
-			TVariantConstructorTraits::bIsArrayConstructibleWithSettings || 
-			TVariantConstructorTraits::bIsArrayConstructibleWithArgs || 
+		static constexpr bool bIsParseableFromAnyArrayLiteralType =
+			TVariantConstructorTraits::bIsArrayDefaultConstructible ||
+			TVariantConstructorTraits::bIsArrayConstructibleWithSettings ||
+			TVariantConstructorTraits::bIsArrayConstructibleWithArgs ||
 			TVariantConstructorTraits::bIsArrayConstructibleWithSettingsAndArgs;
+
+		static constexpr bool bIsParsableFromAnyLiteralType =
+			TVariantConstructorTraits::bIsDefaultConstructible ||
+			TVariantConstructorTraits::bIsConstructibleWithSettings ||
+			TVariantConstructorTraits::bIsConstructibleWithArgs ||
+			TVariantConstructorTraits::bIsConstructibleWithSettingsAndArgs ||
+			bIsParseableFromAnyArrayLiteralType;
 
 		/** Determines if a constructor for the DataType exists which accepts 
 		 * an FOperatorSettings with the literals constructor arg type, and/or one that
-		 * accpets the literal constructor arg type. 
+		 * accepts the literal constructor arg type. 
 		 *
 		 * @param InLiteral - The literal containing the constructor argument.
 		 *
 		 * @return True if a constructor for the DataType exists which accepts 
 		 * an FOperatorSettings with the literals constructor arg type, or one that
-		 * accpets the literal constructor arg type. It returns False otherwise.
+		 * accepts the literal constructor arg type. It returns False otherwise.
 		 */
 		static const bool IsParsable(const FLiteral& InLiteral)
 		{
@@ -934,6 +951,19 @@ namespace Metasound
 	{
 	};
 
+	/** TDataValueReferenceFactory creates TDataValueReferences for the given DataType.
+	 *
+	 * TDataValueReferenceFactory provides several factory methods for forwarding 
+	 * arguments from the factory method to the DataType constructor.  See TDataFactory
+	 * for more information on the provided factory methods.
+	 *
+	 * @tparam DataType - The Metasound DataType of the TDataValueReference.
+	 */
+	template<typename DataType>
+	struct TDataValueReferenceFactory : TDataFactory<DataType, TDataValueReference<DataType>>
+	{
+	};
+
 	/** TDataReadReferenceFactory creates TDataReadReferences for the given DataType.
 	 *
 	 * TDataReadReferenceFactory provides several factory methods for forwarding 
@@ -1076,6 +1106,19 @@ namespace Metasound
 	 */
 	template<typename DataType>
 	struct TDataTypeLiteralFactory : TDataLiteralFactory<DataType, DataFactoryPrivate::TDataTypeCreator<DataType>>
+	{
+	};
+
+	/** TDataValueReferenceLiteralFactory creates TDataValueReferences for the given DataType.
+	 *
+	 * TDataValueReferenceLiteralFactory provides several factory methods for forwarding 
+	 * arguments from the factory method to the DataType constructor.  See TDataFactory
+	 * for more information on the provided factory methods.
+	 *
+	 * @tparam DataType - The Metasound DataType of the TDataValueReference.
+	 */
+	template<typename DataType>
+	struct TDataValueReferenceLiteralFactory : TDataLiteralFactory<DataType, TDataValueReference<DataType>>
 	{
 	};
 

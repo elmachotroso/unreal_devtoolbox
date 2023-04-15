@@ -21,22 +21,23 @@
 #include "AssetTypeActions/AssetTypeActions_NiagaraParameterCollection.h"
 #include "AssetTypeActions/AssetTypeActions_NiagaraEffectType.h"
 #include "AssetTypeActions/AssetTypeActions_NiagaraParameterDefinitions.h"
+#include "AssetTypeActions/AssetTypeActions_NiagaraSimCache.h"
 
+#include "EdGraphSchema_Niagara.h"
 #include "EdGraphUtilities.h"
-#include "SGraphPin.h"
-#include "KismetPins/SGraphPinVector4.h"
-#include "KismetPins/SGraphPinNum.h"
+#include "KismetPins/SGraphPinBool.h"
+#include "KismetPins/SGraphPinColor.h"
+#include "KismetPins/SGraphPinEnum.h"
 #include "KismetPins/SGraphPinExec.h"
 #include "KismetPins/SGraphPinInteger.h"
+#include "KismetPins/SGraphPinNum.h"
 #include "KismetPins/SGraphPinVector.h"
 #include "KismetPins/SGraphPinVector2D.h"
-#include "KismetPins/SGraphPinColor.h"
-#include "KismetPins/SGraphPinBool.h"
-#include "Editor/GraphEditor/Private/KismetPins/SGraphPinEnum.h"
-#include "SNiagaraGraphPinNumeric.h"
-#include "SNiagaraGraphPinAdd.h"
+#include "KismetPins/SGraphPinVector4.h"
 #include "NiagaraNodeAssignment.h"
-#include "EdGraphSchema_Niagara.h"
+#include "SGraphPin.h"
+#include "SNiagaraGraphPinAdd.h"
+#include "SNiagaraGraphPinNumeric.h"
 
 #include "TypeEditorUtilities/NiagaraFloatTypeEditorUtilities.h"
 #include "TypeEditorUtilities/NiagaraIntegerTypeEditorUtilities.h"
@@ -117,7 +118,6 @@
 #include "NiagaraScriptVariable.h"
 #include "NiagaraScript.h"
 #include "NiagaraCommon.h"
-#include "NiagaraScriptHighlight.h"
 #include "NiagaraComponentRendererProperties.h"
 #include "NiagaraMeshRendererProperties.h"
 
@@ -139,18 +139,27 @@
 #include "ISourceControlModule.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Containers/Ticker.h"
-#include "NiagaraConstants.h"
 
 #include "ViewModels/Stack/NiagaraStackObjectIssueGenerator.h"
 #include "NiagaraPlatformSet.h"
 #include "NiagaraEffectType.h"
 #include "SNiagaraSystemViewport.h"
 
+#include "LevelEditor.h"
+#include "LevelEditorOutlinerSettings.h"
+#include "Filters/CustomClassFilterData.h"
+
 #include "SNiagaraDebugger.h"
 
+#include "NiagaraDebugVis.h"
 #include "NiagaraPerfBaseline.h"
-
 #include "NiagaraGraphDataCache.h"
+#include "NiagaraLightRendererProperties.h"
+#include "NiagaraRibbonRendererProperties.h"
+#include "NiagaraSpriteRendererProperties.h"
+#include "Misc/ScopedSlowTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEditorModule)
 
 IMPLEMENT_MODULE( FNiagaraEditorModule, NiagaraEditor );
 
@@ -169,6 +178,23 @@ static FAutoConsoleVariableRef CVarShowNiagaraDeveloperWindows(
 	ECVF_Default
 	);
 
+int32 GbPreloadSelectablePluginAssetsOnDemand = 1;
+static FAutoConsoleVariableRef CVarPreloadSelectablePluginAssetsOnDemand(
+	TEXT("fx.Niagara.PreloadSelectablePluginAssetsOnDemand"),
+	GbPreloadSelectablePluginAssetsOnDemand,
+	TEXT("If > 0 then niagara system, emitter, and script assets provided by the niagara plugin will be preloaded when a dialog is opened to select them. This is a temoporary workaround for asset registry issues in cooked editor builds.\n"),
+	ECVF_Default);
+
+// this is required for gpu script compilation ticks
+static FNiagaraShaderQueueTickable NiagaraShaderQueueProcessor;
+
+#if !IS_MONOLITHIC
+namespace NiagaraDebugVisHelper
+{
+	const FNiagaraTypeRegistry*& GTypeRegistrySingletonPtr = GCoreTypeRegistrySingletonPtr;
+}
+#endif
+
 //////////////////////////////////////////////////////////////////////////
 
 class FNiagaraEditorOnlyDataUtilities : public INiagaraEditorOnlyDataUtilities
@@ -185,6 +211,7 @@ class FNiagaraEditorOnlyDataUtilities : public INiagaraEditorOnlyDataUtilities
 		{
 			UNiagaraSystemEditorData* SystemEditorData = NewObject<UNiagaraSystemEditorData>(InOuter);
 			SystemEditorData->SynchronizeOverviewGraphWithSystem(*System);
+			SystemEditorData->InitOnSyncScriptVariables(*System);
 			return SystemEditorData;
 		}
 		return nullptr;
@@ -320,16 +347,16 @@ void DumpParameterStore(const FNiagaraParameterStore& ParameterStore)
 
 void DumpRapidIterationParametersForScript(UNiagaraScript* Script, const FString& HeaderName)
 {
-	UEnum* NiagaraScriptUsageEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ENiagaraScriptUsage"), true);
+	UEnum* NiagaraScriptUsageEnum = FindObjectChecked<UEnum>(nullptr, TEXT("/Script/Niagara.ENiagaraScriptUsage"), true);
 	FString UsageName = NiagaraScriptUsageEnum->GetNameByValue((int64)Script->GetUsage()).ToString();
 	UE_LOG(LogNiagaraEditor, Log, TEXT("%s - %s - %s"), *Script->GetPathName(), *HeaderName, *UsageName);
 	DumpParameterStore(Script->RapidIterationParameters);
 }
 
-void DumpRapidIterationParametersForEmitter(UNiagaraEmitter* Emitter, const FString& EmitterName)
+void DumpRapidIterationParametersForEmitter(FVersionedNiagaraEmitter Emitter, const FString& EmitterName)
 {
 	TArray<UNiagaraScript*> Scripts;
-	Emitter->GetScripts(Scripts, false);
+	Emitter.GetEmitterData()->GetScripts(Scripts, false);
 	for (UNiagaraScript* Script : Scripts)
 	{
 		DumpRapidIterationParametersForScript(Script, EmitterName);
@@ -341,7 +368,7 @@ void DumpRapidIterationParamersForAsset(const TArray<FString>& Arguments)
 	if (Arguments.Num() == 1)
 	{
 		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*Arguments[0]);
+		const FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(Arguments[0]));
 		UObject* Asset = AssetData.GetAsset();
 		if (Asset != nullptr)
 		{
@@ -360,7 +387,7 @@ void DumpRapidIterationParamersForAsset(const TArray<FString>& Arguments)
 				UNiagaraEmitter* EmitterAsset = Cast<UNiagaraEmitter>(Asset);
 				if (EmitterAsset != nullptr)
 				{
-					DumpRapidIterationParametersForEmitter(EmitterAsset, EmitterAsset->GetName());
+					DumpRapidIterationParametersForEmitter(FVersionedNiagaraEmitter(EmitterAsset, EmitterAsset->GetExposedVersion().VersionGuid), EmitterAsset->GetName());
 				}
 				else
 				{
@@ -379,35 +406,36 @@ void DumpRapidIterationParamersForAsset(const TArray<FString>& Arguments)
 	}
 }
 
-void CompileEmitterStandAlone(UNiagaraEmitter* Emitter, TSet<UNiagaraEmitter*>& InOutCompiledEmitters)
+void CompileEmitterStandAlone(FVersionedNiagaraEmitter VersionedEmitter, TSet<FVersionedNiagaraEmitter>& InOutCompiledEmitters)
 {
-	if (InOutCompiledEmitters.Contains(Emitter) == false)
+	if (InOutCompiledEmitters.Contains(VersionedEmitter) == false)
 	{
-		if (Emitter->GetParent() != nullptr)
+		FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+		if (EmitterData && EmitterData->GetParent().Emitter != nullptr)
 		{
 			// If the emitter has a parent emitter make sure to compile that one first.
-			CompileEmitterStandAlone(Emitter->GetParent(), InOutCompiledEmitters);
+			CompileEmitterStandAlone(EmitterData->GetParent(), InOutCompiledEmitters);
 
-			if (Emitter->IsSynchronizedWithParent() == false)
+			if (VersionedEmitter.Emitter->IsSynchronizedWithParent() == false)
 			{
 				// If compiling the parent caused it to become out of sync with the current emitter merge in changes before compiling.
-				Emitter->MergeChangesFromParent();
+				VersionedEmitter.Emitter->MergeChangesFromParent();
 			}
 		}
 
-		Emitter->MarkPackageDirty();
+		VersionedEmitter.Emitter->MarkPackageDirty();
 		UNiagaraSystem* TransientSystem = NewObject<UNiagaraSystem>(GetTransientPackage(), FName("StandaloneEmitter_TempSystem"), RF_Transient);
 		UNiagaraSystemFactoryNew::InitializeSystem(TransientSystem, true);
-		TransientSystem->AddEmitterHandle(*Emitter, TEXT("Emitter"));
+		TransientSystem->AddEmitterHandle(*VersionedEmitter.Emitter, TEXT("Emitter"), VersionedEmitter.Version);
 		FNiagaraStackGraphUtilities::RebuildEmitterNodes(*TransientSystem);
 		TransientSystem->RequestCompile(false);
 		TransientSystem->WaitForCompilationComplete();
 
-		InOutCompiledEmitters.Add(Emitter);
+		InOutCompiledEmitters.Add(VersionedEmitter);
 	}
 }
 
-void PreventSystemRecompile(FAssetData SystemAsset, TSet<UNiagaraEmitter*>& InOutCompiledEmitters)
+void PreventSystemRecompile(FAssetData SystemAsset, TSet<FVersionedNiagaraEmitter>& InOutCompiledEmitters)
 {
 	UNiagaraSystem* System = Cast<UNiagaraSystem>(SystemAsset.GetAsset());
 	if (System != nullptr)
@@ -428,7 +456,7 @@ void PreventSystemRecompile(const TArray<FString>& Arguments)
 	if (Arguments.Num() > 0)
 	{
 		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		FAssetData SystemAsset = AssetRegistryModule.Get().GetAssetByObjectPath(*Arguments[0]);
+		FAssetData SystemAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(Arguments[0]));
 		if (SystemAsset.IsValid() == false)
 		{
 			TArray<FAssetData> AssetsInPackage;
@@ -438,7 +466,7 @@ void PreventSystemRecompile(const TArray<FString>& Arguments)
 				SystemAsset = AssetsInPackage[0];
 			}
 		}
-		TSet<UNiagaraEmitter*> CompiledEmitters;
+		TSet<FVersionedNiagaraEmitter> CompiledEmitters;
 		PreventSystemRecompile(SystemAsset, CompiledEmitters);
 	}
 }
@@ -451,9 +479,9 @@ void PreventAllSystemRecompiles()
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 
 	TArray<FAssetData> SystemAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraSystem::StaticClass()->GetFName(), SystemAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraSystem::StaticClass()->GetClassPathName(), SystemAssets);
 
-	TSet<UNiagaraEmitter*> CompiledEmitters;
+	TSet<FVersionedNiagaraEmitter> CompiledEmitters;
 	int32 ItemIndex = 0;
 	for (FAssetData& SystemAsset : SystemAssets)
 	{
@@ -478,7 +506,7 @@ void UpgradeAllNiagaraAssets()
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 
 	TArray<FAssetData> SystemAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraSystem::StaticClass()->GetFName(), SystemAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(UNiagaraSystem::StaticClass()->GetClassPathName(), SystemAssets);
 
 	TArray<UNiagaraSystem*> Systems;
 	Systems.Reserve(SystemAssets.Num());
@@ -532,7 +560,6 @@ void UpgradeAllNiagaraAssets()
 void MakeIndent(int32 IndentLevel, FString& OutIndentString)
 {
 	OutIndentString.Reserve(IndentLevel * 2);
-	int32 InsertStart = OutIndentString.Len();
 	for (int32 i = 0; i < IndentLevel * 2; i++)
 	{
 		OutIndentString.AppendChar(TCHAR(' '));
@@ -571,15 +598,14 @@ void DumpCompileIdDataForScript(UNiagaraScript* Script, int32 IndentLevel, FStri
 	}
 }
 
-void DumpCompileIdDataForEmitter(UNiagaraEmitter* Emitter, int32 IndentLevel, FString& Dump)
+void DumpCompileIdDataForEmitter(const FVersionedNiagaraEmitter& VersionedEmitter, int32 IndentLevel, FString& Dump)
 {
-
 	FString Indent;
 	MakeIndent(IndentLevel, Indent);
-	Dump.Append(FString::Printf(TEXT("%sEmitter: %s\n"), *Indent, *Emitter->GetUniqueEmitterName()));
+	Dump.Append(FString::Printf(TEXT("%sEmitter: %s\n"), *Indent, *VersionedEmitter.Emitter->GetUniqueEmitterName()));
 
 	TArray<UNiagaraScript*> Scripts;
-	Emitter->GetScripts(Scripts, false);
+	VersionedEmitter.GetEmitterData()->GetScripts(Scripts, false);
 	for (UNiagaraScript* Script : Scripts)
 	{
 		DumpCompileIdDataForScript(Script, IndentLevel + 1, Dump);
@@ -602,7 +628,7 @@ void DumpCompileIdDataForAsset(const TArray<FString>& Arguments)
 	if (Arguments.Num() > 0)
 	{
 		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		FAssetData SystemAsset = AssetRegistryModule.Get().GetAssetByObjectPath(*Arguments[0]);
+		FAssetData SystemAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(Arguments[0]));
 		if (SystemAsset.IsValid() == false)
 		{
 			TArray<FAssetData> AssetsInPackage;
@@ -634,6 +660,39 @@ void DumpCompileIdDataForAsset(const TArray<FString>& Arguments)
 	else
 	{
 		UE_LOG(LogNiagaraEditor, Warning, TEXT("Command required an asset reference to be passed in."));
+	}
+}
+
+void LoadAllSystemsInFolder(const TArray<FString>& Arguments)
+{
+	if (Arguments.Num() == 1)
+	{
+		TArray<FAssetData> SystemAssetsInFolder;
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UNiagaraSystem::StaticClass()->GetClassPathName());
+		Filter.PackagePaths.Add(*Arguments[0]);
+		Filter.bRecursivePaths = true;
+		AssetRegistryModule.Get().GetAssets(Filter, SystemAssetsInFolder);
+		if (SystemAssetsInFolder.Num() > 0)
+		{
+			const FText SlowTaskText = FText::Format(NSLOCTEXT("NiagaraEditor", "LoadAllSystemsInFolderFormat", "Loading {0} systems in folder {1}"), FText::AsNumber(SystemAssetsInFolder.Num()), FText::FromString(Arguments[0]));
+			FScopedSlowTask SlowTask(SystemAssetsInFolder.Num(), SlowTaskText);
+			SlowTask.MakeDialog(true);
+			int32 ItemNumber = 0;
+			for (FAssetData& SystemAsset : SystemAssetsInFolder)
+			{
+				if (SlowTask.ShouldCancel())
+				{
+					return;
+				}
+				ItemNumber++;
+				FText SlowTaskUpdateText = FText::Format(NSLOCTEXT("NiagaraEditor", "LoadAllSystemsInFolderProgressFormat", "Loading system {0} of {1}\n{2}"),
+					FText::AsNumber(ItemNumber), FText::AsNumber(SystemAssetsInFolder.Num()),  FText::FromString(SystemAsset.GetFullName()));
+				SlowTask.EnterProgressFrame(1, SlowTaskUpdateText);
+				SystemAsset.GetAsset();
+			}
+		}
 	}
 }
 
@@ -806,6 +865,7 @@ void FNiagaraEditorModule::StartupModule()
 	RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_NiagaraParameterCollectionInstance()));
 	RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_NiagaraParameterDefinitions()));
 	RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_NiagaraEffectType()));
+	RegisterAssetTypeAction(AssetTools, MakeShareable(new FAssetTypeActions_NiagaraSimCache()));
 
 	// Preload all parameter definition & collection assets so that they will be postloaded before postload calls to scripts/emitters/systems that rely on them.
 	{
@@ -871,6 +931,10 @@ void FNiagaraEditorModule::StartupModule()
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraNumericCustomization::MakeInstance));
 
 	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FNiagaraEnumToByteHelper::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraNumericCustomization::MakeInstance));
+
+	PropertyModule.RegisterCustomPropertyTypeLayout(
 		FNiagaraBool::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraBoolCustomization::MakeInstance));
 
@@ -914,6 +978,9 @@ void FNiagaraEditorModule::StartupModule()
 		FNiagaraVariableMetaData::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraVariableMetaDataCustomization::MakeInstance));
 
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FNiagaraSystemScalabilityOverride::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraSystemScalabilityOverrideCustomization::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout(
 		UNiagaraSimulationStageGeneric::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraSimulationStageGenericCustomization::MakeInstance));
@@ -943,6 +1010,18 @@ void FNiagaraEditorModule::StartupModule()
 		FNiagaraOutlinerEmitterInstanceData::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraOutlinerEmitterInstanceDetailsCustomization::MakeInstance));
 #endif
+	
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FNiagaraRendererMaterialScalarParameter::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraRendererMaterialScalarParameterCustomization::MakeInstance));
+
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FNiagaraRendererMaterialVectorParameter::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraRendererMaterialVectorParameterCustomization::MakeInstance));
+
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FNiagaraRendererMaterialTextureParameter::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraRendererMaterialTextureParameterCustomization::MakeInstance));
 
 	// Outliner Customizations end.
 
@@ -970,16 +1049,16 @@ void FNiagaraEditorModule::StartupModule()
 		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinInteger>, GraphPin); }));
 
 	GraphPanelPinFactory->RegisterTypePin(FNiagaraTypeDefinition::GetVec2Struct(), FNiagaraScriptGraphPanelPinFactory::FCreateGraphPin::CreateLambda(
-		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector2D>, GraphPin); }));
+		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector2D<float>>, GraphPin); }));
 
 	GraphPanelPinFactory->RegisterTypePin(FNiagaraTypeDefinition::GetVec3Struct(), FNiagaraScriptGraphPanelPinFactory::FCreateGraphPin::CreateLambda(
-		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector>, GraphPin); }));
+		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector<float>>, GraphPin); }));
 
 	GraphPanelPinFactory->RegisterTypePin(FNiagaraTypeDefinition::GetPositionStruct(), FNiagaraScriptGraphPanelPinFactory::FCreateGraphPin::CreateLambda(
-		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector>, GraphPin); }));
+		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector<float>>, GraphPin); }));
 
 	GraphPanelPinFactory->RegisterTypePin(FNiagaraTypeDefinition::GetVec4Struct(), FNiagaraScriptGraphPanelPinFactory::FCreateGraphPin::CreateLambda(
-		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector4>, GraphPin); }));
+		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinVector4<float>>, GraphPin); }));
 
 	GraphPanelPinFactory->RegisterTypePin(FNiagaraTypeDefinition::GetColorStruct(), FNiagaraScriptGraphPanelPinFactory::FCreateGraphPin::CreateLambda(
 		[](UEdGraphPin* GraphPin) -> TSharedRef<SGraphPin> { return SNew(TNiagaraGraphPinEditableName<SGraphPinColor>, GraphPin); }));
@@ -1024,6 +1103,8 @@ void FNiagaraEditorModule::StartupModule()
 
 	RegisterSettings();
 
+	RegisterDefaultRendererFactories();
+	
 	// Register sequencer track editors
 	ISequencerModule &SequencerModule = FModuleManager::LoadModuleChecked<ISequencerModule>("Sequencer");
 	CreateEmitterTrackEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FNiagaraEmitterTrackEditor::CreateTrackEditor));
@@ -1152,6 +1233,11 @@ void FNiagaraEditorModule::StartupModule()
 		TEXT("Dumps data relevant to generating the compile id for an asset."),
 		FConsoleCommandWithArgsDelegate::CreateStatic(&DumpCompileIdDataForAsset));
 
+	LoadAllSystemsInFolderCommand = IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("fx.LoadAllNiagaraSystemsInFolder"),
+		TEXT("Loads all niagara systems in the supplied directory and sub-directories."),
+		FConsoleCommandWithArgsDelegate::CreateStatic(&LoadAllSystemsInFolder));
+
 	FNiagaraMessageManager* MessageManager = FNiagaraMessageManager::Get();
 	MessageManager->RegisterMessageTopic(FNiagaraMessageTopics::CompilerTopicName);
 	MessageManager->RegisterMessageTopic(FNiagaraMessageTopics::ObjectTopicName);
@@ -1203,7 +1289,7 @@ void FNiagaraEditorModule::ShutdownModule()
 		PropertyModule.UnregisterCustomClassLayout("NiagaraComponent");
 	}
 
-	FNiagaraEditorStyle::Shutdown();
+	FNiagaraEditorStyle::Unregister();
 
 	UnregisterSettings();
 
@@ -1332,6 +1418,20 @@ void FNiagaraEditorModule::OnPostEngineInit()
 	ParameterCollectionAssetCache.RefreshCache(true /*bAllowLoading*/);
 	ParameterDefinitionsAssetCache.RefreshCache(true /*bAllowLoading*/);
 
+	if (FModuleManager::Get().IsModuleLoaded("LevelEditor"))
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+		
+		TSharedPtr<FFilterCategory> FXFilterCategory = MakeShared<FFilterCategory>(LOCTEXT("FXFilterCategory", "FX"), FText::GetEmpty());
+		TSharedRef<FCustomClassFilterData> NewClassData = MakeShared<FCustomClassFilterData>(ANiagaraActor::StaticClass(), FXFilterCategory, FLinearColor::White);
+
+		if(TSharedPtr<FFilterCategory> EssentialCategory = LevelEditorModule.GetOutlinerFilterCategory(FLevelEditorOutlinerBuiltInCategories::Common()))
+		{
+			NewClassData->AddCategory(EssentialCategory);
+		}
+		LevelEditorModule.AddCustomClassFilterToOutliner(NewClassData);
+	}
+
 #if WITH_NIAGARA_DEBUGGER
 	Debugger = MakeShared<FNiagaraDebugger>();
 	Debugger->Init();
@@ -1352,7 +1452,7 @@ void FNiagaraEditorModule::OnPreviewPlatformChanged()
 	{
 		UNiagaraSystem* System = *It;
 		check(System);
-		System->OnScalabilityCVarChanged();
+		System->UpdateScalability();
 	}
 }
 
@@ -1474,6 +1574,11 @@ void FNiagaraEditorModule::ClearObjectPool()
 	ObjectPool.Empty();
 }
 
+void FNiagaraEditorModule::RegisterRendererCreationInfo(FNiagaraRendererCreationInfo InRendererCreationInfo)
+{
+	RendererCreationInfo.Add(InRendererCreationInfo);
+}
+
 void FNiagaraEditorModule::RegisterParameterTrackCreatorForType(const UScriptStruct& StructType, FOnCreateMovieSceneTrackForParameter CreateTrack)
 {
 	checkf(TypeToParameterTrackCreatorMap.Contains(&StructType) == false, TEXT("Type already registered"));
@@ -1558,7 +1663,6 @@ void FNiagaraEditorModule::GetDataInterfaceFeedbackSafe(UNiagaraDataInterface* I
 		return;
 
 	UNiagaraSystem* OwningSystem = InDataInterface->GetTypedOuter<UNiagaraSystem>();
-	UNiagaraEmitter* OwningEmitter = InDataInterface->GetTypedOuter<UNiagaraEmitter>();
 	UNiagaraComponent* OwningComponent = InDataInterface->GetTypedOuter<UNiagaraComponent>();
 
 	if (OwningSystem == nullptr)
@@ -1582,7 +1686,6 @@ void FNiagaraEditorModule::GetDataInterfaceFeedbackSafe(UNiagaraDataInterface* I
 			if (SystemViewModel->IsValid() && SystemViewModel->GetPlaceholderDataInterfaceManager()->TryGetOwnerInformation(InDataInterface, OwningEmitterHandle, OwningFunctionCallNode))
 			{
 				OwningSystem = &SystemViewModel->GetSystem();
-				OwningEmitter = OwningEmitterHandle.IsValid() ? SystemViewModel->GetEmitterHandleViewModelById(OwningEmitterHandle)->GetEmitterViewModel()->GetEmitter() : nullptr;
 				break;
 			}
 		}
@@ -1607,10 +1710,10 @@ const TArray<TWeakObjectPtr<UNiagaraParameterDefinitions>>& FNiagaraEditorModule
 	return ParameterDefinitionsAssetCache.Get();
 }
 
-void FNiagaraEditorModule::GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, UNiagaraEmitter*& OutOwningEmitter)
+void FNiagaraEditorModule::GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, FVersionedNiagaraEmitter& OutOwningEmitter)
 {
 	OutOwningSystem = InDataInterface->GetTypedOuter<UNiagaraSystem>();
-	OutOwningEmitter = InDataInterface->GetTypedOuter<UNiagaraEmitter>();
+	OutOwningEmitter.Emitter = InDataInterface->GetTypedOuter<UNiagaraEmitter>();
 	
 	if (OutOwningSystem == nullptr)
 	{
@@ -1634,11 +1737,77 @@ void FNiagaraEditorModule::GetTargetSystemAndEmitterForDataInterface(UNiagaraDat
 			if (SystemViewModel->IsValid() && SystemViewModel->GetPlaceholderDataInterfaceManager()->TryGetOwnerInformation(InDataInterface, OwningEmitterHandle, OwningFunctionCallNode))
 			{
 				OutOwningSystem = &SystemViewModel->GetSystem();
-				OutOwningEmitter = OwningEmitterHandle.IsValid() ? SystemViewModel->GetEmitterHandleViewModelById(OwningEmitterHandle)->GetEmitterViewModel()->GetEmitter() : nullptr;
+				if (OwningEmitterHandle.IsValid())
+				{
+					OutOwningEmitter = SystemViewModel->GetEmitterHandleViewModelById(OwningEmitterHandle)->GetEmitterViewModel()->GetEmitter();
+				}
 				break;
 			}
 		}
 	}
+}
+
+void FNiagaraEditorModule::RegisterDefaultRendererFactories()
+{
+	RegisterRendererCreationInfo(FNiagaraRendererCreationInfo(
+		UNiagaraMeshRendererProperties::StaticClass()->GetDisplayNameText(),
+		FText::FromString(UNiagaraMeshRendererProperties::StaticClass()->GetDescription()),
+		UNiagaraMeshRendererProperties::StaticClass()->GetClassPathName(),
+		FNiagaraRendererCreationInfo::FRendererFactory::CreateLambda([](UObject* OuterEmitter)
+		{
+			UNiagaraMeshRendererProperties* NewRenderer = NewObject<UNiagaraMeshRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
+			// we have an empty entry in the constructor. Due to CDO default value propagation being unwanted, we have to keep it in there
+			if(ensure(NewRenderer->Meshes.Num() == 1))
+			{
+				FSoftObjectPath DefaultMesh(TEXT("StaticMesh'/Niagara/DefaultAssets/S_Gnomon.S_Gnomon'"));
+				NewRenderer->Meshes[0].Mesh = Cast<UStaticMesh>(DefaultMesh.TryLoad());
+			}
+			return NewRenderer;
+		})));
+	
+	RegisterRendererCreationInfo(FNiagaraRendererCreationInfo(
+		UNiagaraSpriteRendererProperties::StaticClass()->GetDisplayNameText(),
+		FText::FromString(UNiagaraSpriteRendererProperties::StaticClass()->GetDescription()),
+		UNiagaraSpriteRendererProperties::StaticClass()->GetClassPathName(),
+		FNiagaraRendererCreationInfo::FRendererFactory::CreateLambda([](UObject* OuterEmitter)
+		{
+			UNiagaraSpriteRendererProperties* NewRenderer = NewObject<UNiagaraSpriteRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
+			FSoftObjectPath DefaultMaterial(TEXT("Material'/Niagara/DefaultAssets/DefaultSpriteMaterial.DefaultSpriteMaterial'"));
+			NewRenderer->Material = Cast<UMaterialInterface>(DefaultMaterial.TryLoad());
+			return NewRenderer;
+		})));
+	
+	RegisterRendererCreationInfo(FNiagaraRendererCreationInfo(
+		UNiagaraRibbonRendererProperties::StaticClass()->GetDisplayNameText(),
+		FText::FromString(UNiagaraRibbonRendererProperties::StaticClass()->GetDescription()),
+		UNiagaraRibbonRendererProperties::StaticClass()->GetClassPathName(),
+		FNiagaraRendererCreationInfo::FRendererFactory::CreateLambda([](UObject* OuterEmitter)
+		{
+			UNiagaraRibbonRendererProperties* NewRenderer = NewObject<UNiagaraRibbonRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
+			FSoftObjectPath DefaultMaterial(TEXT("Material'/Niagara/DefaultAssets/DefaultRibbonMaterial.DefaultRibbonMaterial'"));
+			NewRenderer->Material = Cast<UMaterialInterface>(DefaultMaterial.TryLoad());
+			return NewRenderer;
+		})));
+
+	RegisterRendererCreationInfo(FNiagaraRendererCreationInfo(
+		UNiagaraComponentRendererProperties::StaticClass()->GetDisplayNameText(),
+		FText::FromString(UNiagaraComponentRendererProperties::StaticClass()->GetDescription()),
+		UNiagaraComponentRendererProperties::StaticClass()->GetClassPathName(),
+		FNiagaraRendererCreationInfo::FRendererFactory::CreateLambda([](UObject* OuterEmitter)
+		{
+			UNiagaraComponentRendererProperties* NewRenderer = NewObject<UNiagaraComponentRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
+			return NewRenderer;
+		})));
+
+	RegisterRendererCreationInfo(FNiagaraRendererCreationInfo(
+		UNiagaraLightRendererProperties::StaticClass()->GetDisplayNameText(),
+		FText::FromString(UNiagaraLightRendererProperties::StaticClass()->GetDescription()),
+		UNiagaraLightRendererProperties::StaticClass()->GetClassPathName(),
+		FNiagaraRendererCreationInfo::FRendererFactory::CreateLambda([](UObject* OuterEmitter)
+		{
+			UNiagaraLightRendererProperties* NewRenderer = NewObject<UNiagaraLightRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
+			return NewRenderer;
+		})));
 }
 
 void FNiagaraEditorModule::RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action)
@@ -1715,20 +1884,31 @@ void FNiagaraEditorModule::OnExecParticleInvoked(const TCHAR* Str)
 				AActor* Actor = static_cast<AActor*>(*It);
 				checkSlow(Actor->IsA(AActor::StaticClass()));
 
-				ANiagaraActor* Emitter = Cast<ANiagaraActor>(Actor);
-				if (Emitter)
+				for (UActorComponent* AC : Actor->GetComponents())
 				{
-					Emitter->ResetInLevel();
+					UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(AC);
+					if (NiagaraComponent)
+					{
+						NiagaraComponent->Activate(true);
+						NiagaraComponent->ReregisterComponent();
+					}
 				}
 			}
 		}
 		else if (FParse::Command(&Str, TEXT("ALL")))
 		{
 			// Reset ALL emitters in the level
-			for (TObjectIterator<ANiagaraActor> It; It; ++It)
+			for (TObjectIterator<AActor> It; It; ++It)
 			{
-				ANiagaraActor* Emitter = *It;
-				Emitter->ResetInLevel();
+				for (UActorComponent* AC : It->GetComponents())
+				{
+					UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(AC);
+					if (NiagaraComponent)
+					{
+						NiagaraComponent->Activate(true);
+						NiagaraComponent->ReregisterComponent();
+					}
+				}
 			}
 		}
 	}
@@ -1837,6 +2017,25 @@ void FNiagaraEditorModule::OnPerfBaselineWindowClosed(const TSharedRef<SWindow>&
 	ClosedWindow->SetContent(SNullWidget::NullWidget);
 	BaselineViewport.Reset();
 }
+void FNiagaraEditorModule::PreloadSelectablePluginAssetsByClass(UClass* InClass)
+{
+	if (GbPreloadSelectablePluginAssetsOnDemand && PluginAssetClassesPreloaded.Contains(InClass) == false)
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		TArray<FAssetData> AllClassAssets;
+		AssetRegistryModule.Get().GetAssetsByClass(InClass->GetClassPathName(), AllClassAssets);
+		for (FAssetData& ClassAsset : AllClassAssets)
+		{
+			if (ClassAsset.HasAnyPackageFlags(PKG_Cooked) && ClassAsset.IsAssetLoaded() == false && FNiagaraEditorUtilities::IsEnginePluginAsset(ClassAsset))
+			{
+				ClassAsset.GetAsset();
+			}
+		}
+		PluginAssetClassesPreloaded.Add(InClass);
+	}
+}
+
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

@@ -3,6 +3,8 @@
 #include "Units/Simulation/RigUnit_Timeline.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_Timeline)
+
 FRigUnit_Timeline_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -36,3 +38,44 @@ IMPLEMENT_RIGUNIT_AUTOMATION_TEST(FRigUnit_Timeline)
 }
 
 #endif
+
+FRigUnit_TimeLoop_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	if (Context.State == EControlRigState::Init)
+	{
+		Absolute = Relative = FlipFlop = AccumulatedAbsolute = AccumulatedRelative = 0.f;
+		NumIterations = 0;
+		Even = false;
+		return;
+	}
+
+	const float DurationClamped = FMath::Max(Duration, 0.0001f);
+	const float Increment = Context.DeltaTime * Speed;
+	Absolute = AccumulatedAbsolute = AccumulatedAbsolute + Increment;
+
+	AccumulatedRelative = AccumulatedRelative + Increment;
+	while(AccumulatedRelative > DurationClamped)
+	{
+		AccumulatedRelative -= DurationClamped;
+		NumIterations++;
+	}
+
+	Relative = AccumulatedRelative;
+
+	Even = (NumIterations & 1) == 0;
+	if(Even) // check is this is even or odd
+	{
+		FlipFlop = Relative;
+	}
+	else
+	{
+		FlipFlop = Duration - Relative;
+	}
+
+	if(Normalize)
+	{
+		Relative = Relative / DurationClamped;
+		FlipFlop = FlipFlop / DurationClamped;
+	}
+}

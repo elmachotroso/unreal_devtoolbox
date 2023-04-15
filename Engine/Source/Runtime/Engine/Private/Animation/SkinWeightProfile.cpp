@@ -21,14 +21,16 @@
 #include "UObject/ObjectVersion.h"
 #include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkinWeightProfile)
+
 class ENGINE_API FSkinnedMeshComponentUpdateSkinWeightsContext
 {
 public:
-	FSkinnedMeshComponentUpdateSkinWeightsContext(USkeletalMesh* InSkeletalMesh)
+	FSkinnedMeshComponentUpdateSkinWeightsContext(USkinnedAsset* InSkinnedAsset)
 	{
 		for (TObjectIterator<USkinnedMeshComponent> It; It; ++It)
 		{
-			if (It->SkeletalMesh == InSkeletalMesh)
+			if (It->GetSkinnedAsset() == InSkinnedAsset)
 			{
 				checkf(!It->IsUnreachable(), TEXT("%s"), *It->GetFullName());
 
@@ -241,6 +243,7 @@ FSkinWeightProfilesData::~FSkinWeightProfilesData()
 	DefaultProfileName = NAME_None;
 }
 
+FSkinWeightProfilesData::FOnPickOverrideSkinWeightProfile FSkinWeightProfilesData::OnPickOverrideSkinWeightProfile;
 #if !WITH_EDITOR
 void FSkinWeightProfilesData::OverrideBaseBufferSkinWeightData(USkeletalMesh* Mesh, int32 LODIndex)
 {
@@ -248,23 +251,23 @@ void FSkinWeightProfilesData::OverrideBaseBufferSkinWeightData(USkeletalMesh* Me
 	{
 		const TArray<FSkinWeightProfileInfo>& Profiles = Mesh->GetSkinWeightProfiles();
 		// Try and find a default buffer and whether or not it is set for this LOD index 
-		const int32 DefaultProfileIndex = Profiles.IndexOfByPredicate([LODIndex](FSkinWeightProfileInfo ProfileInfo)
+		int32 DefaultProfileIndex = INDEX_NONE;
+
+		// Setup to not apply any skin weight profiles at this LOD level
+		if (LODIndex >= GSkinWeightProfilesAllowedFromLOD)
 		{
-			// Setup to not apply any skin weight profiles at this LOD level
-			if (LODIndex < GSkinWeightProfilesAllowedFromLOD)
+			DefaultProfileIndex = OnPickOverrideSkinWeightProfile.IsBound() ? OnPickOverrideSkinWeightProfile.Execute(Mesh, MakeArrayView(Profiles), LODIndex) : Profiles.IndexOfByPredicate([LODIndex](FSkinWeightProfileInfo ProfileInfo)
 			{
-				return false;
-			}
+				// In case the default LOD index has been overridden check against that
+				if (GSkinWeightProfilesDefaultLODOverride >= 0)
+				{
+					return (ProfileInfo.DefaultProfile.Default && LODIndex >= GSkinWeightProfilesDefaultLODOverride);
+				}
 
-			// In case the default LOD index has been overridden check against that
-			if (GSkinWeightProfilesDefaultLODOverride >= 0)
-			{
-				return (ProfileInfo.DefaultProfile.Default && LODIndex >= GSkinWeightProfilesDefaultLODOverride);
-			}
-
-			// Otherwise check if this profile is set as default and the current LOD index is applicable
-			return (ProfileInfo.DefaultProfile.Default && LODIndex >= ProfileInfo.DefaultProfileFromLODIndex.Default);
-		});
+				// Otherwise check if this profile is set as default and the current LOD index is applicable
+				return (ProfileInfo.DefaultProfile.Default && LODIndex >= ProfileInfo.DefaultProfileFromLODIndex.Default);
+			});
+		}
 
 		bool bProfileSet = false;
 		// If we found a profile try and find the override skin weights and apply if found
@@ -829,3 +832,4 @@ void FRuntimeSkinWeightProfileData::ApplyDefaultOverride(FSkinWeightVertexBuffer
 		}
 	}
 }
+

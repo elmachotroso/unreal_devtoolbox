@@ -20,6 +20,7 @@ class FToolBarBuilder;
 class IAssetViewport;
 class ISequencer;
 class UActorComponent;
+class UAnimInstance;
 class ULevelSequence;
 class UMovieSceneCinematicShotTrack;
 class FLevelSequencePlaybackContext;
@@ -104,6 +105,7 @@ public:
 	virtual FName GetToolkitFName() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
+	virtual FText GetTabSuffix() const override;
 
 protected:
 
@@ -116,15 +118,18 @@ protected:
 	/** Called whenever sequencer has received focus */
 	void OnSequencerReceivedFocus();
 
+	/** Called whenever sequencer in initializing tool menu context */
+	void OnInitToolMenuContext(FToolMenuContext& MenuContext);
+
 private:
 
-	void ExtendSequencerToolbar(FToolBarBuilder& ToolbarBuilder);
+	void ExtendSequencerToolbar(FName InToolMenuName);
 
 	/** Callback for executing the Add Component action. */
 	void HandleAddComponentActionExecute(UActorComponent* Component);
 
 	/** Create a new binding for the specified skeletal mesh component's animation instance. */
-	void BindAnimationInstance(USkeletalMeshComponent* SkeletalComponent);
+	void BindAnimationInstance(USkeletalMeshComponent* SkeletalComponent, UAnimInstance* AnimInstance);
 
 	/** Callback for map changes. */
 	void HandleMapChanged(UWorld* NewWorld, EMapChangeType MapChangeType);

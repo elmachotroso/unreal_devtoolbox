@@ -2,10 +2,15 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreTypes.h"
 #include "Misc/ExpressionParserTypes.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/ValueOrError.h"
+
+class FText;
 
 namespace EditConditionParserTokens
 {
@@ -112,7 +117,7 @@ public:
 	 * Evaluate the given expression within the given context.
 	 * @returns The result of the evaluated expression if valid, invalid TOptional if the evaluation failed or produced a non-bool result.
 	 */
-	TOptional<bool> Evaluate(const FEditConditionExpression& Expression, const IEditConditionContext& Context) const;
+	TValueOrError<bool, FText> Evaluate(const FEditConditionExpression& Expression, const IEditConditionContext& Context) const;
 
 private:
 	FTokenDefinitions TokenDefinitions;

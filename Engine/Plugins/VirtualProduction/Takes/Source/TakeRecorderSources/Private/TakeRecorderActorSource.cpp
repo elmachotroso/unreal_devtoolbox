@@ -42,6 +42,8 @@
 #include "MovieSceneTakeSection.h"
 #include "MovieSceneTakeSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TakeRecorderActorSource)
+
 DEFINE_LOG_CATEGORY(ActorSerialization);
 
 #define LOCTEXT_NAMESPACE "UTakeRecorderActorSource"
@@ -184,6 +186,7 @@ UTakeRecorderActorSource::UTakeRecorderActorSource(const FObjectInitializer& Obj
 	RecordType = ETakeRecorderActorRecordType::ProjectDefault;
 	bReduceKeys = true;
 	bRecordParentHierarchy = true;
+	bShowProgressDialog = true;
 
 	TargetSequenceID = MovieSceneSequenceID::Invalid;
 
@@ -225,7 +228,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PreRecording(ULevelSequen
 	
 	// Initialize the header for this actor in the Manifest Serializer for streaming data capture.
 	FName SerializedType("Actor");
-	FActorFileHeader Header(ObjectBindingName, ActorToRecord->GetActorLabel(), SerializedType, ActorToRecord->GetClass()->GetName(), false);
+	FActorFileHeader Header(ObjectBindingName, ActorToRecord->GetActorLabel(), SerializedType, ActorToRecord->GetClass()->GetPathName(), false);
 
 	if (GetRecordToPossessable())
 	{
@@ -405,7 +408,7 @@ void UTakeRecorderActorSource::CreateSectionRecordersRecursive(UObject* ObjectTo
 		FMovieScenePossessable* ChildPossessable = MovieScene->FindPossessable(Guid);
 		if (ensure(ChildPossessable))
 		{
-			ChildPossessable->SetParent(CachedObjectBindingGuid);
+			ChildPossessable->SetParent(CachedObjectBindingGuid, MovieScene);
 		}
 
 		FMovieSceneSpawnable* ParentSpawnable = MovieScene->FindSpawnable(CachedObjectBindingGuid);
@@ -684,7 +687,7 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 		TArray<FMovieSceneFloatValue> SubFrames;
 		TArray<FFrameNumber> Times;
 
-		const TArray<TPair<FQualifiedFrameTime, FTimecode>>& RecordedTimes = UTakeRecorderSources::RecordedTimes;
+		const TArray<TPair<FQualifiedFrameTime, FQualifiedFrameTime>>& RecordedTimes = UTakeRecorderSources::RecordedTimes;
 
 		Hours.Reserve(RecordedTimes.Num());
 		Minutes.Reserve(RecordedTimes.Num());
@@ -696,7 +699,7 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 		FFrameRate TickResolution = MovieScene->GetTickResolution();
 		FFrameRate DisplayRate = MovieScene->GetDisplayRate();
 
-		for (const TPair<FQualifiedFrameTime, FTimecode>& RecordedTimePair : RecordedTimes)
+		for (const TPair<FQualifiedFrameTime, FQualifiedFrameTime>& RecordedTimePair : RecordedTimes)
 		{
 			FFrameNumber FrameNumber = RecordedTimePair.Key.Time.FrameNumber;
 			if (!FrameRange.GetValue().Contains(FrameNumber))
@@ -706,7 +709,7 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 
 			FFrameTime FrameTime = FFrameRate::TransformTime(RecordedTimePair.Key.Time, TickResolution, DisplayRate);
 
-			FTimecode Timecode = RecordedTimePair.Value;
+			FTimecode Timecode = RecordedTimePair.Value.ToTimecode();
 		
 			Hours.Add(Timecode.Hours);
 			Minutes.Add(Timecode.Minutes);
@@ -714,7 +717,7 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 			Frames.Add(Timecode.Frames);
 
 			FMovieSceneFloatValue SubFrame;
-			SubFrame.Value = FrameTime.GetSubFrame();
+			SubFrame.Value = RecordedTimePair.Value.Time.GetSubFrame();
 			SubFrame.InterpMode = ERichCurveInterpMode::RCIM_Linear;
 			SubFrames.Add(SubFrame);
 
@@ -776,7 +779,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 	Parameters.Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
 
 	FScopedSlowTask SlowTask((float)TrackRecorders.Num() + 1.0f, FText::Format(LOCTEXT("ProcessingActor", "Generating MovieScene Data for Actor {0}"), Target.IsValid() ? FText::FromString(Target.Get()->GetActorLabel()) : FText::GetEmpty()));
-	SlowTask.MakeDialog(false, true);
+	SlowTask.MakeDialog(false, bShowProgressDialog);
 
 	// We need to do some post-processing tasks on the Track Recorders (such as animation motion source fixup) so we do this now before finalizing
 	{
@@ -813,7 +816,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 		// Expand the Movie Scene Playback Range to encompass all of the sections now that they've all been created.
 		SequenceRecorderUtils::ExtendSequencePlaybackRange(InSequence);
 
-		if (Target.IsValid())
+		if (Target.IsValid() && !ParentSource)
 		{
 			// Automatically add or update the camera cut track if there is a camera component
 			AActor* TargetActor = Target.Get();
@@ -853,6 +856,8 @@ void UTakeRecorderActorSource::FinalizeRecording()
 	// Null these out there and NOT in PostRecording because they are used for cross sequence object binding via GetLevelSequenceID in PostRecording
 	TargetLevelSequence = nullptr;
 	MasterLevelSequence = nullptr;
+
+	ParentSource = nullptr;
 }
 
 void UTakeRecorderActorSource::PostProcessTrackRecorders(ULevelSequence* InSequence)
@@ -923,6 +928,37 @@ void UTakeRecorderActorSource::PostProcessTrackRecorders(ULevelSequence* InSeque
 			if (Parameters.Project.bRecordTimecode)
 			{
 				AnimationTrackRecorder->ProcessRecordedTimes(HoursName, MinutesName, SecondsName, FramesName, SubFramesName, SlateName, Slate);
+			}
+		}
+	}
+
+	// Reset transform for recorded spawnable actors when their skeletal animation is recorded in world space 
+	// but a transform track is not being recorded.
+	// 
+	// This is a very specific case with the following parameters:
+	// 1. Skeletal mesh actor is recorded as a spawnable.
+	// 2. Skeletal mesh actor is a child of another actor which is not being recorded (this results in the bones being recorded in world space)
+	// 3. Transform track is set to not record.
+	//
+	// When this occurs, the transform of the spawnable is doubled up because the root bone is in world space
+	// and the spawnable template is also in world space.The fix here is to reset the spawnable template's 
+	// transform to identity.	
+	if (FirstAnimationRecorder && !RootTransformRecorder)
+	{
+		if (CachedObjectTemplate.IsValid())
+		{
+			AActor* ActorToRecord = Target.Get();
+			if (ActorToRecord)
+			{
+				USceneComponent* RootComponent = ActorToRecord->GetRootComponent();
+				USceneComponent* AttachParent = RootComponent ? RootComponent->GetAttachParent() : nullptr;
+				if (AttachParent && !IsOtherActorBeingRecorded(AttachParent->GetOwner()))
+				{
+					// The object template is marked as bComponentToWorldUpdated=true while the ComponentToWorld doesn't 
+					// match the relative location and rotation. So, calling SetRelativeTransform() doesn't work. 
+					// Set it directly here.
+					CachedObjectTemplate->GetRootComponent()->SetRelativeTransform_Direct(FTransform::Identity);
+				}
 			}
 		}
 	}
@@ -1322,16 +1358,8 @@ FGuid UTakeRecorderActorSource::ResolveActorFromSequence(AActor* InActor, ULevel
 {
 	UMovieScene* MovieScene = CurrentSequence->GetMovieScene();
 
-	// Look through all Spawnables and Possessables in the sequence to see if there's one with the same name as the actor
-	for (int32 SpawnableCount = 0; SpawnableCount < MovieScene->GetSpawnableCount(); ++SpawnableCount)
-	{
-		const FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable(SpawnableCount);
-		if (Spawnable.GetName() == InActor->GetActorLabel())
-		{
-			return Spawnable.GetGuid();
-		}
-	}
-
+	// Look through all Possessables in the sequence to see if there's one with the same name as the actor. We purposely do not look at 
+	// Spawnables so that recording as spawnable will always create a new spawnable.
 	for (int32 PossessableCount = 0; PossessableCount < MovieScene->GetPossessableCount(); ++PossessableCount)
 	{
 		const FMovieScenePossessable& Possessable = MovieScene->GetPossessable(PossessableCount);
@@ -1341,7 +1369,7 @@ FGuid UTakeRecorderActorSource::ResolveActorFromSequence(AActor* InActor, ULevel
 		}
 	}
 
-	// There's no Spawnable or Possessable with the same name as the actor, so this actor hasn't been added
+	// There's no Possessable with the same name as the actor, so this actor hasn't been added
 	// to the sequence yet.
 	return FGuid();
 }
@@ -1398,8 +1426,8 @@ void UTakeRecorderActorSource::CleanExistingDataFromSequence(const FGuid& ForGui
 {
 	if (ForGuid.IsValid())
 	{
-		// Check to see if there is a Possessable or Spawnable in this sequence with the specified Guid and remove their old data if needed.
-		// Removing the Spawnable/Possessable will remove their bindings which will remove the associated tracks and their data as well.
+		// Check to see if there is a Possessable in this sequence with the specified Guid and remove their old data if needed.
+		// Removing the Possessable will remove their bindings which will remove the associated tracks and their data as well.
 		UMovieScene* MovieScene = InSequence.GetMovieScene();
 
 		TArray<FGuid> OutChildGuids;
@@ -1574,12 +1602,40 @@ void UTakeRecorderActorSource::CreateNewActorSourceForReferencedActors()
 	UTakeRecorderSources* SourcesList = GetTypedOuter<UTakeRecorderSources>();
 	TArray<UTakeRecorderSource*> NewSources;
 
+	TSet<AActor*> ActorsWithEnabledSources;
+	TSet<AActor*> ActorsWithDisabledSources;
+	for (UTakeRecorderSource* Source : SourcesList->GetSources())
+	{
+		if (UTakeRecorderActorSource* ActorSource = Cast<UTakeRecorderActorSource>(Source))
+		{
+			AActor* TargetActor = ActorSource->Target.Get();
+			if (TargetActor)
+			{
+				if (ActorSource->bEnabled)
+				{
+					ActorsWithEnabledSources.Add(TargetActor);
+				}
+				else
+				{
+					ActorsWithDisabledSources.Add(TargetActor);
+				}
+			}
+		}
+	}
+
 	for (AActor* Actor : NewReferencedActors)
 	{
-		if (IsOtherActorBeingRecorded(Actor))
+		// Don't create a recording for this actor if there is an existing source for this actor. Another source may have added it
+		// or the user may have added it by hand and adjusted settings.
+		if (ActorsWithEnabledSources.Contains(Actor))
 		{
-			// Don't create a recording for this actor if they're already recording it. Another source may have added it
-			// or the user may have added it by hand and adjusted settings.
+			continue;
+		}
+
+		// Also, don't create a recording if the actor has a disabled source
+		if (ActorsWithDisabledSources.Contains(Actor))
+		{
+			UE_LOG(LogTakesCore, Warning, TEXT("Disregarding automatically adding %s as a recording source because it has been explicitly disabled."), *Actor->GetName());
 			continue;
 		}
 
@@ -1593,6 +1649,7 @@ void UTakeRecorderActorSource::CreateNewActorSourceForReferencedActors()
 		// We don't use AddSource on the UTakeRecorderSources because this is called from functions that also adds returned items to the Source List. This prevents a 
 		// double add from occuring.
 		UTakeRecorderActorSource* ActorSource = NewObject<UTakeRecorderActorSource>(SourcesList, UTakeRecorderActorSource::StaticClass(), NAME_None, RF_Transactional);
+		ActorSource->ParentSource = this;
 
 		// We add it both to the local list (in case we need to start recording immediately) and to the class list
 		// so that we can clean up the recording when we finish.
@@ -1653,6 +1710,8 @@ FTrackRecorderSettings UTakeRecorderActorSource::GetTrackRecorderSettings() cons
 	TrackRecorderSettings.ReduceKeysTolerance = Parameters.User.ReduceKeysTolerance;
 
 	TrackRecorderSettings.DefaultTracks = Parameters.Project.DefaultTracks;
+	TrackRecorderSettings.IncludeAnimationNames = IncludeAnimationNames;
+	TrackRecorderSettings.ExcludeAnimationNames = ExcludeAnimationNames;
 
 	return TrackRecorderSettings;
 }
@@ -1782,3 +1841,4 @@ UActorRecorderPropertyMap* UTakeRecorderActorSource::GetParentPropertyMapForComp
 }
 
 #undef LOCTEXT_NAMESPACE // "UTakeRecorderActorSource"
+

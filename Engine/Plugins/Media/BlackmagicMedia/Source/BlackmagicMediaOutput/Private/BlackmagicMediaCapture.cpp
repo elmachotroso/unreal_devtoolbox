@@ -347,30 +347,25 @@ bool UBlackmagicMediaCapture::ValidateMediaOutput() const
 	return true;
 }
 
-bool UBlackmagicMediaCapture::CaptureSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
+bool UBlackmagicMediaCapture::InitializeCapture()
 {
 	UBlackmagicMediaOutput* BlackmagicMediaOutput = CastChecked<UBlackmagicMediaOutput>(MediaOutput);
-	bool bResult = InitBlackmagic(BlackmagicMediaOutput);
-	if (bResult)
+	BlackmagicMediaOutputPixelFormat = BlackmagicMediaOutput->PixelFormat;
+	bool bInitialized = InitBlackmagic(BlackmagicMediaOutput);
+	if(bInitialized)
 	{
-		ApplyViewportTextureAlpha(InSceneViewport);
-		BlackmagicMediaOutputPixelFormat = BlackmagicMediaOutput->PixelFormat;
 #if WITH_EDITOR
-		BlackmagicMediaCaptureAnalytics::SendCaptureEvent(BlackmagicMediaOutput->GetRequestedSize(), FrameRate, TEXT("SceneViewport"));
+		BlackmagicMediaCaptureAnalytics::SendCaptureEvent(BlackmagicMediaOutput->GetRequestedSize(), FrameRate, GetCaptureSourceType());
 #endif
 	}
-	return bResult;
+
+	return bInitialized;
 }
 
-bool UBlackmagicMediaCapture::CaptureRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget)
+bool UBlackmagicMediaCapture::PostInitializeCaptureViewport(TSharedPtr<FSceneViewport>& InSceneViewport)
 {
-	UBlackmagicMediaOutput* BlackmagicMediaOutput = CastChecked<UBlackmagicMediaOutput>(MediaOutput);
-	bool bResult = InitBlackmagic(BlackmagicMediaOutput);
-	BlackmagicMediaOutputPixelFormat = BlackmagicMediaOutput->PixelFormat;
-#if WITH_EDITOR
-	BlackmagicMediaCaptureAnalytics::SendCaptureEvent(BlackmagicMediaOutput->GetRequestedSize(), FrameRate, TEXT("RenderTarget"));
-#endif
-	return bResult;
+	ApplyViewportTextureAlpha(InSceneViewport);
+	return true;
 }
 
 bool UBlackmagicMediaCapture::UpdateSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport)
@@ -423,7 +418,7 @@ void UBlackmagicMediaCapture::StopCaptureImpl(bool bAllowPendingFrameToBeProcess
 	}
 }
 
-bool UBlackmagicMediaCapture::ShouldCaptureRHITexture() const
+bool UBlackmagicMediaCapture::ShouldCaptureRHIResource() const
 {
 	// Todo: also test if dvp was initialized correctly.
 	return bGPUTextureTransferAvailable && CVarBlackmagicEnableGPUDirect.GetValueOnAnyThread() == 1;
@@ -490,17 +485,11 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 	bLogDropFrame = InBlackmagicMediaOutput->bLogDropFrame;
 	FrameRate = InBlackmagicMediaOutput->GetRequestedFrameRate();
 
-	if (ShouldCaptureRHITexture())
+	if (ShouldCaptureRHIResource())
 	{
 		if (InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard != EMediaIOStandardType::Progressive)
 		{
 			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("GPU DMA is not supported with interlaced, defaulting to regular path."));
-			bGPUTextureTransferAvailable = false;
-		}
-
-		if (InBlackmagicMediaOutput->PixelFormat != EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV)
-		{
-			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("GPU DMA is not supported with pixel format 10 Bit YUV, defaulting to regular path."));
 			bGPUTextureTransferAvailable = false;
 		}
 	}
@@ -529,7 +518,7 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 	ChannelOptions.bOutputVideo = true;
 	ChannelOptions.bOutputInterlacedFieldsTimecodeNeedToMatch = InBlackmagicMediaOutput->bInterlacedFieldsTimecodeNeedToMatch && InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard == EMediaIOStandardType::Interlaced && InBlackmagicMediaOutput->TimecodeFormat != EMediaIOTimecodeFormat::None;
 	ChannelOptions.bLogDropFrames = bLogDropFrame;
-	ChannelOptions.bUseGPUDMA = ShouldCaptureRHITexture();
+	ChannelOptions.bUseGPUDMA = ShouldCaptureRHIResource();
 	ChannelOptions.bScheduleInDifferentThread = InBlackmagicMediaOutput->bUseMultithreadedScheduling;
 
 	AudioBitDepth = InBlackmagicMediaOutput->AudioBitDepth;
@@ -573,7 +562,7 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 		WakeUpEvent = FPlatformProcess::GetSynchEventFromPool(bIsManualReset);
 	}
 
-	if (ShouldCaptureRHITexture())
+	if (ShouldCaptureRHIResource())
 	{
 		UE_LOG(LogBlackmagicMediaOutput, Display, TEXT("BlackmagicMedia capture started using GPU Direct"));
 	}
@@ -581,9 +570,9 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 	return true;
 }
 
-void UBlackmagicMediaCapture::BeforeFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
+void UBlackmagicMediaCapture::LockDMATexture_RenderThread(FTextureRHIRef InTexture)
 {
-	if (ShouldCaptureRHITexture())
+	if (ShouldCaptureRHIResource())
 	{
 		if (!TexturesToRelease.Contains(InTexture))
 		{
@@ -602,6 +591,12 @@ void UBlackmagicMediaCapture::BeforeFrameCaptured_RenderingThread(const FCapture
 			BlackmagicDesign::LockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
 		}
 	}
+}
+
+void UBlackmagicMediaCapture::UnlockDMATexture_RenderThread(FTextureRHIRef InTexture)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::UnlockDMATexture);
+	BlackmagicDesign::UnlockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
 }
 
 void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow)
@@ -624,6 +619,7 @@ void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBase
 		Frame.VideoHeight = Height;
 		Frame.Timecode = Timecode;
 		Frame.FrameIdentifier = InBaseData.SourceFrameNumber;
+		Frame.bEvenFrame = GFrameCounterRenderThread % 2 == 0;
 
 		bool bSent = false;
 		{
@@ -678,7 +674,7 @@ void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBase
 	}
 }
 
-void UBlackmagicMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
+void UBlackmagicMediaCapture::OnRHIResourceCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
 {
 	if (!InTexture)
 	{
@@ -686,11 +682,6 @@ void UBlackmagicMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptur
 	}
 	// Prevent the rendering thread from copying while we are stopping the capture.
 	TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread);
-
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::UnlockDMATexture);
-		BlackmagicDesign::UnlockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
-	}
 
 	FScopeLock ScopeLock(&RenderThreadCriticalSection);
 
@@ -703,6 +694,7 @@ void UBlackmagicMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptur
 		Frame.RHITexture = InTexture->GetTexture2D()->GetNativeResource();
 		Frame.Timecode = Timecode;
 		Frame.FrameIdentifier = InBaseData.SourceFrameNumber;
+		Frame.bEvenFrame = GFrameCounterRenderThread % 2 == 0;
 
 		bool bSent = false;
 		{

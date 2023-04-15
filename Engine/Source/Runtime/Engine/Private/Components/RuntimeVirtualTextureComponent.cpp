@@ -11,6 +11,10 @@
 #include "UObject/UObjectIterator.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "VT/VirtualTextureBuilder.h"
+#include "RenderUtils.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RuntimeVirtualTextureComponent)
 
 #define LOCTEXT_NAMESPACE "URuntimeVirtualTextureComponent"
 
@@ -19,6 +23,22 @@ URuntimeVirtualTextureComponent::URuntimeVirtualTextureComponent(const FObjectIn
 	, SceneProxy(nullptr)
 {
 	Mobility = EComponentMobility::Stationary;
+}
+
+void URuntimeVirtualTextureComponent::BeginDestroy()
+{
+	Super::BeginDestroy();
+	
+	// Queuing up a render fence means that we will have cleaned up the scene proxy/virtual texture producer before finishing the destroy.
+	// This means that any transcode tasks will have finished *before* we garbage collect our StreamingTexture.
+	// That's important because the transcode tasks reference the FVirtualTextureBuiltData from the StreamingTexture.
+	DestroyFence.BeginFence();
+}
+
+bool URuntimeVirtualTextureComponent::IsReadyForFinishDestroy()
+{
+	bool bResult = Super::IsReadyForFinishDestroy() && DestroyFence.IsFenceComplete();
+	return bResult;
 }
 
 #if WITH_EDITOR
@@ -140,20 +160,22 @@ uint64 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() 
 		uint64 PackedValue;
 		struct
 		{
+			uint32 PackedSettingsVersion : 4;
 			uint32 MaterialType : 4;
 			uint32 TileSize : 12;
 			uint32 TileBorderSize : 4;
 			uint32 LODGroup : 8;
 			uint32 CompressTextures : 1;
 			uint32 SinglePhysicalSpace : 1;
-			uint32 EnableCompressCrunch : 1;
 			uint32 ContinuousUpdate : 1;
 			uint32 bUseLowQualityCompression : 1;
+			uint32 LossyCompressionAmount : 4;
 		};
 	};
 
 	FPackedSettings Settings;
 	Settings.PackedValue = 0;
+	Settings.PackedSettingsVersion = 2;
 	Settings.MaterialType = (uint32)VirtualTexture->GetMaterialType();
 	Settings.TileSize = (uint32)VirtualTexture->GetTileSize();
 	Settings.TileBorderSize = (uint32)VirtualTexture->GetTileBorderSize();
@@ -161,8 +183,8 @@ uint64 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() 
 	Settings.CompressTextures = (uint32)VirtualTexture->GetCompressTextures();
 	Settings.ContinuousUpdate = (uint32)VirtualTexture->GetContinuousUpdate();
 	Settings.SinglePhysicalSpace = (uint32)VirtualTexture->GetSinglePhysicalSpace();
-	Settings.EnableCompressCrunch = (uint32)bEnableCompressCrunch;
 	Settings.bUseLowQualityCompression = (uint32)VirtualTexture->GetLQCompression();
+	Settings.LossyCompressionAmount = (uint32)GetLossyCompressionAmount();
 
 	return Settings.PackedValue;
 }
@@ -192,7 +214,7 @@ class FScopedRuntimeVirtualTextureRecreate
 public:
 	FScopedRuntimeVirtualTextureRecreate(UVirtualTextureBuilder* VirtualTextureBuilder)
 	{
-		for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
+		for (TObjectIterator<URuntimeVirtualTextureComponent> It(RF_ClassDefaultObject, false, EInternalObjectFlags::Garbage); It; ++It)
 		{
 			if (It->GetStreamingTexture() == VirtualTextureBuilder)
 			{
@@ -242,7 +264,7 @@ void URuntimeVirtualTextureComponent::InitializeStreamingTexture(uint32 InSizeX,
 		BuildDesc.TileSize = VirtualTexture->GetTileSize();
 		BuildDesc.TileBorderSize = VirtualTexture->GetTileBorderSize();
 		BuildDesc.LODGroup = VirtualTexture->GetLODGroup();
-		BuildDesc.bCrunchCompressed = bEnableCompressCrunch;
+		BuildDesc.LossyCompressionAmount = GetLossyCompressionAmount();
 
 		BuildDesc.LayerCount = VirtualTexture->GetLayerCount();
 		check(BuildDesc.LayerCount <= RuntimeVirtualTexture::MaxTextureLayers);
@@ -275,10 +297,6 @@ bool URuntimeVirtualTextureComponent::CanEditChange(const FProperty* InProperty)
 	{
 		bCanEdit &= GetVirtualTexture() != nullptr && GetStreamingTexture() != nullptr;
 	}
-	else if (InProperty->GetFName() == TEXT("bEnableCompressCrunch"))
-	{
-		bCanEdit &= GetVirtualTexture() != nullptr && GetVirtualTexture()->GetCompressTextures();
-	}
 	else if (InProperty->GetFName() == TEXT("bBuildDebugStreamingMips"))
 	{
 		bCanEdit = GetVirtualTexture() != nullptr && GetVirtualTexture()->GetMaterialType() != ERuntimeVirtualTextureMaterialType::WorldHeight;
@@ -303,3 +321,4 @@ void URuntimeVirtualTextureComponent::CheckForErrors()
 #endif
 
 #undef LOCTEXT_NAMESPACE
+

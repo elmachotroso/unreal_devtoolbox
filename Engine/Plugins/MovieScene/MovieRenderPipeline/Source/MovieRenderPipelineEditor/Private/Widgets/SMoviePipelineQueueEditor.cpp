@@ -24,9 +24,10 @@
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 #include "SDropTarget.h"
+#include "SPositiveActionButton.h"
 
 // Editor
 #include "Editor.h"
@@ -37,7 +38,7 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "DragAndDrop/AssetDragDropOp.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 // Misc
 #include "LevelSequence.h"
@@ -77,6 +78,7 @@ public:
 		SLATE_EVENT(FOnMoviePipelineEditConfig, OnEditConfigRequested)
 	SLATE_END_ARGS()
 
+	static const FName NAME_Enabled;
 	static const FName NAME_JobName;
 	static const FName NAME_Settings;
 	static const FName NAME_Output;
@@ -101,6 +103,8 @@ struct FMoviePipelineQueueJobTreeItem : IMoviePipelineQueueTreeItem
 	/** The job that this tree item represents */
 	TWeakObjectPtr<UMoviePipelineExecutorJob> WeakJob;
 
+	TWeakPtr<SMoviePipelineQueueEditor> WeakQueueEditor;
+
 	/** Sorted list of this category's children */
 	TArray<TSharedPtr<IMoviePipelineQueueTreeItem>> Children;
 
@@ -115,6 +119,8 @@ struct FMoviePipelineQueueJobTreeItem : IMoviePipelineQueueTreeItem
 
 	virtual TSharedRef<ITableRow> ConstructWidget(TWeakPtr<SMoviePipelineQueueEditor> InQueueWidget, const TSharedRef<STableViewBase>& OwnerTable) override
 	{
+		WeakQueueEditor = InQueueWidget;
+
 		return SNew(SQueueJobListRow, OwnerTable)
 			.Item(SharedThis(this));
 	}
@@ -148,6 +154,39 @@ struct FMoviePipelineQueueJobTreeItem : IMoviePipelineQueueTreeItem
 	}
 
 public:
+	ECheckBoxState GetCheckState() const
+	{
+		UMoviePipelineExecutorJob* Job = WeakJob.Get();
+		if (Job)
+		{
+			return Job->IsEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		}
+
+		return ECheckBoxState::Unchecked;
+	}
+
+	void SetCheckState(const ECheckBoxState NewState) const
+	{
+		if (WeakQueueEditor.IsValid() && WeakQueueEditor.Pin()->GetSelectedItems().Contains(SharedThis(this)))
+		{
+			for (TSharedPtr<IMoviePipelineQueueTreeItem> Item : WeakQueueEditor.Pin()->GetSelectedItems())
+			{
+				TSharedPtr<FMoviePipelineQueueJobTreeItem> JobTreeItem = StaticCastSharedPtr<FMoviePipelineQueueJobTreeItem>(Item);
+				if (JobTreeItem.IsValid())
+				{
+					if (UMoviePipelineExecutorJob* Job = JobTreeItem->WeakJob.Get())
+					{
+						Job->SetIsEnabled(NewState == ECheckBoxState::Checked);
+					}
+				}
+			}
+		}
+		else if (UMoviePipelineExecutorJob* Job = WeakJob.Get())
+		{
+			Job->SetIsEnabled(NewState == ECheckBoxState::Checked);
+		}
+	}
+
 	FText GetJobName() const
 	{
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
@@ -244,60 +283,13 @@ public:
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job && Job->GetConfiguration())
 		{
-			UMoviePipelineOutputSetting* OutputSetting = Job->GetConfiguration()->FindSetting<UMoviePipelineOutputSetting>();
-			check(OutputSetting);
-
-			// Set up as many parameters as we can to try and resolve most of the string.
-			FString FormatString = OutputSetting->OutputDirectory.Path / OutputSetting->FileNameFormat;
-
-			// If they've set up any folders within the filename portion of it, let's be nice and resolve that.
-			FPaths::NormalizeFilename(FormatString);
-			int32 LastSlashIndex;
-			if(FormatString.FindLastChar(TEXT('/'), LastSlashIndex))
-			{
-				FormatString.LeftInline(LastSlashIndex + 1);
-			}
-
-			// By having it swap {camera_name} and {shot_name} with an unresolvable tag, it will
-			// stay in the resolved path and can be removed using the code below.
-			static const FString DummyTag = TEXT("{dontresolvethis}");
-			FMoviePipelineFilenameResolveParams Params;
-			Params.Job = Job;
-			Params.ShotNameOverride = DummyTag;
-			Params.CameraNameOverride = DummyTag;
-
-			FString OutResolvedPath;
-			FMoviePipelineFormatArgs Dummy;
-			UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(FormatString, Params, OutResolvedPath, Dummy);
-
-			// Drop the .{ext} resolving always puts on.
-			OutResolvedPath.LeftChopInline(6);
-
-			if (FPaths::IsRelative(OutResolvedPath))
-			{
-				OutResolvedPath = FPaths::ConvertRelativePathToFull(OutResolvedPath);
-			}
-			
-			// In the event that they used a {format_string} we couldn't resolve (such as shot name), then
-			// we'll trim off anything after the format string.
-			int32 FormatStringToken;
-			if(OutResolvedPath.FindChar(TEXT('{'), FormatStringToken))
-			{
-				// Just as a last bit of saftey, we'll trim anything between the { and the preceeding /. This is
-				// in case they did something like Render_{Date}, we wouldn't want to make a folder named Render_.
-				// We search backwards from where we found the first { brace, so that will get us the last usable slash.
-				LastSlashIndex = OutResolvedPath.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd, FormatStringToken);
-				if (LastSlashIndex != INDEX_NONE)
-				{
-					OutResolvedPath.LeftInline(LastSlashIndex + 1);
-				}
-			}
+			FString ResolvedOutputDir = UMoviePipelineEditorBlueprintLibrary::ResolveOutputDirectoryFromJob(Job);
 
 			// Attempt to make the directory. The user can see the output folder before they render so the folder
 			// may not have been created yet and the ExploreFolder call will fail.
-			IFileManager::Get().MakeDirectory(*OutResolvedPath, true);
+			IFileManager::Get().MakeDirectory(*ResolvedOutputDir, true);
 
-			FPlatformProcess::ExploreFolder(*OutResolvedPath);
+			FPlatformProcess::ExploreFolder(*ResolvedOutputDir);
 		}
 	}
 
@@ -318,7 +310,7 @@ public:
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
 		{
-			return !Job->IsConsumed();
+			return Job->IsEnabled() && !Job->IsConsumed();
 		}
 		return false;
 	}
@@ -375,7 +367,7 @@ public:
 			AssetPickerConfig.SaveSettingsName = TEXT("MoviePipelineConfigAsset");
 
 			AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoConfigs_Warning", "No Master Configurations Found");
-			AssetPickerConfig.Filter.ClassNames.Add(InClass->GetFName());
+			AssetPickerConfig.Filter.ClassPaths.Add(InClass->GetClassPathName());
 			AssetPickerConfig.OnAssetSelected = InOnAssetSelected;
 		}
 
@@ -423,7 +415,19 @@ void SQueueJobListRow::Construct(const FArguments& InArgs, const TSharedRef<STab
 
 TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& ColumnName)
 {
-	if (ColumnName == NAME_JobName)
+	if (ColumnName == NAME_Enabled)
+	{
+		return SNew(SBox)
+			.WidthOverride(16)
+		  	[
+				SNew(SCheckBox)
+				.Style(FMovieRenderPipelineStyle::Get(), "MovieRenderPipeline.Setting.Switch")
+				.IsFocusable(false)
+				.IsChecked(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetCheckState)
+				.OnCheckStateChanged(Item.Get(), &FMoviePipelineQueueJobTreeItem::SetCheckState)
+			];
+	}
+	else if (ColumnName == NAME_JobName)
 	{
 		return SNew(SBox)
 			.Padding(2.0f)
@@ -492,8 +496,8 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 				.Padding(FMargin(2, 0))
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+					.TextStyle(FAppStyle::Get(), "NormalText.Important")
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 					.Text(FEditorFontGlyphs::Caret_Down)
 				]
 			]
@@ -541,6 +545,7 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 	return SNullWidget::NullWidget;
 }
 
+const FName SQueueJobListRow::NAME_Enabled = FName(TEXT("Enabled"));
 const FName SQueueJobListRow::NAME_JobName = FName(TEXT("Job Name"));
 const FName SQueueJobListRow::NAME_Settings = FName(TEXT("Settings"));
 const FName SQueueJobListRow::NAME_Output = FName(TEXT("Output"));
@@ -589,11 +594,11 @@ TOptional<EItemDropZone> SQueueJobListRow::OnCanAcceptDrop(const FDragDropEvent&
 	{
 		if (InItemDropZone == EItemDropZone::OntoItem)
 		{
-			DragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
+			DragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 		}
 		else
 		{
-			DragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Ok"));
+			DragDropOp->CurrentIconBrush = FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Ok"));
 		}
 		return InItemDropZone;
 	}
@@ -757,7 +762,7 @@ struct FMoviePipelineShotItem : IMoviePipelineQueueTreeItem
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
 		{
-			return !Job->IsConsumed();
+			return Job->IsEnabled()  && !Job->IsConsumed();
 		}
 		return false;
 	}
@@ -874,6 +879,7 @@ TSharedRef<SWidget> SQueueShotListRow::GenerateWidgetForColumn(const FName& Colu
 		.Padding(2.0f)
 		[
 			SNew(SHorizontalBox)
+			.IsEnabled(Item.Get(), &FMoviePipelineShotItem::IsEnabled)
 
 			// Toggle Checkbox for deciding to render or not.
 			+ SHorizontalBox::Slot()
@@ -945,8 +951,8 @@ TSharedRef<SWidget> SQueueShotListRow::GenerateWidgetForColumn(const FName& Colu
 				.Padding(FMargin(2, 0))
 				[
 					SNew(STextBlock)
-					.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+					.TextStyle(FAppStyle::Get(), "NormalText.Important")
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 					.Text(FEditorFontGlyphs::Caret_Down)
 				]
 			]
@@ -960,7 +966,8 @@ TSharedRef<SWidget> SQueueShotListRow::GenerateWidgetForColumn(const FName& Colu
 	{
 		return SNew(SWidgetSwitcher)
 			.WidgetIndex(Item.Get(), &FMoviePipelineShotItem::GetStatusIndex)
-			
+			.IsEnabled(Item.Get(), &FMoviePipelineShotItem::IsEnabled)
+
 			// Ready Label
 			+ SWidgetSwitcher::Slot()
 			.VAlign(VAlign_Center)
@@ -1011,12 +1018,16 @@ void SMoviePipelineQueueEditor::Construct(const FArguments& InArgs)
 		(
 			SNew(SHeaderRow)
 
+			+ SHeaderRow::Column(SQueueJobListRow::NAME_Enabled)
+			.FillWidth(0.05f)
+			.DefaultLabel(FText::FromString(TEXT(" ")))
+
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_JobName)
 			.FillWidth(0.25f)
 			.DefaultLabel(LOCTEXT("QueueHeaderJobName_Text", "Job"))
 
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_Settings)
-			.FillWidth(0.25f)
+			.FillWidth(0.20f)
 			.DefaultLabel(LOCTEXT("QueueHeaderSettings_Text", "Settings"))
 
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_Output)
@@ -1076,50 +1087,10 @@ TSharedPtr<SWidget> SMoviePipelineQueueEditor::GetContextMenuContent()
 
 TSharedRef<SWidget> SMoviePipelineQueueEditor::MakeAddSequenceJobButton()
 {
-	return SNew(SComboButton)
-		.ContentPadding(MoviePipeline::ButtonPadding)
-		.ButtonStyle(FMovieRenderPipelineStyle::Get(), "FlatButton.Success")
+	return SNew(SPositiveActionButton)
 		.OnGetMenuContent(this, &SMoviePipelineQueueEditor::OnGenerateNewJobFromAssetMenu)
-		.ForegroundColor(FSlateColor::UseForeground())
-		.HasDownArrow(false)
-		.ButtonContent()
-		[
-			SNew(SHorizontalBox)
-
-			// Plus Icon
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Plus)
-			]
-
-			// "Render" Text
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Text(LOCTEXT("AddNewJob_Text", "Render"))
-			]
-
-			// Non-Default Down Caret arrow.
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Caret_Down)
-			]
-		];
+		.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
+		.Text(LOCTEXT("AddNewJob_Text", "Render"));
 }
 
 TSharedRef<SWidget> SMoviePipelineQueueEditor::RemoveSelectedJobButton()
@@ -1131,8 +1102,8 @@ TSharedRef<SWidget> SMoviePipelineQueueEditor::RemoveSelectedJobButton()
 		.VAlign(VAlign_Center)
 		[
 			SNew(STextBlock)
-			.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+			.TextStyle(FAppStyle::Get(), "NormalText.Important")
+			.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 			.Text(FEditorFontGlyphs::Minus)
 		];
 }
@@ -1159,7 +1130,7 @@ TSharedRef<SWidget> SMoviePipelineQueueEditor::OnGenerateNewJobFromAssetMenu()
 		AssetPickerConfig.SaveSettingsName = TEXT("MoviePipelineQueueJobAsset");
 
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoSequences_Warning", "No Level Sequences Found");
-		AssetPickerConfig.Filter.ClassNames.Add(ULevelSequence::StaticClass()->GetFName());
+		AssetPickerConfig.Filter.ClassPaths.Add(ULevelSequence::StaticClass()->GetClassPathName());
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SMoviePipelineQueueEditor::OnCreateJobFromAsset);
 	}
 
@@ -1186,27 +1157,43 @@ void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 	// Close the dropdown menu that showed them the assets to pick from.
 	FSlateApplication::Get().DismissAllMenus();
 
-	// Only try to initialize level sequences, in the event they had more than a level sequence selected when drag/dropping.
-	ULevelSequence* LevelSequence = Cast<ULevelSequence>(InAsset.GetAsset());
-	if (LevelSequence)
-	{
-		FScopedTransaction Transaction(FText::Format(LOCTEXT("CreateJob_Transaction", "Add {0}|plural(one=Job, other=Jobs)"), 1));
+	UMoviePipelineQueue* ActiveQueue = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>()->GetQueue();
+	check(ActiveQueue);
+	
+	FScopedTransaction Transaction(FText::Format(LOCTEXT("CreateJob_Transaction", "Add {0}|plural(one=Job, other=Jobs)"), 1));
 
-		UMoviePipelineQueue* ActiveQueue = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>()->GetQueue();
-		check(ActiveQueue);
-		
+	TArray<UMoviePipelineExecutorJob*> NewJobs;
+	// Only try to initialize level sequences, in the event they had more than a level sequence selected when drag/dropping.
+	if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(InAsset.GetAsset()))
+	{		
 		UMoviePipelineExecutorJob* NewJob = UMoviePipelineEditorBlueprintLibrary::CreateJobFromSequence(ActiveQueue, LevelSequence);
 		if (!NewJob)
 		{
 			return;
 		}
 
+		NewJobs.Add(NewJob);
+	}
+	else if (UMoviePipelineQueue* Queue = Cast<UMoviePipelineQueue>(InAsset.GetAsset()))
+	{
+		for (UMoviePipelineExecutorJob* Job : Queue->GetJobs())
+		{
+			UMoviePipelineExecutorJob* NewJob = ActiveQueue->DuplicateJob(Job);
+			if (NewJob)
+			{
+				NewJobs.Add(NewJob);
+			}
+		}
+	}
+
+	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
+	for (UMoviePipelineExecutorJob* NewJob : NewJobs)
+	{
 		PendingJobsToSelect.Add(NewJob);
 		
 		{
 			// The job configuration is already set up with an empty configuration, but we'll try and use their last used preset 
 			// (or a engine supplied default) for better user experience. 
-			const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 			if (ProjectSettings->LastPresetOrigin.IsValid())
 			{
 				NewJob->SetPresetOrigin(ProjectSettings->LastPresetOrigin.Get());
@@ -1358,6 +1345,13 @@ bool SMoviePipelineQueueEditor::CanDragDropTarget(TSharedPtr<FDragDropOperation>
 				if (LevelSequence)
 				{
 					// If at least one of them is a Level Sequence then we'll accept the drop.
+					bIsValid = true;
+					break;
+				}
+
+				UMoviePipelineQueue* QueueAsset = Cast<UMoviePipelineQueue>(Asset.GetAsset());
+				if (QueueAsset)
+				{
 					bIsValid = true;
 					break;
 				}

@@ -1,15 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCascadePreviewToolbar.h"
+
+#include "Cascade.h"
+#include "CascadeActions.h"
+#include "CascadePreviewViewportClient.h"
+#include "Delegates/Delegate.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "GenericPlatform/ICursor.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Misc/Attribute.h"
+#include "Misc/Optional.h"
+#include "SCascadePreviewViewport.h"
+#include "SEditorViewportToolBarMenu.h"
+#include "SViewportToolBar.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorStyleSet.h"
-#include "SEditorViewportToolBarMenu.h"
-#include "CascadeActions.h"
-#include "Cascade.h"
-#include "SCascadePreviewViewport.h"
-#include "CascadePreviewViewportClient.h"
+#include "Widgets/SCompoundWidget.h"
+
+class FTagMetaData;
+class SWidget;
 
 
 void SCascadePreviewViewportToolBar::Construct(const FArguments& InArgs)
@@ -19,8 +35,8 @@ void SCascadePreviewViewportToolBar::Construct(const FArguments& InArgs)
 	this->ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-		.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
+		.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
 		[
 			SNew(SHorizontalBox)
 			+SHorizontalBox::Slot()

@@ -89,11 +89,6 @@ void FSocialUserList::InitializeList()
 	SetAllowAutoUpdate(ListConfig.bAutoUpdate);
 }
 
-void FSocialUserList::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	Collector.AddReferencedObjects(Users);
-}
-
 void FSocialUserList::UpdateNow()
 {
 	UpdateListInternal();
@@ -129,9 +124,9 @@ void FSocialUserList::HandleOwnerToolkitReset()
 {
 	const bool bTriggerChangeEvent = Users.Num() > 0;
 
-	for (const USocialUser* User : Users)
+	for (TWeakObjectPtr<USocialUser> UserPtr : Users)
 	{
-		if (ensureMsgf(User, TEXT("Encountered a nullptr entry in FSocialUserList::Users array!")))
+		if (USocialUser* User = UserPtr.Get(); ensureMsgf(User, TEXT("Encountered a nullptr entry in FSocialUserList::Users array!")))
 		{
 			OnUserRemoved().Broadcast(*User);
 		}
@@ -476,52 +471,45 @@ bool FSocialUserList::EvaluatePresenceFlag(bool bPresenceValue, ESocialUserState
 // encapsulates UserList sorting comparator and supporting data needed
 struct FUserSortData
 {
-	FUserSortData(USocialUser* InUser, EOnlinePresenceState::Type InStatus, bool InPlayingThisGame, FString InDisplayName, int64 InCustomSortValuePrimary, int64 InCustomSortValueSecondary, int64 InCustomSortValueTertiary)
+	FUserSortData(USocialUser* InUser, EOnlinePresenceState::Type InStatus, bool InPlayingThisGame, FString InDisplayName, TSharedRef<const TArray<int64>> InSortParams)
 		: User(InUser)
 		, OnlineStatus(InStatus)
 		, PlayingThisGame(InPlayingThisGame)
 		, DisplayName(MoveTemp(InDisplayName))
-		, CustomSortValuePrimary(InCustomSortValuePrimary)
-		, CustomSortValueSecondary(InCustomSortValueSecondary)
-		, CustomSortValueTertiary(InCustomSortValueTertiary) 
+		, SortParams(InSortParams)
 	{ }
 
-	USocialUser* User;
+	USocialUser* User = nullptr;
 	EOnlinePresenceState::Type OnlineStatus;
 	bool PlayingThisGame;
 	FString DisplayName;
-	int64 CustomSortValuePrimary;
-	int64 CustomSortValueSecondary;
-	int64 CustomSortValueTertiary;
+	TSharedPtr<const TArray<int64>> SortParams;
 
 	bool operator<(const FUserSortData& OtherSortData) const
 	{
-		// Goes from if online, playing this game, then alphabetical
+		// Sorts in order of if online, playing this game, custom list of search parameters, then alphabetical
 		if (OnlineStatus == OtherSortData.OnlineStatus)
 		{
 			if (PlayingThisGame == OtherSortData.PlayingThisGame)
 			{
-				if (CustomSortValuePrimary == OtherSortData.CustomSortValuePrimary)
+				if (SortParams.IsValid() && OtherSortData.SortParams.IsValid() && SortParams->Num() == OtherSortData.SortParams->Num())
 				{
-					if (CustomSortValueSecondary == OtherSortData.CustomSortValueSecondary)
+					for (int32 SortIndex = 0; SortIndex < SortParams->Num() && SortIndex < OtherSortData.SortParams->Num(); ++SortIndex)
 					{
-						if (CustomSortValueTertiary == OtherSortData.CustomSortValueTertiary)
+						if ((*SortParams)[SortIndex] != (*OtherSortData.SortParams)[SortIndex])
 						{
-							return DisplayName < OtherSortData.DisplayName;
-						}
-						else
-						{
-							return CustomSortValueTertiary > OtherSortData.CustomSortValueTertiary;
+							// Sort first by this parameter
+							return (*SortParams)[SortIndex] > (*OtherSortData.SortParams)[SortIndex];
 						}
 					}
-					else
-					{
-						return CustomSortValueSecondary > OtherSortData.CustomSortValueSecondary;
-					}
+
+					// If we made it here, our sort params were all equal, so just sort alphabetically
+					return DisplayName < OtherSortData.DisplayName;
 				}
 				else
 				{
-					return CustomSortValuePrimary > OtherSortData.CustomSortValuePrimary;
+					// Our sort params don't match, so in this case just sort alphabetically
+					return DisplayName < OtherSortData.DisplayName;
 				}
 			}
 			else
@@ -576,7 +564,7 @@ void FSocialUserList::UpdateListInternal()
 		bListUpdated = true;
 
 		Users.RemoveAllSwap(
-			[this] (USocialUser* User)
+			[this] (TWeakObjectPtr<USocialUser> User)
 		{
 				if (PendingRemovals.Contains(User))
 				{
@@ -596,9 +584,12 @@ void FSocialUserList::UpdateListInternal()
 		bListUpdated = true;
 		Users.Append(PendingAdds);
 
-		for (USocialUser* User : PendingAdds)
+		for (TWeakObjectPtr<USocialUser> UserPtr : PendingAdds)
 		{
-			OnUserAdded().Broadcast(*User);
+			if (USocialUser* User = UserPtr.Get(); ensure(User))
+			{
+				OnUserAdded().Broadcast(*User);
+			}
 		}
 		PendingAdds.Reset();
 	}
@@ -620,18 +611,21 @@ void FSocialUserList::UpdateListInternal()
 				TArray<FUserSortData> SortedData;
 				SortedData.Reserve(NumUsers);
 
-				Algo::Transform(Users, SortedData, [](USocialUser* const User) -> FUserSortData
-				{
-					return FUserSortData(User, User->GetOnlineStatus(), User->IsPlayingThisGame(), User->GetDisplayName(), User->GetCustomSortValuePrimary(), User->GetCustomSortValueSecondary(), User->GetCustomSortValueTertiary());
-				});
+				Algo::TransformIf(Users, SortedData,
+					[](const TWeakObjectPtr<USocialUser> UserPtr) { return UserPtr.IsValid(); },
+					[](const TWeakObjectPtr<USocialUser> UserPtr) -> FUserSortData
+					{
+						USocialUser* User = UserPtr.Get();
+						TSharedRef<TArray<int64>> SortParams = MakeShared<TArray<int64>>();
+						User->PopulateSortParameterList(SortParams.Get());
+						return FUserSortData(User, User->GetOnlineStatus(), User->IsPlayingThisGame(), User->GetDisplayName(), SortParams);
+					});
 
 				Algo::Sort(SortedData);
 
 				// replace contents of Users from SortedData array
-				for (int Index = 0; Index < NumUsers; Index++)
-				{
-					Users[Index] = SortedData[Index].User;
-				}
+				Users.Reset(SortedData.Num());
+				Algo::Transform(SortedData, Users, [](const FUserSortData& Data){ return Data.User; });
 			}
 		}
 		else

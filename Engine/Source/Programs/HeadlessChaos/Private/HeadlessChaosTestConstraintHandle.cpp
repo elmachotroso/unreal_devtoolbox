@@ -2,7 +2,6 @@
 
 #include "HeadlessChaos.h"
 #include "HeadlessChaosTestUtility.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDPositionConstraints.h"
 #include "Chaos/PBDRigidParticles.h"
@@ -12,7 +11,6 @@
 #include "Chaos/Utilities.h"
 #include "Chaos/PBDRigidsEvolutionGBF.h"
 #include "Chaos/PBDPositionConstraints.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDJointConstraints.h"
 #include "Chaos/PBDRigidSpringConstraints.h"
 #include "Chaos/PBDRigidDynamicSpringConstraints.h"
@@ -115,6 +113,10 @@ namespace ChaosTest {
 		TEvolution Evolution(Particles, PhysicalMaterials);
 
 		TArray<FPBDRigidParticleHandle*> ParticleHandles = Evolution.CreateDynamicParticles(5);
+		for (FPBDRigidParticleHandle* ParticleHandle : ParticleHandles)
+		{
+			Evolution.EnableParticle(ParticleHandle);
+		}
 
 		FPBDJointConstraints Constraints;
 		TArray<FPBDJointConstraintHandle*> ConstraintsHandles =
@@ -136,6 +138,10 @@ namespace ChaosTest {
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		TArray<FPBDRigidParticleHandle*> ParticleHandles = Evolution.CreateDynamicParticles(5);
+		for (FPBDRigidParticleHandle* ParticleHandle : ParticleHandles)
+		{
+			Evolution.EnableParticle(ParticleHandle);
+		}
 
 		FPBDPositionConstraints Constraints;
 		TArray<FPBDPositionConstraintHandle*> ConstraintsHandles =
@@ -157,6 +163,10 @@ namespace ChaosTest {
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		TArray<FPBDRigidParticleHandle*> ParticleHandles = Evolution.CreateDynamicParticles(5);
+		for (FPBDRigidParticleHandle* ParticleHandle : ParticleHandles)
+		{
+			Evolution.EnableParticle(ParticleHandle);
+		}
 
 		FPBDRigidSpringConstraints Constraints;
 		TArray<FPBDRigidSpringConstraintHandle*> ConstraintsHandles =
@@ -179,6 +189,10 @@ namespace ChaosTest {
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		TEvolution Evolution(Particles, PhysicalMaterials);
 		TArray<FPBDRigidParticleHandle*> ParticleHandles = Evolution.CreateDynamicParticles(5);
+		for (FPBDRigidParticleHandle* ParticleHandle : ParticleHandles)
+		{
+			Evolution.EnableParticle(ParticleHandle);
+		}
 
 		FPBDRigidDynamicSpringConstraints Constraints;
 		TArray<FPBDRigidDynamicSpringConstraintHandle*> ConstraintsHandles =

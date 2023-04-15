@@ -18,14 +18,9 @@
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #include "HardwareInfo.h"
-#include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
+#include "IHeadMountedDisplayModule.h"
 #include "GenericPlatform/GenericPlatformDriver.h"			// FGPUDriverInfo
 #include "GenericPlatform/GenericPlatformCrashContext.h"
-THIRD_PARTY_INCLUDES_START
-#include "dxgi1_3.h"
-#include "dxgi1_4.h"
-#include "dxgi1_6.h"
-THIRD_PARTY_INCLUDES_END
 #include "RHIValidation.h"
 #include "HAL/ExceptionHandling.h"
 
@@ -357,17 +352,6 @@ static bool SafeTestD3D11CreateDevice(IDXGIAdapter* Adapter,D3D_FEATURE_LEVEL Mi
 	return false;
 }
 
-// Display gamut and chromaticities
-// Note: Must be kept in sync with CVars and Tonemapping shaders
-enum EDisplayGamut
-{
-	DG_Rec709,
-	DG_DCI_P3,
-	DG_Rec2020,
-	DG_ACES,
-	DG_ACEScg
-};
-
 struct DisplayChromacities
 {
 	float RedX, RedY;
@@ -378,14 +362,14 @@ struct DisplayChromacities
 
 const DisplayChromacities DisplayChromacityList[] =
 {
-	{ 0.64000f, 0.33000f, 0.30000f, 0.60000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // DG_Rec709
-	{ 0.68000f, 0.32000f, 0.26500f, 0.69000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // DG_DCI-P3 D65
-	{ 0.70800f, 0.29200f, 0.17000f, 0.79700f, 0.13100f, 0.04600f, 0.31270f, 0.32900f }, // DG_Rec2020
-	{ 0.73470f, 0.26530f, 0.00000f, 1.00000f, 0.00010f,-0.07700f, 0.32168f, 0.33767f }, // DG_ACES
-	{ 0.71300f, 0.29300f, 0.16500f, 0.83000f, 0.12800f, 0.04400f, 0.32168f, 0.33767f }, // DG_ACEScg
+	{ 0.64000f, 0.33000f, 0.30000f, 0.60000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // EDisplayColorGamut::sRGB_D65
+	{ 0.68000f, 0.32000f, 0.26500f, 0.69000f, 0.15000f, 0.06000f, 0.31270f, 0.32900f }, // EDisplayColorGamut::DCIP3_D65
+	{ 0.70800f, 0.29200f, 0.17000f, 0.79700f, 0.13100f, 0.04600f, 0.31270f, 0.32900f }, // EDisplayColorGamut::Rec2020_D65
+	{ 0.73470f, 0.26530f, 0.00000f, 1.00000f, 0.00010f,-0.07700f, 0.32168f, 0.33767f }, // EDisplayColorGamut::ACES_D60
+	{ 0.71300f, 0.29300f, 0.16500f, 0.83000f, 0.12800f, 0.04400f, 0.32168f, 0.33767f }, // EDisplayColorGamut::ACEScg_D60
 };
 
-static void SetHDRMonitorModeNVIDIA(uint32 IHVDisplayIndex, bool bEnableHDR, EDisplayGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
+static void SetHDRMonitorModeNVIDIA(uint32 IHVDisplayIndex, bool bEnableHDR, EDisplayColorGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
 {
 #ifdef NVAPI_INTERFACE
 	NvAPI_Status NvStatus = NVAPI_OK;
@@ -409,7 +393,7 @@ static void SetHDRMonitorModeNVIDIA(uint32 IHVDisplayIndex, bool bEnableHDR, EDi
 			HDRColorData.static_metadata_descriptor_id = NV_STATIC_METADATA_TYPE_1;
 			HDRColorData.hdrMode = bEnableHDR ? NV_HDR_MODE_UHDBD : NV_HDR_MODE_OFF;
 
-			const DisplayChromacities& Chroma = DisplayChromacityList[DisplayGamut];
+			const DisplayChromacities& Chroma = DisplayChromacityList[(int32)DisplayGamut];
 
 			HDRColorData.mastering_display_data.displayPrimary_x0 = NvU16(Chroma.RedX * 50000.0f);
 			HDRColorData.mastering_display_data.displayPrimary_y0 = NvU16(Chroma.RedY * 50000.0f);
@@ -438,7 +422,7 @@ static void SetHDRMonitorModeNVIDIA(uint32 IHVDisplayIndex, bool bEnableHDR, EDi
 #endif //NVAPI_INTERFACE
 }
 
-static void SetHDRMonitorModeAMD(uint32 IHVDisplayIndex, bool bEnableHDR, EDisplayGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
+static void SetHDRMonitorModeAMD(uint32 IHVDisplayIndex, bool bEnableHDR, EDisplayColorGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL)
 {
 #ifdef AMD_AGS_API
 	const int32 AmdHDRDeviceIndex = (IHVDisplayIndex & 0xffff0000) >> 16;
@@ -459,7 +443,7 @@ static void SetHDRMonitorModeAMD(uint32 IHVDisplayIndex, bool bEnableHDR, EDispl
 
 		if (bEnableHDR)
 		{
-			const DisplayChromacities& Chroma = DisplayChromacityList[DisplayGamut];
+			const DisplayChromacities& Chroma = DisplayChromacityList[(int32)DisplayGamut];
 			HDRDisplaySettings.chromaticityRedX   = Chroma.RedX;
 			HDRDisplaySettings.chromaticityRedY   = Chroma.RedY;
 			HDRDisplaySettings.chromaticityGreenX = Chroma.GreenX;
@@ -488,14 +472,12 @@ static void SetHDRMonitorModeAMD(uint32 IHVDisplayIndex, bool bEnableHDR, EDispl
 /** Enable HDR meta data transmission */
 void FD3D11DynamicRHI::EnableHDR()
 {
-	static const auto CVarHDRColorGamut = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.ColorGamut"));
-	static const auto CVarHDROutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
-
 	if ( GRHISupportsHDROutput && IsHDREnabled() )
 	{
-		const int32 OutputDevice = CVarHDROutputDevice->GetValueOnAnyThread();
+		const EDisplayOutputFormat OutputDevice = HDRGetDefaultDisplayOutputFormat();
+		const EDisplayColorGamut DisplayGamut = HDRGetDefaultDisplayColorGamut();
 
-		const float DisplayMaxOutputNits = (OutputDevice == 4 || OutputDevice == 6) ? 2000.f : 1000.f;
+		const float DisplayMaxOutputNits = HDRGetDisplayMaximumLuminance();
 		const float DisplayMinOutputNits = 0.0f;	// Min output of the display
 		const float DisplayMaxCLL = 0.0f;			// Max content light level in lumens (0.0 == unknown)
 		const float DisplayFALL = 0.0f;				// Frame average light level (0.0 == unknown)
@@ -505,7 +487,7 @@ void FD3D11DynamicRHI::EnableHDR()
 			SetHDRMonitorModeNVIDIA(
 				HDRDetectedDisplayIHVIndex,
 				true,
-				EDisplayGamut(CVarHDRColorGamut->GetValueOnAnyThread()),
+				DisplayGamut,
 				DisplayMaxOutputNits,
 				DisplayMinOutputNits,
 				DisplayMaxCLL,
@@ -516,7 +498,7 @@ void FD3D11DynamicRHI::EnableHDR()
 			SetHDRMonitorModeAMD(
 				HDRDetectedDisplayIHVIndex,
 				true,
-				EDisplayGamut(CVarHDRColorGamut->GetValueOnAnyThread()),
+				DisplayGamut,
 				DisplayMaxOutputNits,
 				DisplayMinOutputNits,
 				DisplayMaxCLL,
@@ -545,7 +527,7 @@ void FD3D11DynamicRHI::ShutdownHDR()
 			SetHDRMonitorModeNVIDIA(
 				HDRDetectedDisplayIHVIndex,
 				false,
-				DG_Rec709,
+				EDisplayColorGamut::sRGB_D65,
 				DisplayMaxOutputNits,
 				DisplayMinOutputNits,
 				DisplayMaxCLL,
@@ -556,7 +538,7 @@ void FD3D11DynamicRHI::ShutdownHDR()
 			SetHDRMonitorModeAMD(
 				HDRDetectedDisplayIHVIndex,
 				false,
-				DG_Rec709,
+				EDisplayColorGamut::sRGB_D65,
 				DisplayMaxOutputNits,
 				DisplayMinOutputNits,
 				DisplayMaxCLL,
@@ -569,14 +551,63 @@ void FD3D11DynamicRHI::ShutdownHDR()
 	}
 }
 
-static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
+bool FD3D11DynamicRHI::SetupDisplayHDRMetaData()
 {
-	check(D3DRHI && D3DRHI->GetDevice());
-	ID3D11Device* Direct3DDevice = D3DRHI->GetDevice();
+	check(GetDevice());
 
 	// Default to primary display
-	D3DRHI->SetHDRDetectedDisplayIndices(0, 0);
+	SetHDRDetectedDisplayIndices(0, 0);
 	
+	DisplayList.Empty();
+
+#if WITH_EDITOR
+	// Determines if any displays support HDR
+	bool bSupportsHDROutput = false;
+	{
+		IDXGIAdapter* DXGIAdapter = Adapter.DXGIAdapter;
+		if (!DXGIAdapter)
+		{
+			return false;
+		}
+
+		for (uint32 DisplayIndex = 0; true; ++DisplayIndex)
+		{
+			TRefCountPtr<IDXGIOutput> DXGIOutput;
+			if (S_OK != DXGIAdapter->EnumOutputs(DisplayIndex, DXGIOutput.GetInitReference()))
+			{
+				break;
+			}
+
+			TRefCountPtr<IDXGIOutput6> Output6;
+			if (SUCCEEDED(DXGIOutput->QueryInterface(IID_PPV_ARGS(Output6.GetInitReference()))))
+			{
+				DXGI_OUTPUT_DESC1 OutputDesc;
+				VERIFYD3D11RESULT(Output6->GetDesc1(&OutputDesc));
+
+				// Check for HDR support on the display.
+				const bool bDisplaySupportsHDROutput = (OutputDesc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+				if (bDisplaySupportsHDROutput)
+				{
+					UE_LOG(LogD3D11RHI, Log, TEXT("HDR output is supported on adapter %i, display %u:"), 0, DisplayIndex);
+					UE_LOG(LogD3D11RHI, Log, TEXT("\t\tMinLuminance = %f"), OutputDesc.MinLuminance);
+					UE_LOG(LogD3D11RHI, Log, TEXT("\t\tMaxLuminance = %f"), OutputDesc.MaxLuminance);
+					UE_LOG(LogD3D11RHI, Log, TEXT("\t\tMaxFullFrameLuminance = %f"), OutputDesc.MaxFullFrameLuminance);
+
+					bSupportsHDROutput = true;
+				}
+
+				FDisplayInformation DisplayInformation{};
+				DisplayInformation.bHDRSupported = bDisplaySupportsHDROutput;
+				const RECT& DisplayCoords = OutputDesc.DesktopCoordinates;
+				DisplayInformation.DesktopCoordinates = FIntRect(DisplayCoords.left, DisplayCoords.top, DisplayCoords.right, DisplayCoords.bottom);
+				DisplayList.Add(DisplayInformation);
+			}
+		}
+	}
+
+	return bSupportsHDROutput;
+#else
+
 	// Grab the adapter
 	TRefCountPtr<IDXGIDevice> DXGIDevice;
 	VERIFYD3D11RESULT(Direct3DDevice->QueryInterface(IID_IDXGIDevice, (void**)DXGIDevice.GetInitReference()));
@@ -588,6 +619,7 @@ static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
 	uint32 ForcedDisplayIndex = 0;
 	bool bForcedDisplay = FParse::Value(FCommandLine::Get(), TEXT("FullscreenDisplay="), ForcedDisplayIndex);
 
+	bool bSupportsHDROutput = false;
 	for (; true; ++DisplayIndex)
 	{
 		TRefCountPtr<IDXGIOutput> DXGIOutput;
@@ -604,7 +636,11 @@ static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
 
 		DXGI_OUTPUT_DESC OutputDesc;
 		DXGIOutput->GetDesc(&OutputDesc);
-		
+		FDisplayInformation DisplayInformation{};
+		const RECT& DisplayCoords = OutputDesc.DesktopCoordinates;
+		DisplayInformation.DesktopCoordinates = FIntRect(DisplayCoords.left, DisplayCoords.top, DisplayCoords.right, DisplayCoords.bottom);
+		DisplayInformation.bHDRSupported = false;
+
 		if (IsRHIDeviceNVIDIA())
 		{
 #ifdef NVAPI_INTERFACE
@@ -621,12 +657,14 @@ static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
 
 				if (NVAPI_OK == NvAPI_Disp_GetHdrCapabilities(DisplayId, &HdrCapabilities))
 				{		
-					if (HdrCapabilities.isST2084EotfSupported)
+					// we're only choosing the first supported HDR monitor
+					if (HdrCapabilities.isST2084EotfSupported && !bSupportsHDROutput)
 					{
 						UE_LOG(LogD3D11RHI, Log, TEXT("HDR output is supported on display %i (NvId: 0x%x)."), DisplayIndex, DisplayId);
-						D3DRHI->SetHDRDetectedDisplayIndices(DisplayIndex, DisplayId);
-						return true;
+						SetHDRDetectedDisplayIndices(DisplayIndex, DisplayId);
+						bSupportsHDROutput = true;
 					}
+					DisplayInformation.bHDRSupported = HdrCapabilities.isST2084EotfSupported;
 				}
 			}
 			else if (Status != NVAPI_ERROR && Status != NVAPI_NVIDIA_DEVICE_NOT_FOUND)
@@ -651,12 +689,14 @@ static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
 					{
 						// AGS has flags for HDR10 and Dolby Vision instead of a flag for the ST2084 transfer function.
 						// Both HDR10 and Dolby Vision use the ST2084 EOTF.
-						if (DisplayInfo.HDR10 != 0 || DisplayInfo.dolbyVision != 0)
+						bool DisplaySupportsHDR = (DisplayInfo.HDR10 != 0 || DisplayInfo.dolbyVision != 0);
+						if (DisplaySupportsHDR && !bSupportsHDROutput)
 						{
 							UE_LOG(LogD3D11RHI, Log, TEXT("HDR output is supported on display %i (AMD Device: 0x%x, Display: 0x%x)."), DisplayIndex, AMDDeviceIndex, AMDDisplayIndex);
-							D3DRHI->SetHDRDetectedDisplayIndices(DisplayIndex, (uint32)(AMDDeviceIndex << 16) | (uint32)AMDDisplayIndex);
-							return true;
+							SetHDRDetectedDisplayIndices(DisplayIndex, (uint32)(AMDDeviceIndex << 16) | (uint32)AMDDisplayIndex);
+							bSupportsHDROutput = true;
 						}
+						DisplayInformation.bHDRSupported = DisplaySupportsHDR;
 					}
 				}
 			}
@@ -666,9 +706,11 @@ static bool SupportsHDROutput(FD3D11DynamicRHI* D3DRHI)
 		{
 			// Not yet implemented
 		}
+		DisplayList.Add(DisplayInformation);
 	}
 
-	return false;
+	return bSupportsHDROutput;
+#endif
 }
 
 static bool IsDeviceOverclocked()
@@ -880,10 +922,6 @@ void FD3D11DynamicRHIModule::FindAdapter()
 	FD3D11Adapter FirstWithoutIntegratedAdapter;
 	FD3D11Adapter FirstAdapter;
 
-	bool bIsAnyAMD = false;
-	bool bIsAnyIntel = false;
-	bool bIsAnyNVIDIA = false;
-
 	UE_LOG(LogD3D11RHI, Log, TEXT("D3D11 adapters:"));
 
 	int PreferredVendor = D3D11RHI_PreferAdapterVendor();
@@ -956,25 +994,20 @@ void FD3D11DynamicRHIModule::FindAdapter()
 				bool bIsNVIDIA = AdapterDesc.VendorId == 0x10DE;
 				bool bIsMicrosoft = AdapterDesc.VendorId == 0x1414;
 
-				if(bIsAMD) bIsAnyAMD = true;
-				if(bIsIntel) bIsAnyIntel = true;
-				if(bIsNVIDIA) bIsAnyNVIDIA = true;
-
 				// Simple heuristic but without profiling it's hard to do better
 				bool bIsNonLocalMemoryPresent = false;
-				if (bIsIntel)
+				TRefCountPtr<IDXGIAdapter3> TempDxgiAdapter3;
+				DXGI_QUERY_VIDEO_MEMORY_INFO NonLocalVideoMemoryInfo;
+				if (SUCCEEDED(TempAdapter->QueryInterface(_uuidof(IDXGIAdapter3), (void**)TempDxgiAdapter3.GetInitReference())) &&
+					TempDxgiAdapter3.IsValid() && SUCCEEDED(TempDxgiAdapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &NonLocalVideoMemoryInfo)))
 				{
-					TRefCountPtr<IDXGIAdapter3> TempDxgiAdapter3;
-					DXGI_QUERY_VIDEO_MEMORY_INFO NonLocalVideoMemoryInfo;
-					if (SUCCEEDED(TempAdapter->QueryInterface(_uuidof(IDXGIAdapter3), (void**)TempDxgiAdapter3.GetInitReference())) &&
-						TempDxgiAdapter3.IsValid() && SUCCEEDED(TempDxgiAdapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &NonLocalVideoMemoryInfo)))
-					{
-						bIsNonLocalMemoryPresent = NonLocalVideoMemoryInfo.Budget != 0;
-					}
+					bIsNonLocalMemoryPresent = NonLocalVideoMemoryInfo.Budget != 0;
 				}
 
+				// TODO: Using GPUDetect for Intel GPUs to check for integrated vs discrete status, pending GPUDetect update
+
 				const bool bIsSoftware = bIsMicrosoft;
-				const bool bIsIntegrated = bIsIntel && !bIsNonLocalMemoryPresent;
+				const bool bIsIntegrated = !bIsNonLocalMemoryPresent;
 				// PerfHUD is for performance profiling
 				const bool bIsPerfHUD = !FCString::Stricmp(AdapterDesc.Description,TEXT("NVIDIA PerfHUD"));
 
@@ -1054,6 +1087,10 @@ void FD3D11DynamicRHIModule::FindAdapter()
 		UE_LOG(LogD3D11RHI, Error, TEXT("Failed to choose a D3D11 Adapter."));
 	}
 
+	GRHIAdapterName = ChosenAdapter.DXGIAdapterDesc.Description;
+	GRHIVendorId = ChosenAdapter.DXGIAdapterDesc.VendorId;
+	GRHIDeviceId = ChosenAdapter.DXGIAdapterDesc.DeviceId;
+	GRHIDeviceRevision = ChosenAdapter.DXGIAdapterDesc.Revision;
 	GRHIDeviceIsIntegrated = ChosenAdapter.bIsIntegrated;
 }
 
@@ -1662,7 +1699,7 @@ void FD3D11DynamicRHI::InitD3DDevice()
 	if(!Direct3DDevice)
 	{
 		// Wait for the rendering thread to go idle.
-		SCOPED_SUSPEND_RENDERING_THREAD(false);
+		FlushRenderingCommands();
 
 		UE_LOG(LogD3D11RHI, Log, TEXT("Creating new Direct3DDevice"));
 		check(!GIsRHIInitialized);
@@ -1694,28 +1731,10 @@ void FD3D11DynamicRHI::InitD3DDevice()
 
 		GTexturePoolSize = 0;
 
-		GRHIAdapterName = Adapter.DXGIAdapterDesc.Description;
-		GRHIVendorId = Adapter.DXGIAdapterDesc.VendorId;
-		GRHIDeviceId = Adapter.DXGIAdapterDesc.DeviceId;
-		GRHIDeviceRevision = Adapter.DXGIAdapterDesc.Revision;
 		// turn off creation on other threads for NVidia since a driver heuristic will notice that and make the creation synchronous, and that is not desirable given that large number of shaders will still be created on a single thread
 		GRHISupportsMultithreadedShaderCreation = !IsRHIDeviceNVIDIA(); 
 
-		UE_LOG(LogD3D11RHI, Log, TEXT("    GPU DeviceId: 0x%x (for the marketing name, search the web for \"GPU Device Id\")"), 
-			Adapter.DXGIAdapterDesc.DeviceId);
-
-		// get driver version (todo: share with other RHIs)
-		{
-			FGPUDriverInfo GPUDriverInfo = FPlatformMisc::GetGPUDriverInfo(GRHIAdapterName);
-
-			GRHIAdapterUserDriverVersion = GPUDriverInfo.UserDriverVersion;
-			GRHIAdapterInternalDriverVersion = GPUDriverInfo.InternalDriverVersion;
-			GRHIAdapterDriverDate = GPUDriverInfo.DriverDate;
-
-			UE_LOG(LogD3D11RHI, Log, TEXT("    Adapter Name: %s"), *GRHIAdapterName);
-			UE_LOG(LogD3D11RHI, Log, TEXT("  Driver Version: %s (internal:%s, unified:%s)"), *GRHIAdapterUserDriverVersion, *GRHIAdapterInternalDriverVersion, *GPUDriverInfo.GetUnifiedDriverVersion());
-			UE_LOG(LogD3D11RHI, Log, TEXT("     Driver Date: %s"), *GRHIAdapterDriverDate);
-		}
+		UE_LOG(LogD3D11RHI, Log, TEXT("    GPU DeviceId: 0x%x (for the marketing name, search the web for \"GPU Device Id\")"), Adapter.DXGIAdapterDesc.DeviceId);
 
 		// Issue: 32bit windows doesn't report 64bit value, we take what we get.
 		FD3D11GlobalStats::GDedicatedVideoMemory = int64(Adapter.DXGIAdapterDesc.DedicatedVideoMemory);
@@ -1972,6 +1991,8 @@ void FD3D11DynamicRHI::InitD3DDevice()
 			GRHISupportsAsyncTextureCreation = false;
 		}
 
+		GRHISupportsMultithreadedResources = GRHISupportsAsyncTextureCreation;
+
 #ifdef NVAPI_INTERFACE
 
 		if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
@@ -2176,7 +2197,7 @@ void FD3D11DynamicRHI::InitD3DDevice()
 #endif
 		
 		{
-			GRHISupportsHDROutput = SupportsHDROutput(this);
+			GRHISupportsHDROutput = SetupDisplayHDRMetaData();
 		}
 
 		// Add device overclock state to crash context
@@ -2190,9 +2211,7 @@ void FD3D11DynamicRHI::InitD3DDevice()
 		GRHINeedsExtraDeletionLatency = false;
 		GRHISupportsEfficientUploadOnResourceCreation = true;
 
-		// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().
-		GRHICommandList.GetImmediateCommandList().SetContext(::RHIGetDefaultContext());
-		GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(::RHIGetDefaultAsyncComputeContext());
+		GRHICommandList.GetImmediateCommandList().InitializeImmediateContexts();
 
 		// Now that the driver extensions have been initialized, turn on UAV overlap for the first time.
 		EnableUAVOverlap();

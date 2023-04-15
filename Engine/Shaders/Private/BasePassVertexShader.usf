@@ -10,6 +10,9 @@
 
 #if TRANSLUCENCY_PERVERTEX_FORWARD_SHADING
 #include "ReflectionEnvironmentShared.ush"
+
+// Enables applying a cloud shadow factor to lighting calculations in ForwardLightingCommon.ush.
+#define ENABLE_FORWARD_CLOUD_SHADOW SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
 #include "ForwardLightingCommon.ush"
 #endif
 
@@ -17,7 +20,7 @@
 #include "SkyAtmosphereCommon.ush"
 #endif
 
-#if (NEEDS_BASEPASS_VERTEX_FOGGING && MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING) || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
+#if (NEEDS_BASEPASS_VERTEX_FOGGING && MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING) || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT || NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR
 #include "VolumetricCloudCommon.ush"
 #endif
 
@@ -29,27 +32,17 @@ void Main(
 	, out float OutGlobalClipPlaneDistance : SV_ClipDistance
 #endif
 #if INSTANCED_STEREO
-	, uint InstanceId : SV_InstanceID
-	#if !MULTI_VIEW
-		, out float OutClipDistance : SV_ClipDistance1
-	#else
-		, out uint ViewportIndex : SV_ViewPortArrayIndex
-	#endif
+	, out uint ViewportIndex : SV_ViewPortArrayIndex
 #endif
 	)
-{	
+{
 #if INSTANCED_STEREO
-	const uint EyeIndex = GetEyeIndex(InstanceId);
-	ResolvedView = ResolveView(EyeIndex);
-	#if !MULTI_VIEW
-		OutClipDistance = 0.0;
-	#else
-		ViewportIndex = EyeIndex;
-	#endif
+	const uint EyeIndex = GetEyeIndexFromVF(Input);
+	ViewportIndex = EyeIndex;
 #else
-	uint EyeIndex = 0;
-	ResolvedView = ResolveView();
+	const uint EyeIndex = 0;
 #endif
+	ResolvedView = ResolveViewFromVF(Input);
 
 	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
 	float4 WorldPositionExcludingWPO = VertexFactoryGetWorldPosition(Input, VFIntermediates);
@@ -68,30 +61,10 @@ void Main(
 
 	{
 		float4 RasterizedWorldPosition = VertexFactoryGetRasterizedWorldPosition(Input, VFIntermediates, WorldPosition);
-	#if ODS_CAPTURE
-		float3 ODS = OffsetODS(RasterizedWorldPosition.xyz, ResolvedView.TranslatedWorldCameraOrigin.xyz, ResolvedView.StereoIPD);
-		ClipSpacePosition = mul(float4(RasterizedWorldPosition.xyz + ODS, 1.0), ResolvedView.TranslatedWorldToClip);
-	#else
-		ClipSpacePosition = INVARIANT(mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip));
-	#endif
+		ClipSpacePosition = mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip);
 		Output.Position = INVARIANT(ClipSpacePosition);
 	}
 
-	#if INSTANCED_STEREO && !MULTI_VIEW
-	BRANCH
-	if (IsInstancedStereo())
-	{
-		// Clip at the center of the screen
-		OutClipDistance = dot(Output.Position, EyeClipEdge[EyeIndex]);
-
-		// Scale to the width of a single eye viewport
-		Output.Position.x *= 0.5 * ResolvedView.HMDEyePaddingOffset;
-
-		// Shift to the eye viewport
-		Output.Position.x += (EyeOffsetScale[EyeIndex] * Output.Position.w) * (1.0f - 0.5 * ResolvedView.HMDEyePaddingOffset);
-	}
-	#endif
-	
 #if USE_GLOBAL_CLIP_PLANE
 	OutGlobalClipPlaneDistance = dot(ResolvedView.GlobalClippingPlane, float4(WorldPosition.xyz, 1));
 #endif
@@ -117,7 +90,7 @@ void Main(
 		// Sample the aerial perspective (AP). It is also blended under the VertexFog parameter.
 		Output.BasePassInterpolants.VertexFog = GetAerialPerspectiveLuminanceTransmittanceWithFogOver(
 			ResolvedView.RealTimeReflectionCapture, ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
-			Output.Position, WorldPosition.xyz*CM_TO_SKY_UNIT, ResolvedView.TranslatedWorldCameraOrigin*CM_TO_SKY_UNIT,
+			Output.Position, (WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin) * CM_TO_SKY_UNIT,
 			View.CameraAerialPerspectiveVolume, View.CameraAerialPerspectiveVolumeSampler,
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolutionInv,
 			ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolution,
@@ -141,7 +114,7 @@ void Main(
 
 #endif // NEEDS_BASEPASS_VERTEX_FOGGING
 
-#if TRANSLUCENCY_ANY_PERVERTEX_LIGHTING || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
+#if TRANSLUCENCY_ANY_PERVERTEX_LIGHTING || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT || NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR
 	float3 WorldPositionForVertexLightingTranslated = VertexFactoryGetPositionForVertexLighting(Input, VFIntermediates, WorldPosition.xyz);
 	float3 WorldPositionForVertexLighting = WorldPositionForVertexLightingTranslated - LWCHackToFloat(ResolvedView.PreViewTranslation);
 #endif
@@ -196,21 +169,29 @@ void Main(
 
 #elif NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR
 
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#define ForwardDirLightCloudShadowParams SingleLayerWater.ForwardDirLightCloudShadow
+#elif IS_MATERIAL_TRANSLUCENT_AND_LIT
+#define ForwardDirLightCloudShadowParams TranslucentBasePass.ForwardDirLightCloudShadow
+#endif
+
 	Output.BasePassInterpolants.VertexCloudShadow = 1.0f;
-	if (TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength > 0.0f)
+	if (ForwardDirLightCloudShadowParams.CloudShadowmapStrength > 0.0f)
 	{
 		float OutOpticalDepth = 0.0f;
 		Output.BasePassInterpolants.VertexCloudShadow = lerp(
 			1.0f,
 			GetCloudVolumetricShadow(
 				WorldPositionForVertexLightingTranslated,
-				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTranslatedWorldToLightClipMatrix,
-				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapFarDepthKm,
-				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTexture,
-				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapSampler,
+				ForwardDirLightCloudShadowParams.CloudShadowmapTranslatedWorldToLightClipMatrix,
+				ForwardDirLightCloudShadowParams.CloudShadowmapFarDepthKm,
+				ForwardDirLightCloudShadowParams.CloudShadowmapTexture,
+				ForwardDirLightCloudShadowParams.CloudShadowmapSampler,
 				OutOpticalDepth),
-			TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength);
+			ForwardDirLightCloudShadowParams.CloudShadowmapStrength);
 	}
+
+#undef ForwardDirLightCloudShadowParams
 
 #endif
 
@@ -234,7 +215,7 @@ void Main(
 		float4 PrevTranslatedWorldPosition = float4(0, 0, 0, 1);
 		// Use 'FLATTEN' instead of 'BRANCH' because of nVidia driver compiler bug: see UE-108339 - nVidia is working on a driver side fix right now
 		FLATTEN
-		if ((GetPrimitiveData(VertexParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY) != 0 || View.ForceDrawAllVelocities != 0)
+		if ((GetPrimitiveData(VertexParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY) != 0)
 		{
 			PrevTranslatedWorldPosition = VertexFactoryGetPreviousWorldPosition( Input, VFIntermediates );	
 			VertexParameters = GetMaterialVertexParameters(Input, VFIntermediates, PrevTranslatedWorldPosition.xyz, TangentToLocal);
@@ -244,7 +225,7 @@ void Main(
 		}
 
 		// compute the old screen pos with the old world position and the old camera matrix
-		Output.BasePassInterpolants.VelocityPrevScreenPosition = PrevTranslatedWorldPosition; 
+		Output.BasePassInterpolants.VelocityPrevScreenPosition = INVARIANT(PrevTranslatedWorldPosition); 
 	}
 #endif	// WRITES_VELOCITY_TO_GBUFFER
 }

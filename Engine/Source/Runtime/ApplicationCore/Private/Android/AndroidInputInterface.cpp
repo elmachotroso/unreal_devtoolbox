@@ -11,6 +11,7 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/IConsoleManager.h"
 #include "IHapticDevice.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #ifndef ANDROID_GAMEPAD_TRIGGER_THRESHOLD
 	#define ANDROID_GAMEPAD_TRIGGER_THRESHOLD	0.30f
@@ -54,11 +55,11 @@ static FAutoConsoleVariableRef CVarAndroidOldXBoxWirelessFirmware(
 	TEXT("Determines how XBox Wireless controller mapping is handled. 0 assumes new firmware, 1 will use old firmware mapping (Default: 0)"),
 	ECVF_Default);
 
-bool AndroidUnifyMotionSpace = false;
+int32 AndroidUnifyMotionSpace = 0;
 static FAutoConsoleVariableRef CVarAndroidUnifyMotionSpace(
 	TEXT("Android.UnifyMotionSpace"),
 	AndroidUnifyMotionSpace,
-	TEXT("Motion inputs will be processed to keep rotation rate right-handed and keep other motion inputs in the same space as rotation rate. This also forces rotation rate units to be radians/s and acceleration units to be g. Default: false"),
+	TEXT("If set to non-zero, acceleration, gravity, and rotation rate will all be in the same coordinate space. 0 for legacy behaviour. 1 will match Unreal's coordinate space (left-handed, z-up, etc). 2 will be right-handed by swapping x and y. Non-zero also forces rotation rate units to be radians/s and acceleration units to be g."),
 	ECVF_Default);
 
 TSharedRef< FAndroidInputInterface > FAndroidInputInterface::Create(const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler, const TSharedPtr< ICursor >& InCursor)
@@ -130,11 +131,17 @@ FAndroidInputInterface::FAndroidInputInterface(const TSharedRef< FGenericApplica
 
 void FAndroidInputInterface::ResetGamepadAssignments()
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	
 	for (int32 DeviceIndex = 0; DeviceIndex < MAX_NUM_CONTROLLERS; DeviceIndex++)
 	{
 		if (DeviceMapping[DeviceIndex].DeviceState == MappingState::Valid)
 		{
-			FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, DeviceIndex);
+			FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			
+			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(DeviceIndex, OUT PlatformUserId, OUT DeviceId);
+			DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Disconnected);
 		}
 
 		DeviceMapping[DeviceIndex].DeviceInfo.DeviceId = 0;
@@ -149,7 +156,13 @@ void FAndroidInputInterface::ResetGamepadAssignmentToController(int32 Controller
 
 	if (DeviceMapping[ControllerId].DeviceState == MappingState::Valid)
 	{
-		FCoreDelegates::OnControllerConnectionChange.Broadcast(false, PLATFORMUSERID_NONE, ControllerId);
+		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
+		FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+		FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			
+		DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, OUT PlatformUserId, OUT DeviceId);
+		DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Disconnected);
 	}
 
 	DeviceMapping[ControllerId].DeviceInfo.DeviceId = 0;
@@ -962,7 +975,7 @@ void FAndroidInputInterface::SendControllerEvents()
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("PS5 Wireless Controller")))
 						{
-							CurrentDevice.ButtonRemapping = ButtonRemapType::PS5;
+							CurrentDevice.ButtonRemapping = FAndroidMisc::GetAndroidBuildVersion() > 11 ? ButtonRemapType::PS5New : ButtonRemapType::PS5;
 							CurrentDevice.ControllerClass = ControllerClassType::PlaystationWireless;
 							CurrentDevice.bSupportsHat = true;
 							CurrentDevice.bRightStickZRZ = true;
@@ -983,7 +996,12 @@ void FAndroidInputInterface::SendControllerEvents()
 							CurrentDevice.bSupportsHat = true;
 						}
 
-						FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, DeviceIndex);
+						IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+						FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+						FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			
+						DeviceMapper.RemapControllerIdToPlatformUserAndDevice(DeviceIndex, OUT PlatformUserId, OUT DeviceId);
+						DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Connected);
 
 						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Assigned new gamepad controller %d: DeviceId=%d, ControllerId=%d, DeviceName=%s, Descriptor=%s"),
 							DeviceIndex, CurrentDevice.DeviceInfo.DeviceId, CurrentDevice.DeviceInfo.ControllerId, *CurrentDevice.DeviceInfo.Name, *CurrentDevice.DeviceInfo.Descriptor);
@@ -1001,8 +1019,14 @@ void FAndroidInputInterface::SendControllerEvents()
 						NewControllerData[FoundMatch].DeviceId = FoundMatch;
 						OldControllerData[FoundMatch].DeviceId = FoundMatch;
 
-						//@TODO: uncomment this line in the future when disconnects are detected
-						//FCoreDelegates::OnControllerConnectionChange.Broadcast(true, PLATFORMUSERID_NONE, FoundMatch);
+						//@TODO: uncomment these line in the future when disconnects are detected
+						// IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+						//
+						// FPlatformUserId PlatformUserId = PLATFORMUSERID_NONE;
+						// FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+						//
+						// DeviceMapper.RemapControllerIdToPlatformUserAndDevice(FoundMatch, OUT PlatformUserId, OUT DeviceId);
+						// DeviceMapper.Internal_MapInputDeviceToUser(DeviceId, PlatformUserId, EInputDeviceConnectionState::Connected);
 
 						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Reconnected gamepad controller %d: DeviceId=%d, ControllerId=%d, DeviceName=%s, Descriptor=%s"),
 							FoundMatch, DeviceMapping[FoundMatch].DeviceInfo.DeviceId, CurrentDevice.DeviceInfo.ControllerId, *CurrentDevice.DeviceInfo.Name, *CurrentDevice.DeviceInfo.Descriptor);
@@ -1052,34 +1076,39 @@ void FAndroidInputInterface::SendControllerEvents()
 
 			FAndroidControllerData& OldControllerState = OldControllerData[ControllerIndex];
 			FAndroidControllerData& NewControllerState = NewControllerData[ControllerIndex];
+			
+			IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();		            			
+			FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+			FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+			DeviceMapper.RemapControllerIdToPlatformUserAndDevice(NewControllerState.DeviceId, OUT UserId, OUT DeviceId);
 
 			// Send controller events any time we have a large enough input threshold similarly to PC/Console (see: XInputInterface.cpp)
 			const float RepeatDeadzone = 0.24f;
 
 			if (NewControllerState.LXAnalog != OldControllerState.LXAnalog || FMath::Abs(NewControllerState.LXAnalog) >= RepeatDeadzone)
 			{
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogX, NewControllerState.DeviceId, NewControllerState.LXAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogX, UserId, DeviceId, NewControllerState.LXAnalog);
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 1] = NewControllerState.LXAnalog >= RepeatDeadzone;
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 0] = NewControllerState.LXAnalog <= -RepeatDeadzone;
 			}
 			if (NewControllerState.LYAnalog != OldControllerState.LYAnalog || FMath::Abs(NewControllerState.LYAnalog) >= RepeatDeadzone)
 			{
 				//LOGD("    Sending updated LeftAnalogY value of %f", NewControllerState.LYAnalog);
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogY, NewControllerState.DeviceId, NewControllerState.LYAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftAnalogY, UserId, DeviceId, NewControllerState.LYAnalog);
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 2] = NewControllerState.LYAnalog >= RepeatDeadzone;
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 3] = NewControllerState.LYAnalog <= -RepeatDeadzone;
 			}
 			if (NewControllerState.RXAnalog != OldControllerState.RXAnalog || FMath::Abs(NewControllerState.RXAnalog) >= RepeatDeadzone)
 			{
 				//LOGD("    Sending updated RightAnalogX value of %f", NewControllerState.RXAnalog);
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogX, NewControllerState.DeviceId, NewControllerState.RXAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogX, UserId, DeviceId, NewControllerState.RXAnalog);
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 5] = NewControllerState.RXAnalog >= RepeatDeadzone;
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 4] = NewControllerState.RXAnalog <= -RepeatDeadzone;
 			}
 			if (NewControllerState.RYAnalog != OldControllerState.RYAnalog || FMath::Abs(NewControllerState.RYAnalog) >= RepeatDeadzone)
 			{
 				//LOGD("    Sending updated RightAnalogY value of %f", NewControllerState.RYAnalog);
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogY, NewControllerState.DeviceId, NewControllerState.RYAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightAnalogY, UserId, DeviceId, NewControllerState.RYAnalog);
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 6] = NewControllerState.RYAnalog >= RepeatDeadzone;
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 7] = NewControllerState.RYAnalog <= -RepeatDeadzone;
 			}
@@ -1088,7 +1117,7 @@ void FAndroidInputInterface::SendControllerEvents()
 			if (NewControllerState.LTAnalog != OldControllerState.LTAnalog)
 			{
 				//LOGD("    Sending updated LeftTriggerAnalog value of %f", NewControllerState.LTAnalog);
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftTriggerAnalog, NewControllerState.DeviceId, NewControllerState.LTAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftTriggerAnalog, UserId, DeviceId, NewControllerState.LTAnalog);
 
 				if (bUseTriggerThresholdForClick)
 				{
@@ -1100,7 +1129,7 @@ void FAndroidInputInterface::SendControllerEvents()
 			if (NewControllerState.RTAnalog != OldControllerState.RTAnalog)
 			{
 				//LOGD("    Sending updated RightTriggerAnalog value of %f", NewControllerState.RTAnalog);
-				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightTriggerAnalog, NewControllerState.DeviceId, NewControllerState.RTAnalog);
+				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightTriggerAnalog, UserId, DeviceId, NewControllerState.RTAnalog);
 
 				if (bUseTriggerThresholdForClick)
 				{
@@ -1120,12 +1149,12 @@ void FAndroidInputInterface::SendControllerEvents()
 					if (NewControllerState.ButtonStates[ButtonIndex])
 					{
 						//LOGD("    Sending joystick button down %d (first)", ButtonMapping[ButtonIndex]);
-						MessageHandler->OnControllerButtonPressed(ButtonMapping[ButtonIndex], NewControllerState.DeviceId, false);
+						MessageHandler->OnControllerButtonPressed(ButtonMapping[ButtonIndex], UserId, DeviceId, false);
 					}
 					else
 					{
 						//LOGD("    Sending joystick button up %d", ButtonMapping[ButtonIndex]);
-						MessageHandler->OnControllerButtonReleased(ButtonMapping[ButtonIndex], NewControllerState.DeviceId, false);
+						MessageHandler->OnControllerButtonReleased(ButtonMapping[ButtonIndex], UserId, DeviceId, false);
 					}
 
 					if (NewControllerState.ButtonStates[ButtonIndex])
@@ -1137,7 +1166,7 @@ void FAndroidInputInterface::SendControllerEvents()
 				else if (NewControllerState.ButtonStates[ButtonIndex] && NewControllerState.NextRepeatTime[ButtonIndex] <= CurrentTime)
 				{
 					// Send button repeat events
-					MessageHandler->OnControllerButtonPressed(ButtonMapping[ButtonIndex], NewControllerState.DeviceId, true);
+					MessageHandler->OnControllerButtonPressed(ButtonMapping[ButtonIndex], UserId, DeviceId, true);
 
 					// Set the button's NextRepeatTime to the ButtonRepeatDelay
 					NewControllerState.NextRepeatTime[ButtonIndex] = CurrentTime + ButtonRepeatDelay;
@@ -1589,6 +1618,28 @@ void FAndroidInputInterface::JoystickButtonEvent(int32 deviceId, int32 buttonId,
 				case AKEYCODE_BUTTON_R1:     NewControllerData[deviceId].ButtonStates[11] = buttonDown; break; // R2
 			}
 			break;
+		case ButtonRemapType::PS5New:
+			switch (buttonId)
+			{
+				case AKEYCODE_BUTTON_A:		NewControllerData[deviceId].ButtonStates[0] = buttonDown; break; // Cross
+				case AKEYCODE_BUTTON_B:		NewControllerData[deviceId].ButtonStates[1] = buttonDown; break; // Circle
+				case AKEYCODE_BUTTON_X:		NewControllerData[deviceId].ButtonStates[2] = buttonDown; break; // Triangle
+				case AKEYCODE_BUTTON_Y:		NewControllerData[deviceId].ButtonStates[3] = buttonDown; break; // Square
+				case AKEYCODE_BUTTON_L1:	NewControllerData[deviceId].ButtonStates[4] = buttonDown; break; // L1
+				case AKEYCODE_BUTTON_R1:	NewControllerData[deviceId].ButtonStates[5] = buttonDown; break; // R1
+				case AKEYCODE_BUTTON_THUMBL:NewControllerData[deviceId].ButtonStates[8] = buttonDown; break; // L3
+				case AKEYCODE_BUTTON_THUMBR:NewControllerData[deviceId].ButtonStates[9] = buttonDown; break; // R3
+				case AKEYCODE_BUTTON_L2:	NewControllerData[deviceId].ButtonStates[10] = buttonDown; break; // L2
+				case AKEYCODE_BUTTON_R2:	NewControllerData[deviceId].ButtonStates[11] = buttonDown; break; // R2
+				case 3002:		NewControllerData[deviceId].ButtonStates[16] = buttonDown; break; // Touchpad
+				case AKEYCODE_BUTTON_START:	NewControllerData[deviceId].ButtonStates[6] = buttonDown; // Options
+					if (!bBlockAndroidKeysOnControllers)
+					{
+						NewControllerData[deviceId].ButtonStates[17] = buttonDown; // Options
+					}
+					break;
+			}
+			break;
 	}
 }
 
@@ -1657,7 +1708,7 @@ void FAndroidInputInterface::QueueMotionData(const FVector& Tilt, const FVector&
 	EDeviceScreenOrientation ScreenOrientation = FPlatformMisc::GetDeviceOrientation();
 	FVector TempRotationRate = RotationRate;
 
-	if (AndroidUnifyMotionSpace)
+	if (AndroidUnifyMotionSpace != 0)
 	{
 		FVector TempTilt = Tilt;
 		FVector TempGravity = Gravity;
@@ -1665,17 +1716,17 @@ void FAndroidInputInterface::QueueMotionData(const FVector& Tilt, const FVector&
 
 		auto ReorientLandscapeLeft = [](FVector InValue)
 		{
-			return FVector(-InValue.Z, -InValue.Y, InValue.X);
+			return AndroidUnifyMotionSpace == 1 ? FVector(-InValue.Z, -InValue.Y, InValue.X) : FVector(-InValue.Y, -InValue.Z, InValue.X);
 		};
 
 		auto ReorientLandscapeRight = [](FVector InValue)
 		{
-			return FVector(-InValue.Z, InValue.Y, -InValue.X);
+			return AndroidUnifyMotionSpace == 1 ? FVector(-InValue.Z, InValue.Y, -InValue.X) : FVector(InValue.Y, -InValue.Z, -InValue.X);
 		};
 
 		auto ReorientPortrait = [](FVector InValue)
 		{
-			return FVector(-InValue.Z, InValue.X, InValue.Y);
+			return AndroidUnifyMotionSpace == 1 ? FVector(-InValue.Z, InValue.X, InValue.Y) : FVector(InValue.X, -InValue.Z, InValue.Y);
 		};
 
 		const float ToG = 1.f / 9.8f;
@@ -1702,6 +1753,11 @@ void FAndroidInputInterface::QueueMotionData(const FVector& Tilt, const FVector&
 			TempGravity = ReorientPortrait(TempGravity) * ToG;
 			TempAcceleration = ReorientPortrait(TempAcceleration) * ToG;
 			break;
+		}
+
+		if (AndroidUnifyMotionSpace == 2)
+		{
+			TempRotationRate = -TempRotationRate;
 		}
 
 		FAndroidInputInterface::MotionDataStack.Push(

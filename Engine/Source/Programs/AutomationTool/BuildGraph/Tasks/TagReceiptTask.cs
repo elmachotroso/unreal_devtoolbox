@@ -72,7 +72,7 @@ namespace AutomationTool.Tasks
 	/// Task that tags build products and/or runtime dependencies by reading from *.target files.
 	/// </summary>
 	[TaskElement("TagReceipt", typeof(TagReceiptTaskParameters))]
-	class TagReceiptTask : CustomTask
+	class TagReceiptTask : BgTaskImpl
 	{
 		/// <summary>
 		/// Parameters to this task
@@ -113,10 +113,10 @@ namespace AutomationTool.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Output a warning if the project directory is specified
-			if(Parameters.ProjectDir != null)
+			if (Parameters.ProjectDir != null)
 			{
 				CommandUtils.LogWarning("The ProjectDir argument to the TagReceipt parameter is deprecated. This path is now determined automatically from the receipt.");
 			}
@@ -126,6 +126,16 @@ namespace AutomationTool.Tasks
 
 			// Resolve the input list
 			IEnumerable<FileReference> TargetFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
+
+			// Filter the files
+			HashSet<FileReference> Files = await ExecuteAsync(EngineDir, TargetFiles, Parameters.BuildProducts, BuildProductType, Parameters.RuntimeDependencies, StagedFileType);
+
+			// Apply the tag to all the matching files
+			FindOrAddTagSet(TagNameToFileSet, Parameters.With).UnionWith(Files);
+		}
+
+		public static Task<HashSet<FileReference>> ExecuteAsync(DirectoryReference EngineDir, IEnumerable<FileReference> TargetFiles, bool BuildProducts, BuildProductType? BuildProductType, bool RuntimeDependencies, StagedFileType? StagedFileType = null)
+		{
 			HashSet<FileReference> Files = new HashSet<FileReference>();
 
 			foreach (FileReference TargetFile in TargetFiles)
@@ -144,7 +154,7 @@ namespace AutomationTool.Tasks
 					continue;
 				}
 
-				if (Parameters.BuildProducts)
+				if (BuildProducts)
 				{
 					foreach (BuildProduct BuildProduct in Receipt.BuildProducts)
 					{
@@ -160,7 +170,7 @@ namespace AutomationTool.Tasks
 					}
 				}
 
-				if (Parameters.RuntimeDependencies)
+				if (RuntimeDependencies)
 				{
 					foreach (RuntimeDependency RuntimeDependency in Receipt.RuntimeDependencies)
 					{
@@ -188,8 +198,7 @@ namespace AutomationTool.Tasks
 				}
 			}
 
-			// Apply the tag to all the matching files
-			FindOrAddTagSet(TagNameToFileSet, Parameters.With).UnionWith(Files);
+			return Task.FromResult(Files);
 		}
 
 		/// <summary>
@@ -216,6 +225,21 @@ namespace AutomationTool.Tasks
 		public override IEnumerable<string> FindProducedTagNames()
 		{
 			return FindTagNamesFromList(Parameters.With);
+		}
+	}
+
+	/// <summary>
+	/// Extension methods
+	/// </summary>
+	public static class TaskExtensions
+	{
+		/// <summary>
+		/// Task that tags build products and/or runtime dependencies by reading from *.target files.
+		/// </summary>
+		public static async Task<FileSet> TagReceiptsAsync(this FileSet Files, DirectoryReference EngineDir = null, bool BuildProducts = false, BuildProductType? BuildProductType = null, bool RuntimeDependencies = false, StagedFileType? StagedFileType = null)
+		{
+			HashSet<FileReference> Result = await TagReceiptTask.ExecuteAsync(EngineDir ?? Unreal.EngineDirectory, Files, BuildProducts, BuildProductType, RuntimeDependencies, StagedFileType);
+			return FileSet.FromFiles(Unreal.RootDirectory, Result);
 		}
 	}
 }

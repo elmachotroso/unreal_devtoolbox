@@ -25,6 +25,9 @@ namespace ForkInternal
 	/** Will be set to true on a child process right before we spin up the ForkableThreads at the end of the frame where we forked. */
 	static bool bIsForkedMultithreadInstance = false;
 
+	/** The unique index of a forked child process */
+	static uint16 ChildProcessIndex = 0;
+
 	/**
 	 * Are we doing a real fork and generating child processes on the fork process who received the -WaitAndFork commandline.
 	 * Note: this will be true on the child processes too.
@@ -73,9 +76,15 @@ bool FForkProcessHelper::IsForkedChildProcess()
 	return ForkInternal::bIsForkedChildProcess;
 }
 
-void FForkProcessHelper::SetIsForkedChildProcess()
+void FForkProcessHelper::SetIsForkedChildProcess(uint16 ChildIndex)
 {
 	ForkInternal::bIsForkedChildProcess = true;
+	ForkInternal::ChildProcessIndex = ChildIndex;
+}
+
+uint16 FForkProcessHelper::GetForkedChildProcessIndex()
+{
+	return ForkInternal::ChildProcessIndex;
 }
 
 bool FForkProcessHelper::IsForkRequested()
@@ -108,7 +117,12 @@ bool FForkProcessHelper::IsForkedMultithreadInstance()
 
 bool FForkProcessHelper::SupportsMultithreadingPostFork()
 {
-	check(FCommandLine::IsInitialized());
+	if (!FCommandLine::IsInitialized())
+	{
+		// Return the default setting if the cmdline isn't set yet.
+		return DEFAULT_FORK_PROCESS_MULTITHREAD;
+	}
+
 #if DEFAULT_FORK_PROCESS_MULTITHREAD
 	// Always multi thread unless manually turned off via command line
 	static bool bSupportsMT = FParse::Param(FCommandLine::Get(), TEXT("DisablePostForkThreading")) == false;
@@ -118,4 +132,20 @@ bool FForkProcessHelper::SupportsMultithreadingPostFork()
 	static bool bSupportsMT = FParse::Param(FCommandLine::Get(), TEXT("PostForkThreading")) == true;
 	return bSupportsMT;
 #endif
+}
+
+void FForkProcessHelper::LowLevelPreFork()
+{
+	GMalloc->OnPreFork();
+}
+
+void FForkProcessHelper::LowLevelPostForkParent()
+{
+	// Currently nothing to do here, just provided for completeness. 
+}
+
+void FForkProcessHelper::LowLevelPostForkChild(uint16 ChildIndex)
+{
+	FForkProcessHelper::SetIsForkedChildProcess(ChildIndex);
+	GMalloc->OnPostFork();
 }

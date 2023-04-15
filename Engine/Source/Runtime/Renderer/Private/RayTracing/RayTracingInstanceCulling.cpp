@@ -33,6 +33,12 @@ static TAutoConsoleVariable<float> CVarRayTracingCullingAngle(
 	TEXT("Do camera culling for objects behind the camera with a projected angle smaller than this threshold in ray tracing effects (default = 5 degrees )"),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarRayTracingCullingUseMinDrawDistance(
+	TEXT("r.RayTracing.Culling.UseMinDrawDistance"),
+	1,
+	TEXT("Use min draw distance for culling"),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<int32> CVarRayTracingCullingGroupIds(
 	TEXT("r.RayTracing.Culling.UseGroupIds"),
 	0,
@@ -68,13 +74,14 @@ void FRayTracingCullingParameters::Init(FViewInfo& View)
 	bCullByRadiusOrDistance = CullInRayTracing == 3;
 	bIsRayTracingFarField = Lumen::UseFarField(*View.Family);
 	bCullUsingGroupIds = CVarRayTracingCullingGroupIds.GetValueOnRenderThread() != 0;
+	bCullMinDrawDistance = CVarRayTracingCullingUseMinDrawDistance.GetValueOnRenderThread() != 0;
 }
 
 namespace RayTracing
 {
 bool CullPrimitiveByFlags(const FRayTracingCullingParameters& CullingParameters, const FScene* RESTRICT Scene, int32 PrimitiveIndex)
 {
-	if (EnumHasAnyFlags(Scene->PrimitiveRayTracingFlags[PrimitiveIndex], ERayTracingPrimitiveFlags::UnsupportedProxyType))
+	if (Scene->PrimitiveRayTracingFlags[PrimitiveIndex] == ERayTracingPrimitiveFlags::UnsupportedProxyType)
 	{
 		return true;
 	}
@@ -96,7 +103,7 @@ bool CullPrimitiveByFlags(const FRayTracingCullingParameters& CullingParameters,
 
 // Tests if the given primitive should be culled, given the pre-calculated inputs for the primitive, returns true if the primitive SHOULD be culled
 template<bool bCullByRadiusOrDistance>
-bool CullBounds(const FRayTracingCullingParameters& CullingParameters, const FBoxSphereBounds& RESTRICT ObjectBounds, bool bIsFarFieldPrimitive)
+bool CullBounds(const FRayTracingCullingParameters& CullingParameters, const FBoxSphereBounds& RESTRICT ObjectBounds, float MinDrawDistance, bool bIsFarFieldPrimitive)
 {
 	const float ObjectRadius = ObjectBounds.SphereRadius;
 	const FVector ObjectCenter = ObjectBounds.Origin + 0.5 * ObjectBounds.BoxExtent;
@@ -112,8 +119,13 @@ bool CullBounds(const FRayTracingCullingParameters& CullingParameters, const FBo
 	else
 	{
 		const bool bIsFarEnoughToCull = CameraToObjectCenterLengthSq > FMath::Square(CullingParameters.CullingRadius + ObjectRadius);
+		const bool bIsNearEnoughToCull = CameraToObjectCenterLengthSq < FMath::Square(MinDrawDistance);
 
-		if (bCullByRadiusOrDistance && bIsFarEnoughToCull)
+		if (CullingParameters.bCullMinDrawDistance && bIsNearEnoughToCull)
+		{
+			return true;
+		}
+		else if (bCullByRadiusOrDistance && bIsFarEnoughToCull)
 		{
 			return true;
 		}
@@ -135,21 +147,21 @@ bool CullBounds(const FRayTracingCullingParameters& CullingParameters, const FBo
 	return false;
 }
 
-bool ShouldCullBounds(const FRayTracingCullingParameters& CullingParameters, const FBoxSphereBounds& RESTRICT ObjectBounds, bool bIsFarFieldPrimitive)
+bool ShouldCullBounds(const FRayTracingCullingParameters& CullingParameters, const FBoxSphereBounds& RESTRICT ObjectBounds, float MinDrawDistance, bool bIsFarFieldPrimitive)
 {
 	if (CullingParameters.CullInRayTracing > 0)
 	{
-		const bool bConsiderCulling = CullingParameters.bCullAllObjects || ShouldConsiderCulling(CullingParameters, ObjectBounds);
+		const bool bConsiderCulling = CullingParameters.bCullAllObjects || ShouldConsiderCulling(CullingParameters, ObjectBounds, MinDrawDistance);
 
 		if (bConsiderCulling)
 		{
 			if (CullingParameters.bCullByRadiusOrDistance)
 			{
-				return CullBounds<true>(CullingParameters, ObjectBounds, bIsFarFieldPrimitive);
+				return CullBounds<true>(CullingParameters, ObjectBounds, MinDrawDistance, bIsFarFieldPrimitive);
 			}
 			else
 			{
-				return CullBounds<false>(CullingParameters, ObjectBounds, bIsFarFieldPrimitive);
+				return CullBounds<false>(CullingParameters, ObjectBounds, MinDrawDistance, bIsFarFieldPrimitive);
 			}
 		}
 	}
@@ -214,17 +226,16 @@ void FRayTracingCullPrimitiveInstancesClosure::operator()() const
 {
 	FMemory::Memset(OutInstanceActivationMask.GetData(), 0xFF, OutInstanceActivationMask.Num() * 4);
 
-	const Experimental::FHashElementId GroupId = Scene->PrimitiveRayTracingGroupIds[PrimitiveIndex];
-	const bool bUseGroupBounds = CullingParameters->bCullUsingGroupIds && GroupId.IsValid();
-	const FBoxSphereBounds* const GroupBounds = (bUseGroupBounds) ? &Scene->PrimitiveRayTracingGroups.GetByElementId(GroupId).Value.Bounds : nullptr;
-	const FBoxSphereBounds& PrimitiveBounds = (GroupBounds) ? *GroupBounds : Scene->PrimitiveBounds[PrimitiveIndex].BoxSphereBounds;
+	checkf(!CullingParameters->bCullUsingGroupIds || !Scene->PrimitiveRayTracingGroupIds[PrimitiveIndex].IsValid(), TEXT("Shouldn't do instance level culling of primitives in raytracing groups."));
 
-	if (!RayTracing::ShouldSkipPerInstanceCullingForPrimitive(*CullingParameters, PrimitiveBounds, SceneInfo->CachedRayTracingInstanceWorldBounds[SceneInfo->SmallestRayTracingInstanceWorldBoundsIndex], bIsFarFieldPrimitive))
+	const FPrimitiveBounds& PrimitiveBounds = Scene->PrimitiveBounds[PrimitiveIndex];
+
+	if (!RayTracing::ShouldSkipPerInstanceCullingForPrimitive(*CullingParameters, PrimitiveBounds.BoxSphereBounds, SceneInfo->CachedRayTracingInstanceWorldBounds[SceneInfo->SmallestRayTracingInstanceWorldBoundsIndex], bIsFarFieldPrimitive))
 	{
 		for (int32 InstanceIndex = 0; InstanceIndex < SceneInfo->CachedRayTracingInstanceWorldBounds.Num(); InstanceIndex++)
 		{
-			const FBoxSphereBounds& InstanceBounds = (GroupBounds) ? *GroupBounds : SceneInfo->CachedRayTracingInstanceWorldBounds[InstanceIndex];
-			if (RayTracing::ShouldCullBounds(*CullingParameters, InstanceBounds, bIsFarFieldPrimitive))
+			const FBoxSphereBounds& InstanceBounds = SceneInfo->CachedRayTracingInstanceWorldBounds[InstanceIndex];
+			if (RayTracing::ShouldCullBounds(*CullingParameters, InstanceBounds, PrimitiveBounds.MinDrawDistance, bIsFarFieldPrimitive))
 			{
 				OutInstanceActivationMask[InstanceIndex / 32] &= ~(1 << (InstanceIndex % 32));
 			}

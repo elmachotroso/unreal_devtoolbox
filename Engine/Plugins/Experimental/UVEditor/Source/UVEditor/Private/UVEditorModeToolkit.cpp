@@ -2,7 +2,7 @@
 
 #include "UVEditorModeToolkit.h"
 
-#include "EditorStyleSet.h" //FEditorStyle
+#include "Styling/AppStyle.h" //FAppStyle
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
@@ -27,45 +27,6 @@
 
 namespace UVEditorModeToolkitLocals
 {
-	/** 
-	 * Support for undoing a tool start in such a way that we go back to the mode's default
-	 * tool on undo.
-	 */
-	class FUVEditorBeginToolChange : public FToolCommandChange
-	{
-	public:
-		virtual void Apply(UObject* Object) override
-		{
-			// Do nothing, since we don't allow a re-do back into a tool
-		}
-
-		virtual void Revert(UObject* Object) override
-		{
-			UUVEditorMode* Mode = Cast<UUVEditorMode>(Object);
-			// Don't really need the check for default tool since we theoretically shouldn't
-			// be issuing this transaction for starting the default tool, but still...
-			if (Mode && !Mode->IsDefaultToolActive())
-			{
-				Mode->GetInteractiveToolsContext()->EndTool(EToolShutdownType::Cancel);
-				Mode->ActivateDefaultTool();
-			}
-		}
-
-		virtual bool HasExpired(UObject* Object) const override
-		{
-			// To not be expired, we must be in some non-default tool.
-			UUVEditorMode* Mode = Cast<UUVEditorMode>(Object);
-			return !(Mode && Mode->GetInteractiveToolsContext() 
-				&& Mode->GetInteractiveToolsContext()->ToolManager
-				&& Mode->GetInteractiveToolsContext()->ToolManager->HasAnyActiveTool() 
-				&& !Mode->IsDefaultToolActive());
-		}
-
-		virtual FString ToString() const override
-		{
-			return TEXT("FUVEditorBeginToolChange");
-		}
-	};
 }
 
 FUVEditorModeToolkit::FUVEditorModeToolkit()
@@ -86,11 +47,20 @@ FUVEditorModeToolkit::FUVEditorModeToolkit()
 		.Text(FText::GetEmpty())
 		.Visibility(EVisibility::Collapsed)
 	]
-
+	+ SVerticalBox::Slot()
+	.AutoHeight()
+	[
+		SAssignNew(ModeWarningArea, STextBlock)
+		.AutoWrapText(true)
+		.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+		.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.15f, 0.15f))) //TODO: This probably needs to not be hardcoded
+		.Text(FText::GetEmpty())
+		.Visibility(EVisibility::Collapsed)
+	]
 	+ SVerticalBox::Slot()
 	[
 		SAssignNew(ToolDetailsContainer, SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 	];
 }
 
@@ -199,29 +169,27 @@ void FUVEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost,
 				.Visibility_Lambda([this]() { return GetScriptableEditorMode()->GetInteractiveToolsContext()->ActiveToolHasAccept() ? EVisibility::Visible : EVisibility::Collapsed; })
 			]
 
-			// For now we've decided not to use a "Complete" button for complete-style tools, instead requiring
-			// users to just select a different tool. Uncomment the below if we want to put it back.
-			//+ SHorizontalBox::Slot()
-			//.AutoWidth()
-			//.Padding(FMargin(2.0, 0.f, 0.f, 0.f))
-			//[
-			//	SNew(SButton)
-			//	.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
-			//	.TextStyle(FAppStyle::Get(), "DialogButtonText")
-			//	.Text(LOCTEXT("OverlayComplete", "Complete"))
-			//	.ToolTipText(LOCTEXT("OverlayCompleteTooltip", "Exit the active Tool [Enter]"))
-			//	.HAlign(HAlign_Center)
-			//	.OnClicked_Lambda([this]() { 
-			//		GetScriptableEditorMode()->GetInteractiveToolsContext()->EndTool(EToolShutdownType::Completed); 
-			//		Cast<UUVEditorMode>(GetScriptableEditorMode())->ActivateDefaultTool();
-			//		return FReply::Handled(); 
-			//		})
-			//	.IsEnabled_Lambda([this]() {
-			//		UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
-			//		return GetScriptableEditorMode()->GetInteractiveToolsContext()->CanCompleteActiveTool();
-			//	})
-			//	.Visibility_Lambda([this]() { return GetScriptableEditorMode()->GetInteractiveToolsContext()->CanCompleteActiveTool() ? EVisibility::Visible : EVisibility::Collapsed; })
-			//]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(FMargin(2.0, 0.f, 0.f, 0.f))
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
+				.TextStyle(FAppStyle::Get(), "DialogButtonText")
+				.Text(LOCTEXT("OverlayComplete", "Complete"))
+				.ToolTipText(LOCTEXT("OverlayCompleteTooltip", "Exit the active Tool [Enter]"))
+				.HAlign(HAlign_Center)
+				.OnClicked_Lambda([this]() { 
+					GetScriptableEditorMode()->GetInteractiveToolsContext()->EndTool(EToolShutdownType::Completed);
+					Cast<UUVEditorMode>(GetScriptableEditorMode())->ActivateDefaultTool();
+					return FReply::Handled(); 
+					})
+				.IsEnabled_Lambda([this]() {
+					UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+					return GetScriptableEditorMode()->GetInteractiveToolsContext()->CanCompleteActiveTool();
+				})
+				.Visibility_Lambda([this]() { return GetScriptableEditorMode()->GetInteractiveToolsContext()->CanCompleteActiveTool() ? EVisibility::Visible : EVisibility::Collapsed; })
+			]
 		]	
 	];
 
@@ -287,38 +255,73 @@ TSharedRef<SWidget> FUVEditorModeToolkit::CreateChannelMenu()
 
 TSharedRef<SWidget> FUVEditorModeToolkit::CreateBackgroundSettingsWidget()
 {
-	TSharedRef<SBorder> BackgroundDetailsContainer =
+	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+	return CreateDisplaySettingsWidget(Mode->GetBackgroundSettingsObject());
+}
+
+TSharedRef<SWidget> FUVEditorModeToolkit::CreateGridSettingsWidget()
+{
+	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+	return CreateDisplaySettingsWidget(Mode->GetGridSettingsObject());
+}
+
+TSharedRef<SWidget> FUVEditorModeToolkit::CreateUDIMSettingsWidget()
+{
+	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+	return CreateDisplaySettingsWidget(Mode->GetUDIMSettingsObject());
+}
+
+TSharedRef<SWidget> FUVEditorModeToolkit::GetToolDisplaySettingsWidget()
+{
+	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+	UObject* SettingsObject = Mode->GetToolDisplaySettingsObject();
+	if (SettingsObject)
+	{
+		return CreateDisplaySettingsWidget(SettingsObject);
+	}
+	else
+	{
+		return SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
+			.Padding(0);
+	}
+}
+
+TSharedRef<SWidget> FUVEditorModeToolkit::CreateDisplaySettingsWidget(UObject* SettingsObject) const
+{
+	TSharedRef<SBorder> GridDetailsContainer =
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"));
+		.BorderImage(FAppStyle::GetBrush("NoBorder"));
 
 	TSharedRef<SWidget> Widget = SNew(SBorder)
 		.HAlign(HAlign_Fill)
 		.Padding(4)
 		[
-			SNew(SBox)			
-				.MinDesiredWidth(500)				
-			[
-				BackgroundDetailsContainer				
-			]
+			SNew(SBox)
+			.MinDesiredWidth(500)
+		[
+			GridDetailsContainer
+		]
 		];
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FDetailsViewArgs BackgroundDetailsViewArgs;
-	BackgroundDetailsViewArgs.bAllowSearch = false;
-	BackgroundDetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-	BackgroundDetailsViewArgs.bHideSelectionTip = true;
-	BackgroundDetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
-	BackgroundDetailsViewArgs.bShowOptions = false;
-	BackgroundDetailsViewArgs.bAllowMultipleTopLevelObjects = false;
+	FDetailsViewArgs GridDetailsViewArgs;
+	GridDetailsViewArgs.bAllowSearch = false;
+	GridDetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	GridDetailsViewArgs.bHideSelectionTip = true;
+	GridDetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
+	GridDetailsViewArgs.bShowOptions = false;
+	GridDetailsViewArgs.bAllowMultipleTopLevelObjects = false;
 
-	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
-	TSharedRef<IDetailsView> BackgroundDetailsView = PropertyEditorModule.CreateDetailView(BackgroundDetailsViewArgs);
-	BackgroundDetailsView->SetObject(Mode->GetBackgroundSettingsObject());
-	BackgroundDetailsContainer->SetContent(BackgroundDetailsView);
+	TSharedRef<IDetailsView> GridDetailsView = PropertyEditorModule.CreateDetailView(GridDetailsViewArgs);
+	GridDetailsView->SetObject(SettingsObject);
+	GridDetailsContainer->SetContent(GridDetailsView);
 
 	return Widget;
+
 }
+
 
 void FUVEditorModeToolkit::UpdateActiveToolProperties()
 {
@@ -337,8 +340,9 @@ void FUVEditorModeToolkit::InvalidateCachedDetailPanelState(UObject* ChangedObje
 void FUVEditorModeToolkit::OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
 {
 	FModeToolkit::OnToolStarted(Manager, Tool);
-	
-	UInteractiveTool* CurTool = GetScriptableEditorMode()->GetToolManager()->GetActiveTool(EToolSide::Left);
+
+	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
+	UInteractiveTool* CurTool = Mode->GetToolManager()->GetActiveTool(EToolSide::Left);
 	CurTool->OnPropertySetsModified.AddSP(this, &FUVEditorModeToolkit::UpdateActiveToolProperties);
 	CurTool->OnPropertyModifiedDirectlyByTool.AddSP(this, &FUVEditorModeToolkit::InvalidateCachedDetailPanelState);
 
@@ -349,19 +353,10 @@ void FUVEditorModeToolkit::OnToolStarted(UInteractiveToolManager* Manager, UInte
 	FName ActiveToolIconName = ISlateStyle::Join(FUVEditorCommands::Get().GetContextName(), TCHAR_TO_ANSI(*ActiveToolIdentifier));
 	ActiveToolIcon = FUVEditorStyle::Get().GetOptionalBrush(ActiveToolIconName);
 
-	UUVEditorMode* Mode = Cast<UUVEditorMode>(GetScriptableEditorMode());
 	if (!Mode->IsDefaultToolActive())
 	{
-		// Issue a tool start transaction unless we are starting the default tool, because we can't
-		// undo or revert out of the default tool.
-		Mode->GetInteractiveToolsContext()->GetTransactionAPI()->AppendChange(
-			Mode, MakeUnique<UVEditorModeToolkitLocals::FUVEditorBeginToolChange>(), LOCTEXT("ActivateTool", "Activate Tool"));
-
-		if (Mode->GetInteractiveToolsContext()->ActiveToolHasAccept())
-		{
-			// Add the accept/cancel overlay only if the tool has accept/cancel.
-			GetToolkitHost()->AddViewportOverlayWidget(ViewportOverlayWidget.ToSharedRef());
-		}
+		// Add the accept/cancel overlay only if the tool is not the default tool.
+		GetToolkitHost()->AddViewportOverlayWidget(ViewportOverlayWidget.ToSharedRef());
 	}
 }
 
@@ -408,8 +403,13 @@ void FUVEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToolBarBu
 
 	if (PaletteIndex == ToolsTabName)
 	{
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSelectTool);
+		ToolbarBuilder.AddToolBarButton(Commands.SewAction);
+		ToolbarBuilder.AddToolBarButton(Commands.SplitAction);
+
 		ToolbarBuilder.AddToolBarButton(Commands.BeginLayoutTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginTransformTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginAlignTool);
+		ToolbarBuilder.AddToolBarButton(Commands.BeginDistributeTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginChannelEditTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginSeamTool);
 		ToolbarBuilder.AddToolBarButton(Commands.BeginParameterizeMeshTool);
@@ -457,5 +457,44 @@ void FUVEditorModeToolkit::ClearWarning()
 	ToolWarningArea->SetVisibility(EVisibility::Collapsed);
 }
 
+void FUVEditorModeToolkit::PostModeWarning(const FText& Message)
+{
+	if (Message.IsEmpty())
+	{
+		ClearModeWarning();
+	}
+	else
+	{
+		ModeWarningArea->SetText(Message);
+		ModeWarningArea->SetVisibility(EVisibility::Visible);
+	}
+}
+
+void FUVEditorModeToolkit::ClearModeWarning()
+{
+	ModeWarningArea->SetText(FText());
+	ModeWarningArea->SetVisibility(EVisibility::Collapsed);
+}
+
+void FUVEditorModeToolkit::UpdatePIEWarnings()
+{
+	if (bShowPIEWarning)
+	{
+		PostModeWarning(LOCTEXT("ModelingModeToolkitPIEWarning", "UV Editor functionality is limited during Play in Editor sessions. End the current Play in Editor session to continue using the editor."));
+	}
+	else
+	{
+		ClearModeWarning();
+	}
+}
+
+void FUVEditorModeToolkit::EnableShowPIEWarning(bool bEnable)
+{
+	if (bShowPIEWarning != bEnable)
+	{
+		bShowPIEWarning = bEnable;
+		UpdatePIEWarnings();
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

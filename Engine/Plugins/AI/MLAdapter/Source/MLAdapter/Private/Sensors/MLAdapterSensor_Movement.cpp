@@ -22,21 +22,20 @@ bool UMLAdapterSensor_Movement::ConfigureForAgent(UMLAdapterAgent& Agent)
 
 void UMLAdapterSensor_Movement::Configure(const TMap<FName, FString>& Params)
 {
-	const FName LocationKeyName = TEXT("location");
-	const FName VelocityKeyName = TEXT("velocity");
-	
 	Super::Configure(Params);
 
-	for (auto KeyValue : Params)
+	const FName LocationKeyName = TEXT("location");
+	const FString* LocationKeyValue = Params.Find(LocationKeyName);
+	if (LocationKeyValue != nullptr)
 	{
-		if (KeyValue.Key == LocationKeyName)
-		{
-			bAbsoluteLocation = (KeyValue.Value.Find(TEXT("absolute")) != INDEX_NONE);
-		}
-		else if (KeyValue.Key == VelocityKeyName)
-		{
-			bAbsoluteLocation = (KeyValue.Value.Find(TEXT("absolute")) != INDEX_NONE);
-		}
+		bAbsoluteLocation = (LocationKeyValue->Find(TEXT("absolute")) != INDEX_NONE);
+	}
+
+	const FName VelocityKeyName = TEXT("velocity");
+	const FString* VelocityKeyValue = Params.Find(VelocityKeyName);
+	if (VelocityKeyValue != nullptr)
+	{
+		bAbsoluteVelocity = (VelocityKeyValue->Find(TEXT("absolute")) != INDEX_NONE);
 	}
 
 	UpdateSpaceDef();
@@ -74,8 +73,8 @@ void UMLAdapterSensor_Movement::OnAvatarSet(AActor* Avatar)
 void UMLAdapterSensor_Movement::GetObservations(FMLAdapterMemoryWriter& Ar)
 {
 	FScopeLock Lock(&ObservationCS);
-	FVector Location = bAbsoluteLocation ? CurrentLocation : (CurrentLocation - RefLocation);
-	FVector Velocity = bAbsoluteVelocity ? CurrentVelocity : (CurrentVelocity - RefVelocity);
+	FVector3f Location = FVector3f(bAbsoluteLocation ? CurrentLocation : (CurrentLocation - RefLocation));
+	FVector3f Velocity = FVector3f(bAbsoluteVelocity ? CurrentVelocity : (CurrentVelocity - RefVelocity));
 	
 	FMLAdapter::FSpaceSerializeGuard SerializeGuard(SpaceDef, Ar);	
 	Ar << Location << Velocity;

@@ -201,6 +201,37 @@ namespace UE
 #endif // USE_USD_SDK
 
 	template<typename PtrType>
+	void FUsdStageBase<PtrType>::LoadAndUnload( const TSet<FSdfPath>& LoadSet, const TSet<FSdfPath>& UnloadSet, EUsdLoadPolicy Policy )
+	{
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs Allocs;
+
+			pxr::SdfPathSet UsdLoadSet;
+			for ( const FSdfPath& Path : LoadSet )
+			{
+				UsdLoadSet.insert( static_cast< pxr::SdfPath >( Path ) );
+			}
+
+			pxr::SdfPathSet UsdUnloadSet;
+			for ( const FSdfPath& Path : UnloadSet )
+			{
+				UsdUnloadSet.insert( static_cast< pxr::SdfPath >( Path ) );
+			}
+
+			Ptr->LoadAndUnload(
+				UsdLoadSet,
+				UsdUnloadSet,
+				Policy == EUsdLoadPolicy::UsdLoadWithDescendants
+					? pxr::UsdLoadPolicy::UsdLoadWithDescendants
+					: pxr::UsdLoadPolicy::UsdLoadWithoutDescendants
+			);
+		}
+#endif
+	}
+
+	template<typename PtrType>
 	FSdfLayer FUsdStageBase<PtrType>::GetRootLayer() const
 	{
 #if USE_USD_SDK
@@ -210,6 +241,27 @@ namespace UE
 		}
 #endif // #if USE_USD_SDK
 		return FSdfLayer();
+	}
+
+	template<typename PtrType>
+	bool FUsdStageBase<PtrType>::Export( const TCHAR* FileName, bool bAddSourceFileComment, const TMap<FString, FString>& FileFormatArguments ) const
+	{
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs Allocs;
+
+			std::map<std::string, std::string> UsdFileFormatArguments;
+			for ( const TPair<FString, FString>& Pair : FileFormatArguments )
+			{
+				UsdFileFormatArguments.insert( { TCHAR_TO_ANSI( *Pair.Key ), TCHAR_TO_ANSI( *Pair.Value ) } );
+			}
+
+			return Ptr->Export( TCHAR_TO_ANSI( FileName ), bAddSourceFileComment, UsdFileFormatArguments );
+		}
+#endif // #if USE_USD_SDK
+
+		return false;
 	}
 
 	template<typename PtrType>
@@ -304,6 +356,92 @@ namespace UE
 			Ptr->SetEditTarget( EditTarget );
 		}
 #endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
+	TArray<UE::FSdfLayer> FUsdStageBase<PtrType>::GetLayerStack( bool bIncludeSessionLayers /*= true */ ) const
+	{
+		TArray<UE::FSdfLayer> Result;
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+
+			pxr::SdfLayerHandleVector LayerHandleVector = Ptr->GetLayerStack( bIncludeSessionLayers );
+
+			Result.Reserve( LayerHandleVector.size() );
+
+			for ( pxr::SdfLayerHandle Layer : LayerHandleVector )
+			{
+				Result.Add( UE::FSdfLayer{ Layer } );
+			}
+		}
+#endif // #if USE_USD_SDK
+		return Result;
+	}
+
+	template<typename PtrType>
+	TArray<UE::FSdfLayer> FUsdStageBase<PtrType>::GetUsedLayers( bool bIncludeClipLayers /*= true */ ) const
+	{
+		TArray<UE::FSdfLayer> Result;
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+
+			pxr::SdfLayerHandleVector LayerHandleVector = Ptr->GetUsedLayers( bIncludeClipLayers );
+
+			Result.Reserve( LayerHandleVector.size() );
+
+			for ( pxr::SdfLayerHandle Layer : LayerHandleVector )
+			{
+				Result.Add( UE::FSdfLayer{ Layer } );
+			}
+		}
+#endif // #if USE_USD_SDK
+		return Result;
+	}
+
+	template<typename PtrType>
+	void FUsdStageBase<PtrType>::MuteAndUnmuteLayers( const TArray<FString>& MuteLayers, const TArray<FString>& UnmuteLayers )
+	{
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+
+			std::vector<std::string> UsdMuteLayers;
+			UsdMuteLayers.reserve( MuteLayers.Num() );
+			for ( const FString& MuteLayer : MuteLayers )
+			{
+				UsdMuteLayers.push_back( TCHAR_TO_ANSI( *MuteLayer ) );
+			}
+
+			std::vector<std::string> UsdUnmuteLayers;
+			UsdUnmuteLayers.reserve( UnmuteLayers.Num() );
+			for ( const FString& UnmuteLayer : UnmuteLayers )
+			{
+				UsdUnmuteLayers.push_back( TCHAR_TO_ANSI( *UnmuteLayer ) );
+			}
+
+			Ptr->MuteAndUnmuteLayers( UsdMuteLayers, UsdUnmuteLayers );
+		}
+#endif // #if USE_USD_SDK
+	}
+
+	template<typename PtrType>
+	bool FUsdStageBase<PtrType>::IsLayerMuted( const FString& LayerIdentifier ) const
+	{
+#if USE_USD_SDK
+		if ( PtrType& Ptr = Impl->GetInner() )
+		{
+			FScopedUsdAllocs UsdAllocs;
+
+			return Ptr->IsLayerMuted( TCHAR_TO_ANSI( *LayerIdentifier ) );
+		}
+#endif // #if USE_USD_SDK
+
+		return false;
 	}
 
 	template<typename PtrType>

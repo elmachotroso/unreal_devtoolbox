@@ -2,12 +2,29 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "EdGraph/EdGraphSchema.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+
 #include "EdGraphSchema_BehaviorTreeDecorator.generated.h"
 
 class UEdGraph;
+class UEdGraphNode;
+class UEdGraphPin;
+class UObject;
+struct FEdGraphPinType;
 
 /** Action to add a node to the graph */
 USTRUCT()
@@ -64,7 +81,13 @@ class UEdGraphSchema_BehaviorTreeDecorator : public UEdGraphSchema
 	virtual const FPinConnectionResponse CanCreateConnection(const UEdGraphPin* A, const UEdGraphPin* B) const override;
 	virtual FLinearColor GetPinTypeColor(const FEdGraphPinType& PinType) const override;
 	virtual bool ShouldHidePinDefaultValue(UEdGraphPin* Pin) const override;
+	virtual bool IsCacheVisualizationOutOfDate(int32 InVisualizationCacheID) const override;
+	virtual int32 GetCurrentVisualizationCacheID() const override;
+	virtual void ForceVisualizationCacheClear() const override;
 	//~ End EdGraphSchema Interface
 
 	static TSharedPtr<FDecoratorSchemaAction_NewNode> AddNewDecoratorAction(FGraphContextMenuBuilder& ContextMenuBuilder, const FText& Category, const FText& MenuDesc, const FText& Tooltip);
+
+private:
+	inline static int32 CurrentCacheRefreshID = 0;
 };

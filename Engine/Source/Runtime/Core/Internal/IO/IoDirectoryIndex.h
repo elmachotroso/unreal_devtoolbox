@@ -2,8 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Containers/StringView.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
 #include "Misc/AES.h"
 
 class FArchive;

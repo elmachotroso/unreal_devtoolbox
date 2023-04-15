@@ -9,6 +9,8 @@
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosClothConfig)
+
 // Legacy parameters not yet migrated to Chaos parameters:
 //  VerticalConstraintConfig.CompressionLimit
 //  VerticalConstraintConfig.StretchLimit
@@ -149,7 +151,7 @@ void UChaosClothConfig::PostLoad()
 		bUseLegacyBackstop = true;
 	}
 
-	if (PhysicsObjectVersion < FPhysicsObjectVersion::ChaosClothAddWeightedValue ||
+	if (PhysicsObjectVersion < FPhysicsObjectVersion::ChaosClothAddWeightedValue &&
 		FortniteMainBranchObjectVersion < FFortniteMainBranchObjectVersion::ChaosClothAddWeightedValue)
 	{
 		AnimDriveStiffness.Low = 0.f;
@@ -168,7 +170,7 @@ void UChaosClothConfig::PostLoad()
 		FictitiousAngularScale = 0.f;  // Maintain early behavior with no fictitious forces
 	}
 
-	if (PhysicsObjectVersion < FPhysicsObjectVersion::ChaosClothAddTetherStiffnessWeightMap ||
+	if (PhysicsObjectVersion < FPhysicsObjectVersion::ChaosClothAddTetherStiffnessWeightMap &&
 		FortniteMainBranchObjectVersion < FFortniteMainBranchObjectVersion::ChaosClothAddTetherStiffnessWeightMap)
 	{
 		// Note: Unlike AnimDriveStiffness, Low is updated here, because there was no existing weight map before this version
@@ -190,7 +192,8 @@ void UChaosClothConfig::PostLoad()
 		AreaStiffnessWeighted.Low = AreaStiffnessWeighted.High = AreaStiffness_DEPRECATED;
 	}
 
-	if (UE5ReleaseStreamObjectVersion < FUE5ReleaseStreamObjectVersion::ChaosClothFasterDamping)
+	if (FortniteMainBranchObjectVersion < FFortniteMainBranchObjectVersion::ChaosClothFasterDamping &&
+		UE5ReleaseStreamObjectVersion < FUE5ReleaseStreamObjectVersion::ChaosClothFasterDamping)
 	{
 		// Note: The previous damping has been renamed LocalDamping to make space for a faster but more primitive global point damping.
 		LocalDampingCoefficient = DampingCoefficient;
@@ -260,7 +263,7 @@ void UChaosClothSharedSimConfig::PostEditChangeChainProperty(FPropertyChangedCha
 			{
 				if (const USkeletalMeshComponent* const Component = *It)
 				{
-					if (Component->SkeletalMesh == OwnerMesh)
+					if (Component->GetSkeletalMeshAsset() == OwnerMesh)
 					{
 						if (UClothingSimulationInteractor* const CurInteractor = Component->GetClothingSimulationInteractor())
 						{
@@ -273,3 +276,4 @@ void UChaosClothSharedSimConfig::PostEditChangeChainProperty(FPropertyChangedCha
 	}
 }
 #endif  // #if WITH_EDITOR
+

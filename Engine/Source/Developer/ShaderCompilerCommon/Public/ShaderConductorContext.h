@@ -2,10 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "ShaderCore.h"
-#include "ShaderCompilerCore.h"
 #include "CrossCompilerDefinitions.h"
+#include "HAL/Platform.h"
+#include "RHIDefinitions.h"
+#include "ShaderCompilerCore.h"
+#include "ShaderCore.h"
+#include "Templates/Function.h"
 
 // Cross compiler support/common functionality
 namespace CrossCompiler
@@ -72,8 +78,6 @@ namespace CrossCompiler
 		/** Enable a pass that converts floating point MUL+ADD pairs into FMAs to avoid re-association. */
 		bool bEnableFMAPass = false;
 
-		/** Force subpass OpTypeImage depth parameter to false as a work around for driver bugs */
-		bool bForceSubpassImageDepthFalse = false;
 
 		/** Disables scalar block layout for structured buffers. True for Vulkan mobile due to low coverage of 'VK_EXT_scalar_block_layout' extension. */
 		bool bDisableScalarBlockLayout = false;
@@ -84,7 +88,7 @@ namespace CrossCompiler
 		/** Enables re-mapping of input/output attribute locations to include padding for arrays. */
 		bool bRemapAttributeLocations = false;
 
-		/** Preserve storage inputs used for open gl */
+		/** Preserve storage inputs used for OpenGL */
 		bool bPreserveStorageInput = false;
 
 		enum class ETargetEnvironment
@@ -97,6 +101,9 @@ namespace CrossCompiler
 
 		/** Shader model version of the input language. By default SM6.2. */
 		FHlslShaderModel ShaderModel = { 6, 2 };
+
+		/** HLSL language input version: 2015, 2016, 2017, 2018 (Default), 2021 (Breaking changes in short-circuiting evaluation). */
+		uint32 HlslVersion = 2018;
 	};
 
 	/** Target high level languages for ShaderConductor output. */

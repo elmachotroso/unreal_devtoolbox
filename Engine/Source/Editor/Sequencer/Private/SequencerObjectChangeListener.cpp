@@ -6,6 +6,7 @@
 #include "Editor.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
+#include "PropertyEditorPermissionList.h"
 #include "IPropertyChangeListener.h"
 #include "MovieSceneSequence.h"
 #include "ScopedTransaction.h"
@@ -202,6 +203,8 @@ const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindProperty
 			PropertyVarName.RemoveFromStart("b", ESearchCase::CaseSensitive);
 		}
 
+		const bool bFoundSetter = Property.HasSetter();
+
 		static const FString Set(TEXT("Set"));
 
 		const FString FunctionString = Set + PropertyVarName;
@@ -246,7 +249,7 @@ const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindProperty
 		const bool bIsHiddenFunction = IsHiddenFunction(PropertyStructure, FAnimatedPropertyKey::FromProperty(&Property), Property.GetName());
 
 		// Valid if there's a setter function and the property is editable. Also valid if there's an interp keyword.
-		if (((bFoundValidFunction && bFoundEdit && !bFoundEditDefaultsOnly) || bFoundValidInterp) && !bIsHiddenFunction)
+		if (((bFoundValidFunction && bFoundEdit && !bFoundEditDefaultsOnly) || bFoundValidInterp || bFoundSetter) && !bIsHiddenFunction)
 		{
 			return DelegatePtr;
 		}
@@ -285,6 +288,11 @@ bool FSequencerObjectChangeListener::CanKeyProperty_Internal(FCanKeyPropertyPara
 			const UStruct* PropertyContainer = CanKeyPropertyParams.FindPropertyContainer(Property);
 			if (PropertyContainer)
 			{
+				if (!FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(PropertyContainer, Property->GetFName()))
+				{
+					continue;
+				}
+
 				{
 					FAnimatedPropertyKey PropertyKey = FAnimatedPropertyKey::FromProperty(Property);
 					const FOnAnimatablePropertyChanged* DelegatePtr = FindPropertySetter(*PropertyContainer, PropertyKey, *Property);

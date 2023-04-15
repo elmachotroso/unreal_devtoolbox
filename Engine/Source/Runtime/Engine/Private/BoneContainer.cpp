@@ -8,6 +8,8 @@
 
 #include "HAL/LowLevelMemTracker.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BoneContainer)
+
 LLM_DEFINE_TAG(BoneContainer);
 
 DEFINE_LOG_CATEGORY(LogSkeletalControl);
@@ -537,7 +539,7 @@ bool FBoneContainer::BoneIsChildOf(const FCompactPoseBoneIndex& BoneIndex, const
 	checkSlow((BoneIndex != INDEX_NONE) && (ParentBoneIndex != INDEX_NONE));
 
 	// Bones are in strictly increasing order.
-	// So child must have an index greater than his parent.
+	// So child must have an index greater than its parent.
 	if (BoneIndex > ParentBoneIndex)
 	{
 		FCompactPoseBoneIndex SearchBoneIndex = GetParentBoneIndex(BoneIndex);
@@ -596,9 +598,9 @@ bool FBoneReference::Initialize(const FBoneContainer& RequiredBones)
 	BoneIndex = RequiredBones.GetPoseBoneIndexForBoneName(BoneName);
 
 	bUseSkeletonIndex = false;
-	// If bone name is not found, look into the master skeleton to see if it's found there.
-	// SkeletalMeshes can exclude bones from the master skeleton, and that's OK.
-	// If it's not found in the master skeleton, the bone does not exist at all! so we should report it as a warning.
+	// If bone name is not found, look into the leader skeleton to see if it's found there.
+	// SkeletalMeshes can exclude bones from the leader skeleton, and that's OK.
+	// If it's not found in the leader skeleton, the bone does not exist at all! so we should report it as a warning.
 	if (BoneIndex == INDEX_NONE && BoneName != NAME_None)
 	{
 		if (USkeleton* SkeletonAsset = RequiredBones.GetSkeletonAsset())

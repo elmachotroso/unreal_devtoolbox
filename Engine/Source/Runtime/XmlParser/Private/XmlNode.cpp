@@ -15,14 +15,20 @@ const FString& FXmlAttribute::GetValue() const
 
 void FXmlNode::Delete()
 {
-	const int32 ChildCount = Children.Num();
-	for(int32 ChildIndex = 0; ChildIndex < ChildCount; ++ChildIndex)
+	TArray<FXmlNode*> ToDelete = MoveTemp(Children);
+	check(Children.IsEmpty());
+
+	for (int32 Index = 0; Index != ToDelete.Num(); ++Index)
 	{
-		check(Children[ChildIndex] != nullptr);
-		Children[ChildIndex]->Delete();
-		delete Children[ChildIndex];
+		FXmlNode* NodeToDelete = ToDelete[Index];
+		ToDelete.Append(MoveTemp(NodeToDelete->Children));
+		check(NodeToDelete->Children.IsEmpty());
 	}
-	Children.Empty();
+
+	for (FXmlNode* Node : ToDelete)
+	{
+		delete Node;
+	}
 }
 
 const FXmlNode* FXmlNode::GetNextNode() const
@@ -76,10 +82,14 @@ const FString& FXmlNode::GetContent() const
 	return Content;
 }
 
-
 void FXmlNode::SetContent( const FString& InContent )
 {
 	Content = InContent;
+}
+
+void FXmlNode::SetAttributes(const TArray<FXmlAttribute>& InAttributes)
+{
+	Attributes = InAttributes;
 }
 
 FString FXmlNode::GetAttribute(const FString& InTag) const
@@ -94,11 +104,12 @@ FString FXmlNode::GetAttribute(const FString& InTag) const
 	return FString();
 }
 
-void FXmlNode::AppendChildNode(const FString& InTag, const FString& InContent)
+void FXmlNode::AppendChildNode(const FString& InTag, const FString& InContent, const TArray<FXmlAttribute>& InAttributes)
 {
 	auto NewNode = new FXmlNode;
 	NewNode->Tag = InTag;
 	NewNode->Content = InContent;
+	NewNode->Attributes = InAttributes;
 
 	auto NumChildren = Children.Num();
 	if (NumChildren != 0)

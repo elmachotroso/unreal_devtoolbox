@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include "Algo/MinElement.h"
+#include "Input/Events.h"
 #include "Misc/FrameRate.h"
 #include "Math/Axis.h"
-#include "Runtime/Core/Public/Algo/MinElement.h"
+#include "Math/Vector2D.h"
 
 struct FCurveSnapMetrics
 {

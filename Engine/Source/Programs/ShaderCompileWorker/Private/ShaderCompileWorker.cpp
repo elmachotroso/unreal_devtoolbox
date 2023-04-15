@@ -596,17 +596,28 @@ private:
 
 			int32 NumBatches = 0;
 			InputFile << NumBatches;
-
 			// Flush cache, to make sure we load the latest version of the input file.
 			// (Otherwise quick changes to a shader file can result in the wrong output.)
-			FlushShaderFileCache();
+			FString ShaderPlatformNameString;
+			InputFile << ShaderPlatformNameString;
+			FName ShaderPlatformName = FName(*ShaderPlatformNameString);
 
+			FlushShaderFileCache(&ShaderPlatformName);
+			
 			for (int32 BatchIndex = 0; BatchIndex < NumBatches; BatchIndex++)
 			{
 				// Deserialize the job's inputs.
 				FShaderCompilerInput CompilerInput;
 				InputFile << CompilerInput;
 				CompilerInput.DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments, ParameterStructures);
+
+				// SCW doesn't run DDPI, GShaderHasCache Initialize is run  at start with no knowledge of the CustomPlatforms
+				// CustomPlatforms are known when we parse the WorkerInput so we populate the Directory here
+				if (IsCustomPlatform((EShaderPlatform)CompilerInput.Target.Platform))
+				{
+					const EShaderPlatform ShaderPlatform = ShaderFormatNameToShaderPlatform(CompilerInput.ShaderFormat);
+					UpdateIncludeDirectoryForPreviewPlatform((EShaderPlatform)CompilerInput.Target.Platform, ShaderPlatform);
+				}
 
 				if (IsValidRef(CompilerInput.SharedEnvironment))
 				{
@@ -653,6 +664,14 @@ private:
 					// Deserialize the job's inputs.
 					InputFile << CompilerInputs[StageIndex];
 					CompilerInputs[StageIndex].DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments, ParameterStructures);
+
+					// SCW doesn't run DDPI, GShaderHasCache Initialize is run  at start with no knowledge of the CustomPlatforms
+					// CustomPlatforms are known when we parse the WorkerInput so we populate the Directory here
+					if (IsCustomPlatform((EShaderPlatform)CompilerInputs[StageIndex].Target.Platform))
+					{
+						const EShaderPlatform ShaderPlatform = ShaderFormatNameToShaderPlatform(CompilerInputs[StageIndex].ShaderFormat);
+						UpdateIncludeDirectoryForPreviewPlatform((EShaderPlatform)CompilerInputs[StageIndex].Target.Platform, ShaderPlatform);
+					}
 
 					if (IsValidRef(CompilerInputs[StageIndex].SharedEnvironment))
 					{
@@ -915,6 +934,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 	FString InputFile;
 
 	FName FormatName;
+	FName ShaderPlatformName;
 	FString Entry = TEXT("Main");
 	bool bPipeline = false;
 	bool bUseMCPP = false;
@@ -939,6 +959,10 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 				{
 					Entry = Entry.Mid(1, Entry.Len() - 2);
 				}
+			}
+			else if (Token.StartsWith(TEXT("shaderPlatformName=")))
+			{
+				ShaderPlatformName = FName(*Token.RightChop(19));
 			}
 			else if (Token.StartsWith(TEXT("cflags=")))
 			{
@@ -1021,6 +1045,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 	FShaderCompilerInput Input;
 	Input.EntryPointName = Entry;
 	Input.ShaderFormat = FormatName;
+	Input.ShaderPlatformName = ShaderPlatformName;
 	Input.VirtualSourceFilePath = InputFile;
 	Input.Target.Platform =  ShaderFormatNameToShaderPlatform(FormatName);
 	Input.Target.Frequency = Frequency;
@@ -1302,7 +1327,7 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 	{
 		if (ArgC < 6)
 		{
-			printf("ShaderCompileWorker is called by UnrealEditor, it requires specific command like arguments.\n");
+			printf("ShaderCompileWorker is called by UnrealEditor, it requires specific command line arguments.\n");
 			return -1;
 		}
 

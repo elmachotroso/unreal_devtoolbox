@@ -554,8 +554,8 @@ public:
 	virtual void PostInitializeComponents() override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
+	virtual void RerunConstructionScripts() override;
 	virtual void PostEditUndo() override;
-	virtual bool SupportsExternalPackaging() const override { return false; }
 	bool IsBuildingOnLoad() const { return bIsBuildingOnLoad; }
 	void SetIsBuildingOnLoad(bool bValue) { bIsBuildingOnLoad = bValue; }
 #endif // WITH_EDITOR
@@ -584,8 +584,6 @@ public:
 
 	virtual void TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction) override;
 
-	virtual void RerunConstructionScripts() override;
-
 	virtual bool NeedsRebuild() const { return false; }
 	virtual bool SupportsRuntimeGeneration() const;
 	virtual bool SupportsStreaming() const;
@@ -597,7 +595,11 @@ public:
 	
 	virtual void OnStreamingLevelAdded(ULevel* InLevel, UWorld* InWorld) {};
 	virtual void OnStreamingLevelRemoved(ULevel* InLevel, UWorld* InWorld) {};
-	
+
+#if WITH_EDITOR 
+	virtual double GetWorldPartitionNavigationDataBuilderOverlap() const { return 0; }
+#endif
+
 	//----------------------------------------------------------------------//
 	// Generation & data access                                                      
 	//----------------------------------------------------------------------//
@@ -623,6 +625,9 @@ protected:
 public:
 	/** Creates new generator in case navigation supports it */
 	virtual void ConditionalConstructGenerator();
+
+	/** Any loading before NavDataGenerator->RebuildAll() */
+	virtual void LoadBeforeGeneratorRebuild() {}
 	
 	/** Triggers rebuild in case navigation supports it */
 	virtual void RebuildAll();
@@ -833,6 +838,27 @@ public:
 	 *	@return true if successful, false otherwise
 	 */
 	virtual bool FindMoveAlongSurface(const FNavLocation& StartLocation, const FVector& TargetPosition, FNavLocation& OutLocation, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const PURE_VIRTUAL(ANavigationData::FindMoveAlongSurface, return false;);
+
+	/**	Returns the navmesh edges that touch the convex polygon. The edges are not clipped by the polygon. 
+	 *	@param StartLocation a location on the navmesh where to start searching.
+	 *	@param ConvexPolygon 2D convex polygon that describes the search area. 
+	 *	@param OutEdges result edges, each edge is an adjacent pair of points in the array.
+	 *	@param Filter Nav filter to use, or if nullptr, default filter is used. 
+	 *	@return true if successful, false otherwise
+	 */
+	virtual bool FindOverlappingEdges(const FNavLocation& StartLocation, TConstArrayView<FVector> ConvexPolygon, TArray<FVector>& OutEdges, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const PURE_VIRTUAL(ANavigationData::FindOverlappingEdges, return false;);
+	
+	/**	Searches navmesh edges between the two path points, search up to the convex polygon described in SearchArea. The returned edges are not clipped to the search area polygon.
+	 *  @param Path Path where From and To belong to.
+	 *	@param StartPoint start location of the path segment.
+	 *	@param EndPoint end location of the path segment.
+	 *	@param SearchArea 2D convex polygon that describes the search area.
+	 *	@param OutEdges result edges, each edge is an adjacent pair of points in the array.
+	 *	@param MaxAreaEnterCost if the fixed cost to enter a node is higher than this value, the node is considered unnavigable.
+	 *	@param Filter Nav filter to use, or if nullptr, default filter is used. 
+	 *	@return true if successful, false otherwise
+	 */
+	virtual bool GetPathSegmentBoundaryEdges(const FNavigationPath& Path, const FNavPathPoint& StartPoint, const FNavPathPoint& EndPoint, const TConstArrayView<FVector> SearchArea, TArray<FVector>& OutEdges, const float MaxAreaEnterCost, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const PURE_VIRTUAL(ANavigationData::GetPathSegmentBoundaryEdges, return false;);
 
 	virtual FNavLocation GetRandomPoint(FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const PURE_VIRTUAL(ANavigationData::GetRandomPoint, return FNavLocation(););
 

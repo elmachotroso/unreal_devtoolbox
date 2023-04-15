@@ -1,15 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataLayerOutlinerIsVisibleColumn.h"
-#include "DataLayer/DataLayerEditorSubsystem.h"
+
 #include "DataLayerTreeItem.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SCheckBox.h"
+#include "Engine/World.h"
+#include "ISceneOutliner.h"
+#include "ISceneOutlinerTreeItem.h"
+#include "Math/Color.h"
+#include "Math/ColorList.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/TypeHash.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
-#include "ScopedTransaction.h"
-#include "EditorStyleSet.h"
-#include "Editor.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
+
+class SWidget;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
@@ -29,8 +42,8 @@ protected:
 		auto TreeItem = WeakTreeItem.Pin();
 		if (FDataLayerTreeItem* DataLayerTreeItem = TreeItem.IsValid() ? TreeItem->CastTo<FDataLayerTreeItem>() : nullptr)
 		{
-			const UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer();
-			const UDataLayer* ParentDataLayer = DataLayer ? DataLayer->GetParent() : nullptr;
+			const UDataLayerInstance* DataLayer = DataLayerTreeItem->GetDataLayer();
+			const UDataLayerInstance* ParentDataLayer = DataLayer ? DataLayer->GetParent() : nullptr;
 			const bool bIsParentVisible = ParentDataLayer ? ParentDataLayer->IsEffectiveVisible() : true;
 			return bIsParentVisible && DataLayer && DataLayer->GetWorld() && !DataLayer->GetWorld()->IsPlayInEditor() && DataLayer->IsEffectiveLoadedInEditor();
 		}
@@ -43,7 +56,7 @@ protected:
 		auto TreeItem = WeakTreeItem.Pin();
 		if (FDataLayerTreeItem* DataLayerTreeItem = TreeItem.IsValid() ? TreeItem->CastTo<FDataLayerTreeItem>() : nullptr)
 		{
-			UDataLayer* DataLayer = DataLayerTreeItem->GetDataLayer();
+			UDataLayerInstance* DataLayer = DataLayerTreeItem->GetDataLayer();
 			bIsEffectiveVisible = DataLayer && DataLayer->IsEffectiveVisible();
 		}
 

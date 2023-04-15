@@ -4,14 +4,14 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraEditorStyle.h"
 
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Modules/ModuleManager.h"
 #include "AssetThumbnail.h"
 
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "NiagaraEditorUtilities.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 
@@ -112,7 +112,7 @@ TArray<FAssetData> SNiagaraAssetPickerList::GetAssetDataForSelector(UClass* Asse
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FAssetData> EmitterAssets;
-	AssetRegistryModule.Get().GetAssetsByClass(AssetClass->GetFName(), EmitterAssets);
+	AssetRegistryModule.Get().GetAssetsByClass(AssetClass->GetClassPathName(), EmitterAssets);
 
 	TArray<FAssetData> EmittersToShow;
 	if (TabOptions.GetOnlyShowTemplates())
@@ -195,7 +195,7 @@ TArray<FText> SNiagaraAssetPickerList::OnGetCategoriesForItem(const FAssetData& 
 
 	auto AddAssetPathCategory = [&Categories, &Item]() {
 		TArray<FString> AssetPathParts;
-		Item.ObjectPath.ToString().ParseIntoArray(AssetPathParts, TEXT("/"));
+		Item.GetObjectPathString().ParseIntoArray(AssetPathParts, TEXT("/"));
 		if (AssetPathParts.Num() > 0)
 		{
 			if (AssetPathParts[0] == TEXT("Niagara"))

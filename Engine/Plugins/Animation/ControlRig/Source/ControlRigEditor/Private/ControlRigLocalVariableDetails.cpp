@@ -65,7 +65,6 @@ void FRigVMLocalVariableDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBu
 		.OnVerifyTextChanged(this, &FRigVMLocalVariableDetails::OnVerifyNameChanged)
 	];
 
-	TSharedPtr<IPinTypeSelectorFilter> CustomPinTypeFilter;
 	Category.AddCustomRow(LOCTEXT("VariableTypeLabel", "Variable Type"))
 		.NameContent()
 		[
@@ -82,7 +81,6 @@ void FRigVMLocalVariableDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBu
 			.Schema(Schema)
 			.TypeTreeFilter(ETypeTreeFilter::None)
 			.Font(DetailFontInfo)
-			.CustomFilter(CustomPinTypeFilter)
 		];
 
 
@@ -92,9 +90,6 @@ void FRigVMLocalVariableDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBu
 		UControlRig* CDO = Cast<UControlRig>(RigClass->GetDefaultObject(true /* create if needed */));
 		if (CDO->GetVM() != nullptr)
 		{
-#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
-			
-#else
 			FString SourcePath = FString::Printf(TEXT("LocalVariableDefault::%s|%s::Const"), *GraphBeingCustomized->GetGraphName(), *VariableDescription.Name.ToString());
 			URigVMMemoryStorage* LiteralMemory = CDO->GetVM()->GetLiteralMemory();
 			FProperty* Property = LiteralMemory->FindPropertyByName(*SourcePath);
@@ -118,7 +113,6 @@ void FRigVMLocalVariableDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBu
 				Handle->SetOnPropertyValueChanged(OnDefaultValueChanged);
 				Handle->SetOnChildPropertyValueChanged(OnDefaultValueChanged);
 			}
-#endif
 		}
 	}
 }

@@ -6,6 +6,8 @@
 #include "UObject/Package.h"
 #include "Components/InstancedStaticMeshComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SMInstanceElementId)
+
 #if WITH_EDITORONLY_DATA
 #include "Serialization/TextReferenceCollector.h"
 #endif //WITH_EDITORONLY_DATA
@@ -224,6 +226,8 @@ void FSMInstanceElementIdMap::OnInstanceIndexUpdated(UInstancedStaticMeshCompone
 				{
 					const uint64 InstanceId = *InstanceIdPtr;
 
+					OnInstancePreRemovalDelegate.Broadcast(FSMInstanceElementId{ InComponent, InstanceId }, IndexUpdateData.Index);
+
 					ISMEntry->InstanceIndexToIdMap.Remove(IndexUpdateData.Index);
 					ISMEntry->InstanceIdToIndexMap.Remove(InstanceId);
 
@@ -282,6 +286,14 @@ void FSMInstanceElementIdMap::OnInstanceIndexUpdated(UInstancedStaticMeshCompone
 
 void FSMInstanceElementIdMap::ClearInstanceData_NoLock(UInstancedStaticMeshComponent* InComponent, FSMInstanceElementIdMapEntry& InEntry)
 {
+	if (OnInstancePreRemovalDelegate.IsBound())
+	{
+		for (const TTuple<uint64, int32>& InstanceIdToIndexPair : InEntry.InstanceIdToIndexMap)
+		{
+			OnInstancePreRemovalDelegate.Broadcast(FSMInstanceElementId{ InComponent, InstanceIdToIndexPair.Key }, InstanceIdToIndexPair.Value);
+		}
+	}
+
 	// Take the current instance IDs, so that we can find notify the elements have been unmapped
 	TMap<uint64, int32> PreviousInstanceIdToIndexMap = MoveTemp(InEntry.InstanceIdToIndexMap);
 
@@ -378,3 +390,4 @@ void USMInstanceElementIdMapTransactor::Serialize(FArchive& Ar)
 	}
 }
 #endif	// WITH_EDITORONLY_DATA
+

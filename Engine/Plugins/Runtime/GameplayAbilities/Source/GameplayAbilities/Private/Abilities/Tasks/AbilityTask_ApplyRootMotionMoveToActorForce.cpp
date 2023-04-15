@@ -8,9 +8,12 @@
 #include "DrawDebugHelpers.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemLog.h"
 #include "Net/UnrealNetwork.h"
 #include "Abilities/GameplayAbilityTargetTypes.h"
+#include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_ApplyRootMotionMoveToActorForce)
 
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -30,6 +33,7 @@ UAbilityTask_ApplyRootMotionMoveToActorForce::UAbilityTask_ApplyRootMotionMoveTo
 	bSetNewMovementMode = false;
 	NewMovementMode = EMovementMode::MOVE_Walking;
 	PreviousMovementMode = EMovementMode::MOVE_None;
+	PreviousCustomMode = 0;
 	TargetLocationOffset = FVector::ZeroVector;
 	OffsetAlignment = ERootMotionMoveToActorTargetOffsetType::AlignFromTargetToSource;
 	bRestrictSpeedToExpected = false;
@@ -101,9 +105,10 @@ void UAbilityTask_ApplyRootMotionMoveToActorForce::OnRep_TargetLocation()
 
 void UAbilityTask_ApplyRootMotionMoveToActorForce::SharedInitAndApply()
 {
-	if (AbilitySystemComponent->AbilityActorInfo->MovementComponent.IsValid())
+	UAbilitySystemComponent* ASC = AbilitySystemComponent.Get();
+	if (ASC && ASC->AbilityActorInfo->MovementComponent.IsValid())
 	{
-		MovementComponent = Cast<UCharacterMovementComponent>(AbilitySystemComponent->AbilityActorInfo->MovementComponent.Get());
+		MovementComponent = Cast<UCharacterMovementComponent>(ASC->AbilityActorInfo->MovementComponent.Get());
 		StartTime = GetWorld()->GetTimeSeconds();
 		EndTime = StartTime + Duration;
 
@@ -112,6 +117,7 @@ void UAbilityTask_ApplyRootMotionMoveToActorForce::SharedInitAndApply()
 			if (bSetNewMovementMode)
 			{
 				PreviousMovementMode = MovementComponent->MovementMode;
+				PreviousCustomMode = MovementComponent->CustomMovementMode;
 				MovementComponent->SetMovementMode(NewMovementMode);
 			}
 
@@ -351,7 +357,7 @@ void UAbilityTask_ApplyRootMotionMoveToActorForce::OnDestroy(bool AbilityIsEndin
 
 		if (bSetNewMovementMode)
 		{
-			MovementComponent->SetMovementMode(PreviousMovementMode);
+			MovementComponent->SetMovementMode(PreviousMovementMode, PreviousCustomMode);
 		}
 	}
 
@@ -387,4 +393,5 @@ UAbilityTask_ApplyRootMotionMoveToActorForce* UAbilityTask_ApplyRootMotionMoveTo
 
 	return nullptr;
 }
+
 

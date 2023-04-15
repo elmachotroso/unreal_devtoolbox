@@ -87,12 +87,8 @@ FRHIRenderPassInfo FRDGParameterStruct::GetRenderPassInfo() const
 		SampleCount |= DepthStencilTarget.DepthStencilTarget->GetNumSamples();
 	}
 
-	RenderPassInfo.bIsMSAA = SampleCount > 1;
-	RenderPassInfo.ResolveParameters = RenderTargets.ResolveRect;
-	RenderPassInfo.ResolveParameters.SourceAccessFinal = ERHIAccess::RTV;
-	RenderPassInfo.ResolveParameters.DestAccessFinal = ERHIAccess::ResolveDst;
+	RenderPassInfo.ResolveRect = RenderTargets.ResolveRect;
 	RenderPassInfo.NumOcclusionQueries = RenderTargets.NumOcclusionQueries;
-	RenderPassInfo.bOcclusionQueries = RenderTargets.NumOcclusionQueries > 0;
 	RenderPassInfo.SubpassHint = RenderTargets.SubpassHint;
 	RenderPassInfo.MultiViewCount = RenderTargets.MultiViewCount;
 	RenderPassInfo.ShadingRateTexture = RenderTargets.ShadingRateTexture ? RenderTargets.ShadingRateTexture->GetRHI() : nullptr;
@@ -128,7 +124,7 @@ FRDGBarrierBatchBegin::FRDGBarrierBatchBegin(ERHIPipeline InPipelinesToBegin, ER
 #endif
 {}
 
-void FRDGBarrierBatchBegin::AddTransition(FRDGParentResourceRef Resource, const FRHITransitionInfo& Info)
+void FRDGBarrierBatchBegin::AddTransition(FRDGViewableResource* Resource, const FRHITransitionInfo& Info)
 {
 	Transitions.Add(Info);
 	bTransitionNeeded = true;
@@ -142,7 +138,7 @@ void FRDGBarrierBatchBegin::AddTransition(FRDGParentResourceRef Resource, const 
 #endif
 }
 
-void FRDGBarrierBatchBegin::AddAlias(FRDGParentResourceRef Resource, const FRHITransientAliasingInfo& Info)
+void FRDGBarrierBatchBegin::AddAlias(FRDGViewableResource* Resource, const FRHITransientAliasingInfo& Info)
 {
 	Aliases.Add(Info);
 	bTransitionNeeded = true;
@@ -174,6 +170,16 @@ void FRDGBarrierBatchBegin::Submit(FRHIComputeCommandList& RHICmdList, ERHIPipel
 #endif
 }
 
+FRDGBarrierBatchEndId FRDGBarrierBatchEnd::GetId() const
+{
+	return FRDGBarrierBatchEndId(Pass->GetHandle(), BarrierLocation);
+}
+
+bool FRDGBarrierBatchEnd::IsPairedWith(const FRDGBarrierBatchBegin& BeginBatch) const
+{
+	return GetId() == BeginBatch.BarriersToEnd[Pass->GetPipeline()];
+}
+
 void FRDGBarrierBatchBegin::Submit(FRHIComputeCommandList& RHICmdList, ERHIPipeline Pipeline)
 {
 	FRDGTransitionQueue TransitionsToBegin;
@@ -201,7 +207,7 @@ void FRDGBarrierBatchEnd::AddDependency(FRDGBarrierBatchBegin* BeginBatch)
 #endif
 
 	{
-		const FRDGBarrierBatchEndId Id(Pass->GetHandle(), BarrierLocation);
+		const FRDGBarrierBatchEndId Id = GetId();
 
 		FRDGBarrierBatchEndId& EarliestEndId = BeginBatch->BarriersToEnd[Pass->GetPipeline()];
 

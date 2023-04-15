@@ -75,7 +75,7 @@ class AddConfigDialog(QtWidgets.QDialog):
 
         self.setWindowTitle("Add new Switchboard Configuration")
 
-        self.form_layout =  QtWidgets.QFormLayout()
+        self.form_layout = QtWidgets.QFormLayout()
 
         # Path to this configuration file
 
@@ -455,7 +455,16 @@ class AddConfigDialog(QtWidgets.QDialog):
                 # Relying on wmic for this. Another option is to use psutil which is cross-platform, and slower.
                 cmd = f'wmic process where caption="{UEname}" get commandline'
 
-                for line in subprocess.check_output(cmd, startupinfo=sb_utils.get_hidden_sp_startupinfo()).decode().splitlines():
+                try:
+                    commandlines = subprocess.check_output(
+                        cmd, startupinfo=sb_utils.get_hidden_sp_startupinfo()
+                        ).decode().splitlines()
+                except Exception as exc:
+                    LOGGER.error('Exception polling Unreal processes',
+                                 exc_info=exc)
+                    continue
+
+                for line in commandlines:
                     if UEname.lower() not in line.lower():
                         continue
 
@@ -520,22 +529,24 @@ class AddConfigDialog(QtWidgets.QDialog):
         if not config_path_str:
             return
 
-        # Protect against selecting a file outside of the configs directory.
+        # First attempt to get a relative path then allow for an absolute
+        #
         try:
             config_path_str = str(
                 config.get_relative_config_path(config_path_str))
         except Exception as e:
-            error_msg = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning,
-                'Config Path Error', 'Cannot save config file.',
-                QtWidgets.QMessageBox.Ok, parent=self)
-            error_msg.setInformativeText(str(e))
-            error_msg.exec_()
-            return
+            config_path_str = str(config.get_absolute_config_path(config_path_str))
 
         self.config_path_line_edit.setText(config_path_str)
 
     def on_browse_uproject_path(self, uproject_search_path):
-        self.uproject, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select uProject file", self.engine_dir, "uProject (*.uproject)")
+
+        new_file, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select uProject file", self.engine_dir, "uProject (*.uproject)")
+
+        if not new_file:
+            return
+
+        self.uproject = new_file
         self.uproject = os.path.normpath(self.uproject)
         self.uproject_line_edit.setText(self.uproject)
 
@@ -544,7 +555,12 @@ class AddConfigDialog(QtWidgets.QDialog):
         self.update_button_box()
 
     def on_browse_engine_dir(self):
-        self.engine_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select UE 'Engine' directory")
+        new_dir = QtWidgets.QFileDialog.getExistingDirectory(self, "Select UE 'Engine' directory")
+
+        if not new_dir:
+            return
+
+        self.engine_dir = new_dir
         self.engine_dir = os.path.normpath(self.engine_dir)
         self.engine_dir_line_edit.setText(self.engine_dir)
 

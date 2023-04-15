@@ -2,6 +2,8 @@
 
 #include "Async/Async.h"
 
+#include "HAL/ThreadSafeCounter.h"
+
 
 /* Private types
  *****************************************************************************/

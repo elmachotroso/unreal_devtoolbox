@@ -8,13 +8,22 @@
 #include "Misc/NetworkGuid.h"
 #include "Engine/Channel.h"
 #include "Net/DataReplication.h"
+#include "Containers/StaticBitArray.h"
 #include "ActorChannel.generated.h"
 
+#ifndef NET_ENABLE_SUBOBJECT_REPKEYS
+#define NET_ENABLE_SUBOBJECT_REPKEYS 1
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
+
+class UActorComponent;
 class AActor;
 class FInBunch;
 class FNetFieldExportGroup;
 class FOutBunch;
 class UNetConnection;
+struct FObjectKey;
+
+namespace UE::Net { struct FSubObjectRegistry;  }
 
 enum class ESetChannelActorFlags : uint32
 {
@@ -81,6 +90,12 @@ public:
 	 * set to false in cases where the Actor can't become relevant again (e.g. destruction) as it's unnecessary in that case
 	 */
 	uint32	bClearRecentActorRefs:1;
+	uint32	bHoldQueuedExportBunchesAndGUIDs:1;	// Don't export QueuedExportBunches or QueuedMustBeMappedGuidsInLastBunch if this is true
+
+#if !UE_BUILD_SHIPPING
+	/** Whether or not to block sending of NMT_ActorChannelFailure (for NetcodeUnitTest) */
+	uint32	bBlockChannelFailure:1;
+#endif
 
 private:
 	uint32	bSkipRoleSwap:1;		// true if we should not swap the role and remote role of this actor when properties are received
@@ -93,6 +108,9 @@ private:
 	 * This is used by ProcessQueuedBunches to prevent erroneous log spam.
 	 */
 	uint32 bSuppressQueuedBunchWarningsDueToHitches : 1;
+
+	/** Set to true if SerializeActor is called due to an RPC forcing the channel open */
+	uint32 bIsForcedSerializeFromRPC:1;
 
 public:
 	bool GetSkipRoleSwap() const { return !!bSkipRoleSwap; }
@@ -108,17 +126,20 @@ public:
 
 	TSet<FNetworkGUID> PendingGuidResolves;	// These guids are waiting for their resolves, we need to queue up bunches until these are resolved
 
+	UE_DEPRECATED(5.1, "The CreateSubObjects array will be made private in future versions. Use GetCreatedSubObjects() instead")
 	UPROPERTY()
 	TArray< TObjectPtr<UObject> >					CreateSubObjects;		// Any sub-object we created on this channel
 
+	inline const TArray< TObjectPtr<UObject> >& GetCreatedSubObjects() const 
+	{ 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return CreateSubObjects;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
 	TArray< FNetworkGUID >				QueuedMustBeMappedGuidsInLastBunch;	// Array of guids that will async load on client. This list is used for queued RPC's.
 	TArray< class FOutBunch * >			QueuedExportBunches;				// Bunches that need to be appended to the export list on the next SendBunch call. This list is used for queued RPC's.
-	bool								bHoldQueuedExportBunchesAndGUIDs;	// Don't export QueuedExportBunches or QueuedMustBeMappedGuidsInLastBunch if this is true
 
-#if !UE_BUILD_SHIPPING
-	/** Whether or not to block sending of NMT_ActorChannelFailure (for NetcodeUnitTest) */
-	bool bBlockChannelFailure;
-#endif
 
 	EChannelCloseReason QueuedCloseReason;
 
@@ -146,11 +167,19 @@ public:
 	virtual int64 Close(EChannelCloseReason Reason) override;
 	virtual FString Describe() override;
 
+	/** Release any references this channel is holding to UObjects and object replicators and mark it as broken. */
+	void BreakAndReleaseReferences();
+
+	void ReleaseReferences(bool bKeepReplicators);
+
 	/** UActorChannel interface and accessors. */
-	AActor* GetActor() {return Actor;}
+	AActor* GetActor() const { return Actor; }
 
 	/** Replicate this channel's actor differences. Returns how many bits were replicated (does not include non-bunch packet overhead) */
 	int64 ReplicateActor();
+
+	/** Tells if the actor is ready to be replicated since he is BeginPlay or inside BeginPlay */
+	bool IsActorReadyForReplication() const;
 
 	/**
 	 * Set this channel's actor to the given actor.
@@ -160,9 +189,6 @@ public:
 	void SetChannelActor(AActor* InActor, ESetChannelActorFlags Flags);
 
 	virtual void NotifyActorChannelOpen(AActor* InActor, FInBunch& InBunch);
-
-	UE_DEPRECATED(4.26, "Use UNetworkDriver::SendDestructionInfo instead.")
-	int64 SetChannelActorForDestroy( struct FActorDestructionInfo *DestructInfo );
 
 	/** Append any export bunches */
 	virtual void AppendExportBunches( TArray< FOutBunch* >& OutExportBunches ) override;
@@ -265,14 +291,25 @@ public:
 	//	
 	// --------------------------------
 
+    /** 
+    * Sets the owner of the next replicated subobjects that will be passed to ReplicateSubObject.
+    * The ActorComponent version will choose not to replicate the future subobjects if the component opted to use the registered list.
+    */
+	static void SetCurrentSubObjectOwner(AActor* SubObjectOwner);
+	static void SetCurrentSubObjectOwner(UActorComponent* SubObjectOwner);
+
 	/** Replicates given subobject on this actor channel */
-	bool ReplicateSubobject(UObject *Obj, FOutBunch &Bunch, const FReplicationFlags &RepFlags);
+	bool ReplicateSubobject(UObject* Obj, FOutBunch& Bunch, FReplicationFlags RepFlags);
+
+	/** Replicates an ActorComponent subobject. Used to catch ActorChannels who are using the registration list while their Owner is not flagged to use it */
+	bool ReplicateSubobject(UActorComponent* ActorChannel, FOutBunch& Bunch, FReplicationFlags RepFlags);
 	
 	/** Custom implementation for ReplicateSubobject when RepFlags.bUseCustomSubobjectReplication is true */
 	virtual bool ReplicateSubobjectCustom(UObject* Obj, FOutBunch& Bunch, const FReplicationFlags& RepFlags) { return true;  }
 
 	/** utility template for replicating list of replicated subobjects */
 	template<typename Type>
+	UE_DEPRECATED(5.1, "This function will be deleted. Register your subobjects using AddReplicatedSubObject instead.")
 	bool ReplicateSubobjectList(TArray<Type*> &ObjectList, FOutBunch &Bunch, const FReplicationFlags &RepFlags)
 	{
 		bool WroteSomething = false;
@@ -285,6 +322,9 @@ public:
 		return WroteSomething;
 	}
 
+	void SetForcedSerializeFromRPC(bool bInFromRPC) { bIsForcedSerializeFromRPC = bInFromRPC; }
+
+#if NET_ENABLE_SUBOBJECT_REPKEYS
 	// Static size for SubobjectRepKeyMap. Allows us to resuse arrays and avoid dyanmic memory allocations
 	static const int32 SubobjectRepKeyBufferSize = 64;
 
@@ -308,6 +348,7 @@ public:
 	// Returns true if the given ObjID is not up to date with RepKey
 	// this implicitly 'writes' the RepKey to the current out bunch.
 	bool KeyNeedsToReplicate(int32 ObjID, int32 RepKey);
+#endif // NET_ENABLE_SUBOBJECT_REPKEYS
 	
 	// --------------------------------
 
@@ -361,6 +402,37 @@ protected:
 
 	/** Closes the actor channel but with a 'dormant' flag set so it can be reopened */
 	virtual void BecomeDormant() override;
+
+	/** Handle the replication of subobjects for this actor. Returns true if data was written into the Bunch. */
+	bool DoSubObjectReplication(FOutBunch& Bunch, FReplicationFlags& OutRepFlags);
+
+private:
+
+	/** Replicate Subobjects using the actor's registered list and its replicated actor component list */
+	bool ReplicateRegisteredSubObjects(FOutBunch& Bunch, FReplicationFlags RepFlags);
+
+    /** Write the replicated bits into the bunch data */
+	bool WriteSubObjectInBunch(UObject* Obj, FOutBunch& Bunch, FReplicationFlags RepFlags);
+
+	/** Find the replicated subobjects of the component and write them into the bunch */
+	bool WriteSubObjects(UActorComponent* Component, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
+
+	/** Replicate a list of subobjects */
+	bool WriteSubObjects(UActorComponent* ReplicatedComponent, const UE::Net::FSubObjectRegistry& SubObjectList, FOutBunch& Bunch, FReplicationFlags RepFlags, const TStaticBitArray<COND_Max>& ConditionMap);
+
+	bool CanSubObjectReplicateToClient(ELifetimeCondition NetCondition, FObjectKey SubObjectKey, const TStaticBitArray<COND_Max>& ConditionMap) const;
+
+	bool ValidateReplicatedSubObjects();
+
+	void TestLegacyReplicateSubObjects(UActorComponent* ReplicatedComponent, FOutBunch& Bunch, FReplicationFlags RepFlags);
+	void TestLegacyReplicateSubObjects(FOutBunch& Bunch, FReplicationFlags RepFlags);
+
+	inline TArray< TObjectPtr<UObject> >& GetCreatedSubObjects()
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return CreateSubObjects;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 private:
 

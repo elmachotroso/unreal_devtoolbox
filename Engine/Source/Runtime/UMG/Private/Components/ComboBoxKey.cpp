@@ -8,6 +8,8 @@
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ComboBoxKey)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -184,7 +186,7 @@ void UComboBoxKey::GenerateContent()
 		}
 		else
 		{
-			// Warn the user that he needs to generate a widget for the item
+			// Warn the user that they need to generate a widget for the item
 			ComboBoxContent->SetContent(
 				SNew(STextBlock)
 				.Text(FText::Format(LOCTEXT("WarningMissingOnGenerateContentWidget", "{0} Missing OnGenerateContentWidget"), FText::FromName(SelectedOption)))
@@ -262,3 +264,4 @@ const FText UComboBoxKey::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

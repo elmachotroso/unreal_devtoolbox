@@ -4,12 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "WidgetBlueprintEditor.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 
 #include "IContentBrowserSingleton.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
-#include "SPaletteViewModel.h"
+#include "Palette/SPaletteViewModel.h"
 
 class FWidgetTemplate;
 class FWidgetBlueprintEditor;
@@ -74,7 +74,7 @@ public:
 	FLibraryViewModel(TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor) : FWidgetCatalogViewModel(InBlueprintEditor) { }
 
 	//~ Begin FWidgetCatalogViewModel Interface
-	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates) override;
+	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList) override;
 	virtual void AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
 	virtual void RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
 	virtual void SetSearchText(const FText& InSearchText) override;

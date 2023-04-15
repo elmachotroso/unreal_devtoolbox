@@ -22,14 +22,13 @@ bool FDisplayClusterShadersGenerateMips::GenerateMips(FRHICommandListImmediate& 
 
 		check(&RHICmdList == &FRHICommandListExecutor::GetImmediateCommandList());
 		
-		// Required for memory stack on this thread
-		FMemMark MemMark(FMemStack::Get());
-
 		FRDGBuilder GraphBuilder(RHICmdList);
 		TRefCountPtr<IPooledRenderTarget> PoolRenderTarget = CreateRenderTarget(InOutMipsTexture, TEXT("nDisplayViewportMips"));
 		FRDGTextureRef MipOutputTexture = GraphBuilder.RegisterExternalTexture(PoolRenderTarget);
 
-		FGenerateMips::Execute(GraphBuilder, MipOutputTexture, GenerateMipsParams);
+		// TODO: get FeatureLevel from an outside source.
+		ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
+		FGenerateMips::Execute(GraphBuilder, FeatureLevel, MipOutputTexture, GenerateMipsParams);
 
 		GraphBuilder.Execute();
 

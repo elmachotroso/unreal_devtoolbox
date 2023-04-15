@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "../SocialTypes.h"
+#include "SocialTypes.h"
 
 #include "PartyTypes.generated.h"
 
@@ -230,7 +230,9 @@ enum class ESocialPartyInviteMethod : uint8
 	/** Default value for try invite */
 	Other = 0,
 	/** Invite was sent from a toast */
-	Notification
+	Notification,
+	/** Invite was sent with a custom method */
+	Custom1
 };
 
 UENUM()
@@ -323,7 +325,7 @@ public:
 };
 
 
-/** Companion to EPartyJoinDisapproval to lessen the hassle of working with a "customized" enum */
+/** Companion to EPartyJoinDenialReason to lessen the hassle of working with a "customized" enum */
 struct PARTY_API FPartyJoinDenialReason
 {
 public:
@@ -375,7 +377,7 @@ private:
 	EPartyJoinDenialReason DenialReason = EPartyJoinDenialReason::NoReason;
 };
 
-struct PARTY_API FPartyJoinApproval
+struct FPartyJoinApproval
 {
 	FPartyJoinApproval() {}
 	
@@ -461,7 +463,7 @@ protected:
 	void LogPropertyChanged(const TCHAR* OwningStructTypeName, const TCHAR* PropertyName, bool bFromReplication) const;
 
 	friend class FPartyDataReplicatorHelper;
-	template <typename> friend class TPartyDataReplicator;
+	template <typename, class> friend class TPartyDataReplicator;
 	FSimpleDelegate OnDataChanged;
 };
 
@@ -490,10 +492,14 @@ public:	\
 private:	\
 	void Compare##PropertyName(const Owner& OldData) const	\
 	{	\
-		if (PropertyAccess != OldData.PropertyAccess)	\
+		Compare##PropertyName(OldData.PropertyAccess); \
+	}	\
+	void Compare##PropertyName(const typename TRemoveConst<PropertyType>::Type& OldData) const	\
+	{	\
+		if (PropertyAccess != OldData)	\
 		{	\
 			LogPropertyChanged(TEXT(#Owner), TEXT(#PropertyName), true);	\
-			On##PropertyName##ChangedDif().Broadcast(PropertyAccess, OldData.PropertyAccess);	\
+			On##PropertyName##ChangedDif().Broadcast(PropertyAccess, OldData);	\
 			On##PropertyName##Changed().Broadcast(PropertyAccess);	\
 		}	\
 	}	\
@@ -669,4 +675,24 @@ inline const TCHAR* ToString(EApprovalAction Type)
 		return TEXT("Unknown");
 	}
 	}
+}
+
+/** Defines the means used to join a party*/
+namespace PartyJoinMethod
+{
+	// User has created the party
+	const FName Creation = FName(TEXT("Creation"));
+	// User has joined the party via invitation
+	const FName Invitation = FName(TEXT("Invitation"));
+	// user has joined after requesting access
+	const FName RequestToJoin = FName(TEXT("RequestToJoin"));
+	// User has joined the party via presence
+	const FName Presence = FName(TEXT("Presence"));
+	// User has joined the party using a platform option
+	const FName PlatformSession = FName(TEXT("PlatformSession"));
+	// User has joined the party via command line
+	const FName CommandLineJoin = FName(TEXT("CommandLineJoin"));
+	// User has joined via unknown/undocumented process
+	const FName Unspecified = FName(TEXT("Unspecified"));
+	
 }

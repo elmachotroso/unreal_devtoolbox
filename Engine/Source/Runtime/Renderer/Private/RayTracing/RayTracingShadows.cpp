@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DeferredShadingRenderer.h"
-#include "SceneRenderTargets.h"
+#include "PostProcess/SceneRenderTargets.h"
 
 #if RHI_RAYTRACING
 
@@ -32,6 +32,13 @@ static FAutoConsoleVariableRef CVarRayTracingShadowsEnableMaterials(
 	TEXT("r.RayTracing.Shadows.EnableMaterials"),
 	GRayTracingShadowsEnableMaterials,
 	TEXT("Enables material shader binding for shadow rays. If this is disabled, then a default trivial shader is used. (default = 1)")
+);
+
+static float GRayTracingShadowsAvoidSelfIntersectionTraceDistance = 0.0f;
+static FAutoConsoleVariableRef CVarRayTracingShadowsAvoidSelfIntersectionTraceDistance(
+	TEXT("r.RayTracing.Shadows.AvoidSelfIntersectionTraceDistance"),
+	GRayTracingShadowsAvoidSelfIntersectionTraceDistance,
+	TEXT("Max trace distance of epsilon trace to avoid self intersections. If set to 0, epsilon trace will not be used.")
 );
 
 static TAutoConsoleVariable<int32> CVarRayTracingShadowsEnableTwoSidedGeometry(
@@ -103,12 +110,13 @@ class FOcclusionRGS : public FGlobalShader
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FOcclusionRGS, FGlobalShader)
 
 	class FLightTypeDim : SHADER_PERMUTATION_INT("LIGHT_TYPE", LightType_MAX);
+	class FAvoidSelfIntersectionTraceDim : SHADER_PERMUTATION_BOOL("AVOID_SELF_INTERSECTION_TRACE");
 	class FDenoiserOutputDim : SHADER_PERMUTATION_INT("DIM_DENOISER_OUTPUT", 3);
 	class FEnableMultipleSamplesPerPixel : SHADER_PERMUTATION_BOOL("ENABLE_MULTIPLE_SAMPLES_PER_PIXEL");
 	class FHairLighting : SHADER_PERMUTATION_INT("USE_HAIR_LIGHTING", 2);
 	class FEnableTransmissionDim : SHADER_PERMUTATION_INT("ENABLE_TRANSMISSION", 2);
 
-	using FPermutationDomain = TShaderPermutationDomain<FLightTypeDim, FDenoiserOutputDim, FHairLighting, FEnableMultipleSamplesPerPixel, FEnableTransmissionDim>;
+	using FPermutationDomain = TShaderPermutationDomain<FLightTypeDim, FAvoidSelfIntersectionTraceDim, FDenoiserOutputDim, FHairLighting, FEnableMultipleSamplesPerPixel, FEnableTransmissionDim>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -136,7 +144,7 @@ class FOcclusionRGS : public FGlobalShader
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
 		SHADER_PARAMETER(uint32, SamplesPerPixel)
 		SHADER_PARAMETER(float, NormalBias)
 		SHADER_PARAMETER(uint32, LightingChannelMask)
@@ -146,6 +154,7 @@ class FOcclusionRGS : public FGlobalShader
 		SHADER_PARAMETER(float, TraceDistance)
 		SHADER_PARAMETER(float, LODTransitionStart)
 		SHADER_PARAMETER(float, LODTransitionEnd)
+		SHADER_PARAMETER(float, AvoidSelfIntersectionTraceDistance)
 		SHADER_PARAMETER(uint32, bTransmissionSamplingDistanceCulling)
 		SHADER_PARAMETER(uint32, TransmissionSamplingTechnique)
 		SHADER_PARAMETER(uint32, RejectionSamplingTrials)
@@ -165,6 +174,7 @@ class FOcclusionRGS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualVoxelParameters, VirtualVoxel)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -175,14 +185,13 @@ float GetRaytracingMaxNormalBias()
 	return FMath::Max(0.01f, GRayTracingMaxNormalBias);
 }
 
-void FDeferredShadingSceneRenderer::PrepareRayTracingShadows(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
+void FDeferredShadingSceneRenderer::PrepareRayTracingShadows(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
-	// Declare all RayGen shaders that require material closest hit shaders to be bound
 	// Ray tracing shadows shaders should be properly configured even if r.RayTracing.Shadows is 0 because lights can have raytracing shadows enabled independently of that CVar
+	// We have to check if ray tracing is enabled on any of the scene lights. The Scene.bHasRayTracedLights is computed using ShouldRenderRayTracingShadowsForLight() helper, 
+	// which handles various override conditions.
 
-	const bool bRayTracingShadows = ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::FullPipeline);
-
-	if (!bRayTracingShadows)
+	if (Scene.bHasRayTracedLights == false)
 	{
 		return;
 	}
@@ -200,19 +209,23 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingShadows(const FViewInfo& Vi
 		{
 			for (int32 HairLighting = 0; HairLighting < 2; ++HairLighting)
 			{
-				for (int32 LightType = 0; LightType < LightType_MAX; ++LightType)
+				for (int32 AvoidSelfIntersectionTrace = 0; AvoidSelfIntersectionTrace < 2; ++AvoidSelfIntersectionTrace)
 				{
-					for (IScreenSpaceDenoiser::EShadowRequirements DenoiserRequirement : DenoiserRequirements)
+					for (int32 LightType = 0; LightType < LightType_MAX; ++LightType)
 					{
-						FOcclusionRGS::FPermutationDomain PermutationVector;
-						PermutationVector.Set<FOcclusionRGS::FLightTypeDim>(LightType);
-						PermutationVector.Set<FOcclusionRGS::FDenoiserOutputDim>((int32)DenoiserRequirement);
-						PermutationVector.Set<FOcclusionRGS::FHairLighting>(HairLighting);
-						PermutationVector.Set<FOcclusionRGS::FEnableMultipleSamplesPerPixel>(MultiSPP != 0);
-						PermutationVector.Set<FOcclusionRGS::FEnableTransmissionDim>(EnableTransmissionDim);
+						for (IScreenSpaceDenoiser::EShadowRequirements DenoiserRequirement : DenoiserRequirements)
+						{
+							FOcclusionRGS::FPermutationDomain PermutationVector;
+							PermutationVector.Set<FOcclusionRGS::FLightTypeDim>(LightType);
+							PermutationVector.Set<FOcclusionRGS::FAvoidSelfIntersectionTraceDim>((bool)AvoidSelfIntersectionTrace);
+							PermutationVector.Set<FOcclusionRGS::FDenoiserOutputDim>((int32)DenoiserRequirement);
+							PermutationVector.Set<FOcclusionRGS::FHairLighting>(HairLighting);
+							PermutationVector.Set<FOcclusionRGS::FEnableMultipleSamplesPerPixel>(MultiSPP != 0);
+							PermutationVector.Set<FOcclusionRGS::FEnableTransmissionDim>(EnableTransmissionDim);
 
-						TShaderMapRef<FOcclusionRGS> RayGenerationShader(View.ShaderMap, PermutationVector);
-						OutRayGenShaders.Add(RayGenerationShader.GetRayTracingShader());
+							TShaderMapRef<FOcclusionRGS> RayGenerationShader(View.ShaderMap, PermutationVector);
+							OutRayGenShaders.Add(RayGenerationShader.GetRayTracingShader());
+						}
 					}
 				}
 			}
@@ -276,16 +289,17 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 		{
 			FLightRenderParameters LightParameters;
 			LightSceneProxy->GetLightShaderParameters(LightParameters);
-			LightParameters.MakeShaderParameters(View.ViewMatrices, PassParameters->Light);
+			LightParameters.MakeShaderParameters(View.ViewMatrices, View.GetLastEyeAdaptationExposure(), PassParameters->Light);
 			PassParameters->Light.SourceRadius *= LightSceneProxy->GetShadowSourceAngleFactor();
 		}
 
 		PassParameters->TraceDistance = LightSceneProxy->GetTraceDistance();
 		PassParameters->LODTransitionStart = CVarRayTracingShadowsLODTransitionStart.GetValueOnRenderThread();
 		PassParameters->LODTransitionEnd = CVarRayTracingShadowsLODTransitionEnd.GetValueOnRenderThread();
+		PassParameters->AvoidSelfIntersectionTraceDistance = GRayTracingShadowsAvoidSelfIntersectionTraceDistance;
 		PassParameters->bAcceptFirstHit = CVarRayTracingShadowsAcceptFirstHit.GetValueOnRenderThread();
 		PassParameters->bTwoSidedGeometry = EnableRayTracingShadowTwoSidedGeometry() ? 1 : 0;
-		PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
+		PassParameters->TLAS = View.GetRayTracingSceneLayerViewChecked(ERayTracingSceneLayer::Base);
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = SceneTextures;
 		PassParameters->SceneLightingChannels = GetSceneLightingChannelParameters(GraphBuilder, LightingChannelsTexture);
@@ -295,6 +309,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 		PassParameters->bTransmissionSamplingDistanceCulling = CVarRayTracingTransmissionSamplingDistanceCulling.GetValueOnRenderThread();
 		PassParameters->TransmissionSamplingTechnique = CVarRayTracingTransmissionSamplingTechnique.GetValueOnRenderThread();
 		PassParameters->RejectionSamplingTrials = CVarRayTracingTransmissionRejectionSamplingTrials.GetValueOnRenderThread();
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 		if (bUseHairLighting)
 		{
 			const bool bUseHairVoxel = CVarRayTracingShadowsEnableHairVoxel.GetValueOnRenderThread() > 0;
@@ -303,13 +318,14 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 			PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
 			PassParameters->VirtualVoxel = HairStrands::BindHairStrandsVoxelUniformParameters(View);
 
-			if (ShaderDrawDebug::IsEnabled(View))
+			if (ShaderPrint::IsValid(View.ShaderPrintData))
 			{
-				ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, PassParameters->ShaderDrawParameters);
+				ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
 			}
 		}
 		FOcclusionRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FOcclusionRGS::FLightTypeDim>(LightSceneProxy->GetLightType());
+		PermutationVector.Set<FOcclusionRGS::FAvoidSelfIntersectionTraceDim>(GRayTracingShadowsAvoidSelfIntersectionTraceDistance > 0.0f);
 		if (DenoiserRequirements == IScreenSpaceDenoiser::EShadowRequirements::PenumbraAndAvgOccluder)
 		{
 			PermutationVector.Set<FOcclusionRGS::FDenoiserOutputDim>(1);
@@ -366,8 +382,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 				Initializer.SetHitGroupTable(HitGroupTable);
 				Initializer.bAllowHitGroupIndexing = false; // Use the same hit shader for all geometry in the scene by disabling SBT indexing.
 
+				// TODO(UE-157946): This pipeline does not bind any miss shader and relies on the pipeline to do this automatically. This should be made explicit.
 				FRayTracingPipelineState* Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
-
+				RHICmdList.SetRayTracingMissShader(RayTracingSceneRHI, 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 				RHICmdList.RayTraceDispatch(Pipeline, RayGenerationShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, Resolution.X, Resolution.Y);
 			}
 		});

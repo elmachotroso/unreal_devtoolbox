@@ -12,6 +12,7 @@ using System.Collections.Concurrent;
 using EpicGames.Core;
 using System.Diagnostics.CodeAnalysis;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -65,9 +66,19 @@ namespace UnrealBuildTool
 		List<DirectoryItem> IncludeDirectories = new List<DirectoryItem>();
 
 		/// <summary>
+        /// Framework paths to look in
+        /// </summary>
+		List<DirectoryItem> FrameworkDirectories = new List<DirectoryItem>();
+
+		/// <summary>
 		/// Set of all included files with the #pragma once directive
 		/// </summary>
 		HashSet<FileItem> PragmaOnceFiles = new HashSet<FileItem>();
+
+		/// <summary>
+		/// Set of any files that has been processed
+		/// </summary>
+		HashSet<FileItem> ProcessedFiles = new HashSet<FileItem>();
 
 		/// <summary>
 		/// The current state of the preprocessor
@@ -88,6 +99,15 @@ namespace UnrealBuildTool
 		/// Value of the __COUNTER__ variable
 		/// </summary>
 		int Counter;
+
+		/// <summary>
+		/// List of files included by the preprocessor
+		/// </summary>
+		/// <returns>Enumerable of processed files</returns>
+		public IEnumerable<FileItem> GetProcessedFiles()
+		{
+			return ProcessedFiles.AsEnumerable();
+		}
 
 		/// <summary>
 		/// Default constructor
@@ -210,6 +230,41 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Adds a framework path to the preprocessor
+		/// </summary>
+		/// <param name="Directory">The framework path</param>
+		public void AddFrameworkPath(DirectoryItem Directory)
+		{
+			if (!FrameworkDirectories.Contains(Directory))
+			{
+				FrameworkDirectories.Add(Directory);
+			}
+		}
+
+		/// <summary>
+		/// Adds a framework path to the preprocessor
+		/// </summary>
+		/// <param name="Location">The framework path</param>
+		public void AddFrameworkPath(DirectoryReference Location)
+		{
+			DirectoryItem Directory = DirectoryItem.GetItemByDirectoryReference(Location);
+			if (!Directory.Exists)
+			{
+				throw new FileNotFoundException("Unable to find " + Location.FullName);
+			}
+			AddFrameworkPath(Directory);
+		}
+
+		/// <summary>
+		/// Adds a framework path to the preprocessor
+		/// </summary>
+		/// <param name="DirectoryName">The framework path</param>
+		public void AddFrameworkPath(string DirectoryName)
+		{
+			AddFrameworkPath(new DirectoryReference(DirectoryName));
+		}
+
+		/// <summary>
 		/// Try to resolve an quoted include against the list of include directories. Uses search order described by https://msdn.microsoft.com/en-us/library/36k2cdd4.aspx.
 		/// </summary>
 		/// <param name="Context">The current preprocessor context</param>
@@ -282,6 +337,21 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Try to match the include path against any of the MacOS framework Header paths
+			if (Fragments.Length > 1)
+			{
+				foreach (DirectoryItem BaseDirectory in FrameworkDirectories)
+				{
+					if (BaseDirectory.TryGetDirectory($"{Fragments[0]}.framework", out DirectoryItem? FrameworkBaseDirectory) &&
+						FrameworkBaseDirectory.TryGetDirectory("Headers", out DirectoryItem? HeaderDirectory) &&
+						TryResolveRelativeIncludePath(HeaderDirectory, Fragments.Skip(1).ToArray(), out FileItem? ResolvedFile))
+					{
+						File = ResolvedFile;
+						return true;
+					}
+				}
+			}
+
 			// Failed to find the file
 			File = null;
 			return false;
@@ -315,8 +385,10 @@ namespace UnrealBuildTool
 		/// <param name="Fragments">Lists of fragments that are parsed</param>
 		/// <param name="OuterContext">Outer context information, for error messages</param>
 		/// <param name="SourceFileCache">Cache for source files</param>
+		/// <param name="Logger">Logger for output</param>
 		/// <param name="bShowIncludes">Show all the included files, in order</param>
-		public void ParseFile(FileItem File, List<SourceFileFragment> Fragments, PreprocessorContext OuterContext, SourceFileMetadataCache SourceFileCache, bool bShowIncludes)
+		/// <param name="bIgnoreMissingIncludes">Suppress exceptions if an include path can not be resolved</param>
+		public void ParseFile(FileItem File, List<SourceFileFragment> Fragments, PreprocessorContext? OuterContext, SourceFileMetadataCache SourceFileCache, ILogger Logger, bool bShowIncludes = false, bool bIgnoreMissingIncludes = false)
 		{
 			// If the file has already been included and had a #pragma once directive, don't include it again
 			if(PragmaOnceFiles.Contains(File))
@@ -324,10 +396,15 @@ namespace UnrealBuildTool
 				return;
 			}
 
+			if (!ProcessedFiles.Contains(File))
+			{
+				ProcessedFiles.Add(File);
+			}
+
 			// Output a trace of the included files
 			if(bShowIncludes)
 			{
-				Log.TraceInformation("Note: including file: {0}", File.Location);
+				Logger.LogInformation("Note: including file: {FileLocation}", File.Location);
 			}
 
 			// If the file had a header guard, and the macro is still defined, don't include it again
@@ -349,10 +426,13 @@ namespace UnrealBuildTool
 					if(State.IsCurrentBranchActive())
 					{
 						// Parse the directive
-						FileItem IncludedFile = ParseIncludeDirective(Markup, Context);
+						FileItem? IncludedFile = ParseIncludeDirective(Markup, Context, bIgnoreMissingIncludes);
 
 						// Parse the included file
-						ParseFile(IncludedFile, Fragments, Context, SourceFileCache, bShowIncludes);
+						if (IncludedFile != null)
+						{
+							ParseFile(IncludedFile, Fragments, Context, SourceFileCache, Logger, bShowIncludes, bIgnoreMissingIncludes);
+						}
 					}
 					Context.MarkupIdx++;
 				}
@@ -377,8 +457,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Markup">Markup for the include directive</param>
 		/// <param name="Context">Current preprocessor context</param>
+		/// <param name="bIgnoreMissingIncludes">Suppress exceptions if an include path can not be resolved</param>
 		/// <returns>Included file</returns>
-		FileItem ParseIncludeDirective(SourceFileMarkup Markup, PreprocessorContext Context)
+		FileItem? ParseIncludeDirective(SourceFileMarkup Markup, PreprocessorFileContext Context, bool bIgnoreMissingIncludes = false)
 		{
 			// Expand macros in the given tokens
 			List<Token> ExpandedTokens = new List<Token>();
@@ -409,7 +490,14 @@ namespace UnrealBuildTool
 			FileItem? IncludedFile;
 			if(!TryResolveIncludePath(Context, IncludePath, Type, out IncludedFile))
 			{
-				throw new PreprocessorException(Context, "Couldn't resolve include '{0}'", IncludePath);
+				if (bIgnoreMissingIncludes)
+				{
+					Log.TraceWarningOnce("Couldn't resolve include '{0}' ({1})", IncludePath, Context.SourceFile.Location);
+				}
+				else
+				{
+					throw new PreprocessorException(Context, "Couldn't resolve include '{0}' ({1})", IncludePath, Context.SourceFile.Location);
+				}
 			}
 			return IncludedFile;
 		}

@@ -248,6 +248,23 @@ enum class BodyInstanceSceneState : uint8
 	Removed
 };
 
+namespace Chaos
+{
+	class FRigidBodyHandle_Internal;
+}
+
+USTRUCT(BlueprintType)
+struct ENGINE_API FBodyInstanceAsyncPhysicsTickHandle
+{
+	GENERATED_BODY()
+	FPhysicsActorHandle Proxy = nullptr;
+
+	Chaos::FRigidBodyHandle_Internal* operator->();
+
+	bool IsValid() const;
+	operator bool() const { return IsValid(); }
+};
+
 /** Container for a physics representation of an object */
 USTRUCT(BlueprintType)
 struct ENGINE_API FBodyInstance : public FBodyInstanceCore
@@ -401,6 +418,24 @@ protected:
 	/** Whether we are pending a collision profile setup */
 	uint8 bPendingCollisionProfileSetup : 1;
 
+	/** 
+	 * @brief Enable automatic inertia conditioning to stabilize constraints.
+	 * 
+	 * Inertia conitioning increases inertia when an object is long and thin and also when it has joints that are outside the
+	 * collision shapes of the body. Increasing the inertia reduces the amount of rotation applied at joints which helps stabilize
+	 * joint chains, especially when bodies are small. In principle you can get the same behaviour by setting the InertiaTensorScale
+	 * appropriately, but this takes some of the guesswork out of it.
+	 * 
+	 * @note This only changes the inertia used in the low-level solver. That inertia is not visible to the BodyInstance
+	 * which will still report the inertia calculated from the mass, shapes, and InertiaTensorScale.
+	 * 
+	 * @note When enabled, the effective inertia depends on the joints attached to the body so the inertia will change when
+	 * joints are added or removed (automatically - no user action required).
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Physics)
+	uint8 bInertiaConditioning : 1;
+
+
 public:
 	/** Current scale of physics - used to know when and how physics must be rescaled to match current transform of OwnerComponent. */
 	FVector Scale3D;
@@ -551,6 +586,8 @@ public:
 
 	// Internal physics representation of our body instance
 	FPhysicsActorHandle ActorHandle;
+
+	FBodyInstanceAsyncPhysicsTickHandle GetBodyInstanceAsyncPhysicsTickHandle() const { return FBodyInstanceAsyncPhysicsTickHandle{ ActorHandle }; }
 
 #if USE_BODYINSTANCE_DEBUG_NAMES
 	TSharedPtr<TArray<ANSICHAR>> CharDebugName;
@@ -725,9 +762,24 @@ public:
 	/** Return the body's inertia tensor. This is returned in local mass space */
 	FVector GetBodyInertiaTensor() const;
 
+	/** Whether inertia conditioning is enabled. @see bInertiaConditioning */
+	bool IsInertiaConditioningEnabled() { return bInertiaConditioning; }
 
-	/** Set this body to be fixed (kinematic) or not. */
-	void SetInstanceSimulatePhysics(bool bSimulate, bool bMaintainPhysicsBlending=false);
+	/** Enable or disable inertia conditionin.  @see bInertiaConditioning */
+	void SetInertiaConditioningEnabled(bool bEnabled);
+
+
+	/** 
+	 * Set this body to either simulate or to be fixed/kinematic. 
+	 * 
+	 * @param bMaintainPhysicsBlending If true then the physics blend weight will not be adjusted. If false then 
+	 *        it will get set to 0 or 1 depending on bSimulate.
+	 * @param bPreserveExistingAttachments If true then any existing attachment between the owning component and 
+	 *        its parent will be preserved, even when switching to simulate (most likely useful for skeletal meshes
+	 *        that are parented to a moveable component). If false then the owning component will be detached 
+	 *        from its parent if this is the root body and it is being set to simulate.
+	 */
+	void SetInstanceSimulatePhysics(bool bSimulate, bool bMaintainPhysicsBlending=false, bool bPreserveExistingAttachment = false);
 	/** Makes sure the current kinematic state matches the simulate flag */
 	void UpdateInstanceSimulatePhysics();
 	/** Returns true if this body is simulating, false if it is fixed (kinematic) */
@@ -1039,9 +1091,10 @@ public:
 	 *  @param  Rotation		Rotation to apply to the shape before testing
 	 *	@param	CollisionShape	Shape to test against
 	 *  @param  OutMTD			The minimum translation direction needed to push the shape out of this BodyInstance. (Optional)
+	 *  @param  TraceComplex    Trace against complex or simple geometry (Defaults simple)
 	 *  @return true if the geometry associated with this body instance overlaps the query shape at the specified location/rotation
 	 */
-	bool OverlapTest(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr) const;
+	bool OverlapTest(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr, bool bTraceComplex = false) const;
 
 	/**
 	 *  Test if the bodyinstance overlaps with the specified shape at the specified position/rotation
@@ -1051,9 +1104,10 @@ public:
 	 *  @param  Rotation		Rotation to apply to the shape before testing
 	 *	@param	CollisionShape	Shape to test against
 	 *  @param  OutMTD			The minimum translation direction needed to push the shape out of this BodyInstance. (Optional)
+	 * 	@param  TraceComplex    Trace against complex or simple geometry  (Defaults simple)
 	 *  @return true if the geometry associated with this body instance overlaps the query shape at the specified location/rotation
 	 */
-	bool OverlapTest_AssumesLocked(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr) const;
+	bool OverlapTest_AssumesLocked(const FVector& Position, const FQuat& Rotation, const struct FCollisionShape& CollisionShape, FMTDResult* OutMTD = nullptr, bool bTraceComplex = false) const;
 
 	/**
 	 *  Test if the bodyinstance overlaps with the specified body instances
@@ -1061,10 +1115,11 @@ public:
 	 *  @param  Position		Position to place our shapes at before testing (shapes of this BodyInstance)
 	 *  @param  Rotation		Rotation to apply to our shapes before testing (shapes of this BodyInstance)
 	 *  @param  Bodies			The bodies we are testing for overlap with. These bodies will be in world space already
+	 *  @param  TraceComplex    Trace against complex or simple geometry (Defaults simple)
 	 *  @return true if any of the bodies passed in overlap with this
 	 */
-	bool OverlapTestForBodies(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies) const;
-	bool OverlapTestForBody(const FVector& Position, const FQuat& Rotation, FBodyInstance* Body) const;
+	bool OverlapTestForBodies(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies, bool bTraceComplex = false) const;
+	bool OverlapTestForBody(const FVector& Position, const FQuat& Rotation, FBodyInstance* Body, bool bTraceComplex = false) const;
 
 	/**
 	 *  Determines the set of components that this body instance would overlap with at the supplied location/rotation
@@ -1188,7 +1243,7 @@ private:
 	static bool IsValidCollisionProfileName(FName InCollisionProfileName);
 
 	template<typename AllocatorType>
-	bool OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*, AllocatorType>& Bodies) const;
+	bool OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*, AllocatorType>& Bodies, bool bTraceComplex = false) const;
 
 	friend class UPhysicsAsset;
 	friend class UCollisionProfile;
@@ -1244,16 +1299,16 @@ FORCEINLINE_DEBUGGABLE bool FBodyInstance::OverlapMulti(TArray<struct FOverlapRe
 
 /// @endcond
 
-FORCEINLINE_DEBUGGABLE bool FBodyInstance::OverlapTestForBodies(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies) const
+FORCEINLINE_DEBUGGABLE bool FBodyInstance::OverlapTestForBodies(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies, bool bTraceComplex) const
 {
-	return OverlapTestForBodiesImpl(Position, Rotation, Bodies);
+	return OverlapTestForBodiesImpl(Position, Rotation, Bodies, bTraceComplex);
 }
 
-FORCEINLINE_DEBUGGABLE bool FBodyInstance::OverlapTestForBody(const FVector& Position, const FQuat& Rotation, FBodyInstance* Body) const
+FORCEINLINE_DEBUGGABLE bool FBodyInstance::OverlapTestForBody(const FVector& Position, const FQuat& Rotation, FBodyInstance* Body, bool bTraceComplex) const
 {
 	TArray<FBodyInstance*, TInlineAllocator<1>> InlineArray;
 	InlineArray.Add(Body);
-	return OverlapTestForBodiesImpl(Position, Rotation, InlineArray);
+	return OverlapTestForBodiesImpl(Position, Rotation, InlineArray, bTraceComplex);
 }
 
 FORCEINLINE_DEBUGGABLE bool FBodyInstance::IsInstanceSimulatingPhysics() const
@@ -1261,5 +1316,5 @@ FORCEINLINE_DEBUGGABLE bool FBodyInstance::IsInstanceSimulatingPhysics() const
 	return ShouldInstanceSimulatingPhysics() && IsValidBodyInstance();
 }
 
-extern template ENGINE_API bool FBodyInstance::OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies) const;
-extern template ENGINE_API bool FBodyInstance::OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*, TInlineAllocator<1>>& Bodies) const;
+extern template ENGINE_API bool FBodyInstance::OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*>& Bodies, bool bTraceComplex) const;
+extern template ENGINE_API bool FBodyInstance::OverlapTestForBodiesImpl(const FVector& Position, const FQuat& Rotation, const TArray<FBodyInstance*, TInlineAllocator<1>>& Bodies, bool bTraceComplex) const;

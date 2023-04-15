@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "CollectionManagerTypes.h"
 #include "Styling/SlateTypes.h"
 
@@ -21,7 +21,7 @@ public:
 	void SetCurrentAssets(const TArray<FAssetData>& CurrentAssets);
 
 	/** Set the asset paths that we are currently observing and managing the collection state of */
-	void SetCurrentAssetPaths(const TArray<FName>& CurrentAssets);
+	void SetCurrentAssetPaths(const TArray<FSoftObjectPath>& CurrentAssets);
 
 	/** Add the current assets to the given collection */
 	void AddCurrentAssetsToCollection(FCollectionNameType InCollectionKey);
@@ -49,13 +49,13 @@ private:
 	void HandleCollectionDestroyed(const FCollectionNameType& Collection);
 
 	/** Handles assets being added to a collection */
-	void HandleAssetsAddedToCollection(const FCollectionNameType& Collection, const TArray<FName>& AssetsAdded);
+	void HandleAssetsAddedToCollection(const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsAdded);
 
 	/** Handles assets being removed from a collection */
-	void HandleAssetsRemovedFromCollection(const FCollectionNameType& Collection, const TArray<FName>& AssetsRemoved);
+	void HandleAssetsRemovedFromCollection(const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> AssetsRemoved);
 
 	/** Set of asset paths that we are currently observing and managing the collection state of */
-	TSet<FName> CurrentAssetPaths;
+	TSet<FSoftObjectPath> CurrentAssetPaths;
 
 	/** Mapping between a collection and its asset management state (based on the current assets). A missing item is assumed to be unchecked */
 	TMap<FCollectionNameType, ECheckBoxState> AssetManagementState;

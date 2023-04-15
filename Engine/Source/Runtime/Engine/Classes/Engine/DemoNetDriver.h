@@ -16,6 +16,8 @@
 #include "NetworkReplayStreaming.h"
 #include "Engine/DemoNetConnection.h"
 #include "Net/RepLayout.h"
+#include "Net/Core/Connection/NetResult.h"
+#include "Net/ReplayResult.h"
 #include "Templates/Atomic.h"
 #include "Net/UnrealNetwork.h"
 #include "ReplayHelper.h"
@@ -30,7 +32,11 @@ DECLARE_MULTICAST_DELEGATE(FOnGotoTimeMCDelegate);
 DECLARE_DELEGATE_OneParam(FOnGotoTimeDelegate, const bool /* bWasSuccessful */);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnDemoStartedDelegate, UDemoNetDriver* /* DemoNetDriver */);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UE_DEPRECATED(5.1, "No longer used")
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDemoFailedToStartDelegate, UDemoNetDriver* /* DemoNetDriver */, EDemoPlayFailure::Type /* FailureType*/);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 DECLARE_MULTICAST_DELEGATE(FOnDemoFinishPlaybackDelegate);
 DECLARE_MULTICAST_DELEGATE(FOnDemoFinishRecordingDelegate);
@@ -68,8 +74,7 @@ struct FRollbackNetStartupActorInfo
 	FVector		Location;
 	FRotator	Rotation;
 	FVector		Scale3D;
-	UPROPERTY()
-	TObjectPtr<ULevel>		Level = nullptr;
+	FName		LevelName;
 
 	TSharedPtr<FRepState> RepState;
 	TMap<FString, TSharedPtr<FRepState>> SubObjRepState;
@@ -171,8 +176,6 @@ public:
 	APlayerController* GetSpectatorController() const { return SpectatorController; }
 
 private:
-	/** True if as have paused all of the channels */
-	bool bChannelsArePaused;
 
 	/** This is the main spectator controller that is used to view the demo world from */
 	APlayerController* SpectatorController;
@@ -249,11 +252,24 @@ private:
 	};
 
 	bool bIsFastForwarding;
-	bool bIsFastForwardingForCheckpoint;
-	bool bWasStartStreamingSuccessful;
 	bool bIsFinalizingFastForward;
 	bool bIsRestoringStartupActors;
 
+	/** True if as have paused all of the channels */
+	uint8 bChannelsArePaused : 1;
+	uint8 bIsFastForwardingForCheckpoint : 1;
+	uint8 bWasStartStreamingSuccessful : 1;
+
+	/** If true, recording will prioritize replicating actors based on the value that AActor::GetReplayPriority returns. */
+	uint8 bPrioritizeActors : 1;
+
+protected:
+	uint8 bIsWaitingForHeaderDownload : 1;
+	uint8 bIsWaitingForStream : 1;
+
+	TOptional<UE::Net::TNetResult<EReplayResult>> PendingRecordFailure;
+
+private:
 	TArray<FNetworkGUID> NonQueuedGUIDsForScrubbing;
 
 	// Replay tasks
@@ -289,14 +305,8 @@ private:
 	/** Array of prioritized actors, used in TickDemoRecord. Stored as a member so that its storage doesn't have to be re-allocated each frame. */
 	TArray<FDemoActorPriority> PrioritizedActors;
 
-	/** If true, recording will prioritize replicating actors based on the value that AActor::GetReplayPriority returns. */
-	bool bPrioritizeActors;
-
 	/** Does the actual work of TickFlush, either on the main thread or in a task thread in parallel with Slate. */
 	void TickFlushInternal(float DeltaSeconds);
-
-	/** Returns either CheckpointSaveMaxMSPerFrame or the value of demo.CheckpointSaveMaxMSPerFrameOverride if it's >= 0. */
-	float GetCheckpointSaveMaxMSPerFrame() const;
 
 	/** Returns the last checkpoint time in integer milliseconds. */
 	uint32 GetLastCheckpointTimeInMS() const { return ReplayHelper.GetLastCheckpointTimeInMS(); }
@@ -318,6 +328,7 @@ public:
 	virtual bool InitConnect(FNetworkNotify* InNotify, const FURL& ConnectURL, FString& Error) override;
 	virtual bool InitListen(FNetworkNotify* InNotify, FURL& ListenURL, bool bReuseAddressAndPort, FString& Error) override;
 	virtual void TickFlush(float DeltaSeconds) override;
+	virtual void PostTickFlush() override;
 	virtual void TickDispatch(float DeltaSeconds) override;
 	virtual void ProcessRemoteFunction(class AActor* Actor, class UFunction* Function, void* Parameters, struct FOutParmRec* OutParms, struct FFrame* Stack, class UObject* SubObject = nullptr) override;
 	virtual bool IsAvailable() const override { return true; }
@@ -339,6 +350,7 @@ public:
 	virtual void NotifyActorChannelOpen(UActorChannel* Channel, AActor* Actor) override;
 	virtual void NotifyActorChannelCleanedUp(UActorChannel* Channel, EChannelCloseReason CloseReason) override;
 	virtual void NotifyActorClientDormancyChanged(AActor* Actor, ENetDormancy OldDormancyState) override;
+	virtual void NotifyActorTornOff(AActor* Actor) override;
 
 	virtual void ProcessLocalServerPackets() override {}
 	virtual void ProcessLocalClientPackets() override {}
@@ -349,6 +361,8 @@ public:
 
 	virtual void LowLevelSend(TSharedPtr<const FInternetAddr> Address, void* Data, int32 CountBits, FOutPacketTraits& Traits) override {}
 	virtual class ISocketSubsystem* GetSocketSubsystem() override { return nullptr; }
+
+	virtual bool DoesSupportEncryption() const override { return false; }
 
 protected:
 	virtual UChannel* InternalCreateChannelByName(const FName& ChName) override;
@@ -389,11 +403,15 @@ public:
 	/** Sets the desired maximum recording time in milliseconds. */
 	void SetMaxDesiredRecordTimeMS(const float InMaxDesiredRecordTimeMS) { MaxDesiredRecordTimeMS = InMaxDesiredRecordTimeMS; }
 
+	float GetMaxDesiredRecordTimeMS() const { return MaxDesiredRecordTimeMS; }
+
 	/** Sets the controller to use as the viewpoint for recording prioritization purposes. */
 	void SetViewerOverride(APlayerController* const InViewerOverride ) { ViewerOverride = InViewerOverride; }
 
 	/** Enable or disable prioritization of actors for recording. */
 	void SetActorPrioritizationEnabled(const bool bInPrioritizeActors) { bPrioritizeActors = bInPrioritizeActors; }
+
+	bool IsActorPrioritizationEnabled() const { return bPrioritizeActors; }
 
 	/** Sets CheckpointSaveMaxMSPerFrame. */
 	void SetCheckpointSaveMaxMSPerFrame(const float InCheckpointSaveMaxMSPerFrame)
@@ -539,7 +557,7 @@ public:
 	/**
 	 * Adds a join-in-progress user to the set of users associated with the currently recording replay (if any)
 	 *
-	 * @param UserString a string that uniquely identifies the user, usually his or her FUniqueNetId
+	 * @param UserString a string that uniquely identifies the user, usually their FUniqueNetId
 	 */
 	void AddUserToReplay(const FString& UserString);
 
@@ -607,7 +625,11 @@ public:
 		return ReplayHelper.ActiveReplayName;
 	}
 
+	uint32 GetPlaybackDemoChangelist() const { return ReplayHelper.PlaybackDemoHeader.EngineVersion.GetChangelist(); }
 	uint32 GetPlaybackDemoVersion() const { return ReplayHelper.PlaybackDemoHeader.Version; }
+
+	uint32 GetPlaybackEngineNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.EngineNetworkProtocolVersion; }
+	uint32 GetPlaybackGameNetworkProtocolVersion() const { return ReplayHelper.PlaybackDemoHeader.GameNetworkProtocolVersion; }
 
 	FString GetDemoPath() const;
 
@@ -654,7 +676,7 @@ private:
 	 * @return True if there is time remaining to replicate more actors. False otherwise.
 	 */
 	bool ReplicatePrioritizedActors(const FDemoActorPriority* ActorsToReplicate, uint32 Count, class FRepActorsParams& Params);
-	bool ReplicatePrioritizedActor(const FActorPriority& ActorPriority, const class FRepActorsParams& Params);
+	bool ReplicatePrioritizedActor(const FActorPriority& ActorPriority, class FRepActorsParams& Params);
 
 	friend class FPendingTaskHelper;
 
@@ -666,18 +688,29 @@ private:
 
 	void OnPostLoadMapWithWorld(UWorld* World);
 
+	// Diff Actor plus it's Components and Subobjects from given ActorChannel
+	void DiffActorProperties(UActorChannel* const ActorChannel);
+
+	// Callback sent just before an actor has destroy called on itself.
+	void OnActorPreDestroy(AActor* DestroyedActor);
+
+	FDelegateHandle DelegateHandleActorPreDestroy;
+
 protected:
 
 	void ProcessSeamlessTravel(int32 LevelIndex);
 
 	bool DemoReplicateActor(AActor* Actor, UNetConnection* Connection, bool bMustReplicate);
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.1, "Please use NotifyDemoPlaybackError instead")
 	void NotifyDemoPlaybackFailure(EDemoPlayFailure::Type FailureType);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	void NotifyDemoPlaybackError(const UE::Net::TNetResult<EReplayResult>& Result);
+	void NotifyDemoRecordFailure(const UE::Net::TNetResult<EReplayResult>& Result);
 
 	TArray<FQueuedDemoPacket> QueuedPacketsBeforeTravel;
-
-	bool bIsWaitingForHeaderDownload;
-	bool bIsWaitingForStream;
 
 	int64 MaxArchiveReadPos;
 
@@ -686,6 +719,9 @@ private:
 	// Max percent of time to spend building consider lists / prioritizing actors
 	// for demo recording. Only used if MaxDesiredRecordTimeMS > 0.
 	float RecordBuildConsiderAndPrioritizeTimeSlice;
+
+	// Max percent of time to spend replicating prioritized destruction infos. Only used if MaxDesiredRecordTimeMS > 0.
+	float RecordDestructionInfoReplicationTimeSlice;
 
 	void AdjustConsiderTime(const float ReplicatedPercent);
 
@@ -715,6 +751,9 @@ private:
 	TAtomic<float> LastReplayFrameFidelity{ 0 };
 
 	FReplayHelper ReplayHelper;
+
+	/** Enabled via -skipreplayrollback and causes rollback data to not be generated, with the assumption that there will be no scrubbing. */
+	bool bSkipStartupActorRollback = false;
 
 	friend class UDemoNetConnection;
 };

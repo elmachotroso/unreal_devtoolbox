@@ -8,9 +8,10 @@
 #include "Rendering/DrawElements.h"
 #include "Templates/RefCounting.h"
 #include "Fonts/FontTypes.h"
+#include "Types/SlateVector2.h"
 #include "PixelFormat.h"
 
-class FRHITexture2D;
+class FRHITexture;
 class FRenderTarget;
 class FSlateDrawBuffer;
 class FSlateUpdatableTexture;
@@ -22,7 +23,7 @@ struct Rect;
 class FSceneInterface;
 struct FSlateBrush;
 
-typedef TRefCountPtr<FRHITexture2D> FTexture2DRHIRef;
+typedef TRefCountPtr<FRHITexture> FTexture2DRHIRef;
 
 /**
  * Update context for deferred drawing of widgets to render targets
@@ -30,9 +31,9 @@ typedef TRefCountPtr<FRHITexture2D> FTexture2DRHIRef;
 struct FRenderThreadUpdateContext
 {
 	class FSlateDrawBuffer* WindowDrawBuffer;
-	float WorldTimeSeconds;
+	double WorldTimeSeconds;
 	float DeltaTimeSeconds;
-	float RealTimeSeconds;
+	double RealTimeSeconds;
 	float DeltaRealTimeSeconds;
 	FRenderTarget* RenderTarget;
 	ISlate3DRenderer* Renderer;
@@ -176,9 +177,44 @@ public:
 	virtual ~FSlateRenderer();
 
 public:
+	/** Acquire the draw buffer and release it at the end of the scope. */
+	struct FScopedAcquireDrawBuffer
+	{
+		FScopedAcquireDrawBuffer(FSlateRenderer& InSlateRenderer)
+			: SlateRenderer(InSlateRenderer)
+			, DrawBuffer(InSlateRenderer.AcquireDrawBuffer())
+		{
+		}
+		~FScopedAcquireDrawBuffer()
+		{
+			SlateRenderer.ReleaseDrawBuffer(DrawBuffer);
+		}
+		FScopedAcquireDrawBuffer(const FScopedAcquireDrawBuffer&) = delete;
+		FScopedAcquireDrawBuffer& operator=(const FScopedAcquireDrawBuffer&) = delete;
+
+		FSlateDrawBuffer& GetDrawBuffer()
+		{
+			return DrawBuffer;
+		}
+
+	private:
+		FSlateRenderer& SlateRenderer;
+		FSlateDrawBuffer& DrawBuffer;
+	};
+
+public:
+	/** Returns a draw buffer that can be used by Slate windows to draw window elements */
+	UE_DEPRECATED(5.1, "Use FSlateRenderer::AcquireDrawBuffer instead and release the draw buffer.")
+	virtual FSlateDrawBuffer& GetDrawBuffer()
+	{
+		return AcquireDrawBuffer();
+	}
 
 	/** Returns a draw buffer that can be used by Slate windows to draw window elements */
-	virtual FSlateDrawBuffer& GetDrawBuffer() = 0;
+	virtual FSlateDrawBuffer& AcquireDrawBuffer() = 0;
+
+	/** Return the previously acquired buffer. */
+	virtual void ReleaseDrawBuffer( FSlateDrawBuffer& InWindowDrawBuffer ) = 0;
 
 	virtual bool Initialize() = 0;
 
@@ -300,7 +336,12 @@ public:
 	 * @param	DrawScale	The draw scale of the element using the brush (Vector graphics only)
 	 * @return	The created resource handle.
 	 */
-	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale) = 0;
+	UE_DEPRECATED(5.1, "Slate rendering uses float instead of double. Use GetResourceHandle(FName,FVector2f, float)")
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2d LocalSize, float DrawScale)
+	{
+		return GetResourceHandle(Brush, UE::Slate::CastToVector2f(LocalSize), DrawScale);
+	}
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2f LocalSize, float DrawScale) = 0;
 
 	/**
 	 * Creates a handle to a Slate resource
@@ -313,7 +354,7 @@ public:
 	 */
 	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush)
 	{
-		return GetResourceHandle(Brush, FVector2D::ZeroVector, 1.0f);
+		return GetResourceHandle(Brush, FVector2f::ZeroVector, 1.0f);
 	}
 
 

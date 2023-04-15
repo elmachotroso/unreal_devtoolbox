@@ -3,12 +3,18 @@
 #pragma once
 
 #include "Containers/ArrayView.h"
+#include "Containers/ContainersFwd.h"
 #include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
 #include "Containers/UnrealString.h"
 #include "HAL/Platform.h"
 #include "Internationalization/Text.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+
+#ifndef UE_SUPPORT_FULL_PACKAGEPATH
+	#define UE_SUPPORT_FULL_PACKAGEPATH WITH_EDITOR
+#endif
 
 class FArchive;
 
@@ -475,7 +481,7 @@ private:
 		LocalOnlyPath,
 	};
 
-#if WITH_EDITOR
+#if UE_SUPPORT_FULL_PACKAGEPATH
 	/**
 	 * Combined storage for (EPackageIDType-specific path+filename storage) followed by (possibly empty)
 	 * PackageNameRoot followed by (possibly empty) FilePathRoot followed by (possibly empty) Extension
@@ -491,5 +497,5 @@ private:
 #else
 	FName PackageName;
 	mutable EPackageExtension HeaderExtension = EPackageExtension::Unspecified;
-#endif
+#endif //UE_SUPPORT_FULL_PACKAGEPATH
 };

@@ -2,16 +2,27 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/EnumClassFlags.h"
-#include "Containers/SortedMap.h"
-#include "UObject/StructOnScope.h"
 #include "CollectionManagerTypes.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/SortedMap.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/StructOnScope.h"
+
 #include "ContentBrowserDataFilter.generated.h"
 
 class FNamePermissionList;
 class FPathPermissionList;
 class UContentBrowserDataSource;
+template <typename OptionalType> struct TOptional;
 
 /** Flags controlling which item types should be included */
 UENUM()
@@ -263,11 +274,11 @@ struct CONTENTBROWSERDATA_API FContentBrowserDataClassFilter
 public:
 	/** Array of class names that should be included in this query */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="ContentBrowser")
-	TArray<FName> ClassNamesToInclude;
+	TArray<FString> ClassNamesToInclude;
 
 	/** Array of class names that should be excluded from this query */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="ContentBrowser")
-	TArray<FName> ClassNamesToExclude;
+	TArray<FString> ClassNamesToExclude;
 
 	/** Whether we should include inclusive sub-classes in this query */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="ContentBrowser")
@@ -278,7 +289,7 @@ public:
 	bool bRecursiveClassNamesToExclude = false;
 
 	/** Optional set of additional class filtering */
-	TSharedPtr<FNamePermissionList> ClassPermissionList;
+	TSharedPtr<FPathPermissionList> ClassPermissionList;
 };
 
 /**

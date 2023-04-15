@@ -9,9 +9,10 @@
 class UStateTreeEditorData;
 class SStateTreeView;
 class SInlineEditableTextBlock;
+class SScrollBox;
 class FStateTreeViewModel;
 
-class SStateTreeViewRow : public STableRow<UStateTreeState*>
+class SStateTreeViewRow : public STableRow<TWeakObjectPtr<UStateTreeState>>
 {
 public:
 
@@ -20,8 +21,8 @@ public:
 	}
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, UStateTreeState* InState, TSharedRef<FStateTreeViewModel> InStateTreeViewModel);
-	void RequestRename();
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, TWeakObjectPtr<UStateTreeState> InState, const TSharedPtr<SScrollBox>& ViewBox, TSharedRef<FStateTreeViewModel> InStateTreeViewModel);
+	void RequestRename() const;
 
 private:
 
@@ -30,12 +31,13 @@ private:
 
 	EVisibility GetConditionVisibility() const;
 	EVisibility GetSelectorVisibility() const;
-
-	EVisibility GetEvaluatorsVisibility() const;
-	FText GetEvaluatorsDesc() const;
+	FText GetSelectorDesc() const;
 
 	EVisibility GetTasksVisibility() const;
 	FText GetTasksDesc() const;
+
+	EVisibility GetLinkedStateVisibility() const;
+	FText GetLinkedStateDesc() const;
 
 	EVisibility GetCompletedTransitionVisibility() const;
 	FText GetCompletedTransitionsDesc() const;
@@ -52,21 +54,20 @@ private:
 	EVisibility GetConditionalTransitionsVisibility() const;
 	FText GetConditionalTransitionsDesc() const;
 
-	FText GetTransitionsDesc(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const;
-	FText GetTransitionsIcon(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const;
-	EVisibility GetTransitionsVisibility(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const;
+	FText GetTransitionsDesc(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger, const bool bUseMask = false) const;
+	FText GetTransitionsIcon(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger, const bool bUseMask = false) const;
+	EVisibility GetTransitionsVisibility(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger) const;
 
-	bool HasParentTransitionForEvent(const UStateTreeState& State, const EStateTreeTransitionEvent Event) const;
+	bool HasParentTransitionForTrigger(const UStateTreeState& State, const EStateTreeTransitionTrigger Trigger) const;
 
-	bool IsRoutine() const;
-	bool IsSelected() const;
+	bool IsRootState() const;
+	bool IsStateSelected() const;
 
-	bool VerifyNodeTextChanged(const FText& NewLabel, FText& OutErrorMessage);
-	void HandleNodeLabelTextCommitted(const FText& NewLabel, ETextCommit::Type CommitType);
+	void HandleNodeLabelTextCommitted(const FText& NewLabel, ETextCommit::Type CommitType) const;
 
-	FReply HandleDragDetected(const FGeometry&, const FPointerEvent&);
-	TOptional<EItemDropZone> HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, UStateTreeState* TargetState);
-	FReply HandleAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, UStateTreeState* TargetState);
+	FReply HandleDragDetected(const FGeometry&, const FPointerEvent&) const;
+	TOptional<EItemDropZone> HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TWeakObjectPtr<UStateTreeState> TargetState) const;
+	FReply HandleAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TWeakObjectPtr<UStateTreeState> TargetState) const;
 	
 	TSharedPtr<FStateTreeViewModel> StateTreeViewModel;
 	TWeakObjectPtr<UStateTreeState> WeakState;

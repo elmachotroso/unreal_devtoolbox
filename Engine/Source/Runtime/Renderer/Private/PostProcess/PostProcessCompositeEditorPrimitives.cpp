@@ -111,7 +111,6 @@ public:
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("OUTPUT_SRGB_BUFFER"), IsMobileColorsRGB() && IsMobilePlatform(Parameters.Platform));
 	}
 };
 
@@ -119,7 +118,7 @@ IMPLEMENT_GLOBAL_SHADER(FTemporalUpsampleEditorDepthPS, "/Engine/Private/PostPro
 IMPLEMENT_GLOBAL_SHADER(FPopulateEditorDepthPS, "/Engine/Private/PostProcessCompositeEditorPrimitives.usf", "MainPopulateSceneDepthPS", SF_Pixel);
 IMPLEMENT_GLOBAL_SHADER(FCompositeEditorPrimitivesPS, "/Engine/Private/PostProcessCompositeEditorPrimitives.usf", "MainCompositeEditorPrimitivesPS", SF_Pixel);
 
-void RenderEditorPrimitives(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FMeshPassProcessorRenderState& DrawRenderState, FInstanceCullingManager& InstanceCullingManager)
+void RenderEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, FMeshPassProcessorRenderState& DrawRenderState, FInstanceCullingManager& InstanceCullingManager)
 {
 	// Always depth test against other editor primitives
 	DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<
@@ -163,17 +162,53 @@ void RenderEditorPrimitives(FRHICommandListImmediate& RHICmdList, const FViewInf
 
 	const auto FeatureLevel = View.GetFeatureLevel();
 	const auto ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
-	const bool bNeedToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(ShaderPlatform);
 
 	// Draw the view's batched simple elements(lines, sprites, etc).
-	View.BatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, false, 1.0f);
+	View.BatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, false, 1.0f);
+}
+
+void RenderForegroundTranslucentEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, FMeshPassProcessorRenderState& DrawRenderState, FInstanceCullingManager& InstanceCullingManager)
+{
+	const auto FeatureLevel = View.GetFeatureLevel();
+	const auto ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
+
+	// Force all translucent editor primitives to standard translucent rendering
+	const ETranslucencyPass::Type TranslucencyPass = ETranslucencyPass::TPT_StandardTranslucency;
+
+	if (TranslucencyPass == ETranslucencyPass::TPT_StandardTranslucency)
+	{
+		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
+	}
+
+	View.EditorSimpleElementCollector.DrawBatchedElements(RHICmdList, DrawRenderState, View, EBlendModeFilter::Translucent, SDPG_Foreground);
+
+	DrawDynamicMeshPass(View, RHICmdList,
+		[&View, &DrawRenderState](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+		{
+			FEditorPrimitivesBasePassMeshProcessor PassMeshProcessor(
+				View.Family->Scene->GetRenderScene(),
+				View.GetFeatureLevel(),
+				&View,
+				DrawRenderState,
+				true,
+				DynamicMeshPassContext);
+
+			const uint64 DefaultBatchElementMask = ~0ull;
+
+			for (int32 MeshIndex = 0; MeshIndex < View.TopViewMeshElements.Num(); MeshIndex++)
+			{
+				const FMeshBatch& MeshBatch = View.TopViewMeshElements[MeshIndex];
+				PassMeshProcessor.AddMeshBatch(MeshBatch, DefaultBatchElementMask, nullptr);
+			}
+		});
+	
+	View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, false, 1.0f, EBlendModeFilter::Translucent);
 }
 
 void RenderForegroundEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, FMeshPassProcessorRenderState& DrawRenderState, FInstanceCullingManager& InstanceCullingManager)
 {
 	const auto FeatureLevel = View.GetFeatureLevel();
 	const auto ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
-	const bool bNeedToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(ShaderPlatform);
 
 	// Draw a first time the foreground primitive without depth test to over right depth from non-foreground editor primitives.
 	{
@@ -201,7 +236,7 @@ void RenderForegroundEditorPrimitives(FRHICommandList& RHICmdList, const FViewIn
 			}
 		});
 
-		View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, false);
+		View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, false);
 	}
 
 	// Draw a second time the foreground primitive with depth test to have proper depth test between foreground primitives.
@@ -230,7 +265,7 @@ void RenderForegroundEditorPrimitives(FRHICommandList& RHICmdList, const FViewIn
 			}
 		});
 
-		View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, false);
+		View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, View, false);
 	}
 }
 
@@ -265,7 +300,9 @@ const FViewInfo* CreateEditorPrimitiveView(const FViewInfo& ParentView, FIntRect
 BEGIN_SHADER_PARAMETER_STRUCT(FEditorPrimitivesPassParameters, )
 	SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
 	SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
+	SHADER_PARAMETER_STRUCT_REF(FMobileReflectionCaptureShaderData, MobileReflectionCaptureData)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FOpaqueBasePassUniformParameters, BasePass)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FTranslucentBasePassUniformParameters, TranslucentBasePass)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FMobileBasePassUniformParameters, MobileBasePass)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
 	RENDER_TARGET_BINDING_SLOTS()
@@ -281,7 +318,7 @@ FScreenPassTexture AddEditorPrimitivePass(
 	check(Inputs.SceneDepth.IsValid());
 	check(Inputs.BasePassType != FEditorPrimitiveInputs::EBasePassType::MAX);
 
-	const FSceneTextures& SceneTextures = FSceneTextures::Get(GraphBuilder);
+	const FSceneTextures& SceneTextures = View.GetSceneTextures();
 	const uint32 NumSamples = SceneTextures.Config.EditorPrimitiveNumSamples;
 	const FViewInfo* EditorView = CreateEditorPrimitiveView(View, Inputs.SceneColor.ViewRect, NumSamples);
 
@@ -327,6 +364,7 @@ FScreenPassTexture AddEditorPrimitivePass(
 	// Load the color target if it already exists.
 	const FScreenPassTextureViewport EditorPrimitivesViewport(EditorPrimitiveColor, Inputs.SceneColor.ViewRect);
 
+	RDG_GPU_STAT_SCOPE(GraphBuilder, EditorPrimitives);
 	RDG_EVENT_SCOPE(GraphBuilder, "CompositeEditorPrimitives %dx%d MSAA=%d",
 		EditorPrimitivesViewport.Rect.Width(),
 		EditorPrimitivesViewport.Rect.Height(),
@@ -458,11 +496,12 @@ FScreenPassTexture AddEditorPrimitivePass(
 			}
 		}
 
-		// Draws the editors primitives
+		// Draws the editors opaque primitives
 		{
 			FEditorPrimitivesPassParameters* PassParameters = GraphBuilder.AllocParameters<FEditorPrimitivesPassParameters>();
 			PassParameters->View = EditorView->GetShaderParameters();
 			PassParameters->ReflectionCapture = View.ReflectionCaptureUniformBuffer;
+			PassParameters->MobileReflectionCaptureData = View.MobileReflectionCaptureUniformBuffer;
 			PassParameters->InstanceCulling = InstanceCullingManager.GetDummyInstanceCullingUniformBuffer();
 			PassParameters->RenderTargets[0] = FRenderTargetBinding(EditorPrimitiveColor, ERenderTargetLoadAction::ELoad);
 			PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(EditorPrimitiveDepth, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilWrite);
@@ -485,7 +524,7 @@ FScreenPassTexture AddEditorPrimitivePass(
 					NumSamples),
 				PassParameters,
 				ERDGPassFlags::Raster,
-				[&View, &InstanceCullingManager, PassParameters, EditorView, EditorPrimitivesViewport, BasePassType, NumSamples](FRHICommandListImmediate& RHICmdList)
+				[&View, &InstanceCullingManager, PassParameters, EditorView, EditorPrimitivesViewport, BasePassType, NumSamples](FRHICommandList& RHICmdList)
 			{
 				RHICmdList.SetViewport(EditorPrimitivesViewport.Rect.Min.X, EditorPrimitivesViewport.Rect.Min.Y, 0.0f, EditorPrimitivesViewport.Rect.Max.X, EditorPrimitivesViewport.Rect.Max.Y, 1.0f);
 
@@ -559,6 +598,54 @@ FScreenPassTexture AddEditorPrimitivePass(
 			PixelShader,
 			PassParameters,
 			Output.ViewRect);
+	}
+
+	// Draws the editor translucent primitives on top of the opaque scene primitives
+	if (View.Family->EngineShowFlags.CompositeEditorPrimitives && View.bHasTranslucentViewMeshElements)
+	{
+		FEditorPrimitivesPassParameters* PassParameters = GraphBuilder.AllocParameters<FEditorPrimitivesPassParameters>();
+		PassParameters->View = EditorView->GetShaderParameters();
+		PassParameters->ReflectionCapture = View.ReflectionCaptureUniformBuffer;
+		PassParameters->MobileReflectionCaptureData = View.MobileReflectionCaptureUniformBuffer;
+		PassParameters->InstanceCulling = InstanceCullingManager.GetDummyInstanceCullingUniformBuffer();
+		PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
+		PassParameters->RenderTargets[0].SetLoadAction(ERenderTargetLoadAction::ELoad);
+
+		const FEditorPrimitiveInputs::EBasePassType BasePassType = Inputs.BasePassType;
+
+		if (BasePassType == FEditorPrimitiveInputs::EBasePassType::Deferred)
+		{
+			PassParameters->TranslucentBasePass = CreateTranslucentBasePassUniformBuffer(GraphBuilder, nullptr, *EditorView, 0);
+		}
+		else
+		{
+			PassParameters->MobileBasePass = CreateMobileBasePassUniformBuffer(GraphBuilder, *EditorView, EMobileBasePass::Translucent, EMobileSceneTextureSetupMode::None);
+		}
+
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("EditorPrimitives Translucent %dx%d MSAA=%d",
+				EditorPrimitivesViewport.Rect.Width(),
+				EditorPrimitivesViewport.Rect.Height(),
+				NumSamples),
+			PassParameters,
+			ERDGPassFlags::Raster,
+			[&View, &InstanceCullingManager, PassParameters, EditorView, EditorPrimitivesViewport, OutputViewportRect = Output.ViewRect, BasePassType, NumSamples](FRHICommandListImmediate& RHICmdList)
+			{
+				RHICmdList.SetViewport(OutputViewportRect.Min.X, OutputViewportRect.Min.Y, 0.0f, OutputViewportRect.Max.X, OutputViewportRect.Max.Y, 1.0f);
+
+				FMeshPassProcessorRenderState DrawRenderState;
+				DrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthRead_StencilNop);
+				DrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
+
+				// Draw foreground editor primitives.
+				{
+					SCOPED_DRAW_EVENTF(RHICmdList, EditorPrimitives,
+						TEXT("RenderViewEditorForegroundTranslucentPrimitives %dx%d msaa=%d"),
+						EditorPrimitivesViewport.Rect.Width(), EditorPrimitivesViewport.Rect.Height(), NumSamples);
+
+					RenderForegroundTranslucentEditorPrimitives(RHICmdList, *EditorView, DrawRenderState, InstanceCullingManager);
+				}
+			});
 	}
 
 	return MoveTemp(Output);

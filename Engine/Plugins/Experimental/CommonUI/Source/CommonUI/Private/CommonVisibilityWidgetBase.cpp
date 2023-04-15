@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonVisibilityWidgetBase.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonInputSubsystem.h"
+#include "CommonUIPrivate.h"
 #include "CommonUISubsystemBase.h"
 
 #include "Components/BorderSlot.h"
 #include "Widgets/Layout/SBox.h"
 #include "Styling/CoreStyle.h"
 #include "CommonInputBaseTypes.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonVisibilityWidgetBase)
 
 UDEPRECATED_UCommonVisibilityWidgetBase::UDEPRECATED_UCommonVisibilityWidgetBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -89,3 +92,4 @@ const TArray<FName>& UDEPRECATED_UCommonVisibilityWidgetBase::GetRegisteredPlatf
 {
 	return FCommonInputPlatformBaseData::GetRegisteredPlatforms();
 }
+

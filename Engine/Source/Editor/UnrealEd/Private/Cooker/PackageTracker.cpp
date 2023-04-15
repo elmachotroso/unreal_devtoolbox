@@ -2,6 +2,7 @@
 
 #include "PackageTracker.h"
 
+#include "CookOnTheFlyServerInterface.h"
 #include "CookPackageData.h"
 #include "CookPlatformManager.h"
 #include "ProfilingDebugging/CookStats.h"
@@ -89,7 +90,15 @@ namespace UE::Cook
 
 	TMap<UPackage*, FInstigator> FPackageTracker::GetNewPackages()
 	{
-		return MoveTemp(NewPackages);
+		TMap<UPackage*, FInstigator> Result = MoveTemp(NewPackages);
+		NewPackages.Reset();
+		bHasBeenConsumed = true;
+		return Result;
+	}
+
+	bool FPackageTracker::HasBeenConsumed() const
+	{
+		return bHasBeenConsumed;
 	}
 
 	void FPackageTracker::NotifyUObjectCreated(const class UObjectBase* Object, int32 Index)
@@ -100,6 +109,7 @@ namespace UE::Cook
 
 			if (Package->GetOuter() == nullptr)
 			{
+				LLM_SCOPE_BYTAG(Cooker);
 				if (LoadingPackageData && Package->GetFName() != LoadingPackageData->GetPackageName())
 				{
 					COOK_STAT(++Stats::NumInlineLoads);
@@ -122,7 +132,6 @@ namespace UE::Cook
 
 			LoadedPackages.Remove(Package);
 			NewPackages.Remove(Package);
-			PostLoadFixupPackages.Remove(Package);
 		}
 	}
 

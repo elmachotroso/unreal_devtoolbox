@@ -3,6 +3,7 @@
 #include "Customizations/DMXEntityFixturePatchDetails.h"
 
 #include "DMXEditorUtils.h"
+#include "DMXFixturePatchSharedData.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Widgets/SDMXEntityDropdownMenu.h"
 
@@ -27,15 +28,14 @@ void FDMXEntityFixturePatchDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 {
 	PropertyUtilities = DetailBuilder.GetPropertyUtilities();
 
-	AutoAssignAddressHandle = DetailBuilder.GetProperty(UDMXEntityFixturePatch::GetAutoAssignAddressPropertyNameChecked());
 	ParentFixtureTypeHandle = DetailBuilder.GetProperty(UDMXEntityFixturePatch::GetParentFixtureTypeTemplatePropertyNameChecked());
 	ActiveModeHandle = DetailBuilder.GetProperty(UDMXEntityFixturePatch::GetActiveModePropertyNameChecked());
 
-	// Bind to auto assign address changes to assign channels when it gets enabled
-	FSimpleDelegate OnAutoAssignAddressChangedDelegate = FSimpleDelegate::CreateSP(this, &FDMXEntityFixturePatchDetails::OnAutoAssignAddressChanged);
-	AutoAssignAddressHandle->SetOnPropertyValueChanged(OnAutoAssignAddressChangedDelegate);
+	// Handle Property changes
+	UniverseIDHandle = DetailBuilder.GetProperty(UDMXEntityFixturePatch::GetUniverseIDPropertyNameChecked());
+	UniverseIDHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FDMXEntityFixturePatchDetails::OnUniverseIDChanged));
 
-	// Handle mode changes of the parent fixture type
+	// Handle Fixture Type changes
 	UDMXEntityFixtureType::GetOnFixtureTypeChanged().AddSP(this, &FDMXEntityFixturePatchDetails::OnFixtureTypeChanged);
 
 	// Make a Fixture Types dropdown for the Fixture Type template property
@@ -60,7 +60,7 @@ void FDMXEntityFixturePatchDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 	GenerateActiveModesSource();
 
 	int32 ActiveMode;
-	if (ensure(ActiveModeHandle->GetValue(ActiveMode) == FPropertyAccess::Success))
+	if (ActiveModeHandle->GetValue(ActiveMode) == FPropertyAccess::Success)
 	{
 		const bool bActiveModeExists = ActiveModesSource.ContainsByPredicate([ActiveMode](TSharedPtr<uint32> Option) 
 			{
@@ -120,11 +120,12 @@ TSharedRef<SWidget> FDMXEntityFixturePatchDetails::GenerateActiveModeWidget(cons
 void FDMXEntityFixturePatchDetails::OnParentFixtureTypeChanged(UDMXEntity* NewTemplate) const
 {
 	ParentFixtureTypeHandle->SetValue(Cast<UDMXEntityFixtureType>(NewTemplate));
+	PropertyUtilities->ForceRefresh();
 }
 
 void FDMXEntityFixturePatchDetails::OnFixtureTypeChanged(const UDMXEntityFixtureType* FixtureType)
 {
-	if (IsValid(FixtureType) && !FixtureType->HasAnyFlags(RF_Transactional))
+	if (IsValid(FixtureType))
 	{
 		// Keep the active mode valid
 		int32 ActiveMode;
@@ -141,33 +142,26 @@ void FDMXEntityFixturePatchDetails::OnFixtureTypeChanged(const UDMXEntityFixture
 	}
 }
 
+void FDMXEntityFixturePatchDetails::OnUniverseIDChanged()
+{
+	const TSharedPtr<FDMXEditor> DMXEditor = DMXEditorPtr.Pin();
+	if (!DMXEditor.IsValid())
+	{
+		return;
+	}
+
+	int32 UniverseID;
+	if (UniverseIDHandle->GetValue(UniverseID) == FPropertyAccess::Success)
+	{
+		DMXEditor->GetFixturePatchSharedData()->SelectUniverse(UniverseID);
+	}
+}
+
 void FDMXEntityFixturePatchDetails::OnActiveModeChanged(const TSharedPtr<uint32> InSelectedMode, ESelectInfo::Type SelectInfo)
 {
 	if (InSelectedMode.IsValid())
 	{
 		ActiveModeHandle->SetValue(*InSelectedMode);
-	}
-}
-
-void FDMXEntityFixturePatchDetails::OnAutoAssignAddressChanged()
-{
-	bool bAutoAssignAddress;
-	if (ensure(AutoAssignAddressHandle->GetValue(bAutoAssignAddress) == FPropertyAccess::Success))
-	{
-		if (bAutoAssignAddress)
-		{
-			TArray<UObject*> OuterObjects;
-			AutoAssignAddressHandle->GetOuterObjects(OuterObjects);
-
-			TArray<UDMXEntityFixturePatch*> FixturePatches;
-			for (UObject* Object : OuterObjects)
-			{
-				UDMXEntityFixturePatch* Patch = CastChecked<UDMXEntityFixturePatch>(Object);
-				FixturePatches.Add(Patch);
-			}
-
-			FDMXEditorUtils::AutoAssignedAddresses(FixturePatches);
-		}
 	}
 }
 
@@ -198,7 +192,6 @@ TWeakObjectPtr<UDMXEntityFixtureType> FDMXEntityFixturePatchDetails::GetParentFi
 	}
 	return nullptr;
 }
-
 
 bool FDMXEntityFixturePatchDetails::IsParentFixtureTypeMultipleValues() const
 {
@@ -272,11 +265,14 @@ void FDMXEntityFixturePatchDetails::SetActiveMode(int32 ModeIndex)
 
 	if (OuterObjects.Num() > 0)
 	{
-		const FScopedTransaction Transaction(LOCTEXT("SetFixturePatchActiveModeTransaction", "Set DMX Fixture Patch Active Mode"));
-
 		for (UObject* Object : OuterObjects)
 		{
 			UDMXEntityFixturePatch* Patch = CastChecked<UDMXEntityFixturePatch>(Object);
+			if (Patch->GetActiveModeIndex() == ModeIndex)
+			{
+				continue;
+			}
+			
 			Patch->Modify();
 			Patch->PreEditChange(UDMXEntityFixturePatch::StaticClass()->FindPropertyByName(UDMXEntityFixturePatch::GetActiveModePropertyNameChecked()));
 

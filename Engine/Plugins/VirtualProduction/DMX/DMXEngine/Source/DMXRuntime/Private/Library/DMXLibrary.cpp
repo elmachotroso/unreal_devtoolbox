@@ -2,6 +2,7 @@
 #include "Library/DMXLibrary.h"
 
 #include "DMXRuntimeLog.h"
+#include "DMXRuntimeMainStreamObjectVersion.h"
 #include "DMXProtocolSettings.h"
 #include "DMXProtocolUtils.h"
 #include "Interfaces/IDMXProtocol.h"
@@ -11,13 +12,39 @@
 #include "Library/DMXEntity.h"
 #include "Library/DMXEntityController.h"
 #include "Library/DMXEntityFixturePatch.h"
+#include "Library/DMXImportGDTF.h"
+#include "MVR/DMXMVRGeneralSceneDescription.h"
 
+#include "Misc/Paths.h"
 
 #define LOCTEXT_NAMESPACE "DMXLibrary"
+
 
 FDMXOnEntityArrayChangedDelegate UDMXLibrary::OnEntitiesAddedDelegate;
 
 FDMXOnEntityArrayChangedDelegate UDMXLibrary::OnEntitiesRemovedDelegate;
+
+UDMXLibrary::UDMXLibrary()
+{
+	const FName GeneralSceneDescriptionName = FName(GetName() + TEXT("_MVRGeneralSceneDescription"));
+	GeneralSceneDescription = NewObject<UDMXMVRGeneralSceneDescription>(this, GeneralSceneDescriptionName);
+}
+
+void UDMXLibrary::Serialize(FArchive& Ar)
+{
+// More performant without. Instead Update the General Scene Description on demand when it's actually needed.
+// Serialize is only here because the 5.1.1 hotfix doens't allow a header change and can be removed in 5.2.
+// 
+// #if WITH_EDITORONLY_DATA
+//	if (Ar.IsSaving())
+//	{
+//		// Update the General Scene Description before saving it
+//		UpdateGeneralSceneDescription();
+//	}
+//#endif
+
+	Super::Serialize(Ar);
+}
 
 void UDMXLibrary::PostInitProperties()
 {
@@ -37,12 +64,20 @@ void UDMXLibrary::PostLoad()
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 #if WITH_EDITOR
+		// Upgrade from controllers to ports
 		bool bNeedsUpgradeFromControllersToPorts = Entities.ContainsByPredicate([](UDMXEntity* Entity) {
 			return Cast<UDMXEntityController>(Entity) != nullptr;
 			});
 		if (bNeedsUpgradeFromControllersToPorts)
 		{
 			UpgradeFromControllersToPorts();
+		}
+
+		// Upgrade to contain an MVR General Scene Description
+		if (!GeneralSceneDescription)
+		{
+			const FName GeneralSceneDescriptionName = FName(GetName() + TEXT("_MVRGeneralSceneDescription"));
+			GeneralSceneDescription = UDMXMVRGeneralSceneDescription::CreateFromDMXLibrary(*this, this, GeneralSceneDescriptionName);
 		}
 #endif 
 		UpdatePorts();
@@ -119,15 +154,20 @@ void UDMXLibrary::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 
 void UDMXLibrary::RegisterEntity(UDMXEntity* Entity)
 {
-	if (ensureMsgf(IsValid(Entity), TEXT("Trying to register Entity with DMX Library, but DMX Entity is not valid.")))
+	if (!ensureAlwaysMsgf(IsValid(Entity), TEXT("Trying to register Entity with DMX Library, but DMX Entity is not valid.")))
 	{
-		if (!Entities.Contains(Entity))
-		{
-			Entities.Add(Entity);
-			LastAddedEntity = Entity;
-			OnEntitiesAddedDelegate.Broadcast(this, TArray<UDMXEntity*>({ Entity }));
-		}	
+		return;
 	}
+
+	if (!ensureAlwaysMsgf(!Entities.Contains(Entity), TEXT("Trying to register Entity %s with DMX Library, but Entity was already added."), *Entity->Name))
+	{
+		return;
+	}
+
+	Entities.Add(Entity);
+	LastAddedEntity = Entity;
+
+	OnEntitiesAddedDelegate.Broadcast(this, TArray<UDMXEntity*>({ Entity }));
 }
 
 void UDMXLibrary::UnregisterEntity(UDMXEntity* Entity)
@@ -168,7 +208,7 @@ UDMXEntity* UDMXLibrary::GetOrCreateEntityObject(const FString& InName, TSubclas
 
 UDMXEntity* UDMXLibrary::FindEntity(const FString& InSearchName) const
 {
-	UDMXEntity*const* Entity = Entities.FindByPredicate([&InSearchName](const UDMXEntity* InEntity)->bool
+	TObjectPtr<UDMXEntity> const* Entity = Entities.FindByPredicate([&InSearchName](const UDMXEntity* InEntity)->bool
 		{
 			return InEntity && InEntity->GetDisplayName().Equals(InSearchName);
 		});
@@ -529,6 +569,24 @@ void UDMXLibrary::UpdatePorts()
 		}
 	}
 }
+
+void UDMXLibrary::SetMVRGeneralSceneDescription(UDMXMVRGeneralSceneDescription* NewGeneralSceneDescription)
+{
+	GeneralSceneDescription = NewGeneralSceneDescription;
+}
+
+#if WITH_EDITOR
+UDMXMVRGeneralSceneDescription* UDMXLibrary::UpdateGeneralSceneDescription()
+{
+	if (ensureAlwaysMsgf(GeneralSceneDescription, TEXT("Trying to update General Scene Description of %s, but the General Scene Description is not valid."), *GetName()))
+	{
+		GeneralSceneDescription->WriteDMXLibraryToGeneralSceneDescription(*this);
+		return GeneralSceneDescription;
+	}
+
+	return nullptr;
+}
+#endif // WITH_EDTIOR
 
 #if WITH_EDITOR
 void UDMXLibrary::UpgradeFromControllersToPorts()

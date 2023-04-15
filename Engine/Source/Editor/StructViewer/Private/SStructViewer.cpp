@@ -12,7 +12,7 @@
 #include "Misc/TextFilterExpressionEvaluator.h"
 
 #include "Editor.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SlateOptMacros.h"
 #include "EditorWidgetsModule.h"
 #include "Framework/Commands/UIAction.h"
@@ -30,9 +30,9 @@
 #include "Framework/Docking/TabManager.h"
 #include "SListViewSelectorDropdownMenu.h"
 
-#include "ARFilter.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "ContentBrowserDataDragDropOp.h"
 
@@ -146,8 +146,8 @@ public:
 	 * @param InStructPath	The path name of the struct to find the node for.
 	 * @return The node.
 	 */
-	TSharedPtr<FStructViewerNodeData> FindNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FName InStructPath);
-	TSharedPtr<FStructViewerNodeData> FindNodeByStructPath(const FName InStructPath)
+	TSharedPtr<FStructViewerNodeData> FindNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FSoftObjectPath& InStructPath);
+	TSharedPtr<FStructViewerNodeData> FindNodeByStructPath(const FSoftObjectPath& InStructPath)
 	{
 		return FindNodeByStructPath(GetStructRootNode(), InStructPath);
 	}
@@ -159,7 +159,7 @@ private:
 	/** Dirty the struct hierarchy so it will be rebuilt on the next call to UpdateStructHierarchy */
 	void DirtyStructHierarchy();
 
-	/** Populates the struct hierarchy tree, pulling all the loaded and unloaded structs into a master data tree */
+	/** Populates the struct hierarchy tree, pulling in all the loaded and unloaded structs. */
 	void PopulateStructHierarchy();
 
 	/**
@@ -170,8 +170,8 @@ private:
 	 *
 	 * @return Returns true if the struct was found and deleted successfully.
 	 */
-	bool FindAndRemoveNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FName InStructPath);
-	bool FindAndRemoveNodeByStructPath(const FName InStructPath)
+	bool FindAndRemoveNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FSoftObjectPath& InStructPath);
+	bool FindAndRemoveNodeByStructPath(const FSoftObjectPath& InStructPath)
 	{
 		return FindAndRemoveNodeByStructPath(GetStructRootNode(), InStructPath);
 	}
@@ -227,7 +227,7 @@ namespace StructViewer
 		 * @param InInitOptions		The struct viewer's options, holds the AllowedStructs and DisallowedStructs.
 		 * @param InStructPath		The path name to test against.
 		 */
-		bool IsStructAllowed_UnloadedStruct(const FStructViewerInitializationOptions& InInitOptions, const FName InStructPath)
+		bool IsStructAllowed_UnloadedStruct(const FStructViewerInitializationOptions& InInitOptions, const FSoftObjectPath& InStructPath)
 		{
 			if (InInitOptions.StructFilter.IsValid())
 			{
@@ -640,9 +640,9 @@ public:
 
 				ToolTip = IDocumentation::Get()->CreateToolTip(RestrictionToolTip, nullptr, "", "");
 			}
-			else if (!AssociatedNode->GetStructPath().IsNone())
+			else if (!AssociatedNode->GetStructPath().IsNull())
 			{
-				ToolTip = SNew(SToolTip).Text(FText::FromName(AssociatedNode->GetStructPath()));
+				ToolTip = SNew(SToolTip).Text(FText::FromString(AssociatedNode->GetStructPath().ToString()));
 			}
 
 			return ToolTip;
@@ -806,10 +806,13 @@ FStructHierarchy::~FStructHierarchy()
 	// Unregister with the Asset Registry to be informed when it is done loading up files.
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().OnFilesLoaded().RemoveAll(this);
-		AssetRegistryModule.Get().OnAssetAdded().RemoveAll(this);
-		AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+		}
 
 		// Unregister to have Populate called when doing a Reload.
 		FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
@@ -915,7 +918,7 @@ void FStructHierarchy::PopulateStructHierarchy()
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 		FARFilter Filter;
-		Filter.ClassNames.Add(UUserDefinedStruct::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(UUserDefinedStruct::StaticClass()->GetClassPathName());
 		Filter.bRecursiveClasses = true;
 
 		TArray<FAssetData> UserDefinedStructsList;
@@ -935,7 +938,7 @@ void FStructHierarchy::PopulateStructHierarchy()
 	PopulateStructViewerDelegate.Broadcast();
 }
 
-TSharedPtr<FStructViewerNodeData> FStructHierarchy::FindNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FName InStructPath)
+TSharedPtr<FStructViewerNodeData> FStructHierarchy::FindNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FSoftObjectPath& InStructPath)
 {
 	// Check if the current node is the struct path that is being searched for
 	if (InRootNode->GetStructPath() == InStructPath)
@@ -957,7 +960,7 @@ TSharedPtr<FStructViewerNodeData> FStructHierarchy::FindNodeByStructPath(const T
 	return nullptr;
 }
 
-bool FStructHierarchy::FindAndRemoveNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FName InStructPath)
+bool FStructHierarchy::FindAndRemoveNodeByStructPath(const TSharedRef<FStructViewerNodeData>& InRootNode, const FSoftObjectPath& InStructPath)
 {
 	// Check if the current node contains a child of struct path that is being searched for
 	if (InRootNode->RemoveChild(InStructPath))
@@ -989,7 +992,7 @@ void FStructHierarchy::AddAsset(const FAssetData& InAddedAssetData)
 		if (AssetClass && AssetClass->IsChildOf(UScriptStruct::StaticClass()))
 		{
 			// Make sure that the node does not already exist. There is a bit of double adding going on at times and this prevents it.
-			if (!FindNodeByStructPath(InAddedAssetData.ObjectPath))
+			if (!FindNodeByStructPath(InAddedAssetData.GetSoftObjectPath()))
 			{
 				// User defined structs are always root level structs
 				StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(InAddedAssetData));
@@ -1003,7 +1006,7 @@ void FStructHierarchy::AddAsset(const FAssetData& InAddedAssetData)
 
 void FStructHierarchy::RemoveAsset(const FAssetData& InRemovedAssetData)
 {
-	if (FindAndRemoveNodeByStructPath(InRemovedAssetData.ObjectPath))
+	if (FindAndRemoveNodeByStructPath(InRemovedAssetData.GetSoftObjectPath()))
 	{
 		// All viewers must refresh.
 		PopulateStructViewerDelegate.Broadcast();
@@ -1127,7 +1130,7 @@ void SStructViewer::Construct(const FArguments& InArgs, const FStructViewerIniti
 		.MaxDesiredHeight(800.0f)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush(InitOptions.bShowBackgroundBorder ? "ToolPanel.GroupBorder" : "NoBorder"))
+			.BorderImage(FAppStyle::GetBrush(InitOptions.bShowBackgroundBorder ? "ToolPanel.GroupBorder" : "NoBorder"))
 			[
 				SNew(SVerticalBox)
 				+SVerticalBox::Slot()
@@ -1140,7 +1143,7 @@ void SStructViewer::Construct(const FArguments& InArgs, const FStructViewerIniti
 					[
 						SNew(STextBlock)
 						.Visibility(bHasTitle ? EVisibility::Visible : EVisibility::Collapsed)
-						.ColorAndOpacity(FEditorStyle::GetColor("MultiboxHookColor"))
+						.ColorAndOpacity(FAppStyle::GetColor("MultiboxHookColor"))
 						.Text(InitOptions.ViewerTitleString)
 					]
 				]
@@ -1230,7 +1233,7 @@ void SStructViewer::Construct(const FArguments& InArgs, const FStructViewerIniti
 						SAssignNew(ViewOptionsComboButton, SComboButton)
 						.ContentPadding(0)
 						.ForegroundColor(this, &SStructViewer::GetViewButtonForegroundColor)
-						.ButtonStyle(FEditorStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
+						.ButtonStyle(FAppStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
 						.OnGetMenuContent(this, &SStructViewer::GetViewButtonContent)
 						.ButtonContent()
 						[
@@ -1239,7 +1242,7 @@ void SStructViewer::Construct(const FArguments& InArgs, const FStructViewerIniti
 							.AutoWidth()
 							.VAlign(VAlign_Center)
 							[
-								SNew(SImage).Image(FEditorStyle::GetBrush("GenericViewButton"))
+								SNew(SImage).Image(FAppStyle::GetBrush("GenericViewButton"))
 							]
 
 							+SHorizontalBox::Slot()
@@ -1438,7 +1441,7 @@ FSlateColor SStructViewer::GetViewButtonForegroundColor() const
 	static const FName InvertedForegroundName("InvertedForeground");
 	static const FName DefaultForegroundName("DefaultForeground");
 
-	return ViewOptionsComboButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
+	return ViewOptionsComboButton->IsHovered() ? FAppStyle::GetSlateColor(InvertedForegroundName) : FAppStyle::GetSlateColor(DefaultForegroundName);
 }
 
 TSharedRef<SWidget> SStructViewer::GetViewButtonContent()
@@ -1779,7 +1782,7 @@ void SStructViewer::Populate()
 		// Take the package names for the internal only structs and convert them into their UScriptStructs
 		for (const TSoftObjectPtr<const UScriptStruct>& InternalStructName : InternalStructNames)
 		{
-			const TSharedPtr<FStructViewerNodeData> StructNode = FStructHierarchy::Get().FindNodeByStructPath(*InternalStructName.ToString());
+			const TSharedPtr<FStructViewerNodeData> StructNode = FStructHierarchy::Get().FindNodeByStructPath(InternalStructName.ToSoftObjectPath());
 			if (StructNode.IsValid())
 			{
 				if (const UScriptStruct* Struct = StructNode->GetStruct())

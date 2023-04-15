@@ -5,9 +5,13 @@
 #include "Curves/CurveLinearColor.h"
 #include "NiagaraTypes.h"
 #include "ShaderParameterUtils.h"
+#include "NiagaraGPUSystemTick.h"
+#include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShader.h"
 #include "NiagaraComponent.h"
 #include "ShaderCompilerCore.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterface)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterface"
 
@@ -59,7 +63,7 @@ void UNiagaraDataInterface::ModifyCompilationEnvironment(EShaderPlatform ShaderP
 }
 #endif
 
-void UNiagaraDataInterface::GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
+void UNiagaraDataInterface::GetAssetTagsForContext(const UObject* InAsset,  FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
 {
 	UClass* Class = GetClass();
 
@@ -219,6 +223,145 @@ FSimpleMulticastDelegate& UNiagaraDataInterface::OnErrorsRefreshed()
 }
 
 #endif
+
+FRDGExternalAccessQueue& FNDIGpuComputeContext::GetRDGExternalAccessQueue() const
+{
+	return static_cast<const FNiagaraGpuComputeDispatch&>(ComputeDispatchInterface).GetCurrentPassExternalAccessQueue();
+}
+
+FNiagaraSystemInstanceID FNDIGpuComputePrePostStageContext::GetSystemInstanceID() const
+{
+	return SystemTick.SystemInstanceID;
+}
+
+FVector3f FNDIGpuComputePrePostStageContext::GetSystemLWCTile() const
+{
+	return SystemTick.SystemGpuComputeProxy->GetSystemLWCTile();
+}
+
+bool FNDIGpuComputePrePostStageContext::IsOutputStage() const
+{
+	check(DataInterfaceProxy);
+	return ComputeInstanceData.IsOutputStage(DataInterfaceProxy, SimStageData.StageIndex);
+}
+
+bool FNDIGpuComputePrePostStageContext::IsInputStage() const
+{
+	check(DataInterfaceProxy);
+	return ComputeInstanceData.IsInputStage(DataInterfaceProxy, SimStageData.StageIndex);
+}
+
+bool FNDIGpuComputePrePostStageContext::IsIterationStage() const
+{
+	check(DataInterfaceProxy);
+	return ComputeInstanceData.IsIterationStage(DataInterfaceProxy, SimStageData.StageIndex);
+}
+
+FRDGExternalAccessQueue& FNiagaraDataInterfaceSetShaderParametersContext::GetRDGExternalAccessQueue() const
+{
+	return static_cast<const FNiagaraGpuComputeDispatch&>(ComputeDispatchInterface).GetCurrentPassExternalAccessQueue();
+}
+
+FNiagaraSystemInstanceID FNiagaraDataInterfaceSetShaderParametersContext::GetSystemInstanceID() const
+{
+	return SystemTick.SystemInstanceID;
+}
+
+FVector3f FNiagaraDataInterfaceSetShaderParametersContext::GetSystemLWCTile() const
+{
+	return SystemTick.SystemGpuComputeProxy->GetSystemLWCTile();
+}
+
+bool FNiagaraDataInterfaceSetShaderParametersContext::IsResourceBound(const void* ResourceAddress) const
+{
+	const uint16 ByteOffset = uint16(uintptr_t(ResourceAddress) - uintptr_t(BaseParameters));
+	for (const FShaderParameterBindings::FResourceParameter& ResourceParameter : ShaderRef->Bindings.ResourceParameters)
+	{
+		if ( ResourceParameter.ByteOffset == ByteOffset )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FNiagaraDataInterfaceSetShaderParametersContext::IsParameterBound(const void* ParameterAddress) const
+{
+	const uint16 ByteOffset = uint16(uintptr_t(ParameterAddress) - uintptr_t(BaseParameters));
+	for (const FShaderParameterBindings::FParameter& Parameter : ShaderRef->Bindings.Parameters)
+	{
+		if (Parameter.ByteOffset > ByteOffset)
+		{
+			return false;
+		}
+
+		const uint16 Delta = ByteOffset - Parameter.ByteOffset;
+		if (Delta < Parameter.ByteSize)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FNiagaraDataInterfaceSetShaderParametersContext::IsStructBoundInternal(const void* StructAddress, uint32 StructSize) const
+{
+	const uint16 ByteStart = uint16(uintptr_t(StructAddress) - uintptr_t(BaseParameters));
+	const uint16 ByteEnd = ByteStart + uint16(StructSize);
+
+	// Loop over resources
+	for (const FShaderParameterBindings::FResourceParameter& ResourceParameter : ShaderRef->Bindings.ResourceParameters)
+	{
+		if (ResourceParameter.ByteOffset >= ByteEnd)
+		{
+			break;
+		}
+		if (ResourceParameter.ByteOffset >= ByteStart)
+		{
+			return true;
+		}
+	}
+
+	// Loop over parameters
+	for (const FShaderParameterBindings::FParameter& Parameter : ShaderRef->Bindings.Parameters)
+	{
+		if (Parameter.ByteOffset >= ByteEnd)
+		{
+			break;
+		}
+
+		if (Parameter.ByteOffset >= ByteStart)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+uint16 FNiagaraDataInterfaceSetShaderParametersContext::GetParameterIncludedStructInternal(const FShaderParametersMetadata* StructMetadata) const
+{
+	for (const FNiagaraDataInterfaceStructIncludeInfo& StructIncludeInfo : ShaderParametersMetadata.StructIncludeInfos)
+	{
+		if (StructIncludeInfo.StructMetadata == StructMetadata)
+		{
+			return StructIncludeInfo.ParamterOffset;
+		}
+	}
+
+	UE_LOG(LogNiagara, Fatal, TEXT("Failed to find Included Parameter Struct '%s' in parameters"), StructMetadata->GetStructTypeName());
+	return 0;
+}
+
+bool FNiagaraDataInterfaceSetShaderParametersContext::IsOutputStage() const
+{
+	return ComputeInstanceData.IsOutputStage(DataInterfaceProxy, SimStageData.StageIndex);
+}
+
+bool FNiagaraDataInterfaceSetShaderParametersContext::IsIterationStage() const
+{
+	return ComputeInstanceData.IsIterationStage(DataInterfaceProxy, SimStageData.StageIndex);
+}
 
 #undef LOCTEXT_NAMESPACE
 

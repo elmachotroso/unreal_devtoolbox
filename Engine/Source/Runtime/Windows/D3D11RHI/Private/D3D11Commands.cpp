@@ -88,7 +88,7 @@ void FD3D11DynamicRHI::RHIBeginUpdateMultiFrameResource(FRHITexture* RHITexture)
 {
 	if (!IsRHIDeviceNVIDIA() || GNumAlternateFrameRenderingGroups == 1) return;
 
-	FD3D11TextureBase* Texture = GetD3D11TextureFromRHITexture(RHITexture);
+	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(RHITexture);
 
 	if (!Texture)
 	{
@@ -112,7 +112,7 @@ void FD3D11DynamicRHI::RHIEndUpdateMultiFrameResource(FRHITexture* RHITexture)
 {
 	if (!IsRHIDeviceNVIDIA() || GNumAlternateFrameRenderingGroups == 1) return;
 
-	FD3D11TextureBase* Texture = GetD3D11TextureFromRHITexture(RHITexture);
+	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(RHITexture);
 
 	if (!Texture || !Texture->GetIHVResourceHandle())
 	{
@@ -272,11 +272,44 @@ void FD3D11DynamicRHI::RHISetViewport(float MinX, float MinY, float MinZ, float 
 
 static void ValidateScissorRect(const D3D11_VIEWPORT& Viewport, const D3D11_RECT& ScissorRect)
 {
-	ensure(ScissorRect.left   >= (LONG)Viewport.TopLeftX);
-	ensure(ScissorRect.top    >= (LONG)Viewport.TopLeftY);
-	ensure(ScissorRect.right  <= (LONG)Viewport.TopLeftX + (LONG)Viewport.Width);
+	ensure(ScissorRect.left >= (LONG)Viewport.TopLeftX);
+	ensure(ScissorRect.top >= (LONG)Viewport.TopLeftY);
+	ensure(ScissorRect.right <= (LONG)Viewport.TopLeftX + (LONG)Viewport.Width);
 	ensure(ScissorRect.bottom <= (LONG)Viewport.TopLeftY + (LONG)Viewport.Height);
 	ensure(ScissorRect.left <= ScissorRect.right && ScissorRect.top <= ScissorRect.bottom);
+}
+
+void FD3D11DynamicRHI::RHISetStereoViewport(float LeftMinX, float RightMinX, float LeftMinY, float RightMinY, float MinZ, float LeftMaxX, float RightMaxX, float LeftMaxY, float RightMaxY, float MaxZ)
+{
+	// Set up both viewports
+	D3D11_VIEWPORT StereoViewports[2] = {};
+
+	StereoViewports[0].TopLeftX = FMath::FloorToInt(LeftMinX);
+	StereoViewports[0].TopLeftY = FMath::FloorToInt(LeftMinY);
+	StereoViewports[0].Width = FMath::CeilToInt(LeftMaxX - LeftMinX);
+	StereoViewports[0].Height = FMath::CeilToInt(LeftMaxY - LeftMinY);
+	StereoViewports[0].MinDepth = MinZ;
+	StereoViewports[0].MaxDepth = MaxZ;
+
+	StereoViewports[1].TopLeftX = FMath::FloorToInt(RightMinX);
+	StereoViewports[1].TopLeftY = FMath::FloorToInt(RightMinY);
+	StereoViewports[1].Width = FMath::CeilToInt(RightMaxX - RightMinX);
+	StereoViewports[1].Height = FMath::CeilToInt(RightMaxY - RightMinY);
+	StereoViewports[1].MinDepth = MinZ;
+	StereoViewports[1].MaxDepth = MaxZ;
+
+	D3D11_RECT ScissorRects[2] =
+	{
+		{ StereoViewports[0].TopLeftX, StereoViewports[0].TopLeftY, StereoViewports[0].TopLeftX + StereoViewports[0].Width, StereoViewports[0].TopLeftY + StereoViewports[0].Height },
+		{ StereoViewports[1].TopLeftX, StereoViewports[1].TopLeftY, StereoViewports[1].TopLeftX + StereoViewports[1].Width, StereoViewports[1].TopLeftY + StereoViewports[1].Height }
+	};
+
+	ValidateScissorRect(StereoViewports[0], ScissorRects[0]);
+	ValidateScissorRect(StereoViewports[1], ScissorRects[1]);
+
+	StateCache.SetViewports(2, StereoViewports);
+	// Set the scissor rect appropriately.
+	Direct3DDeviceIMContext->RSSetScissorRects(2, ScissorRects);
 }
 
 void FD3D11DynamicRHI::RHISetScissorRect(bool bEnable,uint32 MinX,uint32 MinY,uint32 MaxX,uint32 MaxY)
@@ -352,7 +385,7 @@ void FD3D11DynamicRHI::RHISetBoundShaderState(FRHIBoundShaderState* BoundShaderS
 
 void FD3D11DynamicRHI::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI,uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
-	FD3D11TextureBase* NewTexture = GetD3D11TextureFromRHITexture(NewTextureRHI);
+	FD3D11Texture* NewTexture = GetD3D11TextureFromRHITexture(NewTextureRHI);
 	ID3D11ShaderResourceView* ShaderResourceView = NewTexture ? NewTexture->GetShaderResourceView() : nullptr;
 
 	switch (ShaderRHI->GetFrequency())
@@ -387,7 +420,7 @@ void FD3D11DynamicRHI::RHISetShaderTexture(FRHIComputeShader* ComputeShaderRHI,u
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 
-	FD3D11TextureBase* NewTexture = GetD3D11TextureFromRHITexture(NewTextureRHI);
+	FD3D11Texture* NewTexture = GetD3D11TextureFromRHITexture(NewTextureRHI);
 	ID3D11ShaderResourceView* ShaderResourceView = NewTexture ? NewTexture->GetShaderResourceView() : nullptr;
 	SetShaderResourceView<SF_Compute>(NewTexture, ShaderResourceView, TextureIndex);
 }
@@ -894,7 +927,7 @@ void FD3D11DynamicRHI::SetRenderTargets(
 	const FRHIRenderTargetView* NewRenderTargetsRHI,
 	const FRHIDepthRenderTargetView* NewDepthStencilTargetRHI)
 {
-	FD3D11TextureBase* NewDepthStencilTarget = GetD3D11TextureFromRHITexture(NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->Texture : nullptr);
+	FD3D11Texture* NewDepthStencilTarget = GetD3D11TextureFromRHITexture(NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->Texture : nullptr);
 
 	check(NewNumSimultaneousRenderTargets <= MaxSimultaneousRenderTargets);
 
@@ -929,7 +962,8 @@ void FD3D11DynamicRHI::SetRenderTargets(
 		{
 			int32 RTMipIndex = NewRenderTargetsRHI[RenderTargetIndex].MipIndex;
 			int32 RTSliceIndex = NewRenderTargetsRHI[RenderTargetIndex].ArraySliceIndex;
-			FD3D11TextureBase* NewRenderTarget = GetD3D11TextureFromRHITexture(NewRenderTargetsRHI[RenderTargetIndex].Texture);
+			
+			FD3D11Texture* NewRenderTarget = GetD3D11TextureFromRHITexture(NewRenderTargetsRHI[RenderTargetIndex].Texture);
 			RenderTargetView = NewRenderTarget ? NewRenderTarget->GetRenderTargetView(RTMipIndex, RTSliceIndex) : nullptr;
 
 			ensureMsgf(RenderTargetView, TEXT("Texture being set as render target has no RTV"));
@@ -1185,9 +1219,6 @@ inline int32 SetShaderResourcesFromBuffer_Surface(FD3D11DynamicRHI* RESTRICT D3D
 			const uint16 ResourceIndex = FRHIResourceTableEntry::GetResourceIndex(ResourceInfo);
 			const uint8 BindIndex = FRHIResourceTableEntry::GetBindIndex(ResourceInfo);
 
-			FD3D11BaseShaderResource* ShaderResource = nullptr;
-			ID3D11ShaderResourceView* D3D11Resource = nullptr;
-
 			check(ResourceIndex < NumResourcesInTable);
 			FRHITexture* TextureRHI = (FRHITexture*)Resources[ResourceIndex].GetReference();
 			if (!TextureRHI)
@@ -1195,9 +1226,9 @@ inline int32 SetShaderResourcesFromBuffer_Surface(FD3D11DynamicRHI* RESTRICT D3D
 				UE_LOG(LogD3D11RHI, Fatal, TEXT("Null texture (resource %d bind %d) on UB Layout %s"), ResourceIndex, BindIndex, LayoutName);
 			}
 			TextureRHI->SetLastRenderTime(CurrentTime);
-			FD3D11TextureBase* TextureD3D11 = GetD3D11TextureFromRHITexture(TextureRHI);
-			ShaderResource = TextureD3D11->GetBaseShaderResource();
-			D3D11Resource = TextureD3D11->GetShaderResourceView();
+
+			FD3D11Texture* TextureD3D11 = GetD3D11TextureFromRHITexture(TextureRHI);
+			ID3D11ShaderResourceView* D3D11Resource = TextureD3D11->GetShaderResourceView();
 
 #if ENABLE_RHI_VALIDATION
 			if (D3D11RHI->Tracker)
@@ -1208,12 +1239,12 @@ inline int32 SetShaderResourcesFromBuffer_Surface(FD3D11DynamicRHI* RESTRICT D3D
 
 				// Textures bound here only have their "common" plane accessible. Stencil etc is ignored.
 				// (i.e. only access the color plane of a color texture, or depth plane of a depth texture)
-				D3D11RHI->Tracker->Assert(TextureRHI->GetViewIdentity(0, 0, 0, 0, uint32(RHIValidation::EResourcePlane::Common), 1), Access);
+				D3D11RHI->Tracker->Assert(TextureD3D11->GetViewIdentity(0, 0, 0, 0, uint32(RHIValidation::EResourcePlane::Common), 1), Access);
 			}
 #endif
 
 			// todo: could coalesce adjacent bound resources.
-			SetResource<ShaderFrequency>(D3D11RHI, StateCache, BindIndex, ShaderResource, D3D11Resource);
+			SetResource<ShaderFrequency>(D3D11RHI, StateCache, BindIndex, TextureD3D11, D3D11Resource);
 			NumSetCalls++;
 			ResourceInfo = *ResourceInfos++;
 		} while (FRHIResourceTableEntry::GetUniformBufferIndex(ResourceInfo) == BufferIndex);
@@ -1845,16 +1876,31 @@ void FD3D11DynamicRHI::EnableDepthBoundsTest(bool bEnable,float MinDepth,float M
 
 void FD3D11DynamicRHI::RHISubmitCommandsHint()
 {
-
 }
+
 IRHICommandContext* FD3D11DynamicRHI::RHIGetDefaultContext()
 {
 	return this;
 }
 
-IRHICommandContextContainer* FD3D11DynamicRHI::RHIGetCommandContextContainer(int32 Index, int32 Num)
+IRHIComputeContext* FD3D11DynamicRHI::RHIGetCommandContext(ERHIPipeline Pipeline, FRHIGPUMask GPUMask)
 {
+	UE_LOG(LogRHI, Fatal, TEXT("FD3D11DynamicRHI::RHIGetCommandContext should never be called. D3D11 RHI does not implement parallel command list execution."));
 	return nullptr;
+}
+
+IRHIPlatformCommandList* FD3D11DynamicRHI::RHIFinalizeContext(IRHIComputeContext* Context)
+{
+	// "Context" will always be the default context, since we don't implement parallel execution.
+	// D3D11 uses an immediate context, there's nothing to do here. Executed commands will have already reached the driver.
+
+	// Returning nullptr indicates that we don't want RHISubmitCommandLists to be called.
+	return nullptr;
+}
+
+void FD3D11DynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("FD3D11DynamicRHI::RHISubmitCommandLists should never be called. D3D11 RHI does not implement parallel command list execution."));
 }
 
 void FD3D11DynamicRHI::EnableUAVOverlap()

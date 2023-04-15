@@ -2,26 +2,52 @@
 
 #include "K2Node_GetSubsystem.h"
 
-#include "KismetCompiler.h"
-#include "BlueprintNodeSpawner.h"
-#include "K2Node_CallFunction.h"
-#include "EditorCategoryUtils.h"
-#include "Kismet2/BlueprintEditorUtils.h"
 #include "BlueprintActionDatabaseRegistrar.h"
-
+#include "BlueprintEditorSettings.h"
+#include "BlueprintNodeSpawner.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "Editor/UnrealEdEngine.h"
+#include "EditorSubsystem.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "GameFramework/PlayerController.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMath.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CallFunction.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "KismetCompiler.h"
+#include "Misc/AssertionMacros.h"
+#include "Preferences/UnrealEdOptions.h"
+#include "SourceCodeNavigation.h"
+#include "Styling/AppStyle.h"
+#include "Subsystems/AudioEngineSubsystem.h"
+#include "Subsystems/EditorSubsystemBlueprintLibrary.h"
 #include "Subsystems/EngineSubsystem.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
-#include "Subsystems/AudioEngineSubsystem.h"
-#include "EditorSubsystem.h"
+#include "Subsystems/Subsystem.h"
 #include "Subsystems/SubsystemBlueprintLibrary.h"
-#include "Subsystems/EditorSubsystemBlueprintLibrary.h"
 #include "Subsystems/WorldSubsystem.h"
-#include "GameFramework/PlayerController.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "Subsystems/WorldSubsystem.h"
-#include "SourceCodeNavigation.h"
-#include "BlueprintEditorSettings.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnrealEdGlobals.h"
+
+class FArchive;
+class UEdGraph;
 
 // ************************************************************************************
 //    UK2Node_GetSubsystem
@@ -75,7 +101,7 @@ bool UK2Node_GetSubsystem::IsCompatibleWithGraph(const UEdGraph* TargetGraph) co
 FSlateIcon UK2Node_GetSubsystem::GetIconAndTint(FLinearColor& OutColor) const
 {
 	OutColor = GetNodeTitleColor();
-	static FSlateIcon Icon("EditorStyle", "Kismet.AllClasses.FunctionIcon");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "Kismet.AllClasses.FunctionIcon");
 	return Icon;
 }
 
@@ -737,20 +763,27 @@ FText UK2Node_GetEditorSubsystem::GetTooltipText() const
 
 bool UK2Node_GetSubsystem::CanJumpToDefinition() const
 {
-	return CustomClass != nullptr;
+	if (CustomClass && ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
+	{
+		return true;
+	}
+	return Super::CanJumpToDefinition();
 }
 
 void UK2Node_GetSubsystem::JumpToDefinition() const
 {
 	bool bSucceeded = false;
 	
-	// Attempt to navigate to the header file where the class is defined if the 
-	// blueprint preferences allow for it
-	if (GetDefault<UBlueprintEditorSettings>()->bNavigateToNativeFunctionsFromCallNodes)
+	if (CustomClass && ensure(GUnrealEd) && GUnrealEd->GetUnrealEdOptions()->IsCPPAllowed())
 	{
-		if (FSourceCodeNavigation::CanNavigateToClass(CustomClass))
+		// Attempt to navigate to the header file where the class is defined if the 
+		// blueprint preferences allow for it
+		if (GetDefault<UBlueprintEditorSettings>()->bNavigateToNativeFunctionsFromCallNodes)
 		{
-			bSucceeded = FSourceCodeNavigation::NavigateToClass(CustomClass);
+			if (FSourceCodeNavigation::CanNavigateToClass(CustomClass))
+			{
+				bSucceeded = FSourceCodeNavigation::NavigateToClass(CustomClass);
+			}
 		}
 	}
 

@@ -25,6 +25,8 @@
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "GameFramework/PlayerInput.h"
+#include "Physics/AsyncPhysicsData.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
 #include "PlayerController.generated.h"
 
 class ACameraActor;
@@ -36,13 +38,13 @@ class FDebugDisplayInfo;
 class UActorChannel;
 class UCheatManager;
 class UGameViewportClient;
-class UInterpTrackInstDirector;
 class ULocalMessage;
 class UNetConnection;
 class UPlayer;
 class UPrimitiveComponent;
 struct FActiveHapticFeedbackEffect;
 struct FCollisionQueryParams;
+class UAsyncPhysicsInputComponent;
 
 /** Default delegate that provides an implementation for those that don't have special needs other than a toggle */
 DECLARE_DELEGATE_RetVal(bool, FCanUnpause);
@@ -110,6 +112,8 @@ protected:
 	/** Derived classes override this function to apply the necessary settings for the desired input mode */
 	virtual void ApplyInputMode(class FReply& SlateOperations, class UGameViewportClient& GameViewportClient) const = 0;
 
+	virtual bool ShouldFlushInputOnViewportFocus() const { return true; };
+
 	/** Utility functions for derived classes. */
 	void SetFocusAndLocking(FReply& SlateOperations, TSharedPtr<class SWidget> InWidgetToFocus, bool bLockMouseToViewport, TSharedRef<class SViewport> InViewportWidget) const;
 
@@ -176,6 +180,8 @@ struct ENGINE_API FInputModeGameAndUI : public FInputModeDataBase
 	/** Whether to hide the cursor during temporary mouse capture caused by a mouse down */
 	FInputModeGameAndUI& SetHideCursorDuringCapture(bool InHideCursorDuringCapture) { bHideCursorDuringCapture = InHideCursorDuringCapture; return *this; }
 
+	virtual bool ShouldFlushInputOnViewportFocus() const override { return false; }
+
 	FInputModeGameAndUI()
 		: WidgetToFocus()
 		, MouseLockMode(EMouseLockMode::DoNotLock)
@@ -207,6 +213,16 @@ protected:
 	virtual void ApplyInputMode(FReply& SlateOperations, class UGameViewportClient& GameViewportClient) const override;
 };
 
+USTRUCT()
+struct FAsyncPhysicsTimestamp
+{
+	GENERATED_BODY()
+	UPROPERTY()
+	int32 ServerFrame = INDEX_NONE;
+
+	UPROPERTY()
+	int32 LocalFrame = INDEX_NONE;
+};
 
 /**
  * PlayerControllers are used by human players to control Pawns.
@@ -221,7 +237,7 @@ protected:
  * @see https://docs.unrealengine.com/latest/INT/Gameplay/Framework/Controller/PlayerController/
  */
 UCLASS(config=Game, BlueprintType, Blueprintable, meta=(ShortTooltip="A Player Controller is an actor responsible for controlling a Pawn used by the player."))
-class ENGINE_API APlayerController : public AController
+class ENGINE_API APlayerController : public AController, public IWorldPartitionStreamingSourceProvider
 {
 	GENERATED_BODY()
 
@@ -236,10 +252,6 @@ public:
 	/** Used in net games so client can acknowledge it possessed a specific pawn. */
 	UPROPERTY()
 	TObjectPtr<APawn> AcknowledgedPawn;
-
-	/** Director track that's currently possessing this player controller, or none if not possessed. */
-	UPROPERTY(Transient)
-	TObjectPtr<UInterpTrackInstDirector> ControllingDirTrackInst;
 
 	/** Heads up display associated with this PlayerController. */
 	UPROPERTY()
@@ -340,7 +352,29 @@ public:
 	TArray<FForceFeedbackEffectHistoryEntry> ForceFeedbackEffectHistoryEntries;
 #endif
 
+protected:
+#if UE_WITH_IRIS
+	virtual void BeginReplication() override;
+#endif // UE_WITH_IRIS
+	/** The type of async physics data object to use*/
+	UPROPERTY(EditDefaultsOnly, Category=PlayerController)
+	TSubclassOf<UAsyncPhysicsData> AsyncPhysicsDataClass;
+
+	/** Get the async physics data to write to. This data will make its way to the async physics tick on client and server. Should not be used during async tick */
+	UFUNCTION(BlueprintPure, Category = PlayerController)
+	UAsyncPhysicsData* GetAsyncPhysicsDataToWrite() const;
+
+	/** Get the async physics data to execute logic off of. This data should not be modified and will NOT make its way back. Must be used during async tick */
+	UFUNCTION(BlueprintPure, Category = PlayerController)
+	const UAsyncPhysicsData* GetAsyncPhysicsDataToConsume() const;
+
 private:
+
+	UPROPERTY(ReplicatedUsing=OnRep_AsyncPhysicsDataComponent)
+	TObjectPtr<UAsyncPhysicsInputComponent> AsyncPhysicsDataComponent;
+
+	UFUNCTION()
+	void OnRep_AsyncPhysicsDataComponent();
 
 	struct FDynamicForceFeedbackAction
 	{
@@ -505,6 +539,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Game|Feedback")
 	uint32 bForceFeedbackEnabled:1;
 
+	/** Whether or not to consider input from motion sources (tilt, acceleration, etc) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetMotionControlsEnabled, Category="Input")
+	uint32 bEnableMotionControls:1;
+
+	UFUNCTION(BlueprintSetter)
+	void SetMotionControlsEnabled(bool bEnabled);
+
 	/** Whether the PlayerController should be used as a World Partiton streaming source. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition)
 	uint32 bEnableStreamingSource:1;
@@ -516,6 +557,18 @@ public:
 	/** Whether the PlayerController streaming source should block on slow streaming. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta=(EditCondition="bEnableStreamingSource"))
 	uint32 bStreamingSourceShouldBlockOnSlowStreaming:1;
+
+	/** PlayerController streaming source priority. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta=(EditCondition="bEnableStreamingSource"))
+	EStreamingSourcePriority StreamingSourcePriority;
+
+	/** Color used for debugging. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta = (EditCondition = "bEnableStreamingSource"))
+	FColor StreamingSourceDebugColor;
+
+	/** Optional aggregated shape list used to build a custom shape for the streaming source. When empty, fallbacks sphere shape with a radius equal to grid's loading range. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta = (EditCondition = "bEnableStreamingSource"))
+	TArray<FStreamingSourceShape> StreamingSourceShapes;
 
 	/** Scale applied to force feedback values */
 	UPROPERTY(config)
@@ -733,6 +786,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = WorldPartition)
 	virtual bool StreamingSourceShouldBlockOnSlowStreaming() const { return bEnableStreamingSource && bStreamingSourceShouldBlockOnSlowStreaming; }
 
+	/**
+	* Gets the streaming source priority.
+	* Default implementation returns StreamingSourcePriority but can be overriden in child classes.
+	* @return the streaming source priority.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual EStreamingSourcePriority GetStreamingSourcePriority() const { return StreamingSourcePriority; }
+
+	/**
+	* Gets the streaming source location and rotation.
+	* Default implementation returns APlayerController::GetPlayerViewPoint but can be overriden in child classes.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual void GetStreamingSourceLocationAndRotation(FVector& OutLocation, FRotator& OutRotation) const;
+	
+	/**
+	* Gets the streaming source priority.
+	* Default implementation returns StreamingSourceShapes but can be overriden in child classes.
+	* @return the streaming source priority.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual void GetStreamingSourceShapes(TArray<FStreamingSourceShape>& OutShapes) const;
+
+	/**
+	 * Gets the PlayerController's streaming source
+	 * @return the streaming source.
+	 */
+	virtual bool GetStreamingSource(FWorldPartitionStreamingSource& OutStreamingSource) const final;
+
 protected:
 	/** Pawn has been possessed, so changing state to NAME_Playing. Start it walking and begin playing with it. */
 	virtual void BeginPlayingState();
@@ -787,12 +869,30 @@ public:
 	 */
 	virtual void PostSeamlessTravel();
 
+	/**
+	 * Called when player controller gets added to its owning world player controller list. 
+	 */
+	void OnAddedToPlayerControllerList();
+
+	/**
+	 * Called when player controller gets removed from its owning world player controller list.
+	 */
+	void OnRemovedFromPlayerControllerList();
+
 	/** 
 	 * Tell the client to enable or disable voice chat (not muting)
 	 * @param bEnable enable or disable voice chat
 	 */
 	UFUNCTION(Reliable, Client)
 	virtual void ClientEnableNetworkVoice(bool bEnable);
+
+	/** 
+	 * Acknowledge received LevelVisibilityTransactionId
+	 * @param PackageName - Identifying the level that we are acknowledging levelvisibility for
+	 * @param TransactionId - TransactionId being acknowledged
+	 */
+	UFUNCTION(Reliable, Client)
+	void ClientAckUpdateLevelVisibility(FName PackageName, FNetLevelVisibilityTransactionId TransactionId, bool bClientAckCanMakeVisible);
 
 	/** Enable voice chat transmission */
 	void StartTalking();
@@ -970,20 +1070,6 @@ public:
 	UFUNCTION(Reliable, Client)
 	void ClientMessage(const FString& S, FName Type = NAME_None, float MsgLifeTime = 0.f);
 
-	/** Play the indicated CameraAnim on this camera.
-	 * @param AnimToPlay - Camera animation to play
-	 * @param Scale - "Intensity" scalar.  This is the scale at which the anim was first played.
-	 * @param Rate -  Multiplier for playback rate.  1.0 = normal.
-	 * @param BlendInTime - Time to interpolate in from zero, for smooth starts
-	 * @param BlendOutTime - Time to interpolate out to zero, for smooth finishes
-	 * @param bLoop - True if the animation should loop, false otherwise
-	 * @param bRandomStartTime - Whether or not to choose a random time to start playing.  Only really makes sense for bLoop = true
-	 * @param Space - Animation play area
-	 * @param CustomPlaySpace - Matrix used when Space = CAPS_UserDefined
-	 */
-	UFUNCTION(unreliable, client, BlueprintCallable, Category="Game|Feedback")
-	void ClientPlayCameraAnim(class UCameraAnim* AnimToPlay, float Scale=1.f, float Rate=1.f, float BlendInTime=0.f, float BlendOutTime=0.f, bool bLoop=false, bool bRandomStartTime=false, ECameraShakePlaySpace Space=ECameraShakePlaySpace::CameraLocal, FRotator CustomPlaySpace=FRotator::ZeroRotator);
-
 	/** 
 	 * Play Camera Shake 
 	 * @param Shake - Camera shake animation to play
@@ -1148,10 +1234,6 @@ public:
 	/** Removes all Camera Lens Effects. */
 	UFUNCTION(reliable, client, BlueprintCallable, Category="Game|Feedback")
 	virtual void ClientClearCameraLensEffects();
-
-	/** Stop camera animation on client. */
-	UFUNCTION(Reliable, Client)
-	void ClientStopCameraAnim(class UCameraAnim* AnimToStop);
 
 	/** Stop camera shake on client.  */
 	UFUNCTION(reliable, client, BlueprintCallable, Category="Game|Feedback")
@@ -1322,9 +1404,11 @@ public:
 	 * @param bNewShouldBeVisible - Whether the level should be visible if it is loaded	
 	 * @param bNewShouldBlockOnLoad - Whether we want to force a blocking load
 	 * @param LODIndex				- Current LOD index for a streaming level
+	 * @param TransactionId			- Optional parameter used when communicating LevelVisibility changes between server and client
 	 */
 	UFUNCTION(Reliable, Client)
-	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex);
+	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex, FNetLevelVisibilityTransactionId TransactionId);
+	void ClientUpdateLevelStreamingStatus(FName PackageName, bool bNewShouldBeLoaded, bool bNewShouldBeVisible, bool bNewShouldBlockOnLoad, int32 LODIndex) { ClientUpdateLevelStreamingStatus(PackageName, bNewShouldBeLoaded, bNewShouldBeVisible, bNewShouldBlockOnLoad, LODIndex, FNetLevelVisibilityTransactionId()); }
 
 	/**
 	 * Replicated Update streaming status.  This version allows for the streaming state of many levels to be sent in a single RPC.
@@ -1419,17 +1503,6 @@ public:
 	 */
 	UFUNCTION(reliable, server, WithValidation, SealedEvent)
 	void ServerUpdateLevelVisibility(const FUpdateLevelVisibilityLevelInfo& LevelVisibility);
-
-	UE_DEPRECATED(4.24, "Use ServerUpdateLevelVisibility that accepts a LevelVisibility struct.")
-	void ServerUpdateLevelVisibility(FName PackageName, bool bIsVisible)
-	{
-		FUpdateLevelVisibilityLevelInfo LevelVisibility;
-		LevelVisibility.PackageName = PackageName;
-		LevelVisibility.FileName = PackageName;
-		LevelVisibility.bIsVisible = bIsVisible;
-
-		ServerUpdateLevelVisibility(LevelVisibility);
-	}
 
 	/** 
 	 * Called when the client adds/removes a streamed level.  This version of the function allows you to pass the state of 
@@ -1562,6 +1635,29 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Game|Player", meta=(Keywords = "Camera"))
 	virtual void SetViewTargetWithBlend(class AActor* NewViewTarget, float BlendTime = 0, enum EViewTargetBlendFunction BlendFunc = VTBlend_Linear, float BlendExp = 0, bool bLockOutgoing = false);
 
+	/** 
+	* Make this player a member of a netcondition group. 
+	* Any subobject registered in the group may now be replicated to this player's connection.
+	*/
+	void IncludeInNetConditionGroup(FName NetGroup);
+
+	/** Remove this player from a netcondition group. */
+	void RemoveFromNetConditionGroup(FName NetGroup);
+
+	/** Returns true if the player controller is a member of the netcondition group */
+	bool IsMemberOfNetConditionGroup(FName NetGroup) const
+	{
+		return NetConditionGroups.Find(NetGroup) != INDEX_NONE;
+	}
+
+	/** Returns the list of netcondition groups we are part of. */
+	const TArray<FName>& GetNetConditionGroups() const { return NetConditionGroups; }
+
+private:
+	
+	/** List of netcondition groups we are currently a member of. */
+	TArray<FName> NetConditionGroups;
+
 protected:
 	/** Clickable object currently under the mouse cursor. */
 	TWeakObjectPtr<UPrimitiveComponent> CurrentClickablePrimitive;
@@ -1606,6 +1702,10 @@ protected:
 	UPROPERTY()
 	TObjectPtr<class UTouchInterface> CurrentTouchInterface;
 
+	/** If set, then this UPlayerInput class will be used instead of the Input Settings' DefaultPlayerInputClass */
+	UPROPERTY(EditDefaultsOnly, Category = Input)
+	TSubclassOf<UPlayerInput> OverridePlayerInputClass;
+
 	/** Handle for efficient management of UnFreeze timer */
 	FTimerHandle TimerHandle_UnFreeze;
 
@@ -1623,8 +1723,20 @@ public:
 	/** Removes given inputcomponent from the input stack (regardless of if it's the top, actually). */
 	virtual bool PopInputComponent(UInputComponent* Input);
 
+	/** Returns true if the given input component is in this PlayerController's CurrentInputStack */
+	virtual bool IsInputComponentInStack(const UInputComponent* Input) const;
+
 	/** Flushes the current key state. */
 	virtual void FlushPressedKeys();
+
+	/**
+	 * If true, then the GameViewportClient should call FlushPressedKeys on this controller when it loses focus.
+	 * The default behavior here is to return true if the PlayerController is in any input mode other than GameAndUI
+	 */
+	virtual bool ShouldFlushKeysWhenViewportFocusChanges() const { return bShouldFlushInputWhenViewportFocusChanges; }
+
+	UFUNCTION(BlueprintCallable, Category = Input)
+	TSubclassOf<UPlayerInput> GetOverridePlayerInputClass() const;
 
 	/** Handles a key press */
 	UE_DEPRECATED(5.0, "This version of InputKey has been deprecated, please use the version that takes FInputKeyParams instead")
@@ -1648,6 +1760,13 @@ public:
 
 	/** Returns the ULocalPlayer for this controller if it exists, or null otherwise */
 	class ULocalPlayer* GetLocalPlayer() const;
+
+	/**
+	 * Returns the platform user that is assigned to this Player Controller's Local Player.
+	 * If there is no local player, then this will return PLATFORMUSERID_NONE
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Game|Player")
+	FPlatformUserId GetPlatformUserId() const;
 
 	/**
 	 * Called client-side to smoothly interpolate received TargetViewRotation (result is in BlendedTargetViewRotation)
@@ -2076,9 +2195,23 @@ public:
 	 */
 	void SetAsLocalPlayerController() { bIsLocalPlayerController = true; }
 
+	/**
+	 * Whether this controller should persist through seamless travel
+	 * Player controllers should always be included in seamless travel
+	 */
+	virtual bool ShouldParticipateInSeamlessTravel() const override { return true; }
+
 private:
 	/** If true, prevent any haptic effects from playing */
 	bool bDisableHaptics : 1;
+
+	/**
+	 * If true, then the GameViewportCliet will call FlushPressedKeys when it loses focus ( UGameViewportClient::LostFocus ).
+	 * By default this is true for all Input Modes except for GameAndUI. When you are using the "GameAndUI" input mode 
+	 * then you don't normally want the input to be flushed because it would reset the player controller's inputs if you bring
+	 * up any in-game UI.
+	 */
+	bool bShouldFlushInputWhenViewportFocusChanges : 1;
 
 public: 
 
@@ -2096,7 +2229,7 @@ public:
 	{
 		int32 HeadFrame() const { return LastWritten; }
 		int32 TailFrame() const { return FMath::Max(0, LastWritten - Buffer.Num() + 1); }
-		TArray<uint8>& Write(int32 Frame) { LastWritten = Frame; return Buffer[Frame % Buffer.Num()]; }
+		TArray<uint8>& Write(int32 Frame) { LastWritten = FMath::Max(Frame, LastWritten); return Buffer[Frame % Buffer.Num()]; }
 		const TArray<uint8>& Get(int32 Frame) const { return Buffer[Frame % Buffer.Num()]; }
 
 	private:
@@ -2118,6 +2251,8 @@ public:
 
 		int8 QuantizedTimeDilation = 1; // Server sent this to this client, telling them to dilate local time either catch up or slow down
 		float TargetNumBufferedCmds = 0.f;
+
+		int32 GetLocalFrameOffset() const { return LastProcessedInputFrame - LastRecvServerFrame; }
 	};	
 
 	// Client pushes input data locally. RPC is sent here but also includes redundant data
@@ -2128,6 +2263,7 @@ public:
 	void ServerRecvClientInputFrame(int32 RecvClientInputFrame, const TArray<uint8>& Data);
 
 	const FClientFrameInfo& GetClientFrameInfo() const { return ClientFrameInfo; }
+	FClientFrameInfo& GetClientFrameInfo() { return ClientFrameInfo; }
 
 	// -------------------------------------------------------------------------
 	// Server
@@ -2145,7 +2281,7 @@ public:
 		bool bFault = true;
 	};
 
-	// We call this in ::SendClientAdjustment to tell the client what the last processed input frame was for him and on what local frame number it was processed
+	// We call this in ::SendClientAdjustment to tell the client what the last processed input frame was for it and on what local frame number it was processed
 	UFUNCTION(Client, unreliable)
 	void ClientRecvServerAckFrame(int32 LastProcessedInputFrame, int32 RecvServerFrameNumber, int8 TimeDilation);
 
@@ -2158,4 +2294,57 @@ private:
 	FInputCmdBuffer InputBuffer;
 	FClientFrameInfo ClientFrameInfo;
 	FServerFrameInfo ServerFrameInfo;
+
+	/** The estimated offset between the local async physics tick frame number and the server's
+	*	This is used to synchronize events that happen in the async physics tick */
+	int32 LocalToServerAsyncPhysicsTickOffset;
+	
+	/** The latest server step we've received an offset correction for. This allows us to ignore out of order corrections that arrive late */
+	int32 ClientLatestCorrectedOffsetServerStep = INDEX_NONE;
+
+	/** The latest physics step we've sent to the server. Due to async we need to avoid duplicate sends */
+	int32 ClientLatestAsyncPhysicsStepSent = INDEX_NONE;
+
+	/** The latest server step we've received a time dilation for. Needed for out of order updates */
+	int32 ClientLatestTimeDilationServerStep = INDEX_NONE;
+
+	/** The server tells the client to speed up or slow down in order to keep its buffer full */
+	float ServerAsyncPhysicsTimeDilationToSend = 1.f;
+
+	/** The server records the latest timestamp it has to correct. This is used to update client (which may not happen on every physics step) */
+	FAsyncPhysicsTimestamp ServerLatestTimestampToCorrect;
+
+	/** The set of timestamps the client has sent to the server. Sorted by local frame number */
+	TArray<FAsyncPhysicsTimestamp> ServerPendingTimestamps;
+
+	/** Update the tick ofsset in between the local client and the server */
+	void UpdateServerAsyncPhysicsTickOffset();
+
+	UFUNCTION(Server, Unreliable)
+	void ServerSendLatestAsyncPhysicsTimestamp(FAsyncPhysicsTimestamp Timestamp);
+
+	UFUNCTION(Client, Unreliable)
+	void ClientCorrectionAsyncPhysicsTimestamp(FAsyncPhysicsTimestamp Timestamp);
+
+	UFUNCTION(Client, Unreliable)
+	void ClientAckTimeDilation(float TimeDilation, int32 ServerStep);
+
+	/** Update the tick offset in between the local client and the server */
+	virtual void AsyncPhysicsTickActor(float DeltaTime, float SimTime) override;
+
+public:
+
+	/** Enqueues a command to run at the time specified by AsyncPhysicsTimestamp. Note that if the time specified was missed the command is triggered as soon as possible as part of the async tick.
+		These commands are all run on the game thread. If you want to run on the physics thread see FPhysicsSolverBase::RegisterSimOneShotCallback
+		If OwningObject is not null this command will only fire as long as the object is still alive. This allows a lambda to still use the owning object's data for read/write (assuming data is designed for async physics tick)
+	*/
+	void ExecuteAsyncPhysicsCommand(const FAsyncPhysicsTimestamp& AsyncPhysicsTimestamp, UObject* OwningObject, const TFunction<void()>& Command);
+
+	/** Generates a timestamp for the upcoming physics step (plus any pending time). Useful for synchronizing client and server events on a specific physics step */
+	FAsyncPhysicsTimestamp GetAsyncPhysicsTimestamp(float DeltaSeconds = 0.f);
+
+	/** Returns the current estimated offset between the local async physics step and the server. This is useful for dealing with low level synchronization.
+		In general it's recommended to use GetAsyncPhysicsTimestamp which accounts for the offset automatically*/
+	int32 GetLocalToServerAsyncPhysicsTickOffset() const { return LocalToServerAsyncPhysicsTickOffset; }
+	
 };

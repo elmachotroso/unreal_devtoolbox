@@ -23,8 +23,8 @@
 #include "Factories/AnimMontageFactory.h"
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "AnimModel_AnimMontage.h"
-#include "SAnimTimeline.h"
+#include "AnimTimeline/AnimModel_AnimMontage.h"
+#include "AnimTimeline/SAnimTimeline.h"
 
 #define LOCTEXT_NAMESPACE "AnimSequenceEditor"
 
@@ -51,7 +51,6 @@ void SMontageEditor::Construct(const FArguments& InArgs, const FMontageEditorReq
 		InOnEditCurves.ExecuteIfBound(InAnimSequence, InCurveInfo, TimelineWidget->GetTimeSliderController());
 	});
 
-	AnimModel->OnStopEditingCurves = InArgs._OnStopEditingCurves;
 	AnimModel->Initialize();
 
 	MontageObj->RegisterOnMontageChanged(UAnimMontage::FOnMontageChanged::CreateSP(AnimModel.Get(), &FAnimModel_AnimMontage::RefreshTracks));

@@ -174,7 +174,7 @@ void FBPVariableDescription::RemoveMetaData(const FName Key)
 	int32 EntryIndex = FindMetaDataEntryIndexForKey(Key);
 	if(EntryIndex != INDEX_NONE)
 	{
-		MetaDataArray.RemoveAt(EntryIndex);
+		MetaDataArray.RemoveAtSwap(EntryIndex);
 	}
 }
 
@@ -354,7 +354,10 @@ UBlueprint::UBlueprint(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 	, bDuplicatingReadOnly(false)
 	, bCachedDependenciesUpToDate(false)
+	// @todo: BP2CPP_remove
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	, bHasAnyNonReducibleFunction(EIsBPNonReducible::Unkown)
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 {
 }
@@ -608,11 +611,13 @@ UClass* UBlueprint::RegenerateClass(UClass* ClassToRegenerate, UObject* Previous
 	}
 	UBlueprint::ForceLoadMembers(this);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (UBlueprintExtension* Extension : Extensions)
 	{
 		ForceLoad(Extension);
 		Extension->PreloadObjectsForCompilation(this);
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	FBlueprintEditorUtils::PreloadConstructionScript( this );
 
@@ -775,6 +780,15 @@ void UBlueprint::PostLoad()
 #endif
 }
 
+#if WITH_EDITORONLY_DATA
+void UBlueprint::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UObjectRedirector::StaticClass()));
+}
+#endif
+
+
 void UBlueprint::DebuggingWorldRegistrationHelper(UObject* ObjectProvidingWorld, UObject* ValueToRegister)
 {
 	if (ObjectProvidingWorld != NULL)
@@ -900,7 +914,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	FString GeneratedClassVal;
 	if (GeneratedClass)
 	{
-		GeneratedClassVal = FString::Printf(TEXT("%s'%s'"), *GeneratedClass->GetClass()->GetName(), *GeneratedClass->GetPathName());
+		GeneratedClassVal = FObjectPropertyBase::GetExportPath(GeneratedClass);
 	}
 	else
 	{
@@ -910,7 +924,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	FString NativeParentClassName, ParentClassName;
 	if ( ParentClass )
 	{
-		ParentClassName = FString::Printf(TEXT("%s'%s'"), *ParentClass->GetClass()->GetName(), *ParentClass->GetPathName());
+		ParentClassName = FObjectPropertyBase::GetExportPath(ParentClass);
 
 		// Walk up until we find a native class (ie 'while they are BP classes')
 		UClass* NativeParentClass = ParentClass;
@@ -918,7 +932,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 		{
 			NativeParentClass = NativeParentClass->GetSuperClass();
 		}
-		NativeParentClassName = FString::Printf(TEXT("%s'%s'"), *NativeParentClass->GetClass()->GetName(), *NativeParentClass->GetPathName());
+		NativeParentClassName = FObjectPropertyBase::GetExportPath(NativeParentClass);
 	}
 	else
 	{
@@ -959,7 +973,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 			FAssetRegistryTag::TT_Alphabetical ) );
 
 	// Only add the FiB tags in the editor, this now gets run for standalone uncooked games
-	if ( ParentClass && GIsEditor && !GetOutermost()->HasAnyPackageFlags(PKG_ForDiffing))
+	if ( ParentClass && GIsEditor && !GetOutermost()->HasAnyPackageFlags(PKG_ForDiffing) && !IsRunningCookCommandlet())
 	{
 		FString Value;
 		const bool bRebuildSearchData = false;
@@ -1005,6 +1019,54 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 		}
 		OutTags.Add(FAssetRegistryTag(FBlueprintTags::NumBlueprintComponents, FString::FromInt(NumAddedComponents), UObject::FAssetRegistryTag::TT_Numerical));
 	}
+}
+
+#if WITH_EDITOR
+void UBlueprint::GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* TargetPlatform, TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetExtendedAssetRegistryTagsForSave(TargetPlatform, OutTags);
+
+	if ( ParentClass && GIsEditor && !GetOutermost()->HasAnyPackageFlags(PKG_ForDiffing) && IsRunningCookCommandlet())
+	{
+		if (!TargetPlatform || TargetPlatform->HasEditorOnlyData())
+		{
+			FString Value;
+			const bool bRebuildSearchData = false;
+			FSearchData SearchData = FFindInBlueprintSearchManager::Get().QuerySingleBlueprint((UBlueprint*)this, bRebuildSearchData);
+			if (SearchData.IsValid())
+			{
+				Value = SearchData.Value;
+			}
+			
+			OutTags.Add( FAssetRegistryTag(FBlueprintTags::FindInBlueprintsData, Value, FAssetRegistryTag::TT_Hidden) );
+		}
+	}
+}
+#endif
+
+void UBlueprint::PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const
+{
+	Super::PostLoadAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+	PostLoadBlueprintAssetRegistryTags(InAssetData, OutTagsAndValuesToUpdate);
+}
+
+void UBlueprint::PostLoadBlueprintAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate)
+{
+	auto FixTagValueShortClassName = [&InAssetData, &OutTagsAndValuesToUpdate](FName TagName, FAssetRegistryTag::ETagType TagType)
+	{
+		FString TagValue = InAssetData.GetTagValueRef<FString>(TagName);
+		if (!TagValue.IsEmpty() && TagValue != TEXT("None"))
+		{
+			if (UClass::TryFixShortClassNameExportPath(TagValue, ELogVerbosity::Warning, TEXT("UBlueprint::PostLoadAssetRegistryTags")))
+			{
+				OutTagsAndValuesToUpdate.Add(FAssetRegistryTag(TagName, TagValue, TagType));
+			}
+		}
+	};
+
+	FixTagValueShortClassName(FBlueprintTags::GeneratedClassPath, FAssetRegistryTag::TT_Hidden);
+	FixTagValueShortClassName(FBlueprintTags::ParentClassPath, FAssetRegistryTag::TT_Alphabetical);
+	FixTagValueShortClassName(FBlueprintTags::NativeParentClassPath, FAssetRegistryTag::TT_Alphabetical);
 }
 
 FPrimaryAssetId UBlueprint::GetPrimaryAssetId() const
@@ -1378,11 +1440,41 @@ void UBlueprint::BeginDestroy()
 	Super::BeginDestroy();
 
 	FBlueprintEditorUtils::RemoveAllLocalBookmarks(this);
+
+	// For each cached dependency, remove ourselves from its cached dependent set.
+	for (const TWeakObjectPtr<UBlueprint>& DependencyReference : CachedDependencies)
+	{
+		if (UBlueprint* Dependency = DependencyReference.Get())
+		{
+			Dependency->CachedDependents.Remove(MakeWeakObjectPtr(this));
+		}
+	}
 }
 
 #endif // WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
+bool UBlueprint::ShouldCookPropertyGuids() const
+{
+	switch (ShouldCookPropertyGuidsValue)
+	{
+	case EShouldCookBlueprintPropertyGuids::No:
+		return false;
+
+	case EShouldCookBlueprintPropertyGuids::Yes:
+		return true;
+
+	case EShouldCookBlueprintPropertyGuids::Inherit:
+		if (const UBlueprint* ParentBlueprint = UBlueprint::GetBlueprintFromClass(ParentClass))
+		{
+			return ParentBlueprint->ShouldCookPropertyGuids();
+		}
+		break;
+	}
+
+	return false;
+}
+
 UBlueprint* UBlueprint::GetBlueprintFromClass(const UClass* InClass)
 {
 	UBlueprint* BP = NULL;
@@ -1455,6 +1547,44 @@ bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UB
 	return bNoErrors;
 }
 
+bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<IBlueprintPropertyGuidProvider*>& OutBlueprintParents)
+{
+	OutBlueprintParents.Reset();
+
+	bool bNoErrors = true;
+
+	UBlueprintGeneratedClass* CurrentClass = Cast<UBlueprintGeneratedClass>(const_cast<UClass*>(InClass));
+	while (CurrentClass)
+	{
+		IBlueprintPropertyGuidProvider* GuidProviderToAdd = CurrentClass;
+
+#if WITH_EDITORONLY_DATA
+		UBlueprint* BP = UBlueprint::GetBlueprintFromClass(CurrentClass);
+
+		if (BP)
+		{
+			GuidProviderToAdd = BP;
+			bNoErrors &= (BP->Status != BS_Error);
+		}
+
+		// If valid, use stored ParentClass rather than the actual UClass::GetSuperClass(); handles the case when the class has not been recompiled yet after a reparent operation.
+		if (BP && BP->ParentClass)
+		{
+			CurrentClass = Cast<UBlueprintGeneratedClass>(BP->ParentClass);
+		}
+		else
+#endif // #if WITH_EDITORONLY_DATA
+		{
+			check(CurrentClass);
+			CurrentClass = Cast<UBlueprintGeneratedClass>(CurrentClass->GetSuperClass());
+		}
+
+		OutBlueprintParents.Add(GuidProviderToAdd);
+	}
+
+	return bNoErrors;
+}
+
 #if WITH_EDITOR
 bool UBlueprint::IsBlueprintHierarchyErrorFree(const UClass* InClass)
 {
@@ -1481,6 +1611,36 @@ bool UBlueprint::IsBlueprintHierarchyErrorFree(const UClass* InClass)
 	return true;
 }
 #endif
+
+FName UBlueprint::FindBlueprintPropertyNameFromGuid(const FGuid& PropertyGuid) const
+{
+#if WITH_EDITORONLY_DATA
+	for (const FBPVariableDescription& BPVarDesc : NewVariables)
+	{
+		if (BPVarDesc.VarGuid == PropertyGuid)
+		{
+			return BPVarDesc.VarName;
+		}
+	}
+#endif
+
+	return NAME_None;
+}
+
+FGuid UBlueprint::FindBlueprintPropertyGuidFromName(const FName PropertyName) const
+{
+#if WITH_EDITORONLY_DATA
+	for (const FBPVariableDescription& BPVarDesc : NewVariables)
+	{
+		if (BPVarDesc.VarName == PropertyName)
+		{
+			return BPVarDesc.VarGuid;
+		}
+	}
+#endif
+
+	return FGuid();
+}
 
 ETimelineSigType UBlueprint::GetTimelineSignatureForFunctionByName(const FName& FunctionName, const FName& ObjectPropertyName)
 {
@@ -1829,6 +1989,10 @@ void UBlueprint::ReplaceDeprecatedNodes()
 void UBlueprint::ClearEditorReferences()
 {
 	FKismetEditorUtilities::OnBlueprintUnloaded.Broadcast(this);
+	if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(GeneratedClass))
+	{
+		FKismetEditorUtilities::OnBlueprintGeneratedClassUnloaded.Broadcast(BPGC);
+	}
 }
 
 UInheritableComponentHandler* UBlueprint::GetInheritableComponentHandler(bool bCreateIfNecessary)
@@ -1858,6 +2022,12 @@ EDataValidationResult UBlueprint::IsDataValid(TArray<FText>& ValidationErrors)
 	{
 		EDataValidationResult IsSCSValid = SimpleConstructionScript->IsDataValid(ValidationErrors);
 		IsValid = CombineDataValidationResults(IsValid, IsSCSValid);
+	}
+
+	if (InheritableComponentHandler)
+	{
+		EDataValidationResult IsICHValid = InheritableComponentHandler->IsDataValid(ValidationErrors);
+		IsValid = CombineDataValidationResults(IsValid, IsICHValid);
 	}
 
 	for (UActorComponent* Component : ComponentTemplates)
@@ -1923,6 +2093,32 @@ UEdGraph* UBlueprint::GetLastEditedUberGraph() const
 	return nullptr;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+TArrayView<const TObjectPtr<UBlueprintExtension>> UBlueprint::GetExtensions() const
+{
+	return Extensions;
+}
+
+int32 UBlueprint::AddExtension(const TObjectPtr<UBlueprintExtension>& InExtension)
+{
+	int32 Index = Extensions.Add(InExtension);
+	OnExtensionAdded.Broadcast(InExtension);
+	return Index;
+}
+
+int32 UBlueprint::RemoveExtension(const TObjectPtr<UBlueprintExtension>& InExtension)
+{
+	int32 NumRemoved = Extensions.RemoveSingleSwap(InExtension);
+	if (NumRemoved > 0)
+	{
+		OnExtensionRemoved.Broadcast(InExtension);
+	}
+	return NumRemoved;
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 #endif //WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
@@ -1935,5 +2131,3 @@ void UBlueprint::LoadModulesRequiredForCompilation()
 	FModuleManager::Get().LoadModule(MovieSceneToolsModuleName);
 }
 #endif //WITH_EDITORONLY_DATA
-
-

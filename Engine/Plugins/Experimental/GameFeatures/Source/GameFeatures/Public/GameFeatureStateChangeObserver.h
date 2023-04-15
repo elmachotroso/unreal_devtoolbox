@@ -8,6 +8,7 @@
 
 class UGameFeatureData;
 struct FGameFeatureDeactivatingContext;
+struct FGameFeaturePauseStateChangeContext;
 
 UINTERFACE(MinimalAPI)
 class UGameFeatureStateChangeObserver : public UInterface
@@ -35,13 +36,18 @@ public:
 
 	virtual void OnGameFeatureTerminating(const FString& PluginURL) {}
 
-	virtual void OnGameFeatureRegistering(const UGameFeatureData* GameFeatureData, const FString& PluginName) {}
+	virtual void OnGameFeatureRegistering(const UGameFeatureData* GameFeatureData, const FString& PluginName, const FString& PluginURL) {}
 
-	virtual void OnGameFeatureUnregistering(const UGameFeatureData* GameFeatureData, const FString& PluginName) {}
+	virtual void OnGameFeatureUnregistering(const UGameFeatureData* GameFeatureData, const FString& PluginName, const FString& PluginURL) {}
 
-	virtual void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData) {}
+	virtual void OnGameFeatureLoading(const UGameFeatureData* GameFeatureData, const FString& PluginURL) {}
 
-	virtual void OnGameFeatureLoading(const UGameFeatureData* GameFeatureData) {}
+	virtual void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData, const FString& PluginURL) {}
 
-	virtual void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context) {}
+	virtual void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, FGameFeatureDeactivatingContext& Context, const FString& PluginURL) {}
+
+	/** Called whenever a GameFeature State either pauses or resumes work without transitioning out of that state.
+		EX: Downloading paused due to a users cellular data settings or the user taking a pause action. We
+		may not yet transition to a download error, but want a way to observe this behavior. */
+	virtual void OnGameFeaturePauseChange(const FString& PluginURL, const FString& PluginName, FGameFeaturePauseStateChangeContext& Context) {}
 };

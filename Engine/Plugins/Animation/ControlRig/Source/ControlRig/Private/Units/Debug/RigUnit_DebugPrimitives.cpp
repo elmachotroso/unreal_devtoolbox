@@ -3,6 +3,8 @@
 #include "Units/Debug/RigUnit_DebugPrimitives.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DebugPrimitives)
+
 FRigUnit_DebugRectangle_Execute()
 {
 	FRigUnit_DebugRectangleItemSpace::StaticExecute(
@@ -16,6 +18,22 @@ FRigUnit_DebugRectangle_Execute()
 		bEnabled,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DebugRectangle::GetUpgradeInfo() const
+{
+	FRigUnit_DebugRectangleItemSpace NewNode;
+	NewNode.Transform = Transform;
+	NewNode.Color = Color;
+	NewNode.Scale = Scale;
+	NewNode.Thickness = Thickness;
+	NewNode.Space = FRigElementKey(Space, ERigElementType::Bone);
+	NewNode.WorldOffset = WorldOffset;
+	NewNode.bEnabled = bEnabled;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Space"), TEXT("Space.Name"));
+	return Info;
 }
 
 FRigUnit_DebugRectangleItemSpace_Execute()
@@ -56,6 +74,25 @@ FRigUnit_DebugArc_Execute()
 		bEnabled,
 		ExecuteContext, 
 		Context);
+}
+
+FRigVMStructUpgradeInfo FRigUnit_DebugArc::GetUpgradeInfo() const
+{
+	FRigUnit_DebugArcItemSpace NewNode;
+	NewNode.Transform = Transform;
+	NewNode.Color = Color;
+	NewNode.Radius = Radius;
+	NewNode.MinimumDegrees = MinimumDegrees;
+	NewNode.MaximumDegrees = MaximumDegrees;
+	NewNode.Thickness = Thickness;
+	NewNode.Detail = Detail;
+	NewNode.Space = FRigElementKey(Space, ERigElementType::Bone);
+	NewNode.WorldOffset = WorldOffset;
+	NewNode.bEnabled = bEnabled;
+
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("Space"), TEXT("Space.Name"));
+	return Info;
 }
 
 FRigUnit_DebugArcItemSpace_Execute()

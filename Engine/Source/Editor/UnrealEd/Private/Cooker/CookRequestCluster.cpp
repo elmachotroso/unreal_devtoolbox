@@ -28,25 +28,27 @@
 namespace UE::Cook
 {
 
-FRequestCluster::FRequestCluster(UCookOnTheFlyServer& COTFS, TArray<const ITargetPlatform*>&& InPlatforms)
+FRequestCluster::FRequestCluster(UCookOnTheFlyServer& InCOTFS, TArray<const ITargetPlatform*>&& InPlatforms)
 	: Platforms(MoveTemp(InPlatforms))
-	, PackageDatas(*COTFS.PackageDatas)
+	, COTFS(InCOTFS)
+	, PackageDatas(*InCOTFS.PackageDatas)
 	, AssetRegistry(*IAssetRegistry::Get())
-	, PackageTracker(*COTFS.PackageTracker)
-	, BuildDefinitions(*COTFS.BuildDefinitions)
+	, PackageTracker(*InCOTFS.PackageTracker)
+	, BuildDefinitions(*InCOTFS.BuildDefinitions)
 {
 }
 
-FRequestCluster::FRequestCluster(UCookOnTheFlyServer& COTFS, TConstArrayView<const ITargetPlatform*> InPlatforms)
+FRequestCluster::FRequestCluster(UCookOnTheFlyServer& InCOTFS, TConstArrayView<const ITargetPlatform*> InPlatforms)
 	: Platforms(InPlatforms)
-	, PackageDatas(*COTFS.PackageDatas)
+	, COTFS(InCOTFS)
+	, PackageDatas(*InCOTFS.PackageDatas)
 	, AssetRegistry(*IAssetRegistry::Get())
-	, PackageTracker(*COTFS.PackageTracker)
-	, BuildDefinitions(*COTFS.BuildDefinitions)
+	, PackageTracker(*InCOTFS.PackageTracker)
+	, BuildDefinitions(*InCOTFS.BuildDefinitions)
 {
 }
 
-void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, TArray<FFilePlatformRequest>&& InRequests,
+void FRequestCluster::AddClusters(UCookOnTheFlyServer& InCOTFS, TArray<FFilePlatformRequest>&& InRequests,
 	bool bRequestsAreUrgent, TRingBuffer<FRequestCluster>& OutClusters)
 {
 	if (InRequests.Num() == 0)
@@ -56,7 +58,7 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, TArray<FFilePlatfo
 
 	TArray<FRequestCluster, TInlineAllocator<1>> AddedClusters;
 	auto FindOrAddClusterForPlatforms =
-		[&AddedClusters, &COTFS](TArray<const ITargetPlatform*>&& InPlatforms)
+		[&AddedClusters, &InCOTFS](TArray<const ITargetPlatform*>&& InPlatforms)
 	{
 		for (FRequestCluster& Existing : AddedClusters)
 		{
@@ -66,7 +68,7 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, TArray<FFilePlatfo
 				return &Existing;
 			}
 		}
-		return &AddedClusters.Emplace_GetRef(COTFS, MoveTemp(InPlatforms));
+		return &AddedClusters.Emplace_GetRef(InCOTFS, MoveTemp(InPlatforms));
 	};
 
 	UE::Cook::FRequestCluster* MRUCluster = FindOrAddClusterForPlatforms(MoveTemp(InRequests[0].GetPlatforms()));
@@ -92,14 +94,14 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, TArray<FFilePlatfo
 
 	for (UE::Cook::FRequestCluster& AddedCluster : AddedClusters)
 	{
-		AddedCluster.Initialize(COTFS);
+		AddedCluster.Initialize(InCOTFS);
 		OutClusters.Add(MoveTemp(AddedCluster));
 	}
 }
 
 FName GInstigatorRequestCluster(TEXT("RequestCluster"));
 
-void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, FPackageDataSet& UnclusteredRequests,
+void FRequestCluster::AddClusters(UCookOnTheFlyServer& InCOTFS, FPackageDataSet& UnclusteredRequests,
 	TRingBuffer<FRequestCluster>& OutClusters, FRequestQueue& QueueForReadyRequests)
 {
 	if (UnclusteredRequests.Num() == 0)
@@ -109,11 +111,11 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, FPackageDataSet& U
 
 	TArray<FRequestCluster, TInlineAllocator<1>> AddedClusters;
 	TArray<const ITargetPlatform*, TInlineAllocator<ExpectedMaxNumPlatforms>> RequestedPlatforms;
-	auto FindOrAddClusterForPlatforms = [&AddedClusters, &COTFS, &RequestedPlatforms, &UnclusteredRequests]()
+	auto FindOrAddClusterForPlatforms = [&AddedClusters, &InCOTFS, &RequestedPlatforms, &UnclusteredRequests]()
 	{
 		if (AddedClusters.Num() == 0)
 		{
-			FRequestCluster& Cluster = AddedClusters.Emplace_GetRef(COTFS, RequestedPlatforms);
+			FRequestCluster& Cluster = AddedClusters.Emplace_GetRef(InCOTFS, RequestedPlatforms);
 			// The usual case is all platforms are the same, so reserve the first Cluster's size assuming it will get all requests
 			Cluster.Requests.Reserve(UnclusteredRequests.Num());
 			return &Cluster;
@@ -125,20 +127,19 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, FPackageDataSet& U
 				return &Existing;
 			}
 		}
-		return &AddedClusters.Emplace_GetRef(COTFS, RequestedPlatforms);
+		return &AddedClusters.Emplace_GetRef(InCOTFS, RequestedPlatforms);
 	};
 
 	bool bErrorOnEngineContentUse = false;
-	UCookOnTheFlyServer::FCookByTheBookOptions* Options = COTFS.CookByTheBookOptions;
+	bool bAllowUncookedAssetReferences = false;
+	UE::Cook::FCookByTheBookOptions& Options = *InCOTFS.CookByTheBookOptions;
 	FString DLCPath;
-	if (Options)
+	bErrorOnEngineContentUse = Options.bErrorOnEngineContentUse;
+	bAllowUncookedAssetReferences = Options.bAllowUncookedAssetReferences;
+	if (bErrorOnEngineContentUse)
 	{
-		bErrorOnEngineContentUse = Options->bErrorOnEngineContentUse;
-		if (bErrorOnEngineContentUse)
-		{
-			DLCPath = FPaths::Combine(*COTFS.GetBaseDirectoryForDLC(), TEXT("Content"));
-			FPaths::MakeStandardFilename(DLCPath);
-		}
+		DLCPath = FPaths::Combine(*InCOTFS.GetBaseDirectoryForDLC(), TEXT("Content"));
+		FPaths::MakeStandardFilename(DLCPath);
 	}
 
 	UE::Cook::FRequestCluster* MRUCluster = nullptr;
@@ -155,10 +156,11 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, FPackageDataSet& U
 		// by checking non-cookable and sending the package to idle instead of adding to
 		// a cluster
 		PackageData->GetRequestedPlatforms(RequestedPlatforms);
-		if (!IsRequestCookable(PackageData->GetPackageName(), PackageData, *COTFS.PackageDatas, *COTFS.PackageTracker,
-			DLCPath, bErrorOnEngineContentUse, RequestedPlatforms))
+		ESuppressCookReason SuppressCookReason;
+		if (!IsRequestCookable(PackageData->GetPackageName(), PackageData, *InCOTFS.PackageDatas, *InCOTFS.PackageTracker,
+			DLCPath, bErrorOnEngineContentUse, bAllowUncookedAssetReferences, RequestedPlatforms, SuppressCookReason))
 		{
-			PackageData->SendToState(EPackageState::Idle, ESendFlags::QueueAdd);
+			InCOTFS.DemoteToIdle(*PackageData, ESendFlags::QueueAdd, SuppressCookReason);
 			continue;
 		}
 
@@ -174,7 +176,7 @@ void FRequestCluster::AddClusters(UCookOnTheFlyServer& COTFS, FPackageDataSet& U
 
 	for (UE::Cook::FRequestCluster& AddedCluster : AddedClusters)
 	{
-		AddedCluster.Initialize(COTFS);
+		AddedCluster.Initialize(InCOTFS);
 		OutClusters.Add(MoveTemp(AddedCluster));
 	}
 }
@@ -187,14 +189,15 @@ FRequestCluster::FFileNameRequest::FFileNameRequest(FFilePlatformRequest&& FileR
 {
 }
 
-void FRequestCluster::Initialize(UCookOnTheFlyServer& COTFS)
+void FRequestCluster::Initialize(UCookOnTheFlyServer& InCOTFS)
 {
-	UCookOnTheFlyServer::FCookByTheBookOptions* Options = COTFS.CookByTheBookOptions;
-	if (Options)
+	if (!COTFS.IsCookOnTheFlyMode())
 	{
-		bAllowHardDependencies = !Options->bSkipHardReferences;
-		bAllowSoftDependencies = !Options->bSkipSoftReferences;
-		bErrorOnEngineContentUse = Options->bErrorOnEngineContentUse;
+		UE::Cook::FCookByTheBookOptions& Options = *COTFS.CookByTheBookOptions;
+		bAllowHardDependencies = !Options.bSkipHardReferences;
+		bAllowSoftDependencies = !Options.bSkipSoftReferences;
+		bErrorOnEngineContentUse = Options.bErrorOnEngineContentUse;
+		bAllowUncookedAssetReferences = Options.bAllowUncookedAssetReferences;
 	}
 	else
 	{
@@ -204,7 +207,6 @@ void FRequestCluster::Initialize(UCookOnTheFlyServer& COTFS)
 		bAllowSoftDependencies = false;
 	}
 	bHybridIterativeEnabled = COTFS.bHybridIterativeEnabled;
-	bPreexploreDependenciesEnabled = COTFS.bPreexploreDependenciesEnabled;
 	if (bErrorOnEngineContentUse)
 	{
 		DLCPath = FPaths::Combine(*COTFS.GetBaseDirectoryForDLC(), TEXT("Content"));
@@ -284,7 +286,7 @@ void FRequestCluster::FetchPackageNames(const FCookerTimer& CookerTimer, bool& b
 	}
 	for (;NextRequest < InRequestsNum; ++NextRequest)
 	{
-		if (NextRequest % TimerCheckPeriod == 0 && CookerTimer.IsTimeUp())
+		if ((NextRequest+1) % TimerCheckPeriod == 0 && CookerTimer.IsTimeUp())
 		{
 			break;
 		}
@@ -339,6 +341,7 @@ bool FRequestCluster::TryTakeOwnership(FPackageData& PackageData, bool bUrgent, 
 {
 	if (!PackageData.IsInProgress())
 	{
+		check(!COTFS.IsCookWorkerMode()); // CookWorkers skip dependency traversal and should only call TryTakeOwnership on incoming requests, which are already in progress
 		check(GetPlatforms().Num() != 0); // This is required for SetRequestData
 		if (PackageData.HasAllExploredPlatforms(GetPlatforms()))
 		{
@@ -435,7 +438,7 @@ void FRequestCluster::RemovePackageData(FPackageData* PackageData)
 		}
 	}
 	Requests.Remove(PackageData);
-	RequestsToDemote.Remove(PackageData);
+	RequestsToDemote.RemoveAll([PackageData](const TPair<FPackageData*, ESuppressCookReason>& Pair) { return Pair.Key == PackageData; });
 }
 
 bool FRequestCluster::Contains(FPackageData* PackageData) const
@@ -443,25 +446,30 @@ bool FRequestCluster::Contains(FPackageData* PackageData) const
 	return OwnedPackageDatas.Contains(PackageData);
 }
 
-void FRequestCluster::ClearAndDetachOwnedPackageDatas(TArray<FPackageData*>& OutRequestsToLoad, TArray<FPackageData*>& OutRequestsToDemote)
+void FRequestCluster::ClearAndDetachOwnedPackageDatas(TArray<FPackageData*>& OutRequestsToLoad,
+	TArray<TPair<FPackageData*, ESuppressCookReason>>& OutRequestsToDemote,
+	TMap<FPackageData*, TArray<FPackageData*>>& OutRequestGraph)
 {
 	if (bStartAsyncComplete)
 	{
 		check(!GraphSearch);
 		OutRequestsToLoad = MoveTemp(Requests);
 		OutRequestsToDemote = MoveTemp(RequestsToDemote);
+		OutRequestGraph = MoveTemp(RequestGraph);
 		check(OutRequestsToLoad.Num() + OutRequestsToDemote.Num() == OwnedPackageDatas.Num())
 	}
 	else
 	{
 		OutRequestsToLoad = OwnedPackageDatas.Array();
 		OutRequestsToDemote.Reset();
+		OutRequestGraph.Reset();
 	}
 	InRequests.Empty();
 	Requests.Empty();
 	RequestsToDemote.Empty();
 	OwnedPackageDatas.Empty();
 	GraphSearch.Reset();
+	RequestGraph.Reset();
 	NextRequest = 0;
 }
 
@@ -469,6 +477,12 @@ void FRequestCluster::FetchDependencies(const FCookerTimer& CookerTimer, bool& b
 {
 	if (bDependenciesComplete)
 	{
+		return;
+	}
+
+	if (COTFS.IsCookWorkerMode())
+	{
+		bDependenciesComplete = true;
 		return;
 	}
 
@@ -542,6 +556,7 @@ void FRequestCluster::FetchDependencies(const FCookerTimer& CookerTimer, bool& b
 	Algo::TopologicalSort(NewRequests, GetElementDependencies, Algo::ETopologicalSort::AllowCycles);
 	Requests = MoveTemp(NewRequests);
 
+	RequestGraph = MoveTemp(GraphSearch->GetGraphEdges());
 	GraphSearch.Reset();
 	bDependenciesComplete = true;
 }
@@ -604,7 +619,7 @@ void FRequestCluster::FGraphSearch::AddVertices(TArray<TUniquePtr<FVertexData>>&
 
 void FRequestCluster::FGraphSearch::WaitForPollAvailability(double WaitTimeSeconds)
 {
-	uint32 WaitTime = WaitTimeSeconds > 0 ? FMath::Floor(WaitTimeSeconds * 1000) : MAX_uint32;
+	uint32 WaitTime = (WaitTimeSeconds > 0.0) ? static_cast<uint32>(FMath::Floor(WaitTimeSeconds * 1000)) : MAX_uint32;
 	PollReadyEvent->Wait(WaitTime);
 }
 
@@ -694,7 +709,7 @@ void FRequestCluster::FGraphSearch::VisitVertex(const FVertexData& VertexData)
 		// We always skip assetregistry soft dependencies if the cook commandline is set to skip soft references.
 		// We also need to skip them if the project has problems with editor-only robustness and has turned
 		// ExploreDependencies off
-		if (Cluster.bAllowSoftDependencies && Cluster.bPreexploreDependenciesEnabled)
+		if (Cluster.bAllowSoftDependencies)
 		{
 			Cluster.AssetRegistry.GetDependencies(PackageName, SoftDependencies, EDependencyCategory::Package,
 				DependencyQuery | EDependencyQuery::Soft);
@@ -735,7 +750,7 @@ void FRequestCluster::FGraphSearch::VisitVertex(const FVertexData& VertexData)
 					UE::SavePackageUtilities::EDLCookInfoAddIterativelySkippedPackage(PackageName);
 				}
 				HardDependencies.Append(PlatformAttachments.BuildDependencies);
-				if (Cluster.bAllowSoftDependencies && Cluster.bPreexploreDependenciesEnabled)
+				if (Cluster.bAllowSoftDependencies)
 				{
 					SoftDependencies.Append(PlatformAttachments.RuntimeOnlyDependencies);
 				}
@@ -821,7 +836,8 @@ void FRequestCluster::FGraphSearch::VisitVertex(const FVertexData& VertexData)
 	}
 	else
 	{
-		Cluster.RequestsToDemote.Add(PackageData);
+		ESuppressCookReason SuppressCookReason = VertexData.bCookable ? ESuppressCookReason::AlreadyCooked : VertexData.SuppressCookReason;
+		Cluster.RequestsToDemote.Emplace(PackageData, SuppressCookReason);
 	}
 }
 
@@ -836,7 +852,7 @@ FRequestCluster::FVertexData::FVertexData(ESkipDependenciesType, FPackageData& I
 	PackageName = InPackageData.GetPackageName();
 	PackageData = &InPackageData;
 	bInitialRequest = true;
-	bCookable = Cluster.IsRequestCookable(PackageData->GetPackageName(), PackageData);
+	bCookable = Cluster.IsRequestCookable(PackageData->GetPackageName(), PackageData, SuppressCookReason);
 	bExploreDependencies = false;
 }
 
@@ -851,6 +867,7 @@ void FRequestCluster::FVertexData::Reset()
 	bInitialRequest = false;
 	bCookable = false;
 	bExploreDependencies = false;
+	SuppressCookReason = ESuppressCookReason::InvalidSuppressCookReason;
 }
 
 TUniquePtr<FRequestCluster::FVertexData> FRequestCluster::FGraphSearch::AllocateVertex()
@@ -883,7 +900,8 @@ FPackageData* FRequestCluster::FGraphSearch::FindOrAddVertex(FName PackageName, 
 	}
 	VisitStatus.bVisited = true;
 
-	bool bCookable = Cluster.IsRequestCookable(PackageName, PackageData);
+	ESuppressCookReason SuppressCookReason;
+	bool bCookable = Cluster.IsRequestCookable(PackageName, PackageData, SuppressCookReason);
 	if (!bInitialRequest)
 	{
 		if (!bCookable)
@@ -904,20 +922,8 @@ FPackageData* FRequestCluster::FGraphSearch::FindOrAddVertex(FName PackageName, 
 	OutNewVertex->PackageData = PackageData;
 	OutNewVertex->bInitialRequest = bInitialRequest;
 	OutNewVertex->bCookable = bCookable;
+	OutNewVertex->SuppressCookReason = SuppressCookReason;
 	OutNewVertex->bExploreDependencies = bCookable;
-	if (bCookable && !Cluster.bPreexploreDependenciesEnabled)
-	{
-		// TODO: Editor-only packages may be loaded at editor startup, which makes them skip the request state
-		// and go straight to load and save, where they are culled and returned to idle.
-		// If we add dependencies from these startup packages, in some projects we add transitive dependency
-		// packages that are not otherwise cooked. To prevent breaking projects we are temporarily skipping the
-		// dependency search from these packages.
-		bool bInProgress = false;
-		if (FindPackage(nullptr, WriteToString<256>(PackageName).ToString()))
-		{
-			OutNewVertex->bExploreDependencies = false;
-		}
-	}
 
 	return PackageData;
 }
@@ -1107,15 +1113,17 @@ TMap<FPackageData*, TArray<FPackageData*>>& FRequestCluster::FGraphSearch::GetGr
 	return GraphEdges;
 }
 
-bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData)
+bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData,
+	ESuppressCookReason& OutReason)
 {
 	return IsRequestCookable(PackageName, InOutPackageData, PackageDatas, PackageTracker,
-		DLCPath, bErrorOnEngineContentUse, GetPlatforms());
+		DLCPath, bErrorOnEngineContentUse, bAllowUncookedAssetReferences, GetPlatforms(), OutReason);
 }
 
 bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutPackageData,
 	FPackageDatas& InPackageDatas, FPackageTracker& InPackageTracker,
-	FStringView InDLCPath, bool bInErrorOnEngineContentUse, TConstArrayView<const ITargetPlatform*> RequestPlatforms)
+	FStringView InDLCPath, bool bInErrorOnEngineContentUse, bool bInAllowUncookedAssetReferences,
+	TConstArrayView<const ITargetPlatform*> RequestPlatforms, ESuppressCookReason& OutReason)
 {
 	TStringBuilder<256> NameBuffer;
 	// We need to reject packagenames from adding themselves or their transitive dependencies using all the same rules that
@@ -1123,6 +1131,7 @@ bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutP
 	PackageName.ToString(NameBuffer);
 	if (FPackageName::IsScriptPackage(NameBuffer))
 	{
+		OutReason = ESuppressCookReason::ScriptPackage;
 		return false;
 	}
 
@@ -1132,6 +1141,7 @@ bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutP
 		if (!InOutPackageData)
 		{
 			// Package does not exist on disk
+			OutReason = ESuppressCookReason::DoesNotExistInWorkspaceDomain;
 			return false;
 		}
 	}
@@ -1140,6 +1150,7 @@ bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutP
 	if (InPackageTracker.NeverCookPackageList.Contains(FileName))
 	{
 		UE_LOG(LogCook, Verbose, TEXT("Package %s is referenced but is in the never cook package list, discarding request"), *NameBuffer);
+		OutReason = ESuppressCookReason::NeverCook;
 		return false;
 	}
 
@@ -1151,12 +1162,19 @@ bool FRequestCluster::IsRequestCookable(FName PackageName, FPackageData*& InOutP
 		{
 			if (!InOutPackageData->HasAllCookedPlatforms(RequestPlatforms, true /* bIncludeFailed */))
 			{
-				UE_LOG(LogCook, Error, TEXT("Uncooked Engine or Game content %s is being referenced by DLC!"), *NameBuffer);
+				// AllowUncookedAssetReferences should only be used when the DLC plugin to cook is going to be mounted where uncooked packages are available.
+				// This will allow a DLC plugin to be recooked continually and mounted in an uncooked editor which is useful for CI.
+				if (!bInAllowUncookedAssetReferences)
+				{
+					UE_LOG(LogCook, Error, TEXT("Uncooked Engine or Game content %s is being referenced by DLC!"), *NameBuffer);
+				}
 			}
+			OutReason = ESuppressCookReason::NotInCurrentPlugin;
 			return false;
 		}
 	}
 
+	OutReason = ESuppressCookReason::InvalidSuppressCookReason;
 	return true;
 }
 

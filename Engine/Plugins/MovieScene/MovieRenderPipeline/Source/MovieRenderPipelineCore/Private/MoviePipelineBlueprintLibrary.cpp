@@ -3,6 +3,7 @@
 #include "MoviePipelineBlueprintLibrary.h"
 #include "MoviePipeline.h"
 #include "MovieRenderPipelineDataTypes.h"
+#include "MovieScene.h"
 #include "MovieSceneSequence.h"
 #include "MovieSceneSpawnable.h"
 #include "MovieScenePossessable.h"
@@ -39,6 +40,10 @@
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineBlueprintLibrary)
+
+PRAGMA_DISABLE_OPTIMIZATION
+
 EMovieRenderPipelineState UMoviePipelineBlueprintLibrary::GetPipelineState(const UMoviePipeline* InPipeline)
 {
 	if (InPipeline)
@@ -73,25 +78,11 @@ FText UMoviePipelineBlueprintLibrary::GetJobName(UMoviePipeline* InMoviePipeline
 	return FText();
 }
 
-namespace MoviePipeline
-{
-	FString GetJobAuthor(const UMoviePipelineExecutorJob* InJob)
-	{
-		if (InJob && InJob->Author.Len() > 0)
-		{
-			return InJob->Author;
-		}
-
-		// If they didn't specify an author in the job, default to the local username.
-		return FPlatformProcess::UserName(false);
-	}
-}
-
 FText UMoviePipelineBlueprintLibrary::GetJobAuthor(UMoviePipeline* InMoviePipeline)
 {
 	if (InMoviePipeline)
 	{
-		return FText::FromString(MoviePipeline::GetJobAuthor(InMoviePipeline->GetCurrentJob()));
+		return FText::FromString(UE::MoviePipeline::GetJobAuthor(InMoviePipeline->GetCurrentJob()));
 	}
 
 	return FText();
@@ -389,6 +380,40 @@ UMoviePipelineQueue* UMoviePipelineBlueprintLibrary::LoadManifestFileFromString(
 	return OutQueue;
 }
 
+namespace UE
+{
+namespace MoviePipeline
+{
+	void DeduplicateNameArray(TArray<FString>& InOutNames)
+	{
+		TMap<FString, int32> NameUseCount;
+		for (FString& Name : InOutNames)
+		{
+			int32& Count = NameUseCount.FindOrAdd(Name, 0);
+			if (++Count > 1)
+			{
+				Name.Append(FString::Format(TEXT("({0})"), { NameUseCount[Name] }));
+			}
+		}
+
+		// For any shot names we found duplicates, append 1 to the first to keep naming consistent
+		for (TPair<FString, int32>& Pair : NameUseCount)
+		{
+			if (Pair.Value > 1)
+			{
+				for (FString& Name : InOutNames)
+				{
+					if (Name.Equals(Pair.Key))
+					{
+						Name.Append(TEXT("(1)"));
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+}
 
 void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequence* InSequence, UMoviePipelineExecutorJob* InJob, bool& bShotsChanged)
 {
@@ -470,6 +495,7 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 			TRange<FFrameNumber> Range;
 			UMovieSceneCameraCutSection* CameraCut;
 			FMovieSceneSequenceID SequenceID;
+			TArray<FMoviePipelineSidecarCamera> SidecarCameras;
 
 			// These are only updated after the final linearized entities are chosen
 			TTuple<FString, FString> Name;
@@ -551,13 +577,126 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 			LeafNode->CameraCutSection = Entity.CameraCut;
 			MoviePipeline::BuildSectionHierarchyRecursive(SequenceHierarchyCache, InSequence, Entity.SequenceID, MovieSceneSequenceID::Invalid, LeafNode);
 
+			// If we did find a camera cut section, we're going to look for any object bindings in the same sequence that contain
+			// camera components and track them as sidecar cameras. We do this even if sidecar data isn't being used.
+			if (LeafNode->CameraCutSection.IsValid() && LeafNode->MovieScene.IsValid())
+			{
+				int32 MainCameraIndex = INDEX_NONE;
+				FMovieSceneObjectBindingID MainBinding = LeafNode->CameraCutSection->GetCameraBindingID();
+
+				for (int32 Index = 0; Index < LeafNode->MovieScene->GetPossessableCount(); Index++)
+				{
+					FMovieScenePossessable& Possessable = LeafNode->MovieScene->GetPossessable(Index);
+					FGuid ValidBinding = FGuid();
+
+#if WITH_EDITOR
+					// This is only available in the editor, so in the editor we'll auto-detect the class
+					// but in runtime builds they'll have to manually tag it with "Camera" :(
+					const UClass* PossessedClass = Possessable.GetPossessedObjectClass();
+
+					// A possessable might point to a unloaded class, but we can safely skip it
+					// because we only need to look for UCameraComponents and those are core engine so
+					// they will always be loaded.
+					if (!PossessedClass)
+					{
+						continue;
+					}
+					if (PossessedClass->IsChildOf<UCameraComponent>())
+					{
+						ValidBinding = Possessable.GetGuid();
+					}
+#endif
+					if (Possessable.Tags.Contains(TEXT("Camera")))
+					{
+						// Don't duplicate them up, but also run this name check in the editor
+						ValidBinding = Possessable.GetGuid();
+					}
+
+					if (ValidBinding.IsValid())
+					{
+						FMoviePipelineSidecarCamera& SidecarCamera = Entity.SidecarCameras.AddDefaulted_GetRef();
+						SidecarCamera.BindingId = ValidBinding;
+						SidecarCamera.SequenceId = Entity.SequenceID;
+						
+						FGuid ParentGuid = Possessable.GetParent();
+						while (ParentGuid.IsValid())
+						{
+							// This comparison doesn't support cross-sequence references, technically we should create a 
+							// FMovieSceneObjectBindingID etc, but because we only support finding sidecar cameras in the
+							// same sequence as the main camera cut track, this is fine for now.
+							if (ParentGuid == MainBinding.GetGuid())
+							{
+								// We want to know which sidecar camera this is, not the possessable index.
+								MainCameraIndex = Entity.SidecarCameras.Num() - 1;
+							}
+
+							if (FMovieScenePossessable* ParentAsPossessable = LeafNode->MovieScene->FindPossessable(ParentGuid))
+							{
+								ParentGuid = ParentAsPossessable->GetParent();
+								SidecarCamera.Name = ParentAsPossessable->GetName();
+							}
+							else if (FMovieSceneSpawnable* ParentAsSpawnable = LeafNode->MovieScene->FindSpawnable(ParentGuid))
+							{
+								// Spawnables will never have a parent
+								ParentGuid.Invalidate(); 
+								SidecarCamera.Name = ParentAsSpawnable->GetName();
+							}
+						}
+					}
+				}
+
+				if (MainCameraIndex == INDEX_NONE)
+				{
+					// When the camera cut points to a camera in another Sequence it won't get detected by the above loop,
+					// so we manually add it as the only sidecar camera. We need to check that the CameraCutSection points
+					// to a real camera though, as they may have an unbound camera.
+					if (LeafNode->CameraCutSection->GetCameraBindingID().GetGuid().IsValid())
+					{
+						FMoviePipelineSidecarCamera& SidecarCamera = Entity.SidecarCameras.AddDefaulted_GetRef();
+						SidecarCamera.BindingId = LeafNode->CameraCutSection->GetCameraBindingID().GetGuid();
+						SidecarCamera.SequenceId = LeafNode->CameraCutSection->GetCameraBindingID().GetRelativeSequenceID();
+
+						// ToDo: We should fetch the actual camera name from the Object Binding in the other sequence.
+						SidecarCamera.Name = TEXT("main_camera");
+						MainCameraIndex = Entity.SidecarCameras.Num() - 1;
+					}
+				}
+
+				// Ensure the "main" camera (specified by the Camera Cut Track) is always index 0, so that it's rendered
+				// first, and the stable sort (on output files) still tries to keep it as the primary layer.
+				if (MainCameraIndex >= 0)
+				{
+					Entity.SidecarCameras.Swap(MainCameraIndex, 0);
+				}
+			}
+
 			FMovieSceneTimeTransform InnerToOuterTransform = FMovieSceneTimeTransform();
 			FMovieSceneSubSequenceData* SubSequenceData = SequenceHierarchyCache.FindSubData(Entity.SequenceID);
 			if (SubSequenceData)
 			{
 				InnerToOuterTransform = SubSequenceData->RootToSequenceTransform.InverseFromAllFirstWarps();
 			}
-			Entity.CameraCutWarmUpRange = MoviePipeline::GetCameraWarmUpRangeFromSequence(InSequence, LeafNode->MovieScene->GetPlaybackRange().GetLowerBoundValue(), InnerToOuterTransform);
+
+			// To make the camera cut range detection more consistent, we'll convert the start of this Entity into root sequence space, and then we'll convert the start of the
+			// camera cut into root sequence space, and the difference between them is the range to use. This is a more reliable way than looking at the actual Playback Range.
+			TRange<FFrameNumber> EntityRangeInMaster = Entity.Range;
+			TRange<FFrameNumber> CameraCutRangeInMaster = EntityRangeInMaster;
+			if (LeafNode->CameraCutSection.IsValid())
+			{
+				CameraCutRangeInMaster = LeafNode->CameraCutSection->GetRange() * InnerToOuterTransform;
+			}
+
+			TRange<FFrameNumber> CameraCutWarmUpRange = TRange<FFrameNumber>::Empty();
+			if (EntityRangeInMaster.GetLowerBound().IsClosed() && CameraCutRangeInMaster.GetLowerBound().IsClosed())
+			{
+				CameraCutWarmUpRange = TRange<FFrameNumber>(CameraCutRangeInMaster.GetLowerBound(), EntityRangeInMaster.GetLowerBound());
+			}
+			if (CameraCutRangeInMaster.IsDegenerate())
+			{
+				CameraCutRangeInMaster = TRange<FFrameNumber>::Empty();
+			}
+
+			Entity.CameraCutWarmUpRange = CameraCutWarmUpRange;
 			Entity.LeafNode = LeafNode;
 			Entity.Name = MoviePipeline::GetNameForShot(SequenceHierarchyCache, InSequence, LeafNode);
 			Entity.InnerToOuterTransform = InnerToOuterTransform;
@@ -585,29 +724,39 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 		// We need to generate all of the linearized segments first so that we have all of the names available.
 		// We need all of the names available because we need to ensure unique shot names (for XMLs), and they 
 		// expect to be consistent (ie: if duplicates are found, the first one is retroactively changed to (1)).
-		TMap<FString, int32> ShotNameUseCount;
-		for (FLinearizedEntity& Entity : Entities)
 		{
-			int32& Count = ShotNameUseCount.FindOrAdd(Entity.Name.Get<1>(), 0);
-			if (++Count > 1)
+			TArray<FString> ShotNames;
+			for (FLinearizedEntity& Entity : Entities)
 			{
-				FString& ShotName = Entity.Name.Get<1>();
-				ShotName.Append(FString::Format(TEXT("({0})"), { ShotNameUseCount[Entity.Name.Get<1>()] }));
+				// Insert the outer name portion (which is the shot)
+				ShotNames.Add(Entity.Name.Get<1>());
+			}
+
+			// Now fix up the names to avoid duplicates
+			UE::MoviePipeline::DeduplicateNameArray(ShotNames);
+
+			// Now re-apply the fixed names
+			for (int32 Index = 0; Index < Entities.Num(); Index++)
+			{
+				Entities[Index].Name.Get<1>() = ShotNames[Index];
 			}
 		}
 
-		// For any shot names we found duplicates, append 1 to the first to keep naming consistent
-		for (TPair<FString, int32>& Pair : ShotNameUseCount)
+		// Repeat for camera names within each shot.
 		{
-			if (Pair.Value > 1)
+			for (FLinearizedEntity& Entity : Entities)
 			{
-				for (FLinearizedEntity& Entity : Entities)
+				TArray<FString> CameraNames;
+				for (FMoviePipelineSidecarCamera& SidecarCamera : Entity.SidecarCameras)
 				{
-					if (Entity.Name.Get<1>().Equals(Pair.Key))
-					{
-						Entity.Name.Get<1>().Append(TEXT("(1)"));
-						break;
-					}
+					CameraNames.Add(SidecarCamera.Name);
+				}
+				
+				UE::MoviePipeline::DeduplicateNameArray(CameraNames);
+
+				for (int32 Index = 0; Index < Entity.SidecarCameras.Num(); Index++)
+				{
+					Entity.SidecarCameras[Index].Name = CameraNames[Index];
 				}
 			}
 		}
@@ -658,11 +807,12 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 			NewShot->ShotInfo.TotalOutputRangeMaster = Entity.Range;
 			NewShot->ShotInfo.WarmupRangeMaster = Entity.CameraCutWarmUpRange;
 			NewShot->ShotInfo.OuterToInnerTransform = Entity.InnerToOuterTransform.Inverse();
+			NewShot->SidecarCameras = Entity.SidecarCameras;
 			UE_LOG(LogMovieRenderPipeline, Log, TEXT("Registering range: %s (InnerName: %s OuterName: %s)"), *LexToString(NewShot->ShotInfo.TotalOutputRangeMaster), *NewShot->InnerName, *NewShot->OuterName);
 		}
 
 		// Now that we've read the job's shot mask we will clear it and replace it with only things still valid.
-		if (InJob->ShotInfo != NewShots)
+		if (ToRawPtrTArrayUnsafe(InJob->ShotInfo) != NewShots)
 		{
 			InJob->ShotInfo.Reset();
 			InJob->ShotInfo = NewShots;
@@ -686,7 +836,7 @@ int32 UMoviePipelineBlueprintLibrary::ResolveVersionNumber(FMoviePipelineFilenam
 	}
 
 	// Calculate a version number by looking at the output path and then scanning for a version token.
-	FString FileNameFormatString = OutputSettings->OutputDirectory.Path / OutputSettings->FileNameFormat;
+	FString FileNameFormatString = InParams.FileNameOverride.Len() > 0 ? InParams.FileNameOverride : OutputSettings->OutputDirectory.Path / OutputSettings->FileNameFormat;
 
 	FString FinalPath;
 	FMoviePipelineFormatArgs FinalFormatArgs;
@@ -775,7 +925,7 @@ FIntPoint UMoviePipelineBlueprintLibrary::GetEffectiveOutputResolution(UMoviePip
 UMoviePipelineSetting* UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(TSubclassOf<UMoviePipelineSetting> InSettingType, const UMoviePipelineMasterConfig* InMasterConfig, const UMoviePipelineExecutorShot* InShot)
 {
 	// Check to see if this setting is in the shot override, if it is we'll use the shot version of that.
-	if (InShot->GetShotOverrideConfiguration())
+	if (InShot && InShot->GetShotOverrideConfiguration())
 	{
 		UMoviePipelineSetting* Setting = InShot->GetShotOverrideConfiguration()->FindSettingByClass(InSettingType);
 		if (Setting)
@@ -787,10 +937,13 @@ UMoviePipelineSetting* UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingFo
 	}
 
 	// If they didn't have a shot override, or the setting wasn't enabled, we'll check the master config.
-	UMoviePipelineSetting* Setting = InMasterConfig->FindSettingByClass(InSettingType);
-	if (Setting)
+	if (InMasterConfig)
 	{
-		return Setting->IsEnabled() ? Setting : InSettingType->GetDefaultObject<UMoviePipelineSetting>();
+		UMoviePipelineSetting* Setting = InMasterConfig->FindSettingByClass(InSettingType);
+		if (Setting && Setting->IsEnabled())
+		{
+			return Setting;
+		}
 	}
 
 	// If no one overrode it, then we return the default.
@@ -862,7 +1015,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 			FrameNumber = FrameNumberRel;
 			FrameNumberShot = FrameNumberShotRel;
 		}
-		FString CameraName = InParams.ShotOverride ? InParams.ShotOverride->InnerName : FString();
+		FString CameraName = InParams.ShotOverride ? InParams.ShotOverride->GetCameraName(InParams.CameraIndex) : FString();
 		CameraName = CameraName.Len() > 0 ? CameraName : TEXT("NoCamera");
 		if(InParams.CameraNameOverride.Len() > 0)
 		{
@@ -879,33 +1032,35 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		MoviePipeline::GetOutputStateFormatArgs(OutMergedFormatArgs, FrameNumber, FrameNumberShot, FrameNumberRel, FrameNumberShotRel, CameraName, ShotName);
 	}
 
+
 	// And from ourself
 	{
-		OutMergedFormatArgs.FilenameArguments.Add(TEXT("date"), InParams.InitializationTime.ToString(TEXT("%Y.%m.%d")));
-		OutMergedFormatArgs.FilenameArguments.Add(TEXT("time"), InParams.InitializationTime.ToString(TEXT("%H.%M.%S")));
-		OutMergedFormatArgs.FilenameArguments.Add(TEXT("job_author"), MoviePipeline::GetJobAuthor(InParams.Job));
-
-		FString VersionText = FString::Printf(TEXT("v%0*d"), 3, InParams.InitializationVersion);
-
-		OutMergedFormatArgs.FilenameArguments.Add(TEXT("version"), VersionText);
-
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobDate"), InParams.InitializationTime.ToString(TEXT("%Y.%m.%d")));
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobTime"), InParams.InitializationTime.ToString(TEXT("%H.%M.%S")));
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobVersion"), FString::FromInt(InParams.InitializationVersion));
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobName"), InParams.Job->JobName);
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobAuthor"), MoviePipeline::GetJobAuthor(InParams.Job));
-
+		// Use the shared function as UMoviePipelineMasterConfig::GetFormatArguments to ensure all the time variables get overwritten.
+		UE::MoviePipeline::GetSharedFormatArguments(OutMergedFormatArgs.FilenameArguments, OutMergedFormatArgs.FileMetadata, InParams.InitializationTime, InParams.InitializationVersion, InParams.Job);
+		
 		// By default, we don't want to show frame duplication numbers. If we need to start writing them,
 		// they need to come before the frame number (so that tools recognize them as a sequence).
 		OutMergedFormatArgs.FilenameArguments.Add(TEXT("file_dup"), FString());
 	}
 
-	// Apply any overrides from shots
 	if (InParams.ShotOverride && InParams.ShotOverride->GetShotOverrideConfiguration())
 	{
-		// ToDo
-		// InParams.ShotOverride->GetShotOverrideConfiguration()->GetFormatArguments(OutMergedFormatArgs, true);
+		UMoviePipelineShotConfig* ShotConfig = InParams.ShotOverride->GetShotOverrideConfiguration();
+		for (UMoviePipelineSetting* Setting : ShotConfig->GetUserSettings())
+		{
+			if (!Setting)
+			{
+				UE_LOG(LogMovieRenderPipeline, Error, TEXT("Null setting found in config: %s - Did you disable a plugin that contained this setting?"), *GetNameSafe(ShotConfig));
+				continue;
+			}
+
+			if (Setting->IsEnabled())
+			{
+				Setting->GetFormatArguments(OutMergedFormatArgs);
+			}
+		}
 	}
+
 	// Overwrite the variables with overrides if needed. This allows different requesters to share the same variables (ie: filename extension, render pass name)
 	for (const TPair<FString, FString>& KVP : InParams.FileNameFormatOverrides)
 	{
@@ -921,7 +1076,9 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		NamedArgs.Add(Argument.Key, Argument.Value);
 	}
 
-	FString BaseFilename = FString::Format(*InFormatString, NamedArgs);
+	FString FileNameFormatString = InParams.FileNameOverride.Len() > 0 ? InParams.FileNameOverride : InFormatString;
+
+	FString BaseFilename = FString::Format(*FileNameFormatString, NamedArgs);
 	FPaths::NormalizeFilename(BaseFilename);
 
 
@@ -946,7 +1103,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		NamedArgs.Add(TEXT("file_dup"), FString::Printf(TEXT("_(%d)"), DuplicateIndex));
 
 		// Re-resolve the format string now that we've reassigned frame_dup to a number.
-		ThisTry = FString::Format(*InFormatString, NamedArgs) + Extension;
+		ThisTry = FString::Format(*FileNameFormatString, NamedArgs) + Extension;
 
 		// If the file doesn't exist, we can use that, else, increment the index and try again
 		if (CanWriteToFile(*ThisTry, OutputSetting->bOverrideExistingOutput))
@@ -1010,3 +1167,4 @@ FText UMoviePipelineBlueprintLibrary::GetMoviePipelineEngineChangelistLabel(cons
 
 	return FText();
 }
+PRAGMA_ENABLE_OPTIMIZATION

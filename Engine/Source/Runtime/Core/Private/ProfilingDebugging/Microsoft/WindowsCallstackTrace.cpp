@@ -135,7 +135,7 @@ private:
 	struct FModule
 	{
 		uint32				Id;
-		uint32				IdSize = 0;
+		uint32				IdSize;
 		uint32				NumFunctions;
 #if BACKTRACE_DBGLVL >= 1
 		uint16				NumFpTypes;
@@ -203,6 +203,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 FBacktracer* FBacktracer::Instance = nullptr;
 static bool GFullBacktraces = UE_CALLSTACK_TRACE_FULL_CALLSTACKS;
+static bool GModulesAreInitialized = false;
 
 ////////////////////////////////////////////////////////////////////////////////
 FBacktracer::FBacktracer(FMalloc* InMalloc)
@@ -231,7 +232,6 @@ FBacktracer::~FBacktracer()
 	{
 		Malloc->Free(Module.Functions);
 	}
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -566,7 +566,7 @@ const FBacktracer::FFunction* FBacktracer::LookupFunction(UPTRINT Address, FLook
 ////////////////////////////////////////////////////////////////////////////////
 uint32 FBacktracer::GetBacktraceId(void* AddressOfReturnAddress) const
 {
-	FLookupState LookupState;
+	FLookupState LookupState = {};
 	FCallstackTracer::FBacktraceEntry BacktraceEntry;
 
 	UPTRINT* StackPointer = (UPTRINT*)AddressOfReturnAddress;
@@ -640,16 +640,24 @@ uint32 FBacktracer::GetBacktraceId(void* AddressOfReturnAddress) const
 		if (Function == nullptr)
 		{
 #if BACKTRACE_LOCK_FREE
-			TGuardValue<bool> ReentranceGuard(bReentranceCheck, true);
-			FunctionLookups.Emplace(RetAddr, -1);
+			// LookupFunction fails when modules are not yet registered. In this case, we do not want the address
+			// to be added to the lookup map, but to retry the lookup later when modules are properly registered.
+			if (GModulesAreInitialized)
+			{
+				TGuardValue<bool> ReentranceGuard(bReentranceCheck, true);
+				FunctionLookups.Emplace(RetAddr, -1);
+			}
 #endif
 			break;
 		}
 
 #if BACKTRACE_LOCK_FREE
 		{
+			// This conversion improves probing performance for the hash set. Additionally it is critical 
+			// to avoid incorrect values when RspBias is compressed into 16 bits in the hash map.
+			int32 StoreBias = Function->RspBias < 0 ? -1 : Function->RspBias;
 			TGuardValue<bool> ReentranceGuard(bReentranceCheck, true);
-			FunctionLookups.Emplace(RetAddr, Function->RspBias);
+			FunctionLookups.Emplace(RetAddr, StoreBias);
 		}
 #endif
 
@@ -709,7 +717,7 @@ int32 FBacktracer::GetFrameSize(void* FunctionAddress) const
 {
 	FScopeLock _(&Lock);
 
-	FLookupState LookupState;
+	FLookupState LookupState = {};
 	const FFunction* Function = LookupFunction(UPTRINT(FunctionAddress), LookupState);
 	if (FunctionAddress == nullptr)
 	{
@@ -762,12 +770,13 @@ void CallstackTrace_CreateInternal(FMalloc* Malloc)
 void CallstackTrace_InitializeInternal()
 {
 	Modules_Initialize();
+	GModulesAreInitialized = true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 uint32 CallstackTrace_GetCurrentId()
 {
-	void* AddressOfReturnAddress = PLATFORM_RETURN_ADDRESS_POINTER();
+	void* AddressOfReturnAddress = PLATFORM_RETURN_ADDRESS_FOR_CALLSTACKTRACING();
 	if (FBacktracer* Instance = FBacktracer::Get())
 	{
 		return Instance->GetBacktraceId(AddressOfReturnAddress);

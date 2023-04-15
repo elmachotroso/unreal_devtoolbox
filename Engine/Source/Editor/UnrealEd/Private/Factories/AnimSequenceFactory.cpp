@@ -9,7 +9,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
 #include "Editor.h"
@@ -37,7 +37,7 @@ bool UAnimSequenceFactory::ConfigureProperties()
 	FAssetPickerConfig AssetPickerConfig;
 	
 	/** The asset picker will only show skeletons */
-	AssetPickerConfig.Filter.ClassNames.Add(USkeleton::StaticClass()->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(USkeleton::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 
 	/** The delegate that fires when an asset was selected */
@@ -52,7 +52,7 @@ bool UAnimSequenceFactory::ConfigureProperties()
 	.SupportsMinimize(false) .SupportsMaximize(false)
 	[
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
 		[
 			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		]

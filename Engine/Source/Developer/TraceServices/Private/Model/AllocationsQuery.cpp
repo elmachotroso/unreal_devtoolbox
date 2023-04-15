@@ -43,9 +43,8 @@ private:
 // FAllocationsQuery
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FAllocationsQuery::FAllocationsQuery(const FAllocationsProvider& InAllocationProvider, const FCallstacksProvider& InCallstacksProvider, const IAllocationsProvider::FQueryParams& InParams)
+FAllocationsQuery::FAllocationsQuery(const FAllocationsProvider& InAllocationProvider, const IAllocationsProvider::FQueryParams& InParams)
 	: AllocationsProvider(InAllocationProvider)
-	, CallstacksProvider(InCallstacksProvider)
 	, Params(InParams)
 	, IsWorking(true)
 	, IsCanceling(false)
@@ -118,7 +117,6 @@ void FAllocationsQuery::Run()
 		UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] Enqueue %u live allocs..."), NumLiveAllocs);
 		TotalAllocationCount += NumLiveAllocs;
 
-		QueryCallstacks(LiveAllocsResult);
 		Results.Enqueue(LiveAllocsResult);
 	}
 	else
@@ -144,7 +142,7 @@ void FAllocationsQuery::Run()
 			SbTree->Query(Cells, Params);
 		}
 	}
-		
+
 	CellCount += Cells.Num();
 
 	UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] %d cells to process"), Cells.Num());
@@ -161,7 +159,7 @@ void FAllocationsQuery::Run()
 		UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] Processing cell %u (%u allocs)..."), CellIndex, Cell->GetAllocCount());
 
 		FAllocationsImpl* CellResult = new FAllocationsImpl();
-			
+
 		Cell->Query(CellResult->Items, Params);
 
 		const uint32 NumAllocs = static_cast<uint32>(CellResult->Items.Num());
@@ -170,7 +168,6 @@ void FAllocationsQuery::Run()
 			UE_LOG(LogTraceServices, Log, TEXT("[MemAlloc] Enqueue %u allocs..."), NumAllocs);
 			TotalAllocationCount += NumAllocs;
 
-			QueryCallstacks(CellResult);
 			Results.Enqueue(CellResult);
 		}
 		else
@@ -397,22 +394,6 @@ void FAllocationsQuery::QueryLiveAllocs(TArray<const FAllocationItem*>& OutAlloc
 		});
 	}
 	break;
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FAllocationsQuery::QueryCallstacks(FAllocationsImpl* Result) const
-{
-	for (auto Item : Result->Items)
-	{
-		// Callstacks could have been resolved in previous queries,
-		// check before querying again
-		if (!Item->Callstack)
-		{
-			Item->Callstack = CallstacksProvider.GetCallstack(Item->Owner);
-			check(Item->Callstack != nullptr);
-		}
 	}
 }
 

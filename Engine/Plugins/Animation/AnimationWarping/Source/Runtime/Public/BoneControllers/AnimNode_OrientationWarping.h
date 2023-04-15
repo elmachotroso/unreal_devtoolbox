@@ -24,6 +24,12 @@ struct ANIMATIONWARPINGRUNTIME_API FAnimNode_OrientationWarping : public FAnimNo
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Evaluation, meta=(PinShownByDefault))
 	float LocomotionAngle = 0.f;
 
+	// Minimum root motion speed required to apply orientation warping
+	// This is useful to prevent unnatural re-orientation when the animation has a portion with no root motion (i.e starts/stops/idles)
+	// When this value is greater than 0, it's recommended to enable interpolation with RotationInterpSpeed > 0
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Evaluation, meta = (ClampMin = "0.0", PinHiddenByDefault))
+	float MinRootMotionSpeedThreshold = 10.0f;
+
 	// Specifies an angle threshold to prevent erroneous over-rotation of the character, disabled with a value of 0
 	//
 	// When the effective orientation warping angle is detected to be greater than this value (default: 90 degrees) the locomotion direction will be inverted prior to warping
@@ -60,6 +66,15 @@ struct ANIMATIONWARPINGRUNTIME_API FAnimNode_OrientationWarping : public FAnimNo
 	// A value of 0 will cause instantaneous rotation, while a greater value will introduce smoothing
 	UPROPERTY(EditAnywhere, Category=Settings, meta=(ClampMin="0.0"))
 	float RotationInterpSpeed = 10.f;
+
+	UPROPERTY(EditAnywhere, Category = Experimental, meta=(PinHiddenByDefault, ClampMin="0.0", ClampMax="1.0"))
+	float WarpingAlpha = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = Experimental, meta=(PinHiddenByDefault, ClampMin="0.0", ClampMax="1.0"))
+	float OffsetAlpha = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category = Experimental, meta=(PinHiddenByDefault, ClampMin="0.0", ClampMax="180.0"))
+	float MaxOffsetAngle = 70.0f;
 
 #if WITH_EDITORONLY_DATA
 	// Scale all debug drawing visualization by a factor
@@ -141,6 +156,17 @@ private:
 	
 	// Internal orientation warping angle
 	float ActualOrientationAngle = 0.f;
+
+	// Our component's heading
+	float ComponentHeading = 0.0;
+
+	// Our accumulated heading offset based on component frame deltas
+	float HeadingOffset = 0.0;
+	float LastOffsetAlpha = 0.0f;
+
+	FGraphTraversalCounter UpdateCounter;
+	bool bIsFirstUpdate = false;
+	void Reset(const FAnimationBaseContext& Context);
 
 #if WITH_EDITORONLY_DATA
 	// Whether we found a root motion delta attribute in the attribute stream on graph driven mode

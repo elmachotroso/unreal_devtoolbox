@@ -23,7 +23,7 @@
 #include "ToolMenus.h"
 #include "Widgets/SOpenColorIODisplay.h"
 
-
+LLM_DEFINE_TAG(OpenColorIO_OpenColorIOEditor);
 DEFINE_LOG_CATEGORY(LogOpenColorIOEditor);
 
 #define LOCTEXT_NAMESPACE "OpenColorIOEditorModule"
@@ -31,6 +31,8 @@ DEFINE_LOG_CATEGORY(LogOpenColorIOEditor);
 
 void FOpenColorIOEditorModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(OpenColorIO_OpenColorIOEditor);
+
 	FWorldDelegates::OnPreWorldInitialization.AddRaw(this, &FOpenColorIOEditorModule::OnWorldInit);
 
 	// Register asset type actions for OpenColorIOConfiguration class
@@ -48,6 +50,8 @@ void FOpenColorIOEditorModule::StartupModule()
 
 void FOpenColorIOEditorModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(OpenColorIO_OpenColorIOEditor);
+
 	UnregisterViewMenuExtension();
 	UnregisterStyle();
 	UnregisterCustomizations();
@@ -75,6 +79,7 @@ void FOpenColorIOEditorModule::RegisterCustomizations()
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	PropertyModule.RegisterCustomPropertyTypeLayout(FOpenColorIOColorConversionSettings::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FOpenColorIOColorConversionSettingsCustomization::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout(FOpenColorIOColorSpace::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FOpenColorIOColorSpaceCustomization::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout(FOpenColorIODisplayView::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FOpenColorIODisplayViewCustomization::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout(UOpenColorIOConfiguration::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FOpenColorIOConfigurationCustomization::MakeInstance));
 }
 
@@ -85,12 +90,14 @@ void FOpenColorIOEditorModule::UnregisterCustomizations()
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomPropertyTypeLayout(UOpenColorIOConfiguration::StaticClass()->GetFName());
 		PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorSpace::StaticStruct()->GetFName());
+		PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIODisplayView::StaticStruct()->GetFName());
 		PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorConversionSettings::StaticStruct()->GetFName());
 	}
 }
 
 void FOpenColorIOEditorModule::OnWorldInit(UWorld* InWorld, const UWorld::InitializationValues InInitializationValues)
 {
+	LLM_SCOPE_BYTAG(OpenColorIO_OpenColorIOEditor);
 	if (InWorld && InWorld->WorldType == EWorldType::Editor)
 	{
 		CleanFeatureLevelDelegate();
@@ -251,6 +258,7 @@ void FOpenColorIOEditorModule::OnLevelViewportClientListChanged()
 
 void FOpenColorIOEditorModule::OnEngineLoopInitComplete()
 {
+	LLM_SCOPE_BYTAG(OpenColorIO_OpenColorIOEditor);
 	// Register for Viewport updates to be able to track them
 	GEditor->OnLevelViewportClientListChanged().AddRaw(this, &FOpenColorIOEditorModule::OnLevelViewportClientListChanged);
 }
@@ -290,14 +298,15 @@ void FOpenColorIOEditorModule::TrackNewViewportIfRequired(FViewport* Viewport)
 		FLevelEditorViewportClient* const* AssociatedClient = LevelViewportClients.FindByPredicate([Viewport](const FLevelEditorViewportClient* Other) { return Other == Viewport->GetClient(); });
 
 		// Active viewport should always have a client
-		check(AssociatedClient && *AssociatedClient);
-		
-		FLevelEditorViewportClient* Client = *AssociatedClient;
-		TSharedPtr<SLevelViewport> LevelViewport = StaticCastSharedPtr<SLevelViewport>(Client->GetEditorViewportWidget());
-		if (LevelViewport.IsValid())
+		if (ensure(AssociatedClient))
 		{
-			FViewportPair NewEntry(Client, LevelViewport->GetConfigKey());
-			ConfiguredViewports.Emplace(MoveTemp(NewEntry));
+			FLevelEditorViewportClient* Client = *AssociatedClient;
+			TSharedPtr<SLevelViewport> LevelViewport = StaticCastSharedPtr<SLevelViewport>(Client->GetEditorViewportWidget());
+			if (LevelViewport.IsValid())
+			{
+				FViewportPair NewEntry(Client, LevelViewport->GetConfigKey());
+				ConfiguredViewports.Emplace(MoveTemp(NewEntry));
+			}
 		}
 	}
 }

@@ -1,11 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace EpicGames.Perforce
 {
 	/// <summary>
@@ -14,16 +8,10 @@ namespace EpicGames.Perforce
 	public class PerforceInfo
 	{
 		/// <summary>
-		/// The severity level
-		/// </summary>
-		[PerforceTag("level")]
-		public int Level;
-
-		/// <summary>
 		/// Message data
 		/// </summary>
 		[PerforceTag("data")]
-		public string Data;
+		public string Data { get; set; }
 
 		/// <summary>
 		/// Private constructor for serialization

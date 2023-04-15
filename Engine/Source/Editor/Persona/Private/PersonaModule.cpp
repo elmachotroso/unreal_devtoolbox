@@ -13,10 +13,10 @@
 #include "Materials/Material.h"
 #include "IPersonaPreviewScene.h"
 #include "Logging/TokenizedMessage.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 #include "AnimGraphDefinitions.h"
 #include "Toolkits/ToolkitManager.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "SkeletalMeshSocketDetails.h"
 #include "AnimNotifyDetails.h"
 #include "AnimGraphNodeDetails.h"
@@ -75,6 +75,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "PhysicsAssetRenderUtils.h"
 #include "PersonaPreviewSceneDescription.h"
 #include "PersonaPreviewSceneAnimationController.h"
 #include "PersonaPreviewSceneRefPoseController.h"
@@ -93,6 +94,8 @@
 #include "SAnimMontageSectionsPanel.h"
 #include "Animation/AnimSequenceHelpers.h"
 #include "SkeletalMeshReferenceSectionDetails.h"
+#include "PersonaToolMenuContext.h"
+#include "ToolMenu.h"
 
 IMPLEMENT_MODULE( FPersonaModule, Persona );
 
@@ -112,6 +115,8 @@ void FPersonaModule::StartupModule()
 
 	// Make sure the advanced preview scene module is loaded 
 	FModuleManager::Get().LoadModuleChecked("AdvancedPreviewScene");
+
+	UPhysicsAssetRenderUtilities::Initialise();
 
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -146,6 +151,8 @@ void FPersonaModule::StartupModule()
 
 	FKismetEditorUtilities::RegisterOnBlueprintCreatedCallback(this, UAnimNotify::StaticClass(), FKismetEditorUtilities::FOnBlueprintCreated::CreateRaw(this, &FPersonaModule::HandleNewAnimNotifyBlueprintCreated));
 	FKismetEditorUtilities::RegisterOnBlueprintCreatedCallback(this, UAnimNotifyState::StaticClass(), FKismetEditorUtilities::FOnBlueprintCreated::CreateRaw(this, &FPersonaModule::HandleNewAnimNotifyStateBlueprintCreated));
+
+	GetMutableDefault<UPersonaOptions>()->SetFlags(RF_Transactional);
 }
 
 void FPersonaModule::ShutdownModule()
@@ -179,77 +186,45 @@ void FPersonaModule::ShutdownModule()
 	}
 }
 
-static void SetupPersonaToolkit(const TSharedRef<FPersonaToolkit>& Toolkit, const FPersonaToolkitArgs& PersonaToolkitArgs)
-{
-	if (PersonaToolkitArgs.bCreatePreviewScene)
-	{
-		Toolkit->CreatePreviewScene(PersonaToolkitArgs);
-	}
-}
-
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UObject* InAsset, const FPersonaToolkitArgs& PersonaToolkitArgs, USkeleton* InSkeleton) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InAsset, InSkeleton);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InAsset, PersonaToolkitArgs, InSkeleton);
 	return NewPersonaToolkit;
 }
 
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(USkeleton* InSkeleton, const FPersonaToolkitArgs& PersonaToolkitArgs) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InSkeleton);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InSkeleton, PersonaToolkitArgs);
 	return NewPersonaToolkit;
 }
 
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UAnimationAsset* InAnimationAsset, const FPersonaToolkitArgs& PersonaToolkitArgs) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InAnimationAsset);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InAnimationAsset, PersonaToolkitArgs);
 	return NewPersonaToolkit;
 }
 
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(USkeletalMesh* InSkeletalMesh, const FPersonaToolkitArgs& PersonaToolkitArgs) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InSkeletalMesh);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InSkeletalMesh, PersonaToolkitArgs);
 	return NewPersonaToolkit;
 }
 
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UAnimBlueprint* InAnimBlueprint, const FPersonaToolkitArgs& PersonaToolkitArgs) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InAnimBlueprint);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InAnimBlueprint, PersonaToolkitArgs);
 	return NewPersonaToolkit;
 }
 
 TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UPhysicsAsset* InPhysicsAsset, const FPersonaToolkitArgs& PersonaToolkitArgs) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
-
-	NewPersonaToolkit->Initialize(InPhysicsAsset);
-
-	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
-
+	NewPersonaToolkit->Initialize(InPhysicsAsset, PersonaToolkitArgs);
 	return NewPersonaToolkit;
 }
 
@@ -388,19 +363,13 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 			WeakHostingApp.Pin()->EditCurves(InAnimSequence, InCurveInfo, InExternalTimeSliderController);
 		};
 
-		auto OnStopEditingCurves = [WeakHostingApp](const TArray<IAnimationEditor::FCurveEditInfo>& InCurveInfo)
-		{ 
-			WeakHostingApp.Pin()->StopEditingCurves(InCurveInfo);
-		};
-
 		if (UAnimSequence* Sequence = Cast<UAnimSequence>(InAnimAsset))
 		{
 			Result = SNew(SSequenceEditor, InArgs.PreviewScene.Pin().ToSharedRef(), InArgs.EditableSkeleton.Pin().ToSharedRef(), InHostingApp->GetToolkitCommands())
 				.Sequence(Sequence)
 				.OnObjectsSelected(InArgs.OnDespatchObjectsSelected)
 				.OnInvokeTab(InArgs.OnDespatchInvokeTab)
-				.OnEditCurves_Lambda(OnEditCurves)
-				.OnStopEditingCurves_Lambda(OnStopEditingCurves);
+				.OnEditCurves_Lambda(OnEditCurves);
 
 			OutDocumentLink = TEXT("Engine/Animation/Sequences");
 		}
@@ -410,8 +379,7 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 				.Composite(Composite)
 				.OnObjectsSelected(InArgs.OnDespatchObjectsSelected)
 				.OnInvokeTab(InArgs.OnDespatchInvokeTab)
-				.OnEditCurves_Lambda(OnEditCurves)
-				.OnStopEditingCurves_Lambda(OnStopEditingCurves);
+				.OnEditCurves_Lambda(OnEditCurves);
 
 			OutDocumentLink = TEXT("Engine/Animation/AnimationComposite");
 		}
@@ -424,8 +392,7 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 				.OnSectionsChanged(InArgs.OnDespatchSectionsChanged)
 				.OnInvokeTab(InArgs.OnDespatchInvokeTab)
 				.OnObjectsSelected(InArgs.OnDespatchObjectsSelected)
-				.OnEditCurves_Lambda(OnEditCurves)
-				.OnStopEditingCurves_Lambda(OnStopEditingCurves);
+				.OnEditCurves_Lambda(OnEditCurves);
 
 			OutDocumentLink = TEXT("Engine/Animation/AnimMontage");
 		}
@@ -435,8 +402,7 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 				.StreamableAnim(StreamableAnim)
 				.OnObjectsSelected(InArgs.OnDespatchObjectsSelected)
 				.OnInvokeTab(InArgs.OnDespatchInvokeTab)
-				.OnEditCurves_Lambda(OnEditCurves)
-				.OnStopEditingCurves_Lambda(OnStopEditingCurves);
+				.OnEditCurves_Lambda(OnEditCurves);
 
 			OutDocumentLink = TEXT("Engine/Animation/Sequences");
 		}
@@ -518,12 +484,12 @@ void FPersonaModule::ImportNewAsset(USkeleton* InSkeleton, EFBXImportType Defaul
 	}
 }
 
-void PopulateWithAssets(FName ClassName, FName SkeletonMemberName, const FString& SkeletonString, TArray<FAssetData>& OutAssets)
+void PopulateWithAssets(const FTopLevelAssetPath& ClassName, FName SkeletonMemberName, const FString& SkeletonString, TArray<FAssetData>& OutAssets)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	FARFilter Filter;
-	Filter.ClassNames.Add(ClassName);
+	Filter.ClassPaths.Add(ClassName);
 	Filter.TagsAndValues.Add(SkeletonMemberName, SkeletonString);
 
 	AssetRegistryModule.Get().GetAssets(Filter, OutAssets);
@@ -538,9 +504,9 @@ void FPersonaModule::TestSkeletonCurveNamesForUse(const TSharedRef<IEditableSkel
 		const FString SkeletonString = FAssetData(&Skeleton).GetExportTextName();
 
 		TArray<FAssetData> SkeletalMeshes;
-		PopulateWithAssets(USkeletalMesh::StaticClass()->GetFName(), USkeletalMesh::GetSkeletonMemberName(), SkeletonString, SkeletalMeshes);
+		PopulateWithAssets(USkeletalMesh::StaticClass()->GetClassPathName(), USkeletalMesh::GetSkeletonMemberName(), SkeletonString, SkeletalMeshes);
 		TArray<FAssetData> Animations;
-		PopulateWithAssets(UAnimSequence::StaticClass()->GetFName(), USkeletalMesh::GetSkeletonMemberName(), SkeletonString, Animations);
+		PopulateWithAssets(UAnimSequence::StaticClass()->GetClassPathName(), USkeletalMesh::GetSkeletonMemberName(), SkeletonString, Animations);
 
 		FText TimeTakenMessage = FText::Format(LOCTEXT("TimeTakenWarning", "In order to verify curve usage all Skeletal Meshes and Animations that use this skeleton will be loaded, this may take some time.\n\nProceed?\n\nNumber of Meshes: {0}\nNumber of Animations: {1}"), FText::AsNumber(SkeletalMeshes.Num()), FText::AsNumber(Animations.Num()));
 
@@ -631,7 +597,7 @@ void FPersonaModule::TestSkeletonCurveNamesForUse(const TSharedRef<IEditableSkel
 							if (!Message.IsValid())
 							{
 								Message = CurveOutput.Warning();
-								Message->AddToken(FAssetNameToken::Create(Anim.ObjectPath.ToString(), FText::FromName(Anim.AssetName)));
+								Message->AddToken(FAssetNameToken::Create(Anim.GetObjectPathString(), FText::FromName(Anim.AssetName)));
 								Message->AddToken(FTextToken::Create(LOCTEXT("VerifyCurves_FoundAnimationsWithUnusedReferences", "References the following curves that are not used for either morph targets or material parameters and so may be unneeded")));
 							}
 							CurveOutput.Info(FText::FromName(Curve.Name.DisplayName));
@@ -867,276 +833,408 @@ IPersonaEditorModeManager* FPersonaModule::CreatePersonaEditorModeManager()
 	return new FPersonaEditorModeManager();
 }
 
+namespace UE::Persona::Private
+{
+	struct FNotificationHandler : public TSharedFromThis<FNotificationHandler>
+	{
+		static void HandleApplyPreviewMesh(TSharedPtr<FNotificationHandler> InNotificationHandler, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
+		{
+			TSharedPtr<IPersonaToolkit> PinnedPersonaToolkit = InWeakPersonaToolkit.Pin();
+			if (PinnedPersonaToolkit.IsValid())	// Toolkit can become invalid while the toast is open
+			{
+				PinnedPersonaToolkit->SetPreviewMesh(PinnedPersonaToolkit->GetPreviewScene()->GetPreviewMesh(), true);
+				if (InNotificationHandler->Notification.IsValid())
+				{
+					InNotificationHandler->Notification->Fadeout();
+				}
+			}
+		}
+
+		TSharedPtr<SNotificationItem> Notification;
+	};
+
+	static TSharedRef<SWidget> CreatePreviewMeshComboButtonContents(TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
+	{
+		static TWeakPtr<SNotificationItem> WeakPendingApplyMeshNotification = nullptr;
+
+		FMenuBuilder MenuBuilder(true, nullptr);
+
+		MenuBuilder.BeginSection(TEXT("ChoosePreviewMesh"), LOCTEXT("ChoosePreviewMesh", "Choose Preview Mesh"));
+		{
+			FAssetPickerConfig AssetPickerConfig;
+
+			auto HandleAssetSelected = [InWeakPersonaToolkit](const FAssetData& AssetData)
+			{
+				if (InWeakPersonaToolkit.IsValid())
+				{
+					InWeakPersonaToolkit.Pin()->SetPreviewMesh(Cast<USkeletalMesh>(AssetData.GetAsset()), false);
+				}
+
+				if (InWeakPersonaToolkit.IsValid())	// SetPreviewMesh can invalidate the persona toolkit, so check it here before displaying toast
+				{
+					TSharedPtr<FNotificationHandler> NotificationHandler = MakeShared<FNotificationHandler>();
+
+					FNotificationInfo Info(LOCTEXT("PreviewMeshSetTemporarily", "Preview mesh set temporarily"));
+					Info.ExpireDuration = 10.0f;
+					Info.bUseLargeFont = true;
+					Info.ButtonDetails.Add(
+						FNotificationButtonInfo(
+							LOCTEXT("ApplyToAsset", "Apply To Asset"),
+							LOCTEXT("ApplyToAssetToolTip", "The preview mesh has changed, but it will not be able to be saved until it is applied to the asset. Click here to make the change to the preview mesh persistent."),
+							FSimpleDelegate::CreateStatic(&FNotificationHandler::HandleApplyPreviewMesh, NotificationHandler, InWeakPersonaToolkit),
+							SNotificationItem::CS_Success));
+
+					// Fade-out previously added SetPreviewMesh notification (if any)
+					const TSharedPtr<SNotificationItem> PendingNotification = WeakPendingApplyMeshNotification.Pin();
+					if(PendingNotification.IsValid())
+					{
+						PendingNotification->Fadeout();
+					}
+
+					NotificationHandler->Notification = FSlateNotificationManager::Get().AddNotification(Info);
+					WeakPendingApplyMeshNotification = NotificationHandler->Notification;
+					if (NotificationHandler->Notification.IsValid())
+					{
+						NotificationHandler->Notification->SetCompletionState(SNotificationItem::CS_Success);
+					}
+
+					FSlateApplication::Get().DismissAllMenus();
+				}
+			};
+
+			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateLambda([HandleAssetSelected](const TArray<FAssetData>& SelectedAssetData)
+			{
+				if (SelectedAssetData.Num() == 1)
+				{
+					HandleAssetSelected(SelectedAssetData[0]);
+				}
+			});
+			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda(HandleAssetSelected);
+			AssetPickerConfig.bAllowNullSelection = false;
+			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+			AssetPickerConfig.Filter.bRecursiveClasses = false;
+			AssetPickerConfig.Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
+			AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([InWeakPersonaToolkit](const FAssetData& AssetData)
+			{
+				if (InWeakPersonaToolkit.IsValid())
+				{
+					if (InWeakPersonaToolkit.Pin()->GetContext() == UPhysicsAsset::StaticClass()->GetFName())
+					{
+						return false;
+					}
+
+					FString TagValue;
+					if (AssetData.GetTagValue("Skeleton", TagValue))
+					{
+						return !InWeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
+					}
+				}
+				return true;
+			});
+			if (InWeakPersonaToolkit.IsValid())
+			{
+				AssetPickerConfig.InitialAssetSelection = FAssetData(InWeakPersonaToolkit.Pin()->GetPreviewScene()->GetPreviewMesh());
+			}
+
+			FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+
+			TSharedPtr<SBox> MenuEntry = SNew(SBox)
+				.WidthOverride(300.0f)
+				.HeightOverride(300.0f)
+				[
+					ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
+				];
+
+			MenuBuilder.AddWidget(MenuEntry.ToSharedRef(), FText::GetEmpty(), true);
+		}
+		MenuBuilder.EndSection();
+
+		return MenuBuilder.MakeWidget();
+	};
+
+	static TSharedRef<SWidget> CreatePreviewAnimationComboButtonContents(TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
+	{
+		FMenuBuilder MenuBuilder(true, nullptr);
+
+		MenuBuilder.BeginSection(TEXT("ChoosePreviewAnimation"), LOCTEXT("ChoosePreviewAnimation", "Choose Preview Animation"));
+		{
+			FAssetPickerConfig AssetPickerConfig;
+			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda([InWeakPersonaToolkit](const FAssetData& AssetData)
+			{
+				if (InWeakPersonaToolkit.IsValid())
+				{
+					TSharedRef<FAnimationEditorPreviewScene> PreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(InWeakPersonaToolkit.Pin()->GetPreviewScene());
+					PreviewScene->GetPreviewSceneDescription()->SetPreviewController(UPersonaPreviewSceneAnimationController::StaticClass(), &PreviewScene.Get());
+
+					UPersonaPreviewSceneAnimationController* AnimController = CastChecked<UPersonaPreviewSceneAnimationController>(PreviewScene->GetPreviewSceneDescription()->PreviewControllerInstance);
+					AnimController->Animation = AssetData.GetAsset();
+					AnimController->InitializeView(PreviewScene->GetPreviewSceneDescription(), &PreviewScene.Get());
+
+					// Make sure any settings views are updated with the new settings
+					UAssetViewerSettings::Get()->OnAssetViewerProfileAddRemoved().Broadcast();
+				}
+
+				FSlateApplication::Get().DismissAllMenus();
+			});
+			AssetPickerConfig.bAllowNullSelection = false;
+			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+			AssetPickerConfig.Filter.bRecursiveClasses = true;
+			AssetPickerConfig.Filter.ClassPaths.Add(UAnimationAsset::StaticClass()->GetClassPathName());
+			AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([InWeakPersonaToolkit](const FAssetData& AssetData)
+			{
+				if (InWeakPersonaToolkit.IsValid())
+				{
+					FString TagValue;
+					if (AssetData.GetTagValue("Skeleton", TagValue))
+					{
+						return !InWeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
+					}
+				}
+				return true;
+			});
+			if (InWeakPersonaToolkit.IsValid())
+			{
+				AssetPickerConfig.InitialAssetSelection = FAssetData(InWeakPersonaToolkit.Pin()->GetPreviewScene()->GetPreviewAnimationAsset());
+			}
+
+			FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+
+			TSharedPtr<SBox> MenuEntry = SNew(SBox)
+				.WidthOverride(300.0f)
+				.HeightOverride(300.0f)
+				[
+					ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
+				];
+
+			MenuBuilder.AddWidget(MenuEntry.ToSharedRef(), FText::GetEmpty(), true);
+		}
+		MenuBuilder.EndSection();
+
+		return MenuBuilder.MakeWidget();
+	};
+
+	static void ShowReferencePose(TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
+	{
+		if (InWeakPersonaToolkit.IsValid())
+		{
+			TSharedRef<FAnimationEditorPreviewScene> PreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(InWeakPersonaToolkit.Pin()->GetPreviewScene());
+			PreviewScene->GetPreviewSceneDescription()->SetPreviewController(UPersonaPreviewSceneRefPoseController::StaticClass(), &PreviewScene.Get());
+
+			UPersonaPreviewSceneRefPoseController* AnimController = CastChecked<UPersonaPreviewSceneRefPoseController>(PreviewScene->GetPreviewSceneDescription()->PreviewControllerInstance);
+			AnimController->bResetBoneTransforms = true;
+			AnimController->InitializeView(PreviewScene->GetPreviewSceneDescription(), &PreviewScene.Get());
+
+			// Reset this to false here as we dont want it to always reset bone transforms, only if they user picks it from the toolbar
+			AnimController->bResetBoneTransforms = false;
+
+			// Make sure any settings views are updated with the new settings
+			UAssetViewerSettings::Get()->OnAssetViewerProfileAddRemoved().Broadcast();
+		}
+	}
+}
+
 void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilder, TSharedRef<IPersonaToolkit> PersonaToolkit, const FCommonToolbarExtensionArgs& InArgs)
 {
 	TWeakPtr<IPersonaToolkit> WeakPersonaToolkit = PersonaToolkit;
 
-	if(InArgs.bPreviewMesh)
+	if (InArgs.bPreviewMesh)
 	{
-		// Handler to hang notifications on
-		struct FNotificationHandler : public TSharedFromThis<FNotificationHandler>
-		{
-			static void HandleApplyPreviewMesh(TSharedPtr<FNotificationHandler> InNotificationHandler, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
-			{
-				TSharedPtr<IPersonaToolkit> PinnedPersonaToolkit = InWeakPersonaToolkit.Pin();
-				if(PinnedPersonaToolkit.IsValid())	// Toolkit can become invalid while the toast is open
-				{
-					PinnedPersonaToolkit->SetPreviewMesh(PinnedPersonaToolkit->GetPreviewScene()->GetPreviewMesh(), true);
-					if(InNotificationHandler->Notification.IsValid())
-					{
-						InNotificationHandler->Notification->Fadeout();
-					}
-				}
-			}
-
-			TSharedPtr<SNotificationItem> Notification;
-		};
-
-		static TWeakPtr<SNotificationItem> WeakPendingApplyMeshNotification = nullptr;
-		auto CreatePreviewMeshComboButtonContents = [WeakPersonaToolkit]()
-		{
-			FMenuBuilder MenuBuilder(true, nullptr);
-
-			MenuBuilder.BeginSection(TEXT("ChoosePreviewMesh"), LOCTEXT("ChoosePreviewMesh", "Choose Preview Mesh"));
-			{
-				FAssetPickerConfig AssetPickerConfig;
-
-				auto HandleAssetSelected = [WeakPersonaToolkit](const FAssetData& AssetData)
-				{
-					if (WeakPersonaToolkit.IsValid())
-					{
-						WeakPersonaToolkit.Pin()->SetPreviewMesh(Cast<USkeletalMesh>(AssetData.GetAsset()), false);
-					}
-
-					if(WeakPersonaToolkit.IsValid())	// SetPreviewMesh can invalidate the persona toolkit, so check it here before displaying toast
-					{
-						TSharedPtr<FNotificationHandler> NotificationHandler = MakeShared<FNotificationHandler>();
-
-						FNotificationInfo Info(LOCTEXT("PreviewMeshSetTemporarily", "Preview mesh set temporarily"));
-						Info.ExpireDuration = 10.0f;
-						Info.bUseLargeFont = true;
-						Info.ButtonDetails.Add(
-							FNotificationButtonInfo(
-								LOCTEXT("ApplyToAsset", "Apply To Asset"), 
-								LOCTEXT("ApplyToAssetToolTip", "The preview mesh has changed, but it will not be able to be saved until it is applied to the asset. Click here to make the change to the preview mesh persistent."),
-								FSimpleDelegate::CreateStatic(&FNotificationHandler::HandleApplyPreviewMesh, NotificationHandler, WeakPersonaToolkit),
-								SNotificationItem::CS_Success));
-
-						// Fade-out previously added SetPreviewMesh notification (if any)
-						const TSharedPtr<SNotificationItem> PendingNotification = WeakPendingApplyMeshNotification.Pin();
-						if(PendingNotification.IsValid())
-						{
-							PendingNotification->Fadeout();
-						}
-
-						NotificationHandler->Notification = FSlateNotificationManager::Get().AddNotification(Info);
-						WeakPendingApplyMeshNotification = NotificationHandler->Notification;
-						if (NotificationHandler->Notification.IsValid())
-						{
-							NotificationHandler->Notification->SetCompletionState(SNotificationItem::CS_Success);
-						}
-
-						FSlateApplication::Get().DismissAllMenus();
-					}
-				};
-				
-				AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateLambda([HandleAssetSelected](const TArray<FAssetData>& SelectedAssetData)
-				{
-					if (SelectedAssetData.Num() == 1)
-					{
-						HandleAssetSelected(SelectedAssetData[0]);
-					}
-				});
-				AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda(HandleAssetSelected);
-				AssetPickerConfig.bAllowNullSelection = false;
-				AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-				AssetPickerConfig.Filter.bRecursiveClasses = false;
-				AssetPickerConfig.Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
-				AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([WeakPersonaToolkit](const FAssetData& AssetData)
-				{
-					if (WeakPersonaToolkit.IsValid())
-					{
-						if(WeakPersonaToolkit.Pin()->GetContext() == UPhysicsAsset::StaticClass()->GetFName())
-						{
-							return false;
-						}
-
-						FString TagValue;
-						if (AssetData.GetTagValue("Skeleton", TagValue))
-						{
-							return !WeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
-						}
-					}
-					return true;
-				});
-				if (WeakPersonaToolkit.IsValid())
-				{
-					AssetPickerConfig.InitialAssetSelection = FAssetData(WeakPersonaToolkit.Pin()->GetPreviewScene()->GetPreviewMesh());
-				}
-
-				FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
-
-				TSharedPtr<SBox> MenuEntry = SNew(SBox)
-					.WidthOverride(300.0f)
-					.HeightOverride(300.0f)
-					[
-						ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
-					];
-
-				MenuBuilder.AddWidget(MenuEntry.ToSharedRef(), FText::GetEmpty(), true);
-			}
-			MenuBuilder.EndSection();
-
-			return MenuBuilder.MakeWidget();
-		};
-
 		InToolbarBuilder.AddComboButton(
 			FUIAction(),
-			FOnGetContent::CreateLambda(CreatePreviewMeshComboButtonContents),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewMeshComboButtonContents, WeakPersonaToolkit),
 			LOCTEXT("SetPreviewMesh", "Preview Mesh"),
 			LOCTEXT("SetPreviewMeshTooltip", "Set a new preview skeletal mesh for the current asset (stored per-animation or per-skeleton)"),
-			FSlateIcon("EditorStyle", "Persona.TogglePreviewAsset", "Persona.TogglePreviewAsset.Small")
-			);
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAsset", "Persona.TogglePreviewAsset.Small")
+		);
 	}
 
-	if(InArgs.bPreviewAnimation)
+	if (InArgs.bPreviewAnimation)
 	{
-		auto CreatePreviewAnimationComboButtonContents = [WeakPersonaToolkit]()
-		{
-			FMenuBuilder MenuBuilder(true, nullptr);
-
-			MenuBuilder.BeginSection(TEXT("ChoosePreviewAnimation"), LOCTEXT("ChoosePreviewAnimation", "Choose Preview Animation"));
-			{
-				FAssetPickerConfig AssetPickerConfig;
-				AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda([WeakPersonaToolkit](const FAssetData& AssetData)
-				{
-					if (WeakPersonaToolkit.IsValid())
-					{
-						TSharedRef<FAnimationEditorPreviewScene> PreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(WeakPersonaToolkit.Pin()->GetPreviewScene());
-						PreviewScene->GetPreviewSceneDescription()->SetPreviewController(UPersonaPreviewSceneAnimationController::StaticClass(), &PreviewScene.Get());
-
-						UPersonaPreviewSceneAnimationController* AnimController = CastChecked<UPersonaPreviewSceneAnimationController>(PreviewScene->GetPreviewSceneDescription()->PreviewControllerInstance);
-						AnimController->Animation = AssetData.GetAsset();
-						AnimController->InitializeView(PreviewScene->GetPreviewSceneDescription(), &PreviewScene.Get());
-
-						// Make sure any settings views are updated with the new settings
-						UAssetViewerSettings::Get()->OnAssetViewerProfileAddRemoved().Broadcast();
-					}
-
-					FSlateApplication::Get().DismissAllMenus();
-				});
-				AssetPickerConfig.bAllowNullSelection = false;
-				AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-				AssetPickerConfig.Filter.bRecursiveClasses = true;
-				AssetPickerConfig.Filter.ClassNames.Add(UAnimationAsset::StaticClass()->GetFName());
-				AssetPickerConfig.OnShouldFilterAsset = FOnShouldFilterAsset::CreateLambda([WeakPersonaToolkit](const FAssetData& AssetData)
-				{
-					if (WeakPersonaToolkit.IsValid())
-					{
-						FString TagValue;
-						if (AssetData.GetTagValue("Skeleton", TagValue))
-						{
-							return !WeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
-						}
-					}
-					return true;
-				});
-				if (WeakPersonaToolkit.IsValid())
-				{
-					AssetPickerConfig.InitialAssetSelection = FAssetData(WeakPersonaToolkit.Pin()->GetPreviewScene()->GetPreviewAnimationAsset());
-				}
-
-				FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
-
-				TSharedPtr<SBox> MenuEntry = SNew(SBox)
-					.WidthOverride(300.0f)
-					.HeightOverride(300.0f)
-					[
-						ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
-					];
-
-				MenuBuilder.AddWidget(MenuEntry.ToSharedRef(), FText::GetEmpty(), true);
-			}
-			MenuBuilder.EndSection();
-
-			return MenuBuilder.MakeWidget();
-		};
-
 		InToolbarBuilder.AddComboButton(
 			FUIAction(),
-			FOnGetContent::CreateLambda(CreatePreviewAnimationComboButtonContents),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewAnimationComboButtonContents, WeakPersonaToolkit),
 			LOCTEXT("SetPreviewAnimation", "Preview Animation"),
 			LOCTEXT("SetPreviewAnimationTooltip", "Setup the scene to use a preview animation. More advanced settings are available in Preview Scene Settings."),
-			FSlateIcon("EditorStyle", "Persona.TogglePreviewAnimation", "Persona.TogglePreviewAnimation.Small")
-			);
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAnimation", "Persona.TogglePreviewAnimation.Small")
+		);
 	}
 
-	if(InArgs.bReferencePose)
+	if (InArgs.bReferencePose)
 	{
 		InToolbarBuilder.AddToolBarButton(
-			FUIAction(
-				FExecuteAction::CreateLambda([WeakPersonaToolkit]()
-				{
-					if (WeakPersonaToolkit.IsValid())
-					{
-						TSharedRef<FAnimationEditorPreviewScene> PreviewScene = StaticCastSharedRef<FAnimationEditorPreviewScene>(WeakPersonaToolkit.Pin()->GetPreviewScene());
-						PreviewScene->GetPreviewSceneDescription()->SetPreviewController(UPersonaPreviewSceneRefPoseController::StaticClass(), &PreviewScene.Get());
-
-						UPersonaPreviewSceneRefPoseController* AnimController = CastChecked<UPersonaPreviewSceneRefPoseController>(PreviewScene->GetPreviewSceneDescription()->PreviewControllerInstance);
-						AnimController->bResetBoneTransforms = true;
-						AnimController->InitializeView(PreviewScene->GetPreviewSceneDescription(), &PreviewScene.Get());
-
-						// Reset this to false here as we dont want it to always reset bone transforms, only if they user picks it from the toolbar
-						AnimController->bResetBoneTransforms = false;
-
-						// Make sure any settings views are updated with the new settings
-						UAssetViewerSettings::Get()->OnAssetViewerProfileAddRemoved().Broadcast();
-					}
-				})
-			),
+			FUIAction(FExecuteAction::CreateStatic(&UE::Persona::Private::ShowReferencePose, WeakPersonaToolkit)),
 			NAME_None,
 			LOCTEXT("ShowReferencePose", "Reference Pose"),
 			LOCTEXT("ShowReferencePoseTooltip", "Show the reference pose. Clears all bone modifications. More advanced settings are available in Preview Scene Settings."),
-			FSlateIcon("EditorStyle", "Persona.ToggleReferencePose", "Persona.ToggleReferencePose.Small")
-			);
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.ToggleReferencePose", "Persona.ToggleReferencePose.Small")
+		);
 	}
 
-	if(InArgs.bCreateAsset)
+	if (InArgs.bCreateAsset)
 	{
 		InToolbarBuilder.AddComboButton(
 			FUIAction(),
-			FOnGetContent::CreateRaw(this, &FPersonaModule::GenerateCreateAssetMenu, WeakPersonaToolkit),
+			FOnGetContent::CreateStatic(&FPersonaModule::GenerateCreateAssetMenu, WeakPersonaToolkit),
 			LOCTEXT("CreateAsset_Label", "Create Asset"),
 			LOCTEXT("CreateAsset_ToolTip", "Create Assets for this skeleton."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.CreateAsset")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.CreateAsset")
 		);
 	}
 }
 
-TSharedRef< SWidget > FPersonaModule::GenerateCreateAssetMenu(TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) const
+void FPersonaModule::AddCommonMenuExtensions(UToolMenu* InToolMenu, const FCommonToolMenuExtensionArgs& InArgs)
 {
+	UPersonaToolMenuContext* PersonaToolMenuContext = InToolMenu->FindContext<UPersonaToolMenuContext>();
+	if (PersonaToolMenuContext == nullptr)
+	{
+		return;
+	}
+
+	TWeakPtr<IPersonaToolkit> WeakPersonaToolkit = PersonaToolMenuContext->GetToolkit();
+
+	FToolMenuSection& PersonaSection = InToolMenu->AddSection("Persona", LOCTEXT("PersonaSectionName", "Persona"));
+
+	if (InArgs.bPreviewMesh)
+	{
+		PersonaSection.AddSubMenu(
+			"PreviewMesh",
+			LOCTEXT("SetPreviewMesh", "Preview Mesh"),
+			LOCTEXT("SetPreviewMeshTooltip", "Set a new preview skeletal mesh for the current asset (stored per-animation or per-skeleton)"),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewMeshComboButtonContents, WeakPersonaToolkit),
+			false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAsset", "Persona.TogglePreviewAsset.Small")
+		);
+	}
+
+	if (InArgs.bPreviewAnimation)
+	{
+		PersonaSection.AddSubMenu(
+			"PreviewAnimation",
+			LOCTEXT("SetPreviewAnimation", "Preview Animation"),
+			LOCTEXT("SetPreviewAnimationTooltip", "Setup the scene to use a preview animation. More advanced settings are available in Preview Scene Settings."),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewAnimationComboButtonContents, WeakPersonaToolkit),
+			false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAnimation", "Persona.TogglePreviewAnimation.Small")
+		);
+	}
+
+	if (InArgs.bReferencePose)
+	{
+		PersonaSection.AddMenuEntry(
+			"ReferencePose",
+			LOCTEXT("ShowReferencePose", "Reference Pose"),
+			LOCTEXT("ShowReferencePoseTooltip", "Show the reference pose. Clears all bone modifications. More advanced settings are available in Preview Scene Settings."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.ToggleReferencePose", "Persona.ToggleReferencePose.Small"),
+			FUIAction(FExecuteAction::CreateStatic(&UE::Persona::Private::ShowReferencePose, WeakPersonaToolkit))
+		);
+	}
+
+	if (InArgs.bCreateAsset)
+	{
+		PersonaSection.AddSubMenu(
+			"CreateAsset",
+			LOCTEXT("CreateAsset_Label", "Create Asset"),
+			LOCTEXT("CreateAsset_ToolTip", "Create Assets for this skeleton."),
+			FOnGetContent::CreateStatic(&FPersonaModule::GenerateCreateAssetMenu, WeakPersonaToolkit),
+			false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.CreateAsset")
+		);
+	}
+}
+
+
+void FPersonaModule::AddCommonToolbarExtensions(UToolMenu* InToolMenu, const FCommonToolMenuExtensionArgs& InArgs)
+{
+	UPersonaToolMenuContext* PersonaToolMenuContext = InToolMenu->FindContext<UPersonaToolMenuContext>();
+	if (PersonaToolMenuContext == nullptr)
+	{
+		return;
+	}
+
+	TWeakPtr<IPersonaToolkit> WeakPersonaToolkit = PersonaToolMenuContext->GetToolkit();
+
+	FToolMenuSection& PersonaSection = InToolMenu->AddSection("Persona", LOCTEXT("PersonaSectionName", "Persona"));
+
+	if (InArgs.bPreviewMesh)
+	{
+		PersonaSection.AddEntry(FToolMenuEntry::InitComboButton(
+			"PreviewMesh",
+			FUIAction(),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewMeshComboButtonContents, WeakPersonaToolkit),
+			LOCTEXT("SetPreviewMesh", "Preview Mesh"),
+			LOCTEXT("SetPreviewMeshTooltip", "Set a new preview skeletal mesh for the current asset (stored per-animation or per-skeleton)"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAsset", "Persona.TogglePreviewAsset.Small"))
+		);
+	}
+
+	if (InArgs.bPreviewAnimation)
+	{
+		PersonaSection.AddEntry(FToolMenuEntry::InitComboButton(
+			"PreviewAnimation",
+			FUIAction(),
+			FOnGetContent::CreateStatic(&UE::Persona::Private::CreatePreviewAnimationComboButtonContents, WeakPersonaToolkit),
+			LOCTEXT("SetPreviewAnimation", "Preview Animation"),
+			LOCTEXT("SetPreviewAnimationTooltip", "Setup the scene to use a preview animation. More advanced settings are available in Preview Scene Settings."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.TogglePreviewAnimation", "Persona.TogglePreviewAnimation.Small"))
+		);
+	}
+
+	if (InArgs.bReferencePose)
+	{
+		PersonaSection.AddMenuEntry(
+			"ReferencePose",
+			LOCTEXT("ShowReferencePose", "Reference Pose"),
+			LOCTEXT("ShowReferencePoseTooltip", "Show the reference pose. Clears all bone modifications. More advanced settings are available in Preview Scene Settings."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.ToggleReferencePose", "Persona.ToggleReferencePose.Small"),
+			FUIAction(FExecuteAction::CreateStatic(&UE::Persona::Private::ShowReferencePose, WeakPersonaToolkit))
+		);
+	}
+
+	if (InArgs.bCreateAsset)
+	{
+		PersonaSection.AddEntry(FToolMenuEntry::InitComboButton(
+			"CreateAsset",
+			FUIAction(),
+			FOnGetContent::CreateStatic(&FPersonaModule::GenerateCreateAssetMenu, WeakPersonaToolkit),
+			LOCTEXT("CreateAsset_Label", "Create Asset"),
+			LOCTEXT("CreateAsset_ToolTip", "Create Assets for this skeleton."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.CreateAsset"))
+		);
+	}
+}
+
+TSharedRef< SWidget > FPersonaModule::GenerateCreateAssetMenu(TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
+{
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
 	const bool bShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, NULL);
 
 	// Create Animation menu
 	MenuBuilder.BeginSection("CreateAnimation", LOCTEXT("CreateAnimationMenuHeading", "Animation"));
 	{
-		// create menu
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("CreateAnimationSubmenu", "Create Animation"),
-			LOCTEXT("CreateAnimationSubmenu_ToolTip", "Create Animation for this skeleton"),
-			FNewMenuDelegate::CreateRaw(this, &FPersonaModule::FillCreateAnimationMenu, InWeakPersonaToolkit),
-			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
-			);
+		if(AssetTools.IsAssetClassSupported(UAnimSequence::StaticClass()))
+		{
+			// create menu
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("CreateAnimationSubmenu", "Create Animation"),
+				LOCTEXT("CreateAnimationSubmenu_ToolTip", "Create Animation for this skeleton"),
+				FNewMenuDelegate::CreateStatic(&FPersonaModule::FillCreateAnimationMenu, InWeakPersonaToolkit),
+				false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
+				);
+		}
 
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("CreatePoseAssetSubmenu", "Create PoseAsset"),
-			LOCTEXT("CreatePoseAsssetSubmenu_ToolTip", "Create PoseAsset for this skeleton"),
-			FNewMenuDelegate::CreateRaw(this, &FPersonaModule::FillCreatePoseAssetMenu, InWeakPersonaToolkit),
-			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.PoseAsset")
-		);
+		if (AssetTools.IsAssetClassSupported(UPoseAsset::StaticClass()))
+		{
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("CreatePoseAssetSubmenu", "Create PoseAsset"),
+				LOCTEXT("CreatePoseAsssetSubmenu_ToolTip", "Create PoseAsset for this skeleton"),
+				FNewMenuDelegate::CreateStatic(&FPersonaModule::FillCreatePoseAssetMenu, InWeakPersonaToolkit),
+				false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.PoseAsset")
+			);
+		}
 	}
 	MenuBuilder.EndSection();
 
@@ -1151,12 +1249,12 @@ TSharedRef< SWidget > FPersonaModule::GenerateCreateAssetMenu(TWeakPtr<IPersonaT
 		Objects.Add(PersonaToolkit->GetSkeleton());
 	}
 
-	AnimationEditorUtils::FillCreateAssetMenu(MenuBuilder, Objects, FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::HandleAssetCreated), false);
+	AnimationEditorUtils::FillCreateAssetMenu(MenuBuilder, Objects, FAnimAssetCreated::CreateStatic(&FPersonaModule::HandleAssetCreated), false);
 
 	return MenuBuilder.MakeWidget();
 }
 
-void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) const
+void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
 {
 	TSharedRef<IPersonaToolkit> PersonaToolkit = InWeakPersonaToolkit.Pin().ToSharedRef();
 	TArray<TWeakObjectPtr<UObject>> Objects;
@@ -1168,6 +1266,9 @@ void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 	{
 		Objects.Add(PersonaToolkit->GetSkeleton());
 	}
+
+	const bool bDoNotShowNameDialog = false;
+	const bool bAllowReplaceExisting = false;
 
 	// create rig
 	MenuBuilder.BeginSection("CreateAnimationSubMenu", LOCTEXT("CreateAnimationSubMenuHeading", "Create Animation"));
@@ -1177,7 +1278,7 @@ void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 			LOCTEXT("CreateAnimation_RefPose_Tooltip", "Create Animation from reference pose."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreateAnimation, EPoseSourceOption::ReferencePose, InWeakPersonaToolkit), false),
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreateAnimation, EPoseSourceOption::ReferencePose, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting),
 				FCanExecuteAction()
 				)
 			);
@@ -1187,7 +1288,7 @@ void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 			LOCTEXT("CreateAnimation_CurrentPose_Tooltip", "Create Animation from current pose."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentPose, InWeakPersonaToolkit), false),
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentPose, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting),
 				FCanExecuteAction()
 				)
 			);
@@ -1197,16 +1298,16 @@ void FPersonaModule::FillCreateAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 			MenuBuilder.AddSubMenu(
 				LOCTEXT("CreateAnimation_CurrenAnimationSubMenu", "Current Animation"),
 				LOCTEXT("CreateAnimation_CurrenAnimationSubMenu_ToolTip", "Create Animation from current animation"),
-				FNewMenuDelegate::CreateRaw(this, &FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu, InWeakPersonaToolkit),
+				FNewMenuDelegate::CreateStatic(&FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu, InWeakPersonaToolkit),
 				false,
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
 			);
 		}
 	}
 	MenuBuilder.EndSection();
 }
 
-void FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) const
+void FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) 
 {
 	TSharedRef<IPersonaToolkit> PersonaToolkit = InWeakPersonaToolkit.Pin().ToSharedRef();
 	TArray<TWeakObjectPtr<UObject>> Objects;
@@ -1219,6 +1320,9 @@ void FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu(FMenuBuilder& M
 	{
 		Objects.Add(PersonaToolkit->GetSkeleton());
 	}
+
+	const bool bDoNotShowNameDialog = false;
+	const bool bAllowReplaceExisting = false;
 
 	// create rig
 	MenuBuilder.BeginSection("CreateAnimationSubMenu", LOCTEXT("CreateAnimationFromCurrentAnimationSubmenuHeading", "Create Animation"));
@@ -1228,7 +1332,7 @@ void FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu(FMenuBuilder& M
 			LOCTEXT("CreateAnimation_CurrentAnimation_AnimData_Tooltip", "Create Animation from Animation Source Data."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentAnimation_AnimData, InWeakPersonaToolkit), false)
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentAnimation_AnimData, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting)
 			)
 		);
 
@@ -1237,14 +1341,14 @@ void FPersonaModule::FillCreateAnimationFromCurrentAnimationMenu(FMenuBuilder& M
 			LOCTEXT("CreateAnimation_CurrentAnimation_PreviewMesh_Tooltip", "Create Animation by playing on the Current Preview Mesh, including Retargeting, Post Process Graph, or anything you see on the preview mesh."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentAnimation_PreviewMesh, InWeakPersonaToolkit), false)
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UAnimSequenceFactory, UAnimSequence>, Objects, FString("_Sequence"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreateAnimation, EPoseSourceOption::CurrentAnimation_PreviewMesh, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting)
 			)
 		);
 	}
 	MenuBuilder.EndSection();
 }
 
-void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) const
+void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
 {
 	TSharedRef<IPersonaToolkit> PersonaToolkit = InWeakPersonaToolkit.Pin().ToSharedRef();
 	TArray<TWeakObjectPtr<UObject>> Objects;
@@ -1258,6 +1362,9 @@ void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 		Objects.Add(PersonaToolkit->GetSkeleton());
 	}
 
+	const bool bDoNotShowNameDialog = false;
+	const bool bAllowReplaceExisting = false;
+
 	// create rig
 	MenuBuilder.BeginSection("CreatePoseAssetSubMenu", LOCTEXT("CreatePoseAssetSubMenuHeading", "Create PoseAsset"));
 	{
@@ -1266,7 +1373,7 @@ void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 			LOCTEXT("CreatePoseAsset_CurrentPose_Tooltip", "Create PoseAsset from current pose."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UPoseAssetFactory, UPoseAsset>, Objects, FString("_PoseAsset"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreatePoseAsset, EPoseSourceOption::CurrentPose, InWeakPersonaToolkit), false),
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UPoseAssetFactory, UPoseAsset>, Objects, FString("_PoseAsset"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreatePoseAsset, EPoseSourceOption::CurrentPose, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting),
 				FCanExecuteAction()
 			)
 		);
@@ -1276,7 +1383,7 @@ void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 			LOCTEXT("CreatePoseAsset_CurrentAnimation_Tooltip", "Create Animation from current animation."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UPoseAssetFactory, UPoseAsset>, Objects, FString("_PoseAsset"), FAnimAssetCreated::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::CreatePoseAsset, EPoseSourceOption::CurrentAnimation_AnimData, InWeakPersonaToolkit), false),
+				FExecuteAction::CreateStatic(&AnimationEditorUtils::ExecuteNewAnimAsset<UPoseAssetFactory, UPoseAsset>, Objects, FString("_PoseAsset"), FAnimAssetCreated::CreateStatic(&FPersonaModule::CreatePoseAsset, EPoseSourceOption::CurrentAnimation_AnimData, InWeakPersonaToolkit), bDoNotShowNameDialog, bAllowReplaceExisting),
 				FCanExecuteAction()
 			)
 		);
@@ -1289,15 +1396,15 @@ void FPersonaModule::FillCreatePoseAssetMenu(FMenuBuilder& MenuBuilder, TWeakPtr
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("InsertPoseSubmenu", "Insert Pose"),
 			LOCTEXT("InsertPoseSubmenu_ToolTip", "Insert current pose to selected PoseAsset"),
-			FNewMenuDelegate::CreateRaw(this, &FPersonaModule::FillInsertPoseMenu, InWeakPersonaToolkit),
+			FNewMenuDelegate::CreateStatic(&FPersonaModule::FillInsertPoseMenu, InWeakPersonaToolkit),
 			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.PoseAsset")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.PoseAsset")
 		);
 	}
 	MenuBuilder.EndSection();
 }
 
-void FPersonaModule::FillInsertPoseMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit) const
+void FPersonaModule::FillInsertPoseMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPersonaToolkit> InWeakPersonaToolkit)
 {
 	FAssetPickerConfig AssetPickerConfig;
 
@@ -1305,13 +1412,13 @@ void FPersonaModule::FillInsertPoseMenu(FMenuBuilder& MenuBuilder, TWeakPtr<IPer
 	USkeleton* Skeleton = PersonaToolkit->GetSkeleton();
 
 	/** The asset picker will only show skeletons */
-	AssetPickerConfig.Filter.ClassNames.Add(*UPoseAsset::StaticClass()->GetName());
+	AssetPickerConfig.Filter.ClassPaths.Add(UPoseAsset::StaticClass()->GetClassPathName());
 	AssetPickerConfig.Filter.bRecursiveClasses = false;
 	AssetPickerConfig.bAllowNullSelection = false;
 	AssetPickerConfig.Filter.TagsAndValues.Add(TEXT("Skeleton"), FAssetData(Skeleton).GetExportTextName());
 
 	/** The delegate that fires when an asset was selected */
-	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(const_cast<FPersonaModule*>(this), &FPersonaModule::InsertCurrentPoseToAsset, InWeakPersonaToolkit);
+	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateStatic(&FPersonaModule::InsertCurrentPoseToAsset, InWeakPersonaToolkit);
 
 	/** The default view mode should be a list view */
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
@@ -1392,7 +1499,7 @@ bool FPersonaModule::CreateAnimation(const TArray<UObject*> NewAssets, const EPo
 				switch (Option)
 				{
 				case EPoseSourceOption::ReferencePose:
-					bResult &= NewAnimSequence->CreateAnimation(MeshComponent->SkeletalMesh);
+					bResult &= NewAnimSequence->CreateAnimation(MeshComponent->GetSkeletalMeshAsset());
 					break;
 				case EPoseSourceOption::CurrentPose:
 					bResult &= NewAnimSequence->CreateAnimation(MeshComponent);

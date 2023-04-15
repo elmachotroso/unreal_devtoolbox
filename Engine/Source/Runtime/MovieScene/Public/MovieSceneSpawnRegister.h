@@ -2,21 +2,42 @@
 
 #pragma once
 
+#include "Containers/Map.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IMovieSceneObjectSpawner.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/Guid.h"
-#include "MovieSceneSequenceID.h"
 #include "MovieSceneFwd.h"
-#include "MovieSceneSpawnable.h"
+#include "MovieSceneSequenceID.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
 #include "Templates/ValueOrError.h"
 #include "UObject/WeakObjectPtr.h"
-#include "IMovieSceneObjectSpawner.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class UClass;
+class UObject;
+template <typename FuncType> class TFunctionRef;
+template <typename OptionalType> struct TOptional;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "MovieSceneSpawnable.h"
+#endif
+
+enum class ESpawnOwnership : uint8;
 
 class IMovieScenePlayer;
-class UMovieScene;
-struct FMovieSceneEvaluationState;
-struct FTransformData;
 class ISequencer;
+class UActorFactory;
+class UMovieScene;
 class USequencerSettings;
+struct FMovieSceneEvaluationState;
+struct FMovieSceneSpawnable;
+struct FTransformData;
 
 /**
  * Class responsible for managing spawnables in a movie scene

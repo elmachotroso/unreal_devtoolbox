@@ -19,6 +19,8 @@
 #include "GameMapsSettings.h"
 #include "MoviePlayerProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameMode)
+
 namespace MatchState
 {
 	const FName EnteringMap = FName(TEXT("EnteringMap"));
@@ -386,7 +388,7 @@ void AGameMode::Tick(float DeltaSeconds)
 	}
 	if (GetMatchState() == MatchState::InProgress)
 	{
-		// Check to see if we should start the match
+		// Check to see if we should end the match
 		if (ReadyToEndMatch())
 		{
 			UE_LOG(LogGameMode, Log, TEXT("GameMode returned ReadyToEndMatch"));
@@ -822,3 +824,4 @@ bool AGameMode::SpawnPlayerFromSimulate(const FVector& NewLocation, const FRotat
 
 	return Super::SpawnPlayerFromSimulate(NewLocation, NewRotation);
 }
+

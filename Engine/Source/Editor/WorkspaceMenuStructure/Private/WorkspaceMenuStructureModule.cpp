@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorkspaceMenuStructureModule.h"
-#include "Textures/SlateIcon.h"
+
 #include "Framework/Docking/WorkspaceItem.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Textures/SlateIcon.h"
 #include "WorkspaceMenuStructure.h"
 
-
-
-#include "EditorStyleSet.h"
 
 IMPLEMENT_MODULE( FWorkspaceMenuStructureModule, WorkspaceMenuStructure );
 
@@ -59,6 +61,11 @@ public:
 	{
 		return LevelEditorWorldPartitionCategory.ToSharedRef();
 	}
+		
+	virtual TSharedRef<FWorkspaceItem> GetLevelEditorOutlinerCategory() const override
+	{
+		return LevelEditorOutlinerCategory.ToSharedRef();
+	}
 
 	virtual TSharedRef<FWorkspaceItem> GetToolsCategory() const override
 	{
@@ -108,27 +115,28 @@ public:
 	void ResetLevelEditorCategory()
 	{
 		LevelEditorCategory->ClearItems();
-		LevelEditorViewportsCategory = LevelEditorCategory->AddGroup(LOCTEXT( "WorkspaceMenu_LevelEditorViewportCategory", "Viewports" ), LOCTEXT( "WorkspaceMenu_LevelEditorViewportCategoryTooltip", "Open a Viewport tab." ), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports"), true);
-		LevelEditorDetailsCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorDetailCategory", "Details" ), LOCTEXT("WorkspaceMenu_LevelEditorDetailCategoryTooltip", "Open a Details tab." ), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"), true );
-		LevelEditorCinematicsCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorCinematicsCategory", "Cinematics"), LOCTEXT("WorkspaceMenu_LevelEditorCinematicsCategoryTooltip", "Open a Cinematics tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Cinematics"), true);
-		LevelEditorVirtualProductionCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorVirtualProductionCategory", "Virtual Production"), LOCTEXT("WorkspaceMenu_LevelEditorVirtualProductionCategoryTooltip", "Open a Virtual Production tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.VirtualProduction"), true);
-		LevelEditorModesCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorToolsCategory", "Editor Modes" ), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.EditorModes"), true );
-		LevelEditorWorldPartitionCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorWorldPartitionCategory", "World Partition"), LOCTEXT("WorkspaceMenu_LevelEditorWorldPartitionCategoryTooltip", "Open a World Partition tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.WorldPartition"), true);
+		LevelEditorViewportsCategory = LevelEditorCategory->AddGroup(LOCTEXT( "WorkspaceMenu_LevelEditorViewportCategory", "Viewports" ), LOCTEXT( "WorkspaceMenu_LevelEditorViewportCategoryTooltip", "Open a Viewport tab." ), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Viewports"), true);
+		LevelEditorDetailsCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorDetailCategory", "Details" ), LOCTEXT("WorkspaceMenu_LevelEditorDetailCategoryTooltip", "Open a Details tab." ), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Details"), true );
+		LevelEditorCinematicsCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorCinematicsCategory", "Cinematics"), LOCTEXT("WorkspaceMenu_LevelEditorCinematicsCategoryTooltip", "Open a Cinematics tab."), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Cinematics"), true);
+		LevelEditorVirtualProductionCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorVirtualProductionCategory", "Virtual Production"), LOCTEXT("WorkspaceMenu_LevelEditorVirtualProductionCategoryTooltip", "Open a Virtual Production tab."), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.VirtualProduction"), true);
+		LevelEditorModesCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorToolsCategory", "Editor Modes" ), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.EditorModes"), true );
+		LevelEditorWorldPartitionCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorWorldPartitionCategory", "World Partition"), LOCTEXT("WorkspaceMenu_LevelEditorWorldPartitionCategoryTooltip", "Open a World Partition tab."), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.WorldPartition"), true);
+		LevelEditorOutlinerCategory = LevelEditorCategory->AddGroup(LOCTEXT("WorkspaceMenu_LevelEditorOutlinerCategory", "Outliner"), LOCTEXT("WorkspaceMenu_LevelEditorOutlinerCategoryTooltip", "Open an Outliner tab."), FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"), true);
 	}
 
 	void ResetToolsCategory()
 	{
 		// Developer tools sections
 		DeveloperToolsCategory->ClearItems();
-		DeveloperToolsSubMenuDebugCategory =     DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsDebugCategory", "Debug"), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Debug"), true);
+		DeveloperToolsSubMenuDebugCategory =     DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsDebugCategory", "Debug"), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Debug"), true);
 
 		DeveloperToolsDebugCategory = DeveloperToolsSubMenuDebugCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsDebugCategory", "Debug"), FSlateIcon(), true);
 		AutomationToolsCategory = DeveloperToolsSubMenuDebugCategory->AddGroup(LOCTEXT("WorkspaceMenu_AutomationToolsCategory", "Testing"), FSlateIcon(), true);
 
-		DeveloperToolsProfilingCategory = DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsProfilingCategory", "Profile"),  FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Profile"), true);
-		DeveloperToolsAuditCategory =     DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsAuditCategory", "Audit"), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Audit"), true);
-		DeveloperToolsPlatformsCategory = DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsPlatforms:WCategory", "Platforms"), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Platforms"), true);
-		DeveloperToolsMiscCategory =      DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsMiscCategory", "Miscellaneous"), FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Debug"), true);
+		DeveloperToolsProfilingCategory = DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsProfilingCategory", "Profile"),  FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Profile"), true);
+		DeveloperToolsAuditCategory =     DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsAuditCategory", "Audit"), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Audit"), true);
+		DeveloperToolsPlatformsCategory = DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsPlatforms:WCategory", "Platforms"), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Platforms"), true);
+		DeveloperToolsMiscCategory =      DeveloperToolsCategory->AddGroup(LOCTEXT("WorkspaceMenu_DeveloperToolsMiscCategory", "Miscellaneous"), FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Debug"), true);
 	}
 
 public:
@@ -160,6 +168,7 @@ private:
 	TSharedPtr<FWorkspaceItem> LevelEditorVirtualProductionCategory;
 	TSharedPtr<FWorkspaceItem> LevelEditorModesCategory;
 	TSharedPtr<FWorkspaceItem> LevelEditorWorldPartitionCategory;
+	TSharedPtr<FWorkspaceItem> LevelEditorOutlinerCategory;
 
 	TSharedPtr<FWorkspaceItem> ToolsCategory;
 	TSharedPtr<FWorkspaceItem> DeveloperToolsCategory;

@@ -8,8 +8,9 @@
 #include "VulkanRayTracing.h"
 #endif // VULKAN_RHI_RAYTRACING
 
-FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* Device, FRHIResource* InRHIBuffer, FVulkanResourceMultiBuffer* InSourceBuffer, uint32 InSize, EPixelFormat InFormat, uint32 InOffset)
-	: VulkanRHI::FVulkanViewBase(Device)
+FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* Device, FRHIViewableResource* InRHIBuffer, FVulkanResourceMultiBuffer* InSourceBuffer, uint32 InSize, EPixelFormat InFormat, uint32 InOffset)
+	: FRHIShaderResourceView(InRHIBuffer)
+	, VulkanRHI::FVulkanViewBase(Device)
 	, BufferViewFormat(InFormat)
 	, SourceTexture(nullptr)
 	, SourceStructuredBuffer(nullptr)
@@ -29,7 +30,8 @@ FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* Device, FRHI
 
 
 FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* Device, FRHITexture* InSourceTexture, const FRHITextureSRVCreateInfo& InCreateInfo)
-	: VulkanRHI::FVulkanViewBase(Device)
+	: FRHIShaderResourceView(InSourceTexture)
+	, VulkanRHI::FVulkanViewBase(Device)
 	, BufferViewFormat((EPixelFormat)InCreateInfo.Format)
 	, SRGBOverride(InCreateInfo.SRGBOverride)
 	, SourceTexture(InSourceTexture)
@@ -41,13 +43,14 @@ FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* Device, FRHI
 	, Size(0)
 	, SourceBuffer(nullptr)
 {
-	FVulkanTextureBase* VulkanTexture = FVulkanTextureBase::Cast(InSourceTexture);
+	FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(InSourceTexture);
 	VulkanTexture->AttachView(this);
 
 }
 
 FVulkanShaderResourceView::FVulkanShaderResourceView(FVulkanDevice* InDevice, FVulkanResourceMultiBuffer* InSourceBuffer, uint32 InOffset)
-	: VulkanRHI::FVulkanViewBase(InDevice)
+	: FRHIShaderResourceView(InSourceBuffer)
+	, VulkanRHI::FVulkanViewBase(InDevice)
 {
 	check(InDevice && InSourceBuffer);
 
@@ -80,7 +83,7 @@ FVulkanShaderResourceView::~FVulkanShaderResourceView()
 	FRHITexture* Texture = SourceTexture.GetReference();
 	if(Texture)
 	{
-		FVulkanTextureBase* VulkanTexture = FVulkanTextureBase::Cast(Texture);
+		FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(Texture);
 		VulkanTexture->DetachView(this);
 	}
 	Clear();
@@ -199,47 +202,47 @@ void FVulkanShaderResourceView::UpdateView()
 			const bool bSRGB = (SRGBOverride != SRGBO_ForceDisable) && bBaseSRGB;
 
 			EPixelFormat Format = (BufferViewFormat == PF_Unknown) ? SourceTexture->GetFormat() : BufferViewFormat;
-			if (FRHITexture2D* Tex2D = SourceTexture->GetTexture2D())
+			FVulkanTexture* SourceTextureVK = FVulkanTexture::Cast(SourceTexture);
+
+			// A NumArraySlices of 0 means view all the layers, so determine the correct layer count.
+			uint32 ActualNumArraySlices = NumArraySlices;
+			if (ActualNumArraySlices == 0)
 			{
-				FVulkanTexture2D* VTex2D = ResourceCast(Tex2D);
-				EPixelFormat OriginalFormat = Format;
-				TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
+				switch (SourceTexture->GetDesc().Dimension)
+				{
+					case ETextureDimension::Texture2DArray:
+					case ETextureDimension::TextureCubeArray:
+						ActualNumArraySlices = SourceTexture->GetDesc().ArraySize;
+						break;
+					default:
+						ActualNumArraySlices = 1;
+				}
+
+				// If we're using the total count, subtract the first layer index, to view all the layers after that.
+				if (ensure(FirstArraySlice < ActualNumArraySlices))
+				{
+					ActualNumArraySlices -= FirstArraySlice;
+				}
+				else
+				{
+					ActualNumArraySlices = 1;
+				}
 			}
-			else if (FRHITextureCube* TexCube = SourceTexture->GetTextureCube())
+
+			// If we explicitely request a single slice of a 2darray (such as with FRDGTextureSRVDesc::CreateForSlice), return it as a regular 2d view
+			VkImageViewType ActualViewType = SourceTextureVK->GetViewType();
+			if ((NumArraySlices == 1) && (SourceTexture->GetDesc().Dimension == ETextureDimension::Texture2DArray))
 			{
-				FVulkanTextureCube* VTexCube = ResourceCast(TexCube);
-				TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_CUBE, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
+				ActualViewType = VK_IMAGE_VIEW_TYPE_2D;
 			}
-			else if (FRHITexture3D* Tex3D = SourceTexture->GetTexture3D())
-			{
-				FVulkanTexture3D* VTex3D = ResourceCast(Tex3D);
-				TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
-			}
-			else if (FRHITexture2DArray* Tex2DArray = SourceTexture->GetTexture2DArray())
-			{
-				FVulkanTexture2DArray* VTex2DArray = ResourceCast(Tex2DArray);
-				TextureView.Create(
-					*Device,
-					VTex2DArray->Surface.Image,
-					VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-					VTex2DArray->Surface.GetPartialAspectMask(),
-					Format,
-					UEToVkTextureFormat(Format, bSRGB),
-					MipLevel,
-					NumMips,
-					FirstArraySlice,
-					(NumArraySlices == 0 ? VTex2DArray->GetSizeZ() : NumArraySlices)
-				);
-			}
-			else
-			{
-				ensure(0);
-			}
+
+			TextureView.Create(*Device, SourceTextureVK->Image, ActualViewType, SourceTextureVK->GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, FirstArraySlice, ActualNumArraySlices, false);
 		}
 	}
 }
 FVulkanUnorderedAccessView::FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanResourceMultiBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer)
-	: VulkanRHI::FVulkanViewBase(Device)
+	: FRHIUnorderedAccessView(Buffer)
+	, VulkanRHI::FVulkanViewBase(Device)
 	, MipLevel(0)
 	, FirstArraySlice(0)
 	, NumArraySlices(0)
@@ -250,7 +253,8 @@ FVulkanUnorderedAccessView::FVulkanUnorderedAccessView(FVulkanDevice* Device, FV
 }
 
 FVulkanUnorderedAccessView::FVulkanUnorderedAccessView(FVulkanDevice* Device, FRHITexture* TextureRHI, uint32 MipLevel, uint16 InFirstArraySlice, uint16 InNumArraySlices)
-	: VulkanRHI::FVulkanViewBase(Device)
+	: FRHIUnorderedAccessView(TextureRHI)
+	, VulkanRHI::FVulkanViewBase(Device)
 	, SourceTexture(TextureRHI)
 	, MipLevel(MipLevel)
 	, FirstArraySlice(InFirstArraySlice)
@@ -258,13 +262,14 @@ FVulkanUnorderedAccessView::FVulkanUnorderedAccessView(FVulkanDevice* Device, FR
 	, BufferViewFormat(PF_Unknown)
 	, VolatileLockCounter(MAX_uint32)
 {
-	FVulkanTextureBase* VulkanTexture = FVulkanTextureBase::Cast(TextureRHI);
+	FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(TextureRHI);
 	VulkanTexture->AttachView(this);
 }
 
 
 FVulkanUnorderedAccessView::FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanResourceMultiBuffer* Buffer, EPixelFormat Format)
-	: VulkanRHI::FVulkanViewBase(Device)
+	: FRHIUnorderedAccessView(Buffer)
+	, VulkanRHI::FVulkanViewBase(Device)
 	, MipLevel(0)
 	, FirstArraySlice(0)
 	, NumArraySlices(0)
@@ -284,7 +289,7 @@ FVulkanUnorderedAccessView::~FVulkanUnorderedAccessView()
 {
 	if (SourceTexture)
 	{
-		FVulkanTextureBase* VulkanTexture = FVulkanTextureBase::Cast(SourceTexture);
+		FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(SourceTexture);
 		VulkanTexture->DetachView(this);
 	}
 
@@ -323,32 +328,52 @@ void FVulkanUnorderedAccessView::UpdateView()
 	else if (TextureView.View == VK_NULL_HANDLE)
 	{
 		EPixelFormat Format = (BufferViewFormat == PF_Unknown) ? SourceTexture->GetFormat() : BufferViewFormat;
-		if (FRHITexture2D* Tex2D = SourceTexture->GetTexture2D())
+		FVulkanTexture* SourceTextureVK = FVulkanTexture::Cast(SourceTexture);
+
+		// A NumArraySlices of 0 means view all the layers, so determine the correct layer count.
+		uint32 ActualNumArraySlices = NumArraySlices;
+		if (NumArraySlices == 0)
 		{
-			FVulkanTexture2D* VTex2D = ResourceCast(Tex2D);
-			TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, 1, true);
+			switch (SourceTexture->GetDesc().Dimension)
+			{
+			case ETextureDimension::Texture2DArray:
+			case ETextureDimension::TextureCubeArray:
+				ActualNumArraySlices = SourceTexture->GetDesc().ArraySize;
+				break;
+			default:
+				ActualNumArraySlices = 1;
+			}
 		}
-		else if (FRHITextureCube* TexCube = SourceTexture->GetTextureCube())
+
+		// RWTextureCube is defined as RWTexture2DArray in shader source, so adjust the view type and layer count.
+		VkImageViewType ActualViewType;
+		switch (SourceTexture->GetDesc().Dimension)
 		{
-			FVulkanTextureCube* VTexCube = ResourceCast(TexCube);
-			// RWTextureCube is defined as RWTexture2DArray in shader source, avoid validation errors by creating the appropriate VK_IMAGE_VIEW_TYPE_2D_ARRAY view (instead of VK_IMAGE_VIEW_TYPE_CUBE)
-			TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTexCube->Surface.GetNumberOfArrayLevels(), true);
+		case ETextureDimension::TextureCube:
+		case ETextureDimension::TextureCubeArray:
+			FirstArraySlice *= 6;
+			ActualNumArraySlices *= 6;
+			ActualViewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+			break;
+
+		default:
+			ActualViewType = SourceTextureVK->GetViewType();
 		}
-		else if (FRHITexture3D* Tex3D = SourceTexture->GetTexture3D())
+
+		if (NumArraySlices == 0)
 		{
-			FVulkanTexture3D* VTex3D = ResourceCast(Tex3D);
-			TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTex3D->GetSizeZ(), true);
+			// If we're using the total count, subtract the first layer index, to view all the layers after that.
+			if (ensure(FirstArraySlice < ActualNumArraySlices))
+			{
+				ActualNumArraySlices -= FirstArraySlice;
+			}
+			else
+			{
+				ActualNumArraySlices = 1;
+			}
 		}
-		else if (FRHITexture2DArray* Tex2DArray = SourceTexture->GetTexture2DArray())
-		{
-			FVulkanTexture2DArray* VTex2DArray = ResourceCast(Tex2DArray);
-			TextureView.Create(*Device, VTex2DArray->Surface.Image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VTex2DArray->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 
-				NumArraySlices == 0 ? 0 : FirstArraySlice, NumArraySlices == 0 ? VTex2DArray->GetSizeZ() : NumArraySlices, true);
-		}
-		else
-		{
-			ensure(0);
-		}
+
+		TextureView.Create(*Device, SourceTextureVK->Image, ActualViewType, SourceTextureVK->GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, FirstArraySlice, ActualNumArraySlices, true);
 	}
 }
 

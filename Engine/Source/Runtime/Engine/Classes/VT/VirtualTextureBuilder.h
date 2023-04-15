@@ -20,9 +20,9 @@ struct FVirtualTextureBuildDesc
 	int32 TileSize = 0;
 	int32 TileBorderSize = 0;
 
-	TEnumAsByte<enum TextureGroup> LODGroup;
+	TEnumAsByte<enum TextureGroup> LODGroup = TEXTUREGROUP_World;
+	ETextureLossyCompressionAmount LossyCompressionAmount = TLCA_Default;
 
-	bool bCrunchCompressed = false;
 	bool bContinuousUpdate = false;
 	bool bSinglePhysicalSpace = false;
 

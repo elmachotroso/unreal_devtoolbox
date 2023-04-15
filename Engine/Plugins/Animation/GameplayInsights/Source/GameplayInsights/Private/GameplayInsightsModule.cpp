@@ -8,6 +8,7 @@
 #include "Framework/Docking/LayoutExtender.h"
 #include "SAnimGraphSchematicView.h"
 #include "Insights/IUnrealInsightsModule.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
@@ -15,15 +16,16 @@
 #include "Trace/StoreClient.h"
 #include "Stats/Stats.h"
 #include "ObjectPropertyTrace.h"
-#include "SAnimationCurvesView.h"
-#include "SBlendWeightsView.h"
 #include "SMontageView.h"
 #include "SObjectPropertiesView.h"
-#include "SNotifiesView.h"
+#include "AnimCurvesTrack.h"
+#include "BlendWeightsTrack.h"
+#include "MontagesTrack.h"
+#include "NotifiesTrack.h"
+#include "PoseWatchTrack.h"
 
 #if WITH_EDITOR
 #include "IAnimationBlueprintEditorModule.h"
-#include "Editor.h"
 #include "ToolMenus.h"
 #include "Engine/Selection.h"
 #include "SubobjectEditorMenuContext.h"
@@ -43,6 +45,8 @@ const FName GameplayInsightsTabs::DocumentTab("DocumentTab");
 
 void FGameplayInsightsModule::StartupModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/GameplayInsights"));
+
 	IModularFeatures::Get().RegisterModularFeature(TraceServices::ModuleFeatureName, &GameplayTraceModule);
 	IModularFeatures::Get().RegisterModularFeature(Insights::TimingViewExtenderFeatureName, &GameplayTimingViewExtender);
 
@@ -57,6 +61,10 @@ void FGameplayInsightsModule::StartupModule()
 	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 	UnrealInsightsModule.OnMajorTabCreated().AddLambda([this](const FName& InMajorTabId, TSharedPtr<FTabManager> InTabManager)
 	{
+#if WITH_EDITOR
+		StartTrace();
+#endif
+
 		if (InMajorTabId == FInsightsManagerTabs::TimingProfilerTabId)
 		{
 			WeakTimingProfilerTabManager = InTabManager;
@@ -69,14 +77,17 @@ void FGameplayInsightsModule::StartupModule()
 	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &ObjectPropertiesViewCreator);
 	static FAnimGraphSchematicViewCreator AnimGraphSchematicViewCreator;
 	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &AnimGraphSchematicViewCreator);
-	static FBlendWeightsViewCreator BlendWeightsViewCreator;
-	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &BlendWeightsViewCreator);
-	static FMontageViewCreator MontageViewCreator;
-	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &MontageViewCreator);
-	static FNotifiesViewCreator NotifiesViewCreator;
-	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &NotifiesViewCreator);
-	static FAnimationCurvesViewCreator AnimationCurvesViewCreator;
-	IModularFeatures::Get().RegisterModularFeature(IRewindDebuggerViewCreator::ModularFeatureName, &AnimationCurvesViewCreator);
+	
+	static RewindDebugger::FAnimationCurvesTrackCreator AnimationCurvesTrackCreator;
+	IModularFeatures::Get().RegisterModularFeature(RewindDebugger::IRewindDebuggerTrackCreator::ModularFeatureName, &AnimationCurvesTrackCreator);
+	static RewindDebugger::FBlendWeightsTrackCreator BlendWeightsTrackCreator;
+	IModularFeatures::Get().RegisterModularFeature(RewindDebugger::IRewindDebuggerTrackCreator::ModularFeatureName, &BlendWeightsTrackCreator);
+	static RewindDebugger::FMontagesTrackCreator MontagesTrackCreator;
+	IModularFeatures::Get().RegisterModularFeature(RewindDebugger::IRewindDebuggerTrackCreator::ModularFeatureName, &MontagesTrackCreator);
+	static RewindDebugger::FNotifiesTrackCreator NotifiesTrackCreator;
+	IModularFeatures::Get().RegisterModularFeature(RewindDebugger::IRewindDebuggerTrackCreator::ModularFeatureName, &NotifiesTrackCreator);
+	static RewindDebugger::FPoseWatchesTrackCreator PoseWatchesTrackCreator;
+	IModularFeatures::Get().RegisterModularFeature(RewindDebugger::IRewindDebuggerTrackCreator::ModularFeatureName, &PoseWatchesTrackCreator);
 
 
 	if (!IsRunningCommandlet())
@@ -171,6 +182,7 @@ void FGameplayInsightsModule::StartupModule()
 		// Create store and start analysis session - should only be done after engine has init and all plugins are loaded
 		FCoreDelegates::OnFEngineLoopInitComplete.AddLambda([this]
 		{
+			LLM_SCOPE_BYNAME(TEXT("Insights/GameplayInsights"));
 			IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 			if (!UnrealInsightsModule.GetStoreClient())
 			{
@@ -194,14 +206,9 @@ void FGameplayInsightsModule::StartupModule()
 #else
 				UE_LOG(LogCore, Display, TEXT("GameplayInsights module auto-connecting to local trace server..."));
 				UnrealInsightsModule.ConnectToStore(TEXT("127.0.0.1"));
-				const bool bConnected = FTraceAuxiliary::Start(
-					FTraceAuxiliary::EConnectionType::Network,
-					TEXT("127.0.0.1"),
-					nullptr);
 #endif // WITH_TRACE_STORE
 
 				UnrealInsightsModule.CreateSessionViewer(false);
-				UnrealInsightsModule.StartAnalysisForLastLiveSession();
 			}
 		});
 
@@ -221,6 +228,8 @@ void FGameplayInsightsModule::StartupModule()
 
 void FGameplayInsightsModule::ShutdownModule()
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/GameplayInsights"));
+
 #if OBJECT_PROPERTY_TRACE_ENABLED
 	FObjectPropertyTrace::Destroy();
 #endif
@@ -409,6 +418,39 @@ bool FGameplayInsightsModule::IsObjectPropertyTraceEnabled(UObject* Object)
 #else
 	return false;
 #endif
+}
+
+void FGameplayInsightsModule::StartTrace()
+{
+	LLM_SCOPE_BYNAME(TEXT("Insights/GameplayInsights"));
+	
+	if (!bTraceStarted)
+	{
+		if (!FTraceAuxiliary::IsConnected())
+		{
+			// cpu tracing is enabled by default, but not connected.
+			// when not connected, disable all channels initially to avoid a whole bunch of extra cpu, memory, and disk overhead from processing all the extra default trace channels
+			////////////////////////////////////////////////////////////////////////////////
+			UE::Trace::EnumerateChannels([](const ANSICHAR* ChannelName, bool bEnabled, void*)
+				{
+					if (bEnabled)
+					{
+						FString ChannelNameFString(ChannelName);
+						UE::Trace::ToggleChannel(ChannelNameFString.GetCharArray().GetData(), false);
+					}
+				}
+				, nullptr);
+		}
+
+
+		bTraceStarted = FTraceAuxiliary::Start(
+			FTraceAuxiliary::EConnectionType::Network,
+			TEXT("127.0.0.1"),
+			nullptr);
+	
+		IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+		UnrealInsightsModule.StartAnalysisForLastLiveSession();
+	}
 }
 
 #endif

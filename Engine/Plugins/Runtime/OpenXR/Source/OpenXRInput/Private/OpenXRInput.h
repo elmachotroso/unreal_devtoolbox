@@ -5,12 +5,21 @@
 #include "GenericPlatform/IInputInterface.h"
 #include "XRMotionControllerBase.h"
 #include "IOpenXRInputPlugin.h"
+#include "IOpenXRExtensionPlugin.h"
 #include "IInputDevice.h"
 #include "IHapticDevice.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/StrongObjectPtr.h"
 
 class FOpenXRHMD;
+class UInputAction;
+class UInputTrigger;
+class UInputModifier;
+class UInputMappingContext;
+class UPlayerMappableInputConfig;
 struct FInputActionKeyMapping;
 struct FInputAxisKeyMapping;
+struct FKey;
 
 // On some platforms the XrPath type becomes ambiguous for overloading
 FORCEINLINE uint32 GetTypeHash(const TPair<XrPath, XrPath>& Pair)
@@ -28,9 +37,43 @@ public:
 		FName			Name;
 		XrAction		Handle;
 
-		TMap<TPair<XrPath, XrPath>, FName> KeyMap;
+		// Enhanced Input
+		TObjectPtr<const UInputAction> Object;
+		TMultiMap<TPair<XrPath, XrPath>, TObjectPtr<UInputTrigger>> Triggers;
+		TMultiMap<TPair<XrPath, XrPath>, TObjectPtr<UInputModifier>> Modifiers;
 
-		FOpenXRAction(XrActionSet InActionSet, XrActionType InActionType, const FName& InName, const TArray<XrPath>& SubactionPaths);
+		FOpenXRAction(XrActionSet InActionSet,
+			XrActionType InActionType,
+			const FName& InName, const
+			FString& InLocalizedName,
+			const TArray<XrPath>& InSubactionPaths,
+			const TObjectPtr<const UInputAction>& InObject);
+
+		FOpenXRAction(XrActionSet InActionSet,
+			XrActionType InActionType,
+			const FName& InName,
+			const FString& InLocalizedName,
+			const TArray<XrPath>& InSubactionPaths);
+	};
+
+	struct FOpenXRActionSet
+	{
+		XrActionSet		Handle;
+		FName			Name;
+		FString			LocalizedName;
+
+		TObjectPtr<const UInputMappingContext> Object;
+
+		FOpenXRActionSet(XrInstance InInstance,
+			const FName& InName,
+			const FString& InLocalizedName,
+			uint32 InPriority,
+			const TObjectPtr<const UInputMappingContext>& InObject);
+
+		FOpenXRActionSet(XrInstance InInstance,
+			const FName& InName,
+			const FString& InLocalizedName,
+			uint32 InPriority);
 	};
 
 	struct FOpenXRController
@@ -42,6 +85,8 @@ public:
 		XrAction		VibrationAction;
 		int32			GripDeviceId;
 		int32			AimDeviceId;
+
+		bool			bHapticActive;
 
 		FOpenXRController(XrActionSet InActionSet, XrPath InUserPath, const char* InName);
 
@@ -58,14 +103,18 @@ public:
 		FInteractionProfile(XrPath InProfile, bool InHasHaptics);
 	};
 
-	class FOpenXRInput : public IInputDevice, public FXRMotionControllerBase, public IHapticDevice, public TSharedFromThis<FOpenXRInput>
+	class FOpenXRInput : public IOpenXRInputModule, public IInputDevice, public FXRMotionControllerBase, public IHapticDevice, public TSharedFromThis<FOpenXRInput>
 	{
 	public:
 		FOpenXRInput(FOpenXRHMD* HMD);
-		virtual ~FOpenXRInput();
+		virtual ~FOpenXRInput() {};
+
+		// IOpenXRAdditionalModule overrides
+		virtual void OnBeginSession() override;
+		virtual void OnDestroySession() override;
 
 		// IInputDevice overrides
-		virtual void Tick(float DeltaTime) override;
+		virtual void Tick(float DeltaTime) override { CurrentDeltaTime = DeltaTime; };
 		virtual void SendControllerEvents() override;
 		virtual void SetMessageHandler(const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler) override;
 		virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
@@ -81,6 +130,7 @@ public:
 		virtual bool GetControllerOrientationAndPosition(const int32 ControllerIndex, const EControllerHand DeviceHand, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const override { check(false); return false; }
 		virtual ETrackingStatus GetControllerTrackingStatus(const int32 ControllerIndex, const EControllerHand DeviceHand) const override { check(false); return ETrackingStatus::NotTracked; }
 		virtual void EnumerateSources(TArray<FMotionControllerSource>& SourcesOut) const override;
+		virtual bool SetPlayerMappableInputConfig(TObjectPtr<class UPlayerMappableInputConfig> InputConfig) override;
 
 		// IHapticDevice overrides
 		IHapticDevice* GetHapticDevice() override { return (IHapticDevice*)this; }
@@ -90,29 +140,41 @@ public:
 		virtual float GetHapticAmplitudeScale() const override;
 
 	private:
-		static const XrDuration MaxFeedbackDuration = 2500000000; // 2.5 seconds
-
 		FOpenXRHMD* OpenXRHMD;
+		XrInstance Instance;
 
-		TArray<XrActiveActionSet> ActionSets;
-		TArray<XrActiveActionSet> PluginActionSets;
+		TUniquePtr<FOpenXRActionSet> ControllerActionSet;
+		TArray<FOpenXRActionSet> ActionSets;
 		TArray<XrPath> SubactionPaths;
-		TArray<FOpenXRAction> Actions;
+		TArray<FOpenXRAction> LegacyActions, EnhancedActions;
 		TMap<EControllerHand, FOpenXRController> Controllers;
 		TMap<FName, EControllerHand> MotionSourceToControllerHandMap;
+
+		TStrongObjectPtr<UPlayerMappableInputConfig> MappableInputConfig;
+
 		XrAction GetActionForMotionSource(FName MotionSource) const;
 		int32 GetDeviceIDForMotionSource(FName MotionSource) const;
 		XrPath GetUserPathForMotionSource(FName MotionSource) const;
 		bool IsOpenXRInputSupportedMotionSource(const FName MotionSource) const;
 
-		bool bActionsBound;
+		bool bActionsAttached;
 		bool bDirectionalBindingSupported;
 
-		void BuildActions();
+		/**
+		* Buffer for current delta time to get an accurate approximation of how long to play haptics for
+		*/
+		float CurrentDeltaTime = 0.0f;
+
+		bool BuildActions(XrSession Session);
+		void SyncActions(XrSession Session);
+		void BuildLegacyActions(TMap<FString, FInteractionProfile>& Profiles);
+		void BuildEnhancedActions(TMap<FString, FInteractionProfile>& Profiles);
 		void DestroyActions();
 
 		template<typename T>
-		int32 SuggestBindings(XrInstance Instance, FOpenXRAction& Action, const TArray<T>& Mappings, TMap<FString, FInteractionProfile>& Profiles);
+		int32 SuggestBindings(TMap<FString, FInteractionProfile>& Profiles, FOpenXRAction& Action, const TArray<T>& Mappings);
+		bool SuggestBindingForKey(TMap<FString, FInteractionProfile>& Profiles, FOpenXRAction& Action, const FKey& Key, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
+		bool SuggestBindingForKey(TMap<FString, FInteractionProfile>& Profiles, FOpenXRAction& Action, const FKey& Key);
 
 		/** handler to send all messages to */
 		TSharedRef<FGenericApplicationMessageHandler> MessageHandler;

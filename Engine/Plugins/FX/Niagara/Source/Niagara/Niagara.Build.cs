@@ -1,14 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
 using UnrealBuildTool;
 
 public class Niagara : ModuleRules
 {
     public Niagara(ReadOnlyTargetRules Target) : base(Target)
     {
-		PrivateIncludePaths.Add("../../../../Shaders/Shared");
+        PrivateIncludePaths.Add("../../../../Shaders/Shared");
 
-        PrivateDependencyModuleNames.AddRange(
+		// Specific to OpenVDB support
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+		{
+			bUseRTTI = true;
+			bEnableExceptions = true;
+		}
+		
+		PrivateDependencyModuleNames.AddRange(
             new string[] {
                 "ApplicationCore",
                 "AudioPlatformConfiguration",
@@ -45,16 +53,17 @@ public class Niagara : ModuleRules
             }
         );
 
-		PrivateIncludePathModuleNames.AddRange(
-			new string[] {
-				"DerivedDataCache",
-			});
+        PrivateIncludePathModuleNames.AddRange(
+                new string[] {
+                        "DerivedDataCache",
+                });
 
         PrivateIncludePaths.AddRange(
             new string[] {
                 "Niagara/Private",
-            })
-        ;
+				System.IO.Path.Combine(GetModuleDirectory("Engine"), "Private"),
+				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
+			});
 
         if (Target.bBuildEditor == true)
         {
@@ -67,5 +76,23 @@ public class Niagara : ModuleRules
 				"Slate"
             });
         }
+
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+		{ 
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"IntelTBB",
+				"Blosc",
+				"zlib",
+				"Boost",				
+				"OpenVDB"
+			);
+		}
+
+		PublicDefinitions.AddRange(
+            new string[]
+            {
+                "VECTORVM_SUPPORTS_EXPERIMENTAL=1",
+                "VECTORVM_SUPPORTS_LEGACY=1"
+            });
     }
 }

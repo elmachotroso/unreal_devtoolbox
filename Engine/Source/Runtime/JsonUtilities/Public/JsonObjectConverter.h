@@ -2,13 +2,29 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/Class.h"
-#include "Serialization/JsonTypes.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Internationalization/Text.h"
+#include "JsonGlobals.h"
+#include "JsonObjectWrapper.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "JsonObjectWrapper.h"
+#include "Serialization/JsonTypes.h"
+#include "Serialization/JsonWriter.h"
+#include "Templates/SharedPointer.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+
+class FProperty;
+class UStruct;
 
 /** Class that handles converting Json objects to and from UStructs */
 class JSONUTILITIES_API FJsonObjectConverter
@@ -172,10 +188,11 @@ public: // JSON -> UStruct
 	 * @param CheckFlags Only convert properties that match at least one of these flags. If 0 check all properties.
 	 * @param SkipFlags Skip properties that match any of these flags
 	 * @param bStrictMode Whether to strictly check the json attributes
+	 * @param OutFailReason Reason of the failure if any
 	 *
 	 * @return False if any properties matched but failed to deserialize
 	 */
-	static bool JsonObjectToUStruct(const TSharedRef<FJsonObject>& JsonObject, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false);
+	static bool JsonObjectToUStruct(const TSharedRef<FJsonObject>& JsonObject, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false, FText* OutFailReason = nullptr);
 
 	/**
 	 * Templated version of JsonObjectToUStruct
@@ -185,13 +202,14 @@ public: // JSON -> UStruct
 	 * @param CheckFlags Only convert properties that match at least one of these flags. If 0 check all properties.
 	 * @param SkipFlags Skip properties that match any of these flags
 	 * @param bStrictMode Whether to strictly check the json attributes
+	 * @param OutFailReason Reason of the failure if any
 	 *
 	 * @return False if any properties matched but failed to deserialize
 	 */
 	template<typename OutStructType>
-	static bool JsonObjectToUStruct(const TSharedRef<FJsonObject>& JsonObject, OutStructType* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false)
+	static bool JsonObjectToUStruct(const TSharedRef<FJsonObject>& JsonObject, OutStructType* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false, FText* OutFailReason = nullptr)
 	{
-		return JsonObjectToUStruct(JsonObject, OutStructType::StaticStruct(), OutStruct, CheckFlags, SkipFlags, bStrictMode);
+		return JsonObjectToUStruct(JsonObject, OutStructType::StaticStruct(), OutStruct, CheckFlags, SkipFlags, bStrictMode, OutFailReason);
 	}
 
 	/**
@@ -203,10 +221,11 @@ public: // JSON -> UStruct
 	 * @param CheckFlags Only convert properties that match at least one of these flags. If 0 check all properties.
 	 * @param SkipFlags Skip properties that match any of these flags
 	 * @param bStrictMode Whether to strictly check the json attributes
+	 * @param OutFailReason Reason of the failure if any
 	 *
 	 * @return False if any properties matched but failed to deserialize
 	 */
-	static bool JsonAttributesToUStruct(const TMap< FString, TSharedPtr<FJsonValue> >& JsonAttributes, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false);
+	static bool JsonAttributesToUStruct(const TMap< FString, TSharedPtr<FJsonValue> >& JsonAttributes, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false, FText* OutFailReason = nullptr);
 
 	/**
 	 * Converts a single JsonValue to the corresponding FProperty (this may recurse if the property is a UStruct for instance).
@@ -217,10 +236,11 @@ public: // JSON -> UStruct
 	 * @param CheckFlags Only convert sub-properties that match at least one of these flags. If 0 check all properties.
 	 * @param SkipFlags Skip sub-properties that match any of these flags
 	 * @param bStrictMode Whether to strictly check the json attributes
+	 * @param OutFailReason Reason of the failure if any
 	 *
 	 * @return False if the property failed to serialize
 	 */
-	static bool JsonValueToUProperty(const TSharedPtr<FJsonValue>& JsonValue, FProperty* Property, void* OutValue, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false);
+	static bool JsonValueToUProperty(const TSharedPtr<FJsonValue>& JsonValue, FProperty* Property, void* OutValue, int64 CheckFlags = 0, int64 SkipFlags = 0, const bool bStrictMode = false, FText* OutFailReason = nullptr);
 
 	/**
 	 * Converts from a json string containing an object to a UStruct

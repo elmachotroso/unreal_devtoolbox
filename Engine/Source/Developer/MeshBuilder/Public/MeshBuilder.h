@@ -2,13 +2,15 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
+#include "Math/UnrealMathSSE.h"
 
-class UStaticMesh;
-class FStaticMeshRenderData;
 class FStaticMeshLODGroup;
-class USkeletalMesh;
+class FStaticMeshRenderData;
 class FStaticMeshSectionArray;
+class USkeletalMesh;
+class UStaticMesh;
 struct FSkeletalMeshBuildParameters;
 struct FStaticMeshBuildVertex;
 struct FStaticMeshSection;
@@ -25,7 +27,13 @@ public:
 	/**
 	 * Build function should be override and is the starting point for static mesh builders
 	 */
-	virtual bool Build(FStaticMeshRenderData& OutRenderData, UStaticMesh* StaticMesh, const FStaticMeshLODGroup& LODGroup, bool bGenerateCoarseMeshStreamingLODs) = 0;
+	virtual bool Build(
+		FStaticMeshRenderData& OutRenderData,
+		UStaticMesh* StaticMesh,
+		const FStaticMeshLODGroup& LODGroup,
+		bool bGenerateCoarseMeshStreamingLODs,
+		bool bAllowNanite) = 0;
+
 	virtual bool BuildMeshVertexPositions(
 		UStaticMesh* StaticMesh,
 		TArray<uint32>& Indices,

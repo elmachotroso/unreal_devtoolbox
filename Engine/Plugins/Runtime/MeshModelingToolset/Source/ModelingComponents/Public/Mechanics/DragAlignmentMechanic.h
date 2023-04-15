@@ -7,7 +7,10 @@
 #include "BaseBehaviors/BehaviorTargetInterfaces.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
 #include "ToolContextInterfaces.h" // FViewCameraState
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/EngineTypes.h" //FHitResult
+#endif
+#include "Engine/HitResult.h"
 #include "InteractionMechanic.h"
 #include "TransformTypes.h"
 #include "VectorTypes.h"

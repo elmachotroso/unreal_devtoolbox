@@ -80,6 +80,7 @@ namespace TextureCompilingManagerImpl
 FTextureCompilingManager::FTextureCompilingManager()
 	: Notification(GetAssetNameFormat())
 {
+	TextureCompilingManagerImpl::EnsureInitializedCVars();
 }
 
 FName FTextureCompilingManager::GetStaticAssetTypeName()
@@ -134,8 +135,6 @@ FQueuedThreadPool* FTextureCompilingManager::GetThreadPool() const
 	static FQueuedThreadPoolWrapper* GTextureThreadPool = nullptr;
 	if (GTextureThreadPool == nullptr && FAssetCompilingManager::Get().GetThreadPool() != nullptr)
 	{
-		TextureCompilingManagerImpl::EnsureInitializedCVars();
-
 		const auto TexturePriorityMapper = [](EQueuedWorkPriority TexturePriority) { return FMath::Max(TexturePriority, EQueuedWorkPriority::Low); };
 
 		// Textures will be scheduled on the asset thread pool, where concurrency limits might by dynamically adjusted depending on memory constraints.
@@ -188,8 +187,6 @@ bool FTextureCompilingManager::IsAsyncTextureCompilationEnabled() const
 		return false;
 	}
 
-	TextureCompilingManagerImpl::EnsureInitializedCVars();
-
 	return CVarAsyncTextureStandard.AsyncCompilation.GetValueOnAnyThread() != 0;
 }
 
@@ -209,6 +206,9 @@ void FTextureCompilingManager::PostCompilation(UTexture* Texture)
 
 	Texture->FinishCachePlatformData();
 	Texture->UpdateResource();
+
+	// Needs to be called after the placeholder resource has been replaced by the real one
+	Texture->UpdateCachedLODBias();
 
 	// Generate an empty property changed event, to force the asset registry tag
 	// to be refreshed now that pixel format and alpha channels are available.
@@ -449,6 +449,8 @@ void FTextureCompilingManager::PostCompilation(TArrayView<UTexture* const> InCom
 
 void FTextureCompilingManager::FinishAllCompilation()
 {
+	UE_SCOPED_ENGINE_ACTIVITY(TEXT("Finish Texture Compilation"));
+
 	check(IsInGameThread());
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::FinishAllCompilation)
 
@@ -578,8 +580,10 @@ void FTextureCompilingManager::ProcessTextures(bool bLimitExecutionTime, int32 M
 			}
 		}
 
-		if (GEngine)
+		if (GEngine && FPlatformTime::Seconds() - LastReschedule > 1.0f)
 		{
+			LastReschedule = FPlatformTime::Seconds();
+
 			TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::Reschedule);
 
 			auto TryRescheduleTexture = 

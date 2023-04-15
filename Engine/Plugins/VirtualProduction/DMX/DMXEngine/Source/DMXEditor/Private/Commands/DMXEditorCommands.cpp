@@ -5,12 +5,15 @@
 #define LOCTEXT_NAMESPACE "DMXEditorCommands"
 
 FDMXEditorCommands::FDMXEditorCommands()
-	: TCommands<FDMXEditorCommands>(TEXT("DMXEditor"), LOCTEXT("DMXEditor", "DMX Editor"), NAME_None, FEditorStyle::GetStyleSetName())
+	: TCommands<FDMXEditorCommands>(TEXT("DMXEditor"), LOCTEXT("DMXEditor", "DMX Editor"), NAME_None, FAppStyle::GetAppStyleSetName())
 {}
 
 void FDMXEditorCommands::RegisterCommands()
 {
 	UI_COMMAND(GoToDocumentation, "View Documentation", "View documentation about DMX editor", EUserInterfaceActionType::Button, FInputChord());
+
+	UI_COMMAND(ImportDMXLibrary, "Import", "Import the DMX Library from an MVR File", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportDMXLibrary, "Export", "Exports the DMX Library to an MVR File", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND(AddNewEntityFixtureType, "New Fixture Type", "Creates a new Fixture Type in this library", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(AddNewEntityFixturePatch, "Add Fixture", "Creates a new Fixture Patch in this library", EUserInterfaceActionType::Button, FInputChord());

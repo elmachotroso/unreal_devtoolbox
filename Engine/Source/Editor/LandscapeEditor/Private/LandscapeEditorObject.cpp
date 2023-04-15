@@ -7,7 +7,9 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "LandscapeEditorModule.h"
+#include "LandscapeEditorPrivate.h"
 #include "LandscapeRender.h"
+#include "LandscapeSettings.h"
 #include "LandscapeImportHelper.h"
 #include "LandscapeMaterialInstanceConstant.h"
 #include "Misc/ConfigCacheIni.h"
@@ -21,6 +23,7 @@ ULandscapeEditorObject::ULandscapeEditorObject(const FObjectInitializer& ObjectI
 
 	// Tool Settings:
 	, ToolStrength(0.3f)
+    , PaintToolStrength(0.3f)
 	, bUseWeightTargetValue(false)
 	, WeightTargetValue(1.0f)
 	, MaximumValueRadius(10000.0f)
@@ -76,7 +79,7 @@ ULandscapeEditorObject::ULandscapeEditorObject(const FObjectInitializer& ObjectI
 	, ResizeLandscape_ComponentCount(0, 0)
 	, ResizeLandscape_ConvertMode(ELandscapeConvertMode::Expand)
 
-	, NewLandscape_Material(NULL)
+	, NewLandscape_Material(nullptr)
 	, NewLandscape_QuadsPerSection(63)
 	, NewLandscape_SectionsPerComponent(1)
 	, NewLandscape_ComponentCount(8, 8)
@@ -89,7 +92,9 @@ ULandscapeEditorObject::ULandscapeEditorObject(const FObjectInitializer& ObjectI
 
 	// Brush Settings:
 	, BrushRadius(2048.0f)
+    , PaintBrushRadius(2048.0f) 
 	, BrushFalloff(0.5f)
+	, PaintBrushFalloff(0.5f)
 	, bUseClayBrush(false)
 
 	, AlphaBrushScale(0.5f)
@@ -99,7 +104,7 @@ ULandscapeEditorObject::ULandscapeEditorObject(const FObjectInitializer& ObjectI
 	, AlphaBrushPanV(0.5f)
 	, bUseWorldSpacePatternBrush(false)
 	, WorldSpacePatternBrushSettings(FVector2D::ZeroVector, 0.0f, false, 3200)
-	, AlphaTexture(NULL)
+	, AlphaTexture(nullptr)
 	, AlphaTextureChannel(EColorChannel::Red)
 	, AlphaTextureSizeX(1)
 	, AlphaTextureSizeY(1)
@@ -121,7 +126,10 @@ ULandscapeEditorObject::ULandscapeEditorObject(const FObjectInitializer& ObjectI
 	};
 	static FConstructorStatics ConstructorStatics;
 
-	SetAlphaTexture(ConstructorStatics.AlphaTexture.Object, AlphaTextureChannel);
+	if (!IsTemplate())
+	{
+		SetAlphaTexture(ConstructorStatics.AlphaTexture.Object, AlphaTextureChannel);
+	}
 }
 
 void ULandscapeEditorObject::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -190,14 +198,17 @@ void ULandscapeEditorObject::PostEditChangeProperty(FPropertyChangedEvent& Prope
 void ULandscapeEditorObject::Load()
 {
 	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("ToolStrength"), ToolStrength, GEditorPerProjectIni);
+	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("PaintToolStrength"), PaintToolStrength, GEditorPerProjectIni);
 	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("WeightTargetValue"), WeightTargetValue, GEditorPerProjectIni);
 	bool InbUseWeightTargetValue = bUseWeightTargetValue;
 	GConfig->GetBool(TEXT("LandscapeEdit"), TEXT("bUseWeightTargetValue"), InbUseWeightTargetValue, GEditorPerProjectIni);
 	bUseWeightTargetValue = InbUseWeightTargetValue;
 
 	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("BrushRadius"), BrushRadius, GEditorPerProjectIni);
+	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("PaintBrushRadius"), PaintBrushRadius, GEditorPerProjectIni);
 	GConfig->GetInt(TEXT("LandscapeEdit"), TEXT("BrushComponentSize"), BrushComponentSize, GEditorPerProjectIni);
 	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("BrushFalloff"), BrushFalloff, GEditorPerProjectIni);
+	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("PaintBrushFalloff"), PaintBrushFalloff, GEditorPerProjectIni);
 	bool InbUseClayBrush = bUseClayBrush;
 	GConfig->GetBool(TEXT("LandscapeEdit"), TEXT("bUseClayBrush"), InbUseClayBrush, GEditorPerProjectIni);
 	bUseClayBrush = InbUseClayBrush;
@@ -210,12 +221,12 @@ void ULandscapeEditorObject::Load()
 	GConfig->GetVector2D(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.Origin"), WorldSpacePatternBrushSettings.Origin, GEditorPerProjectIni);
 	GConfig->GetBool(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.bCenterTextureOnOrigin"), WorldSpacePatternBrushSettings.bCenterTextureOnOrigin, GEditorPerProjectIni);
 	GConfig->GetFloat(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.RepeatSize"), WorldSpacePatternBrushSettings.RepeatSize, GEditorPerProjectIni);
-	FString AlphaTextureName = (AlphaTexture != NULL) ? AlphaTexture->GetPathName() : FString();
+	FString AlphaTextureName = (AlphaTexture != nullptr) ? AlphaTexture->GetPathName() : FString();
 	int32 InAlphaTextureChannel = AlphaTextureChannel;
 	GConfig->GetString(TEXT("LandscapeEdit"), TEXT("AlphaTextureName"), AlphaTextureName, GEditorPerProjectIni);
 	GConfig->GetInt(TEXT("LandscapeEdit"), TEXT("AlphaTextureChannel"), InAlphaTextureChannel, GEditorPerProjectIni);
 	AlphaTextureChannel = (EColorChannel::Type)InAlphaTextureChannel;
-	SetAlphaTexture(LoadObject<UTexture2D>(NULL, *AlphaTextureName, NULL, LOAD_NoWarn), AlphaTextureChannel);
+	SetAlphaTexture(LoadObject<UTexture2D>(nullptr, *AlphaTextureName, nullptr, LOAD_NoWarn), AlphaTextureChannel);
 
 	int32 InFlattenMode = (int32)ELandscapeToolFlattenMode::Both;
 	GConfig->GetInt(TEXT("LandscapeEdit"), TEXT("FlattenMode"), InFlattenMode, GEditorPerProjectIni);
@@ -316,11 +327,35 @@ void ULandscapeEditorObject::Load()
 		}
 	}
 
-	FString NewLandscapeMaterialName = (NewLandscape_Material != NULL) ? NewLandscape_Material->GetPathName() : FString();
-	GConfig->GetString(TEXT("LandscapeEdit"), TEXT("NewLandscapeMaterialName"), NewLandscapeMaterialName, GEditorPerProjectIni);
-	if(NewLandscapeMaterialName != TEXT(""))
+	FString NewLandscapeMaterialName;
+
+	// If NewLandscape_Material is not null, we will try to use it
+	if (!NewLandscape_Material.IsExplicitlyNull())
 	{
-		NewLandscape_Material = LoadObject<UMaterialInterface>(NULL, *NewLandscapeMaterialName, NULL, LOAD_NoWarn);
+		NewLandscapeMaterialName = NewLandscape_Material->GetPathName();
+	}
+	else
+	{
+		// If this project already has a saved NewLandscapeMaterialName, we use it
+		GConfig->GetString(TEXT("LandscapeEdit"), TEXT("NewLandscapeMaterialName"), NewLandscapeMaterialName, GEditorPerProjectIni);
+
+		if (NewLandscapeMaterialName.IsEmpty())
+		{
+			/* Project does not have a saved NewLandscapeMaterialNameand and NewLandscape_Material is not already assigned;
+			 * we fallback to the DefaultLandscapeMaterial for the project, if set */
+			const ULandscapeSettings* Settings = GetDefault<ULandscapeSettings>();
+			TSoftObjectPtr<UMaterialInterface> DefaultMaterial = Settings->GetDefaultLandscapeMaterial();
+
+			if (!DefaultMaterial.IsNull())
+			{
+				NewLandscapeMaterialName = DefaultMaterial.ToString();
+			}
+		}
+	}
+	
+	if (!NewLandscapeMaterialName.IsEmpty())
+	{
+		NewLandscape_Material = LoadObject<UMaterialInterface>(nullptr, *NewLandscapeMaterialName, nullptr, LOAD_NoWarn);
 	}
 	
 	int32 AlphamapType = (uint8)ImportLandscape_AlphamapType;
@@ -334,12 +369,15 @@ void ULandscapeEditorObject::Load()
 void ULandscapeEditorObject::Save()
 {
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("ToolStrength"), ToolStrength, GEditorPerProjectIni);
+	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("PaintToolStrength"), PaintToolStrength, GEditorPerProjectIni);
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("WeightTargetValue"), WeightTargetValue, GEditorPerProjectIni);
 	GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("bUseWeightTargetValue"), bUseWeightTargetValue, GEditorPerProjectIni);
 
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("BrushRadius"), BrushRadius, GEditorPerProjectIni);
+	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("PaintBrushRadius"), PaintBrushRadius, GEditorPerProjectIni);
 	GConfig->SetInt(TEXT("LandscapeEdit"), TEXT("BrushComponentSize"), BrushComponentSize, GEditorPerProjectIni);
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("BrushFalloff"), BrushFalloff, GEditorPerProjectIni);
+	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("PaintBrushFalloff"), PaintBrushFalloff, GEditorPerProjectIni);
 	GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("bUseClayBrush"), bUseClayBrush, GEditorPerProjectIni);
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("AlphaBrushScale"), AlphaBrushScale, GEditorPerProjectIni);
 	GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("AlphaBrushAutoRotate"), bAlphaBrushAutoRotate, GEditorPerProjectIni);
@@ -349,7 +387,7 @@ void ULandscapeEditorObject::Save()
 	GConfig->SetVector2D(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.Origin"), WorldSpacePatternBrushSettings.Origin, GEditorPerProjectIni);
 	GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.bCenterTextureOnOrigin"), WorldSpacePatternBrushSettings.bCenterTextureOnOrigin, GEditorPerProjectIni);
 	GConfig->SetFloat(TEXT("LandscapeEdit"), TEXT("WorldSpacePatternBrushSettings.RepeatSize"), WorldSpacePatternBrushSettings.RepeatSize, GEditorPerProjectIni);
-	const FString AlphaTextureName = (AlphaTexture != NULL) ? AlphaTexture->GetPathName() : FString();
+	const FString AlphaTextureName = (AlphaTexture != nullptr) ? AlphaTexture->GetPathName() : FString();
 	GConfig->SetString(TEXT("LandscapeEdit"), TEXT("AlphaTextureName"), *AlphaTextureName, GEditorPerProjectIni);
 	GConfig->SetInt(TEXT("LandscapeEdit"), TEXT("AlphaTextureChannel"), (int32)AlphaTextureChannel, GEditorPerProjectIni);
 
@@ -399,7 +437,7 @@ void ULandscapeEditorObject::Save()
 	//GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("bUseNegativeMask"), bUseNegativeMask, GEditorPerProjectIni);
 	GConfig->SetBool(TEXT("LandscapeEdit"), TEXT("bApplyToAllTargets"), bApplyToAllTargets, GEditorPerProjectIni);
 
-	const FString NewLandscapeMaterialName = (NewLandscape_Material != NULL) ? NewLandscape_Material->GetPathName() : FString();
+	const FString NewLandscapeMaterialName = (NewLandscape_Material != nullptr) ? NewLandscape_Material->GetPathName() : FString();
 	GConfig->SetString(TEXT("LandscapeEdit"), TEXT("NewLandscapeMaterialName"), *NewLandscapeMaterialName, GEditorPerProjectIni);
 
 	GConfig->SetInt(TEXT("LandscapeEdit"), TEXT("ImportLandscape_AlphamapType"), (uint8)ImportLandscape_AlphamapType, GEditorPerProjectIni);
@@ -465,80 +503,78 @@ void ULandscapeEditorObject::SetbSnapGizmo(bool InbSnapGizmo)
 	}
 }
 
-bool ULandscapeEditorObject::SetAlphaTexture(UTexture2D* InTexture, EColorChannel::Type InTextureChannel)
+void ULandscapeEditorObject::SetAlphaTexture(UTexture2D* InTexture, EColorChannel::Type InTextureChannel)
 {
-	bool Result = true;
-
 	TArray64<uint8> NewTextureData;
-	UTexture2D* NewAlphaTexture = InTexture;
+	UTexture2D* NewAlphaTexture = nullptr;
+	int32 NumChannels = 0;
 
-	// No texture or no source art, try to use the previous texture.
-	if (NewAlphaTexture == NULL || !NewAlphaTexture->Source.IsValid())
+	// Validate that the input texture is valid, if not, we'll display an error message and use the default brush alpha texture : 
+	if (InTexture != nullptr)
 	{
-		NewAlphaTexture = AlphaTexture;
-		Result = false;
-	}
-
-	if (NewAlphaTexture != NULL && NewAlphaTexture->Source.IsValid())
-	{
-		NewAlphaTexture->Source.GetMipData(NewTextureData, 0);
-	}
-
-	const bool bSourceDataIsG8 = NewAlphaTexture != NULL && NewAlphaTexture->Source.IsValid() && NewAlphaTexture->Source.GetFormat() == TSF_G8;
-	const int32 NumChannels = bSourceDataIsG8 ? 1 : 4;
-
-	// Load fallback if there's no texture or data
-	if (NewAlphaTexture == NULL || (NewTextureData.Num() != NumChannels * NewAlphaTexture->Source.GetSizeX() * NewAlphaTexture->Source.GetSizeY()))
-	{
-		NewAlphaTexture = GetClass()->GetDefaultObject<ULandscapeEditorObject>()->AlphaTexture;
-		if (NewAlphaTexture)
+		if (!InTexture->Source.IsValid())
 		{
-			NewAlphaTexture->Source.GetMipData(NewTextureData, 0);
-		}
-		Result = false;
-	}
-
-	if (NewAlphaTexture)
-	{
-		AlphaTexture = NewAlphaTexture;
-		AlphaTextureSizeX = NewAlphaTexture->Source.GetSizeX();
-		AlphaTextureSizeY = NewAlphaTexture->Source.GetSizeY();
-		AlphaTextureChannel = NumChannels == 1 ? EColorChannel::Red : InTextureChannel;
-		AlphaTextureData.Empty(AlphaTextureSizeX * AlphaTextureSizeY);
-
-		if (NewTextureData.Num() != NumChannels * AlphaTextureSizeX * AlphaTextureSizeY)
-		{
-			// Don't crash if for some reason we couldn't load any source art
-			AlphaTextureData.AddZeroed(AlphaTextureSizeX * AlphaTextureSizeY);
+			UE_LOG(LogLandscapeTools, Error, TEXT("Invalid source data detected for texture (%s), the default AlphaTexture (%s) will be used."), *InTexture->GetPathName(), *GetClass()->GetDefaultObject<ULandscapeEditorObject>()->AlphaTexture->GetPathName());
 		}
 		else
 		{
-			uint8* SrcPtr;
-			switch (AlphaTextureChannel)
+			// Try to read the new texture data now : 
+			const bool bSourceDataIsG8 = (InTexture->Source.GetFormat() == TSF_G8);
+			NumChannels = bSourceDataIsG8 ? 1 : 4;
+			InTexture->Source.GetMipData(NewTextureData, 0);
+			if (NewTextureData.Num() == (NumChannels * InTexture->Source.GetSizeX() * InTexture->Source.GetSizeY()))
 			{
-			case 1:
-				SrcPtr = &((FColor*)NewTextureData.GetData())->G;
-				break;
-			case 2:
-				SrcPtr = &((FColor*)NewTextureData.GetData())->B;
-				break;
-			case 3:
-				SrcPtr = &((FColor*)NewTextureData.GetData())->A;
-				break;
-			default:
-				SrcPtr = &((FColor*)NewTextureData.GetData())->R;
-				break;
+				// Valid new texture
+				NewAlphaTexture = InTexture;
 			}
-
-			for (int32 i = 0; i < AlphaTextureSizeX * AlphaTextureSizeY; i++)
+			else
 			{
-				AlphaTextureData.Add(*SrcPtr);
-				SrcPtr += NumChannels;
+				UE_LOG(LogLandscapeTools, Error, TEXT("Invalid data size detected for texture (%s), the default AlphaTexture (%s) will be used."), *InTexture->GetPathName(), *GetClass()->GetDefaultObject<ULandscapeEditorObject>()->AlphaTexture->GetPathName());
 			}
 		}
 	}
 
-	return Result;
+	// Load fallback if there's no texture or valid data
+	if (NewAlphaTexture == nullptr)
+	{
+		UTexture2D* DefaultAlphaTexture = GetClass()->GetDefaultObject<ULandscapeEditorObject>()->AlphaTexture;
+		check((DefaultAlphaTexture != nullptr) && DefaultAlphaTexture->Source.IsValid()); // The default texture should always be valid
+		DefaultAlphaTexture->Source.GetMipData(NewTextureData, 0);
+		NewAlphaTexture = DefaultAlphaTexture;
+		const bool bSourceDataIsG8 = (DefaultAlphaTexture->Source.GetFormat() == TSF_G8);
+		NumChannels = bSourceDataIsG8 ? 1 : 4;
+	}
+
+	check((NewAlphaTexture != nullptr) && !NewTextureData.IsEmpty() && (NumChannels > 0));
+
+	AlphaTexture = NewAlphaTexture;
+	AlphaTextureSizeX = NewAlphaTexture->Source.GetSizeX();
+	AlphaTextureSizeY = NewAlphaTexture->Source.GetSizeY();
+	AlphaTextureChannel = (NumChannels == 1) ? EColorChannel::Red : InTextureChannel;
+	AlphaTextureData.Empty(AlphaTextureSizeX * AlphaTextureSizeY);
+
+	uint8* SrcPtr;
+	switch (AlphaTextureChannel)
+	{
+	case 1:
+		SrcPtr = &((FColor*)NewTextureData.GetData())->G;
+		break;
+	case 2:
+		SrcPtr = &((FColor*)NewTextureData.GetData())->B;
+		break;
+	case 3:
+		SrcPtr = &((FColor*)NewTextureData.GetData())->A;
+		break;
+	default:
+		SrcPtr = &((FColor*)NewTextureData.GetData())->R;
+		break;
+	}
+
+	for (int32 i = 0; i < AlphaTextureSizeX * AlphaTextureSizeY; i++)
+	{
+		AlphaTextureData.Add(*SrcPtr);
+		SrcPtr += NumChannels;
+	}
 }
 
 void ULandscapeEditorObject::ChooseBestComponentSizeForImport()
@@ -604,6 +640,11 @@ void ULandscapeEditorObject::RefreshLayerImport(FLandscapeImportLayer& ImportLay
 	ImportLayer.ErrorMessage = FText();
 	ImportLayer.ImportResult = ELandscapeImportResult::Success;
 
+	if (ImportLayer.LayerName == ALandscapeProxy::VisibilityLayer->LayerName)
+	{
+		ImportLayer.LayerInfo = ALandscapeProxy::VisibilityLayer;
+	}
+
 	if (!ImportLayer.SourceFilePath.IsEmpty())
 	{
 		if (!ImportLayer.LayerInfo)
@@ -662,10 +703,6 @@ void ULandscapeEditorObject::ImportLandscapeData()
 
 ELandscapeImportResult ULandscapeEditorObject::CreateImportLayersInfo(TArray<FLandscapeImportLayerInfo>& OutImportLayerInfos)
 {
-	const int32 QuadsPerComponent = NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection;
-	const int32 SizeX = NewLandscape_ComponentCount.X * QuadsPerComponent + 1;
-	const int32 SizeY = NewLandscape_ComponentCount.Y * QuadsPerComponent + 1;
-
 	const uint32 ImportSizeX = ImportLandscape_Width;
 	const uint32 ImportSizeY = ImportLandscape_Height;
 
@@ -816,7 +853,7 @@ void ULandscapeEditorObject::RefreshImportLayersList(bool bRefreshFromTarget)
 		Material = ParentMode->GetTargetLandscapeMaterial();
 		for (const TSharedRef<FLandscapeTargetListInfo>& TargetListInfo : ParentMode->GetTargetList())
 		{
-			if (TargetListInfo->TargetType != ELandscapeToolTargetType::Weightmap)
+			if ((TargetListInfo->TargetType != ELandscapeToolTargetType::Weightmap) && (TargetListInfo->TargetType != ELandscapeToolTargetType::Visibility))
 			{
 				continue;
 			}
@@ -838,54 +875,57 @@ void ULandscapeEditorObject::RefreshImportLayersList(bool bRefreshFromTarget)
 	{
 		const FName& LayerName = LayerNames[i];
 
-		bool bFound = false;
-		FLandscapeImportLayer NewImportLayer;
-		NewImportLayer.ImportResult = ELandscapeImportResult::Success;
-		NewImportLayer.ErrorMessage = FText();
+		if (!LayerName.IsNone())
+		{
+			bool bFound = false;
+			FLandscapeImportLayer NewImportLayer;
+			NewImportLayer.ImportResult = ELandscapeImportResult::Success;
+			NewImportLayer.ErrorMessage = FText();
 
-		for (int32 j = 0; j < OldLayersList.Num(); j++)
-		{
-			if (OldLayersList[j].LayerName == LayerName)
+			for (int32 j = 0; j < OldLayersList.Num(); j++)
 			{
-				NewImportLayer = OldLayersList[j];
-				bFound = true;
-				break;
-			}
-		}
-
-		if (bFound)
-		{
-			if (NewImportLayer.ThumbnailMIC->Parent != Material)
-			{
-				FMaterialUpdateContext Context;
-				NewImportLayer.ThumbnailMIC->SetParentEditorOnly(Material);
-				Context.AddMaterialInterface(NewImportLayer.ThumbnailMIC);
-			}
-		}
-		else
-		{
-			if (!ThumbnailWeightmap)
-			{
-				ThumbnailWeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailWeightmap.LandscapeThumbnailWeightmap"), NULL, LOAD_None, NULL);
+				if (OldLayersList[j].LayerName == LayerName)
+				{
+					NewImportLayer = OldLayersList[j];
+					bFound = true;
+					break;
+				}
 			}
 
-			if (!ThumbnailHeightmap)
+			if (bFound)
 			{
-				ThumbnailHeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailHeightmap.LandscapeThumbnailHeightmap"), NULL, LOAD_None, NULL);
+				if (NewImportLayer.ThumbnailMIC->Parent != Material)
+				{
+					FMaterialUpdateContext Context;
+					NewImportLayer.ThumbnailMIC->SetParentEditorOnly(Material);
+					Context.AddMaterialInterface(NewImportLayer.ThumbnailMIC);
+				}
+			}
+			else
+			{
+				if (!ThumbnailWeightmap)
+				{
+					ThumbnailWeightmap = LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailWeightmap.LandscapeThumbnailWeightmap"), nullptr, LOAD_None, nullptr);
+				}
+
+				if (!ThumbnailHeightmap)
+				{
+					ThumbnailHeightmap = LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailHeightmap.LandscapeThumbnailHeightmap"), nullptr, LOAD_None, nullptr);
+				}
+
+				NewImportLayer.LayerName = LayerName;
+				NewImportLayer.ThumbnailMIC = ALandscapeProxy::GetLayerThumbnailMIC(Material, LayerName, ThumbnailWeightmap, ThumbnailHeightmap, nullptr);
 			}
 
-			NewImportLayer.LayerName = LayerName;
-			NewImportLayer.ThumbnailMIC = ALandscapeProxy::GetLayerThumbnailMIC(Material, LayerName, ThumbnailWeightmap, ThumbnailHeightmap, nullptr);
+			if (bRefreshFromTarget)
+			{
+				NewImportLayer.LayerInfo = LayerInfoObjs[i];
+			}
+
+			RefreshLayerImport(NewImportLayer);
+
+			ImportLandscape_Layers.Add(MoveTemp(NewImportLayer));
 		}
-
-		if (bRefreshFromTarget)
-		{
-			NewImportLayer.LayerInfo = LayerInfoObjs[i];
-		}
-
-		RefreshLayerImport(NewImportLayer);
-
-		ImportLandscape_Layers.Add(MoveTemp(NewImportLayer));
 	}
 }
 
@@ -913,3 +953,69 @@ void ULandscapeEditorObject::UpdateShowUnusedLayers()
 	}
 }
 
+float ULandscapeEditorObject::GetCurrentToolStrength() const
+{
+	if (IsWeightmapTarget())
+	{
+		return PaintToolStrength;
+	}
+	return ToolStrength;
+}
+
+void ULandscapeEditorObject::SetCurrentToolStrength(float NewToolStrength)
+{
+	if (IsWeightmapTarget())
+	{
+		PaintToolStrength = NewToolStrength;		
+	}
+	else
+	{
+		ToolStrength = NewToolStrength;
+	}
+}
+
+float ULandscapeEditorObject::GetCurrentToolBrushRadius() const
+{
+	if (IsWeightmapTarget())
+	{
+		return PaintBrushRadius;
+	}
+	return BrushRadius;
+	
+	
+}
+
+void ULandscapeEditorObject::SetCurrentToolBrushRadius(float NewBrushStrength)
+{
+	if (IsWeightmapTarget())
+	{
+		PaintBrushRadius = NewBrushStrength;
+	}
+	else
+	{
+		BrushRadius = NewBrushStrength;
+	}
+}
+
+float ULandscapeEditorObject::GetCurrentToolBrushFalloff() const
+{
+	if (IsWeightmapTarget())
+	{
+		return PaintBrushFalloff;
+		
+	}
+	return BrushFalloff;
+	
+}
+
+void ULandscapeEditorObject::SetCurrentToolBrushFalloff(float NewBrushFalloff)
+{
+	if (IsWeightmapTarget())
+	{
+		PaintBrushFalloff = NewBrushFalloff;
+	}
+	else
+	{
+		BrushFalloff = NewBrushFalloff;
+	}
+}

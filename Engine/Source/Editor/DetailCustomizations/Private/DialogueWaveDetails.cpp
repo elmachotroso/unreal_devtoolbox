@@ -1,24 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DialogueWaveDetails.h"
-#include "Widgets/SWidget.h"
-#include "Layout/Margin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "EditorStyleSet.h"
-#include "IDetailChildrenBuilder.h"
+
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "DialogueWaveWidgets.h"
+#include "Fonts/SlateFontInfo.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
+#include "Framework/SlateDelegates.h"
+#include "HAL/Platform.h"
+#include "IDetailChildrenBuilder.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/CString.h"
+#include "Misc/Optional.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "SlotBase.h"
 #include "Sound/DialogueTypes.h"
 #include "Sound/DialogueWave.h"
-#include "DetailLayoutBuilder.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
-#include "DialogueWaveWidgets.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "DialogueWaveDetails"
 
@@ -58,7 +80,7 @@ void FDialogueContextMappingNodeBuilder::GenerateHeaderRowContent(FDetailWidgetR
 				.FillWidth(1.0f)
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("DialogueWaveDetails.HeaderBorder"))
+					.BorderImage(FAppStyle::GetBrush("DialogueWaveDetails.HeaderBorder"))
 					[
 						SNew(SDialogueContextHeaderWidget, ContextPropertyHandle.ToSharedRef(), DetailLayoutBuilder->GetThumbnailPool().ToSharedRef())
 					]
@@ -107,7 +129,7 @@ void FDialogueContextMappingNodeBuilder::GenerateChildContent(IDetailChildrenBui
 			.AutoWidth()
 			[
 				SAssignNew(LocalizationKeyFormatEditableText, SEditableTextBox)
-				.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+				.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 				.Text(this, &FDialogueContextMappingNodeBuilder::LocalizationKeyFormatEditableText_GetText)
 				.ToolTipText(LocalizationKeyFormatPropertyHandle->GetToolTipText())
 				.OnTextCommitted(this, &FDialogueContextMappingNodeBuilder::LocalizationKeyFormatEditableText_OnTextCommitted)
@@ -120,7 +142,7 @@ void FDialogueContextMappingNodeBuilder::GenerateChildContent(IDetailChildrenBui
 			.Padding(FMargin(4.0f, 0.0f, 30.0f, 0.0f))
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::GetFontStyle("PropertyWindow.NormalFont"))
+				.Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
 				.Text(this, &FDialogueContextMappingNodeBuilder::LocalizationKey_GetText)
 				.ToolTipText(LOCTEXT("LocalizationKeyToolTipText", "The localization key used by this context."))
 			]

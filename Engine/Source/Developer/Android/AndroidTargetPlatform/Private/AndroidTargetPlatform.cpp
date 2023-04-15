@@ -26,6 +26,7 @@
 #include "Interfaces/IAndroidDeviceDetection.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/SecureHash.h"
+#include "AnalyticsEventAttribute.h"
 
 
 #if WITH_ENGINE
@@ -50,7 +51,68 @@ struct FAndroidDeviceInfo;
 enum class ETargetPlatformFeatures;
 template<typename TPlatformProperties> class TTargetPlatformBase;
 
+namespace AndroidTexFormat
+{
+	// Compressed Texture Formats
+	const static FName NameDXT1(TEXT("DXT1"));
+	const static FName NameDXT5(TEXT("DXT5"));
+	const static FName NameDXT5n(TEXT("DXT5n"));
+	const static FName NameAutoDXT(TEXT("AutoDXT"));
+	const static FName NameBC4(TEXT("BC4"));
+	const static FName NameBC5(TEXT("BC5"));
+	const static FName NameBC6H(TEXT("BC6H"));
+	const static FName NameBC7(TEXT("BC7"));
 
+	const static FName NameETC2_RGB(TEXT("ETC2_RGB"));
+	const static FName NameETC2_RGBA(TEXT("ETC2_RGBA"));
+	const static FName NameETC2_R11(TEXT("ETC2_R11"));
+	const static FName NameAutoETC2(TEXT("AutoETC2"));
+
+	const static FName NameAutoASTC(TEXT("ASTC_RGBAuto"));
+	
+	// Uncompressed Texture Formats
+	const static FName NameBGRA8(TEXT("BGRA8"));
+	const static FName NameG8(TEXT("G8"));
+	const static FName NameRGBA16F(TEXT("RGBA16F"));
+	const static FName NameR16F(TEXT("R16F"));
+
+	//A1RGB555 is mapped to RGB555A1, because OpenGL GL_RGB5_A1 only supports alpha on the lowest bit
+	const static FName NameA1RGB555(TEXT("A1RGB555"));
+	const static FName NameRGB555A1(TEXT("RGB555A1"));
+
+	const static FName GenericRemap[][2] =
+	{
+		{ NameA1RGB555,		NameRGB555A1				},
+	};
+	
+	static const FName NameASTC_RGB_HDR(TEXT("ASTC_RGB_HDR"));
+
+	const static FName ASTCRemap[][2] =
+	{
+		// Default format:		ASTC format:
+		{ NameDXT1,			FName(TEXT("ASTC_RGB"))		},
+		{ NameDXT5,			FName(TEXT("ASTC_RGBA"))	},
+		{ NameDXT5n,		FName(TEXT("ASTC_NormalAG"))},
+		{ NameBC5,			FName(TEXT("ASTC_NormalRG"))},
+		{ NameBC4,			NameETC2_R11				},
+		{ NameBC6H,			NameASTC_RGB_HDR			},
+		{ NameBC7,			FName(TEXT("ASTC_RGBA_HQ"))	},
+		{ NameAutoDXT,		NameAutoASTC				},
+	};
+
+	const static FName ETCRemap[][2] =
+	{
+		// Default format:	ETC2 format:
+		{ NameDXT1,			NameETC2_RGB	},
+		{ NameDXT5,			NameETC2_RGBA	},
+		{ NameDXT5n,		NameETC2_RGB	},
+		{ NameBC5,			NameETC2_RGB	},
+		{ NameBC4,			NameETC2_R11	},
+		{ NameBC6H,			NameRGBA16F		},
+		{ NameBC7,			NameETC2_RGBA	},
+		{ NameAutoDXT,		NameAutoETC2	},
+	};
+}
 
 static FString GetLicensePath()
 {
@@ -193,13 +255,17 @@ static bool HasLicense()
 FAndroidTargetPlatform::FAndroidTargetPlatform(bool bInIsClient, const TCHAR* FlavorName, const TCHAR* OverrideIniPlatformName)
 	: TNonDesktopTargetPlatformBase(bInIsClient, FlavorName, OverrideIniPlatformName)
 	, DeviceDetection(nullptr)
+	, MobileShadingPath(0)
 	, bDistanceField(false)
+	, bMobileForwardEnableClusteredReflections(false)
 
 {
 #if WITH_ENGINE
 	TextureLODSettings = nullptr; // These are registered by the device profile system.
 	StaticMeshLODSettings.Initialize(this);
 	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField, GEngineIni);
+	GetConfigSystem()->GetInt(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.ShadingPath"), MobileShadingPath, GEngineIni);
+	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.Forward.EnableClusteredReflections"), bMobileForwardEnableClusteredReflections, GEngineIni);
 #endif
 
 	TickDelegate = FTickerDelegate::CreateRaw(this, &FAndroidTargetPlatform::HandleTicker);
@@ -251,15 +317,6 @@ bool FAndroidTargetPlatform::SupportsVulkanSM5() const
 	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkanSM5"), bSupportsMobileVulkanSM5, GEngineIni);
 #endif
 	return bSupportsMobileVulkanSM5;
-}
-
-bool FAndroidTargetPlatform::SupportsLandscapeMeshLODStreaming() const
-{
-	bool bStreamLandscapeMeshLODs = false;
-#if WITH_ENGINE
-	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bStreamLandscapeMeshLODs"), bStreamLandscapeMeshLODs, GEngineIni);
-#endif
-	return bStreamLandscapeMeshLODs;
 }
 
 /* ITargetPlatform overrides
@@ -317,18 +374,12 @@ int32 FAndroidTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConf
 		bReadyToBuild |= ETargetPlatformReadyStatus::SDKNotFound;
 	}
 
-	bool bEnableGradle;
-	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bEnableGradle"), bEnableGradle, GEngineIni);
-
-	if (bEnableGradle)
+	// need to check license was accepted
+	if (!HasLicense())
 	{
-		// need to check license was accepted
-		if (!HasLicense())
-		{
-			OutTutorialPath.Empty();
-			CustomizedLogMessage = LOCTEXT("AndroidLicenseNotAcceptedMessageDetail", "SDK License must be accepted in the Android project settings to deploy your app to the device.");
-			bReadyToBuild |= ETargetPlatformReadyStatus::LicenseNotAccepted;
-		}
+		OutTutorialPath.Empty();
+		CustomizedLogMessage = LOCTEXT("AndroidLicenseNotAcceptedMessageDetail", "SDK License must be accepted in the Android project settings to deploy your app to the device.");
+		bReadyToBuild |= ETargetPlatformReadyStatus::LicenseNotAccepted;
 	}
 
 	return bReadyToBuild;
@@ -352,9 +403,6 @@ bool FAndroidTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) 
 
 		case ETargetPlatformFeatures::VirtualTextureStreaming:
 			return UsesVirtualTextures();
-
-		case ETargetPlatformFeatures::LandscapeMeshLODStreaming:
-			return SupportsLandscapeMeshLODStreaming();
 
 		case ETargetPlatformFeatures::DistanceFieldAO:
 			return UsesDistanceFields();
@@ -394,6 +442,19 @@ void FAndroidTargetPlatform::GetAllTargetedShaderFormats( TArray<FName>& OutForm
 	GetAllPossibleShaderFormats(OutFormats);
 }
 
+void FAndroidTargetPlatform::GetPlatformSpecificProjectAnalytics( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray ) const
+{
+	TNonDesktopTargetPlatformBase<FAndroidPlatformProperties>::GetPlatformSpecificProjectAnalytics( AnalyticsParamArray );
+
+	AppendAnalyticsEventAttributeArray(AnalyticsParamArray,
+		TEXT("AndroidVariant"), GetAndroidVariantName(),
+		TEXT("SupportsVulkan"), SupportsVulkan(),
+		TEXT("SupportsVulkanSM5"), SupportsVulkanSM5(),
+		TEXT("SupportsES31"), SupportsES31()
+	);
+
+	AppendAnalyticsEventConfigArray(AnalyticsParamArray, TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("PackageForOculusMobile"), GEngineIni);
+}
 
 #if WITH_ENGINE
 
@@ -402,166 +463,89 @@ const FStaticMeshLODSettings& FAndroidTargetPlatform::GetStaticMeshLODSettings( 
 	return StaticMeshLODSettings;
 }
 
-static bool FormatSupportsCompressedVolumeTexture(EAndroidTextureFormatCategory FormatCategory)
+void FAndroidTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
 {
+	// FAndroidTargetPlatform aside from being the base class for all the concrete android target platforms
+	//	it is also usable on its own as "flavorless" Android
+	//	but I don't understand how that's supposed to work or what that's supposed to mean
+	//	and no information has been forthcoming
+	check(Texture);
+	
 	// Supported in ES3.2 with ASTC
-	return FormatCategory == EAndroidTextureFormatCategory::ASTC;
-}
+	const bool bSupportCompressedVolumeTexture = SupportsTextureFormatCategory(EAndroidTextureFormatCategory::ASTC);
+	// OpenGL ES has F32 textures but doesn't allow linear filtering unless OES_texture_float_linear
+	const bool bSupportFilteredFloat32Textures = false;
 
-void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const
-{
-#if WITH_EDITOR
-	const int32 NumLayers = InTexture->Source.GetNumLayers();
+	// optionaly compress landscape weightmaps for a mobile rendering
+	static const auto CompressLandscapeWeightMapsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.CompressLandscapeWeightMaps"));
+	static const bool bCompressLandscapeWeightMaps = (CompressLandscapeWeightMapsVar && CompressLandscapeWeightMapsVar->GetValueOnAnyThread() != 0);
 
-	// Can always compress power-of-two, sometimes support non-POT compression
-	const bool bIsCompressionValid = InTexture->Source.IsPowerOfTwo() || SupportsCompressedNonPOT();
+	TArray<FName>& LayerFormats = OutFormats.AddDefaulted_GetRef();
+	int32 BlockSize = 1; // this looks wrong? should be 4 for FAndroid_DXTTargetPlatform ? - it is wrong, but BlockSize is ignored
+	GetDefaultTextureFormatNamePerLayer(LayerFormats, this, Texture, bSupportCompressedVolumeTexture, BlockSize, bSupportFilteredFloat32Textures);
 
-	OutFormats.Reserve((int32)EAndroidTextureFormatCategory::Count);
-	for (int32 FormatIndex = 0; FormatIndex < (int32)EAndroidTextureFormatCategory::Count; ++FormatIndex)
+	for (FName& TextureFormatName : LayerFormats)
 	{
-		const EAndroidTextureFormatCategory FormatCategory = (EAndroidTextureFormatCategory)FormatIndex;
-		if (!SupportsTextureFormatCategory(FormatCategory))
+		if (Texture->LODGroup == TEXTUREGROUP_Terrain_Weightmap && bCompressLandscapeWeightMaps)
 		{
-			continue;
+			TextureFormatName = AndroidTexFormat::NameAutoDXT;
 		}
-
-		const bool bSupportCompressedVolumeTexture = FormatSupportsCompressedVolumeTexture(FormatCategory);
-
-		TArray<FName> FormatPerLayer;
-		FormatPerLayer.SetNum(NumLayers);
-
-		bool bValidFormat = true;
-		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		
+		if (Texture->IsA(UTextureCube::StaticClass()))
 		{
-			FTextureFormatSettings LayerFormatSettings;
-			InTexture->GetLayerFormatSettings(LayerIndex, LayerFormatSettings);
-
-			const bool bNoCompression = LayerFormatSettings.CompressionNone				// Code wants the texture uncompressed.
-				|| (InTexture->LODGroup == TEXTUREGROUP_ColorLookupTable)	// Textures in certain LOD groups should remain uncompressed.
-				|| (InTexture->LODGroup == TEXTUREGROUP_Bokeh)
-				|| (LayerFormatSettings.CompressionSettings == TC_EditorIcon)
-				|| (InTexture->Source.GetSizeX() < 4)						// Don't compress textures smaller than the DXT block size.
-				|| (InTexture->Source.GetSizeY() < 4)
-				|| (InTexture->Source.GetSizeX() % 4 != 0)
-				|| (InTexture->Source.GetSizeY() % 4 != 0)
-				|| (InTexture->GetMaterialType() == MCT_VolumeTexture && !bSupportCompressedVolumeTexture);
-
-			// Determine the pixel format of the compressed texture.
-			if (InTexture->LODGroup == TEXTUREGROUP_Shadowmap)
+			const UTextureCube* Cube = CastChecked<UTextureCube>(Texture);
+			if (Cube != nullptr) 
 			{
-				// forward rendering only needs one channel for shadow maps
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
-			}
-			else if (bNoCompression && InTexture->HasHDRSource(LayerIndex))
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameRGBA16F;
-			}
-			else if (bNoCompression)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameBGRA8;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_LQ)
-			{
-				FormatPerLayer[LayerIndex] = LayerFormatSettings.CompressionNoAlpha ? AndroidTexFormat::NameR5G6B5 : AndroidTexFormat::NameRGB555A1;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !LayerFormatSettings.CompressionNone)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC2_RGBA;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_HDR || LayerFormatSettings.CompressionSettings == TC_HDR_Compressed)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameRGBA16F;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_Normalmap)
-			{
-				if(!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC2_RGB;
-				else bValidFormat = false;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_Displacementmap)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameRGBA16F;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_VectorDisplacementmap)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameBGRA8;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_Grayscale)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_Alpha)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_DistanceFieldFont)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_HalfFloat)
-			{
-				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameR16F;
-			}
-			else if (LayerFormatSettings.CompressionSettings == TC_BC7)
-			{
-				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else bValidFormat = false;
-			}
-			else if (LayerFormatSettings.CompressionNoAlpha)
-			{
-				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT1;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC2_RGB;
-				else bValidFormat = false;
-			}
-			else if (InTexture->bDitherMipMapAlpha)
-			{
-				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else bValidFormat = false;
-			}
-			else
-			{
-				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoDXT;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else bValidFormat = false;
+				FTextureFormatSettings FormatSettings;
+				Cube->GetDefaultFormatSettings(FormatSettings);
+				if (FormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !FormatSettings.CompressionNone)
+				{
+					TextureFormatName = FName(TEXT("ETC2_RGBA"));
+				}
 			}
 		}
 
-		if (bValidFormat)
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::GenericRemap); ++RemapIndex)
 		{
-			OutFormats.AddUnique(FormatPerLayer);
+			if(TextureFormatName == AndroidTexFormat::GenericRemap[RemapIndex][0]) 
+			{
+				TextureFormatName = AndroidTexFormat::GenericRemap[RemapIndex][1];
+			}
 		}
 	}
-#endif // WITH_EDITOR
 }
 
 FName FAndroidTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 {
 #if WITH_EDITOR
 	// Remap non-ETC variants to ETC
-	const static FName ETCRemap[][2] =
+
+	// VirtualTexture Format was already run through the ordinary texture remaps to change AutoDXT to ASTC or ETC
+	// this then runs again
+	// currently it forces all ASTC to ETC
+	// this is needed because the runtime virtual texture encoder only supports ETC
+
+	// code dupe with IOSTargetPlatform
+
+	const static FName VTRemap[][2] =
 	{
 		{ { FName(TEXT("ASTC_RGB")) },			{ AndroidTexFormat::NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_RGBA")) },			{ AndroidTexFormat::NameETC2_RGBA } },
+		{ { FName(TEXT("ASTC_RGBA_HQ")) },		{ AndroidTexFormat::NameETC2_RGBA } },
+//		{ { FName(TEXT("ASTC_RGB_HDR")) },		{ NameRGBA16F } }, // ?
 		{ { FName(TEXT("ASTC_RGBAuto")) },		{ AndroidTexFormat::NameAutoETC2 } },
 		{ { FName(TEXT("ASTC_NormalAG")) },		{ AndroidTexFormat::NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_NormalRG")) },		{ AndroidTexFormat::NameETC2_RGB } },
 		{ { AndroidTexFormat::NameDXT1 },		{ AndroidTexFormat::NameETC2_RGB } },
-		{ { AndroidTexFormat::NameDXT5 },		{ AndroidTexFormat::NameAutoETC2 } },
+		{ { AndroidTexFormat::NameDXT5 },		{ AndroidTexFormat::NameETC2_RGBA } },
 		{ { AndroidTexFormat::NameAutoDXT },	{ AndroidTexFormat::NameAutoETC2 } }
 	};
 
-	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(ETCRemap); RemapIndex++)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(VTRemap); RemapIndex++)
 	{
-		if (ETCRemap[RemapIndex][0] == Format)
+		if (VTRemap[RemapIndex][0] == Format)
 		{
-			return ETCRemap[RemapIndex][1];
+			return VTRemap[RemapIndex][1];
 		}
 	}
 #endif
@@ -570,36 +554,127 @@ FName FAndroidTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) co
 
 void FAndroidTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 {
-	OutFormats.Add(AndroidTexFormat::NameG8);
-	OutFormats.Add(AndroidTexFormat::NameRGBA16F);
-	OutFormats.Add(AndroidTexFormat::NameBGRA8);
-	OutFormats.Add(AndroidTexFormat::NameRGBA16F);
-	OutFormats.Add(AndroidTexFormat::NameRGBA16F);
-	OutFormats.Add(AndroidTexFormat::NameBGRA8);
-	OutFormats.Add(AndroidTexFormat::NameG8);
-	OutFormats.Add(AndroidTexFormat::NameG8);
-	OutFormats.Add(AndroidTexFormat::NameG8);
-	OutFormats.Add(AndroidTexFormat::NameR16F);
+	GetAllDefaultTextureFormats(this, OutFormats);
 
-	auto AddAllTextureFormatIfSupports = [=, &OutFormats](bool bIsNonPOT)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::GenericRemap); ++RemapIndex)
 	{
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoDXT, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NameDXT1, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NameDXT5, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoETC2, OutFormats, bIsNonPOT);
-	};
+		OutFormats.Remove(AndroidTexFormat::GenericRemap[RemapIndex][0]);
+	}
 
-	AddAllTextureFormatIfSupports(true);
-	AddAllTextureFormatIfSupports(false);
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::GenericRemap); ++RemapIndex)
+	{
+		OutFormats.AddUnique(AndroidTexFormat::GenericRemap[RemapIndex][1]);
+	}
 }
 
+void FAndroid_ASTCTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
+{
+	FAndroidTargetPlatform::GetAllTextureFormats(OutFormats);
+
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::ASTCRemap); ++RemapIndex)
+	{
+		OutFormats.Remove(AndroidTexFormat::ASTCRemap[RemapIndex][0]);
+	}
+	
+	// ASTC for compressed textures
+	OutFormats.Add(AndroidTexFormat::NameAutoASTC);
+	// ETC for ETC2_R11
+	OutFormats.Add(AndroidTexFormat::NameAutoETC2);
+}
+
+void FAndroid_ASTCTargetPlatform::GetTextureFormats(const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
+{
+	FAndroidTargetPlatform::GetTextureFormats(Texture, OutFormats);
+
+	// perform any remapping away from defaults
+	TArray<FName>& LayerFormats = OutFormats.Last();
+	for (FName& TextureFormatName : LayerFormats)
+	{
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::ASTCRemap); ++RemapIndex)
+		{
+			if (TextureFormatName == AndroidTexFormat::ASTCRemap[RemapIndex][0])
+			{
+				TextureFormatName = AndroidTexFormat::ASTCRemap[RemapIndex][1];
+				break;
+			}
+		}
+	}
+	
+	bool bSupportASTCHDR = UsesASTCHDR();
+
+	if ( ! bSupportASTCHDR )
+	{
+		for (FName& TextureFormatName : LayerFormats)
+		{
+			if ( TextureFormatName == AndroidTexFormat::NameASTC_RGB_HDR )
+			{
+				TextureFormatName = AndroidTexFormat::NameRGBA16F;
+			}
+		}
+	}
+}
+
+void FAndroid_DXTTargetPlatform::GetTextureFormats(const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
+{
+	FAndroidTargetPlatform::GetTextureFormats(Texture, OutFormats);
+
+	bool bSupportsDX11Formats = false; // assume Android DXT does not support BC6/7
+
+	if ( ! bSupportsDX11Formats )
+	{
+		TArray<FName>& LayerFormats = OutFormats.Last();
+
+		for (FName& TextureFormatName : LayerFormats)
+		{
+			if ( TextureFormatName == AndroidTexFormat::NameBC6H )
+			{
+				TextureFormatName = AndroidTexFormat::NameRGBA16F;
+			}
+			else if ( TextureFormatName == AndroidTexFormat::NameBC7 )
+			{
+				TextureFormatName = AndroidTexFormat::NameDXT5;
+			}
+		}
+	}
+}
+
+void FAndroid_ETC2TargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
+{
+	FAndroidTargetPlatform::GetAllTextureFormats(OutFormats);
+
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::ETCRemap); ++RemapIndex)
+	{
+		OutFormats.Remove(AndroidTexFormat::ETCRemap[RemapIndex][0]);
+	}
+	
+	// support only ETC for compressed textures
+	OutFormats.Add(AndroidTexFormat::NameAutoETC2);
+}
+
+void FAndroid_ETC2TargetPlatform::GetTextureFormats(const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
+{
+	FAndroidTargetPlatform::GetTextureFormats(Texture, OutFormats);
+
+	// perform any remapping away from defaults
+	TArray<FName>& LayerFormats = OutFormats.Last();
+	for (FName& TextureFormatName : LayerFormats)
+	{
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(AndroidTexFormat::ETCRemap); ++RemapIndex)
+		{
+			if (TextureFormatName == AndroidTexFormat::ETCRemap[RemapIndex][0])
+			{
+				TextureFormatName = AndroidTexFormat::ETCRemap[RemapIndex][1];
+				break;
+			}
+		}
+	}
+}
 
 void FAndroidTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const
 {
-	static auto* MobileShadingPathCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ShadingPath"));
-	const bool bMobileDeferredShading = (MobileShadingPathCvar->GetValueOnAnyThread() == 1);
+	const bool bMobileDeferredShading = (MobileShadingPath == 1);
 	
-	if (SupportsVulkanSM5() || bMobileDeferredShading)
+	if (SupportsVulkanSM5() || bMobileDeferredShading || bMobileForwardEnableClusteredReflections)
 	{
 		// use Full HDR with SM5 and Mobile Deferred
 		OutFormats.Add(FName(TEXT("FullHDR")));
@@ -609,31 +684,9 @@ void FAndroidTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutForm
 	OutFormats.Add(FName(TEXT("EncodedHDR")));
 }
 
-
 const UTextureLODSettings& FAndroidTargetPlatform::GetTextureLODSettings() const
 {
 	return *TextureLODSettings;
-}
-
-
-FName FAndroidTargetPlatform::GetWaveFormat(const class USoundWave* Wave) const
-{
-	FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
-	if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
-	{
-		FormatName = Audio::NAME_OGG;
-	}
-	return FormatName;
-}
-
-
-void FAndroidTargetPlatform::GetAllWaveFormats(TArray<FName>& OutFormats) const
-{
-
-	OutFormats.Add(Audio::NAME_BINKA);
-	OutFormats.Add(Audio::NAME_OGG);
-	OutFormats.Add(Audio::NAME_PCM);
-	OutFormats.Add(Audio::NAME_ADPCM);
 }
 
 #endif //WITH_ENGINE
@@ -646,22 +699,6 @@ bool FAndroidTargetPlatform::SupportsVariants() const
 
 /* FAndroidTargetPlatform implementation
  *****************************************************************************/
-
-void FAndroidTargetPlatform::AddTextureFormatIfSupports( FName Format, TArray<FName>& OutFormats, bool bIsCompressedNonPOT ) const
-{
-	if (SupportsTextureFormat(Format))
-	{
-		if (bIsCompressedNonPOT && SupportsCompressedNonPOT() == false)
-		{
-			OutFormats.Add(AndroidTexFormat::NamePOTERROR);
-		}
-		else
-		{
-			OutFormats.Add(Format);
-		}
-	}
-}
-
 void FAndroidTargetPlatform::InitializeDeviceDetection()
 {
 	DeviceDetection = FModuleManager::LoadModuleChecked<IAndroidDeviceDetectionModule>("AndroidDeviceDetection").GetAndroidDeviceDetection();

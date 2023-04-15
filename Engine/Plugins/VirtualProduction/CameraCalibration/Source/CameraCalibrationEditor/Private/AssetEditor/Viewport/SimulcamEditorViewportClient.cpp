@@ -50,9 +50,10 @@ void FSimulcamEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 
 	constexpr float MipLevel = 0;
 	constexpr float LayerIndex = 0;
+	constexpr float SliceIndex = 0;
 
 	TRefCountPtr<FBatchedElementParameters> BatchedElementParameters;
-	BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, false, false, false, false, false);
+	BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(MipLevel, LayerIndex, SliceIndex, false, false, false, false, false);
 
 	if (Texture->GetResource() != nullptr)
 	{
@@ -109,21 +110,22 @@ void FSimulcamEditorViewportClient::ZoomTowardsFit(FViewport* Viewport)
 	}
 }
 
-bool FSimulcamEditorViewportClient::InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool Gamepad)
+bool FSimulcamEditorViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 {
-	if (Event == IE_Pressed)
+	if (InEventArgs.Event == IE_Pressed)
 	{
 		if (!SimulcamEditorViewportWeakPtr.IsValid())
 		{
 			return false;
 		}
 
-		if (Key == EKeys::LeftMouseButton || Key == EKeys::MiddleMouseButton || Key == EKeys::RightMouseButton)
+		if (InEventArgs.Key == EKeys::LeftMouseButton || InEventArgs.Key == EKeys::MiddleMouseButton || InEventArgs.Key == EKeys::RightMouseButton)
 		{
 			const FGeometry& MyGeometry = SimulcamEditorViewportWeakPtr.Pin()->GetTickSpaceGeometry();
-			const FVector2D LocalMouse = FVector2D(Viewport->GetMouseX(), Viewport->GetMouseY());
+			const FVector2D LocalMouse = FVector2D(InEventArgs.Viewport->GetMouseX(), InEventArgs.Viewport->GetMouseY());
 			// check if we are under the viewport, otherwise the capture system will blindly trigger the PointerEvent
-			if (LocalMouse >= FVector2D(0, 0) && LocalMouse < MyGeometry.GetAbsoluteSize())
+			if (LocalMouse.ComponentwiseAllGreaterOrEqual(FVector2D(0, 0)) &&
+				LocalMouse.ComponentwiseAllLessThan(MyGeometry.GetAbsoluteSize()))
 			{
 				if (UTexture* Texture = SimulcamViewportWeakPtr.Pin()->GetTexture())
 				{
@@ -144,7 +146,7 @@ bool FSimulcamEditorViewportClient::InputKey(FViewport* Viewport, int32 Controll
 								FakeMousePosition,
 								FakeMousePosition,
 								TSet<FKey>(),
-								Key,
+								InEventArgs.Key,
 								0,
 								FSlateApplication::Get().GetPlatformApplication()->GetModifierKeys());
 
@@ -159,42 +161,42 @@ bool FSimulcamEditorViewportClient::InputKey(FViewport* Viewport, int32 Controll
 		{
 			const bool bIsCtrlDown = FSlateApplication::Get().GetPlatformApplication()->GetModifierKeys().IsControlDown();
 
-			if (Key == EKeys::MouseScrollUp || (Key == EKeys::Add && bIsCtrlDown))
+			if (InEventArgs.Key == EKeys::MouseScrollUp || (InEventArgs.Key == EKeys::Add && bIsCtrlDown))
 			{
-				ZoomOnPoint(Viewport, MousePosition, [this] {SimulcamEditorViewportWeakPtr.Pin()->ZoomIn(); });
+				ZoomOnPoint(InEventArgs.Viewport, MousePosition, [this] {SimulcamEditorViewportWeakPtr.Pin()->ZoomIn(); });
 				return true;
 			}
 
-			if (Key == EKeys::MouseScrollDown || (Key == EKeys::Subtract && bIsCtrlDown))
+			if (InEventArgs.Key == EKeys::MouseScrollDown || (InEventArgs.Key == EKeys::Subtract && bIsCtrlDown))
 			{	
 				FVector2D TextureSize = SimulcamEditorViewportWeakPtr.Pin()->CalculateTextureDimensions();
-				if (!bIsCtrlDown && (CurrentTexturePosition.X > 0 || (TextureSize.X + CurrentTexturePosition.X) < Viewport->GetSizeXY().X || CurrentTexturePosition.Y > 0 || (TextureSize.Y + CurrentTexturePosition.Y) < Viewport->GetSizeXY().Y))
+				if (!bIsCtrlDown && (CurrentTexturePosition.X > 0 || (TextureSize.X + CurrentTexturePosition.X) < InEventArgs.Viewport->GetSizeXY().X || CurrentTexturePosition.Y > 0 || (TextureSize.Y + CurrentTexturePosition.Y) < InEventArgs.Viewport->GetSizeXY().Y))
 				{
-					ZoomTowardsFit(Viewport);
+					ZoomTowardsFit(InEventArgs.Viewport);
 				}
 				else
 				{
-					ZoomOnPoint(Viewport, MousePosition, [this] {SimulcamEditorViewportWeakPtr.Pin()->ZoomOut(); });
+					ZoomOnPoint(InEventArgs.Viewport, MousePosition, [this] {SimulcamEditorViewportWeakPtr.Pin()->ZoomOut(); });
 				}
 				return true;
 			}
 
-			if ((Key == EKeys::Zero || Key == EKeys::NumPadZero) && bIsCtrlDown)
+			if ((InEventArgs.Key == EKeys::Zero || InEventArgs.Key == EKeys::NumPadZero) && bIsCtrlDown)
 			{
-				ZoomToFit(Viewport);
+				ZoomToFit(InEventArgs.Viewport);
 				return true;
 			}
 		}
 
-		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(Key, Event);
+		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(InEventArgs.Key, InEventArgs.Event);
 	}
-	else if (Event == IE_Released)
+	else if (InEventArgs.Event == IE_Released)
 	{
-		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(Key, Event);
+		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(InEventArgs.Key, InEventArgs.Event);
 	}
-	else if (Event == IE_Repeat)
+	else if (InEventArgs.Event == IE_Repeat)
 	{
-		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(Key, Event);
+		return SimulcamViewportWeakPtr.Pin()->OnViewportInputKey(InEventArgs.Key, InEventArgs.Event);
 	}
 
 	return false;
@@ -214,6 +216,17 @@ void FSimulcamEditorViewportClient::OnViewportResized(FViewport* InViewport, uin
 		{
 			ZoomToFit(InViewport);
 			CurrentViewportSize = NewViewportSize;
+		}
+	}
+}
+
+void FSimulcamEditorViewportClient::OnTextureResized()
+{
+	if (TSharedPtr<SSimulcamEditorViewport> SimulcamEditorViewport = SimulcamEditorViewportWeakPtr.Pin())
+	{
+		if (FViewport* Viewport = SimulcamEditorViewport->GetViewport()->GetViewport())
+		{
+			ZoomToFit(Viewport);
 		}
 	}
 }
@@ -260,7 +273,7 @@ bool FSimulcamEditorViewportClient::InputChar(FViewport* Viewport, int32 Control
 	return false;
 }
 
-bool FSimulcamEditorViewportClient::InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
+bool FSimulcamEditorViewportClient::InputAxis(FViewport* Viewport, FInputDeviceId DeviceID, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	if (Key == EKeys::MouseX || Key == EKeys::MouseY)
 	{

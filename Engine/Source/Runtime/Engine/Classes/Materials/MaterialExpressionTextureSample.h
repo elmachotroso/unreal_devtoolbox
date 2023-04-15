@@ -19,7 +19,6 @@ class ENGINE_API UMaterialExpressionTextureSample : public UMaterialExpressionTe
 	UPROPERTY(meta = (RequiredInput = "false", ToolTip = "Defaults to 'ConstCoordinate' if not specified"))
 	FExpressionInput Coordinates;
 
-#if WITH_EDITORONLY_DATA
 	/** 
 	 * Texture object input which overrides Texture if specified. 
 	 * This only shows up in material functions and is used to implement texture parameters without actually putting the texture parameter in the function.
@@ -43,7 +42,7 @@ class ENGINE_API UMaterialExpressionTextureSample : public UMaterialExpressionTe
 	FExpressionInput AutomaticViewMipBiasValue;
 
 	/** Defines how the MipValue property is applied to the texture lookup */
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionTextureSample, meta=(DisplayName = "MipValueMode"))
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionTextureSample, meta=(DisplayName = "MipValueMode", ShowAsInputPin = "Advanced"))
 	TEnumAsByte<enum ETextureMipValueMode> MipValueMode;
 
 	/** 
@@ -52,7 +51,7 @@ class ENGINE_API UMaterialExpressionTextureSample : public UMaterialExpressionTe
 	 * Otherwise use one of the global samplers, which will not consume a sampler slot.
 	 * This allows materials to use more than 16 unique textures on SM5 platforms.
 	 */
-	UPROPERTY(EditAnywhere, Category=MaterialExpressionTextureSample)
+	UPROPERTY(EditAnywhere, Category=MaterialExpressionTextureSample, Meta = (ShowAsInputPin = "Advanced"))
 	TEnumAsByte<enum ESamplerSourceMode> SamplerSource;
 
 	/** Whether the texture should be sampled with per view mip biasing for sharper output with Temporal AA. */
@@ -64,19 +63,18 @@ protected:
 	uint8 bShowTextureInputPin : 1;
 
 #if WITH_EDITOR
-	EMaterialGenerateHLSLStatus GenerateHLSLExpressionBase(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, UE::HLSLTree::FTextureParameterDeclaration* TextureDeclaration, UE::HLSLTree::FExpression*& OutExpression);
+	bool GenerateHLSLExpressionBase(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, const UE::HLSLTree::FExpression* TextureExpression, UE::HLSLTree::FExpression const*& OutExpression) const;
 #endif
 
 public:
 
 	/** only used if Coordinates is not hooked up */
-	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSample)
+	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSample, meta = (OverridingInputProperty = "Coordinates"))
 	uint8 ConstCoordinate;
 
 	/** only used if MipValue is not hooked up */
 	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSample)
 	int32 ConstMipValue;
-#endif // WITH_EDITORONLY_DATA
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR
@@ -99,7 +97,7 @@ public:
 	virtual bool MatchesSearchQuery( const TCHAR* SearchQuery ) override;
 	virtual uint32 GetInputType(int32 InputIndex) override;
 	virtual bool CanIgnoreOutputIndex() { return true; }
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const override;
 #endif // WITH_EDITOR
 	//~ End UMaterialExpression Interface
 

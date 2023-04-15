@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenTracingCommon.ush
-=============================================================================*/
-
 #pragma once
 
 #include "../ReflectionEnvironmentShared.ush"
@@ -11,12 +7,13 @@
 #include "../FastMath.ush"
 #include "../SHCommon.ush"
 #define DISTANCE_FIELD_IN_VIEW_UB 1
-#include "../GlobalDistanceFieldShared.ush"
-#include "../GlobalDistanceFieldUtils.ush"
+#include "../DistanceField/GlobalDistanceFieldShared.ush"
+#include "../DistanceField/GlobalDistanceFieldUtils.ush"
+#include "../DistanceField/GlobalDistanceFieldObjectGrid.ush"
 #include "../DistanceFieldLightingShared.ush"
 #define USE_GLOBAL_GPU_SCENE_DATA 1
 #include "../SceneData.ush"
-#include "LumenSurfaceCacheSampling.ush"
+#include "SurfaceCache/LumenSurfaceCacheSampling.ush"
 
 #ifndef VISIBILITY_ONLY_TRACE
 	#define VISIBILITY_ONLY_TRACE 0
@@ -46,206 +43,12 @@
 
 #define MIN_flt			(1.175494351e-38F)			/* min positive value */
 
-#if CARD_TRACE_DEPTH_WEIGHTED_OIT
-
-class FCardTraceBlendState
-{
-	float4 LightingAndOpacity;
-	float Revealage;
-	float NumSteps;
-	float NumOverlaps;
-	float OpaqueHitDistance;
-
-	void Initialize(float MaxTraceDistance)
-	{
-		LightingAndOpacity = 0;
-		Revealage = 1;
-		NumSteps = 0;
-		NumOverlaps = 0;
-		OpaqueHitDistance = MaxTraceDistance;
-	}
-
-	float ComputeDepthWeight(float InDepth, float InOpacity)
-	{
-#if DEPTH_WEIGHTED_OIT_32_BIT
-		// From Weighted Blended Order-Independent Transparency
-		//@todo - make full use of 32 bit fp, original functions were crafted for 16 bit fp render targets but we are using shader temporaries
-		//@todo - try 64 bit fp
-	#define HEURISTIC 2
-	#if HEURISTIC == 0
-		float A = InDepth / 50.0f;
-		float B = InDepth / 2000.0f;
-		float B2 = B * B;
-		float B6 = B2 * B2 * B2;
-		return InOpacity * max(.01f, min(10000000.0f, 10.0f / (.00001f + A * A + B6)));
-	#elif HEURISTIC == 1
-		float ZNear = 10.0f;
-		float ZFar = 100000.0f;
-		float D = saturate(((ZNear * ZFar) / InDepth - ZFar) / (ZNear - ZFar));
-		float InvD = 1 - D;
-		return InOpacity * max(.01f, 1000000.0f * InvD * InvD * InvD);
-	#elif HEURISTIC == 2
-		float a = min(8 * InOpacity, 1) + .01f;
-		float ZNear = .5f;
-		float ZFar = 100000.0f;
-		// Clamp depth to prevent black lighting
-		InDepth = min(InDepth, .9f * (ZFar - ZNear));
-		float z = saturate(ZFar / (ZFar - ZNear) - (ZFar * ZNear) / (InDepth * (ZFar - ZNear)));
-		float b = 1 - z;
-		float b2 = b * b;
-		float b4 = b2 * b2;
-		return min(10000 * b4 * b4, 30000) * a * a * a;
-	#endif
-#else
-		// 16 bit fp version
-		float a = min(8 * InOpacity, 1) + .01f;
-		float ZNear = .5f;
-		float ZFar = 100000.0f;
-		// Clamp depth to prevent black lighting
-		InDepth = min(InDepth, .9f * (ZFar - ZNear));
-		float z = saturate(ZFar / (ZFar - ZNear) - (ZFar * ZNear) / (InDepth * (ZFar - ZNear)));
-		float b = 1 - z;
-		return min(10000 * b * b * b + 5, 20) * a * a * a;
-#endif
-	}
-
-	void AddLighting(float3 InLighting, float InOpacity, float InDepth)
-	{
-		float4 WeightedLighting = float4(InLighting * InOpacity, InOpacity) * ComputeDepthWeight(InDepth, InOpacity);
-		LightingAndOpacity += WeightedLighting;
-		Revealage *= (1 - InOpacity);
-	}
-
-	void RegisterStep(uint NewSteps)
-	{
-		NumSteps += NewSteps;
-	}
-
-	void RegisterOpaqueHit(float Distance)
-	{
-		OpaqueHitDistance = Distance;
-	}
-
-	bool HasRemainingVisibility(float MaxTraceDistance)
-	{
-		return OpaqueHitDistance >= MaxTraceDistance;
-	}
-
-	void AddCardTrace(FCardTraceBlendState InBlendState)
-	{
-		LightingAndOpacity += InBlendState.LightingAndOpacity;
-		Revealage *= InBlendState.Revealage;
-		NumSteps += InBlendState.NumSteps;
-		OpaqueHitDistance = min(OpaqueHitDistance, InBlendState.OpaqueHitDistance);
-		NumOverlaps++;
-	}
-
-	float3 GetFinalLighting()
-	{
-		float ClampedWeightedOpacity = max(LightingAndOpacity.a, MIN_flt);
-		return LightingAndOpacity.rgb / ClampedWeightedOpacity * (1 - Revealage);
-	}
-
-	float4 GetLightingAndOpacity()
-	{
-		return LightingAndOpacity;
-	}
-
-	float GetTransparency()
-	{
-		return Revealage;
-	}
-};
-
-#else
-
-class FCardTraceBlendState
-{
-	float4 LightingAndOpacity;
-	float NumSteps;
-	float OpaqueHitDistance;
-	float NumOverlaps;
-
-	void Initialize(float MaxTraceDistance)
-	{
-		LightingAndOpacity = 0;
-		NumSteps = 0;
-		NumOverlaps = 0;
-		OpaqueHitDistance = MaxTraceDistance;
-	}
-
-	void AddLighting(float3 InLighting, float InOpacity, float InDepth)
-	{
-		if (InDepth < OpaqueHitDistance)
-		{
-			LightingAndOpacity.xyz = InLighting;
-			LightingAndOpacity.w = InOpacity;
-			OpaqueHitDistance = InDepth;
-		}
-	}
-
-	void RegisterStep(uint NewSteps)
-	{
-		NumSteps += NewSteps;
-	}
-
-	void RegisterOpaqueHit(float Distance)
-	{
-		// This is done in AddLighting
-		//OpaqueHitDistance = Distance;
-	}
-
-	bool HasRemainingVisibility(float MaxTraceDistance)
-	{
-		return OpaqueHitDistance >= MaxTraceDistance;
-	}
-
-	void AddCardTrace(FCardTraceBlendState InBlendState)
-	{
-		LightingAndOpacity.xyz += InBlendState.LightingAndOpacity.xyz;
-		LightingAndOpacity.w = max(LightingAndOpacity.w, InBlendState.LightingAndOpacity.w);
-		NumSteps += InBlendState.NumSteps;
-		OpaqueHitDistance = min(OpaqueHitDistance, InBlendState.OpaqueHitDistance);
-	}
-
-	float3 GetFinalLighting()
-	{
-		return LightingAndOpacity.xyz;
-	}
-
-	float4 GetLightingAndOpacity()
-	{
-		return LightingAndOpacity;
-	}
-
-	float GetTransparency()
-	{
-		return 1.0f - LightingAndOpacity.w;
-	}
-};
-
-#endif
-
-//https://iquilezles.org/www/articles/smin/smin.htm
-float SmoothMin2( float a, float b, float k )
-{
-    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );
-    return lerp( b, a, h ) - k*h*(1.0-h);
-}
-
-float ComputeBorderFadeDistance(float2 BoxMin, float2 BoxMax, float2 InPoint)
-{
-	float2 DistancesToMin = max(InPoint - BoxMin, 0);
-	float2 DistancesToMax = max(BoxMax - InPoint, 0);
-	float2 ClosestDistances = min(DistancesToMin, DistancesToMax);
-	return SmoothMin2(ClosestDistances.x, ClosestDistances.y, 100.0f);
-}
-
 #define TRACING_ATLAS_SAMPLER GlobalBilinearClampedSampler
 
 struct FConeTraceInput
 {
 	float3 ConeOrigin;
+	float3 ConeTranslatedOrigin;
 	float3 ConeDirection;
 	
 	float ConeAngle;
@@ -257,15 +60,14 @@ struct FConeTraceInput
 	float MaxTraceDistance;
 
 	float StepFactor;
-	float VoxelStepFactor;
 	float VoxelTraceStartDistance;
 	float SDFStepFactor;
-	bool bBlackOutSteepIntersections;
+	float MinSDFStepFactor;
 	bool bExpandSurfaceUsingRayTimeInsteadOfMaxDistance;
 	float InitialMaxDistance;
 
-	// Used for dithering
-	uint2 ScreenCoord;
+	bool bDitheredTransparency;
+	uint2 DitherScreenCoord;
 
 	// Whether to use epsilon trace (skip back face hits over initial short distance) for heightfield tracing
 	bool bUseEpsilonTraceForHeightfields;
@@ -273,6 +75,7 @@ struct FConeTraceInput
 	// Whether to sample high res surface cache data or low res always resident pages
 	bool bHiResSurface;
 
+	bool bZeroRadianceIfRayStartsInsideGeometry;
 	bool bCalculateHitVelocity;
 
 	// Mesh SDF traces
@@ -287,6 +90,7 @@ struct FConeTraceInput
 
 	void Setup(
 		float3 InConeOrigin,
+		float3 InConeTranslatedOrigin,
 		float3 InConeDirection,
 		float InConeAngle,
 		float InMinSampleRadius,
@@ -295,6 +99,7 @@ struct FConeTraceInput
 		float InStepFactor)
 	{
 		ConeOrigin = InConeOrigin;
+		ConeTranslatedOrigin = InConeTranslatedOrigin;
 		ConeDirection = InConeDirection;
 		ConeAngle = InConeAngle;
 		TanConeAngle = tan(ConeAngle);
@@ -303,20 +108,22 @@ struct FConeTraceInput
 		MinTraceDistance = InMinTraceDistance;
 		MaxTraceDistance = InMaxTraceDistance;
 		StepFactor = InStepFactor;
-		VoxelStepFactor = .7f;
 		VoxelTraceStartDistance = InMaxTraceDistance;
 
+		SDFStepFactor = 1.0f;
+		MinSDFStepFactor = 1.0f;
+
 		// The global SDF often overestimates due to the way distances outside of an object SDF are calculated, can be corrected by stepping slower, but increases trace cost
-		SDFStepFactor = 1;
-		bBlackOutSteepIntersections = false;
 		bExpandSurfaceUsingRayTimeInsteadOfMaxDistance = true;
 		InitialMaxDistance = 0;
 
-		ScreenCoord = uint2(0, 0);
+		bDitheredTransparency = false;
+		DitherScreenCoord = uint2(0, 0);
 		bHiResSurface = false;
 		bCalculateHitVelocity = false;
 
 		bUseEpsilonTraceForHeightfields = true;
+		bZeroRadianceIfRayStartsInsideGeometry = false;
 	}
 };
 
@@ -334,256 +141,6 @@ struct FConeTraceResult
 	float3 WorldVelocity;
 };
 
-void ConeTraceSingleLumenCard(
-	FConeTraceInput TraceInput,
-	uint CardIndex,
-	inout float3 Debug,
-	inout float OutTraceEndDistance,
-	inout FCardTraceBlendState CardTraceBlendState)
-{
-	FLumenCardData LumenCardData = GetLumenCardData(CardIndex);
-
-	float3 LocalConeOrigin = mul(TraceInput.ConeOrigin - LumenCardData.Origin, LumenCardData.WorldToLocalRotation);
-	float3 LocalConeDirection = mul(TraceInput.ConeDirection, LumenCardData.WorldToLocalRotation);
-	float3 LocalTraceEnd = LocalConeOrigin + LocalConeDirection * TraceInput.MaxTraceDistance;
-
-	float2 IntersectionRange = LineBoxIntersect(LocalConeOrigin, LocalTraceEnd, -LumenCardData.LocalExtent, LumenCardData.LocalExtent);
-	IntersectionRange.x = max(IntersectionRange.x, TraceInput.MinTraceDistance / TraceInput.MaxTraceDistance);
-	OutTraceEndDistance = IntersectionRange.y * TraceInput.MaxTraceDistance;
-
-	if (IntersectionRange.y > IntersectionRange.x
-		&& LumenCardData.bVisible)
-	{
-		// #lumen_todo: restore after a distant scene rewrite
-/*
-		{
-			FCardTraceBlendState ConeStepBlendState;
-			ConeStepBlendState.Initialize(TraceInput.MaxTraceDistance);
-
-			float StepTime = IntersectionRange.x * TraceInput.MaxTraceDistance;
-			float3 SamplePosition = LocalCoreveneOrigin + StepTime * LocalConeDirection;
-			float TraceEndDistance = IntersectionRange.y * TraceInput.MaxTraceDistance;
-
-			float IntersectionLength = (IntersectionRange.y - IntersectionRange.x) * TraceInput.MaxTraceDistance;
-			float MinStepSize = IntersectionLength / (float)LumenCardScene.MaxConeSteps;
-
-			float PreviousStepTime = StepTime;
-			float3 PreviousSamplePosition = SamplePosition;
-			// Magic value to prevent linear intersection approximation on first step
-			float PreviousHeightfieldZ = -2;
-
-			bool bClampedToEnd = false;
-			bool bFoundSurface = false;
-			bool bRayAboveSurface = false;
-			float IntersectionStepTime = 0;
-			float2 IntersectionSamplePositionXY = SamplePosition.xy;
-			float IntersectionSlope = 0;
-
-			uint NumStepsPerLoop = 4;
-			for (uint StepIndex = 0; StepIndex < LumenCardScene.MaxConeSteps && StepTime < TraceEndDistance; StepIndex += NumStepsPerLoop)
-			{
-				float SampleRadius = max(TraceInput.ConeStartRadius + TraceInput.TanConeAngle * StepTime, TraceInput.MinSampleRadius);
-				float StepSize = max(SampleRadius * TraceInput.StepFactor, MinStepSize);
-				float TraceClampDistance = TraceEndDistance - StepSize * .0001f;
-
-				float DepthMip;
-				float2 DepthValidRegionScale;
-				CalculateMip(SampleRadius, LumenCardData, LumenCardData.LocalExtent, LumenCardData.MaxMip, DepthMip, DepthValidRegionScale);
-
-				float3 SamplePosition1 = LocalConeOrigin + min(StepTime + 0 * StepSize, TraceClampDistance) * LocalConeDirection;
-				float3 SamplePosition2 = LocalConeOrigin + min(StepTime + 1 * StepSize, TraceClampDistance) * LocalConeDirection;
-				float3 SamplePosition3 = LocalConeOrigin + min(StepTime + 2 * StepSize, TraceClampDistance) * LocalConeDirection;
-				float3 SamplePosition4 = LocalConeOrigin + min(StepTime + 3 * StepSize, TraceClampDistance) * LocalConeDirection;
-
-				float2 DepthAtlasUV1 = CalculateAtlasUV(SamplePosition1.xy, DepthValidRegionScale, LumenCardData);
-				float2 DepthAtlasUV2 = CalculateAtlasUV(SamplePosition2.xy, DepthValidRegionScale, LumenCardData);
-				float2 DepthAtlasUV3 = CalculateAtlasUV(SamplePosition3.xy, DepthValidRegionScale, LumenCardData);
-				float2 DepthAtlasUV4 = CalculateAtlasUV(SamplePosition4.xy, DepthValidRegionScale, LumenCardData);
-
-				float Depth1 = Texture2DSampleLevel(DepthAtlas, TRACING_ATLAS_SAMPLER, DepthAtlasUV1, DepthMip).x;
-				float Depth2 = Texture2DSampleLevel(DepthAtlas, TRACING_ATLAS_SAMPLER, DepthAtlasUV2, DepthMip).x;
-				float Depth3 = Texture2DSampleLevel(DepthAtlas, TRACING_ATLAS_SAMPLER, DepthAtlasUV3, DepthMip).x;
-				float Depth4 = Texture2DSampleLevel(DepthAtlas, TRACING_ATLAS_SAMPLER, DepthAtlasUV4, DepthMip).x;
-
-				float HeightfieldZ1 = LumenCardData.LocalExtent.z - Depth1 * 2 * LumenCardData.LocalExtent.z;
-				float HeightfieldZ2 = LumenCardData.LocalExtent.z - Depth2 * 2 * LumenCardData.LocalExtent.z;
-				float HeightfieldZ3 = LumenCardData.LocalExtent.z - Depth3 * 2 * LumenCardData.LocalExtent.z;
-				float HeightfieldZ4 = LumenCardData.LocalExtent.z - Depth4 * 2 * LumenCardData.LocalExtent.z;
-
-				ConeStepBlendState.RegisterStep(NumStepsPerLoop);
-
-				bool4 HeightfieldHit = bool4(
-					SamplePosition1.z < HeightfieldZ1,
-					SamplePosition2.z < HeightfieldZ2,
-					SamplePosition3.z < HeightfieldZ3,
-					SamplePosition4.z < HeightfieldZ4);
-
-				bool bRayBelowHeightfield = any(HeightfieldHit);
-				bool bRayWasAboveSurface = bRayAboveSurface;
-
-				if (!bRayBelowHeightfield)
-				{
-					bRayAboveSurface = true;
-				}
-
-				// Traces which started below the heightfield have to get above before they can register a hit
-				if (bRayBelowHeightfield && bRayWasAboveSurface)
-				{
-					float HeightfieldZ;
-					if (HeightfieldHit.x)
-					{
-						SamplePosition = SamplePosition1;
-						HeightfieldZ = HeightfieldZ1;
-						StepTime = StepTime + 0 * StepSize;
-					}
-					else if (HeightfieldHit.y)
-					{
-						PreviousSamplePosition = SamplePosition1;
-						PreviousHeightfieldZ = HeightfieldZ1;
-						PreviousStepTime = StepTime + 0 * StepSize;
-
-						SamplePosition = SamplePosition2;
-						HeightfieldZ = HeightfieldZ2;
-						StepTime = StepTime + 1 * StepSize;
-					}
-					else if (HeightfieldHit.z)
-					{
-						PreviousSamplePosition = SamplePosition2;
-						PreviousHeightfieldZ = HeightfieldZ2;
-						PreviousStepTime = StepTime + 1 * StepSize;
-
-						SamplePosition = SamplePosition3;
-						HeightfieldZ = HeightfieldZ3;
-						StepTime = StepTime + 2 * StepSize;
-					}
-					else
-					{
-						PreviousSamplePosition = SamplePosition3;
-						PreviousHeightfieldZ = HeightfieldZ3;
-						PreviousStepTime = StepTime + 2 * StepSize;
-
-						SamplePosition = SamplePosition4;
-						HeightfieldZ = HeightfieldZ4;
-						StepTime = StepTime + 3 * StepSize;
-					}
-
-					StepTime = min(StepTime, TraceClampDistance);
-
-					if (PreviousHeightfieldZ != -2)
-					{
-						// Construct a linear approximation of both the SamplePosition z and heightfield z between the previous step and this step: y = m * x + b
-						// SamplePosition z linear approximation:
-						// y = (SamplePosition.z - PreviousSampleZ) / (StepTime - PreviousStepTime) * (x - PreviousStepTime) + PreviousSampleZ
-						// Heightfield z linear approximation:
-						// y = (HeightfieldZ - PreviousHeightfieldZ) / (StepTime - PreviousStepTime) * (x - PreviousStepTime) + PreviousHeightfieldZ 
-
-						// Solve for x where they intersect
-						IntersectionStepTime = PreviousStepTime + ((PreviousSamplePosition.z - PreviousHeightfieldZ) * (StepTime - PreviousStepTime)) / (HeightfieldZ - PreviousHeightfieldZ + PreviousSamplePosition.z - SamplePosition.z);
-
-						float2 LocalPositionSlopeXY = (SamplePosition.xy - PreviousSamplePosition.xy) / (StepTime - PreviousStepTime);
-						IntersectionSamplePositionXY = LocalPositionSlopeXY * (IntersectionStepTime - PreviousStepTime) + PreviousSamplePosition.xy;
-
-						IntersectionSlope = abs(PreviousHeightfieldZ - HeightfieldZ) / max(length(PreviousSamplePosition.xy - SamplePosition.xy), .0001f);
-
-						PreviousHeightfieldZ = -2;
-						bFoundSurface = true;
-					}
-					break;
-				}
-
-				PreviousStepTime = StepTime + 3 * StepSize;
-				PreviousSamplePosition = SamplePosition4;
-				PreviousHeightfieldZ = HeightfieldZ4;
-				StepTime += 4 * StepSize;
-
-				if (StepTime >= TraceEndDistance && !bClampedToEnd)
-				{
-					bClampedToEnd = true;
-					// Stop the last step just before the intersection end, since the linear approximation needs to step past the surface to detect a hit, without terminating the loop
-					StepTime = TraceClampDistance;
-				}
-			}
-
-			if (bFoundSurface)
-			{
-				float IntersectionSampleRadius = TraceInput.ConeStartRadius + TraceInput.TanConeAngle * IntersectionStepTime;
-
-				float MaxMip;
-				float2 ValidRegionScale;
-				CalculateMip(IntersectionSampleRadius, LumenCardData, LumenCardData.LocalExtent, LumenCardData.MaxMip, MaxMip, ValidRegionScale);
-
-				float2 IntersectionAtlasUV = CalculateAtlasUV(IntersectionSamplePositionXY, ValidRegionScale, LumenCardData);
-
-				float DistanceToSurface = 0;
-				float ConeIntersectSurface = saturate(DistanceToSurface / IntersectionSampleRadius);
-				float ConeVisibility = ConeIntersectSurface;
-
-				float MaxDistanceFade = 1; // saturate((TraceInput.MaxTraceDistance - IntersectionStepTime) * TraceInput.InvMaxDistanceFadeLength);
-
-				ConeStepBlendState.RegisterOpaqueHit(IntersectionStepTime);
-				OutTraceEndDistance = IntersectionStepTime;
-
-				float Opacity = Texture2DSampleLevel(OpacityAtlas, TRACING_ATLAS_SAMPLER, IntersectionAtlasUV, MaxMip).x;
-				float ConeOcclusion = (1.0f - ConeVisibility) * Opacity * MaxDistanceFade;
-
-				#if VISIBILITY_ONLY_TRACE
-					float3 StepLighting = 0;
-				#else
-					float3 StepLighting = Texture2DSampleLevel(FinalLightingAtlas, TRACING_ATLAS_SAMPLER, IntersectionAtlasUV, MaxMip).rgb;
-					//float3 StepLighting = Pow2(Texture2DSampleLevel(LumenCardScene.AlbedoAtlas, TRACING_ATLAS_SAMPLER, IntersectionAtlasUV, MaxMip).rgb);
-				#endif
-			
-				if (TraceInput.bBlackOutSteepIntersections)
-				{
-					// Assume steep sections are covered by other faces and fade out.
-					float SlopeFade = 1 - saturate((IntersectionSlope - 5) / 1.0f);
-					StepLighting = lerp(0, StepLighting, SlopeFade);
-					ConeOcclusion = lerp(0, ConeOcclusion, SlopeFade);
-				}
-
-				ConeStepBlendState.AddLighting(StepLighting, ConeOcclusion, IntersectionStepTime);
-			}
-
-			CardTraceBlendState.AddCardTrace(ConeStepBlendState);
-		}
-*/
-	}
-}
-
-Buffer<uint> CulledCardGridData;
-
-void ConeTraceLumenCards(
-	FConeTraceInput TraceInput,
-	inout FConeTraceResult OutResult)
-{
-	FCardTraceBlendState CardTraceBlendState;
-	CardTraceBlendState.Initialize(TraceInput.MaxTraceDistance);
-	float3 ConeEndPosition = TraceInput.ConeOrigin + TraceInput.ConeDirection * TraceInput.MaxTraceDistance;
-	float3 debug = 0;
-	float TraceEndDistance = 0;
-
-	for (uint CardIndex = 0; CardIndex < LumenCardScene.NumCards; CardIndex++)
-	{
-		ConeTraceSingleLumenCard(
-			TraceInput,
-			CardIndex,
-			debug,
-			TraceEndDistance,
-			CardTraceBlendState);
-	}
-
-	OutResult = (FConeTraceResult)0;
-
-	#if !VISIBILITY_ONLY_TRACE
-		OutResult.Lighting = CardTraceBlendState.GetFinalLighting();
-	#endif
-	OutResult.Transparency = CardTraceBlendState.GetTransparency();
-	OutResult.NumSteps = CardTraceBlendState.NumSteps;
-	OutResult.NumOverlaps = CardTraceBlendState.NumOverlaps;
-	OutResult.OpaqueHitDistance = CardTraceBlendState.OpaqueHitDistance;
-	OutResult.Debug = debug;
-}
-
 // Mesh SDF cull grid
 Buffer<uint> NumGridCulledMeshSDFObjects;
 Buffer<uint> GridCulledMeshSDFObjectStartOffsetArray;
@@ -593,8 +150,11 @@ struct FTraceMeshSDFResult
 {
 	float HitDistance;
 	uint HitObject;
-	bool bRayStartInsideGeometry;
 };
+
+float MeshSDFNotCoveredExpandSurfaceScale;
+float MeshSDFNotCoveredMinStepScale;
+float MeshSDFDitheredTransparencyStepThreshold;
 
 void RayTraceSingleMeshSDF(
 	float3 WorldRayStart, 
@@ -608,16 +168,22 @@ void RayTraceSingleMeshSDF(
 	// Expanding as MaxDistance increases has less incorrect self-intersection which is desirable for reflections rays.
 	bool bExpandSurfaceUsingRayTimeInsteadOfMaxDistance,
 	float InitialMaxDistance,
+	bool bDitheredTransparency,
+	float2 DitherScreenCoord,
 	inout FTraceMeshSDFResult TraceResult)
 {
 	FDFObjectData DFObjectData = LoadDFObjectData(ObjectIndex);
+	float4x4 WorldToVolume = LWCHackToFloat(DFObjectData.WorldToVolume);
 
-	// Trace up to the current hit point
-	MaxTraceDistance = min(MaxTraceDistance, TraceResult.HitDistance + DFObjectData.VolumeSurfaceBias);
+	if (!bDitheredTransparency || !DFObjectData.bMostlyTwoSided)
+	{
+		// Trace up to the current hit point
+		MaxTraceDistance = min(MaxTraceDistance, TraceResult.HitDistance + DFObjectData.VolumeSurfaceBias);
+	}
 
 	float3 WorldRayEnd = WorldRayStart + WorldRayDirection * MaxTraceDistance;
-	float3 VolumeRayStart = mul(float4(WorldRayStart, 1), DFObjectData.WorldToVolume).xyz;
-	float3 VolumeRayEnd = mul(float4(WorldRayEnd, 1), DFObjectData.WorldToVolume).xyz;
+	float3 VolumeRayStart = mul(float4(WorldRayStart, 1), WorldToVolume).xyz;
+	float3 VolumeRayEnd = mul(float4(WorldRayEnd, 1), WorldToVolume).xyz;
 	float3 VolumeRayDirection = VolumeRayEnd - VolumeRayStart;
 
 	float VolumeMaxTraceDistance = length(VolumeRayDirection);
@@ -642,11 +208,13 @@ void RayTraceSingleMeshSDF(
 			DFAssetMipData = LoadDFAssetData(DFObjectData.AssetIndex, ReversedMipIndex);
 		#endif
 
-		bool bRayStartInsideGeometry = false;
+		float Coverage = DFObjectData.bMostlyTwoSided && bDitheredTransparency ? 0.0f : 1.0f;
+		float ExpandSurfaceScale = lerp(MeshSDFNotCoveredExpandSurfaceScale, 1.0f, Coverage);
+
 		float SampleRayTime = VolumeSpaceIntersectionTimes.x;
 
 		uint MaxSteps = 64;
-		float MinStepSize = 1.0f / (16 * MaxSteps);
+		float MinStepSize = 1.0f / (16.0f * MaxSteps);
 		uint StepIndex = 0;
 		bool bHit = false;
 		float MaxDistance = InitialMaxDistance;
@@ -664,7 +232,9 @@ void RayTraceSingleMeshSDF(
 			// This still causes incorrect self-occlusion at grazing angles
 			float ExpandSurfaceDistance = DFObjectData.VolumeSurfaceBias;
 			const float ExpandSurfaceFalloff = 2.0f * ExpandSurfaceDistance;
-			const float ExpandSurfaceAmount = ExpandSurfaceDistance * saturate(ExpandSurfaceTime / ExpandSurfaceFalloff);
+			const float ExpandSurfaceAmount = ExpandSurfaceDistance * saturate(ExpandSurfaceTime / ExpandSurfaceFalloff) * ExpandSurfaceScale;
+
+			float StepNoise = InterleavedGradientNoise(DitherScreenCoord.xy, View.StateFrameIndexMod8 * MaxSteps + StepIndex);
 
 #if SDF_TRACING_TRAVERSE_MIPS
 
@@ -685,9 +255,10 @@ void RayTraceSingleMeshSDF(
 			}
 			else 
 #endif
-			if (DistanceField < ExpandSurfaceAmount && ReversedMipIndex == MaxMipIndex)
+			if (DistanceField < ExpandSurfaceAmount 
+				&& ReversedMipIndex == MaxMipIndex
+				&& (!bDitheredTransparency || StepNoise * (1 - Coverage) <= MeshSDFDitheredTransparencyStepThreshold))
 			{
-				bRayStartInsideGeometry = SampleRayTime <= 0.0f && SampleRayTime + DistanceField < 0.0f ? true : false;
 				// One more step to the surface
 				// Pull back by ExpandSurfaceAmount to improve the gradient computed off of the hit point
 				SampleRayTime = clamp(SampleRayTime + DistanceField - ExpandSurfaceAmount, VolumeSpaceIntersectionTimes.x, VolumeSpaceIntersectionTimes.y);
@@ -695,7 +266,8 @@ void RayTraceSingleMeshSDF(
 				break;
 			}
 
-			float StepDistance = max(DistanceField, MinStepSize);
+			float LocalMinStepSize = MinStepSize * lerp(MeshSDFNotCoveredMinStepScale, 1.0f, Coverage);
+			float StepDistance = max(DistanceField, LocalMinStepSize);
 			SampleRayTime += StepDistance;		
 
 			if (SampleRayTime > VolumeSpaceIntersectionTimes.y + ExpandSurfaceAmount)
@@ -717,7 +289,6 @@ void RayTraceSingleMeshSDF(
 			{
 				TraceResult.HitObject = ObjectIndex;
 				TraceResult.HitDistance = NewHitDistance;
-				TraceResult.bRayStartInsideGeometry = bRayStartInsideGeometry;
 			}
 		}
 	}
@@ -751,9 +322,10 @@ FTraceMeshSDFDerivedData CalculateMeshSDFDerivedData(
 
 	uint DFObjectIndex = TraceMeshSDFResult.HitObject;
 	FDFObjectData DFObjectData = LoadDFObjectData(DFObjectIndex);
+	float4x4 WorldToVolume = LWCHackToFloat(DFObjectData.WorldToVolume);
 
 	float3 HitPosition = WorldRayStart + WorldRayDirection * TraceMeshSDFResult.HitDistance;
-	float3 SampleVolumePosition = mul(float4(HitPosition, 1), DFObjectData.WorldToVolume).xyz;
+	float3 SampleVolumePosition = mul(float4(HitPosition, 1), WorldToVolume).xyz;
 
 	// Clamp hit point to a valid volume
 	SampleVolumePosition = clamp(SampleVolumePosition, -DFObjectData.VolumePositionExtent, DFObjectData.VolumePositionExtent);
@@ -763,10 +335,10 @@ FTraceMeshSDFDerivedData CalculateMeshSDFDerivedData(
 	float VolumeGradientLength = length(VolumeGradient);
 	float3 VolumeNormal = VolumeGradientLength > 0.0f ? VolumeGradient / VolumeGradientLength : 0;
 	// Transform by transposed inverse to handle non-uniform scaling
-	float3 WorldGradient = mul(VolumeNormal, transpose((float3x3)DFObjectData.WorldToVolume));
+	float3 WorldGradient = mul(VolumeNormal, transpose((float3x3)DFObjectData.WorldToVolume.M));
 	float WorldGradientLength = length(WorldGradient);
 	TraceSDFData.HitNormal = WorldGradientLength > 0.0f ? WorldGradient / WorldGradientLength : 0;
-	TraceSDFData.SurfaceCacheBias = DFObjectData.bMostlyTwoSided ? 40.0f : 20.0f;
+	TraceSDFData.SurfaceCacheBias = DFObjectData.bMostlyTwoSided ? 200.0f : 20.0f;
 
 	if (bCalculateHitVelocity)
 	{
@@ -809,12 +381,12 @@ FHeightfieldRayStep HeightfieldRayStep(FLumenCardData LumenCardData, uint LocalC
 
 	FLumenCardSample CardSample = ComputeSurfaceCacheSample(LumenCardData, LocalCardIndex, LocalSamplePosition.xy, SampleRadius, bHiResSurface);
 
-	float NormalizedDepth = 1.0f - Texture2DSampleLevel(LumenCardScene.DepthAtlas, GlobalBilinearClampedSampler, CardSample.PhysicalAtlasUV, 0).x;
+	float NormalizedDepth = Texture2DSampleLevel(LumenCardScene.DepthAtlas, GlobalBilinearClampedSampler, CardSample.PhysicalAtlasUV, 0).x;
 
 	FHeightfieldRayStep RayStep;
 	RayStep.tValue = tValue;
 	RayStep.LocalSamplePosition = LocalSamplePosition;
-	RayStep.LocalHeightfieldDepth = -LumenCardData.LocalExtent.z + NormalizedDepth * 2.0f * LumenCardData.LocalExtent.z;
+	RayStep.LocalHeightfieldDepth = -(2.0f * NormalizedDepth - 1.0f) * LumenCardData.LocalExtent.z;
 	RayStep.bAboveHeightfield = RayStep.LocalSamplePosition.z > RayStep.LocalHeightfieldDepth;
 	return RayStep;
 }
@@ -1029,7 +601,7 @@ FTraceMeshHeightfieldResult ConeTraceHeightfield(
 		if (bHitFrontFace)
 		{
 			OutResult.Lighting = SampleLumenMeshCards(
-				TraceInput.ScreenCoord,
+				TraceInput.DitherScreenCoord,
 				LumenHeightfield.MeshCardsIndex,
 				SamplePosition,
 				SampleNormal,
@@ -1071,6 +643,8 @@ void ConeTraceMeshSDFsAndInterpolateFromCards(
 			ObjectIndex, 
 			TraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance,
 			TraceInput.InitialMaxDistance,
+			TraceInput.bDitheredTransparency,
+			TraceInput.DitherScreenCoord,
 			TraceMeshSDFResult);
 	}
 
@@ -1094,7 +668,7 @@ void ConeTraceMeshSDFsAndInterpolateFromCards(
 	
 		uint AtlasId = FINAL_LIGHTING_ATLAS_ID;
 		OutResult.Lighting = SampleLumenMeshCards(
-			TraceInput.ScreenCoord,
+			TraceInput.DitherScreenCoord,
 			TraceSDFData.MeshCardsIndex,
 			InterpolatePosition,
 			TraceSDFData.HitNormal,
@@ -1109,72 +683,137 @@ void ConeTraceMeshSDFsAndInterpolateFromCards(
 	OutResult.OpaqueHitDistance = TraceMeshSDFResult.HitDistance;
 }
 
-Texture3D VoxelLighting;
-// Must match C++
-#define MAX_VOXEL_CLIPMAP_LEVELS 8
-#define NumClipmapLevels LumenVoxelTracingParameters.NumClipmapLevels
-#define ClipmapWorldToUVScale LumenVoxelTracingParameters.ClipmapWorldToUVScale
-#define ClipmapWorldToUVBias LumenVoxelTracingParameters.ClipmapWorldToUVBias
-#define ClipmapVoxelSizeAndRadius LumenVoxelTracingParameters.ClipmapVoxelSizeAndRadius
-#define ClipmapWorldCenter LumenVoxelTracingParameters.ClipmapWorldCenter
-#define ClipmapWorldExtent LumenVoxelTracingParameters.ClipmapWorldExtent
-#define ClipmapWorldSamplingExtent LumenVoxelTracingParameters.ClipmapWorldSamplingExtent
-
-float4 SampleVoxelLighting(float3 WorldPosition, float3 Direction, uint ClipmapIndex)
+float4 EvaluateGlobalDistanceFieldHit(FConeTraceInput TraceInput, FGlobalSDFTraceResult SDFTraceResult)
 {
-	float3 UV = WorldPosition * ClipmapWorldToUVScale[ClipmapIndex].xyz + ClipmapWorldToUVBias[ClipmapIndex].xyz;
-	UV.y = (UV.y + ClipmapIndex) / (float)NumClipmapLevels;
+	float3 SampleWorldPosition = TraceInput.ConeOrigin + TraceInput.ConeDirection * SDFTraceResult.HitTime;
+	float3 SampleWorldNormal = ComputeGlobalDistanceFieldNormal(SampleWorldPosition, SDFTraceResult.HitClipmapIndex, -TraceInput.ConeDirection);
+	float ClipmapVoxelExtent = GlobalVolumeCenterAndExtent[SDFTraceResult.HitClipmapIndex].w * GlobalVolumeTexelSize;
 
-	float4 Lighting = 0;
-
-	float3 XAxisUV = float3(UV.xy, UV.z / 6.0f + (Direction.x > 0 ? 0 : 1.0f / 6.0f));
-	float3 YAxisUV = float3(UV.xy, UV.z / 6.0f + (Direction.y > 0 ? 2.0f / 6.0f : 3.0f / 6.0f));
-	float3 ZAxisUV = float3(UV.xy, UV.z / 6.0f + (Direction.z > 0 ? 4.0f / 6.0f : 5.0f / 6.0f));
-
-	float4 XAxisLighting;
-	float4 YAxisLighting;
-	float4 ZAxisLighting;
-
-	XAxisLighting = Texture3DSampleLevel(VoxelLighting, GlobalTrilinearClampedSampler, XAxisUV, 0);
-	YAxisLighting = Texture3DSampleLevel(VoxelLighting, GlobalTrilinearClampedSampler, YAxisUV, 0);
-	ZAxisLighting = Texture3DSampleLevel(VoxelLighting, GlobalTrilinearClampedSampler, ZAxisUV, 0);
-
-	float3 AxisWeights = Direction * Direction;
-	float InvTotalWeight = 1.0f / dot(AxisWeights, 1.0f);
-
-	Lighting = (XAxisLighting * AxisWeights.x + YAxisLighting * AxisWeights.y + ZAxisLighting * AxisWeights.z) * InvTotalWeight;
-
-	return Lighting.xyzw;
-}
-
-// Transparency value which is forced to zero to reduce leaking. It is softly faded-in with a VOXEL_TRACE_TRANSPARENCY_FADE_LENGTH.
-static float MIN_VOXEL_TRACE_TRANSPARENCY = 0.1f;
-static float VOXEL_TRACE_TRANSPARENCY_FADE_LENGTH = 0.05f;
-
-float4 FadeOutVoxelConeTraceMinTransparency(float4 LightingAndAlpha)
-{
-	if (LightingAndAlpha.a < MIN_VOXEL_TRACE_TRANSPARENCY + VOXEL_TRACE_TRANSPARENCY_FADE_LENGTH)
+	float RadianceFactor = 1.0f;
+	if (TraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance)
 	{
-		// Restore missing energy due to early out.
-		LightingAndAlpha.rgb *= (1.0f + LightingAndAlpha.a);
-
-		// Smoothly force a transparency of MIN_VOXEL_TRACE_TRANSPARENCY to 0, since we stopped tracing
-		LightingAndAlpha.a = saturate((LightingAndAlpha.a - MIN_VOXEL_TRACE_TRANSPARENCY) * (MIN_VOXEL_TRACE_TRANSPARENCY + VOXEL_TRACE_TRANSPARENCY_FADE_LENGTH) / VOXEL_TRACE_TRANSPARENCY_FADE_LENGTH);
+		// Make sure we don't self-intersect and cause leaking
+		RadianceFactor = smoothstep(1.5f * ClipmapVoxelExtent, 2.0f * ClipmapVoxelExtent, SDFTraceResult.HitTime);
 	}
+
+	if (TraceInput.bZeroRadianceIfRayStartsInsideGeometry && SDFTraceResult.HitTime <= TraceInput.MinTraceDistance)
+	{
+		RadianceFactor = 0.0f;
+	}
+
+	float3 LightingSum = 0.0f;
+	float SampleWeightSum = 0.0f;
+
+	float3 ClipmapVolumeUV = ComputeGlobalUV(SampleWorldPosition, SDFTraceResult.HitClipmapIndex);
+	FGlobalDistanceFieldPage Page = GetGlobalDistanceFieldPage(ClipmapVolumeUV, SDFTraceResult.HitClipmapIndex);
+	if (RadianceFactor > 0.0f && Page.bValid)
+	{
+		float3 PageTableCoord = saturate(ClipmapVolumeUV) * GlobalDistanceFieldClipmapSizeInPages;
+		uint3 CellCoordInPage = frac(frac(PageTableCoord)) * DISTANCE_FIELD_OBJECT_GRID_PAGE_RESOLUTION;
+		uint CellOffsetInPage = ZOrder3DEncode(CellCoordInPage, log2(DISTANCE_FIELD_OBJECT_GRID_PAGE_RESOLUTION));
+
+		uint4 DistanceFieldObjectGridCell = GlobalDistanceFieldPageObjectGridBuffer[DISTANCE_FIELD_OBJECT_GRID_PAGE_STRIDE * Page.PageIndex + CellOffsetInPage];
+
+		for (uint ObjectIndexInList = 0; ObjectIndexInList < DISTANCE_FIELD_OBJECT_GRID_CELL_SIZE; ++ObjectIndexInList)
+		{
+			FObjectGridCellIndex GridCellIndex = UnpackObjectGridCellIndex(DistanceFieldObjectGridCell[ObjectIndexInList]);
+			if (GridCellIndex.bValid)
+			{
+				uint MeshCardsIndex = GetMeshCardsIndexFromSceneInstanceIndex(GridCellIndex.GPUSceneInstanceIndex);
+				if (MeshCardsIndex < LumenCardScene.NumMeshCards)
+				{
+					uint2 ScreenCoord = TraceInput.DitherScreenCoord;
+					float SurfaceCacheBias = DISTANCE_FIELD_OBJECT_GRID_CARD_INTERPOLATION_RANGE_IN_VOXELS * ClipmapVoxelExtent;
+					float SampleRadius = 100.0f;
+
+					FSurfaceCacheSample SurfaceCacheSample = SampleLumenMeshCards(
+						ScreenCoord,
+						MeshCardsIndex,
+						SampleWorldPosition,
+						SampleWorldNormal,
+						SampleRadius,
+						SurfaceCacheBias,
+						/*bHiResSurface*/ false,
+						FINAL_LIGHTING_ATLAS_ID
+					);
+
+					LightingSum += SurfaceCacheSample.LightingSum;
+					SampleWeightSum += SurfaceCacheSample.SampleWeightSum;
+
+					if (SampleWeightSum >= 0.9f)
+					{
+						break;	
+					}
+				}
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		#define DEBUG_CELL_COUNTER 0
+		#if DEBUG_CELL_COUNTER
+		{
+			uint NumCells = 0;
+			for (uint ObjectIndexInList = 0; ObjectIndexInList < DISTANCE_FIELD_OBJECT_GRID_CELL_SIZE; ++ObjectIndexInList)
+			{
+				FObjectGridCellIndex GridCellIndex = UnpackObjectGridCellIndex(DistanceFieldObjectGridCell[ObjectIndexInList]);
+				if (GridCellIndex.bValid)
+				{
+					uint MeshCardsIndex = GetMeshCardsIndexFromSceneInstanceIndex(GridCellIndex.GPUSceneInstanceIndex);
+					if (MeshCardsIndex < LUMEN_INVALID_MESH_CARDS_INDEX)
+					{
+						++NumCells;
+					}
+				}
+			}
+			LightingSum = 0.0f;
+			if (NumCells == 1)
+			{
+				LightingSum = float3(1, 0, 0);
+			}
+			else if (NumCells == 2)
+			{
+				LightingSum = float3(0, 1, 0);
+			}
+			else if (NumCells == 3)
+			{
+				LightingSum = float3(0, 0, 1);
+			}
+			else
+			{
+				LightingSum = float3(1, 1, 1);
+			}
+			SampleWeightSum = 1.0f;
+		}
+		#endif
+	}
+
+	float4 LightingAndAlpha = 0.0f;
+
+	if (SampleWeightSum > 0.0f)
+	{
+		LightingAndAlpha.xyz = RadianceFactor * (LightingSum / SampleWeightSum);
+	}
+
+	// Debug visualization
+	#if ENABLE_VISUALIZE_MODE == 1
+	{
+		if (VisualizeMode == VISUALIZE_MODE_GEOMETRY_NORMALS)
+		{
+			LightingAndAlpha.xyz = (SampleWorldNormal * 0.5f + 0.5f) * View.OneOverPreExposure;
+		}
+	}
+	#endif
 
 	return LightingAndAlpha;
 }
 
-uint VoxelFaceFromStep(uint3 StepInc, int3 VoxelStep)
-{
-	uint3 DirectionOffset = VoxelStep >= 0 ? 0 : 1;
-	return dot(StepInc, uint3(0, 2, 4) + DirectionOffset);
-}
-
 /**
- * Ray trace the Global Distance Field, compute hit point and hit normal, and fetch lighting from Voxel Lighting volume
+ * Ray trace the Global Distance Field, compute hit point and hit normal, and then evaluate radiance from surface cache
  */
-void ConeTraceVoxels(
+void RayTraceGlobalDistanceField(
 	FConeTraceInput TraceInput,
 	inout FConeTraceResult OutResult)
 {
@@ -1182,7 +821,9 @@ void ConeTraceVoxels(
 
 	// Trace SDF ray
 	{
-		FGlobalSDFTraceInput SDFTraceInput = SetupGlobalSDFTraceInput(TraceInput.ConeOrigin, TraceInput.ConeDirection, TraceInput.MinTraceDistance, TraceInput.MaxTraceDistance, TraceInput.SDFStepFactor, TraceInput.VoxelStepFactor);
+		FGlobalSDFTraceInput SDFTraceInput = SetupGlobalSDFTraceInput(TraceInput.ConeOrigin, TraceInput.ConeDirection, TraceInput.MinTraceDistance, TraceInput.MaxTraceDistance, TraceInput.SDFStepFactor, TraceInput.MinSDFStepFactor);
+		SDFTraceInput.bDitheredTransparency = TraceInput.bDitheredTransparency;
+		SDFTraceInput.DitherScreenCoord = TraceInput.DitherScreenCoord;
 		SDFTraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance = TraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance;
 		SDFTraceInput.InitialMaxDistance = TraceInput.InitialMaxDistance;
 
@@ -1193,56 +834,8 @@ void ConeTraceVoxels(
 
 	if (GlobalSDFTraceResultIsHit(SDFTraceResult))
 	{
-		float3 SampleWorldPosition = TraceInput.ConeOrigin + TraceInput.ConeDirection * SDFTraceResult.HitTime;
-
-		uint VoxelClipmapIndex = 0;
-		float3 VoxelClipmapCenter = ClipmapWorldCenter[VoxelClipmapIndex].xyz;
-		float3 VoxelClipmapExtent = ClipmapWorldSamplingExtent[VoxelClipmapIndex].xyz;
-
-		bool bOutsideValidRegion = any(SampleWorldPosition > VoxelClipmapCenter + VoxelClipmapExtent || SampleWorldPosition < VoxelClipmapCenter - VoxelClipmapExtent);
-
-		// Find the voxel clipmap that matches the cone width at the current step
-		while (bOutsideValidRegion && VoxelClipmapIndex + 1 < NumClipmapLevels)
-		{
-			VoxelClipmapIndex++;
-			VoxelClipmapCenter = ClipmapWorldCenter[VoxelClipmapIndex].xyz;
-			VoxelClipmapExtent = ClipmapWorldSamplingExtent[VoxelClipmapIndex].xyz;
-			bOutsideValidRegion = any(SampleWorldPosition > VoxelClipmapCenter + VoxelClipmapExtent || SampleWorldPosition < VoxelClipmapCenter - VoxelClipmapExtent);
-		}
-
-		LightingAndAlpha.xyzw = 0.0f;
-
-		if (!bOutsideValidRegion)
-		{
-			float3 DistanceFieldGradient = -TraceInput.ConeDirection;
-
-			float3 ClipmapVolumeUV = ComputeGlobalUV(SampleWorldPosition, SDFTraceResult.HitClipmapIndex);
-			uint PageIndex = GetGlobalDistanceFieldPage(ClipmapVolumeUV, SDFTraceResult.HitClipmapIndex);
-
-			if (PageIndex < GLOBAL_DISTANCE_FIELD_INVALID_PAGE_ID)
-			{
-				float3 PageUV = ComputeGlobalDistanceFieldPageUV(ClipmapVolumeUV, PageIndex);
-				DistanceFieldGradient = GlobalDistanceFieldPageCentralDiff(PageUV);
-			}
-
-			float DistanceFieldGradientLength = length(DistanceFieldGradient);
-			float3 SampleNormal = DistanceFieldGradientLength > 0.001 ? DistanceFieldGradient / DistanceFieldGradientLength : -TraceInput.ConeDirection;
-			float4 StepLighting = SampleVoxelLighting(SampleWorldPosition, -SampleNormal, VoxelClipmapIndex);
-
-			StepLighting.xyz = StepLighting.xyz * (1.0f / max(StepLighting.w, 0.1));
-
-			float VoxelSelfLightingBias = 1.0f;
-			if (TraceInput.bExpandSurfaceUsingRayTimeInsteadOfMaxDistance)
-			{
-				// For diffuse rays prefer to over occlude instead of leaking
-				VoxelSelfLightingBias = smoothstep(1.5 * ClipmapVoxelSizeAndRadius[VoxelClipmapIndex].w, 2.0 * ClipmapVoxelSizeAndRadius[VoxelClipmapIndex].w, SDFTraceResult.HitTime);
-			}
-
-			LightingAndAlpha.xyz = StepLighting.xyz * VoxelSelfLightingBias;
-		}
+		LightingAndAlpha = EvaluateGlobalDistanceFieldHit(TraceInput, SDFTraceResult);
 	}
-
-	LightingAndAlpha = FadeOutVoxelConeTraceMinTransparency(LightingAndAlpha);
 
 	OutResult = (FConeTraceResult)0;
 	#if !VISIBILITY_ONLY_TRACE
@@ -1264,7 +857,7 @@ float CalculateVoxelTraceStartDistance(float MinTraceDistance, float MaxTraceDis
 {
 	float VoxelTraceStartDistance = MaxTraceDistance;
 
-	if (NumClipmapLevels > 0)
+	if (NumGlobalSDFClipmaps > 0)
 	{
 		VoxelTraceStartDistance = MinTraceDistance;
 
@@ -1328,7 +921,7 @@ void ConeTraceLumenSceneVoxels(
 		FConeTraceInput VoxelTraceInput = TraceInput;
 		VoxelTraceInput.MinTraceDistance = TraceInput.VoxelTraceStartDistance;
 		FConeTraceResult VoxelTraceResult;
-		ConeTraceVoxels(VoxelTraceInput, VoxelTraceResult);
+		RayTraceGlobalDistanceField(VoxelTraceInput, VoxelTraceResult);
 
 		#if !VISIBILITY_ONLY_TRACE
 			OutResult.Lighting += VoxelTraceResult.Lighting * OutResult.Transparency;
@@ -1349,71 +942,13 @@ void ConeTraceLumenScene(
 	ConeTraceLumenSceneVoxels(TraceInput, OutResult);
 }
 
-void ConeTraceLumenDistantScene(
-	FConeTraceInput TraceInput,
-	inout FConeTraceResult OutResult)
-{
-	float3 debug = 0;
-	TraceInput.MaxTraceDistance = LumenCardScene.DistantSceneMaxTraceDistance;
-	TraceInput.bBlackOutSteepIntersections = true;
-
-	FCardTraceBlendState CardTraceBlendState;
-	CardTraceBlendState.Initialize(TraceInput.MaxTraceDistance);
-
-	if (LumenCardScene.NumDistantCards > 0)
-	{
-		if (NumClipmapLevels > 0)
-		{
-			float3 VoxelLightingCenter = ClipmapWorldCenter[NumClipmapLevels - 1].xyz;
-			float3 VoxelLightingExtent = ClipmapWorldSamplingExtent[NumClipmapLevels - 1].xyz;
-
-			float3 RayEnd = TraceInput.ConeOrigin + TraceInput.ConeDirection * TraceInput.MaxTraceDistance;
-			float2 IntersectionTimes = LineBoxIntersect(TraceInput.ConeOrigin, RayEnd, VoxelLightingCenter - VoxelLightingExtent, VoxelLightingCenter + VoxelLightingExtent);
-
-			// If we are starting inside the voxel clipmaps, move the start of the trace past the voxel clipmaps
-			if (IntersectionTimes.x < IntersectionTimes.y && IntersectionTimes.x < .001f)
-			{
-				TraceInput.MinTraceDistance = IntersectionTimes.y * TraceInput.MaxTraceDistance;
-			}
-		}
-
-		float TraceEndDistance = TraceInput.MinTraceDistance;
-
-		// Multiple cascades disabled for now - artifacts when resuming traces between cascades, and shader has worse occupancy
-		//for (uint ListIndex = 0; ListIndex < LumenCardScene.NumDistantCards && CardTraceBlendState.HasRemainingVisibility(TraceInput.MaxTraceDistance); ListIndex++)
-		{
-			//TraceInput.MinTraceDistance = TraceEndDistance;
-			uint ListIndex = 0;
-			uint CardIndex = GET_SCALAR_ARRAY_ELEMENT(LumenCardScene.DistantCardIndices, ListIndex);
-
-			ConeTraceSingleLumenCard(
-				TraceInput,
-				CardIndex,
-				debug,
-				TraceEndDistance,
-				CardTraceBlendState);
-		}
-	}
-
-	OutResult = (FConeTraceResult)0;
-
-	#if !VISIBILITY_ONLY_TRACE
-		OutResult.Lighting = CardTraceBlendState.GetFinalLighting();
-	#endif
-	OutResult.Transparency = CardTraceBlendState.GetTransparency();
-	OutResult.NumSteps = CardTraceBlendState.NumSteps;
-	OutResult.NumOverlaps = CardTraceBlendState.NumOverlaps;
-	OutResult.OpaqueHitDistance = CardTraceBlendState.OpaqueHitDistance;
-	OutResult.Debug = debug;
-}
-
 float TanConeAngleToRoughness(float TanConeAngle)
 {
 	//@todo DynamicGI - derive roughness from cone angle
 	return sqrt(saturate(TanConeAngle / (.5f * PI)));
 }
 
-float3 EvaluateSkyRadiance(float3 Direction, float TanConeAngle)
+float3 EvaluateSkyRadiance(float3 Direction)
 {
 	float3 SkyRadiance = 0.0f;
 
@@ -1421,6 +956,7 @@ float3 EvaluateSkyRadiance(float3 Direction, float TanConeAngle)
 	if (ReflectionStruct.SkyLightParameters.y > 0)
 	{
 		float SkyAverageBrightness = 1.0f;
+		float TanConeAngle = 0.0f;
 		float Roughness = TanConeAngleToRoughness(TanConeAngle);
 
 		SkyRadiance = GetSkyLightReflection(Direction, Roughness, SkyAverageBrightness);
@@ -1430,15 +966,13 @@ float3 EvaluateSkyRadiance(float3 Direction, float TanConeAngle)
 	return SkyRadiance;
 }
 
-void EvaluateSkyRadianceForCone(
-	float3 ConeDirection, 
-	float TanConeAngle, 
-	inout FConeTraceResult TraceResult)
+void ApplySkylightToTraceResult(float3 ConeDirection, inout FConeTraceResult TraceResult)
 { 
 #if ENABLE_DYNAMIC_SKY_LIGHT
 	if (ReflectionStruct.SkyLightParameters.y > 0)
 	{
 		float SkyAverageBrightness = 1.0f;
+		float TanConeAngle = 0.0f;
 		float Roughness = TanConeAngleToRoughness(TanConeAngle);
 
 		#if !VISIBILITY_ONLY_TRACE
@@ -1447,4 +981,26 @@ void EvaluateSkyRadianceForCone(
 		TraceResult.Transparency = 0;
 	}
 #endif
+}
+
+float SkylightLeaking;
+float SkylightLeakingRoughness;
+float InvFullSkylightLeakingDistance;
+
+float CalculateSkylightLeakingAmount(float HitDistance)
+{
+	return SkylightLeaking * saturate(HitDistance * InvFullSkylightLeakingDistance);
+}
+
+float3 GetSkylightLeaking(float3 ConeDirection, float HitDistance)
+{
+	float3 Lighting = 0;
+
+	if (ReflectionStruct.SkyLightParameters.y > 0 && SkylightLeaking > 0.0f)
+	{
+		float SkyAverageBrightness = 1.0f;
+		Lighting = GetSkyLightReflection(ConeDirection, SkylightLeakingRoughness, SkyAverageBrightness) * CalculateSkylightLeakingAmount(HitDistance);
+	}
+
+	return Lighting;
 }

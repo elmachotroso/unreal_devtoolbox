@@ -22,10 +22,10 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Blueprint.h"
 #include "Factories/BlueprintFactory.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/ObjectLibrary.h"
 #include "Widgets/Input/SComboButton.h"
 #include "GameplayTagContainer.h"
@@ -45,12 +45,12 @@
 #include "GameplayTagsModule.h"
 
 #include "AbilitySystemGlobals.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "GameplayTagsEditorModule.h"
-#include "Editor/LevelEditor/Public/LevelEditor.h"
-#include "AssetRegistryModule.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "GameplayTagsEditor/Private/SAddNewGameplayTagWidget.h"
+#include "GameplayTagsEditorModule.h"
+#include "LevelEditor.h"
+#include "SAddNewGameplayTagWidget.h"
 
 #include "SGameplayCueEditor_Picker.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -338,7 +338,7 @@ public:
 
 		return 
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		[
 			FilterTreeView.ToSharedRef()
 		];
@@ -915,7 +915,7 @@ TSharedRef<ITableRow> SGameplayCueEditorImpl::OnGenerateWidgetForGameplayCueList
 						.HAlign(HAlign_Left)
 						[
 							SNew(SHyperlink)
-							.Style(FEditorStyle::Get(), "Common.GotoBlueprintHyperlink")
+							.Style(FAppStyle::Get(), "Common.GotoBlueprintHyperlink")
 						.Text(FText::FromString(ObjName))
 						.OnNavigate(this, &SCueItemWidget::NavigateToHandler)
 						];
@@ -947,7 +947,7 @@ TSharedRef<ITableRow> SGameplayCueEditorImpl::OnGenerateWidgetForGameplayCueList
 						.HAlign(HAlign_Left)
 						[
 							SNew(SHyperlink)
-							.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
+							.Style(FAppStyle::Get(), "Common.GotoNativeCodeHyperlink")
 						.Text(LOCTEXT("AddNew", "Add New"))
 						.OnNavigate(this, &SCueItemWidget::OnAddNewClicked)
 						];
@@ -1172,12 +1172,12 @@ void SGameplayCueEditorImpl::Construct(const FArguments& InArgs)
 				SNew(SCheckBox)
 				.IsChecked(this, &SGameplayCueEditorImpl::GetAddTagSectionExpansionState)
 				.OnCheckStateChanged(this, &SGameplayCueEditorImpl::OnAddTagSectionExpansionStateChanged)
-				.CheckedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-				.CheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Expanded_Hovered"))
-				.CheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Expanded"))
-				.UncheckedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
-				.UncheckedHoveredImage(FEditorStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
-				.UncheckedPressedImage(FEditorStyle::GetBrush("TreeArrow_Collapsed"))
+				.CheckedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+				.CheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Expanded_Hovered"))
+				.CheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Expanded"))
+				.UncheckedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
+				.UncheckedHoveredImage(FAppStyle::GetBrush("TreeArrow_Collapsed_Hovered"))
+				.UncheckedPressedImage(FAppStyle::GetBrush("TreeArrow_Collapsed"))
 				.Visibility(this, &SGameplayCueEditorImpl::DetermineExpandableUIVisibility)
 				[
 					SNew(STextBlock)
@@ -1312,7 +1312,7 @@ void SGameplayCueEditorImpl::Construct(const FArguments& InArgs)
 		.FillHeight(1.0f)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(GameplayCueTreeView, SGameplayCueTreeView)
 				.ItemHeight(24)
@@ -1473,7 +1473,7 @@ FString SGameplayCueEditor::GetPathNameForGameplayCueTag(FString GameplayCueTagN
 	else
 	{
 		GameplayCueTagName = GameplayCueTagName.Replace(TEXT("GameplayCue."), TEXT(""), ESearchCase::IgnoreCase);
-		NewDefaultPathName = FString::Printf(TEXT("/Game/GC_%s"), *GameplayCueTagName);
+		NewDefaultPathName = FString::Printf(TEXT("/Game/GameplayCueNotifies/GC_%s"), *GameplayCueTagName);
 	}
 	NewDefaultPathName.ReplaceInline(TEXT("."), TEXT("_"));
 	return NewDefaultPathName;

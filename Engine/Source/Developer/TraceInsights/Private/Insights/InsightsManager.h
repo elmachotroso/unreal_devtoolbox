@@ -6,8 +6,6 @@
 #include "CoreMinimal.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Input/DragAndDrop.h"
-#include "TraceServices/AnalysisService.h"
-#include "TraceServices/ModuleService.h"
 
 // Insights
 #include "Insights/Common/Stopwatch.h"
@@ -58,6 +56,21 @@ private:
 	uint64 NextTimestamp = (uint64)-1;
 };
 
+/**
+ * Struct that holds data about in progress async operations
+ */
+struct FAsyncTaskData
+{
+	FString Name;
+	FGraphEventRef GraphEvent;
+
+	FAsyncTaskData(FGraphEventRef InGraphEvent, const FString InName)
+	{
+		Name = InName;
+		GraphEvent = InGraphEvent;
+	}
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /**
  * This class manages following areas:
@@ -94,6 +107,7 @@ public:
 	virtual void Shutdown() override;
 	virtual void RegisterMajorTabs(IUnrealInsightsModule& InsightsModule) override;
 	virtual void UnregisterMajorTabs() override;
+	virtual bool Exec(const TCHAR* Cmd, FOutputDevice& Ar) override;
 
 	//////////////////////////////////////////////////
 
@@ -105,6 +119,7 @@ public:
 
 	bool ConnectToStore(const TCHAR* Host, uint32 Port=0);
 	UE::Trace::FStoreClient* GetStoreClient() const { return StoreClient.Get(); }
+	FCriticalSection& GetStoreClientCriticalSection() const { return StoreClientCriticalSection; }
 
 	/** @return an instance of the trace analysis session. */
 	TSharedPtr<const TraceServices::IAnalysisSession> GetSession() const;
@@ -224,18 +239,57 @@ public:
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	/** Creates a new analysis session instance and loads the latest available trace that is live. */
+	/**
+	 * Shows the open file dialog for choosing a trace file.
+	 * @param OutTraceFile - The chosen trace file, if successful
+	 * @return True, if successful.
+	 */
+	bool ShowOpenTraceFileDialog(FString& OutTraceFile) const;
+
+	/**
+	 * Starts a new Unreal Insights instance.
+	 * @param CmdLine - The command line passed to the new UnrealInsights.exe process
+	 */
+	void OpenUnrealInsights(const TCHAR* CmdLine = nullptr) const;
+
+	/**
+	 * Shows the open file dialog and starts analysis session for the chosen trace file, in a new Unreal Insights instance.
+	 */
+	void OpenTraceFile() const;
+
+	/**
+	 * Starts analysis session for the specified trace file, in a new Unreal Insights instance.
+	 * @param TraceFilename - The trace file to analyze
+	 */
+	void OpenTraceFile(const FString& TraceFilename) const;
+
+	void ToggleAutoLoadLiveSession() { bIsAutoLoadLiveSessionEnabled = !bIsAutoLoadLiveSessionEnabled; }
+	bool IsAutoLoadLiveSessionEnabled() const { return bIsAutoLoadLiveSessionEnabled; }
+	void AutoLoadLiveSession();
+
+	/**
+	 * Creates a new analysis session instance and loads the latest available trace that is live.
+	 * Replaces the current analysis session.
+	 */
 	void LoadLastLiveSession();
 
 	/**
-	 * Creates a new analysis session instance using specified trace id.
+	 * Creates a new analysis session instance using the specified trace id.
+	 * Replaces the current analysis session.
 	 * @param TraceId - The id of the trace to analyze
 	 * @param InAutoQuit - The Application will close when session analysis is complete or fails to start
 	 */
 	void LoadTrace(uint32 TraceId, bool InAutoQuit = false);
 
 	/**
+	 * Shows the open file dialog and creates a new analysis session instance for the chosen trace file.
+	 * Replaces the current analysis session.
+	 */
+	void LoadTraceFile();
+
+	/**
 	 * Creates a new analysis session instance and loads a trace file from the specified location.
+	 * Replaces the current analysis session.
 	 * @param TraceFilename - The trace file to analyze
 	 * @param InAutoQuit - The Application will close when session analysis is complete or fails to start
 	 */
@@ -260,6 +314,12 @@ public:
 	TSharedPtr<FInsightsMenuBuilder> GetInsightsMenuBuilder() { return InsightsMenuBuilder; }
 
 	const FName& GetLogListingName() const { return LogListingName; }
+
+	void ScheduleCommand(const FString& InCmd);
+
+	void AddInProgressAsyncOp(FGraphEventRef Event, const FString& Name);
+	void RemoveInProgressAsyncOp(FGraphEventRef Event);
+	void WaitOnInProgressAsyncOps();
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// SessionChangedEvent
@@ -320,19 +380,22 @@ private:
 	void ResetSession(bool bNotify = true);
 
 	void OnSessionChanged();
+	void OnSessionAnalysisCompleted();
 
 	void SpawnAndActivateTabs();
 
 	void ActivateTimingInsightsTab();
 
+	bool HandleResponseFileCmd(const TCHAR* ResponseFile, FOutputDevice& Ar);
+
 private:
-	bool bIsInitialized;
+	bool bIsInitialized = false;
 
 	/** If true, the "high system memory usage warning" will be disabled until the system memory usage first drops below a certain threshold. */
-	bool bMemUsageLimitHysteresis;
+	bool bMemUsageLimitHysteresis = false;
 
 	/** The timestamp when has occurred the last check for system memory usage. */
-	uint64 MemUsageLimitLastTimestamp;
+	uint64 MemUsageLimitLastTimestamp = 0;
 
 	/** The name of the Unreal Insights log listing. */
 	FName LogListingName;
@@ -349,14 +412,17 @@ private:
 	/** The location of the trace files managed by the trace store. */
 	FString StoreDir;
 
-	/** The client used to connect to the trace store. */
+	/** The client used to connect to the trace store. It is not thread safe! */
 	TUniquePtr<UE::Trace::FStoreClient> StoreClient;
+
+	/** CriticalSection for using the store client's API. */
+	mutable FCriticalSection StoreClientCriticalSection;
 
 	/** The trace analysis session. */
 	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	/** The id of the trace being analyzed. */
-	uint32 CurrentTraceId;
+	uint32 CurrentTraceId = 0;
 
 	/** The filename of the trace being analyzed. */
 	FString CurrentTraceFilename;
@@ -383,21 +449,31 @@ private:
 	TWeakPtr<class SSessionInfoWindow> SessionInfoWindow;
 
 	/** If enabled, UI can display additional info for debugging purposes. */
-	bool bIsDebugInfoEnabled;
-
-	FStopwatch AnalysisStopwatch;
-	bool bIsAnalysisComplete;
-	double SessionDuration;
-	double AnalysisDuration;
-	double AnalysisSpeedFactor;
+	bool bIsDebugInfoEnabled = false;
 
 	bool bIsMainTabSet = false;
+	bool bIsSessionInfoSet = false;
+
+	bool bIsAnalysisComplete = false;
+	bool bSessionAnalysisCompletedAutoQuit = false;
+
+	bool bIsAutoLoadLiveSessionEnabled = false;
+	TSet<uint32> AutoLoadedTraceIds; // list of trace ids for the auto loaded live sessions
+
+	FStopwatch AnalysisStopwatch;
+	double SessionDuration = 0.0;
+	double AnalysisDuration = 0.0;
+	double AnalysisSpeedFactor = 0.0;
 
 	TSharedPtr<FInsightsMenuBuilder> InsightsMenuBuilder;
 	TSharedPtr<FInsightsTestRunner> TestRunner;
 
-private:
+	FString SessionAnalysisCompletedCmd;
+
+	static const TCHAR* AutoQuitMsg;
 	static const TCHAR* AutoQuitMsgOnFail;
+
+	TDoubleLinkedList<FAsyncTaskData> InProgressAsyncTasks;
 
 	/** A shared pointer to the global instance of the main manager. */
 	static TSharedPtr<FInsightsManager> Instance;

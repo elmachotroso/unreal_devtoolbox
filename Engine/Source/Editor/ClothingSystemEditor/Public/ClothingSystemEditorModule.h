@@ -2,9 +2,9 @@
 
 #pragma once
 
+#include "ClothingAssetFactoryInterface.h"
 #include "Modules/ModuleInterface.h"
 #include "SimulationEditorExtenderNv.h"
-#include "ClothingAssetFactoryInterface.h"
 
 class UClothingAssetFactoryBase;
 
@@ -21,9 +21,5 @@ public:
 	virtual UClothingAssetFactoryBase* GetFactory() override;
 
 private:
-
-#if WITH_NVCLOTH
-	FSimulationEditorExtenderNv NvEditorExtender;
-#endif
 
 };

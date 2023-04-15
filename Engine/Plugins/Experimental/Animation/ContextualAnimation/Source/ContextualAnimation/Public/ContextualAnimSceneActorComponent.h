@@ -3,32 +3,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Components/SphereComponent.h"
 #include "ContextualAnimTypes.h"
+#include "ActorComponents/IKRigInterface.h"
+#include "Components/PrimitiveComponent.h"
 #include "ContextualAnimSceneActorComponent.generated.h"
 
+class AActor;
+class FPrimitiveSceneProxy;
 class UAnimInstance;
 class UAnimMontage;
-class AActor;
-class UContextualAnimSceneInstance;
-struct FContextualAnimSceneActorData;
-
-USTRUCT(BlueprintType)
-struct FContextualAnimDebugParams
-{
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
-	TWeakObjectPtr<AActor> TestActor;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (UIMin = 0, ClampMin = 0))
-	float DrawAlignmentTransformAtTime = 0.f;
-};
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FContextualAnimSceneActorCompDelegate, class UContextualAnimSceneActorComponent*, SceneActorComponent);
 
 UCLASS(meta = (BlueprintSpawnableComponent))
-class CONTEXTUALANIMATION_API UContextualAnimSceneActorComponent : public UPrimitiveComponent
+class CONTEXTUALANIMATION_API UContextualAnimSceneActorComponent : public UPrimitiveComponent, public IIKGoalCreatorInterface
 {
 	GENERATED_BODY()
 
@@ -43,26 +31,28 @@ public:
 	FContextualAnimSceneActorCompDelegate OnLeftSceneDelegate;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config")
-	class UContextualAnimSceneAsset* SceneAsset;
+	TObjectPtr<class UContextualAnimSceneAsset> SceneAsset;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bEnableDebug;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ShowOnlyInnerProperties, EditCondition = "bEnableDebug"))
-	FContextualAnimDebugParams DebugParams;
-
 	UContextualAnimSceneActorComponent(const FObjectInitializer& ObjectInitializer);
 
+	virtual void GetLifetimeReplicatedProps(TArray< FLifetimeProperty >& OutLifetimeProps) const;
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const;
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 
-	/** Called from the scene instance when the actor owner of this component joins an scene */
-	void OnJoinedScene(const FContextualAnimSceneActorData* SceneActorData);
+	virtual void AddIKGoals_Implementation(TMap<FName, FIKRigGoal>& OutGoals) override;
+
+	/** Called when the actor owner of this component joins an scene */
+	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Actor Component")
+	void OnJoinedScene(const FContextualAnimSceneBindings& InBindings);
 	
 	/** Called from the scene instance when the actor owner of this component leave an scene */
-	void OnLeftScene(const FContextualAnimSceneActorData* SceneActorData);
+	UFUNCTION(BlueprintCallable, Category = "Contextual Anim|Scene Actor Component")
+	void OnLeftScene();
 
 	UFUNCTION(BlueprintPure, Category = "Contextual Anim|Scene Actor Component")
 	const TArray<FContextualAnimIKTarget>& GetIKTargets() const { return IKTargets; }
@@ -72,8 +62,8 @@ public:
 
 protected:
 
-	/** Ptr back to the scene actor data that represent us in the scene instance we are part of */
-	const FContextualAnimSceneActorData* SceneActorDataPtr = nullptr;
+	UPROPERTY(Transient, ReplicatedUsing = OnRep_Bindings)
+	FContextualAnimSceneBindings Bindings;
 
 	/** List of IKTarget for this frame */
 	UPROPERTY()
@@ -87,6 +77,9 @@ protected:
 	 */
 	UFUNCTION()
 	void OnTickPose(class USkinnedMeshComponent* SkinnedMeshComponent, float DeltaTime, bool bNeedsValidRootMotion);
+
+	UFUNCTION()
+	void OnRep_Bindings();
 
 private:
 

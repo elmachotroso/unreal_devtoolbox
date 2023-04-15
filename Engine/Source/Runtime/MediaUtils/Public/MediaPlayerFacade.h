@@ -2,32 +2,39 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Queue.h"
 #include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
+#include "HAL/CriticalSection.h"
 #include "IMediaClockSink.h"
 #include "IMediaEventSink.h"
+#include "IMediaPlayerLifecycleManager.h"
 #include "IMediaTickable.h"
 #include "IMediaTimeSource.h"
-#include "IMediaPlayerLifecycleManager.h"
-#include "MediaPlayerOptions.h"
+#include "Internationalization/Text.h"
+#include "Math/MathFwd.h"
 #include "Math/Quat.h"
 #include "Math/Range.h"
 #include "Math/RangeSet.h"
 #include "Math/Rotator.h"
+#include "MediaPlayerOptions.h"
+#include "MediaSampleSink.h"
 #include "MediaSampleSinks.h"
 #include "Misc/Guid.h"
+#include "Misc/Optional.h"
 #include "Misc/Timespan.h"
+#include "Misc/Variant.h"
+#include "Templates/Atomic.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/NameTypes.h"
 
 class FMediaSampleCache;
+class IMediaModule;
 class IMediaOptions;
 class IMediaPlayer;
-class IMediaSamples;
-class IMediaModule;
 class IMediaPlayerFactory;
+class IMediaSamples;
 
 enum class EMediaEvent;
 enum class EMediaCacheState;
@@ -35,8 +42,8 @@ enum class EMediaThreads;
 enum class EMediaTrackType;
 
 struct FMediaAudioTrackFormat;
-struct FMediaVideoTrackFormat;
 struct FMediaPlayerOptions;
+struct FMediaVideoTrackFormat;
 
 
 /**
@@ -226,6 +233,15 @@ public:
 	 * @see GetStats
 	 */
 	FString GetInfo() const;
+
+	/**
+	 * Get information about the media that is playing.
+	 * 
+	 * @param	InfoName		Name of the information we want.
+	 * @returns					Requested information, or empty if not available.
+	 * @see						UMediaPlayer::GetMediaInfo.
+	 */
+	FVariant GetMediaInfo(FName InfoName) const;
 
 	/**
 	 * Get the human readable name of the currently loaded media source.
@@ -782,10 +798,10 @@ protected:
 	void ProcessMetadataSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
 
 	/** Fetch audio samples from the player and forward them to the registered sinks. */
-	void ProcessCaptionSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
+	void ProcessCaptionSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
 
 	/** Fetch subtitle samples from the player and forward them to the registered sinks. */
-	void ProcessSubtitleSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
+	void ProcessSubtitleSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange);
 
 	/** Fetch video samples from the player and forward them to the registered sinks. */
 	void ProcessVideoSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange);

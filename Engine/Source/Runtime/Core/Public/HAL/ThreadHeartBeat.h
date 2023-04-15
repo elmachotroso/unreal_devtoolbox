@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Map.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
 #include "Delegates/DelegateCombinations.h" // for DECLARE_DELEGATE_OneParam
 #include "HAL/CriticalSection.h"
-#include "HAL/ThreadSafeCounter.h"
 #include "HAL/Runnable.h"
 #include "HAL/ThreadSafeBool.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "Misc/AssertionMacros.h"
+#include "UObject/NameTypes.h"
 
 #if PLATFORM_UNIX
 #include "Unix/UnixSignalHeartBeat.h"
@@ -16,6 +18,10 @@
 
 DECLARE_DELEGATE_OneParam(FOnThreadStuck, uint32);
 DECLARE_DELEGATE_OneParam(FOnThreadUnstuck, uint32);
+
+#if !UE_BUILD_SHIPPING
+DECLARE_DELEGATE_OneParam(FOnHangDelegate, uint32);
+#endif
 
 /**
  * Our own local clock.
@@ -133,13 +139,16 @@ class CORE_API FThreadHeartBeat : public FRunnable
 
 	bool bHangsAreFatal;
 
-	/** Global suspended count */
 	FThreadSafeCounter GlobalSuspendCount;
+	int32 CheckpointSuspendCount;
 
 	FThreadHeartBeatClock Clock;
 
 	FOnThreadStuck OnStuck;
 	FOnThreadUnstuck OnUnstuck;
+#if !UE_BUILD_SHIPPING
+	FOnHangDelegate OnHangDelegate;
+#endif
 
 	FThreadHeartBeat();
 	virtual ~FThreadHeartBeat();
@@ -235,6 +244,15 @@ public:
 	FOnThreadUnstuck& GetOnThreadUnstuck() { return OnUnstuck; }
 
 	/*
+	* Get delegate for callback on hang.
+	* Delegate implementation will be called from the hang detector thread and not from the hung thread
+	* Disabled in shipping build
+	*/
+#if !UE_BUILD_SHIPPING
+	FOnHangDelegate& GetOnHangDelegate() { return OnHangDelegate; }
+#endif
+
+	/*
 	*  Get hang duration threshold.
 	*/
 	double GetHangDuration() const { return ConfigHangDuration; };
@@ -251,20 +269,26 @@ struct FSlowHeartBeatScope
 {
 private:
 	bool bSuspendedAllThreads;
+	bool bSuspended;
 public:
 	FORCEINLINE FSlowHeartBeatScope(bool bAllThreads = false)
 		: bSuspendedAllThreads(bAllThreads)
+		, bSuspended(false)
 	{
 		if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
 		{
+			bSuspended = true;
 			HB->SuspendHeartBeat(bSuspendedAllThreads);
 		}
 	}
 	FORCEINLINE ~FSlowHeartBeatScope()
 	{
-		if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
+		if (bSuspended)
 		{
-			HB->ResumeHeartBeat(bSuspendedAllThreads);
+			if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
+			{
+				HB->ResumeHeartBeat(bSuspendedAllThreads);
+			}
 		}
 	}
 };
@@ -272,19 +296,26 @@ public:
 /** Simple scope object to put at the top of a function to monitor it completes in a timely fashion */
 struct FFunctionHeartBeatScope
 {
+private:
+	bool bStartedMonitor;
 public:
 	FORCEINLINE FFunctionHeartBeatScope()
+		: bStartedMonitor(false)
 	{
 		if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
 		{
+			bStartedMonitor = true;
 			HB->MonitorFunctionStart();
 		}
 	}
 	FORCEINLINE ~FFunctionHeartBeatScope()
 	{
-		if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
+		if (bStartedMonitor)
 		{
-			HB->MonitorFunctionEnd();
+			if (FThreadHeartBeat* HB = FThreadHeartBeat::GetNoInit())
+			{
+				HB->MonitorFunctionEnd();
+			}
 		}
 	}
 };

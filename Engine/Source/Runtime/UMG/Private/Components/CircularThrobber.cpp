@@ -7,6 +7,8 @@
 #include "Widgets/Images/SThrobber.h"
 #include "Styling/UMGCoreStyle.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CircularThrobber)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -119,20 +121,6 @@ void UCircularThrobber::SetRadius(float InRadius)
 	}
 }
 
-void UCircularThrobber::PostLoad()
-{
-	Super::PostLoad();
-
-	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
-	{
-		if ( PieceImage_DEPRECATED != nullptr )
-		{
-			Image = PieceImage_DEPRECATED->Brush;
-			PieceImage_DEPRECATED = nullptr;
-		}
-	}
-}
-
 #if WITH_EDITOR
 
 const FText UCircularThrobber::GetPaletteCategory()
@@ -145,3 +133,4 @@ const FText UCircularThrobber::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

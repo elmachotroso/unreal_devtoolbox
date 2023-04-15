@@ -1,18 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SRowEditor.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
-#include "UObject/StructOnScope.h"
-#include "Misc/MessageDialog.h"
 
-#include "PropertyEditorModule.h"
+#include "Containers/Map.h"
+#include "DataTableUtils.h"
+#include "DetailsViewArgs.h"
+#include "Engine/DataTable.h"
+#include "Engine/UserDefinedStruct.h"
+#include "HAL/PlatformMisc.h"
 #include "IStructureDetailsView.h"
-#include "IDetailsView.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class FProperty;
+class SWidget;
+class UPackage;
+struct FPropertyChangedEvent;
 
 #define LOCTEXT_NAMESPACE "SRowEditor"
 
@@ -464,14 +489,14 @@ void SRowEditor::ConstructInternal(UDataTable* Changed)
 				.Visibility(this, &SRowEditor::GetResetToDefaultVisibility)
 				.ContentPadding(FMargin(5.f, 0.f))
 				.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
-				.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+				.ButtonStyle(FAppStyle::Get(), "NoBorder")
 				.ForegroundColor(FSlateColor::UseForeground())
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
 				.Content()
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+					.Image(FAppStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 				]
 			]
 

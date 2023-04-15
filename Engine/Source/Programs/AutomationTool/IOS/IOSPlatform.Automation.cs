@@ -111,6 +111,11 @@ class IOSClientProcess : IProcessResult
 		childProcess.WaitForExit();
 	}
 
+	public FileReference WriteOutputToFile(string FileName)
+	{
+		return childProcess.WriteOutputToFile(FileName);
+	}
+
 	private void StopConsoleOutput()
 	{
 		//processConsoleLogs = false;
@@ -168,24 +173,43 @@ public class IOSPlatform : Platform
 
 	public override bool GetSDKInstallCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext)
 	{
-		TurnkeyContext.Log("Moving your original Xcode application from /Applications to the Trash, and unzipping the new version into /Applications");
+		Command = "";
+		Params = "";
 
-		// put current Xcode in the trash, and unzip a new one. Xcode in the dock will have to be fixed up tho!
-		Command = "osascript";
-		Params =
-			" -e \"try\"" +
-			" -e   \"tell application \\\"Finder\\\" to delete POSIX file \\\"/Applications/Xcode.app\\\"\"" +
-			" -e \"end try\"" +
-			" -e \"do shell script \\\"cd /Applications; xip --expand $(CopyOutputPath);\\\"\"" +
-			" -e \"try\"" +
-			" -e   \"do shell script \\\"xcode-select -s /Applications/Xcode.app; xcode-select --install; xcodebuild -license accept; xcodebuild -runFirstLaunch\\\" with administrator privileges\"" +
-			" -e \"end try\"";
+		if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+		{
+			TurnkeyContext.Log("Moving your original Xcode application from /Applications to the Trash, and unzipping the new version into /Applications");
 
+			// put current Xcode in the trash, and unzip a new one. Xcode in the dock will have to be fixed up tho!
+			Command = "osascript";
+			Params =
+				" -e \"try\"" +
+				" -e   \"tell application \\\"Finder\\\" to delete POSIX file \\\"/Applications/Xcode.app\\\"\"" +
+				" -e \"end try\"" +
+				" -e \"do shell script \\\"cd /Applications; xip --expand $(CopyOutputPath);\\\"\"" +
+				" -e \"try\"" +
+				" -e   \"do shell script \\\"xcode-select -s /Applications/Xcode.app; xcode-select --install; xcodebuild -license accept; xcodebuild -runFirstLaunch\\\" with administrator privileges\"" +
+				" -e \"end try\"";
+		}
+		else if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
+		{
+
+			TurnkeyContext.Log("Uninstalling old iTunes and preparing the new one to be installed.");
+
+			Command = "$(EngineDir)/Extras/iTunes/Install_iTunes.bat";
+			Params = "$(CopyOutputPath)";
+		}
 		return true;
 	}
 
 	public override bool GetDeviceUpdateSoftwareCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext, DeviceInfo Device)
 	{
+		if (UnrealBuildTool.BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
+		{
+			Command = Params = null;
+			return true;
+		}
+
 		TurnkeyContext.Log("Installing an offline downloaded .ipsw onto your device using the Apple Configurator application.");
 
 		// cfgtool needs ECID, not UDID, so find it
@@ -215,7 +239,10 @@ public class IOSPlatform : Platform
 		{
 			if (ExitCode == 0)
 			{
-				TurnkeyContext.PauseForUser("If you had Xcode in your Dock, you will need to remove it and add the new one (even though it was in the same location). macOS follows the move to the Trash for the Dock icon");
+				if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+				{
+					TurnkeyContext.PauseForUser("If you had Xcode in your Dock, you will need to remove it and add the new one (even though it was in the same location). macOS follows the move to the Trash for the Dock icon");
+				}
 			}
 		}
 
@@ -286,7 +313,7 @@ public class IOSPlatform : Platform
 			// if non-interactive, we can just run directly in the current shell
 			if (!bInteractive)
 			{
-				UnrealBuildTool.Utils.RunLocalProcessAndReturnStdOut(Command, Params, out ExitCode, true);
+				UnrealBuildTool.Utils.RunLocalProcessAndReturnStdOut(Command, Params, Log.Logger, out ExitCode);
 			}
 			else
 			{
@@ -316,7 +343,7 @@ public class IOSPlatform : Platform
 
 				Console.WriteLine("\n\n\n{0}\n\n\n", Params);
 
-				UnrealBuildTool.Utils.RunLocalProcessAndReturnStdOut("osascript", Params, out ExitCode, true);
+				UnrealBuildTool.Utils.RunLocalProcessAndReturnStdOut("osascript", Params, Log.Logger, out ExitCode);
 				if (ExitCode == 0)
 				{
 					ExitCode = int.Parse(File.ReadAllText(ReturnCodeFilename));
@@ -537,12 +564,12 @@ public class IOSPlatform : Platform
 
 			if (UnparsedUDID.Contains("Network"))
 			{
-				CurrentDevice.SubType = "Network";
+				CurrentDevice.PlatformValues["Connection"] = "Network";
 				IdeviceInfoArgs = "-n " + IdeviceInfoArgs;
 			}
 			else
 			{
-				CurrentDevice.SubType = "USB";
+				CurrentDevice.PlatformValues["Connection"] = "USB";
 			}
 
 			string OutputInfo = Utils.RunLocalProcessAndReturnStdOut(IdeviceInfoPath, IdeviceInfoArgs);
@@ -599,7 +626,7 @@ public class IOSPlatform : Platform
 	{
 		FileReference TargetReceiptFileName = GetTargetReceiptFileName(Config, InExecutablePath, InEngineDir, InProjectDirectory, bIsUEGame);
 
-		return IOSExports.PrepForUATPackageOrDeploy(Config, ProjectFile, InProjectName, InProjectDirectory, InExecutablePath, InEngineDir, bForDistribution, CookFlavor, bIsDataDeploy, bCreateStubIPA, TargetReceiptFileName);
+		return IOSExports.PrepForUATPackageOrDeploy(Config, ProjectFile, InProjectName, InProjectDirectory, InExecutablePath, InEngineDir, bForDistribution, CookFlavor, bIsDataDeploy, bCreateStubIPA, TargetReceiptFileName, Log.Logger);
 	}
 
 
@@ -626,7 +653,7 @@ public class IOSPlatform : Platform
 	public virtual bool DeployGeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, DirectoryReference ProjectDirectory, bool bIsUEGame, string GameName, bool bIsClient, string ProjectName, DirectoryReference InEngineDir, DirectoryReference AppDirectory, string InExecutablePath, out bool bSupportsPortrait, out bool bSupportsLandscape)
 	{
 		FileReference TargetReceiptFileName = GetTargetReceiptFileName(Config, InExecutablePath, InEngineDir, ProjectDirectory, bIsUEGame);
-		return IOSExports.GeneratePList(ProjectFile, Config, ProjectDirectory, bIsUEGame, GameName, bIsClient, ProjectName, InEngineDir, AppDirectory, TargetReceiptFileName, out bSupportsPortrait, out bSupportsLandscape);
+		return IOSExports.GeneratePList(ProjectFile, Config, ProjectDirectory, bIsUEGame, GameName, bIsClient, ProjectName, InEngineDir, AppDirectory, TargetReceiptFileName, Log.Logger, out bSupportsPortrait, out bSupportsLandscape);
 	}
 
 	protected string MakeIPAFileName(UnrealTargetConfiguration TargetConfiguration, ProjectParams Params, DeploymentContext SC, bool bAllowDistroPrefix)
@@ -853,7 +880,7 @@ public class IOSPlatform : Platform
 
 		StageLaunchScreenStoryboard(Params, SC);
 
-		IOSExports.GenerateAssetCatalog(Params.RawProjectPath, new FileReference(FullExePath), new DirectoryReference(CombinePaths(Params.BaseStageDirectory, (TargetPlatformType == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"))), TargetPlatformType);
+		IOSExports.GenerateAssetCatalog(Params.RawProjectPath, new FileReference(FullExePath), new DirectoryReference(CombinePaths(Params.BaseStageDirectory, (TargetPlatformType == UnrealTargetPlatform.IOS ? "IOS" : "TVOS"))), TargetPlatformType, Log.Logger);
 
 		bCreatedIPA = false;
 		bool bNeedsIPA = false;
@@ -1043,6 +1070,7 @@ public class IOSPlatform : Platform
 		PrintRunTime();
 	}
 
+#if true
 	private string EnsureXcodeProjectExists(FileReference RawProjectPath, string LocalRoot, string ShortProjectName, string ProjectRoot, bool IsCodeBasedProject, out bool bWasGenerated)
 	{
 		// first check for the .xcodeproj
@@ -1062,10 +1090,8 @@ public class IOSPlatform : Platform
 			// If engine is installed then UBT doesn't need to be built
 			if (Unreal.IsEngineInstalled())
 			{
-				// Get the path to UBT
-				string InstalledUBT = UnrealBuild.GetUBTExecutable();
 				Arguments = "-XcodeProjectFiles " + Arguments;
-				RunUBT(CmdEnv, InstalledUBT, Arguments);
+				RunUBT(CmdEnv, UnrealBuild.UnrealBuildToolDll, Arguments);
 			}
 			else
 			{
@@ -1087,9 +1113,39 @@ public class IOSPlatform : Platform
 
 		return XcodeProj;
 	}
+#endif
 
 	private void CodeSign(string BaseDirectory, string GameName, FileReference RawProjectPath, UnrealTargetConfiguration TargetConfig, string LocalRoot, string ProjectName, string ProjectDirectory, bool IsCode, bool Distribution = false, string Provision = null, string Certificate = null, string Team = null, bool bAutomaticSigning = false, string SchemeName = null, string SchemeConfiguration = null)
 	{
+		bool bUseModernXcode = false;
+		if (OperatingSystem.IsMacOS())
+		{
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, RawProjectPath.Directory, UnrealTargetPlatform.IOS);
+			Ini.TryGetValue("XcodeConfiguration", "bUseModernXcode", out bUseModernXcode);
+		}
+
+		if (bUseModernXcode)
+		{
+			// we need an xcode project to continue
+			DirectoryReference GeneratedProject = null;
+			IOSExports.GenerateRunOnlyXcodeProject(RawProjectPath, TargetPlatformType, false, Logger, out GeneratedProject);
+
+			if (GeneratedProject == null || !DirectoryReference.Exists(GeneratedProject))
+			{
+				// something very bad happened
+				throw new AutomationException("iOS couldn't find the appropriate Xcode Project for " + RawProjectPath);
+			}
+
+			int ReturnCode = IOSExports.FinalizeAppWithXcode(GeneratedProject, TargetPlatformType, SchemeName ?? GameName, SchemeConfiguration ?? TargetConfig.ToString(), Provision, Certificate, Team, bAutomaticSigning, Distribution, bUseModernXcode, Logger);
+			if (ReturnCode != 0)
+			{
+				throw new AutomationException(ExitCode.Error_FailedToCodeSign, "CodeSign Failed");
+			}
+
+			return;
+		}
+// @todo make this use the new IOSExports functionality that modern mode is using, after testing it
+#if true
 		// check for the proper xcodeproject
 		bool bWasGenerated = false;
 		string XcodeProj = EnsureXcodeProjectExists(RawProjectPath, LocalRoot, ProjectName, ProjectDirectory, IsCode, out bWasGenerated);
@@ -1135,6 +1191,8 @@ public class IOSPlatform : Platform
 							idx += "<string>".Length;
 							UUID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
 							Arguments += " PROVISIONING_PROFILE_SPECIFIER=" + UUID;
+
+							LogInformation("Extracted Provision UUID {0} from {1}", UUID, Provision);
 						}
 					}
 				}
@@ -1149,6 +1207,7 @@ public class IOSPlatform : Platform
 		{
 			throw new AutomationException(ExitCode.Error_FailedToCodeSign, "CodeSign Failed");
 		}
+#endif
 	}
 
 	private bool ShouldUseMaxIPACompression(ProjectParams Params)
@@ -1346,7 +1405,7 @@ public class IOSPlatform : Platform
 							TargetConfiguration,
 							(SC.IsCodeBasedProject ? SC.ProjectRoot : DirectoryReference.Combine(SC.LocalRoot, "Engine")),
 							!SC.IsCodeBasedProject,
-							(SC.IsCodeBasedProject ? SC.StageExecutables[0] : "UnrealGame"),
+							(SC.IsCodeBasedProject ? TargetName : "UnrealGame"),
 							SC.IsCodeBasedProject ? false : Params.Client, // Code based projects will have Client in their executable name already
 							SC.ShortProjectName, DirectoryReference.Combine(SC.LocalRoot, "Engine"),
 							DirectoryReference.Combine((SC.IsCodeBasedProject ? SC.ProjectRoot : DirectoryReference.Combine(SC.LocalRoot, "Engine")), "Binaries", PlatformName, "Payload", (SC.IsCodeBasedProject ? SC.ShortProjectName : "UnrealGame") + ".app"),
@@ -1684,7 +1743,7 @@ public class IOSPlatform : Platform
 				string IdeviceFSArgs = "-b " + "\"" + BundleIdentifier + " -x " + Directory.GetCurrentDirectory() + "\\CommandsToPush.txt -u " + "\"" + Params.DeviceNames[0];
 				IdeviceFSArgs = GetLibimobileDeviceNetworkedArgument(IdeviceFSArgs, Params.DeviceNames[0]);
 
-				Utils.RunLocalProcessAndReturnStdOut(DeviceFS, IdeviceFSArgs, out ExitCode, true);
+				Utils.RunLocalProcessAndReturnStdOut(DeviceFS, IdeviceFSArgs, Log.Logger, out ExitCode);
 				if (ExitCode != 0)
 				{
 					throw new AutomationException("Failed to deploy manifest to mobile device.");
@@ -1738,7 +1797,7 @@ public class IOSPlatform : Platform
 	{
 		DeviceInfo[] CachedDevices = GetDevices();
 
-		if (CachedDevices.Where(CachedDevice => CachedDevice.Id == UDID && CachedDevice.SubType == "Network").Count() > 0)
+		if (CachedDevices.Where(CachedDevice => CachedDevice.Id == UDID && CachedDevice.PlatformValues["Connection"] == "Network").Count() > 0)
 		{
 			return EntryArguments + " -n";
 		}
@@ -2236,7 +2295,7 @@ public class IOSPlatform : Platform
 
 	public override void StripSymbols(FileReference SourceFile, FileReference TargetFile)
 	{
-		IOSExports.StripSymbols(PlatformType, SourceFile, TargetFile);
+		IOSExports.StripSymbols(PlatformType, SourceFile, TargetFile, Log.Logger);
 	}
 
 
@@ -2280,7 +2339,7 @@ public class IOSPlatform : Platform
 		}
 	}
 
-	#region Hooks
+#region Hooks
 
 	public override void PreBuildAgenda(UnrealBuild Build, UnrealBuild.BuildAgenda Agenda, ProjectParams Params)
 	{
@@ -2290,7 +2349,7 @@ public class IOSPlatform : Platform
 		}
 	}
 
-	#endregion
+#endregion
 
 	public override DirectoryReference GetProjectRootForStage(DirectoryReference RuntimeRoot, StagedDirectoryReference RelativeProjectRootForStage)
 	{

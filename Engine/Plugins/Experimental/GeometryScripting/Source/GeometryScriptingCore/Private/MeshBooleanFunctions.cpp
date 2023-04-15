@@ -15,6 +15,8 @@
 #include "Operations/MinimalHoleFiller.h"
 #include "ConstrainedDelaunay2.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshBooleanFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshBooleanFunctions"
@@ -85,7 +87,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshBooleanFunctions::ApplyMeshBoolean(
 	}
 
 	// Boolean result is in the space of TargetTransform, so invert that
-	MeshTransforms::ApplyTransform(NewResultMesh, (FTransformSRT3d)TargetTransform.Inverse());
+	MeshTransforms::ApplyTransformInverse(NewResultMesh, (FTransformSRT3d)TargetTransform, true);
 
 	if (NewBoundaryEdges.Num() > 0 && Options.bFillHoles)
 	{

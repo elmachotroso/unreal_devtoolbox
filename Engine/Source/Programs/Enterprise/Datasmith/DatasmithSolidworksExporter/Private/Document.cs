@@ -19,6 +19,7 @@ namespace DatasmithSolidworks
 		public bool bDirectLinkAutoSync { get; set; } = false;
 		public int DirectLinkSyncCount { get; private set; } = 0;
 		public ConcurrentDictionary<int, FMaterial> ExportedMaterialsMap = new ConcurrentDictionary<int, FMaterial>();
+		public bool bHasConfigurations = false;
 		
 		protected FDatasmithFacadeScene DatasmithScene = null;
 		protected FDatasmithExporter Exporter = null;
@@ -34,6 +35,7 @@ namespace DatasmithSolidworks
 		private ManualResetEvent MaterialCheckerEvent = null;
 		private bool bExitMaterialUpdateThread = false;
 		private uint FaceCounter = 1; // Face Id generator
+
 
 		public FDocument(int InDocId, ModelDoc2 InSwDoc, FDatasmithExporter InExporter)
 		{
@@ -99,7 +101,7 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		private void ExportConfigurations()
+		private void ExportConfigurations(List<FConfigurationData> Configs)
 		{
 			// Remove any existing Datasmith LevelVariantSets as we'll re-add data
 			while (DatasmithScene.GetLevelVariantSetsCount() > 0)
@@ -109,8 +111,6 @@ namespace DatasmithSolidworks
 					DatasmithScene.RemoveLevelVariantSets(DatasmithScene.GetLevelVariantSets(Index));
 				}
 			}
-
-			List<FConfigurationData> Configs = FConfigurationExporter.ExportConfigurations(this);
 
 			Exporter.ExportMaterials(ExportedMaterialsMap);
 
@@ -145,6 +145,16 @@ namespace DatasmithSolidworks
 			}
 		}
 
+		private void ExportLights()
+		{
+			List<FLight> Lights  = FLightExporter.ExportLights(SwDoc);
+
+			foreach (FLight Light in Lights)
+			{
+				Exporter.ExportLight(Light);
+			}
+		}
+
 		private void RunExport(bool bIsDirectLinkExport)
 		{
 			if (bIsDirectLinkExport)
@@ -159,8 +169,12 @@ namespace DatasmithSolidworks
 #if DEBUG
 				Stopwatch Watch = Stopwatch.StartNew();
 #endif
+				FMeshes Meshes = new FMeshes();
+				
+				PreExport(Meshes, false);
+				ExportToDatasmithScene(Meshes);
 
-				ExportToDatasmithScene();
+				ExportLights();
 
 #if DEBUG
 				Watch.Stop();
@@ -189,9 +203,17 @@ namespace DatasmithSolidworks
 
 				Exporter = new FDatasmithExporter(DatasmithScene);
 
-				ExportToDatasmithScene();
+				FMeshes Meshes = new FMeshes();
 
-				ExportConfigurations();
+				PreExport(Meshes, true);
+
+				List<FConfigurationData> Configs = new FConfigurationExporter(Meshes).ExportConfigurations(this);
+				bHasConfigurations = (Configs != null) && (Configs.Count != 0);
+
+				ExportToDatasmithScene(Meshes);
+			
+				ExportLights();
+				ExportConfigurations(Configs);
 
 				DatasmithScene.PreExport();
 				DatasmithScene.ExportScene(DatasmithFileExportPath);
@@ -218,7 +240,8 @@ namespace DatasmithSolidworks
 		}
 
 		public abstract bool HasMaterialUpdates();
-		public abstract void ExportToDatasmithScene();
+		public abstract void ExportToDatasmithScene(FMeshes Meshes);
+		public abstract void PreExport(FMeshes Meshes, bool bConfigurations);  // Called before configurations are parsed to prepare meshes needed to identify if they create different configurations
 
 		public virtual void Init()
 		{

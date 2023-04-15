@@ -3,6 +3,8 @@
 #include "PhysicsSettingsCore.h"
 #include "Chaos/ChaosEngineInterface.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PhysicsSettingsCore)
+
 UPhysicsSettingsCore* UPhysicsSettingsCore::DefaultSettings = nullptr;
 
 void UPhysicsSettingsCore::SetDefaultSettings(UPhysicsSettingsCore* InSettings)
@@ -55,5 +57,8 @@ void UPhysicsSettingsCore::PostInitProperties()
 	{
 		DefaultShapeComplexity = bDefaultHasComplexCollision_DEPRECATED ? CTF_UseSimpleAndComplex : CTF_UseSimpleAsComplex;
 	}
+
+	SolverOptions.MoveRenamedPropertyValues();
 }
+
 

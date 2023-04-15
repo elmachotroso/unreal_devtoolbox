@@ -10,29 +10,10 @@ class FVulkanCommandListContext;
 class FVulkanResourceMultiBuffer;
 class FVulkanRayTracingLayout;
 
-#define ENUM_VK_ENTRYPOINTS_RAYTRACING(EnumMacro) \
-	EnumMacro(PFN_vkCreateAccelerationStructureKHR, vkCreateAccelerationStructureKHR) \
-	EnumMacro(PFN_vkDestroyAccelerationStructureKHR, vkDestroyAccelerationStructureKHR) \
-	EnumMacro(PFN_vkCmdBuildAccelerationStructuresKHR, vkCmdBuildAccelerationStructuresKHR) \
-	EnumMacro(PFN_vkGetAccelerationStructureBuildSizesKHR, vkGetAccelerationStructureBuildSizesKHR) \
-	EnumMacro(PFN_vkGetAccelerationStructureDeviceAddressKHR, vkGetAccelerationStructureDeviceAddressKHR) \
-	EnumMacro(PFN_vkCmdTraceRaysKHR, vkCmdTraceRaysKHR) \
-	EnumMacro(PFN_vkCreateRayTracingPipelinesKHR, vkCreateRayTracingPipelinesKHR) \
-	EnumMacro(PFN_vkGetRayTracingShaderGroupHandlesKHR, vkGetRayTracingShaderGroupHandlesKHR) \
-	EnumMacro(PFN_vkGetBufferDeviceAddressKHR, vkGetBufferDeviceAddressKHR)
-
-// Declare ray tracing entry points
-namespace VulkanDynamicAPI
-{
-	ENUM_VK_ENTRYPOINTS_RAYTRACING(DECLARE_VK_ENTRYPOINTS);
-}
-
 class FVulkanRayTracingPlatform
 {
 public:
-	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
-	static void EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device);
-	static bool LoadVulkanInstanceFunctions(VkInstance inInstance);
+	static bool CheckVulkanInstanceFunctions(VkInstance inInstance);
 };
 
 struct FVkRtAllocation
@@ -88,32 +69,36 @@ public:
 	virtual void SetInitializer(const FRayTracingGeometryInitializer& Initializer) final override;
 
 	void Swap(FVulkanRayTracingGeometry& Other);
-	void BuildAccelerationStructure(FVulkanCommandListContext& CommandContext, EAccelerationStructureBuildMode BuildMode);
 
-private:
-	FVulkanDevice* const Device = nullptr;
+	using FRHIRayTracingGeometry::Initializer;
+	using FRHIRayTracingGeometry::SizeInfo;
+	
+	void RemoveCompactionRequest();
+	void CompactAccelerationStructure(FVulkanCmdBuffer& CmdBuffer, uint64 InSizeAfterCompaction);
 
 	VkAccelerationStructureKHR Handle = VK_NULL_HANDLE;
 	VkDeviceAddress Address = 0;
 	TRefCountPtr<FVulkanResourceMultiBuffer> AccelerationStructureBuffer;
-	TRefCountPtr<FVulkanResourceMultiBuffer> ScratchBuffer;
+	bool bHasPendingCompactionRequests = false;
+	uint64 AccelerationStructureCompactedSize = 0;
+private:
+	FVulkanDevice* const Device = nullptr;
 };
 
 class FVulkanRayTracingScene : public FRHIRayTracingScene
 {
 public:
-	FVulkanRayTracingScene(FRayTracingSceneInitializer2 Initializer, FVulkanDevice* InDevice, FVulkanResourceMultiBuffer* InInstanceBuffer);
+	FVulkanRayTracingScene(FRayTracingSceneInitializer2 Initializer, FVulkanDevice* InDevice);
 	~FVulkanRayTracingScene();
 
 	const FRayTracingSceneInitializer2& GetInitializer() const override final { return Initializer; }
+	uint32 GetLayerBufferOffset(uint32 LayerIndex) const override final { return Layers[LayerIndex].BufferOffset; }
 
 	void BindBuffer(FRHIBuffer* InBuffer, uint32 InBufferOffset);
 	void BuildAccelerationStructure(
 		FVulkanCommandListContext& CommandContext, 
 		FVulkanResourceMultiBuffer* ScratchBuffer, uint32 ScratchOffset, 
 		FVulkanResourceMultiBuffer* InstanceBuffer, uint32 InstanceOffset);
-
-	FRayTracingAccelerationStructureSize SizeInfo;
 
 	virtual FRHIShaderResourceView* GetMetadataBufferSRV() const override final
 	{
@@ -125,8 +110,6 @@ private:
 
 	const FRayTracingSceneInitializer2 Initializer;
 
-	TRefCountPtr<FVulkanResourceMultiBuffer> InstanceBuffer;
-
 	// Native TLAS handles are owned by SRV objects in Vulkan RHI.
 	// D3D12 and other RHIs allow creating TLAS SRVs from any GPU address at any point
 	// and do not require them for operations such as build or update.
@@ -134,14 +117,22 @@ private:
 	// we allow TLAS memory to be allocated using transient resource allocator and 
 	// the lifetime of the scene object may be different from the lifetime of the buffer.
 	// Many VkAccelerationStructureKHR-s may be created, pointing at the same buffer.
-	TRefCountPtr<FVulkanShaderResourceView> AccelerationStructureView;
+
+	struct FLayerData
+	{
+		TRefCountPtr<FVulkanShaderResourceView> ShaderResourceView;
+		uint32 BufferOffset;
+		uint32 ScratchBufferOffset;
+	};
+
+	TArray<FLayerData> Layers;
 	
 	TRefCountPtr<FVulkanResourceMultiBuffer> AccelerationStructureBuffer;
 
 	// Buffer that contains per-instance index and vertex buffer binding data
 	TRefCountPtr<FVulkanResourceMultiBuffer> PerInstanceGeometryParameterBuffer;
 	TRefCountPtr<FVulkanShaderResourceView> PerInstanceGeometryParameterSRV;
-	void BuildPerInstanceGeometryParameterBuffer();
+	void BuildPerInstanceGeometryParameterBuffer(FVulkanCommandListContext& CommandContext);
 };
 
 class FVulkanRayTracingPipelineState : public FRHIRayTracingPipelineState
@@ -173,4 +164,48 @@ private:
 
 	FVulkanRayTracingPipelineState* Occlusion = nullptr;
 };
+
+class FVulkanRayTracingCompactedSizeQueryPool : public FVulkanQueryPool
+{
+public:
+	FVulkanRayTracingCompactedSizeQueryPool(FVulkanDevice* InDevice, uint32 InMaxQueries)
+		: FVulkanQueryPool(InDevice, nullptr, InMaxQueries, VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, false)
+	{}
+
+	void EndBatch(FVulkanCmdBuffer* InCmdBuffer);
+	bool TryGetResults(uint32 NumResults);
+	void Reset(FVulkanCmdBuffer* InCmdBuffer);
+
+	FVulkanCmdBuffer* CmdBuffer = nullptr;
+	uint64 FenceSignaledCounter = 0;
+};
+
+// Manages all the pending BLAS compaction requests
+class FVulkanRayTracingCompactionRequestHandler : public VulkanRHI::FDeviceChild
+{
+public:
+	UE_NONCOPYABLE(FVulkanRayTracingCompactionRequestHandler)
+
+	FVulkanRayTracingCompactionRequestHandler(FVulkanDevice* const InDevice);
+	~FVulkanRayTracingCompactionRequestHandler()
+	{
+		check(PendingRequests.IsEmpty());
+		delete QueryPool;
+	}
+
+	void RequestCompact(FVulkanRayTracingGeometry* InRTGeometry);
+	bool ReleaseRequest(FVulkanRayTracingGeometry* InRTGeometry);
+
+	void Update(FVulkanCommandListContext& InCommandContext);
+
+private:
+
+	FCriticalSection CS;
+	TArray<FVulkanRayTracingGeometry*> PendingRequests;
+	TArray<FVulkanRayTracingGeometry*> ActiveRequests;
+	TArray<VkAccelerationStructureKHR> ActiveBLASes;
+
+	FVulkanRayTracingCompactedSizeQueryPool* QueryPool = nullptr;
+};
+
 #endif // VULKAN_RHI_RAYTRACING

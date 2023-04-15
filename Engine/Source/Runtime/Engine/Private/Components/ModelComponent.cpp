@@ -15,6 +15,8 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "PhysicsEngine/BodySetup.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ModelComponent)
+
 FModelElement::FModelElement(UModelComponent* InComponent,UMaterialInterface* InMaterial):
 	Component(InComponent),
 	Material(InMaterial),
@@ -631,6 +633,13 @@ void UModelComponent::InvalidateCollisionData()
 }
 #endif // WITH_EDITOR
 
+bool UModelComponent::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	check(Model);
+	OutTriMeshEstimates.VerticeCount = Model->VertexBuffer.Vertices.Num();
+	return true;
+}
+
 bool UModelComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool InUseAllTriData)
 {
 	check(Model);
@@ -735,3 +744,4 @@ bool UModelComponent::ContainsPhysicsTriMeshData(bool InUseAllTriData) const
 {
 	return (Elements.Num() > 0);
 }
+

@@ -23,6 +23,8 @@
 #include "Chaos/ChaosSolverComponentTypes.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
 #include "EngineDefines.h"
+#include "Math/MathFwd.h"
+#include "PhysxUserData.h"
 
 #include "GeometryCollectionComponent.generated.h"
 
@@ -35,10 +37,16 @@ class UChaosPhysicalMaterial;
 class AChaosSolverActor;
 struct FGeometryCollectionEmbeddedExemplar;
 class UInstancedStaticMeshComponent;
+class FGeometryCollectionDecayDynamicFacade;
+struct FGeometryCollectionDecayContext;
+struct FDamageCollector;
+class AGeometryCollectionISMPoolActor;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosBreakEvent, const FChaosBreakEvent&, BreakEvent);
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosRemovalEvent, const FChaosRemovalEvent&, RemovalEvent);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnChaosCrumblingEvent, const FChaosCrumblingEvent&, CrumbleEvent);
 
 namespace GeometryCollection
 {
@@ -51,7 +59,9 @@ namespace GeometryCollection
 		Neighbors,
 		Parent,
 		Children,
-		Level
+		Level,
+		Leaves,
+		Clusters
 	};
 }
 
@@ -208,6 +218,7 @@ public:
 	bool GetEnableBoneSelection() const;
 
 	bool IsBoneSelected(int BoneIndex) const;
+	void Sanitize();
 	void SetSelectedBones(const TArray<int32>& SelectedBonesIn);
 	void AppendSelectedBones(const TArray<int32>& SelectedBonesIn);
 	void ToggleSelectedBones(const TArray<int32>& SelectedBonesIn, bool bAdd, bool bSnapToLevel = true);
@@ -262,7 +273,7 @@ FORCEINLINE TManagedArray<Type>& Get##Name##ArrayCopyOnWrite()					\
 		DynamicCollection->CopyAttribute(										\
 			*RestCollection->GetGeometryCollection(), StaticName, Group);		\
 		Indirect##Name##Array =													\
-			&DynamicCollection->GetAttribute<Type>(StaticName, Group);			\
+			&DynamicCollection->ModifyAttribute<Type>(StaticName, Group);		\
 		CopyOnWriteAttributeList.Add(											\
 			reinterpret_cast<FManagedArrayBase**>(&Indirect##Name##Array));		\
 	}																			\
@@ -284,16 +295,96 @@ public:
  * Raw struct to serialize for network. We need to custom netserialize to optimize
  * the vector serialize as much as possible and rather than have the property system
  * iterate an array of reflected structs we handle everything in the NetSerialize for
- * the container (FGeometryCollectionRepData)
+ * the container (FGeometryCollectionClusterRep)
  */
-struct FGeometryCollectionRepPose
+struct FGeometryCollectionClusterRep
 {
-	FVector Position;
-	FVector LinearVelocity;
-	FVector AngularVelocity;
+	struct FClusterState
+	{
+		static constexpr uint8 StateMask = 0b111;
+		static constexpr uint8 StateOffset = 0;
+		static constexpr uint8 InternalClusterMask = 0b1;
+		static constexpr uint8 InternalClusterOffset = 3;
+
+		void SetMaskedValue(uint8 Val, uint8 Mask, uint8 Offset)
+		{
+			Value &= ~Mask;
+			Value |= ((Val & Mask) << Offset);
+		}
+		
+		uint8 GetMaskedValue(uint8 Mask, uint8 Offset) const
+		{
+			return (Value >> Offset) & Mask;
+		}
+		
+		void SetObjectState(Chaos::EObjectStateType State)
+		{
+			SetMaskedValue((uint8)State, StateMask, StateOffset);
+		}
+
+		void SetInternalCluster(bool bInternalCluster)
+		{
+			SetMaskedValue(bInternalCluster?1:0, InternalClusterMask, InternalClusterOffset);
+		}
+		
+		Chaos::EObjectStateType GetObjectState()
+		{
+			return (Chaos::EObjectStateType)GetMaskedValue(StateMask, StateOffset);
+		}
+
+		bool IsInternalCluster() const
+		{
+			return (bool)GetMaskedValue(InternalClusterMask, InternalClusterOffset);
+		}
+		
+		uint8 Value = 0;
+	};
+	
+	FVector_NetQuantize100 Position;
+	FVector_NetQuantize100 LinearVelocity;
+	FVector_NetQuantize100 AngularVelocity;
 	FQuat Rotation;
-	uint16 ParticleIndex;
+	uint16 ClusterIdx;		  // index of the cluster or one of its child if the cluster is internal ( see ClusterState)
+	FClusterState ClusterState;
+
+	bool ClusterChanged(const FGeometryCollectionClusterRep& Other) const
+	{
+		return Other.ClusterState.Value != ClusterState.Value
+			|| Other.ClusterIdx != ClusterIdx
+			|| Other.Position != Position
+			|| Other.LinearVelocity != LinearVelocity
+			|| Other.AngularVelocity != AngularVelocity
+			|| Other.Rotation != Rotation;
+	}
 };
+
+struct FGeometryCollectionActivatedCluster
+{
+	FGeometryCollectionActivatedCluster() = default;
+	FGeometryCollectionActivatedCluster(uint16 Index, const FVector& InitialLinearVel, const FVector& InitialAngularVel )
+		: ActivatedIndex(Index)
+		, InitialLinearVelocity(InitialLinearVel)
+		, InitialAngularVelocity(InitialAngularVel)
+	{}
+
+	uint16 ActivatedIndex;
+	FVector_NetQuantize100 InitialLinearVelocity;
+	FVector_NetQuantize100 InitialAngularVelocity;
+
+	bool operator==(const FGeometryCollectionActivatedCluster& Other) const
+	{
+		return ActivatedIndex == Other.ActivatedIndex;
+	}
+};
+
+FORCEINLINE FArchive& operator<<(FArchive& Ar, FGeometryCollectionActivatedCluster& ActivatedCluster)
+{
+	Ar << ActivatedCluster.ActivatedIndex;
+	Ar << ActivatedCluster.InitialLinearVelocity;
+	Ar << ActivatedCluster.InitialAngularVelocity;
+
+	return Ar;
+}
 
 /**
  * Replicated data for a geometry collection when bEnableReplication is true for
@@ -310,8 +401,11 @@ struct FGeometryCollectionRepData
 
 	}
 
-	// Array of per-particle data required to synchronize clients
-	TArray<FGeometryCollectionRepPose> Poses;
+	//Array of one off pieces that became activated
+	TArray<FGeometryCollectionActivatedCluster> OneOffActivated;
+
+	// Array of cluster data requires to synchronize clients
+	TArray<FGeometryCollectionClusterRep> Clusters;
 
 	// Version counter, every write to the rep data is a new state so Identical only references this version
 	// as there's no reason to compare the Poses array.
@@ -320,6 +414,13 @@ struct FGeometryCollectionRepData
 	// Just test version to skip having to traverse the whole pose array for replication
 	bool Identical(const FGeometryCollectionRepData* Other, uint32 PortFlags) const;
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	void Reset()
+	{
+		OneOffActivated.Reset();
+		Clusters.Reset();
+	}
+
 };
 
 template<>
@@ -351,6 +452,7 @@ public:
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void SendRenderDynamicData_Concurrent() override;
 	FORCEINLINE void SetRenderStateDirty() { bRenderStateDirty = true; }
+	virtual void OnActorEnableCollisionChanged() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type ReasonEnd) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -358,6 +460,15 @@ public:
 
 #if WITH_EDITOR
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	DECLARE_MULTICAST_DELEGATE(FOnGeometryCollectionPropertyChangedMulticaster)
+	FOnGeometryCollectionPropertyChangedMulticaster OnGeometryCollectionPropertyChanged;
+	typedef FOnGeometryCollectionPropertyChangedMulticaster::FDelegate FOnGeometryCollectionPropertyChanged;
+
+	/** Register / Unregister delegates called when the skeletal mesh property is changed */
+	FDelegateHandle RegisterOnGeometryCollectionPropertyChanged(const FOnGeometryCollectionPropertyChanged& Delegate);
+	void UnregisterOnGeometryCollectionPropertyChanged(FDelegateHandle Handle);
 #endif
 	//~ Begin UActorComponent Interface. 
 
@@ -366,8 +477,13 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual FBoxSphereBounds CalcLocalBounds() const { return LocalBounds; }
 
-	virtual bool HasAnySockets() const override { return false; }
+	virtual bool HasAnySockets() const override;
+	virtual bool DoesSocketExist(FName InSocketName) const override;
+	virtual FTransform GetSocketTransform(FName InSocketName, ERelativeTransformSpace TransformSpace = RTS_World) const override;
+	virtual void QuerySupportedSockets(TArray<FComponentSocketDescription>& OutSockets) const override;
+	
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
+	virtual void AsyncPhysicsTickComponent(float DeltaTime, float SimTime) override;
 	//~ Begin USceneComponent Interface.
 
 
@@ -378,6 +494,13 @@ public:
 	virtual void SetNotifyRigidBodyCollision(bool bNewNotifyRigidBodyCollision) override;
 	virtual bool CanEditSimulatePhysics() override;
 	virtual void SetSimulatePhysics(bool bEnabled) override;
+	virtual void AddForce(FVector Force, FName BoneName = NAME_None, bool bAccelChange = false) override;
+	virtual void AddForceAtLocation(FVector Force, FVector WorldLocation, FName BoneName = NAME_None) override;
+	virtual void AddImpulse(FVector Impulse, FName BoneName = NAME_None, bool bVelChange = false) override;
+	virtual void AddImpulseAtLocation(FVector Impulse, FVector WorldLocation, FName BoneName = NAME_None) override;
+	virtual void AddRadialForce(FVector Origin, float Radius, float Strength, ERadialImpulseFalloff Falloff, bool bAccelChange = false) override;
+	virtual void AddRadialImpulse(FVector Origin, float Radius, float Strength, enum ERadialImpulseFalloff Falloff, bool bVelChange = false) override;
+	virtual void AddTorqueInRadians(FVector Torque, FName BoneName = NAME_None, bool bAccelChange = false) override;
 	virtual void PostLoad() override;
 	//~ End UPrimitiveComponent Interface.
 
@@ -391,9 +514,108 @@ public:
 	UPROPERTY(EditAnywhere, Category = "ChaosPhysics", meta = (DisplayName = "Chaos Solver"))
 	TObjectPtr<AChaosSolverActor> ChaosSolverActor;
 
+	/**
+	 * Apply an external strain to specific piece of the geometry collection
+	 * @param ItemIndex item index ( from HitResult) of the piece to apply strain on
+	 * @param Location world location of where to apply the strain
+	 * @param Radius radius from the location point to apply the strain to ( using the center of mass of the pieces )
+	 * @param PropagationDepth How many level of connection to follow to propagate the strain through
+	 * @param PropagationFactor when using propagation, the factor to multiply the strain from one level to the other, allowing falloff effect
+	 * @param Strain strain / damage to apply 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyExternalStrain(int32 ItemIndex, const FVector& Location, float Radius = 0, int32 PropagationDepth = 0, float PropagationFactor = 1, float Strain = 0);
+
+	/**
+	 * Apply an internal strain to specific piece of the geometry collection
+	 * @param ItemIndex item index ( from HitResult) of the piece to apply strain on
+	 * @param Location world location of where to apply the strain
+	 * @param Radius radius from the location point to apply the strain to ( using the center of mass of the pieces )
+	 * @param PropagationDepth How many level of connection to follow to propagate the strain through
+	 * @param PropagationFactor when using propagation, the factor to multiply the strain from one level to the other, allowing falloff effect
+	 * @param Strain strain / damage to apply 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyInternalStrain(int32 ItemIndex, const FVector& Location, float Radius = 0, int32 PropagationDepth = 0, float PropagationFactor = 1, float Strain = 0);
+	
+	/**
+	 * Crumbe a cluster into all its pieces
+	 * @param ItemIndex item index ( from HitResult) of the cluster to crumble
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void CrumbleCluster(int32 ItemIndex);
+
+	/**
+	* Crumbe active clusters for this entire geometry collection
+	* this will apply to internal and regular clusters
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void CrumbleActiveClusters();
+
+	/**
+	* this will remove anchors on all the pieces ( inlcuding the static and kinematic initial states ones ) of the geometry colection
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void RemoveAllAnchors();
+
+	/**
+	 * Apply linear velocity on breaking pieces for a specific cluster
+	 * If ItemIndex does not represent a cluster this will do nothing  
+	 * @param ItemIndex item index ( from HitResult) of the cluster owning the breaking pieces to apply velocity on
+	 * @param LinearVelocity linear velocity to apply
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyBreakingLinearVelocity(int32 ItemIndex, const FVector& LinearVelocity);
+
+	/**
+	 * Apply linear velocity on breaking pieces for a specific cluster
+	 * If ItemIndex does not represent a cluster this will do nothing  
+	 * @param ItemIndex item index ( from HitResult) of the cluster owning the breaking pieces to apply velocity on
+	 * @param AngularVelocity linear velocity to apply
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyBreakingAngularVelocity(int32 ItemIndex, const FVector& AngularVelocity);
+	
+	/**
+	 * Apply linear velocity on specific piece 
+	 * @param ItemIndex item index ( from HitResult) of the piece to apply velocity on
+	* @param LinearVelocity linear velocity to apply
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyLinearVelocity(int32 ItemIndex, const FVector& LinearVelocity);
+
+	/**
+	 * Apply angular velocity on specific piece 
+	 * @param ItemIndex item index ( from HitResult) of the piece to apply velocity on
+	* @param AngularVelocity linear velocity to apply
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void ApplyAngularVelocity(int32 ItemIndex, const FVector& AngularVelocity);
+
+	/**
+	 * Get the initial level of a specific piece
+	 * Initial level means the level as it is in the unbroken state 
+	 * @param ItemIndex item index ( from HitResult) of the cluster to get level from
+	 * @param Level of the piece ( 0 for root level and positive for the rest ) 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	int32 GetInitialLevel(int32 ItemIndex);
+	
+	/**
+	* Get mass and extent of a specific piece
+	* @param ItemIndex item index ( from HitResult) of the cluster to get level from
+	* @param Level of the piece ( 0 for root level and positive for the rest )
+	*/
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
+	void GetMassAndExtents(int32 ItemIndex, float& OutMass, FBox& OutExtents);
+
 	/** RestCollection */
+	UFUNCTION(BlueprintCallable, Category = "ChaosPhysics")
 	void SetRestCollection(const UGeometryCollection * RestCollectionIn);
+
+
 	FORCEINLINE const UGeometryCollection* GetRestCollection() const { return RestCollection; }
+
 	FORCEINLINE FGeometryCollectionEdit EditRestCollection(GeometryCollection::EEditUpdate EditUpdate = GeometryCollection::EEditUpdate::RestPhysics, bool bShapeIsUnchanged = false) { return FGeometryCollectionEdit(this, EditUpdate, bShapeIsUnchanged); }
 #if WITH_EDITOR
 	FORCEINLINE FScopedColorEdit EditBoneSelection(bool bForceUpdate = false) { return FScopedColorEdit(this, bForceUpdate); }
@@ -408,6 +630,9 @@ public:
 		int32 Size = RestCollection->NumElements(Group);	//assume rest collection has the group and is connected to dynamic.
 		return Size > 0 ? Size : DynamicCollection->NumElements(Group);	//if not, maybe dynamic has the group
 	}
+
+	// Update cached bounds; used e.g. when updating the exploded view of the geometry collection
+	void UpdateCachedBounds();
 
 	// Vertices Group
 	COPY_ON_WRITE_ATTRIBUTE(FVector3f, Vertex, FGeometryCollection::VerticesGroup) 	//GetVertexArray, GetVertexArrayCopyOnWrite, GetVertexArrayRest
@@ -479,13 +704,25 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Clustering")
 	int32 MaxClusterLevel;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Clustering", meta = (EditCondition = "!bUseSizeSpecificDamageThreshold"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Damage", meta = (EditCondition = "!bUseSizeSpecificDamageThreshold"))
 	TArray<float> DamageThreshold;
 
 	/** Damage threshold for clusters at different levels. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Clustering")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Damage")
 	bool bUseSizeSpecificDamageThreshold;
 
+	/** Data about how damage propagation shoudl behave. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Damage")
+	FGeometryCollectionDamagePropagationData DamagePropagationData;
+
+	/** Allow removal on sleep for the instance if the rest collection has it enabled */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Removal")
+	bool bAllowRemovalOnSleep;
+
+	/** Allow removal on break for the instance if the rest collection has it enabled */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|Removal")
+	bool bAllowRemovalOnBreak;
+	
 	/** */
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Connection types are defined on the asset now."))
 	EClusterConnectionTypeEnum ClusterConnectionType_DEPRECATED;
@@ -645,6 +882,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Physics")
 	void SetNotifyRemovals(bool bNewNotifyRemovals);
 
+	/** Changes whether or not this component will get future break notifications. */
+	UFUNCTION(BlueprintCallable, Category = "Physics")
+	void SetNotifyCrumblings(bool bNewNotifyCrumblings);
+	
 	/** Overrideable native notification */
 	virtual void NotifyBreak(const FChaosBreakEvent& Event) {};
 
@@ -656,10 +897,15 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Chaos")
 	FOnChaosRemovalEvent OnChaosRemovalEvent;
-	
+
+	UPROPERTY(BlueprintAssignable, Category = "Chaos")
+	FOnChaosCrumblingEvent OnChaosCrumblingEvent;
+
 	void DispatchBreakEvent(const FChaosBreakEvent& Event);
 
 	void DispatchRemovalEvent(const FChaosRemovalEvent& Event);
+
+	void DispatchCrumblingEvent(const FChaosCrumblingEvent& Event);
 
 	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadWrite, Interp, Category = "Chaos")
 	float DesiredCacheTime;
@@ -683,6 +929,9 @@ public:
 	int32 EmbeddedIndexToTransformIndex(const UInstancedStaticMeshComponent* ISMComponent, int32 InstanceIndex) const;
 #endif
 
+#if WITH_EDITORONLY_DATA
+	const FDamageCollector* GetRunTimeDataCollector() const;
+#endif
 	
 	// #todo should this only be available in editor?
 	void SetRestState(TArray<FTransform>&& InRestTransforms);
@@ -700,7 +949,8 @@ public:
 	const TArray<FMatrix>& GetGlobalMatrices() { return GlobalMatrices; }
 
 	const FGeometryDynamicCollection* GetDynamicCollection() const { return DynamicCollection.Get(); }
-	
+	FGeometryDynamicCollection* GetDynamicCollection() { return DynamicCollection.Get(); } // TEMP HACK?
+
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Collision")
 	FOnChaosPhysicsCollision OnChaosPhysicsCollision;
@@ -727,6 +977,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
 	bool bNotifyRemovals;
 
+	/** If true, this component will generate crumbling events that other systems may subscribe to. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
+	bool bNotifyCrumblings;
+
+	/** If this and bNotifyCrumblings are true, the crumbling events will contain released children indices. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General", meta = (EditCondition = "bNotifyCrumblings"))
+	bool bCrumblingEventIncludesChildren;
+	
 	/** If true, this component will save linear and angular velocities on its DynamicCollection. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
 	bool bStoreVelocities;
@@ -735,6 +993,20 @@ protected:
 	/** Display Bone Colors instead of assigned materials */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|General")
 	bool bShowBoneColors;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, Category = "ChaosPhysics|General")
+	bool bEnableRunTimeDataCollection;
+	
+	UPROPERTY(BlueprintReadOnly, Category = "ChaosPhysics|General")
+	FGuid RunTimeDataCollectionGuid;
+#endif
+	
+	/** ISM pool to use to render the geometry collection - only works for unfractured geometry collections  */
+	UPROPERTY(EditAnywhere, Category = "ChaosPhysics|Rendering", meta = (DisplayName = "ISM Pool"))
+	TObjectPtr<AGeometryCollectionISMPoolActor> ISMPool;
+
+	int32 ISMPoolMeshGroupIndex = INDEX_NONE;
 
 	/** Populate the static geometry structures for the render thread. */
 	void InitConstantData(FGeometryCollectionConstantData* ConstantData) const;
@@ -753,23 +1025,23 @@ protected:
 
 	void CalculateLocalBounds();
 	void CalculateGlobalMatrices();
+	FBox ComputeBounds(const FMatrix& LocalToWorldWithScale) const;
 
 	void RegisterForEvents();
 	void UpdateRBCollisionEventRegistration();
 	void UpdateBreakEventRegistration();
 	void UpdateRemovalEventRegistration();
-
-
-
+	void UpdateCrumblingEventRegistration();
+	
 	/* Per-instance override to enable/disable replication for the geometry collection */
-	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category=Network)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Network)
 	bool bEnableReplication;
 
 	/** 
-	 * Enables use of ReplicationAbandonClusterLevel to stop providing network updates to
+	 * Enables use of ReplicationAbandonAfterLevel to stop providing network updates to
 	 * clients when the updated particle is of a level higher then specified.
 	 */
-	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = Network)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Network)
 	bool bEnableAbandonAfterLevel;
 
 	/**
@@ -778,27 +1050,26 @@ protected:
 	 * gameplay relevant to cut down on required bandwidth to update a collection.
 	 * @see bEnableAbandonAfterLevel
 	 */ 
-	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = Network)
-	int32 ReplicationAbandonClusterLevel;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "GeometryCollection now uses ReplicationAbandonAfterLevel instead of ReplicationAbandonClusterLevel."))
+	int32 ReplicationAbandonClusterLevel_DEPRECATED;
 
-	UPROPERTY(ReplicatedUsing=OnRep_RepData)
+	/**
+	* If replicating - the cluster level after which replication will not happen 
+	* @see bEnableAbandonAfterLevel
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Network)
+	int32 ReplicationAbandonAfterLevel;
+
+	UPROPERTY(Replicated)
 	FGeometryCollectionRepData RepData;
-
-	/** Called on non-authoritative clients when receiving new repdata from the server */
-	UFUNCTION()
-	void OnRep_RepData(const FGeometryCollectionRepData& OldData);
 
 	/** Called post solve to allow authoritative components to update their replication data */
 	void UpdateRepData();
 
-private:
+	/** Clear all rep data, this is required if the physics proxy has been recreated */
+	void ResetRepData();
 
-	/** 
-	 * Notifies all clients that a server has abandoned control of a particle, clients should restore the strain
-	 * values on abandoned particles and their children then fracture them before continuing
-	 */
-	UFUNCTION(NetMulticast, Reliable)
-	void NetAbandonCluster(int32 TransformIndex);
+private:
 
 	bool bRenderStateDirty;
 	bool bEnableBoneSelection;
@@ -822,8 +1093,8 @@ private:
 
 	TArray<FMatrix> GlobalMatrices;
 	FBox LocalBounds;
-	
-	FBoxSphereBounds WorldBounds;
+
+	mutable FBoxSphereBounds ComponentSpaceBounds;
 
 	float CurrentCacheTime;
 	TArray<bool> EventsPlayed;
@@ -833,10 +1104,8 @@ private:
 	TArray<FManagedArrayBase**> CopyOnWriteAttributeList;
 
 	// Temporary dummies to interface with Physx expectations of the SQ syatem
-#if WITH_PHYSX
 	friend class FGeometryCollectionSQAccelerator;
 	FBodyInstance DummyBodyInstance;
-#endif
 
 	// Temporary storage for body setup in order to initialise a dummy body instance
 	UPROPERTY(Transient)
@@ -868,19 +1137,37 @@ private:
 	bool IsEmbeddedGeometryValid() const;
 	void ClearEmbeddedGeometry();
 
+	/** return true is an ISM pool is set and the feature is enabled */
+	bool CanUseISMPool() const;
+
+	/** If an ISM pool is set, register to it  */
+	void RegisterToISMPool();
+
+	/** If an ISM pool is set, unregister to it  */
+	void UnregisterFromISMPool();
+
+	/** update ISM transforms */
+	void RefreshISMPoolInstances();
+
+
 	void IncrementSleepTimer(float DeltaTime);
-	bool CalculateInnerSphere(int32 TransformIndex, FSphere& SphereOut) const;
+	void IncrementBreakTimer(float DeltaTime);
+	bool CalculateInnerSphere(int32 TransformIndex, UE::Math::TSphere<double>& SphereOut) const;
+	void UpdateDecay(int32 TransformIdx, float UpdatedDecay, bool UseClusterCrumbling, bool HasDynamicInternalClusterParent, FGeometryCollectionDecayContext& ContextInOut);
+	void ProcessRepData();
+
+	void UpdateAttachedChildrenTransform() const;
+	
+	void BuildInitialFilterData();
+
+	/** The clusters we need to replicate */
+	TUniquePtr<TSet<Chaos::FPBDRigidClusteredParticleHandle*>> ClustersToRep;
+
+	/** One off activation is processed in the same order as server so remember the last one we processed */
+	int32 OneOffActivatedProcessed = 0;
+	int32 VersionProcessed = INDEX_NONE;
+	double LastHardsnapTimeInMs = 0;
 
 	/** True if GeometryCollection transforms have changed from previous tick. */
 	bool bIsMoving;
-
 };
-
-// Support ISPC enable/disable in non-shipping builds
-#if !INTEL_ISPC
-const bool bChaos_BoxCalcBounds_ISPC_Enabled = false;
-#elif UE_BUILD_SHIPPING
-const bool bChaos_BoxCalcBounds_ISPC_Enabled = true;
-#else
-extern bool bChaos_BoxCalcBounds_ISPC_Enabled;
-#endif

@@ -45,6 +45,26 @@ void UMaterialGraphNode_Root::PostPlacedNewNode()
 	}
 }
 
+UObject* UMaterialGraphNode_Root::GetMaterialNodeOwner() const
+{
+	return Material;
+}
+
+int32 UMaterialGraphNode_Root::GetSourceIndexForInputIndex(int32 InputIndex) const
+{
+	const UMaterialGraph* MaterialGraph = CastChecked<UMaterialGraph>(GetGraph());
+	for (int32 SourceIndex = 0; SourceIndex < MaterialGraph->MaterialInputs.Num(); ++SourceIndex)
+	{
+		// InputIndex will be the EMaterialProperty of the input
+		// SourceIndex will be an index into the 'MaterialInputs' array
+		if (InputIndex == (int32)MaterialGraph->MaterialInputs[SourceIndex].GetProperty())
+		{
+			return SourceIndex;
+		}
+	}
+	return INDEX_NONE;
+}
+
 uint32 UMaterialGraphNode_Root::GetPinMaterialType(const UEdGraphPin* Pin) const
 {
 	if (Pin->PinType.PinCategory == UMaterialGraphSchema::PC_Exec)
@@ -76,7 +96,7 @@ void UMaterialGraphNode_Root::CreateInputPins()
 {
 	UMaterialGraph* MaterialGraph = CastChecked<UMaterialGraph>(GetGraph());
 
-	if (Material->IsCompiledWithExecutionFlow())
+	if (Material->IsUsingControlFlow())
 	{
 		// Create the execution pin
 		UEdGraphPin* NewPin = CreatePin(EGPD_Input, UMaterialGraphSchema::PC_Exec, NAME_None, NAME_None);

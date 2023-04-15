@@ -2,7 +2,9 @@
 
 #include "NaniteMaterials.h"
 #include "NaniteDrawList.h"
+#include "NaniteVertexFactory.h"
 #include "NaniteVisualizationData.h"
+#include "NaniteRayTracing.h"
 #include "Rendering/NaniteResources.h"
 #include "Rendering/NaniteStreamingManager.h"
 #include "RHI.h"
@@ -14,13 +16,57 @@
 #include "RendererModule.h"
 #include "PixelShaderUtils.h"
 #include "Lumen/LumenSceneRendering.h"
+#include "Strata/Strata.h"
 
-DEFINE_GPU_STAT(NaniteMaterials);
-DEFINE_GPU_STAT(NaniteDepth);
+DECLARE_CYCLE_STAT(TEXT("NaniteBasePass"), STAT_CLP_NaniteBasePass, STATGROUP_ParallelCommandListMarkers);
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDummyDepthDecompressParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, SceneDepth)
 END_SHADER_PARAMETER_STRUCT()
+
+static int32 GNaniteMaterialVisibility = 0;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibility(
+	TEXT("r.Nanite.MaterialVisibility"),
+	GNaniteMaterialVisibility,
+	TEXT("Whether to enable Nanite material visibility tests"),
+	ECVF_RenderThreadSafe
+);
+
+static int32 GNaniteMaterialVisibilityAsync = 1;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibilityAsync(
+	TEXT("r.Nanite.MaterialVisibility.Async"),
+	GNaniteMaterialVisibilityAsync,
+	TEXT("Whether to enable parallelization of Nanite material visibility tests"),
+	ECVF_RenderThreadSafe
+);
+
+int32 GNaniteMaterialVisibilityPrimitives = 1;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibilityPrimitives(
+	TEXT("r.Nanite.MaterialVisibility.Primitives"),
+	GNaniteMaterialVisibilityPrimitives,
+	TEXT("")
+);
+
+int32 GNaniteMaterialVisibilityInstances = 0;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibilityInstances(
+	TEXT("r.Nanite.MaterialVisibility.Instances"),
+	GNaniteMaterialVisibilityInstances,
+	TEXT("")
+);
+
+int32 GNaniteMaterialVisibilityRasterBins = 1;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibilityRasterBins(
+	TEXT("r.Nanite.MaterialVisibility.RasterBins"),
+	GNaniteMaterialVisibilityRasterBins,
+	TEXT("")
+);
+
+int32 GNaniteMaterialVisibilityShadingDraws = 1;
+static FAutoConsoleVariableRef CVarNaniteMaterialVisibilityShadingDraws(
+	TEXT("r.Nanite.MaterialVisibility.ShadingDraws"),
+	GNaniteMaterialVisibilityShadingDraws,
+	TEXT("")
+);
 
 int32 GNaniteResummarizeHTile = 1;
 static FAutoConsoleVariableRef CVarNaniteResummarizeHTile(
@@ -89,7 +135,7 @@ class FEmitMaterialDepthPS : public FNaniteGlobalShader
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, VisibleClustersSWHW)
 		SHADER_PARAMETER(FIntVector4, PageConstants)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, MaterialResolve)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
@@ -129,7 +175,7 @@ class FEmitSceneDepthPS : public FNaniteGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPackedView>, InViews)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, VisibleClustersSWHW)
 		SHADER_PARAMETER(FIntVector4, PageConstants)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 		SHADER_PARAMETER_RDG_TEXTURE( Texture2D<UlongType>,	VisBuffer64 )
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, MaterialSlotTable)
 		RENDER_TARGET_BINDING_SLOTS()
@@ -157,7 +203,7 @@ class FEmitSceneStencilPS : public FNaniteGlobalShader
 		
 		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, VisibleClustersSWHW)
 		SHADER_PARAMETER(FIntVector4, PageConstants)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, MaterialResolve)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
@@ -192,7 +238,7 @@ class FEmitSceneDepthStencilPS : public FNaniteGlobalShader
 		SHADER_PARAMETER(FIntVector4, PageConstants)
 		SHADER_PARAMETER(uint32, StencilClear)
 		SHADER_PARAMETER(uint32, StencilDecal)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, MaterialSlotTable)
 		RENDER_TARGET_BINDING_SLOTS()
@@ -218,7 +264,7 @@ class FDepthExportCS : public FNaniteGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPackedView>, InViews)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, VisibleClustersSWHW)
 		SHADER_PARAMETER(FIntVector4, PageConstants)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 		SHADER_PARAMETER(FIntVector4, DepthExportConfig)
 		SHADER_PARAMETER(FIntVector4, ViewRectMax)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
@@ -253,6 +299,20 @@ public:
 };
 IMPLEMENT_GLOBAL_SHADER(FInitializeMaterialsCS, "/Engine/Private/Nanite/NaniteMaterialCulling.usf", "InitializeMaterials", SF_Compute);
 
+class FFinalizeMaterialsCS : public FNaniteGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FFinalizeMaterialsCS);
+	SHADER_USE_PARAMETER_STRUCT(FFinalizeMaterialsCS, FNaniteGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, MaterialTileCount)
+		SHADER_PARAMETER(uint32, MaterialSlotCount)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, MaterialIndirectArgs)
+	END_SHADER_PARAMETER_STRUCT()
+};
+IMPLEMENT_GLOBAL_SHADER(FFinalizeMaterialsCS, "/Engine/Private/Nanite/NaniteMaterialCulling.usf", "FinalizeMaterials", SF_Compute);
+
 class FClassifyMaterialsCS : public FNaniteGlobalShader
 {
 public:
@@ -273,7 +333,7 @@ public:
 		SHADER_PARAMETER(uint32, MaterialSlotCount)
 		SHADER_PARAMETER(uint32, MaterialBinCount)
 		SHADER_PARAMETER(uint32, RowTileCount)
-		SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, ClusterPageData)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, MaterialIndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, MaterialTileRemap)
@@ -316,38 +376,48 @@ BEGIN_SHADER_PARAMETER_STRUCT(FNaniteEmitDepthRectsParameters, )
 END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FNaniteEmitGBufferParameters, )
-	SHADER_PARAMETER(FIntVector4,	VisualizeConfig)
-	SHADER_PARAMETER(FIntVector4,	PageConstants)
-	SHADER_PARAMETER(uint32,		MaxVisibleClusters)
-	SHADER_PARAMETER(uint32,		MaxNodes)
-	SHADER_PARAMETER(uint32,		RenderFlags)
-	SHADER_PARAMETER(uint32,		MaterialRemapCount)
-	SHADER_PARAMETER(FIntPoint,		GridSize)
-
-	SHADER_PARAMETER_SRV(ByteAddressBuffer, ClusterPageData)
-	SHADER_PARAMETER_SRV(ByteAddressBuffer, HierarchyBuffer)
-
-	SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, VisibleClustersSWHW)
-
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, VisBuffer64)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<UlongType>, DbgBuffer64)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>,  DbgBuffer32)
-
 	RDG_BUFFER_ACCESS(MaterialIndirectArgs, ERHIAccess::IndirectArgs)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, MaterialTileRemap)
-
-	// Multi view
-	SHADER_PARAMETER(uint32, MultiViewEnabled)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, MultiViewIndices)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, MultiViewRectScaleOffsets)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FPackedView>, InViews)
 
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)	// To access VTFeedbackBuffer
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FNaniteUniformParameters, Nanite)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FOpaqueBasePassUniformParameters, BasePass)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenCardPassUniformParameters, CardPass)
 
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
+
+TRDGUniformBufferRef<FNaniteUniformParameters> CreateDebugNaniteUniformBuffer(FRDGBuilder& GraphBuilder, uint32 InstanceSceneDataSOAStride)
+{
+	FNaniteUniformParameters* UniformParameters = GraphBuilder.AllocParameters<FNaniteUniformParameters>();
+	UniformParameters->PageConstants.X           = InstanceSceneDataSOAStride;
+	UniformParameters->PageConstants.Y           = Nanite::GStreamingManager.GetMaxStreamingPages();
+	UniformParameters->MaxNodes                  = Nanite::FGlobalResources::GetMaxNodes();
+	UniformParameters->MaxVisibleClusters        = Nanite::FGlobalResources::GetMaxVisibleClusters();
+
+	UniformParameters->ClusterPageData           = Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
+	UniformParameters->HierarchyBuffer           = Nanite::GStreamingManager.GetHierarchySRV(GraphBuilder);
+	UniformParameters->VisibleClustersSWHW       = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder));
+	UniformParameters->MaterialTileRemap         = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder), PF_R32_UINT);
+
+#if RHI_RAYTRACING
+	UniformParameters->RayTracingCutError		= Nanite::GRayTracingManager.GetCutError();
+	UniformParameters->RayTracingDataBuffer		= Nanite::GRayTracingManager.GetAuxiliaryDataSRV(GraphBuilder);
+#else
+	UniformParameters->RayTracingCutError		= 0.0f;
+	UniformParameters->RayTracingDataBuffer		= GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder));
+#endif
+
+	const FRDGSystemTextures& SystemTextures     = FRDGSystemTextures::Get(GraphBuilder);
+	UniformParameters->VisBuffer64               = SystemTextures.Black;
+	UniformParameters->DbgBuffer64               = SystemTextures.Black;
+	UniformParameters->DbgBuffer32               = SystemTextures.Black;
+
+	UniformParameters->MultiViewIndices          = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder));
+	UniformParameters->MultiViewRectScaleOffsets = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<FVector4>(GraphBuilder));
+	UniformParameters->InViews                   = GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<FPackedNaniteView>(GraphBuilder));
+
+	return GraphBuilder.CreateUniformBuffer(UniformParameters);
+}
 
 namespace Nanite
 {
@@ -367,16 +437,12 @@ void DrawBasePass(
 
 	LLM_SCOPE_BYTAG(Nanite);
 	RDG_EVENT_SCOPE(GraphBuilder, "Nanite::BasePass");
-	RDG_GPU_STAT_SCOPE(GraphBuilder, NaniteMaterials);
 
 	const int32 ViewWidth		= View.ViewRect.Max.X - View.ViewRect.Min.X;
 	const int32 ViewHeight		= View.ViewRect.Max.Y - View.ViewRect.Min.Y;
 	const FIntPoint ViewSize	= FIntPoint(ViewWidth, ViewHeight);
 
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
-
-	FRenderTargetBindingSlots GBufferRenderTargets;
-	SceneTextures.GetGBufferRenderTargets(ERenderTargetLoadAction::ELoad, GBufferRenderTargets);
 
 	FRDGTextureRef MaterialDepth	= RasterResults.MaterialDepth ? RasterResults.MaterialDepth : SystemTextures.Black;
 	FRDGTextureRef VisBuffer64		= RasterResults.VisBuffer64   ? RasterResults.VisBuffer64   : SystemTextures.Black;
@@ -392,7 +458,8 @@ void DrawBasePass(
 
 	const uint32 MaxMaterialSlots = NANITE_MAX_STATE_BUCKET_ID + 1;
 
-	FRDGBufferRef MaterialIndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDrawIndexedIndirectParameters>(MaxMaterialSlots), TEXT("Nanite.MaterialIndirectArgs"));
+	const uint32 IndirectArgStride = (sizeof(FRHIDrawIndexedIndirectParameters) + sizeof(FRHIDispatchIndirectParameters)) >> 2u;
+	FRDGBufferRef MaterialIndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(IndirectArgStride * MaxMaterialSlots), TEXT("Nanite.MaterialIndirectArgs"));
 
 	FRDGBufferRef MultiViewIndices = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 1), TEXT("Nanite.DummyMultiViewIndices"));
 	FRDGBufferRef MultiViewRectScaleOffsets = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), 1), TEXT("Nanite.DummyMultiViewRectScaleOffsets"));
@@ -443,14 +510,14 @@ void DrawBasePass(
 			PassParameters->View					= View.ViewUniformBuffer;
 			PassParameters->VisibleClustersSWHW		= GraphBuilder.CreateSRV(VisibleClustersSWHW);
 			PassParameters->PageConstants			= RasterResults.PageConstants;
-			PassParameters->ClusterPageData			= Nanite::GStreamingManager.GetClusterPageDataSRV();
+			PassParameters->ClusterPageData			= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 			PassParameters->VisBuffer64				= VisBuffer64;
 			PassParameters->MaterialSlotTable		= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialSlotSRV();
 			PassParameters->MaterialDepthTable		= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialDepthSRV();
 			PassParameters->MaterialResolve			= RasterResults.MaterialResolve;
 			PassParameters->MaterialIndirectArgs	= GraphBuilder.CreateUAV(FRDGBufferUAVDesc(MaterialIndirectArgs, PF_R32_UINT));
 			PassParameters->MaterialTileRemap		= GraphBuilder.CreateUAV(MaterialTileRemap);
-			PassParameters->MaterialSlotCount		= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetHighestMaterialSlot();
+			PassParameters->MaterialSlotCount		= HighestMaterialSlot;
 			PassParameters->MaterialTileCount		= TileGridSize.X * TileGridSize.Y;
 			PassParameters->MaterialRemapCount		= TileRemaps;
 			PassParameters->MaterialBinCount		= HighestMaterialBin;
@@ -477,125 +544,202 @@ void DrawBasePass(
 				DispatchDim
 			);
 		}
+
+		// Finalize acceleration/indexing structures for tile classification
+		{
+			auto ComputeShader = View.ShaderMap->GetShader<FFinalizeMaterialsCS>();
+			FFinalizeMaterialsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FFinalizeMaterialsCS::FParameters>();
+			PassParameters->MaterialSlotCount		= HighestMaterialSlot;
+			PassParameters->MaterialTileCount		= TileGridSize.X * TileGridSize.Y;
+			PassParameters->MaterialIndirectArgs	= GraphBuilder.CreateUAV(FRDGBufferUAVDesc(MaterialIndirectArgs, PF_R32_UINT));
+
+			const FIntVector DispatchDim = FComputeShaderUtils::GetGroupCount(PassParameters->MaterialSlotCount, 64);
+
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("Finalize Materials"),
+				ComputeShader,
+				PassParameters,
+				DispatchDim
+			);
+		}
 	}
 
-	// Emit GBuffer Values
+	const FNaniteMaterialCommands& MaterialCommands = Scene.NaniteMaterials[ENaniteMeshPass::BasePass];
+	const int32 NumMaterialCommands = MaterialCommands.GetCommands().Num();
+	MaterialPassCommands.Reset(NumMaterialCommands);
+
+	if (NumMaterialCommands > 0)
 	{
-		FNaniteEmitGBufferParameters* PassParameters = GraphBuilder.AllocParameters<FNaniteEmitGBufferParameters>();
+		const FNaniteVisibilityResults& VisibilityResults = RasterResults.VisibilityResults;
+		const bool bWPOInSecondPass = !IsUsingBasePassVelocity(View.GetShaderPlatform());
 
-		PassParameters->PageConstants		= RasterResults.PageConstants;
-		PassParameters->MaxVisibleClusters	= RasterResults.MaxVisibleClusters;
-		PassParameters->MaxNodes			= RasterResults.MaxNodes;
-		PassParameters->RenderFlags			= RasterResults.RenderFlags;
-		PassParameters->MaterialRemapCount	= TileRemaps;
-			
-		PassParameters->ClusterPageData		= Nanite::GStreamingManager.GetClusterPageDataSRV();
-		PassParameters->HierarchyBuffer		= Nanite::GStreamingManager.GetHierarchySRV();
+		FNaniteEmitGBufferParameters TempParams;
+		TempParams.MaterialIndirectArgs = MaterialIndirectArgs;
 
-		PassParameters->VisibleClustersSWHW = GraphBuilder.CreateSRV(VisibleClustersSWHW);
-
-		PassParameters->MaterialTileRemap = GraphBuilder.CreateSRV(MaterialTileRemap, PF_R32_UINT);
-		PassParameters->MaterialIndirectArgs = MaterialIndirectArgs;
-
-		PassParameters->MultiViewEnabled = 0;
-		PassParameters->MultiViewIndices = GraphBuilder.CreateSRV(MultiViewIndices);
-		PassParameters->MultiViewRectScaleOffsets = GraphBuilder.CreateSRV(MultiViewRectScaleOffsets);
-		PassParameters->InViews = GraphBuilder.CreateSRV(ViewsBuffer);
-
-		PassParameters->VisBuffer64 = VisBuffer64;
-		PassParameters->DbgBuffer64 = DbgBuffer64;
-		PassParameters->DbgBuffer32 = DbgBuffer32;
-		PassParameters->RenderTargets = GBufferRenderTargets;
-
-		PassParameters->View = View.ViewUniformBuffer; // To get VTFeedbackBuffer
-		PassParameters->BasePass = CreateOpaqueBasePassUniformBuffer(GraphBuilder, View, 0, {}, DBufferTextures, nullptr);
-		PassParameters->GridSize = FMath::DivideAndRoundUp(View.ViewRect.Max - View.ViewRect.Min, { 64, 64 });
-
-
-		const FExclusiveDepthStencil MaterialDepthStencil = UseComputeDepthExport()
-			? FExclusiveDepthStencil::DepthWrite_StencilNop
-			: FExclusiveDepthStencil::DepthWrite_StencilWrite;
-
-		PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(
-			MaterialDepth,
-			ERenderTargetLoadAction::ELoad,
-			ERenderTargetLoadAction::ELoad,
-			MaterialDepthStencil
-		);
-
-		TShaderMapRef<FNaniteIndirectMaterialVS> NaniteVertexShader(View.ShaderMap);
-				
-		ERDGPassFlags RDGPassFlags = ERDGPassFlags::Raster;
-
-		// Skip render pass when parallel because that's taken care of by the FRDGParallelCommandListSet
-		bool bParallelBasePassBuild = GRHICommandList.UseParallelAlgorithms() && CVarParallelBasePassBuild.GetValueOnRenderThread() != 0 && FParallelMeshDrawCommandPass::IsOnDemandShaderCreationEnabled();
-		if (bParallelBasePassBuild)
 		{
-			RDGPassFlags |= ERDGPassFlags::SkipRenderPass;
-		}
-
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("Emit GBuffer"),
-			PassParameters,
-			RDGPassFlags,
-			[PassParameters, &SceneRenderer, &Scene, NaniteVertexShader, &View, &MaterialPassCommands, bParallelBasePassBuild](FRHICommandListImmediate& RHICmdListImmediate)
-		{
-			RHICmdListImmediate.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
-
-			FNaniteUniformParameters UniformParams;
-			UniformParams.PageConstants = PassParameters->PageConstants;
-			UniformParams.MaxVisibleClusters= PassParameters->MaxVisibleClusters;
-			UniformParams.MaxNodes = PassParameters->MaxNodes;
-			UniformParams.RenderFlags = PassParameters->RenderFlags;
-
-			UniformParams.MaterialConfig.X = 1; // Indirect
-			UniformParams.MaterialConfig.Y = PassParameters->GridSize.X;
-			UniformParams.MaterialConfig.Z = PassParameters->GridSize.Y;
-			UniformParams.MaterialConfig.W = 0;
-
-			FIntPoint ScaledSize = PassParameters->GridSize * 64;
-			UniformParams.RectScaleOffset = FVector4f(
+			const FIntPoint ScaledSize = TileGridSize * 64;
+			const FVector4f RectScaleOffset(
 				float(ScaledSize.X) / float(View.ViewRect.Max.X - View.ViewRect.Min.X),
 				float(ScaledSize.Y) / float(View.ViewRect.Max.Y - View.ViewRect.Min.Y),
 				0.0f,
 				0.0f
 			);
 
-			UniformParams.ClusterPageData = PassParameters->ClusterPageData;
-			UniformParams.HierarchyBuffer = PassParameters->HierarchyBuffer;
+			const FIntVector4 MaterialConfig(1 /* Indirect */, TileGridSize.X, TileGridSize.Y, 0);
 
-			UniformParams.VisibleClustersSWHW = PassParameters->VisibleClustersSWHW->GetRHI();
+			FNaniteUniformParameters* UniformParameters = GraphBuilder.AllocParameters<FNaniteUniformParameters>();
+			UniformParameters->PageConstants            = RasterResults.PageConstants;
+			UniformParameters->MaxNodes                 = RasterResults.MaxNodes;
+			UniformParameters->MaxVisibleClusters       = RasterResults.MaxVisibleClusters;
+			UniformParameters->RenderFlags				= RasterResults.RenderFlags;
 
-			UniformParams.MaterialTileRemap = PassParameters->MaterialTileRemap->GetRHI();
+			UniformParameters->MaterialConfig           = MaterialConfig;
+			UniformParameters->RectScaleOffset          = RectScaleOffset;
 
-			UniformParams.MultiViewEnabled = PassParameters->MultiViewEnabled;
-			UniformParams.MultiViewIndices = PassParameters->MultiViewIndices->GetRHI();
-			UniformParams.MultiViewRectScaleOffsets = PassParameters->MultiViewRectScaleOffsets->GetRHI();
-			UniformParams.InViews = PassParameters->InViews->GetRHI();
+			UniformParameters->ClusterPageData          = Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
+			UniformParameters->HierarchyBuffer          = Nanite::GStreamingManager.GetHierarchySRV(GraphBuilder);
+			UniformParameters->VisibleClustersSWHW      = GraphBuilder.CreateSRV(VisibleClustersSWHW);
+			UniformParameters->MaterialTileRemap        = GraphBuilder.CreateSRV(MaterialTileRemap, PF_R32_UINT);
 
-			UniformParams.VisBuffer64 = PassParameters->VisBuffer64->GetRHI();
-			UniformParams.DbgBuffer64 = PassParameters->DbgBuffer64->GetRHI();
-			UniformParams.DbgBuffer32 = PassParameters->DbgBuffer32->GetRHI();
-			const_cast<FScene&>(Scene).UniformBuffers.NaniteUniformBuffer.UpdateUniformBufferImmediate(UniformParams);
+#if RHI_RAYTRACING
+			UniformParameters->RayTracingCutError		= Nanite::GRayTracingManager.GetCutError();
+			UniformParameters->RayTracingDataBuffer		= Nanite::GRayTracingManager.GetAuxiliaryDataSRV(GraphBuilder);
+#else
+			UniformParameters->RayTracingCutError		= 0.0f;
+			UniformParameters->RayTracingDataBuffer		= GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder));
+#endif
 
-			const uint32 TileCount = UniformParams.MaterialConfig.Y * UniformParams.MaterialConfig.Z; // (W * H)
+			UniformParameters->VisBuffer64              = VisBuffer64;
+			UniformParameters->DbgBuffer64              = DbgBuffer64;
+			UniformParameters->DbgBuffer32              = DbgBuffer32;
 
-			PassParameters->MaterialIndirectArgs->MarkResourceAsUsed();
+			UniformParameters->MultiViewEnabled          = 0;
+			UniformParameters->MultiViewIndices          = GraphBuilder.CreateSRV(MultiViewIndices);
+			UniformParameters->MultiViewRectScaleOffsets = GraphBuilder.CreateSRV(MultiViewRectScaleOffsets);
+			UniformParameters->InViews                   = GraphBuilder.CreateSRV(ViewsBuffer);
 
-			DrawNaniteMaterialPasses(
-				SceneRenderer,
-				Scene,
-				View,
-				TileCount,
-				bParallelBasePassBuild,
-				FParallelCommandListBindings(PassParameters),
-				NaniteVertexShader,
-				RHICmdListImmediate,
-				PassParameters->MaterialIndirectArgs->GetIndirectRHICallBuffer(),
-				MaterialPassCommands
+			TempParams.Nanite = GraphBuilder.CreateUniformBuffer(UniformParameters);
+		}
+
+		TempParams.View = View.ViewUniformBuffer; // To get VTFeedbackBuffer
+		TempParams.BasePass = CreateOpaqueBasePassUniformBuffer(GraphBuilder, View, 0, {}, DBufferTextures);
+
+		const FExclusiveDepthStencil MaterialDepthStencil = UseComputeDepthExport()
+			? FExclusiveDepthStencil::DepthWrite_StencilNop
+			: FExclusiveDepthStencil::DepthWrite_StencilWrite;
+
+		struct FPassParamsAndInfo
+		{
+			FNaniteEmitGBufferParameters Params[(uint32)ENaniteMaterialPass::Max];
+			FNaniteMaterialPassInfo PassInfo[(uint32)ENaniteMaterialPass::Max];
+			uint32 NumPasses = 0;
+		};
+		FPassParamsAndInfo* ParamsAndInfo = GraphBuilder.AllocParameters<FPassParamsAndInfo>();
+
+		// TODO: Perhaps use visibility results to cull the secondary pass when possible?
+		ParamsAndInfo->NumPasses = bWPOInSecondPass ? 2 : 1;
+		for (uint32 PassIndex = 0; PassIndex < ParamsAndInfo->NumPasses; ++PassIndex)
+		{
+			static const EGBufferLayout PassGBufferLayouts[] =
+			{
+				GBL_Default,		// EmitGBuffer
+				GBL_ForceVelocity	// EmitGBufferWithVelocity
+			};
+			static_assert(UE_ARRAY_COUNT(PassGBufferLayouts) == (uint32)ENaniteMaterialPass::Max,
+						  "Unhandled Nanite material pass");
+
+			TStaticArray<FTextureRenderTargetBinding, MaxSimultaneousRenderTargets> BasePassTextures;
+			uint32 BasePassTextureCount = SceneTextures.GetGBufferRenderTargets(BasePassTextures, PassGBufferLayouts[PassIndex]);
+			Strata::AppendStrataMRTs(SceneRenderer, BasePassTextureCount, BasePassTextures);
+			TArrayView<FTextureRenderTargetBinding> BasePassTexturesView = MakeArrayView(BasePassTextures.GetData(), BasePassTextureCount);
+
+			FNaniteEmitGBufferParameters& PassParams = ParamsAndInfo->Params[PassIndex];
+			PassParams = TempParams;
+			PassParams.RenderTargets = GetRenderTargetBindings(ERenderTargetLoadAction::ELoad, BasePassTexturesView);
+			PassParams.RenderTargets.DepthStencil = FDepthStencilBinding(
+				MaterialDepth,
+				ERenderTargetLoadAction::ELoad,
+				ERenderTargetLoadAction::ELoad,
+				MaterialDepthStencil
 			);
+		}
+
+		GraphBuilder.AddSetupTask([ParamsAndInfo, &MaterialCommands, &MaterialPassCommands, VisibilityResults = RasterResults.VisibilityResults /* Intentional copy */]
+		{
+			TArray<FGraphicsPipelineRenderTargetsInfo, TFixedAllocator<(uint32)ENaniteMaterialPass::Max>> RTInfo;
+			for (uint32 PassIndex = 0; PassIndex < ParamsAndInfo->NumPasses; ++PassIndex)
+			{
+				RTInfo.Emplace(ExtractRenderTargetsInfo(ParamsAndInfo->Params[PassIndex].RenderTargets));
+			}
+			TArrayView<FNaniteMaterialPassInfo> PassInfo = MakeArrayView(ParamsAndInfo->PassInfo, ParamsAndInfo->NumPasses);
+			BuildNaniteMaterialPassCommands(RTInfo, MaterialCommands, VisibilityResults, MaterialPassCommands, PassInfo);
 		});
+
+		TShaderMapRef<FNaniteIndirectMaterialVS> NaniteVertexShader(View.ShaderMap);
+
+		const bool bParallelDispatch = GRHICommandList.UseParallelAlgorithms() && CVarParallelBasePassBuild.GetValueOnRenderThread() != 0 && FParallelMeshDrawCommandPass::IsOnDemandShaderCreationEnabled();
+
+		if (bParallelDispatch)
+		{
+			static const TCHAR* const PassNames[] =
+			{
+				TEXT("EmitGBufferParallel"),
+				TEXT("EmitGBufferWithVelocityParallel"),
+			};
+			static_assert(UE_ARRAY_COUNT(PassNames) == (uint32)ENaniteMaterialPass::Max);
+
+			for (uint32 PassIndex = 0; PassIndex < ParamsAndInfo->NumPasses; ++PassIndex)
+			{
+				GraphBuilder.AddPass(
+					FRDGEventName(PassNames[PassIndex]),
+					&ParamsAndInfo->Params[PassIndex],
+					ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
+					[ParamsAndInfo, PassIndex, &SceneRenderer, &View, TileCount, NaniteVertexShader, &MaterialPassCommands, MaterialIndirectArgs](const FRDGPass* Pass, FRHICommandListImmediate& RHICmdList)
+				{
+					if (ParamsAndInfo->PassInfo[PassIndex].NumCommands == 0)
+					{
+						return;
+					}
+
+					FParallelCommandListBindings CmdListBindings(&ParamsAndInfo->Params[PassIndex]);
+					TConstArrayView<FNaniteMaterialPassCommand> PassCommands = MakeArrayView(MaterialPassCommands.GetData() + ParamsAndInfo->PassInfo[PassIndex].CommandOffset, ParamsAndInfo->PassInfo[PassIndex].NumCommands);
+					FRDGParallelCommandListSet ParallelCommandListSet(Pass, RHICmdList, GET_STATID(STAT_CLP_NaniteBasePass), SceneRenderer, View, CmdListBindings);
+					ParallelCommandListSet.SetHighPriority();
+					DrawNaniteMaterialPass(&ParallelCommandListSet, RHICmdList, View.ViewRect, TileCount, NaniteVertexShader, MaterialIndirectArgs, PassCommands);
+				});
+			}
+		}
+		else
+		{
+			static const TCHAR* const PassNames[] =
+			{
+				TEXT("EmitGBuffer"),
+				TEXT("EmitGBufferWithVelocity"),
+			};
+			static_assert(UE_ARRAY_COUNT(PassNames) == (uint32)ENaniteMaterialPass::Max);
+
+			for (uint32 PassIndex = 0; PassIndex < ParamsAndInfo->NumPasses; ++PassIndex)
+			{
+				GraphBuilder.AddPass(
+					FRDGEventName(PassNames[PassIndex]),
+					&ParamsAndInfo->Params[PassIndex],
+					ERDGPassFlags::Raster,
+					[ParamsAndInfo, PassIndex, ViewRect = View.ViewRect, TileCount, NaniteVertexShader, &MaterialPassCommands, MaterialIndirectArgs](const FRDGPass* Pass, FRHICommandList& RHICmdList)
+				{
+					if (ParamsAndInfo->PassInfo[PassIndex].NumCommands == 0)
+					{
+						return;
+					}
+
+					TConstArrayView<FNaniteMaterialPassCommand> PassCommands = MakeArrayView(MaterialPassCommands.GetData() + ParamsAndInfo->PassInfo[PassIndex].CommandOffset, ParamsAndInfo->PassInfo[PassIndex].NumCommands);
+					DrawNaniteMaterialPass(nullptr, RHICmdList, ViewRect, TileCount, NaniteVertexShader, MaterialIndirectArgs, MaterialPassCommands);
+				});
+			}
+		}
 	}
+
+	ExtractShadingStats(GraphBuilder, View, MaterialIndirectArgs, HighestMaterialSlot);
 }
 
 void EmitDepthTargets(
@@ -616,7 +760,6 @@ void EmitDepthTargets(
 {
 	LLM_SCOPE_BYTAG(Nanite);
 	RDG_EVENT_SCOPE(GraphBuilder, "Nanite::EmitDepthTargets");
-	RDG_GPU_STAT_SCOPE(GraphBuilder, NaniteDepth);
 
 #if WITH_EDITORONLY_DATA
 	// Hide all Nanite meshes when the isolate invalid coarse mesh batch debug mode is active.
@@ -627,9 +770,10 @@ void EmitDepthTargets(
 	}
 #endif
 
+	const FSceneTexturesConfig& Config = View.GetSceneTexturesConfig();
 	const EShaderPlatform ShaderPlatform = View.GetShaderPlatform();
-	const FIntPoint SceneTexturesExtent = GetSceneTextureExtent();	
-	const FClearValueBinding DefaultDepthStencil = GetSceneDepthClearValue();
+	const FIntPoint SceneTexturesExtent = Config.Extent;
+	const FClearValueBinding DefaultDepthStencil = Config.DepthClearValue;
 
 	float DefaultDepth = 0.0f;
 	uint32 DefaultStencil = 0;
@@ -693,7 +837,7 @@ void EmitDepthTargets(
 		PassParameters->InViews					= GraphBuilder.CreateSRV(ViewsBuffer);
 		PassParameters->VisibleClustersSWHW		= GraphBuilder.CreateSRV(VisibleClustersSWHW);
 		PassParameters->PageConstants			= PageConstants;
-		PassParameters->ClusterPageData			= Nanite::GStreamingManager.GetClusterPageDataSRV();
+		PassParameters->ClusterPageData			= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 		PassParameters->DepthExportConfig		= FIntVector4(PlatformConfig, SceneTexturesExtent.X, StencilDecalMask, Nanite::FGlobalResources::GetMaxVisibleClusters());
 		PassParameters->ViewRectMax				= FIntVector4(View.ViewRect.Max.X, View.ViewRect.Max.Y, 0, 0);
 		PassParameters->VisBuffer64				= VisBuffer64;
@@ -744,7 +888,7 @@ void EmitDepthTargets(
 			PassParameters->PageConstants				= PageConstants;
 			PassParameters->StencilClear				= DefaultStencil;
 			PassParameters->StencilDecal				= StencilDecalMask;
-			PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV();
+			PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 			PassParameters->VisBuffer64					= VisBuffer64;
 			PassParameters->MaterialSlotTable			= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialSlotSRV();
 			PassParameters->RenderTargets[0]			= FRenderTargetBinding(MaterialResolve, ERenderTargetLoadAction::ELoad);
@@ -779,7 +923,7 @@ void EmitDepthTargets(
 				PassParameters->VisibleClustersSWHW			= GraphBuilder.CreateSRV(VisibleClustersSWHW);
 				PassParameters->PageConstants				= PageConstants;
 				PassParameters->VisBuffer64					= VisBuffer64;
-				PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV();
+				PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 				PassParameters->MaterialSlotTable			= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialSlotSRV();
 				PassParameters->RenderTargets[0]			= FRenderTargetBinding(MaterialResolve,	ERenderTargetLoadAction::ELoad);
 				PassParameters->RenderTargets[1]			= bEmitVelocity ? FRenderTargetBinding(VelocityBuffer, ERenderTargetLoadAction::ELoad) : FRenderTargetBinding();
@@ -806,7 +950,7 @@ void EmitDepthTargets(
 				PassParameters->View						= View.ViewUniformBuffer;
 				PassParameters->VisibleClustersSWHW			= GraphBuilder.CreateSRV(VisibleClustersSWHW);
 				PassParameters->PageConstants				= PageConstants;
-				PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV();
+				PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 				PassParameters->MaterialResolve				= MaterialResolve;
 				PassParameters->VisBuffer64					= VisBuffer64;
 				PassParameters->RenderTargets.DepthStencil	= FDepthStencilBinding
@@ -836,7 +980,7 @@ void EmitDepthTargets(
 			auto* PassParameters = GraphBuilder.AllocParameters<FEmitMaterialDepthPS::FParameters>();
 
 			PassParameters->DummyZero = 0u;
-			PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV();
+			PassParameters->ClusterPageData				= Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 			PassParameters->MaterialSlotTable			= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialSlotSRV();
 			PassParameters->MaterialDepthTable			= Scene.NaniteMaterials[ENaniteMeshPass::BasePass].GetMaterialDepthSRV();
 			PassParameters->PageConstants				= PageConstants;
@@ -947,6 +1091,7 @@ void DrawLumenMeshCapturePass(
 
 	LLM_SCOPE_BYTAG(Nanite);
 	RDG_EVENT_SCOPE(GraphBuilder, "Nanite::DrawLumenMeshCapturePass");
+	TRACE_CPUPROFILER_EVENT_SCOPE(NaniteDraw_LumenMeshCapturePass);
 
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
@@ -994,7 +1139,7 @@ void DrawLumenMeshCapturePass(
 
 		PassParameters->PS.VisibleClustersSWHW = GraphBuilder.CreateSRV(CullingContext.VisibleClustersSWHW);
 		PassParameters->PS.PageConstants = CullingContext.PageConstants;
-		PassParameters->PS.ClusterPageData = GStreamingManager.GetClusterPageDataSRV();
+		PassParameters->PS.ClusterPageData = GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
 
 		PassParameters->PS.VisBuffer64 = RasterContext.VisBuffer64;
 
@@ -1043,12 +1188,12 @@ void DrawLumenMeshCapturePass(
 		);
 
 		int32 NumMaterialQuads = 0;
-		TArray<FLumenMeshCaptureMaterialPass, SceneRenderingAllocator> MaterialPasses;
+		TArray<FLumenMeshCaptureMaterialPass, FRDGArrayAllocator> MaterialPasses;
 		MaterialPasses.Reserve(CardPagesToRender.Num());
 
 		// Build list of unique materials
 		{
-			FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo = ExtractRenderTargetsInfo(FRDGParameterStruct(PassParameters, FNaniteEmitGBufferParameters::FTypeInfo::GetStructMetadata()));
+			FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo = ExtractRenderTargetsInfo(PassParameters->RenderTargets);
 
 			Experimental::TRobinHoodHashSet<FLumenMeshCaptureMaterialPassIndex> MaterialPassSet;
 
@@ -1149,83 +1294,62 @@ void DrawLumenMeshCapturePass(
 			PackedViews.GetData(),
 			PackedViews.Num() * PackedViews.GetTypeSize());
 
-		PassParameters->PageConstants = CullingContext.PageConstants;
-		PassParameters->MaxVisibleClusters = Nanite::FGlobalResources::GetMaxVisibleClusters();
-		PassParameters->MaxNodes = Nanite::FGlobalResources::GetMaxNodes();
-		PassParameters->RenderFlags = CullingContext.RenderFlags;
+		{
+			FNaniteUniformParameters* UniformParameters = GraphBuilder.AllocParameters<FNaniteUniformParameters>();
+			UniformParameters->PageConstants            = CullingContext.PageConstants;
+			UniformParameters->MaxNodes                 = Nanite::FGlobalResources::GetMaxNodes();
+			UniformParameters->MaxVisibleClusters       = Nanite::FGlobalResources::GetMaxVisibleClusters();
+			UniformParameters->RenderFlags              = CullingContext.RenderFlags;
+			UniformParameters->MaterialConfig           = FIntVector4(0, 1, 1, 0); // Tile based material culling is not required for Lumen, as each card is rendered as a small rect
+			UniformParameters->RectScaleOffset          = FVector4f(1.0f, 1.0f, 0.0f, 0.0f); // This will be overridden in vertex shader
 
-		PassParameters->ClusterPageData = GStreamingManager.GetClusterPageDataSRV();
-		PassParameters->HierarchyBuffer = Nanite::GStreamingManager.GetHierarchySRV();
+			UniformParameters->ClusterPageData          = Nanite::GStreamingManager.GetClusterPageDataSRV(GraphBuilder);
+			UniformParameters->HierarchyBuffer          = Nanite::GStreamingManager.GetHierarchySRV(GraphBuilder);
+			UniformParameters->VisibleClustersSWHW      = GraphBuilder.CreateSRV(CullingContext.VisibleClustersSWHW);
+			UniformParameters->MaterialTileRemap        = GraphBuilder.CreateSRV(MaterialTileRemap, PF_R32_UINT);
 
-		PassParameters->VisibleClustersSWHW = GraphBuilder.CreateSRV(CullingContext.VisibleClustersSWHW);
+#if RHI_RAYTRACING
+			UniformParameters->RayTracingCutError		= Nanite::GRayTracingManager.GetCutError();
+			UniformParameters->RayTracingDataBuffer		= Nanite::GRayTracingManager.GetAuxiliaryDataSRV(GraphBuilder);
+#else
+			UniformParameters->RayTracingCutError		= 0.0f;
+			UniformParameters->RayTracingDataBuffer		= GraphBuilder.CreateSRV(GSystemTextures.GetDefaultStructuredBuffer<uint32>(GraphBuilder));
+#endif
 
-		PassParameters->GridSize = { 1u, 1u };
+			UniformParameters->VisBuffer64              = RasterContext.VisBuffer64;
+			UniformParameters->DbgBuffer64              = SystemTextures.Black;
+			UniformParameters->DbgBuffer32              = SystemTextures.Black;
 
-		PassParameters->MaterialTileRemap = GraphBuilder.CreateSRV(MaterialTileRemap, PF_R32_UINT); // Dummy
+			UniformParameters->MultiViewEnabled          = 1;
+			UniformParameters->MultiViewIndices          = GraphBuilder.CreateSRV(ViewIndexBuffer);
+			UniformParameters->MultiViewRectScaleOffsets = GraphBuilder.CreateSRV(ViewRectScaleOffsetBuffer);
+			UniformParameters->InViews                   = GraphBuilder.CreateSRV(PackedViewBuffer);
 
-		PassParameters->MultiViewEnabled = 1;
-		PassParameters->MultiViewIndices = GraphBuilder.CreateSRV(ViewIndexBuffer);
-		PassParameters->MultiViewRectScaleOffsets = GraphBuilder.CreateSRV(ViewRectScaleOffsetBuffer);
-		PassParameters->InViews = GraphBuilder.CreateSRV(PackedViewBuffer);
+			PassParameters->Nanite = GraphBuilder.CreateUniformBuffer(UniformParameters);
+		}
 
-		PassParameters->VisBuffer64 = RasterContext.VisBuffer64;
-		PassParameters->DbgBuffer64 = SystemTextures.Black;
-		PassParameters->DbgBuffer32 = SystemTextures.Black;
-
-		PassParameters->View = Scene.UniformBuffers.LumenCardCaptureViewUniformBuffer;
+		CardPagesToRender[0].PatchView(&Scene, SharedView);
+		PassParameters->View = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*SharedView->CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
 		PassParameters->CardPass = GraphBuilder.CreateUniformBuffer(PassUniformParameters);
 
 		TShaderMapRef<FNaniteMultiViewMaterialVS> NaniteVertexShader(SharedView->ShaderMap);
 
+		const int32 NumMaterialPasses = MaterialPasses.Num();
+
 		GraphBuilder.AddPass
 		(
-			RDG_EVENT_NAME("Lumen Emit GBuffer %d materials %d quads", MaterialPasses.Num(), NumMaterialQuads),
+			RDG_EVENT_NAME("Lumen Emit GBuffer %d materials %d quads", NumMaterialPasses, NumMaterialQuads),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[PassParameters, 
-				&Scene, 
-				&FirstCardPage = CardPagesToRender[0],
-				MaterialPassArray = TArrayView<const FLumenMeshCaptureMaterialPass>(MaterialPasses),
-				NaniteVertexShader, 
-				SharedView,
-				ViewportSize](FRHICommandListImmediate& RHICmdList)
+			[PassParameters, &Scene, MaterialPasses = MoveTemp(MaterialPasses), NaniteVertexShader](FRHICommandList& RHICmdList)
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(LumenEmitGBuffer);
-
-				FirstCardPage.PatchView(RHICmdList, &Scene, SharedView);
-				Scene.UniformBuffers.LumenCardCaptureViewUniformBuffer.UpdateUniformBufferImmediate(*SharedView->CachedViewUniformShaderParameters);
-
-				FNaniteUniformParameters UniformParams;
-				UniformParams.PageConstants = PassParameters->PageConstants;
-				UniformParams.MaxVisibleClusters = PassParameters->MaxVisibleClusters;
-				UniformParams.MaxNodes = PassParameters->MaxNodes;
-				UniformParams.RenderFlags = PassParameters->RenderFlags;
-				UniformParams.MaterialConfig = FIntVector4(0, 1, 1, 0); // Tile based material culling is not required for Lumen, as each card is rendered as a small rect
-				UniformParams.RectScaleOffset = FVector4f(1.0f, 1.0f, 0.0f, 0.0f); // This will be overridden in vertex shader
-
-				UniformParams.ClusterPageData = PassParameters->ClusterPageData;
-				UniformParams.HierarchyBuffer = PassParameters->HierarchyBuffer;
-
-				UniformParams.VisibleClustersSWHW = PassParameters->VisibleClustersSWHW->GetRHI();
-
-				UniformParams.MaterialTileRemap = PassParameters->MaterialTileRemap->GetRHI();
-
-				UniformParams.MultiViewEnabled = PassParameters->MultiViewEnabled;
-				UniformParams.MultiViewIndices = PassParameters->MultiViewIndices->GetRHI();
-				UniformParams.MultiViewRectScaleOffsets = PassParameters->MultiViewRectScaleOffsets->GetRHI();
-				UniformParams.InViews = PassParameters->InViews->GetRHI();
-
-				UniformParams.VisBuffer64 = PassParameters->VisBuffer64->GetRHI();
-				UniformParams.DbgBuffer64 = PassParameters->DbgBuffer64->GetRHI();
-				UniformParams.DbgBuffer32 = PassParameters->DbgBuffer32->GetRHI();
-
-				Scene.UniformBuffers.NaniteUniformBuffer.UpdateUniformBufferImmediate(UniformParams);
 
 				FGraphicsMinimalPipelineStateSet GraphicsMinimalPipelineStateSet;
 				FMeshDrawCommandStateCache StateCache;
 
 				const FNaniteMaterialCommands& LumenMaterialCommands = Scene.NaniteMaterials[ENaniteMeshPass::LumenCardCapture];
-				for (const FLumenMeshCaptureMaterialPass& MaterialPass : MaterialPassArray)
+				for (const FLumenMeshCaptureMaterialPass& MaterialPass : MaterialPasses)
 				{
 					// One instance per card page
 					const uint32 InstanceFactor = MaterialPass.ViewIndices.Num();
@@ -1283,6 +1407,18 @@ void DrawLumenMeshCapturePass(
 	}
 }
 
+EGBufferLayout GetGBufferLayoutForMaterial(const FMaterial& Material)
+{
+	// If WPO is enabled and BasePass velocity is disabled, force velocity output in the base pass
+	// (We split the shading pass into two passes for this reason - see Nanite::DrawBasePass above)
+	if (!IsUsingBasePassVelocity(GMaxRHIShaderPlatform) && Material.MaterialUsesWorldPositionOffset_RenderThread())
+	{
+		return GBL_ForceVelocity;
+	}
+
+	return GBL_Default;
+}
+
 } // namespace Nanite
 
 FNaniteMaterialCommands::FNaniteMaterialCommands(uint32 InMaxMaterials)
@@ -1299,21 +1435,21 @@ FNaniteMaterialCommands::~FNaniteMaterialCommands()
 void FNaniteMaterialCommands::Release()
 {
 	HitProxyTableUploadBuffer.Release();
-	HitProxyTableDataBuffer.Release();
+	HitProxyTableDataBuffer = nullptr;
 
 	MaterialSlotUploadBuffer.Release();
-	MaterialSlotDataBuffer.Release();
+	MaterialSlotDataBuffer = nullptr;
 
 	MaterialDepthUploadBuffer.Release();
-	MaterialDepthDataBuffer.Release();
+	MaterialDepthDataBuffer = nullptr;
 
 #if WITH_DEBUG_VIEW_MODES
 	MaterialEditorUploadBuffer.Release();
-	MaterialEditorDataBuffer.Release();
+	MaterialEditorDataBuffer = nullptr;
 #endif
 }
 
-FNaniteCommandInfo FNaniteMaterialCommands::Register(FMeshDrawCommand& Command, FCommandHash CommandHash, uint32 InstructionCount)
+FNaniteCommandInfo FNaniteMaterialCommands::Register(FMeshDrawCommand& Command, FCommandHash CommandHash, uint32 InstructionCount, bool bWPOEnabled)
 {
 	FNaniteCommandInfo CommandInfo;
 
@@ -1331,6 +1467,7 @@ FNaniteCommandInfo FNaniteMaterialCommands::Register(FMeshDrawCommand& Command, 
 		MaterialEntry.InstructionCount = InstructionCount;
 	#endif
 		MaterialEntry.bNeedUpload = true;
+		MaterialEntry.bWPOEnabled = bWPOEnabled;
 
 		++NumMaterialDepthUpdates;
 	}
@@ -1388,10 +1525,6 @@ void FNaniteMaterialCommands::UpdateBufferState(FRDGBuilder& GraphBuilder, uint3
 	LLM_SCOPE_BYTAG(Nanite);
 
 	check(NumPrimitiveUpdates == 0);
-	check(NumMaterialSlotUpdates == 0);
-#if WITH_EDITOR
-	check(NumHitProxyTableUpdates == 0);
-#endif
 
 	TArray<FRHITransitionInfo, TInlineAllocator<2>> UAVs;
 
@@ -1401,74 +1534,67 @@ void FNaniteMaterialCommands::UpdateBufferState(FRDGBuilder& GraphBuilder, uint3
 	const uint32 MaterialSlotReserve = FMath::RoundUpToPowerOfTwo(FMath::Max(NumMaterialSlots, 256u));
 
 #if WITH_EDITOR
-	if (ResizeResourceIfNeeded(GraphBuilder, HitProxyTableDataBuffer, PrimitiveUpdateReserve * sizeof(uint32), TEXT("Nanite.HitProxyTableDataBuffer")))
-	{
-		UAVs.Add(FRHITransitionInfo(HitProxyTableDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-	}
+	ResizeByteAddressBufferIfNeeded(GraphBuilder, HitProxyTableDataBuffer, PrimitiveUpdateReserve * sizeof(uint32), TEXT("Nanite.HitProxyTableDataBuffer"));
 #endif
 
-	if (ResizeResourceIfNeeded(GraphBuilder, MaterialSlotDataBuffer, PrimitiveUpdateReserve * sizeof(uint32), TEXT("Nanite.MaterialSlotDataBuffer")))
-	{
-		UAVs.Add(FRHITransitionInfo(MaterialSlotDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-	}
+	ResizeByteAddressBufferIfNeeded(GraphBuilder, MaterialSlotDataBuffer, PrimitiveUpdateReserve * MaterialSlotSize, TEXT("Nanite.MaterialSlotDataBuffer"));
 
-	if (ResizeResourceIfNeeded(GraphBuilder, MaterialDepthDataBuffer, MaterialSlotReserve * sizeof(uint32), TEXT("Nanite.MaterialDepthDataBuffer")))
-	{
-		UAVs.Add(FRHITransitionInfo(MaterialDepthDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-	}
+	ResizeByteAddressBufferIfNeeded(GraphBuilder, MaterialDepthDataBuffer, MaterialSlotReserve * sizeof(uint32), TEXT("Nanite.MaterialDepthDataBuffer"));
 
 #if WITH_DEBUG_VIEW_MODES
-	if (ResizeResourceIfNeeded(GraphBuilder, MaterialEditorDataBuffer, MaterialSlotReserve * sizeof(uint32), TEXT("Nanite.MaterialEditorDataBuffer")))
-	{
-		UAVs.Add(FRHITransitionInfo(MaterialEditorDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
-	}
+	ResizeByteAddressBufferIfNeeded(GraphBuilder, MaterialEditorDataBuffer, MaterialSlotReserve * sizeof(uint32), TEXT("Nanite.MaterialEditorDataBuffer"));
 #endif
-
-	GraphBuilder.AddPass(RDG_EVENT_NAME("NaniteMaterialCommands.UpdateBufferState-Transition"), ERDGPassFlags::None,
-		[LocalUAVs = MoveTemp(UAVs)](FRHICommandList& RHICmdList)
-	{
-		RHICmdList.Transition(LocalUAVs);
-	});
 }
 
-void FNaniteMaterialCommands::Begin(FRHICommandListImmediate& RHICmdList, uint32 NumPrimitives, uint32 InNumPrimitiveUpdates)
+FNaniteMaterialCommands::FUploader* FNaniteMaterialCommands::Begin(FRDGBuilder& GraphBuilder, uint32 NumPrimitives, uint32 InNumPrimitiveUpdates)
 {
 	checkSlow(DoesPlatformSupportNanite(GMaxRHIShaderPlatform));
 
 	LLM_SCOPE_BYTAG(Nanite);
 
 	check(NumPrimitiveUpdates == 0);
-	check(NumMaterialSlotUpdates == 0);
 
 	const uint32 NumMaterialSlots = MaterialSlotAllocator.GetMaxSize();
 
 	const uint32 PrimitiveUpdateReserve = FMath::RoundUpToPowerOfTwo(FMath::Max(NumPrimitives * MaxMaterials, 256u));
 	const uint32 MaterialSlotReserve = FMath::RoundUpToPowerOfTwo(FMath::Max(NumMaterialSlots, 256u));
 
+	const auto Register = [&](const TRefCountPtr<FRDGPooledBuffer>& PooledBuffer)
+	{
+		return GraphBuilder.RegisterExternalBuffer(PooledBuffer);
+	};
+
 #if WITH_EDITOR
 	check(NumHitProxyTableUpdates == 0);
-	check(HitProxyTableDataBuffer.NumBytes == PrimitiveUpdateReserve * sizeof(uint32));
+	check(HitProxyTableDataBuffer);
+	check(HitProxyTableDataBuffer->GetSize() == PrimitiveUpdateReserve * sizeof(uint32));
 #endif
 #if WITH_DEBUG_VIEW_MODES
-	check(MaterialEditorDataBuffer.NumBytes == MaterialSlotReserve * sizeof(uint32));
+	check(MaterialEditorDataBuffer)
+	check(MaterialEditorDataBuffer->GetSize() == MaterialSlotReserve * sizeof(uint32));
 #endif
-	check(MaterialSlotDataBuffer.NumBytes == PrimitiveUpdateReserve * sizeof(uint32));
-	check(MaterialDepthDataBuffer.NumBytes == MaterialSlotReserve * sizeof(uint32));
+	check(MaterialSlotDataBuffer);
+	check(MaterialSlotDataBuffer->GetSize() == PrimitiveUpdateReserve * MaterialSlotSize);
+	check(MaterialDepthDataBuffer);
+	check(MaterialDepthDataBuffer->GetSize() == MaterialSlotReserve * sizeof(uint32));
+
+	FNaniteMaterialCommands::FUploader* Uploader = GraphBuilder.AllocObject<FNaniteMaterialCommands::FUploader>();
+	Uploader->MaxMaterials = MaxMaterials;
 
 	NumPrimitiveUpdates = InNumPrimitiveUpdates;
 	if (NumPrimitiveUpdates > 0)
 	{
-		MaterialSlotUploadBuffer.Init(NumPrimitiveUpdates * MaxMaterials, sizeof(uint32), false, TEXT("Nanite.MaterialSlotUploadBuffer"));
+		Uploader->MaterialSlotUploader = MaterialSlotUploadBuffer.Begin(GraphBuilder, Register(MaterialSlotDataBuffer), NumPrimitiveUpdates * MaxMaterials, MaterialSlotSize, TEXT("Nanite.MaterialSlotUploadBuffer"));
 	#if WITH_EDITOR
-		HitProxyTableUploadBuffer.Init(NumPrimitiveUpdates * MaxMaterials, sizeof(uint32), false, TEXT("Nanite.HitProxyTableUploadBuffer"));
+		Uploader->HitProxyTableUploader = HitProxyTableUploadBuffer.Begin(GraphBuilder, Register(HitProxyTableDataBuffer), NumPrimitiveUpdates * MaxMaterials, sizeof(uint32), TEXT("Nanite.HitProxyTableUploadBuffer"));
 	#endif
 	}
 
 	if (NumMaterialDepthUpdates > 0)
 	{
-		MaterialDepthUploadBuffer.Init(NumMaterialDepthUpdates, sizeof(uint32), false, TEXT("Nanite.MaterialDepthUploadBuffer"));
+		Uploader->MaterialDepthUploader = MaterialDepthUploadBuffer.Begin(GraphBuilder, Register(MaterialDepthDataBuffer), NumMaterialDepthUpdates, sizeof(uint32), TEXT("Nanite.MaterialDepthUploadBuffer"));
 	#if WITH_DEBUG_VIEW_MODES
-		MaterialEditorUploadBuffer.Init(NumMaterialDepthUpdates, sizeof(uint32), false, TEXT("Nanite.MaterialEditorUploadBuffer"));
+		Uploader->MaterialEditorUploader = MaterialEditorUploadBuffer.Begin(GraphBuilder, Register(MaterialEditorDataBuffer), NumMaterialDepthUpdates, sizeof(uint32), TEXT("Nanite.MaterialEditorUploadBuffer"));
 	#endif
 
 		for (auto& Command : EntryMap)
@@ -1477,98 +1603,693 @@ void FNaniteMaterialCommands::Begin(FRHICommandListImmediate& RHICmdList, uint32
 			if (MaterialEntry.bNeedUpload)
 			{
 				check(MaterialEntry.MaterialSlot != INDEX_NONE);
-				*static_cast<uint32*>(MaterialDepthUploadBuffer.Add_GetRef(MaterialEntry.MaterialSlot)) = MaterialEntry.MaterialId;
-			#if WITH_DEBUG_VIEW_MODES
-				*static_cast<uint32*>(MaterialEditorUploadBuffer.Add_GetRef(MaterialEntry.MaterialSlot)) = MaterialEntry.InstructionCount;
-			#endif
+				Uploader->DirtyMaterialEntries.Emplace(MaterialEntry);
 				MaterialEntry.bNeedUpload = false;
 			}
 		}
 	}
+
+	return Uploader;
 }
 
-void* FNaniteMaterialCommands::GetMaterialSlotPtr(uint32 PrimitiveIndex, uint32 EntryCount)
+void FNaniteMaterialCommands::FUploader::Lock(FRHICommandListBase& RHICmdList)
 {
-	++NumMaterialSlotUpdates;
+	const auto LockIfValid = [&RHICmdList](FRDGScatterUploader* Uploader)
+	{
+		if (Uploader)
+		{
+			Uploader->Lock(RHICmdList);
+		}
+	};
+
+	LockIfValid(MaterialSlotUploader);
+#if WITH_EDITOR
+	LockIfValid(HitProxyTableUploader);
+#endif
+	LockIfValid(MaterialDepthUploader);
+#if WITH_DEBUG_VIEW_MODES
+	LockIfValid(MaterialEditorUploader);
+#endif
+
+	for (const FMaterialUploadEntry& MaterialEntry : DirtyMaterialEntries)
+	{
+		*static_cast<uint32*>(MaterialDepthUploader->Add_GetRef(MaterialEntry.MaterialSlot)) = MaterialEntry.MaterialId;
+#if WITH_DEBUG_VIEW_MODES
+		* static_cast<uint32*>(MaterialEditorUploader->Add_GetRef(MaterialEntry.MaterialSlot)) = MaterialEntry.InstructionCount;
+#endif
+	}
+	DirtyMaterialEntries.Empty();
+}
+
+void FNaniteMaterialCommands::FUploader::Unlock(FRHICommandListBase& RHICmdList)
+{
+	const auto UnlockIfValid = [&RHICmdList](FRDGScatterUploader* Uploader)
+	{
+		if (Uploader)
+		{
+			Uploader->Unlock(RHICmdList);
+		}
+	};
+
+	UnlockIfValid(MaterialSlotUploader);
+#if WITH_EDITOR
+	UnlockIfValid(HitProxyTableUploader);
+#endif
+	UnlockIfValid(MaterialDepthUploader);
+#if WITH_DEBUG_VIEW_MODES
+	UnlockIfValid(MaterialEditorUploader);
+#endif
+}
+
+void* FNaniteMaterialCommands::FUploader::GetMaterialSlotPtr(uint32 PrimitiveIndex, uint32 EntryCount)
+{
 	const uint32 BaseIndex = PrimitiveIndex * MaxMaterials;
-	return MaterialSlotUploadBuffer.Add_GetRef(BaseIndex, EntryCount);
+	return MaterialSlotUploader->Add_GetRef(BaseIndex, EntryCount);
 }
 
 #if WITH_EDITOR
-void* FNaniteMaterialCommands::GetHitProxyTablePtr(uint32 PrimitiveIndex, uint32 EntryCount)
+void* FNaniteMaterialCommands::FUploader::GetHitProxyTablePtr(uint32 PrimitiveIndex, uint32 EntryCount)
 {
-	++NumHitProxyTableUpdates;
 	const uint32 BaseIndex = PrimitiveIndex * MaxMaterials;
-	return HitProxyTableUploadBuffer.Add_GetRef(BaseIndex, EntryCount);
+	return HitProxyTableUploader->Add_GetRef(BaseIndex, EntryCount);
 }
 #endif
 
-void FNaniteMaterialCommands::Finish(FRHICommandListImmediate& RHICmdList)
+void FNaniteMaterialCommands::Finish(FRDGBuilder& GraphBuilder, FRDGExternalAccessQueue& ExternalAccessQueue, FUploader* Uploader)
 {
 	checkSlow(DoesPlatformSupportNanite(GMaxRHIShaderPlatform));
 
 	LLM_SCOPE_BYTAG(Nanite);
-
-#if WITH_EDITOR
-	check(NumHitProxyTableUpdates <= NumPrimitiveUpdates);
-#endif
-	check(NumMaterialSlotUpdates <= NumPrimitiveUpdates);
 
 	if (NumPrimitiveUpdates == 0 && NumMaterialDepthUpdates == 0)
 	{
 		return;
 	}
 
-	SCOPED_DRAW_EVENTF(RHICmdList, UpdateMaterialTables, TEXT("UpdateNaniteMaterials PrimitiveUpdate = %u, MaterialUpdate = %u"), NumPrimitiveUpdates, NumMaterialDepthUpdates);
+	RDG_EVENT_SCOPE(GraphBuilder, "UpdateNaniteMaterials PrimitiveUpdate = %u, MaterialUpdate = %u", NumPrimitiveUpdates, NumMaterialDepthUpdates);
 
-	TArray<FRHITransitionInfo, TInlineAllocator<3>> UploadUAVs;
+	const auto UploadEnd = [&](FRDGAsyncScatterUploadBuffer& UploadBuffer, FRDGScatterUploader* Uploader)
+	{
+		check(Uploader);
+		UploadBuffer.End(GraphBuilder, Uploader);
+		ExternalAccessQueue.Add(Uploader->GetDstResource());
+	};
 
 	if (NumPrimitiveUpdates > 0)
 	{
-		UploadUAVs.Add(FRHITransitionInfo(MaterialSlotDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	#if WITH_EDITOR
-		UploadUAVs.Add(FRHITransitionInfo(HitProxyTableDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	#endif
-	}
-
-	if (NumMaterialDepthUpdates > 0)
-	{
-		UploadUAVs.Add(FRHITransitionInfo(MaterialDepthDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	#if WITH_DEBUG_VIEW_MODES
-		UploadUAVs.Add(FRHITransitionInfo(MaterialEditorDataBuffer.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	#endif
-	}
-
-	RHICmdList.Transition(UploadUAVs);
-
-	if (NumPrimitiveUpdates > 0)
-	{
-		MaterialSlotUploadBuffer.ResourceUploadTo(RHICmdList, MaterialSlotDataBuffer, false);
-	#if WITH_EDITOR
-		HitProxyTableUploadBuffer.ResourceUploadTo(RHICmdList, HitProxyTableDataBuffer, false);
-	#endif
-	}
-
-	if (NumMaterialDepthUpdates > 0)
-	{
-		MaterialDepthUploadBuffer.ResourceUploadTo(RHICmdList, MaterialDepthDataBuffer, false);
-	#if WITH_DEBUG_VIEW_MODES
-		MaterialEditorUploadBuffer.ResourceUploadTo(RHICmdList, MaterialEditorDataBuffer, false);
-	#endif
-	}
-
-	for (FRHITransitionInfo& Info : UploadUAVs)
-	{
-		Info.AccessBefore = Info.AccessAfter;
-		Info.AccessAfter = ERHIAccess::SRVMask;
-	}
-
-	RHICmdList.Transition(UploadUAVs);
-
-	NumMaterialSlotUpdates = 0;
+		UploadEnd(MaterialSlotUploadBuffer, Uploader->MaterialSlotUploader);
 #if WITH_EDITOR
-	NumHitProxyTableUpdates = 0;
-#endif
+		UploadEnd(HitProxyTableUploadBuffer, Uploader->HitProxyTableUploader);
+	#endif
+	}
+
+	if (NumMaterialDepthUpdates > 0)
+	{
+		UploadEnd(MaterialDepthUploadBuffer, Uploader->MaterialDepthUploader);
+#if WITH_DEBUG_VIEW_MODES
+		UploadEnd(MaterialEditorUploadBuffer, Uploader->MaterialEditorUploader);
+	#endif
+	}
+
 	NumPrimitiveUpdates = 0;
 	NumMaterialDepthUpdates = 0;
+}
+
+FNaniteRasterPipeline FNaniteRasterPipeline::GetFixedFunctionPipeline(bool bIsTwoSided)
+{
+	FNaniteRasterPipeline Ret;
+	Ret.RasterMaterial = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
+	Ret.bIsTwoSided = bIsTwoSided;
+	Ret.bPerPixelEval = false;
+	Ret.bWPODisableDistance = false;
+
+	return Ret;
+}
+
+FNaniteRasterPipelines::FNaniteRasterPipelines()
+{
+	PipelineBins.Reserve(256);
+	PerPixelEvalPipelineBins.Reserve(256);
+	PipelineMap.Reserve(256);
+}
+
+FNaniteRasterPipelines::~FNaniteRasterPipelines()
+{
+	PipelineBins.Reset();
+	PerPixelEvalPipelineBins.Reset();
+	PipelineMap.Empty();
+}
+
+uint16 FNaniteRasterPipelines::AllocateBin(bool bPerPixelEval)
+{
+	TBitArray<>& BinUsageMask = bPerPixelEval ? PerPixelEvalPipelineBins : PipelineBins;
+	int32 BinIndex = BinUsageMask.FindAndSetFirstZeroBit();
+	if (BinIndex == INDEX_NONE)
+	{
+		BinIndex = BinUsageMask.Add(true);
+	}
+
+	check(int32(uint16(BinIndex)) == BinIndex && PipelineBins.Num() + PerPixelEvalPipelineBins.Num() <= int32(MAX_uint16));
+	return bPerPixelEval ? FNaniteRasterBinIndexTranslator::RevertBinIndex(BinIndex) : uint16(BinIndex);
+}
+
+void FNaniteRasterPipelines::ReleaseBin(uint16 BinIndex)
+{
+	check(IsBinAllocated(BinIndex));
+	if (BinIndex < PipelineBins.Num())
+	{
+		PipelineBins[BinIndex] = false;
+	}
+	else
+	{
+		PerPixelEvalPipelineBins[FNaniteRasterBinIndexTranslator::RevertBinIndex(BinIndex)] = false;
+	}
+}
+
+bool FNaniteRasterPipelines::IsBinAllocated(uint16 BinIndex) const
+{
+	return BinIndex < PipelineBins.Num() ? PipelineBins[BinIndex] : PerPixelEvalPipelineBins[FNaniteRasterBinIndexTranslator::RevertBinIndex(BinIndex)];
+}
+
+uint32 FNaniteRasterPipelines::GetRegularBinCount() const
+{
+	return PipelineBins.FindLast(true) + 1;
+}
+
+uint32 FNaniteRasterPipelines::GetBinCount() const
+{
+	return GetRegularBinCount() + PerPixelEvalPipelineBins.FindLast(true) + 1;
+}
+
+FNaniteRasterBin FNaniteRasterPipelines::Register(const FNaniteRasterPipeline& InRasterPipeline)
+{
+	FNaniteRasterBin RasterBin;
+
+	const FRasterHash RasterPipelineHash = PipelineMap.ComputeHash(InRasterPipeline);
+	FRasterId RasterBinId = PipelineMap.FindOrAddIdByHash(RasterPipelineHash, InRasterPipeline, FNaniteRasterEntry());
+	RasterBin.BinId = RasterBinId.GetIndex();
+
+	FNaniteRasterEntry& RasterEntry = PipelineMap.GetByElementId(RasterBinId).Value;
+	if (RasterEntry.ReferenceCount == 0)
+	{
+		// First reference
+		RasterEntry.RasterPipeline = InRasterPipeline;
+		RasterEntry.BinIndex = AllocateBin(InRasterPipeline.bPerPixelEval);
+		RasterEntry.bForceDisableWPO = InRasterPipeline.bForceDisableWPO;
+	}
+
+	++RasterEntry.ReferenceCount;
+
+	RasterBin.BinIndex = RasterEntry.BinIndex;
+	return RasterBin;
+}
+
+void FNaniteRasterPipelines::Unregister(const FNaniteRasterBin& InRasterBin)
+{
+	FRasterId RasterBinId(InRasterBin.BinId);
+	check(RasterBinId.IsValid());
+
+	FNaniteRasterEntry& RasterEntry = PipelineMap.GetByElementId(RasterBinId).Value;
+	
+	check(RasterEntry.ReferenceCount > 0);
+	--RasterEntry.ReferenceCount;
+	if (RasterEntry.ReferenceCount == 0)
+	{
+		ReleaseBin(RasterEntry.BinIndex);
+		PipelineMap.RemoveByElementId(RasterBinId);
+	}
+}
+
+/// TODO: Work in progress / experimental
+
+FNaniteShadingPipelines::FNaniteShadingPipelines()
+{
+	PipelineBins.Reserve(256);
+	PipelineMap.Reserve(256);
+}
+
+FNaniteShadingPipelines::~FNaniteShadingPipelines()
+{
+	PipelineBins.Reset();
+	PipelineMap.Empty();
+}
+
+uint16 FNaniteShadingPipelines::AllocateBin()
+{
+	TBitArray<>& BinUsageMask = PipelineBins;
+	int32 BinIndex = BinUsageMask.FindAndSetFirstZeroBit();
+	if (BinIndex == INDEX_NONE)
+	{
+		BinIndex = BinUsageMask.Add(true);
+	}
+
+	check(int32(uint16(BinIndex)) == BinIndex && PipelineBins.Num() <= int32(MAX_uint16));
+	return uint16(BinIndex);
+}
+
+void FNaniteShadingPipelines::ReleaseBin(uint16 BinIndex)
+{
+	check(IsBinAllocated(BinIndex));
+	if (BinIndex < PipelineBins.Num())
+	{
+		PipelineBins[BinIndex] = false;
+	}
+}
+
+bool FNaniteShadingPipelines::IsBinAllocated(uint16 BinIndex) const
+{
+	return BinIndex < PipelineBins.Num() ? PipelineBins[BinIndex] : false;
+}
+
+uint32 FNaniteShadingPipelines::GetBinCount() const
+{
+	return PipelineBins.FindLast(true) + 1;
+}
+
+FNaniteShadingBin FNaniteShadingPipelines::Register(const FNaniteShadingPipeline& InShadingPipeline)
+{
+	FNaniteShadingBin ShadingBin;
+
+	const FShadingHash ShadingPipelineHash = PipelineMap.ComputeHash(InShadingPipeline);
+	FShadingId ShadingBinId = PipelineMap.FindOrAddIdByHash(ShadingPipelineHash, InShadingPipeline, FNaniteShadingEntry());
+	ShadingBin.BinId = ShadingBinId.GetIndex();
+
+	FNaniteShadingEntry& ShadingEntry = PipelineMap.GetByElementId(ShadingBinId).Value;
+	if (ShadingEntry.ReferenceCount == 0)
+	{
+		// First reference
+		ShadingEntry.ShadingPipeline = InShadingPipeline;
+		ShadingEntry.BinIndex = AllocateBin();
+	}
+
+	++ShadingEntry.ReferenceCount;
+
+	ShadingBin.BinIndex = ShadingEntry.BinIndex;
+	return ShadingBin;
+}
+
+void FNaniteShadingPipelines::Unregister(const FNaniteShadingBin& InShadingBin)
+{
+	FShadingId ShadingBinId(InShadingBin.BinId);
+	check(ShadingBinId.IsValid());
+
+	FNaniteShadingEntry& ShadingEntry = PipelineMap.GetByElementId(ShadingBinId).Value;
+	
+	check(ShadingEntry.ReferenceCount > 0);
+	--ShadingEntry.ReferenceCount;
+	if (ShadingEntry.ReferenceCount == 0)
+	{
+		ReleaseBin(ShadingEntry.BinIndex);
+		PipelineMap.RemoveByElementId(ShadingBinId);
+	}
+}
+
+/// END-TODO: Work in progress / experimental
+
+struct FNaniteVisibilityQuery
+{
+	FGraphEventRef			CompletedEvent;
+	TArray<FConvexVolume>	Views;
+	TArray<TAtomic<bool>>	RasterBinVisibility;
+	TSet<uint32>			ShadingDrawVisibility;
+	mutable FRWLock			ShadingDrawLock;
+	uint32 RasterBinCount;
+	uint32 ShadingDrawCount;
+	uint8 bFinished			: 1; 
+	uint8 bCullRasterBins	: 1;
+	uint8 bCullShadingBins	: 1;
+};
+
+bool FNaniteVisibilityResults::IsRasterBinVisible(uint16 BinIndex) const
+{
+	return IsRasterTestValid() ? RasterBinVisibility[int32(BinIndexTranslator.Translate(BinIndex))] : true;
+}
+
+bool FNaniteVisibilityResults::IsShadingDrawVisible(uint32 DrawId) const
+{
+	return IsShadingTestValid() ? ShadingDrawVisibility.Contains(DrawId) : true;
+}
+
+void FNaniteVisibilityResults::Invalidate()
+{
+	bRasterTestValid	= false;
+	bShadingTestValid	= false;
+	VisibleRasterBins	= 0;
+	VisibleShadingDraws	= 0;
+	RasterBinVisibility.Reset();
+	ShadingDrawVisibility.Reset();
+}
+
+static FORCEINLINE bool IsVisibilityTestNeeded(
+	const FNaniteVisibilityQuery* Query,
+	const FNaniteVisibility::FPrimitiveReferences& References,
+	const FNaniteRasterBinIndexTranslator BinIndexTranslator,
+	bool bAsync)
+{
+	bool bShouldTest = false;
+
+	for (const FNaniteVisibility::FPrimitiveBins& RasterBins : References.RasterBins)
+	{
+		if (!Query->RasterBinVisibility[int32(BinIndexTranslator.Translate(RasterBins.Primary))]) // Raster bin reference is not marked visible
+		{
+			bShouldTest = true;
+			break;
+		}
+	}
+
+	if (!bShouldTest)
+	{
+		if (bAsync)
+		{
+			FReadScopeLock ScopeLock(Query->ShadingDrawLock); // TODO: Improve
+
+			for (const uint32& ShadingDrawId : References.ShadingDraws)
+			{
+				if (!Query->ShadingDrawVisibility.Contains(ShadingDrawId)) // Shading draw reference is not present
+				{
+					bShouldTest = true;
+					break;
+				}
+			}
+		}
+		else
+		{
+			for (const uint32& ShadingDrawId : References.ShadingDraws)
+			{
+				if (!Query->ShadingDrawVisibility.Contains(ShadingDrawId)) // Shading draw reference is not present
+				{
+					bShouldTest = true;
+					break;
+				}
+			}
+		}
+	}
+
+	return bShouldTest;
+}
+
+static FORCEINLINE bool IsNanitePrimitiveVisible(const FNaniteVisibilityQuery* Query, const FPrimitiveSceneInfo* SceneInfo)
+{
+	FPrimitiveSceneProxy* SceneProxy = SceneInfo->Proxy;
+	if (!SceneProxy || SceneInfo->Scene == nullptr || !SceneInfo->IsIndexValid())
+	{
+		return false;
+	}
+
+	bool bPrimitiveVisible = true;
+	
+	if (GNaniteMaterialVisibilityPrimitives != 0)
+	{
+		bPrimitiveVisible = false;
+
+		const FBoxSphereBounds& ProxyBounds = SceneInfo->Scene->PrimitiveBounds[SceneInfo->GetIndex()].BoxSphereBounds; // World space bounds
+
+		for (const FConvexVolume& View : Query->Views)
+		{
+			bPrimitiveVisible = View.IntersectBox(ProxyBounds.Origin, ProxyBounds.BoxExtent);
+			if (bPrimitiveVisible)
+			{
+				break;
+			}
+		}
+	}
+
+	if (bPrimitiveVisible && GNaniteMaterialVisibilityInstances != 0)
+	{
+		bPrimitiveVisible = false;
+
+		const FMatrix& PrimitiveToWorld = SceneInfo->Scene->PrimitiveTransforms[SceneInfo->GetIndex()];
+		const TConstArrayView<FPrimitiveInstance> InstanceSceneData = SceneProxy->GetInstanceSceneData();
+
+		for (int32 InstanceIndex = 0; InstanceIndex < InstanceSceneData.Num(); ++InstanceIndex)
+		{
+			const FPrimitiveInstance& PrimitiveInstance = InstanceSceneData[InstanceIndex];
+			const FMatrix InstanceToWorld = PrimitiveInstance.LocalToPrimitive.ToMatrix() * PrimitiveToWorld;
+			const FBox InstanceBounds = SceneProxy->GetInstanceLocalBounds(InstanceIndex).ToBox();
+			const FBoxSphereBounds InstanceWorldBounds = FBoxSphereBounds(InstanceBounds.TransformBy(InstanceToWorld));
+
+			for (const FConvexVolume& View : Query->Views)
+			{
+				bPrimitiveVisible = View.IntersectBox(InstanceWorldBounds.Origin, InstanceWorldBounds.BoxExtent);
+				if (bPrimitiveVisible)
+				{
+					break;
+				}
+			}
+
+			if (bPrimitiveVisible)
+			{
+				break;
+			}
+		}
+	}
+
+	return bPrimitiveVisible;
+}
+
+static void PerformNaniteVisibility(
+	const TConstArrayView<const FNaniteVisibility::FPrimitiveReferences>& PrimitiveReferences,
+	FNaniteVisibilityQuery* Query,
+	const FNaniteRasterBinIndexTranslator BinIndexTranslator)
+{
+	SCOPED_NAMED_EVENT(PerformNaniteVisibility, FColor::Magenta);
+
+	if (PrimitiveReferences.Num() == 0)
+	{
+		return;
+	}
+
+	const bool bRunAsync = Query->CompletedEvent.IsValid();
+	if (bRunAsync)
+	{
+		ParallelForTemplate(PrimitiveReferences.Num(), [Query, &PrimitiveReferences, BinIndexTranslator](int32 ReferencesIndex)
+		{
+			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+			SCOPED_NAMED_EVENT(PerformNaniteVisibility, FColor::Magenta);
+
+			const FNaniteVisibility::FPrimitiveReferences& References = PrimitiveReferences[ReferencesIndex];
+
+			const bool bShouldTest = IsVisibilityTestNeeded(Query, References, BinIndexTranslator, true /* Async */);
+			if (bShouldTest)
+			{
+				const bool bPrimitiveVisible = IsNanitePrimitiveVisible(Query, References.SceneInfo);
+				if (bPrimitiveVisible)
+				{
+					if (Query->bCullRasterBins)
+					{
+						for (const FNaniteVisibility::FPrimitiveBins RasterBins : References.RasterBins)
+						{
+							Query->RasterBinVisibility[int32(BinIndexTranslator.Translate(RasterBins.Primary))].Store(true);
+							if (RasterBins.Secondary != 0xFFFFu)
+							{
+								Query->RasterBinVisibility[int32(BinIndexTranslator.Translate(RasterBins.Secondary))].Store(true);
+							}
+						}
+					}
+
+					if (Query->bCullShadingBins)
+					{
+						FWriteScopeLock ScopeLock(Query->ShadingDrawLock); // TODO: Improve
+						Query->ShadingDrawVisibility.Append(References.ShadingDraws);
+					}
+				}
+			}
+		});
+	}
+	else
+	{
+		for (const FNaniteVisibility::FPrimitiveReferences& References : PrimitiveReferences)
+		{
+			const bool bShouldTest = IsVisibilityTestNeeded(Query, References, BinIndexTranslator, false /* Async */);
+			if (bShouldTest)
+			{
+				const bool bPrimitiveVisible = IsNanitePrimitiveVisible(Query, References.SceneInfo);
+				if (bPrimitiveVisible)
+				{
+					if (Query->bCullRasterBins)
+					{
+						for (const FNaniteVisibility::FPrimitiveBins RasterBins : References.RasterBins)
+						{
+							Query->RasterBinVisibility[int32(BinIndexTranslator.Translate(RasterBins.Primary))] = true;
+							if (RasterBins.Secondary != 0xFFFFu)
+							{
+								Query->RasterBinVisibility[int32(BinIndexTranslator.Translate(RasterBins.Secondary))] = true;
+							}
+						}
+					}
+
+					if (Query->bCullShadingBins)
+					{
+						Query->ShadingDrawVisibility.Append(References.ShadingDraws);
+					}
+				}
+			}
+		}
+	}
+}
+
+class FNaniteVisibilityTask
+{
+public:
+	explicit FNaniteVisibilityTask(
+		const FNaniteVisibility& InVisibility,
+		FNaniteVisibilityQuery* InQuery,
+		const FNaniteRasterBinIndexTranslator InTranslator)
+	: Visibility(InVisibility)
+	, Query(InQuery)
+	, BinIndexTranslator(InTranslator)
+	{
+	}
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		PerformNaniteVisibility(Visibility.CapturedPrimitiveReferences, Query, BinIndexTranslator);
+	}
+
+public:
+	const FNaniteVisibility& Visibility;
+	FNaniteVisibilityQuery* Query = nullptr;
+	const FNaniteRasterBinIndexTranslator BinIndexTranslator;
+
+	static ESubsequentsMode::Type	GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+	ENamedThreads::Type				GetDesiredThread() { return ENamedThreads::AnyNormalThreadNormalTask; }
+	FORCEINLINE TStatId				GetStatId() const { return TStatId(); }
+};
+
+FNaniteVisibility::FNaniteVisibility()
+: bCalledBegin(false)
+{
+}
+
+void FNaniteVisibility::BeginVisibilityFrame(const FNaniteRasterBinIndexTranslator InTranslator)
+{
+	check(VisibilityQueries.Num() == 0);
+	check(!bCalledBegin);
+	bCalledBegin = true;
+	BinIndexTranslator = InTranslator;
+
+	if (GNaniteMaterialVisibility != 0)
+	{
+		PrimitiveReferences.GenerateValueArray(CapturedPrimitiveReferences);
+	}
+}
+
+void FNaniteVisibility::FinishVisibilityFrame()
+{
+	check(bCalledBegin);
+
+	for (FNaniteVisibilityQuery* Query : VisibilityQueries)
+	{
+		check(Query->bFinished);
+		delete Query;
+	}
+
+	VisibilityQueries.Reset();
+	CapturedPrimitiveReferences.Reset();
+	bCalledBegin = false;
+}
+
+FNaniteVisibilityQuery* FNaniteVisibility::BeginVisibilityQuery(
+	const TConstArrayView<FConvexVolume>& ViewList,
+	const class FNaniteRasterPipelines* RasterPipelines,
+	const class FNaniteMaterialCommands* MaterialCommands
+)
+{
+	const uint32 RasterBinCount = RasterPipelines != nullptr ? RasterPipelines->GetBinCount() : 0u;
+	const uint32 ShadingDrawCount = MaterialCommands != nullptr ? MaterialCommands->GetCommands().Num() : 0u;
+
+	if ((RasterBinCount + ShadingDrawCount == 0u) || ViewList.Num() == 0 || GNaniteMaterialVisibility == 0)
+	{
+		// Nothing to do
+		return nullptr;
+	}
+
+	const bool bRunAsync = GNaniteMaterialVisibilityAsync != 0;
+
+	FNaniteVisibilityQuery* VisibilityQuery = new FNaniteVisibilityQuery;
+	VisibilityQuery->Views = ViewList;
+	VisibilityQuery->bCullRasterBins  = RasterPipelines != nullptr && GNaniteMaterialVisibilityRasterBins != 0;
+	VisibilityQuery->bCullShadingBins = MaterialCommands != nullptr && GNaniteMaterialVisibilityShadingDraws != 0;
+	VisibilityQuery->RasterBinCount   = RasterBinCount;
+	VisibilityQuery->ShadingDrawCount = ShadingDrawCount;
+
+	VisibilityQuery->RasterBinVisibility.SetNum(RasterBinCount);
+	for (uint32 RasterBinIndex = 0; RasterBinIndex < RasterBinCount; ++RasterBinIndex)
+	{
+		VisibilityQuery->RasterBinVisibility[int32(RasterBinIndex)] = false;
+	}
+
+	VisibilityQuery->ShadingDrawVisibility.Reserve(ShadingDrawCount);
+	VisibilityQueries.Emplace(VisibilityQuery);
+
+	VisibilityQuery->bFinished = false;
+	VisibilityQuery->CompletedEvent = bRunAsync ? TGraphTask<FNaniteVisibilityTask>::CreateTask().ConstructAndDispatchWhenReady(*this, VisibilityQuery, BinIndexTranslator) : nullptr;
+	return VisibilityQuery;
+}
+
+void FNaniteVisibility::FinishVisibilityQuery(FNaniteVisibilityQuery* Query, FNaniteVisibilityResults& OutResults) const
+{
+	OutResults.Invalidate();
+	OutResults.SetRasterBinIndexTranslator(BinIndexTranslator);
+
+	if (Query != nullptr)
+	{
+		check(!Query->bFinished);
+
+		if (Query->CompletedEvent.IsValid())
+		{
+			SCOPED_NAMED_EVENT_TEXT("EndPerformNaniteVisibility", FColor::Magenta);
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(Query->CompletedEvent, ENamedThreads::GetRenderThread_Local());
+		}
+		else
+		{
+			PerformNaniteVisibility(CapturedPrimitiveReferences, Query, BinIndexTranslator);
+		}
+
+		OutResults.bRasterTestValid  = Query->bCullRasterBins;
+		OutResults.bShadingTestValid = Query->bCullShadingBins;
+
+		if (OutResults.bRasterTestValid)
+		{
+			OutResults.RasterBinVisibility.Init(false, Query->RasterBinVisibility.Num());
+			for (int32 RasterBinIndex = 0; RasterBinIndex < Query->RasterBinVisibility.Num(); ++RasterBinIndex)
+			{
+				if (Query->RasterBinVisibility[RasterBinIndex])
+				{
+					OutResults.RasterBinVisibility[RasterBinIndex] = true;
+					++OutResults.VisibleRasterBins;
+				}
+			}
+		}
+
+		if (OutResults.bShadingTestValid)
+		{
+			OutResults.ShadingDrawVisibility = Query->ShadingDrawVisibility.Array();
+			OutResults.VisibleShadingDraws = OutResults.ShadingDrawVisibility.Num();
+		}
+
+		OutResults.TotalRasterBins = Query->RasterBinCount;
+		OutResults.TotalShadingDraws = Query->ShadingDrawCount;
+
+		Query->bFinished = true;
+	}
+}
+
+FNaniteVisibility::PrimitiveBinsType& FNaniteVisibility::GetRasterBinReferences(const FPrimitiveSceneInfo* SceneInfo)
+{
+	FNaniteVisibility::FPrimitiveReferences& References = PrimitiveReferences.FindOrAdd(SceneInfo);
+	References.SceneInfo = SceneInfo;
+	return References.RasterBins;
+}
+
+FNaniteVisibility::PrimitiveDrawType& FNaniteVisibility::GetShadingDrawReferences(const FPrimitiveSceneInfo* SceneInfo)
+{
+	FNaniteVisibility::FPrimitiveReferences& References = PrimitiveReferences.FindOrAdd(SceneInfo);
+	References.SceneInfo = SceneInfo;
+	return References.ShadingDraws;
+}
+
+void FNaniteVisibility::RemoveReferences(const FPrimitiveSceneInfo* SceneInfo)
+{
+	PrimitiveReferences.Remove(SceneInfo);
 }

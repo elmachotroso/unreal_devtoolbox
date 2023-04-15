@@ -4,11 +4,13 @@
 
 #include "DMXEditorLog.h"
 #include "DMXNameListItem.h"
+#include "DMXProtocolSettings.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SListViewSelectorDropdownMenu.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STableRow.h"
@@ -20,22 +22,18 @@ const FText SNameListPicker::NoneLabel = LOCTEXT("NoneLabel", "<Select a Value>"
 void SNameListPicker::Construct(const FArguments& InArgs)
 {
 	ValueAttribute = InArgs._Value;
-	OnValueChangedDelegate = InArgs._OnValueChanged;
 	HasMultipleValuesAttribute = InArgs._HasMultipleValues;
-
-	bCanBeNone = InArgs._bCanBeNone;
 	bDisplayWarningIcon = InArgs._bDisplayWarningIcon;
 	OptionsSourceAttr = InArgs._OptionsSource;
-	UpdateOptionsSource();
-	IsValidAttr = InArgs._IsValid;
-
-	UpdateOptionsDelegate = InArgs._UpdateOptionsDelegate;
-	if (UpdateOptionsDelegate)
-	{
-		UpdateOptionsHandle = UpdateOptionsDelegate->Add(FSimpleDelegate::CreateSP(this, &SNameListPicker::UpdateOptionsSource));
-	}
-
 	MaxVisibleItems = InArgs._MaxVisibleItems;
+	OnValueChangedDelegate = InArgs._OnValueChanged;
+
+	UpdateOptionsSource();
+
+	EdititableTextBox = SNew(SEditableTextBox)
+		.Font(FAppStyle::GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+		.Text(this, &SNameListPicker::GetCurrentNameLabel)
+		.OnTextCommitted(this, &SNameListPicker::OnTextCommitted);
 
 	// List of selectable names for the dropdown menu
 	SAssignNew(OptionsListView, SListView< TSharedPtr<FName> >)
@@ -57,7 +55,7 @@ void SNameListPicker::Construct(const FArguments& InArgs)
 	SAssignNew(NamesListDropdown, SListViewSelectorDropdownMenu< TSharedPtr<FName> >, SearchBox, OptionsListView)
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 		.Padding(2)
 		[
 			SNew(SBox)
@@ -85,27 +83,7 @@ void SNameListPicker::Construct(const FArguments& InArgs)
 	SAssignNew(PickerComboButton, SComboButton)
 		.ButtonContent()
 		[
-			SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Left)
-			.Padding(0.0f, 0.0f, 5.0f, 0.0f)
-			[
-				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Icons.Warning"))
-				.ToolTipText(LOCTEXT("WarningToolTip", "Value was removed. Please, select another one."))
-				.Visibility(this, &SNameListPicker::GetWarningVisibility)
-			]
-		
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Left)
-			.Padding(0.0f)
-			[
-				SNew(STextBlock)
-				.Text(this, &SNameListPicker::GetCurrentNameLabel)
-			]
+			EdititableTextBox.ToSharedRef()
 		]
 		.MenuContent()
 		[
@@ -124,30 +102,18 @@ void SNameListPicker::Construct(const FArguments& InArgs)
 
 void SNameListPicker::UpdateOptionsSource()
 {
-	// Number of options with or without the <None> option
-	const int32 NumOptions = OptionsSourceAttr.Get().Num() + (bCanBeNone ? 1 : 0);
+	// Number of options with the <None> option
+	const int32 NumOptions = OptionsSourceAttr.Get().Num() + 1;
 
 	OptionsSource.Reset();
 	OptionsSource.Reserve(NumOptions);
 
-	// If we can have <None>, it's the first option
-	if (bCanBeNone)
-	{
-		OptionsSource.Add(MakeShared<FName>(FDMXNameListItem::None));
-	}
+	// <None> is the first option
+	OptionsSource.Add(MakeShared<FName>(NAME_None));
 
 	for (const FName& Name : OptionsSourceAttr.Get())
 	{
 		OptionsSource.Add(MakeShared<FName>(Name));
-	}
-}
-
-SNameListPicker::~SNameListPicker()
-{
-	if (UpdateOptionsDelegate)
-	{
-		UpdateOptionsDelegate->Remove(UpdateOptionsHandle);
-		UpdateOptionsDelegate = nullptr;
 	}
 }
 
@@ -169,7 +135,7 @@ TSharedRef<ITableRow> SNameListPicker::GenerateNameItemWidget(TSharedPtr<FName> 
 		return TableRow;
 	}
 
-	if (InItem->IsEqual(FDMXNameListItem::None))
+	if (InItem->IsEqual(NAME_None))
 	{
 		RowTextBlock->SetText(NoneLabel);
 		return TableRow;
@@ -184,6 +150,11 @@ void SNameListPicker::OnSelectionChanged(const TSharedPtr<FName> Item, ESelectIn
 	if (SelectInfo == ESelectInfo::OnKeyPress || SelectInfo == ESelectInfo::OnNavigation)
 	{
 		return;
+	}
+
+	if (Item.IsValid())
+	{
+		EdititableTextBox->SetText(FText::FromString(Item->ToString()));
 	}
 
 	OnUserSelectedItem(Item);
@@ -263,21 +234,6 @@ void SNameListPicker::OnMenuOpened()
 	}
 }
 
-EVisibility SNameListPicker::GetWarningVisibility() const
-{
-	if (!bDisplayWarningIcon || HasMultipleValuesAttribute.Get())
-	{
-		return EVisibility::Collapsed;
-	}
-
-	if (!IsValidAttr.Get())
-	{
-		return EVisibility::Visible;
-	}
-
-	return EVisibility::Collapsed;
-}
-
 EVisibility SNameListPicker::GetSearchBoxVisibility() const
 {
 	return OptionsSource.Num() > MaxVisibleItems ? EVisibility::Visible : EVisibility::Collapsed;
@@ -313,7 +269,7 @@ void SNameListPicker::UpdateFilteredOptions(const FString& Filter)
 
 		for (TSharedPtr<FName>& NameOption : OptionsSource)
 		{
-			if (!NameOption.IsValid() || NameOption->IsEqual(FDMXNameListItem::None))
+			if (!NameOption.IsValid() || NameOption->IsEqual(NAME_None))
 			{
 				continue;
 			}
@@ -348,12 +304,32 @@ FText SNameListPicker::GetCurrentNameLabel() const
 	}
 
 	const FName CurrentName = ValueAttribute.Get();
-	if (CurrentName.IsEqual(FDMXNameListItem::None))
+	if (CurrentName.IsEqual(NAME_None))
 	{
 		return NoneLabel;
 	}
 
 	return FText::FromName(CurrentName);
+}
+
+void SNameListPicker::OnTextCommitted(const FText& InNewText, ETextCommit::Type InTextCommit)
+{
+	if (InNewText.IsEmpty())
+	{
+		return;
+	}
+
+	const FName Value = *InNewText.ToString().TrimStartAndEnd();
+	EdititableTextBox->SetText(FText::FromName(Value));
+
+	if (OnValueChangedDelegate.IsBound())
+	{
+		OnValueChangedDelegate.Execute(Value);
+	}
+	else if (!ValueAttribute.IsBound())
+	{
+		ValueAttribute = Value;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

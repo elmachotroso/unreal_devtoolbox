@@ -2,17 +2,24 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "HAL/Platform.h"
 #include "RHIDefinitions.h"
+#include "Templates/SharedPointer.h"
 #include "hlslcc.h"
+
+class FArchive;
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
 #endif
 
+class FShaderCompilerFlags;
 struct FShaderCompilerInput;
 struct FShaderCompilerOutput;
-class FShaderCompilerFlags;
 
 enum GLSLVersion 
 {
@@ -43,9 +50,6 @@ public:
 	void CompileShader(const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output, const class FString& WorkingDirectory, GLSLVersion Version);
 
 protected:
-	// does the given version support SSO? Allows subclasses to device based on it's own format
-	virtual bool SupportsSeparateShaderObjects(GLSLVersion Version);
-
 	// if true, the shader output map will contain true names (i.e. ColorModifier) instead of helper names for runtime binding (i.e. pb_5)
 	virtual bool OutputTrueParameterNames()
 	{

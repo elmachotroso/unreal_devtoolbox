@@ -367,43 +367,6 @@ Mtl* FDatasmithMaxMatHelper::GetRenderedXRefMaterial(Mtl* Material)
 	return RenderedMaterial;
 }
 
-BMM_Color_fl FDatasmithMaxMatHelper::TemperatureToColor(float Kelvin)
-{
-	float Temp = Kelvin / 100.0f;
-	float Red;
-	float Green;
-	float Blue;
-
-	if (Temp <= 66.0f)
-	{
-		Red = 255.0f;
-		Green = Temp;
-		Green = 99.4708025861f * log(Green) - 161.1195681661f;
-		if (Temp <= 19.0f)
-		{
-			Blue = 0.0f;
-		}
-		else
-		{
-			Blue = Temp - 10.0f;
-			Blue = 138.5177312231f * log(Blue) - 305.0447927307f;
-		}
-	}
-	else
-	{
-		Red = Temp - 60.0f;
-		Red = 329.698727446f * FMath::Pow(Red, -0.1332047592f);
-		Green = Temp - 60;
-		Green = 288.1221695283f * FMath::Pow(Green, -0.0755148492f);
-		Blue = 255.0f;
-	}
-	BMM_Color_fl Color;
-	Color.r = Red / 255.0f;
-	Color.g = Green / 255.0f;
-	Color.b = Blue / 255.0f;
-	return Color;
-}
-
 FLinearColor FDatasmithMaxMatHelper::MaxColorToFLinearColor(BMM_Color_fl Color, float Multiplier /*= 1.0f*/)
 {
 	Color.r = FMath::Pow(Color.r, 1.0f / FDatasmithExportOptions::ColorGamma);
@@ -481,53 +444,6 @@ bool FDatasmithMaxMatHelper::IsSRGB(Bitmap& InBitmap)
 	return true;
 }
 
-void FDatasmithMaxMatExport::GetXMLTexture(TSharedRef< IDatasmithScene > DatasmithScene, Texmap* InTexMap, const TCHAR* AssetsPath)
-{
-	switch (FDatasmithMaxMatHelper::GetTextureClass(InTexMap))
-	{
-	case EDSBitmapType::NotSupported:
-		return;
-		break;
-	case EDSBitmapType::RegularBitmap:
-		FDatasmithMaxMatWriter::GetRegularTexmap(DatasmithScene, (BitmapTex*)InTexMap);
-		break;
-	case EDSBitmapType::AutodeskBitmap:
-		FDatasmithMaxMatWriter::GetAutodeskTexmap(DatasmithScene, InTexMap);
-		break; 
-	case EDSBitmapType::TheaBitmap:
-		FDatasmithMaxMatWriter::GetTheaTexmap(DatasmithScene, (BitmapTex*)InTexMap);
-		break;
-	case EDSBitmapType::CoronaBitmap:
-		FDatasmithMaxMatWriter::GetCoronaTexmap(DatasmithScene, (BitmapTex*)InTexMap);
-		break;
-	case EDSBitmapType::VRayHRDI:
-		FDatasmithMaxMatWriter::GetVrayHdri(DatasmithScene, (BitmapTex*)InTexMap);
-		break;
-	case EDSBitmapType::ColorCorrector:
-		GetXMLTexture(DatasmithScene, InTexMap->GetSubTexmap(0), AssetsPath);
-		break;
-	case EDSBitmapType::BakeableMap:
-		FDatasmithMaxMatWriter::AddBakeable(DatasmithScene, (BitmapTex*)InTexMap, AssetsPath);
-		break;
-	case EDSBitmapType::NormalMap:
-	case EDSBitmapType::FallOff:
-	case EDSBitmapType::Gradient:
-	case EDSBitmapType::GradientRamp:
-	case EDSBitmapType::Checker:
-	case EDSBitmapType::Cellular:
-	case EDSBitmapType::Mix:
-	case EDSBitmapType::Noise:
-	case EDSBitmapType::CompositeTex:
-		for (int i = 0; i < InTexMap->NumSubTexmaps(); i++)
-		{
-			GetXMLTexture(DatasmithScene, InTexMap->GetSubTexmap(i), AssetsPath);
-		}
-		break;
-	default:
-		break;
-	}
-}
-
 bool FDatasmithMaxMatExport::UseFirstSubMapOnly(EDSMaterialType MaterialType, Mtl* Material)
 {
 	switch (MaterialType)
@@ -559,8 +475,13 @@ bool FDatasmithMaxMatExport::UseFirstSubMapOnly(EDSMaterialType MaterialType, Mt
 
 TSharedPtr< IDatasmithBaseMaterialElement > FDatasmithMaxMatExport::ExportUniqueMaterial(TSharedRef< IDatasmithScene > DatasmithScene, Mtl* Material, const TCHAR* AssetsPath)
 {
-	// Names should be unique prior to this
-	FString MaterialName(FDatasmithUtils::SanitizeObjectName(Material->GetName().data()));
+	if (!Material)
+	{
+		return {};
+	}
+
+	FString MaterialName(FDatasmithMaxMaterialsToUEPbrManager::GetDatasmithMaterialName(Material));
+
 	for (int i = 0; i < DatasmithScene->GetMaterialsCount(); i++)
 	{
 		if (FString(DatasmithScene->GetMaterial(i)->GetName()) == MaterialName)
@@ -575,17 +496,15 @@ TSharedPtr< IDatasmithBaseMaterialElement > FDatasmithMaxMatExport::ExportUnique
 
 		MaterialConverter->Convert( DatasmithScene, UEPbrMaterial, Material, AssetsPath );
 
-		if ( UEPbrMaterial )
-		{
-			DatasmithScene->AddMaterial( UEPbrMaterial );
-		}
+		FDatasmithMaxMaterialsToUEPbrManager::AddDatasmithMaterial(DatasmithScene, Material, UEPbrMaterial);
 
 		return UEPbrMaterial;
 	}
 	else
 	{
-		TSharedRef< IDatasmithMaterialElement > MaterialElement = FDatasmithSceneFactory::CreateMaterial( (TCHAR*)Material->GetName().data() );
-		DatasmithScene->AddMaterial( MaterialElement );
+		TSharedRef< IDatasmithMaterialElement > MaterialElement = FDatasmithSceneFactory::CreateMaterial( *MaterialName );
+		
+		FDatasmithMaxMaterialsToUEPbrManager::AddDatasmithMaterial(DatasmithScene, Material, MaterialElement);
 
 		WriteXMLMaterial( DatasmithScene, MaterialElement, Material );
 

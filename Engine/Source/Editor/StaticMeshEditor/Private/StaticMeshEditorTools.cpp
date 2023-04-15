@@ -5,7 +5,7 @@
 #include "Textures/SlateIcon.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EngineDefines.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "PropertyHandle.h"
 #include "IDetailGroup.h"
 #include "IDetailChildrenBuilder.h"
@@ -42,13 +42,14 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "JsonObjectConverter.h"
-#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "Interfaces/IAnalyticsProvider.h"
 #include "ScopedTransaction.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SFilePathPicker.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "PerPlatformPropertyCustomization.h"
 #include "Misc/ScopedSlowTask.h"
+#include "MeshCardRepresentation.h"
 
 const uint32 MaxHullCount = 64;
 const uint32 MinHullCount = 1;
@@ -423,11 +424,11 @@ int32 SConvexDecomposition::GetVertsPerHullCount() const
 
 static UEnum& GetFeatureImportanceEnum()
 {
-	static FName FeatureImportanceName(TEXT("EMeshFeatureImportance::Off"));
-	static UEnum* FeatureImportanceEnum = NULL;
-	if (FeatureImportanceEnum == NULL)
+	static UEnum* FeatureImportanceEnum = nullptr;
+	if (FeatureImportanceEnum == nullptr)
 	{
-		UEnum::LookupEnumName(FeatureImportanceName, &FeatureImportanceEnum);
+		FTopLevelAssetPath MeshFeatureImportanceEnumPath(TEXT("/Script/Engine"), TEXT("EMeshFeatureImportance"));
+		FeatureImportanceEnum = FindObject<UEnum>(MeshFeatureImportanceEnumPath);
 		check(FeatureImportanceEnum);
 	}
 	return *FeatureImportanceEnum;
@@ -435,11 +436,11 @@ static UEnum& GetFeatureImportanceEnum()
 
 static UEnum& GetTerminationCriterionEunum()
 {
-	static FName Name(TEXT("EStaticMeshReductionTerimationCriterion::Triangles"));
-	static UEnum* EnumPtr = NULL;
-	if (EnumPtr == NULL)
+	static UEnum* EnumPtr = nullptr;
+	if (EnumPtr == nullptr)
 	{
-		UEnum::LookupEnumName(Name, &EnumPtr);
+		FTopLevelAssetPath StaticMeshReductionTerimationCriterionEnumPath(TEXT("/Script/Engine"), TEXT("EStaticMeshReductionTerimationCriterion"));
+		EnumPtr = FindObject<UEnum>(StaticMeshReductionTerimationCriterionEnumPath);
 		check(EnumPtr);
 	}
 	return *EnumPtr;
@@ -921,17 +922,17 @@ int32 FMeshBuildSettingsLayout::GetDstLightmapIndex() const
 
 TOptional<float> FMeshBuildSettingsLayout::GetBuildScaleX() const
 {
-	return BuildSettings.BuildScale3D.X;
+	return static_cast<float>(BuildSettings.BuildScale3D.X);
 }
 
 TOptional<float> FMeshBuildSettingsLayout::GetBuildScaleY() const
 {
-	return BuildSettings.BuildScale3D.Y;
+	return static_cast<float>(BuildSettings.BuildScale3D.Y);
 }
 
 TOptional<float> FMeshBuildSettingsLayout::GetBuildScaleZ() const
 {
-	return BuildSettings.BuildScale3D.Z;
+	return static_cast<float>(BuildSettings.BuildScale3D.Z);
 }
 
 float FMeshBuildSettingsLayout::GetDistanceFieldResolutionScale() const
@@ -1385,7 +1386,7 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 				[
 					SAssignNew(SilhouetteCombo, STextComboBox)
 					//.Font( IDetailLayoutBuilder::GetDetailFont() )
-				.ContentPadding(0)
+				.ContentPadding(0.f)
 				.OptionsSource(&ImportanceOptions)
 				.InitiallySelectedItem(ImportanceOptions[ReductionSettings.SilhouetteImportance])
 				.OnSelectionChanged(this, &FMeshReductionSettingsLayout::OnSilhouetteImportanceChanged)
@@ -1405,7 +1406,7 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 				[
 					SAssignNew(TextureCombo, STextComboBox)
 					//.Font( IDetailLayoutBuilder::GetDetailFont() )
-				.ContentPadding(0)
+				.ContentPadding(0.f)
 				.OptionsSource(&ImportanceOptions)
 				.InitiallySelectedItem(ImportanceOptions[ReductionSettings.TextureImportance])
 				.OnSelectionChanged(this, &FMeshReductionSettingsLayout::OnTextureImportanceChanged)
@@ -1425,7 +1426,7 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 				[
 					SAssignNew(ShadingCombo, STextComboBox)
 					//.Font( IDetailLayoutBuilder::GetDetailFont() )
-				.ContentPadding(0)
+				.ContentPadding(0.f)
 				.OptionsSource(&ImportanceOptions)
 				.InitiallySelectedItem(ImportanceOptions[ReductionSettings.ShadingImportance])
 				.OnSelectionChanged(this, &FMeshReductionSettingsLayout::OnShadingImportanceChanged)
@@ -2172,6 +2173,19 @@ TSharedRef<SWidget> FMeshSectionSettingsLayout::OnGenerateCustomSectionWidgetsFo
 		.Padding(2, 0, 2, 0)
 		[
 			SNew(SCheckBox)
+			.IsChecked(this, &FMeshSectionSettingsLayout::DoesSectionAffectDistanceFieldLighting, SectionIndex)
+			.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionAffectDistanceFieldLightingChanged, SectionIndex)
+			[
+				SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(LOCTEXT("AffectDistanceFieldLighting", "Affect Distance Field Lighting"))
+			]
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(2, 0, 2, 0)
+		[
+			SNew(SCheckBox)
 			.IsChecked(this, &FMeshSectionSettingsLayout::IsSectionOpaque, SectionIndex)
 			.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionForceOpaqueFlagChanged, SectionIndex)
 			[
@@ -2210,6 +2224,37 @@ void FMeshSectionSettingsLayout::OnSectionVisibleInRayTracingChanged(ECheckBoxSt
 	StaticMesh.GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
 	CallPostEditChange();
 }
+
+
+ECheckBoxState FMeshSectionSettingsLayout::DoesSectionAffectDistanceFieldLighting(int32 SectionIndex) const
+{
+	UStaticMesh& StaticMesh = GetStaticMesh();
+	FMeshSectionInfo Info = StaticMesh.GetSectionInfoMap().Get(LODIndex, SectionIndex);
+	return Info.bAffectDistanceFieldLighting ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FMeshSectionSettingsLayout::OnSectionAffectDistanceFieldLightingChanged(ECheckBoxState NewState, int32 SectionIndex)
+{
+	UStaticMesh& StaticMesh = GetStaticMesh();
+
+	FText TransactionTest = LOCTEXT("StaticMeshEditorSetAffectDistanceFieldLightingSectionFlag", "Staticmesh editor: Set AffectDistanceFieldLighting For section, the section will be affect distance field lighting");
+	if (NewState == ECheckBoxState::Unchecked)
+	{
+		TransactionTest = LOCTEXT("StaticMeshEditorClearAffectDistanceFieldLightingSectionFlag", "Staticmesh editor: Clear AffectDistanceFieldLighting For section");
+	}
+	FScopedTransaction Transaction(TransactionTest);
+
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
+
+	StaticMesh.PreEditChange(Property);
+	StaticMesh.Modify();
+
+	FMeshSectionInfo Info = StaticMesh.GetSectionInfoMap().Get(LODIndex, SectionIndex);
+	Info.bAffectDistanceFieldLighting = (NewState == ECheckBoxState::Checked) ? true : false;
+	StaticMesh.GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
+	CallPostEditChange();
+}
+
 
 ECheckBoxState FMeshSectionSettingsLayout::IsSectionOpaque(int32 SectionIndex) const
 {
@@ -2518,7 +2563,7 @@ void FMeshMaterialsLayout::AddToCategory(IDetailCategoryBuilder& CategoryBuilder
 				.Padding(2.0f, 1.0f)
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 					.Text(LOCTEXT("AddLODLevelCategories_MaterialArrayOpAdd", "Add Material Slot"))
 					.ToolTipText(LOCTEXT("AddLODLevelCategories_MaterialArrayOpAdd_Tooltip", "Add Material Slot at the end of the Material slot array. Those Material slots can be used to override a LODs section, (not the base LOD)"))
 					.ContentPadding(4.0f)
@@ -2528,7 +2573,7 @@ void FMeshMaterialsLayout::AddToCategory(IDetailCategoryBuilder& CategoryBuilder
 					.IsFocusable(false)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
+						.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
@@ -3232,6 +3277,15 @@ FLevelOfDetailSettingsLayout::FLevelOfDetailSettingsLayout( FStaticMeshEditor& I
 	LODCount = StaticMeshEditor.GetStaticMesh()->GetNumLODs();
 
 	UpdateLODNames();
+
+	OnAssetPostLODImportDelegateHandle = GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostLODImport.AddLambda([this](UObject* InObject, int32 InLODIndex)
+		{
+			UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+			if (InObject == StaticMesh)
+			{
+				StaticMeshEditor.RefreshTool();
+			}
+		});
 }
 
 /** Returns true if automatic mesh reduction is available. */
@@ -3320,15 +3374,41 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 	.Visibility(GEngine->UseStaticMeshMinLODPerQualityLevels ? EVisibility::Visible : EVisibility::Collapsed)
 	.RowTag("QualityLevelMinLOD")
 	.IsEnabled(IsQualityLevelLODEnabled)
+	.EditCondition(IsQualityLevelLODEnabled, NULL)
 	.NameContent()
 		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.Text(LOCTEXT("QualityLevelMinLOD", "Quality Level Min LOD"))
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.Padding(0.0f, 4.0f)
+			.HAlign(HAlign_Left)
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text(LOCTEXT("QualityLevelMinLOD", "Quality Level Min LOD"))
+			]
+			+ SHorizontalBox::Slot()
+				.HAlign(HAlign_Right)
+				.Padding(50.0f, 0.0f)
+				.AutoWidth()
+			[
+				SNew(SButton)
+				.OnClicked(this, &FLevelOfDetailSettingsLayout::ResetToDefault)
+				.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+				.ToolTipText(LOCTEXT("QualityLevelMinLodToolTip", "Clear MinLOD conversion data"))
+				.ForegroundColor(FSlateColor::UseForeground())
+				.IsEnabled(TAttribute<bool>::CreateLambda([this]() { return GetMinLOD().PerPlatform.Num() != 0 || GetMinLOD().Default != 0; }))
+				.Content()
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Delete"))
+				]
+			]
 		]
 		.ValueContent()
 		.MinDesiredWidth((float)(StaticMesh->GetQualityLevelMinLOD().PerQuality.Num() + 1)*125.0f)
-		.MaxDesiredWidth((float)((int32)QualityLevelProperty::EQualityLevels::Num + 1)*125.0f)
+		.MaxDesiredWidth((float)((int32)EPerQualityLevels::Num + 1)*125.0f)
 		[
 			SNew(SPerQualityLevelPropertiesWidget)
 			.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetMinQualityLevelLODWidget)
@@ -3346,9 +3426,9 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 			.Text(LOCTEXT("NoRefStreamingLODBias", "NoRef Streaming LOD Bias"))
 		]
-	.ValueContent()
+		.ValueContent()
 		.MinDesiredWidth(float(StaticMesh->GetNoRefStreamingLODBias().PerQuality.Num() + 1) * 125.f)
-		.MaxDesiredWidth(float((int32)QualityLevelProperty::EQualityLevels::Num + 1) * 125.f)
+		.MaxDesiredWidth(float((int32)EPerQualityLevels::Num + 1) * 125.f)
 		[
 			SNew(SPerQualityLevelPropertiesWidget)
 			.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasWidget)
@@ -3714,8 +3794,8 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 					.MaxDesiredWidth(0.0f)
 				[
 					SNew(SFilePathPicker)
-						.BrowseButtonImage(FEditorStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
-						.BrowseButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.BrowseButtonImage(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+						.BrowseButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.BrowseButtonToolTip(LOCTEXT("FileButtonToolTipText", "Choose a source import file"))
 						.BrowseDirectory(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_OPEN))
 						.BrowseTitle(LOCTEXT("PropertyEditorTitle", "Source import file picker..."))
@@ -3800,6 +3880,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 
 FLevelOfDetailSettingsLayout::~FLevelOfDetailSettingsLayout()
 {
+	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostLODImport.Remove(OnAssetPostLODImportDelegateHandle);
 }
 
 FString FLevelOfDetailSettingsLayout::GetSourceImportFilename(int32 LODIndex) const
@@ -3882,7 +3963,7 @@ TSharedRef<SWidget> FLevelOfDetailSettingsLayout::GetLODScreenSizeWidget(FName P
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 		.MinDesiredWidth(60.0f)
 		.MinValue(0.0f)
-		.MaxValue(WORLD_MAX)
+		.MaxValue(static_cast<float>(WORLD_MAX))
 		.SliderExponent(2.0f)
 		.Value(this, &FLevelOfDetailSettingsLayout::GetLODScreenSize, PlatformGroupName, LODIndex)
 		.OnValueChanged(const_cast<FLevelOfDetailSettingsLayout*>(this), &FLevelOfDetailSettingsLayout::OnLODScreenSizeChanged, PlatformGroupName, LODIndex)
@@ -4185,6 +4266,12 @@ bool FLevelOfDetailSettingsLayout::IsApplyNeeded() const
 		}
 	}
 
+	// Allow to rebuild mesh card representation on demand when debugging it
+	if (MeshCardRepresentation::IsDebugMode())
+	{
+		return true;
+	}
+
 	return false;
 }
 
@@ -4278,6 +4365,14 @@ int32 FLevelOfDetailSettingsLayout::GetMinLOD(FName Platform) const
 	return (ValuePtr != nullptr) ? *ValuePtr : StaticMesh->GetMinLOD().Default;
 }
 
+FPerPlatformInt FLevelOfDetailSettingsLayout::GetMinLOD() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	return StaticMesh->GetMinLOD();
+}
+
 void FLevelOfDetailSettingsLayout::OnMinLODChanged(int32 NewValue, FName Platform)
 {
 	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
@@ -4337,7 +4432,7 @@ bool FLevelOfDetailSettingsLayout::AddMinLODPlatformOverride(FName PlatformGroup
 	if (StaticMesh->GetMinLOD().PerPlatform.Find(PlatformGroupName) == nullptr)
 	{
 		FPerPlatformInt MinLOD = StaticMesh->GetMinLOD();
-		float Value = MinLOD.Default;
+		int32 Value = MinLOD.Default;
 		MinLOD.PerPlatform.Add(PlatformGroupName, Value);
 		StaticMesh->SetMinLOD(MoveTemp(MinLOD));
 		OnMinLODChanged(Value, PlatformGroupName);
@@ -4355,7 +4450,7 @@ bool FLevelOfDetailSettingsLayout::RemoveMinLODPlatformOverride(FName PlatformGr
 	FPerPlatformInt MinLOD = StaticMesh->GetMinLOD();
 	if (MinLOD.PerPlatform.Remove(PlatformGroupName) != 0)
 	{
-		float Value = MinLOD.Default;
+		int32 Value = MinLOD.Default;
 		StaticMesh->SetMinLOD(MoveTemp(MinLOD));
 		OnMinLODChanged(Value, PlatformGroupName);
 		return true;
@@ -4407,6 +4502,7 @@ void FLevelOfDetailSettingsLayout::OnMinQualityLevelLODChanged(int32 NewValue, F
 		}
 		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
 		StaticMesh->Modify();
+		StaticMesh->GetOnMeshChanged().Broadcast();
 	}
 	StaticMeshEditor.RefreshViewport();
 }
@@ -4439,7 +4535,7 @@ bool FLevelOfDetailSettingsLayout::AddMinLODQualityLevelOverride(FName QualityLe
 	if (StaticMesh->GetQualityLevelMinLOD().PerQuality.Find(QLKey) == nullptr)
 	{
 		FPerQualityLevelInt MinLOD = StaticMesh->GetQualityLevelMinLOD();
-		float Value = MinLOD.Default;
+		int32 Value = MinLOD.Default;
 		MinLOD.PerQuality.Add(QLKey, Value);
 		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
 		OnMinQualityLevelLODChanged(Value, QualityLevelName);
@@ -4459,7 +4555,7 @@ bool FLevelOfDetailSettingsLayout::RemoveMinLODQualityLevelOverride(FName Qualit
 	int32 QL = QualityLevelProperty::FNameToQualityLevel(QualityLevelName);
 	if (QL != INDEX_NONE && MinLOD.PerQuality.Remove(QL) != 0)
 	{
-		float Value = MinLOD.Default;
+		int32 Value = MinLOD.Default;
 		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
 		OnMinQualityLevelLODChanged(Value, QualityLevelName);
 		return true;
@@ -4507,6 +4603,22 @@ void FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasChanged(int32 NewValue
 		StaticMesh->Modify();
 	}
 	StaticMeshEditor.RefreshViewport();
+}
+
+FReply FLevelOfDetailSettingsLayout::ResetToDefault()
+{
+	if (GEngine->UseStaticMeshMinLODPerQualityLevels)
+	{
+		UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+		check(StaticMesh);
+
+		FPerPlatformInt PlatformMinLOD;
+		StaticMesh->SetMinLOD(MoveTemp(PlatformMinLOD));
+		StaticMesh->Modify();
+
+		StaticMeshEditor.RefreshTool();
+	}
+	return FReply::Handled();
 }
 
 void FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel)
@@ -4675,7 +4787,7 @@ bool FLevelOfDetailSettingsLayout::AddNumStreamedLODsPlatformOverride(FName Plat
 	StaticMesh->Modify();
 	if (StaticMesh->NumStreamedLODs.PerPlatform.Find(PlatformGroupName) == nullptr)
 	{
-		float Value = StaticMesh->NumStreamedLODs.Default;
+		int32 Value = StaticMesh->NumStreamedLODs.Default;
 		StaticMesh->NumStreamedLODs.PerPlatform.Add(PlatformGroupName, Value);
 		OnNumStreamedLODsChanged(Value, PlatformGroupName);
 		return true;
@@ -4964,10 +5076,57 @@ void FNaniteSettingsLayout::UpdateSettings(const FMeshNaniteSettings& InSettings
 void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilder)
 {
 	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	TWeakObjectPtr<UStaticMesh> WeakStaticMesh = StaticMesh;
+
+	const FText NaniteCategoryName = LOCTEXT("NaniteSettingsCategory", "Nanite Settings");
+
+	auto NaniteCategoryContentLambda = [WeakStaticMesh]()
+	{
+		UStaticMesh* StaticMesh = WeakStaticMesh.Get();
+		if (StaticMesh && StaticMesh->NaniteSettings.bEnabled)
+		{
+			if (!StaticMesh->GetHiResSourceModel().SourceImportFilename.IsEmpty())
+			{
+				return LOCTEXT("NaniteSettingsCategory_Imported", "[Imported]");
+			}
+		}
+		return FText::GetEmpty();
+	};
+
+	auto NaniteCategoryContentTooltipLambda = [WeakStaticMesh]()
+	{
+		UStaticMesh* StaticMesh = WeakStaticMesh.Get();
+		if (StaticMesh && StaticMesh->NaniteSettings.bEnabled)
+		{
+			if (!StaticMesh->GetHiResSourceModel().SourceImportFilename.IsEmpty())
+			{
+				return FText::Format(LOCTEXT("NaniteSettingsCategory_ImportedTooltip", "The nanite high resolution data is imported from file {0}"), FText::FromString(StaticMesh->GetHiResSourceModel().SourceImportFilename));
+			}
+		}
+		return FText::GetEmpty();
+	};
 
 	IDetailCategoryBuilder& NaniteSettingsCategory =
-		DetailBuilder.EditCategory("NaniteSettings", LOCTEXT("NaniteSettingsCategory", "Nanite Settings"));
+		DetailBuilder.EditCategory("NaniteSettings", NaniteCategoryName);
 	NaniteSettingsCategory.SetSortOrder(10);
+	
+	NaniteSettingsCategory.HeaderContent
+	(
+		SNew( SHorizontalBox )
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SBox)
+			.Padding(FMargin(5.0f, 0.0f))
+			[
+				SNew(STextBlock)
+				.Text_Lambda(NaniteCategoryContentLambda)
+				.ToolTipText_Lambda(NaniteCategoryContentTooltipLambda)
+				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+					
+			]
+		]
+	);
 
 	TSharedPtr<SCheckBox> NaniteEnabledCheck;
 	{
@@ -4983,6 +5142,23 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 			SAssignNew(NaniteEnabledCheck, SCheckBox)
 			.IsChecked(this, &FNaniteSettingsLayout::IsEnabledChecked)
 			.OnCheckStateChanged(this, &FNaniteSettingsLayout::OnEnabledChanged)
+		];
+	}
+
+	{
+		TSharedPtr<SCheckBox> NanitePreserveAreaCheck;
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("PreserveArea", "Preserve Area") )
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("PreserveArea", "Preserve Area"))
+		]
+		.ValueContent()
+		[
+			SAssignNew(NanitePreserveAreaCheck, SCheckBox)
+			.IsChecked(this, &FNaniteSettingsLayout::IsPreserveAreaChecked)
+			.OnCheckStateChanged(this, &FNaniteSettingsLayout::OnPreserveAreaChanged)
 		];
 	}
 
@@ -5076,7 +5252,7 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 	{
 		NaniteSettingsCategory.AddCustomRow( LOCTEXT("FallbackTrianglePercent", "Fallback Triangle Percent") )
 
-		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([this, NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked() && IsHiResDataEmpty(); })))
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -5100,7 +5276,7 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 	{
 		NaniteSettingsCategory.AddCustomRow( LOCTEXT("FallbackRelativeError", "Fallback Relative Error") )
 
-		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([this, NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked() && IsHiResDataEmpty(); } )))
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -5119,22 +5295,108 @@ void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilde
 		];
 	}
 
-	NaniteSettingsCategory.AddCustomRow(LOCTEXT("ApplyChanges", "Apply Changes"))
-	.ValueContent()
-	.HAlign(HAlign_Left)
-	.VAlign(VAlign_Center)
-	[
-		SNew(SButton)
-		.OnClicked(this, &FNaniteSettingsLayout::OnApply)
-		.IsEnabled(this, &FNaniteSettingsLayout::IsApplyNeeded)
-		.VAlign(VAlign_Center)
-		.HAlign(HAlign_Center)
+	//Source import filename
+	{
+		FString FileFilterText = TEXT("Filmbox (*.fbx)|*.fbx|All files (*.*)|*.*");
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("NANITE_SourceImportFilename", "Source Import Filename") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.NameContent()
 		[
 			SNew(STextBlock)
-			.Text(LOCTEXT("ApplyChanges", "Apply Changes"))
-			.Font(DetailBuilder.GetDetailFont())
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("NANITE_SourceImportFilename", "Source Import Filename"))
+			.ToolTipText(LOCTEXT("NANITE_SourceImportFilenameTooltip", "The file path that was used to import this hi res nanite mesh."))
 		]
-	];
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SFilePathPicker)
+			.BrowseButtonImage(FAppStyle::GetBrush("PropertyWindow.Button_Ellipsis"))
+			.BrowseButtonStyle(FAppStyle::Get(), "HoverHintOnly")
+			.BrowseButtonToolTip(LOCTEXT("NaniteSourceImportFilenamePathLabel_Tooltip", "Choose a nanite hi res source import file"))
+			.BrowseDirectory(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_OPEN))
+			.BrowseTitle(LOCTEXT("NaniteSourceImportFilenameBrowseTitle", "Nanite hi res source import file picker..."))
+			.FilePath(this, &FNaniteSettingsLayout::GetHiResSourceFilename)
+			.FileTypeFilter(FileFilterText)
+			.OnPathPicked(this, &FNaniteSettingsLayout::SetHiResSourceFilename)
+		];
+	}
+
+	//Nanite import button
+	{
+		NaniteSettingsCategory.AddCustomRow(LOCTEXT("NaniteHiResButtons", "Nanite Hi Res buttons"))
+		.ValueContent()
+		.HAlign(HAlign_Fill)
+		[
+			SNew(SUniformWrapPanel)
+			+ SUniformWrapPanel::Slot() // Nanite apply changes
+			[
+				SNew(SButton)
+				.OnClicked(this, &FNaniteSettingsLayout::OnApply)
+				.IsEnabled(this, &FNaniteSettingsLayout::IsApplyNeeded)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ApplyChanges", "Apply Changes"))
+					.Font(DetailBuilder.GetDetailFont())
+				]
+			]
+			+ SUniformWrapPanel::Slot() //Nanite import button
+			[
+				SNew(SButton)
+				.OnClicked(this, &FNaniteSettingsLayout::OnImportHiRes)
+				.IsEnabled(this, &FNaniteSettingsLayout::IsHiResDataEmpty)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NaniteImportHiRes", "Import"))
+					.Font(DetailBuilder.GetDetailFont())
+				]
+			]
+			+ SUniformWrapPanel::Slot() //Nanite remove button
+			[
+				SNew(SButton)
+				.OnClicked(this, &FNaniteSettingsLayout::OnRemoveHiRes)
+				.IsEnabled(this, &FNaniteSettingsLayout::DoesHiResDataExists)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NaniteRemoveHiRes", "Remove"))
+					.Font(DetailBuilder.GetDetailFont())
+				]
+			]
+			+ SUniformWrapPanel::Slot() //Nanite reimport button
+			[
+				SNew(SButton)
+				.OnClicked(this, &FNaniteSettingsLayout::OnReimportHiRes)
+				.IsEnabled(this, &FNaniteSettingsLayout::DoesHiResDataExists)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NaniteReimportHiRes", "Reimport"))
+					.Font(DetailBuilder.GetDetailFont())
+				]
+			]
+			+ SUniformWrapPanel::Slot() //Nanite reimport with new file button
+			[
+				SNew(SButton)
+				.OnClicked(this, &FNaniteSettingsLayout::OnReimportHiResWithNewFile)
+				.IsEnabled(this, &FNaniteSettingsLayout::DoesHiResDataExists)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("NaniteReimportHiResWithNewFile", "Reimport New File"))
+					.Font(DetailBuilder.GetDetailFont())
+				]
+			]
+		];
+	}
 }
 
 bool FNaniteSettingsLayout::IsApplyNeeded() const
@@ -5157,7 +5419,10 @@ void FNaniteSettingsLayout::ApplyChanges()
 
 		StaticMesh->Modify();
 		StaticMesh->NaniteSettings = NaniteSettings;
-		StaticMesh->PostEditChange();
+
+		FProperty* ChangedProperty = FindFProperty<FProperty>(UStaticMesh::StaticClass(), GET_MEMBER_NAME_CHECKED(UStaticMesh, NaniteSettings));
+		FPropertyChangedEvent Event(ChangedProperty);
+		StaticMesh->PostEditChangeProperty(Event);
 	}
 
 
@@ -5209,7 +5474,7 @@ FString FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(int32 Value
 	}
 	else
 	{
-		const float fValue = FMath::Exp2((double)-Value);
+		const float fValue = static_cast<float>(FMath::Exp2((double)-Value));
 		return FString::Printf(TEXT("1/%dcm (%.3gcm)"), 1 << Value, fValue);
 	}
 }
@@ -5267,6 +5532,16 @@ ECheckBoxState FNaniteSettingsLayout::IsEnabledChecked() const
 void FNaniteSettingsLayout::OnEnabledChanged(ECheckBoxState NewState)
 {
 	NaniteSettings.bEnabled = NewState == ECheckBoxState::Checked ? true : false;
+}
+
+ECheckBoxState FNaniteSettingsLayout::IsPreserveAreaChecked() const
+{
+	return NaniteSettings.bPreserveArea ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FNaniteSettingsLayout::OnPreserveAreaChanged(ECheckBoxState NewState)
+{
+	NaniteSettings.bPreserveArea = NewState == ECheckBoxState::Checked ? true : false;
 }
 
 void FNaniteSettingsLayout::OnPositionPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
@@ -5353,6 +5628,102 @@ float FNaniteSettingsLayout::GetFallbackRelativeError() const
 void FNaniteSettingsLayout::OnFallbackRelativeErrorChanged(float NewValue)
 {
 	NaniteSettings.FallbackRelativeError = NewValue;
+}
+
+FString FNaniteSettingsLayout::GetHiResSourceFilename() const
+{
+	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
+	{
+		return StaticMesh->GetHiResSourceModel().SourceImportFilename;
+	}
+	return FString();
+}
+
+void FNaniteSettingsLayout::SetHiResSourceFilename(const FString& NewSourceFile)
+{
+	//Reimport with new file
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	if(!StaticMesh)
+	{
+		return;
+	}
+	
+	if (StaticMesh->GetHiResSourceModel().SourceImportFilename.Equals(NewSourceFile))
+	{
+		return;
+	}
+
+	StaticMesh->GetHiResSourceModel().SourceImportFilename = NewSourceFile;
+	//Trig a reimport with new file
+	FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh);
+	StaticMeshEditor.RefreshTool();
+}
+
+
+bool FNaniteSettingsLayout::DoesHiResDataExists() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	if (!StaticMesh)
+	{
+		return false;
+	}
+
+	return (StaticMesh->GetHiResMeshDescription() != nullptr);
+}
+
+bool FNaniteSettingsLayout::IsHiResDataEmpty() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	if (!StaticMesh)
+	{
+		return true;
+	}
+
+	return (StaticMesh->GetHiResMeshDescription() == nullptr);
+}
+
+FReply FNaniteSettingsLayout::OnImportHiRes()
+{
+	
+	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
+	{
+		StaticMesh->GetHiResSourceModel().SourceImportFilename = FString();
+		FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh);
+		StaticMeshEditor.RefreshTool();
+	}
+	return FReply::Handled();
+}
+
+FReply FNaniteSettingsLayout::OnRemoveHiRes()
+{
+	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
+	{
+		StaticMesh->GetHiResSourceModel().SourceImportFilename = FString();
+		FbxMeshUtils::RemoveStaticMeshHiRes(StaticMesh);
+		StaticMeshEditor.RefreshTool();
+	}
+	return FReply::Handled();
+}
+
+FReply FNaniteSettingsLayout::OnReimportHiRes()
+{
+	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
+	{
+		FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh);
+		StaticMeshEditor.RefreshTool();
+	}
+	return FReply::Handled();
+}
+
+FReply FNaniteSettingsLayout::OnReimportHiResWithNewFile()
+{
+	if (UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh())
+	{
+		StaticMesh->GetHiResSourceModel().SourceImportFilename = FString();
+		FbxMeshUtils::ImportStaticMeshHiResSourceModelDialog(StaticMesh);
+		StaticMeshEditor.RefreshTool();
+	}
+	return FReply::Handled();
 }
 
 #undef LOCTEXT_NAMESPACE

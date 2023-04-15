@@ -19,6 +19,8 @@
 #include "ToolTargetManager.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BaseCreateFromSelectedTool)
+
 #define LOCTEXT_NAMESPACE "UBaseCreateFromSelectedTool"
 
 using namespace UE::Geometry;
@@ -187,8 +189,9 @@ void UBaseCreateFromSelectedTool::GenerateAsset(const FDynamicMeshOpResult& OpRe
 	FTransform3d NewTransform;
 	if (Targets.Num() == 1) // in the single-selection case, shove the result back into the original component space
 	{
-		FTransform3d ToSourceComponentSpace = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]).Inverse();
-		MeshTransforms::ApplyTransform(*OpResult.Mesh, ToSourceComponentSpace);
+		FTransform3d FromSourceComponentSpace = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
+		MeshTransforms::ApplyTransform(*OpResult.Mesh, OpResult.Transform, true);
+		MeshTransforms::ApplyTransformInverse(*OpResult.Mesh, FromSourceComponentSpace, true);
 		NewTransform = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
 	}
 	else // in the multi-selection case, center the pivot for the combined result
@@ -197,7 +200,7 @@ void UBaseCreateFromSelectedTool::GenerateAsset(const FDynamicMeshOpResult& OpRe
 		double Rescale = OpResult.Transform.GetScale().X;
 		FTransform3d LocalTransform(-Center * Rescale);
 		LocalTransform.SetScale3D(FVector3d(Rescale, Rescale, Rescale));
-		MeshTransforms::ApplyTransform(*OpResult.Mesh, LocalTransform);
+		MeshTransforms::ApplyTransform(*OpResult.Mesh, LocalTransform, true);
 		NewTransform = OpResult.Transform;
 		NewTransform.SetScale3D(FVector3d::One());
 		NewTransform.SetTranslation(NewTransform.GetTranslation() + NewTransform.TransformVector(Center * Rescale));
@@ -240,8 +243,8 @@ void UBaseCreateFromSelectedTool::UpdateAsset(const FDynamicMeshOpResult& Result
 	FTransform3d TargetToWorld = UE::ToolTarget::GetLocalToWorldTransform(UpdateTarget);
 
 	FTransform3d ResultTransform = Result.Transform;
-	MeshTransforms::ApplyTransform(*Result.Mesh, ResultTransform);
-	MeshTransforms::ApplyTransformInverse(*Result.Mesh, TargetToWorld);
+	MeshTransforms::ApplyTransform(*Result.Mesh, ResultTransform, true);
+	MeshTransforms::ApplyTransformInverse(*Result.Mesh, TargetToWorld, true);
 
 	UE::ToolTarget::CommitMeshDescriptionUpdateViaDynamicMesh(UpdateTarget, *Result.Mesh, true);
 
@@ -347,3 +350,4 @@ bool UBaseCreateFromSelectedTool::CanAccept() const
 
 
 #undef LOCTEXT_NAMESPACE
+

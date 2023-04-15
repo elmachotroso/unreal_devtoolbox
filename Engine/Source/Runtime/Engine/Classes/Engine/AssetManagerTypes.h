@@ -4,8 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "UObject/PrimaryAssetId.h"
-#include "AssetData.h"
-#include "AssetBundleData.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetBundleData.h"
 #include "EngineTypes.h"
 #include "AssetManagerTypes.generated.h"
 
@@ -125,14 +125,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = AssetType)
 	bool bHasBlueprintClasses;
 
-	/** True if this type is editor only */
+	/** True if this type is editor only. Disable this to consider content that is part of the engine or engine plugins. */
 	UPROPERTY(EditAnywhere, Category = AssetType)
 	bool bIsEditorOnly;
 
 #if WITH_EDITOR
+	const TArray<FDirectoryPath>& GetDirectories() const { return Directories; }
 	TArray<FDirectoryPath>& GetDirectories() { return Directories; }
 
-	TArray<FSoftObjectPath>& GetSpecificAssets() { return SpecificAssets; }
+	const TArray<FSoftObjectPath>& GetSpecificAssets() const { return SpecificAssets; }
 #endif //if WITH_EDITOR
 
 private:

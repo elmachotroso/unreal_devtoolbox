@@ -6,9 +6,9 @@
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 
 #include "Chaos/PBDJointConstraints.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Framework/TripleBufferedData.h"
 
+// @todo(chaos): remove this file
 
 struct CHAOS_API FSkeletalMeshPhysicsProxyParams
 {
@@ -108,9 +108,9 @@ struct FSkeletalMeshPhysicsProxyOutputs : public Chaos::FParticleData
 };
 
 
-class CHAOS_API FSkeletalMeshPhysicsProxy : public TPhysicsProxy<FSkeletalMeshPhysicsProxy, FSkeletalMeshPhysicsProxyOutputs>
+class CHAOS_API FSkeletalMeshPhysicsProxy : public TPhysicsProxy<FSkeletalMeshPhysicsProxy, FSkeletalMeshPhysicsProxyOutputs, FProxyTimestampBase>
 {
-	typedef TPhysicsProxy<FSkeletalMeshPhysicsProxy, FSkeletalMeshPhysicsProxyOutputs> Base;
+	typedef TPhysicsProxy<FSkeletalMeshPhysicsProxy, FSkeletalMeshPhysicsProxyOutputs, FProxyTimestampBase> Base;
 public:
 
 
@@ -168,12 +168,10 @@ public:
 
 private:
 	using FJointConstraints = Chaos::FPBDJointConstraints;
-	using FJointConstraintsRule = Chaos::TPBDConstraintIslandRule<FJointConstraints>;
 
 	FSkeletalMeshPhysicsProxyParams Parameters;
 	TArray<int32> RigidBodyIds;
 	FJointConstraints JointConstraints;
-	FJointConstraintsRule JointConstraintsRule;
 	// @todo(ccaulfield): sort out the IO buffer stuff
 	Chaos::TTripleBufferedData<FSkeletalMeshPhysicsProxyInputs> InputBuffers;
 	Chaos::TBufferedData<FSkeletalMeshPhysicsProxyOutputs> OutputBuffers;

@@ -2,16 +2,30 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UObjectGlobals.h"
-#include "ISourceControlRevision.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
 #include "ISourceControlProvider.h"
+#include "ISourceControlRevision.h"
+#include "ISourceControlState.h"
+#include "Internationalization/Text.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 #include "UObject/TextProperty.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtr.h"
+
 #include "SourceControlHelpers.generated.h"
 
-
+class FAnnotationLine;
+class FName;
 class ISourceControlProvider;
+class UPackage;
+class USourceControlHelpers;
+struct FAssetData;
+struct FFrame;
 
 /**
  * Snapshot of source control state of for a file
@@ -333,6 +347,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
 	static bool RevertFile(const FString& InFile, bool bSilent = false);
 
+#if WITH_EDITOR
+
+	/**
+	 * Applies the provided function and reloads provided packages.
+	 * @param	InFilenames		The files/packages to apply the operation and reload
+	 * @param	InOperation		The function to apply
+	 * @return true if succeeded.
+	 */
+	static bool ApplyOperationAndReloadPackages(const TArray<FString>& InFilenames, const TFunctionRef<bool(const TArray<FString>&)>& InOperation);
+
+	/**
+     * Reverts the provided files then reload packages.
+     * @param	InFilenames		The files/packages to revert and reload
+     * @return true if succeeded.
+     */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
+	static bool RevertAndReloadPackages(const TArray<FString>& InFilenames);
+
+#endif // !WITH_EDITOR
+
 	/**
 	 * Use currently set source control provider to revert files regardless whether any changes will be lost or not.
 	 * @note	Blocks until action is complete.
@@ -383,10 +417,11 @@ public:
 	 * @param	InFile			The file to check in - can be either fully qualified path, relative path, long package name, asset path or export text path (often stored on clipboard)
 	 * @param	InDescription	Description for check in
 	 * @param	bSilent			if false (default) then write out any error info to the Log. Any error text can be retrieved by LastErrorMsg() regardless.
+	 * @param	bKeepCheckedOut Keep files checked-out after checking in. This is helpful for maintaining "ownership" of files if further operations are needed.
 	 * @return	true if succeeded, false if failed and can call LastErrorMsg() for more info.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
-	static bool CheckInFile(const FString& InFile, const FString& InDescription, bool bSilent = false);
+	static bool CheckInFile(const FString& InFile, const FString& InDescription, bool bSilent = false, bool bKeepCheckedOut = false);
 
 	/**
 	 * Use currently set source control provider to check in specified files.
@@ -395,10 +430,11 @@ public:
 	 * @param	InFiles			Files to check out - can be either fully qualified path, relative path, long package name, asset path or export text path (often stored on clipboard)
 	 * @param	InDescription	Description for check in
 	 * @param	bSilent			if false (default) then write out any error info to the Log. Any error text can be retrieved by LastErrorMsg() regardless.
+	 * @param	bKeepCheckedOut Keep files checked-out after checking in. This is helpful for maintaining "ownership" of files if further operations are needed.
 	 * @return	true if succeeded, false if failed and can call LastErrorMsg() for more info.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
-	static bool CheckInFiles(const TArray<FString>& InFiles, const FString& InDescription, bool bSilent = false);
+	static bool CheckInFiles(const TArray<FString>& InFiles, const FString& InDescription, bool bSilent = false, bool bKeepCheckedOut = false);
 
 	/**
 	 * Use currently set source control provider to copy a file.
@@ -436,6 +472,29 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
 	static FSourceControlState QueryFileState(const FString& InFile, bool bSilent = false);
 
+	//Delegate to broadcast FileState upon AsyncQueryFileState completion
+	DECLARE_DYNAMIC_DELEGATE_OneParam(FQueryFileStateDelegate, FSourceControlState, FileStateOut);
+	/**
+	* Query the source control state of the specified file, asynchronously.
+	*
+	* @param	FileStateCallback Source control state - see USourceControlState. It will have bIsValid set to false if it could not have its values set.
+	* @param	InFile			  The file to query - can be either fully qualified path, relative path, long package name, asset path or export text path (often stored on clipboard)
+	* @param	bSilent			  if false (default) then write out any error info to the Log. Any error text can be retrieved by LastErrorMsg() regardless.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Editor Source Control Helpers")
+	static void AsyncQueryFileState(FQueryFileStateDelegate FileStateCallback, const FString& InFile, bool bSilent = false);
+
+	/**
+	 * Use currently set source control provider to query the list of files in the depot under a certain path.
+	 * @note	Blocks until action is complete.
+	 *
+	 * @param	PathToDirectory	The path which we want to query the list of files from.
+	 * @param	OutFilesList	An array containing the list of files under the queried path.
+	 * @param	bIncludeDeleted	Include files that have been deleted from the depot.
+	 * @param	bSilent			if false (default) then write out any error info to the Log. Any error text can be retrieved by LastErrorMsg() regardless.
+	 * @return	Success or failure of the operation
+	 */
+	static bool GetFilesInDepotAtPath(const FString& PathToDirectory, TArray<FString>& OutFilesList, bool bIncludeDeleted = false, bool bSilent = false);
 
 	/**
 	 * Helper function to get a filename for a package name.
@@ -493,13 +552,23 @@ public:
 	static bool AnnotateFile(ISourceControlProvider& InProvider, int32 InCheckInIdentifier, const FString& InFile, TArray<FAnnotationLine>& OutLines);
 
 	/**
-	 * Helper function to branch/integrate packages from one location to another
+	 * Helper function to branch/integrate packages from one location to another maintaining
+	 * a relationship between the files in source control (when possible)
 	 * @param	DestPackage			The destination package
 	 * @param	SourcePackage		The source package
 	 * @Param	StateCacheUsage		Whether to use the source control state cache
 	 * @return true if the file packages were successfully branched.
 	 */
 	static bool BranchPackage(UPackage* DestPackage, UPackage* SourcePackage, EStateCacheUsage::Type StateCacheUsage = EStateCacheUsage::ForceUpdate);
+
+	/**
+	 * Helper function to copy a package from one location to another
+	 * @param	DestPackage             The destination package
+	 * @param	SourcePackage           The source package
+	 * @Param	StateCacheUsage         Whether to use the source control state cache
+	 * @return true if the file packages were successfully branched.
+	 */
+	static bool CopyPackage(UPackage* DestPackage, UPackage* SourcePackage, EStateCacheUsage::Type StateCacheUsage = EStateCacheUsage::ForceUpdate);
 
 	/**
 	 * Helper function to get the ini filename for storing source control settings

@@ -2,8 +2,8 @@
 
 #include "ShotgridEngine.h"
 
-#include "AssetRegistryModule.h"
-#include "IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 #include "GameFramework/Actor.h"
 #include "IPythonScriptPlugin.h"
@@ -62,7 +62,7 @@ void UShotgridEngine::SetSelection(const TArray<FAssetData>* InSelectedAssets, c
 			{
 				if (IsValid(Asset) && Asset->IsAsset())
 				{
-					FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FName(*Asset->GetPathName()));
+					FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(Asset));
 					AllReferencedAssets.AddUnique(MoveTemp(AssetData));
 				}
 			}

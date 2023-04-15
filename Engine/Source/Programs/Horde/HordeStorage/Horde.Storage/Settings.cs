@@ -13,10 +13,10 @@ namespace Horde.Storage
     {
         public enum RefDbImplementations
         {
+            Memory,
             Mongo,
             Cosmos,
             DynamoDb
-
         }
 
         public enum TransactionLogWriterImplementations
@@ -28,7 +28,8 @@ namespace Horde.Storage
         public enum ReplicationLogWriterImplementations
         {
             Memory,
-            Scylla
+            Scylla,
+            Mongo
         }
 
         public enum TreeStoreImplementations
@@ -47,19 +48,33 @@ namespace Horde.Storage
             S3,
             Azure,
             FileSystem,
-            Memory
+            Memory,
+            MemoryBlobStore,
+            Relay
         }
 
         public enum ReferencesDbImplementations
         {
             Memory,
-            Scylla
+            Scylla,
+            Mongo,
+            Cache
         }
 
         public enum ContentIdStoreImplementations
         {
             Memory,
-            Scylla
+            Scylla,
+            Mongo,
+            Cache
+        }
+
+        public enum BlobIndexImplementations
+        {
+            Memory,
+            Scylla,
+            Mongo,
+            Cache
         }
 
         public enum LeaderElectionImplementations
@@ -67,8 +82,8 @@ namespace Horde.Storage
             Static, 
             Kubernetes
         }
-        
-        public class ValidStorageBackend : ValidationAttribute
+
+        private sealed class ValidStorageBackend : ValidationAttribute
         {
             public override string FormatErrorMessage(string name)
             {
@@ -78,20 +93,35 @@ namespace Horde.Storage
 
             public override bool IsValid(object? value)
             {
-                if (value == null) return true;
+                if (value == null)
+                {
+                    return true;
+                }
+
                 return value is IEnumerable<string> backends && backends.All(x => Enum.TryParse(typeof(StorageBackendImplementations), x, true, out _));
             }
         }
 
         [ValidStorageBackend]
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1721:Property names should not match get methods", Justification = "This pattern is used to work around limitations in dotnet configurations support for enums in arrays")]
         public string[]? StorageImplementations { get; set; }
+
+        public IEnumerable<StorageBackendImplementations> GetStorageImplementations()
+        {
+            foreach (string s in StorageImplementations ?? new [] {HordeStorageSettings.StorageBackendImplementations.Memory.ToString()})
+            {
+                HordeStorageSettings.StorageBackendImplementations impl = (HordeStorageSettings.StorageBackendImplementations)Enum.Parse(typeof(HordeStorageSettings.StorageBackendImplementations), s, ignoreCase: true);
+
+                yield return impl;
+            }
+        }
 
         [Required]
         public TransactionLogWriterImplementations TransactionLogWriterImplementation { get; set; } = TransactionLogWriterImplementations.Memory;
 
         [Required] public ReplicationLogWriterImplementations ReplicationLogWriterImplementation { get; set; } = ReplicationLogWriterImplementations.Memory;
 
-        [Required] public RefDbImplementations RefDbImplementation { get; set; } = RefDbImplementations.Mongo;
+        [Required] public RefDbImplementations RefDbImplementation { get; set; } = RefDbImplementations.Memory;
 
         [Required]
         public TreeStoreImplementations TreeStoreImplementation { get; set; } = TreeStoreImplementations.Memory;
@@ -104,12 +134,16 @@ namespace Horde.Storage
 
         public LeaderElectionImplementations LeaderElectionImplementation { get; set; } = LeaderElectionImplementations.Static;
         public ContentIdStoreImplementations ContentIdStoreImplementation { get; set; } = ContentIdStoreImplementations.Memory;
+        public BlobIndexImplementations BlobIndexImplementation { get; set; } = BlobIndexImplementations.Memory;
 
         public int? MaxSingleBlobSize { get; set; } = null; // disable blob partitioning
 
         public int LastAccessRollupFrequencySeconds { get; set; } = 900; // 15 minutes
+        public bool EnableLastAccessTracking { get; set; } = true;
+        public bool EnableOnDemandReplication { get; set; } = false;
 
-        public bool UseNewDDCEndpoints { get; set; } = false;
+        // disable the legacy api
+        public bool DisableLegacyApi { get; set; } = false;
     }
 
     public class MongoSettings
@@ -117,8 +151,8 @@ namespace Horde.Storage
         [Required] public string ConnectionString { get; set; } = "";
 
         public bool RequireTls12 { get; set; } = true;
+        public bool CreateDatabaseIfMissing { get; set; } = true;
     }
-
 
     public class DynamoDbSettings
     {
@@ -142,7 +176,7 @@ namespace Horde.Storage
 
         public static (string, int) ParseDaxEndpointAsHostPort(string endpoint)
         {
-            if (!endpoint.Contains(":"))
+            if (!endpoint.Contains(':', StringComparison.InvariantCultureIgnoreCase))
             {
                 return (endpoint, 8111);
             }
@@ -153,10 +187,9 @@ namespace Horde.Storage
         }
     }
 
-
     public class CosmosSettings
     {
-        [Range(400, 10_000)] public int DefaultRU = 400;
+        [Range(400, 10_000)] public int DefaultRU { get; set; } = 400;
     }
 
     public class CallistoTransactionLogSettings
@@ -164,7 +197,15 @@ namespace Horde.Storage
         [Required] public string ConnectionString { get; set; } = "";
     }
 
-    public class MemoryCacheBlobSettings : MemoryCacheOptions
+    public class MemoryCacheContentIdSettings : MemoryCacheOptions
+    {
+        public bool Enabled { get; set; } = true;
+
+        public bool EnableSlidingExpiry { get; set; } = true;
+        public int SlidingExpirationMinutes { get; set; } = 120;
+    }
+
+	public class MemoryCacheBlobSettings : MemoryCacheOptions
     {
         public bool Enabled { get; set; } = true;
 
@@ -186,10 +227,9 @@ namespace Horde.Storage
         public int SlidingExpirationMinutes { get; set; } = 60;
     }
 
-
     public class AzureSettings
     {
-        [Required] public string ConnectionString { get; set; } = "";
+        [Required] public string ConnectionString { get; set; } = string.Empty;
     }
 
     public class FilesystemSettings
@@ -211,6 +251,8 @@ namespace Horde.Storage
 
         // Options to disable setting of bucket access policies, useful for local testing as minio does not support them.
         public bool SetBucketPolicies { get; set; } = true;
+
+        public bool UseBlobIndexForExistsCheck { get; set; } = false;
     }
 
     public class GCSettings
@@ -219,10 +261,51 @@ namespace Horde.Storage
         
         public bool CleanOldRefRecords { get; set; } = false;
         public bool CleanOldBlobs { get; set; } = true;
+        public bool CleanOldBlobsLegacy { get; set; } = false;
 
         public TimeSpan LastAccessCutoff { get; set; } = TimeSpan.FromDays(14);
 
         public TimeSpan BlobCleanupPollFrequency { get; set; } = TimeSpan.FromMinutes(60);
         public TimeSpan RefCleanupPollFrequency { get; set; } = TimeSpan.FromMinutes(60);
+        public int OrphanGCMaxParallelOperations { get; set; } = 8;
+        public int OrphanRefMaxParallelOperations { get; set; } = 8;
+    }
+
+    public class UpstreamRelaySettings
+    {
+        [Required] public string ConnectionString { get; set; } = null!;
+    }
+
+    public class ClusterSettings
+    {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by serialization")]
+        public List<PeerSettings> Peers { get; set; } = new List<PeerSettings>();
+    }
+
+    public class PeerSettings
+    {
+        [Required] public string Name { get; set; } = null!;
+
+        [Required] public string FullName { get; set; } = null!;
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Used by serialization")]
+        public List<PeerEndpoints> Endpoints { get; set; } = new List<PeerEndpoints>();
+    }
+
+    public class PeerEndpoints
+    { 
+        [Required] public Uri Url { get; set; } = null!;
+
+        public bool IsInternal { get; set; } = false;
+    }
+
+    public class ConsistencyCheckSettings
+    {
+        public bool EnableBlobStoreChecks { get; set; } = false;
+        public bool EnableBlobIndexChecks { get; set; } = false;
+        public double ConsistencyCheckPollFrequencySeconds { get; set; } = TimeSpan.FromHours(2).TotalSeconds;
+        public int BlobIndexMaxParallelOperations { get; set; } = 4;
+        public bool AllowDeletesInBlobIndex { get; set; } = false;
+        public bool RunBlobStoreConsistencyCheckOnRootStore { get; set; } = false;
     }
 }

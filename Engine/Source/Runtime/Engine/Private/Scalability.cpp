@@ -3,12 +3,15 @@
 #include "Scalability.h"
 #include "GenericPlatform/GenericPlatformSurvey.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigUtilities.h"
 #include "HAL/IConsoleManager.h"
 #include "SynthBenchmark.h"
 #include "EngineAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
 #include "Interfaces/IProjectManager.h"
+
+Scalability::FOnScalabilitySettingsChanged Scalability::OnScalabilitySettingsChanged;
 
 static TAutoConsoleVariable<float> CVarResolutionQuality(
 	TEXT("sg.ResolutionQuality"),
@@ -159,8 +162,8 @@ static TAutoConsoleVariable<int32> CVarShadingQuality_NumLevels(
 
 namespace Scalability
 {
-static FQualityLevels GScalabilityBackupQualityLevels;
-static FQualityLevels GScalabilityQualityLevelsOverride;
+static FQualityLevels GScalabilityBackupQualityLevels(false);
+static FQualityLevels GScalabilityQualityLevelsOverride(false);
 static bool GScalabilityUsingTemporaryQualityLevels = false;
 
 // Select a the correct quality level for the given benchmark value and thresholds
@@ -356,7 +359,7 @@ void ApplyScalabilityGroupFromPlatformIni(const TCHAR* InSectionName, const TCHA
 		}			   
 	};
 			
-	ForEachCVarInSectionFromIni(InSectionName, InIniFilename, Func);
+	UE::ConfigUtilities::ForEachCVarInSectionFromIni(InSectionName, InIniFilename, Func);
 }
 
 void ChangeScalabilityPreviewPlatform(FName NewPlatformScalabilityName)
@@ -385,11 +388,9 @@ static void SetGroupQualityLevel(const TCHAR* InGroupName, int32 InQualityLevel,
 					FString CVarName, CVarValue;
 					if (CVarString.Split(TEXT("="), &CVarName, &CVarValue))
 					{
-						IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName);
-						if (CVar)
+						if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName))
 						{
-							float Value = FCString::Atof(*CVarValue);
-							CVar->SetWithCurrentPriority(Value);
+							CVar->SetWithCurrentPriority(*CVarValue);
 						}
 					}
 				}
@@ -399,7 +400,7 @@ static void SetGroupQualityLevel(const TCHAR* InGroupName, int32 InQualityLevel,
 	else
 #endif
 	{
-		ApplyCVarSettingsFromIni(*Section, *GScalabilityIni, ECVF_SetByScalability);
+		UE::ConfigUtilities::ApplyCVarSettingsFromIni(*Section, *GScalabilityIni, ECVF_SetByScalability);
 	}
 }
 

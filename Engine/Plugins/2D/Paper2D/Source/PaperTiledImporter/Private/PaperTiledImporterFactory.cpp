@@ -13,11 +13,13 @@
 #include "PaperJSONHelpers.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "PaperImporterSettings.h"
 #include "PackageTools.h"
 #include "IntMargin.h"
 #include "PaperTileSet.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PaperTiledImporterFactory)
 
 #define LOCTEXT_NAMESPACE "Paper2D"
 #define TILED_IMPORT_ERROR(FormatString, ...) \
@@ -952,7 +954,7 @@ bool FTiledTileInfo::ParseTileInfoFromJSON(int32 TileIndex, TSharedPtr<FJsonObje
 	}
 
 	// Try reading the per-tile collision data if present
-	// Note: This is really an entire fake objectgroup layer, but only the objects array matters; Tiled doens't even provide a way to edit the rest of the data.
+	// Note: This is really an entire fake objectgroup layer, but only the objects array matters; Tiled doesn't even provide a way to edit the rest of the data.
 	const TSharedPtr<FJsonObject>* ObjectGroupSubobject;
 	if (Tree->TryGetObjectField(TEXT("objectgroup"), /*out*/ ObjectGroupSubobject))
 	{
@@ -1302,3 +1304,4 @@ bool UPaperTiledImporterFactory::ConvertTileSets(FTileMapFromTiled& GlobalInfo, 
 
 #undef TILED_IMPORT_ERROR
 #undef LOCTEXT_NAMESPACE
+

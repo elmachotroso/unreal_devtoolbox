@@ -1,15 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonLazyWidget.h"
-#include "CommonWidgetPaletteCategories.h"
+#include "CommonActivatableWidget.h"
 #include "CommonUISettings.h"
-#include "../Public/CommonActivatableWidget.h"
+#include "CommonWidgetPaletteCategories.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonLazyWidget)
 
 UCommonLazyWidget::UCommonLazyWidget(const FObjectInitializer& Initializer)
 	: Super(Initializer)
 {
 	LoadingBackgroundBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
-	Visibility = ESlateVisibility::SelfHitTestInvisible;
+	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 }
 
 TSharedRef<SWidget> UCommonLazyWidget::RebuildWidget()
@@ -186,6 +188,7 @@ const FText UCommonLazyWidget::GetPaletteCategory()
 
 void UCommonLazyWidget::HandleLoadGuardStateChanged(bool bIsLoading)
 {
+	OnLoadingStateChangedEvent.Broadcast(bIsLoading);
 	BP_OnLoadingStateChanged.Broadcast(bIsLoading);
 }
 

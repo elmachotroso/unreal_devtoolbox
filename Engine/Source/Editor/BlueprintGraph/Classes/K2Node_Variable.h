@@ -3,16 +3,38 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Templates/SubclassOf.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
-#include "K2Node.h"
 #include "Engine/MemberReference.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "K2Node.h"
+#include "Math/Color.h"
+#include "Templates/SubclassOf.h"
 #include "Textures/SlateIcon.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+
 #include "K2Node_Variable.generated.h"
 
+class FArchive;
+class FProperty;
+class UActorComponent;
+class UBlueprint;
+class UClass;
 class UEdGraph;
+class UEdGraphPin;
+class UObject;
+class UStruct;
+struct FBPVariableDescription;
+struct FEdGraphPinType;
+template <typename KeyType, typename ValueType> struct TKeyValuePair;
 
 UENUM()
 namespace ESelfContextInfo
@@ -76,11 +98,12 @@ public:
 	virtual UObject* GetJumpTargetForDoubleClick() const override;
 	virtual bool CanJumpToDefinition() const override;
 	virtual void JumpToDefinition() const override;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
+	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	//~ End UEdGraphNode Interface
 
 	//~ Begin K2Node Interface
-	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual bool DrawNodeAsVariable() const override { return true; }
 	virtual ERedirectType DoPinsMatchForReconstruction(const UEdGraphPin* NewPin, int32 NewPinIndex, const UEdGraphPin* OldPin, int32 OldPinIndex)  const override;
 	virtual void ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const override;
@@ -195,6 +218,9 @@ protected:
 	 * @return Found UActorComponent for the FProperty, else nullptr
 	 */
 	const UActorComponent* GetActorComponent(const FProperty* VariableProperty) const;
+
+	/** Adds the variable reference to the suppressed deprecation warnings list */
+	void SuppressDeprecationWarning() const;
 
 	/** Returns whether a Function Graph contains a parameter with the given name */
 	static bool FunctionParameterExists(const UEdGraph* InFunctionGraph, const FName InParameterName);

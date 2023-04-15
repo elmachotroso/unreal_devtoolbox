@@ -7,8 +7,8 @@
 #include "SAnimNotifyPanel.h"
 #include "AnimPreviewInstance.h"
 #include "Editor.h"
-#include "AnimModel_AnimSequenceBase.h"
-#include "SAnimTimeline.h"
+#include "AnimTimeline/AnimModel_AnimSequenceBase.h"
+#include "AnimTimeline/SAnimTimeline.h"
 
 #define LOCTEXT_NAMESPACE "AnimSequenceEditor"
 
@@ -28,7 +28,6 @@ void SSequenceEditor::Construct(const FArguments& InArgs, TSharedRef<class IPers
 		InOnEditCurves.ExecuteIfBound(InAnimSequence, InCurveInfo, TimelineWidget->GetTimeSliderController());
 	});
 
-	AnimModel->OnStopEditingCurves = InArgs._OnStopEditingCurves;
 	AnimModel->OnSelectObjects = FOnObjectsSelected::CreateSP(this, &SAnimEditorBase::OnSelectionChanged);
 	AnimModel->OnInvokeTab = InArgs._OnInvokeTab;
 	AnimModel->Initialize();

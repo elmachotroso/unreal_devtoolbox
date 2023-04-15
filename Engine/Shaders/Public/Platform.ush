@@ -36,6 +36,7 @@
 	#include "Platform/D3D/D3DCommon.ush"
 #endif
 
+#include "/Engine/Public/BindlessResources.ush"
 
 // ---------------------------------------------------- DDC invalidation
 // to support the console command "r.InvalidateShaderCache"
@@ -88,8 +89,26 @@
 #define COMPILER_SUPPORTS_PRIMITIVE_SHADERS 0
 #endif
 
+#ifndef COMPILER_SUPPORTS_BARYCENTRIC_INTRINSICS
+#define COMPILER_SUPPORTS_BARYCENTRIC_INTRINSICS 0
+#endif
+
+// Whether the shader compiler supports WAVESIZE()
+#ifndef COMPILER_SUPPORTS_WAVE_SIZE
+#define COMPILER_SUPPORTS_WAVE_SIZE 0
+#endif
+
+#ifndef COMPILER_FORCE_WAVE32_MODE
+#define COMPILER_FORCE_WAVE32_MODE
+#endif
+
 #ifndef PLATFORM_SUPPORTS_SRV_UB
 #define PLATFORM_SUPPORTS_SRV_UB 0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_ROV
+#define PLATFORM_SUPPORTS_ROV 0
+#define RasterizerOrderedTexture2D RWTexture2D
 #endif
 
 #ifndef SM6_PROFILE
@@ -162,6 +181,10 @@
 #define PLATFORM_SUPPORTS_SRV_UB_MACRO(...)
 #endif
 
+#ifndef PLATFORM_SUPPORTS_CALLABLE_SHADERS
+#define PLATFORM_SUPPORTS_CALLABLE_SHADERS 0
+#endif
+
 // Whether the platforms support official SM6 wave intrinsics
 // https://github.com/Microsoft/DirectXShaderCompiler/wiki/Wave-Intrinsics
 #ifndef PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
@@ -185,6 +208,20 @@
 //Platforms that don't run the editor shouldn't need editor features in the shaders.
 #ifndef PLATFORM_SUPPORTS_EDITOR_SHADERS
 #define PLATFORM_SUPPORTS_EDITOR_SHADERS 1
+#endif
+
+#ifndef COMPILER_SUPPORTS_HLSL2021
+#define COMPILER_SUPPORTS_HLSL2021 0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_UB_STRUCT
+#define PLATFORM_SUPPORTS_UB_STRUCT 0
+#endif
+
+#if PLATFORM_SUPPORTS_UB_STRUCT
+	#define UB_CB_NAME(X) UniformBufferConstants_##X
+#else
+	#define UB_CB_NAME(X) X
 #endif
 
 // ---------------------------------------------------- Alternative floating point types
@@ -341,7 +378,7 @@
 #endif
 
 #ifndef MOBILE_EMULATION
-#define MOBILE_EMULATION ((FEATURE_LEVEL == FEATURE_LEVEL_ES3_1) && (!(COMPILER_GLSL_ES3_1) && USE_DEVELOPMENT_SHADERS && (!(METAL_PROFILE) || MAC) && !VULKAN_PROFILE))
+#define MOBILE_EMULATION 0
 #endif
 
 // Whether the platform supports independent texture and samplers
@@ -432,6 +469,10 @@
 #define COMPILER_SUPPORTS_WAVE_SWIZZLE_GCN 0
 #endif
 
+#ifndef COMPILER_SUPPORTS_WAVE_PERMUTE
+#define COMPILER_SUPPORTS_WAVE_PERMUTE 0
+#endif
+
 // Mirrors GRHISupportsPrimitiveShaders.
 #ifndef COMPILER_SUPPORTS_PRIMITIVE_SHADERS
 #define COMPILER_SUPPORTS_PRIMITIVE_SHADERS 0
@@ -468,7 +509,7 @@ void ShaderYield()
 #define COMPILER_SUPPORTS_GATHER_UINT 0
 #endif
 
-#if ES3_1_PROFILE
+#if ES3_1_PROFILE && !METAL_PROFILE
 #define HALF_TYPE half
 #define HALF2_TYPE half2
 #define HALF3_TYPE half3
@@ -502,7 +543,7 @@ void ShaderYield()
 
 #endif // SM6_PROFILE || SM5_PROFILE || COMPILER_SUPPORTS_ATTRIBUTES
 
-#if SM6_PROFILE || SM5_PROFILE || METAL_MRT_PROFILE || METAL_SM5_PROFILE || ES3_1_PROFILE
+#if SM6_PROFILE || SM5_PROFILE || METAL_MRT_PROFILE || METAL_SM5_PROFILE || ES3_1_PROFILE || VULKAN_PROFILE_SM5
 #define EARLYDEPTHSTENCIL [earlydepthstencil]
 #endif
 
@@ -537,7 +578,7 @@ void ShaderYield()
 #endif
 
 #ifndef INVARIANT
-#define INVARIANT
+#define INVARIANT(X) (X)
 #endif
 
 #ifndef ENABLE_RE_Z
@@ -581,15 +622,15 @@ void ShaderYield()
 #endif
 
 #ifndef RWCoherentBuffer
-#define RWCoherentBuffer(TYPE) RWBuffer<TYPE>
+#define RWCoherentBuffer(TYPE) globallycoherent RWBuffer<TYPE>
 #endif
 
 #ifndef RWCoherentStructuredBuffer
-#define RWCoherentStructuredBuffer(TYPE) RWStructuredBuffer<TYPE>
+#define RWCoherentStructuredBuffer(TYPE) globallycoherent RWStructuredBuffer<TYPE>
 #endif
 
 #ifndef RWCoherentByteAddressBuffer
-#define RWCoherentByteAddressBuffer RWByteAddressBuffer
+#define RWCoherentByteAddressBuffer globallycoherent RWByteAddressBuffer
 #endif
 
 #ifndef ISOLATE
@@ -608,8 +649,12 @@ void ShaderYield()
 #define SCHEDULER_MIN_PRESSURE
 #endif
 
-#ifndef MAX_OCCUPENCY
-#define MAX_OCCUPENCY
+#ifndef MAX_OCCUPANCY
+#define MAX_OCCUPANCY
+#endif
+
+#ifndef ALLOW_NO_PS_EXPORT
+#define ALLOW_NO_PS_EXPORT
 #endif
 
 // ---------------------------------------------------- Interpolator attribute fallbacks
@@ -822,6 +867,62 @@ half4 max3( half4 a, half4 b, half4 c )
 
 #endif
 
+// https://devblogs.microsoft.com/directx/announcing-hlsl-2021/
+// HLSL 2021 supports Logical Operator Short Circuiting. To do vector bool operations, need to use and() or() select()
+// Sadly the HLSL2021 standard does not overload select() very well...
+#define select(cond,a,b) select_internal(cond,a,b)
+#define DEFINE_SELECT(TYPE) \
+	TYPE    select_internal(bool    c, TYPE    a, TYPE    b) { return TYPE   (c   ? a.x : b.x); } \
+	\
+	TYPE##2 select_internal(bool    c, TYPE    a, TYPE##2 b) { return TYPE##2(c   ? a   : b.x, c   ? a   : b.y); } \
+	TYPE##2 select_internal(bool    c, TYPE##2 a, TYPE    b) { return TYPE##2(c   ? a.x : b  , c   ? a.y : b  ); } \
+	TYPE##2 select_internal(bool    c, TYPE##2 a, TYPE##2 b) { return TYPE##2(c   ? a.x : b.x, c   ? a.y : b.y); } \
+	TYPE##2 select_internal(bool##2 c, TYPE    a, TYPE    b) { return TYPE##2(c.x ? a   : b  , c.y ? a   : b  ); } \
+	TYPE##2 select_internal(bool##2 c, TYPE    a, TYPE##2 b) { return TYPE##2(c.x ? a   : b.x, c.y ? a   : b.y); } \
+	TYPE##2 select_internal(bool##2 c, TYPE##2 a, TYPE    b) { return TYPE##2(c.x ? a.x : b  , c.y ? a.y : b  ); } \
+	TYPE##2 select_internal(bool##2 c, TYPE##2 a, TYPE##2 b) { return TYPE##2(c.x ? a.x : b.x, c.y ? a.y : b.y); } \
+	\
+	TYPE##3 select_internal(bool    c, TYPE    a, TYPE##3 b) { return TYPE##3(c   ? a   : b.x, c   ? a   : b.y, c   ? a   : b.z); } \
+	TYPE##3 select_internal(bool    c, TYPE##3 a, TYPE    b) { return TYPE##3(c   ? a.x : b  , c   ? a.y : b  , c   ? a.z : b  ); } \
+	TYPE##3 select_internal(bool    c, TYPE##3 a, TYPE##3 b) { return TYPE##3(c   ? a.x : b.x, c   ? a.y : b.y, c   ? a.z : b.z); } \
+	TYPE##3 select_internal(bool##3 c, TYPE    a, TYPE    b) { return TYPE##3(c.x ? a   : b  , c.y ? a   : b  , c.z ? a   : b  ); } \
+	TYPE##3 select_internal(bool##3 c, TYPE    a, TYPE##3 b) { return TYPE##3(c.x ? a   : b.x, c.y ? a   : b.y, c.z ? a   : b.z); } \
+	TYPE##3 select_internal(bool##3 c, TYPE##3 a, TYPE    b) { return TYPE##3(c.x ? a.x : b  , c.y ? a.y : b  , c.z ? a.z : b  ); } \
+	TYPE##3 select_internal(bool##3 c, TYPE##3 a, TYPE##3 b) { return TYPE##3(c.x ? a.x : b.x, c.y ? a.y : b.y, c.z ? a.z : b.z); } \
+	\
+	TYPE##4 select_internal(bool    c, TYPE    a, TYPE##4 b) { return TYPE##4(c   ? a   : b.x, c   ? a   : b.y, c   ? a   : b.z, c   ? a   : b.w); } \
+	TYPE##4 select_internal(bool    c, TYPE##4 a, TYPE    b) { return TYPE##4(c   ? a.x : b  , c   ? a.y : b  , c   ? a.z : b  , c   ? a.w : b  ); } \
+	TYPE##4 select_internal(bool    c, TYPE##4 a, TYPE##4 b) { return TYPE##4(c   ? a.x : b.x, c   ? a.y : b.y, c   ? a.z : b.z, c   ? a.w : b.w); } \
+	TYPE##4 select_internal(bool##4 c, TYPE    a, TYPE    b) { return TYPE##4(c.x ? a   : b  , c.y ? a   : b  , c.z ? a   : b  , c.w ? a   : b  ); } \
+	TYPE##4 select_internal(bool##4 c, TYPE    a, TYPE##4 b) { return TYPE##4(c.x ? a   : b.x, c.y ? a   : b.y, c.z ? a   : b.z, c.w ? a   : b.w); } \
+	TYPE##4 select_internal(bool##4 c, TYPE##4 a, TYPE    b) { return TYPE##4(c.x ? a.x : b  , c.y ? a.y : b  , c.z ? a.z : b  , c.w ? a.w : b  ); } \
+	TYPE##4 select_internal(bool##4 c, TYPE##4 a, TYPE##4 b) { return TYPE##4(c.x ? a.x : b.x, c.y ? a.y : b.y, c.z ? a.z : b.z, c.w ? a.w : b.w); } \
+
+DEFINE_SELECT(bool)
+DEFINE_SELECT(uint)
+DEFINE_SELECT(int)
+DEFINE_SELECT(float)
+#if PLATFORM_SUPPORTS_REAL_TYPES
+DEFINE_SELECT(half)
+DEFINE_SELECT(uint16_t)
+DEFINE_SELECT(int16_t)
+#endif
+#undef DEFINE_SELECT
+
+// Works around bug in the spirv for the missing implementation of the and() and or() intrinsics.
+bool  and_internal(bool  a, bool  b) { return bool(a && b); }
+bool2 and_internal(bool2 a, bool2 b) { return bool2(a.x && b.x, a.y && b.y); }
+bool3 and_internal(bool3 a, bool3 b) { return bool3(a.x && b.x, a.y && b.y, a.z && b.z); }
+bool4 and_internal(bool4 a, bool4 b) { return bool4(a.x && b.x, a.y && b.y, a.z && b.z, a.w && b.w); }
+
+bool  or_internal(bool  a, bool  b) { return bool(a || b); }
+bool2 or_internal(bool2 a, bool2 b) { return bool2(a.x || b.x, a.y || b.y); }
+bool3 or_internal(bool3 a, bool3 b) { return bool3(a.x || b.x, a.y || b.y, a.z || b.z); }
+bool4 or_internal(bool4 a, bool4 b) { return bool4(a.x || b.x, a.y || b.y, a.z || b.z, a.w || b.w); }
+
+#define and(a, b) and_internal(a, b)
+#define or(a, b) or_internal(a, b)
+
 #if PLATFORM_SUPPORTS_REAL_TYPES && !defined(COMPILER_SUPPORTS_PACK_B32_B16)
 
 // Function that explicitly use RDNA's v_pack_b32_f16 on supported platform. Note that RDNA's documentation call this instruction v_pack_b32_f16
@@ -883,28 +984,20 @@ uint BitFieldInsertU32(uint Mask, uint Preserve, uint Enable)
 
 uint BitFieldExtractU32(uint Data, uint Size, uint Offset)
 {
-	Size &= 31u;
-	Offset &= 31u;
-
-	if (Size == 0u)
-		return 0u;
-	else if (Offset + Size < 32u)
-		return (Data << (32u - Size - Offset)) >> (32u - Size);
-	else
-		return Data >> Offset;
+	// Shift amounts are implicitly &31 in HLSL, so they should be optimized away on most platforms
+	// In GLSL shift amounts < 0 or >= word_size are undefined, so we better be explicit
+	Size &= 31;
+	Offset &= 31;
+	return (Data >> Offset) & ((1u << Size) - 1u);
 }
 
 int BitFieldExtractI32(int Data, uint Size, uint Offset)
 {
 	Size &= 31u;
 	Offset &= 31u;
-
-	if (Size == 0u)
-		return 0;
-	else if (Offset + Size < 32u)
-		return (Data << (32u - Size - Offset)) >> (32u - Size);
-	else
-		return Data >> Offset;
+	const uint Shift = (32u - Size) & 31u;
+	const int Value = (Data >> Offset) & int((1u << Size) - 1u);
+	return (Value << Shift) >> Shift;
 }
 
 uint BitFieldMaskU32(uint MaskWidth, uint MaskLocation)
@@ -970,6 +1063,16 @@ uint MaskedBitCount( uint2 Bits, uint Index )
 	Offset += countbits( Bits.y & ( bLow ? 0 : Mask ) );
 	return Offset;
 }
+
+// Lock a critical region of code within a pixel shader and guarantees no concurrent execution for the same pixel
+#ifndef RASTER_ORDERED_VIEW_LOCK
+#define RASTER_ORDERED_VIEW_LOCK()
+#endif
+
+// Unlock a critical region of code within a pixel shader.
+#ifndef RASTER_ORDERED_VIEW_UNLOCK
+#define RASTER_ORDERED_VIEW_UNLOCK()
+#endif
 
 #if PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
 
@@ -1049,5 +1152,5 @@ uint WaveGetActiveLaneIndexLast()
 #define DECLARE_SCALAR_ARRAY(ScalarType, ScalarName, ElementCount) ScalarType##4 ScalarName[CALC_SCALAR_ARRAY_SIZE(ElementCount)]
 #endif
 #ifndef GET_SCALAR_ARRAY_ELEMENT
-#define GET_SCALAR_ARRAY_ELEMENT(PackedArray, ElementIndex) PackedArray[ElementIndex>>2u][ElementIndex&3u]
+#define GET_SCALAR_ARRAY_ELEMENT(PackedArray, ElementIndex) PackedArray[(uint)ElementIndex>>2u][(uint)ElementIndex&3u]
 #endif

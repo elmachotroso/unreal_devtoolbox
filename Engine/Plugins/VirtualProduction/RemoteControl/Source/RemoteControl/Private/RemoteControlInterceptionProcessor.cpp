@@ -11,7 +11,6 @@
 #include "StructDeserializer.h"
 #include "UObject/FieldPath.h"
 
-
 void FRemoteControlInterceptionProcessor::SetObjectProperties(FRCIPropertiesMetadata& PropsMetadata)
 {
 	// Set object reference
@@ -104,9 +103,20 @@ void FRemoteControlInterceptionProcessor::InvokeCall(FRCIFunctionMetadata& InFun
 		
 		FRCCall Call;
 		Call.CallRef = MoveTemp(CallRef);
-		Call.bGenerateTransaction = InFunction.bGenerateTransaction;
+		Call.TransactionMode = InFunction.bGenerateTransaction ? ERCTransactionMode::AUTOMATIC : ERCTransactionMode::NONE;
 		Call.ParamStruct = FStructOnScope(FunctionArgs.GetStruct(), FunctionArgs.GetStructMemory());
 
 		IRemoteControlModule::Get().InvokeCall(Call);
 	}
 }
+
+void FRemoteControlInterceptionProcessor::SetPresetController(FRCIControllerMetadata& InController)
+{
+	FMemoryReader Reader(InController.Payload);
+	FJsonStructDeserializerBackend Backend(Reader);
+
+	constexpr bool bAllowIntercept = false; // Run without replication
+
+	IRemoteControlModule::Get().SetPresetController(InController.Preset, InController.Controller, Backend, TArray<uint8>(), bAllowIntercept);
+}
+

@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/Guid.h"
+#include "DevObjectVersion.h"
+#include "Containers/Map.h"
 
 // Custom serialization version for changes made in the //Fortnite/Main stream
 struct CORE_API FFortniteMainBranchObjectVersion
@@ -69,7 +69,7 @@ struct CORE_API FFortniteMainBranchObjectVersion
 		// TimelineTemplates store their derived names instead of dynamically generating
 		StoreTimelineNamesInTemplate,
 		
-		// New Pose Asset data type
+		// Avoid duplicating widget animations to save space.
 		WidgetStopDuplicatingAnimations,
 
 		// Allow reducing of the base LOD, we need to store some imported model data so we can reduce again from the same data.
@@ -190,6 +190,71 @@ struct CORE_API FFortniteMainBranchObjectVersion
 		// true for nodes predating this change.
 		GravityOverrideDefinedInWorldSpace,
 
+		// Anim Dynamics Node Physics parameters for each body in a chain are now stored in an array and can be edited.
+		AnimDynamicsEditableChainParameters,
+
+		// Decoupled the generation of the water texture from the Water Brush and the landscape
+		WaterZonesRefactor,
+
+		// Add faster damping calculations to the cloth simulation and rename previous Damping parameter to LocalDamping.
+		ChaosClothFasterDamping,
+
+		// Migrated function handlers to the CDO/archetype data
+		MigratedFunctionHandlersToDefaults,
+
+		// Storing inertia tensor as vec3 instead of matrix.
+		ChaosInertiaConvertedToVec3,
+
+		// Migrated event definitions to the CDO/archetype data
+		MigratedEventDefinitionToDefaults,
+
+		// Serialize LevelInstanceActorGuid on new ILevelInstanceInterface implementation
+		LevelInstanceActorGuidSerialize,
+
+		// Single-frame/key AnimDataModel patch-up
+		SingleFrameAndKeyAnimModel,
+
+		// Remapped bEvaluateWorldPositionOffset to bEvaluateWorldPositionOffsetInRayTracing
+		RemappedEvaluateWorldPositionOffsetInRayTracing,
+
+		// Water body collision settings are now those of the base UPrimitiveComponent, rather than duplicated in UWaterBodyComponent
+		WaterBodyComponentCollisionSettingsRefactor,
+
+		// Introducing widget inherited named slots.  This wouldn't have required a version bump, except in the previous
+		// version, users could make NamedSlots and then Seed them with any random widgets, as a sorta 'default' setup.
+		// In order to preserve that, we're bumping the version so that we can set a new field on UNamedSlot to control
+		// if a widget exposes its named slot to everyone (even if it has content), which by default they wont any longer.
+		WidgetInheritedNamedSlots,
+
+		// Added water HLOD material
+		WaterHLODSupportAdded,
+
+		// Moved parameters affecting Skeleton pose rendering from the PoseWatch class to the PoseWatchPoseElement class.
+		PoseWatchMigrateSkeletonDrawParametersToPoseElement,
+
+		// Reset default value for Water exclusion volumes to make them more intuitive and support the "it just works" philosophy.
+		WaterExclusionVolumeExcludeAllDefault,
+		
+		// Added water non-tessellated LOD
+		WaterNontessellatedLODSupportAdded,
+
+		// Added FHierarchicalSimplification::SimplificationMethod
+		HierarchicalSimplificationMethodEnumAdded,
+
+		// Changed how world partition streaming cells are named
+		WorldPartitionStreamingCellsNamingShortened,
+
+		// Serialize ContentBundleGuid in WorldPartitionActorDesc
+		WorldPartitionActorDescSerializeContentBundleGuid,
+
+		// Serialize IsActorRuntimeOnly in WorldPartitionActorDesc
+		WorldPartitionActorDescSerializeActorIsRuntimeOnly,
+
+		// Add Nanite Material Override option to materials and material instances.
+		NaniteMaterialOverride,
+
+		// Serialize HLOD stats in HLODActorDesc
+		WorldPartitionHLODActorDescSerializeStats,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -198,6 +263,8 @@ struct CORE_API FFortniteMainBranchObjectVersion
 
 	// The GUID for this custom version number
 	const static FGuid GUID;
+
+	static TMap<FGuid, FGuid> GetSystemGuids();
 
 private:
 	FFortniteMainBranchObjectVersion() {}

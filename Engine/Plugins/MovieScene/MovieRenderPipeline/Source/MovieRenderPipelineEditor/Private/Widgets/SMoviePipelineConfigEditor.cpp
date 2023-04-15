@@ -14,8 +14,8 @@
 #include "ClassIconFinder.h"
 
 // AssetRegistry includes
-#include "AssetRegistryModule.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
  
 // ContentBrowser includes
 #include "IContentBrowserSingleton.h"
@@ -34,9 +34,10 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/SlateIconFinder.h"
+#include "SPositiveActionButton.h"
 
 // EditorStyle includes
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 #include "ScopedTransaction.h"
 #include "PropertyEditorModule.h"
@@ -44,6 +45,8 @@
 #include "MovieRenderPipelineStyle.h"
 #include "FrameNumberDetailsCustomization.h"
 #include "Editor.h"
+
+#include "MoviePipelineOutputSetting.h"
 
 #define LOCTEXT_NAMESPACE "SMoviePipelineEditor"
 
@@ -63,10 +66,24 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
     
 	CheckForNewSettingsObject();
      
-	if (CachedPipelineConfig->GetUserSettings().Num() > 0)
+	// Automatically try to select the Output setting as it's the most commonly edited one.
+	// If that fails, we fall back to the first setting.
 	{
-		// Automatically try to select the first setting so there is something displayed.
-		SettingsWidget->SetSelectedSettings({ CachedPipelineConfig->GetUserSettings()[0] });
+		UMoviePipelineOutputSetting* OutputSetting = CachedPipelineConfig->FindSetting<UMoviePipelineOutputSetting>();
+		if (OutputSetting)
+		{
+			TArray<UMoviePipelineSetting*> SelectedSettings;
+			SelectedSettings.Add(OutputSetting);
+			SettingsWidget->SetSelectedSettings(SelectedSettings);
+		}
+		// Shot overrides may not have Output Settings.
+		else
+		{
+			if (CachedPipelineConfig->GetUserSettings().Num() > 0)
+			{
+				SettingsWidget->SetSelectedSettings({ CachedPipelineConfig->GetUserSettings()[0] });
+			}
+		}
 	}
 	ChildSlot
 	[
@@ -78,7 +95,7 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(4)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			[
 				SettingsWidget.ToSharedRef()
 			]
@@ -100,7 +117,7 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Visibility(this, &SMoviePipelineConfigEditor::IsSettingFooterVisible)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SBox)
 					.MaxDesiredHeight(96)
@@ -120,7 +137,7 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.Visibility(this, &SMoviePipelineConfigEditor::IsValidationWarningVisible)
 				[
 					SNew(SHorizontalBox)
@@ -130,7 +147,7 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
 					.Padding(2, 0, 4, 0)
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
 						.Text(FEditorFontGlyphs::Exclamation_Triangle)
 						.ColorAndOpacity(FLinearColor::Yellow)
 					]
@@ -153,50 +170,10 @@ void SMoviePipelineConfigEditor::Construct(const FArguments& InArgs)
 
 TSharedRef<SWidget> SMoviePipelineConfigEditor::MakeAddSettingButton()
 {
-	return SNew(SComboButton)
-		.ContentPadding(MoviePipeline::ButtonPadding)
-		.ButtonStyle(FMovieRenderPipelineStyle::Get(), "FlatButton.Success")
+	return SNew(SPositiveActionButton)
 		.OnGetMenuContent(this, &SMoviePipelineConfigEditor::OnGenerateSettingsMenu)
-		.ForegroundColor(FSlateColor::UseForeground())
-		.HasDownArrow(false)
-		.ButtonContent()
-		[
-			SNew(SHorizontalBox)
-    
-			// Plus Icon
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Plus)
-			]
-    
-			// "Setting" Text
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Text(LOCTEXT("AddNewSetting_Text", "Setting"))
-			]
-    
-			// Non-Default Down Caret arrow.
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(4, 0, 0, 0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FEditorFontGlyphs::Caret_Down)
-			]
-		];
+		.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
+		.Text(LOCTEXT("AddNewSetting_Text", "Setting"));
 }
 PRAGMA_ENABLE_OPTIMIZATION
 
@@ -268,6 +245,10 @@ TSharedRef<SWidget> SMoviePipelineConfigEditor::OnGenerateSettingsMenu()
 		{
 			// Get a display name for the setting from the CDO.
 			const UMoviePipelineSetting* SettingDefaultObject = GetDefault<UMoviePipelineSetting>(Class);
+			if (!SettingDefaultObject)
+			{
+				continue;
+			}
 
 			// Depending on the type of config we're editing, some settings may not be eligible. If this is the case, we omit them from the list.
 			bool bCanSettingBeAdded = CachedPipelineConfig->CanSettingBeAdded(SettingDefaultObject);
@@ -292,11 +273,7 @@ TSharedRef<SWidget> SMoviePipelineConfigEditor::OnGenerateSettingsMenu()
 				continue;
 			}
 
-			FText SettingDisplayName;
-			if (SettingDefaultObject)
-			{
-				SettingDisplayName = SettingDefaultObject->GetDisplayText();
-			}
+			FText SettingDisplayName = SettingDefaultObject->GetDisplayText();
 
 			TSubclassOf<UMoviePipelineSetting> SubclassOf = Class;
 			MenuBuilder.AddMenuEntry(
@@ -325,6 +302,7 @@ void SMoviePipelineConfigEditor::UpdateDetails()
 	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.bShowScrollBar = false;
 	DetailsViewArgs.ColumnWidth = 0.5f;
+	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
 
 	TArray<UMoviePipelineSetting*> SelectedSources;
 	SettingsWidget->GetSelectedSettings(SelectedSources);

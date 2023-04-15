@@ -27,6 +27,9 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/BillboardComponent.h"
 #include "ComponentRecreateRenderStateContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LightComponent)
+
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
 #endif
@@ -35,12 +38,13 @@ void FStaticShadowDepthMap::InitRHI()
 {
 	if (FApp::CanEverRender() && Data && Data->ShadowMapSizeX > 0 && Data->ShadowMapSizeY > 0 && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("FStaticShadowDepthMap"));
-		FTexture2DRHIRef Texture2DRHI = RHICreateTexture2D(Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F, 1, 1, TexCreate_None, CreateInfo);
-		TextureRHI = Texture2DRHI;
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("FStaticShadowDepthMap"), Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F);
+
+		TextureRHI = RHICreateTexture(Desc);
 
 		uint32 DestStride = 0;
-		uint8* TextureData = (uint8*)RHILockTexture2D(Texture2DRHI, 0, RLM_WriteOnly, DestStride, false);
+		uint8* TextureData = (uint8*)RHILockTexture2D(TextureRHI, 0, RLM_WriteOnly, DestStride, false);
 		uint32 RowSize = Data->ShadowMapSizeX * GPixelFormats[PF_R16F].BlockBytes;
 
 		for (int32 Y = 0; Y < Data->ShadowMapSizeY; Y++)
@@ -48,7 +52,7 @@ void FStaticShadowDepthMap::InitRHI()
 			FMemory::Memcpy(TextureData + DestStride * Y, ((uint8*)Data->DepthSamples.GetData()) + RowSize * Y, RowSize);
 		}
 
-		RHIUnlockTexture2D(Texture2DRHI, 0, false);
+		RHIUnlockTexture2D(TextureRHI, 0, false);
 	}
 }
 
@@ -309,11 +313,11 @@ FBoxSphereBounds ULightComponentBase::GetPlacementExtent() const
 	return NewBounds;
 }
 
-void FLightRenderParameters::MakeShaderParameters(const FViewMatrices& ViewMatrices, FLightShaderParameters& OutShaderParameters) const
+void FLightRenderParameters::MakeShaderParameters(const FViewMatrices& ViewMatrices, float Exposure, FLightShaderParameters& OutShaderParameters) const
 {
 	OutShaderParameters.TranslatedWorldPosition = FVector3f(ViewMatrices.GetPreViewTranslation() + WorldPosition);
 	OutShaderParameters.InvRadius = InvRadius;
-	OutShaderParameters.Color = FVector3f(Color);
+	OutShaderParameters.Color = FVector3f(Color) * GetLightExposureScale(Exposure);
 	OutShaderParameters.FalloffExponent = FalloffExponent;
 	OutShaderParameters.Direction = Direction;
 	OutShaderParameters.SpecularScale = SpecularScale;
@@ -324,7 +328,38 @@ void FLightRenderParameters::MakeShaderParameters(const FViewMatrices& ViewMatri
 	OutShaderParameters.SourceLength = SourceLength;
 	OutShaderParameters.RectLightBarnCosAngle = RectLightBarnCosAngle;
 	OutShaderParameters.RectLightBarnLength = RectLightBarnLength;
-	OutShaderParameters.SourceTexture = SourceTexture;
+	OutShaderParameters.RectLightAtlasUVOffset = RectLightAtlasUVOffset;
+	OutShaderParameters.RectLightAtlasUVScale = RectLightAtlasUVScale;
+	OutShaderParameters.RectLightAtlasMaxLevel = RectLightAtlasMaxLevel;
+}
+
+// match logic in EyeAdaptationInverseLookup(...)
+float FLightRenderParameters::GetLightExposureScale(float Exposure, float InverseExposureBlend)
+{
+	if (Exposure <= 0.0f)
+	{
+		return 1.0f;
+	}
+
+	const float Adaptation = Exposure;
+	const float Alpha = InverseExposureBlend;
+
+	// When Alpha = 0.0, we want to multiply by 1.0. when Alpha = 1.0, we want to multiply by 1/Adaptation.
+	// So the lerped value is:
+	//     LerpLogScale = Lerp(log(1),log(1/Adaptation),T)
+	// Which is simplified as:
+	//     LerpLogScale = Lerp(0,-log(Adaptation),T)
+	//     LerpLogScale = -T * logAdaptation;
+
+	const float LerpLogScale = -Alpha * log(Adaptation);
+	const float Scale = exp(LerpLogScale);
+
+	return Scale;
+}
+
+float FLightRenderParameters::GetLightExposureScale(float Exposure) const
+{
+	return GetLightExposureScale(Exposure, InverseExposureBlend);
 }
 
 FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
@@ -375,10 +410,6 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, ShadowAmount(1.0f)
 	, SamplesPerPixel(1)
 	, DeepShadowLayerDistribution(InLightComponent->DeepShadowLayerDistribution)
-	, bMobileMovablePointLightUniformBufferNeedsUpdate(false)
-	, bMobileMovablePointLightShouldBeRender(false)
-	, bMobileMovablePointLightShouldCastShadow(false)
-	, MobileMovablePointLightShadowmapMinMax(0.0f)
 #if ACTOR_HAS_LABELS
 	, OwnerNameOrLabel(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetActorNameOrLabel() : InLightComponent->GetName())
 #endif
@@ -791,6 +822,7 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, SourceRadius) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, SoftSourceRadius) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, SourceLength) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, InverseExposureBlend) &&
 		// Directional light properties that shouldn't unbuild lighting
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, DynamicShadowDistanceMovableLight) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, DynamicShadowDistanceStationaryLight) &&
@@ -994,13 +1026,17 @@ void ULightComponent::SetVolumetricScatteringIntensity(float NewIntensity)
 /** Set color of the light */
 void ULightComponent::SetLightColor(FLinearColor NewLightColor, bool bSRGB)
 {
-	FColor NewColor(NewLightColor.ToFColor(bSRGB));
+	const FColor NewColor(NewLightColor.ToFColor(bSRGB));
+	SetLightFColor(NewColor);
+}
 
+void ULightComponent::SetLightFColor(FColor NewLightColor)
+{
 	// Can't set color on a static light
 	if (AreDynamicDataChangesAllowed()
-		&& LightColor != NewColor)
+		&& LightColor != NewLightColor)
 	{
-		LightColor	= NewColor;
+		LightColor	= NewLightColor;
 
 		// Use lightweight color and brightness update 
 		UWorld* World = GetWorld();
@@ -1722,3 +1758,4 @@ static FAutoConsoleCommand ToggleLightCmd(
 	FConsoleCommandWithArgsDelegate::CreateStatic(ToggleLight),
 	ECVF_Cheat
 	);
+

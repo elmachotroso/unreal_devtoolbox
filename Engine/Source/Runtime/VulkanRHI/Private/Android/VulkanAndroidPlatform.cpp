@@ -2,12 +2,19 @@
 
 #include "VulkanAndroidPlatform.h"
 #include "../VulkanRHIPrivate.h"
+#include "../VulkanPipeline.h"
+#include "../VulkanRenderpass.h"
 #include <dlfcn.h>
 #include "Android/AndroidWindow.h"
 #include "Android/AndroidPlatformFramePacer.h"
 #include "Math/UnrealMathUtility.h"
+#include "Android/AndroidApplication.h"
 #include "Android/AndroidPlatformMisc.h"
+#include "Android/AndroidJavaEnv.h"
+#include "Android/AndroidJNI.h"
 #include "Misc/ConfigCacheIni.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
+#include "../VulkanExtensions.h"
 
 // From VulklanSwapChain.cpp
 extern int32 GVulkanCPURenderThreadFramePacer;
@@ -52,6 +59,8 @@ int32 FVulkanAndroidPlatform::SuccessfulRefreshRateFrames = 1;
 int32 FVulkanAndroidPlatform::UnsuccessfulRefreshRateFrames = 0;
 TArray<TArray<ANSICHAR>> FVulkanAndroidPlatform::DebugVulkanDeviceLayers;
 TArray<TArray<ANSICHAR>> FVulkanAndroidPlatform::DebugVulkanInstanceLayers;
+int32 FVulkanAndroidPlatform::AFBCWorkaroundOption = 0;
+int32 FVulkanAndroidPlatform::ASTCWorkaroundOption = 0;
 
 #define CHECK_VK_ENTRYPOINTS(Type,Func) if (VulkanDynamicAPI::Func == NULL) { bFoundAllEntryPoints = false; UE_LOG(LogRHI, Warning, TEXT("Failed to find entry point for %s"), TEXT(#Func)); }
 
@@ -342,12 +351,12 @@ void FVulkanAndroidPlatform::CreateSurface(void* WindowHandle, VkInstance Instan
 }
 
 
-
-void FVulkanAndroidPlatform::GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions)
+void FVulkanAndroidPlatform::GetInstanceExtensions(FVulkanInstanceExtensionArray& OutExtensions)
 {
-	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
-	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+	OutExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
+
+	// VK_GOOGLE_display_timing (as instance extension?)
+	OutExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
 }
 
 void FVulkanAndroidPlatform::GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers)
@@ -385,45 +394,25 @@ static FAutoConsoleVariableRef CVarVulkanQcomRenderPassTransform(
 	ECVF_ReadOnly
 );
 
-void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions)
+void FVulkanAndroidPlatform::GetDeviceExtensions(FVulkanDevice* Device, FVulkanDeviceExtensionArray& OutExtensions)
 {
-	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
-	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
-	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
-
-	OutExtensions.Add(VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME);
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME, VULKAN_SUPPORTS_ASTC_DECODE_MODE, VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTASTCDecodeMode)));
+	//OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME, VULKAN_SUPPORTS_TEXTURE_COMPRESSION_ASTC_HDR, VK_API_VERSION_1_3, DEVICE_EXT_FLAG_SETTER(HasEXTTextureCompressionASTCHDR)));
 
 	if (GVulkanQcomRenderPassTransform)
 	{
-		OutExtensions.Add(VK_QCOM_RENDER_PASS_TRANSFORM_EXTENSION_NAME);
+		OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VK_QCOM_RENDER_PASS_TRANSFORM_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_3, DEVICE_EXT_FLAG_SETTER(HasQcomRenderPassTransform)));
 	}
 
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
-	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
-	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_MULTIVIEW
-	OutExtensions.Add(VK_KHR_MULTIVIEW_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_RENDERPASS2
-	OutExtensions.Add(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
-#endif
-
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
-#endif
-
 #if !UE_BUILD_SHIPPING
-	OutExtensions.Add(VULKAN_MALI_LAYER_NAME);
+	// Layer name as extension
+	OutExtensions.Add(MakeUnique<FVulkanDeviceExtension>(Device, VULKAN_MALI_LAYER_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
 #endif
 }
 
-void FVulkanAndroidPlatform::GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers)
+void FVulkanAndroidPlatform::GetDeviceLayers(TArray<const ANSICHAR*>& OutLayers)
 {
 #if !UE_BUILD_SHIPPING
 	if (DebugVulkanDeviceLayers.IsEmpty())
@@ -449,10 +438,13 @@ void FVulkanAndroidPlatform::GetDeviceLayers(EGpuVendorId VendorId, TArray<const
 #endif
 }
 
-void FVulkanAndroidPlatform::NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<FString>& Layers, const TArray<FString>& Extensions)
+void FVulkanAndroidPlatform::NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<const ANSICHAR*>& Layers, const TArray<const ANSICHAR*>& Extensions)
 {
 #if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
-	FVulkanAndroidPlatform::bHasGoogleDisplayTiming = Extensions.Contains(TEXT(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME));
+	FVulkanAndroidPlatform::bHasGoogleDisplayTiming = Extensions.ContainsByPredicate([](const ANSICHAR* Key)
+		{
+			return Key && !FCStringAnsi::Strcmp(Key, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+		});
 	UE_LOG(LogVulkanRHI, Log, TEXT("bHasGoogleDisplayTiming = %d"), FVulkanAndroidPlatform::bHasGoogleDisplayTiming);
 #endif
 }
@@ -500,11 +492,13 @@ bool FVulkanAndroidPlatform::FramePace(FVulkanDevice& Device, VkSwapchainKHR Swa
 {
 	bool bVsyncMultiple = true;
 	int32 CurrentFramePace = FAndroidPlatformRHIFramePacer::GetFramePace();
-	if (CurrentFramePace != 0)
+	// give a new swapchain a chance to present some frames before attempting to change refresh rate
+	if (CurrentFramePace != 0 && PresentID > FVulkanViewport::NUM_BUFFERS)
 	{
-		int32 CurrentRefreshRate = FAndroidMisc::GetNativeDisplayRefreshRate();
-
-		bool bRefreshRateInvalid = (CurrentRefreshRate != CachedRefreshRate);
+		CachedRefreshRate = FAndroidMisc::GetNativeDisplayRefreshRate();
+		
+		// we don't need to change display refresh rate as long as it's not lower than game frame pace 
+		bool bRefreshRateInvalid = (CachedRefreshRate < CurrentFramePace);
 		bool bTryChangingRefreshRate = (bRefreshRateInvalid && (SuccessfulRefreshRateFrames > 0 || UnsuccessfulRefreshRateFrames > 1000));
 
 		if (bRefreshRateInvalid)
@@ -523,16 +517,15 @@ bool FVulkanAndroidPlatform::FramePace(FVulkanDevice& Device, VkSwapchainKHR Swa
 		// or periodically if not successfully running at the desired rate
 		if (CurrentFramePace != CachedFramePace || bTryChangingRefreshRate)
 		{
+			UE_LOG(LogRHI, Log, TEXT("Requesting a new display refresh rate - %d Hz"), CurrentFramePace);
+			
 			CachedFramePace = CurrentFramePace;
-			if (FramePacer->SupportsFramePaceInternal(CurrentFramePace, CachedRefreshRate, CachedSyncInterval))
-			{
-				FAndroidMisc::SetNativeDisplayRefreshRate(CachedRefreshRate);
-			}
-			else
-			{
-				// Desired frame pace not supported, save current refresh rate to prevent logspam.
-				CachedRefreshRate = CurrentRefreshRate;
-			}
+			FAndroidMisc::SetNativeDisplayRefreshRate(CurrentFramePace);
+						
+			// assume device succesfully sets desired display refresh rate
+			// actual refresh rate could be higher than requested, we will query exact value on a next frame
+			CachedRefreshRate = CurrentFramePace;
+			
 			UnsuccessfulRefreshRateFrames = 0;
 			SuccessfulRefreshRateFrames = 0;
 		}
@@ -578,6 +571,10 @@ VkResult FVulkanAndroidPlatform::CreateSwapchainKHR(VkDevice Device, const VkSwa
 void FVulkanAndroidPlatform::DestroySwapchainKHR(VkDevice Device, VkSwapchainKHR Swapchain, const VkAllocationCallbacks* Allocator)
 {
 	VulkanRHI::vkDestroySwapchainKHR(Device, Swapchain, Allocator);
+
+	// reset frame pace, to force display refresh rate update after we create a new swapchain
+	// see FVulkanAndroidPlatform::FramePace
+	CachedFramePace = 0;
 }
 
 
@@ -624,8 +621,853 @@ bool FAndroidVulkanFramePacer::SupportsFramePaceInternal(int32 QueryFramePace, i
 	return false;
 }
 
+struct GraphicsPipelineCreateInfo
+{
+	VkPipelineCreateFlags PipelineCreateFlags;
+	uint32_t StageCount;
+	
+	bool bHasVkPipelineVertexInputStateCreateInfo;
+	bool bHasVkPipelineInputAssemblyStateCreateInfo;	
+	bool bHasVkPipelineTessellationStateCreateInfo;
+	bool bHasVkPipelineViewportStateCreateInfo;
+	bool bHasVkPipelineRasterizationStateCreateInfo;
+	bool bHasVkPipelineMultisampleStateCreateInfo;
+	bool bHasVkPipelineDepthStencilStateCreateInfo;
+	bool bHasVkPipelineColorBlendStateCreateInfo;
+	bool bHasVkPipelineDynamicStateCreateInfo;
+
+	uint32_t subpass;
+};
+
+#define COPY_TO_BUFFER(Dst, Src, Size) \
+		Dst.Append((const char*)Src, Size); 
+
+void CharArrayToBuffer(const TArray<const ANSICHAR*>& CharArray, TArray<char>& MemoryStream)
+{
+	uint32_t Count = CharArray.Num();
+	COPY_TO_BUFFER(MemoryStream, &Count, sizeof(uint32_t));
+	for (uint32_t Idx = 0; Idx < Count; ++Idx)
+	{
+		uint32_t StrLength = strlen(CharArray[Idx])+1;
+		COPY_TO_BUFFER(MemoryStream, &StrLength, sizeof(uint32_t));
+		COPY_TO_BUFFER(MemoryStream, CharArray[Idx], StrLength);
+	}
+}
+
+void GetVKStructsFromPNext(const void* pNext, TMap<uint32_t, const void*>& VkStructs)
+{
+	const void* PointerNext = pNext;
+
+	while (PointerNext)
+	{
+		const VkStructureType* NextType = (VkStructureType*)PointerNext;
+		VkStructs.FindOrAdd((uint32_t)*NextType) = PointerNext;
+
+		PointerNext = *((void**)(((uint8*)NextType) + sizeof(size_t)));
+	}
+}
+
+void HandleGraphicsPipelineCreatePNext(VkGraphicsPipelineCreateInfo* PipelineCreateInfo, TArray<char>& MemoryStream)
+{
+	TMap<uint32_t, const void*> VkStructs;
+	GetVKStructsFromPNext(PipelineCreateInfo->pNext, VkStructs);
+
+	int32_t HandledCount = 0;
+
+	// FSR Create Info
+	bool bHasFSRCreateInfo = false;
+
+#if !VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	COPY_TO_BUFFER(MemoryStream, &bHasFSRCreateInfo, sizeof(bool));
+#else
+	const void** Struct = VkStructs.Find((uint32_t)VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
+	bHasFSRCreateInfo = Struct != nullptr;
+	COPY_TO_BUFFER(MemoryStream, &bHasFSRCreateInfo, sizeof(bool));
+
+	if (bHasFSRCreateInfo)
+	{
+		VkPipelineFragmentShadingRateStateCreateInfoKHR FSRCreateInfo = *(VkPipelineFragmentShadingRateStateCreateInfoKHR*)*Struct;
+		FSRCreateInfo.pNext = nullptr;
+
+		COPY_TO_BUFFER(MemoryStream, &FSRCreateInfo, sizeof(VkPipelineFragmentShadingRateStateCreateInfoKHR));
+		HandledCount++;
+	} 
+#endif
+
+	check(HandledCount == VkStructs.Num());
+}
+
+void HandleSubpassDescriptionPNext(VkSubpassDescription2* SubpassDescription, TArray<char>& MemoryStream)
+{
+	TMap<uint32_t, const void*> VkStructs;
+	GetVKStructsFromPNext(SubpassDescription->pNext, VkStructs);
+
+	int32_t HandledCount = 0;
+
+	// FSR Create Info 
+	bool bHasFSRAttachmentCreateInfo = false;
+
+#if !VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	COPY_TO_BUFFER(MemoryStream, &bHasFSRAttachmentCreateInfo, sizeof(bool));
+#else
+	const void** Struct = VkStructs.Find((uint32_t)VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
+	bHasFSRAttachmentCreateInfo = Struct != nullptr;
+	COPY_TO_BUFFER(MemoryStream, &bHasFSRAttachmentCreateInfo, sizeof(bool));
+
+	if (bHasFSRAttachmentCreateInfo)
+	{
+		VkFragmentShadingRateAttachmentInfoKHR* FragmentShadingRateCreateInfo = (VkFragmentShadingRateAttachmentInfoKHR*)*Struct;
+		COPY_TO_BUFFER(MemoryStream, FragmentShadingRateCreateInfo->pFragmentShadingRateAttachment, sizeof(VkAttachmentReference2));
+		COPY_TO_BUFFER(MemoryStream, &FragmentShadingRateCreateInfo->shadingRateAttachmentTexelSize, sizeof(VkExtent2D));
+		HandledCount++;
+	}
+#endif
+
+	check(HandledCount == VkStructs.Num());
+}
+
+void PipelineToBinary(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArray<char>& MemoryStream)
+{
+	static const unsigned int INITIAL_PSO_STREAM_SIZE = 64 * 1024;
+	MemoryStream.Reserve(INITIAL_PSO_STREAM_SIZE);
+	
+	GraphicsPipelineCreateInfo pipelineCreateInfo;
+
+	pipelineCreateInfo.PipelineCreateFlags = PipelineInfo->flags;
+	pipelineCreateInfo.StageCount = PipelineInfo->stageCount; 
+
+	pipelineCreateInfo.bHasVkPipelineVertexInputStateCreateInfo		= PipelineInfo->pVertexInputState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineInputAssemblyStateCreateInfo	= PipelineInfo->pInputAssemblyState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineTessellationStateCreateInfo	= PipelineInfo->pTessellationState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineViewportStateCreateInfo		= PipelineInfo->pViewportState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineRasterizationStateCreateInfo	= PipelineInfo->pRasterizationState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineMultisampleStateCreateInfo		= PipelineInfo->pMultisampleState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineDepthStencilStateCreateInfo	= PipelineInfo->pDepthStencilState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineColorBlendStateCreateInfo		= PipelineInfo->pColorBlendState != nullptr;
+	pipelineCreateInfo.bHasVkPipelineDynamicStateCreateInfo			= PipelineInfo->pDynamicState != nullptr;
+
+	pipelineCreateInfo.subpass = PipelineInfo->subpass;
+
+	TArray<const ANSICHAR*> InstanceLayers = GVulkanRHI->GetInstanceLayers();
+	CharArrayToBuffer(InstanceLayers, MemoryStream);
+	TArray<const ANSICHAR*> InstanceExtensions = GVulkanRHI->GetInstanceExtensions();
+	CharArrayToBuffer(InstanceExtensions, MemoryStream);
+	TArray<const ANSICHAR*> DeviceExtensions = Device->GetDeviceExtensions();
+	CharArrayToBuffer(DeviceExtensions, MemoryStream);
+	COPY_TO_BUFFER(MemoryStream, &pipelineCreateInfo, sizeof(GraphicsPipelineCreateInfo));
+
+	HandleGraphicsPipelineCreatePNext(PipelineInfo, MemoryStream);
+
+	// VkPipelineShaderStageCreateInfo
+	for (int32_t Idx = 0; Idx < PipelineInfo->stageCount; ++Idx)
+	{
+		VkPipelineShaderStageCreateInfo ShaderStage;
+		FMemory::Memzero(ShaderStage);
+
+		ShaderStage.sType = PipelineInfo->pStages[Idx].sType;
+		ShaderStage.flags = PipelineInfo->pStages[Idx].flags;
+		ShaderStage.stage = PipelineInfo->pStages[Idx].stage;
+
+		COPY_TO_BUFFER(MemoryStream, &ShaderStage, sizeof(VkPipelineShaderStageCreateInfo));
+
+		uint32_t NameLength = static_cast<uint32_t>(strlen(PipelineInfo->pStages[Idx].pName)+1);
+
+		COPY_TO_BUFFER(MemoryStream, &NameLength, sizeof(uint32_t));
+		COPY_TO_BUFFER(MemoryStream, PipelineInfo->pStages[Idx].pName, NameLength);
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineVertexInputStateCreateInfo)
+	{
+		const VkPipelineVertexInputStateCreateInfo* VertexInputState = PipelineInfo->pVertexInputState;
+		check(VertexInputState->pNext == nullptr);
+
+		VkPipelineVertexInputStateCreateInfo CopyVertexInputState;
+		FMemory::Memzero(CopyVertexInputState);
+
+		CopyVertexInputState.sType = VertexInputState->sType;
+		CopyVertexInputState.flags = VertexInputState->flags;
+		CopyVertexInputState.vertexBindingDescriptionCount = VertexInputState->vertexBindingDescriptionCount;
+		CopyVertexInputState.vertexAttributeDescriptionCount = VertexInputState->vertexAttributeDescriptionCount;
+
+		COPY_TO_BUFFER(MemoryStream, &CopyVertexInputState, sizeof(VkPipelineVertexInputStateCreateInfo));
+		
+		if(VertexInputState->vertexBindingDescriptionCount > 0)
+		{
+			uint32_t Length = sizeof(VkVertexInputBindingDescription) * VertexInputState->vertexBindingDescriptionCount;
+			COPY_TO_BUFFER(MemoryStream, VertexInputState->pVertexBindingDescriptions, Length);
+		}
+
+		if(VertexInputState->vertexAttributeDescriptionCount > 0)
+		{
+			uint32_t Length = sizeof(VkVertexInputAttributeDescription) * VertexInputState->vertexAttributeDescriptionCount;
+			COPY_TO_BUFFER(MemoryStream, VertexInputState->pVertexAttributeDescriptions, Length);
+		}
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineInputAssemblyStateCreateInfo)
+	{
+		VkPipelineInputAssemblyStateCreateInfo InputAssemblyCreateInfo = *PipelineInfo->pInputAssemblyState;
+		check(PipelineInfo->pInputAssemblyState->pNext == nullptr);
+
+		InputAssemblyCreateInfo.pNext = nullptr;
+		COPY_TO_BUFFER(MemoryStream, &InputAssemblyCreateInfo, sizeof(VkPipelineInputAssemblyStateCreateInfo));
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineTessellationStateCreateInfo)
+	{
+		VkPipelineTessellationStateCreateInfo TesselationCreateInfo = *PipelineInfo->pTessellationState;
+		check(TesselationCreateInfo.pNext == nullptr);
+
+		TesselationCreateInfo.pNext = nullptr;
+		COPY_TO_BUFFER(MemoryStream, &TesselationCreateInfo, sizeof(VkPipelineTessellationStateCreateInfo));
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineViewportStateCreateInfo)
+	{
+		VkPipelineViewportStateCreateInfo ViewportState = *PipelineInfo->pViewportState;
+		check(ViewportState.pNext == nullptr);
+
+		ViewportState.pNext = nullptr;
+		COPY_TO_BUFFER(MemoryStream, &ViewportState, sizeof(VkPipelineViewportStateCreateInfo));
+
+		uint32_t ViewportCount = ViewportState.viewportCount && ViewportState.pViewports ? ViewportState.viewportCount : 0;
+		COPY_TO_BUFFER(MemoryStream, &ViewportCount, sizeof(uint32_t));
+
+		if (ViewportCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, ViewportState.pViewports, sizeof(VkViewport) * ViewportCount);
+		}
+
+		uint32_t ScissorCount = ViewportState.scissorCount && ViewportState.pScissors ? ViewportState.scissorCount : 0;
+		COPY_TO_BUFFER(MemoryStream, &ScissorCount, sizeof(uint32_t));
+
+		if (ScissorCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, ViewportState.pScissors, sizeof(VkRect2D) * ScissorCount);
+		}
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineRasterizationStateCreateInfo)
+	{
+		VkPipelineRasterizationStateCreateInfo RasterizationState = *PipelineInfo->pRasterizationState;
+		check(RasterizationState.pNext == nullptr);
+
+		COPY_TO_BUFFER(MemoryStream, &RasterizationState, sizeof(VkPipelineRasterizationStateCreateInfo));
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineMultisampleStateCreateInfo)
+	{
+		VkPipelineMultisampleStateCreateInfo MultiSampleState = *PipelineInfo->pMultisampleState;
+		check(MultiSampleState.pNext == nullptr);
+
+		COPY_TO_BUFFER(MemoryStream, &MultiSampleState, sizeof(VkPipelineMultisampleStateCreateInfo));
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineDepthStencilStateCreateInfo)
+	{
+		VkPipelineDepthStencilStateCreateInfo DepthStencilState = *PipelineInfo->pDepthStencilState;
+		check(DepthStencilState.pNext == nullptr);
+
+		COPY_TO_BUFFER(MemoryStream, &DepthStencilState, sizeof(VkPipelineDepthStencilStateCreateInfo));
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineColorBlendStateCreateInfo)
+	{
+		VkPipelineColorBlendStateCreateInfo ColorBlendState = *PipelineInfo->pColorBlendState;
+		check(ColorBlendState.pNext == nullptr);
+
+		ColorBlendState.pAttachments = nullptr;
+
+		COPY_TO_BUFFER(MemoryStream, &ColorBlendState, sizeof(VkPipelineColorBlendStateCreateInfo));
+
+		if(ColorBlendState.attachmentCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, PipelineInfo->pColorBlendState->pAttachments, sizeof(VkPipelineColorBlendAttachmentState)* ColorBlendState.attachmentCount);
+		}
+	}
+
+	if (pipelineCreateInfo.bHasVkPipelineDynamicStateCreateInfo)
+	{
+		VkPipelineDynamicStateCreateInfo DynamicState = *PipelineInfo->pDynamicState;
+		check(DynamicState.pNext == nullptr);
+
+		DynamicState.pDynamicStates = nullptr;
+
+		COPY_TO_BUFFER(MemoryStream, &DynamicState, sizeof(VkPipelineDynamicStateCreateInfo));
+
+		if (DynamicState.dynamicStateCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, PipelineInfo->pDynamicState->pDynamicStates, sizeof(VkDynamicState) * DynamicState.dynamicStateCount);
+		}
+	}
+
+	VkPipelineLayoutCreateInfo PipelineLayout;
+	FMemory::Memzero(PipelineLayout);
+
+	PipelineLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	PipelineLayout.setLayoutCount = GfxEntry->DescriptorSetLayoutBindings.Num();
+	
+	COPY_TO_BUFFER(MemoryStream, &PipelineLayout, sizeof(VkPipelineLayoutCreateInfo));
+
+	for (uint32_t Idx = 0; Idx < GfxEntry->DescriptorSetLayoutBindings.Num(); ++Idx)
+	{
+		uint32_t SetBindingsCount = GfxEntry->DescriptorSetLayoutBindings[Idx].Num();
+		COPY_TO_BUFFER(MemoryStream, &SetBindingsCount, sizeof(uint32_t));
+
+		for (auto DescriptorSetBinding : GfxEntry->DescriptorSetLayoutBindings[Idx])
+		{
+			VkDescriptorSetLayoutBinding binding;
+			binding.descriptorType = (VkDescriptorType)DescriptorSetBinding.DescriptorType;
+			binding.binding = DescriptorSetBinding.Binding;
+			binding.stageFlags = DescriptorSetBinding.StageFlags;
+			binding.descriptorCount = 1;
+			binding.pImmutableSamplers = 0;
+
+			COPY_TO_BUFFER(MemoryStream, &binding, sizeof(VkDescriptorSetLayoutBinding));
+		}
+	}
+
+	// Render pass
+	bool bUseRenderPass2 = false;
+
+	bUseRenderPass2 = Device->GetOptionalExtensions().HasKHRRenderPass2;
+
+	COPY_TO_BUFFER(MemoryStream, &bUseRenderPass2, sizeof(bool));
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+	if (bUseRenderPass2)
+	{
+		FVulkanRenderPassBuilder<FVulkanSubpassDescription<VkSubpassDescription2>, FVulkanSubpassDependency<VkSubpassDependency2>, FVulkanAttachmentReference<VkAttachmentReference2>, FVulkanAttachmentDescription<VkAttachmentDescription2>, FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>> Creator(*Device);
+	
+		Creator.BuildCreateInfo(*RTLayout);
+
+		FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>& CreateInfo = Creator.GetCreateInfo();
+
+		VkRenderPassCreateInfo2 RenderPassCreateInfo;
+		FMemory::Memzero(RenderPassCreateInfo);
+
+		RenderPassCreateInfo.sType = CreateInfo.sType;
+		RenderPassCreateInfo.flags = CreateInfo.flags;
+		RenderPassCreateInfo.attachmentCount = CreateInfo.attachmentCount;
+		RenderPassCreateInfo.subpassCount = CreateInfo.subpassCount;
+		RenderPassCreateInfo.dependencyCount = CreateInfo.dependencyCount;
+		RenderPassCreateInfo.correlatedViewMaskCount = CreateInfo.correlatedViewMaskCount;
+
+		COPY_TO_BUFFER(MemoryStream, &RenderPassCreateInfo, sizeof(VkRenderPassCreateInfo2));
+
+		// Check for VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT
+		bool bHasCreateInfoNext = RenderPassCreateInfo.pNext != nullptr;
+		COPY_TO_BUFFER(MemoryStream, &bHasCreateInfoNext, sizeof(bool));
+
+		if (bHasCreateInfoNext)
+		{
+			VkStructureType NextType = *(VkStructureType*)RenderPassCreateInfo.pNext;
+			check(NextType == VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT);
+
+			VkRenderPassFragmentDensityMapCreateInfoEXT* FragmentDensityMap = (VkRenderPassFragmentDensityMapCreateInfoEXT*)RenderPassCreateInfo.pNext;
+			COPY_TO_BUFFER(MemoryStream, FragmentDensityMap, sizeof(VkRenderPassFragmentDensityMapCreateInfoEXT));
+		}
+
+		if(RenderPassCreateInfo.attachmentCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, CreateInfo.pAttachments, sizeof(VkAttachmentDescription2) * RenderPassCreateInfo.attachmentCount);
+		}
+
+		if(RenderPassCreateInfo.dependencyCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, CreateInfo.pDependencies, sizeof(VkSubpassDependency2) * RenderPassCreateInfo.dependencyCount);
+		}
+
+		for (uint32_t Idx = 0; Idx < RenderPassCreateInfo.subpassCount; ++Idx)
+		{
+			VkSubpassDescription2 SubpassDescription = CreateInfo.pSubpasses[Idx];
+			SubpassDescription.pColorAttachments = nullptr;
+			SubpassDescription.pDepthStencilAttachment = nullptr;
+			SubpassDescription.pPreserveAttachments = nullptr;
+			SubpassDescription.pInputAttachments = nullptr;
+			SubpassDescription.pResolveAttachments = nullptr;
+			
+			COPY_TO_BUFFER(MemoryStream, &CreateInfo.pSubpasses[Idx], sizeof(VkSubpassDescription2));
+
+			HandleSubpassDescriptionPNext(&SubpassDescription, MemoryStream);
+
+			if(SubpassDescription.colorAttachmentCount > 0)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pColorAttachments, sizeof(VkAttachmentReference2) * SubpassDescription.colorAttachmentCount);
+			}
+
+			if(SubpassDescription.inputAttachmentCount > 0)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pInputAttachments, sizeof(VkAttachmentReference2) * SubpassDescription.inputAttachmentCount);
+			}
+
+			bool bHasResolveAttachment = CreateInfo.pSubpasses[Idx].pResolveAttachments != nullptr;
+			COPY_TO_BUFFER(MemoryStream, &bHasResolveAttachment, sizeof(bool));
+
+			if (bHasResolveAttachment)
+			{
+				if(SubpassDescription.colorAttachmentCount > 0)
+				{
+					COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pResolveAttachments, sizeof(VkAttachmentReference2)* SubpassDescription.colorAttachmentCount);
+				}
+			}
+
+			bool bHasDepthStencilAttachment = CreateInfo.pSubpasses[Idx].pDepthStencilAttachment != nullptr;
+			COPY_TO_BUFFER(MemoryStream, &bHasDepthStencilAttachment, sizeof(bool));
+
+			if (bHasDepthStencilAttachment)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pDepthStencilAttachment, sizeof(VkAttachmentReference2));
+			}
+		}
+
+		if(RenderPassCreateInfo.correlatedViewMaskCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, CreateInfo.pCorrelatedViewMasks, sizeof(uint32_t) * RenderPassCreateInfo.correlatedViewMaskCount);
+		}
+	}
+	else
+#endif
+	{
+		FVulkanRenderPassBuilder<FVulkanSubpassDescription<VkSubpassDescription>, FVulkanSubpassDependency<VkSubpassDependency>, FVulkanAttachmentReference<VkAttachmentReference>, FVulkanAttachmentDescription<VkAttachmentDescription>, FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo>> Creator(*Device);
+	
+		Creator.BuildCreateInfo(*RTLayout);
+
+		FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo>& CreateInfo = Creator.GetCreateInfo();
+
+		VkRenderPassCreateInfo RenderPassCreateInfo;
+		FMemory::Memzero(RenderPassCreateInfo);
+
+		RenderPassCreateInfo.sType = CreateInfo.sType;
+		RenderPassCreateInfo.flags = CreateInfo.flags;
+		RenderPassCreateInfo.attachmentCount = CreateInfo.attachmentCount;
+		RenderPassCreateInfo.subpassCount = CreateInfo.subpassCount;
+		RenderPassCreateInfo.dependencyCount = CreateInfo.dependencyCount;
+
+		COPY_TO_BUFFER(MemoryStream, &RenderPassCreateInfo, sizeof(VkRenderPassCreateInfo));
+
+		bool bHasCreateInfoNext = RenderPassCreateInfo.pNext != nullptr;
+		COPY_TO_BUFFER(MemoryStream, &bHasCreateInfoNext, sizeof(bool));
+
+		if (bHasCreateInfoNext)
+		{
+			VkStructureType NextType = *(VkStructureType*)RenderPassCreateInfo.pNext;
+			check(NextType == VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT);
+
+			VkRenderPassFragmentDensityMapCreateInfoEXT* FragmentDensityMap = (VkRenderPassFragmentDensityMapCreateInfoEXT*)RenderPassCreateInfo.pNext;
+			COPY_TO_BUFFER(MemoryStream, FragmentDensityMap, sizeof(VkRenderPassFragmentDensityMapCreateInfoEXT));
+
+			check(FragmentDensityMap->pNext == nullptr);
+			// TODO: Support Multiview create info
+		}
+
+		if(RenderPassCreateInfo.attachmentCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, CreateInfo.pAttachments, sizeof(VkAttachmentDescription) * RenderPassCreateInfo.attachmentCount);
+		}
+
+		if(RenderPassCreateInfo.dependencyCount > 0)
+		{
+			COPY_TO_BUFFER(MemoryStream, CreateInfo.pDependencies, sizeof(VkSubpassDependency) * RenderPassCreateInfo.dependencyCount);
+		}
+
+		for (uint32_t Idx = 0; Idx < RenderPassCreateInfo.subpassCount; ++Idx)
+		{
+			VkSubpassDescription SubpassDescription = CreateInfo.pSubpasses[Idx];
+			SubpassDescription.pColorAttachments = nullptr;
+			SubpassDescription.pDepthStencilAttachment = nullptr;
+			SubpassDescription.pPreserveAttachments = nullptr;
+			SubpassDescription.pInputAttachments = nullptr;
+			SubpassDescription.pResolveAttachments = nullptr;
+			
+			COPY_TO_BUFFER(MemoryStream, &CreateInfo.pSubpasses[Idx], sizeof(VkSubpassDescription));
+
+			if(SubpassDescription.colorAttachmentCount > 0)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pColorAttachments, sizeof(VkAttachmentReference) * SubpassDescription.colorAttachmentCount);
+			}
+
+			if(SubpassDescription.inputAttachmentCount > 0)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pInputAttachments, sizeof(VkAttachmentReference) * SubpassDescription.inputAttachmentCount);
+			}
+
+			bool bHasResolveAttachment = CreateInfo.pSubpasses[Idx].pResolveAttachments != nullptr;
+			COPY_TO_BUFFER(MemoryStream, &bHasResolveAttachment, sizeof(bool));
+
+			if (bHasResolveAttachment)
+			{
+				if(SubpassDescription.colorAttachmentCount > 0)
+				{
+					COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pResolveAttachments, sizeof(VkAttachmentReference)* SubpassDescription.colorAttachmentCount);
+				}
+			}
+
+			bool bHasDepthStencilAttachment = CreateInfo.pSubpasses[Idx].pDepthStencilAttachment != nullptr;
+			COPY_TO_BUFFER(MemoryStream, &bHasDepthStencilAttachment, sizeof(bool));
+
+			if (bHasDepthStencilAttachment)
+			{
+				COPY_TO_BUFFER(MemoryStream, CreateInfo.pSubpasses[Idx].pDepthStencilAttachment, sizeof(VkAttachmentReference));
+			}
+		}
+	}
+}
+
+#if UE_BUILD_SHIPPING
+#define CHECK_JNI_EXCEPTIONS(env)  env->ExceptionClear();
+#else
+#define CHECK_JNI_EXCEPTIONS(env)  if (env->ExceptionCheck()) {env->ExceptionDescribe();env->ExceptionClear();}
+#endif
+
+static bool GRemoteCompileServicesActive = false;
+
+struct FVKRemoteProgramCompileJNI
+{
+	jclass PSOServiceAccessor = 0;
+	jmethodID DispatchPSOCompile = 0;
+	jmethodID StartRemoteProgramLink = 0;
+	jmethodID StopRemoteProgramLink = 0;
+	jclass ProgramResponseClass = 0;
+	jfieldID ProgramResponse_SuccessField = 0;
+	jfieldID ProgramResponse_ErrorField = 0;
+	jfieldID ProgramResponse_CompiledBinaryField = 0;
+	bool bAllFound = false;
+
+	void Init(JNIEnv* Env)
+	{
+		// class JNIProgramLinkResponse
+		// {
+		// 	boolean bCompileSuccess;
+		// 	String ErrorMessage;
+		// 	byte[] CompiledProgram;
+		// };
+		// JNIProgramLinkResponse AndroidThunkJava_OGLRemoteProgramLink(...):
+
+		if (PSOServiceAccessor)
+		{
+			return;
+		}
+
+		check(PSOServiceAccessor == 0);
+		PSOServiceAccessor = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/psoservices/PSOProgramServiceAccessor");
+		CHECK_JNI_EXCEPTIONS(Env);
+		if (PSOServiceAccessor)
+		{
+			DispatchPSOCompile = FJavaWrapper::FindStaticMethod(Env, PSOServiceAccessor, "AndroidThunkJava_VKPSOGFXCompile", "([B[B[B[B)Lcom/epicgames/unreal/psoservices/PSOProgramServiceAccessor$JNIProgramLinkResponse;", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			StartRemoteProgramLink = FJavaWrapper::FindStaticMethod(Env, PSOServiceAccessor, "AndroidThunkJava_StartRemoteProgramLink", "(IZ)Z", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			StopRemoteProgramLink = FJavaWrapper::FindStaticMethod(Env, PSOServiceAccessor, "AndroidThunkJava_StopRemoteProgramLink", "()V", false);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponseClass = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/psoservices/PSOProgramServiceAccessor$JNIProgramLinkResponse");
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_SuccessField = FJavaWrapper::FindField(Env, ProgramResponseClass, "bCompileSuccess", "Z", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_CompiledBinaryField = FJavaWrapper::FindField(Env, ProgramResponseClass, "CompiledProgram", "[B", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+			ProgramResponse_ErrorField = FJavaWrapper::FindField(Env, ProgramResponseClass, "ErrorMessage", "Ljava/lang/String;", true);
+			CHECK_JNI_EXCEPTIONS(Env);
+		}
+
+		bAllFound = PSOServiceAccessor && DispatchPSOCompile && StartRemoteProgramLink && StopRemoteProgramLink && ProgramResponseClass && ProgramResponse_SuccessField && ProgramResponse_CompiledBinaryField && ProgramResponse_ErrorField;
+		UE_CLOG(!bAllFound, LogRHI, Fatal, TEXT("Failed to find JNI Vulkan remote program compiler."));
+	}
+}VKRemoteProgramCompileJNI;
+
+static bool AreAndroidVulkanRemoteCompileServicesAvailable()
+{
+	static int RemoteCompileService = -1;
+	if (RemoteCompileService == -1)
+	{
+		const FString* ConfigRulesDisableProgramCompileServices = FAndroidMisc::GetConfigRulesVariable(TEXT("DisableProgramCompileServices"));
+		bool bConfigRulesDisableProgramCompileServices = ConfigRulesDisableProgramCompileServices && ConfigRulesDisableProgramCompileServices->Equals("true", ESearchCase::IgnoreCase);
+		static const auto CVarProgramLRU = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.EnablePipelineLRUCache"));
+		static const auto CVarNumRemoteProgramCompileServices = IConsoleManager::Get().FindConsoleVariable(TEXT("Android.Vulkan.NumRemoteProgramCompileServices"));
+
+		// TODO
+		//RemoteCompileService = !bConfigRulesDisableProgramCompileServices && VKRemoteProgramCompileJNI.bAllFound
+		RemoteCompileService = !bConfigRulesDisableProgramCompileServices && VKRemoteProgramCompileJNI.bAllFound && (CVarProgramLRU->GetInt() != 0) && (CVarNumRemoteProgramCompileServices->GetInt() > 0);
+		FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), RemoteCompileService == 0 ? TEXT("disabled") : TEXT("enabled"));
+	}
+	return RemoteCompileService;
+}
+
+bool AreAndroidVulkanRemoteCompileServicesActive()
+{
+	return GRemoteCompileServicesActive && AreAndroidVulkanRemoteCompileServicesAvailable();
+}
+
+bool FVulkanAndroidPlatform::AreRemoteCompileServicesActive()
+{
+	return AreAndroidVulkanRemoteCompileServicesActive();
+}
+
+bool FVulkanAndroidPlatform::StartAndWaitForRemoteCompileServices(int NumServices)
+{
+	bool bResult = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+	
+	VKRemoteProgramCompileJNI.Init(Env);
+
+	if (Env && AreAndroidVulkanRemoteCompileServicesAvailable())
+	{
+		bResult = (bool)Env->CallStaticBooleanMethod(VKRemoteProgramCompileJNI.PSOServiceAccessor, VKRemoteProgramCompileJNI.StartRemoteProgramLink, (jint)NumServices, (jboolean)true);
+		GRemoteCompileServicesActive = bResult;
+	}
+
+	return bResult;
+}
+
+void FVulkanAndroidPlatform::StopRemoteCompileServices()
+{
+	GRemoteCompileServicesActive = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+
+	if (Env && ensure(AreAndroidVulkanRemoteCompileServicesAvailable()))
+	{
+		Env->CallStaticVoidMethod(VKRemoteProgramCompileJNI.PSOServiceAccessor, VKRemoteProgramCompileJNI.StopRemoteProgramLink);
+	}
+}
+
+namespace AndroidVulkanService
+{
+	std::atomic<bool> bOneTimeErrorEncountered = false;
+}
+
+VkPipelineCache FVulkanAndroidPlatform::PrecompilePSO(FVulkanDevice* Device, VkGraphicsPipelineCreateInfo* PipelineInfo, FGfxPipelineDesc* GfxEntry, const FVulkanRenderTargetLayout* RTLayout, TArrayView<uint32_t> VS, TArrayView<uint32_t> PS, size_t& AfterSize)
+{
+	FString FailureMessageOUT;
+	
+	if (!AreAndroidVulkanRemoteCompileServicesActive())
+	{
+		return VK_NULL_HANDLE;
+	}
+
+	TArray<char> MemoryStream;
+	PipelineToBinary(Device, PipelineInfo, GfxEntry, RTLayout, MemoryStream);
+
+	bool bResult = false;
+	JNIEnv* Env = FAndroidApplication::GetJavaEnv();
+	TArray<uint8> CompiledProgramBinary;
+	FString ErrorMessage;
+
+	if (Env && ensure(VKRemoteProgramCompileJNI.bAllFound))
+	{
+		// get VS code
+		// PipelineInfo
+		// todo: double conversion :(
+		uint32_t VSSize = VS.Num() * sizeof(uint32_t);
+		auto jVS = NewScopedJavaObject(Env, Env->NewByteArray(VSSize));
+		Env->SetByteArrayRegion(*jVS, 0, VSSize, reinterpret_cast<const jbyte*>(VS.GetData()));
+
+		uint32_t PSSize = PS.Num() * sizeof(uint32_t);
+		auto jPS = NewScopedJavaObject(Env, Env->NewByteArray(PSSize));
+		Env->SetByteArrayRegion(*jPS, 0, PSSize, reinterpret_cast<const jbyte*>(PS.GetData()));
+
+		auto jPSOData = NewScopedJavaObject(Env, Env->NewByteArray(MemoryStream.Num()));
+		Env->SetByteArrayRegion(*jPSOData, 0, MemoryStream.Num(), reinterpret_cast<const jbyte*>(MemoryStream.GetData()));
+
+		auto ProgramKeyBuffer = NewScopedJavaObject(Env, Env->NewByteArray(4));
+		Env->SetByteArrayRegion(*ProgramKeyBuffer, 0, 4, reinterpret_cast<const jbyte*>("Test"));
+
+		auto ProgramResponseObj = NewScopedJavaObject(Env, Env->CallStaticObjectMethod(VKRemoteProgramCompileJNI.PSOServiceAccessor, VKRemoteProgramCompileJNI.DispatchPSOCompile, *ProgramKeyBuffer, *jVS, *jPS, *jPSOData));
+		CHECK_JNI_EXCEPTIONS(Env);
+
+		if (*ProgramResponseObj)
+		{
+			bool bSucceeded = (bool)Env->GetBooleanField(*ProgramResponseObj, VKRemoteProgramCompileJNI.ProgramResponse_SuccessField);
+			if (bSucceeded)
+			{
+				auto ProgramResult = NewScopedJavaObject(Env, (jbyteArray)Env->GetObjectField(*ProgramResponseObj, VKRemoteProgramCompileJNI.ProgramResponse_CompiledBinaryField));
+				int len = Env->GetArrayLength(*ProgramResult);
+
+				if (len > 0)
+				{
+					CompiledProgramBinary.SetNumUninitialized(len);
+					Env->GetByteArrayRegion(*ProgramResult, 0, len, reinterpret_cast<jbyte*>(CompiledProgramBinary.GetData()));
+					VkPipelineCacheCreateInfo PipelineCacheCreateInfo;
+					VkPipelineCache PipelineCache;
+					memset(&PipelineCacheCreateInfo, 0, sizeof(VkPipelineCacheCreateInfo));
+					PipelineCacheCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+					PipelineCacheCreateInfo.flags = 0;
+					PipelineCacheCreateInfo.pInitialData = CompiledProgramBinary.GetData();
+					PipelineCacheCreateInfo.initialDataSize = CompiledProgramBinary.Num();
+					VERIFYVULKANRESULT(VulkanRHI::vkCreatePipelineCache(Device->GetInstanceHandle(), &PipelineCacheCreateInfo, VULKAN_CPU_ALLOCATOR, &PipelineCache));
+					AfterSize = CompiledProgramBinary.Num();
+					return PipelineCache;
+				}
+
+				return VK_NULL_HANDLE;
+			}
+			else
+			{
+				if (AndroidVulkanService::bOneTimeErrorEncountered.exchange(true) == false)
+				{
+					FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), TEXT("ec"));
+				}
+
+				FailureMessageOUT = FJavaHelper::FStringFromLocalRef(Env, (jstring)Env->GetObjectField(*ProgramResponseObj, VKRemoteProgramCompileJNI.ProgramResponse_ErrorField));
+				check(!FailureMessageOUT.IsEmpty());
+			}
+		}
+		else
+		{
+			if (AndroidVulkanService::bOneTimeErrorEncountered.exchange(true) == false)
+			{
+				FGenericCrashContext::SetEngineData(TEXT("Android.PSOService"), TEXT("es"));
+			}
+			FailureMessageOUT = TEXT("Remote compiler failed.");
+		}
+	}
+
+	return VK_NULL_HANDLE;
+}
+
+
 bool FAndroidVulkanFramePacer::SupportsFramePace(int32 QueryFramePace)
 {
 	int32 TempRefreshRate, TempSyncInterval;
 	return SupportsFramePaceInternal(QueryFramePace, TempRefreshRate, TempSyncInterval);
+}
+
+//
+// Test whether we should enable workarounds for textures
+// Arm GPUs use an optimization "Arm FrameBuffer Compression - AFBC" that can significanly inflate (~5x) uncompressed texture memory requirements
+// For now AFBC and similar optimizations can be disabled by using VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT or VK_IMAGE_USAGE_STORAGE_BIT flags on a texture
+// On Adreno GPUs ASTC textures with optimial tiling may require 8x more memory
+//
+void FVulkanAndroidPlatform::SetupImageMemoryRequirementWorkaround(const FVulkanDevice& InDevice)
+{
+	AFBCWorkaroundOption = 0;
+	ASTCWorkaroundOption = 0;
+
+	VkImageCreateInfo ImageCreateInfo;
+	ZeroVulkanStruct(ImageCreateInfo, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+	ImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+	ImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	ImageCreateInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+	ImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ImageCreateInfo.arrayLayers = 1;
+	ImageCreateInfo.extent = {128, 128, 1};
+	ImageCreateInfo.mipLevels = 8;
+	ImageCreateInfo.flags = 0;
+	ImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	ImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ImageCreateInfo.queueFamilyIndexCount = 0;
+	ImageCreateInfo.pQueueFamilyIndices = nullptr;
+	ImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	// AFBC workarounds
+	{
+		const VkFormatFeatureFlags FormatFlags = InDevice.GetFormatProperties()[VK_FORMAT_B8G8R8A8_UNORM].optimalTilingFeatures;
+
+		VkImage Image0;
+		VkMemoryRequirements Image0Mem;
+		VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &Image0));
+		VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), Image0, &Image0Mem);
+		VulkanRHI::vkDestroyImage(InDevice.GetInstanceHandle(), Image0, VULKAN_CPU_ALLOCATOR);
+
+		VkImage ImageMutable;
+		VkMemoryRequirements ImageMutableMem;
+		ImageCreateInfo.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+		VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &ImageMutable));
+		VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), ImageMutable, &ImageMutableMem);
+		VulkanRHI::vkDestroyImage(InDevice.GetInstanceHandle(), ImageMutable, VULKAN_CPU_ALLOCATOR);
+
+		VkImage ImageStorage;
+		VkMemoryRequirements ImageStorageMem;
+		if ((FormatFlags & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0)
+		{
+			ImageCreateInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+			ImageCreateInfo.flags = 0;
+		}
+		VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &ImageStorage));
+		VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), ImageStorage, &ImageStorageMem);
+		VulkanRHI::vkDestroyImage(InDevice.GetInstanceHandle(), ImageStorage, VULKAN_CPU_ALLOCATOR);
+
+		const float MEM_SIZE_THRESHOLD = 1.5f;
+		const float IMAGE0_SIZE = (float)Image0Mem.size;
+
+		if (ImageMutableMem.size * MEM_SIZE_THRESHOLD < IMAGE0_SIZE)
+		{
+			AFBCWorkaroundOption = 1;
+		}
+		else if (ImageStorageMem.size * MEM_SIZE_THRESHOLD < IMAGE0_SIZE)
+		{
+			AFBCWorkaroundOption = 2;
+		}
+
+		if (AFBCWorkaroundOption != 0)
+		{
+			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requrement for BGRA textures (%s flag). 128x128 - 8 Mips BGRA texture: %u KiB -> %u KiB"),
+				AFBCWorkaroundOption == 1 ? TEXT("MUTABLE") : TEXT("STORAGE"),
+				Image0Mem.size / 1024,
+				AFBCWorkaroundOption == 1 ? ImageMutableMem.size / 1024 : ImageStorageMem.size / 1024
+			);
+		}
+	}
+
+	// ASTC workarounds
+	{
+		ImageCreateInfo.flags = 0;
+		ImageCreateInfo.format = VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+		ImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		ImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+		VkImage ImageOptimal_ASTC;
+		VkMemoryRequirements ImageOptimalMem_ASTC;
+		VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &ImageOptimal_ASTC));
+		VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), ImageOptimal_ASTC, &ImageOptimalMem_ASTC);
+		VulkanRHI::vkDestroyImage(InDevice.GetInstanceHandle(), ImageOptimal_ASTC, VULKAN_CPU_ALLOCATOR);
+
+		ImageCreateInfo.tiling = VK_IMAGE_TILING_LINEAR;
+
+		VkImage ImageLinear_ASTC;
+		VkMemoryRequirements ImageLinearMem_ASTC;
+		VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &ImageLinear_ASTC));
+		VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), ImageLinear_ASTC, &ImageLinearMem_ASTC);
+		VulkanRHI::vkDestroyImage(InDevice.GetInstanceHandle(), ImageLinear_ASTC, VULKAN_CPU_ALLOCATOR);
+
+
+		const float MEM_SIZE_THRESHOLD = 2.0f;
+		const float ImageOptimal_SIZE = (float)ImageOptimalMem_ASTC.size;
+
+		if (ImageLinearMem_ASTC.size * MEM_SIZE_THRESHOLD <= ImageOptimal_SIZE)
+		{
+			ASTCWorkaroundOption = 1;
+
+			UE_LOG(LogRHI, Display, TEXT("Enabling workaround to reduce memory requrement for ASTC textures (VK_IMAGE_TILING_LINEAR). 128x128 - 8 Mips ASTC_8x8 texture: %u KiB -> %u KiB"),
+				ImageOptimalMem_ASTC.size / 1024,
+				ImageLinearMem_ASTC.size / 1024
+			);
+		}
+	}
+}
+
+void FVulkanAndroidPlatform::SetImageMemoryRequirementWorkaround(VkImageCreateInfo& ImageCreateInfo)
+{
+	if (AFBCWorkaroundOption != 0 &&
+		ImageCreateInfo.imageType == VK_IMAGE_TYPE_2D && 
+		ImageCreateInfo.format == VK_FORMAT_B8G8R8A8_UNORM && 
+		ImageCreateInfo.mipLevels >= 8) // its worth enabling for 128x128 and up
+	{
+		if (AFBCWorkaroundOption == 1)
+		{
+			ImageCreateInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+		}
+		else if (AFBCWorkaroundOption == 2)
+		{
+			ImageCreateInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+		}
+	}
+
+	// Use ASTC workaround for textures ASTC_6x6 and ASTC_8x8 with mips and size up to 128x128
+	if (ASTCWorkaroundOption != 0 &&
+		ImageCreateInfo.imageType == VK_IMAGE_TYPE_2D &&
+		(ImageCreateInfo.format >= VK_FORMAT_ASTC_6x6_UNORM_BLOCK && ImageCreateInfo.format <= VK_FORMAT_ASTC_8x8_SRGB_BLOCK) &&
+		(ImageCreateInfo.mipLevels > 1 && ImageCreateInfo.extent.width <= 128 && ImageCreateInfo.extent.height <= 128))
+	{
+		ImageCreateInfo.tiling = VK_IMAGE_TILING_LINEAR;
+	}
 }

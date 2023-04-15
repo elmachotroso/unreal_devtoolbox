@@ -21,6 +21,7 @@ MapBuildData.cpp
 #include "UObject/MobileObjectVersion.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/ReflectionCaptureObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "ContentStreaming.h"
 #include "Components/ReflectionCaptureComponent.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -91,11 +92,22 @@ void UWorld::PropagateLightingScenarioChange()
 		}
 	}
 
+	TArray<UActorComponent*> WorldComponents;
 	for (USceneComponent* Component : TObjectRange<USceneComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 	{
 		if (Component->GetWorld() == this)
 		{
-			Component->PropagateLightingScenarioChange();
+			WorldComponents.Emplace(Component);
+		}
+	}
+
+	{
+		// Use a global context so UpdateAllPrimitiveSceneInfos only runs once, rather than for each component.  Can save minutes of time.
+		FGlobalComponentRecreateRenderStateContext Context(WorldComponents);
+		
+		for (UActorComponent* Component : WorldComponents)
+		{
+			((USceneComponent*)Component)->PropagateLightingScenarioChange();
 		}
 	}
 
@@ -306,13 +318,6 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 		Ar << Brightness;
 	}
 
-#if WITH_EDITOR
-	if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ExcludeBrightnessFromEncodedHDRCubemap && Brightness != 1.0f)
-	{
-		ReflectionCaptureMapBuildData.bBrightnessBakedInEncodedHDRCubemap = true;
-	}
-#endif
-
 	static FName FullHDR(TEXT("FullHDR"));
 	static FName EncodedHDR(TEXT("EncodedHDR"));
 
@@ -334,14 +339,24 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 		Ar << StrippedData;
 	}
 
-	if (Ar.CustomVer(FMobileObjectVersion::GUID) >= FMobileObjectVersion::StoreReflectionCaptureCompressedMobile)
+	if (Ar.CustomVer(FMobileObjectVersion::GUID) >= FMobileObjectVersion::StoreReflectionCaptureCompressedMobile
+		&& Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::StoreReflectionCaptureEncodedHDRDataInRG11B10Format)
 	{
-		Ar << ReflectionCaptureMapBuildData.EncodedCaptureData;
+		UTextureCube* EncodedCaptureData = nullptr;
+		Ar << EncodedCaptureData;
 	}
 	else
 	{
-		TArray<uint8> StrippedData;
-		Ar << StrippedData;
+		if ((Formats.Num() == 0 || Formats.Contains(EncodedHDR))
+			&& Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::StoreReflectionCaptureEncodedHDRDataInRG11B10Format)
+		{
+			Ar << ReflectionCaptureMapBuildData.EncodedHDRCapturedData;
+		}
+		else
+		{
+			TArray<uint8> StrippedData;
+			Ar << StrippedData;
+		}
 	}
 
 	if (Ar.IsLoading())
@@ -359,13 +374,62 @@ FReflectionCaptureMapBuildData::~FReflectionCaptureMapBuildData()
 
 void FReflectionCaptureMapBuildData::FinalizeLoad()
 {
-	AllocatedSize = FullHDRCapturedData.GetAllocatedSize();
+	AllocatedSize = FullHDRCapturedData.GetAllocatedSize() + EncodedHDRCapturedData.GetAllocatedSize();
 	INC_DWORD_STAT_BY(STAT_ReflectionCaptureBuildData, AllocatedSize);
+
+	bool bMobileEnableClusteredReflections = MobileForwardEnableClusteredReflections(GMaxRHIShaderPlatform) || IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform);
+	bool bEncodedDataRequired = (GIsEditor || (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1 && !bMobileEnableClusteredReflections));
+	// If the RG11B10 format is not really supported, decode it to RGBA16F 
+	if (GPixelFormats[PF_FloatR11G11B10].BlockBytes == 8 && bEncodedDataRequired && EncodedHDRCapturedData.Num() > 0)
+	{
+		const int32 NumMips = FMath::CeilLogTwo(CubemapSize) + 1;
+
+		int32 SourceMipBaseIndex = 0;
+		int32 DestMipBaseIndex = 0;
+
+		TArray<uint8> DecodedHDRData;
+
+		int32 DecodedDataSize = EncodedHDRCapturedData.Num() * sizeof(FFloat16Color) / sizeof(FFloat3Packed);
+
+		DecodedHDRData.Empty(DecodedDataSize);
+		DecodedHDRData.AddZeroed(DecodedDataSize);
+
+		for (int32 MipIndex = 0; MipIndex < NumMips; MipIndex++)
+		{
+			const int32 MipSize = 1 << (NumMips - MipIndex - 1);
+			const int32 SourceCubeFaceBytes = MipSize * MipSize * sizeof(FFloat3Packed);
+			const int32 DestCubeFaceBytes = MipSize * MipSize * sizeof(FFloat16Color);
+
+			// Decode rest of texels
+			for (int32 CubeFace = 0; CubeFace < CubeFace_MAX; CubeFace++)
+			{
+				const int32 FaceSourceIndex = SourceMipBaseIndex + CubeFace * SourceCubeFaceBytes;
+				const int32 FaceDestIndex = DestMipBaseIndex + CubeFace * DestCubeFaceBytes;
+				const FFloat3Packed* FaceSourceData = (const FFloat3Packed*)&EncodedHDRCapturedData[FaceSourceIndex];
+				FFloat16Color* FaceDestData = (FFloat16Color*)&DecodedHDRData[FaceDestIndex];
+
+				// Convert each texel from RG11B10 to linear space FP16 FColor
+				for (int32 y = 0; y < MipSize; y++)
+				{
+					for (int32 x = 0; x < MipSize; x++)
+					{
+						int32 TexelIndex = x + y * MipSize;
+						FaceDestData[TexelIndex] = FFloat16Color(FaceSourceData[TexelIndex].ToLinearColor());
+					}
+				}
+			}
+
+			SourceMipBaseIndex += SourceCubeFaceBytes * CubeFace_MAX;
+			DestMipBaseIndex += DestCubeFaceBytes * CubeFace_MAX;
+		}
+
+		EncodedHDRCapturedData = MoveTemp(DecodedHDRData);
+	}
 }
 
 void FReflectionCaptureMapBuildData::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObject(EncodedCaptureData);
+
 }
 
 UMapBuildDataRegistry::UMapBuildDataRegistry(const FObjectInitializer& ObjectInitializer)
@@ -404,14 +468,14 @@ void UMapBuildDataRegistry::HandleAssetPostCompileEvent(const TArray<FAssetCompi
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(UMapBuildDataRegistry::HandleAssetPostCompileEvent);
 
-		for (FLightmapResourceCluster* Cluster : ClustersToUpdate)
-		{
-			ENQUEUE_RENDER_COMMAND(UpdateClusterUniformBuffer)(
-				[Cluster](FRHICommandList& RHICmdList)
+		ENQUEUE_RENDER_COMMAND(UpdateClusterUniformBuffer)(
+			[ClustersToUpdate = ClustersToUpdate](FRHICommandList& RHICmdList)
+			{
+				for (FLightmapResourceCluster* Cluster : ClustersToUpdate)
 				{
-					Cluster->UpdateUniformBuffer_RenderThread();
-				});
-		}
+					Cluster->UpdateRHI();
+				}
+			});
 
 		for (TObjectIterator<ULandscapeComponent> It; It; ++It)
 		{
@@ -459,6 +523,7 @@ void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FMobileObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReflectionCaptureObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	if (!StripFlags.IsDataStrippedForServer())
 	{
@@ -478,7 +543,7 @@ void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 			{
 				const FReflectionCaptureMapBuildData& CaptureBuildData = It.Value();
 				// Sanity check that every reflection capture entry has valid data for at least one format
-				check(CaptureBuildData.FullHDRCapturedData.Num() > 0 || CaptureBuildData.EncodedCaptureData != nullptr);
+				check(CaptureBuildData.FullHDRCapturedData.Num() > 0 || CaptureBuildData.EncodedHDRCapturedData.Num() > 0);
 			}
 		}
 
@@ -497,9 +562,9 @@ void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 void UMapBuildDataRegistry::PostLoad()
 {
 	Super::PostLoad();
-	bool bUsesMobileDeferredShading = IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform);
-	bool bFullDataRequired = GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 || bUsesMobileDeferredShading;
-	bool bEncodedDataRequired = (GIsEditor || (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1 && !bUsesMobileDeferredShading));
+	bool bMobileEnableClusteredReflections = MobileForwardEnableClusteredReflections(GMaxRHIShaderPlatform) || IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform);
+	bool bFullDataRequired = GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 || bMobileEnableClusteredReflections;
+	bool bEncodedDataRequired = (GIsEditor || (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1 && !bMobileEnableClusteredReflections));
 
 	HandleLegacyEncodedCubemapData();
 
@@ -521,16 +586,23 @@ void UMapBuildDataRegistry::PostLoad()
 
 			if (!bEncodedDataRequired)
 			{
-				CaptureBuildData.EncodedCaptureData = nullptr;
+				CaptureBuildData.EncodedHDRCapturedData.Empty();
 			}
 
-			check(CaptureBuildData.EncodedCaptureData != nullptr || CaptureBuildData.FullHDRCapturedData.Num() > 0 || FApp::CanEverRender() == false);
+			check(CaptureBuildData.EncodedHDRCapturedData.Num() > 0 || CaptureBuildData.FullHDRCapturedData.Num() > 0 || FApp::CanEverRender() == false);
 		}
 	}
 
 	SetupLightmapResourceClusters();
 }
 
+#if WITH_EDITORONLY_DATA
+void UMapBuildDataRegistry::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UTextureCube::StaticClass()));
+}
+#endif
 
 void UMapBuildDataRegistry::HandleLegacyEncodedCubemapData()
 {
@@ -543,11 +615,9 @@ void UMapBuildDataRegistry::HandleLegacyEncodedCubemapData()
 		for (TMap<FGuid, FReflectionCaptureMapBuildData>::TIterator It(ReflectionCaptureBuildData); It; ++It)
 		{
 			FReflectionCaptureMapBuildData& CaptureBuildData = It.Value();
-			if ((CaptureBuildData.EncodedCaptureData == nullptr || CaptureBuildData.bBrightnessBakedInEncodedHDRCubemap) && CaptureBuildData.FullHDRCapturedData.Num() != 0)
+			if (CaptureBuildData.EncodedHDRCapturedData.Num() == 0 && CaptureBuildData.FullHDRCapturedData.Num() != 0)
 			{
-				FString TextureName = TEXT("DeprecatedTexture");
-				TextureName += LexToString(It.Key());
-				GenerateEncodedHDRTextureCube(this, CaptureBuildData, TextureName, 16.0f);
+				GenerateEncodedHDRData(CaptureBuildData.FullHDRCapturedData, CaptureBuildData.CubemapSize, CaptureBuildData.EncodedHDRCapturedData);
 			}
 		}
 	}
@@ -1007,12 +1077,16 @@ void UMapBuildDataRegistry::InitializeClusterRenderingResources(ERHIFeatureLevel
 	check(bSetupResourceClusters || MeshBuildData.Num() == 0);
 	// If we have any mesh build data, we must have at least one resource cluster, otherwise clusters have not been setup properly.
 	check(LightmapResourceClusters.Num() > 0 || MeshBuildData.Num() == 0);
-
-	// At this point all lightmap cluster resources are initialized and we can update cluster uniform buffers.
-	for (FLightmapResourceCluster& Cluster : LightmapResourceClusters)
-	{
-		Cluster.UpdateUniformBuffer(InFeatureLevel);
-	}
+	
+	ENQUEUE_RENDER_COMMAND(SetFeatureLevelAndInitialize)(
+		[&LightmapResourceClusters = LightmapResourceClusters, InFeatureLevel](FRHICommandList& RHICmdList)
+		{
+			// At this point all lightmap cluster resources are initialized and we can update cluster uniform buffers.
+			for (FLightmapResourceCluster& Cluster : LightmapResourceClusters)
+			{
+				Cluster.SetFeatureLevelAndInitialize(InFeatureLevel);
+			}
+		});
 }
 
 void UMapBuildDataRegistry::ReleaseResources(const TSet<FGuid>* ResourcesToKeep)

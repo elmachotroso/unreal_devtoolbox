@@ -5,9 +5,9 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "UObject/UnrealType.h"
 #include "Misc/Guid.h"
 #include "MaterialShared.h"
-#include "MaterialCachedData.h"
 #include "MaterialExpressionIO.h"
 
 #include "MaterialExpression.generated.h"
@@ -17,6 +17,12 @@ class UMaterial;
 class UTexture;
 struct FPropertyChangedEvent;
 struct FMaterialShadingModelField;
+struct FStrataOperator;
+
+class UMaterialExpression;
+class UMaterialExpressionComment;
+class UMaterialExpressionExecBegin;
+class UMaterialExpressionExecEnd;
 
 class FMaterialHLSLGenerator;
 enum class EMaterialNewScopeFlag : uint8;
@@ -28,7 +34,6 @@ namespace HLSLTree
 class FScope;
 class FStatement;
 class FExpression;
-class FTextureParameterDeclaration;
 }
 }
 
@@ -37,11 +42,9 @@ class FTextureParameterDeclaration;
 USTRUCT(noexport)
 struct FExpressionInput
 {
-#if WITH_EDITORONLY_DATA
 	/** UMaterial expression that this input is connected to, or NULL if not connected. */
 	UPROPERTY()
 	TObjectPtr<class UMaterialExpression> Expression;
-#endif
 
 	/** Index into Expression's outputs array that this input is connected to. */
 	UPROPERTY()
@@ -54,7 +57,6 @@ struct FExpressionInput
 	UPROPERTY()
 	FName InputName;
 
-#if WITH_EDITORONLY_DATA
 
 	UPROPERTY()
 	int32 Mask;
@@ -70,11 +72,6 @@ struct FExpressionInput
 
 	UPROPERTY()
 	int32 MaskA;
-#endif
-
-	/** Material expression name that this input is connected to, or None if not connected. Used only in cooked builds */
-	UPROPERTY()
-	FName ExpressionName;
 };
 
 USTRUCT(noexport)
@@ -94,7 +91,6 @@ struct FExpressionOutput
 	UPROPERTY()
 	FName OutputName;
 
-#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	int32 Mask;
 
@@ -109,7 +105,6 @@ struct FExpressionOutput
 
 	UPROPERTY()
 	int32 MaskA;
-#endif
 };
 #endif
 
@@ -129,7 +124,7 @@ public:
 	ENGINE_API bool GenerateHLSLStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
 
 	/** Creates a new scope, and populates it with the expression connected to this input */
-	ENGINE_API UE::HLSLTree::FScope* NewScopeWithStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
+	ENGINE_API UE::HLSLTree::FScope* NewOwnedScopeWithStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FStatement& Owner) const;
 	ENGINE_API UE::HLSLTree::FScope* NewScopeWithStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, EMaterialNewScopeFlag Flags) const;
 #endif // WITH_EDITOR
 private:
@@ -143,12 +138,6 @@ struct FExpressionExecOutputEntry
 	FExpressionExecOutput* Output = nullptr;
 };
 
-enum class EMaterialGenerateHLSLStatus : uint8
-{
-	Success,
-	Error,
-};
-
 enum class EMaterialExpressionSetParameterValueFlags : uint32
 {
 	None = 0u,
@@ -158,7 +147,34 @@ enum class EMaterialExpressionSetParameterValueFlags : uint32
 };
 ENUM_CLASS_FLAGS(EMaterialExpressionSetParameterValueFlags);
 
-UCLASS(abstract, BlueprintType, hidecategories=Object)
+USTRUCT()
+struct ENGINE_API FMaterialExpressionCollection
+{
+	GENERATED_BODY()
+
+	void AddExpression(UMaterialExpression* InExpression);
+	void RemoveExpression(UMaterialExpression* InExpression);
+	void AddComment(UMaterialExpressionComment* InExpression);
+	void RemoveComment(UMaterialExpressionComment* InExpression);
+	void Empty();
+
+	/** Array of material expressions, excluding Comments.  Used by the material editor. */
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialExpression>> Expressions;
+
+	/** Array of comments associated with this material; viewed in the material editor. */
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialExpressionComment>> EditorComments;
+
+	/** The execution begin expression, if material is using an exec wire */
+	UPROPERTY()
+	TObjectPtr<UMaterialExpressionExecBegin> ExpressionExecBegin = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialExpressionExecEnd> ExpressionExecEnd = nullptr;
+};
+
+UCLASS(abstract, Optional, BlueprintType, hidecategories=Object)
 class ENGINE_API UMaterialExpression : public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -169,11 +185,10 @@ class ENGINE_API UMaterialExpression : public UObject
 	static void InitializeNumExecutionInputs(TArrayView<UMaterialExpression*> Expressions);
 #endif
 
-#if WITH_EDITORONLY_DATA
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category = MaterialEditing)
 	int32 MaterialExpressionEditorX;
 
-	UPROPERTY()
+	UPROPERTY(BlueprintReadWrite, Category = MaterialEditing)
 	int32 MaterialExpressionEditorY;
 
 	/** Expression's Graph representation */
@@ -191,7 +206,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	UPROPERTY()
 	FGuid MaterialExpressionGuid;
 
-#endif // WITH_EDITORONLY_DATA
 	/** 
 	 * The material that this expression is currently being compiled in.  
 	 * This is not necessarily the object which owns this expression, for example a preview material compiling a material function's expressions.
@@ -206,7 +220,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	UPROPERTY()
 	TObjectPtr<class UMaterialFunction> Function;
 
-#if WITH_EDITORONLY_DATA
 	/** A description that level designers can add (shows in the material editor UI). */
 	UPROPERTY(EditAnywhere, Category=MaterialExpression, meta=(MultiLine=true, DisplayAfter = "SortPriority"))
 	FString Desc;
@@ -221,13 +234,11 @@ class ENGINE_API UMaterialExpression : public UObject
 	/** If true, we should update the preview next render. This is set when changing bRealtimePreview. */
 	UPROPERTY(transient)
 	uint32 bNeedToUpdatePreview:1;
-#endif // WITH_EDITORONLY_DATA
 
 	/** Indicates that this is a 'parameter' type of expression and should always be loaded (ie not cooked away) because we might want the default parameter. */
 	UPROPERTY()
 	uint8 bIsParameterExpression : 1;
 
-#if WITH_EDITORONLY_DATA
 	/** If true, the comment bubble will be visible in the graph editor */
 	UPROPERTY()
 	uint32 bCommentBubbleVisible:1;
@@ -267,7 +278,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	/** The expression's outputs, which are set in default properties by derived classes. */
 	UPROPERTY()
 	TArray<FExpressionOutput> Outputs;
-#endif // WITH_EDITORONLY_DATA
 
 	//~ Begin UObject Interface.
 	virtual void PostInitProperties() override;
@@ -281,14 +291,6 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual bool Modify( bool bAlwaysMarkDirty=true ) override;
 #endif // WITH_EDITOR
 	virtual void Serialize( FStructuredArchive::FRecord Record ) override;
-	virtual bool IsEditorOnly() const
-	{
-		return true;
-	}
-	virtual bool HasNonEditorOnlyReferences() const override
-	{
-		return true;
-	}
 	//~ End UObject Interface.
 
 	UObject* GetAssetOwner() const;
@@ -310,9 +312,10 @@ class ENGINE_API UMaterialExpression : public UObject
 	 * For example, a for-loop expression might generate a statement for the execution input, but also generate an expression to access the loop index
 	 * These methods replace the Compile() method; once we switch over to the new system, Compile() will be removed
 	 */
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope);
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression* &OutExpression);
-	virtual EMaterialGenerateHLSLStatus GenerateHLSLTexture(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FTextureParameterDeclaration*& OutTexture);
+	virtual bool GenerateHLSLStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
+	virtual bool GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const;
+
+	bool IsUsingNewHLSLGenerator() const;
 
 #endif // WITH_EDITOR
 
@@ -337,6 +340,7 @@ class ENGINE_API UMaterialExpression : public UObject
 	 *	@param	Outputs		The TArray of outputs to fill in.
 	 */
 	virtual TArray<FExpressionOutput>& GetOutputs();
+	/** Get the expression inputs supported by this expression (Note: property inputs NOT included). */
 	virtual const TArray<FExpressionInput*> GetInputs();
 	virtual FExpressionInput* GetInput(int32 InputIndex);
 	virtual FName GetInputName(int32 InputIndex) const;
@@ -345,6 +349,14 @@ class ENGINE_API UMaterialExpression : public UObject
 	{
 		return true;
 	};
+
+	/** Find the property that is associated with the input pin. */
+	virtual TArray<FProperty*> GetInputPinProperty(int32 PinIndex);
+	virtual FName GetInputPinSubCategory(int32 PinIndex);
+	virtual UObject* GetInputPinSubCategoryObject(int32 PinIndex);
+	virtual void PinDefaultValueChanged(int32 PinIndex, const FString& DefaultValue);
+	virtual FString GetInputPinDefaultValue(int32 PinIndex);
+	virtual TArray<FProperty*> GetPropertyInputs() const;
 
 	virtual uint32 GetInputType(int32 InputIndex);
 	virtual uint32 GetOutputType(int32 OutputIndex);
@@ -427,6 +439,13 @@ class ENGINE_API UMaterialExpression : public UObject
 	 * Recursively parse nodes outputing strata material in order to gather all the possible shading models used in a material graph output a Strata material.
 	 */
 	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) { }
+
+	/**
+	 * A starta material is a tree with FrontMateiral being its root and BSDF being leaves, with operators in the middle.
+	 * This recursively parse nodes outputing strata material in order to gather the maximum distance to any leaves. 
+	 * This is used to drive the bottom up order processing of those nodes.
+	 */
+	virtual FStrataOperator* StrataGenerateMaterialTopologyTree(class FMaterialCompiler* Compiler, class UMaterialExpression* Parent, int32 OutputIndex);
 
 	/**
 	 * If true, discards the output index when caching this expression which allows more cases to re-use the output instead of adding a separate instruction

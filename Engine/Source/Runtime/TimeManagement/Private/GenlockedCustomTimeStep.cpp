@@ -3,6 +3,8 @@
 #include "GenlockedCustomTimeStep.h"
 #include "Misc/App.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GenlockedCustomTimeStep)
+
 void UGenlockedCustomTimeStep::UpdateAppTimes(const double& TimeBeforeSync, const double& TimeAfterSync) const
 {
 	// Use fixed delta time to update FApp times.
@@ -33,3 +35,4 @@ uint32 UGenlockedCustomTimeStep::GetExpectedSyncCountDelta() const
 	const FFrameRate DeltaFrameRate = GetSyncRate() / GetFixedFrameRate();
 	return FMath::RoundToInt(DeltaFrameRate.AsDecimal());
 }
+

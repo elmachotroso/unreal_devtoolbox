@@ -7,7 +7,6 @@
 #include "Microsoft/COMPointer.h"
 #include "Misc/Paths.h"
 #include "Misc/Guid.h"
-#include "Misc/SecureHash.h"
 #include "HAL/FileManager.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -118,7 +117,7 @@ bool FDesktopPlatformWindows::OpenFontDialog(const void* ParentWindowHandle, FSt
 	{
 		HDC DC = ::GetDC( cf.hwndOwner ); 
 		const float LogicalPixelsY = static_cast<float>(GetDeviceCaps(DC, LOGPIXELSY));
-		const int32 PixelHeight = static_cast<int32>(-lf.lfHeight * ( 72.0f / LogicalPixelsY ));	// Always target 72 DPI
+		const int32 PixelHeight = static_cast<int32>((float) - lf.lfHeight * (72.0f / LogicalPixelsY));	// Always target 72 DPI
 		auto FontFlags = EFontImportFlags::None;
 		if ( lf.lfUnderline )
 		{
@@ -134,7 +133,7 @@ bool FDesktopPlatformWindows::OpenFontDialog(const void* ParentWindowHandle, FSt
 		}
 
 		OutFontName = (const TCHAR*)lf.lfFaceName;
-		OutHeight = PixelHeight;
+		OutHeight = (float)PixelHeight;
 		OutFlags = FontFlags;
 
 		::ReleaseDC( cf.hwndOwner, DC ); 
@@ -478,59 +477,6 @@ bool FDesktopPlatformWindows::RunUnrealBuildTool(const FText& Description, const
 	return FFeedbackContextMarkup::PipeProcessOutput(Description, UnrealBuildToolPath, Arguments, Warn, &OutExitCode) && OutExitCode == 0;
 }
 
-bool FDesktopPlatformWindows::IsUnrealBuildToolRunning()
-{
-	//TODO 5.1, make this a common routine instead of duplicated
-	FString RunsDir = FPaths::Combine(FPaths::EngineIntermediateDir(), TEXT("UbtRuns"));
-	if (!FPaths::DirectoryExists(RunsDir))
-	{
-		return false;
-	}
-
-	bool bIsRunning = false;
-	IFileManager::Get().IterateDirectory(*RunsDir, [&bIsRunning](const TCHAR* Pathname, bool bIsDirectory)
-		{
-			if (!bIsDirectory)
-			{
-				bool bDeleteFile = true;
-
-				FString Filename = FPaths::GetBaseFilename(FString(Pathname));
-				const TCHAR* Delim = FCString::Strchr(*Filename, '_');
-				if (Delim != nullptr)
-				{
-					FString Pid(*Filename, Delim - *Filename);
-					int ProcessId = 0;
-					LexFromString(ProcessId, *Pid);
-					const FString EntryFullPath = FPlatformProcess::GetApplicationName(ProcessId);
-					if (!EntryFullPath.IsEmpty())
-					{
-						FString EntryFullPathUpper = EntryFullPath.ToUpper();
-						const FTCHARToUTF8 Utf8String(*EntryFullPathUpper);
-						FMD5Hash Hash;
-						LexFromString(Hash, Delim + 1);
-
-						FMD5 Md5Gen;
-						Md5Gen.Update(reinterpret_cast<const uint8*>(Utf8String.Get()), Utf8String.Length());
-						FMD5Hash TestHash;
-						TestHash.Set(Md5Gen);
-						if (Hash == TestHash)
-						{
-							bDeleteFile = false;
-							bIsRunning = true;
-						}
-					}
-					if (bDeleteFile)
-					{
-						IFileManager::Get().Delete(Pathname);
-					}
-				}
-			}
-			return true;
-		});
-
-	return bIsRunning;
-}
-
 FFeedbackContext* FDesktopPlatformWindows::GetNativeFeedbackContext()
 {
 	static FWindowsNativeFeedbackContext FeedbackContext;
@@ -659,6 +605,11 @@ int32 FDesktopPlatformWindows::GetShellIntegrationVersion(const FString &FileNam
 		}
 	}
 	return 0;
+}
+
+FString FDesktopPlatformWindows::GetOidcTokenExecutableFilename(const FString& RootDir) const
+{
+	return FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Binaries/DotNET/OidcToken/win-x64/OidcToken.exe"));
 }
 
 #undef LOCTEXT_NAMESPACE

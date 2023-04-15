@@ -3,6 +3,8 @@
 #include "AlphaBlend.h"
 #include "Curves/CurveFloat.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AlphaBlend)
+
 FAlphaBlend::FAlphaBlend(float NewBlendTime) 
 	: CustomCurve(nullptr)
 	, BlendTime(NewBlendTime)
@@ -145,7 +147,7 @@ float FAlphaBlend::AlphaToBlendOption(float InAlpha, EAlphaBlendOption InBlendOp
 {
 	switch(InBlendOption)
 	{
-		case EAlphaBlendOption::Sinusoidal:		return FMath::Clamp<float>((FMath::Sin(InAlpha * PI - HALF_PI) + 1.f) / 2.f, 0.f, 1.f);
+		case EAlphaBlendOption::Sinusoidal:		return FMath::Clamp<float>((FMath::Sin(InAlpha * UE_PI - UE_HALF_PI) + 1.f) / 2.f, 0.f, 1.f);
 		case EAlphaBlendOption::Cubic:			return FMath::Clamp<float>(FMath::CubicInterp<float>(0.f, 0.f, 1.f, 0.f, InAlpha), 0.f, 1.f);
 		case EAlphaBlendOption::QuadraticInOut: return FMath::Clamp<float>(FMath::InterpEaseInOut<float>(0.f, 1.f, InAlpha, 2), 0.f, 1.f);
 		case EAlphaBlendOption::CubicInOut:		return FMath::Clamp<float>(FMath::InterpEaseInOut<float>(0.f, 1.f, InAlpha, 3), 0.f, 1.f);
@@ -250,3 +252,4 @@ FAlphaBlendArgs::FAlphaBlendArgs(const struct FAlphaBlend& InAlphaBlend)
 {
 
 }
+

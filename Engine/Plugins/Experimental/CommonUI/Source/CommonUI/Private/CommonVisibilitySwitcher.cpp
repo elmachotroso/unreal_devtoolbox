@@ -3,10 +3,12 @@
 #include "CommonVisibilitySwitcher.h"
 
 #include "CommonActivatableWidget.h"
-#include "CommonUIPrivatePCH.h"
+#include "CommonUIPrivate.h"
 #include "CommonVisibilitySwitcherSlot.h"
 #include "CommonWidgetPaletteCategories.h"
 #include "Widgets/Layout/SBox.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonVisibilitySwitcher)
 
 #if WITH_EDITOR
 #include "Editor/WidgetCompilerLog.h"
@@ -274,3 +276,4 @@ void UCommonVisibilitySwitcher::OnSlotRemoved(UPanelSlot* InSlot)
 		}
 	}
 }
+

@@ -9,7 +9,7 @@
 #include "CADKernel/Mesh/Structure/VertexMesh.h"
 #include "CADKernel/Topo/TopologicalEntity.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 void FModelMesh::AddCriterion(TSharedPtr<FCriterion>& Criterion)
@@ -109,7 +109,7 @@ void FModelMesh::GetNodeCoordinates(TArray<FPoint>& NodeCoordinates) const
 	}
 }
 
-void FModelMesh::GetNodeCoordinates(TArray<FVector>& NodeCoordinates) const
+void FModelMesh::GetNodeCoordinates(TArray<FVector3f>& NodeCoordinates) const
 {
 	NodeCoordinates.Reserve(LastIdUsed);
 
@@ -117,7 +117,7 @@ void FModelMesh::GetNodeCoordinates(TArray<FVector>& NodeCoordinates) const
 	{
 		for (const FPoint& Point : *PointArray)
 		{
-			NodeCoordinates.Emplace((float)Point.X, (float)Point.Y, (float)Point.Z);
+			NodeCoordinates.Emplace(Point.X, Point.Y, Point.Z);
 		}
 	}
 }
@@ -145,5 +145,5 @@ int32 FModelMesh::GetTriangleCount() const
 	return TriangleCount;
 }
 
-} // namespace CADKernel
+} // namespace UE::CADKernel
 

@@ -34,6 +34,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/DynamicMeshComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BakeMeshAttributeMapsTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UBakeMeshAttributeMapsTool"
@@ -103,6 +105,8 @@ public:
 	UBakeMeshAttributeMapsTool::FBakeSettings BakeSettings;
 	TSharedPtr<UE::Geometry::TMeshTangents<double>, ESPMode::ThreadSafe> BaseMeshTangents;
 	TSharedPtr<TArray<int32>, ESPMode::ThreadSafe> BaseMeshUVCharts;
+	bool bIsBakeToSelf = false;
+	ImagePtr SampleFilterMask;
 
 	// Map Type settings
 	EBakeMapType Maps;
@@ -116,6 +120,7 @@ public:
 	// NormalMap settings
 	ImagePtr DetailMeshNormalMap;
 	int32 DetailMeshNormalUVLayer = 0;
+	IMeshBakerDetailSampler::EBakeDetailNormalSpace DetailMeshNormalSpace = IMeshBakerDetailSampler::EBakeDetailNormalSpace::Tangent; 
 
 	// Texture2DImage & MultiTexture settings
 	ImagePtr TextureImage;
@@ -135,6 +140,18 @@ public:
 		Baker->SetSamplesPerPixel(BakeSettings.SamplesPerPixel);
 		Baker->SetTargetMeshUVCharts(BaseMeshUVCharts.Get());
 		Baker->SetTargetMeshTangents(BaseMeshTangents);
+		if (bIsBakeToSelf)
+		{
+			Baker->SetCorrespondenceStrategy(FMeshBaseBaker::ECorrespondenceStrategy::Identity);
+		}
+		if (SampleFilterMask)
+		{
+			Baker->SampleFilterF = [this](const FVector2i& ImageCoords, const FVector2d& UV, int32 TriID)
+			{
+				const FVector4f Mask = SampleFilterMask->BilinearSampleUV<float>(UV, FVector4f::One());
+				return (Mask.X + Mask.Y + Mask.Z) / 3;
+			};
+		}
 		
 		FMeshBakerDynamicMeshSampler DetailSampler(DetailMesh.Get(), DetailSpatial.Get(), DetailMeshTangents.Get());
 		Baker->SetDetailSampler(&DetailSampler);
@@ -164,7 +181,7 @@ public:
 			case EBakeMapType::TangentSpaceNormal:
 			{
 				TSharedPtr<FMeshNormalMapEvaluator, ESPMode::ThreadSafe> NormalEval = MakeShared<FMeshNormalMapEvaluator, ESPMode::ThreadSafe>();
-				DetailSampler.SetNormalMap(DetailMesh.Get(), IMeshBakerDetailSampler::FBakeDetailTexture(DetailMeshNormalMap.Get(), DetailMeshNormalUVLayer));
+				DetailSampler.SetNormalTextureMap(DetailMesh.Get(), IMeshBakerDetailSampler::FBakeDetailNormalTexture(DetailMeshNormalMap.Get(), DetailMeshNormalUVLayer, DetailMeshNormalSpace));
 				Baker->AddEvaluator(NormalEval);
 				break;
 			}
@@ -195,7 +212,7 @@ public:
 			{
 				TSharedPtr<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe> PropertyEval = MakeShared<FMeshPropertyMapEvaluator, ESPMode::ThreadSafe>();
 				PropertyEval->Property = EMeshPropertyMapType::Normal;
-				DetailSampler.SetNormalMap(DetailMesh.Get(), IMeshBakerDetailSampler::FBakeDetailTexture(DetailMeshNormalMap.Get(), DetailMeshNormalUVLayer));
+				DetailSampler.SetNormalTextureMap(DetailMesh.Get(), IMeshBakerDetailSampler::FBakeDetailNormalTexture(DetailMeshNormalMap.Get(), DetailMeshNormalUVLayer, DetailMeshNormalSpace));
 				Baker->AddEvaluator(PropertyEval);
 				break;
 			}
@@ -287,6 +304,7 @@ void UBakeMeshAttributeMapsTool::Setup()
 	Settings->WatchProperty(Settings->Resolution, [this](EBakeTextureResolution) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->BitDepth, [this](EBakeTextureBitDepth) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->SamplesPerPixel, [this](EBakeTextureSamplesPerPixel) { OpState |= EBakeOpState::Evaluate; });
+	Settings->WatchProperty(Settings->SampleFilterMask, [this](UTexture2D*){ OpState |= EBakeOpState::Evaluate; });
 	
 
 	InputMeshSettings = NewObject<UBakeInputMeshProperties>(this);
@@ -311,7 +329,15 @@ void UBakeMeshAttributeMapsTool::Setup()
 	InputMeshSettings->WatchProperty(InputMeshSettings->SourceNormalMap, [this](UTexture2D*)
 	{
 		// Only invalidate detail mesh if we need to recompute tangents.
-		if (!DetailMeshTangents)
+		if (!DetailMeshTangents && InputMeshSettings->SourceNormalSpace == EBakeNormalSpace::Tangent)
+		{
+			OpState |= EBakeOpState::EvaluateDetailMesh;
+		}
+		OpState |= EBakeOpState::Evaluate;
+	});
+	InputMeshSettings->WatchProperty(InputMeshSettings->SourceNormalSpace, [this](EBakeNormalSpace Space)
+	{
+		if (!DetailMeshTangents && Space == EBakeNormalSpace::Tangent)
 		{
 			OpState |= EBakeOpState::EvaluateDetailMesh;
 		}
@@ -404,6 +430,8 @@ TUniquePtr<UE::Geometry::TGenericDataOperator<FMeshMapBaker>> UBakeMeshAttribute
 	Op->BaseMesh = &TargetMesh;
 	Op->BakeSettings = CachedBakeSettings;
 	Op->BaseMeshUVCharts = TargetMeshUVCharts;
+	Op->bIsBakeToSelf = bIsBakeToSelf;
+	Op->SampleFilterMask = CachedSampleFilterMask;
 
 	constexpr EBakeMapType RequiresTangents = EBakeMapType::TangentSpaceNormal | EBakeMapType::BentNormal;
 	if ((bool)(CachedBakeSettings.BakeMapTypes & RequiresTangents))
@@ -416,6 +444,8 @@ TUniquePtr<UE::Geometry::TGenericDataOperator<FMeshMapBaker>> UBakeMeshAttribute
 		Op->DetailMeshTangents = DetailMeshTangents;
 		Op->DetailMeshNormalMap = CachedDetailNormalMap;
 		Op->DetailMeshNormalUVLayer = CachedDetailMeshSettings.UVLayer;
+		Op->DetailMeshNormalSpace = CachedDetailMeshSettings.NormalSpace == EBakeNormalSpace::Tangent ?
+			IMeshBakerDetailSampler::EBakeDetailNormalSpace::Tangent : IMeshBakerDetailSampler::EBakeDetailNormalSpace::Object;
 	}
 
 	if ((bool)(CachedBakeSettings.BakeMapTypes & EBakeMapType::TangentSpaceNormal))
@@ -520,9 +550,9 @@ void UBakeMeshAttributeMapsTool::UpdateDetailMesh()
 	if (InputMeshSettings->bProjectionInWorldSpace && bIsBakeToSelf == false)
 	{
 		const FTransformSRT3d DetailToWorld = UE::ToolTarget::GetLocalToWorldTransform(DetailTarget);
-		MeshTransforms::ApplyTransform(*DetailMesh, DetailToWorld);
+		MeshTransforms::ApplyTransform(*DetailMesh, DetailToWorld, true);
 		const FTransformSRT3d WorldToBase = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
-		MeshTransforms::ApplyTransform(*DetailMesh, WorldToBase.Inverse());
+		MeshTransforms::ApplyTransformInverse(*DetailMesh, WorldToBase, true);
 	}
 
 	DetailSpatial = MakeShared<FDynamicMeshAABBTree3, ESPMode::ThreadSafe>();
@@ -602,6 +632,8 @@ void UBakeMeshAttributeMapsTool::UpdateResult()
 	OpState |= UpdateResult_TargetMeshTangents(CachedBakeSettings.BakeMapTypes);
 
 	OpState |= UpdateResult_DetailNormalMap();
+
+	OpState |= UpdateResult_SampleFilterMask(Settings->SampleFilterMask);
 
 	// Update map type settings
 	if ((bool)(CachedBakeSettings.BakeMapTypes & EBakeMapType::TangentSpaceNormal))
@@ -691,6 +723,7 @@ EBakeOpState UBakeMeshAttributeMapsTool::UpdateResult_DetailNormalMap()
 
 	FDetailMeshSettings DetailMeshSettings;
 	DetailMeshSettings.UVLayer = DetailUVLayer;
+	DetailMeshSettings.NormalSpace = InputMeshSettings->SourceNormalSpace;
 
 	if (!(CachedDetailMeshSettings == DetailMeshSettings))
 	{
@@ -788,3 +821,4 @@ void UBakeMeshAttributeMapsTool::GatherAnalytics(FBakeAnalytics::FMeshSettings& 
 
 
 #undef LOCTEXT_NAMESPACE
+

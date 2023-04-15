@@ -275,7 +275,7 @@ namespace UniformTessellateLocals
 
 		void LerpElements(const RealType* Element1, const RealType* Element2, RealType* OutElement, RealType Alpha) 
 		{
-			Alpha = FMath::Clamp(Alpha, 0.0, 1.0);
+			Alpha = FMath::Clamp(Alpha, RealType(0), RealType(1));
 			RealType OneMinusAlpha = (RealType)1 - Alpha;
 
 			for (int Idx = 0; Idx < ElementSize; ++Idx) 
@@ -317,7 +317,7 @@ namespace UniformTessellateLocals
 				RealType OutElement[ElementSize];
 				for (int VertexOffset = 0; VertexOffset < TessellationNum; ++VertexOffset)
 				{
-					const RealType Alpha = (RealType)(VertexOffset + 1) / (TessellationNum + 1);
+					const RealType Alpha = (RealType)(VertexOffset + 1) / RealType(TessellationNum + 1);
 					LerpElements(Element1, Element2, OutElement, Alpha);
 					SetElementOnEdge(EdgeID, EdgeTri.A, VertexOffset, OutElement); 
 				}
@@ -393,7 +393,7 @@ namespace UniformTessellateLocals
 					RealType OutElement[ElementSize];
 					for (int VertexOffset = 0; VertexOffset < NumNewLevelVertices; ++VertexOffset) 
 					{
-						const RealType Alpha = (RealType)(VertexOffset + 1) / (NumNewLevelVertices + 1);
+						const RealType Alpha = RealType(VertexOffset + 1) / RealType(NumNewLevelVertices + 1);
 						LerpElements(Element1, Element2, OutElement, Alpha);
 						this->SetElementOnTriangle(TriangleID, ElementIDCounter, OutElement);
 						ElementIDCounter++;
@@ -882,7 +882,7 @@ namespace UniformTessellateLocals
 
 					for (int VertexOffset = 0; VertexOffset < TessellationNum; ++VertexOffset)
 					{
-						const RealType Tau = (RealType)(VertexOffset + 1) / (TessellationNum + 1);
+						const RealType Tau = (RealType)(VertexOffset + 1) / RealType(TessellationNum + 1);
 						this->LerpElements(Element1, Element2, Out, Tau);
 						this->SetElementOnEdge(EdgeID, EdgeTri.A, VertexOffset, Out);	
 					}
@@ -895,7 +895,7 @@ namespace UniformTessellateLocals
 					
 					for (int VertexOffset = 0; VertexOffset < TessellationNum; ++VertexOffset)
 					{
-						const RealType Tau = (RealType)(VertexOffset + 1) / (TessellationNum + 1);
+						const RealType Tau = (RealType)(VertexOffset + 1) / RealType(TessellationNum + 1);
 						this->LerpElements(Element1, Element2, Out, Tau);
 						this->SetElementOnEdge(EdgeID, EdgeTri.B, VertexOffset, Out);
 					}
@@ -1349,6 +1349,37 @@ namespace UniformTessellateLocals
 
 			return MakeUnique<FVertexAttributeGenerator>(Mesh, TessellationNum, InProgress, bUseParallel, FPntr);
 		}
+
+		static TUniquePtr<FVertexAttributeGenerator> CreateFromVertexAttribute(const FDynamicMesh3* Mesh,
+			const int TessellationNum,
+			FProgressCancel* InProgress,
+			const bool bUseParallel,
+			const TDynamicMeshVertexAttribute<RealType, ElementSize>* Attribute)
+		{
+			if (Attribute == nullptr)
+			{
+				return nullptr;
+			}
+
+			TFunction<void(int, RealType*)> FPntr = [Attribute](const int VertexID, RealType* Value)
+			{
+				Attribute->GetValue(VertexID, Value);
+			};
+
+			return MakeUnique<FVertexAttributeGenerator>(Mesh, TessellationNum, InProgress, bUseParallel, FPntr);
+		}
+
+		void CopyToAttribute(TDynamicMeshVertexAttribute<RealType, ElementSize>* OutAttribute)
+		{
+			RealType Value[ElementSize];
+			for (int EID = 0; EID < OutElementCount; ++EID)
+			{
+				BaseType::GetElement(EID, Value);
+				OutAttribute->SetValue(EID, Value);
+			}
+		}
+
+
 	};
 
 	/**
@@ -1578,7 +1609,7 @@ namespace UniformTessellateLocals
 		void LerpWeights(const FBoneWeights& Weight1, const FBoneWeights& Weight2, FBoneWeights& OutWeight, double Alpha) 
 		{
 			Alpha = FMath::Clamp(Alpha, 0.0, 1.0);
-			OutWeight = FBoneWeights::Blend(Weight1, Weight2, Alpha);
+			OutWeight = FBoneWeights::Blend(Weight1, Weight2, (float)Alpha);
 		} 
 
 		bool GenerateEdgeElements() 
@@ -1811,6 +1842,7 @@ namespace UniformTessellateLocals
 				}
 
 				Generator->CopyToAttribute(OutAttributes->GetMaterialID());
+				OutAttributes->GetMaterialID()->SetName(InAttributes->GetMaterialID()->GetName());
 			}
 
 			if (InAttributes->NumPolygroupLayers())  
@@ -1826,6 +1858,7 @@ namespace UniformTessellateLocals
 					}
 
 					Generator->CopyToAttribute(OutAttributes->GetPolygroupLayer(Idx));
+					OutAttributes->GetPolygroupLayer(Idx)->SetName(InAttributes->GetPolygroupLayer(Idx)->GetName());
 				}
 			}
 
@@ -1839,9 +1872,29 @@ namespace UniformTessellateLocals
 
 				FDynamicMeshVertexSkinWeightsAttribute* SkinAttribute = new FDynamicMeshVertexSkinWeightsAttribute(OutMesh);			
 				Generator.CopyToAttribute(SkinAttribute);
-
+				SkinAttribute->SetName(AttributeInfo.Value.Get()->GetName());
+				
 				OutAttributes->AttachSkinWeightsAttribute(AttributeInfo.Key, SkinAttribute);
 			}
+
+			if (InAttributes->NumWeightLayers() > 0)
+			{
+				OutAttributes->SetNumWeightLayers(InAttributes->NumWeightLayers());
+				for (int Idx = 0; Idx < InAttributes->NumWeightLayers(); ++Idx)
+				{
+					TUniquePtr<FVertexAttributeGenerator<float, 1>> Generator;
+					Generator = FVertexAttributeGenerator<float, 1>::CreateFromVertexAttribute(InMesh, TessellationNum, Progress, bUseParallel, InAttributes->GetWeightLayer(Idx));
+					if (Generator->Generate() == false)
+					{
+						return false;
+					}
+
+					Generator->CopyToAttribute(OutAttributes->GetWeightLayer(Idx));
+					OutAttributes->GetWeightLayer(Idx)->SetName(InAttributes->GetWeightLayer(Idx)->GetName());
+				}
+			}
+
+
 		}
 
 		if (InMesh->HasVertexNormals()) 

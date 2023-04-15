@@ -3,16 +3,18 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace GitDependencies
@@ -91,8 +93,8 @@ namespace GitDependencies
 			List<string> ArgsList = new List<string>(Args);
 			NormalizeArguments(ArgsList);
 
-			// Find the default arguments from the UE4_GITDEPS_ARGS environment variable. These arguments do not cause an error if duplicated or redundant, but can still override defaults.
-			List<string> DefaultArgsList = SplitArguments(System.Environment.GetEnvironmentVariable("UE4_GITDEPS_ARGS"));
+			// Find the default arguments from the UE_GITDEPS_ARGS environment variable. These arguments do not cause an error if duplicated or redundant, but can still override defaults.
+			List<string> DefaultArgsList = SplitArguments(GetLegacyEnvironmentVariable("UE_GITDEPS_ARGS", "UE4_GITDEPS_ARGS"));
 			NormalizeArguments(DefaultArgsList);
 
 			// Parse the parameters
@@ -102,7 +104,8 @@ namespace GitDependencies
 			bool bHelp = ParseSwitch(ArgsList, "-help");
 			float CacheSizeMultiplier = ParseFloatParameter(ArgsList, DefaultArgsList, "-cache-size-multiplier=", 2.0f);
 			int CacheDays = ParseIntParameter(ArgsList, DefaultArgsList, "-cache-days=", 7);
-			string RootPath = ParseParameter(ArgsList, "-root=", Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "../../..")));
+			string RootPath = ParseParameter(ArgsList, "-root=", Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "../../../../..")));
+			double HttpTimeoutMultiplier = ParseFloatParameter(ArgsList, DefaultArgsList, "-http-timeout-multiplier=", 1.0f) * NumThreads;
 
 			// Parse the cache path. A specific path can be set using -catch=<PATH> or the UE4_GITDEPS environment variable, otherwise we look for a parent .git directory
 			// and use a sub-folder of that. Users which download the source through a zip file (and won't have a .git directory) are unlikely to benefit from caching, as
@@ -110,7 +113,7 @@ namespace GitDependencies
 			string CachePath = null;
 			if (!ParseSwitch(ArgsList, "-no-cache"))
 			{
-				string CachePathParam = ParseParameter(ArgsList, DefaultArgsList, "-cache=", System.Environment.GetEnvironmentVariable("UE4_GITDEPS"));
+				string CachePathParam = ParseParameter(ArgsList, DefaultArgsList, "-cache=", GetLegacyEnvironmentVariable("UE_GITDEPS", "UE4_GITDEPS"));
 				if (String.IsNullOrEmpty(CachePathParam))
 				{
 					string CheckPath = Path.GetFullPath(RootPath);
@@ -120,6 +123,10 @@ namespace GitDependencies
 						if (Directory.Exists(GitPath))
 						{
 							CachePath = Path.Combine(GitPath, "ue4-gitdeps");
+							if (!Directory.Exists(CachePath))
+							{
+								CachePath = Path.Combine(GitPath, "ue-gitdeps");
+							}
 							break;
 						}
 						CheckPath = Path.GetDirectoryName(CheckPath);
@@ -199,6 +206,7 @@ namespace GitDependencies
 				Log.WriteLine("   --root=<PATH>                 Set the repository directory to be sync");
 				Log.WriteLine("   --threads=<N>                 Use N threads when downloading new files");
 				Log.WriteLine("   --dry-run                     Print a list of outdated files and exit");
+				Log.WriteLine("   --http-timeout-multiplier=<N> Override download timeout multiplier");
 				Log.WriteLine("   --max-retries                 Override maximum number of retries per file");
 				Log.WriteLine("   --proxy=<user:password@url>   Sets the HTTP proxy address and credentials");
 				Log.WriteLine("   --cache=<PATH>                Specifies a custom path for the download cache");
@@ -211,7 +219,7 @@ namespace GitDependencies
 				Log.WriteLine("   Proxy server: {0}", (Proxy == null)? "none" : Proxy.ToString());
 				Log.WriteLine("   Download cache: {0}", (CachePath == null)? "disabled" : CachePath);
 				Log.WriteLine();
-				Log.WriteLine("Default arguments can be set through the UE4_GITDEPS_ARGS environment variable.");
+				Log.WriteLine("Default arguments can be set through the UE_GITDEPS_ARGS environment variable.");
 				return 0;
 			}
 
@@ -219,11 +227,21 @@ namespace GitDependencies
 			Console.CancelKeyPress += delegate { Log.FlushStatus(); };
 
 			// Update the tree. Make sure we clear out the status line if we quit for any reason (eg. ctrl-c)
-			if(!UpdateWorkingTree(bDryRun, RootPath, ExcludeFolders, NumThreads, MaxRetries, Proxy, Overwrite, CachePath, CacheSizeMultiplier, CacheDays))
+			if(!UpdateWorkingTree(bDryRun, RootPath, ExcludeFolders, NumThreads, HttpTimeoutMultiplier, MaxRetries, Proxy, Overwrite, CachePath, CacheSizeMultiplier, CacheDays))
 			{
 				return 1;
 			}
 			return 0;
+		}
+
+		static string GetLegacyEnvironmentVariable(string Name, string LegacyName)
+		{
+			string Value = Environment.GetEnvironmentVariable(Name);
+			if (string.IsNullOrEmpty(Value))
+			{
+				Value = Environment.GetEnvironmentVariable(LegacyName);
+			}
+			return Value;
 		}
 
 		static void NormalizeArguments(List<string> ArgsList)
@@ -353,7 +371,7 @@ namespace GitDependencies
 			}
 		}
 
-		static bool UpdateWorkingTree(bool bDryRun, string RootPath, HashSet<string> ExcludeFolders, int NumThreads, int MaxRetries, Uri Proxy, OverwriteMode Overwrite, string CachePath, float CacheSizeMultiplier, int CacheDays)
+		static bool UpdateWorkingTree(bool bDryRun, string RootPath, HashSet<string> ExcludeFolders, int NumThreads, double HttpTimeoutMultiplier, int MaxRetries, Uri Proxy, OverwriteMode Overwrite, string CachePath, float CacheSizeMultiplier, int CacheDays)
 		{
 			// Start scanning on the working directory 
 			if(ExcludeFolders.Count > 0)
@@ -382,7 +400,15 @@ namespace GitDependencies
 			}
 
 			// Figure out the path to the working manifest
-			string WorkingManifestPath = Path.Combine(RootPath, ".ue4dependencies");
+			string WorkingManifestPath = Path.Combine(RootPath, ".uedependencies");
+			if (!File.Exists(WorkingManifestPath))
+			{
+				string LegacyManifestPath = Path.Combine(RootPath, ".ue4dependencies");
+				if (File.Exists(LegacyManifestPath) || File.Exists(LegacyManifestPath + TempManifestExtension))
+				{
+					WorkingManifestPath = LegacyManifestPath;
+				}
+			}
 
 			// Recover from any interrupted transaction to the working manifest, by moving the temporary file into place.
 			string TempWorkingManifestPath = WorkingManifestPath + TempManifestExtension;
@@ -429,36 +455,49 @@ namespace GitDependencies
 			}
 
 			// Find all the existing files in the working directory from previous runs. Use the working manifest to cache hashes for them based on timestamp, but recalculate them as needed.
+			List<WorkingFile> ReadOnlyFiles = new List<WorkingFile>();
 			Dictionary<string, WorkingFile> CurrentFileLookup = new Dictionary<string, WorkingFile>();
 			foreach(WorkingFile CurrentFile in CurrentManifest.Files)
 			{
 				// Update the hash for this file
 				string CurrentFilePath = Path.Combine(RootPath, CurrentFile.Name);
-				if(File.Exists(CurrentFilePath))
+				FileInfo CurrentFileInfo = new FileInfo(CurrentFilePath);
+				if(CurrentFileInfo.Exists)
 				{
-					long LastWriteTime = File.GetLastWriteTimeUtc(CurrentFilePath).Ticks;
+					long LastWriteTime = CurrentFileInfo.LastWriteTimeUtc.Ticks;
 					if(LastWriteTime != CurrentFile.Timestamp)
 					{
 						CurrentFile.Hash = ComputeHashForFile(CurrentFilePath);
 						CurrentFile.Timestamp = LastWriteTime;
 					}
 					CurrentFileLookup.Add(CurrentFile.Name, CurrentFile);
+
+					if (CurrentFileInfo.IsReadOnly)
+					{
+						ReadOnlyFiles.Add(CurrentFile);
+					}
 				}
 			}
 
 			// Also add all the untracked files which already exist, but weren't downloaded by this program
 			foreach (DependencyFile TargetFile in TargetFiles.Values) 
 			{
-				if(!CurrentFileLookup.ContainsKey(TargetFile.Name))
+				if (!CurrentFileLookup.ContainsKey(TargetFile.Name))
 				{
 					string CurrentFilePath = Path.Combine(RootPath, TargetFile.Name);
-					if(File.Exists(CurrentFilePath))
+					FileInfo CurrentFileInfo = new FileInfo(CurrentFilePath);
+					if (CurrentFileInfo.Exists)
 					{
 						WorkingFile CurrentFile = new WorkingFile();
 						CurrentFile.Name = TargetFile.Name;
 						CurrentFile.Hash = ComputeHashForFile(CurrentFilePath);
-						CurrentFile.Timestamp = File.GetLastWriteTimeUtc(CurrentFilePath).Ticks;
+						CurrentFile.Timestamp = CurrentFileInfo.LastWriteTimeUtc.Ticks;
 						CurrentFileLookup.Add(CurrentFile.Name, CurrentFile);
+
+						if (CurrentFileInfo.IsReadOnly)
+						{
+							ReadOnlyFiles.Add(CurrentFile);
+						}
 					}
 				}
 			}
@@ -478,7 +517,7 @@ namespace GitDependencies
 
 			// Create a new working manifest for the working directory, moving over files that we already have. Add any missing dependencies into the download queue.
 			WorkingManifest NewWorkingManifest = new WorkingManifest();
-			foreach(DependencyFile TargetFile in FilteredTargetFiles)
+			foreach (DependencyFile TargetFile in FilteredTargetFiles)
 			{
 				WorkingFile NewFile;
 				if(CurrentFileLookup.TryGetValue(TargetFile.Name, out NewFile) && NewFile.Hash == TargetFile.Hash)
@@ -488,6 +527,7 @@ namespace GitDependencies
 
 					// Move the existing file to the new working set
 					CurrentFileLookup.Remove(NewFile.Name);
+					ReadOnlyFiles.Remove(NewFile);
 				}
 				else
 				{
@@ -538,38 +578,49 @@ namespace GitDependencies
 				}
 			}
 
-			// Warn if there were any files that have been tampered with, and allow the user to choose whether to overwrite them
+			// Warn if there were any files that have been tampered with or are read only, and allow the user to choose whether to overwrite them
 			bool bOverwriteTamperedFiles = true;
-			if(TamperedFiles.Count > 0 && Overwrite != OverwriteMode.Force)
+			if (Overwrite != OverwriteMode.Force)
 			{
-				// List the files that have changed
-				Log.WriteError("The following file(s) have been modified:");
-				foreach(WorkingFile TamperedFile in TamperedFiles)
+				bool PromptForOverwrite = false;
+				if (TamperedFiles.Any())
 				{
-					Log.WriteError("  {0}", TamperedFile.Name);
+					PromptForOverwrite = true;
+					// List the files that have changed
+					Log.WriteError("The following file(s) have been modified:");
+					foreach (WorkingFile TamperedFile in TamperedFiles)
+					{
+						bool readOnly = ReadOnlyFiles.Any(x => string.Equals(x.Name, TamperedFile.Name));
+						Log.WriteError("  {0}{1}", TamperedFile.Name, readOnly ? " (read only)" : "");
+					}
 				}
 
 				// Figure out whether to overwrite the files
-				if(Overwrite == OverwriteMode.Unchanged)
+				if (PromptForOverwrite)
 				{
-					Log.WriteError("Re-run with the --force parameter to overwrite them.");
-					bOverwriteTamperedFiles = false;
-				}
-				else
-				{
-					Log.WriteStatus("Would you like to overwrite your changes (y/n)? ");
-					ConsoleKeyInfo KeyInfo = Console.ReadKey(false);
-					bOverwriteTamperedFiles = (KeyInfo.KeyChar == 'y' || KeyInfo.KeyChar == 'Y');
-					Log.FlushStatus();
+					if (Overwrite == OverwriteMode.Unchanged)
+					{
+						Log.WriteError("Re-run with the --force parameter to overwrite them.");
+						bOverwriteTamperedFiles = false;
+					}
+					else
+					{
+						Log.WriteStatus("Would you like to overwrite your changes (y/n)? ");
+						ConsoleKeyInfo KeyInfo = Console.ReadKey(false);
+						bOverwriteTamperedFiles = (KeyInfo.KeyChar == 'y' || KeyInfo.KeyChar == 'Y');
+						Log.FlushStatus();
+					}
 				}
 			}
 
 			// Overwrite any tampered files, or remove them from the download list
-			if(bOverwriteTamperedFiles)
+			if (bOverwriteTamperedFiles)
 			{
 				foreach(WorkingFile TamperedFile in TamperedFiles)
 				{
-					if(!SafeDeleteFile(Path.Combine(RootPath, TamperedFile.Name)))
+					string FilePath = Path.Combine(RootPath, TamperedFile.Name);
+					File.SetAttributes(FilePath, File.GetAttributes(FilePath) & ~FileAttributes.ReadOnly);
+					if (!SafeDeleteFile(Path.Combine(RootPath, TamperedFile.Name)))
 					{
 						return false;
 					}
@@ -577,12 +628,12 @@ namespace GitDependencies
 			}
 			else
 			{
-				foreach(WorkingFile TamperedFile in TamperedFiles)
+				foreach(WorkingFile FileToIgnore in TamperedFiles.Concat(ReadOnlyFiles))
 				{
 					DependencyFile TargetFile;
-					if(TargetFiles.TryGetValue(TamperedFile.Name, out TargetFile))
+					if(TargetFiles.TryGetValue(FileToIgnore.Name, out TargetFile))
 					{
-						TargetFiles.Remove(TamperedFile.Name);
+						TargetFiles.Remove(FileToIgnore.Name);
 						FilesToDownload.Remove(TargetFile);
 					}
 				}
@@ -598,7 +649,7 @@ namespace GitDependencies
 			if(FilesToDownload.Count > 0)
 			{
 				// Download all the new dependencies
-				if(!DownloadDependencies(RootPath, FilesToDownload, TargetBlobs.Values, TargetPacks.Values, NumThreads, MaxRetries, Proxy, CachePath))
+				if(!DownloadDependencies(RootPath, FilesToDownload, TargetBlobs.Values, TargetPacks.Values, NumThreads, HttpTimeoutMultiplier, MaxRetries, Proxy, CachePath))
 				{
 					return false;
 				}
@@ -731,50 +782,135 @@ namespace GitDependencies
 			}
 		}
 
+		/// <summary>
+		/// Gets the file mode on Mac
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <returns></returns>
+		public static int GetFileMode_Mac(string FileName)
+		{
+			stat64_t stat = new stat64_t();
+			int Result = stat64(FileName, stat);
+			return (Result >= 0) ? stat.st_mode : -1;
+		}
+
+		/// <summary>
+		/// Sets the file mode on Mac
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <param name="Mode"></param>
+		public static int SetFileMode_Mac(string FileName, ushort Mode)
+		{
+			return chmod(FileName, Mode);
+		}
+
+		/// <summary>
+		/// Gets the file mode on Linux
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <returns></returns>
+		public static int GetFileMode_Linux(string FileName)
+		{
+			stat64_linux_t stat = new stat64_linux_t();
+			int Result = stat64_linux(1, FileName, stat);
+			return (Result >= 0) ? (int)stat.st_mode : -1;
+		}
+
+		/// <summary>
+		/// Sets the file mode on Linux
+		/// </summary>
+		/// <param name="FileName"></param>
+		/// <param name="Mode"></param>
+		public static int SetFileMode_Linux(string FileName, ushort Mode)
+		{
+			return chmod_linux(FileName, Mode);
+		}
+
+		#region Mac Native File Methods
+#pragma warning disable CS0649
+		struct timespec_t
+		{
+			public ulong tv_sec;
+			public ulong tv_nsec;
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		class stat64_t
+		{
+			public uint st_dev;
+			public ushort st_mode;
+			public ushort st_nlink;
+			public ulong st_ino;
+			public uint st_uid;
+			public uint st_gid;
+			public uint st_rdev;
+			public timespec_t st_atimespec;
+			public timespec_t st_mtimespec;
+			public timespec_t st_ctimespec;
+			public timespec_t st_birthtimespec;
+			public ulong st_size;
+			public ulong st_blocks;
+			public uint st_blksize;
+			public uint st_flags;
+			public uint st_gen;
+			public uint st_lspare;
+			public ulong st_qspare1;
+			public ulong st_qspare2;
+		}
+
+		[DllImport("libSystem.dylib")]
+		static extern int stat64(string pathname, stat64_t stat);
+
+		[DllImport("libSystem.dylib")]
+		static extern int chmod(string path, ushort mode);
+
+#pragma warning restore CS0649
+		#endregion
+
+		#region Linux Native File Methods
+#pragma warning disable CS0649
+
+		[StructLayout(LayoutKind.Sequential)]
+		class stat64_linux_t
+		{
+			public ulong st_dev;
+			public ulong st_ino;
+			public ulong st_nlink;
+			public uint st_mode;
+			public uint st_uid;
+			public uint st_gid;
+			public int pad0;
+			public ulong st_rdev;
+			public long st_size;
+			public long st_blksize;
+			public long st_blocks;
+			public timespec_t st_atime;
+			public timespec_t st_mtime;
+			public timespec_t st_ctime;
+			public long glibc_reserved0;
+			public long glibc_reserved1;
+			public long glibc_reserved2;
+		};
+
+		/* stat tends to get compiled to another symbol and libc doesnt directly have that entry point */
+		[DllImport("libc", EntryPoint = "__xstat64")]
+		static extern int stat64_linux(int ver, string pathname, stat64_linux_t stat);
+
+		[DllImport("libc", EntryPoint = "chmod")]
+		static extern int chmod_linux(string path, ushort mode);
+
+#pragma warning restore CS0649
+		#endregion
+
 		static bool SetExecutablePermissions(string RootDir, IEnumerable<DependencyFile> Files)
 		{
-			// Try to load the Mono Posix assembly. If it doesn't exist, we're on Windows.
-			Assembly MonoPosix;
-			try
-			{
-				MonoPosix = Assembly.Load("Mono.Posix, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756");
-			}
-			catch(FileNotFoundException)
+			// This only apply for *NIX and Mac
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
 				return true;
 			}
 
-			// Dynamically find all the types and methods for Syscall.stat and Syscall.chmod
-			Type SyscallType = MonoPosix.GetType("Mono.Unix.Native.Syscall");
-			if(SyscallType == null)
-			{
-				Log.WriteError("Couldn't find Syscall type");
-				return false;
-			}
-			MethodInfo StatMethod = SyscallType.GetMethod ("stat");
-			if(StatMethod == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Syscall.stat method");
-				return false;
-			}
-			MethodInfo ChmodMethod = SyscallType.GetMethod("chmod");
-			if(ChmodMethod == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Syscall.chmod method");
-				return false;
-			}
-			Type StatType = MonoPosix.GetType("Mono.Unix.Native.Stat");
-			if(StatType == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Stat type");
-				return false;
-			}
-			FieldInfo StatModeField = StatType.GetField("st_mode");
-			if(StatModeField == null)
-			{
-				Log.WriteError("Couldn't find Mono.Unix.Native.Stat.st_mode field");
-				return false;
-			}
+			bool IsLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
 
 			// Update all the executable permissions
 			const uint ExecutableBits = (1 << 0) | (1 << 3) | (1 << 6);
@@ -783,18 +919,24 @@ namespace GitDependencies
 				if(File.IsExecutable)
 				{
 					string FileName = Path.Combine(RootDir, File.Name);
-
-					// Call Syscall.stat(Filename, out Stat)
-					object[] StatArgs = new object[]{ FileName, null };
-					int StatResult = (int)StatMethod.Invoke(null, StatArgs);
-					if(StatResult != 0)
+					int StatResult = -1;
+					if (IsLinux)
 					{
-						Log.WriteError("Stat() call for {0} failed with error {1}", File.Name, StatResult);
+						StatResult = GetFileMode_Linux(FileName);
+					}
+					else
+					{
+						StatResult = GetFileMode_Mac(FileName);
+					}
+
+					if (StatResult == -1)
+					{
+						Log.WriteError("Stat() call for {0} failed", File.Name);
 						return false;
 					}
 
 					// Get the current permissions
-					uint CurrentPermissions = (uint)StatModeField.GetValue(StatArgs[1]);
+					uint CurrentPermissions = (uint)StatResult;
 
 					// The desired permissions should be executable for every read group
 					uint NewPermissions = CurrentPermissions | ((CurrentPermissions >> 2) & ExecutableBits);
@@ -802,8 +944,17 @@ namespace GitDependencies
 					// Update them if they don't match
 					if (CurrentPermissions != NewPermissions)
 					{
-						int ChmodResult = (int)ChmodMethod.Invoke(null, new object[]{ FileName, NewPermissions });
-						if(ChmodResult != 0)
+						int ChmodResult = -1;
+						if (IsLinux)
+						{
+							ChmodResult = SetFileMode_Linux(FileName, (ushort)NewPermissions);
+						}
+						else
+						{
+							ChmodResult = SetFileMode_Mac(FileName, (ushort)NewPermissions);
+						}
+
+						if (ChmodResult != 0)
 						{
 							Log.WriteError("Chmod() call for {0} failed with error {1}", File.Name, ChmodResult);
 							return false;
@@ -839,7 +990,7 @@ namespace GitDependencies
 			return false;
 		}
 
-		static bool DownloadDependencies(string RootPath, IEnumerable<DependencyFile> RequiredFiles, IEnumerable<DependencyBlob> Blobs, IEnumerable<DependencyPackInfo> Packs, int NumThreads, int MaxRetries, Uri Proxy, string CachePath)
+		static bool DownloadDependencies(string RootPath, IEnumerable<DependencyFile> RequiredFiles, IEnumerable<DependencyBlob> Blobs, IEnumerable<DependencyPackInfo> Packs, int NumThreads, double HttpTimeoutMultiplier, int MaxRetries, Uri Proxy, string CachePath)
 		{
 			// Make sure we can actually open the right number of connections
 			ServicePointManager.DefaultConnectionLimit = NumThreads;
@@ -896,10 +1047,11 @@ namespace GitDependencies
 			State.NumBytesTotal = RequiredPacks.Sum(x => x.Pack.CompressedSize);
 
 			// Create all the worker threads
+			CancellationTokenSource CancellationToken = new CancellationTokenSource();
 			Thread[] WorkerThreads = new Thread[NumThreads];
 			for(int Idx = 0; Idx < NumThreads; Idx++)
 			{
-				WorkerThreads[Idx] = new Thread(x => DownloadWorker(DownloadQueue, State, MaxRetries));
+				WorkerThreads[Idx] = new Thread(x => DownloadWorker(DownloadQueue, State, HttpTimeoutMultiplier, MaxRetries, CancellationToken.Token));
 				WorkerThreads[Idx].Start();
 			}
 
@@ -936,13 +1088,15 @@ namespace GitDependencies
 			// If we finished with an error, try to clean up and return
 			if(State.NumFilesRead < State.NumFiles)
 			{
-				foreach(Thread WorkerThread in WorkerThreads)
-				{
-					WorkerThread.Abort();
-				}
+				CancellationToken.Cancel();
+
 				if(State.LastDownloadError != null)
 				{
 					Log.WriteError("{0}", State.LastDownloadError);
+				}
+				else
+				{
+					Log.WriteError("Aborting dependency updating due to unknown failure(s).");
 				}
 				return false;
 			}
@@ -979,11 +1133,17 @@ namespace GitDependencies
 			return Files.OrderBy(x => x.MinPackOffset).ToArray();
 		}
 
-		static void DownloadWorker(ConcurrentQueue<IncomingPack> DownloadQueue, AsyncDownloadState State, int MaxRetries)
+		static void DownloadWorker(ConcurrentQueue<IncomingPack> DownloadQueue, AsyncDownloadState State, double HttpTimeoutMultiplier, int MaxRetries, CancellationToken CancellationToken)
 		{
 			int Retries = 0;
 			for(;;)
 			{
+				if (CancellationToken.IsCancellationRequested)
+				{
+					Interlocked.Increment(ref State.NumFailingOrIdleDownloads);
+					return;
+				}
+
 				// Remove the next file from the download queue, or wait before polling again
 				IncomingPack NextPack;
 				if (!DownloadQueue.TryDequeue(out NextPack))
@@ -1013,7 +1173,7 @@ namespace GitDependencies
 					}
 					else
 					{
-						DownloadAndExtractFiles(NextPack.Url, NextPack.Proxy, NextPack.CacheFileName, NextPack.CompressedSize, NextPack.Hash, NextPack.Files, Size => { RollbackSize += Size; Interlocked.Add(ref State.NumBytesRead, Size); });
+						DownloadAndExtractFiles(NextPack.Url, NextPack.Proxy, NextPack.CacheFileName, NextPack.CompressedSize, NextPack.Hash, NextPack.Files, HttpTimeoutMultiplier, Size => { RollbackSize += Size; Interlocked.Add(ref State.NumBytesRead, Size); }).Wait();
 					}
 
 					// Update the stats
@@ -1037,7 +1197,7 @@ namespace GitDependencies
 					if (Retries++ == MaxRetries)
 					{
 						Interlocked.Increment(ref State.NumFailingOrIdleDownloads);
-						State.LastDownloadError = String.Format("Failed to download '{0}': {1} ({2})", NextPack.Url, Ex.Message, Ex.GetType().Name);
+						State.LastDownloadError = $"Failed to download '{NextPack.Url}': {FormatExceptionDetails(Ex)}";
 					}
 				}
 			}
@@ -1080,23 +1240,27 @@ namespace GitDependencies
 			return false;
 		}
 
-		static void DownloadAndExtractFiles(string Url, Uri Proxy, string CacheFileName, long CompressedSize, string ExpectedHash, IncomingFile[] Files, NotifyReadDelegate NotifyRead)
+		static async Task DownloadAndExtractFiles(string Url, Uri Proxy, string CacheFileName, long CompressedSize, string ExpectedHash, IncomingFile[] Files, double HttpTimeoutMultiplier, NotifyReadDelegate NotifyRead)
 		{
 			// Create the web request
-			WebRequest Request = WebRequest.Create(Url);
-			if(Proxy == null)
+			HttpClientHandler Handler = new HttpClientHandler();
+			if(Proxy != null)
 			{
-				Request.Proxy = null;
-			}
-			else
-			{
-				Request.Proxy = new WebProxy(Proxy, true, null, MakeCredentialsFromUri(Proxy));
+				Handler.Proxy = new WebProxy(Proxy, true, null, MakeCredentialsFromUri(Proxy));
 			}
 
+			HttpClient Client = new HttpClient(Handler);
+
+			// Estimate and set HttpClient timeout
+			double EstimatedDownloadDurationSecondsAt2MBps = Convert.ToDouble(CompressedSize) / 250000.0;
+			double HttpTimeoutSeconds = Math.Max(Client.Timeout.TotalSeconds, EstimatedDownloadDurationSecondsAt2MBps * HttpTimeoutMultiplier);
+
+			Client.Timeout = TimeSpan.FromSeconds(HttpTimeoutSeconds);
+
 			// Read the response and extract the files
-			using (WebResponse Response = Request.GetResponse())
+			using (HttpResponseMessage Response = await Client.GetAsync(Url))
 			{
-				using (Stream ResponseStream = new NotifyReadStream(Response.GetResponseStream(), NotifyRead))
+				using (Stream ResponseStream = new NotifyReadStream(Response.Content.ReadAsStream(), NotifyRead))
 				{
 					if(CacheFileName == null)
 					{
@@ -1292,7 +1456,7 @@ namespace GitDependencies
 			}
 			catch(Exception Ex)
 			{
-				Log.WriteError("Failed to read '{0}': {1}", FileName, Ex.ToString());
+				Log.WriteError($"Failed to read '{FileName}': {FormatExceptionDetails(Ex)}");
 				NewObject = default(T);
 				return false;
 			}
@@ -1305,13 +1469,17 @@ namespace GitDependencies
 				XmlSerializer Serializer = new XmlSerializer(typeof(T));
 				using(StreamWriter Writer = new StreamWriter(FileName))
 				{
-					Serializer.Serialize(Writer, XmlObject);
+					XmlWriterSettings WriterSettings = new() { Indent = true };
+					using(XmlWriter XMLWriter = XmlWriter.Create(Writer, WriterSettings))
+					{
+						Serializer.Serialize(XMLWriter, XmlObject);
+					}
 				}
 				return true;
 			}
 			catch(Exception Ex)
 			{
-				Log.WriteError("Failed to write file '{0}': {1}", FileName, Ex.Message);
+				Log.WriteError($"Failed to write file '{FileName}': {FormatExceptionDetails(Ex)}");
 				return false;
 			}
 		}
@@ -1421,11 +1589,58 @@ namespace GitDependencies
 
 		static string ComputeHashForFile(string FileName)
 		{
+			SHA1 Hasher = SHA1.Create();
 			using(FileStream InputStream = File.OpenRead(FileName))
 			{
-				byte[] Hash = new SHA1CryptoServiceProvider().ComputeHash(InputStream);
+				byte[] Hash = Hasher.ComputeHash(InputStream);
 				return BitConverter.ToString(Hash).ToLower().Replace("-", "");
 			}
+		}
+
+		public static string FormatExceptionDetails(Exception ex)
+		{
+			List<Exception> exceptionStack = new List<Exception>();
+			for (Exception currentEx = ex; currentEx != null; currentEx = currentEx.InnerException)
+			{
+				exceptionStack.Add(currentEx);
+			}
+
+			StringBuilder message = new StringBuilder();
+			for (int idx = exceptionStack.Count - 1; idx >= 0; idx--)
+			{
+				Exception currentEx = exceptionStack[idx];
+				message.AppendFormat("{0}{1}: {2}\n{3}", (idx == exceptionStack.Count - 1) ? "" : "Wrapped by ", currentEx.GetType().Name, currentEx.Message, currentEx.StackTrace);
+
+				if (currentEx.Data.Count > 0)
+				{
+					foreach (object key in currentEx.Data.Keys)
+					{
+						if (key == null)
+						{
+							continue;
+						}
+
+						object value = currentEx.Data[key];
+						if (value == null)
+						{
+							continue;
+						}
+
+						string valueString;
+						if (value is List<string> valueList)
+						{
+							valueString = String.Format("({0})", String.Join(", ", valueList.Select(x => String.Format("\"{0}\"", x))));
+						}
+						else
+						{
+							valueString = value.ToString() ?? String.Empty;
+						}
+
+						message.AppendFormat("   data: {0} = {1}", key, valueString);
+					}
+				}
+			}
+			return message.Replace("\r\n", "\n").ToString();
 		}
 	}
 }

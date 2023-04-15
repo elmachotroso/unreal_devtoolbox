@@ -3,13 +3,17 @@
 #include "SRCPanelExposedEntity.h"
 
 #include "ActorTreeItem.h"
+#include "Components/BillboardComponent.h"
+#include "Commands/RemoteControlCommands.h"
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
+#include "EngineUtils.h"
 #include "Engine/Selection.h"
 #include "Engine/Classes/Components/ActorComponent.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
+#include "Interfaces/IMainFrameModule.h"
 #include "RemoteControlBinding.h"
 #include "RemoteControlEntity.h"
 #include "RemoteControlPreset.h"
@@ -20,8 +24,10 @@
 #include "SceneOutlinerFilters.h"
 #include "SceneOutlinerModule.h"
 #include "ScopedTransaction.h"
+#include "Styling/RemoteControlStyles.h"
 #include "Styling/SlateIconFinder.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -32,15 +38,30 @@
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanel"
 
-void SRCPanelExposedEntity::Tick(const FGeometry&, const double, const float)
+namespace RebindingUtils
 {
-	if (bNeedsRename)
+	TMap<AActor*, TArray<UObject*>> GetLevelSubObjectsOfClass(UClass* TargetClass , UWorld* PresetWorld)
 	{
-		if (NameTextBox)
+		TMap<AActor*, TArray<UObject*>> ObjectMap;
+
+		for (TActorIterator<AActor> It(PresetWorld, AActor::StaticClass(), EActorIteratorFlags::SkipPendingKill); It; ++It)
 		{
-			NameTextBox->EnterEditingMode();
+			if (UE::RemoteControlBinding::IsValidActorForRebinding(*It, PresetWorld))
+			{
+				TArray<UObject*> SubObjects;
+				GetObjectsWithOuter(*It, SubObjects);
+
+				for (UObject* SubObject : SubObjects)
+				{
+					if (SubObject->IsA(TargetClass) && UE::RemoteControlBinding::IsValidSubObjectForRebinding(SubObject, PresetWorld))
+					{
+						ObjectMap.FindOrAdd(*It).Add(SubObject);
+					}
+				}
+			}
 		}
-		bNeedsRename = false;
+
+		return ObjectMap;
 	}
 }
 
@@ -55,7 +76,18 @@ TSharedPtr<FRemoteControlEntity> SRCPanelExposedEntity::GetEntity() const
 
 TSharedPtr<SWidget> SRCPanelExposedEntity::GetContextMenu()
 {
-	FMenuBuilder MenuBuilder(true, TSharedPtr<const FUICommandList>());
+	IMainFrameModule& MainFrame = FModuleManager::Get().LoadModuleChecked<IMainFrameModule>("MainFrame");
+
+	FMenuBuilder MenuBuilder(true, MainFrame.GetMainFrameCommandBindings());
+
+	MenuBuilder.BeginSection("Common");
+
+	MenuBuilder.AddMenuEntry(FRemoteControlCommands::Get().RenameEntity, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("GenericCommands.Rename")));
+	MenuBuilder.AddMenuEntry(FRemoteControlCommands::Get().DeleteEntity, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("GenericCommands.Delete")));
+
+	MenuBuilder.EndSection();
+
+	MenuBuilder.AddSeparator();
 
 	constexpr bool bNoIndent = true;
 	MenuBuilder.AddWidget(CreateUseContextCheckbox(), LOCTEXT("UseContextLabel", "Use Context"), bNoIndent);
@@ -78,6 +110,14 @@ TSharedPtr<SWidget> SRCPanelExposedEntity::GetContextMenu()
 			}));
 
 	MenuBuilder.AddSubMenu(
+		LOCTEXT("EntityRebindSubObjectSubmenuLabel", "Rebind SubObject"),
+		LOCTEXT("EntityRebindSubObjectSubmenuToolTip", "Pick a subobject to rebind this exposed entity."),
+		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenuBuilder)
+			{
+				CreateRebindSubObjectMenuContent(SubMenuBuilder);
+			}));
+
+	MenuBuilder.AddSubMenu(
 		LOCTEXT("EntityRebindAllUnderActorSubmenuLabel", "Rebind all properties for this actor"),
 		LOCTEXT("EntityRebindAllUnderActorSubmenuToolTip", "Pick an actor to rebind."),
 		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenuBuilder)
@@ -89,11 +129,21 @@ TSharedPtr<SWidget> SRCPanelExposedEntity::GetContextMenu()
 	return MenuBuilder.MakeWidget();
 }
 
-void SRCPanelExposedEntity::Initialize(const FGuid& InEntityId, URemoteControlPreset* InPreset, const TAttribute<bool>& InbEditMode)
+void SRCPanelExposedEntity::EnterRenameMode()
+{
+	if (NameTextBox.IsValid())
+	{
+		NameTextBox->EnterEditingMode();
+	}
+}
+
+void SRCPanelExposedEntity::Initialize(const FGuid& InEntityId, URemoteControlPreset* InPreset, const TAttribute<bool>& InbLiveMode)
 {
 	EntityId = InEntityId;
 	Preset = InPreset;
-	bEditMode = InbEditMode;
+	bLiveMode = InbLiveMode;
+
+	RCPanelStyle = &FRemoteControlPanelStyle::Get()->GetWidgetStyle<FRCPanelStyle>("RemoteControlPanel.MinorPanel");
 
 	if (ensure(InPreset))
 	{
@@ -142,6 +192,54 @@ void SRCPanelExposedEntity::CreateRebindComponentMenuContent(FMenuBuilder& SubMe
 	}
 }
 
+void SRCPanelExposedEntity::CreateRebindSubObjectMenuContent(FMenuBuilder& SubMenuBuilder)
+{
+	TInlineComponentArray<UActorComponent*> ComponentArray;
+
+	if (TSharedPtr<FRemoteControlEntity> Entity = GetEntity())
+	{
+		constexpr bool bAllowPie = false;
+		TMap<AActor*, TArray<UObject*>> GroupedObjects = RebindingUtils::GetLevelSubObjectsOfClass(Entity->GetSupportedBindingClass(), Preset->GetWorld(bAllowPie));
+		for (const TPair<AActor*, TArray<UObject*>>& ActorsAndSubobjects : GroupedObjects)
+		{
+			SubMenuBuilder.BeginSection(NAME_None, FText::FromString(ActorsAndSubobjects.Key->GetActorLabel()));
+			for (UObject* SubObject : ActorsAndSubobjects.Value)
+			{
+				FString EntryLabel = SubObject->GetName();
+				const FString ToolTip = SubObject->GetPathName();
+					
+				// Special case for NDisplay properties.
+				static const FName NDisplayViewportClassName = "DisplayClusterConfigurationViewport";
+				if (SubObject->GetClass()->GetFName() == NDisplayViewportClassName)
+				{
+					static const FTopLevelAssetPath DisplayClusterConfigurationPath = FTopLevelAssetPath(TEXT("/Script/DisplayClusterConfiguration"), TEXT("DisplayClusterConfigurationClusterNode"));
+					if (UClass* ClusterNodeClass = FindObject<UClass>(DisplayClusterConfigurationPath);
+						UObject * ClusterNodeOuter = SubObject->GetTypedOuter(ClusterNodeClass))
+					{
+						EntryLabel = SubObject->GetPathName(ClusterNodeOuter->GetOuter());
+					}
+				}
+
+				SubMenuBuilder.AddMenuEntry(
+					FText::FromString(EntryLabel),
+					FText::FromString(ToolTip),
+					FSlateIconFinder::FindIconForClass(SubObject->GetClass(), TEXT("SCS.Component")),
+					FUIAction(
+						FExecuteAction::CreateLambda([Entity, SubObject]
+						{
+							if (Entity)
+							{
+								Entity->BindObject(SubObject);
+							}
+						}),
+						FCanExecuteAction())
+				);
+			}
+			SubMenuBuilder.EndSection();
+		}
+	}
+}
+
 TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindAllPropertiesForActorMenuContent()
 {
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
@@ -151,14 +249,16 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindAllPropertiesForActorMenu
 
 	if (TSharedPtr<FRemoteControlEntity> Entity = GetEntity())
 	{
-		Options.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateRaw(this, &SRCPanelExposedEntity::IsActorSelectable));
+		Options.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateSP(this, &SRCPanelExposedEntity::IsActorSelectable));
 	}
+
+	constexpr bool bAllowPIE = false;
 
 	return SNew(SBox)
 		.MaxDesiredHeight(400.0f)
 		.WidthOverride(300.0f)
 		[
-			SceneOutlinerModule.CreateActorPicker(Options, FOnActorPicked::CreateRaw(this, &SRCPanelExposedEntity::OnActorSelectedForRebindAllProperties))
+			SceneOutlinerModule.CreateActorPicker(Options, FOnActorPicked::CreateSP(this, &SRCPanelExposedEntity::OnActorSelectedForRebindAllProperties), URemoteControlPreset::GetWorld(Preset.Get(), bAllowPIE))
 		];
 }
 
@@ -186,9 +286,9 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateInvalidWidget()
 		];
 }
 
-EVisibility SRCPanelExposedEntity::GetVisibilityAccordingToEditMode(EVisibility NonEditModeVisibility) const
+EVisibility SRCPanelExposedEntity::GetVisibilityAccordingToLiveMode(EVisibility NonEditModeVisibility) const
 {
-	return bEditMode.Get() ? EVisibility::Visible : NonEditModeVisibility;
+	return !bLiveMode.Get() ? EVisibility::Visible : NonEditModeVisibility;
 }
 
 TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindMenuContent()
@@ -196,15 +296,16 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindMenuContent()
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
 	FSceneOutlinerInitializationOptions Options;
 	Options.Filters = MakeShared<FSceneOutlinerFilters>();
-
-	Options.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateRaw(this, &SRCPanelExposedEntity::IsActorSelectable));
-
+	Options.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateSP(this, &SRCPanelExposedEntity::IsActorSelectable));
+	constexpr bool bAllowPIE = false;
+	UWorld* PresetWorld = URemoteControlPreset::GetWorld(Preset.Get(), bAllowPIE);
+	
 	return SNew(SBox)
-	.MaxDesiredHeight(400.0f)
-	.WidthOverride(300.0f)
-	[
-		SceneOutlinerModule.CreateActorPicker(Options, FOnActorPicked::CreateRaw(this, &SRCPanelExposedEntity::OnActorSelected), nullptr)
-	];
+		.MaxDesiredHeight(400.0f)
+		.WidthOverride(300.0f)
+		[
+			SceneOutlinerModule.CreateActorPicker(Options, FOnActorPicked::CreateSP(this, &SRCPanelExposedEntity::OnActorSelected), PresetWorld)
+		];
 }
 
 bool SRCPanelExposedEntity::OnVerifyItemLabelChanged(const FText& InLabel, FText& OutErrorMessage)
@@ -251,7 +352,7 @@ bool SRCPanelExposedEntity::IsActorSelectable(const AActor* Actor) const
 {
 	if (TSharedPtr<FRemoteControlEntity> Entity = GetEntity())
 	{
-		if (Entity->GetBindings().Num())
+		if (Entity->GetBindings().Num() && Entity->GetBindings()[0].IsValid())
 		{
 			// Don't show what it's already bound to.
 			if (UObject* Component = Entity->GetBindings()[0]->Resolve())
@@ -279,16 +380,16 @@ bool SRCPanelExposedEntity::IsActorSelectable(const AActor* Actor) const
 	return false;
 }
 
-TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, const FText& OptionalWarningMessage)
+TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget, const FText& OptionalWarningMessage)
 {
 	FMakeNodeWidgetArgs Args;
 
 	TSharedRef<SBorder> Widget = SNew(SBorder)
 		.Padding(0.0f)
-		.BorderImage_Raw(this, &SRCPanelExposedEntity::GetBorderImage);
+		.BorderImage(this, &SRCPanelExposedEntity::GetBorderImage);
 	
 	Args.DragHandle = SNew(SBox)
-		.Visibility_Raw(this, &SRCPanelExposedEntity::GetVisibilityAccordingToEditMode, EVisibility::Collapsed)
+		.Visibility(this, &SRCPanelExposedEntity::GetVisibilityAccordingToLiveMode, EVisibility::Collapsed)
 		[
 			SNew(SRCPanelDragHandle<FExposedEntityDragDrop>, GetRCId())
 			.Widget(Widget)
@@ -309,41 +410,20 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget
             .Text(FEditorFontGlyphs::Exclamation_Triangle)
 		]
 		+ SHorizontalBox::Slot()
+		.Padding(4.f, 0.f, 2.0f, 0.f)
 		.AutoWidth()
 		[
 			SAssignNew(NameTextBox, SInlineEditableTextBlock)
 			.Text(FText::FromName(CachedLabel))
-			.OnTextCommitted_Raw(this, &SRCPanelExposedEntity::OnLabelCommitted)
-			.OnVerifyTextChanged_Raw(this, &SRCPanelExposedEntity::OnVerifyItemLabelChanged)
-			.IsReadOnly_Lambda([this]() { return !bEditMode.Get(); })
-		];
-
-	Args.RenameButton = SNew(SButton)
-		.Visibility_Raw(this, &SRCPanelExposedEntity::GetVisibilityAccordingToEditMode, EVisibility::Collapsed)
-		.ButtonStyle(FAppStyle::Get(), "FlatButton")
-		.OnClicked_Lambda([this]() {
-			bNeedsRename = true;
-			return FReply::Handled();
-		})
-		[
-			SNew(STextBlock)
-				.TextStyle(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.Button.TextStyle")
-				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
-				.Text(FText::FromString(FString(TEXT("\xf044"))) /*fa-edit*/)
+			.OnTextCommitted(this, &SRCPanelExposedEntity::OnLabelCommitted)
+			.OnVerifyTextChanged(this, &SRCPanelExposedEntity::OnVerifyItemLabelChanged)
+			.IsReadOnly_Lambda([this]() { return bLiveMode.Get(); })
+			.HighlightText_Lambda([this]() { return HighlightText.Get().ToString().Len() > 3 ? HighlightText.Get() : FText::GetEmpty(); })
 		];
 
 	Args.ValueWidget = ValueWidget;
 
-	Args.UnexposeButton = SNew(SButton)
-		.Visibility_Raw(this, &SRCPanelExposedEntity::GetVisibilityAccordingToEditMode, EVisibility::Collapsed)
-		.OnPressed_Raw(this, &SRCPanelExposedEntity::HandleUnexposeEntity)
-		.ButtonStyle(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.UnexposeButton")
-		[
-			SNew(STextBlock)
-			.TextStyle(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.Button.TextStyle")
-			.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
-			.Text(FText::FromString(FString(TEXT("\xf00d"))) /*fa-times*/)
-		];
+	Args.ResetButton = ResetWidget;
 
 	Widget->SetContent(MakeNodeWidget(Args));
 	return Widget;
@@ -404,10 +484,10 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateUseContextCheckbox()
 		.ToolTipText(LOCTEXT("UseRebindingContextTooltip", "Unchecking this will allow you to rebind this property to any object regardless of the underlying supported class."))
 
 		// Bind the button's "on checked" event to our object's method for this
-		.OnCheckStateChanged_Raw(this, &SRCPanelExposedEntity::OnUseContextChanged)
+		.OnCheckStateChanged(this, &SRCPanelExposedEntity::OnUseContextChanged)
 
 		// Bind the check box's "checked" state to our user interface action
-		.IsChecked_Raw(this, &SRCPanelExposedEntity::IsUseContextEnabled);
+		.IsChecked(this, &SRCPanelExposedEntity::IsUseContextEnabled);
 }
 
 void SRCPanelExposedEntity::OnUseContextChanged(ECheckBoxState State)
@@ -439,5 +519,6 @@ bool SRCPanelExposedEntity::ShouldUseRebindingContext() const
 
 	return false;
 }
+
 
 #undef LOCTEXT_NAMESPACE

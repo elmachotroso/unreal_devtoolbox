@@ -5,7 +5,6 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "SlateOptMacros.h"
 #include "Templates/UniquePtr.h"
-#include "TraceServices/AnalysisService.h"
 #include "TraceServices/Model/NetProfiler.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -70,7 +69,7 @@ SNetStatsView::~SNetStatsView()
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-void SNetStatsView::Construct(const FArguments& InArgs, TSharedPtr<SNetworkingProfilerWindow> InProfilerWindow)
+void SNetStatsView::Construct(const FArguments& InArgs, TSharedRef<SNetworkingProfilerWindow> InProfilerWindow)
 {
 	ProfilerWindowWeakPtr = InProfilerWindow;
 
@@ -506,21 +505,6 @@ TSharedRef<SWidget> SNetStatsView::TreeViewHeaderRow_GenerateColumnMenu(const In
 			LOCTEXT("ContextMenu_ShowAllColumns_Desc", "Resets tree view to show all columns."),
 			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ResetColumn"),
 			Action_ShowAllColumns,
-			NAME_None,
-			EUserInterfaceActionType::Button
-		);
-
-		FUIAction Action_ShowMinMaxMedColumns
-		(
-			FExecuteAction::CreateSP(this, &SNetStatsView::ContextMenu_ShowMinMaxMedColumns_Execute),
-			FCanExecuteAction::CreateSP(this, &SNetStatsView::ContextMenu_ShowMinMaxMedColumns_CanExecute)
-		);
-		MenuBuilder.AddMenuEntry
-		(
-			LOCTEXT("ContextMenu_ShowMinMaxMedColumns", "Reset Columns to Min/Max/Median Preset"),
-			LOCTEXT("ContextMenu_ShowMinMaxMedColumns_Desc", "Resets columns to Min/Max/Median preset."),
-			FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.ResetColumn"),
-			Action_ShowMinMaxMedColumns,
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
@@ -1247,6 +1231,7 @@ void SNetStatsView::ShowColumn(const FName ColumnId)
 		.VAlignHeader(VAlign_Center)
 		.HAlignCell(HAlign_Fill)
 		.VAlignCell(VAlign_Fill)
+		.InitialSortMode(Column.GetInitialSortMode())
 		.SortMode(this, &SNetStatsView::GetSortModeForColumn, Column.GetId())
 		.OnSort(this, &SNetStatsView::OnSortModeChanged)
 		.FillWidth(Column.GetInitialWidth())
@@ -1360,56 +1345,6 @@ void SNetStatsView::ContextMenu_ShowAllColumns_Execute()
 		if (!Column.IsVisible())
 		{
 			ShowColumn(Column.GetId());
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// "Show Min/Max/Median Columns" action (ContextMenu)
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-bool SNetStatsView::ContextMenu_ShowMinMaxMedColumns_CanExecute() const
-{
-	return true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void SNetStatsView::ContextMenu_ShowMinMaxMedColumns_Execute()
-{
-	TSet<FName> Preset =
-	{
-		FNetStatsViewColumns::NameColumnID,
-		//FNetStatsViewColumns::MetaGroupNameColumnID,
-		//FNetStatsViewColumns::TypeColumnID,
-		FNetStatsViewColumns::InstanceCountColumnID,
-
-		FNetStatsViewColumns::TotalInclusiveSizeColumnID,
-		FNetStatsViewColumns::MaxInclusiveSizeColumnID,
-		FNetStatsViewColumns::AverageInclusiveSizeColumnID,
-
-		FNetStatsViewColumns::TotalExclusiveSizeColumnID,
-		FNetStatsViewColumns::MaxExclusiveSizeColumnID,
-		//FNetStatsViewColumns::AverageExclusiveSizeColumnID,
-	};
-
-	ColumnBeingSorted = FNetStatsViewColumns::TotalInclusiveSizeColumnID;
-	ColumnSortMode = EColumnSortMode::Descending;
-	UpdateCurrentSortingByColumn();
-
-	for (const TSharedRef<Insights::FTableColumn>& ColumnRef : Table->GetColumns())
-	{
-		const Insights::FTableColumn& Column = *ColumnRef;
-
-		const bool bShouldBeVisible = Preset.Contains(Column.GetId());
-
-		if (bShouldBeVisible && !Column.IsVisible())
-		{
-			ShowColumn(Column.GetId());
-		}
-		else if (!bShouldBeVisible && Column.IsVisible())
-		{
-			HideColumn(Column.GetId());
 		}
 	}
 }

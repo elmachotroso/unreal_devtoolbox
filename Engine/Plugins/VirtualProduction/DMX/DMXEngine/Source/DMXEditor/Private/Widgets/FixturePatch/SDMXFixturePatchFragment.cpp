@@ -3,159 +3,291 @@
 #include "SDMXFixturePatchFragment.h"
 
 #include "DMXEditor.h"
+#include "DMXEditorStyle.h"
 #include "DMXFixturePatchNode.h"
 #include "DMXFixturePatchEditorDefinitions.h"
+#include "DMXFixturePatchSharedData.h"
 #include "Library/DMXEntityFixturePatch.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
 
 #define LOCTEXT_NAMESPACE "SDMXFixturePatchFragment"
 
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-void SDMXFixturePatchFragment::Construct(const FArguments& InArgs, TSharedPtr<FDMXFixturePatchNode> InPatchNode)
+
+void SDMXFixturePatchFragment::Construct(const FArguments& InArgs, const TSharedPtr<FDMXFixturePatchNode>& InFixturePatchNode, const TArray<TSharedPtr<FDMXFixturePatchNode>>& InFixturePatchNodeGroup)
 {
-	check(InPatchNode.IsValid());
+	check(InFixturePatchNode.IsValid());
+	check(InFixturePatchNodeGroup.Contains(InFixturePatchNode));
 	check(Column != -1);
 	check(Row != -1);
 	check(ColumnSpan != -1);
 
-	PatchNode = InPatchNode;
-		
+	ColorBrush = MakeShared<FSlateColorBrush>(FLinearColor::Red);
+
+	FixturePatchNode = InFixturePatchNode;
+	FixturePatchNodeGroup = InFixturePatchNodeGroup;
 	DMXEditorPtr = InArgs._DMXEditor;
+	bIsHead = InArgs._IsHead;
+	bIsTail = InArgs._IsTail;
+	bIsText = InArgs._IsText;
+	bIsConflicting = InArgs._IsConflicting;
 	Column = InArgs._Column;
 	Row = InArgs._Row;
 	ColumnSpan = InArgs._ColumnSpan;
 	bHighlight = InArgs._bHighlight;
 
-	SetVisibility(EVisibility::HitTestInvisible);
+	if (bIsText)
+	{
+		SAssignNew(ContentBorder, SBorder)
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			.Visibility(EVisibility::SelfHitTestInvisible);
+	}
+	else
+	{
+		SAssignNew(ContentBorder, SBorder)
+			.Padding(1.f)
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			.Visibility(EVisibility::SelfHitTestInvisible)
+			.BorderImage_Lambda([this]()
+				{
+					if (UDMXEntityFixturePatch* FixturePatch = FixturePatchNode->GetFixturePatch().Get())
+					{
+						if (bIsConflicting)
+						{
+							ColorBrush->TintColor = FixturePatch->EditorColor.CopyWithNewOpacity(.25f / FixturePatchNodeGroup.Num());
+						}
+						else if (bIsTopmost)
+						{
+							ColorBrush->TintColor = FixturePatch->EditorColor.CopyWithNewOpacity(.5f);
+						}
+						else
+						{
+							ColorBrush->TintColor = FLinearColor::Transparent;
+						}
+					}
+					check(ColorBrush.IsValid());
+					return ColorBrush.Get();
+				});
+	}
 
-	FMargin MinimalTextMargin = FMargin(3.0f, 2.0f, 4.0f, 1.0f);
-	ShadowSize = FEditorStyle::GetVector(TEXT("Graph.Node.ShadowSize"));
-
-	// We do not need graph node feats, but mimic its visuals
 	ChildSlot
 		[
-			SNew(SBox)
-			.ToolTipText(this, &SDMXFixturePatchFragment::GetToolTipText)
-			.MaxDesiredHeight(1.0f)
-			.MaxDesiredWidth(1.0f)			
+			SNew(SBox) 	
+			.Visibility(EVisibility::SelfHitTestInvisible)
+			.MaxDesiredHeight(1.0f) // Prevents from some wiggling issues
+			.MaxDesiredWidth(1.0f) // Prevents from some wiggling issues
+			.Padding_Lambda([this]()
+				{
+					return BorderPadding;
+				})
 			[
-				SNew(SOverlay)
-				+ SOverlay::Slot()
-				[
-					SNew(SImage)
-					.Image( FEditorStyle::GetBrush("Graph.VarNode.Body") )		
-					.ColorAndOpacity( this, &SDMXFixturePatchFragment::GetColor )
-				]
-				+ SOverlay::Slot()
-				.VAlign(VAlign_Top)
-				[
-					SNew(SImage)
-					.Image( FEditorStyle::GetBrush("Graph.VarNode.ColorSpill") )
-					.ColorAndOpacity( this, &SDMXFixturePatchFragment::GetColor )
-				]
-				+ SOverlay::Slot()
-				[
-					SNew(SImage)
-					.Image( FEditorStyle::GetBrush("Graph.VarNode.Gloss") )
-					.ColorAndOpacity( this, &SDMXFixturePatchFragment::GetColor )
-				]
-				+ SOverlay::Slot()
-				[		
-					SNew(SBorder)
-					.HAlign(HAlign_Fill)
-					.VAlign(VAlign_Fill)
-					.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-					.Padding(MinimalTextMargin)
-					.BorderBackgroundColor( this, &SDMXFixturePatchFragment::GetColor )
-					.OnMouseButtonDown(this, &SDMXFixturePatchFragment::OnMouseButtonDown)
-					[	
-						SNew(STextBlock)
-						.Text(this, &SDMXFixturePatchFragment::GetText)
-						.TextStyle(FEditorStyle::Get(), "SmallText")
-						.ColorAndOpacity(FLinearColor::White)						
-					]
-				]
-				+SOverlay::Slot()
-				.VAlign(VAlign_Top)
-				[
-					SNew(SBorder)
-					.Visibility(EVisibility::HitTestInvisible)			
-					.BorderImage( FEditorStyle::GetBrush( "Graph.Node.TitleHighlight" ) )
-					.BorderBackgroundColor( FLinearColor::White )
-					[
-						SNew(SSpacer)
-						.Size(FVector2D(20,20))
-					]
+				SNew(SBorder)
+				.Padding(1.f)
+				.HAlign(HAlign_Fill)
+				.VAlign(VAlign_Fill)
+				.Visibility(EVisibility::SelfHitTestInvisible)
+				.BorderImage(&GetBorderImage())
+				.BorderBackgroundColor_Lambda([this]()
+					{
+						return bHighlight ? FLinearColor(.8f, .8f, .8f) : FLinearColor(.2f, .2f, .2f);
+					})
+				[	
+					ContentBorder.ToSharedRef()
 				]
 			]
 		];
 
-}
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
-
-void SDMXFixturePatchFragment::SetHighlight(bool bEnabled)
-{
-	bHighlight = bEnabled;
+	SetVisibility(EVisibility::SelfHitTestInvisible);
+	Refresh(InFixturePatchNodeGroup);
 }
 
-int32 SDMXFixturePatchFragment::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+void SDMXFixturePatchFragment::Refresh(const TArray<TSharedPtr<FDMXFixturePatchNode>>& InFixturePatchNodeGroup)
 {
-	SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	FixturePatchNodeGroup = InFixturePatchNodeGroup;
+	
+	// Update if it is topmost first so further methods can rely on bIsTopmost
+	UpdateIsTopmost();
 
-	// Draw a shadow	
-	const FSlateBrush* ShadowBrush = GetShadowBrush(bHighlight);
-	FSlateDrawElement::MakeBox(
-		OutDrawElements,
-		LayerId,
-		AllottedGeometry.ToInflatedPaintGeometry(ShadowSize),
-		ShadowBrush
-	);
+	UpdateFixturePatchNameText();
+	UpdateNodeGroupText();
+	UpdateBorderPadding();
 
-	return LayerId;
-}
-
-FText SDMXFixturePatchFragment::GetText() const
-{
-	check(PatchNode.IsValid());
-
-	FText Text;
-	if (UDMXEntityFixturePatch* Patch = PatchNode->GetFixturePatch().Get())
+	if (bIsText)
 	{
-		Text = FText::FromString(Patch->GetDisplayName());
+		// Redraw text
+		ContentBorder->SetContent(CreateTextWidget());
+	}
+}
+
+void SDMXFixturePatchFragment::OnFixturePatchSharedDataSelectedFixturePatch()
+{
+	TSharedPtr<FDMXEditor> DMXEditor = DMXEditorPtr.Pin();
+	if (!DMXEditor.IsValid())
+	{
+		return;
 	}
 
-	return Text;
-}
-
-FText SDMXFixturePatchFragment::GetToolTipText() const
-{		
-	// Useful when the fragment cannot show the whole 
-	// name of the patch on top of it.
-	return GetText();
-}
-
-FSlateColor SDMXFixturePatchFragment::GetColor() const
-{
-	check(PatchNode.IsValid());
-
-	if (PatchNode->GetFixturePatch().IsValid())
+	const TSharedPtr<FDMXFixturePatchSharedData> SharedData = DMXEditor->GetFixturePatchSharedData();
+	if (!SharedData.IsValid())
 	{
-		return PatchNode->GetFixturePatch()->EditorColor;
+		return;
+	}
+	const TArray<TWeakObjectPtr<UDMXEntityFixturePatch>>& SelectedFixturePatches = SharedData->GetSelectedFixturePatches();
+}
+
+void SDMXFixturePatchFragment::UpdateFixturePatchNameText()
+{
+	if (UDMXEntityFixturePatch* Patch = FixturePatchNode->GetFixturePatch().Get())
+	{
+		FixturePatchNameText = FText::FromString(Patch->GetDisplayName());
+	}
+}
+
+void SDMXFixturePatchFragment::UpdateNodeGroupText()
+{
+	NodeGroupText =
+		FixturePatchNodeGroup.Num() > 1 ?
+		FText::Format(LOCTEXT("NodeGroupText", "(and {0} more)"), FixturePatchNodeGroup.Num() - 1) :
+		FText::GetEmpty();
+}
+
+void SDMXFixturePatchFragment::UpdateIsTopmost()
+{
+	if (!ensureMsgf(FixturePatchNodeGroup.Num() > 0, TEXT("Unexpected empty node group for Fixture Patch Fragment Widget.")))
+	{
+		return;
 	}
 
-	return FLinearColor::White;
+	bIsTopmost = !FixturePatchNodeGroup.ContainsByPredicate([this](const TSharedPtr<FDMXFixturePatchNode>& OtherNode)
+		{
+			return OtherNode->GetZOrder() > FixturePatchNode->GetZOrder();
+		});
+
+	if (FixturePatchNodeGroup.Num() > 1)
+	{
+		UpdateFixturePatchNameText();
+	}
 }
 
-const FSlateBrush* SDMXFixturePatchFragment::GetShadowBrush(bool bSelected) const
+void SDMXFixturePatchFragment::UpdateBorderPadding()
 {
-	return bSelected ? FEditorStyle::GetBrush(TEXT("Graph.VarNode.ShadowSelected")) : FEditorStyle::GetBrush(TEXT("Graph.VarNode.Shadow"));
+	if (bIsHead && FixturePatchNodeGroup.Num() > 1)
+	{
+		// Sort by ZOrder ascending
+		FixturePatchNodeGroup.StableSort([](const TSharedPtr<FDMXFixturePatchNode>& NodeA, const TSharedPtr<FDMXFixturePatchNode>& NodeB)
+			{
+				return 
+					NodeA->GetZOrder() < NodeB->GetZOrder();
+			});
+
+		const int32 IndexOfThis = FixturePatchNodeGroup.IndexOfByKey(FixturePatchNode);
+
+		constexpr int32 OffsetPerIndex = 3;
+		const int32 ClampedIndexOfThis = FMath::Min(IndexOfThis, 5);
+		const int32 OffsetLeft = ClampedIndexOfThis * OffsetPerIndex;
+
+		BorderPadding = FMargin(OffsetLeft, 0.f, 0.f, 0.f);
+	}
+	else
+	{
+		BorderPadding = FMargin(0.f);
+	}
+}
+
+const FSlateBrush& SDMXFixturePatchFragment::GetBorderImage() const
+{
+	const FSlateBrush* BorderImage = nullptr;
+	if (bIsText)
+	{
+		BorderImage = FCoreStyle::Get().GetBrush("NoBorder");
+	}
+	else if (bIsConflicting)
+	{
+		BorderImage = FAppStyle::GetBrush("Graph.Node.DevelopmentBanner");
+	}
+	else if (bIsHead && bIsTail)
+	{
+		BorderImage = FDMXEditorStyle::Get().GetBrush("FixturePatcher.FragmentBorder.Normal");
+	}
+	else if (bIsHead)
+	{
+		BorderImage = FDMXEditorStyle::Get().GetBrush("FixturePatcher.FragmentBorder.L");
+	}
+	else if (bIsTail)
+	{
+		BorderImage = FDMXEditorStyle::Get().GetBrush("FixturePatcher.FragmentBorder.R");
+	}
+	else
+	{
+		BorderImage = FDMXEditorStyle::Get().GetBrush("FixturePatcher.FragmentBorder.TB");
+	}
+	check(BorderImage);
+
+	return *BorderImage;
+}
+
+TSharedRef<SWidget> SDMXFixturePatchFragment::CreateTextWidget()
+{
+	if (bIsTopmost)
+	{
+		return
+			SNew(SBox)
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Top)
+			.Visibility(EVisibility::HitTestInvisible)
+			[
+				SNew(SBorder)
+				.HAlign(HAlign_Left)
+				.VAlign(VAlign_Top)
+				.Padding(FMargin(2.f, 2.f, 0.f, 2.f))
+				.BorderImage(FDMXEditorStyle::Get().GetBrush("DMXEditor.RoundedPropertyBorder"))
+				[
+					SNew(SHorizontalBox)
+					.Clipping(EWidgetClipping::ClipToBoundsAlways)
+
+					+ SHorizontalBox::Slot()
+					.HAlign(HAlign_Left)
+					.VAlign(VAlign_Top)
+					.AutoWidth()
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]()
+							{
+								return FixturePatchNameText;
+							})
+						.TextStyle(FAppStyle::Get(), "SmallText")
+						.ColorAndOpacity(FLinearColor::White)
+					]
+				
+					+ SHorizontalBox::Slot()
+					.HAlign(HAlign_Left)
+					.VAlign(VAlign_Top)
+					.AutoWidth()
+					.Padding(FMargin(10.f, 0.f, 0.f, 0.f))
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]()
+							{
+								return NodeGroupText;
+							})
+						.TextStyle(FAppStyle::Get(), "SmallText")
+						.ColorAndOpacity(FLinearColor(.5f, .5f, .5f))
+					]
+				]
+			];
+	}
+
+	return SNullWidget::NullWidget;
 }
 
 #undef LOCTEXT_NAMESPACE

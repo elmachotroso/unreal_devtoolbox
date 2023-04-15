@@ -1159,7 +1159,7 @@ class ir_gen_glsl_visitor : public ir_visitor
 				{
 					0, //vertex_shader, must match FOpenGL::GetFirstVertexUAVUnit()
 					0,
-					4, //fragment_shader, must match FOpenGL::GetFirstPixelUAVUnit()
+					0, //fragment_shader, must match FOpenGL::GetFirstPixelUAVUnit()
 					0,
 					0,
 					0, //compute_shader
@@ -4162,7 +4162,12 @@ static ir_rvalue* GenShaderInputSemantic(
 	bool& ApplyFlipFrontFacingAdjustment
 	)
 {
-	if (Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_", 3) == 0)
+	if (Semantic == nullptr)
+	{
+		return nullptr;
+	}
+
+	if (FCStringAnsi::Strnicmp(Semantic, "SV_", 3) == 0)
 	{
 		FSystemValue* SystemValues = SystemValueTable[Frequency];
 		for (int i = 0; SystemValues[i].Semantic != NULL; ++i)
@@ -4266,7 +4271,7 @@ static ir_rvalue* GenShaderInputSemantic(
 	if (Variable == NULL && (Frequency == HSF_VertexShader || Frequency == HSF_PixelShader))
 	{
 		const int PrefixLength = 9;
-		if (FCStringAnsi::Strnicmp(Semantic, "SV_ViewID", PrefixLength) == 0)
+		if (Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_ViewID", PrefixLength) == 0)
 		{
 			Variable = new(ParseState)ir_variable(
 				Type,
@@ -4291,7 +4296,7 @@ static ir_rvalue* GenShaderInputSemantic(
 
 	// If we're here, no built-in variables matched.
 
-	if (Semantic && FCStringAnsi::Strnicmp(Semantic, "SV_", 3) == 0)
+	if (FCStringAnsi::Strnicmp(Semantic, "SV_", 3) == 0)
 	{
 		_mesa_glsl_warning(ParseState, "unrecognized system "
 			"value input '%s'", Semantic);

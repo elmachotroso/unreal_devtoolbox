@@ -7,6 +7,8 @@
 #include "GameplayEffectExtension.h"
 #include "AbilitySystemGlobals.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitAttributeChange)
+
 UAbilityTask_WaitAttributeChange::UAbilityTask_WaitAttributeChange(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -111,7 +113,7 @@ void UAbilityTask_WaitAttributeChange::OnAttributeChange(const FOnAttributeChang
 
 UAbilitySystemComponent* UAbilityTask_WaitAttributeChange::GetFocusedASC()
 {
-	return ExternalOwner ? ExternalOwner : AbilitySystemComponent;
+	return ExternalOwner ? ToRawPtr(ExternalOwner) : AbilitySystemComponent.Get();
 }
 
 void UAbilityTask_WaitAttributeChange::OnDestroy(bool AbilityEnded)
@@ -123,3 +125,4 @@ void UAbilityTask_WaitAttributeChange::OnDestroy(bool AbilityEnded)
 
 	Super::OnDestroy(AbilityEnded);
 }
+

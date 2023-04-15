@@ -15,9 +15,10 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
 #include "SlateOptMacros.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Models/SessionBrowserTreeItems.h"
 #include "Widgets/Images/SImage.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "SSessionBrowserTreeRow"
 
@@ -66,7 +67,7 @@ public:
 								SNew(STextBlock)
 									.ColorAndOpacity(this, &SSessionBrowserTreeGroupRow::HandleGroupNameColorAndOpacity)
 									.Text(this, &SSessionBrowserTreeGroupRow::HandleGroupNameText)
-									.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+									.Font(FAppStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
 									.ShadowOffset(FVector2D(1.0f, 1.0f))
 							]
 
@@ -75,7 +76,8 @@ public:
 							.VAlign(VAlign_Center)
 							[
 								SNew(SImage)
-									.Image(this, &SSessionBrowserTreeGroupRow::HandlePullDownImage)
+								.Image(this, &SSessionBrowserTreeGroupRow::HandlePullDownImage)
+								.ColorAndOpacity(IsHovered() ? FStyleColors::ForegroundHover : FStyleColors::Foreground)
 							]
 					]
 			];
@@ -83,7 +85,7 @@ public:
 		STableRow<TSharedPtr<FSessionBrowserGroupTreeItem>>::ConstructInternal(
 			STableRow<TSharedPtr<FSessionBrowserGroupTreeItem>>::FArguments()
 				.ShowSelection(false)
-				.Style(FEditorStyle::Get(), "DetailsView.TreeView.TableRow"),
+				.Style(FAppStyle::Get(), "TableView.Row"),
 			InOwnerTableView
 		);
 	}
@@ -114,15 +116,11 @@ private:
 	{
 		if (IsHovered())
 		{
-			return IsItemExpanded()
-				? FEditorStyle::GetBrush("DetailsView.CategoryTop_Hovered")
-				: FEditorStyle::GetBrush("DetailsView.CollapsedCategory_Hovered");
+			return FAppStyle::GetBrush("Brushes.Hover");
 		}
 		else
 		{
-			return IsItemExpanded()
-				? FEditorStyle::GetBrush("DetailsView.CategoryTop")
-				: FEditorStyle::GetBrush("DetailsView.CollapsedCategory");
+			return FAppStyle::GetBrush("Brushes.Header");
 		}
 	}
 
@@ -150,18 +148,9 @@ private:
 	/** Gets the image for the pull-down icon. */
 	const FSlateBrush* HandlePullDownImage() const
 	{
-		if (IsHovered())
-		{
-			return IsItemExpanded()
-				? FEditorStyle::GetBrush("DetailsView.PulldownArrow.Up.Hovered")
-				: FEditorStyle::GetBrush("DetailsView.PulldownArrow.Down.Hovered");
-		}
-		else
-		{
-			return IsItemExpanded()
-				? FEditorStyle::GetBrush("DetailsView.PulldownArrow.Up")
-				: FEditorStyle::GetBrush("DetailsView.PulldownArrow.Down");
-		}
+		return IsItemExpanded()
+			? FAppStyle::GetBrush("Icons.ChevronUp")
+			: FAppStyle::GetBrush("Icons.ChevronDown");
 	}
 
 private:

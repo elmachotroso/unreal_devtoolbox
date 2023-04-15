@@ -3,6 +3,8 @@
 #include "AnimNotifies/AnimNotify_PlayMontageNotify.h"
 #include "Animation/AnimInstance.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNotify_PlayMontageNotify)
+
 //////////////////////////////////////////////////////////////////////////
 // UAnimNotify_PlayMontageNotify
 //////////////////////////////////////////////////////////////////////////
@@ -25,6 +27,11 @@ void UAnimNotify_PlayMontageNotify::BranchingPointNotify(FBranchingPointNotifyPa
 			AnimInstance->OnPlayMontageNotifyBegin.Broadcast(NotifyName, BranchingPointPayload);
 		}
 	}
+}
+
+FString UAnimNotify_PlayMontageNotify::GetNotifyName_Implementation() const
+{
+	return NotifyName.ToString();
 }
 
 #if WITH_EDITOR
@@ -73,9 +80,15 @@ void UAnimNotify_PlayMontageNotifyWindow::BranchingPointNotifyEnd(FBranchingPoin
 	}
 }
 
+FString UAnimNotify_PlayMontageNotifyWindow::GetNotifyName_Implementation() const
+{
+	return NotifyName.ToString();
+}
+
 #if WITH_EDITOR
 bool UAnimNotify_PlayMontageNotifyWindow::CanBePlaced(UAnimSequenceBase* Animation) const
 {
 	return (Animation && Animation->IsA(UAnimMontage::StaticClass()));
 }
 #endif // WITH_EDITOR
+

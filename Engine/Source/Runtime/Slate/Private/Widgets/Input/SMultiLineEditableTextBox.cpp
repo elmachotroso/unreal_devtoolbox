@@ -33,12 +33,7 @@ namespace
 void SMultiLineEditableTextBox::Construct( const FArguments& InArgs )
 {
 	check (InArgs._Style);
-	Style = InArgs._Style;
-
-	BorderImageNormal = &InArgs._Style->BackgroundImageNormal;
-	BorderImageHovered = &InArgs._Style->BackgroundImageHovered;
-	BorderImageFocused = &InArgs._Style->BackgroundImageFocused;
-	BorderImageReadOnly = &InArgs._Style->BackgroundImageReadOnly;
+	SetStyle(InArgs._Style);
 
 	PaddingOverride = InArgs._Padding;
 	HScrollBarPaddingOverride = InArgs._HScrollBarPadding;
@@ -49,6 +44,10 @@ void SMultiLineEditableTextBox::Construct( const FArguments& InArgs )
 	ReadOnlyForegroundColorOverride = InArgs._ReadOnlyForegroundColor;
 	FocusedForegroundColorOverride = InArgs._FocusedForegroundColor;
 	bSelectWordOnMouseDoubleClick = InArgs._SelectWordOnMouseDoubleClick;
+
+	OnTextChanged = InArgs._OnTextChanged;
+	OnVerifyTextChanged = InArgs._OnVerifyTextChanged;
+	OnTextCommitted = InArgs._OnTextCommitted;
 
 	bHasExternalHScrollBar = InArgs._HScrollBar.IsValid();
 	HScrollBar = InArgs._HScrollBar;
@@ -97,15 +96,15 @@ void SMultiLineEditableTextBox::Construct( const FArguments& InArgs )
 					.Text( InArgs._Text )
 					.HintText( InArgs._HintText )
 					.SearchText( InArgs._SearchText )
-					.TextStyle( InArgs._TextStyle )
+					.TextStyle( &InArgs._Style->TextStyle )
 					.Marshaller( InArgs._Marshaller )
 					.Font( this, &SMultiLineEditableTextBox::DetermineFont )
 					.IsReadOnly( InArgs._IsReadOnly )
 					.AllowMultiLine( InArgs._AllowMultiLine )
 					.OnContextMenuOpening( InArgs._OnContextMenuOpening )
 					.OnIsTypedCharValid( InArgs._OnIsTypedCharValid )
-					.OnTextChanged( InArgs._OnTextChanged )
-					.OnTextCommitted( InArgs._OnTextCommitted )
+					.OnTextChanged(this, &SMultiLineEditableTextBox::OnEditableTextChanged)
+					.OnTextCommitted(this, &SMultiLineEditableTextBox::OnEditableTextCommitted)
 					.OnCursorMoved( InArgs._OnCursorMoved )
 					.ContextMenuExtender( InArgs._ContextMenuExtender )
 					.CreateSlateTextLayout( InArgs._CreateSlateTextLayout )
@@ -205,11 +204,47 @@ void SMultiLineEditableTextBox::SetStyle(const FEditableTextBoxStyle* InStyle)
 	BorderImageHovered = &Style->BackgroundImageHovered;
 	BorderImageFocused = &Style->BackgroundImageFocused;
 	BorderImageReadOnly = &Style->BackgroundImageReadOnly;
+
+	SetTextStyle(&Style->TextStyle);
 }
 
 void SMultiLineEditableTextBox::SetTextStyle(const FTextBlockStyle* InTextStyle)
 {
-	EditableText->SetTextStyle(InTextStyle);
+	// The Construct() function will call this before EditableText exists,
+	// so we need a guard here to ignore that function call.
+	if (EditableText.IsValid())
+	{
+		EditableText->SetTextStyle(InTextStyle);
+	}
+}
+
+FMargin SMultiLineEditableTextBox::DeterminePadding() const
+{
+	check(Style);
+	return PaddingOverride.IsSet() ? PaddingOverride.Get() : Style->Padding;
+}
+
+FMargin SMultiLineEditableTextBox::DetermineHScrollBarPadding() const
+{
+	check(Style);
+	return HScrollBarPaddingOverride.IsSet() ? HScrollBarPaddingOverride.Get() : Style->HScrollBarPadding;
+}
+
+FMargin SMultiLineEditableTextBox::DetermineVScrollBarPadding() const
+{
+	check(Style);
+	return VScrollBarPaddingOverride.IsSet() ? VScrollBarPaddingOverride.Get() : Style->VScrollBarPadding;
+}
+
+FSlateFontInfo SMultiLineEditableTextBox::DetermineFont() const
+{
+	return FontOverride.IsSet() ? FontOverride.Get() : Style->TextStyle.Font;
+}
+
+FSlateColor SMultiLineEditableTextBox::DetermineBackgroundColor() const
+{
+	check(Style);  
+	return BackgroundColorOverride.IsSet() ? BackgroundColorOverride.Get() : Style->BackgroundColor;
 }
 
 FSlateColor SMultiLineEditableTextBox::DetermineForegroundColor() const
@@ -566,6 +601,52 @@ void SMultiLineEditableTextBox::SetOnKeyDownHandler(FOnKeyDown InOnKeyDownHandle
 void SMultiLineEditableTextBox::ForceScroll(int32 UserIndex, float ScrollAxisMagnitude)
 {
 	EditableText->ForceScroll(UserIndex, ScrollAxisMagnitude);
+}
+
+void SMultiLineEditableTextBox::OnEditableTextChanged(const FText& InText)
+{
+	OnTextChanged.ExecuteIfBound(InText);
+
+	if (OnVerifyTextChanged.IsBound())
+	{
+		FText OutErrorMessage;
+		if (!OnVerifyTextChanged.Execute(InText, OutErrorMessage))
+		{
+			// Display as an error.
+			SetError(OutErrorMessage);
+		}
+		else
+		{
+			SetError(FText::GetEmpty());
+		}
+	}
+}
+
+void SMultiLineEditableTextBox::OnEditableTextCommitted(const FText& InText, ETextCommit::Type InCommitType)
+{
+	if (OnVerifyTextChanged.IsBound())
+	{
+		FText OutErrorMessage;
+		if (!OnVerifyTextChanged.Execute(InText, OutErrorMessage))
+		{
+			// Display as an error.
+			if (InCommitType == ETextCommit::OnEnter)
+			{
+				SetError(OutErrorMessage);
+			}
+			return;
+		}
+		else
+		{
+			if (InCommitType == ETextCommit::OnEnter)
+			{
+				SetError(FText::GetEmpty());
+			}
+
+		}
+	}
+
+	OnTextCommitted.ExecuteIfBound(InText, InCommitType);
 }
 
 #endif //WITH_FANCY_TEXT

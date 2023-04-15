@@ -17,10 +17,10 @@ class MASSAIBEHAVIOR_API UMassStateTreeTrait : public UMassEntityTraitBase
 
 protected:
 
-	virtual void BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const override;
+	virtual void BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const override;
 
-	virtual void ValidateTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const override;
+	virtual void ValidateTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const override;
 
-	UPROPERTY(Category="StateTree", EditAnywhere, meta=(RequiredAssetDataTags="Schema=MassStateTreeSchema"))
-	UStateTree* StateTree;
+	UPROPERTY(Category="StateTree", EditAnywhere, meta=(RequiredAssetDataTags="Schema=/Script/MassAIBehavior/MassStateTreeSchema"))
+	TObjectPtr<UStateTree> StateTree;
 };

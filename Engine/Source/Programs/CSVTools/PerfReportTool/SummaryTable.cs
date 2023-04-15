@@ -13,6 +13,7 @@ namespace PerfSummaries
 	{
 		public static string FormatStatName(string inStatName)
 		{
+			// We add a space so stats are split over multiple lines
 			return inStatName.Replace("/", "/ ");
 		}
 
@@ -64,12 +65,13 @@ namespace PerfSummaries
 
 	class SummaryTableInfo
 	{
-		public SummaryTableInfo(XElement tableElement)
+		public SummaryTableInfo(XElement tableElement, Dictionary<string,string> substitutionsDict)
 		{
 			XAttribute rowSortAt = tableElement.Attribute("rowSort");
 			if (rowSortAt != null)
 			{
 				rowSortList.AddRange(rowSortAt.Value.Split(','));
+				ApplySubstitutionsToList(rowSortList, substitutionsDict);
 			}
 			XAttribute weightByColumnAt = tableElement.Attribute("weightByColumn");
 			if (weightByColumnAt != null)
@@ -81,17 +83,40 @@ namespace PerfSummaries
 			if (filterEl != null)
 			{
 				columnFilterList.AddRange(filterEl.Value.Split(','));
+				ApplySubstitutionsToList(columnFilterList, substitutionsDict);
 			}
 
 			bReverseSortRows = tableElement.GetSafeAttibute<bool>("reverseSortRows", false);
 			bScrollableFormatting = tableElement.GetSafeAttibute<bool>("scrollableFormatting", false);
 
+			string colorizeModeStr = tableElement.GetSafeAttibute<string>("colorizeMode", "").ToLower();
+			if (colorizeModeStr != "")
+			{
+				if (colorizeModeStr == "auto")
+				{
+					tableColorizeMode = TableColorizeMode.Auto;
+				}
+				else if (colorizeModeStr == "off")
+				{
+					tableColorizeMode = TableColorizeMode.Off;
+				}
+				else if (colorizeModeStr == "budget")
+				{
+					tableColorizeMode = TableColorizeMode.Budget;
+				}
+			}
+
+			statThreshold = tableElement.GetSafeAttibute<float>("statThreshold", 0.0f);
+			hideStatPrefix = tableElement.GetSafeAttibute<string>("hideStatPrefix");
+
 			foreach (XElement sectionBoundaryEl in tableElement.Elements("sectionBoundary"))
 			{
 				if (sectionBoundaryEl != null)
 				{
+					string statName = ApplySubstitution(sectionBoundaryEl.GetSafeAttibute<string>("statName"), substitutionsDict);
+
 					SummarySectionBoundaryInfo sectionBoundary = new SummarySectionBoundaryInfo(
-						sectionBoundaryEl.GetSafeAttibute<string>("statName"),
+						statName,
 						sectionBoundaryEl.GetSafeAttibute<string>("startToken"),
 						sectionBoundaryEl.GetSafeAttibute<string>("endToken"),
 						sectionBoundaryEl.GetSafeAttibute<int>("level", 0),
@@ -102,6 +127,32 @@ namespace PerfSummaries
 				}
 			}
 		}
+
+		private void ApplySubstitutionsToList(List<string> list, Dictionary<string, string> substitutionsDict)
+		{
+			if (substitutionsDict == null)
+			{
+				return;
+			}
+			for (int i = 0; i < list.Count; i++)
+			{
+				list[i] = ApplySubstitution(list[i], substitutionsDict);
+			}
+		}
+
+		private string ApplySubstitution(string str, Dictionary<string, string> substitutionsDict)
+		{
+			if (substitutionsDict == null)
+			{
+				return str;
+			}
+			if (substitutionsDict.TryGetValue(str, out string replaceStr))
+			{
+				return replaceStr;
+			}
+			return str;
+		}
+
 
 		public SummaryTableInfo(string filterListStr, string rowSortStr)
 		{
@@ -118,6 +169,9 @@ namespace PerfSummaries
 		public List<SummarySectionBoundaryInfo> sectionBoundaries = new List<SummarySectionBoundaryInfo>();
 		public bool bReverseSortRows;
 		public bool bScrollableFormatting;
+		public TableColorizeMode tableColorizeMode = TableColorizeMode.Budget;
+		public float statThreshold;
+		public string hideStatPrefix = null;
 		public string weightByColumn = null;
 	}
 
@@ -170,6 +224,13 @@ namespace PerfSummaries
 		static SummaryTableColumnFormatInfo defaultColumnInfo = new SummaryTableColumnFormatInfo();
 	};
 
+	enum TableColorizeMode
+	{
+		Off,		// No coloring.
+		Budget,     // Colorize based on defined budgets. No coloring for stats without defined budgets.
+		Auto,		// Auto calculate based on other values in the column.
+	};
+
 	enum AutoColorizeMode
 	{
 		Off,
@@ -182,6 +243,8 @@ namespace PerfSummaries
 		public SummaryTableColumnFormatInfo()
 		{
 			name = "Default";
+			maxStringLength = Int32.MaxValue;
+			maxStringLengthCollated = Int32.MaxValue;
 		}
 		public SummaryTableColumnFormatInfo(XElement element)
 		{
@@ -198,10 +261,48 @@ namespace PerfSummaries
 				}
 			}
 			numericFormat = element.GetSafeAttibute<string>("numericFormat");
+			maxStringLength = element.GetSafeAttibute<int>("maxStringLength", Int32.MaxValue );
+			maxStringLengthCollated = element.GetSafeAttibute<int>("maxStringLengthCollated", Int32.MaxValue );
+			if (maxStringLengthCollated == Int32.MaxValue)
+			{
+				maxStringLengthCollated = maxStringLength;
+			}
+
+			includeValueWithBucketName = element.GetSafeAttibute<bool>("includeValueWithBucketName", true);
+			string bucketNamesString = element.GetSafeAttibute<string>("valueBucketNames");
+			if (bucketNamesString != null)
+			{
+				bucketNames = bucketNamesString.Split(',').ToList();
+			}
+			string bucketThresholdsString = element.GetSafeAttibute<string>("valueBucketThresholds");
+			if (bucketThresholdsString != null)
+			{
+				bucketThresholds = bucketThresholdsString.Split(',').Select(valStr =>
+				{
+					if (float.TryParse(valStr, out float value))
+					{
+						return value;
+					}
+					return 0.0f;
+				}).ToList();
+			}
+
+			colourThresholdList = ColourThresholdList.ReadColourThresholdListXML(element.Element("colourThresholds"));
 		}
+
 		public AutoColorizeMode autoColorizeMode = AutoColorizeMode.HighIsBad;
 		public string name;
 		public string numericFormat;
+		public int maxStringLength;
+		public int maxStringLengthCollated;
+		// If we should display the actual value in parenthesis next to the bucket name (if a bucket exists).
+		public bool includeValueWithBucketName = true;
+		// The name of each bucket. The name is indexed by the threshold.
+		public List<string> bucketNames = new List<string>();
+		// The value thresholds that correspond to each bucket. If a name doesn't exist for a threshold, the last bucket name is used.
+		public List<float> bucketThresholds = new List<float>();
+		// Colour thresholds override for this column.
+		public ColourThresholdList colourThresholdList = null;
 	};
 
 	class SummaryTableColumn
@@ -210,36 +311,152 @@ namespace PerfSummaries
 		public bool isNumeric = false;
 		public string displayName;
 		public bool isRowWeightColumn = false;
+		public bool hasDiffRows = false;
 		List<double> doubleValues = new List<double>();
 		List<string> stringValues = new List<string>();
 		List<string> toolTips = new List<string>();
+		public SummaryTableElement.Type elementType;
+		public SummaryTableColumnFormatInfo formatInfo = null;
 
 		List<ColourThresholdList> colourThresholds = new List<ColourThresholdList>();
 		ColourThresholdList colourThresholdOverride = null;
-		public SummaryTableColumn(string inName, bool inIsNumeric, string inDisplayName = null, bool inIsRowWeightColumn = false)
+
+		public SummaryTableColumn(string inName, bool inIsNumeric, string inDisplayName, bool inIsRowWeightColumn, SummaryTableElement.Type inElementType)
 		{
 			name = inName;
 			isNumeric = inIsNumeric;
 			displayName = inDisplayName;
 			isRowWeightColumn = inIsRowWeightColumn;
+			elementType = inElementType;
 		}
 		public SummaryTableColumn Clone()
 		{
-			SummaryTableColumn newColumn = new SummaryTableColumn(name, isNumeric, displayName, isRowWeightColumn);
+			SummaryTableColumn newColumn = new SummaryTableColumn(name, isNumeric, displayName, isRowWeightColumn, elementType);
 			newColumn.doubleValues.AddRange(doubleValues);
 			newColumn.stringValues.AddRange(stringValues);
 			newColumn.colourThresholds.AddRange(colourThresholds);
 			newColumn.toolTips.AddRange(toolTips);
+			newColumn.hasDiffRows = hasDiffRows;
 			return newColumn;
 		}
 
-		public string GetDisplayName()
+		private double FilterInvalidValue(double value)
 		{
-			if (displayName == null)
+			return value == double.MaxValue ? 0.0 : value;
+		}
+
+		public void AddDiffRows(bool bIsFirstColumn=false)
+		{
+			if (hasDiffRows)
 			{
-				return TableUtil.FormatStatName(name);
+				throw new Exception("Column already has diff rows!");
 			}
-			return displayName;
+			// Add a diff row for every row after the first one
+			int oldCount = GetCount();
+			int diffRowCount = oldCount - 1;
+			int newCount = oldCount + diffRowCount;
+
+			// Create new lists with counts reserved
+			List<double> newDoubleValues = new List<double>(doubleValues.Count > 0 ? newCount : 0);
+			List<string> newStringValues = new List<string>(stringValues.Count > 0 ? newCount : 0);
+			List<string> newToolTips = new List<string>(toolTips.Count > 0 ? newCount : 0);
+			List<ColourThresholdList> newColourThresholds = new List<ColourThresholdList>(colourThresholds.Count > 0 ? newCount : 0);
+
+			bool bComputeDiff = isNumeric && name != "Count";
+
+			// Add diff rows to each of the arrays
+			for (int i = 0; i < doubleValues.Count; i++)
+			{
+				newDoubleValues.Add(doubleValues[i]);
+				if (i > 0)
+				{
+					if (bComputeDiff)
+					{
+						double thisValue = FilterInvalidValue(doubleValues[i]);
+						double prevValue = FilterInvalidValue(doubleValues[i - 1]);
+						newDoubleValues.Add(thisValue - prevValue);
+					}
+					else
+					{
+						newDoubleValues.Add(0.0);
+					}
+				}
+			}
+			for (int i = 0; i < stringValues.Count; i++)
+			{
+				newStringValues.Add(stringValues[i]);
+				if (i > 0)
+				{
+					newStringValues.Add(bIsFirstColumn ? "Diff" : "");
+				}
+			}
+			for (int i = 0; i < toolTips.Count; i++)
+			{
+				newToolTips.Add(toolTips[i]);
+				if (i > 0)
+				{
+					newToolTips.Add("");
+				}
+			}
+			for (int i = 0; i < colourThresholds.Count; i++)
+			{
+				newColourThresholds.Add(colourThresholds[i]);
+				if (i > 0)
+				{
+					newColourThresholds.Add(null);
+				}
+			}
+
+			doubleValues = newDoubleValues;
+			stringValues = newStringValues;
+			toolTips = newToolTips;
+			colourThresholds = newColourThresholds;
+			hasDiffRows = true;
+		}
+
+		public bool IsDiffRow(int rowIndex)
+		{
+			if (hasDiffRows == false || rowIndex < 2)
+			{
+				return false;
+			}
+			return ((rowIndex - 2) % 2) == 0;
+		}
+
+		public string GetDisplayName(string hideStatPrefix=null, bool bAddStatCategorySeparatorSpaces = true, bool bGreyOutStatCategories = false)
+		{
+			if (displayName != null)
+			{
+				return displayName;
+			}
+			// Trim the stat name suffix if necessary
+			string statName = name;
+			if (hideStatPrefix != null)
+			{
+				string baseStatName = SummaryTable.GetBaseStatNameWithPrefixAndSuffix(statName, out string prefix, out string suffix);
+				if (baseStatName.ToLower().StartsWith(hideStatPrefix.ToLower() ) )
+				{
+					statName = prefix + baseStatName.Substring(hideStatPrefix.Length) + suffix;
+				}
+			}
+
+			if (elementType == SummaryTableElement.Type.CsvStatAverage )
+			{
+				if (bGreyOutStatCategories)
+				{
+					string baseStatName = SummaryTable.GetBaseStatNameWithPrefixAndSuffix(statName, out string prefix, out _);
+					int idx = baseStatName.LastIndexOf("/");
+					if (idx >= 0)
+					{
+						statName = prefix + "<span class='greyText'>" + baseStatName.Substring(0, idx+1) + "</span><span class='blackText'>" + baseStatName.Substring(idx+1)+ "</span>";
+					}
+				}
+				if (bAddStatCategorySeparatorSpaces)
+				{
+					return statName.Replace("/", "/ ");
+				}
+			}
+			return statName;
 		}
 
 		public void SetValue(int index, double value)
@@ -297,15 +514,20 @@ namespace PerfSummaries
 			return null;
 		}
 
-		public string GetColour(int index)
+		public string GetBackgroundColor(int index)
 		{
 			ColourThresholdList thresholds = null;
 			double value = GetValue(index);
-			if (value == double.MaxValue)
+			if (value == double.MaxValue || IsDiffRow(index))
 			{
 				return null;
 			}
-			if (colourThresholdOverride != null)
+
+			if (formatInfo.colourThresholdList != null)
+			{
+				thresholds = formatInfo.colourThresholdList;
+			}
+			else if (colourThresholdOverride != null)
 			{
 				thresholds = colourThresholdOverride;
 			}
@@ -323,12 +545,73 @@ namespace PerfSummaries
 			return thresholds.GetColourForValue(value);
 		}
 
-		public void ComputeAutomaticColourThresholds(AutoColorizeMode autoColorizeMode)
+		public string GetTextColor(int index)
 		{
-			if (autoColorizeMode == AutoColorizeMode.Off)
+			const double absoluteIgnoreThreshold = 0.025;
+			if (hasDiffRows && IsDiffRow(index) && isNumeric && index < doubleValues.Count )
+			{
+				// For simplicity, just negate the diff value if lowIsBad
+				double diffValue = doubleValues[index];
+				if (formatInfo.autoColorizeMode == AutoColorizeMode.LowIsBad)
+				{
+					diffValue *= -1.0;
+				}
+
+				// Diff absolute value is insignificant: output faded color
+				if (Math.Abs(diffValue) < absoluteIgnoreThreshold)
+				{
+					// Very close to zero: just output grey
+					if (Math.Abs(diffValue) < 0.001f)
+					{
+						return "#A0A0A0";
+					}
+					// Slight red/green
+					return diffValue > 0.0 ? "#B8A0A0" : "#A0B8A0";
+				}
+
+				double prevValue = FilterInvalidValue(doubleValues[index - 2]);
+				double thisValue = FilterInvalidValue(doubleValues[index - 1]);
+
+				double maxValue = Math.Max(thisValue, prevValue);
+				double percentOfMax = 100.0 * diffValue / maxValue;
+				string red = "#B00000";
+				string green = "#008000";
+				// More than half a percent of max: output full colours
+				if (percentOfMax >= 0.5)
+				{
+					return red;
+				}
+				if (percentOfMax <= -0.5)
+				{
+					return green;
+				}
+				// Output faded red/green
+				return diffValue > 0.0 ? "#B8A0A0" : "#A0B8A0";
+			}
+			return null;
+		}
+
+
+		public void ComputeColorThresholds(TableColorizeMode tableColorizeMode)
+		{
+			if ( tableColorizeMode == TableColorizeMode.Budget )
 			{
 				return;
 			}
+			if (tableColorizeMode == TableColorizeMode.Off)
+			{
+				// Set empty color thresholds. This clears existing thresholds from summaries
+				colourThresholds = new List<ColourThresholdList>();
+				return;
+			}
+
+			AutoColorizeMode autoColorizeMode = formatInfo.autoColorizeMode;
+			if (autoColorizeMode == AutoColorizeMode.Off || !isNumeric)
+			{
+				return;
+			}
+
+			// Set a single colour threshold list for the whole column
 			colourThresholds = new List<ColourThresholdList>();
 			double maxValue = -double.MaxValue;
 			double minValue = double.MaxValue;
@@ -336,6 +619,10 @@ namespace PerfSummaries
 			double validCount = 0.0f;
 			for (int i = 0; i < doubleValues.Count; i++)
 			{
+				if (IsDiffRow(i))
+				{
+					continue;
+				}
 				double val = doubleValues[i];
 				if (val != double.MaxValue)
 				{
@@ -375,6 +662,22 @@ namespace PerfSummaries
 			return doubleValues[index];
 		}
 
+		public bool AreAllValuesOverThreshold(double threshold)
+		{
+			if (!isNumeric)
+			{
+				return true;
+			}
+			foreach(double value in doubleValues)
+			{
+				if ( value > threshold && value != double.MaxValue)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		public void SetStringValue(int index, string value)
 		{
 			if (isNumeric)
@@ -402,9 +705,24 @@ namespace PerfSummaries
 					return "";
 				}
 				double val = doubleValues[index];
+
+				string prefix = "";
+				bool bIsDiffRow = hasDiffRows && IsDiffRow(index);
+				if (bIsDiffRow)
+				{
+					if ( val == 0.0 )
+					{
+						return "";
+					}
+					if ( val > 0.0 )
+					{
+						prefix = "+";
+					}
+				}
+
 				if (forceNumericFormat != null)
 				{
-					return val.ToString(forceNumericFormat);
+					return prefix + val.ToString(forceNumericFormat);
 				}
 				else if (roundNumericValues)
 				{
@@ -412,19 +730,31 @@ namespace PerfSummaries
 					double frac = absVal - (double)Math.Truncate(absVal);
 					if (absVal >= 250.0f || frac < 0.0001f)
 					{
-						return val.ToString("0");
+						return prefix+val.ToString("0");
 					}
 					if (absVal >= 50.0f)
 					{
-						return val.ToString("0.0");
+						return prefix + val.ToString("0.0");
 					}
 					if (absVal >= 0.1)
 					{
-						return val.ToString("0.00");
+						return prefix + val.ToString("0.00");
 					}
-					return val.ToString("0.000");
+					if (bIsDiffRow)
+					{
+						// Filter out close to zero results in diff columns
+						if (absVal < 0.000)
+						{
+							return "";
+						}
+						return prefix + val.ToString("0.00");
+					}
+					else
+					{
+						return val.ToString("0.000");
+					}
 				}
-				return val.ToString();
+				return prefix + val.ToString();
 			}
 			else
 			{
@@ -502,7 +832,7 @@ namespace PerfSummaries
 			{
 				if (collateByColumns.Contains(srcColumn))
 				{
-					newColumns.Add(new SummaryTableColumn(srcColumn.name, false, srcColumn.displayName));
+					newColumns.Add(new SummaryTableColumn(srcColumn.name, false, srcColumn.displayName, false, srcColumn.elementType));
 					finalSortByList.Add(srcColumn.name.ToLower());
 					// Early out if we've found all the columns
 					if (finalSortByList.Count == collateByColumns.Count)
@@ -512,7 +842,7 @@ namespace PerfSummaries
 				}
 			}
 
-			newColumns.Add(new SummaryTableColumn("Count", true));
+			newColumns.Add(new SummaryTableColumn("Count", true, null, false, SummaryTableElement.Type.ToolMetadata));
 			int countColumnIndex = newColumns.Count - 1;
 
 			int numericColumnStartIndex = newColumns.Count;
@@ -523,11 +853,11 @@ namespace PerfSummaries
 				if (column.isNumeric && !collateByColumns.Contains(column))
 				{
 					srcToDestBaseColumnIndex.Add(newColumns.Count);
-					newColumns.Add(new SummaryTableColumn("Avg " + column.name, true));
+					newColumns.Add(new SummaryTableColumn("Avg " + column.name, true, null, false, column.elementType));
 					if (addMinMaxColumns)
 					{
-						newColumns.Add(new SummaryTableColumn("Min " + column.name, true));
-						newColumns.Add(new SummaryTableColumn("Max " + column.name, true));
+						newColumns.Add(new SummaryTableColumn("Min " + column.name, true, null, false, column.elementType));
+						newColumns.Add(new SummaryTableColumn("Max " + column.name, true, null, false, column.elementType));
 					}
 				}
 				else
@@ -664,7 +994,7 @@ namespace PerfSummaries
 			return SortAndFilter(customFilter.Split(',').ToList(), customRowSort.Split(',').ToList(), bReverseSort, weightByColumnName);
 		}
 
-		public SummaryTable SortAndFilter(List<string> columnFilterList, List<string> rowSortList, bool bReverseSort, string weightByColumnName)
+		public SummaryTable SortAndFilter(List<string> columnFilterList, List<string> rowSortList, bool bReverseSort, string weightByColumnName, float statThreshold = 0.0f)
 		{
 			SummaryTable newTable = SortRows(rowSortList, bReverseSort);
 
@@ -749,11 +1079,39 @@ namespace PerfSummaries
 			}
 
 
+			// Filter out csv stat or metric columns below the specified threshold
+			if (statThreshold > 0.0f)
+			{
+				List<SummaryTableColumn> oldColumnList = newColumnList;
+				newColumnList = new List<SummaryTableColumn>();
+				foreach (SummaryTableColumn column in oldColumnList)
+				{
+					if (!column.isNumeric || 
+						( column.elementType != SummaryTableElement.Type.CsvStatAverage && column.elementType != SummaryTableElement.Type.SummaryTableMetric ) || 
+						column.AreAllValuesOverThreshold((double)statThreshold))
+					{
+						newColumnList.Add(column);
+					}
+				}
+			}
+
 			newTable.columns = newColumnList;
 			newTable.rowCount = rowCount;
 			newTable.InitColumnLookup();
 
 			return newTable;
+		}
+
+		public void AddDiffRows()
+		{
+			for (int i=0; i<columns.Count; i++)
+			{
+				columns[i].AddDiffRows(i == 0);
+			}
+			rowCount += rowCount - 1;
+
+			// Just set rowWeightings to null for now. We shouldn't need it, since we should have already collated by this point
+			rowWeightings = null;
 		}
 
 		public void ApplyDisplayNameMapping(Dictionary<string, string> statDisplaynameMapping)
@@ -764,9 +1122,7 @@ namespace PerfSummaries
 				if (statDisplaynameMapping != null && column.displayName == null)
 				{
 					string name = column.name;
-					string suffix = "";
-					string prefix = "";
-					string statName = GetStatNameWithPrefixAndSuffix(name, out prefix, out suffix);
+					string statName = GetBaseStatNameWithPrefixAndSuffix(name, out string prefix, out string suffix);
 					if (statDisplaynameMapping.ContainsKey(statName.ToLower()))
 					{
 						column.displayName = prefix + statDisplaynameMapping[statName.ToLower()] + suffix;
@@ -774,15 +1130,12 @@ namespace PerfSummaries
 				}
 			}
 		}
-
-		string GetStatNameWithoutPrefixAndSuffix(string inName)
+		public static string GetBaseStatName(string inName)
 		{
-			string suffix = "";
-			string prefix = "";
-			return GetStatNameWithPrefixAndSuffix(inName, out prefix, out suffix);
+			return GetBaseStatNameWithPrefixAndSuffix(inName, out _, out _);
 		}
 
-		string GetStatNameWithPrefixAndSuffix(string inName, out string prefix, out string suffix)
+		public static string GetBaseStatNameWithPrefixAndSuffix(string inName, out string prefix, out string suffix)
 		{
 			suffix = "";
 			prefix = "";
@@ -826,7 +1179,20 @@ namespace PerfSummaries
 		}
 
 
-		public void WriteToHTML(string htmlFilename, string VersionString, bool bSpreadsheetFriendlyStrings, List<SummarySectionBoundaryInfo> sectionBoundaries, bool bScrollableTable, bool bAddMinMaxColumns, int maxColumnStringLength, SummaryTableColumnFormatInfoCollection columnFormatInfoList, string weightByColumnName)
+		public void WriteToHTML(
+			string htmlFilename, 
+			string VersionString, 
+			bool bSpreadsheetFriendlyStrings, 
+			List<SummarySectionBoundaryInfo> sectionBoundaries, 
+			bool bScrollableTable, 
+			TableColorizeMode tableColorizeMode,
+			bool bAddMinMaxColumns, 
+			string hideStatPrefix,
+			int maxColumnStringLength, 
+			SummaryTableColumnFormatInfoCollection columnFormatInfoList, 
+			string weightByColumnName, 
+			string title, 
+			bool bTranspose )
 		{
 			System.IO.StreamWriter htmlFile = new System.IO.StreamWriter(htmlFilename, false);
 			int statColSpan = hasMinMaxColumns ? 3 : 1;
@@ -836,15 +1202,25 @@ namespace PerfSummaries
 				cellPadding = 4;
 			}
 
+			// Generate an automatic title
+			if (title==null)
+			{
+				title = htmlFilename.Replace("_Email.html", "").Replace(".html", "").Replace("\\", "/");
+				title = title.Substring(title.LastIndexOf('/') + 1);
+			}
+
 			htmlFile.WriteLine("<html>");
-			htmlFile.WriteLine("<head><title>Performance summary</title>");
+			htmlFile.WriteLine("<head><title>Perf Summary: "+ title + "</title>");
+
+			bool bAddStatNameSpacing = !bTranspose;
+			bool bGreyOutStatPrefixes = bScrollableTable && bTranspose;
 
 			// Figure out the sticky column count
 			int stickyColumnCount = 0;
 			if (bScrollableTable)
 			{
 				stickyColumnCount = 1;
-				if (isCollated)
+				if (isCollated && !bTranspose)
 				{
 					for (int i = 0; i < columns.Count; i++)
 					{
@@ -854,6 +1230,23 @@ namespace PerfSummaries
 							break;
 						}
 					}
+				}
+			}
+
+			// Get format info for the columns
+			foreach (SummaryTableColumn column in columns)
+			{
+				column.formatInfo = (columnFormatInfoList != null) ? columnFormatInfoList.GetFormatInfo(column.name) : SummaryTableColumnFormatInfoCollection.DefaultColumnInfo;
+			}
+
+			// Automatically colorize the table if requested.
+			// We run this even if colorize is off as we need to overwrite the values.
+			if (tableColorizeMode == TableColorizeMode.Auto ||
+				tableColorizeMode == TableColorizeMode.Off)
+			{
+				foreach (SummaryTableColumn column in columns)
+				{
+					column.ComputeColorThresholds(tableColorizeMode);
 				}
 			}
 
@@ -889,17 +1282,9 @@ namespace PerfSummaries
 					"	 styleElement.textContent+='tr.lastHeaderRow th:nth-child('+(i+1)+') {  z-index: 8;  border-top: 2px solid black;  font-size: 11px;  left: '+xOffset+'px;'+rBorderParam+'}'; \n" +
 					"	 styleElement.textContent+='td:nth-child('+(i+1)+') {  position: -webkit-sticky;  position: sticky; z-index: 7;  left: '+xOffset+'px; '+rBorderParam+'}'; \n" +
 					"	 xOffset+=table.rows[1].cells[i].offsetWidth; \n" +
-					"  } \n"
-					);
-				// Make all sticky columns except the count column opaque
-				htmlFile.WriteLine(
-					"  for (var i=0;i<numStickyCols-1;i++) \n" +
-					"  { \n" +
-					"    styleElement.textContent+='tr:nth-child(odd) td:nth-child('+(i+1)+') { background-color: #e2e2e2; }'; \n" +
-					"    styleElement.textContent+='tr:nth-child(even) td:nth-child('+(i+1)+') { background-color: #ffffff; }'; \n" +
-					"  } \n" +
+					"  } \n"+
 					"} \n"
-				);
+					);
 				htmlFile.WriteLine("</script>");
 			}
 
@@ -909,28 +1294,41 @@ namespace PerfSummaries
 			htmlFile.WriteLine("h2 {  font-family: 'Verdana', Times, serif; font-size: 16px }");
 			htmlFile.WriteLine("h1 {  font-family: 'Verdana', Times, serif; font-size: 20px }");
 			string tableCss = "";
+
+
 			if (bScrollableTable)
 			{
-				int firstColMaxStringLength = 0;
-				if (columns.Count > 0)
+				int headerMinWidth = bTranspose ? 50 : 75;
+				int headerMaxWidth = bTranspose ? 165 : 220;
+				int cellFontSize = bTranspose ? 12 : 10;
+				int headerCellFontSize = bTranspose ? 10 : 9;
+				int firstColVerticalPadding = bTranspose ? 5 : 0;
+				string cellAlign = bTranspose ? "right" : "left";
+
+				if (bAddMinMaxColumns)
 				{
-					for (int i = 0; i < columns[0].GetCount(); i++)
-					{
-						firstColMaxStringLength = Math.Max(firstColMaxStringLength, columns[0].GetStringValue(i).Length);
-					}
+					headerMinWidth = 35;
 				}
-				int firstColWidth = (int)(firstColMaxStringLength * 6.5);
+
 				tableCss =
 					"table {table-layout: fixed;} \n" +
-					"table, th, td { border: 0px solid black; border-spacing: 0; border-collapse: separate; padding: " + cellPadding + "px; vertical-align: center; font-family: 'Verdana', Times, serif; font-size: 10px;} \n" +
+					"table, th, td { border: 0px solid black; border-spacing: 0; border-collapse: separate; padding: " + cellPadding + "px; vertical-align: center; font-family: 'Verdana', Times, serif; font-size: " + cellFontSize + "px;} \n" +
 					"td {" +
 					"  border-right: 1px solid black;" +
-					"  max-width: 400;" +
+					"  max-width: 450;" +
+					"} \n" +
+					"td:first-child {" +
+					"  padding-right:10px; padding-left:5px;" +
+					"  padding-top:" + firstColVerticalPadding + "px;padding-bottom:" + firstColVerticalPadding + "px;" +
+					"} \n" +
+					"td:not(:first-child) {" +
+					"  text-align: " + cellAlign + ";" +
 					"} \n" +
 					"tr:first-element { border-top: 2px; border-bottom: 2px } \n" +
 					"th {" +
-					"  width: 75px;" +
-					"  max-width: 400;" +
+					"  width: auto;" +
+					"  max-width: " + headerMaxWidth + "px;" +
+					"  min-width: " + headerMinWidth + "px;" +
 					"  position: -webkit-sticky;" +
 					"  position: sticky;" +
 					"  border-right: 1px solid black;" +
@@ -938,17 +1336,24 @@ namespace PerfSummaries
 					"  z-index: 5;" +
 					"  background-color: #ffffff;" +
 					"  top:0;" +
-					"  font-size: 9px;" +
+					"  font-size: " + headerCellFontSize + "px;" +
 					"  word-wrap: break-word;" +
 					"  overflow: hidden;" +
 					"  height: 60;" +
+					"} \n" +
+					"span.greyText {" +
+					"  color: #808080;" +
+					"  display: inline-block;"+
+					"} \n"+
+					"span.blackText {" +
+					"  color: #000000;" +
+					"  display: inline-block;" +
 					"} \n";
 
 				// Top-left cell of the table is always on top, big font, thick border
 				tableCss += "tr:first-child th:first-child { z-index: 100;  border-right: 2px solid black; border-top: 2px solid black; font-size: 11px; top:0; left: 0px; } \n";
 
-				// Fix the first column width
-				tableCss += "th:first-child, td:first-child { border-left: 2px solid black; min-width: " + firstColWidth + ";} \n";
+				tableCss += "th:first-child, td:first-child { border-left: 2px solid black; white-space: nowrap; max-width:800px;} \n";
 
 				if (bAddMinMaxColumns && isCollated)
 				{
@@ -970,8 +1375,13 @@ namespace PerfSummaries
 
 
 			bool bOddRowsGray = !(!bAddMinMaxColumns || !isCollated);
-			tableCss += "tr:nth-child(" + (bOddRowsGray ? "odd" : "even") + ") {background-color: #e2e2e2;} \n";
-			tableCss += "tr:nth-child(" + (bOddRowsGray ? "even" : "odd") + ") {background-color: #ffffff;} \n";
+
+			string oddColor = bOddRowsGray ? "#eaeaea" : "#ffffff";
+			string evenColor = bOddRowsGray ? "#ffffff" : "#eaeaea";
+
+			tableCss += "tr:nth-child(odd) {background-color: "+oddColor+";} \n";
+			tableCss += "tr:nth-child(even) {background-color: "+evenColor+";} \n";
+
 			tableCss += "tr:first-child {background-color: #ffffff;} \n";
 			tableCss += "tr.lastHeaderRow th { border-bottom: 2px solid black; } \n";
 
@@ -984,86 +1394,69 @@ namespace PerfSummaries
 
 			htmlFile.WriteLine("</style>");
 			htmlFile.WriteLine("</head><body>");
-			htmlFile.WriteLine("<table id='mainTable'>");
 
-			// Get format info for the columns
-			Dictionary<SummaryTableColumn, SummaryTableColumnFormatInfo> columnFormatInfoLookup = new Dictionary<SummaryTableColumn, SummaryTableColumnFormatInfo>();
-			foreach (SummaryTableColumn column in columns)
-			{
-				columnFormatInfoLookup[column] = (columnFormatInfoList != null) ? columnFormatInfoList.GetFormatInfo(column.name) : SummaryTableColumnFormatInfoCollection.DefaultColumnInfo;
-			}
 
-			// Automatically colourize the table
-			if (bScrollableTable)
-			{
-				foreach (SummaryTableColumn column in columns)
-				{
-					if (column.isNumeric)
-					{
-						column.ComputeAutomaticColourThresholds(columnFormatInfoLookup[column].autoColorizeMode);
-					}
-				}
-			}
+			HtmlTable htmlTable = new HtmlTable("id='mainTable'", 1, columns.Count);
 
-			string HeaderRow = "";
+			// Make a header row, but don't add it to the table yet
+			HtmlTable.Row headerRow = new HtmlTable.Row();
+
+			// Write the header
 			if (isCollated)
 			{
-				string TopHeaderRow = "";
-				if (bScrollableTable)
-				{
-					// Generate an automatic title
-					string title = htmlFilename.Replace("_Email.html", "").Replace(".html", "").Replace("\\", "/");
-					title = title.Substring(title.LastIndexOf('/') + 1);
-					TopHeaderRow += "<th colspan='" + firstStatColumnIndex + "'><h3>" + title + "</h3></th>";
-				}
-				else
-				{
-					TopHeaderRow += "<th colspan='" + firstStatColumnIndex + "'/>";
-				}
+				HtmlTable.Row topHeaderRow = headerRow;
 
+				// Add the special columns (up to Count) to the lower header row
 				for (int i = 0; i < firstStatColumnIndex; i++)
 				{
-					HeaderRow += "<th>" + columns[i].GetDisplayName() + "</th>";
-				}
-				if (!bAddMinMaxColumns)
-				{
-					TopHeaderRow = HeaderRow;
+					headerRow.AddCell(columns[i].GetDisplayName(hideStatPrefix, bAddStatNameSpacing, bGreyOutStatPrefixes));
 				}
 
-				for (int i = firstStatColumnIndex; i < columns.Count; i++)
-				{
-					string prefix = "";
-					string suffix = "";
-					string statName = GetStatNameWithPrefixAndSuffix(columns[i].GetDisplayName(), out prefix, out suffix);
-					if ((i - 1) % statColSpan == 0)
-					{
-						TopHeaderRow += "<th colspan='" + statColSpan + "' >" + statName + suffix + "</th>";
-					}
-					HeaderRow += "<th>" + prefix.Trim() + "</th>";
-				}
 				if (bAddMinMaxColumns)
 				{
-					htmlFile.WriteLine("  <tr>" + TopHeaderRow + "</tr>");
-					htmlFile.WriteLine("  <tr class='lastHeaderRow'>" + HeaderRow + "</tr>");
+					topHeaderRow = htmlTable.CreateRow();
+					htmlTable.numHeaderRows = 2;
+					if (bScrollableTable)
+					{
+						topHeaderRow.AddCell("<h3>" + title + "</h3>", "colspan='" + firstStatColumnIndex + "'");
+					}
+					else
+					{
+						topHeaderRow.AddCell("", "colspan='" + firstStatColumnIndex + "'");
+					}
+					// Add the stat columns
+					for (int i = firstStatColumnIndex; i < columns.Count; i++)
+					{
+						string statName = GetBaseStatNameWithPrefixAndSuffix(columns[i].GetDisplayName(hideStatPrefix, bAddStatNameSpacing, bGreyOutStatPrefixes), out string prefix, out string suffix);
+						if ((i - 1) % statColSpan == 0)
+						{
+							topHeaderRow.AddCell(statName + suffix, "colspan='" + statColSpan + "'");
+						}
+						headerRow.AddCell(prefix.Trim());
+					}
 				}
 				else
 				{
-					htmlFile.WriteLine("  <tr class='lastHeaderRow'>" + TopHeaderRow + "</tr>");
+					// Add the stat columns
+					for (int i = firstStatColumnIndex; i < columns.Count; i++)
+					{
+						string statName = GetBaseStatNameWithPrefixAndSuffix(columns[i].GetDisplayName(hideStatPrefix, bAddStatNameSpacing, bGreyOutStatPrefixes), out _, out string suffix);
+						headerRow.AddCell(statName + suffix);
+					}
 				}
 			}
 			else
 			{
 				foreach (SummaryTableColumn column in columns)
 				{
-					HeaderRow += "<th>" + column.GetDisplayName() + "</th>";
+					headerRow.AddCell(column.GetDisplayName(hideStatPrefix, bAddStatNameSpacing, bGreyOutStatPrefixes));
 				}
-				htmlFile.WriteLine("  <tr class='lastHeaderRow'>" + HeaderRow + "</tr>");
 			}
-			string[] stripeColors = { "'#e2e2e2'", "'#ffffff'" };
+			htmlTable.AddRow(headerRow);
 
 			// Work out which rows are major/minor section boundaries
 			Dictionary<int, int> rowSectionBoundaryLevel = new Dictionary<int, int>();
-			if (sectionBoundaries != null)
+			if (sectionBoundaries != null && !bTranspose)
 			{
 				foreach (SummarySectionBoundaryInfo sectionBoundaryInfo in sectionBoundaries)
 				{
@@ -1129,70 +1522,131 @@ namespace PerfSummaries
 						}
 					}
 				}
-
 			}
 
 			// Add the rows to the table
-			for (int i = 0; i < rowCount; i++)
+			for (int rowIndex = 0; rowIndex < rowCount; rowIndex++)
 			{
 				string rowClassStr = "";
 
 				// Is this a major/minor section boundary
-				if (rowSectionBoundaryLevel.ContainsKey(i))
+				if (rowSectionBoundaryLevel.ContainsKey(rowIndex))
 				{
-					int sectionLevel = rowSectionBoundaryLevel[i];
+					int sectionLevel = rowSectionBoundaryLevel[rowIndex];
 					if (sectionLevel < 3)
 					{
 						rowClassStr = " class='sectionStartLevel" + sectionLevel + "'";
 					}
 				}
 
-				htmlFile.Write("<tr" + rowClassStr + ">");
+				HtmlTable.Row currentRow = htmlTable.CreateRow(rowClassStr);
 				int columnIndex = 0;
 				foreach (SummaryTableColumn column in columns)
 				{
+					List<string> attributes = new List<string>();
+
 					// Add the tooltip for non-collated tables
-					string toolTipString = "";
 					if (!isCollated)
 					{
-						string toolTip = column.GetToolTipValue(i);
+						string toolTip = column.GetToolTipValue(rowIndex);
 						if (toolTip == "")
 						{
 							toolTip = column.GetDisplayName();
 						}
-						toolTipString = " title='" + toolTip + "'";
+						attributes.Add("title='" + toolTip + "'");
 					}
-					string colour = column.GetColour(i);
+					string bgColour = column.GetBackgroundColor(rowIndex);
 
-					// Alternating row colours are normally handled by CSS, but we need to handle it explicitly if we have frozen first columns
-					if (columnIndex < stickyColumnCount && colour == null)
+					if (bgColour != null)
 					{
-						colour = stripeColors[i % 2];
+						attributes.Add("bgcolor=" + bgColour);
 					}
-					string bgColorString = (colour == null ? "" : " bgcolor=" + colour);
-					bool bold = false;
-					string numericFormat = columnFormatInfoLookup[column].numericFormat;
-					string stringValue = column.GetStringValue(i, true, numericFormat);
-					if (maxColumnStringLength > 0 && stringValue.Length > maxColumnStringLength)
+					string textColour = column.GetTextColor(rowIndex);
+					if (textColour != null)
 					{
-						stringValue = TableUtil.SafeTruncateHtmlTableValue(stringValue, maxColumnStringLength);
+						attributes.Add("style='color:" + textColour + "'");
+					}
+
+					bool bold = false;
+					SummaryTableColumnFormatInfo columnFormat = column.formatInfo;
+					int maxStringLength = Math.Min( isCollated ? columnFormat.maxStringLengthCollated : columnFormat.maxStringLength, maxColumnStringLength);
+
+					string numericFormat = columnFormat.numericFormat;
+					string stringValue = column.GetStringValue(rowIndex, true, numericFormat);
+
+					// Check if we have any value buckets, if so lookup the bucket name for the value and display that with the value.
+					if (column.isNumeric && stringValue.Length > 0 && columnFormat.bucketNames.Count > 0 && columnFormat.bucketThresholds.Count > 0)
+					{
+						double value = column.GetValue(rowIndex);
+						int bucketIndex = 0;
+						for (bucketIndex = 0; bucketIndex < columnFormat.bucketThresholds.Count; ++bucketIndex)
+						{
+							if (value <= columnFormat.bucketThresholds[bucketIndex])
+							{
+								break;
+							}
+						}
+
+						bucketIndex = Math.Min(bucketIndex, columnFormat.bucketNames.Count-1);
+						if (columnFormat.includeValueWithBucketName)
+						{
+							stringValue = columnFormat.bucketNames[bucketIndex] + " (" + stringValue + ")";
+						}
+						else
+						{
+							stringValue = columnFormat.bucketNames[bucketIndex];
+						}
+					}
+
+					if (stringValue.Length > maxStringLength)
+					{
+						stringValue = TableUtil.SafeTruncateHtmlTableValue(stringValue, maxStringLength);
 					}
 					if (bSpreadsheetFriendlyStrings && !column.isNumeric)
 					{
 						stringValue = "'" + stringValue;
 					}
-					string columnString = "<td" + toolTipString + bgColorString + "> " + (bold ? "<b>" : "") + stringValue + (bold ? "</b>" : "") + "</td>";
-					htmlFile.Write(columnString);
+					currentRow.AddCell( (bold ? "<b>" : "") + stringValue + (bold ? "</b>" : ""), attributes );
 					columnIndex++;
 				}
-				htmlFile.WriteLine("</tr>");
 			}
-			htmlFile.WriteLine("</table>");
+
+			if (bTranspose)
+			{
+				htmlTable = htmlTable.Transpose();
+				htmlTable.Set(0, 0, new HtmlTable.Cell(title, ""));
+
+				// Add a section boundary where the stats start
+				htmlTable.rows[htmlTable.numHeaderRows + firstStatColumnIndex - 1].attributes = " class='sectionStartLevel2'";
+			}
+
+			// Apply final formatting
+			htmlTable.rows[htmlTable.numHeaderRows-1].attributes += " class='lastHeaderRow'";
+
+			if (bScrollableTable)
+			{
+				// Apply stripe colors to the sticky columns to make them opaque (these need to render on top).	Can't use per-cell CSS because we don't want to override existing cell colors
+				string[] stripeColors = { "bgcolor='"+oddColor+"'", "bgcolor='"+evenColor+"'" };
+				for (int rowIndex = htmlTable.numHeaderRows; rowIndex < htmlTable.rows.Count; rowIndex++)
+				{
+					HtmlTable.Row row = htmlTable.rows[rowIndex];
+					for (int colIndex = 0; colIndex<Math.Min(row.cells.Count,stickyColumnCount); colIndex++ )
+					{
+						HtmlTable.Cell cell = row.cells[colIndex];
+						if (cell != null && !cell.attributes.Contains("bgcolor="))
+						{
+							cell.attributes += " " + stripeColors[rowIndex % 2];
+						}
+					}
+				}
+			}
+
+			htmlTable.WriteToHtml(htmlFile);
+
 			string extraString = "";
 			if (isCollated && weightByColumnName != null)
 			{
 				extraString += " - weighted avg";
-				//htmlFile.WriteLine("<p style='font-size:8'>Weighted by " + weightByColumnName +"</p>");
 			}
 
 			htmlFile.WriteLine("<p style='font-size:8'>Created with PerfReportTool " + VersionString + extraString + "</p>");
@@ -1212,7 +1666,7 @@ namespace PerfSummaries
 					if (columnLookup.ContainsKey(s.ToLower()))
 					{
 						SummaryTableColumn column = columnLookup[s.ToLower()];
-						key += "{" + column.GetStringValue(i) + "}";
+						key += "{" + column.GetStringValue(i,false,"0.0000000000") + "}";
 					}
 					else
 					{
@@ -1231,7 +1685,7 @@ namespace PerfSummaries
 			List<SummaryTableColumn> newColumns = new List<SummaryTableColumn>();
 			foreach (SummaryTableColumn srcCol in columns)
 			{
-				SummaryTableColumn destCol = new SummaryTableColumn(srcCol.name, srcCol.isNumeric);
+				SummaryTableColumn destCol = new SummaryTableColumn(srcCol.name, srcCol.isNumeric, null, false, srcCol.elementType);
 				for (int i = 0; i < rowCount; i++)
 				{
 					int srcIndex = columnRemapping[i].Value;
@@ -1284,7 +1738,7 @@ namespace PerfSummaries
 
 				if (!columnLookup.ContainsKey(key))
 				{
-					column = new SummaryTableColumn(value.name, value.isNumeric);
+					column = new SummaryTableColumn(value.name, value.isNumeric, null, false, value.type);
 					columnLookup.Add(key, column);
 					columns.Add(column);
 				}
@@ -1319,6 +1773,166 @@ namespace PerfSummaries
 		int firstStatColumnIndex = 0;
 		bool isCollated = false;
 		bool hasMinMaxColumns = false;
+	};
+
+	class HtmlTable
+	{
+		public class Row
+		{
+			public Row(string inAttributes="", int reserveColumnCount=0)
+			{
+				attributes = inAttributes;
+				if (reserveColumnCount > 0)
+				{
+					cells = new List<Cell>(reserveColumnCount);
+				}
+				else
+				{
+					cells = new List<Cell>();
+				}
+			}
+
+			public void AddCell(string contents="", string attributes="")
+			{
+				cells.Add(new Cell(contents, attributes));
+			}
+
+			public void AddCell(string contents, List<string> attributes)
+			{
+				cells.Add(new Cell(contents, String.Join(" ",attributes)));
+			}
+
+
+			public void WriteToHtml(System.IO.StreamWriter htmlFile, bool bIsHeaderRow )
+			{
+				string attributesStr = attributes.Length == 0 ? "" : " " + attributes;
+				htmlFile.Write("<tr"+ attributesStr + ">");
+				foreach (Cell cell in cells)
+				{
+					if (cell == null)
+					{
+						htmlFile.Write("<td/>");
+					}
+					else
+					{
+						cell.WriteToHtml(htmlFile, bIsHeaderRow);
+					}
+				}
+				htmlFile.WriteLine("</tr>");
+			}
+
+			public void Set(int ColIndex, Cell cell)
+			{
+				if (cells.Count < ColIndex + 1)
+				{
+					cells.Capacity = ColIndex + 1;
+					while (cells.Count < ColIndex + 1)
+					{
+						cells.Add(null);
+					}
+				}
+				cells[ColIndex] = cell;
+			}
+
+			public string attributes;
+			public List<Cell> cells;
+		}
+
+		public class Cell
+		{
+			public Cell()
+			{
+			}
+			public Cell(Cell srcCell)
+			{
+				contents = srcCell.contents;
+				attributes = srcCell.attributes;
+			}
+
+			public Cell(string inContents, string inAttributes, bool bInIsHeader=false)
+			{
+				contents = inContents;
+				attributes = inAttributes;
+			}
+
+			public void WriteToHtml(System.IO.StreamWriter htmlFile, bool bIsHeaderRow)
+			{
+				string AttributesStr = attributes.Length == 0 ? "" : " "+ attributes;
+				string CellType = bIsHeaderRow ? "th" : "td";
+				htmlFile.Write("<" + CellType + AttributesStr + ">" + contents + "</" + CellType + ">");
+			}
+
+			public string contents;
+			public string attributes;
+		}
+
+		public HtmlTable(string inAttributes="", int inNumHeaderRows=1, int reserveColumnCount=0)
+		{
+			rows = new List<Row>();
+			attributes = inAttributes;
+			numHeaderRows = inNumHeaderRows;
+			reserveColumnCount = 0;
+		}
+
+		public HtmlTable Transpose()
+		{
+			// NOTE: Row attributes are stripped when transposing!
+			HtmlTable transposedTable = new HtmlTable(attributes, 1, rows.Count);
+			for (int i=0; i<rows.Count; i++)
+			{
+				Row row = rows[i];
+				for (int j=0; j< row.cells.Count; j++)
+				{
+					Cell newCell = new Cell(row.cells[j]);
+					transposedTable.Set(j, i, newCell);
+				}
+			}
+			return transposedTable;
+		}
+
+		public void WriteToHtml(System.IO.StreamWriter htmlFile)
+		{
+			string attributesStr = attributes.Length == 0 ? "" : " " + attributes;
+			htmlFile.WriteLine("<table"+attributesStr+">");
+
+			// Compute the number of columns, just in case not all rows are equal
+			for (int i=0; i<rows.Count; i++)
+			{
+				rows[i].WriteToHtml(htmlFile, i<numHeaderRows);
+			}
+			htmlFile.WriteLine("</table>");
+		}
+
+		public void Set(int RowIndex, int ColIndex, Cell cell)
+		{
+			// Make sure we have enough rows
+			if (rows.Count < RowIndex + 1)
+			{
+				rows.Capacity = RowIndex + 1;
+				while (rows.Count < RowIndex + 1)
+				{
+					rows.Add(new Row("", reserveColumnCount));
+				}
+			}
+			// Make sure the row is big enough
+			rows[RowIndex].Set(ColIndex, cell);
+		}
+
+		public Row CreateRow(string attributes="")
+		{
+			Row newRow = new Row(attributes, reserveColumnCount);
+			rows.Add(newRow);
+			return newRow; 
+		}
+		public void AddRow(Row row)
+		{
+			rows.Add(row);
+		}
+
+		public List<Row> rows;
+		public string attributes;
+		public int numHeaderRows = 0;
+		int reserveColumnCount = 0;
 	};
 
 }

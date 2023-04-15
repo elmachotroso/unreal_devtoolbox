@@ -553,6 +553,33 @@ namespace UE
 			}
 
 			/**
+			* Tries to find and return the indedx of a attribute type/value entry of the specified AttributeType.
+			*
+			* @param	InAttributeId		Key to be used for seraching the entry
+			*
+			* @return	Index to the entry, INDEX_NONE if not found
+			*/
+			int32 IndexOfByKey(const UScriptStruct* InScriptStruct, const FAttributeId& InAttributeId) const
+			{
+				const int32 TypeIndex = FindTypeIndex(InScriptStruct);
+				if (TypeIndex != INDEX_NONE)
+				{
+					const TArray<int32>& UniqueBoneIndices = UniqueTypedBoneIndices[TypeIndex];
+
+					// Early out if for this bone index no attributes are currently contained
+					if (UniqueBoneIndices.Contains(InAttributeId.GetIndex()))
+					{
+						const TArray<FAttributeId>& AttributeIds = AttributeIdentifiers[TypeIndex];
+						const int32 AttributeIndex = AttributeIds.IndexOfByKey(InAttributeId);
+						
+						return AttributeIndex;
+					}
+				}
+
+				return INDEX_NONE;
+			}
+			
+			/**
 			* Removes, if existing, an attribute type/value entry of the specified AttributeType.
 			*
 			* @param	InAttributeId		Key of the entry to be removed
@@ -672,7 +699,7 @@ namespace UE
 			/*
 			* @return Array of all the contained attribute types (UScriptStruct)
 			*/
-			const TArray<TWeakObjectPtr<const UScriptStruct>>& GetUniqueTypes() const { return UniqueTypes; }
+			const TArray<TWeakObjectPtr<UScriptStruct>>& GetUniqueTypes() const { return UniqueTypes; }
 
 			/*
 			* Populate out parameter OutAttributeKeyNames for all contained attribute key names
@@ -702,6 +729,20 @@ namespace UE
 		* @return Unique bone indices for all contained entries of a specific attribute type
 		*/
 		const TArray<int32>& GetUniqueTypedBoneIndices(int32 TypeIndex) const { return UniqueTypedBoneIndices[TypeIndex]; }
+
+		/*
+		* @return total number of attributes
+		*/
+		int32 Num() const
+		{
+			int32 NumAttributes = 0;
+			for (const TArray<FAttributeId>& AttributesPerType : AttributeIdentifiers)
+			{
+				NumAttributes += AttributesPerType.Num();
+			}
+				
+			return NumAttributes;
+		}
 
 		public:
 			/* Deprecated API */
@@ -773,7 +814,9 @@ namespace UE
 			int32 FindOrAddTypeIndex(const UScriptStruct* InScriptStruct)
 			{
 				const int32 OldNum = UniqueTypes.Num();
-				const int32 TypeIndex = UniqueTypes.AddUnique(InScriptStruct);
+				// Technically we could have avoided using const cast here if we made UniqueTypes use const UScriptStruct*
+				// but a bit of refactoring is required
+				const int32 TypeIndex = UniqueTypes.AddUnique(const_cast<UScriptStruct*>(InScriptStruct));
 
 				if (UniqueTypes.Num() > OldNum)
 				{
@@ -792,7 +835,7 @@ namespace UE
 			TArray<TArray<int32>> UniqueTypedBoneIndices;
 			TArray<TArray<FAttributeId>> AttributeIdentifiers;
 			TArray<TArray<TWrappedAttribute<InAllocator>>> Values;
-			TArray<TWeakObjectPtr<const UScriptStruct>> UniqueTypes;
+			TArray<TWeakObjectPtr<UScriptStruct>> UniqueTypes;
 
 			template <typename OtherBoneIndexType, typename OtherAllocator>
 			friend struct TAttributeContainer;

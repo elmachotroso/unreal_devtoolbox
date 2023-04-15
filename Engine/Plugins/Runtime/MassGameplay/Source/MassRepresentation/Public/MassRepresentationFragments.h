@@ -4,7 +4,7 @@
 
 #include "MassLODTypes.h"
 #include "MassEntityTypes.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassActorSpawnerSubsystem.h"
 #include "MassRepresentationTypes.h"
 #include "MassRepresentationActorManagement.h"
@@ -61,8 +61,18 @@ struct FMassRepresentationSubsystemSharedFragment : public FMassSharedFragment
 	GENERATED_BODY()
 
 	UPROPERTY(Transient)
-	UMassRepresentationSubsystem* RepresentationSubsystem = nullptr;
+	TObjectPtr<UMassRepresentationSubsystem> RepresentationSubsystem = nullptr;
 };
+
+template<>
+struct TMassSharedFragmentTraits<FMassRepresentationSubsystemSharedFragment> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
+};
+
 
 USTRUCT()
 struct FMassRepresentationParameters : public FMassSharedFragment
@@ -106,8 +116,18 @@ struct FMassRepresentationParameters : public FMassSharedFragment
 	mutable EMassRepresentationType CachedDefaultRepresentationType = EMassRepresentationType::None;
 
 	UPROPERTY(Transient)
-	mutable UMassRepresentationActorManagement* CachedRepresentationActorManagement = nullptr;
+	mutable TObjectPtr<UMassRepresentationActorManagement> CachedRepresentationActorManagement = nullptr;
 };
+
+template<>
+struct TMassSharedFragmentTraits<FMassRepresentationParameters> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
+};
+
 
 inline void FMassRepresentationParameters::ComputeCachedValues() const
 {
@@ -159,7 +179,7 @@ struct FMassVisualizationLODParameters : public FMassSharedFragment
 
 	/** Filter these settings with specified tag */
 	UPROPERTY(EditAnywhere, Category = "Mass|LOD", meta = (BaseStruct = "MassTag"))
-	UScriptStruct* FilterTag = nullptr;
+	TObjectPtr<UScriptStruct> FilterTag = nullptr;
 };
 
 USTRUCT()
@@ -174,5 +194,5 @@ struct FMassVisualizationLODSharedFragment : public FMassSharedFragment
 	bool bHasAdjustedDistancesFromCount = false;
 
 	UPROPERTY(Transient)
-	const UScriptStruct* FilterTag = nullptr;
+	TObjectPtr<const UScriptStruct> FilterTag = nullptr;
 };

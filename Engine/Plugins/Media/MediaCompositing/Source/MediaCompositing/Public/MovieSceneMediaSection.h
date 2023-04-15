@@ -4,6 +4,8 @@
 
 #include "MovieSceneSection.h"
 
+#include "MediaSource.h"
+
 #include "MovieSceneMediaSection.generated.h"
 
 class UMediaPlayer;
@@ -15,8 +17,8 @@ class UMediaTexture;
 /**
  * Implements a movie scene section for media playback.
  */
-UCLASS(MinimalAPI)
-class UMovieSceneMediaSection
+UCLASS()
+class MEDIACOMPOSITING_API UMovieSceneMediaSection
 	: public UMovieSceneSection
 {
 public:
@@ -52,6 +54,14 @@ public:
 	/** The external media player this track should control. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Media", meta = (EditCondition = "bUseExternalMediaPlayer"), AdvancedDisplay)
 	TObjectPtr<UMediaPlayer> ExternalMediaPlayer;
+
+	/** Override the default cache settings. Not used if we have a player proxy as the settings come from the proxy instead. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (EditCondition = "!bHasMediaPlayerProxy", HideEditConditionToggle = true, EditConditionHides), AdvancedDisplay)
+	FMediaSourceCacheSettings CacheSettings;
+
+	/** True if the object bound to this track has a media player proxy. */
+	UPROPERTY(Transient)
+	bool bHasMediaPlayerProxy;
 
 public:
 

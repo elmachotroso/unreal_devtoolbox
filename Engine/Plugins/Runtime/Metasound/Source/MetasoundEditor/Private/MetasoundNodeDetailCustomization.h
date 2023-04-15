@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Components/Widget.h"
+#include "Delegates/IDelegateInstance.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
@@ -16,8 +17,8 @@
 #include "MetasoundEditorGraphBuilder.h"
 #include "MetasoundEditorGraphMemberDefaults.h"
 #include "MetasoundEditorGraphNode.h"
-#include "MetasoundFrontendLiteral.h"
 #include "MetasoundEditorModule.h"
+#include "MetasoundFrontendLiteral.h"
 #include "MetasoundUObjectRegistry.h"
 #include "PropertyHandle.h"
 #include "PropertyRestriction.h"
@@ -34,6 +35,7 @@
 #include "WorkflowOrientedApp/SModeWidget.h"
 
 #define LOCTEXT_NAMESPACE "MetaSoundEditor"
+
 
 namespace Metasound
 {
@@ -59,7 +61,6 @@ namespace Metasound
 			virtual bool IsReadOnly() const override { return false; }
 			virtual int32 GetNumTexts() const override { return 1; }
 			virtual bool IsValidText(const FText& InText, FText& OutErrorMsg) const override { return true; }
-			virtual void RequestRefresh() override { }
 
 			virtual FText GetToolTipText() const override
 			{
@@ -279,8 +280,6 @@ namespace Metasound
 			ECheckBoxState OnGetDataTypeArrayCheckState(TWeakObjectPtr<UMetasoundEditorGraphMember> InGraphMember) const;
 			void OnDataTypeSelected(FName InSelectedTypeName);
 			FName GetDataType() const;
-
-			TFunction<void()> OnDataTypeChanged;
 		
 		private:
 			TWeakObjectPtr<UMetasoundEditorGraphMember> GraphMember;
@@ -311,7 +310,7 @@ namespace Metasound
 				return InDetailLayout.EditCategory("General");
 			}
 
-			void UpdateRenameDelegate(UMetasoundEditorGraphMemberDefaultLiteral& InMemberDefaultLiteral);
+			void UpdateRenameDelegate(UMetasoundEditorGraphMember& InMember);
 			void CacheMemberData(IDetailLayoutBuilder& InDetailLayout);
 			virtual void CustomizeGeneralCategory(IDetailLayoutBuilder& InDetailLayout);
 			virtual TArray<IDetailPropertyRow*> CustomizeDefaultCategory(IDetailLayoutBuilder& InDetailLayout);
@@ -353,13 +352,19 @@ namespace Metasound
 			virtual void CustomizeGeneralCategory(IDetailLayoutBuilder& InDetailLayout) override;
 			virtual EVisibility GetDefaultVisibility() const;
 			virtual bool IsInterfaceMember() const override;
+
+			void AddConstructorPinRow(IDetailLayoutBuilder& InDetailLayout);
+			ECheckBoxState OnGetConstructorPinCheckboxState(TWeakObjectPtr<UMetasoundEditorGraphVertex> InGraphMember) const;
+			void OnConstructorPinStateChanged(TWeakObjectPtr<UMetasoundEditorGraphVertex> InGraphMember, ECheckBoxState InNewState);
+
+			TSharedPtr<SCheckBox> ConstructorPinCheckbox;
 		};
 
 		class FMetasoundInputDetailCustomization : public FMetasoundVertexDetailCustomization
 		{
 		public:
 			virtual ~FMetasoundInputDetailCustomization() = default;
-
+			
 			virtual void CustomizeDetails(IDetailLayoutBuilder& InDetailLayout) override;
 			virtual bool IsDefaultEditable() const override;
 

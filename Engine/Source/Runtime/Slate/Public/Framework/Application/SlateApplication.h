@@ -13,6 +13,7 @@
 #include "Layout/SlateRect.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Input/Events.h"
 #include "Input/DragAndDrop.h"
 #include "Input/Reply.h"
@@ -119,6 +120,22 @@ class SLATE_API ISlateInputManager
 public:
 	virtual int32 GetUserIndexForMouse() const = 0;
 	virtual int32 GetUserIndexForKeyboard() const = 0;
+
+	virtual FInputDeviceId GetInputDeviceIdForMouse() const = 0;
+	virtual FInputDeviceId GetInputDeviceIdForKeyboard() const = 0;
+	
+	virtual TOptional<int32> GetUserIndexForInputDevice(FInputDeviceId InputDeviceId) const
+	{
+		// There is a 1:1 mapping of the platform user ID to a slate user index.
+		return GetUserIndexForPlatformUser(IPlatformInputDeviceMapper::Get().GetUserForInputDevice(InputDeviceId));
+	}
+
+	virtual TOptional<int32> GetUserIndexForPlatformUser(FPlatformUserId PlatformUser) const
+	{
+		// There is a 1:1 mapping of the platform user ID to a slate user index.
+		return PlatformUser.GetInternalId();
+	}
+
 	virtual int32 GetUserIndexForController(int32 ControllerId) const { return ControllerId; }
 	virtual TOptional<int32> GetUserIndexForController(int32 ControllerId, FKey InKey) const = 0;
 };
@@ -128,6 +145,17 @@ class SLATE_API FSlateDefaultInputMapping : public ISlateInputManager
 public:
 	virtual int32 GetUserIndexForMouse() const override { return 0; }
 	virtual int32 GetUserIndexForKeyboard() const override { return 0; }
+	
+	virtual FInputDeviceId GetInputDeviceIdForMouse() const override
+	{
+		return IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	};
+	
+	virtual FInputDeviceId GetInputDeviceIdForKeyboard() const override
+	{
+		return IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	};
+	
 	virtual int32 GetUserIndexForController(int32 ControllerId) const override { return ControllerId; }
 	virtual TOptional<int32> GetUserIndexForController(int32 ControllerId, FKey InKey) const override { return GetUserIndexForController(ControllerId); }
 };
@@ -919,6 +947,7 @@ public:
 	{
 		return Users.IsValidIndex(UserIndex) ? Users[UserIndex] : nullptr;
 	}
+	TSharedPtr<FSlateUser> GetUser(FPlatformUserId PlatformUser);
 	FORCEINLINE TSharedPtr<const FSlateUser> GetUser(const FInputEvent& InputEvent) const { return GetUser(InputEvent.GetUserIndex()); }
 	FORCEINLINE TSharedPtr<FSlateUser> GetUser(const FInputEvent& InputEvent) { return GetUser(InputEvent.GetUserIndex()); }
 	
@@ -940,6 +969,10 @@ public:
 		}
 		return nullptr;
 	}
+	
+	TSharedPtr<FSlateUser> GetUserFromPlatformUser(FPlatformUserId PlatformUser);
+	
+	TSharedPtr<const FSlateUser> GetUserFromPlatformUser(FPlatformUserId PlatformUser) const;
 
 	/** Get the standard 'default' user (there's always guaranteed to be at least one). */
 	FORCEINLINE TSharedPtr<const FSlateUser> GetCursorUser() const
@@ -979,10 +1012,31 @@ protected:
 	TSharedRef<FSlateUser> RegisterNewUser(int32 UserIndex, bool bIsVirtual = false);
 
 	/**
+	 * Register a new user with Slate.  Normally this is unnecessary as Slate automatically adds
+	 * a user entry if it gets input from a controller for that index.  Might happen if the user
+	 * allocates the virtual user.
+	 */
+	TSharedRef<FSlateUser> RegisterNewUser(FPlatformUserId PlatformUserId, bool bIsVirtual = false);
+
+	/**
 	 * Locates the SlateUser object corresponding to the index, creating a new one if it doesn't exist.
 	 * Asserts if given an invalid (ie, negative) index.
 	 */
 	TSharedRef<FSlateUser> GetOrCreateUser(int32 UserIndex);
+	
+	/**
+	 * Locates the SlateUser object corresponding to the index, creating a new one if it doesn't exist.
+	 * Asserts if given an invalid (ie, negative) index.
+	 */
+	TSharedRef<FSlateUser> GetOrCreateUser(FPlatformUserId PlatformUserId);
+
+	/**
+	 * Locates the SlateUser object corresponding to the input device id, creating a new one if it doesn't exist.
+	 * This will call GetOrCreateUser for the owning Platform User of the given input device.
+	 * Asserts if given an invalid (ie, negative) index.
+	 */
+	TSharedRef<FSlateUser> GetOrCreateUser(FInputDeviceId DeviceId);
+	
 	FORCEINLINE TSharedRef<FSlateUser> GetOrCreateUser(const FInputEvent& InputEvent) { return GetOrCreateUser(InputEvent.GetUserIndex()); }
 
 	friend class FEventRouter;
@@ -1434,17 +1488,17 @@ public:
 	virtual bool OnMouseMove() override;
 	virtual bool OnRawMouseMove( const int32 X, const int32 Y ) override;
 	virtual bool OnCursorSet() override;
-	virtual bool OnControllerAnalog( FGamepadKeyNames::Type KeyName, int32 ControllerId, float AnalogValue ) override;
-	virtual bool OnControllerButtonPressed( FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat ) override;
-	virtual bool OnControllerButtonReleased( FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat ) override;
 	virtual bool OnTouchGesture( EGestureEvent GestureType, const FVector2D& Delta, float WheelDelta, bool bIsDirectionInvertedFromDevice ) override;
-	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& PlatformWindow, const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId ) override;
-	virtual bool OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId ) override;
-	virtual bool OnTouchEnded( const FVector2D& Location, int32 TouchIndex, int32 ControllerId ) override;
-	virtual bool OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId) override;
-	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId) override;
+	virtual bool OnTouchStarted( const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceId ) override;
+	virtual bool OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID ) override;
+	virtual bool OnTouchEnded( const FVector2D& Location, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID ) override;
+	virtual bool OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID) override;
+	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID) override;
 	virtual void ShouldSimulateGesture(EGestureEvent Gesture, bool bEnable) override;
-	virtual bool OnMotionDetected(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, int32 ControllerId) override;
+	virtual bool OnMotionDetected(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId) override;
+	virtual bool OnControllerAnalog(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, float AnalogValue) override;
+	virtual bool OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat) override;
+	virtual bool OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat) override;
 	virtual bool OnSizeChanged( const TSharedRef< FGenericWindow >& PlatformWindow, const int32 Width, const int32 Height, bool bWasMinimized = false ) override;
 	virtual void OnOSPaint( const TSharedRef< FGenericWindow >& PlatformWindow ) override;
 	virtual FWindowSizeLimits GetSizeLimitsForWindow(const TSharedRef<FGenericWindow>& Window) const override;
@@ -1528,8 +1582,24 @@ public:
 	 */
 	int32 GetUserIndexForKeyboard() const;
 
+	/**
+	 * @return InputDeviceId that the mouse is mapped to
+	 */
+	FInputDeviceId GetInputDeviceIdForMouse() const;
+
+	/**
+	 * @return InputDeviceId that the keyboard is mapped to
+	 */
+	FInputDeviceId GetInputDeviceIdForKeyboard() const;
+
 	/** @return int user index that this controller is mapped to. */
 	int32 GetUserIndexForController(int32 ControllerId) const;
+
+	/** @return Gets the slate user index that this input device is mapped to */	
+	TOptional<int32> GetUserIndexForInputDevice(FInputDeviceId InputDeviceId) const;
+	/** @return Gets the slate user index that this platform user id mapped to*/	
+	TOptional<int32> GetUserIndexForPlatformUser(FPlatformUserId PlatformUser) const;
+	
 	TOptional<int32> GetUserIndexForController(int32 ControllerId, FKey InKey) const;
 
 	/** Establishes the input mapping object used to map input sources to SlateUser indices */

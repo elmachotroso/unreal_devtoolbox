@@ -10,6 +10,7 @@ Field.cpp: Defines FField property system fundamentals
 #include "Misc/ScopeLock.h"
 #include "Misc/StringBuilder.h"
 #include "Serialization/MemoryWriter.h"
+#include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/FeedbackContext.h"
@@ -42,9 +43,6 @@ Field.cpp: Defines FField property system fundamentals
 #include "Templates/SubclassOf.h"
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
-
-// WARNING: This should always be the last include in any file that needs it (except .generated.h)
-#include "UObject/UndefineUPropertyMacros.h"
 
 FFieldClass::FFieldClass(const TCHAR* InCPPName, uint64 InId, uint64 InCastFlags, FFieldClass* InSuperClass, FField* (*ConstructFnPtr)(const FFieldVariant&, const FName&, EObjectFlags))
 	: Id(InId)
@@ -772,7 +770,7 @@ FText FField::GetToolTipText(bool bShortTooltip) const
 	}
 	else
 	{
-		LocalizedToolTip = FText::Join(FText::FromString(TEXT(":") LINE_TERMINATOR), DisplayName, LocalizedToolTip);
+		LocalizedToolTip = FText::Join(FText::FromString(TEXT(":" LINE_TERMINATOR_ANSI)), DisplayName, LocalizedToolTip);
 	}
 
 	return LocalizedToolTip;
@@ -913,15 +911,15 @@ void FField::SetMetaData(const FName& Key, FString&& InValue)
 UClass* FField::GetClassMetaData(const TCHAR* Key) const
 {
 	const FString& ClassName = GetMetaData(Key);
-	UClass* const FoundObject = FindObject<UClass>(ANY_PACKAGE, *ClassName);
-	return FoundObject;
+	UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(ClassName);
+	return FoundClass;
 }
 
 UClass* FField::GetClassMetaData(const FName& Key) const
 {
 	const FString& ClassName = GetMetaData(Key);
-	UClass* const FoundObject = FindObject<UClass>(ANY_PACKAGE, *ClassName);
-	return FoundObject;
+	UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(ClassName);;
+	return FoundClass;
 }
 
 void FField::RemoveMetaData(const TCHAR* Key)
@@ -941,6 +939,21 @@ void FField::RemoveMetaData(const FName& Key)
 const TMap<FName, FString>* FField::GetMetaDataMap() const
 {
 	return MetaDataMap;
+}
+
+void FField::AppendMetaData(const TMap<FName, FString>& MetaDataMapToAppend)
+{
+	if (MetaDataMapToAppend.Num() > 0)
+	{
+		if (MetaDataMap)
+		{
+			MetaDataMap->Append(MetaDataMapToAppend);
+		}
+		else
+		{
+			MetaDataMap = new TMap<FName, FString>(MetaDataMapToAppend);
+		}
+	}
 }
 
 void FField::CopyMetaData(const FField* InSourceField, FField* InDestField)
@@ -1185,7 +1198,7 @@ FField* FindFPropertyByPath(const TCHAR* InFieldPath)
 		// And the FField part
 		InFieldPath += (LastSubobjectDelimiterIndex + 1);
 
-		UStruct* Owner = FindObject<UStruct>(ANY_PACKAGE, PathBuffer);
+		UStruct* Owner = FindObject<UStruct>(nullptr, PathBuffer);
 		if (Owner)
 		{
 #if DO_CHECK
@@ -1200,4 +1213,37 @@ FField* FindFPropertyByPath(const TCHAR* InFieldPath)
 	return FoundField;
 }
 
-#include "UObject/DefineUPropertyMacros.h"
+#if WITH_DEV_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FFieldCastTest, "UObject.Field Cast", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
+
+bool FFieldCastTest::RunTest(const FString& Parameters)
+{
+	FBoolProperty* DefaultBoolProperty = static_cast<FBoolProperty*>(FBoolProperty::StaticClass()->GetDefaultObject());
+	FIntProperty* DefaultIntProperty = static_cast<FIntProperty*>(FIntProperty::StaticClass()->GetDefaultObject());
+	FNumericProperty* DefaultNumericProperty = static_cast<FNumericProperty*>(FNumericProperty::StaticClass()->GetDefaultObject());
+	FProperty* BaseProperty = nullptr;
+
+	AddErrorIfFalse(CastField<FBoolProperty>(DefaultBoolProperty) == DefaultBoolProperty, TEXT("DefaultBoolProperty could not be CastField to a FBoolProperty."));
+	BaseProperty = DefaultBoolProperty;
+	AddErrorIfFalse(CastField<FBoolProperty>(BaseProperty) == DefaultBoolProperty, TEXT("Property could not be CastField to a FBoolProperty."));
+
+	AddErrorIfFalse(CastField<FBoolProperty>(DefaultIntProperty) == nullptr, TEXT("DefaultIntProperty was CastField to a FBoolProperty."));
+	BaseProperty = DefaultIntProperty;
+	AddErrorIfFalse(CastField<FBoolProperty>(BaseProperty) == nullptr, TEXT("DefaultIntProperty was CastField to a FBoolProperty."));
+
+	AddErrorIfFalse(CastField<FBoolProperty>(DefaultNumericProperty) == nullptr, TEXT("DefaultNumericProperty was CastField to a FBoolProperty."));
+	BaseProperty = DefaultNumericProperty;
+	AddErrorIfFalse(CastField<FBoolProperty>(BaseProperty) == nullptr, TEXT("BaseProperty was CastField to a FBoolProperty."));
+
+	AddErrorIfFalse(CastField<FNumericProperty>(DefaultIntProperty) == DefaultIntProperty, TEXT("DefaultIntProperty could not be CastField to a FNumericProperty."));
+	BaseProperty = DefaultIntProperty;
+	AddErrorIfFalse(CastField<FNumericProperty>(BaseProperty) == DefaultIntProperty, TEXT("BaseProperty could not be CastField to a FNumericProperty."));
+
+	BaseProperty = nullptr;
+	AddErrorIfFalse(CastField<FNumericProperty>(BaseProperty) == nullptr, TEXT("nullptr was CastField to a FNumericProperty."));
+
+	return true;
+}
+
+#endif

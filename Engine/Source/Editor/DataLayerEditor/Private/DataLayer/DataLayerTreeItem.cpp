@@ -1,20 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataLayerTreeItem.h"
+
 #include "DataLayer/DataLayerEditorSubsystem.h"
 #include "ISceneOutlinerTreeItem.h"
-#include "SceneOutlinerStandaloneTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
 #include "SDataLayerTreeLabel.h"
-#include "Editor.h"
+#include "SceneOutlinerStandaloneTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+
+class ISceneOutliner;
+class SWidget;
+template <typename ItemType> class STableRow;
 
 #define LOCTEXT_NAMESPACE "DataLayer"
 
 const FSceneOutlinerTreeItemType FDataLayerTreeItem::Type(&ISceneOutlinerTreeItem::Type);
 
-FDataLayerTreeItem::FDataLayerTreeItem(UDataLayer* InDataLayer)
+FDataLayerTreeItem::FDataLayerTreeItem(UDataLayerInstance* InDataLayerInstance)
 	: ISceneOutlinerTreeItem(Type)
-	, DataLayer(InDataLayer)
-	, ID(InDataLayer)
+	, DataLayerInstance(InDataLayerInstance)
+	, ID(InDataLayerInstance)
 	, bIsHighlighedtIfSelected(false)
 {
 	Flags.bIsExpanded = false;
@@ -22,14 +29,25 @@ FDataLayerTreeItem::FDataLayerTreeItem(UDataLayer* InDataLayer)
 
 FString FDataLayerTreeItem::GetDisplayString() const
 {
-	const UDataLayer* DataLayerPtr = DataLayer.Get();
-	return DataLayerPtr ? DataLayerPtr->GetDataLayerLabel().ToString() : LOCTEXT("DataLayerForMissingDataLayer", "(Deleted Data Layer)").ToString();
+	const UDataLayerInstance* DataLayerInstancePtr = DataLayerInstance.Get();
+	return DataLayerInstancePtr ? DataLayerInstancePtr->GetDataLayerShortName() : LOCTEXT("DataLayerForMissingDataLayer", "(Deleted Data Layer)").ToString();
 }
 
 bool FDataLayerTreeItem::GetVisibility() const
 {
-	const UDataLayer* DataLayerPtr = DataLayer.Get();
-	return DataLayerPtr && DataLayerPtr->IsVisible();
+	const UDataLayerInstance* DataLayerInstancePtr = DataLayerInstance.Get();
+	return DataLayerInstancePtr && DataLayerInstancePtr->IsVisible();
+}
+
+bool FDataLayerTreeItem::ShouldShowVisibilityState() const
+{
+	const UDataLayerInstance* DataLayerInstancePtr = DataLayerInstance.Get();
+	return DataLayerInstancePtr && !DataLayerInstancePtr->IsReadOnly();
+}
+
+bool FDataLayerTreeItem::CanInteract() const 
+{
+	return true;
 }
 
 TSharedRef<SWidget> FDataLayerTreeItem::GenerateLabelWidget(ISceneOutliner& Outliner, const STableRow<FSceneOutlinerTreeItemPtr>& InRow)
@@ -39,9 +57,9 @@ TSharedRef<SWidget> FDataLayerTreeItem::GenerateLabelWidget(ISceneOutliner& Outl
 
 void FDataLayerTreeItem::OnVisibilityChanged(const bool bNewVisibility)
 {
-	if (UDataLayer* DataLayerPtr = DataLayer.Get())
+	if (UDataLayerInstance* DataLayerInstancePtr = DataLayerInstance.Get())
 	{
-		UDataLayerEditorSubsystem::Get()->SetDataLayerVisibility(DataLayerPtr, bNewVisibility);
+		UDataLayerEditorSubsystem::Get()->SetDataLayerVisibility(DataLayerInstancePtr, bNewVisibility);
 	}
 }
 
@@ -49,9 +67,9 @@ bool FDataLayerTreeItem::ShouldBeHighlighted() const
 {
 	if (bIsHighlighedtIfSelected)
 	{
-		if (UDataLayer* DataLayerPtr = DataLayer.Get())
+		if (UDataLayerInstance* DataLayerInstancePtr = DataLayerInstance.Get())
 		{
-			return UDataLayerEditorSubsystem::Get()->DoesDataLayerContainSelectedActors(DataLayerPtr);
+			return UDataLayerEditorSubsystem::Get()->DoesDataLayerContainSelectedActors(DataLayerInstancePtr);
 		}
 	}
 	return false;

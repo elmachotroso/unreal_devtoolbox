@@ -13,6 +13,7 @@
 #include "Math/RandomStream.h"
 #include "Engine/EngineTypes.h"
 #include "Templates/PimplPtr.h"
+#include "Templates/RefCounting.h"
 #include "RHI.h"
 #include "RenderResource.h"
 #include "RenderingThread.h"
@@ -463,75 +464,6 @@ public:
 	const class FDistanceFieldSceneData* LastUsedSceneDataForFullUpdate;
 };
 
-class FRadianceCacheClipmap
-{
-public:
-	/** World space bounds. */
-	FVector Center;
-	float Extent;
-
-	FVector ProbeCoordToWorldCenterBias;
-	float ProbeCoordToWorldCenterScale;
-
-	FVector WorldPositionToProbeCoordBias;
-	float WorldPositionToProbeCoordScale;
-
-	float ProbeTMin;
-
-	/** Offset applied to UVs so that only new or dirty areas of the volume texture have to be updated. */
-	FVector VolumeUVOffset;
-
-	/* Distance between two probes. */
-	float CellSize;
-};
-
-class FRadianceCacheState
-{
-public:
-	FRadianceCacheState()
-	{}
-
-	TArray<FRadianceCacheClipmap> Clipmaps;
-
-	float ClipmapWorldExtent = 0.0f;
-	float ClipmapDistributionBase = 0.0f;
-
-	/** Clipmaps of probe indexes, used to lookup the probe index for a world space position. */
-	TRefCountPtr<IPooledRenderTarget> RadianceProbeIndirectionTexture;
-
-	TRefCountPtr<IPooledRenderTarget> RadianceProbeAtlasTexture;
-	/** Texture containing radiance cache probes, ready for sampling with bilinear border. */
-	TRefCountPtr<IPooledRenderTarget> FinalRadianceAtlas;
-	TRefCountPtr<IPooledRenderTarget> FinalIrradianceAtlas;
-	TRefCountPtr<IPooledRenderTarget> ProbeOcclusionAtlas;
-
-	TRefCountPtr<IPooledRenderTarget> DepthProbeAtlasTexture;
-
-	TRefCountPtr<FRDGPooledBuffer> ProbeAllocator;
-	TRefCountPtr<FRDGPooledBuffer> ProbeFreeListAllocator;
-	TRefCountPtr<FRDGPooledBuffer> ProbeFreeList;
-	TRefCountPtr<FRDGPooledBuffer> ProbeLastUsedFrame;
-	TRefCountPtr<FRDGPooledBuffer> ProbeLastTracedFrame;
-	TRefCountPtr<FRDGPooledBuffer> ProbeWorldOffset;
-	TRefCountPtr<IPooledRenderTarget> OctahedralSolidAngleTextureRT;
-
-	void ReleaseTextures()
-	{
-		RadianceProbeIndirectionTexture.SafeRelease();
-		RadianceProbeAtlasTexture.SafeRelease();
-		FinalRadianceAtlas.SafeRelease();
-		FinalIrradianceAtlas.SafeRelease();
-		ProbeOcclusionAtlas.SafeRelease();
-		DepthProbeAtlasTexture.SafeRelease();
-		ProbeAllocator.SafeRelease();
-		ProbeFreeListAllocator.SafeRelease();
-		ProbeFreeList.SafeRelease();
-		ProbeLastUsedFrame.SafeRelease();
-		ProbeLastTracedFrame.SafeRelease();
-		ProbeWorldOffset.SafeRelease();
-	}
-};
-
 /** Maps a single primitive to it's per-view fading state data */
 typedef TMap<FPrimitiveComponentId, FPrimitiveFadingState> FPrimitiveFadingStateMap;
 
@@ -574,53 +506,6 @@ private:
 /** Random table for occlusion **/
 extern FOcclusionRandomStream GOcclusionRandomStream;
 
-
-/**
-Helper class to time sections of the GPU work.
-Buffers multiple frames to avoid waiting on the GPU so times are a little lagged.
-*/
-class FLatentGPUTimer
-{
-	FRenderQueryPoolRHIRef TimerQueryPool;
-public:
-	static const int32 NumBufferedFrames = FOcclusionQueryHelpers::MaxBufferedOcclusionFrames + 1;
-
-	FLatentGPUTimer(FRenderQueryPoolRHIRef InTimerQueryPool, int32 InAvgSamples = 30);
-	~FLatentGPUTimer()
-	{
-		Release();
-	}
-
-	void Release();
-
-	/** Retrieves the most recently ready query results. */
-	bool Tick(FRHICommandListImmediate& RHICmdList);
-	/** Kicks off the query for the start of the rendering you're timing. */
-	void Begin(FRHICommandListImmediate& RHICmdList);
-	/** Kicks off the query for the end of the rendering you're timing. */
-	void End(FRHICommandListImmediate& RHICmdList);
-
-	/** Returns the most recent time in ms. */
-	float GetTimeMS();
-	/** Gets the average time in ms. Average is tracked over AvgSamples. */
-	float GetAverageTimeMS();
-
-private:
-
-	int32 GetQueryIndex();
-
-	//Average Tracking;
-	int32 AvgSamples;
-	TArray<float> TimeSamples;
-	float TotalTime;
-	int32 SampleIndex;
-
-	int32 QueryIndex;
-	bool QueriesInFlight[NumBufferedFrames];
-	FRHIPooledRenderQuery StartQueries[NumBufferedFrames];
-	FRHIPooledRenderQuery EndQueries[NumBufferedFrames];
-	FGraphEventRef QuerySubmittedFences[NumBufferedFrames];
-};
 
 /** HLOD tree persistent fading and visibility state */
 class FHLODVisibilityState
@@ -689,15 +574,19 @@ struct FHLODSceneNodeVisibilityState
 	uint16 bIsFading	: 1;
 };
 
-struct FShaderDrawDebugStateData
+struct FShaderPrintStateData
 {
-	TRefCountPtr<FRDGPooledBuffer> Buffer;
+	TRefCountPtr<FRDGPooledBuffer> StateBuffer;
+	TRefCountPtr<FRDGPooledBuffer> EntryBuffer;
+	FVector PreViewTranslation = FVector::ZeroVector;
 	bool bIsLocked = false;
 
 	void Release()
 	{
-		Buffer = nullptr;
 		bIsLocked = false;
+		PreViewTranslation = FVector::ZeroVector;
+		StateBuffer = nullptr;
+		EntryBuffer = nullptr;
 	}
 };
 
@@ -712,11 +601,47 @@ struct FPersistentSkyAtmosphereData
 
 	TRefCountPtr<IPooledRenderTarget> GetCurrentCameraAerialPerspectiveVolume();
 
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
+
 private:
 	bool bInitialised;
+	int32 CurrentScreenResolution;
+	int32 CurrentDepthResolution;
+	EPixelFormat CurrentTextureAerialLUTFormat;
 	TRefCountPtr<IPooledRenderTarget> CameraAerialPerspectiveVolumes[2];
 	uint8 CameraAerialPerspectiveVolumeCount;
 	uint8 CameraAerialPerspectiveVolumeIndex;
+};
+
+struct FPersistentGlobalDistanceFieldData : public FThreadSafeRefCountedObject
+{
+	// Array of ClipmapIndex
+	TArray<int32> DeferredUpdates[GDF_Num];
+
+	int32	UpdateFrame = 0;
+	bool	bFirstFrame = true;
+
+	bool	bInitializedOrigins = false;
+	bool	bPendingReset = false;
+	FGlobalDistanceFieldClipmapState ClipmapState[GlobalDistanceField::MaxClipmaps];
+	int32	UpdateIndex = 0;
+	FVector	CameraVelocityOffset = FVector(0);
+	bool	bUpdateViewOrigin = true;
+	FVector	LastViewOrigin = FVector(0);
+#if WITH_MGPU
+	FRHIGPUMask LastGPUMask;
+#endif
+
+	TRefCountPtr<FRDGPooledBuffer> PageFreeListAllocatorBuffer;
+	TRefCountPtr<FRDGPooledBuffer> PageFreeListBuffer;
+	TRefCountPtr<IPooledRenderTarget> PageAtlasTexture;
+	TRefCountPtr<IPooledRenderTarget> CoverageAtlasTexture;
+	TRefCountPtr<FRDGPooledBuffer> PageObjectGridBuffer;
+	TRefCountPtr<IPooledRenderTarget> PageTableCombinedTexture;
+	TRefCountPtr<IPooledRenderTarget> PageTableLayerTextures[GDF_Num];
+	TRefCountPtr<IPooledRenderTarget> MipTexture;
+
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 };
 
 /**
@@ -766,6 +691,15 @@ public:
 	};
 
 	uint32 UniqueID;
+
+	/**
+	 * The scene pointer may be NULL -- it's filled in by certain API calls that require a FSceneViewState and FScene to know about each other,
+	 * such as FSceneViewState::AddVirtualShadowMapCache.  Whenever a ViewState and Scene get linked, this pointer is set, and a pointer
+	 * to the ViewState is added to an array in the Scene.  The linking is necessary in cases where incremental FScene updates need to be
+	 * reflected in cached data stored in FSceneViewState.
+	 */
+	FScene* Scene;
+
 	typedef TMap<FSceneViewState::FProjectedShadowKey, FRHIPooledRenderQuery> ShadowKeyOcclusionQueryMap;
 	TArray<ShadowKeyOcclusionQueryMap, TInlineAllocator<FOcclusionQueryHelpers::MaxBufferedOcclusionFrames> > ShadowOcclusionQueryMaps;
 
@@ -813,9 +747,6 @@ public:
 	FIndirectLightingCacheAllocation* TranslucencyLightingCacheAllocations[TVC_MAX];
 
 	TMap<int32, FIndividualOcclusionHistory> PlanarReflectionOcclusionHistories;
-
-	// Array of ClipmapIndex
-	TArray<int32> DeferredGlobalDistanceFieldUpdates[GDF_Num];
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** Are we currently in the state of freezing rendering? (1 frame where we gather what was rendered) */
@@ -895,6 +826,8 @@ private:
 		void SwapBuffers();
 		void UpdateLastExposureFromBuffer();
 		void EnqueueExposureBufferReadback(FRDGBuilder& GraphBuilder);
+
+		uint64 GetGPUSizeBytes(bool bLogSizes) const;
 
 	private:
 		const TRefCountPtr<IPooledRenderTarget>& GetTexture(uint32 TextureIndex) const;
@@ -1030,12 +963,14 @@ public:
 
 	// Cached material texture samplers
 	float MaterialTextureCachedMipBias;
+	float LandscapeCachedMipBias;
 	FSamplerStateRHIRef MaterialTextureBilinearWrapedSamplerCache;
 	FSamplerStateRHIRef MaterialTextureBilinearClampedSamplerCache;
+	FSamplerStateRHIRef LandscapeWeightmapSamplerCache;
 
 #if RHI_RAYTRACING
 	// Invalidates cached results related to the path tracer so accumulated rendering can start over
-	void PathTracingInvalidate();
+	void PathTracingInvalidate(bool InvalidateAnimationStates = true);
 	virtual uint32 GetPathTracingSampleIndex() const override;
 	virtual uint32 GetPathTracingSampleCount() const override;
 
@@ -1069,34 +1004,12 @@ public:
 
 	TUniquePtr<FForwardLightingViewResources> ForwardLightingResources;
 
+	float LightScatteringHistoryPreExposure;
 	TRefCountPtr<IPooledRenderTarget> LightScatteringHistory;
 	TRefCountPtr<IPooledRenderTarget> PrevLightScatteringConservativeDepthTexture;
 
-	bool bInitializedGlobalDistanceFieldOrigins;
-	bool bGlobalDistanceFieldPendingReset = false;
-	FGlobalDistanceFieldClipmapState GlobalDistanceFieldClipmapState[GMaxGlobalDistanceFieldClipmaps];
-	int32 GlobalDistanceFieldUpdateIndex;
-	FVector GlobalDistanceFieldCameraVelocityOffset;
-	bool bGlobalDistanceFieldUpdateViewOrigin = true;
-	FVector GlobalDistanceFieldLastViewOrigin = FVector(0);
-
-	TRefCountPtr<FRDGPooledBuffer> GlobalDistanceFieldPageFreeListAllocatorBuffer;
-	TRefCountPtr<FRDGPooledBuffer> GlobalDistanceFieldPageFreeListBuffer;
-	TRefCountPtr<IPooledRenderTarget> GlobalDistanceFieldPageAtlasTexture;
-	TRefCountPtr<IPooledRenderTarget> GlobalDistanceFieldCoverageAtlasTexture;
-	TRefCountPtr<IPooledRenderTarget> GlobalDistanceFieldPageTableCombinedTexture;
-	TRefCountPtr<IPooledRenderTarget> GlobalDistanceFieldPageTableLayerTextures[GDF_Num];
-	TRefCountPtr<IPooledRenderTarget> GlobalDistanceFieldMipTexture;
-	
-	FRadianceCacheState RadianceCacheState;
-	FRadianceCacheState TranslucencyVolumeRadianceCacheState;
-
-	/** Timestamp queries around separate translucency, used for auto-downsampling. */
-	FRenderQueryPoolRHIRef TimerQueryPool;
-	FLatentGPUTimer TranslucencyTimer;
-	FLatentGPUTimer SeparateTranslucencyTimer;
-	FLatentGPUTimer SeparateTranslucencyModulateTimer;
-	FLatentGPUTimer PostMotionBlurTranslucencyTimer;
+	/** Potentially shared to save memory in cases where multiple view states share a common origin, such as cube map capture faces. */
+	TRefCountPtr<FPersistentGlobalDistanceFieldData> GlobalDistanceFieldData;
 
 	/** This is float since it is derived off of UWorld::RealTimeSeconds, which is relative to BeginPlay time. */
 	float LastAutoDownsampleChangeTime;
@@ -1125,9 +1038,15 @@ public:
 
 	FHairStrandsViewStateData HairStrandsViewStateData;
 
-	FShaderDrawDebugStateData ShaderDrawDebugStateData;
+	FShaderPrintStateData ShaderPrintStateData;
 
 	FShadingEnergyConservationStateData ShadingEnergyConservationData;
+
+	bool bVirtualShadowMapCacheAdded;
+	bool bLumenSceneDataAdded;
+	float LumenSurfaceCacheResolution;
+
+	FVirtualShadowMapArrayCacheManager* ViewVirtualShadowMapCache;
 
 	// call after OnFrameRenderingSetup()
 	virtual uint32 GetCurrentTemporalAASampleIndex() const
@@ -1178,7 +1097,7 @@ public:
 	}
 
 	/** Default constructor. */
-	FSceneViewState(ERHIFeatureLevel::Type FeatureLevel);
+	FSceneViewState(ERHIFeatureLevel::Type FeatureLevel, FSceneViewState* ShareOriginTarget);
 
 	virtual ~FSceneViewState();
 
@@ -1193,7 +1112,8 @@ public:
 		}
 	}
 
-	void TrimHistoryRenderTargets(const FScene* Scene);
+	// InScene is passed in, as the Scene pointer in the class itself may be null, if it was allocated without a scene.
+	void TrimHistoryRenderTargets(const FScene* InScene);
 
 	/**
 	 * Calculates and stores the scale factor to apply to motion vectors based on the current game
@@ -1220,8 +1140,9 @@ public:
 	 * Returns an array of visibility data for the given view, or NULL if none exists. 
 	 * The data bits are indexed by VisibilityId of each primitive in the scene.
 	 * This method decompresses data if necessary and caches it based on the bucket and chunk index in the view state.
+	 * InScene is passed in, as the Scene pointer in the class itself may be null, if it was allocated without a scene.
 	 */
-	const uint8* GetPrecomputedVisibilityData(FViewInfo& View, const FScene* Scene);
+	const uint8* GetPrecomputedVisibilityData(FViewInfo& View, const FScene* InScene);
 
 	/**
 	 * Cleans out old entries from the primitive occlusion history, and resets unused pending occlusion queries.
@@ -1570,6 +1491,7 @@ public:
 	}
 
 	virtual SIZE_T GetSizeBytes() const override;
+	uint64 GetGPUSizeBytes(bool bLogSizes = false) const;
 
 	virtual void SetSequencerState(ESequencerState InSequencerState) override
 	{
@@ -1580,6 +1502,15 @@ public:
 	{
 		return SequencerState;
 	}
+
+	virtual void AddVirtualShadowMapCache(FSceneInterface* InScene) override;
+	virtual void RemoveVirtualShadowMapCache(FSceneInterface* InScene) override;
+	virtual bool HasVirtualShadowMapCache() const override;
+	virtual FVirtualShadowMapArrayCacheManager* GetVirtualShadowMapCache(const FScene* InScene) const override;
+
+	virtual void AddLumenSceneData(FSceneInterface* InScene, float SurfaceCacheResolution) override;
+	virtual void RemoveLumenSceneData(FSceneInterface* InScene) override;
+	virtual bool HasLumenSceneData() const override;
 
 	/** Information about visibility/occlusion states in past frames for individual primitives. */
 	TSet<FPrimitiveOcclusionHistory,FPrimitiveOcclusionHistoryKeyFuncs> PrimitiveOcclusionHistorySet;
@@ -1614,7 +1545,8 @@ public:
 	int32 GetMaxCubemaps() const { return MaxCubemaps; }
 	int32 GetCubemapSize() const { return CubemapSize; }
 	bool IsValid() const { return IsValidRef(ReflectionEnvs); }
-	FSceneRenderTargetItem& GetRenderTarget() const { return ReflectionEnvs->GetRenderTargetItem(); }
+	const TRefCountPtr<IPooledRenderTarget>& GetRenderTarget() const { return ReflectionEnvs; }
+	void Reset();
 
 protected:
 	uint32 MaxCubemaps;
@@ -1670,6 +1602,49 @@ struct FReflectionCaptureSortData
 	}
 };
 
+
+struct FReflectionCaptureCacheEntry
+{
+	int32 RefCount;
+	FCaptureComponentSceneState SceneState;
+};
+
+
+struct FReflectionCaptureCache
+{
+public:
+
+	const FCaptureComponentSceneState* Find(const FGuid& MapBuildDataId) const;
+	FCaptureComponentSceneState* Find(const FGuid& MapBuildDataId);
+
+	const FCaptureComponentSceneState* Find(const UReflectionCaptureComponent* Component) const;
+	FCaptureComponentSceneState* Find(const UReflectionCaptureComponent* Component);
+	const FCaptureComponentSceneState& FindChecked(const UReflectionCaptureComponent* Component) const;
+	FCaptureComponentSceneState& FindChecked(const UReflectionCaptureComponent* Component);
+
+	FCaptureComponentSceneState& Add(const UReflectionCaptureComponent* Component, const FCaptureComponentSceneState& Value);
+	FCaptureComponentSceneState* AddReference(const UReflectionCaptureComponent* Component);
+	bool Remove(const UReflectionCaptureComponent* Component);
+	int32 Prune(const TSet<FGuid> KeysToKeep, TArray<int32>& ReleasedIndices);
+
+	int32 GetKeys(TArray<FGuid>& OutKeys) const;
+	int32 GetKeys(TSet<FGuid>& OutKeys) const;
+
+	void Empty();
+
+protected:
+
+	bool RemapRegisteredComponentMapBuildDataId(const UReflectionCaptureComponent* Component);
+	void RegisterComponentMapBuildDataId(const UReflectionCaptureComponent* Component);
+	void UnregisterComponentMapBuildDataId(const UReflectionCaptureComponent* Component);
+
+	// Different map build data id of a capture might share the same capture component while editing (e.g., when they move).
+	// need to replace it with the new one.
+	TMap<const UReflectionCaptureComponent*, FGuid> RegisteredComponentMapBuildDataIds;
+
+	TMap<FGuid, FReflectionCaptureCacheEntry> CaptureData;
+};
+
 /** Scene state used to manage the reflection environment feature. */
 class FReflectionEnvironmentSceneData
 {
@@ -1695,7 +1670,7 @@ public:
 	FReflectionEnvironmentCubemapArray CubemapArray;
 
 	/** Rendering thread map from component to scene state.  This allows storage of RT state that needs to persist through a component re-register. */
-	TMap<const UReflectionCaptureComponent*, FCaptureComponentSceneState> AllocatedReflectionCaptureState;
+	FReflectionCaptureCache AllocatedReflectionCaptureState;
 
 	/** Rendering bitfield to track cubemap slots used. Needs to kept in sync with AllocatedReflectionCaptureState */
 	TBitArray<> CubemapArraySlotsUsed;
@@ -1714,14 +1689,29 @@ public:
 	/** Game thread tracking of what size this scene has allocated for the cubemap array. */
 	int32 MaxAllocatedReflectionCubemapsGameThread;
 
+	/** Game thread tracking of what size cubemaps are in the cubemap array. */
+	int32 ReflectionCaptureSizeGameThread;
+	int32 DesiredReflectionCaptureSizeGameThread;
+
 	FReflectionEnvironmentSceneData(ERHIFeatureLevel::Type InFeatureLevel) :
 		bRegisteredReflectionCapturesHasChanged(true),
 		AllocatedReflectionCaptureStateHasChanged(false),
 		CubemapArray(InFeatureLevel),
-		MaxAllocatedReflectionCubemapsGameThread(0)
+		MaxAllocatedReflectionCubemapsGameThread(0),
+		ReflectionCaptureSizeGameThread(0),
+		DesiredReflectionCaptureSizeGameThread(0)
 	{}
 
+	/** Set Data necessary to determine if GPU resources will need future updates */
+	void SetGameThreadTrackingData(int32 MaxAllocatedCubemaps, int32 CaptureSize, int32 DesiredCaptureSize);
+
+	/** Do the resources on the GPU match our desired state?  If not, reallocation will be necessary. */
+	bool DoesAllocatedDataNeedUpdate(int32 DesiredMaxCubemaps, int32 DesiredCaptureSize) const;
+
 	void ResizeCubemapArrayGPU(uint32 InMaxCubemaps, int32 InCubemapSize);
+
+	/** Resets the structure to empty, useful if you want to shrink the allocation. */
+	void Reset(FScene* Scene);
 };
 
 /** Scene state used to manage hair strands. */
@@ -1772,7 +1762,7 @@ class FPrimitiveAndInstance
 {
 public:
 
-	FPrimitiveAndInstance(const FRenderTransform& InLocalToWorld, const FBox& InWorldBounds, FPrimitiveSceneInfo* InPrimitive, int32 InInstanceIndex)
+	FPrimitiveAndInstance(const FMatrix& InLocalToWorld, const FBox& InWorldBounds, FPrimitiveSceneInfo* InPrimitive, int32 InInstanceIndex)
 	: LocalToWorld(InLocalToWorld)
 	, WorldBounds(InWorldBounds)
 	, InstanceIndex(InInstanceIndex)
@@ -1780,7 +1770,7 @@ public:
 	{
 	}
 
-	FRenderTransform LocalToWorld;
+	FMatrix LocalToWorld;
 	FBox WorldBounds;
 	int32 InstanceIndex;
 	FPrimitiveSceneInfo* Primitive;
@@ -1978,14 +1968,15 @@ public:
 	void ListMeshDistanceFields(bool bDumpAssetStats) const;
 
 	void UpdateDistanceFieldObjectBuffers(
-		FRDGBuilder& GraphBuilder, 
+		FRDGBuilder& GraphBuilder,
+		FRDGExternalAccessQueue& ExternalAccessQueue,
 		FScene* Scene,
-		const DistanceField::FUpdateTrackingBounds& UpdateTrackingBounds,
 		TArray<FDistanceFieldAssetMipId>& DistanceFieldAssetAdds,
 		TArray<FSetElementId>& DistanceFieldAssetRemoves);
 
 	void UpdateDistanceFieldAtlas(
-		FRDGBuilder& GraphBuilder, 
+		FRDGBuilder& GraphBuilder,
+		FRDGExternalAccessQueue& ExternalAccessQueue,
 		const FViewInfo& View,
 		FScene* Scene,
 		bool bLumenEnabled,
@@ -2054,17 +2045,17 @@ public:
 	class FDistanceFieldObjectBuffers* ObjectBuffers;
 	class FHeightFieldObjectBuffers* HeightFieldObjectBuffers;
 
-	FScatterUploadBuffer UploadHeightFieldDataBuffer;
-	FScatterUploadBuffer UploadHeightFieldBoundsBuffer;
-	FScatterUploadBuffer UploadDistanceFieldDataBuffer;
-	FScatterUploadBuffer UploadDistanceFieldBoundsBuffer;
+	FRDGScatterUploadBuffer UploadHeightFieldDataBuffer;
+	FRDGScatterUploadBuffer UploadHeightFieldBoundsBuffer;
+	FRDGScatterUploadBuffer UploadDistanceFieldDataBuffer;
+	FRDGScatterUploadBuffer UploadDistanceFieldBoundsBuffer;
 	
 	TArray<int32> IndicesToUpdateInObjectBuffers;
 	TArray<int32> IndicesToUpdateInHeightFieldObjectBuffers;
 
 	TSet<FDistanceFieldAssetState, TFDistanceFieldAssetStateFuncs> AssetStateArray;
-	FRWBufferStructured AssetDataBuffer;
-	FScatterUploadBuffer AssetDataUploadBuffer;
+	TRefCountPtr<FRDGPooledBuffer> AssetDataBuffer;
+	FRDGScatterUploadBuffer AssetDataUploadBuffer;
 
 	TArray<FRHIGPUBufferReadback*> StreamingRequestReadbackBuffers;
 	uint32 MaxStreamingReadbackBuffers = 4;
@@ -2072,11 +2063,8 @@ public:
 	uint32 ReadbackBuffersNumPending = 0;
 
 	FGrowOnlySpanAllocator IndirectionTableAllocator;
-	FRWByteAddressBuffer IndirectionTable;
-	FScatterUploadBuffer IndirectionTableUploadBuffer;
-
-	FRWBuffer Indirection2Table;
-	FScatterUploadBuffer Indirection2TableUploadBuffer;
+	TRefCountPtr<FRDGPooledBuffer> IndirectionTable;
+	FRDGScatterUploadBuffer IndirectionTableUploadBuffer;
 
 	TRefCountPtr<IPooledRenderTarget> IndirectionAtlas;
 	FTextureLayout3d IndirectionAtlasLayout;
@@ -2090,20 +2078,19 @@ public:
 	FReadBuffer BrickUploadDataBuffer;
 
 	TArray<FDistanceFieldReadRequest> ReadRequests;
-	FGraphEventArray AsyncTaskEvents;
 
 	/** Stores the primitive and instance index of every entry in the object buffer. */
 	TArray<FPrimitiveAndInstance> PrimitiveInstanceMapping;
 	TArray<FPrimitiveSceneInfo*> HeightfieldPrimitives;
 	/** Pending operations on the object buffers to be processed next frame. */
 	TSet<FPrimitiveSceneInfo*> PendingAddOperations;
-	TArray<FPrimitiveSceneInfo*> PendingThrottledOperations;
+	TSet<FPrimitiveSceneInfo*> PendingThrottledOperations;
 	TSet<FPrimitiveSceneInfo*> PendingUpdateOperations;
 	TArray<FPrimitiveRemoveInfo> PendingRemoveOperations;
 	TArray<FRenderBounds> PrimitiveModifiedBounds[GDF_Num];
 
-	TArray<FPrimitiveSceneInfo*> PendingHeightFieldAddOps;
-	TArray<FPrimitiveSceneInfo*> PendingHeightFieldUpdateOps;
+	TSet<FPrimitiveSceneInfo*> PendingHeightFieldAddOps;
+	TSet<FPrimitiveSceneInfo*> PendingHeightFieldUpdateOps;
 	TArray<FHeightFieldPrimitiveRemoveInfo> PendingHeightFieldRemoveOps;
 
 	int32 HeightFieldAtlasGeneration;
@@ -2124,15 +2111,15 @@ private:
 		TArray<FDistanceFieldReadRequest>& ReadRequestsToUpload,
 		TArray<FDistanceFieldReadRequest>& ReadRequestsToCleanUp);
 
-	void ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap);
+	FRDGTexture* ResizeBrickAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap);
 
-	bool ResizeIndirectionAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap);
+	bool ResizeIndirectionAtlasIfNeeded(FRDGBuilder& GraphBuilder, FGlobalShaderMap* GlobalShaderMap, FRDGTexture*& OutTexture);
 
 	void DefragmentIndirectionAtlas(FIntVector MinSize, TArray<FDistanceFieldAssetMipRelocation>& Relocations);
 
-	void UploadAssetData(FRDGBuilder& GraphBuilder, const TArray<FDistanceFieldAssetMipId>& AssetDataUploads);
+	void UploadAssetData(FRDGBuilder& GraphBuilder, const TArray<FDistanceFieldAssetMipId>& AssetDataUploads, FRDGBuffer* AssetDataBufferRDG);
 	
-	void UploadAllAssetData(FRDGBuilder& GraphBuilder);
+	void UploadAllAssetData(FRDGBuilder& GraphBuilder, FRDGBuffer* AssetDataBufferRDG);
 
 	void AsyncUpdate(FDistanceFieldAsyncUpdateParameters UpdateParameters);
 
@@ -2240,9 +2227,9 @@ public:
 	void SetLightingCacheDirty(FScene* Scene, const FPrecomputedLightVolume* Volume);
 
 	// Accessors
-	FSceneRenderTargetItem& GetTexture0() { return Texture0->GetRenderTargetItem(); }
-	FSceneRenderTargetItem& GetTexture1() { return Texture1->GetRenderTargetItem(); }
-	FSceneRenderTargetItem& GetTexture2() { return Texture2->GetRenderTargetItem(); }
+	FRHITexture* GetTexture0() { return Texture0->GetRHI(); }
+	FRHITexture* GetTexture1() { return Texture1->GetRHI(); }
+	FRHITexture* GetTexture2() { return Texture2->GetRHI(); }
 
 private:
 	/** Internal helper to determine if indirect lighting is enabled at all */
@@ -2439,7 +2426,7 @@ public:
 	{
 		const FComponentVelocityData* VelocityData = ComponentData.Find(PrimitiveComponentId);
 
-		if (VelocityData)
+		if (VelocityData && VelocityData->PrimitiveSceneInfo)
 		{
 			check(VelocityData->bPreviousLocalToWorldValid);
 			VelocityData->LastFrameUsed = InternalFrameIndex;
@@ -2455,7 +2442,7 @@ public:
 	 */
 	void UpdateTransform(FPrimitiveSceneInfo* PrimitiveSceneInfo, const FMatrix& LocalToWorld, const FMatrix& PreviousLocalToWorld)
 	{
-		check(PrimitiveSceneInfo->Proxy->DrawsVelocity() || PrimitiveSceneInfo->Proxy->IsUsingWPOMaterial());
+		check(PrimitiveSceneInfo->Proxy->HasDynamicTransform());
 
 		FComponentVelocityData& VelocityData = ComponentData.FindOrAdd(PrimitiveSceneInfo->PrimitiveComponentId);
 		VelocityData.LocalToWorld = LocalToWorld;
@@ -2471,13 +2458,20 @@ public:
 		}
 	}
 
-	void RemoveFromScene(FPrimitiveComponentId PrimitiveComponentId)
+	void RemoveFromScene(FPrimitiveComponentId PrimitiveComponentId, bool bImmediate)
 	{
-		FComponentVelocityData* VelocityData = ComponentData.Find(PrimitiveComponentId);
-
-		if (VelocityData)
+		if (bImmediate)
 		{
-			VelocityData->PrimitiveSceneInfo = nullptr;
+			ComponentData.Remove(PrimitiveComponentId);
+		}
+		else
+		{
+			FComponentVelocityData* VelocityData = ComponentData.Find(PrimitiveComponentId);
+
+			if (VelocityData)
+			{
+				VelocityData->PrimitiveSceneInfo = nullptr;
+			}
 		}
 	}
 
@@ -2644,9 +2638,6 @@ public:
 	void Initialize();
 	void Clear();
 
-	TUniformBufferRef<FViewUniformShaderParameters> ViewUniformBuffer;
-	TUniformBufferRef<FNaniteUniformParameters> NaniteUniformBuffer;
-	TUniformBufferRef<FViewUniformShaderParameters> LumenCardCaptureViewUniformBuffer;
 
 	/** Mobile Directional Lighting uniform buffers, one for each lighting channel 
 	  * The first is used for primitives with no lighting channels set.
@@ -2667,10 +2658,46 @@ struct FMeshComputeDispatchCommand
 
 enum class ERayTracingMeshCommandsMode : uint8 {
 	RAY_TRACING,
-	PATH_TRACING
+	PATH_TRACING,
+	LIGHTMAP_TRACING,
 };
 
 #endif
+
+struct FLumenSceneDataKey
+{
+	uint32 ViewUniqueId;		// Zero if not view specific
+	uint32 GPUIndex;			// INDEX_NONE if not GPU specific
+
+	friend FORCEINLINE bool operator == (const FLumenSceneDataKey& A, const FLumenSceneDataKey& B)
+	{
+		return A.ViewUniqueId == B.ViewUniqueId && A.GPUIndex == B.GPUIndex;
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FLumenSceneDataKey& Key)
+	{
+		return HashCombine(GetTypeHash(Key.ViewUniqueId), GetTypeHash(Key.GPUIndex));
+	}
+};
+
+typedef TMap<FLumenSceneDataKey, FLumenSceneData*> FLumenSceneDataMap;
+
+class FLumenSceneDataIterator
+{
+public:
+	FLumenSceneDataIterator(const FScene* InScene);
+	FLumenSceneDataIterator& operator++();
+
+	FORCEINLINE explicit operator bool() const { return LumenSceneData != nullptr; }
+	FORCEINLINE bool operator !() const { return LumenSceneData == nullptr; }
+	FORCEINLINE FLumenSceneData* operator->() const { return LumenSceneData; }
+	FORCEINLINE FLumenSceneData& operator*() const { return *LumenSceneData; }
+
+private:
+	const FScene* Scene;
+	FLumenSceneData* LumenSceneData;
+	FLumenSceneDataMap::TConstIterator NextSceneData;
+};
 
 /** 
  * Renderer scene which is private to the renderer module.
@@ -2687,6 +2714,9 @@ public:
 	/** An optional FX system associated with the scene. */
 	class FFXSystemInterface* FXSystem;
 
+	/** List of view states associated with the scene. */
+	TArray<FSceneViewState*> ViewStates;
+
 	FPersistentUniformBuffers UniformBuffers;
 
 	/** Instancing state buckets.  These are stored on the scene as they are precomputed at FPrimitiveSceneInfo::AddToScene time. */
@@ -2702,8 +2732,18 @@ public:
 	void RefreshRayTracingInstances();
 #endif
 
-	/** Nanite material commands. These are stored on the scene as they are computed at FPrimitiveSceneInfo::AddToScene time. */
+	/* Mobile specific. Auxilary data for each cached command state bucket. This data can be used during mesh draw command batching */
+	TArray<FStateBucketAuxData> CachedStateBucketsAuxData[EMeshPass::Num];
+
+	/** Nanite shading material commands. These are stored on the scene as they are computed at FPrimitiveSceneInfo::AddToScene time. */
 	FNaniteMaterialCommands NaniteMaterials[ENaniteMeshPass::Num];
+
+	/** Nanite raster and shading pipelines. These are stored on the scene as they are computed at FPrimitiveSceneInfo::AddToScene time. */
+	FNaniteRasterPipelines  NaniteRasterPipelines[ENaniteMeshPass::Num];
+	FNaniteShadingPipelines NaniteShadingPipelines[ENaniteMeshPass::Num];
+
+	/** Nanite material visibility references. These are stored on the scene as they are computed at FPrimitiveSceneInfo::AddToScene time. */
+	FNaniteVisibility NaniteVisibility[ENaniteMeshPass::Num];
 
 	/**
 	 * The following arrays are densely packed primitive data needed by various
@@ -2744,6 +2784,7 @@ public:
 	struct FRayTracingCullingGroup
 	{
 		FBoxSphereBounds Bounds;
+		float MinDrawDistance = 0.0f;
 		TArray<FPrimitiveSceneInfo*> Primitives;
 	};
 	Experimental::TRobinHoodHashMap<int32, FRayTracingCullingGroup> PrimitiveRayTracingGroups;
@@ -2759,6 +2800,8 @@ public:
 	TBitArray<> PrimitivesNeedingStaticMeshUpdate;
 	TSet<FPrimitiveSceneInfo*> PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck;
 
+	TArray<int32> PersistentPrimitiveIdToIndexMap;
+
 	struct FTypeOffsetTableEntry
 	{
 		FTypeOffsetTableEntry(SIZE_T InPrimitiveSceneProxyType, uint32 InOffset) : PrimitiveSceneProxyType(InPrimitiveSceneProxyType), Offset(InOffset) {}
@@ -2769,13 +2812,14 @@ public:
 	TArray<FTypeOffsetTableEntry> TypeOffsetTable;
 
 	/** The lights in the scene. */
-	TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>> Lights;
+	using FLightSceneInfoCompactSparseArray = TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>;
+	FLightSceneInfoCompactSparseArray Lights;
 
 	/** 
 	 * Lights in the scene which are invisible, but still needed by the editor for previewing. 
 	 * Lights in this array cannot be in the Lights array.  They also are not fully set up, as AddLightSceneInfo_RenderThread is not called for them.
 	 */
-	TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>> InvisibleLights;
+	FLightSceneInfoCompactSparseArray InvisibleLights;
 
 	/** Shadow casting lights that couldn't get a shadowmap channel assigned and therefore won't have valid dynamic shadows, forward renderer only. */
 	TArray<FString> OverflowingDynamicShadowedLights;
@@ -2807,7 +2851,7 @@ public:
 	FSkyLightSceneProxy* SkyLight;
 
 	/** Contains the sky env map irradiance as spherical harmonics. */
-	FRWBufferStructured SkyIrradianceEnvironmentMap;
+	TRefCountPtr<FRDGPooledBuffer> SkyIrradianceEnvironmentMap;
 
 	/** The SkyView LUT used when rendering sky material sampling this lut into the realtime capture sky env map. It must be generated at the skylight position*/
 	TRefCountPtr<IPooledRenderTarget> RealTimeReflectionCaptureSkyAtmosphereViewLutTexture;
@@ -2824,19 +2868,31 @@ public:
 	/** The index of the ConvolvedSkyRenderTarget to use when rendering meshes. -1 when not initialised. */
 	int32 ConvolvedSkyRenderTargetReadyIndex;
 
-	/** We always enforce a complete one the first frame even with time slicing for correct start up lighting.*/
-	enum class ERealTimeSlicedReflectionCaptureFirstFrameState
+	struct FRealTimeSlicedReflectionCapture
 	{
-		INIT = 0,
-		FIRST_FRAME = 1,
-		BEYOND_FIRST_FRAME = 2,
-	} RealTimeSlicedReflectionCaptureFirstFrameState;
+		/** We always enforce a complete one the first frame even with time slicing for correct start up lighting.*/
+		enum class EFirstFrameState
+		{
+			INIT = 0,
+			FIRST_FRAME = 1,
+			BEYOND_FIRST_FRAME = 2,
+		} FirstFrameState = EFirstFrameState::INIT;
 
-	/** The current progress of the real time reflection capture when time sliced. */
-	int32 RealTimeSlicedReflectionCaptureState;
+		/** The current progress of the real time reflection capture when time sliced. */
+		int32 State = -1;
 
-	/** Cache of Frame Number, used to detect first viewfamily */
-	uint64 RealTimeSlicedReflectionCaptureFrameNumber;
+		/** The current progress of each sub step of a state capture of the real time reflection capture when time sliced. */
+		int32 StateSubStep = 0;
+
+		/** Keeps track of which GPUs have been initialized with a full cube map */
+		uint32 GpusWithFullCube = 0;
+
+		/** Keeps track of which GPUs calculations have been done in the frame */
+		uint32 GpusHandledThisFrame = 0;
+
+		/** Cache of Frame Number, used to detect first viewfamily */
+		uint64 FrameNumber = uint64(-1);
+	} RealTimeSlicedReflectionCapture;
 
 	/**
 	 * The path tracer uses its own representation of the skylight. These textures
@@ -2897,13 +2953,17 @@ public:
 #if RHI_RAYTRACING
 	/** Persistently-allocated ray tracing scene data. */
 	FRayTracingScene RayTracingScene;
-	TArray<FLightSceneInfo*, TInlineAllocator<4>> RayTracedLights;
+	FRayTracingScene HeterogeneousVolumesRayTracingScene;
+
+	bool bHasRayTracedLights = false;
+	void UpdateRayTracedLights();
 #endif // RHI_RAYTRACING
 
 	/** Distance field object scene data. */
 	FDistanceFieldSceneData DistanceFieldSceneData;
 
-	FLumenSceneData* LumenSceneData;
+	FLumenSceneData* DefaultLumenSceneData;
+	FLumenSceneDataMap PerViewOrGPULumenSceneData;
 
 	/** Map from light id to the cached shadowmap data for that light. */
 	TMap<int32, TArray<FCachedShadowMapData>> CachedShadowMaps;
@@ -2917,7 +2977,13 @@ public:
 	/** Preshadows that are currently cached in the PreshadowCache render target. */
 	TArray<TRefCountPtr<FProjectedShadowInfo> > CachedPreshadows;
 
-	FVirtualShadowMapArrayCacheManager *VirtualShadowMapArrayCacheManager;
+	/**
+	 * Virtual shadow maps can use a default cache stored in the FScene, or define a separate cache per view (AddVirtualShadowMapCache)
+	 * for improved performance.  A linked list of caches for the FScene is maintained to allow scene updates to be propagated to all
+	 * caches as needed.  If a cache is never used, the GPU resources for it are never allocated, so the overhead of the default cache
+	 * should be minimal when not in use.
+	 */
+	FVirtualShadowMapArrayCacheManager* DefaultVirtualShadowMapCache;
 
 	/** Texture layout that tracks current allocations in the PreshadowCache render target. */
 	FTextureLayout PreshadowCacheLayout;
@@ -2983,9 +3049,6 @@ public:
 	int32 NumMobileStaticAndCSMLights_RenderThread;
 	int32 NumMobileMovableDirectionalLights_RenderThread;
 
-	/** Cached shadow atlas size for mobile, since if the resolution is changed we have to update the movable point lights uniform buffer. */
-	FIntPoint MobileWholeSceneShadowAtlasSize;
-
 	FSceneVelocityData VelocityData;
 
 	/** GPU Skinning cache, if enabled */
@@ -3005,6 +3068,7 @@ public:
 
 	/** Strata data shared between all views. */
 	FStrataSceneData StrataSceneData;
+
 	/** Mask used to determine whether primitives that draw to a runtime virtual texture should also be drawn in the main pass. */
 	uint8 RuntimeVirtualTexturePrimitiveHideMaskEditor;
 	uint8 RuntimeVirtualTexturePrimitiveHideMaskGame;
@@ -3072,7 +3136,8 @@ public:
 	virtual void UpdateSceneCaptureContents(class USceneCaptureComponent2D* CaptureComponent) override;
 	virtual void UpdateSceneCaptureContents(class USceneCaptureComponentCube* CaptureComponent) override;
 	virtual void UpdatePlanarReflectionContents(UPlanarReflectionComponent* CaptureComponent, FSceneRenderer& MainSceneRenderer) override;
-	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile) override;
+	virtual void AllocateReflectionCaptures(const TArray<UReflectionCaptureComponent*>& NewCaptures, const TCHAR* CaptureReason, bool bVerifyOnlyCapturing, bool bCapturingForMobile, bool bInsideTick) override;
+	virtual void ResetReflectionCaptures(bool bOnlyIfOOM) override;
 	virtual void UpdateSkyCaptureContents(const USkyLightComponent* CaptureComponent, bool bCaptureEmissiveOnly, UTextureCube* SourceCubemap, FTexture* OutProcessedTexture, float& OutAverageBrightness, FSHVectorRGB3& OutIrradianceEnvironmentMap, TArray<FFloat16Color>* OutRadianceMap) override; 
 	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager) override;
 	virtual void ValidateSkyLightRealTimeCapture(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneColorTexture) override;
@@ -3086,6 +3151,7 @@ public:
 	virtual void GetRuntimeVirtualTextureHidePrimitiveMask(uint8& bHideMaskEditor, uint8& bHideMaskGame) const override;
 	virtual void InvalidateRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component, FBoxSphereBounds const& WorldBounds) override;
 	virtual void InvalidatePathTracedOutput() override;
+	virtual void InvalidateLumenSurfaceCache_GameThread(UPrimitiveComponent* Component) override;
 	virtual void GetPrimitiveUniformShaderParameters_RenderThread(const FPrimitiveSceneInfo* PrimitiveSceneInfo, bool& bHasPrecomputedVolumetricLightmap, FMatrix& PreviousLocalToWorld, int32& SingleCaptureIndex, bool& bOutputVelocity) const override;
 	virtual void UpdateLightTransform(ULightComponent* Light) override;
 	virtual void UpdateLightColorAndBrightness(ULightComponent* Light) override;
@@ -3095,6 +3161,8 @@ public:
 
 	virtual void AddHairStrands(FHairStrandsInstance* Proxy) override;
 	virtual void RemoveHairStrands(FHairStrandsInstance* Proxy) override;
+
+	virtual void GetRectLightAtlasSlot(const FRectLightSceneProxy* Proxy, FLightRenderParameters* Out) override;
 
 	virtual void AddSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy, bool bStaticLightingBuilt) override;
 	virtual void RemoveSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy) override;
@@ -3125,13 +3193,43 @@ public:
 	virtual void DumpUnbuiltLightInteractions( FOutputDevice& Ar ) const override;
 	virtual void UpdateParameterCollections(const TArray<FMaterialParameterCollectionInstanceResource*>& InParameterCollections) override;
 
+	virtual bool RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState) override;
+
+	FVirtualShadowMapArrayCacheManager* GetVirtualShadowMapCache(FSceneView& View) const;
+	void GetAllVirtualShadowMapCacheManagers(TArray<FVirtualShadowMapArrayCacheManager*, SceneRenderingAllocator>& OutCacheManagers) const;
+
+	FLumenSceneData* FindLumenSceneData(uint32 ViewKey, uint32 GPUIndex) const;
+	inline FLumenSceneData* GetLumenSceneData(const FViewInfo& View) const
+	{
+		if (View.ViewLumenSceneData)
+		{
+			return View.ViewLumenSceneData;
+		}
+		else
+		{
+			return FindLumenSceneData(View.ViewState ? View.ViewState->GetViewKey() : 0, View.GPUMask.GetFirstIndex());
+		}
+	}
+	inline FLumenSceneData* GetLumenSceneData(const FSceneView& View) const
+	{
+		// Should we assert that this is only called for FViewInfo (meaning inside scene renderer)?
+		if (View.bIsViewInfo)
+		{
+			return GetLumenSceneData((const FViewInfo&)View);
+		}
+		else
+		{
+			return FindLumenSceneData(View.State ? View.State->GetViewKey() : 0, View.GPUMask.GetFirstIndex());
+		}
+	}
+
 	bool HasSkyAtmosphere() const
 	{
-		return (SkyAtmosphere != NULL);
+		return (SkyAtmosphere != nullptr);
 	}
 	bool HasVolumetricCloud() const
 	{
-		return (VolumetricCloud != NULL);
+		return (VolumetricCloud != nullptr);
 	}
 
 	bool IsSecondAtmosphereLightEnabled()
@@ -3180,6 +3278,16 @@ public:
 	int64 GetCachedWholeSceneShadowMapsSize() const;
 
 	void UpdateEarlyZPassMode();
+
+	/**
+	 * Get the default base pass depth stencil access
+	 */
+	static FExclusiveDepthStencil::Type GetDefaultBasePassDepthStencilAccess(ERHIFeatureLevel::Type InFeatureLevel);
+
+	/**
+	 * Get the default base pass depth stencil access
+	 */
+	static void GetEarlyZPassMode(ERHIFeatureLevel::Type InFeatureLevel, EDepthDrawingMode& OutZPassMode, bool& bOutEarlyZPassMovable);
 
 	/**
 	 * Marks static mesh elements as needing an update if necessary.
@@ -3286,7 +3394,7 @@ public:
 			bRenderSkyLight = bRenderSkyLight
 				&& ((ReadOnlyCVARCache.bEnableStationarySkylight && SkyLight->bWantsStaticShadowing)
 					|| (!SkyLight->bWantsStaticShadowing
-						&& (IsAnyForwardShadingEnabled(GetShaderPlatform()) || IsMobilePlatform(GetShaderPlatform()))));
+						&& (IsForwardShadingEnabled(GetShaderPlatform()) || IsMobilePlatform(GetShaderPlatform()))));
 		}
 
 		return bRenderSkyLight;
@@ -3371,14 +3479,35 @@ public:
 	 */
 	inline int32 GetMaxPersistentPrimitiveIndex() const { return PersistentPrimitiveIdAllocator.GetMaxSize(); }
 
+	FORCEINLINE int32 GetPrimitiveIndex(const FPersistentPrimitiveIndex& PersistentPrimitiveIndex) const
+	{ 
+		if (PersistentPrimitiveIndex.Index < PersistentPrimitiveIdToIndexMap.Num())
+		{
+			return PersistentPrimitiveIdToIndexMap[PersistentPrimitiveIndex.Index];
+		}
+		return INDEX_NONE;
+	}
+
 	bool GetForceNoPrecomputedLighting() const
 	{
 		return bForceNoPrecomputedLighting;
 	}
 
+	FLumenSceneDataIterator GetLumenSceneDataIterator() const
+	{
+		return FLumenSceneDataIterator(this);
+	}
+
+	void LumenAddPrimitive(FPrimitiveSceneInfo* InPrimitive);
+	void LumenUpdatePrimitive(FPrimitiveSceneInfo* InPrimitive);
+	void LumenInvalidateSurfaceCacheForPrimitive(FPrimitiveSceneInfo* InPrimitive);
+	void LumenRemovePrimitive(FPrimitiveSceneInfo* InPrimitive, int32 PrimitiveIndex);
+
 protected:
 
 private:
+	void RemoveViewLumenSceneData_RenderThread(FSceneViewStateInterface* ViewState);
+	void RemoveViewState_RenderThread(FSceneViewStateInterface*);
 
 	/**
 	 * Ensures the packed primitive arrays contain the same number of elements.
@@ -3440,10 +3569,10 @@ private:
 	* Updates the contents of the given reflection capture by rendering the scene. 
 	* This must be called on the game thread.
 	*/
-	void CaptureOrUploadReflectionCapture(UReflectionCaptureComponent* CaptureComponent, int32 ReflectionCaptureSize, bool bVerifyOnlyCapturing, bool bCapturingForMobile);
+	void CaptureOrUploadReflectionCapture(UReflectionCaptureComponent* CaptureComponent, int32 ReflectionCaptureSize, bool bVerifyOnlyCapturing, bool bCapturingForMobile, bool bInsideTick);
 
 	/** Updates the contents of all reflection captures in the scene.  Must be called from the game thread. */
-	void UpdateAllReflectionCaptures(const TCHAR* CaptureReason, int32 ReflectionCaptureSize, bool bVerifyOnlyCapturing, bool bCapturingForMobile);
+	void UpdateAllReflectionCaptures(const TCHAR* CaptureReason, int32 ReflectionCaptureSize, bool bVerifyOnlyCapturing, bool bCapturingForMobile, bool bInsideTick);
 
 	/** Updates all static draw lists. */
 	void UpdateStaticDrawLists_RenderThread(FRHICommandListImmediate& RHICmdList);
@@ -3534,6 +3663,8 @@ private:
 
 	/** Whether world settings has bForceNoPrecomputedLighting set */
 	bool bForceNoPrecomputedLighting;
+
+	friend class FSceneViewState;
 };
 
 inline bool ShouldIncludeDomainInMeshPass(EMaterialDomain Domain)
@@ -3543,5 +3674,5 @@ inline bool ShouldIncludeDomainInMeshPass(EMaterialDomain Domain)
 	return Domain != MD_Volume;
 }
 
-#include "BasePassRendering.inl"
+#include "BasePassRendering.inl" // IWYU pragma: export
 

@@ -6,6 +6,8 @@
 #include "SourceControlOperations.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlAssetDataCache.h"
+#include "SourceControlFileStatusMonitor.h"
+#include "Misc/Paths.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
 	#include "Widgets/DeclarativeSyntaxSupport.h"
@@ -20,8 +22,8 @@
 #endif
 
 #if WITH_EDITOR
-	#include "Runtime/Engine/Public/EngineAnalytics.h"
-	#include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+	#include "EngineAnalytics.h"
+	#include "Interfaces/IAnalyticsProvider.h"
 #endif
 
 DEFINE_LOG_CATEGORY(LogSourceControl);
@@ -64,6 +66,8 @@ void FSourceControlModule::StartupModule()
 #endif
 
 	AssetDataCache.Startup();
+
+	SourceControlFileStatusMonitor = MakeShared<FSourceControlFileStatusMonitor>();
 }
 
 void FSourceControlModule::ShutdownModule()
@@ -87,6 +91,8 @@ void FSourceControlModule::ShutdownModule()
 	// we don't care about modular features any more
 	IModularFeatures::Get().OnModularFeatureRegistered().RemoveAll(this);
 	IModularFeatures::Get().OnModularFeatureUnregistered().RemoveAll(this);
+
+	SourceControlFileStatusMonitor.Reset();
 }
 
 void FSourceControlModule::SaveSettings()
@@ -237,8 +243,8 @@ void FSourceControlModule::GetProviderNames(TArray<FName>& OutProviderNames)
 }
 
 void FSourceControlModule::Tick()
-{	
-	if( CurrentSourceControlProvider != nullptr )
+{
+	if (CurrentSourceControlProvider != nullptr)
 	{
 		ISourceControlProvider& Provider = GetProvider();
 
@@ -248,23 +254,24 @@ void FSourceControlModule::Tick()
 		AssetDataCache.Tick();
 
 		// don't allow background status updates when temporarily disabled for login
-		if(!bTemporarilyDisabled)
+		if (!bTemporarilyDisabled)
 		{
 			// check for any pending dispatches
-			if(PendingStatusUpdateFiles.Num() > 0)
+			if (PendingStatusUpdateFiles.Num() > 0)
 			{
 				// grab a batch of files
 				TArray<FString> FilesToDispatch;
-				for(auto Iter(PendingStatusUpdateFiles.CreateConstIterator()); Iter; Iter++)
+				FilesToDispatch.Reserve(SourceControlConstants::MaxStatusDispatchesPerTick);
+				for (const FString& Filename : PendingStatusUpdateFiles)
 				{
 					if(FilesToDispatch.Num() >= SourceControlConstants::MaxStatusDispatchesPerTick)
 					{
 						break;
 					}
-					FilesToDispatch.Add(*Iter);
+					FilesToDispatch.Add(Filename);
 				}
 
-				if(FilesToDispatch.Num() > 0)
+				if (FilesToDispatch.Num() > 0)
 				{
 					// remove the files we are dispatching so we don't try again
 					PendingStatusUpdateFiles.RemoveAt(0, FilesToDispatch.Num());
@@ -279,29 +286,29 @@ void FSourceControlModule::Tick()
 
 void FSourceControlModule::QueueStatusUpdate(const TArray<UPackage*>& InPackages)
 {
-	if(IsEnabled())
+	if (IsEnabled())
 	{
-		for(auto It(InPackages.CreateConstIterator()); It; It++)
+		for (UPackage* Package: InPackages)
 		{
-			QueueStatusUpdate(*It);
+			QueueStatusUpdate(Package);
 		}
 	}
 }
 
 void FSourceControlModule::QueueStatusUpdate(const TArray<FString>& InFilenames)
 {
-	if(IsEnabled())
+	if (IsEnabled())
 	{
-		for(auto It(InFilenames.CreateConstIterator()); It; It++)
+		for (const FString& Filename : InFilenames)
 		{
-			QueueStatusUpdate(*It);
+			QueueStatusUpdate(Filename);
 		}
 	}
 }
 
 void FSourceControlModule::QueueStatusUpdate(UPackage* InPackage)
 {
-	if(IsEnabled())
+	if (IsEnabled())
 	{
 		QueueStatusUpdate(SourceControlHelpers::PackageFilename(InPackage));
 	}
@@ -309,13 +316,13 @@ void FSourceControlModule::QueueStatusUpdate(UPackage* InPackage)
 
 void FSourceControlModule::QueueStatusUpdate(const FString& InFilename)
 {
-	if(IsEnabled())
+	if (IsEnabled())
 	{
 		TSharedPtr<ISourceControlState, ESPMode::ThreadSafe> SourceControlState = GetProvider().GetState(InFilename, EStateCacheUsage::Use);
-		if(SourceControlState.IsValid())
+		if (SourceControlState.IsValid())
 		{
 			FTimespan TimeSinceLastUpdate = FDateTime::Now() - SourceControlState->GetTimeStamp();
-			if(TimeSinceLastUpdate > SourceControlConstants::StateRefreshInterval)
+			if (TimeSinceLastUpdate > SourceControlConstants::StateRefreshInterval)
 			{
 				PendingStatusUpdateFiles.AddUnique(InFilename);
 			}
@@ -331,6 +338,21 @@ bool FSourceControlModule::IsEnabled() const
 ISourceControlProvider& FSourceControlModule::GetProvider() const
 {
 	return *CurrentSourceControlProvider;
+}
+
+TUniquePtr<ISourceControlProvider> FSourceControlModule::CreateProvider(const FName& ProviderName, const FStringView& OwnerName, const FSourceControlInitSettings& InitialSettings) const
+{
+	TArray<ISourceControlProvider*> Providers = IModularFeatures::Get().GetModularFeatureImplementations<ISourceControlProvider>(SourceControlFeatureName);
+	for (const ISourceControlProvider* DefaultProvider : Providers)
+	{
+		if (DefaultProvider->GetName() == ProviderName)
+		{
+			return DefaultProvider->Create(OwnerName, InitialSettings);
+		}
+	}
+
+	// Provider was not found
+	return TUniquePtr<ISourceControlProvider>();
 }
 
 FSourceControlAssetDataCache& FSourceControlModule::GetAssetDataCache()
@@ -504,6 +526,47 @@ void FSourceControlModule::UnregisterFilesDeleted(FDelegateHandle InHandle)
 const FSourceControlFilesDeletedDelegate& FSourceControlModule::GetOnFilesDeleted() const
 {
 	return OnFilesDeleted;
+}
+
+void FSourceControlModule::RegisterSourceControlProjectDirDelegate(const FSourceControlProjectDirDelegate& InSourceControlProjectDirDelegate)
+{
+	SourceControlProjectDirDelegate = InSourceControlProjectDirDelegate;
+}
+
+void FSourceControlModule::UnregisterSourceControlProjectDirDelegate()
+{
+	SourceControlProjectDirDelegate = FSourceControlProjectDirDelegate();
+}
+
+FString FSourceControlModule::GetSourceControlProjectDir() const
+{
+	if (SourceControlProjectDirDelegate.IsBound())
+	{
+		FString ProjectDir = SourceControlProjectDirDelegate.Execute();
+		if (!ProjectDir.IsEmpty())
+		{
+			return ProjectDir;
+		}
+	}
+	return FPaths::ProjectDir();
+}
+
+bool FSourceControlModule::UsesCustomProjectDir() const
+{
+	if (SourceControlProjectDirDelegate.IsBound())
+	{
+		FString ProjectDir = SourceControlProjectDirDelegate.Execute();
+		if (!ProjectDir.IsEmpty())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FSourceControlFileStatusMonitor& FSourceControlModule::GetSourceControlFileStatusMonitor()
+{
+	return *SourceControlFileStatusMonitor;
 }
 
 IMPLEMENT_MODULE( FSourceControlModule, SourceControl );

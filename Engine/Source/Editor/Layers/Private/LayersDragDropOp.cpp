@@ -1,12 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LayersDragDropOp.h"
-#include "Textures/SlateIcon.h"
+
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Styling/AppStyle.h"
+
+struct FSlateBrush;
 
 
 void FLayersDragDropOp::Construct()
 {
-	const FSlateBrush* Icon = FEditorStyle::GetBrush(TEXT("Layer.Icon16x"));
+	const FSlateBrush* Icon = FAppStyle::GetBrush(TEXT("Layer.Icon16x"));
 	if (Layers.Num() == 1)
 	{
 		SetToolTip(FText::FromName(Layers[0]), Icon);

@@ -8,7 +8,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "NiagaraEditorCommon.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 class FNiagaraScriptGraphViewModel;
 
@@ -17,16 +17,20 @@ class SNiagaraScriptGraph : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SNiagaraScriptGraph)
-		: _ForegroundColor(FEditorStyle::GetColor("Graph.ForegroundColor"))
+		: _ForegroundColor(FAppStyle::GetColor("Graph.ForegroundColor"))
 		, _ZoomToFitOnLoad(false)
+		, _ShowHeader(true)
 	{}
 		/** The text displayed in the title bar of the graph. */
 		SLATE_ATTRIBUTE(FText, GraphTitle)
 		SLATE_ATTRIBUTE(FSlateColor, ForegroundColor)
 		SLATE_ARGUMENT(bool, ZoomToFitOnLoad)
+		SLATE_ARGUMENT(bool, ShowHeader)
 	SLATE_END_ARGS();
 
-	NIAGARAEDITOR_API void Construct(const FArguments& InArgs, TSharedRef<FNiagaraScriptGraphViewModel> InViewModel);
+	NIAGARAEDITOR_API void Construct(const FArguments& InArgs, TSharedRef<FNiagaraScriptGraphViewModel> InViewModel, const FAssetData& InEditedAsset = FAssetData());
+
+	NIAGARAEDITOR_API virtual ~SNiagaraScriptGraph() override;
 
 	const TSharedPtr<SGraphEditor> GetGraphEditor() { return GraphEditor; };
 
@@ -39,6 +43,8 @@ public:
 	void UpdateViewModel(TSharedRef<FNiagaraScriptGraphViewModel> InNewModel);
 
 	void RecreateGraphWidget();
+
+	TSharedPtr<FNiagaraScriptGraphViewModel> GetViewModel() { return ViewModel; };
 
 private:
 	/** Constructs the graph editor widget for the current graph. */
@@ -86,6 +92,14 @@ private:
 	FText GetCurrentSearchText() const { return CurrentSearchText; };
 
 	EVisibility GetGraphSearchBoxVisibility() const { return bGraphSearchBoxActive ? EVisibility::Visible : EVisibility::Collapsed; };
+	FText GetScriptSubheaderText() const;
+	EVisibility GetScriptSubheaderVisibility() const;
+	FLinearColor GetScriptSubheaderColor() const;
+	
+	int32 GetScriptAffectedAssets() const;
+	void ResetAssetCount(const FAssetData& InAssetData);
+	void AddAssetListeners();
+	void ClearListeners();
 
 	FReply CloseGraphSearchBoxPressed();
 
@@ -103,7 +117,7 @@ private:
 	void OnDistributeNodesH();
 	void OnDistributeNodesV();
 
-
+	void RebuildCommands();
 private:
 	/** The combined commands used by the graph editor. */
 	TSharedPtr<FUICommandList> Commands;
@@ -129,6 +143,10 @@ private:
 	int CurrentFocusedSearchMatchIndex;
 	TArray<TSharedPtr<INiagaraScriptGraphFocusInfo>> CurrentSearchResults;
 	bool bGraphSearchBoxActive;
+	bool bShowHeader;
+
+	mutable TOptional<int32> ScriptAffectedAssets;
+	FAssetData EditedAsset;
 
 private:
 	// action menu data

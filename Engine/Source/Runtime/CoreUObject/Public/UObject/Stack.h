@@ -12,8 +12,24 @@
 #include "Templates/Casts.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
+#include "Memory/VirtualStackAllocator.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogScriptFrame, Warning, All);
+
+#ifndef UE_USE_VIRTUAL_STACK_ALLOCATOR_FOR_SCRIPT_VM
+#define UE_USE_VIRTUAL_STACK_ALLOCATOR_FOR_SCRIPT_VM 0
+#endif 
+
+#if UE_USE_VIRTUAL_STACK_ALLOCATOR_FOR_SCRIPT_VM
+FORCEINLINE void* UeVstackAllocHelper(FVirtualStackAllocator* Allocator, size_t Size, size_t Align) { return ((Size == 0) ? 0 : Allocator->Allocate(Size, (Align < 16) ? 16 : Align)); }
+#define UE_VSTACK_MAKE_FRAME(Name, VirtualStackAllocatorPtr) FScopedStackAllocatorBookmark Name = VirtualStackAllocatorPtr->CreateScopedBookmark()
+#define UE_VSTACK_ALLOC(VirtualStackAllocatorPtr, Size) UeVstackAllocHelper((VirtualStackAllocatorPtr), (Size), 0) 
+#define UE_VSTACK_ALLOC_ALIGNED(VirtualStackAllocatorPtr, Size, Align) UeVstackAllocHelper((VirtualStackAllocatorPtr), (Size), (Align))
+#else
+#define UE_VSTACK_MAKE_FRAME(Name, VirtualStackAllocatorPtr)
+#define UE_VSTACK_ALLOC(VirtualStackAllocatorPtr, Size) FMemory_Alloca(Size)
+#define UE_VSTACK_ALLOC_ALIGNED(VirtualStackAllocatorPtr, Size, Align) FMemory_Alloca_Aligned(Size, Align)
+#endif
 
 /**
  * Property data type enums.
@@ -94,6 +110,7 @@ public:
 
 	FProperty* MostRecentProperty;
 	uint8* MostRecentPropertyAddress;
+	uint8* MostRecentPropertyContainer;
 
 	/** The execution flow stack for compiled Kismet code */
 	FlowStackType FlowStack;
@@ -110,7 +127,17 @@ public:
 	/** Currently executed native function */
 	UFunction* CurrentNativeFunction;
 
+#if UE_USE_VIRTUAL_STACK_ALLOCATOR_FOR_SCRIPT_VM
+	FVirtualStackAllocator* CachedThreadVirtualStackAllocator;
+#endif
+
+	/** Previous tracking frame */
+	FFrame* PreviousTrackingFrame;
+
 	bool bArrayContextFailed;
+
+	/** If this flag gets set (usually from throwing a EBlueprintExceptionType::AbortExecution exception), execution shall immediately stop and return */
+	bool bAbortingExecution;
 
 #if PER_FUNCTION_SCRIPT_STATS
 	/** Increment for each PreviousFrame on the stack (Max 255) */
@@ -129,7 +156,18 @@ public:
 		{
 			BlueprintExceptionTracker.ScriptStack.Pop(false);
 		}
+
+		// ensure that GTopTrackingStackFrame is accurate
+		if (BlueprintExceptionTracker.ScriptStack.Num() == 0)
+		{
+			ensure(PreviousTrackingFrame == nullptr);
+		}
+		else
+		{
+			ensure(BlueprintExceptionTracker.ScriptStack.Last() == PreviousTrackingFrame);
+		}
 #endif
+		PopThreadLocalTopStackFrame(PreviousTrackingFrame);
 	}
 
 	// Functions.
@@ -198,20 +236,49 @@ public:
 	COREUOBJECT_API FString GetStackTrace() const;
 
 	/**
+	 * This will return the StackTrace of the current callstack from the last native entry point
+	 * 
+	 * @param StringBuilder to populate
+	 **/
+	COREUOBJECT_API void GetStackTrace(FStringBuilderBase& StringBuilder) const;
+
+	/**
 	* This will return the StackTrace of the all script frames currently active
 	* 
 	* @param	bReturnEmpty if true, returns empty string when no script callstack found
+	* @param	bTopOfStackOnly if true only returns the top of the callstack
 	**/
-	COREUOBJECT_API static FString GetScriptCallstack(bool bReturnEmpty = false);
+	COREUOBJECT_API static FString GetScriptCallstack(bool bReturnEmpty = false, bool bTopOfStackOnly = false);
 
+	/**
+	* This will return the StackTrace of the all script frames currently active
+	*
+	* @param	StringBuilder to populate
+	* @param	bReturnEmpty if true, returns empty string when no script callstack found
+	* @param	bTopOfStackOnly if true only returns the top of the callstack
+	**/
+	COREUOBJECT_API static void GetScriptCallstack(FStringBuilderBase& StringBuilder, bool bReturnEmpty = false, bool bTopOfStackOnly = false);
+		
 	/** 
 	 * This will return a string of the form "ScopeName.FunctionName" associated with this stack frame:
 	 */
+	UE_DEPRECATED(5.1, "Please use GetStackDescription(FStringBuilderBase&).")
 	COREUOBJECT_API FString GetStackDescription() const;
+
+	/**
+	* This will append a string of the form "ScopeName.FunctionName" associated with this stack frame
+	*
+	* @param	StringBuilder to populate
+	**/
+	COREUOBJECT_API void GetStackDescription(FStringBuilderBase& StringBuilder) const;
 
 #if DO_BLUEPRINT_GUARD
 	static void InitPrintScriptCallstack();
 #endif
+
+	COREUOBJECT_API static FFrame* PushThreadLocalTopStackFrame(FFrame* NewTopStackFrame);
+	COREUOBJECT_API static void PopThreadLocalTopStackFrame(FFrame* NewTopStackFrame);
+	COREUOBJECT_API static FFrame* GetThreadLocalTopStackFrame();
 };
 
 
@@ -224,13 +291,15 @@ inline FFrame::FFrame( UObject* InObject, UFunction* InNode, void* InLocals, FFr
 	, Object(InObject)
 	, Code(InNode->Script.GetData())
 	, Locals((uint8*)InLocals)
-	, MostRecentProperty(NULL)
-	, MostRecentPropertyAddress(NULL)
+	, MostRecentProperty(nullptr)
+	, MostRecentPropertyAddress(nullptr)
+	, MostRecentPropertyContainer(nullptr)
 	, PreviousFrame(InPreviousFrame)
 	, OutParms(NULL)
 	, PropertyChainForCompiledIn(InPropertyChainForCompiledIn)
-	, CurrentNativeFunction(NULL)
+	, CurrentNativeFunction(nullptr)
 	, bArrayContextFailed(false)
+	, bAbortingExecution(false)
 #if PER_FUNCTION_SCRIPT_STATS
 	, DepthCounter(0)
 #endif
@@ -238,10 +307,22 @@ inline FFrame::FFrame( UObject* InObject, UFunction* InNode, void* InLocals, FFr
 #if DO_BLUEPRINT_GUARD
 	FBlueprintContextTracker::Get().ScriptStack.Push(this);
 #endif
+	PreviousTrackingFrame = PushThreadLocalTopStackFrame(this);
+
 #if PER_FUNCTION_SCRIPT_STATS
 	if (InPreviousFrame)
 	{
 		DepthCounter = (InPreviousFrame->DepthCounter < MAX_uint8) ? InPreviousFrame->DepthCounter + 1 : MAX_uint8;
+	}
+#endif
+#if UE_USE_VIRTUAL_STACK_ALLOCATOR_FOR_SCRIPT_VM
+	if (InPreviousFrame == nullptr)
+	{
+		CachedThreadVirtualStackAllocator = FBlueprintContext::GetThreadSingleton()->GetVirtualStackAllocator();
+	}
+	else
+	{
+		CachedThreadVirtualStackAllocator = InPreviousFrame->CachedThreadVirtualStackAllocator;
 	}
 #endif
 }
@@ -379,7 +460,8 @@ FORCEINLINE_DEBUGGABLE void FFrame::StepCompiledIn(void* Result, const FFieldCla
 template<class TProperty, typename TNativeType>
 FORCEINLINE_DEBUGGABLE TNativeType& FFrame::StepCompiledInRef(void*const TemporaryBuffer)
 {
-	MostRecentPropertyAddress = NULL;
+	MostRecentPropertyAddress = nullptr;
+	MostRecentPropertyContainer = nullptr;
 
 	if (Code)
 	{

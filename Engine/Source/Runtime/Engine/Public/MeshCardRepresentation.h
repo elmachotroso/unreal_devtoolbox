@@ -24,12 +24,12 @@ class FSignedDistanceFieldBuildMaterialData;
 
 namespace MeshCardRepresentation
 {
+	// Generation config
 	extern ENGINE_API float GetMinDensity();
 	extern ENGINE_API float GetNormalTreshold();
-	extern ENGINE_API int32 GetMaxSurfelDistanceXY();
-	extern ENGINE_API int32 GetMaxSurfelDistanceZ();
-	extern ENGINE_API int32 GetSeedIterations();
-	extern ENGINE_API int32 GetGrowIterations();
+
+	// Debugging
+	extern ENGINE_API bool IsDebugMode();
 	extern ENGINE_API int32 GetDebugSurfelDirection();
 };
 
@@ -104,8 +104,8 @@ public:
 		const float ZAxisLength = ScaledZAxis.Size();
 
 		// #lumen_todo: fix axisX flip cascading into entire card code
-		WorldOBB.AxisY = ScaledYAxis / FMath::Max(YAxisLength, DELTA);
-		WorldOBB.AxisZ = ScaledZAxis / FMath::Max(ZAxisLength, DELTA);
+		WorldOBB.AxisY = ScaledYAxis / FMath::Max(YAxisLength, UE_DELTA);
+		WorldOBB.AxisZ = ScaledZAxis / FMath::Max(ZAxisLength, UE_DELTA);
 		WorldOBB.AxisX = FVector3f::CrossProduct(WorldOBB.AxisZ, WorldOBB.AxisY);
 		FVector3f::CreateOrthonormalBasis(WorldOBB.AxisX, WorldOBB.AxisY, WorldOBB.AxisZ);
 
@@ -115,12 +115,11 @@ public:
 		return WorldOBB;
 	}
 
-	FBox GetBox()
+	FBox GetBox() const
 	{
-		FBox Box;
-		Box.Min = FVector(AxisX.GetAbs() * -Extent.X + AxisY.GetAbs() * -Extent.Y + AxisZ.GetAbs() * -Extent.Z + Origin);
-		Box.Max = FVector(AxisX.GetAbs() * +Extent.X + AxisY.GetAbs() * +Extent.Y + AxisZ.GetAbs() * +Extent.Z + Origin);
-		return Box;
+		FVector BoxMin(AxisX.GetAbs() * -Extent.X + AxisY.GetAbs() * -Extent.Y + AxisZ.GetAbs() * -Extent.Z + Origin);
+		FVector BoxMax(AxisX.GetAbs() * +Extent.X + AxisY.GetAbs() * +Extent.Y + AxisZ.GetAbs() * +Extent.Z + Origin);
+		return FBox(BoxMin, BoxMax);
 	}
 
 	friend FArchive& operator<<(FArchive& Ar, FLumenCardOBB& Data)
@@ -138,14 +137,12 @@ class FLumenCardBuildData
 {
 public:
 	FLumenCardOBB OBB;
-	uint8 LODLevel;
 	uint8 AxisAlignedDirectionIndex;
 
 	friend FArchive& operator<<(FArchive& Ar, FLumenCardBuildData& Data)
 	{
 		// Note: this is derived data, no need for versioning (bump the DDC guid)
 		Ar << Data.OBB;
-		Ar << Data.LODLevel;
 		Ar << Data.AxisAlignedDirectionIndex;
 		return Ar;
 	}
@@ -159,8 +156,6 @@ public:
 		Valid,
 		Invalid,
 
-		Seed,
-		Seed2,
 		Idle,
 		Cluster,
 		Used
@@ -177,6 +172,8 @@ public:
 	{
 		FVector3f Position;
 		FVector3f Normal;
+		float Coverage = 0.0f;
+		float Visibility = 1.0f;
 		int32 SourceSurfelIndex = -1;
 		ESurfelType Type;
 	};
@@ -190,13 +187,21 @@ public:
 	TArray<FSurfel> Surfels;
 	TArray<FRay> SurfelRays;
 	TArray<FSurfelCluster> Clusters;
+	int32 NumSurfels = 0;
+
+	void Init()
+	{
+		Surfels.Reset();
+		SurfelRays.Reset();
+		Clusters.Reset();
+		NumSurfels = 0;
+	}
 };
 
 class FMeshCardsBuildData
 {
 public:
 	FBox Bounds;
-	int32 MaxLODLevel;
 	TArray<FLumenCardBuildData> CardBuildData;
 
 	// Temporary debug visualization data, don't serialize
@@ -206,7 +211,6 @@ public:
 	{
 		// Note: this is derived data, no need for versioning (bump the DDC guid)
 		Ar << Data.Bounds;
-		Ar << Data.MaxLODLevel;
 		Ar << Data.CardBuildData;
 		return Ar;
 	}
@@ -339,7 +343,7 @@ public:
 	ENGINE_API void CancelAllOutstandingBuilds();
 
 	/** Blocks the main thread until the async build of the specified mesh is complete. */
-	ENGINE_API void BlockUntilBuildComplete(UStaticMesh* StaticMesh, bool bWarnIfBlocked);
+	ENGINE_API void BlockUntilBuildComplete(UStaticMesh* InStaticMesh, bool bWarnIfBlocked);
 
 	/** Blocks the main thread until all async builds complete. */
 	ENGINE_API void BlockUntilAllBuildsComplete();

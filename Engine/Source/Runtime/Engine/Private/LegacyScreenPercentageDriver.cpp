@@ -3,6 +3,7 @@
 #include "LegacyScreenPercentageDriver.h"
 #include "UnrealEngine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "DynamicResolutionState.h"
 
 
 static TAutoConsoleVariable<int32> CVarScreenPercentageMode(
@@ -118,33 +119,38 @@ FLegacyScreenPercentageDriver::FLegacyScreenPercentageDriver(
 	}
 }
 
-float FLegacyScreenPercentageDriver::GetPrimaryResolutionFractionUpperBound() const
+DynamicRenderScaling::TMap<float> FLegacyScreenPercentageDriver::GetResolutionFractionsUpperBound() const
 {
-	if (!ViewFamily.EngineShowFlags.ScreenPercentage)
+	DynamicRenderScaling::TMap<float> UpperBounds;
+	UpperBounds.SetAll(1.0f);
+
+	if (ViewFamily.EngineShowFlags.ScreenPercentage)
 	{
-		return 1.0f;
+		UpperBounds[GDynamicPrimaryResolutionFraction] = FMath::Clamp(
+			GlobalResolutionFractionUpperBound,
+			ISceneViewFamilyScreenPercentage::kMinResolutionFraction,
+			ISceneViewFamilyScreenPercentage::kMaxResolutionFraction);
 	}
 
-	return FMath::Clamp(
-		GlobalResolutionFractionUpperBound,
-		ISceneViewFamilyScreenPercentage::kMinResolutionFraction,
-		ISceneViewFamilyScreenPercentage::kMaxResolutionFraction);
+	return UpperBounds;
 }
 
-float FLegacyScreenPercentageDriver::GetPrimaryResolutionFraction_RenderThread() const
+DynamicRenderScaling::TMap<float> FLegacyScreenPercentageDriver::GetResolutionFractions_RenderThread() const
 {
 	check(IsInRenderingThread());
 
-	// Early return if no screen percentage should be done.
-	if (!ViewFamily.EngineShowFlags.ScreenPercentage)
+	DynamicRenderScaling::TMap<float> ResolutionFractions;
+	ResolutionFractions.SetAll(1.0f);
+
+	if (ViewFamily.EngineShowFlags.ScreenPercentage)
 	{
-		return 1.0f;
+		ResolutionFractions[GDynamicPrimaryResolutionFraction] = FMath::Clamp(
+			GlobalResolutionFraction,
+			ISceneViewFamilyScreenPercentage::kMinResolutionFraction,
+			ISceneViewFamilyScreenPercentage::kMaxResolutionFraction);
 	}
 
-	return FMath::Clamp(
-		GlobalResolutionFraction,
-		ISceneViewFamilyScreenPercentage::kMinResolutionFraction,
-		ISceneViewFamilyScreenPercentage::kMaxResolutionFraction);
+	return ResolutionFractions;
 }
 
 ISceneViewFamilyScreenPercentage* FLegacyScreenPercentageDriver::Fork_GameThread(
@@ -169,6 +175,11 @@ float FLegacyScreenPercentageDriver::GetCVarResolutionFraction()
 	}
 
 	return GlobalFraction;
+}
+
+FStaticResolutionFractionHeuristic::FStaticResolutionFractionHeuristic(const FEngineShowFlags& EngineShowFlags)
+{
+	Settings.bAllowDisplayBasedScreenPercentageMode = (EngineShowFlags.StereoRendering == 0) && (EngineShowFlags.VREditing == 0);
 }
 
 #if WITH_EDITOR
@@ -199,16 +210,21 @@ void FStaticResolutionFractionHeuristic::FUserSettings::PullRunTimeRenderingSett
 	AutoPixelCountMultiplier = CVarAutoPixelCountMultiplier.GetValueOnGameThread();
 }
 
-void FStaticResolutionFractionHeuristic::FUserSettings::PullEditorRenderingSettings(bool bIsRealTime)
+void FStaticResolutionFractionHeuristic::FUserSettings::PullEditorRenderingSettings(bool bIsRealTime, bool bIsPathTraced)
 #if WITH_EDITOR
 {
 	static auto CVarEditorViewportDefaultScreenPercentageRealTimeMode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.ScreenPercentageMode.RealTime"));
+	static auto CVarEditorViewportDefaultScreenPercentagePathTracerMode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.ScreenPercentageMode.PathTracer"));
 	static auto CVarEditorViewportDefaultScreenPercentageMode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.ScreenPercentageMode.NonRealTime"));
 	static auto CVarEditorViewportDefaultScreenPercentage = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.ScreenPercentage"));
 	static auto CVarEditorViewportDefaultMinRenderingResolution = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.MinRenderingResolution"));
 	static auto CVarEditorViewportDefaultMaxRenderingResolution = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.MaxRenderingResolution"));
 
-	if (bIsRealTime)
+	if (bIsPathTraced)
+	{
+		Mode = EScreenPercentageMode(FMath::Clamp(CVarEditorViewportDefaultScreenPercentagePathTracerMode->GetInt(), 0, 2));
+	}
+	else if (bIsRealTime)
 	{
 		Mode = EScreenPercentageMode(FMath::Clamp(CVarEditorViewportDefaultScreenPercentageRealTimeMode->GetInt(), 0, 2));
 	}
@@ -248,7 +264,10 @@ float FStaticResolutionFractionHeuristic::ResolveResolutionFraction() const
 	float LocalTotalDisplayedPixelCount = FMath::Max(TotalDisplayedPixelCount, 1) * SecondaryViewFraction * SecondaryViewFraction;
 
 	float GlobalResolutionFraction = 1.0f;
-	if (Settings.Mode == EScreenPercentageMode::BasedOnDisplayResolution)
+
+	const EScreenPercentageMode EffectiveScreenPercentageMode = Settings.bAllowDisplayBasedScreenPercentageMode ? Settings.Mode : EScreenPercentageMode::Manual;
+
+	if (EffectiveScreenPercentageMode == EScreenPercentageMode::BasedOnDisplayResolution)
 	{
 		static bool bInitPixelCount = false;
 		static float AutoMinDisplayResolution;
@@ -303,13 +322,13 @@ float FStaticResolutionFractionHeuristic::ResolveResolutionFraction() const
 
 		GlobalResolutionFraction = FMath::Sqrt(Settings.AutoPixelCountMultiplier * LerpedRenderingPixelCount / LocalTotalDisplayedPixelCount);
 	}
-	else if (Settings.Mode == EScreenPercentageMode::BasedOnDPIScale)
+	else if (EffectiveScreenPercentageMode == EScreenPercentageMode::BasedOnDPIScale)
 	{
 		GlobalResolutionFraction = 1.0f / DPIScale;
 	}
 	else
 	{
-		ensure(Settings.Mode == EScreenPercentageMode::Manual);
+		ensure(EffectiveScreenPercentageMode == EScreenPercentageMode::Manual);
 		GlobalResolutionFraction = Settings.GlobalResolutionFraction;
 	}
 

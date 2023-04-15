@@ -43,7 +43,7 @@ namespace Audio
 
 		for (int32 Channel = 0; Channel < InNumChannels; ++Channel)
 		{
-			LookaheadDelay[Channel].Init(SampleRate, 0.1f);
+			LookaheadDelay[Channel].Init(SampleRate, MaxLookaheadMsec / 1000.0f);
 			LookaheadDelay[Channel].SetDelayMsec(LookaheedDelayMsec);
 
 			EnvFollower[Channel].Init(FInlineEnvelopeFollowerInitParams{SampleRate, AttackTimeMsec, ReleaseTimeMsec, EnvelopeFollowerPeakMode, bIsAnalogMode});
@@ -67,6 +67,11 @@ namespace Audio
 	int32 FDynamicsProcessor::GetKeyNumChannels() const
 	{
 		return EnvFollower.Num();
+	}
+
+	float Audio::FDynamicsProcessor::GetMaxLookaheadMsec() const
+	{
+		return MaxLookaheadMsec;
 	}
 	
 	void FDynamicsProcessor::SetLookaheadMsec(const float InLookAheadMsec)
@@ -255,11 +260,6 @@ namespace Audio
 
 				// Write into the output with the computed gain value
 				OutFrame[Channel] = Gain[Channel] * LookaheadOutput * OutputGain * InputGain;
-
-				if (ProcessingMode == EDynamicsProcessingMode::Limiter)
-				{
-					OutFrame[Channel] = FMath::Clamp(OutFrame[Channel], -ConvertToLinear(ThresholdDb), ConvertToLinear(ThresholdDb));
-				}
 			}
 		}
 	}
@@ -390,7 +390,6 @@ namespace Audio
 		{
 			DetectorOuts[Channel] = EnvFollower[Channel].ProcessSample(DetectorGain * KeyIn[Channel]);
 		}
-		ArrayClampInPlace(DetectorOuts, 0.f, 1.f);
 
 		switch (LinkMode)
 		{

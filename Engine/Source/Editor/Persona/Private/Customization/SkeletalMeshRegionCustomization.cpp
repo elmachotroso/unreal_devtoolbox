@@ -5,7 +5,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Class.h"
 #include "IDetailsView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "PropertyHandle.h"
 #include "DetailLayoutBuilder.h"
@@ -189,7 +189,10 @@ TSharedRef<SWidget> FNiagaraSkeletalMeshRegionMaterialFilterDetails::HandleMater
 
 void FNiagaraSkeletalMeshRegionMaterialFilterDetails::HandleMaterialNameComboBoxSelectionChanged(TSharedPtr<FName> StringItem, ESelectInfo::Type SelectInfo)
 {
-	MaterialNameHandle->SetValue(*StringItem);
+	if (StringItem)
+	{
+		MaterialNameHandle->SetValue(*StringItem);
+	}
 }
 
 void FNiagaraSkeletalMeshRegionMaterialFilterDetails::OnComboOpening()

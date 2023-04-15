@@ -2,15 +2,24 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "EdGraph/EdGraphNode.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
 #include "K2Node.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "K2Node_Knot.generated.h"
 
 class FBlueprintActionDatabaseRegistrar;
 class INameValidatorInterface;
 class UEdGraph;
 class UEdGraphPin;
+class UObject;
 
 UCLASS(MinimalAPI)
 class UK2Node_Knot : public UK2Node
@@ -52,10 +61,11 @@ public:
 		return Pins[1];
 	}
 
+	void PropagatePinType();
+
 	BLUEPRINTGRAPH_API UEdGraphNode* GetExecTerminal() const;
 
 private:
-	void PropagatePinType();
 	void PropagatePinTypeFromDirection(bool bFromInput);
 
 	/** Recursion guard boolean to prevent PropagatePinType from infinitely recursing if you manage to create a loop of knots */

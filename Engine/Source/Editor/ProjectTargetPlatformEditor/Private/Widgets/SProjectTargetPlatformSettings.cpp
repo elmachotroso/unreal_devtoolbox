@@ -1,49 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProjectTargetPlatformSettings.h"
-#include "Widgets/SBoxPanel.h"
-#include "Styling/SlateTypes.h"
-#include "SlateOptMacros.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "EditorStyleSet.h"
-#include "PlatformInfo.h"
+
 #include "GameProjectGenerationModule.h"
 #include "Interfaces/IProjectManager.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "SlateOptMacros.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SProjectTargetPlatformSettings"
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SProjectTargetPlatformSettings::Construct(const FArguments& InArgs)
 {
-	// Create and sort a list of vanilla platforms that are game targets (sort by display name)
-	// We show all of the platforms regardless of whether we have an SDK installed for them or not
-	for(const PlatformInfo::FTargetPlatformInfo* PlatformInfo : PlatformInfo::GetPlatformInfoArray())
-	{
-		if(PlatformInfo->IsVanilla() && PlatformInfo->PlatformType == EBuildTargetType::Game)
-		{
-			AvailablePlatforms.Add(PlatformInfo);
-		}
-	}
-
-	AvailablePlatforms.Sort([](const PlatformInfo::FTargetPlatformInfo& One, const PlatformInfo::FTargetPlatformInfo& Two) -> bool
-	{
-		return One.DisplayName.CompareTo(Two.DisplayName) < 0;
-	});
-
-	// Generate a widget for each platform
 	TSharedRef<SVerticalBox> PlatformsListBox = SNew(SVerticalBox);
-	for(const PlatformInfo::FTargetPlatformInfo* AvailablePlatform : AvailablePlatforms)
+
+	for (const FDataDrivenPlatformInfo* DDPI : FDataDrivenPlatformInfoRegistry::GetSortedPlatformInfos(EPlatformInfoType::TruePlatformsOnly))
 	{
 		PlatformsListBox->AddSlot()
-		.AutoHeight()
-		[
-			MakePlatformRow(AvailablePlatform->DisplayName, AvailablePlatform->Name, FEditorStyle::GetBrush(AvailablePlatform->GetIconStyleName(EPlatformIconSize::Normal)))
-		];
+			.AutoHeight()
+			[
+				MakePlatformRow(FText::FromName(DDPI->IniPlatformName), DDPI->IniPlatformName, FAppStyle::GetBrush(DDPI->GetIconStyleName(EPlatformIconSize::Normal)))
+			];
 	}
 
 	ChildSlot
@@ -54,7 +51,7 @@ void SProjectTargetPlatformSettings::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(5.0f)
 			[
 				SNew(SVerticalBox)
@@ -62,7 +59,7 @@ void SProjectTargetPlatformSettings::Construct(const FArguments& InArgs)
 				+SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					MakePlatformRow(LOCTEXT("AllPlatforms", "All Platforms"), NAME_None, FEditorStyle::GetBrush("Launcher.Platform.AllPlatforms"))
+					MakePlatformRow(LOCTEXT("AllPlatforms", "All Platforms"), NAME_None, FAppStyle::GetBrush("Launcher.Platform.AllPlatforms"))
 				]
 
 				+SVerticalBox::Slot()
@@ -85,7 +82,7 @@ void SProjectTargetPlatformSettings::Construct(const FArguments& InArgs)
 		.Padding(FMargin(0.0f, 5.0f))
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(5.0f)
 			[
 				SNew(STextBlock)
@@ -187,9 +184,9 @@ void SProjectTargetPlatformSettings::HandlePlatformCheckBoxStateChanged(ECheckBo
 		else
 		{
 			// We've deselected "All Platforms", so manually select every available platform
-			for(const PlatformInfo::FTargetPlatformInfo* AvailablePlatform : AvailablePlatforms)
+			for (const FDataDrivenPlatformInfo* DDPI : FDataDrivenPlatformInfoRegistry::GetSortedPlatformInfos(EPlatformInfoType::TruePlatformsOnly))
 			{
-				FGameProjectGenerationModule::Get().UpdateSupportedTargetPlatforms(AvailablePlatform->Name, true);
+				FGameProjectGenerationModule::Get().UpdateSupportedTargetPlatforms(DDPI->IniPlatformName, true);
 			}
 		}
 	}

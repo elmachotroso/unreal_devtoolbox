@@ -9,17 +9,17 @@
 #include "Selections/MeshConnectedComponents.h"
 #include "DynamicSubmesh3.h"
 #include "Polygroups/PolygroupUtil.h"
+#include "Util/ColorConstants.h"
 
 #include "ShapeApproximation/ShapeDetection3.h"
 #include "ShapeApproximation/MeshSimpleShapeApproximation.h"
 
-#include "Physics/PhysicsDataCollection.h"
 #include "Physics/CollisionGeometryVisualization.h"
 
 // physics data
-#include "Engine/Classes/Engine/StaticMesh.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
-#include "Engine/Classes/PhysicsEngine/BodySetup.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "PhysicsEngine/BodySetup.h"
 
 #include "Async/ParallelFor.h"
 
@@ -28,9 +28,113 @@
 #include "ToolTargetManager.h"
 #include "ModelingToolTargetUtil.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SetCollisionGeometryTool)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "USetCollisionGeometryTool"
+
+
+/*
+ * Operators
+ */
+
+class FPhysicsCollectionOp : public TGenericDataOperator<FPhysicsDataCollection>
+{
+public:
+
+	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> InitialCollision;
+
+	TUniquePtr<FMeshSimpleShapeApproximation> UseShapeGenerator;
+	// Note: UseShapeGenerator holds raw pointers to these meshes, so we keep the array of shared pointers to prevent them from getting deleted while the op runs
+	TArray<TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>> ActiveInputMeshes;
+
+	ECollisionGeometryType ComputeType;
+
+	bool bUseMaxCount;
+	bool bRemoveContained;
+	bool bAppendToExisting;
+
+	EProjectedHullAxis SweepAxis;
+	int32 MaxCount;
+
+	// Begin TGenericDataOperator interface
+	virtual void CalculateResult(FProgressCancel* Progress) override
+	{
+		check(UseShapeGenerator.IsValid());
+		check(InitialCollision.IsValid());
+
+		// calculate new collision
+		TUniquePtr<FPhysicsDataCollection> NewCollision = MakeUnique<FPhysicsDataCollection>();
+		NewCollision->InitializeFromExisting(*InitialCollision);
+		if (bAppendToExisting || ComputeType == ECollisionGeometryType::KeepExisting)
+		{
+			NewCollision->CopyGeometryFromExisting(*InitialCollision);
+		}
+
+		switch (ComputeType)
+		{
+		case ECollisionGeometryType::KeepExisting:
+		case ECollisionGeometryType::None:
+			break;
+		case ECollisionGeometryType::AlignedBoxes:
+			UseShapeGenerator->Generate_AlignedBoxes(NewCollision->Geometry);
+			break;
+		case ECollisionGeometryType::OrientedBoxes:
+			UseShapeGenerator->Generate_OrientedBoxes(NewCollision->Geometry);
+			break;
+		case ECollisionGeometryType::MinimalSpheres:
+			UseShapeGenerator->Generate_MinimalSpheres(NewCollision->Geometry);
+			break;
+		case ECollisionGeometryType::Capsules:
+			UseShapeGenerator->Generate_Capsules(NewCollision->Geometry);
+			break;
+		case ECollisionGeometryType::ConvexHulls:
+			if (UseShapeGenerator->ConvexDecompositionMaxPieces > 1)
+			{
+				UseShapeGenerator->Generate_ConvexHullDecompositions(NewCollision->Geometry);
+			}
+			else
+			{
+				UseShapeGenerator->Generate_ConvexHulls(NewCollision->Geometry);
+			}
+			break;
+		case ECollisionGeometryType::SweptHulls:
+			UseShapeGenerator->Generate_ProjectedHulls(NewCollision->Geometry,
+				(FMeshSimpleShapeApproximation::EProjectedHullAxisMode)(int32)SweepAxis);
+			break;
+		case ECollisionGeometryType::LevelSets:
+			UseShapeGenerator->Generate_LevelSets(NewCollision->Geometry);
+			break;
+		case ECollisionGeometryType::MinVolume:
+			UseShapeGenerator->Generate_MinVolume(NewCollision->Geometry);
+			break;
+		}
+
+		if (!NewCollision)
+		{
+			ensure(false);
+			return;
+		}
+
+		if (bRemoveContained)
+		{
+			NewCollision->Geometry.RemoveContainedGeometry();
+		}
+
+		
+		if (bUseMaxCount)
+		{
+			NewCollision->Geometry.FilterByVolume(MaxCount);
+		}
+
+		NewCollision->CopyGeometryToAggregate();
+
+		SetResult(MoveTemp(NewCollision));
+	}
+	// End TGenericDataOperator interface
+};
+
 
 
 const FToolTargetTypeRequirements& USetCollisionGeometryToolBuilder::GetTargetRequirements() const
@@ -83,9 +187,6 @@ void USetCollisionGeometryTool::Setup()
 		InitialSourceMeshes[k] = UE::ToolTarget::GetDynamicMeshCopy(Targets[k]);
 	});
 
-	// why is this here?
-	bInputMeshesValid = true;
-
 	UToolTarget* CollisionTarget = Targets[Targets.Num() - 1];
 	PreviewGeom = NewObject<UPreviewGeometry>(this);
 	FTransform PreviewTransform = (FTransform)UE::ToolTarget::GetLocalToWorldTransform(CollisionTarget);
@@ -105,21 +206,26 @@ void USetCollisionGeometryTool::Setup()
 	AddToolPropertySource(Settings);
 	Settings->bUseWorldSpace = (SourceObjectIndices.Num() > 1);
 	Settings->WatchProperty(Settings->InputMode, [this](ESetCollisionGeometryInputMode) { OnInputModeChanged(); });
-	Settings->WatchProperty(Settings->GeometryType, [this](ECollisionGeometryType) { bResultValid = false; });
+	Settings->WatchProperty(Settings->GeometryType, [this](ECollisionGeometryType) { InvalidateCompute(); });
 	Settings->WatchProperty(Settings->bUseWorldSpace, [this](bool) { bInputMeshesValid = false; });
-	Settings->WatchProperty(Settings->bAppendToExisting, [this](bool) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bRemoveContained, [this](bool) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bEnableMaxCount, [this](bool) { bResultValid = false; });
-	Settings->WatchProperty(Settings->MaxCount, [this](int32) { bResultValid = false; });
-	Settings->WatchProperty(Settings->MinThickness, [this](float) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bDetectBoxes, [this](int32) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bDetectSpheres, [this](int32) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bDetectCapsules, [this](int32) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bSimplifyHulls, [this](bool) { bResultValid = false; });
-	Settings->WatchProperty(Settings->HullTargetFaceCount, [this](int32) { bResultValid = false; });
-	Settings->WatchProperty(Settings->bSimplifyPolygons, [this](bool) { bResultValid = false; });
-	Settings->WatchProperty(Settings->HullTolerance, [this](float) { bResultValid = false; });
-	Settings->WatchProperty(Settings->SweepAxis, [this](EProjectedHullAxis) { bResultValid = false; });
+	Settings->WatchProperty(Settings->bAppendToExisting, [this](bool) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bRemoveContained, [this](bool) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bEnableMaxCount, [this](bool) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->MaxCount, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->MinThickness, [this](float) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bDetectBoxes, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bDetectSpheres, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bDetectCapsules, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bSimplifyHulls, [this](bool) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->HullTargetFaceCount, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->MaxHullsPerMesh, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->ConvexDecompositionSearchFactor, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->AddHullsErrorTolerance, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->MinPartThickness, [this](int32) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->bSimplifyPolygons, [this](bool) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->HullTolerance, [this](float) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->SweepAxis, [this](EProjectedHullAxis) { InvalidateCompute(); });
+	Settings->WatchProperty(Settings->LevelSetResolution, [this](int32) { InvalidateCompute(); });
 
 	if (InitialSourceMeshes.Num() == 1)
 	{
@@ -130,13 +236,12 @@ void USetCollisionGeometryTool::Setup()
 		AddToolPropertySource(PolygroupLayerProperties);
 	}
 
-	bResultValid = false;
-
 	VizSettings = NewObject<UCollisionGeometryVisualizationProperties>(this);
 	VizSettings->RestoreProperties(this);
 	AddToolPropertySource(VizSettings);
 	VizSettings->WatchProperty(VizSettings->LineThickness, [this](float NewValue) { bVisualizationDirty = true; });
 	VizSettings->WatchProperty(VizSettings->Color, [this](FColor NewValue) { bVisualizationDirty = true; });
+	VizSettings->WatchProperty(VizSettings->bRandomColors, [this](bool bNewValue) { bVisualizationDirty = true; });
 	VizSettings->WatchProperty(VizSettings->bShowHidden, [this](bool bNewValue) { bVisualizationDirty = true; });
 
 	// add option for collision properties
@@ -147,6 +252,65 @@ void USetCollisionGeometryTool::Setup()
 	GetToolManager()->DisplayMessage(
 		LOCTEXT("OnStartTool", "Initialize Simple Collision geometry for a Mesh from one or more input Meshes (including itself)."),
 		EToolMessageLevel::UserNotification);
+
+	// Make sure we are set to precompute input meshes on first tick
+	bInputMeshesValid = false;
+}
+
+
+TUniquePtr<UE::Geometry::TGenericDataOperator<FPhysicsDataCollection>> USetCollisionGeometryTool::MakeNewOperator()
+{
+	TUniquePtr<FPhysicsCollectionOp> Op = MakeUnique<FPhysicsCollectionOp>();
+
+	Op->InitialCollision = InitialCollision;
+
+	// Pick the approximator and input meshes that will be used by the op
+	TSharedPtr<UE::Geometry::FMeshSimpleShapeApproximation, ESPMode::ThreadSafe>* Approximator = nullptr;
+	TArray<TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>>* Inputs = nullptr;
+	if (Settings->InputMode == ESetCollisionGeometryInputMode::CombineAll)
+	{
+		Approximator = &CombinedInputMeshesApproximator;
+		Inputs = &CombinedInputMeshes;
+	}
+	else if (Settings->InputMode == ESetCollisionGeometryInputMode::PerMeshComponent)
+	{
+		Approximator = &SeparatedMeshesApproximator;
+		Inputs = &SeparatedInputMeshes;
+	}
+	else if (Settings->InputMode == ESetCollisionGeometryInputMode::PerMeshGroup)
+	{
+		Approximator = &PerGroupMeshesApproximator;
+		Inputs = &PerGroupInputMeshes;
+	}
+	else
+	{
+		Approximator = &InputMeshesApproximator;
+		Inputs = &InputMeshes;
+	}
+	Op->UseShapeGenerator = MakeUnique<FMeshSimpleShapeApproximation>(**Approximator);
+	Op->ActiveInputMeshes = *Inputs;
+
+	Op->UseShapeGenerator->bDetectSpheres = Settings->bDetectSpheres;
+	Op->UseShapeGenerator->bDetectBoxes = Settings->bDetectBoxes;
+	Op->UseShapeGenerator->bDetectCapsules = Settings->bDetectCapsules;
+	Op->UseShapeGenerator->MinDimension = Settings->MinThickness;
+	Op->UseShapeGenerator->bSimplifyHulls = Settings->bSimplifyHulls;
+	Op->UseShapeGenerator->HullTargetFaceCount = Settings->HullTargetFaceCount;
+	Op->UseShapeGenerator->ConvexDecompositionMaxPieces = Settings->MaxHullsPerMesh;
+	Op->UseShapeGenerator->ConvexDecompositionSearchFactor = Settings->ConvexDecompositionSearchFactor;
+	Op->UseShapeGenerator->ConvexDecompositionErrorTolerance = Settings->AddHullsErrorTolerance;
+	Op->UseShapeGenerator->ConvexDecompositionMinPartThickness = Settings->MinPartThickness;
+	Op->UseShapeGenerator->HullSimplifyTolerance = Settings->HullTolerance;
+	Op->UseShapeGenerator->LevelSetGridResolution = Settings->LevelSetResolution;
+
+	Op->ComputeType = Settings->GeometryType;
+	Op->bAppendToExisting = Settings->bAppendToExisting;
+	Op->bUseMaxCount = Settings->bEnableMaxCount;
+	Op->MaxCount = Settings->MaxCount;
+	Op->bRemoveContained = Settings->bRemoveContained;
+	Op->SweepAxis = Settings->SweepAxis;
+
+	return Op;
 }
 
 
@@ -168,6 +332,11 @@ void USetCollisionGeometryTool::OnShutdown(EToolShutdownType ShutdownType)
 		{
 			UE::ToolTarget::ShowSourceObject(Targets[k]);
 		}
+	}
+
+	if (Compute)
+	{
+		Compute->Shutdown();
 	}
 
 	if (ShutdownType == EToolShutdownType::Accept)
@@ -242,13 +411,32 @@ void USetCollisionGeometryTool::OnTick(float DeltaTime)
 	{
 		PrecomputeInputMeshes();
 		bInputMeshesValid = true;
-		bResultValid = false;
+		InvalidateCompute();
 	}
 
-	if (bResultValid == false)
+	if (Compute)
 	{
-		UpdateGeneratedCollision();
-		bResultValid = true;
+		Compute->Tick(DeltaTime);
+
+		if (Compute->HaveValidResult())
+		{
+			TUniquePtr<FPhysicsDataCollection> Result = Compute->Shutdown();
+			if (Result.IsValid())
+			{
+				GeneratedCollision = MakeShareable<FPhysicsDataCollection>(Result.Release());
+
+				bVisualizationDirty = true;
+
+				// update visualization
+				PreviewGeom->RemoveAllLineSets();
+				UE::PhysicsTools::InitializePreviewGeometryLines(*GeneratedCollision, PreviewGeom,
+					VizSettings->Color, VizSettings->LineThickness, 0.0f, 16, VizSettings->bRandomColors);
+
+				// update property set
+				CollisionProps->Reset();
+				UE::PhysicsTools::InitializePhysicsToolObjectPropertySet(GeneratedCollision.Get(), CollisionProps);
+			}
+		}
 	}
 
 	if (bVisualizationDirty)
@@ -259,6 +447,28 @@ void USetCollisionGeometryTool::OnTick(float DeltaTime)
 }
 
 
+void USetCollisionGeometryTool::InvalidateCompute()
+{
+	if (PreviewGeom)
+	{
+		PreviewGeom->RemoveAllLineSets();
+	}
+
+	if (!bInputMeshesValid)
+	{
+		// InvalidateCompute() will be called again when the input meshes are valid
+		return;
+	}
+
+	if (!Compute)
+	{
+		// Initialize background compute
+		Compute = MakeUnique<TGenericDataBackgroundCompute<FPhysicsDataCollection>>();
+		Compute->Setup(this);
+	}
+	Compute->InvalidateResult();
+}
+
 
 void USetCollisionGeometryTool::OnInputModeChanged()
 {
@@ -266,13 +476,13 @@ void USetCollisionGeometryTool::OnInputModeChanged()
 	{
 		SetToolPropertySourceEnabled(PolygroupLayerProperties, Settings->InputMode == ESetCollisionGeometryInputMode::PerMeshGroup);
 	}
-	bResultValid = false;
+	InvalidateCompute();
 }
 
 void USetCollisionGeometryTool::OnSelectedGroupLayerChanged()
 {
 	bInputMeshesValid = false;
-	bResultValid = false;
+	InvalidateCompute();
 }
 
 
@@ -305,10 +515,11 @@ void USetCollisionGeometryTool::UpdateVisualization()
 {
 	float UseThickness = VizSettings->LineThickness;
 	FColor UseColor = VizSettings->Color;
+	int32 ColorIdx = 0;
 	PreviewGeom->UpdateAllLineSets([&](ULineSetComponent* LineSet)
 	{
 		LineSet->SetAllLinesThickness(UseThickness);
-		LineSet->SetAllLinesColor(UseColor);
+		LineSet->SetAllLinesColor(VizSettings->bRandomColors ? LinearColors::SelectFColor(ColorIdx++) : UseColor);
 	});
 
 	LineMaterial = ToolSetupUtil::GetDefaultLineComponentMaterial(GetToolManager(), !VizSettings->bShowHidden);
@@ -316,91 +527,6 @@ void USetCollisionGeometryTool::UpdateVisualization()
 }
 
 
-void USetCollisionGeometryTool::UpdateGeneratedCollision()
-{
-	// calculate new collision
-	ECollisionGeometryType ComputeType = Settings->GeometryType;
-
-
-	TSharedPtr<FPhysicsDataCollection, ESPMode::ThreadSafe> NewCollision = MakeShared<FPhysicsDataCollection, ESPMode::ThreadSafe>();
-	NewCollision->InitializeFromExisting(*InitialCollision);
-	if (Settings->bAppendToExisting || ComputeType == ECollisionGeometryType::KeepExisting)
-	{
-		NewCollision->CopyGeometryFromExisting(*InitialCollision);
-	}
-
-	TSharedPtr<FMeshSimpleShapeApproximation, ESPMode::ThreadSafe> UseShapeGenerator = GetApproximator(Settings->InputMode);
-
-	UseShapeGenerator->bDetectSpheres = Settings->bDetectSpheres;
-	UseShapeGenerator->bDetectBoxes = Settings->bDetectBoxes;
-	UseShapeGenerator->bDetectCapsules = Settings->bDetectCapsules;
-	//UseShapeGenerator->bDetectConvexes = Settings->bDetectConvexes;
-
-	UseShapeGenerator->MinDimension = Settings->MinThickness;
-
-	switch (ComputeType)
-	{
-	case ECollisionGeometryType::KeepExisting:
-	case ECollisionGeometryType::None:
-		break;
-	case ECollisionGeometryType::AlignedBoxes:
-		UseShapeGenerator->Generate_AlignedBoxes(NewCollision->Geometry);
-		break;
-	case ECollisionGeometryType::OrientedBoxes:
-		UseShapeGenerator->Generate_OrientedBoxes(NewCollision->Geometry);
-		break;
-	case ECollisionGeometryType::MinimalSpheres:
-		UseShapeGenerator->Generate_MinimalSpheres(NewCollision->Geometry);
-		break;
-	case ECollisionGeometryType::Capsules:
-		UseShapeGenerator->Generate_Capsules(NewCollision->Geometry);
-		break;
-	case ECollisionGeometryType::ConvexHulls:
-		UseShapeGenerator->bSimplifyHulls = Settings->bSimplifyHulls;
-		UseShapeGenerator->HullTargetFaceCount = Settings->HullTargetFaceCount;
-		UseShapeGenerator->Generate_ConvexHulls(NewCollision->Geometry);
-		break;
-	case ECollisionGeometryType::SweptHulls:
-		UseShapeGenerator->bSimplifyHulls = Settings->bSimplifyPolygons;
-		UseShapeGenerator->HullSimplifyTolerance = Settings->HullTolerance;
-		UseShapeGenerator->Generate_ProjectedHulls(NewCollision->Geometry, 
-			(FMeshSimpleShapeApproximation::EProjectedHullAxisMode)(int32)Settings->SweepAxis);
-		break;
-	case ECollisionGeometryType::MinVolume:
-		UseShapeGenerator->Generate_MinVolume(NewCollision->Geometry);
-		break;
-	}
-
-
-	if (!NewCollision)
-	{
-		ensure(false);
-		return;
-	}
-	GeneratedCollision = NewCollision;
-
-	if (Settings->bRemoveContained)
-	{
-		GeneratedCollision->Geometry.RemoveContainedGeometry();
-	}
-
-	bool bUseMaxCount = (Settings->bEnableMaxCount);
-	if (bUseMaxCount)
-	{
-		GeneratedCollision->Geometry.FilterByVolume(Settings->MaxCount);
-	}
-
-	GeneratedCollision->CopyGeometryToAggregate();
-
-	// update visualization
-	PreviewGeom->RemoveAllLineSets();
-	UE::PhysicsTools::InitializePreviewGeometryLines(*GeneratedCollision, PreviewGeom,
-		VizSettings->Color, VizSettings->LineThickness, 0.0f, 16);
-
-	// update property set
-	CollisionProps->Reset();
-	UE::PhysicsTools::InitializePhysicsToolObjectPropertySet(GeneratedCollision.Get(), CollisionProps);
-}
 
 
 
@@ -483,7 +609,6 @@ void USetCollisionGeometryTool::PrecomputeInputMeshes()
 
 	UToolTarget* CollisionTarget = Targets[Targets.Num() - 1];
 	FTransformSRT3d TargetTransform(UE::ToolTarget::GetLocalToWorldTransform(CollisionTarget));
-	FTransformSRT3d TargetTransformInv = TargetTransform.Inverse();
 
 	InputMeshes.Reset();
 	InputMeshes.SetNum(SourceObjectIndices.Num());
@@ -493,8 +618,8 @@ void USetCollisionGeometryTool::PrecomputeInputMeshes()
 		if (Settings->bUseWorldSpace)
 		{
 			FTransformSRT3d ToWorld(UE::ToolTarget::GetLocalToWorldTransform(Targets[k]));
-			MeshTransforms::ApplyTransform(SourceMesh, ToWorld);
-			MeshTransforms::ApplyTransform(SourceMesh, TargetTransformInv);
+			MeshTransforms::ApplyTransform(SourceMesh, ToWorld, true);
+			MeshTransforms::ApplyTransformInverse(SourceMesh, TargetTransform, true);
 		}
 		SourceMesh.DiscardAttributes();
 		InputMeshes[k] = MakeShared<FDynamicMesh3, ESPMode::ThreadSafe>(MoveTemp(SourceMesh));
@@ -541,27 +666,6 @@ void USetCollisionGeometryTool::PrecomputeInputMeshes()
 	PerGroupMeshesApproximator = MakeShared<FMeshSimpleShapeApproximation, ESPMode::ThreadSafe>();
 	PerGroupMeshesApproximator->InitializeSourceMeshes(MakeRawPointerList<FDynamicMesh3>(PerGroupInputMeshes));
 
-}
-
-
-TSharedPtr<FMeshSimpleShapeApproximation, ESPMode::ThreadSafe>& USetCollisionGeometryTool::GetApproximator(ESetCollisionGeometryInputMode MeshSetMode)
-{
-	if (MeshSetMode == ESetCollisionGeometryInputMode::CombineAll)
-	{
-		return CombinedInputMeshesApproximator;
-	}
-	else if ( MeshSetMode == ESetCollisionGeometryInputMode::PerMeshComponent)
-	{
-		return SeparatedMeshesApproximator;
-	}
-	else if (MeshSetMode == ESetCollisionGeometryInputMode::PerMeshGroup)
-	{
-		return PerGroupMeshesApproximator;
-	}
-	else
-	{
-		return InputMeshesApproximator;
-	}
 }
 
 

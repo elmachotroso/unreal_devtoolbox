@@ -151,6 +151,13 @@ FEngineAnalyticsSessionSummary::FEngineAnalyticsSessionSummary(TSharedPtr<IAnaly
 
 	// Create the immutable metrics.
 	Store->Set(TEXT("Platform"), FString(FPlatformProperties::IniPlatformName()));
+#if PLATFORM_MAC
+#if PLATFORM_MAC_ARM64
+    Store->Set(TEXT("UEBuildArch"), FString(TEXT("AppleSilicon")));
+#else
+    Store->Set(TEXT("UEBuildArch"), FString(TEXT("Intel(Mac)")));
+#endif
+#endif
 	Store->Set(TEXT("OSMajor"), OSMajor);
 	Store->Set(TEXT("OSMinor"), OSMinor);
 	Store->Set(TEXT("OSVersion"), FPlatformMisc::GetOSVersion());
@@ -160,6 +167,7 @@ FEngineAnalyticsSessionSummary::FEngineAnalyticsSessionSummary(TSharedPtr<IAnaly
 	Store->Set(TEXT("CPULogicalCores"), FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 	Store->Set(TEXT("CPUVendor"), FPlatformMisc::GetCPUVendor());
 	Store->Set(TEXT("CPUBrand"), FPlatformMisc::GetCPUBrand());
+	Store->Set(TEXT("CPUInfo"), FPlatformMisc::GetCPUInfo()); // This is a bitfield. See the function documentation in GenericPlatformMisc.h to interpret the bits.
 	Store->Set(TEXT("DesktopGPUAdapter"), FPlatformMisc::GetPrimaryGPUBrand());
 	Store->Set(TEXT("RenderingGPUAdapter"), GRHIAdapterName);
 	Store->Set(TEXT("GPUVendorID"), GRHIVendorId);
@@ -366,9 +374,14 @@ bool FEngineAnalyticsSessionSummary::UpdateExternalProcessReporterState(bool bQu
 bool FEngineAnalyticsSessionSummary::UpdateDebuggerStates()
 {
 	bool bStateChanged = false;
+	bool bIgnoreDebugger = false;
+
+#if !UE_BUILD_SHIPPING
+	bIgnoreDebugger = GIgnoreDebugger;
+#endif // !UE_BUILD_SHIPPING
 
 	// Ignoring the debugger changes how IsDebuggerPresent() behave and masks the usage of the debugger if true.
-	if (!bDebuggerIgnored && GIgnoreDebugger)
+	if (!bDebuggerIgnored && bIgnoreDebugger)
 	{
 		bStateChanged = true;
 		bDebuggerIgnored = true;

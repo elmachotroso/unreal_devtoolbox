@@ -16,7 +16,11 @@ namespace Horde.Storage.Controllers
         private readonly IOptionsMonitor<MvcOptions> _mvcOptions;
 
         private readonly string[] _validContentTypes = {
-            MediaTypeNames.Application.Octet, MediaTypeNames.Application.Json, CustomMediaTypeNames.UnrealCompactBinary
+            MediaTypeNames.Application.Octet, 
+            MediaTypeNames.Application.Json, 
+            CustomMediaTypeNames.UnrealCompactBinary, 
+            CustomMediaTypeNames.JupiterInlinedPayload,
+			CustomMediaTypeNames.UnrealCompactBinaryPackage
         };
 
         public FormatResolver(IOptionsMonitor<MvcOptions> mvcOptions)
@@ -31,7 +35,10 @@ namespace Horde.Storage.Controllers
             {
                 string? typeMapping = _mvcOptions.CurrentValue.FormatterMappings.GetMediaTypeMappingForFormat(format);
                 if (typeMapping == null)
+                {
                     throw new Exception($"No mapping defined from format {format} to mime type");
+                }
+
                 return typeMapping;
             }
             
@@ -43,12 +50,17 @@ namespace Horde.Storage.Controllers
                 return defaultContentType;
             }
 
+            // */* means to accept anything, so we use the default content type
+            if (acceptHeader == "*/*")
+            {
+                return defaultContentType;
+            }
+
             foreach (string header in acceptHeader)
             {
-                string s = header.ToLowerInvariant();
-                if (_validContentTypes.Contains(s))
+                if (_validContentTypes.Contains(header, StringComparer.OrdinalIgnoreCase))
                 {
-                    return s;
+                    return header;
                 }
             }
 

@@ -3,15 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IDerivedDataCacheNotifications.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
-#include "IDerivedDataCacheNotifications.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UniquePtr.h"
 
-class SDockTab;
-class SWindow;
-class SWidget;
-class SDerivedDataCacheSettingsDialog;
 class FSpawnTabArgs;
+class SDerivedDataCacheSettingsDialog;
+class SDockTab;
+class SWidget;
+class SWindow;
 
 /**
  * The module holding all of the UI related pieces for DerivedData
@@ -35,26 +37,21 @@ public:
 
 	void ShowResourceUsageTab();
 	void ShowCacheStatisticsTab();
-
-	void ShowVirtualAssetsStatisticsTab();
+	
 	void ShowSettingsDialog();
 
 private:
 
 	TSharedPtr<SWidget> CreateResourceUsageDialog();
 	TSharedPtr<SWidget> CreateCacheStatisticsDialog();
-	TSharedPtr<SWidget> CreateVirtualAssetsStatisticsDialog();
-
 
 	TSharedRef<SDockTab> CreateResourceUsageTab(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> CreateCacheStatisticsTab(const FSpawnTabArgs& Args);
-	TSharedRef<SDockTab> CreateVirtualAssetsStatisticsTab(const FSpawnTabArgs& Args);
 
 	void OnSettingsDialogClosed(const TSharedRef<SWindow>& InWindow);
 
 	TWeakPtr<SDockTab> ResourceUsageTab;
 	TWeakPtr<SDockTab> CacheStatisticsTab;
-	TWeakPtr<SDockTab> VirtualAssetsStatisticsTab;
 
 	TSharedPtr<SWindow>	SettingsWindow;
 	TSharedPtr<SDerivedDataCacheSettingsDialog> SettingsDialog;

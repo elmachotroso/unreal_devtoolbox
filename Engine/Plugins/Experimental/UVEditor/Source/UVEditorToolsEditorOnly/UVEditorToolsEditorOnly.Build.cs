@@ -53,11 +53,32 @@ public class UVEditorToolsEditorOnly : ModuleRules
 				"ModelingOperators",
 				"ModelingOperatorsEditorOnly",
 				"UVEditorTools",
+
+				"ToolWidgets",
+				"EditorWidgets",
+				"ModelingEditorUI",
+				"PropertyEditor",
+
+				"MeshDescription",
+				"StaticMeshDescription",
+				"MeshConversion",
+				"GeometryAlgorithms", // required for constrained Delaunay triangulation
+				"MeshUtilitiesCommon", // required by uvlayoutop
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
-		
-		
+		bool bWithProxyLOD = Target.Platform == UnrealTargetPlatform.Win64;
+		PrivateDefinitions.Add("WITH_PROXYLOD=" + (bWithProxyLOD ? '1' : '0'));
+		if (bWithProxyLOD)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"ProxyLODMeshReduction", // currently Win64-only
+				}
+				);
+		}
+
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]
 			{

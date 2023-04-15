@@ -46,9 +46,14 @@ namespace
 
 			for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 			{
-				FRHIResourceCreateInfo CreateInfo(TEXT("FTileRenderResources"));
-				RenderTargets[Layer] = RHICreateTexture2D(TileSize, TileSize, LayerFormats[Layer], 1, 1, TexCreate_RenderTargetable, CreateInfo);
-				StagingTextures[Layer] = RHICreateTexture2D(TileSize, TileSize, LayerFormats[Layer], 1, 1, TexCreate_CPUReadback, CreateInfo);
+				FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("FTileRenderResources"), TileSize, TileSize, LayerFormats[Layer]);
+
+				Desc.SetFlags(ETextureCreateFlags::RenderTargetable);
+				RenderTargets[Layer] = RHICreateTexture(Desc);
+
+				Desc.SetFlags(ETextureCreateFlags::CPUReadback);
+				StagingTextures[Layer] = RHICreateTexture(Desc);
 			}
 
 			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
@@ -174,7 +179,7 @@ namespace RuntimeVirtualTexture
 
 		// Spin up slow task UI
 		const float TaskWorkRender = NumTilesX * NumTilesY;
-		const float TextureBuildTaskMultiplier = InComponent->IsCrunchCompressed() ? 3.f : .25f; // Crunch compression is slow.
+		const float TextureBuildTaskMultiplier = 0.25f;
 		const float TaskWorkBuildBulkData = TaskWorkRender * TextureBuildTaskMultiplier;
 		FScopedSlowTask Task(TaskWorkRender + TaskWorkBuildBulkData, FText::AsCultureInvariant(InComponent->GetStreamingTexture()->GetName()));
 		Task.MakeDialog(true);
@@ -183,9 +188,13 @@ namespace RuntimeVirtualTexture
 		FTileRenderResources RenderTileResources(TileSize, NumTilesX, NumTilesY, NumLayers, LayerFormats);
 		BeginInitResource(&RenderTileResources);
 
+		int64 RenderTileResourcesBytes = RenderTileResources.GetTotalSizeBytes();
+
+		UE_LOG(LogVirtualTexturing,Display,TEXT("Allocating %uMiB for RenderTileResourcesBytes"),(uint32)(RenderTileResourcesBytes/(1024*1024)));
+
 		// Final pixels will contain image data for each virtual texture layer in order
 		TArray64<uint8> FinalPixels;
-		FinalPixels.SetNumUninitialized(RenderTileResources.GetTotalSizeBytes());
+		FinalPixels.SetNumUninitialized(RenderTileResourcesBytes);
 
 		// Iterate over all tiles and render/store each one to the final image
 		for (int32 TileY = 0; TileY < NumTilesY && !Task.ShouldCancel(); TileY++)
@@ -203,7 +212,7 @@ namespace RuntimeVirtualTexture
 				//todo[vt]: Batch groups of streaming locations and render commands to reduce number of flushes.
 				const FVector StreamingWorldPos = Transform.TransformPosition(FVector(UVRange.GetCenter(), 0.5f));
 				IStreamingManager::Get().Tick(0.f);
-				IStreamingManager::Get().AddViewSlaveLocation(StreamingWorldPos);
+				IStreamingManager::Get().AddViewLocation(StreamingWorldPos);
 				IStreamingManager::Get().StreamAllResources(0);
 
 				ENQUEUE_RENDER_COMMAND(BakeStreamingTextureTileCommand)([
@@ -227,7 +236,6 @@ namespace RuntimeVirtualTexture
 					}
 
 					{
-						FMemMark MemMark(FMemStack::Get());
 						FRDGBuilder GraphBuilder(RHICmdList);
 
 						RuntimeVirtualTexture::FRenderPageBatchDesc Desc;
@@ -262,6 +270,7 @@ namespace RuntimeVirtualTexture
 						RHICmdList.CopyTexture(RenderTileResources.GetRenderTarget(Layer), RenderTileResources.GetStagingTexture(Layer), FRHICopyTextureInfo());
 					}
 
+					RenderTileResources.GetFence()->Clear();
 					RHICmdList.WriteGPUFence(RenderTileResources.GetFence());
 
 					// Read back tile data and copy into final destination

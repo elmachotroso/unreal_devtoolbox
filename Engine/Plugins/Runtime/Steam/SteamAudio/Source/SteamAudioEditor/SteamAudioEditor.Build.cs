@@ -15,12 +15,6 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			PublicIncludePaths.AddRange(
-				new string[] {
-				}
-			);
-
-
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
@@ -30,7 +24,7 @@ namespace UnrealBuildTool.Rules
 					"EditorFramework",
 					"UnrealEd",
 					"LevelEditor",
-					"EditorStyle",
+					
 					"RenderCore",
 					"RHI",
 					"AudioEditor",
@@ -59,7 +53,7 @@ namespace UnrealBuildTool.Rules
 					"InputCore",
 					"PropertyEditor",
 					"Projects",
-					"EditorStyle",
+					
 					"SteamAudio"
 				 }
 			);

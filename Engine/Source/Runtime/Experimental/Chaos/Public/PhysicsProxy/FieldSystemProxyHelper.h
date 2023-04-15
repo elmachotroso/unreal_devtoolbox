@@ -11,6 +11,8 @@
 #include "Chaos/Particles.h"
 #include <limits>
 
+#include "GeometryCollectionPhysicsProxy.h"
+
 namespace Chaos
 {
 	/**
@@ -191,7 +193,15 @@ namespace Chaos
 		}
 		else
 		{
+			// @todo(chaos): this should also call Evolution.SetParticleObjectState, but to do that
+			// we need to change how the ActiveParticlesArray is handled in RigidParticleSOAs.
+			// Instead we manually do the parts of SetParticleObjectState that are still required 
+			// while avoiding the SOA management.
 			RigidHandle->SetObjectStateLowLevel(FieldState);
+			if (!RigidHandle->Disabled())
+			{
+				RigidSolver->GetEvolution()->GetConstraintGraph().AddParticle(RigidHandle);
+			}
 		}
 	}
 
@@ -201,9 +211,9 @@ namespace Chaos
 	 * @param    FieldState Field state that will be set on the handle
 	 * @param    RigidHandle Particle hadle on which the state will be set
 	 * @param    HasInitialLinearVelocity Boolean to check if we have to set the initial linear velocity 
-	 * @param    InitialLinearVelocity Initial linear velocity to potentially set onto he handle
+	 * @param    InitialLinearVelocity Initial linear velocity to potentially set onto the handle
 	 * @param    HasInitialAngularVelocity Boolean to check if we have to set the initial angular velocity 
-	 * @param    InitialAngularVelocity Initial angular velocity to potentially set onto he handle
+	 * @param    InitialAngularVelocity Initial angular velocity to potentially set onto the handle
 	 */
 	static bool ReportDynamicStateResult(Chaos::FPBDRigidsSolver* RigidSolver,
 		const Chaos::EObjectStateType FieldState, Chaos::FPBDRigidParticleHandle* RigidHandle,
@@ -243,55 +253,47 @@ namespace Chaos
 	/**
 	 * Update all the clustered particles object state to static/kinematic if one of its children state has been changed to static/kinematic
 	 * @param    Rigidsolver Rigid solver owning the particle handle
-	 * @param    bHasStateChanged Boolean to check before updating the handle state
+	 * @param    UpdatedParticles List of particles that had their state updated
 	 */
-	static void UpdateSolverParticlesState(Chaos::FPBDRigidsSolver* RigidSolver, const bool bHasStateChanged)
+	static void UpdateSolverParticlesState(Chaos::FPBDRigidsSolver* RigidSolver, const TFieldArrayView<FFieldContextIndex>& UpdatedParticleIndices, const TArray<Chaos::FGeometryParticleHandle*>& Particles)
 	{
-		if (bHasStateChanged)
+		if (UpdatedParticleIndices.Num() > 0)
 		{
+			// chaos(todo) : do we really need this ? 
 			RigidSolver->GetParticles().UpdateGeometryCollectionViews(true);
 
-			Chaos::FPBDRigidsSOAs& SolverParticles = RigidSolver->GetParticles();
-			auto& Clustering = RigidSolver->GetEvolution()->GetRigidClustering();
-
-			FPBDRigidClusteredParticles& ClusteredParticles = SolverParticles.GetClusteredParticles();
-
-			for (uint32 ParticleIndex = 0, NumParticles = ClusteredParticles.Size(); ParticleIndex < NumParticles; ++ParticleIndex)
+			TSet<FPBDRigidClusteredParticleHandle*> TopParentClusters;
+			for (const FFieldContextIndex& ParticleIndex: UpdatedParticleIndices)
 			{
-				FPBDRigidClusteredParticleHandle* ClusteredHandle = ClusteredParticles.Handle(ParticleIndex);
-				if (ClusteredHandle && ClusteredHandle->ClusterIds().NumChildren && !ClusteredHandle->Disabled())
+				if (FPBDRigidClusteredParticleHandle* ClusteredHandle = Particles[ParticleIndex.Sample]->CastToClustered())
 				{
-					Chaos::FPBDRigidParticleHandle* RigidHandle = ClusteredHandle->CastToRigidParticle();
-					check(RigidHandle);
-					UpdateKinematicProperties(RigidHandle, Clustering.GetChildrenMap(), *RigidSolver->GetEvolution());
+					FPBDRigidClusteredParticleHandle* TopParent = ClusteredHandle;
+					while (FPBDRigidClusteredParticleHandle* DirectParent = TopParent->Parent())
+					{
+						TopParent = DirectParent;
+					}
+					TopParentClusters.Add(TopParent);
 				}
 			}
-		}
-	}
 
-	/**
-	 * Update the solver breaking model based on external strain
-	 * @param    Rigidsolver Rigid solver owning the breaking model
-	 * @param    ExternalStrain Strain to be used to update the breaking model
-	 */
-	static void UpdateSolverBreakingModel(Chaos::FPBDRigidsSolver* RigidSolver, TMap<Chaos::FGeometryParticleHandle*, Chaos::FReal>& ExternalStrain)
-	{
-		// Capture the results from the breaking model to post-process
-		TMap<Chaos::FPBDRigidClusteredParticleHandle*, TSet<Chaos::FPBDRigidParticleHandle*>> BreakResults =
-			RigidSolver->GetEvolution()->GetRigidClustering().BreakingModel(&ExternalStrain);
-
-		// If clusters broke apart then we'll have activated new particles that have no relationship to the proxy that now owns them
-		// Here we attach each new particle to the proxy of the parent particle that owns it.
-		for (const TPair<Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>*, TSet<Chaos::FPBDRigidParticleHandle*>> & Iter : BreakResults)
-		{
-			const TSet<Chaos::FPBDRigidParticleHandle*>& Activated = Iter.Value;
-
-			for (Chaos::FPBDRigidParticleHandle* Handle : Activated)
+			const FRigidClustering& Clustering = RigidSolver->GetEvolution()->GetRigidClustering();
+			for (FPBDRigidClusteredParticleHandle* TopParentClusteredHandle: TopParentClusters)
 			{
-				if (Handle->PhysicsProxy() == nullptr)
+				if (TopParentClusteredHandle && !TopParentClusteredHandle->Disabled())
 				{
-					IPhysicsProxyBase* ParentProxy = Iter.Key->PhysicsProxy();
-					Handle->SetPhysicsProxy(ParentProxy);
+					if (TopParentClusteredHandle->ClusterIds().NumChildren)
+					{
+						UpdateKinematicProperties(TopParentClusteredHandle, Clustering.GetChildrenMap(), *RigidSolver->GetEvolution());
+					}
+					else
+					{
+						// if the cluster is dynamic let's make sure we clear kinematic target to avoid animated ones to have their velocity reset by the kinematic target update
+						// for particles with children this is taken care in UpdateKinematicProperties
+						if (TopParentClusteredHandle->ObjectState() == EObjectStateType::Dynamic)
+						{
+							RigidSolver->GetEvolution()->SetParticleKinematicTarget(TopParentClusteredHandle, FKinematicTarget());
+						}
+					}
 				}
 			}
 		}
@@ -378,11 +380,14 @@ namespace Chaos
 		{
 			SCOPE_CYCLE_COUNTER(STAT_ParamUpdateField_DynamicState);
 			{
-				bool bHasStateChanged = false;
 				InitDynamicStateResults(ParticleHandles, FieldContext, FinalResults);
 
 				static_cast<const FFieldNode<int32>*>(FieldCommand.RootNode.Get())->Evaluate(FieldContext, ResultsView);
-				for (const FFieldContextIndex& Index : FieldContext.GetEvaluatedSamples())
+
+				bool bHasStateChanged = false;
+				
+				const TFieldArrayView<FFieldContextIndex>& EvaluatedSamples = FieldContext.GetEvaluatedSamples();
+				for (const FFieldContextIndex& Index : EvaluatedSamples)
 				{
 					Chaos::FPBDRigidParticleHandle* RigidHandle = ParticleHandles[Index.Sample]->CastToRigidParticle();
 					if (RigidHandle)
@@ -395,7 +400,10 @@ namespace Chaos
 							false, Chaos::FVec3(0), false, Chaos::FVec3(0));
 					}
 				}
-				UpdateSolverParticlesState(RigidSolver, bHasStateChanged);
+				if (bHasStateChanged)
+				{
+					UpdateSolverParticlesState(RigidSolver, EvaluatedSamples, ParticleHandles);
+				}
 			}
 		}
 		else if (FieldCommand.PhysicsType == EFieldPhysicsType::Field_ActivateDisabled)
@@ -410,7 +418,7 @@ namespace Chaos
 					Chaos::FPBDRigidParticleHandle* RigidHandle = ParticleHandles[Index.Sample]->CastToRigidParticle();
 					if (RigidHandle && RigidHandle->Disabled() && ResultsView[Index.Result] == 0)
 					{
-						RigidSolver->GetEvolution()->EnableParticle(RigidHandle, nullptr);
+						RigidSolver->GetEvolution()->EnableParticle(RigidHandle);
 						SetParticleDynamicState(RigidSolver, Chaos::EObjectStateType::Dynamic, RigidHandle);
 					}
 				}
@@ -486,17 +494,19 @@ namespace Chaos
 		{
 			SCOPE_CYCLE_COUNTER(STAT_ParamUpdateField_ExternalClusterStrain);
 			{
-				TMap<Chaos::FGeometryParticleHandle*, Chaos::FReal> ExternalStrain;
-
 				static_cast<const FFieldNode<float>*>(FieldCommand.RootNode.Get())->Evaluate(FieldContext, ResultsView);
 				for (const FFieldContextIndex& Index : FieldContext.GetEvaluatedSamples())
 				{
-					if (ResultsView[Index.Result] > 0)
+					const float ExternalStrainValue = ResultsView[Index.Result];
+					if (ExternalStrainValue > 0)
 					{
-						ExternalStrain.Add(ParticleHandles[Index.Sample], ResultsView[Index.Result]);
+						if (Chaos::FPBDRigidClusteredParticleHandle* ClusteredParticle = ParticleHandles[Index.Sample]->CastToClustered())
+						{
+							const FReal CurrentExternalStrains = ClusteredParticle->GetExternalStrain();
+							ClusteredParticle->SetExternalStrain(FMath::Max(CurrentExternalStrains, ExternalStrainValue));
+						}
 					}
 				}
-				UpdateSolverBreakingModel(RigidSolver, ExternalStrain);
 			}
 		}
 		else if (FieldCommand.PhysicsType == EFieldPhysicsType::Field_Kill)
@@ -590,6 +600,22 @@ namespace Chaos
 					if (RigidHandle && RigidHandle->ObjectState() == Chaos::EObjectStateType::Dynamic)
 					{
 						RigidHandle->V() += ResultsView[Index.Result];
+					}
+				}
+			}
+		}
+		else if (FieldCommand.PhysicsType == EFieldPhysicsType::Field_LinearImpulse)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_ForceUpdateField_LinearImpulse);
+			{
+				static_cast<const FFieldNode<FVector>*>(FieldCommand.RootNode.Get())->Evaluate(FieldContext, ResultsView);
+				for (const FFieldContextIndex& Index : FieldContext.GetEvaluatedSamples())
+				{
+					Chaos::FPBDRigidParticleHandle* RigidHandle = ParticleHandles[Index.Sample]->CastToRigidParticle();
+					if (RigidHandle && RigidHandle->ObjectState() == Chaos::EObjectStateType::Dynamic)
+					{
+						const FVec3 CurrentImpulseVelocity = RigidHandle->LinearImpulseVelocity();
+						RigidHandle->SetLinearImpulseVelocity(CurrentImpulseVelocity + (ResultsView[Index.Result] * RigidHandle->InvM()));
 					}
 				}
 			}
@@ -711,7 +737,8 @@ FORCEINLINE bool IsParameterFieldValid(const FFieldSystemCommand& FieldCommand)
 	else if (FieldCommand.RootNode->Type() == FFieldNodeBase::EFieldType::EField_FVector)
 	{
 		return (FieldCommand.PhysicsType == EFieldPhysicsType::Field_LinearVelocity) ||
-			(FieldCommand.PhysicsType == EFieldPhysicsType::Field_AngularVelociy);
+				(FieldCommand.PhysicsType == EFieldPhysicsType::Field_AngularVelociy) ||
+				(FieldCommand.PhysicsType == EFieldPhysicsType::Field_LinearImpulse);
 	}
 	return false;
 }

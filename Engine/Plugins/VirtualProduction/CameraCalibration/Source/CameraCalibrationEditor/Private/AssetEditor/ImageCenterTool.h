@@ -6,8 +6,6 @@
 
 #include "ImageCenterTool.generated.h"
 
-struct FLensFileEvalData;
-
 class UCameraImageCenterAlgo;
 
 /**
@@ -59,7 +57,7 @@ private:
 
 	/** Map of algo names to overlay MIDs used by those algos */
 	UPROPERTY(Transient)
-	TMap<FName, TWeakObjectPtr<UMaterialInstanceDynamic>> AlgoOverlayMIDs;
+	TMap<FName, TObjectPtr<UMaterialInstanceDynamic>> AlgoOverlayMIDs;
 
 	/** True if this tool is the active one in the panel */
 	bool bIsActive = false;

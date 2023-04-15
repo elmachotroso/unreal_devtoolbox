@@ -4,14 +4,15 @@
 
 #include "CoreTypes.h"
 #include "Containers/Map.h"
+#include "EntitySystem/MovieSceneEntityIDs.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "MovieSceneFwd.h"
 #include "MovieSceneSequenceID.h"
 #include "Evaluation/MovieSceneRootOverridePath.h"
 #include "Compilation/MovieSceneCompiledDataID.h"
-#include "EntitySystem/MovieSceneEntitySystemRunner.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
 #include "MovieSceneEvaluationTemplateInstance.generated.h"
 
@@ -21,6 +22,7 @@ struct FMovieSceneBlendingAccumulator;
 
 class IMovieScenePlayer;
 class UMovieSceneSequence;
+class FMovieSceneEntitySystemRunner;
 class UMovieSceneEntitySystemLinker;
 class UMovieSceneCompiledDataManager;
 
@@ -46,7 +48,7 @@ public:
 	 * @param Player					The player responsible for playback
 	 * @param TemplateStore				Template store responsible for supplying templates for a given sequence
 	 */
-	MOVIESCENE_API void Initialize(UMovieSceneSequence& RootSequence, IMovieScenePlayer& Player, UMovieSceneCompiledDataManager* InCompiledDataManager);
+	MOVIESCENE_API void Initialize(UMovieSceneSequence& RootSequence, IMovieScenePlayer& Player, UMovieSceneCompiledDataManager* InCompiledDataManager, TWeakPtr<FMovieSceneEntitySystemRunner> InWeakRunner);
 
 	/**
 	 * Evaluate this sequence in a synchronous way.
@@ -54,21 +56,24 @@ public:
 	 * @param Context				Evaluation context containing the time (or range) to evaluate
 	 * @param Player				The player responsible for playback
 	 */
+	MOVIESCENE_API void EvaluateSynchronousBlocking(FMovieSceneContext Context, IMovieScenePlayer& Player);
+
+	UE_DEPRECATED(5.1, "Use EvaluateSynchronousBlocking instead.")
 	MOVIESCENE_API void Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player);
 
 	/**
-	 * Indicate that we're not going to evaluate this instance again, and that we should tear down any current state
-	 *
-	 * @param Player				The player responsible for playback
+	 * Called when this instance has completely finished playing
 	 */
-	MOVIESCENE_API void Finish(IMovieScenePlayer& Player);
+	void OnFinished();
+
+	MOVIESCENE_API void ResetDirectorInstances();
 
 	bool IsValid() const
 	{
 		return CompiledDataManager && WeakRootSequence.Get();
 	}
 
-	UE::MovieScene::FInstanceHandle GetRootInstanceHandle() const
+	UE::MovieScene::FRootInstanceHandle GetRootInstanceHandle() const
 	{
 		return RootInstanceHandle;
 	}
@@ -88,11 +93,14 @@ public:
 		return CompiledDataManager;
 	}
 
+	TSharedPtr<FMovieSceneEntitySystemRunner> GetRunner() const
+	{
+		return WeakRunner.Pin();
+	}
+
 	MOVIESCENE_API bool HasEverUpdated() const;
 
 	MOVIESCENE_API UMovieSceneEntitySystemLinker* GetEntitySystemLinker() const;
-
-	MOVIESCENE_API FMovieSceneEntitySystemRunner& GetEntitySystemRunner();
 
 	MOVIESCENE_API const FMovieSceneSequenceHierarchy* GetHierarchy() const;
 
@@ -103,6 +111,7 @@ public:
 	MOVIESCENE_API const UE::MovieScene::FSequenceInstance* FindInstance(FMovieSceneSequenceID SequenceID) const;
 
 	MOVIESCENE_API UE::MovieScene::FMovieSceneEntityID FindEntityFromOwner(UObject* Owner, uint32 EntityID, FMovieSceneSequenceID SequenceID) const;
+	MOVIESCENE_API void FindEntitiesFromOwner(UObject* Owner, FMovieSceneSequenceID SequenceID, TArray<UE::MovieScene::FMovieSceneEntityID>& OutEntityIDs) const;
 
 	MOVIESCENE_API UMovieSceneSequence* GetSequence(FMovieSceneSequenceIDRef SequenceID) const;
 
@@ -135,12 +144,12 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMovieSceneCompiledDataManager> CompiledDataManager;
 
-	UE::MovieScene::FInstanceHandle RootInstanceHandle;
+	TWeakPtr<FMovieSceneEntitySystemRunner> WeakRunner;
+
+	UE::MovieScene::FRootInstanceHandle RootInstanceHandle;
 
 	UPROPERTY()
 	TObjectPtr<UMovieSceneEntitySystemLinker> EntitySystemLinker;
-
-	FMovieSceneEntitySystemRunner EntitySystemRunner;
 
 	/** Map of director instances by sequence ID. Kept alive by this map assuming this struct is reference collected */
 	UPROPERTY()

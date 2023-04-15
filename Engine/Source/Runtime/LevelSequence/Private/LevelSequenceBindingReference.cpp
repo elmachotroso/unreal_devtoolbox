@@ -2,14 +2,18 @@
 
 #include "LevelSequenceBindingReference.h"
 #include "LevelSequenceLegacyObjectReference.h"
+#include "UObject/GarbageCollection.h"
 #include "UObject/Package.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
 #include "MovieSceneFwd.h"
 #include "Misc/PackageName.h"
 #include "Engine/World.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/LevelStreamingDynamic.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequenceBindingReference)
 
 FLevelSequenceBindingReference::FLevelSequenceBindingReference(UObject* InObject, UObject* InContext)
 {
@@ -41,17 +45,27 @@ FLevelSequenceBindingReference::FLevelSequenceBindingReference(UObject* InObject
 	}
 }
 
-UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, FName StreamedLevelAssetPath) const
+UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, const FTopLevelAssetPath& StreamedLevelAssetPath) const
 {
 	if (InContext && InContext->IsA<AActor>())
 	{
 		if (ExternalObjectPath.IsNull())
 		{
+			if (UE::IsSavingPackage(nullptr) || IsGarbageCollecting())
+			{
+				return nullptr;
+			}
+
 			return FindObject<UObject>(InContext, *ObjectPath, false);
 		}
 	}
-	else if (InContext && InContext->IsA<ULevel>() && StreamedLevelAssetPath != NAME_None && ExternalObjectPath.GetAssetPathName() == StreamedLevelAssetPath)
+	else if (InContext && InContext->IsA<ULevel>() && StreamedLevelAssetPath.IsValid() && ExternalObjectPath.GetAssetPath() == StreamedLevelAssetPath)
 	{
+		if (UE::IsSavingPackage(nullptr) || IsGarbageCollecting())
+		{
+			return nullptr;
+		}
+
 		// ExternalObjectPath.GetSubPathString() specifies the path from the package (so includes PersistentLevel.) so we must do a FindObject from its outer
 		return FindObject<UObject>(InContext->GetOuter(), *ExternalObjectPath.GetSubPathString());
 	}
@@ -65,18 +79,12 @@ UObject* FLevelSequenceBindingReference::Resolve(UObject* InContext, FName Strea
 		TempPath.PreSavePath();
 
 	#if WITH_EDITORONLY_DATA
-		int32 ContextPlayInEditorID = InContext ? InContext->GetOutermost()->GetPIEInstanceID() : INDEX_NONE;
-
-		if (ContextPlayInEditorID != INDEX_NONE)
-		{
-			// We have an override PIE id, so set the global before entering
-			TGuardValue<int32> PIEGuard(GPlayInEditorID, ContextPlayInEditorID);
-			TempPath.FixupForPIE();
-		}
-		else
-		{
-			TempPath.FixupForPIE();
-		}
+		// Sequencer is explicit about providing a resolution context for its bindings. We never want to resolve to objects
+		// with a different PIE instance ID, even if the current callstack is being executed inside a different GPlayInEditorID
+		// scope. Since ResolveObject will always call FixupForPIE in editor based on GPlayInEditorID, we always override the current
+		// GPlayInEditorID to be the current PIE instance of the provided context.
+		const int32 ContextPlayInEditorID = InContext ? InContext->GetOutermost()->GetPIEInstanceID() : INDEX_NONE;
+		TGuardValue<int32> PIEGuard(GPlayInEditorID, ContextPlayInEditorID);
 	#endif
 
 		return TempPath.ResolveObject();
@@ -105,6 +113,11 @@ void FLevelSequenceBindingReference::PostSerialize(const FArchive& Ar)
 
 UObject* ResolveByPath(UObject* InContext, const FString& InObjectPath)
 {
+	if (UE::IsSavingPackage(nullptr) || IsGarbageCollecting())
+	{
+		return nullptr;
+	}
+
 	if (!InObjectPath.IsEmpty())
 	{
 		if (UObject* FoundObject = FindObject<UObject>(InContext, *InObjectPath, false))
@@ -135,7 +148,7 @@ UObject* ResolveByPath(UObject* InContext, const FString& InObjectPath)
 		}
 #endif
 
-		if (UObject* FoundObject = FindObject<UObject>(ANY_PACKAGE, *InObjectPath, false))
+		if (UObject* FoundObject = FindFirstObject<UObject>(*InObjectPath, EFindFirstObjectOptions::NativeFirst))
 		{
 			return FoundObject;
 		}
@@ -205,14 +218,25 @@ bool FLevelSequenceObjectReferenceMap::Serialize(FArchive& Ar)
 
 bool FLevelSequenceBindingReferences::HasBinding(const FGuid& ObjectId) const
 {
-	return BindingIdToReferences.Contains(ObjectId) || AnimSequenceInstances.Contains(ObjectId);
+	return BindingIdToReferences.Contains(ObjectId) || AnimSequenceInstances.Contains(ObjectId) || PostProcessInstances.Contains(ObjectId);
 }
 
 void FLevelSequenceBindingReferences::AddBinding(const FGuid& ObjectId, UObject* InObject, UObject* InContext)
 {
-	if (InObject->IsA<UAnimInstance>())
+	if (UAnimInstance* AnimInstance = Cast<UAnimInstance>(InObject))
 	{
-		AnimSequenceInstances.Add(ObjectId);
+		if (AnimInstance->GetOwningComponent()->GetAnimInstance() == InObject)
+		{
+			AnimSequenceInstances.Add(ObjectId);
+		}
+		else if (AnimInstance->GetOwningComponent()->GetPostProcessInstance() == InObject)
+		{
+			PostProcessInstances.Add(ObjectId);
+		}
+		else
+		{
+			UE_LOG(LogMovieScene, Warning, TEXT("Attempted to add a binding for %s which is not an anim instance or post process instance"), *GetNameSafe(InObject));
+		}
 	}
 	else
 	{
@@ -236,7 +260,7 @@ void FLevelSequenceBindingReferences::RemoveObjects(const FGuid& ObjectId, const
 
 	for (int32 ReferenceIndex = 0; ReferenceIndex < ReferenceArray->References.Num(); )
 	{
-		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, NAME_None);
+		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FTopLevelAssetPath());
 
 		if (InObjects.Contains(ResolvedObject))
 		{
@@ -259,7 +283,7 @@ void FLevelSequenceBindingReferences::RemoveInvalidObjects(const FGuid& ObjectId
 
 	for (int32 ReferenceIndex = 0; ReferenceIndex < ReferenceArray->References.Num(); )
 	{
-		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, NAME_None);
+		UObject* ResolvedObject = ReferenceArray->References[ReferenceIndex].Resolve(InContext, FTopLevelAssetPath());
 
 		if (!IsValid(ResolvedObject))
 		{
@@ -272,7 +296,7 @@ void FLevelSequenceBindingReferences::RemoveInvalidObjects(const FGuid& ObjectId
 	}
 }
 
-void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObject* InContext, FName StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
+void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObject* InContext, const FTopLevelAssetPath& StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
 	if (const FLevelSequenceBindingReferenceArray* ReferenceArray = BindingIdToReferences.Find(ObjectId))
 	{
@@ -288,9 +312,16 @@ void FLevelSequenceBindingReferences::ResolveBinding(const FGuid& ObjectId, UObj
 	else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InContext))
 	{
 		// If the object ID exists in the AnimSequenceInstances set, then this binding relates to an anim instance on a skeletal mesh component
-		if (SkeletalMeshComponent && AnimSequenceInstances.Contains(ObjectId) && SkeletalMeshComponent->GetAnimInstance())
+		if (SkeletalMeshComponent)
 		{
-			OutObjects.Add(SkeletalMeshComponent->GetAnimInstance());
+			if (AnimSequenceInstances.Contains(ObjectId) && SkeletalMeshComponent->GetAnimInstance())
+			{
+				OutObjects.Add(SkeletalMeshComponent->GetAnimInstance());
+			}
+			else if (PostProcessInstances.Contains(ObjectId) && SkeletalMeshComponent->GetPostProcessInstance())
+			{
+				OutObjects.Add(SkeletalMeshComponent->GetPostProcessInstance());
+			}
 		}
 	}
 }
@@ -333,3 +364,4 @@ UObject* FLevelSequenceObjectReferenceMap::ResolveBinding(const FGuid& ObjectId,
 	}
 	return nullptr;
 }
+

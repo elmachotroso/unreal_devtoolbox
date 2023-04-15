@@ -58,12 +58,33 @@ void UNiagaraEffectType::PostLoad()
 		}
 	}
 
+	for (FNiagaraSystemScalabilitySettings& SysScalabilitySetting : SystemScalabilitySettings.Settings)
+	{
+		SysScalabilitySetting.PostLoad(NiagaraVer);
+	}
+
+	//Apply platform set redirectors
+	auto ApplyPlatformSetRedirects = [](FNiagaraPlatformSet& Platforms)
+	{
+		Platforms.ApplyRedirects();
+	};
+	ForEachPlatformSet(ApplyPlatformSetRedirects);
+
+
 #if !WITH_EDITOR && NIAGARA_PERF_BASELINES
 	//When not in the editor we clear out the baseline so that it's regenerated for play tests.
 	//We cannot use the saved editor/development config settings.
 	InvalidatePerfBaseline();
 #endif
 }
+
+#if WITH_EDITORONLY_DATA
+void UNiagaraEffectType::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UNiagaraSignificanceHandlerDistance::StaticClass()));
+}
+#endif
 
 const FNiagaraSystemScalabilitySettings& UNiagaraEffectType::GetActiveSystemScalabilitySettings()const
 {
@@ -109,7 +130,7 @@ void UNiagaraEffectType::PostEditChangeProperty(struct FPropertyChangedEvent& Pr
 		UNiagaraSystem* System = *It;
 		if (System->GetEffectType() == this)
 		{
-			System->OnScalabilityCVarChanged();
+			System->UpdateScalability();
 			UpdateContext.Add(System, true);
 		}
 	}
@@ -160,12 +181,23 @@ FNiagaraGlobalBudgetScaling::FNiagaraGlobalBudgetScaling()
 }
 
 //////////////////////////////////////////////////////////////////////////
+ 
+FNiagaraSystemVisibilityCullingSettings::FNiagaraSystemVisibilityCullingSettings()
+	: bCullWhenNotRendered(false)
+	, bCullByViewFrustum(false)
+	, bAllowPreCullingByViewFrustum(false)
+	, MaxTimeOutsideViewFrustum(1.0f)
+	, MaxTimeWithoutRender(1.0f)
+{
+}
+
+//////////////////////////////////////////////////////////////////////////
 
 FNiagaraSystemScalabilityOverride::FNiagaraSystemScalabilityOverride()
 	: bOverrideDistanceSettings(false)
 	, bOverrideInstanceCountSettings(false)
 	, bOverridePerSystemInstanceCountSettings(false)
-	, bOverrideTimeSinceRendererSettings(false)
+	, bOverrideVisibilitySettings(false)
 	, bOverrideGlobalBudgetScalingSettings(false)
 	, bOverrideCullProxySettings(false)
 {
@@ -180,17 +212,29 @@ void FNiagaraSystemScalabilitySettings::Clear()
 {
 	Platforms = FNiagaraPlatformSet();
 	bCullByDistance = false;
-	bCullByMaxTimeWithoutRender = false;
 	bCullMaxInstanceCount = false;
-	bCullPerSystemMaxInstanceCount = false;
+	bCullPerSystemMaxInstanceCount = false;	
 	MaxDistance = 0.0f;
 	MaxInstances = 0;
 	MaxSystemInstances = 0;
-	MaxTimeWithoutRender = 0.0f;
+
+
+	MaxTimeWithoutRender_DEPRECATED = 0.0f;
+	bCullByMaxTimeWithoutRender_DEPRECATED = false;
+	VisibilityCulling = FNiagaraSystemVisibilityCullingSettings();
 
 	BudgetScaling = FNiagaraGlobalBudgetScaling();
 	CullProxyMode = ENiagaraCullProxyMode::None;
 	MaxSystemProxies = 32;
+}
+
+void FNiagaraSystemScalabilitySettings::PostLoad(int32 Version)
+{
+	if (Version < FNiagaraCustomVersion::VisibilityCullingImprovements)
+	{
+		VisibilityCulling.bCullWhenNotRendered = bCullByMaxTimeWithoutRender_DEPRECATED;
+		VisibilityCulling.MaxTimeWithoutRender = MaxTimeWithoutRender_DEPRECATED;
+	}
 }
 
 FNiagaraEmitterScalabilitySettings::FNiagaraEmitterScalabilitySettings()
@@ -213,6 +257,9 @@ FNiagaraEmitterScalabilityOverride::FNiagaraEmitterScalabilityOverride()
 //////////////////////////////////////////////////////////////////////////
 
 #include "NiagaraScalabilityManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEffectType)
+
 void UNiagaraSignificanceHandlerDistance::CalculateSignificance(TConstArrayView<UNiagaraComponent*> Components, TArrayView<FNiagaraScalabilityState> OutState, TConstArrayView<FNiagaraScalabilitySystemData> SystemData, TArray<int32>& OutIndices)
 {
 	const int32 ComponentCount = Components.Num();
@@ -288,7 +335,7 @@ void UNiagaraSignificanceHandlerAge::CalculateSignificance(TConstArrayView<UNiag
 
 #if NIAGARA_PERF_BASELINES
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 //Invalidate this to regenerate perf baseline info.
 //For example if there are some significant code optimizations.
@@ -302,7 +349,7 @@ void UNiagaraEffectType::GeneratePerfBaselines()
 		//Load all effect types so we generate all baselines at once.
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		TArray<FAssetData> EffectTypeAssets;
-		AssetRegistryModule.Get().GetAssetsByClass(UNiagaraEffectType::StaticClass()->GetFName(), EffectTypeAssets);
+		AssetRegistryModule.Get().GetAssetsByClass(UNiagaraEffectType::StaticClass()->GetClassPathName(), EffectTypeAssets);
 
 		TArray<UNiagaraEffectType*> EffectTypesToGenerate;
 		for (FAssetData& Asset : EffectTypeAssets)

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "ContentBrowserDataMenuContexts.h"
 #include "Input/Reply.h"
 
@@ -24,15 +24,15 @@ public:
 private:
 	struct FSourceAssetsState
 	{
-		TSet<FName> SelectedAssets;
-		TSet<FName> CurrentAssets;
+		TSet<FSoftObjectPath> SelectedAssets;
+		TSet<FSoftObjectPath> CurrentAssets;
 	};
 
 	struct FLocalizedAssetsState
 	{
 		FCulturePtr Culture;
-		TSet<FName> NewAssets;
-		TSet<FName> CurrentAssets;
+		TSet<FSoftObjectPath> NewAssets;
+		TSet<FSoftObjectPath> CurrentAssets;
 	};
 
 private:
@@ -90,7 +90,7 @@ private:
 	void MakeAssetLocalizationSubMenu(UToolMenu* Menu);
 
 	/** Adds the Create Localized Asset sub-menu to a menu builder. */
-	void MakeCreateLocalizedAssetSubMenu(UToolMenu* Menu, TSet<FName> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
+	void MakeCreateLocalizedAssetSubMenu(UToolMenu* Menu, TSet<FSoftObjectPath> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
 
 	/** Adds the Show Localized Assets sub-menu to a menu builder. */
 	void MakeShowLocalizedAssetSubMenu(UToolMenu* Menu, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
@@ -99,13 +99,13 @@ private:
 	void MakeEditLocalizedAssetSubMenu(UToolMenu* Menu, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
 
 	/** Create new localized assets for the given culture */
-	void ExecuteCreateLocalizedAsset(TSet<FName> InSelectedSourceAssets, FLocalizedAssetsState InLocalizedAssetsStateForCulture);
+	void ExecuteCreateLocalizedAsset(TSet<FSoftObjectPath> InSelectedSourceAssets, FLocalizedAssetsState InLocalizedAssetsStateForCulture);
 
 	/** Find the given assets in the Content Browser */
-	void ExecuteFindInAssetTree(TArray<FName> InAssets);
+	void ExecuteFindInAssetTree(TArray<FSoftObjectPath> InAssets);
 
 	/** Open the given assets in their respective editors */
-	void ExecuteOpenEditorsForAssets(TArray<FName> InAssets);
+	void ExecuteOpenEditorsForAssets(TArray<FSoftObjectPath> InAssets);
 
 	/** Adds asset documentation menu options to a menu builder. Returns true if any options were added. */
 	bool AddDocumentationMenuOptions(UToolMenu* Menu);
@@ -264,9 +264,6 @@ private:
 
 	/** Handler to check to see if "Diff Against Depot" can be executed */
 	bool CanExecuteSCCDiffAgainstDepot() const;
-
-	/** Handler to check to see if "Consolidate" can be executed */
-	bool CanExecuteConsolidate() const;
 
 	/** Handler to check to see if "Diff Selected" can be executed */
 	bool CanExecuteDiffSelected() const;

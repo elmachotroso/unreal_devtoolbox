@@ -7,6 +7,9 @@
 
 struct FNiagaraComputeDataInterfaceInstanceData
 {
+	UE_NONCOPYABLE(FNiagaraComputeDataInterfaceInstanceData);
+	FNiagaraComputeDataInterfaceInstanceData() {}
+
 	void* PerInstanceDataForRT = nullptr;
 	TMap<FNiagaraDataInterfaceProxy*, int32> InterfaceProxiesToOffsets;
 	uint32 PerInstanceDataSize = 0;
@@ -15,6 +18,19 @@ struct FNiagaraComputeDataInterfaceInstanceData
 
 struct FNiagaraComputeInstanceData
 {
+	UE_NONCOPYABLE(FNiagaraComputeInstanceData);
+
+	struct FPerStageInfo
+	{
+		FPerStageInfo() {}
+		FPerStageInfo(int32 InNumIterations, FIntVector InElementCountXYZ) : NumIterations(InNumIterations), ElementCountXYZ(InElementCountXYZ) {}
+
+		int32 NumIterations = 0;
+		FIntVector ElementCountXYZ = FIntVector::NoneValue;
+
+		bool ShouldRunStage() const { return NumIterations > 0 && (ElementCountXYZ != FIntVector::ZeroValue); }
+	};
+
 	FNiagaraComputeInstanceData()
 	{
 		bResetData = false;
@@ -25,10 +41,11 @@ struct FNiagaraComputeInstanceData
 	FNiagaraGpuSpawnInfo SpawnInfo;
 	uint8* EmitterParamData = nullptr;
 	uint8* ExternalParamData = nullptr;
+	uint32 ExternalParamDataSize = 0;
 	FNiagaraComputeExecutionContext* Context = nullptr;
 	TArray<FNiagaraDataInterfaceProxy*> DataInterfaceProxies;
 	TArray<FNiagaraDataInterfaceProxyRW*> IterationDataInterfaceProxies;
-	TArray<int32, TInlineAllocator<1>> NumIterationsPerStage;
+	TArray<FPerStageInfo, TInlineAllocator<1>> PerStageInfo;
 	uint32 ParticleCountFence = INDEX_NONE;
 	uint32 TotalDispatches = 0;
 	uint32 bResetData : 1;
@@ -36,6 +53,7 @@ struct FNiagaraComputeInstanceData
 	uint32 bHasMultipleStages : 1;
 
 	bool IsOutputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
+	bool IsInputStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
 	bool IsIterationStage(FNiagaraDataInterfaceProxy* DIProxy, uint32 CurrentStage) const;
 	FNiagaraDataInterfaceProxyRW* FindIterationInterface(uint32 SimulationStageIndex) const;
 };
@@ -66,29 +84,42 @@ public:
 		return MakeArrayView(reinterpret_cast<FNiagaraComputeInstanceData*>(InstanceData_ParamData_Packed), InstanceCount);
 	};
 
-	enum EUniformBufferType
+	FORCEINLINE void GetGlobalParameters(const FNiagaraComputeInstanceData& InstanceData, void* OutputParameters) const
 	{
-		UBT_FirstSystemType = 0,
-		UBT_Global = UBT_FirstSystemType,
-		UBT_System,
-		UBT_Owner,
-		UBT_NumSystemTypes,
+		const uint32 ParamSize = sizeof(FNiagaraGlobalParameters) * (InstanceData.Context->HasInterpolationParameters ? 2 : 1);
+		FMemory::Memcpy(OutputParameters, GlobalParamData, ParamSize);
+	}
 
-		UBT_FirstInstanceType = UBT_NumSystemTypes,
-		UBT_Emitter = UBT_FirstInstanceType,
-		UBT_External,
+	FORCEINLINE void GetSystemParameters(const FNiagaraComputeInstanceData& InstanceData, void* OutputParameters) const
+	{
+		const uint32 ParamSize = sizeof(FNiagaraSystemParameters) * (InstanceData.Context->HasInterpolationParameters ? 2 : 1);
+		FMemory::Memcpy(OutputParameters, SystemParamData, ParamSize);
+	}
 
-		UBT_NumTypes,
+	FORCEINLINE void GetOwnerParameters(const FNiagaraComputeInstanceData& InstanceData, void* OutputParameters) const
+	{
+		const uint32 ParamSize = sizeof(FNiagaraOwnerParameters) * (InstanceData.Context->HasInterpolationParameters ? 2 : 1);
+		FMemory::Memcpy(OutputParameters, OwnerParamData, ParamSize);
+	}
 
-		UBT_NumInstanceTypes = UBT_NumTypes - UBT_NumSystemTypes,
-	};
+	FORCEINLINE void GetEmitterParameters(const FNiagaraComputeInstanceData& InstanceData, void* OutputParameters) const
+	{
+		const uint32 ParamSize = sizeof(FNiagaraEmitterParameters) * (InstanceData.Context->HasInterpolationParameters ? 2 : 1);
+		FMemory::Memcpy(OutputParameters, InstanceData.EmitterParamData, ParamSize);
+	}
 
-	FUniformBufferRHIRef GetUniformBuffer(EUniformBufferType Type, const FNiagaraComputeInstanceData* InstanceData, bool Previous) const;
-	const uint8* GetUniformBufferSource(EUniformBufferType Type, const FNiagaraComputeInstanceData* InstanceData, bool Previous) const;
+	void BuildUniformBuffers();
+
+	FORCEINLINE FRHIUniformBuffer* GetExternalUniformBuffer(const FNiagaraComputeInstanceData& InstanceData, bool bPrevious) const
+	{
+		const int32 InstanceIndex = &InstanceData - GetInstances().GetData();
+		const int32 BufferIndex = InstanceIndex + (bPrevious ? InstanceCount : 0);
+		return ExternalUnformBuffers_RT[BufferIndex];
+	}
 
 public:
 	// Transient data used by the RT
-	TArray<FUniformBufferRHIRef> UniformBuffers;
+	TArray<FUniformBufferRHIRef> ExternalUnformBuffers_RT;
 
 	// data assigned by GT
 	FNiagaraSystemInstanceID SystemInstanceID = 0LL;						//-TODO: Remove?
@@ -101,6 +132,8 @@ public:
 	uint32 InstanceCount = 0;
 	uint32 TotalDispatches = 0;
 	bool bIsFinalTick = false;
+	bool bHasMultipleStages = false;
+	bool bHasInterpolatedParameters = false;
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	// Debugging only

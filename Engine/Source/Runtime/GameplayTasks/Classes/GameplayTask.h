@@ -35,6 +35,10 @@ enum class ETaskResourceOverlapPolicy : uint8
 	StartOnTop,
 	/** Wait for other same-priority tasks to finish. */
 	StartAtEnd,
+	/** Request to cancel same or lower priority tasks, if tasks not ended pause overlapping same-priority tasks. */
+	RequestCancelAndStartOnTop,
+	/** Request to cancel same or lower priority tasks, wait for any remaining overlapping same-priority tasks to finish. */
+	RequestCancelAndStartAtEnd,
 };
 	
 USTRUCT(BlueprintType)
@@ -157,7 +161,7 @@ protected:
 	 *	Note that the default implementation does nothing and you don't have to call it */
 	virtual void Activate();
 
-	/** Initailizes the task with the task owner interface instance but does not actviate until Activate() is called */
+	/** Initializes the task with the task owner interface instance but does not activate until Activate() is called */
 	void InitTask(IGameplayTaskOwnerInterface& InTaskOwner, uint8 InPriority);
 
 public:
@@ -171,6 +175,9 @@ public:
 
 	/** Called when the task is asked to cancel from an outside node. What this means depends on the individual task. By default, this does nothing other than ending the task. */
 	virtual void ExternalCancel();
+
+	/** Called when a task owner wants to inform the task that it's done and don't want to get notified on task deactivation (i.e. OnGameplayTaskDeactivated). */
+	void MarkOwnerFinished() { bOwnerFinished = true; }
 
 	/** Return debug string describing task */
 	virtual FString GetDebugString() const;
@@ -317,7 +324,7 @@ protected:
 	UPROPERTY()
 	FName InstanceName;
 
-	/** This controls how this task will be treaded in relation to other, already running tasks, 
+	/** This controls how this task will be treated in relation to other, already running tasks, 
 	 *	provided GameplayTasksComponent is configured to care about priorities (the default behavior)*/
 	uint8 Priority;
 

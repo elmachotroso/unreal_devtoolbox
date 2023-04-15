@@ -3,12 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Materials/Material.h"
 #include "PrimitiveSceneProxy.h"
-#include "WaterQuadTree.h"
-#include "Engine/Classes/Materials/Material.h"
-#include "WaterVertexFactory.h"
+#include "UObject/ObjectMacros.h"
 #include "WaterInstanceDataBuffer.h"
+#include "WaterQuadTree.h"
+#include "WaterVertexFactory.h"
 
 class UWaterMeshComponent;
 
@@ -43,7 +43,7 @@ public:
 
 	uint32 GetAllocatedSize() const
 	{
-		return(FPrimitiveSceneProxy::GetAllocatedSize());
+		return(FPrimitiveSceneProxy::GetAllocatedSize() + (WaterVertexFactories.GetAllocatedSize() + WaterVertexFactories.Num() * sizeof(WaterVertexFactoryType)) + WaterQuadTree.GetAllocatedSize());
 	}
 
 #if WITH_WATER_SELECTION_SUPPORT
@@ -55,7 +55,42 @@ public:
 	using WaterInstanceDataBuffersType = TWaterInstanceDataBuffers<WITH_WATER_SELECTION_SUPPORT>;
 	using WaterMeshUserDataBuffersType = TWaterMeshUserDataBuffers<WITH_WATER_SELECTION_SUPPORT>;
 
+#if RHI_RAYTRACING
+	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override final;
+	virtual bool HasRayTracingRepresentation() const override { return true; }
+	virtual bool IsRayTracingRelevant() const override { return true; }
+#endif
+
+	void OnTessellatedWaterMeshBoundsChanged_GameThread(const FBox2D& InTessellatedWaterMeshBounds);
+
 private:
+	struct FWaterLODParams
+	{
+		int32 LowestLOD;
+		float HeightLODFactor;
+		float WaterHeightForLOD;
+	};
+
+#if RHI_RAYTRACING
+	struct FRayTracingWaterData
+	{
+		FRayTracingGeometry Geometry;
+		FRWBuffer DynamicVertexBuffer;
+	};
+#endif
+
+	bool HasWaterData() const 
+	{
+		return WaterQuadTree.GetNodeCount() != 0 && DensityCount != 0;
+	}
+
+	FWaterLODParams GetWaterLODParams(const FVector& Position) const;
+
+#if RHI_RAYTRACING
+	void SetupRayTracingInstances(int32 NumInstances, uint32 DensityIndex);
+#endif
+
+	void OnTessellatedWaterMeshBoundsChanged_RenderThread(const FBox2D& InTessellatedWaterMeshBounds);
 
 	FMaterialRelevance MaterialRelevance;
 
@@ -71,6 +106,9 @@ private:
 	/** Per-"water render group" user data (the number of groups might vary depending on whether we're in the editor or not) */
 	WaterMeshUserDataBuffersType* WaterMeshUserDataBuffers;
 
+	/** The world-space bounds of the current water info texture coverage. The Water mesh should only render tiles within this bounding box. */
+	FBox2D TessellatedWaterMeshBounds = FBox2D(ForceInit);
+
 	/** Scale of the concentric LOD squares  */
 	float LODScale = -1.0f;
 
@@ -80,4 +118,9 @@ private:
 	int32 ForceCollapseDensityLevel = TNumericLimits<int32>::Max();
 
 	mutable int32 HistoricalMaxViewInstanceCount = 0;
+
+#if RHI_RAYTRACING
+	// Per density array of ray tracing geometries.
+	TArray<TArray<FRayTracingWaterData>> RayTracingWaterData;	
+#endif
 };

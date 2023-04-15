@@ -98,6 +98,7 @@ struct FVulkanShaderHashes
 
 struct FVulkanPipelineSize
 {
+	//TODO: increase hash to 12 bytes to reduce collisions
 	uint64 ShaderHash;
 	uint32 PipelineSize;
 
@@ -279,10 +280,6 @@ struct FGfxPipelineDesc
 	FVulkanShaderHashes ShaderHashes;
 #endif
 
-#if VULKAN_SUPPORTS_COLOR_CONVERSIONS
-	SIZE_T ImmutableSamplers[MaxImmutableSamplers] = { 0 };
-#endif
-
 	struct FRenderTargets
 	{
 		struct FAttachmentRef
@@ -428,16 +425,6 @@ struct FGfxPipelineDesc
 		}
 #endif
 
-#if VULKAN_SUPPORTS_COLOR_CONVERSIONS
-		for (uint32 Index = 0; Index < MaxImmutableSamplers; ++Index)
-		{
-			if (ImmutableSamplers[Index] != In.ImmutableSamplers[Index])
-			{
-				return false;
-			}
-		}
-#endif
-
 		if (!(RenderTargets == In.RenderTargets))
 		{
 			return false;
@@ -478,7 +465,7 @@ public:
 
 	// Array of potential cache locations; first entries have highest priority. Only one cache file is loaded. If unsuccessful, tries next entry in the array.
 	void InitAndLoad(const TArray<FString>& CacheFilenames);
-	void Save(const FString& CacheFilename, bool bFromPSOFC = false);
+	void Save(const FString& CacheFilename);
 
 	FVulkanPipelineStateCacheManager(FVulkanDevice* InParent);
 	~FVulkanPipelineStateCacheManager();
@@ -489,19 +476,24 @@ public:
 	void NotifyDeletedComputePipeline(FVulkanComputePipeline* Pipeline);
 
 private:
+	class FPipelineCache;
+
 	/** Delegate handlers to track the ShaderPipelineCache precompile. */
 	void OnShaderPipelineCacheOpened(FString const& Name, EShaderPlatform Platform, uint32 Count, const FGuid& VersionGuid, FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
 	void OnShaderPipelineCachePrecompilationComplete(uint32 Count, double Seconds, const FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
 
 	void CreateGfxEntry(const FGraphicsPipelineStateInitializer& PSOInitializer, FVulkanDescriptorSetsLayoutInfo& DescriptorSetLayoutInfo, FGfxPipelineDesc* Desc);
-	bool Load(const TArray<FString>& CacheFilenames);
+	bool Load(const TArray<FString>& CacheFilenames, FPipelineCache& Cache);
+	void SavePSOCache(const FString& CacheFilename, FPipelineCache& Cache);
 	void DestroyCache();
 
 	FVulkanRHIGraphicsPipelineState* RHICreateGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer);
 	FVulkanComputePipeline* RHICreateComputePipelineState(FRHIComputeShader* ComputeShaderRHI);
 	void NotifyDeletedGraphicsPSO(FRHIGraphicsPipelineState* PSO);
-	bool CreateGfxPipelineFromEntry(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkPipeline* Pipeline);
+	bool CreateGfxPipelineFromEntry(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], bool bPrecompile);
 
+	VkResult CreateVKPipeline(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkGraphicsPipelineCreateInfo PipelineInfo, bool bIsPrecompileJob);
+	static FString ShaderHashesToString(FVulkanShader* Shaders[ShaderStage::NumStages]);
 
 	FVulkanLayout* FindOrAddLayout(const FVulkanDescriptorSetsLayoutInfo& DescriptorSetLayoutInfo, bool bGfxLayout);
 	FVulkanComputePipeline* CreateComputePipelineFromShader(FVulkanComputeShader* Shader);
@@ -522,11 +514,8 @@ private:
 
 	FVulkanDevice* Device;
 	bool bEvictImmediately;
-	// if true, we will link to the PSOFC, loading later, when we have that guid and only if the guid matches, saving only if there is no match, and only saving after the PSOFC is done.
-	bool bLinkedToPSOFC;
-	bool bLinkedToPSOFCSucessfulLoaded;
-	FString LinkedToPSOFCCacheFolderPath;
-	FString LinkedToPSOFCCacheFolderFilename;
+	FString CompiledPSOCacheTopFolderPath;
+	FString CompiledPSOCacheFolderName;
 	FDelegateHandle OnShaderPipelineCacheOpenedDelegate;
 	FDelegateHandle OnShaderPipelineCachePrecompilationCompleteDelegate;
 
@@ -534,7 +523,40 @@ private:
 	FRWLock ComputePipelineLock;
 	TMap<uint64, FVulkanComputePipeline*> ComputePipelineEntries;
 
-	VkPipelineCache PipelineCache;
+	template<typename TType>
+	class FScopedRWAccessor
+	{
+		bool bWriteAccess;
+		TType& ProtectedObj;
+		FRWLock& RWLock;
+	public:
+		FScopedRWAccessor(bool bWriteAccessIn, TType& ProtectedObjIn, FRWLock& RWLockIn) : bWriteAccess(bWriteAccessIn), ProtectedObj(ProtectedObjIn), RWLock(RWLockIn) { bWriteAccess ? RWLock.WriteLock() : RWLock.ReadLock(); }
+		~FScopedRWAccessor() { bWriteAccess ? RWLock.WriteUnlock() : RWLock.ReadUnlock(); }
+		TType& Get() { return ProtectedObj; }
+	};
+
+	using FScopedPipelineCache = FScopedRWAccessor<VkPipelineCache>;
+
+	enum class EPipelineCacheAccess : uint8
+	{
+		Shared,			// 'read' access, or for use when the API does its own synchronization.
+		Exclusive		// 'write' access, excludes all other usage for the duration. 
+	};
+	class FPipelineCache
+	{
+		VkPipelineCache PipelineCache = VK_NULL_HANDLE;
+		FRWLock PipelineCacheLock;
+	public:
+		FScopedPipelineCache Get(EPipelineCacheAccess PipelineAccessType) { return FScopedPipelineCache(PipelineAccessType == EPipelineCacheAccess::Exclusive, PipelineCache, PipelineCacheLock); }
+	};
+	FPipelineCache GlobalPSOCache;		// contains all PSO caches opened during the program run as well as PSO objects created on the fly
+
+	FPipelineCache CurrentPrecompilingPSOCache;
+	// if true, we will link to the PSOFC, loading later, when we have that guid and only if the guid matches, saving only if there is no match, and only saving after the PSOFC is done.
+	bool bPrecompilingCacheLoadedFromFile;
+	FGuid CurrentPrecompilingPSOCacheGuid;
+
+	TSet<FGuid> CompiledPSOCaches;
 
 	FCriticalSection LayoutMapCS;
 	TMap<FVulkanDescriptorSetsLayoutInfo, FVulkanLayout*> LayoutMap;
@@ -550,7 +572,7 @@ private:
 	uint32 LRUUsedPipelineSize = 0;
 	uint32 LRUUsedPipelineCount = 0;
 	uint32 LRUUsedPipelineMax = 0;
-	TMap<uint32, FVulkanPipelineSize> LRU2SizeList;	// key: Shader hash (FShaderHash), value: pipeline size
+	TMap<uint64, FVulkanPipelineSize> LRU2SizeList;	// key: Shader hash (FShaderHash), value: pipeline size
 	bool bUseLRU = true;
 	friend class FVulkanDynamicRHI;
 	friend class FVulkanCommandListContext;
@@ -688,15 +710,13 @@ public:
 	}
 
 	void DeleteVkPipeline(bool bImmediate);
-	void GetOrCreateShaderModules(FVulkanShader*const* Shaders);
+	void GetOrCreateShaderModules(TRefCountPtr<FVulkanShaderModule>(&ShaderModulesOUT)[ShaderStage::NumStages], FVulkanShader* const* Shaders);
+	FVulkanShader::FSpirvCode GetPatchedSpirvCode(FVulkanShader* Shader);
 	void PurgeShaderModules(FVulkanShader*const* Shaders);
-	void PurgeLoadedShaderModules(FVulkanDevice* InDevice);
-
 
 
 	bool								bHasInputAttachments = false;
 	bool								bIsRegistered;
-	bool								bShaderModulesLoaded = false;
 
 	uint64								ShaderKeys[ShaderStage::NumStages];
 	TEnumAsByte<EPrimitiveType>			PrimitiveType;
@@ -708,7 +728,6 @@ public:
 	FVulkanDevice* Device;
 	FGfxPipelineDesc Desc;
 	FVulkanShader* VulkanShaders[ShaderStage::NumStages];
-	VkShaderModule ShaderModules[ShaderStage::NumStages];
 	const FVulkanRenderPass* RenderPass;
 
 
@@ -716,7 +735,6 @@ public:
 	uint32 LRUFrame = UINT32_MAX;
 	uint32 PipelineCacheSize = UINT32_MAX;
 	FVulkanPSOKey							VulkanKey;
-
 
 #if VULKAN_PSO_CACHE_DEBUG
 	FPixelShaderRHIRef					PixelShaderRHI;

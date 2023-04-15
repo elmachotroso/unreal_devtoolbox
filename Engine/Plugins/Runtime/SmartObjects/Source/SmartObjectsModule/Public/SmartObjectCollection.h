@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "GameplayTagContainer.h"
 #include "GameFramework/Actor.h"
 #include "SmartObjectTypes.h"
 #include "SmartObjectCollection.generated.h"
@@ -16,14 +17,15 @@ struct SMARTOBJECTSMODULE_API FSmartObjectCollectionEntry
 	GENERATED_BODY()
 public:
 	FSmartObjectCollectionEntry() = default;
-	explicit FSmartObjectCollectionEntry(const FSmartObjectHandle& SmartObjectHandle, const USmartObjectComponent& SmartObjectComponent, const uint32 DefinitionIndex);
+	explicit FSmartObjectCollectionEntry(const FSmartObjectHandle SmartObjectHandle, const USmartObjectComponent& SmartObjectComponent, const uint32 DefinitionIndex);
 
-	const FSmartObjectHandle& GetHandle() const { return Handle; }
+	FSmartObjectHandle GetHandle() const { return Handle; }
 	const FSoftObjectPath& GetPath() const	{ return Path; }
 	USmartObjectComponent* GetComponent() const;
 	FTransform GetTransform() const { return Transform; }
 	const FBox& GetBounds() const { return Bounds; }
 	uint32 GetDefinitionIndex() const { return DefinitionIdx; }
+	const FGameplayTagContainer& GetTags() const { return Tags; }
 
 	friend FString LexToString(const FSmartObjectCollectionEntry& CollectionEntry)
 	{
@@ -35,8 +37,8 @@ protected:
 	// might change to better support streaming so keeping this as encapsulated as possible
 	friend class ASmartObjectCollection;
 
-	UPROPERTY(VisibleAnywhere, Category = SmartObject, meta = (ShowOnlyInnerProperties))
-	FSmartObjectHandle Handle;
+	UPROPERTY(VisibleAnywhere, Category = SmartObject)
+	FGameplayTagContainer Tags;
 
 	UPROPERTY()
 	FSoftObjectPath Path;
@@ -46,6 +48,9 @@ protected:
 
 	UPROPERTY()
 	FBox Bounds = FBox(ForceInitToZero);
+
+	UPROPERTY(VisibleAnywhere, Category = SmartObject, meta = (ShowOnlyInnerProperties))
+	FSmartObjectHandle Handle;
 
 	UPROPERTY(VisibleAnywhere, Category = SmartObject)
 	uint32 DefinitionIdx = INDEX_NONE;
@@ -75,6 +80,7 @@ protected:
 
 	explicit ASmartObjectCollection(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+	virtual void PostLoad() override;
 	virtual void PostActorCreated() override;
 	virtual void Destroyed() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -85,8 +91,15 @@ protected:
 	virtual void PostEditUndo() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool SupportsExternalPackaging() const override { return false; }
-	bool IsBuildOnDemand() const { return bBuildOnDemand; }
+	virtual bool ShouldExport() override { return false; }
+	virtual bool CanDeleteSelectedActor(FText& OutReason) const override { return false; }
+	bool ShouldBuildCollectionAutomatically() const { return bBuildCollectionAutomatically; }
 
+	/** Removes all entries from the collection. */
+	UFUNCTION(CallInEditor, Category = SmartObject)
+	void ClearCollection();
+
+	/** Rebuild entries in the collection using all the SmartObjectComponents currently loaded in the level. */
 	UFUNCTION(CallInEditor, Category = SmartObject)
 	void RebuildCollection();
 	void RebuildCollection(const TConstArrayView<USmartObjectComponent*> Components);
@@ -100,9 +113,15 @@ protected:
 	bool IsRegistered() const { return bRegistered; }
 	void OnUnregistered();
 
-	bool AddSmartObject(USmartObjectComponent& SOComponent);
+	/**
+	 * Creates a new entry for a given component.
+	 * @param SOComponent SmartObject Component for which a new entry must be created
+	 * @param bAlreadyInCollection Output parameter to indicate if an existing entry was returned instead of a newly created one.
+	 * @return Pointer to the created or existing entry. An unset value indicates a registration error.
+	 */
+	FSmartObjectCollectionEntry* AddSmartObject(USmartObjectComponent& SOComponent, bool& bAlreadyInCollection);
 	bool RemoveSmartObject(USmartObjectComponent& SOComponent);
-	USmartObjectComponent* GetSmartObjectComponent(const FSmartObjectHandle& SmartObjectHandle) const;
+	USmartObjectComponent* GetSmartObjectComponent(const FSmartObjectHandle SmartObjectHandle) const;
 
 	UPROPERTY(VisibleAnywhere, Category = SmartObject)
 	FBox Bounds = FBox(ForceInitToZero);
@@ -119,8 +138,14 @@ protected:
 	bool bRegistered = false;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere, Category = SmartObject)
-	bool bBuildOnDemand = false;
+private:
+	/** This property used to be exposed to the UI editor. It was replaced with bBuildCollectionAutomatically for greater readability. */
+	UPROPERTY()
+	bool bBuildOnDemand_DEPRECATED = true;
+
+protected:
+	UPROPERTY(EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	bool bBuildCollectionAutomatically = false;
 
 	bool bBuildingForWorldPartition = false;
 #endif // WITH_EDITORONLY_DATA

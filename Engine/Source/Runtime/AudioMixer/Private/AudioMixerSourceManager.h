@@ -8,10 +8,9 @@
 #include "AudioMixerDevice.h"
 #include "AudioMixerSourceOutputBuffer.h"
 #include "AudioMixerSubmix.h"
-#include "Containers/Queue.h"
+#include "Containers/MpscQueue.h"
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/EnvelopeFollower.h"
-#include "DSP/Filter.h"
 #include "DSP/InterpolatedOnePole.h"
 #include "DSP/ParamInterpolator.h"
 #include "IAudioExtensionPlugin.h"
@@ -19,6 +18,20 @@
 #include "Sound/SoundModulationDestination.h"
 #include "Sound/QuartzQuantizationUtilities.h"
 #include "Stats/Stats.h"
+
+// defines for debug data/logging in AudioMixerThreadCommand execution
+// if this hasn't been explicitly defined, assume it is enabled
+#ifndef WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+#define WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG 1
+#endif // #ifndef WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+#define AUDIO_MIXER_THREAD_COMMAND_STRING(X) ( FName(X) )
+#else //WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+static const FName NAME_NONE;
+#define AUDIO_MIXER_THREAD_COMMAND_STRING(X) ( NAME_NONE )
+#endif //WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+
 
 // Tracks the time it takes to up the source manager (computes source buffers, source effects, sample rate conversion)
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Manager Update"), STAT_AudioMixerSourceManagerUpdate, STATGROUP_AudioMixer, AUDIOMIXER_API);
@@ -61,6 +74,8 @@ namespace Audio
 	class ISourceListener
 	{
 	public:
+		virtual ~ISourceListener() = default;
+
 		// Called before a source begins to generate audio. 
 		virtual void OnBeginGenerate() = 0;
 
@@ -129,6 +144,8 @@ namespace Audio
 		FQuartzQuantizedRequestData QuantizedRequestData;
 
 		FSharedISourceBufferListenerPtr SourceBufferListener;		
+
+		IAudioLinkFactory::FAudioLinkSourcePushedSharedPtr AudioLink;
 
 		FName AudioComponentUserID;
 		uint64 AudioComponentID = 0;
@@ -213,6 +230,8 @@ namespace Audio
 		void SetModLPFFrequency(const int32 SourceId, const float InModFrequency);
 		void SetModHPFFrequency(const int32 SourceId, const float InModFrequency);
 
+		void SetSourceBufferListener(const int32 SourceId, FSharedISourceBufferListenerPtr& InSourceBufferListener, bool InShouldSourceBufferListenerZeroBuffer);
+
 
 		void SetListenerTransforms(const TArray<FTransform>& ListenerTransforms);
 		const TArray<FTransform>* GetListenerTransforms() const;
@@ -263,7 +282,12 @@ namespace Audio
 		void PumpCommandQueue();
 		void UpdatePendingReleaseData(bool bForceWait = false);
 		void FlushCommandQueue(bool bPumpCommandQueue = false);
+
+		// Pushes a TFUnction command into an MPSC queue from an arbitrary thread to the audio render thread
+		void AudioMixerThreadMPSCCommand(TFunction<void()> InCommand);
+		
 	private:
+		
 		void ReleaseSource(const int32 SourceId);
 		void BuildSourceEffectChain(const int32 SourceId, FSoundEffectSourceInitData& InitData, const TArray<FSourceEffectChainEntry>& SourceEffectChain, TArray<TSoundEffectSourcePtr>& OutSourceEffects);
 		void ResetSourceEffectChain(const int32 SourceId);
@@ -279,8 +303,41 @@ namespace Audio
 		void ComputeBuses();
 		void UpdateBuses();
 
-		void AudioMixerThreadCommand(TFunction<void()> InFunction);
+		struct FAudioMixerThreadCommand
+		{
+			// ctor
+			FAudioMixerThreadCommand(TFunction<void()> InFunction, FName InCallerDebugInfo, bool bInDeferExecution = false);
 
+			// function-call operator
+			void operator()() const;
+
+			// data
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+			FName CallerDebugInfo;
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+			TFunction<void()> Function;
+
+			// Defers the execution by a single call to PumpCommandQueue()
+			// (used for commands that affect a playing source,
+			// and that source gets initialized after the command executes
+			bool bDeferExecution;
+		};
+
+		struct FCurrentAudioMixerThreadCommandInfo
+		{
+			FName CallerDebugInfo;
+			FThreadSafeCounter64 QueueTimeInCycles;
+
+			void LogWarning() const;
+			void LogError() const;
+			void Reset();
+		};
+
+		FCurrentAudioMixerThreadCommandInfo CurrentAudioMixerThreadCommandInfo;
+
+		void AudioMixerThreadCommand(TFunction<void()> InFunction, FName CallingFunction = {}, bool bInDeferExecution = false);
+
+		
 		static const int32 NUM_BYTES_PER_SAMPLE = 2;
 
 		// Private class which perform source buffer processing in a worker task
@@ -321,8 +378,13 @@ namespace Audio
 
 		FMixerDevice* MixerDevice;
 
-		// Cached ptr to an optional spatialization plugin
-		TAudioSpatializationPtr SpatializationPlugin;
+		// Info about spatialization plugin
+		FAudioDevice::FAudioSpatializationInterfaceInfo SpatialInterfaceInfo;
+		
+		// Cached ptr to an optional source data override plugin
+		TAudioSourceDataOverridePtr SourceDataOverridePlugin;
+
+		IAudioLinkFactory* AudioLinkFactory = nullptr;
 
 		// Array of pointers to game thread audio source objects
 		TArray<FMixerSourceVoice*> MixerSources;
@@ -330,9 +392,9 @@ namespace Audio
 		// A command queue to execute commands from audio thread (or game thread) to audio mixer device thread.
 		struct FCommands
 		{
-			TArray<TFunction<void()>> SourceCommandQueue;
+			TArray<FAudioMixerThreadCommand> SourceCommandQueue;
 		};
-
+		
 		FCommands CommandBuffers[2];
 		FThreadSafeCounter RenderThreadCommandBufferIndex;
 
@@ -341,6 +403,9 @@ namespace Audio
 
 		TArray<int32> DebugSoloSources;
 
+		// Command queue to communicate commands to teh source manager from arbitrary threads
+		TMpscQueue<TFunction<void()>> MpscCommandQueue;
+		
 		struct FSourceInfo
 		{
 			FSourceInfo() {}
@@ -437,6 +502,9 @@ namespace Audio
 
 			// Optional Source buffer listener.
 			FSharedISourceBufferListenerPtr SourceBufferListener;
+
+			// Optional AudioLink.
+			IAudioLinkFactory::FAudioLinkSourcePushedSharedPtr AudioLink;
 
 			// State management
 			uint8 bIs3D:1;
@@ -539,7 +607,7 @@ namespace Audio
 
 		uint8 bInitialized : 1;
 		uint8 bUsingSpatializationPlugin : 1;
-		int32 MaxChannelsSupportedBySpatializationPlugin;
+		uint8 bUsingSourceDataOverridePlugin : 1;
 
 		// Set to true when the audio source manager should pump the command queue
 		FThreadSafeBool bPumpQueue;

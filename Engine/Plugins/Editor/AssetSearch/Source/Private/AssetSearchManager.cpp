@@ -2,8 +2,8 @@
 
 #include "AssetSearchManager.h"
 
-#include "IAssetRegistry.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetSearchDatabase.h"
 #include "Async/Async.h"
 #include "DerivedDataCacheInterface.h"
@@ -292,9 +292,13 @@ void FAssetSearchManager::StopScanningAssets()
 {
 	if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
 	{
-		AssetRegistryModule->Get().OnAssetAdded().RemoveAll(this);
-		AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
-		AssetRegistryModule->Get().OnFilesLoaded().RemoveAll(this);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnAssetAdded().RemoveAll(this);
+			AssetRegistry->OnAssetRemoved().RemoveAll(this);
+			AssetRegistry->OnFilesLoaded().RemoveAll(this);
+		}
 	}
 
 	ProcessAssetQueue.Reset();
@@ -606,7 +610,7 @@ bool FAssetSearchManager::AsyncGetDerivedDataKey(const FAssetData& InAssetData, 
 			// The universal key for content is:
 			// AssetSearch_V{SerializerVersion}_{IndexersNamesAndVersions}_{ObjectPathHash}_{FileOnDiskHash}
 
-			const FString ObjectPathString = InAssetData.ObjectPath.ToString();
+			const FString ObjectPathString = InAssetData.GetObjectPathString();
 
 			FSHAHash ObjectPathHash;
 			FSHA1::HashBuffer(*ObjectPathString, ObjectPathString.Len() * sizeof(FString::ElementType), ObjectPathHash.Hash);
@@ -709,7 +713,7 @@ void FAssetSearchManager::StoreIndexForAsset(UObject* InAsset)
 
 					FTCHARToUTF8 IndexedJsonUTF8(*IndexedJson);
 					TArrayView<const uint8> IndexedJsonUTF8View((const uint8*)IndexedJsonUTF8.Get(), IndexedJsonUTF8.Length() * sizeof(UTF8CHAR));
-					GetDerivedDataCacheRef().Put(*InDDCKey, IndexedJsonUTF8View, InAssetData.ObjectPath.ToString(), false);
+					GetDerivedDataCacheRef().Put(*InDDCKey, IndexedJsonUTF8View, InAssetData.GetObjectPathString(), false);
 
 					AddOrUpdateAsset(InAssetData, IndexedJson, InDDCKey);
 				});
@@ -783,7 +787,7 @@ bool FAssetSearchManager::Tick_GameThread(float DeltaTime)
 		DownloadQueueCount--;
 		ActiveDownloads++;
 
-		DDCRequest.DDCHandle = GetDerivedDataCacheRef().GetAsynchronous(*DDCRequest.DDCKey, DDCRequest.AssetData.ObjectPath.ToString());
+		DDCRequest.DDCHandle = GetDerivedDataCacheRef().GetAsynchronous(*DDCRequest.DDCKey, DDCRequest.AssetData.GetObjectPathString());
 		ProcessDDCQueue.Enqueue(DDCRequest);
 	}
 

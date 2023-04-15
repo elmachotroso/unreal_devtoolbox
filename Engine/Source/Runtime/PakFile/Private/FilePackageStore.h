@@ -13,17 +13,19 @@ struct FFilePackageStoreEntry;
 /*
  * File/container based package store.
  */
-class FFilePackageStore
-	: public FPackageStoreBase
+class FFilePackageStoreBackend
+	: public IPackageStoreBackend
 {
 public:
-	FFilePackageStore();
-	virtual ~FFilePackageStore();
+	FFilePackageStoreBackend();
+	virtual ~FFilePackageStoreBackend();
 
-	virtual void Initialize() override;
-	virtual void Lock() override;
-	virtual void Unlock() override;
-	virtual bool DoesPackageExist(FPackageId PackageId) override;
+	virtual void OnMounted(TSharedRef<const FPackageStoreBackendContext>) override
+	{
+	}
+
+	virtual void BeginRead() override;
+	virtual void EndRead() override;
 	virtual EPackageStoreEntryStatus GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry) override;
 	virtual bool GetPackageRedirectInfo(FPackageId PackageId, FName& OutSourcePackageName, FPackageId& OutRedirectedToPackageId) override;
 
@@ -35,6 +37,7 @@ private:
 	{
 		const FIoContainerHeader* ContainerHeader;
 		uint32 Order;
+		uint32 Sequence;
 	};
 
 #if WITH_EDITOR
@@ -43,27 +46,32 @@ private:
 		FName PackageName;
 		EPackageExtension HeaderExtension;
 	};
-#endif
+#endif //if WITH_EDITOR
 
 	void Update();
 #if WITH_EDITOR
 	uint64 AddUncookedPackagesFromRoot(const FString& RootPath);
-#endif
+	uint64 RemoveUncookedPackagesFromRoot(const TSet<FString>& RootPath);
+#endif //if WITH_EDITOR
 
 	FRWLock EntriesLock;
 	FCriticalSection UpdateLock;
 	TArray<FMountedContainer> MountedContainers;
+	TAtomic<uint32> NextSequence{ 0 };
 	TMap<FPackageId, const FFilePackageStoreEntry*> StoreEntriesMap;
 	TMap<FPackageId, TTuple<FName, FPackageId>> RedirectsPackageMap;
 	TMap<FPackageId, FName> LocalizedPackages;
-	bool bNeedsUpdate = false;
+	bool bNeedsContainerUpdate = false;
 
 #if WITH_EDITOR
 	FDelegateHandle OnContentPathMountedDelegateHandle;
+	FDelegateHandle OnContentPathDismountedDelegateHandle;
 	FCriticalSection UncookedPackageRootsLock;
-	TSet<FString> PendingUncookedPackageRoots;
+	TSet<FString> PendingAddUncookedPackageRoots;
+	TSet<FString> PendingRemoveUncookedPackageRoots;
 	TMap<FPackageId, FUncookedPackage> UncookedPackagesMap;
-#endif
+	TMap<FPackageId, const FFilePackageStoreEntry*> OptionalSegmentStoreEntriesMap;
+	bool bNeedsUncookedPackagesUpdate = false;
+#endif //if WITH_EDITOR
 
-	static thread_local int32 LockedOnThreadCount;
 };

@@ -25,6 +25,8 @@
 #include "GameFramework/PlayerState.h"
 #include "ObjectTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Controller)
+
 DEFINE_LOG_CATEGORY(LogController);
 DEFINE_LOG_CATEGORY(LogPath);
 
@@ -766,4 +768,10 @@ void AController::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutL
 	DOREPLIFETIME_CONDITION_NOTIFY(AController, Pawn, COND_None, REPNOTIFY_Always);
 }
 
+bool AController::ShouldParticipateInSeamlessTravel() const
+{
+	return (PlayerState != nullptr);
+}
+
 #undef LOCTEXT_NAMESPACE
+

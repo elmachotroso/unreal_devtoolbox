@@ -2,13 +2,12 @@
 
 #pragma once
 
-#include "../SocialTypes.h"
-#include "UObject/Object.h"
+#include "Interactions/SocialInteractionHandle.h"
 #include "OnlineSessionSettings.h"
 #include "Party/PartyTypes.h"
-#include "Interactions/SocialInteractionHandle.h"
+#include "SocialTypes.h"
+#include "UObject/Object.h"
 
-#include "PartyPackage.h"
 #include "SocialUser.generated.h"
 
 class IOnlinePartyJoinInfo;
@@ -31,6 +30,8 @@ UCLASS(Within = SocialToolkit)
 class PARTY_API USocialUser : public UObject
 {
 	GENERATED_BODY()
+
+	friend USocialToolkit;
 
 public:
 	USocialUser();
@@ -59,6 +60,7 @@ public:
 	bool IsFriend() const;
 	bool IsFriend(ESocialSubsystem SubsystemType) const;
 	bool IsFriendshipPending(ESocialSubsystem SubsystemType) const;
+	bool IsAnyInboundFriendshipPending() const;
 	const FOnlineUserPresence* GetFriendPresenceInfo(ESocialSubsystem SubsystemType) const;
 	FDateTime GetFriendshipCreationDate() const;
 	virtual FDateTime GetLastOnlineDate() const;
@@ -86,6 +88,9 @@ public:
 	virtual int64 GetCustomSortValueSecondary() const { return 0; }
 	virtual int64 GetCustomSortValueTertiary() const { return 0; }
 
+	/** Populate list with sort values in order of priority */
+	virtual void PopulateSortParameterList(TArray<int64>& OutSortParams) const;
+
 	bool SetUserLocalAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, const FString& AttrValue);
 	bool GetUserAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, FString& OutAttrValue) const;
 
@@ -108,23 +113,31 @@ public:
 
 	virtual bool CanRequestToJoin() const { return false; }
 	virtual bool HasRequestedToJoinUs() const { return false; }
-	void HandleRequestToJoinSent(const FDateTime& ExpiresAt);
 	void HandleRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request);
 	void HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason);
+
+	UE_DEPRECATED(5.1, "Use RequestToJoinParty(const FName&) instead of RequestToJoinParty(void)")
 	void RequestToJoinParty();
+
+	virtual void RequestToJoinParty(const FName& JoinMethod);
 	void AcceptRequestToJoinParty() const;
 	void DismissRequestToJoinParty() const;
-
+	virtual void HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result, FName JoinMethod);
+	
 	virtual IOnlinePartyJoinInfoConstPtr GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const;
 
 	bool HasSentPartyInvite(const FOnlinePartyTypeId& PartyTypeId) const;
 	FJoinPartyResult CheckPartyJoinability(const FOnlinePartyTypeId& PartyTypeId) const;
+
+	UE_DEPRECATED(5.1, "Use JoinParty(const FOnlinePartyTypeId&, const FName&) instead of JoinParty(const FOnlinePartyTypeId&)")
 	void JoinParty(const FOnlinePartyTypeId& PartyTypeId) const;
-	void RejectPartyInvite(const FOnlinePartyTypeId& PartyTypeId);
+
+	virtual void JoinParty(const FOnlinePartyTypeId& PartyTypeId, const FName& JoinMethod) const;
+	virtual void RejectPartyInvite(const FOnlinePartyTypeId& PartyTypeId);
 
 	bool HasBeenInvitedToParty(const FOnlinePartyTypeId& PartyTypeId) const;
 	bool CanInviteToParty(const FOnlinePartyTypeId& PartyTypeId) const;
-	bool InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod = ESocialPartyInviteMethod::Other) const;
+	bool InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod = ESocialPartyInviteMethod::Other, const FString& MetaData = FString()) const;
 
 	virtual bool BlockUser(ESocialSubsystem Subsystem) const;
 	virtual bool UnblockUser(ESocialSubsystem Subsystem) const;
@@ -164,7 +177,7 @@ public:
 	void EstablishOssInfo(const TSharedRef<FOnlineBlockedPlayer>& BlockedPlayerInfo, ESocialSubsystem SubsystemType);
 	void EstablishOssInfo(const TSharedRef<FOnlineRecentPlayer>& RecentPlayerInfo, ESocialSubsystem SubsystemType);
 
-PACKAGE_SCOPE:
+protected:
 	void InitLocalUser();
 	void Initialize(const FUniqueNetIdRepl& PrimaryId);
 
@@ -185,7 +198,10 @@ protected:
 	virtual void OnPartyInviteRejectedInternal(const FOnlinePartyTypeId& PartyTypeId) const;
 	virtual void HandleSetNicknameComplete(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnlineError& Error);
 	virtual void SetSubsystemId(ESocialSubsystem SubsystemType, const FUniqueNetIdRepl& SubsystemId);
+
+	UE_DEPRECATED(5.1, "This function is deprecated and will be removed.")
 	virtual void NotifyRequestToJoinSent(const FDateTime& ExpiresAt) {}
+
 	virtual void NotifyRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request) {}
 	virtual void NotifyRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason) {}
 	int32 NumPendingQueries = 0;

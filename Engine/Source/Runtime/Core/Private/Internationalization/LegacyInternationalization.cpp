@@ -5,7 +5,7 @@
 
 #if !UE_ENABLE_ICU
 
-#include "InvariantCulture.h"
+#include "Internationalization/Cultures/InvariantCulture.h"
 
 FLegacyInternationalization::FLegacyInternationalization(FInternationalization* const InI18N)
 	: I18N(InI18N)
@@ -70,8 +70,35 @@ void FLegacyInternationalization::GetCultureNames(TArray<FString>& CultureNames)
 
 TArray<FString> FLegacyInternationalization::GetPrioritizedCultureNames(const FString& Name)
 {
+	const FString CanonicalName = FCulture::GetCanonicalName(Name);
 	TArray<FString> PrioritizedCultureNames;
-	PrioritizedCultureNames.Add(Name);
+	
+	if (!CanonicalName.IsEmpty())
+	{
+		TArray<FString> CultureFragments;
+		CanonicalName.ParseIntoArray(CultureFragments, TEXT("-"), true);
+
+		switch (CultureFragments.Num())
+		{
+		case 1: // Language
+			PrioritizedCultureNames = FCulture::GetPrioritizedParentCultureNames(CultureFragments[0], FString(), FString());
+			break;
+		case 2: // Language + Region
+			PrioritizedCultureNames = FCulture::GetPrioritizedParentCultureNames(CultureFragments[0], FString(), CultureFragments[1]);
+			break;
+		case 3: // Language + Script + Region
+			PrioritizedCultureNames = FCulture::GetPrioritizedParentCultureNames(CultureFragments[0], CultureFragments[1], CultureFragments[2]);
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (PrioritizedCultureNames.Num() == 0)
+	{
+		PrioritizedCultureNames.Add(CanonicalName);
+	}
+
 	return PrioritizedCultureNames;
 }
 

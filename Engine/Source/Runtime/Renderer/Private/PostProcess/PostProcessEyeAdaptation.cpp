@@ -93,6 +93,23 @@ bool IsExtendLuminanceRangeEnabled()
 	return VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnRenderThread() == 1;
 }
 
+static EAutoExposureMethod ApplyEyeAdaptationQuality(EAutoExposureMethod AutoExposureMethod)
+{
+	static const auto CVarEyeAdaptationQuality = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.EyeAdaptationQuality"));
+	const int32 EyeAdaptationQuality = CVarEyeAdaptationQuality->GetValueOnRenderThread();
+	
+	if (AutoExposureMethod != EAutoExposureMethod::AEM_Manual)
+	{
+		if (EyeAdaptationQuality == 1)
+		{
+			// Clamp current method to AEM_Basic
+			AutoExposureMethod = EAutoExposureMethod::AEM_Basic;
+		}
+	}
+
+	return AutoExposureMethod;
+}
+
 float LuminanceMaxFromLensAttenuation()
 {
 	const bool bExtendedLuminanceRange = IsExtendLuminanceRangeEnabled();
@@ -118,6 +135,9 @@ EAutoExposureMethod GetAutoExposureMethod(const FViewInfo& View)
 	{
 		AutoExposureMethod = IsAutoExposureMethodSupported(View.GetFeatureLevel(), EAutoExposureMethod::AEM_Basic) ? EAutoExposureMethod::AEM_Basic : EAutoExposureMethod::AEM_Manual;
 	}
+
+	// Apply quality settings
+	AutoExposureMethod = ApplyEyeAdaptationQuality(AutoExposureMethod);
 
 	const int32 EyeOverride = CVarEyeAdaptationMethodOverride.GetValueOnRenderThread();
 
@@ -213,9 +233,10 @@ bool IsAutoExposureDebugMode(const FViewInfo& View)
 
 	return View.Family->UseDebugViewPS() ||
 		!EngineShowFlags.Lighting ||
-		(EngineShowFlags.VisualizeBuffer && View.CurrentBufferVisualizationMode != NAME_None) ||
-		(EngineShowFlags.VisualizeNanite && View.CurrentNaniteVisualizationMode != NAME_None) ||
-		(EngineShowFlags.VisualizeVirtualShadowMap && View.CurrentVirtualShadowMapVisualizationMode != NAME_None) ||
+		(EngineShowFlags.VisualizeBuffer && View.CurrentBufferVisualizationMode != NAME_None
+			// Some HDR buffer visualization do want to have exposure applied.
+			&& View.CurrentBufferVisualizationMode != TEXT("SeparateTranslucencyRGB") && View.CurrentBufferVisualizationMode != TEXT("SceneColor") && View.CurrentBufferVisualizationMode != TEXT("FinalImage")
+			&& View.CurrentBufferVisualizationMode != TEXT("PreTonemapHDRColor") && View.CurrentBufferVisualizationMode != TEXT("PostTonemapHDRColor")) ||
 		EngineShowFlags.RayTracingDebug ||
 		EngineShowFlags.VisualizeDistanceFieldAO ||
 		EngineShowFlags.VisualizeVolumetricCloudConservativeDensity ||
@@ -226,16 +247,14 @@ bool IsAutoExposureDebugMode(const FViewInfo& View)
 
 float CalculateFixedAutoExposure(const FViewInfo& View)
 {
-	const bool bExtendedLuminanceRange = IsExtendLuminanceRangeEnabled();
-	const float LuminanceMax = bExtendedLuminanceRange ? LuminanceMaxFromLensAttenuation() : 1.0f;
+	const float LuminanceMax = LuminanceMaxFromLensAttenuation();
 	return EV100ToLuminance(LuminanceMax, View.Family->ExposureSettings.FixedEV100);
 }
 
 // on mobile, we are never using the Physical Camera, which is why we need the bForceDisablePhysicalCamera
 float CalculateManualAutoExposure(const FViewInfo& View, bool bForceDisablePhysicalCamera)
 {
-	const bool bExtendedLuminanceRange = IsExtendLuminanceRangeEnabled();
-	const float LuminanceMax = bExtendedLuminanceRange ? LuminanceMaxFromLensAttenuation() : 1.0f;
+	const float LuminanceMax = LuminanceMaxFromLensAttenuation();
 
 	const FPostProcessSettings& Settings = View.FinalPostProcessSettings;
 
@@ -256,7 +275,7 @@ FEyeAdaptationParameters GetEyeAdaptationParameters(const FViewInfo& View, ERHIF
 
 	const EAutoExposureMethod AutoExposureMethod = GetAutoExposureMethod(View);
 
-	const float LuminanceMax = bExtendedLuminanceRange ? LuminanceMaxFromLensAttenuation() : 1.0f;
+	const float LuminanceMax = LuminanceMaxFromLensAttenuation();
 
 	const float PercentToScale = 0.01f;
 
@@ -353,10 +372,18 @@ FEyeAdaptationParameters GetEyeAdaptationParameters(const FViewInfo& View, ERHIF
 	// mode does the calculation in pre-exposure space, which is why we need to multiply by View.PreExposure.
 	const float LuminanceMin = (AutoExposureMethod == AEM_Basic) ? 0.0001f : FMath::Exp2(HistogramLogMin);
 
-	//AutoExposureMeterMask
-	const FTextureRHIRef MeterMask = Settings.AutoExposureMeterMask ?
-		Settings.AutoExposureMeterMask->GetResource()->TextureRHI :
-		GWhiteTexture->TextureRHI;
+	FTextureRHIRef MeterMask = nullptr;
+
+	if (Settings.AutoExposureMeterMask &&
+		Settings.AutoExposureMeterMask->GetResource() &&
+		Settings.AutoExposureMeterMask->GetResource()->TextureRHI)
+	{
+		MeterMask = Settings.AutoExposureMeterMask->GetResource()->TextureRHI;
+	}
+	else
+	{
+		MeterMask = GWhiteTexture->TextureRHI;
+	}
 
 	// The distance at which we switch from linear to exponential. I.e. at StartDistance=1.5, when linear is 1.5 f-stops away from hitting the 
 	// target, we switch to exponential.
@@ -401,7 +428,8 @@ FEyeAdaptationParameters GetEyeAdaptationParameters(const FViewInfo& View, ERHIF
 	Parameters.HistogramScale = HistogramScale;
 	Parameters.HistogramBias = HistogramBias;
 	Parameters.LuminanceMin = LuminanceMin;
-	Parameters.LocalExposureContrastScale = Settings.LocalExposureContrastScale;
+	Parameters.LocalExposureHighlightContrastScale = Settings.LocalExposureHighlightContrastScale;
+	Parameters.LocalExposureShadowContrastScale = Settings.LocalExposureShadowContrastScale;
 	Parameters.LocalExposureDetailStrength = Settings.LocalExposureDetailStrength;
 	Parameters.LocalExposureBlurredLuminanceBlend = Settings.LocalExposureBlurredLuminanceBlend;
 	Parameters.LocalExposureMiddleGreyExposureCompensation = LocalExposureMiddleGreyExposureCompensation;
@@ -772,6 +800,8 @@ void FSceneViewState::FEyeAdaptationManager::EnqueueExposureTextureReadback(FRDG
 	
 	if (ReadbackBuffersNumPending < MAX_READBACK_BUFFERS)
 	{
+		// limit to single bit here for readback to work
+		RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::FromIndex(GraphBuilder.RHICmdList.GetGPUMask().GetFirstIndex()));
 		FRDGTextureRef CurrentTexture = GraphBuilder.RegisterExternalTexture(PooledRenderTarget[CurrentBuffer], ERDGTextureFlags::MultiFrame);
 
 		FRHIGPUTextureReadback* ExposureReadbackTexture = ExposureReadbackTextures[ReadbackBuffersWriteIndex];
@@ -935,9 +965,7 @@ void FSceneViewState::UpdatePreExposure(FViewInfo& View)
 		!ViewFamily.EngineShowFlags.LODColoration &&
 		!ViewFamily.EngineShowFlags.HLODColoration &&
 		!ViewFamily.EngineShowFlags.LevelColoration &&
-		((!ViewFamily.EngineShowFlags.VisualizeBuffer) || View.CurrentBufferVisualizationMode != NAME_None) && // disable pre-exposure for the buffer visualization modes
-		((!ViewFamily.EngineShowFlags.VisualizeNanite) || View.CurrentNaniteVisualizationMode != NAME_None) && // disable pre-exposure for the Nanite visualization modes
-		((!ViewFamily.EngineShowFlags.VisualizeVirtualShadowMap) || View.CurrentVirtualShadowMapVisualizationMode != NAME_None); // disable pre-exposure for the virtual shadow map visualization modes
+		((!ViewFamily.EngineShowFlags.VisualizeBuffer) || View.CurrentBufferVisualizationMode != NAME_None); // disable pre-exposure for the buffer visualization modes
 
 	PreExposure = 1.f;
 	bUpdateLastExposure = false;
@@ -982,7 +1010,7 @@ static const FName NAME_EyeAdaptation(TEXT("EyeAdaptation"));
 
 void FSceneViewState::BroadcastEyeAdaptationTemporalEffect(FRHICommandList& RHICmdList)
 {
-	FRHITexture* EyeAdaptation = GetCurrentEyeAdaptationTexture(RHICmdList)->GetRenderTargetItem().ShaderResourceTexture.GetReference();
+	FRHITexture* EyeAdaptation = GetCurrentEyeAdaptationTexture(RHICmdList)->GetRHI();
 	RHICmdList.BroadcastTemporalEffect(FName(NAME_EyeAdaptation, UniqueID), { &EyeAdaptation, 1 });
 }
 

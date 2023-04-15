@@ -11,6 +11,7 @@
 #include "TraceServices/Model/NetProfiler.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Input/SComboBox.h"
 
 // Insights
 #include "Insights/Common/FixedCircularBuffer.h"
@@ -86,6 +87,20 @@ struct FNetworkPacketEventRef
  */
 class SPacketContentView : public SCompoundWidget
 {
+private:
+	struct FAggregationModeItem
+	{
+		/** Conversion constructor. */
+		FAggregationModeItem(const TraceServices::ENetProfilerAggregationMode& InMode)
+			: Mode(InMode)
+		{}
+
+		FText GetText() const;
+		FText GetTooltipText() const;
+
+		TraceServices::ENetProfilerAggregationMode Mode;
+	};
+
 public:
 	/** Number of pixels. */
 	static constexpr float MOUSE_SNAP_DISTANCE = 2.0f;
@@ -112,7 +127,7 @@ public:
 	SLATE_BEGIN_ARGS(SPacketContentView) {}
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, TSharedPtr<SNetworkingProfilerWindow> InProfilerWindow);
+	void Construct(const FArguments& InArgs, TSharedRef<SNetworkingProfilerWindow> InProfilerWindow);
 
 	/**
 	 * Ticks this widget. Override in derived classes, but always call the parent implementation.
@@ -151,6 +166,8 @@ public:
 	void SetFilterEventType(const uint32 InEventTypeIndex, const FText& InEventName);
 	void EnableFilterEventType(const uint32 InEventTypeIndex);
 	void DisableFilterEventType();
+
+	TraceServices::ENetProfilerAggregationMode GetSelectedFilterEventAggregationMode() const { return SelectedAggregationMode ? SelectedAggregationMode->Mode : TraceServices::ENetProfilerAggregationMode::Aggregate; }
 
 	void FindFirstEvent();
 	void FindPreviousEvent(EEventNavigationType NavigationType);
@@ -210,8 +227,14 @@ private:
 
 	void AdjustForSplitContent();
 
+	TSharedRef<SWidget> CreateAggregationModeComboBox();
+	TSharedRef<SWidget> AggregationMode_OnGenerateWidget(TSharedPtr<FAggregationModeItem> InAggregationMode) const;
+	void AggregationMode_OnSelectionChanged(TSharedPtr<FAggregationModeItem> NewAggregationMode, ESelectInfo::Type SelectInfo);
+	FText AggregationMode_GetSelectedText() const;
+	FText AggregationMode_GetSelectedTooltipText() const;
+
 private:
-	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow;
+	TWeakPtr<SNetworkingProfilerWindow> ProfilerWindowWeakPtr;
 
 	/** The track's viewport. Encapsulates info about position and scale. */
 	FPacketContentViewport Viewport;
@@ -241,6 +264,10 @@ private:
 	//////////////////////////////////////////////////
 
 	TSharedPtr<SScrollBar> HorizontalScrollBar;
+
+	TSharedPtr<SComboBox<TSharedPtr<FAggregationModeItem>>> AggregationModeComboBox;
+	TArray<TSharedPtr<FAggregationModeItem>> AvailableAggregationModes;
+	TSharedPtr<FAggregationModeItem> SelectedAggregationMode;
 
 	//////////////////////////////////////////////////
 	// Panning and Zooming behaviors

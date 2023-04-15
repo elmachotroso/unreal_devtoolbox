@@ -11,6 +11,8 @@
 #include "GameplayTagsModule.h"
 #include "Misc/OutputDeviceNull.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayTagContainer)
+
 const FGameplayTag FGameplayTag::EmptyTag;
 const FGameplayTagContainer FGameplayTagContainer::EmptyContainer;
 const FGameplayTagQuery FGameplayTagQuery::EmptyQuery;
@@ -102,12 +104,12 @@ void SerializeTagNetIndexPacked(FArchive& Ar, FGameplayTagNetIndex& Value, const
 		{
 			uint32 SecondData = 0;
 			Ar.SerializeBits(&SecondData, SecondSegment);
-			Value = (SecondData << FirstSegment);
+			Value = IntCastChecked<uint16, uint32>(SecondData << FirstSegment);
 			Value |= (FirstData & BitMasks[FirstSegment]);
 		}
 		else
 		{
-			Value = FirstData;
+			Value = IntCastChecked<uint16, uint32>(FirstData);
 		}
 
 	}
@@ -167,7 +169,7 @@ private:
 		}
 		
 		UE_LOG(LogGameplayTags, Warning, TEXT("Error parsing FGameplayTagQuery!"));
-		bReadError = true;
+		bReadError = true; 
 		return 0;
 	}
 };
@@ -966,7 +968,7 @@ bool FGameplayTagContainer::NetSerialize(FArchive& Ar, class UPackageMap* Map, b
 
 	if (Ar.IsSaving())
 	{
-		uint8 NumTags = GameplayTags.Num();
+		uint8 NumTags = IntCastChecked<uint8, int32>(GameplayTags.Num());
 		uint8 MaxSize = (1 << NumBitsForContainerSize) - 1;
 		if (!ensureMsgf(NumTags <= MaxSize, TEXT("TagContainer has %d elements when max is %d! Tags: %s"), NumTags, MaxSize, *ToStringSimple()))
 		{
@@ -1085,8 +1087,9 @@ bool FGameplayTag::MatchesTag(const FGameplayTag& TagToCheck) const
 		return TagContainer->HasTag(TagToCheck);
 	}
 
-	// This should always be invalid if the node is missing
-	ensureMsgf(!IsValid(), TEXT("Valid tag failed to convert to single tag container. %s"), *GetTagName().ToString());
+	// If a non-empty tag has not been registered, it will not exist in the tag database so this function may return the incorrect value
+	// All tags must be registered from code or data before being used in matching functions and this tag may have been deleted with active references
+	ensureMsgf(!IsValid(), TEXT("MatchesTag passed invalid gameplay tag %s, only registered tags can be used in containers"), *GetTagName().ToString());
 
 	return false;
 }
@@ -1102,8 +1105,10 @@ bool FGameplayTag::MatchesAny(const FGameplayTagContainer& ContainerToCheck) con
 		return TagContainer->HasAny(ContainerToCheck);
 	}
 
-	// This should always be invalid if the node is missing
-	ensureMsgf(!IsValid(), TEXT("Valid tag failed to conver to single tag container. %s"), *GetTagName().ToString() );
+	// If a non-empty tag has not been registered, it will not exist in the tag database so this function may return the incorrect value
+	// All tags must be registered from code or data before being used in matching functions and this tag may have been deleted with active references
+	ensureMsgf(!IsValid(), TEXT("MatchesAny passed invalid gameplay tag %s, only registered tags can be used in containers"), *GetTagName().ToString());
+
 	return false;
 }
 
@@ -1217,7 +1222,7 @@ bool FGameplayTag::NetSerialize_Packed(FArchive& Ar, class UPackageMap* Map, boo
 
 			uint32 NetIndex32 = NetIndex;
 			Ar.SerializeIntPacked(NetIndex32);
-			NetIndex = NetIndex32;
+			NetIndex = IntCastChecked<uint16, uint32>(NetIndex32);
 
 			if (Ar.IsLoading())
 			{
@@ -1469,16 +1474,19 @@ UEditableGameplayTagQuery* FQueryEvaluator::CreateEditableQuery()
 	UEditableGameplayTagQuery* const EditableQuery = NewObject<UEditableGameplayTagQuery>(GetTransientPackage(), NAME_None, RF_Transactional);
 
 	// start parsing the set
-	Version = GetToken();
-	if (!bReadError)
+	if (!Query.IsEmpty())
 	{
-		uint8 const bHasRootExpression = GetToken();
-		if (!bReadError && bHasRootExpression)
+		Version = GetToken();
+		if (!bReadError)
 		{
-			EditableQuery->RootExpression = ReadEditableQueryExpr(EditableQuery);
+			uint8 const bHasRootExpression = GetToken();
+			if (!bReadError && bHasRootExpression)
+			{
+				EditableQuery->RootExpression = ReadEditableQueryExpr(EditableQuery);
+			}
 		}
+		ensure(CurStreamIdx == Query.QueryTokenStream.Num());
 	}
-	ensure(CurStreamIdx == Query.QueryTokenStream.Num());
 
 	EditableQuery->UserDescription = Query.UserDescription;
 
@@ -1642,7 +1650,7 @@ FString UEditableGameplayTagQuery::GetTagQueryExportText(FGameplayTagQuery const
 	FProperty* const TQProperty = FindFProperty<FProperty>(GetClass(), TEXT("TagQueryExportText_Helper"));
 
 	FString OutString;
-	TQProperty->ExportTextItem(OutString, (void*)&TagQueryExportText_Helper, (void*)&TagQueryExportText_Helper, this, 0);
+	TQProperty->ExportTextItem_Direct(OutString, (void*)&TagQueryExportText_Helper, (void*)&TagQueryExportText_Helper, this, 0);
 	return OutString;
 }
 
@@ -1847,7 +1855,7 @@ FGameplayTagQueryExpression& FGameplayTagQueryExpression::AddTag(FName TagName)
 void FGameplayTagQueryExpression::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary) const
 {
 	// emit exprtype
-	TokenStream.Add(ExprType);
+	TokenStream.Add(static_cast<uint8>(ExprType));
 
 	// emit exprdata
 	switch (ExprType)
@@ -1920,7 +1928,7 @@ static void TagPackingTest()
 		{
 			for (int32 NetIndex=0; NetIndex < FMath::Pow(2.f, TotalNetIndexBits); ++NetIndex)
 			{
-				FGameplayTagNetIndex NI = NetIndex;
+				FGameplayTagNetIndex NI = IntCastChecked<uint16, int32>(NetIndex);
 
 				FNetBitWriter	BitWriter(nullptr, 1024 * 8);
 				SerializeTagNetIndexPacked(BitWriter, NI, NetIndexBitsPerComponent, TotalNetIndexBits);
@@ -1950,3 +1958,4 @@ FAutoConsoleCommand TagPackingTestCmd(
 );
 
 #endif
+

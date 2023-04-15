@@ -1,21 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StorageServerConnection.h"
-#include "IPAddress.h"
-#include "SocketSubsystem.h"
-#include "Sockets.h"
-#include "Misc/App.h"
-#include "Misc/Paths.h"
-#include "Misc/SecureHash.h"
+
 #include "IO/IoDispatcher.h"
-#include "Misc/StringBuilder.h"
-#include "Misc/ScopeExit.h"
+#include "IPAddress.h"
+#include "Misc/App.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/StringBuilder.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinarySerialization.h"
+#include "Memory/MemoryView.h"
 #include "Memory/SharedBuffer.h"
 #include "ProfilingDebugging/CountersTrace.h"
-#include "HAL/FileManager.h"
+#include "SocketSubsystem.h"
+#include "Sockets.h"
 
 #if !UE_BUILD_SHIPPING
 
@@ -64,18 +62,6 @@ static uint64 GetCompressedOffset(const FCompressedBuffer& Buffer, uint64 RawOff
 	}
 
 	return 0;
-}
-
-// Duplicated in ZenStoreHttpClient.cpp to avoid having a public API in a shared module
-static FString GetProjectPathId()
-{
-	FString ProjectFilePath = FPaths::GetProjectFilePath();
-	FPaths::NormalizeFilename(ProjectFilePath);
-	FString AbsProjectFilePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ProjectFilePath);
-	FTCHARToUTF8 AbsProjectFilePathUTF8(*AbsProjectFilePath);
-
-	FString HashString = FMD5::HashBytes((unsigned char*)AbsProjectFilePathUTF8.Get(), AbsProjectFilePathUTF8.Length()).Left(8);
-	return FString::Printf(TEXT("%s.%.8s"), FApp::GetProjectName(), *HashString);
 }
 
 FStorageServerRequest::FStorageServerRequest(FAnsiStringView Verb, FAnsiStringView Resource, FAnsiStringView Hostname, EStorageServerContentType Accept)
@@ -193,7 +179,7 @@ FStorageServerResponse::FStorageServerResponse(FStorageServerConnection& InOwner
 		ResponseLine = ReadResponseLine();
 		if (ResponseLine.StartsWith("Content-Length: "))
 		{
-			ContentLength = TCString<ANSICHAR>::Atoi64(ResponseLine.GetData() + 16);
+			ContentLength = FMath::Max(0, TCString<ANSICHAR>::Atoi64(ResponseLine.GetData() + 16));
 		}
 		else if (ResponseLine.StartsWith("Content-Type: "))
 		{
@@ -203,10 +189,20 @@ FStorageServerResponse::FStorageServerResponse(FStorageServerConnection& InOwner
 	if (!bIsOk && ContentLength)
 	{
 		TArray<uint8> ErrorBuffer;
-		ErrorBuffer.SetNumUninitialized(ContentLength);
-		int32 BytesRead;
+		ErrorBuffer.SetNumUninitialized(ContentLength + 1);
+		int32 BytesRead = 0;
 		InSocket.Recv(ErrorBuffer.GetData(), ContentLength, BytesRead, ESocketReceiveFlags::WaitAll);
-		ErrorMessage = FString(ContentLength, ANSI_TO_TCHAR(reinterpret_cast<ANSICHAR*>(ErrorBuffer.GetData())));
+
+		if (BytesRead > 0)
+		{
+			ErrorBuffer[BytesRead] = '\0';
+			ErrorMessage = FString(BytesRead, ANSI_TO_TCHAR(reinterpret_cast<ANSICHAR*>(ErrorBuffer.GetData())));
+		}
+		else
+		{
+			ErrorMessage = TEXT("Unknown error");
+		}
+
 		ContentLength = 0;
 	}
 	if (ContentLength == 0)
@@ -262,6 +258,11 @@ bool FStorageServerChunkBatchRequest::Issue(TFunctionRef<void(uint32 ChunkCount,
 		return false;
 	}
 	Response << ChunkCount;
+	if (ChunkCount > INT32_MAX)
+	{
+		UE_LOG(LogStorageServerConnection, Fatal, TEXT("Invalid chunk count in chunk batch response from storage server."));
+		return false;
+	}
 	Response << Reserved1;
 	Response << Reserved2;
 
@@ -345,7 +346,7 @@ int64 FStorageServerResponse::SerializeChunk(FStorageServerSerializationContext&
 
 	if (ContentType == EStorageServerContentType::Binary)
 	{
-		const uint64 ChunkSize = FMath::Min(ContentLength, RawSize);
+		const uint64 ChunkSize = FMath::Min<uint64>(ContentLength, RawSize);
 		OutChunk = TargetVa ? FIoBuffer(FIoBuffer::Wrap, TargetVa, ChunkSize) : FIoBuffer(ChunkSize);
 		Serialize(OutChunk.Data(), OutChunk.DataSize());
 		return ChunkSize;
@@ -391,7 +392,7 @@ int64 FStorageServerResponse::SerializeChunkTo(FMutableMemoryView Memory, uint64
 
 	if (ContentType == EStorageServerContentType::Binary)
 	{
-		FMutableMemoryView Dst = Memory.Left(FMath::Min(Memory.GetSize(), ContentLength));
+		FMutableMemoryView Dst = Memory.Left(FMath::Min<uint64>(Memory.GetSize(), ContentLength));
 		Serialize(Dst.GetData(), Dst.GetSize());
 		return Dst.GetSize();
 	}
@@ -405,8 +406,8 @@ int64 FStorageServerResponse::SerializeChunkTo(FMutableMemoryView Memory, uint64
 		
 		if (FCompressedBuffer Compressed = FCompressedBuffer::FromCompressed(FSharedBuffer::MakeView(CompressedBuffer.GetData(), ContentLength)))
 		{
-			FMutableMemoryView Dst = Memory.Left(FMath::Min(Memory.GetSize(), Compressed.GetRawSize()));
 			const uint64 CompressedOffset = GetCompressedOffset(Compressed, RawOffset);
+			FMutableMemoryView Dst = Memory.Left(FMath::Min(Memory.GetSize(), Compressed.GetRawSize() - CompressedOffset));
 			if (FCompressedBufferReader(Compressed).TryDecompressTo(Dst, CompressedOffset))
 			{
 				return Dst.GetSize();
@@ -418,6 +419,12 @@ int64 FStorageServerResponse::SerializeChunkTo(FMutableMemoryView Memory, uint64
 	
 	UE_LOG(LogStorageServerConnection, Fatal, TEXT("Received unknown chunk type from storage server"));
 	return 0;
+}
+
+FCbObject FStorageServerResponse::GetResponseObject()
+{
+	FCbField Payload = LoadCompactBinary(*this);
+	return Payload.AsObject();
 }
 
 FStorageServerConnection::FStorageServerConnection()
@@ -451,7 +458,7 @@ bool FStorageServerConnection::Initialize(TArrayView<const FString> InHostAddres
 	}
 	else
 	{
-		OplogPath.Append(TCHAR_TO_ANSI(*GetProjectPathId()));
+		OplogPath.Append(TCHAR_TO_ANSI(*FApp::GetZenStoreProjectId()));
 	}
 	OplogPath.Append("/oplog/");
 	if (InPlatformNameOverride)
@@ -609,11 +616,11 @@ bool FStorageServerConnection::ReadChunkRequest(const FIoChunkId& ChunkId, uint6
 	{
 		if (HaveQuery)
 		{
-			ResourceBuilder.Append("&"_ASV);
+			ResourceBuilder.Append(ANSITEXTVIEW("&"));
 		}
 		else
 		{
-			ResourceBuilder.Append("?"_ASV);
+			ResourceBuilder.Append(ANSITEXTVIEW("?"));
 			HaveQuery = true;
 		}
 	};

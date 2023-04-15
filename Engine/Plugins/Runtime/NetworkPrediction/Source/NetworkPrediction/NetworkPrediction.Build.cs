@@ -13,17 +13,12 @@ namespace UnrealBuildTool.Rules
                 }
 				);
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-                    "NetworkPrediction/Private",
-				}
-				);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
 					"CoreUObject",
+					"NetCore",
                     "Engine",
                     "RenderCore",
 					"PhysicsCore",
@@ -56,6 +51,7 @@ namespace UnrealBuildTool.Rules
                 });
             }
 
-        }
+			SetupIrisSupport(Target);
+		}
 	}
 }

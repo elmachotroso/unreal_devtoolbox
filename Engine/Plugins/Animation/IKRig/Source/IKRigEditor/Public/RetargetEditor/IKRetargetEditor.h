@@ -6,7 +6,7 @@
 
 #include "IHasPersonaToolkit.h"
 #include "IKRetargetEditorController.h"
-#include "IKRetargetMode.h"
+#include "IKRetargetApplicationMode.h"
 #include "IPersonaPreviewScene.h"
 #include "PersonaAssetEditorToolkit.h"
 #include "EditorUndoClient.h"
@@ -22,9 +22,9 @@ class FIKRetargetPreviewScene;
 struct FIKRetargetPose;
 class SEditableTextBox;
 
-namespace IKRetargetEditorModes
+namespace IKRetargetApplicationModes
 {
-	extern const FName IKRetargetEditorMode;
+	extern const FName IKRetargetApplicationMode;
 }
 
 class FIKRetargetEditor :
@@ -37,7 +37,7 @@ class FIKRetargetEditor :
 public:
 
 	FIKRetargetEditor();
-	virtual ~FIKRetargetEditor() override;
+	virtual ~FIKRetargetEditor() override {};
 
 	void InitAssetEditor(
 		const EToolkitMode::Type Mode,
@@ -45,6 +45,7 @@ public:
 		UIKRetargeter* Asset);
 
 	/** FAssetEditorToolkit interface */
+	virtual void OnClose() override;
 	virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager) override;
 	virtual void UnregisterTabSpawners(const TSharedRef<FTabManager>& InTabManager) override;
 	virtual FName GetToolkitFName() const override;
@@ -69,7 +70,7 @@ public:
 	//~ END FTickableEditorObject Interface
 
 	/** IHasPersonaToolkit interface */
-	virtual TSharedRef<IPersonaToolkit> GetPersonaToolkit() const override { return EditorController->PersonaToolkit.ToSharedRef(); }
+	virtual TSharedRef<IPersonaToolkit> GetPersonaToolkit() const override { return PersonaToolkit.ToSharedRef(); }
 	/** END IHasPersonaToolkit interface */
 
 	/** FSelfRegisteringEditorUndoClient interface */
@@ -88,14 +89,22 @@ private:
 	/** END toolbar */
 	
 	/** preview scene setup */
+	void HandleViewportCreated(const TSharedRef<class IPersonaViewport>& InViewport);
 	void HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene);
 	void HandleDetailsCreated(const TSharedRef<class IDetailsView>& InDetailsView);
 	void OnFinishedChangingDetails(const FPropertyChangedEvent& PropertyChangedEvent);
 	void SetupAnimInstance();
+	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder) const;
 	/** END preview scene setup */
 	
 	/** centralized management across all views */
 	TSharedRef<FIKRetargetEditorController> EditorController;
+
+	/** Preview scene to be supplied by IHasPersonaToolkit::GetPersonaToolkit */
+	TSharedPtr<IPersonaToolkit> PersonaToolkit;
+
+	/** record previous playback time of source anim instance to trigger reset when scrubbing / looping */
+	float PreviousTime;
 	
-	friend FIKRetargetMode;
+	friend FIKRetargetApplicationMode;
 };

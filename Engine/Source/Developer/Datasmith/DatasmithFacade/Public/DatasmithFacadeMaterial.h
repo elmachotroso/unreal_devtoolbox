@@ -14,8 +14,9 @@ class DATASMITHFACADE_API FDatasmithFacadeBaseMaterial :
 public:
 	enum class EDatasmithMaterialType
 	{
-		MasterMaterial,
+		MaterialInstance,
 		UEPbrMaterial,
+		DecalMaterial,
 		Unsupported,
 	};
 
@@ -25,7 +26,7 @@ public:
 protected:
 #endif
 	FDatasmithFacadeBaseMaterial(
-		const TSharedRef<IDatasmithBaseMaterialElement>& BaseMaterialElement 
+		const TSharedRef<IDatasmithBaseMaterialElement>& BaseMaterialElement
 	);
 
 	static EDatasmithMaterialType GetDatasmithMaterialType(
@@ -39,30 +40,30 @@ protected:
 	);
 };
 
-class DATASMITHFACADE_API FDatasmithFacadeMasterMaterial :
+class DATASMITHFACADE_API FDatasmithFacadeMaterialInstance :
 	public FDatasmithFacadeBaseMaterial
 {
 	friend class FDatasmithFacadeScene;
 
 public:
 
-	// Possible Datasmith master material types, from EDatasmithMasterMaterialType in DatasmithDefinitions.h
-	enum class EMasterMaterialType
+	// Possible Datasmith material types, from EDatasmithMaterialInstanceType in DatasmithDefinitions.h
+	enum class EMaterialInstanceType
 	{
 		Auto,
 		Opaque,
 		Transparent,
 		ClearCoat,
-		/** Instantiate a master material from a specified one */
 		Custom,
 		/** Material has a transparent cutout map */
 		CutOut,
 		Emissive,
+		Decal,
 		/** Dummy element to count the number of types */
 		Count
 	};
 
-	enum class EMasterMaterialQuality : uint8
+	enum class EMaterialInstanceQuality : uint8
 	{
 		High,
 		Low,
@@ -72,32 +73,28 @@ public:
 
 public:
 
-	FDatasmithFacadeMasterMaterial(
-		const TCHAR* InElementName // Datasmith element name
+	FDatasmithFacadeMaterialInstance(
+		const TCHAR* InElementName
 	);
 
-	virtual ~FDatasmithFacadeMasterMaterial() {}
+	virtual ~FDatasmithFacadeMaterialInstance() {}
 
-	/** Get the Datasmith master material type. */
-	EMasterMaterialType GetMaterialType() const;
+	EMaterialInstanceType GetMaterialType() const;
 
-	/** Set the Datasmith master material type. */
 	void SetMaterialType(
-		EMasterMaterialType InMasterMaterialType // master material type
+		EMaterialInstanceType InMaterialInstanceType
 	);
 
-	/** Get the Datasmith master material quality. */
-	EMasterMaterialQuality GetQuality() const;
+	EMaterialInstanceQuality GetQuality() const;
 
-	/** Set the Datasmith master material quality. */
 	void SetQuality(
-		EMasterMaterialQuality InQuality
+		EMaterialInstanceQuality InQuality
 	);
 
-	/** Get the material path name used when master material type is set to Custom */
+	/** Get the material path name used when material type is set to Custom */
 	const TCHAR* GetCustomMaterialPathName() const;
-	
-	/** Set the material path name used when master material type is set to Custom */
+
+	/** Set the material path name used when material type is set to Custom */
 	void SetCustomMaterialPathName(
 		const TCHAR* InPathName
 	);
@@ -160,9 +157,9 @@ public:
 protected:
 #endif
 
-	FDatasmithFacadeMasterMaterial(
-		const TSharedRef<IDatasmithMasterMaterialElement>& InMaterialRef // Datasmith master material element
+	FDatasmithFacadeMaterialInstance(
+		const TSharedRef<IDatasmithMaterialInstanceElement>& InMaterialRef
 	);
 
-	TSharedRef<IDatasmithMasterMaterialElement> GetDatasmithMasterMaterial() const;
+	TSharedRef<IDatasmithMaterialInstanceElement> GetDatasmithMaterialInstance() const;
 };

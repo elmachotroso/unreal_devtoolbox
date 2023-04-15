@@ -2,7 +2,24 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "HAL/Platform.h"
+#include "RHI.h"
+#include "RenderGraphAllocator.h"
+#include "RenderGraphDefinitions.h"
 #include "RenderGraphPass.h"
+#include "RenderGraphResources.h"
+
+class FRDGBarrierBatchBegin;
+class FRDGBarrierBatchEnd;
+class FRDGEventName;
+class FRDGPass;
+class FShaderParametersMetadata;
+struct IPooledRenderTarget;
+template <typename ReferencedType> class TRefCountPtr;
 
 #if RDG_ENABLE_DEBUG
 
@@ -67,7 +84,7 @@ public:
 	void ValidateExtractTexture(FRDGTextureRef Texture, TRefCountPtr<IPooledRenderTarget>* OutTexturePtr);
 	void ValidateExtractBuffer(FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>* OutBufferPtr);
 
-	void ValidateConvertToExternalResource(FRDGParentResourceRef Resource);
+	void ValidateConvertToExternalResource(FRDGViewableResource* Resource);
 
 	/** Tracks and validates the addition of a new pass to the graph.
 	 *  @param bSkipPassAccessMarking Skips marking the pass as a producer or incrementing the pass access. Useful when
@@ -87,26 +104,30 @@ public:
 	void ValidateExecuteEnd();
 
 	/** Removes the 'produced but not used' warning from the requested resource. */
-	void RemoveUnusedWarning(FRDGParentResourceRef Resource);
+	void RemoveUnusedWarning(FRDGViewableResource* Resource);
 
 	/** Attempts to mark a resource for clobbering. If already marked, returns false.  */
-	bool TryMarkForClobber(FRDGParentResourceRef Resource) const;
+	bool TryMarkForClobber(FRDGViewableResource* Resource) const;
 
 	void ValidateGetPooledTexture(FRDGTextureRef Texture) const;
 	void ValidateGetPooledBuffer(FRDGBufferRef Buffer) const;
 
-	void ValidateSetAccessFinal(FRDGParentResourceRef Resource, ERHIAccess AccessFinal);
+	void ValidateSetAccessFinal(FRDGViewableResource* Resource, ERHIAccess AccessFinal);
 
-	void ValidateFinalize(FRDGParentResourceRef Resource, ERHIAccess Access, FRDGPassHandle ConvertToUntrackedPassHandle);
-	void ValidateFinalizedAccess(FRDGParentResourceRef Resource, ERHIAccess Access, const FRDGPass* Pass);
+	void ValidateAddSubresourceAccess(FRDGViewableResource* Resource, const FRDGSubresourceState& Subresource, ERHIAccess Access);
+
+	void ValidateUseExternalAccessMode(FRDGViewableResource* Resource, ERHIAccess ReadOnlyAccess, ERHIPipeline Pipelines);
+	void ValidateUseInternalAccessMode(FRDGViewableResource* Resaource);
+
+	void ValidateExternalAccess(FRDGViewableResource* Resource, ERHIAccess Access, const FRDGPass* Pass);
 
 	/** Traverses all resources in the pass and marks whether they are externally accessible by user pass implementations. */
 	static void SetAllowRHIAccess(const FRDGPass* Pass, bool bAllowAccess);
 
 private:
-	void ValidateCreateParentResource(FRDGParentResourceRef Resource);
+	void ValidateCreateViewableResource(FRDGViewableResource* Resource);
 	void ValidateCreateResource(FRDGResourceRef Resource);
-	void ValidateExtractResource(FRDGParentResourceRef Resource);
+	void ValidateExtractResource(FRDGViewableResource* Resource);
 
 	FRDGAllocator& Allocator;
 
@@ -144,7 +165,7 @@ private:
 	{
 		TMap<FRDGTextureRef, TArray<FRHITransitionInfo>> Textures;
 		TMap<FRDGBufferRef, FRHITransitionInfo> Buffers;
-		TMap<FRDGParentResourceRef, FRHITransientAliasingInfo> Aliases;
+		TMap<FRDGViewableResource*, FRHITransientAliasingInfo> Aliases;
 	};
 
 	using FBarrierBatchMap = TMap<const FRDGBarrierBatchBegin*, FResourceMap>;
@@ -153,59 +174,6 @@ private:
 
 	const FRDGPassRegistry* Passes = nullptr;
 	const TCHAR* GraphName = nullptr;
-};
-
-class FRDGLogFile
-{
-public:
-	FRDGLogFile(const FRDGPassRegistry& InPasses)
-		: Passes(InPasses)
-	{}
-
-	void Begin(const FRDGEventName& GraphName);
-
-	void AddFirstEdge(const FRDGTextureRef Texture, FRDGPassHandle FirstPass);
-
-	void AddFirstEdge(const FRDGBufferRef Buffer, FRDGPassHandle FirstPass);
-
-	void AddAliasEdge(const FRDGTextureRef TextureBefore, FRDGPassHandle BeforePass, const FRDGTextureRef TextureAfter, FRDGPassHandle PassAfter);
-
-	void AddAliasEdge(const FRDGBufferRef BufferBefore, FRDGPassHandle BeforePass, const FRDGBufferRef BufferAfter, FRDGPassHandle PassAfter);
-
-	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGTextureRef Texture);
-
-	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGTextureRef Texture, FRDGTextureSubresource Subresource);
-
-	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGBufferRef Buffer);
-
-	void End();
-
-private:
-	void AddLine(const FString& Line);
-	void AddBraceBegin();
-	void AddBraceEnd();
-
-	FString GetProducerName(FRDGPassHandle PassHandle);
-	FString GetConsumerName(FRDGPassHandle PassHandle);
-
-	FString GetNodeName(FRDGPassHandle Pass);
-	FString GetNodeName(const FRDGTexture* Texture);
-	FString GetNodeName(const FRDGBuffer* Buffer);
-
-	bool IncludeTransitionEdgeInGraph(FRDGPassHandle PassBefore, FRDGPassHandle PassAfter) const;
-	bool IncludeTransitionEdgeInGraph(FRDGPassHandle Pass) const;
-
-	bool bOpen = false;
-
-	const FRDGPassRegistry& Passes;
-
-	TSet<FRDGPassHandle> PassesReferenced;
-	TArray<const FRDGTexture*> Textures;
-	TArray<const FRDGBuffer*> Buffers;
-
-	FString Indentation;
-	FString File;
-	FString GraphName;
 };
 
 #endif

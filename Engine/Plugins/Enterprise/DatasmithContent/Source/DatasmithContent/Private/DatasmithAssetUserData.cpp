@@ -52,17 +52,73 @@ UDatasmithAssetUserData* UDatasmithAssetUserData::GetDatasmithUserData(UObject* 
 	return nullptr;
 }
 
-FString UDatasmithAssetUserData::GetDatasmithUserDataValueForKey(UObject* Object, FName Key)
+FString UDatasmithAssetUserData::GetDatasmithUserDataValueForKey(UObject* Object, FName Key, bool bPartialMatchKey)
 {
 	if (Object)
 	{
 		if (UDatasmithAssetUserData* AssetUserData = GetDatasmithUserData(Object))
 		{
-			FString* Value = AssetUserData->MetaData.Find(Key);
-			return Value ? *Value : FString();
+			FString Value;
+
+			if (bPartialMatchKey)
+			{
+				const FString KeyString = Key.ToString();
+
+				for (TPair<FName, FString> KeyValuePair : AssetUserData->MetaData)
+				{
+					if (KeyValuePair.Key.ToString().Contains(KeyString))
+					{
+						Value = KeyValuePair.Value;
+						break;
+					}
+				}
+			}
+			else
+			{
+				if (FString* ValuePtr = AssetUserData->MetaData.Find(Key))
+				{
+					Value = *ValuePtr;
+				}
+			}
+			
+			return Value;
 		}
 	}
 	return FString();
+}
+
+TArray<FString> UDatasmithAssetUserData::GetDatasmithUserDataValuesForKey(UObject* Object, FName Key, bool bPartialMatchKey)
+{
+	if (Object)
+	{
+		if (UDatasmithAssetUserData* AssetUserData = GetDatasmithUserData(Object))
+		{
+			TArray<FString> Values;
+
+			if (bPartialMatchKey)
+			{
+				const FString KeyString = Key.ToString();
+
+				for (TPair<FName, FString> KeyValuePair : AssetUserData->MetaData)
+				{
+					if (KeyValuePair.Key.ToString().Contains(KeyString))
+					{
+						Values.Add(KeyValuePair.Value);
+					}
+				}
+			}
+			else
+			{
+				if (FString* ValuePtr = AssetUserData->MetaData.Find(Key))
+				{
+					Values.Add(*ValuePtr);
+				}
+			}
+
+			return Values;
+		}
+	}
+	return {};
 }
 
 bool UDatasmithAssetUserData::SetDatasmithUserDataValueForKey(UObject* Object, FName Key, const FString & Value)

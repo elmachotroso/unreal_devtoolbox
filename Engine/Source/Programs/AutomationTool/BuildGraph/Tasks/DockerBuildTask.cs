@@ -9,8 +9,10 @@ using System.Text;
 using System.Xml;
 using AutomationTool;
 using UnrealBuildBase;
+using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 
-namespace BuildGraph.Tasks
+namespace AutomationTool.Tasks
 {
 	/// <summary>
 	/// Parameters for a Docker-Build task
@@ -34,6 +36,24 @@ namespace BuildGraph.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true)]
 		public string DockerFile;
+
+		/// <summary>
+		/// Path to a .dockerignore. Will be copied to basedir if specified.
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public string DockerIgnoreFile;
+
+		/// <summary>
+		/// Use BuildKit in Docker
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool UseBuildKit;
+
+		/// <summary>
+		/// Type of progress output (--progress)
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public string ProgressOutput;
 
 		/// <summary>
 		/// Tag for the image
@@ -92,19 +112,23 @@ namespace BuildGraph.Tasks
 		/// <param name="Job">Information about the current job</param>
 		/// <param name="BuildProducts">Set of build products produced by this node.</param>
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
-		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
+		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			Log.TraceInformation("Building Docker image");
 			using (LogIndentScope Scope = new LogIndentScope("  "))
 			{
 				DirectoryReference BaseDir = ResolveDirectory(Parameters.BaseDir);
 				List<FileReference> SourceFiles = ResolveFilespec(BaseDir, Parameters.Files, TagNameToFileSet).ToList();
+				bool isStagingEnabled = SourceFiles.Count > 0;
 
 				DirectoryReference StagingDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Docker");
 				FileUtils.ForceDeleteDirectoryContents(StagingDir);
 
 				List<FileReference> TargetFiles = SourceFiles.ConvertAll(x => FileReference.Combine(StagingDir, x.MakeRelativeTo(BaseDir)));
 				CommandUtils.ThreadedCopyFiles(SourceFiles, BaseDir, StagingDir);
+
+				FileReference DockerIgnoreFileInBaseDir = FileReference.Combine(BaseDir, ".dockerignore");
+				FileReference.Delete(DockerIgnoreFileInBaseDir);
 
 				if (!String.IsNullOrEmpty(Parameters.OverlayDirs))
 				{
@@ -128,14 +152,34 @@ namespace BuildGraph.Tasks
 					}
 					Arguments.Append($" -f {DockerFile.MakeRelativeTo(BaseDir).QuoteArgument()}");
 				}
+				if (Parameters.DockerIgnoreFile != null)
+				{
+					FileReference DockerIgnoreFile = ResolveFile(Parameters.DockerIgnoreFile);
+					FileReference.Copy(DockerIgnoreFile, DockerIgnoreFileInBaseDir);
+				}
+				if (Parameters.ProgressOutput != null)
+				{
+					Arguments.Append($" --progress={Parameters.ProgressOutput}");
+				}
 				if (Parameters.Arguments != null)
 				{
 					Arguments.Append($" {Parameters.Arguments}");
 				}
 
-				SpawnTaskBase.Execute("docker", Arguments.ToString(), EnvVars: ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile), WorkingDir: StagingDir.FullName);
+				Dictionary<string, string> EnvVars = ParseEnvVars(Parameters.Environment, Parameters.EnvironmentFile);
+				if (Parameters.UseBuildKit)
+				{
+					EnvVars["DOCKER_BUILDKIT"] = "1";
+				}
+				
+				string WorkingDir = isStagingEnabled ? StagingDir.FullName : BaseDir.FullName;
+				await SpawnTaskBase.ExecuteAsync("docker", Arguments.ToString(), EnvVars: EnvVars, WorkingDir: WorkingDir, SpewFilterCallback: FilterOutput);
 			}
 		}
+
+		static Regex FilterOutputPattern = new Regex(@"^#\d+ (?:\d+\.\d+ )?");
+
+		static string FilterOutput(string Line) => FilterOutputPattern.Replace(Line, "");
 
 		/// <summary>
 		/// Output this task out to an XML writer.

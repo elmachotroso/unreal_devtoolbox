@@ -1,18 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioMixerSourceManager.h"
+
 #include "AudioMixerSourceBuffer.h"
-#include "AudioMixerSource.h"
 #include "AudioMixerDevice.h"
 #include "AudioMixerSourceVoice.h"
 #include "AudioMixerSubmix.h"
 #include "AudioThread.h"
+#include "DSP/FloatArrayMath.h"
 #include "IAudioExtensionPlugin.h"
 #include "AudioMixer.h"
 #include "Sound/SoundModulationDestination.h"
 #include "SoundFieldRendering.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Async/Async.h"
+#include "ProfilingDebugging/CountersTrace.h"
 #include "Stats/Stats.h"
 
 // Link to "Audio" profiling category
@@ -95,6 +97,20 @@ FAutoConsoleVariableRef CVarCommandBufferMaxSizeMb(
 	TEXT("How big to allow the command buffer to grow before ignoring more commands"),
 	ECVF_Default);
 
+static float AudioCommandExecTimeMsWarningThresholdCvar = 1.f;
+FAutoConsoleVariableRef CVarAudioCommandExecTimeMsWarningThreshold(
+	TEXT("au.AudioThreadCommand.ExecutionTimeWarningThresholdInMs"),
+	AudioCommandExecTimeMsWarningThresholdCvar,
+	TEXT("If a command took longer to execute than this number (in milliseconds) then we log a warning"),
+	ECVF_Default);
+
+static int32 LogEveryAudioThreadCommandCvar = 0;
+FAutoConsoleVariableRef LogEveryAudioThreadCommand(
+	TEXT("au.AudioThreadCommand.LogEveryExecution"),
+	LogEveryAudioThreadCommandCvar,
+	TEXT("Extremely verbose logging of each Audio Thread command caller and it's execution time"),
+	ECVF_Default);
+
 // +/- 4 Octaves (default)
 static float MaxModulationPitchRangeFreqCVar = 16.0f;
 static float MinModulationPitchRangeFreqCVar = 0.0625f;
@@ -163,7 +179,7 @@ namespace Audio
 		, NumSourceWorkers(4)
 		, bInitialized(false)
 		, bUsingSpatializationPlugin(false)
-		, MaxChannelsSupportedBySpatializationPlugin(1)
+		, bUsingSourceDataOverridePlugin(false)
 	{
 		// Get a manual resetable event
 		const bool bIsManualReset = true;
@@ -335,16 +351,23 @@ namespace Audio
 		NumSourceWorkers = SourceWorkers.Num();
 
 		// Cache the spatialization plugin
-		SpatializationPlugin = MixerDevice->SpatializationPluginInterface;
-		if (SpatializationPlugin.IsValid())
+		bUsingSpatializationPlugin = false;
+		SpatialInterfaceInfo = MixerDevice->GetCurrentSpatializationPluginInterfaceInfo();
+		const auto& SpatializationPlugin = SpatialInterfaceInfo.SpatializationPlugin;
+		if (SpatialInterfaceInfo.SpatializationPlugin.IsValid())
 		{
 			bUsingSpatializationPlugin = true;
-			MaxChannelsSupportedBySpatializationPlugin = MixerDevice->MaxChannelsSupportedBySpatializationPlugin;
+		}
+		// Cache the source data override plugin
+		SourceDataOverridePlugin = MixerDevice->SourceDataOverridePluginInterface;
+		if (SourceDataOverridePlugin.IsValid())
+		{
+			bUsingSourceDataOverridePlugin = true;
 		}
 
 		// Spam command queue with nops.
 		static FAutoConsoleCommand SpamNopsCmd(
-			TEXT("au.SpamCommandQueue"),
+			TEXT("au.AudioThreadCommand.SpamCommandQueue"),
 			TEXT(""),
 			FConsoleCommandDelegate::CreateLambda([this]() 
 			{				
@@ -354,8 +377,24 @@ namespace Audio
 				} Payload;
 				for (int32 i = 0; i < 65536; ++i)
 				{
-					AudioMixerThreadCommand([Payload] {});
+					AudioMixerThreadCommand([Payload] {}, AUDIO_MIXER_THREAD_COMMAND_STRING("SpamNopsCmd() -- Console command"));
 				}
+			})
+		);
+
+
+		// submit a command that has an endless loop
+		static FAutoConsoleCommand SpamEndlessCmd(
+			TEXT("au.AudioThreadCommand.ChokeCommandQueue"),
+			TEXT(""),
+			FConsoleCommandDelegate::CreateLambda([this]()
+			{
+				struct FSpamPayload
+				{
+					uint8 JunkBytes[1024];
+				} Payload;
+
+				AudioMixerThreadCommand([Payload] {while(true){}}, AUDIO_MIXER_THREAD_COMMAND_STRING("SpamEndlessCmd() -- Console command"));
 			})
 		);
 
@@ -399,8 +438,9 @@ namespace Audio
 					// Pop and execute all the commands that came since last update tick
 					for (int32 Id = 0; Id < NextCommandBuffer.SourceCommandQueue.Num(); ++Id)
 					{
-						TFunction<void()>& CommandFunction = NextCommandBuffer.SourceCommandQueue[Id];
-						CommandFunction();
+						FAudioMixerThreadCommand AudioCommand = NextCommandBuffer.SourceCommandQueue[Id];
+
+						AudioCommand();
 						NumCommands.Decrement();
 					}
 
@@ -527,7 +567,7 @@ namespace Audio
 		{
 			AUDIO_MIXER_CHECK(bUsingSpatializationPlugin);
 			LLM_SCOPE(ELLMTag::AudioMixerPlugins);
-			SpatializationPlugin->OnReleaseSource(SourceId);
+			SpatialInterfaceInfo.SpatializationPlugin->OnReleaseSource(SourceId);
 		}
 
 		if (SourceInfo.bUseOcclusionPlugin)
@@ -538,6 +578,12 @@ namespace Audio
 		if (SourceInfo.bUseReverbPlugin)
 		{
 			MixerDevice->ReverbPluginInterface->OnReleaseSource(SourceId);
+		}
+
+		if (SourceInfo.AudioLink)
+		{
+			SourceInfo.AudioLink->OnSourceReleased(SourceId);
+			SourceInfo.AudioLink.Reset();
 		}
 
 		// Delete the source effects
@@ -737,19 +783,19 @@ namespace Audio
 
 		FModulationDestination VolumeMod;
 		VolumeMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
-		VolumeMod.UpdateModulator(InitParams.ModulationSettings.VolumeModulationDestination.Modulator);
+		VolumeMod.UpdateModulators(InitParams.ModulationSettings.VolumeModulationDestination.Modulators);
 
 		FModulationDestination PitchMod;
 		PitchMod.Init(MixerDevice->DeviceID, FName("Pitch"), false /* bInIsBuffered */);
-		PitchMod.UpdateModulator(InitParams.ModulationSettings.PitchModulationDestination.Modulator);
+		PitchMod.UpdateModulators(InitParams.ModulationSettings.PitchModulationDestination.Modulators);
 
 		FModulationDestination HighpassMod;
 		HighpassMod.Init(MixerDevice->DeviceID, FName("HPFCutoffFrequency"), false /* bInIsBuffered */);
-		HighpassMod.UpdateModulator(InitParams.ModulationSettings.HighpassModulationDestination.Modulator);
+		HighpassMod.UpdateModulators(InitParams.ModulationSettings.HighpassModulationDestination.Modulators);
 
 		FModulationDestination LowpassMod;
 		LowpassMod.Init(MixerDevice->DeviceID, FName("LPFCutoffFrequency"), false /* bInIsBuffered */);
-		LowpassMod.UpdateModulator(InitParams.ModulationSettings.LowpassModulationDestination.Modulator);
+		LowpassMod.UpdateModulators(InitParams.ModulationSettings.LowpassModulationDestination.Modulators);
 
 		AudioMixerThreadCommand([
 			this,
@@ -842,7 +888,17 @@ namespace Audio
 			{
 				AUDIO_MIXER_CHECK(bUsingSpatializationPlugin);
 				LLM_SCOPE(ELLMTag::AudioMixerPlugins);
-				SpatializationPlugin->OnInitSource(SourceId, InitParams.AudioComponentUserID, InitParams.SpatializationPluginSettings);
+
+				// re-cache the spatialization plugin in case it changed
+				bUsingSpatializationPlugin = false;
+				SpatialInterfaceInfo = MixerDevice->GetCurrentSpatializationPluginInterfaceInfo();
+				const auto& SpatializationPlugin = SpatialInterfaceInfo.SpatializationPlugin;
+				if (SpatialInterfaceInfo.SpatializationPlugin.IsValid())
+				{
+					bUsingSpatializationPlugin = true;
+				}
+
+				SpatialInterfaceInfo.SpatializationPlugin->OnInitSource(SourceId, InitParams.AudioComponentUserID, InitParams.SpatializationPluginSettings);
 			}
 
 			// Create the occlusion plugin source effect
@@ -857,6 +913,11 @@ namespace Audio
 			{
 				MixerDevice->ReverbPluginInterface->OnInitSource(SourceId, InitParams.AudioComponentUserID, InitParams.NumInputChannels, InitParams.ReverbPluginSettings);
 				SourceInfo.bUseReverbPlugin = true;
+			}
+
+			if (InitParams.AudioLink.IsValid())
+			{
+				SourceInfo.AudioLink = InitParams.AudioLink;
 			}
 
 			// Optional Source Buffer listener.
@@ -1012,7 +1073,7 @@ namespace Audio
 #endif 
 
 			AUDIO_MIXER_DEBUG_LOG(SourceId, TEXT("Is initializing"));
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("InitSource"));
 	}
 
 	void FMixerSourceManager::ReleaseSourceId(const int32 SourceId)
@@ -1038,7 +1099,7 @@ namespace Audio
 			AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
 			ReleaseSource(SourceId);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("ReleaseSourceId"));
 	}
 
 	void FMixerSourceManager::StartAudioBus(uint32 InAudioBusId, int32 InNumChannels, bool bInIsAutomatic)
@@ -1079,7 +1140,7 @@ namespace Audio
 					SourceInfo.bIsStopping = false;
 				}
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("StartAudioBus"));
 	}
 
 	void FMixerSourceManager::StopAudioBus(uint32 InAudioBusId)
@@ -1112,7 +1173,7 @@ namespace Audio
 					AudioBuses.Remove(InAudioBusId);
 				}
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("StartAudioBus"));
 	}
 
 	bool FMixerSourceManager::IsAudioBusActive(uint32 InAudioBusId) const
@@ -1136,10 +1197,21 @@ namespace Audio
 	void FMixerSourceManager::AddPatchOutputForAudioBus(uint32 InAudioBusId, const FPatchOutputStrongPtr& InPatchOutputStrongPtr)
 	{
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
-		TSharedPtr<FMixerAudioBus> AudioBusPtr = AudioBuses.FindRef(InAudioBusId);
-		if (AudioBusPtr.IsValid())
+		if (MixerDevice->IsAudioRenderingThread())
 		{
-			AudioBusPtr->AddNewPatchOutput(InPatchOutputStrongPtr);
+			TSharedPtr<FMixerAudioBus> AudioBusPtr = AudioBuses.FindRef(InAudioBusId);
+			if (AudioBusPtr.IsValid())
+			{
+				AudioBusPtr->AddNewPatchOutput(InPatchOutputStrongPtr);
+			}
+		}
+		else
+		{
+			// Queue up the command via MPSC command queue
+			AudioMixerThreadMPSCCommand([this, InAudioBusId, InPatchOutputStrongPtr]()
+			{
+				AddPatchOutputForAudioBus(InAudioBusId, InPatchOutputStrongPtr);
+			});
 		}
 	}
 
@@ -1148,7 +1220,7 @@ namespace Audio
 		AudioMixerThreadCommand([this, InAudioBusId, NewPatchPtr = InPatchOutputStrongPtr]() mutable
 		{
 			AddPatchOutputForAudioBus(InAudioBusId, NewPatchPtr);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("AddPatchOutputForAudioBus_AudioThread()"));
 	}
 
 	void FMixerSourceManager::Play(const int32 SourceId)
@@ -1173,7 +1245,7 @@ namespace Audio
 			SourceInfo.StartTime = StartTime;
 
 			AUDIO_MIXER_DEBUG_LOG(SourceId, TEXT("Is playing"));
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("Play()"));
 	}
 
 	void FMixerSourceManager::CancelQuantizedSound(const int32 SourceId)
@@ -1202,6 +1274,10 @@ namespace Audio
 			{
 				SourceInfo.SourceListener->OnDone();
 			}
+			if (SourceInfo.AudioLink)
+			{
+				SourceInfo.AudioLink->OnSourceDone(SourceId);
+			}
 		}
 	}
 
@@ -1222,7 +1298,7 @@ namespace Audio
 		AudioMixerThreadCommand([this, SourceId]()
 		{
 			StopInternal(SourceId);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("Stop()"));
 	}
 
 	void FMixerSourceManager::StopInternal(const int32 SourceId)
@@ -1289,7 +1365,7 @@ namespace Audio
 			}
 
 			AUDIO_MIXER_DEBUG_LOG(SourceId, TEXT("Is stopping with fade"));
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("StopFade()"));
 	}
 
 
@@ -1307,7 +1383,7 @@ namespace Audio
 
 			SourceInfo.bIsPaused = true;
 			SourceInfo.bIsActive = false;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("Pause()"));
 	}
 
 	void FMixerSourceManager::SetPitch(const int32 SourceId, const float Pitch)
@@ -1321,7 +1397,7 @@ namespace Audio
 			check(NumOutputFrames > 0);
 
 			SourceInfos[SourceId].PitchSourceParam.SetValue(Pitch, NumOutputFrames);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetPitch()"));
 	}
 
 	void FMixerSourceManager::SetVolume(const int32 SourceId, const float Volume)
@@ -1348,7 +1424,7 @@ namespace Audio
 
 				SourceInfos[SourceId].VolumeSourceDestination = Volume;
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetVolume()"));
 	}
 
 	void FMixerSourceManager::SetDistanceAttenuation(const int32 SourceId, const float DistanceAttenuation)
@@ -1369,7 +1445,7 @@ namespace Audio
 			}
 
 			SourceInfos[SourceId].DistanceAttenuationSourceDestination = DistanceAttenuation;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetDistanceAttenuation()"));
 	}
 
 	void FMixerSourceManager::SetSpatializationParams(const int32 SourceId, const FSpatializationParams& InParams)
@@ -1383,7 +1459,7 @@ namespace Audio
 			AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
 			SourceInfos[SourceId].SpatParams = InParams;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetSpatializationParams()"));
 	}
 
 	void FMixerSourceManager::SetChannelMap(const int32 SourceId, const uint32 NumInputChannels, const Audio::FAlignedFloatBuffer& ChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly)
@@ -1414,7 +1490,7 @@ namespace Audio
 
 			bool bNeedsSpeakerMap = SourceSubmixOutput.SetChannelMap(ChannelMap, bInIsCenterChannelOnly);
 			GameThreadInfo.bNeedsSpeakerMap[SourceId] = bNeedsSpeakerMap;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetChannelMap()"));
 	}
 
 	void FMixerSourceManager::SetLPFFrequency(const int32 SourceId, const float InLPFFrequency)
@@ -1434,7 +1510,7 @@ namespace Audio
 			// On callback, the client version may be overridden with the modulation LPF value depending on which is more aggressive.  
 			SourceInfo.LowPassFreq = InLPFFrequency;
 			SourceInfo.LowPassFilter.StartFrequencyInterpolation(InLPFFrequency, NumOutputFrames);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetLPFFrequency()"));
 	}
 
 	void FMixerSourceManager::SetHPFFrequency(const int32 SourceId, const float InHPFFrequency)
@@ -1453,7 +1529,7 @@ namespace Audio
 			// On callback, the client version may be overridden with the modulation HPF value depending on which is more aggressive.  
 			SourceInfo.HighPassFreq = InHPFFrequency;
 			SourceInfo.HighPassFilter.StartFrequencyInterpolation(InHPFFrequency, NumOutputFrames);
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetHPFFrequency()"));
 	}
 
 	void FMixerSourceManager::SetModLPFFrequency(const int32 SourceId, const float InLPFFrequency)
@@ -1469,7 +1545,7 @@ namespace Audio
 			FSourceInfo& SourceInfo = SourceInfos[SourceId];
 			SourceInfo.LowpassModulationBase = InLPFFrequency;
 			SourceInfo.bModFiltersUpdated = true;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetModLPFFrequency()"));
 	}
 
 	void FMixerSourceManager::SetModHPFFrequency(const int32 SourceId, const float InHPFFrequency)
@@ -1485,6 +1561,22 @@ namespace Audio
 			FSourceInfo& SourceInfo = SourceInfos[SourceId];
 			SourceInfo.HighpassModulationBase = InHPFFrequency;
 			SourceInfo.bModFiltersUpdated = true;
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetModHPFFrequency()"));
+	}
+
+	void FMixerSourceManager::SetSourceBufferListener(const int32 SourceId, FSharedISourceBufferListenerPtr& InSourceBufferListener, bool InShouldSourceBufferListenerZeroBuffer)
+	{
+		AUDIO_MIXER_CHECK(SourceId < NumTotalSources);
+		AUDIO_MIXER_CHECK(GameThreadInfo.bIsBusy[SourceId]);
+		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
+
+		AudioMixerThreadCommand([this, SourceId, InSourceBufferListener, InShouldSourceBufferListenerZeroBuffer]()
+		{
+			AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
+
+			FSourceInfo& SourceInfo = SourceInfos[SourceId];
+			SourceInfo.SourceBufferListener = InSourceBufferListener;
+			SourceInfo.bShouldSourceBufferListenerZeroBuffer = InShouldSourceBufferListenerZeroBuffer;
 		});
 	}
 
@@ -1500,7 +1592,7 @@ namespace Audio
 
 			FSourceInfo& SourceInfo = SourceInfos[SourceId];
 			SourceInfo.VolumeModulationBase = InModVolume;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetModVolume()"));
 	}
 
 	void FMixerSourceManager::SetModPitch(const int32 SourceId, const float InModPitch)
@@ -1515,7 +1607,7 @@ namespace Audio
 
 			FSourceInfo& SourceInfo = SourceInfos[SourceId];
 			SourceInfo.PitchModulationBase = InModPitch;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetModPitch()"));
 	}
 
 	void FMixerSourceManager::SetSubmixSendInfo(const int32 SourceId, const FMixerSourceSubmixSend& InSubmixSend)
@@ -1574,7 +1666,7 @@ namespace Audio
 					InSubmixPtr->AddOrSetSourceVoice(SourceVoice, InSubmixSend.SendLevel, InSubmixSend.SubmixSendStage);
 				}
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetSubmixSendInfo()"));
 	}
 
 	void FMixerSourceManager::ClearSubmixSendInfo(const int32 SourceId, const FMixerSourceSubmixSend& InSubmixSend)
@@ -1622,7 +1714,7 @@ namespace Audio
 				// Now remove the source voice from the submix send list
 				InSubmixPtr->RemoveSourceVoice(MixerSources[SourceId]);
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("ClearSubmixSendInfo()"));
 	}
 
 	void FMixerSourceManager::SetBusSendInfo(const int32 SourceId, EBusSendType InAudioBusSendType, uint32 AudioBusId, float BusSendLevel)
@@ -1677,7 +1769,7 @@ namespace Audio
 			{
 				SourceInfo.AudioBusSends[(int32)InAudioBusSendType].Add(AudioBusId);
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetBusSendInfo()"));
 	}
 
 	void FMixerSourceManager::SetListenerTransforms(const TArray<FTransform>& InListenerTransforms)
@@ -1685,7 +1777,7 @@ namespace Audio
 		AudioMixerThreadCommand([this, InListenerTransforms]()
 		{
 			ListenerTransforms = InListenerTransforms;
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("SetListenerTransforms()"));
 	}
 
 	const TArray<FTransform>* FMixerSourceManager::GetListenerTransforms() const
@@ -1800,22 +1892,36 @@ namespace Audio
 		{
 			// Grab the float PCM audio data (which could be a new audio chunk from previous ReadSourceFrame call)
 			const float* AudioData = SourceInfo.CurrentPCMBuffer->AudioData.GetData();
+			const int32 CurrentSampleIndex = SourceInfo.CurrentFrameIndex * NumChannels;
 			const int32 NextSampleIndex = (SourceInfo.CurrentFrameIndex + 1)  * NumChannels;
+			const int32 AudioDataNum = SourceInfo.CurrentPCMBuffer->AudioData.Num();
 
-			if (bReadCurrentFrame)
+			if(ensureAlwaysMsgf(AudioDataNum >= NextSampleIndex + NumChannels
+				, TEXT("Bailing due to bad CurrentPCMBuffer:  AudioData.Num() = %i, NextSampleIndex = %i, NumChannels = %i"), AudioDataNum, NextSampleIndex, NumChannels))
 			{
-				const int32 CurrentSampleIndex = SourceInfo.CurrentFrameIndex * NumChannels;
-				for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+				if (bReadCurrentFrame)
 				{
-					SourceInfo.CurrentFrameValues[Channel] = AudioData[CurrentSampleIndex + Channel];
-					SourceInfo.NextFrameValues[Channel] = AudioData[NextSampleIndex + Channel];
+					for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+					{
+						SourceInfo.CurrentFrameValues[Channel] = AudioData[CurrentSampleIndex + Channel];
+						SourceInfo.NextFrameValues[Channel] = AudioData[NextSampleIndex + Channel];
+					}
+				}
+				else if (NextSampleIndex != SourceInfo.CurrentPCMBuffer->AudioData.Num())
+				{
+					for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+					{
+						SourceInfo.NextFrameValues[Channel] = AudioData[NextSampleIndex + Channel];
+					}
 				}
 			}
-			else if (NextSampleIndex != SourceInfo.CurrentPCMBuffer->AudioData.Num())
+			else
 			{
+				// fill w/ silence instead of the bad access
 				for (int32 Channel = 0; Channel < NumChannels; ++Channel)
 				{
-					SourceInfo.NextFrameValues[Channel] = AudioData[NextSampleIndex + Channel];
+					SourceInfo.CurrentFrameValues[Channel] = 0.f;
+					SourceInfo.NextFrameValues[Channel] = 0.f;
 				}
 			}
 		}
@@ -1984,19 +2090,22 @@ namespace Audio
 					SourceInfo.bHasStarted = true;
 
 					// Update the PrevFrameIndex value for the source based on alpha value
-					while (SourceInfo.CurrentFrameAlpha >= 1.0f)
+					if (SourceInfo.CurrentFrameAlpha >= 1.0f)
 					{
 						// Our inter-frame alpha lerping value is causing us to read new source frames
 						bReadNextSample = true;
+						
+						const float Delta = FMath::FloorToFloat(SourceInfo.CurrentFrameAlpha);
+						const int DeltaInt = (int)Delta;
 
 						// Bump up the current frame index
-						SourceInfo.CurrentFrameIndex++;
+						SourceInfo.CurrentFrameIndex += DeltaInt;
 
 						// Bump up the frames played -- this is tracking the total frames in source file played
 						// CurrentFrameIndex can wrap for looping sounds so won't be accurate in that case
-						SourceInfo.NumFramesPlayed++;
+						SourceInfo.NumFramesPlayed += DeltaInt;
 
-						SourceInfo.CurrentFrameAlpha -= 1.0f;
+						SourceInfo.CurrentFrameAlpha -= Delta;
 					}
 
 					// If our alpha parameter caused us to jump to a new source frame, we need
@@ -2067,6 +2176,23 @@ namespace Audio
 		}
 	}
 
+	// ctor
+	FMixerSourceManager::FAudioMixerThreadCommand::FAudioMixerThreadCommand(TFunction<void()> InFunction, FName InCallerDebugInfo, bool bInDeferExecution)
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+		: CallerDebugInfo(InCallerDebugInfo)
+		, Function(MoveTemp(InFunction))
+		, bDeferExecution(bInDeferExecution)
+#else
+		: Function(MoveTemp(InFunction))
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+	{
+	}
+
+	void FMixerSourceManager::FAudioMixerThreadCommand::operator()() const
+	{
+		Function();
+	}
+
 	void FMixerSourceManager::ApplyDistanceAttenuation(FSourceInfo& SourceInfo, int32 NumSamples)
 	{
 		if (DisableDistanceAttenuationCvar)
@@ -2074,8 +2200,8 @@ namespace Audio
 			return;
 		}
 
-		float* PostDistanceAttenBufferPtr = SourceInfo.SourceBuffer.GetData();
-		Audio::FadeBufferFast(PostDistanceAttenBufferPtr, SourceInfo.SourceBuffer.Num(), SourceInfo.DistanceAttenuationSourceStart, SourceInfo.DistanceAttenuationSourceDestination);
+		TArrayView<float> PostDistanceAttenBufferView(SourceInfo.SourceBuffer.GetData(), SourceInfo.SourceBuffer.Num());
+		Audio::ArrayFade(PostDistanceAttenBufferView, SourceInfo.DistanceAttenuationSourceStart, SourceInfo.DistanceAttenuationSourceDestination);
 		SourceInfo.DistanceAttenuationSourceStart = SourceInfo.DistanceAttenuationSourceDestination;
 	}
 
@@ -2096,6 +2222,14 @@ namespace Audio
 			return;
 		}
 
+		if (SourceInfo.AudioLink.IsValid())
+		{
+			IAudioLinkSourcePushed::FOnNewBufferParams Params;
+			Params.SourceId = SourceId;
+			Params.Buffer = SourceInfo.PreDistanceAttenuationBuffer;
+			SourceInfo.AudioLink->OnNewBuffer(Params);
+		}
+
 		// If we have Source Buffer Listener
 		if (SourceInfo.SourceBufferListener.IsValid())
 		{
@@ -2114,6 +2248,7 @@ namespace Audio
 			if (SourceInfo.bShouldSourceBufferListenerZeroBuffer)
 			{
 				FMemory::Memzero(SourceInfo.PreDistanceAttenuationBuffer.GetData(), SourceInfo.PreDistanceAttenuationBuffer.Num() * sizeof(float));
+				FMemory::Memzero(SourceInfo.SourceBuffer.GetData(), SourceInfo.SourceBuffer.Num() * sizeof(float));
 			}
 		}
 
@@ -2148,6 +2283,10 @@ namespace Audio
 			}
 		}
 
+		TArrayView<const float> ReverbPluginOutputBufferView(InSourceSubmixOutputBuffer.GetReverbPluginOutputData(), NumSamples);
+		TArrayView<const float> AudioPluginOutputDataView(SourceInfo.AudioPluginOutputData.AudioBuffer.GetData(), NumSamples);
+		TArrayView<float> PostDistanceAttenBufferView(PostDistanceAttenBufferPtr, NumSamples);
+
 		if (SourceInfo.bUseOcclusionPlugin)
 		{
 			const FSpatializationParams* SourceSpatParams = &SourceInfo.SpatParams;
@@ -2171,10 +2310,7 @@ namespace Audio
 			// Copy the occlusion-processed data back to the source buffer and mix with the reverb plugin output buffer
 			if (bShouldMixInReverb)
 			{
-				const float* ReverbPluginOutputBufferPtr = InSourceSubmixOutputBuffer.GetReverbPluginOutputData();
-				const float* AudioPluginOutputDataPtr = SourceInfo.AudioPluginOutputData.AudioBuffer.GetData();
-
-				Audio::SumBuffers(ReverbPluginOutputBufferPtr, AudioPluginOutputDataPtr, PostDistanceAttenBufferPtr, NumSamples);
+				Audio::ArraySum(ReverbPluginOutputBufferView, AudioPluginOutputDataView, PostDistanceAttenBufferView);
 			}
 			else
 			{
@@ -2183,8 +2319,7 @@ namespace Audio
 		}
 		else if (bShouldMixInReverb)
 		{
-			const float* ReverbPluginOutputBufferPtr = InSourceSubmixOutputBuffer.GetReverbPluginOutputData();
-			Audio::MixInBufferFast(ReverbPluginOutputBufferPtr, PostDistanceAttenBufferPtr, NumSamples);
+			Audio::ArrayMixIn(ReverbPluginOutputBufferView, PostDistanceAttenBufferView);
 		}
 
 		// If the source has HRTF processing enabled, run it through the spatializer
@@ -2193,8 +2328,8 @@ namespace Audio
 			CSV_SCOPED_TIMING_STAT(Audio, HRTF);
 			SCOPE_CYCLE_COUNTER(STAT_AudioMixerHRTF);
 
-			AUDIO_MIXER_CHECK(SpatializationPlugin.IsValid());
-			AUDIO_MIXER_CHECK(SourceInfo.NumInputChannels <= MaxChannelsSupportedBySpatializationPlugin);
+			AUDIO_MIXER_CHECK(SpatialInterfaceInfo.SpatializationPlugin.IsValid());
+			AUDIO_MIXER_CHECK(SourceInfo.NumInputChannels <= SpatialInterfaceInfo.MaxChannelsSupportedBySpatializationPlugin);
 
 			FAudioPluginSourceInputData AudioPluginInputData;
 			AudioPluginInputData.AudioBuffer = &SourceInfo.SourceBuffer;
@@ -2202,7 +2337,7 @@ namespace Audio
 			AudioPluginInputData.SourceId = SourceId;
 			AudioPluginInputData.SpatializationParams = &SourceInfo.SpatParams;
 
-			if (!MixerDevice->bSpatializationIsExternalSend)
+			if (!SpatialInterfaceInfo.bSpatializationIsExternalSend)
 			{
 				SourceInfo.AudioPluginOutputData.AudioBuffer.Reset();
 				SourceInfo.AudioPluginOutputData.AudioBuffer.AddZeroed(2 * NumOutputFrames);
@@ -2210,7 +2345,7 @@ namespace Audio
 
 			{
 				LLM_SCOPE(ELLMTag::AudioMixerPlugins);
-				SpatializationPlugin->ProcessAudio(AudioPluginInputData, SourceInfo.AudioPluginOutputData);
+				SpatialInterfaceInfo.SpatializationPlugin->ProcessAudio(AudioPluginInputData, SourceInfo.AudioPluginOutputData);
 			}
 
 			// If this is an external send, we treat this source audio as if it was still a mono source
@@ -2218,7 +2353,7 @@ namespace Audio
 			// sent to submixes (e.g. reverb) panned and mixed down. Certain submixes will want this spatial 
 			// information in addition to the external send. We've already bypassed adding this source
 			// to a base submix (e.g. master/eq, etc)
-			if (MixerDevice->bSpatializationIsExternalSend)
+			if (SpatialInterfaceInfo.bSpatializationIsExternalSend)
 			{
 				// Otherwise our pre- and post-effect channels are the same as the input channels
 				SourceInfo.NumPostEffectChannels = SourceInfo.NumInputChannels;
@@ -2294,6 +2429,8 @@ namespace Audio
 			float* PreDistanceAttenBufferPtr = SourceInfo.PreDistanceAttenuationBuffer.GetData();
 			const int32 NumSamples = SourceInfo.PreDistanceAttenuationBuffer.Num();
 
+			TArrayView<float> PreDistanceAttenBufferView(PreDistanceAttenBufferPtr, NumSamples);
+
 			// Update volume fade information if we're stopping
 			if (SourceInfo.bIsStopping)
 			{
@@ -2328,7 +2465,8 @@ namespace Audio
 					VolumeDestination *= ModVolumeEnd;
 				}
 
-				Audio::FadeBufferFast(PreDistanceAttenBufferPtr, NumFadeSamples, VolumeStart, VolumeDestination);
+				TArrayView<float> PreDistanceAttenBufferFadeSamplesView(PreDistanceAttenBufferPtr, NumFadeSamples);
+				Audio::ArrayFade(PreDistanceAttenBufferFadeSamplesView, VolumeStart, VolumeDestination);
 
 				// Zero the rest of the buffer
 				if (NumFadeFrames < NumOutputFrames)
@@ -2362,7 +2500,8 @@ namespace Audio
 					}
 					VolumeDestination *= ModVolumeEnd;
 				}
-				Audio::FadeBufferFast(PreDistanceAttenBufferPtr, NumSamples, VolumeStart, VolumeDestination);
+
+				Audio::ArrayFade(PreDistanceAttenBufferView, VolumeStart, VolumeDestination);
 			}
 			SourceInfo.VolumeSourceStart = SourceInfo.VolumeSourceDestination;
 
@@ -2414,7 +2553,7 @@ namespace Audio
 			if (!DisableEnvelopeFollowingCvar)
 			{
 				// Compute the source envelope using pre-distance attenuation buffer
-				float AverageSampleValue = Audio::BufferGetAverageAbsValue(PreDistanceAttenBufferPtr, NumSamples);
+				float AverageSampleValue = Audio::ArrayGetAverageAbsValue(PreDistanceAttenBufferView);
 				SourceInfo.SourceEnvelopeValue = SourceInfo.SourceEnvelopeFollower.ProcessSample(AverageSampleValue);
 				SourceInfo.SourceEnvelopeValue = FMath::Clamp(SourceInfo.SourceEnvelopeValue, 0.f, 1.f);
 
@@ -2487,7 +2626,7 @@ namespace Audio
 				}
 			}
 
-			if (SourceInfo.IsRenderingToSubmixes() || MixerDevice->bSpatializationIsExternalSend)
+			if (SourceInfo.IsRenderingToSubmixes() || SpatialInterfaceInfo.bSpatializationIsExternalSend)
 			{
 				// Apply distance attenuation
 				ApplyDistanceAttenuation(SourceInfo, NumSamples);
@@ -2666,7 +2805,7 @@ namespace Audio
 
 				SourceSubmixOutputBuffer.SetChannelMap(SourceInfo.ScratchChannelMap, SourceInfo.bIsCenterChannelOnly);
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("UpdateDeviceChannelCount()"));
 	}
 
 	void FMixerSourceManager::UpdateSourceEffectChain(const uint32 InSourceEffectChainId, const TArray<FSourceEffectChainEntry>& InSourceEffectChain, const bool bPlayEffectChainTails)
@@ -2731,7 +2870,7 @@ namespace Audio
 					}
 				}
 			}
-		});
+		}, AUDIO_MIXER_THREAD_COMMAND_STRING("UpdateSourceEffectChain()"), /*bDeferExecution*/true);
 	}
 
 	void FMixerSourceManager::PauseSoundForQuantizationCommand(const int32 SourceId)
@@ -2864,12 +3003,20 @@ namespace Audio
 		// Let the plugin know we finished processing all sources
 		if (bUsingSpatializationPlugin)
 		{
-			AUDIO_MIXER_CHECK(SpatializationPlugin.IsValid());
+			AUDIO_MIXER_CHECK(SpatialInterfaceInfo.SpatializationPlugin.IsValid());
 			LLM_SCOPE(ELLMTag::AudioMixerPlugins);
-			SpatializationPlugin->OnAllSourcesProcessed();
+			SpatialInterfaceInfo.SpatializationPlugin->OnAllSourcesProcessed();
 		}
 
-		// Update the game thread copy of source doneness
+		// Let the plugin know we finished processing all sources
+		if (bUsingSourceDataOverridePlugin)
+		{
+			AUDIO_MIXER_CHECK(SourceDataOverridePlugin.IsValid());
+			LLM_SCOPE(ELLMTag::AudioMixerPlugins);
+			SourceDataOverridePlugin->OnAllSourcesProcessed();
+		}
+
+		// Update the game thread copy of source donenessf
 		for (int32 SourceId = 0; SourceId < NumTotalSources; ++SourceId)
 		{		
 			FSourceInfo& SourceInfo = SourceInfos[SourceId];
@@ -2883,6 +3030,11 @@ namespace Audio
 
 					// Notify that we're now done with this source
 					SourceInfo.SourceListener->OnDone();
+
+					if (SourceInfo.AudioLink)
+					{
+						SourceInfo.AudioLink->OnSourceDone(SourceId);
+					}
 				}
 			}
 		}
@@ -2899,14 +3051,64 @@ namespace Audio
 				SourceInfo.bIsStopping = false;
 				SourceInfo.bIsDone = true;
 				SourceInfo.SourceListener->OnDone();
+				if (SourceInfo.AudioLink)
+				{
+					SourceInfo.AudioLink->OnSourceDone(SourceId);
+				}
 			}
 
 		}
 	}
 
-
-	void FMixerSourceManager::AudioMixerThreadCommand(TFunction<void()> InFunction)
+	void FMixerSourceManager::AudioMixerThreadMPSCCommand(TFunction<void()> InCommand)
 	{
+		MpscCommandQueue.Enqueue(MoveTemp(InCommand));
+	}
+
+	void FMixerSourceManager::FCurrentAudioMixerThreadCommandInfo::LogWarning() const
+	{
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+		if(CallerDebugInfo.IsValid())
+		{
+
+			UE_LOG(LogAudioMixer, Warning, TEXT("The AudioThreadCommand currently executing was called by %s, and started execution %f milliseconds ago")
+				, *CallerDebugInfo.ToString(), FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - QueueTimeInCycles.GetValue()));
+		}
+		else
+		{
+			UE_LOG(LogAudioMixer, Warning, TEXT("The AudioThreadCommand has not yet executed a command"));
+		}
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+	}
+
+	void FMixerSourceManager::FCurrentAudioMixerThreadCommandInfo::LogError() const
+	{
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+		if(CallerDebugInfo.IsValid())
+		{
+
+			UE_LOG(LogAudioMixer, Error, TEXT("The AudioThreadCommand currently executing was called by %s, and started execution %f milliseconds ago")
+				, *CallerDebugInfo.ToString(), FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - QueueTimeInCycles.GetValue()));
+		}
+		else
+		{
+			UE_LOG(LogAudioMixer, Error, TEXT("The AudioThreadCommand has not yet executed a command"));
+		}
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+	}
+
+	void FMixerSourceManager::FCurrentAudioMixerThreadCommandInfo::Reset()
+	{
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+		CallerDebugInfo = FName();
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+		QueueTimeInCycles.Reset();
+	}
+
+	void FMixerSourceManager::AudioMixerThreadCommand(TFunction<void()> InFunction, FName CallingFunction, bool bDeferExecution)
+	{
+		FAudioMixerThreadCommand AudioCommand(InFunction, CallingFunction, bDeferExecution);
+
 		// Here, we make sure that we don't flip our command double buffer while we are executing this function.
 		FScopeLock ScopeLock(&CommandBufferIndexCriticalSection);
 		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
@@ -2914,31 +3116,39 @@ namespace Audio
 		// Add the function to the command queue:
 		int32 AudioThreadCommandIndex = !RenderThreadCommandBufferIndex.GetValue();
 		SIZE_T CurrentBufferSizeInBytes = CommandBuffers[AudioThreadCommandIndex].SourceCommandQueue.GetAllocatedSize();
-		
-#if !NO_LOGGING
+
+		TRACE_INT_VALUE(TEXT("AudioMixerThreadCommands::CurrentBufferSizeInKb"), CurrentBufferSizeInBytes >> 10);
+
 		static SIZE_T WarnSize = 1024 * 1024;
 		if (CurrentBufferSizeInBytes > WarnSize )
 		{		
+			CurrentAudioMixerThreadCommandInfo.LogError();
+
 			SIZE_T Num = CommandBuffers[AudioThreadCommandIndex].SourceCommandQueue.Num();
-			// NOTE: Although not really and error we want this to show up in shipping builds.
-			UE_LOG(LogAudioMixer, Error, TEXT("Command Queue has grown to %ukb, containing %d cmds, last pump was %.2fms ago."), 
+			UE_LOG(LogAudioMixer, Error, TEXT("Command Queue has grown to %ukb, containing %d cmds, last pump was %.2fms ago."),
 				CurrentBufferSizeInBytes >> 10, Num, FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - LastPumpTimeInCycles));
 			WarnSize *= 2;
+
 		}
-#endif //!NO_LOGGING
 
 		// Before adding further commands, ensure we're not growing outside any sensible size for these buffers.
 		// On shipping builds, this will just stop us crashing from growing out of control and OOMing the machine.		
 		const SIZE_T MaxBufferSizeInBytes = ((SIZE_T)CommandBufferMaxSizeInMbCvar) << 20;
-		if (ensureMsgf(CurrentBufferSizeInBytes < MaxBufferSizeInBytes, TEXT("Command buffer grown to %umb, preventing any more adds! Likely cause, the h/w has stopped consuming data."), CurrentBufferSizeInBytes >>20))
+		if (CurrentBufferSizeInBytes < MaxBufferSizeInBytes)
 		{
-			CommandBuffers[AudioThreadCommandIndex].SourceCommandQueue.Add(MoveTemp(InFunction));
+			CommandBuffers[AudioThreadCommandIndex].SourceCommandQueue.Add(AudioCommand);
 			NumCommands.Increment();
+		}
+		else
+		{
+			CurrentAudioMixerThreadCommandInfo.LogError();
+			UE_LOG(LogAudioMixer, Error,  TEXT("Command buffer grown to %umb, preventing any more adds! Likely cause, the h/w has stopped consuming data."), CurrentBufferSizeInBytes >>20);
 		}
 	}
 
 	void FMixerSourceManager::PumpCommandQueue()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AudioMixerThreadCommands::PumpCommandQueue)
 		// If we're already triggered, we need to wait for the audio thread to reset it before pumping
 		if (FPlatformProcess::SupportsMultithreading())
 		{
@@ -2948,20 +3158,60 @@ namespace Audio
 			}
 		}
 
+		// Pump the MPSC command queue
+		TOptional Opt{ MpscCommandQueue.Dequeue() };
+		while (Opt.IsSet())
+		{
+			TFunction<void()> Command = MoveTemp(Opt.GetValue());
+			Command();
+				
+			Opt = MpscCommandQueue.Dequeue();
+		}
+
 		int32 CurrentRenderThreadIndex = RenderThreadCommandBufferIndex.GetValue();
 
 		FCommands& Commands = CommandBuffers[CurrentRenderThreadIndex];
 
+		const int32 NumCommandsToExecute = Commands.SourceCommandQueue.Num();
+		TRACE_INT_VALUE(TEXT("AudioMixerThreadCommands::NumCommandsToExecute"), NumCommandsToExecute);
+
 		// Pop and execute all the commands that came since last update tick
-		for (int32 Id = 0; Id < Commands.SourceCommandQueue.Num(); ++Id)
+		TArray<FAudioMixerThreadCommand> DelayedCommands;
+
+		for (int32 Id = 0; Id < NumCommandsToExecute; ++Id)
 		{
-			TFunction<void()>& CommandFunction = Commands.SourceCommandQueue[Id];
-			CommandFunction();
+			FAudioMixerThreadCommand& AudioCommand = Commands.SourceCommandQueue[Id];
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+			// cache debug info about the command we are about to execute (for safe access from the producer thread)
+			CurrentAudioMixerThreadCommandInfo.CallerDebugInfo = AudioCommand.CallerDebugInfo;
+			CurrentAudioMixerThreadCommandInfo.QueueTimeInCycles = FPlatformTime::Cycles64();
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+			if(AudioCommand.bDeferExecution)
+			{
+				AudioCommand.bDeferExecution = false;
+				DelayedCommands.Emplace(MoveTemp(AudioCommand));
+			}
+			else
+			{
+				AudioCommand(); // execute
+			}
+
+#if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+			const float ExecutionTimeInMs = static_cast<float>(FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - CurrentAudioMixerThreadCommandInfo.QueueTimeInCycles.GetValue()));
+			if(LogEveryAudioThreadCommandCvar || (ExecutionTimeInMs >= AudioCommandExecTimeMsWarningThresholdCvar))
+			{
+				UE_LOG(LogAudioMixer, Warning, TEXT("Audio Thread Command from %s() took %f milleseconds to execute"),
+				*CurrentAudioMixerThreadCommandInfo.CallerDebugInfo.ToString(), ExecutionTimeInMs);
+			}
+#endif // #if WITH_AUDIO_MIXER_THREAD_COMMAND_DEBUG
+
+			CurrentAudioMixerThreadCommandInfo.Reset();
 			NumCommands.Decrement();
 		}
 
+
 		LastPumpTimeInCycles = FPlatformTime::Cycles64();
-		Commands.SourceCommandQueue.Reset();
+		Commands.SourceCommandQueue = DelayedCommands;
 
 		if (FPlatformProcess::SupportsMultithreading())
 		{
@@ -2972,7 +3222,6 @@ namespace Audio
 		{
 			RenderThreadCommandBufferIndex.Set(!CurrentRenderThreadIndex);
 		}
-
 	}
 
 	void FMixerSourceManager::FlushCommandQueue(bool bPumpInCommand)

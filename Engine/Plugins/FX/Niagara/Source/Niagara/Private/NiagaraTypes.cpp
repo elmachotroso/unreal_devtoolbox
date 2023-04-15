@@ -4,8 +4,13 @@
 
 #include "NiagaraDataInterface.h"
 #include "NiagaraStats.h"
+#include "NiagaraEmitter.h"
 #include "Misc/StringBuilder.h"
 #include "UObject/Class.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraTypes)
+
+static FName NAME_NiagaraPosition(TEXT("NiagaraPosition"));
 
 void FNiagaraVariableBase::SetNamespacedName(const FString& InNamespace, FName InVariableName)
 {
@@ -14,6 +19,39 @@ void FNiagaraVariableBase::SetNamespacedName(const FString& InNamespace, FName I
 	NameBuilder.AppendChar(TEXT('.'));
 	InVariableName.AppendString(NameBuilder);
 	Name = FName(NameBuilder.ToString());
+}
+
+bool FNiagaraVariableBase::RemoveRootNamespace(const FStringView& ExpectedNamespace)
+{
+	FNameBuilder NameString;
+	Name.ToString(NameString);
+
+	FStringView NameStringView = NameString.ToView();
+	if ( (NameStringView.Len() > ExpectedNamespace.Len() + 1) && (NameStringView[ExpectedNamespace.Len()] == '.') && NameStringView.StartsWith(ExpectedNamespace) )
+	{
+		FNameBuilder NewNameString;
+		NewNameString.Append(NameStringView.Mid(ExpectedNamespace.Len() + 1));
+		Name = FName(FStringView(NewNameString));
+		return true;
+	}
+	return false;
+}
+
+bool FNiagaraVariableBase::ReplaceRootNamespace(const FStringView& ExpectedNamespace, const FStringView& NewNamespace)
+{
+	FNameBuilder NameString;
+	Name.ToString(NameString);
+
+	FStringView NameStringView = NameString.ToView();
+	if ( (NameStringView.Len() > ExpectedNamespace.Len() + 1) && (NameStringView[ExpectedNamespace.Len()] == '.') && NameStringView.StartsWith(ExpectedNamespace) )
+	{
+		FNameBuilder NewNameString;
+		NewNameString.Append(NewNamespace);
+		NewNameString.Append(NameStringView.Mid(ExpectedNamespace.Len() + 1));
+		Name = FName(FStringView(NewNameString));
+		return true;
+	}
+	return false;
 }
 
 void FNiagaraVariableMetaData::CopyUserEditableMetaData(const FNiagaraVariableMetaData& OtherMetaData)
@@ -26,6 +64,62 @@ void FNiagaraVariableMetaData::CopyUserEditableMetaData(const FNiagaraVariableMe
 			ChildProperty->CopyCompleteValue((uint8*)this + PropertyOffset, (uint8*)&OtherMetaData + PropertyOffset);
 		};
 	}
+}
+
+FVersionedNiagaraEmitterData* FVersionedNiagaraEmitter::GetEmitterData() const
+{
+	return Emitter ? Emitter->GetEmitterData(Version) : nullptr;
+}
+
+FVersionedNiagaraEmitterWeakPtr FVersionedNiagaraEmitter::ToWeakPtr() const
+{
+	return FVersionedNiagaraEmitterWeakPtr(Emitter, Version);
+}
+
+FVersionedNiagaraEmitterWeakPtr::FVersionedNiagaraEmitterWeakPtr(UNiagaraEmitter* InEmitter, const FGuid& InVersion)
+{
+	Emitter = InEmitter;
+	Version = InVersion;
+}
+
+FVersionedNiagaraEmitter FVersionedNiagaraEmitterWeakPtr::ResolveWeakPtr() const
+{
+	if (Emitter.IsValid())
+	{
+		return FVersionedNiagaraEmitter(Emitter.Get(), Version);
+	}
+	return FVersionedNiagaraEmitter();
+}
+
+FVersionedNiagaraEmitterData* FVersionedNiagaraEmitterWeakPtr::GetEmitterData() const
+{
+	return ResolveWeakPtr().GetEmitterData();
+}
+
+bool FVersionedNiagaraEmitterWeakPtr::IsValid() const
+{
+	return GetEmitterData() != nullptr;
+}
+
+FGuid FNiagaraAssetVersion::CreateStableVersionGuid(UObject* Object)
+{
+	if (Object)
+	{
+		uint32 HashBuffer[]{ 0, 0, 0, 0 };
+
+		{
+			TStringBuilder<256> ObjectPathString;
+			Object->GetPathName(nullptr, ObjectPathString);
+
+			FMD5 ObjectPathHash;
+			ObjectPathHash.Update(reinterpret_cast<uint8*>(GetData(ObjectPathString)), ObjectPathString.Len() * sizeof(TCHAR));
+			ObjectPathHash.Final(reinterpret_cast<uint8*>(&HashBuffer));
+		}
+
+		return FGuid(HashBuffer[0], HashBuffer[1], HashBuffer[2], HashBuffer[3]);
+	}
+
+	return FGuid();
 }
 
 FNiagaraLWCConverter::FNiagaraLWCConverter(FVector InSystemWorldPos)
@@ -171,6 +265,10 @@ void FNiagaraLwcStructConverter::AddConversionStep(int32 InSourceBytes, int32 In
 }
 
 //////////////////////////////////////////////////////////////////////////
+
+FRWLock FNiagaraTypeHelper::RemapTableLock;
+TMap<TWeakObjectPtr<UScriptStruct>, FNiagaraTypeHelper::FRemapEntry> FNiagaraTypeHelper::RemapTable;
+std::atomic<bool> FNiagaraTypeHelper::RemapTableDirty;
 
 FString FNiagaraTypeHelper::ToString(const uint8* ValueData, const UObject* StructOrEnum)
 {
@@ -369,30 +467,32 @@ bool FNiagaraTypeHelper::IsLWCType(const FNiagaraTypeDefinition& InType)
 	return InType.IsValid() && !InType.IsUObject() && IsLWCStructure(InType.GetStruct());
 }
 
-UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
+void FNiagaraTypeHelper::TickTypeRemap()
 {
-	struct FRemapEntry
+	if (RemapTableDirty)
 	{
-		UScriptStruct* Get(UScriptStruct* InStruct) const
+		FWriteScopeLock WriteLock(RemapTableLock);
+
+		for (auto it = RemapTable.CreateIterator(); it; ++it)
 		{
-		#if WITH_EDITORONLY_DATA
-			return SerialNumber == InStruct->FieldPathSerialNumber ? Struct.Get() : nullptr;
-		#else
-			return Struct.Get();
-		#endif
+			UScriptStruct* SrcScript = it->Key.Get();
+			if (SrcScript == nullptr || it->Value.Get(SrcScript) == nullptr)
+			{
+				UScriptStruct* DstStruct = it->Value.Struct.Get();
+				if (DstStruct && SrcScript != DstStruct)
+				{
+					DstStruct->RemoveFromRoot();
+				}
+				it.RemoveCurrent();
+			}
 		}
 
-		TWeakObjectPtr<UScriptStruct>	Struct;
-	#if WITH_EDITORONLY_DATA
-		int32 SerialNumber = 0;
-	#endif
-	};
+		RemapTableDirty = false;
+	}
+}
 
-	static FRWLock RemapTableLock;
-	static TMap<TWeakObjectPtr<UScriptStruct>, FRemapEntry> RemapTable;
-
-	bool bRemoveDeadRemaps = false;
-
+UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
+{
 	// Attempt to find existing struct
 	UScriptStruct* SWCStruct = nullptr;
 	{
@@ -400,7 +500,7 @@ UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
 		if ( FRemapEntry* RemapEntry = RemapTable.Find(LWCStruct) )
 		{
 			SWCStruct = RemapEntry->Get(LWCStruct);
-			bRemoveDeadRemaps = true;
+			RemapTableDirty = true;
 		}
 	}
 
@@ -412,43 +512,42 @@ UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
 		if (FRemapEntry* RemapEntry = RemapTable.Find(LWCStruct))
 		{
 			SWCStruct = RemapEntry->Get(LWCStruct);
-			bRemoveDeadRemaps = true;
+			RemapTableDirty = true;
 		}
 
 		if (SWCStruct == nullptr)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_Niagara_GetSWCStruct);
 
-			// Do we need to remove dead remaps from the list?  
-			//-OPT: We should hook into post GC and prune the map at that point
-			bRemoveDeadRemaps = true;
-			if ( bRemoveDeadRemaps )
-			{
-				for (auto it = RemapTable.CreateIterator(); it; ++it)
-				{
-					UScriptStruct* SrcScript = it->Key.Get();
-					if (SrcScript == nullptr || it->Value.Get(SrcScript) == nullptr)
-					{
-						UScriptStruct* DstStruct = it->Value.Struct.Get();
-						if (DstStruct && SrcScript != DstStruct)
-						{
-							DstStruct->RemoveFromRoot();
-						}
-						it.RemoveCurrent();
-					}
-				}
-			}
-
 			// If this is a LWC structure we need to built a new structure now
 			if (IsLWCStructure(LWCStruct))
 			{
-				SWCStruct = NewObject<UScriptStruct>(GetTransientPackage(), FName(LWCStruct->GetName() + TEXT("_SWC")), RF_NoFlags);
+				FName SWCName = FName(LWCStruct->GetName() + TEXT("_SWC"));
+
+				//check if the remap table contains a previous entry for that struct. This might happen when the lwc struct was changed at runtime.
+				// In that case we want to reuse the existing swc struct object, since it might already be referenced by compile results.
+				for (auto Iter = RemapTable.CreateIterator(); Iter; ++Iter)
+				{
+					TWeakObjectPtr<UScriptStruct> ExistingStruct = Iter.Value().Struct;
+					if (ExistingStruct.IsValid() && ExistingStruct->GetFName() == SWCName)
+					{
+						SWCStruct = ExistingStruct.Get();
+						Iter.RemoveCurrent();
+						RemapTableDirty = true;
+						break;
+					}
+				}
+
+				if (SWCStruct == nullptr)
+				{
+					SWCStruct = NewObject<UScriptStruct>(GetTransientPackage(), SWCName, RF_NoFlags);
+					SWCStruct->AddToRoot();
+				}
 				FNiagaraLwcStructConverter StructConverter = BuildSWCStructure(SWCStruct, LWCStruct);
 				FNiagaraTypeRegistry::RegisterStructConverter(FNiagaraTypeDefinition(LWCStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow), StructConverter);
 				SWCStruct->Bind();
 				SWCStruct->PrepareCppStructOps();
 				SWCStruct->StaticLink(true);
-				SWCStruct->AddToRoot();
 			}
 			else
 			{
@@ -462,6 +561,27 @@ UScriptStruct* FNiagaraTypeHelper::GetSWCStruct(UScriptStruct* LWCStruct)
 		}
 	}
 	return SWCStruct;
+}
+
+UScriptStruct* FNiagaraTypeHelper::GetLWCStruct(UScriptStruct* SWCStruct)
+{
+	if (SWCStruct->GetOutermost() != GetTransientPackage())
+	{
+		return SWCStruct;
+	}
+
+	FReadScopeLock ReadLock(RemapTableLock);
+
+	for (auto It = RemapTable.CreateConstIterator(); It; ++It)
+	{
+		const FRemapEntry& RemapEntry = It.Value();
+		if (RemapEntry.Struct.Get() == SWCStruct)
+		{
+			return It.Key().Get();
+		}
+	}
+
+	return nullptr;
 }
 
 UScriptStruct* FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct, ENiagaraStructConversion StructConversion)
@@ -492,7 +612,7 @@ UScriptStruct* FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(UScriptStru
 		return FNiagaraTypeDefinition::GetQuatStruct();
 	}
 
-	if (InStruct->GetFName() == FName("NiagaraPosition"))
+	if (InStruct->GetFName() == NAME_NiagaraPosition)
 	{
 		return FNiagaraTypeDefinition::GetPositionStruct();
 	}
@@ -518,3 +638,4 @@ bool FNiagaraTypeHelper::IsNiagaraFriendlyTopLevelStruct(UScriptStruct* InStruct
 }
 
 /////////////////////////////////////////////////////////////////////////////
+

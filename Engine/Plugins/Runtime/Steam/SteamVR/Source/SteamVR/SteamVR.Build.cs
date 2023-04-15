@@ -9,20 +9,10 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePaths.AddRange(
 				new string[] {
 					"SteamVR/Private",
-					"../../../../../Source/Runtime/Renderer/Private",
-					"../../../../../Source/Runtime/VulkanRHI/Private",
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 					// ... add other private include paths required here ...
 				}
 				);
-
-			if(Target.Platform == UnrealTargetPlatform.Win64)
-			{
-				PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/Windows");
-			}
-			else if(Target.Platform != UnrealTargetPlatform.Mac)
-			{
-				PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/" + Target.Platform);
-			}
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
@@ -31,7 +21,6 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"RHI",
-					"RHICore",
 					"RenderCore",
 					"Renderer",
                     "InputCore",
@@ -48,11 +37,6 @@ namespace UnrealBuildTool.Rules
                 PrivateDependencyModuleNames.Add("UnrealEd");
             }
 
-			if (Target.Platform == UnrealTargetPlatform.Win64 || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-			}
-
             if (Target.Platform == UnrealTargetPlatform.Win64)
             {
 				PrivateDependencyModuleNames.AddRange(
@@ -62,16 +46,7 @@ namespace UnrealBuildTool.Rules
 							"D3D12RHI",
 					});
 
-				PrivateIncludePaths.AddRange(
-					new string[]
-					{
-							"../../../../../Source/Runtime/Windows/D3D11RHI/Private",
-							"../../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows",
-							"../../../../../Source/Runtime/D3D12RHI/Private",
-							"../../../../../Source/Runtime/D3D12RHI/Private/Windows",
-					});
-
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenVR");
 
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenGL");

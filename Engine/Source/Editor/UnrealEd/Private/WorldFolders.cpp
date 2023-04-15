@@ -9,7 +9,8 @@
 #include "Misc/Paths.h"
 #include "EngineUtils.h"
 #include "EditorActorFolders.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 
 #define LOCTEXT_NAMESPACE "UnrealEd.WorldFolders"
 
@@ -39,7 +40,7 @@ void UWorldFolders::RebuildList()
 	TArray<FFolder> FoldersToRemove;
 	ForEachFolder([&FoldersToRemove](const FFolder& Folder)
 	{
-		if (Folder.HasRootObject())
+		if (!Folder.IsRootObjectPersistentLevel())
 		{
 			FoldersToRemove.Add(Folder);
 		}
@@ -57,16 +58,20 @@ void UWorldFolders::RebuildList()
 		AddFolder(ActorIt->GetFolder());
 	}
 
-	for (ULevel* Level : GetWorld()->GetLevels())
+	// Add levels ActorFolders as they are still needed for unloaded actors (only in editor)
+	if (!GetWorld()->IsGameWorld())
 	{
-		const bool bIsLevelVisibleOrAssociating = (Level->bIsVisible && !Level->bIsBeingRemoved) || Level->bIsAssociatingLevel || Level->bIsDisassociatingLevel;
-		if (bIsLevelVisibleOrAssociating)
+		for (ULevel* Level : GetWorld()->GetLevels())
 		{
-			Level->ForEachActorFolder([this](UActorFolder* ActorFolder)
+			const bool bIsLevelVisibleOrAssociating = (Level->bIsVisible && !Level->bIsBeingRemoved) || Level->bIsAssociatingLevel || Level->bIsDisassociatingLevel;
+			if (bIsLevelVisibleOrAssociating)
 			{
-				AddFolder(ActorFolder->GetFolder());
-				return true;
-			}, /*bSkipDeleted*/ true);
+				Level->ForEachActorFolder([this](UActorFolder* ActorFolder)
+				{
+					AddFolder(ActorFolder->GetFolder());
+					return true;
+				}, /*bSkipDeleted*/ true);
+			}
 		}
 	}
 }
@@ -119,7 +124,30 @@ bool UWorldFolders::RenameFolder(const FFolder& InOldFolder, const FFolder& InNe
 	check(IsValid(World.Get()));
 	check(InOldFolder.GetRootObject() == InNewFolder.GetRootObject());
 
-	return GetImpl(InOldFolder).RenameFolder(InOldFolder, InNewFolder);
+	bool bSuccess = GetImpl(InOldFolder).RenameFolder(InOldFolder, InNewFolder);
+	if (bSuccess)
+	{
+		bool bChanged = false;
+		for (int StackIndex=0; StackIndex < CurrentFolderStack.Num(); ++StackIndex)
+		{
+			FActorPlacementFolder& StackElement = CurrentFolderStack[StackIndex];
+			if (StackElement.GetFolder() == InOldFolder)
+			{
+				StackElement.Path = InNewFolder.GetPath();
+				bChanged = true;
+			}
+		}
+		if (CurrentFolder.GetFolder() == InOldFolder)
+		{
+			CurrentFolder.Path = InNewFolder.GetPath();
+			bChanged = true;
+		}
+		if (bChanged)
+		{
+			FActorFolders::Get().BroadcastOnActorEditorContextClientChanged();
+		}
+	}
+	return bSuccess;
 }
 
 void UWorldFolders::BroadcastOnActorFolderCreated(const FFolder& InFolder)
@@ -156,9 +184,58 @@ bool UWorldFolders::SetIsFolderExpanded(const FFolder& InFolder, bool bIsExpande
 	return false;
 }
 
+FFolder UWorldFolders::GetActorEditorContextFolder(bool bMustMatchCurrentLevel) const
+{
+	FFolder Folder = CurrentFolder.GetFolder();
+	if (ContainsFolder(Folder))
+	{
+		ULevelInstanceSubsystem* LevelInstanceSubsystem = GetWorld()->GetSubsystem<ULevelInstanceSubsystem>();
+		ILevelInstanceInterface* EditingLevelInstance = LevelInstanceSubsystem ? LevelInstanceSubsystem->GetEditingLevelInstance() : nullptr;
+		if (UObject* EditingLevelInstanceObject = EditingLevelInstance ? CastChecked<UObject>(EditingLevelInstance) : nullptr)
+		{
+			FFolder::FRootObject RootObject = FFolder::FRootObject(EditingLevelInstanceObject);
+			if (Folder.GetRootObject() == RootObject)
+			{
+				return Folder;
+			}
+		}
+		else if (!bMustMatchCurrentLevel || (Folder.GetRootObject() == FFolder::FRootObject(GetWorld()->GetCurrentLevel())))
+		{
+			return Folder;
+		}
+	}
+	return FFolder::GetWorldRootFolder(GetWorld());
+}
+
+bool UWorldFolders::SetActorEditorContextFolder(const FFolder& InFolder)
+{
+	if (InFolder != CurrentFolder.GetFolder())
+	{
+		Modify();
+		CurrentFolder = InFolder;
+		return true;
+	}
+	return false;
+}
+
+void UWorldFolders::PushActorEditorContext()
+{
+	Modify();
+	CurrentFolderStack.Push(CurrentFolder);
+	CurrentFolder.Reset();
+}
+
+void UWorldFolders::PopActorEditorContext()
+{
+	check(!CurrentFolderStack.IsEmpty());
+
+	Modify();
+	CurrentFolder = CurrentFolderStack.Pop();
+}
+
 bool UWorldFolders::ContainsFolder(const FFolder& InFolder) const
 {
-	return GetImpl(InFolder).ContainsFolder(InFolder);
+	return InFolder.IsValid() && !InFolder.IsNone() && GetImpl(InFolder).ContainsFolder(InFolder);
 }
 
 void UWorldFolders::ForEachFolder(TFunctionRef<bool(const FFolder&)> Operation)
@@ -196,11 +273,8 @@ void UWorldFolders::Serialize(FArchive& Ar)
 
 	check(PersistentFolders.IsValid());
 	Ar << FoldersProperties;
-}
 
-void UWorldFolders::OnWorldSaved()
-{
-	SaveState();
+	Super::Serialize(Ar);
 }
 
 FString UWorldFolders::GetWorldStateFilename() const
@@ -213,6 +287,10 @@ FString UWorldFolders::GetWorldStateFilename() const
 
 void UWorldFolders::LoadState()
 {
+	FFolder WorldDefaultFolder = FFolder::GetWorldRootFolder(World.Get());
+	check(WorldDefaultFolder.IsRootObjectValid());
+	const FFolder::FRootObject WorldRootObject = WorldDefaultFolder.GetRootObject();
+
 	// Attempt to load the folder properties from user's saved world state directory and apply them.
 	const auto Filename = GetWorldStateFilename();
 	TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileReader(*Filename));
@@ -229,7 +307,7 @@ void UWorldFolders::LoadState()
 				// Only pull in the folder's properties if this folder still exists in the world.
 				// This means that old stale folders won't re-appear in the world (they'll won't get serialized when the world is saved anyway)
 				auto FolderProperties = KeyValue.Value->AsObject();
-				const FFolder Folder(*KeyValue.Key);
+				const FFolder Folder(WorldRootObject, *KeyValue.Key);
 				const bool bIsExpanded = FolderProperties->GetBoolField(TEXT("bIsExpanded"));
 				if (!SetIsFolderExpanded(Folder, bIsExpanded))
 				{
@@ -254,7 +332,7 @@ void UWorldFolders::SaveState()
 		ForEachFolder([this, &JsonFolders](const FFolder& Folder)
 		{
 			// Only write for World root
-			if (!Folder.HasRootObject())
+			if (Folder.IsRootObjectPersistentLevel())
 			{
 				TSharedRef<FJsonObject> JsonFolder = MakeShareable(new FJsonObject);
 				JsonFolder->SetBoolField(TEXT("bIsExpanded"), IsFolderExpanded(Folder));

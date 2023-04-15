@@ -46,27 +46,33 @@ namespace Metasound
 			bool bIsStringArrayParsable = false;
 			bool bIsProxyArrayParsable = false;
 
-			// Is an TEnum wrapped enum
+			// Is a TEnum wrapped enum
 			bool bIsEnum = false;
 
 			// Determines whether the type can be used with send/receive transmitters
 			bool bIsTransmittable = false;
 
-			// Is true if is a Variable type
+			// Returns if DataType is a Variable type
 			bool bIsVariable = false;
 
-			// If provided in registration call, UClass this datatype was registered with
+			// Returns if DataType can be used for constructor vertices.
+			bool bIsConstructorType = false;
+
+			// Returns if DataType represents an array type (ex. TArray<float>, TArray<int32>, etc.).
+			bool bIsArrayType = false;
+
+			// Returns if DataType supports array parsing and passing array of base type to constructor.
+			bool bIsArrayParseable = false;
+
+			// If provided in registration call, UClass this datatype was registered with.
 			UClass* ProxyGeneratorClass = nullptr;
 
+
 			// Returns if DataType supports array parsing.
+			UE_DEPRECATED(5.1, "Use bIsArrayType or bIsArrayParseable members instead")
 			FORCEINLINE bool IsArrayType() const
 			{
-				return bIsDefaultArrayParsable
-				|| bIsBoolArrayParsable
-				|| bIsIntArrayParsable
-				|| bIsFloatArrayParsable
-				|| bIsStringArrayParsable
-				|| bIsProxyArrayParsable;
+				return bIsArrayType;
 			}
 		};
 
@@ -134,11 +140,17 @@ namespace Metasound
 			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
 			virtual const FMetasoundFrontendClass& GetFrontendInputClass() const = 0;
 
+			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
+			virtual const FMetasoundFrontendClass& GetFrontendConstructorInputClass() const = 0;
+
 			/** Return an FMetasoundFrontendClass representing a variable node of the data type. */
 			virtual const FMetasoundFrontendClass& GetFrontendLiteralClass() const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an output node of the data type. */
 			virtual const FMetasoundFrontendClass& GetFrontendOutputClass() const = 0;
+
+			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
+			virtual const FMetasoundFrontendClass& GetFrontendConstructorOutputClass() const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an init variable node of the data type. */
 			virtual const FMetasoundFrontendClass& GetFrontendVariableClass() const = 0;
@@ -155,8 +167,14 @@ namespace Metasound
 			/** Create an input node */
 			virtual TUniquePtr<INode> CreateInputNode(FInputNodeConstructorParams&&) const = 0;
 
+			/** Create an input node */
+			virtual TUniquePtr<INode> CreateConstructorInputNode(FInputNodeConstructorParams&&) const = 0;
+
 			/** Create an output node */
 			virtual TUniquePtr<INode> CreateOutputNode(FOutputNodeConstructorParams&&) const = 0;
+
+			/** Create an output node */
+			virtual TUniquePtr<INode> CreateConstructorOutputNode(FOutputNodeConstructorParams&&) const = 0;
 			
 			/** Create a variable node */
 			virtual TUniquePtr<INode> CreateLiteralNode(FLiteralNodeConstructorParams&&) const = 0;
@@ -178,6 +196,9 @@ namespace Metasound
 
 			/** Create a get delayed variable node for this data type. */
 			virtual TUniquePtr<INode> CreateVariableDeferredAccessorNode(const FNodeInitData&) const = 0;
+			
+			/** Create a data reference from a literal. */
+			virtual TOptional<FAnyDataReference> CreateDataReference(EDataReferenceAccessType InAccessType, const FLiteral& InLiteral, const FOperatorSettings& InOperatorSettings) const = 0;
 
 			/** Create a proxy from a UObject. If this data type does not support
 			 * UObject proxies, return a nullptr. */
@@ -189,6 +210,7 @@ namespace Metasound
 
 			/** Clone this registry entry. */
 			virtual TUniquePtr<IDataTypeRegistryEntry> Clone() const = 0;
+
 		};
 
 		class METASOUNDFRONTEND_API IDataTypeRegistry
@@ -237,16 +259,25 @@ namespace Metasound
 			virtual FLiteral CreateLiteralFromUObject(const FName& InDataType, UObject* InObject) const = 0;
 			virtual FLiteral CreateLiteralFromUObjectArray(const FName& InDataType, const TArray<UObject*>& InObjectArray) const = 0;
 
+			/** Create a data reference of the data type given a literal. If not supported, the result will be not be set. */
+			virtual TOptional<FAnyDataReference> CreateDataReference(const FName& InDataType, EDataReferenceAccessType InAccessType, const FLiteral& InLiteral, const FOperatorSettings& InOperatorSettings) const = 0;
+
 			virtual TSharedPtr<IDataChannel, ESPMode::ThreadSafe> CreateDataChannel(const FName& InDataType, const FOperatorSettings& InOperatorSettings) const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
 			virtual bool GetFrontendInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
+
+			/** Return an FMetasoundFrontendClass representing an input node of the data type. */
+			virtual bool GetFrontendConstructorInputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
 
 			/** Return an FMetasoundFrontendClass representing a variable node of the data type. */
 			virtual bool GetFrontendLiteralClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an output node of the data type. */
 			virtual bool GetFrontendOutputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
+
+			/** Return an FMetasoundFrontendClass representing an output node of the data type. */
+			virtual bool GetFrontendConstructorOutputClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
 
 			/** Return an FMetasoundFrontendClass representing an init variable node of the data type. */
 			virtual bool GetFrontendVariableClass(const FName& InDataType, FMetasoundFrontendClass& OutClass) const = 0;
@@ -262,8 +293,10 @@ namespace Metasound
 
 			// Create a new instance of a C++ implemented node from the registry.
 			virtual TUniquePtr<INode> CreateInputNode(const FName& InInputType, FInputNodeConstructorParams&& InParams) const = 0;
+			virtual TUniquePtr<INode> CreateConstructorInputNode(const FName& InInputType, FInputNodeConstructorParams&& InParams) const = 0;
 			virtual TUniquePtr<INode> CreateLiteralNode(const FName& InLiteralType, FLiteralNodeConstructorParams&& InParams) const = 0;
 			virtual TUniquePtr<INode> CreateOutputNode(const FName& InOutputType, FOutputNodeConstructorParams&& InParams) const = 0;
+			virtual TUniquePtr<INode> CreateConstructorOutputNode(const FName& InOutputType, FOutputNodeConstructorParams&& InParams) const = 0;
 			virtual TUniquePtr<INode> CreateReceiveNode(const FName& InDataType, const FNodeInitData&) const = 0;
 			virtual TUniquePtr<INode> CreateVariableNode(const FName& InDataType, FVariableNodeConstructorParams&& InParams) const = 0;
 			virtual TUniquePtr<INode> CreateVariableMutatorNode(const FName& InDataType, const FNodeInitData& InParams) const = 0;

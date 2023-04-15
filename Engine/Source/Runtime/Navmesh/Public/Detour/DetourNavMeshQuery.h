@@ -24,9 +24,11 @@
 
 #include "CoreMinimal.h"
 #include "Detour/DetourAlloc.h"
-#include "Detour/DetourNavMesh.h"
 #include "Detour/DetourCommon.h"
 #include "Detour/DetourLargeWorldCoordinates.h"
+#include "Detour/DetourNavMesh.h"
+#include "Detour/DetourStatus.h"
+#include "Misc/AssertionMacros.h"
 
 //@UE BEGIN
 #define WITH_FIXED_AREA_ENTERING_COST 1
@@ -556,6 +558,19 @@ public:
 									  dtPolyRef* neiRefs, int* neiCount, const int maxNei,
 									  dtReal* resultWalls, dtPolyRef* resultRefs, int* resultCount, const int maxResult) const;
 
+
+	/// [UE] Finds the wall segments that overlap the polygon shape.
+	dtStatus findWallsOverlappingShape(dtPolyRef startRef, const dtReal* verts, const int nverts,
+									   const dtQueryFilter* filter, 
+									   dtPolyRef* neiRefs, int* neiCount, const int maxNei,
+									   dtReal* resultWalls, dtPolyRef* resultRefs, int* resultCount, const int maxResult) const;
+
+	/// [UE] Finds the wall segments that overlap the polygon shape.
+	dtStatus findWallsAroundPath(const dtPolyRef* path, const int pathCount, const dtReal* searchAreaPoly, const int searchAreaPolyCount,
+									   const float maxAreaEnterCost, const dtQueryFilter* filter,
+									   dtPolyRef* neiRefs, int* neiCount, const int maxNei,
+									   dtReal* resultWalls, dtPolyRef* resultRefs, int* resultCount, const int maxResult) const;
+	
 	/// Moves from the start to the end position constrained to the navigation mesh.
 	///  @param[in]		startRef		The reference id of the start polygon.
 	///  @param[in]		startPos		A position of the mover within the start polygon. [(x, y, x)]
@@ -638,6 +653,13 @@ public:
 	dtStatus findRandomPointAroundCircle(dtPolyRef startRef, const dtReal* centerPos, const dtReal maxRadius,
 										 const dtQueryFilter* filter, float(*frand)(),
 										 dtPolyRef* randomRef, dtReal* randomPt) const;
+
+	/// Returns random location inside the specified polygon.
+	///  @param[in]		ref				The reference id of the polygon.
+	///  @param[in]		frand			Function returning a random number [0..1).
+	///  @param[out]	randomPt		The random location. [(x, y, z)]
+	/// @returns The status flags for the query.
+	dtStatus findRandomPointInPoly(dtPolyRef ref, float(*frand)(), dtReal* randomPt) const;
 
 	//@UE BEGIN
 #if WITH_NAVMESH_CLUSTER_LINKS

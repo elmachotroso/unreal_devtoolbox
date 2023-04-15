@@ -1,12 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioGameplayVolumeProxy.h"
-#include "AudioGameplayVolumeProxyMutator.h"
+#include "AudioAnalytics.h"
+#include "AudioGameplayVolumeMutator.h"
+#include "AudioGameplayVolumeSubsystem.h"
 #include "AudioGameplayVolumeLogs.h"
 #include "AudioGameplayVolumeComponent.h"
 #include "Interfaces/IAudioGameplayCondition.h"
 #include "Components/BrushComponent.h"
 #include "Components/PrimitiveComponent.h"
+
+namespace AudioGameplayVolumeConsoleVariables
+{
+	int32 bProxyDistanceCulling = 1;
+	FAutoConsoleVariableRef CVarProxyDistanceCulling(
+		TEXT("au.AudioGameplayVolumes.PrimitiveProxy.DistanceCulling"),
+		bProxyDistanceCulling,
+		TEXT("Skips physics body queries for proxies that are not close to the listener.\n0: Disable, 1: Enable (default)"),
+		ECVF_Default);
+
+} // namespace AudioGameplayVolumeConsoleVariables
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AudioGameplayVolumeProxy)
 
 UAudioGameplayVolumeProxy::UAudioGameplayVolumeProxy(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -18,7 +33,7 @@ bool UAudioGameplayVolumeProxy::ContainsPosition(const FVector& Position) const
 	return false;
 }
 
-void UAudioGameplayVolumeProxy::InitFromComponent(const UAudioGameplayVolumeProxyComponent* Component)
+void UAudioGameplayVolumeProxy::InitFromComponent(const UAudioGameplayVolumeComponent* Component)
 {
 	if (!Component || !Component->GetWorld())
 	{
@@ -32,8 +47,8 @@ void UAudioGameplayVolumeProxy::InitFromComponent(const UAudioGameplayVolumeProx
 	PayloadType = PayloadFlags::AGCP_None;
 	ProxyVolumeMutators.Reset();
 
-	TInlineComponentArray<UAudioGameplayVolumeComponentBase*> Components(Component->GetOwner());
-	for (UAudioGameplayVolumeComponentBase* Comp : Components)
+	TInlineComponentArray<UAudioGameplayVolumeMutator*> Components(Component->GetOwner());
+	for (UAudioGameplayVolumeMutator* Comp : Components)
 	{
 		if (!Comp || !Comp->IsActive())
 		{
@@ -50,6 +65,8 @@ void UAudioGameplayVolumeProxy::InitFromComponent(const UAudioGameplayVolumeProx
 			ProxyVolumeMutators.Emplace(NewMutator);
 		}
 	}
+
+	Audio::Analytics::RecordEvent_Usage(TEXT("AudioGameplayVolume.InitializedFromComponent"));
 }
 
 void UAudioGameplayVolumeProxy::FindMutatorPriority(FAudioProxyMutatorPriorities& Priorities) const
@@ -111,15 +128,17 @@ UAGVPrimitiveComponentProxy::UAGVPrimitiveComponentProxy(const FObjectInitialize
 
 bool UAGVPrimitiveComponentProxy::ContainsPosition(const FVector& Position) const
 {
+	SCOPED_NAMED_EVENT(UAGVPrimitiveComponentProxy_ContainsPosition, FColor::Blue);
+
 	FBodyInstance* BodyInstancePointer = nullptr;
 	if (UPrimitiveComponent* PrimitiveComponent = WeakPrimative.Get())
 	{
-		if (PrimitiveComponent->IsPhysicsStateCreated() && PrimitiveComponent->HasValidPhysicsState())
+		if (NeedsPhysicsQuery(PrimitiveComponent, Position))
 		{
 			BodyInstancePointer = PrimitiveComponent->GetBodyInstance();
 		}
 	}
-	
+
 	if (!BodyInstancePointer)
 	{
 		return false;
@@ -130,18 +149,47 @@ bool UAGVPrimitiveComponentProxy::ContainsPosition(const FVector& Position) cons
 	return BodyInstancePointer->GetSquaredDistanceToBody(Position, DistanceSquared, PointOnBody) && FMath::IsNearlyZero(DistanceSquared);
 }
 
-void UAGVPrimitiveComponentProxy::InitFromComponent(const UAudioGameplayVolumeProxyComponent* Component)
+void UAGVPrimitiveComponentProxy::InitFromComponent(const UAudioGameplayVolumeComponent* Component)
 {
 	Super::InitFromComponent(Component);
 
 	if (Component)
 	{
 		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(Component->GetOwner());
-		if (ensureMsgf(PrimitiveComponents.Num() == 1, TEXT("An Audio Gameplay Volume Shape Proxy requires exactly one Primitive Component on the owning actor")))
+		const int32 PrimitiveComponentCount = PrimitiveComponents.Num();
+
+		if (PrimitiveComponentCount != 1)
+		{
+			UE_LOG(AudioGameplayVolumeLog, Warning, TEXT("Was expecting exactly one Primitive Component on the owning actor, found %d - this could cause unexpected behavior"), PrimitiveComponentCount);
+		}
+
+		if (PrimitiveComponents.Num() > 0)
 		{
 			WeakPrimative = PrimitiveComponents[0];
 		}
 	}
+}
+
+bool UAGVPrimitiveComponentProxy::NeedsPhysicsQuery(UPrimitiveComponent* PrimitiveComponent, const FVector& Position) const
+{
+	check(PrimitiveComponent);
+
+	if (!PrimitiveComponent->IsPhysicsStateCreated() || !PrimitiveComponent->HasValidPhysicsState())
+	{
+		return false;
+	}
+
+	// Temporary kill switch for distance culling
+	if (AudioGameplayVolumeConsoleVariables::bProxyDistanceCulling == 0)
+	{
+		return true;
+	}
+
+	// Early distance culling
+	const float BoundsRadiusSq = FMath::Square(PrimitiveComponent->Bounds.SphereRadius);
+	const float DistanceSq = FVector::DistSquared(PrimitiveComponent->Bounds.Origin, Position);
+
+	return DistanceSq <= BoundsRadiusSq;
 }
 
 UAGVConditionProxy::UAGVConditionProxy(const FObjectInitializer& ObjectInitializer)
@@ -151,6 +199,8 @@ UAGVConditionProxy::UAGVConditionProxy(const FObjectInitializer& ObjectInitializ
 
 bool UAGVConditionProxy::ContainsPosition(const FVector& Position) const
 {
+	SCOPED_NAMED_EVENT(UAGVConditionProxy_ContainsPosition, FColor::Blue);
+
 	const UObject* ObjectWithInterface = WeakObject.Get();
 	if (ObjectWithInterface && ObjectWithInterface->Implements<UAudioGameplayCondition>())
 	{
@@ -161,7 +211,7 @@ bool UAGVConditionProxy::ContainsPosition(const FVector& Position) const
 	return false;
 }
 
-void UAGVConditionProxy::InitFromComponent(const UAudioGameplayVolumeProxyComponent* Component)
+void UAGVConditionProxy::InitFromComponent(const UAudioGameplayVolumeComponent* Component)
 {
 	Super::InitFromComponent(Component);
 
@@ -187,3 +237,4 @@ void UAGVConditionProxy::InitFromComponent(const UAudioGameplayVolumeProxyCompon
 		}
 	}
 }
+

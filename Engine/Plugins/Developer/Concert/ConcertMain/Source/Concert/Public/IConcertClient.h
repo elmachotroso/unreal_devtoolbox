@@ -143,6 +143,12 @@ struct FConcertArchiveSessionArgs
 	FConcertSessionFilter SessionFilter;
 };
 
+struct FConcertBatchDeleteSessionsArgs
+{
+	TSet<FGuid> SessionIds;
+	EBatchSessionDeletionFlags Flags;
+};
+
 /** Interface for Concert client */
 class IConcertClient
 {
@@ -337,6 +343,15 @@ public:
 	 */
 	virtual TFuture<EConcertResponseCode> DeleteSession(const FGuid& ServerAdminEndpointId, const FGuid& SessionId) = 0;
 
+	/**
+	 * Deletes several live or archives sessions from the server. If the client is not sure whether the client has permission for it,
+	 * it can set the SkipForbiddenSessions - the server will skip disallowed sessions instead of rejecting the entire operation.
+	 * @param ServerAdminEndpointId	The Id of the Concert Server query endpoint
+	 * @param BatchDeletionArgs		The arguments that will be used for batch deleting the session(s)
+	 * @return A future that will contain the server's response (and optionally which sessions were skipped due to permissions)
+	 */
+	virtual TFuture<FConcertAdmin_BatchDeleteSessionResponse> BatchDeleteSessions(const FGuid& ServerAdminEndpointId, const FConcertBatchDeleteSessionsArgs& BatchDeletionArgs) = 0;
+	
 	/** 
 	 * Disconnect from the current session.
 	 */
@@ -358,7 +373,7 @@ public:
 	virtual bool IsSessionSuspended() const = 0;
 
 	/**
-	 * Does the client think he is the owner of the session?
+	 * Does the client think it is the owner of the session?
 	 */
 	virtual bool IsOwnerOf(const FConcertSessionInfo& InSessionInfo) const = 0;
 

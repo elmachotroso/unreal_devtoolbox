@@ -9,8 +9,8 @@
 #include "UObject/SoftObjectPtr.h"
 
 /**
- * Modular feature interface for mesh defomer providers. 
- * Modules that inherit from this need to be loaded before material shader compilation starts (PostConfigInit)
+ * Modular feature interface for mesh deformer providers. 
+ * Modules that inherit from this need to be loaded before shader compilation starts (PostConfigInit)
  * so that the correct vertex factories can be created.
  */
 class ENGINE_API IMeshDeformerProvider : public IModularFeature
@@ -22,13 +22,16 @@ public:
 	static bool IsAvailable();
 	static IMeshDeformerProvider* Get();
 
-	/** Returns true if this provider is enabled for the platform. */
-	virtual bool IsEnabled(EShaderPlatform Platform) = 0;
+	/** Structure for passing to GetDefaultMeshDeformer(). */
+	struct FDefaultMeshDeformerSetup
+	{
+		bool bIsUsingSkinCache = false;
+		bool bIsRequestingRecomputeTangent = false;
+	};
 
 	/** 
 	 * Returns a default mesh deformer. 
 	 * This can allow a mesh deformer plugin to automatically replace the UE fixed function animation path.
-	 * todo: Extend this to take requested features (lbs, morph, cloth etc.)
 	 */
-	virtual TSoftObjectPtr<class UMeshDeformer> GetDefaultMeshDeformer() = 0;
+	virtual TObjectPtr<class UMeshDeformer> GetDefaultMeshDeformer(FDefaultMeshDeformerSetup const& Setup) = 0;
 };

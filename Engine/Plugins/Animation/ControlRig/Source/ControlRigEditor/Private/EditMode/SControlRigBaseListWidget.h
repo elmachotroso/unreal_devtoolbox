@@ -15,10 +15,10 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
 #include "EditorUndoClient.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "IAssetTools.h"
 #include "ContentBrowserDelegates.h"
-#include "SControlRigControlViews.h"
+#include "EditMode/SControlRigControlViews.h"
 
 class UControlRig;
 class FControlRigEditMode;
@@ -54,7 +54,6 @@ public:
 	~SControlRigBaseListWidget();
 
 	FControlRigEditMode* GetEditMode();
-	UControlRig* GetControlRig(); 
 
 	/*Notification that filter has changed, this includes new folder selected*/
 	void FilterChanged();

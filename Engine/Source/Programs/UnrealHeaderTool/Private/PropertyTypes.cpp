@@ -996,7 +996,6 @@ struct FPropertyTypeTraitsBooleanBase : public FPropertyTypeTraitsBase
 		{
 			return SizeText;
 		}
-		return TEXT("uint32");
 	}
 
 	static bool DefaultValueStringCppFormatToInnerFormat(const FUnrealPropertyDefinitionInfo& PropDef, const FString& CppForm, FString& OutForm)
@@ -1595,6 +1594,10 @@ struct FPropertyTypeTraitsObjectPtrReference : public FPropertyTypeTraitsObjectB
 		if (VarProperty.ClassDef->IsChildOf(*GUClassDef))
 		{
 			return FString::Printf(TEXT("TObjectPtr<%s%s>"), VarProperty.ClassDef->GetPrefixCPP(), *VarProperty.ClassDef->GetName());
+		}
+		else if ((CPPExportFlags & CPPF_ArgumentOrReturnValue) == CPPF_ArgumentOrReturnValue)
+		{
+			return FString::Printf(TEXT("%s%s*"), VarProperty.ClassDef->GetPrefixCPP(), *VarProperty.ClassDef->GetName());
 		}
 		else
 		{
@@ -2251,7 +2254,7 @@ struct FPropertyTypeTraitsStruct : public FPropertyTypeTraitsBase
 	static FString GetCPPTypeForwardDeclaration(const FUnrealPropertyDefinitionInfo& PropDef)
 	{
 		// Core type structs don't need to forward declare in UHT as every generated.h indirectly includes CoreMinimal.h
-		if (UScriptStruct::ICppStructOps* CppStructOps = UScriptStruct::FindDeferredCppStructOps(PropDef.GetPropertyBase().ScriptStructDef->GetFName()); CppStructOps != nullptr && CppStructOps->IsUECoreType())
+		if (UScriptStruct::ICppStructOps* CppStructOps = UScriptStruct::FindDeferredCppStructOps(PropDef.GetPropertyBase().ScriptStructDef->GetStructPathName()); CppStructOps != nullptr && CppStructOps->IsUECoreType())
 		{
 			return FString();
 		}
@@ -2511,7 +2514,7 @@ struct FPropertyTypeTraitsFieldPath : public FPropertyTypeTraitsBase
 	{
 		const FPropertyBase& VarProperty = PropDef.GetPropertyBase();
 		ExtendedTypeText = FString::Printf(TEXT("TFieldPath<F%s>"), *VarProperty.FieldClassName.ToString());
-		return TEXT("STRUCT");
+		return TEXT("TFIELDPATH");
 	}
 };
 
@@ -2553,9 +2556,12 @@ struct FPropertyTypeTraitsStaticArray : public FPropertyTypeTraitsBase
 					TEXT("(unsigned int)"),
 					TEXT("(signed int)")
 				};
+				
+				// Remove any irrelevant whitespace
+				Temp.TrimStartAndEndInline();
 
 				// Remove any brackets
-				if (Temp[0] == TEXT('('))
+				if (Temp.Len() > 0 && Temp[0] == TEXT('('))
 				{
 					int32 TempLen = Temp.Len();
 					int32 ClosingParen = FindMatchingClosingParenthesis(Temp);
@@ -2583,7 +2589,7 @@ struct FPropertyTypeTraitsStaticArray : public FPropertyTypeTraitsBase
 				if (!EnumDef)
 				{
 					// If the enum wasn't declared in this scope, then try to find it anywhere we can
-					EnumDef = GTypeDefinitionInfoMap.FindByName<FUnrealEnumDefinitionInfo>(PropDef.GetArrayDimensions());
+					EnumDef = GTypeDefinitionInfoMap.FindByName<FUnrealEnumDefinitionInfo>(*Temp);
 				}
 
 				if (EnumDef)

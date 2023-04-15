@@ -3,7 +3,7 @@
 import { configure } from "mobx";
 import { isNumber } from 'util';
 import templateCache from '../backend/TemplateCache';
-import { AgentData, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateJobRequest, CreateJobResponse, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, DashboardPreference, EventData, GetArtifactZipRequest, GetDevicePlatformResponse, GetDevicePoolResponse, GetDeviceReservationResponse, GetDeviceResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, JobData, JobQuery, JobsTabColumnType, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TemplateData, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateUserRequest, UsersQuery } from './Api';
+import { AgentData, AgentQuery, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateExternalIssueRequest, CreateExternalIssueResponse, CreateJobRequest, CreateJobResponse, CreateNoticeRequest, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, DashboardPreference, EventData, FindIssueResponse, FindJobTimingsResponse, GetAgentSoftwareChannelResponse, GetArtifactZipRequest, GetDashboardConfigResponse, GetDevicePlatformResponse, GetDevicePoolResponse, GetDeviceReservationResponse, GetDeviceResponse, GetExternalIssueProjectResponse, GetExternalIssueResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNoticeResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetPoolResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, IssueQueryV2, JobData, JobQuery, JobsTabColumnType, JobStepOutcome, JobStreamQuery, JobTimingsQuery, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TemplateData, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNoticeRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateTemplateRefRequest, UpdateUserRequest, UsersQuery } from './Api';
 import dashboard from './Dashboard';
 import { ChallengeStatus, Fetch } from './Fetch';
 import graphCache, { GraphQuery } from './GraphCache';
@@ -20,6 +20,17 @@ configure({
 const updateInterval = 120 * 1000;
 
 export class Backend {
+
+
+    getDashboardConfig(): Promise<GetDashboardConfigResponse> {
+        return new Promise<GetDashboardConfigResponse>((resolve, reject) => {
+            this.backend.get("/api/v1/dashboard/config").then((response) => {
+                resolve(response.data as GetDashboardConfigResponse);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
 
     getProjects(): Promise<ProjectData[]> {
 
@@ -89,6 +100,25 @@ export class Backend {
         });
     }
 
+    updateTemplateRef(streamId: string, templateRefId: string, request: UpdateTemplateRefRequest): Promise<boolean> {
+
+        return new Promise<boolean>((resolve, reject) => {
+            this.backend.put(`/api/v1/streams/${streamId}/templates/${templateRefId}`, request).then((value) => {
+                resolve(true);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    getPool(poolId: string): Promise<GetPoolResponse> {
+        return new Promise<GetPoolResponse>((resolve, reject) => {
+            this.backend.get(`/api/v1/pools/${poolId}`).then((response) => {
+                resolve(response.data as GetPoolResponse);
+            }).catch(reason => { reject(reason); });
+        });
+    }
+
     getPools(): Promise<PoolData[]> {
         return new Promise<PoolData[]>((resolve, reject) => {
             this.backend.get("/api/v1/pools").then((response) => {
@@ -116,10 +146,10 @@ export class Backend {
         });
     }
 
-    getAgents(modifiedAfter: Date): Promise<AgentData[]> {
+    getAgents(query: AgentQuery): Promise<AgentData[]> {
         return new Promise<AgentData[]>((resolve, reject) => {
             // for whenever we bring back modifiedDate, swap to this line
-            this.backend.get(`/api/v1/agents?ModifiedAfter=${modifiedAfter.toISOString()}`).then((response) => {
+            this.backend.get(`/api/v1/agents`, { params: query }).then((response) => {
                 //this.backend.get(`/api/v1/agents`).then((response) => {
                 const agents = response.data as AgentData[];
                 resolve(agents);
@@ -325,6 +355,55 @@ export class Backend {
 
     }
 
+    getStreamJobs(streamId: string, query: JobStreamQuery, queryGraph: boolean = false): Promise<JobData[]> {
+
+        if (typeof query.index === 'number') {
+            query.index = 0;
+        }
+
+        if (typeof query.count !== 'number') {
+            query.count = 100;
+        }
+
+        return new Promise<JobData[]>((resolve, reject) => {
+
+            this.backend.get(`/api/v1/jobs/streams/${streamId}`, {
+                params: query
+            }).then((value) => {
+                const jobs = value.data as JobData[];
+
+                if (!queryGraph) {
+                    resolve(jobs);
+                    return;
+                }
+
+                const query: GraphQuery[] = [];
+                jobs.forEach(j => {
+                    if (!j.graphHash) {
+                        console.error(`Job ${j.id} has no graph hash`);
+                        return;
+                    }
+
+                    if (!query.find(q => q.graphHash === j.graphHash)) {
+                        query.push({ graphHash: j.graphHash!, jobId: j.id });
+                    }
+                });
+
+                graphCache.getGraphs(query).then(graphs => {
+                    jobs.forEach(j => {
+                        j.graphRef = graphs.find(g => g.hash === j.graphHash);
+                    });
+                    resolve(jobs);
+                }).catch(reason => reject(reason));
+
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+
+    }
+
+
     getJobs(query: JobQuery, queryGraph: boolean = false): Promise<JobData[]> {
 
         if (typeof query.index === 'number') {
@@ -385,6 +464,34 @@ export class Backend {
 
     }
 
+    getBatchJobTiming(query: JobTimingsQuery): Promise<FindJobTimingsResponse> {
+
+        return new Promise<FindJobTimingsResponse>((resolve, reject) => {
+            this.backend.get(`/api/v1/jobs/timing`, {
+                params: query
+            }).then((response) => {
+                let timingsWrapper = response.data as FindJobTimingsResponse;
+                let graphCalls: { jobResponse: JobData, call: any }[] = [];
+                Object.values(timingsWrapper.timings).forEach(timing => {
+                    if (!timing.jobResponse.graphHash) {
+                        return reject(`Job ${timing.jobResponse.id} has undefined graph hash`);
+                    }
+                    graphCalls.push({ jobResponse: timing.jobResponse, call: graphCache.get({ graphHash: timing.jobResponse.graphHash, jobId: timing.jobResponse.id }) });
+                });
+                let allPromises = graphCalls.map(item => item.call);
+                Promise.all(allPromises).then(responses => {
+                    for (let idx = 0; idx < responses.length; idx++) {
+                        graphCalls[idx].jobResponse.graphRef = responses[idx] as GetGraphResponse;
+                    }
+                    resolve(timingsWrapper);
+                });
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+
+    }
+
     getLogEvents(logId: string): Promise<EventData[]> {
 
         return new Promise<EventData[]>((resolve, reject) => {
@@ -430,7 +537,9 @@ export class Backend {
             this.backend.get(`/api/v1/streams/${streamId}/history`, {
                 params: params
             }).then((value) => {
-                resolve(value.data as GetJobStepRefResponse[]);
+                let results = (value.data ?? []) as GetJobStepRefResponse[];
+                results = results.filter(r => r.outcome !== JobStepOutcome.Unspecified);
+                resolve(results);
             }).catch(reason => {
                 reject(reason);
             });
@@ -838,7 +947,15 @@ export class Backend {
 
                     data.dashboardSettings.preferences = preferences;
                 }
+
+                // apply defaults
+                const current = data.dashboardSettings.preferences.get(DashboardPreference.Darktheme);
+                if (current !== "true" && current !== "false") {
+                    data.dashboardSettings.preferences.set(DashboardPreference.Darktheme, "true");
+                }
+
                 resolve(data);
+
             }).catch(reason => reject(reason));
 
         });
@@ -866,6 +983,23 @@ export class Backend {
         });
     }
 
+
+    getIssuesV2(queryIn?: IssueQueryV2): Promise<FindIssueResponse[]> {
+
+        const query = queryIn ?? {};
+
+        return new Promise<FindIssueResponse[]>((resolve, reject) => {
+
+            this.backend.get("/api/v2/issues", {
+                params: query
+            }).then((value) => {
+                resolve(value.data as FindIssueResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+
+    }
 
     getIssues(queryIn?: IssueQuery): Promise<IssueData[]> {
 
@@ -939,19 +1073,57 @@ export class Backend {
         });
     }
 
-    getJobStepTestDataByKey(jobId: string, stepId: string, key: string): Promise<TestData[]> {
-        return new Promise<TestData[]>((resolve, reject) => {
-            this.backend.get(`/api/v1/testdata?JobId=${jobId}&JobStepId=${stepId}&Key=${key}`).then((value) => {
-                resolve(value.data as TestData[]);
+    getExternalIssues(streamId: string, keys: string[]): Promise<GetExternalIssueResponse[]> {
+
+        const params = {
+            streamId: streamId,
+            keys: keys
+        };
+
+        return new Promise<GetExternalIssueResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v1/issues/external`, { params: params }).then((value) => {
+                resolve(value.data as GetExternalIssueResponse[]);
             }).catch((reason) => {
                 reject(reason);
             });
         });
     }
 
-    getTestData(id: string): Promise<TestData> {
+    getExternalIssueProjects(streamId: string): Promise<GetExternalIssueProjectResponse[]> {
+
+        const params = {
+            streamId: streamId,
+        };
+
+        return new Promise<GetExternalIssueProjectResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v1/issues/external/projects`, { params: params }).then((value) => {
+                resolve(value.data as GetExternalIssueProjectResponse[]);
+            }).catch((reason) => {
+                reject(reason);
+            });
+        });
+    }
+
+
+    createExternalIssue(request: CreateExternalIssueRequest): Promise<CreateExternalIssueResponse> {
+        return new Promise<CreateExternalIssueResponse>((resolve, reject) => {
+            this.backend.post(`/api/v1/issues/external`, request).then((value) => {
+                resolve(value.data as CreateExternalIssueResponse);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    getTestData(id: string, filter?: string): Promise<TestData> {
         return new Promise<TestData>((resolve, reject) => {
-            this.backend.get(`/api/v1/testdata/${id}`).then((value) => {
+            const params: any = {
+                filter: 'id,key,change,jobId,stepId,streamId,' + (filter ? filter : 'data')
+            };
+
+            this.backend.get(`/api/v1/testdata/${id}`, {
+                params: params
+            }).then((value) => {
                 resolve(value.data as TestData);
             }).catch((reason) => {
                 reject(reason);
@@ -963,8 +1135,8 @@ export class Backend {
         return new Promise<TestData[]>((resolve, reject) => {
             const params: any = {
                 jobId: jobId,
-                filter: 'key,id,stepId',
-                count: 200,
+                filter: 'id,key,change,jobId,stepId,streamId',
+                count: 500,
             };
 
             if (stepId) {
@@ -981,13 +1153,13 @@ export class Backend {
         });
     }
 
-    getTestDataHistory(streamId: string, key: string, maxChange?: number, count: number = 30, index?: number): Promise<TestData[]> {
+    getTestDataHistory(streamId: string, key: string, maxChange?: number, count: number = 30, index?: number, filter?: string): Promise<TestData[]> {
         return new Promise<TestData[]>((resolve, reject) => {
             const params: any = {
                 streamId: streamId,
                 key: key,
                 count: count,
-                filter: 'id,change,data'
+                filter: 'id,key,change,jobId,stepId,streamId,' + (filter ? filter : 'data')
             };
 
             if (maxChange) {
@@ -1022,8 +1194,8 @@ export class Backend {
     }
 
     downloadAgentZip() {
-        try {            
-            const url = `${this.serverUrl}/api/v1/agentsoftware/default/zip`;            
+        try {
+            const url = `${this.serverUrl}/api/v1/agentsoftware/default/zip`;
             const link = document.createElement('a');
             link.href = url;
             document.body.appendChild(link);
@@ -1032,6 +1204,17 @@ export class Backend {
             console.error(reason);
         }
     }
+
+    getAgentSoftwareChannel(name: string = "default"): Promise<GetAgentSoftwareChannelResponse> {
+        return new Promise<GetAgentSoftwareChannelResponse>((resolve, reject) => {
+            this.backend.get(`/api/v1/agentsoftware/${name}`, { suppress404: true }).then((value) => {
+                resolve(value.data as GetAgentSoftwareChannelResponse);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
 
     updateJobStep(jobId: string, batchId: string, stepId: string, request: UpdateStepRequest): Promise<UpdateStepResponse> {
         return new Promise<UpdateStepResponse>((resolve, reject) => {
@@ -1043,10 +1226,10 @@ export class Backend {
         });
     }
 
-    getNotification(type: string, jobId: string, labelIdx?: string | null, batchId?: string, stepId?: string | null): Promise<GetNotificationResponse> {
+    getNotification(type: string, jobId: string, labelIdx?: string, batchId?: string, stepId?: string): Promise<GetNotificationResponse> {
 
         let url = `api/v1/jobs/${jobId}`;
-        if (type === "label" && labelIdx != null) {
+        if (type === "label" && labelIdx) {
             url = `${url}/labels/${labelIdx}`;
         }
         else if (type === "step" && batchId && stepId) {
@@ -1061,11 +1244,11 @@ export class Backend {
         });
     }
 
-    updateNotification(request: UpdateNotificationsRequest, type: string, jobId: string, labelIdx?: string | null, batchId?: string, stepId?: string | null): Promise<boolean> {
+    updateNotification(request: UpdateNotificationsRequest, type: string, jobId: string, labelIdx?: string, batchId?: string, stepId?: string | null): Promise<boolean> {
 
         let url = `api/v1/jobs/${jobId}`;
 
-        if (type === "label" && labelIdx != null) {
+        if (type === "label" && labelIdx) {
             url = `${url}/labels/${labelIdx}`;
         }
         else if (type === "step" && batchId && stepId) {
@@ -1161,14 +1344,14 @@ export class Backend {
         });
     }
 
-    checkoutDevice(deviceId: string, checkout:boolean): Promise<void> {
+    checkoutDevice(deviceId: string, checkout: boolean): Promise<void> {
         return new Promise<void>((resolve, reject) => {
-            this.backend.put(`/api/v2/devices/${deviceId}/checkout`, {checkout: checkout}).then(() => {
+            this.backend.put(`/api/v2/devices/${deviceId}/checkout`, { checkout: checkout }).then(() => {
                 resolve();
             }).catch(reason => {
                 reject(reason);
             });
-        });        
+        });
     }
 
 
@@ -1249,7 +1432,7 @@ export class Backend {
         });
     }
 
-    updateServerSettings(request: UpdateServerSettingsRequest): Promise< ServerUpdateResponse> {
+    updateServerSettings(request: UpdateServerSettingsRequest): Promise<ServerUpdateResponse> {
         return new Promise<ServerUpdateResponse>((resolve, reject) => {
             this.backend.put(`/api/v1/config/serversettings`, request).then((value) => {
                 resolve(value.data as ServerUpdateResponse);
@@ -1266,7 +1449,7 @@ export class Backend {
             }).catch(reason => {
                 reject(reason);
             });
-        });        
+        });
     }
 
     // updates global configuation
@@ -1284,6 +1467,54 @@ export class Backend {
         return new Promise<GetServerInfoResponse>((resolve, reject) => {
             this.backend.get(`/api/v1/server/info`).then((value) => {
                 resolve(value.data as GetServerInfoResponse);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    // create a new notice
+    createNotice(request: CreateNoticeRequest): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            this.backend.post(`/api/v1/notices`, request).then(() => {
+                resolve();
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    // get all notices
+    getNotices(): Promise<GetNoticeResponse[]> {
+        return new Promise<GetNoticeResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v1/notices`).then((value) => {
+                resolve((value.data as GetNoticeResponse[]).map(notice => {
+                    notice.startTime = notice.startTime ? new Date(notice.startTime as string) : undefined;
+                    notice.finishTime = notice.finishTime ? new Date(notice.finishTime as string) : undefined;
+                    return notice;
+                }));
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    // update a notice
+    updateNotice(request: UpdateNoticeRequest): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            this.backend.put(`/api/v1/notices`, request).then(() => {
+                resolve();
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    // delete a notice
+    deleteNotice(id: string): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            this.backend.delete(`/api/v1/notices/${id}`).then(() => {
+                resolve();
             }).catch(reason => {
                 reject(reason);
             });
@@ -1343,7 +1574,10 @@ export class Backend {
 
     }
 
+
     init() {
+
+
         return new Promise<boolean>(async (resolve, reject) => {
 
             this.backend.setBaseUrl(this.serverUrl);
@@ -1355,8 +1589,6 @@ export class Backend {
                 this.backend.login(window.location.toString());
                 return;
             }
-
-            this.serverInfo = await this.getServerInfo();
 
             await dashboard.update();
 
@@ -1381,9 +1613,6 @@ export class Backend {
 
     updateID?: any;
     logout: boolean = false;
-
-    serverInfo: GetServerInfoResponse = {serverVersion: "0", osDescription: "Unknown", singleInstance: false};
-
 
     private backend: Fetch;
 

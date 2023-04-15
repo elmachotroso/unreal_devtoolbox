@@ -7,6 +7,7 @@
 #include "MetasoundOperatorInterface.h"
 #include "MetasoundDataReference.h"
 #include "MetasoundExecutableOperator.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundRouter.h"
 #include "MetasoundVertex.h"
 
@@ -17,16 +18,15 @@
 
 namespace Metasound
 {
+	namespace SendVertexNames
+	{
+		METASOUND_PARAM(AddressInput, "Address", "Address")
+	}
+
 	template<typename TDataType>
 	class TSendNode : public FNode
 	{
 	public:
-		static const FVertexName& GetAddressInputName()
-		{
-			static const FVertexName InputName = TEXT("Address");
-			return InputName;
-		}
-
 		static const FVertexName& GetSendInputName()
 		{
 			static const FVertexName& SendInput = GetMetasoundDataTypeName<TDataType>();
@@ -35,10 +35,17 @@ namespace Metasound
 
 		static FVertexInterface DeclareVertexInterface()
 		{
+			using namespace SendVertexNames; 
+			static const FDataVertexMetadata AddressInputMetadata
+			{
+				  FText::GetEmpty() // description
+				, METASOUND_GET_PARAM_DISPLAYNAME(AddressInput) // display name
+			};
+
 			return FVertexInterface(
 				FInputVertexInterface(
-					TInputDataVertexModel<FSendAddress>(GetAddressInputName(), FText::GetEmpty()),
-					TInputDataVertexModel<TDataType>(GetSendInputName(), FText::GetEmpty())
+					TInputDataVertex<FSendAddress>(METASOUND_GET_PARAM_NAME(AddressInput), AddressInputMetadata),
+					TInputDataVertex<TDataType>(GetSendInputName(), FDataVertexMetadata{ FText::GetEmpty() })
 				),
 				FOutputVertexInterface(
 				)
@@ -99,8 +106,10 @@ namespace Metasound
 
 				virtual FDataReferenceCollection GetInputs() const override
 				{
+					using namespace SendVertexNames; 
+
 					FDataReferenceCollection Inputs;
-					Inputs.AddDataReadReference<FSendAddress>(GetAddressInputName(), SendAddress);
+					Inputs.AddDataReadReference<FSendAddress>(METASOUND_GET_PARAM_NAME(AddressInput), SendAddress);
 					Inputs.AddDataReadReference<TDataType>(GetSendInputName(), TDataReadReference<TDataType>(InputData));
 					return Inputs;
 				}
@@ -160,12 +169,14 @@ namespace Metasound
 			public:
 				FSendOperatorFactory() = default;
 
-				virtual TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors) override
+				virtual TUniquePtr<IOperator> CreateOperator(const FBuildOperatorParams& InParams, FBuildResults& OutResults) override
 				{
-					if (InParams.InputDataReferences.ContainsDataReadReference<TDataType>(GetSendInputName()))
+					using namespace SendVertexNames;
+
+					if (InParams.InputData.IsVertexBound(GetSendInputName()))
 					{
-						return MakeUnique<TSendOperator>(InParams.InputDataReferences.GetDataReadReference<TDataType>(GetSendInputName()),
-							InParams.InputDataReferences.GetDataReadReferenceOrConstruct<FSendAddress>(GetAddressInputName()),
+						return MakeUnique<TSendOperator>(InParams.InputData.GetDataReadReference<TDataType>(GetSendInputName()),
+							InParams.InputData.GetOrConstructDataReadReference<FSendAddress>(METASOUND_GET_PARAM_NAME(AddressInput)),
 							InParams.OperatorSettings
 						);
 					}

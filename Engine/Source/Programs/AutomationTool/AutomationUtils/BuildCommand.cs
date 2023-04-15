@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using EpicGames.Core;
 using UnrealBuildBase;
 
@@ -159,7 +160,7 @@ namespace AutomationTool
 		/// Parses an argument as an enum.
 		/// </summary>
 		/// <param name="Param">Name of the parameter to read.</param>
-		/// <returns>Returns the value that was parsed.
+		/// <returns>Returns the value that was parsed.</returns>
 		public Nullable<T> ParseOptionalEnumParam<T>(string Param) where T : struct
 		{
 			string ValueString = ParseParamValue(Param);
@@ -182,7 +183,7 @@ namespace AutomationTool
 		/// Parses an argument as an enum. Throws an exception if the parameter is not specified.
 		/// </summary>
 		/// <param name="Param">Name of the parameter to read.</param>
-		/// <returns>Returns the value that was parsed.
+		/// <returns>Returns the value that was parsed.</returns>
 		public T ParseRequiredEnumParamEnum<T>(string Param) where T : struct
 		{
 			Nullable<T> Value = ParseOptionalEnumParam<T>(Param);
@@ -342,6 +343,14 @@ namespace AutomationTool
 		{
 			ExecuteBuild();
 			return ExitCode.Success;
+		}
+
+		/// <summary>
+		/// Async command entry point.
+		/// </summary>
+		public virtual Task<ExitCode> ExecuteAsync()
+		{
+			return Task.FromResult(Execute());
 		}
 
 		/// <summary>

@@ -19,7 +19,7 @@
 #include "Engine/HLODProxy.h"
 #include "Serialization/ArchiveCrc32.h"
 
-#include "HLODBuilderInstancing.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilderMeshSimplify)
 
 
 UHLODBuilderMeshSimplify::UHLODBuilderMeshSimplify(const FObjectInitializer& ObjectInitializer)
@@ -72,30 +72,45 @@ TArray<UActorComponent*> UHLODBuilderMeshSimplify::Build(const FHLODBuildContext
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UHLODBuilderMeshSimplifySettings::Build);
 
-	TArray<UStaticMeshComponent*> StaticMeshComponents;
-	TArray<UActorComponent*> InstancedComponents;
-
-	// Filter the input components
-	for (UStaticMeshComponent* SubComponent : FilterComponents<UStaticMeshComponent>(InSourceComponents))
-	{
-		switch (SubComponent->HLODBatchingPolicy)
-		{
-		case EHLODBatchingPolicy::None:
-			StaticMeshComponents.Add(SubComponent);
-			break;
-		case EHLODBatchingPolicy::Instancing:
-			InstancedComponents.Add(SubComponent);
-			break;
-		case EHLODBatchingPolicy::MeshSection:
-			InstancedComponents.Add(SubComponent);
-			UE_LOG(LogHLODBuilder, Warning, TEXT("EHLODBatchingPolicy::MeshSection is not yet supported by the UHLODBuilderMeshSimplify builder."));
-			break;
-		}
-	}
+	TArray<UStaticMeshComponent*> StaticMeshComponents = FilterComponents<UStaticMeshComponent>(InSourceComponents);
 
 	const UHLODBuilderMeshSimplifySettings* MeshSimplifySettings = CastChecked<UHLODBuilderMeshSimplifySettings>(HLODBuilderSettings);
-	const FMeshProxySettings& UseSettings = MeshSimplifySettings->MeshSimplifySettings;
-	UMaterial* HLODMaterial = MeshSimplifySettings->HLODMaterial.LoadSynchronous();
+	FMeshProxySettings UseSettings = MeshSimplifySettings->MeshSimplifySettings; // Make a copy as we may tweak some values
+	UMaterialInterface* HLODMaterial = MeshSimplifySettings->HLODMaterial.LoadSynchronous();
+
+	// When using automatic textuse sizing based on draw distance, use the MinVisibleDistance for this HLOD.
+	if (UseSettings.MaterialSettings.TextureSizingType == TextureSizingType_AutomaticFromMeshDrawDistance)
+	{
+		UseSettings.MaterialSettings.MeshMinDrawDistance = InHLODBuildContext.MinVisibleDistance;
+	}
+
+	// Generate a projection matrix.
+	static const float ScreenX = 1920;
+	static const float ScreenY = 1080;
+	static const float HalfFOVRad = FMath::DegreesToRadians(45.0f);
+	static const FMatrix ProjectionMatrix = FPerspectiveMatrix(HalfFOVRad, ScreenX, ScreenY, 0.01f);
+
+	// Gather bounds of the input components
+	auto GetComponentsBounds = [&]() -> FBoxSphereBounds
+	{
+		FBoxSphereBounds Bounds;
+		bool bFirst = true;
+
+		for (UActorComponent* Component : InSourceComponents)
+		{
+			if (USceneComponent* SceneComponent = Cast<USceneComponent>(Component))
+			{
+				FBoxSphereBounds ComponentBounds = SceneComponent->Bounds;
+				Bounds = bFirst ? ComponentBounds : Bounds + ComponentBounds;
+				bFirst = false;
+			}
+		}
+
+		return Bounds;
+	};
+
+	float ScreenSizePercent = ComputeBoundsScreenSize(FVector::ZeroVector, GetComponentsBounds().SphereRadius, FVector(0.0f, 0.0f, InHLODBuildContext.MinVisibleDistance), ProjectionMatrix);
+	UseSettings.ScreenSize = ScreenSizePercent * ScreenX;
 
 	TArray<UObject*> Assets;
 	FCreateProxyDelegate ProxyDelegate;
@@ -104,27 +119,22 @@ TArray<UActorComponent*> UHLODBuilderMeshSimplify::Build(const FHLODBuildContext
 	const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
 	MeshMergeUtilities.CreateProxyMesh(StaticMeshComponents, UseSettings, HLODMaterial, InHLODBuildContext.AssetsOuter->GetPackage(), InHLODBuildContext.AssetsBaseName, FGuid::NewGuid(), ProxyDelegate, true);
 
-	UStaticMeshComponent* Component = nullptr;
-	Algo::ForEach(Assets, [this, &Component](UObject* Asset)
+
+	TArray<UActorComponent*> Components;
+
+	Algo::ForEach(Assets, [this, &Components](UObject* Asset)
 	{
 		Asset->ClearFlags(RF_Public | RF_Standalone);
 
 		if (Cast<UStaticMesh>(Asset))
 		{
-			Component = NewObject<UStaticMeshComponent>();
-			Component->SetStaticMesh(static_cast<UStaticMesh*>(Asset));
+			UStaticMeshComponent* SMComponent = NewObject<UStaticMeshComponent>();
+			SMComponent->SetStaticMesh(static_cast<UStaticMesh*>(Asset));
+
+			Components.Add(SMComponent);
 		}
 	});
-
-	TArray<UActorComponent*> Components;
-	Components.Add(Component);
-
-	// Batch instances
-	if (InstancedComponents.Num())
-	{
-		UHLODBuilderInstancing* InstancingHLODBuilder = NewObject<UHLODBuilderInstancing>();
-		Components.Append(InstancingHLODBuilder->Build(InHLODBuildContext, InstancedComponents));
-	}
-
+	
 	return Components;
 }
+

@@ -10,18 +10,18 @@
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/SViewport.h"
 #include "FileHelpers.h"
-#include "ARFilter.h"
+#include "AssetRegistry/ARFilter.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "ContentBrowserDataSource.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Toolkits/GlobalEditorCommonCommands.h"
 #include "FrontendFilterBase.h"
 #include "Slate/SceneViewport.h"
@@ -57,7 +57,7 @@ TSharedPtr<SWidget> SAssetAuditBrowser::OnGetAssetContextMenu(const TArray<FAsse
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("Load", "Load..."),
 			LOCTEXT("LoadTooltip", "Loads selected assets into memory."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.OpenLevel"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.OpenLevel"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &SAssetAuditBrowser::LoadSelectedAssets),
 				FCanExecuteAction::CreateSP(this, &SAssetAuditBrowser::IsAnythingSelected)
@@ -67,7 +67,7 @@ TSharedPtr<SWidget> SAssetAuditBrowser::OnGetAssetContextMenu(const TArray<FAsse
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("SaveSelectedAssets", "Save..."),
 			LOCTEXT("SaveSelectedAssets_ToolTip", "Save the selected assets."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Save"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Save"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &SAssetAuditBrowser::SaveSelectedAssets),
 				FCanExecuteAction::CreateSP(this, &SAssetAuditBrowser::IsAnythingSelectedAndLoaded)
@@ -128,22 +128,22 @@ void SAssetAuditBrowser::GetSelectedPackages(const TArray<FAssetData>& Assets, T
 void SAssetAuditBrowser::EditSelectedAssets() const
 {
 	TArray<FAssetData> Assets = GetCurrentSelectionDelegate.Execute();
-	TArray<FName> AssetNames;
+	TArray<FSoftObjectPath> AssetPaths;
 
 	for (FAssetData& AssetData : Assets)
 	{
-		AssetNames.Add(AssetData.ObjectPath);
+		AssetPaths.Add(AssetData.GetSoftObjectPath());
 	}
 
-	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetNames);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetPaths);
 }
 
 void SAssetAuditBrowser::OnRequestOpenAsset(const FAssetData& AssetData) const
 {
-	TArray<FName> AssetNames;
-	AssetNames.Add(AssetData.ObjectPath);
+	TArray<FSoftObjectPath> AssetPaths;
+	AssetPaths.Add(AssetData.GetSoftObjectPath());
 
-	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetNames);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetPaths);
 }
 
 void SAssetAuditBrowser::SaveSelectedAssets() const
@@ -289,7 +289,6 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 	Config.GetCurrentSelectionDelegates.Add(&GetCurrentSelectionDelegate);
 	Config.SetFilterDelegates.Add(&SetFilterDelegate);
 	Config.bFocusSearchBoxWhenOpened = false;
-	Config.bPreloadAssetsForContextMenu = false;
 
 	Config.SaveSettingsName = SettingsIniSection;
 	
@@ -329,15 +328,15 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		[
 			SNew(SButton)
 			.OnClicked(this, &SAssetAuditBrowser::OnGoBackInHistory)
-			.ForegroundColor(FEditorStyle::GetSlateColor(DefaultForegroundName))
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+			.ForegroundColor(FAppStyle::GetSlateColor(DefaultForegroundName))
+			.ButtonStyle(FAppStyle::Get(), "FlatButton")
 			.ContentPadding(FMargin(1, 0))
 			.IsEnabled(this, &SAssetAuditBrowser::CanStepBackwardInHistory)
 			.ToolTipText(LOCTEXT("Backward_Tooltip", "Step backward in the asset history. Right click to see full history."))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(FText::FromString(FString(TEXT("\xf060"))) /*fa-arrow-left*/)
 			]
 		];
@@ -348,15 +347,15 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		[
 			SNew(SButton)
 			.OnClicked(this, &SAssetAuditBrowser::OnGoForwardInHistory)
-			.ForegroundColor(FEditorStyle::GetSlateColor(DefaultForegroundName))
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+			.ForegroundColor(FAppStyle::GetSlateColor(DefaultForegroundName))
+			.ButtonStyle(FAppStyle::Get(), "FlatButton")
 			.ContentPadding(FMargin(1, 0))
 			.IsEnabled(this, &SAssetAuditBrowser::CanStepForwardInHistory)
 			.ToolTipText(LOCTEXT("Forward_Tooltip", "Step forward in the asset history. Right click to see full history."))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+				.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+				.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 				.Text(FText::FromString(FString(TEXT("\xf061"))) /*fa-arrow-right*/)
 			]
 		];
@@ -370,7 +369,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 			SNew(SBorder)
 			.Visibility(this, &SAssetAuditBrowser::GetHistoryVisibility)
 			.Padding(FMargin(3))
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			[
 				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -382,7 +381,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.OnMouseButtonDown(this, &SAssetAuditBrowser::OnMouseDownHistory, TWeakPtr<SMenuAnchor>(BackMenuAnchorPtr))
-						.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+						.BorderImage( FAppStyle::GetBrush("NoBorder") )
 						[
 							BackMenuAnchorPtr
 						]
@@ -393,7 +392,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.OnMouseButtonDown(this, &SAssetAuditBrowser::OnMouseDownHistory, TWeakPtr<SMenuAnchor>(FwdMenuAnchorPtr))
-						.BorderImage( FEditorStyle::GetBrush("NoBorder") )
+						.BorderImage( FAppStyle::GetBrush("NoBorder") )
 						[
 							FwdMenuAnchorPtr
 						]
@@ -509,7 +508,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.Padding(FMargin(3))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(Config)
 			]
@@ -798,17 +797,17 @@ void SAssetAuditBrowser::AddAssetsOfClass(UClass* AssetClass)
 	{
 		TArray<FAssetData> FoundData;
 		FARFilter AssetFilter;
-		TSet<FName> DerivedClassNames;
+		TSet<FTopLevelAssetPath> DerivedClassNames;
 		bool bAssetClassIsBlueprint = AssetClass->IsChildOf(UBlueprintCore::StaticClass());
 
-		AssetFilter.ClassNames.Add(AssetClass->GetFName());
+		AssetFilter.ClassPaths.Add(AssetClass->GetClassPathName());
 		AssetFilter.bRecursiveClasses = true;
 
 		if (!bAssetClassIsBlueprint)
 		{
 			// If we didn't search specifically for a Blueprint class, find the derived class and look for all blueprints of those derived classes
-			AssetRegistry->GetDerivedClassNames(AssetFilter.ClassNames, TSet<FName>(), DerivedClassNames);
-			AssetFilter.ClassNames.Add(UBlueprintCore::StaticClass()->GetFName());
+			AssetRegistry->GetDerivedClassNames(AssetFilter.ClassPaths, TSet<FTopLevelAssetPath>(), DerivedClassNames);
+			AssetFilter.ClassPaths.Add(UBlueprintCore::StaticClass()->GetClassPathName());
 		}
 		
 		if (AssetRegistry->GetAssets(AssetFilter, FoundData) && FoundData.Num() > 0)
@@ -817,7 +816,7 @@ void SAssetAuditBrowser::AddAssetsOfClass(UClass* AssetClass)
 
 			for (FAssetData& AssetData : FoundData)
 			{
-				if (!bAssetClassIsBlueprint && AssetData.AssetClass.ToString().EndsWith(TEXT("Blueprint")))
+				if (!bAssetClassIsBlueprint && AssetData.AssetClassPath.GetAssetName().ToString().EndsWith(TEXT("Blueprint")))
 				{
 					// This is a blueprint but the filter type wasn't, check the derived class list
 					if (!AssetManager->IsAssetDataBlueprintOfClassSet(AssetData, DerivedClassNames))

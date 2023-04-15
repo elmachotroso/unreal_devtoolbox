@@ -39,15 +39,15 @@ private:
 
 	/** Called when the ParentFixtureType property changed */
 	void OnParentFixtureTypeChanged(UDMXEntity* NewTemplate) const;
-	
-	/** Called when the ActiveMode property changed */
-	void OnActiveModeChanged(const TSharedPtr<uint32> InSelectedMode, ESelectInfo::Type SelectInfo);
 
 	/** Called when a Mode in the Modes Array property changed */
 	void OnFixtureTypeChanged(const UDMXEntityFixtureType* FixtureType);
 
-	/** Called when the bAutoAssignAddress property changed */
-	void OnAutoAssignAddressChanged();
+	/** Called when the UniverseID property changed */
+	void OnUniverseIDChanged();
+
+	/** Called when the ActiveMode property changed */
+	void OnActiveModeChanged(const TSharedPtr<uint32> InSelectedMode, ESelectInfo::Type SelectInfo);
 
 	/** Generates the Array of available mode in the ActiveModeSource member array */
 	void GenerateActiveModesSource();
@@ -70,11 +70,11 @@ private:
 	/** Handle for the ParentFixtureType property */
 	TSharedPtr<IPropertyHandle> ParentFixtureTypeHandle;
 
+	/** Handle for the UniverseID property */
+	TSharedPtr<IPropertyHandle> UniverseIDHandle;
+
 	/** Handle for the ActiveMode property */
 	TSharedPtr<IPropertyHandle> ActiveModeHandle;
-
-	/** Handle for the bAutoAssignAddress property */
-	TSharedPtr<IPropertyHandle> AutoAssignAddressHandle;
 
 	/** ComboBox that displays the ActiveMode property */
 	TSharedPtr<SComboBox<TSharedPtr<uint32>>> ActiveModeComboBox;

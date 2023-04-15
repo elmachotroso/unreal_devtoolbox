@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Physics/PhysicsFiltering.h"
-
+#include "CollisionQueryParams.h"
 
 //////////////////////////////////////////////////////////////////////////
 // FPhysicsFilterBuilder
@@ -27,7 +27,3 @@ FPhysicsFilterBuilder::FPhysicsFilterBuilder(TEnumAsByte<enum ECollisionChannel>
 
 	Word3 = CreateChannelAndFilter(InObjectType, MaskFilter);
 }
-
-#if PHYSICS_INTERFACE_PHYSX
-PxSimulationFilterShader GSimulationFilterShader = nullptr;
-#endif // WITH_PHYSX

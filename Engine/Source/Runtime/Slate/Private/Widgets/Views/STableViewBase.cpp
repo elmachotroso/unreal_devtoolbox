@@ -17,6 +17,8 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListPanel.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(STableViewBase)
+
 namespace ListConstants
 {
 	static const float OvershootMax = 150.0f;
@@ -50,7 +52,7 @@ FTableViewDimensions::FTableViewDimensions(EOrientation InOrientation, const FVe
 	}
 }
 
-void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled, const FScrollBarStyle* InScrollBarStyle )
+void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, const TAttribute<float>& InItemHeight, const TAttribute<EListItemAlignment>& InItemAlignment, const TSharedPtr<SHeaderRow>& InHeaderRow, const TSharedPtr<SScrollBar>& InScrollBar, EOrientation InScrollOrientation, const FOnTableViewScrolled& InOnTableViewScrolled, const FScrollBarStyle* InScrollBarStyle, const bool bInPreventThrottling )
 {
 	bItemsNeedRefresh = true;
 	
@@ -69,6 +71,15 @@ void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, co
 		.ItemAlignment(InItemAlignment)
 		.ListOrientation(Orientation);
 
+	PinnedItemsPanel = SNew(SListPanel)
+		.Clipping(GetClipping())
+		.ItemWidth(InItemWidth)
+		.ItemHeight(InItemHeight)
+		.NumDesiredItems(this, &STableViewBase::GetNumPinnedItems)
+		.ItemAlignment(InItemAlignment)
+		.ListOrientation(Orientation)
+		.Visibility(this, &STableViewBase::GetPinnedItemsVisiblity);
+
 	TSharedPtr<SWidget> ListAndScrollbar;
 	if (InScrollBar)
 	{
@@ -83,7 +94,8 @@ void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, co
 		ScrollBar = SNew(SScrollBar)
 			.OnUserScrolled(this, &STableViewBase::ScrollBar_OnUserScrolled)
 			.Orientation(Orientation)
-			.Style(InScrollBarStyle ? InScrollBarStyle : &FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"));
+			.Style(InScrollBarStyle ? InScrollBarStyle : &FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"))
+			.PreventThrottling(bInPreventThrottling);
 
 		const FOptionalSize ScrollBarSize(16.f);
 
@@ -93,7 +105,17 @@ void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, co
 				+SHorizontalBox::Slot()
 				.FillWidth(1)
 				[
-					ItemsPanel.ToSharedRef()
+					SNew(SVerticalBox)
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						PinnedItemsPanel.ToSharedRef()
+					]
+					+SVerticalBox::Slot()
+					.FillHeight(1)
+					[
+						ItemsPanel.ToSharedRef()
+					]
 				]
 				+SHorizontalBox::Slot()
 				.AutoWidth()
@@ -111,7 +133,17 @@ void STableViewBase::ConstructChildren( const TAttribute<float>& InItemWidth, co
 				+SVerticalBox::Slot()
 				.FillHeight(1)
 				[
-					ItemsPanel.ToSharedRef()
+					SNew(SVerticalBox)
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						PinnedItemsPanel.ToSharedRef()
+					]
+					+SVerticalBox::Slot()
+					.FillHeight(1)
+					[
+						ItemsPanel.ToSharedRef()
+					]
 				]
 				+SVerticalBox::Slot()
 				.AutoHeight()
@@ -247,7 +279,10 @@ void STableViewBase::Tick( const FGeometry& AllottedGeometry, const double InCur
 	if (ItemsPanel.IsValid())
 	{
 		FGeometry PanelGeometry = FindChildGeometry( AllottedGeometry, ItemsPanel.ToSharedRef() );
-		if ( bItemsNeedRefresh || PanelGeometryLastTick.GetLocalSize() != PanelGeometry.GetLocalSize())
+
+		bool bPanelGeometryChanged = PanelGeometryLastTick.GetLocalSize() != PanelGeometry.GetLocalSize();
+		
+		if ( bItemsNeedRefresh || bPanelGeometryChanged)
 		{
 			PanelGeometryLastTick = PanelGeometry;
 			
@@ -344,6 +379,10 @@ void STableViewBase::Tick( const FGeometry& AllottedGeometry, const double InCur
 				// Either we haven't made the item yet or we still have scrolling to do, so we'll need another refresh next frame
 				// We call this rather than just leave bItemsNeedRefresh as true to ensure that EnsureTickToRefresh is registered
 				RequestLayoutRefresh();
+			}
+			else if (CurrentScrollOffset == TargetScrollOffset)
+			{
+				NotifyFinishedScrolling();
 			}
 		}
 	}
@@ -786,12 +825,12 @@ float STableViewBase::ScrollTo( float InScrollOffset)
 	const float NewScrollOffset = FMath::Clamp( InScrollOffset, -10.0f, GetNumItemsBeingObserved()+10.0f );
 	float AmountScrolled = FMath::Abs( DesiredScrollOffset - NewScrollOffset );
 
-	SetScrollOffset( NewScrollOffset );
-	
-	if ( bWasAtEndOfList && NewScrollOffset >= DesiredScrollOffset )
+	if (bWasAtEndOfList && NewScrollOffset >= DesiredScrollOffset)
 	{
 		AmountScrolled = 0;
 	}
+
+	SetScrollOffset( NewScrollOffset );
 
 	return AmountScrolled;
 }
@@ -906,6 +945,32 @@ void STableViewBase::AppendWidget( const TSharedRef<ITableRow>& WidgetToAppend )
 void STableViewBase::ClearWidgets()
 {
 	ItemsPanel->ClearItems();
+}
+
+const FChildren* STableViewBase::GetConstructedTableItems() const
+{
+	return ItemsPanel->GetChildren();
+}
+
+void STableViewBase::InsertPinnedWidget( const TSharedRef<SWidget> & WidgetToInset )
+{
+	PinnedItemsPanel->AddSlot(0)
+	[
+		WidgetToInset
+	];
+}
+
+void STableViewBase::AppendPinnedWidget( const TSharedRef<SWidget>& WidgetToAppend )
+{
+	PinnedItemsPanel->AddSlot()
+	[
+		WidgetToAppend
+	];
+}
+
+void STableViewBase::ClearPinnedWidgets()
+{
+	PinnedItemsPanel->ClearItems();
 }
 
 float STableViewBase::GetItemWidth() const
@@ -1052,6 +1117,16 @@ bool STableViewBase::CanUseInertialScroll( float ScrollAmount ) const
 	// We allow sampling for the inertial scroll if we are not in the overscroll region,
 	// Or if we are scrolling outwards of the overscroll region
 	return CurrentOverscroll == 0.f || FMath::Sign(CurrentOverscroll) != FMath::Sign(ScrollAmount);
+}
+
+int32 STableViewBase::GetNumPinnedItems() const
+{
+	return PinnedItemsPanel->GetChildren()->Num();
+}
+
+EVisibility STableViewBase::GetPinnedItemsVisiblity() const
+{
+	return PinnedItemsPanel->GetChildren()->Num() != 0 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 static const TBitArray<> EmptyBitArray = TBitArray<>();

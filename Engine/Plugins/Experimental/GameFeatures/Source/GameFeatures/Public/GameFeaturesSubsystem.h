@@ -6,6 +6,7 @@
 #include "Subsystems/EngineSubsystem.h"
 #include "GameFeaturePluginOperationResult.h"
 #include "Engine/Engine.h"
+#include "GameFeatureTypesFwd.h"
 
 #include "GameFeaturesSubsystem.generated.h"
 
@@ -15,10 +16,38 @@ struct FStreamableHandle;
 struct FAssetIdentifier;
 class UGameFeatureData;
 class UGameFeaturesProjectPolicies;
-enum class EGameFeaturePluginState : uint8;
 class IPlugin;
 class FJsonObject;
 struct FWorldContext;
+struct FGameFeaturePluginStateRange;
+enum class EInstallBundleRequestFlags : uint32;
+enum class EInstallBundleReleaseRequestFlags : uint32;
+
+/** Holds static global information about how our PluginURLs are structured */
+namespace UE::GameFeatures
+{
+	namespace PluginURLStructureInfo
+	{
+		extern const TCHAR* OptionAssignOperator;
+		extern const TCHAR* OptionSeperator;
+	};
+
+	namespace CommonErrorCodes
+	{
+		extern const FString PluginNotAllowed;
+		extern const FString DependencyFailedRegister;
+		extern const FString BadURL;
+		extern const FString UnreachableState;
+		extern const FString NoURLUpdateNeeded;
+		
+		extern const FString CancelAddonCode;
+	};
+
+	namespace CommonErrorText
+	{
+		extern const FText GenericError;
+	};
+};
 
 /** 
  * Struct that determines if game feature action state changes should be applied for cases where there are multiple worlds or contexts.
@@ -94,6 +123,32 @@ private:
 	friend struct FGameFeaturePluginState_Deactivating;
 };
 
+/** Context that provides extra information for a game feature changing its pause state */
+struct FGameFeaturePauseStateChangeContext : public FGameFeatureStateChangeContext
+{
+public:
+	FGameFeaturePauseStateChangeContext(FString PauseStateNameIn, FString PauseReasonIn, bool bIsPausedIn)
+		: PauseStateName(MoveTemp(PauseStateNameIn))
+		, PauseReason(MoveTemp(PauseReasonIn))
+		, bIsPaused(bIsPausedIn)
+	{
+	}
+
+	/** Returns true if the State has paused or false if it is resuming */
+	bool IsPaused() const { return bIsPaused; }
+
+	/** Returns an FString description of why the state has paused work. */
+	const FString& GetPauseReason() const { return PauseReason; }
+
+	/** Returns an FString description of what state has issued the pause change */
+	const FString& GetPausingStateName() const { return PauseStateName; }
+
+private:
+	FString PauseStateName;
+	FString PauseReason;
+	bool bIsPaused = false;
+};
+
 GAMEFEATURES_API DECLARE_LOG_CATEGORY_EXTERN(LogGameFeatures, Log, All);
 /** Notification that a game feature plugin install/register/load/unload has finished */
 DECLARE_DELEGATE_OneParam(FGameFeaturePluginChangeStateComplete, const UE::GameFeatures::FResult& /*Result*/);
@@ -101,7 +156,15 @@ DECLARE_DELEGATE_OneParam(FGameFeaturePluginChangeStateComplete, const UE::GameF
 using FGameFeaturePluginLoadComplete = FGameFeaturePluginChangeStateComplete;
 using FGameFeaturePluginDeactivateComplete = FGameFeaturePluginChangeStateComplete;
 using FGameFeaturePluginUnloadComplete = FGameFeaturePluginChangeStateComplete;
+using FGameFeaturePluginReleaseComplete = FGameFeaturePluginChangeStateComplete;
 using FGameFeaturePluginUninstallComplete = FGameFeaturePluginChangeStateComplete;
+using FGameFeaturePluginTerminateComplete = FGameFeaturePluginChangeStateComplete;
+using FGameFeaturePluginUpdateURLComplete = FGameFeaturePluginChangeStateComplete;
+
+/** Notification delegate to be called by certain states that want to notify when they pause/resume work without leaving their current state.
+EX: Downloading can be paused due to cellular or internet connection outages without failing the download,
+but bubbling that pause information up to the user can be beneficial for messaging */
+DECLARE_DELEGATE_TwoParams(FGameFeaturePluginOnStatePausedChange, bool /*bIsPaused*/, const FString& /*PauseReason*/);
 
 /** Notification that a game feature plugin load has finished successfully and feeds back the GameFeatureData*/
 DECLARE_MULTICAST_DELEGATE_TwoParams(FGameFeaturePluginLoadCompleteDataReady, const FString& /*Name*/, const UGameFeatureData* /*Data*/);
@@ -124,8 +187,10 @@ enum class EGameFeatureTargetState : uint8
 	Installed,
 	Registered,
 	Loaded,
-	Active
+	Active,
+	Count	UMETA(Hidden)
 };
+const FString GAMEFEATURES_API LexToString(const EGameFeatureTargetState GameFeatureTargetState);
 
 struct FGameFeaturePluginDetails
 {
@@ -145,7 +210,93 @@ struct FBuiltInGameFeaturePluginBehaviorOptions
 	EBuiltInAutoState AutoStateOverride = EBuiltInAutoState::Invalid;
 };
 
+/** Struct used to transform a GameFeaturePlugin URL into something that can uniquely identify the GameFeaturePlugin
+    without including any transient data being passed in through the URL */
+USTRUCT()
+struct FGameFeaturePluginIdentifier
+{
+	GENERATED_BODY()
 
+	/** The protocol used in the URL for this GameFeaturePlugin URL */
+	EGameFeaturePluginProtocol PluginProtocol;
+
+	FGameFeaturePluginIdentifier() = default;
+	FGameFeaturePluginIdentifier(const FString& PluginURL);
+
+	/** Used to determine if 2 FGameFeaturePluginIdentifiers are referencing the same GameFeaturePlugin.
+		Only matching on Identifying information instead of all the optional bundle information */
+	bool operator==(const FGameFeaturePluginIdentifier& Other) const;
+
+	/** Function that fills out IdentifyingURLSubset from the given PluginURL */
+	void FromPluginURL(const FString& PluginURL);
+
+	/** Returns true if this FGameFeaturePluginIdentifier exactly matches the given PluginURL.
+		To match exactly all information in the PluginURL has to match and not just the IdentifyingURLSubset */
+	bool ExactMatchesURL(const FString& PluginURL) const;
+
+	/** Get the Full PluginURL used to originally construct this identifier */
+	const FString& GetFullPluginURL() const { return PluginURL; }
+
+	friend FORCEINLINE uint32 GetTypeHash(const FGameFeaturePluginIdentifier& PluginIdentifier)
+	{
+		return GetTypeHash(PluginIdentifier.IdentifyingURLSubset);
+	}
+
+private:
+	/** The part of the URL that can be used to uniquely identify this plugin without any transient data */
+	FString IdentifyingURLSubset;
+
+	/** Full PluginURL used to originally construct this identifier */
+	FString PluginURL;
+
+	//Friend class so that it can access parsed URL data from under the hood
+	friend struct FGameFeaturePluginStateMachineProperties;
+};
+
+USTRUCT()
+struct GAMEFEATURES_API FInstallBundlePluginProtocolMetaData
+{
+	GENERATED_BODY()
+
+	TArray<FName> InstallBundles;
+
+	/** Set to whatever the FDefaultValues::CurrentVersionNum was when this URL was generated.
+		Allows us to ensure if we try and load URLs generated from a previous version **/
+	uint8 VersionNum;
+
+	/** If we want to attempt to uninstall InstallBundle information installed by this plugin before terminating */
+	bool bUninstallBeforeTerminate;
+
+	/** EInstallBundleRequestFlags utilized during the download/install by InstallBundleManager */
+	EInstallBundleRequestFlags InstallBundleFlags;
+
+	/** EInstallBundleReleaseRequestFlags utilized during our release and uninstall states */
+	EInstallBundleReleaseRequestFlags ReleaseInstallBundleFlags;
+
+	/** If we want to set the Downloading state to pause because of user interaction */
+	bool bUserPauseDownload;
+
+	/** Functions to convert to/from the URL FString representation of this metadata **/
+	FString ToString() const;
+	static bool FromString(const FString& URLString, FInstallBundlePluginProtocolMetaData& OutMetadata);
+
+	/** Resets all our Metadata values to the default values */
+	void ResetToDefaults();
+
+	FInstallBundlePluginProtocolMetaData();
+
+private:
+	/** Holds default values for the above settings as they are only encoded into a string if they differ from these values */
+	struct FDefaultValues
+	{
+		static const uint32 CurrentVersionNum;
+		//Missing InstallBundles on purpose as the default is just an empty TArray and should always be encoded
+		static const bool Default_bUninstallBeforeTerminate;
+		static const bool Default_bUserPauseDownload;
+		static const EInstallBundleRequestFlags Default_InstallBundleFlags;
+		static const EInstallBundleReleaseRequestFlags Default_ReleaseInstallBundleFlags;
+	};
+};
 
 /** The manager subsystem for game features */
 UCLASS()
@@ -216,6 +367,13 @@ public:
 	static FString GetPluginURL_InstallBundleProtocol(const FString& PluginName, const FString& BundleName);
 	static FString GetPluginURL_InstallBundleProtocol(const FString& PluginName, TArrayView<const FName> BundleNames);
 	static FString GetPluginURL_InstallBundleProtocol(const FString& PluginName, FName BundleName);
+	static FString GetPluginURL_InstallBundleProtocol(const FString& PluginName, const FInstallBundlePluginProtocolMetaData& ProtocolMetadata);
+
+	/** Returns the plugin protocol for the specified URL */
+	static EGameFeaturePluginProtocol GetPluginURLProtocol(FStringView PluginURL);
+
+	/** Tests whether the plugin URL is the specified protocol */
+	static bool IsPluginURLProtocol(FStringView PluginURL, EGameFeaturePluginProtocol PluginProtocol);
 
 public:
 	/** Returns all the active plugins GameFeatureDatas */
@@ -225,7 +383,16 @@ public:
 	const UGameFeatureData* GetGameFeatureDataForActivePluginByURL(const FString& PluginURL);
 
 	/** Returns the game feature data for a registered plugin specified by PluginURL */
-	const UGameFeatureData* GetGameFeatureDataForRegisteredPluginByURL(const FString& PluginURL);
+	const UGameFeatureData* GetGameFeatureDataForRegisteredPluginByURL(const FString& PluginURL, bool bCheckForRegistering = false);
+
+	/** Determines if a plugin is in the Installed state (or beyond) */
+	bool IsGameFeaturePluginInstalled(const FString& PluginURL) const;
+
+	/** Determines if a plugin is in the Registered state (or beyond) */
+	bool IsGameFeaturePluginRegistered(const FString& PluginURL, bool bCheckForRegistering = false) const;
+
+	/** Determines if a plugin is in the Loaded state (or beyond) */
+	bool IsGameFeaturePluginLoaded(const FString& PluginURL) const;
 
 	/** Loads a single game feature plugin. */
 	void LoadGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginLoadComplete& CompleteDelegate);
@@ -235,6 +402,10 @@ public:
 
 	/** Changes the target state of a game feature plugin */
 	void ChangeGameFeatureTargetState(const FString& PluginURL, EGameFeatureTargetState TargetState, const FGameFeaturePluginChangeStateComplete& CompleteDelegate);
+
+	/** Changes the URL data of a game feature plugin. Useful to change any options data that is parsed from the URL such as settings flags */
+	void UpdateGameFeaturePluginURL(const FString& NewPluginURL);
+	void UpdateGameFeaturePluginURL(const FString& NewPluginURL, const FGameFeaturePluginUpdateURLComplete& CompleteDelegate);
 
 	/** Gets the Install_Percent for single game feature plugin if it is active. */
 	bool GetGameFeaturePluginInstallPercent(const FString& PluginURL, float& Install_Percent) const;
@@ -250,19 +421,34 @@ public:
 	void UnloadGameFeaturePlugin(const FString& PluginURL, bool bKeepRegistered = false);
 	void UnloadGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginUnloadComplete& CompleteDelegate, bool bKeepRegistered = false);
 
-	/** Uninstall the specified game feature plugin. Will remove the game feature plugin from the device if it was downloaded */
+	/** Releases any game data stored for this GameFeaturePlugin. Does not uninstall data and it will remain on disk. */
+	void ReleaseGameFeaturePlugin(const FString& PluginURL);
+	void ReleaseGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginReleaseComplete& CompleteDelegate);
+
+	/** Uninstalls any game data stored for this GameFeaturePlugin and terminates the GameFeaturePlugin.
+		If the given PluginURL is not found this will create a GameFeaturePlugin first and attempt to run it through the uninstall flow.
+		This allows for the uninstalling of data that was installed on previous runs of the application where we haven't yet requested the
+		GameFeaturePlugin that we would like to uninstall data for on this run. */
 	void UninstallGameFeaturePlugin(const FString& PluginURL);
 	void UninstallGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginUninstallComplete& CompleteDelegate);
 
-	/** Same as UninstallGameFeaturePlugin, but completely removes all tracking data associated with the plugin. */
+	/** Terminate the GameFeaturePlugin and remove all associated plugin tracking data. */
 	void TerminateGameFeaturePlugin(const FString& PluginURL);
-	void TerminateGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginUninstallComplete& CompleteDelegate);
+	void TerminateGameFeaturePlugin(const FString& PluginURL, const FGameFeaturePluginTerminateComplete& CompleteDelegate);
+	
+	/** Attempt to cancel any state change. Calls back when cancelation is complete. Any other pending callbacks will be called with a canceled error. */
+	void CancelGameFeatureStateChange(const FString& PluginURL);
+	void CancelGameFeatureStateChange(const FString& PluginURL, const FGameFeaturePluginChangeStateComplete& CompleteDelegate);
+
+	/**
+	 * If the specified plugin is known by the game feature system, returns the URL used to identify it
+	 * @return true if the plugin exists, false if it was not found
+	 */
+	bool GetPluginURLByName(const FString& PluginName, FString& OutPluginURL) const;
 
 	/** If the specified plugin is a built-in plugin, return the URL used to identify it. Returns true if the plugin exists, false if it was not found */
+	UE_DEPRECATED(5.1, "Use GetPluginURLByName instead")
 	bool GetPluginURLForBuiltInPluginByName(const FString& PluginName, FString& OutPluginURL) const;
-	
-	/** Get the plugin path from the plugin name */
-	FString GetPluginFilenameFromPluginName(const FString& PluginName);
 
 	/** Get the plugin path from the plugin URL */
 	FString GetPluginFilenameFromPluginURL(const FString& PluginURL) const;
@@ -306,35 +492,44 @@ public:
 private:
 	TSet<FString> GetActivePluginNames() const;
 
-	void OnGameFeatureTerminating(const FString& PluginURL);
+	void OnGameFeatureTerminating(const FString& PluginName, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Terminal;
 
 	void OnGameFeatureCheckingStatus(const FString& PluginURL);
 	friend struct FGameFeaturePluginState_UnknownStatus;
 
-	void OnGameFeatureRegistering(const UGameFeatureData* GameFeatureData, const FString& PluginName);
+	void OnGameFeatureStatusKnown(const FString& PluginName, const FString& PluginURL);
+	friend struct FGameFeaturePluginState_CheckingStatus;
+
+	void OnGameFeatureRegistering(const UGameFeatureData* GameFeatureData, const FString& PluginName, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Registering;
 
-	void OnGameFeatureUnregistering(const UGameFeatureData* GameFeatureData, const FString& PluginName);
+	void OnGameFeatureUnregistering(const UGameFeatureData* GameFeatureData, const FString& PluginName, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Unregistering;
 
-	void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData, const FString& PluginName, FGameFeatureActivatingContext& Context);
+	void OnGameFeatureActivating(const UGameFeatureData* GameFeatureData, const FString& PluginName, FGameFeatureActivatingContext& Context, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Activating;
 
-	void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, const FString& PluginName, FGameFeatureDeactivatingContext& Context);
+	void OnGameFeatureDeactivating(const UGameFeatureData* GameFeatureData, const FString& PluginName, FGameFeatureDeactivatingContext& Context, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Deactivating;
 
-	void OnGameFeatureLoading(const UGameFeatureData* GameFeatureData);
+	void OnGameFeatureLoading(const UGameFeatureData* GameFeatureData, const FString& PluginURL);
 	friend struct FGameFeaturePluginState_Loading;
+
+	void OnGameFeaturePauseChange(const FString& PluginURL, const FString& PluginName, FGameFeaturePauseStateChangeContext& Context);
+	friend struct FGameFeaturePluginState_Downloading;
+	friend struct FGameFeaturePluginState_Deactivating;
 
 	void OnAssetManagerCreated();
 
 	/** Scans for assets specified in the game feature data */
-	static void AddGameFeatureToAssetManager(const UGameFeatureData* GameFeatureToAdd, const FString& PluginName);
+	static void AddGameFeatureToAssetManager(const UGameFeatureData* GameFeatureToAdd, const FString& PluginName, TArray<FName>& OutNewPrimaryAssetTypes);
 
-	static void RemoveGameFeatureFromAssetManager(const UGameFeatureData* GameFeatureToRemove);
+	static void RemoveGameFeatureFromAssetManager(const UGameFeatureData* GameFeatureToRemove, const FString& PluginName, const TArray<FName>& AddedPrimaryAssetTypes);
 
 private:
+	bool ShouldUpdatePluginURLData(const FString& NewPluginURL);
+
 	const UGameFeatureData* GetDataForStateMachine(UGameFeaturePluginStateMachine* GFSM) const;
 	const UGameFeatureData* GetRegisteredDataForStateMachine(UGameFeaturePluginStateMachine* GFSM) const;
 
@@ -351,32 +546,59 @@ private:
 	UGameFeaturePluginStateMachine* FindOrCreateGameFeaturePluginStateMachine(const FString& PluginURL);
 
 	/** Notification that a game feature has finished loading, and whether it was successful */
-	void LoadGameFeaturePluginComplete(UGameFeaturePluginStateMachine* Machine, const UE::GameFeatures::FResult& Result);
+	void LoadBuiltInGameFeaturePluginComplete(const UE::GameFeatures::FResult& Result, UGameFeaturePluginStateMachine* Machine, FGameFeaturePluginStateRange RequestedDestination);
 
-	/** Notification that a game feature that was requested to be terminate has finished terminating, and whether it was successful. */
-	void TerminateGameFeaturePluginComplete(UGameFeaturePluginStateMachine* Machine, const UE::GameFeatures::FResult& Result, FGameFeaturePluginUninstallComplete CompleteDelegate);
+	/** Sets a new destination state. Will attempt to cancel the current transition if the new destination is incompatible with the current destination */
+	void ChangeGameFeatureDestination(UGameFeaturePluginStateMachine* Machine, const FGameFeaturePluginStateRange& StateRange, FGameFeaturePluginChangeStateComplete CompleteDelegate);
 
 	/** Generic notification that calls the Complete delegate without broadcasting anything else.*/
-	void ChangeGameFeatureTargetStateComplete(UGameFeaturePluginStateMachine* Machine, const UE::GameFeatures::FResult& Result, FGameFeaturePluginUninstallComplete CompleteDelegate);
+	void ChangeGameFeatureTargetStateComplete(UGameFeaturePluginStateMachine* Machine, const UE::GameFeatures::FResult& Result, FGameFeaturePluginChangeStateComplete CompleteDelegate);
+
+	void BeginTermination(UGameFeaturePluginStateMachine* Machine);
+	void FinishTermination(UGameFeaturePluginStateMachine* Machine);
+	friend class UGameFeaturePluginStateMachine;
 
 	/** Handler for when a state machine requests its dependencies. Returns false if the dependencies could not be read */
-	bool HandleRequestPluginDependencyStateMachines(const FString& PluginFilename, TArray<UGameFeaturePluginStateMachine*>& OutDependencyMachines);
+	bool FindOrCreatePluginDependencyStateMachines(const FString& PluginFilename, TArray<UGameFeaturePluginStateMachine*>& OutDependencyMachines);
+	friend struct FGameFeaturePluginState_WaitingForDependencies;
 
 	/** Handle 'ListGameFeaturePlugins' console command */
 	void ListGameFeaturePlugins(const TArray<FString>& Args, UWorld* InWorld, FOutputDevice& Ar);
 
+	enum class EObserverCallback
+	{
+		CheckingStatus,
+		Terminating,
+		Registering,
+		Unregistering,
+		Loading,
+		Activating,
+		Deactivating,
+		PauseChanged,
+		Count
+	};
+
+	void CallbackObservers(EObserverCallback CallbackType, const FString& PluginURL, 
+		const FString* PluginName = nullptr, 
+		const UGameFeatureData* GameFeatureData = nullptr, 
+		FGameFeatureStateChangeContext* StateChangeContext = nullptr);
+
 private:
 	/** The list of all game feature plugin state machine objects */
 	UPROPERTY(Transient)
-	TMap<FString, UGameFeaturePluginStateMachine*> GameFeaturePluginStateMachines;
+	TMap<FGameFeaturePluginIdentifier, TObjectPtr<UGameFeaturePluginStateMachine>> GameFeaturePluginStateMachines;
+
+	/** Game feature plugin state machine objects that are being terminated. Used to prevent GC until termination is complete. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UGameFeaturePluginStateMachine>> TerminalGameFeaturePluginStateMachines;
 
 	TMap<FString, FString> GameFeaturePluginNameToPathMap;
 
 	UPROPERTY()
-	TArray<UObject*> Observers;
+	TArray<TObjectPtr<UObject>> Observers;
 
 	UPROPERTY(Transient)
-	UGameFeaturesProjectPolicies* GameSpecificPolicies;
+	TObjectPtr<UGameFeaturesProjectPolicies> GameSpecificPolicies;
 
 	bool bInitializedPolicyManager = false;
 };

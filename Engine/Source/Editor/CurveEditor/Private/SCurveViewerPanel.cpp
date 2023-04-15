@@ -1,12 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCurveViewerPanel.h"
-#include "Rendering/DrawElements.h"
+
+#include "Containers/Map.h"
+#include "Containers/SortedMap.h"
 #include "CurveDrawInfo.h"
-#include "EditorStyleSet.h"
+#include "CurveEditor.h"
+#include "CurveEditorTypes.h"
+#include "Layout/Clipping.h"
+#include "Layout/Geometry.h"
+#include "Layout/PaintGeometry.h"
+#include "Math/Color.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
 #include "Misc/Attribute.h"
-#include "CurveEditorScreenSpace.h"
+#include "Misc/Optional.h"
+#include "Rendering/DrawElements.h"
+#include "Templates/Less.h"
+#include "Templates/UniquePtr.h"
 #include "Views/SInteractiveCurveEditorView.h"
+
+class FCurveModel;
+class FPaintArgs;
+class FSlateRect;
+class FWidgetStyle;
 
 #define LOCTEXT_NAMESPACE "SCurveViewerPanel"
 
@@ -70,13 +87,20 @@ void SCurveViewerPanel::DrawCurves(const FGeometry& AllottedGeometry, FSlateWind
 				const FKeyDrawInfo& PointDrawInfo = Params.GetKeyDrawInfo(Point.Type, PointIndex);
 
 				const int32 KeyLayerId = BaseLayerId + Point.LayerBias + CurveViewConstants::ELayerOffset::Keys;
+				FLinearColor PointTint = PointDrawInfo.Tint.IsSet() ? PointDrawInfo.Tint.GetValue() : Params.Color;
+
+				// Brighten and saturate the points a bit so they pop
+				FLinearColor HSV = PointTint.LinearRGBToHSV();
+				HSV.G = FMath::Clamp(HSV.G * 1.1f, 0.f, 255.f);
+				HSV.B = FMath::Clamp(HSV.B * 2.f, 0.f, 255.f);
+				PointTint = HSV.HSVToLinearRGB();
 
 				FPaintGeometry PointGeometry = AllottedGeometry.ToPaintGeometry(
 					Point.ScreenPosition - (PointDrawInfo.ScreenSize * 0.5f),
 					PointDrawInfo.ScreenSize
 				);
 
-				FSlateDrawElement::MakeBox(OutDrawElements, KeyLayerId, PointGeometry, PointDrawInfo.Brush, DrawEffects, PointDrawInfo.Tint);
+				FSlateDrawElement::MakeBox(OutDrawElements, KeyLayerId, PointGeometry, PointDrawInfo.Brush, DrawEffects, PointTint );
 			}
 		}
 	}

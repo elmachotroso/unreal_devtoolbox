@@ -1,10 +1,36 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditModes/TwoBoneIKEditMode.h"
-#include "SceneManagement.h"
-#include "EngineUtils.h"
-#include "IPersonaPreviewScene.h"
+
+#include "AnimGraphNode_Base.h"
+#include "AnimGraphNode_TwoBoneIK.h"
 #include "Animation/DebugSkelMeshComponent.h"
+#include "BoneContainer.h"
+#include "BoneControllers/AnimNode_TwoBoneIK.h"
+#include "BonePose.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Containers/EnumAsByte.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/SkeletalMesh.h"
+#include "GenericPlatform/ICursor.h"
+#include "HitProxies.h"
+#include "IPersonaPreviewScene.h"
+#include "Math/Color.h"
+#include "Math/Matrix.h"
+#include "Math/Rotator.h"
+#include "Math/Transform.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector.h"
+#include "Misc/AssertionMacros.h"
+#include "SceneManagement.h"
+#include "Templates/Casts.h"
+#include "UObject/ObjectPtr.h"
+
+class FSceneView;
+class FViewport;
+class USkeleton;
+struct FAnimNode_Base;
+struct FPropertyChangedEvent;
 
 struct HTwoBoneIKProxy : public HHitProxy
 {
@@ -56,9 +82,9 @@ void FTwoBoneIKEditMode::ExitMode()
 void FTwoBoneIKEditMode::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
 	USkeletalMeshComponent* SkelMeshComp = GetAnimPreviewScene().GetPreviewMeshComponent();
-	if (SkelMeshComp && SkelMeshComp->SkeletalMesh && SkelMeshComp->SkeletalMesh->GetSkeleton())
+	if (SkelMeshComp && SkelMeshComp->GetSkeletalMeshAsset() && SkelMeshComp->GetSkeletalMeshAsset()->GetSkeleton())
 	{
-		USkeleton* Skeleton = SkelMeshComp->SkeletalMesh->GetSkeleton();
+		USkeleton* Skeleton = SkelMeshComp->GetSkeletalMeshAsset()->GetSkeleton();
 
 		PDI->SetHitProxy(new HTwoBoneIKProxy(BSM_EndEffector));
 		DrawTargetLocation(PDI, BSM_EndEffector, FColor(255, 128, 128), FColor(180, 128, 128));

@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "AnimTimelineTrack_MontagePanel.h"
+#include "AnimTimeline/AnimTimelineTrack_MontagePanel.h"
 #include "SAnimMontagePanel.h"
 #include "Animation/AnimComposite.h"
 #include "PersonaUtils.h"
@@ -9,7 +9,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Images/SImage.h"
-#include "AnimModel_AnimMontage.h"
+#include "AnimTimeline/AnimModel_AnimMontage.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_MontagePanel"
 
@@ -90,8 +90,8 @@ void FAnimTimelineTrack_MontagePanel::RefreshOutlinerWidget()
 		SlotBox->SetContent(
 			SNew(SBorder)
 			.ToolTipText_Lambda(LabelLambda)
-			.BorderImage(FEditorStyle::GetBrush("Sequencer.Section.BackgroundTint"))
-			.BorderBackgroundColor(FEditorStyle::GetColor("AnimTimeline.Outliner.ItemColor"))
+			.BorderImage(FAppStyle::GetBrush("Sequencer.Section.BackgroundTint"))
+			.BorderBackgroundColor(FAppStyle::GetColor("AnimTimeline.Outliner.ItemColor"))
 			[
 				SAssignNew(HorizontalBox, SHorizontalBox)
 				+SHorizontalBox::Slot()
@@ -107,7 +107,7 @@ void FAnimTimelineTrack_MontagePanel::RefreshOutlinerWidget()
 					.AutoWidth()
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("AnimSlotManager.Warning"))
+						.Image(FAppStyle::GetBrush("AnimSlotManager.Warning"))
 						.Visibility(this, &FAnimTimelineTrack_MontagePanel::GetSlotWarningVisibility, SlotIndex)
 						.ToolTipText(this, &FAnimTimelineTrack_MontagePanel::GetSlotWarningText, SlotIndex)
 					]
@@ -116,7 +116,7 @@ void FAnimTimelineTrack_MontagePanel::RefreshOutlinerWidget()
 					.FillWidth(1.0f)
 					[
 						SNew(STextBlock)
-						.TextStyle(&FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimTimeline.Outliner.Label"))
+						.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("AnimTimeline.Outliner.Label"))
 						.Text_Lambda(LabelLambda)
 					]
 				]

@@ -22,6 +22,8 @@
 #include "Animation/AnimSubsystemInstance.h"
 #include "Engine/PoseWatch.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimBlueprintGeneratedClass)
+
 /////////////////////////////////////////////////////
 // FStateMachineDebugData
 
@@ -229,7 +231,7 @@ void FAnimBlueprintDebugData::RecordBlendSpacePlayer(int32 InNodeID, const UBlen
 	BlendSpacePlayerRecordsThisFrame.Emplace(InNodeID, InBlendSpace, InPosition, InFilteredPosition);
 }
 
-void FAnimBlueprintDebugData::AddPoseWatch(int32 NodeID, UPoseWatch* InPoseWatch)
+void FAnimBlueprintDebugData::AddPoseWatch(int32 NodeID, UPoseWatchPoseElement* const InPoseWatchPoseElement)
 {
 	for (FAnimNodePoseWatch& PoseWatch : AnimNodePoseWatch)
 	{
@@ -239,12 +241,14 @@ void FAnimBlueprintDebugData::AddPoseWatch(int32 NodeID, UPoseWatch* InPoseWatch
 		}
 	}
 
+	check(InPoseWatchPoseElement != nullptr); // Expect a valid pointer.
+
 	//Not found so make new one
 	AnimNodePoseWatch.Add(FAnimNodePoseWatch());
 	FAnimNodePoseWatch& NewAnimNodePoseWatch = AnimNodePoseWatch.Last();
 	NewAnimNodePoseWatch.NodeID = NodeID;
-	NewAnimNodePoseWatch.PoseWatch = InPoseWatch;
-	NewAnimNodePoseWatch.PoseInfo = MakeShareable(new FCompactHeapPose());
+	NewAnimNodePoseWatch.PoseWatch = InPoseWatchPoseElement->GetParent();
+	NewAnimNodePoseWatch.PoseWatchPoseElement = InPoseWatchPoseElement;
 	NewAnimNodePoseWatch.Object = nullptr;
 }
 
@@ -256,6 +260,31 @@ void FAnimBlueprintDebugData::RemovePoseWatch(int32 NodeID)
 		{
 			AnimNodePoseWatch.RemoveAtSwap(PoseWatchIdx);
 			return;
+		}
+	}
+}
+
+void FAnimBlueprintDebugData::ForEachActiveVisiblePoseWatchPoseElement(const TFunctionRef<void(FAnimNodePoseWatch&)>& InFunction)
+{
+	for (FAnimNodePoseWatch& PoseWatchNode : AnimNodePoseWatch)
+	{
+		if (const UPoseWatchPoseElement* PoseWatchPoseElement = PoseWatchNode.PoseWatchPoseElement)
+		{
+			if (PoseWatchPoseElement->GetIsEnabled() && PoseWatchPoseElement->GetIsVisible())
+			{
+				InFunction(PoseWatchNode);
+			}
+		}
+	}
+}
+
+void FAnimBlueprintDebugData::DisableAllPoseWatches()
+{
+	for (FAnimNodePoseWatch& PoseWatchNode : AnimNodePoseWatch)
+	{
+		if (PoseWatchNode.PoseWatch)
+		{
+			PoseWatchNode.PoseWatch->SetIsNodeEnabled(false);
 		}
 	}
 }
@@ -475,14 +504,37 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 	{
 		if(UScriptStruct* ParentSparseClassDataStruct = ParentClass->GetSparseClassDataStruct())
 		{
-			if(SparseClassDataStruct && ParentSparseClassDataStruct != SparseClassDataStruct)
+			if(SparseClassDataStruct)
 			{
-				// Ensure parent is linked before setting super
-				ParentSparseClassDataStruct->Link(Ar, bRelinkExistingProperties);
-				SparseClassDataStruct->SetSuperStruct(ParentSparseClassDataStruct);
+				// Make sure there are no duplicate SparseClassDataStructs in the parent heirarchy
+				bool bAllSparseClassDataStructsUnique = true;
+				TArray<UScriptStruct*, TInlineAllocator<4>> HierarchySparseClassDataStructs;
+				HierarchySparseClassDataStructs.Add(SparseClassDataStruct);
+				for (UClass* CurClass = ParentClass; CurClass; CurClass = CurClass->GetSuperClass())
+				{
+					if (UScriptStruct* CurSparseClassDataStruct = CurClass->GetSparseClassDataStruct())
+					{
+						if (HierarchySparseClassDataStructs.Contains(CurSparseClassDataStruct))
+						{
+							bAllSparseClassDataStructsUnique = false;
+							break;
+						}
+						else
+						{
+							HierarchySparseClassDataStructs.Add(CurSparseClassDataStruct);
+						}
+					}
+				}
 
-				// Link sparse class data now it is correctly parented
-				SparseClassDataStruct->Link(Ar, bRelinkExistingProperties);
+				if (bAllSparseClassDataStructsUnique)
+				{
+					// Ensure parent is linked before setting super
+					ParentSparseClassDataStruct->Link(Ar, bRelinkExistingProperties);
+					SparseClassDataStruct->SetSuperStruct(ParentSparseClassDataStruct);
+
+					// Link sparse class data now it is correctly parented
+					SparseClassDataStruct->Link(Ar, bRelinkExistingProperties);
+				}
 			}
 		}
 	}
@@ -546,17 +598,25 @@ void UAnimBlueprintGeneratedClass::Link(FArchive& Ar, bool bRelinkExistingProper
 		}
 	}
 
-	// Must build constant properties to be able to iterate subsystems
-	BuildConstantProperties();
-	
-	ForEachSubsystem([this](const FAnimSubsystemContext& InContext)
+#if WITH_EDITORONLY_DATA
+	// With cooked data, we skip this as Link() is called on serialization and sparse class data
+	// is not properly serialized yet
+	if(!GetPackage()->bIsCookedForEditor)
 	{
-		Subsystems.Add(&InContext.Subsystem);
+		// Must build constant properties to be able to iterate subsystems and call OnLink()
+		// Subsystems in non-editor data builds should be initialized in OnPostLoadDefaults.
+		BuildConstantProperties();
+		
+		ForEachSubsystem([this](const FAnimSubsystemContext& InContext)
+		{
+			Subsystems.Add(&InContext.Subsystem);
 
-		FAnimSubsystemLinkContext Context(InContext, *this);
-		const_cast<FAnimSubsystem&>(InContext.Subsystem).OnLink(Context);
-		return EAnimSubsystemEnumeration::Continue;
-	});	
+			FAnimSubsystemLinkContext Context(InContext, *this);
+			const_cast<FAnimSubsystem&>(InContext.Subsystem).OnLink(Context);
+			return EAnimSubsystemEnumeration::Continue;
+		});
+	}
+#endif
 }
 
 void UAnimBlueprintGeneratedClass::PurgeClass(bool bRecompilingOnLoad)

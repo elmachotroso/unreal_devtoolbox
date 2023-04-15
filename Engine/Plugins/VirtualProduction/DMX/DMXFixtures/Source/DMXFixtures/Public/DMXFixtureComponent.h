@@ -12,6 +12,8 @@
 #include "DMXInterpolation.h"
 #include "DMXFixtureComponent.generated.h"
 
+struct FDMXNormalizedAttributeValueMap;
+
 
 USTRUCT(BlueprintType)
 struct FDMXChannelData
@@ -32,7 +34,7 @@ struct FDMXChannelData
 };
 
 
-UCLASS(meta=(IsBlueprintBase=false))
+UCLASS(Abstract, Meta=(IsBlueprintBase=false))
 class DMXFIXTURES_API UDMXFixtureComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -41,7 +43,7 @@ protected:
 	/** Initializes the cells for the fixture */
 	void InitCells(int NumCells);
 
-public:	
+public:
 	UDMXFixtureComponent();
 
 	/** Initializes the component */
@@ -51,8 +53,11 @@ public:
 	/** Sets the cell that is currently active */
 	virtual void SetCurrentCell(int Index);
 
+	/** Pushes DMX Values to the Fixture Component. Expects normalized values in the range of 0.0f to 1.0f */
+	virtual void PushNormalizedValuesPerAttribute(const FDMXNormalizedAttributeValueMap& ValuePerAttribute)  PURE_VIRTUAL(UDMXFixtureComponent::PushNormalizedValuesPerAttribute, return; );
+
 	/** If used within a DMX Fixture Actor or Fixture Matrix Actor, the component only receives data when set to true. Else needs be implemented in blueprints. */
-	UPROPERTY(EditAnywhere, Category = "DMX Parameters", meta= (DisplayPriority = 0))
+	UPROPERTY(EditAnywhere, Category = "DMX Parameters", meta = (DisplayPriority = 0))
 	bool bIsEnabled = true;
 
 	/** Value changes smaller than this threshold are ignored */
@@ -86,6 +91,11 @@ public:
 	/** Called to initialize the component in blueprints */
 	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category = "DMX")
 	void InitializeComponent();
+
+	/** Should be implemented to let other objects (e.g. datasmith) know which attributes the component can handle */
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "DMX")
+	void GetSupportedDMXAttributes(TArray<FName>& OutAttributeNames);
+	virtual void GetSupportedDMXAttributes_Implementation(TArray<FName>& OutAttributeNames) {};
 
 	/** Applies the speed scale property */
 	void ApplySpeedScale();

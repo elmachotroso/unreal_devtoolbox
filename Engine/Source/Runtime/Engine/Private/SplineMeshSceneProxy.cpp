@@ -27,6 +27,41 @@ void FSplineMeshVertexFactory::ModifyCompilationEnvironment(const FVertexFactory
 	OutEnvironment.SetDefine(TEXT("USE_SPLINEDEFORM"), TEXT("1"));
 }
 
+/**
+ * FSplineMeshVertexFactory does not support manual vertex fetch yet so worst case element set is returned to make sure the PSO can be compiled
+ */
+void FSplineMeshVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
+{
+	if (VertexInputStreamType == EVertexInputStreamType::PositionOnly || VertexInputStreamType == EVertexInputStreamType::PositionAndNormalOnly)
+	{
+		FLocalVertexFactory::GetPSOPrecacheVertexFetchElements(VertexInputStreamType, Elements);
+	}
+	else
+	{
+		// Position
+		Elements.Add(FVertexElement(0, 0, VET_Float3, 0, 12, false));
+
+		// Normals
+		Elements.Add(FVertexElement(1, 0, VET_PackedNormal, 1, 0, false));
+		Elements.Add(FVertexElement(2, 0, VET_PackedNormal, 2, 0, false));
+
+		// Color
+		Elements.Add(FVertexElement(3, 0, VET_Color, 3, 0, false));
+
+		// Texcoords
+		Elements.Add(FVertexElement(4, 0, VET_Float4, 4, 0, false));
+		Elements.Add(FVertexElement(5, 0, VET_Float4, 5, 0, false));
+		Elements.Add(FVertexElement(6, 0, VET_Float4, 6, 0, false));
+		Elements.Add(FVertexElement(7, 0, VET_Float4, 7, 0, false));
+
+		// Lightmap coords
+		Elements.Add(FVertexElement(8, 0, VET_Float2, 15, 0, false));
+		
+		// Primitive ID
+		Elements.Add(FVertexElement(9, 0, VET_UInt, 13, 0, true));
+	}
+}
+
 FSplineMeshSceneProxy::FSplineMeshSceneProxy(USplineMeshComponent* InComponent) :
 	FStaticMeshSceneProxy(InComponent, false)
 {
@@ -70,20 +105,25 @@ SIZE_T FSplineMeshSceneProxy::GetTypeHash() const
 	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
+void FSplineMeshSceneProxy::SetupMeshBatchForSpline(int32 InLODIndex, FMeshBatch& OutMeshBatch) const
+{
+	const FStaticMeshVertexFactories& VFs = RenderData->LODVertexFactories[InLODIndex];
+	check(OutMeshBatch.Elements.Num() == 1);
+	OutMeshBatch.VertexFactory = OutMeshBatch.Elements[0].bUserDataIsColorVertexBuffer ? VFs.SplineVertexFactoryOverrideColorVertexBuffer : VFs.SplineVertexFactory;
+	check(OutMeshBatch.VertexFactory);
+	OutMeshBatch.Elements[0].SplineMeshSceneProxy = const_cast<FSplineMeshSceneProxy*>(this);
+	OutMeshBatch.Elements[0].bIsSplineProxy = true;
+	OutMeshBatch.Elements[0].PrimitiveUniformBuffer = GetUniformBuffer();
+	OutMeshBatch.ReverseCulling ^= (SplineParams.StartScale.X < 0) ^ (SplineParams.StartScale.Y < 0);
+}
+
 bool FSplineMeshSceneProxy::GetShadowMeshElement(int32 LODIndex, int32 BatchIndex, uint8 InDepthPriorityGroup, FMeshBatch& OutMeshBatch, bool bDitheredLODTransition) const
 {
 	//checkf(LODIndex == 0, TEXT("Getting spline static mesh element with invalid LOD [%d]"), LODIndex);
 
 	if (FStaticMeshSceneProxy::GetShadowMeshElement(LODIndex, BatchIndex, InDepthPriorityGroup, OutMeshBatch, bDitheredLODTransition))
 	{
-		const FStaticMeshVertexFactories& VFs = RenderData->LODVertexFactories[LODIndex];
-		check(OutMeshBatch.Elements.Num() == 1);
-		OutMeshBatch.VertexFactory = OutMeshBatch.Elements[0].bUserDataIsColorVertexBuffer ? VFs.SplineVertexFactoryOverrideColorVertexBuffer : VFs.SplineVertexFactory;
-		check(OutMeshBatch.VertexFactory);
-		OutMeshBatch.Elements[0].SplineMeshSceneProxy = const_cast<FSplineMeshSceneProxy*>(this);
-		OutMeshBatch.Elements[0].bIsSplineProxy = true;
-		OutMeshBatch.Elements[0].PrimitiveUniformBuffer = GetUniformBuffer();
-		OutMeshBatch.ReverseCulling ^= (SplineParams.StartScale.X < 0) ^ (SplineParams.StartScale.Y < 0);
+		SetupMeshBatchForSpline(LODIndex, OutMeshBatch);
 		return true;
 	}
 	return false;
@@ -95,14 +135,7 @@ bool FSplineMeshSceneProxy::GetMeshElement(int32 LODIndex, int32 BatchIndex, int
 
 	if (FStaticMeshSceneProxy::GetMeshElement(LODIndex, BatchIndex, SectionIndex, InDepthPriorityGroup, bUseSelectionOutline, bAllowPreCulledIndices, OutMeshBatch))
 	{
-		const FStaticMeshVertexFactories& VFs = RenderData->LODVertexFactories[LODIndex];
-		check(OutMeshBatch.Elements.Num() == 1);
-		OutMeshBatch.VertexFactory = OutMeshBatch.Elements[0].bUserDataIsColorVertexBuffer ? VFs.SplineVertexFactoryOverrideColorVertexBuffer : VFs.SplineVertexFactory;
-		check(OutMeshBatch.VertexFactory);
-		OutMeshBatch.Elements[0].SplineMeshSceneProxy = const_cast<FSplineMeshSceneProxy*>(this);
-		OutMeshBatch.Elements[0].bIsSplineProxy = true;
-		OutMeshBatch.Elements[0].PrimitiveUniformBuffer = GetUniformBuffer();
-		OutMeshBatch.ReverseCulling ^= (SplineParams.StartScale.X < 0) ^ (SplineParams.StartScale.Y < 0);
+		SetupMeshBatchForSpline(LODIndex, OutMeshBatch);
 		return true;
 	}
 	return false;
@@ -114,14 +147,20 @@ bool FSplineMeshSceneProxy::GetWireframeMeshElement(int32 LODIndex, int32 BatchI
 
 	if (FStaticMeshSceneProxy::GetWireframeMeshElement(LODIndex, BatchIndex, WireframeRenderProxy, InDepthPriorityGroup, bAllowPreCulledIndices, OutMeshBatch))
 	{
-		const FStaticMeshVertexFactories& VFs = RenderData->LODVertexFactories[LODIndex];
-		check(OutMeshBatch.Elements.Num() == 1);
-		OutMeshBatch.VertexFactory = OutMeshBatch.Elements[0].bUserDataIsColorVertexBuffer ? VFs.SplineVertexFactoryOverrideColorVertexBuffer : VFs.SplineVertexFactory;
-		check(OutMeshBatch.VertexFactory);
-		OutMeshBatch.Elements[0].SplineMeshSceneProxy = const_cast<FSplineMeshSceneProxy*>(this);
-		OutMeshBatch.Elements[0].bIsSplineProxy = true;
-		OutMeshBatch.Elements[0].PrimitiveUniformBuffer = GetUniformBuffer();
-		OutMeshBatch.ReverseCulling ^= (SplineParams.StartScale.X < 0) ^ (SplineParams.StartScale.Y < 0);
+		SetupMeshBatchForSpline(LODIndex, OutMeshBatch);
+		return true;
+	}
+	return false;
+}
+
+
+bool FSplineMeshSceneProxy::GetCollisionMeshElement(int32 LODIndex, int32 BatchIndex, int32 SectionIndex, uint8 InDepthPriorityGroup, const FMaterialRenderProxy* RenderProxy, FMeshBatch& OutMeshBatch) const
+{
+	//checkf(LODIndex == 0, TEXT("Getting spline static mesh element with invalid LOD [%d]"), LODIndex);
+
+	if (FStaticMeshSceneProxy::GetCollisionMeshElement(LODIndex, BatchIndex, SectionIndex, InDepthPriorityGroup, RenderProxy, OutMeshBatch))
+	{
+		SetupMeshBatchForSpline(LODIndex, OutMeshBatch);
 		return true;
 	}
 	return false;

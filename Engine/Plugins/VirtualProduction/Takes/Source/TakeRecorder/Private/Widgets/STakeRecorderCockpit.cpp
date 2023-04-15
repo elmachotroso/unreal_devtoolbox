@@ -23,7 +23,7 @@
 #include "MovieSceneToolsProjectSettings.h"
 
 // AssetRegistry includes
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 // TimeManagement includes
 #include "FrameNumberNumericInterface.h"
@@ -45,8 +45,8 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
-// EditorStyle includes
-#include "EditorStyleSet.h"
+// Style includes
+#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 
 // UnrealEd includes
@@ -56,7 +56,11 @@
 #include "Modules/ModuleManager.h"
 #include "LevelEditor.h"
 #include "ISettingsModule.h"
-#include "Dialogs/CustomDialog.h"
+#include "Dialog/SMessageDialog.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+
+#include "ISequencer.h"
+#include "ILevelSequenceEditorToolkit.h"
 
 extern UNREALED_API UEditorEngine* GEditor;
 
@@ -68,7 +72,11 @@ STakeRecorderCockpit::~STakeRecorderCockpit()
 
 	if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
 	{
-		AssetRegistryModule->Get().OnFilesLoaded().Remove(OnAssetRegistryFilesLoadedHandle);
+		IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+		if (AssetRegistry)
+		{
+			AssetRegistry->OnFilesLoaded().Remove(OnAssetRegistryFilesLoadedHandle);
+		}
 	}
 
 	if (!ensure(TransactionIndex == INDEX_NONE))
@@ -178,7 +186,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 		.AutoHeight()
 		[
 			SNew(SBorder)
-			.BorderImage_Lambda([this]{ return Reviewing() ? FTakeRecorderStyle::Get().GetBrush("TakeRecorder.TakeRecorderReviewBorder") : FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"); })
+			.BorderImage_Lambda([this]{ return Reviewing() ? FTakeRecorderStyle::Get().GetBrush("TakeRecorder.TakeRecorderReviewBorder") : FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"); })
 			[
 				SNew(SHorizontalBox)
 
@@ -239,7 +247,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 						.AutoWidth()
 						[
 							SNew(SButton)
-							.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+							.ButtonStyle(FAppStyle::Get(), "NoBorder")
 							.OnClicked(this, &STakeRecorderCockpit::OnSetNextTakeNumber)
 							.ForegroundColor(FSlateColor::UseForeground())
 							.Visibility(this, &STakeRecorderCockpit::GetTakeWarningVisibility)
@@ -247,7 +255,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 							[
 								SNew(STextBlock)
 								.ToolTipText(this, &STakeRecorderCockpit::GetTakeWarningText)
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.8"))
+								.Font(FAppStyle::Get().GetFontStyle("FontAwesome.8"))
 								.Text(FEditorFontGlyphs::Exclamation_Triangle)
 							]
 						]
@@ -309,7 +317,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 						[
 							SNew(SButton)
 							.ContentPadding(TakeRecorder::ButtonPadding)
-							.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+							.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 							.ToolTipText(LOCTEXT("NewRecording", "Start a new recording using this Take as a base"))
 							.ForegroundColor(FSlateColor::UseForeground())
 							.OnClicked(this, &STakeRecorderCockpit::NewRecordingFromThis)
@@ -327,7 +335,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 						SNew(STextBlock)
 						.ToolTipText(this, &STakeRecorderCockpit::GetRecordErrorText)
 						.Visibility(this, &STakeRecorderCockpit::GetRecordErrorVisibility)
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
 						.Text(FEditorFontGlyphs::Exclamation_Triangle)
 					]
 
@@ -336,7 +344,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 					.VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
-						.ColorAndOpacity(FEditorStyle::Get().GetSlateColor("InvertedForeground"))
+						.ColorAndOpacity(FAppStyle::Get().GetSlateColor("InvertedForeground"))
 						.Visibility(this, &STakeRecorderCockpit::GetCountdownVisibility)
 						.Text(this, &STakeRecorderCockpit::GetCountdownText)
 					]
@@ -356,8 +364,8 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 					.ButtonContent()
 					[
 						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.TextStyle(FAppStyle::Get(), "NormalText.Important")
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(FEditorFontGlyphs::Caret_Down)
 					]
 				]
@@ -412,7 +420,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					[
 						SNew(SNonThrottledButton)
-						.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+						.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 						.ToolTipText(LOCTEXT("AddMarkedFrame", "Click to add a marked frame while recording"))
 						.IsEnabled_Lambda([this]() { return IsRecording() == ECheckBoxState::Checked; })
 						.OnClicked(this, &STakeRecorderCockpit::OnAddMarkedFrame)
@@ -439,7 +447,7 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 					.AutoWidth()
 					[
 						SNew(SComboButton)
-						.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+						.ButtonStyle(FAppStyle::Get(), "NoBorder")
 						.OnGetMenuContent(this, &STakeRecorderCockpit::OnCreateMenu)
 						.ForegroundColor(FSlateColor::UseForeground())
 						.ButtonContent()
@@ -457,14 +465,45 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 				.Padding(8, 0, 8, 8)
 				.AutoHeight()
 				[
-					SNew(SEditableTextBox)
-					.IsEnabled(this, &STakeRecorderCockpit::EditingMetaData)
-					.Style(FTakeRecorderStyle::Get(), "TakeRecorder.EditableTextBox")
-					.Font(FTakeRecorderStyle::Get().GetFontStyle("TakeRecorder.Cockpit.SmallText"))
-					.SelectAllTextWhenFocused(true)
-					.HintText(LOCTEXT("EnterSlateDescription_Hint", "<description>"))
-					.Text(this, &STakeRecorderCockpit::GetUserDescriptionText)
-					.OnTextCommitted(this, &STakeRecorderCockpit::SetUserDescriptionText)
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					[
+						SNew(SEditableTextBox)
+						.IsEnabled(this, &STakeRecorderCockpit::EditingMetaData)
+						.Style(FTakeRecorderStyle::Get(), "TakeRecorder.EditableTextBox")
+						.Font(FTakeRecorderStyle::Get().GetFontStyle("TakeRecorder.Cockpit.SmallText"))
+						.SelectAllTextWhenFocused(true)
+						.HintText(LOCTEXT("EnterSlateDescription_Hint", "<description>"))
+						.Text(this, &STakeRecorderCockpit::GetUserDescriptionText)
+						.OnTextCommitted(this, &STakeRecorderCockpit::SetUserDescriptionText)
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SSpinBox<float>)
+						.ToolTipText(LOCTEXT("EngineTimeDilation", "Recording speed"))
+						.Style(&FAppStyle::GetWidgetStyle<FSpinBoxStyle>("Sequencer.HyperlinkSpinBox"))
+						.OnValueChanged(this, &STakeRecorderCockpit::SetEngineTimeDilation)
+						.OnValueCommitted_Lambda([=](float InEngineTimeDilation, ETextCommit::Type) { SetEngineTimeDilation(InEngineTimeDilation); })
+						.MinValue(TOptional<float>())
+						.MaxValue(TOptional<float>())
+						.Value(this, &STakeRecorderCockpit::GetEngineTimeDilation)
+						.Delta(0.5f)
+					]
+
+					+ SHorizontalBox::Slot()
+					.Padding(2, 0, 0, 2)
+					.VAlign(VAlign_Bottom)
+					.AutoWidth()
+					[
+						SNew(STextBlock)
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Font(FTakeRecorderStyle::Get().GetFontStyle("TakeRecorder.Cockpit.SmallText"))
+						.TextStyle(FTakeRecorderStyle::Get(), "TakeRecorder.TextBox")
+						.Text(LOCTEXT("EngineTimeDilationLabel", "x"))
+					]
 				]
 			]
 		]
@@ -583,7 +622,7 @@ void STakeRecorderCockpit::UpdateTakeError()
 	// If there's only a single one, and it's the one that we're looking at directly, don't show the error
 	if (DuplicateTakes.Num() == 1 && DuplicateTakes[0].IsValid())
 	{
-		ULevelSequence* AlreadyLoaded = FindObject<ULevelSequence>(nullptr, *DuplicateTakes[0].ObjectPath.ToString());
+		ULevelSequence* AlreadyLoaded = FindObject<ULevelSequence>(nullptr, *DuplicateTakes[0].GetObjectPathString());
 		if (AlreadyLoaded && AlreadyLoaded->FindMetaData<UTakeMetaData>() == TakeMetaData)
 		{
 			return;
@@ -914,6 +953,16 @@ void STakeRecorderCockpit::OnEndSetTakeNumber(int32 InFinalValue)
 	TransactionIndex = INDEX_NONE;
 }
 
+float STakeRecorderCockpit::GetEngineTimeDilation() const
+{
+	return GetDefault<UTakeRecorderUserSettings>()->Settings.EngineTimeDilation;
+}
+
+void STakeRecorderCockpit::SetEngineTimeDilation(float InEngineTimeDilation)
+{
+	GetMutableDefault<UTakeRecorderUserSettings>()->Settings.EngineTimeDilation = InEngineTimeDilation;
+}
+
 FReply STakeRecorderCockpit::OnAddMarkedFrame()
 {
 	if (UTakeRecorderBlueprintLibrary::IsRecording())
@@ -1017,9 +1066,9 @@ void STakeRecorderCockpit::CancelRecording()
 	UTakeRecorder* CurrentRecording = UTakeRecorder::GetActiveRecorder();
 	if (CurrentRecording)
 	{
-		TSharedRef<SCustomDialog> ConfirmDialog = SNew(SCustomDialog)
+		TSharedRef<SMessageDialog> ConfirmDialog = SNew(SMessageDialog)
 			.Title(FText(LOCTEXT("ConfirmCancelRecordingTitle", "Cancel Recording?")))
-			.DialogContent( SNew(STextBlock).Text(LOCTEXT("ConfirmCancelRecording", "Are you sure you want to cancel the current recording?")))
+			.Message(LOCTEXT("ConfirmCancelRecording", "Are you sure you want to cancel the current recording?"))
 			.Buttons({
 				SCustomDialog::FButton(LOCTEXT("Yes", "Yes"), FSimpleDelegate::CreateLambda([WeakRecording = TWeakObjectPtr<UTakeRecorder>(CurrentRecording)]()
 					{ 
@@ -1056,8 +1105,22 @@ void STakeRecorderCockpit::StartRecording()
 		Parameters.User    = GetDefault<UTakeRecorderUserSettings>()->Settings;
 		Parameters.Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
 		Parameters.TakeRecorderMode = TakeRecorderModeAttribute.Get();
+		Parameters.StartFrame = LevelSequence->GetMovieScene()->GetPlaybackRange().GetLowerBoundValue();
 
 		FText ErrorText = LOCTEXT("UnknownError", "An unknown error occurred when trying to start recording");
+
+		IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LevelSequence, false);
+		ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
+
+		if (LevelSequenceEditor && LevelSequenceEditor->GetSequencer())
+		{
+			// If not resetting the playhead, store the current time as the start frame for recording. 
+			// This will ultimately be the start of the playback range and the recording will begin from that time.
+			if (!Parameters.User.bResetPlayhead)
+			{
+				Parameters.StartFrame = LevelSequenceEditor->GetSequencer()->GetLocalTime().Time.FrameNumber;
+			}
+		}
 
 		UTakeRecorder* NewRecorder = NewObject<UTakeRecorder>(GetTransientPackage(), NAME_None, RF_Transient);
 
@@ -1156,7 +1219,7 @@ bool STakeRecorderCockpit::EditingMetaData() const
 TSharedRef<SWidget> STakeRecorderCockpit::MakeLockButton()
 {
 	return SNew(SCheckBox)
-	.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+	.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 	.Padding(TakeRecorder::ButtonPadding)
 	.ToolTipText(LOCTEXT("Modify Slate", "Unlock to modify the slate information for this prior recording."))
 	.IsChecked_Lambda([this]() { return TakeMetaData->IsLocked() ? ECheckBoxState::Unchecked: ECheckBoxState::Checked; } )
@@ -1165,7 +1228,7 @@ TSharedRef<SWidget> STakeRecorderCockpit::MakeLockButton()
 	[
 		SNew(STextBlock)
 		.Justification(ETextJustify::Center)
-		.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
+		.Font(FAppStyle::Get().GetFontStyle("FontAwesome.14"))
 		.Text_Lambda([this]() { return TakeMetaData->IsLocked() ? FEditorFontGlyphs::Lock : FEditorFontGlyphs::Unlock; } )
 	];
 }

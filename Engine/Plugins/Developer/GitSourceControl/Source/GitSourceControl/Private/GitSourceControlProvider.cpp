@@ -267,6 +267,21 @@ bool FGitSourceControlProvider::UsesCheckout() const
 	return false;
 }
 
+bool FGitSourceControlProvider::UsesFileRevisions() const
+{
+	return false;
+}
+
+TOptional<bool> FGitSourceControlProvider::IsAtLatestRevision() const
+{
+	return TOptional<bool>();
+}
+
+TOptional<int> FGitSourceControlProvider::GetNumLocalChanges() const
+{
+	return TOptional<int>();
+}
+
 TSharedPtr<IGitSourceControlWorker, ESPMode::ThreadSafe> FGitSourceControlProvider::CreateWorker(const FName& InOperationName) const
 {
 	const FGetGitSourceControlWorker* Operation = WorkersMap.Find(InOperationName);

@@ -4,11 +4,11 @@
 #include "Systems/ByteChannelEvaluatorSystem.h"
 #include "MovieSceneTracksComponentTypes.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneBytePropertySystem)
+
 UMovieSceneBytePropertySystem::UMovieSceneBytePropertySystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
-	SystemExclusionContext |= UE::MovieScene::EEntitySystemContext::Interrogation;
-
 	BindToProperty(UE::MovieScene::FMovieSceneTracksComponentTypes::Get()->Byte);
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
@@ -23,4 +23,5 @@ void UMovieSceneBytePropertySystem::OnRun(FSystemTaskPrerequisites& InPrerequisi
 {
 	Super::OnRun(InPrerequisites, Subsequents);
 }
+
 

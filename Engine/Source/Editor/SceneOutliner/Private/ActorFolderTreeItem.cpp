@@ -16,7 +16,7 @@
 #include "WorldPersistentFolders.h"
 #include "Engine/Level.h"
 #include "LevelUtils.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SceneOutliner_ActorFolderTreeItem"
@@ -35,10 +35,13 @@ struct SActorFolderTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWi
 
 		TSharedPtr<SInlineEditableTextBlock> InlineTextBlock = SNew(SInlineEditableTextBlock)
 			.Text(this, &SActorFolderTreeLabel::GetDisplayText)
+			.ToolTipText(this, &SActorFolderTreeLabel::GetTooltipText)
 			.HighlightText(SceneOutliner.GetFilterHighlightText())
 			.ColorAndOpacity(this, &SActorFolderTreeLabel::GetForegroundColor)
 			.OnTextCommitted(this, &SActorFolderTreeLabel::OnLabelCommitted)
 			.OnVerifyTextChanged(this, &SActorFolderTreeLabel::OnVerifyItemLabelChanged)
+			.OnEnterEditingMode(this, &SActorFolderTreeLabel::OnEnterEditingMode)
+			.OnExitEditingMode(this, &SActorFolderTreeLabel::OnExitEditingMode)
 			.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FSceneOutlinerTreeItemPtr>::IsSelectedExclusively))
 			.IsReadOnly_Lambda([Item = FolderItem.AsShared(), this]()
 		{
@@ -53,39 +56,64 @@ struct SActorFolderTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWi
 		ChildSlot
 			[
 				SNew(SHorizontalBox)
-
 				+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(FSceneOutlinerDefaultTreeItemMetrics::IconPadding())
-			[
-				SNew(SBox)
-				.WidthOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
-				.HeightOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
-			[
-				SNew(SImage)
-				.Image(this, &SActorFolderTreeLabel::GetIcon)
-				.ColorAndOpacity(FSlateColor::UseForeground())
-			]
-			]
-
-		+ SHorizontalBox::Slot()
-			.FillWidth(1.0f)
-			.VAlign(VAlign_Center)
-			.Padding(0.0f, 2.0f)
-			[
-				InlineTextBlock.ToSharedRef()
-			]
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FSceneOutlinerDefaultTreeItemMetrics::IconPadding())
+				[
+					SNew(SBox)
+					.WidthOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
+					.HeightOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
+					[
+						SNew(SImage)
+						.Image(this, &SActorFolderTreeLabel::GetIcon)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 2.0f)
+				[
+					InlineTextBlock.ToSharedRef()
+				]
 			];
 	}
 
 private:
 	TWeakPtr<FActorFolderTreeItem> TreeItemPtr;
 
+	bool IsInActorEditorContext() const
+	{
+		auto Folder = TreeItemPtr.Pin();
+		const bool bIsCurrentFolder = (Folder.IsValid() && Folder->World.IsValid()) ? (FActorFolders::Get().GetActorEditorContextFolder(*Folder->World) == Folder->GetFolder()) : false;
+		return bIsCurrentFolder;
+	}
+
 	FText GetDisplayText() const
 	{
 		auto Folder = TreeItemPtr.Pin();
-		return Folder.IsValid() ? FText::FromString(Folder->GetDisplayString()) : FText();
+		if (Folder.IsValid())
+		{
+			if (!bInEditingMode)
+			{
+				FText IsCurrentSuffixText = IsInActorEditorContext() ? FText(LOCTEXT("IsCurrentSuffix", " (Current)")) : FText::GetEmpty();
+				return FText::Format(LOCTEXT("LevelInstanceDisplay", "{0}{1}"), FText::FromString(Folder->GetDisplayString()), IsCurrentSuffixText);
+			}
+			return FText::FromString(Folder->GetDisplayString());
+		}
+		return FText();
+	}
+
+	FText GetTooltipText() const
+	{
+		if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
+		{
+			FText Description = IsInActorEditorContext() ? LOCTEXT("ActorFolderIsCurrentDescription", "This Folder is set as Current Folder. New actors will be added to this Folder.") : FText::GetEmpty();
+			return FText::Format(LOCTEXT("DataLayerTooltipText", "{0}\n{1}"), FText::FromString(TreeItem->GetDisplayString()), Description);
+		}
+
+		return FText();
 	}
 
 	const FSlateBrush* GetIcon() const
@@ -93,16 +121,16 @@ private:
 		auto TreeItem = TreeItemPtr.Pin();
 		if (!TreeItem.IsValid())
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		}
 
 		if (TreeItem->Flags.bIsExpanded && TreeItem->GetChildren().Num())
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderOpen"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderOpen"));
 		}
 		else
 		{
-			return FEditorStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
+			return FAppStyle::Get().GetBrush(TEXT("SceneOutliner.FolderClosed"));
 		}
 	}
 
@@ -111,6 +139,11 @@ private:
 		if (auto BaseColor = FSceneOutlinerCommonLabelData::GetForegroundColor(*TreeItemPtr.Pin()))
 		{
 			return BaseColor.GetValue();
+		}
+
+		if (IsInActorEditorContext())
+		{
+			return FAppStyle::Get().GetSlateColor("Colors.AccentGreen");
 		}
 
 		return FSlateColor::UseForeground();
@@ -165,9 +198,9 @@ private:
 		{
 			NewPath = FName(*(NewPath.ToString() / LabelString));
 		}
-		Folder.SetPath(NewPath);
+		FFolder NewFolder(Folder.GetRootObject(), NewPath);
 
-		if (FActorFolders::Get().ContainsFolder(*TreeItem->World.Get(), Folder))
+		if (FActorFolders::Get().ContainsFolder(*TreeItem->World.Get(), NewFolder))
 		{
 			OutErrorMessage = LOCTEXT("RenameFailed_AlreadyExists", "A folder with this name already exists at this level");
 			return false;
@@ -192,7 +225,7 @@ private:
 			{
 				NewPath = FName(*(NewPath.ToString() / InLabel.ToString()));
 			}
-			FFolder TreeItemNewFolder(NewPath, Folder.GetRootObject());
+			FFolder TreeItemNewFolder(Folder.GetRootObject(), NewPath);
 
 			FActorFolders::Get().RenameFolderInWorld(*TreeItem->World.Get(), Folder, TreeItemNewFolder);
 
@@ -203,13 +236,27 @@ private:
 			}
 		}
 	}
+
+	void OnEnterEditingMode()
+	{
+		bInEditingMode = true;
+	}
+
+	void OnExitEditingMode()
+	{
+		bInEditingMode = false;
+	}
+
+	bool bInEditingMode = false;
 };
 
 FActorFolderTreeItem::FActorFolderTreeItem(const FFolder& InFolder, const TWeakObjectPtr<UWorld>& InWorld)
 	: FFolderTreeItem(InFolder, Type)
 	, World(InWorld)
 {
-	SetPath(InFolder.GetPath());
+	FFolderTreeItem::SetPath(InFolder.GetPath());
+	// Initialize ActorFolder
+	ActorFolder = InFolder.GetActorFolder();
 }
 
 void FActorFolderTreeItem::OnExpansionChanged()
@@ -276,10 +323,8 @@ void FActorFolderTreeItem::SetPath(const FName& InNewPath)
 {
 	FFolderTreeItem::SetPath(InNewPath);
 
-	if (World.IsValid())
-	{
-		ActorFolder = FWorldPersistentFolders::GetActorFolder(GetFolder(), World.Get());
-	}
+	// Validate that if the item's ActorFolder object is set, that changing the path keeps the same ActorFolder but with a different path
+	check(!ActorFolder.IsValid() || (ActorFolder->GetFolder().GetPath() == Path));
 }
 
 void FActorFolderTreeItem::CreateSubFolder(TWeakPtr<SSceneOutliner> WeakOutliner)
@@ -305,7 +350,26 @@ TSharedRef<SWidget> FActorFolderTreeItem::GenerateLabelWidget(ISceneOutliner& Ou
 
 bool FActorFolderTreeItem::ShouldShowPinnedState() const
 {
-	return GetRootObject() == FFolder::GetDefaultRootObject() && World.IsValid() && World->IsPartitionedWorld();
+	if (World.IsValid() && !World->IsGameWorld() && World->IsPartitionedWorld())
+	{
+		return FFolder::IsRootObjectPersistentLevel(GetRootObject());
+	}
+	return false;
+}
+
+bool FActorFolderTreeItem::ShouldShowVisibilityState() const
+{
+	// Visibility state can only be shown when folder is part of the persistent level (PIE or Editor) or
+	// if it is an actual sub-level that is not instanced (sublevels prior to level instances or editing level instance)
+	ULevel* Level = FFolder::GetRootObjectAssociatedLevel(GetRootObject());
+	return World.IsValid() && Level && (Level->IsPersistentLevel() || !Level->IsInstancedLevel());
+}
+
+FFolder FActorFolderTreeItem::GetFolder() const
+{
+	// Use Folder resolved by ActorFolder when valid (a null owning world would will fail resolving, see UActorFolder::GetFolder())
+	FFolder Folder = ActorFolder.IsValid() ? ActorFolder->GetFolder() : FFolder::GetInvalidFolder();
+	return Folder.IsValid() ? Folder : FFolderTreeItem::GetFolder();
 }
 
 bool FActorFolderTreeItem::CanInteract() const
@@ -317,9 +381,9 @@ bool FActorFolderTreeItem::CanInteract() const
 
 	if (ULevelInstanceSubsystem* LevelInstanceSubsystem = World.IsValid() ? World->GetSubsystem<ULevelInstanceSubsystem>() : nullptr)
 	{
-		if (ALevelInstance* EditingLevelInstance = LevelInstanceSubsystem->GetEditingLevelInstance())
+		if (ILevelInstanceInterface* EditingLevelInstance = LevelInstanceSubsystem->GetEditingLevelInstance())
 		{
-			if (GetRootObject() != FFolder::FRootObject(EditingLevelInstance))
+			if (GetRootObject() != FFolder::FRootObject(CastChecked<AActor>(EditingLevelInstance)))
 			{
 				return false;
 			}

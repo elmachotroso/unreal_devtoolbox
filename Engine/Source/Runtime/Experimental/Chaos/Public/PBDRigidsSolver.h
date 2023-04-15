@@ -12,7 +12,6 @@
 #include "Chaos/PBDPositionConstraints.h"
 #include "Chaos/PBDSuspensionConstraints.h"
 #include "Chaos/PBDJointConstraints.h"
-#include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PerParticleGravity.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Transform.h"
@@ -113,13 +112,7 @@ namespace Chaos
 		typedef FPBDRigidDynamicSpringConstraints FRigidDynamicSpringConstraints;
 		typedef FPBDPositionConstraints FPositionConstraints;
 
-		typedef TPBDConstraintIslandRule<FPBDJointConstraints> FJointConstraintsRule;
-		typedef TPBDConstraintIslandRule<FRigidDynamicSpringConstraints> FRigidDynamicSpringConstraintsRule;
-		typedef TPBDConstraintIslandRule<FPositionConstraints> FPositionConstraintsRule;
-		typedef TPBDConstraintIslandRule<FPBDSuspensionConstraints> FSuspensionConstraintsRule;
-
 		using FJointConstraints = FPBDJointConstraints;
-		using FJointConstraintRule = TPBDConstraintIslandRule<FJointConstraints>;
 		//
 		// Execution API
 		//
@@ -175,22 +168,11 @@ namespace Chaos
 		int32& GetCurrentFrame() { return CurrentFrame; }
 
 		/**/
-		FReal& GetSolverTime() { return MTime; }
-		const FReal GetSolverTime() const { return MTime; }
-
-		/**/
-		FReal GetLastDt() const { return MLastDt; }
-
-		/**/
-		void SetIterations(const int32 InNumIterations) { GetEvolution()->SetNumIterations(InNumIterations); }
-		void SetPushOutIterations(const int32 InNumIterations) {  GetEvolution()->SetNumPushOutIterations(InNumIterations); }
-		void SetCollisionPairIterations(const int32 InNumIterations) { GetEvolution()->GetCollisionConstraints().SetPairIterations(InNumIterations); }
-		void SetCollisionPushOutPairIterations(const int32 InNumIterations) { GetEvolution()->GetCollisionConstraints().SetPushOutPairIterations(InNumIterations); }
-		void SetJointPairIterations(const int32 InNumIterations) { GetJointConstraints().SetNumPairIterations(InNumIterations); }
-		void SetJointPushOutPairIterations(const int32 InNumIterations) {GetJointConstraints().SetNumPushOutPairIterations(InNumIterations); }
-		void SetCollisionCullDistance(const FReal InCullDistance) { GetEvolution()->GetNarrowPhase().SetBoundsExpansion(InCullDistance); }
+		void SetPositionIterations(const int32 InNumIterations) { GetEvolution()->SetNumPositionIterations(InNumIterations); }
+		void SetVelocityIterations(const int32 InNumIterations) { GetEvolution()->SetNumVelocityIterations(InNumIterations); }
+		void SetProjectionIterations(const int32 InNumIterations) { GetEvolution()->SetNumProjectionIterations(InNumIterations); }
+		void SetCollisionCullDistance(const FReal InCullDistance) { GetEvolution()->GetCollisionDetector().SetBoundsExpansion(InCullDistance); }
 		void SetCollisionMaxPushOutVelocity(const FReal InMaxPushOutVelocity) { GetEvolution()->GetCollisionConstraints().SetMaxPushOutVelocity(InMaxPushOutVelocity); }
-		void SetUseContactGraph(const bool bInUseContactGraph) { GetEvolution()->GetCollisionConstraintsRule().SetUseContactGraph(bInUseContactGraph); }
 
 		/**/
 		void SetGenerateCollisionData(bool bDoGenerate) { GetEventFilters()->SetGenerateCollisionEvents(bDoGenerate); }
@@ -287,6 +269,10 @@ namespace Chaos
 		const FPerSolverFieldSystem& GetPerSolverField() const { return *PerSolverField; }
 
 		void UpdateExternalAccelerationStructure_External(ISpatialAccelerationCollection<FAccelerationStructureHandle,FReal,3>*& ExternalStructure);
+		const ISpatialAccelerationCollection<FAccelerationStructureHandle, FReal, 3>* GetInternalAccelerationStructure_Internal() const
+		{
+			return MEvolution->GetSpatialAcceleration();
+		}
 
 		/** Apply a solver configuration to this solver, set externally by the owner of a solver (see UPhysicsSettings for world solver settings) */
 		void ApplyConfig(const FChaosSolverConfiguration& InConfig);
@@ -315,13 +301,18 @@ namespace Chaos
 		void UpdateStatCounters() const;
 		void UpdateExpensiveStatCounters() const;
 
+		// Access particle proxy from physics thread useful for cross thread communication
+		FSingleParticlePhysicsProxy* GetParticleProxy_PT(const FGeometryParticleHandle& Handle);
+		const FSingleParticlePhysicsProxy* GetParticleProxy_PT(const FGeometryParticleHandle& Handle) const;
+
 	private:
 
 		/**/
 		void BufferPhysicsResults();
 	
 		/**/
-		virtual void AdvanceSolverBy(const FReal DeltaTime, const FSubStepInfo& SubStepInfo = FSubStepInfo()) override;
+		virtual void PrepareAdvanceBy(const FReal DeltaTime) override;
+		virtual void AdvanceSolverBy(const FSubStepInfo& SubStepInfo) override;
 		virtual void PushPhysicsState(const FReal ExternalDt, const int32 NumSteps, const int32 NumExternalSteps) override;
 		virtual void SetExternalTimestampConsumed_Internal(const int32 Timestamp) override;
 
@@ -331,8 +322,6 @@ namespace Chaos
 		// Solver Data
 		//
 		int32 CurrentFrame;
-		FReal MTime;
-		FReal MLastDt;
 		bool bHasFloor;
 		bool bIsFloorAnalytic;
 		FReal FloorHeight;
@@ -349,6 +338,7 @@ namespace Chaos
 		// Proxies
 		//
 		TSharedPtr<FCriticalSection> MCurrentLock;
+		TSparseArray< FSingleParticlePhysicsProxy* > SingleParticlePhysicsProxies_PT;
 		TArray< FGeometryCollectionPhysicsProxy* > GeometryCollectionPhysicsProxies_Internal; // PT
 		TArray< FJointConstraintPhysicsProxy* > JointConstraintPhysicsProxies_Internal; // PT
 

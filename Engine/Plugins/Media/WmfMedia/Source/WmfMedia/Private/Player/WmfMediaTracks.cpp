@@ -181,12 +181,12 @@ TComPtr<IMFTopology> FWmfMediaTracks::CreateTopology()
 
 	UE_LOG(LogWmfMedia, Verbose, TEXT("Tracks %p: Created playback topology %p (media source %p)"), this, Topology.Get(), MediaSource.Get());
 
-	if (GetDefault<UWmfMediaSettings>()->HardwareAcceleratedVideoDecoding)
+	const UWmfMediaSettings* WmfMediaSettings = GetDefault<UWmfMediaSettings>();
+	if (WmfMediaSettings->HardwareAcceleratedVideoDecoding ||
+		WmfMediaSettings->bAreHardwareAcceleratedCodecRegistered)
 	{
-		bool bHardwareAccelerated = false;
 		WmfMediaTopologyLoader MediaTopologyLoader;
-		bHardwareAccelerated = MediaTopologyLoader.EnableHardwareAcceleration(Topology);
-		bHardwareAccelerated = bHardwareAccelerated || bVideoTrackRequestedHardwareAcceleration;
+		bool bHardwareAccelerated = MediaTopologyLoader.EnableHardwareAcceleration(Topology) || bVideoTrackRequestedHardwareAcceleration;
 
 		UE_LOG(LogWmfMedia, Verbose, TEXT("Tracks %p: Video (media source %p) will be decoded on %s"), this, MediaSource.Get(), bHardwareAccelerated ? TEXT("GPU") : TEXT("CPU"));
 		Info += FString::Printf(TEXT("Video decoded on %s\n"), bHardwareAccelerated ? TEXT("GPU") : TEXT("CPU"));
@@ -630,6 +630,13 @@ IMediaSamples::EFetchBestSampleResult FWmfMediaTracks::FetchBestVideoSampleForTi
 						{
 							Result = IMediaSamples::EFetchBestSampleResult::Ok;
 							CurrentOverlap = Overlap;
+							
+							// Update sequence index.
+							FWmfMediaTextureSample* WmfSample =
+								static_cast<FWmfMediaTextureSample*>(OutSample.Get());
+							WmfSample->SetSequenceIndex(GetSequenceIndex(TimeRange,
+								WmfSample->GetTime().Time));
+								
 							UE_LOG(LogWmfMedia, VeryVerbose, TEXT("FetchBestVideoSampleForTimeRange got sample."));
 						}
 					}
@@ -1267,8 +1274,17 @@ bool FWmfMediaTracks::AddTrackToTopology(const FTrack& Track, IMFTopology& Topol
 	// Hardware Acccelerated Stream Sink
 	TComPtr<FWmfMediaStreamSink> MediaStreamSink;
 
-	if ((GEngine != nullptr) && 
-		GetDefault<UWmfMediaSettings>()->HardwareAcceleratedVideoDecoding &&
+	const UWmfMediaSettings* WmfMediaSettings = GetDefault<UWmfMediaSettings>();
+
+	if (VideoSamplePool)
+	{
+		delete VideoSamplePool;
+		VideoSamplePool = nullptr;
+	}
+
+#if WITH_ENGINE
+	if ((GEngine != nullptr) &&
+		(WmfMediaSettings->HardwareAcceleratedVideoDecoding || WmfMediaSettings->bAreHardwareAcceleratedCodecRegistered) &&
 		MajorType == MFMediaType_Video &&
 		FPlatformMisc::VerifyWindowsVersion(6, 2) && // Windows 8
 		FWmfMediaStreamSink::Create(MFMediaType_Video, MediaStreamSink))
@@ -1289,12 +1305,14 @@ bool FWmfMediaTracks::AddTrackToTopology(const FTrack& Track, IMFTopology& Topol
 		bVideoTrackRequestedHardwareAcceleration = true;
 	}
 	else
+#endif
 	{
-		if (VideoSamplePool)
-		{
-			delete VideoSamplePool;
-		}
 		VideoSamplePool = new FWmfMediaTextureSamplePool();
+		if (!VideoSamplePool)
+		{
+			UE_LOG(LogWmfMedia, Verbose, TEXT("Tracks %p: Failed to configure output node for stream (no memory) %i"), this, Track.StreamIndex);
+			return false;
+		}
 
 		if (FAILED(::MFCreateTopologyNode(MF_TOPOLOGY_OUTPUT_NODE, &OutputNode)) ||
 			FAILED(OutputNode->SetObject(OutputActivator)) ||
@@ -1370,19 +1388,6 @@ bool FWmfMediaTracks::AddTrackToTopology(const FTrack& Track, IMFTopology& Topol
 	}
 	else
 	{
-		// Is this video?
-		if (MajorType == MFMediaType_Video)
-		{
-			// We only support our own decoders in D3D12.
-			const TCHAR* RHIName = GDynamicRHI->GetName();
-			bool bIsD3D12 = (TCString<TCHAR>::Stricmp(RHIName, TEXT("D3D12")) == 0);
-			if (bIsD3D12)
-			{
-				UE_LOG(LogWmfMedia, Error, TEXT("Tracks %p: Format is not supported in D3D12."), this);
-				return false;
-			}
-		}
-
 		// connect nodes
 		Result = SourceNode->ConnectOutput(0, OutputNode, 0);
 	}
@@ -1540,7 +1545,9 @@ bool FWmfMediaTracks::AddStreamToTracks(uint32 StreamIndex, bool IsVideoDevice, 
 	Track->SelectedFormat = INDEX_NONE;
 
 	// add track formats
-	const bool AllowNonStandardCodecs = GetDefault<UWmfMediaSettings>()->AllowNonStandardCodecs;
+	const UWmfMediaSettings* WmfMediaSettings = GetDefault<UWmfMediaSettings>();
+	const bool AllowNonStandardCodecs = WmfMediaSettings->AllowNonStandardCodecs ||
+		WmfMediaSettings->bAreHardwareAcceleratedCodecRegistered;
 
 	for (DWORD TypeIndex = 0; TypeIndex < NumMediaTypes; ++TypeIndex)
 	{
@@ -1903,11 +1910,14 @@ bool FWmfMediaTracks::AddStreamToTracks(uint32 StreamIndex, bool IsVideoDevice, 
 		::CoTaskMemFree(OutString);
 	}
 
+#pragma warning(push)
+#pragma warning(disable: 6388) // CA Warning: OutLength may not be NULL - According to MS documentation the initial value does not matter & we are sure to query a string type
 	if (SUCCEEDED(StreamDescriptor->GetAllocatedString(MF_SD_STREAM_NAME, &OutString, &OutLength)))
 	{
 		Track->Name = OutString;
 		::CoTaskMemFree(OutString);
 	}
+#pragma warning(pop)
 
 	Track->DisplayName = (Track->Name.IsEmpty())
 		? FText::Format(LOCTEXT("UnnamedStreamFormat", "Unnamed Track (Stream {0})"), FText::AsNumber((uint32)StreamIndex))
@@ -1989,6 +1999,33 @@ const FWmfMediaTracks::FFormat* FWmfMediaTracks::GetVideoFormat(int32 TrackIndex
 	return nullptr;
 }
 
+
+int64 FWmfMediaTracks::GetSequenceIndex(const TRange<FMediaTimeStamp>& TimeRange, FTimespan Time) const
+{
+	int64 SequenceIndex = 0;
+
+	// Make sure this has the sequence index that matches the time range.
+	// If the time range only has one sequence index then just use that.
+	if (TimeRange.GetLowerBoundValue().SequenceIndex == TimeRange.GetUpperBoundValue().SequenceIndex)
+	{
+		SequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
+	}
+	else
+	{
+		// Try the lower bound sequence index.
+		SequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
+		FMediaTimeStamp SampleTime = FMediaTimeStamp(Time, SequenceIndex);
+
+		// Does our time overlap the time range?
+		if (TimeRange.Contains(SampleTime) == false)
+		{
+			// No. Use the upper bound sequence index.
+			SequenceIndex = TimeRange.GetUpperBoundValue().SequenceIndex;
+		}
+	}
+
+	return SequenceIndex;
+}
 
 /* FWmfMediaTracks callbacks
  *****************************************************************************/

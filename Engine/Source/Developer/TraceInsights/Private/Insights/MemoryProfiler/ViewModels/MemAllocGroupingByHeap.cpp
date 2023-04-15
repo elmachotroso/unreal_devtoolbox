@@ -5,15 +5,16 @@
 #include "Internationalization/Internationalization.h"
 
 // Insights
+#include "Insights/Common/AsyncOperationProgress.h"
 #include "Insights/MemoryProfiler/ViewModels/MemAllocNode.h"
 
 #define LOCTEXT_NAMESPACE "Insights::FMemAllocGroupingByHeap"
 
 namespace Insights
 {
-	
+
 INSIGHTS_IMPLEMENT_RTTI(FMemAllocGroupingByHeap)
-	
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FMemAllocGroupingByHeap::FMemAllocGroupingByHeap(const TraceServices::IAllocationsProvider& InAllocProvider)
@@ -50,15 +51,15 @@ FTableTreeNodePtr MakeGroupNodeHierarchy(const TraceServices::IAllocationsProvid
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup,
-	TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const
+	TWeakPtr<FTable> InParentTable, IAsyncOperationProgress& InAsyncOperationProgress) const
 {
 	ParentGroup.ClearChildren();
 
 	// Build heap hierarchy
 	TArray<FTableTreeNodePtr> HeapNodes;
 	HeapNodes.AddZeroed(256);
-	
-	AllocProvider.EnumerateRootHeaps([&](uint8 Id, const TraceServices::IAllocationsProvider::FHeapSpec& Spec)
+
+	AllocProvider.EnumerateRootHeaps([&](HeapId Id, const TraceServices::IAllocationsProvider::FHeapSpec& Spec)
 	{
 		ParentGroup.AddChildAndSetGroupPtr(MakeGroupNodeHierarchy(Spec, InParentTable, HeapNodes));
 	});
@@ -66,19 +67,25 @@ void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 	// Add allocations nodes to heaps
 	for (FTableTreeNodePtr NodePtr : Nodes)
 	{
-		if (bCancelGrouping)
+		if (InAsyncOperationProgress.ShouldCancelAsyncOp())
 		{
 			return;
 		}
-		
+
+		if (NodePtr->IsGroup())
+		{
+			ParentGroup.AddChildAndSetGroupPtr(NodePtr);
+			continue;
+		}
+
 		const FMemAllocNode& MemAllocNode = static_cast<const FMemAllocNode&>(*NodePtr);
 		const FMemoryAlloc* Alloc = MemAllocNode.GetMemAlloc();
 
 		if (Alloc)
 		{
-			//todo: Calculating the real HeapId when the allocation is first added to the provider was too expensive, so deferring that operation to here could make sense.
-			//const uint8 HeapId = AllocProvider.GetParentBlock(Alloc->GetAddress());
-			const uint8 HeapId = Alloc->GetRootHeap();
+			//TODO: Calculating the real HeapId when the allocation is first added to the provider was too expensive, so deferring that operation to here could make sense.
+			//const HeapId Heap = AllocProvider.GetParentBlock(Alloc->GetAddress());
+			const uint8 HeapId = static_cast<uint8>(Alloc->GetRootHeap());
 			if (FTableTreeNodePtr GroupPtr = HeapNodes[HeapId])
 			{
 				GroupPtr->AddChildAndSetGroupPtr(NodePtr);
@@ -86,8 +93,9 @@ void FMemAllocGroupingByHeap::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 		}
 	}
 }
-	
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 } // namespace Insights
 
 #undef LOCTEXT_NAMESPACE

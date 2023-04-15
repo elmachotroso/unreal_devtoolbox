@@ -8,9 +8,13 @@
 #include "VisualLogger/VisualLogger.h"
 #include "MassEntityTemplateRegistry.h"
 #include "Engine/World.h"
+#include "MassEntityUtils.h"
 
-void UMassStateTreeTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+
+void UMassStateTreeTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
+
 	UMassStateTreeSubsystem* MassStateTreeSubsystem = World.GetSubsystem<UMassStateTreeSubsystem>();
 	if (!MassStateTreeSubsystem)
 	{
@@ -23,23 +27,22 @@ void UMassStateTreeTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildCo
 		UE_VLOG(MassStateTreeSubsystem, LogMassBehavior, Error, TEXT("StateTree asset is not set or unavailable."));
 		return;
 	}
-	if (!StateTree->GetInstanceStorageDefaultValue().IsValid())
+	if (!StateTree->IsReadyToRun())
 	{
-		UE_VLOG(MassStateTreeSubsystem, LogMassBehavior, Error, TEXT("StateTree asset is valid but missing runtime storage type."));
+		UE_VLOG(MassStateTreeSubsystem, LogMassBehavior, Error, TEXT("StateTree asset is ready to run."));
 		return;
 	}
 
-	const FMassStateTreeHandle Handle = MassStateTreeSubsystem->RegisterStateTreeAsset(StateTree);
+	FMassStateTreeSharedFragment SharedStateTree;
+	SharedStateTree.StateTree = StateTree;
+	
+	const FConstSharedStruct StateTreeFragment = EntityManager.GetOrCreateConstSharedFragment(SharedStateTree);
+	BuildContext.AddConstSharedFragment(StateTreeFragment);
 
-	// Add fragment describing which StateTree to run
-	FMassStateTreeFragment& StateTreeFragment = BuildContext.AddFragment_GetRef<FMassStateTreeFragment>();
-	StateTreeFragment.StateTreeHandle = Handle;
-
-	// Add runtime storage as a fragment
-	BuildContext.AddFragment(StateTree->GetInstanceStorageDefaultValue());
+	BuildContext.AddFragment<FMassStateTreeInstanceFragment>();
 }
 
-void UMassStateTreeTrait::ValidateTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+void UMassStateTreeTrait::ValidateTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
 	UMassStateTreeSubsystem* MassStateTreeSubsystem = World.GetSubsystem<UMassStateTreeSubsystem>();
 	if (!MassStateTreeSubsystem)
@@ -61,7 +64,7 @@ void UMassStateTreeTrait::ValidateTemplate(FMassEntityTemplateBuildContext& Buil
 		{
 			if (ItemDesc.Struct->IsChildOf(UWorldSubsystem::StaticClass()))
 			{
-				const TSubclassOf<UWorldSubsystem> SubClass = Cast<UClass>(const_cast<UStruct*>(ItemDesc.Struct));
+				const TSubclassOf<UWorldSubsystem> SubClass = Cast<UClass>(const_cast<UStruct*>(ToRawPtr(ItemDesc.Struct)));
 				USubsystem* Subsystem = World.GetSubsystemBase(SubClass);
 				UE_CVLOG(!Subsystem, MassStateTreeSubsystem, LogMassBehavior, Error, TEXT("StateTree %s: Could not find required subsystem %s"), *GetNameSafe(StateTree), *GetNameSafe(ItemDesc.Struct));
 			}

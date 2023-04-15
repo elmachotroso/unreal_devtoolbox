@@ -29,7 +29,7 @@ public:
 	{
 		if (!UObjectInitialized() && !IsEngineExitRequested())
 		{
-			UnregisterStyle();
+			UnregisterStyle();	
 		}
 	}
 

@@ -33,9 +33,21 @@ class UNiagaraDataInterfaceUObjectPropertyReader : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()
 
-public:
-	DECLARE_NIAGARA_DI_PARAMETER();
+	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+		SHADER_PARAMETER(FVector3f,			TransformLocation)
+		SHADER_PARAMETER(uint32,			TransformValid)
+		SHADER_PARAMETER(FQuat4f,			TransformRotation)
+		SHADER_PARAMETER(FVector3f,			TransformScale)
 
+		SHADER_PARAMETER(FVector3f,			InvTransformLocation)
+		SHADER_PARAMETER(uint32,			InvTransformValid)
+		SHADER_PARAMETER(FQuat4f,			InvTransformRotation)
+		SHADER_PARAMETER(FVector3f,			InvTransformScale)
+
+		SHADER_PARAMETER_SRV(Buffer<uint>,	PropertyData)
+	END_SHADER_PARAMETER_STRUCT()
+
+public:
 	/** User parameter Object binding to read properties from. */
 	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader")
 	FNiagaraUserParameterBinding UObjectParameterBinding;
@@ -45,7 +57,7 @@ public:
 
 	/** Optional source actor to use, if the user parameter binding is valid this will be ignored. */
 	UPROPERTY(EditAnywhere, Category = "UObjectPropertyReader")
-	TLazyObjectPtr<AActor> SourceActor;
+	TSoftObjectPtr<AActor> SourceActor;
 
 	/**
 	When an actor is bound as the object we will also search for a component of this type to bind properties to.
@@ -78,10 +90,13 @@ public:
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc) override;
 #if WITH_EDITORONLY_DATA
-	//virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
+	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+	virtual bool UseLegacyShaderBindings() const override { return false; }
+	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
+	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 	//UNiagaraDataInterface Interface
 
 	/** Remaps a property reader, where the  */
@@ -90,6 +105,7 @@ public:
 
 private:
 	void VMGetComponentTransform(FVectorVMExternalFunctionContext& Context);
+	void VMGetComponentInvTransform(FVectorVMExternalFunctionContext& Context);
 
 	FName GetRemappedPropertyName(FName InName) const
 	{

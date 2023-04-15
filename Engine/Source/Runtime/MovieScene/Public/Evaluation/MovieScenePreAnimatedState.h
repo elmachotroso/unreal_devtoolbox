@@ -2,37 +2,43 @@
 
 #pragma once
 
+#include "Containers/Map.h"
 #include "CoreTypes.h"
-#include "Misc/TVariant.h"
-#include "Evaluation/MovieSceneAnimTypeID.h"
-#include "Evaluation/MovieSceneEvaluationKey.h"
-#include "Evaluation/MovieSceneCompletionMode.h"
-#include "Evaluation/IMovieSceneEvaluationHook.h"
-#include "EntitySystem/TrackInstance/MovieSceneTrackInstance.h"
 #include "EntitySystem/MovieSceneSequenceInstanceHandle.h"
-#include "EntitySystem/MovieScenePropertySystemTypes.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+	#include "EntitySystem/MovieScenePropertySystemTypes.h"
+	#include "EntitySystem/TrackInstance/MovieSceneTrackInstance.h"
+	#include "Evaluation/IMovieSceneEvaluationHook.h"
+	#include "Evaluation/MovieSceneAnimTypeID.h"
+	#include "Evaluation/MovieSceneCompletionMode.h"
+	#include "Evaluation/MovieSceneEvaluationKey.h"
+	#include "Misc/TVariant.h"
+#endif
 
-class UObject;
-class IMovieScenePlayer;
 class FMovieScenePreAnimatedState;
+class IMovieScenePlayer;
+class UClass;
 class UMovieSceneEntitySystemLinker;
-
-struct IMovieScenePreAnimatedTokenProducer;
+class UObject;
+struct FMovieSceneAnimTypeID;
+struct FMovieSceneEvaluationKey;
+struct FMovieSceneSequenceID;
 struct IMovieScenePreAnimatedGlobalTokenProducer;
+struct IMovieScenePreAnimatedTokenProducer;
+template <typename FuncType> class TFunctionRef;
 
 namespace UE
 {
 namespace MovieScene
 {
 
-struct FPreAnimatedStateEntry;
-struct FPreAnimatedStateExtension;
-struct FPreAnimatedTemplateCaptureSources;
-struct FAnimTypePreAnimatedStateObjectStorage;
-struct FAnimTypePreAnimatedStateMasterStorage;
-struct FPreAnimatedTrackInstanceCaptureSources;
 struct FPreAnimatedEvaluationHookCaptureSources;
+struct FPreAnimatedStateEntry;
+struct FPreAnimatedTemplateCaptureSources;
 
 }
 }
@@ -51,7 +57,7 @@ public:
 
 	MOVIESCENE_API ~FMovieScenePreAnimatedState();
 
-	MOVIESCENE_API void Initialize(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FInstanceHandle InstanceHandle);
+	MOVIESCENE_API void Initialize(UMovieSceneEntitySystemLinker* Linker, UE::MovieScene::FRootInstanceHandle InstanceHandle);
 
 	/**
 	 * Check whether this sequence instance is capturing any and all changes of state so they can be restored later
@@ -127,8 +133,6 @@ private:
 
 	void ConditionalInitializeEntityStorage(bool bOverrideWantsRestoreState);
 
-	void InitializeStorage(TSharedPtr<UE::MovieScene::FPreAnimatedStateExtension> Extension);
-
 	void AddSourceMetaData(const UE::MovieScene::FPreAnimatedStateEntry& Entry);
 
 private:
@@ -138,18 +142,13 @@ private:
 	/** Weak pointer to the linker that we're associated with */
 	TWeakObjectPtr<UMovieSceneEntitySystemLinker> WeakLinker;
 
-	/** Pointers to the storage for state bound to objects, organized by FMovieSceneAnimTypeID */
-	TWeakPtr<UE::MovieScene::FAnimTypePreAnimatedStateObjectStorage> WeakObjectStorage;
-	/** Pointers to the storage for state created from master tracks, or otherwise not bound to objects */
-	TWeakPtr<UE::MovieScene::FAnimTypePreAnimatedStateMasterStorage> WeakMasterStorage;
-
 	/** Meta-data ledger for any pre-animated state that originates from track templates */
 	TSharedPtr<UE::MovieScene::FPreAnimatedTemplateCaptureSources> TemplateMetaData;
 	/** Meta-data ledger for any pre-animated state that originates from evaluation hooks */
 	TSharedPtr<UE::MovieScene::FPreAnimatedEvaluationHookCaptureSources> EvaluationHookMetaData;
 
 	/** The instance handle for the root sequence instance */
-	UE::MovieScene::FInstanceHandle InstanceHandle;
+	UE::MovieScene::FRootInstanceHandle InstanceHandle;
 
 	bool bCapturingGlobalPreAnimatedState;
 };

@@ -2,15 +2,22 @@
 
 #include "InsightsManager.h"
 
+#include "DesktopPlatformModule.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformMemory.h"
+#include "HAL/PlatformProcess.h"
+#include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
 #include "Logging/MessageLog.h"
-#include "MessageLog/Public/MessageLogModule.h"
+#include "MessageLogModule.h"
 #include "Misc/CString.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Templates/UniquePtr.h"
 #include "Trace/StoreClient.h"
+#include "TraceServices/AnalysisService.h"
+#include "TraceServices/Model/Diagnostics.h"
 #include "TraceServices/Model/NetProfiler.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
@@ -102,6 +109,7 @@ void FAvailabilityCheck::Enable(double InWaitTime)
 // FInsightsManager
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+const TCHAR* FInsightsManager::AutoQuitMsg = TEXT("Application is closing because it was started with the AutoQuit parameter and session analysis is complete.");
 const TCHAR* FInsightsManager::AutoQuitMsgOnFail = TEXT("Application is closing because it was started with the AutoQuit parameter and session analysis failed to start.");
 
 TSharedPtr<FInsightsManager> FInsightsManager::Instance = nullptr;
@@ -133,23 +141,11 @@ TSharedPtr<FInsightsManager> FInsightsManager::CreateInstance(TSharedRef<TraceSe
 
 FInsightsManager::FInsightsManager(TSharedRef<TraceServices::IAnalysisService> InTraceAnalysisService,
 								   TSharedRef<TraceServices::IModuleService> InTraceModuleService)
-	: bIsInitialized(false)
-	, bMemUsageLimitHysteresis(false)
-	, MemUsageLimitLastTimestamp(0)
-	, LogListingName(TEXT("UnrealInsights"))
+	: LogListingName(TEXT("UnrealInsights"))
 	, AnalysisService(InTraceAnalysisService)
 	, ModuleService(InTraceModuleService)
-	, StoreDir()
-	, StoreClient()
 	, CommandList(new FUICommandList())
 	, ActionManager(this)
-	, Settings()
-	, bIsDebugInfoEnabled(false)
-	, AnalysisStopwatch()
-	, bIsAnalysisComplete(false)
-	, SessionDuration(0.0)
-	, AnalysisDuration(0.0)
-	, AnalysisSpeedFactor(0.0)
 {
 }
 
@@ -501,11 +497,33 @@ FInsightsSettings& FInsightsManager::GetSettings()
 
 bool FInsightsManager::Tick(float DeltaTime)
 {
+	AutoLoadLiveSession();
+
 	UpdateSessionDuration();
 
 #if !WITH_EDITOR
+	if (!bIsSessionInfoSet && Session.IsValid())
+	{
+		{
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+			const TraceServices::IDiagnosticsProvider* DiagnosticsProvider = TraceServices::ReadDiagnosticsProvider(*Session.Get());
+			if (DiagnosticsProvider && DiagnosticsProvider->IsSessionInfoAvailable())
+			{
+				bIsSessionInfoSet = true;
+			}
+		}
+		if (bIsSessionInfoSet)
+		{
+			UpdateAppTitle();
+		}
+	}
+
+	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+	ISourceCodeAccessor& SourceCodeAccessor = SourceCodeAccessModule.GetAccessor();
+	SourceCodeAccessor.Tick(DeltaTime);
+
 	CheckMemoryUsage();
-#endif
+#endif // !WITH_EDITOR
 
 	return true;
 }
@@ -546,6 +564,8 @@ void FInsightsManager::UpdateSessionDuration()
 				*TimeUtils::FormatTimeAuto(AnalysisDuration, 2),
 				AnalysisSpeedFactor,
 				*TimeUtils::FormatTimeAuto(SessionDuration, 2));
+
+			OnSessionAnalysisCompleted();
 		}
 	}
 }
@@ -619,6 +639,7 @@ void FInsightsManager::ResetSession(bool bNotify)
 		}
 	}
 
+	bIsSessionInfoSet = false;
 	bIsAnalysisComplete = false;
 	SessionDuration = 0.0;
 	AnalysisStopwatch.Restart();
@@ -699,6 +720,120 @@ void FInsightsManager::ActivateTimingInsightsTab()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+bool FInsightsManager::ShowOpenTraceFileDialog(FString& OutTraceFile) const
+{
+	const FString ProfilingDirectory(FPaths::ConvertRelativePathToFull(FInsightsManager::Get()->GetStoreDir()));
+
+	TArray<FString> OutFiles;
+	bool bOpened = false;
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform != nullptr)
+	{
+		FSlateApplication::Get().CloseToolTip();
+
+		bOpened = DesktopPlatform->OpenFileDialog
+		(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			LOCTEXT("LoadTrace_FileDesc", "Open trace file...").ToString(),
+			ProfilingDirectory,
+			TEXT(""),
+			LOCTEXT("LoadTrace_FileFilter", "Trace files (*.utrace)|*.utrace|All files (*.*)|*.*").ToString(),
+			EFileDialogFlags::None,
+			OutFiles
+		);
+	}
+
+	if (bOpened == true && OutFiles.Num() == 1)
+	{
+		OutTraceFile = OutFiles[0];
+		return true;
+	}
+
+	return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::OpenUnrealInsights(const TCHAR* CmdLine) const
+{
+	if (CmdLine == nullptr)
+	{
+		CmdLine = TEXT("");
+	}
+
+	const TCHAR* ExecutablePath = FPlatformProcess::ExecutablePath();
+
+	constexpr bool bLaunchDetached = true;
+	constexpr bool bLaunchHidden = false;
+	constexpr bool bLaunchReallyHidden = false;
+
+	uint32 ProcessID = 0;
+	const int32 PriorityModifier = 0;
+	const TCHAR* OptionalWorkingDirectory = nullptr;
+
+	void* PipeWriteChild = nullptr;
+	void* PipeReadChild = nullptr;
+
+	FProcHandle Handle = FPlatformProcess::CreateProc(ExecutablePath, CmdLine, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, &ProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeReadChild);
+	if (Handle.IsValid())
+	{
+		FPlatformProcess::CloseProc(Handle);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::OpenTraceFile() const
+{
+	FString TraceFile;
+	if (FInsightsManager::Get()->ShowOpenTraceFileDialog(TraceFile))
+	{
+		OpenTraceFile(TraceFile);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::OpenTraceFile(const FString& InTraceFile) const
+{
+	FString CmdLine = TEXT("-OpenTraceFile=\"") + InTraceFile + TEXT("\"");
+	OpenUnrealInsights(*CmdLine);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::AutoLoadLiveSession()
+{
+	if (!bIsAutoLoadLiveSessionEnabled)
+	{
+		return;
+	}
+
+	if (!StoreClient.IsValid())
+	{
+		return;
+	}
+
+	const uint32 SessionCount = StoreClient->GetSessionCount();
+	for (uint32 SessionIndex = 0; SessionIndex < SessionCount; ++SessionIndex)
+	{
+		const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionIndex);
+		if (SessionInfo)
+		{
+			const uint32 TraceId = SessionInfo->GetTraceId();
+			if (TraceId != CurrentTraceId && !AutoLoadedTraceIds.Contains(TraceId))
+			{
+				AutoLoadedTraceIds.Add(TraceId);
+				LoadTrace(SessionInfo->GetTraceId());
+				break;
+			}
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FInsightsManager::LoadLastLiveSession()
 {
 	ResetSession();
@@ -708,19 +843,15 @@ void FInsightsManager::LoadLastLiveSession()
 		return;
 	}
 
-	const int32 SessionCount = StoreClient->GetSessionCount();
-	if (SessionCount == 0)
+	const uint32 SessionCount = StoreClient->GetSessionCount();
+	if (SessionCount != 0)
 	{
-		return;
+		const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionCount - 1);
+		if (SessionInfo)
+		{
+			LoadTrace(SessionInfo->GetTraceId());
+		}
 	}
-
-	const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionCount - 1);
-	if (SessionInfo == nullptr)
-	{
-		return;
-	}
-
-	LoadTrace(SessionInfo->GetTraceId());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -729,7 +860,7 @@ void FInsightsManager::LoadTrace(uint32 InTraceId, bool InAutoQuit)
 {
 	ResetSession();
 
-	if (StoreClient == nullptr)
+	if (!StoreClient.IsValid())
 	{
 		if (InAutoQuit)
 		{
@@ -752,9 +883,14 @@ void FInsightsManager::LoadTrace(uint32 InTraceId, bool InAutoQuit)
 	const UE::Trace::FStoreClient::FTraceInfo* TraceInfo = StoreClient->GetTraceInfoById(InTraceId);
 	if (TraceInfo != nullptr)
 	{
-		FAnsiStringView Name = TraceInfo->GetName();
-		TraceName = FPaths::Combine(TraceName, FString(Name.Len(), Name.GetData()));
-		TraceName = FPaths::SetExtension(TraceName, ".utrace");
+		const FUtf8StringView Utf8NameView = TraceInfo->GetName();
+		FString Name(Utf8NameView);
+		if (!Name.EndsWith(TEXT(".utrace")))
+		{
+			Name += TEXT(".utrace");
+		}
+		TraceName = FPaths::Combine(TraceName, Name);
+		FPaths::NormalizeFilename(TraceName);
 	}
 
 	Session = AnalysisService->StartAnalysis(InTraceId, *TraceName, MoveTemp(TraceData));
@@ -763,11 +899,24 @@ void FInsightsManager::LoadTrace(uint32 InTraceId, bool InAutoQuit)
 	{
 		CurrentTraceId = InTraceId;
 		CurrentTraceFilename = TraceName;
+		bIsSessionInfoSet = false;
 		OnSessionChanged();
+		bSessionAnalysisCompletedAutoQuit = InAutoQuit;
 	}
 	else if (InAutoQuit)
 	{
 		RequestEngineExit(AutoQuitMsgOnFail);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::LoadTraceFile()
+{
+	FString TraceFile;
+	if (FInsightsManager::Get()->ShowOpenTraceFileDialog(TraceFile))
+	{
+		LoadTraceFile(TraceFile);
 	}
 }
 
@@ -790,7 +939,9 @@ void FInsightsManager::LoadTraceFile(const FString& InTraceFilename, bool InAuto
 	{
 		CurrentTraceId = 0;
 		CurrentTraceFilename = InTraceFilename;
+		bIsSessionInfoSet = false;
 		OnSessionChanged();
+		bSessionAnalysisCompletedAutoQuit = InAutoQuit;
 	}
 	else if (InAutoQuit)
 	{
@@ -864,9 +1015,34 @@ void FInsightsManager::UpdateAppTitle()
 		}
 		else
 		{
-			const FString SessionName = FPaths::GetBaseFilename(CurrentTraceFilename);
-			const FText AppTitle = FText::Format(LOCTEXT("UnrealInsightsAppNameFmt", "{0} - Unreal Insights"), FText::FromString(SessionName));
-			RootWindow->SetTitle(AppTitle);
+			bool bWasAppTitleUpdated = false;
+			if (Session.IsValid())
+			{
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+				const TraceServices::IDiagnosticsProvider* DiagnosticsProvider = TraceServices::ReadDiagnosticsProvider(*Session.Get());
+				if (DiagnosticsProvider && DiagnosticsProvider->IsSessionInfoAvailable())
+				{
+					TraceServices::FSessionInfo SessionInfo = DiagnosticsProvider->GetSessionInfo();
+
+					const FString SessionName = FPaths::GetBaseFilename(CurrentTraceFilename);
+					const FText AppTitle = FText::Format(LOCTEXT("UnrealInsightsAppNameFmt2", "{0} - {1} - {2} - {3} - {4} - Unreal Insights"),
+						FText::FromString(SessionName),
+						FText::FromString(SessionInfo.Platform),
+						FText::FromString(SessionInfo.AppName),
+						FText::FromString(LexToString(SessionInfo.ConfigurationType)),
+						FText::FromString(LexToString(SessionInfo.TargetType)));
+					RootWindow->SetTitle(AppTitle);
+
+					bWasAppTitleUpdated = true;
+				}
+			}
+
+			if (!bWasAppTitleUpdated)
+			{
+				const FString SessionName = FPaths::GetBaseFilename(CurrentTraceFilename);
+				const FText AppTitle = FText::Format(LOCTEXT("UnrealInsightsAppNameFmt", "{0} - Unreal Insights"), FText::FromString(SessionName));
+				RootWindow->SetTitle(AppTitle);
+			}
 		}
 	}
 #endif
@@ -880,6 +1056,175 @@ void FInsightsManager::OpenSettings()
 	if (Wnd.IsValid())
 	{
 		Wnd->OpenSettings();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::ScheduleCommand(const FString& InCmd)
+{
+	SessionAnalysisCompletedCmd = InCmd;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::OnSessionAnalysisCompleted()
+{
+	if (!SessionAnalysisCompletedCmd.IsEmpty())
+	{
+		FOutputDevice& Ar = *GLog;
+		Ar.Logf(TEXT("Executing commands on analysis completed..."));
+		FStopwatch Stopwatch;
+		Stopwatch.Start();
+		IUnrealInsightsModule& TraceInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+		TraceInsightsModule.Exec(*SessionAnalysisCompletedCmd, Ar);
+		Stopwatch.Stop();
+		Ar.Logf(TEXT("Commands executed in %.3fs."), Stopwatch.GetAccumulatedTime());
+	}
+
+#if !UE_BUILD_SHIPPING && !WITH_EDITOR
+	if (FInsightsTestRunner::Get().IsValid())
+	{
+		// Don't quit now. Let the test runner to execute.
+		bSessionAnalysisCompletedAutoQuit = false;
+	}
+#endif
+
+	if (bSessionAnalysisCompletedAutoQuit)
+	{
+		bSessionAnalysisCompletedAutoQuit = false;
+		RequestEngineExit(AutoQuitMsg);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FInsightsManager::Exec(const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	FString ResponseFile;
+	if (FParse::Value(Cmd, TEXT("@="), ResponseFile))
+	{
+		HandleResponseFileCmd(*ResponseFile, Ar);
+		return true;
+	}
+
+	return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FInsightsManager::HandleResponseFileCmd(const TCHAR* ResponseFile, FOutputDevice& Ar)
+{
+	Ar.Logf(TEXT("Executing commands using response file (%s)..."), ResponseFile);
+
+	FString Contents;
+	if (!FFileHelper::LoadFileToString(Contents, &IPlatformFile::GetPlatformPhysical(), ResponseFile))
+	{
+		Ar.Logf(ELogVerbosity::Error, TEXT("Failed to open the response file (%s)."), ResponseFile);
+		return false;
+	}
+
+	if (Contents.IsEmpty())
+	{
+		return true;
+	}
+
+	IUnrealInsightsModule& TraceInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
+
+	TCHAR* StartPos = &Contents[0];
+	TCHAR* EndPos = StartPos + Contents.Len();
+	TCHAR* CrtPos = StartPos;
+	while (CrtPos != EndPos)
+	{
+		uint32 EndOfLine = 0;
+		if (*CrtPos == TEXT('\r'))
+		{
+			if (*(CrtPos + 1) == '\n')
+			{
+				EndOfLine = 2;
+			}
+			else
+			{
+				EndOfLine = 1;
+			}
+		}
+		else if (*CrtPos == TEXT('\n'))
+		{
+			EndOfLine = 1;
+		}
+
+		if (EndOfLine > 0)
+		{
+			const uint32 LineLen = uint32(CrtPos - StartPos);
+			if (LineLen > 0 && *StartPos != TEXT('#'))
+			{
+				StartPos[LineLen] = TEXT('\0');
+				TraceInsightsModule.Exec(StartPos, Ar);
+			}
+
+			CrtPos += EndOfLine;
+			StartPos = CrtPos;
+		}
+		else
+		{
+			++CrtPos;
+		}
+	}
+	const uint32 LineLen = uint32(CrtPos - StartPos);
+	if (LineLen > 0 && *StartPos != TEXT('#'))
+	{
+		StartPos[LineLen] = TEXT('\0');
+		TraceInsightsModule.Exec(StartPos, Ar);
+	}
+
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::AddInProgressAsyncOp(FGraphEventRef Event, const FString& Name)
+{
+	check(IsInGameThread());
+	if (Event.IsValid() && !Event->IsComplete())
+	{
+		InProgressAsyncTasks.AddTail(FAsyncTaskData(Event, Name));
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::RemoveInProgressAsyncOp(FGraphEventRef Event)
+{
+	check(IsInGameThread());
+	if (Event.IsValid())
+	{
+		auto Element = InProgressAsyncTasks.GetHead();
+		while (Element && Element->GetValue().GraphEvent != Event)
+		{
+			Element = Element->GetNextNode();
+		}
+		if (Element)
+		{
+			InProgressAsyncTasks.RemoveNode(Element);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FInsightsManager::WaitOnInProgressAsyncOps()
+{
+	check(IsInGameThread());
+	while(!InProgressAsyncTasks.IsEmpty())
+	{
+		auto Entry = InProgressAsyncTasks.GetHead();
+		UE_LOG(TraceInsights, Log, TEXT("Waiting on task: %s."), *(Entry->GetValue().Name));
+		FGraphEventRef Event = Entry->GetValue().GraphEvent;
+		while (!Event->IsComplete())
+		{
+			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+			FPlatformProcess::Sleep(0.1f);
+		}
 	}
 }
 

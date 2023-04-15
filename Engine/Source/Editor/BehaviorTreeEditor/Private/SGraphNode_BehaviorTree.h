@@ -2,23 +2,36 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Layout/Visibility.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "SNodePanel.h"
 #include "BehaviorTreeEditorTypes.h"
-#include "SGraphNode.h"
-#include "SGraphPin.h"
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Kismet2/EnumEditorUtils.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Math/Vector2D.h"
 #include "SGraphNodeAI.h"
+#include "SNodePanel.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 
+class SBorder;
+class SGraphNode;
+class SGraphPin;
 class SHorizontalBox;
 class SToolTip;
 class SVerticalBox;
+class SWidget;
 class UBehaviorTreeGraphNode;
+class UEdGraphPin;
+class UUserDefinedEnum;
+struct FGeometry;
+struct FPointerEvent;
+struct FSlateBrush;
 
-class SGraphNode_BehaviorTree : public SGraphNodeAI
+class SGraphNode_BehaviorTree : public SGraphNodeAI, public FEnumEditorUtils::INotifyOnEnumChanged
 {
 public:
 	SLATE_BEGIN_ARGS(SGraphNode_BehaviorTree){}
@@ -61,6 +74,10 @@ public:
 	FVector2D GetCachedPosition() const { return CachedPosition; }
 
 protected:
+	/** INotifyOnEnumChanged interface */
+	virtual void PreChange(const UUserDefinedEnum* Changed, FEnumEditorUtils::EEnumEditorChangeInfo ChangedType) override;
+	virtual void PostChange(const UUserDefinedEnum* Changed, FEnumEditorUtils::EEnumEditorChangeInfo ChangedType) override;
+
 	uint32 bSuppressDebuggerColor : 1;
 	uint32 bSuppressDebuggerTriggers : 1;
 	

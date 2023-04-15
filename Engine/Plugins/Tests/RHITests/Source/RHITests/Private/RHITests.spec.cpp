@@ -8,7 +8,7 @@
 #include "RHITextureTests.h"
 
 
-BEGIN_DEFINE_SPEC(FAutomationRHITest, "System.Automation.RHI", EAutomationTestFlags::EngineFilter | EAutomationTestFlags::ApplicationContextMask)
+BEGIN_DEFINE_SPEC(FAutomationRHITest, "Rendering.RHI", EAutomationTestFlags::EngineFilter | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::NonNullRHI)
 END_DEFINE_SPEC(FAutomationRHITest)
 void FAutomationRHITest::Define()
 {
@@ -49,12 +49,38 @@ void FAutomationRHITest::Define()
 			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHIClearUAV_Texture3D);
 			TestEqual("Clear Texture3D failed", bResult, 1);
 		});
+	});
 
-		It("RHI Formats", [this]()
+	Describe("Test RHI Pixel Format", [this]()
+	{
+		It("RHI Target Formats", [this]()
 		{
 			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHIFormats);
-			TestEqual("RHI Formats failed", bResult, 1);
+			TestEqual("RHI Target Formats failed", bResult, 1);
 		});
 	});
 
+	Describe("Test RHI Resource Update", [this]()
+	{
+		It("RHI Update Texture2D", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_UpdateTexture2D);
+			TestEqual("RHI Update Texture2D failed", bResult, 1);
+		});
+		
+		It("RHI Multiple Lock Texture2D", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_MultipleLockTexture2D);
+			TestEqual("RHI Multiple Lock Texture2D failed", bResult, 1);
+		});
+	});
+
+	Describe("Test RHI Copy", [this]
+	{
+		It("RHICopyTexture", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHICopyTexture);
+			TestEqual("RHICopyTexture", bResult, 1);
+		});
+	});
 }

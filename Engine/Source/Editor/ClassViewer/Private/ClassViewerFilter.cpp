@@ -2,17 +2,37 @@
 
 #include "ClassViewerFilter.h"
 
-#include "UnloadedBlueprintData.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "ClassViewerModule.h"
+#include "ClassViewerNode.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Brush.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
-#include "Editor.h"
-#include "ClassViewerModule.h"
-#include "AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
 #include "PropertyHandle.h"
+#include "Settings/ClassViewerSettings.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UnloadedBlueprintData.h"
 
 EFilterReturn::Type FClassViewerFilterFuncs::IfInChildOfClassesSet(TSet< const UClass* >& InSet, const UClass* InClass)
 {
@@ -523,7 +543,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (bCheckTextFilter && (TextFilter->GetFilterType() != ETextFilterExpressionType::Empty))
 	{
 		FString ClassNameWithCppPrefix = FString::Printf(TEXT("%s%s"), InClass->GetPrefixCPP(), *InClass->GetName());
-		bPassesTextFilter = PassesTextFilter(InClass->GetName(), TextFilter) || PassesTextFilter(ClassNameWithCppPrefix, TextFilter);
+		bPassesTextFilter = PassesTextFilter(InClass->GetName(), TextFilter) || PassesTextFilter(ClassNameWithCppPrefix, TextFilter) || PassesTextFilter(InClass->GetDisplayNameText().ToString(), TextFilter);
 
 		// If the class is deprecated, try searching without the deprecated name inserted, in case a user typed a string
 		if (!bPassesTextFilter && InClass->HasAnyClassFlags(CLASS_Deprecated))
@@ -569,7 +589,7 @@ bool FClassViewerFilter::IsUnloadedClassAllowed(const FClassViewerInitialization
 	// Determine if we allow any developer folder classes, if so determine if this class is in one of the allowed developer folders.
 	static const FString DeveloperPathWithSlash = FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir());
 	static const FString UserDeveloperPathWithSlash = FPackageName::FilenameToLongPackageName(FPaths::GameUserDeveloperDir());
-	FString GeneratedClassPathString = InUnloadedClassData->GetClassPath().ToString();
+	FString GeneratedClassPathString = InUnloadedClassData->GetClassPathName().ToString();
 
 	bool bPassesDeveloperFilter = true;
 
@@ -649,8 +669,22 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	bool bPassesAssetReferenceFilter = true;
 	if (AssetReferenceFilter.IsValid() && bIsBlueprintBase)
 	{
-		FName BlueprintPath = FName(*GeneratedClassPathString.LeftChop(2)); // Chop off _C
-		bPassesAssetReferenceFilter = AssetReferenceFilter->PassesFilter(AssetRegistry.GetAssetByObjectPath(BlueprintPath));
+		FString BlueprintAssetPath = GeneratedClassPathString;
+		FAssetData BlueprintAssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(BlueprintAssetPath));
+		if (!BlueprintAssetData.IsValid())
+		{
+			BlueprintAssetPath = GeneratedClassPathString.LeftChop(2); // Chop off _C
+			BlueprintAssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(BlueprintAssetPath));
+		}
+
+		if (BlueprintAssetData.IsValid())
+		{
+			bPassesAssetReferenceFilter = AssetReferenceFilter->PassesFilter(BlueprintAssetData);
+		}
+		else
+		{
+			UE_LOG(LogEditorClassViewer, Warning, TEXT("Blueprint class cannot be found: %s"), *GeneratedClassPathString);
+		}
 	}
 
 	bool bPassesFilter = bPassesPlaceableFilter && bPassesBlueprintBaseFilter && bPassesDeveloperFilter 

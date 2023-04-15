@@ -3,8 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RHIDefinitions.h"
 #include "HAL/Thread.h"
-#include "VulkanRHIPrivate.h"
 
 #include <string.h>
 
@@ -67,7 +67,7 @@ namespace AVEncoder
 
 		AMFContextPtr GetContext() { return AmfContext; }
 
-        bool InitializeContext(FString RHIName, void* NativeDevice, void* NativeInstance = nullptr, void* NativePhysicalDevice = nullptr);
+        bool InitializeContext(ERHIInterfaceType RHIType, const FString& RHIName, void* NativeDevice, void* NativeInstance = nullptr, void* NativePhysicalDevice = nullptr);
 
         void DestroyContext()
         {

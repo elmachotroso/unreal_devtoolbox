@@ -6,6 +6,7 @@ public class UnrealMultiUserServer : ModuleRules
 {
 	public UnrealMultiUserServer(ReadOnlyTargetRules Target) : base(Target)
 	{
+		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -21,7 +22,7 @@ public class UnrealMultiUserServer : ModuleRules
 			new string[] {
 				"Launch",
 				"ConcertSyncCore",
-				"ConcertSyncServer",
+				"ConcertSyncServer"
 			}
 		);
 
@@ -33,7 +34,7 @@ public class UnrealMultiUserServer : ModuleRules
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
-				"ConcertSyncServer",
+				"ConcertSyncServer"
 			}
 		);
 	}

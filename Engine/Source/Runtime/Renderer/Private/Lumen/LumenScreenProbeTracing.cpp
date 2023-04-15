@@ -31,6 +31,14 @@ FAutoConsoleVariableRef GVarLumenScreenProbeGatherHierarchicalScreenTraces(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+int32 GLumenScreenProbeGatherHierarchicalScreenTracesSkipFoliageHits = 1;
+FAutoConsoleVariableRef GVarLumenScreenProbeGatherHierarchicalScreenTracesSkipFoliageHits(
+	TEXT("r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.SkipFoliageHits"),
+	GLumenScreenProbeGatherHierarchicalScreenTracesSkipFoliageHits,
+	TEXT("Whether to allow screen traces to hit Subsurface and TwoSided Foliage shading models.  Can be used to work around aliasing from high frequency grass geometry."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 int32 GLumenScreenProbeGatherHierarchicalScreenTracesMaxIterations = 50;
 FAutoConsoleVariableRef GVarLumenScreenProbeGatherHierarchicalScreenTracesMaxIterations(
 	TEXT("r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.MaxIterations"),
@@ -47,7 +55,7 @@ FAutoConsoleVariableRef GVarLumenScreenProbeGatherRelativeDepthThickness(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-float GLumenScreenProbeGatherHistoryDepthTestRelativeThickness = .1f;
+float GLumenScreenProbeGatherHistoryDepthTestRelativeThickness = .01f;
 FAutoConsoleVariableRef GVarLumenScreenProbeGatherHistoryDepthTestRelativeThickness(
 	TEXT("r.Lumen.ScreenProbeGather.ScreenTraces.HZBTraversal.HistoryDepthTestRelativeThickness"),
 	GLumenScreenProbeGatherHistoryDepthTestRelativeThickness,
@@ -125,6 +133,27 @@ class FClearTracesCS : public FGlobalShader
 
 IMPLEMENT_GLOBAL_SHADER(FClearTracesCS, "/Engine/Private/Lumen/LumenScreenProbeTracing.usf", "ClearTracesCS", SF_Compute);
 
+class FClearLightSampleTracesCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FClearLightSampleTracesCS)
+	SHADER_USE_PARAMETER_STRUCT(FClearLightSampleTracesCS, FGlobalShader)
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeParameters, ScreenProbeParameters)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return DoesPlatformSupportLumenGI(Parameters.Platform);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FClearLightSampleTracesCS, "/Engine/Private/Lumen/LumenScreenProbeTracing.usf", "ClearLightSampleTracesCS", SF_Compute);
 
 class FScreenProbeTraceScreenTexturesCS : public FGlobalShader
 {
@@ -132,7 +161,7 @@ class FScreenProbeTraceScreenTexturesCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FScreenProbeTraceScreenTexturesCS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenCardTracingParameters, TracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHZBScreenTraceParameters, HZBScreenTraceParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, FurthestHZBTexture)
@@ -142,6 +171,7 @@ class FScreenProbeTraceScreenTexturesCS : public FGlobalShader
 		SHADER_PARAMETER(float, HistoryDepthTestRelativeThickness)
 		SHADER_PARAMETER(float, NumThicknessStepsToDetermineCertainty)
 		SHADER_PARAMETER(uint32, MinimumTracingThreadOccupancy)
+		SHADER_PARAMETER(uint32, SkipFoliageHits)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeParameters, ScreenProbeParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenIndirectTracingParameters, IndirectTracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
@@ -153,8 +183,9 @@ class FScreenProbeTraceScreenTexturesCS : public FGlobalShader
 	class FStructuredImportanceSampling : SHADER_PERMUTATION_BOOL("STRUCTURED_IMPORTANCE_SAMPLING");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_SCREEN");
 	class FTerminateOnLowOccupancy : SHADER_PERMUTATION_BOOL("TERMINATE_ON_LOW_OCCUPANCY");
-	
-	using FPermutationDomain = TShaderPermutationDomain<FStructuredImportanceSampling, FHierarchicalScreenTracing, FRadianceCache, FHairStrands, FTerminateOnLowOccupancy>;
+	class FTraceLightSamples : SHADER_PERMUTATION_BOOL("TRACE_LIGHT_SAMPLES");
+
+	using FPermutationDomain = TShaderPermutationDomain<FStructuredImportanceSampling, FHierarchicalScreenTracing, FRadianceCache, FHairStrands, FTerminateOnLowOccupancy, FTraceLightSamples>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -191,11 +222,15 @@ class FScreenProbeCompactTracesCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FScreenProbeParameters, ScreenProbeParameters)
+		SHADER_PARAMETER(uint32, CullByDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionTracingEndDistanceFromCamera)
 		SHADER_PARAMETER(float, CompactionMaxTraceDistance)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWCompactedTraceTexelAllocator)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWCompactedTraceTexelData)
 	END_SHADER_PARAMETER_STRUCT()
+
+	class FTraceLightSamples : SHADER_PERMUTATION_BOOL("TRACE_LIGHT_SAMPLES");
+	using FPermutationDomain = TShaderPermutationDomain<FTraceLightSamples>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -246,14 +281,40 @@ class FScreenProbeTraceMeshSDFsCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCompactedTraceParameters, CompactedTraceParameters)
 	END_SHADER_PARAMETER_STRUCT()
 		
+	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FStructuredImportanceSampling : SHADER_PERMUTATION_BOOL("STRUCTURED_IMPORTANCE_SAMPLING");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FTraceMeshSDFs : SHADER_PERMUTATION_BOOL("SCENE_TRACE_MESH_SDFS");
 	class FTraceHeightfields : SHADER_PERMUTATION_BOOL("SCENE_TRACE_HEIGHTFIELDS");
-	using FPermutationDomain = TShaderPermutationDomain<FStructuredImportanceSampling, FHairStrands, FTraceMeshSDFs, FTraceHeightfields>;
+	class FOffsetDataStructure : SHADER_PERMUTATION_INT("OFFSET_DATA_STRUCT", 3);
+	class FTraceLightSamples : SHADER_PERMUTATION_BOOL("TRACE_LIGHT_SAMPLES");
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FStructuredImportanceSampling, FHairStrands, FTraceMeshSDFs, FTraceHeightfields, FOffsetDataStructure, FTraceLightSamples>;
+
+	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
+	{
+		// FOffsetDataStructure is only used for mesh SDFs
+		if (!PermutationVector.Get<FTraceMeshSDFs>())
+		{
+			PermutationVector.Set<FOffsetDataStructure>(0);
+		}
+
+		if (PermutationVector.Get<FTraceLightSamples>())
+		{
+			PermutationVector.Set<FStructuredImportanceSampling>(false);
+		}
+
+		return PermutationVector;
+	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (RemapPermutation(PermutationVector) != PermutationVector)
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
@@ -287,16 +348,34 @@ class FScreenProbeTraceVoxelsCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(FCompactedTraceParameters, CompactedTraceParameters)
 	END_SHADER_PARAMETER_STRUCT()
 
-	class FDynamicSkyLight : SHADER_PERMUTATION_BOOL("ENABLE_DYNAMIC_SKY_LIGHT");
-	class FTraceDistantScene : SHADER_PERMUTATION_BOOL("TRACE_DISTANT_SCENE");
+	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("RADIANCE_CACHE");
 	class FStructuredImportanceSampling : SHADER_PERMUTATION_BOOL("STRUCTURED_IMPORTANCE_SAMPLING");
 	class FHairStrands : SHADER_PERMUTATION_BOOL("USE_HAIRSTRANDS_VOXEL");
 	class FTraceVoxels : SHADER_PERMUTATION_BOOL("TRACE_VOXELS");
-	using FPermutationDomain = TShaderPermutationDomain<FDynamicSkyLight, FTraceDistantScene, FRadianceCache, FStructuredImportanceSampling, FHairStrands, FTraceVoxels>;
+	class FTraceLightSamples : SHADER_PERMUTATION_BOOL("TRACE_LIGHT_SAMPLES");
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FRadianceCache, FStructuredImportanceSampling, FHairStrands, FTraceVoxels, FTraceLightSamples>;
+
+	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
+	{
+		if (PermutationVector.Get<FTraceLightSamples>())
+		{
+			PermutationVector.Set<FRadianceCache>(false);
+			PermutationVector.Set<FStructuredImportanceSampling>(false);
+		}
+
+		return PermutationVector;
+	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (RemapPermutation(PermutationVector) != PermutationVector)
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
@@ -356,7 +435,8 @@ void SetupVisualizeTraces(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
 	const FViewInfo& View,
-	const FScreenProbeParameters& ScreenProbeParameters)
+	const FScreenProbeParameters& ScreenProbeParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	FRDGBufferRef VisualizeTracesData = nullptr;
 
@@ -388,6 +468,7 @@ void SetupVisualizeTraces(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("SetupVisualizeTraces"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FComputeShaderUtils::GetGroupCount(FIntPoint(ScreenProbeParameters.ScreenProbeTracingOctahedronResolution), FScreenProbeSetupVisualizeTracesCS::GetGroupSize()));
@@ -404,41 +485,87 @@ void GetScreenProbeVisualizeTracesBuffer(TRefCountPtr<FRDGPooledBuffer>& Visuali
 	}
 }
 
+enum class ECompactedTracingIndirectArgs
+{
+	NumTracesDiv64 = 0 * sizeof(FRHIDispatchIndirectParameters),
+	NumTracesDiv32 = 1 * sizeof(FRHIDispatchIndirectParameters),
+	NumLightSampleTracesDiv64 = 2 * sizeof(FRHIDispatchIndirectParameters),
+	NumLightSampleTracesDiv32 = 3 * sizeof(FRHIDispatchIndirectParameters),
+	MAX = 4,
+};
+
 FCompactedTraceParameters CompactTraces(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View, 
 	const FScreenProbeParameters& ScreenProbeParameters,
+	bool bCullByDistanceFromCamera,
 	float CompactionTracingEndDistanceFromCamera,
-	float CompactionMaxTraceDistance)
+	float CompactionMaxTraceDistance,
+	bool bRenderDirectLighting,
+	ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute)
 {
+	FRDGBufferRef CompactedTraceTexelAllocator = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 2), TEXT("Lumen.ScreenProbeGather.CompactedTraceTexelAllocator"));
+	FRDGBufferUAVRef CompactedTraceTexelAllocatorUAV = GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT, ERDGUnorderedAccessViewFlags::SkipBarrier);
+
+	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT), 0, ComputePassFlags);
+
 	const FIntPoint ScreenProbeTraceBufferSize = ScreenProbeParameters.ScreenProbeAtlasBufferSize * ScreenProbeParameters.ScreenProbeTracingOctahedronResolution;
-	FCompactedTraceParameters CompactedTraceParameters;
-	FRDGBufferRef CompactedTraceTexelAllocator = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), 1), TEXT("Lumen.ScreenProbeGather.CompactedTraceTexelAllocator"));
 	const int32 NumCompactedTraceTexelDataElements = ScreenProbeTraceBufferSize.X * ScreenProbeTraceBufferSize.Y;
 	FRDGBufferRef CompactedTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32) * 2, NumCompactedTraceTexelDataElements), TEXT("Lumen.ScreenProbeGather.CompactedTraceTexelData"));
 
-	CompactedTraceParameters.IndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.ScreenProbeGather.CompactTracingIndirectArgs"));
-
-	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT), 0);
+	const FIntPoint ScreenProbeLightSampleBufferSize = ScreenProbeParameters.ScreenProbeAtlasBufferSize * ScreenProbeParameters.ScreenProbeLightSampleResolutionXY;
+	const int32 NumCompactedLightSampleTraceTexelDataElements = ScreenProbeLightSampleBufferSize.X * ScreenProbeLightSampleBufferSize.Y;
+	FRDGBufferRef CompactedLightSampleTraceTexelData = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32) * 2, NumCompactedLightSampleTraceTexelDataElements), TEXT("Lumen.ScreenProbeGather.CompactedLightSampleTraceTexelData"));
 
 	{
 		FScreenProbeCompactTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeCompactTracesCS::FParameters>();
 		PassParameters->ScreenProbeParameters = ScreenProbeParameters;
-		PassParameters->RWCompactedTraceTexelAllocator = GraphBuilder.CreateUAV(CompactedTraceTexelAllocator, PF_R32_UINT);
+		PassParameters->RWCompactedTraceTexelAllocator = CompactedTraceTexelAllocatorUAV;
 		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(CompactedTraceTexelData, PF_R32G32_UINT);
+		PassParameters->CullByDistanceFromCamera = bCullByDistanceFromCamera ? 1 : 0;
 		PassParameters->CompactionTracingEndDistanceFromCamera = CompactionTracingEndDistanceFromCamera;
 		PassParameters->CompactionMaxTraceDistance = CompactionMaxTraceDistance;
 
-		auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeCompactTracesCS>(0);
+		FScreenProbeCompactTracesCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set< FScreenProbeCompactTracesCS::FTraceLightSamples>(false);
+		auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeCompactTracesCS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("CompactTraces"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ScreenProbeParameters.ProbeIndirectArgs,
 			(uint32)EScreenProbeIndirectArgs::ThreadPerTrace * sizeof(FRHIDispatchIndirectParameters));
 	}
+
+	if (bRenderDirectLighting)
+	{
+		FScreenProbeCompactTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeCompactTracesCS::FParameters>();
+		PassParameters->ScreenProbeParameters = ScreenProbeParameters;
+		PassParameters->RWCompactedTraceTexelAllocator = CompactedTraceTexelAllocatorUAV;
+		PassParameters->RWCompactedTraceTexelData = GraphBuilder.CreateUAV(CompactedLightSampleTraceTexelData, PF_R32G32_UINT);
+		PassParameters->CullByDistanceFromCamera = bCullByDistanceFromCamera ? 1 : 0;
+		PassParameters->CompactionTracingEndDistanceFromCamera = CompactionTracingEndDistanceFromCamera;
+		PassParameters->CompactionMaxTraceDistance = CompactionMaxTraceDistance;
+
+		FScreenProbeCompactTracesCS::FPermutationDomain PermutationVector;
+		PermutationVector.Set< FScreenProbeCompactTracesCS::FTraceLightSamples>(true);
+		auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeCompactTracesCS>(PermutationVector);
+
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("CompactLightSampleTraces"),
+			ComputePassFlags,
+			ComputeShader,
+			PassParameters,
+			ScreenProbeParameters.ProbeIndirectArgs,
+			(uint32)EScreenProbeIndirectArgs::ThreadPerLightSample * sizeof(FRHIDispatchIndirectParameters));
+	}
+
+	FCompactedTraceParameters CompactedTraceParameters;
+	CompactedTraceParameters.IndirectArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>((int32)ECompactedTracingIndirectArgs::MAX), TEXT("Lumen.ScreenProbeGather.CompactTracingIndirectArgs"));
 
 	{
 		FSetupCompactedTracesIndirectArgsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSetupCompactedTracesIndirectArgsCS::FParameters>();
@@ -451,6 +578,7 @@ FCompactedTraceParameters CompactTraces(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("SetupCompactedTracesIndirectArgs"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FIntVector(1, 1, 1));
@@ -458,6 +586,7 @@ FCompactedTraceParameters CompactTraces(
 
 	CompactedTraceParameters.CompactedTraceTexelAllocator = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelAllocator, PF_R32_UINT));
 	CompactedTraceParameters.CompactedTraceTexelData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedTraceTexelData, PF_R32G32_UINT));
+	CompactedTraceParameters.CompactedLightSampleTraceTexelData = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CompactedLightSampleTraceTexelData, PF_R32G32_UINT));
 
 	return CompactedTraceParameters;
 }
@@ -466,13 +595,16 @@ void TraceScreenProbes(
 	FRDGBuilder& GraphBuilder, 
 	const FScene* Scene,
 	const FViewInfo& View, 
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	bool bTraceMeshObjects,
+	bool bRenderDirectLighting,
 	const FSceneTextures& SceneTextures,
 	FRDGTextureRef LightingChannelsTexture,
 	const FLumenCardTracingInputs& TracingInputs,
 	const LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	FScreenProbeParameters& ScreenProbeParameters,
-	FLumenMeshSDFGridParameters& MeshSDFGridParameters)
+	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
+	ERDGPassFlags ComputePassFlags)
 {
 	const FSceneTextureParameters& SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
@@ -485,10 +617,28 @@ void TraceScreenProbes(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("ClearTraces %ux%u", ScreenProbeParameters.ScreenProbeTracingOctahedronResolution, ScreenProbeParameters.ScreenProbeTracingOctahedronResolution),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			ScreenProbeParameters.ProbeIndirectArgs,
 			(uint32)EScreenProbeIndirectArgs::ThreadPerTrace * sizeof(FRHIDispatchIndirectParameters));
+	}
+
+	if (bRenderDirectLighting)
+	{
+		FClearLightSampleTracesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FClearLightSampleTracesCS::FParameters>();
+		PassParameters->ScreenProbeParameters = ScreenProbeParameters;
+
+		auto ComputeShader = View.ShaderMap->GetShader<FClearLightSampleTracesCS>(0);
+
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("ClearLightSampleTraces %ux%u", ScreenProbeParameters.ScreenProbeLightSampleResolutionXY, ScreenProbeParameters.ScreenProbeLightSampleResolutionXY),
+			ComputePassFlags,
+			ComputeShader,
+			PassParameters,
+			ScreenProbeParameters.ProbeIndirectArgs,
+			(uint32)EScreenProbeIndirectArgs::ThreadPerLightSample * sizeof(FRHIDispatchIndirectParameters));
 	}
 
 	FLumenIndirectTracingParameters IndirectTracingParameters;
@@ -502,69 +652,81 @@ void TraceScreenProbes(
 
 	if (bTraceScreen)
 	{
-		FScreenProbeTraceScreenTexturesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeTraceScreenTexturesCS::FParameters>();
-
-		PassParameters->HZBScreenTraceParameters = SetupHZBScreenTraceParameters(GraphBuilder, View, SceneTextures);
-		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->SceneTextures = SceneTextureParameters;
-
-		if (PassParameters->HZBScreenTraceParameters.PrevSceneColorTexture == SceneTextures.Color.Resolve || !PassParameters->SceneTextures.GBufferVelocityTexture)
+		auto TraceScreen = [&](bool bTraceLightSamples)
 		{
-			PassParameters->SceneTextures.GBufferVelocityTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
-		}
+			FScreenProbeTraceScreenTexturesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeTraceScreenTexturesCS::FParameters>();
 
-		PassParameters->FurthestHZBTexture = View.HZB;
-		PassParameters->LightingChannelsTexture = LightingChannelsTexture;
-		PassParameters->MaxHierarchicalScreenTraceIterations = GLumenScreenProbeGatherHierarchicalScreenTracesMaxIterations;
-		PassParameters->RelativeDepthThickness = GLumenScreenProbeGatherRelativeDepthThickness;
-		PassParameters->HistoryDepthTestRelativeThickness = GLumenScreenProbeGatherHistoryDepthTestRelativeThickness;
-		PassParameters->NumThicknessStepsToDetermineCertainty = GLumenScreenProbeGatherNumThicknessStepsToDetermineCertainty;
-		PassParameters->MinimumTracingThreadOccupancy = GLumenScreenProbeGatherScreenTracesMinimumOccupancy;
+			PassParameters->HZBScreenTraceParameters = SetupHZBScreenTraceParameters(GraphBuilder, View, SceneTextures);
+			GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+			PassParameters->SceneTextures = SceneTextureParameters;
 
-		PassParameters->ScreenProbeParameters = ScreenProbeParameters;
-		PassParameters->IndirectTracingParameters = IndirectTracingParameters;
-		PassParameters->RadianceCacheParameters = RadianceCacheParameters;
+			if (PassParameters->HZBScreenTraceParameters.PrevSceneColorTexture == SceneTextures.Color.Resolve || !PassParameters->SceneTextures.GBufferVelocityTexture)
+			{
+				PassParameters->SceneTextures.GBufferVelocityTexture = GSystemTextures.GetBlackDummy(GraphBuilder);
+			}
 
-		const bool bHasHairStrands = HairStrands::HasViewHairStrandsData(View) && GLumenScreenProbeGatherHairStrands_ScreenTrace > 0;
-		if (bHasHairStrands)
-		{
-			PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
-		}
+			PassParameters->FurthestHZBTexture = View.HZB;
+			PassParameters->LightingChannelsTexture = LightingChannelsTexture;
+			PassParameters->MaxHierarchicalScreenTraceIterations = GLumenScreenProbeGatherHierarchicalScreenTracesMaxIterations;
+			PassParameters->RelativeDepthThickness = GLumenScreenProbeGatherRelativeDepthThickness;
+			PassParameters->HistoryDepthTestRelativeThickness = GLumenScreenProbeGatherHistoryDepthTestRelativeThickness;
+			PassParameters->NumThicknessStepsToDetermineCertainty = GLumenScreenProbeGatherHierarchicalScreenTracesSkipFoliageHits ? 0 : GLumenScreenProbeGatherNumThicknessStepsToDetermineCertainty;
+			PassParameters->MinimumTracingThreadOccupancy = GLumenScreenProbeGatherScreenTracesMinimumOccupancy;
+			PassParameters->SkipFoliageHits = GLumenScreenProbeGatherHierarchicalScreenTracesSkipFoliageHits;
 
-		const bool bTerminateOnLowOccupancy = GLumenScreenProbeGatherScreenTracesMinimumOccupancy > 0
-			&& GRHISupportsWaveOperations 
-			&& GRHIMinimumWaveSize >= 32 
-			&& RHISupportsWaveOperations(View.GetShaderPlatform());
+			PassParameters->ScreenProbeParameters = ScreenProbeParameters;
+			PassParameters->IndirectTracingParameters = IndirectTracingParameters;
+			PassParameters->RadianceCacheParameters = RadianceCacheParameters;
 
-		FScreenProbeTraceScreenTexturesCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FRadianceCache >(LumenScreenProbeGather::UseRadianceCache(View));
-		PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FHierarchicalScreenTracing >(GLumenScreenProbeGatherHierarchicalScreenTraces != 0);
-		PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FStructuredImportanceSampling >(LumenScreenProbeGather::UseImportanceSampling(View));
-		PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FHairStrands>(bHasHairStrands);
-		PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FTerminateOnLowOccupancy>(bTerminateOnLowOccupancy);
-		
-		auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeTraceScreenTexturesCS>(PermutationVector);
+			const bool bHasHairStrands = HairStrands::HasViewHairStrandsData(View) && GLumenScreenProbeGatherHairStrands_ScreenTrace > 0;
+			if (bHasHairStrands)
+			{
+				PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
+			}
 
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("TraceScreen(%s)", bHasHairStrands ? TEXT("Scene, HairStrands") : TEXT("Scene")),
-			ComputeShader,
-			PassParameters,
-			ScreenProbeParameters.ProbeIndirectArgs,
-			(uint32)EScreenProbeIndirectArgs::ThreadPerTrace * sizeof(FRHIDispatchIndirectParameters));
+			const bool bTerminateOnLowOccupancy = GLumenScreenProbeGatherScreenTracesMinimumOccupancy > 0
+				&& GRHISupportsWaveOperations
+				&& GRHIMinimumWaveSize >= 32
+				&& RHISupportsWaveOperations(View.GetShaderPlatform());
+
+			FScreenProbeTraceScreenTexturesCS::FPermutationDomain PermutationVector;
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FRadianceCache >(LumenScreenProbeGather::UseRadianceCache(View) && !bTraceLightSamples);
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FHierarchicalScreenTracing >(GLumenScreenProbeGatherHierarchicalScreenTraces != 0);
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FStructuredImportanceSampling >(LumenScreenProbeGather::UseImportanceSampling(View));
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FHairStrands>(bHasHairStrands);
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FTerminateOnLowOccupancy>(bTerminateOnLowOccupancy);
+			PermutationVector.Set< FScreenProbeTraceScreenTexturesCS::FTraceLightSamples>(bTraceLightSamples);
+
+			auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeTraceScreenTexturesCS>(PermutationVector);
+
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("TraceScreen(%s)%s", bHasHairStrands ? TEXT("Scene, HairStrands") : TEXT("Scene"), bTraceLightSamples ? TEXT("(LightSamples)") : TEXT("")),
+				ComputePassFlags,
+				ComputeShader,
+				PassParameters,
+				ScreenProbeParameters.ProbeIndirectArgs,
+				(uint32)(bTraceLightSamples ? EScreenProbeIndirectArgs::ThreadPerLightSample : EScreenProbeIndirectArgs::ThreadPerTrace) * sizeof(FRHIDispatchIndirectParameters));
+		};
+
+		TraceScreen(false);
 	}
 
 	bool bNeedTraceHairVoxel = HairStrands::HasViewHairStrandsVoxelData(View) && GLumenScreenProbeGatherHairStrands_VoxelTrace > 0;
-	const bool bUseHardwareRayTracing = Lumen::UseHardwareRayTracedScreenProbeGather();
+	const bool bUseHardwareRayTracing = Lumen::UseHardwareRayTracedScreenProbeGather(*View.Family);
 
 	if (bUseHardwareRayTracing)
 	{
+		check(ComputePassFlags == ERDGPassFlags::Compute);
+
 		FCompactedTraceParameters CompactedTraceParameters = CompactTraces(
 			GraphBuilder,
 			View,
 			ScreenProbeParameters,
-			Lumen::MaxTracingEndDistanceFromCamera,
-			IndirectTracingParameters.MaxTraceDistance);
+			false,
+			0.0f,
+			IndirectTracingParameters.MaxTraceDistance,
+			bRenderDirectLighting);
 
 		RenderHardwareRayTracingScreenProbe(GraphBuilder,
 			Scene,
@@ -580,13 +742,16 @@ void TraceScreenProbes(
 	{
 		CullForCardTracing(
 			GraphBuilder,
-			Scene, View,
+			Scene, 
+			View,
+			FrameTemporaries,
 			TracingInputs,
 			IndirectTracingParameters,
-			/* out */ MeshSDFGridParameters);
+			/* out */ MeshSDFGridParameters,
+			ComputePassFlags);
 
 		const bool bTraceMeshSDFs = MeshSDFGridParameters.TracingParameters.DistanceFieldObjectBuffers.NumSceneObjects > 0;
-		const bool bTraceHeightfields = Lumen::UseHeightfieldTracing(*View.Family, *Scene->LumenSceneData);
+		const bool bTraceHeightfields = Lumen::UseHeightfieldTracing(*View.Family, *Scene->GetLumenSceneData(View));
 
 		if (bTraceMeshSDFs || bTraceHeightfields)
 		{
@@ -594,12 +759,16 @@ void TraceScreenProbes(
 				GraphBuilder,
 				View,
 				ScreenProbeParameters,
+				true,
 				IndirectTracingParameters.CardTraceEndDistanceFromCamera,
-				IndirectTracingParameters.MaxMeshSDFTraceDistance);
+				IndirectTracingParameters.MaxMeshSDFTraceDistance,
+				bRenderDirectLighting,
+				ComputePassFlags);
 
+			auto TraceMeshSDFs = [&](bool bTraceLightSamples)
 			{
 				FScreenProbeTraceMeshSDFsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeTraceMeshSDFsCS::FParameters>();
-				GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+				GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 				PassParameters->MeshSDFGridParameters = MeshSDFGridParameters;
 				PassParameters->ScreenProbeParameters = ScreenProbeParameters;
 				PassParameters->IndirectTracingParameters = IndirectTracingParameters;
@@ -611,21 +780,42 @@ void TraceScreenProbes(
 				}
 
 				FScreenProbeTraceMeshSDFsCS::FPermutationDomain PermutationVector;
+				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
 				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FStructuredImportanceSampling >(LumenScreenProbeGather::UseImportanceSampling(View));
 				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FHairStrands >(bNeedTraceHairVoxel);
 				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FTraceMeshSDFs >(bTraceMeshSDFs);
 				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FTraceHeightfields >(bTraceHeightfields);
+				extern int32 GDistanceFieldOffsetDataStructure;
+				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FOffsetDataStructure >(GDistanceFieldOffsetDataStructure);
+				PermutationVector.Set< FScreenProbeTraceMeshSDFsCS::FTraceLightSamples>(bTraceLightSamples);
+				PermutationVector = FScreenProbeTraceMeshSDFsCS::RemapPermutation(PermutationVector);
 				auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeTraceMeshSDFsCS>(PermutationVector);
+
+				ECompactedTracingIndirectArgs IndirectArgsOffset = Lumen::UseThreadGroupSize32() ? ECompactedTracingIndirectArgs::NumTracesDiv32 : ECompactedTracingIndirectArgs::NumTracesDiv64;
+
+				if (bTraceLightSamples)
+				{
+					IndirectArgsOffset = Lumen::UseThreadGroupSize32() ? ECompactedTracingIndirectArgs::NumLightSampleTracesDiv32 : ECompactedTracingIndirectArgs::NumLightSampleTracesDiv64;
+				}
 
 				FComputeShaderUtils::AddPass(
 					GraphBuilder,
-					RDG_EVENT_NAME("TraceMeshSDFs(%s)", bNeedTraceHairVoxel ? TEXT("Scene, HairStrands") : TEXT("Scene")),
+					RDG_EVENT_NAME("TraceMeshSDFs(%s)%s", bNeedTraceHairVoxel ? TEXT("Scene, HairStrands") : TEXT("Scene"), bTraceLightSamples ? TEXT("(LightSamples)") : TEXT("")),
+					ComputePassFlags,
 					ComputeShader,
 					PassParameters,
 					CompactedTraceParameters.IndirectArgs,
-					0);
-				bNeedTraceHairVoxel = false;
+					(int32)IndirectArgsOffset);
+			};
+
+			if (bRenderDirectLighting)
+			{
+				TraceMeshSDFs(true);
 			}
+
+			TraceMeshSDFs(false);
+
+			bNeedTraceHairVoxel = false;
 		}
 	}
 
@@ -633,16 +823,20 @@ void TraceScreenProbes(
 		GraphBuilder,
 		View,
 		ScreenProbeParameters,
-		Lumen::MaxTracingEndDistanceFromCamera,
+		false,
+		0.0f,
 		// Make sure the shader runs on all misses to apply radiance cache + skylight
-		IndirectTracingParameters.MaxTraceDistance * 2);
+		IndirectTracingParameters.MaxTraceDistance * 2,
+		bRenderDirectLighting,
+		ComputePassFlags);
 
+	auto TraceVoxels = [&](bool bTraceLightSamples)
 	{
 		const bool bRadianceCache = LumenScreenProbeGather::UseRadianceCache(View);
 
 		FScreenProbeTraceVoxelsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FScreenProbeTraceVoxelsCS::FParameters>();
 		PassParameters->RadianceCacheParameters = RadianceCacheParameters;
-		GetLumenCardTracingParameters(View, TracingInputs, PassParameters->TracingParameters);
+		GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
 		PassParameters->ScreenProbeParameters = ScreenProbeParameters;
 		PassParameters->IndirectTracingParameters = IndirectTracingParameters;
 		PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
@@ -653,26 +847,42 @@ void TraceScreenProbes(
 		}
 
 		FScreenProbeTraceVoxelsCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FDynamicSkyLight >(Lumen::ShouldHandleSkyLight(Scene, *View.Family));
-		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FTraceDistantScene >(Scene->LumenSceneData->DistantCardIndices.Num() > 0);
-		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FRadianceCache >(bRadianceCache);
+		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FThreadGroupSize32 >(Lumen::UseThreadGroupSize32());
+		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FRadianceCache >(bRadianceCache && !bTraceLightSamples);
 		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FStructuredImportanceSampling >(LumenScreenProbeGather::UseImportanceSampling(View));
 		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FHairStrands>(bNeedTraceHairVoxel);
 		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FTraceVoxels>(!bUseHardwareRayTracing && Lumen::UseGlobalSDFTracing(*View.Family));
+		PermutationVector.Set< FScreenProbeTraceVoxelsCS::FTraceLightSamples>(bTraceLightSamples);
+		PermutationVector = FScreenProbeTraceVoxelsCS::RemapPermutation(PermutationVector);
 		auto ComputeShader = View.ShaderMap->GetShader<FScreenProbeTraceVoxelsCS>(PermutationVector);
+
+		ECompactedTracingIndirectArgs IndirectArgsOffset = Lumen::UseThreadGroupSize32() ? ECompactedTracingIndirectArgs::NumTracesDiv32 : ECompactedTracingIndirectArgs::NumTracesDiv64;
+
+		if (bTraceLightSamples)
+		{
+			IndirectArgsOffset = Lumen::UseThreadGroupSize32() ? ECompactedTracingIndirectArgs::NumLightSampleTracesDiv32 : ECompactedTracingIndirectArgs::NumLightSampleTracesDiv64;
+		}
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
-			RDG_EVENT_NAME("%s%s", bUseHardwareRayTracing ? TEXT("RadianceCacheInterpolate") : TEXT("TraceVoxels"), bNeedTraceHairVoxel ? TEXT(" and HairStrands") : TEXT("")),
+			RDG_EVENT_NAME("%s%s%s", bUseHardwareRayTracing ? TEXT("RadianceCacheInterpolate") : TEXT("TraceVoxels"), bNeedTraceHairVoxel ? TEXT(" and HairStrands") : TEXT(""), bTraceLightSamples ? TEXT("(LightSamples)") : TEXT("")),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			CompactedTraceParameters.IndirectArgs,
-			0);
+			(int32)IndirectArgsOffset);
 		bNeedTraceHairVoxel = false;
+	};
+
+	if (bRenderDirectLighting && !bUseHardwareRayTracing)
+	{
+		TraceVoxels(true);
 	}
+
+	TraceVoxels(false);
 
 	if (GLumenScreenProbeGatherVisualizeTraces)
 	{
-		SetupVisualizeTraces(GraphBuilder, Scene, View, ScreenProbeParameters);
+		SetupVisualizeTraces(GraphBuilder, Scene, View, ScreenProbeParameters, ComputePassFlags);
 	}
 }

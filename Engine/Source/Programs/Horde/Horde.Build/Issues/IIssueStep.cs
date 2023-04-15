@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Utilities;
-using MongoDB.Bson;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using Horde.Build.Jobs;
+using Horde.Build.Jobs.Graphs;
+using Horde.Build.Logs;
+using Horde.Build.Server;
+using Horde.Build.Utilities;
+using MongoDB.Bson;
 
-using SubResourceId = HordeServer.Models.SubResourceId;
-
-namespace HordeServer.Models
+namespace Horde.Build.Issues
 {
 	using JobId = ObjectId<IJob>;
 	using LogId = ObjectId<ILogFile>;
+	using WorkflowId = StringId<WorkflowConfig>;
 
 	/// <summary>
 	/// Identifies a particular changelist and job that contributes to a span
@@ -58,6 +58,11 @@ namespace HordeServer.Models
 		/// Time that the step started
 		/// </summary>
 		public DateTime StepTime { get; }
+
+		/// <summary>
+		/// Annotations for this step
+		/// </summary>
+		public IReadOnlyNodeAnnotations Annotations { get; }
 
 		/// <summary>
 		/// Whether to promote spans including this step by default

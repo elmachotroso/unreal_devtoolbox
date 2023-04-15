@@ -12,6 +12,8 @@
 
 #include "LevelExporterUSDOptions.generated.h"
 
+struct FAnalyticsEventAttribute;
+
 USTRUCT( BlueprintType )
 struct USDEXPORTER_API FLevelExporterUSDOptionsInner
 {
@@ -61,7 +63,7 @@ struct USDEXPORTER_API FLevelExporterUSDOptionsInner
 	FIntPoint LandscapeBakeResolution = FIntPoint( 1024, 1024 );
 
 	/** If true, will export sub-levels as separate layers (referenced as sublayers). If false, will collapse all sub-levels in a single exported root layer */
-    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers" )
+    UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Sublayers", meta = ( DisplayName = "Export Sublevels as Layers" ) )
     bool bExportSublayers = false;
 
 	/** Names of levels that should be ignored when collecting actors to export (e.g. "Persistent Level", "Level1", "MySubLevel", etc.) */
@@ -94,6 +96,20 @@ public:
     UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Export settings", meta = ( ShowOnlyInnerProperties ) )
     FLevelExporterUSDOptionsInner Inner;
 
+	/**
+	 * Whether to export levels and LevelSequences even if the existing files already describe the same versions of compatible assets.
+	 * This is only checked when bReplaceIdentical is set on the asset export task. Otherwise we'll never overwrite files.
+	 */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Collision", meta = ( DisplayName = "Re-export Identical Levels and Sequences" ) )
+	bool bReExportIdenticalLevelsAndSequences = false;
+
+	/**
+	 * Whether to export any asset (StaticMesh, Material, etc.) even if the existing file already describes the same version of a compatible asset.
+	 * This is only checked when bReplaceIdentical is set on the asset export task. Otherwise we'll never overwrite files.
+	 */
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Collision", meta = ( DisplayName = "Re-export Identical Assets" ) )
+	bool bReExportIdenticalAssets = false;
+
 public:
 	// We temporarily stash our export task here as a way of passing our options down to
 	// the Python exporter, that does the actual level exporting.
@@ -104,10 +120,28 @@ public:
 
 private:
 	UFUNCTION()
-	static TArray<FString> GetUsdExtensions()
-	{
-		TArray<FString> Extensions = UnrealUSDWrapper::GetAllSupportedFileFormats();
-		Extensions.Remove( TEXT( "usdz" ) );
-		return Extensions;
-	}
+	static TArray<FString> GetUsdExtensions();
 };
+
+namespace UsdUtils
+{
+	USDEXPORTER_API void AddAnalyticsAttributes(
+		const FLevelExporterUSDOptionsInner& Options,
+		TArray< FAnalyticsEventAttribute >& InOutAttributes
+	);
+
+	USDEXPORTER_API void AddAnalyticsAttributes(
+		const ULevelExporterUSDOptions& Options,
+		TArray< FAnalyticsEventAttribute >& InOutAttributes
+	);
+
+	USDEXPORTER_API void HashForLevelExport(
+		const FLevelExporterUSDOptionsInner& Options,
+		FSHA1& HashToUpdate
+	);
+
+	USDEXPORTER_API void HashForLevelExport(
+		const ULevelExporterUSDOptions& Options,
+		FSHA1& HashToUpdate
+	);
+}

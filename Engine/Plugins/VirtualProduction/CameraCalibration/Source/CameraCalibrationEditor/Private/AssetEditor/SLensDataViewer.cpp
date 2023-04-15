@@ -12,7 +12,6 @@
 #include "ICurveEditorModule.h"
 #include "ISinglePropertyView.h"
 #include "LensFile.h"
-#include "LiveLinkCameraController.h"
 #include "RichCurveEditorModel.h"
 #include "SLensDataAddPointDialog.h"
 #include "SLensDataCategoryListItem.h"
@@ -345,7 +344,7 @@ TSharedRef<SWidget> SLensDataViewer::MakeToolbarWidget(TSharedRef<SCameraCalibra
 
 	TSharedRef<SWidget> AddPointButton =
 			 SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton")
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Center)
 			.ToolTipText(LOCTEXT("AddLensDataPoint", "Add a lens data point"))
@@ -361,7 +360,7 @@ TSharedRef<SWidget> SLensDataViewer::MakeToolbarWidget(TSharedRef<SCameraCalibra
 
 	TSharedRef<SWidget> ClearAllButton =
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton")
 			.VAlign(VAlign_Center)
 			.ToolTipText(LOCTEXT("DeleteLensData", "Delete all calibrated lens data"))
 			.OnClicked(this, &SLensDataViewer::OnClearLensFileClicked)
@@ -402,7 +401,7 @@ FReply SLensDataViewer::OnClearLensFileClicked()
 	FScopedTransaction Transaction(LOCTEXT("LensFileClearAll", "Cleared LensFile"));
 	LensFile->Modify();
 
-	//Warn the user that he's about to clear everything
+	//Warn the user that they are about to clear everything
 	const FText Message = LOCTEXT("ClearAllWarning", "This will erase all data contained in this LensFile. Do you wish to continue?");
 	if (FMessageDialog::Open(EAppMsgType::OkCancel, Message) != EAppReturnType::Ok)
 	{

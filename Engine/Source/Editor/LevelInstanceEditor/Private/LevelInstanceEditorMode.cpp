@@ -4,9 +4,11 @@
 #include "LevelInstanceEditorModeToolkit.h"
 #include "LevelInstanceEditorModeCommands.h"
 #include "Editor.h"
+#include "Selection.h"
+#include "EditorModes.h"
 #include "Engine/World.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/ILevelInstanceEditorModule.h"
 #include "LevelEditorViewport.h"
 #include "LevelEditorActions.h"
@@ -46,7 +48,10 @@ void ULevelInstanceEditorMode::UpdateEngineShowFlags()
 		{
 			if(ULevelInstanceSubsystem* LevelInstanceSubsystem = LevelVC->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 			{
-				LevelVC->EngineShowFlags.EditingLevelInstance = !!LevelInstanceSubsystem->GetEditingLevelInstance();
+				const bool bEditingLevelInstance = !!LevelInstanceSubsystem->GetEditingLevelInstance();
+				// Make sure we update both Game/Editor showflags
+				LevelVC->EngineShowFlags.EditingLevelInstance = bEditingLevelInstance;
+				LevelVC->LastEngineShowFlags.EditingLevelInstance = bEditingLevelInstance;
 			}
 		}
 	}
@@ -77,6 +82,11 @@ void ULevelInstanceEditorMode::CreateToolkit()
 	Toolkit = MakeShared<FLevelInstanceEditorModeToolkit>();
 }
 
+bool ULevelInstanceEditorMode::IsCompatibleWith(FEditorModeID OtherModeID) const
+{
+	return (OtherModeID != FBuiltinEditorModes::EM_Foliage) && (OtherModeID != FBuiltinEditorModes::EM_Landscape);
+}
+
 void ULevelInstanceEditorMode::BindCommands()
 {
 	UEdMode::BindCommands();
@@ -85,7 +95,27 @@ void ULevelInstanceEditorMode::BindCommands()
 
 	CommandList->MapAction(
 		Commands.ExitMode,
-		FExecuteAction::CreateUObject(this, &ULevelInstanceEditorMode::ExitModeCommand));
+		FExecuteAction::CreateUObject(this, &ULevelInstanceEditorMode::ExitModeCommand),
+		FCanExecuteAction::CreateLambda([&] 
+		{ 
+			// If some actors are selected make sure we don't interfere with the SelectNone command
+			if(GEditor->GetSelectedActors()->Num() > 0)
+			{
+				const FInputChord& SelectNonePrimary = FLevelEditorCommands::Get().SelectNone->GetActiveChord(EMultipleKeyBindingIndex::Primary).Get();
+				if (SelectNonePrimary.IsValidChord() && Commands.ExitMode->HasActiveChord(SelectNonePrimary))
+				{
+					return false;
+				}
+
+				const FInputChord& SelectNoneSecondary = FLevelEditorCommands::Get().SelectNone->GetActiveChord(EMultipleKeyBindingIndex::Secondary).Get();
+				if (SelectNoneSecondary.IsValidChord() && Commands.ExitMode->HasActiveChord(SelectNoneSecondary))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}));
 
 	CommandList->MapAction(
 		Commands.ToggleContextRestriction,
@@ -102,9 +132,9 @@ bool ULevelInstanceEditorMode::IsSelectionDisallowed(AActor* InActor, bool bInSe
 	{
 		if (UWorld* World = InActor->GetWorld())
 		{
-			if (ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(InActor))
+			if (ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(InActor))
 			{
-				if (LevelInstanceActor->IsEditing())
+				if (LevelInstance->IsEditing())
 				{
 					return false;
 				}
@@ -112,10 +142,21 @@ bool ULevelInstanceEditorMode::IsSelectionDisallowed(AActor* InActor, bool bInSe
 
 			if (ULevelInstanceSubsystem* LevelInstanceSubsystem = World->GetSubsystem<ULevelInstanceSubsystem>())
 			{
-				ALevelInstance* EditingLevelInstance = LevelInstanceSubsystem->GetEditingLevelInstance();
-				ALevelInstance* LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(InActor);
+				ILevelInstanceInterface* EditingLevelInstance = LevelInstanceSubsystem->GetEditingLevelInstance();
+				ILevelInstanceInterface* LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(InActor);
+				// Allow selection on actors that are part of the currently edited Level Instance hierarchy because AActor::GetRootSelectionParent() will eventually
+				// Bubble up the selection to its parent.
+				while (LevelInstance != nullptr)
+				{
+					if (LevelInstance == EditingLevelInstance)
+					{
+						return false;
+					}
 
-				return EditingLevelInstance != LevelInstance;
+					LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(CastChecked<AActor>(LevelInstance));
+				}
+
+				return EditingLevelInstance != nullptr;
 			}
 		}
 	}

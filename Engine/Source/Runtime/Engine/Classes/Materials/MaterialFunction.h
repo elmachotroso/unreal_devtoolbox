@@ -16,6 +16,15 @@ class UTexture;
 struct FPropertyChangedEvent;
 class UMaterialExpression;
 
+UCLASS(MinimalAPI, Optional)
+class UMaterialFunctionEditorOnlyData : public UMaterialFunctionInterfaceEditorOnlyData
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY()
+	FMaterialExpressionCollection ExpressionCollection;
+};
+
 /**
  * A Material Function is a collection of material expressions that can be reused in different materials
  */
@@ -25,20 +34,21 @@ class UMaterialFunction : public UMaterialFunctionInterface
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITORONLY_DATA
+	virtual const UClass* GetEditorOnlyDataClass() const override { return UMaterialFunctionEditorOnlyData::StaticClass(); }
+
+	UMaterialFunctionEditorOnlyData* GetEditorOnlyData() { return CastChecked<UMaterialFunctionEditorOnlyData>(Super::GetEditorOnlyData()); }
+	const UMaterialFunctionEditorOnlyData* GetEditorOnlyData() const { return CastChecked<UMaterialFunctionEditorOnlyData>(Super::GetEditorOnlyData()); }
+#endif // WITH_EDITORONLY_DATA
+
+#if WITH_EDITORONLY_DATA
 	/** Used in the material editor, points to the function asset being edited, which this function is just a preview for. */
 	UPROPERTY(transient)
 	TObjectPtr<class UMaterialFunction> ParentFunction;
-
 #endif // WITH_EDITORONLY_DATA
+
 	/** Description of the function which will be displayed as a tooltip wherever the function is used. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunction, AssetRegistrySearchable)
 	FString Description;
-
-#if WITH_EDITORONLY_DATA
-	/** Array of material expressions, excluding Comments.  Used by the material editor. */
-	UPROPERTY()
-	TArray<TObjectPtr<UMaterialExpression>> FunctionExpressions;
-#endif // WITH_EDITORONLY_DATA
 
 	/** Whether to list this function in the material function library, which is a window in the material editor that lists categorized functions. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunction, AssetRegistrySearchable)
@@ -47,6 +57,12 @@ class UMaterialFunction : public UMaterialFunctionInterface
 	/** If true, parameters in this function will have a prefix added to their group name. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunction)
 	uint8 bPrefixParameterNames:1;
+
+	UPROPERTY(EditAnywhere, Category = MaterialFunction)
+	uint8 bEnableExecWire : 1;
+
+	UPROPERTY(EditAnywhere, Category = MaterialFunction)
+	uint8 bEnableNewHLSLGenerator : 1;
 
 #if WITH_EDITORONLY_DATA
 	/** 
@@ -65,12 +81,11 @@ class UMaterialFunction : public UMaterialFunctionInterface
 #endif
 
 #if WITH_EDITORONLY_DATA
-	/** Array of comments associated with this material; viewed in the material editor. */
-	UPROPERTY()
-	TArray<TObjectPtr<class UMaterialExpressionComment>> FunctionEditorComments;
-
 	UPROPERTY(transient)
 	TObjectPtr<UMaterial> PreviewMaterial;
+
+	// The UMaterial which represents this function while the function itself is open in the material editor
+	TObjectPtr<UMaterial> EditorMaterial;
 
 	UPROPERTY()
 	TArray<TObjectPtr<class UMaterialExpressionMaterialFunctionCall>> DependentFunctionExpressionCandidates;
@@ -78,6 +93,8 @@ class UMaterialFunction : public UMaterialFunctionInterface
 	/** Determines the blend mode when previewing a material function. */
 	UPROPERTY(EditAnywhere, Category = Preview, AssetRegistrySearchable)
 	TEnumAsByte<enum EBlendMode> PreviewBlendMode = BLEND_Opaque;
+
+	class UMaterialGraph* MaterialGraph = nullptr;
 private:
 	/** Transient flag used to track re-entrance in recursive functions like IsDependent. */
 	UPROPERTY(transient)
@@ -91,6 +108,9 @@ public:
 #endif // WITH_EDITOR
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	//~ End UObject Interface.
 
 	void SetMaterialFunctionUsage(EMaterialFunctionUsage Usage) { MaterialFunctionUsage = Usage; }
@@ -149,17 +169,18 @@ public:
 	virtual bool HasFlippedCoordinates() const override;
 #endif
 
-	virtual UMaterialFunctionInterface* GetBaseFunction() override { return this; }
-	virtual const UMaterialFunctionInterface* GetBaseFunction() const override { return this; }
+	virtual UMaterialFunction* GetBaseFunction(FMFRecursionGuard RecursionGuard = FMFRecursionGuard()) override { return this; }
+	virtual const UMaterialFunction* GetBaseFunction(FMFRecursionGuard RecursionGuard = FMFRecursionGuard()) const override { return this; }
 #if WITH_EDITORONLY_DATA
-	virtual const TArray<TObjectPtr<UMaterialExpression>>* GetFunctionExpressions() const override { return &FunctionExpressions; }
-#endif
-	virtual const FString* GetDescription() const override { return &Description; }
+	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpression>> GetExpressions() const;
+	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpressionComment>> GetEditorComments() const;
+	ENGINE_API UMaterialExpressionExecBegin* GetExpressionExecBegin() const;
+	ENGINE_API UMaterialExpressionExecEnd* GetExpressionExecEnd() const;
 
-#if WITH_EDITOR
-	virtual bool GetReentrantFlag() const override { return bReentrantFlag; }
-	virtual void SetReentrantFlag(const bool bIsReentrant) override { bReentrantFlag = bIsReentrant; }
-#endif
+	ENGINE_API const FMaterialExpressionCollection& GetExpressionCollection() const;
+	ENGINE_API FMaterialExpressionCollection& GetExpressionCollection();
+	ENGINE_API void AssignExpressionCollection(const FMaterialExpressionCollection& InCollection);
+#endif // WITH_EDITORONLY_DATA
 	//~ End UMaterialFunctionInterface interface
 
 
@@ -172,5 +193,28 @@ public:
 	ENGINE_API bool SetFontParameterValueEditorOnly(FName ParameterName, class UFont* InFontValue, int32 InFontPage);
 	ENGINE_API bool SetStaticComponentMaskParameterValueEditorOnly(FName ParameterName, bool R, bool G, bool B, bool A, FGuid OutExpressionGuid);
 	ENGINE_API bool SetStaticSwitchParameterValueEditorOnly(FName ParameterName, bool OutValue, FGuid OutExpressionGuid);
+
+	inline bool GetReentrantFlag() const { return bReentrantFlag; }
+	inline void SetReentrantFlag(bool bIsReentrant) { bReentrantFlag = bIsReentrant; }
+
+	virtual bool IsUsingControlFlow() const override;
+	virtual bool IsUsingNewHLSLGenerator() const override;
+
+	void CreateExecutionFlowExpressions();
 #endif // WITH_EDITOR
+
+private:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialExpression>> FunctionExpressions_DEPRECATED;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialExpressionComment>> FunctionEditorComments_DEPRECATED;
+
+	UPROPERTY()
+	TObjectPtr<class UMaterialExpressionExecBegin> ExpressionExecBegin_DEPRECATED;
+
+	UPROPERTY()
+	TObjectPtr<class UMaterialExpressionExecEnd> ExpressionExecEnd_DEPRECATED;
+#endif // WITH_EDITORONLY_DATA
 };

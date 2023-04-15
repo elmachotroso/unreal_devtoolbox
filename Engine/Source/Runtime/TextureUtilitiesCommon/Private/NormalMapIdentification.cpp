@@ -68,23 +68,24 @@ public:
 
 	~NormalMapSamplerBase()
 	{
-		if ( SourceTexture != NULL )
+		if ( SourceTextureData != NULL )
 		{
 			SourceTexture->Source.UnlockMip(0);
 		}
 	}
 
-	void SetSourceTexture( UTexture* Texture )
+	bool SetSourceTexture( UTexture* Texture )
 	{
 		SourceTexture = Texture;
 		TextureSizeX = Texture->Source.GetSizeX();
 		TextureSizeY = Texture->Source.GetSizeY();
 		SourceTextureData = Texture->Source.LockMipReadOnly(0);
+		return SourceTextureData != nullptr;
 	}
 
 	UTexture* SourceTexture;
-	int32 TextureSizeX;
-	int32 TextureSizeY;
+	int64 TextureSizeX;
+	int64 TextureSizeY;
 	const uint8* SourceTextureData;
 };
 
@@ -151,16 +152,29 @@ public:
 
 	FLinearColor DoSampleColor( int32 X, int32 Y )
 	{
-		FLinearColor Result;
-		const uint8* PixelToSample = SourceTextureData + ((Y * TextureSizeX + X) * 8);
+		const uint8* PixelToSample = SourceTextureData + ((Y * TextureSizeX + X) * sizeof(FFloat16Color));
 
 		// this assume the normal map to be in linear (not the case if Photoshop converts a 8bit normalmap to float and saves it as 16bit dds)
-		Result.R = (float)((FFloat16*)PixelToSample)[0];
-		Result.G = (float)((FFloat16*)PixelToSample)[1];
-		Result.B = (float)((FFloat16*)PixelToSample)[2];
-		Result.A = (float)((FFloat16*)PixelToSample)[3];
+		
+		return ((const FFloat16Color*)PixelToSample)->GetFloats();
+	}
 
-		return Result;
+	float ScaleAndBiasComponent( float Value ) const
+	{
+		// no need to scale and bias floating point components.
+		return Value;
+	}
+};
+class SampleNormalMapPixelF32 : public NormalMapSamplerBase
+{
+public:
+	SampleNormalMapPixelF32() {}
+	~SampleNormalMapPixelF32() {}
+
+	FLinearColor DoSampleColor( int32 X, int32 Y )
+	{
+		const uint8* PixelToSample = SourceTextureData + ((Y * TextureSizeX + X) * sizeof(FLinearColor));
+		return *((const FLinearColor*)PixelToSample);
 	}
 
 	float ScaleAndBiasComponent( float Value ) const
@@ -272,7 +286,10 @@ public:
 		int32 NumTilesX = FMath::Min( TextureSizeX / SampleTileEdgeLength, MaxTilesPerAxis );
 		int32 NumTilesY = FMath::Min( TextureSizeY / SampleTileEdgeLength, MaxTilesPerAxis );
 
-		Sampler.SetSourceTexture( Texture );
+		if ( ! Sampler.SetSourceTexture( Texture ) )
+		{
+			return false;
+		}
 
 		if (( NumTilesX > 0 ) &&
 			( NumTilesY > 0 ))
@@ -351,6 +368,8 @@ public:
  */
 static bool IsTextureANormalMap( UTexture* Texture )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(IsTextureANormalMap);
+
 #if NORMALMAP_IDENTIFICATION_TIMING
 	double StartSeconds = FPlatformTime::Seconds();
 #endif
@@ -381,9 +400,9 @@ static bool IsTextureANormalMap( UTexture* Texture )
 				bIsNormalMap = Analyzer.DoesTextureLookLikelyToBeANormalMap( Texture );
 			}
 			break;
-		case TSF_RGBA8:
+		case TSF_RGBA32F:
 			{
-				TNormalMapAnalyzer<SampleNormalMapPixelRGBA8> Analyzer;
+				TNormalMapAnalyzer<SampleNormalMapPixelF32> Analyzer;
 				bIsNormalMap = Analyzer.DoesTextureLookLikelyToBeANormalMap( Texture );
 			}
 			break;

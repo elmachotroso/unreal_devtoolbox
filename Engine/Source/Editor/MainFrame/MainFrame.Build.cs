@@ -26,7 +26,6 @@ public class MainFrame : ModuleRules
 				"RenderCore",
 				"Slate",
 				"SlateCore",
-				"EditorStyle",
 				"SourceControl",
 				"SourceControlWindows",
 				"TargetPlatform",
@@ -39,7 +38,7 @@ public class MainFrame : ModuleRules
 				"TranslationEditor",
 				"Projects",
 				"DeviceProfileEditor",
-				"UndoHistory",
+				"UndoHistoryEditor",
 				"Analytics",
 				"ToolMenus",
 				"LauncherServices",
@@ -61,14 +60,7 @@ public class MainFrame : ModuleRules
 				"Settings",
 				"SourceCodeAccess",
 				"LocalizationDashboard", // not required but causes circular depends issues on Linux/Mac
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"Editor/MainFrame/Private",
-				"Editor/MainFrame/Private/Frame",
-				"Editor/MainFrame/Private/Menus",
+				"HotReload",
 			}
 		);
 

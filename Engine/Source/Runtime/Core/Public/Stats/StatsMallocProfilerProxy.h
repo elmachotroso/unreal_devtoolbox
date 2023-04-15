@@ -5,6 +5,11 @@
 #include "CoreTypes.h"
 #include "HAL/MemoryBase.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "Misc/Build.h"
+
+class FOutputDevice;
+class UWorld;
+struct FGenericMemoryStats;
 
 #if STATS
 
@@ -126,6 +131,21 @@ public:
 	virtual const TCHAR* GetDescriptiveName() override
 	{ 
 		return UsedMalloc->GetDescriptiveName(); 
+	}
+
+	virtual void OnMallocInitialized() override
+	{
+		UsedMalloc->OnMallocInitialized();
+	}
+
+	virtual void OnPreFork() override
+	{
+		UsedMalloc->OnPreFork();
+	}
+
+	virtual void OnPostFork() override
+	{
+		UsedMalloc->OnPostFork();
 	}
 };
 

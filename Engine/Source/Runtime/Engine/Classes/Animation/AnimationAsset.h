@@ -8,18 +8,22 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Animation/AnimTypes.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "Templates/SubclassOf.h"
 #include "Interfaces/Interface_AssetUserData.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/SkeletalMesh.h"
+#endif
 #include "AnimInterpFilter.h"
 #include "AnimEnums.h"
 #include "Interfaces/Interface_PreviewMeshProvider.h"
 #include "AnimationAsset.generated.h"
 
 class UAnimMetaData;
+class UAnimMontage;
 class UAssetMappingTable;
 class UAssetUserData;
 class USkeleton;
@@ -27,6 +31,7 @@ class UAnimSequenceBase;
 class UBlendSpace;
 class UPoseAsset;
 class UMirrorDataTable;
+class USkeletalMesh;
 struct FAnimationUpdateContext;
 
 namespace UE { namespace Anim {
@@ -201,11 +206,6 @@ struct FBlendFilter
 	{
 	}
 	
-	bool IsValid() const
-	{
-		return FilterPerAxis.Num() > 0;
-	}
-	
 	FVector GetFilterLastOutput() const
 	{
 		return FVector(
@@ -303,18 +303,18 @@ struct FMarkerSyncAnimPosition
 	GENERATED_USTRUCT_BODY()
 
 	/** The marker we have passed*/
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Sync)
 	FName PreviousMarkerName;
 
 	/** The marker we are heading towards */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Sync)
 	FName NextMarkerName;
 
 	/** Value between 0 and 1 representing where we are:
 	0   we are at PreviousMarker
 	1   we are at NextMarker
 	0.5 we are half way between the two */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Sync)
 	float PositionBetweenMarkers;
 
 	/** Is this a valid Marker Sync Position */
@@ -397,6 +397,9 @@ struct FAnimTickRecord
 	// Return the root motion weight for this tick record
 	float GetRootMotionWeight() const { return EffectiveBlendWeight * RootMotionWeightModifier; }
 
+private:
+	void AllocateContextDataContainer();
+
 public:
 	FAnimTickRecord()
 		: SourceAsset(nullptr)
@@ -433,6 +436,19 @@ public:
 	// Gather any data from the current update context
 	ENGINE_API void GatherContextData(const FAnimationUpdateContext& InContext);
 	
+	// Explicitly add typed context data to the tick record
+	template<typename Type, typename... TArgs>
+	void MakeContextData(TArgs&&... Args)
+	{
+		static_assert(TPointerIsConvertibleFromTo<Type, const UE::Anim::IAnimNotifyEventContextDataInterface>::Value, "'Type' template parameter to MakeContextData must be derived from IAnimNotifyEventContextDataInterface");
+		if (!ContextData.IsValid())
+		{
+			AllocateContextDataContainer();
+		}
+
+		ContextData->Add(MakeUnique<Type>(Forward<TArgs>(Args)...));
+	}
+
 	/** This can be used with the Sort() function on a TArray of FAnimTickRecord to sort from higher leader score */
 	ENGINE_API bool operator <(const FAnimTickRecord& Other) const { return LeaderScore > Other.LeaderScore; }
 };
@@ -589,11 +605,19 @@ public:
 
 	FMarkerTickContext MarkerTickContext;
 
+	// Float in 0 - 1 range representing how far through an animation we were before ticking
+	float PreviousAnimLengthRatio;
+
+	// Float in 0 - 1 range representing how far through an animation we are
+	float AnimLengthRatio;
+
 public:
 	FAnimGroupInstance()
 		: GroupLeaderIndex(INDEX_NONE)
 		, bCanUseMarkerSync(false)
 		, MontageLeaderWeight(0.f)
+		, PreviousAnimLengthRatio(0.f)
+		, AnimLengthRatio(0.f)
 	{
 	}
 
@@ -604,6 +628,8 @@ public:
 		bCanUseMarkerSync = false;
 		MontageLeaderWeight = 0.f;
 		MarkerTickContext = FMarkerTickContext();
+		PreviousAnimLengthRatio = 0.f;
+		AnimLengthRatio = 0.f;
 	}
 
 	// Checks the last tick record in the ActivePlayers array to see if it's a better leader than the current candidate.
@@ -734,7 +760,7 @@ public:
 	void MakeUpToFullWeight()
 	{
 		float WeightLeft = FMath::Max(1.f - BlendWeight, 0.f);
-		if (WeightLeft > KINDA_SMALL_NUMBER)
+		if (WeightLeft > UE_KINDA_SMALL_NUMBER)
 		{
 			AccumulateWithBlend(FTransform(), WeightLeft);
 		}
@@ -776,6 +802,7 @@ public:
 		, bIsMarkerPositionValid(ValidMarkerNames.Num() > 0)
 		, bIsLeader(true)
 		, bOnlyOneAnimationInGroup(bInOnlyOneAnimationInGroup)
+		, bResyncToSyncGroup(false)
 	{
 	}
 
@@ -788,6 +815,7 @@ public:
 		, bIsMarkerPositionValid(false)
 		, bIsLeader(true)
 		, bOnlyOneAnimationInGroup(bInOnlyOneAnimationInGroup)
+		, bResyncToSyncGroup(false)
 	{
 	}
 
@@ -828,17 +856,15 @@ public:
 		AnimLengthRatio = NormalizedTime;
 	}
 
-	// Returns the previous synchronization point (normalized time; only legal to call if ticking a follower)
+	// Returns the previous synchronization point (normalized time)
 	float GetPreviousAnimationPositionRatio() const
 	{
-		checkSlow(!bIsLeader);
 		return PreviousAnimLengthRatio;
 	}
 
-	// Returns the synchronization point (normalized time; only legal to call if ticking a follower)
+	// Returns the synchronization point (normalized time)
 	float GetAnimationPositionRatio() const
 	{
-		checkSlow(!bIsLeader);
 		return AnimLengthRatio;
 	}
 
@@ -867,6 +893,17 @@ public:
 		return bOnlyOneAnimationInGroup;
 	}
 
+	void SetResyncToSyncGroup(bool bInResyncToSyncGroup)
+	{
+		bResyncToSyncGroup = bInResyncToSyncGroup;
+	}
+
+	// Should we resync to the sync group this tick (eg: when initializing or resuming from zero weight)?
+	bool ShouldResyncToSyncGroup() const
+	{
+		return bResyncToSyncGroup;
+	}
+
 	//Root Motion accumulated from this tick context
 	FRootMotionMovementParams RootMotionMovementParams;
 
@@ -891,6 +928,9 @@ private:
 	bool bIsLeader;
 
 	bool bOnlyOneAnimationInGroup;
+
+	// True if the asset player being ticked should (re)synchronize to the sync group's time (eg: it was inactive and has now reactivated)
+	bool bResyncToSyncGroup;
 };
 
 USTRUCT()
@@ -1092,6 +1132,7 @@ public:
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
 #endif // WITH_EDITOR
 
 	/**

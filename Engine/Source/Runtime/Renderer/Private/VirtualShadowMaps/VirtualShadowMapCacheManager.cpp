@@ -12,8 +12,10 @@
 #include "HAL/FileManager.h"
 
 #include "PrimitiveSceneInfo.h"
-#include "ShaderDebug.h"
+#include "ShaderPrint.h"
 #include "RendererOnScreenNotification.h"
+
+#define VSM_LOG_STATIC_CACHING 0
 
 static TAutoConsoleVariable<int32> CVarAccumulateStats(
 	TEXT("r.Shadow.Virtual.AccumulateStats"),
@@ -60,17 +62,26 @@ FAutoConsoleVariableRef CVarCacheInvalidateOftenMoving(
 	TEXT("If enabled, Primitive Proxies that are marked as having deformable meshes (HasDeformableMesh() == true) causes invalidations regardless of whether their transforms are updated."),
 	ECVF_RenderThreadSafe);
 
+int32 GForceInvalidateDirectionalVSM = 0;
+static FAutoConsoleVariableRef  CVarForceInvalidateDirectionalVSM(
+	TEXT("r.Shadow.Virtual.Cache.ForceInvalidateDirectional"),
+	GForceInvalidateDirectionalVSM,
+	TEXT("Forces the clipmap to always invalidate, useful to emulate a moving sun to avoid misrepresenting cache performance."),
+	ECVF_RenderThreadSafe);
+
 
 void FVirtualShadowMapCacheEntry::UpdateClipmap(
 	int32 VirtualShadowMapId,
 	const FMatrix &WorldToLight,
-	FIntPoint PageSpaceLocation,
+	FInt64Point PageSpaceLocation,
+	FInt64Point ClipmapCornerOffset,
 	double LevelRadius,
 	double ViewCenterZ,
 	// NOTE: ViewRadiusZ must be constant for a given clipmap level
-	double ViewRadiusZ)
+	double ViewRadiusZ,
+	const FVirtualShadowMapPerLightCacheEntry& PerLightEntry)
 {
-	bool bCacheValid = (CurrentVirtualShadowMapId != INDEX_NONE);
+	bool bCacheValid = (CurrentVirtualShadowMapId != INDEX_NONE) && GForceInvalidateDirectionalVSM == 0;
 	
 	if (bCacheValid && WorldToLight != Clipmap.WorldToLight)
 	{
@@ -100,6 +111,12 @@ void FVirtualShadowMapCacheEntry::UpdateClipmap(
 		}
 	}
 
+	// Not valid if it was never rendered
+	if (PerLightEntry.PrevRenderedFrameNumber < 0)
+	{
+		bCacheValid = false;
+	}
+
 	bool bRadiusMatches = (ViewRadiusZ == Clipmap.ViewRadiusZ);
 
 	if (bCacheValid && bRadiusMatches)
@@ -122,43 +139,111 @@ void FVirtualShadowMapCacheEntry::UpdateClipmap(
 	}
 		
 	PrevPageSpaceLocation = CurrentPageSpaceLocation;
-	bPrevRendered = bCurrentRendered;
 	
 	CurrentVirtualShadowMapId = VirtualShadowMapId;
 	CurrentPageSpaceLocation = PageSpaceLocation;
-	bCurrentRendered = false;
+
+	Clipmap.PrevClipmapCornerOffset = Clipmap.CurrentClipmapCornerOffset;
+	Clipmap.CurrentClipmapCornerOffset = ClipmapCornerOffset;
 }
 
-void FVirtualShadowMapCacheEntry::UpdateLocal(int32 VirtualShadowMapId, const FWholeSceneProjectedShadowInitializer &InCacheValidKey)
+void FVirtualShadowMapCacheEntry::UpdateLocal(int32 VirtualShadowMapId, const FVirtualShadowMapPerLightCacheEntry& PerLightEntry)
 {
 	// Swap previous frame data over.
-	PrevPageSpaceLocation = FIntPoint(0, 0);		// Not used for local lights
+	PrevPageSpaceLocation = FInt64Point(0, 0);		// Not used for local lights
 	PrevVirtualShadowMapId = CurrentVirtualShadowMapId;
-	bPrevRendered = bCurrentRendered;
 
-	// Check cache validity based of shadow setup
-	if (!LocalCacheValidKey.IsCachedShadowValid(InCacheValidKey))
+	// Not valid if it was never rendered
+	if (PerLightEntry.PrevRenderedFrameNumber < 0)
 	{
 		PrevVirtualShadowMapId = INDEX_NONE;
-		//UE_LOG(LogRenderer, Display, TEXT("Invalidated!"));
 	}
-	LocalCacheValidKey = InCacheValidKey;
+
+	// Invalidate on transition from distant to full
+	if (!PerLightEntry.bCurrentIsDistantLight && PerLightEntry.bPrevIsDistantLight)
+	{
+		PrevVirtualShadowMapId = INDEX_NONE;
+	}
 
 	CurrentVirtualShadowMapId = VirtualShadowMapId;
-	CurrentPageSpaceLocation = FIntPoint(0, 0);		// Not used for local lights
-	bCurrentRendered = false;
+	CurrentPageSpaceLocation = FInt64Point(0, 0);		// Not used for local lights
+}
+
+void FVirtualShadowMapCacheEntry::Invalidate()
+{
+	PrevVirtualShadowMapId = INDEX_NONE;
+}
+
+void FVirtualShadowMapPerLightCacheEntry::UpdateClipmap()
+{
+	PrevRenderedFrameNumber = FMath::Max(PrevRenderedFrameNumber, CurrentRenderedFrameNumber);
+	CurrentRenderedFrameNumber = -1;
+}
+
+void FVirtualShadowMapPerLightCacheEntry::UpdateLocal(const FProjectedShadowInitializer& InCacheKey, bool bIsDistantLight)
+{
+	bPrevIsDistantLight = bCurrentIsDistantLight;
+	PrevRenderedFrameNumber = FMath::Max(PrevRenderedFrameNumber, CurrentRenderedFrameNumber);
+	PrevScheduledFrameNumber = FMath::Max(PrevScheduledFrameNumber, CurrenScheduledFrameNumber);
+
+	// Check cache validity based of shadow setup
+	if (!LocalCacheKey.IsCachedShadowValid(InCacheKey))
+	{
+		// If it is a distant light, we want to let the time-share perform the invalidation.
+		// TODO: track invalidation state somehow for later.
+		if (!bIsDistantLight)
+		{
+			PrevRenderedFrameNumber = -1;
+		}
+		//UE_LOG(LogRenderer, Display, TEXT("Invalidated!"));
+	}
+	LocalCacheKey = InCacheKey;
+
+	bCurrentIsDistantLight = bIsDistantLight;
+	CurrentRenderedFrameNumber = -1;
+	CurrenScheduledFrameNumber = -1;
+}
+
+void FVirtualShadowMapPerLightCacheEntry::Invalidate()
+{
+	PrevRenderedFrameNumber = -1;
+
+	for (TSharedPtr<FVirtualShadowMapCacheEntry>& Entry : ShadowMapEntries)
+	{
+		Entry->Invalidate();
+	}
+}
+
+static inline uint32 EncodeInstanceInvalidationPayload(bool bInvalidateStaticPage, int32 ClipmapVirtualShadowMapId = INDEX_NONE)
+{
+	uint32 Payload = 0;
+
+	if (bInvalidateStaticPage)
+	{
+		Payload = Payload | 0x2;
+	}
+
+	if (ClipmapVirtualShadowMapId != INDEX_NONE)
+	{
+		// Do a single clipmap level
+		Payload = Payload | 0x1;
+		Payload = Payload | (((uint32)ClipmapVirtualShadowMapId) << 2);
+	}
+
+	return Payload;
 }
 
 FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::FInvalidatingPrimitiveCollector(FVirtualShadowMapArrayCacheManager* InVirtualShadowMapArrayCacheManager)
-	: AlreadyAddedPrimitives(false, InVirtualShadowMapArrayCacheManager->Scene->Primitives.Num())
-	, Scene(*InVirtualShadowMapArrayCacheManager->Scene)
+	: Scene(*InVirtualShadowMapArrayCacheManager->Scene)
 	, GPUScene(InVirtualShadowMapArrayCacheManager->Scene->GPUScene)
 	, Manager(*InVirtualShadowMapArrayCacheManager)
+	, AlreadyAddedPrimitives(false, InVirtualShadowMapArrayCacheManager->Scene->Primitives.Num())
 {
 	// Add and clear pending invalidations enqueued on the GPU Scene from dynamic primitives added since last invalidation
 	for (const FGPUScene::FInstanceRange& Range : GPUScene.DynamicPrimitiveInstancesToInvalidate)
 	{
-		LoadBalancer.Add(Range.InstanceSceneDataOffset, Range.NumInstanceSceneDataEntries, 0U);
+		// Dynamic primitives are never cached as static; see  FUploadDataSourceAdapterDynamicPrimitives::GetPrimitiveInfo
+		LoadBalancer.Add(Range.InstanceSceneDataOffset, Range.NumInstanceSceneDataEntries, EncodeInstanceInvalidationPayload(false));
 #if VSM_LOG_INVALIDATIONS
 		RangesStr.Appendf(TEXT("[%6d, %6d), "), Range.InstanceSceneDataOffset, Range.InstanceSceneDataOffset + Range.NumInstanceSceneDataEntries);
 #endif
@@ -177,8 +262,8 @@ FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::FInvalidati
 			{
 				if (SmCacheEntry.IsValid())
 				{
-					// Lowest bit indicates whether to run the clipmap loop, add 1 to ID so != 0 <==> single level processing
-					LoadBalancer.Add(Range.InstanceSceneDataOffset, Range.NumInstanceSceneDataEntries, (uint32(SmCacheEntry->CurrentVirtualShadowMapId + 1) << 1U) | 0U);
+					LoadBalancer.Add(Range.InstanceSceneDataOffset, Range.NumInstanceSceneDataEntries,
+						EncodeInstanceInvalidationPayload(Range.bInvalidateStaticPage, SmCacheEntry->CurrentVirtualShadowMapId));
 				}
 			}
 
@@ -189,9 +274,52 @@ FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::FInvalidati
 		}
 		CacheEntry.Value->PrimitiveInstancesToInvalidate.Reset();
 	}
+
+	// Process any GPU readback static invalidations
+	{
+		FVirtualShadowMapFeedback::FReadbackInfo Readback = Manager.StaticGPUInvalidationsFeedback.GetLatestReadbackBuffer();
+		if (Readback.Size > 0)
+		{
+			TBitArray<SceneRenderingAllocator> Primitives;
+			{
+				const uint32* Data = (const uint32*)Readback.Buffer->Lock(Readback.Size);			
+				Primitives.AddRange(Data, Readback.Size * 8);
+				Readback.Buffer->Unlock();
+				// TODO: Mark that we've done this buffer? Not really harmful to redo it
+			}
+
+			for (TConstSetBitIterator<SceneRenderingAllocator> PrimitivesIt(Primitives); PrimitivesIt; ++PrimitivesIt)
+			{
+				const FPersistentPrimitiveIndex PersistentPrimitiveIndex = FPersistentPrimitiveIndex{PrimitivesIt.GetIndex()};
+				
+				// NOTE: Have to be a bit careful as this primitive index came from a few frames ago... thus it may no longer
+				// be valid, or possibly even replaced by a new primitive.
+				// TODO: Dual iterator and avoid any primitives that have been removed recently (might resuse the slot)
+				const int32 PrimitiveIndex = Scene.GetPrimitiveIndex(PersistentPrimitiveIndex);
+				FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene.GetPrimitiveSceneInfo(PrimitiveIndex);
+				if (PrimitiveSceneInfo)
+				{
+					if (Manager.WasRecentlyRemoved(PersistentPrimitiveIndex))
+					{
+						// Do nothing for now, as this slot may have been reused after a previous removal
+#if VSM_LOG_STATIC_CACHING
+						UE_LOG(LogRenderer, Warning, TEXT("Ignoring GPU invalidation due to recent primitive removal: %u"), PersistentPrimitiveIndex.Index);
+#endif
+					}
+					else
+					{
+#if VSM_LOG_STATIC_CACHING
+						UE_LOG(LogRenderer, Warning, TEXT("Transitioning GPU invalidation to dynamic caching: %u"), PersistentPrimitiveIndex.Index);
+#endif
+						AddInvalidation(PrimitiveSceneInfo, false);
+					}
+				}
+			}
+		}
+	}
 }
 
-void FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::Add(const FPrimitiveSceneInfo * PrimitiveSceneInfo)
+void FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::AddInvalidation(FPrimitiveSceneInfo * PrimitiveSceneInfo, bool bRemovedPrimitive)
 {
 	int32 PrimitiveID = PrimitiveSceneInfo->GetIndex();
 	if (PrimitiveID >= 0
@@ -202,24 +330,41 @@ void FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::Add(co
 		&& !EnumHasAnyFlags(GPUScene.GetPrimitiveDirtyState(PrimitiveID), EPrimitiveDirtyState::Added))
 	{
 		AlreadyAddedPrimitives[PrimitiveID] = true;
-		int32 PersistentPrimitiveIndex = PrimitiveSceneInfo->GetPersistentIndex().Index;
-
-		const int32 NumInstanceSceneDataEntries = PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
-		// Add for non-directional lights, mark for skipping clipmaps as these are handled individually below
-		LoadBalancer.Add(PrimitiveSceneInfo->GetInstanceSceneDataOffset(), NumInstanceSceneDataEntries, 1U);
+		const FPersistentPrimitiveIndex PersistentPrimitiveIndex = PrimitiveSceneInfo->GetPersistentIndex();
 
 		// Nanite meshes need special handling because they don't get culled on CPU, thus always process invalidations for those
 		const bool bIsNaniteMesh = Scene.PrimitiveFlagsCompact[PrimitiveID].bIsNaniteMesh;
+		const bool bPreviouslyCachedAsStatic = PrimitiveSceneInfo->ShouldCacheShadowAsStatic();
+
+		if (bRemovedPrimitive)
+		{
+			RemovedPrimitives.PadToNum(PersistentPrimitiveIndex.Index + 1, false);
+			RemovedPrimitives[PersistentPrimitiveIndex.Index] = true;
+		}
+		else
+		{
+			// Swap to dynamic caching if it was already static
+			if (bPreviouslyCachedAsStatic)
+			{
+				PrimitiveSceneInfo->SetCacheShadowAsStatic(false);
+#if VSM_LOG_STATIC_CACHING
+				UE_LOG(LogRenderer, Warning, TEXT("FVirtualShadowMapArrayCacheManager: '%s' switched to dynamic caching"), *PrimitiveSceneInfo->GetFullnameForDebuggingOnly());
+#endif
+			}
+		}
+
+		const int32 NumInstanceSceneDataEntries = PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
+
 		// Process directional lights, where we explicitly filter out primitives that were not rendered (and mark this fact)
 		for (auto& CacheEntry : Manager.PrevCacheEntries)
 		{
 			TBitArray<>& CachedPrimitives = CacheEntry.Value->CachedPrimitives;
-			if (bIsNaniteMesh || (PersistentPrimitiveIndex < CachedPrimitives.Num() && CachedPrimitives[PersistentPrimitiveIndex]))
+			if (bIsNaniteMesh || (PersistentPrimitiveIndex.Index < CachedPrimitives.Num() && CachedPrimitives[PersistentPrimitiveIndex.Index]))
 			{
 				if (!bIsNaniteMesh)
 				{
 					// Clear the record as we're wiping it out.
-					CachedPrimitives[PersistentPrimitiveIndex] = false;
+					CachedPrimitives[PersistentPrimitiveIndex.Index] = false;
 				}
 
 				// Add item for each shadow map explicitly, inflates host data but improves load balancing,
@@ -228,8 +373,9 @@ void FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::Add(co
 				{
 					if (SmCacheEntry.IsValid())
 					{
-						// Lowest bit indicates whether to run the clipmap loop, add 1 to ID so != 0 <==> single level processing
-						LoadBalancer.Add(PrimitiveSceneInfo->GetInstanceSceneDataOffset(), NumInstanceSceneDataEntries, (uint32(SmCacheEntry->CurrentVirtualShadowMapId + 1) << 1U) | 0U);
+						checkSlow(SmCacheEntry->CurrentVirtualShadowMapId != INDEX_NONE);
+						LoadBalancer.Add(PrimitiveSceneInfo->GetInstanceSceneDataOffset(), NumInstanceSceneDataEntries,
+							EncodeInstanceInvalidationPayload(bPreviouslyCachedAsStatic, SmCacheEntry->CurrentVirtualShadowMapId));
 					}
 				}
 			}
@@ -242,6 +388,75 @@ void FVirtualShadowMapArrayCacheManager::FInvalidatingPrimitiveCollector::Add(co
 }
 
 
+FVirtualShadowMapFeedback::FVirtualShadowMapFeedback()
+{
+	for (int32 i = 0; i < MaxBuffers; ++i)
+	{
+		Buffers[i].Buffer = new FRHIGPUBufferReadback(TEXT("Shadow.Virtual.Readback"));
+		Buffers[i].Size = 0;
+	}
+}
+
+FVirtualShadowMapFeedback::~FVirtualShadowMapFeedback()
+{
+	for (int32 i = 0; i < MaxBuffers; ++i)
+	{
+		delete Buffers[i].Buffer;
+		Buffers[i].Buffer = nullptr;
+		Buffers[i].Size = 0;
+	}
+}
+
+void FVirtualShadowMapFeedback::SubmitFeedbackBuffer(
+	FRDGBuilder& GraphBuilder,
+	FRDGBufferRef FeedbackBuffer)
+{
+	// Source copy usage is required for readback
+	check((FeedbackBuffer->Desc.Usage & EBufferUsageFlags::SourceCopy) == EBufferUsageFlags::SourceCopy);
+
+	if (NumPending == MaxBuffers)
+	{
+#if VSM_LOG_STATIC_CACHING
+		UE_LOG(LogRenderer, Warning, TEXT("FVirtualShadowMapFeedback ran out of feedback buffers!"));
+#endif
+		return;
+	}
+
+	FRHIGPUBufferReadback* ReadbackBuffer = Buffers[WriteIndex].Buffer;
+	Buffers[WriteIndex].Size = FeedbackBuffer->Desc.GetSize();
+
+	AddReadbackBufferPass(GraphBuilder, RDG_EVENT_NAME("Readback"), FeedbackBuffer,
+		[ReadbackBuffer, FeedbackBuffer](FRHICommandList& RHICmdList)
+		{
+			ReadbackBuffer->EnqueueCopy(RHICmdList, FeedbackBuffer->GetRHI(), 0u);
+		});
+
+	WriteIndex = (WriteIndex + 1) % MaxBuffers;
+	NumPending = FMath::Min(NumPending + 1, MaxBuffers);
+}
+
+FVirtualShadowMapFeedback::FReadbackInfo FVirtualShadowMapFeedback::GetLatestReadbackBuffer()
+{
+	int32 LatestBufferIndex = -1;
+
+	// Find latest buffer that is ready
+	while (NumPending > 0)
+	{
+		uint32 Index = (WriteIndex + MaxBuffers - NumPending) % MaxBuffers;
+		if (Buffers[Index].Buffer->IsReady())
+		{
+			--NumPending;
+			LatestBufferIndex = Index;
+		}
+		else
+		{
+			break;
+		}
+	}
+
+	return LatestBufferIndex >= 0 ? Buffers[LatestBufferIndex] : FReadbackInfo();
+}
+
 
 FVirtualShadowMapArrayCacheManager::FVirtualShadowMapArrayCacheManager(FScene* InScene) 
 	: Scene(InScene)
@@ -249,42 +464,50 @@ FVirtualShadowMapArrayCacheManager::FVirtualShadowMapArrayCacheManager(FScene* I
 	// Handle message with status sent back from GPU
 	StatusFeedbackSocket = GPUMessage::RegisterHandler(TEXT("Shadow.Virtual.StatusFeedback"), [this](GPUMessage::FReader Message)
 	{
-		// Get the frame that the message was sent.
-		uint32 FrameNumber = Message.Read<uint32>(0);
-		// Goes negative on underflow
-		int32 NumPagesFree = Message.Read<int32>(0);
-
-		if (NumPagesFree < 0)
+		// Only process status messages that came from this specific cache manager
+		if (Message.MessageId == this->StatusFeedbackSocket.GetMessageId())
 		{
-			static const auto* CVarResolutionLodBiasLocalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasLocal"));
-			const float LodBiasLocal = CVarResolutionLodBiasLocalPtr->GetValueOnRenderThread();
+			// Get the frame that the message was sent.
+			uint32 FrameNumber = Message.Read<uint32>(0);
+			// Goes negative on underflow
+			int32 NumPagesFree = Message.Read<int32>(0);
 
-			static const auto* CVarResolutionLodBiasDirectionalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasDirectional"));
-			const float LodBiasDirectional = CVarResolutionLodBiasDirectionalPtr->GetValueOnRenderThread();
-
-			static const auto* CVarMaxPhysicalPagesPtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPages"));
-			const int32 MaxPhysicalPages = CVarMaxPhysicalPagesPtr->GetValueOnRenderThread();
-
-#if !UE_BUILD_SHIPPING
-			if (!bLoggedPageOverflow)
+			if (NumPagesFree < 0)
 			{
-				UE_LOG(LogRenderer, Warning, TEXT("Virtual Shadow Map Page Pool overflow (%d page allocations were not served), this will produce visual artifacts (missing shadow), increase the page pool limit or reduce resolution bias to avoid.\n")
-					TEXT(" See r.Shadow.Virtual.MaxPhysicalPages (%d), r.Shadow.Virtual.ResolutionLodBiasLocal (%.2f), and r.Shadow.Virtual.ResolutionLodBiasDirectional (%.2f)"),
-					-NumPagesFree,
-					MaxPhysicalPages,
-					LodBiasLocal,
-					LodBiasDirectional);
-				bLoggedPageOverflow = true;
-			}
-			LastOverflowFrame = Scene->GetFrameNumber();
-#endif
-		}
+				static const auto* CVarResolutionLodBiasLocalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasLocal"));
+				const float LodBiasLocal = CVarResolutionLodBiasLocalPtr->GetValueOnRenderThread();
+
+				static const auto* CVarResolutionLodBiasDirectionalPtr = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.Shadow.Virtual.ResolutionLodBiasDirectional"));
+				const float LodBiasDirectional = CVarResolutionLodBiasDirectionalPtr->GetValueOnRenderThread();
+
+				static const auto* CVarMaxPhysicalPagesPtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPages"));
+				const int32 MaxPhysicalPages = CVarMaxPhysicalPagesPtr->GetValueOnRenderThread();
+
+				static const auto* CVarMaxPhysicalPagesSceneCapturePtr = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Shadow.Virtual.MaxPhysicalPagesSceneCapture"));
+				const int32 MaxPhysicalPagesSceneCapture = CVarMaxPhysicalPagesSceneCapturePtr->GetValueOnRenderThread();
+
 #if !UE_BUILD_SHIPPING
-		else
-		{
-			bLoggedPageOverflow = false;
-		}
+				if (!bLoggedPageOverflow)
+				{
+					UE_LOG(LogRenderer, Warning, TEXT("Virtual Shadow Map Page Pool overflow (%d page allocations were not served), this will produce visual artifacts (missing shadow), increase the page pool limit or reduce resolution bias to avoid.\n")
+						TEXT(" See r.Shadow.Virtual.MaxPhysicalPages (%d), r.Shadow.Virtual.MaxPhysicalPagesSceneCapture (%d), r.Shadow.Virtual.ResolutionLodBiasLocal (%.2f), and r.Shadow.Virtual.ResolutionLodBiasDirectional (%.2f)"),
+						-NumPagesFree,
+						MaxPhysicalPages,
+						MaxPhysicalPagesSceneCapture,
+						LodBiasLocal,
+						LodBiasDirectional);
+					bLoggedPageOverflow = true;
+				}
+				LastOverflowFrame = Scene->GetFrameNumber();
 #endif
+			}
+#if !UE_BUILD_SHIPPING
+			else
+			{
+				bLoggedPageOverflow = false;
+			}
+#endif
+		}
 	});
 
 #if !UE_BUILD_SHIPPING
@@ -308,17 +531,19 @@ FVirtualShadowMapArrayCacheManager::~FVirtualShadowMapArrayCacheManager()
 }
 
 
-TRefCountPtr<IPooledRenderTarget> FVirtualShadowMapArrayCacheManager::SetPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedSize)
+TRefCountPtr<IPooledRenderTarget> FVirtualShadowMapArrayCacheManager::SetPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedSize, int RequestedArraySize)
 {
-	if (!PhysicalPagePool || PhysicalPagePool->GetDesc().Extent != RequestedSize)
+	if (!PhysicalPagePool || PhysicalPagePool->GetDesc().Extent != RequestedSize || PhysicalPagePool->GetDesc().ArraySize != RequestedArraySize)
 	{
-		FPooledRenderTargetDesc Desc2D = FPooledRenderTargetDesc::Create2DDesc(
+		FPooledRenderTargetDesc Desc2D = FPooledRenderTargetDesc::Create2DArrayDesc(
 			RequestedSize,
 			PF_R32_UINT,
 			FClearValueBinding::None,
 			TexCreate_None,
 			TexCreate_ShaderResource | TexCreate_UAV,
-			false);
+			false,
+			RequestedArraySize
+		);
 		GRenderTargetPool.FindFreeElement(GraphBuilder.RHICmdList, Desc2D, PhysicalPagePool, TEXT("Shadow.Virtual.PhysicalPagePool"));
 
 		Invalidate();
@@ -333,6 +558,35 @@ void FVirtualShadowMapArrayCacheManager::FreePhysicalPool()
 	if (PhysicalPagePool)
 	{
 		PhysicalPagePool = nullptr;
+		Invalidate();
+	}
+}
+
+TRefCountPtr<IPooledRenderTarget> FVirtualShadowMapArrayCacheManager::SetHZBPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedHZBSize, const EPixelFormat Format)
+{
+	if (!HZBPhysicalPagePool || HZBPhysicalPagePool->GetDesc().Extent != RequestedHZBSize || HZBPhysicalPagePool->GetDesc().Format != Format)
+	{
+		// TODO: This may need to be an array as well
+		FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
+			RequestedHZBSize,
+			Format,
+			FClearValueBinding::None,
+			GFastVRamConfig.HZB,
+			TexCreate_ShaderResource | TexCreate_UAV,
+			false,
+			FVirtualShadowMap::NumHZBLevels);
+
+		GRenderTargetPool.FindFreeElement(GraphBuilder.RHICmdList, Desc, HZBPhysicalPagePool, TEXT("Shadow.Virtual.HZBPhysicalPagePool"));
+	}
+
+	return HZBPhysicalPagePool;
+}
+
+void FVirtualShadowMapArrayCacheManager::FreeHZBPhysicalPool()
+{
+	if (HZBPhysicalPagePool)
+	{
+		HZBPhysicalPagePool = nullptr;
 		Invalidate();
 	}
 }
@@ -359,23 +613,25 @@ TSharedPtr<FVirtualShadowMapCacheEntry> FVirtualShadowMapPerLightCacheEntry::Fin
 	return EntryRef;
 }
 
-TSharedPtr<FVirtualShadowMapPerLightCacheEntry> FVirtualShadowMapArrayCacheManager::FindCreateLightCacheEntry(int32 LightSceneId)
+TSharedPtr<FVirtualShadowMapPerLightCacheEntry> FVirtualShadowMapArrayCacheManager::FindCreateLightCacheEntry(int32 LightSceneId, uint32 ViewUniqueID)
 {
 	if (CVarCacheVirtualSMs.GetValueOnRenderThread() == 0)
 	{
 		return nullptr;
 	}
 
-	if (TSharedPtr<FVirtualShadowMapPerLightCacheEntry> *LightEntry = CacheEntries.Find(LightSceneId))
+	const uint64 CacheKey = (uint64(ViewUniqueID) << 32U) | uint64(LightSceneId);
+
+	if (TSharedPtr<FVirtualShadowMapPerLightCacheEntry> *LightEntry = CacheEntries.Find(CacheKey))
 	{
 		return *LightEntry;
 	}
 
 	// Add to current frame / active set.
-	TSharedPtr<FVirtualShadowMapPerLightCacheEntry>& NewLightEntry = CacheEntries.Add(LightSceneId);
+	TSharedPtr<FVirtualShadowMapPerLightCacheEntry>& NewLightEntry = CacheEntries.Add(CacheKey);
 
 	// Copy data if available
-	if (TSharedPtr<FVirtualShadowMapPerLightCacheEntry>* PrevNewLightEntry = PrevCacheEntries.Find(LightSceneId))
+	if (TSharedPtr<FVirtualShadowMapPerLightCacheEntry>* PrevNewLightEntry = PrevCacheEntries.Find(CacheKey))
 	{
 		NewLightEntry = *PrevNewLightEntry;
 	}
@@ -390,17 +646,6 @@ TSharedPtr<FVirtualShadowMapPerLightCacheEntry> FVirtualShadowMapArrayCacheManag
 
 
 
-TSharedPtr<FVirtualShadowMapCacheEntry> FVirtualShadowMapArrayCacheManager::FindCreateCacheEntry(int32 LightSceneId, int32 Index)
-{
-	if (CVarCacheVirtualSMs.GetValueOnRenderThread() == 0)
-	{
-		return nullptr;
-	}
-
-	return FindCreateLightCacheEntry(LightSceneId)->FindCreateShadowMapEntry(Index);
-}
-
-
 void FVirtualShadowMapPerLightCacheEntry::OnPrimitiveRendered(const FPrimitiveSceneInfo* PrimitiveSceneInfo)
 {
 	// Mark as (potentially present in a cached page somehwere, so we'd need to invalidate if it is removed/moved)
@@ -411,7 +656,11 @@ void FVirtualShadowMapPerLightCacheEntry::OnPrimitiveRendered(const FPrimitiveSc
 		// Deformable mesh primitives need to trigger invalidation (even if they did not move) or we get artifacts, for example skinned meshes that are animating but not currently moving.
 		if (PrimitiveSceneInfo->Proxy->HasDeformableMesh())
 		{
-			PrimitiveInstancesToInvalidate.Add(FInstanceRange{ PrimitiveSceneInfo->GetInstanceSceneDataOffset(), PrimitiveSceneInfo->GetNumInstanceSceneDataEntries() });
+			PrimitiveInstancesToInvalidate.Add(FInstanceRange{ 
+				PrimitiveSceneInfo->GetInstanceSceneDataOffset(),
+				PrimitiveSceneInfo->GetNumInstanceSceneDataEntries(),
+				PrimitiveSceneInfo->ShouldCacheShadowAsStatic()
+			});
 		}
 	}
 }
@@ -430,7 +679,7 @@ public:
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) &&
-			DoesPlatformSupportNanite(Parameters.Platform);
+			DoesPlatformSupportVirtualShadowMaps(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -455,7 +704,9 @@ void FVirtualShadowMapArrayCacheManager::ExtractFrameData(
 	if (bDropPrevBuffers)
 	{
 		PrevBuffers = FVirtualShadowMapArrayFrameData();
-		PrevUniformParameters.NumShadowMaps = 0;
+		PrevUniformParameters.NumFullShadowMaps = 0;
+		PrevUniformParameters.NumSinglePageShadowMaps = 0;
+		PrevUniformParameters.NumShadowMapSlots = 0;
 	}
 
 	if (bDropAll)
@@ -467,31 +718,25 @@ void FVirtualShadowMapArrayCacheManager::ExtractFrameData(
 	}
 	else if (bNewShadowData)
 	{
-		bool bExtractPageTable = false;
+		bool bExtractHzbData = false;
 
 		// HZB and associated page table are needed by next frame even when VSM physical page caching is disabled
 		if (VirtualShadowMapArray.HZBPhysical)
 		{
-			bExtractPageTable = true;
+			bExtractHzbData = true;
 			GraphBuilder.QueueTextureExtraction(VirtualShadowMapArray.HZBPhysical, &PrevBuffers.HZBPhysical);
 			PrevBuffers.HZBMetadata = VirtualShadowMapArray.HZBMetadata;
 		}
 
 		if (CVarCacheVirtualSMs.GetValueOnRenderThread() != 0)
 		{
-			bExtractPageTable = true;
-			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PageFlagsRDG, &PrevBuffers.PageFlags);
+			bExtractHzbData = true;
 
 			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PhysicalPageMetaDataRDG, &PrevBuffers.PhysicalPageMetaData);
-			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.DynamicCasterPageFlagsRDG, &PrevBuffers.DynamicCasterPageFlags);
 			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.ProjectionDataRDG, &PrevBuffers.ProjectionData);
-			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PageRectBoundsRDG, &PrevBuffers.PageRectBounds);
 
-			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.InvalidatingInstancesRDG, &PrevBuffers.InvalidatingInstancesBuffer);
-			PrevBuffers.NumInvalidatingInstanceSlots = VirtualShadowMapArray.NumInvalidatingInstanceSlots;
-
-			// Move cache entries to previous frame, this implicitly removes any that were not used
-			PrevCacheEntries = CacheEntries;
+			// Enqueue readback
+			StaticGPUInvalidationsFeedback.SubmitFeedbackBuffer(GraphBuilder, VirtualShadowMapArray.StaticInvalidatingPrimitivesRDG);
 			
 			// Store but drop any temp references embedded in the uniform parameters this frame.
 			// We'll reestablish them when we reimport the extracted resources next frame
@@ -500,10 +745,14 @@ void FVirtualShadowMapArrayCacheManager::ExtractFrameData(
 			PrevUniformParameters.PageTable = nullptr;
 			PrevUniformParameters.PhysicalPagePool = nullptr;
 		}
+		// Move cache entries to previous frame, this implicitly removes any that were not used
+		PrevCacheEntries = CacheEntries;
 
-		if (bExtractPageTable)
+		if (bExtractHzbData)
 		{
 			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PageTableRDG, &PrevBuffers.PageTable);
+			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PageRectBoundsRDG, &PrevBuffers.PageRectBounds);
+			GraphBuilder.QueueBufferExtraction(VirtualShadowMapArray.PageFlagsRDG, &PrevBuffers.PageFlags);
 		}
 
 		// propagate current-frame primitive state to cache entry
@@ -522,12 +771,30 @@ void FVirtualShadowMapArrayCacheManager::ExtractFrameData(
 	}
 	else
 	{
+		// Caching is disabled
+		if (CVarCacheVirtualSMs.GetValueOnRenderThread() == 0)
+		{
+			// Make sure we empty out any resources associated with caching
+			PrevCacheEntries.Reset();
+			CacheEntries.Reset();
+		}
+
 		// Do nothing; maintain the data that we had
 		// This allows us to work around some cases where the renderer gets called multiple times in a given frame
 		// - such as scene captures - but does no shadow-related work in all but one of them. We do not want to drop
 		// all the cached data in this case otherwise we effectively get no caching at all.
 		// Ideally in the long run we want the cache itself to be more robust against rendering multiple views. but
 		// for now this at least provides a work-around for some common cases where only one view is rendering VSMs.
+	}
+
+	// Every once in a while zero out our recently removed primitive flags. This lets us ignore slots that
+	// may have been reused since they were flagged from GPU invalidations.
+	++RecentlyRemovedFrameCounter;
+	if (RecentlyRemovedFrameCounter >= 3)
+	{
+		RecentlyRemovedPrimitives[RecentlyRemovedReadIndex].Reset();
+		RecentlyRemovedReadIndex = 1 - RecentlyRemovedReadIndex;
+		RecentlyRemovedFrameCounter = 0;
 	}
 }
 
@@ -566,7 +833,7 @@ void FVirtualShadowMapArrayCacheManager::ExtractStats(FRDGBuilder& GraphBuilder,
 		PassParameters->AccumulatedStatsBufferOut = GraphBuilder.CreateUAV(AccumulatedStatsBufferRDG, PF_R32_UINT);
 		PassParameters->NumStats = FVirtualShadowMapArray::NumStats;
 
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FVirtualSmCopyStatsCS>();
+		auto ComputeShader = GetGlobalShaderMap(Scene->GetFeatureLevel())->GetShader<FVirtualSmCopyStatsCS>();
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -675,8 +942,7 @@ bool FVirtualShadowMapArrayCacheManager::IsValid()
 	return CVarCacheVirtualSMs.GetValueOnRenderThread() != 0
 		&& PrevBuffers.PageTable
 		&& PrevBuffers.PageFlags
-		&& PrevBuffers.PhysicalPageMetaData
-		&& PrevBuffers.DynamicCasterPageFlags;
+		&& PrevBuffers.PhysicalPageMetaData;
 }
 
 
@@ -685,12 +951,19 @@ bool FVirtualShadowMapArrayCacheManager::IsAccumulatingStats()
 	return CVarAccumulateStats.GetValueOnRenderThread() != 0;
 }
 
+static uint32 GetPrimFlagsBufferSizeInDwords(int32 MaxPersistentPrimitiveIndex)
+{
+	return FMath::RoundUpToPowerOfTwo(FMath::DivideAndRoundUp(MaxPersistentPrimitiveIndex, 32));
+}
+
 void FVirtualShadowMapArrayCacheManager::ProcessRemovedOrUpdatedPrimitives(FRDGBuilder& GraphBuilder, const FGPUScene& GPUScene, FInvalidatingPrimitiveCollector& InvalidatingPrimitiveCollector)
 {
-	if (CVarCacheVirtualSMs.GetValueOnRenderThread() != 0 && PrevBuffers.DynamicCasterPageFlags.IsValid())
+	// Always incorporate any scene removals into the "recently removed" list
+	UpdateRecentlyRemoved(InvalidatingPrimitiveCollector.GetRemovedPrimitives());
+
+	if (CVarCacheVirtualSMs.GetValueOnRenderThread() != 0 && PrevBuffers.PhysicalPageMetaData.IsValid())
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "Shadow.Virtual.ProcessRemovedOrUpdatedPrimitives");
-		ProcessGPUInstanceInvalidations(GraphBuilder, GPUScene);
 
 		if (!InvalidatingPrimitiveCollector.IsEmpty())
 		{
@@ -702,7 +975,7 @@ void FVirtualShadowMapArrayCacheManager::ProcessRemovedOrUpdatedPrimitives(FRDGB
 	}
 }
 
-static void ResizeFlagArray(TBitArray<>& BitArray, int32 NewMax)
+static void ResizeFlagArray(TBitArray<>& BitArray, int32 NewMax, bool DefaultValue = false)
 {
 	if (BitArray.Num() > NewMax)
 	{
@@ -711,8 +984,7 @@ static void ResizeFlagArray(TBitArray<>& BitArray, int32 NewMax)
 	}
 	else if (BitArray.Num() < NewMax)
 	{
-		// Add false
-		BitArray.Add(false, NewMax - BitArray.Num());
+		BitArray.Add(DefaultValue, NewMax - BitArray.Num());
 	}
 }
 
@@ -720,19 +992,26 @@ void FVirtualShadowMapArrayCacheManager::OnSceneChange()
 {
 	if (CVarCacheVirtualSMs.GetValueOnRenderThread() != 0)
 	{
+		const int32 MaxPersistentPrimitiveIndex = FMath::Max(1, Scene->GetMaxPersistentPrimitiveIndex());
+
 		for (auto& CacheEntry : PrevCacheEntries)
 		{
-			ResizeFlagArray(CacheEntry.Value->CachedPrimitives, Scene->GetMaxPersistentPrimitiveIndex());
-			ResizeFlagArray(CacheEntry.Value->RenderedPrimitives, Scene->GetMaxPersistentPrimitiveIndex());
+			ResizeFlagArray(CacheEntry.Value->CachedPrimitives, MaxPersistentPrimitiveIndex);
+			ResizeFlagArray(CacheEntry.Value->RenderedPrimitives, MaxPersistentPrimitiveIndex);
 		}
 		for (auto& CacheEntry : CacheEntries)
 		{
-			ResizeFlagArray(CacheEntry.Value->CachedPrimitives, Scene->GetMaxPersistentPrimitiveIndex());
-			ResizeFlagArray(CacheEntry.Value->RenderedPrimitives, Scene->GetMaxPersistentPrimitiveIndex());
+			ResizeFlagArray(CacheEntry.Value->CachedPrimitives, MaxPersistentPrimitiveIndex);
+			ResizeFlagArray(CacheEntry.Value->RenderedPrimitives, MaxPersistentPrimitiveIndex);
 		}
 	}
 }
 
+void FVirtualShadowMapArrayCacheManager::OnLightRemoved(int32 LightId)
+{
+	CacheEntries.Remove(LightId);
+	PrevCacheEntries.Remove(LightId);
+}
 
 /**
  * Compute shader to project and invalidate the rectangles of given instances.
@@ -742,42 +1021,38 @@ class FVirtualSmInvalidateInstancePagesCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FVirtualSmInvalidateInstancePagesCS);
 	SHADER_USE_PARAMETER_STRUCT(FVirtualSmInvalidateInstancePagesCS, FGlobalShader)
 
-	enum EInputDataKind
-	{
-		EInputKind_GPUInstances,
-		EInputKind_LoadBalancer,
-		EInputKind_Num
-	};
-
 	class FDebugDim : SHADER_PERMUTATION_BOOL("ENABLE_DEBUG_MODE");
-	class FInputKindDim : SHADER_PERMUTATION_INT("INPUT_KIND", EInputKind_Num);
 	class FUseHzbDim : SHADER_PERMUTATION_BOOL("USE_HZB_OCCLUSION");
-	using FPermutationDomain = TShaderPermutationDomain<FUseHzbDim, FDebugDim, FInputKindDim>;
+	using FPermutationDomain = TShaderPermutationDomain<FUseHzbDim, FDebugDim>;
 
 public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualShadowMapUniformParameters, VirtualShadowMap)
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawUniformBuffer)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintUniformBuffer)
 		SHADER_PARAMETER(uint32, bDrawBounds)
 
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer< uint >, OutDynamicCasterPageFlags)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer< FPhysicalPageMetaData >, PrevPhysicalPageMetaDataOut)
 
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
-		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
 		SHADER_PARAMETER(uint32, GPUSceneFrameNumber)
 		SHADER_PARAMETER(uint32, InstanceSceneDataSOAStride)
 		SHADER_PARAMETER(uint32, GPUSceneNumAllocatedInstances)
 		SHADER_PARAMETER(uint32, GPUSceneNumAllocatedPrimitives)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint >, ShadowHZBPageTable)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint >, HZBPageTable)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer< uint4 >, HZBPageRectBounds)
+
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HZBTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, HZBSampler)
 		SHADER_PARAMETER( FVector2f,	HZBSize )
 
+		// GPU instances parameters
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, InvalidatingInstances)
 		SHADER_PARAMETER(uint32, NumInvalidatingInstanceSlots)
 		RDG_BUFFER_ACCESS(IndirectArgs, ERHIAccess::IndirectArgs)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, OutStaticInvalidatingPrimitives)
 
 		SHADER_PARAMETER_STRUCT_INCLUDE(FGPUScene::FInstanceGPULoadBalancer::FShaderParameters, LoadBalancerParameters)
 	END_SHADER_PARAMETER_STRUCT()
@@ -787,7 +1062,7 @@ public:
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) &&
-			DoesPlatformSupportNanite(Parameters.Platform);
+			DoesPlatformSupportVirtualShadowMaps(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -797,10 +1072,6 @@ public:
 		OutEnvironment.SetDefine(TEXT("CS_1D_GROUP_SIZE_X"), Cs1dGroupSizeX);
 		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
-		
-		OutEnvironment.SetDefine(TEXT("INPUT_KIND_GPU_INSTANCES"), EInputKind_GPUInstances);
-		OutEnvironment.SetDefine(TEXT("INPUT_KIND_LOAD_BALANCER"), EInputKind_LoadBalancer);
-
 		FGPUScene::FInstanceGPULoadBalancer::SetShaderDefines(OutEnvironment);
 	}
 };
@@ -821,15 +1092,29 @@ void FVirtualShadowMapArrayCacheManager::SetHZBViewParams(int32 HZBKey, Nanite::
 	{
 		OutParams.PrevTargetLayerIndex = PrevHZBMeta->TargetLayerIndex;
 		OutParams.PrevViewMatrices = PrevHZBMeta->ViewMatrices;
-		OutParams.Flags = NANITE_VIEW_FLAG_HZBTEST;
+		OutParams.Flags |= NANITE_VIEW_FLAG_HZBTEST;
 	}
 }
 
-static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapArrayCacheManager* CacheManager, int32 TotalInstanceCount, const FGPUScene& GPUScene, 
+#if WITH_MGPU
+void FVirtualShadowMapArrayCacheManager::UpdateGPUMask(FRHIGPUMask GPUMask)
+{
+	if (LastGPUMask != GPUMask)
+	{
+		LastGPUMask = GPUMask;
+		Invalidate();
+	}
+}
+#endif  // WITH_MGPU
+
+static void SetupCommonParameters(
+	FRDGBuilder& GraphBuilder,
+	FVirtualShadowMapArrayCacheManager* CacheManager,
+	int32 TotalInstanceCount,
+	const FGPUScene& GPUScene,
 	FVirtualSmInvalidateInstancePagesCS::FParameters& OutPassParameters,
 	FVirtualSmInvalidateInstancePagesCS::FPermutationDomain &OutPermutationVector)
 {
-
 	auto RegExtCreateSrv = [&GraphBuilder](const TRefCountPtr<FRDGPooledBuffer>& Buffer, const TCHAR* Name) -> FRDGBufferSRVRef
 	{
 		return GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(Buffer, Name));
@@ -840,12 +1125,12 @@ static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapAr
 
 	if (bDrawBounds)
 	{
-		ShaderDrawDebug::SetEnabled(true);
-		ShaderDrawDebug::RequestSpaceForElements(TotalInstanceCount * 12);
+		ShaderPrint::SetEnabled(true);
+		ShaderPrint::RequestSpaceForLines(TotalInstanceCount * 12);
 	}
 
 	// Note: this disables the whole debug permutation since the parameters must be bound.
-	const bool bUseDebugPermutation = bDrawBounds && ShaderDrawDebug::IsDefaultViewEnabled();
+	const bool bUseDebugPermutation = bDrawBounds && ShaderPrint::IsDefaultViewEnabled();
 
 	FVirtualShadowMapArrayFrameData &PrevBuffers = CacheManager->PrevBuffers;
 
@@ -855,16 +1140,15 @@ static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapAr
 	CacheManager->PrevUniformParameters.PageFlags = RegExtCreateSrv(PrevBuffers.PageFlags, TEXT("Shadow.Virtual.PrevPageFlags"));
 	CacheManager->PrevUniformParameters.PageRectBounds = RegExtCreateSrv(PrevBuffers.PageRectBounds, TEXT("Shadow.Virtual.PrevPageRectBounds"));
 	// Unused in this path
-	CacheManager->PrevUniformParameters.PhysicalPagePool = GSystemTextures.GetZeroUIntDummy(GraphBuilder);
+	CacheManager->PrevUniformParameters.PhysicalPagePool = GSystemTextures.GetZeroUIntArrayDummy(GraphBuilder);
 
 	OutPassParameters.VirtualShadowMap = CacheManager->GetPreviousUniformBuffer(GraphBuilder);
 
-	FRDGBufferRef DynamicCasterPageFlagsRDG = GraphBuilder.RegisterExternalBuffer(PrevBuffers.DynamicCasterPageFlags, TEXT("Shadow.Virtual.PrevDynamicCasterFlags"));
-	OutPassParameters.OutDynamicCasterPageFlags = GraphBuilder.CreateUAV(DynamicCasterPageFlagsRDG);
+	OutPassParameters.PrevPhysicalPageMetaDataOut = GraphBuilder.CreateUAV(GraphBuilder.RegisterExternalBuffer(PrevBuffers.PhysicalPageMetaData));
 
-	OutPassParameters.GPUSceneInstanceSceneData = GPUScene.InstanceSceneDataBuffer.SRV;
-	OutPassParameters.GPUScenePrimitiveSceneData = GPUScene.PrimitiveBuffer.SRV;
-	OutPassParameters.GPUSceneInstancePayloadData = GPUScene.InstancePayloadDataBuffer.SRV;
+	OutPassParameters.GPUSceneInstanceSceneData = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(GPUScene.InstanceSceneDataBuffer));
+	OutPassParameters.GPUScenePrimitiveSceneData = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(GPUScene.PrimitiveBuffer));
+	OutPassParameters.GPUSceneInstancePayloadData = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(GPUScene.InstancePayloadDataBuffer));
 	OutPassParameters.GPUSceneFrameNumber = GPUScene.GetSceneFrameNumber();
 	OutPassParameters.GPUSceneNumAllocatedInstances = GPUScene.GetNumInstances();
 	OutPassParameters.GPUSceneNumAllocatedPrimitives = GPUScene.GetNumPrimitives();
@@ -874,7 +1158,7 @@ static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapAr
 
 	if (bUseDebugPermutation)
 	{
-		ShaderDrawDebug::SetParameters(GraphBuilder, OutPassParameters.ShaderDrawUniformBuffer);
+		ShaderPrint::SetParameters(GraphBuilder, OutPassParameters.ShaderPrintUniformBuffer);
 	}
 
 	const bool bUseHZB = (CVarCacheVsmUseHzb.GetValueOnRenderThread() != 0);
@@ -882,7 +1166,8 @@ static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapAr
 	if (PrevHZBPhysical)
 	{
 		// Same, since we are not producing a new frame just yet
-		OutPassParameters.ShadowHZBPageTable = CacheManager->PrevUniformParameters.PageTable;
+		OutPassParameters.HZBPageTable = CacheManager->PrevUniformParameters.PageTable;
+		OutPassParameters.HZBPageRectBounds = CacheManager->PrevUniformParameters.PageRectBounds;
 		OutPassParameters.HZBTexture = GraphBuilder.RegisterExternalTexture(PrevHZBPhysical);
 		OutPassParameters.HZBSize = PrevHZBPhysical->GetDesc().Extent;
 		OutPassParameters.HZBSampler = TStaticSamplerState< SF_Point, AM_Clamp, AM_Clamp, AM_Clamp >::GetRHI();
@@ -893,7 +1178,11 @@ static void SetupCommonParameters(FRDGBuilder& GraphBuilder, FVirtualShadowMapAr
 }
 
 
-void FVirtualShadowMapArrayCacheManager::ProcessInvalidations(FRDGBuilder& GraphBuilder, FInstanceGPULoadBalancer& Instances, int32 TotalInstanceCount, const FGPUScene& GPUScene)
+void FVirtualShadowMapArrayCacheManager::ProcessInvalidations(
+	FRDGBuilder& GraphBuilder,
+	FInstanceGPULoadBalancer& Instances,
+	int32 TotalInstanceCount,
+	const FGPUScene& GPUScene)
 {
 	if (Instances.IsEmpty())
 	{
@@ -910,9 +1199,7 @@ void FVirtualShadowMapArrayCacheManager::ProcessInvalidations(FRDGBuilder& Graph
 	SetupCommonParameters(GraphBuilder, this, TotalInstanceCount, GPUScene, *PassParameters, PermutationVector);
 	Instances.Upload(GraphBuilder).GetShaderParameters(GraphBuilder, PassParameters->LoadBalancerParameters);
 
-	PermutationVector.Set<FVirtualSmInvalidateInstancePagesCS::FInputKindDim>(FVirtualSmInvalidateInstancePagesCS::EInputKind_LoadBalancer);
-
-	auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FVirtualSmInvalidateInstancePagesCS>(PermutationVector);
+	auto ComputeShader = GetGlobalShaderMap(Scene->GetFeatureLevel())->GetShader<FVirtualSmInvalidateInstancePagesCS>(PermutationVector);
 
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
@@ -922,40 +1209,4 @@ void FVirtualShadowMapArrayCacheManager::ProcessInvalidations(FRDGBuilder& Graph
 		Instances.GetWrappedCsGroupCount()
 	);
 
-}
-
-
-void FVirtualShadowMapArrayCacheManager::ProcessGPUInstanceInvalidations(FRDGBuilder& GraphBuilder, const FGPUScene& GPUScene)
-{
-	// Dispatch CS indirectly to process instances that are marked to update from the GPU side.
-	if (PrevBuffers.InvalidatingInstancesBuffer.IsValid())
-	{
-		RDG_EVENT_SCOPE(GraphBuilder, "ProcessGPUInstanceInvalidations [GPU-Instances]");
-
-		FRDGBufferRef InvalidatingInstancesBufferRDG = GraphBuilder.RegisterExternalBuffer(PrevBuffers.InvalidatingInstancesBuffer, TEXT("Shadow.Virtual.PrevInvalidatingInstancesBuffer"));
-		FRDGBufferRef IndirectArgs = FComputeShaderUtils::AddIndirectArgsSetupCsPass1D(GraphBuilder, InvalidatingInstancesBufferRDG, TEXT("Shadow.Virtual.ProcessGPUInstanceInvalidationsIndirectArgs"), FVirtualSmInvalidateInstancePagesCS::Cs1dGroupSizeX);
-
-		FVirtualSmInvalidateInstancePagesCS::FPermutationDomain PermutationVector;
-		FVirtualSmInvalidateInstancePagesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVirtualSmInvalidateInstancePagesCS::FParameters>();
-		SetupCommonParameters(GraphBuilder, this, 16*1024, GPUScene, *PassParameters, PermutationVector);
-
-		PassParameters->IndirectArgs = IndirectArgs;
-		PassParameters->InvalidatingInstances = GraphBuilder.CreateSRV(InvalidatingInstancesBufferRDG);
-		PassParameters->NumInvalidatingInstanceSlots = PrevBuffers.NumInvalidatingInstanceSlots;
-
-		PermutationVector.Set<FVirtualSmInvalidateInstancePagesCS::FInputKindDim>(FVirtualSmInvalidateInstancePagesCS::EInputKind_GPUInstances);
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FVirtualSmInvalidateInstancePagesCS>(PermutationVector);
-
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("VirtualSmInvalidateInstancePagesCS"),
-			ComputeShader,
-			PassParameters,
-			IndirectArgs,
-			0
-		);
-
-		// Drop the InvalidatingInstancesBuffer to make sure we don't redundantly process the associated invalidations if ProcessRemovedOrUpdatedPrimitives is called multiple times.
-		PrevBuffers.InvalidatingInstancesBuffer.SafeRelease();
-	}
 }

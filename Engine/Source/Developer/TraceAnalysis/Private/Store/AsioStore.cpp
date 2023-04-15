@@ -11,7 +11,11 @@
 #	include "Windows/AllowWindowsPlatformTypes.h"
 #	include <Windows.h>
 #	include "Windows/HideWindowsPlatformTypes.h"
-#endif // PLATFORM_WINDOWS
+#elif PLATFORM_LINUX
+	#include <sys/inotify.h>
+#elif PLATFORM_MAC
+	#include "Misc/Paths.h"
+#endif
 
 namespace UE {
 namespace Trace {
@@ -24,9 +28,112 @@ class FAsioStore::FDirWatcher
 public:
 	using asio::windows::object_handle::object_handle;
 };
+#elif PLATFORM_LINUX
+class FAsioStore::FDirWatcher
+	: public asio::posix::stream_descriptor
+{
+	typedef TFunction<void(asio::error_code error)> HandlerType;
+public:
+	using asio::posix::stream_descriptor::stream_descriptor;
+	void async_wait(HandlerType InHandler)
+	{
+		asio::posix::stream_descriptor::async_wait(asio::posix::stream_descriptor::wait_read, InHandler);
+	}
+};
+#elif PLATFORM_MAC
+class FAsioStore::FDirWatcher
+{
+	typedef TFunction<void(asio::error_code error)> HandlerType;
+public:
+	FDirWatcher(const TCHAR* InStoreDir)
+		: StoreDir(InStoreDir)
+	{
+
+	}
+	void async_wait(HandlerType InHandler);
+	void cancel()
+	{
+		close();
+	}
+	void close()
+	{
+		if (bIsRunning)
+		{
+			FSEventStreamStop(EventStream);
+			FSEventStreamUnscheduleFromRunLoop(EventStream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+			FSEventStreamInvalidate(EventStream);
+			FSEventStreamRelease(EventStream);
+			bIsRunning = false;
+		}
+	}
+	bool is_open() { return bIsRunning; }
+
+	void ProcessChanges(size_t EventCount, void* EventPaths, const FSEventStreamEventFlags EventFlags[])
+	{
+		Handler(asio::error_code());
+	}
+
+	FSEventStreamRef	EventStream;
+    HandlerType Handler;
+private:
+	bool bIsRunning = false;
+	const TCHAR* StoreDir = nullptr;
+};
+
+void MacCallback(ConstFSEventStreamRef StreamRef,
+					void* InDirWatcherPtr,
+					size_t EventCount,
+					void* EventPaths,
+					const FSEventStreamEventFlags EventFlags[],
+					const FSEventStreamEventId EventIDs[])
+{
+	FAsioStore::FDirWatcher* DirWatcherPtr = (FAsioStore::FDirWatcher*)InDirWatcherPtr;
+	check(DirWatcherPtr);
+	check(DirWatcherPtr->EventStream == StreamRef);
+
+	DirWatcherPtr->ProcessChanges(EventCount, EventPaths, EventFlags);
+}
+
+void FAsioStore::FDirWatcher::async_wait(HandlerType InHandler)
+{
+    if (bIsRunning)
+    {
+        return;
+    }
+
+	CFAbsoluteTime Latency = 0.2;	// seconds
+
+	FSEventStreamContext Context;
+	Context.version = 0;
+	Context.info = this;
+	Context.retain = NULL;
+	Context.release = NULL;
+	Context.copyDescription = NULL;
+
+	// Make sure the path is absolute
+	const FString FullPath = FPaths::ConvertRelativePathToFull(StoreDir);
+
+	// Set up streaming and turn it on
+	CFStringRef FullPathMac = FPlatformString::TCHARToCFString(*FullPath);
+	CFArrayRef PathsToWatch = CFArrayCreate(NULL, (const void**)&FullPathMac, 1, NULL);
+
+	EventStream = FSEventStreamCreate(NULL,
+		&MacCallback,
+		&Context,
+		PathsToWatch,
+		kFSEventStreamEventIdSinceNow,
+		Latency,
+		kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer
+	);
+
+	FSEventStreamScheduleWithRunLoop(EventStream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+	FSEventStreamStart(EventStream);
+	bIsRunning = true;
+
+	Handler = InHandler;
+}
 #else
 class FAsioStore::FDirWatcher
-	//: public asio::posix::stream_descriptor
 {
 public:
 	void async_wait(...) {}
@@ -34,7 +141,7 @@ public:
 	void close() {}
 	bool is_open() { return false; }
 };
-#endif // PLATFORM_WINDOWS
+#endif
 
 
 
@@ -159,6 +266,12 @@ FAsioStore::FAsioStore(asio::io_context& InIoContext, const TCHAR* InStoreDir)
 		DirWatchHandle = 0;
 	}
 	DirWatcher = new FDirWatcher(IoContext, DirWatchHandle);
+#elif PLATFORM_LINUX
+	int inotfd = inotify_init();
+	int watch_desc = inotify_add_watch(inotfd, TCHAR_TO_UTF8(InStoreDir), IN_CREATE | IN_DELETE);
+	DirWatcher = new FDirWatcher(IoContext, inotfd);
+#elif PLATFORM_MAC
+	DirWatcher = new FDirWatcher(*StoreDir);
 #endif
 
 	WatchDir();

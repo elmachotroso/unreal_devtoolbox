@@ -16,6 +16,8 @@
 #include "SceneManagement.h"
 #include "TimerManager.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavMeshRenderingComponent)
+
 #if RECAST_INTERNAL_DEBUG_DATA
 #include "NavMesh/RecastInternalDebugData.h"
 #endif
@@ -511,14 +513,15 @@ void FNavMeshSceneProxyData::GatherData(const ARecastNavMesh* NavMesh, int32 InN
 		NavMesh->BeginBatchQuery();
 		if (TileSet.Num() > 0)
 		{
-			for (int32 Idx = 0; Idx < TileSet.Num(); Idx++)
+			bool bDone = false;
+			for (int32 Idx = 0; Idx < TileSet.Num() && !bDone; Idx++)
 			{
-				NavMesh->GetDebugGeometry(NavMeshGeometry, TileSet[Idx]);
+				bDone = NavMesh->GetDebugGeometryForTile(NavMeshGeometry, TileSet[Idx]);
 			}
 		}
 		else
 		{
-			NavMesh->GetDebugGeometry(NavMeshGeometry);
+			NavMesh->GetDebugGeometryForTile(NavMeshGeometry, INDEX_NONE);
 		}
 
 		const TArray<FVector>& MeshVerts = NavMeshGeometry.MeshVerts;
@@ -1188,7 +1191,7 @@ void FNavMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>&
 					BatchElement = MeshBatchElements[Index];
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(FMatrix::Identity, FMatrix::Identity, GetBounds(), GetLocalBounds(), false, false, DrawsVelocity(), false);
+					DynamicPrimitiveUniformBuffer.Set(FMatrix::Identity, FMatrix::Identity, GetBounds(), GetLocalBounds(), false, false, AlwaysHasVelocity());
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 					Mesh.bWireframe = false;
@@ -1562,3 +1565,4 @@ FBoxSphereBounds UNavMeshRenderingComponent::CalcBounds(const FTransform& LocalT
 #endif
 	return FBoxSphereBounds(BoundingBox);
 }
+

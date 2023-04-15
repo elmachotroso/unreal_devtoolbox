@@ -7,6 +7,8 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimTrace.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_BlendListBase)
+
 /////////////////////////////////////////////////////
 // FAnimNode_BlendListBase
 
@@ -117,7 +119,7 @@ void FAnimNode_BlendListBase::Update_AnyThread(const FAnimationUpdateContext& Co
 				UE::Anim::IInertializationRequester* InertializationRequester = Context.GetMessage<UE::Anim::IInertializationRequester>();
 				if (InertializationRequester)
 				{
-					InertializationRequester->RequestInertialization(CurrentBlendTimes[ChildIndex]);
+					InertializationRequester->RequestInertialization(CurrentBlendTimes[ChildIndex], CurrentBlendProfile);
 					InertializationRequester->AddDebugRecord(*Context.AnimInstanceProxy, Context.GetCurrentNodeId());
 				}
 				else

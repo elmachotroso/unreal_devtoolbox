@@ -2,7 +2,7 @@
 
 #include "DisplayClusterConfiguratorStyle.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IPluginManager.h"
 #include "Styling/SlateStyleRegistry.h"
@@ -70,6 +70,15 @@ void FDisplayClusterConfiguratorStyle::Initialize()
 
 		Set("ClassIcon.DisplayClusterOriginComponent", new IMAGE_BRUSH_SVG("Icons/Components/nDisplayRootComponent", Icon16x16));
 		Set("ClassThumbnail.DisplayClusterOriginComponent", new IMAGE_BRUSH_SVG("Icons/Components/nDisplayRootComponent", Icon64x64));
+
+		Set("ClassIcon.DisplayClusterLightCardActor", new IMAGE_BRUSH_SVG("Icons/LightCard/LightCard", Icon16x16));
+		Set("ClassThumbnail.DisplayClusterLightCardActor", new IMAGE_BRUSH_SVG("Icons/LightCard/LightCard", Icon64x64));
+
+		Set("ClassIcon.DisplayClusterLightCardActor.UVLightCard", new IMAGE_BRUSH_SVG("Icons/LightCard/LightCardUV", Icon16x16));
+		Set("ClassThumbnail.DisplayClusterLightCardActor.UVLightCard", new IMAGE_BRUSH_SVG("Icons/UVLightCard/LightCardUV", Icon64x64));
+
+		Set("ClassIcon.DisplayClusterLightCardActor.Flag", new IMAGE_BRUSH_SVG("Icons/LightCard/LightCardFlag", Icon16x16));
+		Set("ClassThumbnail.DisplayClusterLightCardActor.Flag", new IMAGE_BRUSH_SVG("Icons/UVLightCard/LightCardFlag", Icon64x64));
 	}
 
 	// Config Editor Tabs
@@ -142,26 +151,26 @@ void FDisplayClusterConfiguratorStyle::Initialize()
 
 	// Node Text
 	{
-		FTextBlockStyle TilteTextBlockStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+		FTextBlockStyle TilteTextBlockStyle = FAppStyle::GetWidgetStyle< FTextBlockStyle >("NormalText");
 		TilteTextBlockStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 28));
 		Set("DisplayClusterConfigurator.Node.Text.Regular", TilteTextBlockStyle);
 	}
 
 	{
-		FTextBlockStyle TilteTextBlockStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+		FTextBlockStyle TilteTextBlockStyle = FAppStyle::GetWidgetStyle< FTextBlockStyle >("NormalText");
 		TilteTextBlockStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 28));
 		Set("DisplayClusterConfigurator.Node.Text.Bold", TilteTextBlockStyle);
 	}
 
 	{
-		FTextBlockStyle TilteTextBlockStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("Graph.StateNode.NodeTitle");
+		FTextBlockStyle TilteTextBlockStyle = FAppStyle::GetWidgetStyle<FTextBlockStyle>("Graph.StateNode.NodeTitle");
 		TilteTextBlockStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 36));
 		TilteTextBlockStyle.SetShadowColorAndOpacity(FLinearColor::Transparent);
 		Set("DisplayClusterConfigurator.Host.Text.Title", TilteTextBlockStyle);
 	}
 
 	{
-		FTextBlockStyle TilteTextBlockStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("NormalText");
+		FTextBlockStyle TilteTextBlockStyle = FAppStyle::GetWidgetStyle< FTextBlockStyle >("NormalText");
 		TilteTextBlockStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Italic", 18));
 		Set("DisplayClusterConfigurator.Node.Text.Small", TilteTextBlockStyle);
 	}

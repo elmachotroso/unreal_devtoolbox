@@ -5,6 +5,8 @@
 #include "RenderUtils.h"
 #include "VT/VirtualTexture.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VirtualTextureBuilder)
+
 UVirtualTextureBuilder::UVirtualTextureBuilder(const FObjectInitializer& ObjectInitializer)
 	: UObject(ObjectInitializer)
 {
@@ -43,7 +45,7 @@ void UVirtualTextureBuilder::BuildTexture(FVirtualTextureBuildDesc const& BuildD
 	Texture->Settings.Init();
 	Texture->Settings.TileSize = BuildDesc.TileSize;
 	Texture->Settings.TileBorderSize = BuildDesc.TileBorderSize;
-	Texture->Settings.bEnableCompressCrunch = BuildDesc.bCrunchCompressed;
+	Texture->LossyCompressionAmount = BuildDesc.LossyCompressionAmount;
 
 	Texture->bContinuousUpdate = BuildDesc.bContinuousUpdate;
 	Texture->bSinglePhysicalSpace = BuildDesc.bSinglePhysicalSpace;
@@ -58,3 +60,4 @@ void UVirtualTextureBuilder::BuildTexture(FVirtualTextureBuildDesc const& BuildD
 }
 
 #endif
+

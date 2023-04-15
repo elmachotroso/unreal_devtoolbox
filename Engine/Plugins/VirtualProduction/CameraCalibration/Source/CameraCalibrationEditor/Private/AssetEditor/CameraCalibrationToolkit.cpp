@@ -5,6 +5,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ISettingsModule.h"
 #include "CameraCalibrationStepsController.h"
+#include "CameraCalibrationCommands.h"
 #include "EngineAnalytics.h"
 #include "LensFile.h"
 #include "PropertyEditorModule.h"
@@ -55,7 +56,9 @@ void FCameraCalibrationToolkit::InitCameraCalibrationTool(const EToolkitMode::Ty
 	CalibrationStepsTab = CalibrationStepsController->BuildUI();
 	LensEditorTab = SNew(SLensFilePanel, LensFile, CalibrationStepsController.ToSharedRef())
 		.CachedFIZData(TAttribute<FCachedFIZData>::Create(TAttribute<FCachedFIZData>::FGetter::CreateSP(LensEvaluationWidget.ToSharedRef(), &SLensEvaluation::GetLastEvaluatedData)));
-		
+
+	BindCommands();
+
 	TSharedRef<FTabManager::FLayout> NewLayout = FTabManager::NewLayout("CameraCalibrationToolLayout_v0.9")
 		->AddArea
 		(
@@ -98,6 +101,7 @@ void FCameraCalibrationToolkit::InitCameraCalibrationTool(const EToolkitMode::Ty
 		bUseSmallIcons);
 
 	ExtendMenu();
+	ExtendToolBar();
 	RegenerateMenusAndToolbars();
 }
 
@@ -114,7 +118,9 @@ TSharedPtr<SWindow> FCameraCalibrationToolkit::OpenPopupWindow(const FText& InTi
 			.HasCloseButton(true)
 			.SupportsMaximize(false)
 			.SupportsMinimize(false)
-			.ClientSize(FVector2D(480, 360));
+			.ClientSize(FVector2D(480, 720))
+			.MinWidth(480)
+			.MinHeight(720);
 
 		FSlateApplication::Get().AddWindow(PopupWindowPin.ToSharedRef());
 	}
@@ -145,17 +151,17 @@ void FCameraCalibrationToolkit::RegisterTabSpawners(const TSharedRef<class FTabM
 	InTabManager->RegisterTabSpawner(CameraCalibrationToolkitUtils::LensTabId, FOnSpawnTab::CreateSP(this, &FCameraCalibrationToolkit::HandleSpawnLensEditorTab))
 		.SetDisplayName(LOCTEXT("LensEditorTab", "Lens File Editor"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings.Small"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.GameSettings.Small"));
 
 	InTabManager->RegisterTabSpawner(CameraCalibrationToolkitUtils::CalibrationStepsTabId, FOnSpawnTab::CreateSP(this, &FCameraCalibrationToolkit::HandleSpawnNodalOffsetTab))
 		.SetDisplayName(LOCTEXT("CalibrationStepsTab", "Calibration Steps"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings.Small"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.GameSettings.Small"));
 
 	InTabManager->RegisterTabSpawner(CameraCalibrationToolkitUtils::LensEvaluationTabId, FOnSpawnTab::CreateSP(this, &FCameraCalibrationToolkit::HandleSpawnLensEvaluationTab))
 		.SetDisplayName(LOCTEXT("LensEvaluationTab", "Lens Evaluation"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings.Small"));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.GameSettings.Small"));
 }
 
 void FCameraCalibrationToolkit::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -224,6 +230,44 @@ FCachedFIZData FCameraCalibrationToolkit::GetFIZData() const
 	}
 
 	return FCachedFIZData();
+}
+
+void FCameraCalibrationToolkit::BindCommands()
+{
+	const FCameraCalibrationCommands& Commands = FCameraCalibrationCommands::Get();
+
+	ToolkitCommands->MapAction(
+		Commands.ShowMediaPlaybackControls,
+		FExecuteAction::CreateRaw(CalibrationStepsController.Get(), &FCameraCalibrationStepsController::ToggleShowMediaPlaybackControls),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateRaw(CalibrationStepsController.Get(), &FCameraCalibrationStepsController::AreMediaPlaybackControlsVisible));
+}
+
+void FCameraCalibrationToolkit::ExtendToolBar()
+{
+	struct Local
+	{
+		static void FillToolbar(FToolBarBuilder& ToolbarBuilder, const TSharedRef<FUICommandList> ToolkitCommands)
+		{
+			ToolbarBuilder.BeginSection("PlaybackControls");
+			{
+				ToolbarBuilder.AddToolBarButton(FCameraCalibrationCommands::Get().ShowMediaPlaybackControls);
+			}
+			ToolbarBuilder.EndSection();
+		}
+	};
+
+
+	TSharedPtr<FExtender> ToolbarExtender = MakeShareable(new FExtender);
+
+	ToolbarExtender->AddToolBarExtension(
+		"Asset",
+		EExtensionHook::After,
+		GetToolkitCommands(),
+		FToolBarExtensionDelegate::CreateStatic(&Local::FillToolbar, GetToolkitCommands())
+	);
+
+	AddToolbarExtender(ToolbarExtender);
 }
 
 void FCameraCalibrationToolkit::ExtendMenu()

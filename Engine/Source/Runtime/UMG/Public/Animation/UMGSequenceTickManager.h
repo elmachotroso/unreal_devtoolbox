@@ -5,10 +5,16 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
-#include "MovieSceneSequenceTickManager.h"
-#include "EntitySystem/MovieSceneEntitySystemRunner.h"
+#include "MovieSceneLatentActionManager.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+	#include "MovieSceneSequenceTickManager.h"
+	#include "EntitySystem/MovieSceneEntitySystemRunner.h"
+#endif
+
 #include "UMGSequenceTickManager.generated.h"
 
+class FMovieSceneEntitySystemRunner;
 class UMovieSceneEntitySystemLinker;
 class UUserWidget;
 
@@ -40,7 +46,7 @@ public:
 	UUMGSequenceTickManager(const FObjectInitializer& Init);
 
 	UMovieSceneEntitySystemLinker* GetLinker() { return Linker; }
-	FMovieSceneEntitySystemRunner& GetRunner() { return Runner; }
+	TSharedPtr<FMovieSceneEntitySystemRunner> GetRunner() { return Runner; }
 
 	void AddLatentAction(FMovieSceneSequenceLatentActionDelegate Delegate);
 	void ClearLatentActions(UObject* Object);
@@ -69,10 +75,11 @@ private:
 	UPROPERTY(transient)
 	TObjectPtr<UMovieSceneEntitySystemLinker> Linker;
 
-	FMovieSceneEntitySystemRunner Runner;
+	TSharedPtr<FMovieSceneEntitySystemRunner> Runner;
 
-	bool bIsTicking;
 	FDelegateHandle SlateApplicationPreTickHandle, SlateApplicationPostTickHandle;
 
 	FMovieSceneLatentActionManager LatentActionManager;
+
+	bool bIsTicking;
 };

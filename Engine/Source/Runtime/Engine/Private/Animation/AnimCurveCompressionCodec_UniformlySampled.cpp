@@ -4,6 +4,8 @@
 #include "Animation/AnimSequence.h"
 #include "Serialization/MemoryWriter.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCurveCompressionCodec_UniformlySampled)
+
 UAnimCurveCompressionCodec_UniformlySampled::UAnimCurveCompressionCodec_UniformlySampled(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -296,3 +298,4 @@ float UAnimCurveCompressionCodec_UniformlySampled::DecompressCurve(const FCompre
 
 	return 0.0f;
 }
+

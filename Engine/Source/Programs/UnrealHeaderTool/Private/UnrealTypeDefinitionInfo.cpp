@@ -3,6 +3,7 @@
 #include "UnrealTypeDefinitionInfo.h"
 #include "BaseParser.h"
 #include "ClassMaps.h"
+#include "EngineAPI.h"
 #include "HeaderParser.h"
 #include "NativeClassExporter.h"
 #include "PropertyTypes.h"
@@ -974,7 +975,7 @@ void FUnrealPropertyDefinitionInfo::ExportCppDeclaration(FOutputDevice& Out, EEx
 		NameCpp = FString(TEXT(", ")) + NameCpp;
 	}
 
-	TCHAR ArrayStr[MAX_SPRINTF] = TEXT("");
+	TCHAR ArrayStr[MAX_SPRINTF] = {};
 	const bool bExportStaticArray = 0 == (CPPF_NoStaticArray & AdditionalExportCPPFlags);
 	if (ArrayDimOverride != nullptr && bExportStaticArray)
 	{
@@ -1028,7 +1029,7 @@ void FUnrealPropertyDefinitionInfo::ExportCppDeclaration(FOutputDevice& Out, EEx
 				else
 				{
 					// export as a pointer if this is an optional out parm, reference if it's just an out parm, standard otherwise...
-					TCHAR ModifierString[2] = { 0,0 };
+					TCHAR ModifierString[2] = { TCHAR('\0'), TCHAR('\0') };
 					if (bCanHaveRef && (HasAnyPropertyFlags(CPF_OutParm | CPF_ReferenceParm) || bIsInterfaceProp))
 					{
 						ModifierString[0] = TEXT('&');
@@ -1164,6 +1165,11 @@ void FUnrealObjectDefinitionInfo::GetPathName(FUnrealObjectDefinitionInfo* StopO
 	{
 		ResultString << TEXT("None");
 	}
+}
+FTopLevelAssetPath FUnrealObjectDefinitionInfo::GetStructPathName() const
+{
+	checkf(GetOuter() && !GetOuter()->GetOuter(), TEXT("GetStructPathName can only be used with top level objects (current: \"%s\")"), *GetPathName());
+	return FTopLevelAssetPath(GetOuter()->GetFName(), GetFName());
 }
 
 FString FUnrealObjectDefinitionInfo::GetFullGroupName(bool bStartWithOuter) const
@@ -1403,6 +1409,7 @@ void FUnrealFieldDefinitionInfo::PostParseFinalizeReferencedProperties()
 		{
 			OuterPropDef = NextPropDef;
 		}
+		checkSlow(OuterPropDef);
 		FPropertyTraits::PostParseFinalize(*OuterPropDef);
 	}
 }
@@ -1770,12 +1777,17 @@ void FUnrealStructDefinitionInfo::CreateUObjectEngineTypesInternal(ECreateEngine
 		GetStruct()->Bind();
 
 		// Internals will assert of we are relinking an intrinsic 
+		bool bStaticLink = true;
 		bool bRelinkExistingProperties = true;
 		if (FUnrealClassDefinitionInfo* ClassDef = UHTCast<FUnrealClassDefinitionInfo>(this))
 		{
 			bRelinkExistingProperties = !ClassDef->HasAnyClassFlags(CLASS_Intrinsic);
+			bStaticLink = !ClassDef->IsCompiledIn();
 		}
-		GetStruct()->StaticLink(bRelinkExistingProperties);
+		if (bStaticLink)
+		{
+			GetStruct()->StaticLink(bRelinkExistingProperties);
+		}
 		break;
 	}
 }
@@ -1958,6 +1970,16 @@ void FUnrealScriptStructDefinitionInfo::PostParseFinalizeInternal(EPostParseFina
 				}
 			}
 		}
+
+		// check for internal struct recursion via arrays
+		for (TSharedRef<FUnrealPropertyDefinitionInfo> PropertyDef : GetProperties())
+		{
+			const FPropertyBase& PropertyBase = PropertyDef->GetPropertyBase();
+			if (PropertyBase.ArrayType == EArrayType::Dynamic && PropertyBase.Type == EPropertyType::CPT_Struct && PropertyBase.TypeDef == this)
+			{
+				Throwf(TEXT("'Struct' recursion via arrays is unsupported for properties."));
+			}
+		}
 		break;
 
 	case EPostParseFinalizePhase::Phase2:
@@ -1984,7 +2006,7 @@ void FUnrealScriptStructDefinitionInfo::SetHasInstancedReference()
 
 bool FUnrealScriptStructDefinitionInfo::HasNoOpConstructor() const
 {
-	UScriptStruct::ICppStructOps* CppStructOps = UScriptStruct::FindDeferredCppStructOps(GetFName());
+	UScriptStruct::ICppStructOps* CppStructOps = UScriptStruct::FindDeferredCppStructOps(GetStructPathName());
 	return CppStructOps ? CppStructOps->HasNoopConstructor() : false;
 }
 
@@ -2093,12 +2115,9 @@ FUnrealClassDefinitionInfo* FUnrealClassDefinitionInfo::FindScriptClass(const FS
 
 uint32 FUnrealClassDefinitionInfo::GetHash(FUnrealTypeDefinitionInfo& ReferencingDef, bool bIncludeNoExport) const
 {
-	if (!bIncludeNoExport)
+	if (!bIncludeNoExport && IsNoExport())
 	{
-		if (HasAnyClassFlags(CLASS_NoExport))
-		{
-			return 0;
-		}
+		return 0;
 	}
 	return FUnrealStructDefinitionInfo::GetHash(ReferencingDef, bIncludeNoExport);
 }
@@ -2116,14 +2135,21 @@ void FUnrealClassDefinitionInfo::CreateUObjectEngineTypesInternal(ECreateEngineT
 			Throwf(TEXT("ClassWithin is not set.  This can be the result of the class's UCLASS not being parsed due to statement skipping preceding the UCLASS keyword."));
 		}
 		check(ClassWithin);
-		if (GetObjectSafe() == nullptr)
+		check(GetObjectSafe() == nullptr);
+
+		const FString& ClassName = GetNameCPP();
+		FString ClassNameStripped = GetClassNameWithPrefixRemoved(*ClassName);
+
+		// See if we have an existing engine object we should use
+		UClass* Class = FEngineAPI::FindFirstObject<UClass>(*ClassNameStripped, EFindFirstObjectOptions::EnsureIfAmbiguous);
+
+		if (Class == nullptr)
 		{
 			UPackage* Package = GetPackageDef().GetPackage();
-			const FString& ClassName = GetNameCPP();
-			FString ClassNameStripped = GetClassNameWithPrefixRemoved(*ClassName);
 
 			// Create new class.
-			UClass* Class = new(EC_InternalUseOnlyConstructor, Package, *ClassNameStripped, RF_Public | RF_Standalone) UClass(FObjectInitializer(), nullptr);
+			Class = new(EC_InternalUseOnlyConstructor, Package, *ClassNameStripped, RF_Public | RF_Standalone) UClass(FObjectInitializer(), nullptr);
+
 
 			Class->ClassFlags = ClassFlags;
 			Class->ClassCastFlags = ClassCastFlags;
@@ -2150,54 +2176,66 @@ void FUnrealClassDefinitionInfo::CreateUObjectEngineTypesInternal(ECreateEngineT
 					}
 				}
 			}
-			SetObject(Class);
 		}
+		else
+		{
+			bIsCompiledIn = true;
+		}
+		SetObject(Class);
 		break;
 	}
 
 	case ECreateEngineTypesPhase::Phase2:
 	{
 
-		// Initialize the class object
-		UClass* Class = GetClass();
-
-		// Clear the property size
-		Class->PropertiesSize = 0;
-
-		// Make the visible to the package
-		Class->ClearFlags(RF_Transient);
-		check(Class->HasAnyFlags(RF_Public));
-		check(Class->HasAnyFlags(RF_Standalone));
-
-		// Finalize all of the children introduced in this class
-		for (TSharedRef<FUnrealFunctionDefinitionInfo> FunctionDef : GetFunctions())
+		// Only do this for UHT types
+		if (!bIsCompiledIn)
 		{
-			UFunction* Function = FunctionDef->GetFunction();
-			Class->AddFunctionToFunctionMap(Function, Function->GetFName());
+			// Initialize the class object
+			UClass* Class = GetClass();
+
+			// Clear the property size
+			Class->PropertiesSize = 0;
+
+			// Make the visible to the package
+			Class->ClearFlags(RF_Transient);
+			check(Class->HasAnyFlags(RF_Public));
+			check(Class->HasAnyFlags(RF_Standalone));
+
+			// Finalize all of the children introduced in this class
+			for (TSharedRef<FUnrealFunctionDefinitionInfo> FunctionDef : GetFunctions())
+			{
+				UFunction* Function = FunctionDef->GetFunction();
+				Class->AddFunctionToFunctionMap(Function, Function->GetFName());
+			}
 		}
 		break;
 	}
 
 	case ECreateEngineTypesPhase::Phase3:
 	{
-
-		// Initialize the class object
-		UClass* Class = GetClass();
-
-		if (!HasAnyClassFlags(CLASS_Native))
+		// Only do this for UHT types
+		if (!bIsCompiledIn)
 		{
-			//Class->UnMark(EObjectMark(OBJECTMARK_TagImp | OBJECTMARK_TagExp));
-		}
-		else if (!HasAnyClassFlags(CLASS_NoExport | CLASS_Intrinsic))
-		{
-			//Class->UnMark(OBJECTMARK_TagImp);
-			//Class->Mark(OBJECTMARK_TagExp);
-		}
 
-		// This needs to be done outside of parallel blocks because it will modify UClass memory.
-		// Later calls to SetUpUhtReplicationData inside parallel blocks should be fine, because
-		// they will see the memory has already been set up, and just return the parent pointer.
-		Class->SetUpUhtReplicationData();
+			// Initialize the class object
+			UClass* Class = GetClass();
+
+			if (!HasAnyClassFlags(CLASS_Native))
+			{
+				//Class->UnMark(EObjectMark(OBJECTMARK_TagImp | OBJECTMARK_TagExp));
+			}
+			else if (!IsNoExport() && !HasAnyClassFlags(CLASS_Intrinsic))
+			{
+				//Class->UnMark(OBJECTMARK_TagImp);
+				//Class->Mark(OBJECTMARK_TagExp);
+			}
+
+			// This needs to be done outside of parallel blocks because it will modify UClass memory.
+			// Later calls to SetUpUhtReplicationData inside parallel blocks should be fine, because
+			// they will see the memory has already been set up, and just return the parent pointer.
+			Class->SetUpUhtReplicationData();
+		}
 		break;
 	}
 	}
@@ -2272,12 +2310,91 @@ void FUnrealClassDefinitionInfo::PostParseFinalizeInternal(EPostParseFinalizePha
 		if (!HasAnyClassFlags(CLASS_Native))
 		{
 		}
-		else if (!HasAnyClassFlags(CLASS_NoExport | CLASS_Intrinsic))
+		else if (!IsNoExport() && !HasAnyClassFlags(CLASS_Intrinsic))
 		{
 			GetPackageDef().SetWriteClassesH(true);
 		}
+
+		// See if we have an existing engine object we should use
+		if (UClass* Class = FEngineAPI::FindFirstObject<UClass>(*GetFName().ToString(), EFindFirstObjectOptions::EnsureIfAmbiguous))
+		{
+
+			// Check for differences in ClassFlags
+			const EClassFlags CheckFlags = CLASS_SaveInCompiledInClasses & ~CLASS_Intrinsic;
+			if ((ClassFlags & CheckFlags) != (Class->ClassFlags & CheckFlags))
+			{
+				LogError(TEXT("Class flags in core class '%s', is '0x%08x', should be '0x%08x'"), *GetNameCPP(), ClassFlags & CheckFlags, Class->ClassFlags & CheckFlags);
+			}
+
+			// Check for differences in super class
+			{
+				FName SuperClassName = Class->GetSuperClass() ? Class->GetSuperClass()->GetFName() : NAME_None;
+				FName SuperClassDefName = GetSuperClass() ? GetSuperClass()->GetFName() : NAME_None;
+				if (SuperClassName != SuperClassDefName)
+				{
+					LogError(TEXT("Super class mismatch in core class '%s', is '%s', should be '%s'"), *GetNameCPP(), *SuperClassDefName.ToString(), *SuperClassName.ToString());
+				}
+			}
+
+			// Check package
+			{
+				FName PackageName = Class->GetOutermost()->GetFName();
+				FName PackageDefName = GetPackageDef().GetFName();
+				if (PackageName != PackageDefName)
+				{
+					LogError(TEXT("Package mismatch in core class '%s', is '%s', should be '%s'"), *GetNameCPP(), *PackageDefName.ToString(), *PackageName.ToString());
+				}
+			}
+
+			// Check class config name
+			{
+				if (GetClassConfigName() != Class->ClassConfigName && GetNameCPP() != TEXT("UObject"))
+				{
+					LogError(TEXT("Class config name in core class '%s', is '%s', should be '%s'"), *GetNameCPP(), *GetClassConfigName().ToString(), *Class->ClassConfigName.ToString());
+				}
+			}
+
+			// Check ClassCastFlags
+			if (ClassCastFlags != Class->ClassCastFlags)
+			{
+				LogError(TEXT("Class cast flags in core class '%s', is '0x%016x', should be '0x%016x'"), *GetNameCPP(), ClassCastFlags, Class->ClassCastFlags);
+			}
+		}
+
+		// Validate if we are using editor only data in a class or struct definition
+		if (HasAnyClassFlags(CLASS_Optional))
+		{
+			for (TSharedRef<FUnrealPropertyDefinitionInfo> PropertyDef : GetProperties())
+			{
+				if (PropertyDef->GetPropertyBase().IsEditorOnlyProperty())
+				{
+					PropertyDef->LogError(TEXT("Cannot specify editor only property inside an optional class."));
+				}
+				else if (PropertyDef->GetPropertyBase().ContainsEditorOnlyProperties())
+				{
+					PropertyDef->LogError(TEXT("Do not specify struct property containing editor only properties inside an optional class."));
+				}
+			}
+		}
 		break;
 	}
+	}
+}
+
+void FUnrealClassDefinitionInfo::MarkHasFieldNotify()
+{
+	if (!bHasFieldNotify)
+	{
+		bHasFieldNotify = true;
+		const FUnrealClassDefinitionInfo* NotifyFieldInterface = GTypeDefinitionInfoMap.FindByName<FUnrealClassDefinitionInfo>(TEXT("NotifyFieldValueChanged"));
+		if (NotifyFieldInterface == nullptr)
+		{
+			LogError(TEXT("INotifyFieldValueChanged could not be found. FieldNotify are not valid for UClass %s"), *GetName());
+		}
+		else if (!ImplementsInterface(*NotifyFieldInterface))
+		{
+			LogError(TEXT("UClass %s need to implement the interface INotifyFieldValueChanged to support FieldNotify."), *GetName());
+		}
 	}
 }
 
@@ -2288,7 +2405,7 @@ bool FUnrealClassDefinitionInfo::ImplementsInterface(const FUnrealClassDefinitio
 		for (const FUnrealClassDefinitionInfo* CurrentClassDef = this; CurrentClassDef; CurrentClassDef = CurrentClassDef->GetSuperClass())
 		{
 			// SomeInterface might be a base interface of our implemented interface
-			for (const FBaseStructInfo& BaseStructInfo : GetBaseStructInfos())
+			for (const FBaseStructInfo& BaseStructInfo : CurrentClassDef->GetBaseStructInfos())
 			{
 				if (const FUnrealClassDefinitionInfo* InterfaceDef = UHTCast<FUnrealClassDefinitionInfo>(BaseStructInfo.Struct))
 				{
@@ -2301,24 +2418,6 @@ bool FUnrealClassDefinitionInfo::ImplementsInterface(const FUnrealClassDefinitio
 		}
 	}
 	return false;
-}
-
-void FUnrealClassDefinitionInfo::InitializeFromExistingUObject(UClass* Class)
-{
-	ClassFlags = Class->ClassFlags;
-	ClassCastFlags = Class->ClassCastFlags;
-	InitialEngineClassFlags = Class->ClassFlags;
-	PropertiesSize = Class->PropertiesSize;
-	ClassConfigName = Class->ClassConfigName;
-	SetInternalFlags(Class->GetInternalFlags());
-
-	UPackage* Package = Class->GetOutermost();
-	FUnrealPackageDefinitionInfo* PackageDef = GTypeDefinitionInfoMap.FindByName<FUnrealPackageDefinitionInfo>(*Package->GetName());
-	if (PackageDef == nullptr)
-	{
-		Throwf(TEXT("Unable to find package %s"), *Package->GetName());
-	}
-	SetOuter(PackageDef);
 }
 
 void FUnrealClassDefinitionInfo::ParseClassProperties(TArray<FPropertySpecifier>&& InClassSpecifiers, const FString& InRequiredAPIMacroIfPresent)
@@ -2340,7 +2439,7 @@ void FUnrealClassDefinitionInfo::ParseClassProperties(TArray<FPropertySpecifier>
 		case EClassMetadataSpecifier::NoExport:
 
 			// Don't export to C++ header.
-			ParsedClassFlags |= CLASS_NoExport;
+			MarkNoExport();
 			break;
 
 		case EClassMetadataSpecifier::Intrinsic:
@@ -2462,6 +2561,12 @@ void FUnrealClassDefinitionInfo::ParseClassProperties(TArray<FPropertySpecifier>
 
 			// we will not export a constructor for this class, assuming it is in the CPP block
 			MarkCustomConstructor();
+			break;
+
+		case EClassMetadataSpecifier::CustomFieldNotify:
+
+			// we will not export a UE_FIELD_NOTIFICATION for this class
+			MarkCustomFieldNotify();
 			break;
 
 		case EClassMetadataSpecifier::Config:
@@ -2620,6 +2725,23 @@ void FUnrealClassDefinitionInfo::ParseClassProperties(TArray<FPropertySpecifier>
 			ParsedClassFlags |= CLASS_NeedsDeferredDependencyLoading;
 			break;
 
+		case EClassMetadataSpecifier::MatchedSerializers:
+			if (!GetUnrealSourceFile().IsNoExportTypes())
+			{
+				LogError(TEXT("The 'MatchedSerializers' class specifier is only valid in the NoExportTypes.h file"));
+			}
+			ParsedClassFlags |= CLASS_MatchedSerializers;
+			break;
+
+		case EClassMetadataSpecifier::Interface:
+			if (!GetUnrealSourceFile().IsNoExportTypes())
+			{
+				LogError(TEXT("The 'Interface' class specifier is only valid in the NoExportTypes.h file"));
+			}
+			ParsedClassFlags |= CLASS_Interface;
+			ParsedInterface = EParsedInterface::ParsedUInterface;
+			break;
+
 		default:
 			Throwf(TEXT("Unknown class specifier '%s'"), *PropSpecifier.Key);
 		}
@@ -2737,35 +2859,6 @@ void FUnrealClassDefinitionInfo::MergeAndValidateClassFlags(const FString& Decla
 	if (DeclaredClassName != ExpectedClassName)
 	{
 		Throwf(TEXT("Class name '%s' is invalid, should be identified as '%s'"), *DeclaredClassName, *ExpectedClassName);
-	}
-
-	// This check only works if we already have an object.  This has to be moved to the engine type create code
-	if (InitialEngineClassFlags != CLASS_None)
-	{
-
-		// if the class's class flags didn't contain CLASS_NoExport before it was parsed, it means either:
-		// a) the DECLARE_CLASS macro for this native class doesn't contain the CLASS_NoExport flag (this is an error)
-		// b) this is a new native class, which isn't yet hooked up to static registration (this is OK)
-		if (HasAnyClassFlags(CLASS_NoExport) && !EnumHasAnyFlags(InitialEngineClassFlags, CLASS_NoExport))
-		{
-			if (!HasAnyClassFlags(CLASS_Intrinsic) && EnumHasAnyFlags(InitialEngineClassFlags, CLASS_Native))
-			{
-				Throwf(TEXT("'noexport': Must include CLASS_NoExport in native class declaration"));
-			}
-		}
-
-		if (!HasAnyClassFlags(CLASS_Abstract) && EnumHasAnyFlags(InitialEngineClassFlags, CLASS_Abstract))
-		{
-			if (HasAnyClassFlags(CLASS_NoExport))
-			{
-				Throwf(TEXT("'abstract': NoExport class missing abstract keyword from class declaration (must change C++ version first)"));
-				SetClassFlags(CLASS_Abstract);
-			}
-			else if (IsNative())
-			{
-				Throwf(TEXT("'abstract': missing abstract keyword from class declaration - class will no longer be exported as abstract"));
-			}
-		}
 	}
 }
 

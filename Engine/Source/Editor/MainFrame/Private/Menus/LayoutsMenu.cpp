@@ -24,8 +24,8 @@
 #include "DesktopPlatformModule.h"
 #include "ToolMenus.h"
 // Editor
-#include "Classes/EditorStyleSettings.h"
-#include "Dialogs/CustomDialog.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Dialog/SCustomDialog.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Frame/MainFrameActions.h"
 #include "LevelViewportActions.h"
@@ -98,7 +98,7 @@ public:
 	static void SaveLayoutWithoutRemovingTempLayoutFiles();
 
 	/**
-	 * It simply checks whether PIE, SIE, or any Asset Editor is opened, and ask the user whether he wanna continue closing them or cancel the Editor layout load
+	 * It simply checks whether PIE, SIE, or any Asset Editor is opened, and asks the user whether they want to continue closing them or cancel the Editor layout load
 	 * @return Whether we should continue loading the layout
 	 */
 	static bool CheckAskUserToClosePIESIE(const FText& InitialMessage);
@@ -195,7 +195,10 @@ bool FPrivateLayoutsMenu::TrySaveLayoutOrWarnInternal(const FString& InSourceFil
 					const FText CancelText = NSLOCTEXT("Dialogs", "EAppReturnTypeCancel", "Cancel");
 					TSharedRef<SCustomDialog> CustomDialog = SNew(SCustomDialog)
 						.Title(TextTitle)
-						.DialogContent(DialogContents)
+						.Content()
+						[
+							DialogContents
+						]
 						.Buttons({ SCustomDialog::FButton(PreserveValuesText), SCustomDialog::FButton(ClearValuesText), SCustomDialog::FButton(CancelText) });
 
 					// Returns 0 when "Preserve Values" is pressed, 1 when "Clear Values" is pressed, or 2 when Cancel/Esc is pressed
@@ -563,7 +566,7 @@ bool FPrivateLayoutsMenu::CheckAskUserToClosePIESIE(const FText& InitialMessage)
 		return true;
 	}
 	// If PIE/SIE are opened
-	// FMessageDialog - Ask the user whether he wants to automatically close them and continue loading the layout
+	// FMessageDialog - Ask the user whether they wants to automatically close them and continue loading the layout
 	const FText TextTitle = LOCTEXT("CheckAskUserToClosePIESIEIfYesHeaderPIE", "Close PIE/SIE?");
 	const FText IfYesText = LOCTEXT("CheckAskUserToClosePIESIEIfYesBodyPIE", "If \"Yes\", your current game instances (PIE or SIE) will be closed. Any unsaved changes in those will also be lost.");
 	const FText IfNoText = LOCTEXT("CheckAskUserToClosePIESIEIfNoBody", "If \"No\", you can manually reload the layout from the \"User Layouts\" section later.");
@@ -667,7 +670,7 @@ void FPrivateLayoutsMenu::SaveExportLayoutCommon(const FString& InDefaultDirecto
 		// "Export Layout..." (or "Save Layout As..." dialog could not be opened)
 		if (!bWasDialogOpened)
 		{
-			// Open the "save file" dialog so user can save his/her layout configuration file
+			// Open the "save file" dialog so the user can save their layout configuration file
 			const FString DefaultFile = "";
 			bWereFilesSelected = DesktopPlatform->SaveFileDialog(
 				FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
@@ -770,7 +773,7 @@ bool FLayoutsMenuLoad::CanLoadChooseLayout(const int32 InLayoutIndex, const FLay
 
 void FLayoutsMenuLoad::ReloadCurrentLayout()
 {
-	// If PIE, SIE, or any Asset Editors are opened, ask the user whether he wants to automatically close them and continue loading the layout
+	// If PIE, SIE, or any Asset Editors are opened, ask the user whether they want to automatically close them and continue loading the layout
 	if (!FPrivateLayoutsMenu::CheckAskUserToClosePIESIE(LOCTEXT("AreYouSureToLoadHeader", "Are you sure you want to continue loading the selected layout profile?")))
 	{
 		return;
@@ -856,7 +859,7 @@ void FLayoutsMenuLoad::ImportLayout()
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 	if (DesktopPlatform)
 	{
-		// Open File Dialog so user can select his/her desired layout configuration files
+		// Open File Dialog so the user can select their desired layout configuration files
 		TArray<FString> LayoutFilePaths;
 		const FString LastDirectory = FPaths::ProjectContentDir();
 		const FString DefaultDirectory = LastDirectory;
@@ -906,7 +909,7 @@ void FLayoutsMenuLoad::ImportLayout()
 					FMessageDialog::Open(EAppMsgType::Ok, TextBody, &TextTitle);
 				}
 			}
-			// If PIE, SIE, or any Asset Editors are opened, ask the user whether he wants to automatically close them and continue loading the layout
+			// If PIE, SIE, or any Asset Editors are opened, ask the user whether they wants to automatically close them and continue loading the layout
 			if (!FPrivateLayoutsMenu::CheckAskUserToClosePIESIE(LOCTEXT("LayoutImportClosePIEAndEditorAssetsHeader", "The layout(s) were successfully imported into the \"User Layouts\" section. Do you want to continue loading the selected layout profile?")))
 			{
 				return;

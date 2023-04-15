@@ -23,6 +23,7 @@
 #include "SceneUtils.h"
 
 #include "HardwareInfo.h"
+#include "OpenGLProgramBinaryFileCache.h"
 
 #if PLATFORM_ANDROID
 #include <jni.h>
@@ -186,8 +187,6 @@ FOpenGLContextState& FOpenGLDynamicRHI::GetContextStateForCurrentContext(bool bA
 
 void FOpenGLDynamicRHI::RHIBeginFrame()
 {
-	RHIPrivateBeginFrame();
-
 	GPUProfilingData.BeginFrame(this);
 
 #if PLATFORM_ANDROID //adding #if since not sure if this is required for any other platform.
@@ -227,12 +226,16 @@ void FOpenGLDynamicRHI::RHIBeginScene()
 	}
 
 	BeginSceneContextType = (int32)PlatformOpenGLCurrentContext(PlatformDevice);
+
+	// recache NULL shader as it can change with ODSC
+	NULLPixelShaderRHI = GetNULLPixelShader();
 }
 
 void FOpenGLDynamicRHI::RHIEndScene()
 {
 	ResourceTableFrameCounter = INDEX_NONE;
 	BeginSceneContextType = CONTEXT_Other;
+	NULLPixelShaderRHI = nullptr;
 }
 
 #if PLATFORM_ANDROID
@@ -742,10 +745,15 @@ static void InitRHICapabilitiesForGL()
 		GSupportsQuadBufferStereo = (Result == GL_TRUE);
 	}
 
-	if( FOpenGL::SupportsTextureFilterAnisotropic())
+	if (FOpenGL::SupportsTextureFilterAnisotropic())
 	{
 		LOG_AND_GET_GL_INT_TEMP(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, 0);
 		GMaxOpenGLTextureFilterAnisotropic = Value_GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT;
+	}
+
+	if (FOpenGL::SupportsPixelLocalStorage())
+	{
+		LOG_AND_GET_GL_INT_TEMP(GL_MAX_SHADER_PIXEL_LOCAL_STORAGE_SIZE_EXT, 0);
 	}
 #undef LOG_AND_GET_GL_INT_TEMP
 
@@ -804,6 +812,8 @@ static void InitRHICapabilitiesForGL()
 		&& !IsPCPlatform(GMaxRHIShaderPlatform)
 #endif
 		;
+
+	GRHISupportsMultithreadedResources = GRHISupportsRHIThread;
 	
 	// By default use emulated UBs on mobile
 	GUseEmulatedUniformBuffers = IsUsingEmulatedUniformBuffers(GMaxRHIShaderPlatform);
@@ -1041,7 +1051,11 @@ FOpenGLDynamicRHI::FOpenGLDynamicRHI()
 ,   BeginSceneContextType(CONTEXT_Other)
 ,	PlatformDevice(NULL)
 ,	GPUProfilingData(this)
+,	NULLPixelShaderRHI(nullptr)
 {
+	check(Singleton == nullptr);
+	Singleton = this;
+
 	// This should be called once at the start
 	check( IsInGameThread() );
 	check( !GIsThreadedRendering );
@@ -1049,6 +1063,11 @@ FOpenGLDynamicRHI::FOpenGLDynamicRHI()
 #if PLATFORM_ANDROID
 	GRHINeedsExtraDeletionLatency = CVarGLExtraDeletionLatency.GetValueOnAnyThread() == 1;
 #endif
+
+	// Ogl must have all programs created on the context owning thread.
+	// when GRHISupportsAsyncPipelinePrecompile is true pipelinefilecache will call RHICreateGraphicsPipelineState from any thread and
+	// RHISetGraphicsPipelineState will not be called for precompiled programs.
+	GRHISupportsAsyncPipelinePrecompile = false;
 
 	PlatformInitOpenGL();
 	PlatformDevice = PlatformCreateOpenGLDevice();
@@ -1190,9 +1209,7 @@ void FOpenGLDynamicRHI::Init()
 
 	FHardwareInfo::RegisterHardwareInfo( NAME_RHI, TEXT( "OpenGL" ) );
 
-	// Command lists need the validation RHI context if enabled, so call the global scope version of RHIGetDefaultContext() and RHIGetDefaultAsyncComputeContext().
-	GRHICommandList.GetImmediateCommandList().SetContext(::RHIGetDefaultContext());
-	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(::RHIGetDefaultAsyncComputeContext());
+	GRHICommandList.GetImmediateCommandList().InitializeImmediateContexts();
 
 	FRenderResource::InitPreRHIResources();
 	GIsRHIInitialized = true;

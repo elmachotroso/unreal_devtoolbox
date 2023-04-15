@@ -72,9 +72,11 @@ public:
 	virtual FString GetDocumentationExcerptName() const override;
 	virtual bool CanUserDeleteNode() const override;
 	virtual uint32 GetPinMaterialType(const UEdGraphPin* Pin) const override;
+	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
 	//~ End UEdGraphNode Interface.
 
 	//~ Begin UMaterialGraphNode_Base Interface
+	virtual UObject* GetMaterialNodeOwner() const override { return MaterialExpression; }
 	virtual void CreateInputPins() override;
 	virtual void CreateOutputPins() override;
 	//~ End UMaterialGraphNode_Base Interface

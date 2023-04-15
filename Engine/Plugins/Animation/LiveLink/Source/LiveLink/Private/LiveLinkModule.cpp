@@ -8,7 +8,9 @@
 #include "LiveLinkSettings.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
+#include "Styling/SlateStyleRegistry.h"
 
+LLM_DEFINE_TAG(LiveLink);
 #define LOCTEXT_NAMESPACE "LiveLinkModule"
 
 FLiveLinkClient* FLiveLinkModule::LiveLinkClient_AnyThread = nullptr;
@@ -17,13 +19,16 @@ FLiveLinkModule::FLiveLinkModule()
 	: LiveLinkClient()
 	, LiveLinkMotionController(LiveLinkClient)
 	, HeartbeatEmitter(MakeUnique<FLiveLinkHeartbeatEmitter>())
+#if WITH_LIVELINK_DISCOVERY_MANAGER_THREAD
 	, DiscoveryManager(MakeUnique<FLiveLinkMessageBusDiscoveryManager>())
+#endif
 	, LiveLinkDebugCommand(MakeUnique<FLiveLinkDebugCommand>(LiveLinkClient))
 {
 }
 
 void FLiveLinkModule::StartupModule()
 {
+	LLM_SCOPE_BYTAG(LiveLink);
 	FLiveLinkLogInstance::CreateInstance();
 	CreateStyle();
 
@@ -37,15 +42,19 @@ void FLiveLinkModule::StartupModule()
 
 void FLiveLinkModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(LiveLink);
 	FCoreDelegates::OnFEngineLoopInitComplete.RemoveAll(this);
 
 	HeartbeatEmitter->Exit();
+#if WITH_LIVELINK_DISCOVERY_MANAGER_THREAD
 	DiscoveryManager->Stop();
+#endif
 	LiveLinkMotionController.UnregisterController();
 
 	IModularFeatures::Get().UnregisterModularFeature(FLiveLinkClient::ModularFeatureName, &LiveLinkClient);
 	FPlatformAtomics::InterlockedExchangePtr((void**)&LiveLinkClient_AnyThread, nullptr);
 
+	FSlateStyleRegistry::UnRegisterSlateStyle(*StyleSet.Get());
 	FLiveLinkLogInstance::DestroyInstance();
 }
 
@@ -53,6 +62,7 @@ void FLiveLinkModule::CreateStyle()
 {
 	static FName LiveLinkStyle(TEXT("LiveLinkCoreStyle"));
 	StyleSet = MakeShared<FSlateStyleSet>(LiveLinkStyle);
+	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
 
 	FString ContentDir = IPluginManager::Get().FindPlugin(TEXT("LiveLink"))->GetContentDir();
 
@@ -65,21 +75,29 @@ void FLiveLinkModule::OnEngineLoopInitComplete()
 {
 	ULiveLinkPreset* StartupPreset = nullptr;
 	const FString& CommandLine = FCommandLine::Get();
-	const TCHAR* PresetStr = TEXT("LiveLink.Preset.Apply Preset=");
-	const int32 FoundElement = CommandLine.Find(PresetStr);
-	if (FoundElement != INDEX_NONE)
+	const TCHAR* PresetStr = TEXT("LiveLink.Preset.Apply Preset="); // expected inside an -ExecCmds="" argument. So our command should end either on ',' or '"'.
+	const int32 CommandStartPos = CommandLine.Find(PresetStr);
+
+	if (CommandStartPos != INDEX_NONE)
 	{
-		int32 LiveLinkArgumentEnd = CommandLine.Find(",", ESearchCase::IgnoreCase, ESearchDir::FromStart, FoundElement);
-		if (LiveLinkArgumentEnd == INDEX_NONE)
+		int32 PresetEndPos = CommandLine.Find(",", ESearchCase::IgnoreCase, ESearchDir::FromStart, CommandStartPos);
+		const int32 NextDoubleQuotesPos = CommandLine.Find("\"", ESearchCase::IgnoreCase, ESearchDir::FromStart, CommandStartPos);
+
+		if ((PresetEndPos != INDEX_NONE) && (NextDoubleQuotesPos != INDEX_NONE))
 		{
-			LiveLinkArgumentEnd = CommandLine.Find("\"", ESearchCase::IgnoreCase, ESearchDir::FromStart, FoundElement);
+			PresetEndPos = FMath::Min(PresetEndPos, NextDoubleQuotesPos);
 		}
-		if (LiveLinkArgumentEnd != INDEX_NONE)
+		else if (NextDoubleQuotesPos != INDEX_NONE)
 		{
-			const int32 StartIndex = FoundElement + FCString::Strlen(PresetStr);
-			if (CommandLine.IsValidIndex(StartIndex) && CommandLine.IsValidIndex(LiveLinkArgumentEnd))
+			PresetEndPos = NextDoubleQuotesPos;
+		}
+
+		if (PresetEndPos != INDEX_NONE)
+		{
+			const int32 PresetStartPos = CommandStartPos + FCString::Strlen(PresetStr);
+			if (CommandLine.IsValidIndex(PresetStartPos) && CommandLine.IsValidIndex(PresetEndPos))
 			{
-				const FString LiveLinkPresetName = CommandLine.Mid(StartIndex, LiveLinkArgumentEnd - StartIndex);
+				const FString LiveLinkPresetName = CommandLine.Mid(PresetStartPos, PresetEndPos - PresetStartPos);
 				StartupPreset = Cast<ULiveLinkPreset>(StaticLoadObject(ULiveLinkPreset::StaticClass(), nullptr, *LiveLinkPresetName));
 			}
 		}

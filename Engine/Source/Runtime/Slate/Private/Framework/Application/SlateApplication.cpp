@@ -26,6 +26,8 @@
 #include "Input/Events.h"
 #include "Input/HittestGrid.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+
 #if WITH_ACCESSIBILITY
 #include "Widgets/Accessibility/SlateAccessibleMessageHandler.h"
 #endif
@@ -37,12 +39,11 @@
 #include "Framework/Application/IInputProcessor.h"
 #include "GenericPlatform/ITextInputMethodSystem.h"
 #include "Framework/Docking/TabCommands.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "Math/UnitConversion.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "ProfilingDebugging/StallDetector.h"
 #include "Types/ReflectionMetadata.h"
+#include "Trace/SlateMemoryTags.h"
 #include "Trace/SlateTrace.h"
 #include "Styling/StarshipCoreStyle.h"
 #include "Styling/UMGCoreStyle.h"
@@ -51,8 +52,8 @@
 	#define SLATE_HAS_WIDGET_REFLECTOR !(UE_BUILD_TEST || UE_BUILD_SHIPPING) && PLATFORM_DESKTOP
 #endif
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-#include "Windows/WindowsHWrapper.h"
+#if PLATFORM_MICROSOFT
+#include "Microsoft/WindowsHWrapper.h"
 #endif
 #include "Debugging/SlateDebugging.h"
 #include "Styling/StyleColors.h"
@@ -95,7 +96,13 @@ namespace UE::Slate::Private
 class FFauxSlateCursor : public ICursor
 {
 public:
-	FFauxSlateCursor() {}
+	FFauxSlateCursor() 
+	{
+		// We don't support any concept of invalid or unset position for pointer events.
+		// To avoid collisions with fullscreen or windows or multi-monitor setups with monitors left of primary,
+		// we initialize the faux position to something that shouldn't generate overlap with any widgets.
+		CurrentPosition = FVector2D(std::numeric_limits<int32>::min(), std::numeric_limits<int32>::min());
+	}
 	virtual ~FFauxSlateCursor() {}
 	virtual void SetTypeShape(EMouseCursor::Type InCursorType, void* CursorHandle) override {}
 	
@@ -717,7 +724,7 @@ TSharedRef<FSlateApplication> FSlateApplication::Create(const TSharedRef<class G
 		PlatformApplication->OnDisplayMetricsChanged().AddSP(CurrentApplication.ToSharedRef(), &FSlateApplication::OnVirtualDesktopSizeChanged);
 	}
 
-	FAsyncTaskNotificationFactory::Get().RegisterFactory(TEXT("Slate"), []() -> FAsyncTaskNotificationFactory::FImplPointerType { return new FSlateAsyncTaskNotificationImpl(); });
+	FAsyncTaskNotificationFactory::Get().RegisterFactory(TEXT("Slate"), []() -> FAsyncTaskNotificationFactory::FImplPointerType { return MakeShared<FSlateAsyncTaskNotificationImpl>(); });
 
 	return CurrentApplication.ToSharedRef();
 }
@@ -809,7 +816,9 @@ FSlateApplication::FSlateApplication()
 	NormalExecutionGetter.BindRaw( this, &FSlateApplication::IsNormalExecution );
 
 	// Add the standard 'default' user (there's always guaranteed to be at least one)
-	RegisterNewUser(CursorUserIndex);
+	// The default cursor platform user id the primary platform user
+	ensure(SlateAppPrimaryPlatformUser.IsValid() && SlateAppPrimaryPlatformUser == IPlatformInputDeviceMapper::Get().GetPrimaryPlatformUser());
+	RegisterNewUser(SlateAppPrimaryPlatformUser);
 
 	NavigationConfig->OnRegister();
 #if WITH_EDITOR
@@ -1203,8 +1212,7 @@ static void PrepassWindowAndChildren( TSharedRef<SWindow> WindowToPrepass )
 		}
 
 		// Note: Iterate over copy since num children can change during resize above.
-		FMemMark Mark(FMemStack::Get());
-		TArray<TSharedRef<SWindow>, TMemStackAllocator<>> ChildWindows(WindowToPrepass->GetChildWindows());
+		TArray<TSharedRef<SWindow>, FConcurrentLinearArrayAllocator> ChildWindows(WindowToPrepass->GetChildWindows());
 		for (const TSharedRef<SWindow>& ChildWindow : ChildWindows)
 		{
 			PrepassWindowAndChildren(ChildWindow);
@@ -1291,67 +1299,70 @@ void FSlateApplication::PrivateDrawWindows( TSharedPtr<SWindow> DrawOnlyThisWind
 	// Prepass the window
 	DrawPrepass( DrawOnlyThisWindow );
 
-	FDrawWindowArgs DrawWindowArgs( Renderer->GetDrawBuffer(), WidgetsToVisualizeUnderCursor);
-
 	{
-		SCOPE_CYCLE_COUNTER( STAT_SlateDrawWindowTime );
+		FSlateRenderer::FScopedAcquireDrawBuffer ScopedDrawBuffer{ *Renderer };
+		FDrawWindowArgs DrawWindowArgs( ScopedDrawBuffer.GetDrawBuffer(), WidgetsToVisualizeUnderCursor);
+		ensureMsgf(DrawWindowArgs.OutDrawBuffer.IsLocked(), TEXT("The buffer should be lock by GetDrawBuffer."));
 
-		TSharedPtr<SWindow> ActiveModalWindow = GetActiveModalWindow(); 
-
-		if (ActiveModalWindow.IsValid())
 		{
-			DrawWindowAndChildren( ActiveModalWindow.ToSharedRef(), DrawWindowArgs );
+			SCOPE_CYCLE_COUNTER( STAT_SlateDrawWindowTime );
 
-			for( TArray< TSharedRef<SWindow> >::TConstIterator CurrentWindowIt( SlateWindows ); CurrentWindowIt; ++CurrentWindowIt )
+			TSharedPtr<SWindow> ActiveModalWindow = GetActiveModalWindow(); 
+
+			if (ActiveModalWindow.IsValid())
 			{
-				const TSharedRef<SWindow>& CurrentWindow = *CurrentWindowIt;
-				if ( CurrentWindow->GetType() == EWindowType::ToolTip )
+				DrawWindowAndChildren( ActiveModalWindow.ToSharedRef(), DrawWindowArgs );
+
+				for( TArray< TSharedRef<SWindow> >::TConstIterator CurrentWindowIt( SlateWindows ); CurrentWindowIt; ++CurrentWindowIt )
 				{
-					DrawWindowAndChildren(CurrentWindow, DrawWindowArgs);
+					const TSharedRef<SWindow>& CurrentWindow = *CurrentWindowIt;
+					if ( CurrentWindow->GetType() == EWindowType::ToolTip )
+					{
+						DrawWindowAndChildren(CurrentWindow, DrawWindowArgs);
+					}
+				}
+
+				TArray< TSharedRef<SWindow> > NotificationWindows;
+				FSlateNotificationManager::Get().GetWindows(NotificationWindows);
+				for( auto CurrentWindowIt( NotificationWindows.CreateIterator() ); CurrentWindowIt; ++CurrentWindowIt )
+				{
+					DrawWindowAndChildren(*CurrentWindowIt, DrawWindowArgs);
+				}	
+			}
+			else if( DrawOnlyThisWindow.IsValid() )
+			{
+				DrawWindowAndChildren( DrawOnlyThisWindow.ToSharedRef(), DrawWindowArgs );
+			}
+			else
+			{
+				// Draw all windows
+				// Use of an old-style iterator is intentional here, as SlateWindows 
+				// array may be mutated by user logic in draw calls. The iterator 
+				// prevents us from reading off the end and only keeps an index 
+				// internally:
+				for( TArray< TSharedRef<SWindow> >::TConstIterator CurrentWindowIt( SlateWindows ); CurrentWindowIt; ++CurrentWindowIt )
+				{
+					TSharedRef<SWindow> CurrentWindow = *CurrentWindowIt;
+					// Only draw visible windows or in off-screen rendering mode
+					if (bRenderOffScreen || CurrentWindow->IsVisible() )
+					{
+						DrawWindowAndChildren( CurrentWindow, DrawWindowArgs );
+					}
 				}
 			}
-
-			TArray< TSharedRef<SWindow> > NotificationWindows;
-			FSlateNotificationManager::Get().GetWindows(NotificationWindows);
-			for( auto CurrentWindowIt( NotificationWindows.CreateIterator() ); CurrentWindowIt; ++CurrentWindowIt )
-			{
-				DrawWindowAndChildren(*CurrentWindowIt, DrawWindowArgs);
-			}	
 		}
-		else if( DrawOnlyThisWindow.IsValid() )
+
+		// This is potentially dangerous on the movie playback thread that slate sometimes runs on
+		if(!IsInSlateThread())
 		{
-			DrawWindowAndChildren( DrawOnlyThisWindow.ToSharedRef(), DrawWindowArgs );
+			// Some windows may have been destroyed/removed.
+			// Do not attempt to draw any windows that have been removed.
+			TArray<SWindow*> AllWindows = GatherAllDescendants(SlateWindows);
+			DrawWindowArgs.OutDrawBuffer.RemoveUnusedWindowElement(AllWindows);
 		}
-		else
-		{
-			// Draw all windows
-			// Use of an old-style iterator is intentional here, as SlateWindows 
-			// array may be mutated by user logic in draw calls. The iterator 
-			// prevents us from reading off the end and only keeps an index 
-			// internally:
-			for( TArray< TSharedRef<SWindow> >::TConstIterator CurrentWindowIt( SlateWindows ); CurrentWindowIt; ++CurrentWindowIt )
-			{
-				TSharedRef<SWindow> CurrentWindow = *CurrentWindowIt;
-				// Only draw visible windows or in off-screen rendering mode
-				if (bRenderOffScreen || CurrentWindow->IsVisible() )
-				{
-					DrawWindowAndChildren( CurrentWindow, DrawWindowArgs );
-				}
-			}
-		}
+
+		Renderer->DrawWindows( DrawWindowArgs.OutDrawBuffer );
 	}
-
-	// This is potentially dangerous on the movie playback thread that slate sometimes runs on
-	if(!IsInSlateThread())
-	{
-		// Some windows may have been destroyed/removed.
-		// Do not attempt to draw any windows that have been removed.
-		TArray<SWindow*> AllWindows = GatherAllDescendants(SlateWindows);
-		DrawWindowArgs.OutDrawBuffer.RemoveUnusedWindowElement(AllWindows);
-	}
-
-
-	Renderer->DrawWindows( DrawWindowArgs.OutDrawBuffer );
 }
 
 void FSlateApplication::PollGameDeviceState()
@@ -1443,7 +1454,7 @@ static const TCHAR* LexToString(ESlateTickType TickType)
 
 void FSlateApplication::Tick(ESlateTickType TickType)
 {
-	LLM_SCOPE(ELLMTag::UI);
+	LLM_SCOPE_BYTAG(UI_Slate);
 
 	SCOPE_TIME_GUARD(TEXT("FSlateApplication::Tick"));
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(UI);
@@ -2401,7 +2412,17 @@ int32 FSlateApplication::GetUserIndexForKeyboard() const
 {
 	return InputManager->GetUserIndexForKeyboard();
 }
- 
+
+FInputDeviceId FSlateApplication::GetInputDeviceIdForMouse() const
+{
+	return InputManager->GetInputDeviceIdForMouse();
+}
+
+FInputDeviceId FSlateApplication::GetInputDeviceIdForKeyboard() const
+{
+	return InputManager->GetInputDeviceIdForKeyboard();
+}
+
 TOptional<int32> FSlateApplication::GetUserIndexForController(int32 ControllerId, FKey InKey) const
 {
 	return InputManager->GetUserIndexForController(ControllerId, InKey);
@@ -2410,6 +2431,16 @@ TOptional<int32> FSlateApplication::GetUserIndexForController(int32 ControllerId
 int32 FSlateApplication::GetUserIndexForController(int32 ControllerId) const
 {
 	return InputManager->GetUserIndexForController(ControllerId);
+}
+
+TOptional<int32> FSlateApplication::GetUserIndexForInputDevice(FInputDeviceId InputDeviceId) const
+{
+	return InputManager->GetUserIndexForInputDevice(InputDeviceId);
+}
+
+TOptional<int32> FSlateApplication::GetUserIndexForPlatformUser(FPlatformUserId PlatformUser) const
+{
+	return InputManager->GetUserIndexForPlatformUser(PlatformUser);
 }
 
 void FSlateApplication::SetInputManager(TSharedRef<ISlateInputManager> InInputManager)
@@ -2844,7 +2875,7 @@ bool FSlateApplication::SetUserFocus(FSlateUser& User, const FWidgetPath& InFocu
 		// Let previously-focused widget know that it's losing focus
 		OldFocusedWidget->OnFocusLost(FocusEvent);
 #if WITH_ACCESSIBILITY
-		GetAccessibleMessageHandler()->OnWidgetEventRaised(OldFocusedWidget.ToSharedRef(), EAccessibleEvent::FocusChange, true, false);
+		GetAccessibleMessageHandler()->OnWidgetEventRaised(FSlateAccessibleMessageHandler::FSlateWidgetAccessibleEventArgs(OldFocusedWidget.ToSharedRef(), EAccessibleEvent::FocusChange, true, false, User.GetUserIndex()));
 #endif
 	}
 
@@ -2881,7 +2912,7 @@ bool FSlateApplication::SetUserFocus(FSlateUser& User, const FWidgetPath& InFocu
 		GetRelevantNavConfig(User.GetUserIndex())->OnNavigationChangedFocus(OldFocusedWidget, NewFocusedWidget, FocusEvent);
 
 #if WITH_ACCESSIBILITY
-		GetAccessibleMessageHandler()->OnWidgetEventRaised(NewFocusedWidget.ToSharedRef(), EAccessibleEvent::FocusChange, false, true);
+		GetAccessibleMessageHandler()->OnWidgetEventRaised(FSlateAccessibleMessageHandler::FSlateWidgetAccessibleEventArgs(NewFocusedWidget.ToSharedRef(), EAccessibleEvent::FocusChange, false, true, User.GetUserIndex()));
 #endif
 	}
 
@@ -3946,6 +3977,40 @@ bool FSlateApplication::TakeScreenshot(const TSharedRef<SWidget>& Widget, const 
 	return (OutSize.X != 0 && OutSize.Y != 0 && OutColorData.Num() >= OutSize.X * OutSize.Y);
 }
 
+TSharedPtr<FSlateUser> FSlateApplication::GetUser(FPlatformUserId PlatformUser)
+{
+	int32 InternalId = 0;
+	if (PlatformUser.IsValid())
+	{
+		InternalId = PlatformUser.GetInternalId();
+	}
+	else
+	{
+		UE_LOG(LogSlate, Warning, TEXT("SlateApplication::GetUser called with an invalid platform user! Defaulting to 0"));
+	}
+	return Users.IsValidIndex(InternalId) ? Users[InternalId] : nullptr;
+}
+
+TSharedPtr<FSlateUser> FSlateApplication::GetUserFromPlatformUser(FPlatformUserId PlatformUser)
+{
+	TOptional<int32> UserIndex = GetUserIndexForPlatformUser(PlatformUser);
+	if (UserIndex.IsSet())
+	{
+		return GetUser(UserIndex.GetValue());
+	}
+	return nullptr;
+}
+
+TSharedPtr<const FSlateUser> FSlateApplication::GetUserFromPlatformUser(FPlatformUserId PlatformUser) const
+{
+	TOptional<int32> UserIndex = GetUserIndexForPlatformUser(PlatformUser);
+	if (UserIndex.IsSet())
+	{
+		return GetUser(UserIndex.GetValue());
+	}
+	return nullptr;
+}
+
 TSharedRef<FSlateVirtualUserHandle> FSlateApplication::FindOrCreateVirtualUser(int32 VirtualUserIndex)
 {
 	// Ensure we have a large enough array to add the new virtual user
@@ -3985,8 +4050,30 @@ TSharedRef<FSlateUser> FSlateApplication::GetOrCreateUser(int32 UserIndex)
 	return RegisterNewUser(UserIndex);
 }
 
+TSharedRef<FSlateUser> FSlateApplication::GetOrCreateUser(FPlatformUserId PlatformUserId)
+{
+	if (TSharedPtr<FSlateUser> FoundUser = GetUser(PlatformUserId))
+	{
+		return FoundUser.ToSharedRef();
+	}
+	return RegisterNewUser(PlatformUserId);
+}
+
+TSharedRef<FSlateUser> FSlateApplication::GetOrCreateUser(FInputDeviceId DeviceId)
+{
+	// Get a user based on the owning platform user of this input device
+	return GetOrCreateUser(IPlatformInputDeviceMapper::Get().GetUserForInputDevice(DeviceId));
+}
+
 TSharedRef<FSlateUser> FSlateApplication::RegisterNewUser(int32 UserIndex, bool bIsVirtual)
 {
+	return RegisterNewUser(FGenericPlatformMisc::GetPlatformUserForUserIndex(UserIndex), bIsVirtual);
+}
+
+TSharedRef<FSlateUser> FSlateApplication::RegisterNewUser(FPlatformUserId PlatformUserId, bool bIsVirtual)
+{
+	int32 UserIndex = PlatformUserId.GetInternalId();
+	
 	// We tolerate no shenanigans with inappropriate arguments here
 	// New users must be registered at a valid non-negative index that is not already occupied by another user
 	check(UserIndex >= 0);
@@ -4633,7 +4720,7 @@ void FSlateApplication::SetGameIsFakingTouchEvents(const bool bIsFaking, FVector
 	{
 		if (bIsFakingTouched && !bIsFaking && bIsGameFakingTouch && !bIsFakingTouch)
 		{
-			OnTouchEnded((CursorLocation ? *CursorLocation : PlatformApplication->Cursor->GetPosition()), 0, 0);
+			OnTouchEnded((CursorLocation ? *CursorLocation : PlatformApplication->Cursor->GetPosition()), 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice());
 		}
 
 		bIsGameFakingTouch = bIsFaking;
@@ -4656,7 +4743,7 @@ bool FSlateApplication::OnMouseDown( const TSharedPtr< FGenericWindow >& Platfor
 	if (IsFakingTouchEvents() && Button == EMouseButtons::Left)
 	{
 		bIsFakingTouched = true;
-		return OnTouchStarted( PlatformWindow, PlatformApplication->Cursor->GetPosition(), 1.0f, 0, 0 );
+		return OnTouchStarted( PlatformWindow, PlatformApplication->Cursor->GetPosition(), 1.0f, /* touch index */ 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice() );
 	}
 
 	FKey Key = TranslateMouseButtonToKey( Button );
@@ -5138,7 +5225,28 @@ bool FSlateApplication::RoutePointerMoveEvent(const FWidgetPath& WidgetsUnderPoi
 				{
 					TOptional<FArrangedWidget> FoundWidget = WidgetsUnderPointer.FindArrangedWidget(SomeWidgetPreviouslyUnderCursor.ToSharedRef());
 					const bool bWidgetNoLongerUnderMouse = !FoundWidget.IsSet();
+					
+					bool bWidgetUnderOtherUsersPointer = false;
+					
+					// Verify if the Widget is under another user pointer
 					if (bWidgetNoLongerUnderMouse)
+					{
+						for (const TSharedPtr<FSlateUser>& user : Users)
+						{
+							if (user != nullptr && user->GetUserIndex() != PointerEvent.GetUserIndex())
+							{
+								if (user->IsWidgetDirectlyUnderAnyPointer(SomeWidgetPreviouslyUnderCursor))
+								{
+									bWidgetUnderOtherUsersPointer = true;
+
+									break;
+								}
+							}
+						}
+					}
+
+					// We consider the Widget is nolonger under a pointer if it's no longer under any pointers.
+					if (bWidgetNoLongerUnderMouse && !bWidgetUnderOtherUsersPointer)
 					{
 						// Widget is no longer under cursor, so send a MouseLeave.
 						// The widget might not even be in the hierarchy any more!
@@ -5347,7 +5455,7 @@ bool FSlateApplication::OnMouseDoubleClick( const TSharedPtr< FGenericWindow >& 
 	if (IsFakingTouchEvents())
 	{
 		bIsFakingTouched = true;
-		return OnTouchStarted(PlatformWindow, PlatformApplication->Cursor->GetPosition(), 1.0f, 0, 0);
+		return OnTouchStarted(PlatformWindow, PlatformApplication->Cursor->GetPosition(), 1.0f, /* touch index */ 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice());
 	}
 
 	FKey Key = TranslateMouseButtonToKey( Button );
@@ -5439,7 +5547,7 @@ bool FSlateApplication::OnMouseUp( const EMouseButtons::Type Button, const FVect
 	if (IsFakingTouchEvents() && Button == EMouseButtons::Left)
 	{
 		bIsFakingTouched = false;
-		return OnTouchEnded(PlatformApplication->Cursor->GetPosition(), 0, 0);
+		return OnTouchEnded(PlatformApplication->Cursor->GetPosition(), 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice());
 	}
 
 	FKey Key = TranslateMouseButtonToKey( Button );
@@ -5620,7 +5728,7 @@ bool FSlateApplication::OnMouseMove()
 		// convert to touch event if we are faking it
 		if (bIsFakingTouched)
 		{
-			return OnTouchMoved(PlatformApplication->Cursor->GetPosition(), 1.0f, 0, 0);
+			return OnTouchMoved(PlatformApplication->Cursor->GetPosition(), 1.0f, 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice());
 		}
 
 		// Throw out the mouse move event if we're faking touch events but the mouse button isn't down.
@@ -5680,7 +5788,7 @@ bool FSlateApplication::OnRawMouseMove( const int32 X, const int32 Y )
 		// convert to touch event if we are faking it
 		if (bIsFakingTouched)
 		{
-			return OnTouchMoved(GetCursorPos(), 1.0f, 0, 0);
+			return OnTouchMoved(GetCursorPos(), 1.0f, 0, FSlateApplicationBase::SlateAppPrimaryPlatformUser, IPlatformInputDeviceMapper::Get().GetDefaultInputDevice());
 		}
 
 		// Throw out the mouse move event if we're faking touch events but the mouse button isn't down.
@@ -5905,37 +6013,40 @@ bool FSlateApplication::ExecuteNavigation(const FWidgetPath& NavigationSource, T
 	return bHandled;
 }
 
-bool FSlateApplication::OnControllerAnalog( FGamepadKeyNames::Type KeyName, int32 ControllerId, float AnalogValue )
+bool FSlateApplication::OnControllerAnalog(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, float AnalogValue)
 {
 	FKey Key(KeyName);
-	TOptional<int32> UserIndex = GetUserIndexForController(ControllerId, Key);
-	if(UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerAnalog(KeyName=%s,ControllerId=%d,AnalogValue=%f) key is invalid"), *KeyName.ToString(), ControllerId, AnalogValue))
+	TOptional<int32> UserIndex = GetUserIndexForInputDevice(InputDeviceId);
+	if (UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerAnalog(KeyName=%s,InputDeviceId=%d,AnalogValue=%f) key is invalid"), *KeyName.ToString(), InputDeviceId.GetId(), AnalogValue))
 	{
-		FAnalogInputEvent AnalogInputEvent(Key, PlatformApplication->GetModifierKeys(), UserIndex.GetValue(), false, 0, 0, AnalogValue);
+		FAnalogInputEvent AnalogInputEvent(Key, PlatformApplication->GetModifierKeys(), InputDeviceId, false, 0, 0, AnalogValue, UserIndex);
+		
 		return ProcessAnalogInputEvent(AnalogInputEvent);
 	}
 	return false;
 }
 
-bool FSlateApplication::OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat)
+bool FSlateApplication::OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat)
 {
 	FKey Key(KeyName);
-	TOptional<int32> UserIndex = GetUserIndexForController(ControllerId, Key);
-	if(UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerButtonPressed(KeyName=%s,ControllerId=%d,IsRepeat=%b) key is invalid"), *KeyName.ToString(), ControllerId, IsRepeat))
+	TOptional<int32> UserIndex = GetUserIndexForInputDevice(InputDeviceId);
+	if (UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerButtonPressed(KeyName=%s,InputDeviceId=%d,IsRepeat=%b) key is invalid"), *KeyName.ToString(), InputDeviceId.GetId(), IsRepeat))
 	{
-		FKeyEvent KeyEvent(Key, PlatformApplication->GetModifierKeys(), UserIndex.GetValue(), IsRepeat, 0, 0);
+		FKeyEvent KeyEvent(Key, PlatformApplication->GetModifierKeys(), InputDeviceId, IsRepeat, 0, 0, UserIndex);
+		
 		return ProcessKeyDownEvent(KeyEvent);
 	}
 	return false;
 }
 
-bool FSlateApplication::OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat)
+bool FSlateApplication::OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId, bool IsRepeat)
 {
 	FKey Key(KeyName);
-	TOptional<int32> UserIndex = GetUserIndexForController(ControllerId, Key);
-	if(UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerButtonReleased(KeyName=%s,ControllerId=%d,IsRepeat=%b) key is invalid"), *KeyName.ToString(), ControllerId, IsRepeat))
+	TOptional<int32> UserIndex = GetUserIndexForInputDevice(InputDeviceId);
+	if (UserIndex.IsSet() && ensureMsgf(Key.IsValid(), TEXT("OnControllerButtonReleased(KeyName=%s,InputDeviceId=%d,IsRepeat=%b) key is invalid"), *KeyName.ToString(), InputDeviceId.GetId(), IsRepeat))
 	{
-		FKeyEvent KeyEvent(Key, PlatformApplication->GetModifierKeys(), UserIndex.GetValue(), IsRepeat, 0, 0);
+		FKeyEvent KeyEvent(Key, PlatformApplication->GetModifierKeys(), InputDeviceId, IsRepeat, 0, 0, UserIndex);
+		
 		return ProcessKeyUpEvent(KeyEvent);
 	}
 	return false;
@@ -5973,7 +6084,7 @@ bool ValidateTouchIndex(int32 TouchIndex)
 	return true;
 }
 
-bool FSlateApplication::OnTouchStarted( const TSharedPtr< FGenericWindow >& PlatformWindow, const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId )
+bool FSlateApplication::OnTouchStarted( const TSharedPtr< FGenericWindow >& PlatformWindow, const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceId )
 {
 	// Don't process touches that overlap or surpass with the cursor pointer index.
 	if (TouchIndex >= (int32)ETouchIndex::CursorPointerIndex)
@@ -5986,7 +6097,7 @@ bool FSlateApplication::OnTouchStarted( const TSharedPtr< FGenericWindow >& Plat
 	}
 
 	FPointerEvent PointerEvent(
-		ControllerId,
+		DeviceId,
 		TouchIndex,
 		Location,
 		Location,
@@ -6007,13 +6118,13 @@ void FSlateApplication::ProcessTouchStartedEvent( const TSharedPtr< FGenericWind
 	ProcessMouseButtonDownEvent(PlatformWindow, InTouchEvent);
 }
 
-bool FSlateApplication::OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId )
+bool FSlateApplication::OnTouchMoved( const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID )
 {
-	TSharedRef<FSlateUser> User = GetOrCreateUser(ControllerId);
+	TSharedRef<FSlateUser> User = GetOrCreateUser(DeviceID);
 	if (User->IsTouchPointerActive(TouchIndex))
 	{
 		FPointerEvent PointerEvent(
-			ControllerId,
+			DeviceID,
 			TouchIndex,
 			Location,
 			User->GetPreviousPointerPosition(TouchIndex),
@@ -6036,13 +6147,13 @@ void FSlateApplication::ProcessTouchMovedEvent( const FPointerEvent& PointerEven
 	ProcessMouseMoveEvent(PointerEvent);
 }
 
-bool FSlateApplication::OnTouchEnded( const FVector2D& Location, int32 TouchIndex, int32 ControllerId )
+bool FSlateApplication::OnTouchEnded( const FVector2D& Location, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID )
 {
-	TSharedRef<FSlateUser> User = GetOrCreateUser(ControllerId);
+	TSharedRef<FSlateUser> User = GetOrCreateUser(DeviceID);
 	if (User->IsTouchPointerActive(TouchIndex))
 	{
 		FPointerEvent PointerEvent(
-			ControllerId,
+			DeviceID,
 			TouchIndex,
 			Location,
 			Location,
@@ -6069,13 +6180,13 @@ void FSlateApplication::ProcessTouchEndedEvent(const FPointerEvent& PointerEvent
 	ProcessMouseButtonUpEvent(PointerEvent);
 }
 
-bool FSlateApplication::OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId)
+bool FSlateApplication::OnTouchForceChanged(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID)
 {
-	TSharedRef<FSlateUser> User = GetOrCreateUser(ControllerId);
+	TSharedRef<FSlateUser> User = GetOrCreateUser(DeviceID);
 	if (User->IsTouchPointerActive(TouchIndex))
 	{
 		FPointerEvent PointerEvent(
-			ControllerId,
+			DeviceID,
 			TouchIndex,
 			Location,
 			Location,
@@ -6091,13 +6202,13 @@ bool FSlateApplication::OnTouchForceChanged(const FVector2D& Location, float For
 	return false;
 }
 
-bool FSlateApplication::OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId)
+bool FSlateApplication::OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, FPlatformUserId PlatformUserId, FInputDeviceId DeviceID)
 {
-	TSharedRef<FSlateUser> User = GetOrCreateUser(ControllerId);
+	TSharedRef<FSlateUser> User = GetOrCreateUser(DeviceID);
 	if (User->IsTouchPointerActive(TouchIndex))
 	{
 		FPointerEvent PointerEvent(
-			ControllerId,
+			DeviceID,
 			TouchIndex,
 			Location,
 			User->GetPreviousPointerPosition(TouchIndex),
@@ -6120,10 +6231,10 @@ void FSlateApplication::ShouldSimulateGesture(EGestureEvent Gesture, bool bEnabl
 	SimulateGestures[(uint8)Gesture] = bEnable;
 }
 
-bool FSlateApplication::OnMotionDetected(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, int32 ControllerId)
+bool FSlateApplication::OnMotionDetected(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, FPlatformUserId PlatformUserId, FInputDeviceId InputDeviceId)
 {
 	FMotionEvent MotionEvent( 
-		ControllerId,
+		InputDeviceId,
 		Tilt,
 		RotationRate,
 		Gravity,
@@ -6167,6 +6278,8 @@ void FSlateApplication::ProcessMotionDetectedEvent( const FMotionEvent& MotionEv
 
 bool FSlateApplication::OnSizeChanged( const TSharedRef< FGenericWindow >& PlatformWindow, const int32 Width, const int32 Height, bool bWasMinimized )
 {
+	LLM_SCOPE(ELLMTag::UI);
+
 	TSharedPtr< SWindow > Window = FSlateWindowHelper::FindWindowByPlatformWindow( SlateWindows, PlatformWindow );
 
 	if ( Window.IsValid() )

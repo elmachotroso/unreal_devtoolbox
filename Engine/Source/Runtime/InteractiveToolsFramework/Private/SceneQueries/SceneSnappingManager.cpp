@@ -7,6 +7,8 @@
 #include "GameFramework/Actor.h"
 #include "Components/PrimitiveComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SceneSnappingManager)
+
 
 
 namespace UELocal
@@ -83,7 +85,7 @@ void FSceneHitQueryResult::InitializeHitResult(const FSceneHitQueryRequest& From
 {
 	HitResult = FHitResult(TargetActor, TargetComponent, (FVector)Position, (FVector)Normal);
 
-	HitResult.Distance = FromRequest.WorldRay.GetParameter(Position);
+	HitResult.Distance = static_cast<float>( FromRequest.WorldRay.GetParameter(Position) );
 	HitResult.FaceIndex = HitTriIndex;
 	// initialize .Time? Need start/end for that...
 }
@@ -117,3 +119,4 @@ USceneSnappingManager* USceneSnappingManager::Find(UInteractiveGizmoManager* Giz
 	}
 	return nullptr;
 }
+

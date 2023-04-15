@@ -12,13 +12,14 @@
 #include "GroomDesc.h"
 #include "LODSyncInterface.h"
 #include "GroomInstance.h"
+#include "NiagaraDataInterfacePhysicsAsset.h"
 
 #include "GroomComponent.generated.h"
 
 class UGroomCache;
 
 UCLASS(HideCategories = (Object, Physics, Activation, Mobility, "Components|Activation"), editinlinenew, meta = (BlueprintSpawnableComponent), ClassGroup = Rendering)
-class HAIRSTRANDSCORE_API UGroomComponent : public UMeshComponent, public ILODSyncInterface
+class HAIRSTRANDSCORE_API UGroomComponent : public UMeshComponent, public ILODSyncInterface, public INiagaraPhysicsAssetDICollectorInterface
 {
 	GENERATED_UCLASS_BODY()
 
@@ -134,6 +135,7 @@ public:
 
 	//~ Begin UMeshComponent Interface.
 	virtual void PostLoad() override;
+	virtual void PrecachePSOs() override;
 	//~ End UMeshComponent Interface.
 
 	/** Return the guide hairs rest resources*/
@@ -187,6 +189,10 @@ public:
 	/* Reset the simulation, if enabled */
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	void ResetSimulation();
+	
+	/* Given the group index return the matching niagara component */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UNiagaraComponent* GetNiagaraComponent(const int32 GroupIndex) {return NiagaraComponents.IsValidIndex(GroupIndex) ? NiagaraComponents[GroupIndex] : nullptr;}
 
 	/* Accessor function for changing hair length scale from blueprint/sequencer */
 	UFUNCTION(BlueprintCallable, Category = "Groom")
@@ -265,6 +271,10 @@ public:
 	/** Build the local simulation transform that could be used in strands simulation */
 	void BuildSimulationTransform(FTransform& SimulationTransform) const;
 
+	//~ Begin INiagaraPhysicsAssetDICollectorInterface Interface
+	virtual UPhysicsAsset* BuildAndCollect(FTransform& BoneTransform, TArray<TWeakObjectPtr<USkeletalMeshComponent>>& SourceComponents, TArray<TWeakObjectPtr<UPhysicsAsset>>& PhysicsAssets) const override;
+	//~ End INiagaraPhysicsAssetDICollectorInterface Interface
+
 private:
 	void UpdateGroomCache(float Time);
 
@@ -303,6 +313,7 @@ private:
 	void DeleteDeferredHairGroupInstances();
 	void* InitializedResources;
 	class UMeshComponent* RegisteredMeshComponent;
+	class UMeshComponent* DeformedMeshComponent;
 	FVector SkeletalPreviousPositionOffset;
 	bool bIsGroomAssetCallbackRegistered;
 	bool bIsGroomBindingAssetCallbackRegistered;

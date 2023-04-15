@@ -20,13 +20,15 @@ public:
 	float MeshSDFTraceDistance;
 	float SurfaceBias;
 	int32 VoxelTracingMode;
+	int32 DirectLighting;
 
 	inline bool operator==(const FLumenGatherCvarState& Rhs)
 	{
 		return TraceMeshSDFs == Rhs.TraceMeshSDFs &&
 			MeshSDFTraceDistance == Rhs.MeshSDFTraceDistance &&
 			SurfaceBias == Rhs.SurfaceBias &&
-			VoxelTracingMode == Rhs.VoxelTracingMode;
+			VoxelTracingMode == Rhs.VoxelTracingMode &&
+			DirectLighting == Rhs.DirectLighting;
 	}
 };
 
@@ -36,10 +38,12 @@ public:
 	FIntRect DiffuseIndirectHistoryViewRect;
 	FVector4f DiffuseIndirectHistoryScreenPositionScaleBias;
 	TRefCountPtr<IPooledRenderTarget> DiffuseIndirectHistoryRT;
-	TRefCountPtr<IPooledRenderTarget> RoughSpecularIndirectHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> BackfaceDiffuseIndirectHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> RoughSpecularIndirectHistoryRT; 
 	TRefCountPtr<IPooledRenderTarget> NumFramesAccumulatedRT;
 	TRefCountPtr<IPooledRenderTarget> FastUpdateModeHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> NormalHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> BSDFTileHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> OctahedralSolidAngleTextureRT;
 	FIntRect ProbeHistoryViewRect;
 	FVector4f ProbeHistoryScreenPositionScaleBias;
@@ -60,16 +64,41 @@ public:
 	void SafeRelease()
 	{
 		DiffuseIndirectHistoryRT.SafeRelease();
+		BackfaceDiffuseIndirectHistoryRT.SafeRelease();
 		RoughSpecularIndirectHistoryRT.SafeRelease();
 		NumFramesAccumulatedRT.SafeRelease();
 		FastUpdateModeHistoryRT.SafeRelease();
 		NormalHistoryRT.SafeRelease();
+		BSDFTileHistoryRT.SafeRelease();
 		OctahedralSolidAngleTextureRT.SafeRelease();
 		HistoryScreenProbeSceneDepth.SafeRelease();
 		HistoryScreenProbeTranslatedWorldPosition.SafeRelease();
 		ProbeHistoryScreenProbeRadiance.SafeRelease();
 		ImportanceSamplingHistoryScreenProbeRadiance.SafeRelease();
 	}
+
+#if WITH_MGPU
+	void AddCrossGPUTransfers(uint32 SourceGPUIndex, uint32 DestGPUIndex, TArray<FTransferResourceParams>& OutTransfers)
+	{
+		#define TRANSFER_LUMEN_RESOURCE(NAME) \
+			if (NAME) OutTransfers.Add(FTransferResourceParams(NAME->GetRHI(), SourceGPUIndex, DestGPUIndex, false, false))
+
+		TRANSFER_LUMEN_RESOURCE(DiffuseIndirectHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(RoughSpecularIndirectHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(NumFramesAccumulatedRT);
+		TRANSFER_LUMEN_RESOURCE(FastUpdateModeHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(NormalHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(BSDFTileHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(HistoryScreenProbeSceneDepth);
+		TRANSFER_LUMEN_RESOURCE(HistoryScreenProbeTranslatedWorldPosition);
+		TRANSFER_LUMEN_RESOURCE(ProbeHistoryScreenProbeRadiance);
+		TRANSFER_LUMEN_RESOURCE(ImportanceSamplingHistoryScreenProbeRadiance);
+
+		#undef TRANSFER_LUMEN_RESOURCE
+	}
+#endif  // WITH_MGPU
+
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 };
 
 
@@ -81,6 +110,7 @@ public:
 	TRefCountPtr<IPooledRenderTarget> SpecularIndirectHistoryRT;
 	TRefCountPtr<IPooledRenderTarget> NumFramesAccumulatedRT;
 	TRefCountPtr<IPooledRenderTarget> ResolveVarianceHistoryRT;
+	TRefCountPtr<IPooledRenderTarget> BSDFTileHistoryRT;
 
 	FReflectionTemporalState()
 	{
@@ -93,25 +123,119 @@ public:
 		SpecularIndirectHistoryRT.SafeRelease();
 		NumFramesAccumulatedRT.SafeRelease();
 		ResolveVarianceHistoryRT.SafeRelease();
+		BSDFTileHistoryRT.SafeRelease();
 	}
+
+#if WITH_MGPU
+	void AddCrossGPUTransfers(uint32 SourceGPUIndex, uint32 DestGPUIndex, TArray<FTransferResourceParams>& OutTransfers)
+	{
+		#define TRANSFER_LUMEN_RESOURCE(NAME) \
+			if (NAME) OutTransfers.Add(FTransferResourceParams(NAME->GetRHI(), SourceGPUIndex, DestGPUIndex, false, false))
+
+		TRANSFER_LUMEN_RESOURCE(SpecularIndirectHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(NumFramesAccumulatedRT);
+		TRANSFER_LUMEN_RESOURCE(ResolveVarianceHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(BSDFTileHistoryRT);
+
+		#undef TRANSFER_LUMEN_RESOURCE
+	}
+#endif  // WITH_MGPU
+
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 };
 
-class FLumenVoxelLightingClipmapState
+class FRadianceCacheClipmap
 {
 public:
-	FIntVector FullUpdateOriginInTiles = FIntVector(0);
-	FIntVector LastPartialUpdateOriginInTiles = FIntVector(0);
-	FIntVector ScrollOffsetInTiles = FIntVector(0);
+	/** World space bounds. */
+	FVector Center;
+	float Extent;
 
-	FVector Center = FVector(0.0f);
-	FVector Extent = FVector(0.0f);
-	FVector VoxelSize = FVector(0.0f);
-	float VoxelRadius = 0.0f;
-	float MeshSDFRadiusThreshold = 0.0f;
-	FVector VoxelCoordToUVScale = FVector(0.0f);
-	FVector VoxelCoordToUVBias = FVector(0.0f);
+	FVector ProbeCoordToWorldCenterBias;
+	float ProbeCoordToWorldCenterScale;
 
-	TArray<FRenderBounds> PrimitiveModifiedBounds;
+	FVector WorldPositionToProbeCoordBias;
+	float WorldPositionToProbeCoordScale;
+
+	float ProbeTMin;
+
+	/** Offset applied to UVs so that only new or dirty areas of the volume texture have to be updated. */
+	FVector VolumeUVOffset;
+
+	/* Distance between two probes. */
+	float CellSize;
+};
+
+class FRadianceCacheState
+{
+public:
+	FRadianceCacheState()
+	{}
+
+	TArray<FRadianceCacheClipmap> Clipmaps;
+
+	float ClipmapWorldExtent = 0.0f;
+	float ClipmapDistributionBase = 0.0f;
+
+	/** Clipmaps of probe indexes, used to lookup the probe index for a world space position. */
+	TRefCountPtr<IPooledRenderTarget> RadianceProbeIndirectionTexture;
+
+	TRefCountPtr<IPooledRenderTarget> RadianceProbeAtlasTexture;
+	/** Texture containing radiance cache probes, ready for sampling with bilinear border. */
+	TRefCountPtr<IPooledRenderTarget> FinalRadianceAtlas;
+	TRefCountPtr<IPooledRenderTarget> FinalIrradianceAtlas;
+	TRefCountPtr<IPooledRenderTarget> ProbeOcclusionAtlas;
+
+	TRefCountPtr<IPooledRenderTarget> DepthProbeAtlasTexture;
+
+	TRefCountPtr<FRDGPooledBuffer> ProbeAllocator;
+	TRefCountPtr<FRDGPooledBuffer> ProbeFreeListAllocator;
+	TRefCountPtr<FRDGPooledBuffer> ProbeFreeList;
+	TRefCountPtr<FRDGPooledBuffer> ProbeLastUsedFrame;
+	TRefCountPtr<FRDGPooledBuffer> ProbeLastTracedFrame;
+	TRefCountPtr<FRDGPooledBuffer> ProbeWorldOffset;
+	TRefCountPtr<IPooledRenderTarget> OctahedralSolidAngleTextureRT;
+
+	void ReleaseTextures()
+	{
+		RadianceProbeIndirectionTexture.SafeRelease();
+		RadianceProbeAtlasTexture.SafeRelease();
+		FinalRadianceAtlas.SafeRelease();
+		FinalIrradianceAtlas.SafeRelease();
+		ProbeOcclusionAtlas.SafeRelease();
+		DepthProbeAtlasTexture.SafeRelease();
+		ProbeAllocator.SafeRelease();
+		ProbeFreeListAllocator.SafeRelease();
+		ProbeFreeList.SafeRelease();
+		ProbeLastUsedFrame.SafeRelease();
+		ProbeLastTracedFrame.SafeRelease();
+		ProbeWorldOffset.SafeRelease();
+	}
+
+#if WITH_MGPU
+	void AddCrossGPUTransfers(uint32 SourceGPUIndex, uint32 DestGPUIndex, TArray<FTransferResourceParams>& OutTransfers)
+	{
+		#define TRANSFER_LUMEN_RESOURCE(NAME) \
+			if (NAME) OutTransfers.Add(FTransferResourceParams(NAME->GetRHI(), SourceGPUIndex, DestGPUIndex, false, false))
+
+		TRANSFER_LUMEN_RESOURCE(RadianceProbeIndirectionTexture);
+		TRANSFER_LUMEN_RESOURCE(RadianceProbeAtlasTexture);
+		TRANSFER_LUMEN_RESOURCE(FinalRadianceAtlas);
+		TRANSFER_LUMEN_RESOURCE(FinalIrradianceAtlas);
+		TRANSFER_LUMEN_RESOURCE(ProbeOcclusionAtlas);
+		TRANSFER_LUMEN_RESOURCE(DepthProbeAtlasTexture);
+		TRANSFER_LUMEN_RESOURCE(ProbeAllocator);
+		TRANSFER_LUMEN_RESOURCE(ProbeFreeListAllocator);
+		TRANSFER_LUMEN_RESOURCE(ProbeFreeList);
+		TRANSFER_LUMEN_RESOURCE(ProbeLastUsedFrame);
+		TRANSFER_LUMEN_RESOURCE(ProbeLastTracedFrame);
+		TRANSFER_LUMEN_RESOURCE(ProbeWorldOffset);
+
+		#undef TRANSFER_LUMEN_RESOURCE
+	}
+#endif  // WITH_MGPU
+
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 };
 
 class FLumenViewState
@@ -122,17 +246,12 @@ public:
 	FReflectionTemporalState ReflectionState;
 	TRefCountPtr<IPooledRenderTarget> DepthHistoryRT;
 
-	// Voxel clipmaps
-	int32 NumClipmapLevels = 0;
-	FLumenVoxelLightingClipmapState VoxelLightingClipmapState[MaxVoxelClipmapLevels];
-	TRefCountPtr<IPooledRenderTarget> VoxelLighting;
-	TRefCountPtr<FRDGPooledBuffer>     VoxelVisBuffer;
-	const FScene* VoxelVisBufferCachedScene = nullptr;
-	FIntVector VoxelGridResolution;
-
 	// Translucency
 	TRefCountPtr<IPooledRenderTarget> TranslucencyVolume0;
 	TRefCountPtr<IPooledRenderTarget> TranslucencyVolume1;
+
+	FRadianceCacheState RadianceCacheState;
+	FRadianceCacheState TranslucencyVolumeRadianceCacheState;
 
 	void SafeRelease()
 	{
@@ -140,11 +259,30 @@ public:
 		ReflectionState.SafeRelease();
 		DepthHistoryRT.SafeRelease();
 
-		VoxelLighting.SafeRelease();
-		VoxelVisBuffer.SafeRelease();
 		TranslucencyVolume0.SafeRelease();
 		TranslucencyVolume1.SafeRelease();
 	}
+
+#if WITH_MGPU
+	void AddCrossGPUTransfers(uint32 SourceGPUIndex, uint32 DestGPUIndex, TArray<FTransferResourceParams>& OutTransfers)
+	{
+		#define TRANSFER_LUMEN_RESOURCE(NAME) \
+			if (NAME) OutTransfers.Add(FTransferResourceParams(NAME->GetRHI(), SourceGPUIndex, DestGPUIndex, false, false))
+
+		TRANSFER_LUMEN_RESOURCE(DepthHistoryRT);
+		TRANSFER_LUMEN_RESOURCE(TranslucencyVolume0);
+		TRANSFER_LUMEN_RESOURCE(TranslucencyVolume1);
+
+		#undef TRANSFER_LUMEN_RESOURCE
+
+		ScreenProbeGatherState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
+		ReflectionState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
+		RadianceCacheState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
+		TranslucencyVolumeRadianceCacheState.AddCrossGPUTransfers(SourceGPUIndex, DestGPUIndex, OutTransfers);
+	}
+#endif  // WITH_MGPU
+
+	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 };
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLumenCardPassUniformParameters, RENDERER_API)

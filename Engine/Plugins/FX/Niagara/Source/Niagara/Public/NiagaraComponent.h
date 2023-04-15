@@ -32,7 +32,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraSystemFinished, class UNia
 * @see ANiagaraActor
 * @see UNiagaraSystem
 */
-UCLASS(ClassGroup = (Rendering, Common), hidecategories = Object, hidecategories = Physics, hidecategories = Collision, showcategories = Trigger, editinlinenew, meta = (BlueprintSpawnableComponent, DisplayName = "Niagara Particle System Component"))
+UCLASS(ClassGroup = (Rendering, Common), Blueprintable, hidecategories = Object, hidecategories = Physics, hidecategories = Collision, showcategories = Trigger, editinlinenew, meta = (BlueprintSpawnableComponent, DisplayName = "Niagara Particle System Component"))
 class NIAGARA_API UNiagaraComponent : public UFXSystemComponent
 {
 	friend struct FNiagaraScalabilityManager;
@@ -59,6 +59,8 @@ public:
 	uint32 GetApproxMemoryUsage() const override;
 	virtual void ActivateSystem(bool bFlagAsJustAttached = false) override;
 	/********* UFXSystemComponent *********/
+
+	virtual FName GetFNameForStatID() const override;
 
 private:
 	UPROPERTY(EditAnywhere, Category="Niagara", meta = (DisplayName = "Niagara System Asset"))
@@ -139,7 +141,8 @@ private:
 	//~ Begin UActorComponent Interface.
 protected:
 	virtual void OnRegister() override;
-	virtual void OnUnregister() override;
+	virtual void OnUnregister() override; 
+	virtual void ApplyWorldOffset(const FVector& InOffset, bool bWorldShift) override;
 	virtual void OnEndOfFrameUpdateDuringTick() override;
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void DestroyRenderState_Concurrent() override;
@@ -184,7 +187,6 @@ public:
 
 	FORCEINLINE bool IsComplete() const { return SystemInstanceController ? SystemInstanceController->IsComplete() : true; }
 
-	FORCEINLINE float GetSafeTimeSinceRendered(float WorldTime)const;
 private:
 
 	//Internal versions that can be called from the scalability code.
@@ -215,7 +217,7 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
-
+	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
 	virtual void OnAttachmentChanged() override;
 	//~ End UPrimitiveComponent Interface
 
@@ -408,7 +410,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Vector4)"))
 	void SetVariableVec4(FName InVariableName, const FVector4& InValue);
 
-
 	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Quaternion)"))
 	void SetNiagaraVariableQuat(const FString& InVariableName, const FQuat& InValue);
@@ -416,6 +417,14 @@ public:
 	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Quaternion)"))
 	void SetVariableQuat(FName InVariableName, const FQuat& InValue);
+
+	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Matrix)"))
+	void SetNiagaraVariableMatrix(const FString& InVariableName, const FMatrix& InValue);
+
+	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
+	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable (Matrix)"))
+	void SetVariableMatrix(FName InVariableName, const FMatrix& InValue);
 
 	/** Sets a Niagara Vector3 parameter by name, overriding locally if necessary.*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara Variable By String (Vector3)"))
@@ -543,6 +552,9 @@ public:
 	//~ Begin UObject Interface.
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
@@ -696,6 +708,31 @@ public:
 	uint32 bWaitForCompilationOnActivate : 1;
 #endif
 
+	/**
+	Sets the simulation cache to use for the component.
+	A null SimCache parameter will clear the active simulation cache.
+	When clearing a simulation cache that has been running you may wish to reset or continue, this option is only
+	valid when using a full simulation cache.  A renderer only cache will always reset as we can not continue the
+	simulation due to missing simulation data.
+	*/
+	UFUNCTION(BlueprintCallable, Category = SimCache)
+	void SetSimCache(UNiagaraSimCache* SimCache, bool bResetSystem = false);
+
+	/**
+	Get the active simulation cache, will return null if we do not have an active one.
+	*/
+	UFUNCTION(BlueprintCallable, Category = SimCache)
+	UNiagaraSimCache* GetSimCache() const;
+
+	/**
+	Clear any active simulation cache.
+	When clearing a simulation cache that has been running you may wish to reset or continue, this option is only
+	valid when using a full simulation cache.  A renderer only cache will always reset as we can not continue the
+	simulation due to missing simulation data.
+	*/
+	UFUNCTION(BlueprintCallable, Category = SimCache)
+	void ClearSimCache(bool bResetSystem = false) { SetSimCache(nullptr, bResetSystem); }
+
 	/** Set whether this component is allowed to perform scalability checks and potentially be culled etc. Occasionally it is useful to disable this for specific components. E.g. Effects on the local player. */
 	UFUNCTION(BlueprintSetter, Category = Scalability, meta = (Keywords = "LOD scalability"))
 	void SetAllowScalability(bool bAllow);
@@ -764,6 +801,7 @@ private:
 
 	FDelegateHandle AssetExposedParametersChangedHandle;
 
+	UNiagaraEffectType* ScalabilityEffectType = nullptr;
 	int32 ScalabilityManagerHandle;
 
 	float ForceUpdateTransformTime;
@@ -775,7 +813,10 @@ private:
 
 	float CustomTimeDilation = 1.0f;
 
-	UPROPERTY()
+	UPROPERTY(transient)
+	TObjectPtr<class UNiagaraSimCache> SimCache;
+
+	UPROPERTY(transient)
 	TObjectPtr<class UNiagaraCullProxyComponent> CullProxy;
 
 	void CreateCullProxy(bool bForce = false);
@@ -823,7 +864,7 @@ public:
 
 	const FVector3f& GetLWCRenderTile() const { return RenderData ? RenderData->LWCRenderTile : FVector3f::ZeroVector; }
 
-	TUniformBuffer<FPrimitiveUniformShaderParameters>& GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
+	TUniformBuffer<FPrimitiveUniformShaderParameters>* GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
 	FRHIUniformBuffer* GetCustomUniformBuffer(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
 
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
@@ -842,6 +883,8 @@ public:
 
 private:
 	void ReleaseRenderThreadResources();
+
+	void ReleaseUniformBuffers(bool bEmpty);
 
 	//~ Begin FPrimitiveSceneProxy Interface.
 	virtual void CreateRenderThreadResources() override;
@@ -868,7 +911,7 @@ private:
 
 private:
 	/** Custom Uniform Buffers, allows us to have renderer specific data packed inside such as pre-skinned bounds. */
-	mutable TMap<uint64, TUniformBuffer<FPrimitiveUniformShaderParameters>> CustomUniformBuffers;
+	mutable TMap<uint64, TUniformBuffer<FPrimitiveUniformShaderParameters>*> CustomUniformBuffers;
 
 	/** The data required to render a single instance of a NiagaraSystem */
 	FNiagaraSystemRenderData* RenderData = nullptr;
@@ -881,12 +924,6 @@ private:
 
 	FDynamicData DynamicData;
 };
-
-extern float GLastRenderTimeSafetyBias;
-FORCEINLINE float UNiagaraComponent::GetSafeTimeSinceRendered(float WorldTime)const
-{
-	return FMath::Max(0.0f, WorldTime - GetLastRenderTime() - GLastRenderTimeSafetyBias);
-}
 
 FORCEINLINE void UNiagaraComponent::SetLODDistance(float InLODDistance, float InMaxLODDistance)
 {

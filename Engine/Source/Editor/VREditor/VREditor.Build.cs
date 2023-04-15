@@ -6,6 +6,12 @@ namespace UnrealBuildTool.Rules
 	{
         public VREditor(ReadOnlyTargetRules Target) : base(Target)
 		{
+			PrivateIncludePaths.AddRange(
+				new string[] {
+					System.IO.Path.Combine(GetModuleDirectory("LevelEditor"), "Private"),
+				}
+			);
+
 			PublicIncludePaths.Add(ModuleDirectory);
 
             PrivateDependencyModuleNames.AddRange(
@@ -18,7 +24,7 @@ namespace UnrealBuildTool.Rules
                     "InputCore",
 				    "Slate",
 					"SlateCore",
-                    "EditorStyle",
+                    
 					"EditorFramework",
 					"UnrealEd",
 					"UMG",
@@ -27,7 +33,8 @@ namespace UnrealBuildTool.Rules
 					"Analytics",
                     "LevelSequence",
                     "Sequencer",
-                    "Projects"
+                    "Projects",
+					"ToolMenus",
 				}
 			);
 
@@ -39,7 +46,9 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-					"PlacementMode"
+					"AssetTools",
+					"LevelEditor",
+					"PlacementMode",
 				}
 			);
 
@@ -48,14 +57,6 @@ namespace UnrealBuildTool.Rules
                     "PlacementMode"
                 }
 			);
-
-            PrivateIncludePaths.AddRange(
-                new string[] {
-                    "Editor/VREditor/UI",
-                    "Editor/VREditor/Teleporter",
-                }
-            );
-
 		}
 	}
 }

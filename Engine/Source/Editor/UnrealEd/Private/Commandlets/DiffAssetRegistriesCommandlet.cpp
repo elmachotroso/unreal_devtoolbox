@@ -171,8 +171,11 @@ int32 UDiffAssetRegistriesCommandlet::Main(const FString& FullCommandLine)
 		UE_LOG(LogDiffAssets, Error, TEXT("No platform specified on the commandline use \"-platform=<platform>\"."));
 	}
 
+	TArray<FString> LocalSearchPaths = AssetRegistrySearchPath;
+	LocalSearchPaths.AddUnique(TEXT("[buildversion]"));
+
 	auto FindAssetRegistryPath = [&](const FString& PathVal, FString& OutPath) {
-			for (const FString& SearchPath : AssetRegistrySearchPath)
+			for (const FString& SearchPath : LocalSearchPaths)
 			{
 				FString FinalSearchPath = SearchPath;
 				FinalSearchPath.ReplaceInline(TEXT("[buildversion]"), *PathVal);
@@ -510,10 +513,13 @@ bool	UDiffAssetRegistriesCommandlet::IsInRelevantChunk(FAssetRegistryState& InRe
 
 	}
 	TArrayView<FAssetData const* const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
-
-	if (Assets.Num() && Assets[0]->ChunkIDs.Num())
+	if (!Assets.IsEmpty())
 	{
-		return Assets[0]->ChunkIDs.Contains(DiffChunkID);
+		const FAssetData::FChunkArrayView ChunkIDs = Assets[0]->GetChunkIDs();
+		if (!ChunkIDs.IsEmpty())
+		{
+			return ChunkIDs.Contains(DiffChunkID);
+		}
 	}
 
 	return true;
@@ -525,10 +531,10 @@ FName UDiffAssetRegistriesCommandlet::GetClassName(FAssetRegistryState& InRegist
 	{
 		TArrayView<FAssetData const * const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
 
-		FName NewName = NAME_None;
+		FName NewName;
 		if (Assets.Num() > 0)
 		{
-			NewName = Assets[0]->AssetClass;
+			NewName = Assets[0]->AssetClassPath.GetAssetName();
 		}
 		else
 		{
@@ -553,15 +559,15 @@ TArray<int32> UDiffAssetRegistriesCommandlet::GetAssetChunks(FAssetRegistryState
 	if (ChunkIdByAssetPath.Contains(InAssetPath) == false)
 	{
 		TArrayView<FAssetData const* const> Assets = InRegistryState.GetAssetsByPackageName(InAssetPath);
-
-		if (Assets.Num() > 0 && Assets[0]->ChunkIDs.Num() > 0)
+		const FAssetData::FChunkArrayView ChunkIDs = Assets.IsEmpty() ? FAssetData::FChunkArrayView() : Assets[0]->GetChunkIDs();
+		if (!ChunkIDs.IsEmpty())
 		{
-			if (Assets[0]->ChunkIDs.Num() > 1)
+			if (ChunkIDs.Num() > 1)
 			{
 				UE_LOG(LogDiffAssets, Log, TEXT("Multiple ChunkIds for asset %s"), *InAssetPath.ToString());
 			}
 
-			for (int32 id : Assets[0]->ChunkIDs)
+			for (int32 id : ChunkIDs)
 			{
 				ChangesByChunk.FindOrAdd(id).IncludedAssets.Add(InAssetPath);
 				ChunkIdByAssetPath.Add(InAssetPath, id);

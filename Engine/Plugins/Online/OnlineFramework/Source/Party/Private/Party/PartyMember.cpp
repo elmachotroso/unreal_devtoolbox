@@ -6,8 +6,10 @@
 #include "SocialManager.h"
 #include "SocialToolkit.h"
 
-#include "OnlineSubsystem.h"
+#include "OnlineSubsystemUtils.h"
 #include "Interfaces/OnlinePartyInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PartyMember)
 
 //////////////////////////////////////////////////////////////////////////
 // PartyMemberRepData
@@ -31,6 +33,8 @@ void FPartyMemberRepData::CompareAgainst(const FOnlinePartyRepDataBase& OldData)
 	ComparePlatformDataUniqueId(TypedOldData);
 	ComparePlatformDataSessionId(TypedOldData);
 	CompareCrossplayPreference(TypedOldData);
+	CompareJoinInProgressDataRequest(TypedOldData);
+	CompareJoinInProgressDataResponses(TypedOldData);
 }
 
 const USocialParty* FPartyMemberRepData::GetOwnerParty() const
@@ -70,6 +74,7 @@ void UPartyMember::InitializePartyMember(const FOnlinePartyMemberConstRef& InOss
 	{
 		OssPartyMember = InOssMember;
 		OssPartyMember->OnMemberConnectionStatusChanged().AddUObject(this, &ThisClass::HandleMemberConnectionStatusChanged);
+		OssPartyMember->OnMemberAttributeChanged().AddUObject(this, &ThisClass::HandleMemberAttributeChanged);
 		USocialToolkit* OwnerToolkit = GetParty().GetSocialManager().GetSocialToolkit(OssPartyMember->GetUserId());
 		// If we are not a local user then we simply get the first local user's toolkit
 		if (OwnerToolkit == nullptr)
@@ -104,6 +109,32 @@ void UPartyMember::InitializeLocalMemberRepData()
 
 	MemberDataReplicator->SetPlatformDataPlatform(IOnlineSubsystem::GetLocalPlatformName());
 	MemberDataReplicator->SetPlatformDataUniqueId(SocialUser->GetUserId(ESocialSubsystem::Platform));
+	
+	const USocialParty& CurrentParty = GetParty();
+	
+	FString JoinMethod;
+	if (const USocialManager::FJoinPartyAttempt* JoinAttempt = CurrentParty.GetSocialManager().GetJoinAttemptInProgress(CurrentParty.GetPartyTypeId()))
+	{
+		JoinMethod = JoinAttempt->JoinMethod.ToString();
+		UE_LOG(LogParty, Verbose, TEXT("Join method from join attempt for local member is %s."), *JoinMethod);
+	}
+	else
+	{
+		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+		FOnlinePartyDataConstPtr PartyMemberData = PartyInterface.IsValid() ? PartyInterface->GetPartyMemberData(*CurrentParty.GetOwningLocalUserId(), CurrentParty.GetPartyId(), *GetPrimaryNetId(), DefaultPartyDataNamespace) : nullptr;
+		
+		if (PartyMemberData.IsValid())
+		{
+			FVariantData AttrValue;
+			if (PartyMemberData->GetAttribute(TEXT("JoinMethod"), AttrValue))
+			{
+				JoinMethod = AttrValue.ToString();
+				UE_LOG(LogParty, Verbose, TEXT("Join method recovered from the Party member data is %s."), *JoinMethod);
+			}
+		}
+	}
+
+	MemberDataReplicator->SetJoinMethod(JoinMethod);
 }
 
 void UPartyMember::Shutdown()
@@ -278,3 +309,12 @@ void UPartyMember::HandleMemberConnectionStatusChanged(const FUniqueNetId& Chang
 {
 	OnMemberConnectionStatusChanged().Broadcast();
 }
+
+void UPartyMember::HandleMemberAttributeChanged(const FUniqueNetId& ChangedUserId, const FString& Attribute, const FString& NewValue, const FString& OldValue)
+{
+	if (Attribute == USER_ATTR_DISPLAYNAME)
+	{
+		OnDisplayNameChanged().Broadcast();
+	}
+}
+

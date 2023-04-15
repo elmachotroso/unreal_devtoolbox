@@ -74,11 +74,13 @@ public:
 		, _MinFractionalDigits(DefaultMinFractionalDigits)
 		, _MaxFractionalDigits(DefaultMaxFractionalDigits)
 		, _AlwaysUsesDeltaSnap(false)
+		, _EnableSlider(true)
 		, _Delta(0)
 		, _ShiftMouseMovePixelPerDelta(1)
 		, _SupportDynamicSliderMaxValue(false)
 		, _SupportDynamicSliderMinValue(false)
 		, _SliderExponent(1.f)
+		, _EnableWheel(true)
 		, _Font(FCoreStyle::Get().GetFontStyle(TEXT("NormalFont")))
 		, _ContentPadding(FMargin(2.0f, 1.0f))
 		, _OnValueChanged()
@@ -107,6 +109,8 @@ public:
 		SLATE_ATTRIBUTE(TOptional< int32 >, MaxFractionalDigits)
 		/** Whether typed values should use delta snapping, defaults to false */
 		SLATE_ATTRIBUTE(bool, AlwaysUsesDeltaSnap)
+		/** Whether this spin box should have slider feature enabled, defaults to true */
+		SLATE_ATTRIBUTE(bool, EnableSlider)
 		/** Delta to increment the value as the slider moves.  If not specified will determine automatically */
 		SLATE_ATTRIBUTE(NumericType, Delta)
 		/** How many pixel the mouse must move to change the value of the delta step */
@@ -125,6 +129,10 @@ public:
 		SLATE_ATTRIBUTE(float, SliderExponent)
 		/** When use exponential scale for the slider which is the neutral value */
 		SLATE_ATTRIBUTE(NumericType, SliderExponentNeutralValue)
+		/** Whether this spin box should have mouse wheel feature enabled, defaults to true */
+		SLATE_ARGUMENT(bool, EnableWheel)
+		/** Step to increment or decrement the value by when scrolling the mouse wheel. If not specified will determine automatically */
+		SLATE_ATTRIBUTE(TOptional< NumericType >, WheelStep)
 		/** Font used to display text in the slider */
 		SLATE_ATTRIBUTE(FSlateFontInfo, Font)
 		/** Padding to add around this widget and its internal widgets */
@@ -145,6 +153,8 @@ public:
 		SLATE_ATTRIBUTE(float, MinDesiredWidth)
 		/** How should the value be justified in the spinbox. */
 		SLATE_ATTRIBUTE(ETextJustify::Type, Justification)
+		/** What keyboard to display. */
+		SLATE_ATTRIBUTE(EKeyboardType, KeyboardType)
 		/** Provide custom type conversion functionality to this spin box */
 		SLATE_ARGUMENT(TSharedPtr< INumericTypeInterface<NumericType> >, TypeInterface)
 		/** If refresh requests for the viewport should happen for all value changes **/
@@ -190,26 +200,31 @@ public:
 		SetMinFractionalDigits(MinFractionalDigits);
 
 		AlwaysUsesDeltaSnap = InArgs._AlwaysUsesDeltaSnap;
+		EnableSlider = InArgs._EnableSlider;
 
 		SupportDynamicSliderMaxValue = InArgs._SupportDynamicSliderMaxValue;
 		SupportDynamicSliderMinValue = InArgs._SupportDynamicSliderMinValue;
 		OnDynamicSliderMaxValueChanged = InArgs._OnDynamicSliderMaxValueChanged;
 		OnDynamicSliderMinValueChanged = InArgs._OnDynamicSliderMinValueChanged;
 
+		bEnableWheel = InArgs._EnableWheel;
+		WheelStep = InArgs._WheelStep;
+
 		bPreventThrottling = InArgs._PreventThrottling;
 
 		CachedExternalValue = ValueAttribute.Get();
 		CachedValueString = Interface->ToString(CachedExternalValue);
+		bCachedValueStringDirty = false;
 
 		InternalValue = (double)CachedExternalValue;
 
 		if (SupportDynamicSliderMaxValue.Get() && CachedExternalValue > GetMaxSliderValue())
 		{
-			ApplySliderMaxValueChanged(CachedExternalValue - GetMaxSliderValue(), true);
+			ApplySliderMaxValueChanged(float(CachedExternalValue - GetMaxSliderValue()), true);
 		}
 		else if (SupportDynamicSliderMinValue.Get() && CachedExternalValue < GetMinSliderValue())
 		{
-			ApplySliderMinValueChanged(CachedExternalValue - GetMinSliderValue(), true);
+			ApplySliderMinValueChanged(float(CachedExternalValue - GetMinSliderValue()), true);
 		}
 
 		UpdateIsSpinRangeUnlimited();
@@ -274,7 +289,7 @@ public:
 				.ClearKeyboardFocusOnCommit(InArgs._ClearKeyboardFocusOnCommit)
 				.SelectAllTextOnCommit(InArgs._SelectAllTextOnCommit)
 				.MinDesiredWidth(this, &SSpinBox<NumericType>::GetTextMinDesiredWidth)
-				.VirtualKeyboardType(EKeyboardType::Keyboard_Number)
+				.VirtualKeyboardType(InArgs._KeyboardType)
 				.Justification(InArgs._Justification)
 				.VirtualKeyboardTrigger(EVirtualKeyboardTrigger::OnAllFocusEvents)
 				.ContextMenuExtender(InArgs._ContextMenuExtender)
@@ -511,7 +526,8 @@ public:
 	 */
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
-		if (PointerDraggingSliderIndex == MouseEvent.GetPointerIndex())
+		const bool bEnableSlider = GetEnableSlider();
+		if (PointerDraggingSliderIndex == MouseEvent.GetPointerIndex() && bEnableSlider)
 		{
 			if (!this->HasMouseCapture())
 			{
@@ -524,7 +540,7 @@ public:
 
 			if (!bDragging)
 			{
-				DistanceDragged += FMath::Abs(MouseEvent.GetCursorDelta().X);
+				DistanceDragged += (float)FMath::Abs(MouseEvent.GetCursorDelta().X);
 				if (DistanceDragged > FSlateApplication::Get().GetDragTriggerDistance())
 				{
 					ExitTextMode();
@@ -543,7 +559,7 @@ public:
 
 				// A minimum slider width to use for calculating deltas in the slider-range space
 				const float MinSliderWidth = 100.f;
-				float SliderWidthInSlateUnits = FMath::Max(MyGeometry.GetDrawSize().X, MinSliderWidth);
+				float SliderWidthInSlateUnits = FMath::Max((float)MyGeometry.GetDrawSize().X, MinSliderWidth);
 
 				const int32 CachedShiftMouseMovePixelPerDelta = ShiftMouseMovePixelPerDelta.Get();
 				if (CachedShiftMouseMovePixelPerDelta > 1 && MouseEvent.IsShiftDown())
@@ -553,7 +569,7 @@ public:
 
 				if (MouseEvent.IsControlDown())
 				{
-					float DeltaToAdd = MouseEvent.GetCursorDelta().X / SliderWidthInSlateUnits;
+					float DeltaToAdd = (float)MouseEvent.GetCursorDelta().X / SliderWidthInSlateUnits;
 
 					if (SupportDynamicSliderMaxValue.Get() && (NumericType)InternalValue == GetMaxSliderValue())
 					{
@@ -590,7 +606,7 @@ public:
 					FractionFilled *= SliderWidthInSlateUnits;
 
 					// Now add the delta to the fraction filled, this causes the spin.
-					FractionFilled += MouseEvent.GetCursorDelta().X;
+					FractionFilled += (float)MouseEvent.GetCursorDelta().X;
 
 					// Clamp the fraction to be within the bounds of the geometry.
 					FractionFilled = FMath::Clamp(FractionFilled, 0.0f, SliderWidthInSlateUnits);
@@ -619,15 +635,15 @@ public:
 				else
 				{
 					// If this control has a specified delta and sensitivity then we use that instead of the current value for determining how much to change.
-					const float Sign = (MouseEvent.GetCursorDelta().X > 0) ? 1.f : -1.f;
+					const double Sign = (MouseEvent.GetCursorDelta().X > 0) ? 1.0 : -1.0;
 					if (LinearDeltaSensitivity.IsSet() && LinearDeltaSensitivity.Get() != 0 && Delta.IsSet() && Delta.Get() > 0)
 					{
-						const float MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / LinearDeltaSensitivity.Get());
-						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((float)Delta.Get(), SliderExponent.Get()));
+						const double MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / LinearDeltaSensitivity.Get());
+						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((double)Delta.Get(), SliderExponent.Get()));
 					}
 					else
 					{
-						const float MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / SliderWidthInSlateUnits);
+						const double MouseDelta = FMath::Abs(MouseEvent.GetCursorDelta().X / SliderWidthInSlateUnits);
 						const double CurrentValue = FMath::Clamp<double>(FMath::Abs(InternalValue), 1.0, (double)std::numeric_limits<NumericType>::max());
 						NewValue = InternalValue + (Sign * MouseDelta * FMath::Pow((float)CurrentValue, SliderExponent.Get()));
 					}
@@ -644,8 +660,58 @@ public:
 		return FReply::Unhandled();
 	}
 
+	/**
+	 * Called when the mouse wheel is spun. This event is bubbled.
+	 *
+	 * @param  MouseEvent  Mouse event
+	 * @return  Returns whether the event was handled, along with other possible actions
+	 */
+	virtual FReply OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (bEnableWheel && PointerDraggingSliderIndex == INDEX_NONE && HasKeyboardFocus())
+		{
+			// If there is no WheelStep defined, we use 1.0 (Or 0.1 if slider range is <= 10)
+			constexpr bool bIsIntegral = TIsIntegral<NumericType>::Value;
+			const bool bIsSmallStep = !bIsIntegral && (GetMaxSliderValue() - GetMinSliderValue()) <= 10.0;
+			double Step = WheelStep.IsSet() && WheelStep.Get().IsSet() ? WheelStep.Get().GetValue() : (bIsSmallStep ? 0.1 : 1.0);
+
+			if (MouseEvent.IsControlDown())
+			{
+				// If no value is set for WheelSmallStep, we use the DefaultStep divided by 10
+				Step /= 10.0;
+			}
+			else if (MouseEvent.IsShiftDown())
+			{
+				// If no value is set for WheelBigStep, we use the DefaultStep multiplied by 10
+				Step *= 10.0;
+			}
+
+			const double Sign = (MouseEvent.GetWheelDelta() > 0) ? 1.0 : -1.0;
+			const double NewValue = InternalValue + (Sign * Step);
+			const NumericType RoundedNewValue = RoundIfIntegerValue(NewValue);
+
+			// First SetText is to update the value before calling CommitValue. Otherwise, when the text lose
+			// focus from the CommitValue, it will override the value we just committed.
+			// The second SetText is to update the text to the InternalValue since it could have been clamped.
+			EditableText->SetText(FText::FromString(Interface->ToString((NumericType)NewValue)));
+			CommitValue(RoundedNewValue, NewValue, CommittedViaSpin, ETextCommit::OnEnter);
+			EditableText->SetText(FText::FromString(Interface->ToString((NumericType)InternalValue)));
+
+			return FReply::Handled();
+		}
+
+		return FReply::Unhandled();
+	}
+
 	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override
 	{
+		const bool bEnableSlider = GetEnableSlider();
+
+		if (!bEnableSlider)
+		{
+			return FCursorReply::Cursor(EMouseCursor::Default);
+		}
+
 		return bDragging ?
 			FCursorReply::Cursor(EMouseCursor::None) :
 			FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
@@ -772,6 +838,7 @@ public:
 	void SetMinFractionalDigits(const TAttribute<TOptional<int32>>& InMinFractionalDigits)
 	{
 		Interface->SetMinFractionalDigits((InMinFractionalDigits.Get().IsSet()) ? InMinFractionalDigits.Get() : MinFractionalDigits);
+		bCachedValueStringDirty = true;
 	}
 
 	/** See the MaxFractionalDigits attribute */
@@ -779,11 +846,16 @@ public:
 	void SetMaxFractionalDigits(const TAttribute<TOptional<int32>>& InMaxFractionalDigits)
 	{
 		Interface->SetMaxFractionalDigits((InMaxFractionalDigits.Get().IsSet()) ? InMaxFractionalDigits.Get() : MaxFractionalDigits);
+		bCachedValueStringDirty = true;
 	}
 
 	/** See the AlwaysUsesDeltaSnap attribute */
 	bool GetAlwaysUsesDeltaSnap() const { return AlwaysUsesDeltaSnap.Get(); }
 	void SetAlwaysUsesDeltaSnap(bool bNewValue) { AlwaysUsesDeltaSnap.Set(bNewValue); }
+
+	/** See the EnableSlider attribute */
+	bool GetEnableSlider() const { return EnableSlider.Get(); }
+	void SetEnableSlider(bool bNewValue) { EnableSlider.Set(bNewValue); }
 
 	/** See the Delta attribute */
 	NumericType GetDelta() const { return Delta.Get(); }
@@ -816,11 +888,12 @@ protected:
 	FString GetValueAsString() const
 	{
 		NumericType CurrentValue = ValueAttribute.Get();
-		if (CurrentValue == CachedExternalValue)
+		if (!bCachedValueStringDirty && CurrentValue == CachedExternalValue)
 		{
 			return CachedValueString;
 		}
 
+		bCachedValueStringDirty = false;
 		return Interface->ToString(CurrentValue);
 	}
 
@@ -950,11 +1023,11 @@ protected:
 		// Update the max slider value based on the current value if we're in dynamic mode
 		if (SupportDynamicSliderMaxValue.Get() && ValueAttribute.Get() > GetMaxSliderValue())
 		{
-			ApplySliderMaxValueChanged(ValueAttribute.Get() - GetMaxSliderValue(), true);
+			ApplySliderMaxValueChanged(float(ValueAttribute.Get() - GetMaxSliderValue()), true);
 		}
 		else if (SupportDynamicSliderMinValue.Get() && ValueAttribute.Get() < GetMinSliderValue())
 		{
-			ApplySliderMinValueChanged(ValueAttribute.Get() - GetMinSliderValue(), true);
+			ApplySliderMinValueChanged(float(ValueAttribute.Get() - GetMinSliderValue()), true);
 		}
 
 		if (CommitMethod == CommittedViaTypeIn || CommitMethod == CommittedViaArrowKey)
@@ -971,10 +1044,11 @@ protected:
 
 		// Update the cache of the external value to what the user believes the value is now.
 		const NumericType CurrentValue = ValueAttribute.Get();
-		if (CachedExternalValue != CurrentValue)
+		if (CachedExternalValue != CurrentValue || bCachedValueStringDirty)
 		{
 			CachedExternalValue = ValueAttribute.Get();
 			CachedValueString = Interface->ToString(CachedExternalValue);
+			bCachedValueStringDirty = false;
 		}
 
 		// This ensures that dragging is cleared if focus has been removed from this widget in one of the delegate calls, such as when spawning a modal dialog.
@@ -1057,8 +1131,10 @@ private:
 	TAttribute< TOptional<int32> > MinFractionalDigits;
 	TAttribute< TOptional<int32> > MaxFractionalDigits;
 	TAttribute<bool> AlwaysUsesDeltaSnap;
+	TAttribute<bool> EnableSlider;
 	TAttribute<bool> SupportDynamicSliderMaxValue;
 	TAttribute<bool> SupportDynamicSliderMinValue;
+	TAttribute< TOptional<NumericType> > WheelStep;
 	FOnDynamicSliderMinMaxValueChanged OnDynamicSliderMaxValueChanged;
 	FOnDynamicSliderMinMaxValueChanged OnDynamicSliderMinValueChanged;
 
@@ -1066,7 +1142,7 @@ private:
 	TAttribute<float> MinDesiredWidth;
 	float GetTextMinDesiredWidth() const
 	{
-		return FMath::Max(0.0f, MinDesiredWidth.Get() - Style->ArrowsImage.ImageSize.X);
+		return FMath::Max(0.0f, MinDesiredWidth.Get() - (float)Style->ArrowsImage.ImageSize.X);
 	}
 
 	/** Check whether a typed character is valid */
@@ -1098,9 +1174,6 @@ private:
 		}
 	}
 
-	/** Whether the user is dragging the slider */
-	bool bDragging;
-
 	/** Tracks which cursor is currently dragging the slider (e.g., the mouse cursor or a specific finger) */
 	int32 PointerDraggingSliderIndex;
 
@@ -1126,6 +1199,12 @@ private:
 	/** Used to prevent per-frame re-conversion of the cached numeric value to a string. */
 	FString CachedValueString;
 
+	/** Whetever the interfaced setting changed and the CachedValueString needs to be recomputed. */
+	mutable bool bCachedValueStringDirty;
+
+	/** Whether the user is dragging the slider */
+	bool bDragging;
+
 	/** Re-entrant guard for the text changed handler */
 	bool bIsTextChanging;
 
@@ -1134,6 +1213,9 @@ private:
 	 * When true, the viewport will be updated with every single change to the value during dragging
 	 */
 	bool bPreventThrottling;
+
+	/** Does this spin box have the mouse wheel feature enabled? */
+	bool bEnableWheel = true;
 };
 
 template<typename NumericType>

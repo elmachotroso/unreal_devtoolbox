@@ -4,7 +4,9 @@
 
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "Engine/World.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitAttributeChangeThreshold)
 
 UAbilityTask_WaitAttributeChangeThreshold::UAbilityTask_WaitAttributeChangeThreshold(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -92,7 +94,7 @@ bool UAbilityTask_WaitAttributeChangeThreshold::DoesValuePassComparison(float Va
 
 UAbilitySystemComponent* UAbilityTask_WaitAttributeChangeThreshold::GetFocusedASC()
 {
-	return ExternalOwner ? ExternalOwner : AbilitySystemComponent;
+	return ExternalOwner ? ToRawPtr(ExternalOwner) : AbilitySystemComponent.Get();
 }
 
 void UAbilityTask_WaitAttributeChangeThreshold::OnDestroy(bool AbilityEnded)
@@ -104,3 +106,4 @@ void UAbilityTask_WaitAttributeChangeThreshold::OnDestroy(bool AbilityEnded)
 
 	Super::OnDestroy(AbilityEnded);
 }
+

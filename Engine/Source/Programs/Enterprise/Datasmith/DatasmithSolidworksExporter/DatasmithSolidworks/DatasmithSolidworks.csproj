@@ -161,6 +161,7 @@
     <Compile Include="..\Private\DatasmithExporter.cs" />
     <Compile Include="..\Private\Document.cs" />
     <Compile Include="..\Private\GeometryChunk.cs" />
+    <Compile Include="..\Private\Lights.cs" />
     <Compile Include="..\Private\Material.cs" />
     <Compile Include="..\Private\MaterialUtils.cs" />
     <Compile Include="..\Private\MathUtils.cs" />

@@ -10,11 +10,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public GoogleARCoreBase(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(new string[]
-			{
-				"GoogleARCoreBase/Private",
-			});
-
 			PublicIncludePathModuleNames.Add("TargetPlatform");
 
 			PublicDependencyModuleNames.AddRange(new string[]
@@ -64,10 +59,6 @@ namespace UnrealBuildTool.Rules
 				// Register Plugin Language
 				string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
 				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "GoogleARCoreBase_APL.xml"));
-				
-				// Needed for including "AndroidEGL.h"
-				string EnginePath = Path.GetFullPath(Target.RelativeEnginePath);
-				PrivateIncludePaths.Add(Path.Combine(EnginePath, "Source/Runtime/OpenGLDrv/Private"));
 			}
 
 			if (Target.bBuildEditor)

@@ -2,6 +2,7 @@
 
 #include "OpenColorIODisplayExtension.h"
 
+#include "Containers/SortedMap.h"
 #include "CoreGlobals.h"
 #include "OpenColorIOConfiguration.h"
 #include "OpenColorIOColorTransform.h"
@@ -14,7 +15,6 @@
 #include "PipelineStateCache.h"
 #include "RenderTargetPool.h"
 #include "Shader.h"
-#include "OpenColorIORenderingPrivate.h"
 
 #include "RHI.h"
 #include "SceneView.h"
@@ -56,7 +56,7 @@ void FOpenColorIODisplayExtension::SetupView(FSceneViewFamily& InViewFamily, FSc
 	//Cache render resource so they are available on the render thread (Can't access UObjects on RT)
 	//If something fails, cache invalid resources to invalidate them
 	FOpenColorIOTransformResource* ShaderResource = nullptr;
-	FTextureResource* LUT3dResource = nullptr;
+	TSortedMap<int32, FTextureResource*> TransformTextureResources;
 
 	if (DisplayConfiguration.ColorConfiguration.ConfigurationSource == nullptr)
 	{
@@ -64,12 +64,11 @@ void FOpenColorIODisplayExtension::SetupView(FSceneViewFamily& InViewFamily, FSc
 	}
 	else
 	{
-		const bool bFoundTransform = DisplayConfiguration.ColorConfiguration.ConfigurationSource->GetShaderAndLUTResources(
+		const bool bFoundTransform = DisplayConfiguration.ColorConfiguration.ConfigurationSource->GetRenderResources(
 			InViewFamily.GetFeatureLevel()
-			, DisplayConfiguration.ColorConfiguration.SourceColorSpace.ColorSpaceName
-			, DisplayConfiguration.ColorConfiguration.DestinationColorSpace.ColorSpaceName
+			, DisplayConfiguration.ColorConfiguration
 			, ShaderResource
-			, LUT3dResource);
+			, TransformTextureResources);
 
 		if (!bFoundTransform)
 		{
@@ -79,7 +78,7 @@ void FOpenColorIODisplayExtension::SetupView(FSceneViewFamily& InViewFamily, FSc
 		{
 			// Transform was found, so shader must be there but doesn't mean the actual shader is available
 			check(ShaderResource);
-			if (ShaderResource->GetShaderGameThread<FOpenColorIOPixelShader_RDG>().IsNull())
+			if (ShaderResource->GetShaderGameThread<FOpenColorIOPixelShader>().IsNull())
 			{
 				UE_LOG(LogOpenColorIO, Warning, TEXT("Can't apply display look - Shader was invalid for Resource %s"), *ShaderResource->GetFriendlyName());
 
@@ -100,55 +99,13 @@ void FOpenColorIODisplayExtension::SetupView(FSceneViewFamily& InViewFamily, FSc
 	}
 
 	ENQUEUE_RENDER_COMMAND(ProcessColorSpaceTransform)(
-		[this, ShaderResource, LUT3dResource](FRHICommandListImmediate& RHICmdList)
+		[this, ShaderResource, TextureResources = MoveTemp(TransformTextureResources)](FRHICommandListImmediate& RHICmdList)
 		{
 			//Caches render thread resource to be used when applying configuration in PostRenderViewFamily_RenderThread
 			CachedResourcesRenderThread.ShaderResource = ShaderResource;
-			CachedResourcesRenderThread.LUT3dResource = LUT3dResource;
+			CachedResourcesRenderThread.TextureResources = TextureResources;
 		}
 	);
-}
-
-namespace {
-	template<typename TSetupFunction>
-	void DrawScreenPass(
-		FRHICommandList& RHICmdList,
-		const FSceneView& View,
-		const FScreenPassTextureViewport& OutputViewport,
-		const FScreenPassTextureViewport& InputViewport,
-		const FScreenPassPipelineState& PipelineState,
-		TSetupFunction SetupFunction)
-	{
-		PipelineState.Validate();
-
-		const FIntRect InputRect = InputViewport.Rect;
-		const FIntPoint InputSize = InputViewport.Extent;
-		const FIntRect OutputRect = OutputViewport.Rect;
-		const FIntPoint OutputSize = OutputRect.Size();
-
-		RHICmdList.SetViewport(OutputRect.Min.X, OutputRect.Min.Y, 0.0f, OutputRect.Max.X, OutputRect.Max.Y, 1.0f);
-
-		SetScreenPassPipelineState(RHICmdList, PipelineState);
-
-		// Setting up buffers.
-		SetupFunction(RHICmdList);
-
-		FIntPoint LocalOutputPos(FIntPoint::ZeroValue);
-		FIntPoint LocalOutputSize(OutputSize);
-		EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
-
-		DrawPostProcessPass(
-			RHICmdList,
-			LocalOutputPos.X, LocalOutputPos.Y, LocalOutputSize.X, LocalOutputSize.Y,
-			InputRect.Min.X, InputRect.Min.Y, InputRect.Width(), InputRect.Height(),
-			OutputSize,
-			InputSize,
-			PipelineState.VertexShader,
-			View.StereoViewIndex,
-			false,
-			DrawRectangleFlags);
-	}
-
 }
 
 void FOpenColorIODisplayExtension::SubscribeToPostProcessingPass(EPostProcessingPass PassId, FAfterPassCallbackDelegateArray& InOutPassCallbacks, bool bIsPassEnabled)
@@ -161,12 +118,9 @@ void FOpenColorIODisplayExtension::SubscribeToPostProcessingPass(EPostProcessing
 
 FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& InOutInputs)
 {
-
 	const FSceneViewFamily& ViewFamily = *View.Family;
-
-	const ERHIFeatureLevel::Type FeatureLevel = View.GetFeatureLevel();
-
-	const FScreenPassTexture& SceneColor = InOutInputs.Textures[(uint32)EPostProcessMaterialInput::SceneColor];
+	const FScreenPassTexture& SceneColor = InOutInputs.GetInput(EPostProcessMaterialInput::SceneColor);
+	check(SceneColor.IsValid());
 
 	//If the shader resource could not be found, skip this frame. The LUT isn't required
 	if (CachedResourcesRenderThread.ShaderResource == nullptr)
@@ -179,95 +133,35 @@ FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_Ren
 		return SceneColor;
 	}
 
-	if (!SceneColor.IsValid())
+	checkSlow(View.bIsViewInfo);
+	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
+	
+	FScreenPassRenderTarget Output = InOutInputs.OverrideOutput;
+
+	// If the override output is provided it means that this is the last pass in post processing.
+	if (!Output.IsValid())
 	{
-		return SceneColor;
+		Output = FScreenPassRenderTarget::CreateFromInput(GraphBuilder, SceneColor, ViewInfo.GetOverwriteLoadAction(), TEXT("OCIORenderTarget"));
 	}
 
-	RDG_EVENT_SCOPE(GraphBuilder, "OCIODisplayLook");
+	const FScreenPassTextureViewport InputViewport(SceneColor);
+	const FScreenPassTextureViewport OutputViewport(Output);
 
-	{
-		// Get shader from shader map.
-		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(ViewFamily.GetFeatureLevel());
+	TShaderRef<FOpenColorIOPixelShader> OCIOPixelShader = CachedResourcesRenderThread.ShaderResource->GetShader<FOpenColorIOPixelShader>();
 
-		
-		FScreenPassRenderTarget BackBufferRenderTarget;
+	const float DisplayGamma = View.Family->RenderTarget->GetDisplayGamma();
 
-		// If the override output is provided it means that this is the last pass in post processing.
-		if (InOutInputs.OverrideOutput.IsValid())
-		{
-			BackBufferRenderTarget = InOutInputs.OverrideOutput;
-		}
-		else
-		{
-			// Reusing the same output description for our back buffer as SceneColor when it's not overriden
-			FRDGTextureDesc OutputDesc = SceneColor.Texture->Desc;
-			OutputDesc.Flags |= TexCreate_RenderTargetable;
-			FLinearColor ClearColor(0., 0., 0., 0.);
-			OutputDesc.ClearValue = FClearValueBinding(ClearColor);
+	FOpenColorIOPixelShaderParameters* Parameters = GraphBuilder.AllocParameters<FOpenColorIOPixelShaderParameters>();
+	Parameters->InputTexture = SceneColor.Texture;
+	Parameters->InputTextureSampler = TStaticSamplerState<>::GetRHI();
+	OpenColorIOBindTextureResources(Parameters, CachedResourcesRenderThread.TextureResources);
 
-			FRDGTexture* BackBufferRenderTargetTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("BackBufferRenderTargetTexture"));
-			BackBufferRenderTarget = FScreenPassRenderTarget(BackBufferRenderTargetTexture, SceneColor.ViewRect, ERenderTargetLoadAction::EClear);
-		}
+	// There is a special case where post processing and tonemapper are disabled. In this case tonemapper applies a static display Inverse of Gamma which defaults to 2.2.
+	// In the case when Both PostProcessing and ToneMapper are disabled we apply gamma manually. In every other case we apply inverse gamma before applying OCIO.
+	Parameters->Gamma = (ViewFamily.EngineShowFlags.Tonemapper == 0) || (ViewFamily.EngineShowFlags.PostProcessing == 0) ? DefaultDisplayGamma : DefaultDisplayGamma / DisplayGamma;
+	Parameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
-		//Get input and output viewports. Backbuffer could be targeting a different region than input viewport
-		const FScreenPassTextureViewport SceneColorViewport(SceneColor);
-		const FScreenPassTextureViewport BackBufferViewport(BackBufferRenderTarget);
+	AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("OCIODisplayLook"), ViewInfo, OutputViewport, InputViewport, OCIOPixelShader, Parameters);
 
-		FScreenPassRenderTarget SceneColorRenderTarget(SceneColor, ERenderTargetLoadAction::ELoad);
-
-		FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
-		FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
-
-		{
-			
-			TShaderMapRef<FOpenColorIOVertexShader> VertexShader(GlobalShaderMap);
-			TShaderRef<FOpenColorIOPixelShader_RDG> OCIOPixelShader = CachedResourcesRenderThread.ShaderResource->GetShaderGameThread<FOpenColorIOPixelShader_RDG>();
-
-			const float DisplayGamma = View.Family->RenderTarget->GetDisplayGamma();
-
-			FOpenColorIOPixelShaderParameters* Parameters = GraphBuilder.AllocParameters<FOpenColorIOPixelShaderParameters>();
-			Parameters->InputTexture = SceneColorRenderTarget.Texture;
-			Parameters->InputTextureSampler = TStaticSamplerState<>::GetRHI();
-			if (CachedResourcesRenderThread.LUT3dResource)
-			{
-				Parameters->Ocio_lut3d_0 = CachedResourcesRenderThread.LUT3dResource->TextureRHI;
-			}
-			Parameters->Ocio_lut3d_0Sampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-
-			// There is a special case where post processing and tonemapper are disabled. In this case tonemapper applies a static display Inverse of Gamma which defaults to 2.2.
-			// In the case when Both PostProcessing and ToneMapper are disabled we apply gamma manually. In every other case we apply inverse gamma before applying OCIO.
-			Parameters->Gamma = (ViewFamily.EngineShowFlags.Tonemapper == 0) || (ViewFamily.EngineShowFlags.PostProcessing == 0) ? DefaultDisplayGamma : DefaultDisplayGamma/DisplayGamma;
-			Parameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
-
-			// Main Pass
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("ProcessOCIOColorSpaceXfrm"),
-				Parameters,
-				ERDGPassFlags::Raster,
-				[&View,
-				VertexShader,
-				OCIOPixelShader,
-				DefaultBlendState,
-				DepthStencilState,
-				SceneColorViewport,
-				BackBufferViewport,
-				Parameters](FRHICommandList& RHICmdList)
-			{
-				DrawScreenPass(
-					RHICmdList,
-					View,
-					BackBufferViewport,
-					SceneColorViewport,
-					FScreenPassPipelineState(VertexShader, OCIOPixelShader, DefaultBlendState, DepthStencilState),
-					[&](FRHICommandList& RHICmdList)
-				{
-					SetShaderParameters(RHICmdList, OCIOPixelShader, OCIOPixelShader.GetPixelShader(), *Parameters);
-				});
-
-			});
-
-			return MoveTemp(BackBufferRenderTarget);
-		}
-	}
+	return MoveTemp(Output);
 }

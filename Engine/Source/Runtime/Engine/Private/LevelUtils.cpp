@@ -12,9 +12,11 @@
 #include "Misc/FeedbackContext.h"
 #include "GameFramework/WorldSettings.h"
 #include "Components/ModelComponent.h"
+#include "Streaming/ServerStreamingLevelsVisibility.h"
 
 #if WITH_EDITOR
 #include "ScopedTransaction.h"
+#include "WorldPartition/WorldPartition.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "LevelUtils"
@@ -50,32 +52,19 @@ bool FLevelUtils::bMovingLevel = false;
 bool FLevelUtils::bApplyingLevelTransform = false;
 #endif
 
-/**
- * Returns the streaming level corresponding to the specified ULevel, or NULL if none exists.
- *
- * @param		Level		The level to query.
- * @return					The level's streaming level, or NULL if none exists.
- */
 ULevelStreaming* FLevelUtils::FindStreamingLevel(const ULevel* Level)
 {
 	return ULevelStreaming::FindStreamingLevel(Level);
 }
 
-/**
- * Returns the streaming level by package name, or NULL if none exists.
- *
- * @param		PackageName		Name of the package containing the ULevel to query
- * @return						The level's streaming level, or NULL if none exists.
- */
-ULevelStreaming* FLevelUtils::FindStreamingLevel(UWorld* InWorld, const TCHAR* InPackageName)
+ULevelStreaming* FLevelUtils::FindStreamingLevel(UWorld* InWorld, const FName PackageName)
 {
-	const FName PackageName( InPackageName );
 	ULevelStreaming* MatchingLevel = NULL;
-	if( InWorld)
+	if (InWorld && !PackageName.IsNone())
 	{
 		for (ULevelStreaming* CurStreamingLevel : InWorld->GetStreamingLevels())
 		{
-			if( CurStreamingLevel && CurStreamingLevel->GetWorldAssetPackageFName() == PackageName )
+			if (CurStreamingLevel && CurStreamingLevel->GetWorldAssetPackageFName() == PackageName)
 			{
 				MatchingLevel = CurStreamingLevel;
 				break;
@@ -83,6 +72,54 @@ ULevelStreaming* FLevelUtils::FindStreamingLevel(UWorld* InWorld, const TCHAR* I
 		}
 	}
 	return MatchingLevel;
+}
+
+ULevelStreaming* FLevelUtils::FindStreamingLevel(UWorld* InWorld, const TCHAR* InPackageName)
+{
+	return FindStreamingLevel(InWorld, FName(InPackageName));
+}
+
+bool FLevelUtils::IsValidStreamingLevel(UWorld* InWorld, const TCHAR* InPackageName)
+{
+	if (FindStreamingLevel(InWorld, InPackageName))
+	{
+		return true;
+	}
+
+#if WITH_EDITOR
+	if (UWorldPartition* WorldPartition = InWorld ? InWorld->GetWorldPartition() : nullptr)
+	{
+		return WorldPartition->IsValidPackageName(InPackageName);
+	}
+#endif
+
+	return false;
+}
+
+bool FLevelUtils::SupportsMakingVisibleTransactionRequests(UWorld* InWorld)
+{
+	return InWorld && InWorld->SupportsMakingVisibleTransactionRequests();
+}
+
+bool FLevelUtils::SupportsMakingInvisibleTransactionRequests(UWorld* InWorld)
+{
+	return InWorld && InWorld->SupportsMakingInvisibleTransactionRequests();
+}
+
+bool FLevelUtils::IsServerStreamingLevelVisible(UWorld* InWorld, const FName& InPackageName)
+{
+	// If there's no implementation for this world to query the server visible streaming levels, return true
+	if (!SupportsMakingVisibleTransactionRequests(InWorld))
+	{
+		return true;
+	}
+
+	if (const AServerStreamingLevelsVisibility* ServerStreamingLevelsVisibility = InWorld->GetServerStreamingLevelsVisibility())
+	{
+		return ServerStreamingLevelsVisibility && ServerStreamingLevelsVisibility->Contains(InPackageName);
+	}
+
+	return false;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////

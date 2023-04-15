@@ -2,16 +2,24 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Interfaces/IHttpRequest.h"
-#include "Runtime/Online/HTTP/Private/IHttpThreadedRequest.h"
-#include "Containers/Ticker.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
 #include "Containers/Queue.h"
-#include "HttpPackage.h"
 #include "Containers/Ticker.h"
+#include "Containers/Ticker.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "HAL/CriticalSection.h"
+#include "HttpPackage.h"
+#include "Interfaces/IHttpRequest.h"
 #include "Misc/EnumRange.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
 
 class FHttpThread;
+class FOutputDevice;
+class IHttpThreadedRequest;
 
 enum class EHttpFlushReason : uint8
 {
@@ -26,6 +34,14 @@ enum class EHttpFlushReason : uint8
 	Count
 };
 ENUM_RANGE_BY_COUNT(EHttpFlushReason, EHttpFlushReason::Count)
+const TCHAR* LexToString(const EHttpFlushReason& FlushReason);
+
+/**
+ * Delegate called when an Http request added
+ *
+ * @param Request Http request that start things
+ */
+DECLARE_DELEGATE_OneParam(FHttpManagerRequestAddedDelegate, const FHttpRequestRef& /*Request*/);
 
 /**
  * Manages Http request that are currently being processed
@@ -59,6 +75,9 @@ public:
 	 * @param Request - the request object to add
 	 */
 	void AddRequest(const FHttpRequestRef& Request);
+
+	/** Delegate that will get called once request added */
+	FHttpManagerRequestAddedDelegate RequestAddedDelegate;
 
 	/**
 	 * Removes an Http request instance from the manager

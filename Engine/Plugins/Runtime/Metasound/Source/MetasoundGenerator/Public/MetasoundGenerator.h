@@ -1,16 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Analysis/MetasoundFrontendGraphAnalyzer.h"
 #include "Async/Async.h"
-#include "CoreMinimal.h"
 #include "DSP/Dsp.h"
 #include "MetasoundAudioFormats.h"
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundFrontendController.h"
+#include "MetasoundGraphOperator.h"
+#include "MetasoundOperatorBuilder.h"
 #include "MetasoundOperatorInterface.h"
 #include "MetasoundPrimitives.h"
+#include "MetasoundRouter.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundVertex.h"
+#include "MetasoundVertexData.h"
 #include "Sound/SoundGenerator.h"
 #include "Tickable.h"
 
@@ -21,10 +25,12 @@ namespace Metasound
 	struct METASOUNDGENERATOR_API FMetasoundGeneratorInitParams
 	{
 		FOperatorSettings OperatorSettings;
+		FOperatorBuilderSettings BuilderSettings;
 		TSharedPtr<const IGraph, ESPMode::ThreadSafe> Graph;
 		FMetasoundEnvironment Environment;
 		FString MetaSoundName;
 		TArray<FVertexName> AudioOutputNames;
+		TArray<FAudioParameter> DefaultParameters;
 
 		void Release();
 	};
@@ -32,7 +38,8 @@ namespace Metasound
 	struct FMetasoundGeneratorData
 	{
 		FOperatorSettings OperatorSettings;
-		TUniquePtr<Metasound::IOperator> GraphOperator;
+		TUniquePtr<IOperator> GraphOperator;
+		TUniquePtr<Frontend::FGraphAnalyzer> GraphAnalyzer;
 		TArray<TDataReadReference<FAudioBuffer>> OutputBuffers;
 		FTriggerWriteRef TriggerOnPlayRef;
 		FTriggerReadRef TriggerOnFinishRef;
@@ -55,6 +62,10 @@ namespace Metasound
 		}
 
 	private:
+		TUniquePtr<IOperator> BuildGraphOperator(TArray<FAudioParameter>&& InParameters, FBuildResults& OutBuildResults) const;
+		TUniquePtr<Frontend::FGraphAnalyzer> BuildGraphAnalyzer(TMap<FGuid, FDataReferenceCollection>&& InInternalDataReferences) const;
+		void LogBuildErrors(const FBuildResults& InBuildResults) const;
+		TArray<FAudioBufferReadRef> FindOutputAudioBuffers(const FVertexInterfaceData& InVertexData) const;
 
 		FMetasoundGenerator* Generator;
 		FMetasoundGeneratorInitParams InitParams;
@@ -166,6 +177,7 @@ namespace Metasound
 		bool bIsFinishTriggered;
 		bool bIsFinished;
 
+		int32 FinishSample = INDEX_NONE;
 		int32 NumChannels;
 		int32 NumFramesPerExecute;
 		int32 NumSamplesPerExecute;
@@ -190,6 +202,7 @@ namespace Metasound
 		bool bPendingGraphTrigger;
 		bool bIsNewGraphPending;
 		bool bIsWaitingForFirstGraph;
+
+		TUniquePtr<Frontend::FGraphAnalyzer> GraphAnalyzer;
 	};
 }
-

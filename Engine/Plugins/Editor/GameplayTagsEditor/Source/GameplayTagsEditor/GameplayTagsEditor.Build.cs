@@ -18,6 +18,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					// ... add private dependencies that you statically link with here ...
+					"ApplicationCore",
 					"Core",
 					"CoreUObject",
 					"Engine",
@@ -44,6 +45,7 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
+					"PropertyEditor",
 					"Settings"
 				}
 			);

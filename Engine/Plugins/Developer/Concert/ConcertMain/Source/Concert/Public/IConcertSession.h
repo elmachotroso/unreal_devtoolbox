@@ -98,6 +98,7 @@ public:
 	 * Get the scratchpad associated with the given client ID.
 	 */
 	virtual FConcertScratchpadPtr GetClientScratchpad(const FGuid& ClientEndpointId) const = 0;
+	
 
 	/**
 	 * Register a custom event handler for this session
@@ -247,11 +248,17 @@ public:
 	/** Rename the session. */
 	virtual void SetName(const FString& NewName) = 0;
 
+	/** Gets the client's address used by the messaging system. Can be fed into  */
+	virtual FMessageAddress GetClientAddress(const FGuid& ClientEndpointId) const = 0;
+
 	/** Callback when a server session gets ticked */
 	virtual FOnConcertServerSessionTick& OnTick() = 0;
 
 	/** Callback when a session client state changes */
 	virtual FOnConcertServerSessionClientChanged& OnSessionClientChanged() = 0;
+	
+	/** Callback when a session message is acknowledged */
+	virtual FOnConcertMessageAcknowledgementReceivedFromLocalEndpoint& OnConcertMessageAcknowledgementReceived() = 0;
 };
 
 /** Interface for Concert client sessions */

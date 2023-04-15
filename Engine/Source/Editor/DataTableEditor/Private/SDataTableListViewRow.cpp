@@ -2,14 +2,49 @@
 
 #include "SDataTableListViewRow.h"
 
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
+#include "Containers/Map.h"
 #include "DataTableEditor.h"
-#include "EditorStyleSet.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "Misc/MessageDialog.h"
+#include "DataTableUtils.h"
+#include "Delegates/Delegate.h"
+#include "Editor.h"
+#include "Engine/DataTable.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "DetailWidgetRow.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "Input/Events.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/WidgetPath.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/MessageDialog.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Templates/Casts.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class STableViewBase;
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "SDataTableListViewRowName"
 
@@ -21,7 +56,7 @@ void SDataTableListViewRow::Construct(const FArguments& InArgs, const TSharedRef
 	IsEditable = InArgs._IsEditable;
 	SMultiColumnTableRow<FDataTableEditorRowListViewDataPtr>::Construct(
 		FSuperRowType::FArguments()
-		.Style(FEditorStyle::Get(), "DataTableEditor.CellListViewRow")
+		.Style(FAppStyle::Get(), "DataTableEditor.CellListViewRow")
 		.OnDrop(this, &SDataTableListViewRow::OnRowDrop)
 		.OnDragEnter(this, &SDataTableListViewRow::OnRowDragEnter)
 		.OnDragLeave(this, &SDataTableListViewRow::OnRowDragLeave),
@@ -251,7 +286,7 @@ TSharedRef<SWidget> SDataTableListViewRow::MakeCellWidget(const int32 InRowIndex
 			.Padding(FMargin(4, 2, 4, 2))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "DataTableEditor.CellText")
+				.TextStyle(FAppStyle::Get(), "DataTableEditor.CellText")
 				.Text(FText::FromString(FString::FromInt(RowDataPtr->RowNum)))
 				.ColorAndOpacity(DataTableEdit, &FDataTableEditor::GetRowTextColor, RowDataPtr->RowId)
 				.HighlightText(DataTableEdit, &FDataTableEditor::GetFilterText)
@@ -290,7 +325,7 @@ TSharedRef<SWidget> SDataTableListViewRow::MakeCellWidget(const int32 InRowIndex
 			.Padding(FMargin(4, 2, 4, 2))
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "DataTableEditor.CellText")
+				.TextStyle(FAppStyle::Get(), "DataTableEditor.CellText")
 				.ColorAndOpacity(DataTableEdit, &FDataTableEditor::GetRowTextColor, RowDataPtr->RowId)
 				.Text(DataTableEdit, &FDataTableEditor::GetCellText, RowDataPtr, ColumnIndex)
 				.HighlightText(DataTableEdit, &FDataTableEditor::GetFilterText)
@@ -396,11 +431,11 @@ const FSlateBrush* SDataTableListViewRow::GetBorder() const
 {
 	if (bIsDragDropObject)
 	{
-		return FEditorStyle::GetBrush("DataTableEditor.DragDropObject");
+		return FAppStyle::GetBrush("DataTableEditor.DragDropObject");
 	}
 	else if (bIsHoveredDragTarget)
 	{
-		return FEditorStyle::GetBrush("DataTableEditor.DragDropHoveredTarget");
+		return FAppStyle::GetBrush("DataTableEditor.DragDropHoveredTarget");
 	}
 	else
 	{
@@ -425,7 +460,7 @@ TSharedRef<SWidget> SDataTableListViewRow::MakeRowActionsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("DataTableRowMenuActions_InsertNewRow", "Insert New Row"),
 		LOCTEXT("DataTableRowMenuActions_InsertNewRowTooltip", "Insert a new row"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "DataTableEditor.Add"), 
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "DataTableEditor.Add"), 
 		FUIAction(FExecuteAction::CreateSP(this, &SDataTableListViewRow::OnInsertNewRow, ERowInsertionPosition::Bottom))
 	);
 	
@@ -454,14 +489,14 @@ TSharedRef<SWidget> SDataTableListViewRow::MakeRowActionsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("DataTableRowMenuActions_MoveToTopAction", "Move Row to Top"),
 		LOCTEXT("DataTableRowMenuActions_MoveToTopActionTooltip", "Move selected Row to the top"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Symbols.DoubleUpArrow"), 
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Symbols.DoubleUpArrow"), 
 		FUIAction(FExecuteAction::CreateSP(this, &SDataTableListViewRow::OnMoveToExtentClicked, FDataTableEditorUtils::ERowMoveDirection::Up))
 	);
 	
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("DataTableRowMenuActions_MoveToBottom", "Move Row To Bottom"),
 		LOCTEXT("DataTableRowMenuActions_MoveToBottomTooltip", "Move selected Row to the bottom"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Symbols.DoubleDownArrow"), 
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Symbols.DoubleDownArrow"), 
 		FUIAction(FExecuteAction::CreateSP(this, &SDataTableListViewRow::OnMoveToExtentClicked, FDataTableEditorUtils::ERowMoveDirection::Down))
 	);
 	
@@ -489,7 +524,7 @@ FDataTableRowDragDropOp::FDataTableRowDragDropOp(TSharedPtr<SDataTableListViewRo
 
 		DecoratorWidget = SNew(SBorder)
 			.Padding(8.f)
-			.BorderImage(FEditorStyle::GetBrush("Graph.ConnectorFeedback.Border"))
+			.BorderImage(FAppStyle::GetBrush("Graph.ConnectorFeedback.Border"))
 			.Content()
 			[
 				SNew(SHorizontalBox)

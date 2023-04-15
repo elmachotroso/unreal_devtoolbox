@@ -2,26 +2,54 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/BitArray.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/SparseArray.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Misc/Guid.h"
+#include "Delegates/Delegate.h"
 #include "EdGraph/EdGraphPin.h"
-#include "Layout/Visibility.h"
-#include "Styling/SlateColor.h"
-#include "Input/Reply.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Textures/SlateIcon.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STreeView.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "FindInBlueprintManager.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Layout/Visibility.h"
+#include "Math/Color.h"
+#include "Misc/Guid.h"
+#include "Misc/Optional.h"
+#include "SlateFwd.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/TypeHash.h"
+#include "Templates/UnrealTemplate.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STreeView.h"
 
 class FBlueprintEditor;
 class FImaginaryFiBData;
+class FJsonValue;
 class FUICommandList;
+class ITableRow;
+class SDockTab;
+class SVerticalBox;
+class SWidget;
+class UBlueprint;
+class UClass;
+class UObject;
+struct FGeometry;
+struct FKeyEvent;
+struct FSlateBrush;
 
 typedef STreeView<FSearchResult>  STreeViewType;
 
@@ -228,7 +256,7 @@ enum class EFiBSearchBarWidget
 };
 
 /*Widget for searching for (functions/events) across all blueprints or just a single blueprint */
-class SFindInBlueprints: public SCompoundWidget
+class KISMET_API SFindInBlueprints: public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS( SFindInBlueprints )
@@ -433,8 +461,8 @@ private:
 	/** Tab hosting this widget. May be invalid. */
 	TWeakPtr<SDockTab> HostTab;
 
-	/** Last cached asset name (used during continuous cache operations). */
-	mutable FName LastCachedAssetName;
+	/** Last cached asset path (used during continuous cache operations). */
+	mutable FSoftObjectPath LastCachedAssetPath;
 
 	/** Should we search within the current blueprint only (rather than all blueprints) */
 	bool bIsInFindWithinBlueprintMode;

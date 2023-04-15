@@ -3,6 +3,7 @@
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Animation/AnimSequence.h"
+#include "AnimSequencerInstanceProxy.h"
 #include "Evaluation/MovieSceneSkeletalAnimationTemplate.h"
 #include "Logging/MessageLog.h"
 #include "MovieScene.h"
@@ -13,6 +14,8 @@
 #include "Animation/AnimationPoseData.h"
 #include "Animation/AttributesRuntime.h"
 #include "Misc/FrameRate.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSkeletalAnimationSection)
 
 #define LOCTEXT_NAMESPACE "MovieSceneSkeletalAnimationSection"
 
@@ -34,6 +37,7 @@ FMovieSceneSkeletalAnimationParams::FMovieSceneSkeletalAnimationParams()
 	Weight.SetDefault(1.f);
 	bSkipAnimNotifiers = false;
 	bForceCustomMode = false;
+	SwapRootBone = ESwapRootBone::SwapRootBone_None;
 }
 
 UMovieSceneSkeletalAnimationSection::UMovieSceneSkeletalAnimationSection( const FObjectInitializer& ObjectInitializer )
@@ -210,23 +214,6 @@ void UMovieSceneSkeletalAnimationSection::PostLoad()
 
 	Super::PostLoad();
 }
-
-FFrameNumber GetFirstLoopStartOffsetAtTrimTime(FQualifiedFrameTime TrimTime, const FMovieSceneSkeletalAnimationParams& Params, FFrameNumber StartFrame, FFrameRate FrameRate)
-{
-	const float AnimPlayRate = FMath::IsNearlyZero(Params.PlayRate) ? 1.0f : Params.PlayRate;
-	const float AnimPosition = (TrimTime.Time - StartFrame) / TrimTime.Rate * AnimPlayRate;
-	const float SeqLength = Params.GetSequenceLength() - FrameRate.AsSeconds(Params.StartFrameOffset + Params.EndFrameOffset) / AnimPlayRate;
-
-	FFrameNumber NewOffset = FrameRate.AsFrameNumber(FMath::Fmod(AnimPosition, SeqLength));
-	NewOffset += Params.FirstLoopStartFrameOffset;
-
-	const FFrameNumber SeqLengthInFrames = FrameRate.AsFrameNumber(SeqLength);
-	while (NewOffset >= SeqLengthInFrames)
-		NewOffset -= SeqLengthInFrames;
-
-	return NewOffset;
-}
-
 
 TOptional<TRange<FFrameNumber> > UMovieSceneSkeletalAnimationSection::GetAutoSizeRange() const
 {
@@ -407,8 +394,7 @@ void UMovieSceneSkeletalAnimationSection::PostEditUndo()
 
 TOptional<FTransform> UMovieSceneSkeletalAnimationSection::GetRootMotion(FFrameTime CurrentTime, bool& bBlendFirstChildOfRoot) const
 {
-	//if we don't have an offset transform set then it's fine to return nothing, we just use the default root. Also use smaller tolerance here just in case
-	if (GetRootMotionParams() && GetOffsetTransform().Equals(FTransform::Identity, KINDA_SMALL_NUMBER)  == false)
+	if (GetRootMotionParams())
 	{
 		UMovieSceneSkeletalAnimationTrack* Track = GetTypedOuter<UMovieSceneSkeletalAnimationTrack>();
 		if (GetRootMotionParams()->bRootMotionsDirty)

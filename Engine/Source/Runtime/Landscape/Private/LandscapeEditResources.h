@@ -70,11 +70,6 @@ struct FTexture2DResourceSubregion
 {
 	FTexture2DResourceSubregion() = default;
 
-	FTexture2DResourceSubregion(FTexture2DResource* InTexture, const FIntPoint& InSubregionOffset, const FIntPoint& InSubregionSize)
-		: Texture(InTexture)
-		, Subregion(InSubregionOffset, InSubregionOffset + InSubregionSize)
-	{}
-
 	FTexture2DResourceSubregion(FTexture2DResource* InTexture, const FIntRect& InSubregion)
 		: Texture(InTexture)
 		, Subregion(InSubregion)
@@ -99,8 +94,6 @@ struct FLandscapeRDGTrackedTexture
 	bool bNeedsScratch = false;
 	/** If bNeedsSRV is set to true, the registration of the texture in the render graph will also produce a FRDGTextureSRVRef (ExternalTextureSRVRef) in order to access this texture as a SRV */
 	bool bNeedsSRV = false;
-	/** If bNeedsForceTracking is set to true, the texture will be declared in the render graph with the ERDGTextureFlags::ForceTracking flag, so that it can be copied from/to via CopyTexture within the graph */
-	bool bNeedsForceTracking = false;
 	/** Debug name for this texture (transient memory : will last for the lifetime of the GraphBuilder) */
 	FString* DebugName = nullptr;
 	/** If bNeedsScratch is true, contains the RDG ref of the allocated intermediate scratch texture */

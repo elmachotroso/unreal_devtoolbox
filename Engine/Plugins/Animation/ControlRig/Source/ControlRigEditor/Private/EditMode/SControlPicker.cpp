@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SControlPicker.h"
+#include "EditMode/SControlPicker.h"
 #include "Widgets/SCanvas.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Images/SImage.h"
@@ -9,13 +9,13 @@
 #include "Widgets/SOverlay.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SScaleBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "ScopedTransaction.h"
-#include "ControlRigEditMode.h"
+#include "EditMode/ControlRigEditMode.h"
 #include "ControlRig.h"
 #include "EditorModeManager.h"
-#include "SEditorUserWidgetHost.h"
+#include "EditMode/SEditorUserWidgetHost.h"
 #include "ControlRigBlueprint.h"
 #include "ControlRigBlueprintGeneratedClass.h"
 

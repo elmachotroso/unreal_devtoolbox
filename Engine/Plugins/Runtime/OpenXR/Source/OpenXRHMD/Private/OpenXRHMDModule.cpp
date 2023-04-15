@@ -8,6 +8,7 @@
 #include "IOpenXRARModule.h"
 #include "BuildSettings.h"
 #include "GeneralProjectSettings.h"
+#include "Epic_openxr.h"
 
 #if PLATFORM_ANDROID
 #include <android_native_app_glue.h>
@@ -42,7 +43,12 @@ FOpenXRHMDModule::~FOpenXRHMDModule()
 
 TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOpenXRHMDModule::CreateTrackingSystem()
 {
-	if (!RenderBridge)
+	if (!InitInstanceAndSystem())
+	{
+		return nullptr;
+	}
+
+	if (!RenderBridge && !FParse::Param(FCommandLine::Get(), TEXT("xrtrackingonly")))
 	{
 		if (!InitRenderBridge())
 		{
@@ -67,7 +73,7 @@ void FOpenXRHMDModule::ShutdownModule()
 {
 	if (Instance)
 	{
-		XR_ENSURE(xrDestroyInstance(Instance));
+		DestroyInstance();
 	}
 
 	if (LoaderHandle)
@@ -79,6 +85,11 @@ void FOpenXRHMDModule::ShutdownModule()
 
 uint64 FOpenXRHMDModule::GetGraphicsAdapterLuid()
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("xrtrackingonly")))
+	{
+		return 0;
+	}
+
 	if (!RenderBridge)
 	{
 		if (!InitRenderBridge())
@@ -248,9 +259,7 @@ bool FOpenXRHMDModule::InitRenderBridge()
 		}
 	}
 
-
-	FString RHIString = FApp::GetGraphicsRHI();
-	if (RHIString.IsEmpty())
+	if (GDynamicRHI == nullptr)
 	{
 		return false;
 	}
@@ -260,42 +269,45 @@ bool FOpenXRHMDModule::InitRenderBridge()
 		return false;
 	}
 
+	const ERHIInterfaceType RHIType = RHIGetInterfaceType();
+
 #ifdef XR_USE_GRAPHICS_API_D3D11
-	if (RHIString == TEXT("DirectX 11") && IsExtensionEnabled(XR_KHR_D3D11_ENABLE_EXTENSION_NAME))
+	if (RHIType == ERHIInterfaceType::D3D11 && IsExtensionEnabled(XR_KHR_D3D11_ENABLE_EXTENSION_NAME))
 	{
 		RenderBridge = CreateRenderBridge_D3D11(Instance, System);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_D3D12
-	if (RHIString == TEXT("DirectX 12") && IsExtensionEnabled(XR_KHR_D3D12_ENABLE_EXTENSION_NAME))
+	if (RHIType == ERHIInterfaceType::D3D12 && IsExtensionEnabled(XR_KHR_D3D12_ENABLE_EXTENSION_NAME))
 	{
 		RenderBridge = CreateRenderBridge_D3D12(Instance, System);
 	}
 	else
 #endif
 #if defined(XR_USE_GRAPHICS_API_OPENGL_ES) && defined(XR_USE_PLATFORM_ANDROID)
-	if (RHIString == TEXT("OpenGL") && IsExtensionEnabled(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME))
+	if (RHIType == ERHIInterfaceType::OpenGL && IsExtensionEnabled(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME))
 	{
 		RenderBridge = CreateRenderBridge_OpenGLES(Instance, System);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_OPENGL
-	if (RHIString == TEXT("OpenGL") && IsExtensionEnabled(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
+	if (RHIType == ERHIInterfaceType::OpenGL && IsExtensionEnabled(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
 	{
 		RenderBridge = CreateRenderBridge_OpenGL(Instance, System);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_VULKAN
-	if (RHIString == TEXT("Vulkan") && IsExtensionEnabled(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME))
+	if (RHIType == ERHIInterfaceType::Vulkan && IsExtensionEnabled(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME))
 	{
 		RenderBridge = CreateRenderBridge_Vulkan(Instance, System);
 	}
 	else
 #endif
 	{
+		FString RHIString = FApp::GetGraphicsRHI();
 		UE_LOG(LogHMD, Warning, TEXT("%s is not currently supported by the OpenXR runtime"), *RHIString);
 		return false;
 	}
@@ -418,6 +430,14 @@ bool FOpenXRHMDModule::GetRequiredExtensions(TArray<const ANSICHAR*>& OutExtensi
 #if PLATFORM_ANDROID
 	OutExtensions.Add(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
 #endif
+
+	// If the commandline -xrtrackingonly is passed, then start the application in _Other mode instead of _Scene mode
+	// This is used when we only want to get tracking information and don't need to render anything to the XR device
+	if (FParse::Param(FCommandLine::Get(), TEXT("xrtrackingonly")))
+	{
+		OutExtensions.Add(XR_MND_HEADLESS_EXTENSION_NAME);
+	}
+
 	return true;
 }
 
@@ -437,14 +457,18 @@ bool FOpenXRHMDModule::GetOptionalExtensions(TArray<const ANSICHAR*>& OutExtensi
 #endif
 #ifdef XR_USE_GRAPHICS_API_VULKAN
 	OutExtensions.Add(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+	OutExtensions.Add(XR_KHR_VULKAN_SWAPCHAIN_FORMAT_LIST_EXTENSION_NAME);
 #endif
 	OutExtensions.Add(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
 	OutExtensions.Add(XR_VARJO_QUAD_VIEWS_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_BINDING_MODIFICATION_EXTENSION_NAME);
+	OutExtensions.Add(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME);
 
 	// Draft extension not yet provided in headers
 	OutExtensions.Add("XR_EXT_dpad_binding");
+	OutExtensions.Add("XR_EXT_active_action_set_priority");
+
 	return true;
 }
 
@@ -502,6 +526,14 @@ bool FOpenXRHMDModule::InitInstance()
 	if (!GetProcAddr)
 	{
 		GetProcAddr = GetDefaultLoader();
+	}
+
+	for (IOpenXRExtensionPlugin* Plugin : ExtModules)
+	{
+		if (Plugin->InsertOpenXRAPILayer(GetProcAddr))
+		{
+			UE_LOG(LogHMD, Log, TEXT("IOpenXRExtensionPlugin API layer enabled: %s"), *Plugin->GetDisplayName());
+		}
 	}
 
 	if (!PreInitOpenXRCore(GetProcAddr))
@@ -600,17 +632,27 @@ bool FOpenXRHMDModule::InitInstance()
 
 	// Enable layers, if specified by CVar.
 	// Note: For the validation layer to work on Windows (as of latest OpenXR runtime, August 2019), the following are required:
-	//   1. Download and build the OpenXR SDK from https://github.com/KhronosGroup/OpenXR-SDK-Source (follow instructions at https://github.com/KhronosGroup/OpenXR-SDK-Source/blob/master/BUILDING.md)
+	//   1. Download and build the OpenXR SDK from https://github.com/KhronosGroup/OpenXR-SDK-Source (follow instructions at https://github.com/KhronosGroup/OpenXR-SDK-Source/blob/main/BUILDING.md)
 	//	 2. Add a registry key under HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Explicit, containing the path to the manifest file
-	//      (e.g. C:\OpenXR-SDK-Source-master\build\win64\src\api_layers\XrApiLayer_core_validation.json) <-- this file is downloaded as part of the SDK source, above
-	//   3. Copy the DLL from the build target at, for example, C:\OpenXR-SDK-Source-master\build\win64\src\api_layers\XrApiLayer_core_validation.dll to
+	//      (e.g. C:\OpenXR-SDK-Source-main\build\win64\src\api_layers\XrApiLayer_core_validation.json) <-- this file is downloaded as part of the SDK source, above
+	//   3. Copy the DLL from the build target at, for example, C:\OpenXR-SDK-Source-main\build\win64\src\api_layers\XrApiLayer_core_validation.dll to
 	//      somewhere in your system path (e.g. c:\windows\system32); the OpenXR loader currently doesn't use the path the json file is in (this is a bug)
 
-	const bool bEnableOpenXRValidationLayer = CVarEnableOpenXRValidationLayer.GetValueOnAnyThread() != 0;
+	const bool bEnableOpenXRValidationLayer = (CVarEnableOpenXRValidationLayer.GetValueOnAnyThread() != 0)
+		|| FParse::Param(FCommandLine::Get(), TEXT("openxrdebug"))
+		|| FParse::Param(FCommandLine::Get(), TEXT("openxrvalidation"));
 	TArray<const char*> Layers;
-	if (bEnableOpenXRValidationLayer && AvailableLayers.Contains("XR_APILAYER_LUNARG_core_validation"))
+	if (bEnableOpenXRValidationLayer)
 	{
-		Layers.Add("XR_APILAYER_LUNARG_core_validation");
+		if (AvailableLayers.Contains("XR_APILAYER_LUNARG_core_validation"))
+		{
+			UE_LOG(LogHMD, Display, TEXT("Running with OpenXR validation layers, performance might be degraded."));
+			Layers.Add("XR_APILAYER_LUNARG_core_validation");
+		}
+		else
+		{
+			UE_LOG(LogHMD, Error, TEXT("OpenXR validation was requested, but the validation layer isn't available. Request ignored."));
+		}
 	}
 
 	// Engine registration can be disabled via console var.
@@ -632,9 +674,9 @@ bool FOpenXRHMDModule::InitInstance()
 	Info.type = XR_TYPE_INSTANCE_CREATE_INFO;
 	Info.next = nullptr;
 	Info.createFlags = 0;
-	FTCHARToUTF8_Convert::Convert(Info.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, *AppName, AppName.Len() + 1);
+	FPlatformString::Convert((UTF8CHAR*)Info.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, *AppName, AppName.Len() + 1);
 	Info.applicationInfo.applicationVersion = static_cast<uint32>(BuildSettings::GetCurrentChangelist()) | (BuildSettings::IsLicenseeVersion() ? 0x80000000 : 0);
-	FTCHARToUTF8_Convert::Convert(Info.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, *EngineName, EngineName.Len() + 1);
+	FPlatformString::Convert((UTF8CHAR*)Info.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, *EngineName, EngineName.Len() + 1);
 	Info.applicationInfo.engineVersion = (uint32)(FEngineVersion::Current().GetMinor() << 16 | FEngineVersion::Current().GetPatch());
 	Info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
 
@@ -702,6 +744,7 @@ bool FOpenXRHMDModule::InitSystem()
 	XrResult Result = xrGetSystem(Instance, &SystemInfo, &System);
 	if (XR_FAILED(Result))
 	{
+		DestroyInstance();
 		UE_LOG(LogHMD, Log, TEXT("Failed to get an OpenXR system, result is %s. Please check that your runtime supports VR headsets."), OpenXRResultToString(Result));
 		return false;
 	}
@@ -712,4 +755,10 @@ bool FOpenXRHMDModule::InitSystem()
 	}
 
 	return true;
+}
+
+void FOpenXRHMDModule::DestroyInstance()
+{
+	XR_ENSURE(xrDestroyInstance(Instance));
+	Instance = XR_NULL_HANDLE;
 }

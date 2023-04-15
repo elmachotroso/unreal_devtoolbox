@@ -66,6 +66,9 @@ namespace ChaosTest
 		Dynamic->SetCCDEnabled(false);
 		Dynamic->SetGravityEnabled(false);
 
+		Evolution.EnableParticle(Static);
+		Evolution.EnableParticle(Dynamic);
+
 
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
 
@@ -86,7 +89,7 @@ namespace ChaosTest
 		const FReal Dt = 1 / 30.0f;
 		const FReal Fps = 1 / Dt;
 		const FReal BoxHalfSize = 50; // cm
-		const FReal InitialSpeed = BoxHalfSize * 5 * Fps; // More than enough to tunnel
+		const FReal InitialSpeed = (30.0f + BoxHalfSize * 5) * Fps; // More than enough to tunnel
 		using TEvolution = FPBDRigidsEvolutionGBF;
 		FParticleUniqueIndicesMultithreaded UniqueIndices;
 		FPBDRigidsSOAs Particles(UniqueIndices);
@@ -129,6 +132,9 @@ namespace ChaosTest
 
 
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
+
+		Evolution.EnableParticle(Static);
+		Evolution.EnableParticle(Dynamic);
 
 		for (int i = 0; i < 1; ++i)
 		{
@@ -193,6 +199,9 @@ namespace ChaosTest
 		
 
 		Dynamic->V() = FVec3(0, 0, -InitialSpeed);
+
+		Evolution.EnableParticle(Static);
+		Evolution.EnableParticle(Dynamic);
 
 		for (int i = 0; i < 1; ++i)
 		{
@@ -284,13 +293,13 @@ namespace ChaosTest
 		Dynamic->SetGravityEnabled(false);
 
 		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
-		Evolution.DirtyParticle(*ContainerFaces[0]);
-		Evolution.DirtyParticle(*ContainerFaces[1]);
-		Evolution.DirtyParticle(*ContainerFaces[2]);
-		Evolution.DirtyParticle(*ContainerFaces[3]);
-		Evolution.DirtyParticle(*ContainerFaces[4]);
-		Evolution.DirtyParticle(*ContainerFaces[5]);
-		Evolution.DirtyParticle(*Dynamic);
+		Evolution.EnableParticle(ContainerFaces[0]);
+		Evolution.EnableParticle(ContainerFaces[1]);
+		Evolution.EnableParticle(ContainerFaces[2]);
+		Evolution.EnableParticle(ContainerFaces[3]);
+		Evolution.EnableParticle(ContainerFaces[4]);
+		Evolution.EnableParticle(ContainerFaces[5]);
+		Evolution.EnableParticle(Dynamic);
 
 		Dynamic->V() = InitialVelocity;
 		///////////////////////////////////

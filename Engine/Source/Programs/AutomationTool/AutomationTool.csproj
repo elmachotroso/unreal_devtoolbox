@@ -1,12 +1,33 @@
-<Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\Shared\UnrealEngine.csproj.props" />
+  
   <PropertyGroup>
-    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <IsWindows Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))' == 'true'">true</IsWindows> 
+    <IsOSX Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</IsOSX> 
+    <IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</IsLinux> 
+  </PropertyGroup>
+  
+  <Choose>
+    <When Condition="'$(IsWindows)'=='true'">
+      <PropertyGroup>
+        <TargetFramework>net6.0-windows10.0.19041</TargetFramework>
+        <UseWindowsForms>true</UseWindowsForms>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup>
+        <TargetFramework>net6.0</TargetFramework>
+      </PropertyGroup>
+    </Otherwise>
+  </Choose>
+  
+  <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Development</Configuration>
     <OutputType>Exe</OutputType>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
-    <Configurations>Debug;Release;Development</Configurations>
+    <Configurations>Debug;Release;Development;Analyze</Configurations>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>AutomationTool</RootNamespace>
     <AssemblyName>AutomationTool</AssemblyName>
@@ -15,9 +36,6 @@
     <EnableDefaultItems>false</EnableDefaultItems>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages> <!-- remove non english resource languages -->
-    <IsWindows Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Windows)))' == 'true'">true</IsWindows> 
-    <IsOSX Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</IsOSX> 
-    <IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</IsLinux> 
     <DebugType>pdbonly</DebugType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks> <!-- required for FileMatcher support code in MSBuild subdir -->
   </PropertyGroup>
@@ -35,19 +53,13 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
   </PropertyGroup>
-  <Choose>
-    <When Condition="'$(IsOSX)'=='true'">
-      <PropertyGroup>
-        <!-- Set runtime identifier for osx so that it produces a app host executable (consistency with the other platforms) -->
-        <RuntimeIdentifier>osx-x64</RuntimeIdentifier>
-      </PropertyGroup>
-    </When>
-    <When Condition="'$(IsWindows)'=='true'">
-      <PropertyGroup>
-        <UseWindowsForms>true</UseWindowsForms>
-      </PropertyGroup>
-    </When>
-  </Choose>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Analyze|AnyCPU' ">
+    <RunAnalyzersDuringBuild>True</RunAnalyzersDuringBuild>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <DocumentationFile></DocumentationFile>
+  </PropertyGroup>
+  
   <ItemGroup>
     <Reference Include="Ionic.Zip.Reduced">
       <HintPath>..\..\..\Binaries\DotNET\Ionic.Zip.Reduced.dll</HintPath>
@@ -58,10 +70,6 @@
       <Private>true</Private>
     </Reference>
   </ItemGroup>
-  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk.WindowsDesktop" Condition="'$(IsWindows)'=='true'" />
-  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk.WindowsDesktop" Condition="'$(IsWindows)'=='true'" />
-  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" Condition="'$(IsWindows)'!='true'" />
-  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" Condition="'$(IsWindows)'!='true'" />
   <Choose>
     <When Condition="'$(IsWindows)'=='true'">
       <PropertyGroup>
@@ -71,28 +79,12 @@
     </When>
   </Choose>
 
+  <!-- This set of dependencies should be kept as small as possible
+       This list must match the list of locations searched for changed files in BuildUAT.bat and BuildUAT.sh -->
   <ItemGroup>
     <Compile Include="..\Shared\MetaData.cs">
       <Link>Properties\MetaData.cs</Link>
     </Compile>
-    <Compile Include="CompileScriptModules.cs" />
-    <Compile Include="ThirdParty\MSBuild\ErrorUtilities.cs" />
-    <Compile Include="ThirdParty\MSBuild\ExceptionHandling.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileMatcher.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\FileSystems.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\IFileSystem.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\ManagedFileSystem.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\MSBuildOnWindowsFileSystem.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\NativeWin32Exception.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\SafeFileHandle.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\WindowsFileSystem.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileSystem\WindowsNative.cs" />
-    <Compile Include="ThirdParty\MSBuild\FileUtilities.cs" />
-    <Compile Include="ThirdParty\MSBuild\InternalErrorException.cs" />
-    <Compile Include="ThirdParty\MSBuild\NativeMethodsShared.cs" />
-    <Compile Include="ThirdParty\MSBuild\ResourceUtilities.cs" />
-    <Compile Include="ThirdParty\MSBuild\ReusableStringBuilder.cs" />
-    <Compile Include="ThirdParty\MSBuild\Traits.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <None Include="app.manifest">
@@ -102,10 +94,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Build" Version="16.9.0" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build" Version="17.1.0" ExcludeAssets="runtime" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Build.Locator" Version="1.4.1" PrivateAssets="all" />
+    <!-- Added as a temporary workaround to running from visual studio where the system version of dotnet is run. 
+         Adding a loader context resolves many of the issues, but it still fails when MSBuild tries to write the json -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
   
+  <!-- This set of dependencies should be kept as small as possible
+       This list must match the list of locations searched for changed files in BuildUAT.bat and BuildUAT.sh -->
   <ItemGroup>
     <ProjectReference Include="..\Shared\EpicGames.Core\EpicGames.Core.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\Shared\EpicGames.Build\EpicGames.Build.csproj" PrivateAssets="all" />

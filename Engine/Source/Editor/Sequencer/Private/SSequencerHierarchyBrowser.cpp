@@ -85,15 +85,15 @@ public:
 						{
 							if (!SequencerHierarchyNode->SubSection.IsValid())
 							{
-								return FEditorStyle::GetNoBrush();
+								return FAppStyle::GetNoBrush();
 							}
 							else if (SequencerHierarchyNode->SubSection.Get()->IsA<UMovieSceneCinematicShotSection>())
 							{
-								return FEditorStyle::GetBrush("Sequencer.Tracks.CinematicShot");
+								return FAppStyle::GetBrush("Sequencer.Tracks.CinematicShot");
 							}
 							else
 							{
-								return FEditorStyle::GetBrush("Sequencer.Tracks.Sub"); 
+								return FAppStyle::GetBrush("Sequencer.Tracks.Sub"); 
 							}
 						})
 				]
@@ -146,6 +146,9 @@ void SSequencerHierarchyBrowser::Construct(const FArguments& InArgs, TWeakPtr<FS
 		OutChildren.Append(InParent->Children);
 	};
 
+	FDisplayMetrics DisplayMetrics;
+	FSlateApplication::Get().GetCachedDisplayMetrics(DisplayMetrics);
+
 	TreeView = SNew(STreeView<TSharedPtr<FSequencerHierarchyNode>>)
 		.OnGenerateRow_Lambda(HandleGenerateRow)
 		.OnGetChildren_Lambda(HandleGetChildren)
@@ -155,11 +158,12 @@ void SSequencerHierarchyBrowser::Construct(const FArguments& InArgs, TWeakPtr<FS
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
 			+ SVerticalBox::Slot()
+			.MaxHeight(DisplayMetrics.PrimaryDisplayHeight * 0.5)
 			[
 				SNew(SScrollBorder, TreeView.ToSharedRef())
 				[

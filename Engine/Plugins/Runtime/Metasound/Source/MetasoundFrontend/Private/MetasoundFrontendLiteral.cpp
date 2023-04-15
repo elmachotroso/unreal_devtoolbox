@@ -7,6 +7,8 @@
 #include "MetasoundFrontendDataTypeRegistry.h"
 #include "MetasoundFrontendRegistries.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MetasoundFrontendLiteral)
+
 FString LexToString(Metasound::FLiteral::FNone InValue)
 {
 	return FString(TEXT(""));
@@ -29,9 +31,9 @@ namespace MetasoundFrontendLiteralPrivate
 
 	// String conversion specialization for UObject*
 	template<>
-	struct TLiteralValueToStringHelper<UObject*>
+	struct TLiteralValueToStringHelper<TObjectPtr<UObject>>
 	{
-		static FString Convert(const UObject* InObject)
+		static FString Convert(const TObjectPtr<UObject> InObject)
 		{
 			// Use empty string for null object as this is recognized
 			// as empty value in editor context (the string "nullptr"
@@ -40,7 +42,7 @@ namespace MetasoundFrontendLiteralPrivate
 			{
 				return FString();
 			}
-			return InObject->GetFullName();
+			return InObject->GetPathName();
 		}
 	};
 
@@ -840,4 +842,5 @@ namespace Metasound
 		}
 	}
 }
+
 

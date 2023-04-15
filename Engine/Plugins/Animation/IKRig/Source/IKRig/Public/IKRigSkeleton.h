@@ -4,24 +4,12 @@
 
 #include "CoreMinimal.h"
 
-#include "ReferenceSkeleton.h"
-
 #include "IKRigSkeleton.generated.h"
 
+struct FBoneChain;
+class USkeletalMesh;
 class UIKRigDefinition;
 class UIKRigSolver;
-
-USTRUCT()
-struct IKRIG_API FIKRigSkeletonChain
-{
-	GENERATED_BODY()
-	
-	FIKRigSkeletonChain(){}
-	FIKRigSkeletonChain(const FName& StartBone, const FName& EndBone): StartBone(StartBone), EndBone(EndBone){}
-
-	FName StartBone;
-	FName EndBone;
-};
 
 /** Data used just to initialize an IKRigSkeleton from outside systems
  *
@@ -42,33 +30,15 @@ struct IKRIG_API FIKRigInputSkeleton
 	TArray<FName> BoneNames;
 	TArray<int32> ParentIndices;
 	TArray<FTransform> LocalRefPose;
+	FName SkeletalMeshName;
 
 	FIKRigInputSkeleton() = default;
 	
-	FIKRigInputSkeleton(const FReferenceSkeleton& RefSkeleton)
-	{
-		Initialize(RefSkeleton);
-	}
+	FIKRigInputSkeleton(const USkeletalMesh* SkeletalMesh);
 
-	void Initialize(const FReferenceSkeleton& RefSkeleton)
-	{
-		Reset();
-		
-		const TArray<FMeshBoneInfo>& BoneInfo = RefSkeleton.GetRefBoneInfo();
-		for (int32 BoneIndex=0; BoneIndex<BoneInfo.Num(); ++BoneIndex)
-		{
-			BoneNames.Add(BoneInfo[BoneIndex].Name);
-			ParentIndices.Add(BoneInfo[BoneIndex].ParentIndex);
-			LocalRefPose.Add(RefSkeleton.GetRefBonePose()[BoneIndex]);
-		}
-	}
+	void Initialize(const USkeletalMesh* SkeletalMesh);
 
-	void Reset()
-	{
-		BoneNames.Reset();
-		ParentIndices.Reset();
-		LocalRefPose.Reset();
-	}
+	void Reset();
 };
 
 USTRUCT()
@@ -100,7 +70,7 @@ struct IKRIG_API FIKRigSkeleton
 	UPROPERTY(VisibleAnywhere, Category = Skeleton)
 	TArray<FTransform> RefPoseGlobal;
 
-	void SetInputSkeleton(const FReferenceSkeleton& RefSkeleton, const TArray<FName>& InExcludedBones);
+	void SetInputSkeleton(const USkeletalMesh* SkeletalMesh, const TArray<FName>& InExcludedBones);
 
 	void SetInputSkeleton(const FIKRigInputSkeleton& InputSkeleton, const TArray<FName>& InExcludedBones);
 
@@ -139,7 +109,20 @@ struct IKRIG_API FIKRigSkeleton
 
 	static void NormalizeRotations(TArray<FTransform>& Transforms);
 
-	void GetChainsInList(const TArray<int32>& SelectedBones, TArray<FIKRigSkeletonChain>& OutChains) const;
+	void GetChainsInList(const TArray<int32>& SelectedBones, TArray<FBoneChain>& OutChains) const;
+
+	// get indices of bones in this chain, ordered from tip to root. returns false if chain is invalid.
+	bool ValidateChainAndGetBones(const FBoneChain& Chain, TArray<int32>& OutBoneIndices) const;
+
+	// given a set of bones, returns a set of indices of bones that are mirrored across X axis (YZ plane)
+	// return false if any of the bones do not have a mirrored pair within the MaxDistanceThreshold
+	bool GetMirroredBoneIndices(
+		const TArray<int32>& BoneIndices,
+		TArray<int32>& OutMirroredIndices,
+		float MaxDistanceThreshold=5.0f) const;
+	
+	// get the bone that is closest to the given point (sets bone index and distance)
+	void GetClosestBone(const FVector& InPoint, int32& OutBoneIndex, float& OutDistance) const;
 
 private:
 

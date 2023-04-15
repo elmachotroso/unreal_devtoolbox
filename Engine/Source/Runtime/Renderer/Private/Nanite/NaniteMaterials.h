@@ -5,15 +5,13 @@
 #include "NaniteShared.h"
 #include "NaniteCullRaster.h"
 #include "MeshPassProcessor.h"
+#include "GBufferInfo.h"
 
 static constexpr uint32 NANITE_MAX_MATERIALS = 64;
 
 // TODO: Until RHIs no longer set stencil ref to 0 on a PSO change, this optimization 
 // is actually worse (forces a context roll per unique material draw, back to back).
 #define NANITE_MATERIAL_STENCIL 0
-
-DECLARE_GPU_STAT_NAMED_EXTERN(NaniteMaterials, TEXT("Nanite Materials"));
-DECLARE_GPU_STAT_NAMED_EXTERN(NaniteDepth, TEXT("Nanite Depth"));
 
 struct FNaniteMaterialPassCommand;
 struct FLumenMeshCaptureMaterialPass;
@@ -81,6 +79,33 @@ private:
 	int32 MaterialSlot = INDEX_NONE;
 };
 
+struct FNaniteMaterialSlot
+{
+	struct FPacked
+	{
+		uint32 Data[2];
+	};
+
+	FNaniteMaterialSlot()
+	: ShadingId(0xFFFF)
+	, RasterId(0xFFFF)
+	, SecondaryRasterId(0xFFFF)
+	{
+	}
+
+	inline FPacked Pack() const
+	{
+		FPacked Ret;
+		Ret.Data[0] = (ShadingId << 16u | RasterId);
+		Ret.Data[1] = SecondaryRasterId == 0xFFFFu ? 0xFFFFFFFFu : SecondaryRasterId;
+		return Ret;
+	}
+
+	uint16 ShadingId;
+	uint16 RasterId;
+	uint16 SecondaryRasterId;
+};
+
 struct FNaniteMaterialPassCommand
 {
 	FNaniteMaterialPassCommand(const FMeshDrawCommand& InMeshDrawCommand)
@@ -117,7 +142,6 @@ class FNaniteMultiViewMaterialVS : public FNaniteGlobalShader
 	: FNaniteGlobalShader(Initializer)
 	{
 		BindForLegacyShaderParameters<FParameters>(this, Initializer.PermutationId, Initializer.ParameterMap, false);
-		NaniteUniformBuffer.Bind(Initializer.ParameterMap, TEXT("Nanite"), SPF_Mandatory);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -136,7 +160,6 @@ class FNaniteMultiViewMaterialVS : public FNaniteGlobalShader
 		const FMeshMaterialShaderElementData& ShaderElementData,
 		FMeshDrawSingleShaderBindings& ShaderBindings) const
 	{
-		ShaderBindings.Add(NaniteUniformBuffer, DrawRenderState.GetNaniteUniformBuffer());
 	}
 
 	void GetElementShaderBindings(
@@ -157,7 +180,6 @@ class FNaniteMultiViewMaterialVS : public FNaniteGlobalShader
 
 private:
 	LAYOUT_FIELD(FShaderParameter, MaterialDepth);
-	LAYOUT_FIELD(FShaderUniformBufferParameter, NaniteUniformBuffer);
 };
 
 class FNaniteIndirectMaterialVS : public FNaniteGlobalShader
@@ -176,7 +198,6 @@ class FNaniteIndirectMaterialVS : public FNaniteGlobalShader
 	: FNaniteGlobalShader(Initializer)
 	{
 		BindForLegacyShaderParameters<FParameters>(this, Initializer.PermutationId, Initializer.ParameterMap, false);
-		NaniteUniformBuffer.Bind(Initializer.ParameterMap, TEXT("Nanite"), SPF_Mandatory);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -195,7 +216,6 @@ class FNaniteIndirectMaterialVS : public FNaniteGlobalShader
 		const FMeshMaterialShaderElementData& ShaderElementData,
 		FMeshDrawSingleShaderBindings& ShaderBindings) const
 	{
-		ShaderBindings.Add(NaniteUniformBuffer, DrawRenderState.GetNaniteUniformBuffer());
 	}
 
 	void GetElementShaderBindings(
@@ -216,7 +236,6 @@ class FNaniteIndirectMaterialVS : public FNaniteGlobalShader
 
 private:
 	LAYOUT_FIELD(FShaderParameter, MaterialDepth);
-	LAYOUT_FIELD(FShaderUniformBufferParameter, NaniteUniformBuffer);
 };
 
 struct FNaniteMaterialEntry
@@ -229,6 +248,7 @@ struct FNaniteMaterialEntry
 	, InstructionCount(0)
 #endif
 	, bNeedUpload(false)
+	, bWPOEnabled(false)
 	{
 	}
 
@@ -240,6 +260,7 @@ struct FNaniteMaterialEntry
 	, InstructionCount(Other.InstructionCount)
 #endif
 	, bNeedUpload(false)
+	, bWPOEnabled(Other.bWPOEnabled)
 	{
 		checkSlow(!Other.bNeedUpload);
 	}
@@ -251,6 +272,7 @@ struct FNaniteMaterialEntry
 	uint32 InstructionCount;
 #endif
 	bool bNeedUpload;
+	bool bWPOEnabled;
 };
 
 struct FNaniteMaterialEntryKeyFuncs : TDefaultMapHashableKeyFuncs<FMeshDrawCommand, FNaniteMaterialEntry, false>
@@ -274,14 +296,17 @@ public:
 	typedef Experimental::FHashType FCommandHash;
 	typedef Experimental::FHashElementId FCommandId;
 
+	// The size of one entry in the material slot byte address buffer
+	static const uint32 MaterialSlotSize = sizeof(FNaniteMaterialSlot::FPacked);
+
 public:
 	FNaniteMaterialCommands(uint32 MaxMaterials = NANITE_MAX_MATERIALS);
 	~FNaniteMaterialCommands();
 
 	void Release();
 
-	FNaniteCommandInfo Register(FMeshDrawCommand& Command, FCommandHash CommandHash, uint32 InstructionCount);
-	FNaniteCommandInfo Register(FMeshDrawCommand& Command, uint32 InstructionCount) { return Register(Command, ComputeCommandHash(Command), InstructionCount); }
+	FNaniteCommandInfo Register(FMeshDrawCommand& Command, FCommandHash CommandHash, uint32 InstructionCount, bool bWPOEnabled);
+	FNaniteCommandInfo Register(FMeshDrawCommand& Command, uint32 InstructionCount, bool bWPOEnabled) { return Register(Command, ComputeCommandHash(Command), InstructionCount, bWPOEnabled); }
 	void Unregister(const FNaniteCommandInfo& CommandInfo);
 
 	inline const FCommandHash ComputeCommandHash(const FMeshDrawCommand& DrawCommand) const
@@ -332,21 +357,60 @@ public:
 
 	void UpdateBufferState(FRDGBuilder& GraphBuilder, uint32 NumPrimitives);
 
-	void Begin(FRHICommandListImmediate& RHICmdList, uint32 NumPrimitives, uint32 NumPrimitiveUpdates);
-	void* GetMaterialSlotPtr(uint32 PrimitiveIndex, uint32 EntryCount);
-#if WITH_EDITOR
-	void* GetHitProxyTablePtr(uint32 PrimitiveIndex, uint32 EntryCount);
-#endif
-	void Finish(FRHICommandListImmediate& RHICmdList);
+	class FUploader
+	{
+	public:
+		void Lock(FRHICommandListBase& RHICmdList);
 
+		void* GetMaterialSlotPtr(uint32 PrimitiveIndex, uint32 EntryCount);
 #if WITH_EDITOR
-	FRHIShaderResourceView* GetHitProxyTableSRV() const { return HitProxyTableDataBuffer.SRV; }
+		void* GetHitProxyTablePtr(uint32 PrimitiveIndex, uint32 EntryCount);
 #endif
 
-	FRHIShaderResourceView* GetMaterialSlotSRV() const { return MaterialSlotDataBuffer.SRV; }
-	FRHIShaderResourceView* GetMaterialDepthSRV() const { return MaterialDepthDataBuffer.SRV; }
+		void Unlock(FRHICommandListBase& RHICmdList);
+
+	private:
+		struct FMaterialUploadEntry
+		{
+			FMaterialUploadEntry() = default;
+			FMaterialUploadEntry(const FNaniteMaterialEntry& Entry)
+				: MaterialId(Entry.MaterialId)
+				, MaterialSlot(Entry.MaterialSlot)
 #if WITH_DEBUG_VIEW_MODES
-	FRHIShaderResourceView* GetMaterialEditorSRV() const { return MaterialEditorDataBuffer.SRV; }
+				, InstructionCount(Entry.InstructionCount)
+#endif
+			{}
+
+			uint32 MaterialId;
+			int32 MaterialSlot;
+#if WITH_DEBUG_VIEW_MODES
+			uint32 InstructionCount;
+#endif
+		};
+
+		TArray<FMaterialUploadEntry, FSceneRenderingArrayAllocator> DirtyMaterialEntries;
+
+		FRDGScatterUploader* MaterialSlotUploader = nullptr;
+		FRDGScatterUploader* HitProxyTableUploader = nullptr;
+		FRDGScatterUploader* MaterialDepthUploader = nullptr;
+		FRDGScatterUploader* MaterialEditorUploader = nullptr;
+		int32 MaxMaterials = 0;
+
+		friend FNaniteMaterialCommands;
+	};
+
+	FUploader* Begin(FRDGBuilder& GraphBuilder, uint32 NumPrimitives, uint32 NumPrimitiveUpdates);
+
+	void Finish(FRDGBuilder& GraphBuilder, FRDGExternalAccessQueue& ExternalAccessQueue, FUploader* Uploader);
+
+#if WITH_EDITOR
+	FRHIShaderResourceView* GetHitProxyTableSRV() const { return HitProxyTableDataBuffer->GetSRV(); }
+#endif
+
+	FRHIShaderResourceView* GetMaterialSlotSRV() const { return MaterialSlotDataBuffer->GetSRV(); }
+	FRHIShaderResourceView* GetMaterialDepthSRV() const { return MaterialDepthDataBuffer->GetSRV(); }
+#if WITH_DEBUG_VIEW_MODES
+	FRHIShaderResourceView* GetMaterialEditorSRV() const { return MaterialEditorDataBuffer->GetSRV(); }
 #endif
 
 	inline const int32 GetHighestMaterialSlot() const
@@ -363,22 +427,38 @@ private:
 	uint32 NumMaterialSlotUpdates = 0;
 	uint32 NumMaterialDepthUpdates = 0;
 
-	FScatterUploadBuffer MaterialSlotUploadBuffer;
-	FRWByteAddressBuffer MaterialSlotDataBuffer;
+	FRDGAsyncScatterUploadBuffer MaterialSlotUploadBuffer;
+	TRefCountPtr<FRDGPooledBuffer> MaterialSlotDataBuffer;
 
-	FScatterUploadBuffer HitProxyTableUploadBuffer;
-	FRWByteAddressBuffer HitProxyTableDataBuffer;
+	FRDGAsyncScatterUploadBuffer HitProxyTableUploadBuffer;
+	TRefCountPtr<FRDGPooledBuffer> HitProxyTableDataBuffer;
 
 	FGrowOnlySpanAllocator	MaterialSlotAllocator;
 
-	FScatterUploadBuffer	MaterialDepthUploadBuffer; // 1 uint per slot (Depth Value)
-	FRWByteAddressBuffer	MaterialDepthDataBuffer;
+	FRDGAsyncScatterUploadBuffer MaterialDepthUploadBuffer; // 1 uint per slot (Depth Value)
+	TRefCountPtr<FRDGPooledBuffer> MaterialDepthDataBuffer;
 
 #if WITH_DEBUG_VIEW_MODES
-	FScatterUploadBuffer	MaterialEditorUploadBuffer; // 1 uint per slot (VS and PS instruction count)
-	FRWByteAddressBuffer	MaterialEditorDataBuffer;
+	FRDGAsyncScatterUploadBuffer MaterialEditorUploadBuffer; // 1 uint per slot (VS and PS instruction count)
+	TRefCountPtr<FRDGPooledBuffer> MaterialEditorDataBuffer;
 #endif
 };
+
+inline void LockIfValid(FRHICommandListBase& RHICmdList, FNaniteMaterialCommands::FUploader* Uploader)
+{
+	if (Uploader)
+	{
+		Uploader->Lock(RHICmdList);
+	}
+}
+
+inline void UnlockIfValid(FRHICommandListBase& RHICmdList, FNaniteMaterialCommands::FUploader* Uploader)
+{
+	if (Uploader)
+	{
+		Uploader->Unlock(RHICmdList);
+	}
+}
 
 extern bool UseComputeDepthExport();
 
@@ -428,5 +508,7 @@ void DrawLumenMeshCapturePass(
 	FRDGTextureRef EmissiveAtlasTexture,
 	FRDGTextureRef DepthAtlasTexture
 );
+
+EGBufferLayout GetGBufferLayoutForMaterial(const FMaterial& Material);
 
 } // namespace Nanite

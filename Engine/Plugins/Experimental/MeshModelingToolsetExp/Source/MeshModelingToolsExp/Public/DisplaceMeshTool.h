@@ -2,17 +2,17 @@
 
 #pragma once
 
+#include "BaseTools/SingleSelectionMeshEditingTool.h"
 #include "CoreMinimal.h"
-#include "UObject/NoExportTypes.h"
-#include "Engine/Classes/Engine/Texture2D.h"
-#include "SingleSelectionTool.h"
-#include "InteractiveToolBuilder.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/MeshNormals.h"
+#include "Engine/Texture2D.h"
+#include "InteractiveToolBuilder.h"
 #include "MeshOpPreviewHelpers.h"
+#include "SingleSelectionTool.h"
 #include "Spatial/SampledScalarField2.h"
+#include "UObject/NoExportTypes.h"
 #include "WeightMapUtil.h"
-#include "BaseTools/SingleSelectionMeshEditingTool.h"
 #include "DisplaceMeshTool.generated.h"
 
 struct FMeshDescription;
@@ -53,7 +53,17 @@ enum class EDisplaceMeshToolSubdivisionType : uint8
 		retriangulated into a number of small subtriangles. The geometry of a PN triangle is defined as one cubic Bezier 
 		patch using control points. The patch matches the point and normal information at the vertices of the original 
 		flat triangle.*/
-	PNTriangles UMETA(DisplayName = "PN Triangles"),
+	PNTriangles UMETA(DisplayName = "PN Triangles")
+};
+
+UENUM()
+enum class EDisplaceMeshToolTriangleSelectionType : uint8
+{	
+	/** Tessellate the whole mesh */
+	None UMETA(DisplayName = "None"),
+
+	/** Tessellate only triangles assigned to the chosen material */
+	Material UMETA(DisplayName = "Material")
 };
 
 UENUM() 
@@ -115,6 +125,28 @@ public:
 	bool bDisableSizeWarning = false;
 };
 
+/** PropertySet for properties affecting the selective tessellation. */
+UCLASS()
+class MESHMODELINGTOOLSEXP_API USelectiveTessellationProperties : public UInteractiveToolPropertySet
+{
+	GENERATED_BODY()
+			
+public:
+
+	/** Optionally, restrict tessellation to a subset of the triangles. */
+	UPROPERTY(EditAnywhere, Category = SelectiveTessellationOptions)
+	EDisplaceMeshToolTriangleSelectionType SelectionType = EDisplaceMeshToolTriangleSelectionType::None;
+
+	/** Name of the selected material. */
+	UPROPERTY(EditAnywhere, Category = SelectiveTessellationOptions, meta = (EditCondition = "SelectionType == EDisplaceMeshToolTriangleSelectionType::Material", EditConditionHides, GetOptions = GetMaterialIDsFunc))
+	FName ActiveMaterial;
+
+	UFUNCTION()
+	TArray<FString> GetMaterialIDsFunc() { return MaterialIDList; }
+
+	UPROPERTY(meta = (TransientToolProperty))
+	TArray<FString> MaterialIDList;	
+};
 
 
 /** PropertySet for properties affecting the Image Map displacement type. */
@@ -302,6 +334,10 @@ public:
 	UPROPERTY()
 	TObjectPtr<UDisplaceMeshSineWaveProperties> SineWaveProperties;
 
+	/** Selective tessellation properties */
+	UPROPERTY()
+	TObjectPtr<USelectiveTessellationProperties> SelectiveTessellationProperties;
+
 	/** Contrast Curve we are actively listening to */
 	UPROPERTY()
 	TObjectPtr<UCurveFloat> ActiveContrastCurveTarget = nullptr;
@@ -323,6 +359,7 @@ private:
 	float WeightMapQuery(const FVector3d& Position, const UE::Geometry::FIndexedWeightMap& WeightMap) const;
 
 	TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> SubdividedMesh = nullptr;
+	TSharedPtr<TArray<int>, ESPMode::ThreadSafe> VerticesToDisplace = nullptr;
 	
 	UPROPERTY()
 	TObjectPtr<AInternalToolFrameworkActor> PreviewMeshActor = nullptr;

@@ -8,59 +8,120 @@
 #include "SourceControlAssetDataCache.h"
 #include "ISourceControlProvider.h"
 #include "UncontrolledChangelistState.h"
+#include "Input/DragAndDrop.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Templates/Function.h"
 
 struct FAssetData;
-struct IChangelistTreeItem;
-typedef TSharedPtr<IChangelistTreeItem> FChangelistTreeItemPtr;
-typedef TSharedRef<IChangelistTreeItem> FChangelistTreeItemRef;
 
+/**
+ * Modelizes a changelist node in a source control tree-like structure.
+ * The modelized tree stored is as below in memory.
+ * 
+ * > Changelist
+ *     File
+ *     > ShelvedChangelist
+ *         ShelvedFile
+ * 
+ * > UncontrolledChangelist
+ *     File
+ *     Offline File
+ */
 struct IChangelistTreeItem : TSharedFromThis<IChangelistTreeItem>
 {
 	enum TreeItemType
 	{
-		Invalid,
-		Changelist,
-		UncontrolledChangelist,
-		File,
-		OfflineFile,
-		ShelvedChangelist, // container for shelved files
-		ShelvedFile
+		Changelist,              // Node displaying a change list description.
+		UncontrolledChangelist,  // Node displaying an uncontrolled change list description.
+		File,                    // Node displaying a file information.
+		ShelvedChangelist,       // Node displaying shelved files as children.
+		ShelvedFile,             // Node displaying a shelved file information.
+		OfflineFile,             // Node displaying an offline file information.
 	};
 
-	/** Get this item's parent. Can be nullptr. */
-	FChangelistTreeItemPtr GetParent() const;
+	virtual ~IChangelistTreeItem() = default;
+
+	/** Get this item's parent. Can be nullptr for root nodes. */
+	TSharedPtr<IChangelistTreeItem> GetParent() const;
 
 	/** Get this item's children, if any. Although we store as weak pointers, they are guaranteed to be valid. */
-	const TArray<FChangelistTreeItemPtr>& GetChildren() const;
+	const TArray<TSharedPtr<IChangelistTreeItem>>& GetChildren() const;
 
 	/** Returns the TreeItem's type */
-	const TreeItemType GetTreeItemType() const
-	{
-		return Type;
-	}
+	const TreeItemType GetTreeItemType() const { return Type; }
 
 	/** Add a child to this item */
-	void AddChild(FChangelistTreeItemRef Child);
+	void AddChild(TSharedRef<IChangelistTreeItem> Child);
 
 	/** Remove a child from this item */
-	void RemoveChild(const FChangelistTreeItemRef& Child);
+	void RemoveChild(const TSharedRef<IChangelistTreeItem>& Child);
 
 protected:
+	IChangelistTreeItem(TreeItemType InType) { Type = InType; }
+
 	/** This item's parent, if any. */
-	FChangelistTreeItemPtr Parent;
+	TSharedPtr<IChangelistTreeItem> Parent;
 
 	/** Array of children contained underneath this item */
-	TArray<FChangelistTreeItemPtr> Children;
+	TArray<TSharedPtr<IChangelistTreeItem>> Children;
 
+	/** This item type. */
 	TreeItemType Type;
 };
 
+
+/**
+ * Abstracts the values displayed in the file view that has a set of columns. The API returns values
+ * as string rather than FText to avoid conversion when sorting very large collection (as FText convert
+ * internally to FString for comparison).
+ */
+struct IFileViewTreeItem : public IChangelistTreeItem
+{
+	/**The 'Priority' given to the item icon when sorting ascending (lower will be sorted first). */
+	virtual int32 GetIconSortingPriority() const { return 0; }
+
+	/** The values displayed in the 'Name' column. */
+	virtual const FString& GetName() const { return DefaultStrValue; }
+
+	/** The values displayed in the 'Path' column. */
+	virtual const FString& GetPath() const { return DefaultStrValue; }
+
+	/** The values displayed in the 'Type' column. */
+	virtual const FString& GetType() const { return DefaultStrValue; }
+
+	/** The values displayed in the 'User' column. */
+	virtual const FString& GetCheckedOutBy() const { return DefaultStrValue; }
+
+	/** Set the last modified time timestamp. */
+	void SetLastModifiedDateTime(const FDateTime& Timestamp);
+
+	/** The values displayed in the 'Last Modified' column. */
+	const FDateTime& GetLastModifiedDateTime() const { return LastModifiedDateTime; }
+
+	/** The values displayed in the 'Last Modified' column as text. */
+	FText GetLastModifiedTimestamp() const { return LastModifiedTimestampText; }
+
+protected:
+	IFileViewTreeItem(TreeItemType InType) : IChangelistTreeItem(InType) {}
+
+private:
+	// Use an empty string to return as default for const FString&.
+	static FString DefaultStrValue;
+	static FDateTime DefaultDateTimeValue;
+
+	/** The timestamp of the last modification to the file. */
+	FText LastModifiedTimestampText;
+	FDateTime LastModifiedDateTime;
+};
+
+
+/** Displays a changelist icon/number/description. */
 struct FChangelistTreeItem : public IChangelistTreeItem
 {
-	FChangelistTreeItem(FSourceControlChangelistStateRef InChangelistState)
-		: ChangelistState(InChangelistState)
+	FChangelistTreeItem(TSharedRef<ISourceControlChangelistState> InChangelistState)
+		: IChangelistTreeItem(IChangelistTreeItem::Changelist)
+		, ChangelistState(MoveTemp(InChangelistState))
 	{
-		Type = IChangelistTreeItem::Changelist;
 	}
 
 	FText GetDisplayText() const
@@ -73,15 +134,27 @@ struct FChangelistTreeItem : public IChangelistTreeItem
 		return ChangelistState->GetDescriptionText();
 	}
 
-	FSourceControlChangelistStateRef ChangelistState;
+	int32 GetFileCount() const
+	{
+		return ChangelistState->GetFilesStates().Num();
+	}
+
+	int32 GetShelvedFileCount() const
+	{
+		return ChangelistState->GetShelvedFilesStates().Num();
+	}
+
+	TSharedRef<ISourceControlChangelistState> ChangelistState;
 };
 
+
+/** Displays an uncontrolled changelist icon/number/description. */
 struct FUncontrolledChangelistTreeItem : public IChangelistTreeItem
 {
 	FUncontrolledChangelistTreeItem(FUncontrolledChangelistStateRef InUncontrolledChangelistState)
-		: UncontrolledChangelistState(InUncontrolledChangelistState)
+		: IChangelistTreeItem(IChangelistTreeItem::UncontrolledChangelist)
+		, UncontrolledChangelistState(InUncontrolledChangelistState)
 	{
-		Type = IChangelistTreeItem::UncontrolledChangelist;
 	}
 
 	FText GetDisplayText() const
@@ -94,31 +167,34 @@ struct FUncontrolledChangelistTreeItem : public IChangelistTreeItem
 		return UncontrolledChangelistState->GetDescriptionText();
 	}
 
+	int32 GetFileCount() const
+	{
+		return UncontrolledChangelistState->GetFileCount();
+	}
+
 	FUncontrolledChangelistStateRef UncontrolledChangelistState;
 };
 
-typedef TSharedPtr<FUncontrolledChangelistTreeItem> FUncontrolledChangelistTreeItemPtr;
-typedef TSharedRef<FUncontrolledChangelistTreeItem> FUncontrolledChangelistTreeItemRef;
 
-struct FShelvedChangelistTreeItem : public IChangelistTreeItem
-{
-	FShelvedChangelistTreeItem()
-	{
-		Type = IChangelistTreeItem::ShelvedChangelist;
-	}
-
-	FText GetDisplayText() const;
-};
-
-struct FFileTreeItem : public IChangelistTreeItem
+/** Displays a set of files under a changelist or uncontrolled changelist. */
+struct FFileTreeItem : public IFileViewTreeItem
 {
 	explicit FFileTreeItem(FSourceControlStateRef InFileState, bool bBeautifyPaths = true, bool bIsShelvedFile = false);
+
+	virtual int32 GetIconSortingPriority() const override;
+	virtual const FString& GetName() const override { return AssetNameStr; }
+	virtual const FString& GetPath() const override { return AssetPathStr; }
+	virtual const FString& GetType() const override { return AssetTypeStr; }
+	virtual const FString& GetCheckedOutBy() const override;
 
 	/** Updates informations based on AssetData */
 	void RefreshAssetInformation();
 
-	/** Returns the asset name of the item */
+	/** Returns the asset name of the item. This might update the asset names from the asset registry. */
 	FText GetAssetName();
+
+	/** Returns the asset name. This returns the currently cached asset name.*/
+	FText GetAssetName() const;
 
 	/** Returns the asset path of the item */
 	FText GetAssetPath() const { return AssetPath; }
@@ -128,6 +204,9 @@ struct FFileTreeItem : public IChangelistTreeItem
 
 	/** Returns the asset type color of the item */
 	FSlateColor GetAssetTypeColor() const { return FSlateColor(AssetTypeColor); }
+
+	/** Returns the user that checked out the file/asset (if any). */
+	FText GetCheckedOutByUser() const;
 
 	/** Returns the package name of the item to display */
 	FText GetPackageName() const { return PackageName; }
@@ -166,13 +245,6 @@ struct FFileTreeItem : public IChangelistTreeItem
 
 	bool IsShelved() const { return GetTreeItemType() == IChangelistTreeItem::ShelvedFile; }
 
-private:
-	/** Returns a string representing the name of the asset represented by the given AssetData */
-	FString RetrieveAssetName(const FAssetData& InAssetData) const;
-
-	/** Returns a string representing the path of the asset represented by the given AssetData */
-	FString RetrieveAssetPath(const FAssetData& InAssetData) const;
-
 public:
 	/** Shared pointer to the source control state object itself */
 	FSourceControlStateRef FileState;
@@ -183,18 +255,24 @@ private:
 
 	/** Cached asset name to display */
 	FText AssetName;
+	FString AssetNameStr;
 
 	/** Cached asset path to display */
 	FText AssetPath;
+	FString AssetPathStr;
 
 	/** Cached asset type to display */
 	FText AssetType;
+	FString AssetTypeStr;
 
 	/** Cached asset type related color to display */
 	FColor AssetTypeColor;
 
 	/** Cached package name to display */
 	FText PackageName;
+
+	/** The other user that has the checked out. */
+	mutable FString CheckedOutBy;
 
 	/** Matching asset(s) to facilitate Locate in content browser */
 	FAssetDataArrayPtr Assets;
@@ -209,39 +287,55 @@ private:
 	bool bAssetsUpToDate;
 };
 
-struct FOfflineFileTreeItem : public IChangelistTreeItem
+
+/** Root node to group shelved files as children. */
+struct FShelvedChangelistTreeItem : public IChangelistTreeItem
 {
-	explicit FOfflineFileTreeItem(const FString& InFilename);
-
-public:
-	const FText& GetPackageName() const { return PackageName; }
-
-	const FText& GetDisplayName() const { return AssetName; }
-
-	const FText& GetDisplayPath() const { return AssetPath; }
-
-	const FText& GetDisplayType() const { return AssetType; }
-
-	const FSlateColor& GetDisplayColor() const { return AssetTypeColor; }
-
-private:
-	TArray<FAssetData> Assets;
-	FText PackageName;
-	FText AssetName;
-	FText AssetPath;
-	FText AssetType;
-	FSlateColor AssetTypeColor;
+	FShelvedChangelistTreeItem() : IChangelistTreeItem(IChangelistTreeItem::ShelvedChangelist) {}
+	FText GetDisplayText() const;
 };
 
-typedef TSharedPtr<FFileTreeItem> FFileTreeItemPtr;
-typedef TSharedRef<FFileTreeItem> FFileTreeItemRef;
 
 struct FShelvedFileTreeItem : public FFileTreeItem
 {
 	explicit FShelvedFileTreeItem(FSourceControlStateRef InFileState, bool bBeautifyPaths = true)
 		: FFileTreeItem(InFileState, bBeautifyPaths,/*bIsShelved=*/true)
-	{}
+	{
+	}
 };
+
+
+struct FOfflineFileTreeItem : public IFileViewTreeItem
+{
+	explicit FOfflineFileTreeItem(const FString& InFilename);
+
+	void RefreshAssetInformation();
+
+public:
+	virtual const FString& GetName() const override { return AssetNameStr; }
+	virtual const FString& GetPath() const override { return AssetPathStr; }
+	virtual const FString& GetType() const override { return AssetTypeStr; }
+
+	const FString& GetFilename() const { return Filename; }
+	const FText& GetPackageName() const { return PackageName; }
+	const FText& GetDisplayName() const { return AssetName; }
+	const FText& GetDisplayPath() const { return AssetPath; }
+	const FText& GetDisplayType() const { return AssetType; }
+	const FColor& GetDisplayColor() const { return AssetTypeColor; }
+
+private:
+	TArray<FAssetData> Assets;
+	FString Filename;
+	FText PackageName;
+	FText AssetName;
+	FString AssetNameStr;
+	FText AssetPath;
+	FString AssetPathStr;
+	FText AssetType;
+	FString AssetTypeStr;
+	FColor AssetTypeColor;
+};
+
 
 namespace SSourceControlCommon
 {
@@ -250,4 +344,36 @@ namespace SSourceControlCommon
 	FText GetDefaultAssetType();
 	FText GetDefaultUnknownAssetType();
 	FText GetDefaultMultipleAsset();
+
+	void ExecuteChangelistOperationWithSlowTaskWrapper(const FText& Message, const TFunction<void()>& ChangelistTask);
+	void ExecuteUncontrolledChangelistOperationWithSlowTaskWrapper(const FText& Message, const TFunction<void()>& UncontrolledChangelistTask);
+	void DisplaySourceControlOperationNotification(const FText& Message, SNotificationItem::ECompletionState CompletionState);
+	bool OpenConflictDialog(const TArray<FSourceControlStateRef>& InFilesConflicts);
 }
+
+
+/** Implements drag and drop operation. */
+struct FSCCFileDragDropOp : public FDragDropOperation
+{
+	DRAG_DROP_OPERATOR_TYPE(FSCCFileDragDropOp, FDragDropOperation);
+
+	using FDragDropOperation::Construct;
+
+	virtual TSharedPtr<SWidget> GetDefaultDecorator() const override
+	{
+		FSourceControlStateRef FileState = Files.IsEmpty() ? UncontrolledFiles[0] : Files[0];
+		return SSourceControlCommon::GetSCCFileWidget(MoveTemp(FileState));
+	}
+
+	TArray<FSourceControlStateRef> Files;
+	TArray<FSourceControlStateRef> UncontrolledFiles;
+};
+
+
+typedef TSharedPtr<FUncontrolledChangelistTreeItem> FUncontrolledChangelistTreeItemPtr;
+typedef TSharedRef<FUncontrolledChangelistTreeItem> FUncontrolledChangelistTreeItemRef;
+typedef TSharedPtr<IChangelistTreeItem> FChangelistTreeItemPtr;
+typedef TSharedRef<IChangelistTreeItem> FChangelistTreeItemRef;
+typedef TSharedPtr<FFileTreeItem> FFileTreeItemPtr;
+typedef TSharedRef<FFileTreeItem> FFileTreeItemRef;
+

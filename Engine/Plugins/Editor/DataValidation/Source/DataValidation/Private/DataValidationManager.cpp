@@ -3,13 +3,15 @@
 #include "DataValidationManager.h"
 
 #include "Modules/ModuleManager.h"
-#include "Developer/MessageLog/Public/MessageLogModule.h"
+#include "MessageLogModule.h"
 #include "Logging/MessageLog.h"
 #include "Misc/ScopedSlowTask.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
 
 #include "CoreGlobals.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataValidationManager)
 
 #define LOCTEXT_NAMESPACE "DataValidationManager"
 
@@ -265,3 +267,4 @@ void UDEPRECATED_DataValidationManager::ValidateAllSavedPackages()
 }
 
 #undef LOCTEXT_NAMESPACE
+

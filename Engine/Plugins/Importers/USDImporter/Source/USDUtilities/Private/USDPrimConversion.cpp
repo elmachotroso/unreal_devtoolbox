@@ -3,6 +3,7 @@
 #include "USDPrimConversion.h"
 
 #include "UnrealUSDWrapper.h"
+#include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDLayerUtils.h"
 #include "USDLightConversion.h"
@@ -38,6 +39,7 @@
 #include "GeometryCache.h"
 #include "GeometryCacheComponent.h"
 #include "InstancedFoliageActor.h"
+#include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Sections/MovieScene3DTransformSection.h"
@@ -70,7 +72,7 @@
 #include "pxr/usd/usdGeom/xformCommonAPI.h"
 #include "pxr/usd/usdLux/diskLight.h"
 #include "pxr/usd/usdLux/distantLight.h"
-#include "pxr/usd/usdLux/light.h"
+#include "pxr/usd/usdLux/lightAPI.h"
 #include "pxr/usd/usdLux/rectLight.h"
 #include "pxr/usd/usdLux/shapingAPI.h"
 #include "pxr/usd/usdLux/sphereLight.h"
@@ -228,11 +230,101 @@ namespace UE
 
 				return NewOp;
 			}
+
+			// Turns OutTransform into the UE-space relative (local to parent) transform for Xformable, paying attention to if it
+			// or any of its ancestors has the '!resetXformStack!' xformOp.
+			void GetPrimConvertedRelativeTransform( pxr::UsdGeomXformable Xformable, double UsdTimeCode, FTransform& OutTransform, bool bIgnoreLocalTransform = false )
+			{
+				if ( !Xformable )
+				{
+					return;
+				}
+
+				FScopedUsdAllocs Allocs;
+
+				pxr::UsdPrim UsdPrim = Xformable.GetPrim();
+				pxr::UsdStageRefPtr UsdStage = UsdPrim.GetStage();
+
+				bool bResetTransformStack = false;
+				if( bIgnoreLocalTransform )
+				{
+					FTransform Dummy;
+					UsdToUnreal::ConvertXformable( UsdStage, Xformable, Dummy, UsdTimeCode, &bResetTransformStack );
+
+					OutTransform = FTransform::Identity;
+				}
+				else
+				{
+					UsdToUnreal::ConvertXformable( UsdStage, Xformable, OutTransform, UsdTimeCode, &bResetTransformStack );
+				}
+
+				// If we have the resetXformStack op on this prim's xformOpOrder we have to essentially use its transform
+				// as the world transform (i.e. we have to discard the parent transforms). We won't do this here, and will instead
+				// keep relative transforms everywhere for consistency, which means we must manually invert the ParentToWorld transform
+				// and compute our relative transform ourselves.
+				//
+				// Ideally we'd query the components for this for performance reasons, but not only we don't have access to them here,
+				// but neither the stage actor's PrimsToAnimate nor the sequencer guarantee a particular evaluation order anyway,
+				// which means that if our parent is also animated, we could end up computing our relative transforms using the outdated
+				// parent's transform instead. This means we must compute our relative transform using the actual prim hierarchy.
+				//
+				// Additionally, our parent prims may be animated, so we must query all of our ancestors for a new world matrix every frame.
+				//
+				// We could use UsdGeomXformCache for this, but given that we won't actually cache anything (since we'll have to resample
+				// all ancestors every frame anyway) and that we would have to manually handle the camera/light compensation at least for
+				// our immediate parent, it's simpler to just recursively call our own UsdToUnreal::ConvertXformable and concatenate the
+				// results. Its not as fast, but we'll only do this on the initial read for prims with `resetXformStack`, so it should
+				// be very rare. We don't ever write out the resetXformStack either, so after that initial read this op should just disappear.
+				//
+				// Note that, alternatively, we could also handle this whole situation by having the scene components specify their transforms
+				// as absolute, and the Sequencer would work with that as well. However that would spread out the handling of
+				// resetXformStack through all USD workflows, and mean we'd have to *write out* resetXformStack when writing/exporting
+				// absolute transform components, and also convert between them when the user toggles between relative/absolute manually,
+				// which is probably worse than just baking it as relative transforms on first read and forgetting about it.
+				if ( bResetTransformStack )
+				{
+					FTransform ParentToWorld = FTransform::Identity;
+
+					pxr::UsdPrim AncestorPrim = UsdPrim.GetParent();
+					while ( AncestorPrim && !AncestorPrim.IsPseudoRoot() )
+					{
+						FTransform AncestorTransform = FTransform::Identity;
+						bool bAncestorResetTransformStack = false;
+						UsdToUnreal::ConvertXformable( UsdStage, pxr::UsdGeomXformable{ AncestorPrim }, AncestorTransform, UsdTimeCode, &bAncestorResetTransformStack );
+
+						ParentToWorld = ParentToWorld * AncestorTransform;
+
+						// If we find a parent that also has the resetXformStack, then we're in luck: That transform value will be its world
+						// transform already, so we can stop concatenating stuff. Yes, on the component-side of things we'd have done the same
+						// thing of making a fake relative transform for it, but the end result would have been the same final world transform
+						if ( bAncestorResetTransformStack )
+						{
+							break;
+						}
+
+						AncestorPrim = AncestorPrim.GetParent();
+					}
+
+					const FVector& Scale = ParentToWorld.GetScale3D();
+					if ( !FMath::IsNearlyEqual( Scale.X, Scale.Y ) || !FMath::IsNearlyEqual( Scale.X, Scale.Z ) )
+					{
+						UE_LOG( LogUsd, Warning, TEXT( "Inverting transform with non-uniform scaling '%s' when computing relative transform for prim '%s'! Result will likely be incorrect, since FTransforms can't invert non-uniform scalings. You can work around this by baking your non-uniform scaling transform into the vertices, or by not using the !resetXformStack! Xform op." ),
+							*Scale.ToString(),
+							*UsdToUnreal::ConvertPath( UsdPrim.GetPrimPath() )
+						);
+					}
+
+					// Multiplying with matrices here helps mitigate the issues encountered with non-uniform scaling, however it will stil
+					// never be perfect, as it is not possible to generate an FTransform that can properly invert a complex transform with non-uniform
+					// scaling when just multiplying them (which is what downstream code within USceneComponent will do).
+					OutTransform = FTransform{ OutTransform.ToMatrixWithScale() * ParentToWorld.ToInverseMatrixWithScale() };
+				}
+			}
 		}
 	}
 }
 
-bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, FTransform& OutTransform, double EvalTime )
+bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, FTransform& OutTransform, double EvalTime, bool* bOutResetTransformStack )
 {
 	pxr::UsdGeomXformable Xformable( Schema );
 	if ( !Xformable )
@@ -244,16 +336,19 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 
 	// Transform
 	pxr::GfMatrix4d UsdMatrix;
-	bool bResetXFormStack = false;
-	Xformable.GetLocalTransformation( &UsdMatrix, &bResetXFormStack, EvalTime );
+	bool bResetXformStack = false;
+	bool* bResetXformStackPtr = bOutResetTransformStack ? bOutResetTransformStack : &bResetXformStack;
+	Xformable.GetLocalTransformation( &UsdMatrix, bResetXformStackPtr, EvalTime );
 
 	FUsdStageInfo StageInfo( Stage );
 	OutTransform = UsdToUnreal::ConvertMatrix( StageInfo, UsdMatrix );
 
+	const bool bPrimIsLight = Xformable.GetPrim().HasAPI< pxr::UsdLuxLightAPI >();
+
 	// Extra rotation to match different camera facing direction convention
 	// Note: The camera space is always Y-up, yes, but this is not what this is: This is the camera's transform wrt the stage,
 	// which follows the stage up axis
-	if ( Xformable.GetPrim().IsA< pxr::UsdGeomCamera >() || Xformable.GetPrim().IsA< pxr::UsdLuxLight >() )
+	if ( Xformable.GetPrim().IsA< pxr::UsdGeomCamera >() || bPrimIsLight )
 	{
 		if ( StageInfo.UpAxis == EUsdUpAxis::YAxis )
 		{
@@ -267,7 +362,12 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 	// Invert the compensation applied to our parents, in case they're a camera or a light
 	if ( pxr::UsdPrim Parent = Xformable.GetPrim().GetParent() )
 	{
-		if ( Parent.IsA< pxr::UsdGeomCamera >() || Parent.IsA< pxr::UsdLuxLight >() )
+		const bool bParentIsLight = Parent.HasAPI< pxr::UsdLuxLightAPI >();
+
+		// If bResetXFormStack is true, then the prim's local transform will be used directly as the world transform, and we will
+		// already invert the parent transform fully, regardless of what it is. This means it doesn't really matter if our parent
+		// has a camera/light compensation or not, and so we don't have to have the explicit inverse compensation here anyway!
+		if ( !(*bResetXformStackPtr) && ( Parent.IsA< pxr::UsdGeomCamera >() || bParentIsLight ) )
 		{
 			if ( StageInfo.UpAxis == EUsdUpAxis::YAxis )
 			{
@@ -283,7 +383,7 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 	return true;
 }
 
-bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, USceneComponent& SceneComponent, double EvalTime )
+bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, USceneComponent& SceneComponent, double EvalTime, bool bUsePrimTransform )
 {
 	pxr::UsdGeomXformable Xformable( Schema );
 	if ( !Xformable )
@@ -297,8 +397,7 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 
 	// Transform
 	FTransform Transform;
-	UsdToUnreal::ConvertXformable( Stage, Xformable, Transform, EvalTime );
-
+	UE::USDPrimConversionImpl::Private::GetPrimConvertedRelativeTransform( Xformable, EvalTime, Transform, !bUsePrimTransform );
 	SceneComponent.SetRelativeTransform( Transform );
 
 	SceneComponent.Modify();
@@ -522,8 +621,16 @@ bool UsdToUnreal::ConvertBoolTimeSamples( const UE::FUsdStage& Stage, const TArr
 	const double StageTimeCodesPerSecond = UsdStage->GetTimeCodesPerSecond();
 	const FFrameRate StageFrameRate( StageTimeCodesPerSecond, 1 );
 
+	double LastTimeSample = TNumericLimits<double>::Lowest();
 	for ( const double UsdTimeSample : UsdTimeSamples )
 	{
+		// We never want to evaluate the same time twice
+		if ( FMath::IsNearlyEqual( UsdTimeSample, LastTimeSample ) )
+		{
+			continue;
+		}
+		LastTimeSample = UsdTimeSample;
+
 		int32 FrameNumber = FMath::FloorToInt( UsdTimeSample );
 		float SubFrameNumber = UsdTimeSample - FrameNumber;
 
@@ -585,8 +692,16 @@ bool UsdToUnreal::ConvertFloatTimeSamples( const UE::FUsdStage& Stage, const TAr
 
 	const ERichCurveInterpMode InterpMode = ( UsdStage->GetInterpolationType() == pxr::UsdInterpolationTypeLinear ) ? ERichCurveInterpMode::RCIM_Linear : ERichCurveInterpMode::RCIM_Constant;
 
+	double LastTimeSample = TNumericLimits<double>::Lowest();
 	for ( const double UsdTimeSample : UsdTimeSamples )
 	{
+		// We never want to evaluate the same time twice
+		if ( FMath::IsNearlyEqual( UsdTimeSample, LastTimeSample ) )
+		{
+			continue;
+		}
+		LastTimeSample = UsdTimeSample;
+
 		int32 FrameNumber = FMath::FloorToInt( UsdTimeSample );
 		float SubFrameNumber = UsdTimeSample - FrameNumber;
 
@@ -653,8 +768,16 @@ bool UsdToUnreal::ConvertColorTimeSamples( const UE::FUsdStage& Stage, const TAr
 
 	const ERichCurveInterpMode InterpMode = ( UsdStage->GetInterpolationType() == pxr::UsdInterpolationTypeLinear ) ? ERichCurveInterpMode::RCIM_Linear : ERichCurveInterpMode::RCIM_Constant;
 
+	double LastTimeSample = TNumericLimits<double>::Lowest();
 	for ( const double UsdTimeSample : UsdTimeSamples )
 	{
+		// We never want to evaluate the same time twice
+		if ( FMath::IsNearlyEqual( UsdTimeSample, LastTimeSample ) )
+		{
+			continue;
+		}
+		LastTimeSample = UsdTimeSample;
+
 		int32 FrameNumber = FMath::FloorToInt( UsdTimeSample );
 		float SubFrameNumber = UsdTimeSample - FrameNumber;
 
@@ -744,8 +867,16 @@ bool UsdToUnreal::ConvertTransformTimeSamples( const UE::FUsdStage& Stage, const
 
 	const ERichCurveInterpMode InterpMode = ( UsdStage->GetInterpolationType() == pxr::UsdInterpolationTypeLinear ) ? ERichCurveInterpMode::RCIM_Linear : ERichCurveInterpMode::RCIM_Constant;
 
+	double LastTimeSample = TNumericLimits<double>::Lowest();
 	for ( const double UsdTimeSample : UsdTimeSamples )
 	{
+		// We never want to evaluate the same time twice
+		if ( FMath::IsNearlyEqual( UsdTimeSample, LastTimeSample ) )
+		{
+			continue;
+		}
+		LastTimeSample = UsdTimeSample;
+
 		int32 FrameNumber = FMath::FloorToInt( UsdTimeSample );
 		float SubFrameNumber = UsdTimeSample - FrameNumber;
 
@@ -799,7 +930,7 @@ bool UsdToUnreal::ConvertTransformTimeSamples( const UE::FUsdStage& Stage, const
 	return true;
 }
 
-UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const UE::FUsdPrim& Prim, const FName& PropertyPath )
+UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const UE::FUsdPrim& Prim, const FName& PropertyPath, bool bIgnorePrimLocalTransform )
 {
 	UsdToUnreal::FPropertyTrackReader Reader;
 
@@ -814,12 +945,12 @@ UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const 
 		if ( PropertyPath == UnrealIdentifiers::TransformPropertyName )
 		{
 			FTransform Default = FTransform::Identity;
-			UsdToUnreal::ConvertXformable( UsdStage, Xformable, Default, UsdUtils::GetDefaultTimeCode() );
+			UE::USDPrimConversionImpl::Private::GetPrimConvertedRelativeTransform( Xformable, UsdUtils::GetDefaultTimeCode(), Default, bIgnorePrimLocalTransform );
 
-			Reader.TransformReader = [UsdStage, Xformable, Default]( double UsdTimeCode )
+			Reader.TransformReader = [UsdStage, Xformable, Default, bIgnorePrimLocalTransform]( double UsdTimeCode )
 			{
 				FTransform Result = Default;
-				UsdToUnreal::ConvertXformable( UsdStage, Xformable, Result, UsdTimeCode );
+				UE::USDPrimConversionImpl::Private::GetPrimConvertedRelativeTransform( Xformable, UsdTimeCode, Result, bIgnorePrimLocalTransform );
 				return Result;
 			};
 			return Reader;
@@ -908,11 +1039,11 @@ UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const 
 			}
 		}
 	}
-	else if ( pxr::UsdLuxLight Light{ Prim } )
+	else if ( const pxr::UsdLuxLightAPI LightAPI{ Prim } )
 	{
 		if ( PropertyPath == UnrealIdentifiers::LightColorPropertyName )
 		{
-			if ( pxr::UsdAttribute Attr = Light.GetColorAttr() )
+			if ( pxr::UsdAttribute Attr = LightAPI.GetColorAttr() )
 			{
 				pxr::GfVec3f UsdDefault;
 				Attr.Get<pxr::GfVec3f>( &UsdDefault );
@@ -935,7 +1066,7 @@ UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const 
 		}
 		else if ( PropertyPath == UnrealIdentifiers::UseTemperaturePropertyName )
 		{
-			if ( pxr::UsdAttribute Attr = Light.GetEnableColorTemperatureAttr() )
+			if ( pxr::UsdAttribute Attr = LightAPI.GetEnableColorTemperatureAttr() )
 			{
 				bool Default;
 				Attr.Get<bool>( &Default );
@@ -951,7 +1082,7 @@ UsdToUnreal::FPropertyTrackReader UsdToUnreal::CreatePropertyTrackReader( const 
 		}
 		else if ( PropertyPath == UnrealIdentifiers::TemperaturePropertyName )
 		{
-			if ( pxr::UsdAttribute Attr = Light.GetColorTemperatureAttr() )
+			if ( pxr::UsdAttribute Attr = LightAPI.GetColorTemperatureAttr() )
 			{
 				float Default;
 				Attr.Get<float>( &Default );
@@ -1405,26 +1536,31 @@ bool UnrealToUsd::ConvertCameraComponent( const UCineCameraComponent& CameraComp
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFocalLengthAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.CurrentFocalLength ), UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFocusDistanceAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.FocusSettings.ManualFocusDistance ), UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFStopAttr() )
 	{
 		Attr.Set<float>( CameraComponent.CurrentAperture, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateHorizontalApertureAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.Filmback.SensorWidth ), UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateVerticalApertureAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.Filmback.SensorHeight ), UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	return true;
@@ -1928,7 +2064,7 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 	// In UE cameras shoot towards local + X, with + Z up.Lights also emit towards local + X, with + Z up
 	// Note that this wouldn't have worked in case we collapsed light and camera components, but these always get their own
 	// actors, so we know that we don't have a single component that represents a large collapsed prim hierarchy
-	if ( UsdPrim.IsA<pxr::UsdGeomCamera>() || UsdPrim.IsA<pxr::UsdLuxLight>() )
+	if ( UsdPrim.IsA<pxr::UsdGeomCamera>() || UsdPrim.HasAPI<pxr::UsdLuxLightAPI>() )
 	{
 		FTransform AdditionalRotation = FTransform( FRotator( 0.0f, 90.f, 0.0f ) );
 
@@ -1943,7 +2079,7 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 	// Invert compensation applied to parent if it's a light or camera component
 	if ( pxr::UsdPrim ParentPrim = UsdPrim.GetParent() )
 	{
-		if ( ParentPrim.IsA<pxr::UsdGeomCamera>() || ParentPrim.IsA<pxr::UsdLuxLight>() )
+		if ( ParentPrim.IsA<pxr::UsdGeomCamera>() || ParentPrim.HasAPI<pxr::UsdLuxLightAPI>() )
 		{
 			FTransform AdditionalRotation = FTransform( FRotator( 0.0f, 90.f, 0.0f ) );
 
@@ -1975,6 +2111,7 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 		}
 
 		VisibilityAttr.Set<pxr::TfToken>( Value );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ VisibilityAttr } );
 	}
 
 	return true;
@@ -2079,9 +2216,9 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 			return false;
 		}
 
-		if ( const USkeletalMesh* SkeletalMesh = SkinnedMeshComponent->SkeletalMesh )
+		if ( const USkinnedAsset* SkinnedAsset = SkinnedMeshComponent->GetSkinnedAsset())
 		{
-			FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
+			FSkeletalMeshRenderData* RenderData = SkinnedAsset->GetResourceForRendering();
 			if ( !RenderData )
 			{
 				return false;
@@ -2093,7 +2230,7 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 				return false;
 			}
 
-			int32 NumLODs = SkeletalMesh->GetLODNum();
+			int32 NumLODs = SkinnedAsset->GetLODNum();
 			const bool bHasLODs = NumLODs > 1;
 
 			FString MeshName;
@@ -2124,7 +2261,7 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 						continue;
 					}
 
-					const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo( LODIndex );
+					const FSkeletalMeshLODInfo* LODInfo = SkinnedAsset->GetLODInfo( LODIndex );
 
 					const TArray<FSkelMeshRenderSection>& Sections = LodRenderData[ LODIndex ].RenderSections;
 					int32 NumSections = Sections.Num();
@@ -2241,21 +2378,25 @@ bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierar
 	if ( UsdAttribute Attr = PointInstancer.CreateProtoIndicesAttr() )
 	{
 		Attr.Set( ProtoIndices, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreatePositionsAttr() )
 	{
 		Attr.Set( Positions, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateOrientationsAttr() )
 	{
 		Attr.Set( Orientations, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateScalesAttr() )
 	{
 		Attr.Set( Scales, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	return true;
@@ -2292,17 +2433,74 @@ bool UnrealToUsd::ConvertXformable( const FTransform& RelativeTransform, pxr::Us
 
 	const pxr::UsdTimeCode UsdTimeCode( TimeCode );
 
-	pxr::GfMatrix4d UsdMatrix;
-	bool bResetXFormStack = false;
-	XForm.GetLocalTransformation( &UsdMatrix, &bResetXFormStack, UsdTimeCode );
-
 	if ( pxr::UsdGeomXformOp MatrixXform = UE::USDPrimConversionImpl::Private::ForceMatrixXform( XForm ) )
 	{
 		MatrixXform.Set( UsdTransform, UsdTimeCode );
+
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ MatrixXform.GetAttr() } );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ XForm.GetXformOpOrderAttr() } );
 	}
 
 	return true;
 }
+
+#if WITH_EDITOR
+namespace UE
+{
+	namespace USDPrimConversionImpl
+	{
+		namespace Private
+		{
+			void ConvertFoliageInstances(
+				const FFoliageInfo& Info,
+				const TSet<int32>& UEInstances,
+				const FTransform& UEWorldToFoliageActor,
+				const FUsdStageInfo& StageInfo,
+				int PrototypeIndex,
+				pxr::VtArray<int>& ProtoIndices,
+				pxr::VtArray<pxr::GfVec3f>& Positions,
+				pxr::VtArray<pxr::GfQuath>& Orientations,
+				pxr::VtArray<pxr::GfVec3f>& Scales
+			)
+			{
+				FScopedUsdAllocs Allocs;
+
+				const int32 NumInstances = UEInstances.Num();
+
+				ProtoIndices.reserve( ProtoIndices.size() + NumInstances );
+				Positions.reserve( Positions.size() + NumInstances );
+				Orientations.reserve( Orientations.size() + NumInstances );
+				Scales.reserve( Scales.size() + NumInstances );
+
+				for ( int32 InstanceIndex : UEInstances )
+				{
+					const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
+
+					// Convert axes
+					FTransform UEWorldTransform{ Instance->Rotation, (FVector)Instance->Location, (FVector)Instance->DrawScale3D };
+					FTransform USDTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, UEWorldTransform * UEWorldToFoliageActor );
+
+					FVector Translation = USDTransform.GetTranslation();
+					FQuat Rotation = USDTransform.GetRotation();
+					FVector Scale = USDTransform.GetScale3D();
+
+					// Compensate metersPerUnit
+					const float UEMetersPerUnit = 0.01f;
+					if ( !FMath::IsNearlyEqual( UEMetersPerUnit, StageInfo.MetersPerUnit ) )
+					{
+						Translation *= ( UEMetersPerUnit / StageInfo.MetersPerUnit );
+					}
+
+					ProtoIndices.push_back( PrototypeIndex );
+					Positions.push_back( pxr::GfVec3f( Translation.X, Translation.Y, Translation.Z ) );
+					Orientations.push_back( pxr::GfQuath( Rotation.W, Rotation.X, Rotation.Y, Rotation.Z ) );
+					Scales.push_back( pxr::GfVec3f( Scale.X, Scale.Y, Scale.Z ) );
+				}
+			}
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Actor, pxr::UsdPrim& UsdPrim, double TimeCode, ULevel* InstancesLevel )
 {
@@ -2325,51 +2523,72 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 	VtArray<GfQuath> Orientations;
 	VtArray<GfVec3f> Scales;
 
+	TSet<FFoliageInstanceBaseId> HandledComponents;
+
+	// It seems like the foliage instance transforms are actually world transforms, so to get them into the coordinate space of the generated
+	// point instancer, we'll have to concatenate with the inverse the foliage actor's ActorToWorld transform
+	FTransform UEWorldToFoliageActor = Actor.GetTransform().Inverse();
+
 	int PrototypeIndex = 0;
 	for ( const TPair<UFoliageType*, TUniqueObj<FFoliageInfo>>& FoliagePair : Actor.GetFoliageInfos() )
 	{
+		const UFoliageType* FoliageType = FoliagePair.Key;
 		const FFoliageInfo& Info = FoliagePair.Value.Get();
 
+		// Traverse valid foliage instances: Those that are being tracked to belonging to a particular component
 		for ( const TPair<FFoliageInstanceBaseId, FFoliageInstanceBaseInfo>& FoliageInstancePair : Actor.InstanceBaseCache.InstanceBaseMap )
 		{
+			const FFoliageInstanceBaseId& ComponentId = FoliageInstancePair.Key;
+			HandledComponents.Add( ComponentId );
+
 			UActorComponent* Comp = FoliageInstancePair.Value.BasePtr.Get();
 			if ( !Comp || ( InstancesLevel && ( Comp->GetComponentLevel() != InstancesLevel ) ) )
 			{
 				continue;
 			}
 
-			if ( const TSet<int32>* InstanceSet = Info.ComponentHash.Find( FoliageInstancePair.Key ) )
+			if ( const TSet<int32>* InstanceSet = Info.ComponentHash.Find( ComponentId ) )
 			{
-				const int32 NumInstances = InstanceSet->Num();
-				ProtoIndices.reserve( ProtoIndices.size() + NumInstances );
-				Positions.reserve( Positions.size() + NumInstances );
-				Orientations.reserve( Orientations.size() + NumInstances );
-				Scales.reserve( Scales.size() + NumInstances );
+				UE::USDPrimConversionImpl::Private::ConvertFoliageInstances(
+					Info,
+					*InstanceSet,
+					UEWorldToFoliageActor,
+					StageInfo,
+					PrototypeIndex,
+					ProtoIndices,
+					Positions,
+					Orientations,
+					Scales
+				);
+			}
+		}
 
-				for ( int32 InstanceIndex : (*InstanceSet) )
+		// Do another pass to grab invalid foliage instances (not assigned to any particular component)
+		// Only export these when we're not given a particular level to export, or if that level is the actor's level (essentially
+		// pretending the invalid instances belong to the actor's level). This mostly helps prevent it from exporting the invalid instances
+		// multiple times in case we're calling this function repeatedly for each individual sublevel
+		if ( !InstancesLevel || InstancesLevel == Actor.GetLevel() )
+		{
+			for ( const TPair<FFoliageInstanceBaseId, TSet<int32>>& Pair : Info.ComponentHash )
+			{
+				const FFoliageInstanceBaseId& ComponentId = Pair.Key;
+				if ( HandledComponents.Contains( ComponentId ) )
 				{
-					const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
-
-					// Convert axes
-					FTransform UETransform{ Instance->Rotation, (FVector)Instance->Location, (FVector)Instance->DrawScale3D };
-					FTransform USDTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, UETransform );
-
-					FVector Translation = USDTransform.GetTranslation();
-					FQuat Rotation = USDTransform.GetRotation();
-					FVector Scale = USDTransform.GetScale3D();
-
-					// Compensate metersPerUnit
-					const float UEMetersPerUnit = 0.01f;
-					if ( !FMath::IsNearlyEqual( UEMetersPerUnit, StageInfo.MetersPerUnit ) )
-					{
-						Translation *= ( UEMetersPerUnit / StageInfo.MetersPerUnit );
-					}
-
-					ProtoIndices.push_back( PrototypeIndex );
-					Positions.push_back( GfVec3f( Translation.X, Translation.Y, Translation.Z ) );
-					Orientations.push_back( GfQuath( Rotation.W, Rotation.X, Rotation.Y, Rotation.Z ) );
-					Scales.push_back( GfVec3f( Scale.X, Scale.Y, Scale.Z ) );
+					continue;
 				}
+
+				const TSet<int32>& InstanceSet = Pair.Value;
+				UE::USDPrimConversionImpl::Private::ConvertFoliageInstances(
+					Info,
+					InstanceSet,
+					UEWorldToFoliageActor,
+					StageInfo,
+					PrototypeIndex,
+					ProtoIndices,
+					Positions,
+					Orientations,
+					Scales
+				);
 			}
 		}
 
@@ -2381,21 +2600,25 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 	if ( UsdAttribute Attr = PointInstancer.CreateProtoIndicesAttr() )
 	{
 		Attr.Set( ProtoIndices, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreatePositionsAttr() )
 	{
 		Attr.Set( Positions, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateOrientationsAttr() )
 	{
 		Attr.Set( Orientations, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateScalesAttr() )
 	{
 		Attr.Set( Scales, UsdTimeCode );
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	return true;
@@ -2444,7 +2667,7 @@ bool UnrealToUsd::CreateComponentPropertyBaker( UE::FUsdPrim& Prim, const UScene
 
 			// Compensate different orientation for light or camera components
 			FTransform AdditionalRotation = FTransform::Identity;
-			if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.IsA< pxr::UsdLuxLight >() )
+			if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.HasAPI< pxr::UsdLuxLightAPI >() )
 			{
 				AdditionalRotation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
 
@@ -2652,7 +2875,7 @@ bool UnrealToUsd::CreateComponentPropertyBaker( UE::FUsdPrim& Prim, const UScene
 bool UnrealToUsd::CreateSkeletalAnimationBaker( UE::FUsdPrim& SkelRoot, UE::FUsdPrim& SkelAnimation, USkeletalMeshComponent& Component, FComponentBaker& OutBaker )
 {
 #if WITH_EDITOR
-	USkeletalMesh* SkeletalMesh = Component.SkeletalMesh;
+	USkeletalMesh* SkeletalMesh = Component.GetSkeletalMeshAsset();
 	if ( !SkeletalMesh )
 	{
 		return false;
@@ -2690,11 +2913,7 @@ bool UnrealToUsd::CreateSkeletalAnimationBaker( UE::FUsdPrim& SkelRoot, UE::FUsd
 	{
 		for ( int32 MorphTargetIndex = 0; MorphTargetIndex < MorphTargets.Num(); ++MorphTargetIndex )
 		{
-			FActiveMorphTarget ActiveMorphTarget;
-			ActiveMorphTarget.MorphTarget = MorphTargets[ MorphTargetIndex ];
-			ActiveMorphTarget.WeightIndex = MorphTargetIndex;
-
-			Component.ActiveMorphTargets.Add( ActiveMorphTarget );
+			Component.ActiveMorphTargets.Add( MorphTargets[ MorphTargetIndex ], MorphTargetIndex );
 		}
 	}
 
@@ -2710,19 +2929,19 @@ bool UnrealToUsd::CreateSkeletalAnimationBaker( UE::FUsdPrim& SkelRoot, UE::FUsd
 		BlendShapeWeightsAttr = UsdSkelAnimation.CreateBlendShapeWeightsAttr();
 		BlendShapesAttr = UsdSkelAnimation.CreateBlendShapesAttr();
 
-		TArray<FActiveMorphTarget> SortedMorphTargets = Component.ActiveMorphTargets;
-		SortedMorphTargets.Sort([](const FActiveMorphTarget& Left, const FActiveMorphTarget& Right)
+		TArray<FMorphTargetWeightMap::ElementType> SortedMorphTargets = Component.ActiveMorphTargets.Array();
+		SortedMorphTargets.Sort([](const FMorphTargetWeightMap::ElementType& Left, const FMorphTargetWeightMap::ElementType& Right)
 		{
-			return Left.WeightIndex < Right.WeightIndex;
+			return Left.Value < Right.Value;
 		});
 
 		pxr::VtArray< pxr::TfToken > BlendShapeNames;
 		BlendShapeNames.reserve(SortedMorphTargets.Num());
 
-		for ( const FActiveMorphTarget& ActiveMorphTarget : SortedMorphTargets )
+		for ( const FMorphTargetWeightMap::ElementType& ActiveMorphTarget : SortedMorphTargets )
 		{
 			FString BlendShapeName;
-			if ( UMorphTarget* MorphTarget = ActiveMorphTarget.MorphTarget )
+			if ( const UMorphTarget* MorphTarget = ActiveMorphTarget.Key )
 			{
 				BlendShapeName = MorphTarget->GetFName().ToString();
 			}
@@ -2754,7 +2973,7 @@ bool UnrealToUsd::CreateSkeletalAnimationBaker( UE::FUsdPrim& SkelRoot, UE::FUsd
 			Component.TickAnimation( 0.f, false );
 			Component.UpdateLODStatus();
 			Component.RefreshBoneTransforms();
-			Component.RefreshSlaveComponents();
+			Component.RefreshFollowerComponents();
 			Component.UpdateComponentToWorld();
 			Component.FinalizeBoneTransform();
 			Component.MarkRenderTransformDirty();
@@ -2832,7 +3051,7 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 
 					// Compensate different orientation for light or camera components
 					FTransform AdditionalRotation = FTransform::Identity;
-					if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.IsA< pxr::UsdLuxLight >() )
+					if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.HasAPI< pxr::UsdLuxLightAPI >() )
 					{
 						AdditionalRotation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
 
@@ -2944,11 +3163,11 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 			}
 		}
 	}
-	else if ( pxr::UsdLuxLight Light{ Prim } )
+	else if ( pxr::UsdLuxLightAPI LightAPI{ Prim } )
 	{
 		if ( PropertyPath == UnrealIdentifiers::LightColorPropertyName )
 		{
-			Attr = Light.GetColorAttr();
+			Attr = LightAPI.GetColorAttr();
 			if ( Attr )
 			{
 				Result.ColorWriter = [Attr]( const FLinearColor& UEValue, double UsdTimeCode )
@@ -2960,7 +3179,7 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 		}
 		else if ( PropertyPath == UnrealIdentifiers::UseTemperaturePropertyName )
 		{
-			Attr = Light.GetEnableColorTemperatureAttr();
+			Attr = LightAPI.GetEnableColorTemperatureAttr();
 			if ( Attr )
 			{
 				Result.BoolWriter = [Attr]( bool UEValue, double UsdTimeCode )
@@ -2971,7 +3190,7 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 		}
 		else if ( PropertyPath == UnrealIdentifiers::TemperaturePropertyName )
 		{
-			Attr = Light.GetColorTemperatureAttr();
+			Attr = LightAPI.GetColorTemperatureAttr();
 			if ( Attr )
 			{
 				Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
@@ -3261,6 +3480,8 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 		{
 			Attr.ClearAtTime( TimeSample );
 		}
+
+		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
 	}
 
 	return Result;
@@ -3370,11 +3591,9 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 		FFrameTime UsdStartTime = FFrameRate::TransformTime( PlaybackRange.GetLowerBoundValue(), Resolution, StageFrameRate );
 		FFrameTime UsdEndTime = FFrameRate::TransformTime( PlaybackRange.GetUpperBoundValue(), Resolution, StageFrameRate );
 
-		if ( LocationValuesX.Num() > 0 || Xformable.TransformMightBeTimeVarying() )
+		std::vector< double > UsdTimeSamples;
+		if ( LocationValuesX.Num() > 0 || ( Xformable.GetTimeSamples( &UsdTimeSamples ) && UsdTimeSamples.size() > 0 ) )
 		{
-			std::vector< double > UsdTimeSamples;
-			Xformable.GetTimeSamples( &UsdTimeSamples );
-
 			bIsDataOutOfSync = ( UsdTimeSamples.size() != LocationValuesX.Num() );
 
 			if ( !bIsDataOutOfSync )
@@ -3417,7 +3636,7 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 
 		// Compensate different orientation for light or camera components
 		FTransform CameraCompensation = FTransform::Identity;
-		if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.IsA< pxr::UsdLuxLight >() )
+		if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.HasAPI< pxr::UsdLuxLightAPI >() )
 		{
 			CameraCompensation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
 
@@ -3431,7 +3650,7 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 		FTransform InverseCameraCompensation = FTransform::Identity;
 		if ( pxr::UsdPrim ParentPrim = UsdPrim.GetParent() )
 		{
-			if ( ParentPrim.IsA<pxr::UsdGeomCamera>() || ParentPrim.IsA<pxr::UsdLuxLight>() )
+			if ( ParentPrim.IsA<pxr::UsdGeomCamera>() || ParentPrim.HasAPI<pxr::UsdLuxLightAPI>() )
 			{
 				InverseCameraCompensation = FTransform( FRotator( 0.0f, 90.f, 0.0f ) );
 

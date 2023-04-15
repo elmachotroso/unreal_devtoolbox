@@ -7,6 +7,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Cassandra;
 using Dasync.Collections;
+using EpicGames.Horde.Storage;
 using Jupiter.Implementation;
 
 namespace Horde.Storage.Implementation
@@ -16,17 +17,19 @@ namespace Horde.Storage.Implementation
         private readonly ConcurrentDictionary<NamespaceId, SortedList<string, SortedList<TimeUuid, ReplicationLogEvent>>> _replicationEvents = new();
         private readonly ConcurrentDictionary<NamespaceId, List<SnapshotInfo>>  _snapshots = new();
 
+        private readonly ConcurrentDictionary<NamespaceId, ConcurrentDictionary<string, ReplicatorState>>  _replicatorState = new();
+
         public IAsyncEnumerable<NamespaceId> GetNamespaces()
         {
             return _replicationEvents.Keys.ToAsyncEnumerable();
         }
 
-        public Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timestamp)
+        public Task<(string, Guid)> InsertAddEvent(NamespaceId ns, BucketId bucket, IoHashKey key, BlobIdentifier objectBlob, DateTime? timestamp)
         {
             return DoInsert(ns, bucket, key, objectBlob, ReplicationLogEvent.OpType.Added, timestamp);
         }
 
-        private async Task<(string, Guid)> DoInsert(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier hash, ReplicationLogEvent.OpType op, DateTime? lastTimestamp)
+        private async Task<(string, Guid)> DoInsert(NamespaceId ns, BucketId bucket, IoHashKey key, BlobIdentifier? hash, ReplicationLogEvent.OpType op, DateTime? lastTimestamp)
         {
             DateTime timestamp = lastTimestamp.GetValueOrDefault(DateTime.Now);
 
@@ -65,9 +68,9 @@ namespace Horde.Storage.Implementation
             });
         }
 
-        public Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, KeyId key, BlobIdentifier objectBlob, DateTime? timestamp)
+        public Task<(string, Guid)> InsertDeleteEvent(NamespaceId ns, BucketId bucket, IoHashKey key, DateTime? timestamp)
         {
-            return DoInsert(ns, bucket, key, objectBlob, ReplicationLogEvent.OpType.Deleted, timestamp); 
+            return DoInsert(ns, bucket, key, null, ReplicationLogEvent.OpType.Deleted, timestamp); 
         }
 
         public async IAsyncEnumerable<ReplicationLogEvent> Get(NamespaceId ns, string? lastBucket, Guid? lastEvent)
@@ -83,7 +86,9 @@ namespace Horde.Storage.Implementation
             {
                 // if we have no buckets we are done
                 if (!buckets.Any())
+                {
                     yield break;
+                }
 
                 lastBucket = buckets.First().Key;
             }
@@ -169,7 +174,35 @@ namespace Horde.Storage.Implementation
             {
                 yield return snapshot;
             }
+        }
 
+        public Task UpdateReplicatorState(NamespaceId ns, string replicatorName,
+            ReplicatorState newState)
+        {
+            _replicatorState.AddOrUpdate(ns,
+                _ =>
+                new ConcurrentDictionary<string, ReplicatorState>
+                {
+                    [replicatorName] = newState
+                },
+                (_, states) =>
+                {
+                    states[replicatorName] = newState;
+                    return states;
+                });
+
+            return Task.CompletedTask;
+        }
+
+        public Task<ReplicatorState?> GetReplicatorState(NamespaceId ns, string replicatorName)
+        {
+            if (_replicatorState.TryGetValue(ns, out ConcurrentDictionary<string, ReplicatorState>? replicationState))
+            {
+                replicationState.TryGetValue(replicatorName, out ReplicatorState? state);
+                return Task.FromResult(state);
+            }
+
+            return Task.FromResult<ReplicatorState?>(null);
         }
     }
 
@@ -182,7 +215,7 @@ namespace Horde.Storage.Implementation
 
         public static string ToReplicationBucketIdentifier(this DateTime timestamp)
         {
-            return $"rep-{timestamp.ToFileTime()}";
+            return $"rep-{timestamp.ToFileTimeUtc()}";
         }
     }
 }

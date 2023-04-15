@@ -9,6 +9,7 @@
 #include "AssetThumbnail.h"
 #include "ClassIconFinder.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
+#include "Engine/Level.h"
 
 TSharedRef<FAssetDragDropOp> FAssetDragDropOp::New(const FAssetData& InAssetData, UActorFactory* ActorFactory)
 {
@@ -65,28 +66,28 @@ TSharedPtr<SWidget> FAssetDragDropOp::GetDefaultDecorator() const
 			+SOverlay::Slot()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Base"))
+				.Image(FAppStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Base"))
 				.ColorAndOpacity(FLinearColor::Gray)
 			]
 		
 			+SOverlay::Slot()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Mask"))
+				.Image(FAppStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Mask"))
 			];
 	}
 	else
 	{
 		ThumbnailWidget = 
 			SNew(SImage)
-			.Image(FEditorStyle::GetDefaultBrush());
+			.Image(FAppStyle::GetDefaultBrush());
 	}
 	
-	const FSlateBrush* SubTypeBrush = FEditorStyle::GetDefaultBrush();
+	const FSlateBrush* SubTypeBrush = FAppStyle::GetDefaultBrush();
 	FLinearColor SubTypeColor = FLinearColor::White;
 	if (AssetThumbnail.IsValid() && HasFolders())
 	{
-		SubTypeBrush = FEditorStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
+		SubTypeBrush = FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderClosed");
 		SubTypeColor = FLinearColor::Gray;
 	}
 	else if (ActorFactory.IsValid() && HasFiles())
@@ -97,7 +98,7 @@ TSharedPtr<SWidget> FAssetDragDropOp::GetDefaultDecorator() const
 
 	return 
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ContentBrowser.AssetDragDropTooltipBackground"))
+		.BorderImage(FAppStyle::GetBrush("ContentBrowser.AssetDragDropTooltipBackground"))
 		.Content()
 		[
 			SNew(SHorizontalBox)
@@ -125,7 +126,7 @@ TSharedPtr<SWidget> FAssetDragDropOp::GetDefaultDecorator() const
 					.Padding(FMargin(0, 4, 0, 0))
 					[
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+						.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 						.Visibility(TotalCount > 1 ? EVisibility::Visible : EVisibility::Collapsed)
 						.Content()
 						[
@@ -141,7 +142,7 @@ TSharedPtr<SWidget> FAssetDragDropOp::GetDefaultDecorator() const
 					[
 						SNew(SImage)
 						.Image(SubTypeBrush)
-						.Visibility(SubTypeBrush != FEditorStyle::GetDefaultBrush() ? EVisibility::Visible : EVisibility::Collapsed)
+						.Visibility(SubTypeBrush != FAppStyle::GetDefaultBrush() ? EVisibility::Visible : EVisibility::Collapsed)
 						.ColorAndOpacity(SubTypeColor)
 					]
 				]
@@ -210,8 +211,7 @@ void FAssetDragDropOp::Init(TArray<FAssetData> InAssetData, TArray<FString> InAs
 	// Can cause unsafe frame reentry 
 	for (FAssetData& Data : AssetData)
 	{
-		FScopedLoadAllExternalObjects Scope(Data.PackageName);
-		Data.GetAsset();
+		Data.GetAsset({ ULevel::LoadAllExternalObjectsTag });
 	}
 
 	InitThumbnail();

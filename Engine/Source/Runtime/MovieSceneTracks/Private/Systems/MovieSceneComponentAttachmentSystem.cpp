@@ -7,6 +7,7 @@
 
 #include "EntitySystem/MovieSceneBoundObjectInstantiator.h"
 #include "EntitySystem/MovieSceneBoundSceneComponentInstantiator.h"
+#include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 
 #include "PreAnimatedState/MovieScenePreAnimatedComponentTransformStorage.h"
 #include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
@@ -19,6 +20,8 @@
 #include "MovieSceneTracksComponentTypes.h"
 #include "MovieSceneObjectBindingID.h"
 #include "IMovieScenePlayer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneComponentAttachmentSystem)
 
 namespace UE
 {
@@ -102,7 +105,7 @@ struct FAttachmentHandler
 	}
 };
 
-struct FComponentAttachmentPreAnimatedTraits
+struct FComponentAttachmentPreAnimatedTraits : FBoundObjectPreAnimatedStateTraits
 {
 	using KeyType     = FObjectKey;
 	using StorageType = FPreAnimAttachment;
@@ -127,8 +130,6 @@ struct FPreAnimatedComponentAttachmentStorage
 	: TPreAnimatedStateStorage_ObjectTraits<FComponentAttachmentPreAnimatedTraits>
 {
 	static TAutoRegisterPreAnimatedStorageID<FPreAnimatedComponentAttachmentStorage> StorageID;
-
-	FPreAnimatedStorageID GetStorageType() const override { return StorageID; }
 };
 
 TAutoRegisterPreAnimatedStorageID<FPreAnimatedComponentAttachmentStorage> FPreAnimatedComponentAttachmentStorage::StorageID;
@@ -165,7 +166,7 @@ UMovieSceneComponentAttachmentSystem::UMovieSceneComponentAttachmentSystem(const
 {
 	using namespace UE::MovieScene;
 
-	SystemExclusionContext |= EEntitySystemContext::Interrogation;
+	SystemCategories |= FSystemInterrogator::GetExcludedFromInterrogationCategory();
 
 	FMovieSceneTracksComponentTypes* TrackComponents = FMovieSceneTracksComponentTypes::Get();
 	RelevantComponent = TrackComponents->AttachParentBinding;
@@ -192,17 +193,7 @@ void UMovieSceneComponentAttachmentSystem::OnLink()
 	Linker->SystemGraph.AddReference(this, AttachmentInvalidator);
 	Linker->SystemGraph.AddPrerequisite(AttachmentInvalidator, this);
 
-	Linker->Events.TagGarbage.AddUObject(this, &UMovieSceneComponentAttachmentSystem::TagGarbage);
-}
-
-void UMovieSceneComponentAttachmentSystem::TagGarbage(UMovieSceneEntitySystemLinker*)
-{
-	AttachmentTracker.CleanupGarbage();
-}
-
-void UMovieSceneComponentAttachmentSystem::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
-{
-	CastChecked<UMovieSceneComponentAttachmentSystem>(InThis)->AttachmentTracker.AddReferencedObjects(Collector);
+	AttachmentTracker.Initialize(this);
 }
 
 void UMovieSceneComponentAttachmentSystem::OnUnlink()
@@ -277,7 +268,7 @@ void UMovieSceneComponentAttachmentSystem::SavePreAnimatedState(const FPreAnimat
 	.Read(BuiltInComponents->BoundObject)
 	.FilterAll(FilterMask)
 	.Iterate_PerAllocation(&Linker->EntityManager,
-		[EntityMetaData, ComponentTransformStorage, ComponentAttachmentStorage](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
+		[EntityMetaData, ComponentTransformStorage, ComponentAttachmentStorage](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
 		{
 			TArrayView<UObject* const> BoundObjectArray = BoundObjects.AsArray(Item.GetAllocation()->Num());
 
@@ -328,3 +319,4 @@ void UMovieSceneComponentAttachmentSystem::RestorePreAnimatedState(const FPreAni
 		);
 	}
 }
+

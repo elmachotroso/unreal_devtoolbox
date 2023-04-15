@@ -2,11 +2,13 @@
 
 #include "SourceFilterCollection.h"
 #include "SourceFilterTrace.h"
-#include "AssetRegistryModule.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
 #include "Async/Async.h"
 #include "UObject/UObjectIterator.h"
 #include "EmptySourceFilter.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SourceFilterCollection)
 
 template<typename T>
 T* USourceFilterCollection::CreateNewFilter(UClass* Class /*= T::StaticClass()*/)
@@ -196,7 +198,7 @@ void USourceFilterCollection::AddFiltersFromPreset(const TArray<FString>& ClassN
 	AsyncTask(ENamedThreads::GameThread,
 		[this, ClassNames, ChildToParentIndices]()
 	{
-		const UEnum* EnumPtr = FindObject<UEnum>(ANY_PACKAGE, TEXT("EFilterSetMode"), true);
+		const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/SourceFilteringCore.EFilterSetMode"), true);
 
 		TArray<UDataSourceFilter*> CreatedFilters;
 		TArray<bool> MovedFlags;

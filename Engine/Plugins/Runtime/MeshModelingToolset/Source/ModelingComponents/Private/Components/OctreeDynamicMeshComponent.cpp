@@ -30,6 +30,8 @@
 // default proxy for this component
 #include "OctreeDynamicMeshSceneProxy.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OctreeDynamicMeshComponent)
+
 using namespace UE::Geometry;
 
 
@@ -79,11 +81,11 @@ void UOctreeDynamicMeshComponent::ApplyTransform(const FTransform3d& Transform, 
 {
 	if (bInvert)
 	{
-		MeshTransforms::ApplyTransformInverse(*GetMesh(), Transform);
+		MeshTransforms::ApplyTransformInverse(*GetMesh(), Transform, true);
 	}
 	else
 	{
-		MeshTransforms::ApplyTransform(*GetMesh(), Transform);
+		MeshTransforms::ApplyTransform(*GetMesh(), Transform, true);
 	}
 
 	if (GetCurrentSceneProxy() != nullptr)

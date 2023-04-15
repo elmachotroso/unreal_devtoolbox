@@ -2,26 +2,55 @@
 
 
 #include "SGraphActionMenu.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Text/SRichTextBlock.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "EditorStyleSet.h"
-#include "Styling/CoreStyle.h"
-#include "GraphEditorDragDropAction.h"
+
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraphSchema_K2.h"
-#include "K2Node.h"
 #include "EdGraphSchema_K2_Actions.h"
-#include "GraphActionNode.h"
-#include "Widgets/SToolTip.h"
-#include "IDocumentation.h"
 #include "EditorCategoryUtils.h"
-#include "Editor/EditorPerProjectUserSettings.h"
-#include "BlueprintPaletteFavorites.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "GraphActionNode.h"
+#include "GraphEditorDragDropAction.h"
+#include "IDocumentation.h"
+#include "Input/DragAndDrop.h"
+#include "Input/Events.h"
+#include "InputCoreTypes.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node.h"
+#include "Layout/Children.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
 #include "Math/NumericLimits.h"
+#include "Math/UnrealMathSSE.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBorder.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/SRichTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/STableRow.h"
+
+class ITableRow;
+class SWidget;
+struct FGeometry;
+struct FSlateBrush;
 
 #define LOCTEXT_NAMESPACE "GraphActionMenu"
 
@@ -64,7 +93,7 @@ public:
 
 		STableRow < ItemType >::ConstructInternal(
 			typename STableRow< ItemType >::FArguments()
-			.Style(FEditorStyle::Get(), "DetailsView.TreeView.TableRow")
+			.Style(FAppStyle::Get(), "DetailsView.TreeView.TableRow")
 			.ShowSelection(false),
 			InOwnerTableView
 			);
@@ -365,12 +394,19 @@ void SGraphActionMenu::Construct( const FArguments& InArgs, bool bIsReadOnly/* =
 
 void SGraphActionMenu::RefreshAllActions(bool bPreserveExpansion, bool bHandleOnSelectionEvent/*=true*/)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SGraphActionMenu::RefreshAllActions);
+
 	// Save Selection (of only the first selected thing)
 	TArray< TSharedPtr<FGraphActionNode> > SelectedNodes = TreeView->GetSelectedItems();
 	TSharedPtr<FGraphActionNode> SelectedAction = SelectedNodes.Num() > 0 ? SelectedNodes[0] : nullptr;
 
-	AllActions.Empty();
-	OnCollectAllActions.ExecuteIfBound(AllActions);
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SGraphActionMenu::CollectAllActions);
+
+		AllActions.Empty();
+		OnCollectAllActions.ExecuteIfBound(AllActions);
+	}
+
 	GenerateFilteredItems(bPreserveExpansion);
 
 	// Re-apply selection #0 if possible
@@ -660,6 +696,8 @@ void RestoreExpansionState(TSharedPtr< STreeView<ItemType> > InTree, const TArra
 
 void SGraphActionMenu::GenerateFilteredItems(bool bPreserveExpansion)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SGraphActionMenu::GenerateFilteredItems);
+
 	// First, save off current expansion state
 	TSet< TSharedPtr<FGraphActionNode> > OldExpansionState;
 	if(bPreserveExpansion)
@@ -996,7 +1034,7 @@ TSharedRef<ITableRow> SGraphActionMenu::MakeWidget( TSharedPtr<FGraphActionNode>
 			.Padding( 0.0f, 1.f, 0.0f, 1.f )
 			[
 				SNew(SSeparator)
-				.SeparatorImage(FEditorStyle::Get().GetBrush("Menu.Separator"))
+				.SeparatorImage(FAppStyle::Get().GetBrush("Menu.Separator"))
 				.Thickness(1.0f)
 			];
 		}
@@ -1010,7 +1048,7 @@ TSharedRef<ITableRow> SGraphActionMenu::MakeWidget( TSharedPtr<FGraphActionNode>
 				SNew(SRichTextBlock)
 				.Text(SectionTitle)
 				.TransformPolicy(ETextTransformPolicy::ToUpper)
-				.DecoratorStyleSet(&FEditorStyle::Get())
+				.DecoratorStyleSet(&FAppStyle::Get())
 				.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
 			]
 

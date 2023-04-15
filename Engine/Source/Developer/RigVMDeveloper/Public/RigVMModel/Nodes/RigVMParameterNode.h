@@ -2,17 +2,28 @@
 
 #pragma once
 
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
+#include "Math/Color.h"
 #include "RigVMCore/RigVMExternalVariable.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMTypeUtils.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "RigVMParameterNode.generated.h"
+
+class UObject;
+struct FFrame;
 
 /**
  * The parameter description is used to convey information
  * about unique parameters within a Graph. Multiple Parameter
  * Nodes can share the same parameter description.
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (Deprecated = "5.1"))
 struct FRigVMGraphParameterDescription
 {
 	GENERATED_BODY()
@@ -75,7 +86,7 @@ public:
  * The Parameter Node represents an input or output argument / parameter
  * of the Function / Graph. Parameter Node have only a single value pin.
  */
-UCLASS(BlueprintType)
+UCLASS(BlueprintType, meta = (Deprecated = "5.1"))
 class RIGVMDEVELOPER_API URigVMParameterNode : public URigVMNode
 {
 	GENERATED_BODY()

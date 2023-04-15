@@ -16,7 +16,6 @@
 #include "CADKernel/Geo/Surfaces/Surface.h"
 #include "CADKernel/Math/Aabb.h"
 #include "CADKernel/Math/Boundary.h"
-#include "CADKernel/Math/Plane.h"
 #include "CADKernel/Mesh/Structure/EdgeMesh.h"
 #include "CADKernel/Mesh/Structure/ModelMesh.h"
 #include "CADKernel/Mesh/Structure/FaceMesh.h"
@@ -27,8 +26,9 @@
 #include "CADKernel/Topo/Shell.h"
 #include "CADKernel/Topo/TopologicalFace.h"
 
+#include "Math/Plane.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 #ifdef CADKERNEL_DEV
@@ -255,8 +255,12 @@ void DrawQuadripode(double Height, double Base, FPoint& Center, FPoint& InDirect
 void DisplayEntity(const FEntity& Entity)
 {
 #ifdef CADKERNEL_DEV
-	FTimePoint StartTime = FChrono::Now();
+	if (Entity.IsDeleted())
+	{
+		return;
+	}
 
+	FTimePoint StartTime = FChrono::Now();
 	FProgress Progress;
 
 	F3DDebugSession GraphicSession(FString::Printf(TEXT("%s %d"), Entity.GetTypeName(), Entity.GetId()), { Entity.GetId() });
@@ -309,6 +313,11 @@ void DisplayEntity(const FEntity& Entity)
 void DisplayEntity2D(const FEntity& Entity)
 {
 #ifdef CADKERNEL_DEV
+	if (Entity.IsDeleted())
+	{
+		return;
+	}
+
 	FTimePoint StartTime = FChrono::Now();
 
 	FProgress Progress;
@@ -342,25 +351,25 @@ void DisplayEntity2D(const FEntity& Entity)
 void Display(const FPlane& Plane, FIdent Ident)
 {
 #ifdef CADKERNEL_DEV
-	FPoint Normal = Plane.GetNormal();
-	if (Normal.Length() < SMALL_NUMBER)
+	FVector Normal = Plane.GetNormal();
+	if (Normal.Size() < DOUBLE_SMALL_NUMBER)
 	{
 		return;
 	}
 
-	FPoint UAxis;
+	FVector UAxis;
 	// Find the first frame axis non collinear to the plane normal
 	for (int32 Index = 0; Index < 3; ++Index)
 	{
-		FPoint Axis = FPoint::ZeroPoint;
+		FVector Axis = FVector::ZeroVector;
 		Axis[Index] = 1;
 		UAxis = Normal ^ Axis;
-		if (UAxis.Length() > SMALL_NUMBER)
+		if (UAxis.Size() > DOUBLE_SMALL_NUMBER)
 		{
 			break;
 		}
 	}
-	FPoint VAxis = UAxis ^ Normal;
+	FVector VAxis = UAxis ^ Normal;
 
 	UAxis.Normalize();
 	UAxis *= 10;
@@ -368,13 +377,25 @@ void Display(const FPlane& Plane, FIdent Ident)
 	VAxis *= 10;
 
 	TArray<FPoint> Points;
-	Points.Init(FPoint(), 5);
-	const FPoint& Point = Plane.GetPoint();
-	Points[0] = Point + UAxis + VAxis;
-	Points[1] = Point + UAxis - VAxis;
-	Points[2] = Point - UAxis - VAxis;
-	Points[3] = Point - UAxis + VAxis;
-	Points[4] = Point + UAxis + VAxis;
+
+	const FVector Point = Plane.GetOrigin();
+	
+	FVector VTemp;
+
+	VTemp = Point + UAxis + VAxis;
+	Points.Emplace(VTemp[0], VTemp[1], VTemp[2]);
+
+	VTemp = Point + UAxis - VAxis;
+	Points.Emplace(VTemp[0], VTemp[1], VTemp[2]);
+
+	VTemp = Point - UAxis - VAxis;
+	Points.Emplace(VTemp[0], VTemp[1], VTemp[2]);
+
+	VTemp = Point - UAxis + VAxis;
+	Points.Emplace(VTemp[0], VTemp[1], VTemp[2]);
+
+	VTemp = Point + UAxis + VAxis;
+	Points.Emplace(VTemp[0], VTemp[1], VTemp[2]);
 
 	F3DDebugSegment G(Ident);
 	DrawElement(2, Points);
@@ -623,7 +644,7 @@ void DisplayControlPolygon(const FCurve& Curve)
 	{
 		for (const FPoint& Pole : Poles)
 		{
-			Display(Pole, EVisuProperty::GreenPoint);
+			DisplayPoint(Pole, EVisuProperty::GreenPoint);
 		}
 
 		for (int32 Index = 1; Index < Poles.Num(); Index++)
@@ -657,7 +678,7 @@ void DisplayControlPolygon(const FSurface& Surface)
 	{
 		for (int32 Index = 0; Index < Poles.Num(); Index++)
 		{
-			Display(Poles[Index], EVisuProperty::GreenPoint);
+			DisplayPoint(Poles[Index], EVisuProperty::GreenPoint);
 		}
 
 		for (int32 IndexV = 0, Index = 0; IndexV < PoleVNum; IndexV++)
@@ -724,7 +745,7 @@ void Draw(const FTopologicalFace& Face)
 				switch (Edge.Entity->GetTwinEntityCount())
 				{
 				case 1:
-					Property = EVisuProperty::BorderEdge;
+					Property =  Edge.Entity->IsDegenerated() ? EVisuProperty::OrangeCurve : EVisuProperty::BorderEdge;
 					break;
 				case 2:
 					Property = EVisuProperty::BlueCurve;
@@ -909,14 +930,6 @@ void Display(const FModel& Model)
 		}
 	}
 
-	{
-		const TArray<TSharedPtr<FTopologicalFace>>& Surfaces = Model.GetFaces();
-		FProgress SurfaceProgress((int32)Surfaces.Num(), TEXT("Surfaces"));
-		for (const TSharedPtr<FTopologicalFace>& Surface : Surfaces)
-		{
-			Display(*Surface);
-		}
-	}
 #endif
 }
 
@@ -935,14 +948,6 @@ void DisplayProductTree(const FModel& Model)
 		}
 	}
 
-	{
-		const TArray<TSharedPtr<FTopologicalFace>>& Faces = Model.GetFaces();
-		FProgress SurfaceProgress((int32)Faces.Num(), TEXT("Faces"));
-		for (const TSharedPtr<FTopologicalFace>& Face : Faces)
-		{
-			Display(*Face);
-		}
-	}
 #endif
 }
 
@@ -1035,9 +1040,18 @@ void DisplayMesh(const FFaceMesh& Mesh)
 	const TArray<int32>& VertexIndices = Mesh.VerticesGlobalIndex;
 	for (int32 Index = 0; Index < TriangleIndices.Num();)
 	{
-		Points[0] = *NodeIdToCoordinates[VertexIndices[TriangleIndices[Index++]]];
-		Points[1] = *NodeIdToCoordinates[VertexIndices[TriangleIndices[Index++]]];
-		Points[2] = *NodeIdToCoordinates[VertexIndices[TriangleIndices[Index++]]];
+		const FPoint** P0 = NodeIdToCoordinates.Find(VertexIndices[TriangleIndices[Index++]]);
+		const FPoint** P1 = NodeIdToCoordinates.Find(VertexIndices[TriangleIndices[Index++]]);
+		const FPoint** P2 = NodeIdToCoordinates.Find(VertexIndices[TriangleIndices[Index++]]);
+
+		if (!P0 || !P1 || !P2)
+		{
+			continue;
+		}
+
+		Points[0] = **P0;
+		Points[1] = **P1;
+		Points[2] = **P2;
 		DrawElement(2, Points, EVisuProperty::Element);
 		DrawSegment(Points[0], Points[1], EVisuProperty::EdgeMesh);
 		DrawSegment(Points[1], Points[2], EVisuProperty::EdgeMesh);
@@ -1050,22 +1064,33 @@ void DisplayMesh(const FFaceMesh& Mesh)
 
 	for (const int32& Index : VertexIndices)
 	{
+		const FPoint** PointPtr = NodeIdToCoordinates.Find(Index);
+		if (!PointPtr)
+		{
+			continue;
+		}
 		F3DDebugSegment GraphicSegment(Index);
-		DrawPoint(*NodeIdToCoordinates[Index], EVisuProperty::NodeMesh);
+		DrawPoint(**PointPtr, EVisuProperty::NodeMesh);
 	}
 
 	bool test = FSystem::Get().GetVisu()->GetParameters()->bDisplayNormals;
 	if (FSystem::Get().GetVisu()->GetParameters()->bDisplayNormals)
 	{
 		double NormalLength = FSystem::Get().GetVisu()->GetParameters()->NormalLength;
-		const TArray<FVector>& Normals = Mesh.Normals;
+		const TArray<FVector3f>& Normals = Mesh.Normals;
 		for (int32 Index = 0; Index < VertexIndices.Num(); ++Index)
 		{
+			const FPoint** PointPtr = NodeIdToCoordinates.Find(VertexIndices[Index]);
+			if (!PointPtr)
+			{
+				continue;
+			}
+
 			F3DDebugSegment GraphicSegment(Index);
-			FVector Normal = Normals[Index];
+			FVector3f Normal = Normals[Index];
 			Normal.Normalize();
 			Normal *= NormalLength;
-			DrawSegment(*NodeIdToCoordinates[VertexIndices[Index]], *NodeIdToCoordinates[VertexIndices[Index]] + Normal, EVisuProperty::EdgeMesh);
+			DrawSegment(**PointPtr, **PointPtr + Normal, EVisuProperty::EdgeMesh);
 		}
 	}
 #endif
@@ -1202,4 +1227,4 @@ void Display2D(const FTopologicalLoop& Loop)
 #endif
 }
 
-} // namespace CADKernel
+} // namespace UE::CADKernel

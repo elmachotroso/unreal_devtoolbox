@@ -139,7 +139,7 @@ public:
 	template <typename Lambda>
 	void ParallelForEachProxy(const Lambda& Func)
 	{
-		::ParallelFor(DirtyProxyBucketInfo.TotalNum,[this,&Func](int32 Idx)
+		::ParallelFor( TEXT("Chaos.PF"),DirtyProxyBucketInfo.TotalNum,1, [this,&Func](int32 Idx)
 		{
 			int32 BucketIdx, InnerIdx;
 			DirtyProxyBucketInfo.GetBucketIdx(Idx, BucketIdx, InnerIdx);
@@ -297,6 +297,9 @@ public:
 
 	/** Returns the amount of external time pushed so far. Any external commands or events should be associated with this time */
 	FReal GetExternalTime_External() const { return ExternalTime_External; }
+
+	/** Returns the internal step that the current PushData will be associated with once it is marshalled over*/
+	int32 GetInternalStep_External() const { return InternalStep_External; }
 
 	/** Used to delay marshalled data. This is mainly used for testing at the moment */
 	void SetTickDelay_External(int32 InDelay) { Delay = InDelay; }

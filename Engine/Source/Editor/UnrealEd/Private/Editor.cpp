@@ -69,10 +69,10 @@
 #include "AssetToolsModule.h"
 
 #include "InterchangeManager.h"
+#include "InterchangeResultsContainer.h"
 
 #if WITH_EDITOR
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "Settings/EditorExperimentalSettings.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "UnrealEd.Editor"
@@ -119,13 +119,17 @@ FEditorDelegates::FOnPreSaveWorldWithContext			FEditorDelegates::PreSaveWorldWit
 FEditorDelegates::FOnPostSaveWorldWithContext			FEditorDelegates::PostSaveWorldWithContext;
 FEditorDelegates::FOnPreSaveExternalActors				FEditorDelegates::PreSaveExternalActors;
 FEditorDelegates::FOnPostSaveExternalActors				FEditorDelegates::PostSaveExternalActors;
+FSimpleMulticastDelegate								FEditorDelegates::OnPreAssetValidation;
+FSimpleMulticastDelegate								FEditorDelegates::OnPostAssetValidation;
 FEditorDelegates::FOnFinishPickingBlueprintClass		FEditorDelegates::OnFinishPickingBlueprintClass;
 FEditorDelegates::FOnNewAssetCreation					FEditorDelegates::OnConfigureNewAssetProperties;
 FEditorDelegates::FOnNewAssetCreation					FEditorDelegates::OnNewAssetCreated;
+FEditorDelegates::FOnPreDestructiveAssetAction          FEditorDelegates::OnPreDestructiveAssetAction;
 FEditorDelegates::FOnAssetPreImport						FEditorDelegates::OnAssetPreImport;
 FEditorDelegates::FOnAssetPostImport					FEditorDelegates::OnAssetPostImport;
 FEditorDelegates::FOnAssetReimport						FEditorDelegates::OnAssetReimport;
 FEditorDelegates::FOnNewActorsDropped					FEditorDelegates::OnNewActorsDropped;
+FEditorDelegates::FOnNewActorsPlaced					FEditorDelegates::OnNewActorsPlaced;
 FEditorDelegates::FOnGridSnappingChanged				FEditorDelegates::OnGridSnappingChanged;
 FSimpleMulticastDelegate								FEditorDelegates::OnLightingBuildStarted;
 FSimpleMulticastDelegate								FEditorDelegates::OnLightingBuildKept;
@@ -167,7 +171,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	Globals.
 -----------------------------------------------------------------------------*/
 
-IMPLEMENT_STRUCT(SlatePlayInEditorInfo);
+UE_IMPLEMENT_STRUCT("/Script/UnrealEd", SlatePlayInEditorInfo);
 
 //////////////////////////////////////////////////////////////////////////
 // FReimportManager
@@ -259,18 +263,29 @@ void FReimportManager::UpdateReimportPath(UObject* Obj, const FString& Filename,
 }
 
 
-bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, bool bShowNotification, FString PreferredReimportFile, FReimportHandler* SpecifiedReimportHandler, int32 SourceFileIndex, bool bForceNewFile /*= false*/, bool bAutomated /*= false*/)
+bool FReimportManager::Reimport(UObject* Obj, bool bAskForNewFileIfMissing, bool bShowNotification, FString PreferredReimportFile, FReimportHandler* SpecifiedReimportHandler, int32 SourceFileIndex, bool bForceNewFile /*= false*/, bool bAutomated /*= false*/)
 {
+	UE::Interchange::FAssetImportResultRef ImportResult = ReimportAsync(Obj, bAskForNewFileIfMissing, bShowNotification, PreferredReimportFile, SpecifiedReimportHandler, SourceFileIndex, bForceNewFile, bAutomated);
+	ImportResult->WaitUntilDone();
+	const TArray<UInterchangeResult*>& Results = ImportResult->GetResults()->GetResults();
+	for (const UInterchangeResult* InterchangeResult : Results)
+	{
+		if (InterchangeResult->IsA<UInterchangeResultError_ReimportFail>())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+UE::Interchange::FAssetImportResultRef FReimportManager::ReimportAsync(UObject* Obj, bool bAskForNewFileIfMissing, bool bShowNotification, FString PreferredReimportFile, FReimportHandler* SpecifiedReimportHandler, int32 SourceFileIndex, bool bForceNewFile /*= false*/, bool bAutomated /*= false*/)
+{
+	UE::Interchange::FAssetImportResultRef ImportResultSynchronous = MakeShared< UE::Interchange::FImportResult, ESPMode::ThreadSafe >();
 	// Warn that were about to reimport, so prep for it
 	PreReimport.Broadcast( Obj );
 
-	bool bUseInterchangeFramework = false;
+	bool bUseInterchangeFramework = UInterchangeManager::IsInterchangeImportEnabled();;
 	UInterchangeManager& InterchangeManager = UInterchangeManager::GetInterchangeManager();
-	const UEditorExperimentalSettings* EditorExperimentalSettings = GetDefault<UEditorExperimentalSettings>();
-
-	bUseInterchangeFramework = EditorExperimentalSettings->bEnableInterchangeFramework;
-	const bool bUseInterchangeFrameworkForTextureOnly = (!bUseInterchangeFramework) && EditorExperimentalSettings->bEnableInterchangeFrameworkForTextureOnly;
-	bUseInterchangeFramework |= bUseInterchangeFrameworkForTextureOnly;
 
 	bool bSuccess = false;
 	if ( Obj )
@@ -365,7 +380,7 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 				}
 				if ( SourceFilenames.Num() == 0 || bAllSourceFileEmpty)
 				{
-					// Failed to specify a new filename. Don't show a notification of the failure since the user exited on his own
+					// Failed to specify a new filename. Don't show a notification of the failure since the user exited on their own
 					bValidSourceFilename = false;
 					bShowNotification = false;
 					SourceFilenames.Empty();
@@ -390,48 +405,20 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 
 			if ( bValidSourceFilename )
 			{
-				if (bUseInterchangeFramework)
+				if (bUseInterchangeFramework && CanReimportHandler->IsInterchangeFactory())
 				{
-					UE::Interchange::FScopedSourceData ScopedSourceData(SourceFilenames[0]);
-
-					bool bUseATextureTranslator = false;
-					if (bUseInterchangeFrameworkForTextureOnly)
+					int32 RealSourceFileIndex = SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex;
+					int32 RealValidSourceFileIndex = SourceFilenames.IsValidIndex(RealSourceFileIndex) ? RealSourceFileIndex : 0;
+					UE::Interchange::FScopedSourceData ScopedSourceData(SourceFilenames[RealValidSourceFileIndex]);
+					CanReimportHandler->SetReimportSourceIndex(Obj, SourceFileIndex);
+					if (InterchangeManager.CanTranslateSourceData(ScopedSourceData.GetSourceData()))
 					{
-						UInterchangeTranslatorBase* Translator = InterchangeManager.GetTranslatorForSourceData(ScopedSourceData.GetSourceData());
-						if (Translator && InterchangeManager.IsTranslatorClassForTextureOnly(Translator->GetClass()))
-						{
-							bUseATextureTranslator = true;
-						}
-					}
-
-					if (bUseATextureTranslator || (!bUseInterchangeFrameworkForTextureOnly && InterchangeManager.CanTranslateSourceData(ScopedSourceData.GetSourceData())))
-					{
-						auto PostImportedLambda = [](UObject* ImportedObject)
-						{
-							if (ImportedObject)
-							{
-								TArray<UObject*> ObjectArray;
-								ObjectArray.Add(ImportedObject);
-								//UAssetToolsImpl::Get().SyncBrowserToAssets(ObjectArray);
-								GEditor->BroadcastObjectReimported(ImportedObject);
-								if (FEngineAnalytics::IsAvailable())
-								{
-									TArray<FAnalyticsEventAttribute> Attributes;
-									Attributes.Add(FAnalyticsEventAttribute(TEXT("ObjectType"), ImportedObject->GetClass()->GetName()));
-									FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.AssetReimported"), Attributes);
-								}
-								//PostReimport.Broadcast(ImportedObject, true);
-								GEditor->RedrawAllViewports();
-							}
-						};
-						FDelegateHandle PostImportHandle = InterchangeManager.OnAssetPostImport.AddLambda(PostImportedLambda);
-
 						FImportAssetParameters ImportAssetParameters;
 						ImportAssetParameters.bIsAutomated = GIsAutomationTesting || FApp::IsUnattended() || IsRunningCommandlet() || GIsRunningUnattendedScript;
 						ImportAssetParameters.ReimportAsset = Obj;
-						InterchangeManager.ImportAsset(FString(), ScopedSourceData.GetSourceData(), ImportAssetParameters);
-						InterchangeManager.OnAssetPostImport.Remove(PostImportHandle);
-						return true;
+						ImportAssetParameters.ReimportSourceIndex = SourceFileIndex;
+						UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(FString(), ScopedSourceData.GetSourceData(), ImportAssetParameters);
+						return ImportResult;
 					}
 				}
 
@@ -521,7 +508,13 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 
 	GEditor->RedrawAllViewports();
 
-	return bSuccess;
+	if (!bSuccess)
+	{
+		//Add a ReimportFail message
+		ImportResultSynchronous->GetResults()->Add<UInterchangeResultError_ReimportFail>();
+	}
+	ImportResultSynchronous->SetDone();
+	return ImportResultSynchronous;
 }
 
 void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImportObjects, bool bShowNotification, int32 SourceFileIndex, bool bForceNewFile /*= false*/, bool bAutomated /*= false*/)
@@ -675,6 +668,25 @@ void FReimportManager::SortHandlersIfNeeded()
 	}
 }
 
+void FReimportManager::OnInterchangePostReimported(UObject* ReimportAsset) const
+{
+	if (ReimportAsset)
+	{
+		TArray<UObject*> ObjectArray;
+		ObjectArray.Add(ReimportAsset);
+		//UAssetToolsImpl::Get().SyncBrowserToAssets(ObjectArray);
+		GEditor->BroadcastObjectReimported(ReimportAsset);
+		if (FEngineAnalytics::IsAvailable())
+		{
+			TArray<FAnalyticsEventAttribute> Attributes;
+			Attributes.Add(FAnalyticsEventAttribute(TEXT("ObjectType"), ReimportAsset->GetClass()->GetName()));
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.AssetReimported"), Attributes);
+		}
+		PostReimport.Broadcast(ReimportAsset, true);
+		GEditor->RedrawAllViewports();
+	}
+}
+
 bool FReimportManager::ReimportMultiple(TArrayView<UObject*> Objects, bool bAskForNewFileIfMissing /*= false*/, bool bShowNotification /*= true*/, FString PreferredReimportFile /*= TEXT("")*/, FReimportHandler* SpecifiedReimportHandler /*= nullptr */, int32 SourceFileIndex /*= INDEX_NONE*/, bool bForceNewFile /*= false*/, bool bAutomated /*= false*/)
 {
 	bool bBulkSuccess = true;
@@ -688,8 +700,21 @@ bool FReimportManager::ReimportMultiple(TArrayView<UObject*> Objects, bool bAskF
 			FText SingleTaskTest = FText::Format(LOCTEXT("BulkReimport_SingleItem", "Reimporting {0}"), FText::FromString(CurrentObject->GetName()));
 			FScopedSlowTask SingleObjectTask(1.0f, SingleTaskTest);
 			SingleObjectTask.EnterProgressFrame(1.0f);
-
-			bBulkSuccess = bBulkSuccess && Reimport(CurrentObject, bAskForNewFileIfMissing, bShowNotification, PreferredReimportFile, SpecifiedReimportHandler, SourceFileIndex, bForceNewFile, bAutomated);
+			UE::Interchange::FAssetImportResultRef ImportResult = ReimportAsync(CurrentObject, bAskForNewFileIfMissing, bShowNotification, PreferredReimportFile, SpecifiedReimportHandler, SourceFileIndex, bForceNewFile, bAutomated);
+			const bool bAsync = ImportResult->GetStatus() == UE::Interchange::FImportResult::EStatus::InProgress;
+			bool bResultSuccess = true;
+			if (!bAsync)
+			{
+				const TArray<UInterchangeResult*>& Results = ImportResult->GetResults()->GetResults();
+				for (const UInterchangeResult* InterchangeResult : Results)
+				{
+					if (InterchangeResult->IsA<UInterchangeResultError_ReimportFail>())
+					{
+						bResultSuccess = false;
+					}
+				}
+			}
+			bBulkSuccess = bBulkSuccess && bResultSuccess;
 		}
 
 		BulkReimportTask.EnterProgressFrame(1.0f);
@@ -759,10 +784,22 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 
 	TMultiMap<uint32, UFactory*> DummyFilterIndexToFactory;
 
-	// Generate the file types and extensions represented by the selected factories
-	ObjectTools::GenerateFactoryFileExtensions( Factories, FileTypes, AllExtensions, DummyFilterIndexToFactory );
+	//Append the interchange supported translator formats for this object
+	if (UInterchangeManager::IsInterchangeImportEnabled())
+	{
+		//Get the extension interchange can translate for this object
+		TArray<FString> TranslatorFormats = UInterchangeManager::GetInterchangeManager().GetSupportedFormatsForObject(Obj);
+		ObjectTools::AppendFormatsFileExtensions(TranslatorFormats, FileTypes, AllExtensions, DummyFilterIndexToFactory);
+	}
 
-	FileTypes = FString::Printf(TEXT("All Files (%s)|%s|%s"),*AllExtensions,*AllExtensions,*FileTypes);
+	//If this object was not import with interchange add the legacy formats
+	if(AllExtensions.IsEmpty())
+	{
+		// Generate the file types and extensions represented by the selected factories
+		ObjectTools::GenerateFactoryFileExtensions(Factories, FileTypes, AllExtensions, DummyFilterIndexToFactory);
+	}
+
+	
 
 	FString DefaultFolder;
 	FString DefaultFile;
@@ -772,7 +809,20 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 	{
 		DefaultFolder = FPaths::GetPath(ExistingPaths[0]);
 		DefaultFile = FPaths::GetCleanFilename(ExistingPaths[0]);
+		//Make sure we have at least the existing asset source files path extension.
+		//If an asset is import with legacy importer and we switch importer to use interchange (or we go back to legacy)
+		for (const FString& ExistingPath : ExistingPaths)
+		{
+			const FString& Extension = FPaths::GetExtension(ExistingPath);
+			if (!AllExtensions.Contains(Extension))
+			{
+				AllExtensions.Append(TEXT(";*.") + Extension);
+				FileTypes.Append(FString::Printf(TEXT("|Asset file source type (*.%s)|*.%s"), *Extension, *Extension));
+			}
+		}
 	}
+
+	FileTypes = FString::Printf(TEXT("All Files (%s)|%s|%s"), *AllExtensions, *AllExtensions, *FileTypes);
 
 	// Prompt the user for the filenames
 	TArray<FString> OpenFilenames;
@@ -860,6 +910,17 @@ FReimportManager::FReimportManager()
 
 	// Create reimport handler for PhysicalMaterialMasks
 	UPhysicalMaterialMaskFactory::StaticClass();
+
+	UInterchangeManager& InterchangeManager = UInterchangeManager::GetInterchangeManager();
+	InterchangePostReimportedDelegateHandle = InterchangeManager.OnAssetPostReimport.AddRaw(this, &FReimportManager::OnInterchangePostReimported);
+
+	InterchangeManager.OnPreDestroyInterchangeManager.AddLambda([InterchangePostReimportedDelegateHandleClosure = InterchangePostReimportedDelegateHandle]()
+		{
+			if (InterchangePostReimportedDelegateHandleClosure.IsValid())
+			{
+				UInterchangeManager::GetInterchangeManager().OnAssetPostReimport.Remove(InterchangePostReimportedDelegateHandleClosure);
+			}
+		});
 }
 
 FReimportManager::~FReimportManager()
@@ -918,7 +979,7 @@ void RestoreEditorWorld( UWorld* EditorWorld )
  * Takes an FName and checks to see that it is unique among all loaded objects.
  *
  * @param	InName		The name to check
- * @param	Outer		The context for validating this object name. Should be a group/package, but could be ANY_PACKAGE if you want to check across the whole system (not recommended)
+ * @param	Outer		The context for validating this object name. Should be a group/package
  * @param	InReason	If the check fails, this string is filled in with the reason why.
  *
  * @return	1 if the name is valid, 0 if it is not
@@ -939,11 +1000,26 @@ bool IsUniqueObjectName( const FName& InName, UObject* Outer, FText* InReason )
 	return true;
 }
 
+bool IsGloballyUniqueObjectName(const FName& InName, FText* InReason)
+{
+	// See if the name is already in use anywhere in the engine.
+	if (StaticFindFirstObject(UObject::StaticClass(), *InName.ToString()) != NULL)
+	{
+		if (InReason != NULL)
+		{
+			*InReason = NSLOCTEXT("UnrealEd", "NameAlreadyInUse", "Name is already in use by another object.");
+		}
+		return false;
+	}
+
+	return true;
+}
+
 /**
  * Takes an FName and checks to see that it is unique among all loaded objects.
  *
  * @param	InName		The name to check
- * @param	Outer		The context for validating this object name. Should be a group/package, but could be ANY_PACKAGE if you want to check across the whole system (not recommended)
+ * @param	Outer		The context for validating this object name. Should be a group/package.
  * @param	InReason	If the check fails, this string is filled in with the reason why.
  *
  * @return	1 if the name is valid, 0 if it is not

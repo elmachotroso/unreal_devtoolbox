@@ -3,7 +3,7 @@
 #pragma once
 
 #include "MassEntityTypes.h"
-#include "MassLODSubsystem.h"
+#include "MassProcessor.h"
 #include "MassLODCollector.h"
 
 #include "MassLODCollectorProcessor.generated.h"
@@ -20,7 +20,7 @@ struct FMassGenericCollectorLogic : public FLODDefaultLogic
  * LOD collector which combines collection of LOD information for both Viewer and Simulation LODing when possible.
  */
 UCLASS(meta = (DisplayName = "LOD Collector"))
-class MASSLOD_API UMassLODCollectorProcessor : public UMassLODProcessorBase
+class MASSLOD_API UMassLODCollectorProcessor : public UMassProcessor
 {
 	GENERATED_BODY()
 
@@ -29,13 +29,13 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	template <bool bLocalViewersOnly>
 	void CollectLODForChunk(FMassExecutionContext& Context);
 
 	template <bool bLocalViewersOnly>
-	void ExecuteInternal(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context);
+	void ExecuteInternal(FMassEntityManager& EntityManager, FMassExecutionContext& Context);
 
 	TMassLODCollector<FMassGenericCollectorLogic> Collector;
 

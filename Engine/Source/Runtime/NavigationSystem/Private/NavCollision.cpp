@@ -14,6 +14,9 @@
 #include "ProfilingDebugging/CookStats.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "CoreGlobals.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NavCollision)
+
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
@@ -36,11 +39,7 @@ namespace NavCollisionCookStats
 }
 #endif
 
-#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
-static const FName NAVCOLLISION_FORMAT = TEXT("NavCollision_X");
-#elif WITH_CHAOS
 static const FName NAVCOLLISION_FORMAT = TEXT("NavCollision_Chaos");
-#endif
 
 class FNavCollisionDataReader
 {
@@ -94,7 +93,7 @@ public:
 
 	virtual const TCHAR* GetVersionString() const override
 	{
-		return TEXT("2983273BE5D6425391E8C0B3D1C0A55D");
+		return TEXT("982ABB61BCEA412C832BC21B87BF3538");
 	}
 
 	virtual FString GetPluginSpecificCacheKeySuffix() const override
@@ -141,6 +140,8 @@ FDerivedDataNavCollisionCooker::FDerivedDataNavCollisionCooker(FName InFormat, U
 
 bool FDerivedDataNavCollisionCooker::Build( TArray<uint8>& OutData )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDerivedDataNavCollisionCooker::Build);
+
 	if ((NavCollisionInstance->ConvexShapeIndices.Num() == 0) ||
 		(NavCollisionInstance->GetTriMeshCollision().VertexBuffer.Num() == 0 && NavCollisionInstance->GetConvexCollision().VertexBuffer.Num() == 0))
 	{
@@ -545,6 +546,8 @@ void UNavCollision::PostLoad()
 
 FByteBulkData* UNavCollision::GetCookedData(FName Format)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UNavCollision::GetCookedData);
+
 	const bool bUseConvexCollision = bGatherConvexGeometry || (BoxCollision.Num() > 0) || (CylinderCollision.Num() > 0);
 	if (IsTemplate() || !bUseConvexCollision)
 	{

@@ -1,11 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProfilerFPSChartPanel.h"
+
+#if STATS
+
 #include "Widgets/SBoxPanel.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ProfilerFPSAnalyzer.h"
 #include "Widgets/SHistogram.h"
 
@@ -32,7 +35,7 @@ public:
 		ChildSlot
 		[
 			SNew( SBorder )
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding( 2.0f )
 			[
 				SNew( SVerticalBox )
@@ -198,7 +201,7 @@ void SProfilerFPSChartPanel::Construct( const FArguments& InArgs )
 	ChildSlot
 	[
 		SNew( SBorder )
-		.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+		.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 		.Padding( 2.0f )
 		[
 			SNew( SHorizontalBox )
@@ -240,3 +243,5 @@ void SProfilerFPSChartPanel::ProfilerManager_OnViewModeChanged(EProfilerViewMode
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // STATS

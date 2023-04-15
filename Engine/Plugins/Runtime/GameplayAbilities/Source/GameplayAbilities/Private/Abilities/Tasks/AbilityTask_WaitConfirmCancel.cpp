@@ -4,6 +4,8 @@
 
 #include "AbilitySystemComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitConfirmCancel)
+
 
 UAbilityTask_WaitConfirmCancel::UAbilityTask_WaitConfirmCancel(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -15,7 +17,7 @@ UAbilityTask_WaitConfirmCancel::UAbilityTask_WaitConfirmCancel(const FObjectInit
 void UAbilityTask_WaitConfirmCancel::OnConfirmCallback()
 {
 	
-	if (AbilitySystemComponent)
+	if (AbilitySystemComponent.IsValid())
 	{
 		AbilitySystemComponent->ConsumeGenericReplicatedEvent(EAbilityGenericReplicatedEvent::GenericConfirm, GetAbilitySpecHandle(), GetActivationPredictionKey());
 		if (ShouldBroadcastAbilityTaskDelegates())
@@ -28,7 +30,7 @@ void UAbilityTask_WaitConfirmCancel::OnConfirmCallback()
 
 void UAbilityTask_WaitConfirmCancel::OnCancelCallback()
 {
-	if (AbilitySystemComponent)
+	if (AbilitySystemComponent.IsValid())
 	{
 		AbilitySystemComponent->ConsumeGenericReplicatedEvent(EAbilityGenericReplicatedEvent::GenericCancel, GetAbilitySpecHandle(), GetActivationPredictionKey());
 		if (ShouldBroadcastAbilityTaskDelegates())
@@ -41,9 +43,9 @@ void UAbilityTask_WaitConfirmCancel::OnCancelCallback()
 
 void UAbilityTask_WaitConfirmCancel::OnLocalConfirmCallback()
 {
-	FScopedPredictionWindow ScopedPrediction(AbilitySystemComponent, IsPredictingClient());
+	FScopedPredictionWindow ScopedPrediction(AbilitySystemComponent.Get(), IsPredictingClient());
 
-	if (AbilitySystemComponent && IsPredictingClient())
+	if (AbilitySystemComponent.IsValid() && IsPredictingClient())
 	{
 		AbilitySystemComponent->ServerSetReplicatedEvent(EAbilityGenericReplicatedEvent::GenericConfirm, GetAbilitySpecHandle(), GetActivationPredictionKey() ,AbilitySystemComponent->ScopedPredictionKey);
 	}
@@ -52,9 +54,9 @@ void UAbilityTask_WaitConfirmCancel::OnLocalConfirmCallback()
 
 void UAbilityTask_WaitConfirmCancel::OnLocalCancelCallback()
 {
-	FScopedPredictionWindow ScopedPrediction(AbilitySystemComponent, IsPredictingClient());
+	FScopedPredictionWindow ScopedPrediction(AbilitySystemComponent.Get(), IsPredictingClient());
 
-	if (AbilitySystemComponent && IsPredictingClient())
+	if (AbilitySystemComponent.IsValid() && IsPredictingClient())
 	{
 		AbilitySystemComponent->ServerSetReplicatedEvent(EAbilityGenericReplicatedEvent::GenericCancel, GetAbilitySpecHandle(), GetActivationPredictionKey() ,AbilitySystemComponent->ScopedPredictionKey);
 	}
@@ -68,7 +70,7 @@ UAbilityTask_WaitConfirmCancel* UAbilityTask_WaitConfirmCancel::WaitConfirmCance
 
 void UAbilityTask_WaitConfirmCancel::Activate()
 {
-	if (AbilitySystemComponent && Ability)
+	if (AbilitySystemComponent.IsValid() && Ability)
 	{
 		const FGameplayAbilityActorInfo* Info = Ability->GetCurrentActorInfo();
 
@@ -101,7 +103,7 @@ void UAbilityTask_WaitConfirmCancel::Activate()
 
 void UAbilityTask_WaitConfirmCancel::OnDestroy(bool AbilityEnding)
 {
-	if (RegisteredCallbacks && AbilitySystemComponent)
+	if (RegisteredCallbacks && AbilitySystemComponent.IsValid())
 	{
 		AbilitySystemComponent->GenericLocalConfirmCallbacks.RemoveDynamic(this, &UAbilityTask_WaitConfirmCancel::OnLocalConfirmCallback);
 		AbilitySystemComponent->GenericLocalCancelCallbacks.RemoveDynamic(this, &UAbilityTask_WaitConfirmCancel::OnLocalCancelCallback);
@@ -114,3 +116,4 @@ void UAbilityTask_WaitConfirmCancel::OnDestroy(bool AbilityEnding)
 
 	Super::OnDestroy(AbilityEnding);
 }
+

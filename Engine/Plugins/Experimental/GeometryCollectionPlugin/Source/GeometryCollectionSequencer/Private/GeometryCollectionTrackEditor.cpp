@@ -19,7 +19,7 @@
 #include "ContentBrowserModule.h"
 #include "SequencerUtilities.h"
 #include "ISectionLayoutBuilder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "MovieSceneTimeHelpers.h"
 #include "Fonts/FontMeasure.h"
 #include "SequencerTimeSliderController.h"
@@ -29,6 +29,7 @@
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "Styling/SlateIconFinder.h"
 #include "LevelSequence.h"
+#include "TimeToPixel.h"
 
 namespace GeometryCollectionEditorConstants
 {
@@ -97,13 +98,15 @@ float FGeometryCollectionTrackSection::GetSectionHeight() const
 
 int32 FGeometryCollectionTrackSection::OnPaintSection( FSequencerSectionPainter& Painter ) const
 {
+	using namespace UE::Sequencer;
+
 	const ESlateDrawEffect DrawEffects = Painter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 	
 	const FTimeToPixel& TimeToPixelConverter = Painter.GetTimeConverter();
 
 	int32 LayerId = Painter.PaintSectionBackground();
 
-	static const FSlateBrush* GenericDivider = FEditorStyle::GetBrush("Sequencer.GenericDivider");
+	static const FSlateBrush* GenericDivider = FAppStyle::GetBrush("Sequencer.GenericDivider");
 
 	if (!Section.HasStartFrame() || !Section.HasEndFrame())
 	{
@@ -168,7 +171,7 @@ int32 FGeometryCollectionTrackSection::OnPaintSection( FSequencerSectionPainter&
 			const float MajorTickHeight = 9.0f; 
 			FVector2D TextOffset(TextPosition, Painter.SectionGeometry.Size.Y - (MajorTickHeight + TextSize.Y));
 
-			const FLinearColor DrawColor = FEditorStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle());
+			const FLinearColor DrawColor = FAppStyle::GetSlateColor("SelectionColor").GetColor(FWidgetStyle());
 			const FVector2D BoxPadding = FVector2D(4.0f, 2.0f);
 			// draw time string
 	
@@ -176,7 +179,7 @@ int32 FGeometryCollectionTrackSection::OnPaintSection( FSequencerSectionPainter&
 				Painter.DrawElements,
 				LayerId + 5,
 				Painter.SectionGeometry.ToPaintGeometry(TextOffset - BoxPadding, TextSize + 2.0f * BoxPadding),
-				FEditorStyle::GetBrush("WhiteBrush"),
+				FAppStyle::GetBrush("WhiteBrush"),
 				ESlateDrawEffect::None,
 				FLinearColor::Black.CopyWithNewOpacity(0.5f)
 			);
@@ -274,8 +277,12 @@ TSharedRef<ISequencerTrackEditor> FGeometryCollectionTrackEditor::CreateTrackEdi
 
 bool FGeometryCollectionTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneGeometryCollectionTrack::StaticClass()) : ETrackSupport::NotSupported;    
-	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported; 
+	if (InSequence && InSequence->IsTrackSupported(UMovieSceneGeometryCollectionTrack::StaticClass()) == ETrackSupport::NotSupported)
+	{
+		return false;
+	}
+
+	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
 }
 
 bool FGeometryCollectionTrackEditor::SupportsType( TSubclassOf<UMovieSceneTrack> Type ) const

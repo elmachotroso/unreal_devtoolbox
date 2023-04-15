@@ -1,21 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConfigEditorPropertyDetails.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/UnrealType.h"
-#include "PropertyEditorModule.h"
-#include "PropertyHandle.h"
+
+#include "ConfigPropertyHelper.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Framework/Views/ITypedTableView.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "IConfigEditorModule.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
 #include "IPropertyTable.h"
 #include "IPropertyTableColumn.h"
-
-#include "IConfigEditorModule.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Visibility.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/ConfigContext.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "PropertyVisualization/ConfigPropertyColumn.h"
-#include "ConfigPropertyHelper.h"
+#include "Templates/Casts.h"
+#include "UObject/Class.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakFieldPtr.h"
+
+class SWidget;
 
 
 #define LOCTEXT_NAMESPACE "ConfigPropertyHelperDetails"
@@ -102,8 +124,7 @@ void FConfigPropertyHelperDetails::OnPropertyValueChanged(UObject* Object, FProp
 			NewFile.UpdateSinglePropertyInSection(*ConfigIniName, *PropertyName, *SectionName);
 
 			// reload the file, so that it refresh the cache internally.
-			FString FinalIniFileName;
-			GConfig->LoadGlobalIniFile(FinalIniFileName, *OriginalProperty->GetOwnerClass()->ClassConfigName.ToString(), NULL, true);
+			FConfigContext::ForceReloadIntoGConfig().Load(*OriginalProperty->GetOwnerClass()->ClassConfigName.ToString());
 
 			// Update the CDO, as this change might have had an impact on it's value.
 			OriginalProperty->GetOwnerClass()->GetDefaultObject()->ReloadConfig();
@@ -127,7 +148,7 @@ void FConfigPropertyHelperDetails::AddEditablePropertyForConfig(IDetailLayoutBui
 	FString PropertyName = ConfigEditorCopyOfEditProperty->GetName();
 	if (GConfig->GetString(*SectionName, *PropertyName, ExistingConfigEntryValue, ConfigFilePropertyRowObj->ConfigFileName))
 	{
-		ConfigEditorCopyOfEditProperty->ImportText(*ExistingConfigEntryValue, ConfigEditorCopyOfEditProperty->ContainerPtrToValuePtr<uint8>(ConfigEntryObject), 0, nullptr);
+		ConfigEditorCopyOfEditProperty->ImportText_InContainer(*ExistingConfigEntryValue, ConfigEntryObject, nullptr, 0);
 	}
 
 	// Cache a reference for future usage.

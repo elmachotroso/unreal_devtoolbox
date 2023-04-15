@@ -19,6 +19,7 @@ void UEditorAnimBaseObj::InitFromAnim(UAnimSequenceBase* AnimObjectIn, FOnAnimOb
 	AnimObject = AnimObjectIn;
 	OnChange = OnChangeIn;
 }
+
 bool UEditorAnimBaseObj::ApplyChangesToMontage()
 {
 	return false;

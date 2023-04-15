@@ -2,12 +2,24 @@
 
 
 #include "SceneOutlinerLayerContentsColumn.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
 
 #include "ActorTreeItem.h"
+#include "HAL/Platform.h"
+#include "ISceneOutlinerTreeItem.h"
+#include "Internationalization/Internationalization.h"
+#include "LayerViewModel.h"
+#include "Layout/Margin.h"
+#include "Misc/Attribute.h"
+#include "Styling/AppStyle.h"
+#include "Types/SlateEnums.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SSpacer.h"
+#include "Widgets/SNullWidget.h"
+
+class AActor;
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "SceneOutlinerLayerContentsColumn"
 
@@ -45,13 +57,13 @@ const TSharedRef<SWidget> FSceneOutlinerLayerContentsColumn::ConstructRowWidget(
 		return SNew(SButton)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FEditorStyle::Get(), "LayerBrowserButton")
+			.ButtonStyle(FAppStyle::Get(), "LayerBrowserButton")
 			.ContentPadding(0)
 			.OnClicked(this, &FSceneOutlinerLayerContentsColumn::OnRemoveFromLayerClicked, ActorItem->Actor)
 			.ToolTipText(LOCTEXT("RemoveFromLayerButtonText", "Remove from Layer"))
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush(TEXT("LayerBrowser.Actor.RemoveFromLayer")))
+				.Image(FAppStyle::GetBrush(TEXT("LayerBrowser.Actor.RemoveFromLayer")))
 			];
 	}
 	return SNullWidget::NullWidget;

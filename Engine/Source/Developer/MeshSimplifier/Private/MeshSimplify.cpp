@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshSimplify.h"
+#include "Math/RandomStream.h"
 
 FMeshSimplifier::FMeshSimplifier( float* InVerts, uint32 InNumVerts, uint32* InIndexes, uint32 InNumIndexes, int32* InMaterialIndexes, uint32 InNumAttributes )
 	: NumVerts( InNumVerts )
@@ -181,7 +182,8 @@ void FMeshSimplifier::CalcEdgeQuadric( uint32 EdgeIndex )
 	const QVec3 Normal = ( p2 - p0 ) ^ ( p1 - p0 );
 
 	// Didn't find matching edge. Add edge constraint.
-	EdgeQuadrics[ EdgeIndex ] = FEdgeQuadric( GetPosition( VertIndex0 ), GetPosition( VertIndex1 ), Normal, Weight );
+	//EdgeQuadrics[ EdgeIndex ] = FEdgeQuadric( GetPosition( VertIndex0 ), GetPosition( VertIndex1 ), Normal, Weight );
+	EdgeQuadrics[ EdgeIndex ] = FEdgeQuadric( GetPosition( VertIndex0 ), GetPosition( VertIndex1 ), Weight );
 	EdgeQuadricsValid[ EdgeIndex ] = true;
 }
 
@@ -249,7 +251,9 @@ void FMeshSimplifier::GatherAdjTris( const FVector3f& Position, uint32 Flag, TAr
 
 float FMeshSimplifier::EvaluateMerge( const FVector3f& Position0, const FVector3f& Position1, bool bMoveVerts )
 {
-	check( Position0 != Position1 );
+	//check( Position0 != Position1 );
+	if( Position0 == Position1 )
+		return 0.0f;
 
 	// Find unique adjacent triangles
 	TArray< uint32, TInlineAllocator<16> > AdjTris;
@@ -280,7 +284,7 @@ float FMeshSimplifier::EvaluateMerge( const FVector3f& Position0, const FVector3
 	TArray< uint32, TInlineAllocator<8> >	WedgeIDs;
 	TArray< uint8, TInlineAllocator<1024> >	WedgeQuadrics;
 	
-	const uint32 QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
+	const SIZE_T QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
 
 	auto GetWedgeQuadric =
 		[ &WedgeQuadrics, QuadricSize ]( int32 WedgeIndex ) -> FQuadricAttr&
@@ -477,6 +481,9 @@ float FMeshSimplifier::EvaluateMerge( const FVector3f& Position0, const FVector3
 			if( CorrectAttributes != nullptr )
 				CorrectAttributes( NewAttributes );
 
+			if( bLimitErrorToSurfaceArea )
+				WedgeError = FMath::Min( WedgeError, WedgeQuadric.a );
+
 			Error += WedgeError;
 		}
 		else
@@ -491,11 +498,17 @@ float FMeshSimplifier::EvaluateMerge( const FVector3f& Position0, const FVector3
 	}
 
 	Error += EdgeError;
+	
+	bool bIsDisjoint = AdjTris.Num() == 1 || ( AdjTris.Num() == 2 && VertDegree == 4 );
 
 	if( bLimitErrorToSurfaceArea )
 	{
 		// Limit error to be no greater than the size of the triangles it could affect.
 		Error = FMath::Min( Error, SurfaceArea );
+		
+		// Collapsing with completely remove this surface area. The position merged to is irrelevant.
+		if( bIsDisjoint )
+			Error = SurfaceArea;
 	}
 
 	if( bMoveVerts )
@@ -587,7 +600,23 @@ float FMeshSimplifier::EvaluateMerge( const FVector3f& Position0, const FVector3
 
 		for( uint32 TriIndex : AdjTris )
 		{
+			int32 MaterialIndex = MaterialIndexes[ TriIndex ] & 0xffffff;
+			if( !PerMaterialDeltas.IsValidIndex( MaterialIndex ) )
+				PerMaterialDeltas.SetNumZeroed( MaterialIndex + 1 );
+
+			auto& Delta = PerMaterialDeltas[ MaterialIndex ];
+
+			Delta.SurfaceArea -= GetTriQuadric( TriIndex ).a;
+			Delta.NumTris--;
+			Delta.NumDisjoint -= bIsDisjoint ? 1 : 0;
+
 			FixUpTri( TriIndex );
+			
+			if( !TriRemoved[ TriIndex ] )
+			{
+				Delta.SurfaceArea += GetTriQuadric( TriIndex ).a;
+				Delta.NumTris++;
+			}
 		}
 	}
 	else
@@ -850,7 +879,7 @@ float FMeshSimplifier::Simplify(
 	check( TargetNumTris >= LimitNumTris );
 	check( TargetError <= LimitError );
 
-	const uint32 QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
+	const SIZE_T QuadricSize = sizeof( FQuadricAttr ) + NumAttributes * 4 * sizeof( QScalar );
 
 	TriQuadrics.AddUninitialized( NumTris * QuadricSize );
 	for( uint32 TriIndex = 0; TriIndex < NumTris; TriIndex++ )
@@ -922,6 +951,175 @@ float FMeshSimplifier::Simplify(
 	}
 	
 	return MaxError;
+}
+
+void FMeshSimplifier::PreserveSurfaceArea()
+{
+	int32 DilateMaterialIndex = INDEX_NONE;
+	float DilateSurfaceArea = 0.0f;
+	for( int32 MaterialIndex = 0; MaterialIndex < PerMaterialDeltas.Num(); MaterialIndex++ )
+	{
+		if( PerMaterialDeltas[ MaterialIndex ].SurfaceArea < DilateSurfaceArea )
+		{
+			DilateMaterialIndex = MaterialIndex;
+			DilateSurfaceArea = PerMaterialDeltas[ MaterialIndex ].SurfaceArea;
+		}
+	}
+
+	if( DilateMaterialIndex == INDEX_NONE )
+		return;
+
+	TArray< FVector4f > EdgeNormals;
+	EdgeNormals.AddZeroed( NumVerts );
+
+	float Perimeter = 0.0f;
+	float TotalArea = 0.0f;
+	float ThisArea = 0.0f;
+
+	uint32 NumEdges = 0;
+	uint32 NumFaces = 0;
+
+	for( uint32 TriIndex = 0; TriIndex < NumTris; TriIndex++ )
+	{
+		if( TriRemoved[ TriIndex ] )
+			continue;
+
+		float SurfaceArea = GetTriQuadric( TriIndex ).a;
+		TotalArea += SurfaceArea;
+
+		if( ( MaterialIndexes[ TriIndex ] & 0xffffff ) != DilateMaterialIndex )
+			continue;
+
+		ThisArea += SurfaceArea;
+		NumFaces++;
+
+		for( uint32 CornerIndex = 0; CornerIndex < 3; CornerIndex++ )
+		{
+			uint32 EdgeIndex = TriIndex * 3 + CornerIndex;
+			
+			if( EdgeQuadricsValid[ EdgeIndex ] )
+			{
+				uint32 VertIndex0 = Indexes[ EdgeIndex ];
+				uint32 VertIndex1 = Indexes[ Cycle3( EdgeIndex ) ];
+
+				const FVector3f& Position0 = GetPosition( VertIndex0 );
+				const FVector3f& Position1 = GetPosition( VertIndex1 );
+
+				// Find edge with opposite direction that shares these 2 verts.
+				/*
+					  /\
+					 /  \
+					o-<<-o
+					o->>-o
+					 \  /
+					  \/
+				*/
+				uint32 Hash = HashPosition( Position1 );
+				uint32 Corner;
+				for( Corner = CornerHash.First( Hash ); CornerHash.IsValid( Corner ); Corner = CornerHash.Next( Corner ) )
+				{
+					uint32 OtherVertIndex0 = Indexes[ Corner ];
+					uint32 OtherVertIndex1 = Indexes[ Cycle3( Corner ) ];
+			
+					if( Position0 == GetPosition( OtherVertIndex1 ) &&
+						Position1 == GetPosition( OtherVertIndex0 ) )
+					{
+						// Found matching edge.
+						break;
+					}
+				}
+				if( !CornerHash.IsValid( Corner ) )
+				{
+					NumEdges++;
+
+					const FVector3f& p0 = GetPosition( Indexes[ TriIndex * 3 + 0 ] );
+					const FVector3f& p1 = GetPosition( Indexes[ TriIndex * 3 + 1 ] );
+					const FVector3f& p2 = GetPosition( Indexes[ TriIndex * 3 + 2 ] );
+
+					FVector3f Edge = Position1 - Position0;
+					FVector3f FaceNormal = ( p2 - p0 ) ^ ( p1 - p0 );
+					FVector3f EdgeNormal = FaceNormal ^ Edge;
+					EdgeNormal.Normalize();
+
+					float EdgeLength = Edge.Length();
+					Perimeter  += EdgeLength;
+					EdgeNormal *= EdgeLength;
+
+					auto AddEdgeNormal = [&]( uint32 VertIndex )
+					{
+						EdgeNormals[ VertIndex ] += FVector4f( EdgeNormal, EdgeLength );
+					};
+
+					bool bLocked0 = CornerFlags[ EdgeIndex ]			& LockedVertMask;
+					bool bLocked1 = CornerFlags[ Cycle3( EdgeIndex ) ]	& LockedVertMask;
+
+					if( !bLocked0 ) ForAllVerts( Position0, AddEdgeNormal );
+					if( !bLocked1 ) ForAllVerts( Position1, AddEdgeNormal );
+				}
+			}
+		}
+	}
+
+	// If the scale is too big don't do it. Losing some area is better than suddenly getting a few gigantic leaves.
+	if( -DilateSurfaceArea > 4.0f * ThisArea )
+		return;
+
+	// Does not accurately factor in corners.
+	float DilateDistance = -DilateSurfaceArea / Perimeter;
+
+	FRandomStream Random( NumEdges );
+
+	for( uint32 VertIndex = 0; VertIndex < NumVerts; VertIndex++ )
+	{
+		FVector3f EdgeNormal = EdgeNormals[ VertIndex ];
+		float Weight = EdgeNormals[ VertIndex ].W;
+		if( Weight > 1e-6f )
+		{
+			//Scale * Perimeter / NumEdges = Weight * 0.5f;
+			//float Scale = 2.0f * Perimeter / ( NumEdges * Weight );
+			float Scale = Random.GetFraction() * 0.5f + 0.75f;
+			EdgeNormal /= Weight;
+			float LengthSqr = EdgeNormal.SizeSquared();
+			if( LengthSqr > 0.1f )
+			{
+				GetPosition( VertIndex ) += EdgeNormal * ( Scale * DilateDistance / LengthSqr );
+			}
+		}
+	}
+}
+
+void FMeshSimplifier::DumpOBJ( const char* Filename )
+{
+#if PLATFORM_WINDOWS
+	FILE* File = nullptr;
+	fopen_s(&File, Filename, "wb");
+#else
+	FILE* File = fopen(Filename, "wb");
+#endif
+	
+	if( File )
+	{
+		for( uint32 i = 0; PairHeap.Num() > 0; i++ )
+		{
+			uint32 PairIndex = PairHeap.Top();
+
+			float Error = PairHeap.GetKey( PairIndex );
+			PairHeap.Pop();
+
+			const FPair& Pair = Pairs[ PairIndex ];
+
+			const FVector3f& p0 = Pair.Position0;
+			const FVector3f& p1 = Pair.Position1;
+
+			fprintf( File, "v %f %f %f\n", p0.X, p0.Y, p0.Z );
+			fprintf( File, "v %f %f %f\n", p1.X, p1.Y, p1.Z );
+
+			// +1 as Wavefront files are 1 index based
+			fprintf( File, "l %u %u # %u %f\n", i*2 + 1, i*2 + 2, i + 1, Error );
+		}
+	
+		fclose( File );
+	}
 }
 
 void FMeshSimplifier::Compact()

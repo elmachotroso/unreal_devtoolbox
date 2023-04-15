@@ -10,11 +10,14 @@
 #include "UObject/Script.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectBaseUtility.h"
+#include "UObject/ObjectCompileContext.h"
 #include "ProfilingDebugging/ResourceSize.h"
 #include "UObject/PrimaryAssetId.h"
+#include "Containers/VersePathFwd.h"
 
 struct FAssetData;
 class FConfigCacheIni;
+class FCustomPropertyConditionState;
 class FEditPropertyChain;
 class FObjectPostSaveContext;
 class FObjectPostSaveRootContext;
@@ -23,10 +26,23 @@ class FObjectPreSaveRootContext;
 class ITargetPlatform;
 class ITransactionObjectAnnotation;
 class FTransactionObjectEvent;
+struct FAppendToClassSchemaContext;
 struct FFrame;
 struct FObjectInstancingGraph;
 struct FPropertyChangedChainEvent;
+struct FTopLevelAssetPath;
 class UClass;
+#if UE_WITH_IRIS
+namespace UE::Net
+{
+	class FFragmentRegistrationContext;
+	enum class EFragmentRegistrationFlags : uint32;
+	namespace Private
+	{
+		struct FNetHandleLegacyPushModelHelper;
+	}
+}
+#endif // UE_WITH_IRIS
 
 DECLARE_LOG_CATEGORY_EXTERN(LogObj, Log, All);
 
@@ -51,7 +67,7 @@ namespace ECastCheckedType
 class COREUOBJECT_API UObject : public UObjectBaseUtility
 {
 	// Declarations, normally created by UnrealHeaderTool boilerplate code
-	DECLARE_CLASS(UObject,UObject,CLASS_Abstract|CLASS_NoExport|CLASS_Intrinsic|CLASS_MatchedSerializers,CASTCLASS_None,TEXT("/Script/CoreUObject"),NO_API)
+	DECLARE_CLASS(UObject,UObject,CLASS_Abstract|CLASS_Intrinsic|CLASS_MatchedSerializers,CASTCLASS_None,TEXT("/Script/CoreUObject"),NO_API)
 	DEFINE_DEFAULT_OBJECT_INITIALIZER_CONSTRUCTOR_CALL(UObject)
 	typedef UObject WithinClass;
 	static UObject* __VTableCtorCaller(FVTableHelper& Helper)
@@ -216,11 +232,22 @@ public:
 	}
 
 #if WITH_EDITOR
+	using FPostCDOCompiledContext = FObjectPostCDOCompiledContext;
+
 	/**
 	 * Called after the Blueprint compiler has finished generating the Class Default Object (CDO) for a class. This can only happen in the editor.
 	 * This is called when the CDO and its associated class structure have been fully generated and populated, and allows the assignment of cached/derived data, 
 	 * eg) caching the name/count of properties of a certain type, or inspecting the properties on the class and using their meta-data and CDO default values to derive game data.
 	 */
+	virtual void PostCDOCompiled(const FPostCDOCompiledContext& Context)
+	{
+	}
+
+	/**
+	 * Called after the Blueprint compiler has finished generating the Class Default Object (CDO) for a class. This can only happen in the editor.
+	 * @note This version is deprecated as it wasn't called for skeleton-only compilation. Use the version taking FPostCDOCompiledContext instead.
+	 */
+	UE_DEPRECATED(5.1, "Use version that takes FPostCDOCompiledContext instead.")
 	virtual void PostCDOCompiled()
 	{
 	}
@@ -352,12 +379,29 @@ public:
 	 */
 	virtual void Serialize(FArchive& Ar);
 	virtual void Serialize(FStructuredArchive::FRecord Record);
+#if WITH_EDITORONLY_DATA
 	/**
 	 * Call Ar.UsingCustomVersion for every CustomVersion that might be serialized by this class when saving.
 	 * This duplicates CustomVersions declared in Serialize; Serialize still needs to declare them.
 	 * Used to track which customversions will be used by a package when it is resaved.
 	 * Not yet exhaustive; add CustomVersions as necessary to remove EditorDomain warnings about missing versions. */
-	virtual void DeclareCustomVersions(FArchive& Ar);
+	static void DeclareCustomVersions(FArchive& Ar, const UClass* SpecificSubclass);
+	/**
+	 * Append config values or settings that can change how instances of the class are cooked, including especially
+	 * values that determine how version upgraded are conducted. Can also append a unique guid when necessary to
+	 * invalidate previous results because serialization changed and no custom version was udpated.
+	 */
+	static void AppendToClassSchema(FAppendToClassSchemaContext& Context);
+	/**
+	 * Declare classes that can be constructed by this class during loading. This declaration is implicitly transitive;
+	 * the caller is responsible for following the graph of ConstructClasses to find all transitive ConstructClasses.
+	 * 
+	 * @param OutConstructClasses Output list of classes that this class can construct.
+	 * @param SpecificSubclass The class on which DeclaredConstructClasses was called. This can differ from the current
+	 *        class because each class calls Super::DeclareConstructClasses.
+	 */
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 
 	/** After a critical error, perform any mission-critical cleanup, such as restoring the video mode orreleasing hardware resources. */
 	virtual void ShutdownAfterError() {}
@@ -395,6 +439,17 @@ public:
 	 * @return	true if the property can be modified in the editor, otherwise false
 	 */
 	virtual bool CanEditChange( const FProperty* InProperty ) const;
+
+	/**
+	 * Alternate version of CanEditChange that includes the full property chain leading to the property in question.
+	 * The head of the chain is the FStructProperty member variable that contains the property that was modified.
+	 * The active property in the chain is the specific FProperty in question (the one given to the other signature of CanEditChange)
+	 * 
+	 * @param PropertyChain The chain to the property in question. The ActiveNode of the chain corresponds to the specific property in question.
+	 *
+	 * @return	true if the property can be modified in the editor, otherwise false
+	 */
+	virtual bool CanEditChange(const FEditPropertyChain& PropertyChain) const;
 
 	/** 
 	 * Intentionally non-virtual as it calls the FPropertyChangedEvent version
@@ -797,12 +852,18 @@ public:
 	 */
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
 
-	/**
-	 * Temporary interim solution to gather external actors asset registry data.
-	 *
-	 * @param	OutTags		A list of key-value pairs associated with this object and their types
-	 */
+	UE_DEPRECATED(5.1, "Use the new GetExtendedAssetRegistryTagsForSave that takes a TargetPlatform")
 	virtual void GetExternalActorExtendedAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const {}
+
+#if WITH_EDITOR
+	/**
+	 * Temporary interim solution to gather asset registry data at save time only.  Can depend on the target platform being saved for.
+	 *
+	 * @param	TargetPlatform	The platform that this object is being saved for.
+	 * @param	OutTags			A list of key-value pairs associated with this object and their types
+	 */
+	virtual void GetExtendedAssetRegistryTagsForSave(const ITargetPlatform* TargetPlatform, TArray<FAssetRegistryTag>& OutTags) const;
+#endif // WITH_EDITOR
 
 	/** Gathers a list of asset registry tags for an FAssetData  */
 	void GetAssetRegistryTags(FAssetData& Out) const;
@@ -810,7 +871,23 @@ public:
 	/** Get the common tag name used for all asset source file import paths */
 	static const FName& SourceFileTagName();
 
+#if UE_USE_VERSE_PATHS
+	/** Get the common tag name used for all asset verse paths */
+	static const FName& AssetVersePathTagName();
+#endif
+
 #if WITH_EDITOR
+
+	/**
+	 * Performs fixup on loaded asset registry data. 
+	 * This function is called from inside the AssetRegistry CriticalSection. DO NOT CALL ASSETREGISTRY FUNCTIONS FROM THIS FUNCTION, IT WILL DEADLOCK.
+	 * Note that this function is only called on Class Default Objects where the actual object instance data used to generate 
+	 * the asset data is not available.
+	 * @param InAssetData Asset data loaded from the AssetRegistry
+	 * @return Pointer to new asset data after fixup or nullptr if no fixup was required
+	 */
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+
 	/**
 	 * Additional data pertaining to asset registry tags used by the editor
 	 */
@@ -884,6 +961,19 @@ public:
 	/** Returns properties that are replicated for the lifetime of the actor channel */
 	virtual void GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const;
 
+	/** Called when this object begins replicating to initialize the state of custom property conditions */
+	virtual void GetReplicatedCustomConditionState(FCustomPropertyConditionState& OutActiveState) const;
+#if UE_WITH_IRIS
+	/**
+	 * RegisterReplicationFragments is called when we an object is added to the ReplicationSystem, it allows an object to register new or existing ReplicationFragments describing data to be replicated and how it should be accessed
+	 * For more information about ReplicationFragments see ReplicationFragment.h
+	 * 
+	 * @param Context Context FFragmentRegistrationContext in which FReplicationFragments could be registered
+	 * @param RegistrationFlags Flags specifying what should be registered in the call
+	 */
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags);
+#endif // UE_WITH_IRIS
+
 	/** IsNameStableForNetworking means an object can be referred to its path name (relative to outer) over the network */
 	virtual bool IsNameStableForNetworking() const;
 
@@ -909,8 +999,22 @@ public:
 	virtual void PreDestroyFromReplication();
 
 #if WITH_EDITOR
-	/** 
-	 * @return		Returns Valid if this object has data validation rules set up for it and the data for this object is valid. Returns Invalid if it does not pass the rules. Returns NotValidated if no rules are set for this object.
+	/**
+	 * Generic function to validate objects during changelist validations, etc.
+	 *
+	 * @param	Context	the context holding validation warnings/errors.
+	 * @return Valid if this object has data validation rules set up for it and the data for this object is valid. Returns Invalid if it does not pass 
+	 *         the rules. Returns NotValidated if no rules are set for this object.
+	 */
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context);
+
+	/**
+	 * Generic function to validate objects during changelist validations, etc.
+	 *
+	 * @param	ValidationErrors	the array of validation errors.
+	 * @return Valid if this object has data validation rules set up for it and the data for this object is valid. Returns Invalid if it does not pass 
+	 *         the rules. Returns NotValidated if no rules are set for this object.
+	 * @note	Will be deprecated in 5.2 in favor of version taking a FDataValidationContext.
 	 */
 	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors);
 #endif // WITH_EDITOR
@@ -1508,29 +1612,12 @@ public:
 	DECLARE_FUNCTION(execMetaCast);
 	DECLARE_FUNCTION(execInterfaceCast);
 	DECLARE_FUNCTION(execDoubleToFloatCast);
-	DECLARE_FUNCTION(execDoubleToFloatArrayCast);
-	DECLARE_FUNCTION(execDoubleToFloatSetCast);
 	DECLARE_FUNCTION(execFloatToDoubleCast);
-	DECLARE_FUNCTION(execFloatToDoubleArrayCast);
-	DECLARE_FUNCTION(execFloatToDoubleSetCast);
-	DECLARE_FUNCTION(execVectorToVector3fCast);
-	DECLARE_FUNCTION(execVector3fToVectorCast);
 	DECLARE_FUNCTION(execObjectToBool);
 	DECLARE_FUNCTION(execInterfaceToBool);
 	DECLARE_FUNCTION(execObjectToInterface);
 	DECLARE_FUNCTION(execInterfaceToInterface);
 	DECLARE_FUNCTION(execInterfaceToObject);
-
-	// Map-specific conversions
-	DECLARE_FUNCTION(execFloatToDoubleKeysMapCast);
-	DECLARE_FUNCTION(execDoubleToFloatKeysMapCast);
-	DECLARE_FUNCTION(execFloatToDoubleValuesMapCast);
-	DECLARE_FUNCTION(execDoubleToFloatValuesMapCast);
-	DECLARE_FUNCTION(execFloatToDoubleKeysFloatToDoubleValuesMapCast);
-	DECLARE_FUNCTION(execDoubleToFloatKeysFloatToDoubleValuesMapCast);
-	DECLARE_FUNCTION(execDoubleToFloatKeysDoubleToFloatValuesMapCast);
-	DECLARE_FUNCTION(execFloatToDoubleKeysDoubleToFloatValuesMapCast);
-
 
 	// Dynamic array functions
 	// Array support
@@ -1609,7 +1696,7 @@ public:
 private:
 	
 	friend struct FObjectNetPushIdHelper;
-	virtual void SetNetPushIdDynamic(const int32 NewNetPushId)
+	virtual void SetNetPushIdDynamic(const uint64 NewNetPushId)
 	{
 		// This method should only be called on Objects that are networked, and those should
 		// always have this implemented (by UHT).
@@ -1619,9 +1706,9 @@ private:
 public:
 
 	/** Should only ever be used by internal systems. */
-	virtual int32 GetNetPushIdDynamic() const
+	virtual uint64 GetNetPushIdDynamic() const
 	{
-		return INDEX_NONE;
+		return uint64(int64(INDEX_NONE));
 	}
 };
 
@@ -1630,8 +1717,11 @@ struct FObjectNetPushIdHelper
 private:
 	friend struct FNetPrivatePushIdHelper;
 	friend struct FNetObjectManagerPushIdHelper;
+#if UE_WITH_IRIS
+	friend struct UE::Net::Private::FNetHandleLegacyPushModelHelper;
+#endif // UE_WITH_IRIS
 
-	static void SetNetPushIdDynamic(UObject* Object, const int32 NewNetPushId)
+	static void SetNetPushIdDynamic(UObject* Object, const uint64 NewNetPushId)
 	{
 		Object->SetNetPushIdDynamic(NewNetPushId);
 	}
@@ -1648,6 +1738,21 @@ struct FInternalUObjectBaseUtilityIsValidFlagsChecker
 		return !Test->HasAnyFlags(RF_InternalPendingKill | RF_InternalGarbage);
 	}
 };
+
+#if WITH_EDITORONLY_DATA
+struct FAppendToClassSchemaContext
+{
+public:
+	explicit FAppendToClassSchemaContext(void* InHasher) // Type is void* to mask the implementation detail
+		:Hasher(InHasher)
+	{
+	}
+	COREUOBJECT_API void Update(const void* Data, uint64 Size);
+
+private:
+	void* Hasher; // Type is void* to mask the implementation detail
+};
+#endif
 
 /**
 * Test validity of object

@@ -16,6 +16,7 @@
 #include "Misc/SingleThreadEvent.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
+#include "Misc/TrackedActivity.h"
 #include "Internationalization/Internationalization.h"
 #include "CoreGlobals.h"
 #include "Stats/Stats.h"
@@ -44,6 +45,49 @@ TArray<FString> FWindowsPlatformProcess::DllDirectoryStack;
 TArray<FString> FWindowsPlatformProcess::DllDirectories;
 bool IsJobObjectSet = false;
 HANDLE GhJob = NULL;
+
+namespace WindowsPlatformProcess
+{
+	/**
+	 * Maintain a named mutex to detect whether we are the first instance of this game
+	 */
+	static HANDLE GNamedMutex = NULL;
+
+	void ReleaseNamedMutex(void)
+	{
+		if (GNamedMutex)
+		{
+			ReleaseMutex(GNamedMutex);
+			GNamedMutex = NULL;
+		}
+	}
+
+	bool MakeNamedMutex(const TCHAR* CmdLine)
+	{
+		bool bIsFirstInstance = false;
+
+		TCHAR MutexName[MAX_SPRINTF] = TEXT("");
+
+		FCString::Strcpy(MutexName, MAX_SPRINTF, TEXT("UnrealEngine4"));
+
+		GNamedMutex = CreateMutex(NULL, true, MutexName);
+
+		if (GNamedMutex && GetLastError() != ERROR_ALREADY_EXISTS && !FParse::Param(CmdLine, TEXT("NEVERFIRST")))
+		{
+			// We're the first instance!
+			bIsFirstInstance = true;
+		}
+		else
+		{
+			// Still need to release it in this case, because it gave us a valid copy
+			ReleaseNamedMutex();
+			// There is already another instance of the game running.
+			bIsFirstInstance = false;
+		}
+
+		return(bIsFirstInstance);
+	}
+}
 
 void FWindowsPlatformProcess::AddDllDirectory(const TCHAR* Directory)
 {
@@ -75,18 +119,21 @@ void* FWindowsPlatformProcess::GetDllHandle( const TCHAR* FileName )
 	}
 
 	// Load the DLL, avoiding windows dialog boxes if missing
+	static const bool CMDLINE_dllerrors = FParse::Param(::GetCommandLineW(), TEXT("dllerrors"));
+	static const bool CMDLINE_unattended = FParse::Param(::GetCommandLineW(), TEXT("unattended"));
+	
 	DWORD ErrorMode = 0;
-	if(!FParse::Param(::GetCommandLineW(), TEXT("dllerrors")))
+	if(!CMDLINE_dllerrors)
 	{
 		ErrorMode |= SEM_NOOPENFILEERRORBOX;
-		if(FParse::Param(::GetCommandLineW(), TEXT("unattended")))
+		if(CMDLINE_unattended)
 		{
 			ErrorMode |= SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX;
 		}
 	}
 
 	DWORD PrevErrorMode = 0;
-	BOOL bHavePrevErrorMode = ::SetThreadErrorMode(ErrorMode, &PrevErrorMode);
+	const BOOL bHavePrevErrorMode = ::SetThreadErrorMode(ErrorMode, &PrevErrorMode);
 
 	// Load the DLL, avoiding windows dialog boxes if missing
 	void* Handle = LoadLibraryWithSearchPaths(FileName, SearchPaths);
@@ -439,35 +486,45 @@ void FWindowsPlatformProcess::CloseProc(FProcHandle & ProcessHandle)
 
 void FWindowsPlatformProcess::TerminateProc( FProcHandle & ProcessHandle, bool KillTree )
 {
-	if (KillTree)
+	TerminateProcTreeWithPredicate(ProcessHandle, [](uint32 ProcessId, const TCHAR* ApplicationName) { return true; });
+}
+
+void FWindowsPlatformProcess::TerminateProcTreeWithPredicate(
+	FProcHandle& ProcessHandle,
+	TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate)
+{
+	::DWORD ProcessId = ::GetProcessId(ProcessHandle.Get());
+	FString ProcessName = FPlatformProcess::GetApplicationName(ProcessId);
+
+	if (!Predicate(ProcessId, *ProcessName))
 	{
-		HANDLE SnapShot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+		return;
+	}
 
-		if (SnapShot != INVALID_HANDLE_VALUE)
+	HANDLE SnapShot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+	if (SnapShot != INVALID_HANDLE_VALUE)
+	{
+
+		PROCESSENTRY32 Entry;
+		Entry.dwSize = sizeof(PROCESSENTRY32);
+
+		if (::Process32First(SnapShot, &Entry))
 		{
-			::DWORD ProcessId = ::GetProcessId(ProcessHandle.Get());
-
-			PROCESSENTRY32 Entry;
-			Entry.dwSize = sizeof(PROCESSENTRY32);
-
-			if (::Process32First(SnapShot, &Entry))
+			do
 			{
-				do
+				if (Entry.th32ParentProcessID == ProcessId)
 				{
-					if (Entry.th32ParentProcessID == ProcessId)
-					{
-						HANDLE ChildProcHandle = ::OpenProcess(PROCESS_ALL_ACCESS, 0, Entry.th32ProcessID);
+					HANDLE ChildProcHandle = ::OpenProcess(PROCESS_ALL_ACCESS, 0, Entry.th32ProcessID);
 
-						if (ChildProcHandle)
-						{
-							FProcHandle ChildHandle(ChildProcHandle);
-							TerminateProc(ChildHandle, KillTree);
-//							::TerminateProcess(ChildProcHandle, 1);
-						}
+					if (ChildProcHandle)
+					{
+						FProcHandle ChildHandle(ChildProcHandle);
+						TerminateProcTreeWithPredicate(ChildHandle, Predicate);
 					}
 				}
-				while(::Process32Next(SnapShot, &Entry));
 			}
+			while(::Process32Next(SnapShot, &Entry));
 		}
 	}
 
@@ -1010,7 +1067,7 @@ const TCHAR* FWindowsPlatformProcess::BaseDir()
 					}
 				}
 			}
-			Result[StringLength] = 0;
+			Result[StringLength] = TCHAR('\0');
 
 			FString CollapseResult(Result);
 #ifdef UE_RELATIVE_BASE_DIR
@@ -1102,7 +1159,7 @@ const TCHAR* FWindowsPlatformProcess::ApplicationSettingsDir()
 
 const TCHAR* FWindowsPlatformProcess::ComputerName()
 {
-	static TCHAR Result[256]=TEXT("");
+	static TCHAR Result[256] = {};
 	if( !Result[0] )
 	{
 		uint32 Size=UE_ARRAY_COUNT(Result);
@@ -1113,8 +1170,8 @@ const TCHAR* FWindowsPlatformProcess::ComputerName()
 
 const TCHAR* FWindowsPlatformProcess::UserName(bool bOnlyAlphaNumeric/* = true*/)
 {
-	static TCHAR Result[256]=TEXT("");
-	static TCHAR ResultAlpha[256]=TEXT("");
+	static TCHAR Result[256] = {};
+	static TCHAR ResultAlpha[256] = {};
 	if( bOnlyAlphaNumeric )
 	{
 		if( !ResultAlpha[0] )
@@ -1125,7 +1182,7 @@ const TCHAR* FWindowsPlatformProcess::UserName(bool bOnlyAlphaNumeric/* = true*/
 			for( c=ResultAlpha, d=ResultAlpha; *c!=0; c++ )
 				if( FChar::IsAlnum(*c) )
 					*d++ = *c;
-			*d++ = 0;
+			*d++ = TCHAR('\0');
 		}
 		return ResultAlpha;
 	}
@@ -1192,12 +1249,12 @@ const FString FWindowsPlatformProcess::ShaderWorkingDir()
 
 const TCHAR* FWindowsPlatformProcess::ExecutablePath()
 {
-	static TCHAR Result[512]=TEXT("");
+	static TCHAR Result[512] = {};
 	if( !Result[0] )
 	{
 		if ( !GetModuleFileName( hInstance, Result, UE_ARRAY_COUNT(Result) ) )
 		{
-			Result[0] = 0;
+			Result[0] = TCHAR('\0');
 		}
 	}
 	return Result;
@@ -1205,8 +1262,8 @@ const TCHAR* FWindowsPlatformProcess::ExecutablePath()
 
 const TCHAR* FWindowsPlatformProcess::ExecutableName(bool bRemoveExtension)
 {
-	static TCHAR Result[512]=TEXT("");
-	static TCHAR ResultWithExt[512]=TEXT("");
+	static TCHAR Result[512] = {};
+	static TCHAR ResultWithExt[512] = {};
 	if( !Result[0] )
 	{
 		// Get complete path for the executable
@@ -1326,7 +1383,7 @@ bool FWindowsPlatformProcess::ResolveNetworkPath( FString InUNCPath, FString& Ou
 	// Get local machine name first and check if this UNC path points to local share
 	// (if it's not UNC path it will also fail this check)
 	uint32 ComputerNameSize = MAX_COMPUTERNAME_LENGTH;
-	TCHAR ComputerName[MAX_COMPUTERNAME_LENGTH + 3] = { '\\', '\\', '\0', };
+	TCHAR ComputerName[MAX_COMPUTERNAME_LENGTH + 3] = { TEXT('\\'), TEXT('\\'), TEXT('\0'), };
 
 	if ( GetComputerName( ComputerName + 2, (::DWORD*)&ComputerNameSize ) )
 	{
@@ -1927,6 +1984,8 @@ static void LogImportDiagnostics(const FString& FileName, const TArray<FString>&
 
 void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileName, const TArray<FString>& SearchPaths)
 {
+	UE_SCOPED_IO_ACTIVITY(*WriteToString<256>("Loading Dll ", FileName));
+
 	// Make sure the initial module exists. If we can't find it from the path we're given, it's probably a system dll.
 	FString FullFileName = FileName;
 	if (FPaths::FileExists(FullFileName))
@@ -1945,23 +2004,36 @@ void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileNam
 		// Load all the missing dependencies first
 		for (int32 Idx = 0; Idx < ImportFileNames.Num(); Idx++)
 		{
-			if (GetModuleHandle(*ImportFileNames[Idx]) == nullptr)
+			const FString& ImportFileName = ImportFileNames[Idx];
+			
+			if (!GetModuleHandle(*ImportFileName))
 			{
-				if(LoadLibrary(*ImportFileNames[Idx]))
+				const void* DependencyHandle = [&ImportFileName]() 
 				{
-					UE_LOG(LogWindows, Verbose, TEXT("Preloaded '%s'"), *ImportFileNames[Idx]);
+					TRACE_CPUPROFILER_EVENT_SCOPE(Windows::LoadLibrary);
+					return LoadLibrary(*ImportFileName);
+				}();
+				
+				if (DependencyHandle)
+				{
+					UE_LOG(LogWindows, Verbose, TEXT("Preloaded '%s'"), *ImportFileName);
 				}
 				else
 				{
-					UE_LOG(LogWindows, Log, TEXT("Failed to preload '%s' (GetLastError=%d)"), *ImportFileNames[Idx], GetLastError());
-					LogImportDiagnostics(ImportFileNames[Idx], SearchPaths);
+					UE_LOG(LogWindows, Log, TEXT("Failed to preload '%s' (GetLastError=%d)"), *ImportFileName, GetLastError());
+					LogImportDiagnostics(ImportFileName, SearchPaths);
 				}
 			}
 		}
 	}
 
 	// Try to load the actual library
-	void* Handle = LoadLibrary(*FullFileName);
+	void* Handle = [FullFileName]() 
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Windows::LoadLibrary);
+		return LoadLibrary(*FullFileName);
+	}();
+	
 	if(Handle)
 	{
 		UE_LOG(LogWindows, Verbose, TEXT("Loaded %s"), *FullFileName);
@@ -2045,6 +2117,20 @@ FString FWindowsPlatformProcess::FProcEnumInfo::GetFullPath() const
 void FWindowsPlatformProcess::SetupGameThread()
 {
 	SetThreadName(TEXT("GameThread"));
+}
+
+bool FWindowsPlatformProcess::IsFirstInstance()
+{
+	// Named mutex we use to figure out whether we are the first instance of the game running. This is needed to e.g.
+	// make sure there is no contention when trying to save the shader cache.
+	static bool bIsFirstInstance = WindowsPlatformProcess::MakeNamedMutex(FCommandLine::Get());
+	return bIsFirstInstance;
+}
+
+void FWindowsPlatformProcess::CeaseBeingFirstInstance()
+{
+	// Release the mutex in the error case to ensure subsequent runs don't find it.
+	WindowsPlatformProcess::ReleaseNamedMutex();
 }
 
 namespace WindowsPlatformProcessImpl

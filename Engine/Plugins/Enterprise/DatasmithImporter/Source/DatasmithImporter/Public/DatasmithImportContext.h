@@ -21,6 +21,7 @@ struct FDatasmithImportContext;
 class FJsonObject;
 class FMessageLogModule;
 class IDatasmithBaseMaterialElement;
+class IDatasmithClothElement;
 class IDatasmithElement;
 class IDatasmithLevelSequenceElement;
 class IDatasmithLevelVariantSetsElement;
@@ -93,6 +94,7 @@ private:
 	FMessageLogModule& MessageLogModule;
 	TSharedPtr<IMessageLogListing> LogListing;
 	TArray<TSharedRef<FTokenizedMessage>> TokenizedMessages;
+	FCriticalSection TokenizedMessageCS;
 };
 
 struct FDatasmithActorImportContext
@@ -172,8 +174,8 @@ struct DATASMITHIMPORTER_API FDatasmithAssetsImportContext
 	/** Package where the materials are stored until they are finalized */
 	TStrongObjectPtr< UPackage > MaterialsImportPackage;
 
-	/** Package where the master/parent materials are stored until they are finalized */
-	TStrongObjectPtr< UPackage > MasterMaterialsImportPackage;
+	/** Package where the reference/parent materials are stored until they are finalized */
+	TStrongObjectPtr< UPackage > ReferenceMaterialsImportPackage;
 
 	/** Package where the material functions are stored until they are finalized */
 	TStrongObjectPtr< UPackage > MaterialFunctionsImportPackage;
@@ -187,8 +189,8 @@ struct DATASMITHIMPORTER_API FDatasmithAssetsImportContext
 	/** Ensures uniqueness of the name of the materials being imported */
 	FDatasmithUniqueNameProvider MaterialNameProvider;
 
-	/** Ensures uniqueness of the name of the materials being imported in the master material package */
-	FDatasmithUniqueNameProvider MasterMaterialNameProvider;
+	/** Ensures uniqueness of the name of the materials being imported in the reference material package */
+	FDatasmithUniqueNameProvider MaterialInstanceNameProvider;
 
 	/** Ensures uniqueness of the name of the material functions being imported in the material function material package */
 	FDatasmithUniqueNameProvider MaterialFunctionNameProvider;
@@ -212,7 +214,7 @@ struct DATASMITHIMPORTER_API FDatasmithImportContext
 	FDatasmithImportContext(const FString& InFileName, bool bLoadConfig, const FName& LoggerName, const FText& LoggerLabel, TSharedPtr<IDatasmithTranslator> InSceneTranslator = nullptr);
 
 	FDatasmithImportContext(const TSharedPtr<UE::DatasmithImporter::FExternalSource>& InExternalSource, bool bLoadConfig, const FName& LoggerName, const FText& LoggerLabel);
-	
+
 	/** Cached MD5 hash value for faster processing */
 	FMD5Hash FileHash;
 
@@ -226,10 +228,10 @@ struct DATASMITHIMPORTER_API FDatasmithImportContext
 	EObjectFlags ObjectFlags;
 
 	/** Settings related to the import of a Datasmith scene */
-	TStrongObjectPtr<UDatasmithImportOptions> Options;
+	TObjectPtr<UDatasmithImportOptions> Options;
 
 	/** Per-Translator settings related to the import of a Datasmith scene */
-	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> AdditionalImportOptions;
+	TArray<TObjectPtr<UDatasmithOptionsBase>> AdditionalImportOptions;
 
 	/** Stack of parent components we're currently importing under */
 	TArray< USceneComponent* > Hierarchy;
@@ -254,6 +256,10 @@ struct DATASMITHIMPORTER_API FDatasmithImportContext
 
 	/** Map of imported mesh for each mesh element */
 	TMap< TSharedRef< IDatasmithMeshElement >, UStaticMesh* > ImportedStaticMeshes;
+
+	TMap< TSharedRef< IDatasmithClothElement >, UObject* > ImportedClothes; // #ue_ds_cloth_arch UChaosClothAsset
+
+	TArray< UObject* > ImportedClothPresets; // #ue_ds_cloth_arch: UChaosClothPreset // #ue_ds_cloth_todo: map with a dedicated element so that clothes can share presets // #ue_ds_cloth_existing presets
 
 	/** Register IDatasmithMeshElement by their name so they can be searched faster */
 	TMap< FString, TSharedRef < IDatasmithMeshElement > > ImportedStaticMeshesByName;
@@ -312,7 +318,7 @@ public:
 	 * @param bSilent				Doesn't display the options dialog and skips other user input requests
 	 */
 	bool Init(const FString& InImportPath, EObjectFlags InFlags, FFeedbackContext* InWarn, const TSharedPtr<FJsonObject>& ImportSettingsJson, bool bSilent);
-	
+
 	/**
 	 * First part of the Init process, replaces Init, requires a call to SetupDestination and InitScene after that.
 	 * Displays the options to the end-user (blocking call), and updates translator accordingly.

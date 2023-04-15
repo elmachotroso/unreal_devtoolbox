@@ -132,12 +132,13 @@ namespace Chaos
 		FReal LinearProjection;
 		FReal AngularProjection;
 		FReal ShockPropagation;
+		FReal TeleportDistance;
+		FReal TeleportAngle;			// Radians
 		FReal ParentInvMassScale;
 
 		bool bCollisionEnabled;
-		bool bProjectionEnabled;		// @chaos(todo): remove - implied by alpha
+		bool bProjectionEnabled;		// @chaos(todo): remove - implied by alpha and teleport settings
 		bool bShockPropagationEnabled;	// @chaos(todo): remove - implied by alpha
-		bool bSoftProjectionEnabled;	// @chaos(todo): remove - old PBD solver only
 
 		TVector<EJointMotionType, 3> LinearMotionTypes;
 		FReal LinearLimit;
@@ -170,8 +171,8 @@ namespace Chaos
 		TVector<bool, 3> bLinearPositionDriveEnabled;
 		TVector<bool, 3> bLinearVelocityDriveEnabled;
 		EJointForceMode LinearDriveForceMode;
-		FReal LinearDriveStiffness;
-		FReal LinearDriveDamping;
+		FVec3 LinearDriveStiffness;
+		FVec3 LinearDriveDamping;
 
 		FRotation3 AngularDrivePositionTarget;
 		FVec3 AngularDriveVelocityTarget;
@@ -183,8 +184,8 @@ namespace Chaos
 		bool bAngularSwingPositionDriveEnabled;
 		bool bAngularSwingVelocityDriveEnabled;
 		EJointForceMode AngularDriveForceMode;
-		FReal AngularDriveStiffness;
-		FReal AngularDriveDamping;
+		FVec3 AngularDriveStiffness;
+		FVec3 AngularDriveDamping;
 
 		FReal LinearBreakForce;
 		FReal LinearPlasticityLimit;
@@ -202,10 +203,6 @@ namespace Chaos
 	{
 	public:
 		FPBDJointSolverSettings();
-
-		// Iterations
-		int32 ApplyPairIterations;
-		int32 ApplyPushOutPairIterations;
 
 		// Tolerances
 		FReal SwingTwistAngleTolerance;

@@ -38,9 +38,9 @@ namespace UnrealBuildTool.Rules
 					// Relative to Engine\Plugins\Runtime\Oculus\OculusVR\Source
 					"OculusHMD/Private",
                     "OculusInput/Private",
-                    "../../../../../Source/Runtime/Renderer/Private",
+					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 					"../../../../../Source/Runtime/Engine/Classes/Components",
-                    "../../../../../Source/Runtime/MediaAssets/Private",
+					System.IO.Path.Combine(GetModuleDirectory("MediaAssets"), "Private"),
                 });
 
             if (Target.Platform == UnrealTargetPlatform.Win64)
@@ -51,8 +51,6 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.Platform == UnrealTargetPlatform.Android)
             {
-                PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private");
-                PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/" + Target.Platform);
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
             }
 

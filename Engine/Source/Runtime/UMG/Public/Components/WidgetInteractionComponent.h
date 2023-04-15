@@ -6,7 +6,10 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "InputCoreTypes.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/EngineTypes.h"
+#endif
+#include "Engine/HitResult.h"
 #include "Components/SceneComponent.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "Layout/WidgetPath.h"
@@ -37,7 +40,7 @@ enum class EWidgetInteractionSource : uint8
 };
 
 // TODO CenterScreen needs to be able to work with multiple player controllers, perhaps finding
-// the PC via the outer/owner chain?  Maybe you need to set the PC that owns this guy?  Maybe we should
+// the PC via the outer/owner chain?  Maybe you need to set the PC that owns this?  Maybe we should
 // key off the Virtual User Index?
 
 // TODO Expose modifier key state.

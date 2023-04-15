@@ -1,8 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Units/Math/RigUnit_MathVector.h"
+#include "Units/Math/RigUnit_MathTransform.h"
 #include "Units/RigUnitContext.h"
 #include "Math/ControlRigMathLibrary.h"
+#include "Units/Core/RigUnit_CoreDispatch.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_MathVector)
 
 FRigUnit_MathVectorFromFloat_Execute()
 {
@@ -195,10 +199,20 @@ FRigUnit_MathVectorEquals_Execute()
 	Result = A == B;
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathVectorEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreEquals::StaticStruct());
+}
+
 FRigUnit_MathVectorNotEquals_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = A != B;
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathVectorNotEquals::GetUpgradeInfo() const
+{
+	return FRigVMStructUpgradeInfo::MakeFromStructToFactory(StaticStruct(), FRigDispatch_CoreNotEquals::StaticStruct());
 }
 
 FRigUnit_MathVectorIsNearlyZero_Execute()
@@ -225,6 +239,12 @@ FRigUnit_MathVectorSelectBool_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 	Result = Condition ? IfTrue : IfFalse;
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathVectorSelectBool::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_MathVectorDeg_Execute()
@@ -334,7 +354,7 @@ FRigUnit_MathVectorAngle_Execute()
 		Result = 0.f;
 		return;
 	}
-	Result = FQuat::FindBetween(A, B).GetAngle();
+	Result = FControlRigMathLibrary::FindQuatBetweenVectors(A, B).GetAngle();
 }
 
 FRigUnit_MathVectorParallel_Execute()
@@ -381,8 +401,20 @@ FRigUnit_MathVectorBezierFourPoint_Execute()
 	FControlRigMathLibrary::FourPointBezier(Bezier, T, Result, Tangent);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_MathVectorBezierFourPoint::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
+}
+
 FRigUnit_MathVectorMakeBezierFourPoint_Execute()
 {
+}
+
+FRigVMStructUpgradeInfo FRigUnit_MathVectorMakeBezierFourPoint::GetUpgradeInfo() const
+{
+	// this node is no longer supported
+	return FRigVMStructUpgradeInfo();
 }
 
 FRigUnit_MathVectorClampSpatially_Execute()
@@ -511,3 +543,22 @@ FRigUnit_MathDistanceToPlane_Execute()
 	}
 }
 
+FRigUnit_MathVectorMakeRelative_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Local = Global - Parent;
+}
+
+FRigUnit_MathVectorMakeAbsolute_Execute()
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+	Global = Parent + Local;
+}
+
+FRigUnit_MathVectorMirrorTransform_Execute()
+{
+	FTransform Transform = FTransform::Identity;
+	Transform.SetTranslation(Value);
+	FRigUnit_MathTransformMirrorTransform::StaticExecute(RigVMExecuteContext, Transform, MirrorAxis, AxisToFlip, CentralTransform, Transform, Context);
+	Result = Transform.GetTranslation();
+}

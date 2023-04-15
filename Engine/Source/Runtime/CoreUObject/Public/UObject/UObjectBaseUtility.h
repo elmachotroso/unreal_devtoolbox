@@ -6,12 +6,31 @@
 
 #pragma once
 
+#include "Containers/StringFwd.h"
+#include "Containers/UnrealString.h"
+#include "Containers/VersePathFwd.h"
 #include "CoreMinimal.h"
+#include "HAL/PlatformMath.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Stats/StatsCommon.h"
+#include "Trace/Detail/Channel.h"
+#include "Trace/Detail/Channel.inl"
+#include "Trace/Trace.h"
+#include "UObject/NameTypes.h"
 #include "UObject/ObjectMacros.h"
-#include "UObject/UObjectBase.h"
+#include "UObject/ObjectVersion.h"
 #include "UObject/UObjectArray.h"
+#include "UObject/UObjectBase.h"
 #include "UObject/UObjectMarks.h"
+
+class UClass;
+class UObject;
+class UPackage;
+struct FGuid;
 
 #if defined(_MSC_VER) && _MSC_VER == 1900
 	#ifdef PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
@@ -416,6 +435,19 @@ public:
 	void GetFullName( const UObject* StopOuter, FString& ResultString, EObjectFullNameFlags Flags = EObjectFullNameFlags::None ) const;
 
 	/**
+	 * Returns the fully qualified pathname for this object as well as the name of the class, in the format:
+	 * 'ClassName Outermost[.Outer].Name'.
+	 *
+	 * @param	ResultString StringBuilder to populate
+	 * @param	StopOuter	if specified, indicates that the output string should be relative to this object.  if StopOuter
+	 *						does not exist in this object's Outer chain, the result would be the same as passing NULL.
+	 * @param	Flags		flags that control the behavior of full name generation
+	 *
+	 * @note	safe to call on NULL object pointers!
+	 */
+	void GetFullName(FStringBuilderBase& ResultString, const UObject* StopOuter = NULL, EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const;
+
+	/**
 	 * Returns the fully qualified pathname for this object, in the format:
 	 * 'Outermost[.Outer].Name'
 	 *
@@ -562,6 +594,15 @@ public:
 	 */
 	UPackage* GetPackage() const;
 
+#if UE_USE_VERSE_PATHS
+	/**
+	 * Gets the versepath of the UObject.
+	 *
+	 * @return The VersePath of the object
+	 */
+	UE::Core::FVersePath GetVersePath() const;
+#endif
+
 	/** 
 	 * Legacy function, has the same behavior as GetPackage
 	 * use GetPackage instead.
@@ -603,6 +644,30 @@ public:
 	{
 		return (T *)GetTypedOuter(T::StaticClass());
 	}
+
+	/** 
+	 * Traverses the outer chain looking for the next object that implements the specified IInterface (InterfaceClass must be an IInterface)
+	 * 
+	 * @return	a pointer to the interface on the first object in this object's Outer chain which implements the specified interface.
+	 */
+	template<typename InterfaceClassType>
+	InterfaceClassType* GetImplementingOuter() const
+	{
+		UClass* InterfaceClass = InterfaceClassType::UClassType::StaticClass();
+		if(UObjectBaseUtility* ImplementingOuter = GetImplementingOuterObject(InterfaceClass))
+		{
+			return static_cast<InterfaceClassType*>(ImplementingOuter->GetInterfaceAddress(InterfaceClass));
+		}
+		return nullptr;
+	}
+
+	/** 
+	 * Traverses the outer chain looking for the next object that implements the specified UInterface (InInterfaceClass must be a subclass of UInterface)
+	 *
+	 * @param	InInterfaceClass	Target interface to search for
+	 * @return	a pointer to the first object in this object's Outer chain which implements the specified interface.
+	 */
+	UObjectBaseUtility* GetImplementingOuterObject(const UClass* InInterfaceClass) const;
 
 	/** 
 	 * Return the dispatch to `IsInOuter` or `IsInPackage` depending on SomeOuter's class. 
@@ -714,7 +779,6 @@ public:
 
 	/**
 	 * Returns whether this component was instanced from a component/subobject template, or if it is a component/subobject template.
-	 * This is based on a name comparison with the outer class instance lookup table
 	 *
 	 * @return	true if this component was instanced from a template.  false if this component was created manually at runtime.
 	 */
@@ -935,6 +999,10 @@ COREUOBJECT_API UClass* GetParentNativeClass(UClass* Class);
 #define USE_LIGHTWEIGHT_UOBJECT_STATS_FOR_HITCH_DETECTION (1)
 #endif
 
+#if CPUPROFILERTRACE_ENABLED
+COREUOBJECT_API FName GetClassTraceScope(const UObjectBaseUtility* Object);
+#endif
+
 #if STATS
 
 /** Structure used to track time spent by a UObject */
@@ -968,7 +1036,7 @@ public:
 #if CPUPROFILERTRACE_ENABLED
 			if (!bStarted && UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel))
 			{
-				StartTrace(Object->GetFName());
+				StartObjectTrace(Object);
 			}
 #endif
 		}
@@ -1001,7 +1069,7 @@ public:
 #if CPUPROFILERTRACE_ENABLED
 			if (!bStarted && UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel))
 			{
-				StartTrace(Object->GetFName());
+				StartObjectTrace(Object);
 			}
 #endif
 		}
@@ -1013,6 +1081,10 @@ public:
 		}
 #endif
 	}
+
+#if CPUPROFILERTRACE_ENABLED
+	COREUOBJECT_API void StartObjectTrace(const UObjectBaseUtility* Object);
+#endif
 
 	/**
 	 * Updates the stat with the time spent

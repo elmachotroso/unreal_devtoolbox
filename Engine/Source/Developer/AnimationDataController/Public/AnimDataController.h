@@ -45,8 +45,8 @@ public:
 #if WITH_EDITOR
 	/** Begin IAnimationDataController overrides */
 	virtual void SetModel(UAnimDataModel* InModel)  override;
-    virtual UAnimDataModel* GetModel() override { return Model; }
-	virtual const UAnimDataModel* const GetModel() const override { return Model; }
+    virtual UAnimDataModel* GetModel() override { return Model.Get(); }
+	virtual const UAnimDataModel* const GetModel() const override { return Model.Get(); }
 	virtual void OpenBracket(const FText& InTitle, bool bShouldTransact = true) override;
 	virtual void CloseBracket(bool bShouldTransact = true) override;
 	virtual void SetPlayLength(float Length, bool bShouldTransact = true) override;
@@ -76,6 +76,7 @@ public:
 	virtual bool SetCurveKey(const FAnimationCurveIdentifier& CurveId, const FRichCurveKey& Key, bool bShouldTransact = true) override;	
 	virtual bool RemoveCurveKey(const FAnimationCurveIdentifier& CurveId, float Time, bool bShouldTransact = true) override;
 	virtual bool SetCurveKeys(const FAnimationCurveIdentifier& CurveId, const TArray<FRichCurveKey>& CurveKeys, bool bShouldTransact = true) override;
+	virtual bool SetCurveAttributes(const FAnimationCurveIdentifier& CurveId, const FCurveAttributes& Attributes, bool bShouldTransact = true) override;
 	virtual void UpdateCurveNamesFromSkeleton(const USkeleton* Skeleton, ERawCurveTrackTypes SupportedCurveType, bool bShouldTransact = true) override;
 	virtual void FindOrAddCurveNamesOnSkeleton(USkeleton* Skeleton, ERawCurveTrackTypes SupportedCurveType, bool bShouldTransact = true) override;
 	virtual bool RemoveBoneTracksMissingFromSkeleton(const USkeleton* Skeleton, bool bShouldTransact = true) override;
@@ -122,19 +123,24 @@ private:
 	bool CheckOuterClass(UClass* InClass) const;
 
 	/** Helper functionality to output script-based warnings and errors */
-	void ReportWarning(const FText& InMessage) const;
-	void ReportError(const FText& InMessage) const;
+	void Report(ELogVerbosity::Type InVerbosity, const FText& InMessage) const;
 
 	template <typename FmtType, typename... Types>
     void ReportWarningf(const FmtType& Fmt, Types... Args) const
 	{	
-		ReportWarning(FText::Format(Fmt, Args...));
+		Report(ELogVerbosity::Warning, FText::Format(Fmt, Args...));
 	}
 
 	template <typename FmtType, typename... Types>
     void ReportErrorf(const FmtType& Fmt, Types... Args) const
 	{
-		ReportError(FText::Format(Fmt, Args...));
+		Report(ELogVerbosity::Error, FText::Format(Fmt, Args...));
+	}
+
+	template <typename FmtType, typename... Types>
+	void Reportf(ELogVerbosity::Type InLogType, const FmtType& Fmt, Types... Args) const
+	{	
+		Report(InLogType, FText::Format(Fmt, Args...));
 	}
 #endif // WITH_EDITOR
 
@@ -147,7 +153,7 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(transient)
-	TObjectPtr<UAnimDataModel> Model;
+	TWeakObjectPtr<UAnimDataModel> Model;
 #endif // WITH_EDITORONLY_DATA
 
 	friend class FAnimDataControllerTestBase;

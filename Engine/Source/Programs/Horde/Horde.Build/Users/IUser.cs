@@ -1,14 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using HordeServer.Utilities;
-using MongoDB.Bson;
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Security.Claims;
-using System.Threading.Tasks;
+using Horde.Build.Jobs;
+using Horde.Build.Utilities;
+using MongoDB.Bson;
 
-namespace HordeServer.Models
+namespace Horde.Build.Users
 {
 	using JobId = ObjectId<IJob>;
 	using UserId = ObjectId<IUser>;
@@ -80,11 +77,6 @@ namespace HordeServer.Models
 		/// Whether to enable experimental features
 		/// </summary>
 		public bool EnableExperimentalFeatures { get; }
-
-		/// <summary>
-		/// Whether to enable Slack notifications
-		/// </summary>
-		public bool EnableIssueNotifications { get; }
 
 		/// <summary>
 		/// Opaque settings dictionary for the dashboard

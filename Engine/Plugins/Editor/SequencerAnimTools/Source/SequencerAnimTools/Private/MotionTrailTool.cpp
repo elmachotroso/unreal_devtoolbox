@@ -25,6 +25,8 @@
 #include "EditorModeManager.h"
 #include "EditorViewportClient.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MotionTrailTool)
+
 #define LOCTEXT_NAMESPACE "SequencerAnimTools"
 
 UInteractiveTool* UMotionTrailToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
@@ -236,21 +238,17 @@ void UMotionTrailTool::OnClicked(const FInputDeviceRay& ClickPos)
 
 void UMotionTrailTool::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	FViewport* FocusedViewport = GetToolManager()->GetContextQueriesAPI()->GetFocusedViewport();
-
 	for (TUniquePtr<UE::SequencerAnimTools::FTrailHierarchy>& TrailHierarchy : TrailHierarchies)
 	{
-		TrailHierarchy->GetRenderer()->Render(RenderAPI->GetSceneView(), FocusedViewport, RenderAPI->GetPrimitiveDrawInterface());
+		TrailHierarchy->GetRenderer()->Render(RenderAPI->GetSceneView(), RenderAPI->GetPrimitiveDrawInterface());
 	}
 }
 
 void UMotionTrailTool::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI)
 {
-	FViewport* FocusedViewport = GetToolManager()->GetContextQueriesAPI()->GetFocusedViewport();
-	FEditorViewportClient* ViewportClient = ModeManager->GetFocusedViewportClient();
 	for (TUniquePtr<UE::SequencerAnimTools::FTrailHierarchy>& TrailHierarchy : TrailHierarchies)
 	{
-		TrailHierarchy->GetRenderer()->DrawHUD(ViewportClient, FocusedViewport, RenderAPI->GetSceneView(), Canvas);
+		TrailHierarchy->GetRenderer()->DrawHUD(RenderAPI->GetSceneView(), Canvas);
 	}
 }
 
@@ -469,3 +467,4 @@ bool UMotionTrailTool::SomeKeysAreSelected() const
 
 
 #undef LOCTEXT_NAMESPACE
+

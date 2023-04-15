@@ -193,7 +193,7 @@ TSharedRef<SWindow> FPropertyEditorModule::CreateFloatingDetailsView( const TArr
 
 	NewSlateWindow->SetContent(
 		SNew(SBorder)
-		.BorderImage( FEditorStyle::GetBrush(TEXT("PropertyWindow.WindowBorder")) )
+		.BorderImage( FAppStyle::GetBrush(TEXT("PropertyWindow.WindowBorder")) )
 		[
 			DetailView
 		]
@@ -365,7 +365,7 @@ TSharedRef< IPropertyTableCellPresenter > FPropertyEditorModule::CreateTextPrope
 	if (InFontPtr == NULL)
 	{
 		// Encapsulating reference to Private file PropertyTableConstants.h
-		InFont = FEditorStyle::GetFontStyle( PropertyTableConstants::NormalFontStyle );
+		InFont = FAppStyle::GetFontStyle( PropertyTableConstants::NormalFontStyle );
 	}
 	else
 	{
@@ -392,9 +392,10 @@ FStructProperty* FPropertyEditorModule::RegisterStructOnScopeProperty(TSharedRef
 			StructOnScopePropertyOwner->AddToRoot();
 		}
 		UScriptStruct* InnerStruct = Cast<UScriptStruct>(const_cast<UStruct*>(StructOnScope->GetStruct()));
-		StructProperty = new FStructProperty(StructOnScopePropertyOwner, *MakeUniqueObjectName(StructOnScopePropertyOwner, UField::StaticClass(), InnerStruct->GetFName()).ToString(), RF_Transient, 0, CPF_None, InnerStruct);
+		StructProperty = new FStructProperty(StructOnScopePropertyOwner, *MakeUniqueObjectName(StructOnScopePropertyOwner, UField::StaticClass(), InnerStruct->GetFName()).ToString(), RF_Transient);
 		StructProperty->Struct = InnerStruct;
 		StructProperty->ElementSize = StructOnScope->GetStruct()->GetStructureSize();
+		StructOnScopePropertyOwner->AddCppProperty(StructProperty);
 
 		RegisteredStructToProxyMap.Add(StructName, StructProperty);
 	}

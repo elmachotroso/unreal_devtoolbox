@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorSkeletalMeshLibrary.h"
-#include "Components/SkinnedMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Editor.h"
 #include "EditorScriptingUtils.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -17,6 +17,8 @@
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "SkeletalMeshEditorSubsystem.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(EditorSkeletalMeshLibrary)
 
 bool UDEPRECATED_EditorSkeletalMeshLibrary::RegenerateLOD(USkeletalMesh* SkeletalMesh, int32 NewLODCount /*= 0*/, bool bRegenerateEvenIfImported /*= false*/, bool bGenerateBaseLOD /*= false*/)
 {
@@ -91,12 +93,12 @@ bool UDEPRECATED_EditorSkeletalMeshLibrary::RemoveLODs(USkeletalMesh* SkeletalMe
 	}
 
 	// Now iterate over all skeletal mesh components to add them to the UpdateContext
-	for (TObjectIterator<USkinnedMeshComponent> It; It; ++It)
+	for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
 	{
-		USkinnedMeshComponent* SkinComp = *It;
-		if (SkinComp->SkeletalMesh == SkeletalMesh)
+		USkeletalMeshComponent* SkelComp = *It;
+		if (SkelComp->GetSkeletalMeshAsset() == SkeletalMesh)
 		{
-			UpdateContext.AssociatedComponents.Add(SkinComp);
+			UpdateContext.AssociatedComponents.Add(SkelComp);
 		}
 	}
 
@@ -122,3 +124,4 @@ UPhysicsAsset* UDEPRECATED_EditorSkeletalMeshLibrary::CreatePhysicsAsset(USkelet
 
 	return SkeletalMeshEditorSubsystem ? SkeletalMeshEditorSubsystem->CreatePhysicsAsset(SkeletalMesh) : nullptr;
 }
+

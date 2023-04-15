@@ -14,7 +14,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/SMultiLineEditableText.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "Editor/UnrealEdEngine.h"
@@ -30,6 +30,7 @@
 #include "K2Node.h"
 #include "K2Node_Tunnel.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Composite.h"
@@ -143,7 +144,7 @@ void FKismetDebugUtilities::RequestSingleStepIn()
 void FKismetDebugUtilities::RequestStepOver()
 {
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 
 	if (ScriptStack.Num() > 0)
 	{
@@ -151,7 +152,7 @@ void FKismetDebugUtilities::RequestStepOver()
 
 		if (const UEdGraphNode* StoppedNode = Data.MostRecentStoppedNode.Get())
 		{
-			if (StoppedNode->IsA<UK2Node_MacroInstance>() || StoppedNode->IsA<UK2Node_Composite>())
+			if (StoppedNode->IsA<UK2Node_MacroInstance>() || StoppedNode->IsA<UK2Node_Composite>() || StoppedNode->IsA<UK2Node_CallFunction>())
 			{
 				for (const UEdGraphPin* Pin : StoppedNode->Pins)
 				{
@@ -188,7 +189,7 @@ void FKismetDebugUtilities::RequestStepOver()
 void FKismetDebugUtilities::RequestStepOut()
 {
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 
 	Data.bIsSingleStepping = false;
 	if (ScriptStack.Num() > 1)
@@ -260,7 +261,7 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 			bShouldBreakExecution = true;
 			break;
 		case EBlueprintExceptionType::Tracepoint:
-			bShouldBreakExecution = bIsStepping;
+			bShouldBreakExecution = bIsStepping && TracepointBreakAllowedOnOwningWorld(ActiveObject);
 			break;
 		case EBlueprintExceptionType::WireTracepoint:
 			break;
@@ -426,7 +427,7 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 						.Content()
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 							[
 								SNew(SScrollBox)
 								+ SScrollBox::Slot()
@@ -503,6 +504,21 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 	}
 }
 
+bool FKismetDebugUtilities::TracepointBreakAllowedOnOwningWorld(const UObject* ObjOuter)
+{
+	bool bAllowTracepointBreak = true;
+
+	const UWorld* ObjWorld = ObjOuter->GetWorld();
+
+	// Disable tracepoints on EditorPreviews or Inactive worlds
+	if (ObjWorld && (ObjWorld->WorldType == EWorldType::EditorPreview || ObjWorld->WorldType == EWorldType::Inactive))
+	{
+		bAllowTracepointBreak = false;
+	}
+
+	return bAllowTracepointBreak;
+}
+
 UClass* FKismetDebugUtilities::FindClassForNode(const UObject* Object, UFunction* Function)
 {
 	if (NULL != Function)
@@ -540,7 +556,7 @@ UEdGraphNode* FKismetDebugUtilities::FindSourceNodeForCodeLocation(const UObject
 void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bool bHitBreakpoint, int32 BreakpointOffset, bool& InOutBreakExecution)
 {
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 
 	if (NodeStoppedAt)
 	{
@@ -731,7 +747,7 @@ void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, co
 	if (bShouldInStackDebug)
 	{
 		TGuardValue<int32> GuardDisablePIE(GPlayInEditorID, INDEX_NONE);
-		const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+		TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 		Data.LastExceptionMessage = Info.GetDescription();
 		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(NodeStoppedAt);
 		CallStackViewer::UpdateDisplayedCallstack(ScriptStack);
@@ -1201,7 +1217,7 @@ void FKismetDebugUtilities::RestoreBreakpointsOnLoad(const UBlueprint* Blueprint
 		[Blueprint](const FBlueprintBreakpoint& Breakpoint)
 		{
 			const UEdGraphNode* const Location = Breakpoint.GetLocation();
-			return !Location || Location->GetTypedOuter<UPackage>()->GetPersistentGuid() != Blueprint->GetTypedOuter<UPackage>()->GetPersistentGuid();
+			return !Location || Location->GetPackage()->GetPersistentGuid() != Blueprint->GetPackage()->GetPersistentGuid();
 		}
 	);
 #endif
@@ -2026,7 +2042,7 @@ FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance)
 	else if (const FStructProperty* StructProperty = CastField<FStructProperty>(ResolvedProperty))
 	{
 		FString WatchText;
-		StructProperty->ExportTextItem(WatchText, PropertyInstance.Value, PropertyInstance.Value, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView, nullptr);
+		StructProperty->ExportTextItem_Direct(WatchText, PropertyInstance.Value, PropertyInstance.Value, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView, nullptr);
 		Value = FText::FromString(WatchText);
 		return;
 	}
@@ -2126,7 +2142,7 @@ FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance)
 		return;
 	}
 
-	ensureMsgf(false, TEXT("Failed to identify property type. This function may need to be exanded to include it: %s"), *ResolvedProperty->GetClass()->GetName());
+	ensureMsgf(false, TEXT("Failed to identify property type. This function may need to be expanded to include it: %s"), *ResolvedProperty->GetClass()->GetName());
 }
 
 TSharedPtr<FPropertyInstanceInfo> FPropertyInstanceInfo::FindOrMake(FPropertyInstance PropertyInstance,
@@ -2214,7 +2230,7 @@ void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
 				const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
 				
 				FString NameStr = TEXT("[");
-				MapProperty->KeyProp->ExportTextItem(
+				MapProperty->KeyProp->ExportTextItem_Direct(
 					NameStr,
 					PropData,
 					nullptr,

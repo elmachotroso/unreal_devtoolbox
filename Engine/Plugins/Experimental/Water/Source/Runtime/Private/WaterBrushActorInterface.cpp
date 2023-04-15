@@ -3,6 +3,8 @@
 #include "WaterBrushActorInterface.h"
 #include "Components/PrimitiveComponent.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBrushActorInterface)
+
 UWaterBrushActorInterface::UWaterBrushActorInterface(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
 {
@@ -13,4 +15,14 @@ TArray<UPrimitiveComponent*> IWaterBrushActorInterface::GetBrushRenderableCompon
 {
 	return TArray<UPrimitiveComponent*>();
 }
+
+IWaterBrushActorInterface::FWaterBrushActorChangedEvent& IWaterBrushActorInterface::GetOnWaterBrushActorChangedEvent()
+{
+	static IWaterBrushActorInterface::FWaterBrushActorChangedEvent WaterBrushActorChangedEvent;
+	return WaterBrushActorChangedEvent;
+}
+
 #endif //WITH_EDITOR
+
+
+

@@ -1,12 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphNodePromotableOperator.h"
-#include "EdGraphSchema_K2.h"
+
+#include "Containers/Set.h"
+#include "EdGraph/EdGraphPin.h"
 #include "GraphEditorSettings.h"
+#include "K2Node_PromotableOperator.h"
+#include "KismetNodes/SGraphNodeK2Sequence.h"
 #include "SGraphPin.h"
-#include "SPinTypeSelector.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UObjectGlobals.h"
 #include "Widgets/Images/SLayeredImage.h"
-#include "GraphEditorSettings.h"
+
+class SWidget;
+
 
 #define LOCTEXT_NAMESPACE "SGraphNodePromotableOperator"
 
@@ -62,12 +72,12 @@ void SGraphNodePromotableOperator::LoadCachedIcons()
 	// Outer ring icons
 	if(!CachedOuterIcon)
 	{
-		CachedOuterIcon = FEditorStyle::GetBrush(PromotableTypeOuterName);
+		CachedOuterIcon = FAppStyle::GetBrush(PromotableTypeOuterName);
 	}
 
 	if(!CachedInnerIcon)
 	{
-		CachedInnerIcon = FEditorStyle::GetBrush(PromotableTypeInnerName);
+		CachedInnerIcon = FAppStyle::GetBrush(PromotableTypeInnerName);
 	}
 }
 

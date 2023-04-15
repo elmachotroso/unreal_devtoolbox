@@ -3,13 +3,15 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Misc/VarArgs.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformString.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/Char.h"
-#include "HAL/PlatformString.h"
-#include "Templates/IsValidVariadicFunctionArg.h"
+#include "Misc/VarArgs.h"
 #include "Templates/AndOrNot.h"
-#include "Templates/IsArrayOrRefOfType.h"
+#include "Templates/IsArrayOrRefOfTypeByPredicate.h"
+#include "Templates/IsValidVariadicFunctionArg.h"
+#include "Traits/IsCharEncodingCompatibleWith.h"
 
 #define MAX_SPRINTF 1024
 
@@ -369,18 +371,21 @@ private:
 	static int32 VARARGS SprintfImpl(CharType* Dest, const CharType* Fmt, ...);
 	static int32 VARARGS SnprintfImpl(CharType* Dest, int32 DestSize, const CharType* Fmt, ...);
 
+	template <typename SrcEncoding>
+	using TIsCharEncodingCompatibleWithCharType = TIsCharEncodingCompatibleWith<SrcEncoding, CharType>;
+
 public:
-	/** 
+	/**
 	* Standard string formatted print. 
 	* @warning: make sure code using FCString::Sprintf allocates enough (>= MAX_SPRINTF) memory for the destination buffer
 	*/
 	template <typename FmtType, typename... Types>
 	static int32 Sprintf(CharType* Dest, const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, CharType>::Value, "Formatting string must be a literal string of the same character type as template.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithCharType>::Value, "Formatting string must be a literal string of a char type compatible with the TCString type.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to TCString::Sprintf");
 
-		return SprintfImpl(Dest, Fmt, Args...);
+		return SprintfImpl(Dest, (const CharType*)Fmt, Args...);
 	}
 
 	/** 
@@ -389,10 +394,10 @@ public:
 	template <typename FmtType, typename... Types>
 	static int32 Snprintf(CharType* Dest, int32 DestSize, const FmtType& Fmt, Types... Args)
 	{
-		static_assert(TIsArrayOrRefOfType<FmtType, CharType>::Value, "Formatting string must be a literal string of the same character type as template.");
+		static_assert(TIsArrayOrRefOfTypeByPredicate<FmtType, TIsCharEncodingCompatibleWithCharType>::Value, "Formatting string must be a literal string of a char type compatible with the TCString type.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to TCString::Snprintf");
 
-		return SnprintfImpl(Dest, DestSize, Fmt, Args...);
+		return SnprintfImpl(Dest, DestSize, (const CharType*)Fmt, Args...);
 	}
 
 	/**
@@ -797,14 +802,14 @@ int32 TCString<T>::Strcspn( const CharType* String, const CharType* Mask )
 		{
 			if (*StringIt == *MaskIt)
 			{
-				return StringIt - String;
+				return UE_PTRDIFF_TO_INT32(StringIt - String);
 			}
 		}
 
 		++StringIt;
 	}
 
-	return StringIt - String;
+	return UE_PTRDIFF_TO_INT32(StringIt - String);
 }
 
 template <typename T> FORCEINLINE 
@@ -947,13 +952,58 @@ inline int32 TCString<ANSICHAR>::SnprintfImpl(CharType* Dest, int32 DestSize, co
 	return Result;
 }
 
-template <> 
+template <>
 FORCEINLINE bool TCString<ANSICHAR>::ToBool(const ANSICHAR* Str)
 {
 	return FToBoolHelper::FromCStringAnsi(Str);
 }
 
-template <> 
+/*-----------------------------------------------------------------------------
+	TCString<UTF8CHAR> specializations
+-----------------------------------------------------------------------------*/
+template <> FORCEINLINE
+bool TCString<UTF8CHAR>::IsPureAnsi(const CharType* Str)
+{
+	for (; *Str; Str++)
+	{
+		if ((uint8)*Str > 0x7f)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+template <> FORCEINLINE
+bool TCString<UTF8CHAR>::IsPureAnsi(const CharType* Str, const SIZE_T StrLen)
+{
+	for (SIZE_T Idx = 0; Idx < StrLen; Idx++, Str++)
+	{
+		if ((uint8)*Str > 0x7f)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+template <>
+inline int32 TCString<UTF8CHAR>::SprintfImpl(CharType* Dest, const CharType* Fmt, ...)
+{
+	int32	Result = -1;
+	GET_VARARGS_RESULT_UTF8(Dest, MAX_SPRINTF, MAX_SPRINTF - 1, Fmt, Fmt, Result);
+	return Result;
+}
+
+template <>
+inline int32 TCString<UTF8CHAR>::SnprintfImpl(CharType* Dest, int32 DestSize, const CharType* Fmt, ...)
+{
+	int32	Result = -1;
+	GET_VARARGS_RESULT_UTF8(Dest, DestSize, DestSize - 1, Fmt, Fmt, Result);
+	return Result;
+}
+
+template <>
 FORCEINLINE bool TCString<UTF8CHAR>::ToBool(const UTF8CHAR* Str)
 {
 	return FToBoolHelper::FromCStringUtf8(Str);

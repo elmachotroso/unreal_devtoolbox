@@ -7,8 +7,10 @@
 #include "LevelInstance/LevelInstancePrivate.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 
-APackedLevelActor::APackedLevelActor(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PackedLevelActor)
+
+APackedLevelActor::APackedLevelActor()
+	: Super()
 #if WITH_EDITORONLY_DATA
 	, bChildChanged(false)
 #endif
@@ -33,7 +35,7 @@ void APackedLevelActor::Serialize(FArchive& Ar)
 #endif
 }
 
-bool APackedLevelActor::SupportsLoading() const
+bool APackedLevelActor::IsLoadingEnabled() const
 {
 #if WITH_EDITOR
 	return HasChildEdit() || IsLoaded();
@@ -104,13 +106,13 @@ FName APackedLevelActor::GetPackedComponentTag()
 	return PackedComponentTag;
 }
 
-void APackedLevelActor::UpdateFromLevel()
+void APackedLevelActor::UpdateLevelInstanceFromWorldAsset()
 {
-	Super::UpdateFromLevel();
+	Super::UpdateLevelInstanceFromWorldAsset();
 
 	if (!Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
 	{
-		if (IsLevelInstancePathValid())
+		if (IsWorldAssetValid())
 		{
 			TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
 			Builder->PackActor(this, GetWorldAsset());
@@ -150,7 +152,6 @@ void APackedLevelActor::OnCommitChild(bool bChanged)
 
 			if (UBlueprint* GeneratedBy = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
 			{
-				check(GeneratedBy == BlueprintAsset.Get());
 				Builder->UpdateBlueprint(GeneratedBy);
 				return; // return here because Actor might have been reinstanced
 			}
@@ -178,7 +179,6 @@ void APackedLevelActor::OnCommit(bool bChanged)
 	{
 		if (UBlueprint* GeneratedBy = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
 		{
-			check(GeneratedBy == BlueprintAsset.Get());
 			TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
 			Builder->UpdateBlueprint(GeneratedBy);
 			return; // return here because Actor might have been reinstanced

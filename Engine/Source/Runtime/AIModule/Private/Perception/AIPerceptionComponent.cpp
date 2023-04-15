@@ -6,6 +6,8 @@
 #include "Perception/AISenseConfig.h"
 #include "VisualLogger/VisualLogger.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AIPerceptionComponent)
+
 #if WITH_GAMEPLAY_DEBUGGER
 #include "GameplayDebuggerTypes.h"
 #include "GameplayDebuggerCategory.h"
@@ -185,6 +187,9 @@ void UAIPerceptionComponent::OnRegister()
 	{
 		Owner->OnEndPlay.AddUniqueDynamic(this, &UAIPerceptionComponent::OnOwnerEndPlay);
 		AIOwner = Cast<AAIController>(Owner);
+
+		// Whilst it should be possible with some code changes, to make perception components work when being added to other AActors than AIControllers, it's not something Epic support.
+		UE_CVLOG_UELOG(!AIOwner && Owner->GetWorld() && (Owner->GetWorld()->WorldType != EWorldType::Editor), Owner, LogAIPerception, Warning, TEXT("%s: Perception Component is being registered with %s, they are designed to work with AAIControllers!"), ANSI_TO_TCHAR(__FUNCTION__), *Owner->GetName());
 	}
 
 	UAIPerceptionSystem* AIPerceptionSys = UAIPerceptionSystem::GetCurrent(GetWorld());
@@ -462,7 +467,7 @@ AActor* UAIPerceptionComponent::GetMutableBodyActor()
 
 void UAIPerceptionComponent::RegisterStimulus(AActor* Source, const FAIStimulus& Stimulus)
 {
-	FStimulusToProcess& StimulusToProcess = StimuliToProcess[StimuliToProcess.Add(FStimulusToProcess(Source, Stimulus))];
+	FStimulusToProcess& StimulusToProcess = StimuliToProcess.Add_GetRef(FStimulusToProcess(Source, Stimulus));
 	StimulusToProcess.Stimulus.SetExpirationAge(MaxActiveAge[int32(Stimulus.Type)]);
 }
 
@@ -479,13 +484,14 @@ void UAIPerceptionComponent::ProcessStimuli()
 	const bool bBroadcastEveryTargetUpdate = OnTargetPerceptionUpdated.IsBound();
 	const bool bBroadcastEveryTargetInfoUpdate = OnTargetPerceptionInfoUpdated.IsBound();
 	
+	TArray<FStimulusToProcess> ProcessingStimuli = MoveTemp(StimuliToProcess);
 	TArray<AActor*> UpdatedActors;
-	UpdatedActors.Reserve(StimuliToProcess.Num());
+	UpdatedActors.Reserve(ProcessingStimuli.Num());
 	TArray<AActor*> ActorsToForget;
-	ActorsToForget.Reserve(StimuliToProcess.Num());
+	ActorsToForget.Reserve(ProcessingStimuli.Num());
 	TArray<TObjectKey<AActor>, TInlineAllocator<8>> DataToRemove;
 
-	for (FStimulusToProcess& SourcedStimulus : StimuliToProcess)
+	for (FStimulusToProcess& SourcedStimulus : ProcessingStimuli)
 	{
 		const TObjectKey<AActor>& SourceKey = SourcedStimulus.Source;
 
@@ -582,8 +588,6 @@ void UAIPerceptionComponent::ProcessStimuli()
 			}
 		}
 	}
-
-	StimuliToProcess.Reset();
 
 	if (UpdatedActors.Num() > 0)
 	{
@@ -881,3 +885,4 @@ void UAIPerceptionComponent::GetPerceivedActors(TSubclassOf<UAISense> SenseToUse
 {
 	GetCurrentlyPerceivedActors(SenseToUse, OutActors);
 }
+

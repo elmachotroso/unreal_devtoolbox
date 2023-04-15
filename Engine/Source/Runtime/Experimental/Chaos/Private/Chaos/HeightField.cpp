@@ -2,6 +2,8 @@
 
 #include "Chaos/HeightField.h"
 #include "Chaos/Collision/ContactPoint.h"
+#include "Chaos/Collision/ContactPointsMiscShapes.h"
+#include "Chaos/Collision/ContactTriangles.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/CollisionOneShotManifolds.h"
 #include "Chaos/Core.h"
@@ -16,16 +18,18 @@
 #include "Chaos/Triangle.h"
 #include "Chaos/TriangleRegister.h"
 
+//PRAGMA_DISABLE_OPTIMIZATION
+
 namespace Chaos
 {
+	namespace CVars
+	{
+		extern bool bCCDNewTargetDepthMode;
+	}
+
 	extern FRealSingle Chaos_Collision_EdgePrunePlaneDistance;
 
-	int32 bOneSidedHeightField = 1;
-	static FAutoConsoleVariableRef CVarOneSidedHeightField(TEXT("p.Chaos.OneSidedHeightField"), bOneSidedHeightField, TEXT("When enabled, extra steps will ensure that FHeightField::GJKContactPointImp never results in internal-facing contact data."));
-
-	int32 bOneSidedHeightfieldAlwaysSweep = 1;
-	static FAutoConsoleVariableRef CVarOneSidedHeightfieldAlwaysSweep(TEXT("p.Chaos.OneSidedHeightfieldAlwaysSweep"), bOneSidedHeightfieldAlwaysSweep, TEXT("When enabled, always use a sweep to ensure FHeightField::GJKContactPointImp never results \
-	in internal-facing contact data. Else, we only sweep if we detect an inward facing normal. Note that the sweep results can be inaccurate in some cases."));
+	extern bool bChaos_Collision_OneSidedHeightField;
 
 	class FHeightfieldRaycastVisitor
 	{
@@ -43,6 +47,11 @@ namespace Chaos
 				bParallel[Axis] = FMath::IsNearlyZero(Dir[Axis], (FReal)1.e-8);
 				InvDir[Axis] = bParallel[Axis] ? 0 : 1 / Dir[Axis];
 			}
+
+			StartPointSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(Start.X, Start.Y, Start.Z, 0.0));
+			VectorRegister4Float DirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(Dir.X, Dir.Y, Dir.Z, 0.0));
+			Parallel = VectorCompareLT(VectorAbs(DirSimd), GlobalVectorConstants::SmallNumber);
+			InvDirSimd = VectorBitwiseNotAnd(Parallel, VectorDivide(VectorOne(), DirSimd));
 		}
 
 		enum class ERaycastType
@@ -51,71 +60,10 @@ namespace Chaos
 			Sweep
 		};
 
-		/**
-		* Ray / triangle  intersection
-		* this provides a double sided test
-		* note : this method assumes that the triangle formed by A,B and C is well formed
-		*/
-		FORCEINLINE_DEBUGGABLE bool RayTriangleIntersection(
-			const FVec3& RayStart, const FVec3& RayDir, FReal RayLength,
-			const FVec3& A, const FVec3& B, const FVec3& C,
-			FReal& OutT, FVec3& OutN
-		)
+		FORCEINLINE_DEBUGGABLE bool VisitRaycast(int32 Payload, FReal CurrentLength)
 		{
-			const FVec3 AB = B - A; // edge 1
-			const FVec3 AC = C - A; // edge 2
-			const FVec3 Normal = FVec3::CrossProduct(AB, AC);
-			const FVec3 NegRayDir = -RayDir;
-
-			FReal Den = FVec3::DotProduct(NegRayDir, Normal);
-			if (FMath::Abs(Den) < SMALL_NUMBER)
-			{
-				// ray is parallel or away to the triangle plane it is a miss
-				return false;
-			}
-
-			const FReal InvDen = (FReal)1 / Den;
-
-			// let's compute the time to intersection
-			const FVec3 RayToA = RayStart - A;
-			const FReal Time = FVec3::DotProduct(RayToA, Normal) * InvDen;
-			if (Time < (FReal)0 || Time > RayLength)
-			{
-				return false;
-			}
-
-			// now compute baricentric coordinates
-			const FVec3 RayToACrossNegDir = FVec3::CrossProduct(NegRayDir, RayToA);
-			constexpr FReal Epsilon = SMALL_NUMBER;
-			const FReal UU = FVec3::DotProduct(AC, RayToACrossNegDir) * InvDen;
-			if (UU < -Epsilon || UU >(1 + Epsilon))
-			{
-				return false; // outside of the triangle
-			}
-			const FReal VV = -FVec3::DotProduct(AB, RayToACrossNegDir) * InvDen;
-			if (VV < -Epsilon || (VV + UU) >(1 + Epsilon))
-			{
-				return false; // outside of the triangle
-			}
-
-			// point is within the triangle, let's compute 
-			OutT = Time;
-			OutN = Normal.GetSafeNormal();
-			OutN *= FMath::Sign(Den);
-			return true;
-		}
-
-
-		FORCEINLINE_DEBUGGABLE bool VisitRaycast(int32 Payload, FReal& CurrentLength)
-		{
-			const int32 SubX = Payload % (GeomData->NumCols - 1);
 			const int32 SubY = Payload / (GeomData->NumCols - 1);
-
 			const int32 FullIndex = Payload + SubY;
-
-			const FReal Radius = Thickness + SMALL_NUMBER;
-			const FReal Radius2 = Radius * Radius;
-			bool bIntersection = false;
 
 			// return if the triangle was hit or not 
 			auto TestTriangle = [&](int32 FaceIndex, const FVec3& A, const FVec3& B, const FVec3& C) -> bool
@@ -140,7 +88,6 @@ namespace Chaos
 							OutNormal = Normal;
 							OutTime = Time;
 							OutFaceIndex = FaceIndex;
-							CurrentLength = Time;
 							return true;
 						}
 					}
@@ -150,21 +97,11 @@ namespace Chaos
 			};
 
 			FVec3 Points[4];
-			FAABB3 CellBounds;
-			GeomData->GetPointsAndBoundsScaled(FullIndex, Points, CellBounds);
-			CellBounds.Thicken(Thickness);
-
-			// Check cell bounds
-			//todo: can do it without raycast
-			FReal TOI;
-			FVec3 HitPoint;
+			GeomData->GetPointsScaled(FullIndex, Points);
 			bool bHit = false;
-			if (CellBounds.RaycastFast(Start, Dir, InvDir, bParallel, CurrentLength, 1.0f / CurrentLength, TOI, HitPoint))
-			{
 				// Test both triangles that are in this cell, as we could hit both in any order
 				bHit |= TestTriangle(Payload * 2, Points[0], Points[1], Points[3]);
 				bHit |= TestTriangle(Payload * 2 + 1, Points[0], Points[3], Points[2]);
-			}
 			const bool bShouldContinueVisiting = !bHit;
 			return bShouldContinueVisiting;
 		}
@@ -176,9 +113,8 @@ namespace Chaos
 
 			const int32 FullIndex = Payload + SubY;
 
-			const FReal Radius = Thickness + SMALL_NUMBER;
+			const FReal Radius = Thickness + UE_SMALL_NUMBER;
 			const FReal Radius2 = Radius * Radius;
-			bool bIntersection = false;
 
 			// return if the triangle was hit or not 
 			auto TestTriangle = [&](int32 FaceIndex, const FVec3& A, const FVec3& B, const FVec3& C) -> bool
@@ -189,7 +125,7 @@ namespace Chaos
 				FVec3 Normal = FVec3::CrossProduct(AB, AC);
 				const FReal Len2 = Normal.SafeNormalize();
 
-				if(!ensure(Len2 > SMALL_NUMBER))
+				if(!ensure(Len2 > UE_SMALL_NUMBER))
 				{
 					// Bad triangle, co-linear points or very thin
 					return false;
@@ -197,6 +133,7 @@ namespace Chaos
 
 				const TPlane<FReal, 3> TrianglePlane(A, Normal);
 
+				bool bIntersection = false;
 				FVec3 ResultPosition(0);
 				FVec3 ResultNormal(0);
 				FReal Time = TNumericLimits<FReal>::Max();
@@ -222,7 +159,7 @@ namespace Chaos
 					{
 						const FVec3 ClosestPtOnTri = FindClosestPointOnTriangle(ResultPosition, A, B, C, ResultPosition);
 						const FReal DistToTriangle2 = (ResultPosition - ClosestPtOnTri).SizeSquared();
-						bIntersection = DistToTriangle2 <= SMALL_NUMBER;
+						bIntersection = DistToTriangle2 <= UE_SMALL_NUMBER;
 					}
 				}
 
@@ -328,9 +265,12 @@ namespace Chaos
 		FVec3 OutNormal;
 		int32 OutFaceIndex;
 
-	private:
-
+		VectorRegister4Float StartPointSimd;
+		VectorRegister4Float InvDirSimd;
+		VectorRegister4Float Parallel;
+		
 		const typename FHeightField::FDataType* GeomData;
+	private:
 
 		FVec3 Start;
 		FVec3 Dir;
@@ -362,6 +302,14 @@ namespace Chaos
 				bParallel[Axis] = FMath::IsNearlyZero(Dir[Axis], (FReal)1.e-8);
 				InvDir[Axis] = bParallel[Axis] ? 0 : 1 / Dir[Axis];
 			}
+
+			StartPointSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(StartPoint.X, StartPoint.Y, StartPoint.Z, 0.0));
+			DirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(Dir.X, Dir.Y, Dir.Z, 0.0));
+			Parallel = VectorCompareLT(VectorAbs(DirSimd), GlobalVectorConstants::SmallNumber);
+			InvDirSimd = VectorBitwiseNotAnd(Parallel, VectorDivide(VectorOne(), DirSimd));
+			Inflation3DSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(Inflation3D.X, Inflation3D.Y, Inflation3D.Z, 0.0));
+			Inflation3DSimd = VectorAbs(Inflation3DSimd);
+
 		}
 
 		bool VisitSweep(int32 Payload, FReal& CurrentLength)
@@ -371,7 +319,7 @@ namespace Chaos
 
 			const int32 FullIndex = Payload + SubY;
 
-			auto TestTriangle = [&](int32 FaceIndex, const FVec3& A, const FVec3& B, const FVec3& C) -> bool
+			auto TestTriangle = [&](int32 FaceIndex, const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C) -> bool
 			{
 				if(OutTime == 0)
 				{
@@ -379,17 +327,20 @@ namespace Chaos
 				}
 
 				//Convert into local space of A to get better precision
-				VectorRegister4Float AReg = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(A.X, A.Y, A.Z, 0.0));
-				VectorRegister4Float BReg = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(B.X, B.Y, B.Z, 0.0));
-				VectorRegister4Float CReg = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(C.X, C.Y, C.Z, 0.0));
+				FTriangleRegister Triangle(VectorZero(), VectorSubtract(B, A), VectorSubtract(C, A));
 
-				FTriangleRegister Triangle(VectorZero(), VectorSubtract(BReg, AReg), VectorSubtract(CReg, AReg));
+				const UE::Math::TQuat<FReal>& RotationDouble = StartTM.GetRotation();
+				VectorRegister4Float Rotation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(RotationDouble.X, RotationDouble.Y, RotationDouble.Z, RotationDouble.W));
+				// Normalize rotation
+				Rotation = VectorNormalizeSafe(Rotation, GlobalVectorConstants::Float0001);
 
-				FReal Time;
-				FVec3 LocalHitPosition;
-				FVec3 HitNormal;
-				const FRigidTransform3 LocalStartTM(StartTM.GetTranslation() - A,StartTM.GetRotation());
-				if(GJKRaycast2<FReal>(Triangle, OtherGeom, LocalStartTM, Dir, CurrentLength, Time, LocalHitPosition, HitNormal, Thickness, bComputeMTD))
+				const UE::Math::TVector<FReal>& TranslationDouble = StartTM.GetTranslation();
+				VectorRegister4Float Translation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(TranslationDouble.X, TranslationDouble.Y, TranslationDouble.Z, 0.0));
+				Translation = VectorSubtract(Translation, A);
+
+				FRealSingle Time;
+				VectorRegister4Float OutPositionSimd, OutNormalSimd;
+				if(GJKRaycast2ImplSimd(Triangle, OtherGeom, Rotation, Translation, DirSimd, static_cast<FRealSingle>(CurrentLength), Time, OutPositionSimd, OutNormalSimd, bComputeMTD, GlobalVectorConstants::Float1000))
 				{
 					if(Time < OutTime)
 					{
@@ -403,8 +354,18 @@ namespace Chaos
 
 						if(!bHole)
 						{
-							OutNormal = HitNormal;
-							OutPosition = LocalHitPosition + A;
+							alignas(16) FRealSingle OutFloat[4];
+							VectorStoreAligned(OutNormalSimd, OutFloat);
+							OutNormal.X = OutFloat[0];
+							OutNormal.Y = OutFloat[1];
+							OutNormal.Z = OutFloat[2];
+
+							OutPositionSimd = VectorAdd(OutPositionSimd, A);
+							VectorStoreAligned(OutPositionSimd, OutFloat);
+							OutPosition.X = OutFloat[0];
+							OutPosition.Y = OutFloat[1];
+							OutPosition.Z = OutFloat[2];
+
 							OutTime = Time;
 							OutFaceIndex = FaceIndex;
 
@@ -414,13 +375,17 @@ namespace Chaos
 								// we adopt the triangle normal but this leaves us with an incorrect MTD from the GJK call
 								// above. #TODO possibly re-do GJK with a plane, or some geom vs.plane special case to solve
 								// both triangles as planes 
-								const FVec3 AB = B - A;
-								const FVec3 AC = C - A;
+								const VectorRegister4Float AB = VectorSubtract(B, A);
+								const VectorRegister4Float AC = VectorSubtract(C, A);
 
-								FVec3 TriNormal = FVec3::CrossProduct(AB, AC);
-								TriNormal.SafeNormalize();
+								VectorRegister4Float TriNormal = VectorCross(AB, AC);
+								TriNormal = VectorNormalize(TriNormal);
 
-								OutNormal = TriNormal;
+								VectorStoreAligned(TriNormal, OutFloat);
+								OutNormal.X = OutFloat[0];
+								OutNormal.Y = OutFloat[1];
+								OutNormal.Z = OutFloat[2];
+
 								CurrentLength = 0;
 								return false;
 							}
@@ -433,16 +398,12 @@ namespace Chaos
 				return true;
 			};
 
-			FVec3 Points[4];
-			FAABB3 CellBounds;
-			HfData->GetPointsAndBoundsScaled(FullIndex, Points, CellBounds);
-			CellBounds.ThickenSymmetrically(Inflation3D);
+			VectorRegister4Float Points[4];
+			FAABBVectorized CellBounds;
+			HfData->GetPointsAndBoundsScaledSimd(FullIndex, Points, CellBounds);
+			CellBounds.Thicken(Inflation3DSimd);
 
-			// Check cell bounds
-			//todo: can do it without raycast
-			FReal TOI;
-			FVec3 HitPoint;
-			if (CellBounds.RaycastFast(StartPoint, Dir, InvDir, bParallel, CurrentLength, 1.0f / CurrentLength, TOI, HitPoint))
+			if (CellBounds.RaycastFast(StartPointSimd, InvDirSimd, Parallel, VectorSetFloat1(static_cast<FRealSingle>(CurrentLength))))
 			{
 				bool bContinue = TestTriangle(Payload * 2, Points[0], Points[1], Points[3]);
 				if (bContinue)
@@ -450,6 +411,7 @@ namespace Chaos
 					TestTriangle(Payload * 2 + 1, Points[0], Points[3], Points[2]);
 				}
 			}
+
 			return OutTime > 0;
 		}
 
@@ -457,6 +419,12 @@ namespace Chaos
 		FVec3 OutPosition;
 		FVec3 OutNormal;
 		int32 OutFaceIndex;
+
+		VectorRegister4Float StartPointSimd;
+		VectorRegister4Float InvDirSimd;
+		VectorRegister4Float DirSimd;
+		VectorRegister4Float Parallel;
+		VectorRegister4Float Inflation3DSimd;
 
 	private:
 
@@ -472,6 +440,153 @@ namespace Chaos
 		FVec3 Inflation3D;
 
 	};
+
+	template<typename GeomQueryType>
+	class THeightfieldSweepVisitorCCD
+	{
+	public:
+
+		THeightfieldSweepVisitorCCD(const typename FHeightField::FDataType* InData, const GeomQueryType& InQueryGeom, const FRigidTransform3& InStartTM, const FVec3& InDir, const FReal Length, const FReal InIgnorePenetration, const FReal InTargetPenetration)
+			: OutDistance(TNumericLimits<FReal>::Max())
+			, OutPhi(TNumericLimits<FReal>::Max())
+			, OutPosition(0)
+			, OutNormal(0)
+			, OutFaceIndex(INDEX_NONE)
+			, HfData(InData)
+			, StartTM(InStartTM)
+			, OtherGeom(InQueryGeom)
+			, IgnorePenetration(InIgnorePenetration)
+			, TargetPenetration(InTargetPenetration)
+		{
+			const FAABB3 QueryBounds = InQueryGeom.BoundingBox();
+			const FVec3 StartPoint = StartTM.TransformPositionNoScale(QueryBounds.Center());
+			const FVec3 Inflation3D = QueryBounds.Extents() * FReal(0.5);
+
+			const VectorRegister4Float LengthSimd = MakeVectorRegisterFloatFromDouble(VectorSetFloat1(Length));
+			StartPointSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(StartPoint.X, StartPoint.Y, StartPoint.Z, 0.0));
+			DirSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(InDir.X, InDir.Y, InDir.Z, 0.0));
+			EndPointSimd = VectorAdd(StartPointSimd, VectorMultiply(DirSimd, LengthSimd));
+			RotationSimd = MakeVectorRegisterFloatFromDouble(StartTM.GetRotationRegister());
+			ParallelSimd = VectorCompareLT(VectorAbs(DirSimd), GlobalVectorConstants::SmallNumber);
+			InvDirSimd = VectorBitwiseNotAnd(ParallelSimd, VectorDivide(VectorOne(), DirSimd));
+			Inflation3DSimd = MakeVectorRegisterFloatFromDouble(VectorAbs(MakeVectorRegister(Inflation3D.X, Inflation3D.Y, Inflation3D.Z, 0.0)));
+
+			// @todo(chaos): do we really need this?
+			RotationSimd = VectorNormalizeSafe(RotationSimd, GlobalVectorConstants::Float0001);
+		}
+
+		bool VisitSweep(int32 CellIndex, FReal& CurrentLength)
+		{
+			// Skip holes
+			if (HfData->MaterialIndices.IsValidIndex(CellIndex))
+			{
+				const bool bHole = (HfData->MaterialIndices[CellIndex] == TNumericLimits<uint8>::Max());
+				if (bHole)
+				{
+					return true;
+				}
+			}
+
+			auto TestTriangle = [&](int32 FaceIndex, const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C) -> bool
+			{
+				// Convert into A-relative positions to get better precision
+				FTriangleRegister Triangle(VectorZero(), VectorSubtract(B, A), VectorSubtract(C, A));
+				VectorRegister4Float TranslationSimd = MakeVectorRegisterFloatFromDouble(VectorSubtract(StartTM.GetTranslationRegister(), A));
+
+				// If we are definitely penetrating by less than IgnorePenetration at T=1, we can ignore this triangle
+				// Checks the query geometry support point along the normal at the sweep end point
+				// NOTE: We are using SupportCore, so we need to add Radius to the early-out distance check. We could just use Support
+				// but this way avoids an extra sqrt. We don't modify IgnorePenetration in the ctor because it gets used below.
+				VectorRegister4Float RadiusV = MakeVectorRegisterFloatFromDouble(VectorSetFloat1(OtherGeom.GetRadius()));
+				VectorRegister4Float IgnorePenetrationSimd = VectorSubtract(MakeVectorRegisterFloatFromDouble(VectorSetFloat1(IgnorePenetration)), RadiusV);
+				VectorRegister4Float TriangleNormalSimd = VectorNormalize(VectorCross(VectorSubtract(B, A), VectorSubtract(C, A)));
+				VectorRegister4Float OtherTriangleNormalSimd = VectorQuaternionInverseRotateVector(RotationSimd, TriangleNormalSimd);
+				VectorRegister4Float OtherTrianglePositionSimd = VectorQuaternionInverseRotateVector(RotationSimd, VectorSubtract(A, EndPointSimd));
+				VectorRegister4Float OtherSupportSimd = OtherGeom.SupportCoreSimd(VectorNegate(OtherTriangleNormalSimd), 0);
+				VectorRegister4Float MaxDepthSimd = VectorDot3(VectorSubtract(OtherTrianglePositionSimd, OtherSupportSimd), OtherTriangleNormalSimd);
+				if (VectorMaskBits(VectorCompareLT(MaxDepthSimd, IgnorePenetrationSimd)))
+				{
+					return true;
+				}
+
+				FRealSingle Distance;
+				VectorRegister4Float PositionSimd, NormalSimd;
+				if (GJKRaycast2ImplSimd(Triangle, OtherGeom, RotationSimd, TranslationSimd, DirSimd, FRealSingle(CurrentLength), Distance, PositionSimd, NormalSimd, true, GlobalVectorConstants::Float1000))
+				{
+					// Convert back from A-relative positions
+					PositionSimd = VectorAdd(PositionSimd, A);
+
+					const VectorRegister4Float DirDotNormalSimd = VectorDot3(DirSimd, NormalSimd);
+					FReal DirDotNormal;
+					VectorStoreFloat1(DirDotNormalSimd, &DirDotNormal);
+
+					// Calculate the time to reach a depth of TargetPenetration
+					FReal TargetTOI, TargetPhi;
+					ComputeSweptContactTOIAndPhiAtTargetPenetration(DirDotNormal, CurrentLength, FReal(Distance), IgnorePenetration, TargetPenetration, TargetTOI, TargetPhi);
+
+					// If this hit is closest, store the result
+					const FReal TargetDistance = TargetTOI * CurrentLength;
+					if (TargetDistance < CurrentLength)
+					{
+						CurrentLength = TargetDistance;
+
+						VectorStoreFloat3(MakeVectorRegisterDouble(NormalSimd), &OutNormal);
+						VectorStoreFloat3(MakeVectorRegisterDouble(PositionSimd), &OutPosition);
+						OutDistance = TargetDistance;
+						OutPhi = TargetPhi;
+						OutFaceIndex = FaceIndex;
+					}
+				}
+
+				return (CurrentLength > 0);
+			};
+
+
+			VectorRegister4Float Points[4];
+			FAABBVectorized CellBounds;
+			const int32 VertexIndex = HfData->CellIndexToVertexIndex(CellIndex);
+			HfData->GetPointsAndBoundsScaledSimd(VertexIndex, Points, CellBounds);
+			CellBounds.Thicken(Inflation3DSimd);
+
+			if (CellBounds.RaycastFast(StartPointSimd, InvDirSimd, ParallelSimd, VectorSetFloat1(static_cast<FRealSingle>(CurrentLength))))
+			{
+				const int32 TriIndex0 = 2 * CellIndex + 0;
+				const int32 TriIndex1 = 2 * CellIndex + 1;
+				if (!TestTriangle(TriIndex0, Points[0], Points[1], Points[3]))
+				{
+					return false;
+				}
+				if (!TestTriangle(TriIndex1, Points[0], Points[3], Points[2]))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		FReal OutDistance;
+		FReal OutPhi;
+		FVec3 OutPosition;
+		FVec3 OutNormal;
+		int32 OutFaceIndex;
+
+	private:
+		const typename FHeightField::FDataType* HfData;
+		const FRigidTransform3 StartTM;
+		const GeomQueryType& OtherGeom;
+		FReal IgnorePenetration;
+		FReal TargetPenetration;
+
+		VectorRegister4Float StartPointSimd;
+		VectorRegister4Float EndPointSimd;
+		VectorRegister4Float InvDirSimd;
+		VectorRegister4Float DirSimd;
+		VectorRegister4Float RotationSimd;
+		VectorRegister4Float ParallelSimd;
+		VectorRegister4Float Inflation3DSimd;
+	};
+
 
 	template<typename BufferType>
 	void BuildGeomData(TArrayView<BufferType> BufferView, TArrayView<uint8> MaterialIndexView, int32 NumRows, int32 NumCols, const FVec3& InScale, TUniqueFunction<FReal(const BufferType)> ToRealFunc, typename FHeightField::FDataType& OutData, FAABB3& OutBounds)
@@ -493,6 +608,7 @@ namespace Chaos
 		OutData.MinValue = ToRealFunc(BufferView[0]);
 		OutData.MaxValue = ToRealFunc(BufferView[0]);
 		OutData.Scale = InScale;
+		OutData.ScaleSimd = MakeVectorRegisterFloatFromDouble(MakeVectorRegisterDouble(InScale.X, InScale.Y, InScale.Z, 0.0));
 
 		for(int32 HeightIndex = 1; HeightIndex < NumHeights; ++HeightIndex)
 		{
@@ -527,7 +643,10 @@ namespace Chaos
 				OutBounds.GrowToInclude(Position * InScale);
 			}
 		}
-		OutBounds.Thicken(KINDA_SMALL_NUMBER);
+		OutBounds.Thicken(UE_KINDA_SMALL_NUMBER);
+
+		
+		OutData.BuildLowResolutionData();
 
 		if(bHaveMaterials)
 		{
@@ -607,7 +726,7 @@ namespace Chaos
 				}
 			}
 
-			OutBounds.Thicken(KINDA_SMALL_NUMBER);
+			OutBounds.Thicken(UE_KINDA_SMALL_NUMBER);
 
 			OutData.MinValue = NewMin;
 			OutData.MaxValue = NewMax;
@@ -628,6 +747,8 @@ namespace Chaos
 				}
 			}
 		}
+
+		OutData.BuildLowResolutionData();
 	}
 
 	FHeightField::FHeightField(TArray<FReal>&& Height, TArray<uint8>&& InMaterialIndices, int32 NumRows, int32 NumCols, const FVec3& InScale)
@@ -909,8 +1030,255 @@ namespace Chaos
 		return false;
 	}
 
+	// Raycast is navigating slowly one cell at the time, on the high resolution height field
+	// This navigation is the most precise and will check if we need to compute the raycast at the triangle level
+	FORCEINLINE bool FHeightField::WalkSlow(TVec2<int32>& CellIdx, FHeightfieldRaycastVisitor& Visitor, FReal CurrentLength, const VectorRegister4Float& CurrentLengthSimd,
+		const FVec2& ScaledMin, FReal ZMidPoint, const FVec3& Dir, const FVec3& InvDir, bool bParallel[3], const FVec2& ScaledDx2D, FVec3& NextStart, 
+		const FVec3& ScaleSign, const FVec3& ScaledDx, int32 IndexLowResX, int32 IndexLowResY) const
+	{
+		const int32 LowResInc = Visitor.GeomData->LowResInc;
+		while (true)
+		{
+			if (FlatGrid.IsValid(CellIdx))
+			{
+				PHYSICS_CSV_CUSTOM_VERY_EXPENSIVE(PhysicsCounters, NumRayHeightfieldCellVisited, 1, ECsvCustomStatOp::Accumulate);
+				// Test for the cell bounding box is done in the visitor at the same time as fetching the points for the triangles
+				// this avoid fetching the points twice ( here and in the visitor )
 
-	bool FHeightField::GridCast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, FHeightfieldRaycastVisitor& Visitor) const
+				const int32 Payload = CellIdx[1] * (GeomData.NumCols - 1) + CellIdx[0];
+				const int32 SubY = (Payload) / (GeomData.NumCols - 1);
+				const int32 FullIndex = Payload + SubY;
+				FAABBVectorized Bounds;
+				Visitor.GeomData->GetBoundsScaledSimd(FullIndex, Bounds);
+				if (Bounds.RaycastFast(Visitor.StartPointSimd, Visitor.InvDirSimd, Visitor.Parallel, CurrentLengthSimd))
+				{
+					const bool bContinue = Visitor.VisitRaycast(CellIdx[1] * (GeomData.NumCols - 1) + CellIdx[0], CurrentLength);
+					if (!bContinue)
+					{
+						return false;
+					}
+				}
+			}
+
+			//find next cell
+			//We want to know which plane we used to cross into next cell
+			const FVec2 ScaledCellCenter2D = ScaledMin + FVec2(static_cast<FReal>(CellIdx[0]) + 0.5f, static_cast<FReal>(CellIdx[1]) + 0.5f) * ScaledDx2D;
+			const FVec3 ScaledCellCenter(ScaledCellCenter2D[0], ScaledCellCenter2D[1], ZMidPoint);
+
+			FReal Times[3];
+			FReal BestTime = CurrentLength;
+			bool bTerminate = true;
+			for (int Axis = 0; Axis < 3; ++Axis)
+			{
+				if (!bParallel[Axis])
+				{
+					const FReal CrossPoint = (Dir[Axis] * ScaleSign[Axis]) > 0 ? ScaledCellCenter[Axis] + ScaledDx[Axis] / 2 : ScaledCellCenter[Axis] - ScaledDx[Axis] / 2;
+					const FReal Distance = CrossPoint - NextStart[Axis];	//note: CellCenter already has /2, we probably want to use the corner instead
+					const FReal Time = Distance * InvDir[Axis];
+					Times[Axis] = Time;
+					if (Time < BestTime)
+					{
+						bTerminate = false;	//found at least one plane to pass through
+						BestTime = Time;
+					}
+				}
+				else
+				{
+					Times[Axis] = TNumericLimits<FReal>::Max();
+				}
+			}
+
+			if (bTerminate)
+			{
+				return false;
+			}
+
+			const TVec2<int32> PrevIdx = CellIdx;
+
+			for (int Axis = 0; Axis < 2; ++Axis)
+			{
+				CellIdx[Axis] += (Times[Axis] <= BestTime) ? ((Dir[Axis] * ScaleSign[Axis]) > 0 ? 1 : -1) : 0;
+				if (CellIdx[Axis] < 0 || CellIdx[Axis] >= FlatGrid.Counts()[Axis])
+				{
+					return false;
+				}
+			}
+
+			if (PrevIdx == CellIdx)
+			{
+				//crossed on z plane which means no longer in heightfield bounds
+				return false;
+			}
+
+			NextStart = NextStart + Dir * BestTime;
+
+			if (IndexLowResX != CellIdx[0] / LowResInc || IndexLowResY != CellIdx[1] / LowResInc)
+			{
+				return true;
+			}
+
+		}
+		return true;
+	}
+
+	// Raycast is navigating fast on the high resolution height field
+	// This navigation is more precise than the low resolution walk. It would have more cache miss because it grabs several cells not necessarily contiguous in memory.
+	// It navigates only on the cell that need to be checked.
+	FORCEINLINE bool FHeightField::WalkFast(TVec2<int32>& CellIdx, FHeightfieldRaycastVisitor& Visitor, FReal CurrentLength, const VectorRegister4Float& CurrentLengthSimd,
+		const FVec2& ScaledMin, FReal ZMidPoint, const FVec3& Dir, const FVec3& InvDir, bool bParallel[3], const FVec2& ScaledDx2D, FVec3& NextStart,
+		const FVec3& ScaleSign, const FVec3& ScaledDx, const FVec2& Scale2D, const FVec3& DirScaled) const 
+	{
+		const FReal BoundsMinZ = CachedBounds.Min().Z;
+		const FReal BoundsMaxZ = CachedBounds.Max().Z;
+
+		const int32 LowResInc = Visitor.GeomData->LowResInc;
+		const int32 IndexLowResX = CellIdx[0] / LowResInc;
+		const int32 IndexLowResY = CellIdx[1] / LowResInc;
+
+		const TVec2<int32> NextStartInt = TVec2<int32>(static_cast<int32>(NextStart[0] / Scale2D[0]), static_cast<int32>(NextStart[1] / Scale2D[1]));
+		CellIdx = FlatGrid.Cell(NextStartInt);
+
+		const FVec3 NextStartOri = NextStart;
+		const FReal Length2D = FMath::Sqrt(DirScaled[0] * DirScaled[0] + DirScaled[1] * DirScaled[1]);
+		constexpr FReal FastInc2D = 2.0;  // Length in cell dimension
+		const FReal FastIncScaled = FastInc2D / Length2D;
+
+		const FVec3 InspectionStepVector = DirScaled * FastIncScaled * ScaledDx;
+		FReal NextStartZ = FMath::Clamp(NextStart.Z, BoundsMinZ, BoundsMaxZ); // Numerical errors can violate this condition, so force it here.
+		const FReal FastIncScaled3D = InspectionStepVector.Length();
+		const FReal CellsToInspectZ = FastIncScaled3D * Dir.Z;
+		FReal DistanceProcessed = 0.0;
+
+		while (true)
+		{
+			if (!FlatGrid.IsValid(CellIdx))
+			{
+				return false;
+			}
+
+			const FVec3 NewNextStart = (InspectionStepVector + NextStart);
+			const TVec2<int32> NewNextStartInt = TVec2<int32>(static_cast<int32>(NewNextStart[0] / Scale2D[0]), static_cast<int32>(NewNextStart[1] / Scale2D[1]));
+			const TVec2<int32> NextStartInt2 = TVec2<int32>(static_cast<int32>(NextStart[0] / Scale2D[0]), static_cast<int32>(NextStart[1] / Scale2D[1]));
+
+			const TVec2<int32> DiffInt = NewNextStartInt - NextStartInt2;
+			const TVec2<int32> AddedCellIdx = TVec2<int32>(static_cast<int32>(DiffInt[0]), static_cast<int32>(DiffInt[1]));
+
+			FAABBVectorized Bounds;
+			Visitor.GeomData->GetBoundsScaled(CellIdx, AddedCellIdx, Bounds);
+			if (Bounds.RaycastFast(Visitor.StartPointSimd, Visitor.InvDirSimd, Visitor.Parallel, CurrentLengthSimd))
+			{
+				NextStart = NextStartOri + Dir * DistanceProcessed;
+				bool bContinue = WalkSlow(CellIdx, Visitor, CurrentLength, CurrentLengthSimd, ScaledMin, ZMidPoint, Dir, InvDir, bParallel, ScaledDx2D, NextStart, ScaleSign, ScaledDx, IndexLowResX, IndexLowResY);
+				if (bContinue)
+				{
+					return true;
+				}
+				return false;
+			}
+
+			NextStart = NewNextStart;
+
+			const TVec2<int32> PrevIdx = CellIdx;
+			CellIdx = FlatGrid.Cell(NewNextStartInt);
+			if (PrevIdx == CellIdx)
+			{
+				return false;
+			}
+
+			if (DistanceProcessed > CurrentLength || NextStartZ < BoundsMinZ || NextStartZ > BoundsMaxZ)
+			{
+				return false;
+			}
+			DistanceProcessed += FastIncScaled3D;
+			NextStartZ += CellsToInspectZ;
+			if (IndexLowResX != CellIdx[0] / LowResInc || IndexLowResY != CellIdx[1] / LowResInc)
+			{
+				// Walk on low resolution height field
+				return true;
+			}
+		} 
+		return true;
+	}
+
+	// Raycast is navigating a low resolution height field
+	// This navigation is less precise can have lot of false positive intersection but navigate fast with few cache miss.
+	// It navigates on a squared cell number.
+	FORCEINLINE bool FHeightField::WalkOnLowRes(TVec2<int32>& CellIdx, FHeightfieldRaycastVisitor& Visitor, FReal CurrentLength, const VectorRegister4Float& CurrentLengthSimd,
+		const FVec2& ScaledMin, FReal ZMidPoint, const FVec3& Dir, const FVec3& InvDir, bool bParallel[3], const FVec2& ScaledDx2D, FVec3& NextStart,
+		const FVec3& ScaleSign, const FVec3& ScaledDx, const FVec2& Scale2D, const FVec3& DirScaled) const
+	{
+		const int32 LowResInc = Visitor.GeomData->LowResInc;
+		while (true)
+		{
+			if (!FlatGrid.IsValid(CellIdx))
+			{
+				return false;
+			}
+
+			FAABBVectorized Bounds;
+			Visitor.GeomData->GetLowResBoundsScaled(CellIdx, Bounds);
+			if (Bounds.RaycastFast(Visitor.StartPointSimd, Visitor.InvDirSimd, Visitor.Parallel, CurrentLengthSimd))
+			{
+				bool bContinue = WalkFast(CellIdx, Visitor, CurrentLength, CurrentLengthSimd, ScaledMin, ZMidPoint, Dir, InvDir, bParallel, ScaledDx2D, NextStart,
+					ScaleSign, ScaledDx, Scale2D, DirScaled);
+				if (bContinue)
+				{
+					continue; 
+				}
+				return false;
+			}
+
+			const FVec2 ScaledCellCenter2D = ScaledMin + FVec2(static_cast<FReal>(CellIdx[0] / LowResInc) + 0.5f, static_cast<FReal>(CellIdx[1] / LowResInc) + 0.5f) * (ScaledDx2D * (FReal)LowResInc);
+			const FVec3 ScaledCellCenter(ScaledCellCenter2D[0], ScaledCellCenter2D[1], ZMidPoint);
+
+			FReal Times[3];
+			FReal BestTime = CurrentLength;
+			bool bTerminate = true;
+			for (int Axis = 0; Axis < 3; ++Axis)
+			{
+				if (!bParallel[Axis])
+				{
+					const FReal CrossPoint = (Dir[Axis] * ScaleSign[Axis]) > 0 ? ScaledCellCenter[Axis] + ScaledDx[Axis] * (FReal)LowResInc / 2 : ScaledCellCenter[Axis] - ScaledDx[Axis] * (FReal)LowResInc / 2;
+					const FReal Distance = CrossPoint - NextStart[Axis];	//note: CellCenter already has /2, we probably want to use the corner instead
+					const FReal Time = Distance * InvDir[Axis];
+					Times[Axis] = Time;
+					if (Time < BestTime)
+					{
+						bTerminate = false;	//found at least one plane to pass through
+						BestTime = Time;
+					}
+				}
+				else
+				{
+					Times[Axis] = TNumericLimits<FReal>::Max();
+				}
+			}
+
+			if (bTerminate)
+			{
+				return false;
+			}
+
+			const TVec2<int32> PrevIdx = CellIdx;
+
+			for (int Axis = 0; Axis < 2; ++Axis)
+			{
+				CellIdx[Axis] += (Times[Axis] <= BestTime) ? ((Dir[Axis] * ScaleSign[Axis]) > 0 ? LowResInc : -LowResInc) : 0;
+				// Make sure CellIdx doesn't go beyond the grid
+				CellIdx[Axis] = FMath::Min<int32>(CellIdx[Axis], FlatGrid.Counts()[Axis] - 1);
+				CellIdx[Axis] = FMath::Max<int32>(CellIdx[Axis], 0);
+			}
+
+			if (PrevIdx == CellIdx)
+			{
+				return false;
+			}
+			NextStart = NextStart + Dir * BestTime;
+		}
+		return false;
+	}
+	
+	FORCEINLINE bool FHeightField::GridCast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, FHeightfieldRaycastVisitor& Visitor) const
 	{
 		//Is this check needed?
 		if(Length < 1e-4)
@@ -938,10 +1306,10 @@ namespace Chaos
 		FReal RayExitTime;
 		if(CachedBounds.RaycastFast(StartPoint, Dir, InvDir, bParallel, Length, InvCurrentLength, RayEntryTime, RayExitTime))
 		{
-			CurrentLength = RayExitTime + SMALL_NUMBER; // to account for precision errors 
+			CurrentLength = RayExitTime + 1e-2; // to account for precision errors 
 			FVec3 NextStart = StartPoint + (Dir * RayEntryTime);
 
-			const FVec2 Scale2D(GeomData.Scale[0],GeomData.Scale[1]);
+			const FVec2 Scale2D(GeomData.Scale[0], GeomData.Scale[1]);
 			TVec2<int32> CellIdx = FlatGrid.Cell(TVec2<int32>(static_cast<int32>(NextStart[0] / Scale2D[0]), static_cast<int32>(NextStart[1] / Scale2D[1])));
 			const FReal ZDx = CachedBounds.Extents()[2];
 			const FReal ZMidPoint = CachedBounds.Min()[2] + ZDx * 0.5f;
@@ -950,75 +1318,26 @@ namespace Chaos
 			const FVec2 ScaledMin = FlatGrid.MinCorner() * Scale2D;
 			const FVec3 ScaleSign = GeomData.Scale.GetSignVector();
 
-			//START
-			do
+			const FVec3 DirScaled = Dir / ScaledDx;
+			const FReal SumPlaneAxis = FMath::Abs(DirScaled[0]) + FMath::Abs(DirScaled[1]);
+			const bool bCanWalk = SumPlaneAxis > UE_SMALL_NUMBER;
+			const VectorRegister4Float CurrentLengthSimd = VectorSet1(static_cast<FRealSingle>(CurrentLength));
+			if (bCanWalk)
 			{
-				if (FlatGrid.IsValid(CellIdx))
-				{
-					PHYSICS_CSV_CUSTOM_VERY_EXPENSIVE(PhysicsCounters, NumRayHeightfieldCellVisited, 1, ECsvCustomStatOp::Accumulate);
-					// Test for the cell bounding box is done in the visitor at the same time as fetching the points for the triangles
-					// this avoid fetching the points twice ( here and in the visitor ) 
-					bool bContinue = Visitor.VisitRaycast(CellIdx[1] * (GeomData.NumCols - 1) + CellIdx[0], CurrentLength);
-					if (!bContinue)
-					{
-						return false;
-					}
-				}
-
-				//find next cell
-
-				//We want to know which plane we used to cross into next cell
-				const FVec2 ScaledCellCenter2D = ScaledMin + FVec2(static_cast<FReal>(CellIdx[0]) + 0.5f, static_cast<FReal>(CellIdx[1]) + 0.5f) * ScaledDx2D;
-				const FVec3 ScaledCellCenter(ScaledCellCenter2D[0], ScaledCellCenter2D[1], ZMidPoint);
-
-				FReal Times[3];
-				FReal BestTime = CurrentLength;
-				bool bTerminate = true;
-				for(int Axis = 0; Axis < 3; ++Axis)
-				{
-					if(!bParallel[Axis])
-					{
-						const FReal CrossPoint = (Dir[Axis] * ScaleSign[Axis]) > 0 ? ScaledCellCenter[Axis] + ScaledDx[Axis] / 2 : ScaledCellCenter[Axis] - ScaledDx[Axis] / 2;
-						const FReal Distance = CrossPoint - NextStart[Axis];	//note: CellCenter already has /2, we probably want to use the corner instead
-						const FReal Time = Distance * InvDir[Axis];
-						Times[Axis] = Time;
-						if(Time < BestTime)
-						{
-							bTerminate = false;	//found at least one plane to pass through
-							BestTime = Time;
-						}
-					} else
-					{
-						Times[Axis] = TNumericLimits<FReal>::Max();
-					}
-				}
-
-				if(bTerminate)
+				WalkOnLowRes(CellIdx, Visitor, CurrentLength, CurrentLengthSimd, ScaledMin, ZMidPoint, Dir, InvDir, bParallel, ScaledDx2D, NextStart, ScaleSign, ScaledDx, Scale2D, DirScaled);
+			}
+			else 
+			{
+				const int32 LowResInc = Visitor.GeomData->LowResInc;
+				const int32 IndexLowResX = CellIdx[0] / LowResInc;
+				const int32 IndexLowResY = CellIdx[1] / LowResInc;
+				const bool bContinue = WalkSlow(CellIdx, Visitor, CurrentLength, CurrentLengthSimd, ScaledMin, ZMidPoint, Dir, InvDir, bParallel, ScaledDx2D, NextStart, ScaleSign, ScaledDx, IndexLowResX, IndexLowResY);
+				if (!bContinue)
 				{
 					return false;
 				}
-
-				const TVec2<int32> PrevIdx = CellIdx;
-
-				for(int Axis = 0; Axis < 2; ++Axis)
-				{
-					CellIdx[Axis] += (Times[Axis] <= BestTime) ? ((Dir[Axis] * ScaleSign[Axis]) > 0 ? 1 : -1) : 0;
-					if(CellIdx[Axis] < 0 || CellIdx[Axis] >= FlatGrid.Counts()[Axis])
-					{
-						return false;
-					}
-				}
-
-				if(PrevIdx == CellIdx)
-				{
-					//crossed on z plane which means no longer in heightfield bounds
-					return false;
-				}
-
-				NextStart = NextStart + Dir * BestTime;
-			} while(true);
+			}
 		}
-
 		return false;
 	}
 
@@ -1319,6 +1638,59 @@ namespace Chaos
 		return OutIntersections.Num() > 0;
 	}
 
+
+	bool Chaos::FHeightField::GetGridIntersectionsBatch(FBounds2D InFlatBounds, TArray<TVec2<int32>>& OutIntersections, const FAABBVectorized& Bounds) const
+	{
+		OutIntersections.Reset();
+
+		const FBounds2D FlatBounds = GetFlatBounds();
+		FVec2 Scale2D(GeomData.Scale[0], GeomData.Scale[1]);
+
+		InFlatBounds = FBounds2D::FromPoints(FlatBounds.Clamp(InFlatBounds.Min) / Scale2D, FlatBounds.Clamp(InFlatBounds.Max) / Scale2D);
+
+		TVec2<int32> MinCell = FlatGrid.Cell(InFlatBounds.Min);
+		TVec2<int32> MaxCell = FlatGrid.Cell(InFlatBounds.Max);
+
+		// We want to capture the first cell (delta == 0) as well
+		const int32 MaxX = MaxCell[0] + 1;
+		const int32 MaxY = MaxCell[1] + 1;
+
+		const int32 NumX = MaxCell[0] - MaxX;
+		const int32 NumY = MaxCell[1] - MaxY;
+		OutIntersections.Reserve(NumX * NumY);
+		
+		constexpr int32 Jump = 4;
+		
+		FAABBVectorized CellsBounds;
+		for (int32 CurrFastX = MinCell[0]; CurrFastX < MaxX; CurrFastX += Jump)
+		{
+			for (int32 CurrFastY = MinCell[1]; CurrFastY < MaxY; CurrFastY += Jump)
+			{
+				const TVec2<int32> CellIdx(CurrFastX, CurrFastY);
+				const TVec2<int32> Area(FMath::Min(MaxX - CurrFastX, Jump), FMath::Min(MaxY - CurrFastY, Jump));
+				GeomData.GetBoundsScaled(CellIdx, Area, CellsBounds);
+				if (CellsBounds.Intersects(Bounds))
+				{
+					const int32 CurrMaxX = CurrFastX + Area[0];
+					const int32 CurrMaxY = CurrFastY + Area[1];
+
+					for (int32 CurrX = CurrFastX; CurrX < CurrMaxX; ++CurrX)
+					{
+						for (int32 CurrY = CurrFastY; CurrY < CurrMaxY; ++CurrY)
+						{
+							const TVec2<int32> Cell(CurrX, CurrY);
+							check (FlatGrid.IsValid(Cell))
+							OutIntersections.Add(Cell);
+						}
+					}
+				}
+			}
+		}
+		return OutIntersections.Num() > 0;
+	}
+	
+
+
 	typename Chaos::FHeightField::FBounds2D Chaos::FHeightField::GetFlatBounds() const
 	{
 		FBounds2D Result;
@@ -1336,7 +1708,7 @@ namespace Chaos
 			FVec3 Normal = FVec3::CrossProduct(AB, AC);
 			const FReal NormalLength = Normal.SafeNormalize();
 
-			if(!ensure(NormalLength > KINDA_SMALL_NUMBER))
+			if(!ensure(NormalLength > UE_KINDA_SMALL_NUMBER))
 			{
 				return false;
 			}
@@ -1385,277 +1757,8 @@ namespace Chaos
 	}
 
 	template <typename GeomType>
-	bool FHeightField::ContactManifoldNonPlanarConvexImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		auto OverlapTriangle = [&](const FVec3& A, const FVec3& B, const FVec3& C,
-			FPBDCollisionConstraint& Constraint)
-		{
-			const FVec3 AB = B - A;
-			const FVec3 AC = C - A;
-
-			const FVec3 Offset = FVec3::CrossProduct(AB, AC);
-
-			FTriangle TriangleConvex(A, B, C);
-			Collisions::ConstructConvexConvexOneShotManifold(QueryGeom, QueryTM, TriangleConvex, FRigidTransform3::Identity, 0, Constraint);
-		};
-
-		auto InsertSorted = [&](const FContactPoint& ContactPoint)
-		{
-			int32 PointIndex = 0;
-			bool done = false;
-			const FReal SamePointErrorMarginSqr = 0.01f;
-
-			int32 ContactPointsNum = ContactPoints.Num();
-			for (; PointIndex < ContactPointsNum; PointIndex++)
-			{
-				FVec3 DiffVector = ContactPoint.ShapeContactPoints[1] - ContactPoints[PointIndex].ShapeContactPoints[1];
-				// Check if point is the same (or close)
-				if (DiffVector.SizeSquared() < SamePointErrorMarginSqr)
-				{
-					done = true;
-					break;
-				}
-
-				if (ContactPoint.Phi < ContactPoints[PointIndex].Phi)
-				{
-					ContactPoints.Insert(ContactPoint, PointIndex);
-					done = true;
-					break;
-				}
-			}
-
-			if (!done)
-			{
-				ContactPoints.Add(ContactPoint);
-			}
-		};
-
-		bool bResult = false;
-		FAABB3 QueryBounds = QueryGeom.BoundingBox();
-		QueryBounds.Thicken(Thickness);
-		QueryBounds = QueryBounds.TransformedAABB(QueryTM);
-
-		FBounds2D FlatQueryBounds;
-		FlatQueryBounds.Min = FVec2(QueryBounds.Min()[0], QueryBounds.Min()[1]);
-		FlatQueryBounds.Max = FVec2(QueryBounds.Max()[0], QueryBounds.Max()[1]);
-
-		TArray<TVec2<int32>> Intersections;
-		FVec3 Points[4];
-
-		GetGridIntersections(FlatQueryBounds, Intersections);
-
-		FReal MinContactPhi = FLT_MAX;
-		FVec3 LocalContactLocation, LocalContactNormal;
-		for (const TVec2<int32>& Cell : Intersections)
-		{
-			const int32 SingleIndex = Cell[1] * GeomData.NumCols + Cell[0];
-			const int32 CellIndex = Cell[1] * (GeomData.NumCols - 1) + Cell[0];
-
-			// Check for holes and skip checking if we'll never collide
-			if (GeomData.MaterialIndices.IsValidIndex(CellIndex) && GeomData.MaterialIndices[CellIndex] == TNumericLimits<uint8>::Max())
-			{
-				continue;
-			}
-
-			// @todo(chaos): we should not be creating constraints just for collecting contacts...
-			FPBDCollisionConstraint Constraint = FPBDCollisionConstraint::MakeTriangle(&QueryGeom);
-
-			// The triangle is solid so proceed to test it
-			FAABB3 CellBounds;
-			GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
-			if (CellBounds.Intersects(QueryBounds))
-			{
-				// First Triangle
-				{
-					Constraint.ResetManifold();
-					Constraint.GetGJKWarmStartData().Reset();
-					OverlapTriangle(Points[0], Points[1], Points[3], Constraint);
-					for (FManifoldPoint& ManifoldPoint : Constraint.GetManifoldPoints())
-					{
-						ManifoldPoint.ContactPoint.FaceIndex = CellIndex * 2;
-						InsertSorted(ManifoldPoint.ContactPoint);
-					}
-				}
-				// Second Triangle
-				{
-					Constraint.ResetManifold();
-					Constraint.GetGJKWarmStartData().Reset();
-					OverlapTriangle(Points[0], Points[3], Points[2], Constraint);
-					for (FManifoldPoint& ManifoldPoint : Constraint.GetManifoldPoints())
-					{
-						ManifoldPoint.ContactPoint.FaceIndex = CellIndex * 2 + 1;
-						InsertSorted(ManifoldPoint.ContactPoint);
-					}
-				}
-			}
-		}
-
-		// Remove edge contacts that are "hidden" by face contacts
-		// EdgePruneDistance should be some fraction of the convex margin...
-		const FReal EdgePruneDistance = Chaos_Collision_EdgePrunePlaneDistance;
-		Collisions::PruneEdgeContactPointsOrdered(ContactPoints, EdgePruneDistance);
-
-		// Remove all points (except for the deepest one, and ones with phis similar to it)
-		const FReal CullMargin = 0.1f;
-		int32 NewContactPointCount = ContactPoints.Num() > 0 ? 1 : 0;
-		for (int32 Index = 1; Index < ContactPoints.Num(); Index++)
-		{
-			if (ContactPoints[Index].Phi < 0 || ContactPoints[Index].Phi - ContactPoints[0].Phi < CullMargin)
-			{
-				NewContactPointCount++;
-			}
-			else
-			{
-				break;
-			}
-		}
-		ContactPoints.SetNum(NewContactPointCount, false);
-
-		// Reduce to only 4 contact points from here
-		Collisions::ReduceManifoldContactPointsTriangeMesh(ContactPoints);
-
-		return true;
-	}
-
-	template <typename GeomType>
-	bool FHeightField::ContactManifoldPlanarConvexImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		auto OverlapTriangle = [&](const FVec3& A, const FVec3& B, const FVec3& C, TCArray<FContactPoint, 4>& TriangleContactPoints)
-		{
-			// Create triangle in query space
-			FTriangle TriangleConvex(
-				QueryTM.InverseTransformPositionNoScale(A), 
-				QueryTM.InverseTransformPositionNoScale(B), 
-				QueryTM.InverseTransformPositionNoScale(C));
-
-			Collisions::ConstructPlanarConvexTriangleOneShotManifold(QueryGeom, TriangleConvex, Thickness, TriangleContactPoints);
-
-			// Convert back to shape-local space
-			for (FContactPoint& ContactPoint : TriangleContactPoints)
-			{
-				ContactPoint.ShapeContactPoints[1] = QueryTM.TransformPositionNoScale(ContactPoint.ShapeContactPoints[1]);
-				ContactPoint.ShapeContactNormal = QueryTM.TransformVectorNoScale(ContactPoint.ShapeContactNormal);
-			}
-		};
-
-		auto InsertSorted = [&](const FContactPoint& ContactPoint)
-		{
-			int32 PointIndex = 0;
-			bool done = false;
-			const FReal SamePointErrorMarginSqr = 0.01f;
-			
-			int32 ContactPointsNum = ContactPoints.Num();
-			for( ; PointIndex < ContactPointsNum; PointIndex++ )
-			{
-				FVec3 DiffVector = ContactPoint.ShapeContactPoints[1] - ContactPoints[PointIndex].ShapeContactPoints[1];
-				// Check if point is the same (or close)
-				if (DiffVector.SizeSquared() < SamePointErrorMarginSqr)
-				{
-					done = true;
-					break;
-				}
-
-				if (ContactPoint.Phi < ContactPoints[PointIndex].Phi)
-				{
-					ContactPoints.Insert(ContactPoint, PointIndex);
-					done = true;
-					break;
-				}
-			}
-
-			if (!done)
-			{
-				ContactPoints.Add(ContactPoint);
-			}
-		};		
-		
-		bool bResult = false;
-		FAABB3 QueryBounds = QueryGeom.BoundingBox();
-		QueryBounds.Thicken(Thickness);
-		QueryBounds = QueryBounds.TransformedAABB(QueryTM);
-
-		FBounds2D FlatQueryBounds;
-		FlatQueryBounds.Min = FVec2(QueryBounds.Min()[0], QueryBounds.Min()[1]);
-		FlatQueryBounds.Max = FVec2(QueryBounds.Max()[0], QueryBounds.Max()[1]);
-
-		TArray<TVec2<int32>> Intersections;
-		FVec3 Points[4];
-
-		GetGridIntersections(FlatQueryBounds, Intersections);
-
-		FReal MinContactPhi = FLT_MAX;
-		FVec3 LocalContactLocation, LocalContactNormal;
-		TCArray<FContactPoint, 4> TriangleContactPoints;
-
-		for (const TVec2<int32>& Cell : Intersections)
-		{
-			const int32 SingleIndex = Cell[1] * GeomData.NumCols + Cell[0];
-			const int32 CellIndex = Cell[1] * (GeomData.NumCols - 1) + Cell[0];
-
-			// Check for holes and skip checking if we'll never collide
-			if (GeomData.MaterialIndices.IsValidIndex(CellIndex) && GeomData.MaterialIndices[CellIndex] == TNumericLimits<uint8>::Max())
-			{
-				continue;
-			}
-
-			// The triangle is solid so proceed to test it
-			FAABB3 CellBounds;
-			GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
-			if (CellBounds.Intersects(QueryBounds))
-			{
-				// First Triangle
-				{
-					TriangleContactPoints.Reset();
-					OverlapTriangle(Points[0], Points[1], Points[3], TriangleContactPoints);
-					for (FContactPoint& ContactPoint : TriangleContactPoints)
-					{
-						ContactPoint.FaceIndex = CellIndex * 2;
-						InsertSorted(ContactPoint);
-					}
-				}
-				// Second Triangle
-				{
-					TriangleContactPoints.Reset();
-					OverlapTriangle(Points[0], Points[3], Points[2], TriangleContactPoints);
-					for (FContactPoint& ContactPoint : TriangleContactPoints)
-					{
-						ContactPoint.FaceIndex = CellIndex * 2 + 1;
-						InsertSorted(ContactPoint);
-					}
-				}
-			}
-		}
-
-		// Remove edge contacts that are "hidden" by face contacts
-		// EdgePruneDistance should be some fraction of the convex margin...
-		const FReal EdgePruneDistance = Chaos_Collision_EdgePrunePlaneDistance;
-		Collisions::PruneEdgeContactPointsOrdered(ContactPoints, EdgePruneDistance);
-
-		// Remove all points (except for the deepest one, and ones with phis similar to it)
-		const FReal CullMargin = 0.1f;
-		int32 NewContactPointCount = ContactPoints.Num() > 0 ? 1 : 0;
-		for (int32 Index = 1; Index < ContactPoints.Num(); Index++)
-		{
-			if (ContactPoints[Index].Phi < 0 || ContactPoints[Index].Phi - ContactPoints[0].Phi < CullMargin)
-			{
-				NewContactPointCount++;
-			}
-			else
-			{
-				break;
-			}
-		}
-		ContactPoints.SetNum(NewContactPointCount, false);
-
-		// Reduce to only 4 contact points from here
-		Collisions::ReduceManifoldContactPointsTriangeMesh(ContactPoints);
-
-		return true;
-	}
-
-	template <typename GeomType>
 	bool FHeightField::GJKContactPointImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness,
-		FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+		FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
 		auto OverlapTriangle = [&](const FVec3& A, const FVec3& B, const FVec3& C,
 			FVec3& LocalContactLocation, FVec3& LocalContactNormal, FReal& LocalContactPhi) -> bool
@@ -1671,64 +1774,14 @@ namespace Chaos
 				MakeVectorRegisterFloatFromDouble(MakeVectorRegister(B.X, B.Y, B.Z, 0.0f)),
 				MakeVectorRegisterFloatFromDouble(MakeVectorRegister(C.X, C.Y, C.Z, 0.0f)));
 
-
 			FReal Penetration;
 			FVec3 ClosestA, ClosestB, Normal;
-
-			auto SweepAgainstTriangle = [&]() -> bool
+			int32 ClosestVertexIndexA, ClosestVertexIndexB;
+			if (GJKPenetration(TriangleConvex, QueryGeom, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0))
 			{
-				//
-				// BUG: This does not detect collisions when we specify a cull distance. It is as if
-				// Thickness is always zero...
-				//
-
-				const FAABB3 Bounds = QueryGeom.BoundingBox();
-				const FReal ApproximateSizeOfObject = Bounds.Extents()[Bounds.LargestAxis()];
-				const FReal ApproximateDistToObject = FVec3::DistSquared(QueryTM.GetLocation(), A);
-				const FReal SweepLength = ApproximateSizeOfObject + ApproximateDistToObject;
-				const FRigidTransform3 QueryStartTM(QueryTM.GetLocation() + TriNormal * SweepLength, QueryTM.GetRotation());
-				if (GJKRaycast2(TriangleConvexReg, QueryGeom, QueryStartTM, -TriNormal, SweepLength, Penetration, ClosestB, Normal, (FReal)0., true))
-				{
-					LocalContactLocation = ClosestB;
-					LocalContactNormal = TriNormal;
-					LocalContactPhi = Penetration - SweepLength;
-					return true;
-				}
-				return false;
-			};
-
-			if (bOneSidedHeightField)
-			{
-				// HACK:
-				// The regular penetration calculation vs a triangle may result in inward facing normals.
-				// To protect against this, we sweep against the triangle from a distance to ensure an outward
-				// facing normal and MTD.
-
-				if (bOneSidedHeightfieldAlwaysSweep)
-				{
-					return SweepAgainstTriangle();
-				}
-				else
-				{
-					int32 ClosestVertexIndexA, ClosestVertexIndexB;
-					if (GJKPenetration(TriangleConvex, QueryGeom, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0))
-					{
-						if (FVec3::DotProduct(TriNormal, Normal) < 0)
-						{
-							return SweepAgainstTriangle();
-						}
-						LocalContactLocation = ClosestB;
-						LocalContactNormal = Normal;
-						LocalContactPhi = -Penetration;
-						return true;
-					}
-				}
-				
-			}
-			else
-			{
-				int32 ClosestVertexIndexA, ClosestVertexIndexB;
-				if (GJKPenetration(TriangleConvex, QueryGeom, QueryTM, Penetration, ClosestA, ClosestB, Normal, ClosestVertexIndexA, ClosestVertexIndexB, (FReal)0))
+				const bool bOneSidedCollision = bChaos_Collision_OneSidedHeightField;
+				const bool bSkipOneSided = (bOneSidedCollision && (FVec3::DotProduct(TriNormal, Normal) < 0));
+				if (!bSkipOneSided)
 				{
 					LocalContactLocation = ClosestB;
 					LocalContactNormal = Normal; 
@@ -1777,6 +1830,7 @@ namespace Chaos
 					ContactPhi = LocalContactPhi;
 					ContactLocation = LocalContactLocation;
 					ContactNormal = LocalContactNormal;
+					ContactFaceIndex = CellIndex * 2; // This assumes 2 faces per cell.
 				}
 			}
 
@@ -1787,6 +1841,8 @@ namespace Chaos
 					ContactPhi = LocalContactPhi;
 					ContactLocation = LocalContactLocation;
 					ContactNormal = LocalContactNormal;
+					// This Triangle has the same faceIndex as the previous one (this is a consequence of how the materials are stored [one per cell])
+					ContactFaceIndex = CellIndex * 2; // This assumes 2 faces per cell.
 				}
 			}
 		}
@@ -1796,90 +1852,49 @@ namespace Chaos
 		return false;
 	}
 
-	bool FHeightField::GJKContactPoint(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const FCapsule& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const FCapsule& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const FConvex& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const FConvex& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled < FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
-	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const
+	bool FHeightField::GJKContactPoint(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi, int32& ContactFaceIndex) const
 	{
-		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi);
-	}
-
-	bool FHeightField::ContactManifold(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}
-
-	/*bool FHeightField::ContactManifold(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}*/
-
-	bool FHeightField::ContactManifold(const FCapsule& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldNonPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}
-
-	bool FHeightField::ContactManifold(const FConvex& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}
-
-	bool FHeightField::ContactManifold(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}
-
-	bool FHeightField::ContactManifold(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldNonPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
-	}
-
-	bool FHeightField::ContactManifold(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const
-	{
-		return ContactManifoldPlanarConvexImp(QueryGeom, QueryTM, Thickness, ContactPoints);
+		return GJKContactPointImp(QueryGeom, QueryTM, Thickness, ContactLocation, ContactNormal, ContactPhi, ContactFaceIndex);
 	}
 
 	template <typename QueryGeomType>
 	bool FHeightField::OverlapGeomImp(const QueryGeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
 	{
-		if (OutMTD)
-		{
-			OutMTD->Normal = FVec3(0);
-			OutMTD->Penetration = TNumericLimits<FReal>::Lowest();
-		}
-
 		auto OverlapTriangleMTD = [&](const FVec3& A, const FVec3& B, const FVec3& C, FMTDInfo* InnerMTD) -> bool
 		{
 			const FVec3 AB = B - A;
@@ -1909,18 +1924,18 @@ namespace Chaos
 			return false;
 		};
 
-		auto OverlapTriangleNoMTD = [&](const FVec3& A, const FVec3& B, const FVec3& C) -> bool
+		auto OverlapTriangleNoMTD = [&](const VectorRegister4Float& A, const VectorRegister4Float& B, const VectorRegister4Float& C) -> bool
 		{
 			// points are assumed to be in the same space as the overlap geometry
-			const FVec3 AB = B - A;
-			const FVec3 AC = C - A;
+			const VectorRegister4Float AB = VectorSubtract(B, A);
+			const VectorRegister4Float AC = VectorSubtract(C, A);
 
 			//It's most likely that the query object is in front of the triangle since queries tend to be on the outside.
 			//However, maybe we should check if it's behind the triangle plane. Also, we should enforce this winding in some way
-			const FVec3 Offset = FVec3::CrossProduct(AB, AC);
+			const VectorRegister4Float Offset = VectorCross(AB, AC);
 
-			FTriangle TriangleConvex(A, B, C);
-			return GJKIntersectionSameSpace(TriangleConvex, QueryGeom, Thickness, Offset);
+			FTriangleRegister TriangleConvex(A, B, C);
+			return GJKIntersectionSameSpaceSimd(TriangleConvex, QueryGeom, Thickness, Offset);
 		};
 
 		bool bResult = false;
@@ -1933,54 +1948,69 @@ namespace Chaos
 		FlatQueryBounds.Max = FVec2(QueryBounds.Max()[0], QueryBounds.Max()[1]);
 
 		TArray<TVec2<int32>> Intersections;
-		FVec3 Points[4];
-		FAABB3 CellBounds;
-
-		GetGridIntersections(FlatQueryBounds, Intersections);
-
-		bool bOverlaps = false;
-		if (OutMTD)
+		
+		const FAABBVectorized QueryBoundsSimd(QueryBounds);
+		if (GetGridIntersectionsBatch(FlatQueryBounds, Intersections, QueryBoundsSimd))
 		{
-			for (const TVec2<int32>& Cell : Intersections)
+			bool bOverlaps = false;
+			if (OutMTD)
 			{
-				const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
-				GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
-
-				if(CellBounds.Intersects(QueryBounds))
+				OutMTD->Normal = FVec3(0);
+				OutMTD->Penetration = TNumericLimits<FReal>::Lowest();
+				FVec3 Points[4];
+				FAABB3 CellBounds;
+				for (const TVec2<int32>& Cell : Intersections)
 				{
-					bOverlaps |= OverlapTriangleMTD(Points[0], Points[1], Points[3], OutMTD);
-					bOverlaps |= OverlapTriangleMTD(Points[0], Points[3], Points[2], OutMTD);
-				}
-			}
-			return bOverlaps;
-		}
-		else
-		{
-			for (const TVec2<int32>& Cell : Intersections)
-			{
-				const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
-				GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
+					const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
+					GeomData.GetPointsAndBoundsScaled(SingleIndex, Points, CellBounds);
 
-				if (CellBounds.Intersects(QueryBounds))
-				{
-					// pre-transform the triangle in overlap geometry space
-					Points[0] = QueryTM.InverseTransformPositionNoScale(Points[0]);
-					Points[1] = QueryTM.InverseTransformPositionNoScale(Points[1]);
-					Points[2] = QueryTM.InverseTransformPositionNoScale(Points[2]);
-					Points[3] = QueryTM.InverseTransformPositionNoScale(Points[3]);
-
-					if (OverlapTriangleNoMTD(Points[0], Points[1], Points[3]))
+					if(CellBounds.Intersects(QueryBounds))
 					{
-						return true;
-					}
-					if (OverlapTriangleNoMTD(Points[0], Points[3], Points[2]))
-					{
-						return true;
+						bOverlaps |= OverlapTriangleMTD(Points[0], Points[1], Points[3], OutMTD);
+						bOverlaps |= OverlapTriangleMTD(Points[0], Points[3], Points[2], OutMTD);
 					}
 				}
+				return bOverlaps;
 			}
-			return false;
+			else
+			{
+				VectorRegister4Float Points[4];
+				const UE::Math::TQuat<FReal>& RotationDouble = QueryTM.GetRotation();
+				VectorRegister4Float Rotation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(RotationDouble.X, RotationDouble.Y, RotationDouble.Z, RotationDouble.W));
+				// Normalize rotation
+				Rotation = VectorNormalizeSafe(Rotation, GlobalVectorConstants::Float0001);
+				VectorRegister4Float InvRotation = VectorQuaternionInverse(Rotation);
+
+				const UE::Math::TVector<FReal>& TranslationDouble = QueryTM.GetTranslation();
+				const VectorRegister4Float Translation = MakeVectorRegisterFloatFromDouble(MakeVectorRegister(TranslationDouble.X, TranslationDouble.Y, TranslationDouble.Z, 0.0));
+				FAABBVectorized CellBounds;
+				for (const TVec2<int32>& Cell : Intersections)
+				{
+					const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
+					GeomData.GetPointsAndBoundsScaledSimd(SingleIndex, Points, CellBounds);
+					if (CellBounds.Intersects(QueryBoundsSimd))
+					{
+						// pre-transform the triangle in overlap geometry space
+						for (int32 Index = 0; Index < 4; ++Index)
+						{
+							VectorRegister4Float& P = Points[Index];
+							P = VectorSubtract(P, Translation);
+							P = VectorQuaternionRotateVector(InvRotation, P);
+						}
+
+						if (OverlapTriangleNoMTD(Points[0], Points[1], Points[3]))
+						{
+							return true;
+						}
+						if (OverlapTriangleNoMTD(Points[0], Points[3], Points[2]))
+						{
+							return true;
+						}
+					}
+				}
+			}
 		}
+		return false;
 	}
 
 	bool FHeightField::OverlapGeom(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD) const
@@ -2086,26 +2116,81 @@ namespace Chaos
 		return SweepGeomImp(QueryGeom, StartTM, Dir, Length, OutTime, OutPosition, OutNormal, OutFaceIndex, Thickness, bComputeMTD);
 	}
 
-	void FHeightField::VisitTriangles(const FAABB3& QueryBounds, const TFunction<void(const FTriangle& Triangle)>& Visitor) const
+	template <typename QueryGeomType>
+	bool FHeightField::SweepGeomCCDImp(const QueryGeomType& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal InIgnorePenetration, const FReal InTargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex) const
 	{
-		FBounds2D FlatQueryBounds;
-		FlatQueryBounds.Min = TVector<FReal, 2>(QueryBounds.Min()[0], QueryBounds.Min()[1]);
-		FlatQueryBounds.Max = TVector<FReal, 2>(QueryBounds.Max()[0], QueryBounds.Max()[1]);
+		// Emulate the old TargetPenetration mode which always uses the first contact encountered, as opposed to the first contact which reaches a depth of TargetPenetration
+		const FReal IgnorePenetration = CVars::bCCDNewTargetDepthMode ? InIgnorePenetration : 0;
+		const FReal TargetPenetration = CVars::bCCDNewTargetDepthMode ? InTargetPenetration : 0;
 
-		TArray<TVector<int32, 2>> Intersections;
-		FVec3 Points[4];
+		bool bHit = false;
+		THeightfieldSweepVisitorCCD<QueryGeomType> SQVisitor(&GeomData, QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration);
+		const FAABB3 QueryBounds = QueryGeom.BoundingBox();
+		const FVec3 StartPoint = StartTM.TransformPositionNoScale(QueryBounds.Center());
 
-		GetGridIntersections(FlatQueryBounds, Intersections);
+		const FVec3 Inflation3D = QueryBounds.Extents() * FReal(0.5);
+		GridSweep(StartPoint, Dir, Length, Inflation3D, SQVisitor);
 
-		bool bOverlaps = false;
-		for (const TVector<int32, 2>&Cell : Intersections)
+		FReal TOI = (Length > 0) ? SQVisitor.OutDistance / Length : FReal(0);
+		FReal Phi = SQVisitor.OutPhi;
+
+		if (TOI <= 1)
 		{
-			const int32 SingleIndex = Cell[1] * (GeomData.NumCols) + Cell[0];
-			GeomData.GetPointsScaled(SingleIndex, Points);
+			// @todo(chaos): Legacy path to be removed when fully tested. See ComputeSweptContactTOIAndPhiAtTargetPenetration
+			if (!CVars::bCCDNewTargetDepthMode)
+			{
+				LegacyComputeSweptContactTOIAndPhiAtTargetPenetration(FVec3::DotProduct(Dir, SQVisitor.OutNormal), Length, InIgnorePenetration, InTargetPenetration, TOI, Phi);
+			}
 
-			Visitor(FTriangle(Points[0], Points[1], Points[3]));
-			Visitor(FTriangle(Points[0], Points[3], Points[2]));
+			OutTOI = TOI;
+			OutPhi = Phi;
+			OutPosition = SQVisitor.OutPosition;
+			OutNormal = SQVisitor.OutNormal;
+			OutFaceIndex = SQVisitor.OutFaceIndex;
+			bHit = true;
 		}
+
+		return bHit;
+	}
+
+	bool FHeightField::SweepGeomCCD(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const FCapsule& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const FConvex& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const TImplicitObjectScaled<TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
+	}
+
+	bool FHeightField::SweepGeomCCD(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, const FReal IgnorePenetration, const FReal TargetPenetration, FReal& OutTOI, FReal& OutPhi, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal) const
+	{
+		return SweepGeomCCDImp(QueryGeom, StartTM, Dir, Length, IgnorePenetration, TargetPenetration, OutTOI, OutPhi, OutPosition, OutNormal, OutFaceIndex);
 	}
 
 	int32 FHeightField::FindMostOpposingFace(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist) const
@@ -2126,7 +2211,7 @@ namespace Chaos
 			const FVec3 AC = C - A;
 			FVec3 Normal = FVec3::CrossProduct(AB, AC);
 			const FReal NormalLength = Normal.SafeNormalize();
-			if(!ensure(NormalLength > KINDA_SMALL_NUMBER))
+			if(!ensure(NormalLength > UE_KINDA_SMALL_NUMBER))
 			{
 				//hitting degenerate triangle - should be fixed before we get to this stage
 				return;
@@ -2192,7 +2277,7 @@ namespace Chaos
 				FVec3 Normal = FVec3::CrossProduct(AB, AC);
 
 				const FReal NormalLength = Normal.SafeNormalize();
-				if(!ensure(NormalLength > KINDA_SMALL_NUMBER))
+				if(!ensure(NormalLength > UE_KINDA_SMALL_NUMBER))
 				{
 					//hitting degenerate triangle - should be fixed before we get to this stage
 					return;

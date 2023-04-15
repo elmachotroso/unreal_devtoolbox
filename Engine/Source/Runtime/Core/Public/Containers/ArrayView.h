@@ -113,7 +113,7 @@ namespace ArrayViewPrivate
  *
  * Caution:
  *   Treat a view like a *reference* to the elements in the array. DO NOT free or reallocate the array while the view exists!
- *   For this reason, be mindful of lifetime when constructing TArrayViews from rvalue initializer lists:
+ *   For this reason, be mindful of lifetimes when constructing TArrayViews from rvalue initializer lists:
  *
  *   TArrayView<int> View = { 1, 2, 3 }; // construction of array view from rvalue initializer list
  *   int n = View[0]; // undefined behavior, as the initializer list was destroyed at the end of the previous line
@@ -208,7 +208,7 @@ public:
 	/**
 	 * Helper function for returning a typed pointer to the first array entry.
 	 *
-	 * @returns Pointer to first array entry or nullptr if ArrayMax == 0.
+	 * @returns Pointer to first array entry.
 	 */
 	FORCEINLINE ElementType* GetData() const
 	{
@@ -234,8 +234,7 @@ public:
 	}
 
 	/**
-	 * Checks array invariants: if array size is greater than zero and less
-	 * than maximum.
+	 * Checks array invariants: if array size is greater than or equal to zero.
 	 */
 	FORCEINLINE void CheckInvariants() const
 	{
@@ -251,7 +250,7 @@ public:
 	{
 		CheckInvariants();
 
-		checkf((Index >= 0) & (Index < ArrayNum),TEXT("Array index out of bounds: %i from an array of size %i"),Index,ArrayNum); // & for one branch
+		checkf((Index >= 0) & (Index < ArrayNum),TEXT("Array index out of bounds: %lld from an array of size %lld"), (long long)Index, (long long)ArrayNum); // & for one branch
 	}
 
 	/**
@@ -263,13 +262,13 @@ public:
 	 */
 	FORCEINLINE void SliceRangeCheck(SizeType Index, SizeType InNum) const
 	{
-		checkf(Index >= 0, TEXT("Invalid index (%d)"), Index);
-		checkf(InNum >= 0, TEXT("Invalid count (%d)"), InNum);
-		checkf(Index + InNum <= ArrayNum, TEXT("Range (index: %d, count: %d) lies outside the view of %d elements"), Index, InNum, ArrayNum);
+		checkf(Index >= 0, TEXT("Invalid index (%lld)"), (long long)Index);
+		checkf(InNum >= 0, TEXT("Invalid count (%lld)"), (long long)InNum);
+		checkf(Index + InNum <= ArrayNum, TEXT("Range (index: %lld, count: %lld) lies outside the view of %lld elements"), (long long)Index, (long long)InNum, (long long)ArrayNum);
 	}
 
 	/**
-	 * Tests if index is valid, i.e. than or equal to zero, and less than the number of elements in the array.
+	 * Tests if index is valid, i.e. greater than or equal to zero, and less than the number of elements in the array.
 	 *
 	 * @param Index Index to test.
 	 *
@@ -302,7 +301,7 @@ public:
 	}
 
 	/**
-	 * Array bracket operator. Returns reference to element at give index.
+	 * Array bracket operator. Returns reference to element at given index.
 	 *
 	 * @returns Reference to indexed element.
 	 */
@@ -328,7 +327,7 @@ public:
 
 	/**
 	 * Returns a sliced view
-	   The is similar to Mid(), but with a narrow contract, i.e. slicing outside of the range of the view is illegal.
+	 * This is similar to Mid(), but with a narrow contract, i.e. slicing outside of the range of the view is illegal.
 	 *
 	 * @param Index starting index of the new view
 	 * @param InNum number of elements in the new view
@@ -633,7 +632,7 @@ public:
 	}
 
 	/**
-	 * Checks if this array contains element for which the predicate is true.
+	 * Checks if this array contains an element for which the predicate is true.
 	 *
 	 * @param Predicate to use
 	 *
@@ -804,7 +803,7 @@ template<typename InElementType, typename InAllocatorType>
 template<typename OtherElementType, typename OtherSizeType>
 FORCEINLINE TArray<InElementType, InAllocatorType>::TArray(const TArrayView<OtherElementType, OtherSizeType>& Other)
 {
-	CopyToEmpty(Other.GetData(), Other.Num(), 0, 0);
+	CopyToEmpty(Other.GetData(), Other.Num(), 0);
 }
 
 template<typename InElementType, typename InAllocatorType>
@@ -812,6 +811,6 @@ template<typename OtherElementType, typename OtherSizeType>
 FORCEINLINE TArray<InElementType, InAllocatorType>& TArray<InElementType, InAllocatorType>::operator=(const TArrayView<OtherElementType, OtherSizeType>& Other)
 {
 	DestructItems(GetData(), ArrayNum);
-	CopyToEmpty(Other.GetData(), Other.Num(), ArrayMax, 0);
+	CopyToEmpty(Other.GetData(), Other.Num(), ArrayMax);
 	return *this;
 }

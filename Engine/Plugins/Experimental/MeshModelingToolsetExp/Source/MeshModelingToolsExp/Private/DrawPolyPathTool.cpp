@@ -18,8 +18,11 @@
 #include "Selection/ToolSelectionUtil.h"
 #include "Operations/ExtrudeMesh.h"
 #include "DynamicMesh/MeshNormals.h"
+#include "DynamicMesh/MeshTangents.h"
 #include "MeshBoundaryLoops.h"
 #include "ToolDataVisualizer.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DrawPolyPathTool)
 
 using namespace UE::Geometry;
 
@@ -40,8 +43,9 @@ namespace DrawPolyPathToolLocals
 		}
 	}
 
-
-	void GeneratePathMesh(FDynamicMesh3& Mesh, 
+	/// Generate path mesh
+	/// @return Offset to location of generated mesh 
+	UE_NODISCARD FVector3d GeneratePathMesh(FDynamicMesh3& Mesh,
 		const TArray<FFrame3d>& InPathPoints, 
 		const TArray<double>& InOffsetScaleFactors, 
 		double OffsetDistance, 
@@ -57,6 +61,22 @@ namespace DrawPolyPathToolLocals
 
 		TArray<FFrame3d> UsePathPoints = InPathPoints;
 		TArray<double> UseOffsetScaleFactors = InOffsetScaleFactors;
+
+		// re-center the input points at the origin
+		FVector3d Center(0, 0, 0);
+		if (UsePathPoints.Num())
+		{
+			FAxisAlignedBox3d PathBounds;
+			for (const FFrame3d& Point : UsePathPoints)
+			{
+				PathBounds.Contain(Point.Origin);
+			}
+			Center = PathBounds.Center();
+			for (FFrame3d& Point : UsePathPoints)
+			{
+				Point.Origin -= Center;
+			}
+		}
 
 		if (bPathIsClosed && bRampMode)
 		{
@@ -121,6 +141,8 @@ namespace DrawPolyPathToolLocals
 				Mesh.SetVertex(NumMeshVertices - 1, Mesh.GetVertex(1));
 			}
 		}
+
+		return Center;
 	}
 
 }	// namespace DrawPolyPathToolLocals
@@ -789,7 +811,8 @@ void UDrawPolyPathTool::UpdatePathPreview()
 	}
 
 	FDynamicMesh3 PathMesh;
-	GeneratePathMesh(PathMesh);
+	FVector3d MeshCenter = GeneratePathMesh(PathMesh);
+	EditPreview->SetTransform(FTransform3d(MeshCenter));
 
 	if (State == EState::SettingHeight)
 	{
@@ -803,14 +826,14 @@ void UDrawPolyPathTool::UpdatePathPreview()
 }
 
 
-void UDrawPolyPathTool::GeneratePathMesh(FDynamicMesh3& Mesh)
+FVector3d UDrawPolyPathTool::GeneratePathMesh(FDynamicMesh3& Mesh) 
 {
 	CurPolyLoop.Reset();
 	SecondPolyLoop.Reset();
 
 	const bool bRampMode = (TransformProps->ExtrudeMode == EDrawPolyPathExtrudeMode::RampFixed) || (TransformProps->ExtrudeMode == EDrawPolyPathExtrudeMode::RampInteractive);
 	constexpr bool bLimitCornerRadius = true;
-	DrawPolyPathToolLocals::GeneratePathMesh(Mesh, 
+	FVector3d MeshCenter = DrawPolyPathToolLocals::GeneratePathMesh(Mesh, 
 		CurPathPoints, 
 		OffsetScaleFactors, 
 		TransformProps->Width/2,
@@ -830,11 +853,21 @@ void UDrawPolyPathTool::GeneratePathMesh(FDynamicMesh3& Mesh)
 	if (Loops.Loops.Num() > 0)
 	{
 		Loops.Loops[0].GetVertices<FVector3d>(CurPolyLoop);
+		for (FVector3d& Pt : CurPolyLoop)
+		{
+			Pt += MeshCenter;
+		}
 		if (Loops.Loops.Num() > 1)
 		{
 			Loops.Loops[1].GetVertices<FVector3d>(SecondPolyLoop);
+			for (FVector3d& Pt : SecondPolyLoop)
+			{
+				Pt += MeshCenter;
+			}
 		}
 	}
+
+	return MeshCenter;
 }
 
 void UDrawPolyPathTool::BeginSettingHeight()
@@ -872,15 +905,17 @@ void UDrawPolyPathTool::BeginInteractiveExtrudeHeight()
 	ExtrudeHeightMechanic->CurrentHeight = 1.0f;  // initialize to something non-zero...prob should be based on polygon bounds maybe?
 
 	FDynamicMesh3 PathMesh;
-	GeneratePathMesh(PathMesh);
+	FVector3d MeshCenter = GeneratePathMesh(PathMesh);
+	EditPreview->SetTransform(FTransform(MeshCenter));
 	EditPreview->InitializeExtrudeType(MoveTemp(PathMesh), DrawPlaneWorld.Z(), nullptr, false);
 
 	FDynamicMesh3 TmpMesh;
 	EditPreview->MakeExtrudeTypeHitTargetMesh(TmpMesh, false);
 
 	FFrame3d UseFrame = DrawPlaneWorld; 
-	UseFrame.Origin = CurPathPoints.Last().Origin;
-	ExtrudeHeightMechanic->Initialize(MoveTemp(TmpMesh), UseFrame, true);
+	UseFrame.Origin = MeshCenter;
+	FTransform3d MeshToFrame(FQuat(UseFrame.Rotation.Inverse()));
+	ExtrudeHeightMechanic->Initialize(MoveTemp(TmpMesh), UseFrame, MeshToFrame);
 
 	ShowExtrudeMessage();
 }
@@ -909,7 +944,8 @@ void UDrawPolyPathTool::BeginConstantExtrudeHeight()
 	}
 
 	FDynamicMesh3 PathMesh;
-	GeneratePathMesh(PathMesh);
+	FVector3d Center = GeneratePathMesh(PathMesh);
+	EditPreview->SetTransform(FTransform(Center));
 	EditPreview->InitializeExtrudeType(MoveTemp(PathMesh), DrawPlaneWorld.Z(), nullptr, false);
 	UpdateExtrudePreview();
 
@@ -1004,14 +1040,20 @@ void UDrawPolyPathTool::GenerateExtrudeMesh(FDynamicMesh3& PathMesh)
 void UDrawPolyPathTool::EmitNewObject()
 {
 	FDynamicMesh3 PathMesh;
-	GeneratePathMesh(PathMesh);
+	FVector3d MeshCenter = GeneratePathMesh(PathMesh);
 	GenerateExtrudeMesh(PathMesh);
 	PathMesh.DiscardVertexUVs();  // throw away arc lengths
 
-	FFrame3d MeshTransform = DrawPlaneWorld;
-	FVector3d Center = PathMesh.GetBounds().Center();
-	MeshTransform.Origin = MeshTransform.ToPlane(Center, 2);
-	MeshTransforms::WorldToFrameCoords(PathMesh, MeshTransform);
+	FFrame3d MeshTransform = DrawPlaneWorld; // The desired frame for the final output mesh
+	FVector3d WorldCenter = PathMesh.GetBounds().Center() + MeshCenter;
+	MeshTransform.Origin = MeshTransform.ToPlane(WorldCenter, 2);
+	
+	// Transform the mesh from its MeshCenter-offset space to the MeshTransform frame space
+	// The below is equivalent to applying: MeshTransform.Rotation^-1 (Mesh + MeshCenter - MeshTransform.Origin)
+	FFrame3d LocalCenterMeshTransform = MeshTransform;
+	LocalCenterMeshTransform.Origin -= MeshCenter;
+	MeshTransforms::WorldToFrameCoords(PathMesh, LocalCenterMeshTransform);
+	UE::Geometry::FMeshTangentsf::ComputeDefaultOverlayTangents(PathMesh);
 
 	GetToolManager()->BeginUndoTransaction(LOCTEXT("CreatePolyPathTransactionName", "Create PolyPath"));
 
@@ -1131,3 +1173,4 @@ FString FDrawPolyPathStateChange::ToString() const
 
 
 #undef LOCTEXT_NAMESPACE
+

@@ -11,6 +11,8 @@
 #include "Systems/MovieScenePropertyInstantiator.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogatedPropertyInstantiator.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneInitialValueSystem)
+
 namespace UE
 {
 namespace MovieScene
@@ -77,6 +79,8 @@ struct FInitialValueMutation : IMovieSceneEntityMutation
 UMovieSceneInitialValueSystem::UMovieSceneInitialValueSystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 {
+	SystemCategories = UE::MovieScene::EEntitySystemCategory::Core;
+
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
 		DefineImplicitPrerequisite(UMovieScenePropertyInstantiatorSystem::StaticClass(), StaticClass());
@@ -170,3 +174,4 @@ void UMovieSceneInitialValueSystem::OnRun(FSystemTaskPrerequisites& InPrerequisi
 		}
 	}
 }
+

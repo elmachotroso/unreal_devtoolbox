@@ -1,22 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading.Tasks;
-using HordeServer.Api;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using HordeServer.Controllers;
-using HordeServer.Models;
-using HordeServer.Utilities;
+using Horde.Build.Jobs;
+using Horde.Build.Jobs.Graphs;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace HordeServerTests
+namespace Horde.Build.Tests
 {
-    /// <summary>
-    /// Database-only test for testing the Job controller. Different from the JobsController test that set up
-    /// the entire ASP.NET chain.
-    /// </summary>
+	/// <summary>
+	/// Database-only test for testing the Job controller. Different from the JobsController test that set up
+	/// the entire ASP.NET chain.
+	/// </summary>
 	[TestClass]
     public class JobsControllerDbTest : TestSetup
     {
@@ -24,40 +20,54 @@ namespace HordeServerTests
         [TestMethod]
         public async Task GetJobs()
         {
-			Fixture Fixture = await CreateFixtureAsync();
+			await CreateFixtureAsync();
 
-			ActionResult<List<object>> Res = await JobsController.FindJobsAsync();
-	        Assert.AreEqual(2, Res.Value!.Count);
-	        Assert.AreEqual("hello2", (Res.Value[0] as GetJobResponse)!.Name);
-	        Assert.AreEqual("hello1", (Res.Value[1] as GetJobResponse)!.Name);
+			ActionResult<List<object>> res = await JobsController.FindJobsAsync();
+	        Assert.AreEqual(2, res.Value!.Count);
+	        Assert.AreEqual("hello2", (res.Value[0] as GetJobResponse)!.Name);
+	        Assert.AreEqual("hello1", (res.Value[1] as GetJobResponse)!.Name);
 	        
-	        Res = await JobsController.FindJobsAsync(IncludePreflight: false);
-	        Assert.AreEqual(1, Res.Value!.Count);
-	        Assert.AreEqual("hello2", (Res.Value[0] as GetJobResponse)!.Name);
+	        res = await JobsController.FindJobsAsync(includePreflight: false);
+	        Assert.AreEqual(1, res.Value!.Count);
+	        Assert.AreEqual("hello2", (res.Value[0] as GetJobResponse)!.Name);
         }
         
         [TestMethod]
         public async Task AbortStepTest()
         {
-			Fixture Fixture = await CreateFixtureAsync();
+			Fixture fixture = await CreateFixtureAsync();
 
-	        IJob Job = Fixture.Job1;
-	        SubResourceId BatchId = Job.Batches[0].Id;
-	        SubResourceId StepId = Job.Batches[0].Steps[0].Id;
+	        IJob job = fixture.Job1;
+	        SubResourceId batchId = job.Batches[0].Id;
+	        SubResourceId stepId = job.Batches[0].Steps[0].Id;
 
-	        object Obj = (await JobsController.GetStepAsync(Job.Id, BatchId.ToString(), StepId.ToString())).Value!;
-	        GetStepResponse StepRes = (Obj as GetStepResponse)!;
-	        Assert.IsFalse(StepRes.AbortRequested);
+	        object obj = (await JobsController.GetStepAsync(job.Id, batchId, stepId)).Value!;
+	        GetStepResponse stepRes = (obj as GetStepResponse)!;
+	        Assert.IsFalse(stepRes.AbortRequested);
 	        
-	        UpdateStepRequest UpdateReq = new UpdateStepRequest();
-	        UpdateReq.AbortRequested = true;
-	        Obj = (await JobsController.UpdateStepAsync(Job.Id, BatchId.ToString(), StepId.ToString(), UpdateReq)).Value!;
-	        UpdateStepResponse UpdateRes = (Obj as UpdateStepResponse)!;
+	        UpdateStepRequest updateReq = new UpdateStepRequest();
+	        updateReq.AbortRequested = true;
+			await JobsController.UpdateStepAsync(job.Id, batchId, stepId, updateReq);
+//	        UpdateStepResponse updateRes = (obj as UpdateStepResponse)!;
 	        
-	        Obj = (await JobsController.GetStepAsync(Job.Id, BatchId.ToString(), StepId.ToString())).Value!;
-	        StepRes = (Obj as GetStepResponse)!;
-	        Assert.IsTrue(StepRes.AbortRequested);
+	        obj = (await JobsController.GetStepAsync(job.Id, batchId, stepId)).Value!;
+	        stepRes = (obj as GetStepResponse)!;
+	        Assert.IsTrue(stepRes.AbortRequested);
 //	        Assert.AreEqual("Anonymous", StepRes.AbortByUser);
+        }
+        
+        [TestMethod]
+        public async Task FindJobTimingsTest()
+        {
+	        Fixture fixture = await CreateFixtureAsync();
+	        IJob job = fixture.Job1;
+	        string[] templates = { job.TemplateId.ToString() };
+	        object obj = (await JobsController.FindJobTimingsAsync(fixture.Stream!.Id.ToString(), templates)).Value!;
+	        FindJobTimingsResponse res = (obj as FindJobTimingsResponse)!;
+	        Assert.AreEqual(1, res.Timings.Count);
+	        GetJobTimingResponse timingResponse = res.Timings[job.Id.ToString()];
+	        Assert.AreEqual(0, timingResponse.JobResponse!.Labels!.Count);
+//	        Assert.AreEqual(job.Name, timingResponse.Job!.Name);
         }
     }
 }

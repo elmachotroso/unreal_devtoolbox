@@ -21,6 +21,7 @@
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemEditorData.h"
 #include "NiagaraTypes.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
@@ -29,16 +30,21 @@
 #include "ViewModels/NiagaraSystemGraphSelectionViewModel.h"
 #include "NiagaraSystemScriptViewModel.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "ViewModels/HierarchyEditor/NiagaraUserParametersHierarchyViewModel.h"
 #include "Widgets/SNiagaraParameterMenu.h"
 #include "Widgets/SNiagaraParameterPanel.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
+#include "ViewModels/NiagaraScratchPadScriptViewModel.h"
+#include "ViewModels/NiagaraSystemEditorDocumentsViewModel.h"
 
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "ScopedTransaction.h"
 #include "Widgets/SNullWidget.h"
-
-
+#include "Widgets/SNiagaraDebugger.h"
 #define LOCTEXT_NAMESPACE "NiagaraParameterPanelViewModel"
 
 template<> TMap<UNiagaraScript*, TArray<FNiagaraScriptToolkitParameterPanelViewModel*>> TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptToolkitParameterPanelViewModel>::ObjectsToViewModels{};
@@ -47,88 +53,46 @@ template<> TMap<UNiagaraSystem*, TArray<FNiagaraSystemToolkitParameterPanelViewM
 
 TArray<FNiagaraParameterPanelCategory> FNiagaraSystemToolkitParameterPanelViewModel::DefaultCategories;
 TArray<FNiagaraParameterPanelCategory> FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
+TArray<FNiagaraParameterPanelCategory> FNiagaraSystemToolkitParameterPanelViewModel::UserCategories;
+TArray<FNiagaraParameterPanelCategory> FNiagaraSystemToolkitParameterPanelViewModel::DefaultScriptCategories;
+TArray<FNiagaraParameterPanelCategory> FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedScriptCategories;
+
 TArray<FNiagaraParameterPanelCategory> FNiagaraScriptToolkitParameterPanelViewModel::DefaultCategories;
 TArray<FNiagaraParameterPanelCategory> FNiagaraScriptToolkitParameterPanelViewModel::DefaultAdvancedCategories;
 TArray<FNiagaraParameterPanelCategory> FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::DefaultCategories;
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /// System Toolkit Parameter Panel Utilities								///
 ///////////////////////////////////////////////////////////////////////////////
 
-TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelUtilities::GetAllGraphs(const TSharedPtr<FNiagaraSystemViewModel>& SystemViewModel)
+TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelUtilities::GetAllGraphs(const TSharedPtr<FNiagaraSystemViewModel>& SystemViewModel, bool bActiveScriptMode)
 {
-	TArray<UNiagaraGraph*> OutGraphs;
-
-	// Helper lambda to null check graph weak object ptrs before adding them to the retval array.
-	auto AddToOutGraphsChecked = [&OutGraphs](const TWeakObjectPtr<UNiagaraGraph>& WeakGraph) {
-		UNiagaraGraph* Graph = WeakGraph.Get();
-		if (Graph == nullptr)
-		{
-			ensureMsgf(false, TEXT("Encountered null graph when gathering editable graphs for system parameter panel viewmodel!"));
-			return;
-		}
-		OutGraphs.Add(Graph);
-	};
-
-	if (SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset)
+	if (bActiveScriptMode)
 	{
-		TArray<UNiagaraGraph*> Graphs;
-		AddToOutGraphsChecked(SystemViewModel->GetSystemScriptViewModel()->GetGraphViewModel()->GetGraph());
-
-		const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& EmitterHandleViewModels = SystemViewModel->GetEmitterHandleViewModels();
-		for (const TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel : EmitterHandleViewModels)
-		{
-			FNiagaraEmitterHandle* EmitterHandle = EmitterHandleViewModel->GetEmitterHandle();
-			if (EmitterHandle == nullptr)
-			{
-				continue;
-			}
-			UNiagaraGraph* Graph = Cast<UNiagaraScriptSource>(EmitterHandle->GetInstance()->GraphSource)->NodeGraph;
-			if (Graph)
-			{
-				OutGraphs.Add(Graph);
-			}
-		}
+		TArray<UNiagaraGraph*> EdGraphs = SystemViewModel->GetDocumentViewModel()->GetAllGraphsForActiveScriptDocument();
+		return EdGraphs;
 	}
 	else
 	{
-		FNiagaraEmitterHandle* EmitterHandle = SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterHandle();
-		if (EmitterHandle != nullptr)
-		{
-			OutGraphs.Add(Cast<UNiagaraScriptSource>(EmitterHandle->GetInstance()->GraphSource)->NodeGraph);
-		}
+		TArray<UNiagaraGraph*> EdGraphs = SystemViewModel->GetDocumentViewModel()->GetAllGraphsForPrimaryDocument();
+		return EdGraphs;
 	}
-	return OutGraphs;
 }
 
-TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelUtilities::GetEditableGraphs(const TSharedPtr<FNiagaraSystemViewModel>& SystemViewModel, const TWeakPtr<FNiagaraSystemGraphSelectionViewModel>& SystemGraphSelectionViewModelWeak)
+TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelUtilities::GetEditableGraphs(const TSharedPtr<FNiagaraSystemViewModel>& SystemViewModel, const TWeakPtr<FNiagaraSystemGraphSelectionViewModel>& SystemGraphSelectionViewModelWeak, bool bActiveScriptMode)
 {
-	TArray<UNiagaraGraph*> EditableGraphs;
-
-	// Helper lambda to null check graph weak object ptrs before adding them to the retval array.
-	auto AddToEditableGraphChecked = [&EditableGraphs](const TWeakObjectPtr<UNiagaraGraph>& WeakGraph) {
-		UNiagaraGraph* Graph = WeakGraph.Get();
-		if (Graph == nullptr)
-		{
-			ensureMsgf(false, TEXT("Encountered null graph when gathering editable graphs for system parameter panel viewmodel!"));
-			return;
-		}
-		EditableGraphs.Add(Graph);
-	};
-
-	if (SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset && ensureMsgf(SystemGraphSelectionViewModelWeak.IsValid(), TEXT("SystemGraphSelectionViewModel was null for System edit mode!")))
+	if (bActiveScriptMode)
 	{
-		for (const TWeakObjectPtr<UNiagaraGraph>& WeakGraph : SystemGraphSelectionViewModelWeak.Pin()->GetSelectedEmitterScriptGraphs())
-		{
-			AddToEditableGraphChecked(WeakGraph);
-		}
-		AddToEditableGraphChecked(SystemViewModel->GetSystemScriptViewModel()->GetGraphViewModel()->GetGraph());
+		TArray<UNiagaraGraph*> EdGraphs = SystemViewModel->GetDocumentViewModel()->GetEditableGraphsForActiveScriptDocument();
+		return EdGraphs;
 	}
 	else
 	{
-		EditableGraphs.Add(Cast<UNiagaraScriptSource>(SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph);
+		TArray<UNiagaraGraph*> EdGraphs = SystemViewModel->GetDocumentViewModel()->GetEditableGraphsForPrimaryDocument();
+		return EdGraphs;
 	}
-	return EditableGraphs;
 }
 
 FReply FNiagaraSystemToolkitParameterPanelUtilities::CreateDragEventForParameterItem(const FNiagaraParameterPanelItemBase& DraggedItem, const FPointerEvent& MouseEvent, const TArray<FNiagaraGraphParameterReference>& GraphParameterReferencesForItem, const TSharedPtr<TArray<FName>>& ParametersWithNamespaceModifierRenamePending)
@@ -157,7 +121,10 @@ FReply FNiagaraSystemToolkitParameterPanelUtilities::CreateDragEventForParameter
 TArray<UNiagaraGraph*> FNiagaraScriptToolkitParameterPanelUtilities::GetEditableGraphs(const TSharedPtr<FNiagaraScriptViewModel>& ScriptViewModel)
 {
 	TArray<UNiagaraGraph*> EditableGraphs;
-	EditableGraphs.Add(ScriptViewModel->GetGraphViewModel()->GetGraph());
+	if (UNiagaraGraph* Graph = ScriptViewModel->GetGraphViewModel()->GetGraph())
+	{
+		EditableGraphs.Add(Graph);
+	}
 	return EditableGraphs;
 }
 
@@ -259,14 +226,14 @@ bool FNiagaraParameterPanelUtilities::GetCanSetParameterCustomNamespaceModifierA
 /// Immutable Parameter Panel View Model									///
 ///////////////////////////////////////////////////////////////////////////////
 
-void INiagaraImmutableParameterPanelViewModel::Refresh() const
+void INiagaraImmutableParameterPanelViewModel::RefreshFull(bool bDoCategoryExpansion) const
 {
-	OnRequestRefreshDelegate.ExecuteIfBound();
+	OnRequestRefreshDelegate.ExecuteIfBound(bDoCategoryExpansion);
 }
 
-void INiagaraImmutableParameterPanelViewModel::RefreshNextTick() const
+void INiagaraImmutableParameterPanelViewModel::RefreshFullNextTick(bool bDoCategoryExpansion) const
 {
-	OnRequestRefreshNextTickDelegate.ExecuteIfBound();
+	OnRequestRefreshNextTickDelegate.ExecuteIfBound(bDoCategoryExpansion);
 }
 
 void INiagaraImmutableParameterPanelViewModel::PostUndo(bool bSuccess)
@@ -310,6 +277,11 @@ bool INiagaraImmutableParameterPanelViewModel::GetCanCopyParameterMetaDataAndToo
 ///	Parameter Panel View Model												///
 ///////////////////////////////////////////////////////////////////////////////
 
+INiagaraParameterPanelViewModel::INiagaraParameterPanelViewModel()
+{
+	ActiveSectionIndex = -1;
+}
+
 INiagaraParameterPanelViewModel::~INiagaraParameterPanelViewModel()
 {
 	// Clean up transient UNiagaraScriptVariables used as intermediate representations.
@@ -318,6 +290,19 @@ INiagaraParameterPanelViewModel::~INiagaraParameterPanelViewModel()
 		UNiagaraScriptVariable* ScriptVar = It.Value();
 		ScriptVar->RemoveFromRoot();
 		ScriptVar = nullptr;
+	}
+
+}
+
+
+void INiagaraParameterPanelViewModel::RefreshFull(bool bDoCategoryExpansion) const
+{
+	INiagaraImmutableParameterPanelViewModel::RefreshFull(bDoCategoryExpansion);
+
+	TSharedPtr<INiagaraParameterPanelViewModel> MainVM = MainParameterPanelViewModel.Pin();
+	if (MainVM.IsValid())
+	{
+		MainVM->RefreshFull(bDoCategoryExpansion);
 	}
 }
 
@@ -372,7 +357,7 @@ bool INiagaraParameterPanelViewModel::GetCanPasteParameterMetaDataAndToolTip(FTe
 	return true;
 }
 
-void INiagaraParameterPanelViewModel::DuplicateParameters(const TArray<FNiagaraParameterPanelItem> ItemsToDuplicate) const
+void INiagaraParameterPanelViewModel::DuplicateParameters(const TArray<FNiagaraParameterPanelItem> ItemsToDuplicate) 
 {
 	bool bAnyChange = false;
 	FScopedTransaction Transaction(LOCTEXT("DuplicateParameter(s)Transaction", "Duplicate parameter(s)"));
@@ -397,6 +382,22 @@ void INiagaraParameterPanelViewModel::DuplicateParameters(const TArray<FNiagaraP
 		Transaction.Cancel();
 	}
 		
+}
+
+bool INiagaraParameterPanelViewModel::GetCanDebugParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDebug) const
+{
+	for (const FNiagaraParameterPanelItem& ItemToDebug : ItemsToDebug)
+	{
+		const FNiagaraVariableBase& Var = ItemToDebug.GetVariable();
+		if (Var.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
+			Var.IsInNameSpace(FNiagaraConstants::SystemNamespaceString) ||
+			Var.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString) ||
+			Var.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool INiagaraParameterPanelViewModel::GetCanDuplicateParameterAndToolTip(const TArray<FNiagaraParameterPanelItem>& ItemsToDuplicate, FText& OutCanDuplicateParameterToolTip) const
@@ -497,7 +498,7 @@ bool INiagaraParameterPanelViewModel::GetCanSubscribeParameterToLibraryAndToolTi
 	return false;
 }
 
-void INiagaraParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const FNiagaraParameterPanelItem ItemToModify, const bool bSubscribed) const
+void INiagaraParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const FNiagaraParameterPanelItem ItemToModify, const bool bSubscribed) 
 {
 	if (ensureMsgf(ItemToModify.bExternallyReferenced == false, TEXT("Cannot modify an externally referenced parameter.")) == false)
 	{
@@ -507,7 +508,7 @@ void INiagaraParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const FN
 	SetParameterIsSubscribedToLibrary(ItemToModify.ScriptVariable, bSubscribed);
 }
 
-void INiagaraParameterPanelViewModel::SetParameterNamespace(const FNiagaraParameterPanelItem ItemToModify, FNiagaraNamespaceMetadata NewNamespaceMetaData, bool bDuplicateParameter) const
+void INiagaraParameterPanelViewModel::SetParameterNamespace(const FNiagaraParameterPanelItem ItemToModify, FNiagaraNamespaceMetadata NewNamespaceMetaData, bool bDuplicateParameter) 
 {
 	FName NewName = FNiagaraParameterUtilities::ChangeNamespace(ItemToModify.GetVariable().GetName(), NewNamespaceMetaData);
 	if (NewName != NAME_None)
@@ -542,7 +543,7 @@ void INiagaraParameterPanelViewModel::SetParameterNamespace(const FNiagaraParame
 	}
 }
 
-void INiagaraParameterPanelViewModel::SetParameterNamespaceModifier(const FNiagaraParameterPanelItem ItemToModify, const FName NewNamespaceModifier, bool bDuplicateParameter) const
+void INiagaraParameterPanelViewModel::SetParameterNamespaceModifier(const FNiagaraParameterPanelItem ItemToModify, const FName NewNamespaceModifier, bool bDuplicateParameter) 
 {
 	FName NewName = FNiagaraParameterUtilities::SetSpecificNamespaceModifier(ItemToModify.GetVariable().GetName(), NewNamespaceModifier);
 	if (NewName != NAME_None)
@@ -578,7 +579,7 @@ void INiagaraParameterPanelViewModel::SetParameterNamespaceModifier(const FNiaga
 	}
 }
 
-void INiagaraParameterPanelViewModel::ChangeParameterType(const TArray<FNiagaraParameterPanelItem> ItemsToModify, const FNiagaraTypeDefinition NewType) const
+void INiagaraParameterPanelViewModel::ChangeParameterType(const TArray<FNiagaraParameterPanelItem> ItemsToModify, const FNiagaraTypeDefinition NewType) 
 {
 	ensureMsgf(false, TEXT("type change not supported for this view"));
 }
@@ -622,10 +623,12 @@ bool INiagaraParameterPanelViewModel::GetCanChangeParameterType(const TArray<FNi
 	return true;
 }
 
-void INiagaraParameterPanelViewModel::GetChangeTypeSubMenu(FMenuBuilder& MenuBuilder, TArray<FNiagaraParameterPanelItem> Items) const
+void INiagaraParameterPanelViewModel::GetChangeTypeSubMenu(FMenuBuilder& MenuBuilder, TArray<FNiagaraParameterPanelItem> Items) 
 {
 	TArray<FNiagaraTypeDefinition> FilteredTypes;
-	for (const FNiagaraTypeDefinition& RegisteredType : FNiagaraTypeRegistry::GetRegisteredTypes())
+	TArray<FNiagaraTypeDefinition> AllowedTypes;
+	FNiagaraEditorUtilities::GetAllowedTypes(AllowedTypes);
+	for (const FNiagaraTypeDefinition& RegisteredType : AllowedTypes)
 	{
 		// only allow basic types for now
 		if (RegisteredType.IsDataInterface() || RegisteredType.IsEnum() || RegisteredType.IsUObject() || FNiagaraTypeRegistry::GetRegisteredPayloadTypes().Contains(RegisteredType) || RegisteredType.IsInternalType())
@@ -649,7 +652,7 @@ void INiagaraParameterPanelViewModel::GetChangeTypeSubMenu(FMenuBuilder& MenuBui
 	}
 }
 
-void INiagaraParameterPanelViewModel::SetParameterCustomNamespaceModifier(const FNiagaraParameterPanelItem ItemToModify, bool bDuplicateParameter) const
+void INiagaraParameterPanelViewModel::SetParameterCustomNamespaceModifier(const FNiagaraParameterPanelItem ItemToModify, bool bDuplicateParameter) 
 {
 	if (bDuplicateParameter == false && ItemToModify.bExternallyReferenced)
 	{
@@ -697,7 +700,7 @@ void INiagaraParameterPanelViewModel::SetParameterCustomNamespaceModifier(const 
 }
 
 
-void INiagaraParameterPanelViewModel::GetChangeNamespaceSubMenu(FMenuBuilder& MenuBuilder, bool bDuplicateParameter, FNiagaraParameterPanelItem Item) const
+void INiagaraParameterPanelViewModel::GetChangeNamespaceSubMenu(FMenuBuilder& MenuBuilder, bool bDuplicateParameter, FNiagaraParameterPanelItem Item) 
 {
 	TArray<FNiagaraParameterUtilities::FChangeNamespaceMenuData> MenuData;
 	FNiagaraParameterUtilities::GetChangeNamespaceMenuData(Item.GetVariable().GetName(), GetParameterContext(), MenuData);
@@ -733,7 +736,7 @@ void INiagaraParameterPanelViewModel::GetChangeNamespaceSubMenu(FMenuBuilder& Me
 	}
 }
 
-void INiagaraParameterPanelViewModel::GetChangeNamespaceModifierSubMenu(FMenuBuilder& MenuBuilder, bool bDuplicateParameter, FNiagaraParameterPanelItem Item) const
+void INiagaraParameterPanelViewModel::GetChangeNamespaceModifierSubMenu(FMenuBuilder& MenuBuilder, bool bDuplicateParameter, FNiagaraParameterPanelItem Item) 
 {
 	TArray<FName> OptionalNamespaceModifiers;
 	FNiagaraParameterUtilities::GetOptionalNamespaceModifiers(Item.GetVariable().GetName(), GetParameterContext(), OptionalNamespaceModifiers);
@@ -782,7 +785,8 @@ const TArray<FNiagaraParameterPanelItem>& INiagaraParameterPanelViewModel::GetCa
 	return CachedViewedItems;
 }
 
-void INiagaraParameterPanelViewModel::SelectParameterItemByName(const FName ParameterName, const bool bRequestRename) const
+
+void INiagaraParameterPanelViewModel::SelectParameterItemByName(const FName ParameterName, const bool bRequestRename)
 {
 	if (bRequestRename)
 	{
@@ -792,9 +796,49 @@ void INiagaraParameterPanelViewModel::SelectParameterItemByName(const FName Para
 	{
 		OnSelectParameterItemByNameDelegate.ExecuteIfBound(ParameterName);
 	}
+
+	// Propagate to the selection object (if found)
+	UNiagaraScriptVariable* FoundScriptVariable = nullptr;
+	for (const UNiagaraGraph* Graph : GetEditableGraphsConst())
+	{
+		if (UNiagaraScriptVariable* ScriptVariable = Graph->GetScriptVariable(ParameterName))
+		{
+			FoundScriptVariable = ScriptVariable;
+			break;
+		}
+	}
+
+	if (IncludeViewItemsInSelectParameterItem() && !FoundScriptVariable)
+	{
+		const TArray < FNiagaraParameterPanelItem>& CachedItems = GetCachedViewedParameterItems();
+		for (const FNiagaraParameterPanelItem& Item : CachedItems)
+		{
+			if (Item.GetVariable().GetName() == ParameterName)
+			{
+				FoundScriptVariable = (UNiagaraScriptVariable*)Item.ScriptVariable;
+				break;
+			}
+		}
+	}
+
+
+	const TSharedPtr<FNiagaraObjectSelection>& Selection = GetVariableObjectSelection();
+	if (Selection.IsValid() && FoundScriptVariable)
+	{
+		Selection->SetSelectedObject(FoundScriptVariable);
+	}
+
+
+	OnINiagaraParameterPanelViewModelSelectionChanged(FoundScriptVariable);
+
+	TSharedPtr<INiagaraParameterPanelViewModel> MainVM = MainParameterPanelViewModel.Pin();
+	if (MainVM.IsValid())
+	{
+		MainVM->SelectParameterItemByName(ParameterName, bRequestRename);
+	}
 }
 
-void INiagaraParameterPanelViewModel::SubscribeParameterToLibraryIfMatchingDefinition(const UNiagaraScriptVariable* ScriptVarToModify, const FName ScriptVarName) const
+void INiagaraParameterPanelViewModel::SubscribeParameterToLibraryIfMatchingDefinition(const UNiagaraScriptVariable* ScriptVarToModify, const FName ScriptVarName) 
 {
 	const TArray<const UNiagaraScriptVariable*> ReservedParametersForName = FNiagaraParameterDefinitionsUtilities::FindReservedParametersByName(ScriptVarName);
 
@@ -877,7 +921,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::Cleanup()
 		{
 			TArray<UNiagaraScript*> EmitterScripts;
 			const bool bCompilableOnly = false;
-			EmitterHandle->GetInstance()->GetScripts(EmitterScripts, bCompilableOnly);
+			EmitterHandle->GetEmitterData()->GetScripts(EmitterScripts, bCompilableOnly);
 			for (UNiagaraScript* EmitterScript : EmitterScripts)
 			{
 				GraphsToRemoveCallbacks.Add(GetGraphFromScript(EmitterScript));
@@ -912,10 +956,56 @@ void FNiagaraSystemToolkitParameterPanelViewModel::Cleanup()
 
 }
 
+
 void FNiagaraSystemToolkitParameterPanelViewModel::Init(const FSystemToolkitUIContext& InUIContext)
 {
 	UIContext = InUIContext;
 	UNiagaraSystem& System = SystemViewModel->GetSystem();
+
+	VariableObjectSelection = MakeShared< FNiagaraObjectSelection>();
+
+	// Standalone emitter assets have different default section setups than systems
+	if (SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
+	{
+		ActiveSectionIndex = 1;
+		LastActiveSystemSectionIdx = ActiveSectionIndex;
+	}
+	else
+	{
+		ActiveSectionIndex = 0;
+		LastActiveSystemSectionIdx = ActiveSectionIndex;
+	}
+
+	// Define the sections
+	ActiveSystemIdx = Sections.Emplace(FGuid(0x7B4AFB34, 0xD0DF4618, 0x9A05349E, 0x361CE735), LOCTEXT("SectionSystemActive", "Active Overview"), LOCTEXT("SectionActiveSystemDesc", "Displays parameters that are context-sensitive to the selected items in the System Overview."));
+	ActiveScriptIdx = Sections.Emplace(FGuid(0x6E11F3EA, 0x5E314E82, 0xA64FEA41, 0x4F1DB891), LOCTEXT("SectionScriptActive", "Active Module"), LOCTEXT("SectionActiveScriptDesc", "Displays parameters that are context-sensitive to the active Scratch module document. Use this for renaming/editing local parameters to the module."));
+
+	// Go through all the settings and propagate with the default values if not already defined.
+	UNiagaraEditorSettings* Settings = GetMutableDefault<UNiagaraEditorSettings>();
+	if (Settings)
+	{
+		bool bSaveConfig = false;
+		bool bAdded = false;
+
+		FNiagaraParameterPanelSectionStorage& ScriptStorage = Settings->FindOrAddParameterPanelSectionStorage(Sections[ActiveScriptIdx].SectionId, bAdded);
+		if (bAdded)
+		{
+			ScriptStorage.ExpandedCategories.Emplace(FNiagaraEditorGuids::ModuleNamespaceMetaDataGuid);
+			bSaveConfig = true;
+		}
+
+		FNiagaraParameterPanelSectionStorage& SystemStorage = Settings->FindOrAddParameterPanelSectionStorage(Sections[ActiveSystemIdx].SectionId, bAdded);
+		if (bAdded)
+		{
+			SystemStorage.ExpandedCategories.Emplace(FNiagaraEditorGuids::SystemNamespaceMetaDataGuid);
+			bSaveConfig = true;
+		}
+
+		if (bSaveConfig)
+		{
+			Settings->SaveConfig();
+		}
+	}
 
 	// Init bindings
 	// Bind OnChanged() and OnNeedsRecompile() callbacks for all script source graphs.
@@ -932,7 +1022,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::Init(const FSystemToolkitUICo
 		{
 			TArray<UNiagaraScript*> EmitterScripts;
 			const bool bCompilableOnly = false;
-			EmitterHandle->GetInstance()->GetScripts(EmitterScripts, bCompilableOnly);
+			EmitterHandle->GetEmitterData()->GetScripts(EmitterScripts, bCompilableOnly);
 			for (UNiagaraScript* EmitterScript : EmitterScripts)
 			{
 				GraphsToAddCallbacks.Add(GetGraphFromScript(EmitterScript));
@@ -991,10 +1081,102 @@ void FNiagaraSystemToolkitParameterPanelViewModel::Init(const FSystemToolkitUICo
 			}
 		}
 	}
+	if (UserCategories.Num() == 0)
+	{
+		TArray<FNiagaraNamespaceMetadata> NamespaceMetadata = GetDefault<UNiagaraEditorSettings>()->GetAllNamespaceMetadata();
+		for (const FNiagaraNamespaceMetadata& NamespaceMetadatum : NamespaceMetadata)
+		{
+			if (NamespaceMetadatum.GetGuid() == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+				UserCategories.Add(NamespaceMetadatum);
+		}
+	}
+	// Init Default Script categories
+	if (DefaultScriptCategories.Num() == 0)
+	{
+		TArray<FNiagaraNamespaceMetadata> NamespaceMetadata = GetDefault<UNiagaraEditorSettings>()->GetAllNamespaceMetadata();
+		for (const FNiagaraNamespaceMetadata& NamespaceMetadatum : NamespaceMetadata)
+		{
+			if (NamespaceMetadatum.Options.Contains(ENiagaraNamespaceMetadataOptions::HideInScript) == false)
+			{
+				if (NamespaceMetadatum.Options.Contains(ENiagaraNamespaceMetadataOptions::AdvancedInScript))
+				{
+					DefaultAdvancedScriptCategories.Add(NamespaceMetadatum);
+				}
+				else
+				{
+					DefaultScriptCategories.Add(NamespaceMetadatum);
+					DefaultAdvancedScriptCategories.Add(NamespaceMetadatum);
+				}
+			}
+		}
+	}
 
 	RegisteredHandle = RegisterViewModelWithMap(&System, this);
 }
 
+
+void FNiagaraSystemToolkitParameterPanelViewModel::OnINiagaraParameterPanelViewModelSelectionChanged(UNiagaraScriptVariable* InVar)
+{
+
+	if (InVar)
+	{
+		SelectedVariable = InVar->Variable;
+	}
+	else
+	{
+		VariableObjectSelection->ClearSelectedObjects();
+		SelectedVariable = FNiagaraVariable();
+	}
+	
+	InvalidateCachedDependencies();
+}
+
+void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterItemSelected(const FNiagaraParameterPanelItem& SelectedItem, ESelectInfo::Type SelectInfo) const
+{
+	SelectedVariable = SelectedItem.GetVariable();
+	bool bFound = false;
+	for (const UNiagaraGraph* Graph : GetEditableGraphsConst())
+	{
+		UNiagaraScriptVariable* ParameterScriptVariable = Graph->GetScriptVariable(SelectedItem.GetVariable().GetName());
+		if (ParameterScriptVariable != nullptr)
+		{
+			VariableObjectSelection->SetSelectedObject(ParameterScriptVariable);
+			bFound = true;
+			break;
+		}
+	}
+
+	if (!bFound)
+	{
+		VariableObjectSelection->ClearSelectedObjects();
+	}
+
+	InvalidateCachedDependencies();
+
+}
+
+bool FNiagaraSystemToolkitParameterPanelViewModel::IsVariableSelected(FNiagaraVariableBase& InVar) const
+{
+	if (VariableObjectSelection.IsValid())
+	{
+		const TSet<UObject*>& Objects = VariableObjectSelection->GetSelectedObjects();
+		for (UObject* Obj : Objects)
+		{
+			UNiagaraScriptVariable* ScriptVar = Cast<UNiagaraScriptVariable>(Obj);
+			if (ScriptVar && ScriptVar->Variable.IsEquivalent(InVar, false))
+			{
+				return true;
+			}
+		}
+
+	}
+	if (IncludeViewItemsInSelectParameterItem() && InVar == (const FNiagaraVariableBase&)SelectedVariable)
+	{
+		return true;
+	}
+
+	return false;
+}
 const TArray<UNiagaraScriptVariable*> FNiagaraSystemToolkitParameterPanelViewModel::GetEditableScriptVariablesWithName(const FName ParameterName) const
 {
 	TArray<UNiagaraScriptVariable*> EditableScriptVariables;
@@ -1008,50 +1190,94 @@ const TArray<UNiagaraScriptVariable*> FNiagaraSystemToolkitParameterPanelViewMod
 	}
 	return EditableScriptVariables;
 }
+bool FNiagaraSystemToolkitParameterPanelViewModel::GetSectionEnabled(FText Section) const
+{
+	if (ActiveScriptIdx != -1 && Sections.IsValidIndex(ActiveScriptIdx) && Section.IdenticalTo(Sections[ActiveScriptIdx].DisplayName))
+	{
+		TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+		return ScratchDocumentVM.IsValid();
+	}
 
-void FNiagaraSystemToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) const
+	return true;
+}
+
+bool  FNiagaraSystemToolkitParameterPanelViewModel::ShouldRouteThroughScratchParameterMap(const FNiagaraParameterPanelCategory* Category, const FNiagaraVariableBase* NewVariable)
+{
+	bool bForceScript = false;
+	if (ActiveSectionIndex == ActiveScriptIdx && ActiveScriptIdx != -1)
+	{
+		bForceScript = true;
+	}
+	if (NewVariable != nullptr && bForceScript)
+	{
+		const FGuid NamespaceId = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(NewVariable->GetName()).GetGuid();
+		/*if (NamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+			bForceScript = false;
+		if (NamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+			bForceScript = false;
+		if (NamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+			bForceScript = false;*/
+	}
+
+	return bForceScript;
+}
+
+void FNiagaraSystemToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
 	bool bSuccess = false;
 	UNiagaraSystem& System = SystemViewModel->GetSystem();
 
-	FScopedTransaction AddTransaction(LOCTEXT("AddSystemParameterTransaction", "Add parameter to system."));
-	System.Modify();
-	const FGuid NamespaceId = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(NewVariable.GetName()).GetGuid();
-	if (NamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+	bool bForceScript = ShouldRouteThroughScratchParameterMap(&Category, &NewVariable);
+
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+	if (ScratchDocumentVM.IsValid() && bForceScript)
 	{
-		bSuccess = FNiagaraEditorUtilities::AddParameter(NewVariable, System.GetExposedParameters(), System, nullptr);
+		ScratchDocumentVM->GetParameterPanelViewModel()->AddParameter(NewVariable, Category, bRequestRename, bMakeUniqueName);
+		RefreshNextTick();
+		return;
 	}
-	else
+	
 	{
-		UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-		TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
-		bool bNewScriptVarAlreadyExists = EditorOnlyScriptVars.ContainsByPredicate([&NewVariable](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == NewVariable; });
 
-		// unless the namespace prevents name changes we make sure the new parameter has a unique name  
-		if (bMakeUniqueName && !Category.NamespaceMetaData.Options.Contains(ENiagaraNamespaceMetadataOptions::PreventEditingName))
+		FScopedTransaction AddTransaction(LOCTEXT("AddSystemParameterTransaction", "Add parameter to system."));
+		System.Modify();
+		const FGuid NamespaceId = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(NewVariable.GetName()).GetGuid();
+		if (NamespaceId == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
 		{
-			TSet<FName> Names;
-			for (UNiagaraScriptVariable* ScriptVar : EditorOnlyScriptVars)
-			{
-				Names.Add(ScriptVar->Variable.GetName());
-			}
-			NewVariable.SetName(FNiagaraUtilities::GetUniqueName(NewVariable.GetName(), Names));
-			bNewScriptVarAlreadyExists = false;
+			bSuccess = FNiagaraEditorUtilities::AddParameter(NewVariable, System.GetExposedParameters(), System, nullptr);
 		}
-
-		if (bNewScriptVarAlreadyExists == false)
+		else
 		{
-			EditorParametersAdapter->Modify();
-			UNiagaraScriptVariable* NewScriptVar = NewObject<UNiagaraScriptVariable>(EditorParametersAdapter, FName(), RF_Transactional);
-			NewScriptVar->Init(NewVariable, FNiagaraVariableMetaData());
-			NewScriptVar->SetIsStaticSwitch(false);
-			NewScriptVar->SetIsSubscribedToParameterDefinitions(false);
-			EditorOnlyScriptVars.Add(NewScriptVar);
-			bSuccess = true;
+			UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
+			TArray<UNiagaraScriptVariable*>& EditorOnlyScriptVars = EditorParametersAdapter->GetParameters();
+			bool bNewScriptVarAlreadyExists = EditorOnlyScriptVars.ContainsByPredicate([&NewVariable](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == NewVariable; });
 
-			// Check if the new parameter has the same name and type as an existing parameter definition, and if so, link to the definition automatically.
-			SubscribeParameterToLibraryIfMatchingDefinition(NewScriptVar, NewScriptVar->Variable.GetName());
+			// unless the namespace prevents name changes we make sure the new parameter has a unique name  
+			if (bMakeUniqueName && !Category.NamespaceMetaData.Options.Contains(ENiagaraNamespaceMetadataOptions::PreventEditingName))
+			{
+				TSet<FName> Names;
+				for (UNiagaraScriptVariable* ScriptVar : EditorOnlyScriptVars)
+				{
+					Names.Add(ScriptVar->Variable.GetName());
+				}
+				NewVariable.SetName(FNiagaraUtilities::GetUniqueName(NewVariable.GetName(), Names));
+				bNewScriptVarAlreadyExists = false;
+			}
+
+			if (bNewScriptVarAlreadyExists == false)
+			{
+				EditorParametersAdapter->Modify();
+				UNiagaraScriptVariable* NewScriptVar = NewObject<UNiagaraScriptVariable>(EditorParametersAdapter, FName(), RF_Transactional);
+				NewScriptVar->Init(NewVariable, FNiagaraVariableMetaData());
+				NewScriptVar->SetIsStaticSwitch(false);
+				NewScriptVar->SetIsSubscribedToParameterDefinitions(false);
+				EditorOnlyScriptVars.Add(NewScriptVar);
+				bSuccess = true;
+
+				// Check if the new parameter has the same name and type as an existing parameter definition, and if so, link to the definition automatically.
+				SubscribeParameterToLibraryIfMatchingDefinition(NewScriptVar, NewScriptVar->Variable.GetName());
+			}
 		}
 	}
 
@@ -1062,11 +1288,18 @@ void FNiagaraSystemToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable
 	}
 }
 
-void FNiagaraSystemToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) const
+void FNiagaraSystemToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
 	bool bSuccess = false;
 	UNiagaraSystem& System = SystemViewModel->GetSystem();
+
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+	if (ScratchDocumentVM.IsValid())
+	{
+		ScratchDocumentVM->GetParameterPanelViewModel()->FindOrAddParameter(Variable, Category);
+		return;
+	}
 
 	FScopedTransaction AddTransaction(LOCTEXT("FindOrAddAddSystemParameterTransaction", "Add parameter to script."));
 	const FGuid NamespaceId = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Variable.GetName()).GetGuid();
@@ -1101,34 +1334,94 @@ void FNiagaraSystemToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVa
 	SelectParameterItemByName(Variable.GetName(), false);
 }
 
+void FNiagaraSystemToolkitParameterPanelViewModel::SetActiveSection(int32 InSection)
+{
+	INiagaraParameterPanelViewModel::SetActiveSection(InSection);
+
+	// We want to cache this off so that we can remember what you were last on when the primary document was active.
+	if (SystemViewModel->GetDocumentViewModel()->IsPrimaryDocumentActive())
+	{
+		LastActiveSystemSectionIdx = ActiveSectionIndex;
+	}
+	else
+	{
+		TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+		if (ScratchDocumentVM.IsValid())
+		{
+			TWeakPtr<INiagaraParameterPanelViewModel> WeakVM = StaticCastSharedRef< INiagaraParameterPanelViewModel>(AsShared());
+			ScratchDocumentVM->GetParameterPanelViewModel()->SetMainParameterPanelViewModel(WeakVM);
+		}
+	}
+}
+
 bool FNiagaraSystemToolkitParameterPanelViewModel::GetCanAddParametersToCategory(FNiagaraParameterPanelCategory Category) const
 {
+	// If in emitter edit mode, don't support anything other than Emitter level and below
+	if (SystemViewModel && SystemViewModel->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
+	{
+		if (Category.NamespaceMetaData.GetGuid() == FNiagaraEditorGuids::SystemNamespaceMetaDataGuid || 
+			Category.NamespaceMetaData.GetGuid() == FNiagaraEditorGuids::UserNamespaceMetaDataGuid)
+		{
+			return false;
+		}
+	}
 	return GetEditableGraphsConst().Num() > 0 && Category.NamespaceMetaData.GetGuid() != FNiagaraEditorGuids::StaticSwitchNamespaceMetaDataGuid;
 }
 
-void FNiagaraSystemToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) const
+void FNiagaraSystemToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) 
 {
 	bool bAnyChange = false;
 	FScopedTransaction RemoveParameterTransaction(LOCTEXT("RemoveParameter", "Removed Parameter(s)"));
 
-	for(const FNiagaraParameterPanelItem& ItemToDelete : ItemsToDelete)
+	// Handle deleting parameters from the active script differently than from the system overview being active.
+	// This will allow us to behave as users expect.
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+	if (ScratchDocumentVM.IsValid())
 	{
-		if (ItemToDelete.bExternallyReferenced)
+		for (const FNiagaraParameterPanelItem& ItemToDelete : ItemsToDelete)
 		{
-			continue;
-		}
-		
-		UNiagaraSystem& System = SystemViewModel->GetSystem();
-		const FGuid& ScriptVarId = ItemToDelete.GetVariableMetaData().GetVariableGuid();
-		System.Modify();
-		System.GetExposedParameters().RemoveParameter(ItemToDelete.GetVariable());
-		UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
-		EditorParametersAdapter->Modify();
-		EditorParametersAdapter->GetParameters().RemoveAll([&ScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == ScriptVarId; });
+			if (ItemToDelete.bExternallyReferenced)
+			{
+				continue;
+			}
 
-		// Update anything that was referencing that parameter
-		System.HandleVariableRemoved(ItemToDelete.GetVariable(), true);
-		bAnyChange = true;
+			for (UNiagaraGraph* Graph : GetEditableGraphs())
+			{
+				UNiagaraScriptVariable* SelectedScriptVariable = Graph->GetScriptVariable(ItemToDelete.GetVariable());
+				if (SelectedScriptVariable && VariableObjectSelection->GetSelectedObjects().Contains(SelectedScriptVariable))
+				{
+					VariableObjectSelection->ClearSelectedObjects();
+				}
+				Graph->RemoveParameter(ItemToDelete.GetVariable());
+
+				if (!bAnyChange)
+				{
+					bAnyChange = true;
+				}
+			}
+		}
+	}
+	else
+	{
+		for (const FNiagaraParameterPanelItem& ItemToDelete : ItemsToDelete)
+		{
+			if (ItemToDelete.bExternallyReferenced)
+			{
+				continue;
+			}
+
+			UNiagaraSystem& System = SystemViewModel->GetSystem();
+			const FGuid& ScriptVarId = ItemToDelete.GetVariableMetaData().GetVariableGuid();
+			System.Modify();
+			System.GetExposedParameters().RemoveParameter(ItemToDelete.GetVariable());
+			UNiagaraEditorParametersAdapter* EditorParametersAdapter = SystemViewModel->GetEditorOnlyParametersAdapter();
+			EditorParametersAdapter->Modify();
+			EditorParametersAdapter->GetParameters().RemoveAll([&ScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == ScriptVarId; });
+
+			// Update anything that was referencing that parameter
+			System.HandleVariableRemoved(ItemToDelete.GetVariable(), true);
+			bAnyChange = true;
+		}
 	}
 
 	if(bAnyChange)
@@ -1141,7 +1434,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::DeleteParameters(const TArray
 	}
 }
 
-void FNiagaraSystemToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) const
+void FNiagaraSystemToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) 
 {
 	if (ensureMsgf(ItemToRename.bExternallyReferenced == false, TEXT("Can not modify an externally referenced parameter.")) == false)
 	{
@@ -1156,6 +1449,15 @@ void FNiagaraSystemToolkitParameterPanelViewModel::RenameParameter(const FNiagar
 	const FNiagaraVariable Parameter = ItemToRename.GetVariable();
 	const FGuid& ScriptVarId = ItemToRename.GetVariableMetaData().GetVariableGuid();
 	UNiagaraSystem& System = SystemViewModel->GetSystem();
+
+	// Forward renaming of script variables for the active script to the working parameter panel view model for just that script.
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchDocumentVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+	if (ScratchDocumentVM.IsValid())
+	{
+		ScratchDocumentVM->GetParameterPanelViewModel()->RenameParameter(ItemToRename, NewName);
+		return;
+	}
+
 	System.Modify();
 
 	bool bExposedParametersRename = false;
@@ -1230,7 +1532,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::RenameParameter(const FNiagar
 		{
 			for (const FNiagaraEmitterHandle* EmitterHandle : GetEditableEmitterHandles())
 			{
-				EmitterHandle->GetInstance()->HandleVariableRenamed(Parameter, FNiagaraVariableBase(Parameter.GetType(), NewName), true);
+				EmitterHandle->GetInstance().Emitter->HandleVariableRenamed(Parameter, FNiagaraVariableBase(Parameter.GetType(), NewName), true, EmitterHandle->GetInstance().Version);
 			}		
 		}
 		else
@@ -1244,7 +1546,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::RenameParameter(const FNiagar
 	}
 }
 
-void FNiagaraSystemToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) const
+void FNiagaraSystemToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) 
 {
 	const FText TransactionText = bSubscribed ? LOCTEXT("SubscribeParameter", "Subscribe parameter") : LOCTEXT("UnsubscribeParameter", "Unsubscribe parameter");
 	FScopedTransaction SubscribeTransaction(TransactionText);
@@ -1317,6 +1619,15 @@ TSharedPtr<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateContextM
 				LOCTEXT("ChangeNamespaceModifierToolTip", "Edit the namespace modifier for the selected parameter."),
 				FNewMenuDelegate::CreateSP(this, &FNiagaraSystemToolkitParameterPanelViewModel::GetChangeNamespaceModifierSubMenu, false, SelectedItem));
 			
+			MenuBuilder.AddMenuSeparator();
+			bool bCanDebugParameter = GetCanDebugParameters(Items);
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("DebugParameter", "Watch Parameter In Niagara Debugger"),
+				LOCTEXT("DebugParameterToolTip", "Open the Niagara Debugger and add this Parameter to the list of tracked parameters.\r\nParticles parameters will show up alongside each particle.\r\nSystem, Emitter, and User parameters will be attached to the System in the world."), 
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &FNiagaraSystemToolkitParameterPanelViewModel::DebugParameters, Items),
+					FCanExecuteAction::CreateLambda([bCanDebugParameter]() {return bCanDebugParameter; })));
 
 			MenuBuilder.AddMenuSeparator();
 
@@ -1352,21 +1663,54 @@ FNiagaraParameterUtilities::EParameterContext FNiagaraSystemToolkitParameterPane
 	return FNiagaraParameterUtilities::EParameterContext::System;
 }
 
-const TArray<FNiagaraParameterPanelCategory>& FNiagaraSystemToolkitParameterPanelViewModel::GetDefaultCategories() const
+void FNiagaraSystemToolkitParameterPanelViewModel::DebugParameters(const TArray<FNiagaraParameterPanelItem> Items) const
 {
-//	const UNiagaraEditorSettings* NiagaraEditorSettings = GetDefault<UNiagaraEditorSettings>();
-//	const bool bShowAdvanced = NiagaraEditorSettings->GetDisplayAdvancedParameterPanelCategories();
-// 	if (bShowAdvanced)
-// 	{
-// 		CachedCurrentCategories = FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
-// 		return FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
-// 	}
-	// For now always show advanced.
-	CachedCurrentCategories = FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
-	return FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
+	TArray<FNiagaraVariableBase> Attributes;
+	for (const FNiagaraParameterPanelItem& Item : Items)
+	{
+		Attributes.Emplace(Item.GetVariable());
+	}
+
+	const TArray<FGuid> EmitterHandles = SystemViewModel->GetSelectionViewModel()->GetSelectedEmitterHandleIds();
+	UNiagaraSystem* System = &SystemViewModel->GetSystem();
+	if (System)
+	{
+		TArray< FNiagaraEmitterHandle> Handles;
+		for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
+		{
+			if (EmitterHandles.Contains(Handle.GetId() ))
+				Handles.Add(Handle);
+		}
+#if WITH_NIAGARA_DEBUGGER
+		SNiagaraDebugger::InvokeDebugger(System, Handles, Attributes);
+#endif
+	}
 }
 
-FMenuAndSearchBoxWidgets FNiagaraSystemToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) const
+const TArray<FNiagaraParameterPanelCategory>& FNiagaraSystemToolkitParameterPanelViewModel::GetDefaultCategories() const
+{
+	// Show advanced in Active/Common case. Only show User when in user mode.
+	bool bForceScript = false;
+	bool bForceSystem = false;
+	
+	if (ActiveSectionIndex == ActiveScriptIdx && ActiveScriptIdx != -1)
+		bForceScript= true;
+	else if (ActiveSectionIndex == ActiveSystemIdx && ActiveSystemIdx != -1)
+		bForceSystem = true;
+	
+	if (bForceScript)
+	{
+		CachedCurrentCategories = FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedScriptCategories;
+	}
+	else
+	{
+		CachedCurrentCategories = FNiagaraSystemToolkitParameterPanelViewModel::DefaultAdvancedCategories;
+	}
+	
+	return CachedCurrentCategories;
+}
+
+FMenuAndSearchBoxWidgets FNiagaraSystemToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) 
 {
 	const bool bRequestRename = true;
 	const bool bSkipSubscribedLibraries = false;
@@ -1401,7 +1745,7 @@ FMenuAndSearchBoxWidgets FNiagaraSystemToolkitParameterPanelViewModel::GetParame
 	return MenuAndSearchBoxWidgets;
 }
 
-FReply FNiagaraSystemToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation) const
+FReply FNiagaraSystemToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation) 
 {
 	TSharedPtr<FNiagaraParameterGraphDragOperation> ParameterGraphDragDropOperation = StaticCastSharedPtr<FNiagaraParameterGraphDragOperation>(DragDropOperation);
 	if (ParameterGraphDragDropOperation.IsValid() == false)
@@ -1461,6 +1805,22 @@ bool FNiagaraSystemToolkitParameterPanelViewModel::GetCanHandleDragDropOperation
 	return true;
 }
 
+
+
+void FNiagaraSystemToolkitParameterPanelViewModel::RefreshDueToActiveDocumentChanged()
+{
+	// We want to recall the section you were last in when you swapped between Primary and Scratch documents, which
+	// will invoke a full parameter refresh.
+	if (SystemViewModel->GetDocumentViewModel()->IsPrimaryDocumentActive())
+	{
+		SetActiveSection(LastActiveSystemSectionIdx);
+	}
+	else
+	{
+		SetActiveSection(ActiveScriptIdx);
+	}
+}
+
 bool FNiagaraSystemToolkitParameterPanelViewModel::GetCanSetParameterNamespaceAndToolTip(const FNiagaraParameterPanelItem& ItemToModify, const FName NewNamespace, FText& OutCanSetParameterNamespaceToolTip) const
 {
 	return FNiagaraParameterPanelUtilities::GetCanSetParameterNamespaceAndToolTipForScriptOrSystem(ItemToModify, NewNamespace, OutCanSetParameterNamespaceToolTip);
@@ -1476,7 +1836,7 @@ bool FNiagaraSystemToolkitParameterPanelViewModel::GetCanSetParameterCustomNames
 	return FNiagaraParameterPanelUtilities::GetCanSetParameterCustomNamespaceModifierAndToolTipForScriptOrSystem(ItemToModify, bDuplicateParameter, OutCanSetParameterNamespaceModifierToolTip);
 }
 
-TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParameterMenuForAssignmentNode(UNiagaraNodeAssignment* AssignmentNode, const TSharedPtr<SComboButton>& AddButton) const
+TSharedRef<SWidget> FNiagaraSystemToolkitParameterPanelViewModel::CreateAddParameterMenuForAssignmentNode(UNiagaraNodeAssignment* AssignmentNode, const TSharedPtr<SComboButton>& AddButton) 
 {
 	auto AddParameterLambda = [this, AssignmentNode](FNiagaraVariable& NewParameter) {
 		// If an assignment target is already setting the associated parameter, make a unique name here so that the assignment target is valid.
@@ -1600,8 +1960,8 @@ const TArray<FNiagaraGraphParameterReference> FNiagaraSystemToolkitParameterPane
 
 			bool bIgnoreDisabled = true;
 			FNiagaraParameterMapHistoryBuilder Builder;
-			UNiagaraEmitter* GraphOwningEmitter = Graph->GetTypedOuter<UNiagaraEmitter>();
-			FCompileConstantResolver ConstantResolver = GraphOwningEmitter != nullptr
+			FVersionedNiagaraEmitter GraphOwningEmitter = Graph->GetOwningEmitter();
+			FCompileConstantResolver ConstantResolver = GraphOwningEmitter.Emitter != nullptr
 				? FCompileConstantResolver(GraphOwningEmitter, ENiagaraScriptUsage::Function)
 				: FCompileConstantResolver();
 
@@ -1609,9 +1969,9 @@ const TArray<FNiagaraGraphParameterReference> FNiagaraSystemToolkitParameterPane
 			Builder.ConstantResolver = ConstantResolver;
 			FName StageName;
 			ENiagaraScriptUsage StageUsage = OutputNode->GetUsage();
-			if (StageUsage == ENiagaraScriptUsage::ParticleSimulationStageScript && GraphOwningEmitter)
+			if (StageUsage == ENiagaraScriptUsage::ParticleSimulationStageScript && GraphOwningEmitter.Emitter)
 			{
-				UNiagaraSimulationStageBase* Base = GraphOwningEmitter->GetSimulationStageById(OutputNode->GetUsageId());
+				UNiagaraSimulationStageBase* Base = GraphOwningEmitter.GetEmitterData()->GetSimulationStageById(OutputNode->GetUsageId());
 				if (Base)
 				{
 					StageName = Base->GetStackContextReplacementName();
@@ -1624,7 +1984,11 @@ const TArray<FNiagaraGraphParameterReference> FNiagaraSystemToolkitParameterPane
 			if (Builder.Histories.Num() != 1)
 			{
 				// We should only have traversed one emitter (have not visited more than one NiagaraNodeEmitter.)
-				ensureMsgf(false, TEXT("Encountered more than one parameter map history when collecting graph parameter reference collections for system parameter panel view model!"));
+				ensureMsgf(false, TEXT("Encountered '%d' parameter map history when collecting parameters for system parameter panel view model, we expect only 1!"), Builder.Histories.Num());
+			}
+			if (Builder.Histories.Num() == 0)
+			{
+				continue;
 			}
 
 			const TArray<FName>& CustomIterationSourceNamespaces = Builder.Histories[0].IterationNamespaceOverridesEncountered;
@@ -1659,18 +2023,117 @@ const TArray<UNiagaraParameterDefinitions*> FNiagaraSystemToolkitParameterPanelV
 	return SystemViewModel->GetAvailableParameterDefinitions(bSkipSubscribedParameterDefinitions);
 }
 
+void FNiagaraSystemToolkitParameterPanelViewModel::PreSectionChange(const TArray<FNiagaraParameterPanelCategory>& ExpandedItems)
+{
+	// Before we go to a different setup, cache the existing expanded states.
+	if (Sections.IsValidIndex(ActiveSectionIndex))
+	{
+		UNiagaraEditorSettings* Settings = GetMutableDefault<UNiagaraEditorSettings>();
+		bool bAdded = false;
+		FNiagaraParameterPanelSectionStorage& Storage = Settings->FindOrAddParameterPanelSectionStorage(Sections[ActiveSectionIndex].SectionId, bAdded);
+
+		TArray<FGuid> ExpandedCategories;
+
+		for (const FNiagaraParameterPanelCategory& Item : ExpandedItems)
+		{
+			if (Item.NamespaceMetaData.IsValid() && Item.NamespaceMetaData.GetGuid().IsValid())
+			{
+				ExpandedCategories.AddUnique(Item.NamespaceMetaData.GetGuid());
+			}
+		}
+		Storage.ExpandedCategories = ExpandedCategories;
+		Settings->SaveConfig();
+	}
+}
+
+bool FNiagaraSystemToolkitParameterPanelViewModel::IsCategoryExpandedByDefault(const FNiagaraParameterPanelCategory& Category) const 
+{
+	// Pull data from the settings for categories being expanded or collapsed
+	if (Sections.IsValidIndex(ActiveSectionIndex))
+	{
+		UNiagaraEditorSettings* Settings = GetMutableDefault<UNiagaraEditorSettings>();
+		bool bAdded = false;
+		FNiagaraParameterPanelSectionStorage& Storage = Settings->FindOrAddParameterPanelSectionStorage(Sections[ActiveSectionIndex].SectionId, bAdded);
+		if (Storage.ExpandedCategories.Contains(Category.NamespaceMetaData.GetGuid()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 const TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelViewModel::GetAllGraphsConst() const
 {
-	return FNiagaraSystemToolkitParameterPanelUtilities::GetAllGraphs(SystemViewModel);
+	// If an active script, just get the graphs associated with that. Otherwise for system overview, get all graphs.
+	if (ActiveSectionIndex == ActiveScriptIdx && ActiveScriptIdx != -1)
+	{
+		return FNiagaraSystemToolkitParameterPanelUtilities::GetAllGraphs(SystemViewModel, true);
+	}
+	else
+	{
+		return FNiagaraSystemToolkitParameterPanelUtilities::GetAllGraphs(SystemViewModel, false);
+	}
 }
 
 TArray<UNiagaraGraph*> FNiagaraSystemToolkitParameterPanelViewModel::GetEditableGraphs() const
 {
-	return FNiagaraSystemToolkitParameterPanelUtilities::GetEditableGraphs(SystemViewModel, SystemGraphSelectionViewModelWeak);
+	// If an active script, just get the graphs associated with that. Otherwise for system overview, get all editable graphs.
+	if (ActiveSectionIndex == ActiveScriptIdx && ActiveScriptIdx != -1)
+	{
+		return FNiagaraSystemToolkitParameterPanelUtilities::GetEditableGraphs(SystemViewModel, SystemGraphSelectionViewModelWeak, true);
+	}
+	else
+	{
+		return FNiagaraSystemToolkitParameterPanelUtilities::GetEditableGraphs(SystemViewModel, SystemGraphSelectionViewModelWeak, false);
+	}
+}
+void INiagaraParameterPanelViewModel::SetActiveSection(int32 InSection)
+{
+	int32 OldActiveSectionIndex = ActiveSectionIndex;
+
+	if (Sections.IsValidIndex(InSection))
+	{
+		ActiveSectionIndex = InSection;
+	}
+
+	// Need to update UI if sections change
+	if (OldActiveSectionIndex != ActiveSectionIndex)
+	{
+		RefreshFullNextTick(true);
+	}
 }
 
+void INiagaraParameterPanelViewModel::SetActiveSection(FText & InSection)
+{
+	for (int32 Idx = 0; Idx <Sections.Num(); Idx++)
+	{
+		if (Sections[Idx].DisplayName.EqualTo(InSection))
+		{
+			SetActiveSection(Idx);
+			return;
+		}
+	}
+}
+
+FText INiagaraParameterPanelViewModel::GetTooltipForSection(FText& InSection) const
+{
+	for (int32 i = 0; i < Sections.Num(); i++)
+	{
+		if (Sections[i].DisplayName.EqualTo(InSection))
+			return Sections[i].Description;
+	}
+
+	return FText::GetEmpty();
+}
 TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel::GetViewedParameterItems() const
 {
+	bool bForceScript = false;
+	bool bForceSystem = false;
+	if (ActiveSectionIndex == ActiveScriptIdx && ActiveScriptIdx != -1)
+		bForceScript = true;
+	else if (ActiveSectionIndex == ActiveSystemIdx && ActiveSystemIdx != -1)
+		bForceSystem = true;
+
 	// On the first time opening the parameter panel view model we are not guaranteed to call GetDefaultCategories() before GetViewedParameterItems(). 
 	// We require CachedCurrentCategories being set as this is used to filter out parameter items that are being viewed. If CachedCurrentCategories 
 	// is not set, call GetDefaultCategories() to initialize it. 
@@ -1679,10 +2142,11 @@ TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel:
 		GetDefaultCategories();
 	}
 
+
 	TMap<FNiagaraVariable, FNiagaraParameterPanelItem> VisitedParameterToItemMap;
 	TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> ParameterToScriptVariableMap;
-	const TArray<UNiagaraGraph*> EditableGraphs = GetEditableGraphsConst();
-	const TArray<UNiagaraGraph*> AllGraphs = GetAllGraphsConst();
+	TArray<UNiagaraGraph*> EditableGraphs = GetEditableGraphsConst();
+	TArray<UNiagaraGraph*> AllGraphs = GetAllGraphsConst();
 
 	// Collect all metadata to be packaged with the FNiagaraParameterPanelItems.
 	for (const UNiagaraGraph* EditableGraph : EditableGraphs)
@@ -1697,19 +2161,7 @@ TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel:
 		ParamStore->GetParameters(Vars);
 		for (const FNiagaraVariable& Var : Vars)
 		{
-			UNiagaraScriptVariable* ScriptVar;
-			if (TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ParameterToScriptVariableMap.Find(Var))
-			{
-				ScriptVar = *ScriptVarPtr;
-			}
-			else
-			{
-				// Create a new UNiagaraScriptVariable to represent this parameter for the lifetime of the ParameterPanelViewModel.
-				ScriptVar = NewObject<UNiagaraScriptVariable>(GetTransientPackage());
-				ScriptVar->AddToRoot();
-				ScriptVar->Init(Var, FNiagaraVariableMetaData());
-				TransientParameterToScriptVarMap.Add(Var, ScriptVar);
-			}
+			UNiagaraScriptVariable* ScriptVar = FNiagaraEditorUtilities::GetScriptVariableForUserParameter(Var, SystemViewModel);
 
 			FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
 			Item.ScriptVariable = ScriptVar;
@@ -1726,180 +2178,242 @@ TArray<FNiagaraParameterPanelItem> FNiagaraSystemToolkitParameterPanelViewModel:
 	};
 
 	// Collect user parameters from system.
-	CollectParamStore(&SystemViewModel->GetSystem().GetExposedParameters());
-
-	// Collect parameters added to the system asset.
-	for (UNiagaraScriptVariable* EditorOnlyScriptVar : SystemViewModel->GetEditorOnlyParametersAdapter()->GetParameters())
+	if (bForceSystem)
 	{
-		ParameterToScriptVariableMap.Add(EditorOnlyScriptVar->Variable, EditorOnlyScriptVar);
-
-		const FNiagaraVariable& Var = EditorOnlyScriptVar->Variable;
-		FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
-		Item.ScriptVariable = EditorOnlyScriptVar;
-		Item.NamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Var.GetName());
-		Item.bExternallyReferenced = false;
-		Item.bSourcedFromCustomStackContext = false;
-		Item.ReferenceCount = 0;
-
-		// Determine whether the item is name aliasing a parameter definition's parameter.
-		Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(EditorOnlyScriptVar->Variable);
-
-		VisitedParameterToItemMap.Add(Var, Item);
+		CollectParamStore(&SystemViewModel->GetSystem().GetExposedParameters());
 	}
 
-	// Collect parameters for all emitters.
-	TArray<FNiagaraVariable> VisitedInvalidParameters;
-
-	// -For each selected graph perform a parameter map history traversal and record each unique visited parameter.
-	for (const UNiagaraGraph* EditableGraph : EditableGraphs)
+	if (bForceSystem)
 	{
-		TArray<UNiagaraNodeOutput*> OutputNodes;
-		EditableGraph->GetNodesOfClass<UNiagaraNodeOutput>(OutputNodes);
-		for (UNiagaraNodeOutput* OutputNode : OutputNodes)
+		// Collect parameters added to the system asset.
+		for (UNiagaraScriptVariable* EditorOnlyScriptVar : SystemViewModel->GetEditorOnlyParametersAdapter()->GetParameters())
 		{
-			UNiagaraNode* NodeToTraverse = OutputNode;
-			if (OutputNode->GetUsage() == ENiagaraScriptUsage::SystemSpawnScript || OutputNode->GetUsage() == ENiagaraScriptUsage::SystemUpdateScript)
-			{
-				// Traverse past the emitter nodes, otherwise the system scripts will pick up all of the emitter and particle script parameters.
-				UEdGraphPin* InputPin = FNiagaraStackGraphUtilities::GetParameterMapInputPin(*NodeToTraverse);
-				while (NodeToTraverse != nullptr && InputPin != nullptr && InputPin->LinkedTo.Num() == 1 &&
-					(NodeToTraverse->IsA<UNiagaraNodeOutput>() || NodeToTraverse->IsA<UNiagaraNodeEmitter>()))
-				{
-					NodeToTraverse = Cast<UNiagaraNode>(InputPin->LinkedTo[0]->GetOwningNode());
-					InputPin = NodeToTraverse != nullptr ? FNiagaraStackGraphUtilities::GetParameterMapInputPin(*NodeToTraverse) : nullptr;
-				}
-			}
+			ParameterToScriptVariableMap.Add(EditorOnlyScriptVar->Variable, EditorOnlyScriptVar);
 
-			if (NodeToTraverse == nullptr)
-			{
-				continue;
-			}
+			const FNiagaraVariable& Var = EditorOnlyScriptVar->Variable;
+			FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
+			Item.ScriptVariable = EditorOnlyScriptVar;
+			Item.NamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Var.GetName());
+			Item.bExternallyReferenced = false;
+			Item.bSourcedFromCustomStackContext = false;
+			Item.ReferenceCount = 0;
 
-			bool bIgnoreDisabled = true;
-			FNiagaraParameterMapHistoryBuilder Builder;
-			UNiagaraEmitter* GraphOwningEmitter = EditableGraph->GetTypedOuter<UNiagaraEmitter>();
-			FCompileConstantResolver ConstantResolver = GraphOwningEmitter != nullptr
-				? FCompileConstantResolver(GraphOwningEmitter, OutputNode->GetUsage())
-				: FCompileConstantResolver();
-				 
-			Builder.SetIgnoreDisabled(bIgnoreDisabled);
-			Builder.ConstantResolver = ConstantResolver;
-			FName StageName;
-			ENiagaraScriptUsage StageUsage = OutputNode->GetUsage();
-			if (StageUsage == ENiagaraScriptUsage::ParticleSimulationStageScript && GraphOwningEmitter)
-			{
-				UNiagaraSimulationStageBase* Base = GraphOwningEmitter->GetSimulationStageById(OutputNode->GetUsageId());
-				if (Base)
-				{
-					StageName = Base->GetStackContextReplacementName();
-				}
-			}
-			Builder.BeginUsage(StageUsage, StageName);
-			NodeToTraverse->BuildParameterMapHistory(Builder, true, true);
-			Builder.EndUsage();
+			// Determine whether the item is name aliasing a parameter definition's parameter.
+			Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(EditorOnlyScriptVar->Variable);
 
-			if (Builder.Histories.Num() != 1)
+			VisitedParameterToItemMap.Add(Var, Item);
+		}
+	}
+
+	if (bForceSystem)
+	{
+		// Collect parameters for all emitters.
+		TArray<FNiagaraVariable> VisitedInvalidParameters;
+
+		// -For each selected graph perform a parameter map history traversal and record each unique visited parameter.
+		for (const UNiagaraGraph* EditableGraph : EditableGraphs)
+		{
+			TArray<UNiagaraNodeOutput*> OutputNodes;
+			EditableGraph->GetNodesOfClass<UNiagaraNodeOutput>(OutputNodes);
+			for (UNiagaraNodeOutput* OutputNode : OutputNodes)
 			{
-				// We should only have traversed one emitter (have not visited more than one NiagaraNodeEmitter.)
-				ensureMsgf(false, TEXT("Encountered more than one parameter map history when collecting parameters for system parameter panel view model!"));
-			}
-	
-			// Get all UNiagaraScriptVariables of visited graphs in the ParameterToScriptVariableMap so that generated items are in sync.
-			TSet<UNiagaraGraph*> VisitedExternalGraphs;
-			for (const UEdGraphPin* MapPin : Builder.Histories[0].MapPinHistory)
-			{
-				const UNiagaraNodeFunctionCall* MapPinOuterFunctionCallNode = Cast<UNiagaraNodeFunctionCall>(MapPin->GetOuter());
-				if (MapPinOuterFunctionCallNode != nullptr)
+				UNiagaraNode* NodeToTraverse = OutputNode;
+				if (OutputNode->GetUsage() == ENiagaraScriptUsage::SystemSpawnScript || OutputNode->GetUsage() == ENiagaraScriptUsage::SystemUpdateScript)
 				{
-					UNiagaraGraph* VisitedExternalGraph = MapPinOuterFunctionCallNode->GetCalledGraph();
-					if (VisitedExternalGraph != nullptr)
+					// Traverse past the emitter nodes, otherwise the system scripts will pick up all of the emitter and particle script parameters.
+					UEdGraphPin* InputPin = FNiagaraStackGraphUtilities::GetParameterMapInputPin(*NodeToTraverse);
+					while (NodeToTraverse != nullptr && InputPin != nullptr && InputPin->LinkedTo.Num() == 1 &&
+						(NodeToTraverse->IsA<UNiagaraNodeOutput>() || NodeToTraverse->IsA<UNiagaraNodeEmitter>()))
 					{
-						VisitedExternalGraphs.Add(VisitedExternalGraph);
+						NodeToTraverse = Cast<UNiagaraNode>(InputPin->LinkedTo[0]->GetOwningNode());
+						InputPin = NodeToTraverse != nullptr ? FNiagaraStackGraphUtilities::GetParameterMapInputPin(*NodeToTraverse) : nullptr;
 					}
 				}
-			}
-			for (const UNiagaraGraph* VisitedExternalGraph : VisitedExternalGraphs)
-			{
-				ParameterToScriptVariableMap.Append(VisitedExternalGraph->GetAllMetaData());
-			}
 
-			const TArray<FName>& CustomIterationSourceNamespaces = Builder.Histories[0].IterationNamespaceOverridesEncountered;
-			for (int32 VariableIndex = 0; VariableIndex < Builder.Histories[0].Variables.Num(); VariableIndex++)
-			{
-				const FNiagaraVariable& Var = Builder.Histories[0].Variables[VariableIndex];
-				// If this variable has already been visited and does not have a valid namespace then skip it.
-				if (VisitedInvalidParameters.Contains(Var))
+				if (NodeToTraverse == nullptr)
 				{
 					continue;
 				}
 
-				if(FNiagaraParameterPanelItem* ItemPtr = VisitedParameterToItemMap.Find(Var))
+				bool bIgnoreDisabled = true;
+				FNiagaraParameterMapHistoryBuilder Builder;
+				FVersionedNiagaraEmitter GraphOwningEmitter = EditableGraph->GetOwningEmitter();
+				FCompileConstantResolver ConstantResolver = GraphOwningEmitter.Emitter != nullptr
+					? FCompileConstantResolver(GraphOwningEmitter, OutputNode->GetUsage())
+					: FCompileConstantResolver();
+				 
+				Builder.SetIgnoreDisabled(bIgnoreDisabled);
+				Builder.ConstantResolver = ConstantResolver;
+				FName StageName;
+				ENiagaraScriptUsage StageUsage = OutputNode->GetUsage();
+				if (StageUsage == ENiagaraScriptUsage::ParticleSimulationStageScript && GraphOwningEmitter.Emitter)
 				{
-					// This variable has already been registered, increment the reference count.
-					ItemPtr->ReferenceCount += Builder.Histories[0].PerVariableReadHistory[VariableIndex].Num() + Builder.Histories[0].PerVariableWriteHistory[VariableIndex].Num();
-				}
-				else
-				{
-					// This variable has not been registered, prepare the FNiagaraParameterPanelItem.
-					// -First make sure the variable namespace is in a valid category. If not, skip it.
-					FNiagaraNamespaceMetadata CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Var.GetName());
-					if (CachedCurrentCategories.Contains(FNiagaraParameterPanelCategory(CandidateNamespaceMetaData)) == false)
+					UNiagaraSimulationStageBase* Base = GraphOwningEmitter.GetEmitterData()->GetSimulationStageById(OutputNode->GetUsageId());
+					if (Base)
 					{
-						VisitedInvalidParameters.Add(Var);
+						StageName = Base->GetStackContextReplacementName();
+					}
+				}
+				Builder.BeginUsage(StageUsage, StageName);
+				NodeToTraverse->BuildParameterMapHistory(Builder, true, true);
+				Builder.EndUsage();
+
+				if (Builder.Histories.Num() != 1)
+				{
+					// We should only have traversed one emitter (have not visited more than one NiagaraNodeEmitter.)
+					ensureMsgf(false, TEXT("Encountered '%d' parameter map history when collecting parameters for system parameter panel view model, we expect only 1!"), Builder.Histories.Num());
+				}
+				if (Builder.Histories.Num() == 0)
+				{
+					continue;
+				}
+
+				// Get all UNiagaraScriptVariables of visited graphs in the ParameterToScriptVariableMap so that generated items are in sync.
+				TSet<UNiagaraGraph*> VisitedExternalGraphs;
+				for (const UEdGraphPin* MapPin : Builder.Histories[0].MapPinHistory)
+				{
+					const UNiagaraNodeFunctionCall* MapPinOuterFunctionCallNode = Cast<UNiagaraNodeFunctionCall>(MapPin->GetOuter());
+					if (MapPinOuterFunctionCallNode != nullptr)
+					{
+						UNiagaraGraph* VisitedExternalGraph = MapPinOuterFunctionCallNode->GetCalledGraph();
+						if (VisitedExternalGraph != nullptr)
+						{
+							VisitedExternalGraphs.Add(VisitedExternalGraph);
+						}
+					}
+				}
+				for (const UNiagaraGraph* VisitedExternalGraph : VisitedExternalGraphs)
+				{
+					ParameterToScriptVariableMap.Append(VisitedExternalGraph->GetAllMetaData());
+				}
+
+				const TArray<FName>& CustomIterationSourceNamespaces = Builder.Histories[0].IterationNamespaceOverridesEncountered;
+				for (int32 VariableIndex = 0; VariableIndex < Builder.Histories[0].Variables.Num(); VariableIndex++)
+				{
+					const FNiagaraVariable& Var = Builder.Histories[0].Variables[VariableIndex];
+					// If this variable has already been visited and does not have a valid namespace then skip it.
+					if (VisitedInvalidParameters.Contains(Var))
+					{
 						continue;
 					}
 
-					// -Lookup the script variable.
-					TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ParameterToScriptVariableMap.Find(Var);
-					UNiagaraScriptVariable* ScriptVar;
-					if (ScriptVarPtr != nullptr)
+					if (FNiagaraParameterPanelItem* ItemPtr = VisitedParameterToItemMap.Find(Var))
 					{
-						ScriptVar = *ScriptVarPtr;
+						// This variable has already been registered, increment the reference count.
+						ItemPtr->ReferenceCount += Builder.Histories[0].PerVariableReadHistory[VariableIndex].Num() + Builder.Histories[0].PerVariableWriteHistory[VariableIndex].Num();
 					}
-					else
+					else  // Add newly found variables
 					{
-						// Create a new UNiagaraScriptVariable to represent this parameter for the lifetime of the ParameterPanelViewModel.
-						ScriptVar = NewObject<UNiagaraScriptVariable>(GetTransientPackage());
-						ScriptVar->AddToRoot();
-						ScriptVar->Init(Var, FNiagaraVariableMetaData());
-						TransientParameterToScriptVarMap.Add(Var, ScriptVar);
-					}
-
-					bool bVarOnlyInTopLevelGraph = true;
-					for (FModuleScopedPin& WritePin : Builder.Histories[0].PerVariableWriteHistory[VariableIndex])
-					{
-						UEdGraphNode* VariableOwningNode = WritePin.Pin->GetOwningNode();
-						bVarOnlyInTopLevelGraph &= AllGraphs.Contains(static_cast<const UNiagaraGraph*>(VariableOwningNode->GetGraph()));
-					}
-					for (FNiagaraParameterMapHistory::FReadHistory& ReadPins : Builder.Histories[0].PerVariableReadHistory[VariableIndex])
-					{
-						bVarOnlyInTopLevelGraph &= !AllGraphs.Contains(static_cast<const UNiagaraGraph*>(ReadPins.ReadPin.Pin->GetOwningNode()->GetGraph()));
-					}
-
-					FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
-					Item.ScriptVariable = ScriptVar;
-					Item.NamespaceMetaData = CandidateNamespaceMetaData;
-					Item.bExternallyReferenced = !bVarOnlyInTopLevelGraph;
-					
-					// -Determine whether the parameter is from a custom stack context.
-					Item.bSourcedFromCustomStackContext = false;
-					for (const FName CustomIterationNamespace : CustomIterationSourceNamespaces)
-					{
-						if (Var.IsInNameSpace(CustomIterationNamespace))
+						// This variable has not been registered, prepare the FNiagaraParameterPanelItem.
+						// -First make sure the variable namespace is in a valid category. If not, skip it.
+						FNiagaraNamespaceMetadata CandidateNamespaceMetaData = FNiagaraEditorUtilities::GetNamespaceMetaDataForVariableName(Var.GetName());
+						if (CachedCurrentCategories.Contains(FNiagaraParameterPanelCategory(CandidateNamespaceMetaData)) == false)
 						{
-							Item.bSourcedFromCustomStackContext = true;
-							break;
+							VisitedInvalidParameters.Add(Var);
+							continue;
 						}
+
+						// -Lookup the script variable.
+						TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ParameterToScriptVariableMap.Find(Var);
+						UNiagaraScriptVariable* ScriptVar;
+						if (ScriptVarPtr != nullptr)
+						{
+							ScriptVar = *ScriptVarPtr;
+						}
+						else
+						{
+							// Create a new UNiagaraScriptVariable to represent this parameter for the lifetime of the ParameterPanelViewModel.
+							ScriptVar = NewObject<UNiagaraScriptVariable>(GetTransientPackage());
+							ScriptVar->AddToRoot();
+							ScriptVar->Init(Var, FNiagaraVariableMetaData());
+							TransientParameterToScriptVarMap.Add(Var, ScriptVar);
+						}
+
+						bool bVarOnlyInTopLevelGraph = true;
+						if (!bForceScript)
+						{
+							for (FModuleScopedPin& WritePin : Builder.Histories[0].PerVariableWriteHistory[VariableIndex])
+							{
+								UEdGraphNode* VariableOwningNode = WritePin.Pin->GetOwningNode();
+								bVarOnlyInTopLevelGraph &= AllGraphs.Contains(static_cast<const UNiagaraGraph*>(VariableOwningNode->GetGraph()));
+							}
+							for (FNiagaraParameterMapHistory::FReadHistory& ReadPins : Builder.Histories[0].PerVariableReadHistory[VariableIndex])
+							{
+								UEdGraphNode* VariableOwningNode = ReadPins.ReadPin.Pin->GetOwningNode();
+								bVarOnlyInTopLevelGraph &= !AllGraphs.Contains(static_cast<const UNiagaraGraph*>(VariableOwningNode->GetGraph()));
+							}
+						}
+
+						FNiagaraParameterPanelItem Item = FNiagaraParameterPanelItem();
+						Item.ScriptVariable = ScriptVar;
+						Item.NamespaceMetaData = CandidateNamespaceMetaData;
+						Item.bExternallyReferenced = !bVarOnlyInTopLevelGraph;
+
+						// -Determine whether the parameter is from a custom stack context.
+						Item.bSourcedFromCustomStackContext = false;
+						for (const FName CustomIterationNamespace : CustomIterationSourceNamespaces)
+						{
+							if (Var.IsInNameSpace(CustomIterationNamespace))
+							{
+								Item.bSourcedFromCustomStackContext = true;
+								break;
+							}
+						}
+
+						// Determine whether the item is name aliasing a parameter definition's parameter.
+						Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(Item.ScriptVariable->Variable);
+
+						// -Increment the reference count.
+						Item.ReferenceCount += Builder.Histories[0].PerVariableReadHistory[VariableIndex].Num() + Builder.Histories[0].PerVariableWriteHistory[VariableIndex].Num();
+
+						VisitedParameterToItemMap.Add(Var, Item);
 					}
-
-					// Determine whether the item is name aliasing a parameter definition's parameter.
-					Item.DefinitionMatchState = FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(Item.ScriptVariable->Variable);
-
-					// -Increment the reference count.
-					Item.ReferenceCount += Builder.Histories[0].PerVariableReadHistory[VariableIndex].Num() + Builder.Histories[0].PerVariableWriteHistory[VariableIndex].Num();
-
-					VisitedParameterToItemMap.Add(Var, Item);
 				}
+			}
+		}
+
+		// Add active renderers usage variables to the counts
+		for (TSharedRef<FNiagaraEmitterHandleViewModel> EmitterVMS : SystemViewModel->GetEmitterHandleViewModels())
+		{
+			if (EmitterVMS.Get().IsValid() && EmitterVMS.Get().GetIsEnabled() && EmitterVMS.Get().GetEmitterHandle())
+			{
+				FVersionedNiagaraEmitterData* ED = EmitterVMS.Get().GetEmitterHandle()->GetEmitterData();
+				if (ED)
+				{
+					FNiagaraAliasContext ResolveAliasesContext(FNiagaraAliasContext::ERapidIterationParameterMode::EmitterOrParticleScript);
+					ResolveAliasesContext.ChangeEmitterNameToEmitter(EmitterVMS.Get().GetEmitterHandle()->GetUniqueInstanceName());
+					
+					ED->ForEachEnabledRenderer(
+						[&](UNiagaraRendererProperties* RenderProperties)
+						{
+							for (FNiagaraVariableBase BoundAttribute : RenderProperties->GetBoundAttributes())
+							{
+								BoundAttribute = FNiagaraUtilities::ResolveAliases(BoundAttribute, ResolveAliasesContext);
+
+								if (FNiagaraParameterPanelItem* ItemPtr = VisitedParameterToItemMap.Find(BoundAttribute))
+								{
+									// This variable has already been registered, increment the reference count. Otherwise, it is 
+									// not a live binding and we can skip.
+									ItemPtr->ReferenceCount++;
+								}
+							}
+						}
+					);
+				}
+			}
+		}
+
+	}
+	else if (bForceScript)
+	{
+		TSharedPtr<class FNiagaraScratchPadScriptViewModel> ScratchPadScriptVM = SystemViewModel->GetDocumentViewModel()->GetActiveScratchPadViewModelIfSet();
+		if (ScratchPadScriptVM.IsValid())
+		{
+			TSharedPtr<INiagaraParameterPanelViewModel> ParamPanelForScriptVM = ScratchPadScriptVM->GetParameterPanelViewModel();
+			if (ParamPanelForScriptVM.IsValid())
+			{
+				CachedViewedItems = ParamPanelForScriptVM->GetViewedParameterItems();
+				return CachedViewedItems;
 			}
 		}
 	}
@@ -1918,7 +2432,7 @@ TArray<TWeakObjectPtr<UNiagaraGraph>> FNiagaraSystemToolkitParameterPanelViewMod
 	else
 	{
 		TArray<TWeakObjectPtr<UNiagaraGraph>> EditableEmitterScriptGraphs;
-		EditableEmitterScriptGraphs.Add(static_cast<UNiagaraScriptSource*>(SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph);
+		EditableEmitterScriptGraphs.Add(static_cast<UNiagaraScriptSource*>(SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterHandle()->GetEmitterData()->GraphSource)->NodeGraph);
 		return EditableEmitterScriptGraphs;
 	}
 }
@@ -1939,7 +2453,7 @@ TArray<FNiagaraEmitterHandle*> FNiagaraSystemToolkitParameterPanelViewModel::Get
 	return EditableEmitterHandles;
 }
 
-void FNiagaraSystemToolkitParameterPanelViewModel::AddScriptVariable(const UNiagaraScriptVariable* NewScriptVar) const
+void FNiagaraSystemToolkitParameterPanelViewModel::AddScriptVariable(const UNiagaraScriptVariable* NewScriptVar) 
 {
 	if (NewScriptVar == nullptr)
 	{
@@ -1977,6 +2491,8 @@ void FNiagaraSystemToolkitParameterPanelViewModel::AddScriptVariable(const UNiag
 
 	if (bSuccess)
 	{
+		if (SystemViewModel->GetSystemStackViewModel())
+			SystemViewModel->GetSystemStackViewModel()->InvalidateCachedParameterUsage();
 		Refresh();
 		const bool bRequestRename = false;
 		SelectParameterItemByName(NewScriptVar->Variable.GetName(), bRequestRename);
@@ -2023,7 +2539,8 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRenamedExternally(
 				if (SelectedEmitterHandleIds.Contains(EmitterHandleViewModel->GetId()))
 				{
 					bool bFound = false;
-					UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph;
+					FVersionedNiagaraEmitter VersionedEmitter = EmitterHandleViewModel->GetEmitterHandle()->GetInstance();
+					UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(VersionedEmitter.GetEmitterData()->GraphSource)->NodeGraph;
 					if (Graph)
 					{
 						const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& RefMap = Graph->GetParameterReferenceMap();
@@ -2037,7 +2554,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRenamedExternally(
 
 					if (!bFound)
 					{
-						if (const FNiagaraParameterPanelItem* FoundItemPtr = CachedViewedItems.FindByPredicate([&InOldVar](const FNiagaraParameterPanelItem& Item) { return Item.GetVariable() == InOldVar; }))
+						if (const FNiagaraParameterPanelItem* FoundItemPtr = CachedViewedItems.FindByPredicate([&InOldVar](const FNiagaraParameterPanelItem& Item) { return (const FNiagaraVariableBase&)Item.GetVariable() == InOldVar; }))
 						{
 							RenameParameter(*FoundItemPtr, InNewVar.GetName());
 						}
@@ -2056,7 +2573,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRenamedExternally(
 		const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& EmitterHandleViewModels = SystemViewModel->GetEmitterHandleViewModels();
 		for (const TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel : EmitterHandleViewModels)
 		{
-			UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph;
+			UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetEmitterData()->GraphSource)->NodeGraph;
 			if (Graph)
 			{ 
 				Graphs.Add(Graph);
@@ -2077,7 +2594,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRenamedExternally(
 
 		if (!bFound)
 		{
-			if (const FNiagaraParameterPanelItem* FoundItemPtr = CachedViewedItems.FindByPredicate([&InOldVar](const FNiagaraParameterPanelItem& Item) { return Item.GetVariable() == InOldVar; }))
+			if (const FNiagaraParameterPanelItem* FoundItemPtr = CachedViewedItems.FindByPredicate([&InOldVar](const FNiagaraParameterPanelItem& Item) { return (const FNiagaraVariableBase&)Item.GetVariable() == InOldVar; }))
 			{
 				RenameParameter(*FoundItemPtr, InNewVar.GetName());
 			}
@@ -2106,7 +2623,8 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRemovedExternally(
 				if (SelectedEmitterHandleIds.Contains(EmitterHandleViewModel->GetId()))
 				{
 					bool bFound = false;
-					UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph;
+					FVersionedNiagaraEmitter VersionedEmitter = EmitterHandleViewModel->GetEmitterHandle()->GetInstance();
+					UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(VersionedEmitter.GetEmitterData()->GraphSource)->NodeGraph;
 					if (Graph)
 					{
 						const TMap<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& RefMap = Graph->GetParameterReferenceMap();
@@ -2120,7 +2638,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRemovedExternally(
 
 					if (!bFound)
 					{
-						EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->HandleVariableRemoved(InOldVar, true);
+						VersionedEmitter.Emitter->HandleVariableRemoved(InOldVar, true, VersionedEmitter.Version);
 					}
 				}
 			}
@@ -2129,14 +2647,14 @@ void FNiagaraSystemToolkitParameterPanelViewModel::OnParameterRemovedExternally(
 	// User and System need to be checked for all graphs as they could be used anywhere.
 	else if (InOldVar.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
 		InOldVar.IsInNameSpace(FNiagaraConstants::SystemNamespaceString))
-	{
+	{		
 		TArray<UNiagaraGraph*> Graphs;
 		Graphs.Add(SystemScriptGraph.Get());
 
 		const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& EmitterHandleViewModels = SystemViewModel->GetEmitterHandleViewModels();
 		for (const TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel : EmitterHandleViewModels)
 		{
-			UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetInstance()->GraphSource)->NodeGraph;
+			UNiagaraGraph* Graph = static_cast<UNiagaraScriptSource*>(EmitterHandleViewModel->GetEmitterHandle()->GetEmitterData()->GraphSource)->NodeGraph;
 			if (Graph)
 				Graphs.Add(Graph);
 
@@ -2183,7 +2701,7 @@ void FNiagaraSystemToolkitParameterPanelViewModel::ReconcileOnGraphChangedBindin
 		{
 			TArray<UNiagaraScript*> EmitterScripts;
 			const bool bCompilableOnly = false;
-			EmitterHandle->GetInstance()->GetScripts(EmitterScripts, bCompilableOnly);
+			EmitterHandle->GetEmitterData()->GetScripts(EmitterScripts, bCompilableOnly);
 			for (UNiagaraScript* EmitterScript : EmitterScripts)
 			{
 				GraphsToAddCallbacks.Add(GetGraphFromScript(EmitterScript));
@@ -2268,7 +2786,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::Init(const FScriptToolkitUICo
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) const
+void FNiagaraScriptToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
 	bool bSuccess = false;
@@ -2305,7 +2823,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) const
+void FNiagaraScriptToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
 	bool bSuccess = false;
@@ -2337,7 +2855,7 @@ bool FNiagaraScriptToolkitParameterPanelViewModel::GetCanAddParametersToCategory
 	return GetEditableGraphsConst().Num() > 0 && Category.NamespaceMetaData.GetGuid() != FNiagaraEditorGuids::StaticSwitchNamespaceMetaDataGuid;
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) const
+void FNiagaraScriptToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) 
 {
 	bool bAnyChange = false;
 	FScopedTransaction RemoveParametersWithPins(LOCTEXT("RemoveParametersWithPins", "Removed parameter(s) and referenced pins"));
@@ -2375,7 +2893,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::DeleteParameters(const TArray
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) const
+void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) 
 {
 	if (ensureMsgf(ItemToRename.bExternallyReferenced == false, TEXT("Can not modify an externally referenced parameter.")) == false)
 	{
@@ -2389,7 +2907,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagar
 	RenameParameter(ItemToRename.ScriptVariable, NewName);
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::ChangeParameterType(const TArray<FNiagaraParameterPanelItem> ItemsToModify, const FNiagaraTypeDefinition NewType) const
+void FNiagaraScriptToolkitParameterPanelViewModel::ChangeParameterType(const TArray<FNiagaraParameterPanelItem> ItemsToModify, const FNiagaraTypeDefinition NewType) 
 {
 	FScopedTransaction Transaction(LOCTEXT("ChangeParameterTypeTransaction", "Change parameter type"));
 
@@ -2412,7 +2930,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::ChangeParameterType(const TAr
 	Refresh();
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const UNiagaraScriptVariable* ScriptVarToRename, const FName NewName) const
+void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const UNiagaraScriptVariable* ScriptVarToRename, const FName NewName) 
 {
 	FScopedTransaction RenameTransaction(LOCTEXT("RenameParameterTransaction", "Rename parameter"));
 	ScriptViewModel->GetStandaloneScript().Script->Modify();
@@ -2420,12 +2938,8 @@ void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const UNiagar
 	const FNiagaraVariable& Parameter = ScriptVarToRename->Variable;
 	for (UNiagaraGraph* Graph : GetEditableGraphs())
 	{
-		const FNiagaraGraphParameterReferenceCollection* ReferenceCollection = Graph->GetParameterReferenceMap().Find(Parameter);
-		if (ensureMsgf(ReferenceCollection != nullptr, TEXT("Parameter in view which wasn't in the reference collection.")) == false)
-		{
-			// Can't handle parameters with no reference collections.
-			continue;
-		}
+		// Removed some prior code here around parameter usage collections and earlying out as it was causing "unreferenced" parameters to be
+		// unabled to have their namespace changed for no good reason.
 		Graph->Modify();
 		Graph->RenameParameter(Parameter, NewName);
 		bSuccess = true;
@@ -2442,7 +2956,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const UNiagar
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagaraVariable& VariableToRename, const FName NewName) const
+void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagaraVariable& VariableToRename, const FName NewName) 
 {
 	for (UNiagaraGraph* Graph : GetEditableGraphs())
 	{
@@ -2454,7 +2968,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::RenameParameter(const FNiagar
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::DuplicateParameters(const TArray<FNiagaraParameterPanelItem> ItemsToDuplicate) const
+void FNiagaraScriptToolkitParameterPanelViewModel::DuplicateParameters(const TArray<FNiagaraParameterPanelItem> ItemsToDuplicate) 
 {
 	FScopedTransaction Transaction(LOCTEXT("DuplicateParameterTransaction", "Duplicate parameter"));
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
@@ -2505,7 +3019,7 @@ void FNiagaraScriptToolkitParameterPanelViewModel::DuplicateParameters(const TAr
 	}
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) const
+void FNiagaraScriptToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) 
 {
 	const FText TransactionText = bSubscribed ? LOCTEXT("SubscribeParameter", "Subscribe parameter") : LOCTEXT("UnsubscribeParameter", "Unsubscribe parameter");
 	FScopedTransaction SubscribeTransaction(TransactionText);
@@ -2694,11 +3208,12 @@ const TArray<FNiagaraParameterPanelCategory>& FNiagaraScriptToolkitParameterPane
 // 		return FNiagaraScriptToolkitParameterPanelViewModel::DefaultAdvancedCategories;
 // 	}
 	// For now always show advanced.
+
 	CachedCurrentCategories = FNiagaraScriptToolkitParameterPanelViewModel::DefaultAdvancedCategories;
-	return FNiagaraScriptToolkitParameterPanelViewModel::DefaultAdvancedCategories;
+	return CachedCurrentCategories;
 }
 
-FMenuAndSearchBoxWidgets FNiagaraScriptToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) const
+FMenuAndSearchBoxWidgets FNiagaraScriptToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) 
 {
 	const bool bRequestRename = true;
 	const bool bSkipSubscribedLibraries = false;
@@ -2727,7 +3242,7 @@ FMenuAndSearchBoxWidgets FNiagaraScriptToolkitParameterPanelViewModel::GetParame
 	return MenuAndSearchBoxWidgets;
 }
 
-FReply FNiagaraScriptToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation) const
+FReply FNiagaraScriptToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation) 
 {
 	TSharedPtr<FNiagaraParameterGraphDragOperation> ParameterGraphDragDropOperation = StaticCastSharedPtr<FNiagaraParameterGraphDragOperation>(DragDropOperation);
 	if (ParameterGraphDragDropOperation.IsValid() == false)
@@ -2802,7 +3317,7 @@ bool FNiagaraScriptToolkitParameterPanelViewModel::GetCanSetParameterCustomNames
 	return FNiagaraParameterPanelUtilities::GetCanSetParameterCustomNamespaceModifierAndToolTipForScriptOrSystem(ItemToModify, bDuplicateParameter, OutCanSetParameterNamespaceModifierToolTip);
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::SetParameterIsOverridingLibraryDefaultValue(const FNiagaraParameterPanelItem ItemToModify, const bool bOverriding) const
+void FNiagaraScriptToolkitParameterPanelViewModel::SetParameterIsOverridingLibraryDefaultValue(const FNiagaraParameterPanelItem ItemToModify, const bool bOverriding) 
 {
 	if (ensureMsgf(ItemToModify.bExternallyReferenced == false, TEXT("Cannot modify an externally referenced parameter.")) == false)
 	{
@@ -2879,8 +3394,10 @@ TArray<FNiagaraParameterPanelItem> FNiagaraScriptToolkitParameterPanelViewModel:
 	TMap<FNiagaraVariable, FNiagaraParameterPanelItem> VisitedParameterToItemMap;
 	TArray<FNiagaraVariable> VisitedInvalidParameters;
 
+	TArray<UNiagaraGraph*> Graphs = GetEditableGraphsConst();
+
 	// For scripts we use the reference maps cached in the graph to collect parameters.
-	for (const UNiagaraGraph* Graph : GetEditableGraphsConst())
+	for (const UNiagaraGraph* Graph : Graphs)
 	{
 		TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>> ParameterToScriptVariableMap;
 		ParameterToScriptVariableMap.Append(Graph->GetAllMetaData());
@@ -2965,7 +3482,7 @@ TArray<FNiagaraParameterPanelItem> FNiagaraScriptToolkitParameterPanelViewModel:
 	return CachedViewedItems;
 }
 
-void FNiagaraScriptToolkitParameterPanelViewModel::AddScriptVariable(const UNiagaraScriptVariable* NewScriptVar) const
+void FNiagaraScriptToolkitParameterPanelViewModel::AddScriptVariable(const UNiagaraScriptVariable* NewScriptVar) 
 {
 	bool bSuccess = false;
 	FScopedTransaction AddTransaction(LOCTEXT("AddScriptParameterTransaction", "Add parameter to script."));
@@ -3044,10 +3561,9 @@ void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::Cleanup()
 	}
 }
 
-void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) const
+void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::AddParameter(FNiagaraVariable NewVariable, const FNiagaraParameterPanelCategory Category, const bool bRequestRename, const bool bMakeUniqueName) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
-	bool bSuccess = false;
 
 	if (bMakeUniqueName)
 	{
@@ -3062,9 +3578,10 @@ void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::AddParameter(FN
 	
 	ParameterDefinitionsWeak.Get()->AddParameter(NewVariable);
 	SelectParameterItemByName(NewVariable.GetName(), bRequestRename);
+
 }
 
-void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) const
+void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::FindOrAddParameter(FNiagaraVariable Variable, const FNiagaraParameterPanelCategory Category) 
 {
 	TGuardValue<bool> AddParameterRefreshGuard(bIsAddingParameter, true);
 
@@ -3081,7 +3598,7 @@ bool FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::GetCanAddParame
 	return true;
 }
 
-void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) const
+void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::DeleteParameters(const TArray<FNiagaraParameterPanelItem>& ItemsToDelete) 
 {
 	FScopedTransaction RemoveParameter(LOCTEXT("ParameterDefinitionsToolkitParameterPanelViewModel_RemoveParameter", "Removed Parameter(s)"));
 
@@ -3093,13 +3610,13 @@ void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::DeleteParameter
 	UIContext.RefreshSelectionDetailsViewPanel();
 }
 
-void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) const
+void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::RenameParameter(const FNiagaraParameterPanelItem& ItemToRename, const FName NewName) 
 {
 	FScopedTransaction RenameParameter(LOCTEXT("ParameterDefinitionsToolkitParameterPanelViewModel_RenameParameter", "Rename Parameter"));
 	ParameterDefinitionsWeak.Get()->RenameParameter(ItemToRename.GetVariable(), NewName);
 }
 
-void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) const
+void FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::SetParameterIsSubscribedToLibrary(const UNiagaraScriptVariable* ScriptVarToModify, const bool bSubscribed) 
 {
 	// Do nothing, parameter definitions parameters are always subscribed to their parent parameter definitions.
 	ensureMsgf(false, TEXT("Tried to set a parameter definitions defined parameter subscribing! This should not be reachable."));
@@ -3291,7 +3808,7 @@ const TArray<FNiagaraParameterPanelCategory>& FNiagaraParameterDefinitionsToolki
 	return FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::DefaultCategories;
 }
 
-FMenuAndSearchBoxWidgets FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) const
+FMenuAndSearchBoxWidgets FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::GetParameterMenu(FNiagaraParameterPanelCategory Category) 
 {
 	const bool bRequestRename = true;
 	const bool bMakeUniqueName = true;
@@ -3312,7 +3829,7 @@ FMenuAndSearchBoxWidgets FNiagaraParameterDefinitionsToolkitParameterPanelViewMo
 	return MenuAndSearchBoxWidgets;
 }
 
-FReply FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DropOperation) const
+FReply FNiagaraParameterDefinitionsToolkitParameterPanelViewModel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DropOperation) 
 {
 	ensureMsgf(false, TEXT("Tried to handle drag drop op in parameter definitions parameter panel viewmodel!"));
 	return FReply::Handled();

@@ -2,10 +2,15 @@
 
 #include "ControlRigGizmoLibrary.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigGizmoLibrary)
+
 #define LOCTEXT_NAMESPACE "ControlRigGizmoLibrary"
 
 UControlRigShapeLibrary::UControlRigShapeLibrary()
 {
+#if WITH_EDITOR
+	XRayMaterial = LoadObject<UMaterial>(nullptr, TEXT("/ControlRig/Controls/ControlRigXRayMaterial.ControlRigXRayMaterial"));
+#endif
 }
 
 #if WITH_EDITOR
@@ -161,3 +166,4 @@ const TArray<FName> UControlRigShapeLibrary::GetUpdatedNameList(bool bReset)
 }
 
 #undef LOCTEXT_NAMESPACE
+

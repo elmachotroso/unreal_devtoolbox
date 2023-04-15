@@ -2,16 +2,24 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
 #include "Framework/Commands/Commands.h"
-#include "EditorStyleSet.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
+#include "Styling/AppStyle.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+
+class FUICommandInfo;
 
 class FGraphEditorCommandsImpl : public TCommands<FGraphEditorCommandsImpl>
 {
 public:
 
 	FGraphEditorCommandsImpl()
-		: TCommands<FGraphEditorCommandsImpl>( TEXT("GraphEditor"), NSLOCTEXT("Contexts", "GraphEditor", "Graph Editor"), NAME_None, FEditorStyle::GetStyleSetName() )
+		: TCommands<FGraphEditorCommandsImpl>( TEXT("GraphEditor"), NSLOCTEXT("Contexts", "GraphEditor", "Graph Editor"), NAME_None, FAppStyle::GetAppStyleSetName() )
 	{
 	}	
 
@@ -102,6 +110,7 @@ public:
 	TSharedPtr< FUICommandInfo > GoToDefinition;
 
 	// Pin-specific actions
+	TSharedPtr< FUICommandInfo > BreakThisLink;
 	TSharedPtr< FUICommandInfo > BreakPinLinks;
 	TSharedPtr< FUICommandInfo > PromoteToVariable;
 	TSharedPtr< FUICommandInfo > PromoteToLocalVariable;

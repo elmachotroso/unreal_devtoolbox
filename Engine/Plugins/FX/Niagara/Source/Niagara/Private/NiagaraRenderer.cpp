@@ -2,12 +2,9 @@
 
 #include "NiagaraRenderer.h"
 #include "ParticleResources.h"
-#include "ParticleBeamTrailVertexFactory.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraStats.h"
-#include "NiagaraVertexFactory.h"
 #include "NiagaraComponent.h"
-#include "Engine/Engine.h"
 #include "DynamicBufferAllocator.h"
 #include "NiagaraComputeExecutionContext.h"
 #include "NiagaraGPUSortInfo.h"
@@ -81,51 +78,60 @@ public:
 class FNiagaraEmptyTextureSRV : public FRenderResource
 {
 public:
-	enum ETextureType
-	{
-		Texture2D,
-		Texture2DArray,
-		Texture3D
-	};
+	FNiagaraEmptyTextureSRV(EPixelFormat InPixelFormat, const FString& InDebugName, ETextureDimension InDimension)
+		: PixelFormat(InPixelFormat)
+		, DebugName(InDebugName)
+		, Dimension(InDimension)
+	{}
 
-	FNiagaraEmptyTextureSRV(EPixelFormat InPixelFormat, const FString& InDebugName, ETextureType InType) : PixelFormat(InPixelFormat), DebugName(InDebugName), Type(InType) {}
 	EPixelFormat PixelFormat;
 	FString DebugName;
-	ETextureType Type;
+	ETextureDimension Dimension;
 	FTextureRHIRef Texture;
 	FShaderResourceViewRHIRef SRV;
 
 	virtual void InitRHI() override
 	{
+		const FRHITextureCreateDesc Desc = FRHITextureCreateDesc(*DebugName, Dimension)
+			.SetExtent(1, 1)
+			.SetDepth(1)
+			.SetArraySize(1)
+			.SetFormat(PixelFormat)
+			.SetFlags(ETextureCreateFlags::ShaderResource);
+
 		// Create a 1x1 texture.
 		FRHIResourceCreateInfo CreateInfo(*DebugName);
 
 		uint32 Stride;
-		switch (Type)
+		switch (Dimension)
 		{
-			case Texture2D:
+			case ETextureDimension::Texture2D:
 			{
-				FTexture2DRHIRef Tex2D = RHICreateTexture2D(1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
-				void* Pixels = RHILockTexture2D(Tex2D, 0, RLM_WriteOnly, Stride, false);
+				Texture = RHICreateTexture(Desc);
+				void* Pixels = RHILockTexture2D(Texture, 0, RLM_WriteOnly, Stride, false);
 				FMemory::Memset(Pixels, 0, Stride);
-				RHIUnlockTexture2D(Tex2D, 0, 0, false);
-				Texture = Tex2D;
+				RHIUnlockTexture2D(Texture, 0, 0, false);
 				break;
 			}
 
-			case Texture2DArray:
+			case ETextureDimension::Texture2DArray:
 			{
-				FTexture2DArrayRHIRef Tex2DArray = RHICreateTexture2DArray(1, 1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
-				void* Pixels = RHILockTexture2DArray(Tex2DArray, 0, 0, RLM_WriteOnly, Stride, false);
+				Texture = RHICreateTexture(Desc);
+				void* Pixels = RHILockTexture2DArray(Texture, 0, 0, RLM_WriteOnly, Stride, false);
 				FMemory::Memset(Pixels, 0, Stride);
-				RHIUnlockTexture2DArray(Tex2DArray, 0, 0, false);
-				Texture = Tex2DArray;
+				RHIUnlockTexture2DArray(Texture, 0, 0, false);
 				break;
 			}
 
-			case Texture3D:
+			case ETextureDimension::Texture3D:
 			{
-				Texture = RHICreateTexture3D(1, 1, 1, PixelFormat, 1, TexCreate_ShaderResource, CreateInfo);
+				FTexture3DRHIRef Texture3D = RHICreateTexture(Desc);
+				Texture = Texture3D;
+
+				const FPixelFormatInfo& Info = GPixelFormats[PixelFormat];
+				TArray<uint8, TInlineAllocator<16>> Data;
+				Data.AddZeroed(Info.BlockBytes);
+				RHIUpdateTexture3D(Texture3D, 0, FUpdateTextureRegion3D(0, 0, 0, 0, 0, 0, 1, 1, 1), Info.BlockBytes, Info.BlockBytes, Data.GetData());
 				break;
 			}
 
@@ -204,21 +210,21 @@ FRHIShaderResourceView* FNiagaraRenderer::GetDummyUInt4Buffer()
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer2D()
 {
 	check(IsInRenderingThread());
-	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2D"), FNiagaraEmptyTextureSRV::Texture2D);
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2D"), ETextureDimension::Texture2D);
 	return DummyTextureReadBuffer2D.SRV;
 }
 
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer2DArray()
 {
 	check(IsInRenderingThread());
-	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2DArray(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2DArray"), FNiagaraEmptyTextureSRV::Texture2DArray);
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer2DArray(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer2DArray"), ETextureDimension::Texture2DArray);
 	return DummyTextureReadBuffer2DArray.SRV;
 }
 
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyTextureReadBuffer3D()
 {
 	check(IsInRenderingThread());
-	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer3D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer3D"), FNiagaraEmptyTextureSRV::Texture3D);
+	static TGlobalResource<FNiagaraEmptyTextureSRV> DummyTextureReadBuffer3D(PF_R32_FLOAT, TEXT("NiagaraRenderer::DummyTextureReadBuffer3D"), ETextureDimension::Texture3D);
 	return DummyTextureReadBuffer3D.SRV;
 }
 
@@ -360,14 +366,14 @@ void FNiagaraDynamicDataBase::SetVertexFactoryData(class FNiagaraVertexFactoryBa
 
 FNiagaraRenderer::FNiagaraRenderer(ERHIFeatureLevel::Type InFeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter)
 	: DynamicDataRender(nullptr)
-	, bLocalSpace(Emitter->GetCachedEmitter()->bLocalSpace)
+	, bLocalSpace(Emitter->GetCachedEmitterData()->bLocalSpace)
 	, bHasLights(false)
 	, bMotionBlurEnabled(InProps ? InProps->MotionVectorSetting != ENiagaraRendererMotionVectorSetting::Disable : false)
-	, SimTarget(Emitter->GetCachedEmitter()->SimTarget)
+	, SimTarget(Emitter->GetCachedEmitterData()->SimTarget)
 	, FeatureLevel(InFeatureLevel)
 {
 #if STATS
-	EmitterStatID = Emitter->GetCachedEmitter()->GetStatID(false, false);
+	EmitterStatID = Emitter->GetCachedEmitter().Emitter->GetStatID(false, false);
 #endif
 }
 
@@ -487,10 +493,12 @@ bool FNiagaraRenderer::UseLocalSpace(const FNiagaraSceneProxy* Proxy)const
 	return bLocalSpace || Proxy->GetProxyDynamicData().bUseCullProxy;
 }
 
-void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagaraMaterialAttributeBinding > InMaterialParameterBindings, const FNiagaraEmitterInstance* InEmitter, TConstArrayView<UMaterialInterface*> InMaterials) const
+void FNiagaraRenderer::ProcessMaterialParameterBindings(const FNiagaraRendererMaterialParameters& MaterialParameters, const FNiagaraEmitterInstance* InEmitter, TConstArrayView<UMaterialInterface*> InMaterials) const
 {
-	if (InMaterialParameterBindings.Num() == 0 || !InEmitter)
+	if (MaterialParameters.HasAnyBindings() == false || !InEmitter)
+	{
 		return;
+	}
 
 	FNiagaraSystemInstance* SystemInstance = InEmitter->GetParentSystemInstance();
 	if (SystemInstance)
@@ -504,7 +512,7 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagar
 				UMaterialInstanceDynamic* MatDyn = Cast<UMaterialInstanceDynamic>(Mat);
 				if (MatDyn)
 				{
-					for (const FNiagaraMaterialAttributeBinding& Binding : InMaterialParameterBindings)
+					for (const FNiagaraMaterialAttributeBinding& Binding : MaterialParameters.AttributeBindings)
 					{
 
 						if (Binding.GetParamMapBindableVariable().GetType() == FNiagaraTypeDefinition::GetVec4Def() ||
@@ -527,6 +535,17 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagar
 							FLinearColor Var(1.0f, 1.0f, 1.0f, 1.0f);
 							InEmitter->GetBoundRendererValue_GT(Binding.GetParamMapBindableVariable(), Binding.NiagaraChildVariable, &Var);
 							MatDyn->SetVectorParameterValue(Binding.MaterialParameterName, Var);
+						}
+						else if (Binding.GetParamMapBindableVariable().GetType() == FNiagaraTypeDefinition::GetPositionDef() ||
+							(Binding.GetParamMapBindableVariable().GetType().IsDataInterface() && Binding.NiagaraChildVariable.GetType() == FNiagaraTypeDefinition::GetPositionDef()))
+						{
+							FNiagaraPosition Var(ForceInitToZero);
+							InEmitter->GetBoundRendererValue_GT(Binding.GetParamMapBindableVariable(), Binding.NiagaraChildVariable, &Var);
+							FNiagaraLWCConverter LwcConverter = SystemInstance->GetLWCConverter(InEmitter->GetCachedEmitterData() ? InEmitter->GetCachedEmitterData()->bLocalSpace : false);
+							FVector WorldPos = LwcConverter.ConvertSimulationPositionToWorld(Var);
+
+							//TODO: should we use SetDoubleVectorParamValue() instead to prevent accuracy loss? 
+							MatDyn->SetVectorParameterValue(Binding.MaterialParameterName, WorldPos);
 						}
 						else if (Binding.GetParamMapBindableVariable().GetType() == FNiagaraTypeDefinition::GetVec2Def() ||
 							(Binding.GetParamMapBindableVariable().GetType().IsDataInterface() && Binding.NiagaraChildVariable.GetType() == FNiagaraTypeDefinition::GetVec2Def()))
@@ -559,6 +578,24 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagar
 									MatDyn->SetTextureParameterValue(Binding.MaterialParameterName, Tex);
 								}
 							}
+						}
+					}
+
+					for (const FNiagaraRendererMaterialScalarParameter& ScalarParameter : MaterialParameters.ScalarParameters)
+					{
+						MatDyn->SetScalarParameterValue(ScalarParameter.MaterialParameterName, ScalarParameter.Value);
+					}
+
+					for (const FNiagaraRendererMaterialVectorParameter& VectorParameter : MaterialParameters.VectorParameters)
+					{
+						MatDyn->SetVectorParameterValue(VectorParameter.MaterialParameterName, VectorParameter.Value);
+					}
+
+					for (const FNiagaraRendererMaterialTextureParameter& TextureParameter : MaterialParameters.TextureParameters)
+					{
+						if (IsValid(TextureParameter.Texture))
+						{
+							MatDyn->SetTextureParameterValue(TextureParameter.MaterialParameterName, TextureParameter.Texture);
 						}
 					}
 				}
@@ -897,12 +934,12 @@ FVector4f FNiagaraRenderer::CalcMacroUVParameters(const FSceneView& View, FVecto
 		const FVector4 RightPostProjectionPosition = ViewProjMatrix.TransformPosition(MacroUVPosition + MacroUVRadius * ViewMatrix.GetColumn(0));
 		const FVector4 UpPostProjectionPosition = ViewProjMatrix.TransformPosition(MacroUVPosition + MacroUVRadius * ViewMatrix.GetColumn(1));
 
-		const float RightNDCPosX = RightPostProjectionPosition.X / FMath::Max(RightPostProjectionPosition.W, 0.0001f);
-		const float UpNDCPosY = UpPostProjectionPosition.Y / FMath::Max(UpPostProjectionPosition.W, 0.0001f);
-		const float DX = FMath::Min<float>(RightNDCPosX - ObjectNDCPosition.X, WORLD_MAX);
-		const float DY = FMath::Min<float>(UpNDCPosY - ObjectNDCPosition.Y, WORLD_MAX);
+		const FVector4::FReal RightNDCPosX = RightPostProjectionPosition.X / FMath::Max(RightPostProjectionPosition.W, 0.0001f);
+		const FVector4::FReal UpNDCPosY = UpPostProjectionPosition.Y / FMath::Max(UpPostProjectionPosition.W, 0.0001f);
+		const FVector4::FReal DX = FMath::Min(RightNDCPosX - ObjectNDCPosition.X, WORLD_MAX);
+		const FVector4::FReal DY = FMath::Min(UpNDCPosY - ObjectNDCPosition.Y, WORLD_MAX);
 
-		MacroUVParameters.X = float(ObjectNDCPosition.X);
+		MacroUVParameters.X = float(ObjectNDCPosition.X);	// LWC_TODO: Precision loss?
 		MacroUVParameters.Y = float(ObjectNDCPosition.Y);
 		if (DX != 0.0f && DY != 0.0f && !FMath::IsNaN(DX) && FMath::IsFinite(DX) && !FMath::IsNaN(DY) && FMath::IsFinite(DY))
 		{

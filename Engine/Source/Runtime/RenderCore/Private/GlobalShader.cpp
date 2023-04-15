@@ -20,6 +20,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Containers/StaticBitArray.h"
+#include "ShaderCodeLibrary.h"
 #include "StaticBoundShaderState.h"
 
 /** The global shader map. */
@@ -189,9 +190,19 @@ private:
 			// No found platforms that support this shader format
 			return nullptr;
 		}
-
-		const FPlatformInfo& Platform = GetOrLoadPlatformInfo(IniPlatforms[0]);
 		
+		// first add all platforms to populate the map :
+		for (int32 PlatformIndex = 0; PlatformIndex < IniPlatforms.Num(); ++PlatformIndex)
+		{
+			FPlatformInfo& Platform = ConfigDefines.FindOrAdd(IniPlatforms[PlatformIndex]);
+
+			if (!Platform.bInitializedFromConfig)
+			{
+				InitializePlatform(Platform, IniPlatforms[PlatformIndex]);
+				check( Platform.bInitializedFromConfig );
+			}
+		}
+
 		if (!ErrorCheckedPlatforms[ShaderPlatform])
 		{
 			ErrorCheckedPlatforms[ShaderPlatform] = true;
@@ -200,25 +211,24 @@ private:
 			{
 				// This shader platform is shared by multiple target platforms that can be configured independently. We need to make sure all config defines
 				// match up, and that no platform-specific defines exist that might introduce shader compiler output that diverges between target platforms
+								
+				// pointer to Platform0 is safe to hold now because all are added first :
+				const FPlatformInfo * Platform0 = ConfigDefines.Find(IniPlatforms[0]);
+				check( Platform0 != nullptr );
+
 				for (int32 PlatformIndex = 1; PlatformIndex < IniPlatforms.Num(); ++PlatformIndex)
 				{
-					const FPlatformInfo& OtherPlatform = GetOrLoadPlatformInfo(IniPlatforms[PlatformIndex]);
-					ErrorCheckPlatformsForShaderFormat(Platform, OtherPlatform, OutShaderFormat);
+					const FPlatformInfo * OtherPlatform = ConfigDefines.Find(IniPlatforms[PlatformIndex]);
+					check( OtherPlatform != nullptr );
+
+					ErrorCheckPlatformsForShaderFormat(*Platform0, *OtherPlatform, OutShaderFormat);
 				}
 			}
 		}
-
-		return &Platform;
-	}
-
-	static FPlatformInfo& GetOrLoadPlatformInfo(FName PlatformName)
-	{
-		FPlatformInfo& Platform = ConfigDefines.FindOrAdd(PlatformName);
-
-		if (!Platform.bInitializedFromConfig)
-		{
-			InitializePlatform(Platform, PlatformName);
-		}
+		
+		// reget the pointer to IniPlatforms[0] after all Map adds are done, to return out :
+		// note returned pointer is not safe if any more adds are done
+		const FPlatformInfo * Platform = ConfigDefines.Find(IniPlatforms[0]);
 
 		return Platform;
 	}
@@ -254,7 +264,7 @@ private:
 					if (ShaderType == nullptr || ShaderType->GetGlobalShaderType() == nullptr)
 					{
 						// This global shader doesn't actually exist
-						UE_LOG(LogShaders, Error, TEXT("Global shader definition '%s' found in engine config for global shader '%s', which does not exist"), *DefineName, *ShaderName);
+						UE_LOG(LogShaders, Warning, TEXT("Global shader definition '%s' found in engine config for global shader '%s', which does not exist"), *DefineName, *ShaderName);
 						continue;
 					}
 
@@ -449,6 +459,8 @@ void FGlobalShaderMapId::AppendKeyString(FString& KeyString, const TArray<FShade
 {
 #if WITH_EDITOR
 
+	LayoutParams.AppendKeyString(KeyString);
+
 	{
 		const FSHAHash LayoutHash = Freeze::HashLayout(StaticGetTypeLayoutDesc<FGlobalShaderMapContent>(), LayoutParams);
 		KeyString += TEXT("_");
@@ -531,6 +543,11 @@ void FGlobalShaderMapId::AppendKeyString(FString& KeyString, const TArray<FShade
 		SerializationHistory.AppendKeyString(KeyString);
 	}
 #endif // WITH_EDITOR
+}
+
+bool FGlobalShaderMapId::WithEditorOnly() const
+{
+	return LayoutParams.WithEditorOnly();
 }
 
 bool FGlobalShaderType::ShouldCompilePipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, EShaderPermutationFlags Flags)

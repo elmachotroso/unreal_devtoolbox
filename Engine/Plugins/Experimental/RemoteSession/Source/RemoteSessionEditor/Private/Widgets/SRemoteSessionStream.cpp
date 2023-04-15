@@ -2,7 +2,7 @@
 
 #include "Widgets/SRemoteSessionStream.h"
 
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -16,8 +16,8 @@
 #include "Widgets/SVirtualWindow.h"
 #include "Widgets/SBoxPanel.h"
 
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "EditorSupportDelegates.h"
@@ -39,6 +39,8 @@
 #include "RemoteSession.h"
 #include "ImageProviders/RemoteSessionMediaOutput.h"
 #include "RemoteSessionEditorStyle.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SRemoteSessionStream)
 
 #define LOCTEXT_NAMESPACE "RemoteSessionStream"
 
@@ -73,6 +75,7 @@ void SRemoteSessionStream::RegisterNomadTabSpawner()
 {
 	auto RegisterTabSpawner = []()
 	{
+		LLM_SCOPE_BYNAME(TEXT("RemoteSession/RemoteSessionStream"));
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(RemoteSessionStream::LevelEditorModuleName);
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
@@ -177,7 +180,7 @@ void SRemoteSessionStream::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Padding(FMargin(3.f))
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.IsEnabled_Lambda([this]() { return !IsStreaming(); })
 				[
 					DetailView.ToSharedRef()
@@ -187,7 +190,7 @@ void SRemoteSessionStream::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.Padding(FMargin(3.f))
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				[
 					SNew(SScaleBox)
 					.Stretch(this, &SRemoteSessionStream::GetViewportStretch)
@@ -213,7 +216,7 @@ const FSlateBrush* SRemoteSessionStream::GetImageBorderImage() const
 	{
 		return FCoreStyle::Get().GetBrush("ColorPicker.AlphaBackground");
 	}
-	return FEditorStyle::GetBrush("ToolPanel.GroupBorder");
+	return FAppStyle::GetBrush("ToolPanel.GroupBorder");
 }
 
 EStretch::Type SRemoteSessionStream::GetViewportStretch() const
@@ -504,7 +507,11 @@ void SRemoteSessionStream::EnabledStreaming(bool bInStreaming)
 			}
 			if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(TEXT("AssetRegistry")))
 			{
-				AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
+				IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+				if (AssetRegistry)
+				{
+					AssetRegistry->OnAssetRemoved().RemoveAll(this);
+				}
 			}
 			FEditorSupportDelegates::PrepareToCleanseEditorObject.RemoveAll(this);
 			GEditor->OnBlueprintPreCompile().RemoveAll(this);
@@ -631,3 +638,4 @@ void SRemoteSessionStream::CanDeleteAssets(const TArray<UObject*>& InAssetsToDel
 }
 
 #undef LOCTEXT_NAMESPACE
+

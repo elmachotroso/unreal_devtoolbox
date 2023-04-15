@@ -10,17 +10,17 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Misc/TextFilter.h"
-#include "Editor/Layers/Private/ActorsAssignedToSpecificLayersFilter.h"
+#include "ActorsAssignedToSpecificLayersFilter.h"
 #include "ISceneOutlinerColumn.h"
-#include "Editor/Layers/Private/SceneOutlinerLayerContentsColumn.h"
+#include "SceneOutlinerLayerContentsColumn.h"
 #include "DragAndDrop/ActorDragDropOp.h"
 #include "DragAndDrop/FolderDragDropOp.h"
 #include "DragAndDrop/CompositeDragDropOp.h"
-#include "Editor/Layers/Private/SLayersView.h"
-#include "Editor/Layers/Private/SLayersCommandsMenu.h"
+#include "SLayersView.h"
+#include "SLayersCommandsMenu.h"
 #include "EditorActorFolders.h"
 
 class ISceneOutliner;
@@ -166,22 +166,22 @@ protected:
 			{
 				if (ActorDragOp.IsValid())
 				{
-					ActorDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+					ActorDragOp->SetToolTip(Message, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 				}
 				if (FolderDragOp.IsValid())
 				{
-					FolderDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+					FolderDragOp->SetToolTip(Message, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 				}
 			}
 			else
 			{
 				if (ActorDragOp.IsValid())
 				{
-					ActorDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+					ActorDragOp->SetToolTip(Message, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 				}
 				if (FolderDragOp.IsValid())
 				{
-					FolderDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+					FolderDragOp->SetToolTip(Message, FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
 				}
 			}
 		}
@@ -273,14 +273,14 @@ private:
 	FSlateColor GetInvertedForegroundIfHovered() const
 	{
 		static const FName InvertedForegroundName("InvertedForeground");
-		return ( ToggleModeButton.IsValid() && ( ToggleModeButton->IsHovered() || ToggleModeButton->IsPressed() ) ) ? FEditorStyle::GetSlateColor(InvertedForegroundName): FSlateColor::UseForeground();
+		return ( ToggleModeButton.IsValid() && ( ToggleModeButton->IsHovered() || ToggleModeButton->IsPressed() ) ) ? FAppStyle::GetSlateColor(InvertedForegroundName): FSlateColor::UseForeground();
 	}
 
 	const FSlateBrush* GetToggleModeButtonImageBrush() const
 	{
 		static const FName ExploreLayerContents("LayerBrowser.ExploreLayerContents");
 		static const FName ReturnToLayersList("LayerBrowser.ReturnToLayersList");
-		return ( Mode == ELayerBrowserMode::Layers ) ? FEditorStyle::GetBrush( ExploreLayerContents ) : FEditorStyle::GetBrush( ReturnToLayersList );
+		return ( Mode == ELayerBrowserMode::Layers ) ? FAppStyle::GetBrush( ExploreLayerContents ) : FAppStyle::GetBrush( ReturnToLayersList );
 	}
 
 	FText GetLayerContentsHeaderText() const;

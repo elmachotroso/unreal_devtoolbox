@@ -6,7 +6,10 @@ import os
 import threading
 import time
 import re
-from typing import List, Optional, Set
+import shutil
+from typing import List, Optional, Set, Union
+
+from pathlib import Path
 
 from PySide2 import QtCore
 from PySide2 import QtGui
@@ -166,7 +169,27 @@ class DeviceAdditionalSettingsUI(QtCore.QObject):
         self.assign_button(button,parent)
         return button
 
+class PeriodicRunnable(QtCore.QRunnable):
+    ''' Performs periodic tasks on the switchboard dialog. '''
+
+    def __init__(self, switchboard):
+        super().__init__()
+        self._switchboard = switchboard
+        self._exiting = False
+
+    def exit(self):
+        self._exiting = True
+
+    def run(self):
+        while not self._exiting:
+            self._switchboard.update_muserver_button()
+            self._switchboard.update_locallistener_menuitem()
+            self._switchboard.update_insights_menuitem()
+
+            time.sleep(1.0)
+
 class SwitchboardDialog(QtCore.QObject):
+
     STYLESHEET_PATH = os.path.join(RELATIVE_PATH, 'ui/switchboard.qss')
 
     _stylesheet_watcher: Optional[QtCore.QFileSystemWatcher] = None
@@ -188,8 +211,10 @@ class SwitchboardDialog(QtCore.QObject):
             stylesheet = styling.read()
             QtWidgets.QApplication.instance().setStyleSheet(stylesheet)
 
-    def __init__(self):
+    def __init__(self, script_manager):
         super().__init__()
+
+        self.script_manager = script_manager
 
         font_dir = os.path.join(ENGINE_PATH, 'Content/Slate/Fonts')
         font_files = ['Roboto-Regular.ttf', 'Roboto-Bold.ttf',
@@ -221,7 +246,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         self.init_stylesheet_watcher()
 
-        self._exiting = False
+        self._periodic_runner = None
         self._shoot = None
         self._sequence = None
         self._slate = None
@@ -257,6 +282,19 @@ class SwitchboardDialog(QtCore.QObject):
         #self.transport_queue.signal_transport_queue_job_started.connect(self.transport_queue_job_started)
         #self.transport_queue.signal_transport_queue_job_finished.connect(self.transport_queue_job_finished)
 
+        # add level picker combo box and refresh button
+        self.level_combo_box = sb_widgets.SearchableComboBox(self.window)
+        self.level_combo_box.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        
+        self.refresh_levels_button = sb_widgets.ControlQPushButton()
+        self.refresh_levels_button.setMaximumSize(22, 22)
+        self.refresh_levels_button.setIcon(QtGui.QIcon("icon_refresh.png"))
+        self.refresh_levels_button.setProperty("frameless", True)
+        self.refresh_levels_button.setToolTip("Refresh level list")
+        
+        self.window.horizontalLayout_7.addWidget(self.level_combo_box)
+        self.window.horizontalLayout_7.addWidget(self.refresh_levels_button)
+        
         self.shoot = 'Default'
         self.sequence = SETTINGS.CURRENT_SEQUENCE
         self.slate = SETTINGS.CURRENT_SLATE
@@ -291,7 +329,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Start the OSC server
         self.osc_server = switchboard_application.OscServer()
-        self.osc_server.launch(SETTINGS.IP_ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
+        self.osc_server.launch(SETTINGS.ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
 
         # Register with OSC server
         self.osc_server.dispatcher_map(osc.TAKE, self.osc_take)
@@ -305,8 +343,8 @@ class SwitchboardDialog(QtCore.QObject):
         self.osc_server.dispatcher_map(osc.RECORD_CANCEL_CONFIRM, self.osc_record_cancel_confirm)
         self.osc_server.dispatcher_map(osc.UE4_LAUNCH_CONFIRM, self.osc_ue4_launch_confirm)
         self.osc_server.dispatcher.map(osc.OSC_ADD_SEND_TARGET_CONFIRM, self.osc_add_send_target_confirm, 1, needs_reply_address=True)
-        self.osc_server.dispatcher.map(osc.ARSESSION_START_CONFIRM, self.osc_arsession_start_confrim, 1, needs_reply_address=True)
-        self.osc_server.dispatcher.map(osc.ARSESSION_STOP_CONFIRM, self.osc_arsession_stop_confrim, 1, needs_reply_address=True)
+        self.osc_server.dispatcher.map(osc.ARSESSION_START_CONFIRM, self.osc_arsession_start_confirm, 1, needs_reply_address=True)
+        self.osc_server.dispatcher.map(osc.ARSESSION_STOP_CONFIRM, self.osc_arsession_stop_confirm, 1, needs_reply_address=True)
         self.osc_server.dispatcher_map(osc.BATTERY, self.osc_battery)
         self.osc_server.dispatcher_map(osc.DATA, self.osc_data)
 
@@ -315,8 +353,8 @@ class SwitchboardDialog(QtCore.QObject):
         self.window.slate_line_edit.textChanged.connect(self._set_slate)
         self.window.take_spin_box.valueChanged.connect(self._set_take)
         self.window.sequence_line_edit.textChanged.connect(self._set_sequence)
-        self.window.level_combo_box.currentIndexChanged.connect(self._on_selected_level_changed)
-        self.window.refresh_levels_button.clicked.connect(self.refresh_levels_incremental)
+        self.level_combo_box.currentIndexChanged.connect(self._on_selected_level_changed)
+        self.refresh_levels_button.clicked.connect(self.refresh_levels_incremental)
         self.window.project_cl_combo_box.currentTextChanged.connect(self._set_project_changelist)
         self.window.engine_cl_combo_box.currentIndexChanged.connect(
             lambda _: self._set_engine_changelist(self.window.engine_cl_combo_box.currentText()))
@@ -357,7 +395,7 @@ class SwitchboardDialog(QtCore.QObject):
             btn.setObjectName(name)
             btn.hover_focus = False
 
-        configure_ctrl_btn(self.window.refresh_levels_button, 'refresh')
+        configure_ctrl_btn(self.refresh_levels_button, 'refresh')
         configure_ctrl_btn(self.window.sync_all_button, 'sync')
         configure_ctrl_btn(self.window.build_all_button, 'build')
         configure_ctrl_btn(self.window.sync_and_build_all_button, 'sync_and_build')
@@ -381,6 +419,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Menu items
         self.window.menu_new_config.triggered.connect(self.menu_new_config)
+        self.window.menu_save_config_as.triggered.connect(self.menu_save_config_as)
         self.window.menu_delete_config.triggered.connect(self.menu_delete_config)
         self.window.update_settings.triggered.connect(self.menu_update_settings)
 
@@ -391,12 +430,11 @@ class SwitchboardDialog(QtCore.QObject):
         # Plugin UI
         self.device_manager.plug_into_ui(self.window.menu_bar, self.window.tabs_main)
 
-        # If starting up with new config, open the menu to create a new one
-        if not CONFIG.file_path:
-            self.menu_new_config()
-        else:
+        if CONFIG.file_path:
             self.toggle_p4_controls(CONFIG.P4_ENABLED.get_value())
             self.refresh_levels()
+        else:
+            self.menu_new_config()
 
         self.set_config_hooks()
 
@@ -406,43 +444,60 @@ class SwitchboardDialog(QtCore.QObject):
         #self.transport_queue_resume()
         
         self.update_current_config_text()
-        self.update_current_ip_address_text()
-        SETTINGS.IP_ADDRESS.signal_setting_changed.connect(
-            lambda: self.update_current_ip_address_text()
+        self.update_current_address_text()
+        SETTINGS.ADDRESS.signal_setting_changed.connect(
+            lambda: self.update_current_address_text()
         )
-        self.window.current_ip_value.editingFinished.connect(self._try_change_ip_address)
+        self.window.current_address_value.editingFinished.connect(self._try_change_address)
 
         self.refresh_window_title()
-        
-    def _try_change_ip_address(self):
-        def is_valid_ip_format(address):
-            ip_port_split = address.split(":")
-            if len(ip_port_split) != 1:
-                return False
-            
-            ip_elements = ip_port_split[0].split(".")
-            if len(ip_elements) != 4:
-                return False
-            
-            return all(element.isdigit() for element in ip_elements)
-        
-        new_value = self.window.current_ip_value.text()
-        if is_valid_ip_format(new_value):
-            SETTINGS.IP_ADDRESS.update_value(new_value)
-            SETTINGS.save()
-            # Print to make it clear to the user that the IP was updated
-            LOGGER.info(f"Updated IP to {new_value}")
-        else:
-            self.window.current_ip_value.setText(SETTINGS.IP_ADDRESS.get_value())
-            LOGGER.warning(f"{new_value} must be in the format a.b.c.d (without port)")
 
-    def _poll_muserver_status(self):
-        '''
-        Poll the status of the Multi-user server on a 1 second timer.
-        '''
-        while not self._exiting:
-            self.update_muserver_button()
-            time.sleep(1.0)
+        self.script_manager.on_postinit(self)
+        self.have_warned_about_muserver = False
+        
+    def _try_change_address(self):
+        new_value = self.window.current_address_value.text()
+        old_address = SETTINGS.ADDRESS.get_value()
+        
+        if not SETTINGS.ADDRESS.possible_values.__contains__(new_value):
+            SETTINGS.ADDRESS.possible_values.append(new_value)
+            
+        SETTINGS.ADDRESS.update_value(new_value)
+        SETTINGS.save()
+        # Check if osc connection binds before commiting changes
+        if self.osc_restart_check(old_address):
+            # Print to make it clear to the user that the Address was updated
+            if old_address != new_value:
+                LOGGER.info(f"Updated address to {new_value}")
+        else:
+            LOGGER.warning(f"Reverting to the previous address ({old_address})")
+            SETTINGS.ADDRESS.update_value(old_address)
+            SETTINGS.save()
+            self.osc_server.launch(SETTINGS.ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
+
+    def warn_user_about_muserver(self):
+        if self.have_warned_about_muserver:
+            return
+
+        ServerInstance = switchboard_application.get_multi_user_server_instance()
+        expected_server = ServerInstance.server_name()
+        expected_endpoint = ServerInstance.endpoint_address()
+        actual_server = ServerInstance.running_server_name()
+        actual_endpoint = ServerInstance.running_endpoint()
+        LOGGER.warning(f'The running Multi-user server does not match Switchboard configuration. Expected "{expected_server}" with "{expected_endpoint}" but found "{actual_server}" with "{actual_endpoint}". Please restart the multi-user server.')
+
+        self.have_warned_about_muserver = True
+
+    def get_muserver_label(self, is_running, is_valid):
+        ServerInstance = switchboard_application.get_multi_user_server_instance()
+        if is_running and is_valid:
+            actual_server = ServerInstance.running_server_name()
+            actual_endpoint = ServerInstance.running_endpoint()
+            return f'Multi-user Server ({actual_server} {actual_endpoint})'
+        elif is_running and not is_valid:
+            return 'Multi-user Server (WARNING: RUNNING SERVER DOES NOT MATCH CONFIGURATION)'
+        else:
+            return 'Multi-user Server'
 
     def update_muserver_button(self):
         '''
@@ -451,10 +506,17 @@ class SwitchboardDialog(QtCore.QObject):
         ServerInstance = switchboard_application.get_multi_user_server_instance()
         is_checked = self.window.muserver_start_stop_button.isChecked()
         is_running = ServerInstance.is_running()
+        is_valid =  ServerInstance.validate_process()
         if  (is_running or self._started_mu_server) and not is_checked:
             self.window.muserver_start_stop_button.setChecked( True )
         elif not is_running and is_checked:
             self.window.muserver_start_stop_button.setChecked( False )
+            self.have_warned_about_muserver = False
+
+        label = self.get_muserver_label(is_running or self._started_mu_server,is_valid)
+        self.window.muserver_label.setText(label)
+        if is_running and not is_valid:
+            self.warn_user_about_muserver()
 
         if is_running and self._started_mu_server:
             # Server has finished starting so reset our start flag.
@@ -464,19 +526,8 @@ class SwitchboardDialog(QtCore.QObject):
         '''
         Sets up a thread for performing maintenance tasks
         '''
-        thread = threading.Thread(target=self._do_periodic_tasks, args=[], kwargs={})
-        thread.start()
-
-    def _do_periodic_tasks(self):
-        ''' Performs periodic tasks, like updating certain parts of the UI '''
-
-        while not self._exiting:
-
-            self.update_muserver_button()
-            self.update_locallistener_menuitem()
-            self.update_insights_menuitem()
-
-            time.sleep(1.0)
+        self._periodic_runner = PeriodicRunnable(self)
+        QtCore.QThreadPool.globalInstance().start(self._periodic_runner)
 
     def update_locallistener_menuitem(self):
         ''' 
@@ -541,14 +592,15 @@ class SwitchboardDialog(QtCore.QObject):
         ''' Registers convenience "Open Logs Folder" menu item '''
         action = self.register_tools_menu_action("&Open Logs Folder")
         action.triggered.connect(collect_logs.open_logs_folder)
-     
+
     def register_zip_logs_menuitem(self):
         def save_logs():
-            collect_logs.execute_zip_logs_workflow(
+            status = collect_logs.execute_zip_logs_workflow(
                 CONFIG,
                 [device for device in self.device_manager.devices() if isinstance(device, DeviceUnreal)]
             )
-            collect_logs.open_logs_folder()
+            if status:
+                collect_logs.open_logs_folder()
         action = self.register_tools_menu_action("&Zip Logs")
         action.triggered.connect(save_logs)
 
@@ -674,7 +726,8 @@ class SwitchboardDialog(QtCore.QObject):
                    for device in self.device_manager.devices())
 
     def on_exit(self):
-        self._exiting = True
+        if self._periodic_runner:
+            self._periodic_runner.exit()
         self.osc_server.close()
         for device in self.device_manager.devices():
             device.disconnect_listener()
@@ -743,6 +796,27 @@ class SwitchboardDialog(QtCore.QObject):
             if config_path == SETTINGS.CONFIG:
                 config_action.setEnabled(False)
 
+        # Make a special entry for a config not in the normal area
+        externalconfig_action = QtWidgets.QAction("Browse...", self.window.menu_load_config)
+        externalconfig_action.triggered.connect(self._on_open_external_config)
+        self.window.menu_load_config.addAction(externalconfig_action)
+
+    def _on_open_external_config(self):
+        ''' When the user wants to open a config located outside of the designated area
+        This is useful when the user keeps the configs somewhere else (e.g. under the project)
+        '''
+        config_path, _ = QtWidgets.QFileDialog.getOpenFileName(self.window,
+            'Select config file', str(config.ROOT_CONFIGS_PATH),
+            f'Config files (*{config.CONFIG_SUFFIX})'
+        )
+
+        # Do nothing if the user didn't choose a config path
+        if not config_path:
+            return
+
+        # ok, let's open it
+        self.set_current_config(config_path)
+
     def set_current_config(self, config_path):
 
         # Update to the new config
@@ -797,8 +871,86 @@ class SwitchboardDialog(QtCore.QObject):
         else:
             self.window.current_config_file_value.setText("No config loaded")
     
-    def update_current_ip_address_text(self):
-        self.window.current_ip_value.setText(SETTINGS.IP_ADDRESS.get_value())
+    def update_current_address_text(self):
+        self.window.current_address_value.setText(SETTINGS.ADDRESS.get_value())
+
+    def create_new_config(self, file_path: Union[str, Path], uproject, engine_dir, p4_settings):
+        ''' Creates a new config file
+
+        Args:
+            file_path: Path to the new config file
+            uproject: Path to the unreal project (.uproject) file
+            engine_dir: Path to the Engine/ directory
+            p4_settings: Desired Perforce settings
+        '''
+
+        CONFIG.init_new_config(
+            file_path=file_path,
+            uproject=uproject,
+            engine_dir=engine_dir,
+            p4_settings=p4_settings
+        )
+
+        # Disable saving while loading
+        CONFIG.push_saving_allowed(False)
+        try:
+            # Remove all devices
+            self.device_manager.clear_device_list()
+            self.device_list_widget.clear_widgets()
+
+            # Reset plugin settings
+            self.device_manager.reset_plugins_settings(CONFIG)
+
+            # Set hooks to this dialog's UI
+            self.set_config_hooks()
+        finally:
+            # Re-enable saving after loading
+            CONFIG.pop_saving_allowed()
+
+        # Update the UI
+        self.toggle_p4_controls(CONFIG.P4_ENABLED.get_value())
+        self.refresh_levels()
+        self.update_current_config_text()
+        self.refresh_muserver_autojoin()
+        self.refresh_trace_settings()
+        self.refresh_window_title()
+
+    def menu_save_config_as(self):
+        ''' Copy the current config file and move to it '''
+
+        # get the destination path for the copy
+
+        new_config_path, _ = QtWidgets.QFileDialog.getSaveFileName(self.window,
+            'Select config file', str(config.ROOT_CONFIGS_PATH),
+            f'Config files (*{config.CONFIG_SUFFIX})',
+            #options=QtWidgets.QFileDialog.DontUseNativeDialog
+        )
+
+        # Do nothing if the user didn't choose a destination config path
+        if not new_config_path:
+            return
+
+        # If replacing the same config, just save
+        if Path(new_config_path).resolve() == Path(SETTINGS.CONFIG).resolve():
+            CONFIG.save()
+            return
+
+        # Switch to the new config
+        CONFIG.save_as(new_config_path)
+
+        # Update the settings
+        SETTINGS.CONFIG = new_config_path
+        SETTINGS.save()
+
+        # Make sure we reflect the new config in the status bar
+        self.update_current_config_text()
+
+        # Reset mu server name
+        # * unless it is running to avoid devices failing to connect to the current server
+        # * if there are devices running, they won't auto-connect when you launch the renamed server
+        mu_server = switchboard_application.get_multi_user_server_instance()
+        if not mu_server.is_running():
+            CONFIG.MUSERVER_SERVER_NAME.update_value(CONFIG.default_mu_server_name())
 
     def menu_new_config(self):
         uproject_search_path = os.path.dirname(CONFIG.UPROJECT_PATH.get_value().replace('"',''))
@@ -814,33 +966,12 @@ class SwitchboardDialog(QtCore.QObject):
 
         if dialog.result() == QtWidgets.QDialog.Accepted:
 
-            CONFIG.init_new_config(file_path=dialog.config_path,
-                uproject=dialog.uproject, engine_dir=dialog.engine_dir,
-                p4_settings=dialog.p4_settings())
-
-            # Disable saving while loading
-            CONFIG.push_saving_allowed(False)
-            try:
-                # Remove all devices
-                self.device_manager.clear_device_list()
-                self.device_list_widget.clear_widgets()
-
-                # Reset plugin settings
-                self.device_manager.reset_plugins_settings(CONFIG)
-
-                # Set hooks to this dialog's UI
-                self.set_config_hooks()
-            finally:
-                # Re-enable saving after loading
-                CONFIG.pop_saving_allowed()
-
-            # Update the UI
-            self.toggle_p4_controls(CONFIG.P4_ENABLED.get_value())
-            self.refresh_levels()
-            self.update_current_config_text()
-            self.refresh_muserver_autojoin()
-            self.refresh_trace_settings()
-            self.refresh_window_title()
+            self.create_new_config(
+                file_path=dialog.config_path,
+                uproject=dialog.uproject, 
+                engine_dir=dialog.engine_dir,
+                p4_settings=dialog.p4_settings()
+            )
 
     def menu_delete_config(self):
         """
@@ -886,8 +1017,8 @@ class SwitchboardDialog(QtCore.QObject):
         
         settings_dialog.select_all_tab()
 
-        old_ip_address = SETTINGS.IP_ADDRESS.get_value()
-        old_transport_path = SETTINGS.TRANSPORT_PATH.get_value()
+        old_address = SETTINGS.ADDRESS.get_value()
+
         # avoid saving the config all the time while in the settings dialog
         CONFIG.push_saving_allowed(False)
         try:
@@ -902,14 +1033,19 @@ class SwitchboardDialog(QtCore.QObject):
             CONFIG.replace(new_config_path)
             SETTINGS.CONFIG = new_config_path
             SETTINGS.save()
-
-        if old_ip_address != SETTINGS.IP_ADDRESS.get_value() or SETTINGS.TRANSPORT_PATH.get_value():
+        if old_address != SETTINGS.ADDRESS.get_value() or SETTINGS.TRANSPORT_PATH.get_value():
             SETTINGS.save()
-        if old_ip_address != SETTINGS.IP_ADDRESS.get_value():
-            self.osc_server.close()
-            self.osc_server.launch(SETTINGS.IP_ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
+
+        self.osc_restart_check(old_address)
 
         CONFIG.save()
+
+    def osc_restart_check(self, old_address):
+        if old_address != SETTINGS.ADDRESS.get_value():
+            self.osc_server.close()
+            return self.osc_server.launch(SETTINGS.ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
+        else:
+            return True
 
     def sync_all_button_clicked(self):
         if not CONFIG.P4_ENABLED.get_value():
@@ -1159,9 +1295,9 @@ class SwitchboardDialog(QtCore.QObject):
     def slate(self, value):
         self._set_slate(value, reset_take=False)
 
-    def _set_slate(self, value, exclude_ip_addresses=[], reset_take=True):
+    def _set_slate(self, value, exclude_addresses=[], reset_take=True):
         """
-        Internal setter that allows exclusion of ip addresses
+        Internal setter that allows exclusion of addresses
         """
         # Protect against blank slates
         if value == '':
@@ -1182,15 +1318,15 @@ class SwitchboardDialog(QtCore.QObject):
         if self.window.slate_line_edit.text() != self._slate:
             self.window.slate_line_edit.setText(self._slate)
 
-        thread = threading.Thread(target=self._set_slate_all_devices, args=[value], kwargs={'exclude_ip_addresses':exclude_ip_addresses})
+        thread = threading.Thread(target=self._set_slate_all_devices, args=[value], kwargs={'exclude_addresses':exclude_addresses})
         thread.start()
 
-    def _set_slate_all_devices(self, value, exclude_ip_addresses=[]):
+    def _set_slate_all_devices(self, value, exclude_addresses=[]):
         """
         Tell all devices the new slate
         """
         for device in self.device_manager.devices():
-            if device.ip_address in exclude_ip_addresses:
+            if device.address in exclude_addresses:
                 continue
 
             # Do not send updates to disconnected devices
@@ -1207,9 +1343,9 @@ class SwitchboardDialog(QtCore.QObject):
     def take(self, value):
         self._set_take(value)
 
-    def _set_take(self, value, exclude_ip_addresses=[]):
+    def _set_take(self, value, exclude_addresses=[]):
         """
-        Internal setter that allows exclusion of ip addresses
+        Internal setter that allows exclusion of addresses
         """
         requested_take = value
 
@@ -1224,7 +1360,7 @@ class SwitchboardDialog(QtCore.QObject):
         if requested_take != value:
             LOGGER.warning(f'Slate: "{self._slate}" Take: "{value}" have already been used. Auto incremented up to take: "{requested_take}"')
             # Clear the exclude list since Switchboard changed the incoming value
-            exclude_ip_addresses = []
+            exclude_addresses = []
         
 
         self._take = requested_take
@@ -1234,10 +1370,10 @@ class SwitchboardDialog(QtCore.QObject):
         if self.window.take_spin_box.value() != self._take:
             self.window.take_spin_box.setValue(self._take)
 
-        thread = threading.Thread(target=self._set_take_all_devices, args=[value], kwargs={'exclude_ip_addresses':exclude_ip_addresses})
+        thread = threading.Thread(target=self._set_take_all_devices, args=[value], kwargs={'exclude_addresses':exclude_addresses})
         thread.start()
 
-    def _set_take_all_devices(self, value, exclude_ip_addresses=[]):
+    def _set_take_all_devices(self, value, exclude_addresses=[]):
         """
         Tell all devices the new take
         """
@@ -1247,7 +1383,7 @@ class SwitchboardDialog(QtCore.QObject):
             if device.is_disconnected:
                 continue
 
-            if device.ip_address in exclude_ip_addresses:
+            if device.address in exclude_addresses:
                 continue
 
             device.set_take(self._take)
@@ -1273,8 +1409,8 @@ class SwitchboardDialog(QtCore.QObject):
         self._set_level(full_map_path)
         
     def _get_level_from_combo_box(self, index: int):
-        # Tooltip stores full path
-        return self.window.level_combo_box.itemData(index, QtCore.Qt.ToolTipRole)
+        # Data stores full path
+        return self.level_combo_box.itemData(index)
 
     def _set_level(self, value):
         ''' Called when level dropdown text changes
@@ -1285,12 +1421,12 @@ class SwitchboardDialog(QtCore.QObject):
             CONFIG.CURRENT_LEVEL = value
             CONFIG.save()
 
-        if self.window.level_combo_box.currentText() != self._level:
-            for index in range(self.window.level_combo_box.count()):
+        if self.level_combo_box.currentText() != self._level:
+            for index in range(self.level_combo_box.count()):
                 if self._get_level_from_combo_box(index) == self._level:
-                    self.window.level_combo_box.blockSignals(True)
-                    self.window.level_combo_box.setCurrentIndex(index)
-                    self.window.level_combo_box.blockSignals(False)
+                    self.level_combo_box.blockSignals(True)
+                    self.level_combo_box.setCurrentIndex(index)
+                    self.level_combo_box.blockSignals(False)
                     break
 
     @property
@@ -1440,9 +1576,9 @@ class SwitchboardDialog(QtCore.QObject):
         )
         
         cl = device.project_changelist
-        ip = device.ip_address
+        address = device.address
         for device in self.device_manager.devices():
-            if device.ip_address == ip and device.project_changelist and device.project_changelist != cl:
+            if device.address == address and device.project_changelist and device.project_changelist != cl:
                 device.project_changelist = cl
 
     @QtCore.Slot(object)
@@ -1455,9 +1591,9 @@ class SwitchboardDialog(QtCore.QObject):
         )
 
         cl = device.engine_changelist
-        ip = device.ip_address
+        address = device.address
         for device in self.device_manager.devices():
-            if device.ip_address == ip and device.engine_changelist and device.engine_changelist != cl:
+            if device.address == address and device.engine_changelist and device.engine_changelist != cl:
                 device.engine_changelist = cl
 
     @QtCore.Slot(object)
@@ -1676,37 +1812,46 @@ class SwitchboardDialog(QtCore.QObject):
 
         current_level = CONFIG.CURRENT_LEVEL
 
-        self.window.level_combo_box.clear()
-        self._update_level_list(self.window.level_combo_box, levels)
+        self.level_combo_box.clear()
+        self._update_level_list(self.level_combo_box, levels)
 
         if current_level and current_level in levels:
             self.level = current_level
 
+    def filter_empty_abiguated_path(path, file_name):
+        path = path.removesuffix(file_name)
+        if path == "/":
+            return f"{file_name}"
+        else:
+            return f"{file_name} ({path})"
 
-    def _update_level_list(self, level_combo_box: QtWidgets.QComboBox, level_path_list: List[str]):
-        def compare_file_names(path_a: str, path_b: str):
-            return -1 if path_a.lower() < path_b.lower() \
-                else 1 if path_a.lower() > path_b.lower() else 0
+    def generate_short_map_path(path: str, file_name: str) -> str:
+            path = path.replace("/Game", "", 1)
+            return SwitchboardDialog.filter_empty_abiguated_path(path, file_name)
         
-        def generate_short_map_path(map_path: str, file_name: str) -> str:
-            map_path = map_path.replace("/Game", "", 1)
-            map_path = map_path.removesuffix(file_name)
-            return f"{file_name} ({map_path})"
-            
-        
+    def generate_disambiguated_names(path_list, shortening_function):
         name_counts = {}
-        for map_path in level_path_list:
-            file_name = os.path.basename(map_path)
+        for path in path_list:
+            file_name = os.path.basename(path)
             name_counts[file_name] = name_counts.get(file_name, 0) + 1
             
         # Show only level name if unique and show path behind to disambiguate duplicates
         short_name_list = []
         short_name_to_path = {}
-        for map_path in level_path_list:
-            file_name = os.path.basename(map_path)
-            short_name = file_name if name_counts[file_name] == 1 else generate_short_map_path(map_path, file_name)
+        for path in path_list:
+            file_name = os.path.basename(path)
+            short_name = file_name if name_counts[file_name] == 1 else shortening_function(path, file_name)
             short_name_list.append(short_name)
-            short_name_to_path[short_name] = map_path
+            short_name_to_path[short_name] = path
+            
+        return short_name_list, short_name_to_path
+
+    def _update_level_list(self, level_combo_box: sb_widgets.SearchableComboBox, level_path_list: List[str]):
+        def compare_file_names(path_a: str, path_b: str):
+            return -1 if path_a.lower() < path_b.lower() \
+                else 1 if path_a.lower() > path_b.lower() else 0
+        
+        short_name_list, short_name_to_path = SwitchboardDialog.generate_disambiguated_names(level_path_list, SwitchboardDialog.generate_short_map_path)
             
         from functools import cmp_to_key
         short_name_list = sorted(short_name_list, key=cmp_to_key(compare_file_names))
@@ -1716,13 +1861,15 @@ class SwitchboardDialog(QtCore.QObject):
             return
         
         # To disambiguate, show the full path name in the drop-down
+        level_combo_box.setItemData(0, "Default level")
         level_combo_box.setItemData(0, "Default level", QtCore.Qt.ToolTipRole)
         for short_name_index in range(len(short_name_list)):
             short_name = short_name_list[short_name_index]
+            level_combo_box.setItemData(short_name_index + 1, short_name_to_path[short_name])
             level_combo_box.setItemData(short_name_index + 1, short_name_to_path[short_name], QtCore.Qt.ToolTipRole)
 
     def get_current_level_list(self):
-        level_combo = self.window.level_combo_box
+        level_combo = self.level_combo_box
         return [self._get_level_from_combo_box(i) for i in range(1, level_combo.count())] # skip DEFAULT_MAP_TEXT
 
     def refresh_levels_incremental(self):
@@ -1774,24 +1921,24 @@ class SwitchboardDialog(QtCore.QObject):
             self.p4_refresh_engine_cl()
             self.p4_refresh_project_cl()
 
-    def osc_take(self, ip_address, command, value):
-        device = self._device_from_ip_address(ip_address, command, value=value)
+    def osc_take(self, address, command, value):
+        device = self._device_from_address(address, command, value=value)
 
         if not device:
             return
 
-        self._set_take(value, exclude_ip_addresses=[device.ip_address])
+        self._set_take(value, exclude_addresses=[device.address])
 
     # OSC: Set Slate
-    def osc_slate(self, ip_address, command, value):
-        device = self._device_from_ip_address(ip_address, command, value=value)
+    def osc_slate(self, address, command, value):
+        device = self._device_from_address(address, command, value=value)
         if not device:
             return
 
-        self._set_slate(value, exclude_ip_addresses=[device.ip_address], reset_take=False)
+        self._set_slate(value, exclude_addresses=[device.address], reset_take=False)
 
     # OSC: Set Description UPDATE THIS TO MAKE IT WORK
-    def osc_slate_description(self, ip_address, command, value):
+    def osc_slate_description(self, address, command, value):
         self.description = value
 
     def record_button_released(self):
@@ -1801,15 +1948,16 @@ class SwitchboardDialog(QtCore.QObject):
         if self._is_recording:
             LOGGER.debug('Record stop button pressed')
             self._record_stop(1)
+            self.window.take_spin_box.setValue(self.window.take_spin_box.value() + 1)
         else:
             LOGGER.debug('Record start button pressed')
             self._record_start(self.slate, self.take, self.description)
 
-    def _device_from_ip_address(self, ip_address, command, value=''):
-        device = self.device_manager.device_with_ip_address(ip_address[0])
+    def _device_from_address(self, address, command, value=''):
+        device = self.device_manager.device_with_address(address[0])
 
         if not device:
-            LOGGER.warning(f'{ip_address} is not registered with a device in Switchboard')
+            LOGGER.warning(f'{address} is not registered with a device in Switchboard')
             return None
 
         # Do not receive osc from disconnected devices
@@ -1817,15 +1965,15 @@ class SwitchboardDialog(QtCore.QObject):
             LOGGER.warning(f'{device.name}: is sending OSC commands but is not connected. Ignoring "{command} {value}"')
             return None
 
-        LOGGER.osc(f'OSC Server: Received "{command} {value}" from {device.name} ({device.ip_address})')
+        LOGGER.osc(f'OSC Server: Received "{command} {value}" from {device.name} ({device.address})')
         return device
 
     # OSC: Start a recording
-    def osc_record_start(self, ip_address, command, slate, take, description):
+    def osc_record_start(self, address, command, slate, take, description):
         '''
         OSC message Recieved /RecordStart
         '''
-        device = self._device_from_ip_address(ip_address, command, value=[slate, take, description])
+        device = self._device_from_address(address, command, value=[slate, take, description])
         if not device:
             return
 
@@ -1839,9 +1987,9 @@ class SwitchboardDialog(QtCore.QObject):
         self.take = take
         self.description = description
 
-        self._record_start(self.slate, self.take, self.description, exclude_ip_address=device.ip_address)
+        self._record_start(self.slate, self.take, self.description, exclude_address=device.address)
 
-    def _record_start(self, slate, take, description, exclude_ip_address=None):
+    def _record_start(self, slate, take, description, exclude_address=None):
         LOGGER.success(f'Record Start: "{self.slate}" {self.take}')
 
         # Update the UI button
@@ -1875,7 +2023,7 @@ class SwitchboardDialog(QtCore.QObject):
         devices = self.device_manager.devices()
         for device in devices:
             # Do not send a start record message to whichever device sent it
-            if exclude_ip_address and exclude_ip_address == device.ip_address:
+            if exclude_address and exclude_address == device.address:
                 continue
 
             # Do not send updates to disconnected devices
@@ -1885,7 +2033,7 @@ class SwitchboardDialog(QtCore.QObject):
             LOGGER.debug(f'Record Start {device.name}')
             device.record_start(slate, take, description)
 
-    def _record_stop(self, exclude_ip_address=None):
+    def _record_stop(self, exclude_address=None):
         LOGGER.success(f'Record Stop: "{self.slate}" {self.take}')
 
         pixmap = QtGui.QPixmap(":/icons/images/record_stop.png")
@@ -1911,7 +2059,7 @@ class SwitchboardDialog(QtCore.QObject):
         # Sends the message to all recording devices
         for device in devices:
             # Do not send a start record message to whichever device sent it
-            if exclude_ip_address and exclude_ip_address == device.ip_address:
+            if exclude_address and exclude_address == device.address:
                 continue
 
             # Do not send updates to disconnected devices
@@ -1920,29 +2068,29 @@ class SwitchboardDialog(QtCore.QObject):
 
             device.record_stop()
 
-    def _record_cancel(self, exclude_ip_address=None):
-        self._record_stop(exclude_ip_address=exclude_ip_address)
+    def _record_cancel(self, exclude_address=None):
+        self._record_stop(exclude_address=exclude_address)
 
-        # Incriment Take
+        # Increment Take
         #new_recording = self.recording_manager.latest_recording
         #self.take = new_recording.take + 1
 
-    def osc_record_start_confirm(self, ip_address, command, timecode):
-        device = self._device_from_ip_address(ip_address, command, value=timecode)
+    def osc_record_start_confirm(self, address, command, timecode):
+        device = self._device_from_address(address, command, value=timecode)
         if not device:
             return
 
         device.record_start_confirm(timecode)
 
-    def osc_record_stop(self, ip_address, command):
-        device = self._device_from_ip_address(ip_address, command)
+    def osc_record_stop(self, address, command):
+        device = self._device_from_address(address, command)
         if not device:
             return
 
-        self._record_stop(exclude_ip_address=device.ip_address)
+        self._record_stop(exclude_address=device.address)
 
-    def osc_record_stop_confirm(self, ip_address, command, timecode, *paths):
-        device = self._device_from_ip_address(ip_address, command, value=timecode)
+    def osc_record_stop_confirm(self, address, command, timecode, *paths):
+        device = self._device_from_address(address, command, value=timecode)
         if not device:
             return
 
@@ -1950,27 +2098,27 @@ class SwitchboardDialog(QtCore.QObject):
             paths = None
         device.record_stop_confirm(timecode, paths=paths)
 
-    def osc_record_cancel(self, ip_address, command):
+    def osc_record_cancel(self, address, command):
         """
         This is called when record has been pressed and stopped before the countdown in take recorder
         has finished
         """
-        device = self._device_from_ip_address(ip_address, command)
+        device = self._device_from_address(address, command)
         if not device:
             return
 
-        self._record_cancel(exclude_ip_address=device.ip_address)
+        self._record_cancel(exclude_address=device.address)
 
-    def osc_record_cancel_confirm(self, ip_address, command, timecode):
+    def osc_record_cancel_confirm(self, address, command, timecode):
         pass
-        #device = self._device_from_ip_address(ip_address, command, value=timecode)
+        #device = self._device_from_address(address, command, value=timecode)
         #if not device:
         #    return
 
         #self.record_cancel_confirm(device, timecode)
 
-    def osc_ue4_launch_confirm(self, ip_address, command):
-        device = self._device_from_ip_address(ip_address, command)
+    def osc_ue4_launch_confirm(self, address, command):
+        device = self._device_from_address(address, command)
         if not device:
             return
 
@@ -1981,26 +2129,26 @@ class SwitchboardDialog(QtCore.QObject):
         # Set the device status to ready
         device.status = DeviceStatus.READY
 
-    def osc_add_send_target_confirm(self, ip_address, command, value):
-        device = self.device_manager.device_with_ip_address(ip_address[0])
+    def osc_add_send_target_confirm(self, address, command, value):
+        device = self.device_manager.device_with_address(address[0])
         if not device:
             return
 
         device.osc_add_send_target_confirm()
 
-    def osc_arsession_stop_confrim(self, ip_address, command, value):
-        LOGGER.debug(f'osc_arsession_stop_confrim {value}')
+    def osc_arsession_stop_confirm(self, address, command, value):
+        LOGGER.debug(f'osc_arsession_stop_confirm {value}')
 
-    def osc_arsession_start_confrim(self, ip_address, command, value):
-        device = self._device_from_ip_address(ip_address, command, value=value)
+    def osc_arsession_start_confirm(self, address, command, value):
+        device = self._device_from_address(address, command, value=value)
         if not device:
             return
 
         device.connect_listener()
 
-    def osc_battery(self, ip_address, command, value):
+    def osc_battery(self, address, command, value):
         # The Battery command is used to handshake with LiveLinkFace. Don't reject it if it's not connected 
-        device = self.device_manager.device_with_ip_address(ip_address[0])
+        device = self.device_manager.device_with_address(address[0])
         
         if not device:
             return
@@ -2012,8 +2160,8 @@ class SwitchboardDialog(QtCore.QObject):
         device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
         device_widget.set_battery(value)
 
-    def osc_data(self, ip_address, command, value):
-        device = self._device_from_ip_address(ip_address, command)
+    def osc_data(self, address, command, value):
+        device = self._device_from_address(address, command)
         if not device:
             return
 

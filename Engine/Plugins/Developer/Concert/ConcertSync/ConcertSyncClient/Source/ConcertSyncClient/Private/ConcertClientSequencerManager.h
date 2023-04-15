@@ -87,6 +87,11 @@ public:
 	virtual bool IsSequencerRemoteOpenEnabled() const override;
 
 	/**
+	 * @return true if the remote close option is enabled.
+	 */
+	virtual bool IsSequencerRemoteCloseEnabled() const override;
+
+	/**
 	 * Checks the CVar to see if we are allowed to forcefully close the player on game instances.
 	 *
 	 * @return true if we should always close a sequence player on a -game instance.
@@ -95,11 +100,19 @@ public:
 
 	/**
 	 * Set the remote open option in Multi-User
-	 * which open sequencer for other user when this option is enabled on both user machines.
-	 * 
+	 * which opens Sequencer for other users when this option is enabled on both user machines.
+	 *
 	 * @param bEnable The value to set for the remote open option
 	 */
 	virtual void SetSequencerRemoteOpen(bool bEnable) override;
+
+	/**
+	 * Set the remote close option in Multi-User
+	 * which closes Sequencer for this user when the sequence is closed by a remote user.
+	 *
+	 * @param bEnable The value to set for the remote close option
+	 */
+	virtual void SetSequencerRemoteClose(bool bEnable) override;
 
 	/** Assign the current active workspace to this sequencer. */
 	void SetActiveWorkspace(TSharedPtr<FConcertClientWorkspace> Workspace);
@@ -176,19 +189,19 @@ private:
 	void OnOpenEvent(const FConcertSessionContext&, const FConcertSequencerOpenEvent& InEvent);
 
 	/**
-	 * Called on receipt of an external close event from the server
+	 * Called on receipt of an external state sync event from the server
 	 *
 	 * @param InEventContext              The context for the current client session
-	 * @param InEvent                     The sequencer close event received from the server
+	 * @param InEvent                     The sequencer state sync event received from the server
 	 */
-	void OnSyncEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerStateSyncEvent& InEvent);
+	void OnStateSyncEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerStateSyncEvent& InEvent);
 
 	/**
-	 * Called on receipt of time adjustment event.
+	 * Called on receipt of an external time adjustment event from the server
 	 * @param InEventContext             The context for the current session.
 	 * @param InEvent                    The sequencer time adjustment event.
 	 */
-	void OnTimeAdjustmentEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+	void OnTimeAdjustmentEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerTimeAdjustmentEvent& InEvent);
 
 	/**
 	 * Called when the global time has been changed for the specified Sequencer
@@ -205,16 +218,20 @@ private:
 	void OnSequencerCreated(TSharedRef<ISequencer> InSequencer);
 
 	/**
-	 * Handle the end of frame callback to apply pending sequencer events
+	 * Handle the end of frame callback to apply pending sequencer events.
+	 * 
+	 * Note that this is called through a delegate on the workspace instead of
+	 * being called directly by a core engine delegate. This is to ensure that
+	 * all workspace operations have completed first.
 	 */
-	void OnEndFrame();
+	void OnWorkspaceEndFrameCompleted();
 
 	/**
 	 * Apply a Sequencer open event
 	 *
 	 * @param SequenceObjectPath	The sequence to open
 	 */
-	void ApplyTransportOpenEvent(const FString& SequenceObjectPath);
+	void ApplyOpenEvent(const FString& SequenceObjectPath);
 
 	/**
 	 * Create a new sequence player to be used in -game instances.
@@ -245,33 +262,41 @@ private:
 	void ApplyEventToPlayers(const FConcertSequencerState& PendingState);
 
 	/**
-	 * Apply a Sequencer Close Event to SequencePlayers
+	 * Apply a Sequencer close event to open players.
+	 * 
+	 * This is a helper function called by ApplyCloseEvent().
 	 *
-	 * @param PendingState	The pending state to apply
+	 * @param CloseEvent  The close event state
 	 */
-	void ApplyCloseToPlayers(const FConcertSequencerCloseEvent& InEvent);
+	void ApplyCloseEventToPlayers(const FConcertSequencerCloseEvent& CloseEvent);
 
 	/**
-	 * Apply CloseEvent to Open sequencers and players.
+	 * Apply a Sequencer close event to open Sequencers and players.
 	 *
-	 * @param PendingClose  The close event state.
+	 * @param CloseEvent  The close event state
 	 */
-	void ApplyTransportCloseEvent(const FConcertSequencerCloseEvent& PendingClose);
+	void ApplyCloseEvent(const FConcertSequencerCloseEvent& CloseEvent);
 
 	/**
 	 * Apply a sequencer time adjustment event.
+	 * 
+	 * @param TimeAdjustmentEvent  The time adjustment event state
 	 */
 	void ApplyTimeAdjustmentEvent(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
 
 	/**
 	 * Apply a sequencer time adjustment to players.
+	 * 
+	 * @param TimeAdjustmentEvent  The time adjustment event state
 	 */
-	void ApplyTimeAdjustmentPlayers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+	void ApplyTimeAdjustmentToPlayers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
 
 	/**
 	 * Apply a sequencer time adjustment to sequencers.
+	 * 
+	 * @param TimeAdjustmentEvent  The time adjustment event state
 	 */
-	void ApplyTimeAdjustmentSequencers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+	void ApplyTimeAdjustmentToSequencers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
 
 	/**
 	 * Gather all the currently open sequencer UIs that have the specified path as their root sequence

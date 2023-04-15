@@ -153,7 +153,6 @@ struct FAndroidOpenGL : public FOpenGLES
 
 	static FORCEINLINE EImageExternalType GetImageExternalType() { return ImageExternalType; }
 
-	static FORCEINLINE GLint GetMaxComputeTextureImageUnits() { check(MaxComputeTextureImageUnits != -1); return MaxComputeTextureImageUnits; }
 	static FORCEINLINE GLint GetMaxComputeUniformComponents() { check(MaxComputeUniformComponents != -1); return MaxComputeUniformComponents; }
 	static FORCEINLINE GLint GetFirstComputeUAVUnit()			{ return 0; }
 	static FORCEINLINE GLint GetMaxComputeUAVUnits()			{ check(MaxComputeUAVUnits != -1); return MaxComputeUAVUnits; }
@@ -181,11 +180,27 @@ struct FAndroidOpenGL : public FOpenGLES
 	static int32 GLMajorVerion;
 	static int32 GLMinorVersion;
 
+	static FORCEINLINE GLuint GetMajorVersion()
+	{
+		return GLMajorVerion;
+	}
+
+	static FORCEINLINE GLuint GetMinorVersion()
+	{
+		return GLMinorVersion;
+	}
+
 	/** Whether device supports image external */
 	static bool bSupportsImageExternal;
 
 	/** Type of image external supported */
 	static EImageExternalType ImageExternalType;
+
+	/* interface to remote GLES program compiler */
+	static TArray<uint8> DispatchAndWaitForRemoteGLProgramCompile(const TArrayView<uint8> ContextData, const TArray<ANSICHAR>& VertexGlslCode, const TArray<ANSICHAR>& PixelGlslCode, const TArray<ANSICHAR>& ComputeGlslCode, FString& FailureMessageOUT);
+	static bool AreRemoteCompileServicesActive();
+	static bool StartAndWaitForRemoteCompileServices(int NumServices);
+	static void StopRemoteCompileServices();
 };
 
 typedef FAndroidOpenGL FOpenGL;

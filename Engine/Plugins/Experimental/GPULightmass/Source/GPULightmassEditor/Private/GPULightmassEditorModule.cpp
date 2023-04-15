@@ -24,13 +24,128 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "ToolMenus.h"
 
-extern ENGINE_API void ToggleLightmapPreview_GameThread(UWorld* InWorld);
-
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
 
 IMPLEMENT_MODULE( FGPULightmassEditorModule, GPULightmassEditor )
 
 FName GPULightmassSettingsTabName = TEXT("GPULightmassSettings");
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#endif
+
+static bool IsRenderDocPresent()
+{
+#if PLATFORM_WINDOWS
+	// Run only once as this func is called each time the UI is rendered
+	static HMODULE RenderDocDLLHandle = GetModuleHandleW(L"renderdoc.dll");
+	return RenderDocDLLHandle != nullptr;
+#endif
+	// TODO: other platforms
+	return false;
+}
+
+static bool IsCurrentRHIRayTracingCapable()
+{
+	switch(RHIGetInterfaceType())
+	{
+	case ERHIInterfaceType::D3D12:
+	case ERHIInterfaceType::Vulkan:
+		return true;
+	default:
+		return false;
+	}
+}
+
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
+enum class ERayTracingDisabledReason : int32
+{
+	OK, // Ray tracing is supported and running
+	DISABLED_BY_PROJECT_SETTINGS, // "Ray Tracing" or "Support Compute Skin Cache" is off in project settings
+	DISABLED_BY_TARGET_PLATFORM, // FXXXTargetPlatform::UsesRayTracing() returns false (eg. WindowsTargetPlatform checks for bEnableRayTracing in its ini)
+	INCOMPATIBLE_SHADER_PLATFORM, // An incompatible shader platform is chosen (eg. ES3.1)
+	INCAPABLE_RHI, // The RHI is incapable of ray tracing in general (eg. DX11)
+	INCOMPATIBLE_PLUGIN, // An incompatible plugin is enabled (specifically, RenderDoc)
+	INCAPABLE_HARDWARE, // The video card isn't capable of hardware ray tracing (too old), or supports only software emulated ray tracing (GTX 10 series)
+};
+
+ERayTracingDisabledReason GetRayTracingDisabledReason()
+{
+	if (IsRayTracingEnabled())
+	{
+		return ERayTracingDisabledReason::OK;
+	}
+	
+	static IConsoleVariable* RayTracingCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing"));
+	if (RayTracingCVar->GetInt() == 0)
+	{
+		return ERayTracingDisabledReason::DISABLED_BY_PROJECT_SETTINGS;
+	}
+
+	extern RENDERCORE_API ShaderPlatformMaskType GRayTracingPlatformMask;
+	if (!RHISupportsRayTracing(GMaxRHIShaderPlatform))
+	{
+		return ERayTracingDisabledReason::INCOMPATIBLE_SHADER_PLATFORM;
+	}
+	// Shader platform statically supports ray tracing, but disabled by target platform at runtime
+	else if (RHISupportsRayTracing(GMaxRHIShaderPlatform) && (GRayTracingPlatformMask[(int)GMaxRHIShaderPlatform]) == 0)
+	{
+		return ERayTracingDisabledReason::DISABLED_BY_TARGET_PLATFORM;
+	}
+	
+	if (!IsCurrentRHIRayTracingCapable())
+	{
+		return ERayTracingDisabledReason::INCAPABLE_RHI;
+	}
+
+	if (IsRenderDocPresent())
+	{
+		return ERayTracingDisabledReason::INCOMPATIBLE_PLUGIN;
+	}
+
+	// TODO: better determination of reasons instead of pouring everything into this bucket 
+	return ERayTracingDisabledReason::INCAPABLE_HARDWARE;
+}
+
+static FText GenerateRayTracingDisabledReasonMessage(ERayTracingDisabledReason Reason)
+{
+	switch (Reason)
+	{
+	case ERayTracingDisabledReason::DISABLED_BY_PROJECT_SETTINGS:
+		return LOCTEXT("GPULightmassHWRayTracingDisabled",
+		               "GPU Lightmass requires 'Support Hardware Ray Tracing' enabled in your project settings.");
+	case ERayTracingDisabledReason::DISABLED_BY_TARGET_PLATFORM:
+	case ERayTracingDisabledReason::INCOMPATIBLE_SHADER_PLATFORM:
+		return LOCTEXT("GPULightmassHWRayTracingDisabledByPlatformSettings",
+		               "GPU Lightmass requires hardware ray tracing which is disabled by some of your project settings (an incompatible shader platform (eg. ES3.1) is enabled and active, or disabled on your current target platform).");
+	case ERayTracingDisabledReason::INCAPABLE_RHI:
+		return LOCTEXT("GPULightmassHWRayTracingDisabledRHI",
+		               "GPU Lightmass requires hardware ray tracing which is not supported by the current RHI.");
+	case ERayTracingDisabledReason::INCOMPATIBLE_PLUGIN:
+		return LOCTEXT("GPULightmassHWRayTracingDisabledPossiblyByRenderDoc",
+		               "GPU Lightmass requires hardware ray tracing support which is disabled by an incompatible plugin, possibly RenderDoc.");
+	case ERayTracingDisabledReason::INCAPABLE_HARDWARE:
+		return LOCTEXT("GPULightmassHWRayTracingDisabledGPU",
+		               "GPU Lightmass requires hardware ray tracing which isn't supported by your GPU.");
+	default:
+		return FText();
+	}
+}
+
+static bool IsStaticLightingAllowed()
+{
+	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+	return (AllowStaticLightingVar && AllowStaticLightingVar->GetValueOnAnyThread() > 0);
+}
+
+static bool IsPathTracingEnabled()
+{
+	static const auto CVarPathTracing = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PathTracing"));
+	return CVarPathTracing && CVarPathTracing->GetValueOnAnyThread() > 0;
+}
 
 void FGPULightmassEditorModule::StartupModule()
 {
@@ -50,7 +165,7 @@ void FGPULightmassEditorModule::StartupModule()
 	}), FCanExecuteAction());
 
 	FToolMenuEntry& Entry = Section.AddMenuEntry(NAME_None, LOCTEXT("GPULightmassSettingsTitle", "GPU Lightmass"),
-		LOCTEXT("OpensGPULightmassSettings", "Opens GPU Lightmass settings tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.LightingScenarioIcon16x"), ActionOpenGPULightmassSettingsTab,
+		LOCTEXT("OpensGPULightmassSettings", "Opens GPU Lightmass settings tab."), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Level.LightingScenarioIcon16x"), ActionOpenGPULightmassSettingsTab,
 		EUserInterfaceActionType::Button);
 
 
@@ -68,7 +183,7 @@ void FGPULightmassEditorModule::RegisterTabSpawner()
 	LevelEditorTabManager->RegisterTabSpawner(GPULightmassSettingsTabName, FOnSpawnTab::CreateRaw(this, &FGPULightmassEditorModule::SpawnSettingsTab))
 		.SetDisplayName(LOCTEXT("GPULightmassSettingsTitle", "GPU Lightmass"))
 		//.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorCategory())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.LightingScenarioIcon16x"))
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Level.LightingScenarioIcon16x"))
 		.SetMenuType(ETabSpawnerMenuType::Hidden);
 }
 
@@ -106,8 +221,8 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-					.IsEnabled(IsRayTracingEnabled() && IsAllowStaticLightingEnabled())
+					.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
+					.IsEnabled(IsRayTracingEnabled() && IsStaticLightingAllowed() && IsPathTracingEnabled())
 					.Visibility_Lambda([](){ return IsRunning() ? EVisibility::Collapsed : EVisibility::Visible; })
 					.OnClicked_Raw(this, &FGPULightmassEditorModule::OnStartClicked)
 					[
@@ -117,8 +232,8 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 							.Text(FEditorFontGlyphs::Lightbulb_O)
 						]
 						+ SHorizontalBox::Slot()
@@ -127,7 +242,7 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 						.Padding(4, 0, 0, 0)
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 							.Text_Lambda( []()
 							{ 
 								return FGPULightmassEditorModule::IsBakeWhatYouSeeMode() ? 
@@ -146,7 +261,7 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+					.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 					.Visibility_Lambda([](){ return IsRunning() && IsBakeWhatYouSeeMode() ? EVisibility::Visible : EVisibility::Collapsed; })
 					.OnClicked_Raw(this, &FGPULightmassEditorModule::OnSaveAndStopClicked)
 					[
@@ -156,8 +271,8 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.11"))
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.11"))
 							.Text(FEditorFontGlyphs::Lightbulb_O)
 						]
 						+ SHorizontalBox::Slot()
@@ -166,7 +281,7 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 						.Padding(4, 0, 0, 0)
 						[
 							SNew(STextBlock)
-							.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+							.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 							.Text(LOCTEXT("GPULightmassSettingsSaveAndStop", "Save And Stop Building"))
 						]
 					]
@@ -179,11 +294,11 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Danger")
+					.ButtonStyle(FAppStyle::Get(), "FlatButton.Danger")
 					.Visibility_Lambda([](){ return IsRunning() ? EVisibility::Visible: EVisibility::Collapsed; })
 					.OnClicked_Raw(this, &FGPULightmassEditorModule::OnCancelClicked)
 					.Text(LOCTEXT("GPULightmassSettingsCancel", "Cancel Build"))
-					.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
+					.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
 				]
 				
 
@@ -224,16 +339,17 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 				.AutoWrapText(true)
 				.Text_Lambda( []() -> FText
 				{
-
-					bool bIsRayTracingEnabled = IsRayTracingEnabled();
-					FText RTDisabledMsg = LOCTEXT("GPULightmassRayTracingDisabled", "GPU Lightmass requires ray tracing support which is disabled.");
-					if (!bIsRayTracingEnabled)
+					if (!IsRayTracingEnabled())
 					{
-						return LOCTEXT("GPULightmassRayTracingDisabled", "GPU Lightmass requires ray tracing support which is disabled.");
+						return GenerateRayTracingDisabledReasonMessage(GetRayTracingDisabledReason());
 					}
-					else if (!IsAllowStaticLightingEnabled())
+					else if (!IsStaticLightingAllowed())
 					{
 						return LOCTEXT("GPULightmassAllowStaticLightingDisabled", "GPU Lightmass requires Allow Static Lighting enabled in the project settings.");
+					}
+					else if (!IsPathTracingEnabled())
+					{
+						return LOCTEXT("GPULightmassPathTracingDisabled", "GPU Lightmass requires Path Tracing enabled in the project settings.");
 					}
 
 					// Ready
@@ -320,12 +436,6 @@ bool FGPULightmassEditorModule::IsRunning()
 	}
 
 	return false;
-}
-
-bool FGPULightmassEditorModule::IsAllowStaticLightingEnabled()
-{
-	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-	return (AllowStaticLightingVar && AllowStaticLightingVar->GetValueOnAnyThread() > 0);
 }
 
 FReply FGPULightmassEditorModule::OnStartClicked()
@@ -424,7 +534,7 @@ void FGPULightmassEditorModule::CreateBuildMenu(FMenuBuilder& Builder)
 	}), FCanExecuteAction());
 
 	Builder.AddMenuEntry(LOCTEXT("GPULightmassSettingsTitle", "GPU Lightmass"),
-		LOCTEXT("OpensGPULightmassSettings", "Opens GPU Lightmass settings tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.LightingScenarioIcon16x"), ActionOpenGPULightmassSettingsTab,
+		LOCTEXT("OpensGPULightmassSettings", "Opens GPU Lightmass settings tab."), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Level.LightingScenarioIcon16x"), ActionOpenGPULightmassSettingsTab,
 		NAME_None, EUserInterfaceActionType::Button);
 }
 

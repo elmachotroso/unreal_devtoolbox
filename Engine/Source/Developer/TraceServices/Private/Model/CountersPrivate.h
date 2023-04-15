@@ -190,19 +190,23 @@ private:
 };
 
 class FCounter
-	: public IEditableCounter
+	: public ICounter
+	, public IEditableCounter
 {
 public:
 	FCounter(ILinearAllocator& Allocator, const TArray64<double>& FrameStartTimes);
 	virtual const TCHAR* GetName() const override { return Name; }
 	virtual void SetName(const TCHAR* InName) override { Name = InName; }
+	virtual const TCHAR* GetGroup() const override { return Group; }
+	virtual void SetGroup(const TCHAR* InGroup) override { Group = InGroup; }
 	virtual const TCHAR* GetDescription() const override { return Description; }
 	virtual void SetDescription(const TCHAR* InDescription) override { Description = InDescription; }
 	virtual bool IsFloatingPoint() const override { return bIsFloatingPoint; }
 	virtual void SetIsFloatingPoint(bool bInIsFloatingPoint) override;
+	virtual bool IsResetEveryFrame() const override { return bIsResetEveryFrame; }
+	virtual void SetIsResetEveryFrame(bool bInIsResetEveryFrame) override { bIsResetEveryFrame = bInIsResetEveryFrame; }
 	virtual ECounterDisplayHint GetDisplayHint() const { return DisplayHint; }
 	virtual void SetDisplayHint(ECounterDisplayHint InDisplayHint) override { DisplayHint = InDisplayHint; }
-	virtual void SetIsResetEveryFrame(bool bInIsResetEveryFrame) override { bIsResetEveryFrame = bInIsResetEveryFrame; }
 	virtual void EnumerateValues(double IntervalStart, double IntervalEnd, bool bIncludeExternalBounds, TFunctionRef<void(double, int64)> Callback) const override;
 	virtual void EnumerateFloatValues(double IntervalStart, double IntervalEnd, bool bIncludeExternalBounds, TFunctionRef<void(double, double)> Callback) const override;
 	virtual void AddValue(double Time, int64 Value) override;
@@ -215,6 +219,7 @@ private:
 	TCounterData<int64> IntCounterData;
 	TCounterData<double> DoubleCounterData;
 	const TCHAR* Name = nullptr;
+	const TCHAR* Group = nullptr;
 	const TCHAR* Description = nullptr;
 	uint64 ModCount = 0;
 	ECounterDisplayHint DisplayHint = CounterDisplayHint_None;
@@ -224,6 +229,7 @@ private:
 
 class FCounterProvider
 	: public ICounterProvider
+	, public IEditableCounterProvider
 {
 public:
 	static const FName ProviderName;
@@ -233,7 +239,10 @@ public:
 	virtual uint64 GetCounterCount() const override { return Counters.Num(); }
 	virtual void EnumerateCounters(TFunctionRef<void(uint32, const ICounter&)> Callback) const override;
 	virtual bool ReadCounter(uint32 CounterId, TFunctionRef<void(const ICounter&)> Callback) const override;
-	virtual IEditableCounter* CreateCounter() override;
+
+	// implement IEditableCounterProvider
+	virtual const ICounter* GetCounter(IEditableCounter* EditableCounter) override;
+	virtual IEditableCounter* CreateEditableCounter() override;
 	virtual void AddCounter(const ICounter* Counter) override;
 
 private:

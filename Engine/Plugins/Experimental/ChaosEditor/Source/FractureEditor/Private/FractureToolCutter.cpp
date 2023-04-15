@@ -18,6 +18,12 @@
 #include "Voronoi/Voronoi.h"
 #include "PlanarCut.h"
 
+#include "FractureToolBackgroundTask.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolCutter)
+
+using namespace UE::Fracture;
+
 #define LOCTEXT_NAMESPACE "FractureToolCutter"
 
 
@@ -349,6 +355,61 @@ void UFractureToolVoronoiCutterBase::FractureContextChanged()
 	UpdateVisualizations(FractureContexts);
 }
 
+
+class FVoronoiFractureOp : public FGeometryCollectionFractureOperator
+{
+public:
+	FVoronoiFractureOp(const FGeometryCollection& SourceCollection) : FGeometryCollectionFractureOperator(SourceCollection)
+	{}
+
+	virtual ~FVoronoiFractureOp() = default;
+
+	TArray<int> Selection;
+	FBox Bounds;
+	TArray<FVector> Sites;
+	TOptional<FNoiseSettings> NoiseSettings;
+	float PointSpacing;
+	float Grout;
+	int Seed;
+	FTransform Transform;
+
+	// TGenericDataOperator interface:
+	virtual void CalculateResult(FProgressCancel* Progress) override
+	{
+		// Assume Voronoi diagram only takes ~1% of the total time to compute
+		FProgressCancel::FProgressScope VoronoiDiagramProgress =
+			FProgressCancel::CreateScopeTo(Progress, .01, LOCTEXT("ComputingVoronoiDiagramMessage", "Computing Voronoi Diagram"));
+
+		FVector Origin = Transform.GetTranslation();
+		for (FVector& Site : Sites)
+		{
+			Site -= Origin;
+		}
+		Bounds.Min -= Origin;
+		Bounds.Max -= Origin;
+		FVoronoiDiagram Voronoi(Sites, Bounds, .1f);
+
+		FPlanarCells VoronoiPlanarCells = FPlanarCells(Sites, Voronoi);
+		VoronoiPlanarCells.InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
+
+		if (Progress && Progress->Cancelled())
+		{
+			return;
+		}
+
+		VoronoiDiagramProgress.Done();
+
+		// All remaining work is assigned to the mesh fracture
+		FProgressCancel::FProgressScope FractureMeshProgress =
+			FProgressCancel::CreateScopeTo(Progress, 1, LOCTEXT("FractureMeshMessage", "Fracturing Mesh"));
+
+		ResultGeometryIndex = CutMultipleWithPlanarCells(VoronoiPlanarCells, *CollectionCopy, Selection, Grout, PointSpacing, Seed, Transform, true, true, Progress, Origin);
+		
+		SetResult(MoveTemp(CollectionCopy));
+	}
+};
+
+
 int32 UFractureToolVoronoiCutterBase::ExecuteFracture(const FFractureToolContext& FractureContext)
 {
 	if (FractureContext.IsValid())
@@ -356,22 +417,25 @@ int32 UFractureToolVoronoiCutterBase::ExecuteFracture(const FFractureToolContext
 		TArray<FVector> Sites;
 		GenerateVoronoiSites(FractureContext, Sites);
 		FBox VoronoiBounds = GetVoronoiBounds(FractureContext, Sites);
-			
-		FVoronoiDiagram Voronoi(Sites, VoronoiBounds, .1f);
 
-		FPlanarCells VoronoiPlanarCells = FPlanarCells(Sites, Voronoi);
-
-		FNoiseSettings NoiseSettings;
+		TUniquePtr<FVoronoiFractureOp> VoronoiOp = MakeUnique<FVoronoiFractureOp>(*(FractureContext.GetGeometryCollection()));
+		VoronoiOp->Bounds = VoronoiBounds;
+		VoronoiOp->Selection = FractureContext.GetSelection();
+		VoronoiOp->Grout = CutterSettings->Grout;
+		VoronoiOp->PointSpacing = CollisionSettings->GetPointSpacing();
+		VoronoiOp->Sites = Sites;
 		if (CutterSettings->Amplitude > 0.0f)
 		{
-			CutterSettings->TransferNoiseSettings(NoiseSettings);
-			VoronoiPlanarCells.InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
+			FNoiseSettings Settings;
+			CutterSettings->TransferNoiseSettings(Settings);
+			VoronoiOp->NoiseSettings = Settings;
 		}
+		VoronoiOp->Seed = FractureContext.GetSeed();
+		VoronoiOp->Transform = FractureContext.GetTransform();
 
-		// Proximity is invalidated.
-		ClearProximity(FractureContext.GetGeometryCollection().Get());
-
-		return CutMultipleWithPlanarCells(VoronoiPlanarCells, *(FractureContext.GetGeometryCollection()), FractureContext.GetSelection(), CutterSettings->Grout, CollisionSettings->GetPointSpacing(), FractureContext.GetSeed(), FractureContext.GetTransform());
+		int Result = RunCancellableGeometryCollectionOp<FVoronoiFractureOp>(*(FractureContext.GetGeometryCollection()),
+			MoveTemp(VoronoiOp), LOCTEXT("ComputingVoronoiFractureMessage", "Computing Voronoi Fracture"));
+		return Result;
 	}
 
 	return INDEX_NONE;
@@ -389,3 +453,4 @@ FBox UFractureToolVoronoiCutterBase::GetVoronoiBounds(const FFractureToolContext
 }
 
 #undef LOCTEXT_NAMESPACE
+

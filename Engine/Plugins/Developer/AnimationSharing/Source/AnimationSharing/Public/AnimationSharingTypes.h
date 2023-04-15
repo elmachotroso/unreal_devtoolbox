@@ -2,16 +2,21 @@
 
 #pragma once
 
-#include "Engine/DeveloperSettings.h"
 #include "PerPlatformProperties.h"
+#include "UObject/Class.h"
+#include "AnimationSharingInstances.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#include "Engine/DeveloperSettings.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
-#include "UObject/Class.h"
-#include "Animation/AnimInstance.h"
-#include "AnimationSharingInstances.h"
+#endif
 #include "AnimationSharingTypes.generated.h"
+
+class UAnimSequence;
+class USkeleton;
+class USkeletonMesh;
 
 USTRUCT()
 struct FAnimationSetup
@@ -84,7 +89,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = AnimationSharing, meta = (EditCondition = "bOnDemand", UIMin="0.0", UIMax="1.0", ClampMin = "0.0", ClampMax = "1.0"))
 	float WiggleTimePercentage;
 	
-	/** Whether or not this animation requires curves or morphtargets to function correctly for slave components */
+	/** Whether or not this animation requires curves or morphtargets to function correctly for follower components */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = AnimationSharing)
 	bool bRequiresCurves;
 };
@@ -135,7 +140,7 @@ public:
 	TObjectPtr<USkeleton> Skeleton;
 
 	/** Skeletal mesh used to setup skeletal mesh components */
-	UPROPERTY(EditAnywhere, Category = AnimationSharing, meta = (DisallowedClasses = "DestructibleMesh"))
+	UPROPERTY(EditAnywhere, Category = AnimationSharing, meta = (DisallowedClasses = "/Script/ApexDestruction.DestructibleMesh"))
 	TObjectPtr<USkeletalMesh> SkeletalMesh;
 
 	/** Animation blueprint used to perform the blending between states */
@@ -174,7 +179,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = AnimationSharing, meta = (ClampMin = "1", UIMin = "1"))
 	FPerPlatformInt MaximumNumberConcurrentBlends;
 
-	/** Significance value tied to whether or not the master pose components should be ticking */
+	/** Significance value tied to whether or not the leader pose components should be ticking */
 	UPROPERTY(EditAnywhere, Category = AnimationSharing, meta = (ClampMin = "0.0", UIMin = "0.0"))
 	FPerPlatformFloat TickSignificanceValue;
 };

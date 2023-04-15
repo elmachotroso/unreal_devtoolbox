@@ -7,10 +7,12 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "SLevelViewport.h"
-#include "Editor/UnrealEd/Public/SViewportToolBar.h"
+#include "SViewportToolBar.h"
 
 class ACameraActor;
 class FExtender;
+class SExtensionPanel;
+class STransformViewportToolBar;
 class FMenuBuilder;
 class UToolMenu;
 struct FToolMenuSection;
@@ -31,7 +33,7 @@ public:
 	virtual bool IsViewModeSupported(EViewModeIndex ViewModeIndex) const;
 
 	/** @return Level editor viewport client. */ 
-	FLevelEditorViewportClient* GetLevelViewportClient();
+	FLevelEditorViewportClient* GetLevelViewportClient() const;
 
 	/** Fills view menu */
 	void FillViewMenu(UToolMenu* InMenu);
@@ -276,8 +278,17 @@ private:
 	void OnDisableRealtimeOverride();
 	bool IsRealtimeOverrideToggleVisible() const;
 	FText GetRealtimeOverrideTooltip() const;
+
+	float GetTransformToolbarWidth() const;
+
 private:
 	/** The viewport that we are in */
 	TWeakPtr<class SLevelViewport> Viewport;
+
+	/** STransformViewportToolBar menu */
+	TSharedPtr<STransformViewportToolBar> TransformToolbar;
+
+	/** The previous max STransformViewportToolBar width to allow deterministic size calculations */
+	mutable float TransformToolbar_CachedMaxWidth = 0.0f;
 };
 

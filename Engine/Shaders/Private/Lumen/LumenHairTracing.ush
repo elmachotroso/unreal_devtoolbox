@@ -26,6 +26,7 @@ void TraceHairScreen(
 	inout bool bHit,
 	inout bool bUncertain,
 	inout float3 OutScreenUV,
+	inout float3 OutLastVisibleScreenUV,
 	inout float OutHitTileZ)
 {
 	InternalTraceScreen(
@@ -44,6 +45,7 @@ void TraceHairScreen(
 		bHit,
 		bUncertain,
 		OutScreenUV,
+		OutLastVisibleScreenUV,
 		OutHitTileZ);
 }
 #endif
@@ -78,18 +80,17 @@ void TraceHairVoxels(
 	float4 Random = GetHairVoxelJitter2(PixelCoord.xy, View.StateFrameIndexMod8, VirtualVoxel.JitterMode);
 
 	// Jitter start position to mask/compensate coarse voxel resolution
-	if (1)
+	float3 NormalizedDepthBias = 0;
 	{
 		const float PositionBiasScale = 0.5f;
-		const float3 DepthBias = VirtualVoxel.VoxelWorldSize * (VirtualVoxel.DepthBiasScale_Shadow * SampleDirection + PositionBiasScale * (Random.xyz * 2 - 1));
-		RayStart += DepthBias;
+		NormalizedDepthBias = (VirtualVoxel.DepthBiasScale_Shadow * SampleDirection + PositionBiasScale * (Random.xyz * 2 - 1));
 	}
 
 	FVirtualVoxelCommonDesc CommonDesc;
 	CommonDesc.PageCountResolution = VirtualVoxel.PageCountResolution;
-	CommonDesc.VoxelWorldSize = VirtualVoxel.VoxelWorldSize;
 	CommonDesc.PageTextureResolution = VirtualVoxel.PageTextureResolution;
 	CommonDesc.PageResolution = VirtualVoxel.PageResolution;
+	CommonDesc.PageResolutionLog2 = VirtualVoxel.PageResolutionLog2;
 
 	FHairTraversalSettings TraversalSettings = InitHairTraversalSettings();
 	TraversalSettings.DensityScale = bIsReflectionTracing ? VirtualVoxel.DensityScale_Shadow : VirtualVoxel.DensityScale_Environment;
@@ -107,12 +108,11 @@ void TraceHairVoxels(
 	const uint VoxelDescCount = VirtualVoxel.NodeDescCount;
 	for (uint VoxelDescIt = 0; Transparency > 0.01f && VoxelDescIt < VoxelDescCount; ++VoxelDescIt)
 	{
-		const FPackedVirtualVoxelNodeDesc PackedNode = VirtualVoxel.NodeDescBuffer[VoxelDescIt];
-		const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(PackedNode, VirtualVoxel.PageResolution);
+		const FVirtualVoxelNodeDesc NodeDesc = UnpackVoxelNode(VirtualVoxel.NodeDescBuffer[VoxelDescIt], VirtualVoxel.PageResolution);
 
 		FHairTraversalResult Result = InitHairTraversalResult();
 		Result = ComputeHairCountVirtualVoxel(
-			RayStart,
+			RayStart + NormalizedDepthBias * NodeDesc.VoxelWorldSize,
 			RayEnd,
 			CommonDesc,
 			NodeDesc,

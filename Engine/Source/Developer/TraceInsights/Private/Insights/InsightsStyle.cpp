@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InsightsStyle.h"
+
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Styling/AppStyle.h"
 #include "Styling/SlateStyleMacros.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Styling/StyleColors.h"
 #include "Styling/ToolBarStyle.h"
-
-LLM_DEFINE_TAG(Insights);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FInsightsStyle
@@ -21,7 +22,7 @@ void FInsightsStyle::Initialize()
 {
 	LLM_SCOPE_BYNAME(TEXT("Insights/Style"));
 
-	// The core style must be initialized before the editor style
+	// The core style must be initialized before the Insights style
 	FSlateApplication::InitializeCoreStyle();
 
 	if (!StyleInstance.IsValid())
@@ -80,6 +81,12 @@ void FInsightsStyle::FStyle::SyncParentStyles()
 	const ISlateStyle* ParentStyle = GetParentStyle();
 
 	NormalText = ParentStyle->GetWidgetStyle<FTextBlockStyle>("NormalText");
+	Button = ParentStyle->GetWidgetStyle<FButtonStyle>("Button");
+
+	SelectorColor = ParentStyle->GetSlateColor("SelectorColor");
+	SelectionColor = ParentStyle->GetSlateColor("SelectionColor");
+	SelectionColor_Inactive = ParentStyle->GetSlateColor("SelectionColor_Inactive");
+	SelectionColor_Pressed = ParentStyle->GetSlateColor("SelectionColor_Pressed");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -87,6 +94,7 @@ void FInsightsStyle::FStyle::SyncParentStyles()
 #define EDITOR_IMAGE_BRUSH(RelativePath, ...) IMAGE_BRUSH("../../../Editor/Slate/" RelativePath, __VA_ARGS__)
 #define EDITOR_IMAGE_BRUSH_SVG(RelativePath, ...) IMAGE_BRUSH_SVG("../../../Editor/Slate/" RelativePath, __VA_ARGS__)
 #define EDITOR_BOX_BRUSH(RelativePath, ...) BOX_BRUSH("../../../Editor/Slate/" RelativePath, __VA_ARGS__)
+#define EDITOR_BORDER_BRUSH(RelativePath, ...) BORDER_BRUSH("../../../Editor/Slate/" RelativePath, __VA_ARGS__)
 #define TODO_IMAGE_BRUSH(...) EDITOR_IMAGE_BRUSH_SVG("Starship/Common/StaticMesh", __VA_ARGS__)
 
 void FInsightsStyle::FStyle::Initialize()
@@ -115,6 +123,8 @@ void FInsightsStyle::FStyle::Initialize()
 	//////////////////////////////////////////////////
 
 	Set("WhiteBrush", new FSlateColorBrush(FLinearColor::White));
+	Set("DarkGreenBrush", new FSlateColorBrush(FLinearColor(0.0f, 0.25f, 0.0f, 1.0f)));
+
 	Set("SingleBorder", new FSlateBorderBrush(NAME_None, FMargin(1.0f)));
 	Set("DoubleBorder", new FSlateBorderBrush(NAME_None, FMargin(2.0f)));
 
@@ -124,11 +134,12 @@ void FInsightsStyle::FStyle::Initialize()
 
 	Set("RoundedBackground", new FSlateRoundedBoxBrush(FLinearColor(1.0f, 1.0f, 1.0f, 1.0f), Icon16x16));
 
-	Set("Border.TB", new EDITOR_BOX_BRUSH("Icons/Profiler/Profiler_Border_TB_16x", FMargin(4.0f / 16.0f)));
-	Set("Border.L", new EDITOR_BOX_BRUSH("Icons/Profiler/Profiler_Border_L_16x", FMargin(4.0f / 16.0f)));
-	Set("Border.R", new EDITOR_BOX_BRUSH("Icons/Profiler/Profiler_Border_R_16x", FMargin(4.0f / 16.0f)));
+	Set("Border.TB", new CORE_BOX_BRUSH("Icons/Profiler/Profiler_Border_TB_16x", FMargin(4.0f / 16.0f)));
+	Set("Border.L", new CORE_BOX_BRUSH("Icons/Profiler/Profiler_Border_L_16x", FMargin(4.0f / 16.0f)));
+	Set("Border.R", new CORE_BOX_BRUSH("Icons/Profiler/Profiler_Border_R_16x", FMargin(4.0f / 16.0f)));
 
 	Set("Graph.Point", new EDITOR_IMAGE_BRUSH("Old/Graph/ExecutionBubble", Icon16x16));
+	Set("TreeViewBanner.WarningIcon", new CORE_IMAGE_BRUSH_SVG("Starship/Common/alert-circle", Icon20x20, FStyleColors::Warning));
 
 	//////////////////////////////////////////////////
 	// Icons for major components
@@ -172,6 +183,7 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Icons.TableTreeView.ToolBar", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Spreadsheet", Icon20x20));
 
 	Set("Icons.TasksView", new IMAGE_BRUSH_SVG("Tasks", Icon16x16));
+	Set("Icons.PackagesView", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Spreadsheet", Icon16x16));
 
 	Set("Icons.AllTracksMenu.ToolBar", new IMAGE_BRUSH_SVG("AllTracks_20", Icon20x20));
 	Set("Icons.CpuGpuTracksMenu.ToolBar", new IMAGE_BRUSH_SVG("CpuGpuTracks_20", Icon20x20));
@@ -179,7 +191,7 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Icons.PluginTracksMenu.ToolBar", new IMAGE_BRUSH_SVG("PluginTracks_20", Icon20x20));
 	Set("Icons.ViewModeMenu.ToolBar", new IMAGE_BRUSH_SVG("ViewMode_20", Icon20x20));
 
-	Set("Icons.HighlightEvents.ToolBar", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Visualizer", Icon20x20));
+	Set("Icons.HighlightEvents.ToolBar", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Visualizer", Icon20x20));
 	Set("Icons.ResetHighlight.ToolBar", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Reject", Icon20x20));
 
 	//////////////////////////////////////////////////
@@ -223,15 +235,16 @@ void FInsightsStyle::FStyle::Initialize()
 	//////////////////////////////////////////////////
 	// Tasks
 
-	Set("Icons.GoToTask", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ViewColumn_32x", Icon16x16));
-	Set("Icons.ShowTaskCriticalPath", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_HotPath_32x", Icon16x16));
-	Set("Icons.ShowTaskTransitions", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowTaskConnections", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowTaskPrerequisites", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowTaskSubsequents", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowNestedTasks", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowTaskTrack", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
-	Set("Icons.ShowDetailedTaskTrackInfo", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.GoToTask", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ViewColumn_32x", Icon16x16));
+	Set("Icons.ShowTaskCriticalPath", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_HotPath_32x", Icon16x16));
+	Set("Icons.ShowTaskTransitions", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowTaskConnections", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowTaskPrerequisites", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowTaskSubsequents", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowParentTasks", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowNestedTasks", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowTaskTrack", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
+	Set("Icons.ShowDetailedTaskTrackInfo", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_Calls_32x", Icon16x16));
 
 	//////////////////////////////////////////////////
 
@@ -256,9 +269,10 @@ void FInsightsStyle::FStyle::Initialize()
 
 	//////////////////////////////////////////////////
 
-	Set("Icons.ResetToDefault", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ResetToDefault_32x", Icon16x16));
+	Set("Icons.ResetToDefault", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ResetToDefault_32x", Icon16x16));
 	Set("Icons.DiffersFromDefault", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/ResetToDefault", Icon16x16));
 
+	Set("Icons.Console", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Console", Icon16x16));
 	//Set("Icons.Filter", new CORE_IMAGE_BRUSH_SVG("Starship/Common/filter", Icon16x16));	//-> use FAppStyle "Icons.Filter"
 	Set("Icons.Filter.ToolBar", new CORE_IMAGE_BRUSH_SVG("Starship/Common/filter", Icon20x20));
 	Set("Icons.Find", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/TraceDataFiltering", Icon16x16));
@@ -270,19 +284,20 @@ void FInsightsStyle::FStyle::Initialize()
 	//Set("Icons.FolderOpen", new CORE_IMAGE_BRUSH_SVG("Starship/Common/folder-open", Icon16x16));		//-> use FAppStyle "Icons.FolderOpen"
 	//Set("Icons.FolderClosed", new CORE_IMAGE_BRUSH_SVG("Starship/Common/folder-closed", Icon16x16));	//-> use FAppStyle "Icons.FolderClosed"
 
-	Set("Icons.SortBy", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_SortBy_32x", Icon16x16));
+	Set("Icons.SortBy", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_SortBy_32x", Icon16x16));
 	//Set("Icons.SortAscending", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortUp", Icon16x16));	//-> use FAppStyle "Icons.SortUp"
 	//Set("Icons.SortDescending", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortDown", Icon16x16));	//-> use FAppStyle "Icons.SortDown"
 
-	Set("Icons.ViewColumn", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ViewColumn_32x", Icon16x16));
-	Set("Icons.ResetColumn", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ResetColumn_32x", Icon16x16));
+	Set("Icons.ViewColumn", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ViewColumn_32x", Icon16x16));
+	Set("Icons.ResetColumn", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ResetColumn_32x", Icon16x16));
 
-	Set("Icons.ExpandAll", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ExpandAll_32x", Icon16x16));
-	Set("Icons.CollapseAll", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_CollapseAll_32x", Icon16x16));
-	Set("Icons.ExpandSelection", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ExpandSelection_32x", Icon16x16));
-	Set("Icons.CollapseSelection", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_CollapseSelection_32x", Icon16x16));
+	Set("Icons.ExpandAll", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ExpandAll_32x", Icon16x16));
+	Set("Icons.CollapseAll", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_CollapseAll_32x", Icon16x16));
+	Set("Icons.ExpandSelection", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ExpandSelection_32x", Icon16x16));
+	Set("Icons.CollapseSelection", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_CollapseSelection_32x", Icon16x16));
 
-	Set("Icons.ToggleShowGraphSeries", new EDITOR_IMAGE_BRUSH("Icons/Profiler/profiler_ShowGraphData_32x", Icon16x16));
+	Set("Icons.AddGraphSeries", new CORE_IMAGE_BRUSH_SVG("Starship/Common/plus", Icon16x16));
+	Set("Icons.RemoveGraphSeries", new CORE_IMAGE_BRUSH_SVG("Starship/Common/close", Icon16x16));
 
 	Set("Icons.TestAutomation", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/TestAutomation", Icon16x16));
 	Set("Icons.Test", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Test", Icon16x16));
@@ -295,6 +310,14 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Icons.ZeroCountFilter", new IMAGE_BRUSH_SVG("ZeroCountFilter", Icon16x16));
 
 	Set("Icons.Function", new IMAGE_BRUSH_SVG("Function", Icon16x16));
+
+	Set("Icons.Pinned", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Pinned", Icon16x16));
+	Set("Icons.Unpinned", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Unpinned", Icon16x16));
+
+	Set("Icons.Rename", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Rename", Icon16x16));
+	Set("Icons.Delete", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Delete", Icon16x16));
+
+	Set("Icons.ImportTable", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Import", Icon16x16));
 
 	//////////////////////////////////////////////////
 
@@ -390,6 +413,35 @@ void FInsightsStyle::FStyle::Initialize()
 		Set("SecondaryToolbar2.MinUniformToolbarSize", 32.0f);
 		Set("SecondaryToolbar2.MaxUniformToolbarSize", 32.0f);
 	}
+
+	{
+		Set("ToggleButton", FButtonStyle(Button)
+			.SetNormal(FSlateNoResource())
+			.SetHovered(EDITOR_BOX_BRUSH("Common/RoundedSelection_16x", 4.0f / 16.0f, SelectionColor))
+			.SetPressed(EDITOR_BOX_BRUSH("Common/RoundedSelection_16x", 4.0f / 16.0f, SelectionColor_Pressed)));
+	}
+
+	{
+		FTextBlockStyle InheritedFromNativeTextStyle = FTextBlockStyle(NormalText)
+			.SetFont(DEFAULT_FONT("Regular", 10));
+
+		Set("Common.InheritedFromNativeTextStyle", InheritedFromNativeTextStyle);
+
+		// Go to native class hyperlink
+		FButtonStyle EditNativeHyperlinkButton = FButtonStyle()
+			.SetNormal(EDITOR_BORDER_BRUSH("Old/HyperlinkDotted", FMargin(0, 0, 0, 3 / 16.0f)))
+			.SetPressed(FSlateNoResource())
+			.SetHovered(EDITOR_BORDER_BRUSH("Old/HyperlinkUnderline", FMargin(0, 0, 0, 3 / 16.0f)));
+		FHyperlinkStyle EditNativeHyperlinkStyle = FHyperlinkStyle()
+			.SetUnderlineStyle(EditNativeHyperlinkButton)
+			.SetTextStyle(InheritedFromNativeTextStyle)
+			.SetPadding(FMargin(0.0f));
+
+		Set("Common.GotoNativeCodeHyperlink", EditNativeHyperlinkStyle);
+	}
+
+
+	//////////////////////////////////////////////////
 }
 
 #undef TODO_IMAGE_BRUSH

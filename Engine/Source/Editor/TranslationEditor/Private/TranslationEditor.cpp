@@ -7,6 +7,7 @@
 #include "Widgets/Input/SButton.h"
 #include "TranslationEditorModule.h"
 #include "TranslationEditorMenu.h"
+#include "PropertyPath.h"
 
 #include "Logging/MessageLog.h"
 
@@ -279,12 +280,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Untranslated( const FSpawnTabA
 	TSharedRef<SWidget> PropertyTableWidget = UntranslatedPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon( FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties") )
+		//.Icon( FAppStyle::GetBrush("TranslationEditor.Tabs.Properties") )
 		.Label( LOCTEXT("UntranslatedTabTitle", "Untranslated") )
 		.TabColorScale( GetTabColorScale() )
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding(0.0f)
 			[
 				PropertyTableWidget
@@ -344,12 +345,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Review( const FSpawnTabArgs& A
 	TSharedRef<SWidget> PropertyTableWidget = ReviewPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon( FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties") )
+		//.Icon( FAppStyle::GetBrush("TranslationEditor.Tabs.Properties") )
 		.Label( LOCTEXT("ReviewTabTitle", "Needs Review") )
 		.TabColorScale( GetTabColorScale() )
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding(0.0f)
 			[
 				PropertyTableWidget
@@ -402,12 +403,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Completed( const FSpawnTabArgs
 	TSharedRef<SWidget> PropertyTableWidget = CompletedPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon( FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties") )
+		//.Icon( FAppStyle::GetBrush("TranslationEditor.Tabs.Properties") )
 		.Label( LOCTEXT("CompletedTabTitle", "Completed") )
 		.TabColorScale( GetTabColorScale() )
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding(0.0f)
 			[
 				PropertyTableWidget
@@ -460,7 +461,7 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Search(const FSpawnTabArgs& Ar
 	TSharedRef<SWidget> PropertyTableWidget = SearchPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon(FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties"))
+		//.Icon(FAppStyle::GetBrush("TranslationEditor.Tabs.Properties"))
 		.Label(LOCTEXT("SearchTabTitle", "Search"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -483,7 +484,7 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Search(const FSpawnTabArgs& Ar
 				.FillHeight(10.f)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				.Padding(0.0f)
 				.VAlign(VAlign_Top)
 				[
@@ -540,12 +541,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_ChangedOnImport(const FSpawnTa
 	TSharedRef<SWidget> PropertyTableWidget = SearchPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon(FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties"))
+		//.Icon(FAppStyle::GetBrush("TranslationEditor.Tabs.Properties"))
 		.Label(LOCTEXT("ChangedOnImportTabTitle", "Changed on Import"))
 		.TabColorScale(GetTabColorScale())
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(0.0f)
 			[
 				PropertyTableWidget
@@ -562,12 +563,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Preview( const FSpawnTabArgs& 
 	check( Args.GetTabId().TabType == PreviewTabId );
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon( FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties") )
+		//.Icon( FAppStyle::GetBrush("TranslationEditor.Tabs.Properties") )
 		.Label( LOCTEXT("PreviewTabTitle", "Preview") )
 		.TabColorScale( GetTabColorScale() )
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding(0.0f)
 			[
 				SNew(SHorizontalBox)
@@ -628,12 +629,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Context( const FSpawnTabArgs& 
 	TSharedRef<SWidget> PropertyTableWidget = ContextPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon( FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties") )
+		//.Icon( FAppStyle::GetBrush("TranslationEditor.Tabs.Properties") )
 		.Label( LOCTEXT("ContextTabTitle", "Context") )
 		.TabColorScale( GetTabColorScale() )
 		[
 			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
+			.BorderImage( FAppStyle::GetBrush("ToolPanel.GroupBorder") )
 			.Padding(0.0f)
 			[
 				SNew(SVerticalBox)
@@ -643,7 +644,7 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_Context( const FSpawnTabArgs& 
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.Padding(5.0f)
 					[
 						NamespaceTextBlock
@@ -724,12 +725,12 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_History(const FSpawnTabArgs& A
 	TSharedRef<SWidget> PropertyTableWidget = HistoryPropertyTableWidgetHandle->GetWidget();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		//.Icon(FEditorStyle::GetBrush("TranslationEditor.Tabs.Properties"))
+		//.Icon(FAppStyle::GetBrush("TranslationEditor.Tabs.Properties"))
 		.Label(LOCTEXT("HistoryTabTitle", "History"))
 		.TabColorScale(GetTabColorScale())
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(0.0f)
 			[
 				SNew(SVerticalBox)
@@ -739,7 +740,7 @@ TSharedRef<SDockTab> FTranslationEditor::SpawnTab_History(const FSpawnTabArgs& A
 				.AutoHeight()
 				[
 					SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 					.Padding(5.0f)
 					[
 						SNew(SButton)

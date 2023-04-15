@@ -4,6 +4,18 @@
 	MeshDecals.usf: Vertex/Hull/Domain/Pixel shader for computing a mesh decal.
 =============================================================================*/
 
+#include "Common.ush"
+
+#if SHADING_PATH_MOBILE
+	// Reroute MobileSceneTextures uniform buffer references to the base pass uniform buffer 
+	#define MobileSceneTextures MobileBasePass.SceneTextures
+	#define EyeAdaptationStruct MobileBasePass
+#else
+	#define SceneTexturesStruct DecalPass.SceneTextures
+	#define EyeAdaptationStruct DecalPass
+#endif
+
+#include "Strata/Strata.ush"
 #include "DecalCommon.ush"
 #include "/Engine/Generated/Material.ush"
 #include "/Engine/Generated/VertexFactory.ush"
@@ -120,6 +132,31 @@ void FPixelShaderInOut_MainPS(
 	}
 #endif
 
+#if STRATA_ENABLED
+	FStrataPixelHeader StrataHeader = InitialiseStrataPixelHeader();
+	StrataHeader.StrataTree = MaterialParameters.StrataTree;
+	StrataHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount; // Must be one due to parameter blending being forced on the entire Strata tree form the convert-to-decal node.
+	StrataHeader.IrradianceAO = InitIrradianceAndOcclusion();
+	StrataHeader.IrradianceAO.MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
+	StrataHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
+
+	float Coverage = 0.0;
+	if (StrataHeader.StrataTree.BSDFCount > 0)
+	{
+		FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
+
+		FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
+		const float3 V = MaterialParameters.CameraVector;
+
+		// Update tree (coverage/transmittance/luminace weights)
+		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, false /*bRoughDiffuseEnabled*/, 0);
+		StrataUpdateTree(NullStrataAddressing, StrataHeader, StrataHeader.StrataTree, V, Settings);
+
+		// Since the Convert-To-Decal node forces parameter blending for the entire Strata tree, the BSDF we are interested in will be in 0.
+		Coverage = DecalCommonOutput(Out, StrataHeader, StrataHeader.StrataTree.BSDFs[0], 1.0f /*CoverageWeight*/);
+	}
+	const float Opacity = Coverage;
+#else // STRATA_ENABLED
 	float3 Color = GetMaterialEmissive(PixelMaterialInputs);
 
 	float Opacity = GetMaterialOpacity(PixelMaterialInputs);
@@ -141,6 +178,7 @@ void FPixelShaderInOut_MainPS(
 	GBufferData.Velocity = 0;
 
 	DecalCommonOutput(In, Out, Color, Opacity, GBufferData);
+#endif // STRATA_ENABLED
 
 #if NUM_VIRTUALTEXTURE_SAMPLES
 	FinalizeVirtualTextureFeedback(

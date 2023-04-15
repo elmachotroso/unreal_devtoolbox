@@ -236,8 +236,8 @@ void FGridWidget::DrawNewGrid(const FSceneView* View, FPrimitiveDrawInterface* P
 	{
 		// screenspace size looks better in 2d
 
-		float ScaleX = View->ViewMatrices.GetProjectionMatrix().M[0][0] * View->UnscaledViewRect.Width();
-		float ScaleY = View->ViewMatrices.GetProjectionMatrix().M[1][1] * View->UnscaledViewRect.Height();
+		float ScaleX = static_cast<float>(View->ViewMatrices.GetProjectionMatrix().M[0][0] * View->UnscaledViewRect.Width());
+		float ScaleY = static_cast<float>(View->ViewMatrices.GetProjectionMatrix().M[1][1] * View->UnscaledViewRect.Height());
 
 		float Scale = FMath::Min(ScaleX, ScaleY);
 
@@ -342,7 +342,7 @@ void FGridWidget::DrawNewGrid(const FSceneView* View, FPrimitiveDrawInterface* P
 	FVector UVMax = UVMid + FVector(UVRadi, UVRadi, 0);
 
 	// vertex pos is in -1..1 range
-	DrawPlane10x10(PDI, ObjectToWorld, Radii, FVector2D(UVMin), FVector2D(UVMax), MaterialInst->GetRenderProxy(), SDPG_World );
+	DrawPlane10x10(PDI, ObjectToWorld, static_cast<float>(Radii), FVector2D(UVMin), FVector2D(UVMax), MaterialInst->GetRenderProxy(), SDPG_World );
 }
 
 
@@ -359,7 +359,7 @@ FEditorCommonDrawHelper::FEditorCommonDrawHelper()
 	, GridColorAxis(70, 70, 70)
 	, GridColorMajor(40, 40, 40)
 	, GridColorMinor(20, 20, 20)
-	, PerspectiveGridSize(HALF_WORLD_MAX1)
+	, PerspectiveGridSize(UE_OLD_HALF_WORLD_MAX1)
 	, PivotColor(FColor::Red)
 	, PivotSize(0.02f)
 	, NumCells(64)
@@ -424,15 +424,12 @@ void FEditorCommonDrawHelper::DrawBaseInfo(const FSceneView* View,FPrimitiveDraw
 // @todo UE - reimplement with new component attachment system
 }
 
-#define GRID_WORLD_MAX (2097152.0*0.5)
-
 void FEditorCommonDrawHelper::DrawOldGrid(const FSceneView* View,FPrimitiveDrawInterface* PDI)
 {
 	ESceneDepthPriorityGroup eDPG = (ESceneDepthPriorityGroup)DepthPriorityGroup;
 
 	bool bIsPerspective = ( View->ViewMatrices.GetProjectionMatrix().M[3][3] < 1.0f );
 
-	// LWC_TODO - replace with LWC version of HALF_WORLD_MAX once we have it
 	static double MaxGridExtent = 8.0 * 1024 * 1024 * 1024;
 
 	// Draw 3D perspective grid
@@ -471,11 +468,11 @@ void FEditorCommonDrawHelper::DrawOldGrid(const FSceneView* View,FPrimitiveDrawI
 				LineColor = GridColorMinor;
 			}
 
-			PDI->DrawLine(A,B,LineColor,eDPG, LineThickness, GridDepthBias);
+			PDI->DrawLine(A, B, LineColor, static_cast<uint8>(eDPG), LineThickness, GridDepthBias);
 
 			A.Y=A.X;							B.Y=B.X;
 			A.X=(PerspectiveGridSize/4.f);		B.X=-(PerspectiveGridSize/4.f);
-			PDI->DrawLine(A,B,LineColor,eDPG, LineThickness, GridDepthBias);
+			PDI->DrawLine(A, B, LineColor, static_cast<uint8>(eDPG), LineThickness, GridDepthBias);
 		}
 	}
 	// Draw ortho grid.
@@ -543,7 +540,7 @@ void FEditorCommonDrawHelper::DrawOldGrid(const FSceneView* View,FPrimitiveDrawI
 	// Draw orthogonal worldframe.
 	if(bDrawWorldBox)
 	{
-		DrawWireBox(PDI, FBox(FVector(-MaxGridExtent, -MaxGridExtent, -MaxGridExtent), FVector(MaxGridExtent, MaxGridExtent, MaxGridExtent)), GEngine->C_WorldBox, eDPG);
+		DrawWireBox(PDI, FBox(FVector(-MaxGridExtent, -MaxGridExtent, -MaxGridExtent), FVector(MaxGridExtent, MaxGridExtent, MaxGridExtent)), GEngine->C_WorldBox, static_cast<uint8>(eDPG));
 	}
 }
 

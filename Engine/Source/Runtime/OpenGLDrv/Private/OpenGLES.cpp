@@ -127,11 +127,13 @@ bool FOpenGLES::bRequiresARMShaderFramebufferFetchDepthStencilUndef = false;
 /** GL_EXT_buffer_storage */
 bool FOpenGLES::bSupportsBufferStorage = false;
 
+/** GL_EXT_depth_clamp */
+bool FOpenGLES::bSupportsDepthClamp = false;
+
 bool FOpenGLES::bHasHardwareHiddenSurfaceRemoval = false;
 bool FOpenGLES::bSupportsMobileMultiView = false;
 GLint FOpenGLES::MaxMSAASamplesTileMem = 1;
 
-GLint FOpenGLES::MaxComputeTextureImageUnits = -1;
 GLint FOpenGLES::MaxComputeUniformComponents = -1;
 
 GLint FOpenGLES::MaxComputeUAVUnits = -1;
@@ -167,8 +169,7 @@ void FOpenGLES::ProcessQueryGLInt()
 	LOG_AND_GET_GL_INT(GL_MAX_FRAGMENT_UNIFORM_VECTORS, 0, MaxPixelUniformComponents);
 	LOG_AND_GET_GL_INT(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT, 0, TextureBufferAlignment);
 	
-	GET_GL_INT(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS, 0, MaxComputeTextureImageUnits);
-	GET_GL_INT(GL_MAX_COMPUTE_UNIFORM_COMPONENTS, 0, MaxComputeUniformComponents);
+	LOG_AND_GET_GL_INT(GL_MAX_COMPUTE_UNIFORM_COMPONENTS, 0, MaxComputeUniformComponents);
 	LOG_AND_GET_GL_INT(GL_MAX_COMBINED_IMAGE_UNIFORMS, 0, MaxCombinedUAVUnits);
 	LOG_AND_GET_GL_INT(GL_MAX_COMPUTE_IMAGE_UNIFORMS, 0, MaxComputeUAVUnits);
 	LOG_AND_GET_GL_INT(GL_MAX_FRAGMENT_IMAGE_UNIFORMS, 0, MaxPixelUAVUnits);
@@ -222,6 +223,7 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 	bSupportsDXT = ExtensionsString.Contains(TEXT("GL_NV_texture_compression_s3tc")) || ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_s3tc"));
 	bSupportsNVFrameBufferBlit = ExtensionsString.Contains(TEXT("GL_NV_framebuffer_blit"));
 	bSupportsBufferStorage = ExtensionsString.Contains(TEXT("GL_EXT_buffer_storage"));
+	bSupportsDepthClamp = ExtensionsString.Contains(TEXT("GL_EXT_depth_clamp"));
 	bSupportsASTCDecodeMode = ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_astc_decode_mode"));
 
 	// Report shader precision

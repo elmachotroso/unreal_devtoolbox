@@ -10,9 +10,9 @@
 #include "DatasmithContentEditorStyle.h"
 #include "DatasmithCustomAction.h"
 #include "DatasmithFileProducer.h"
-#include "DatasmithImportFactory.h"
 #include "DatasmithImporterEditorSettings.h"
 #include "DatasmithImporterHelper.h"
+#include "DatasmithImportFactory.h"
 #include "DatasmithScene.h"
 #include "DatasmithStaticMeshImporter.h"
 #include "DatasmithUtils.h"
@@ -31,11 +31,11 @@
 #include "DataprepAssetInterface.h"
 #include "DataprepAssetUserData.h"
 #include "DataprepCoreUtils.h"
-#include "DirectLinkExtensionModule.h"
+#include "DirectLinkExtensionEditorModule.h"
 #include "DirectLinkUriResolver.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Engine/StaticMesh.h"
 #include "ExternalSourceModule.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -59,6 +59,8 @@
 #include "UObject/StrongObjectPtr.h"
 
 #define LOCTEXT_NAMESPACE "DatasmithImporter"
+
+static class IDatasmithImporterExt* GClothImporterExtInstance = nullptr;
 
 /**
  * DatasmithImporter module implementation (private)
@@ -116,9 +118,26 @@ public:
 		ResetFromTemplates( Object );
 	}
 
+	virtual FOnGenerateDatasmithImportMenu& OnGenerateDatasmithImportMenu() override
+	{
+		return GenerateDatasmithImportMenuEvent;
+	}
+
 	bool IsInOfflineMode() const
 	{
 		return GetDefault< UDatasmithImporterEditorSettings >() && GetDefault< UDatasmithImporterEditorSettings >()->bOfflineImporter;
+	}
+
+
+	virtual void SetClothImporterExtension(class IDatasmithImporterExt* InInstance) override
+	{
+		GClothImporterExtInstance = InInstance;
+	}
+
+
+	virtual class IDatasmithImporterExt* GetClothImporterExtension() override
+	{
+		return GClothImporterExtInstance;
 	}
 
 private:
@@ -169,6 +188,9 @@ private:
 	FDelegateHandle IsAssetAutoReimportEnabledHandle;
 	FDelegateHandle BrowseExternalSourceUriHandle;
 	FDelegateHandle GetSupporedUriSchemeHandle;
+
+	FOnGenerateDatasmithImportMenu GenerateDatasmithImportMenuEvent;
+
 };
 
 void FDatasmithImporterModule::SetupMenuEntry()
@@ -205,6 +227,8 @@ void FDatasmithImporterModule::SetupMenuEntry()
 					FSlateIcon( FDatasmithStyle::GetStyleSetName(), TEXT( "Datasmith.Import" ) ),
 					FUIAction( FExecuteAction::CreateRaw( this, &FDatasmithImporterModule::OnClickedImportDirectLinkMenuEntry ) )
 				);
+
+				GenerateDatasmithImportMenuEvent.Broadcast(SubSection);
 			}),
 			bOpenMenuOnClick,
 			FSlateIcon( FDatasmithStyle::GetStyleSetName(), TEXT( "Datasmith.Import" ) )
@@ -224,7 +248,7 @@ void FDatasmithImporterModule::OnClickedImportDirectLinkMenuEntry()
 {
 	using namespace UE::DatasmithImporter;
 
-	TSharedPtr<FDirectLinkExternalSource> ExternalSource = IDirectLinkExtensionModule::Get().DisplayDirectLinkSourcesDialog();
+	TSharedPtr<FDirectLinkExternalSource> ExternalSource = IDirectLinkExtensionEditorModule::Get().DisplayDirectLinkSourcesDialog();
 	if ( ExternalSource )
 	{
 		TFuture<TSharedPtr<IDatasmithScene>> DatasmithSceneFuture = ExternalSource->AsyncLoad();
@@ -396,8 +420,8 @@ TSharedRef<FExtender> FDatasmithImporterModule::OnExtendContentBrowserAssetSelec
 	bool bShouldExtendAssetActions = false;
 	for ( const FAssetData& Asset : SelectedAssets )
 	{
-		if ( Asset.AssetClass == UMaterial::StaticClass()->GetFName() || Asset.AssetClass == UMaterialInstance::StaticClass()->GetFName() ||
-			 Asset.AssetClass == UMaterialInstanceConstant::StaticClass()->GetFName() )
+		if ( Asset.AssetClassPath == UMaterial::StaticClass()->GetClassPathName() || Asset.AssetClassPath == UMaterialInstance::StaticClass()->GetClassPathName() ||
+			 Asset.AssetClassPath == UMaterialInstanceConstant::StaticClass()->GetClassPathName() )
 		{
 			UMaterialInterface* MaterialInterface = Cast< UMaterialInterface >( Asset.GetAsset() ); // Need to load the asset at this point to figure out the type of the AssetImportData
 
@@ -408,7 +432,7 @@ TSharedRef<FExtender> FDatasmithImporterModule::OnExtendContentBrowserAssetSelec
 				break;
 			}
 		}
-		else if ( Asset.AssetClass == UStaticMesh::StaticClass()->GetFName() )
+		else if ( Asset.AssetClassPath == UStaticMesh::StaticClass()->GetClassPathName() )
 		{
 			UStaticMesh* StaticMesh = Cast< UStaticMesh >( Asset.GetAsset() ); // Need to load the asset at this point to figure out the type of the AssetImportData
 
@@ -488,15 +512,15 @@ void FDatasmithImporterModule::PopulateDatasmithActionsMenu( FMenuBuilder& MenuB
 
 	for ( const FAssetData& Asset : SelectedAssets )
 	{
-		if ( Asset.AssetClass == UMaterial::StaticClass()->GetFName() || Asset.AssetClass == UMaterialInstance::StaticClass()->GetFName() ||
-			 Asset.AssetClass == UMaterialInstanceConstant::StaticClass()->GetFName() )
+		if ( Asset.AssetClassPath == UMaterial::StaticClass()->GetClassPathName() || Asset.AssetClassPath == UMaterialInstance::StaticClass()->GetClassPathName() ||
+			 Asset.AssetClassPath == UMaterialInstanceConstant::StaticClass()->GetClassPathName() )
 		{
 			bCanResetOverrides = true;
 
 			UMaterialInterface* MaterialInterface = Cast< UMaterialInterface >( Asset.GetAsset() );
 			bCanReimportMaterial = ( MaterialInterface && MaterialInterface->AssetImportData && MaterialInterface->AssetImportData->IsA< UDatasmithAssetImportData >() );
 		}
-		else if ( Asset.AssetClass == UStaticMesh::StaticClass()->GetFName() )
+		else if ( Asset.AssetClassPath == UStaticMesh::StaticClass()->GetClassPathName() )
 		{
 			bCanResetOverrides = true;
 		}
@@ -508,14 +532,14 @@ void FDatasmithImporterModule::PopulateDatasmithActionsMenu( FMenuBuilder& MenuB
 		/*MenuBuilder.AddMenuEntry(
 			NSLOCTEXT("DatasmithActions", "ObjectContext_DiffDatasmith", "Show Overrides"),
 			NSLOCTEXT("DatasmithActions", "ObjectContext_DiffDatasmithTooltip", "Displays which values are currently overriden"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Diff"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Diff"),
 			FUIAction( FExecuteAction::CreateStatic( &FDatasmithImporterModule::DiffAssetAgainstTemplate, SelectedAssets ), FCanExecuteAction() ));*/
 
 		// Add the Datasmith reset sub-menu extender
 		MenuBuilder.AddMenuEntry(
 			NSLOCTEXT("DatasmithActions", "ObjectContext_ResetDatasmith", "Reset Overrides"),
 			NSLOCTEXT("DatasmithActions", "ObjectContext_ResetDatasmithTooltip", "Resets overriden values with the values from Datasmith"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Refresh"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Refresh"),
 			FUIAction( FExecuteAction::CreateStatic( &FDatasmithImporterModule::ResetAssetFromTemplate, SelectedAssets ), FCanExecuteAction() ));
 	}
 
@@ -525,7 +549,7 @@ void FDatasmithImporterModule::PopulateDatasmithActionsMenu( FMenuBuilder& MenuB
 		MenuBuilder.AddMenuEntry(
 			NSLOCTEXT("AssetTypeActions_Material", "ObjectContext_ReimportDatasmithMaterial", "Reimport Material"),
 			NSLOCTEXT("AssetTypeActions_Material", "ObjectContext_ReimportDatasmithMaterialTooltip", "Reimports a material using Datasmith"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 			FUIAction( FExecuteAction::CreateStatic( &FDatasmithImporterModule::ExecuteReimportDatasmithMaterials, SelectedAssets ), FCanExecuteAction() ));
 	}
 
@@ -538,7 +562,7 @@ void FDatasmithImporterModule::PopulateDatasmithActionsMenu( FMenuBuilder& MenuB
 			MenuBuilder.AddMenuEntry(
 				Action->GetLabel(),
 				Action->GetTooltip(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 				FUIAction( FExecuteAction::CreateLambda( [=](){ FDatasmithImporterModule::ApplyCustomActionOnAssets(SelectedAssets, Action);} ), FCanExecuteAction() )
 			);
 		}
@@ -551,14 +575,14 @@ void FDatasmithImporterModule::PopulateDatasmithActorsMenu( FMenuBuilder& MenuBu
 	/*MenuBuilder.AddMenuEntry(
 		NSLOCTEXT("DatasmithActions", "ObjectContext_DiffDatasmith", "Show Overrides"),
 		NSLOCTEXT("DatasmithActions", "ObjectContext_DiffDatasmithTooltip", "Displays which values are currently overriden"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Diff"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Diff"),
 		FUIAction( FExecuteAction::CreateStatic( &FDatasmithImporterModule::DiffActorAgainstTemplate, SelectedActors ), FCanExecuteAction() ));*/
 
 	// Add the Datasmith reset sub-menu extender
 	MenuBuilder.AddMenuEntry(
 		NSLOCTEXT("DatasmithActions", "ObjectContext_ResetDatasmith", "Reset Overrides"),
 		NSLOCTEXT("DatasmithActions", "ObjectContext_ResetDatasmithTooltip", "Resets overriden values with the values from Datasmith"),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Refresh"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Refresh"),
 		FUIAction( FExecuteAction::CreateStatic( &FDatasmithImporterModule::ResetActorFromTemplate, SelectedActors ), FCanExecuteAction() ));
 
 	// Add an entry for each applicable custom action
@@ -570,7 +594,7 @@ void FDatasmithImporterModule::PopulateDatasmithActorsMenu( FMenuBuilder& MenuBu
 			MenuBuilder.AddMenuEntry(
 				Action->GetLabel(),
 				Action->GetTooltip(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 				FUIAction( FExecuteAction::CreateLambda( [=]() { Action->ApplyOnActors(SelectedActors); } ) , FCanExecuteAction() )
 			);
 		}
@@ -583,9 +607,9 @@ void FDatasmithImporterModule::ExecuteReimportDatasmithMaterials( TArray<FAssetD
 	{
 		for ( const FAssetData& AssetData : SelectedAssets )
 		{
-			if ( AssetData.AssetClass == UMaterial::StaticClass()->GetFName()
-			  || AssetData.AssetClass == UMaterialInstance::StaticClass()->GetFName()
-			  || AssetData.AssetClass == UMaterialInstanceConstant::StaticClass()->GetFName() )
+			if ( AssetData.AssetClassPath == UMaterial::StaticClass()->GetClassPathName()
+			  || AssetData.AssetClassPath == UMaterialInstance::StaticClass()->GetClassPathName()
+			  || AssetData.AssetClassPath == UMaterialInstanceConstant::StaticClass()->GetClassPathName() )
 			{
 				if ( UObject* AssetToReimport = AssetData.GetAsset() )
 				{
@@ -751,7 +775,7 @@ void FDatasmithImporterModule::SetupDatasmithContentDelegates()
 					return false;
 				}
 
-				return IDirectLinkExtensionModule::Get().GetManager().SetAssetAutoReimport(Asset, bEnabled);
+				return IDirectLinkExtensionEditorModule::Get().GetManager().SetAssetAutoReimport(Asset, bEnabled);
 			});
 		SetAssetAutoReimportHandle = SetAssetAutoReimport.GetHandle();
 		DatasmithContentEditorModule.RegisterSetAssetAutoReimportHandler(MoveTemp(SetAssetAutoReimport));
@@ -781,7 +805,7 @@ void FDatasmithImporterModule::SetupDatasmithContentDelegates()
 
 				if (SourceUri.HasScheme(FDirectLinkUriResolver::GetDirectLinkScheme()))
 				{
-					return IDirectLinkExtensionModule::Get().GetManager().IsAssetAutoReimportEnabled(Asset);
+					return IDirectLinkExtensionEditorModule::Get().GetManager().IsAssetAutoReimportEnabled(Asset);
 				}
 
 				return false;

@@ -33,16 +33,16 @@ namespace Horde.Storage.Implementation.LeaderElection
 
     }
 
-    public class KubernetesLeaderElection : PollingService<KubernetesLeaderElectionState>, ILeaderElection, IDisposable
+    public class KubernetesLeaderElection : PollingService<KubernetesLeaderElectionState>, ILeaderElection
     {
         private readonly ILogger _logger = Log.ForContext<KubernetesLeaderElection>();
 
         private readonly Kubernetes _client;
         private readonly LeaderElector _leaderElector;
-        private ConfigMapLock _configMapLock;
-        private string _identity;
+        private readonly ConfigMapLock _configMapLock;
+        private readonly string _identity;
 
-        public KubernetesLeaderElection(IOptionsMonitor<KubernetesLeaderElectionSettings> leaderSettings) : base("Kubernetes Leader Election", TimeSpan.FromSeconds(1), new KubernetesLeaderElectionState())
+        public KubernetesLeaderElection(IOptionsMonitor<KubernetesLeaderElectionSettings> leaderSettings) : base("Kubernetes Leader Election", TimeSpan.FromSeconds(1), new KubernetesLeaderElectionState(), startAtRandomTime: true)
         {
             KubernetesLeaderElectionSettings settings = leaderSettings.CurrentValue;
             // As we are determining if we are the leader we just assume we are running in a kubernetes cluster
@@ -70,8 +70,8 @@ namespace Horde.Storage.Implementation.LeaderElection
         {
             _logger.Warning("{Instance} is the new leader", leaderName);
 
-            bool isLeader = string.Equals(leaderName, _identity, StringComparison.InvariantCultureIgnoreCase);
-            OnLeaderChanged?.Invoke(this, new ILeaderElection.OnLeaderChangedEventArgs(isLeader, leaderName));
+            bool isLeader = string.Equals(leaderName, _identity, StringComparison.OrdinalIgnoreCase);
+            OnLeaderChanged?.Invoke(this, new OnLeaderChangedEventArgs(isLeader, leaderName));
         }
 
         public bool IsThisInstanceLeader()
@@ -79,12 +79,14 @@ namespace Horde.Storage.Implementation.LeaderElection
             return _leaderElector.IsLeader();
         }
 
-        public event EventHandler<ILeaderElection.OnLeaderChangedEventArgs>? OnLeaderChanged;
+        public event EventHandler<OnLeaderChangedEventArgs>? OnLeaderChanged;
 
-        public void Dispose()
+        protected override Task OnStopping(KubernetesLeaderElectionState state)
         {
             _leaderElector?.Dispose();
             _client?.Dispose();
+
+            return Task.CompletedTask;
         }
 
         public override async Task<bool> OnPoll(KubernetesLeaderElectionState state, CancellationToken cancellationToken)

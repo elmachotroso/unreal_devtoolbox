@@ -23,8 +23,10 @@
 #include "Engine/Texture2D.h"
 #include "RHI.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(KismetRenderingLibrary)
+
 #if WITH_EDITOR
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "IContentBrowserSingleton.h"
@@ -54,7 +56,7 @@ void UKismetRenderingLibrary::ClearRenderTarget2D(UObject* WorldContextObject, U
 			[RenderTargetResource, ClearColor](FRHICommandList& RHICmdList)
 		{
 			FRHIRenderPassInfo RPInfo(RenderTargetResource->GetRenderTargetTexture(), ERenderTargetActions::DontLoad_Store);
-			TransitionRenderPassTargets(RHICmdList, RPInfo);
+			RHICmdList.Transition(FRHITransitionInfo(RenderTargetResource->GetRenderTargetTexture(), ERHIAccess::Unknown, ERHIAccess::RTV));
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearRT"));
 			DrawClearQuad(RHICmdList, ClearColor);
 			RHICmdList.EndRenderPass();
@@ -129,8 +131,28 @@ void UKismetRenderingLibrary::ReleaseRenderTarget2D(UTextureRenderTarget2D* Text
 	TextureRenderTarget->ReleaseResource();
 }
 
+void UKismetRenderingLibrary::ResizeRenderTarget2D(UTextureRenderTarget2D* TextureRenderTarget, int32 Width, int32 Height)
+{
+	if (!TextureRenderTarget)
+	{
+		return;
+	}
+
+	// Resize function silently fails if either dimension isn't positive, so check for that here so we can warn the caller
+	if ((Width > 0) && (Height > 0))
+	{
+		TextureRenderTarget->ResizeTarget(Width, Height);
+	}
+	else
+	{
+		FMessageLog("Blueprint").Warning(LOCTEXT("ResizeRenderTarget2D_InvalidDimensions", "ResizeRenderTarget2D: Dimensions must be positive."));
+	}
+}
+
 void UKismetRenderingLibrary::DrawMaterialToRenderTarget(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, UMaterialInterface* Material)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DrawMaterialToRenderTarget);
+
 	if (!FApp::CanEverRender())
 	{
 		// Returning early to avoid warnings about missing resources that are expected when CanEverRender is false.
@@ -157,6 +179,9 @@ void UKismetRenderingLibrary::DrawMaterialToRenderTarget(UObject* WorldContextOb
 	}
 	else
 	{
+		// This is a user-facing function, so we'd rather make sure that shaders are ready by the time we render, in order to ensure we don't draw with a fallback material :
+		Material->EnsureIsComplete();
+
 		World->FlushDeferredParameterCollectionInstanceUpdates();
 
 		FTextureRenderTargetResource* RenderTargetResource = TextureRenderTarget->GameThread_GetRenderTargetResource();
@@ -170,7 +195,6 @@ void UKismetRenderingLibrary::DrawMaterialToRenderTarget(UObject* WorldContextOb
 			World->FeatureLevel);
 
 		Canvas->Init(TextureRenderTarget->SizeX, TextureRenderTarget->SizeY, nullptr, &RenderCanvas);
-		Canvas->Update();
 
 		{
 			SCOPED_DRAW_EVENTF_GAMETHREAD(DrawMaterialToRenderTarget, *TextureRenderTarget->GetFName().ToString());
@@ -720,7 +744,6 @@ void UKismetRenderingLibrary::BeginDrawCanvasToRenderTarget(UObject* WorldContex
 			// Draw immediately so that interleaved SetVectorParameter (etc) function calls work as expected
 			FCanvas::CDM_ImmediateDrawing);
 		Canvas->Init(TextureRenderTarget->SizeX, TextureRenderTarget->SizeY, nullptr, NewCanvas);
-		Canvas->Update();
 
 #if  WANTS_DRAW_MESH_EVENTS
 		Context.DrawEvent = new FDrawEvent();
@@ -761,9 +784,9 @@ void UKismetRenderingLibrary::EndDrawCanvasToRenderTarget(UObject* WorldContextO
 			FTextureRenderTargetResource* RenderTargetResource = Context.RenderTarget->GameThread_GetRenderTargetResource();
 
 			ENQUEUE_RENDER_COMMAND(CanvasRenderTargetResolveCommand)(
-				[RenderTargetResource](FRHICommandList& RHICmdList)
+				[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
 				{
-					RHICmdList.CopyToResolveTarget(RenderTargetResource->GetRenderTargetTexture(), RenderTargetResource->TextureRHI, FResolveParams());
+					TransitionAndCopyTexture(RHICmdList, RenderTargetResource->GetRenderTargetTexture(), RenderTargetResource->TextureRHI, {});
 				}
 			);
 
@@ -862,3 +885,4 @@ ENGINE_API FMatrix UKismetRenderingLibrary::CalculateProjectionMatrix(const FMin
 }
 
 #undef LOCTEXT_NAMESPACE
+

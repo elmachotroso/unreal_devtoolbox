@@ -14,10 +14,14 @@
 
 #include "ImgMediaLoader.h"
 #include "ImgMediaMipMapInfo.h"
-#include "ImgMediaMipMapInfoManager.h"
 #include "ImgMediaScheduler.h"
 #include "ImgMediaSettings.h"
 #include "ImgMediaTextureSample.h"
+
+#include "MediaPlayer.h"
+#include "MediaPlayerFacade.h"
+#include "MediaTexture.h"
+#include "MediaTextureTracker.h"
 
 #define IMG_MEDIA_PLAYER_VERSION 2
 #define LOCTEXT_NAMESPACE "FImgMediaPlayer"
@@ -31,6 +35,38 @@ DECLARE_CYCLE_STAT(TEXT("ImgMedia Player TickInput"), STAT_ImgMedia_PlayerTickIn
 
 
 const FTimespan HackDeltaTimeOffset(1);
+
+namespace {
+	/** Convenience function to process all media textures corresponding the specified player. */
+	void ApplyToPlayerMediaTextures(FImgMediaPlayer* InPlayer, TFunctionRef<void(UMediaTexture*)> TextureCallbackFn)
+	{
+		TArray<UMediaTexture*> PlayerTextures;
+
+		FMediaTextureTracker& TextureTracker = FMediaTextureTracker::Get();
+
+		// Look through all the media textures we know about.
+		for (TWeakObjectPtr<UMediaTexture> TexturePtr : TextureTracker.GetTextures())
+		{
+			UMediaTexture* Texture = TexturePtr.Get();
+			if (Texture != nullptr)
+			{
+				// Does this match the player?
+				UMediaPlayer* MediaPlayer = Texture->GetMediaPlayer();
+				if (MediaPlayer != nullptr)
+				{
+					TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> Player = MediaPlayer->GetPlayerFacade()->GetPlayer();
+					if (Player.IsValid())
+					{
+						if (Player.Get() == InPlayer)
+						{
+							TextureCallbackFn(Texture);
+						}
+					}
+				}
+			}
+		}
+	}
+}
 
 
 /* FImgMediaPlayer structors
@@ -73,6 +109,17 @@ void FImgMediaPlayer::Close()
 		return;
 	}
 
+	{
+		const TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe>& MipMapInfo = Loader->GetMipMapInfo();
+		if (MipMapInfo.IsValid())
+		{
+			ApplyToPlayerMediaTextures(this, [&MipMapInfo](UMediaTexture* Texture)
+				{
+					MipMapInfo->RemoveObjectsUsingThisMediaTexture(Texture);
+				});
+		}
+	}
+
 	Scheduler->UnregisterLoader(Loader.ToSharedRef());
 	Loader.Reset();
 
@@ -107,6 +154,33 @@ IMediaControls& FImgMediaPlayer::GetControls()
 FString FImgMediaPlayer::GetInfo() const
 {
 	return Loader.IsValid() ? Loader->GetInfo() : FString();
+}
+
+
+FVariant FImgMediaPlayer::GetMediaInfo(FName InfoName) const
+{
+	FVariant Variant;
+
+	// Source num mips?
+	if (InfoName == UMediaPlayer::MediaInfoNameSourceNumMips.Resolve())
+	{
+		if (Loader.IsValid())
+		{
+			int32 NumMips = Loader->GetNumMipLevels();
+			Variant = NumMips;
+		}
+	}
+	// Source num tiles?
+	else if (InfoName == UMediaPlayer::MediaInfoNameSourceNumTiles.Resolve())
+	{
+		if (Loader.IsValid())
+		{
+			FIntPoint TileNum(Loader->GetNumTilesX(), Loader->GetNumTilesY());
+			Variant = TileNum;
+		}
+	}
+
+	return Variant;
 }
 
 
@@ -182,12 +256,15 @@ bool FImgMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 	FFrameRate FrameRateOverride(0, 0);
 	TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe> MipMapInfo;
 	bool bFillGapsInSequence = true;
+	bool bIsSmartCacheEnabled = false;
+	float SmartCacheTimeToLookAhead = 0.0f;
 	if (Options != nullptr)
 	{
 		FrameRateOverride.Denominator = Options->GetMediaOption(ImgMedia::FrameRateOverrideDenonimatorOption, 0LL);
 		FrameRateOverride.Numerator = Options->GetMediaOption(ImgMedia::FrameRateOverrideNumeratorOption, 0LL);
 		bFillGapsInSequence = Options->GetMediaOption(ImgMedia::FillGapsInSequenceOption, true);
-
+		bIsSmartCacheEnabled = Options->GetMediaOption(ImgMedia::SmartCacheEnabled, false);
+		SmartCacheTimeToLookAhead = Options->GetMediaOption(ImgMedia::SmartCacheTimeToLookAhead, 0.0f);
 		TSharedPtr<IMediaOptions::FDataContainer, ESPMode::ThreadSafe> DefaultValue;
 		TSharedPtr<IMediaOptions::FDataContainer, ESPMode::ThreadSafe> DataContainer = Options->GetMediaOption(ImgMedia::MipMapInfoOption, DefaultValue);
 		if (DataContainer.IsValid())
@@ -195,21 +272,18 @@ bool FImgMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 			MipMapInfo = StaticCastSharedPtr<FImgMediaMipMapInfo, IMediaOptions::FDataContainer, ESPMode::ThreadSafe>(DataContainer);
 			if (MipMapInfo.IsValid())
 			{
-				// Tell mipmipinfo about our media textures.
-				MipMapInfo->ClearAllObjects();
-				FImgMediaMipMapInfoManager& MipMapInfoManager = FImgMediaMipMapInfoManager::Get();
-				TArray<UMediaTexture*> MediaTextures;
-				MipMapInfoManager.GetMediaTexturesFromPlayer(MediaTextures, this);
-				for (UMediaTexture* MediaTexture : MediaTextures)
-				{
-					MipMapInfo->AddObjectsUsingThisMediaTexture(MediaTexture);
-				}
+				ApplyToPlayerMediaTextures(this, [&MipMapInfo](UMediaTexture* Texture)
+					{
+						MipMapInfo->AddObjectsUsingThisMediaTexture(Texture);
+					});
 			}
 		}
 	}
 
 	// initialize image loader on a separate thread
-	Loader = MakeShared<FImgMediaLoader, ESPMode::ThreadSafe>(Scheduler.ToSharedRef(), GlobalCache.ToSharedRef(), MipMapInfo, bFillGapsInSequence);
+	FImgMediaLoaderSmartCacheSettings SmartCacheSettings(bIsSmartCacheEnabled, SmartCacheTimeToLookAhead);
+	Loader = MakeShared<FImgMediaLoader, ESPMode::ThreadSafe>(Scheduler.ToSharedRef(),
+		GlobalCache.ToSharedRef(), MipMapInfo, bFillGapsInSequence, SmartCacheSettings);
 	Scheduler->RegisterLoader(Loader.ToSharedRef());
 
 	const FString SequencePath = Url.RightChop(6);
@@ -553,6 +627,11 @@ bool FImgMediaPlayer::Seek(const FTimespan& Time)
 	if (CurrentState == EMediaState::Stopped)
 	{
 		CurrentState = EMediaState::Paused;
+
+		if (Loader.IsValid())
+		{
+			Loader->HandlePause();
+		}
 	}
 
 #if IMG_MEDIA_PLAYER_VERSION == 1
@@ -636,6 +715,11 @@ bool FImgMediaPlayer::SetRate(float Rate)
 		CurrentRate = Rate;
 		CurrentState = EMediaState::Paused;
 
+		if (Loader.IsValid())
+		{
+			Loader->HandlePause();
+		}
+
 		EventSink.ReceiveMediaEvent(EMediaEvent::PlaybackSuspended);
 		return true;
 	}
@@ -709,6 +793,7 @@ IMediaSamples::EFetchBestSampleResult FImgMediaPlayer::FetchBestVideoSampleForTi
 	{
 		// See if we have any samples in the specified time range.
 		SampleResult = Loader->FetchBestVideoSampleForTimeRange(TimeRange, OutSample, ShouldLoop, CurrentRate, PlaybackIsBlocking);
+		Scheduler->TickInput(FTimespan::Zero(), FTimespan::MinValue());
 		if (SampleResult == IMediaSamples::EFetchBestSampleResult::Ok)
 		{
 			CurrentTime = OutSample->GetTime().Time;

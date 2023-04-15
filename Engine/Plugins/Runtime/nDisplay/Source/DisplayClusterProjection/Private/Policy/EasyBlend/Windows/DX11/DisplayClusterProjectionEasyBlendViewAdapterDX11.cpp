@@ -7,11 +7,7 @@
 #include "DisplayClusterProjectionLog.h"
 #include "Misc/DisplayClusterHelpers.h"
 
-#include "RHI.h"
-#include "RHIResources.h"
-#include "RHIUtilities.h"
-
-#include "Windows/D3D11RHI/Private/D3D11RHIPrivate.h"
+#include "ID3D11DynamicRHI.h"
 
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
@@ -21,7 +17,6 @@
 
 #include "Render/Viewport/IDisplayClusterViewport.h"
 #include "Render/Viewport/IDisplayClusterViewportProxy.h"
-
 
 //------------------------------------------------------------------------------
 // FDisplayClusterProjectionEasyBlendViewAdapterDX11
@@ -59,7 +54,7 @@ FDisplayClusterProjectionEasyBlendViewAdapterDX11::~FDisplayClusterProjectionEas
 	}
 }
 
-bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(class IDisplayClusterViewport* InViewport, const FString& File)
+bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(IDisplayClusterViewport* InViewport, const FString& File)
 {
 	if (!IsEasyBlendRenderingEnabled())
 	{
@@ -140,28 +135,24 @@ void FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplInitializeResources_
 		if (IsEasyBlendRenderingEnabled())
 		{
 			FViewport* MainViewport = GEngine->GameViewport->Viewport;
-			if (GD3D11RHI && MainViewport)
+			if (IsRHID3D11() && MainViewport)
 			{
-				FD3D11Device* Device = GD3D11RHI->GetDevice();
-				FD3D11DeviceContext* DeviceContext = GD3D11RHI->GetDeviceContext();
+				FD3D11Device* Device = GetID3D11DynamicRHI()->RHIGetDevice();
+				FD3D11DeviceContext* DeviceContext = GetID3D11DynamicRHI()->RHIGetDeviceContext();
 				if (Device && DeviceContext)
 				{
-					FD3D11Viewport* Viewport = static_cast<FD3D11Viewport*>(MainViewport->GetViewportRHI().GetReference());
-					if (Viewport)
+					IDXGISwapChain* SwapChain = GetID3D11DynamicRHI()->RHIGetSwapChain(MainViewport->GetViewportRHI().GetReference());
+					if (SwapChain)
 					{
-						IDXGISwapChain* SwapChain = (IDXGISwapChain*)Viewport->GetSwapChain();
-						if (SwapChain)
+						// Create RT texture for viewport warp
+						for (FViewData& It : Views)
 						{
-							// Create RT texture for viewport warp
-							for (FViewData& It : Views)
+							// Initialize EasyBlend internals
+							check(DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitDeviceObjectsFunc);
+							EasyBlendSDKDXError sdkErr = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitDeviceObjectsFunc(It.EasyBlendMeshData.Get(), Device, DeviceContext, SwapChain);
+							if (EasyBlendSDKDX_FAILED(sdkErr))
 							{
-								// Initialize EasyBlend internals
-								check(DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitDeviceObjectsFunc);
-								EasyBlendSDKDXError sdkErr = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitDeviceObjectsFunc(It.EasyBlendMeshData.Get(), Device, DeviceContext, SwapChain);
-								if (EasyBlendSDKDX_FAILED(sdkErr))
-								{
-									UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Couldn't initialize EasyBlend Device/DeviceContext/SwapChain"));
-								}
+								UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Couldn't initialize EasyBlend Device/DeviceContext/SwapChain"));
 							}
 						}
 					}
@@ -237,7 +228,14 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ApplyWarpBlend_RenderThr
 
 	// Get in\out remp resources ref from viewport
 	TArray<FRHITexture2D*> InputTextures, OutputTextures;
-	if (!InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::InputShaderResource, InputTextures) || !InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::AdditionalTargetableResource, OutputTextures))
+	if (!InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::InputShaderResource, InputTextures))
+	{
+		return false;
+	}
+
+	// Get output resources with rects
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT
+	if (!InViewportProxy->GetResources_RenderThread(EDisplayClusterViewportResourceType::AdditionalTargetableResource, OutputTextures))
 	{
 		return false;
 	}
@@ -260,8 +258,8 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ApplyWarpBlend_RenderThr
 		}
 	}
 
-	// resolve warp result images from temp targetable to FrameTarget
-	return InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType_RenderThread());
+	// warp result is now inside AdditionalRTT.  Later, from the DC ViewportManagerProxy it will be resolved to FrameRTT 
+	return true;
 }
 
 bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, uint32 ContextNum, FRHITexture2D* InputTexture, FRHITexture2D* OutputTexture)
@@ -272,19 +270,18 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplApplyWarpBlend_Rende
 	}
 
 	FViewport* MainViewport = GEngine->GameViewport->Viewport;
-	if (GD3D11RHI == nullptr || MainViewport == nullptr)
+	if (!IsRHID3D11() || MainViewport == nullptr)
 	{
 		return false;
 	}
 
+	ID3D11DynamicRHI* D3D11RHI = GetID3D11DynamicRHI();
+
 	// Prepare the textures
-	FD3D11TextureBase* SrcTextureRHI = static_cast<FD3D11TextureBase*>(InputTexture->GetTextureBaseRHI());
-	FD3D11TextureBase* DstTextureRHI = static_cast<FD3D11TextureBase*>(OutputTexture->GetTextureBaseRHI());
+	ID3D11RenderTargetView* DstTextureRTV = D3D11RHI->RHIGetRenderTargetView(OutputTexture);
 
-	ID3D11RenderTargetView* DstTextureRTV = DstTextureRHI->GetRenderTargetView(0, -1);
-
-	ID3D11Texture2D* DstTextureD3D11 = static_cast<ID3D11Texture2D*>(DstTextureRHI->GetResource());
-	ID3D11Texture2D* SrcTextureD3D11 = static_cast<ID3D11Texture2D*>(SrcTextureRHI->GetResource());
+	ID3D11Texture2D* DstTextureD3D11 = (ID3D11Texture2D*)D3D11RHI->RHIGetResource(OutputTexture);
+	ID3D11Texture2D* SrcTextureD3D11 = (ID3D11Texture2D*)D3D11RHI->RHIGetResource(InputTexture);
 
 	// Setup In/Out EasyBlend textures
 	{
@@ -311,40 +308,37 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplApplyWarpBlend_Rende
 	RenderViewportData.TopLeftX = 0.0f;
 	RenderViewportData.TopLeftY = 0.0f;
 
-	FD3D11Device* Device = GD3D11RHI->GetDevice();
-	FD3D11DeviceContext* DeviceContext = GD3D11RHI->GetDeviceContext();
+	FD3D11Device* Device = GetID3D11DynamicRHI()->RHIGetDevice();
+	FD3D11DeviceContext* DeviceContext = GetID3D11DynamicRHI()->RHIGetDeviceContext();
 	if (Device && DeviceContext)
 	{
-		FD3D11Viewport* Viewport = static_cast<FD3D11Viewport*>(MainViewport->GetViewportRHI().GetReference());
-		if (Viewport)
+
+		IDXGISwapChain* SwapChain = D3D11RHI->RHIGetSwapChain(MainViewport->GetViewportRHI().GetReference());
+		if (SwapChain)
 		{
-			IDXGISwapChain* SwapChain = (IDXGISwapChain*)Viewport->GetSwapChain();
-			if (SwapChain)
+			DeviceContext->RSSetViewports(1, &RenderViewportData);
+			DeviceContext->OMSetRenderTargets(1, &DstTextureRTV, nullptr);
+			DeviceContext->Flush();
+
 			{
-				DeviceContext->RSSetViewports(1, &RenderViewportData);
-				DeviceContext->OMSetRenderTargets(1, &DstTextureRTV, nullptr);
-				DeviceContext->Flush();
+				FScopeLock Lock(&DllAccessCS);
 
+				// Perform warp&blend by the EasyBlend
+				check(DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendDXRenderFunc);
+				EasyBlendSDKDXError EasyBlendSDKDXError = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendDXRenderFunc(
+					Views[ContextNum].EasyBlendMeshData.Get(),
+					Device,
+					DeviceContext,
+					SwapChain,
+					false);
+
+				if (!EasyBlendSDKDX_SUCCEEDED(EasyBlendSDKDXError))
 				{
-					FScopeLock Lock(&DllAccessCS);
-
-					// Perform warp&blend by the EasyBlend
-					check(DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendDXRenderFunc);
-					EasyBlendSDKDXError EasyBlendSDKDXError = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendDXRenderFunc(
-						Views[ContextNum].EasyBlendMeshData.Get(),
-						Device,
-						DeviceContext,
-						SwapChain,
-						false);
-
-					if (!EasyBlendSDKDX_SUCCEEDED(EasyBlendSDKDXError))
-					{
-						UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("EasyBlend couldn't perform rendering operation"));
-						return false;
-					}
-
-					return true;
+					UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("EasyBlend couldn't perform rendering operation"));
+					return false;
 				}
+
+				return true;
 			}
 		}
 	}

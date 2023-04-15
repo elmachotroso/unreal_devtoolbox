@@ -6,7 +6,8 @@
 
 #define LOCTEXT_NAMESPACE "AnimNode_PoseSearchHistoryCollector"
 
-namespace UE { namespace PoseSearch { namespace Private {
+namespace UE::PoseSearch::Private
+{
 
 class FPoseHistoryProvider : public IPoseHistoryProvider
 {
@@ -30,7 +31,8 @@ public:
 	FAnimNode_PoseSearchHistoryCollector& Node;
 };
 
-}}} // namespace UE::PoseSearch::Private
+} // namespace UE::PoseSearch::Private
+
 
 /////////////////////////////////////////////////////
 // FAnimNode_PoseSearchHistoryCollector
@@ -60,9 +62,23 @@ void FAnimNode_PoseSearchHistoryCollector::Evaluate_AnyThread(FPoseContext& Outp
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread);
 
+	using namespace UE::PoseSearch;
+
 	Source.Evaluate(Output);
 
-	PoseHistory.Update(Output.AnimInstanceProxy->GetDeltaSeconds(), Output);
+	FText ErrorText;
+
+	if (!PoseHistory.Update(
+		Output.AnimInstanceProxy->GetDeltaSeconds(),
+		Output,
+		Output.AnimInstanceProxy->GetComponentTransform(),
+		&ErrorText,
+		bUseRootMotion ?
+		FPoseHistory::ERootUpdateMode::RootMotionDelta :
+		FPoseHistory::ERootUpdateMode::ComponentTransformDelta))
+	{
+		Output.LogMessage(EMessageSeverity::Warning, ErrorText);
+	}
 }
 
 void FAnimNode_PoseSearchHistoryCollector::Update_AnyThread(const FAnimationUpdateContext& Context)

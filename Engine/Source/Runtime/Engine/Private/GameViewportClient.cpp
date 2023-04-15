@@ -61,16 +61,20 @@
 #include "ComponentRecreateRenderStateContext.h"
 #include "DynamicResolutionState.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "ProfilingDebugging/MiscTrace.h"
+#include "ProfilingDebugging/TraceScreenshot.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "CustomStaticScreenPercentage.h"
 #include "ObjectTrace.h"
+#include "DynamicResolutionState.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif
 #include "Math/UnrealMathUtility.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GameViewportClient)
 
 #define LOCTEXT_NAMESPACE "GameViewport"
 
@@ -631,7 +635,7 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 
 	if (IgnoreInput())
 	{
-		return ViewportConsole ? ViewportConsole->InputKey(EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
+		return ViewportConsole ? ViewportConsole->InputKey(EventArgs.InputDevice, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
 	}
 
 	OnInputKeyEvent.Broadcast(EventArgs);
@@ -648,7 +652,7 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 #endif
 
 	// route to subsystems that care
-	bool bResult = ( ViewportConsole ? ViewportConsole->InputKey(EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false );
+	bool bResult = ( ViewportConsole ? ViewportConsole->InputKey(EventArgs.InputDevice, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false );
 
 	// Try the override callback, this may modify event args
 	if (!bResult && OnOverrideInputKeyEvent.IsBound())
@@ -658,10 +662,10 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 
 	if (!bResult)
 	{
-		ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, EventArgs.ControllerId);
+		ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromInputDevice(this, EventArgs.InputDevice);
 		if (TargetPlayer && TargetPlayer->PlayerController)
 		{
-			bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, EventArgs.Event, static_cast<double>(EventArgs.AmountDepressed), EventArgs.IsGamepad()));
+			bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, EventArgs.Event, static_cast<double>(EventArgs.AmountDepressed), EventArgs.IsGamepad(), EventArgs.InputDevice));
 		}
 
 		// A gameviewport is always considered to have responded to a mouse buttons to avoid throttling
@@ -671,27 +675,24 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 		}
 	}
 
-#if WITH_EDITOR
-	// For PIE, let the next PIE window handle the input if none of our players did
-	// (this allows people to use multiple controllers to control each window)
-	const int32 NumLocalPlayers = World ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
-	if (!bResult && EventArgs.ControllerId > NumLocalPlayers - 1 && EventArgs.Viewport->IsPlayInEditorViewport())
-	{
-		UGameViewportClient* NextViewport = GEngine->GetNextPIEViewport(this);
-		if (NextViewport)
-		{
-			FInputKeyEventArgs NextViewportEventArgs = EventArgs;
-			NextViewportEventArgs.ControllerId = EventArgs.ControllerId - NumLocalPlayers;
-			bResult = NextViewport->InputKey(NextViewportEventArgs);
-		}
-	}
-#endif
 
 	return bResult;
 }
 
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
+{
+	// Remap the old int32 ControllerId value to the new InputDeviceId
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId UserId = PLATFORMUSERID_NONE;
+	FInputDeviceId DeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, DeviceId);
+	
+	return InputAxis(InViewport, DeviceId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+bool UGameViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId InputDevice, FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
 	if (IgnoreInput())
 	{
@@ -699,8 +700,7 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, F
 	}
 
 	// Handle mapping controller id and key if needed
-	FInputKeyEventArgs EventArgs(InViewport, ControllerId, Key, IE_Axis);
-	RemapControllerInput(EventArgs);
+	FInputKeyEventArgs EventArgs(InViewport, InputDevice, Key, IE_Axis);
 
 	OnInputAxisEvent.Broadcast(InViewport, EventArgs.ControllerId, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 	
@@ -709,12 +709,12 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, F
 	// Don't allow mouse/joystick input axes while in PIE and the console has forced the cursor to be visible.  It's
 	// just distracting when moving the mouse causes mouse look while you are trying to move the cursor over a button
 	// in the editor!
-	if( !( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() ) || ViewportConsole == NULL || !ViewportConsole->ConsoleActive() )
+	if( !( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() ) || ViewportConsole == nullptr || !ViewportConsole->ConsoleActive() )
 	{
 		// route to subsystems that care
-		if (ViewportConsole != NULL)
+		if (ViewportConsole != nullptr)
 		{
-			bResult = ViewportConsole->InputAxis(EventArgs.ControllerId, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
+			bResult = ViewportConsole->InputAxis(EventArgs.InputDevice, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 		}
 		
 		// Try the override callback, this may modify event args
@@ -725,26 +725,12 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, F
 
 		if (!bResult)
 		{
-			ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, EventArgs.ControllerId);
+			ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromInputDevice(this, EventArgs.InputDevice);
 			if (TargetPlayer && TargetPlayer->PlayerController)
 			{
-				bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, (double)Delta, DeltaTime, NumSamples, EventArgs.IsGamepad()));
+				bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, (double)Delta, DeltaTime, NumSamples, EventArgs.IsGamepad(), EventArgs.InputDevice));
 			}
 		}
-
-#if WITH_EDITOR
-		const int32 NumLocalPlayers = World && World->GetGameInstance() ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
-		// For PIE, let the next PIE window handle the input if none of our players did
-		// (this allows people to use multiple controllers to control each window)
-		if (!bResult && EventArgs.ControllerId > NumLocalPlayers - 1 && InViewport->IsPlayInEditorViewport())
-		{
-			UGameViewportClient *NextViewport = GEngine->GetNextPIEViewport(this);
-			if (NextViewport)
-			{
-				bResult = NextViewport->InputAxis(InViewport, EventArgs.ControllerId - NumLocalPlayers, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
-			}
-		}
-#endif
 
 		if( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() )
 		{
@@ -764,7 +750,7 @@ bool UGameViewportClient::InputChar(FViewport* InViewport, int32 ControllerId, T
 	CharacterString += Character;
 
 	//Always route to the console
-	bool bResult = (ViewportConsole ? ViewportConsole->InputChar(ControllerId, CharacterString) : false);
+	bool bResult = (ViewportConsole ? ViewportConsole->InputChar(FInputDeviceId::CreateFromInternalId(ControllerId), CharacterString) : false);
 
 	if (IgnoreInput())
 	{
@@ -789,7 +775,7 @@ bool UGameViewportClient::InputTouch(FViewport* InViewport, int32 ControllerId, 
 	}
 
 	// route to subsystems that care
-	bool bResult = (ViewportConsole ? ViewportConsole->InputTouch(ControllerId, Handle, Type, TouchLocation, Force, DeviceTimestamp, TouchpadIndex) : false);
+	bool bResult = (ViewportConsole ? ViewportConsole->InputTouch(FInputDeviceId::CreateFromInternalId(ControllerId), Handle, Type, TouchLocation, Force, DeviceTimestamp, TouchpadIndex) : false);
 	if (!bResult)
 	{
 		ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, ControllerId);
@@ -804,7 +790,7 @@ bool UGameViewportClient::InputTouch(FViewport* InViewport, int32 ControllerId, 
 
 bool UGameViewportClient::InputMotion(FViewport* InViewport, int32 ControllerId, const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration)
 {
-	if (IgnoreInput())
+	if (IgnoreInput() || !GetDefault<UInputSettings>()->bEnableMotionControls)
 	{
 		return false;
 	}
@@ -1301,7 +1287,9 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	}
 #endif
 
-	ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(InViewport));
+	FSceneViewExtensionContext ViewExtensionContext(InViewport);
+	ViewExtensionContext.bStereoEnabled = true;
+	ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
 
 	for (auto ViewExt : ViewFamily.ViewExtensions)
 	{
@@ -1408,25 +1396,37 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 				GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::BeginDynamicResolutionRendering);
 				ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
 					ViewFamily,
-					DynamicResolutionStateInfos.ResolutionFractionApproximation,
-					DynamicResolutionStateInfos.ResolutionFractionUpperBound));
+					DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction],
+					DynamicResolutionStateInfos.ResolutionFractionUpperBounds[GDynamicPrimaryResolutionFraction]));
 
 				bUsesDynamicResolution = true;
 			}
 
+			// Feed approximated resolution fraction to CSV
 			#if CSV_PROFILER
-			if (DynamicResolutionStateInfos.ResolutionFractionApproximation >= 0.0f)
+			if (DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] >= 0.0f)
 			{
-				CSV_CUSTOM_STAT_GLOBAL(DynamicResolutionPercentage, DynamicResolutionStateInfos.ResolutionFractionApproximation * 100.0f, ECsvCustomStatOp::Set);
+				// Keep same name as before for primary screen percentage
+				CSV_CUSTOM_STAT_GLOBAL(DynamicResolutionPercentage, DynamicResolutionStateInfos.ResolutionFractionApproximations[GDynamicPrimaryResolutionFraction] * 100.0f, ECsvCustomStatOp::Set);
+				CSV_CUSTOM_STAT_GLOBAL(DynamicResolutionPercentageMax, DynamicResolutionStateInfos.ResolutionFractionUpperBounds[GDynamicPrimaryResolutionFraction] * 100.0f, ECsvCustomStatOp::Set);
+			}
+			for (TLinkedList<DynamicRenderScaling::FBudget*>::TIterator BudgetIt(DynamicRenderScaling::FBudget::GetGlobalList()); BudgetIt; BudgetIt.Next())
+			{
+				const DynamicRenderScaling::FBudget& Budget = **BudgetIt;
+				if (Budget == GDynamicPrimaryResolutionFraction)
+				{
+					continue;
+				}
+
+				float Value = DynamicResolutionStateInfos.ResolutionFractionApproximations[Budget] * 100.0f;
+				const char* NameChar = Budget.GetAnsiName();
+
+				TRACE_CSV_PROFILER_INLINE_STAT(NameChar, CSV_CATEGORY_INDEX_GLOBAL);
+				FCsvProfiler::RecordCustomStat(NameChar, CSV_CATEGORY_INDEX_GLOBAL, Value, ECsvCustomStatOp::Set);
 			}
 			#endif
 		}
 		#endif
-
-		if (GCustomStaticScreenPercentage && ViewFamily.ViewMode == EViewModeIndex::VMI_Lit && ViewFamily.Scene->GetShadingPath() == EShadingPath::Deferred && ViewFamily.bRealtimeUpdate)
-		{
-			GCustomStaticScreenPercentage->SetupMainGameViewFamily(ViewFamily);
-		}
 
 		bFinalScreenPercentageShowFlag = ViewFamily.EngineShowFlags.ScreenPercentage;
 	}
@@ -1566,6 +1566,12 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 					const float StreamingScale = 1.f / FMath::Clamp<float>(View->LODDistanceFactor, .2f, 1.f);
 					IStreamingManager::Get().AddViewInformation(View->ViewMatrices.GetViewOrigin(), View->UnscaledViewRect.Width(), View->UnscaledViewRect.Width() * View->ViewMatrices.GetProjectionMatrix().M[0][0], StreamingScale);
 					MyWorld->ViewLocationsRenderedLastFrame.Add(View->ViewMatrices.GetViewOrigin());
+					FWorldCachedViewInfo& WorldViewInfo = World->CachedViewInfoRenderedLastFrame.AddDefaulted_GetRef();
+					WorldViewInfo.ViewMatrix = View->ViewMatrices.GetViewMatrix();
+					WorldViewInfo.ProjectionMatrix = View->ViewMatrices.GetProjectionMatrix();
+					WorldViewInfo.ViewProjectionMatrix = View->ViewMatrices.GetViewProjectionMatrix();
+					WorldViewInfo.ViewToWorld = View->ViewMatrices.GetInvViewMatrix();
+					World->LastRenderTime = World->GetTimeSeconds();
 				}
 			}
 		}
@@ -1643,12 +1649,12 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 			if (ViewFamily.EngineShowFlags.ScreenPercentage && !bDisableWorldRendering && ViewFamily.Views.Num() > 0)
 			{
 				// Get global view fraction.
-				FStaticResolutionFractionHeuristic StaticHeuristic;
+				FStaticResolutionFractionHeuristic StaticHeuristic(ViewFamily.EngineShowFlags);
 
 #if WITH_EDITOR
 				if (FStaticResolutionFractionHeuristic::FUserSettings::EditorOverridePIESettings())
 				{
-					StaticHeuristic.Settings.PullEditorRenderingSettings(/* bIsRealTime = */ true);
+					StaticHeuristic.Settings.PullEditorRenderingSettings(/* bIsRealTime = */ true, /* bIsPathTraced = */ ViewFamily.EngineShowFlags.PathTracing);
 				}
 				else
 #endif
@@ -1948,9 +1954,18 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 				// We need to ignore the high resolution screenshot alpha mask in that case, as the mask isn't relevant when taking a
 				// screenshot of the entire window (and it will trigger an assert).  We don't want to solve this by modifying the
 				// global variables associated with the screenshot feature, as the application may be taking its own screenshots.
-				if (!bIsUI)
+				if (GIsHighResScreenshot && !bIsUI)
 				{
 					GetHighResScreenshotConfig().MergeMaskIntoAlpha(Bitmap, FIntRect(0,0,0,0));
+				}
+				else
+				{
+					// Ensure that all pixels' alpha is set to 255 for a regular screenshot regardless of UI settings
+					// (Regular screenshots return with 0 in the alpha channels)
+					for (auto& Color : Bitmap)
+					{
+						Color.A = 255;
+					}
 				}
 
 				FIntRect SourceRect(0, 0, GScreenshotResolutionX, GScreenshotResolutionY);
@@ -1962,38 +1977,56 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 				// Clip the bitmap to just the capture region if valid
 				if (!SourceRect.IsEmpty())
 				{
-					FColor* const Data = Bitmap.GetData();
 					const int32 OldWidth = Size.X;
 					const int32 OldHeight = Size.Y;
-					const int32 NewWidth = SourceRect.Width();
-					const int32 NewHeight = SourceRect.Height();
-					const int32 CaptureTopRow = SourceRect.Min.Y;
-					const int32 CaptureLeftColumn = SourceRect.Min.X;
-
-					for (int32 Row = 0; Row < NewHeight; Row++)
+					
+					//clamp in bounds:
+					int CaptureMinX = FMath::Clamp(SourceRect.Min.X,0,OldWidth);
+					int CaptureMinY = FMath::Clamp(SourceRect.Min.Y,0,OldHeight);
+				
+					int CaptureMaxX = FMath::Clamp(SourceRect.Max.X,0,OldWidth);
+					int CaptureMaxY = FMath::Clamp(SourceRect.Max.Y,0,OldHeight);
+				
+					int32 NewWidth  = CaptureMaxX - CaptureMinX;
+					int32 NewHeight = CaptureMaxY - CaptureMinY;
+ 
+					if ( NewWidth > 0 && NewHeight > 0 )
 					{
-						FMemory::Memmove(Data + Row * NewWidth, Data + (Row + CaptureTopRow) * OldWidth + CaptureLeftColumn, NewWidth * sizeof(*Data));
-					}
+						FColor* const Data = Bitmap.GetData();
 
-					Bitmap.RemoveAt(NewWidth * NewHeight, OldWidth * OldHeight - NewWidth * NewHeight, false);
-					Size = FIntVector(NewWidth, NewHeight, 0);
+						for (int32 Row = 0; Row < NewHeight; Row++)
+						{
+							FMemory::Memmove(Data + Row * NewWidth, Data + (Row + CaptureMinY) * OldWidth + CaptureMinX, NewWidth * sizeof(*Data));
+						}
+
+						Bitmap.RemoveAt(NewWidth * NewHeight, OldWidth * OldHeight - NewWidth * NewHeight, false);
+						Size = FIntVector(NewWidth, NewHeight, 0);
+					}
 				}
 
-				if (!FPaths::GetExtension(ScreenShotName).IsEmpty())
+				if ( FPaths::GetExtension(ScreenShotName).IsEmpty() )
 				{
-					ScreenShotName = FPaths::GetBaseFilename(ScreenShotName, false);
 					ScreenShotName += TEXT(".png");
 				}
 
-				// Save the contents of the array to a png file.
-				TArray64<uint8> CompressedBitmap;
-				FImageUtils::PNGCompressImageArray(Size.X, Size.Y, Bitmap, CompressedBitmap);
-				bIsScreenshotSaved = FFileHelper::SaveArrayToFile(CompressedBitmap, *ScreenShotName);
+				bool bSuppressWritingToFile = false;
+				if (SHOULD_TRACE_SCREENSHOT())
+				{
+					bSuppressWritingToFile = FTraceScreenshot::ShouldSuppressWritingToFile();
+					FTraceScreenshot::TraceScreenshot(Size.X, Size.Y, Bitmap, ScreenShotName);
+				}
 
+				// Save the contents of the array to a png file.
+				if (!bSuppressWritingToFile)
+				{
+					FImageView Image((const FColor*)Bitmap.GetData(), Size.X, Size.Y);
+					bIsScreenshotSaved = FImageUtils::SaveImageByExtension(*ScreenShotName, Image);
+				}
 			}
 		}
 
 		FScreenshotRequest::Reset();
+		FTraceScreenshot::Reset();
 		FScreenshotRequest::OnScreenshotRequestProcessed().Broadcast();
 
 		// Reeanble screen messages - if we are NOT capturing a movie
@@ -2048,12 +2081,14 @@ void UGameViewportClient::LostFocus(FViewport* InViewport)
 	// We need to reset some key inputs, since keyup events will sometimes not be processed (such as going into immersive/maximized mode).
 	// Resetting them will prevent them from "sticking"
 	UWorld* const ViewportWorld = GetWorld();
+	const bool bShouldFlush = GetDefault<UInputSettings>()->bShouldFlushPressedKeysOnViewportFocusLost;
+	
 	if (ViewportWorld && !ViewportWorld->bIsTearingDown)
 	{
 		for (FConstPlayerControllerIterator Iterator = ViewportWorld->GetPlayerControllerIterator(); Iterator; ++Iterator)
 		{
 			APlayerController* const PlayerController = Iterator->Get();
-			if (PlayerController)
+			if (PlayerController && (bShouldFlush || PlayerController->ShouldFlushKeysWhenViewportFocusChanges()))
 			{
 				PlayerController->FlushPressedKeys();
 			}
@@ -3738,7 +3773,7 @@ bool UGameViewportClient::HandleDisplayCommand( const TCHAR* Cmd, FOutputDevice&
 	if ( FParse::Token(Cmd, ObjectName, UE_ARRAY_COUNT(ObjectName), true) &&
 		FParse::Token(Cmd, PropStr, UE_ARRAY_COUNT(PropStr), true) )
 	{
-		UObject* Obj = FindObject<UObject>(ANY_PACKAGE, ObjectName);
+		UObject* Obj = FindFirstObject<UObject>(ObjectName, EFindFirstObjectOptions::NativeFirst, ELogVerbosity::Warning, TEXT("HandleDisplayCommand"));
 		if (Obj != nullptr)
 		{
 			FName PropertyName(PropStr, FNAME_Find);
@@ -3774,7 +3809,7 @@ bool UGameViewportClient::HandleDisplayAllCommand( const TCHAR* Cmd, FOutputDevi
 			if (DotIndex != INDEX_NONE)
 			{
 				// first part is within class
-				WithinClass = FindObject<UClass>(ANY_PACKAGE, *ClassStr.Left(DotIndex));
+				WithinClass = FindFirstObject<UClass>(*ClassStr.Left(DotIndex), EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleDisplayAllCommand"));
 				if (WithinClass == nullptr)
 				{
 					Ar.Logf(TEXT("Within class not found"));
@@ -3790,7 +3825,7 @@ bool UGameViewportClient::HandleDisplayAllCommand( const TCHAR* Cmd, FOutputDevi
 		if (bValidClassToken)
 		{
 			FParse::Token(Cmd, PropStr, UE_ARRAY_COUNT(PropStr), true);
-			UClass* Cls = FindObject<UClass>(ANY_PACKAGE, ClassName);
+			UClass* Cls = FindFirstObject<UClass>(ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleDisplayAllCommand"));
 			if (Cls != nullptr)
 			{
 				FName PropertyName(PropStr, FNAME_Find);
@@ -3827,7 +3862,7 @@ bool UGameViewportClient::HandleDisplayAllLocationCommand( const TCHAR* Cmd, FOu
 	TCHAR ClassName[256];
 	if (FParse::Token(Cmd, ClassName, UE_ARRAY_COUNT(ClassName), true))
 	{
-		UClass* Cls = FindObject<UClass>(ANY_PACKAGE, ClassName);
+		UClass* Cls = FindFirstObject<UClass>(ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleDisplayAllLocationCommand"));
 		if (Cls != nullptr)
 		{
 			// add all un-GCable things immediately as that list is static
@@ -3859,7 +3894,7 @@ bool UGameViewportClient::HandleDisplayAllRotationCommand( const TCHAR* Cmd, FOu
 	TCHAR ClassName[256];
 	if (FParse::Token(Cmd, ClassName, UE_ARRAY_COUNT(ClassName), true))
 	{
-		UClass* Cls = FindObject<UClass>(ANY_PACKAGE, ClassName);
+		UClass* Cls = FindFirstObject<UClass>(ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleDisplayAllRotationCommand"));
 		if (Cls != nullptr)
 		{
 			// add all un-GCable things immediately as that list is static
@@ -3900,7 +3935,7 @@ bool UGameViewportClient::HandleGetAllLocationCommand(const TCHAR* Cmd, FOutputD
 	UClass* Class;
 
 	if (FParse::Token(Cmd, ClassName, UE_ARRAY_COUNT(ClassName), 1) &&
-		(Class = FindObject<UClass>(ANY_PACKAGE, ClassName)) != NULL)
+		(Class = FindFirstObject<UClass>(ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleGetAllLocationCommand"))) != nullptr)
 	{
 		bool bShowPendingKills = FParse::Command(&Cmd, TEXT("SHOWPENDINGKILLS"));
 		int32 cnt = 0;
@@ -3928,7 +3963,7 @@ bool UGameViewportClient::HandleGetAllRotationCommand(const TCHAR* Cmd, FOutputD
 	UClass* Class;
 
 	if (FParse::Token(Cmd, ClassName, UE_ARRAY_COUNT(ClassName), 1) &&
-		(Class = FindObject<UClass>(ANY_PACKAGE, ClassName)) != NULL)
+		(Class = FindFirstObject<UClass>(ClassName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("HandleGetAllRotationCommand"))) != nullptr)
 	{
 		bool bShowPendingKills = FParse::Command(&Cmd, TEXT("SHOWPENDINGKILLS"));
 		int32 cnt = 0;
@@ -4245,3 +4280,4 @@ bool UGameViewportClient::LoadAvailableCursorPngs(TArray< TSharedPtr<FPngFileDat
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -51,7 +51,7 @@ public:
 
 	struct TRACEANALYSIS_API FEventFieldInfo
 	{
-		enum class EType { None, Integer, Float, AnsiString, WideString };
+		enum class EType { None, Integer, Float, AnsiString, WideString, Reference8, Reference16, Reference32, Reference64 };
 
 		/** Returns the name of the field. */
 		const ANSICHAR* GetName() const;
@@ -61,6 +61,13 @@ public:
 
 		/** Is this field an array-type field? */
 		bool IsArray() const;
+
+		/** Is this field signed (only relevant for integer types) */
+		bool IsSigned() const;
+
+		/** Gets the size in bytes for this field */
+		uint8 GetSize() const;
+
 	};
 
 	struct FEventFieldHandle
@@ -97,6 +104,12 @@ public:
 		template <typename ValueType>
 		FEventFieldHandle GetFieldHandle(const ANSICHAR* FieldName) const;
 
+		/** Returns a handle without specifying type. This should only be used in circumstances
+		 * where the field is treated untyped data.
+		 * @param Index Index of field.
+		 */
+		FEventFieldHandle GetFieldHandleUnchecked(uint32 Index) const;
+
 	private:
 		FEventFieldHandle GetFieldHandleImpl(const ANSICHAR*, int16&) const;
 	};
@@ -107,7 +120,7 @@ public:
 		uint32 Num() const;
 
 	protected:
-		const void* GetImpl(uint32 Index, int16& SizeAndType) const;
+		const void* GetImpl(uint32 Index, int8& SizeAndType) const;
 	};
 
 	template <typename ValueType>
@@ -153,8 +166,23 @@ public:
 		  * @param Out Destination object for the field's value.
 		  * @return True if the field was found. */
 		bool GetString(const ANSICHAR* FieldName, FAnsiStringView& Out) const;
-		bool GetString(const ANSICHAR* FieldName, FStringView& Out) const;
+		bool GetString(const ANSICHAR* FieldName, FWideStringView& Out) const;
 		bool GetString(const ANSICHAR* FieldName, FString& Out) const;
+
+		/** Returns a value of a reference field.
+		 * @param FieldName Name of field
+		 * @return Reference value
+		 */
+		template<typename DefinitionType>
+		TEventRef<DefinitionType> GetReferenceValue(const ANSICHAR* FieldName) const;
+
+		template<typename DefinitionType>
+		TEventRef<DefinitionType> GetReferenceValue(uint32 FieldIndex) const;
+		
+		/** If this is a spec event, gets the unique Id for this spec.
+		 * @return A valid spec id if the event is valid, otherwise an empty id.
+		 */
+		template<typename DefinitionType> TEventRef<DefinitionType> GetDefinitionId() const;
 
 		/** The size of the event in uncompressed bytes excluding the header */
 		uint32 GetSize() const;
@@ -162,6 +190,13 @@ public:
 		/** Serializes the event to Cbor object.
 		 * @param Recipient of the Cbor serialization. Data is appeneded to Out. */
 		void SerializeToCbor(TArray<uint8>& Out) const;
+
+		/**
+		 * Returns the raw pointer to a field value
+		 * @param Handle Handle to field
+		 * @return Untyped pointer to field value
+		 */
+		const void* GetValueRaw(FEventFieldHandle Handle) const;
 
 		/** Returns the event's attachment. Not that this will always return an
 		 * address but if the event has no attachment then reading from that
@@ -172,7 +207,11 @@ public:
 		uint32 GetAttachmentSize() const;
 
 	private:
-		const void* GetValueImpl(const ANSICHAR* FieldName, int16& SizeAndType) const;
+		bool IsDefinitionImpl(uint32& OutTypeId) const;
+		uint32 GetReferenceTypeIdImpl(FEventFieldHandle Handle) const;
+		const void* GetReferenceValueImpl(const char* FieldName, uint16& OutSizeType, uint32& OutTypeUid) const;
+		const void* GetReferenceValueImpl(uint32 FieldIndex, uint32& OutTypeUid) const;
+		const void* GetValueImpl(const ANSICHAR* FieldName, int8& SizeAndType) const;
 		const FArrayReader* GetArrayImpl(const ANSICHAR* FieldName) const;
 	};
 
@@ -273,7 +312,7 @@ public:
 	}
 
 private:
-	template <typename ValueType> static ValueType CoerceValue(const void* Addr, int16 SizeAndType);
+	template <typename ValueType> static ValueType CoerceValue(const void* Addr, int8 SizeAndType);
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -295,26 +334,29 @@ IAnalyzer::FEventFieldHandle IAnalyzer::FEventTypeInfo::GetFieldHandle(const ANS
 
 ////////////////////////////////////////////////////////////////////////////////
 template <typename ValueType>
-ValueType IAnalyzer::CoerceValue(const void* Addr, int16 SizeAndType)
+ValueType IAnalyzer::CoerceValue(const void* Addr, int8 SizeAndType)
 {
+	using integral8 = std::conditional_t<std::is_signed_v<ValueType>, int8, uint8>;
+	using integral16 = std::conditional_t<std::is_signed_v<ValueType>, int16, uint16>;
+	using integral32 = std::conditional_t<std::is_signed_v<ValueType>, int32, uint32>;
+	using integral64 = std::conditional_t<std::is_signed_v<ValueType>, int64, uint64>;
 	switch (SizeAndType)
 	{
 	case -4: return ValueType(*(const float*)(Addr));
 	case -8: return ValueType(*(const double*)(Addr));
-	case  1: return ValueType(*(const uint8*)(Addr));
-	case  2: return ValueType(*(const uint16*)(Addr));
-	case  4: return ValueType(*(const uint32*)(Addr));
-	case  8: return ValueType(*(const uint64*)(Addr));
+	case  1: return ValueType(*(const integral8*)(Addr));
+	case  2: return ValueType(*(const integral16*)(Addr));
+	case  4: return ValueType(*(const integral32*)(Addr));
+	case  8: return ValueType(*(const integral64*)(Addr));
+	default: return ValueType(0);
 	}
-
-	return ValueType(0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 template <typename ValueType>
 ValueType IAnalyzer::FEventData::GetValue(const ANSICHAR* FieldName, ValueType Default) const
 {
-	int16 FieldSizeAndType;
+	int8 FieldSizeAndType;
 	if (const void* Addr = GetValueImpl(FieldName, FieldSizeAndType))
 	{
 		return CoerceValue<ValueType>(Addr, FieldSizeAndType);
@@ -350,7 +392,7 @@ TArrayView<const ValueType> IAnalyzer::FEventData::GetArrayView(const ANSICHAR* 
 template <typename ValueType>
 ValueType IAnalyzer::TArrayReader<ValueType>::operator [] (uint32 Index) const
 {
-	int16 ElementSizeAndType;
+	int8 ElementSizeAndType;
 	if (const void* Addr = GetImpl(Index, ElementSizeAndType))
 	{
 		return CoerceValue<ValueType>(Addr, ElementSizeAndType);
@@ -362,7 +404,7 @@ ValueType IAnalyzer::TArrayReader<ValueType>::operator [] (uint32 Index) const
 template <typename ValueType>
 const ValueType* IAnalyzer::TArrayReader<ValueType>::GetData() const
 {
-	int16 ElementSizeAndType;
+	int8 ElementSizeAndType;
 	const void* Addr = GetImpl(0, ElementSizeAndType);
 
 	if (Addr == nullptr || sizeof(ValueType) != abs(ElementSizeAndType))
@@ -373,5 +415,41 @@ const ValueType* IAnalyzer::TArrayReader<ValueType>::GetData() const
 	return (const ValueType*)Addr;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+template<typename DefinitionType>
+TEventRef<DefinitionType> IAnalyzer::FEventData::GetDefinitionId() const
+{
+	uint32 TypeUid;
+	if (IsDefinitionImpl(TypeUid))
+	{
+		//todo: Emit warning when trying to access id of incorrect type?
+		return MakeEventRef(GetValue<DefinitionType>("DefinitionId", 0), TypeUid);
+	}
+	return MakeEventRef<DefinitionType>(0,0);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+template<typename DefinitionType>
+TEventRef<DefinitionType> IAnalyzer::FEventData::GetReferenceValue(const ANSICHAR* FieldName) const
+{
+	uint32 TypeUid;
+	uint16 SizeAndType;
+	const void* Value = GetReferenceValueImpl(FieldName, SizeAndType, TypeUid);
+	if (Value)
+	{
+		return MakeEventRef<DefinitionType>(CoerceValue<DefinitionType>(Value, SizeAndType), TypeUid);
+	}
+	return MakeEventRef<DefinitionType>(0,0);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+template <typename DefinitionType>
+TEventRef<DefinitionType> IAnalyzer::FEventData::GetReferenceValue(uint32 FieldIndex) const
+{
+	uint32 RefTypeUid;
+	DefinitionType* Id = (DefinitionType*) GetReferenceValueImpl(FieldIndex, RefTypeUid);
+	return MakeEventRef<DefinitionType>(*Id, RefTypeUid);
+}
+	
 } // namespace Trace
 } // namespace UE

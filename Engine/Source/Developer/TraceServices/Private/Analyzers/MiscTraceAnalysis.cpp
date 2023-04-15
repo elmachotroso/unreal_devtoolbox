@@ -1,32 +1,39 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "MiscTraceAnalysis.h"
-#include "TraceServices/Model/AnalysisSession.h"
-#include "Model/LogPrivate.h"
-#include "Model/ThreadsPrivate.h"
-#include "Model/BookmarksPrivate.h"
-#include "Model/FramesPrivate.h"
-#include "Model/Channel.h"
+
 #include "Common/Utils.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "Model/BookmarksPrivate.h"
+#include "Model/Channel.h"
+#include "Model/FramesPrivate.h"
+#include "Model/LogPrivate.h"
+#include "Model/ScreenshotProviderPrivate.h"
+#include "Model/ThreadsPrivate.h"
+#include "TraceServices/Model/AnalysisSession.h"
 
 namespace TraceServices
 {
 
 FMiscTraceAnalyzer::FMiscTraceAnalyzer(IAnalysisSession& InSession,
 									   FThreadProvider& InThreadProvider,
-									   FBookmarkProvider& InBookmarkProvider,
 									   FLogProvider& InLogProvider,
 									   FFrameProvider& InFrameProvider,
-									   FChannelProvider& InChannelProvider)
+									   FChannelProvider& InChannelProvider,
+									   FScreenshotProvider& InScreenshotProvider)
 	: Session(InSession)
 	, ThreadProvider(InThreadProvider)
-	, BookmarkProvider(InBookmarkProvider)
 	, LogProvider(InLogProvider)
 	, FrameProvider(InFrameProvider)
 	, ChannelProvider(InChannelProvider)
+	, ScreenshotProvider(InScreenshotProvider)
 {
-	FLogCategoryInfo& BookmarkLogCategory = LogProvider.GetCategory(FLogProvider::ReservedLogCategory_Bookmark);
-	BookmarkLogCategory.Name = TEXT("LogBookmark");
-	BookmarkLogCategory.DefaultVerbosity = ELogVerbosity::All;
+	// Todo: update this to use provider locking instead of session locking
+	// FProviderEditScopeLock LogProviderLock (LogProvider);
+	FAnalysisSessionEditScope _(Session);
+	ScreenshotLogCategoryId = LogProvider.RegisterCategory();
+	FLogCategoryInfo& ScreenshotLogCategory = LogProvider.GetCategory(ScreenshotLogCategoryId);
+	ScreenshotLogCategory.Name = TEXT("Screenshot");
 }
 
 void FMiscTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
@@ -48,10 +55,14 @@ void FMiscTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_EndRenderFrame, "Misc", "EndRenderFrame");
 	Builder.RouteEvent(RouteId_ChannelAnnounce, "Trace", "ChannelAnnounce");
 	Builder.RouteEvent(RouteId_ChannelToggle, "Trace", "ChannelToggle");
+	Builder.RouteEvent(RouteId_ScreenshotHeader, "Misc", "ScreenshotHeader");
+	Builder.RouteEvent(RouteId_ScreenshotChunk, "Misc", "ScreenshotChunk");
 }
 
 void FMiscTraceAnalyzer::OnThreadInfo(const FThreadInfo& ThreadInfo)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FMiscTraceAnalyzer"));
+
 	uint32 ThreadId = ThreadInfo.GetId();
 	FString Name = ThreadInfo.GetName();
 
@@ -69,51 +80,13 @@ void FMiscTraceAnalyzer::OnThreadInfo(const FThreadInfo& ThreadInfo)
 
 bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Insights/FMiscTraceAnalyzer"));
+
 	FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
 	switch (RouteId)
 	{
-	case RouteId_BookmarkSpec:
-	{
-		uint64 BookmarkPoint = EventData.GetValue<uint64>("BookmarkPoint");
-		FBookmarkSpec& Spec = BookmarkProvider.GetSpec(BookmarkPoint);
-		Spec.Line = EventData.GetValue<int32>("Line");
-
-		FString FileName;
-		if (EventData.GetString("FileName", FileName))
-		{
-			Spec.File = Session.StoreString(*FileName);
-
-			FString FormatString;
-			EventData.GetString("FormatString", FormatString);
-			Spec.FormatString = Session.StoreString(*FormatString);
-		}
-		else
-		{
-			const ANSICHAR* File = reinterpret_cast<const ANSICHAR*>(EventData.GetAttachment());
-			Spec.File = Session.StoreString(ANSI_TO_TCHAR(File));
-			Spec.FormatString = Session.StoreString(reinterpret_cast<const TCHAR*>(EventData.GetAttachment() + strlen(File) + 1));
-		}
-
-		FLogMessageSpec& LogMessageSpec = LogProvider.GetMessageSpec(BookmarkPoint);
-		LogMessageSpec.Category = &LogProvider.GetCategory(FLogProvider::ReservedLogCategory_Bookmark);
-		LogMessageSpec.Line = Spec.Line;
-		LogMessageSpec.File = Spec.File;
-		LogMessageSpec.FormatString = Spec.FormatString;
-		LogMessageSpec.Verbosity = ELogVerbosity::Log;
-		break;
-	}
-	case RouteId_Bookmark:
-	{
-		uint64 BookmarkPoint = EventData.GetValue<uint64>("BookmarkPoint");
-		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
-		double Timestamp = Context.EventTime.AsSeconds(Cycle);
-		TArrayView<const uint8> FormatArgsView = FTraceAnalyzerUtils::LegacyAttachmentArray("FormatArgs", Context);
-		BookmarkProvider.AppendBookmark(Timestamp, BookmarkPoint, FormatArgsView.GetData());
-		LogProvider.AppendMessage(BookmarkPoint, Timestamp, FormatArgsView.GetData());
-		break;
-	}
 	case RouteId_BeginFrame:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
@@ -122,6 +95,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		FrameProvider.BeginFrame(ETraceFrameType(FrameType), Context.EventTime.AsSeconds(Cycle));
 		break;
 	}
+
 	case RouteId_EndFrame:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
@@ -130,6 +104,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		FrameProvider.EndFrame(ETraceFrameType(FrameType), Context.EventTime.AsSeconds(Cycle));
 		break;
 	}
+
 	case RouteId_BeginGameFrame:
 	case RouteId_EndGameFrame:
 	case RouteId_BeginRenderFrame:
@@ -167,6 +142,46 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		OnChannelToggle(Context);
 		break;
 
+	case RouteId_ScreenshotHeader:
+	{
+		uint32 Id = EventData.GetValue<uint32>("Id");
+		TSharedPtr<FScreenshot> Screenshot = ScreenshotProvider.AddScreenshot(Id);
+		Screenshot->Id = Id;
+
+		EventData.GetString("Name", Screenshot->Name);
+		
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		Screenshot->Timestamp = Context.EventTime.AsSeconds(Cycle);
+
+		Screenshot->Width = EventData.GetValue<uint32>("Width");
+		Screenshot->Height = EventData.GetValue<uint32>("Height");
+		Screenshot->ChunkNum = EventData.GetValue<uint32>("TotalChunkNum");
+		Screenshot->Size = EventData.GetValue<uint32>("Size");
+		Screenshot->Data.Reserve(Screenshot->Size);
+
+		FLogMessageSpec& LogMessageSpec = LogProvider.GetMessageSpec(Cycle);
+		LogMessageSpec.Category = &LogProvider.GetCategory(ScreenshotLogCategoryId);
+		LogMessageSpec.Line = Id;
+		LogMessageSpec.File = nullptr;
+		LogMessageSpec.FormatString = nullptr;
+		LogMessageSpec.Verbosity = ELogVerbosity::Log;
+
+		LogProvider.AppendMessage(Cycle, Screenshot->Timestamp, Screenshot->Name);
+
+		break;
+	}
+
+	case RouteId_ScreenshotChunk:
+	{
+		uint32 Id = EventData.GetValue<uint32>("Id");
+		uint16 ChunkNum = EventData.GetValue<uint16>("ChunkNum");
+		uint16 Size = EventData.GetValue<uint16>("Size");
+		TArrayView<const uint8> Data = EventData.GetArrayView<uint8>("Data");
+
+		ScreenshotProvider.AddScreenshotChunk(Id, ChunkNum, Size, Data);
+
+		break;
+	}
 	// Begin retired events
 	//
 	case RouteId_RegisterGameThread:
@@ -175,6 +190,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		ThreadProvider.AddGameThread(ThreadId);
 		break;
 	}
+
 	case RouteId_CreateThread:
 	{
 		const uint32 CreatedThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context, "CreatedThreadId");
@@ -189,6 +205,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		}
 		break;
 	}
+
 	case RouteId_SetThreadGroup:
 	{
 		const TCHAR* GroupName = Session.StoreString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(EventData.GetAttachment())));
@@ -196,6 +213,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		ThreadProvider.SetThreadGroup(ThreadId, GroupName);
 		break;
 	}
+
 	case RouteId_BeginThreadGroupScope:
 	{
 		const TCHAR* GroupName = Session.StoreString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(EventData.GetAttachment())));
@@ -204,6 +222,7 @@ bool FMiscTraceAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		ThreadState->ThreadGroupStack.Push(GroupName);
 		break;
 	}
+
 	case RouteId_EndThreadGroupScope:
 	{
 		const uint32 CurrentThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context, "CurrentThreadId");

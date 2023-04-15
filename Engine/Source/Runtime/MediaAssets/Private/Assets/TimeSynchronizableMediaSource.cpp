@@ -2,6 +2,8 @@
 
 #include "TimeSynchronizableMediaSource.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(TimeSynchronizableMediaSource)
+
 
 
 UTimeSynchronizableMediaSource::UTimeSynchronizableMediaSource()
@@ -20,6 +22,11 @@ bool UTimeSynchronizableMediaSource::GetMediaOption(const FName& Key, bool Defau
 	if (Key == TimeSynchronizableMedia::UseTimeSynchronizatioOption)
 	{
 		return bUseTimeSynchronization;
+	}
+	
+	if (Key == TimeSynchronizableMedia::AutoDetect)
+	{
+		return bAutoDetectInput;
 	}
 
 	return Super::GetMediaOption(Key, DefaultValue);
@@ -54,11 +61,13 @@ bool UTimeSynchronizableMediaSource::HasMediaOption(const FName& Key) const
 {
 	if (Key == TimeSynchronizableMedia::UseTimeSynchronizatioOption
 		|| Key == TimeSynchronizableMedia::FrameDelay
-		|| Key == TimeSynchronizableMedia::TimeDelay)
+		|| Key == TimeSynchronizableMedia::TimeDelay
+		|| Key == TimeSynchronizableMedia::AutoDetect)
 	{
 		return true;
 	}
 
 	return Super::HasMediaOption(Key);
 }
+
 

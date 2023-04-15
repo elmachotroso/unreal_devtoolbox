@@ -2,25 +2,29 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
-#include "Misc/Crc.h"
-#include "Containers/UnrealString.h"
-#include "Containers/Set.h"
+#include "Containers/ContainerAllocationPolicies.h"
 #include "Containers/Map.h"
-#include "Templates/SharedPointer.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
 #include "Delegates/Delegate.h"
-#include "Internationalization/TextKey.h"
-#include "Internationalization/LocTesting.h"
+#include "HAL/CriticalSection.h"
 #include "Internationalization/LocKeyFuncs.h"
+#include "Internationalization/LocTesting.h"
 #include "Internationalization/LocalizedTextSourceTypes.h"
+#include "Internationalization/TextKey.h"
+#include "Misc/Crc.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/SharedPointer.h"
 
-struct FPolyglotTextData;
+#include <atomic>
+
+class FTextLocalizationResource;
 class ILocalizedTextSource;
 class IPakFile;
-class FTextLocalizationResource;
+struct FPolyglotTextData;
 
 enum class ETextLocalizationManagerInitializedFlags : uint8
 {
@@ -77,7 +81,7 @@ private:
 	typedef TMap<FTextId, FDisplayStringEntry> FDisplayStringLookupTable;
 
 private:
-	ETextLocalizationManagerInitializedFlags InitializedFlags = ETextLocalizationManagerInitializedFlags::None;
+	std::atomic<ETextLocalizationManagerInitializedFlags> InitializedFlags{ ETextLocalizationManagerInitializedFlags::None };
 	
 	bool IsInitialized() const
 	{
@@ -86,7 +90,7 @@ private:
 
 	bool IsInitializing() const
 	{
-		return EnumHasAnyFlags(InitializedFlags, ETextLocalizationManagerInitializedFlags::Initializing);
+		return EnumHasAnyFlags(InitializedFlags.load(), ETextLocalizationManagerInitializedFlags::Initializing);
 	}
 
 	mutable FCriticalSection DisplayStringLookupTableCS;

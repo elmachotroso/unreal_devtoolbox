@@ -4,6 +4,8 @@
 #include "RHIStaticStates.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Hash/CityHash.h"
+#include "Trace/Trace.inl"
+#include "ProfilingDebugging/CountersTrace.h"
 
 /** The global render targets pool. */
 TGlobalResource<FRenderTargetPool> GRenderTargetPool;
@@ -12,39 +14,23 @@ DEFINE_LOG_CATEGORY_STATIC(LogRenderTargetPool, Warning, All);
 
 CSV_DEFINE_CATEGORY(RenderTargetPool, !UE_SERVER);
 
+TRACE_DECLARE_INT_COUNTER(RenderTargetPoolCount, TEXT("RenderTargetPool/Count"));
+TRACE_DECLARE_MEMORY_COUNTER(RenderTargetPoolSize, TEXT("RenderTargetPool/Size"));
+
+UE_TRACE_EVENT_BEGIN(Cpu, FRenderTargetPool_CreateTexture, NoSync)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+UE_TRACE_EVENT_END()
 
 TRefCountPtr<IPooledRenderTarget> CreateRenderTarget(FRHITexture* Texture, const TCHAR* Name)
 {
 	check(Texture);
 
-	const FIntVector Size = Texture->GetSizeXYZ();
-
-	FPooledRenderTargetDesc Desc;
-	Desc.Extent = FIntPoint(Size.X, Size.Y);
-	Desc.ClearValue = Texture->GetClearBinding();
-	Desc.Format = Texture->GetFormat();
-	Desc.NumMips = Texture->GetNumMips();
-	Desc.NumSamples = Texture->GetNumSamples();
-	Desc.Flags = Texture->GetFlags();
-	Desc.DebugName = Name;
-
-	if (FRHITextureCube* TextureCube = Texture->GetTextureCube())
-	{
-		Desc.bIsCubemap = true;
-	}
-	else if (FRHITexture3D* Texture3D = Texture->GetTexture3D())
-	{
-		Desc.Depth = Size.Z;
-	}
-	else if (FRHITexture2DArray* TextureArray = Texture->GetTexture2DArray())
-	{
-		Desc.bIsArray = true;
-		Desc.ArraySize = Size.Z;
-	}
-
 	FSceneRenderTargetItem Item;
 	Item.TargetableTexture = Texture;
 	Item.ShaderResourceTexture = Texture;
+
+	FPooledRenderTargetDesc Desc = Translate(Texture->GetDesc());
+	Desc.DebugName = Name;
 
 	TRefCountPtr<IPooledRenderTarget> PooledRenderTarget;
 	GRenderTargetPool.CreateUntrackedElement(Desc, PooledRenderTarget, Item);
@@ -59,30 +45,6 @@ bool CacheRenderTarget(FRHITexture* Texture, const TCHAR* Name, TRefCountPtr<IPo
 		return true;
 	}
 	return false;
-}
-
-static uint64 GetTypeHash(FClearValueBinding Binding)
-{
-	uint64 Hash = 0;
-	switch (Binding.ColorBinding)
-	{
-	case EClearBinding::EColorBound:
-		Hash = CityHash64((const char*)Binding.Value.Color, sizeof(Binding.Value.Color));
-		break;
-	case EClearBinding::EDepthStencilBound:
-		Hash = uint64(GetTypeHash(Binding.Value.DSValue.Depth)) << 32 | uint64(Binding.Value.DSValue.Stencil);
-		break;
-	}
-	return Hash ^ uint64(Binding.ColorBinding);
-}
-
-inline uint64 ComputeHash(const FRHITextureCreateInfo& InCreateInfo)
-{
-	// Make sure all padding is removed.
-	FRHITextureCreateInfo NewInfo;
-	FPlatformMemory::Memzero(&NewInfo, sizeof(FRHITextureCreateInfo));
-	NewInfo = InCreateInfo;
-	return CityHash64((const char*)&NewInfo, sizeof(FRHITextureCreateInfo));
 }
 
 RENDERCORE_API void DumpRenderTargetPoolMemory(FOutputDevice& OutputDevice)
@@ -101,7 +63,7 @@ static uint32 ComputeSizeInKB(FPooledRenderTarget& Element)
 	return (Element.ComputeMemorySize() + 1023) / 1024;
 }
 
-TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElementInternal(FRHITextureCreateInfo Desc, const TCHAR* Name, bool bResetStateToUnknown)
+TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElement(FRHITextureCreateInfo Desc, const TCHAR* Name)
 {
 	FPooledRenderTarget* Found = 0;
 	uint32 FoundIndex = -1;
@@ -109,7 +71,10 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElementInternal(FRH
 	// FastVRAM is no longer supported by the render target pool.
 	EnumRemoveFlags(Desc.Flags, ETextureCreateFlags::FastVRAM | ETextureCreateFlags::FastVRAMPartialAlloc);
 
-	const uint64 DescHash = ComputeHash(Desc);
+	// We always want SRV access
+	Desc.Flags |= TexCreate_ShaderResource;
+
+	const uint32 DescHash = GetTypeHash(Desc);
 
 	for (uint32 Index = 0, Num = (uint32)PooledRenderTargets.Num(); Index < Num; ++Index)
 	{
@@ -137,86 +102,18 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElementInternal(FRH
 
 	if (!Found)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FRenderTargetPool::CreateTexture);
+#if CPUPROFILERTRACE_ENABLED
+		UE_TRACE_LOG_SCOPED_T(Cpu, FRenderTargetPool_CreateTexture, CpuChannel)
+			<< FRenderTargetPool_CreateTexture.Name(Name);
+#endif
 
-		FRHIResourceCreateInfo CreateInfo(Name, Desc.ClearValue);
-
-		FTextureRHIRef ResultTexture;
 		const ERHIAccess AccessInitial = ERHIAccess::SRVMask;
-		const ETextureCreateFlags TextureFlags = Desc.Flags | TexCreate_ShaderResource;
+		FRHITextureCreateDesc CreateDesc(Desc, AccessInitial, Name);
 
-		// Only create resources if we're not asked to defer creation.
-		if (Desc.IsTexture2D())
-		{
-			if (!Desc.IsTextureArray())
-			{
-				ResultTexture = RHICreateTexture2D(
-					Desc.Extent.X,
-					Desc.Extent.Y,
-					(uint8)Desc.Format,
-					Desc.NumMips,
-					Desc.NumSamples,
-					TextureFlags,
-					AccessInitial,
-					CreateInfo
-				);
-			}
-			else
-			{
-				ResultTexture = RHICreateTexture2DArray(
-					Desc.Extent.X,
-					Desc.Extent.Y,
-					Desc.ArraySize,
-					(uint8)Desc.Format,
-					Desc.NumMips,
-					Desc.NumSamples,
-					TextureFlags,
-					AccessInitial,
-					CreateInfo
-				);
-			}
-		}
-		else if (Desc.IsTexture3D())
-		{
-			ResultTexture = RHICreateTexture3D(
-				Desc.Extent.X,
-				Desc.Extent.Y,
-				Desc.Depth,
-				(uint8)Desc.Format,
-				Desc.NumMips,
-				TextureFlags,
-				AccessInitial,
-				CreateInfo);
-		}
-		else
-		{
-			check(Desc.IsTextureCube());
-			if (Desc.IsTextureArray())
-			{
-				ResultTexture = RHICreateTextureCubeArray(
-					Desc.Extent.X,
-					Desc.ArraySize,
-					(uint8)Desc.Format,
-					Desc.NumMips,
-					TextureFlags,
-					AccessInitial,
-					CreateInfo
-				);
-			}
-			else
-			{
-				ResultTexture = RHICreateTextureCube(
-					Desc.Extent.X,
-					(uint8)Desc.Format,
-					Desc.NumMips,
-					TextureFlags,
-					AccessInitial,
-					CreateInfo
-				);
-			}
-		}
-
-		Found = new FPooledRenderTarget(ResultTexture, AccessInitial, Translate(Desc), this);
+		Found = new FPooledRenderTarget(
+			RHICreateTexture(CreateDesc),
+			Translate(CreateDesc),
+			this);
 
 		PooledRenderTargets.Add(Found);
 		PooledRenderTargetHashes.Add(DescHash);
@@ -242,6 +139,8 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElementInternal(FRH
 		}
 
 		AllocationLevelInKB += ComputeSizeInKB(*Found);
+		TRACE_COUNTER_ADD(RenderTargetPoolCount, 1);
+		TRACE_COUNTER_SET(RenderTargetPoolSize, (int64)AllocationLevelInKB * 1024);
 
 		FoundIndex = PooledRenderTargets.Num() - 1;
 		Found->Desc.DebugName = Name;
@@ -249,11 +148,6 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElementInternal(FRH
 
 	Found->Desc.DebugName = Name;
 	Found->UnusedForNFrames = 0;
-
-	if (bResetStateToUnknown)
-	{
-		Found->PooledTexture.Reset();
-	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	RHIBindDebugLabelName(Found->GetRHI(), Name);
@@ -301,6 +195,8 @@ bool FRenderTargetPool::FindFreeElement(const FRHITextureCreateInfo& Desc, TRefC
 			if (Current->IsFree())
 			{
 				AllocationLevelInKB -= ComputeSizeInKB(*Current);
+				TRACE_COUNTER_SUBTRACT(RenderTargetPoolCount, 1);
+				TRACE_COUNTER_SET(RenderTargetPoolSize, (int64)AllocationLevelInKB * 1024);
 				int32 Index = FindIndex(Current);
 				check(Index >= 0);
 				FreeElementAtIndex(Index);
@@ -308,20 +204,13 @@ bool FRenderTargetPool::FindFreeElement(const FRHITextureCreateInfo& Desc, TRefC
 		}
 	}
 
-	const bool bResetStateToUnknown = true;
-	Out = FindFreeElementInternal(Desc, Name, bResetStateToUnknown);
+	Out = FindFreeElement(Desc, Name);
 	return false;
-}
-
-TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElement(const FRHITextureCreateInfo& Desc, const TCHAR* Name)
-{
-	const bool bResetStateToUnknown = true;
-	return FindFreeElementInternal(Desc, Name, bResetStateToUnknown);
 }
 
 void FRenderTargetPool::CreateUntrackedElement(const FPooledRenderTargetDesc& Desc, TRefCountPtr<IPooledRenderTarget>& Out, const FSceneRenderTargetItem& Item)
 {
-	FPooledRenderTarget* Result = new FPooledRenderTarget(Item.GetRHI(), ERHIAccess::Unknown, Desc, nullptr);
+	FPooledRenderTarget* Result = new FPooledRenderTarget(Item.GetRHI(), Desc, nullptr);
 	Result->RenderTargetItem = Item;
 	Out = Result;
 }
@@ -423,6 +312,8 @@ void FRenderTargetPool::TickPoolElements()
 		if (OldestElementIndex != -1)
 		{
 			AllocationLevelInKB -= ComputeSizeInKB(*PooledRenderTargets[OldestElementIndex]);
+			TRACE_COUNTER_SUBTRACT(RenderTargetPoolCount, 1);
+			TRACE_COUNTER_SET(RenderTargetPoolSize, (int64)AllocationLevelInKB * 1024);
 
 			// we assume because of reference counting the resource gets released when not needed any more
 			// we don't use Remove() to not shuffle around the elements for better transparency on RenderTargetPoolEvents
@@ -512,6 +403,9 @@ void FRenderTargetPool::FreeUnusedResource(TRefCountPtr<IPooledRenderTarget>& In
 		if (Element->IsFree())
 		{
 			AllocationLevelInKB -= ComputeSizeInKB(*Element);
+			TRACE_COUNTER_SUBTRACT(RenderTargetPoolCount, 1);
+			TRACE_COUNTER_SET(RenderTargetPoolSize, (int64)AllocationLevelInKB * 1024);
+
 			// we assume because of reference counting the resource gets released when not needed any more
 			DeferredDeleteArray.Add(PooledRenderTargets[Index]);
 			FreeElementAtIndex(Index);
@@ -530,6 +424,9 @@ void FRenderTargetPool::FreeUnusedResources()
 		if (Element && Element->IsFree())
 		{
 			AllocationLevelInKB -= ComputeSizeInKB(*Element);
+			TRACE_COUNTER_SUBTRACT(RenderTargetPoolCount, 1);
+			TRACE_COUNTER_SET(RenderTargetPoolSize, (int64)AllocationLevelInKB * 1024);
+
 			// we assume because of reference counting the resource gets released when not needed any more
 			// we don't use Remove() to not shuffle around the elements for better transparency on RenderTargetPoolEvents
 			DeferredDeleteArray.Add(PooledRenderTargets[i]);

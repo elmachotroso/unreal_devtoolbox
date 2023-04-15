@@ -3,11 +3,13 @@
 #include "RigEditor/IKRigMode.h"
 #include "RigEditor/IKRigToolkit.h"
 #include "IPersonaPreviewScene.h"
+#include "IPersonaToolkit.h"
 #include "PersonaModule.h"
 #include "ISkeletonEditorModule.h"
 #include "Modules/ModuleManager.h"
 #include "PersonaTabs.h"
 #include "RigEditor/IKRigAssetBrowserTabSummoner.h"
+#include "RigEditor/IKRigOutputLogTabSummoner.h"
 #include "RigEditor/IKRigSkeletonTabSummoner.h"
 #include "RigEditor/IKRigSolverStackTabSummoner.h"
 #include "RigEditor/IKRigRetargetChainTabSummoner.h"
@@ -27,21 +29,23 @@ FIKRigMode::FIKRigMode(
 	ViewportArgs.bShowStats = false;
 	ViewportArgs.bShowTurnTable = false;
 	ViewportArgs.ContextName = TEXT("IKRigEditor.Viewport");
+	ViewportArgs.OnViewportCreated = FOnViewportCreated::CreateSP(IKRigEditor, &FIKRigEditorToolkit::HandleViewportCreated);
 
 	// register Persona tabs
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 	TabFactories.RegisterFactory(PersonaModule.CreatePersonaViewportTabFactory(InHostingApp, ViewportArgs));
-	TabFactories.RegisterFactory(PersonaModule.CreateAdvancedPreviewSceneTabFactory(InHostingApp, InPreviewScene));
 	TabFactories.RegisterFactory(PersonaModule.CreateDetailsTabFactory(InHostingApp, FOnDetailsCreated::CreateSP(&IKRigEditor.Get(), &FIKRigEditorToolkit::HandleDetailsCreated)));
+	TabFactories.RegisterFactory(PersonaModule.CreateAdvancedPreviewSceneTabFactory(InHostingApp, IKRigEditor->GetPersonaToolkit()->GetPreviewScene()));
 
 	// register custom tabs
 	TabFactories.RegisterFactory(MakeShared<FIKRigAssetBrowserTabSummoner>(IKRigEditor));
 	TabFactories.RegisterFactory(MakeShared<FIKRigSkeletonTabSummoner>(IKRigEditor));
 	TabFactories.RegisterFactory(MakeShared<FIKRigSolverStackTabSummoner>(IKRigEditor));
 	TabFactories.RegisterFactory(MakeShared<FIKRigRetargetChainTabSummoner>(IKRigEditor));
+	TabFactories.RegisterFactory(MakeShared<FIKRigOutputLogTabSummoner>(IKRigEditor));
 
 	// create tab layout
-	TabLayout = FTabManager::NewLayout("Standalone_IKRigEditor_Layout_v1.123")
+	TabLayout = FTabManager::NewLayout("Standalone_IKRigEditor_Layout_v1.127")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -71,10 +75,22 @@ FIKRigMode::FIKRigMode(
 				)
 				->Split
 				(
+					FTabManager::NewSplitter()
+					->SetSizeCoefficient(0.8f)
+					->SetOrientation(Orient_Vertical)
+					->Split
+					(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.6f)
-					->SetHideTabWell(true)
-					->AddTab(FPersonaTabs::PreviewViewportID, ETabState::OpenedTab)
+						->SetSizeCoefficient(0.6f)
+						->SetHideTabWell(true)
+						->AddTab(FPersonaTabs::PreviewViewportID, ETabState::OpenedTab)
+					)
+					->Split
+					(
+						FTabManager::NewStack()
+						->SetSizeCoefficient(0.2f)
+						->AddTab(FIKRigOutputLogTabSummoner::TabID, ETabState::OpenedTab)
+					)
 				)
 				->Split
 				(

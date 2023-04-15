@@ -46,8 +46,6 @@ UDebugSkelMeshComponent::UDebugSkelMeshComponent(const FObjectInitializer& Objec
 
 	bTrackAttachedInstanceLOD = false;
 
-	BoneRadiusMultiplier = 1.f;
-
 	WireframeMeshOverlayColor = FLinearColor(0.4f, 0.8f, 0.66f);
 	
 	CachedClothBounds = FBoxSphereBounds(ForceInit);
@@ -99,9 +97,9 @@ FBoxSphereBounds UDebugSkelMeshComponent::CalcBounds(const FTransform& LocalToWo
 			}			
 		}
 
-		if ( SkeletalMesh )
+		if (GetSkeletalMeshAsset() && !GetSkeletalMeshAsset()->IsCompiling())
 		{
-			Result = Result + SkeletalMesh->GetBounds();
+			Result = Result + GetSkeletalMeshAsset()->GetBounds();
 		}
 	}
 
@@ -111,6 +109,11 @@ FBoxSphereBounds UDebugSkelMeshComponent::CalcBounds(const FTransform& LocalToWo
 	}	
 
 	return Result;
+}
+
+FBoxSphereBounds UDebugSkelMeshComponent::CalcGameBounds(const FTransform& LocalToWorld) const
+{
+	return Super::CalcBounds(LocalToWorld);
 }
 
 bool UDebugSkelMeshComponent::IsUsingInGameBounds() const
@@ -156,10 +159,10 @@ bool UDebugSkelMeshComponent::CheckIfBoundsAreCorrrect()
 	return false;
 }
 
-float WrapInRange(float StartVal, float MinVal, float MaxVal)
+double WrapInRange(double StartVal, double MinVal, double MaxVal)
 {
-	float Size = MaxVal - MinVal;
-	float EndVal = StartVal;
+	double Size = MaxVal - MinVal;
+	double EndVal = StartVal;
 	while (EndVal < MinVal)
 	{
 		EndVal += Size;
@@ -214,7 +217,7 @@ void UDebugSkelMeshComponent::ConsumeRootMotion(const FVector& FloorMin, const F
 		return FTransform::Identity;
 	};
 
-	// Force ProcessRootMotionMode to Ignore if the current asset is not using root motion. 
+	// Force ProcessRootMotionMode to Ignore if the current asset/animation blueprint is not using root motion. 
 	if(ProcessRootMotionMode != EProcessRootMotionMode::Ignore && DoesCurrentAssetHaveRootMotion() == false)
 	{
 		SetProcessRootMotionMode(EProcessRootMotionMode::Ignore);
@@ -353,11 +356,42 @@ EProcessRootMotionMode UDebugSkelMeshComponent::GetProcessRootMotionMode() const
 
 bool UDebugSkelMeshComponent::DoesCurrentAssetHaveRootMotion() const
 {
-	if(PreviewInstance)
+	if (PreviewInstance)
 	{
-		if(UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(PreviewInstance->GetCurrentAsset()))
+		// Allow root motion if current asset is sequence
+		if(const UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(PreviewInstance->GetCurrentAsset()))
 		{
 			return AnimSequenceBase->HasRootMotion();
+		}
+		
+		// Allow root motion if current blend-space references any sequences with root motion
+		if (const UBlendSpace* BlendSpace = Cast<UBlendSpace>(PreviewInstance->GetCurrentAsset()))
+		{
+			bool bIsRootMotionUsedInBlendSpace = false;
+			
+			BlendSpace->ForEachImmutableSample([&bIsRootMotionUsedInBlendSpace](const FBlendSample & Sample)
+			{
+				const TObjectPtr<UAnimSequence> Sequence = Sample.Animation;
+				
+				if (IsValid(Sequence) && Sequence->HasRootMotion())
+				{
+					bIsRootMotionUsedInBlendSpace = true;
+				}
+			});
+			
+			if (bIsRootMotionUsedInBlendSpace)
+			{
+				return true;
+			}
+		}
+
+		// Allow previewing an animation blueprint with root motion
+		if (!PreviewInstance->GetCurrentAsset())
+		{
+			if (PreviewInstance->RootMotionMode == ERootMotionMode::RootMotionFromEverything || PreviewInstance->RootMotionMode == ERootMotionMode::RootMotionFromMontagesOnly)
+			{
+				return true;
+			}
 		}
 	}
 
@@ -371,7 +405,7 @@ bool UDebugSkelMeshComponent::CanUseProcessRootMotionMode(EProcessRootMotionMode
 		return false;
 	}
 	
-	// Disable Loop modes if the current asset doesn't have root motion
+	// Disable Loop modes if the current asset or animation blueprint doesn't have root motion
 	if(Mode != EProcessRootMotionMode::Ignore)
 	{
 		if(!DoesCurrentAssetHaveRootMotion())
@@ -380,10 +414,10 @@ bool UDebugSkelMeshComponent::CanUseProcessRootMotionMode(EProcessRootMotionMode
 		}
 	}
 
-	// Disable Loop and Reset mode for blend spaces
+	// Disable Loop and Reset mode for blend spaces and animation blueprints
 	if (Mode == EProcessRootMotionMode::LoopAndReset)
 	{
-		if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(PreviewInstance->GetCurrentAsset()))
+		if (Cast<UBlendSpace>(PreviewInstance->GetCurrentAsset()) || !PreviewInstance->GetCurrentAsset())
 		{
 			return false;
 		}
@@ -421,7 +455,7 @@ FPrimitiveSceneProxy* UDebugSkelMeshComponent::CreateSceneProxy()
 {
 	FDebugSkelMeshSceneProxy* Result = NULL;
 	ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->FeatureLevel;
-	FSkeletalMeshRenderData* SkelMeshRenderData = SkeletalMesh ? SkeletalMesh->GetResourceForRendering() : NULL;
+	FSkeletalMeshRenderData* SkelMeshRenderData = GetSkeletalMeshAsset() ? GetSkeletalMeshAsset()->GetResourceForRendering() : NULL;
 
 	// only create a scene proxy for rendering if
 	// properly initialized
@@ -485,9 +519,9 @@ void UDebugSkelMeshComponent::InitAnim(bool bForceReinit)
 {
 	// If we already have PreviewInstance and its asset's Skeleton isn't compatible with the mesh's Skeleton
 	// then we need to clear it up to avoid an issue
-	if ( PreviewInstance && PreviewInstance->GetCurrentAsset() && SkeletalMesh )
+	if ( PreviewInstance && PreviewInstance->GetCurrentAsset() && GetSkeletalMeshAsset())
 	{
-		if (!SkeletalMesh->GetSkeleton()->IsCompatible(PreviewInstance->GetCurrentAsset()->GetSkeleton()))
+		if (!GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(PreviewInstance->GetCurrentAsset()->GetSkeleton()))
 		{
 			// if it doesn't match, just clear it
 			PreviewInstance->SetAnimationAsset(NULL);
@@ -666,6 +700,11 @@ bool UDebugSkelMeshComponent::ShouldRunClothTick() const
 void UDebugSkelMeshComponent::SendRenderDynamicData_Concurrent()
 {
 	Super::SendRenderDynamicData_Concurrent();
+	
+	if (GetSkeletalMeshAsset() && GetSkeletalMeshAsset()->IsCompiling())
+	{
+		return;
+	}
 
 	if (SceneProxy)
 	{
@@ -714,7 +753,7 @@ void UDebugSkelMeshComponent::GenSpaceBases(TArray<FTransform>& OutSpaceBases)
 	FBlendedHeapCurve TempCurve;
 	UE::Anim::FMeshAttributeContainer TempAtttributes;
 	DoInstancePreEvaluation();
-	PerformAnimationEvaluation(SkeletalMesh, AnimScriptInstance, OutSpaceBases, TempBoneSpaceTransforms, TempRootBoneTranslation, TempCurve, TempAtttributes);
+	PerformAnimationEvaluation(GetSkeletalMeshAsset(), AnimScriptInstance, OutSpaceBases, TempBoneSpaceTransforms, TempRootBoneTranslation, TempCurve, TempAtttributes);
 	DoInstancePostEvaluation();
 }
 
@@ -920,7 +959,7 @@ void UDebugSkelMeshComponent::ToggleClothSectionsVisibility(bool bShowOnlyClothS
 
 void UDebugSkelMeshComponent::RestoreClothSectionsVisibility()
 {
-	if (!SkeletalMesh)
+	if (!GetSkeletalMeshAsset())
 	{
 		return;
 	}
@@ -973,11 +1012,11 @@ void UDebugSkelMeshComponent::RebuildClothingSectionsFixedVerts(bool bInvalidate
 	// TODO: There is no need to rebuild all section/LODs at once.
 	//       It should only do the section associated to the current cloth asset being
 	//        painted instead, and only when the MaxDistance mask changes.
-	FScopedSkeletalMeshPostEditChange ScopedSkeletalMeshPostEditChange(SkeletalMesh);
+	FScopedSkeletalMeshPostEditChange ScopedSkeletalMeshPostEditChange(GetSkeletalMeshAsset());
 
-	SkeletalMesh->PreEditChange(nullptr);
+	GetSkeletalMeshAsset()->PreEditChange(nullptr);
 
-	TIndirectArray<FSkeletalMeshLODModel>& LODModels = SkeletalMesh->GetImportedModel()->LODModels;
+	TIndirectArray<FSkeletalMeshLODModel>& LODModels = GetSkeletalMeshAsset()->GetImportedModel()->LODModels;
 
 	for (int32 LODIndex = 0; LODIndex < LODModels.Num(); ++LODIndex)
 	{
@@ -991,7 +1030,7 @@ void UDebugSkelMeshComponent::RebuildClothingSectionsFixedVerts(bool bInvalidate
 
 	if (bInvalidateDerivedDataCache)
 	{
-		SkeletalMesh->InvalidateDeriveDataCacheGUID();  // Dirty the DDC key unless previewing
+		GetSkeletalMeshAsset()->InvalidateDeriveDataCacheGUID();  // Dirty the DDC key unless previewing
 	}
 
 	ReregisterComponent();
@@ -999,7 +1038,7 @@ void UDebugSkelMeshComponent::RebuildClothingSectionsFixedVerts(bool bInvalidate
 
 void UDebugSkelMeshComponent::RebuildClothingSectionFixedVerts(int32 LODIndex, int32 SectionIndex)
 {
-	FSkeletalMeshModel* const SkeletalMeshModel = SkeletalMesh->GetImportedModel();
+	FSkeletalMeshModel* const SkeletalMeshModel = GetSkeletalMeshAsset()->GetImportedModel();
 	if (!ensure(SkeletalMeshModel && LODIndex < SkeletalMeshModel->LODModels.Num()))
 	{
 		return;
@@ -1017,7 +1056,7 @@ void UDebugSkelMeshComponent::RebuildClothingSectionFixedVerts(int32 LODIndex, i
 		return;
 	}
 
-	const UClothingAssetCommon* const ClothingAsset = Cast<UClothingAssetCommon>(SkeletalMesh->GetClothingAsset(UpdatedSection.ClothingData.AssetGuid));
+	const UClothingAssetCommon* const ClothingAsset = Cast<UClothingAssetCommon>(GetSkeletalMeshAsset()->GetClothingAsset(UpdatedSection.ClothingData.AssetGuid));
 	check(ClothingAsset);  // Must have a valid clothing asset at this point, or something has gone terribly wrong
 
 	const FClothLODDataCommon& ClothLODData = ClothingAsset->LodData[UpdatedSection.ClothingData.AssetLodIndex];
@@ -1046,6 +1085,12 @@ void UDebugSkelMeshComponent::CheckClothTeleport()
 
 void UDebugSkelMeshComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
+	//Do not tick a skeletalmesh component if the skeletalmesh is compiling
+	if (GetSkeletalMeshAsset() && GetSkeletalMeshAsset()->IsCompiling())
+	{
+		return;
+	}
+
 	if (TurnTableMode == EPersonaTurnTableMode::Playing)
 	{
 		FRotator Rotation = GetRelativeTransform().Rotator();
@@ -1091,9 +1136,9 @@ void UDebugSkelMeshComponent::TickComponent(float DeltaTime, enum ELevelTick Tic
 
 void UDebugSkelMeshComponent::RefreshSelectedClothingSkinnedPositions()
 {
-	if(SkeletalMesh && SelectedClothingGuidForPainting.IsValid())
+	if(GetSkeletalMeshAsset() && SelectedClothingGuidForPainting.IsValid())
 	{
-		UClothingAssetBase** Asset = SkeletalMesh->GetMeshClothingAssets().FindByPredicate([&](UClothingAssetBase* Item)
+		UClothingAssetBase** Asset = GetSkeletalMeshAsset()->GetMeshClothingAssets().FindByPredicate([&](UClothingAssetBase* Item)
 		{
 			return Item && SelectedClothingGuidForPainting == Item->GetAssetGuid();
 		});
@@ -1302,7 +1347,7 @@ FDebugSkelMeshDynamicData::FDebugSkelMeshDynamicData(UDebugSkelMeshComponent* In
 		SkinnedPositions = InComponent->SkinnedSelectedClothingPositions;
 		SkinnedNormals = InComponent->SkinnedSelectedClothingNormals;
 
-		if(USkeletalMesh* Mesh = InComponent->SkeletalMesh)
+		if(USkeletalMesh* Mesh = InComponent->GetSkeletalMeshAsset())
 		{
 			const int32 NumClothingAssets = Mesh->GetMeshClothingAssets().Num();
 			for(int32 ClothingAssetIndex = 0; ClothingAssetIndex < NumClothingAssets; ++ClothingAssetIndex)
@@ -1358,7 +1403,7 @@ FScopedSuspendAlternateSkinWeightPreview::FScopedSuspendAlternateSkinWeightPrevi
 		for (TObjectIterator<UDebugSkelMeshComponent> It; It; ++It)
 		{
 			UDebugSkelMeshComponent* DebugSKComp = *It;
-			if (DebugSKComp->SkeletalMesh == SkeletalMesh)
+			if (DebugSKComp->GetSkeletalMeshAsset() == SkeletalMesh)
 			{
 				const FName ProfileName = DebugSKComp->GetCurrentSkinWeightProfileName();
 				if (ProfileName != NAME_None)

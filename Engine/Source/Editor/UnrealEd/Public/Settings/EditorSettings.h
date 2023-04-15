@@ -2,13 +2,21 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "Engine/EngineTypes.h"
+#include "Misc/DateTime.h"
 #include "Misc/Guid.h"
 #include "Scalability.h"
-#include "Engine/EngineTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UObjectGlobals.h"
+
 #include "EditorSettings.generated.h"
+
+class FProperty;
 
 
 USTRUCT()
@@ -84,9 +92,9 @@ class UNREALED_API UEditorSettings : public UObject
 	UPROPERTY(EditAnywhere, config, Category = "Derived Data Cache Notifications", meta = (DisplayName = "Enable Notifcations", ConfigRestartRequired = false))
 	bool bEnableDDCNotifications = true;
 
-	/** Whether to enable the Horde Storage notification */
-	UPROPERTY(EditAnywhere, config, Category = "Derived Data Cache Notifications", meta = (DisplayName = "Notify Use Horde Storage", ConfigRestartRequired = false, EditCondition = "bEnableDDCNotifications"))
-	bool bNotifyUseHordeStorage = true;
+	/** Whether to enable the Unreal Cloud DDC notification */
+	UPROPERTY(EditAnywhere, config, Category = "Derived Data Cache Notifications", meta = (DisplayName = "Notify Use Unreal Cloud DDC", ConfigRestartRequired = false, EditCondition = "bEnableDDCNotifications"))
+	bool bNotifyUseUnrealCloudDDC = true;
 
 	/** Whether to enable the DDC path notification */
 	UPROPERTY(EditAnywhere, config, Category = "Derived Data Cache Notifications", meta = (DisplayName = "Notify Setup DDC Path", ConfigRestartRequired = false, EditCondition = "bEnableDDCNotifications"))

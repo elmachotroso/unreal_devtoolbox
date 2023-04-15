@@ -18,10 +18,18 @@
 #include "Tests/AutomationCommon.h"
 #include "Logging/LogMacros.h"
 #include "UObject/AutomationObjectVersion.h"
+#include "RenderGraphBuilder.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScreenshotFunctionalTestBase)
 
 #define	WITH_EDITOR_AUTOMATION_TESTS	(WITH_EDITOR && WITH_AUTOMATION_TESTS)
 
 DEFINE_LOG_CATEGORY_STATIC(LogScreenshotFunctionalTest, Log, Log)
+
+static TAutoConsoleVariable<int32> GDumpGPUDumpOnScreenshotTest(
+	TEXT("r.DumpGPU.DumpOnScreenshotTest"), 0,
+	TEXT("Allows to filter the tree when using r.DumpGPU command, the pattern match is case sensitive."),
+	ECVF_Default);
 
 AScreenshotFunctionalTestBase::AScreenshotFunctionalTestBase(const FObjectInitializer& ObjectInitializer)
 	: AFunctionalTest(ObjectInitializer)
@@ -54,7 +62,7 @@ bool AScreenshotFunctionalTestBase::IsReady_Implementation()
 {
 	if ((GetWorld()->GetTimeSeconds() - RunTime) > ScreenshotOptions.Delay)
 	{
-		return (GFrameNumber - RunFrame) > 5;
+		return int32(GFrameNumber - RunFrame) > ScreenshotOptions.FrameDelay;
 	}
 
 	return false;
@@ -115,6 +123,15 @@ void AScreenshotFunctionalTestBase::PrepareForScreenshot()
 			bNeedsViewportRestore = true;
 		}
 	}
+
+#if WITH_DUMPGPU
+	// Reset render target extent to reduce size of the dumpGPU.
+	if (GDumpGPUDumpOnScreenshotTest.GetValueOnGameThread() != 0)
+	{
+		FlushRenderingCommands();
+		UKismetSystemLibrary::ExecuteConsoleCommand(GEngine->GameViewport->GetWorld(), TEXT("r.ResetRenderTargetsExtent"), nullptr);
+	}
+#endif
 #endif
 }
 
@@ -166,6 +183,13 @@ void AScreenshotFunctionalTestBase::RequestScreenshot()
 
 	UGameViewportClient* GameViewportClient = GEngine->GameViewport;
 	GameViewportClient->OnScreenshotCaptured().AddUObject(this, &AScreenshotFunctionalTestBase::OnScreenShotCaptured);
+
+#if WITH_AUTOMATION_TESTS && WITH_DUMPGPU
+	if (GDumpGPUDumpOnScreenshotTest.GetValueOnGameThread() != 0)
+	{
+		FRDGBuilder::BeginResourceDump(TEXT(""));
+	}
+#endif
 }
 
 void AScreenshotFunctionalTestBase::OnComparisonComplete(const FAutomationScreenshotCompareResults& CompareResults)
@@ -253,4 +277,5 @@ void AScreenshotFunctionalTestBase::Serialize(FArchive& Ar)
 		ScreenshotOptions.bDisableTonemapping = true;
 	}
 }
+
 

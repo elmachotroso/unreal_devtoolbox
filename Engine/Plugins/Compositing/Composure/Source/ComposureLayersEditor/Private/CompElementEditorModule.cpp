@@ -25,6 +25,8 @@
 #include "LevelEditorViewport.h"
 #include "Widgets/SCompElementPreviewDialog.h"
 
+LLM_DEFINE_TAG(Composure_ComposureLayersEditor);
+
 namespace CompElementEditor_Impl
 {
 	static const FName ComposureLayersTabName(TEXT("ComposureLayers"));
@@ -90,6 +92,8 @@ private:
 //------------------------------------------------------------------------------
 void FCompElementEditorModule::StartupModule() 
 {
+	LLM_SCOPE_BYTAG(Composure_ComposureLayersEditor);
+
 	FComposureEditorStyle::Get();
 	FCompElementEditorCommands::Register();
 
@@ -118,6 +122,8 @@ void FCompElementEditorModule::StartupModule()
 //------------------------------------------------------------------------------
 void FCompElementEditorModule::ShutdownModule()
 {
+	LLM_SCOPE_BYTAG(Composure_ComposureLayersEditor);
+
 	IModularFeatures::Get().UnregisterModularFeature(ICompositingEditor::GetModularFeatureName(), this);
 
 	if (FSlateApplication::IsInitialized())
@@ -177,7 +183,7 @@ TSharedPtr<SWidget> FCompElementEditorModule::ConstructCompositingPreviewPane(TW
 				[
 					SAssignNew(MaximizeButton, SButton)
 						.ContentPadding(0)
-						.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+						.ButtonStyle(FAppStyle::Get(), "ToggleButton")
 						.Cursor(EMouseCursor::Default)
 						.ToolTipText(NSLOCTEXT("FCompElementEditorModule", "MaximizePreviewTooltip", "Maximize"))
 						.OnClicked_Lambda([PreviewTarget, Overlay]()->FReply
@@ -272,10 +278,11 @@ void FCompElementEditorModule::RegisterEditorTab()
 
 	LevelEditorTabManagerChangedHandle = LevelEditorModule.OnTabManagerChanged().AddLambda([]()
 	{
+		LLM_SCOPE_BYTAG(Composure_ComposureLayersEditor);
 		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(CompElementEditor_Impl::LevelEditorModuleName);
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
-		const FSlateIcon LayersIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.ComposureCompositing");
+		const FSlateIcon LayersIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.ComposureCompositing");
 		LevelEditorTabManager->RegisterTabSpawner(CompElementEditor_Impl::ComposureLayersTabName, FOnSpawnTab::CreateStatic(&FCompElementEditorModule::SpawnComposureLayersTab))
 			.SetDisplayName(NSLOCTEXT("LevelEditorTabs", "LevelEditorComposureLayerBrowser", "Composure Compositing"))
 			.SetTooltipText(NSLOCTEXT("LevelEditorTabs", "LevelEditorComposureLayerBrowserTooltipText", "Open the Composure compositing tab."))

@@ -6,6 +6,7 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -14,12 +15,16 @@ namespace UnrealBuildTool
 	/// </summary>
 	abstract class PlatformProjectGenerator
 	{
+		protected readonly ILogger Logger;
+
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="Arguments">Command line arguments passed to the project generator</param>
-		public PlatformProjectGenerator(CommandLineArguments Arguments)
+		/// <param name="Logger">Logger for output</param>
+		public PlatformProjectGenerator(CommandLineArguments Arguments, ILogger Logger)
 		{
+			this.Logger = Logger;
 		}
 
 		/// <summary>
@@ -255,6 +260,24 @@ namespace UnrealBuildTool
 			string InConditionString, TargetRules InTargetRules, FileReference TargetRulesPath, FileReference ProjectFilePath)
 		{
 			return "";
+		}
+
+		/// <summary>
+		/// Get the text to insert into the user file for the given platform/configuration/target
+		/// </summary>
+		/// <param name="InPlatform">The platform being added</param>
+		/// <param name="InConfiguration">The configuration being added</param>
+		/// <param name="InConditionString">The condition string </param>
+		/// <param name="InTargetRules">The target rules </param>
+		/// <param name="TargetRulesPath">The target rules path</param>
+		/// <param name="ProjectFilePath">The project file path</param>
+		/// <param name="ProjectName">The name of the project</param>
+		/// <param name="ForeignUProjectPath">Path to foreign .uproject file, if any</param>
+		/// <returns>The string to append to the user file</returns>
+		public virtual string GetVisualStudioUserFileStrings(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration,
+			string InConditionString, TargetRules InTargetRules, FileReference TargetRulesPath, FileReference ProjectFilePath, string ProjectName, string? ForeignUProjectPath)
+		{
+			return GetVisualStudioUserFileStrings(InPlatform, InConfiguration, InConditionString, InTargetRules, TargetRulesPath, ProjectFilePath);
 		}
 
 		/// <summary>

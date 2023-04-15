@@ -7,15 +7,14 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Mime;
+using System.Text;
 using System.Threading.Tasks;
 using Horde.Storage.FunctionalTests.Storage;
-using Horde.Storage.Implementation;
 using Jupiter;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Serilog;
 using Serilog.Core;
@@ -30,7 +29,8 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
             // Use the S3 storage backend so we can handle large blobs
             return new[]
             {
-                new KeyValuePair<string, string>("Horde.Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.S3.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:ContentIdStoreImplementation", HordeStorageSettings.ContentIdStoreImplementations.Scylla.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.S3.ToString()),
                 new KeyValuePair<string, string>("S3:BucketName", $"tests-{TestNamespace}")
             };
         }
@@ -46,11 +46,35 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
         }
     }
 
+    [TestClass]
+    public class MongoCompressedBlobTests : CompressedBlobTests
+    {
+        protected override IEnumerable<KeyValuePair<string, string>> GetSettings()
+        {
+            // Use the S3 storage backend so we can handle large blobs
+            return new[]
+            {
+                new KeyValuePair<string, string>("Horde_Storage:ContentIdStoreImplementation", HordeStorageSettings.ContentIdStoreImplementations.Mongo.ToString()),
+                new KeyValuePair<string, string>("Horde_Storage:StorageImplementations:0", HordeStorageSettings.StorageBackendImplementations.S3.ToString()),
+                new KeyValuePair<string, string>("S3:BucketName", $"tests-{TestNamespace}")
+            };
+        }
+
+        protected override async Task Seed(IServiceProvider provider)
+        {
+            await Task.CompletedTask;
+        }
+
+        protected override async Task Teardown()
+        {
+            await Task.CompletedTask;
+        }
+    }
 
     public abstract class CompressedBlobTests
     {
-        protected TestServer? _server;
-        protected HttpClient? _httpClient;
+        private TestServer? Server { get; set; }
+        private HttpClient? Client { get; set; }
 
         protected const string TestNamespace = "test-namespace";
 
@@ -74,25 +98,22 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
                 .UseSerilog(logger)
                 .UseStartup<HordeStorageStartup>()
             );
-            _httpClient = server.CreateClient();
-            _server = server;
+            Client = server.CreateClient();
+            Server = server;
 
             // Seed storage
-            await Seed(_server.Services);
+            await Seed(Server.Services);
         }
 
         protected abstract IEnumerable<KeyValuePair<string, string>> GetSettings();
-
         protected abstract Task Seed(IServiceProvider serverServices);
         protected abstract Task Teardown();
-
 
         [TestCleanup]
         public async Task MyTeardown()
         {
             await Teardown();
         }
-
 
         [TestMethod]
         [DataTestMethod]
@@ -111,9 +132,9 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
             BlobIdentifier compressedPayloadIdentifier = BlobIdentifier.FromBlob(texturePayload);
             BlobIdentifier uncompressedPayloadIdentifier = new BlobIdentifier(uncompressedHash);
 
-            ByteArrayContent content = new ByteArrayContent(texturePayload);
+            using ByteArrayContent content = new(texturePayload);
             content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
-            HttpResponseMessage result = await _httpClient!.PutAsync($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", content);
+            HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
             result.EnsureSuccessStatusCode();
 
             InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
@@ -126,23 +147,24 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
         {
             byte[] texturePayload = await File.ReadAllBytesAsync("ContentId/Payloads/UncompressedTexture_CAS_dea81b6c3b565bb5089695377c98ce0f1c13b0c3.udd");
             BlobIdentifier compressedPayloadIdentifier = BlobIdentifier.FromBlob(texturePayload);
-            BlobIdentifier uncompressedPayloadIdentifier = new BlobIdentifier("DEA81B6C3B565BB5089695377C98CE0F1C13B0C3");
+            ContentId uncompressedPayloadIdentifier = new ContentId("DEA81B6C3B565BB5089695377C98CE0F1C13B0C3");
 
             {
-                ByteArrayContent content = new ByteArrayContent(texturePayload);
+                using ByteArrayContent content = new(texturePayload);
                 content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
-                HttpResponseMessage result = await _httpClient!.PutAsync($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", content);
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
                 result.EnsureSuccessStatusCode();
 
                 InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                Assert.IsNotNull(response.Identifier);
                 Assert.AreNotEqual(compressedPayloadIdentifier, response.Identifier);
-                Assert.AreEqual(uncompressedPayloadIdentifier, response.Identifier);
+                Assert.AreEqual(uncompressedPayloadIdentifier, ContentId.FromBlobIdentifier(response.Identifier));
             }
 
-
             {
-                HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}");
+                HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative));
                 result.EnsureSuccessStatusCode();
+                Assert.AreEqual(CustomMediaTypeNames.UnrealCompressedBuffer, result.Content.Headers.ContentType!.MediaType);
 
                 byte[] blobContent = await result.Content.ReadAsByteArrayAsync();
                 CollectionAssert.AreEqual(texturePayload, blobContent);
@@ -150,8 +172,9 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
 
             {
                 // verify the compressed blob can be retrieved in the blob store
-                HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/blobs/{TestNamespace}/{compressedPayloadIdentifier}");
+                HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/blobs/{TestNamespace}/{compressedPayloadIdentifier}", UriKind.Relative));
                 result.EnsureSuccessStatusCode();
+                Assert.AreEqual(MediaTypeNames.Application.Octet, result.Content.Headers.ContentType!.MediaType);
 
                 byte[] blobContent = await result.Content.ReadAsByteArrayAsync();
                 CollectionAssert.AreEqual(texturePayload, blobContent);
@@ -159,8 +182,110 @@ namespace Horde.Storage.FunctionalTests.CompressedBlobs
 
             {
                 // the uncompressed payload should not be valid in the blob endpoint
-                HttpResponseMessage result = await _httpClient!.GetAsync($"api/v1/blobs/{TestNamespace}/{uncompressedPayloadIdentifier}");
+                HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative));
                 Assert.AreEqual(HttpStatusCode.NotFound, result.StatusCode);
+            }
+        }
+
+        [TestMethod]
+        public async Task PutWrongIdentifier()
+        {
+            byte[] texturePayload = await File.ReadAllBytesAsync("ContentId/Payloads/UncompressedTexture_CAS_dea81b6c3b565bb5089695377c98ce0f1c13b0c3.udd");
+            BlobIdentifier compressedPayloadIdentifier = BlobIdentifier.FromBlob(texturePayload);
+
+            {
+                using ByteArrayContent content = new(texturePayload);
+                content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
+                // we purposefully use the compressed identifier here which is not what is expected
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{compressedPayloadIdentifier}", UriKind.Relative), content);
+
+                Assert.AreEqual(HttpStatusCode.BadRequest, result.StatusCode);
+            }
+        }
+
+        [TestMethod]
+        public async Task PostNoIdentifier()
+        {
+            byte[] texturePayload = await File.ReadAllBytesAsync("ContentId/Payloads/UncompressedTexture_CAS_dea81b6c3b565bb5089695377c98ce0f1c13b0c3.udd");
+            BlobIdentifier compressedPayloadIdentifier = BlobIdentifier.FromBlob(texturePayload);
+            BlobIdentifier uncompressedPayloadIdentifier = new BlobIdentifier("DEA81B6C3B565BB5089695377C98CE0F1C13B0C3");
+            {
+                using ByteArrayContent content = new(texturePayload);
+                content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
+                // we purposefully use the compressed identifier here which is not what is expected
+                HttpResponseMessage result = await Client!.PostAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}", UriKind.Relative), content);
+
+                result.EnsureSuccessStatusCode();
+
+                InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                Assert.IsNotNull(response.Identifier);
+                Assert.AreEqual(uncompressedPayloadIdentifier, response.Identifier);
+                Assert.AreNotEqual(compressedPayloadIdentifier, response.Identifier);
+            }
+        }
+
+        [TestMethod]
+        public async Task GetUncompressedContent()
+        {
+            string stringContent = "this is just a random string";
+            byte[] payload = Encoding.ASCII.GetBytes(stringContent);
+            BlobIdentifier blobIdentifier = BlobIdentifier.FromBlob(payload);
+
+            // upload a uncompressed blob
+            {
+                using ByteArrayContent content = new(payload);
+                content.Headers.ContentType = new MediaTypeHeaderValue(MediaTypeNames.Application.Octet);
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/blobs/{TestNamespace}/{blobIdentifier}", UriKind.Relative), content);
+                result.EnsureSuccessStatusCode();
+            }
+
+            {
+                HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{blobIdentifier}", UriKind.Relative));
+                result.EnsureSuccessStatusCode();
+
+                // verify that we return the uncompressed content but also that the media type indicates that
+                byte[] blobContent = await result.Content.ReadAsByteArrayAsync();
+                Assert.AreEqual(MediaTypeNames.Application.Octet, result.Content.Headers.ContentType!.MediaType);
+                CollectionAssert.AreEqual(payload, blobContent);
+            }
+        }
+
+        
+        [TestMethod]
+        public async Task GetUncompressedContentAsCompressedBuffer()
+        {
+            string stringContent = "this is just a random string";
+            byte[] payload = Encoding.ASCII.GetBytes(stringContent);
+            BlobIdentifier blobIdentifier = BlobIdentifier.FromBlob(payload);
+
+            // upload a uncompressed blob
+            {
+                using ByteArrayContent content = new(payload);
+                content.Headers.ContentType = new MediaTypeHeaderValue(MediaTypeNames.Application.Octet);
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/blobs/{TestNamespace}/{blobIdentifier}", UriKind.Relative), content);
+                result.EnsureSuccessStatusCode();
+            }
+
+            {
+                using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/compressed-blobs/{TestNamespace}/{blobIdentifier}");
+                request.Headers.Add("Accept", CustomMediaTypeNames.UnrealCompactBinary);
+
+                // asking for a compressed buffer when we only have the uncompressed content results in a 415 (unsupported media type) as transcoding this is to complicated when the compressed buffer header requires the full blake3 hash of the content
+                HttpResponseMessage result = await Client!.SendAsync(request);
+                Assert.AreEqual(HttpStatusCode.UnsupportedMediaType, result.StatusCode);
+            }
+
+            {
+                // ask for any accept type
+                using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, $"api/v1/compressed-blobs/{TestNamespace}/{blobIdentifier}");
+                request.Headers.Add("Accept", "*/*");
+
+                HttpResponseMessage result = await Client!.SendAsync(request);
+                result.EnsureSuccessStatusCode();
+                Assert.AreEqual(MediaTypeNames.Application.Octet, result.Content.Headers.ContentType!.MediaType);
+
+                byte[] blobContent = await result.Content.ReadAsByteArrayAsync();
+                CollectionAssert.AreEqual(payload, blobContent);
             }
         }
     }

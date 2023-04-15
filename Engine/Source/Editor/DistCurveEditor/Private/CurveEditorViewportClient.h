@@ -2,14 +2,23 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
 #include "InputCoreTypes.h"
+#include "Math/Color.h"
+#include "Math/IntPoint.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateEnums.h"
 #include "UnrealClient.h"
 
 class FCanvas;
+class FCurveEdInterface;
 class FCurveEditorSharedData;
+class HHitProxy;
 class SCurveEditorViewport;
 class SDistributionCurveEditor;
+class SWindow;
 struct FCurveEdEntry;
 
 /*-----------------------------------------------------------------------------
@@ -27,6 +36,7 @@ public:
 	virtual void Draw(FViewport* Viewport, FCanvas* Canvas) override;
 	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.0f, bool bGamepad = false) override;
 	virtual void MouseMove(FViewport* Viewport, int32 X, int32 Y) override;
+	virtual void CapturedMouseMove(FViewport* Viewport, int32 X, int32 Y) override;
 	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples = 1, bool bGamepad = false) override;
 
 	/** Exec handler */

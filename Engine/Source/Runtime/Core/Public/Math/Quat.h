@@ -131,15 +131,6 @@ public:
 
 public:
 
-#ifdef IMPLEMENT_ASSIGNMENT_OPERATOR_MANUALLY
-	/**
-	 * Copy another TQuat into this one
-	 *
-	 * @return reference to this TQuat
-	 */
-	FORCEINLINE TQuat<T>& operator=(const TQuat<T>& Other);
-#endif
-
 	/**
 	 * Gets the result of adding a Quaternion to this.
 	 * This is a component-wise addition; composing quaternions should be done via multiplication.
@@ -181,7 +172,7 @@ public:
 	 * @param Tolerance Error tolerance for comparison with other Quaternion.
 	 * @return true if two Quaternions are equal, within specified tolerance, otherwise false.
 	 */
-	FORCEINLINE bool Equals(const TQuat<T>& Q, T Tolerance=KINDA_SMALL_NUMBER) const;
+	FORCEINLINE bool Equals(const TQuat<T>& Q, T Tolerance=UE_KINDA_SMALL_NUMBER) const;
 
 	/**
 	 * Checks whether this Quaternion is an Identity Quaternion.
@@ -190,7 +181,7 @@ public:
 	 * @param Tolerance Error tolerance for comparison with Identity Quaternion.
 	 * @return true if Quaternion is a normalized Identity Quaternion.
 	 */
-	FORCEINLINE bool IsIdentity(T Tolerance=SMALL_NUMBER) const;
+	FORCEINLINE bool IsIdentity(T Tolerance=UE_SMALL_NUMBER) const;
 
 	/**
 	 * Subtracts another quaternion from this.
@@ -381,7 +372,7 @@ public:
 	 *
 	 * @param Tolerance Minimum squared length of quaternion for normalization.
 	 */
-	FORCEINLINE void Normalize(T Tolerance = SMALL_NUMBER);
+	FORCEINLINE void Normalize(T Tolerance = UE_SMALL_NUMBER);
 
 	/**
 	 * Get a normalized copy of this quaternion.
@@ -389,7 +380,7 @@ public:
 	 *
 	 * @param Tolerance Minimum squared length of quaternion for normalization.
 	 */
-	FORCEINLINE TQuat<T> GetNormalized(T Tolerance = SMALL_NUMBER) const;
+	FORCEINLINE TQuat<T> GetNormalized(T Tolerance = UE_SMALL_NUMBER) const;
 
 	// Return true if this quaternion is normalized
 	bool IsNormalized() const;
@@ -409,18 +400,33 @@ public:
 	FORCEINLINE T SizeSquared() const;
 
 
-	/** Get the angle of this quaternion */
+	/** Get the angle in radians of this quaternion */
 	FORCEINLINE T GetAngle() const;
 
 	/** 
 	 * get the axis and angle of rotation of this quaternion
 	 *
-	 * @param Axis{out] vector of axis of the quaternion
-	 * @param Angle{out] angle of the quaternion
-	 * @warning : assumes normalized quaternions.
+	 * @param Axis{out] Normalized rotation axis of the quaternion
+	 * @param Angle{out] Angle of the quaternion in radians
+	 * @warning : Requires this quaternion to be normalized.
 	 */
 	void ToAxisAndAngle(TVector<T>& Axis, float& Angle) const;
 	void ToAxisAndAngle(TVector<T>& Axis, double& Angle) const;
+
+	/**
+	 * Get the rotation vector corresponding to this quaternion. 
+	 * The direction of the vector represents the rotation axis, 
+	 * and the magnitude the angle in radians.
+	 * @warning : Requires this quaternion to be normalized.
+	 */
+	TVector<T> ToRotationVector() const;
+
+	/**
+	 * Constructs a quaternion corresponding to the rotation vector. 
+	 * The direction of the vector represents the rotation axis, 
+	 * and the magnitude the angle in radians.
+	 */
+	static TQuat<T> MakeFromRotationVector(const TVector<T>& RotationVector);
 
 	/** 
 	 * Get the swing and twist decomposition for a specified axis
@@ -471,6 +477,7 @@ public:
 
 	/**
 	 * @return inverse of this quaternion
+	 * @warning : Requires this quaternion to be normalized.
 	 */
 	FORCEINLINE TQuat<T> Inverse() const;
 
@@ -738,7 +745,7 @@ inline TQuat<T>::TQuat(const UE::Math::TMatrix<T>& M)
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// Make sure the Rotation part of the Matrix is unit length.
 	// Changed to this (same as RemoveScaling) from RotDeterminant as using two different ways of checking unit length matrix caused inconsistency. 
-	if (!ensure((FMath::Abs(1.f - M.GetScaledAxis(EAxis::X).SizeSquared()) <= KINDA_SMALL_NUMBER) && (FMath::Abs(1.f - M.GetScaledAxis(EAxis::Y).SizeSquared()) <= KINDA_SMALL_NUMBER) && (FMath::Abs(1.f - M.GetScaledAxis(EAxis::Z).SizeSquared()) <= KINDA_SMALL_NUMBER)))
+	if (!ensure((FMath::Abs(1.f - M.GetScaledAxis(EAxis::X).SizeSquared()) <= UE_KINDA_SMALL_NUMBER) && (FMath::Abs(1.f - M.GetScaledAxis(EAxis::Y).SizeSquared()) <= UE_KINDA_SMALL_NUMBER) && (FMath::Abs(1.f - M.GetScaledAxis(EAxis::Z).SizeSquared()) <= UE_KINDA_SMALL_NUMBER)))
 	{
 		*this = TQuat<T>::Identity;
 		return;
@@ -859,19 +866,6 @@ inline bool TQuat<T>::InitFromString(const FString& InSourceString)
 	DiagnosticCheckNaN();
 	return bSuccess;
 }
-
-#ifdef IMPLEMENT_ASSIGNMENT_OPERATOR_MANUALLY
-template<typename T>
-FORCEINLINE TQuat<T>& TQuat<T>::operator=(const TQuat<T>& Other)
-{
-	this->X = Other.X;
-	this->Y = Other.Y;
-	this->Z = Other.Z;
-	this->W = Other.W;
-
-	return *this;
-}
-#endif
 
 template<typename T>
 FORCEINLINE TQuat<T>::TQuat(TVector<T> Axis, T AngleRad)
@@ -1117,7 +1111,7 @@ FORCEINLINE bool TQuat<T>::IsNormalized() const
 	QuatVectorRegister TestValue = VectorAbs(VectorSubtract(VectorOne(), VectorDot4(A, A)));
 	return !VectorAnyGreaterThan(TestValue, GlobalVectorConstants::ThreshQuatNormalized);
 #else
-	return (FMath::Abs(1.f - SizeSquared()) < THRESH_QUAT_NORMALIZED);
+	return (FMath::Abs(1.f - SizeSquared()) < UE_THRESH_QUAT_NORMALIZED);
 #endif // PLATFORM_ENABLE_VECTORINTRINSICS
 }
 
@@ -1156,6 +1150,21 @@ FORCEINLINE void TQuat<T>::ToAxisAndAngle(TVector<T>& Axis, double& Angle) const
 }
 
 template<typename T>
+FORCEINLINE TVector<T> TQuat<T>::ToRotationVector() const
+{
+	checkSlow(IsNormalized());
+	TQuat<T> RotQ = Log();
+	return TVector<T>(RotQ.X * 2.0f, RotQ.Y * 2.0f, RotQ.Z * 2.0f);
+}
+
+template<typename T>
+FORCEINLINE TQuat<T> TQuat<T>::MakeFromRotationVector(const TVector<T>& RotationVector)
+{
+	TQuat<T> RotQ(RotationVector.X * 0.5f, RotationVector.Y * 0.5f, RotationVector.Z * 0.5f, 0.0f);
+	return RotQ.Exp();
+}
+
+template<typename T>
 FORCEINLINE TVector<T> TQuat<T>::GetRotationAxis() const
 {
 #if PLATFORM_ENABLE_VECTORINTRINSICS
@@ -1166,7 +1175,7 @@ FORCEINLINE TVector<T> TQuat<T>::GetRotationAxis() const
 	return V;
 #else
 	const T SquareSum = X * X + Y * Y + Z * Z;
-	if (SquareSum < SMALL_NUMBER)
+	if (SquareSum < UE_SMALL_NUMBER)
 	{
 		return TVector<T>::XAxisVector;
 	}
@@ -1291,7 +1300,7 @@ template<typename T>
 FORCEINLINE T TQuat<T>::Error(const TQuat<T>& Q1, const TQuat<T>& Q2)
 {
 	const T cosom = FMath::Abs(Q1.X * Q2.X + Q1.Y * Q2.Y + Q1.Z * Q2.Z + Q1.W * Q2.W);
-	return (FMath::Abs(cosom) < 0.9999999f) ? FMath::Acos(cosom)*(1.f / PI) : 0.0f;
+	return (FMath::Abs(cosom) < 0.9999999f) ? FMath::Acos(cosom)*(1.f / UE_PI) : 0.0f;
 }
 
 
@@ -1341,7 +1350,20 @@ FORCEINLINE bool TQuat<T>::ContainsNaN() const
 			!FMath::IsFinite(W)
 	);
 }
-
+	
+/**
+ * Creates a hash value from an FQuat.
+ *
+ * @param Quat the quat to create a hash value for
+ * @return The hash value from the components
+ */
+template<typename T>
+FORCEINLINE uint32 GetTypeHash(const TQuat<T>& Quat)
+{
+	// Note: this assumes there's no padding in Quat that could contain uncompared data.
+	static_assert(sizeof(TQuat<T>) == sizeof(T[4]), "Unexpected padding in TQuat");
+	return FCrc::MemCrc_DEPRECATED(&Quat, sizeof(Quat));
+}
 
 } // namespace UE::Math
 } // namespace UE

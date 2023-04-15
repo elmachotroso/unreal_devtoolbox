@@ -5,12 +5,14 @@
 #include "MetasoundExecutableOperator.h"
 #include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundDataTypeRegistrationMacro.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundStandardNodesNames.h"
 #include "MetasoundTrigger.h"
 #include "MetasoundTime.h"
 #include "MetasoundAudioBuffer.h"
 #include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "MetasoundStandardNodesCategories.h"
 #include "MetasoundFacade.h"
 #include "MetasoundVertex.h"
@@ -21,65 +23,11 @@ namespace Metasound
 {
 	namespace StereoPannerVertexNames
 	{
-		const FVertexName& GetInputAudioName()
-		{
-			static FVertexName Name = TEXT("In");
-			return Name;
-		}
-
-		const FText& GetInputAudioDescription()
-		{
-			static FText Desc = METASOUND_LOCTEXT("StereoPannerNodeInDesc", "The input audio to pan.");
-			return Desc;
-		}
-
-		const FVertexName& GetInputPanAmountName()
-		{
-			static FVertexName Name = TEXT("Pan Amount");
-			return Name;
-		}
-
-		const FText& GetInputPanAmountDescription()
-		{
-			static FText Desc = METASOUND_LOCTEXT("StereoPannerNodePanAmountDesc", "The amount of pan. -1.0 is full left, 1.0 is full right.");
-			return Desc;
-		}
-
-		const FVertexName& GetInputPanningLawName()
-		{
-			static FVertexName Name = TEXT("Panning Law");
-			return Name;
-		}
-
-		const FText& GetInputPanningLawDescription()
-		{
-			static FText Desc = METASOUND_LOCTEXT("StereoPannerNodePanningLawDescription", "Which panning law should be used for the stereo panner.");
-			return Desc;
-		}
-
-		const FVertexName& GetOutputAudioLeftName()
-		{
-			static FVertexName Name = TEXT("Out Left");
-			return Name;
-		}
-
-		const FText& GetOutputAudioLeftDescription()
-		{
-			static FText Desc = METASOUND_LOCTEXT("StereoPannerNodeOutputLeftDescription", "Left channel audio output.");
-			return Desc;
-		}
-
-		const FVertexName& GetOutputAudioRightName()
-		{
-			static FVertexName Name = TEXT("Out Right");
-			return Name;
-		}
-
-		const FText& GetOutputAudioRightDescription()
-		{
-			static FText Desc = METASOUND_LOCTEXT("StereoPannerNodeOutputRightDescription", "Right channel audio output.");
-			return Desc;
-		}
+		METASOUND_PARAM(InputAudio, "In", "The input audio to pan.")
+		METASOUND_PARAM(InputPanAmount, "Pan Amount", "The amount of pan. -1.0 is full left, 1.0 is full right.")
+		METASOUND_PARAM(InputPanningLaw, "Panning Law", "Which panning law should be used for the stereo panner.")
+		METASOUND_PARAM(OutputAudioLeft, "Out Left", "Left channel audio output.")
+		METASOUND_PARAM(OutputAudioRight, "Out Right", "Right channel audio output.")
 	}
 
 	enum class EPanningLaw
@@ -155,9 +103,9 @@ namespace Metasound
 		using namespace StereoPannerVertexNames;
 
 		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(GetInputAudioName(), AudioInput);
-		InputDataReferences.AddDataReadReference(GetInputPanAmountName(), PanningAmount);
-		InputDataReferences.AddDataReadReference(GetInputPanningLawName(), PanningLaw);
+		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPanAmount), PanningAmount);
+		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPanningLaw), PanningLaw);
 
 		return InputDataReferences;
 	}
@@ -167,8 +115,8 @@ namespace Metasound
 		using namespace StereoPannerVertexNames;
 
 		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(GetOutputAudioLeftName(), AudioLeftOutput);
-		OutputDataReferences.AddDataReadReference(GetOutputAudioRightName(), AudioRightOutput);
+		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioLeft), AudioLeftOutput);
+		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioRight), AudioRightOutput);
 
 		return OutputDataReferences;
 	}
@@ -200,10 +148,14 @@ namespace Metasound
 		float* OutputLeftBufferPtr = AudioLeftOutput->GetData();
 		float* OutputRightBufferPtr = AudioRightOutput->GetData();
 
+		TArrayView<const float> InputBufferView(AudioInput->GetData(), InputSampleCount);
+		TArrayView<float> OutputLeftBufferView(AudioLeftOutput->GetData(), InputSampleCount);
+		TArrayView<float> OutputRightBufferView(AudioRightOutput->GetData(), InputSampleCount);
+
 		if (FMath::IsNearlyEqual(PrevPanningAmount, CurrentPanningAmount))
 		{
-			Audio::BufferMultiplyByConstant(InputBufferPtr, PrevLeftPan, OutputLeftBufferPtr, InputSampleCount);
-			Audio::BufferMultiplyByConstant(InputBufferPtr, PrevRightPan, OutputRightBufferPtr, InputSampleCount);
+			Audio::ArrayMultiplyByConstant(InputBufferView, PrevLeftPan, OutputLeftBufferView);
+			Audio::ArrayMultiplyByConstant(InputBufferView, PrevRightPan, OutputRightBufferView);
 		}
 		else 
 		{
@@ -217,8 +169,8 @@ namespace Metasound
 			FMemory::Memcpy(OutputRightBufferPtr, InputBufferPtr, InputSampleCount * sizeof(float));
 
 			// Do a fast fade on the buffers from the prev left/right gains to current left/right gains
-			Audio::FadeBufferFast(OutputLeftBufferPtr, InputSampleCount, PrevLeftPan, CurrentLeftPan);
-			Audio::FadeBufferFast(OutputRightBufferPtr, InputSampleCount, PrevRightPan, CurrentRightPan);
+			Audio::ArrayFade(OutputLeftBufferView, PrevLeftPan, CurrentLeftPan);
+			Audio::ArrayFade(OutputRightBufferView, PrevRightPan, CurrentRightPan);
 
 			// lerp through the buffer to the target panning amount
 			PrevPanningAmount = *PanningAmount;
@@ -233,13 +185,13 @@ namespace Metasound
 
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
-				TInputDataVertexModel<FAudioBuffer>(GetInputAudioName(), GetInputAudioDescription()),
-				TInputDataVertexModel<float>(GetInputPanAmountName(), GetInputPanAmountDescription(), 0.0f),
-				TInputDataVertexModel<FEnumPanningLaw>(GetInputPanningLawName(), GetInputPanningLawDescription())
+				TInputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAudio)),
+				TInputDataVertex<float>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPanAmount), 0.0f),
+				TInputDataVertex<FEnumPanningLaw>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputPanningLaw))
 			),
 			FOutputVertexInterface(
-				TOutputDataVertexModel<FAudioBuffer>(GetOutputAudioLeftName(), GetOutputAudioLeftDescription()),
-				TOutputDataVertexModel<FAudioBuffer>(GetOutputAudioRightName(), GetOutputAudioRightDescription())
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioLeft)),
+				TOutputDataVertex<FAudioBuffer>(METASOUND_GET_PARAM_NAME_AND_METADATA(OutputAudioRight))
 			)
 		);
 
@@ -275,9 +227,9 @@ namespace Metasound
 
 		using namespace StereoPannerVertexNames;
 
-		FAudioBufferReadRef AudioIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(GetInputAudioName(), InParams.OperatorSettings);
-		FFloatReadRef PanningAmount = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, GetInputPanAmountName(), InParams.OperatorSettings);
-		FPanningLawReadRef PanningLaw = InputCollection.GetDataReadReferenceOrConstruct<FEnumPanningLaw>(GetInputPanningLawName());
+		FAudioBufferReadRef AudioIn = InputCollection.GetDataReadReferenceOrConstruct<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InputAudio), InParams.OperatorSettings);
+		FFloatReadRef PanningAmount = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputPanAmount), InParams.OperatorSettings);
+		FPanningLawReadRef PanningLaw = InputCollection.GetDataReadReferenceOrConstruct<FEnumPanningLaw>(METASOUND_GET_PARAM_NAME(InputPanningLaw));
 
 		return MakeUnique<FStereoPannerOperator>(InParams.OperatorSettings, AudioIn, PanningAmount, PanningLaw);
 	}

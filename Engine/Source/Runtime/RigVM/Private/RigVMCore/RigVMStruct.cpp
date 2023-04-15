@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMCore/RigVMStruct.h"
+#include "RigVMCore/RigVMRegistry.h"
 #include "UObject/StructOnScope.h"
+#include "RigVMModule.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMStruct)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -83,6 +87,192 @@ FName FRigVMUnitNodeCreatedContext::FindFirstVariableOfType(UObject* InCPPTypeOb
 	return NAME_None;
 }
 
+FRigVMStructUpgradeInfo::FRigVMStructUpgradeInfo()
+	: NodePath()
+	, OldStruct(nullptr)
+	, NewStruct(nullptr)
+{
+}
+
+FRigVMStructUpgradeInfo FRigVMStructUpgradeInfo::MakeFromStructToFactory(UScriptStruct* InRigVMStruct, UScriptStruct* InFactoryStruct)
+{
+	check(InRigVMStruct);
+	check(InFactoryStruct);
+	
+	const FRigVMDispatchFactory* Factory = FRigVMRegistry::Get().FindOrAddDispatchFactory(InFactoryStruct);
+	check(Factory);
+	const FRigVMTemplateTypeMap Types = GetTypeMapFromStruct(InRigVMStruct);
+	const FString PermutationName = Factory->GetPermutationName(Types);
+
+	FRigVMStructUpgradeInfo Info;
+	Info.OldStruct = InRigVMStruct;
+	Info.NewStruct = InFactoryStruct;
+	Info.NewDispatchFunction = *PermutationName;
+	return Info;
+}
+
+FRigVMTemplateTypeMap FRigVMStructUpgradeInfo::GetTypeMapFromStruct(UScriptStruct* InScriptStruct)
+{
+	FRigVMTemplateTypeMap Types;
+#if WITH_EDITOR
+	for (TFieldIterator<FProperty> It(InScriptStruct); It; ++It)
+	{
+		if(It->HasAnyPropertyFlags(CPF_Transient))
+		{
+			continue;
+		}
+
+		if(!It->HasMetaData(FRigVMStruct::InputMetaName) &&
+			!It->HasMetaData(FRigVMStruct::OutputMetaName) &&
+			!It->HasMetaData(FRigVMStruct::VisibleMetaName))
+		{
+			continue;
+		}
+		
+		const FName PropertyName = It->GetFName();
+		const TRigVMTypeIndex TypeIndex = FRigVMTemplateArgument(*It).GetTypeIndices()[0];
+		Types.Add(PropertyName, TypeIndex);
+	}
+#endif
+	return Types;
+}
+
+bool FRigVMStructUpgradeInfo::IsValid() const
+{
+	return NodePath.IsEmpty() && (OldStruct != nullptr) && (NewStruct != nullptr);
+}
+
+const FString& FRigVMStructUpgradeInfo::GetDefaultValueForPin(const FName& InPinName) const
+{
+	static const FString EmptyString = FString();
+	if(const FString* DefaultValue = DefaultValues.Find(InPinName))
+	{
+		return *DefaultValue;
+	}
+	return EmptyString;
+}
+
+void FRigVMStructUpgradeInfo::SetDefaultValueForPin(const FName& InPinName, const FString& InDefaultValue)
+{
+	DefaultValues.FindOrAdd(InPinName) = InDefaultValue;
+}
+
+void FRigVMStructUpgradeInfo::AddRemappedPin(const FString& InOldPinPath, const FString& InNewPinPath, bool bAsInput,
+	bool bAsOutput)
+{
+	if(bAsInput)
+	{
+		InputLinkMap.Add(InOldPinPath, InNewPinPath);
+	}
+	if(bAsOutput)
+	{
+		OutputLinkMap.Add(InOldPinPath, InNewPinPath);
+	}
+}
+
+FString FRigVMStructUpgradeInfo::RemapPin(const FString& InPinPath, bool bIsInput, bool bContainsNodeName) const
+{
+	FString NodeName;
+	FString PinPath = InPinPath;
+
+	if(bContainsNodeName)
+	{
+		if(!PinPath.Split(TEXT("."), &NodeName, &PinPath, ESearchCase::IgnoreCase, ESearchDir::FromStart))
+		{
+			return InPinPath;
+		}
+	}
+
+	const TMap<FString, FString>& LinkMap = bIsInput ? InputLinkMap : OutputLinkMap;
+
+	int32 FoundMaxLength = 0;
+	FString FoundReplacement;
+
+	for(const TPair<FString, FString>& Pair : LinkMap)
+	{
+		if(Pair.Key == PinPath)
+		{
+			PinPath = Pair.Value;
+			FoundReplacement.Reset();
+			break;
+		}
+
+		const FString KeyWithPeriod = Pair.Key + TEXT(".");
+		if(PinPath.StartsWith(KeyWithPeriod))
+		{
+			if(FoundMaxLength < KeyWithPeriod.Len())
+			{
+				FoundMaxLength = KeyWithPeriod.Len();
+				FoundReplacement = Pair.Value + PinPath.RightChop(Pair.Key.Len());
+			}
+		}
+	}
+
+	if(!FoundReplacement.IsEmpty())
+	{
+		PinPath = FoundReplacement;
+	}
+
+	if(bContainsNodeName)
+	{
+		PinPath = FString::Printf(TEXT("%s.%s"), *NodeName, *PinPath);
+	}
+
+	return PinPath;
+}
+
+FString FRigVMStructUpgradeInfo::AddAggregatePin(FString InPinName)
+{
+	if(InPinName.IsEmpty())
+	{
+		FString LastPinName;
+		
+		FStructOnScope StructOnScope(GetNewStruct());
+		const FRigVMStruct* StructMemory = (const FRigVMStruct*)StructOnScope.GetStructMemory();
+
+		if(AggregatePins.IsEmpty())
+		{
+#if WITH_EDITOR
+			FString LastInputPinName;
+			FString LastOutputPinName;
+			for (TFieldIterator<FProperty> It(GetNewStruct()); It; ++It)
+			{
+				if(It->HasMetaData(FRigVMStruct::AggregateMetaName))
+				{
+					FString& LastDeterminedPinName = It->HasMetaData(FRigVMStruct::InputMetaName) ?
+						LastInputPinName : LastOutputPinName;
+
+					if(!LastDeterminedPinName.IsEmpty())
+					{
+						LastPinName = It->GetName();
+						break;
+					}
+
+					LastDeterminedPinName = It->GetName();
+				}
+			}
+#else
+			LastPinName = TEXT("B");
+#endif
+		}
+		else
+		{
+			LastPinName = AggregatePins.Last();
+		}
+
+		InPinName = StructMemory->GetNextAggregateName(*LastPinName).ToString();
+	}
+	AggregatePins.Add(InPinName);
+	return AggregatePins.Last();
+}
+
+void FRigVMStructUpgradeInfo::SetDefaultValues(const FRigVMStruct* InNewStructMemory)
+{
+	check(NewStruct);
+	check(InNewStructMemory);
+	DefaultValues = InNewStructMemory->GetDefaultValues(NewStruct);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const FName FRigVMStruct::DeprecatedMetaName("Deprecated");
@@ -103,7 +293,8 @@ const FName FRigVMStruct::TitleColorMetaName("TitleColor");
 const FName FRigVMStruct::NodeColorMetaName("NodeColor");
 const FName FRigVMStruct::IconMetaName("Icon");
 const FName FRigVMStruct::KeywordsMetaName("Keywords");
-const FName FRigVMStruct::PrototypeNameMetaName("PrototypeName");
+const FName FRigVMStruct::TemplateNameMetaName = FRigVMRegistry::TemplateNameMetaName;
+const FName FRigVMStruct::AggregateMetaName("Aggregate");
 const FName FRigVMStruct::ExpandPinByDefaultMetaName("ExpandByDefault");
 const FName FRigVMStruct::DefaultArraySizeMetaName("DefaultArraySize");
 const FName FRigVMStruct::VaryingMetaName("Varying");
@@ -123,6 +314,15 @@ float FRigVMStruct::GetRatioFromIndex(int32 InIndex, int32 InCount)
 		return 0.f;
 	}
 	return ((float)FMath::Clamp<int32>(InIndex, 0, InCount - 1)) / ((float)(InCount - 1));
+}
+
+TArray<FRigVMUserWorkflow> FRigVMStruct::GetWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const
+{
+	return GetSupportedWorkflows(InSubject).FilterByPredicate([InType](const FRigVMUserWorkflow& InWorkflow) -> bool
+	{
+		return uint32(InWorkflow.GetType()) & uint32(InType) &&
+			InWorkflow.IsValid();
+	});
 }
 
 #if WITH_EDITOR
@@ -374,18 +574,20 @@ ERigVMPinDirection FRigVMStruct::GetPinDirectionFromProperty(FProperty* InProper
 	return ERigVMPinDirection::Hidden;
 }
 
-FString FRigVMStruct::ExportToFullyQualifiedText(FProperty* InMemberProperty, const uint8* InMemberMemoryPtr)
+#endif
+
+FString FRigVMStruct::ExportToFullyQualifiedText(const FProperty* InMemberProperty, const uint8* InMemberMemoryPtr, bool bUseQuotes)
 {
 	check(InMemberProperty);
 	check(InMemberMemoryPtr);
 
 	FString DefaultValue;
 
-	if (FStructProperty* StructProperty = CastField<FStructProperty>(InMemberProperty))
+	if (const FStructProperty* StructProperty = CastField<FStructProperty>(InMemberProperty))
 	{
 		DefaultValue = ExportToFullyQualifiedText(StructProperty->Struct, InMemberMemoryPtr);
 	}
-	else if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InMemberProperty))
+	else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InMemberProperty))
 	{
 		FScriptArrayHelper ScriptArrayHelper(ArrayProperty, InMemberMemoryPtr);
 
@@ -407,18 +609,21 @@ FString FRigVMStruct::ExportToFullyQualifiedText(FProperty* InMemberProperty, co
 	}
 	else
 	{
-		InMemberProperty->ExportTextItem(DefaultValue, InMemberMemoryPtr, nullptr, nullptr, PPF_None);
+		InMemberProperty->ExportTextItem_Direct(DefaultValue, InMemberMemoryPtr, nullptr, nullptr, PPF_None);
 
 		if (CastField<FNameProperty>(InMemberProperty) != nullptr ||
 			CastField<FStrProperty>(InMemberProperty) != nullptr)
 		{
-			if (DefaultValue.IsEmpty())
+			if(bUseQuotes)
 			{
-				DefaultValue = TEXT("\"\"");
-			}
-			else
-			{
-				DefaultValue = FString::Printf(TEXT("\"%s\""), *DefaultValue);
+				if (DefaultValue.IsEmpty())
+				{
+					DefaultValue = TEXT("\"\"");
+				}
+				else
+				{
+					DefaultValue = FString::Printf(TEXT("\"%s\""), *DefaultValue);
+				}
 			}
 		}
 	}
@@ -426,7 +631,7 @@ FString FRigVMStruct::ExportToFullyQualifiedText(FProperty* InMemberProperty, co
 	return DefaultValue;
 }
 
-FString FRigVMStruct::ExportToFullyQualifiedText(UScriptStruct* InStruct, const uint8* InStructMemoryPtr)
+FString FRigVMStruct::ExportToFullyQualifiedText(const UScriptStruct* InStruct, const uint8* InStructMemoryPtr, bool bUseQuotes)
 {
 	check(InStruct);
 	check(InStructMemoryPtr);
@@ -441,7 +646,7 @@ FString FRigVMStruct::ExportToFullyQualifiedText(UScriptStruct* InStruct, const 
 		
 		FString PropertyName = It->GetName();
 		const uint8* StructMemberMemoryPtr = It->ContainerPtrToValuePtr<uint8>(InStructMemoryPtr);
-		FString DefaultValue = ExportToFullyQualifiedText(*It, StructMemberMemoryPtr);
+		FString DefaultValue = ExportToFullyQualifiedText(*It, StructMemberMemoryPtr, bUseQuotes);
 		FieldValues.Add(FString::Printf(TEXT("%s=%s"), *PropertyName, *DefaultValue));
 	}
 
@@ -453,4 +658,155 @@ FString FRigVMStruct::ExportToFullyQualifiedText(UScriptStruct* InStruct, const 
 	return FString::Printf(TEXT("(%s)"), *FString::Join(FieldValues, TEXT(",")));
 }
 
+FString FRigVMStruct::ExportToFullyQualifiedText(const UScriptStruct* InScriptStruct, const FName& InPropertyName, const uint8* InStructMemoryPointer, bool bUseQuotes) const
+{
+	check(InScriptStruct);
+	if(InStructMemoryPointer == nullptr)
+	{
+		InStructMemoryPointer = (const uint8*)this;
+	}
+	
+	const FProperty* Property = InScriptStruct->FindPropertyByName(InPropertyName);
+	if(Property == nullptr)
+	{
+		return FString();
+	}
+
+	const uint8* StructMemberMemoryPtr = Property->ContainerPtrToValuePtr<uint8>(InStructMemoryPointer);
+	return ExportToFullyQualifiedText(Property, StructMemberMemoryPtr, bUseQuotes);
+}
+
+FName FRigVMStruct::GetNextAggregateName(const FName& InLastAggregatePinName) const
+{
+	if(InLastAggregatePinName.IsNone())
+	{
+		return InLastAggregatePinName;
+	}
+
+	const FString PinName = InLastAggregatePinName.ToString();
+	if(PinName.IsNumeric())
+	{
+		const int32 Index = FCString::Atoi(*PinName);
+		return *FString::FormatAsNumber(Index+1);
+	}
+
+	if(PinName.Len() == 1)
+	{
+		const TCHAR C = PinName[0];
+		if((C >='a' && C < 'z') || (C >='A' && C <'Z'))
+		{
+			FString Result;
+			Result.AppendChar(C + 1);
+			return *Result;
+		}
+	}
+
+	if(PinName.Contains(TEXT("_")))
+	{
+		const FString Left = PinName.Left(PinName.Find(TEXT("_"), ESearchCase::IgnoreCase, ESearchDir::FromEnd));
+		const FString Right = PinName.Mid(PinName.Find(TEXT("_"), ESearchCase::IgnoreCase, ESearchDir::FromEnd)+1);
+		return *FString::Printf(TEXT("%s_%s"), *Left, *GetNextAggregateName(*Right).ToString());
+	}
+
+	return *FString::Printf(TEXT("%s_1"), *PinName);
+}
+
+TMap<FName, FString> FRigVMStruct::GetDefaultValues(UScriptStruct* InScriptStruct) const
+{
+	check(InScriptStruct);
+	
+	TMap<FName, FString> DefaultValues;
+	for (TFieldIterator<FProperty> It(InScriptStruct); It; ++It)
+	{
+		if(It->HasAnyPropertyFlags(CPF_Transient))
+		{
+			continue;
+		}
+
+#if WITH_EDITOR
+		if(!It->HasMetaData(FRigVMStruct::InputMetaName) &&
+			!It->HasMetaData(FRigVMStruct::OutputMetaName) &&
+			!It->HasMetaData(FRigVMStruct::VisibleMetaName))
+		{
+			continue;
+		}
 #endif
+		
+		const FName PropertyName = It->GetFName();
+		const uint8* StructMemberMemoryPtr = It->ContainerPtrToValuePtr<uint8>(this);
+		const FString DefaultValue = ExportToFullyQualifiedText(*It, StructMemberMemoryPtr, false);
+		DefaultValues.Add(PropertyName, DefaultValue);
+	}
+
+	return DefaultValues;
+}
+
+class FRigVMStructApplyUpgradeInfoErrorContext : public FOutputDevice
+{
+public:
+
+	int32 NumErrors;
+	UScriptStruct* OldStruct;
+	UScriptStruct* NewStruct;
+	FName PropertyName;
+
+	FRigVMStructApplyUpgradeInfoErrorContext(UScriptStruct* InOldStruct, UScriptStruct* InNewStruct, const FName& InPropertyName)
+		: FOutputDevice()
+		, NumErrors(0)
+		, OldStruct(InOldStruct)
+		, NewStruct(InNewStruct)
+		, PropertyName(InPropertyName)
+	{
+	}
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	{
+		if(Verbosity == ELogVerbosity::Error)
+		{
+			UE_LOG(LogRigVM, Warning, TEXT("Error when applying upgrade data from %s to %s, property %s: %s"),
+				*OldStruct->GetStructCPPName(),
+				*NewStruct->GetStructCPPName(),
+				*PropertyName.ToString(),
+				V);
+			NumErrors++;
+		}
+		else if(Verbosity == ELogVerbosity::Warning)
+		{
+			UE_LOG(LogRigVM, Warning, TEXT("Warning when applying upgrade data from %s to %s, property %s: %s"),
+				*OldStruct->GetStructCPPName(),
+				*NewStruct->GetStructCPPName(),
+				*PropertyName.ToString(),
+				V);
+		}
+	}
+};
+
+bool FRigVMStruct::ApplyUpgradeInfo(const FRigVMStructUpgradeInfo& InUpgradeInfo)
+{
+	check(InUpgradeInfo.IsValid());
+
+	for(const TPair<FName, FString>& Pair : InUpgradeInfo.GetDefaultValues())
+	{
+		const FName& PropertyName = Pair.Key;
+		const FString& DefaultValue = Pair.Value;
+		
+		const FProperty* Property = InUpgradeInfo.GetNewStruct()->FindPropertyByName(PropertyName);
+		if(Property == nullptr)
+		{
+			return false;
+		}
+
+		uint8* MemberMemory = Property->ContainerPtrToValuePtr<uint8>(this);
+
+		FRigVMStructApplyUpgradeInfoErrorContext ErrorPipe(InUpgradeInfo.GetOldStruct(), InUpgradeInfo.GetNewStruct(), PropertyName);
+        Property->ImportText_Direct(*DefaultValue, MemberMemory, nullptr, PPF_None, &ErrorPipe);
+
+		if(ErrorPipe.NumErrors > 0)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+

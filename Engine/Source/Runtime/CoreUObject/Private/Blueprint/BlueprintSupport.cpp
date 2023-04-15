@@ -218,6 +218,14 @@ void FBlueprintSupport::RepairDeferredDependenciesInObject(UObject* Object)
 	{
 		const FObjectProperty* Property = It.Key();
 		void* PropertyValue = (void*)It.Value();
+		if (Property->IsA<FObjectPtrProperty>())
+		{
+			FObjectPtr* PropertyValueAsObjectPtr = ((FObjectPtr*)PropertyValue);
+			if (!PropertyValueAsObjectPtr->IsResolved())
+			{
+				continue;
+			}
+		}
 		UObject* PropertyValueAsObj = *((UObject**)PropertyValue);
 
 		FLinkerPlaceholderBase* Placeholder = nullptr;
@@ -439,22 +447,22 @@ void FBlueprintSupport::ValidateNoExternalRefsToSkeletons()
  ******************************************************************************/
 
 #if WITH_EDITOR
-UClass* FScopedClassDependencyGather::BatchMasterClass = NULL;
+UClass* FScopedClassDependencyGather::BatchAuthorityClass = NULL;
 TArray<UClass*> FScopedClassDependencyGather::BatchClassDependencies;
 
 FScopedClassDependencyGather::FScopedClassDependencyGather(UClass* ClassToGather, FUObjectSerializeContext* InLoadContext)
-	: bMasterClass(false)
+	: bAuthoritativeClass(false)
 	, LoadContext(InLoadContext)
 {
 	// Do NOT track duplication dependencies, as these are intermediate products that we don't care about
 	if( !GIsDuplicatingClassForReinstancing )
 	{
-		if( BatchMasterClass == NULL )
+		if( BatchAuthorityClass == NULL )
 		{
-			// If there is no current dependency master, register this class as the master, and reset the array
-			BatchMasterClass = ClassToGather;
+			// If there is no current dependency authority, register this class as the authority, and reset the array
+			BatchAuthorityClass = ClassToGather;
 			BatchClassDependencies.Empty();
-			bMasterClass = true;
+			bAuthoritativeClass = true;
 		}
 		else
 		{
@@ -468,11 +476,11 @@ FScopedClassDependencyGather::~FScopedClassDependencyGather()
 {
 	// If this gatherer was the initial gatherer for the current scope, process 
 	// dependencies (unless compiling on load is explicitly disabled)
-	if( bMasterClass )
+	if( bAuthoritativeClass )
 	{
 		auto DependencyIter = BatchClassDependencies.CreateIterator();
 		// implemented as a lambda, to prevent duplicated code between 
-		// BatchMasterClass and BatchClassDependencies entries
+		// BatchAuthorityClass and BatchClassDependencies entries
 		auto RecompileClassLambda = [&DependencyIter](UClass* Class, FUObjectSerializeContext* InLoadContext)
 		{
 			Class->ConditionalRecompileClass(InLoadContext);
@@ -502,9 +510,9 @@ FScopedClassDependencyGather::~FScopedClassDependencyGather()
 			}
 		};
 
-		BatchMasterClass->ConditionalRecompileClass(LoadContext);
+		BatchAuthorityClass->ConditionalRecompileClass(LoadContext);
 
-		BatchMasterClass = NULL;
+		BatchAuthorityClass = NULL;
 	}
 }
 
@@ -812,7 +820,7 @@ FString GetPlaceholderPrefix<ULinkerPlaceholderClass>()    { return TEXT("PLACEH
 
 /** Internal utility function for spawning various type of placeholder objects. */
 template<class PlaceholderType>
-static PlaceholderType* MakeImportPlaceholder(UObject* Outer, const TCHAR* TargetObjName, int32 ImportIndex = INDEX_NONE)
+static PlaceholderType* MakeImportPlaceholder(UObject* Outer, const UClass* TargetObjType, const TCHAR* TargetObjName, int32 ImportIndex = INDEX_NONE)
 {
 	PlaceholderType* PlaceholderObj = nullptr;
 
@@ -830,8 +838,11 @@ static PlaceholderType* MakeImportPlaceholder(UObject* Outer, const TCHAR* Targe
 	// and isn't referenced by the ImportMap... instead, this should be stored 
 	// in the FLinkerLoad's ImportPlaceholders map
 
+	// Record the type of object that's being deferred
+	PlaceholderObj->DeferredObjectType = TargetObjType;
+
 	// make sure the class is fully formed (has its 
-	// ClassAddReferencedObjects/ClassConstructor members set)
+	// CppClassStaticFunctions/ClassConstructor members set)
 	PlaceholderObj->Bind();
 	PlaceholderObj->StaticLink(/*bRelinkExistingProperties =*/true);
 
@@ -1094,7 +1105,7 @@ bool FLinkerLoad::DeferPotentialCircularImport(const int32 Index)
 			{
 				if (ImportClass->HasAnyClassFlags(CLASS_NeedsDeferredDependencyLoading))
 				{
-					Import.XObject = MakeImportPlaceholder<ULinkerPlaceholderClass>(LinkerRoot, *Import.ObjectName.ToString(), Index);
+					Import.XObject = MakeImportPlaceholder<ULinkerPlaceholderClass>(LinkerRoot, ImportClass, *Import.ObjectName.ToString(), Index);
 				}
 				else if (ImportClass->IsChildOf<UFunction>() && Import.OuterIndex.IsImport())
 				{
@@ -1111,7 +1122,7 @@ bool FLinkerLoad::DeferPotentialCircularImport(const int32 Index)
 						// but the DEFERRED_DEPENDENCY_CHECK may be out of date...
 						if(Cast<UClass>(FuncOuter))
 						{
-							Import.XObject = MakeImportPlaceholder<ULinkerPlaceholderFunction>(FuncOuter, *Import.ObjectName.ToString(), Index);
+							Import.XObject = MakeImportPlaceholder<ULinkerPlaceholderFunction>(FuncOuter, ImportClass, *Import.ObjectName.ToString(), Index);
 							DEFERRED_DEPENDENCY_CHECK(dynamic_cast<ULinkerPlaceholderClass*>(FuncOuter) != nullptr);
 						}
 					}
@@ -1964,6 +1975,16 @@ void FLinkerLoad::ResolveDeferredExports(UClass* LoadClass)
 
 	DEFERRED_DEPENDENCY_CHECK(DeferredCDOIndex != INDEX_NONE || bForceBlueprintFinalization);
 
+	// Handle deferred construction of the CDO and patch it into the export table. Any deferred ctor
+	// initializer dependencies (e.g. subobject class overrides) should now be resolved at this point.
+	if (DeferredCDOIndex != INDEX_NONE && !ExportMap[DeferredCDOIndex].Object)
+	{
+		// Note: We could just call GetDefaultObject() here, but then we'd also need to set object
+		// flags on it to ensure that it gets serialized later. For consistency/safety, this routes
+		// through CreateExport() so that we don't have to worry about keeping object flags in sync.
+		CreateExport(DeferredCDOIndex);
+	}
+
 	UObject* BlueprintCDO = DeferredCDOIndex != INDEX_NONE ? ExportMap[DeferredCDOIndex].Object : LoadClass->ClassDefaultObject;
 	DEFERRED_DEPENDENCY_CHECK(BlueprintCDO != nullptr);
 	
@@ -2325,7 +2346,7 @@ bool FLinkerLoad::HasPerformedFullExportResolvePass()
 	
 }
 
-UObject* FLinkerLoad::RequestPlaceholderValue(UClass* ObjectType, const TCHAR* ObjectPath)
+UObject* FLinkerLoad::RequestPlaceholderValue(const FProperty* Property, const UClass* ObjectType, const TCHAR* ObjectPath)
 {
 #if !USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	return nullptr;
@@ -2345,13 +2366,40 @@ UObject* FLinkerLoad::RequestPlaceholderValue(UClass* ObjectType, const TCHAR* O
 		// handle that here as well
 		else if (ObjectType->IsChildOf<UClass>())
 		{
+			// Class property values will typically always request the base UClass type via FObjectPropertyBase, so
+			// we try and redirect to the actual class object value type to determine if a placeholder can be created.
+			// Generally, we shouldn't be in here unless we're serializing an object property's value from exported T3D.
+			if (const FClassProperty* ClassProperty = CastField<FClassProperty>(Property))
+			{
+				if (ClassProperty->MetaClass)
+				{
+					// Note: We are interested in the value's underlying class type, not the value itself (which will be an instance of the class type).
+					const UClass* ValueType = ClassProperty->MetaClass->GetClass();
+					if (const ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ClassProperty->MetaClass))
+					{
+						// If the type was deferred on import of the property value, redirect to the type of value whose load has been deferred (this should be a native UClass derivative).
+						ValueType = PlaceholderClass->DeferredObjectType.Get();
+					}
+
+					if (ValueType)
+					{
+						checkf(ValueType->IsChildOf(ObjectType),
+							TEXT("Requesting an import placeholder object for a class value type (%s) that is not a derivative of the required object type (%s)."),
+							*ValueType->GetName(),
+							*ObjectType->GetName());
+
+						ObjectType = ValueType;
+					}
+				}
+			}
+
 			const FString ObjectPathStr(ObjectPath);
 			// we don't need placeholders for native object references and for non-BP class objects (the 
 			// calling code should properly handle null return values)
 			if (!FPackageName::IsScriptPackage(ObjectPathStr) && ObjectType->HasAnyClassFlags(CLASS_NeedsDeferredDependencyLoading))
 			{
 				const FString ObjectName = FPackageName::ObjectPathToObjectName(ObjectPathStr);
-				Placeholder = MakeImportPlaceholder<ULinkerPlaceholderClass>(LinkerRoot, *ObjectName);
+				Placeholder = MakeImportPlaceholder<ULinkerPlaceholderClass>(LinkerRoot, ObjectType, *ObjectName);
 				ImportPlaceholders.Add(ObjId, Placeholder);
 			}
 		}
@@ -2367,9 +2415,18 @@ UObject* FLinkerLoad::FindImport(UClass* ImportClass, UObject* ImportOuter, cons
 	return Result;
 }
 
-UObject* FLinkerLoad::FindImportFast(UClass* ImportClass, UObject* ImportOuter, FName Name, bool bAnyPackage)
+UObject* FLinkerLoad::FindImportFast(UClass* ImportClass, UObject* ImportOuter, FName Name, bool bFindObjectbyName)
 {
-	UObject* Result = StaticFindObjectFast(ImportClass, ImportOuter, Name, false/*ExactClass*/, bAnyPackage);
+	UObject* Result = nullptr;
+	if (!bFindObjectbyName)
+	{
+		Result = StaticFindObjectFast(ImportClass, ImportOuter, Name, false/*ExactClass*/);
+	}
+	else
+	{
+		Result = StaticFindFirstObject(ImportClass, *Name.ToString(), EFindFirstObjectOptions::NativeFirst | EFindFirstObjectOptions::EnsureIfAmbiguous, ELogVerbosity::Warning, TEXT("FindImportFast"));
+	}
+
 	return Result;
 }
 

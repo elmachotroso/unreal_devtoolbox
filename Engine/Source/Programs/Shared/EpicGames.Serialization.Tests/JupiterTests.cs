@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Numerics;
 using EpicGames.Core;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -16,36 +15,36 @@ namespace EpicGames.Serialization.Tests
 		[TestMethod]
 		public void OverflowTest()
 		{
-			CbWriter Writer = new CbWriter();
+			CbWriter writer = new CbWriter();
 
-			Writer.BeginArray();
-			for (int Idx = 0; Idx < 128; Idx++)
+			writer.BeginArray();
+			for (int idx = 0; idx < 128; idx++)
 			{
-				Writer.WriteNullValue();
+				writer.WriteNullValue();
 			}
-			Writer.EndArray();
+			writer.EndArray();
 
-			byte[] Data = Writer.ToByteArray();
+			writer.ToByteArray();
 		}
 
 		[TestMethod]
 		public void EmbeddedObject()
 		{
-			CbWriter Writer1 = new CbWriter();
-			Writer1.BeginObject();
-			Writer1.WriteInteger("a", 1);
-			Writer1.WriteString("b", "hello");
-			Writer1.EndObject();
+			CbWriter writer1 = new CbWriter();
+			writer1.BeginObject();
+			writer1.WriteInteger("a", 1);
+			writer1.WriteUtf8String("b", "hello");
+			writer1.EndObject();
 
-			CbObject Object1 = Writer1.ToObject();
+			CbObject object1 = writer1.ToObject();
 
-			CbWriter Writer2 = new CbWriter();
-			Writer2.BeginObject();
-			Writer2.WriteObject("ref", Object1);
-			Writer2.EndObject();
+			CbWriter writer2 = new CbWriter();
+			writer2.BeginObject();
+			writer2.WriteObject("ref", object1);
+			writer2.EndObject();
 
-			CbObject Object2 = Writer2.ToObject();
-			Assert.AreEqual(21, Object2.GetSize());
+			CbObject object2 = writer2.ToObject();
+			Assert.AreEqual(21, object2.GetSize());
 		}
 
 		[TestMethod]
@@ -78,7 +77,6 @@ namespace EpicGames.Serialization.Tests
 			Assert.AreEqual(IoHash.Parse("f855382171a0b1e5a1c653aa6c5121a05cbf4ba0"), inputsFields[0].AsHash());
 		}
 
-
 		[TestMethod]
 		public void ReferenceOutput()
 		{
@@ -99,12 +97,27 @@ namespace EpicGames.Serialization.Tests
 			Assert.AreEqual(IoHash.Parse("c7a03f83c08cdca882110ecf2b5654ee3b09b11e"), payloadFields[2]["RawHash"]!.AsHash());
 		}
 
+		[TestMethod]
+		public void CompactBinary()
+		{
+			byte[] bytes = File.ReadAllBytes("CompactBinaryObjects/compact_binary");
+
+			CbObject o = new CbObject(bytes);
+			Assert.AreEqual("", o.AsField().Name);
+			List<CbField> buildActionFields = o.ToList();
+			Assert.AreEqual(3, buildActionFields.Count);
+			CbField payloads = buildActionFields[0];
+			List<CbField> payloadFields = payloads.ToList();
+			Assert.AreEqual(2, payloadFields.Count);
+
+			Assert.AreEqual("{\"Key\":{\"Bucket\":\"EditorDomainPackage\",\"Hash\":\"37dbaa409ef30ba67f18c8fc2faaf606636cb915\"},\"Meta\":{\"FileSize\":24789},\"Attachments\":[{\"Id\":\"000000000000000000000001\",\"RawHash\":\"da6fc57e4b9f91377c9509ea0ad567bacb3796c5\",\"RawSize\":24789}]}", o.ToJson());
+		}
 
 		[TestMethod]
 		public void WriteArray()
 		{
-			var hash1 = IoHash.Parse("5d8a6dc277c968f0d027c98f879c955c1905c293");
-			var hash2 = IoHash.Parse("313f0d0d334100d83aeb1ee2c42794fd087cb0ae");
+			IoHash hash1 = IoHash.Parse("5d8a6dc277c968f0d027c98f879c955c1905c293");
+			IoHash hash2 = IoHash.Parse("313f0d0d334100d83aeb1ee2c42794fd087cb0ae");
 
 			CbWriter writer = new CbWriter();
 			writer.BeginObject();
@@ -128,15 +141,14 @@ namespace EpicGames.Serialization.Tests
 			CollectionAssert.AreEqual(new IoHash[] { hash1, hash2 }, blobs);
 		}
 
-
 		[TestMethod]
 		public void WriteObject()
 		{
-			var hash1 = IoHash.Parse("5d8a6dc277c968f0d027c98f879c955c1905c293");
+			IoHash hash1 = IoHash.Parse("5d8a6dc277c968f0d027c98f879c955c1905c293");
 
 			CbWriter writer = new CbWriter();
 			writer.BeginObject();
-			writer.WriteString("string", "test");
+			writer.WriteUtf8String("string", "test");
 			writer.WriteBinaryAttachment("hash", hash1);
 			writer.EndObject();
 
@@ -150,7 +162,7 @@ namespace EpicGames.Serialization.Tests
 			Assert.AreEqual(2, fields.Count);
 
 			CbField? stringField = o["string"];
-			Assert.AreEqual("test", stringField!.AsString());
+			Assert.AreEqual("test", stringField!.AsUtf8String());
 
 			CbField? hashField = o["hash"];
 			Assert.AreEqual(hash1, hashField!.AsAttachment());

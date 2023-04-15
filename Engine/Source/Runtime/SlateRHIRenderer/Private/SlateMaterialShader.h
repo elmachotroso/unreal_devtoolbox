@@ -29,20 +29,12 @@ public:
 
 	void SetMaterialShaderParameters(FRHICommandList& RHICmdList, const FSceneView& View, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material);
 
-	/**
-	 * Sets the vertical axis multiplier to use depending on graphics api
-	 */
-	void SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier);
-
 	/** Serializes the shader data */
 	//virtual bool Serialize( FArchive& Ar ) override;
 private:
 	
 		/** ViewProjection parameter used by the shader */
 		LAYOUT_FIELD(FShaderParameter, ViewProjection)
-		/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-		LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
-	
 };
 
 class FSlateMaterialShaderPS : public FMaterialShader
@@ -103,7 +95,6 @@ public:
 		FSlateMaterialShaderVS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("USE_SLATE_INSTANCING"), (uint32)( bUseInstancing ? 1 : 0 ));
-		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
 	}
 };
 
@@ -131,6 +122,5 @@ public:
 		FSlateMaterialShaderPS::ModifyCompilationEnvironment(Parameters,OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("SHADER_TYPE"), (uint32)ShaderType);
-		OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
 	}
 };

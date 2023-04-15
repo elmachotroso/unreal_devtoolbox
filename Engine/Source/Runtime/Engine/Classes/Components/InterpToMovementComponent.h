@@ -7,6 +7,8 @@
 #include "GameFramework/MovementComponent.h"
 #include "InterpToMovementComponent.generated.h"
 
+struct FHitResult;
+
 /**
  * Controls the movement behaviour
  */

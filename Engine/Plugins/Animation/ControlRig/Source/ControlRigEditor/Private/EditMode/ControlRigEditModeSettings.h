@@ -17,6 +17,8 @@ class UControlRigEditModeSettings : public UObject
 		: bDisplayHierarchy(false)
 		, bDisplayNulls(false)
 		, bHideControlShapes(false)
+		, bShowAllProxyControls(false)
+		, bShowControlsAsOverlay(false)
 		, bDisplayAxesOnSelection(false)
 		, AxisScale(10.f)
 		, bCoordSystemPerWidgetMode(true)
@@ -25,6 +27,7 @@ class UControlRigEditModeSettings : public UObject
 		, GizmoScale(1.0f)
 	{
 		LastInViewportTweenWidgetLocation = FVector2D(EForceInit::ForceInitToZero);
+		DrivenControlColor = FLinearColor::White * FLinearColor(FVector::OneVector * 0.8f);
 	}
 
 	// UObject interface
@@ -36,39 +39,51 @@ class UControlRigEditModeSettings : public UObject
 public:
 
 	/** Whether to show all bones in the hierarchy */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bDisplayHierarchy;
 
 	/** Whether to show all nulls in the hierarchy */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bDisplayNulls;
 
 	/** Should we always hide control shapes in viewport */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bHideControlShapes;
 
+	/** Should we always hide control shapes in viewport */
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings", meta = (EditCondition = "!bHideControlShapes"))
+	bool bShowAllProxyControls;
+
+	/** Determins if controls should be rendered on top of other controls */
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings", meta = (EditCondition = "!bHideControlShapes"))
+	bool bShowControlsAsOverlay;
+
+	/** Indicates a control being driven by a proxy control */
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings", meta = (EditCondition = "!bHideControlShapes"))
+	FLinearColor DrivenControlColor;
+
 	/** Should we show axes for the selected elements */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bDisplayAxesOnSelection;
 
 	/** The scale for axes to draw on the selection */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	float AxisScale;
 
 	/** If true we restore the coordinate space when changing Widget Modes in the Viewport*/
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bCoordSystemPerWidgetMode;
 
 	/** If true we can only select Rig Controls in the scene not other Actors. */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bOnlySelectRigControls;
 
 	/** If true when we transform multiple selected objects in the viewport they each transforms along their own local transform space */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	bool bLocalTransformsInEachLocalSpace;
 	
 	/** The scale for Gizmos */
-	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Animation Settings")
+	UPROPERTY(config, EditAnywhere, Category = "Animation Settings")
 	float GizmoScale;
 
 	UPROPERTY(config)

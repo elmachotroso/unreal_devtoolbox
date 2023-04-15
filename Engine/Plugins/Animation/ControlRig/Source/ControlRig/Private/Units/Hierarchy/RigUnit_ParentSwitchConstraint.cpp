@@ -3,9 +3,23 @@
 #include "RigUnit_ParentSwitchConstraint.h"
 #include "Units/RigUnitContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_ParentSwitchConstraint)
+
 FRigUnit_ParentSwitchConstraint_Execute()
 {
 	FRigUnit_ParentSwitchConstraintArray::StaticExecute(RigVMExecuteContext, Subject, ParentIndex, Parents.Keys, InitialGlobalTransform, Weight, Transform, Switched, CachedSubject, CachedParent, RelativeOffset, ExecuteContext, Context);	
+}
+
+FRigVMStructUpgradeInfo FRigUnit_ParentSwitchConstraint::GetUpgradeInfo() const
+{
+	FRigUnit_ParentSwitchConstraintArray NewNode;
+	NewNode.Subject = Subject;
+	NewNode.ParentIndex = ParentIndex;
+	NewNode.Parents = Parents.Keys;
+	NewNode.InitialGlobalTransform = InitialGlobalTransform;
+	NewNode.Weight = Weight;
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
 }
 
 FRigUnit_ParentSwitchConstraintArray_Execute()
@@ -87,3 +101,10 @@ FRigUnit_ParentSwitchConstraintArray_Execute()
 		}
 	}
 }
+
+FRigVMStructUpgradeInfo FRigUnit_ParentSwitchConstraintArray::GetUpgradeInfo() const
+{
+	// this node is no longer supported.
+	return FRigVMStructUpgradeInfo();
+}
+

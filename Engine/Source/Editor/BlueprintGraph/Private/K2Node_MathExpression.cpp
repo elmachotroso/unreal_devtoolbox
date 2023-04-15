@@ -1,25 +1,57 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_MathExpression.h"
-#include "UObject/UnrealType.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
-#include "Engine/MemberReference.h"
-#include "Kismet/BlueprintFunctionLibrary.h"
-#include "EdGraphSchema_K2.h"
-#include "EdGraphSchema_K2_Actions.h"
-#include "K2Node_CallFunction.h"
-#include "K2Node_MacroInstance.h"
-#include "K2Node_VariableGet.h"
-#include "Kismet2/BlueprintEditorUtils.h"
-#include "Kismet2/Kismet2NameValidators.h"
-#include "EdGraphUtilities.h"
+
 #include "BasicTokenParser.h"
 #include "BlueprintActionDatabaseRegistrar.h"
-#include "DiffResults.h"
-#include "MathExpressionHandler.h"
-#include "Misc/DefaultValueHelper.h"
 #include "BlueprintNodeSpawner.h"
+#include "Containers/Array.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/Map.h"
+#include "Delegates/Delegate.h"
+#include "DiffResults.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "EdGraphSchema_K2_Actions.h"
+#include "EdGraphUtilities.h"
+#include "Engine/Blueprint.h"
+#include "Engine/MemberReference.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_EditablePinBase.h"
+#include "K2Node_Tunnel.h"
+#include "K2Node_VariableGet.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Kismet2/Kismet2NameValidators.h"
+#include "Logging/TokenizedMessage.h"
+#include "Math/UnrealMathSSE.h"
+#include "Math/Vector2D.h"
+#include "MathExpressionHandler.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
+#include "Misc/DefaultValueHelper.h"
+#include "Misc/Guid.h"
+#include "Serialization/Archive.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/Script.h"
+#include "UObject/Stack.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class FExpressionParser;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -70,12 +102,12 @@ static bool PromoteByteToInt(FEdGraphPinType& InOutType)
 
 /**
 * If the specified type is a "int" type, then this will modify it to
-* a "float". Helps when trying to match function signatures.
+* a "double". Helps when trying to match function signatures.
 *
 * @param  InOutType	The type you want to attempt to promote.
 * @return True if the type was modified, false if not.
 */
-static bool PromoteIntToFloat(FEdGraphPinType& InOutType)
+static bool PromoteIntToDouble(FEdGraphPinType& InOutType)
 {
 	if (InOutType.PinCategory == UEdGraphSchema_K2::PC_Int)
 	{
@@ -717,7 +749,7 @@ public:
 	 * Attempts to lookup a function matching the supplied signature (where 
 	 * 'Operator' identifies the function's name and 'InputTypeList' defines
 	 * the desired parameters). If one can't be found, it attempts to find a
-	 * match by promoting the input types (like from int to float, etc.)
+	 * match by promoting the input types (like from int to double, etc.)
 	 * 
 	 * @param  Operator			The operator you want to find a function for.
 	 * @param  InputTypeList	A list of parameter types you want to feed the function.
@@ -734,7 +766,7 @@ public:
 
 		// if we didn't find a function that matches the supplied function 
 		// signature, then try to promote the parameters (like from int to 
-		// float), and see if we can lookup a function with those types
+		// double), and see if we can lookup a function with those types
 		for (int32 promoterIndex = 0; (promoterIndex < OrderedTypePromoters.Num()) && (MatchingFunc == NULL); ++promoterIndex)
 		{
 			const FTypePromoter& PromotionOperator = OrderedTypePromoters[promoterIndex];
@@ -833,9 +865,9 @@ public:
 		ByteToIntPromoter.BindStatic(&PromoteByteToInt);
 		OrderedTypePromoters.Add(ByteToIntPromoter);
 
-		FTypePromoter IntToFloatPromoter;
-		IntToFloatPromoter.BindStatic(&PromoteIntToFloat);
-		OrderedTypePromoters.Add(IntToFloatPromoter);
+		FTypePromoter IntToDoublePromoter;
+		IntToDoublePromoter.BindStatic(&PromoteIntToDouble);
+		OrderedTypePromoters.Add(IntToDoublePromoter);
 	}
 
 private:
@@ -977,6 +1009,26 @@ private:
 			ADD_ALIAS("ARCTAN")
 		FUNC_ALIASES_END
 
+		FUNC_ALIASES_BEGIN("DegAtan")
+			ADD_ALIAS("DEGATAN")
+			ADD_ALIAS("DEGARCTAN")
+		FUNC_ALIASES_END
+
+		FUNC_ALIASES_BEGIN("DegAtan2")
+			ADD_ALIAS("DEGATAN2")
+			ADD_ALIAS("DEGARCTAN2")
+		FUNC_ALIASES_END
+
+		FUNC_ALIASES_BEGIN("DegreesToRadians")
+			ADD_ALIAS("DEGTORAD")
+			ADD_ALIAS("D2R")
+		FUNC_ALIASES_END
+
+		FUNC_ALIASES_BEGIN("RadiansToDegrees")
+			ADD_ALIAS("RADTODEG")
+			ADD_ALIAS("R2D")
+		FUNC_ALIASES_END
+
 		FUNC_ALIASES_BEGIN("ATan2")
 			ADD_ALIAS("ATAN2")
 			ADD_ALIAS("ARCTAN2")
@@ -1048,7 +1100,7 @@ private:
 
 	/**
 	 * When looking to match parameters, there are some implicit conversions we
-	 * can make to try and find a match (like converting from int to float). 
+	 * can make to try and find a match (like converting from int to double). 
 	 * This holds an ordered list of delegates that will try and promote the 
 	 * supplied types.
 	 */
@@ -1341,13 +1393,13 @@ public:
 
 		// position the entry and exit nodes somewhere sane
 		{
-			const FVector2D EntryPos = GetNodePosition(GraphXBounds.X - 1, 0);
-			EntryNode->NodePosX = EntryPos.X;
-			EntryNode->NodePosY = EntryPos.Y;
+			const FVector2D EntryPos = GetNodePosition(static_cast<int32>(GraphXBounds.X - 1), 0);
+			EntryNode->NodePosX = static_cast<int32>(EntryPos.X);
+			EntryNode->NodePosY = static_cast<int32>(EntryPos.Y);
 
-			const FVector2D ExitPos = GetNodePosition(GraphXBounds.Y + 1, 0);
-			ExitNode->NodePosX = ExitPos.X;
-			ExitNode->NodePosY = ExitPos.Y;
+			const FVector2D ExitPos = GetNodePosition(static_cast<int32>(GraphXBounds.Y + 1), 0);
+			ExitNode->NodePosX = static_cast<int32>(ExitPos.X);
+			ExitNode->NodePosY = static_cast<int32>(ExitPos.Y);
 		}
 				
 		bool bHasErrors = ((MessageLog.NumErrors - StartingErrorCount) > 0);
@@ -1648,7 +1700,7 @@ private:
 		{
 			// Create an input pin (using the default guessed type)
 			FEdGraphPinType DefaultType;
-			// currently, generated expressions ALWAYS take a float (it is the most versatile type)
+			// currently, generated expressions ALWAYS take a double (it is the most versatile type)
 			DefaultType.PinCategory = UEdGraphSchema_K2::PC_Real;
 			DefaultType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 			
@@ -1732,7 +1784,7 @@ private:
 			case CPT_Bool:
 				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
 				break;
-			case CPT_Float:
+			case CPT_Double:
 				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Real;
 				LiteralType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 				break;
@@ -2232,7 +2284,7 @@ private:
 	}
 
 	/**
-	 * Intended to handle type-casts (like from float to int, etc.).
+	 * Intended to handle type-casts (like from double to int, etc.).
 	 * 
 	 * @TODO   Implement!
 	 * @return Root node of an expression tree that was generated from where we 
@@ -2857,7 +2909,7 @@ void UK2Node_MathExpression::FindDiffs(class UEdGraphNode* OtherNode, struct FDi
 		Args.Add(TEXT("Expression2"), Expression2);
 
 		Diff.ToolTip =  FText::Format(LOCTEXT("DIF_MathExpressionToolTip", "Math Expression '{Expression1}' changed to '{Expression2}'"), Args);
-		Diff.DisplayColor = FLinearColor(0.85f,0.71f,0.25f);
+		Diff.Category = EDiffType::MODIFICATION;
 		Diff.DisplayString = FText::Format(LOCTEXT("DIF_MathExpression", "Math Expression '{Expression1}' changed to '{Expression2}'"), Args);
 		Results.Add(Diff);
 	}

@@ -1,135 +1,130 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
-	interface IPerforceModalTask
+	public class PerforceLoginException : Exception
 	{
-		bool Run(PerforceConnection Perforce, TextWriter Log, out string ErrorMessage);
+		public PerforceResponse<LoginRecord> Response { get; }
+
+		public PerforceLoginException(PerforceResponse<LoginRecord> response) : base($"Login failed: {response}")
+		{
+			this.Response = response;
+		}
 	}
 
-	class PerforceModalTask : IModalTask
+	static class PerforceModalTask
 	{
-		public PerforceConnection Perforce;
-		public string Password;
-		public LoginResult LoginResult;
-		public IPerforceModalTask InnerTask;
-		public TextWriter Log;
-
-		public PerforceModalTask(PerforceConnection Perforce, IPerforceModalTask InnerTask, TextWriter Log)
+		public static ModalTask? Execute(IWin32Window? owner, string title, string message, IPerforceSettings perforceSettings, Func<IPerforceConnection, CancellationToken, Task> executeAsync, ILogger logger, ModalTaskFlags flags = ModalTaskFlags.None)
 		{
-			this.Perforce = Perforce;
-			this.InnerTask = InnerTask;
-			this.Log = Log;
+			Func<IPerforceConnection, CancellationToken, Task<int>> executeTypedAsync = async (p, c) => { await executeAsync(p, c); return 0; };
+			return Execute(owner, title, message, perforceSettings, executeTypedAsync, logger, flags);
 		}
 
-		public bool Run(out string ErrorMessage)
+		public static ModalTask<T>? Execute<T>(IWin32Window? owner, string title, string message, IPerforceSettings perforceSettings, Func<IPerforceConnection, CancellationToken, Task<T>> executeAsync, ILogger logger, ModalTaskFlags flags = ModalTaskFlags.None)
 		{
-			// Set the default login state to failed
-			LoginResult = LoginResult.Failed;
+			IPerforceConnection? connection = null;
+			try
+			{
+				Func<Task<IPerforceConnection>> connectAsync = async () =>
+				{
+					connection ??= await PerforceConnection.CreateAsync(perforceSettings, logger);
+					return connection;
+				};
+				return ExecuteInternal(owner, title, message, perforceSettings, connectAsync, executeAsync, flags);
+			}
+			finally
+			{
+				connection?.Dispose();
+			}
+		}
+
+		public static ModalTask? Execute(IWin32Window? owner, string title, string message, IPerforceConnection perforceConnection, Func<IPerforceConnection, CancellationToken, Task> executeAsync, ILogger logger, ModalTaskFlags flags = ModalTaskFlags.None)
+		{
+			Func<IPerforceConnection, CancellationToken, Task<int>> executeTypedAsync = async (p, c) => { await executeAsync(p, c); return 0; };
+			return Execute(owner, title, message, perforceConnection, executeTypedAsync, logger, flags);
+		}
+
+		public static ModalTask<T>? Execute<T>(IWin32Window? owner, string title, string message, IPerforceConnection perforceConnection, Func<IPerforceConnection, CancellationToken, Task<T>> executeAsync, ILogger logger, ModalTaskFlags flags = ModalTaskFlags.None)
+		{
+			return ExecuteInternal(owner, title, message, perforceConnection.Settings, () => Task.FromResult(perforceConnection), executeAsync, flags);
+		}
+
+		private static ModalTask<T>? ExecuteInternal<T>(IWin32Window? owner, string title, string message, IPerforceSettings perforceSettings, Func<Task<IPerforceConnection>> connectAsync, Func<IPerforceConnection, CancellationToken, Task<T>> executeAsync, ModalTaskFlags flags = ModalTaskFlags.None)
+		{
+			string? password = perforceSettings.Password;
+			for(;;)
+			{
+				Func<CancellationToken, Task<T>> runAsync = cancellationToken => LoginAndExecuteAsync(password, connectAsync, executeAsync, cancellationToken);
+
+				ModalTask<T>? result = ModalTask.Execute(owner, title, message, runAsync, ModalTaskFlags.Quiet);
+				if (result != null && result.Failed && (flags & ModalTaskFlags.Quiet) == 0)
+				{
+					if (result.Exception is PerforceLoginException)
+					{
+						string passwordPrompt;
+						if (String.IsNullOrEmpty(password))
+						{
+							passwordPrompt = $"Enter the password for user '{perforceSettings.UserName}' on server '{perforceSettings.ServerAndPort}'.";
+						}
+						else
+						{
+							passwordPrompt = $"Authentication failed. Enter the password for user '{perforceSettings.UserName}' on server '{perforceSettings.ServerAndPort}'.";
+						}
+
+						PasswordWindow passwordWindow = new PasswordWindow(passwordPrompt, password ?? String.Empty);
+						if (owner == null)
+						{
+							passwordWindow.ShowInTaskbar = true;
+							passwordWindow.StartPosition = FormStartPosition.CenterScreen;
+						}
+						if (passwordWindow.ShowDialog(owner) != DialogResult.OK)
+						{
+							return null;
+						}
+
+						password = passwordWindow.Password;
+						continue;
+					}
+					MessageBox.Show(owner, result.Error, title, MessageBoxButtons.OK);
+				}
+
+				return result;
+			}
+		}
+
+		private static async Task<T> LoginAndExecuteAsync<T>(string? password, Func<Task<IPerforceConnection>> connectAsync, Func<IPerforceConnection, CancellationToken, Task<T>> executeAsync, CancellationToken cancellationToken)
+		{
+			IPerforceConnection perforce = await connectAsync();
 
 			// If we've got a password, execute the login command
-			if(Password != null)
+			PerforceResponse<LoginRecord> response;
+			if (String.IsNullOrEmpty(password))
 			{
-				string PasswordErrorMessage;
-				LoginResult = Perforce.Login(Password, out PasswordErrorMessage, Log);
-				if(LoginResult != LoginResult.Succeded)
-				{
-					Log.WriteLine(PasswordErrorMessage);
-					ErrorMessage = String.Format("Unable to login: {0}", PasswordErrorMessage);
-					return false;
-				}
+				response = await perforce.TryGetLoginStateAsync(cancellationToken);
+			}
+			else
+			{
+				response = await perforce.TryLoginAsync(password, cancellationToken);
 			}
 
-			// Check that we're logged in
-			bool bLoggedIn;
-			if(!Perforce.GetLoggedInState(out bLoggedIn, Log))
+			if (!response.Succeeded)
 			{
-				ErrorMessage = "Unable to get login status.";
-				return false;
-			}
-			if(!bLoggedIn)
-			{
-				LoginResult = LoginResult.MissingPassword;
-				ErrorMessage = "User is not logged in to Perforce.";
-				Log.WriteLine(ErrorMessage);
-				return false;
+				throw new PerforceLoginException(response);
 			}
 
 			// Execute the inner task
-			LoginResult = LoginResult.Succeded;
-			return InnerTask.Run(Perforce, Log, out ErrorMessage);
-		}
-
-		public static ModalTaskResult Execute(IWin32Window Owner, PerforceConnection Perforce, IPerforceModalTask PerforceTask, string Title, string Message, TextWriter Log, out string ErrorMessage)
-		{
-			PerforceModalTask Task = new PerforceModalTask(Perforce, PerforceTask, Log);
-			for(;;)
-			{
-				string TaskErrorMessage;
-				ModalTaskResult TaskResult = ModalTask.Execute(Owner, Task, Title, Message, out TaskErrorMessage);
-
-				if(Task.LoginResult == LoginResult.Succeded)
-				{
-					ErrorMessage = TaskErrorMessage;
-					return TaskResult;
-				}
-				else if(Task.LoginResult == LoginResult.MissingPassword)
-				{
-					PasswordWindow PasswordWindow = new PasswordWindow(String.Format("Enter the password for user '{0}' on server '{1}'.", Perforce.UserName, Perforce.ServerAndPort), Task.Password);
-					if(Owner == null)
-					{
-						PasswordWindow.StartPosition = FormStartPosition.CenterScreen;
-					}
-					if(PasswordWindow.ShowDialog() != DialogResult.OK)
-					{
-						ErrorMessage = null;
-						return ModalTaskResult.Aborted;
-					}
-					Task.Password = PasswordWindow.Password;
-				}
-				else if(Task.LoginResult == LoginResult.IncorrectPassword)
-				{
-					PasswordWindow PasswordWindow = new PasswordWindow(String.Format("Authentication failed. Enter the password for user '{0}' on server '{1}'.", Perforce.UserName, Perforce.ServerAndPort), Task.Password);
-					if (Owner == null)
-					{
-						PasswordWindow.StartPosition = FormStartPosition.CenterScreen;
-					}
-					if (PasswordWindow.ShowDialog() != DialogResult.OK)
-					{
-						ErrorMessage = null;
-						return ModalTaskResult.Aborted;
-					}
-					Task.Password = PasswordWindow.Password;
-				}
-				else
-				{
-					ErrorMessage = TaskErrorMessage;
-					return ModalTaskResult.Failed;
-				}
-			}
-		}
-
-		public static bool ExecuteAndShowError(IWin32Window Owner, PerforceConnection Perforce, IPerforceModalTask Task, string Title, string Message, TextWriter Log)
-		{
-			string ErrorMessage;
-			ModalTaskResult Result = Execute(Owner, Perforce, Task, Title, Message, Log, out ErrorMessage);
-			if (Result != ModalTaskResult.Succeeded)
-			{
-				if (!String.IsNullOrEmpty(ErrorMessage))
-				{
-					MessageBox.Show(ErrorMessage);
-				}
-				return false;
-			}
-			return true;
+			return await executeAsync(perforce, cancellationToken);
 		}
 	}
 }

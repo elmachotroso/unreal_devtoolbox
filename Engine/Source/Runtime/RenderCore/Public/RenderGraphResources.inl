@@ -53,7 +53,7 @@ FORCEINLINE ERHIPipeline FRDGSubresourceState::GetPipelines() const
 	return Pipelines;
 }
 
-inline FPooledRenderTargetDesc Translate(const FRDGTextureDesc& InDesc)
+inline FPooledRenderTargetDesc Translate(const FRHITextureDesc& InDesc)
 {
 	check(InDesc.IsValid());
 
@@ -78,13 +78,14 @@ inline FPooledRenderTargetDesc Translate(const FRDGTextureDesc& InDesc)
 inline FRHIBufferCreateInfo Translate(const FRDGBufferDesc& InDesc)
 {
 	FRHIBufferCreateInfo CreateInfo;
-	CreateInfo.Size = InDesc.GetTotalNumBytes();
-	if (InDesc.UnderlyingType == FRDGBufferDesc::EUnderlyingType::VertexBuffer)
+	CreateInfo.Size = InDesc.GetSize();
+
+	if (EnumHasAnyFlags(InDesc.Usage, EBufferUsageFlags::VertexBuffer))
 	{
 		CreateInfo.Stride = 0;
 		CreateInfo.Usage = InDesc.Usage | BUF_VertexBuffer;
 	}
-	else if (InDesc.UnderlyingType == FRDGBufferDesc::EUnderlyingType::StructuredBuffer)
+	else if (EnumHasAnyFlags(InDesc.Usage, EBufferUsageFlags::StructuredBuffer))
 	{
 		CreateInfo.Stride = InDesc.BytesPerElement;
 		CreateInfo.Usage = InDesc.Usage | BUF_StructuredBuffer;
@@ -97,7 +98,7 @@ inline FRHIBufferCreateInfo Translate(const FRDGBufferDesc& InDesc)
 	return CreateInfo;
 }
 
-FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc)
+inline FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc)
 {
 	check(InDesc.IsValid());
 
@@ -134,6 +135,7 @@ inline FRDGTextureSubresourceRange FRDGTextureSRV::GetSubresourceRange() const
 {
 	FRDGTextureSubresourceRange Range = GetParent()->GetSubresourceRange();
 	Range.MipIndex = Desc.MipLevel;
+	Range.ArraySlice = Desc.FirstArraySlice;
 	Range.PlaneSlice = GetResourceTransitionPlaneForMetadataAccess(Desc.MetaData);
 
 	if (Desc.MetaData == ERDGTextureMetaDataAccess::None && Desc.Texture && Desc.Texture->Desc.Format == PF_DepthStencil)
@@ -165,8 +167,14 @@ inline FRDGTextureSubresourceRange FRDGTextureUAV::GetSubresourceRange() const
 {
 	FRDGTextureSubresourceRange Range = GetParent()->GetSubresourceRange();
 	Range.MipIndex = Desc.MipLevel;
+	Range.ArraySlice = Desc.FirstArraySlice;
 	Range.NumMips = 1;
 	Range.PlaneSlice = GetResourceTransitionPlaneForMetadataAccess(Desc.MetaData);
+
+	if (Desc.NumArraySlices != 0)
+	{
+		Range.NumArraySlices = Desc.NumArraySlices;
+	}
 
 	if (Desc.MetaData != ERDGTextureMetaDataAccess::None)
 	{
@@ -179,43 +187,39 @@ inline FRDGTextureSubresourceRange FRDGTextureUAV::GetSubresourceRange() const
 inline FRDGBufferSRVDesc::FRDGBufferSRVDesc(FRDGBufferRef InBuffer)
 	: Buffer(InBuffer)
 {
-	if (EnumHasAnyFlags(Buffer->Desc.Usage, BUF_DrawIndirect))
+	if (EnumHasAnyFlags(Buffer->Desc.Usage, EBufferUsageFlags::DrawIndirect))
 	{
 		BytesPerElement = 4;
 		Format = PF_R32_UINT;
 	}
-	else if (EnumHasAnyFlags(Buffer->Desc.Usage, BUF_AccelerationStructure))
+	else if (EnumHasAnyFlags(Buffer->Desc.Usage, EBufferUsageFlags::AccelerationStructure))
 	{
 		// nothing special here
-	}
-	else
-	{
-		checkf(Buffer->Desc.UnderlyingType != FRDGBufferDesc::EUnderlyingType::VertexBuffer, TEXT("VertexBuffer %s requires a type when creating a SRV."), Buffer->Name);
 	}
 }
 
 inline FRDGBufferUAVDesc::FRDGBufferUAVDesc(FRDGBufferRef InBuffer)
 	: Buffer(InBuffer)
 {
-	if (EnumHasAnyFlags(Buffer->Desc.Usage, BUF_DrawIndirect))
+	if (EnumHasAnyFlags(Buffer->Desc.Usage, EBufferUsageFlags::DrawIndirect))
 	{
 		Format = PF_R32_UINT;
-	}
-	else
-	{
-		checkf(Buffer->Desc.UnderlyingType != FRDGBufferDesc::EUnderlyingType::VertexBuffer, TEXT("VertexBuffer %s requires a type when creating a UAV."), Buffer->Name);
 	}
 }
 
 inline FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo(const FRDGParameterStruct& ParameterStruct)
 {
-	const FRenderTargetBindingSlots& RDGRenderTargets = ParameterStruct.GetRenderTargets();
+	return ExtractRenderTargetsInfo(ParameterStruct.GetRenderTargets());
+}
+
+inline FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo(const FRenderTargetBindingSlots& RenderTargets)
+{
 	FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
 	uint32 RenderTargetIndex = 0;
 
 	RenderTargetsInfo.NumSamples = 1;
 
-	RDGRenderTargets.Enumerate([&](FRenderTargetBinding RenderTarget)
+	RenderTargets.Enumerate([&](FRenderTargetBinding RenderTarget)
 	{
 		FRDGTextureRef Texture = RenderTarget.GetTexture();
 
@@ -231,7 +235,7 @@ inline FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo(const FRDGPar
 		RenderTargetsInfo.RenderTargetFormats[RenderTargetIndex] = PF_Unknown;
 	}
 
-	const FDepthStencilBinding& DepthStencil = RDGRenderTargets.DepthStencil;
+	const FDepthStencilBinding& DepthStencil = RenderTargets.DepthStencil;
 	if (FRDGTextureRef DepthTexture = DepthStencil.GetTexture())
 	{
 		RenderTargetsInfo.DepthStencilTargetFormat = DepthTexture->Desc.Format;
@@ -251,8 +255,8 @@ inline FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo(const FRDGPar
 		RenderTargetsInfo.DepthStencilTargetFormat = PF_Unknown;
 	}
 
-	RenderTargetsInfo.MultiViewCount = RDGRenderTargets.MultiViewCount;
-	RenderTargetsInfo.bHasFragmentDensityAttachment = RDGRenderTargets.ShadingRateTexture != nullptr;
+	RenderTargetsInfo.MultiViewCount = RenderTargets.MultiViewCount;
+	RenderTargetsInfo.bHasFragmentDensityAttachment = RenderTargets.ShadingRateTexture != nullptr;
 
 	return RenderTargetsInfo;
 }

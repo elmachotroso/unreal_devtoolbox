@@ -4,22 +4,23 @@
 
 #include "Algo/AnyOf.h"
 #include "Algo/Transform.h"
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "Misc/Paths.h"
+#include "Misc/DataValidation.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
+#include "UncontrolledChangelistsModule.h"
+#include "Misc/ConfigCacheIni.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataValidationChangelist)
 
 #define LOCTEXT_NAMESPACE "DataValidationChangelist"
 
-void GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies, bool bGetFullDependencies)
+void GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies)
 {
-	if (OutDependencies.Contains(InPackageName))
-	{
-		return;
-	}
-
 	OutDependencies.Add(InPackageName);
 
 	TArray<FAssetData> Assets;
@@ -28,11 +29,8 @@ void GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies
 
 	for (const FName& PackageDependency : Dependencies)
 	{
-		if (bGetFullDependencies)
-		{
-			GatherDependencies(PackageDependency, OutDependencies, bGetFullDependencies);
-		}
-		else if (!OutDependencies.Contains(PackageDependency))
+		// Exclude script/memory packages
+		if (FPackageName::IsValidLongPackageName(PackageDependency.ToString()))
 		{
 			OutDependencies.Add(PackageDependency);
 		}
@@ -46,7 +44,7 @@ FString GetPrettyPackageName(const FName& InPackageName)
 
 	if (Assets.Num() > 0)
 	{
-		FString AssetPath = Assets[0].ObjectPath.ToString();
+		FString AssetPath = Assets[0].GetObjectPathString();
 
 		int32 LastDot = -1;
 		if (AssetPath.FindLastChar('.', LastDot))
@@ -74,7 +72,7 @@ FString GetPrettyPackageName(const FName& InPackageName)
 	}
 }
 
-EDataValidationResult UDataValidationChangelist::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult UDataValidationChangelist::IsDataValid(FDataValidationContext& Context)
 {
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	
@@ -83,8 +81,7 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(TArray<FText>& Vali
 	// Gather dependencies of every file in the changelist
 	TArray<FName> FilesInChangelist;
 	TSet<FName> ExternalDependenciesSet;
-	const bool bGetFullDependencyHierarchy = false;
-
+	
 	for (const FSourceControlStateRef& File : ChangelistState->GetFilesStates())
 	{
 		// We shouldn't consider dependencies of deleted files
@@ -97,7 +94,7 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(TArray<FText>& Vali
 		if (FPackageName::TryConvertFilenameToLongPackageName(File->GetFilename(), PackageName))
 		{
 			FilesInChangelist.Add(*PackageName);
-			GatherDependencies(*PackageName, ExternalDependenciesSet, bGetFullDependencyHierarchy);
+			GatherDependencies(*PackageName, ExternalDependenciesSet);
 		}
 	}
 
@@ -125,6 +122,9 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(TArray<FText>& Vali
 
 	check(ExternalDependenciesFilenames.Num() == ExternalDependencies.Num());
 
+	bool bIgnoreOutOfDateDependencies = false;
+	GConfig->GetBool(TEXT("DataValidationChangelistSettings"), TEXT("bIgnoreOutOfDateDependencies"), bIgnoreOutOfDateDependencies, GEditorIni);
+
 	for (int32 i = 0; i < ExternalDependenciesFilenames.Num(); ++i)
 	{
 		const FString& ExternalPackageFilename = ExternalDependenciesFilenames[i];
@@ -138,13 +138,43 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(TArray<FText>& Vali
 			continue;
 		}
 
-		// If file is checked out, added, it's not in this changelist, which is a problem
+		// Dependency is checked out or added but is not in this changelist
 		if (ExternalDependencyFileState->IsCheckedOut() || ExternalDependencyFileState->IsAdded())
 		{
 			bHasChangelistErrors = true;
 			FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.Error", "{0} is missing from this changelist."), FText::FromString(GetPrettyPackageName(ExternalDependency)));
-			ValidationErrors.Add(CurrentError);
+			Context.AddError(CurrentError);
 		}
+		// Dependency is not at the latest revision
+		else if (!ExternalDependencyFileState->IsCurrent())
+		{
+			if (!bIgnoreOutOfDateDependencies)
+			{
+				FText CurrentWarning = FText::Format(LOCTEXT("DataValidation.Changelist.NotLatest", "{0} is referenced but is not at the latest revision '{1}'"), FText::FromString(GetPrettyPackageName(ExternalDependency)), FText::FromString(ExternalPackageFilename));
+				Context.AddWarning(CurrentWarning);
+			}
+		}
+		// Dependency is not in source control
+		else if (ExternalDependencyFileState->CanAdd())
+		{
+			if (!FPaths::FileExists(ExternalDependencyFileState->GetFilename()))
+			{
+				bHasChangelistErrors = true;
+				FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.NotInWorkspace", "{0} is referenced and cannot be found in workspace '{1}'"), FText::FromString(GetPrettyPackageName(ExternalDependency)), FText::FromString(ExternalPackageFilename));
+				Context.AddError(CurrentError);
+			}
+			else
+			{
+				bHasChangelistErrors = true;
+				FText CurrentError = FText::Format(LOCTEXT("DataValidation.Changelist.NotInDepot", "{0} is referenced and must also be added to source control '{1}'"), FText::FromString(GetPrettyPackageName(ExternalDependency)), FText::FromString(ExternalPackageFilename));
+				Context.AddError(CurrentError);
+			}
+		}
+	}
+
+	if (bHasChangelistErrors)
+	{
+		FUncontrolledChangelistsModule::Get().OnReconcileAssets();
 	}
 
 	return bHasChangelistErrors ? EDataValidationResult::Invalid : EDataValidationResult::Valid;

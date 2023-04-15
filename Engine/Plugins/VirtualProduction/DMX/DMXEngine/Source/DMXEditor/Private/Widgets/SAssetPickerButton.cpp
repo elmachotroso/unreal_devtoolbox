@@ -13,7 +13,7 @@
 #include "ContentBrowserModule.h"
 #include "ScopedTransaction.h"
 #include "Engine/Selection.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #define LOCTEXT_NAMESPACE "SAssetPickerButton"
 
@@ -52,7 +52,7 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 		.MaxWidth(100.0f)
 		[
 			SAssignNew(AssetPickerAnchor, SComboButton)
-			.ButtonStyle( FEditorStyle::Get(), "PropertyEditor.AssetComboStyle" )
+			.ButtonStyle( FAppStyle::Get(), "PropertyEditor.AssetComboStyle" )
 			.ForegroundColor( this, &SAssetPickerButton::OnGetComboForeground)
 			.ContentPadding( FMargin(2,2,2,1) )
 			.ButtonColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetBackground )
@@ -61,8 +61,8 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.ColorAndOpacity( this, &SAssetPickerButton::OnGetComboForeground )
-				.TextStyle( FEditorStyle::Get(), "PropertyEditor.AssetClass" )
-				.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
+				.TextStyle( FAppStyle::Get(), "PropertyEditor.AssetClass" )
+				.Font( FAppStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
 				.Text( this, &SAssetPickerButton::OnGetComboTextValue )
 				.ToolTipText( this, &SAssetPickerButton::GetObjectToolTip )
 			]
@@ -75,7 +75,7 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Center)
 		[
 			SAssignNew(UseButton, SButton)
-			.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+			.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 			.ButtonColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetBackground )
 			.OnClicked(this, &SAssetPickerButton::OnClickUse)
 			.ContentPadding(1.f)
@@ -83,7 +83,7 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 			[
 				SNew(SImage)
 				.ColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetForeground )
-				.Image( FEditorStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
+				.Image( FAppStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
 			]
 		]
 		// Browse button
@@ -93,7 +93,7 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Center)
 		[
 			SAssignNew(BrowseButton, SButton)
-			.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
+			.ButtonStyle( FAppStyle::Get(), "NoBorder" )
 			.ButtonColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetBackground )
 			.OnClicked(this, &SAssetPickerButton::OnClickBrowse)
 			.ContentPadding(0)
@@ -101,7 +101,7 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 			[
 				SNew(SImage)
 				.ColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetForeground )
-				.Image( FEditorStyle::GetBrush(TEXT("Icons.Search")) )
+				.Image( FAppStyle::GetBrush(TEXT("Icons.Search")) )
 			]
 		]
 	];
@@ -159,7 +159,7 @@ TSharedRef<SWidget> SAssetPickerButton::GenerateAssetPicker()
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
 
 	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(AllowedClass->GetFName());
+	AssetPickerConfig.Filter.ClassPaths.Add(AllowedClass->GetClassPathName());
 	AssetPickerConfig.bAllowNullSelection = true;
 	AssetPickerConfig.Filter.bRecursiveClasses = true;
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SAssetPickerButton::OnAssetSelectedFromPicker);
@@ -170,13 +170,13 @@ TSharedRef<SWidget> SAssetPickerButton::GenerateAssetPicker()
 	if (AllowedClasses.Num() > 0)
 	{
 		// Clear out the allowed class names and have the pin's metadata override.
-		AssetPickerConfig.Filter.ClassNames.Empty();
-		AssetPickerConfig.Filter.ClassNames = AllowedClasses;
+		AssetPickerConfig.Filter.ClassPaths.Empty();
+		AssetPickerConfig.Filter.ClassPaths = AllowedClasses;
 	}
 
 	if (DisallowedClasses.Num() > 0)
 	{
-		AssetPickerConfig.Filter.RecursiveClassesExclusionSet.Append(DisallowedClasses);
+		AssetPickerConfig.Filter.RecursiveClassPathsExclusionSet.Append(DisallowedClasses);
 	}
 
 	return
@@ -185,7 +185,7 @@ TSharedRef<SWidget> SAssetPickerButton::GenerateAssetPicker()
 		.WidthOverride(300)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+			.BorderImage(FAppStyle::GetBrush("Menu.Background"))
 			[
 				ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 			]
@@ -270,7 +270,7 @@ const FAssetData& SAssetPickerButton::GetAssetData() const
 {
 	if (UObject* Object = CurrentAssetValue.Get().Get())
 	{
-		if (!Object->GetPathName().Equals(CachedAssetData.ObjectPath.ToString(), ESearchCase::CaseSensitive))
+		if (FSoftObjectPath(Object) != CachedAssetData.GetSoftObjectPath())
 		{
 			// This always uses the exact object pointed at
 			CachedAssetData = FAssetData(Object, true);

@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/MaterialImportHelpers.h"
-#include "AssetRegistryModule.h"
-#include "AssetData.h"
-#include "ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/ARFilter.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/Paths.h"
 
@@ -91,7 +91,7 @@ UMaterialInterface* UMaterialImportHelpers::FindExistingMaterial(const FString& 
 	FARFilter Filter;
 	Filter.bRecursiveClasses = true;
 	Filter.bRecursivePaths = bRecursivePaths;
-	Filter.ClassNames.Add(UMaterialInterface::StaticClass()->GetFName());
+	Filter.ClassPaths.Add(UMaterialInterface::StaticClass()->GetClassPathName());
 	Filter.PackagePaths.Add(FName(*BasePath));
 
 	TArray<FAssetData> AssetData;

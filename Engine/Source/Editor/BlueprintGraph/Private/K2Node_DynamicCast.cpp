@@ -2,18 +2,42 @@
 
 
 #include "K2Node_DynamicCast.h"
-#include "UObject/Interface.h"
+
+#include "BlueprintActionFilter.h"
+#include "BlueprintCompiledStatement.h"
+#include "BlueprintEditorModule.h"
+#include "BlueprintEditorSettings.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "DynamicCastHandler.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Commands/UIAction.h"
-#include "ToolMenus.h"
-#include "EdGraphSchema_K2.h"
-
-#include "BlueprintEditorSettings.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
 #include "Kismet2/CompilerResultsLog.h"
-#include "DynamicCastHandler.h"
-#include "EditorCategoryUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/CString.h"
 #include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SharedPointer.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
+#include "UObject/Class.h"
+#include "UObject/Interface.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class FKismetCompilerContext;
 
 #define LOCTEXT_NAMESPACE "K2Node_DynamicCast"
 
@@ -84,7 +108,7 @@ FLinearColor UK2Node_DynamicCast::GetNodeTitleColor() const
 
 FSlateIcon UK2Node_DynamicCast::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Cast_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Cast_16x");
 	return Icon;
 }
 
@@ -121,14 +145,18 @@ FText UK2Node_DynamicCast::GetTooltipText() const
 {
 	if (TargetType && TargetType->IsChildOf(UInterface::StaticClass()))
 	{
-		return LOCTEXT("CastToInterfaceTooltip", "Tries to access object as an interface it may implement.");
+		return FText::Format(LOCTEXT("CastToInterfaceTooltip", "Tries to access object as an interface '{0}' it may implement."), FText::FromString(TargetType->GetName()));
 	}
+	
 	UBlueprint* CastToBP = UBlueprint::GetBlueprintFromClass(TargetType);
 	if (CastToBP)
 	{
-		return LOCTEXT("CastToBPTooltip", "Tries to access object as a blueprint class it may be an instance of.\n\nNOTE: This will cause the blueprint to always be loaded, which can be expensive.");
+		return FText::Format(LOCTEXT("CastToBPTooltip", "Tries to access object as a blueprint class '{0}' it may be an instance of.\n\nNOTE: This will cause the blueprint to always be loaded, which can be expensive."), FText::FromString(CastToBP->GetName()));
 	}
-	return LOCTEXT("CastToNativeTooltip", "Tries to access object as a class it may be an instance of.");
+
+	const FString ClassName = TargetType ? TargetType->GetName() : TEXT("");
+
+	return FText::Format(LOCTEXT("CastToNativeTooltip", "Tries to access object as a class '{0}' it may be an instance of."), FText::FromString(ClassName));
 }
 
 void UK2Node_DynamicCast::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
@@ -456,7 +484,7 @@ void UK2Node_DynamicCast::ValidateNodeDuringCompilation(FCompilerResultsLog& Mes
 				FText const WarningFormat = LOCTEXT("UnneededObjectCastFmt", "'{0}' is already a '{1}' (which inherits from '{2}'), so you don't need @@.");
 				MessageLog.Note( *FText::Format(WarningFormat, FText::FromString(SourcePinName), SourceClass->GetDisplayNameText(), TargetType->GetDisplayNameText()).ToString(), this );
 			}
-			else if (!SourceType->IsChildOf(SourceClass) && !FKismetEditorUtilities::IsClassABlueprintInterface(SourceType))
+			else if ((!SourceType || !SourceType->IsChildOf(SourceClass)) && !FKismetEditorUtilities::IsClassABlueprintInterface(SourceType))
 			{
 				FText const WarningFormat = LOCTEXT("DisallowedObjectCast", "'{0}' does not inherit from '{1}' (@@ would always fail).");
 				MessageLog.Warning( *FText::Format(WarningFormat, TargetType->GetDisplayNameText(), SourceClass->GetDisplayNameText()).ToString(), this );
@@ -510,6 +538,22 @@ bool UK2Node_DynamicCast::ReconnectPureExecPins(TArray<UEdGraphPin*>& OldPins)
 		}
 	}
 	return false;
+}
+
+bool UK2Node_DynamicCast::IsActionFilteredOut(const FBlueprintActionFilter& Filter)
+{
+	bool bIsFilteredOut = false;
+
+	if (Filter.HasAnyFlags(FBlueprintActionFilter::BPFILTER_RejectNonImportedFields))
+	{
+		TSharedPtr<IBlueprintEditor> BlueprintEditor = Filter.Context.EditorPtr.Pin();
+		if (BlueprintEditor.IsValid() && TargetType)
+		{
+			bIsFilteredOut = BlueprintEditor->IsNonImportedObject(TargetType);
+		}
+	}
+
+	return bIsFilteredOut;
 }
 
 #undef LOCTEXT_NAMESPACE

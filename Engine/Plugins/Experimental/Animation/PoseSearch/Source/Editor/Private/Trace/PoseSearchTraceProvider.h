@@ -8,30 +8,14 @@
 #include "TraceServices/Model/AnalysisSession.h"
 
 
-namespace UE { namespace PoseSearch {
-
-// Message types for appending / reading to the timeline
-/** Base message type for common data */
-struct FTraceMessage
+namespace UE::PoseSearch
 {
-	uint64 AnimInstanceId;
-	uint64 SkeletalMeshComponentId;
-	int32 NodeId;
-	uint16 FrameCounter;
-};
 
 /** Motion matching state message container */
-struct FTraceMotionMatchingStateMessage : FTraceMessage
+struct FTraceMotionMatchingStateMessage : FTraceMotionMatchingState, FTraceMessage
 {
-	FTraceMotionMatchingState::EFlags Flags;
-	float ElapsedPoseJumpTime;
-	TArray<float> QueryVector;
-	TArray<float> QueryVectorNormalized;
-	FPoseSearchDynamicWeightParams Weights;
-	int32 DbPoseIdx;
-	uint64 DatabaseId;
 };
-
+FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingStateMessage& State);
 
 /**
  * Provider to the widgets for pose search functionality, largely mimicking FAnimationProvider
@@ -178,4 +162,4 @@ private:
 
 	TraceServices::IAnalysisSession& Session;
 };
-}}
+} // namespace UE::PoseSearch

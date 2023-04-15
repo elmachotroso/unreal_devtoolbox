@@ -1,4 +1,4 @@
-set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_TARGET_ARCHITECTURE x86_64)
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 
@@ -8,5 +8,4 @@ set(VCPKG_OSX_ARCHITECTURES x86_64)
 set(VCPKG_BUILD_TYPE release)
 set(VCPKG_OSX_DEPLOYMENT_TARGET "10.14")
 
-set(VCPKG_C_FLAGS -fvisibility-ms-compat -fvisibility-inlines-hidden)
-set(VCPKG_CXX_FLAGS -fvisibility-ms-compat -fvisibility-inlines-hidden)
+set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${CMAKE_CURRENT_LIST_DIR}/osx.toolchain.cmake")

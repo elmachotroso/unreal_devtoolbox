@@ -1,11 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_SwitchEnum.h"
-#include "EdGraphSchema_K2.h"
-#include "Kismet/KismetMathLibrary.h"
-#include "BlueprintFieldNodeSpawner.h"
+
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintFieldNodeSpawner.h"
+#include "Containers/EnumAsByte.h"
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "EdGraphSchema_K2.h"
 #include "FindInBlueprintManager.h"
+#include "HAL/PlatformCrt.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Misc/AssertionMacros.h"
+#include "Templates/Casts.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Field.h"
+#include "UObject/NameTypes.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
+class UBlueprintNodeSpawner;
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -170,8 +186,8 @@ UK2Node::ERedirectType UK2Node_SwitchEnum::DoPinsMatchForReconstruction(const UE
 	UK2Node::ERedirectType ReturnValue = Super::DoPinsMatchForReconstruction(NewPin, NewPinIndex, OldPin, OldPinIndex);
 	if (ReturnValue == UK2Node::ERedirectType_None && Enum && OldPinIndex > 2 && NewPinIndex > 2)
 	{
-		const int32 OldValue = Enum->GetValueByName(OldPin->PinName);
-		const int32 NewValue = Enum->GetValueByName(NewPin->PinName);
+		const int64 OldValue = Enum->GetValueByName(OldPin->PinName);
+		const int64 NewValue = Enum->GetValueByName(NewPin->PinName);
 		// This handles redirects properly
 		if (OldValue == NewValue && OldValue != INDEX_NONE)
 		{

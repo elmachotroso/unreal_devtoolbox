@@ -50,12 +50,16 @@ namespace
 				FIntPoint(NumTilesX, NumTilesY), PF_R8G8B8A8, FClearValueBinding::None, TexCreate_None, TexCreate_UAV | TexCreate_ShaderResource | TexCreate_GenerateMipCapable | TexCreate_RenderTargetable, false, NumMips);
 			GRenderTargetPool.FindFreeElement(RHICmdList, FinalRenderTargetDesc, FinalRenderTarget, TEXT("FinalTarget"));
 
-			FRHIResourceCreateInfo CreateInfo(TEXT("FMinMaxTileRenderResources_StagingTextures"));
 			for (int32 MipLevel = 0; MipLevel < NumMips; MipLevel++)
 			{
 				const int32 SizeX = FMath::Max(NumTilesX >> MipLevel, 1);
 				const int32 SizeY = FMath::Max(NumTilesY >> MipLevel, 1);
-				StagingTextures.Add(RHICreateTexture2D(SizeX, SizeY, PF_R8G8B8A8, 1, 1, TexCreate_CPUReadback, CreateInfo));
+
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("FMinMaxTileRenderResources_StagingTextures"), SizeX, SizeY, PF_R8G8B8A8)
+					.SetFlags(ETextureCreateFlags::CPUReadback);
+
+				StagingTextures.Add(RHICreateTexture(Desc));
 			}
 			
 			Fence = RHICreateGPUFence(TEXT("Runtime Virtual Texture Build"));
@@ -78,7 +82,7 @@ namespace
 		int32 GetNumFinalTexels() const { return NumFinalTexels; }
 		TRefCountPtr<IPooledRenderTarget> GetTileRenderTarget() const { return TileRenderTarget; }
 		TRefCountPtr<IPooledRenderTarget> GetFinalRenderTarget() const { return FinalRenderTarget; }
-		FTexture2DRHIRef GetStagingTexture(int32 InMipLevel) const { return StagingTextures[InMipLevel]; }
+		FTextureRHIRef GetStagingTexture(int32 InMipLevel) const { return StagingTextures[InMipLevel]; }
 		FRHIGPUFence* GetFence() const { return Fence; }
 
 	private:
@@ -90,7 +94,7 @@ namespace
 
 		TRefCountPtr<IPooledRenderTarget> TileRenderTarget;
 		TRefCountPtr<IPooledRenderTarget> FinalRenderTarget;
-		TArray<FTexture2DRHIRef> StagingTextures;
+		TArray<FTextureRHIRef> StagingTextures;
 		FGPUFenceRHIRef Fence;
 	};
 }
@@ -179,7 +183,7 @@ namespace VirtualHeightfieldMesh
 				//todo[vt]: Batch groups of streaming locations and render commands to reduce number of flushes.
 				const FVector StreamingWorldPos = Transform.TransformPosition(FVector(UVRange.GetCenter(), 0.5f));
 				IStreamingManager::Get().Tick(0.f);
-				IStreamingManager::Get().AddViewSlaveLocation(StreamingWorldPos);
+				IStreamingManager::Get().AddViewLocation(StreamingWorldPos);
 				IStreamingManager::Get().StreamAllResources(0);
 
 				ENQUEUE_RENDER_COMMAND(MinMaxTextureTileCommand)([
@@ -190,7 +194,6 @@ namespace VirtualHeightfieldMesh
 					MaxLevel, MipLevel = 0](FRHICommandListImmediate& RHICmdList)
 				{
 					// Rendering one page at a time, but could batch here?
-					FMemMark Mark(FMemStack::Get());
 					FRDGBuilder GraphBuilder(RHICmdList);
 
 					const FBox2D TileBox(FVector2D(0, 0), FVector2D(TileSize, TileSize));
@@ -207,7 +210,7 @@ namespace VirtualHeightfieldMesh
 					Desc.bIsThumbnails = false;
 					Desc.DebugType = ERuntimeVirtualTextureDebugType::None;
 					Desc.NumPageDescs = 1;
-					Desc.Targets[0].Texture = RenderTileResources.GetTileRenderTarget()->GetRenderTargetItem().ShaderResourceTexture->GetTexture2D();
+					Desc.Targets[0].Texture = RenderTileResources.GetTileRenderTarget()->GetRHI();
 					Desc.Targets[1].Texture = nullptr;
 					Desc.Targets[2].Texture = nullptr;
 					Desc.PageDescs[0].DestBox[0] = TileBox;
@@ -237,7 +240,6 @@ namespace VirtualHeightfieldMesh
 
 			ENQUEUE_RENDER_COMMAND(MinMaxTextureTileCommand)([&RenderTileResources, &FinalPixels, NumTilesX, NumTilesY, NumMips](FRHICommandListImmediate& RHICmdList)
 			{
-				FMemMark Mark(FMemStack::Get());
 				FRDGBuilder GraphBuilder(RHICmdList);
 
 				FRDGTextureRef Texture = GraphBuilder.RegisterExternalTexture(RenderTileResources.GetFinalRenderTarget());
@@ -255,7 +257,7 @@ namespace VirtualHeightfieldMesh
 					CopyInfo.DestMipIndex = 0;
 
 					RHICmdList.Transition(FRHITransitionInfo(RenderTileResources.GetStagingTexture(MipLevel), ERHIAccess::Unknown, ERHIAccess::CopyDest));
-					RHICmdList.CopyTexture(RenderTileResources.GetFinalRenderTarget()->GetRenderTargetItem().ShaderResourceTexture, RenderTileResources.GetStagingTexture(MipLevel), CopyInfo);
+					RHICmdList.CopyTexture(RenderTileResources.GetFinalRenderTarget()->GetRHI(), RenderTileResources.GetStagingTexture(MipLevel), CopyInfo);
 				}
 
 				RHICmdList.WriteGPUFence(RenderTileResources.GetFence());

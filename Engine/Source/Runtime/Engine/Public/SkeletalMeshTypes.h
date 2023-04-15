@@ -7,6 +7,7 @@
 #include "Materials/MaterialInterface.h"
 #include "ComponentReregisterContext.h"
 #include "SkeletalMeshLegacyCustomVersions.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class FMaterialRenderProxy;
 class FMeshElementCollector;
@@ -173,7 +174,7 @@ public:
 	virtual bool IsUsingDistanceCullFade() const override;
 	
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
-	virtual void GetShadowShapes(TArray<FCapsuleShape3f>& CapsuleShapes) const override;
+	virtual void GetShadowShapes(FVector PreViewTranslation, TArray<FCapsuleShape3f>& OutCapsuleShapes) const override;
 
 	/** Return the bounds for the pre-skinned primitive in local space */
 	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const override { OutBounds = PreSkinnedLocalBounds; }
@@ -204,6 +205,10 @@ public:
 	/** Render the bones of the skeleton for debug display */ 
 	void DebugDrawSkeleton(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
+#if WITH_EDITOR
+	void DebugDrawPoseWatchSkeletons(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
+#endif
+
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
 	SIZE_T GetAllocatedSize( void ) const { return( FPrimitiveSceneProxy::GetAllocatedSize() + LODSections.GetAllocatedSize() ); }
 
@@ -230,8 +235,7 @@ public:
 		return GetCurrentFirstLODIdx_Internal();
 	}
 
-	const TArray<FMatrix>& GetMeshObjectReferenceToLocalMatrices() const;
-	const TIndirectArray<FSkeletalMeshLODRenderData>& GetSkeletalMeshRenderDataLOD() const;
+	bool GetCachedGeometry(struct FCachedGeometry& OutCachedGeometry) const;
 
 protected:
 	AActor* Owner;
@@ -239,9 +243,11 @@ protected:
 	FSkeletalMeshRenderData* SkeletalMeshRenderData;
 
 	/** The points to the skeletal mesh and physics assets are purely for debug purposes. Access is NOT thread safe! */
-	const USkeletalMesh* SkeletalMeshForDebug;
+	const class USkinnedAsset* SkeletalMeshForDebug;
 	class UPhysicsAsset* PhysicsAssetForDebug;
-
+	
+	UMaterialInterface* OverlayMaterial;
+	float OverlayMaterialMaxDrawDistance;
 public:
 #if RHI_RAYTRACING
 	bool bAnySegmentUsesWorldPositionOffset : 1;
@@ -332,6 +338,12 @@ protected:
 	uint8 GetCurrentFirstLODIdx_Internal() const;
 private:
 	void CreateBaseMeshBatch(const FSceneView* View, const FSkeletalMeshLODRenderData& LODData, const int32 LODIndex, const int32 SectionIndex, const FSectionElementInfo& SectionElementInfo, FMeshBatch& Mesh, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const;
+	void UpdateLooseParametersUniformBuffer(const FSceneView* View, const int32 SectionIndex, const FMeshBatch& Mesh, const struct FGPUSkinBatchElementUserData* BatchUserData) const;
+
+public:
+#if WITH_EDITORONLY_DATA
+	struct FPoseWatchDynamicData* PoseWatchDynamicData;
+#endif
 };
 
 /** Used to recreate all skinned mesh components for a given skeletal mesh */
@@ -348,7 +360,7 @@ public:
 private:
 
 	/** List of components to reset */
-	TArray< class USkinnedMeshComponent*> MeshComponents;
+	TArray< TWeakObjectPtr<USkinnedMeshComponent>> MeshComponents;
 
 	/** Whether we'll refresh the component bounds as we reset */
 	bool bRefreshBounds;

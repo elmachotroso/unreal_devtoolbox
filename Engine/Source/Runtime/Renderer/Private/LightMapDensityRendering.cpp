@@ -32,11 +32,20 @@ IMPLEMENT_DENSITY_LIGHTMAPPED_SHADER_TYPE(TUniformLightMapPolicy<LMP_HQ_LIGHTMAP
 
 #endif
 
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLightmapDensityPassUniformParameters, )
+	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
+	SHADER_PARAMETER(FVector4f, LightMapDensity)
+	SHADER_PARAMETER(FVector4f, DensitySelectedColor) // The color to apply to selected objects.
+	SHADER_PARAMETER(FVector4f, VertexMappedColor) // The color to apply to vertex mapped objects.
+	SHADER_PARAMETER_TEXTURE(Texture2D, GridTexture) // The "Grid" texture to visualize resolution.
+	SHADER_PARAMETER_SAMPLER(SamplerState, GridTextureSampler)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FLightmapDensityPassUniformParameters, "LightmapDensityPass", SceneTextures);
 
-void SetupLightmapDensityPassUniformBuffer(FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel, FLightmapDensityPassUniformParameters& LightmapDensityPassParameters)
+void SetupLightmapDensityPassUniformBuffer(FRDGBuilder& GraphBuilder, const FSceneTextures* SceneTextures, ERHIFeatureLevel::Type FeatureLevel, FLightmapDensityPassUniformParameters& LightmapDensityPassParameters)
 {
-	SetupSceneTextureUniformParameters(GraphBuilder, FeatureLevel, ESceneTextureSetupMode::None, LightmapDensityPassParameters.SceneTextures);
+	SetupSceneTextureUniformParameters(GraphBuilder, SceneTextures, FeatureLevel, ESceneTextureSetupMode::None, LightmapDensityPassParameters.SceneTextures);
 
 	LightmapDensityPassParameters.GridTexture = GEngine->LightMapDensityTexture->GetResource()->TextureRHI;
 	LightmapDensityPassParameters.GridTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
@@ -52,10 +61,10 @@ void SetupLightmapDensityPassUniformBuffer(FRDGBuilder& GraphBuilder, ERHIFeatur
 	LightmapDensityPassParameters.VertexMappedColor = GEngine->LightMapDensityVertexMappedColor;
 }
 
-TRDGUniformBufferRef<FLightmapDensityPassUniformParameters> CreateLightmapDensityPassUniformBuffer(FRDGBuilder& GraphBuilder, ERHIFeatureLevel::Type FeatureLevel)
+TRDGUniformBufferRef<FLightmapDensityPassUniformParameters> CreateLightmapDensityPassUniformBuffer(FRDGBuilder& GraphBuilder, const FSceneTextures* SceneTextures, ERHIFeatureLevel::Type FeatureLevel)
 {
 	auto* UniformBufferParameters = GraphBuilder.AllocParameters<FLightmapDensityPassUniformParameters>();
-	SetupLightmapDensityPassUniformBuffer(GraphBuilder, FeatureLevel, *UniformBufferParameters);
+	SetupLightmapDensityPassUniformBuffer(GraphBuilder, SceneTextures, FeatureLevel, *UniformBufferParameters);
 	return GraphBuilder.CreateUniformBuffer(UniformBufferParameters);
 }
 
@@ -83,7 +92,7 @@ void RenderLightMapDensities(
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FLightMapDensitiesPassParameters>();
 		PassParameters->View = View.GetShaderParameters();
-		PassParameters->Pass = CreateLightmapDensityPassUniformBuffer(GraphBuilder, View.GetFeatureLevel());
+		PassParameters->Pass = CreateLightmapDensityPassUniformBuffer(GraphBuilder, View.GetSceneTexturesChecked(), View.GetFeatureLevel());
 		PassParameters->RenderTargets = RenderTargets;
 		FScene* Scene = View.Family->Scene->GetRenderScene();
 		check(Scene != nullptr);
@@ -248,8 +257,8 @@ bool FLightmapDensityMeshProcessor::TryAddMeshBatch(
 	const bool bTranslucentBlendMode = IsTranslucentBlendMode(Material->GetBlendMode());
 	const bool bIsLitMaterial = Material->GetShadingModels().IsLit();
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*Material, OverrideSettings);
 	const FLightMapInteraction LightMapInteraction = (MeshBatch.LCI && bIsLitMaterial) ? MeshBatch.LCI->GetLightMapInteraction(FeatureLevel) : FLightMapInteraction();
 
 	// Force simple lightmaps based on system settings.
@@ -373,17 +382,17 @@ void FLightmapDensityMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT Mesh
 	}
 }
 
-FLightmapDensityMeshProcessor::FLightmapDensityMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
-	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
+FLightmapDensityMeshProcessor::FLightmapDensityMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+	: FMeshPassProcessor(EMeshPass::LightmapDensity, Scene, FeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 {
 	// Opaque blending, depth tests and writes.
 	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
 }
 
-FMeshPassProcessor* CreateLightmapDensityPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
+FMeshPassProcessor* CreateLightmapDensityPassProcessor(ERHIFeatureLevel::Type FeatureLevel, const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	return new(FMemStack::Get()) FLightmapDensityMeshProcessor(Scene, InViewIfDynamicMeshCommand, InDrawListContext);
+	return new FLightmapDensityMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterLightmapDensityPass(&CreateLightmapDensityPassProcessor, EShadingPath::Deferred, EMeshPass::LightmapDensity, EMeshPassFlags::MainView);

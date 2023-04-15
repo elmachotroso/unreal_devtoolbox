@@ -15,7 +15,7 @@ Globals
 -----------------------------------------------------------------------------*/
 
 // smallest blend weight for vertex anims
-const float MinMorphTargetBlendWeight = SMALL_NUMBER;
+const float MinMorphTargetBlendWeight = UE_SMALL_NUMBER;
 // largest blend weight for vertex anims
 const float MaxMorphTargetBlendWeight = 5.0f;
 
@@ -28,6 +28,8 @@ static bool IsSkeletalMeshRayTracingSupported()
 }
 #endif // RHI_RAYTRACING
 
+static TAutoConsoleVariable<bool> CVarSkeletalMeshClothBlendEnabled(TEXT("r.SkeletalMeshClothBlend.Enabled"), true, TEXT("Enable the use of the cloth blend weight value set by the skeletal mesh component. When disabled all cloth blend weight will become 0."));
+
 /*-----------------------------------------------------------------------------
 FSkeletalMeshObject
 -----------------------------------------------------------------------------*/
@@ -39,13 +41,12 @@ FSkeletalMeshObject::FSkeletalMeshObject(USkinnedMeshComponent* InMeshComponent,
 ,	WorkingMaxDistanceFactor(0.f)
 ,   bHasBeenUpdatedAtLeastOnce(false)
 #if RHI_RAYTRACING
-, bRequireRecreatingRayTracingGeometry(false)
-, bSupportRayTracing(IsSkeletalMeshRayTracingSupported() && InMeshComponent->SkeletalMesh->GetSupportRayTracing())
+, bSupportRayTracing(IsSkeletalMeshRayTracingSupported() && InMeshComponent->GetSkinnedAsset()->GetSupportRayTracing())
 , bHiddenMaterialVisibilityDirtyForRayTracing(false)
-, RayTracingMinLOD(InMeshComponent->SkeletalMesh->GetRayTracingMinLOD())
+, RayTracingMinLOD(InMeshComponent->GetSkinnedAsset()->GetRayTracingMinLOD())
 #endif
 #if !UE_BUILD_SHIPPING
-, DebugName(InMeshComponent->SkeletalMesh->GetFName())
+, DebugName(InMeshComponent->GetSkinnedAsset()->GetFName())
 #endif // !UE_BUILD_SHIPPING
 #if WITH_EDITORONLY_DATA
 ,   SectionIndexPreview(InMeshComponent->GetSectionPreview())
@@ -54,12 +55,12 @@ FSkeletalMeshObject::FSkeletalMeshObject(USkinnedMeshComponent* InMeshComponent,
 ,	SelectedEditorMaterial(InMeshComponent->GetSelectedEditorMaterial())
 #endif	
 ,	SkeletalMeshRenderData(InSkelMeshRenderData)
-,	SkeletalMeshLODInfo(InMeshComponent->SkeletalMesh->GetLODInfoArray())
+,	SkeletalMeshLODInfo(InMeshComponent->GetSkinnedAsset()->GetLODInfoArray())
 ,	SkinCacheEntry(nullptr)
 ,	SkinCacheEntryForRayTracing(nullptr)
 ,	LastFrameNumber(0)
 ,	bUsePerBoneMotionBlur(InMeshComponent->bPerBoneMotionBlur)
-,	StatId(InMeshComponent->SkeletalMesh->GetStatID(true))
+,	StatId(InMeshComponent->GetSkinnedAsset()->GetStatID(true))
 ,	FeatureLevel(InFeatureLevel)
 ,	ComponentId(InMeshComponent->ComponentId.PrimIDValue)
 {
@@ -168,6 +169,16 @@ const TArray<FSkelMeshRenderSection>& FSkeletalMeshObject::GetRenderSections(int
 	return LOD.RenderSections;
 }
 
+FColor FSkeletalMeshObject::GetSkinCacheVisualizationDebugColor(const FName& GPUSkinCacheVisualizationMode, uint32 SectionIndex) const
+{
+	FGPUSkinCacheEntry* RTEntry = nullptr;
+#if RHI_RAYTRACING
+	RTEntry = GetSkinCacheEntryForRayTracing();
+#endif
+	return FGPUSkinCache::GetVisualizationDebugColor(GPUSkinCacheVisualizationMode, SkinCacheEntry, RTEntry, SectionIndex);
+
+}
+
 /**
  * Update the hidden material section flags for an LOD entry
  *
@@ -225,7 +236,7 @@ float FSkeletalMeshObject::GetScreenSize(int32 LODIndex) const
 Global functions
 -----------------------------------------------------------------------------*/
 
-void UpdateRefToLocalMatricesInner(TArray<FMatrix44f>& ReferenceToLocal, const TArray<FTransform>& ComponentTransform, const TArray<uint8>& BoneVisibilityStates, const TArray<int32>* MasterBoneMap,
+void UpdateRefToLocalMatricesInner(TArray<FMatrix44f>& ReferenceToLocal, const TArray<FTransform>& ComponentTransform, const TArray<uint8>& BoneVisibilityStates, const TArray<int32>* LeaderBoneMap,
 	const TArray<FMatrix44f>* RefBasesInvMatrix, const FReferenceSkeleton& RefSkeleton, const FSkeletalMeshRenderData* InSkeletalMeshRenderData, int32 LODIndex, const TArray<FBoneIndexType>* ExtraRequiredBoneIndices)
 {
 	const FSkeletalMeshLODRenderData& LOD = InSkeletalMeshRenderData->LODRenderData[LODIndex];
@@ -233,7 +244,7 @@ void UpdateRefToLocalMatricesInner(TArray<FMatrix44f>& ReferenceToLocal, const T
 	const TArray<FBoneIndexType>* RequiredBoneSets[3] = { &LOD.ActiveBoneIndices, ExtraRequiredBoneIndices, NULL };
 
 	const bool bBoneVisibilityStatesValid = BoneVisibilityStates.Num() == ComponentTransform.Num();
-	const bool bIsMasterCompValid = MasterBoneMap != nullptr;
+	const bool bIsLeaderCompValid = LeaderBoneMap != nullptr;
 	
 	for (int32 RequiredBoneSetIndex = 0; RequiredBoneSets[RequiredBoneSetIndex] != NULL; RequiredBoneSetIndex++)
 	{
@@ -249,23 +260,23 @@ void UpdateRefToLocalMatricesInner(TArray<FMatrix44f>& ReferenceToLocal, const T
 				// On the off chance the parent matrix isn't valid, revert to identity.
 				ReferenceToLocal[ThisBoneIndex] = FMatrix44f::Identity;
 
-				//if we have master pose component, we use MasterBoneMap to figure out the mapping
-				if( bIsMasterCompValid )
+				//if we have Leader pose component, we use LeaderBoneMap to figure out the mapping
+				if( bIsLeaderCompValid )
 				{
 					// If valid, use matrix from parent component.
-					const int32 MasterBoneIndex = (*MasterBoneMap)[ThisBoneIndex];
-					if (ComponentTransform.IsValidIndex(MasterBoneIndex))
+					const int32 LeaderBoneIndex = (*LeaderBoneMap)[ThisBoneIndex];
+					if (ComponentTransform.IsValidIndex(LeaderBoneIndex))
 					{
 						const int32 ParentIndex = RefSkeleton.GetParentIndex(ThisBoneIndex);
-						bool bNeedToHideBone = BoneVisibilityStates[MasterBoneIndex] != BVS_Visible;
+						bool bNeedToHideBone = BoneVisibilityStates[LeaderBoneIndex] != BVS_Visible;
 						if (bNeedToHideBone && ParentIndex != INDEX_NONE)
 						{
 							ReferenceToLocal[ThisBoneIndex] = ReferenceToLocal[ParentIndex].ApplyScale(0.f);
 						}
 						else
 						{
-							checkSlow(ComponentTransform[MasterBoneIndex].IsRotationNormalized());
-							ReferenceToLocal[ThisBoneIndex] = (FMatrix44f)ComponentTransform[MasterBoneIndex].ToMatrixWithScale();
+							checkSlow(ComponentTransform[LeaderBoneIndex].IsRotationNormalized());
+							ReferenceToLocal[ThisBoneIndex] = (FMatrix44f)ComponentTransform[LeaderBoneIndex].ToMatrixWithScale();
 						}
 					}
 					else
@@ -331,17 +342,17 @@ void UpdateRefToLocalMatricesInner(TArray<FMatrix44f>& ReferenceToLocal, const T
  */
 void UpdateRefToLocalMatrices( TArray<FMatrix44f>& ReferenceToLocal, const USkinnedMeshComponent* InMeshComponent, const FSkeletalMeshRenderData* InSkeletalMeshRenderData, int32 LODIndex, const TArray<FBoneIndexType>* ExtraRequiredBoneIndices )
 {
-	const USkeletalMesh* const ThisMesh = InMeshComponent->SkeletalMesh;
-	const USkinnedMeshComponent* const MasterComp = InMeshComponent->MasterPoseComponent.Get();
+	const USkinnedAsset* const SkinnedAsset = InMeshComponent->GetSkinnedAsset();
+	const USkinnedMeshComponent* const LeaderComp = InMeshComponent->LeaderPoseComponent.Get();
 	const FSkeletalMeshLODRenderData& LOD = InSkeletalMeshRenderData->LODRenderData[LODIndex];
 
-	const FReferenceSkeleton& RefSkeleton = ThisMesh->GetRefSkeleton();
-	const TArray<int32>& MasterBoneMap = InMeshComponent->GetMasterBoneMap();
-	const bool bIsMasterCompValid = MasterComp && MasterBoneMap.Num() == ThisMesh->GetRefSkeleton().GetNum();
-	const TArray<FTransform>& ComponentTransform = (bIsMasterCompValid)? MasterComp->GetComponentSpaceTransforms() : InMeshComponent->GetComponentSpaceTransforms();
-	const TArray<uint8>& BoneVisibilityStates = (bIsMasterCompValid) ? MasterComp->GetBoneVisibilityStates() : InMeshComponent->GetBoneVisibilityStates();
+	const FReferenceSkeleton& RefSkeleton = SkinnedAsset->GetRefSkeleton();
+	const TArray<int32>& LeaderBoneMap = InMeshComponent->GetLeaderBoneMap();
+	const bool bIsLeaderCompValid = LeaderComp && LeaderBoneMap.Num() == SkinnedAsset->GetRefSkeleton().GetNum();
+	const TArray<FTransform>& ComponentTransform = (bIsLeaderCompValid)? LeaderComp->GetComponentSpaceTransforms() : InMeshComponent->GetComponentSpaceTransforms();
+	const TArray<uint8>& BoneVisibilityStates = (bIsLeaderCompValid) ? LeaderComp->GetBoneVisibilityStates() : InMeshComponent->GetBoneVisibilityStates();
 	// Get inv ref pose matrices
-	const TArray<FMatrix44f>* RefBasesInvMatrix = &ThisMesh->GetRefBasesInvMatrix();
+	const TArray<FMatrix44f>* RefBasesInvMatrix = &SkinnedAsset->GetRefBasesInvMatrix();
 
 	// Check if there is an override (and it's the right size)
 	if( InMeshComponent->GetRefPoseOverride() && 
@@ -367,7 +378,7 @@ void UpdateRefToLocalMatrices( TArray<FMatrix44f>& ReferenceToLocal, const USkin
 	{
 		UE_LOG(LogSkeletalMesh, Error,
 			TEXT("Mesh %s : Invalid LODIndex [count %d, index %d], streaming[Ready(%d), F(%d), P(%d)], \
-			ExtraRequiredBoneIndices is (%d), and total number is (%d)"), *GetNameSafe(ThisMesh),
+			ExtraRequiredBoneIndices is (%d), and total number is (%d)"), *GetNameSafe(SkinnedAsset),
 			InSkeletalMeshRenderData->LODRenderData.Num(), LODIndex, InSkeletalMeshRenderData->bReadyForStreaming,
 			InSkeletalMeshRenderData->CurrentFirstLODIdx, InSkeletalMeshRenderData->PendingFirstLODIdx,
 			(ExtraRequiredBoneIndices) ? 1 : 0, (ExtraRequiredBoneIndices) ? ExtraRequiredBoneIndices->Num() : 0);
@@ -380,20 +391,20 @@ void UpdateRefToLocalMatrices( TArray<FMatrix44f>& ReferenceToLocal, const USkin
 		return;
 	}
 
-	UpdateRefToLocalMatricesInner(ReferenceToLocal, ComponentTransform, BoneVisibilityStates, (bIsMasterCompValid)? &MasterBoneMap : nullptr, RefBasesInvMatrix, RefSkeleton, InSkeletalMeshRenderData, LODIndex, ExtraRequiredBoneIndices);
+	UpdateRefToLocalMatricesInner(ReferenceToLocal, ComponentTransform, BoneVisibilityStates, (bIsLeaderCompValid)? &LeaderBoneMap : nullptr, RefBasesInvMatrix, RefSkeleton, InSkeletalMeshRenderData, LODIndex, ExtraRequiredBoneIndices);
 }
 
 void UpdatePreviousRefToLocalMatrices(TArray<FMatrix44f>& ReferenceToLocal, const USkinnedMeshComponent* InMeshComponent, const FSkeletalMeshRenderData* InSkeletalMeshRenderData, int32 LODIndex, const TArray<FBoneIndexType>* ExtraRequiredBoneIndices)
 {
-	const USkeletalMesh* const ThisMesh = InMeshComponent->SkeletalMesh;
-	const USkinnedMeshComponent* const MasterComp = InMeshComponent->MasterPoseComponent.Get();
+	const USkinnedAsset* const ThisMesh = InMeshComponent->GetSkinnedAsset();
+	const USkinnedMeshComponent* const LeaderComp = InMeshComponent->LeaderPoseComponent.Get();
 	const FSkeletalMeshLODRenderData& LOD = InSkeletalMeshRenderData->LODRenderData[LODIndex];
 
 	const FReferenceSkeleton& RefSkeleton = ThisMesh->GetRefSkeleton();
-	const TArray<int32>& MasterBoneMap = InMeshComponent->GetMasterBoneMap();
-	const bool bIsMasterCompValid = MasterComp && MasterBoneMap.Num() == ThisMesh->GetRefSkeleton().GetNum();
-	const TArray<FTransform>& ComponentTransform = (bIsMasterCompValid) ? MasterComp->GetPreviousComponentTransformsArray() : InMeshComponent->GetPreviousComponentTransformsArray();
-	const TArray<uint8>& BoneVisibilityStates = (bIsMasterCompValid) ? MasterComp->GetPreviousBoneVisibilityStates() : InMeshComponent->GetPreviousBoneVisibilityStates();
+	const TArray<int32>& LeaderBoneMap = InMeshComponent->GetLeaderBoneMap();
+	const bool bIsLeaderCompValid = LeaderComp && LeaderBoneMap.Num() == ThisMesh->GetRefSkeleton().GetNum();
+	const TArray<FTransform>& ComponentTransform = (bIsLeaderCompValid) ? LeaderComp->GetPreviousComponentTransformsArray() : InMeshComponent->GetPreviousComponentTransformsArray();
+	const TArray<uint8>& BoneVisibilityStates = (bIsLeaderCompValid) ? LeaderComp->GetPreviousBoneVisibilityStates() : InMeshComponent->GetPreviousBoneVisibilityStates();
 	// Get inv ref pose matrices
 	const TArray<FMatrix44f>* RefBasesInvMatrix = &ThisMesh->GetRefBasesInvMatrix();
 	// Check if there is an override (and it's the right size)
@@ -432,6 +443,11 @@ void UpdatePreviousRefToLocalMatrices(TArray<FMatrix44f>& ReferenceToLocal, cons
 
 		return;
 	}
-	UpdateRefToLocalMatricesInner(ReferenceToLocal, ComponentTransform, BoneVisibilityStates, (bIsMasterCompValid) ? &MasterBoneMap : nullptr, RefBasesInvMatrix, RefSkeleton, InSkeletalMeshRenderData, LODIndex, ExtraRequiredBoneIndices);
+	UpdateRefToLocalMatricesInner(ReferenceToLocal, ComponentTransform, BoneVisibilityStates, (bIsLeaderCompValid) ? &LeaderBoneMap : nullptr, RefBasesInvMatrix, RefSkeleton, InSkeletalMeshRenderData, LODIndex, ExtraRequiredBoneIndices);
+}
+
+bool IsSkeletalMeshClothBlendEnabled()
+{
+	return CVarSkeletalMeshClothBlendEnabled.GetValueOnAnyThread();
 }
 

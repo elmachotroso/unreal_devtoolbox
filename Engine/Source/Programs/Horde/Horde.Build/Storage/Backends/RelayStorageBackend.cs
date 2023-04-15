@@ -1,89 +1,101 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using Microsoft.Extensions.Options;
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Threading;
 using System.Threading.Tasks;
+using OpenTracing;
+using OpenTracing.Util;
 
-namespace HordeServer.Storage.Backends
+namespace Horde.Build.Storage.Backends
 {
+	/// <summary>
+	/// Options for the relay storage backend
+	/// </summary>
+	public interface IRelayStorageOptions : IFileSystemStorageOptions
+	{
+		/// <summary>
+		/// Remote Horde server to use for storage using the relay storage backend
+		/// </summary>
+		public string? RelayServer { get; }
+
+		/// <summary>
+		/// Authentication token for using a relay server
+		/// </summary>
+		public string? RelayToken { get; }
+	}
+
 	/// <summary>
 	/// Implementation of ILogFileStorage which forwards requests to another server
 	/// </summary>
 	public sealed class RelayStorageBackend : IStorageBackend, IDisposable
 	{
-		class FileSystemSettings : IFileSystemStorageOptions
-		{
-			public string? BaseDir { get; set; }
-		}
-
 		/// <summary>
 		/// The client to connect with
 		/// </summary>
-		HttpClient Client;
+		readonly HttpClient _client;
 
 		/// <summary>
 		/// The base server URL
 		/// </summary>
-		Uri ServerUrl;
+		readonly Uri _serverUrl;
 
 		/// <summary>
 		/// Local storage provider
 		/// </summary>
-		FileSystemStorageBackend LocalStorage;
+		readonly FileSystemStorageBackend _localStorage;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="Settings">Settings for the server instance</param>
-		public RelayStorageBackend(IOptions<ServerSettings> Settings)
+		/// <param name="options">Settings for the server instance</param>
+		public RelayStorageBackend(IRelayStorageOptions options)
 		{
-			ServerSettings CurrentSettings = Settings.Value;
-			if (CurrentSettings.LogRelayServer == null)
+			if (options.RelayServer == null)
 			{
-				throw new InvalidDataException("Missing LogRelayServer in server configuration");
+				throw new InvalidDataException($"Missing {nameof(IRelayStorageOptions.RelayServer)} in server configuration");
 			}
-			if (CurrentSettings.LogRelayBearerToken == null)
+			if (options.RelayToken == null)
 			{
-				throw new InvalidDataException("Missing LogRelayBearerToken in server configuration");
+				throw new InvalidDataException($"Missing {nameof(IRelayStorageOptions.RelayToken)} in server configuration");
 			}
 
-			ServerUrl = new Uri(CurrentSettings.LogRelayServer);
+			_serverUrl = new Uri(options.RelayServer);
 
-			Client = new HttpClient();
-			Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CurrentSettings.LogRelayBearerToken);
+			_client = new HttpClient();
+			_client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.RelayToken);
 
-			LocalStorage = new FileSystemStorageBackend(new FileSystemSettings { BaseDir = "RelayCache" });
+			_localStorage = new FileSystemStorageBackend(options);
 		}
 
 		/// <inheritdoc/>
 		public void Dispose()
 		{
-			Client.Dispose();
+			_client.Dispose();
 		}
 
 		/// <inheritdoc/>
-		public async Task<Stream?> ReadAsync(string Path)
+		public async Task<Stream?> ReadAsync(string path, CancellationToken cancellationToken)
 		{
-			Stream? LocalResult = await LocalStorage.ReadAsync(Path);
-			if (LocalResult != null)
+			using IScope scope = GlobalTracer.Instance.BuildSpan("RelayStorageBackend.ReadAsync").StartActive();
+			scope.Span.SetTag("Path", path);
+			
+			Stream? localResult = await _localStorage.ReadAsync(path, cancellationToken);
+			if (localResult != null)
 			{
-				return LocalResult;
+				return localResult;
 			}
 
-			Uri Url = new Uri(ServerUrl, $"api/v1/debug/storage?path={Path}");
-			using (HttpResponseMessage Response = await Client.GetAsync(Url))
+			Uri url = new Uri(_serverUrl, $"api/v1/debug/storage?path={path}");
+			using (HttpResponseMessage response = await _client.GetAsync(url, cancellationToken))
 			{
-				if (Response.IsSuccessStatusCode)
+				if (response.IsSuccessStatusCode)
 				{
-					byte[] ResponseData = await Response.Content.ReadAsByteArrayAsync();
-					await LocalStorage.WriteBytesAsync(Path, ResponseData);
-					return new MemoryStream(ResponseData);
+					byte[] responseData = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+					await _localStorage.WriteBytesAsync(path, responseData, cancellationToken);
+					return new MemoryStream(responseData);
 				}
 			}
 
@@ -91,19 +103,22 @@ namespace HordeServer.Storage.Backends
 		}
 
 		/// <inheritdoc/>
-		public Task WriteAsync(string Path, Stream Stream)
+		public Task WriteAsync(string path, Stream stream, CancellationToken cancellationToken)
 		{
-			return LocalStorage.WriteAsync(Path, Stream);
+			using IScope scope = GlobalTracer.Instance.BuildSpan("RelayStorageBackend.WriteAsync").StartActive();
+			scope.Span.SetTag("Path", path);
+
+			return _localStorage.WriteAsync(path, stream, cancellationToken);
 		}
 
 		/// <inheritdoc/>
-		public Task<bool> ExistsAsync(string Path)
+		public Task<bool> ExistsAsync(string path, CancellationToken cancellationToken)
 		{
 			throw new NotSupportedException();
 		}
 
 		/// <inheritdoc/>
-		public Task DeleteAsync(string Path)
+		public Task DeleteAsync(string path, CancellationToken cancellationToken)
 		{
 			throw new NotImplementedException();
 		}

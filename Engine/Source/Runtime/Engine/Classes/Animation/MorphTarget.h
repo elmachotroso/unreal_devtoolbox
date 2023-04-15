@@ -99,6 +99,27 @@ struct FMorphTargetLODModel
 	}
 };
 
+#if WITH_EDITOR
+/**
+* Data to cache serialization results for async asset building
+*/
+struct FFinishBuildMorphTargetData
+{
+public:
+	virtual ~FFinishBuildMorphTargetData()
+	{}
+	
+	/** Load morph target data */
+	ENGINE_API virtual void LoadFromMemoryArchive(FMemoryArchive & Ar);
+	
+	/** Apply serialized data to skeletal mesh in game thread */
+	ENGINE_API virtual void ApplyEditorData(USkeletalMesh * SkeletalMesh, bool bIsSerializeSaving) const;
+	
+protected:
+	bool bApplyMorphTargetsData = false;
+	TMap<FName, TArray<FMorphTargetLODModel>> MorphLODModelsPerTargetName;
+	};
+#endif
 
 UCLASS(hidecategories=Object, MinimalAPI)
 class UMorphTarget
@@ -125,7 +146,7 @@ protected:
 public:
 
 	/** Get Morphtarget Delta array for the given input Index */
-	ENGINE_API const FMorphTargetDelta* GetMorphTargetDelta(int32 LODIndex, int32& OutNumDeltas) const;
+	ENGINE_API virtual const FMorphTargetDelta* GetMorphTargetDelta(int32 LODIndex, int32& OutNumDeltas) const;
 	ENGINE_API virtual bool HasDataForLOD(int32 LODIndex) const;
 	/** return true if this morphtarget contains data for section within LOD */
 	ENGINE_API virtual bool HasDataForSection(int32 LODIndex, int32 SectionIndex) const;
@@ -135,16 +156,18 @@ public:
 
 	/** Discard CPU Buffers after render resources have been created. */
 	UE_DEPRECATED(5.0, "No longer in use, will be deleted. Whether to discard vertex data is now determined during cooking instead of loading.")
-	ENGINE_API void DiscardVertexData();
+	ENGINE_API virtual void DiscardVertexData();
 
 	/** Return true if this morph target uses engine built-in compression */
 	ENGINE_API virtual bool UsesBuiltinMorphTargetCompression() const { return true; }
 
 #if WITH_EDITOR
 	/** Populates the given morph target LOD model with the provided deltas */
-	ENGINE_API virtual void PopulateDeltas(const TArray<FMorphTargetDelta>& Deltas, const int32 LODIndex, const TArray<struct FSkelMeshSection>& Sections, const bool bCompareNormal = false, const bool bGeneratedByReductionSetting = false, const float PositionThreshold = THRESH_POINTS_ARE_NEAR);
+	ENGINE_API virtual void PopulateDeltas(const TArray<FMorphTargetDelta>& Deltas, const int32 LODIndex, const TArray<struct FSkelMeshSection>& Sections, const bool bCompareNormal = false, const bool bGeneratedByReductionSetting = false, const float PositionThreshold = UE_THRESH_POINTS_ARE_NEAR);
 	/** Remove empty LODModels */
 	ENGINE_API virtual void RemoveEmptyMorphTargets();
+	/** Factory function to define type of FinishBuildData needed*/
+	ENGINE_API virtual TUniquePtr<FFinishBuildMorphTargetData> CreateFinishBuildMorphTargetData() const;
 #endif // WITH_EDITOR
 
 public:
@@ -152,6 +175,9 @@ public:
 	//~ UObject interface
 
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+#if WITH_EDITORONLY_DATA
+	ENGINE_API static void DeclareCustomVersions(FArchive& Ar, const UClass* SpecificSubclass);
+#endif
 	ENGINE_API virtual void PostLoad() override;
 
 	/** UObject does not support serialization via FMemoryArchive, so manually handle separately */

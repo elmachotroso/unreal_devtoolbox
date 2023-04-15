@@ -10,6 +10,8 @@
 #include "Widgets/Layout/SWindowTitleBarArea.h"
 #include "Components/WindowTitleBarAreaSlot.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WindowTitleBarArea)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
@@ -19,7 +21,7 @@ UWindowTitleBarArea::UWindowTitleBarArea(const FObjectInitializer& ObjectInitial
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-	Visibility = ESlateVisibility::Visible;
+	SetVisibilityInternal(ESlateVisibility::Visible);
 
 	bDoubleClickTogglesFullscreen = false;
 }
@@ -167,3 +169,4 @@ void UWindowTitleBarArea::RequestToggleFullscreen()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
+

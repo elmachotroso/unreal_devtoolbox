@@ -1,19 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InputSettingsDetails.h"
-#include "IDetailChildrenBuilder.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "GameFramework/PlayerInput.h"
-#include "GameFramework/InputSettings.h"
+
+#include "Containers/UnrealString.h"
+#include "CoreTypes.h"
+#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/SlateDelegates.h"
+#include "GameFramework/InputSettings.h"
+#include "GameFramework/PlayerInput.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
-#include "ScopedTransaction.h"
 #include "IDocumentation.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
+#include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Templates/Casts.h"
+#include "Templates/Tuple.h"
+#include "Types/SlateStructs.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
+class UObject;
 
 #define LOCTEXT_NAMESPACE "InputSettingsDetails"
 
@@ -84,7 +108,7 @@ void FActionMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& C
 
 	for (int32 Index = 0; Index < GroupedMappings.Num(); ++Index)
 	{
-		FMappingSet& MappingSet = GroupedMappings[Index];
+		InputSettingsDetails::FMappingSet& MappingSet = GroupedMappings[Index];
 
 		FString GroupNameString(TEXT("ActionMappings."));
 		MappingSet.SharedName.AppendString(GroupNameString);
@@ -105,7 +129,7 @@ void FActionMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& C
 			.AutoWidth()
 			[
 				SNew(SBox)
-				.WidthOverride( InputConstants::TextBoxWidth )
+				.WidthOverride(InputSettingsDetails::InputConstants::TextBoxWidth)
 				[
 					SNew(SEditableTextBox)
 					.Padding(2.0f)
@@ -115,7 +139,7 @@ void FActionMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& C
 				]
 			]
 			+SHorizontalBox::Slot()
-			.Padding(InputConstants::PropertyPadding)
+			.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			.AutoWidth()
@@ -123,7 +147,7 @@ void FActionMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& C
 				AddButton
 			]
 			+SHorizontalBox::Slot()
-			.Padding(InputConstants::PropertyPadding)
+			.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			.AutoWidth()
@@ -168,7 +192,7 @@ void FActionMappingsNodeBuilder::ClearActionMappingButton_OnClick()
 	ActionMappingsPropertyHandle->AsArray()->EmptyArray();
 }
 
-void FActionMappingsNodeBuilder::OnActionMappingNameCommitted(const FText& InName, ETextCommit::Type CommitInfo, const FMappingSet MappingSet)
+void FActionMappingsNodeBuilder::OnActionMappingNameCommitted(const FText& InName, ETextCommit::Type CommitInfo, const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("RenameActionMapping_Transaction", "Rename Action Mapping"));
 
@@ -197,7 +221,7 @@ void FActionMappingsNodeBuilder::OnActionMappingNameCommitted(const FText& InNam
 	}
 }
 
-void FActionMappingsNodeBuilder::AddActionMappingToGroupButton_OnClick(const FMappingSet MappingSet)
+void FActionMappingsNodeBuilder::AddActionMappingToGroupButton_OnClick(const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddActionMappingToGroup_Transaction", "Add Action Mapping To Group"));
 
@@ -218,7 +242,7 @@ void FActionMappingsNodeBuilder::AddActionMappingToGroupButton_OnClick(const FMa
 	}
 }
 
-void FActionMappingsNodeBuilder::RemoveActionMappingGroupButton_OnClick(const FMappingSet MappingSet)
+void FActionMappingsNodeBuilder::RemoveActionMappingGroupButton_OnClick(const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("RemoveActionMappingGroup_Transaction", "Remove Action Mapping Group"));
 
@@ -241,7 +265,7 @@ bool FActionMappingsNodeBuilder::GroupsRequireRebuild() const
 {
 	for (int32 GroupIndex = 0; GroupIndex < GroupedMappings.Num(); ++GroupIndex)
 	{
-		const FMappingSet& MappingSet = GroupedMappings[GroupIndex];
+		const InputSettingsDetails::FMappingSet& MappingSet = GroupedMappings[GroupIndex];
 		for (int32 MappingIndex = 0; MappingIndex < MappingSet.Mappings.Num(); ++MappingIndex)
 		{
 			FName ActionName;
@@ -374,7 +398,7 @@ void FAxisMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& Chi
 
 	for (int32 Index = 0; Index < GroupedMappings.Num(); ++Index)
 	{
-		FMappingSet& MappingSet = GroupedMappings[Index];
+		InputSettingsDetails::FMappingSet& MappingSet = GroupedMappings[Index];
 
 		FString GroupNameString(TEXT("AxisMappings."));
 		MappingSet.SharedName.AppendString(GroupNameString);
@@ -395,7 +419,7 @@ void FAxisMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& Chi
 			.AutoWidth()
 			[
 				SNew( SBox )
-				.WidthOverride( InputConstants::TextBoxWidth )
+				.WidthOverride(InputSettingsDetails::InputConstants::TextBoxWidth)
 				[
 					SNew(SEditableTextBox)
 					.Padding(2.0f)
@@ -405,7 +429,7 @@ void FAxisMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& Chi
 				]
 			]
 			+SHorizontalBox::Slot()
-			.Padding(InputConstants::PropertyPadding)
+			.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			.AutoWidth()
@@ -413,7 +437,7 @@ void FAxisMappingsNodeBuilder::GenerateChildContent( IDetailChildrenBuilder& Chi
 				AddButton
 			]
 			+SHorizontalBox::Slot()
-			.Padding(InputConstants::PropertyPadding)
+			.Padding(InputSettingsDetails::InputConstants::PropertyPadding)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			.AutoWidth()
@@ -459,7 +483,7 @@ void FAxisMappingsNodeBuilder::ClearAxisMappingButton_OnClick()
 	AxisMappingsPropertyHandle->AsArray()->EmptyArray();
 }
 
-void FAxisMappingsNodeBuilder::OnAxisMappingNameCommitted(const FText& InName, ETextCommit::Type CommitInfo, const FMappingSet MappingSet)
+void FAxisMappingsNodeBuilder::OnAxisMappingNameCommitted(const FText& InName, ETextCommit::Type CommitInfo, const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("RenameAxisMapping_Transaction", "Rename Axis Mapping"));
 
@@ -488,7 +512,7 @@ void FAxisMappingsNodeBuilder::OnAxisMappingNameCommitted(const FText& InName, E
 	}
 }
 
-void FAxisMappingsNodeBuilder::AddAxisMappingToGroupButton_OnClick(const FMappingSet MappingSet)
+void FAxisMappingsNodeBuilder::AddAxisMappingToGroupButton_OnClick(const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddAxisMappingToGroup_Transaction", "Add Axis Mapping To Group"));
 
@@ -509,7 +533,7 @@ void FAxisMappingsNodeBuilder::AddAxisMappingToGroupButton_OnClick(const FMappin
 	}
 }
 
-void FAxisMappingsNodeBuilder::RemoveAxisMappingGroupButton_OnClick(const FMappingSet MappingSet)
+void FAxisMappingsNodeBuilder::RemoveAxisMappingGroupButton_OnClick(const InputSettingsDetails::FMappingSet MappingSet)
 {
 	const FScopedTransaction Transaction(LOCTEXT("RemoveAxisMappingGroup_Transaction", "Remove Axis Mapping Group"));
 
@@ -532,7 +556,7 @@ bool FAxisMappingsNodeBuilder::GroupsRequireRebuild() const
 {
 	for (int32 GroupIndex = 0; GroupIndex < GroupedMappings.Num(); ++GroupIndex)
 	{
-		const FMappingSet& MappingSet = GroupedMappings[GroupIndex];
+		const InputSettingsDetails::FMappingSet& MappingSet = GroupedMappings[GroupIndex];
 		for (int32 MappingIndex = 0; MappingIndex < MappingSet.Mappings.Num(); ++MappingIndex)
 		{
 			FName AxisName;
@@ -618,16 +642,55 @@ void FInputSettingsDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 
 	IDetailCategoryBuilder& MappingsDetailCategoryBuilder = DetailBuilder.EditCategory(BindingsCategory);
 
+	// If the new Enhanced Input module is loaded, then add a warning telling people to use
+	// that instead of these legacy Action/Axis bindings
+	static const FName ForegroundColorStyle("Colors.Foreground");
+	static const FName WarningColorStyle("Colors.AccentYellow");
+	static const FSlateBrush* WarningBrush = FAppStyle::Get().GetBrush("Icons.AlertCircle");
+	
 	MappingsDetailCategoryBuilder.AddCustomRow(LOCTEXT("Mappings_Title", "Action Axis Mappings"))
 	[
 		SNew(SHorizontalBox)
 		+SHorizontalBox::Slot()
-		.FillWidth(1)
+		.FillWidth(1.0f)
 		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.AutoWrapText(true)
-			.Text(LOCTEXT("Mappings_Description", "Action and Axis Mappings provide a mechanism to conveniently map keys and axes to input behaviors by inserting a layer of indirection between the input behavior and the keys that invoke it. Action Mappings are for key presses and releases, while Axis Mappings allow for inputs that have a continuous range."))
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.HAlign(HAlign_Center)
+			.Padding(0.0f, 10.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(10.0f, 10.0f)
+				[
+					SNew(SImage)
+					.Image(WarningBrush)
+					.Visibility(this, &FInputSettingsDetails::GetLegacyWarningVisibility)
+					.ColorAndOpacity(FAppStyle::Get().GetSlateColor(ForegroundColorStyle))		
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Bottom)
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.AutoWrapText(true)					
+					.Visibility(this, &FInputSettingsDetails::GetLegacyWarningVisibility)
+					.Text(LOCTEXT("Mappings_DeprecationWarning", "Axis and Action mappings are now deprecated, please use Enhanced Input Actions and Input Mapping Contexts instead."))
+					.ColorAndOpacity(FAppStyle::Get().GetSlateColor(WarningColorStyle))
+				]	
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()			
+			.HAlign(HAlign_Left)
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.AutoWrapText(true)
+				.Text(LOCTEXT("Mappings_Description", "Action and Axis Mappings provide a mechanism to conveniently map keys and axes to input behaviors by inserting a layer of indirection between the input behavior and the keys that invoke it. Action Mappings are for key presses and releases, while Axis Mappings allow for inputs that have a continuous range."))
+			]		
 		]
 		+SHorizontalBox::Slot()
 		.AutoWidth()
@@ -649,6 +712,11 @@ void FInputSettingsDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 
 	const TSharedRef<FAxisMappingsNodeBuilder> AxisMappingsBuilder = MakeShareable( new FAxisMappingsNodeBuilder( &DetailBuilder, AxisMappingsPropertyHandle ) );
 	MappingsDetailCategoryBuilder.AddCustomBuilder(AxisMappingsBuilder);
+}
+
+EVisibility FInputSettingsDetails::GetLegacyWarningVisibility() const
+{
+	return FModuleManager::Get().IsModuleLoaded("EnhancedInput") ? EVisibility::Visible : EVisibility::Hidden;
 }
 
 #undef LOCTEXT_NAMESPACE

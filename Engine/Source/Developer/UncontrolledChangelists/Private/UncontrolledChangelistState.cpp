@@ -15,9 +15,17 @@
 
 #define LOCTEXT_NAMESPACE "UncontrolledChangelists"
 
+const FText FUncontrolledChangelistState::DEFAULT_UNCONTROLLED_CHANGELIST_DESCRIPTION = LOCTEXT("DefaultUncontrolledChangelist", "Default Uncontrolled Changelist");
+
 FUncontrolledChangelistState::FUncontrolledChangelistState(const FUncontrolledChangelist& InUncontrolledChangelist)
 	: Changelist(InUncontrolledChangelist)
 {
+}
+
+FUncontrolledChangelistState::FUncontrolledChangelistState(const FUncontrolledChangelist& InUncontrolledChangelist, const FText& InDescription)
+	: Changelist(InUncontrolledChangelist)
+{
+	SetDescription(InDescription);
 }
 
 FName FUncontrolledChangelistState::GetIconName() const
@@ -30,14 +38,14 @@ FName FUncontrolledChangelistState::GetSmallIconName() const
 	return FName("SourceControl.UncontrolledChangelist_Small");
 }
 
-FText FUncontrolledChangelistState::GetDisplayText() const
+const FText& FUncontrolledChangelistState::GetDisplayText() const
 {
-	return FText::FromString(Changelist.ToString());
+	return Description;
 }
 
-FText FUncontrolledChangelistState::GetDescriptionText() const
+const FText& FUncontrolledChangelistState::GetDescriptionText() const
 {
-	return FText::FromString(Description);
+	return Description;
 }
 
 FText FUncontrolledChangelistState::GetDisplayTooltip() const
@@ -60,12 +68,37 @@ const TSet<FString>& FUncontrolledChangelistState::GetOfflineFiles() const
 	return OfflineFiles;
 }
 
+const TSet<FString>& FUncontrolledChangelistState::GetDeletedOfflineFiles() const
+{
+	return DeletedOfflineFiles;
+}
+
+int32 FUncontrolledChangelistState::GetFileCount() const
+{
+	// Avoid counting DeletedOfflineFiles.
+	return Files.Num() + OfflineFiles.Num();
+}
+
+TArray<FString> FUncontrolledChangelistState::GetFilenames() const
+{
+	TArray<FString> Filenames;
+	Filenames.Reserve(GetFileCount());
+
+	Algo::Transform(GetFilesStates(), Filenames, [](const TSharedRef<ISourceControlState>& FileState) { return FileState->GetFilename(); });
+	Algo::Transform(GetOfflineFiles(), Filenames, [](const FString& Pathname) { return Pathname; });
+
+	return Filenames;
+}
+
 void FUncontrolledChangelistState::Serialize(TSharedRef<FJsonObject> OutJsonObject) const
 {
 	TArray<TSharedPtr<FJsonValue>> FileValues;
 
+	OutJsonObject->SetStringField(DESCRIPTION_NAME, Description.ToString());
+
 	Algo::Transform(Files, FileValues, [](const FSourceControlStateRef& File) { return MakeShareable(new FJsonValueString(File->GetFilename())); });
 	Algo::Transform(OfflineFiles, FileValues, [](const FString& OfflineFile) { return MakeShareable(new FJsonValueString(OfflineFile)); });
+	Algo::Transform(DeletedOfflineFiles, FileValues, [](const FString& DeletedOfflineFile) { return MakeShareable(new FJsonValueString(DeletedOfflineFile)); });
 
 	OutJsonObject->SetArrayField(FILES_NAME, MoveTemp(FileValues));
 }
@@ -73,6 +106,15 @@ void FUncontrolledChangelistState::Serialize(TSharedRef<FJsonObject> OutJsonObje
 bool FUncontrolledChangelistState::Deserialize(const TSharedRef<FJsonObject> InJsonValue)
 {
 	const TArray<TSharedPtr<FJsonValue>>* FileValues = nullptr;
+	FString TempString;
+
+	if (!InJsonValue->TryGetStringField(DESCRIPTION_NAME, TempString) && !InJsonValue->TryGetStringField(NAME_NAME, TempString))
+	{
+		UE_LOG(LogSourceControl, Error, TEXT("Cannot get field %s or %s."), DESCRIPTION_NAME, NAME_NAME);
+		return false;
+	}
+
+	SetDescription(FText::FromString(TempString));
 
 	if ((!InJsonValue->TryGetArrayField(FILES_NAME, FileValues)) || (FileValues == nullptr))
 	{
@@ -96,6 +138,7 @@ bool FUncontrolledChangelistState::AddFiles(const TArray<FString>& InFilenames, 
 {
 	TArray<FSourceControlStateRef> FileStates;
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	IFileManager& FileManager = IFileManager::Get();
 	bool bCheckStatus = (InCheckFlags & ECheckFlags::Modified) != ECheckFlags::None;
 	bool bCheckCheckout = (InCheckFlags & ECheckFlags::NotCheckedOut) != ECheckFlags::None;
 	bool bOutChanged = false;
@@ -109,14 +152,29 @@ bool FUncontrolledChangelistState::AddFiles(const TArray<FString>& InFilenames, 
 	if (!SourceControlProvider.IsAvailable())
 	{
 		int32 OldSize = OfflineFiles.Num();
-		Algo::Copy(SourceControlHelpers::AbsoluteFilenames(InFilenames), OfflineFiles);
-		return OldSize != OfflineFiles.Num();
+		int32 OldDeletedSize = DeletedOfflineFiles.Num();
+
+		for (const FString& Filename : SourceControlHelpers::AbsoluteFilenames(InFilenames))
+		{
+			if (FileManager.FileExists(*Filename))
+			{
+				OfflineFiles.Add(Filename);
+			}
+			else
+			{
+				// Keep in case we source control provider and can determine this file is source controlled
+				DeletedOfflineFiles.Add(Filename);
+			}
+		}
+				
+		return (OldSize != OfflineFiles.Num()) || (OldDeletedSize != DeletedOfflineFiles.Num());
 	}
 
 	if (bCheckStatus)
 	{
 		auto UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
 		UpdateStatusOperation->SetUpdateModifiedState(true);
+		UpdateStatusOperation->SetUpdateModifiedStateToLocalRevision(true);
 		UpdateStatusOperation->SetQuiet(true);
 		UpdateStatusOperation->SetForceUpdate(true);
 		SourceControlProvider.Execute(UpdateStatusOperation, InFilenames);
@@ -129,7 +187,7 @@ bool FUncontrolledChangelistState::AddFiles(const TArray<FString>& InFilenames, 
 		for (FSourceControlStateRef FileState : FileStates)
 		{
 			const bool bIsSourceControlled = (!FileState->IsUnknown()) && FileState->IsSourceControlled();
-			const bool bFileExists = IFileManager::Get().FileExists(*FileState->GetFilename());
+			const bool bFileExists = FileManager.FileExists(*FileState->GetFilename());
 
 			const bool bIsUncontrolled = (!bIsSourceControlled) && bFileExists;
 			// File doesn't exist and is not marked for delete
@@ -166,14 +224,17 @@ bool FUncontrolledChangelistState::UpdateStatus()
 {
 	TArray<FString> FilesToUpdate;
 	bool bOutChanged = false;
-	int32 InitialFileNumber = Files.Num();
-	int32 InitialOfflineFileNumber = OfflineFiles.Num();
+	const int32 InitialFileNumber = Files.Num();
+	const int32 InitialOfflineFileNumber = OfflineFiles.Num();
+	const int32 InitialDeletedOfflineFiles = DeletedOfflineFiles.Num();
 
 	Algo::Transform(Files, FilesToUpdate, [](const FSourceControlStateRef& State) { return State->GetFilename(); });
 	Algo::Copy(OfflineFiles, FilesToUpdate);
+	Algo::Copy(DeletedOfflineFiles, FilesToUpdate);
 
 	Files.Empty();
 	OfflineFiles.Empty();
+	DeletedOfflineFiles.Empty();
 
 	if (FilesToUpdate.Num() == 0)
 	{
@@ -182,10 +243,11 @@ bool FUncontrolledChangelistState::UpdateStatus()
 
 	bOutChanged |= AddFiles(FilesToUpdate, ECheckFlags::All);
 
-	bool bFileNumberChanged = InitialFileNumber == Files.Num();
-	bool bOfflineFileNumberChanged = InitialOfflineFileNumber == OfflineFiles.Num();
+	const bool bFileNumberChanged = InitialFileNumber == Files.Num();
+	const bool bOfflineFileNumberChanged = InitialOfflineFileNumber == OfflineFiles.Num();
+	const bool bDeletedOfflineFileNumberChanged = InitialDeletedOfflineFiles == DeletedOfflineFiles.Num();
 
-	bOutChanged |= bFileNumberChanged || bOfflineFileNumberChanged;
+	bOutChanged |= bFileNumberChanged || bOfflineFileNumberChanged || bDeletedOfflineFileNumberChanged;
 
 	return bOutChanged;
 }
@@ -198,6 +260,23 @@ void FUncontrolledChangelistState::RemoveDuplicates(TSet<FString>& InOutAddedAss
 		
 		InOutAddedAssets.Remove(Filename);
 	}
+}
+
+void FUncontrolledChangelistState::SetDescription(const FText& InDescription)
+{
+	Description = InDescription;
+
+	if (Description.EqualToCaseIgnored(FText::FromString(TEXT("default"))))
+	{
+		Description = FText::Format(LOCTEXT("Default_Override", "{0} (Uncontrolled Changelist)"), Description);
+	}
+}
+
+
+bool FUncontrolledChangelistState::ContainsFiles() const
+{
+	// Ignore DeletedOfflineFiles
+	return !Files.IsEmpty() || !OfflineFiles.IsEmpty();
 }
 
 #undef LOCTEXT_NAMESPACE

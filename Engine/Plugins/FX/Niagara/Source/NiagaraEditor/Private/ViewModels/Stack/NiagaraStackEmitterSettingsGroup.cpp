@@ -7,30 +7,35 @@
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterEditorData.h"
-#include "NiagaraStackEditorData.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraEmitterDetailsCustomization.h"
 #include "NiagaraEditorStyle.h"
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraSystem.h"
-#include "NiagaraEditorStyle.h"
+#include "ScopedTransaction.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
 #include "Styling/AppStyle.h"
 #include "IDetailTreeNode.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackEmitterSettingsGroup)
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackEmitterItemGroup"
 
 void UNiagaraStackEmitterPropertiesItem::Initialize(FRequiredEntryData InRequiredEntryData)
 {
 	Super::Initialize(InRequiredEntryData, TEXT("EmitterProperties"));
-	Emitter = GetEmitterViewModel()->GetEmitter();
-	Emitter->OnPropertiesChanged().AddUObject(this, &UNiagaraStackEmitterPropertiesItem::EmitterPropertiesChanged);
+	EmitterWeakPtr = GetEmitterViewModel()->GetEmitter().ToWeakPtr();
+	EmitterWeakPtr.Emitter->OnPropertiesChanged().AddUObject(this, &UNiagaraStackEmitterPropertiesItem::EmitterPropertiesChanged);
 }
 
 void UNiagaraStackEmitterPropertiesItem::FinalizeInternal()
 {
-	if (Emitter.IsValid())
+	if (EmitterWeakPtr.IsValid())
 	{
-		Emitter->OnPropertiesChanged().RemoveAll(this);
+		EmitterWeakPtr.Emitter->OnPropertiesChanged().RemoveAll(this);
 	}
 	Super::FinalizeInternal();
 }
@@ -47,13 +52,17 @@ FText UNiagaraStackEmitterPropertiesItem::GetTooltipText() const
 
 bool UNiagaraStackEmitterPropertiesItem::TestCanResetToBaseWithMessage(FText& OutCanResetToBaseMessage) const
 {
-	if (bCanResetToBaseCache.IsSet() == false)
+	if (GetEmitterViewModel().IsValid() == false)
 	{
-		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
-		if (BaseEmitter != nullptr && Emitter != BaseEmitter)
+		bCanResetToBaseCache = false;
+	}
+	else if (bCanResetToBaseCache.IsSet() == false)
+	{
+		FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetParentEmitter();
+		if (BaseEmitter.GetEmitterData() != nullptr && EmitterWeakPtr.Emitter != BaseEmitter.Emitter)
 		{
 			TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-			bCanResetToBaseCache = MergeManager->IsEmitterEditablePropertySetDifferentFromBase(*Emitter.Get(), *BaseEmitter);
+			bCanResetToBaseCache = MergeManager->IsEmitterEditablePropertySetDifferentFromBase(EmitterWeakPtr.ResolveWeakPtr(), BaseEmitter);
 		}
 		else
 		{
@@ -77,23 +86,26 @@ void UNiagaraStackEmitterPropertiesItem::ResetToBase()
 	FText Unused;
 	if (TestCanResetToBaseWithMessage(Unused))
 	{
-		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
+		FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetParentEmitter();
 		TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-		MergeManager->ResetEmitterEditablePropertySetToBase(*Emitter, *BaseEmitter);
+		MergeManager->ResetEmitterEditablePropertySetToBase(EmitterWeakPtr.ResolveWeakPtr(), BaseEmitter);
 	}
 }
 
 const FSlateBrush* UNiagaraStackEmitterPropertiesItem::GetIconBrush() const
 {
-	if (Emitter->SimTarget == ENiagaraSimTarget::CPUSim)
+	if (FVersionedNiagaraEmitterData* EmitterData = EmitterWeakPtr.GetEmitterData())
 	{
-		return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.CPUIcon");
+		if (EmitterData->SimTarget == ENiagaraSimTarget::CPUSim)
+		{
+			return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.CPUIcon");
+		}
+		if (EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+		{
+			return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.GPUIcon");
+		}
 	}
-	if (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
-	{
-		return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.GPUIcon");
-	}
-	return FEditorStyle::GetBrush("NoBrush");
+	return FAppStyle::GetBrush("NoBrush");
 }
 
 void UNiagaraStackEmitterPropertiesItem::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -103,7 +115,7 @@ void UNiagaraStackEmitterPropertiesItem::RefreshChildrenInternal(const TArray<UN
 		EmitterObject = NewObject<UNiagaraStackObject>(this);
 		FRequiredEntryData RequiredEntryData(GetSystemViewModel(), GetEmitterViewModel(), FExecutionCategoryNames::Emitter, NAME_None, GetStackEditorData());
 		bool bIsTopLevelObject = true;
-		EmitterObject->Initialize(RequiredEntryData, Emitter.Get(), bIsTopLevelObject, GetStackEditorDataKey());
+		EmitterObject->Initialize(RequiredEntryData, EmitterWeakPtr.Emitter.Get(), bIsTopLevelObject, GetStackEditorDataKey());
 		EmitterObject->RegisterInstancedCustomPropertyLayout(UNiagaraEmitter::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraEmitterDetails::MakeInstance));
 	}
 
@@ -113,33 +125,162 @@ void UNiagaraStackEmitterPropertiesItem::RefreshChildrenInternal(const TArray<UN
 	RefreshIssues(NewIssues);
 }
 
+UNiagaraStackEntry::FStackIssueFixDelegate UNiagaraStackEmitterPropertiesItem::GetUpgradeVersionFix()
+{
+	return FStackIssueFixDelegate::CreateLambda([=]()
+	{
+		FGuid NewVersion = GetEmitterViewModel()->GetParentEmitter().Emitter->GetExposedVersion().VersionGuid;
+		FNiagaraEditorUtilities::SwitchParentEmitterVersion(GetEmitterViewModel().ToSharedRef(), GetSystemViewModel(), NewVersion);
+	});
+}
 
 void UNiagaraStackEmitterPropertiesItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 {
-	UNiagaraEmitter* ActualEmitter = GetEmitterViewModel()->GetEmitter();
-	if (ActualEmitter && ActualEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim && ActualEmitter->bFixedBounds == false)
+	FNiagaraStackGraphUtilities::CheckForDeprecatedEmitterVersion(GetEmitterViewModel(), GetStackEditorDataKey(), GetUpgradeVersionFix(), NewIssues);
+	
+	FVersionedNiagaraEmitterData* ActualEmitterData = GetEmitterViewModel()->GetEmitter().GetEmitterData();
+	if (ActualEmitterData)
 	{
-		bool bAddError = true;
-		
-		UNiagaraSystem& Sys = GetSystemViewModel()->GetSystem();
-		if (Sys.bFixedBounds)
+		if (ActualEmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim && ActualEmitterData->CalculateBoundsMode == ENiagaraEmitterCalculateBoundMode::Dynamic)
 		{
-			bAddError = false;
-		}			
-		
+			bool bAddError = true;
 
-		if (bAddError)
+			UNiagaraSystem& Sys = GetSystemViewModel()->GetSystem();
+			if (Sys.bFixedBounds)
+			{
+				bAddError = false;
+			}
+
+			if (bAddError)
+			{
+				FStackIssue MissingRequiredFixedBoundsModuleError(
+					EStackIssueSeverity::Warning,
+					LOCTEXT("RequiredFixedBoundsWarningFormat", "The emitter is GPU and is using dynamic bounds mode.\r\nPlease update the Emitter or System properties otherwise bounds may be incorrect."),
+					LOCTEXT("MissingFixedBounds", "Missing fixed bounds."),
+					GetStackEditorDataKey(),
+					false);
+
+				NewIssues.Add(MissingRequiredFixedBoundsModuleError);
+			}
+		}
+
+		if ( ActualEmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim && ActualEmitterData->bGpuAlwaysRunParticleUpdateScript )
 		{
-			FStackIssue MissingRequiredFixedBoundsModuleError(
+			const FText FixGpuInterpolatedDisabledText = LOCTEXT("FixGpuInterpolatedDisabled", "Fix GPU emitter to not run particle update script on particle spawn");
+			FVersionedNiagaraEmitterWeakPtr WeakEmitter = GetEmitterViewModel()->GetEmitter().ToWeakPtr();
+
+			NewIssues.Emplace(
 				EStackIssueSeverity::Warning,
-				LOCTEXT("RequiredFixedBoundsWarningFormat", "The emitter is GPU but the fixed bounds checkbox is not set.\r\nPlease update the Emitter or System properties, otherwise existing value for fixed bounds will be used."),
-				LOCTEXT("MissingFixedBounds", "Missing fixed bounds."),
+				LOCTEXT("GpuNoInterpolatedIncorrect", "GPU is incorrectly running particle update script on particle spawn."),
+				LOCTEXT("GpuNoInterpolatedIncorrectLong", "Due to a previous GPU codegen issue both particle spawn & update scripts were running on particle spawn when interpolated spawning is disabled.  This is now fixed for new content to match CPU behavior where only particle spawn will run when interpolated spawning is disabled."),
 				GetStackEditorDataKey(),
-				false);
+				true,
+				FStackIssueFix(
+					FixGpuInterpolatedDisabledText,
+					FStackIssueFixDelegate::CreateLambda(
+						[WeakEmitter, FixGpuInterpolatedDisabledText]()
+						{
+							FVersionedNiagaraEmitter PinnedEmitter = WeakEmitter.ResolveWeakPtr();
+							if (PinnedEmitter.Emitter)
+							{
+								FScopedTransaction ScopedTransaction(FixGpuInterpolatedDisabledText);
 
-			NewIssues.Add(MissingRequiredFixedBoundsModuleError);
+								PinnedEmitter.Emitter->Modify();
+								PinnedEmitter.GetEmitterData()->bGpuAlwaysRunParticleUpdateScript = false;
+								UNiagaraSystem::RequestCompileForEmitter(PinnedEmitter);
+							}
+						}
+					)
+				)
+			);
+		}
+
+		UNiagaraSystem& System = GetSystemViewModel()->GetSystem();
+		TWeakPtr<FNiagaraSystemViewModel> WeakSysViewModel = GetSystemViewModel();
+		if (System.NeedsWarmup())
+		{
+			float WarmupDelta = System.GetWarmupTickDelta();
+			if (ActualEmitterData->bLimitDeltaTime && ActualEmitterData->MaxDeltaTimePerTick < WarmupDelta)
+			{
+				TArray<FStackIssueFix> Fixes;
+
+				float MaxEmitterDt = ActualEmitterData->MaxDeltaTimePerTick;
+				//This emitter does not allow ticks with a delta time so large.
+				FText FixDescriptionReduceWarmupDt = LOCTEXT("FixWarmupDeltaTime", "Reduce System Warmup Delta Time");
+				Fixes.Emplace(
+					FixDescriptionReduceWarmupDt,
+					FStackIssueFixDelegate::CreateLambda([=]()
+						{
+							if (auto Pinned = WeakSysViewModel.Pin())
+							{
+								FScopedTransaction ScopedTransaction(FixDescriptionReduceWarmupDt);
+								Pinned->GetSystem().Modify();
+								Pinned->GetSystem().SetWarmupTickDelta(MaxEmitterDt);
+								Pinned->RefreshAll();
+							}
+						}));
+
+				FVersionedNiagaraEmitterWeakPtr WeakEmitter = GetEmitterViewModel()->GetEmitter().ToWeakPtr();
+				FText FixDescriptionReduceIncreaseEmitterDt = LOCTEXT("FixEmitterDeltaTime", "Increase Max Emitter Delta Time");
+				Fixes.Emplace(
+					FixDescriptionReduceIncreaseEmitterDt,
+					FStackIssueFixDelegate::CreateLambda([=]()
+						{
+							auto PinnedSysViewModel = WeakSysViewModel.Pin();
+							FVersionedNiagaraEmitter PinnedEmitter = WeakEmitter.ResolveWeakPtr();
+							if (PinnedEmitter.Emitter && PinnedSysViewModel)
+							{
+								FScopedTransaction ScopedTransaction(FixDescriptionReduceIncreaseEmitterDt);
+
+								PinnedEmitter.Emitter->Modify();
+								PinnedEmitter.GetEmitterData()->MaxDeltaTimePerTick = WarmupDelta;
+								PinnedSysViewModel->RefreshAll();
+							}
+						}));
+
+				FStackIssue WarmupDeltaTimeExceedsEmitterDeltaTimeWarning(
+					EStackIssueSeverity::Warning,
+					LOCTEXT("WarmupDeltaTimeExceedsEmitterDeltaTimeWarningSummary", "System Warmup Delta Time Exceeds Emitter Max Delta Time."),
+					LOCTEXT("WarmupDeltaTimeExceedsEmitterDeltaTimeWarningText", "Max Tick Delta Time is smaller than the System's Warmup Delta Time. This could cause unintended results during warmup for this emitter."),
+					GetStackEditorDataKey(),
+					false,
+					Fixes);
+
+				NewIssues.Add(WarmupDeltaTimeExceedsEmitterDeltaTimeWarning);
+			}
+		}
+
+		// check for any emitters which are exclusively using Emitter sourced renderers and dynamic bounds.  Currently our bounds calculators don't support
+		// emitter sources and so no valid bounds will be generated
+		if (ActualEmitterData->SimTarget == ENiagaraSimTarget::CPUSim && ActualEmitterData->CalculateBoundsMode == ENiagaraEmitterCalculateBoundMode::Dynamic)
+		{
+			UNiagaraSystem& Sys = GetSystemViewModel()->GetSystem();
+			if (!Sys.bFixedBounds)
+			{
+				bool bHasParticleSourcedRenderer = false;
+				ActualEmitterData->ForEachEnabledRenderer([&](UNiagaraRendererProperties* RendererProperties)
+				{
+					if (RendererProperties && RendererProperties->GetCurrentSourceMode() == ENiagaraRendererSourceDataMode::Particles)
+					{
+						bHasParticleSourcedRenderer = true;
+					}
+				});
+
+				if (!bHasParticleSourcedRenderer)
+				{
+					FStackIssue EmitterSourcedEmitterRequiredFixedBoundsError(
+						EStackIssueSeverity::Warning,
+						LOCTEXT("EmitterSourcedWarningFormat", "The emitter is using dynamic bounds mode but only using Emitter sourced renderers.\r\nPlease update the Emitter or System properties otherwise bounds may be incorrect."),
+						LOCTEXT("EmitterSourcedWarning", "Missing fixed bounds."),
+						GetStackEditorDataKey(),
+						false);
+
+					NewIssues.Add(EmitterSourcedEmitterRequiredFixedBoundsError);
+				}
+			}
 		}
 	}
+
 }
 
 void UNiagaraStackEmitterPropertiesItem::EmitterPropertiesChanged()
@@ -150,17 +291,18 @@ void UNiagaraStackEmitterPropertiesItem::EmitterPropertiesChanged()
 		// so guard against receiving an event when finalized here.
 		bCanResetToBaseCache.Reset();
 		RefreshChildren();
+
+		if (EmitterWeakPtr.IsValid())
+		{
+			GetSystemViewModel()->GetEmitterHandleViewModelForEmitter(EmitterWeakPtr.ResolveWeakPtr()).Get()->GetEmitterStackViewModel()->RequestValidationUpdate();
+		}
 	}
 }
-
-
-
-
 
 void UNiagaraStackEmitterSummaryItem::Initialize(FRequiredEntryData InRequiredEntryData)
 {
 	Super::Initialize(InRequiredEntryData, TEXT("EmitterParameters"));
-	Emitter = GetEmitterViewModel()->GetEmitter();
+	Emitter = GetEmitterViewModel()->GetEmitter().ToWeakPtr();
 }
 
 FText UNiagaraStackEmitterSummaryItem::GetDisplayName() const
@@ -203,7 +345,7 @@ void UNiagaraStackEmitterSummaryItem::RefreshChildrenInternal(const TArray<UNiag
 	{
 		FilteredObject = NewObject<UNiagaraStackSummaryViewObject>(this);
 		FRequiredEntryData RequiredEntryData(GetSystemViewModel(), GetEmitterViewModel(), FExecutionCategoryNames::Emitter, NAME_None, GetStackEditorData());
-		FilteredObject->Initialize(RequiredEntryData, Emitter.Get(), GetStackEditorDataKey());
+		FilteredObject->Initialize(RequiredEntryData, Emitter, GetStackEditorDataKey());
 	}
 
 	NewChildren.Add(FilteredObject);
@@ -324,3 +466,4 @@ void UNiagaraStackSummaryViewCollapseButton::RefreshChildrenInternal(const TArra
 
 
 #undef LOCTEXT_NAMESPACE
+

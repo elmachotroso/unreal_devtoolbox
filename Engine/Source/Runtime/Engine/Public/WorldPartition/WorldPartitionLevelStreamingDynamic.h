@@ -16,7 +16,7 @@
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionRuntimeLevelStreamingCell.h"
 #if WITH_EDITOR
-#include "WorldPartition/WorldPartitionPackageCache.h"
+#include "WorldPartition/WorldPartitionLevelHelper.h"
 #endif
 #include "WorldPartitionLevelStreamingDynamic.generated.h"
 
@@ -35,12 +35,15 @@ class ENGINE_API UWorldPartitionLevelStreamingDynamic : public ULevelStreamingDy
 
 	virtual bool ShouldBeAlwaysLoaded() const override { return bShouldBeAlwaysLoaded; }
 	virtual bool ShouldRequireFullVisibilityToRender() const override { return true; }
+#if !WITH_EDITOR
+	virtual void PostLoad();
+#endif
+
+	void Initialize(const UWorldPartitionRuntimeLevelStreamingCell& InCell);
 
 #if WITH_EDITOR
 	static UWorldPartitionLevelStreamingDynamic* LoadInEditor(UWorld* World, FName LevelStreamingName, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
 	static void UnloadFromEditor(UWorldPartitionLevelStreamingDynamic* InLevelStreaming);
-
-	void Initialize(const UWorldPartitionRuntimeLevelStreamingCell& InCell);
 
 	// Override ULevelStreaming
 	virtual bool RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoadRequests, EReqLevelBlock BlockPolicy) override;
@@ -60,7 +63,6 @@ private:
 	FName OriginalLevelPackageName;
 	TArray<FWorldPartitionRuntimeCellObjectMapping> ChildPackages;
 	TArray<FWorldPartitionRuntimeCellObjectMapping> ChildPackagesToLoad;
-	TArray<FGuid> ActorFolders;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
@@ -70,8 +72,11 @@ private:
 	FDelegateHandle OnCleanupLevelDelegateHandle;
 	bool bLoadRequestInProgress;
 	bool bLoadSucceeded;
-	FWorldPartitionPackageCache PackageCache;
+	FWorldPartitionLevelHelper::FPackageReferencer PackageReferencer;
 #endif
+
+private:
+	void UpdateShouldSkipMakingVisibilityTransactionRequest();
 
 	UPROPERTY()
 	bool bShouldBeAlwaysLoaded;

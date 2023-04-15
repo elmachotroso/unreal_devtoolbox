@@ -22,9 +22,10 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSlider.h"
 #include "Framework/Docking/TabManager.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Settings/ContentBrowserSettings.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Level.h"
 #include "Editor.h"
 #include "AssetSelection.h"
 #include "IAssetTools.h"
@@ -47,7 +48,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/TextFilterUtils.h"
 #include "Misc/NamePermissionList.h"
-#include "AssetRegistryState.h"
+#include "AssetRegistry/AssetRegistryState.h"
 #include "Materials/Material.h"
 #include "ContentBrowserMenuContexts.h"
 #include "ContentBrowserUtils.h"
@@ -58,6 +59,7 @@
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserDataLegacyBridge.h"
 #include "ContentBrowserDataDragDropOp.h"
+#include "SFilterList.h"
 #include "SPrimaryButton.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
@@ -117,10 +119,17 @@ public:
 			return true;
 		}
 
+		if (AssetView->OnShouldFilterItem.IsBound()
+			&& !AssetView->OnShouldFilterItem.Execute(InItemToFilter->GetItem()))
+		{
+			return true;
+		}
+
 		// If we have OnShouldFilterAsset then it is assumed that we really only want to see true assets and 
 		// nothing else so only include things that have asset data and also pass the query filter
 		FAssetData ItemAssetData;
-		if (InItemToFilter->GetItem().Legacy_TryGetAssetData(ItemAssetData))
+		if (AssetView->OnShouldFilterAsset.IsBound()
+			&& InItemToFilter->GetItem().Legacy_TryGetAssetData(ItemAssetData))
 		{
 			if (!AssetView->OnShouldFilterAsset.Execute(ItemAssetData))
 			{
@@ -199,8 +208,8 @@ void SAssetView::Construct( const FArguments& InArgs )
 	ContentBrowserData->OnItemDataDiscoveryComplete().AddSP(this, &SAssetView::HandleItemDataDiscoveryComplete);
 
 	FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-	CollectionManagerModule.Get().OnAssetsAdded().AddSP( this, &SAssetView::OnAssetsAddedToCollection );
-	CollectionManagerModule.Get().OnAssetsRemoved().AddSP( this, &SAssetView::OnAssetsRemovedFromCollection );
+	CollectionManagerModule.Get().OnAssetsAddedToCollection().AddSP( this, &SAssetView::OnAssetsAddedToCollection );
+	CollectionManagerModule.Get().OnAssetsRemovedFromCollection().AddSP( this, &SAssetView::OnAssetsRemovedFromCollection );
 	CollectionManagerModule.Get().OnCollectionRenamed().AddSP( this, &SAssetView::OnCollectionRenamed );
 	CollectionManagerModule.Get().OnCollectionUpdated().AddSP( this, &SAssetView::OnCollectionUpdated );
 
@@ -248,7 +257,6 @@ void SAssetView::Construct( const FArguments& InArgs )
 
 	bCanShowFavorites = InArgs._CanShowFavorites;
 	bCanDockCollections = InArgs._CanDockCollections;
-	bPreloadAssetsForContextMenu = InArgs._PreloadAssetsForContextMenu;
 
 	SelectionMode = InArgs._SelectionMode;
 
@@ -273,6 +281,8 @@ void SAssetView::Construct( const FArguments& InArgs )
 	}
 
 	OnShouldFilterAsset = InArgs._OnShouldFilterAsset;
+	OnShouldFilterItem = InArgs._OnShouldFilterItem;
+
 	OnNewItemRequested = InArgs._OnNewItemRequested;
 	OnItemSelectionChanged = InArgs._OnItemSelectionChanged;
 	OnItemsActivated = InArgs._OnItemsActivated;
@@ -319,12 +329,10 @@ void SAssetView::Construct( const FArguments& InArgs )
 	bPendingFocusOnSync = false;
 	bWereItemsRecursivelyFiltered = false;
 
-	NumVisibleColumns = 0;
-
 	OwningContentBrowser = InArgs._OwningContentBrowser;
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	AssetClassPermissionList = AssetToolsModule.Get().GetAssetClassPermissionList();
+	AssetClassPermissionList = AssetToolsModule.Get().GetAssetClassPathPermissionList(EAssetClassAction::ViewAsset);
 	FolderPermissionList = AssetToolsModule.Get().GetFolderPermissionList();
 	WritableFolderPermissionList = AssetToolsModule.Get().GetWritableFolderPermissionList();
 
@@ -405,7 +413,7 @@ void SAssetView::Construct( const FArguments& InArgs )
 			.Padding(FMargin(8, 0))
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ErrorReporting.EmptyBox"))
+				.BorderImage(FAppStyle::GetBrush("ErrorReporting.EmptyBox"))
 				.BorderBackgroundColor(this, &SAssetView::GetQuickJumpColor)
 				.Visibility(this, &SAssetView::IsQuickJumpVisible)
 				[
@@ -473,7 +481,7 @@ void SAssetView::Construct( const FArguments& InArgs )
 				SNew(SComboButton)
 				.Visibility(InArgs._ShowViewOptions ? EVisibility::Visible : EVisibility::Collapsed)
 				.ContentPadding(0)
-				.ButtonStyle( FEditorStyle::Get(), "ToggleButton" ) // Use the tool bar item style for this button
+				.ButtonStyle( FAppStyle::Get(), "ToggleButton" ) // Use the tool bar item style for this button
 				.OnGetMenuContent( this, &SAssetView::GetViewButtonContent )
 				.ButtonContent()
 				[
@@ -484,7 +492,7 @@ void SAssetView::Construct( const FArguments& InArgs )
 					.VAlign(VAlign_Center)
 					[
 						SNew(SImage)
-						.Image( FEditorStyle::GetBrush("GenericViewButton") )
+						.Image( FAppStyle::GetBrush("GenericViewButton") )
 					]
  
 					+SHorizontalBox::Slot()
@@ -927,6 +935,16 @@ void SAssetView::LoadSettings(const FString& IniFilename, const FString& IniSect
 	if (LoadedHiddenColumnNames.Num() > 0)
 	{
 		HiddenColumnNames = LoadedHiddenColumnNames;
+
+		// Also update the visibility of the columns we just loaded in (unless this is called before creation and ColumnView doesn't exist)
+		if(ColumnView)
+		{
+			for (const SHeaderRow::FColumn& Column : ColumnView->GetHeaderRow()->GetColumns())
+			{
+				ColumnView->GetHeaderRow()->SetShowGeneratedColumn(Column.ColumnId, !HiddenColumnNames.Contains(Column.ColumnId.ToString()));
+			}
+		}
+		
 	}
 }
 
@@ -1255,7 +1273,7 @@ void SAssetView::ProcessItemsPendingFilter(const double TickStartTime)
 		}
 	};
 
-	const bool bRunQueryFilter = OnShouldFilterAsset.IsBound();
+	const bool bRunQueryFilter = OnShouldFilterAsset.IsBound() || OnShouldFilterItem.IsBound();
 	const bool bFlushAllPendingItems = TickStartTime < 0;
 
 	bool bRefreshList = false;
@@ -1394,13 +1412,13 @@ FReply SAssetView::OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent
 	}
 	else if (HasSingleCollectionSource())
 	{
-		TArray<FName> NewCollectionItems;
+		TArray<FSoftObjectPath> NewCollectionItems;
 
 		if (TSharedPtr<FContentBrowserDataDragDropOp> ContentDragDropOp = DragDropEvent.GetOperationAs<FContentBrowserDataDragDropOp>())
 		{
 			for (const FContentBrowserItem& DraggedItem : ContentDragDropOp->GetDraggedFiles())
 			{
-				FName CollectionItemId;
+				FSoftObjectPath CollectionItemId;
 				if (DraggedItem.TryGetCollectionId(CollectionItemId))
 				{
 					NewCollectionItems.Add(CollectionItemId);
@@ -1410,20 +1428,20 @@ FReply SAssetView::OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent
 		else
 		{
 			const TArray<FAssetData> AssetDatas = AssetUtil::ExtractAssetDataFromDrag(DragDropEvent);
-			Algo::Transform(AssetDatas, NewCollectionItems, &FAssetData::ObjectPath);
+			Algo::Transform(AssetDatas, NewCollectionItems, &FAssetData::GetSoftObjectPath);
 		}
 
 		if (NewCollectionItems.Num() > 0)
 		{
 			if (TSharedPtr<FAssetDragDropOp> AssetDragDropOp = DragDropEvent.GetOperationAs<FAssetDragDropOp>())
 			{
-				TArray< FName > ObjectPaths;
+				TArray<FSoftObjectPath> ObjectPaths;
 				FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
 				const FCollectionNameType& Collection = SourcesData.Collections[0];
 				CollectionManagerModule.Get().GetObjectsInCollection(Collection.Name, Collection.Type, ObjectPaths);
 
 				bool IsValidDrop = false;
-				for (const FName& NewCollectionItem : NewCollectionItems)
+				for (const FSoftObjectPath& NewCollectionItem : NewCollectionItems)
 				{
 					if (!ObjectPaths.Contains(NewCollectionItem))
 					{
@@ -1434,7 +1452,7 @@ FReply SAssetView::OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent
 
 				if (IsValidDrop)
 				{
-					AssetDragDropOp->SetToolTip(NSLOCTEXT("AssetView", "OnDragOverCollection", "Add to Collection"), FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+					AssetDragDropOp->SetToolTip(NSLOCTEXT("AssetView", "OnDragOverCollection", "Add to Collection"), FAppStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
 				}
 			}
 
@@ -1474,13 +1492,13 @@ FReply SAssetView::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& Dr
 	}
 	else if (HasSingleCollectionSource())
 	{
-		TArray<FName> NewCollectionItems;
+		TArray<FSoftObjectPath> NewCollectionItems;
 
 		if (TSharedPtr<FContentBrowserDataDragDropOp> ContentDragDropOp = DragDropEvent.GetOperationAs<FContentBrowserDataDragDropOp>())
 		{
 			for (const FContentBrowserItem& DraggedItem : ContentDragDropOp->GetDraggedFiles())
 			{
-				FName CollectionItemId;
+				FSoftObjectPath CollectionItemId;
 				if (DraggedItem.TryGetCollectionId(CollectionItemId))
 				{
 					NewCollectionItems.Add(CollectionItemId);
@@ -1490,7 +1508,7 @@ FReply SAssetView::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& Dr
 		else
 		{
 			const TArray<FAssetData> AssetDatas = AssetUtil::ExtractAssetDataFromDrag(DragDropEvent);
-			Algo::Transform(AssetDatas, NewCollectionItems, &FAssetData::ObjectPath);
+			Algo::Transform(AssetDatas, NewCollectionItems, &FAssetData::GetSoftObjectPath);
 		}
 
 		if (NewCollectionItems.Num() > 0)
@@ -1526,7 +1544,7 @@ static bool IsValidObjectPath(const FString& Path, FString& OutObjectClassName, 
 {
 	if (FPackageName::ParseExportTextPath(Path, &OutObjectClassName, &OutObjectPath))
 	{
-		if (UClass* ObjectClass = FindObject<UClass>(ANY_PACKAGE, *OutObjectClassName, true))
+		if (UClass* ObjectClass = UClass::TryFindTypeSlow<UClass>(OutObjectClassName, EFindFirstObjectOptions::ExactClass))
 		{
 			OutPackageName = FPackageName::ObjectPathToPackageName(OutObjectPath);
 			if (FPackageName::IsValidLongPackageName(OutPackageName))
@@ -1573,8 +1591,8 @@ FReply SAssetView::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKe
 				FString PackageName;
 				if (IsValidObjectPath(AssetPath, ObjectClassName, ObjectPath, PackageName))
 				{
-					FScopedLoadAllExternalObjects Scope(*PackageName);
-					UObject* ObjectToCopy = LoadObject<UObject>(nullptr, *ObjectPath);
+					FLinkerInstancingContext InstancingContext({ ULevel::LoadAllExternalObjectsTag });
+					UObject* ObjectToCopy = LoadObject<UObject>(nullptr, *ObjectPath, nullptr, LOAD_None, nullptr, &InstancingContext);
 					if (ObjectToCopy && !ObjectToCopy->IsA(UClass::StaticClass()))
 					{
 						AssetsToCopy.Add(ObjectToCopy);
@@ -1681,23 +1699,18 @@ TSharedRef<SAssetColumnView> SAssetView::CreateColumnView()
 		(
 			SNew(SHeaderRow)
 			.ResizeMode(ESplitterResizeMode::FixedSize)
+			.CanSelectGeneratedColumn(true)
+			.OnHiddenColumnsListChanged(this, &SAssetView::OnHiddenColumnsChanged)
 			+ SHeaderRow::Column(SortManager.NameColumnId)
 			.FillWidth(300)
 			.SortMode( TAttribute< EColumnSortMode::Type >::Create( TAttribute< EColumnSortMode::Type >::FGetter::CreateSP( this, &SAssetView::GetColumnSortMode, SortManager.NameColumnId ) ) )
 			.SortPriority(TAttribute< EColumnSortPriority::Type >::Create(TAttribute< EColumnSortPriority::Type >::FGetter::CreateSP(this, &SAssetView::GetColumnSortPriority, SortManager.NameColumnId)))
 			.OnSort( FOnSortModeChanged::CreateSP( this, &SAssetView::OnSortColumnHeader ) )
 			.DefaultLabel( LOCTEXT("Column_Name", "Name") )
-			.ShouldGenerateWidget(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SAssetView::ShouldColumnGenerateWidget, SortManager.NameColumnId.ToString())))
-			.MenuContent()
-			[
-				CreateRowHeaderMenuContent(SortManager.NameColumnId.ToString())
-			]
+			.ShouldGenerateWidget(true) // Can't hide name column, so at least one column is visible
 		);
 
 	NewColumnView->GetHeaderRow()->SetOnGetMaxRowSizeForColumn(FOnGetMaxRowSizeForColumn::CreateRaw(NewColumnView.Get(), &SAssetColumnView::GetMaxRowSizeForColumn));
-
-
-	NumVisibleColumns = HiddenColumnNames.Contains(SortManager.NameColumnId.ToString()) ? 0 : 1;
 
 	if(bShowTypeInColumnView)
 	{
@@ -1708,16 +1721,12 @@ TSharedRef<SAssetColumnView> SAssetView::CreateColumnView()
 				.SortPriority(TAttribute< EColumnSortPriority::Type >::Create(TAttribute< EColumnSortPriority::Type >::FGetter::CreateSP(this, &SAssetView::GetColumnSortPriority, SortManager.ClassColumnId)))
 				.OnSort(FOnSortModeChanged::CreateSP(this, &SAssetView::OnSortColumnHeader))
 				.DefaultLabel(LOCTEXT("Column_Class", "Type"))
-				.ShouldGenerateWidget(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SAssetView::ShouldColumnGenerateWidget, SortManager.ClassColumnId.ToString())))
-				.MenuContent()
-				[
-					CreateRowHeaderMenuContent(SortManager.ClassColumnId.ToString())
-				]
 			);
 
-		NumVisibleColumns += HiddenColumnNames.Contains(SortManager.ClassColumnId.ToString()) ? 0 : 1;
+		bool bIsColumnVisible = !HiddenColumnNames.Contains(SortManager.ClassColumnId.ToString());
+		
+		NewColumnView->GetHeaderRow()->SetShowGeneratedColumn(SortManager.ClassColumnId, bIsColumnVisible);
 	}
-
 
 	if (bShowPathInColumnView)
 	{
@@ -1728,15 +1737,11 @@ TSharedRef<SAssetColumnView> SAssetView::CreateColumnView()
 				.SortPriority(TAttribute< EColumnSortPriority::Type >::Create(TAttribute< EColumnSortPriority::Type >::FGetter::CreateSP(this, &SAssetView::GetColumnSortPriority, SortManager.PathColumnId)))
 				.OnSort(FOnSortModeChanged::CreateSP(this, &SAssetView::OnSortColumnHeader))
 				.DefaultLabel(LOCTEXT("Column_Path", "Path"))
-				.ShouldGenerateWidget(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SAssetView::ShouldColumnGenerateWidget, SortManager.PathColumnId.ToString())))
-				.MenuContent()
-				[
-					CreateRowHeaderMenuContent(SortManager.PathColumnId.ToString())
-				]
 			);
 
-
-		NumVisibleColumns += HiddenColumnNames.Contains(SortManager.PathColumnId.ToString()) ? 0 : 1;
+		bool bIsColumnVisible = !HiddenColumnNames.Contains(SortManager.PathColumnId.ToString());
+		
+		NewColumnView->GetHeaderRow()->SetShowGeneratedColumn(SortManager.PathColumnId, bIsColumnVisible);
 	}
 
 	return NewColumnView.ToSharedRef();
@@ -2127,14 +2132,11 @@ void SAssetView::SetMajorityAssetType(FName NewMajorityAssetType)
 				.OnSort(FOnSortModeChanged::CreateSP(this, &SAssetView::OnSortColumnHeader))
 				.DefaultLabel(Column.DisplayName)
 				.DefaultTooltip(Column.TooltipText)
-				.FillWidth(180)
-				.ShouldGenerateWidget(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SAssetView::ShouldColumnGenerateWidget, TagName.ToString())))
-				.MenuContent()
-				[
-					CreateRowHeaderMenuContent(TagName.ToString())
-				]);
+				.FillWidth(180));
 
-			NumVisibleColumns += HiddenColumnNames.Contains(TagName.ToString()) ? 0 : 1;
+			bool bIsColumnVisible = !HiddenColumnNames.Contains(TagName.ToString());
+		
+			ColumnView->GetHeaderRow()->SetShowGeneratedColumn(TagName, bIsColumnVisible);
 
 			// If we found a tag the matches the column we are currently sorting on, there will be no need to change the column
 			for (int32 SortIdx = 0; SortIdx < CurrentSortOrder.Num(); SortIdx++)
@@ -2207,15 +2209,12 @@ void SAssetView::SetMajorityAssetType(FName NewMajorityAssetType)
 							.OnSort(FOnSortModeChanged::CreateSP(this, &SAssetView::OnSortColumnHeader))
 							.DefaultLabel(TagPair.Value.GetMetaData().DisplayName)
 							.DefaultTooltip(TagPair.Value.GetMetaData().TooltipText)
-							.FillWidth(180)
-							.ShouldGenerateWidget(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SAssetView::ShouldColumnGenerateWidget, TagPair.Key.ToString())))
-							.MenuContent()
-							[
-								CreateRowHeaderMenuContent(TagPair.Key.ToString())
-							]);
+							.FillWidth(180));
 
-						NumVisibleColumns += HiddenColumnNames.Contains(TagPair.Key.ToString()) ? 0 : 1;
-
+						bool bIsColumnVisible = !HiddenColumnNames.Contains(TagPair.Key.ToString());
+		
+						ColumnView->GetHeaderRow()->SetShowGeneratedColumn(TagPair.Key, bIsColumnVisible);
+						
 						// If we found a tag the matches the column we are currently sorting on, there will be no need to change the column
 						for (int32 SortIdx = 0; SortIdx < CurrentSortOrder.Num(); SortIdx++)
 						{
@@ -2264,7 +2263,7 @@ void SAssetView::SetMajorityAssetType(FName NewMajorityAssetType)
 	}
 }
 
-void SAssetView::OnAssetsAddedToCollection( const FCollectionNameType& Collection, const TArray< FName >& ObjectPaths )
+void SAssetView::OnAssetsAddedToCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> ObjectPaths )
 {
 	if ( !SourcesData.Collections.Contains( Collection ) )
 	{
@@ -2274,7 +2273,7 @@ void SAssetView::OnAssetsAddedToCollection( const FCollectionNameType& Collectio
 	RequestSlowFullListRefresh();
 }
 
-void SAssetView::OnAssetsRemovedFromCollection( const FCollectionNameType& Collection, const TArray< FName >& ObjectPaths )
+void SAssetView::OnAssetsRemovedFromCollection( const FCollectionNameType& Collection, TConstArrayView<FSoftObjectPath> ObjectPaths )
 {
 	if ( !SourcesData.Collections.Contains( Collection ) )
 	{
@@ -2446,6 +2445,47 @@ void SAssetView::PopulateViewButtonMenu(UToolMenu* Menu)
 				),
 			EUserInterfaceActionType::RadioButton
 			);
+	}
+
+	if(TSharedPtr<SFilterList> FilterBarPinned = FilterBar.Pin())
+	{
+		FToolMenuSection& Section = Menu->AddSection("FilterBar", LOCTEXT("FilterBarHeading", "Filter Display"));
+
+		Section.AddMenuEntry(
+		"VerticalLayout",
+		LOCTEXT("FilterListVerticalLayout", "Vertical"),
+		LOCTEXT("FilterListVerticalLayoutToolTip", "Swap to a vertical layout for the filter bar"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([FilterBarPinned]()
+			{
+				if(FilterBarPinned->GetFilterLayout() != EFilterBarLayout::Vertical)
+				{
+					FilterBarPinned->SetFilterLayout(EFilterBarLayout::Vertical);
+				}
+			}),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([FilterBarPinned]() { return FilterBarPinned->GetFilterLayout() == EFilterBarLayout::Vertical; })),
+		EUserInterfaceActionType::RadioButton
+	);
+
+		Section.AddMenuEntry(
+			"HorizontalLayout",
+			LOCTEXT("FilterListHorizontalLayout", "Horizontal"),
+			LOCTEXT("FilterListHorizontalLayoutToolTip", "Swap to a Horizontal layout for the filter bar"),
+			FSlateIcon(),
+			FUIAction(
+			FExecuteAction::CreateLambda([FilterBarPinned]()
+				{
+					if(FilterBarPinned->GetFilterLayout() != EFilterBarLayout::Horizontal)
+					{
+						FilterBarPinned->SetFilterLayout(EFilterBarLayout::Horizontal);
+					}
+				}),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([FilterBarPinned]() { return FilterBarPinned->GetFilterLayout() == EFilterBarLayout::Horizontal; })),
+			EUserInterfaceActionType::RadioButton
+		);
 	}
 
 	{
@@ -2710,15 +2750,6 @@ void SAssetView::PopulateViewButtonMenu(UToolMenu* Menu)
 	{
 		{
 			FToolMenuSection& Section = Menu->AddSection("AssetColumns", LOCTEXT("ToggleColumnsHeading", "Columns"));
-			Section.AddSubMenu(
-				"ToggleColumns",
-				LOCTEXT("ToggleColumnsMenu", "Toggle columns"),
-				LOCTEXT("ToggleColumnsMenuTooltip", "Show or hide specific columns."),
-				FNewMenuDelegate::CreateSP(this, &SAssetView::FillToggleColumnsMenu),
-				false,
-				FSlateIcon(),
-				false
-				);
 
 			Section.AddMenuEntry(
 				"ResetColumns",
@@ -3192,7 +3223,7 @@ TSharedRef<ITableRow> SAssetView::MakeListViewWidget(TSharedPtr<FAssetViewItem> 
 	{
 		TSharedPtr< STableRow<TSharedPtr<FAssetViewItem>> > TableRowWidget;
 		SAssignNew( TableRowWidget, STableRow<TSharedPtr<FAssetViewItem>>, OwnerTable )
-			.Style(FEditorStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow")
+			.Style(FAppStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow")
 			.Cursor( bAllowDragging ? EMouseCursor::GrabHand : EMouseCursor::Default )
 			.OnDragDetected( this, &SAssetView::OnDraggingAssetItem );
 
@@ -3225,7 +3256,7 @@ TSharedRef<ITableRow> SAssetView::MakeListViewWidget(TSharedPtr<FAssetViewItem> 
 
 		TSharedPtr< STableRow<TSharedPtr<FAssetViewItem>> > TableRowWidget;
 		SAssignNew( TableRowWidget, STableRow<TSharedPtr<FAssetViewItem>>, OwnerTable )
-		.Style(FEditorStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow")
+		.Style(FAppStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow")
 		.Cursor( bAllowDragging ? EMouseCursor::GrabHand : EMouseCursor::Default )
 		.OnDragDetected( this, &SAssetView::OnDraggingAssetItem );
 
@@ -3271,7 +3302,7 @@ TSharedRef<ITableRow> SAssetView::MakeTileViewWidget(TSharedPtr<FAssetViewItem> 
 	{
 		TSharedPtr< STableRow<TSharedPtr<FAssetViewItem>> > TableRowWidget;
 		SAssignNew( TableRowWidget, STableRow<TSharedPtr<FAssetViewItem>>, OwnerTable )
-			.Style( FEditorStyle::Get(), "ContentBrowser.AssetListView.TileTableRow" )
+			.Style( FAppStyle::Get(), "ContentBrowser.AssetListView.TileTableRow" )
 			.Cursor( bAllowDragging ? EMouseCursor::GrabHand : EMouseCursor::Default )
 			.OnDragDetected( this, &SAssetView::OnDraggingAssetItem );
 
@@ -3306,7 +3337,7 @@ TSharedRef<ITableRow> SAssetView::MakeTileViewWidget(TSharedPtr<FAssetViewItem> 
 
 		TSharedPtr< STableRow<TSharedPtr<FAssetViewItem>> > TableRowWidget;
 		SAssignNew( TableRowWidget, STableRow<TSharedPtr<FAssetViewItem>>, OwnerTable )
-		.Style(FEditorStyle::Get(), "ContentBrowser.AssetListView.TileTableRow")
+		.Style(FAppStyle::Get(), "ContentBrowser.AssetListView.TileTableRow")
 		.Cursor( bAllowDragging ? EMouseCursor::GrabHand : EMouseCursor::Default )
 		.OnDragDetected( this, &SAssetView::OnDraggingAssetItem );
 
@@ -3346,7 +3377,7 @@ TSharedRef<ITableRow> SAssetView::MakeColumnViewWidget(TSharedPtr<FAssetViewItem
 	if ( !ensure(AssetItem.IsValid()) )
 	{
 		return SNew( STableRow<TSharedPtr<FAssetViewItem>>, OwnerTable )
-			.Style(FEditorStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow");
+			.Style(FAppStyle::Get(), "ContentBrowser.AssetListView.ColumnListTableRow");
 	}
 
 	// Update the cached custom data
@@ -3608,27 +3639,6 @@ bool SAssetView::CanOpenContextMenu() const
 	if (NumCollectionFoldersSelected > 0)
 	{
 		return false;
-	}
-
-	if (bPreloadAssetsForContextMenu)
-	{
-		// Build a list of selected object paths
-		TArray<FString> ObjectPaths;
-		for (const TSharedPtr<FAssetViewItem>& Item : SelectedItems)
-		{
-			FAssetData ItemAssetData;
-			if (Item->GetItem().Legacy_TryGetAssetData(ItemAssetData))
-			{
-				ObjectPaths.Add(ItemAssetData.ObjectPath.ToString());
-			}
-		}
-
-		TArray<UObject*> LoadedObjects;
-		if (ObjectPaths.Num() > 0 && !ContentBrowserUtils::LoadAssetsIfNeeded(ObjectPaths, LoadedObjects, /*bAllowedToPrompt*/false))
-		{
-			// Do not show the context menu if the load failed
-			return false;
-		}
 	}
 
 	return true;
@@ -4132,7 +4142,7 @@ EVisibility SAssetView::IsQuickJumpVisible() const
 
 FSlateColor SAssetView::GetQuickJumpColor() const
 {
-	return FEditorStyle::GetColor((QuickJumpData.bHasValidMatch) ? "InfoReporting.BackgroundColor" : "ErrorReporting.BackgroundColor");
+	return FAppStyle::GetColor((QuickJumpData.bHasValidMatch) ? "InfoReporting.BackgroundColor" : "ErrorReporting.BackgroundColor");
 }
 
 void SAssetView::ResetQuickJump()
@@ -4198,8 +4208,11 @@ bool SAssetView::PerformQuickJump(const bool bWasJumping)
 			const FString& NewSelectedItemName = NewSelectedItem->GetItem().GetDisplayName().ToString();
 			if(NewSelectedItemName.StartsWith(QuickJumpData.JumpTerm, ESearchCase::IgnoreCase))
 			{
-				SetSelection(NewSelectedItem);
+				ClearSelection(true);
 				RequestScrollIntoView(NewSelectedItem);
+				ClearSelection();
+				// Consider it derived from a keypress because otherwise it won't update the navigation selector
+				SetItemSelection(NewSelectedItem, true, ESelectInfo::Type::OnKeyPress);
 				return true;
 			}
 		}
@@ -4235,38 +4248,15 @@ bool SAssetView::PerformQuickJump(const bool bWasJumping)
 	return ValidMatch;
 }
 
-void SAssetView::FillToggleColumnsMenu(FMenuBuilder& MenuBuilder)
-{
-	// Column view may not be valid if we toggled off columns view while the columns menu was open
-	if(ColumnView.IsValid())
-	{
-		const TIndirectArray<SHeaderRow::FColumn> Columns = ColumnView->GetHeaderRow()->GetColumns();
-
-		for (int32 ColumnIndex = 0; ColumnIndex < Columns.Num(); ++ColumnIndex)
-		{
-			const FString ColumnName = Columns[ColumnIndex].ColumnId.ToString();
-
-			MenuBuilder.AddMenuEntry(
-				Columns[ColumnIndex].DefaultText,
-				LOCTEXT("ShowHideColumnTooltip", "Show or hide column"),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &SAssetView::ToggleColumn, ColumnName),
-					FCanExecuteAction::CreateSP(this, &SAssetView::CanToggleColumn, ColumnName),
-					FIsActionChecked::CreateSP(this, &SAssetView::IsColumnVisible, ColumnName),
-					EUIActionRepeatMode::RepeatEnabled
-				),
-				NAME_None,
-				EUserInterfaceActionType::Check
-			);
-		}
-	}
-}
-
 void SAssetView::ResetColumns()
 {
+	for (const SHeaderRow::FColumn &Column : ColumnView->GetHeaderRow()->GetColumns())
+	{
+		ColumnView->GetHeaderRow()->SetShowGeneratedColumn(Column.ColumnId, !DefaultHiddenColumnNames.Contains(Column.ColumnId.ToString()));
+	}
+
+	// This is set after updating the column visibilties, because SetShowGeneratedColumn calls OnHiddenColumnsChanged indirectly which can mess up the list
 	HiddenColumnNames = DefaultHiddenColumnNames;
-	NumVisibleColumns = ColumnView->GetHeaderRow()->GetColumns().Num();
 	ColumnView->GetHeaderRow()->RefreshColumns();
 	ColumnView->RebuildList();
 }
@@ -4308,57 +4298,37 @@ void SAssetView::ExportColumns()
 	}
 }
 
-void SAssetView::ToggleColumn(const FString ColumnName)
+void SAssetView::OnHiddenColumnsChanged()
 {
-	SetColumnVisibility(ColumnName, HiddenColumnNames.Contains(ColumnName));
-}
-
-void SAssetView::SetColumnVisibility(const FString ColumnName, const bool bShow)
-{
-	if (!bShow)
+	// Early out if this is called before creation (due to loading config etc)
+	if(!ColumnView)
 	{
-		--NumVisibleColumns;
-		HiddenColumnNames.Add(ColumnName);
-	}
-	else
-	{
-		++NumVisibleColumns;
-		check(HiddenColumnNames.Contains(ColumnName));
-		HiddenColumnNames.Remove(ColumnName);
+		return;
 	}
 
-	ColumnView->GetHeaderRow()->RefreshColumns();
-	ColumnView->RebuildList();
-}
+	// We can't directly update the hidden columns list, because some columns maybe hidden, but not created yet
+	TArray<FName> NewHiddenColumns = ColumnView->GetHeaderRow()->GetHiddenColumnIds();
 
-bool SAssetView::CanToggleColumn(const FString ColumnName) const
-{
-	return (HiddenColumnNames.Contains(ColumnName) || NumVisibleColumns > 1);
-}
+	// So instead for each column that currently exists, we update its visibility state in the HiddenColumnNames array
+	for (const SHeaderRow::FColumn& Column : ColumnView->GetHeaderRow()->GetColumns())
+	{
+		bool bIsColumnVisible = NewHiddenColumns.Contains(Column.ColumnId);
 
-bool SAssetView::IsColumnVisible(const FString ColumnName) const
-{
-	return !HiddenColumnNames.Contains(ColumnName);
+		if(bIsColumnVisible)
+		{
+			HiddenColumnNames.AddUnique(Column.ColumnId.ToString());
+		}
+		else
+		{
+			HiddenColumnNames.Remove(Column.ColumnId.ToString());
+		}
+	}
+	
 }
 
 bool SAssetView::ShouldColumnGenerateWidget(const FString ColumnName) const
 {
 	return !HiddenColumnNames.Contains(ColumnName);
-}
-
-TSharedRef<SWidget> SAssetView::CreateRowHeaderMenuContent(const FString ColumnName)
-{
-	FMenuBuilder MenuBuilder(true, NULL);
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("HideColumn", "Hide Column"),
-		LOCTEXT("HideColumnToolTip", "Hides this column."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &SAssetView::SetColumnVisibility, ColumnName, false), FCanExecuteAction::CreateSP(this, &SAssetView::CanToggleColumn, ColumnName)),
-		NAME_None,
-		EUserInterfaceActionType::Button);
-
-	return MenuBuilder.MakeWidget();
 }
 
 void SAssetView::ForceShowPluginFolder(bool bEnginePlugin)
@@ -4527,7 +4497,7 @@ void SAssetView::HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataU
 	if (ItemsPendingInplaceFrontendFilter.Num() > 0)
 	{
 		FAssetViewFrontendFilterHelper FrontendFilterHelper(this);
-		const bool bRunQueryFilter = OnShouldFilterAsset.IsBound();
+		const bool bRunQueryFilter = OnShouldFilterAsset.IsBound() || OnShouldFilterItem.IsBound();
 
 		for (auto It = FilteredAssetItems.CreateIterator(); It && ItemsPendingInplaceFrontendFilter.Num() > 0; ++It)
 		{
@@ -4591,6 +4561,11 @@ void SAssetView::HandleItemDataDiscoveryComplete()
 		// If we have a sort pending, then force this to happen next frame now that discovery has finished
 		LastSortTime = 0;
 	}
+}
+
+void SAssetView::SetFilterBar(TSharedPtr<SFilterList> InFilterBar)
+{
+	FilterBar = InFilterBar;
 }
 
 #undef checkAssetList

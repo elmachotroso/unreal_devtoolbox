@@ -15,6 +15,7 @@
 #include "StaticParameterSet.generated.h"
 
 class FSHA1;
+struct FStaticParameterSet;
 
 /**
 Base parameter properties
@@ -77,7 +78,9 @@ struct FStaticParameterBase
 
 	void AppendKeyString(FString& KeyString) const
 	{
-		KeyString += ParameterInfo.ToString() + FString::FromInt(bOverride) + ExpressionGUID.ToString();
+		ParameterInfo.AppendString(KeyString);
+		KeyString.AppendInt(bOverride);
+		ExpressionGUID.AppendString(KeyString);
 	}
 };
 
@@ -133,7 +136,7 @@ struct FStaticSwitchParameter : public FStaticParameterBase
 	void AppendKeyString(FString& KeyString) const
 	{
 		FStaticParameterBase::AppendKeyString(KeyString);
-		KeyString += FString::FromInt(Value);
+		KeyString.AppendInt(Value);
 	}
 
 	void GetValue(FMaterialParameterMetadata& OutResult) const
@@ -143,6 +146,8 @@ struct FStaticSwitchParameter : public FStaticParameterBase
 		OutResult.ExpressionGuid = ExpressionGUID;
 #endif
 	}
+
+	bool IsValid() const { return true; }
 };
 
 /**
@@ -228,6 +233,8 @@ struct FStaticComponentMaskParameter : public FStaticParameterBase
 		OutResult.ExpressionGuid = ExpressionGUID;
 #endif
 	}
+
+	bool IsValid() const { return true; }
 };
 
 /**
@@ -240,7 +247,6 @@ struct FStaticTerrainLayerWeightParameter
 {
 	GENERATED_USTRUCT_BODY();
 
-#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FMaterialParameterInfo ParameterInfo_DEPRECATED;
 
@@ -249,7 +255,6 @@ struct FStaticTerrainLayerWeightParameter
 
 	UPROPERTY()
 	bool bOverride_DEPRECATED = true;
-#endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY()
 	FName LayerName;
@@ -369,11 +374,40 @@ struct FStaticMaterialLayersParameter : public FStaticParameterBase
 #endif // WITH_EDITOR
 };
 
-/** Contains all the information needed to identify a single permutation of static parameters. */
 USTRUCT()
-struct FStaticParameterSet
+struct FStaticParameterSetRuntimeData
 {
-	GENERATED_USTRUCT_BODY();
+	GENERATED_BODY()
+
+	FStaticParameterSetRuntimeData() : bHasMaterialLayers(false) {}
+	FStaticParameterSetRuntimeData(const FStaticParameterSetRuntimeData& Rhs) = default;
+	FStaticParameterSetRuntimeData(const FStaticParameterSet& Rhs) = delete;
+	FStaticParameterSetRuntimeData& operator=(const FStaticParameterSetRuntimeData& Rhs) = default;
+	FStaticParameterSetRuntimeData& operator=(const FStaticParameterSet& Rhs) = delete;
+
+	/** Material layers for this set */
+	UPROPERTY()
+	FMaterialLayersFunctionsRuntimeData MaterialLayers;
+
+	UPROPERTY()
+	uint8 bHasMaterialLayers : 1;
+
+	void Empty()
+	{
+		MaterialLayers.Empty();
+		bHasMaterialLayers = false;
+	}
+
+	bool IsEmpty() const
+	{
+		return !bHasMaterialLayers;
+	}
+};
+
+USTRUCT()
+struct FStaticParameterSetEditorOnlyData
+{
+	GENERATED_BODY()
 
 	/** An array of static switch parameters in this set */
 	UPROPERTY()
@@ -389,14 +423,44 @@ struct FStaticParameterSet
 
 	/** Material layers for this set */
 	UPROPERTY()
-	FMaterialLayersFunctions MaterialLayers;
+	FMaterialLayersFunctionsEditorOnlyData MaterialLayers;
 
+#if WITH_EDITOR
+	void Empty()
+	{
+		StaticSwitchParameters.Empty();
+		StaticComponentMaskParameters.Empty();
+		TerrainLayerWeightParameters.Empty();
+		MaterialLayers.Empty();
+	}
+
+	bool IsEmpty() const
+	{
+		return StaticSwitchParameters.Num() == 0 && StaticComponentMaskParameters.Num() == 0 && TerrainLayerWeightParameters.Num() == 0;
+	}
+#endif // WITH_EDITOR
+};
+
+/** Contains all the information needed to identify a single permutation of static parameters. */
+USTRUCT()
+struct FStaticParameterSet : public FStaticParameterSetRuntimeData
+{
+	GENERATED_USTRUCT_BODY();
+
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	uint8 bHasMaterialLayers : 1;
+	FStaticParameterSetEditorOnlyData EditorOnly;
+#endif // WITH_EDITORONLY_DATA
 
-	FStaticParameterSet() : bHasMaterialLayers(false) {}
+	FStaticParameterSet() = default;
 	ENGINE_API FStaticParameterSet(const FStaticParameterSet& InValue);
+	FStaticParameterSet(const FStaticParameterSetRuntimeData&) = delete;
+
 	ENGINE_API FStaticParameterSet& operator=(const FStaticParameterSet& InValue);
+	FStaticParameterSet& operator=(const FStaticParameterSetRuntimeData& InValue) = delete;
+
+	FStaticParameterSetRuntimeData& GetRuntime() { return *this; }
+	const FStaticParameterSetRuntimeData& GetRuntime() const { return *this; }
 
 	/** 
 	* Checks if this set contains any parameters
@@ -405,16 +469,38 @@ struct FStaticParameterSet
 	*/
 	bool IsEmpty() const
 	{
-		return StaticSwitchParameters.Num() == 0 && StaticComponentMaskParameters.Num() == 0 && TerrainLayerWeightParameters.Num() == 0 && !bHasMaterialLayers;
+		if (!FStaticParameterSetRuntimeData::IsEmpty()) return false;
+#if WITH_EDITOR
+		if (!EditorOnly.IsEmpty()) return false;
+#endif
+		return true;
 	}
 
-	void Empty();
+	void Empty()
+	{
+		FStaticParameterSetRuntimeData::Empty();
+#if WITH_EDITOR
+		EditorOnly.Empty();
+#endif
+		// Ensure that we're actually empty now
+		check(IsEmpty());
+	}
+
+	bool GetMaterialLayers(FMaterialLayersFunctions& OutMaterialLayers) const;
 
 #if WITH_EDITOR
 	void SerializeLegacy(FArchive& Ar);
 	void UpdateLegacyTerrainLayerWeightData();
 	void UpdateLegacyMaterialLayersData();
+
+	static void Validate(const FStaticParameterSetRuntimeData& Runtime, const FStaticParameterSetEditorOnlyData& EditorOnly);
+	void Validate()
+	{
+		Validate(GetRuntime(), EditorOnly);
+	}
 #endif // WITH_EDITOR
+
+	void PostSerialize(const FArchive& Ar);
 
 	/** 
 	* Tests this set against another for equality
@@ -442,6 +528,15 @@ private:
 	UPROPERTY()
 	TArray<FStaticMaterialLayersParameter> MaterialLayersParameters_DEPRECATED;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	UPROPERTY()
+	TArray<FStaticSwitchParameter> StaticSwitchParameters_DEPRECATED;
+
+	UPROPERTY()
+	TArray<FStaticComponentMaskParameter> StaticComponentMaskParameters_DEPRECATED;
+
+	UPROPERTY()
+	TArray<FStaticTerrainLayerWeightParameter> TerrainLayerWeightParameters_DEPRECATED;
 #endif // WITH_EDITORONLY_DATA
 
 	void SortForEquivalent();
@@ -450,4 +545,15 @@ private:
 	void SetStaticSwitchParameterValue(const FMaterialParameterInfo& ParameterInfo, const FGuid& ExpressionGuid, bool Value);
 	void SetStaticComponentMaskParameterValue(const FMaterialParameterInfo& ParameterInfo, const FGuid& ExpressionGuid, bool R, bool G, bool B, bool A);
 #endif // WITH_EDITORONLY_DATA
+};
+
+bool operator==(const FStaticParameterSet&, const FStaticParameterSetRuntimeData&) = delete;
+bool operator==(const FStaticParameterSetRuntimeData&, const FStaticParameterSet&) = delete;
+bool operator!=(const FStaticParameterSet&, const FStaticParameterSetRuntimeData&) = delete;
+bool operator!=(const FStaticParameterSetRuntimeData&, const FStaticParameterSet&) = delete;
+
+template<>
+struct TStructOpsTypeTraits<FStaticParameterSet> : TStructOpsTypeTraitsBase2<FStaticParameterSet>
+{
+	enum { WithPostSerialize = true	};
 };

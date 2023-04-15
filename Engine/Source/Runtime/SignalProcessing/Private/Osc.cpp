@@ -19,7 +19,7 @@ namespace Audio
 		, PulseWidthMod(0.0f)
 		, PulseWidth(0.0f)
 		, ModMatrix(nullptr)
-		, SlaveOsc(nullptr)
+		, FollowerOsc(nullptr)
 		, bIsPlaying(false)
 		, bChanged(false)
 	{
@@ -174,7 +174,11 @@ namespace Audio
 
 	void IOscBase::SetPulseWidth(const float InPulseWidth)
 	{
-		PulseWidthBase = FMath::Clamp(InPulseWidth, 0.0f, 1.0f);
+		if (InPulseWidth != PulseWidthBase)
+		{
+			PulseWidthBase = FMath::Clamp(InPulseWidth, 0.0f, 1.0f);
+			bChanged = true;
+		}
 	}
 
 	void IOscBase::ResetPhase()
@@ -184,7 +188,12 @@ namespace Audio
 
 	void IOscBase::SetSlaveOsc(IOscBase* InSlaveOsc)
 	{
-		SlaveOsc = InSlaveOsc;
+		FollowerOsc = InSlaveOsc;
+	}
+
+	void IOscBase::SetFollowerOsc(IOscBase* InFollowerOsc)
+	{
+		FollowerOsc = InFollowerOsc;
 	}
 
 	void IOscBase::Reset()

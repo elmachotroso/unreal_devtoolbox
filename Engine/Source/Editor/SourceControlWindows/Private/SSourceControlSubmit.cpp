@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSourceControlSubmit.h"
+
 #include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
+#include "SSourceControlCommon.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/SWindow.h"
@@ -19,15 +21,73 @@
 #include "Widgets/Notifications/SErrorText.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "UObject/UObjectHash.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "AssetToolsModule.h"
-#include "AssetRegistryModule.h"
-
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Virtualization/VirtualizationSystem.h"
+#include "Logging/MessageLog.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
 
 #define LOCTEXT_NAMESPACE "SSourceControlSubmit"
 
+// This is useful for source control that do not support changelist (Git/SVN) or when the submit widget is not created from the changelist window. If a user
+// commits/submits this way, then edits the submit description but cancels, the description will be remembered in memory for the next time he tries to submit.
+static FText GSavedChangeListDescription;
+
+bool TryToVirtualizeFilesToSubmit(const TArray<FString>& FilesToSubmit, FText& Description, FText& OutFailureMsg)
+{
+	// TODO: Once this is removed and not deprecated move the following arrays inside of the System.IsEnabled() scope
+	TArray<FText> PayloadErrors;
+	TArray<FText> DescriptionTags;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	ISourceControlModule::Get().GetOnPreSubmitFinalize().Broadcast(FilesToSubmit, DescriptionTags, PayloadErrors);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	UE::Virtualization::IVirtualizationSystem& System = UE::Virtualization::IVirtualizationSystem::Get();
+	if (!System.IsEnabled())
+	{
+		return true;
+	}
+
+	UE::Virtualization::EVirtualizationResult Result = System.TryVirtualizePackages(FilesToSubmit, DescriptionTags, PayloadErrors);
+	if (Result == UE::Virtualization::EVirtualizationResult::Success)
+	{
+		FTextBuilder NewDescription;
+		NewDescription.AppendLine(Description);
+
+		for (const FText& Line : DescriptionTags)
+		{
+			NewDescription.AppendLine(Line);
+		}
+
+		Description = NewDescription.ToText();
+
+		return true;
+	}
+	else if (System.AllowSubmitIfVirtualizationFailed())
+	{
+		for (const FText& Error : PayloadErrors)
+		{
+			FMessageLog("SourceControl").Warning(Error);
+		}
+
+		// Even though the virtualization process had problems we should continue submitting
+		return true;
+	}
+	else
+	{
+		for (const FText& Error : PayloadErrors)
+		{
+			FMessageLog("SourceControl").Error(Error);
+		}
+
+		OutFailureMsg = LOCTEXT("SCC_Virtualization_Failed", "Failed to virtualize the files being submitted!");
+
+		return false;
+	}
+}
 
 namespace SSourceControlSubmitWidgetDefs
 {
@@ -63,11 +123,11 @@ TSharedRef<SWidget> SSourceControlSubmitListRow::GenerateWidgetForColumn(const F
 	return SNullWidget::NullWidget;
 }
 
-FText SSourceControlSubmitWidget::SavedChangeListDescription;
 
 SSourceControlSubmitWidget::~SSourceControlSubmitWidget()
 {
-	SavedChangeListDescription = ChangeListDescriptionTextCtrl->GetText();
+	// If the user cancel the submit, save the changelist. If the user submitted, ChangeListDescriptionTextCtrl was cleared).
+	GSavedChangeListDescription = ChangeListDescriptionTextCtrl->GetText();
 }
 
 void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
@@ -75,13 +135,18 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 	ParentFrame = InArgs._ParentWindow.Get();
 	SortByColumn = SSourceControlSubmitWidgetDefs::ColumnID_AssetLabel;
 	SortMode = EColumnSortMode::Ascending;
-	SavedChangeListDescription = InArgs._Description.Get();
+	if (!InArgs._Description.Get().IsEmpty())
+	{
+		// If a description is provided, override the last one saved in memory.
+		GSavedChangeListDescription = InArgs._Description.Get();
+	}
 	bAllowSubmit = InArgs._AllowSubmit.Get();
 
 	const bool bDescriptionIsReadOnly = !InArgs._AllowDescriptionChange.Get();
 	const bool bAllowUncheckFiles = InArgs._AllowUncheckFiles.Get();
 	const bool bAllowKeepCheckedOut = InArgs._AllowKeepCheckedOut.Get();
-	const bool bShowChangelistValidation = !InArgs._ChangeValidationDescription.Get().IsEmpty();
+	const bool bShowChangelistValidation = !InArgs._ChangeValidationResult.Get().IsEmpty();
+	const bool bAllowSaveAndClose = InArgs._AllowSaveAndClose.Get();
 
 	for (const auto& Item : InArgs._Items.Get())
 	{
@@ -134,7 +199,7 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SAssignNew(Contents, SVerticalBox)
 		]
@@ -158,7 +223,7 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 		[
 			SAssignNew(ChangeListDescriptionTextCtrl, SMultiLineEditableTextBox)
 			.SelectAllTextWhenFocused(!bDescriptionIsReadOnly)
-			.Text(SavedChangeListDescription)
+			.Text(GSavedChangeListDescription)
 			.AutoWrapText(true)
 			.IsReadOnly(bDescriptionIsReadOnly)
 		]
@@ -191,36 +256,96 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 			.Padding(5)
 			[
 				SNew( SErrorText )
-				.ErrorText( NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDescWarning", "Changelist description is required to submit") )
+				.ErrorText(ChangeListDescriptionTextCtrl->GetText().IsEmpty() ? 
+					NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDescWarning", "Changelist description is required to submit") :
+					NSLOCTEXT("SourceControl.SubmitPanel", "Error", "Error!")) // Other errors exist and a better mechanism should be built in to display the right error. 
 			]
 		];
 	}
 
 	if (bShowChangelistValidation)
 	{
-		FString ChangelistResultText = InArgs._ChangeValidationDescription.Get();
-		FName ChangelistIconName = InArgs._ChangeValidationIcon.Get();
+		const FString ChangelistResultText = InArgs._ChangeValidationResult.Get();
+		const FString ChangelistResultWarningsText = InArgs._ChangeValidationWarnings.Get();
+		const FString ChangelistResultErrorsText = InArgs._ChangeValidationErrors.Get();
 
-		Contents->AddSlot()
-		.AutoHeight()
-		.Padding(FMargin(5))
-		[
-			SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
+		const FName ChangelistSuccessIconName = TEXT("Icons.SuccessWithColor.Large");
+		const FName ChangelistWarningsIconName = TEXT("Icons.WarningWithColor.Large");
+		const FName ChangelistErrorsIconName = TEXT("Icons.ErrorWithColor.Large");
+
+		const bool bIsSuccess = ChangelistResultWarningsText.IsEmpty() && ChangelistResultErrorsText.IsEmpty();
+
+		if (bIsSuccess)
+		{
+			Contents->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(5))
 			[
-				SNew(SImage)
-				.Image(FEditorStyle::GetBrush(ChangelistIconName))
-			]
-			+SHorizontalBox::Slot()
-			[
-				SNew(SMultiLineEditableTextBox)
-				.Text(FText::FromString(ChangelistResultText))
-				.AutoWrapText(true)
-				.IsReadOnly(true)
-			]
-		];
+				SNew(SHorizontalBox)
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush(ChangelistSuccessIconName))
+				]
+				+SHorizontalBox::Slot()
+				[
+					SNew(SMultiLineEditableTextBox)
+					.Text(FText::FromString(ChangelistResultText))
+					.AutoWrapText(true)
+					.IsReadOnly(true)
+				]
+			];
+		}
+		else
+		{
+			if (!ChangelistResultErrorsText.IsEmpty())
+			{
+				Contents->AddSlot()
+				.Padding(FMargin(5))
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SImage)
+						.Image(FAppStyle::GetBrush(ChangelistErrorsIconName))
+					]
+					+SHorizontalBox::Slot()
+					[
+						SNew(SMultiLineEditableTextBox)
+						.Text(FText::FromString(ChangelistResultErrorsText))
+						.AutoWrapText(true)
+						.IsReadOnly(true)
+					]
+				];
+			}
+
+			if (!ChangelistResultWarningsText.IsEmpty())
+			{
+				Contents->AddSlot()
+				.Padding(FMargin(5))
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SImage)
+						.Image(FAppStyle::GetBrush(ChangelistWarningsIconName))
+					]
+					+SHorizontalBox::Slot()
+					[
+						SNew(SMultiLineEditableTextBox)
+						.Text(FText::FromString(ChangelistResultWarningsText))
+						.AutoWrapText(true)
+						.IsReadOnly(true)
+					]
+				];
+			}
+		}
 	}
 
 	if (bAllowKeepCheckedOut)
@@ -255,23 +380,33 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 	.Padding(0.0f,AdditionalTopPadding,0.0f,5.0f)
 	[
 		SNew(SUniformGridPanel)
-		.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-		.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-		.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+		.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+		.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+		.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 		+SUniformGridPanel::Slot(0,0)
 		[
 			SNew(SButton)
+			.Visibility(bAllowSaveAndClose ? EVisibility::Visible : EVisibility::Collapsed)
 			.HAlign(HAlign_Center)
-			.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
-			.IsEnabled(this, &SSourceControlSubmitWidget::IsSubmitEnabled)
-			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "OKButton", "Submit") )
-			.OnClicked(this, &SSourceControlSubmitWidget::SubmitClicked)
+			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+			.Text(NSLOCTEXT("SourceControl.SubmitPanel", "Save", "Save"))
+			.ToolTipText(NSLOCTEXT("SourceControl.SubmitPanel", "Save_Tooltip", "Save the description and close without submitting."))
+			.OnClicked(this, &SSourceControlSubmitWidget::SaveAndCloseClicked)
 		]
 		+SUniformGridPanel::Slot(1,0)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
-			.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+			.IsEnabled(this, &SSourceControlSubmitWidget::IsSubmitEnabled)
+			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "OKButton", "Submit") )
+			.OnClicked(this, &SSourceControlSubmitWidget::SubmitClicked)
+		]
+		+SUniformGridPanel::Slot(2,0)
+		[
+			SNew(SButton)
+			.HAlign(HAlign_Center)
+			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "CancelButton", "Cancel") )
 			.OnClicked(this, &SSourceControlSubmitWidget::CancelClicked)
 		]
@@ -297,7 +432,7 @@ TSharedPtr<SWidget> SSourceControlSubmitWidget::OnCreateContextMenu()
 			MenuBuilder.AddMenuEntry(
 				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepot", "Diff Against Depot"),
 				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepotTooltip", "Look at differences between your version of the asset and that in source control."),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "SourceControl.Actions.Diff"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Diff"),
 				FUIAction(
 					FExecuteAction::CreateSP(this, &SSourceControlSubmitWidget::OnDiffAgainstDepot),
 					FCanExecuteAction::CreateSP(this, &SSourceControlSubmitWidget::CanDiffAgainstDepot)
@@ -358,13 +493,13 @@ void SSourceControlSubmitWidget::OnDiffAgainstDepotSelected(TSharedPtr<FFileTree
 
 FReply SSourceControlSubmitWidget::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent )
 {
-   // Pressing escape returns as if the user clicked cancel
-   if ( InKeyEvent.GetKey() == EKeys::Escape )
-   {
-      return CancelClicked();
-   }
+	// Pressing escape returns as if the user clicked cancel
+	if (InKeyEvent.GetKey() == EKeys::Escape)
+	{
+		return CancelClicked();
+	}
 
-   return FReply::Unhandled();
+	return FReply::Unhandled();
 }
 
 TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(TSharedPtr<FFileTreeItem> Item, const FName ColumnID) const
@@ -394,7 +529,7 @@ TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(T
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush(Item->GetIconName()))
+				.Image(FAppStyle::GetBrush(Item->GetIconName()))
 				.ToolTipText(Item->GetIconTooltip())
 			];
 	}
@@ -430,7 +565,7 @@ ECheckBoxState SSourceControlSubmitWidget::GetToggleSelectedState() const
 	ECheckBoxState PendingState = ECheckBoxState::Checked;
 
 	// Iterate through the list of selected items
-	for (const auto& Item : ListViewItems)
+	for (const TSharedPtr<FFileTreeItem>& Item : ListViewItems)
 	{
 		if (Item->GetCheckBoxState() == ECheckBoxState::Unchecked)
 		{
@@ -447,7 +582,7 @@ ECheckBoxState SSourceControlSubmitWidget::GetToggleSelectedState() const
 
 void SSourceControlSubmitWidget::OnToggleSelectedCheckBox(ECheckBoxState InNewState)
 {
-	for (const auto& Item : ListViewItems)
+	for (const TSharedPtr<FFileTreeItem>& Item : ListViewItems)
 	{
 		Item->SetCheckBoxState(InNewState);
 	}
@@ -463,7 +598,7 @@ void SSourceControlSubmitWidget::FillChangeListDescription(FChangeListDescriptio
 	OutDesc.FilesForAdd.Empty();
 	OutDesc.FilesForSubmit.Empty();
 
-	for (const auto& Item : ListViewItems)
+	for (const TSharedPtr<FFileTreeItem>& Item : ListViewItems)
 	{
 		if (Item->GetCheckBoxState() == ECheckBoxState::Checked)
 		{
@@ -498,7 +633,6 @@ FReply SSourceControlSubmitWidget::SubmitClicked()
 	return FReply::Handled();
 }
 
-
 FReply SSourceControlSubmitWidget::CancelClicked()
 {
 	DialogResult = ESubmitResults::SUBMIT_CANCELED;
@@ -507,6 +641,13 @@ FReply SSourceControlSubmitWidget::CancelClicked()
 	return FReply::Handled();
 }
 
+FReply SSourceControlSubmitWidget::SaveAndCloseClicked()
+{
+	DialogResult = ESubmitResults::SUBMIT_SAVED;
+	ParentFrame.Pin()->RequestDestroyWindow();
+
+	return FReply::Handled();
+}
 
 bool SSourceControlSubmitWidget::IsSubmitEnabled() const
 {
@@ -516,7 +657,7 @@ bool SSourceControlSubmitWidget::IsSubmitEnabled() const
 
 EVisibility SSourceControlSubmitWidget::IsWarningPanelVisible() const
 {
-	return IsSubmitEnabled()? EVisibility::Hidden : EVisibility::Visible;
+	return IsSubmitEnabled() ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 
@@ -622,7 +763,6 @@ void SSourceControlSubmitWidget::SortTree()
 		}
 	}
 }
-
 
 #undef LOCTEXT_NAMESPACE
 

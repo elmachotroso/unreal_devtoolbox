@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "MassLODSubsystem.h"
+#include "MassProcessor.h"
 #include "MassLODCollector.h"
 #include "MassLODCalculator.h"
 #include "MassLODTickRateController.h"
@@ -162,7 +162,7 @@ struct MASSLOD_API FMassSimulationVariableTickSharedFragment : public FMassShare
 };
 
 UCLASS(meta = (DisplayName = "Simulation LOD"))
-class MASSLOD_API UMassSimulationLODProcessor : public UMassLODProcessorBase
+class MASSLOD_API UMassSimulationLODProcessor : public UMassProcessor
 {
 	GENERATED_BODY()
 
@@ -172,9 +172,9 @@ public:
 protected:
 
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
-	void CalculateLODForConfig(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context, FMassSimulationLODParameters& LODParams);
+	void CalculateLODForConfig(FMassEntityManager& EntityManager, FMassExecutionContext& Context, FMassSimulationLODParameters& LODParams);
 
 	FMassEntityQuery EntityQuery;
 	FMassEntityQuery EntityQueryCalculateLOD;

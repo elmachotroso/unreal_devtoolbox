@@ -19,7 +19,7 @@
 #include "Factories/FbxStaticMeshImportData.h"
 #include "Factories/FbxTextureImportData.h"
 #include "Factories/FbxImportUI.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ObjectTools.h"
 #include "AssetImportTask.h"
 #include "FbxImporter.h"
@@ -32,15 +32,18 @@
 #include "DesktopPlatformModule.h"
 #include "EditorDirectories.h"
 #include "Framework/Application/SlateApplication.h"
+#include "InterchangeAssetImportData.h"
+#include "InterchangeFilePickerBase.h"
+#include "InterchangePipelineBase.h"
 #include "InterchangeManager.h"
+#include "InterchangeProjectSettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Misc/CoreMisc.h"
-#include "Settings/EditorExperimentalSettings.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSkinWeightsUtilities, Log, All);
 
-bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMesh, const FString& Path, int32 TargetLODIndex, const FName& ProfileName)
+bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMesh, const FString& Path, int32 TargetLODIndex, const FName& ProfileName, const bool bIsReimport)
 {
 	check(SkeletalMesh);
 	check(SkeletalMesh->GetLODInfo(TargetLODIndex));
@@ -64,11 +67,9 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 
 	//If Interchange is enable use it if not use the old path
 
-	bool bUseInterchangeFramework = false;
+	bool bUseInterchangeFramework = UInterchangeManager::IsInterchangeImportEnabled();
 	UInterchangeManager& InterchangeManager = UInterchangeManager::GetInterchangeManager();
-#if WITH_EDITOR
-	bUseInterchangeFramework = GetDefault<UEditorExperimentalSettings>()->bEnableInterchangeFramework;
-#endif
+	const FString FileExtension = FPaths::GetExtension(AbsoluteFilePath);
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 	FString ImportAssetPath = TEXT("/Engine/TempEditor/SkeletalMeshTool");
@@ -100,22 +101,33 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 	UObject* ImportedObject = nullptr;
 	UnFbx::FBXImportOptions ImportOptions;
 
-	if (bUseInterchangeFramework)
+	//Only use interchange if the base skeletal mesh was imported with interchange
+	const UInterchangeAssetImportData* SelectedInterchangeAssetImportData = Cast<UInterchangeAssetImportData>(SkeletalMesh->GetAssetImportData());
+	if (bUseInterchangeFramework && SelectedInterchangeAssetImportData)
 	{
 		UE::Interchange::FScopedSourceData ScopedSourceData(AbsoluteFilePath);
-
+		const UInterchangeProjectSettings* InterchangeProjectSettings = GetDefault<UInterchangeProjectSettings>();
 		FImportAssetParameters ImportAssetParameters;
 		ImportAssetParameters.bIsAutomated = true; // From the InterchangeManager point of view, this is considered an automated import
 
+		if (const UClass* GenericPipelineClass = InterchangeProjectSettings->GenericPipelineClass.LoadSynchronous())
+		{
+			if (UInterchangePipelineBase* GenericPipeline = NewObject<UInterchangePipelineBase>(GetTransientPackage(), GenericPipelineClass))
+			{
+				GenericPipeline->AdjustSettingsForContext(bIsReimport ? EInterchangePipelineContext::AssetAlternateSkinningReimport : EInterchangePipelineContext::AssetAlternateSkinningImport, nullptr);
+				ImportAssetParameters.OverridePipelines.Add(GenericPipeline);
+			}
+		}
+
 		//TODO create a pipeline that set all the proper skeletalmesh options (look at the legacy system setup)
 		UE::Interchange::FAssetImportResultRef AssetImportResult = InterchangeManager.ImportAssetAsync(ImportAssetPath, ScopedSourceData.GetSourceData(), ImportAssetParameters);
-		AssetImportResult->WaitUntilDone();
+		AssetImportResult->WaitUntilDone(); //TODO, do not stall the main thread here, WaitUntilDone will tick taskgraph so the job can complete even if we wait on the game thread.
 		if (USkeletalMesh* ImportedSkeletalMesh = Cast< USkeletalMesh >(AssetImportResult->GetFirstAssetOfClass(USkeletalMesh::StaticClass())))
 		{
 			ImportedObject = ImportedSkeletalMesh;
 		}
 	}
-	else
+	else if(FileExtension.Equals(TEXT("fbx"), ESearchCase::IgnoreCase))
 	{
 		//Import the alternate fbx into a temporary skeletal mesh using the same import options
 		UFbxFactory* FbxFactory = NewObject<UFbxFactory>(UFbxFactory::StaticClass());
@@ -183,7 +195,7 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 
 		for (FString AssetPath : Task->ImportedObjectPaths)
 		{
-			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*AssetPath));
+			FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(AssetPath));
 			ImportedObject = AssetData.GetAsset();
 			if (ImportedObject != nullptr)
 			{
@@ -199,7 +211,7 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 	USkeletalMesh* TmpSkeletalMesh = Cast<USkeletalMesh>(ImportedObject);
 	if (TmpSkeletalMesh == nullptr || TmpSkeletalMesh->GetSkeleton() == nullptr)
 	{
-		UE_LOG(LogSkinWeightsUtilities, Error, TEXT("Failed to import Skin Weight Profile from provided FBX file (%s)."), *Path);
+		UE_LOG(LogSkinWeightsUtilities, Error, TEXT("Failed to import Skin Weight Profile from provided file (%s)."), *Path);
 		DeletePathAssets();
 		return false;
 	}
@@ -220,13 +232,13 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 				// Prepare the profile data
 				FSkinWeightProfileInfo* Profile = SkeletalMesh->GetSkinWeightProfiles().FindByPredicate([ProfileName](FSkinWeightProfileInfo Profile) { return Profile.Name == ProfileName; });
 
-				const bool bIsReimport = Profile != nullptr;
-				FText TransactionName = bIsReimport ? NSLOCTEXT("UnrealEd", "UpdateAlternateSkinningWeight", "Update Alternate Skinning Weight")
+				const bool bIsReimportLocal = Profile != nullptr;
+				FText TransactionName = bIsReimportLocal ? NSLOCTEXT("UnrealEd", "UpdateAlternateSkinningWeight", "Update Alternate Skinning Weight")
 					: NSLOCTEXT("UnrealEd", "ImportAlternateSkinningWeight", "Import Alternate Skinning Weight");
 				FScopedTransaction ScopedTransaction(TransactionName);
 				SkeletalMesh->Modify();
 
-				if (bIsReimport)
+				if (bIsReimportLocal)
 				{
 					// Update source file path
 					FString& StoredPath = Profile->PerLODSourceFiles.FindOrAdd(TargetLODIndex);
@@ -251,7 +263,7 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 				if (!bResult)
 				{
 					// Remove invalid profile data due to failed import
-					if (!bIsReimport)
+					if (!bIsReimportLocal)
 					{
 						TargetLODModel.SkinWeightProfiles.Remove(ProfileName);
 					}
@@ -263,7 +275,7 @@ bool FSkinWeightsUtilities::ImportAlternateSkinWeight(USkeletalMesh* SkeletalMes
 				}
 
 				// Only add if it is an initial import and it was successful 
-				if (!bIsReimport && bResult)
+				if (!bIsReimportLocal && bResult)
 				{
 					FSkinWeightProfileInfo SkeletalMeshProfile;
 					SkeletalMeshProfile.DefaultProfile = (SkeletalMesh->GetNumSkinWeightProfiles() == 0);
@@ -311,14 +323,14 @@ bool FSkinWeightsUtilities::ReimportAlternateSkinWeight(USkeletalMesh* SkeletalM
 		FString AbsoluteFilePath = UAssetImportData::ResolveImportFilename(PathName, SkeletalMesh->GetOutermost());
 		if (FPaths::FileExists(AbsoluteFilePath))
 		{
-			bResult |= FSkinWeightsUtilities::ImportAlternateSkinWeight(SkeletalMesh, AbsoluteFilePath, TargetLODIndex, ProfileInfo.Name);
+			bResult |= FSkinWeightsUtilities::ImportAlternateSkinWeight(SkeletalMesh, AbsoluteFilePath, TargetLODIndex, ProfileInfo.Name, true);
 		}
 		else
 		{
-			const FString PickedFileName = FSkinWeightsUtilities::PickSkinWeightFBXPath(TargetLODIndex, SkeletalMesh);
+			const FString PickedFileName = FSkinWeightsUtilities::PickSkinWeightPath(TargetLODIndex, SkeletalMesh);
 			if (!PickedFileName.IsEmpty() && FPaths::FileExists(PickedFileName))
 			{
-				bResult |= FSkinWeightsUtilities::ImportAlternateSkinWeight(SkeletalMesh, PickedFileName, TargetLODIndex, ProfileInfo.Name);
+				bResult |= FSkinWeightsUtilities::ImportAlternateSkinWeight(SkeletalMesh, PickedFileName, TargetLODIndex, ProfileInfo.Name, true);
 			}
 		}
 	}
@@ -383,58 +395,109 @@ bool FSkinWeightsUtilities::RemoveSkinnedWeightProfileData(USkeletalMesh* Skelet
 	return bBuildSuccess;
 }
 
-FString FSkinWeightsUtilities::PickSkinWeightFBXPath(int32 LODIndex, USkeletalMesh* SkeletalMesh)
+FString FSkinWeightsUtilities::PickSkinWeightPath(int32 LODIndex, USkeletalMesh* SkeletalMesh)
 {
 	FString PickedFileName("");
+	
+	bool bUseInterchangeFramework = UInterchangeManager::IsInterchangeImportEnabled();
+	const UInterchangeAssetImportData* SelectedInterchangeAssetImportData = Cast<UInterchangeAssetImportData>(SkeletalMesh->GetAssetImportData());
 
-	FString ExtensionStr;
-	ExtensionStr += TEXT("FBX files|*.fbx|");
-
-	// First, display the file open dialog for selecting the file.
-	TArray<FString> OpenFilenames;
-	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-	bool bOpen = false;
-	if (DesktopPlatform)
+	if (bUseInterchangeFramework && SelectedInterchangeAssetImportData)
 	{
-		// Try and retrieve the path containing the original skeletal mesh source data, and set it as default path for the file dialog
-		UFbxSkeletalMeshImportData* ImportData = SkeletalMesh ? Cast<UFbxSkeletalMeshImportData>(SkeletalMesh->GetAssetImportData()) : nullptr;
-		FString DefaultPath;
-		FString TempString;
-		if (ImportData)
+		const FString& FirstSourceFile = SelectedInterchangeAssetImportData->ScriptGetFirstFilename();
+		FString DefaultPath = FPaths::GetPath(FirstSourceFile);
+		// Otherwise resort back to last imported directory
+		if (!FPaths::DirectoryExists(DefaultPath))
 		{
-			ImportData->GetImportContentFilename(DefaultPath, TempString);
-			DefaultPath = FPaths::GetPath(DefaultPath);
+			DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_IMPORT);
 		}
-		
-		// Otherwise resort back to last FBX directory
-		if(!FPaths::DirectoryExists(DefaultPath))
+
+		//Ask the user for a file path
+		const UInterchangeProjectSettings* InterchangeProjectSettings = GetDefault<UInterchangeProjectSettings>();
+		UInterchangeFilePickerBase* FilePicker = nullptr;
+
+		//In runtime we do not have any pipeline configurator
+#if WITH_EDITORONLY_DATA
+		TSoftClassPtr <UInterchangeFilePickerBase> FilePickerClass = InterchangeProjectSettings->FilePickerClass;
+		if (FilePickerClass.IsValid())
 		{
-			DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::FBX);
-		}		
-		
-		const FString DialogTitle = TEXT("Pick FBX file containing Skin Weight data for LOD ") + FString::FormatAsNumber(LODIndex);
-		bOpen = DesktopPlatform->OpenFileDialog(
-			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-			DialogTitle,
-			*DefaultPath,
-			TEXT(""),
-			*ExtensionStr,
-			EFileDialogFlags::None,
-			OpenFilenames
-		);
+			UClass* FilePickerClassLoaded = FilePickerClass.LoadSynchronous();
+			if (FilePickerClassLoaded)
+			{
+				FilePicker = NewObject<UInterchangeFilePickerBase>(GetTransientPackage(), FilePickerClassLoaded, NAME_None, RF_NoFlags);
+			}
+		}
+#endif
+		if (FilePicker)
+		{
+			FInterchangeFilePickerParameters Parameters;
+			Parameters.bAllowMultipleFiles = false;
+			Parameters.DefaultPath = DefaultPath;
+			Parameters.Title = FText::Format(NSLOCTEXT("FSkinWeightsUtilities", "PickSkinWeightPath_Title", "Choose a file to import alternate skinning for LOD {0}"), FText::AsNumber(LODIndex));
+			TArray<FString> Filenames;
+
+			if (FilePicker->ScriptedFilePickerForTranslatorAssetType(EInterchangeTranslatorAssetType::Meshes, Parameters, Filenames))
+			{
+				ensure(Filenames.Num() == 1);
+				PickedFileName = Filenames[0];
+				FEditorDirectories::Get().SetLastDirectory(ELastDirectory::GENERIC_IMPORT, FPaths::GetPath(PickedFileName));
+			}
+			else
+			{
+				// Error
+			}
+		}
 	}
-
-	if (bOpen)
+	else
 	{
-		if (OpenFilenames.Num() == 1)
+		bool bOpen = false;
+		TArray<FString> OpenFilenames;
+		FString ExtensionStr;
+		ExtensionStr += TEXT("FBX files|*.fbx|");
+
+		// First, display the file open dialog for selecting the file.
+		IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+		if (DesktopPlatform)
 		{
-			PickedFileName = OpenFilenames[0];
-			// Set last directory path for FBX files
-			FEditorDirectories::Get().SetLastDirectory(ELastDirectory::FBX, FPaths::GetPath(PickedFileName));
-		}
-		else
-		{
-			// Error
+			// Try and retrieve the path containing the original skeletal mesh source data, and set it as default path for the file dialog
+			UFbxSkeletalMeshImportData* ImportData = SkeletalMesh ? Cast<UFbxSkeletalMeshImportData>(SkeletalMesh->GetAssetImportData()) : nullptr;
+			FString DefaultPath;
+			FString TempString;
+			if (ImportData)
+			{
+				ImportData->GetImportContentFilename(DefaultPath, TempString);
+				DefaultPath = FPaths::GetPath(DefaultPath);
+			}
+		
+			// Otherwise resort back to last FBX directory
+			if(!FPaths::DirectoryExists(DefaultPath))
+			{
+				DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::FBX);
+			}		
+
+			const FString DialogTitle = TEXT("Pick FBX file containing Skin Weight data for LOD ") + FString::FormatAsNumber(LODIndex);
+			bOpen = DesktopPlatform->OpenFileDialog(
+				FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+				DialogTitle,
+				*DefaultPath,
+				TEXT(""),
+				*ExtensionStr,
+				EFileDialogFlags::None,
+				OpenFilenames
+			);
+			if (bOpen)
+			{
+				if (OpenFilenames.Num() == 1)
+				{
+					PickedFileName = OpenFilenames[0];
+					// Set last directory path for FBX files
+					FEditorDirectories::Get().SetLastDirectory(ELastDirectory::FBX, FPaths::GetPath(PickedFileName));
+				}
+				else
+				{
+					// Error
+				}
+			}
 		}
 	}
 

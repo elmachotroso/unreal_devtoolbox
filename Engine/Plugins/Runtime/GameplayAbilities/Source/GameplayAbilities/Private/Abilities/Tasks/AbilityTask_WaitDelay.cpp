@@ -3,6 +3,9 @@
 #include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "TimerManager.h"
 #include "AbilitySystemGlobals.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AbilityTask_WaitDelay)
 
 UAbilityTask_WaitDelay::UAbilityTask_WaitDelay(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -41,6 +44,13 @@ void UAbilityTask_WaitDelay::OnTimeFinish()
 
 FString UAbilityTask_WaitDelay::GetDebugString() const
 {
-	float TimeLeft = Time - GetWorld()->TimeSince(TimeStarted);
-	return FString::Printf(TEXT("WaitDelay. Time: %.2f. TimeLeft: %.2f"), Time, TimeLeft);
+	if (UWorld* World = GetWorld())
+	{
+		const float TimeLeft = Time - World->TimeSince(TimeStarted);
+		return FString::Printf(TEXT("WaitDelay. Time: %.2f. TimeLeft: %.2f"), Time, TimeLeft);
+	}
+	else
+	{
+		return FString::Printf(TEXT("WaitDelay. Time: %.2f. Time Started: %.2f"), Time, TimeStarted);
+	}
 }

@@ -5,13 +5,15 @@
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ScopedTransaction.h"
 #include "Engine/SkeletalMesh.h"
 #include "RigVMPythonUtils.h"
 #endif
 
 #include "ControlRig.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigHierarchyController)
 
 ////////////////////////////////////////////////////////////////////////////////
 // URigHierarchyController
@@ -78,12 +80,22 @@ bool URigHierarchyController::SelectElement(FRigElementKey InKey, bool bSelect, 
 		return false;
 	}
 
+	const bool bSelectionState = Hierarchy->OrderedSelection.Contains(InKey);
+	ensure(bSelectionState == Element->bSelected);
 	if(Element->bSelected == bSelect)
 	{
 		return false;
 	}
 
 	Element->bSelected = bSelect;
+	if(bSelect)
+	{
+		Hierarchy->OrderedSelection.Add(InKey);
+	}
+	else
+	{
+		Hierarchy->OrderedSelection.Remove(InKey);
+	}
 
 	if(Element->bSelected)
 	{
@@ -93,6 +105,8 @@ bool URigHierarchyController::SelectElement(FRigElementKey InKey, bool bSelect, 
 	{
 		Notify(ERigHierarchyNotification::ElementDeselected, Element);
 	}
+
+	Hierarchy->UpdateVisibilityOnProxyControls();
 
 	return true;
 }
@@ -141,7 +155,7 @@ bool URigHierarchyController::SetSelection(const TArray<FRigElementKey>& InKeys,
 			}
 		}
 	}
-	
+
 #if WITH_EDITOR
 	if (bPrintPythonCommand && !bSuspendPythonPrinting)
 	{
@@ -159,7 +173,7 @@ bool URigHierarchyController::SetSelection(const TArray<FRigElementKey>& InKeys,
 		}
 	}
 #endif
-	
+
 	return bResult;
 }
 
@@ -180,7 +194,7 @@ FRigElementKey URigHierarchyController::AddBone(FName InName, FRigElementKey InP
 	}
 #endif
 
-	FRigBoneElement* NewElement = new FRigBoneElement();
+	FRigBoneElement* NewElement = MakeElement<FRigBoneElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);
 		NewElement->Key.Type = ERigElementType::Bone;
@@ -191,10 +205,12 @@ FRigElementKey URigHierarchyController::AddBone(FName InName, FRigElementKey InP
 		if(bTransformInGlobal)
 		{
 			Hierarchy->SetTransform(NewElement, InTransform, ERigTransformType::InitialGlobal, true, false);
+			Hierarchy->SetTransform(NewElement, InTransform, ERigTransformType::CurrentGlobal, true, false);
 		}
 		else
 		{
 			Hierarchy->SetTransform(NewElement, InTransform, ERigTransformType::InitialLocal, true, false);
+			Hierarchy->SetTransform(NewElement, InTransform, ERigTransformType::CurrentLocal, true, false);
 		}
 
 		NewElement->Pose.Current = NewElement->Pose.Initial;
@@ -240,7 +256,7 @@ FRigElementKey URigHierarchyController::AddNull(FName InName, FRigElementKey InP
 	}
 #endif
 
-	FRigNullElement* NewElement = new FRigNullElement();
+	FRigNullElement* NewElement = MakeElement<FRigNullElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);		
 		NewElement->Key.Type = ERigElementType::Null;
@@ -256,8 +272,6 @@ FRigElementKey URigHierarchyController::AddNull(FName InName, FRigElementKey InP
 			Hierarchy->SetTransform(NewElement, InTransform, ERigTransformType::InitialLocal, true, false);
 		}
 
-		NewElement->Parent.MarkDirty(ERigTransformType::InitialGlobal);
-		NewElement->Parent.Current = NewElement->Parent.Initial;
 		NewElement->Pose.Current = NewElement->Pose.Initial;
 	}
 
@@ -307,7 +321,7 @@ FRigElementKey URigHierarchyController::AddControl(
 	}
 #endif
 
-	FRigControlElement* NewElement = new FRigControlElement();
+	FRigControlElement* NewElement = MakeElement<FRigControlElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);		
 		NewElement->Key.Type = ERigElementType::Control;
@@ -317,17 +331,20 @@ FRigElementKey URigHierarchyController::AddControl(
 		{
 			NewElement->Settings.SetupLimitArrayForType();
 		}
+
+		if(!NewElement->Settings.DisplayName.IsNone())
+		{
+			NewElement->Settings.DisplayName = Hierarchy->GetSafeNewDisplayName(InParent, NewElement->Settings.DisplayName.ToString()); 
+		}
 		AddElement(NewElement, Hierarchy->Get(Hierarchy->GetIndex(InParent)), false);
 		
 		NewElement->Offset.Set(ERigTransformType::InitialLocal, InOffsetTransform);  
 		NewElement->Shape.Set(ERigTransformType::InitialLocal, InShapeTransform);  
 		Hierarchy->SetControlValue(NewElement, InValue, ERigControlValueType::Initial, false);
 
-		NewElement->Parent.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Offset.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Pose.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
-		NewElement->Parent.Current = NewElement->Parent.Initial;
 		NewElement->Offset.Current = NewElement->Offset.Initial;
 		NewElement->Pose.Current = NewElement->Pose.Initial;
 		NewElement->Shape.Current = NewElement->Shape.Initial;
@@ -356,6 +373,26 @@ FRigElementKey URigHierarchyController::AddControl(
 	return NewElement->Key;
 }
 
+FRigElementKey URigHierarchyController::AddAnimationChannel(FName InName, FRigElementKey InParentControl,
+	FRigControlSettings InSettings, bool bSetupUndo, bool bPrintPythonCommand)
+{
+	if(!IsValid())
+	{
+		return FRigElementKey();
+	}
+
+	if(const FRigControlElement* ParentControl = Hierarchy->Find<FRigControlElement>(InParentControl))
+	{
+		InSettings.AnimationType = ERigControlAnimationType::AnimationChannel;
+		InSettings.bGroupWithParentControl = true;
+
+		return AddControl(InName, ParentControl->GetKey(), InSettings, InSettings.GetIdentityValue(),
+			FTransform::Identity, FTransform::Identity, bSetupUndo, bPrintPythonCommand);
+	}
+
+	return FRigElementKey();
+}
+
 FRigElementKey URigHierarchyController::AddCurve(FName InName, float InValue, bool bSetupUndo, bool bPrintPythonCommand)
 {
 	if(!IsValid())
@@ -372,7 +409,7 @@ FRigElementKey URigHierarchyController::AddCurve(FName InName, float InValue, bo
 	}
 #endif
 
-	FRigCurveElement* NewElement = new FRigCurveElement();
+	FRigCurveElement* NewElement = MakeElement<FRigCurveElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);		
 		NewElement->Key.Type = ERigElementType::Curve;
@@ -421,7 +458,7 @@ FRigElementKey URigHierarchyController::AddRigidBody(FName InName, FRigElementKe
 	}
 #endif
 
-	FRigRigidBodyElement* NewElement = new FRigRigidBodyElement();
+	FRigRigidBodyElement* NewElement = MakeElement<FRigRigidBodyElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);		
 		NewElement->Key.Type = ERigElementType::RigidBody;
@@ -473,7 +510,7 @@ FRigElementKey URigHierarchyController::AddReference(FName InName, FRigElementKe
 	}
 #endif
 
-	FRigReferenceElement* NewElement = new FRigReferenceElement();
+	FRigReferenceElement* NewElement = MakeElement<FRigReferenceElement>();
 	{
 		TGuardValue<bool> DisableCacheValidityChecks(Hierarchy->bEnableCacheValidityCheck, false);		
 		NewElement->Key.Type = ERigElementType::Reference;
@@ -1045,7 +1082,9 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromText(FString InContent
 	{
 		KeyMap.Add(Element->GetKey(), Element->GetKey());
 	}
-	
+
+	FRigHierarchyInteractionBracket InteractionBracket(Hierarchy.Get());
+
 	for(const FRigHierarchyCopyPasteContentPerElement& PerElementData : Data.Elements)
 	{
 		ErrorPipe.NumErrors = 0;
@@ -1056,38 +1095,38 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromText(FString InContent
 		{
 			case ERigElementType::Bone:
 			{
-				NewElement = new FRigBoneElement();
+				NewElement = MakeElement<FRigBoneElement>();
 				FRigBoneElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigBoneElement::StaticStruct()->GetName(), true);
 				CastChecked<FRigBoneElement>(NewElement)->BoneType = ERigBoneType::User;
 				break;
 			}
 			case ERigElementType::Null:
 			{
-				NewElement = new FRigNullElement();
+				NewElement = MakeElement<FRigNullElement>();
 				FRigNullElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigNullElement::StaticStruct()->GetName(), true);
 				break;
 			}
 			case ERigElementType::Control:
 			{
-				NewElement = new FRigControlElement();
+				NewElement = MakeElement<FRigControlElement>();
 				FRigControlElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigControlElement::StaticStruct()->GetName(), true);
 				break;
 			}
 			case ERigElementType::Curve:
 			{
-				NewElement = new FRigCurveElement();
+				NewElement = MakeElement<FRigCurveElement>();
 				FRigCurveElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigCurveElement::StaticStruct()->GetName(), true);
 				break;
 			}
 			case ERigElementType::RigidBody:
 			{
-				NewElement = new FRigRigidBodyElement();
+				NewElement = MakeElement<FRigRigidBodyElement>();
 				FRigRigidBodyElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigRigidBodyElement::StaticStruct()->GetName(), true);
 				break;
 			}
 			case ERigElementType::Reference:
 			{
-				NewElement = new FRigReferenceElement();
+				NewElement = MakeElement<FRigReferenceElement>();
 				FRigReferenceElement::StaticStruct()->ImportText(*PerElementData.Content, NewElement, nullptr, EPropertyPortFlags::PPF_None, &ErrorPipe, FRigReferenceElement::StaticStruct()->GetName(), true);
 				break;
 			}
@@ -1105,8 +1144,16 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromText(FString InContent
 		{
 			if(FRigBaseElement* ExistingElement = Hierarchy->Find(NewElement->GetKey()))
 			{
-				ExistingElement->CopyPose(NewElement, true, true);
+				ExistingElement->CopyPose(NewElement, true, true, false);
 
+				if(FRigControlElement* ControlElement = Cast<FRigControlElement>(ExistingElement))
+				{
+					Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::CurrentLocal);
+					Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::InitialLocal);
+					ControlElement->Shape.MarkDirty(ERigTransformType::CurrentGlobal);
+					ControlElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
+				}
+				
 				TArray<FRigElementKey> CurrentParents = Hierarchy->GetParents(NewElement->GetKey());
 
 				bool bUpdateParents = CurrentParents.Num() != PerElementData.Parents.Num();
@@ -1139,7 +1186,8 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromText(FString InContent
 				}
 
 				PastedKeys.Add(ExistingElement->GetKey());
-				delete NewElement;
+
+				Hierarchy->DestroyElement(NewElement);
 				continue;
 			}
 		}
@@ -1215,6 +1263,7 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromText(FString InContent
 TArray<FRigElementKey> URigHierarchyController::ImportFromHierarchyContainer(const FRigHierarchyContainer& InContainer, bool bIsCopyAndPaste)
 {
 	TMap<FRigElementKey, FRigElementKey> KeyMap;;
+	FRigHierarchyInteractionBracket InteractionBracket(Hierarchy.Get());
 
 	for(const FRigBone& Bone : InContainer.BoneHierarchy)
 	{
@@ -1244,16 +1293,21 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromHierarchyContainer(con
 		Settings.DisplayName = Control.DisplayName;
 		Settings.PrimaryAxis = Control.PrimaryAxis;
 		Settings.bIsCurve = Control.bIsCurve;
-		Settings.bAnimatable = Control.bAnimatable;
+		Settings.SetAnimationTypeFromDeprecatedData(Control.bAnimatable, Control.bGizmoEnabled);
 		Settings.SetupLimitArrayForType(Control.bLimitTranslation, Control.bLimitRotation, Control.bLimitScale);
 		Settings.bDrawLimits = Control.bDrawLimits;
 		Settings.MinimumValue = Control.MinimumValue;
 		Settings.MaximumValue = Control.MaximumValue;
-		Settings.bShapeEnabled = Control.bGizmoEnabled;
 		Settings.bShapeVisible = Control.bGizmoVisible;
 		Settings.ShapeName = Control.GizmoName;
 		Settings.ShapeColor = Control.GizmoColor;
 		Settings.ControlEnum = Control.ControlEnum;
+		Settings.bGroupWithParentControl = Settings.IsAnimatable() && (
+			Settings.ControlType == ERigControlType::Bool ||
+			Settings.ControlType == ERigControlType::Float ||
+			Settings.ControlType == ERigControlType::Integer ||
+			Settings.ControlType == ERigControlType::Vector2D
+		);
 
 		if(Settings.ShapeName == FRigControl().GizmoName)
 		{
@@ -1342,11 +1396,12 @@ TArray<FRigElementKey> URigHierarchyController::ImportFromHierarchyContainer(con
 TArray<FString> URigHierarchyController::GeneratePythonCommands()
 {
 	TArray<FString> Commands;
-	Hierarchy->ForEach([&](FRigBaseElement* Element) -> bool
+	Hierarchy->Traverse([&](FRigBaseElement* Element, bool& bContinue)
 	{
 		Commands.Append(GetAddElementPythonCommands(Element));
 		
-		return true;
+		bContinue = true;
+		return;
 	});
 
 	return Commands;
@@ -1397,11 +1452,12 @@ TArray<FString> URigHierarchyController::GetAddBonePythonCommands(FRigBoneElemen
 	}
 	
 	// AddBone(FName InName, FRigElementKey InParent, FTransform InTransform, bool bTransformInGlobal = true, ERigBoneType InBoneType = ERigBoneType::User, bool bSetupUndo = false);
-	Commands.Add(FString::Printf(TEXT("hierarchy_controller.add_bone('%s', %s, %s, False, unreal.RigBoneType.%s)"),
+	Commands.Add(FString::Printf(TEXT("hierarchy_controller.add_bone('%s', %s, %s, False, %s)"),
 		*Bone->GetName().ToString(),
 		*ParentKeyStr,
 		*TransformStr,
-		Bone->BoneType == ERigBoneType::Imported ? TEXT("IMPORTED") : TEXT("USER")));
+		*RigVMPythonUtils::EnumValueToPythonString<ERigBoneType>((int64)Bone->BoneType)
+	));
 
 	return Commands;
 }
@@ -1437,7 +1493,7 @@ TArray<FString> URigHierarchyController::GetAddControlPythonCommands(FRigControl
 	FRigControlSettings& Settings = Control->Settings;
 	FString SettingsStr;
 	{
-		FString ControlNamePythonized = RigVMPythonUtils::NameToPep8(Control->GetName().ToString());
+		FString ControlNamePythonized = RigVMPythonUtils::PythonizeName(Control->GetName().ToString());
 		SettingsStr = FString::Printf(TEXT("control_settings_%s"),
 			*ControlNamePythonized);
 			
@@ -1482,7 +1538,7 @@ TArray<FString> URigHierarchyController::GetAddRigidBodyPythonCommands(FRigRigid
 		ParentKeyStr = RigidBody->ParentElement->GetKey().ToPythonString();
 	}
 
-	FString RigidBodyNamePythonized = RigVMPythonUtils::NameToPep8(RigidBody->GetName().ToString());
+	FString RigidBodyNamePythonized = RigVMPythonUtils::PythonizeName(RigidBody->GetName().ToString());
 	FRigRigidBodySettings& Settings = RigidBody->Settings;
 	FString SettingsStr;
 	{
@@ -1510,19 +1566,10 @@ TArray<FString> URigHierarchyController::GetAddRigidBodyPythonCommands(FRigRigid
 TArray<FString> URigHierarchyController::GetSetControlValuePythonCommands(const FRigControlElement* Control, const FRigControlValue& Value,
                                                                           const ERigControlValueType& Type) const
 {
-	FString TypeStr;
-	switch (Type)
-	{
-		case ERigControlValueType::Initial: TypeStr = TEXT("INITIAL"); break;
-		case ERigControlValueType::Current: TypeStr = TEXT("CURRENT"); break;
-		case ERigControlValueType::Minimum: TypeStr = TEXT("MINIMUM"); break;
-		case ERigControlValueType::Maximum: TypeStr = TEXT("MAXIMUM"); break;
-		default: ensure(false);
-	}
-	return {FString::Printf(TEXT("hierarchy.set_control_value(%s, %s, unreal.RigControlValueType.%s)"),
+	return {FString::Printf(TEXT("hierarchy.set_control_value(%s, %s, %s)"),
 		*Control->GetKey().ToPythonString(),
 		*Value.ToPythonString(Control->Settings.ControlType),
-		*TypeStr)};
+		*RigVMPythonUtils::EnumValueToPythonString<ERigControlValueType>((int64)Type))};
 }
 
 TArray<FString> URigHierarchyController::GetSetControlOffsetTransformPythonCommands(const FRigControlElement* Control,
@@ -1553,16 +1600,24 @@ void URigHierarchyController::Notify(ERigHierarchyNotification InNotifType, cons
 	{
 		return;
 	}
-	if(bSuspendNotifications)
+	if(bSuspendAllNotifications)
 	{
 		return;
 	}
+	if(bSuspendSelectionNotifications)
+	{
+		if(InNotifType == ERigHierarchyNotification::ElementSelected ||
+			InNotifType == ERigHierarchyNotification::ElementDeselected)
+		{
+			return;
+		}
+	}	
 	Hierarchy->Notify(InNotifType, InElement);
 }
 
 void URigHierarchyController::HandleHierarchyModified(ERigHierarchyNotification InNotifType, URigHierarchy* InHierarchy, const FRigBaseElement* InElement) const
 {
-	if(bSuspendNotifications)
+	if(bSuspendAllNotifications)
 	{
 		return;
 	}
@@ -1575,16 +1630,25 @@ int32 URigHierarchyController::AddElement(FRigBaseElement* InElementToAdd, FRigB
 {
 	ensure(IsValid());
 
+	InElementToAdd->NameString = InElementToAdd->Key.Name.ToString();
 	InElementToAdd->SubIndex = Hierarchy->Num(InElementToAdd->Key.Type);
 	InElementToAdd->Index = Hierarchy->Elements.Add(InElementToAdd);
 	Hierarchy->ElementsPerType[URigHierarchy::RigElementTypeToFlatIndex(InElementToAdd->GetKey().Type)].Add(InElementToAdd);
 
 	Hierarchy->IndexLookup.Add(InElementToAdd->Key, InElementToAdd->Index);
-	Hierarchy->TopologyVersion++;
+	Hierarchy->IncrementTopologyVersion();
 
 	{
-		const TGuardValue<bool> Guard(bSuspendNotifications, true);
+		const TGuardValue<bool> Guard(bSuspendAllNotifications, true);
 		SetParent(InElementToAdd, InFirstParent, bMaintainGlobalTransform);
+	}
+
+	if(FRigControlElement* ControlElement = Cast<FRigControlElement>(InElementToAdd))
+	{
+		Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::CurrentLocal);
+		Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::InitialLocal);
+		ControlElement->Shape.MarkDirty(ERigTransformType::CurrentGlobal);
+		ControlElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
 	}
 
 	// only notify once at the end
@@ -1737,10 +1801,11 @@ bool URigHierarchyController::RemoveElement(FRigBaseElement* InElement)
 		{
 			ControlElement->Settings.Customization.AvailableSpaces.Remove(InElement->GetKey());
 			ControlElement->Settings.Customization.RemovedSpaces.Remove(InElement->GetKey());
+			ControlElement->Settings.DrivenControls.Remove(InElement->GetKey());
 		}
 	}
 	
-	Hierarchy->TopologyVersion++;
+	Hierarchy->IncrementTopologyVersion();
 
 	Notify(ERigHierarchyNotification::ElementRemoved, InElement);
 	if(Hierarchy->Num() == 0)
@@ -1748,7 +1813,7 @@ bool URigHierarchyController::RemoveElement(FRigBaseElement* InElement)
 		Notify(ERigHierarchyNotification::HierarchyReset, nullptr);
 	}
 
-	delete InElement;
+	Hierarchy->DestroyElement(InElement);
 
 	Hierarchy->EnsureCacheValidity();
 
@@ -1808,6 +1873,57 @@ FRigElementKey URigHierarchyController::RenameElement(FRigElementKey InElement, 
 	return bRenamed ? Element->GetKey() : FRigElementKey();
 }
 
+FName URigHierarchyController::SetDisplayName(FRigElementKey InControl, FName InDisplayName, bool bRenameElement, bool bSetupUndo,
+	bool bPrintPythonCommand)
+{
+	if(!IsValid())
+	{
+		return NAME_None;
+	}
+
+	FRigControlElement* ControlElement = Hierarchy->Find<FRigControlElement>(InControl);
+	if(ControlElement == nullptr)
+	{
+		ReportWarningf(TEXT("Cannot Rename Control: '%s' not found."), *InControl.ToString());
+		return NAME_None;
+	}
+
+#if WITH_EDITOR
+	TSharedPtr<FScopedTransaction> TransactionPtr;
+	if(bSetupUndo)
+	{
+		TransactionPtr = MakeShared<FScopedTransaction>(NSLOCTEXT("RigHierarchyController", "Set Display Name on Control", "Set Display Name on Control"));
+		Hierarchy->Modify();
+	}
+#endif
+
+	const FName NewDisplayName = SetDisplayName(ControlElement, InDisplayName, bRenameElement);
+	const bool bDisplayNameChanged = !NewDisplayName.IsNone();
+
+#if WITH_EDITOR
+	if(!bDisplayNameChanged && TransactionPtr.IsValid())
+	{
+		TransactionPtr->Cancel();
+	}
+	TransactionPtr.Reset();
+
+	if (bDisplayNameChanged && bPrintPythonCommand && !bSuspendPythonPrinting)
+	{
+		UBlueprint* Blueprint = GetTypedOuter<UBlueprint>();
+		if (Blueprint)
+		{
+			RigVMPythonUtils::Print(Blueprint->GetFName().ToString(), 
+				FString::Printf(TEXT("hierarchy_controller.set_display_name(%s, '%s', %s)"),
+				*InControl.ToPythonString(),
+				*InDisplayName.ToString(),
+				(bRenameElement) ? TEXT("True") : TEXT("False")));
+		}
+	}
+#endif
+
+	return NewDisplayName;
+}
+
 bool URigHierarchyController::RenameElement(FRigBaseElement* InElement, const FName &InName, bool bClearSelection)
 {
 	if(InElement == nullptr)
@@ -1837,6 +1953,7 @@ bool URigHierarchyController::RenameElement(FRigBaseElement* InElement, const FN
    
 		TGuardValue<TMap<FRigElementKey, int32>> MapGuard(Hierarchy->IndexLookup, TemporaryMap);
 		InElement->Key.Name = Hierarchy->GetSafeNewName(InName.ToString(), InElement->GetType());
+		InElement->NameString = InElement->Key.Name.ToString();
 	}
 	
 	const FRigElementKey NewKey = InElement->GetKey();
@@ -1867,11 +1984,19 @@ bool URigHierarchyController::RenameElement(FRigBaseElement* InElement, const FN
 					Favorite.Name = NewKey.Name;
 				}
 			}
+
+			for(FRigElementKey& DrivenControl : ControlElement->Settings.DrivenControls)
+			{
+				if(DrivenControl == OldKey)
+				{
+					DrivenControl.Name = NewKey.Name;
+				}
+			}
 		}
 	}
 	
 	Hierarchy->PreviousNameMap.FindOrAdd(NewKey) = OldKey;
-	Hierarchy->TopologyVersion++;
+	Hierarchy->IncrementTopologyVersion();
 	Notify(ERigHierarchyNotification::ElementRenamed, InElement);
 
 	if (!bClearSelection && bWasSelected)
@@ -1880,6 +2005,39 @@ bool URigHierarchyController::RenameElement(FRigBaseElement* InElement, const FN
 	}
 
 	return true;
+}
+
+FName URigHierarchyController::SetDisplayName(FRigControlElement* InControlElement, const FName& InDisplayName, bool bRenameElement)
+{
+	if(InControlElement == nullptr)
+	{
+		return NAME_None;
+	}
+
+	if (InControlElement->Settings.DisplayName.IsEqual(InDisplayName, ENameCase::CaseSensitive))
+	{
+		return NAME_None;
+	}
+
+	FRigElementKey ParentElementKey;
+	if(const FRigBaseElement* ParentElement = Hierarchy->GetFirstParent(InControlElement))
+	{
+		ParentElementKey = ParentElement->GetKey();
+	}
+
+	const FString DesiredDisplayName = InDisplayName.IsNone() ? FString() : InDisplayName.ToString();
+	const FName DisplayName = Hierarchy->GetSafeNewDisplayName(ParentElementKey, DesiredDisplayName);
+	InControlElement->Settings.DisplayName = DisplayName;
+
+	Hierarchy->IncrementTopologyVersion();
+	Notify(ERigHierarchyNotification::ControlSettingChanged, InControlElement);
+
+	if(bRenameElement)
+	{
+		RenameElement(InControlElement, InControlElement->Settings.DisplayName, false);
+	}
+
+	return InControlElement->Settings.DisplayName;
 }
 
 bool URigHierarchyController::AddParent(FRigElementKey InChild, FRigElementKey InParent, float InWeight, bool bMaintainGlobalTransform, bool bSetupUndo)
@@ -1953,11 +2111,40 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 		}
 	}
 
+	// we can only parent things to controls which are not animation channels (animation channels are not 3D things)
+	if(FRigControlElement* ParentControlElement = Cast<FRigControlElement>(InParent))
+	{
+		if(ParentControlElement->IsAnimationChannel())
+		{
+			return false;
+		}
+	}
+
+	// we can only reparent animation channels - we cannot add a parent to them
+	if(FRigControlElement* ChildControlElement = Cast<FRigControlElement>(InChild))
+	{
+		if(ChildControlElement->IsAnimationChannel())
+		{
+			if(!bRemoveAllParents)
+			{
+				if (ChildControlElement->ParentConstraints.Num() > 0)
+				{
+					ReportErrorf(TEXT("Cannot add multiple parents to animation channel '%s'."), *InChild->Key.ToString());
+					return false;
+				}
+			}
+
+			bMaintainGlobalTransform = false;
+		}
+	}
+
 	if(Hierarchy->IsParentedTo(InParent, InChild))
 	{
 		ReportErrorf(TEXT("Cannot parent '%s' to '%s' - would cause a cycle."), *InChild->Key.ToString(), *InParent->Key.ToString());
 		return false;
 	}
+
+	Hierarchy->EnsureCacheValidity();
 
 	if(bRemoveAllParents)
 	{
@@ -1986,8 +2173,6 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 
 		if(FRigControlElement* ControlElement = Cast<FRigControlElement>(InChild))
 		{
-			Hierarchy->GetControlOffsetTransform(ControlElement, ERigTransformType::CurrentLocal);
-			Hierarchy->GetControlOffsetTransform(ControlElement, ERigTransformType::InitialLocal);
 			Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::CurrentLocal);
 			Hierarchy->GetControlShapeTransform(ControlElement, ERigTransformType::InitialLocal);
 		}
@@ -2007,7 +2192,7 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 		AddElementToDirty(Constraint.ParentElement, SingleParentElement);
 		SingleParentElement->ParentElement = Constraint.ParentElement;
 
-		Hierarchy->TopologyVersion++;
+		Hierarchy->IncrementTopologyVersion();
 
 		if(!bMaintainGlobalTransform)
 		{
@@ -2023,6 +2208,17 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 	}
 	else if(FRigMultiParentElement* MultiParentElement = Cast<FRigMultiParentElement>(InChild))
 	{
+		if(FRigControlElement* ControlElement = Cast<FRigControlElement>(InChild))
+		{
+			if(!ControlElement->Settings.DisplayName.IsNone())
+			{
+				ControlElement->Settings.DisplayName =
+					Hierarchy->GetSafeNewDisplayName(
+						InParent->GetKey(),
+						ControlElement->Settings.DisplayName.ToString());
+			}
+		}
+		
 		AddElementToDirty(Constraint.ParentElement, MultiParentElement);
 
 		const int32 ParentIndex = MultiParentElement->ParentConstraints.Add(Constraint);
@@ -2030,9 +2226,6 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 
 		if(InWeight > SMALL_NUMBER)
 		{
-			MultiParentElement->Parent.MarkDirty(ERigTransformType::CurrentGlobal);  
-			MultiParentElement->Parent.MarkDirty(ERigTransformType::InitialGlobal);
-
 			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(MultiParentElement))
 			{
 				ControlElement->Offset.MarkDirty(ERigTransformType::CurrentGlobal);  
@@ -2042,7 +2235,7 @@ bool URigHierarchyController::AddParent(FRigBaseElement* InChild, FRigBaseElemen
 			}
 		}
 
-		Hierarchy->TopologyVersion++;
+		Hierarchy->IncrementTopologyVersion();
 
 		if(InWeight > SMALL_NUMBER)
 		{
@@ -2158,7 +2351,7 @@ bool URigHierarchyController::RemoveParent(FRigBaseElement* InChild, FRigBaseEle
 			// remove the previous parent
 			SingleParentElement->ParentElement = nullptr;
 			RemoveElementToDirty(InParent, SingleParentElement); 
-			Hierarchy->TopologyVersion++;
+			Hierarchy->IncrementTopologyVersion();
 
 			if(!bMaintainGlobalTransform)
 			{
@@ -2220,9 +2413,6 @@ bool URigHierarchyController::RemoveParent(FRigBaseElement* InChild, FRigBaseEle
 				}
 			}
 
-			MultiParentElement->Parent.MarkDirty(ERigTransformType::CurrentGlobal);  
-			MultiParentElement->Parent.MarkDirty(ERigTransformType::InitialGlobal);  
-
 			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(MultiParentElement))
 			{
 				ControlElement->Offset.MarkDirty(ERigTransformType::CurrentGlobal);  
@@ -2231,7 +2421,7 @@ bool URigHierarchyController::RemoveParent(FRigBaseElement* InChild, FRigBaseEle
 				ControlElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
 			}
 
-			Hierarchy->TopologyVersion++;
+			Hierarchy->IncrementTopologyVersion();
 
 			if(!bMaintainGlobalTransform)
 			{
@@ -2415,6 +2605,8 @@ TArray<FRigElementKey> URigHierarchyController::DuplicateElements(TArray<FRigEle
 
 TArray<FRigElementKey> URigHierarchyController::MirrorElements(TArray<FRigElementKey> InKeys, FRigMirrorSettings InSettings, bool bSelectNewElements, bool bSetupUndo, bool bPrintPythonCommands)
 {
+	FRigHierarchyInteractionBracket InteractionBracket(Hierarchy.Get());
+
 	TArray<FRigElementKey> OriginalKeys = Hierarchy->SortKeys(InKeys);
 	TArray<FRigElementKey> DuplicatedKeys = DuplicateElements(OriginalKeys, bSelectNewElements, bSetupUndo);
 
@@ -2521,10 +2713,10 @@ TArray<FRigElementKey> URigHierarchyController::MirrorElements(TArray<FRigElemen
 			ArrayStr += TEXT("]");
 
 			RigVMPythonUtils::Print(Blueprint->GetFName().ToString(),
-				FString::Printf(TEXT("hierarchy_controller.mirror_elements(%s, unreal.RigMirrorSettings(unreal.AxisType.%s, unreal.AxisType.%s, '%s', '%s'), %s)"),
+				FString::Printf(TEXT("hierarchy_controller.mirror_elements(%s, unreal.RigMirrorSettings(%s, %s, '%s', '%s'), %s)"),
 				*ArrayStr,
-				(InSettings.MirrorAxis.GetValue() == EAxis::X) ? TEXT("X") : (InSettings.MirrorAxis.GetValue() == EAxis::Y) ? TEXT("Y") : TEXT("Z"),
-				(InSettings.AxisToFlip.GetValue() == EAxis::X) ? TEXT("X") : (InSettings.AxisToFlip.GetValue() == EAxis::Y) ? TEXT("Y") : TEXT("Z"),
+				*RigVMPythonUtils::EnumValueToPythonString<EAxis::Type>((int64)InSettings.MirrorAxis.GetValue()),
+				*RigVMPythonUtils::EnumValueToPythonString<EAxis::Type>((int64)InSettings.AxisToFlip.GetValue()),
 				*InSettings.SearchString,
 				*InSettings.ReplaceString,
 				(bSelectNewElements) ? TEXT("True") : TEXT("False")));
@@ -2564,22 +2756,6 @@ void URigHierarchyController::AddElementToDirty(FRigBaseElement* InParent, FRigB
 		const FRigTransformElement::FElementToDirty ElementToDirty(ElementToAdd, InHierarchyDistance);
 		TransformParent->ElementsToDirty.AddUnique(ElementToDirty);
 	}
-
-#if URIGHIERARCHY_RECURSIVE_DIRTY_PROPAGATION
-	// nothing to do 
-#else
-	if(FRigSingleParentElement* SingleParentElement = Cast<FRigSingleParentElement>(InParent))
-	{
-		AddElementToDirty(SingleParentElement->ParentElement, InElementToAdd, InHierarchyDistance + 1);
-	}
-	else if(FRigMultiParentElement* MultiParentElement = Cast<FRigMultiParentElement>(InParent))
-	{
-		for(FRigTransformElement* ParentElement : MultiParentElement->ParentElements)
-		{
-			AddElementToDirty(ParentElement, InElementToAdd, InHierarchyDistance + 1);
-		}
-	}
-#endif
 }
 
 void URigHierarchyController::RemoveElementToDirty(FRigBaseElement* InParent, FRigBaseElement* InElementToRemove) const
@@ -2599,22 +2775,6 @@ void URigHierarchyController::RemoveElementToDirty(FRigBaseElement* InParent, FR
 	{
 		TransformParent->ElementsToDirty.Remove(ElementToRemove);
 	}
-
-#if URIGHIERARCHY_RECURSIVE_DIRTY_PROPAGATION
-	// nothing to do 
-#else
-	if(FRigSingleParentElement* SingleParentElement = Cast<FRigSingleParentElement>(InParent))
-	{
-		RemoveElementToDirty(SingleParentElement->ParentElement, InElementToRemove);
-	}
-	else if(FRigMultiParentElement* MultiParentElement = Cast<FRigMultiParentElement>(InParent))
-	{
-		for(FRigTransformElement* ParentElement : MultiParentElement->ParentElements)
-		{
-			RemoveElementToDirty(ParentElement, InElementToRemove);
-		}
-	}
-#endif
 }
 
 void URigHierarchyController::ReportWarning(const FString& InMessage) const
@@ -2679,7 +2839,7 @@ void URigHierarchyController::ReportAndNotifyError(const FString& InMessage) con
 #if WITH_EDITOR
 	FNotificationInfo Info(FText::FromString(InMessage));
 	Info.bUseSuccessFailIcons = true;
-	Info.Image = FEditorStyle::GetBrush(TEXT("MessageLog.Warning"));
+	Info.Image = FAppStyle::GetBrush(TEXT("MessageLog.Warning"));
 	Info.bFireAndForget = true;
 	Info.bUseThrobber = true;
 	// longer message needs more time to read
@@ -2692,3 +2852,4 @@ void URigHierarchyController::ReportAndNotifyError(const FString& InMessage) con
 	}
 #endif
 }
+

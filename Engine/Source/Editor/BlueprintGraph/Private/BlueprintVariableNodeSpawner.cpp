@@ -1,16 +1,38 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintVariableNodeSpawner.h"
-#include "Engine/BlueprintGeneratedClass.h"
+
+#include "BlueprintActionFilter.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "EdGraphSchema_K2.h"
+#include "Editor/EditorEngine.h"
+#include "EditorCategoryUtils.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/MemberReference.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Internationalization.h"
 #include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
-#include "Editor/EditorEngine.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Guid.h"
 #include "ObjectEditorUtils.h"
-#include "EditorCategoryUtils.h"
+#include "Settings/EditorStyleSettings.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Textures/SlateIcon.h"
+#include "UObject/Class.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintVariableNodeSpawner"
 
@@ -42,15 +64,18 @@ UBlueprintVariableNodeSpawner* UBlueprintVariableNodeSpawner::CreateFromMemberOr
 
 	FText const VarName = NodeSpawner->GetVariableName();
 	// @TODO: NodeClass could be modified post Create()
-	if (NodeClass->IsChildOf(UK2Node_VariableGet::StaticClass()))
+	if (NodeClass != nullptr)
 	{
-		MenuSignature.MenuName = FText::Format(LOCTEXT("GetterMenuName", "Get {0}"), VarName);
-		MenuSignature.Tooltip  = UK2Node_VariableGet::GetPropertyTooltip(VarProperty);
-	}
-	else if (NodeClass->IsChildOf(UK2Node_VariableSet::StaticClass()))
-	{
-		MenuSignature.MenuName = FText::Format(LOCTEXT("SetterMenuName", "Set {0}"), VarName);
-		MenuSignature.Tooltip  = UK2Node_VariableSet::GetPropertyTooltip(VarProperty);
+		if (NodeClass->IsChildOf(UK2Node_VariableGet::StaticClass()))
+		{
+			MenuSignature.MenuName = FText::Format(LOCTEXT("GetterMenuName", "Get {0}"), VarName);
+			MenuSignature.Tooltip  = UK2Node_VariableGet::GetPropertyTooltip(VarProperty);
+		}
+		else if (NodeClass->IsChildOf(UK2Node_VariableSet::StaticClass()))
+		{
+			MenuSignature.MenuName = FText::Format(LOCTEXT("SetterMenuName", "Set {0}"), VarName);
+			MenuSignature.Tooltip  = UK2Node_VariableSet::GetPropertyTooltip(VarProperty);
+		}
 	}
 	// add at least one character, so that PrimeDefaultUiSpec() doesn't 
 	// attempt to query the template node
@@ -117,15 +142,18 @@ UBlueprintVariableNodeSpawner* UBlueprintVariableNodeSpawner::CreateFromLocal(TS
 
 	FText const VarName = NodeSpawner->GetVariableName();
 	// @TODO: NodeClass could be modified post Create()
-	if (NodeClass->IsChildOf(UK2Node_VariableGet::StaticClass()))
+	if (NodeClass != nullptr)
 	{
-		MenuSignature.MenuName = FText::Format(LOCTEXT("LocalGetterMenuName", "Get {0}"), VarName);
-		MenuSignature.Tooltip  = UK2Node_VariableGet::GetBlueprintVarTooltip(VarDesc);
-	}
-	else if (NodeClass->IsChildOf(UK2Node_VariableSet::StaticClass()))
-	{
-		MenuSignature.MenuName = FText::Format(LOCTEXT("LocalSetterMenuName", "Set {0}"), VarName);
-		MenuSignature.Tooltip  = UK2Node_VariableSet::GetBlueprintVarTooltip(VarDesc);
+		if (NodeClass->IsChildOf(UK2Node_VariableGet::StaticClass()))
+		{
+			MenuSignature.MenuName = FText::Format(LOCTEXT("LocalGetterMenuName", "Get {0}"), VarName);
+			MenuSignature.Tooltip  = UK2Node_VariableGet::GetBlueprintVarTooltip(VarDesc);
+		}
+		else if (NodeClass->IsChildOf(UK2Node_VariableSet::StaticClass()))
+		{
+			MenuSignature.MenuName = FText::Format(LOCTEXT("LocalSetterMenuName", "Set {0}"), VarName);
+			MenuSignature.Tooltip  = UK2Node_VariableSet::GetBlueprintVarTooltip(VarDesc);
+		}
 	}
 	// add at least one character, so that PrimeDefaultUiSpec() doesn't 
 	// attempt to query the template node
@@ -192,7 +220,7 @@ FBlueprintActionUiSpec UBlueprintVariableNodeSpawner::GetUiSpec(FBlueprintAction
 		EffectiveOwnerClass = EffectiveOwnerClass ? EffectiveOwnerClass : ToRawPtr(OwnerClass);
 		const bool bIsOwningClassValid = EffectiveOwnerClass && (!Cast<const UBlueprintGeneratedClass>(EffectiveOwnerClass) || EffectiveOwnerClass->ClassGeneratedBy); //todo: more general validation
 		UClass const* VariableClass = bIsOwningClassValid ? EffectiveOwnerClass->GetAuthoritativeClass() : nullptr;
-		if (VariableClass && !TargetClass->IsChildOf(VariableClass))
+		if (VariableClass && (!TargetClass || !TargetClass->IsChildOf(VariableClass)))
 		{
 			MenuSignature.Category = FEditorCategoryUtils::BuildCategoryString(FCommonEditorCategory::Class,
 				FText::FromString(VariableClass->GetDisplayNameText().ToString()));

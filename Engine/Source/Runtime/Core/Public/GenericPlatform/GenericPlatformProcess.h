@@ -2,16 +2,21 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "Containers/Array.h"
 #include "Containers/UnrealString.h"
-#include "Templates/Function.h"
-#include "Misc/EnumClassFlags.h"
-#include "Misc/EnumClassFlags.h"
+#include "CoreTypes.h"
 #include "GenericPlatform/GenericPlatformAffinity.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformMisc.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/EnumClassFlags.h"
+#include "Templates/Function.h"
+
+class FEvent;
 
 ////////////////////////////////////////////////////////////////////////////////
 #if PLATFORM_CPU_X86_FAMILY
-#include <emmintrin.h>
+#include <immintrin.h>
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -31,7 +36,6 @@
 
 class Error;
 struct FProcHandle;
-
 template <typename FuncType> class TFunctionRef;
 
 namespace EProcessResource
@@ -468,6 +472,16 @@ struct CORE_API FGenericPlatformProcess
 	 */
 	static void TerminateProc( FProcHandle & ProcessHandle, bool KillTree = false );
 
+	/** Terminates a process tree
+	 *
+	 * @param ProcessHandle handle returned from FPlatformProcess::CreateProc
+	 * @param Predicate that returns true if the process identified by ProcessId and ApplicationName
+	 *        should be terminated with its children, else that process and its children will be kept alive
+	 */
+	static void TerminateProcTreeWithPredicate(
+			FProcHandle& ProcessHandle,
+			TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate);
+
 	enum class EWaitAndForkResult : uint8
 	{
 		Error,
@@ -774,10 +788,28 @@ struct CORE_API FGenericPlatformProcess
 		uint64 start = ReadCycleCounter();
 		//some 32bit implementations return 0 for __builtin_readcyclecounter just to be on the safe side we protect against this.
 		Cycles = start != 0 ? Cycles : 0;
-		do
+
+#if PLATFORM_WINDOWS
+		if (FPlatformMisc::HasTimedPauseCPUFeature())
 		{
-			Yield();
-		} while((ReadCycleCounter() - start) < Cycles);
+			uint64 PauseCycles = ReadCycleCounter() + Cycles;
+#if defined(_MSC_VER) && !defined(__clang__)
+			_tpause(0, PauseCycles);
+#elif __has_builtin(__builtin_ia32_tpause)
+			__builtin_ia32_tpause(0, (uint32)(PauseCycles >> 32), (uint32)PauseCycles);
+#else
+#	error Unsupported architecture!
+#endif
+		}
+		else
+#endif
+		{
+			do
+			{
+				Yield();
+			} while ((ReadCycleCounter() - start) < Cycles);
+		}
+
 #else
 		// We can't read cycle counter from user mode on these platform
 		for (uint64 i = 0; i < Cycles; i++)

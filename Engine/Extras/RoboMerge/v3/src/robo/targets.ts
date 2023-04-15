@@ -75,16 +75,11 @@ const ROBO_TAGS = [
 	'ROBOMERGE-SOURCE',
 ]
 
-type ChangeFlag = 'review' | 'manual' | 'null' | 'ignore' | 'disregardexcludedauthors'
+type ChangeFlag = 'manual' | 'null' | 'ignore' | 'disregardexcludedauthors'
 
 // mapping of #ROBOMERGE: flags to canonical names
 // use these with a pound like #ROBOMERGE: #stage
 const FLAGMAP: {[name: string]: ChangeFlag} = {
-	// force a codereview to be sent to the owner as commits flow down the automerge chain
-	review: 'review',
-	forcereview: 'review',
-	cr: 'review',
-
 	// don't merge, only shelf this change and review the owner
 	manual: 'manual',
 	nosubmit: 'manual',
@@ -171,7 +166,6 @@ export class DescriptionParser {
 	descFinal: string[] = []
 
 	propagatingNullMerge = false
-	hasOkForGithubTag = false
 	useDefaultFlow = true
 
 	// arguments: string[] = []
@@ -188,7 +182,7 @@ export class DescriptionParser {
 		private isDefaultBot: boolean,
 		private graphBotName: string,
 		private cl: number,
-		private aliasUpper: string,
+		private aliasesUpper: string[],
 		private macros: {[name: string]: string[]}
 
 	) {
@@ -203,6 +197,15 @@ export class DescriptionParser {
 		this.otherBotArguments = other.otherBotArguments
 
 		this.errors = other.errors
+	}
+
+	append(other: DescriptionParser) {
+		// ignore default flow here
+		this.arguments = [...this.arguments, ...other.arguments]
+		this.expandedMacros = [...this.expandedMacros, ...other.expandedMacros]
+		this.otherBotArguments = [...this.otherBotArguments, ...other.otherBotArguments]
+
+		this.errors = [...this.errors, ...other.errors]
 	}
 
 	private processNonRoboToken(token: Token_Other) {
@@ -241,14 +244,11 @@ export class DescriptionParser {
 		if (token.tag.match(/REVIEW-(\d+)/)) {
 							// remove swarm review numbers entirely (they can't be neutered and generate emails)
 			if (token.rest) {
-				this.descFinal.push(token.rest)
+				this.descFinal.push(`${token.initialWhitespace}[REVIEW] ${token.rest}`)
 			}
 			return false
 		}
 
-		if (token.tag === 'OKFORGITHUB') {
-			this.hasOkForGithubTag = true
-		}
 		return true
 	}
 
@@ -275,7 +275,7 @@ export class DescriptionParser {
 				continue
 			}
 
-			const thisBotNames = ['', this.graphBotName, this.aliasUpper, 'ALL']
+			const thisBotNames = ['', this.graphBotName, ...this.aliasesUpper, 'ALL']
 			const commands: Token_Command[] = []
 			for (const tokenCommand of (result as Token_Command[])) {
 				const macroLines = this.macros[tokenCommand.param.toLowerCase()]
@@ -309,7 +309,7 @@ export class DescriptionParser {
 				}
 
 				// ignore bare ROBOMERGE tags if we're not the default bot (should not affect default flow)
-				if (!command.bot) {
+				if (!command.bot && !isFlag(command.param)) {
 					if (this.isDefaultBot) {
 						this.useDefaultFlow = false
 					}
@@ -328,12 +328,12 @@ export function parseDescriptionLines(args: {
 		isDefaultBot: boolean, 
 		graphBotName: string, 
 		cl: number, 
-		aliasUpper: string,
+		aliasesUpper: string[],
 		macros: {[name: string]: string[]},
 		logger: ContextualLogger
 	}
 	) {
-	const lineParser = new DescriptionParser(args.isDefaultBot, args.graphBotName, args.cl, args.aliasUpper, args.macros)
+	const lineParser = new DescriptionParser(args.isDefaultBot, args.graphBotName, args.cl, args.aliasesUpper, args.macros)
 	lineParser.parse(args.lines)
 	return lineParser
 }
@@ -386,7 +386,7 @@ export function processOtherBotTargets(
 			info = {
 				firstHopBranches: new Set<Branch>(),
 				commands: [],
-				aliasOrName: bg.config.alias || bg.botname
+				aliasOrName: bg.config.aliases.length > 0 ? bg.config.aliases[0] : bg.botname
 			}
 			otherBotInfo.set(key, info)
 		}
@@ -582,7 +582,7 @@ function computeTargetsImpl(
 	}
 
 	const branchGraph = sourceBranch.parent
-	const requestedMerges = [
+	const requestedMergesArray = [
 		...defaultTargets.map(name => [name, 'normal'] as [string, MergeMode]),
 		...ri.integrations.filter(([name, _]) => branchGraph.config.branchNamesToIgnore.indexOf(name.toUpperCase()) < 0)
 	]
@@ -593,7 +593,7 @@ function computeTargetsImpl(
 	const errors: string[] = []
 
 	// process parsed targets
-	for (const [targetName, mergeMode] of requestedMerges) {
+	for (const [targetName, mergeMode] of requestedMergesArray) {
 		// make sure the target exists
 		const targetBranch = branchGraph.getBranch(targetName)
 		if (!targetBranch) {
@@ -622,10 +622,10 @@ function computeTargetsImpl(
 	}
 
 // note: this allows multiple mentions of same branch, with flag of last mention taking priority. Could be an error instead
-	const allIntegrations = new Map<string, MergeMode>(requestedMerges)
+	const requestedMerges = new Map<string, MergeMode>(requestedMergesArray)
 
 	const requestedTargets = new Map<Node, MergeMode>()
-	for (const [targetName, mergeMode] of allIntegrations) {
+	for (const [targetName, mergeMode] of requestedMerges) {
 		const node = ubergraph.getNode(makeTargetName(botname, targetName))
 		if (node) {
 			if (node !== sourceNode) {
@@ -657,8 +657,16 @@ function computeTargetsImpl(
 		return {computeResult: null, errors: []}
 	}
 
+	// handle multiple routes to skip targets
+	//	
+	const skipTargets: Branch[] = [...requestedMerges]
+		.filter(([_, mergeMode]) => mergeMode === 'skip')
+		.map(([branchName, _]) => branchGraph.getBranch(branchName)!)
+
+
 	const merges = new Map<Branch, Branch[]>()
 	for (const [initialEdge, furtherEdges] of integrations) {
+
 		const edgeTargetBranch = (e: Edge) => {
 			const branch = branchGraph.getBranch(e.targetName)
 			if (!branch) {
@@ -667,7 +675,25 @@ function computeTargetsImpl(
 			return branch
 		}
 
-		merges.set(edgeTargetBranch(initialEdge), furtherEdges.map(edgeTargetBranch))
+		const targetBranch = edgeTargetBranch(initialEdge)
+		const furtherEdgeBranches = furtherEdges.map(edgeTargetBranch)
+		for (const skipTarget of skipTargets) {
+			if (furtherEdgeBranches.indexOf(skipTarget) < 0
+				&&
+
+			// make sure skipTarget is present directly if reachable
+				[...furtherEdgeBranches, targetBranch]
+					.map(b => b.forcedDownstream)
+					.filter(ds => (ds || []).map(b => branchGraph.getBranch(b)).indexOf(skipTarget) >= 0)
+					.length > 0
+				) {
+
+				logger.info(`adding skip of ${skipTarget.name} to onward integrations for ` +
+					`${initialEdge.source.debugName}->${initialEdge.target.debugName} due to ... todo`)
+				furtherEdgeBranches.push(skipTarget)
+			}
+		}
+		merges.set(targetBranch, furtherEdgeBranches)
 	}
 
 	return {computeResult: {merges, targets, flags: ri.flags}, errors}
@@ -779,7 +805,7 @@ export function runTests(parentLogger: ContextualLogger) {
 		isDefaultBot: true,
 		graphBotName: 'test',
 		cl: 1,
-		aliasUpper: '',
+		aliasesUpper: [],
 		macros: {'m': ['#robomerge X, Y'], 'otherbot': ['#robomerge[A] B']},
 		logger
 	}

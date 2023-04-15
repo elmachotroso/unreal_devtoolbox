@@ -8,7 +8,6 @@
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Guid.h"
-#include "Misc/SecureHash.h"
 #include "HAL/FileManager.h"
 
 #define LOCTEXT_NAMESPACE "DesktopPlatform"
@@ -338,7 +337,7 @@ bool FDesktopPlatformMac::OpenFontDialog(const void* ParentWindowHandle, FString
 				FPlatformString::CFStringToTCHAR((CFStringRef)[Font fontName], FontName);
 
 				OutFontName = FontName;
-				OutHeight = [Font pointSize];
+				OutHeight = (float)[Font pointSize];
 
 				auto FontFlags = EFontImportFlags::None;
 
@@ -377,7 +376,7 @@ bool FDesktopPlatformMac::FileDialogShared(bool bSave, const void* ParentWindowH
 				NSOpenPanel* OpenPanel = (NSOpenPanel*)Panel;
 				[OpenPanel setCanChooseFiles: true];
 				[OpenPanel setCanChooseDirectories: false];
-				[OpenPanel setAllowsMultipleSelection: Flags & EFileDialogFlags::Multiple];
+				[OpenPanel setAllowsMultipleSelection: (Flags & EFileDialogFlags::Multiple) != 0];
 			}
 
 			[Panel setCanCreateDirectories: bSave];
@@ -626,59 +625,6 @@ bool FDesktopPlatformMac::RunUnrealBuildTool(const FText& Description, const FSt
 	return FFeedbackContextMarkup::PipeProcessOutput(Description, UnrealBuildToolPath, Arguments, Warn, &OutExitCode) && OutExitCode == 0;
 }
 
-bool FDesktopPlatformMac::IsUnrealBuildToolRunning()
-{
-	//TODO 5.1, make this a common routine instead of duplicated
-	FString RunsDir = FPaths::Combine(FPaths::EngineIntermediateDir(), TEXT("UbtRuns"));
-	if (!FPaths::DirectoryExists(RunsDir))
-	{
-		return false;
-	}
-
-	bool bIsRunning = false;
-	IFileManager::Get().IterateDirectory(*RunsDir, [&bIsRunning](const TCHAR* Pathname, bool bIsDirectory)
-		{
-			if (!bIsDirectory)
-			{
-				bool bDeleteFile = true;
-
-				FString Filename = FPaths::GetBaseFilename(FString(Pathname));
-				const TCHAR* Delim = FCString::Strchr(*Filename, '_');
-				if (Delim != nullptr)
-				{
-					FString Pid(*Filename, Delim - *Filename);
-					int ProcessId = 0;
-					LexFromString(ProcessId, *Pid);
-					const FString EntryFullPath = FPlatformProcess::GetApplicationName(ProcessId);
-					if (!EntryFullPath.IsEmpty())
-					{
-						FString EntryFullPathUpper = EntryFullPath.ToUpper();
-						const FTCHARToUTF8 Utf8String(*EntryFullPathUpper);
-						FMD5Hash Hash;
-						LexFromString(Hash, Delim + 1);
-
-						FMD5 Md5Gen;
-						Md5Gen.Update(reinterpret_cast<const uint8*>(Utf8String.Get()), Utf8String.Length());
-						FMD5Hash TestHash;
-						TestHash.Set(Md5Gen);
-						if (Hash == TestHash)
-						{
-							bDeleteFile = false;
-							bIsRunning = true;
-						}
-					}
-					if (bDeleteFile)
-					{
-						IFileManager::Get().Delete(Pathname);
-					}
-				}
-			}
-			return true;
-		});
-
-	return bIsRunning;
-}
-
 FFeedbackContext* FDesktopPlatformMac::GetNativeFeedbackContext()
 {
 	static FMacNativeFeedbackContext Warn;
@@ -690,4 +636,8 @@ FString FDesktopPlatformMac::GetUserTempPath()
 	return FString(FPlatformProcess::UserTempDir());
 }
 
+FString FDesktopPlatformMac::GetOidcTokenExecutableFilename(const FString& RootDir) const
+{
+	return FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Binaries/DotNET/OidcToken/osx-x64/OidcToken"));
+}
 #undef LOCTEXT_NAMESPACE

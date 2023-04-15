@@ -6,6 +6,9 @@
 #include "Misc/Guid.h"
 
 #include "ConcertMessageData.h"
+
+#include "Styling/SlateTypes.h"
+
 #include "ConsoleVariableSyncData.generated.h"
 
 UCLASS(config=Engine, DisplayName="Multi-user Console Variable Synchronization")
@@ -84,10 +87,27 @@ struct FConcertCVarSyncChangeEvent
 	bool bSyncCVarChanges = true;
 };
 
+UENUM()
+enum class EConsoleVariableChangeType : uint8
+{
+	/** The console variable was modified */
+	Modify = 0,
+
+	/** A console variable was added to the CVE asset */
+	Add,
+
+	/** A console variable was removed to the CVE asset */
+	Remove
+};
+
 USTRUCT()
 struct FConcertSetConsoleVariableEvent
 {
 	GENERATED_BODY()
+
+	/** */
+	UPROPERTY()
+	EConsoleVariableChangeType ChangeType = EConsoleVariableChangeType::Modify;
 
 	/** Console variable name to apply value change. */
 	UPROPERTY()
@@ -96,4 +116,16 @@ struct FConcertSetConsoleVariableEvent
 	/** The value to set the named console variable. */
 	UPROPERTY()
 	FString Value;
+};
+
+USTRUCT()
+struct FConcertSetListItemCheckStateEvent
+{
+	GENERATED_BODY()
+	/** Console variable name to apply the checked state change. */
+	UPROPERTY()
+	FString Variable;
+	/** The checked state of the list item. */
+	UPROPERTY()
+	ECheckBoxState CheckState = ECheckBoxState::Checked;
 };

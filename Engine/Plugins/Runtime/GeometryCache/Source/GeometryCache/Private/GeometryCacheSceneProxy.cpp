@@ -395,8 +395,9 @@ void FGeometryCacheSceneProxy::CreateMeshBatch(
 	int32 SingleCaptureIndex;
 	bool bOutputVelocity;
 	GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+	bOutputVelocity |= AlwaysHasVelocity();
 
-	DynamicPrimitiveUniformBuffer.Set(LocalToWorldTransform, PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, false, DrawsVelocity(), bOutputVelocity);
+	DynamicPrimitiveUniformBuffer.Set(LocalToWorldTransform, PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, false, bOutputVelocity);
 	BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 	const FGeometryCacheMeshData* MeshData = TrackProxy->bNextFrameMeshDataSelected ? TrackProxy->NextFrameMeshData : TrackProxy->MeshData;
@@ -711,7 +712,7 @@ void FGeometryCacheSceneProxy::UpdateAnimation(float NewTime, bool bNewLooping, 
 					Segment.MaxVertices = Section->PositionBuffers[PositionBufferIndex].GetSizeInBytes() / Segment.VertexBufferStride; // conservative estimate
 
 					Segments.Add(Segment);
-					TotalPrimitiveCount += BatchInfo.NumTriangles;
+					TotalPrimitiveCount += Segment.NumPrimitives;
 				}
 
 				bRequireRecreate = bRequireRecreate || Section->RayTracingGeometry.Initializer.IndexBuffer != Section->IndexBuffer.IndexBufferRHI;
@@ -724,8 +725,8 @@ void FGeometryCacheSceneProxy::UpdateAnimation(float NewTime, bool bNewLooping, 
 				{
 					if (bRequireRecreate)
 					{
-						Section->RayTracingGeometry.UpdateRHI();
-					}
+					Section->RayTracingGeometry.UpdateRHI();
+				}
 					else
 					{
 						// Request full build on same geometry because data might have changed to much for update call?
@@ -1174,7 +1175,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 				// Only bother uploading if anything changed or when the we failed to decode anything make sure update the gpu buffers regardless
 				if (bFrameIndicesChanged || bDifferentRoundedInterpolationFactor || (bDifferentInterpolationFactor && bExtrapolateFrames) || bDecodedAnything || bDecoderError)
 				{
-					const bool bNextFrame = !!FMath::RoundToInt(InterpolationFactor) && TrackProxy->NextFrameMeshData->Positions.Num() > 0; // use next frame only if it's valid
+					const bool bNextFrame = !!FMath::RoundToInt(InterpolationFactor) && TrackProxy->NextFrameMeshData->Positions.Num() > 0 && (TrackProxy->NextFrameIndex != -1); // use next frame only if it's valid
 					const uint32 FrameIndexToUse = bNextFrame ? TrackProxy->NextFrameIndex : TrackProxy->FrameIndex;
 					FGeometryCacheMeshData* MeshDataToUse = bNextFrame ? TrackProxy->NextFrameMeshData : TrackProxy->MeshData;
 

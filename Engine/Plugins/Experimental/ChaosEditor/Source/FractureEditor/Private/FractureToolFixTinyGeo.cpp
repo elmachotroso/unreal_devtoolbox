@@ -9,6 +9,8 @@
 #include "FractureEditorModeToolkit.h"
 #include "FractureToolContext.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FractureToolFixTinyGeo)
+
 #define LOCTEXT_NAMESPACE "FractureGeoMerge"
 
 
@@ -36,7 +38,7 @@ FSlateIcon UFractureToolFixTinyGeo::GetToolIcon() const
 
 void UFractureToolFixTinyGeo::RegisterUICommand( FFractureEditorCommands* BindingContext ) 
 {
-	UI_COMMAND_EXT( BindingContext, UICommandInfo, "FixTinyGeo", "GeoMrg", "Merge pieces of geometry onto their neighbors -- use it to, for example, clean up \"too small\" pieces of geometry.", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND_EXT( BindingContext, UICommandInfo, "FixTinyGeo", "TinyGeo", "Merge pieces of geometry onto their neighbors -- use it to, for example, clean up \"too small\" pieces of geometry.", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	BindingContext->FixTinyGeo = UICommandInfo;
 }
 
@@ -101,21 +103,29 @@ void UFractureToolFixTinyGeo::FractureContextChanged()
 		double MinVolume = GetMinVolume(Volumes);
 
 		TArray<int32> SmallIndices;
-		FindSmallBones(
-			Collection,
-			TArrayView<int32>(),
-			Volumes,
-			MinVolume,
-			SmallIndices
-		);
 
-		if (TinyGeoSettings->bAlsoMergeSelected)
+		if (TinyGeoSettings->UseBoneSelection == EUseBoneSelection::OnlyMergeSelected)
 		{
-			const TArray<int32> Selection = FractureContext.GetSelection();
-			for (int32 Bone : Selection)
+			SmallIndices = FractureContext.GetSelection();
+		}
+		else
+		{
+			FindSmallBones(
+				Collection,
+				TArrayView<int32>(),
+				Volumes,
+				MinVolume,
+				SmallIndices
+			);
+
+			if (TinyGeoSettings->UseBoneSelection == EUseBoneSelection::AlsoMergeSelected)
 			{
-				// note: we AddUnique when doing the merge, but for rendering we allow duplicates
-				SmallIndices.Add(Bone);
+				const TArray<int32>& Selection = FractureContext.GetSelection();
+				for (int32 Bone : Selection)
+				{
+					// note: we AddUnique when doing the merge, but for rendering we allow duplicates
+					SmallIndices.Add(Bone);
+				}
 			}
 		}
 
@@ -169,10 +179,18 @@ double UFractureToolFixTinyGeo::GetMinVolume(TArray<double>& Volumes)
 
 int32 UFractureToolFixTinyGeo::ExecuteFracture(const FFractureToolContext& FractureContext)
 {
-	int32 UpdateIdx = INDEX_NONE;
 	if (FractureContext.GetGeometryCollection().IsValid())
 	{
 		TArray<int32> TransformIndices; // left empty to refer to all indices
+		if (TinyGeoSettings->UseBoneSelection == EUseBoneSelection::OnlyMergeSelected)
+		{
+			// restrict to selection
+			TransformIndices = FractureContext.GetSelection();
+			if (TransformIndices.IsEmpty())
+			{
+				return INDEX_NONE;
+			}
+		}
 
 		TArray<double> Volumes;
 		FGeometryCollection& Collection = *FractureContext.GetGeometryCollection();
@@ -186,20 +204,27 @@ int32 UFractureToolFixTinyGeo::ExecuteFracture(const FFractureToolContext& Fract
 		double MinVolume = GetMinVolume(Volumes);
 
 		TArray<int32> SmallIndices;
-		FindSmallBones(
-			Collection,
-			TransformIndices,
-			Volumes,
-			MinVolume,
-			SmallIndices
-		);
-
-		if (TinyGeoSettings->bAlsoMergeSelected)
+		if (TinyGeoSettings->UseBoneSelection == EUseBoneSelection::OnlyMergeSelected)
 		{
-			const TArray<int32> Selection = FractureContext.GetSelection();
-			for (int32 Bone : Selection)
+			SmallIndices = FractureContext.GetSelection();
+		}
+		else
+		{
+			FindSmallBones(
+				Collection,
+				TransformIndices,
+				Volumes,
+				MinVolume,
+				SmallIndices
+			);
+
+			if (TinyGeoSettings->UseBoneSelection == EUseBoneSelection::AlsoMergeSelected)
 			{
-				SmallIndices.AddUnique(Bone);
+				const TArray<int32>& Selection = FractureContext.GetSelection();
+				for (int32 Bone : Selection)
+				{
+					SmallIndices.AddUnique(Bone);
+				}
 			}
 		}
 
@@ -219,10 +244,10 @@ int32 UFractureToolFixTinyGeo::ExecuteFracture(const FFractureToolContext& Fract
 			false, /*bUnionJoinedPieces*/ // Note: Union-ing the pieces is nicer in theory, but can leave cracks and non-manifold garbage
 			SelectionMethod
 		);
-		UpdateIdx = 0;
 	}
 
-	return UpdateIdx;
+	// Don't update selection
+	return INDEX_NONE;
 }
 
 

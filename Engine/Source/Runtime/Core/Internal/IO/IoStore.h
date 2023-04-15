@@ -2,8 +2,16 @@
 
 #pragma once
 
+#include "Containers/Array.h"
+#include "HAL/Platform.h"
+#include "HAL/UnrealMemory.h"
+#include "IO/IoContainerId.h"
 #include "IO/IoDispatcher.h"
-#include "IO/IoDirectoryIndex.h"
+#include "Logging/LogMacros.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/Guid.h"
+#include "Misc/SecureHash.h"
+#include "UObject/NameTypes.h"
 
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogIoStore, Log, All);
 
@@ -128,6 +136,7 @@ ENUM_CLASS_FLAGS(FIoStoreTocEntryMetaFlags);
  */
 struct FIoStoreTocEntryMeta
 {
+	// Source data hash (i.e. not the on disk data)
 	FIoChunkHash ChunkHash;
 	FIoStoreTocEntryMetaFlags Flags;
 };

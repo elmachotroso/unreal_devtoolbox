@@ -1,13 +1,13 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
 using Dasync.Collections;
+using EpicGames.Horde.Storage;
 using Horde.Storage.Implementation.TransactionLog;
 using Jupiter;
+using Jupiter.Common;
 using Jupiter.Implementation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -15,13 +15,13 @@ using Serilog;
 
 namespace Horde.Storage.Implementation
 {
-    // ReSharper disable once ClassNeverInstantiated.Global
-    public class ReplicationSnapshotService : PollingService<ReplicationSnapshotService.SnapshotState>
+    public class SnapshotState
     {
-        public class SnapshotState
-        {
-        }
+    }
 
+    // ReSharper disable once ClassNeverInstantiated.Global
+    public class ReplicationSnapshotService : PollingService<SnapshotState>
+    {
         private readonly IServiceProvider _provider;
         private readonly IOptionsMonitor<SnapshotSettings> _settings;
         private readonly IReplicationLog _replicationLog;
@@ -30,13 +30,12 @@ namespace Horde.Storage.Implementation
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private Task? _snapshotBuildTask = null;
 
-        public override bool ShouldStartPolling()
+        protected override bool ShouldStartPolling()
         {
             return _settings.CurrentValue.Enabled;
         }
 
-        public ReplicationSnapshotService(IServiceProvider provider, IOptionsMonitor<SnapshotSettings> settings, IReplicationLog replicationLog, ILeaderElection leaderElection) :
-            base(serviceName: nameof(ReplicationSnapshotService), TimeSpan.FromSeconds(settings.CurrentValue.SnapshotFrequencySeconds), new SnapshotState())
+        public ReplicationSnapshotService(IServiceProvider provider, IOptionsMonitor<SnapshotSettings> settings, IReplicationLog replicationLog, ILeaderElection leaderElection) : base(serviceName: nameof(ReplicationSnapshotService), TimeSpan.FromMinutes(15), new SnapshotState())
         {
             _provider = provider;
             _settings = settings;
@@ -61,12 +60,32 @@ namespace Horde.Storage.Implementation
             bool ran = false;
             _snapshotBuildTask = _replicationLog.GetNamespaces().ParallelForEachAsync(async ns =>
             {
+                SnapshotInfo? latestSnapshot = await _replicationLog.GetLatestSnapshot(ns);
+                if (latestSnapshot != null)
+                {
+                    DateTime lastSnapshot = latestSnapshot.Timestamp;
+                    DateTime nextSnapshot = lastSnapshot.AddDays(1);
+                    if (DateTime.Now < nextSnapshot)
+                    {
+                        _logger.Information("Skipped building snapshot for namespace {Namespace} as the previous snapshot ({PreviousSnapshot}) was not a day old.", ns, lastSnapshot);
+                        return;
+                    }
+                }
                 ReplicationLogSnapshotBuilder builder = ActivatorUtilities.CreateInstance<ReplicationLogSnapshotBuilder>(_provider);
-                BlobIdentifier snapshotBlob = await builder.BuildSnapshot(ns, _settings.CurrentValue.SnapshotStorageNamespace, _cancellationTokenSource.Token);
-                _logger.Information("Snapshot built for {Namespace} with id {Id}", ns, snapshotBlob);
+                try
+                {
+                    _logger.Information("Building snapshot for {Namespace}", ns);
+                    BlobIdentifier snapshotBlob = await builder.BuildSnapshot(ns, _settings.CurrentValue.SnapshotStorageNamespace, _cancellationTokenSource.Token);
+                    _logger.Information("Snapshot built for {Namespace} with id {Id}", ns, snapshotBlob);
+
+                }
+                catch (IncrementalLogNotAvailableException)
+                {
+                    _logger.Warning("Unable to generate a snapshot for {Namespace} as there was no incremental state available", ns);
+                }
 
                 ran = true;
-            }, _cancellationTokenSource.Token);
+            }, _settings.CurrentValue.MaxCountOfNamespacesToSnapshotInParallel, _cancellationTokenSource.Token);
             await _snapshotBuildTask;
             _snapshotBuildTask = null;
             return ran;
@@ -77,7 +96,9 @@ namespace Horde.Storage.Implementation
             _cancellationTokenSource.Cancel();
 
             if (_snapshotBuildTask != null)
+            {
                 await _snapshotBuildTask;
+            }
         }
     }
 
@@ -88,12 +109,7 @@ namespace Horde.Storage.Implementation
         /// </summary>
         public bool Enabled { get; set; } = false;
 
-        /// <summary>
-        /// The frequency at which to poll for new replication events
-        /// </summary>
-        [Required]
-        public int SnapshotFrequencySeconds { get; set; } = 3600; // default to once a day
-
-        public NamespaceId SnapshotStorageNamespace { get; set; } = new NamespaceId("jupiter-internal");
+        public NamespaceId SnapshotStorageNamespace { get; set; } = INamespacePolicyResolver.JupiterInternalNamespace;
+        public int MaxCountOfNamespacesToSnapshotInParallel { get; set; } = 1;
     }
 }

@@ -7,9 +7,10 @@
 #include "Algo/Sort.h"
 #include "Misc/ScopeRWLock.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
 #include "HAL/FileManager.h"
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_DESKTOP
 
 #include "Async/Async.h"
 #include "HAL/PlatformFileManager.h"
@@ -57,7 +58,8 @@ FZenStoreHttpClient::TryCreateProject(FStringView InProjectId,
 	FStringView InOplogId, 
 	FStringView ServerRoot,
 	FStringView EngineRoot,
-	FStringView ProjectRoot)
+	FStringView ProjectRoot,
+	FStringView ProjectFilePath)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(ZenStoreHttp_Initialize);
 
@@ -92,6 +94,7 @@ FZenStoreHttpClient::TryCreateProject(FStringView InProjectId,
 			ProjInfo << "root" << ServerRoot;
 			ProjInfo << "engine" << EngineRoot;
 			ProjInfo << "project" << ProjectRoot;
+			ProjInfo << "projectfile" << ProjectFilePath;
 			ProjInfo.EndObject();
 
 			Res = Request->PerformBlockingPost(ProjectUri, ProjInfo.Save().AsObject());
@@ -260,7 +263,7 @@ TIoStatusOr<uint64> FZenStoreHttpClient::AppendOp(FCbPackage OpEntry)
 		{
 			// Old-style with all attachments by value
 
-			UE::Zen::SaveCbPackage(OpEntry, SerializedPackage);
+			UE::Zen::OpLog::SaveCbPackage(OpEntry, SerializedPackage);
 		}
 		else
 		{
@@ -367,7 +370,7 @@ TIoStatusOr<uint64> FZenStoreHttpClient::AppendOp(FCbPackage OpEntry)
 
 					if (!bIsSerialized)
 					{
-						UE::Zen::SaveCbAttachment(Attachment, Writer);
+						UE::Zen::OpLog::SaveCbAttachment(Attachment, Writer);
 					}
 				}
 				else
@@ -450,11 +453,11 @@ TIoStatusOr<FIoBuffer> FZenStoreHttpClient::ReadOpLogUri(FStringBuilderBase& Chu
 	{
 		if (bHaveQuery)
 		{
-			ChunkUri.Append(TEXT("&"_WSV));
+			ChunkUri.AppendChar(TEXT('&'));
 		}
 		else
 		{
-			ChunkUri.Append(TEXT("?"_WSV));
+			ChunkUri.AppendChar(TEXT('?'));
 			bHaveQuery = true;
 		}
 	};
@@ -584,7 +587,7 @@ FZenStoreHttpClient::EndBuildPass(FCbPackage OpEntry)
 	check(bAllowEdit);
 
 	FLargeMemoryWriter SerializedPackage;
-	UE::Zen::SaveCbPackage(OpEntry, SerializedPackage);
+	UE::Zen::OpLog::SaveCbPackage(OpEntry, SerializedPackage);
 
 	UE_LOG(LogZenStore, Verbose, TEXT("Package size: %lld"), SerializedPackage.TotalSize());
 
@@ -604,7 +607,7 @@ FZenStoreHttpClient::EndBuildPass(FCbPackage OpEntry)
 
 } // UE
 
-#else // not PLATFORM_WINDOWS, dummy implementation stub for now
+#else // not desktop platform
 
 namespace UE {
 namespace Zen {
@@ -630,7 +633,8 @@ FZenStoreHttpClient::~FZenStoreHttpClient()
 }
 
 bool FZenStoreHttpClient::TryCreateProject(FStringView InProjectId, FStringView InOplogId, FStringView ServerRoot,
-	FStringView EngineRoot,	FStringView ProjectRoot)
+	FStringView EngineRoot,	FStringView ProjectRoot,
+	FStringView ProjectFilePath)
 {
 	return false;
 }
@@ -690,7 +694,7 @@ TFuture<TIoStatusOr<FCbObject>> FZenStoreHttpClient::GetFiles()
 
 }
 
-#endif // PLATFORM_WINDOWS
+#endif // desktop platform
 
 namespace UE
 {
@@ -767,23 +771,6 @@ const UTF8CHAR* FZenStoreHttpClient::FindAttachmentId(FUtf8StringView Attachment
 		return nullptr;
 	}
 	return Existing;
-}
-
-// Duplicated in StorageServerPlatformFile.cpp to avoid having a public API in a shared module
-static FString GetProjectPathId()
-{
-	FString ProjectFilePath = FPaths::GetProjectFilePath();
-	FPaths::NormalizeFilename(ProjectFilePath);
-	FString AbsProjectFilePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ProjectFilePath);
-	FTCHARToUTF8 AbsProjectFilePathUTF8(*AbsProjectFilePath);
-
-	FString HashString = FMD5::HashBytes((unsigned char*)AbsProjectFilePathUTF8.Get(), AbsProjectFilePathUTF8.Length()).Left(8);
-	return FString::Printf(TEXT("%s.%.8s"), FApp::GetProjectName(), *HashString);
-}
-
-FString FZenStoreHttpClient::GenerateDefaultProjectId()
-{
-	return GetProjectPathId();
 }
 
 }

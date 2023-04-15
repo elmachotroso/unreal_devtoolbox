@@ -9,6 +9,10 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
 #include "IndexTypes.h"
+#include "InterchangeAssetImportData.h"
+#include "InterchangeGenericAssetsPipeline.h"
+#include "InterchangeGenericMeshPipeline.h"
+#include "InterchangePythonPipelineBase.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMeshPaintSkeletalMeshAdapter, Log, All);
 //////////////////////////////////////////////////////////////////////////
@@ -103,13 +107,13 @@ void PropagateVertexPaintToSkeletalMesh(USkeletalMesh* SkeletalMesh, int32 LODIn
 bool FMeshPaintSkeletalMeshComponentAdapter::Construct(UMeshComponent* InComponent, int32 InMeshLODIndex)
 {
 	SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InComponent);
-	if (SkeletalMeshComponent != nullptr)
+	if (SkeletalMeshComponent.IsValid())
 	{
 		SkeletalMeshChangedHandle = SkeletalMeshComponent->RegisterOnSkeletalMeshPropertyChanged(USkeletalMeshComponent::FOnSkeletalMeshPropertyChanged::CreateSP(this, &FMeshPaintSkeletalMeshComponentAdapter::OnSkeletalMeshChanged));
 
-		if (SkeletalMeshComponent->SkeletalMesh != nullptr)
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() != nullptr)
 		{
-			ReferencedSkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
+			ReferencedSkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
 			MeshLODIndex = InMeshLODIndex;
 			const bool bSuccess = Initialize();
 			return bSuccess;
@@ -121,7 +125,7 @@ bool FMeshPaintSkeletalMeshComponentAdapter::Construct(UMeshComponent* InCompone
 
 FMeshPaintSkeletalMeshComponentAdapter::~FMeshPaintSkeletalMeshComponentAdapter()
 {
-	if (SkeletalMeshComponent != nullptr)
+	if (SkeletalMeshComponent.IsValid())
 	{
 		SkeletalMeshComponent->UnregisterOnSkeletalMeshPropertyChanged(SkeletalMeshChangedHandle);
 	}
@@ -134,10 +138,10 @@ FMeshPaintSkeletalMeshComponentAdapter::~FMeshPaintSkeletalMeshComponentAdapter(
 void FMeshPaintSkeletalMeshComponentAdapter::OnSkeletalMeshChanged()
 {
 	OnRemoved();
-	if (SkeletalMeshComponent != nullptr)
+	if (SkeletalMeshComponent.IsValid())
 	{
-		ReferencedSkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
-		if (SkeletalMeshComponent->SkeletalMesh != nullptr)
+		ReferencedSkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset();
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() != nullptr)
 		{
 			Initialize();
 			OnAdded();
@@ -155,20 +159,23 @@ void FMeshPaintSkeletalMeshComponentAdapter::OnPostMeshCached(USkeletalMesh* Ske
 
 bool FMeshPaintSkeletalMeshComponentAdapter::Initialize()
 {
-	check(ReferencedSkeletalMesh == SkeletalMeshComponent->SkeletalMesh);
-
 	bool bInitializationResult = false;
 
-	MeshResource = ReferencedSkeletalMesh->GetResourceForRendering();
-	if (MeshResource != nullptr)
+	if (SkeletalMeshComponent.IsValid())
 	{
-		LODData = &MeshResource->LODRenderData[MeshLODIndex];
-		checkf(ReferencedSkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(MeshLODIndex), TEXT("Invalid Imported Model index for vertex painting"));
-		LODModel = &ReferencedSkeletalMesh->GetImportedModel()->LODModels[MeshLODIndex];
+		check(ReferencedSkeletalMesh == SkeletalMeshComponent->GetSkeletalMeshAsset());
 
-		bInitializationResult = FBaseMeshPaintComponentAdapter::Initialize();
+		MeshResource = ReferencedSkeletalMesh->GetResourceForRendering();
+		if (MeshResource != nullptr)
+		{
+			LODData = &MeshResource->LODRenderData[MeshLODIndex];
+			checkf(ReferencedSkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(MeshLODIndex), TEXT("Invalid Imported Model index for vertex painting"));
+			LODModel = &ReferencedSkeletalMesh->GetImportedModel()->LODModels[MeshLODIndex];
+
+			bInitializationResult = FBaseMeshPaintComponentAdapter::Initialize();
+		}
+
 	}
-
 	
 	return bInitializationResult;
 }
@@ -207,7 +214,6 @@ void FMeshPaintSkeletalMeshComponentAdapter::AddReferencedObjectsGlobals(FRefere
 void FMeshPaintSkeletalMeshComponentAdapter::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(ReferencedSkeletalMesh);
-	Collector.AddReferencedObject(SkeletalMeshComponent);
 }
 
 void FMeshPaintSkeletalMeshComponentAdapter::CleanupGlobals()
@@ -216,9 +222,15 @@ void FMeshPaintSkeletalMeshComponentAdapter::CleanupGlobals()
 
 void FMeshPaintSkeletalMeshComponentAdapter::OnAdded()
 {
-	checkf(SkeletalMeshComponent, TEXT("Invalid SkeletalMesh Component"));
+	// We shouldn't assume that the cached skeletal mesh component remains valid.
+	// Components may be destroyed by editor ticks, and be forcibly removed by GC.
+	if (!SkeletalMeshComponent.IsValid())
+	{
+		return;
+	}
+
 	checkf(ReferencedSkeletalMesh, TEXT("Invalid reference to Skeletal Mesh"));
-	checkf(ReferencedSkeletalMesh == SkeletalMeshComponent->SkeletalMesh, TEXT("Referenced Skeletal Mesh does not match one in Component"));
+	checkf(ReferencedSkeletalMesh == SkeletalMeshComponent->GetSkeletalMeshAsset(), TEXT("Referenced Skeletal Mesh does not match one in Component"));
 
 	SkeletalMeshComponent->bUseRefPoseOnInitAnim = true;
 	SkeletalMeshComponent->InitAnim(true);
@@ -229,9 +241,16 @@ void FMeshPaintSkeletalMeshComponentAdapter::OnAdded()
 
 void FMeshPaintSkeletalMeshComponentAdapter::OnRemoved()
 {
+	// We shouldn't assume that the cached skeletal mesh component remains valid.
+	// Components may be destroyed by editor ticks, and be forcibly removed by GC.
+	if (!SkeletalMeshComponent.IsValid())
+	{
+		return;
+	}
+	
 	// If the referenced skeletal mesh has been destroyed (and nulled by GC), don't try to do anything more.
 	// It should be in the process of removing all global geometry adapters if it gets here in this situation.
-	if (!ReferencedSkeletalMesh || !SkeletalMeshComponent)
+	if (!ReferencedSkeletalMesh)
 	{
 		return;
 	}
@@ -244,6 +263,11 @@ void FMeshPaintSkeletalMeshComponentAdapter::OnRemoved()
 
 bool FMeshPaintSkeletalMeshComponentAdapter::LineTraceComponent(struct FHitResult& OutHit, const FVector Start, const FVector End, const struct FCollisionQueryParams& Params) const
 {
+	if (!SkeletalMeshComponent.IsValid())
+	{
+		return false;
+	}
+
 	const bool bHitBounds = FMath::LineSphereIntersection(Start, End.GetSafeNormal(), (End - Start).SizeSquared(), SkeletalMeshComponent->Bounds.Origin, SkeletalMeshComponent->Bounds.SphereRadius);
 	const float SqrRadius = FMath::Square(SkeletalMeshComponent->Bounds.SphereRadius);
 	const bool bInsideBounds = (SkeletalMeshComponent->Bounds.ComputeSquaredDistanceFromBoxToPoint(Start) <= SqrRadius) || (SkeletalMeshComponent->Bounds.ComputeSquaredDistanceFromBoxToPoint(End) <= SqrRadius);
@@ -310,12 +334,18 @@ bool FMeshPaintSkeletalMeshComponentAdapter::LineTraceComponent(struct FHitResul
 
 void FMeshPaintSkeletalMeshComponentAdapter::QueryPaintableTextures(int32 MaterialIndex, int32& OutDefaultIndex, TArray<struct FPaintableTexture>& InOutTextureList)
 {
-	DefaultQueryPaintableTextures(MaterialIndex, SkeletalMeshComponent, OutDefaultIndex, InOutTextureList);
+	if (SkeletalMeshComponent.IsValid())
+	{
+		DefaultQueryPaintableTextures(MaterialIndex, SkeletalMeshComponent.Get(), OutDefaultIndex, InOutTextureList);
+	}
 }
 
 void FMeshPaintSkeletalMeshComponentAdapter::ApplyOrRemoveTextureOverride(UTexture* SourceTexture, UTexture* OverrideTexture) const
 {
-	DefaultApplyOrRemoveTextureOverride(SkeletalMeshComponent, SourceTexture, OverrideTexture);
+	if (SkeletalMeshComponent.IsValid())
+	{
+		DefaultApplyOrRemoveTextureOverride(SkeletalMeshComponent.Get(), SourceTexture, OverrideTexture);
+	}
 }
 
 void FMeshPaintSkeletalMeshComponentAdapter::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const
@@ -325,6 +355,11 @@ void FMeshPaintSkeletalMeshComponentAdapter::GetTextureCoordinate(int32 VertexIn
 
 void FMeshPaintSkeletalMeshComponentAdapter::PreEdit()
 {
+	if (!SkeletalMeshComponent.IsValid())
+	{
+		return;
+	}
+
 	FlushRenderingCommands();
 
 	SkeletalMeshComponent->Modify();
@@ -359,6 +394,33 @@ void FMeshPaintSkeletalMeshComponentAdapter::PreEdit()
 			ImportData->SetFlags(RF_Transactional);
 			ImportData->Modify();
 			ImportData->VertexColorImportOption = EVertexColorImportOption::Ignore;
+		}
+
+		UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(ReferencedSkeletalMesh->GetAssetImportData());
+		if (InterchangeAssetImportData)
+		{
+			for (TObjectPtr<UObject> PipelineBase : InterchangeAssetImportData->Pipelines)
+			{
+				UInterchangeGenericAssetsPipeline* GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PipelineBase.Get());
+
+				if (!GenericAssetPipeline)
+				{
+					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(PipelineBase.Get()))
+					{
+						GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PythonPipelineAsset->GeneratedPipeline);
+					}
+				}
+				
+				if (GenericAssetPipeline)
+				{
+					if (GenericAssetPipeline->CommonMeshesProperties && GenericAssetPipeline->CommonMeshesProperties->VertexColorImportOption != EInterchangeVertexColorImportOption::IVCIO_Ignore)
+					{
+						GenericAssetPipeline->SetFlags(RF_Transactional);
+						GenericAssetPipeline->Modify();
+						GenericAssetPipeline->CommonMeshesProperties->VertexColorImportOption = EInterchangeVertexColorImportOption::IVCIO_Ignore;
+					}
+				}
+			}
 		}
 	}
 }
@@ -399,6 +461,11 @@ void FMeshPaintSkeletalMeshComponentAdapter::SetVertexColor(int32 VertexIndex, F
 
 FMatrix FMeshPaintSkeletalMeshComponentAdapter::GetComponentToWorldMatrix() const
 {
+	if (!SkeletalMeshComponent.IsValid())
+	{
+		return FMatrix::Identity;
+	}
+
 	return SkeletalMeshComponent->GetComponentToWorld().ToMatrixWithScale();
 }
 
@@ -409,7 +476,7 @@ TSharedPtr<IMeshPaintComponentAdapter> FMeshPaintSkeletalMeshComponentAdapterFac
 {
 	if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InComponent))
 	{
-		if (SkeletalMeshComponent->SkeletalMesh != nullptr)
+		if (SkeletalMeshComponent->GetSkeletalMeshAsset() != nullptr)
 		{
 			TSharedRef<FMeshPaintSkeletalMeshComponentAdapter> Result = MakeShareable(new FMeshPaintSkeletalMeshComponentAdapter());
 			if (Result->Construct(InComponent, InMeshLODIndex))

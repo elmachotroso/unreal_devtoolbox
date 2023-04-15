@@ -16,7 +16,6 @@ namespace UnrealBuildTool.Rules
 				"Core",
 				"CoreUObject",
 				"EditorFramework",
-				"EditorStyle",
 				"EditorWidgets",
 				"Engine",
 				"GameplayInsights",
@@ -37,7 +36,8 @@ namespace UnrealBuildTool.Rules
 				"UnrealEd",
 				"RewindDebuggerInterface",
 				"ToolWidgets",
-				"MainFrame"
+				"MainFrame",
+				"DeveloperSettings",
 			});
 		}
 	}

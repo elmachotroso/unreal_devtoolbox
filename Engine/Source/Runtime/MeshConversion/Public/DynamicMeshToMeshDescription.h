@@ -2,12 +2,19 @@
 
 #pragma once
 
+#include "Containers/Array.h"
 #include "CoreMinimal.h"
 #include "DynamicMesh/DynamicMesh3.h"
-#include "MeshDescription.h"
+#include "GeometryBase.h"
 #include "MeshConversionOptions.h"
+#include "MeshDescription.h"
 
 PREDECLARE_GEOMETRY(template<typename RealType> class TMeshTangents);
+namespace UE { namespace Geometry { class FDynamicMesh3; } }
+struct FMeshDescription;
+struct FTriangleID;
+struct FVertexID;
+
 using UE::Geometry::FDynamicMesh3;
 
 /**
@@ -158,4 +165,21 @@ protected:
 	 */
 	void ConvertPolygroupLayers(const FDynamicMesh3* MeshIn, FMeshDescription& MeshOut, const TArray<FTriangleID>& IndexToTriangleIDMap);
 
+	/**
+	* Transfer WeightLayers from DynamicMesh AttributeSet to MeshDescription.
+	* Will copy to existing MeshDescription VertexAttribute<float> if one with the same name exists.
+	* Otherwise will register a new one.
+	*/
+	void ConvertWeightLayers(const FDynamicMesh3* MeshIn, FMeshDescription& MeshOut, const TArray<FVertexID>& IndexToVertexIDMap);
+
+	/**
+	 * Applies an optional sRGB-to-Linear color transform on the input. The color transform
+	 * is controlled by ConversionOptions.bTransformVtxColorsSRGBToLinear.
+	 *
+	 * The counterpart to this method is MeshDescriptionToDynamicMesh::ApplyVertexColorTransform
+	 * which will undo this color transformation when the MeshDescription is read back.
+	 *
+	 * @param Color color to transform
+	 */
+	void ApplyVertexColorTransform(FVector4f& Color) const;
 };

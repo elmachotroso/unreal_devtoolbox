@@ -10,28 +10,31 @@ namespace Geometry {
 
 	//
 	// Index interface (similar to ParallelFor)
-	// 	   TransformFuncT should be a function pointer-like object with signature: T(int)
+	// 	   TransformFuncT should be a function pointer-like object with signature: T(IntType )
 	// 	   ReduceFuncT should be a function pointer-like object with signature: T(T,T)
 
-	template<typename T, typename TransformFuncT, typename ReduceFuncT>
-	T ParallelTransformReduce(int64 Num,
+	template<typename IntType, typename T, typename TransformFuncT, typename ReduceFuncT>
+	T ParallelTransformReduce(IntType Num,
 							  const T& Init,
 							  TransformFuncT Transform,
 							  ReduceFuncT Reduce,
-							  int64 NumTasks)
+							  int64 InNumTasks)
 	{
-		check(NumTasks > 0);
-		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / NumTasks);
+		check(InNumTasks > 0);
+		// ParallelFor doesn't yet support int64 NumTasks, so cap it
+		const int32 NumTasks = (int32) FMath::Min(InNumTasks, MAX_int32);
+
+		const IntType NumPerTask = (IntType)FMathf::Ceil((float)Num / (float)NumTasks);
 
 		TArray<T> PerTaskResults;
 		PerTaskResults.SetNum(NumTasks);
 
-		ParallelFor(NumTasks, [&](int64 TaskIndex)
+		ParallelFor(NumTasks, [&](int32 TaskIndex)
 		{
 			T LocalResult{ Init };
 
-			int64 End = FMath::Min((TaskIndex + 1) * NumPerTask, Num);
-			for (int64 Index = TaskIndex * NumPerTask; Index < End; ++Index)
+			IntType End = FMath::Min((TaskIndex + 1) * NumPerTask, Num);
+			for (IntType Index = TaskIndex * NumPerTask; Index < End; ++Index)
 			{
 				T Transformed{ Transform(Index) };
 				LocalResult = Reduce(Transformed, LocalResult);
@@ -49,32 +52,37 @@ namespace Geometry {
 	}
 
 
+
 	//
 	// Index interface for non-copyable types
 	// 	   InitFuncT should be a function-like object with signature void(T&)
-	// 	   TransformFuncT should be a function-like object with signature void(int,T&)
+	// 	   TransformFuncT should be a function-like object with signature void(IntType,T&)
 	// 	   ReduceFuncT should be a function-like object with signature void(T,T&)
 
-	template<typename T, typename InitFuncT, typename TransformFuncT, typename ReduceFuncT>
-	void ParallelTransformReduce(int64 Num,
+	template<typename IntType, typename T, typename InitFuncT, typename TransformFuncT, typename ReduceFuncT>
+	void ParallelTransformReduce(IntType Num,
 								 InitFuncT InitFunc,
 								 TransformFuncT Transform,
 								 ReduceFuncT Reduce,
 								 T& Out,
-								 int64 NumTasks)
+								 int64 InNumTasks)
 	{
-		check(NumTasks > 0);
-		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / NumTasks);
+		check(InNumTasks > 0);
+
+		// ParallelFor doesn't yet support int64 NumTasks, so cap it
+		const int32 NumTasks = (int32)FMath::Min(InNumTasks, MAX_int32);
+
+		IntType NumPerTask = (IntType)FMathf::Ceil((float)Num / (float)NumTasks);
 
 		TArray<T> PerTaskResults;
 		PerTaskResults.SetNum(NumTasks);
 
-		ParallelFor(NumTasks, [&](int64 TaskIndex)
+		ParallelFor(NumTasks, [&](int32 TaskIndex)
 		{
 			InitFunc(PerTaskResults[TaskIndex]);
 
-			int64 End = FMath::Min((TaskIndex + 1) * NumPerTask, Num);
-			for (int64 Index = TaskIndex * NumPerTask; Index < End; ++Index)
+			IntType End = FMath::Min((TaskIndex + 1) * NumPerTask, Num);
+			for (IntType Index = TaskIndex * NumPerTask; Index < End; ++Index)
 			{
 				T Transformed;
 				Transform(Index, Transformed);
@@ -129,7 +137,7 @@ namespace Geometry {
 	template<typename ContainerType, typename ElementType, typename SizeType>
 	TIndexedContainerIterator<ContainerType, ElementType, SizeType>
 		AdvanceIterator(TIndexedContainerIterator<ContainerType, ElementType, SizeType> Begin,
-						int64 N)
+						SizeType N)
 	{
 		return Begin + N;
 	}
@@ -144,22 +152,26 @@ namespace Geometry {
 							  const T& Init,
 							  TransformFuncT Transform,
 							  ReduceFuncT Reduce,
-							  int64 NumTasks)
+							  int64 InNumTasks)
 	{
 		int64 Num = IteratorDistance(BeginIterator, EndIterator);
 
-		check(NumTasks > 0);
-		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / NumTasks);
+		check(InNumTasks > 0);
+
+		// ParallelFor doesn't yet support int64 NumTasks, so cap it
+		const int32 NumTasks = (int32)FMath::Min(InNumTasks, MAX_int32);
+
+		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / (float)NumTasks);
 
 		TArray<T> PerTaskResults;
 		PerTaskResults.SetNum(NumTasks);
 
-		ParallelFor(NumTasks, [&](int64 TaskIndex)
+		ParallelFor(NumTasks, [&](int32 TaskIndex)
 		{
 			T LocalResult{ Init };
 
-			IterT LocalIter = AdvanceIterator(BeginIterator, FMath::Min(Num, TaskIndex * NumPerTask));
-			IterT LocalEndIter = AdvanceIterator(BeginIterator, FMath::Min(Num, (TaskIndex + 1) * NumPerTask));
+			IterT LocalIter = AdvanceIterator(BeginIterator, FMath::Min(Num, int64(TaskIndex) * NumPerTask));
+			IterT LocalEndIter = AdvanceIterator(BeginIterator, FMath::Min(Num, (int64(TaskIndex) + 1) * NumPerTask));
 
 			while (LocalIter != LocalEndIter)
 			{
@@ -193,22 +205,25 @@ namespace Geometry {
 								 TransformFuncT Transform,
 								 ReduceFuncT Reduce,
 								 T& Out,
-								 int64 NumTasks)
+								 int64 InNumTasks)
 	{
 		int64 Num = IteratorDistance(BeginIterator, EndIterator);
 
-		check(NumTasks > 0);
-		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / NumTasks);
+		check(InNumTasks > 0);
+		// ParallelFor doesn't yet support int64 NumTasks, so cap it
+		const int32 NumTasks = (int32)FMath::Min(InNumTasks, MAX_int32);
+
+		int64 NumPerTask = (int64)FMathf::Ceil((float)Num / (float)NumTasks);
 
 		TArray<T> PerTaskResults;
 		PerTaskResults.SetNum(NumTasks);
 
-		ParallelFor(NumTasks, [&](int64 TaskIndex)
+		ParallelFor(NumTasks, [&](int32 TaskIndex)
 		{
 			InitFunc(PerTaskResults[TaskIndex]);
 
-			IterT LocalIter = AdvanceIterator(BeginIterator, FMath::Min(Num, TaskIndex * NumPerTask));
-			IterT LocalEndIter = AdvanceIterator(BeginIterator, FMath::Min(Num, (TaskIndex + 1) * NumPerTask));
+			IterT LocalIter = AdvanceIterator(BeginIterator, FMath::Min(Num, int64(TaskIndex) * NumPerTask));
+			IterT LocalEndIter = AdvanceIterator(BeginIterator, FMath::Min(Num, (int64(TaskIndex) + 1) * NumPerTask));
 
 			while (LocalIter != LocalEndIter)
 			{

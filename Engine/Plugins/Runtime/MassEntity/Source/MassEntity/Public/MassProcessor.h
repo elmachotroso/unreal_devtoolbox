@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "MassEntitySubsystem.h"
+#include "MassEntityManager.h"
 #include "MassProcessingTypes.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "MassCommandBuffer.h"
@@ -12,6 +12,8 @@
 
 
 struct FMassProcessingPhaseConfig;
+class UMassCompositeProcessor;
+struct FMassDebugger;
 
 enum class EProcessorCompletionStatus : uint8
 {
@@ -38,22 +40,23 @@ struct FMassProcessorExecutionOrder
 };
 
 
-UCLASS(abstract, EditInlineNew, CollapseCategories, config = Mass, defaultconfig)
+UCLASS(abstract, EditInlineNew, CollapseCategories, config = Mass, defaultconfig, ConfigDoNotCheckDefaults)
 class MASSENTITY_API UMassProcessor : public UObject
 {
 	GENERATED_BODY()
 public:
-	UMassProcessor(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+	UMassProcessor();
+	UMassProcessor(const FObjectInitializer& ObjectInitializer);
 
 	virtual void Initialize(UObject& Owner) {}
-	virtual FGraphEventRef DispatchProcessorTasks(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& ExecutionContext, const FGraphEventArray& Prerequisites = FGraphEventArray());
+	virtual FGraphEventRef DispatchProcessorTasks(const TSharedPtr<FMassEntityManager>& EntityManager, FMassExecutionContext& ExecutionContext, const FGraphEventArray& Prerequisites = FGraphEventArray());
 
 	EProcessorExecutionFlags GetExecutionFlags() const { return (EProcessorExecutionFlags)ExecutionFlags; }
 
 	/** Whether this processor should execute according the CurrentExecutionFlags parameters */
 	bool ShouldExecute(const EProcessorExecutionFlags CurrentExecutionFlags) const { return (GetExecutionFlags() & CurrentExecutionFlags) != EProcessorExecutionFlags::None; }
-	void CallExecute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context);
-	
+	void CallExecute(FMassEntityManager& EntityManager, FMassExecutionContext& Context);
+
 	bool AllowDuplicates() const { return bAllowDuplicates; }
 
 	virtual void DebugOutputDescription(FOutputDevice& Ar, int32 Indent = 0) const;
@@ -68,7 +71,15 @@ public:
 	
 	const FMassProcessorExecutionOrder& GetExecutionOrder() const { return ExecutionOrder; }
 
-	TConstArrayView<const int32> GetPrerequisiteIndices() const { return DependencyIndices; }
+	/** By default fetches requirements declared entity queries registered via RegisterQuery. Processors can override 
+	 *	this function to supply additional requirements */
+	virtual void ExportRequirements(FMassExecutionRequirements& OutRequirements) const;
+
+	const FMassSubsystemRequirements& GetProcessorRequirements() const { return ProcessorRequirements; }
+
+	/** Adds Query to RegisteredQueries list. Query is required to be a member variable of this processor. Not meeting
+	 *  this requirement will cause check failure and the query won't be registered. */
+	void RegisterQuery(FMassEntityQuery& Query);
 
 	bool ShouldAutoAddToGlobalList() const { return bAutoRegisterWithProcessingPhases; }
 #if WITH_EDITOR
@@ -88,14 +99,11 @@ public:
 protected:
 	virtual void ConfigureQueries() PURE_VIRTUAL(UMassProcessor::ConfigureQueries);
 	virtual void PostInitProperties() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) PURE_VIRTUAL(UMassProcessor::Execute);
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif // WITH_EDITOR
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) PURE_VIRTUAL(UMassProcessor::Execute);
 
 protected:
 	/** Whether this processor should be executed on StandAlone or Server or Client */
-	UPROPERTY(EditAnywhere, Category = "Pipeline", meta = (Bitmask, BitmaskEnum = EProcessorExecutionFlags), config)
+	UPROPERTY(EditAnywhere, Category = "Pipeline", meta = (Bitmask, BitmaskEnum = "/Script/MassEntity.EProcessorExecutionFlags"), config)
 	int32 ExecutionFlags;
 
 	/** Processing phase this processor will be automatically run as part of. */
@@ -124,9 +132,17 @@ protected:
 	bool bCanShowUpInSettings = true;
 #endif // WITH_EDITORONLY_DATA
 
-	friend class UMassCompositeProcessor;
-	TArray<int32> DependencyIndices;
-	TArray<int32> TransientDependencyIndices;
+	friend UMassCompositeProcessor;
+	friend FMassDebugger;
+
+	/** A query representing elements this processor is accessing in Execute function outside of query execution */
+	FMassSubsystemRequirements ProcessorRequirements;
+
+private:
+	/** Stores processor's queries registered via RegisterQuery. 
+	 *  @note that it's safe to store pointers here since RegisterQuery does verify that a given registered query is 
+	 *  a member variable of a given processor */
+	TArray<FMassEntityQuery*> OwnedQueries;
 };
 
 
@@ -135,6 +151,8 @@ class MASSENTITY_API UMassCompositeProcessor : public UMassProcessor
 {
 	GENERATED_BODY()
 
+	friend FMassDebugger;
+public:
 	struct FDependencyNode
 	{
 		FName Name;
@@ -155,13 +173,14 @@ public:
 	FName GetGroupName() const { return GroupName; }
 
 	virtual void CopyAndSort(const FMassProcessingPhaseConfig& PhaseConfig, const FString& DependencyGraphFileName = FString());
+	void SetProcessors(TArrayView<UMassProcessor*> InProcessorInstances, const FString& DependencyGraphFileName = FString());
 
 	/** adds SubProcessor to an appropriately named group. If RequestedGroupName == None then SubProcessor
 	 *  will be added directly to ChildPipeline. If not then the indicated group will be searched for in ChildPipeline 
 	 *  and if it's missing it will be created and AddGroupedProcessor will be called recursively */
 	void AddGroupedProcessor(FName RequestedGroupName, UMassProcessor& SubProcessor);
 
-	virtual FGraphEventRef DispatchProcessorTasks(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& ExecutionContext, const FGraphEventArray& Prerequisites = FGraphEventArray()) override;
+	virtual FGraphEventRef DispatchProcessorTasks(const TSharedPtr<FMassEntityManager>& EntityManager, FMassExecutionContext& ExecutionContext, const FGraphEventArray& Prerequisites = FGraphEventArray()) override;
 
 	bool IsEmpty() const { return ChildPipeline.IsEmpty(); }
 
@@ -169,12 +188,12 @@ public:
 
 protected:
 	virtual void ConfigureQueries() override;
-	virtual void Execute(UMassEntitySubsystem& EntitySubsystem, FMassExecutionContext& Context) override;
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
 
 	/**
-	 *  Called recursively to add processors and composite processors to ChildPipeline based on ProcessorsAndGroups
+	 *  Adds processors in OrderedProcessors to ChildPipeline and builds flat processing graph that's being used in multithreaded mode.
 	 */
-	int32 Populate(TArray<FProcessorDependencySolver::FOrderInfo>& ProcessorsAndGroups, const int32 StartIndex = 0);
+	void Populate(TConstArrayView<FProcessorDependencySolver::FOrderInfo> OrderedProcessors);
 
 	/** RequestedGroupName can indicate a multi-level group name, like so: A.B.C
 	 *  We need to extract the highest-level group name ('A' in the example), and see if it already exists. 
@@ -213,7 +232,4 @@ protected:
 		}
 	};
 	TArray<FProcessorCompletion> CompletionStatus;
-
-	bool bRunInSeparateThread;
-	bool bHasOffThreadSubGroups;
 };

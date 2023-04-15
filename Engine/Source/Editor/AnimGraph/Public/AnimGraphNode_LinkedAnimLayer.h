@@ -53,11 +53,19 @@ public:
 	// Optionally updates layer GUID if it is invalid
 	void UpdateGuidForLayer();
 
+	// Sets the name of the layer we refer to
+	void SetLayerName(FName InName);
+
+	// Gets the name of the layer we refer to
+	FName GetLayerName() const;
 protected:
+
+	void GetLinkTarget(UObject* &OutTargetGraph, UBlueprint* &OutTargetBlueprint) const;
+
 	// ----- UI CALLBACKS ----- //
 	// Handlers for layer combo
 	void GetLayerNames(TArray<TSharedPtr<FString>>& OutStrings, TArray<TSharedPtr<SToolTip>>& OutToolTips, TArray<bool>& OutRestrictedItems);
-	FString GetLayerName() const;
+	FString GetLayerNameString() const;
 	void OnLayerChanged(IDetailLayoutBuilder* DetailBuilder);
 	bool HasAvailableLayers() const;
 	bool HasValidNonSelfLayer() const;
@@ -72,16 +80,17 @@ protected:
 	// Begin UAnimGraphNode_CustomProperty
 	virtual FAnimNode_CustomProperty* GetCustomPropertyNode() override { return &Node;  }
 	virtual const FAnimNode_CustomProperty* GetCustomPropertyNode() const override { return &Node; }
-	virtual bool NeedsToSpecifyValidTargetClass() const override { return false; }
 	virtual UClass* GetTargetSkeletonClass() const override;
 
 	// Begin UAnimGraphNode_LinkedAnimGraphBase
-	virtual FAnimNode_LinkedAnimLayer* GetLinkedAnimGraphNode() override { return &Node;  }
-	virtual const FAnimNode_LinkedAnimLayer* GetLinkedAnimGraphNode() const override { return &Node; }
+	virtual FAnimNode_LinkedAnimGraph* GetLinkedAnimGraphNode() override;
+	virtual const FAnimNode_LinkedAnimGraph* GetLinkedAnimGraphNode() const override;
 	virtual bool OnShouldFilterInstanceBlueprint(const FAssetData& AssetData) const override;
 	virtual FString GetCurrentInstanceBlueprintPath() const override;
 	virtual bool IsStructuralProperty(FProperty* InProperty) const override;
-
+	virtual FLinearColor GetDefaultNodeTitleColor() const override;
+	virtual void HandleFunctionReferenceChanged(FName InNewName) override;
+	
 	friend class FAnimationLayerDragDropAction;
 	
 	// Helper function to get the interface currently in use by the selected layer
@@ -96,6 +105,9 @@ protected:
 	// Helper function to setup a newly spawned node
 	void SetupFromLayerId(FName InLayerId);
 	
+	// Used during compilation to check if the blueprint structure causes any circular references or nested linked layer nodes
+	void ValidateCircularRefAndNesting(const UEdGraph* CurrentGraph, const TArray<UEdGraph*>& AllGraphs, TArray<const UEdGraph*> GraphStack, bool bWithinLinkedLayerGraph, FCompilerResultsLog& MessageLog);
+
 	// Handle used to hook into object being debugged changing
 	FDelegateHandle SetObjectBeingDebuggedHandle;
 };

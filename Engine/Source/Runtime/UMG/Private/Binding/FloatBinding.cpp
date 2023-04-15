@@ -2,6 +2,8 @@
 
 #include "Binding/FloatBinding.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FloatBinding)
+
 #define LOCTEXT_NAMESPACE "UMG"
 
 UFloatBinding::UFloatBinding()
@@ -29,29 +31,16 @@ float UFloatBinding::GetValue() const
 
 		float FloatValue = 0.0f;
 
-		SourcePath.Resolve(Source);
-		if (FProperty* Property = SourcePath.GetFProperty())
+		if (SourcePath.Resolve(Source))
 		{
 			double DoubleValue = 0.0;
-			if (Property->IsA<FFloatProperty>() && SourcePath.GetValue<float>(Source, FloatValue))
-			{
-				return FloatValue;
-			}
-			else if (Property->IsA<FDoubleProperty>() && SourcePath.GetValue<double>(Source, DoubleValue))
-			{
-				FloatValue = static_cast<float>(DoubleValue);
-				return FloatValue;
-			}
-			else
-			{
-				checkf(false, TEXT("Unexpected property type: '%s'! Float bindings must use either a float or double property."), *Property->GetCPPType());
-			}
-		}
-		else
-		{
-			check(SourcePath.GetCachedFunction());
 			if (SourcePath.GetValue<float>(Source, FloatValue))
 			{
+				return FloatValue;
+			}
+			else if (SourcePath.GetValue<double>(Source, DoubleValue))
+			{
+				FloatValue = static_cast<float>(DoubleValue);
 				return FloatValue;
 			}
 		}
@@ -61,3 +50,4 @@ float UFloatBinding::GetValue() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -22,6 +22,13 @@ enum class EGPULightmassDenoisingOptions : uint8
 	DuringInteractivePreview
 };
 
+UENUM()
+enum class EGPULightmassDenoiser : uint8
+{
+	IntelOIDN  UMETA(DisplayName = "Intel Open Image Denoise"),
+	SimpleFireflyRemover
+};
+
 UCLASS(BlueprintType)
 class GPULIGHTMASS_API UGPULightmassSettings : public UObject
 {
@@ -43,8 +50,11 @@ public:
 
 	// If enabled, denoise the results on the CPU after rendering. On Completion denoises the entire lightmap when it is finished.
 	// During Interactive Preview denoises each tile as it finishes, which is useful for previewing but less efficient.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = General, DisplayName = "Denoise")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Denoising, DisplayName = "Denoise when")
 	EGPULightmassDenoisingOptions DenoisingOptions = EGPULightmassDenoisingOptions::OnCompletion;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Denoising, meta = (EditCondition = "DenoisingOptions != EGPULightmassDenoisingOptions::None"))
+	EGPULightmassDenoiser Denoiser = EGPULightmassDenoiser::IntelOIDN;
 
 	// Whether to compress lightmap textures.  Disabling lightmap texture compression will reduce artifacts but increase memory and disk size by 4x.
 	// Use caution when disabling this.
@@ -84,6 +94,10 @@ public:
 	// Number of samples per Irradiance Cache cell.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = IrradianceCaching, DisplayName = "Quality", meta = (EditCondition = "bUseIrradianceCaching", ClampMin = "4", ClampMax = "65536", UIMax = "8192"))
 	int32 IrradianceCacheQuality = 128;
+	
+	// Further prevent leaks caused by irradiance cache cells being placed inside geometry, at the cost of more fireflies and slower sampling speed. Recommended to be used with higher irradiance cache quality (>=256)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = IrradianceCaching, DisplayName = "Aggressive Leak Prevention", meta = (EditCondition = "bUseIrradianceCaching"))
+	bool bUseIrradianceCacheBackfaceDetection = false;
 
 	// Size of each Irradiance Cache cell. Smaller sizes will be slower but more accurate.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = IrradianceCaching, DisplayName = "Size", meta = (EditCondition = "bUseIrradianceCaching", ClampMin = "4", ClampMax = "1024"))
@@ -117,7 +131,6 @@ public:
 	int32 LightmapTilePoolSize = 55;
 
 public:
-	void GatherSettingsFromCVars();
 	void ApplyImmediateSettingsToRunningInstances();
 
 #if WITH_EDITOR
@@ -133,7 +146,7 @@ class GPULIGHTMASS_API AGPULightmassSettingsActor : public AInfo
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings)
-	UGPULightmassSettings* Settings;
+	TObjectPtr<UGPULightmassSettings> Settings;
 };
 
 UCLASS()

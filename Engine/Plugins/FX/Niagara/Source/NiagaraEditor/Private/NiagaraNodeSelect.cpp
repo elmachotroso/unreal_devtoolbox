@@ -21,6 +21,8 @@
 #include "Editor/EditorEngine.h"
 #include "Editor.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeSelect)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeSelect"
 
 UNiagaraNodeSelect::UNiagaraNodeSelect()
@@ -197,6 +199,13 @@ void UNiagaraNodeSelect::AllocateDefaultPins()
 {
 	const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
 
+	// in case der selector type became invalid, we change it back to wildcard here.
+	// this can happen if the underlying ustruct, for example an enum, has been deleted
+	if(!SelectorPinType.IsValid())
+	{
+		SelectorPinType = FNiagaraTypeDefinition::GetWildcardDef();
+	}
+	
 	TArray<int32> OptionValues = GetOptionValues();
 	NumOptionsPerVariable = OptionValues.Num();
 
@@ -207,7 +216,7 @@ void UNiagaraNodeSelect::AllocateDefaultPins()
 			AddOptionPin(Variable, OptionValues[OptionIndex]);
 		}
 	}
-
+	
 	// create the selector pin
 	UEdGraphPin* SelectorPin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(SelectorPinType), GetSelectorPinName());
 	SelectorPin->PersistentGuid = SelectorPinGuid;
@@ -231,7 +240,7 @@ FLinearColor UNiagaraNodeSelect::GetNodeTitleColor() const
 
 FSlateIcon UNiagaraNodeSelect::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Switch_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Switch_16x");
 	return Icon;
 }
 
@@ -300,6 +309,20 @@ void UNiagaraNodeSelect::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 void UNiagaraNodeSelect::Compile(FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
 {	
 	const UEdGraphPin* SelectorPin = GetSelectorPin();
+
+	if(!SelectorPinType.IsValid())
+	{
+		Translator->Warning(LOCTEXT("SelectNodePinSelectorTypeInvalid", "Select node selector pin should have a valid type."), this, nullptr);
+	}
+	
+	for(FNiagaraVariable& Variable : OutputVars)
+	{
+		if(!Variable.GetType().IsValid())
+		{
+			Translator->Warning(FText::Format(LOCTEXT("SelectNodePinOutputTypeInvalid", "Select node output pin should have a valid type. {0} is invalid."), FText::FromName(Variable.GetName())), this, nullptr);
+		}
+	}
+	
 	int32 Selection = Translator->CompilePin(SelectorPin);
 
 	// a map from selector value to compiled option pins (i.e.: for selector value 0 all pins that should be case "if 0" get their compiled index added under key 0)
@@ -391,7 +414,7 @@ void UNiagaraNodeSelect::AddWidgetsToOutputBox(TSharedPtr<SVerticalBox> OutputBo
 		[
 			SNew(SButton)
 			.Visibility(RemoveVisibilityAttribute)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(GetIntegerRemoveButtonTooltipText())
 			.OnPressed(FSimpleDelegate::CreateUObject(this, &UNiagaraNodeSelect::RemoveIntegerInputPin))
 			[
@@ -404,7 +427,7 @@ void UNiagaraNodeSelect::AddWidgetsToOutputBox(TSharedPtr<SVerticalBox> OutputBo
 		[
 			SNew(SButton)
 			.Visibility(AddVisibilityAttribute)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.ButtonStyle(FAppStyle::Get(), "HoverHintOnly")
 			.ToolTipText(GetIntegerAddButtonTooltipText())
 			.OnPressed(FSimpleDelegate::CreateUObject(this, &UNiagaraNodeSelect::AddIntegerInputPin))
 			[
@@ -673,7 +696,7 @@ TArray<int32> UNiagaraNodeSelect::GetOptionValues() const
 			SelectorValues.Add(Index);
 		}
 	}
-	else if(SelectorPinType.IsEnum() && SelectorPinType.GetEnum())
+	else if(SelectorPinType.IsEnum() && SelectorPinType.IsValid() && SelectorPinType.GetEnum())
 	{
 		UEnum* Enum = SelectorPinType.GetEnum();
 		const int32 EnumEntryCount = Enum->NumEnums();
@@ -682,8 +705,7 @@ TArray<int32> UNiagaraNodeSelect::GetOptionValues() const
 			int32 ValidEnumEntryCount = 0;
 			for (int32 EnumIndex = 0; EnumIndex < Enum->NumEnums()-1; EnumIndex++)
 			{
-				const bool bShouldHideEnumEntry = ShouldHideEnumEntry(Enum, EnumIndex);
-				if(!bShouldHideEnumEntry)
+				if(FNiagaraEditorUtilities::IsEnumIndexVisible(Enum, EnumIndex))
 				{
 					ValidEnumEntryCount++;
 					SelectorValues.Add(Enum->GetValueByIndex(EnumIndex));
@@ -721,3 +743,4 @@ EVisibility UNiagaraNodeSelect::ShowRemoveIntegerButton() const
 }
 
 #undef LOCTEXT_NAMESPACE
+

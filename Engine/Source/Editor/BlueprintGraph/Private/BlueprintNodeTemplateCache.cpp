@@ -1,19 +1,41 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNodeTemplateCache.h"
-#include "Engine/Blueprint.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/MetaData.h"
-#include "GameFramework/Actor.h"
+
 #include "Animation/AnimBlueprint.h"
-#include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
-#include "EdGraph/EdGraphSchema.h"
-#include "EdGraph/EdGraph.h"
-#include "Kismet2/BlueprintEditorUtils.h"
 #include "Animation/AnimInstance.h"
-#include "Kismet2/KismetEditorUtilities.h"
 #include "BlueprintEditorSettings.h"
+#include "BlueprintNodeBinder.h"
+#include "BlueprintNodeSpawner.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "GameFramework/Actor.h"
+#include "HAL/PlatformCrt.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Logging/LogCategory.h"
+#include "Logging/LogMacros.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Templates/Casts.h"
+#include "Templates/ChooseClass.h"
+#include "Templates/SubclassOf.h"
+#include "Templates/Tuple.h"
+#include "Trace/Detail/Channel.h"
+#include "UObject/Class.h"
+#include "UObject/MetaData.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
+
+class UEdGraphSchema;
 
 DEFINE_LOG_CATEGORY_STATIC(LogBlueprintNodeCache, Log, All);
 
@@ -24,7 +46,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogBlueprintNodeCache, Log, All);
 namespace BlueprintNodeTemplateCacheImpl
 {
 	/** */
-	static int32 ActiveMemFootprint   = 0;
+	static int64 ActiveMemFootprint   = 0;
 	/** Used to track the average blueprint size (so that we can try to predict when a blueprint would fail to be cached) */
 	static int32 MadeBlueprintCount   = 0;
 	static int32 AverageBlueprintSize = 0;
@@ -149,11 +171,6 @@ static UEdGraph* BlueprintNodeTemplateCacheImpl::FindCompatibleGraph(UBlueprint*
 static UBlueprint* BlueprintNodeTemplateCacheImpl::MakeCompatibleBlueprint(TSubclassOf<UBlueprint> BlueprintClass, UClass* ParentClass, TSubclassOf<UBlueprintGeneratedClass> GeneratedClassType)
 {
 	EBlueprintType BlueprintType = BPTYPE_Normal;
-	// @TODO: BPTYPE_LevelScript requires a level outer, which we don't want to have here... can we get away without it?
-// 	if (BlueprintClass->IsChildOf<ULevelScriptBlueprint>())
-// 	{
-// 		BlueprintType = BPTYPE_LevelScript;
-// 	}
 
 	if (GeneratedClassType == nullptr)
 	{
@@ -161,8 +178,8 @@ static UBlueprint* BlueprintNodeTemplateCacheImpl::MakeCompatibleBlueprint(TSubc
 	}
 
 	UPackage* BlueprintOuter = GetTransientPackage();
-	FString const DesiredName = FString::Printf(TEXT("PROTO_BP_%s"), *BlueprintClass->GetName());
-	FName   const BlueprintName = MakeUniqueObjectName(BlueprintOuter, BlueprintClass, FName(*DesiredName));
+	const FString DesiredName = FString::Printf(TEXT("PROTO_BP_%s"), *BlueprintClass->GetName());
+	const FName BlueprintName = MakeUniqueObjectName(BlueprintOuter, BlueprintClass, FName(*DesiredName));
 
 	BlueprintClass = FBlueprintEditorUtils::FindFirstNativeClass(BlueprintClass);
 	UBlueprint* NewBlueprint = FKismetEditorUtilities::CreateBlueprint(ParentClass, BlueprintOuter, BlueprintName, BlueprintType, BlueprintClass, GeneratedClassType);
@@ -170,11 +187,17 @@ static UBlueprint* BlueprintNodeTemplateCacheImpl::MakeCompatibleBlueprint(TSubc
 
 	++MadeBlueprintCount;
 
-	float const AproxBlueprintSize = ApproximateMemFootprint(NewBlueprint);
+	const float AproxBlueprintSize = static_cast<float>(ApproximateMemFootprint(NewBlueprint));
+	const float MadeBlueprintCountFloat = static_cast<float>(MadeBlueprintCount);
+
 	// track the average blueprint size, so that we can attempt to predict 
 	// whether a  blueprint will fail to be cached (when the cache is near full)
-	AverageBlueprintSize = AverageBlueprintSize * ((float)(MadeBlueprintCount-1) / MadeBlueprintCount) + 
-		(AproxBlueprintSize / MadeBlueprintCount) + 0.5f;
+	AverageBlueprintSize = 
+		static_cast<int32>(
+			(AverageBlueprintSize * ((MadeBlueprintCountFloat - 1.0f) / MadeBlueprintCountFloat)) +
+			(AproxBlueprintSize / MadeBlueprintCountFloat) +
+			0.5f
+		);
 
 	return NewBlueprint;
 }
@@ -215,9 +238,9 @@ bool BlueprintNodeTemplateCacheImpl::IsTemplateOuter(UEdGraph* ParentGraph)
 //------------------------------------------------------------------------------
 static int32 BlueprintNodeTemplateCacheImpl::GetCacheCapSize()
 {
-	UBlueprintEditorSettings const* BpSettings = GetDefault<UBlueprintEditorSettings>();
+	const UBlueprintEditorSettings* BpSettings = GetDefault<UBlueprintEditorSettings>();
 	// have to convert from MB to bytes
-	return (BpSettings->NodeTemplateCacheCapMB * 1024.f * 1024.f) + 0.5f;
+	return (static_cast<int32>(BpSettings->NodeTemplateCacheCapMB) << 20);
 }
 
 //------------------------------------------------------------------------------
@@ -255,6 +278,8 @@ FBlueprintNodeTemplateCache::FBlueprintNodeTemplateCache()
 //------------------------------------------------------------------------------
 UEdGraphNode* FBlueprintNodeTemplateCache::GetNodeTemplate(UBlueprintNodeSpawner const* NodeSpawner, UEdGraph* TargetGraph)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintNodeTemplateCache::GetNodeTemplate);
+
 	using namespace BlueprintNodeTemplateCacheImpl;
 
 	bool bIsOverMemCap = false;
@@ -438,9 +463,9 @@ void FBlueprintNodeTemplateCache::ClearCachedTemplate(UBlueprintNodeSpawner cons
 }
 
 //------------------------------------------------------------------------------
-int32 FBlueprintNodeTemplateCache::GetEstimateCacheSize() const
+int64 FBlueprintNodeTemplateCache::GetEstimateCacheSize() const
 {
-	int32 TotalEstimatedSize = ApproximateObjectMem;
+	int64 TotalEstimatedSize = ApproximateObjectMem;
 	TotalEstimatedSize += TemplateOuters.GetAllocatedSize();
 	TotalEstimatedSize += NodeTemplateCache.GetAllocatedSize();
 	TotalEstimatedSize += sizeof(*this);
@@ -449,7 +474,7 @@ int32 FBlueprintNodeTemplateCache::GetEstimateCacheSize() const
 }
 
 //------------------------------------------------------------------------------
-int32 FBlueprintNodeTemplateCache::RecalculateCacheSize()
+int64 FBlueprintNodeTemplateCache::RecalculateCacheSize()
 {
 	ApproximateObjectMem = 0;
 	for (UBlueprint* Blueprint : TemplateOuters)

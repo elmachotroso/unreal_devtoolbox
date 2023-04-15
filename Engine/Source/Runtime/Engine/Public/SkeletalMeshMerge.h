@@ -78,7 +78,7 @@ struct FRefPoseOverride
 
 /** 
 * Info to map all the sections from a single source skeletal mesh to 
-* a final section entry int he merged skeletal mesh
+* a final section entry in the merged skeletal mesh
 */
 USTRUCT(BlueprintType)
 struct ENGINE_API FSkelMeshMergeSectionMapping
@@ -157,6 +157,10 @@ public:
     		FSkelMeshMergeUVTransforms* InSectionUVTransforms
     		PRAGMA_ENABLE_DEPRECATION_WARNINGS
     		);
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FSkeletalMeshMerge(const FSkeletalMeshMerge&) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Merge/Composite skeleton and meshes together from the list of source meshes.
@@ -359,8 +363,4 @@ private:
 	 */
 	template<typename VertexDataType>
 	void CopyVertexFromSource(VertexDataType& DestVert, const FSkeletalMeshLODRenderData& SrcLODData, int32 SourceVertIdx, const FMergeSectionInfo& MergeSectionInfo);
-
-	/** Copy skin weight info from source LOD model - templatized per SourceLODModel extra bone influence */
-	template<typename SkinWeightType, bool bHasExtraBoneInfluences, typename BoneIndexType>
-	void CopyWeightFromSource(SkinWeightType& DestWeight, const FSkeletalMeshLODRenderData& SrcLODData, int32 SourceVertIdx, const FMergeSectionInfo& MergeSectionInfo);
 };

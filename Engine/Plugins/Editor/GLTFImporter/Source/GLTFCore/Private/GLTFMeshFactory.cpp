@@ -33,7 +33,8 @@ namespace GLTF
 			const TVertexInstanceAttributesRef<FVector2f>& VertexInstanceUVs,
 			const TVertexInstanceAttributesRef<FVector4f>&  VertexInstanceColors,
 			const TEdgeAttributesRef<bool>&                EdgeHardnesses,
-			FMeshDescription* MeshDescription);
+			FMeshDescription* MeshDescription,
+			bool bSkipTangents);
 
 		inline TArray<FVector4f>& GetVector4dBuffer(int32 Index)
 		{
@@ -70,23 +71,21 @@ namespace GLTF
 		enum
 		{
 			NormalBufferIndex = 0,
-			TangentBufferIndex = 1,
-			PositionBufferIndex = 2,
-			ReindexBufferIndex = 3,
-			VectorBufferCount = 4,
+			PositionBufferIndex = 1,
+			ReindexBufferIndex = 2,
+			VectorBufferCount = 3,
 			UvReindexBufferIndex = MAX_MESH_TEXTURE_COORDS_MD,
 			ColorBufferIndex = 0,
-			Reindex4dBufferIndex = 1,
-			Vector4dBufferCount = 2,
+			TangentBufferIndex = 1,
+			Reindex4dBufferIndex = 2,
+			Vector4dBufferCount = 3,
 		};
-
-		using FIndexVertexIdMap = TMap<int32, FVertexID>;
 
 		float                ImportUniformScale;
 
 		TSet<int32>                  MaterialIndicesUsed;
 		TMap<int32, FPolygonGroupID> MaterialIndexToPolygonGroupID;
-		TArray<FIndexVertexIdMap>    PositionIndexToVertexIdPerPrim;
+		TArray<FMeshFactory::FIndexVertexIdMap>    PositionIndexToVertexIdPerPrim;
 
 		TArray<FVector2f>                       Vector2dBuffers[MAX_MESH_TEXTURE_COORDS_MD + 1];
 		TArray<FVector3f>                       VectorBuffers[VectorBufferCount];
@@ -160,9 +159,13 @@ namespace GLTF
 
 	void FMeshFactoryImpl::FillMeshDescription(const FMesh &Mesh, FMeshDescription* MeshDescription)
 	{
+		const bool bSkipTangents = !Mesh.HasNormals(); // Per the GLTF spec, tangents should be ignored if no normals are provided
+
 		const int32 NumUVs = FMath::Max(1, GetNumUVs(Mesh));
 
 		FStaticMeshAttributes StaticMeshAttributes(*MeshDescription);
+		StaticMeshAttributes.Register();
+
 		TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
 		TEdgeAttributesRef<bool>  EdgeHardnesses = StaticMeshAttributes.GetEdgeHardnesses();
 		TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
@@ -179,13 +182,20 @@ namespace GLTF
 		for (int32 Index = 0; Index < Mesh.Primitives.Num(); ++Index)
 		{
 			const FPrimitive& Primitive = Mesh.Primitives[Index];
+
+			if (!Primitive.IsValid())
+			{
+				Messages.Emplace(EMessageSeverity::Warning, TEXT("Mesh has an invalid primitive: ") + Mesh.Name);
+				continue;
+			}
+
 			// Remember which primitives use which materials.
 			MaterialIndicesUsed.Add(Primitive.MaterialIndex);
 
 			TArray<FVector3f>& Positions = GetVectorBuffer(PositionBufferIndex);
 			Primitive.GetPositions(Positions);
 
-			FIndexVertexIdMap& PositionIndexToVertexId = PositionIndexToVertexIdPerPrim[Index];
+			FMeshFactory::FIndexVertexIdMap& PositionIndexToVertexId = PositionIndexToVertexIdPerPrim[Index];
 			PositionIndexToVertexId.Empty(Positions.Num());
 			for (int32 PositionIndex = 0; PositionIndex < Positions.Num(); ++PositionIndex)
 			{
@@ -212,11 +222,17 @@ namespace GLTF
 		for (int32 Index = 0; Index < Mesh.Primitives.Num(); ++Index)
 		{
 			const FPrimitive& Primitive = Mesh.Primitives[Index];
+
+			if (!Primitive.IsValid())
+			{
+				continue;
+			}
+
 			const bool        bHasDegenerateTriangles =
 				ImportPrimitive(Primitive, Index, NumUVs, Mesh.HasTangents(), Mesh.HasColors(),  //
 					VertexInstanceNormals, VertexInstanceTangents, VertexInstanceBinormalSigns, VertexInstanceUVs,
 					VertexInstanceColors,  //
-					EdgeHardnesses, MeshDescription);
+					EdgeHardnesses, MeshDescription, bSkipTangents);
 
 			bMeshUsesEmptyMaterial |= Primitive.MaterialIndex == INDEX_NONE;
 			for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
@@ -243,7 +259,7 @@ namespace GLTF
 	bool FMeshFactoryImpl::ImportPrimitive(const GLTF::FPrimitive&                        Primitive,  //
 		int32                                          PrimitiveIndex,
 		int32                                          NumUVs,
-		bool                                           bMeshHasTagents,
+		bool                                           bMeshHasTangents,
 		bool                                           bMeshHasColors,
 		const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceNormals,
 		const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceTangents,
@@ -251,7 +267,8 @@ namespace GLTF
 		const TVertexInstanceAttributesRef<FVector2f>& VertexInstanceUVs,
 		const TVertexInstanceAttributesRef<FVector4f>&  VertexInstanceColors,
 		const TEdgeAttributesRef<bool>&                EdgeHardnesses,
-		FMeshDescription* MeshDescription)
+		FMeshDescription* MeshDescription,
+		bool bSkipTangents)
 	{
 
 		const FPolygonGroupID CurrentPolygonGroupID = MaterialIndexToPolygonGroupID[Primitive.MaterialIndex];
@@ -259,6 +276,22 @@ namespace GLTF
 
 		TArray<uint32>& Indices = GetIntBuffer();
 		Primitive.GetTriangleIndices(Indices);
+
+		// Validate Indices against Positions:
+		//  In case of corrupted Indices return with bHasDegenerateTriangles.
+		{
+			TArray<FVector3f>& Positions = GetVectorBuffer(PositionBufferIndex);
+			Primitive.GetPositions(Positions);
+			uint32 PositionsSize = Positions.Num();
+
+			for (uint32 Index : Indices)
+			{
+				if (PositionsSize <= Index)
+				{
+					return true;
+				}
+			}
+		}
 
 		TArray<FVector3f>& Normals = GetVectorBuffer(NormalBufferIndex);
 		// glTF does not guarantee each primitive within a mesh has the same attributes.
@@ -280,18 +313,18 @@ namespace GLTF
 			GenerateFlatNormals(Positions, Indices, Normals);
 		}
 
-		TArray<FVector3f>& Tangents = GetVectorBuffer(TangentBufferIndex);
+		TArray<FVector4f>& Tangents = GetVector4dBuffer(TangentBufferIndex);
 		if (Primitive.HasTangents())
 		{
-			TArray<FVector3f>& ReindexBuffer = GetVectorBuffer(ReindexBufferIndex);
+			TArray<FVector4f>& ReindexBuffer = GetVector4dBuffer(Reindex4dBufferIndex);
 			Primitive.GetTangents(Tangents);
 			ReIndex(Tangents, Indices, ReindexBuffer);
 			Swap(Tangents, ReindexBuffer);
 		}
-		else if (bMeshHasTagents)
+		else if (bMeshHasTangents)
 		{
 			// If other primitives in this mesh have tangents, generate filler ones for this primitive, to avoid gaps.
-			Tangents.Init(FVector3f(0.0f, 0.0f, 1.0f), Primitive.VertexCount());
+			Tangents.Init(FVector4f(1.0f, 0.0f, 0.0f, 1.0f), Primitive.VertexCount());
 		}
 
 		TArray<FVector4f>& Colors = GetVector4dBuffer(ColorBufferIndex);
@@ -359,16 +392,13 @@ namespace GLTF
 
 				const uint32 IndiceIndex = TriangleIndex * 3 + Corner;
 
-				if (Tangents.Num() > 0)
+				VertexInstanceNormals[VertexInstanceID] = Normals[IndiceIndex];
+
+				if (!bSkipTangents && Tangents.Num() > 0)
 				{
 					VertexInstanceTangents[VertexInstanceID] = Tangents[IndiceIndex];
+					VertexInstanceBinormalSigns[VertexInstanceID] = Tangents[IndiceIndex].W;
 				}
-
-				VertexInstanceNormals[VertexInstanceID] = Normals[IndiceIndex];
-				VertexInstanceBinormalSigns[VertexInstanceID] =
-					GetBasisDeterminantSign((FVector)VertexInstanceTangents[VertexInstanceID].GetSafeNormal(),
-						(FVector)(VertexInstanceNormals[VertexInstanceID] ^ VertexInstanceTangents[VertexInstanceID]).GetSafeNormal(),
-						(FVector)VertexInstanceNormals[VertexInstanceID].GetSafeNormal());
 
 				for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
 				{
@@ -455,5 +485,10 @@ namespace GLTF
 	void FMeshFactory::CleanUp()
 	{
 		Impl->CleanUp();
+	}
+
+	TArray<FMeshFactory::FIndexVertexIdMap>& FMeshFactory::GetPositionIndexToVertexIdPerPrim() const
+	{
+		return Impl->PositionIndexToVertexIdPerPrim;
 	}
 } //namespace GLTF

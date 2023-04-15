@@ -241,9 +241,6 @@ private:
 			case EStreamableRenderAssetType::SkeletalMesh:
 				OutArray = NumStreamedMips_SkeletalMesh.GetData();
 				return NumStreamedMips_SkeletalMesh.Num();
-			case EStreamableRenderAssetType::LandscapeMeshMobile:
-				OutArray = NumStreamedMips_LandscapeMeshMobile.GetData();
-				return NumStreamedMips_LandscapeMeshMobile.Num();
 			default:
 				check(false);
 				OutArray = nullptr;
@@ -251,8 +248,11 @@ private:
 			}
 		}
 
-		/** All streaming texture or mesh objects. */
-		TArray<FStreamingRenderAsset> StreamingRenderAssets;
+		/** All streaming texture or mesh objects. 
+		* Use directly only if it's safe to overlap with UpdateStreamingRenderAssets.
+		* For an async safe version, use GetStreamingRenderAssetsAsyncSafe
+		*/
+		TArray<FStreamingRenderAsset> AsyncUnsafeStreamingRenderAssets;
 
 		/** All the textures/meshes referenced in StreamingRenderAssets. Used to handled deleted textures/meshes.  */
 		TSet<const UStreamableRenderAsset*> ReferencedRenderAssets;
@@ -310,7 +310,6 @@ private:
 	int32 NumStreamedMips_Texture[TEXTUREGROUP_MAX];
 	TArray<int32> NumStreamedMips_StaticMesh;
 	TArray<int32> NumStreamedMips_SkeletalMesh;
-	TArray<int32> NumStreamedMips_LandscapeMeshMobile;
 
 	FRenderAssetStreamingSettings Settings;
 
@@ -408,6 +407,10 @@ private:
 
 	// A critical section use around code that could be called in parallel with NotifyPrimitiveUpdated() or NotifyPrimitiveUpdated_Concurrent().
 	FCriticalSection CriticalSection;
+
+	// An event used to prevent FUpdateStreamingRenderAssetsTask from overlapping with related work
+	FGraphEventRef StreamingRenderAssetsSyncEvent;
+	TArray<FStreamingRenderAsset>& GetStreamingRenderAssetsAsyncSafe();
 
 	friend bool TrackRenderAssetEvent( FStreamingRenderAsset* StreamingRenderAsset, UStreamableRenderAsset* RenderAsset, bool bForceMipLevelsToBeResident, const FRenderAssetStreamingManager* Manager);
 };

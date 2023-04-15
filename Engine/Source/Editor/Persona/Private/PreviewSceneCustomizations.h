@@ -12,7 +12,7 @@
 #include "AnimationEditorPreviewScene.h"
 
 #ifndef CHAOS_SIMULATION_DETAIL_VIEW_FACTORY_SELECTOR  // TODO: Decide whether to keep the detail view cloth selector after nvcloth has been removed
-#define CHAOS_SIMULATION_DETAIL_VIEW_FACTORY_SELECTOR WITH_CHAOS
+	#define CHAOS_SIMULATION_DETAIL_VIEW_FACTORY_SELECTOR 1
 #endif
 
 struct FAssetData;
@@ -70,8 +70,6 @@ private:
 
 	void HandleMeshChanged(const FAssetData& InAssetData);
 
-	void HandlePreviewAnimBlueprintChanged(const FAssetData& InAssetData);
-
 	void HandleAdditionalMeshesChanged(const FAssetData& InAssetData, IDetailLayoutBuilder* DetailLayoutBuilder);
 
 	void HandleAllowDifferentSkeletonsCheckedStateChanged(ECheckBoxState CheckState);
@@ -81,9 +79,6 @@ private:
 	void HandleUseCustomAnimBPCheckedStateChanged(ECheckBoxState CheckState);
 
 	ECheckBoxState HandleUseCustomAnimBPIsChecked() const;
-
-	// Called when the anim blueprint being edited is compiled.
-	void HandleAnimBlueprintCompiled(UBlueprint* Blueprint);
 
 	// Reinitialize the preview controller in the preview scene.
 	void ReinitializePreviewController();
@@ -119,7 +114,7 @@ private:
 	TArray<TSharedPtr<FPersonaModeComboEntry>> ControllerItems;
 
 	/** This is list of class available to filter asset by. This list doesn't change once loaded, so only collect once */
-	static TArray<FName> AvailableClassNameList;
+	static TArray<FTopLevelAssetPath> AvailableClassNameList;
 
 #if CHAOS_SIMULATION_DETAIL_VIEW_FACTORY_SELECTOR
 	/** List of available cloth simulation factories. */

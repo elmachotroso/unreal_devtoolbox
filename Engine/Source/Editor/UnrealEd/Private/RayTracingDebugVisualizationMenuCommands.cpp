@@ -5,7 +5,7 @@
 #include "Framework/Commands/InputChord.h"
 #include "Internationalization/Text.h"
 #include "Templates/Function.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorViewportClient.h"
 
 #define LOCTEXT_NAMESPACE "RayTracingDebugVisualizationMenuCommands"
@@ -18,7 +18,7 @@ FRayTracingDebugVisualizationMenuCommands::FRayTracingDebugVisualizationMenuComm
 		TEXT("RayTracingDebugVisualizationMenu"), // Context name for fast lookup
 		NSLOCTEXT("Contexts", "RayTracingMenu", "Ray Tracing Debug Visualization"), // Localized context name for displaying
 		NAME_None, // Parent context name.  
-		FEditorStyle::GetStyleSetName() // Icon Style Set
+		FAppStyle::GetAppStyleSetName() // Icon Style Set
 	)
 {
 }
@@ -62,6 +62,9 @@ void FRayTracingDebugVisualizationMenuCommands::CreateRayTracingDebugVisualizati
 
 	RayTracingDebugModeNames.Add(LOCTEXT("Triangles", "Triangles"));
 	RayTracingDebugModeNames.Add(LOCTEXT("FarField", "FarField"));
+	RayTracingDebugModeNames.Add(LOCTEXT("Dynamic Instances", "Dynamic Instances"));
+	RayTracingDebugModeNames.Add(LOCTEXT("Proxy Type", "Proxy Type"));
+	RayTracingDebugModeNames.Add(LOCTEXT("Picker", "Picker"));
 
 	for ( int32 RayTracingDebugIndex = 0; RayTracingDebugIndex < RayTracingDebugModeNames.Num(); ++RayTracingDebugIndex)
 	{

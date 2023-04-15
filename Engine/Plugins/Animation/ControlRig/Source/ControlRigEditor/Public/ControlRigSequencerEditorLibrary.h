@@ -9,7 +9,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
-#include "SequencerBindingProxy.h"
+#include "MovieSceneBindingProxy.h"
 #include "ControlRig.h"
 #include "Tools/ControlRigSnapper.h"
 #include "TransformNoScale.h"
@@ -20,6 +20,7 @@
 #include "ControlRigSequencerEditorLibrary.generated.h"
 
 class ULevelSequence;
+class UTickableConstraint;
 
 USTRUCT(BlueprintType)
 struct FControlRigSequencerBindingProxy
@@ -31,14 +32,14 @@ struct FControlRigSequencerBindingProxy
 		, Track(nullptr)
 	{}
 
-	FControlRigSequencerBindingProxy(const FSequencerBindingProxy& InProxy, UControlRig* InControlRig, UMovieSceneControlRigParameterTrack* InTrack)
+	FControlRigSequencerBindingProxy(const FMovieSceneBindingProxy& InProxy, UControlRig* InControlRig, UMovieSceneControlRigParameterTrack* InTrack)
 		: Proxy(InProxy)
 		, ControlRig(InControlRig)
 		, Track(InTrack)
 	{}
 
 	UPROPERTY(BlueprintReadOnly, Category = ControlRig)
-	FSequencerBindingProxy Proxy;
+	FMovieSceneBindingProxy Proxy;
 
 	UPROPERTY(BlueprintReadOnly, Category = ControlRig)
 	TObjectPtr<UControlRig> ControlRig;
@@ -83,7 +84,7 @@ public:
 	* @return returns Return the found or created track
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
-	static UMovieSceneTrack* FindOrCreateControlRigTrack(UWorld* World, ULevelSequence* LevelSequence, const UClass* ControlRigClass, const FSequencerBindingProxy& InBinding);
+	static UMovieSceneTrack* FindOrCreateControlRigTrack(UWorld* World, ULevelSequence* LevelSequence, const UClass* ControlRigClass, const FMovieSceneBindingProxy& InBinding);
 
 	/**
 	* Find or create a Control Rig Component
@@ -93,7 +94,7 @@ public:
 	* @return returns Find array of component Control Rigs that were found or created
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
-	static TArray<UMovieSceneTrack*> FindOrCreateControlRigComponentTrack(UWorld* World, ULevelSequence* LevelSequence, const FSequencerBindingProxy& InBinding);
+	static TArray<UMovieSceneTrack*> FindOrCreateControlRigComponentTrack(UWorld* World, ULevelSequence* LevelSequence, const FMovieSceneBindingProxy& InBinding);
 	
 	/**
 	* Load anim sequence into this control rig section
@@ -125,7 +126,18 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static bool BakeToControlRig(UWorld* World, ULevelSequence* LevelSequence, UClass* ControlRigClass, UAnimSeqExportOption* ExportOptions, bool bReduceKeys, float Tolerance,
-			const FSequencerBindingProxy& Binding);
+			const FMovieSceneBindingProxy& Binding);
+
+	/**
+	* Bake the constraint to keys based on the passed in frames. This will use the open sequencer to bake. See ConstraintsScriptingLibrary to get the list of available constraints
+	* @param World The active world
+	* @param Constraint The Constraint to bake. After baking it will be keyed to be inactive of the range of frames that are baked
+	* @param Frames The frames to bake, if the array is empty it will use the active time ranges of the constraint to deteremine where it should bake
+	* @param TimeUnit Unit for all frame and time values, either in display rate or tick resolution
+	* @return returns True if successful, False otherwise
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool BakeConstraint(UWorld* World, UTickableConstraint* Constraint, const TArray<FFrameNumber>& Frames, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
 
 	/**
 	* Peform a Tween operation on the current active sequencer time(must be visible).
@@ -887,5 +899,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	bool RenameControlRigControlChannels(ULevelSequence* InSequence, UControlRig* InControlRig, const TArray<FName>& InOldControlNames, const TArray<FName>& InNewControlNames);
 
-};
+	/** Get the controls mask for the given ControlName */
+	UFUNCTION(BlueprintPure, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool GetControlsMask(UMovieSceneSection* InSection, FName ControlName);
 
+	/** Set the controls mask for the given ControlNames */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static void SetControlsMask(UMovieSceneSection* InSection, const TArray<FName>& ControlNames, bool bVisible);
+
+	/** Shows all of the controls for the given section */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static void ShowAllControls(UMovieSceneSection* InSection);
+
+	/** Hides all of the controls for the given section */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static void HideAllControls(UMovieSceneSection* InSection);
+};

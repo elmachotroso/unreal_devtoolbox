@@ -9,7 +9,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
@@ -44,7 +44,7 @@ void SDlgPickAssetPath::Construct(const FArguments& InArgs)
 			.Padding(2,2,2,4)
 			[
 				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					SNew(SVerticalBox)
 
@@ -88,9 +88,9 @@ void SDlgPickAssetPath::Construct(const FArguments& InArgs)
 			.Padding(8.f, 16.f)
 			[
 				SNew(SUniformGridPanel)
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
+				.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+				.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+				.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
 
 				+SUniformGridPanel::Slot(0,0)
 				[
@@ -102,7 +102,7 @@ void SDlgPickAssetPath::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.Text(LOCTEXT("Cancel", "Cancel"))
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 					.OnClicked(this, &SDlgPickAssetPath::OnButtonClick, EAppReturnType::Cancel)
 				]
 			]

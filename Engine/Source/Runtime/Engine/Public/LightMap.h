@@ -402,31 +402,9 @@ template <> struct TIsPODType<FQuantizedSimpleLightSample> { enum { Value = true
  * Bulk data array of FQuantizedLightSamples
  */
 template<class QuantizedLightSampleType>
-struct TQuantizedLightSampleBulkData : public FUntypedBulkData
+struct TQuantizedLightSampleBulkData : public TBulkData<QuantizedLightSampleType>
 {
 	typedef QuantizedLightSampleType SampleType;
-	/**
-	 * Returns whether single element serialization is required given an archive. This e.g.
-	 * can be the case if the serialization for an element changes and the single element
-	 * serialization code handles backward compatibility.
-	 */
-	virtual bool RequiresSingleElementSerialization( FArchive& Ar );
-
-	/**
-	 * Returns size in bytes of single element.
-	 *
-	 * @return Size in bytes of single element
-	 */
-	virtual int32 GetElementSize() const;
-
-	/**
-	 * Serializes an element at a time allowing and dealing with endian conversion and backward compatiblity.
-	 * 
-	 * @param Ar			Archive to serialize with
-	 * @param Data			Base pointer to data
-	 * @param ElementIndex	Element index to serialize
-	 */
-	virtual void SerializeElement( FArchive& Ar, void* Data, int64 ElementIndex );
 };
 
 /** A 1D array of incident lighting data. */
@@ -515,18 +493,6 @@ struct FLightMapCoefficients
 	uint8 Coefficients[NUM_STORED_LIGHTMAP_COEF][4];
 	uint8 SkyOcclusion[4];
 	uint8 AOMaterialMask;
-
-	/** Equality operator */
-	bool operator==( const FLightMapCoefficients& RHS ) const
-	{
-		return Coverage == RHS.Coverage &&
-			   Coefficients == RHS.Coefficients &&
-			   SkyOcclusion[0] == RHS.SkyOcclusion[0] &&
-			   SkyOcclusion[1] == RHS.SkyOcclusion[1] &&
-			   SkyOcclusion[2] == RHS.SkyOcclusion[2] &&
-			   SkyOcclusion[3] == RHS.SkyOcclusion[3] &&
-			   AOMaterialMask == RHS.AOMaterialMask;
-	}
 };
 
 struct FQuantizedLightmapData
@@ -645,15 +611,17 @@ public:
 	virtual void InitRHI();
 	virtual void ReleaseRHI();
 
-	void UpdateUniformBuffer(ERHIFeatureLevel::Type InFeatureLevel);
-	void UpdateUniformBuffer_RenderThread();
-
+	void SetFeatureLevelAndInitialize(const FStaticFeatureLevel InFeatureLevel);
+	void TryInitializeUniformBuffer();
+	void UpdateUniformBuffer();
+	
 	/**
 	 * Allocates virtual texture on demand and returns it, may return nullptr if not using virtual texture
 	 * 'const' method setting 'mutable' member is not amazing, but this is required to work around ordering of render commands submitted from main thread,
 	 * it's possible for commands that want to access AllocatedVT from here execute before this has a chance to run InitRHI()
 	 */
-	IAllocatedVirtualTexture* AcquireAllocatedVT() const;
+	const IAllocatedVirtualTexture* GetAllocatedVT() const;
+	void ConditionalCreateAllocatedVT();
 	void ReleaseAllocatedVT();
 	bool GetUseVirtualTexturing() const;
 

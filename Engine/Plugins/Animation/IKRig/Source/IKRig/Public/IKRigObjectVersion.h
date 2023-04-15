@@ -14,6 +14,12 @@ struct IKRIG_API FIKRigObjectVersion
 		// Before any version changes were made
 		BeforeCustomVersionWasAdded,
 
+		// Retarget pose quaternions changed from pre to post multiplied
+		RetargetPoseQuatPostMultiplied,
+
+		// Chain settings moved to struct to be used in profiles
+		ChainSettingsConvertedToStruct,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

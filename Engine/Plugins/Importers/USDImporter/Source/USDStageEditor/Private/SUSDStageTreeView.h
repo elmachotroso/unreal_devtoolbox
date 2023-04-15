@@ -2,16 +2,17 @@
 
 #pragma once
 
+#include "USDPrimViewModel.h"
+#include "UsdWrappers/UsdStage.h"
 #include "Widgets/SUSDTreeView.h"
 
 #include "Widgets/Views/SHeaderRow.h"
 #include "Widgets/Views/STreeView.h"
 
-#include "USDMemory.h"
-#include "USDPrimViewModel.h"
-
 class AUsdStageActor;
+class FUICommandList;
 enum class EPayloadsTrigger;
+enum class EUsdDuplicateType : uint8;
 
 #if USE_USD_SDK
 
@@ -25,8 +26,9 @@ public:
 		SLATE_EVENT( FOnPrimSelectionChanged, OnPrimSelectionChanged )
 	SLATE_END_ARGS()
 
-	void Construct( const FArguments& InArgs, AUsdStageActor* InUsdStageActor );
-	void Refresh( AUsdStageActor* InUsdStageActor );
+	void Construct( const FArguments& InArgs );
+
+	void Refresh( const UE::FUsdStageWeak& NewStage );
 	void RefreshPrim( const FString& PrimPath, bool bResync );
 
 	FUsdPrimViewModelPtr GetItemFromPrimPath( const FString& PrimPath );
@@ -37,6 +39,10 @@ public:
 private:
 	virtual TSharedRef< ITableRow > OnGenerateRow( FUsdPrimViewModelRef InDisplayNode, const TSharedRef< STableViewBase >& OwnerTable ) override;
 	virtual void OnGetChildren( FUsdPrimViewModelRef InParent, TArray< FUsdPrimViewModelRef >& OutChildren ) const override;
+
+	// Required so that we can use the cut/copy/paste/etc. shortcuts
+	virtual bool SupportsKeyboardFocus() const override { return true; }
+	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
 
 	void ScrollItemIntoView( FUsdPrimViewModelRef TreeItem );
 	virtual void OnTreeItemScrolledIntoView( FUsdPrimViewModelRef TreeItem, const TSharedPtr< ITableRow >& Widget ) override ;
@@ -49,27 +55,49 @@ private:
 
 	void OnToggleAllPayloads( EPayloadsTrigger PayloadsTrigger );
 
-	void OnAddPrim();
+	void FillDuplicateSubmenu( FMenuBuilder& MenuBuilder );
+
+	void OnAddChildPrim();
+	void OnCutPrim();
+	void OnCopyPrim();
+	void OnPastePrim();
+	void OnDuplicatePrim( EUsdDuplicateType DuplicateType );
+	void OnDeletePrim();
 	void OnRenamePrim();
-	void OnRemovePrim();
+
 	void OnAddReference();
 	void OnClearReferences();
 
-	bool CanAddPrim() const;
-	bool CanExecutePrimAction() const;
+	void OnAddPayload();
+	void OnClearPayloads();
+
+	void OnApplySchema( FName SchemaName );
+	void OnRemoveSchema( FName SchemaName );
+	bool CanApplySchema( FName SchemaName );
+	bool CanRemoveSchema( FName SchemaName );
+
+	bool CanAddChildPrim() const;
+	bool CanPastePrim() const;
+	bool DoesPrimExistOnStage() const;
+	bool DoesPrimExistOnEditTarget() const;
+	bool DoesPrimHaveSpecOnLocalLayerStack() const;
 
 	/** Uses TreeItemExpansionStates to travel the tree and call SetItemExpansion */
 	void RestoreExpansionStates();
 	virtual void RequestListRefresh() override;
 
 private:
-	TWeakObjectPtr< AUsdStageActor > UsdStageActor;
+	// Should always be valid, we keep the one we're given on Refresh()
+	UE::FUsdStageWeak UsdStage;
+
 	TWeakPtr< FUsdPrimViewModel > PendingRenameItem;
 
 	// So that we can store these across refreshes
 	TMap< FString, bool > TreeItemExpansionStates;
 
 	FOnPrimSelectionChanged OnPrimSelectionChanged;
+
+	TSharedPtr<FUICommandList> UICommandList;
 };
 
 #endif // #if USE_USD_SDK

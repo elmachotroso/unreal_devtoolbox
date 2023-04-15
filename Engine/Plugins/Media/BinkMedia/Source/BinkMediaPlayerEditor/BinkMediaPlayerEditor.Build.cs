@@ -23,8 +23,7 @@ public class BinkMediaPlayerEditor : ModuleRules
 			new string[] {
 				"ContentBrowser",
 				"Core",
-				"CoreUObject",
-				"EditorStyle",
+				"CoreUObject",			
 				"Engine",
 				"InputCore",
 				"PropertyEditor",
@@ -38,8 +37,6 @@ public class BinkMediaPlayerEditor : ModuleRules
 				"BinkMediaPlayer",
 			}
 		);
-
-        PrivatePCHHeaderFile = "Private/BinkMediaPlayerEditorPCH.h";
 
 		PublicDefinitions.Add("BUILDING_FOR_UNREAL_ONLY=1");
 		PublicDefinitions.Add("__RADNOEXPORTS__=1");

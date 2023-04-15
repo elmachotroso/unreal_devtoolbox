@@ -10,6 +10,8 @@
 #include "ProjectDescriptor.h"
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Sound/AudioFormatSettings.h"
+#include "AnalyticsEventAttribute.h"
 
 #define LOCTEXT_NAMESPACE "TargetPlatform"
 
@@ -81,6 +83,82 @@ bool FTargetPlatformBase::UsesMobileAmbientOcclusion() const
 	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.AmbientOcclusion"));
 	return CVar ? (CVar->GetInt() != 0) : false;
 }
+
+int32 GASTCHDRProfile = 0;
+static FAutoConsoleVariableRef CVarAllowASTCHDRProfile(
+	TEXT("cook.AllowASTCHDRProfile"),
+	GASTCHDRProfile,
+	TEXT("whether to allow ASTC HDR profile, the hdr format is only supported on some devices, e.g. Apple A13, Mali-G72, Adreno (TM) 660"),
+	ECVF_Default | ECVF_ReadOnly
+);
+
+bool FTargetPlatformBase::UsesASTCHDR() const
+{
+	return GASTCHDRProfile != 0;
+}
+
+void FTargetPlatformBase::GetRayTracingShaderFormats(TArray<FName>& OutFormats) const
+{
+	if (UsesRayTracing())
+	{
+		GetAllTargetedShaderFormats(OutFormats);
+	}
+}
+
+void FTargetPlatformBase::GetPlatformSpecificProjectAnalytics( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray ) const
+{
+	AppendAnalyticsEventAttributeArray( AnalyticsParamArray,
+		TEXT("UsesDistanceFields"), UsesDistanceFields(),
+		TEXT("UsesForwardShading"), UsesForwardShading()
+	);
+}
+
+void FTargetPlatformBase::AppendAnalyticsEventConfigBool( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride )
+{
+	bool ConfigValue;
+	if (GConfig->GetBool(ConfigSection, ConfigKey, ConfigValue, IniFileName))
+	{
+		AnalyticsParamArray.Add( FAnalyticsEventAttribute( AnalyticsKeyNameOverride ? AnalyticsKeyNameOverride : ConfigKey, ConfigValue ) );
+	}
+}
+
+void FTargetPlatformBase::AppendAnalyticsEventConfigInt( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride )
+{
+	int32 ConfigValue;
+	if (GConfig->GetInt(ConfigSection, ConfigKey, ConfigValue, IniFileName))
+	{
+		AnalyticsParamArray.Add( FAnalyticsEventAttribute( AnalyticsKeyNameOverride ? AnalyticsKeyNameOverride : ConfigKey, ConfigValue ) );
+	}
+}
+
+void FTargetPlatformBase::AppendAnalyticsEventConfigFloat( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride )
+{
+	float ConfigValue;
+	if (GConfig->GetFloat(ConfigSection, ConfigKey, ConfigValue, IniFileName))
+	{
+		AnalyticsParamArray.Add( FAnalyticsEventAttribute( AnalyticsKeyNameOverride ? AnalyticsKeyNameOverride : ConfigKey, ConfigValue ) );
+	}
+}
+
+void FTargetPlatformBase::AppendAnalyticsEventConfigString( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride )
+{
+	FString ConfigValue;
+	if (GConfig->GetString(ConfigSection, ConfigKey, ConfigValue, IniFileName))
+	{
+		AnalyticsParamArray.Add( FAnalyticsEventAttribute( AnalyticsKeyNameOverride ? AnalyticsKeyNameOverride : ConfigKey, ConfigValue ) );
+	}
+}
+
+void FTargetPlatformBase::AppendAnalyticsEventConfigArray( TArray<FAnalyticsEventAttribute>& AnalyticsParamArray, const TCHAR* ConfigSection, const TCHAR* ConfigKey, const FString& IniFileName, const TCHAR* AnalyticsKeyNameOverride )
+{
+	TArray<FString> ConfigValue;
+	if (GConfig->GetArray(ConfigSection, ConfigKey, ConfigValue, IniFileName))
+	{
+		AnalyticsParamArray.Add( FAnalyticsEventAttribute( AnalyticsKeyNameOverride ? AnalyticsKeyNameOverride : ConfigKey, ConfigValue ) );
+	}
+}
+
+
 
 static bool IsPluginEnabledForTarget(const IPlugin& Plugin, const FProjectDescriptor* Project, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType)
 {
@@ -270,5 +348,45 @@ bool FTargetPlatformBase::DoProjectSettingsMatchDefault(const FString& InPlatfor
 
 	return true;
 }
+
+
+FTargetPlatformBase::FTargetPlatformBase(const PlatformInfo::FTargetPlatformInfo* const InPlatformInfo) : PlatformInfo(InPlatformInfo)
+{
+	checkf(PlatformInfo, TEXT("Null PlatformInfo was passed to FTargetPlatformBase. Check the static IsUsable function before creating this object. See FWindowsTargetPlatformModule::GetTargetPlatform()"));
+
+	PlatformOrdinal = AssignPlatformOrdinal(*this);
+
+#if WITH_ENGINE
+	// Build Audio Format Settings, Using long form equiv of GetConfigSysten to avoid calling a virtual
+	AudioFormatSettings = MakePimpl<Audio::FAudioFormatSettings>(
+		FConfigCacheIni::ForPlatform(InPlatformInfo->IniPlatformName), GEngineIni, InPlatformInfo->IniPlatformName.ToString());
+#endif //WITH_ENGINE
+
+}
+
+#if WITH_ENGINE
+
+const Audio::FAudioFormatSettings& FTargetPlatformBase::GetAudioFormatSettings() const
+{
+	check(AudioFormatSettings.IsValid())
+	return *AudioFormatSettings;
+}
+
+FName FTargetPlatformBase::GetWaveFormat(const class USoundWave* InWave) const
+{
+	return GetAudioFormatSettings().GetWaveFormat(InWave);
+}
+
+void FTargetPlatformBase::GetAllWaveFormats(TArray<FName>& OutFormats) const
+{
+	GetAudioFormatSettings().GetAllWaveFormats(OutFormats);
+}
+
+void FTargetPlatformBase::GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const
+{
+	GetAudioFormatSettings().GetWaveFormatModuleHints(OutModuleNames);
+}
+
+#endif // WITH_ENGINE
 
 #undef LOCTEXT_NAMESPACE

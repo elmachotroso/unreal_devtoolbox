@@ -5,6 +5,8 @@
 #include "Math/ControlRigMathLibrary.h"
 #include "TwoBoneIK.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_TwoBoneIKSimple)
+
 FRigUnit_TwoBoneIKSimple_Execute()
 {
 	FRigUnit_TwoBoneIKSimplePerItem::StaticExecute(
@@ -35,6 +37,37 @@ FRigUnit_TwoBoneIKSimple_Execute()
 		Context);
 }
 
+FRigVMStructUpgradeInfo FRigUnit_TwoBoneIKSimple::GetUpgradeInfo() const
+{
+	FRigUnit_TwoBoneIKSimplePerItem NewNode;
+	NewNode.ItemA = FRigElementKey(BoneA, ERigElementType::Bone);
+	NewNode.ItemB = FRigElementKey(BoneB, ERigElementType::Bone);
+	NewNode.EffectorItem = FRigElementKey(EffectorBone, ERigElementType::Bone);
+	NewNode.Effector = Effector;
+	NewNode.PrimaryAxis = PrimaryAxis;
+	NewNode.SecondaryAxis = SecondaryAxis;
+	NewNode.SecondaryAxisWeight = SecondaryAxisWeight;
+	NewNode.PoleVector = PoleVector;
+	NewNode.PoleVectorKind = PoleVectorKind;
+	NewNode.PoleVectorSpace = FRigElementKey(PoleVectorSpace, ERigElementType::Bone);
+	NewNode.bEnableStretch = bEnableStretch;
+	NewNode.StretchStartRatio = StretchStartRatio;
+	NewNode.StretchMaximumRatio = StretchMaximumRatio;
+	NewNode.Weight = Weight;
+	NewNode.ItemALength = BoneALength;
+	NewNode.ItemBLength = BoneBLength;
+	NewNode.bPropagateToChildren = bPropagateToChildren;
+	NewNode.DebugSettings = DebugSettings;
+	
+	FRigVMStructUpgradeInfo Info(*this, NewNode);
+	Info.AddRemappedPin(TEXT("BoneA"), TEXT("ItemA.Name"));
+	Info.AddRemappedPin(TEXT("BoneB"), TEXT("ItemB.Name"));
+	Info.AddRemappedPin(TEXT("EffectorBone"), TEXT("EffectorItem.Name"));
+	Info.AddRemappedPin(TEXT("BoneALength"), TEXT("ItemALength"));
+	Info.AddRemappedPin(TEXT("BoneBLength"), TEXT("ItemBLength"));
+	return Info;
+}
+
 FRigUnit_TwoBoneIKSimplePerItem_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
@@ -54,12 +87,12 @@ FRigUnit_TwoBoneIKSimplePerItem_Execute()
 	}
 
 	if (!CachedItemAIndex.UpdateCache(ItemA, Hierarchy) ||
-		!CachedItemBIndex.UpdateCache(ItemB, Hierarchy) ||
-		!CachedEffectorItemIndex.UpdateCache(EffectorItem, Hierarchy))
+		!CachedItemBIndex.UpdateCache(ItemB, Hierarchy))
 	{
 		return;
 	}
 
+	CachedEffectorItemIndex.UpdateCache(EffectorItem, Hierarchy);
 	CachedPoleVectorSpaceIndex.UpdateCache(PoleVectorSpace, Hierarchy);
 
 	if (Weight <= SMALL_NUMBER)
@@ -139,14 +172,20 @@ FRigUnit_TwoBoneIKSimplePerItem_Execute()
 		FVector PositionC = TransformB.InverseTransformPosition(TransformC.GetLocation());
 		TransformA.SetRotation(FQuat::Slerp(Hierarchy->GetGlobalTransform(CachedItemAIndex).GetRotation(), TransformA.GetRotation(), Weight));
 		TransformB.SetRotation(FQuat::Slerp(Hierarchy->GetGlobalTransform(CachedItemBIndex).GetRotation(), TransformB.GetRotation(), Weight));
-		TransformC.SetRotation(FQuat::Slerp(Hierarchy->GetGlobalTransform(CachedEffectorItemIndex).GetRotation(), TransformC.GetRotation(), Weight));
+		if(CachedEffectorItemIndex != INDEX_NONE)
+		{
+			TransformC.SetRotation(FQuat::Slerp(Hierarchy->GetGlobalTransform(CachedEffectorItemIndex).GetRotation(), TransformC.GetRotation(), Weight));
+		}
 		TransformB.SetLocation(TransformA.TransformPosition(PositionB));
 		TransformC.SetLocation(TransformB.TransformPosition(PositionC));
 	}
 
 	Hierarchy->SetGlobalTransform(CachedItemAIndex, TransformA, bPropagateToChildren);
 	Hierarchy->SetGlobalTransform(CachedItemBIndex, TransformB, bPropagateToChildren);
-	Hierarchy->SetGlobalTransform(CachedEffectorItemIndex, TransformC, bPropagateToChildren);
+	if(CachedEffectorItemIndex != INDEX_NONE)
+	{
+		Hierarchy->SetGlobalTransform(CachedEffectorItemIndex, TransformC, bPropagateToChildren);
+	}
 }
 
 FRigUnit_TwoBoneIKSimpleVectors_Execute()

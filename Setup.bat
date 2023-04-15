@@ -10,21 +10,21 @@ set PROMPT_ARGUMENT=--prompt
 :no_prompt_argument
 
 rem Sync the dependencies...
-.\Engine\Binaries\DotNET\GitDependencies.exe %PROMPT_ARGUMENT% %*
-if ERRORLEVEL 1 goto error
+.\Engine\Binaries\DotNET\GitDependencies\win-x64\GitDependencies.exe %PROMPT_ARGUMENT% %*
+if %ERRORLEVEL% NEQ 0 goto error
 
 rem Setup the git hooks...
 if not exist .git\hooks goto no_git_hooks_directory
 echo Registering git hooks...
 echo #!/bin/sh >.git\hooks\post-checkout
-echo Engine/Binaries/DotNET/GitDependencies.exe %* >>.git\hooks\post-checkout
+echo Engine/Binaries/DotNET/GitDependencies/win-x64/GitDependencies.exe %* >>.git\hooks\post-checkout
 echo #!/bin/sh >.git\hooks\post-merge
-echo Engine/Binaries/DotNET/GitDependencies.exe %* >>.git\hooks\post-merge
+echo Engine/Binaries/DotNET/GitDependencies/win-x64/GitDependencies.exe %* >>.git\hooks\post-merge
 :no_git_hooks_directory
 
 rem Install prerequisites...
 echo Installing prerequisites...
-start /wait Engine\Extras\Redist\en-us\UEPrereqSetup_x64.exe /quiet
+start /wait Engine\Extras\Redist\en-us\UEPrereqSetup_x64.exe /quiet /norestart
 
 rem Register the engine installation...
 if not exist .\Engine\Binaries\Win64\UnrealVersionSelector-Win64-Shipping.exe goto :no_unreal_version_selector

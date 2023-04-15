@@ -2,7 +2,8 @@
 //   Licenced under the Unreal Engine EULA 
 
 #include "BinkMediaPlayerEditorToolkit.h"
-#include "BinkMediaPlayerEditorPCH.h"
+
+#include "BinkMediaPlayerEditorPrivate.h"
 #include "Factories.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -23,6 +24,8 @@ void FBinkMediaPlayerEditorToolkit::Initialize( UBinkMediaPlayer* InMediaPlayer,
 	MediaPlayer->InitializePlayer();
 	MediaPlayer->SetFlags(RF_Transactional);
 	GEditor->RegisterForUndo(this);
+
+	FEditorDelegates::EndPIE.AddRaw(this, &FBinkMediaPlayerEditorToolkit::HandleEditorEndPIE);
 
 	const FBinkMediaPlayerEditorCommands& Commands = FBinkMediaPlayerEditorCommands::Get();
 
@@ -85,6 +88,10 @@ void FBinkMediaPlayerEditorToolkit::Initialize( UBinkMediaPlayer* InMediaPlayer,
 	RegenerateMenusAndToolbars();
 }
 
+void FBinkMediaPlayerEditorToolkit::HandleEditorEndPIE(bool bIsSimulating) {
+	MediaPlayer->InitializePlayer();
+}
+
 void FBinkMediaPlayerEditorToolkit::RegisterTabSpawners( const TSharedRef<class FTabManager>& TabManagerParam ) 
 {
 	WorkspaceMenuCategory = TabManagerParam->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_MediaPlayerEditor", "Bink Media Player Editor"));
@@ -95,12 +102,12 @@ void FBinkMediaPlayerEditorToolkit::RegisterTabSpawners( const TSharedRef<class 
 	TabManagerParam->RegisterTabSpawner( ViewerTabId, FOnSpawnTab::CreateSP( this, &FBinkMediaPlayerEditorToolkit::HandleTabManagerSpawnTab, ViewerTabId ) )
 		.SetDisplayName( LOCTEXT( "PlayerTabName", "Player" ) )
 		.SetGroup( WorkspaceMenuCategoryRef )
-		.SetIcon( FSlateIcon( FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports" ) );
+		.SetIcon( FSlateIcon( FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Viewports" ) );
 
 	TabManagerParam->RegisterTabSpawner( DetailsTabId, FOnSpawnTab::CreateSP( this, &FBinkMediaPlayerEditorToolkit::HandleTabManagerSpawnTab, DetailsTabId ) )
 		.SetDisplayName( LOCTEXT( "DetailsTabName", "Details" ) )
 		.SetGroup( WorkspaceMenuCategoryRef )
-		.SetIcon( FSlateIcon( FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details" ) );
+		.SetIcon( FSlateIcon( FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details" ) );
 }
 
 

@@ -2,26 +2,46 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "Widgets/SWidget.h"
-#include "Toolkits/IToolkitHost.h"
-#include "GraphEditor.h"
 #include "BlueprintEditor.h"
-#include "IAnimationBlueprintEditor.h"
+#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphPin.h"
+#include "GraphEditor.h"
+#include "HAL/Platform.h"
+#include "IAnimationBlueprintEditor.h"
+#include "Internationalization/Text.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "Stats/Stats2.h"
+#include "Templates/SharedPointer.h"
+#include "Toolkits/IToolkit.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
-class UAnimationBlueprintEditorOptions;
-class IPersonaToolkit;
+class FExtender;
+class FReferenceCollector;
+class FUICommandList;
+class IAnimationSequenceBrowser;
 class IPersonaViewport;
-class ISkeletonTree;
-class UAnimBlueprint;
-class UAnimGraphNode_Base;
-class UEdGraph;
-class USkeletalMesh;
 class ISkeletonTreeItem;
+class SDockTab;
+class SWidget;
+class UAnimBlueprint;
+class UAnimInstance;
+class UAnimationBlueprintEditorOptions;
 class UAnimationBlueprintEditorSettings;
-
+class UBlueprint;
+class UEdGraph;
+class UObject;
+class USkeletalMesh;
+class USkeletalMeshComponent;
 struct FToolMenuContext;
 
 struct FAnimationBlueprintEditorModes
@@ -144,6 +164,7 @@ public:
 public:
 	//~ Begin IToolkit Interface
 	virtual FName GetToolkitFName() const override;
+	virtual FName GetToolkitContextFName() const override;
 	virtual FText GetBaseToolkitName() const override;
 	virtual FText GetToolkitToolTipText() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
@@ -190,12 +211,18 @@ protected:
 	virtual void OnGraphEditorBackgrounded(const TSharedRef<SGraphEditor>& InGraphEditor) override;
 	virtual bool IsInAScriptingMode() const override { return true; }
 	virtual void GetCustomDebugObjects(TArray<FCustomDebugObject>& DebugList) const override;
+	virtual FString GetCustomDebugObjectLabel(UObject* ObjectBeingDebugged) const override;
 	virtual void CreateDefaultTabContents(const TArray<UBlueprint*>& InBlueprints) override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
 	virtual bool IsEditable(UEdGraph* InGraph) const override;
 	virtual FText GetGraphDecorationString(UEdGraph* InGraph) const override;
 	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled = false) override;
 	virtual void CreateEditorModeManager() override;
+	virtual bool IsSectionVisible(NodeSectionID::Type InSectionID) const override;
+	virtual bool AreEventGraphsAllowed() const override;
+	virtual bool AreMacrosAllowed() const override;
+	virtual bool AreDelegatesAllowed() const override;
+	virtual void OnCreateComment() override;
 	//~ End FBlueprintEditor Interface
 
 	//~ Begin FEditorUndoClient Interface
@@ -208,7 +235,12 @@ protected:
 	//~ End FNotifyHook Interface
 
 	// Toggle pose watch on selected nodes
+	bool CanTogglePoseWatch();
 	void OnTogglePoseWatch();
+
+	// Hide unbound pins on selected nodes 
+	bool CanHideUnboundPropertyPins();
+	void OnHideUnboundPropertyPins();
 
 	void BindCommands();
 
@@ -261,6 +293,9 @@ private:
 	/** Extend toolbar */
 	void ExtendToolbar();
 
+	/** Get the anim BP editor referenced by the supplied tool menu context */
+	static TSharedPtr<FAnimationBlueprintEditor> GetAnimationBlueprintEditor(const FToolMenuContext& InMenuContext);
+
 	/** Called immediately prior to a blueprint compilation */
 	void OnBlueprintPreCompile(UBlueprint* BlueprintToCompile);
 
@@ -269,6 +304,18 @@ private:
 
 	/** Called post compile to copy node data */
 	void OnPostCompile();
+
+	/** Call OnNodeSelected for each selected node **/
+	void NotifyAllNodesOnSelection(const bool bInIsSelected);
+
+	/** Call OnPoseWatchChanged for each pose watched node **/
+	void NotifyAllNodesOnPoseWatchChanged(const bool IsPoseWatchActive);
+
+	/** Called to notify all Nodes before any change to node selection or pose watch status **/
+	void ReleaseAllManagedNodes();
+
+	/** Called to notify all Nodes after any change to node selection or pose watch status **/
+	void AcquireAllManagedNodes();
 
 	/** Helper function used to keep skeletal controls in preview & instance in sync */
 	struct FAnimNode_Base* FindAnimNode(class UAnimGraphNode_Base* AnimGraphNode) const;
@@ -288,7 +335,13 @@ private:
 	/** Enable/disable pose watch on selected nodes */
 	void HandlePoseWatchSelectedNodes();
 
-	/** Removes all pose watches created by selectionfrom the current view */
+	/** Customize Preview Scene Settings details panel */
+	void HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder);
+	void HandlePreviewAnimBlueprintChanged(const FAssetData& InAssetData) const;
+	bool HandleShouldFilterAsset(const FAssetData& InAssetData, FName InTag, bool bCanUseDifferentSkeleton) const;
+	void HandleAnimBlueprintCompiled(UBlueprint* Blueprint) const;
+
+	/** Removes all pose watches created by selection from the current view */
 	void RemoveAllSelectionPoseWatches();
 
     /**
@@ -305,7 +358,7 @@ private:
 
 	void HandleUpdateSettings(const UAnimationBlueprintEditorSettings* AnimationBlueprintEditorSettings, EPropertyChangeType::Type ChangeType);
 
-	/** Chooses a suitable pose watch colour automatically - i.e. one that isn't already in use (if possible) */
+	/** Chooses a suitable pose watch color automatically - i.e. one that isn't already in use (if possible) */
 	FColor ChoosePoseWatchColor() const;
 
 	// Pose pin UI handlers

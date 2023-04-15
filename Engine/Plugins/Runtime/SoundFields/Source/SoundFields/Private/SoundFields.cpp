@@ -1,11 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SoundFields.h"
-#include "CoreMinimal.h"
+#include "AudioAnalytics.h"
+#include "DSP/AlignedBuffer.h"
 #include "DSP/Dsp.h"
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "SoundFieldRendering.h"
 #include "HAL/IConsoleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundFields)
 
 static int32 VirtualIntermediateChannelsCvar = 1;
 FAutoConsoleVariableRef CVarVirtualIntermediateChannels(
@@ -93,7 +96,7 @@ public:
 			Decoder.DecodeAudioDirectlyToDeviceOutputPositions(*AudioToDecode, OutputPositions, DecoderOutputBuffer);
 		}
 
-		Audio::MixInBufferFast(DecoderOutputBuffer, OutputAudio);
+		Audio::ArrayMixIn(DecoderOutputBuffer, OutputAudio);
 	}
 };
 
@@ -211,7 +214,7 @@ public:
 		const FQuat AmountToRotateBy = InAudio.Rotation.Inverse();
 		const FQuat PreviousAmountRotatedBy = InAudio.PreviousRotation.Inverse();
 		FSoundFieldDecoder::RotateFirstOrderAmbisonicsBed(InAudio, RotatedAudio, AmountToRotateBy, PreviousAmountRotatedBy);
-		Audio::MixInBufferFast(RotatedAudio.AudioBuffer, OutAudio.AudioBuffer, InputData.SendLevel);
+		Audio::ArrayMixIn(RotatedAudio.AudioBuffer, OutAudio.AudioBuffer, InputData.SendLevel);
 	}
 };
 
@@ -250,6 +253,7 @@ TUniquePtr<ISoundfieldTranscodeStream> FAmbisonicsSoundfieldFormat::CreateTransc
 
 TUniquePtr<ISoundfieldMixerStream> FAmbisonicsSoundfieldFormat::CreateMixerStream(const ISoundfieldEncodingSettingsProxy& InitialSettings)
 {
+	Audio::Analytics::RecordEvent_Usage("SoundFields.MixerStreamCreated");
 	return TUniquePtr<ISoundfieldMixerStream>(new FAmbisonicsMixer());
 }
 
@@ -279,7 +283,7 @@ UClass* FAmbisonicsSoundfieldFormat::GetCustomEncodingSettingsClass() const
 
 USoundfieldEncodingSettingsBase* FAmbisonicsSoundfieldFormat::GetDefaultEncodingSettings()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInAudioThread());
 	return GetMutableDefault<UAmbisonicsEncodingSettings>();
 }
 
@@ -295,3 +299,4 @@ TUniquePtr<ISoundfieldEncodingSettingsProxy> UAmbisonicsEncodingSettings::GetPro
 	Proxy->Order = FMath::Clamp(AmbisonicsOrder, 1, 5);
 	return TUniquePtr<ISoundfieldEncodingSettingsProxy>(Proxy);
 }
+

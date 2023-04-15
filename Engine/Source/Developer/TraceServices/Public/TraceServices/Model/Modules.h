@@ -42,36 +42,55 @@ inline const TCHAR* QueryResultToString(ESymbolQueryResult Result)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+enum class EResolvedSymbolFilterStatus : uint8
+{
+	Unknown = 0,
+	Filtered,
+	NotFiltered,
+};
+
+////////////////////////////////////////////////////////////////////////////////
 /**
   * Represent a resolved symbol. The resolve status and string values may change
-  * over time, but string pointers returned from the methods are guaranteed to live 
+  * over time, but string pointers returned from the methods are guaranteed to live
   * during the entire analysis session.
   */
 struct FResolvedSymbol
 {
-	std::atomic<ESymbolQueryResult> Result;
 	const TCHAR* Module;
 	const TCHAR* Name;
 	const TCHAR* File;
 	uint16 Line;
-	
+	std::atomic<ESymbolQueryResult> Result;
+	std::atomic<EResolvedSymbolFilterStatus> FilterStatus;
+
 	inline ESymbolQueryResult GetResult() const
 	{
 		return Result.load(std::memory_order_acquire);
 	}
 
-	FResolvedSymbol(ESymbolQueryResult InResult, const TCHAR* InModule, const TCHAR* InName, const TCHAR* InFile, uint16 InLine) 
-		: Result(InResult)
-		, Module(InModule)
+	FResolvedSymbol(ESymbolQueryResult InResult, const TCHAR* InModule, const TCHAR* InName, const TCHAR* InFile, uint16 InLine, EResolvedSymbolFilterStatus InFilterStatus)
+		: Module(InModule)
 		, Name(InName)
 		, File(InFile)
 		, Line(InLine)
+		, Result(InResult)
+		, FilterStatus(InFilterStatus)
 	{}
+};
+
+////////////////////////////////////////////////////////////////////////////////
+class IResolvedSymbolFilter
+{
+public:
+	virtual void Update(FResolvedSymbol& InSymbol) const = 0;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 enum class EModuleStatus
 {
+	Discovered,			// Symbols are discovered for this module
 	Pending,			// Module is pending load
 	Loaded,				// Module has been successfully loaded
 	VersionMismatch,	// Debug data was found, but did not match traced version
@@ -80,11 +99,12 @@ enum class EModuleStatus
 	StatusNum,
 	FailedStatusStart = VersionMismatch
 };
-	
+
 ////////////////////////////////////////////////////////////////////////////////
 inline const TCHAR* ModuleStatusToString(EModuleStatus Result)
 {
 	static const TCHAR* DisplayStrings[] = {
+		TEXT("Discovered"),
 		TEXT("Pending..."),
 		TEXT("Loaded"),
 		TEXT("Version mismatch"),
@@ -94,7 +114,7 @@ inline const TCHAR* ModuleStatusToString(EModuleStatus Result)
 	static_assert(UE_ARRAY_COUNT(DisplayStrings) == (uint8) EModuleStatus::StatusNum, "Missing QueryResult");
 	return DisplayStrings[(uint8)Result];
 }
-	
+
 ////////////////////////////////////////////////////////////////////////////////
 /**
  * Represents information about a module (engine/game/system dll or monolithic binary)
@@ -122,7 +142,7 @@ struct FModule
 		std::atomic<uint32>		Resolved;
 		std::atomic<uint32>		Failed;
 	} Stats;
-	
+
 	FModule(const TCHAR* InName, const TCHAR* InFullName, uint64 InBase, uint32 InSize, EModuleStatus InStatus)
 		: Name(InName)
 		, FullName(InFullName)
@@ -132,9 +152,9 @@ struct FModule
 		, StatusMessage(nullptr)
 	{}
 };
-	
+
 ////////////////////////////////////////////////////////////////////////////////
-class IModuleProvider : public IProvider
+class IModuleProvider : public IEditableProvider
 {
 public:
 	struct FStats
@@ -149,12 +169,11 @@ public:
 
 	virtual ~IModuleProvider() = default;
 
-	/** Queries the name of the symbol at address. This function returns immediately, 
-	 * but the lookup is async. See \ref FResolvedSymbol for details. It assumed that 
+	/** Queries the name of the symbol at address. This function returns immediately,
+	 * but the lookup is async. See \ref FResolvedSymbol for details. It assumed that
 	 * all calls to this function happens before analysis has ended.
 	 */
 	virtual const FResolvedSymbol* GetSymbol(uint64 Address) = 0;
-
 
 	/**
 	 * Gets the number of discovered modules.

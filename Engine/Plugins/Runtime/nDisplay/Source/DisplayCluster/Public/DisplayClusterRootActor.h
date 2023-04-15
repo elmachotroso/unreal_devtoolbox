@@ -105,7 +105,9 @@ protected:
 	virtual void PostLoad() override;
 	virtual void PostActorCreated() override;
 	virtual void BeginDestroy() override;
+#if WITH_EDITOR
 	virtual void RerunConstructionScripts() override;
+#endif
 
 	// Initializes the actor on spawn and load
 	void InitializeRootActor();
@@ -113,9 +115,19 @@ protected:
 	// Creates all hierarchy objects declared in a config file
 	bool BuildHierarchy();
 
+	/** Updates the world position and rotation of each light card referenced by this root actor's light card list to match the default view origin */
+	void UpdateLightCardPositions();
+
 public:
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get Default Camera"), Category = "NDisplay|Components")
+	UFUNCTION(BlueprintGetter)
 	UDisplayClusterCameraComponent* GetDefaultCamera() const;
+
+	/**
+	 * Get the view origin most commonly used by viewports in this cluster.
+	 * If no viewports override the camera, this returns the default camera, or if there isn't one, the actor's root component.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "NDisplay|Components")
+	USceneComponent* GetCommonViewPoint() const;
 
 	UFUNCTION(BlueprintCallable, Category = "NDisplay|Render")
 	bool SetReplaceTextureFlagForAllViewports(bool bReplace);
@@ -190,10 +202,10 @@ private:
 	UPROPERTY(EditAnywhere, Transient, Category = "In Camera VFX", meta = (PropertyPath = "CurrentConfigData.StageSettings.bEnableInnerFrustums"))
 	FDisplayClusterEditorPropertyReference EnableInnerFrustumsRef;
 
-	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (PropertyPath = "CurrentConfigData.StageSettings.EntireClusterColorGrading.bEnableEntireClusterColorGrading"))
-	FDisplayClusterEditorPropertyReference EnableClusterColorGradingRef;
+	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (PropertyPath = "CurrentConfigData.StageSettings.EnableColorGrading"))
+	FDisplayClusterEditorPropertyReference EnableColorGradingRef;
 
-	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (DisplayName = "Entire Cluster", PropertyPath = "CurrentConfigData.StageSettings.EntireClusterColorGrading.ColorGradingSettings", EditConditionPath = "CurrentConfigData.StageSettings.EntireClusterColorGrading.bEnableEntireClusterColorGrading"))
+	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (PropertyPath = "CurrentConfigData.StageSettings.EntireClusterColorGrading"))
 	FDisplayClusterEditorPropertyReference ClusterColorGradingRef;
 
 	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (PropertyPath = "CurrentConfigData.StageSettings.PerViewportColorGrading"))
@@ -216,6 +228,10 @@ private:
 
 	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.ShowOnlyList", EditConditionPath = "CurrentConfigData.StageSettings.Lightcard.bEnable"))
 	FDisplayClusterEditorPropertyReference LightCardContentRef;
+
+	UPROPERTY(EditAnywhere, Transient, Category = "Media", meta = (PropertyPath = "CurrentConfigData.MediaSettings"))
+	FDisplayClusterEditorPropertyReference MediaSettingsRef;
+
 #endif // WITH_EDITORONLY_DATA
 
 private:
@@ -232,19 +248,19 @@ private:
 	 * nDisplay details panel will hide this from actually being visible.
 	 */
 	UPROPERTY(EditAnywhere, Category = "NDisplay", meta = (HideProperty))
-	USceneComponent* DisplayClusterRootComponent;
+	TObjectPtr<USceneComponent> DisplayClusterRootComponent;
 
 	/**
 	 * Default camera component. It's an outer camera in VP/ICVFX terminology. Always exists on a DCRA instance.
 	 */
-	UPROPERTY(VisibleAnywhere, Category = "NDisplay")
-	UDisplayClusterCameraComponent* DefaultViewPoint;
+	UPROPERTY(VisibleAnywhere, BlueprintGetter=GetDefaultCamera, Category = "NDisplay|Components")
+	TObjectPtr<UDisplayClusterCameraComponent> DefaultViewPoint;
 
 	/**
 	 * Helper sync component. Performs sync procedure during Tick phase.
 	 */
 	UPROPERTY()
-	UDisplayClusterSyncTickComponent* SyncTickComponent;
+	TObjectPtr<UDisplayClusterSyncTickComponent> SyncTickComponent;
 
 private:
 	// Current operation mode
@@ -265,7 +281,7 @@ public:
 	 * If set from the DisplayCluster BP Compiler it will be loaded from the class default subobjects in run-time.
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Instanced, Category = "NDisplay", meta = (AllowPrivateAccess = "true"))
-	UDisplayClusterConfigurationData* CurrentConfigData;
+	TObjectPtr<UDisplayClusterConfigurationData> CurrentConfigData;
 
 public:
 	// UObject interface
@@ -288,6 +304,10 @@ public:
 //////////////////////////////////////////////////////////////////////////////////////////////
 #if WITH_EDITORONLY_DATA
 public:
+	/** When the MRQ is rendered, this flag is raised. */
+	UPROPERTY()
+	bool bMoviePipelineRenderPass = false;
+
 	/** Render the scene and display it as a preview on the nDisplay root actor in the editor.  This will impact editor performance. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Editor Preview", meta = (DisplayName = "Enable Editor Preview"))
 	bool bPreviewEnable = true;
@@ -334,13 +354,24 @@ public:
 
 private:
 	UPROPERTY(Transient)
-	TMap<FString, UDisplayClusterPreviewComponent*> PreviewComponents;
+	TMap<FString, TObjectPtr<UDisplayClusterPreviewComponent>> PreviewComponents;
 
 	UPROPERTY(Transient)
 	bool bDeferPreviewGeneration;
 #endif
 
 #if WITH_EDITOR
+public:
+	/** Enable or disable editor render. Preview components may need to be on for texture overrides, but capture and rendering disabled. */
+	void EnableEditorRender(bool bValue);
+
+	/** If editor rendering is enabled. */
+	bool IsEditorRenderEnabled() const { return bEnableEditorRender; }
+	
+private:
+	/** Is editor rendering enabled? This can be false and the preview still enabled. */
+	bool bEnableEditorRender = true;
+	
 public:
 	DECLARE_DELEGATE(FOnPreviewUpdated);
 
@@ -366,11 +397,44 @@ public:
 	// Preview components free referenced meshes and materials
 	void ResetPreviewComponents_Editor(bool bInRestoreSceneMaterial);
 
-	UDisplayClusterPreviewComponent* GetPreviewComponent(const FString& NodeId, const FString& ViewportId);
+	UDisplayClusterPreviewComponent* GetPreviewComponent(const FString& NodeId, const FString& ViewportId) const;
 
 	void UpdatePreviewComponents();
 	void ReleasePreviewComponents();
 
+	/**
+	 * Enable the use of a post process render target when bPreviewEnablePostProcess is disabled on the actor. The root actor
+	 * will still display a pre post processed preview. This may increase editor overhead.
+	 *
+	 * Retrieve the post process texture from the preview component with GetRenderTargetTexturePostProcess().
+	 *
+	 * @param Object The object subscribing to updates
+	 * @return The number of subscribers to use post process.
+	 */
+	int32 SubscribeToPostProcessRenderTarget(const uint8* Object);
+
+	/**
+	 * Unsubscribe a registered object from requiring post process render target updates.
+	 *
+	 * @param Object The object subscribing to updates. When the counter is zero post process render targets will not be used.
+	 * @return The number of subscribers to use post process.
+	 */
+	int32 UnsubscribeFromPostProcessRenderTarget(const uint8* Object);
+
+	/** If one or more observers are subscribed to receive post process preview targets. */
+	bool DoObserversNeedPostProcessRenderTarget() const;
+	
+	/** When rendering the preview determine which render target should be used for the current frame. */
+	bool ShouldThisFrameOutputPreviewToPostProcessRenderTarget() const;
+
+	/** Force preview rendering to be enabled regardless of the user's setting until a matching RemovePreviewEnableOverride call is made. */
+	void AddPreviewEnableOverride(const uint8* Object);
+
+	/**
+	 * Stop forcing preview rendering to be enabled for this caller. If other objects have called AddPreviewEnableOverride, it will remain
+	 * forced until they have also removed their overrides.
+	 */
+	void RemovePreviewEnableOverride(const uint8* Object);
 
 	float GetPreviewRenderTargetRatioMult() const
 	{
@@ -410,10 +474,21 @@ protected:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditMove(bool bFinished) override;
 
+	/** Called when the asset has been reloaded in the editor. */
+	void HandleAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
+	
 private:
 	bool bIsSelectedInEditor = false;
 	
-private:
+	/** When the preview render should be directed to the post process render target. */
+	bool bOutputFrameToPostProcessRenderTarget;
+
+	/** Enables preview components to output to the post process render target when bPreviewEnablePostProcess is disabled. Contains all subscribed objects. */
+	TSet<const uint8*> PostProcessRenderTargetObservers;
+
+	/* Addresses of callers to AddPreviewEnableOverride that haven't removed their overrides yet. */
+	TSet<const uint8*> PreviewEnableOverriders;
+	
 	TWeakPtr<IDisplayClusterConfiguratorBlueprintEditor> ToolkitPtr;
 
 	int32 TickPerFrameCounter = 0;

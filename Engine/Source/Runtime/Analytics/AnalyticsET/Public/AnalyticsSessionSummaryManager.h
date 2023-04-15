@@ -2,12 +2,21 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Interfaces/IAnalyticsPropertyStore.h"
 #include "AnalyticsEventAttribute.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
+#include "CoreMinimal.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "Interfaces/IAnalyticsPropertyStore.h"
 #include "Misc/Timespan.h"
+#include "Templates/SharedPointer.h"
 
+class IAnalyticsPropertyStore;
 class IAnalyticsSessionSummarySender;
+struct FAnalyticsEventAttribute;
+template <typename T> class TAnalyticsProperty;
 
 /** Defines how the principal process (the application for which analytics is gathered) exited. When the analytics session summary manager aggregates the summaries for a session,
     it looks for 'ShutdownTypeCode' key and if the key is found, it converts it to its string representation and add the 'ShutdownType' property known by the analytics backend. */
@@ -82,7 +91,7 @@ public:
 	/**
 	 * Creates a new property store associated to this manager process group. The manager only sends an analytics session summary when all
 	 * collecting processes have closed their property store. Ensure to flush and release the store before calling the manager Shutdown() to
-	 * ensure the session is sent as soon a possible.
+	 * ensure the session is sent as soon a possible. Subsequent calls to MakeStore will increment an internal counter in the store's filename.
 	 * @param InitialCapacity The amount of space to reserve in the file.
 	 */
 	TSharedPtr<IAnalyticsPropertyStore> MakeStore(uint32 InitialCapacity);
@@ -178,6 +187,7 @@ private:
 	FString SessionRootPath;
 	uint32 CurrentProcessId;
 	uint32 PrincipalProcessId;
+	uint32 StoreCounter;
 	double NextOrphanSessionCheckTimeSecs;
 	bool bOrphanGroupOwner = false;
 	bool bIsPrincipal = false;

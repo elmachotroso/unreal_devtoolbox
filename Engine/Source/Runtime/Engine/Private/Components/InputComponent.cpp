@@ -4,6 +4,8 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerInput.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(InputComponent)
+
 
 void FInputActionBinding::GenerateNewHandle()
 {
@@ -95,7 +97,21 @@ void UInputComponent::OnInputOwnerEndPlayed(AActor* InOwner, EEndPlayReason::Typ
 	for (int32 Index = CachedKeyToActionInfo.Num() - 1; Index >= 0; --Index)
 	{
 		FCachedKeyToActionInfo& CachedInfo = CachedKeyToActionInfo[Index];
-		if (CachedInfo.PlayerInput->GetTypedOuter<AActor>() == InOwner)
+		const UPlayerInput* CachedInput = CachedInfo.PlayerInput.Get();
+		if (CachedInput && CachedInput->GetTypedOuter<AActor>() == InOwner)
+		{
+			CachedKeyToActionInfo.RemoveAtSwap(Index, 1, false);
+		}
+	}
+}
+
+void UInputComponent::ClearBindingsForObject(UObject* InOwner)
+{
+	for (int32 Index = CachedKeyToActionInfo.Num() - 1; Index >= 0; --Index)
+	{
+		FCachedKeyToActionInfo& CachedInfo = CachedKeyToActionInfo[Index];
+		const UPlayerInput* CachedInput = CachedInfo.PlayerInput.Get();
+		if (CachedInput && CachedInput->GetTypedOuter<UObject>() == InOwner)
 		{
 			CachedKeyToActionInfo.RemoveAtSwap(Index, 1, false);
 		}
@@ -366,6 +382,23 @@ void UInputComponent::ClearBindingValues()
 	}
 }
 
+void UInputComponent::RemoveAxisBinding(FName AxisName)
+{
+	for (int32 AxisIdx = AxisBindings.Num() - 1; AxisIdx >= 0; --AxisIdx)
+	{
+		const FInputAxisBinding& Binding = AxisBindings[AxisIdx];
+		if (Binding.AxisName == AxisName)
+		{
+			AxisBindings.RemoveAt(AxisIdx, 1, false);
+		}
+	}
+}
+
+void UInputComponent::ClearAxisBindings()
+{
+	AxisBindings.Reset();
+}
+
 /* Deprecated functions (needed for Blueprints)
  *****************************************************************************/
 
@@ -378,3 +411,4 @@ void UInputComponent::GetTouchState(int32 FingerIndex, float& LocationX, float& 
 float UInputComponent::GetControllerKeyTimeDown(FKey Key) const { return 0.f; }
 void UInputComponent::GetControllerMouseDelta(float& DeltaX, float& DeltaY) const { }
 void UInputComponent::GetControllerAnalogStickState(EControllerAnalogStick::Type WhichStick, float& StickX, float& StickY) const { }
+

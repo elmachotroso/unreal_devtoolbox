@@ -7,7 +7,6 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/QualifiedFrameTime.h"
 #include "Modules/ModuleManager.h"
-#include "Misc/CoreDelegates.h"
 #include "Logging/LogMacros.h"
 
 #include "IConcertClient.h"
@@ -24,10 +23,12 @@
 #include "LevelSequenceActor.h"
 
 #include "UObject/PackageReload.h"
+#include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR
 	#include "ISequencerModule.h"
 	#include "ISequencer.h"
+	#include "SequencerSettings.h"
 	#include "Subsystems/AssetEditorSubsystem.h"
 	#include "Editor.h"
 #endif
@@ -42,10 +43,15 @@ static TAutoConsoleVariable<int32> CVarEnablePlaybackSync(TEXT("Concert.EnableSe
 // Enable Sequence Playing on game client
 static TAutoConsoleVariable<int32> CVarEnableSequencePlayer(TEXT("Concert.EnableSequencePlayer"), 1, TEXT("Enable Concert Sequence Players on `-game` client."));
 
-// Enable opening Sequencer on remote machine whenever a sequencer is opened, if both instance have this option on.
-static TAutoConsoleVariable<int32> CVarEnableRemoteSequencerOpen(TEXT("Concert.EnableOpenRemoteSequencer"), 0, TEXT("Enable Concert remote Sequencer opening."));
+static TAutoConsoleVariable<int32> CVarEnableLoopingOnPlayer(TEXT("Concert.EnableLoopingOnPlayer"), 1, TEXT("Enable Looping Sequence Players when sequencer looping is enabled."));
 
-// Enable opening Sequencer on remote machine whenever a sequencer is opened, if both instance have this option on.
+// Enable opening Sequencer on remote machine whenever a Sequencer is opened, if both instances have this option on.
+static TAutoConsoleVariable<int32> CVarEnableRemoteSequencerOpen(TEXT("Concert.EnableOpenRemoteSequencer"), 1, TEXT("Enable Concert remote Sequencer opening."));
+
+// Enable closing Sequencer for this user when a remote user closes the sequence.
+static TAutoConsoleVariable<int32> CVarEnableRemoteSequencerClose(TEXT("Concert.EnableCloseRemoteSequencer"), 0, TEXT("Enable Concert remote Sequencer closing."));
+
+// Enable synchronizing the timeline of unrelated Sequencers on remote machine whenever a Sequencer state event is received, if both instances have this option on.
 static TAutoConsoleVariable<int32> CVarEnableUnrelatedTimelineSync(TEXT("Concert.EnableUnrelatedTimelineSync"), 0, TEXT("Enable syncing unrelated sequencer timeline."));
 
 // Enable always closing player on remote machine whenever a sequencer is closed on an editor.
@@ -61,7 +67,7 @@ FConcertClientSequencerManager::FConcertClientSequencerManager(IConcertSyncClien
 
 	ISequencerModule& SequencerModule = FModuleManager::Get().LoadModuleChecked<ISequencerModule>("Sequencer");
 	OnSequencerCreatedHandle = SequencerModule.RegisterOnSequencerCreated(FOnSequencerCreated::FDelegate::CreateRaw(this, &FConcertClientSequencerManager::OnSequencerCreated));
-	FCoreDelegates::OnEndFrame.AddRaw(this, &FConcertClientSequencerManager::OnEndFrame);
+
 	FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &FConcertClientSequencerManager::HandleAssetReload);
 }
 
@@ -73,7 +79,7 @@ FConcertClientSequencerManager::~FConcertClientSequencerManager()
 		SequencerModulePtr->UnregisterOnSequencerCreated(OnSequencerCreatedHandle);
 	}
 
-	FCoreDelegates::OnEndFrame.RemoveAll(this);
+	SetActiveWorkspace(nullptr);
 
 	for (FOpenSequencerData& OpenSequencer : OpenSequencers)
 	{
@@ -93,14 +99,18 @@ void FConcertClientSequencerManager::OnSequencerCreated(TSharedRef<ISequencer> I
 	UMovieSceneSequence* Sequence = InSequencer->GetRootMovieSceneSequence();
 	check(Sequence != nullptr);
 
-	if (!SequencerStates.Contains(*Sequence->GetPathName()))
+	const FString SequenceObjectPath = Sequence->GetPathName();
+
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("OnSequencerCreated: %s"), *SequenceObjectPath);
+
+	if (!SequencerStates.Contains(*SequenceObjectPath))
 	{
 		FConcertSequencerState NewState;
 		NewState.Time = InSequencer->GetGlobalTime();
-		SequencerStates.Add(*Sequence->GetPathName(), NewState);
+		SequencerStates.Add(*SequenceObjectPath, NewState);
 	}
 
-	FConcertSequencerState& SequencerState = SequencerStates.FindOrAdd(*Sequence->GetPathName());
+	FConcertSequencerState& SequencerState = SequencerStates.FindOrAdd(*SequenceObjectPath);
 
 	// Setup the Sequencer
 	FOpenSequencerData OpenSequencer;
@@ -110,9 +120,10 @@ void FConcertClientSequencerManager::OnSequencerCreated(TSharedRef<ISequencer> I
 	OpenSequencer.OnCloseEventHandle = InSequencer->OnCloseEvent().AddRaw(this, &FConcertClientSequencerManager::OnSequencerClosed);
 	int32 OpenIndex = OpenSequencers.Add(OpenSequencer);
 
-	// Setup stored state
-	InSequencer->SetPlaybackStatus((EMovieScenePlayerStatus::Type)SequencerState.PlayerStatus);
-	InSequencer->SetPlaybackSpeed(SequencerState.PlaybackSpeed);
+	// Setup stored state.  Since this is an open event by the sequencer we might be the controller and should not set player
+	// state from previous stored state.  Hence playback mode is set to undefined.  We should wait for a global time event from
+	// other clients before we set our playback state.
+	//
 	// Setting the global time will notify the server of this newly opened state.
 	InSequencer->SetGlobalTime(SequencerState.Time.ConvertTo(InSequencer->GetRootTickResolution()));
 	// Since setting the global time will potentially have set our playback mode put us back to undefined
@@ -123,12 +134,12 @@ void FConcertClientSequencerManager::OnSequencerCreated(TSharedRef<ISequencer> I
 	{
 		if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin())
 		{
-			if (CanSendSequencerEvent(Sequence->GetPathName()))
+			if (CanSendSequencerEvent(SequenceObjectPath))
 			{
 				FConcertSequencerOpenEvent OpenEvent;
-				OpenEvent.SequenceObjectPath = Sequence->GetPathName();
+				OpenEvent.SequenceObjectPath = SequenceObjectPath;
 
-				UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Sending OpenEvent: %s"), *OpenEvent.SequenceObjectPath);
+				UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Sending OpenEvent: %s"), *OpenEvent.SequenceObjectPath);
 				Session->SendCustomEvent(OpenEvent, Session->GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 			}
 		}
@@ -144,7 +155,7 @@ FConcertClientSequencerManager::GatherRootSequencersByState(const FString& InSeq
 		TSharedPtr<ISequencer> Sequencer = Entry.WeakSequencer.Pin();
 		UMovieSceneSequence*   Sequence = Sequencer.IsValid() ? Sequencer->GetRootMovieSceneSequence() : nullptr;
 
-		if (Sequence && (Sequence->GetPathName() == InSequenceObjectPath || CVarEnableUnrelatedTimelineSync.GetValueOnAnyThread() > 0))
+		if (Sequence && (Sequence->GetPathName() == InSequenceObjectPath || IsUnrelatedSequencerTimelineSyncEnabled()))
 		{
 			OutSequencers.Add(&Entry);
 		}
@@ -154,7 +165,17 @@ FConcertClientSequencerManager::GatherRootSequencersByState(const FString& InSeq
 
 void FConcertClientSequencerManager::SetActiveWorkspace(TSharedPtr<FConcertClientWorkspace> InWorkspace)
 {
+	if (TSharedPtr<FConcertClientWorkspace> SharedWorkspace = Workspace.Pin())
+	{
+		SharedWorkspace->OnWorkspaceEndFrameCompleted().RemoveAll(this);
+	}
+
 	Workspace = InWorkspace;
+
+	if (InWorkspace.IsValid())
+	{
+		InWorkspace->OnWorkspaceEndFrameCompleted().AddRaw(this, &FConcertClientSequencerManager::OnWorkspaceEndFrameCompleted);
+	}
 }
 
 float FConcertClientSequencerManager::GetLatencyCompensationMs() const
@@ -174,7 +195,7 @@ void FConcertClientSequencerManager::Register(TSharedRef<IConcertClientSession> 
 	InSession->RegisterCustomEventHandler<FConcertSequencerStateEvent>(this, &FConcertClientSequencerManager::OnTransportEvent);
 	InSession->RegisterCustomEventHandler<FConcertSequencerCloseEvent>(this, &FConcertClientSequencerManager::OnCloseEvent);
 	InSession->RegisterCustomEventHandler<FConcertSequencerOpenEvent>(this, &FConcertClientSequencerManager::OnOpenEvent);
-	InSession->RegisterCustomEventHandler<FConcertSequencerStateSyncEvent>(this, &FConcertClientSequencerManager::OnSyncEvent);
+	InSession->RegisterCustomEventHandler<FConcertSequencerStateSyncEvent>(this, &FConcertClientSequencerManager::OnStateSyncEvent);
 	InSession->RegisterCustomEventHandler<FConcertSequencerTimeAdjustmentEvent>(this, &FConcertClientSequencerManager::OnTimeAdjustmentEvent);
 }
 
@@ -218,9 +239,19 @@ bool FConcertClientSequencerManager::IsSequencerRemoteOpenEnabled() const
 	return CVarEnableRemoteSequencerOpen.GetValueOnAnyThread() > 0;
 }
 
+bool FConcertClientSequencerManager::IsSequencerRemoteCloseEnabled() const
+{
+	return CVarEnableRemoteSequencerClose.GetValueOnAnyThread() > 0;
+}
+
 void FConcertClientSequencerManager::SetSequencerRemoteOpen(bool bEnable)
 {
 	CVarEnableRemoteSequencerOpen->AsVariable()->Set(bEnable ? 1 : 0);
+}
+
+void FConcertClientSequencerManager::SetSequencerRemoteClose(bool bEnable)
+{
+	CVarEnableRemoteSequencerClose->AsVariable()->Set(bEnable ? 1 : 0);
 }
 
 bool FConcertClientSequencerManager::ShouldAlwaysCloseGameSequencerPlayer() const
@@ -228,8 +259,104 @@ bool FConcertClientSequencerManager::ShouldAlwaysCloseGameSequencerPlayer() cons
 	return CVarAlwaysCloseGamePlayerOnCloseEvent.GetValueOnAnyThread() > 0;
 }
 
+namespace UE::Private::ConcertClientSequencerManager
+{
+
+void ApplyPlayRangeToPlayer(ULevelSequencePlayer* Player, const FFrameNumberRange& PlayRange)
+{
+	check(Player);
+
+	const bool bLowerBoundClosed = PlayRange.GetLowerBound().IsClosed();
+	const bool bUpperBoundClosed = PlayRange.GetUpperBound().IsClosed();
+
+	if (!ensureMsgf(bLowerBoundClosed, TEXT("PlayRange lower bound is open, which is not supported.")))
+	{
+		return;
+	}
+
+	if (!Player->GetSequence() || !Player->GetSequence()->GetMovieScene())
+	{
+		UE_LOG(LogConcertSequencerSync, Warning, TEXT("ApplyPlayRangeToPlayer (%s): Missing sequence or scene"),
+			*Player->GetSequenceName());
+		return;
+	}
+
+	// Convert passed-in range from tick resolution to display rate.
+	UMovieScene* MovieScene = Player->GetSequence()->GetMovieScene();
+	const FFrameRate TickRate = MovieScene->GetTickResolution();
+	const FFrameRate PlayerRate = Player->GetFrameRate();
+
+	const FFrameNumber NewStartFrame = ConvertFrameTime(
+		UE::MovieScene::DiscreteInclusiveLower(PlayRange), TickRate, PlayerRate).FloorToFrame();
+
+	int32 NewDuration;
+	if (bUpperBoundClosed)
+	{
+		const FFrameNumber NewEndFrame = ConvertFrameTime(
+			UE::MovieScene::DiscreteExclusiveUpper(PlayRange), TickRate, PlayerRate).FloorToFrame();
+
+		NewDuration = (NewEndFrame - NewStartFrame).Value;
+	}
+	else
+	{
+		NewDuration = TNumericLimits<int32>::Max() - 1;
+	}
+
+	const int32 CurrentDuration = Player->GetFrameDuration();
+	const FFrameNumber CurrentStartFrame = Player->GetStartTime().Time.GetFrame();
+	if (CurrentDuration != NewDuration || CurrentStartFrame != NewStartFrame)
+	{
+		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("SetFrameRange (%s): Start %d, duration %d (was %d, %d)"),
+			*Player->GetSequenceName(), NewStartFrame.Value, NewDuration, CurrentStartFrame.Value, CurrentDuration);
+
+		Player->SetFrameRange(NewStartFrame.Value, NewDuration);
+	}
+}
+
+bool IsLoopingEnabled(TSharedPtr<ISequencer>& InSequencer)
+{
+	check(InSequencer);
+
+	if (USequencerSettings* Settings = InSequencer->GetSequencerSettings())
+	{
+		ESequencerLoopMode LoopMode = Settings->GetLoopMode();
+		if (LoopMode == SLM_Loop || LoopMode == SLM_LoopSelectionRange)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FMovieSceneSequencePlaybackSettings GetPlaybackSettings(bool bInLoopMode)
+{
+	FMovieSceneSequencePlaybackSettings PlaybackSettings;
+
+	// Sequencer behaves differently to Player. Sequencer pauses at the last frame and Player Stops and goes to the
+	// first frame unless we set this flag.
+	//
+	PlaybackSettings.bPauseAtEnd = true;
+
+	if (bInLoopMode && CVarEnableLoopingOnPlayer.GetValueOnAnyThread() > 0)
+	{
+		// Loop indefinitely
+		PlaybackSettings.LoopCount.Value = -1;
+	}
+	return PlaybackSettings;
+}
+
+
+}
+
 void FConcertClientSequencerManager::OnSequencerClosed(TSharedRef<ISequencer> InSequencer)
 {
+	const UMovieSceneSequence* Sequence = InSequencer->GetRootMovieSceneSequence();
+	const FString SequenceObjectPath = (Sequence != nullptr) ? Sequence->GetPathName() : FString();
+
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("OnSequencerClosed: %s"),
+		(!SequenceObjectPath.IsEmpty()) ? *SequenceObjectPath : TEXT("<NO SEQUENCE>"));
+
 	// Find the associated open sequencer index
 	int Index = 0;
 	for (; Index < OpenSequencers.Num(); ++Index)
@@ -247,31 +374,26 @@ void FConcertClientSequencerManager::OnSequencerClosed(TSharedRef<ISequencer> In
 
 	FOpenSequencerData& ClosingSequencer = OpenSequencers[Index];
 
-	// Send close event to server and put back playback mode to undefined
-	TSharedPtr<IConcertClientSession> Session = WeakSession.Pin();
-	if (Session.IsValid())
+	if (Sequence)
 	{
-		// Find the associated sequence path name
-		UMovieSceneSequence* Sequence = InSequencer->GetRootMovieSceneSequence();
-		if (Sequence)
+		// Send close event to server and put back playback mode to undefined
+		if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin())
 		{
-			if (CanSendSequencerEvent(Sequence->GetPathName()))
+			// Find the associated sequence path name
+			if (CanSendSequencerEvent(SequenceObjectPath))
 			{
-				UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Sending CloseEvent: %s"), *Sequence->GetPathName());
+				UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Sending CloseEvent: %s"), *SequenceObjectPath);
 
 				FConcertSequencerCloseEvent CloseEvent;
 				CloseEvent.bControllerClose = ClosingSequencer.PlaybackMode == EPlaybackMode::Controller; // this sequencer had control over the sequence playback
-				CloseEvent.SequenceObjectPath = *Sequence->GetPathName();
+				CloseEvent.SequenceObjectPath = SequenceObjectPath;
 				Session->SendCustomEvent(CloseEvent, Session->GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 			}
 		}
-	}
-	else
-	{
-		UMovieSceneSequence* Sequence = InSequencer->GetRootMovieSceneSequence();
-		if (Sequence)
+		else
 		{
-			SequencerStates.Remove(*Sequence->GetPathName());
+			UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    Removing Sequencer state for sequence: %s"), *SequenceObjectPath);
+			SequencerStates.Remove(*SequenceObjectPath);
 		}
 	}
 
@@ -279,13 +401,24 @@ void FConcertClientSequencerManager::OnSequencerClosed(TSharedRef<ISequencer> In
 	OpenSequencers.RemoveAtSwap(Index);
 }
 
-void FConcertClientSequencerManager::OnSyncEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerStateSyncEvent& InEvent)
+void FConcertClientSequencerManager::OnStateSyncEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerStateSyncEvent& InEvent)
 {
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Event Received - StateSync: Syncing %d Sequencer states"), InEvent.SequencerStates.Num());
+
 	for (const auto& State : InEvent.SequencerStates)
 	{
 		FConcertSequencerState& SequencerState = SequencerStates.FindOrAdd(*State.SequenceObjectPath);
 		SequencerState = State;
-		for (FOpenSequencerData* OpenSequencer : GatherRootSequencersByState(SequencerState.SequenceObjectPath))
+
+		const TArray<FOpenSequencerData*, TInlineAllocator<1>> OpenSequencersForObject = GatherRootSequencersByState(SequencerState.SequenceObjectPath);
+
+		// Keep track of whether a Sequencer is open for this particular
+		// sequence, since the array of open Sequencers may contain unrelated
+		// Sequencers.
+		bool bFoundSequencerForObject = false;
+
+		UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    Syncing %d Sequencers for sequence %s"), OpenSequencersForObject.Num(), *SequencerState.SequenceObjectPath);
+		for (FOpenSequencerData* OpenSequencer : OpenSequencersForObject)
 		{
 			TSharedPtr<ISequencer> Sequencer = OpenSequencer->WeakSequencer.Pin();
 			if (Sequencer.IsValid() && IsSequencerPlaybackSyncEnabled())
@@ -293,7 +426,20 @@ void FConcertClientSequencerManager::OnSyncEvent(const FConcertSessionContext& I
 				Sequencer->SetGlobalTime(SequencerState.Time.ConvertTo(Sequencer->GetRootTickResolution()));
 				Sequencer->SetPlaybackStatus((EMovieScenePlayerStatus::Type)SequencerState.PlayerStatus);
 				Sequencer->SetPlaybackSpeed(SequencerState.PlaybackSpeed);
+
+				const UMovieSceneSequence* Sequence = Sequencer->GetRootMovieSceneSequence();
+				if (Sequence && (Sequence->GetPathName() == SequencerState.SequenceObjectPath))
+				{
+					bFoundSequencerForObject = true;
+				}
 			}
+		}
+
+		if (!bFoundSequencerForObject)
+		{
+			UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    No existing Sequencer with sequence %s open. Will open and sync a new one at end of frame."), *SequencerState.SequenceObjectPath);
+			PendingSequenceOpenEvents.Add(SequencerState.SequenceObjectPath);
+			PendingSequencerEvents.Add(SequencerState);
 		}
 	}
 }
@@ -333,6 +479,8 @@ void FConcertClientSequencerManager::OnSequencerTimeChanged(TWeakPtr<ISequencer>
 			SequencerStateEvent.State.PlayerStatus			= (EConcertMovieScenePlayerStatus)Sequencer->GetPlaybackStatus();
 			SequencerStateEvent.State.PlaybackSpeed			= Sequencer->GetPlaybackSpeed();
 
+			SequencerStateEvent.State.bLoopMode = UE::Private::ConcertClientSequencerManager::IsLoopingEnabled(Sequencer);
+
 			UMovieScene* MovieScene = Sequence->GetMovieScene();
 			check(MovieScene);
 			SequencerStateEvent.State.PlaybackRange			= MovieScene->GetPlaybackRange();
@@ -358,13 +506,13 @@ void FConcertClientSequencerManager::OnSequencerTimeChanged(TWeakPtr<ISequencer>
 
 void FConcertClientSequencerManager::OnCloseEvent(const FConcertSessionContext&, const FConcertSequencerCloseEvent& InEvent)
 {
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("OnCloseEvent: %s"), *InEvent.SequenceObjectPath);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Event Received - Close: %s. Deferring until end of frame."), *InEvent.SequenceObjectPath);
 	PendingSequenceCloseEvents.Add(InEvent);
 }
 
 void FConcertClientSequencerManager::OnOpenEvent(const FConcertSessionContext&, const FConcertSequencerOpenEvent& InEvent)
 {
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("OnOpenEvent: %s"), *InEvent.SequenceObjectPath);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Event Received - Open: %s. Deferring until end of frame."), *InEvent.SequenceObjectPath);
 	PendingSequenceOpenEvents.Add(InEvent.SequenceObjectPath);
 }
 
@@ -396,36 +544,94 @@ void FConcertClientSequencerManager::HandleAssetReload(const EPackageReloadPhase
 	}
 }
 
-void FConcertClientSequencerManager::ApplyTransportCloseEvent(const FConcertSequencerCloseEvent& PendingClose)
+void FConcertClientSequencerManager::ApplyCloseEventToPlayers(const FConcertSequencerCloseEvent& CloseEvent)
 {
-	FConcertSequencerState* SequencerState = SequencerStates.Find(*PendingClose.SequenceObjectPath);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Closing sequence players: %s, is from controller: %d"), *CloseEvent.SequenceObjectPath, CloseEvent.bControllerClose);
+
+	FSequencePlayer* Player = SequencePlayers.Find(*CloseEvent.SequenceObjectPath);
+	if (!Player)
+	{
+		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No open players to close for sequence %s"), *CloseEvent.SequenceObjectPath);
+		return;
+	}
+
+	ALevelSequenceActor* LevelSequenceActor = Player->Actor.Get();
+
+	if (CloseEvent.bControllerClose && LevelSequenceActor && LevelSequenceActor->SequencePlayer)
+	{
+		LevelSequenceActor->SequencePlayer->Stop();
+	}
+
+	if (!CanClose(CloseEvent))
+	{
+		return;
+	}
+
+	DestroyPlayer(*Player, LevelSequenceActor);
+
+	Player->Actor = nullptr;
+
+	// Always remove the player on close event. This will allow it to be re-opened on an OpenEvent.
+	UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    Removing sequence player for sequence: %s"), *CloseEvent.SequenceObjectPath);
+	SequencePlayers.Remove(*CloseEvent.SequenceObjectPath);
+}
+
+void FConcertClientSequencerManager::ApplyCloseEvent(const FConcertSequencerCloseEvent& CloseEvent)
+{
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Handling Event - Close: %s"), *CloseEvent.SequenceObjectPath);
+
+	FConcertSequencerState* SequencerState = SequencerStates.Find(*CloseEvent.SequenceObjectPath);
 	if (SequencerState)
 	{
+		const TArray<FOpenSequencerData*, TInlineAllocator<1>> OpenSequencersForObject = GatherRootSequencersByState(SequencerState->SequenceObjectPath);
+
 		// if the event was that a sequencer that was in controller playback mode was closed, stop playback
-		if (PendingClose.bControllerClose)
+		if (CloseEvent.bControllerClose)
 		{
 			SequencerState->PlayerStatus = EConcertMovieScenePlayerStatus::Stopped;
-			for (FOpenSequencerData* OpenSequencer : GatherRootSequencersByState(SequencerState->SequenceObjectPath))
+			for (FOpenSequencerData* OpenSequencer : OpenSequencersForObject)
 			{
 				OpenSequencer->PlaybackMode = EPlaybackMode::Undefined;
 				TSharedPtr<ISequencer> Sequencer = OpenSequencer->WeakSequencer.Pin();
 				Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Stopped);
 			}
 		}
+
+		if (GEditor && IsSequencerRemoteCloseEnabled())
+		{
+			for (FOpenSequencerData* OpenSequencer : OpenSequencersForObject)
+			{
+				TSharedPtr<ISequencer> Sequencer = OpenSequencer->WeakSequencer.Pin();
+				UMovieSceneSequence* Sequence = Sequencer.IsValid() ? Sequencer->GetRootMovieSceneSequence() : nullptr;
+
+				// Verify that this Sequencer is open for the particular
+				// sequence being closed since the array of open Sequencers
+				// may contain unrelated Sequencers.
+				if (Sequence && (Sequence->GetPathName() == CloseEvent.SequenceObjectPath))
+				{
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(Sequence);
+				}
+			}
+		}
+
 		// Discard the state if it's no longer opened by anyone.
 		//
-		if (PendingClose.EditorsWithSequencerOpened == 0)
+		if (CloseEvent.EditorsWithSequencerOpened == 0)
 		{
-			SequencerStates.Remove(*PendingClose.SequenceObjectPath);
+			UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    Removing Sequencer state for sequence: %s"), *CloseEvent.SequenceObjectPath);
+			SequencerStates.Remove(*CloseEvent.SequenceObjectPath);
 		}
 	}
 
-	ApplyCloseToPlayers(PendingClose);
+	ApplyCloseEventToPlayers(CloseEvent);
 }
 
-void FConcertClientSequencerManager::ApplyTransportOpenEvent(const FString& SequenceObjectPath)
+void FConcertClientSequencerManager::ApplyOpenEvent(const FString& SequenceObjectPath)
 {
 	TGuardValue<bool> ReentrancyGuard(bRespondingToTransportEvent, true);
+
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Handling Event - Open: %s"), *SequenceObjectPath);
+
 #if WITH_EDITOR
 	if (IsSequencerRemoteOpenEnabled() && GIsEditor)
 	{
@@ -441,9 +647,11 @@ void FConcertClientSequencerManager::ApplyTransportOpenEvent(const FString& Sequ
 
 void FConcertClientSequencerManager::CreateNewSequencePlayerIfNotExists(const FString& SequenceObjectPath)
 {
-	// we do not have a player for this state yet
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("CreateNewSequencePlayerIfNotExists: %s"), *SequenceObjectPath);
+
 	if (SequencePlayers.Contains(*SequenceObjectPath))
 	{
+		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Sequence player already exists for sequence %s"), *SequenceObjectPath);
 		return;
 	}
 
@@ -454,22 +662,18 @@ void FConcertClientSequencerManager::CreateNewSequencePlayerIfNotExists(const FS
 	}
 	check(CurrentWorld);
 
-	ALevelSequenceActor* LevelSequenceActor = nullptr;
-
 	// Get the actual sequence
-	ULevelSequence* Sequence = LoadObject<ULevelSequence>( nullptr, *SequenceObjectPath);
-
+	ULevelSequence* Sequence = LoadObject<ULevelSequence>(nullptr, *SequenceObjectPath);
 	if (!Sequence)
 	{
+		UE_LOG(LogConcertSequencerSync, Warning, TEXT("    Failed to load level sequence while creating new sequence player: %s"), *SequenceObjectPath);
 		return;
 	}
 
-	FMovieSceneSequencePlaybackSettings PlaybackSettings;
-	// Sequencer behaves differently to Player.
-	// Sequencer pauses at the last frame and Player Stops and goes to the first frame unless we set this flag.
-	PlaybackSettings.bPauseAtEnd = true;
+	FMovieSceneSequencePlaybackSettings PlaybackSettings = UE::Private::ConcertClientSequencerManager::GetPlaybackSettings(false);
 
-	// This call will initialeze LevelSequenceActor as an output parameter.
+	// This call will initialize LevelSequenceActor as an output parameter.
+	ALevelSequenceActor* LevelSequenceActor = nullptr;
 	ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(CurrentWorld->PersistentLevel, Sequence, PlaybackSettings, LevelSequenceActor);
 	check(Player);
 
@@ -487,6 +691,7 @@ void FConcertClientSequencerManager::DestroyPlayer(FSequencePlayer& Player, ALev
 {
 	if (LevelSequenceActor && LevelSequenceActor->SequencePlayer)
 	{
+		UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("Destroying LevelSequenceActor: %s"), *LevelSequenceActor->GetPathName());
 		LevelSequenceActor->SequencePlayer->Stop();
 
 		LevelSequenceActor->SetSequence(nullptr);
@@ -495,59 +700,35 @@ void FConcertClientSequencerManager::DestroyPlayer(FSequencePlayer& Player, ALev
 	}
 }
 
-void FConcertClientSequencerManager::ApplyCloseToPlayers(const FConcertSequencerCloseEvent& InEvent)
-{
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Apply CloseEvent: %s, is from controller: %d"), *InEvent.SequenceObjectPath, InEvent.bControllerClose);
-	FSequencePlayer* Player = SequencePlayers.Find(*InEvent.SequenceObjectPath);
-	ALevelSequenceActor* LevelSequenceActor = Player ? Player->Actor.Get() : nullptr;
-
-	if (InEvent.bControllerClose && LevelSequenceActor && LevelSequenceActor->SequencePlayer)
-	{
-		LevelSequenceActor->SequencePlayer->Stop();
-	}
-
-	if (!Player || !CanClose(InEvent))
-	{
-		return;
-	}
-
-	DestroyPlayer(*Player, LevelSequenceActor);
-
-	Player->Actor = nullptr;
-
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Removing player: %s"), *InEvent.SequenceObjectPath);
-	// Always remove the player on close event. This will allow it to be re-opened on an OpenEvent.
-	//
-	SequencePlayers.Remove(*InEvent.SequenceObjectPath);
-}
-
 void FConcertClientSequencerManager::OnTransportEvent(const FConcertSessionContext&, const FConcertSequencerStateEvent& InEvent)
 {
 	PendingSequencerEvents.Add(InEvent.State);
 }
 
-void FConcertClientSequencerManager::OnTimeAdjustmentEvent(const FConcertSessionContext&, const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent)
+void FConcertClientSequencerManager::OnTimeAdjustmentEvent(const FConcertSessionContext&, const FConcertSequencerTimeAdjustmentEvent& InEvent)
 {
-	PendingTimeAdjustmentEvents.Add(TimeAdjustmentEvent);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Event Received - TimeAdjustment: %s. Deferring until end of frame."), *InEvent.SequenceObjectPath);
+	PendingTimeAdjustmentEvents.Add(InEvent);
 }
 
-void FConcertClientSequencerManager::ApplyTimeAdjustmentEvent(const FConcertSequencerTimeAdjustmentEvent& TimeEvent)
+void FConcertClientSequencerManager::ApplyTimeAdjustmentEvent(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent)
 {
 	if (bRespondingToTransportEvent)
 	{
 		return;
 	}
 
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Apply TimeAdjustmentEvent: %s"), *TimeEvent.SequenceObjectPath);
 	TGuardValue<bool> ReentrancyGuard(bRespondingToTransportEvent, true);
+
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Handling Event - TimeAdjustment: %s"), *TimeAdjustmentEvent.SequenceObjectPath);
 
 	if (GIsEditor)
 	{
-		ApplyTimeAdjustmentSequencers(TimeEvent);
+		ApplyTimeAdjustmentToSequencers(TimeAdjustmentEvent);
 	}
 	else if (CVarEnableSequencePlayer.GetValueOnAnyThread() > 0)
 	{
-		ApplyTimeAdjustmentPlayers(TimeEvent);
+		ApplyTimeAdjustmentToPlayers(TimeAdjustmentEvent);
 	}
 }
 
@@ -571,9 +752,11 @@ bool ApplyStartFrameToMovieScene(FFrameNumber StartFrame, UMovieScene* MovieScen
 	return true;
 }
 
-void FConcertClientSequencerManager::ApplyTimeAdjustmentSequencers(const FConcertSequencerTimeAdjustmentEvent& TimeEvent)
+void FConcertClientSequencerManager::ApplyTimeAdjustmentToSequencers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent)
 {
-	for (FOpenSequencerData* OpenSequencer : GatherRootSequencersByState(TimeEvent.SequenceObjectPath))
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    TimeAdjustment: Updating Sequencers for sequence %s"), *TimeAdjustmentEvent.SequenceObjectPath);
+
+	for (FOpenSequencerData* OpenSequencer : GatherRootSequencersByState(TimeAdjustmentEvent.SequenceObjectPath))
 	{
 		ISequencer* Sequencer = OpenSequencer->WeakSequencer.Pin().Get();
 		// If the entry is driving playback (PlaybackMode == Controller) then we never respond time adjustment events.
@@ -587,10 +770,10 @@ void FConcertClientSequencerManager::ApplyTimeAdjustmentSequencers(const FConcer
 		UMovieScene* MovieScene = Sequencer->GetRootMovieSceneSequence()->GetMovieScene();
 		if (MovieScene)
 		{
-			if (ApplyStartFrameToMovieScene(TimeEvent.PlaybackStartFrame, MovieScene))
+			if (ApplyStartFrameToMovieScene(TimeAdjustmentEvent.PlaybackStartFrame, MovieScene))
 			{
 				FFrameRate FrameRate = MovieScene->GetTickResolution();
-				double CurrentTimeSeconds = FrameRate.AsSeconds(FFrameTime(TimeEvent.PlaybackStartFrame));
+				double CurrentTimeSeconds = FrameRate.AsSeconds(FFrameTime(TimeAdjustmentEvent.PlaybackStartFrame));
 				TRange<double> NewRange(CurrentTimeSeconds, CurrentTimeSeconds+10.0);
 				Sequencer->SetViewRange(NewRange, EViewRangeInterpolation::Immediate);
 				Sequencer->SetClampRange(Sequencer->GetViewRange());
@@ -600,12 +783,14 @@ void FConcertClientSequencerManager::ApplyTimeAdjustmentSequencers(const FConcer
 	}
 }
 
-void FConcertClientSequencerManager::ApplyTimeAdjustmentPlayers(const FConcertSequencerTimeAdjustmentEvent& TimeEvent)
+void FConcertClientSequencerManager::ApplyTimeAdjustmentToPlayers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent)
 {
-	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*TimeEvent.SequenceObjectPath);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    TimeAdjustment: Updating sequence players for sequence %s"), *TimeAdjustmentEvent.SequenceObjectPath);
 
+	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*TimeAdjustmentEvent.SequenceObjectPath);
 	if (!SeqPlayer)
 	{
+		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No sequence player for sequence %s"), *TimeAdjustmentEvent.SequenceObjectPath);
 		return;
 	}
 
@@ -615,7 +800,7 @@ void FConcertClientSequencerManager::ApplyTimeAdjustmentPlayers(const FConcertSe
 		UMovieScene* MovieScene = LevelSequenceActor->LevelSequenceAsset->GetMovieScene();
 		if (MovieScene)
 		{
-			ApplyStartFrameToMovieScene(TimeEvent.PlaybackStartFrame, MovieScene);
+			ApplyStartFrameToMovieScene(TimeAdjustmentEvent.PlaybackStartFrame, MovieScene);
 		}
 	}
 }
@@ -628,8 +813,9 @@ void FConcertClientSequencerManager::ApplyTransportEvent(const FConcertSequencer
 		return;
 	}
 
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Apply Transport Event: %s"), *EventState.SequenceObjectPath);
 	TGuardValue<bool> ReentrancyGuard(bRespondingToTransportEvent, true);
+
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Handling Event - Transport: %s"), *EventState.SequenceObjectPath);
 
 	// Update the sequencer pointing to the same sequence
 	FConcertSequencerState& SequencerState = SequencerStates.FindOrAdd(*EventState.SequenceObjectPath);
@@ -649,7 +835,7 @@ void FConcertClientSequencerManager::ApplyTransportEvent(const FConcertSequencer
 
 void FConcertClientSequencerManager::ApplyEventToSequencers(const FConcertSequencerState& EventState)
 {
-	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("ApplyEventToSequencers: %s, at frame: %d"), *EventState.SequenceObjectPath, EventState.Time.Time.FrameNumber.Value);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Transport: Update Sequencer for sequence %s, at frame: %d"), *EventState.SequenceObjectPath, EventState.Time.Time.FrameNumber.Value);
 	FConcertSequencerState& SequencerState = SequencerStates.FindOrAdd(*EventState.SequenceObjectPath);
 
 	// Record the Sequencer State
@@ -674,7 +860,7 @@ void FConcertClientSequencerManager::ApplyEventToSequencers(const FConcertSequen
 		check(MovieScene);
 		MovieScene->SetPlaybackRange(EventState.PlaybackRange, false);
 
-		// If the event is coming from a sequencer that is playing back, we are a slave to its updates until it stops
+		// If the event is coming from a sequencer that is playing back, we are an agent to its updates until it stops
 		// We also apply any latency compensation when playing back
 		if (EventState.PlayerStatus == EConcertMovieScenePlayerStatus::Playing)
 		{
@@ -740,69 +926,14 @@ void FConcertClientSequencerManager::ApplyEventToSequencers(const FConcertSequen
 	}
 }
 
-namespace UE::Private::ConcertClientSequencerManager
-{
-
-void ApplyPlayRangeToPlayer(ULevelSequencePlayer* Player, const FFrameNumberRange& PlayRange)
-{
-	check(Player);
-
-	const bool bLowerBoundClosed = PlayRange.GetLowerBound().IsClosed();
-	const bool bUpperBoundClosed = PlayRange.GetUpperBound().IsClosed();
-
-	if (!ensureMsgf(bLowerBoundClosed, TEXT("PlayRange lower bound is open, which is not supported.")))
-	{
-		return;
-	}
-
-	if (!Player->GetSequence() || !Player->GetSequence()->GetMovieScene())
-	{
-		UE_LOG(LogConcertSequencerSync, Warning, TEXT("ApplyPlayRangeToPlayer (%s): Missing sequence or scene"),
-			*Player->GetSequenceName());
-		return;
-	}
-
-	// Convert passed-in range from tick resolution to display rate.
-	UMovieScene* MovieScene = Player->GetSequence()->GetMovieScene();
-	const FFrameRate TickRate = MovieScene->GetTickResolution();
-	const FFrameRate PlayerRate = Player->GetFrameRate();
-
-	const FFrameNumber NewStartFrame = ConvertFrameTime(
-		UE::MovieScene::DiscreteInclusiveLower(PlayRange), TickRate, PlayerRate).FloorToFrame();
-
-	int32 NewDuration;
-	if (bUpperBoundClosed)
-	{
-		const FFrameNumber NewEndFrame = ConvertFrameTime(
-			UE::MovieScene::DiscreteExclusiveUpper(PlayRange), TickRate, PlayerRate).FloorToFrame();
-
-		NewDuration = (NewEndFrame - NewStartFrame).Value;
-	}
-	else
-	{
-		NewDuration = TNumericLimits<int32>::Max() - 1;
-	}
-
-	const int32 CurrentDuration = Player->GetFrameDuration();
-	const FFrameNumber CurrentStartFrame = Player->GetStartTime().Time.GetFrame();
-	if (CurrentDuration != NewDuration || CurrentStartFrame != NewStartFrame)
-	{
-		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("SetFrameRange (%s): Start %d, duration %d (was %d, %d)"),
-			*Player->GetSequenceName(), NewStartFrame.Value, NewDuration, CurrentStartFrame.Value, CurrentDuration);
-
-		Player->SetFrameRange(NewStartFrame.Value, NewDuration);
-	}
-}
-
-}
-
-
 void FConcertClientSequencerManager::ApplyEventToPlayers(const FConcertSequencerState& EventState)
 {
-	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*EventState.SequenceObjectPath);
+	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Transport: Update sequence player for sequence %s, at frame: %d"), *EventState.SequenceObjectPath, EventState.Time.Time.FrameNumber.Value);
 
+	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*EventState.SequenceObjectPath);
 	if (!SeqPlayer)
 	{
+		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No sequence player for sequence %s"), *EventState.SequenceObjectPath);
 		return;
 	}
 
@@ -817,12 +948,14 @@ void FConcertClientSequencerManager::ApplyEventToPlayers(const FConcertSequencer
 
 		UE::Private::ConcertClientSequencerManager::ApplyPlayRangeToPlayer(Player, EventState.PlaybackRange);
 
-		// If the event is coming from a sequencer that is playing back, we are a slave to its updates until it stops
+		// If the event is coming from a sequencer that is playing back, we are an agent to its updates until it stops
 		// We also apply any latency compensation when playing back
 		if (EventState.PlayerStatus == EConcertMovieScenePlayerStatus::Playing)
 		{
 			FFrameTime CurrentTime = Player->GetCurrentTime().Time;
 
+			FMovieSceneSequencePlaybackSettings PlaybackSettings = UE::Private::ConcertClientSequencerManager::GetPlaybackSettings(EventState.bLoopMode);
+			Player->SetPlaybackSettings(PlaybackSettings);
 			// We should be playing back, but are not currently - we compensate the event time for network latency and commence playback
 			if (!Player->IsPlaying())
 			{
@@ -903,46 +1036,37 @@ bool FConcertClientSequencerManager::CanSendSequencerEvent(const FString& Object
 	return true;
 }
 
-void FConcertClientSequencerManager::OnEndFrame()
+void FConcertClientSequencerManager::OnWorkspaceEndFrameCompleted()
 {
-	TSharedPtr<FConcertClientWorkspace> SharedWorkspace = Workspace.Pin();
-	if (SharedWorkspace)
-	{
-		if (!SharedWorkspace->CanProcessPendingPackages())
-		{
-			// There is currently a lock on the workspace.  We should wait for those to finish before processing
-			// sequencer events.
-			//
-			return;
-		}
-	}
-
 	for (const FConcertSequencerCloseEvent& CloseEvent: PendingSequenceCloseEvents)
 	{
-		ApplyTransportCloseEvent(CloseEvent);
+		ApplyCloseEvent(CloseEvent);
 	}
 	PendingSequenceCloseEvents.Reset();
 
-	for (const TTuple<FName,FString>& Player: PendingDestroy)
+	if (!PendingDestroy.IsEmpty())
 	{
-		if (FSequencePlayer* SequencePlayer = SequencePlayers.Find(Player.Get<0>()))
+		for (const TTuple<FName, FString>& Player : PendingDestroy)
 		{
-			DestroyPlayer(*SequencePlayer, SequencePlayer->Actor.Get());
-			SequencePlayers.Remove(Player.Get<0>());
-			PendingCreate.Add(Player.Get<1>());
+			if (FSequencePlayer* SequencePlayer = SequencePlayers.Find(Player.Get<0>()))
+			{
+				DestroyPlayer(*SequencePlayer, SequencePlayer->Actor.Get());
+				SequencePlayers.Remove(Player.Get<0>());
+				PendingCreate.Add(Player.Get<1>());
+			}
 		}
-	}
 
-	if (PendingDestroy.Num())
-	{
 		if (GEngine)
 		{
 			GEngine->ForceGarbageCollection(true);
 		}
+
+		// Wait for the next frame to continue. Garbage collection will not happen
+		// immediately so we need to wait for the next frame before we re-create.
+		UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("Running garbage collection after destroying %d sequence players. Deferring remaining pending events until next frame"), PendingDestroy.Num());
+
 		PendingDestroy.Reset();
-		// Wait for the next frame to continue.  Garbage collection will not happen immediately so we need to wait for the
-		// next frame before we re-create.
-		//
+
 		return;
 	}
 
@@ -954,7 +1078,7 @@ void FConcertClientSequencerManager::OnEndFrame()
 
 	for (const FString& SequenceObjectPath : PendingSequenceOpenEvents)
 	{
-		ApplyTransportOpenEvent(SequenceObjectPath);
+		ApplyOpenEvent(SequenceObjectPath);
 	}
 	PendingSequenceOpenEvents.Reset();
 

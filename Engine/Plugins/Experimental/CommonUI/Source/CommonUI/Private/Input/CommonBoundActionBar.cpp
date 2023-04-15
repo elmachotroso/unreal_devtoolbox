@@ -1,12 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Input/CommonBoundActionBar.h"
-#include "Input/CommonUIActionRouterBase.h"
-#include "Engine/LocalPlayer.h"
-#include "Engine/GameInstance.h"
-#include "TimerManager.h"
+#include "CommonInputSubsystem.h"
 #include "Editor/WidgetCompilerLog.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "Input/CommonBoundActionButtonInterface.h"
+#include "Input/CommonUIActionRouterBase.h"
 #include "Input/UIActionRouterTypes.h"
+#include "TimerManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CommonBoundActionBar)
 
 #define LOCTEXT_NAMESPACE "CommonUI"
 
@@ -218,7 +222,7 @@ void UCommonBoundActionBar::HandleDeferredDisplayUpdate()
 
 					for (FUIActionBindingHandle BindingHandle : FilteredBindings)
 					{
-						UCommonBoundActionButton* ActionButton = Cast<UCommonBoundActionButton>(CreateEntryInternal(ActionButtonClass));
+						ICommonBoundActionButtonInterface* ActionButton = Cast<ICommonBoundActionButtonInterface>(CreateEntryInternal(ActionButtonClass));
 						if (ensure(ActionButton))
 						{
 							ActionButton->SetRepresentedAction(BindingHandle);

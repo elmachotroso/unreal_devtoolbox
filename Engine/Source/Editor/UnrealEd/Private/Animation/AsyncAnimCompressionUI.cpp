@@ -8,12 +8,12 @@
 
 /** Global notification object. */
 
-/** Notification class for asynchronous shader compiling. */
+/** Notification class for asynchronous animation processing. */
 class FAnimCompressionNotificationImpl : public FGlobalEditorProgressNotification
 {
 public:
 	FAnimCompressionNotificationImpl()
-		: FGlobalEditorProgressNotification(NSLOCTEXT("AsyncAnimCompression", "AnimCompressionInProgress", "Compressing Animations"))
+		: FGlobalEditorProgressNotification(NSLOCTEXT("AsyncAnimCompression", "AnimProcessing", "Preparing Animations"))
 	{}
 protected:
 	/** FGlobalEditorProgressNotification interface */
@@ -24,7 +24,7 @@ protected:
 		{
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("AnimsToCompress"), FText::AsNumber(RemainingJobs));
-			UpdateProgressMessage(FText::Format(NSLOCTEXT("AsyncAnimCompression", "AnimCompressionInProgressFormat", "Compressing Animations ({AnimsToCompress})"), Args));
+			UpdateProgressMessage(FText::Format(NSLOCTEXT("AsyncAnimCompression", "AnimPreparationInProgressFormat", "Preparing Animations ({AnimsToCompress})"), Args));
 
 		}
 

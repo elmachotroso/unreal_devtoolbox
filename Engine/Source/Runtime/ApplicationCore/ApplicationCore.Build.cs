@@ -31,8 +31,7 @@ public class ApplicationCore : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"XInput"
 			);
-			// We only enable UIA with Win64
-			if (Target.bCompileWithAccessibilitySupport && !Target.bIsBuildingConsoleApplication && Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.bCompileWithAccessibilitySupport && !Target.bIsBuildingConsoleApplication)
 			{
 				PublicSystemLibraries.Add("uiautomationcore.lib");
 				PublicDefinitions.Add("UE_WINDOWS_USING_UIA=1");
@@ -52,8 +51,8 @@ public class ApplicationCore : ModuleRules
 			);
 			if (Target.bBuildEditor == true)
 			{
-				string SDKROOT = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcrun", "--sdk macosx --show-sdk-path");
-				PublicAdditionalLibraries.Add(SDKROOT + "/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport.tbd");
+				string XcodeRoot = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcode-select", "--print-path");
+				PublicAdditionalLibraries.Add(XcodeRoot + "/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/Current/MultitouchSupport.tbd");
 			}
 			
 			PublicFrameworks.Add("GameController");
@@ -93,9 +92,11 @@ public class ApplicationCore : ModuleRules
 			);
 		}
 
-		if (!Target.bCompileAgainstApplicationCore)
+		if (!Target.IsTestTarget && !Target.bCompileAgainstApplicationCore)
 		{
 			throw new System.Exception("ApplicationCore cannot be used when Target.bCompileAgainstApplicationCore = false.");
 		}
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 	}
 }

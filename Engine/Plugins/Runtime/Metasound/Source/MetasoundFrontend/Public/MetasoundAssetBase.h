@@ -11,6 +11,7 @@
 #include "MetasoundLog.h"
 #include "MetasoundParameterTransmitter.h"
 #include "MetasoundVertex.h"
+#include "Templates/SharedPointer.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
@@ -19,8 +20,12 @@ class UEdGraph;
 
 namespace Metasound
 {
-	namespace Frontend {
+	namespace Frontend
+	{
+		// Forward Declarations
 		class IInterfaceRegistryEntry;
+
+		METASOUNDFRONTEND_API float GetDefaultBlockRate();
 	} // namespace Frontend
 } // namespace Metasound
 
@@ -73,8 +78,10 @@ public:
 	// Sets/overwrites the root class metadata
 	virtual void SetMetadata(FMetasoundFrontendClassMetadata& InMetadata);
 
-	// Rebuild the asset class dependency key array.
-	void RebuildReferencedAssetClassKeys();
+#if WITH_EDITOR
+	// Rebuild dependent asset classes
+	void RebuildReferencedAssetClasses();
+#endif // WITH_EDITOR
 
 	// Returns the interface entries declared by the given asset's document from the InterfaceRegistry.
 	bool GetDeclaredInterfaces(TArray<const Metasound::Frontend::IInterfaceRegistryEntry*>& OutInterfaces) const;
@@ -88,13 +95,16 @@ public:
 	// Returns all the class keys of this asset's referenced assets
 	virtual const TSet<FString>& GetReferencedAssetClassKeys() const = 0;
 
-	// Returns set of cached class references set on last registration
-	// prior to serialize. Used at runtime to hint where to load referenced
-	// class if sound loads before AssetManager scan is completed.  When registered
-	// hint paths to classes here can be superseded by another asset class if it shares
-	// the same key and has already been registered in the MetaSoundAssetManager.
-	virtual TSet<FSoftObjectPath>& GetReferencedAssetClassCache() = 0;
-	virtual const TSet<FSoftObjectPath>& GetReferencedAssetClassCache() const = 0;
+	// Returns set of class references set call to serialize in the editor
+	// Used at runtime load register referenced classes.
+	virtual TArray<FMetasoundAssetBase*> GetReferencedAssets() = 0;
+
+	// Return all dependent asset paths to load asynchronously
+	virtual const TSet<FSoftObjectPath>& GetAsyncReferencedAssetClassPaths() const = 0;
+
+	// Called when async assets have finished loading.
+	virtual void OnAsyncReferencedAssetsLoaded(const TArray<FMetasoundAssetBase*>& InAsyncReferences) = 0;
+
 
 	bool AddingReferenceCausesLoop(const FSoftObjectPath& InReferencePath) const;
 	bool IsReferencedAsset(const FMetasoundAssetBase& InAssetToCheck) const;
@@ -135,14 +145,8 @@ public:
 	 */
 	void CacheRegistryMetadata();
 
-	// TODO: These flags & associated functions are highly UE editor-specific.
-	// Split synchronization requirement flag into synchronization required &
-	// object type refresh or checking frontend class guids when synchronizing.
-	bool GetSynchronizationRequired() const;
-	bool GetSynchronizationUpdateDetails() const;
-	void ResetSynchronizationState();
-	void SetUpdateDetailsOnSynchronization();
-	void SetSynchronizationRequired();
+	FMetasoundFrontendDocumentModifyContext& GetModifyContext();
+	const FMetasoundFrontendDocumentModifyContext& GetModifyContext() const;
 #endif // WITH_EDITOR
 
 	// Calls the outermost package and marks it dirty.
@@ -163,7 +167,9 @@ public:
 	FString GetOwningAssetName() const;
 
 protected:
-	virtual void SetReferencedAssetClassKeys(TSet<Metasound::Frontend::FNodeRegistryKey>&& InKeys) = 0;
+#if WITH_EDITOR
+	virtual void SetReferencedAssetClasses(TSet<Metasound::Frontend::IMetaSoundAssetManager::FAssetInfo>&& InAssetClasses) = 0;
+#endif
 
 	// Get information for communicating asynchronously with MetaSound running instance.
 	TArray<FSendInfoAndVertexName> GetSendInfos(uint64 InInstanceID) const;
@@ -178,17 +184,15 @@ protected:
 	// Returns an access pointer to the document.
 	virtual Metasound::Frontend::FConstDocumentAccessPtr GetDocument() const = 0;
 
-#if WITH_EDITORONLY_DATA
-	bool bSynchronizationRequired = true;
-	bool bSynchronizationUpdateDetails = false;
-#endif // WITH_EDITORONLY_DATA
-
 protected:
 	// Container for runtime data of MetaSound graph.
 	struct FRuntimeData
 	{
 		// Current ID of graph.
 		FGuid ChangeID;
+
+		// Array of inputs which can be set for construction. 
+		TArray<FMetasoundFrontendClassInput> PublicInputs;
 
 		// Array of inputs which can be transmitted to.
 		TArray<FMetasoundFrontendClassInput> TransmittableInputs;
@@ -197,24 +201,31 @@ protected:
 		TSharedPtr<Metasound::IGraph, ESPMode::ThreadSafe> Graph;
 	};
 
-	// Returns the cached runtime data. Call updates cached data if out-of-date.
-	const FRuntimeData& CacheRuntimeData();
-
 	// Returns the cached runtime data.
 	const FRuntimeData& GetRuntimeData() const;
 
-	// Returns all transmissible class inputs.  This is a potentially expensive.
-	// Prefer accessing transmissible class inputs using CacheRuntimeData.
-	TArray<FMetasoundFrontendClassInput> GetTransmittableClassInputs() const;
+	// Returns all public class inputs.  This is a potentially expensive.
+	// Prefer accessing public class inputs using CacheRuntimeData.
+	TArray<FMetasoundFrontendClassInput> GetPublicClassInputs() const;
 
+
+	bool AutoUpdate(bool bInLogWarningsOnDroppedConnection);
+	void RegisterAssetDependencies(const Metasound::Frontend::FMetaSoundAssetRegistrationOptions& InRegistrationOptions);
+	TSharedPtr<FMetasoundFrontendDocument> PreprocessDocument();
 private:
+#if WITH_EDITORONLY_DATA
+	void UpdateAssetRegistry();
+#endif
+	// Returns the cached runtime data. Call updates cached data if out-of-date.
+	const FRuntimeData& CacheRuntimeData(const FMetasoundFrontendDocument& InPreprocessedDoc);
+
 	Metasound::Frontend::FNodeRegistryKey RegistryKey;
 
 	// Cache ID is used to determine whether CachedRuntimeData is out-of-date.
 	FGuid CurrentCachedRuntimeDataChangeID;
 	FRuntimeData CachedRuntimeData;
 
-	TSharedPtr<Metasound::IGraph, ESPMode::ThreadSafe> BuildMetasoundDocument(const TArray<FMetasoundFrontendClassInput>& InTransmittableInputs) const;
+	TSharedPtr<Metasound::IGraph, ESPMode::ThreadSafe> BuildMetasoundDocument(const FMetasoundFrontendDocument& InPreprocessDoc, const TSet<FName>& InTransmittableInputNames) const;
 	Metasound::FSendAddress CreateSendAddress(uint64 InInstanceID, const Metasound::FVertexName& InVertexName, const FName& InDataTypeName) const;
 	Metasound::Frontend::FNodeHandle AddInputPinForSendAddress(const Metasound::FMetaSoundParameterTransmitter::FSendInfo& InSendInfo, Metasound::Frontend::FGraphHandle InGraph) const;
 };

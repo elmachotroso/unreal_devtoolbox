@@ -4,142 +4,14 @@
 
 #include "Archive/ClassDefaults/ApplyClassDefaulDataArchive.h"
 #include "Data/RestorationEvents/ApplySnapshotPropertiesScope.h"
-#include "Data/Util/Property/PropertyUtil.h"
-#include "Data/Util/SnapshotObjectUtil.h"
+#include "Data/Util/WorldData/ClassDataUtil.h"
+#include "Data/Util/WorldData/SnapshotObjectUtil.h"
 #include "Data/WorldSnapshotData.h"
 #include "LevelSnapshotsLog.h"
 #include "Selection/PropertySelection.h"
 
-#include "Components/ActorComponent.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
 #include "Serialization/ObjectReader.h"
-#include "Serialization/ObjectWriter.h"
-#include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
-#include "Util/Restoration/WorldDataUtil.h"
-
-namespace UE::LevelSnapshots::Private::Internal
-{
-	class FCopyProperties : public FObjectWriter
-	{
-		using Super = FObjectWriter;
-
-		const FPropertySelection& PropertiesToSerialize;
-		UObject* SnapshotObject;
-
-		bool IsWorldObjectProperty(const FProperty* InProperty) const
-		{
-			const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty);
-			if (!ObjectProperty)
-			{
-				return false;
-			}
-
-			const bool bIsMarkedAsSubobject = InProperty->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference | CPF_PersistentInstance);
-			const bool bIsActorOrComponentPtr = ObjectProperty->PropertyClass->IsChildOf(AActor::StaticClass()) || ObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass());
-			if (bIsMarkedAsSubobject || bIsActorOrComponentPtr)
-			{
-				return true;
-			}
-
-			const FArchiveSerializedPropertyChain* PropertyChain = GetSerializedPropertyChain();
-			const bool bContainsWorldReference = UE::LevelSnapshots::Private::FollowPropertyChainUntilPredicateIsTrue(SnapshotObject, PropertyChain, InProperty, [this, ObjectProperty](void* LeafValuePtr)
-			{
-				const UObject* ContainedPtr = ObjectProperty->GetObjectPropertyValue(LeafValuePtr);
-				return LeafValuePtr ? ContainedPtr->IsInA(UWorld::StaticClass()) : false;
-			});
-			return bContainsWorldReference;
-		}
-				
-	public:
-
-		mutable TSet<const FTextProperty*> TextProperties;
-
-		FCopyProperties(UObject* SnapshotObject, TArray<uint8>& SaveLocation, const FPropertySelection& PropertiesToSerialize)
-			:
-			Super(SaveLocation),
-			PropertiesToSerialize(PropertiesToSerialize),
-			SnapshotObject(SnapshotObject)
-		{
-			ArNoDelta = true;
-		}
-
-		virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
-		{
-			// Do not copy object reference properties that have a world as outer: They will not be valid when copied from snapshot to editor world.
-			// Hence, we only allow object references to external assets, e.g. UMaterials or UDataAssets
-			if (IsWorldObjectProperty(InProperty))
-			{
-				return true;
-			}
-
-			const bool bIsPropertyAllowed = PropertiesToSerialize.ShouldSerializeProperty(GetSerializedPropertyChain(), InProperty);
-			if (bIsPropertyAllowed)
-			{
-				if (const FTextProperty* TextProperty = CastField<FTextProperty>(InProperty))
-				{
-					TextProperties.Add(TextProperty);
-					return false;
-				}
-			}
-			return !bIsPropertyAllowed;
-		}		
-	};
-
-	class FSerializeTextProperties : public FApplyClassDefaulDataArchive
-	{
-		TSet<const FTextProperty*>& TextProperties;
-	public:
-		
-		FSerializeTextProperties(TSet<const FTextProperty*>& InTextProperties, FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InSerializedObject)
-			:
-			FApplyClassDefaulDataArchive(InObjectData, InSharedData, InSerializedObject, ESerialisationMode::RestoringChangedDefaults),
-			TextProperties(InTextProperties)
-		{}
-
-		virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
-		{
-			if (const FTextProperty* TextProperty = CastField<FTextProperty>(InProperty))
-			{
-				return !TextProperties.Contains(TextProperty);
-			}
-			return true;
-		}
-	};
-
-	static TSet<const FTextProperty*> CopyPastePropertiesDifferentInCDO(const FPropertySelection& PropertiesLeftToSerialise, UObject* InOriginalObject, UObject* InDeserializedVersion)
-	{
-		if (!PropertiesLeftToSerialise.IsEmpty())
-		{
-			TArray<uint8> CopiedPropertyData;
-			FCopyProperties CopySimpleProperties(InDeserializedVersion, CopiedPropertyData, PropertiesLeftToSerialise);
-			InDeserializedVersion->Serialize(CopySimpleProperties);
-		
-			FObjectReader PasteSimpleProperties(InOriginalObject, CopiedPropertyData);
-			return CopySimpleProperties.TextProperties;
-		}
-		return {};
-	}
-
-	static void FixUpTextPropertiesDifferentInCDO(TSet<const FTextProperty*> TextProperties, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
-	{
-		const bool bAreTextPropertiesLeft = TextProperties.Num() > 0;
-		if (bAreTextPropertiesLeft)
-		{
-			FObjectSnapshotData* ClassDefaults = GetSerializedClassDefaults(InSharedData, InOriginalObject->GetClass()).Get(nullptr);
-			if (ClassDefaults)
-			{
-				FSerializeTextProperties SerializeTextProperties(TextProperties, *ClassDefaults, InSharedData, InOriginalObject);
-				InOriginalObject->Serialize(SerializeTextProperties);
-			}
-			else
-			{
-				UE_LOG(LogLevelSnapshots, Warning, TEXT("%d text properties have changed in class defaults since snapshot was taken but cannot be restored."), TextProperties.Num());
-			}
-		}
-	}
-}
 
 void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToExistingEditorWorldObject(
 	FObjectSnapshotData& InObjectData,
@@ -147,10 +19,11 @@ void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToExisting
 	FSnapshotDataCache& Cache,
 	UObject* InOriginalObject,
 	UObject* InDeserializedVersion,
-	const FPropertySelectionMap& InSelectionMapForResolvingSubobjects)
+	const FPropertySelectionMap& InSelectionMapForResolvingSubobjects,
+	TOptional<FClassDataIndex> ClassIndex)
 {
 	const FPropertySelection* Selection = InSelectionMapForResolvingSubobjects.GetObjectSelection(InOriginalObject).GetPropertySelection();
-	if (Selection && Selection->IsEmpty())
+	if (!Selection || Selection->IsEmpty())
 	{
 		return;
 	}
@@ -161,18 +34,19 @@ void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToExisting
 	InOriginalObject->Modify();
 #endif
 	
-	// Step 1: Serialise  properties that were different from CDO at time of snapshotting and that are still different from CDO
+	// 1. Serialize archetype first to handle the case were the archetype has changed properties since the snapshot was taken
+	if (ClassIndex) // Sometimes not available, e.g. for custom subobjects
+	{
+		const FSubobjectArchetypeFallbackInfo ClassFallbackInfo{ InOriginalObject->GetOuter(), InOriginalObject->GetFName(), InOriginalObject->GetFlags() };
+		SerializeSelectedClassDefaultsInto(InOriginalObject, InSharedData, *ClassIndex, Cache, ClassFallbackInfo, *Selection);
+	}
+	
+	// Step 2: Serialise  properties that were different from CDO at time of snapshotting and that are still different from CDO
 	FApplySnapshotToEditorArchive ApplySavedData(InObjectData, InSharedData, InOriginalObject, InSelectionMapForResolvingSubobjects, Selection, Cache);
 	InOriginalObject->Serialize(ApplySavedData);
-	
-	// Step 2: Serialise any remaining properties that were not covered: properties that were equal to the CDO value when the snapshot was taken but now are different from the CDO.
-	TSet<const FTextProperty*> TextProperties = Internal::CopyPastePropertiesDifferentInCDO(ApplySavedData.PropertiesLeftToSerialize, InOriginalObject, InDeserializedVersion);
-
-	// Step 3: Serialize FText properties that have changed in CDO since snapshot was taken. 
-	Internal::FixUpTextPropertiesDifferentInCDO(MoveTemp(TextProperties), InSharedData, InOriginalObject);
 }
 
-void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToRecreatedEditorWorldObject(
+void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToEditorWorldObjectRecreatedWithArchetype(
 	FObjectSnapshotData& InObjectData,
 	FWorldSnapshotData& InSharedData,
 	FSnapshotDataCache& Cache,
@@ -183,7 +57,23 @@ void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToRecreate
 	const FApplySnapshotPropertiesScope NotifySnapshotListeners({ InOriginalObject, InSelectionMapForResolvingSubobjects, {}, true });
 	
 	// Apply all properties that we saved into the target actor.
-	// We assume that InOriginalObject was already created with the snapshot CDO as template: we do not need Step 2 from ApplyToExistingWorldObject.
+	FApplySnapshotToEditorArchive ApplySavedData(InObjectData, InSharedData, InOriginalObject, InSelectionMapForResolvingSubobjects, {}, Cache);
+	InOriginalObject->Serialize(ApplySavedData);
+}
+
+void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ApplyToEditorWorldObjectRecreatedWithoutArchetype(
+	FObjectSnapshotData& InObjectData,
+	FWorldSnapshotData& InSharedData,
+	FSnapshotDataCache& Cache,
+	UObject* InOriginalObject,
+	const FPropertySelectionMap& InSelectionMapForResolvingSubobjects,
+	FClassDataIndex ClassIndex)
+{
+	// 1. Serialize archetype first to handle the case were the archetype has changed properties since the snapshot was taken
+	const FSubobjectArchetypeFallbackInfo ClassFallbackInfo{ InOriginalObject->GetOuter(), InOriginalObject->GetFName(), InOriginalObject->GetFlags() };
+	SerializeClassDefaultsIntoSubobject(InOriginalObject, InSharedData, ClassIndex, Cache, ClassFallbackInfo);
+	
+	// Step 2: Apply the data that was different from CDO at time of snapshotting
 	FApplySnapshotToEditorArchive ApplySavedData(InObjectData, InSharedData, InOriginalObject, InSelectionMapForResolvingSubobjects, {}, Cache);
 	InOriginalObject->Serialize(ApplySavedData);
 }
@@ -193,7 +83,6 @@ bool UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ShouldSkipPrope
 	SCOPED_SNAPSHOT_CORE_TRACE(ShouldSkipProperty);
 	
 	bool bShouldSkipProperty = Super::ShouldSkipProperty(InProperty);
-	
 	if (!bShouldSkipProperty && !ShouldSerializeAllProperties())
 	{
 		const bool bIsAllowed = SelectionSet.GetValue()->ShouldSerializeProperty(GetSerializedPropertyChain(), InProperty);  
@@ -203,21 +92,13 @@ bool UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ShouldSkipPrope
 	return bShouldSkipProperty;
 }
 
-void UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::PushSerializedProperty(FProperty* InProperty, const bool bIsEditorOnlyProperty)
-{
-	// Do before call to super because super appends InProperty to property chain
-	PropertiesLeftToSerialize.RemoveProperty(GetSerializedPropertyChain(), InProperty);
-	
-	Super::PushSerializedProperty(InProperty, bIsEditorOnlyProperty);
-}
-
-UObject* UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ResolveObjectDependency(int32 ObjectIndex) const
+UObject* UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ResolveObjectDependency(int32 ObjectIndex, UObject* CurrentValue) const
 {
 	FString LocalizationNamespace;
 #if USE_STABLE_LOCALIZATION_KEYS
 	LocalizationNamespace = GetLocalizationNamespace();
 #endif
-	return UE::LevelSnapshots::Private::ResolveObjectDependencyForEditorWorld(GetSharedData(), Cache, ObjectIndex, LocalizationNamespace, SelectionMapForResolvingSubobjects);
+	return ResolveObjectDependencyForEditorWorld(GetSharedData(), Cache, ObjectIndex, LocalizationNamespace, SelectionMapForResolvingSubobjects);
 }
 
 UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::FApplySnapshotToEditorArchive(
@@ -232,10 +113,9 @@ UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::FApplySnapshotToEdit
 		, SelectionSet(InSelectionSet)
 		, Cache(Cache)
 {
-	if (SelectionSet)
-	{
-		PropertiesLeftToSerialize = *SelectionSet.GetValue();
-	}
+#if UE_BUILD_DEBUG
+	UE_LOG(LogLevelSnapshots, VeryVerbose, TEXT("FApplySnapshotToEditorArchive: %s (%s)"), *InOriginalObject->GetPathName(), *InOriginalObject->GetClass()->GetPathName());
+#endif
 }
 
 bool UE::LevelSnapshots::Private::FApplySnapshotToEditorArchive::ShouldSerializeAllProperties() const

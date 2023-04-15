@@ -68,6 +68,11 @@ public:
 	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) { return false; }
 
 	/**
+	 * Returns pixel format that the device created its swapchain with (which can be different than what was requested in AllocateRenderTargetTexture)
+	 */
+	virtual EPixelFormat GetActualColorSwapchainFormat() const { return PF_Unknown; }
+	
+	/**
 	 * Allocates a depth texture.
 	 *
 	 * @param Index			(in) index of the buffer, changing from 0 to GetNumberOfBufferedFrames()
@@ -83,4 +88,17 @@ public:
 	 * @return				true, if texture was allocated; false, if the default texture allocation should be used.
 	 */
 	virtual bool AllocateShadingRateTexture(uint32 Index, uint32 RenderSizeX, uint32 RenderSizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) { return false; }
+
+	/**
+	 * Retrieves HDR information about the stereo device, if any is available.
+	 * The default implementation always returns false to indicate that the information from the monitor can be used instead.
+	 *
+	 * @param OutDisplayOutputFormat	(out) encoding used by the stereo device
+	 * @param OutDisplayColorGamut		(out) color space used by the stereo device
+	 * @param OutbHDRSupported			(out) whether HDR is supported by the stereo device
+	 * @return							true, if HDR information is available for the stereo device
+	 */
+	virtual bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported) { return false; }
+
+	static EPixelFormat GetStereoLayerPixelFormat() { return PF_B8G8R8A8; }
 };

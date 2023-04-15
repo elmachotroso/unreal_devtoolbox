@@ -1,6 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
+using EpicGames.Perforce;
+using Microsoft.Extensions.Logging;
+using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
@@ -8,71 +14,65 @@ namespace UnrealGameSync
 	static class P4Automation
 	{
 
-		public static PerforceConnection GetConnection(out string ErrorMessage)
+		public static IPerforceSettings GetConnectionSettings()
 		{
-			ErrorMessage = null;
-
 			// Read the settings
-			string ServerAndPort = null;
-			string UserName = null;
-			string DepotPathSettings = null;
+			string? serverAndPort = null;
+			string? userName = null;
+			string? depotPathSettings = null;
+			bool preview = false;
 
-			Utility.ReadGlobalPerforceSettings(ref ServerAndPort, ref UserName, ref DepotPathSettings);
+			GlobalPerforceSettings.ReadGlobalPerforceSettings(ref serverAndPort, ref userName, ref depotPathSettings, ref preview);
 
-			if (string.IsNullOrEmpty(UserName))
-			{
-				ErrorMessage = "Unable to get UGS perforce username from registry";
-				return null;
-			}
-
-			if (string.IsNullOrEmpty(ServerAndPort))
-			{
-				ServerAndPort = "perforce:1666";
-			}
-
-			return new PerforceConnection(UserName, null, ServerAndPort);
+			return Utility.OverridePerforceSettings(PerforceSettings.Default, serverAndPort, userName);
 
 		}
 
-		public static bool PrintToTempFile(PerforceConnection Connection, string DepotPath, out string TempFileName, out string ErrorMessage)
+		public static Task<string> PrintToTempFile(IPerforceConnection? connection, string depotPath, ILogger logger)
 		{
-			TempFileName = null;
-			ErrorMessage = null;
+			return PrintToTempFileAsync(connection, depotPath, CancellationToken.None, logger);
+		}
 
-			if (Connection == null)
+		public static async Task<string> PrintToTempFileAsync(IPerforceConnection? connection, string depotPath, CancellationToken cancellationToken, ILogger logger)
+		{
+			bool createNewConnection = (connection == null);
+
+			try
 			{
-				Connection = GetConnection(out ErrorMessage);
-				if (Connection == null)
+				if (connection == null)
 				{
-					return false;
+					IPerforceSettings settings = GetConnectionSettings();
+					connection = await PerforceConnection.CreateAsync(logger);
+				}
+
+				string depotFileName = Path.GetFileName(depotPath);
+
+				// Reorder CL and extension
+				int index = depotFileName.IndexOf('@');
+				if (index == -1)
+				{
+					depotFileName += "@Latest";
+					index = depotFileName.IndexOf('@');
+				}
+
+				string cl = depotFileName.Substring(index + 1);
+				string fileName = depotFileName.Substring(0, index);
+				string tempFileName = string.Format("{0}@{1}{2}", Path.GetFileNameWithoutExtension(fileName), cl, Path.GetExtension(fileName));
+
+				tempFileName = Path.Combine(Path.GetTempPath(), tempFileName);
+				await connection.PrintAsync(tempFileName, depotFileName, cancellationToken);
+
+				return tempFileName;
+			}
+			finally
+			{
+				// If we created a new connection, tear it down now.
+				if (createNewConnection)
+				{
+					connection?.Dispose();
+					connection = null;
 				}
 			}
-
-			BufferedTextWriter Log = new BufferedTextWriter();
-			string DepotFileName = Path.GetFileName(DepotPath);
-
-			// Reorder CL and extension
-			int Index = DepotFileName.IndexOf('@');
-			if (Index == -1)
-			{
-				DepotFileName += "@Latest";
-				Index = DepotFileName.IndexOf('@');
-			}
-
-			string CL = DepotFileName.Substring(Index + 1);
-			string FileName = DepotFileName.Substring(0, Index);
-			TempFileName = string.Format("{0}@{1}{2}", Path.GetFileNameWithoutExtension(FileName), CL, Path.GetExtension(FileName));
-
-			TempFileName = Path.Combine(Path.GetTempPath(), TempFileName);
-
-			if (!Connection.PrintToFile(DepotPath, TempFileName, Log) || !File.Exists(TempFileName))
-			{
-				ErrorMessage = string.Format("Unable to p4 print file {0}\\n{1}\\n", DepotPath, string.Join("\n", Log.Lines));
-				return false;
-			}		
-
-			return true;
-
 		}
 
 	}

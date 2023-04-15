@@ -67,6 +67,18 @@ namespace Metasound
 			 */
 			int32 operator[](int32 InTriggerIndex) const;
 
+			/** Returns frame index for the first trigger in the block.
+			 *
+			 * @return The frame of the first trigger in the block or -1 if there is no trigger in the block.
+			 */
+			int32 First() const;
+
+			/** Returns frame index for the last trigger in the block.
+			 *
+			 * @return The frame of the last trigger in the block or -1 if there is no trigger in the block.
+			 */
+			int32 Last() const;
+
 			/** Returns true if there are any triggered frames. */
 			bool IsTriggered() const;
 
@@ -81,6 +93,9 @@ namespace Metasound
 
 			/** Removes all triggered frames. */
 			void Reset();
+
+			/** Removes all triggers which occur after the frame index. */
+			void RemoveAfter(int32 InFrameIndex);
 
 			/** Executes one block of frames and calls underlying InPreTrigger and InOnTrigger
 			 * functions with frame indices.
@@ -120,6 +135,11 @@ namespace Metasound
 					
 					ExecuteFrames(InNumFrames, LastTriggerIndexInLookAhead, InPreTrigger, InOnTrigger);
 				}
+			}
+
+			const TArray<int32>& GetTriggeredFrames() const
+			{
+				return TriggeredFrames;
 			}
 
 		private:

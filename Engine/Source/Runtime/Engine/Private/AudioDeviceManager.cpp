@@ -3,6 +3,7 @@
 
 #include "Audio.h"
 #include "Audio/AudioDebug.h"
+#include "AudioAnalytics.h"
 #include "AudioDefines.h"
 #include "AudioDevice.h"
 #include "AudioMixerDevice.h"
@@ -14,7 +15,12 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "UObject/UObjectIterator.h"
-#include "Audio/AudioDebug.h"
+
+#include "AudioDecompress.h"
+#include "Sound/AudioFormatSettings.h"
+#include "ADPCMAudioInfo.h"
+#include "VorbisAudioInfo.h"
+#include "OpusAudioInfo.h"
 
 #if INSTRUMENT_AUDIODEVICE_HANDLES
 #include "Containers/StringConv.h"
@@ -26,6 +32,8 @@
 #include "AudioEditorModule.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #endif
+
+#include "IAudioLinkFactory.h"
 
 static int32 GCVarEnableAudioThreadWait = 1;
 TAutoConsoleVariable<int32> CVarEnableAudioThreadWait(
@@ -532,6 +540,42 @@ void FAudioDeviceManager::UnregisterWorld(UWorld* InWorld, Audio::FDeviceId Devi
 	}
 }
 
+void FAudioDeviceManager::RegisterAudioInfoFactories()
+{
+	// Load any Engine.ini defined modules necessary for registering format factories.
+	TArray<FString> AudioInfoModules;
+	if (GConfig->GetArray(TEXT("Audio"), TEXT("AudioInfoModules"), AudioInfoModules, GEngineIni))
+	{
+		for (const FString& i : AudioInfoModules)
+		{
+			FModuleManager::Get().LoadModuleChecked(*i);
+		}
+	}
+
+	// Register the engine formats.
+	EngineFormats.Add(MakePimpl<FSimpleAudioInfoFactory>([] { return new FADPCMAudioInfo(); }, Audio::NAME_PCM));
+	EngineFormats.Add(MakePimpl<FSimpleAudioInfoFactory>([] { return new FADPCMAudioInfo(); }, Audio::NAME_ADPCM));
+	EngineFormats.Add(MakePimpl<FSimpleAudioInfoFactory>([] { return new FVorbisAudioInfo(); }, Audio::NAME_OGG));
+	EngineFormats.Add(MakePimpl<FSimpleAudioInfoFactory>([] { return new FOpusAudioInfo(); }, Audio::NAME_OPUS));
+
+	// Sanity check we have all the Factories we need to run now by 
+	TArray<FName> AllFormats;
+	GetAudioFormatSettings().GetAllWaveFormats(AllFormats);
+
+	FString FailedFormatsString;
+	int32 NumFailedFormats = 0;
+	for (FName i : AllFormats)
+	{
+		if (!IAudioInfoFactoryRegistry::Get().Find(i))
+		{
+			FailedFormatsString += FString::Printf(TEXT("'%s' "), *i.ToString());
+			NumFailedFormats++;
+		}
+	}
+	checkf(NumFailedFormats == 0, TEXT("Failed to find these required AudioFormats: [ %s]"), *FailedFormatsString);
+}
+
+
 bool FAudioDeviceManager::InitializeManager()
 {
 	if (LoadDefaultAudioDeviceModule())
@@ -546,6 +590,10 @@ bool FAudioDeviceManager::InitializeManager()
 
 		const bool bIsAudioMixerEnabled = AudioDeviceModule->IsAudioMixerModule();
 		AudioSettings->SetAudioMixerEnabled(bIsAudioMixerEnabled);
+
+		// Register all formats
+		AudioFormatSettings = MakePimpl<Audio::FAudioFormatSettings>(GConfig, GEngineIni, FPlatformProperties::IniPlatformName());
+		RegisterAudioInfoFactories();
 
 #if WITH_EDITOR
 		if (bIsAudioMixerEnabled)
@@ -612,6 +660,13 @@ bool FAudioDeviceManager::LoadDefaultAudioDeviceModule()
 		// Get the audio mixer and non-audio mixer device module names
 		GConfig->GetString(TEXT("Audio"), TEXT("AudioDeviceModuleName"), AudioDeviceModuleName, GEngineIni);
 		GConfig->GetString(TEXT("Audio"), TEXT("AudioMixerModuleName"), AudioMixerModuleName, GEngineIni);
+
+		// If AudioLink is Enabled, use the AudioLink Platform.
+		static const FString AudioLinkMixerModule = TEXT("AudioMixerPlatformAudioLink");
+		if (IModularFeatures::Get().IsModularFeatureAvailable(TEXT("AudioLink Factory")))
+		{
+			AudioMixerModuleName = AudioLinkMixerModule;
+		}
 	}
 	else if (bForceNoAudioMixer)
 	{
@@ -665,6 +720,10 @@ bool FAudioDeviceManager::LoadDefaultAudioDeviceModule()
 		IsUsingAudioMixerCvar->Set(0, ECVF_SetByConstructor);
 	}
 
+	if (bForceNoAudioMixer)
+	{
+		Audio::Analytics::RecordEvent_Usage(TEXT("ForceNoAudioMixer"));
+	}
 	return AudioDeviceModule != nullptr;
 }
 
@@ -857,6 +916,10 @@ bool FAudioDeviceManager::Initialize()
 				delete Singleton;
 				Singleton = nullptr;
 			}
+		}
+		else
+		{
+			Audio::Analytics::RecordEvent_Usage(TEXT("AllAudioDisabled"));
 		}
 	}
 
@@ -1214,6 +1277,12 @@ void FAudioDeviceManager::LogListOfAudioDevices()
 	}
 
 	UE_LOG(LogAudio, Display, TEXT("Active Audio Devices:\n%s"), *ListOfDevices);
+}
+
+Audio::FAudioFormatSettings& FAudioDeviceManager::GetAudioFormatSettings() const
+{
+	check(AudioFormatSettings.IsValid());
+	return *AudioFormatSettings;
 }
 
 uint32 FAudioDeviceManager::GetNewDeviceID()

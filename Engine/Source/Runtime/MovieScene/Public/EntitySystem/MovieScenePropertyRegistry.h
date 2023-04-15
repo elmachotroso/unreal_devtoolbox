@@ -4,31 +4,45 @@
 
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
-
-#include "EntitySystem/MovieSceneEntityIDs.h"
-#include "EntitySystem/MovieSceneSystemTaskDependencies.h"
-#include "EntitySystem/MovieScenePropertySystemTypes.h"
+#include "CoreTypes.h"
 #include "EntitySystem/IMovieScenePropertyComponentHandler.h"
-
+#include "EntitySystem/MovieSceneEntityIDs.h"
+#include "EntitySystem/MovieSceneEntitySystemTypes.h"
+#include "EntitySystem/MovieScenePropertySystemTypes.h"
+#include "EntitySystem/MovieSceneSystemTaskDependencies.h"
+#include "Math/NumericLimits.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/GeneratedTypeName.h"
 #include "Misc/InlineValue.h"
+#include "Misc/Optional.h"
 #include "Misc/TVariant.h"
+#include "Stats/Stats.h"
+#include "Stats/Stats2.h"
+#include "Templates/IsTriviallyDestructible.h"
+#include "Templates/SharedPointer.h"
+#include "Templates/UnrealTemplate.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "UObject/NameTypes.h"
+
 #include <initializer_list>
 
-struct FMovieScenePropertyBinding;
-
+class FTrackInstancePropertyBindings;
+class UClass;
 class UMovieSceneBlenderSystem;
 class UMovieSceneEntitySystemLinker;
-class FTrackInstancePropertyBindings;
+class UObject;
+struct FMovieScenePropertyBinding;
 
 namespace UE
 {
 namespace MovieScene
 {
 
-struct FPropertyDefinition;
 struct FFloatDecompositionParams;
 struct FPropertyCompositeDefinition;
+struct FPropertyDefinition;
 
+DECLARE_CYCLE_STAT(TEXT("Apply properties"), MovieSceneEval_ApplyProperties,  STATGROUP_MovieSceneECS);
 
 /**
  * Stats pertaining to a given type of property including how many properties exist in the linker,
@@ -55,7 +69,6 @@ struct FPropertyDefinition
 			uint16 InVariableSizeCompositeOffset, uint16 InSizeofStorageType, uint16 InAlignofStorageType,
 			FComponentTypeID InPropertyType, FComponentTypeID InInitialValueType)
 		: CustomPropertyRegistration(nullptr)
-		, FloatCompositeMask(0)
 		, DoubleCompositeMask(0)
 		, VariableSizeCompositeOffset(InVariableSizeCompositeOffset)
 		, CompositeSize(0)
@@ -83,8 +96,8 @@ struct FPropertyDefinition
 	/** Pointer to a custom getter/setter registry for short circuiting the UObject VM. Must outlive this definitions lifetime (usually these are static or singletons) */
 	ICustomPropertyRegistration* CustomPropertyRegistration = nullptr;
 
-	/** A mask of which composite indices pertain to floats */
-	uint32 FloatCompositeMask = 0;
+	/** Stat ID for this property type */
+	TStatId StatID;
 
 	/** A mask of which composite indices pertain to doubles */
 	uint32 DoubleCompositeMask = 0;
@@ -136,8 +149,8 @@ using FResolvedFastProperty = TVariant<uint16, UE::MovieScene::FCustomPropertyIn
 /** Type aliases for a property that resolved to either a fast pointer offset (type index 0), or a custom property index (specific to the path of the property - type index 1) with a fallback to a slow property binding (type index 2) */
 using FResolvedProperty = TVariant<uint16, UE::MovieScene::FCustomPropertyIndex, TSharedPtr<FTrackInstancePropertyBindings>>;
 
-template<typename PropertyTraits> struct TPropertyDefinitionBuilder;
 template<typename PropertyTraits, typename... Composites> struct TCompositePropertyDefinitionBuilder;
+template<typename PropertyTraits> struct TPropertyDefinitionBuilder;
 
 /**
  * Central registry of all property types animatable by sequencer.
@@ -179,9 +192,9 @@ public:
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
 	template<typename PropertyTraits>
-	TCompositePropertyDefinitionBuilder<PropertyTraits> DefineCompositeProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
+	TCompositePropertyDefinitionBuilder<PropertyTraits> DefineCompositeProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents, const TCHAR* InStatName)
 	{
-		DefinePropertyImpl(InOutPropertyComponents);
+		DefinePropertyImpl(InOutPropertyComponents, InStatName);
 		FPropertyDefinition* Property = &Properties[InOutPropertyComponents.CompositeID.AsIndex()];
 		return TCompositePropertyDefinitionBuilder<PropertyTraits>(Property, this);
 	}
@@ -193,9 +206,9 @@ public:
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
 	template<typename PropertyTraits>
-	TPropertyDefinitionBuilder<PropertyTraits> DefineProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
+	TPropertyDefinitionBuilder<PropertyTraits> DefineProperty(TPropertyComponents<PropertyTraits>& InOutPropertyComponents, const TCHAR* InStatName)
 	{
-		DefinePropertyImpl(InOutPropertyComponents);
+		DefinePropertyImpl(InOutPropertyComponents, InStatName);
 		FPropertyDefinition* Property = &Properties[InOutPropertyComponents.CompositeID.AsIndex()];
 		return TPropertyDefinitionBuilder<PropertyTraits>(Property, this);
 	}
@@ -249,7 +262,7 @@ private:
 	 * @return A builder class that should be used to define the composites that contribute to this property
 	 */
 	template<typename PropertyTraits>
-	void DefinePropertyImpl(TPropertyComponents<PropertyTraits>& InOutPropertyComponents)
+	void DefinePropertyImpl(TPropertyComponents<PropertyTraits>& InOutPropertyComponents, const TCHAR* InStatName)
 	{
 		using StorageType = typename PropertyTraits::StorageType;
 		static_assert( TIsBitwiseConstructible<StorageType, StorageType>::Value && TIsTriviallyDestructible<StorageType>::Value, "StorageType must be trivially TIsTriviallyCopyConstructible" );
@@ -257,11 +270,33 @@ private:
 		const int32 CompositeOffset = CompositeDefinitions.Num();
 		checkf(CompositeOffset <= MAX_uint16, TEXT("Maximum number of composite definitions reached"));
 
+		TStatId StatID;
+
+#if STATS || ENABLE_STATNAMEDEVENTS
+
+	#if STATS
+		// Use FDynamicStats to create the stat in the right stat group if possible
+		StatID = FDynamicStats::CreateStatId<STAT_GROUP_TO_FStatGroup(STATGROUP_MovieSceneECS)>( FName(InStatName) );
+	#else
+		// Otherwise just make a named stat
+		const auto& ConversionData = StringCast<PROFILER_CHAR>(InStatName);
+		const int32 NumStorageChars = (ConversionData.Length() + 1);	//length doesn't include null terminator
+
+		// We leak this string
+		PROFILER_CHAR* StoragePtr = new PROFILER_CHAR[NumStorageChars];
+		FMemory::Memcpy(StoragePtr, ConversionData.Get(), NumStorageChars * sizeof(PROFILER_CHAR));
+
+		StatID = TStatId(StoragePtr);
+	#endif
+#endif
+
 		FPropertyDefinition NewDefinition(
 			CompositeOffset, 
 			sizeof(StorageType), alignof(StorageType),
 			InOutPropertyComponents.PropertyTag,
 			InOutPropertyComponents.InitialValue);
+
+		NewDefinition.StatID = StatID;
 
 		NewDefinition.MetaDataTypes = InOutPropertyComponents.MetaDataComponents.GetTypes();
 		checkf(!NewDefinition.MetaDataTypes.Contains(FComponentTypeID()), TEXT("Property meta-data component is not defined"));

@@ -1,5 +1,4 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -13,15 +12,23 @@
 #include "Engine/Texture.h"
 #include "PerPlatformProperties.h"
 #include "LandscapeComponent.h"
+#include "LandscapeNaniteComponent.h"
 #include "LandscapeWeightmapUsage.h"
+#include "LandscapeHeightfieldCollisionComponent.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
 #include "ActorPartition/PartitionActor.h"
 #include "ILandscapeSplineInterface.h"
+
+#if WITH_EDITOR
+#include "WorldPartition/WorldPartitionHandle.h"
+#endif
+
 #include "LandscapeProxy.generated.h"
 
 class ALandscape;
 class ALandscapeProxy;
 class UHierarchicalInstancedStaticMeshComponent;
+class ULandscapeNaniteComponent;
 class ULandscapeComponent;
 class ULandscapeGrassType;
 class ULandscapeHeightfieldCollisionComponent;
@@ -37,11 +44,14 @@ class UTexture2D;
 class FLandscapeEditLayerReadback;
 struct FAsyncGrassBuilder;
 struct FLandscapeInfoLayerSettings;
+class FLandscapeProxyComponentDataChangedParams;
 struct FMeshDescription;
 enum class ENavDataGatheringMode : uint8;
 
 #if WITH_EDITOR
 LANDSCAPE_API extern bool GLandscapeEditModeActive;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnLandscapeProxyComponentDataChanged, ALandscapeProxy*, const FLandscapeProxyComponentDataChangedParams&);
 #endif // WITH_EDITOR
 
 
@@ -141,7 +151,7 @@ struct FLandscapeImportLayerInfo
 	UPROPERTY(Category="Import", VisibleAnywhere)
 	FName LayerName;
 
-	UPROPERTY(Category="Import", EditAnywhere)
+	UPROPERTY(Category="Import", EditAnywhere, meta=(NoCreate))
 	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 
 	UPROPERTY(Category="Import", EditAnywhere, meta=(DisplayName="Layer File"))
@@ -320,8 +330,8 @@ public:
 	~FAsyncGrassTask();
 };
 
-USTRUCT()
-struct FLandscapeProxyMaterialOverride
+USTRUCT(meta = (Deprecated = "5.1"))
+struct UE_DEPRECATED(5.1, "FLandscapeProxyMaterialOverride is deprecated; please use FLandscapePerLODMaterialOverride instead") FLandscapeProxyMaterialOverride
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -330,34 +340,9 @@ struct FLandscapeProxyMaterialOverride
 
 	UPROPERTY(EditAnywhere, Category = Landscape)
 	TObjectPtr<UMaterialInterface> Material = nullptr;
-
-#if WITH_EDITORONLY_DATA
-	bool operator==(const FLandscapeProxyMaterialOverride& InOther) const
-	{
-		if (Material != InOther.Material)
-		{
-			return false;
-		}
-
-		if (LODIndex.Default != InOther.LODIndex.Default || LODIndex.PerPlatform.Num() != InOther.LODIndex.PerPlatform.Num())
-		{
-			return false;
-		}
-
-		for (auto& ItPair : LODIndex.PerPlatform)
-		{
-			if (!InOther.LODIndex.PerPlatform.Contains(ItPair.Key))
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
-#endif
 };
 
-UCLASS(Abstract, MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories=(Display, Attachment, Physics, Debug, Lighting, HLOD), showcategories=(Lighting, Rendering, Transformation), hidecategories=(Mobility))
+UCLASS(Abstract, MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories=(Display, Attachment, Physics, Debug, Lighting), showcategories=(Lighting, Rendering, Transformation), hidecategories=(Mobility))
 class ALandscapeProxy : public APartitionActor, public ILandscapeSplineInterface
 {
 	GENERATED_BODY()
@@ -368,6 +353,20 @@ public:
 	virtual ~ALandscapeProxy();
 
 protected:
+
+#if WITH_EDITORONLY_DATA
+	/** 
+	* Hard refs to actors that need to be loaded when this proxy is loaded.
+	* It is currently used for 2 cases : 
+	* 1- ALandscapeStreamingProxy forces the loading of its intersecting ALandscapeSplineActor.
+	* 2- ALandscape forces the loading of its child landscape proxies when the Landscape has Layer brushes.
+	*    This is a temporary solution until landscape layer brushes support partial landscape loading.
+	*/
+	TSet<FWorldPartitionReference> ActorDescReferences;
+
+	friend class FLandscapeActorDesc;
+#endif
+
 	UPROPERTY()
 	TObjectPtr<ULandscapeSplinesComponent> SplineComponent;
 
@@ -375,8 +374,16 @@ protected:
 	UPROPERTY()
 	FGuid LandscapeGuid;
 
+	UPROPERTY(EditAnywhere, Category = Landscape)
+	TArray<FLandscapePerLODMaterialOverride> PerLODOverrideMaterials;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(Transient)
+	TArray<FLandscapePerLODMaterialOverride> PreEditPerLODOverrideMaterials;
+#endif // WITH_EDITORONLY_DATA
+
 public:
-	LANDSCAPE_API TOptional<float> GetHeightAtLocation(FVector Location) const;
+	LANDSCAPE_API TOptional<float> GetHeightAtLocation(FVector Location, EHeightfieldSource HeightFieldSource = EHeightfieldSource::Complex) const;
 
 	/** Fills an array with height values **/
 	LANDSCAPE_API void GetHeightValues(int32& SizeX, int32& SizeY, TArray<float>& ArrayValue) const;
@@ -389,11 +396,13 @@ public:
 	UPROPERTY(EditAnywhere, Category=LOD)
 	int32 MaxLODLevel;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	float LODDistanceFactor_DEPRECATED;
 
 	UPROPERTY()
 	TEnumAsByte<ELandscapeLODFalloff::Type> LODFalloff_DEPRECATED;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Component screen size (0.0 - 1.0) at which we should keep sub sections. This is mostly pertinent if you have large component of > 64 and component are close to the camera. The goal is to reduce draw call, so if a component is smaller than the value, we merge all subsections into 1 drawcall. */
 	UPROPERTY(EditAnywhere, Category = LOD, meta=(ClampMin = "0.01", ClampMax = "1.0", UIMin = "0.01", UIMax = "1.0", DisplayName= "SubSection Min Component ScreenSize"))
@@ -460,10 +469,15 @@ public:
 	UPROPERTY(EditAnywhere, Category=Landscape, AdvancedDisplay)
 	TObjectPtr<UMaterialInterface> LandscapeHoleMaterial;
 
-	UPROPERTY(EditAnywhere, Category = Landscape)
-	TArray<FLandscapeProxyMaterialOverride> LandscapeMaterialsOverride;
 
 #if WITH_EDITORONLY_DATA
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.1, "LandscapeComponentMaterialOverride has been deprecated, use PerLODOverrideMaterials instead.")
+	UPROPERTY()
+	TArray<FLandscapeProxyMaterialOverride> LandscapeMaterialsOverride_DEPRECATED;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> PreEditLandscapeMaterial;
 
@@ -471,20 +485,8 @@ public:
 	TObjectPtr<UMaterialInterface> PreEditLandscapeHoleMaterial;
 
 	UPROPERTY(Transient)
-	TArray<FLandscapeProxyMaterialOverride> PreEditLandscapeMaterialsOverride;
-
-	UPROPERTY(Transient)
 	bool bIsPerformingInteractiveActionOnLandscapeMaterialOverride;
 #endif 
-
-	/** Use unique geometry instead of material alpha tests for holes on mobile platforms. This requires additional memory and will render more vertices at lower LODs.*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Mobile, meta = (DisplayName = "Unique Hole Meshes"))
-	bool bMeshHoles = false;
-
-	/** Maximum geometry LOD at which to render unique hole meshes.*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Mobile, meta = (DisplayName = "Unique Hole Meshes Max LOD", UIMin = "1", UIMax = "6"))
-	uint8 MeshHolesMaxLod = 6;
-
 	/**
 	 * Array of runtime virtual textures into which we draw this landscape.
 	 * The material also needs to be set up to output to a virtual texture.
@@ -511,8 +513,11 @@ public:
 	int32 VirtualTextureLodBias = 0;
 
 	/** Controls if this component draws in the main pass as well as in the virtual texture. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Draw in Main Pass"))
+	UPROPERTY(EditAnywhere, BlueprintSetter = SetVirtualTextureRenderPassType, Category = VirtualTexture, meta = (DisplayName = "Draw in Main Pass"))
 	ERuntimeVirtualTextureMainPassType VirtualTextureRenderPassType = ERuntimeVirtualTextureMainPassType::Always;
+
+	UFUNCTION(BlueprintSetter)
+	void SetVirtualTextureRenderPassType(ERuntimeVirtualTextureMainPassType InType);
 
 	/** Allows overriding the landscape bounds. This is useful if you distort the landscape with world-position-offset, for example
 	 *  Extension value in the negative Z axis, positive value increases bound size
@@ -536,6 +541,9 @@ public:
 
 	UPROPERTY(transient, duplicatetransient)
 	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> FoliageComponents;
+
+	UPROPERTY()
+	TObjectPtr<ULandscapeNaniteComponent> NaniteComponent;
 
 	/** A transient data structure for tracking the grass */
 	FCachedLandscapeFoliage FoliageCache;
@@ -721,14 +729,12 @@ public:
 #endif
 
 	/** Flag whether or not this Landscape's surface can be used for culling hidden triangles **/
-	UPROPERTY(EditAnywhere, Category = HierarchicalLOD)
+	UPROPERTY(EditAnywhere, Category = HLOD)
 	bool bUseLandscapeForCullingInvisibleHLODVertices;
 
 	/** Flag that tell if we have some layers content **/
 	UPROPERTY()
 	bool bHasLayersContent;
-
-public:
 
 #if WITH_EDITOR
 	LANDSCAPE_API static ULandscapeLayerInfoObject* VisibilityLayer;
@@ -737,6 +743,10 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Map of material instance constants used to for the components. Key is generated with ULandscapeComponent::GetLayerAllocationKey() */
 	TMap<FString, UMaterialInstanceConstant*> MaterialInstanceConstantMap;
+#endif
+
+#if WITH_EDITOR
+	FOnLandscapeProxyComponentDataChanged OnComponentDataChanged;
 #endif
 
 	// Blueprint functions
@@ -789,7 +799,6 @@ public:
 	//~ Begin AActor Interface
 	virtual void PostRegisterAllComponents() override;
 	virtual void UnregisterAllComponents(bool bForReregister = false) override;
-	virtual void RerunConstructionScripts() override {}
 	virtual bool IsLevelBoundsRelevant() const override { return true; }
 
 	virtual void BeginDestroy() override;
@@ -797,6 +806,7 @@ public:
 	virtual void FinishDestroy() override;
 
 #if WITH_EDITOR
+	virtual void RerunConstructionScripts() override {}
 	virtual void Destroyed() override;
 	virtual void EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotLocation) override;
@@ -809,12 +819,18 @@ public:
 	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
 	virtual bool EditorCanAttachTo(const AActor* InParent, FText& OutReason) const override { return false; }
 	virtual bool GetReferencedContentObjects(TArray<UObject*>& Objects) const override;
+	virtual bool IsNaniteEnabled() const PURE_VIRTUAL(IsNaniteEnabled, return false;)
 #endif	//WITH_EDITOR
 
 	virtual FGuid GetLandscapeGuid() const override { return LandscapeGuid; }
 	void SetLandscapeGuid(const FGuid& Guid) { LandscapeGuid = Guid; }
+
+	UFUNCTION(BlueprintCallable, Category = "Landscape|Runtime")
 	virtual ALandscape* GetLandscapeActor() PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
 	virtual const ALandscape* GetLandscapeActor() const PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
+
+	const TArray<FLandscapePerLODMaterialOverride>& GetPerLODOverrideMaterials() const { return PerLODOverrideMaterials; }
+	void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue) { PerLODOverrideMaterials = InValue; }
 
 	static void SetGrassUpdateInterval(int32 Interval) { GrassUpdateInterval = Interval; }
 
@@ -851,9 +867,9 @@ public:
 		* @param bForceSync if true, block and finish all work
 	*/
 	LANDSCAPE_API void UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNumComponentsCreated, bool bForceSync = false);
-
 	LANDSCAPE_API void UpdateGrass(const TArray<FVector>& Cameras, bool bForceSync = false);
 
+	// TODO [jonathan.bard] : Rename to "AddGrassExlusionBox" + no reason for any of this to be static
 	LANDSCAPE_API static void AddExclusionBox(FWeakObjectPtr Owner, const FBox& BoxToRemove);
 	LANDSCAPE_API static void RemoveExclusionBox(FWeakObjectPtr Owner);
 	LANDSCAPE_API static void RemoveAllExclusionBoxes();
@@ -868,6 +884,8 @@ public:
 
 	/* Invalidate the precomputed grass and baked texture data on all components */
 	LANDSCAPE_API void InvalidateGeneratedComponentData(bool bInvalidateLightingCache = false);
+
+	LANDSCAPE_API void UpdateRenderingMethod();
 
 #if WITH_EDITOR
 	/** Update Grass maps */
@@ -903,6 +921,8 @@ public:
 
 	/** Handle so we can unregister the delegate */
 	FDelegateHandle FeatureLevelChangedDelegateHandle;
+
+	FGuid GetNaniteContentId() const;
 #endif
 
 	//~ Begin UObject Interface.
@@ -915,7 +935,7 @@ public:
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostLoad() override;
 
-	LANDSCAPE_API ULandscapeInfo* CreateLandscapeInfo(bool bMapCheck = false);
+	LANDSCAPE_API ULandscapeInfo* CreateLandscapeInfo(bool bMapCheck = false, bool bUpdateAllAddCollisions = true);
 	virtual LANDSCAPE_API ULandscapeInfo* GetLandscapeInfo() const override;
 
 	/** Get the LandcapeActor-to-world transform with respect to landscape section offset*/
@@ -941,7 +961,10 @@ public:
 	LANDSCAPE_API TArray<float> GetLODScreenSizeArray() const;
 
 #if WITH_EDITOR
-	LANDSCAPE_API void SetSplinesComponent(ULandscapeSplinesComponent* InSplineComponent) { check(!SplineComponent); SplineComponent = InSplineComponent; }
+	/* Serialize all hashes/guids that record the current state of this proxy */
+	void SerializeStateHashes(FArchive& Ar);
+
+	LANDSCAPE_API void SetSplinesComponent(ULandscapeSplinesComponent* InSplineComponent) { check(!SplineComponent || (SplineComponent == InSplineComponent)); SplineComponent = InSplineComponent; }
 
 	LANDSCAPE_API virtual bool SupportsForeignSplineMesh() const override { return true; }
 
@@ -967,8 +990,17 @@ public:
 
 	LANDSCAPE_API static const TArray<FName>& GetLayersFromMaterial(UMaterialInterface* Material);
 	LANDSCAPE_API const TArray<FName>& GetLayersFromMaterial() const;
-	LANDSCAPE_API static ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* LayerName, ULevel* Level);
-	LANDSCAPE_API ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* LayerName);
+
+	/**
+	* Creates a new LandscapeLayerInfoObject
+	* @param	LayerName	The name of the created Layer
+	* @param	Level		The Level tied to LandscapeLayerInfoObject. The new package's location will be relative to this Level.
+	* @param	InTemplate	If set, this object will be cloned as a basis for the new LandscapeLayerInfoObject.
+	* @return a new LandscapeLayerInfoObject if created successfully.
+	*/
+	LANDSCAPE_API static ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* InLayerName, const ULevel* InLevel, const ULandscapeLayerInfoObject* InTemplate = nullptr);
+
+	LANDSCAPE_API ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* InLayerName, const ULandscapeLayerInfoObject* InTemplate = nullptr);
 
 	// Get Landscape Material assigned to this Landscape
 	virtual UMaterialInterface* GetLandscapeMaterial(int8 InLODIndex = INDEX_NONE) const;
@@ -1029,19 +1061,44 @@ public:
 	 */
 	LANDSCAPE_API bool ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRawMesh) const;
 
-
 	/**
 	* Exports landscape geometry contained within InBounds into a raw mesh
 	*
-	* @param InExportLOD Landscape LOD level to use while exporting, INDEX_NONE will use ALanscapeProxy::ExportLOD settings
+	* @param InExportLOD - Landscape LOD level to use while exporting, INDEX_NONE will use ALanscapeProxy::ExportLOD settings
 	* @param OutRawMesh - Resulting raw mesh
 	* @param InBounds - Box/Sphere bounds which limit the geometry exported out into OutRawMesh
+	* @param bIgnoreBounds - If false, InBounds will be ignored during export
 	* @return true if successful
 	*/
 	LANDSCAPE_API bool ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRawMesh, const FBoxSphereBounds& InBounds, bool bIgnoreBounds = false) const;
 
-	/** Generate platform data if it's missing or outdated */
+	/**
+	* Exports landscape geometry contained within InBounds into a raw mesh
+	*
+	* @param InComponents - Specific landscape component(s) to export
+	* @param InExportLOD - Landscape LOD level to use while exporting, INDEX_NONE will use ALanscapeProxy::ExportLOD settings
+	* @param OutRawMesh - Resulting raw mesh
+	* @param InBounds - Box/Sphere bounds which limit the geometry exported out into OutRawMesh
+	* @param bIgnoreBounds - If false, InBounds will be ignored during export
+	* @return true if successful
+	*/
+	LANDSCAPE_API bool ExportToRawMesh(const TArrayView<ULandscapeComponent*>& InComponents, int32 InExportLOD, FMeshDescription& OutRawMesh, const FBoxSphereBounds& InBounds, bool bIgnoreBounds = false) const;
+
+	UE_DEPRECATED(5.1, "CheckGenerateLandscapePlatformData has been deprecated, please use CheckGenerateMobilePlatformData instead.")
 	LANDSCAPE_API void CheckGenerateLandscapePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
+
+	/** Generate mobile platform data if it's missing or outdated */
+	LANDSCAPE_API void CheckGenerateMobilePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
+
+	/** Update Nanite representation if it's missing or outdated */
+	LANDSCAPE_API void UpdateNaniteRepresentation(const ITargetPlatform* TargetPlatform = nullptr);
+
+	/** 
+	* Invalidate and disable Nanite representation until a subsequent rebuild occurs
+	*
+	* @param bCheckContentId - If true, only invalidate when the content Id of the proxy mismatches with the Nanite representation
+	*/
+	LANDSCAPE_API void InvalidateNaniteRepresentation(bool bCheckContentId = true);
 	
 	/** @return Current size of bounding rectangle in quads space */
 	LANDSCAPE_API FIntRect GetBoundingRect() const;
@@ -1058,6 +1115,7 @@ public:
 
 	/* For the grassmap rendering notification */
 	int32 NumComponentsNeedingGrassMapRender;
+	UE_DEPRECATED(5.1, "No longer used for the grassmap rendering notification.")
 	LANDSCAPE_API static int32 TotalComponentsNeedingGrassMapRender;
 
 	/* To throttle texture streaming when we're trying to render a grassmap */
@@ -1066,6 +1124,7 @@ public:
 
 	/* For the texture baking notification */
 	int32 NumComponentsNeedingTextureBaking;
+	UE_DEPRECATED(5.1, "No longer used for the texture baking notification.")
 	LANDSCAPE_API static int32 TotalComponentsNeedingTextureBaking;
 
 	/** remove an overlapping component. Called from MapCheck. */
@@ -1111,7 +1170,7 @@ public:
 	/** Will tell if the landscape proxy can have some content related to the layer system */
 	LANDSCAPE_API bool CanHaveLayersContent() const;
 
-	LANDSCAPE_API void UpdateCachedHasLayersContent(bool InCheckComponentDataIntegrity = false);
+	LANDSCAPE_API virtual void UpdateCachedHasLayersContent(bool InCheckComponentDataIntegrity = false);
 
 protected:
 	friend class ALandscape;
@@ -1213,6 +1272,20 @@ public:
 private:
 	UWorld* World;
 	int32 OudatedPhysicalMaterialComponentsCount;
+};
+
+/**
+* Helper class to store proxy changes information 
+*/
+class LANDSCAPE_API FLandscapeProxyComponentDataChangedParams
+{
+public:
+	FLandscapeProxyComponentDataChangedParams(const TSet<ULandscapeComponent*>& InComponents);
+	void ForEachComponent(TFunctionRef<void(const ULandscapeComponent*)> Func) const;
+	const TArray<ULandscapeComponent*>& GetComponents() const { return Components; }
+
+private:
+	TArray<ULandscapeComponent*> Components;
 };
 
 DEFINE_ACTORDESC_TYPE(ALandscapeProxy, FLandscapeActorDesc);

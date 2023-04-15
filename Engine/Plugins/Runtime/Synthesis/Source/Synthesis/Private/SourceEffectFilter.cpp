@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourceEffects/SourceEffectFilter.h"
-#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
 #include "DSP/Dsp.h"
 #include "AudioMixerDevice.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SourceEffectFilter)
 
 PRAGMA_DISABLE_OPTIMIZATION
 
@@ -163,7 +165,7 @@ void FSourceEffectFilter::ProcessAudio(const FSoundEffectSourceInputData& InData
 			ScratchEnvFollowerBuffer.AddUninitialized(InData.NumSamples);
 
 			Audio::BufferSum2ChannelToMonoFast(ScratchModBuffer, ScratchEnvFollowerBuffer);
-			Audio::MultiplyBufferByConstantInPlace(ScratchEnvFollowerBuffer, 0.5f);
+			Audio::ArrayMultiplyByConstantInPlace(ScratchEnvFollowerBuffer, 0.5f);
 
 			Mod.AudioBusEnvelopeFollower.ProcessAudio(ScratchEnvFollowerBuffer.GetData(), InData.NumSamples);
 		}
@@ -213,3 +215,4 @@ void USourceEffectFilterPreset::SetSettings(const FSourceEffectFilterSettings& I
 }
 
 PRAGMA_ENABLE_OPTIMIZATION
+

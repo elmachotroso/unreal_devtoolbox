@@ -1,20 +1,21 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "SmoothOrientation/MassSmoothOrientationTrait.h"
 #include "MassEntityTemplateRegistry.h"
 #include "MassMovementFragments.h"
 #include "MassCommonFragments.h"
 #include "MassNavigationFragments.h"
 #include "Engine/World.h"
+#include "MassEntityUtils.h"
 
-void UMassSmoothOrientationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, UWorld& World) const
+
+void UMassSmoothOrientationTrait::BuildTemplate(FMassEntityTemplateBuildContext& BuildContext, const UWorld& World) const
 {
-	UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(&World);
-	check(EntitySubsystem);
+	FMassEntityManager& EntityManager = UE::Mass::Utils::GetEntityManagerChecked(World);
 
-	BuildContext.AddFragment<FMassMoveTargetFragment>();
-	BuildContext.AddFragment<FMassVelocityFragment>();
-	BuildContext.AddFragment<FTransformFragment>();
+	BuildContext.RequireFragment<FMassMoveTargetFragment>();
+	BuildContext.RequireFragment<FMassVelocityFragment>();
+	BuildContext.RequireFragment<FTransformFragment>();
 
-	const FConstSharedStruct OrientationFragment = EntitySubsystem->GetOrCreateConstSharedFragment(UE::StructUtils::GetStructCrc32(FConstStructView::Make(Orientation)), Orientation);
+	const FConstSharedStruct OrientationFragment = EntityManager.GetOrCreateConstSharedFragment(Orientation);
 	BuildContext.AddConstSharedFragment(OrientationFragment);
 }

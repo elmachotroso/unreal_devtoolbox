@@ -9,6 +9,8 @@
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraSystemTrackTemplate)
+
 struct FPreAnimatedNiagaraComponentToken : IMovieScenePreAnimatedToken
 {
 	FPreAnimatedNiagaraComponentToken(
@@ -119,8 +121,11 @@ struct FNiagaraSystemUpdateDesiredAgeExecutionToken : IMovieSceneExecutionToken
 	{
 		for (TWeakObjectPtr<> Object : Player.FindBoundObjects(Operand))
 		{
-			UObject* ObjectPtr = Object.Get();
-			UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(ObjectPtr);
+			UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(Object);
+			if (!NiagaraComponent)
+			{
+				return;
+			}
 
 			{
 				static FMovieSceneAnimTypeID TypeID = TMovieSceneAnimTypeID<FNiagaraSystemUpdateDesiredAgeExecutionToken, 0>();

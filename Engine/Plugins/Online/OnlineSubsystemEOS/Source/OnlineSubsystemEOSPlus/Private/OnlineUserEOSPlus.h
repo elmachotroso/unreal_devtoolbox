@@ -114,18 +114,8 @@ public:
 	}
 	virtual FString ToDebugString() const override
 	{
+		// TODO OSS_UNIQUEID_REDACT
 		return ToString();
-	}
-
-	/** Needed for TMap::GetTypeHash() */
-	friend uint32 GetTypeHash(const FUniqueNetIdBinary& A)
-	{
-		uint32 Hash = 0;
-		for (uint8 CurrentByte : A.RawBytes)
-		{
-			Hash = HashCombine(Hash, GetTypeHash(CurrentByte));
-		}
-		return Hash;
 	}
 
 protected:
@@ -482,6 +472,7 @@ private:
 	TSharedRef<FOnlineRecentPlayer> GetRecentPlayer(TSharedRef<FOnlineRecentPlayer> Player);
 	TSharedRef<FOnlineBlockedPlayer> AddBlockedPlayer(TSharedRef<FOnlineBlockedPlayer> Player);
 	TSharedRef<FOnlineBlockedPlayer> GetBlockedPlayer(TSharedRef<FOnlineBlockedPlayer> Player);
+	void CacheFriendListNetIds(int32 LocalUserNum, const FString& ListName);
 
 	/** Reference to the owning EOS plus subsystem */
 	FOnlineSubsystemEOSPlus* EOSPlus;

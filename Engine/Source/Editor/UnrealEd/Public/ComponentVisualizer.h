@@ -2,11 +2,28 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
 #include "Components/ActorComponent.h"
-#include "HitProxies.h"
+#include "Containers/Array.h"
 #include "ConvexVolume.h"
+#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "Engine/EngineBaseTypes.h"
+#include "GameFramework/Actor.h"
+#include "GenericPlatform/ICursor.h"
+#include "HitProxies.h"
+#include "InputCoreTypes.h"
+#include "Math/Box.h"
+#include "Math/MathFwd.h"
+#include "Math/Matrix.h"
+#include "Math/Rotator.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/UnrealNames.h"
+#include "UObject/UnrealType.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "ComponentVisualizer.generated.h"
 
 class AActor;
@@ -165,6 +182,10 @@ public:
 	virtual bool HasFocusOnSelectionBoundingBox(FBox& OutBoundingBox) { return false; }
 	/** Pass snap input to active visualizer */
 	virtual bool HandleSnapTo(const bool bInAlign, const bool bInUseLineTrace, const bool bInUseBounds, const bool bInUsePivot, AActor* InDestination) { return false;  }
+	/** Gets called when the mouse tracking has started (dragging behavior) */
+	virtual void TrackingStarted(FEditorViewportClient* InViewportClient) {}
+	/** Gets called when the mouse tracking has stopped (dragging behavior) */
+	virtual void TrackingStopped(FEditorViewportClient* InViewportClient, bool bInDidMove) {}
 	/** Get currently edited component, this is needed to reset the active visualizer after undo/redo */
 	virtual UActorComponent* GetEditedComponent() const { return nullptr;  }
 

@@ -9,7 +9,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/SListView.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "EditorClassUtils.h"
 #include "SortHelper.h"
 #include "ISceneOutliner.h"
@@ -19,7 +19,7 @@
 #include "FolderTreeItem.h"
 #include "LevelTreeItem.h"
 #include "WorldTreeItem.h"
-#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "Styling/StyleColors.h"
@@ -59,14 +59,10 @@ struct FGetInfo
 		}
 		else if (const FActorDescTreeItem* ActorDescItem = Item.CastTo<FActorDescTreeItem>())
 		{
-			const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get();
-
-			if (!ActorDesc)
+			if (const FWorldPartitionActorDesc* ActorDesc = ActorDescItem->ActorDescHandle.Get())
 			{
-				return FString();
+				return ActorDesc->GetDisplayClassName().ToString();
 			}
-
-			return ActorDesc->GetActorClass()->GetName();
 		}
 
 		return FString();
@@ -140,7 +136,7 @@ const TSharedRef< SWidget > FTypeInfoColumn::ConstructRowWidget( FSceneOutlinerT
 		[
 			// Make sure that the hyperlink shows as black (by multiplying black * desired color) when selected so it is readable against the orange background even if blue/green/etc... normally
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+			.BorderImage(FAppStyle::GetBrush("NoBorder"))
 			.ForegroundColor_Static([](TWeakPtr<const STableRow<FSceneOutlinerTreeItemPtr>> WeakRow)->FSlateColor{
 				auto TableRow = WeakRow.Pin();
 				return TableRow.IsValid() && TableRow->IsSelected() ? FStyleColors::ForegroundHover : FSlateColor::UseStyle();
@@ -181,7 +177,11 @@ TSharedPtr<SWidget> FTypeInfoColumn::ConstructClassHyperlink( ISceneOutlinerTree
 
 				if (bIsBlueprintClass || bIsGameClass)
 				{
-					return FEditorClassUtils::GetSourceLink(ActorClass, Actor);
+					FEditorClassUtils::FSourceLinkParams SourceLinkParams;
+					SourceLinkParams.Object = Actor;
+					SourceLinkParams.bUseDefaultFormat = true;
+
+					return FEditorClassUtils::GetSourceLink(ActorClass, SourceLinkParams);
 				}
 			}
 		}

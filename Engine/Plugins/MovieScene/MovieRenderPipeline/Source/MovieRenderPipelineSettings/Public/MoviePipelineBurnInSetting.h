@@ -41,11 +41,11 @@ public:
 	virtual bool IsValidOnShots() const override { return false; }
 	virtual bool IsValidOnMaster() const override { return true; }
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(MetaClass="MoviePipelineBurnInWidget"), Category = "Widget Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(MetaClass="/Script/MovieRenderPipelineSettings.MoviePipelineBurnInWidget"), Category = "Widget Settings")
 	FSoftClassPath BurnInClass;
 
 	/** If true, the Burn In image will be composited into the Final Image pass. Doesn't apply to multi-layer EXR files. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (MetaClass = "MoviePipelineBurnInWidget"), Category = "Widget Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (MetaClass = "/Script/MovieRenderPipelineSettings.MoviePipelineBurnInWidget"), Category = "Widget Settings")
 	bool bCompositeOntoFinalImage;
 
 private:
@@ -54,10 +54,10 @@ private:
 	TSharedPtr<SVirtualWindow> VirtualWindow;
 
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* RenderTarget;
+	TObjectPtr<UTextureRenderTarget2D> RenderTarget;
 
 	UPROPERTY(Transient)
-	UMoviePipelineBurnInWidget* BurnInWidgetInstance;
+	TArray<TObjectPtr<UMoviePipelineBurnInWidget>> BurnInWidgetInstances;
 public:
 	static FString DefaultBurnInWidgetAsset;
 };

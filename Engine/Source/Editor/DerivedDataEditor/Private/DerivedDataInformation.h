@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Framework/Commands/Commands.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
 
 enum class ERemoteCacheState : uint8
 {
@@ -21,7 +21,7 @@ public:
 	static double				GetCacheActivitySizeBytes(bool bGet, bool bLocal);
 	static bool					GetHasRemoteCache();
 	static bool					GetHasZenCache();
-	static bool					GetHasHordeStorageCache();
+	static bool					GetHasUnrealCloudCache();
 	static ERemoteCacheState	GetRemoteCacheState() { return RemoteCacheState; }
 	static FText				GetRemoteCacheStateAsText();
 	static FText				GetRemoteCacheWarningMessage() { return RemoteCacheWarningMessage; }

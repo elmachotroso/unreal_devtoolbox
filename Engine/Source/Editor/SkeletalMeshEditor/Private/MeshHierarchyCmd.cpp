@@ -5,10 +5,10 @@
 #include "Modules/ModuleManager.h"
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "EdGraph/EdGraphSchema.h"
-#include "ARFilter.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 static FMeshHierarchyCmd MeshHierarchyCmdExec;
 
@@ -19,7 +19,7 @@ bool FMeshHierarchyCmd::Exec(UWorld*, const TCHAR* Cmd, FOutputDevice& Ar)
 	{
 		Ar.Log(TEXT("Starting Mesh Test"));
 		FARFilter Filter;
-		Filter.ClassNames.Add(USkeletalMesh::StaticClass()->GetFName());
+		Filter.ClassPaths.Add(USkeletalMesh::StaticClass()->GetClassPathName());
 
 		TArray<FAssetData> SkeletalMeshes;
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));

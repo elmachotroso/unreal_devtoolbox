@@ -14,7 +14,7 @@
 #include "Widgets/Text/SRichTextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSplitter.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "Editor/UnrealEdEngine.h"
 #include "Engine/Selection.h"
 #include "UnrealEdGlobals.h"
@@ -80,12 +80,12 @@ public:
 		{
  
 			RowWidget = SNew(SSplitter)
-				.Style(FEditorStyle::Get(), "PropertyTable.InViewport.Splitter")
+				.Style(FAppStyle::Get(), "PropertyTable.InViewport.Splitter")
 				.PhysicalSplitterHandleSize(1.0f)
  				.HitDetectionSplitterHandleSize(5.0f)
  				+ SSplitter::Slot()
- 				.Value(ColumnSizeData.NameColumnWidth)
-				.OnSlotResized(ColumnSizeData.OnNameColumnResized)
+ 				.Value(ColumnSizeData.GetNameColumnWidth())
+				.OnSlotResized(ColumnSizeData.GetOnNameColumnResized())
  				[
 					SNew(SBox)
 					.HAlign(HAlign_Left)
@@ -96,8 +96,8 @@ public:
 					]
  				]
  				+ SSplitter::Slot()
- 				.Value(ColumnSizeData.ValueColumnWidth)
- 				.OnSlotResized(ColumnSizeData.OnValueColumnResized)
+ 				.Value(ColumnSizeData.GetValueColumnWidth())
+ 				.OnSlotResized(ColumnSizeData.GetOnValueColumnResized())
  				[
  					SNew(SBox)
  					.Padding(2.0f)
@@ -106,8 +106,8 @@ public:
  					]
 				]
 				+ SSplitter::Slot()
-				.Value(ColumnSizeData.RightColumnWidth)
-				.OnSlotResized(ColumnSizeData.OnRightColumnResized)
+				.Value(ColumnSizeData.GetRightColumnWidth())
+				.OnSlotResized(ColumnSizeData.GetOnRightColumnResized())
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot()

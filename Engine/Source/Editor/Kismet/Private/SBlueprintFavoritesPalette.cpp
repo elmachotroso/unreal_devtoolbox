@@ -1,22 +1,51 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBlueprintFavoritesPalette.h"
-#include "HAL/PlatformProcess.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Textures/SlateIcon.h"
+
+#include "BlueprintActionFilter.h"
+#include "BlueprintActionMenuBuilder.h"
+#include "BlueprintActionMenuUtils.h"
+#include "BlueprintEditor.h"
+#include "BlueprintPaletteFavorites.h"
+#include "Containers/Array.h"
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "Delegates/Delegate.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "Editor/EditorPerProjectUserSettings.h"
+#include "Fonts/SlateFontInfo.h"
+#include "Framework/Commands/Commands.h"
 #include "Framework/Commands/InputChord.h"
 #include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Widgets/SToolTip.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
+#include "HAL/PlatformProcess.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Text.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Parse.h"
+#include "SGraphActionMenu.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
-#include "EditorStyleSet.h"
-#include "Editor/EditorPerProjectUserSettings.h"
-#include "BlueprintPaletteFavorites.h"
-#include "BlueprintActionMenuBuilder.h"
-#include "BlueprintActionFilter.h"
-#include "BlueprintActionMenuUtils.h"
+#include "Textures/SlateIcon.h"
+#include "Types/SlateEnums.h"
+#include "UObject/NameTypes.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealNames.h"
 #include "Widgets/Input/SHyperlink.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
+#include "Widgets/Text/STextBlock.h"
+
+class SWidget;
 
 #define LOCTEXT_NAMESPACE "BlueprintFavoritesPalette"
 
@@ -177,7 +206,7 @@ struct SBlueprintFavoritesPaletteUtils
 
 				// build the text that goes in the sub-menu
 				TSharedRef<STextBlock> MenuTextEntry = SNew(STextBlock)
-					.TextStyle(MenuBuilder.GetStyleSet(), FEditorStyle::Join("Menu", ".Label"))
+					.TextStyle(MenuBuilder.GetStyleSet(), FAppStyle::Join("Menu", ".Label"))
 					// @TODO how do we best localize this
 					.Text(FText::FromString(FriendlyProfileName));
 
@@ -217,7 +246,7 @@ struct SBlueprintFavoritesPaletteUtils
 						// so the tool tip shows up for the whole entry:
 						.Visibility(EVisibility::Visible)
 					+SHorizontalBox::Slot()
-						// match the padding with normal sub-men entries
+						// match the padding with normal sub-menu entries
 						.Padding(FMargin(18.f, 0.f, 6.f, 0.f))
 						.FillWidth(1.0f)
 					[
@@ -253,7 +282,7 @@ public:
 		( "BlueprintFavoritesPalette"
 		, LOCTEXT("FavoritesPaletteContext", "Favorites Palette")
 		, NAME_None
-		, FEditorStyle::GetStyleSetName() )
+		, FAppStyle::GetAppStyleSetName() )
 	{
 	}
 
@@ -289,7 +318,7 @@ void SBlueprintFavoritesPalette::Construct(FArguments const& InArgs, TWeakPtr<FB
 {
 	SBlueprintSubPalette::FArguments SuperArgs;
 	SuperArgs._Title       = LOCTEXT("PaletteTitle", "Favorites");
-	SuperArgs._Icon        = FEditorStyle::GetBrush("Icons.Star");
+	SuperArgs._Icon        = FAppStyle::GetBrush("Icons.Star");
 	SuperArgs._ToolTipText = LOCTEXT("PaletteToolTip", "A listing of your favorite and most used nodes.");
 
 	static FString const ShowFreqUsedConfigKey("bShowFrequentlyUsed");
@@ -315,6 +344,7 @@ void SBlueprintFavoritesPalette::CollectAllActions(FGraphActionListBuilderBase& 
 {
 	FBlueprintActionContext FilterContext;
 	FilterContext.Blueprints.Add(GetBlueprint());
+	FilterContext.EditorPtr = BlueprintEditorPtr;
 
 	FBlueprintActionMenuBuilder FavoritesBuilder(BlueprintEditorPtr);
 	FBlueprintActionMenuUtils::MakeFavoritesMenu(FilterContext, FavoritesBuilder);

@@ -5,7 +5,7 @@
 #include "CADKernel/Utils/Util.h"
 #include "CADKernel/Math/MatrixH.h"
 
-namespace CADKernel
+namespace UE::CADKernel
 {
 
 const FPoint FPoint::ZeroPoint(0.,0.,0.);
@@ -37,14 +37,14 @@ double FPoint::SignedAngle(const FPoint & Other, const FPoint & Normal) const
 
 	double ScalarProduct = Vector1 * Vector2;
 
-	if (ScalarProduct >= 1 - SMALL_NUMBER)
+	if (ScalarProduct >= 1 - DOUBLE_SMALL_NUMBER)
 	{
 		return 0.;
 	}
 
-	if (ScalarProduct <= -1 + SMALL_NUMBER)
+	if (ScalarProduct <= -1 + DOUBLE_SMALL_NUMBER)
 	{
-		return PI;
+		return DOUBLE_PI;
 	}
 
 	return MixedTripleProduct(Vector1, Vector2, Vector3) > 0 ? acos(ScalarProduct) : -acos(ScalarProduct);

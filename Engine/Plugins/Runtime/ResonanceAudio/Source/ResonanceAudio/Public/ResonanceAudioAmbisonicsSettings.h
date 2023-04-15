@@ -4,8 +4,9 @@
 
 #pragma once
 
-#include "ResonanceAudioCommon.h"
 #include "ISoundfieldFormat.h"
+#include "Templates/UniquePtr.h"
+
 #include "ResonanceAudioAmbisonicsSettings.generated.h"
 
 UENUM()
@@ -31,26 +32,6 @@ enum class EResonanceRenderMode : uint8
 	RoomEffectsOnly,
 };
 
-class FResonanceAmbisonicsSettingsProxy : public ISoundfieldEncodingSettingsProxy
-{
-public:
-	vraudio::RenderingMode RenderingMode;
-
-
-	virtual uint32 GetUniqueId() const override
-	{
-		return static_cast<uint32>(RenderingMode);
-	}
-
-
-	virtual TUniquePtr<ISoundfieldEncodingSettingsProxy> Duplicate() const override
-	{
-		FResonanceAmbisonicsSettingsProxy* Proxy = new FResonanceAmbisonicsSettingsProxy();
-		Proxy->RenderingMode = RenderingMode;
-		return TUniquePtr<ISoundfieldEncodingSettingsProxy>(Proxy);
-	}
-};
-
 UCLASS()
 class RESONANCEAUDIO_API UResonanceAudioSoundfieldSettings : public USoundfieldEncodingSettingsBase
 {
@@ -61,44 +42,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Ambisonics)
 	EResonanceRenderMode RenderMode = EResonanceRenderMode::BinauralHighQuality;
 
-	virtual TUniquePtr<ISoundfieldEncodingSettingsProxy> GetProxy() const override
-	{
-		FResonanceAmbisonicsSettingsProxy* Proxy = new FResonanceAmbisonicsSettingsProxy();
-
-		switch (RenderMode)
-		{
-			case EResonanceRenderMode::StereoPanning:
-			{
-				Proxy->RenderingMode = vraudio::kStereoPanning;
-				break;
-			}
-			case EResonanceRenderMode::BinauralLowQuality:
-			{
-				Proxy->RenderingMode = vraudio::kBinauralLowQuality;
-				break;
-			}
-			case EResonanceRenderMode::BinauralMediumQuality:
-			{
-				Proxy->RenderingMode = vraudio::kBinauralMediumQuality;
-				break;
-			}
-			case EResonanceRenderMode::BinauralHighQuality:
-			{
-				Proxy->RenderingMode = vraudio::kBinauralHighQuality;
-				break;
-			}
-			case EResonanceRenderMode::RoomEffectsOnly:
-			{
-				Proxy->RenderingMode = vraudio::kRoomEffectsOnly;
-				break;
-			}
-			default:
-			{
-				checkNoEntry();
-			}
-		}
-
-		return TUniquePtr<ISoundfieldEncodingSettingsProxy>(Proxy);
-	}
-
+	virtual TUniquePtr<ISoundfieldEncodingSettingsProxy> GetProxy() const override;
 };
+

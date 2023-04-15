@@ -113,6 +113,8 @@ namespace Metasound
 			Info.PromptIfMissing = PluginNodeMissingPrompt;
 			Info.DefaultInterface = DeclareVertexInterface();
 			Info.CategoryHierarchy.Emplace(NodeCategories::Music);
+			Info.Keywords.Add(METASOUND_LOCTEXT("ScaleToArrayPitchKeyword", "Pitch"));
+			Info.Keywords.Add(METASOUND_LOCTEXT("ScaleToArrayMIDIKeyword", "MIDI"));
 
 			return Info;
 		};
@@ -127,11 +129,11 @@ namespace Metasound
 	{
 		static const FVertexInterface Interface(
 			FInputVertexInterface(
-				TInputDataVertexModel<FEnumEMusicalScale>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegreesPreset)),
-				TInputDataVertexModel<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamChordTonesOnly))
+				TInputDataVertex<FEnumEMusicalScale>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamScaleDegreesPreset)),
+				TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamChordTonesOnly))
 			),
 			FOutputVertexInterface(
-				TOutputDataVertexModel<ScaleDegreeArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteArrayOutput))
+				TOutputDataVertex<ScaleDegreeArrayType>(METASOUND_GET_PARAM_NAME_AND_METADATA(ParamNoteArrayOutput))
 				)
 			);
 

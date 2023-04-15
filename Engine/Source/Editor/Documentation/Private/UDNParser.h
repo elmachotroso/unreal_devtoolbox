@@ -1,14 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
-#include "IDocumentationPage.h"
-#include "Types/SlateStructs.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformCrt.h"
 #include "IDocumentation.h"
-#include "Brushes/SlateDynamicImageBrush.h"
+#include "Input/Reply.h"
+#include "Internationalization/Text.h"
+#include "Misc/Attribute.h"
+#include "Templates/SharedPointer.h"
+#include "Types/SlateStructs.h"
+
+class SVerticalBox;
+class SWidget;
+struct FExcerpt;
+struct FSlateDynamicImageBrush;
 
 /** Stores all the metadata that a UDN page can have */
 struct FUDNPageMetadata
@@ -18,7 +26,8 @@ struct FUDNPageMetadata
 		, Title()
 		, Crumbs()
 		, Description()
-		, ExcerptNames() 
+		, ExcerptNames()
+		, BaseUrl()
 	{}
 
 	FString Availability;
@@ -26,6 +35,7 @@ struct FUDNPageMetadata
 	FText Crumbs;
 	FText Description;
 	TSet< FString > ExcerptNames;
+	FString BaseUrl;
 };
 
 /** Represents a single UDN Markdown token */
@@ -50,6 +60,7 @@ namespace EUDNToken
 		MetadataTitle,
 		MetadataCrumbs,
 		MetadataDescription,
+		MetadataBaseUrl,
 		Percentage,
 		Asterisk
 	};
@@ -90,6 +101,7 @@ public:
 		MetadataTitle,
 		MetadataCrumbs,
 		MetadataDescription,
+		MetadataBaseUrl,
 		Variable,
 		VariableOpen,
 		VariableClose,

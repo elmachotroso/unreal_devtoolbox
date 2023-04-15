@@ -63,6 +63,9 @@ public:
 	// Delta for this tick
 	float DeltaSeconds;
 
+	// Velocity scale to compensate input velocities in case the MaxPhysicsDelta kicks in
+	float VelocityScale;
+
 	// Whether and how we should teleport the simulation this tick
 	EClothingTeleportMode TeleportMode;
 
@@ -71,6 +74,12 @@ public:
 
 	// The predicted LOD of the skeletal mesh component running the simulation
 	int32 PredictedLod;
+	
+	// World space cached positions for the kinematics targets
+	TArray<FVector> CachedPositions;
+
+	// World space cached velocities for the kinematics targets
+	TArray<FVector> CachedVelocities;
 };
 
 // Base simulation to fill in common data for the base context

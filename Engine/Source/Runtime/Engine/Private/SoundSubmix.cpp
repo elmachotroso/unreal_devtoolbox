@@ -10,6 +10,8 @@
 #include "DSP/Dsp.h"
 #include "DSP/SpectrumAnalyzer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SoundSubmix)
+
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -59,22 +61,46 @@ void USoundSubmix::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 	if (Ar.IsLoading() || Ar.IsSaving())
 	{
+		// use -96dB as a noise floor when fixing up linear volume settings
+		static constexpr float LinearNeg96dB = 0.0000158489319f;
+
 		// convert any old deprecated values to the new value
-		if (OutputVolume > 0.0f)
+		if (OutputVolume >= 0.0f)
 		{
-			OutputVolumeModulation.Value = Audio::ConvertToDecibels(OutputVolume);
+			if (OutputVolume <= LinearNeg96dB)
+			{
+				OutputVolumeModulation.Value = -96.f;
+			}
+			else
+			{
+				OutputVolumeModulation.Value = Audio::ConvertToDecibels(OutputVolume);
+			}
 			OutputVolume = -1.0f;
 		}
 
-		if (WetLevel > 0.0f)
+		if (WetLevel >= 0.0f)
 		{
-			WetLevelModulation.Value = Audio::ConvertToDecibels(WetLevel);
+			if (WetLevel <= LinearNeg96dB)
+			{
+				WetLevelModulation.Value = -96.f;
+			}
+			else
+			{
+				WetLevelModulation.Value = Audio::ConvertToDecibels(WetLevel);
+			}
 			WetLevel = -1.0f;
 		}
 
-		if (DryLevel > 0.0f)
+		if (DryLevel >= 0.0f)
 		{
-			DryLevelModulation.Value = Audio::ConvertToDecibels(DryLevel);
+			if (DryLevel <= LinearNeg96dB)
+			{
+				DryLevelModulation.Value = -96.f;
+			}
+			else
+			{
+				DryLevelModulation.Value = Audio::ConvertToDecibels(DryLevel);
+			}
 			DryLevel = -1.0f;
 		}
 
@@ -93,6 +119,10 @@ void USoundSubmix::Serialize(FArchive& Ar)
 		{
 			DryLevelModulation.Value = Audio::ConvertToDecibels(DryLevelModulation.Value);
 		}
+
+		OutputVolumeModulation.VersionModulators();
+		WetLevelModulation.VersionModulators();
+		DryLevelModulation.VersionModulators();
 	}
 #endif // WITH_EDITORONLY_DATA
 }
@@ -467,13 +497,13 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 			{
 				USoundSubmix* SoundSubmix = this;
 
-				USoundModulatorBase* NewVolumeMod = OutputVolumeModulation.Modulator;
-				USoundModulatorBase* NewWetLevelMod = WetLevelModulation.Modulator;
-				USoundModulatorBase* NewDryLevelMod = DryLevelModulation.Modulator;
+				TSet<TObjectPtr<USoundModulatorBase>> NewVolumeMod = OutputVolumeModulation.Modulators;
+				TSet<TObjectPtr<USoundModulatorBase>> NewWetLevelMod = WetLevelModulation.Modulators;
+				TSet<TObjectPtr<USoundModulatorBase>> NewDryLevelMod = DryLevelModulation.Modulators;
 
-				AudioDeviceManager->IterateOverAllDevices([SoundSubmix, NewVolumeMod, NewWetLevelMod, NewDryLevelMod](Audio::FDeviceId Id, FAudioDevice* Device)
+				AudioDeviceManager->IterateOverAllDevices([SoundSubmix, VolMod = MoveTemp(NewVolumeMod), WetMod = MoveTemp(NewWetLevelMod), DryMod = MoveTemp(NewDryLevelMod)](Audio::FDeviceId Id, FAudioDevice* Device) mutable
 				{
-					Device->UpdateSubmixModulationSettings(SoundSubmix, NewVolumeMod, NewWetLevelMod, NewDryLevelMod);
+					Device->UpdateSubmixModulationSettings(SoundSubmix, VolMod, WetMod, DryMod);
 				});
 
 				float NewVolumeModBase = OutputVolumeModulation.Value;
@@ -940,8 +970,11 @@ FSoundSpectrumAnalyzerSettings USoundSubmix::GetSpectrumAnalyzerSettings(EFFTSiz
 	OutSettings.FFTSize = FFTSize;
 	OutSettings.WindowType = WindowType;
 	OutSettings.InterpolationMethod = InterpolationMethod;
-	OutSettings.HopSize = HopSize;
 	OutSettings.SpectrumType = SpectrumType;
+
+	const float MinHopSize = 0.001f;
+	const float MaxHopSize = 10.0f;
+	OutSettings.HopSize = FMath::Clamp(HopSize, MinHopSize, MaxHopSize);
 
 	return OutSettings;
 }
@@ -1091,3 +1124,4 @@ ENGINE_API void SubmixUtils::RefreshEditorForSubmix(const USoundSubmixBase* InSu
 }
 
 #endif // WITH_EDITOR
+

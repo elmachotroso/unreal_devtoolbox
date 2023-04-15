@@ -19,12 +19,6 @@ UThumbnailInfo* FAssetTypeActions_IKRigDefinition::GetThumbnailInfo(UObject* Ass
 	return NewObject<USceneThumbnailInfo>(IKRig, NAME_None, RF_Transactional);
 }
 
-void FAssetTypeActions_IKRigDefinition::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
-{
-	FAssetTypeActions_Base::GetActions(InObjects, Section);
-}
-
-
 void FAssetTypeActions_IKRigDefinition::OpenAssetEditor(
 	const TArray<UObject*>& InObjects,
 	TSharedPtr<IToolkitHost> EditWithinLevelEditor)
@@ -39,6 +33,15 @@ void FAssetTypeActions_IKRigDefinition::OpenAssetEditor(
     		NewEditor->InitAssetEditor(Mode, EditWithinLevelEditor, Asset);
     	}
     }
+}
+
+const TArray<FText>& FAssetTypeActions_IKRigDefinition::GetSubMenus() const
+{
+	static const TArray<FText> SubMenus
+	{
+		LOCTEXT("AnimIKRigSubMenu", "IK Rig")
+	};
+	return SubMenus;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -341,7 +341,7 @@ void BeginInitTextLocalization()
 void InitEngineTextLocalization()
 {
 	LLM_SCOPE(ELLMTag::Localization);
-	
+	UE_SCOPED_ENGINE_ACTIVITY(TEXT("Initializing Localization"));
 	SCOPED_BOOT_TIMING("InitEngineTextLocalization");
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("InitEngineTextLocalization"), STAT_InitEngineTextLocalization, STATGROUP_LoadTime);
 
@@ -364,8 +364,9 @@ void InitEngineTextLocalization()
 	// Setting InitializedFlags to None ensures we don't pick up the culture change
 	// notification if ApplyDefaultCultureSettings changes the default culture
 	{
-		TGuardValue<ETextLocalizationManagerInitializedFlags> InitializedFlagsGuard(FTextLocalizationManager::Get().InitializedFlags, ETextLocalizationManagerInitializedFlags::None);
+		ETextLocalizationManagerInitializedFlags OldFlags = FTextLocalizationManager::Get().InitializedFlags.exchange(ETextLocalizationManagerInitializedFlags::None);
 		ApplyDefaultCultureSettings(ApplyLocLoadFlags);
+		FTextLocalizationManager::Get().InitializedFlags = OldFlags;
 	}
 
 #if WITH_EDITOR
@@ -381,7 +382,7 @@ void InitEngineTextLocalization()
 #endif
 
 	FTextLocalizationManager::Get().LoadLocalizationResourcesForCulture(FInternationalization::Get().GetCurrentLanguage()->GetName(), LocLoadFlags);
-	FTextLocalizationManager::Get().InitializedFlags |= ETextLocalizationManagerInitializedFlags::Engine;
+	FTextLocalizationManager::Get().InitializedFlags = FTextLocalizationManager::Get().InitializedFlags.load() | ETextLocalizationManagerInitializedFlags::Engine;
 }
 
 static FGraphEventRef InitGameTextLocalizationTask;
@@ -405,8 +406,9 @@ void BeginInitGameTextLocalization()
 	// notification if ApplyDefaultCultureSettings changes the default culture
 	const FString PreviousLanguage = FInternationalization::Get().GetCurrentLanguage()->GetName();
 	{
-		TGuardValue<ETextLocalizationManagerInitializedFlags> InitializedFlagsGuard(FTextLocalizationManager::Get().InitializedFlags, ETextLocalizationManagerInitializedFlags::None);
+		ETextLocalizationManagerInitializedFlags OldFlags = FTextLocalizationManager::Get().InitializedFlags.exchange(ETextLocalizationManagerInitializedFlags::None);
 		ApplyDefaultCultureSettings(ELocalizationLoadFlags::Game);
+		FTextLocalizationManager::Get().InitializedFlags = OldFlags;
 	}
 	const FString CurrentLanguage = FInternationalization::Get().GetCurrentLanguage()->GetName();
 
@@ -422,8 +424,8 @@ void BeginInitGameTextLocalization()
 		LocLoadFlags |= ELocalizationLoadFlags::Additional;
 	}
 
-	FTextLocalizationManager::Get().InitializedFlags |= ETextLocalizationManagerInitializedFlags::Initializing;
-	auto TaskLambda = [LocLoadFlags, InitializedFlags = FTextLocalizationManager::Get().InitializedFlags]()
+	FTextLocalizationManager::Get().InitializedFlags = FTextLocalizationManager::Get().InitializedFlags.load() | ETextLocalizationManagerInitializedFlags::Initializing;
+	auto TaskLambda = [LocLoadFlags, InitializedFlags = FTextLocalizationManager::Get().InitializedFlags.load()]()
 	{
 		SCOPED_BOOT_TIMING("InitGameTextLocalization");
 
@@ -711,7 +713,6 @@ FTextConstDisplayStringRef FTextLocalizationManager::GetDisplayString(const FTex
 	FTextConstDisplayStringPtr SourceDisplayString;
 	FDisplayStringEntry* SourceLiveEntry = nullptr;
 #if USE_STABLE_LOCALIZATION_KEYS
-	if (GIsEditor)
 	{
 		const FTextKey DisplayNamespace = TextNamespaceUtil::StripPackageNamespace(TextId.GetNamespace().GetChars());
 		if (DisplayNamespace != TextId.GetNamespace())
@@ -996,7 +997,7 @@ void FTextLocalizationManager::OnPakFileMounted(const IPakFile& PakFile)
 	// Track this so that full resource refreshes (eg, changing culture) work as expected
 	LocResTextSource->RegisterChunkId(ChunkId);
 
-	if (!EnumHasAnyFlags(InitializedFlags, ETextLocalizationManagerInitializedFlags::Game))
+	if (!EnumHasAnyFlags(InitializedFlags.load(), ETextLocalizationManagerInitializedFlags::Game))
 	{
 		// If we've not yet initialized game localization then don't bother patching, as the full initialization path will load the data for this chunk
 		return;
@@ -1230,7 +1231,6 @@ void FTextLocalizationManager::UpdateFromNative(FTextLocalizationResource&& Text
 
 #if USE_STABLE_LOCALIZATION_KEYS
 			// In builds with stable keys enabled, we have to update the display strings from the "clean" version of the text (if the sources match) as this is the only version that is translated
-			if (GIsEditor)
 			{
 				const FTextKey LiveNamespace = DisplayStringPair.Key.GetNamespace();
 				const FTextKey DisplayNamespace = TextNamespaceUtil::StripPackageNamespace(LiveNamespace.GetChars());
@@ -1343,7 +1343,6 @@ void FTextLocalizationManager::UpdateFromLocalizations(FTextLocalizationResource
 
 		// Perform any additional processing over existing entries
 #if USE_STABLE_LOCALIZATION_KEYS
-		if (GIsEditor)
 		{
 			for (auto& DisplayStringPair : DisplayStringLookupTable)
 			{

@@ -10,6 +10,8 @@
 #include "MetasoundFrontendRegistries.h"
 #include "MetasoundGraph.h"
 #include "MetasoundVertex.h"
+#include "Templates/Function.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/Tuple.h"
 
 
@@ -24,7 +26,7 @@
  *
  * In general, the workflow for editing a Metasound graph will be:
  * 1) Load or create a metasound asset.
- * 2) Call UMetaSound::GetDocumentHandle() to get a handle to the document for that asset.
+ * 2) Call UMetaSoundPatch::GetDocumentHandle() to get a handle to the document for that asset.
  * 
  * Typically the workflow for creating a Metasound subgraph will be
  * 1) Get a Metasound::Frontend::FGraphHandle (typically through the two steps described in the first paragraph)
@@ -94,7 +96,6 @@ namespace Metasound
 		  * when querying if a node's class has been updated */
 		struct FClassInterfaceUpdates
 		{
-
 			TArray<const FMetasoundFrontendClassInput*> AddedInputs;
 			TArray<const FMetasoundFrontendClassOutput*> AddedOutputs;
 			TArray<const FMetasoundFrontendClassInput*> RemovedInputs;
@@ -118,7 +119,6 @@ namespace Metasound
 			// Cached copy of registry class potentially referenced by added members
 			FMetasoundFrontendClass RegistryClass;
 		};
-
 
 		/** IDocumentAccessor describes an interface for various I*Controllers to interact with
 		 * each other without exposing that interface publicly or requiring friendship 
@@ -177,6 +177,9 @@ namespace Metasound
 			
 			/** Returns the name associated with this output. */
 			virtual const FVertexName& GetName() const = 0;
+
+			/** Returns the vertex access type. */
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const = 0;
 			
 #if WITH_EDITOR
 			/** Returns the human readable name associated with this output. */
@@ -329,6 +332,9 @@ namespace Metasound
 			/** Returns the data type name associated with this input. */
 			virtual const FVertexName& GetName() const = 0;
 
+			/** Returns the vertex access type. */
+			virtual EMetasoundFrontendVertexAccessType GetVertexAccessType() const = 0;
+
 #if WITH_EDITOR
 			/** Returns the data type name associated with this input. */
 			virtual FText GetDisplayName() const = 0;
@@ -472,18 +478,13 @@ namespace Metasound
 			/** Returns interface version if node is a required member of a given interface, otherwise returns invalid version. */
 			virtual const FMetasoundFrontendVersion& GetInterfaceVersion() const = 0;
 
-			/** Returns the highest minor version number available from the class registry that shares this node's name & major version. */
-			virtual FMetasoundFrontendVersionNumber FindHighestVersionInRegistry() const = 0;
-
-			/** Returns the highest version number available from the class registry that shares this node's name. */
-			virtual FMetasoundFrontendVersionNumber FindHighestMinorVersionInRegistry() const = 0;
-
 			/**
 			  * Replaces this node with a new node of the provided version number, and attempts to 
 			  * rebuild edges where possible with matching vertex names that share the same DataType.
 			  * Returns a node handle to the new node.  If operation fails, returns a handle to this node.
 			  */
 			virtual FNodeHandle ReplaceWithVersion(const FMetasoundFrontendVersionNumber& InNewVersion, TArray<FVertexNameAndType>* OutDisconnectedInputs, TArray<FVertexNameAndType>* OutDisconnectedOutputs) = 0;
+
 
 			/** Returns an input with the given id.
 			 *
@@ -529,6 +530,11 @@ namespace Metasound
 			virtual const FMetasoundFrontendClassMetadata& GetClassMetadata() const = 0;
 			virtual const FMetasoundFrontendClassInterface& GetClassInterface() const = 0;
 
+			/** Returns the node interface, which may be different than the class interface
+			  * if the class supports dynamic input/output behavior (ex. Templates).
+			  */
+			virtual const FMetasoundFrontendNodeInterface& GetNodeInterface() const = 0;
+			
 #if WITH_EDITOR
 			/** Returns associated node class data */
 			virtual const FMetasoundFrontendInterfaceStyle& GetOutputStyle() const = 0;
@@ -818,6 +824,8 @@ namespace Metasound
 			 * @return On success, a valid input node handle. On failure, an invalid node handle.
 			 */
 			virtual FNodeHandle AddInputVertex(const FMetasoundFrontendClassInput& InDescription) = 0;
+
+			UE_DEPRECATED(5.1, "Use AddInputVertex method which specifies EMetasoundFrontendVertexAccessType")
 			virtual FNodeHandle AddInputVertex(const FVertexName& InName, const FName InTypeName, const FMetasoundFrontendLiteral* InDefaultValue) = 0;
 
 			/** Remove the input with the given name. Returns true if successfully removed, false otherwise. */
@@ -943,6 +951,17 @@ namespace Metasound
 			 */
 			virtual FNodeHandle AddDuplicateNode(const INodeController& InNodeController) = 0;
 
+			/** Add a new template node to this graph, providing the defined interface as expected by the caller.
+			 *
+			 * @param InKey - Class key (must correspond with a class in the registry that was registered as a template).
+			 * @param InNodeInterface - Interface for node class.  Validated by template class registered in the node class registry. If invalid, node is not created/added.
+			 * @param InNodeGuid - (Optional) Explicit guid for the new node. Must be unique within the graph.
+			 * Only useful to specify explicitly when caller is managing or tracking the graph's guids (ex. replacing removed node).
+			 *
+			 * @return Node handle for class. On error, an invalid handle is returned.
+			 */
+			virtual FNodeHandle AddTemplateNode(const FNodeRegistryKey& InKey, FMetasoundFrontendNodeInterface&& InNodeInterface, FGuid InNodeGuid = FGuid::NewGuid()) = 0;
+
 			/** Remove the node corresponding to this node handle.
 			 *
 			 * @return True on success, false on failure. 
@@ -959,15 +978,15 @@ namespace Metasound
 			 */
 			virtual FNodeHandle CreateEmptySubgraph(const FMetasoundFrontendClassMetadata& InInfo) = 0;
 
-			/** Creates a runtime operator for the given graph.
+			/** Creates a runtime operator for the given graph. Does not support input value manipulation via transmission.
 			 *
 			 * @param InSettings - Settings to use when creating operators.
 			 * @param InEnvironment - Environment variables available during creation.
-			 * @param OutBuildErrors - An array to populate with errors encountered during the build process.
+			 * @param OutResults - Results pertaining to operator build process & resulting IOperator instance.
 			 *
-			 * @return On success, a valid pointer to a Metasound operator. An invalid pointer on failure. 
+			 * @return On success, a valid pointer to a Metasound operator. An invalid pointer on failure.
 			 */
-			virtual TUniquePtr<IOperator> BuildOperator(const FOperatorSettings& InSettings, const FMetasoundEnvironment& InEnvironment, TArray<IOperatorBuilder::FBuildErrorPtr>& OutBuildErrors) const = 0;
+			virtual TUniquePtr<IOperator> BuildOperator(const FOperatorSettings& InSettings, const FMetasoundEnvironment& InEnvironment, FBuildResults& OutResults) const = 0;
 
 			/** Returns a handle to the document owning this graph. */
 			virtual FDocumentHandle GetOwningDocument() = 0;
@@ -1016,6 +1035,7 @@ namespace Metasound
 
 			virtual void SetMetadata(const FMetasoundFrontendDocumentMetadata& InMetadata) = 0;
 			virtual const FMetasoundFrontendDocumentMetadata& GetMetadata() const = 0;
+			virtual FMetasoundFrontendDocumentMetadata* GetMetadata() = 0;
 
 			/** Returns an existing Metasound class description corresponding to 
 			 * a dependency which matches the provided class information.
@@ -1100,5 +1120,9 @@ namespace Metasound
 			/** Exports the document to a json formatted string. */
 			virtual FString ExportToJSON() const = 0;
 		};
-	}
-}
+
+		METASOUNDFRONTEND_API FConstOutputHandle FindReroutedOutput(FConstOutputHandle InOutputHandle);
+		METASOUNDFRONTEND_API void FindReroutedInputs(FConstInputHandle InHandleToCheck, TArray<FConstInputHandle>& InOutInputHandles);
+		METASOUNDFRONTEND_API void IterateReroutedInputs(FConstInputHandle InHandleToCheck, TFunctionRef<void(FConstInputHandle)> Func);
+	} // namespace Frontend
+} // namespace Metasound

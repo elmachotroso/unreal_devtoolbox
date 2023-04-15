@@ -9,7 +9,7 @@
 #include "mdl/MaterialCollection.h"
 #include "mdl/Utility.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Logging/LogMacros.h"
 #include "MaterialEditingLibrary.h"
@@ -33,6 +33,8 @@ namespace MDLImporterImpl
 		UMaterialExpressionClearCoatNormalCustomOutput* UnderClearcoatNormal = nullptr;
 
 		const FMDLMaterialSelector::EMaterialType MaterialType = MaterialSelector.GetMaterialType(MdlMaterial);
+
+		UMaterialEditorOnlyData& MaterialEditorOnly = *Material.GetEditorOnlyData();
 
 		// set material settings
 		Material.bTangentSpaceNormal = true;
@@ -121,12 +123,12 @@ namespace MDLImporterImpl
 		{
 			if (MaterialType != FMDLMaterialSelector::EMaterialType::Translucent)
 				// TODO: find a nicer way to handle this cases
-				Connect(Material.BaseColor, MdlMaterial.BaseColor.ExpressionData);
-			Connect(Material.EmissiveColor, MdlMaterial.Emission.ExpressionData);
-			Connect(Material.SubsurfaceColor, MdlMaterial.Scattering.ExpressionData);
-			Connect(Material.Roughness, MdlMaterial.Roughness.ExpressionData);
-			Connect(Material.Metallic, MdlMaterial.Metallic.ExpressionData);
-			Connect(Material.Specular, MdlMaterial.Specular.ExpressionData);
+				Connect(MaterialEditorOnly.BaseColor, MdlMaterial.BaseColor.ExpressionData);
+			Connect(MaterialEditorOnly.EmissiveColor, MdlMaterial.Emission.ExpressionData);
+			Connect(MaterialEditorOnly.SubsurfaceColor, MdlMaterial.Scattering.ExpressionData);
+			Connect(MaterialEditorOnly.Roughness, MdlMaterial.Roughness.ExpressionData);
+			Connect(MaterialEditorOnly.Metallic, MdlMaterial.Metallic.ExpressionData);
+			Connect(MaterialEditorOnly.Specular, MdlMaterial.Specular.ExpressionData);
 
 			if (MaterialType == FMDLMaterialSelector::EMaterialType::Translucent)
 			{
@@ -134,26 +136,26 @@ namespace MDLImporterImpl
 			}
 			else if (MaterialType == FMDLMaterialSelector::EMaterialType::Masked)
 			{
-				Connect(Material.OpacityMask, MdlMaterial.Opacity.ExpressionData);
+				Connect(MaterialEditorOnly.OpacityMask, MdlMaterial.Opacity.ExpressionData);
 			}
 
-			Connect(Material.ClearCoat, MdlMaterial.Clearcoat.Weight.ExpressionData);
-			Connect(Material.ClearCoatRoughness, MdlMaterial.Clearcoat.Roughness.ExpressionData);
+			Connect(MaterialEditorOnly.ClearCoat, MdlMaterial.Clearcoat.Weight.ExpressionData);
+			Connect(MaterialEditorOnly.ClearCoatRoughness, MdlMaterial.Clearcoat.Roughness.ExpressionData);
 			if (UnderClearcoatNormal)
 			{
-				Connect(Material.Normal, MdlMaterial.Clearcoat.Normal.ExpressionData);
+				Connect(MaterialEditorOnly.Normal, MdlMaterial.Clearcoat.Normal.ExpressionData);
 				Connect(UnderClearcoatNormal->Input, MdlMaterial.Normal.ExpressionData);
 			}
 			else
 			{
-				Connect(Material.Normal, MdlMaterial.Normal.ExpressionData);
+				Connect(MaterialEditorOnly.Normal, MdlMaterial.Normal.ExpressionData);
 			}
 		}
 
 		if (UnderClearcoatNormal && !UnderClearcoatNormal->Input.Expression)
 		{
 			// delete if unused
-			Material.Expressions.Remove(UnderClearcoatNormal);
+			Material.GetExpressionCollection().RemoveExpression(UnderClearcoatNormal);
 			UnderClearcoatNormal = nullptr;
 		}
 
@@ -209,7 +211,7 @@ bool FMDLMaterialFactory::CreateMaterials(const FString& Filename, UObject* Pare
 		NewMaterial->AssetImportData = NewObject<UAssetImportData>(NewMaterial, TEXT("AssetImportData"));
 		NewMaterial->AssetImportData->Update(Filename);
 
-		const FString DbName        = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.Name, true);
+		const FString DbName        = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.BaseName, true);
 		NameMaterialMap.Add(DbName) = NewMaterial;
 	}
 
@@ -226,7 +228,7 @@ void FMDLMaterialFactory::PostImport(Mdl::FMaterialCollection& Materials)
 			continue;
 		}
 
-		const FString DbName   = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.Name, true);
+		const FString DbName   = Mdl::Util::GetMaterialDatabaseName(Materials.Name, MdlMaterial.BaseName, true);
 		UMaterial*    Material = NameMaterialMap[DbName];
 		if (Material == nullptr)
 		{
@@ -238,8 +240,8 @@ void FMDLMaterialFactory::PostImport(Mdl::FMaterialCollection& Materials)
 		CreatedMaterials.Add(Material);
 		FAssetRegistryModule::AssetCreated(Material);
 
-		const FString MasterMaterialName = FMDLMaterialSelector::ToString(MaterialSelector->GetMaterialType(MdlMaterial));
-		UE_LOG(LogMDLImporter, Log, TEXT("Created material %s based on %s"), *MdlMaterial.Name, *MasterMaterialName);
+		const FString MaterialTypeName = FMDLMaterialSelector::ToString(MaterialSelector->GetMaterialType(MdlMaterial));
+		UE_LOG(LogMDLImporter, Log, TEXT("Created material %s based on %s"), *MdlMaterial.Name, *MaterialTypeName);
 	}
 #endif
 }
@@ -251,8 +253,8 @@ void FMDLMaterialFactory::Reimport(const Mdl::FMaterial& MdlMaterial, UMaterial&
 
 	// Material.AssetImportData->Update(InFileName);
 
-	const FString MasterMaterialName = FMDLMaterialSelector::ToString(MaterialSelector->GetMaterialType(MdlMaterial));
-	UE_LOG(LogMDLImporter, Log, TEXT("Reimported material %s based on %s"), *MdlMaterial.Name, *MasterMaterialName);
+	const FString MaterialTypeName = FMDLMaterialSelector::ToString(MaterialSelector->GetMaterialType(MdlMaterial));
+	UE_LOG(LogMDLImporter, Log, TEXT("Reimported material %s based on %s"), *MdlMaterial.Name, *MaterialTypeName);
 #endif
 }
 

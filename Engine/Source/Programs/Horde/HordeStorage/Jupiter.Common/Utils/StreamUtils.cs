@@ -1,9 +1,9 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
+using EpicGames.AspNet;
+using Microsoft.AspNetCore.Http;
 
 namespace Jupiter.Utils
 {
@@ -11,9 +11,17 @@ namespace Jupiter.Utils
     {
         public static async Task<byte[]> ToByteArray(this Stream s)
         {
-            await using MemoryStream ms = new MemoryStream();
-            await s.CopyToAsync(ms);
-            return ms.ToArray();
+            try
+            {
+                await using MemoryStream ms = new MemoryStream();
+                await s.CopyToAsync(ms);
+                return ms.ToArray();
+            }
+            catch (BadHttpRequestException e)
+            {
+                ClientSendSlowExceptionUtil.MaybeThrowSlowSendException(e);
+                throw;
+            }
         }
     }
 }

@@ -29,6 +29,8 @@
 #include "Materials/Material.h"
 #include "Engine/Engine.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VectorField)
+
 #if WITH_EDITORONLY_DATA
 	#include "EditorFramework/AssetImportData.h"
 #endif
@@ -208,12 +210,14 @@ public:
 		{
 			const uint32 DataSize = SizeX * SizeY * SizeZ * sizeof(FFloat16Color);
 			FVectorFieldStaticResourceBulkDataInterface BulkDataInterface(VolumeData, DataSize);
-			FRHIResourceCreateInfo CreateInfo(TEXT("FVectorFieldStaticResource"), &BulkDataInterface);
-			VolumeTextureRHI = RHICreateTexture3D(
-				SizeX, SizeY, SizeZ, PF_FloatRGBA,
-				/*NumMips=*/ 1,
-				/*Flags=*/ TexCreate_ShaderResource,
-				/*BulkData=*/ CreateInfo );
+
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create3D(TEXT("FVectorFieldStaticResource"), SizeX, SizeY, SizeZ, PF_FloatRGBA)
+				.SetFlags(ETextureCreateFlags::ShaderResource)
+				.SetBulkData(&BulkDataInterface);
+
+			VolumeTextureRHI = RHICreateTexture(Desc);
+
 			FMemory::Free(VolumeData);
 			VolumeData = NULL;
 		}
@@ -410,9 +414,9 @@ void UVectorFieldStatic::UpdateCPUData(bool bDiscardData)
 		if (bDiscardData && SourceData.IsBulkDataLoaded())
 		{
 			// NOTE(mv): This assertion will fail in the case where the bulk data is still available even though the bDiscardInternalCopy
-			//           flag is toggled when FUntypedBulkData::CanLoadFromDisk() also fail. This happens when the user tries to allow 
+			//           flag is toggled when FBulkData::CanLoadFromDisk() also fail. This happens when the user tries to allow 
 			//           CPU access to a newly imported file that isn't reloaded. We still have our valid data, so we just issue a 
-			//           warning and move on. See FUntypedBulkData::GetCopy() for more details. 
+			//           warning and move on. See FBulkData::GetCopy() for more details. 
 			UE_LOG(LogVectorField, Warning, TEXT("SourceData.GetCopy() is supposed to unload the data after copying, but it is still loaded."));
 		}
 
@@ -1096,13 +1100,11 @@ public:
 				TexCreateFlags = TexCreate_ShaderResource | TexCreate_UAV;
 			}
 
-			FRHIResourceCreateInfo CreateInfo(TEXT("FVectorFieldAnimatedResource"));
-			VolumeTextureRHI = RHICreateTexture3D(
-				SizeX, SizeY, SizeZ,
-				PF_FloatRGBA,
-				/*NumMips=*/ 1,
-				TexCreateFlags,
-				CreateInfo);
+			const FRHITextureCreateDesc Desc =
+				FRHITextureCreateDesc::Create3D(TEXT("FVectorFieldAnimatedResource"), SizeX, SizeY, SizeZ, PF_FloatRGBA)
+				.SetFlags(TexCreateFlags);
+
+			VolumeTextureRHI = RHICreateTexture(Desc);
 
 			if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 			{
@@ -1181,7 +1183,7 @@ public:
 			}
 
 			RHICmdList.Transition(FRHITransitionInfo(VolumeTextureUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-			RHICmdList.SetComputeShader(CompositeCS.GetComputeShader());
+			SetComputePipelineState(RHICmdList, CompositeCS.GetComputeShader());
 			CompositeCS->SetOutput(RHICmdList, VolumeTextureUAV);
 			/// ?
 			CompositeCS->SetParameters(
@@ -1257,3 +1259,4 @@ void UVectorFieldAnimated::PostEditChangeProperty(FPropertyChangedEvent& Propert
 	}
 }
 #endif // WITH_EDITOR
+

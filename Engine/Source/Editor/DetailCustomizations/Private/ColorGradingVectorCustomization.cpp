@@ -1,21 +1,53 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "ColorGradingVectorCustomization.h"
-#include "IPropertyUtilities.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Colors/SColorGradingPicker.h"
-#include "IDetailChildrenBuilder.h"
+
+#include "Containers/UnrealString.h"
+#include "CoreGlobals.h"
+#include "CoreTypes.h"
+#include "Customizations/MathStructCustomizations.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/Layout/SBox.h"
-#include "Vector4StructCustomization.h"
-#include "IDetailGroup.h"
-#include "Widgets/Colors/SComplexGradient.h"
-#include "Misc/ConfigCacheIni.h"
-#include "IDetailPropertyRow.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Fonts/SlateFontInfo.h"
+#include "HAL/PlatformCrt.h"
+#include "IDetailChildrenBuilder.h"
+#include "IDetailGroup.h"
+#include "IDetailPropertyRow.h"
+#include "Internationalization/Internationalization.h"
+#include "Layout/Margin.h"
+#include "Math/NumericLimits.h"
+#include "Math/Vector2D.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/Attribute.h"
+#include "Misc/ConfigCacheIni.h"
+#include "PropertyEditorModule.h"
+#include "PropertyHandle.h"
 #include "ScopedTransaction.h"
+#include "SlotBase.h"
+#include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/ISlateStyle.h"
+#include "Styling/SlateColor.h"
+#include "Templates/UnrealTemplate.h"
+#include "Types/SlateEnums.h"
+#include "Types/SlateStructs.h"
+#include "UObject/UnrealType.h"
+#include "Vector4StructCustomization.h"
+#include "Widgets/Colors/SColorBlock.h"
+#include "Widgets/Colors/SColorGradingPicker.h"
+#include "Widgets/Colors/SComplexGradient.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Text/STextBlock.h"
+
+class IPropertyTypeCustomizationUtils;
 
 #define LOCTEXT_NAMESPACE "FColorGradingCustomization"
 
@@ -840,7 +872,7 @@ void FColorGradingCustomBuilder::GenerateHeaderRowContent(FDetailWidgetRow& Node
 		.Padding(FMargin(0.0f, 0.0f, 3.0f, 0.0f))
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+			.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 			.Type(ESlateCheckBoxType::ToggleButton)
 			.IsChecked(this, &FColorGradingCustomBuilder::OnGetChangeColorMode, ColorModeType::RGB)
 			.OnCheckStateChanged(this, &FColorGradingCustomBuilder::OnChangeColorModeClicked, ColorModeType::RGB)
@@ -851,7 +883,7 @@ void FColorGradingCustomBuilder::GenerateHeaderRowContent(FDetailWidgetRow& Node
 			[
 				SNew(STextBlock)
 				.Text(this, &FColorGradingCustomBuilder::OnChangeColorModeText, ColorModeType::RGB)
-				.Font(FEditorStyle::GetFontStyle("StandardDialog.SmallFont"))
+				.Font(FAppStyle::GetFontStyle("StandardDialog.SmallFont"))
 			]
 		]
 		+ SHorizontalBox::Slot()
@@ -861,7 +893,7 @@ void FColorGradingCustomBuilder::GenerateHeaderRowContent(FDetailWidgetRow& Node
 		.Padding(FMargin(0.0f, 0.0f, 3.0f, 0.0f))
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+			.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
 			.Type(ESlateCheckBoxType::ToggleButton)
 			.IsChecked(this, &FColorGradingCustomBuilder::OnGetChangeColorMode, ColorModeType::HSV)
 			.OnCheckStateChanged(this, &FColorGradingCustomBuilder::OnChangeColorModeClicked, ColorModeType::HSV)
@@ -872,7 +904,7 @@ void FColorGradingCustomBuilder::GenerateHeaderRowContent(FDetailWidgetRow& Node
 			[
 				SNew(STextBlock)
 				.Text(this, &FColorGradingCustomBuilder::OnChangeColorModeText, ColorModeType::HSV)
-				.Font(FEditorStyle::GetFontStyle("StandardDialog.SmallFont"))
+				.Font(FAppStyle::GetFontStyle("StandardDialog.SmallFont"))
 			]
 		]
 	];

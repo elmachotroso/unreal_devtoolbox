@@ -29,9 +29,13 @@ PXR_NAMESPACE_OPEN_SCOPE
 PXR_NAMESPACE_CLOSE_SCOPE
 
 class FSkeletalMeshImportData;
+class IMovieScenePlayer;
 class UAnimSequence;
+class UMovieScene;
+class UMovieSceneControlRigParameterSection;
 class USkeletalMesh;
 struct FUsdStageInfo;
+struct FMovieSceneSequenceTransform;
 namespace SkeletalMeshImportData
 {
 	struct FBone;
@@ -110,8 +114,16 @@ namespace UsdUtils
 	 */
 	USDUTILITIES_API void BindAnimationSource( pxr::UsdPrim& Prim, const pxr::UsdPrim& AnimationSource );
 
-	// Finds the strongest SkelAnimation prim that is bound to SkelRootPrim as its animation source
-	USDUTILITIES_API UE::FUsdPrim FindAnimationSource( const UE::FUsdPrim& SkelRootPrim );
+	// Finds the SkelAnimation prim that is bound to Prim as its animationSource, if Prim has the UsdSkelBindingAPI. Returns an invalid prim otherwise.
+	UE_DEPRECATED( 5.1, "Prefer UsdUtils::FindFirstAnimationSource instead" )
+	USDUTILITIES_API UE::FUsdPrim FindAnimationSource( const UE::FUsdPrim& Prim );
+
+	/**
+	 * Returns the SkelAnimation prim that is resolved for the first skeletal binding of SkelRootPrim, if it is a SkelRoot.
+	 * We use this as we currently only parse a single Skeleton per SkelRoot (and so a single SkelAnimation), but in the future we may
+	 * decide to do something else.
+	 */
+	USDUTILITIES_API UE::FUsdPrim FindFirstAnimationSource( const UE::FUsdPrim& SkelRootPrim );
 #endif // USE_USD_SDK
 }
 
@@ -131,26 +143,50 @@ namespace UsdToUnreal
 	 * @param UsdBlendShape - Source USD object with the blend shape data
 	 * @param StageInfo - Details about the stage, required to do the coordinate conversion from the USD blend shape to morph target data
 	 * @param LODIndex - LODIndex of the SkeletalMesh that will use the imported FUsdBlendShape
-	 * @param AdditionalTransform - Additional affine transform to apply to the blend shape deltas and tangents
+	 * @param AdditionalTransform - Additional affine transform to apply to the blend shape deltas and tangents (Note: No longer used, even in the deprecated overload of this function)
 	 * @param PointIndexOffset - Index into the corresponding SkelMeshImportData.Points where the points corresponding to the UsdBlendShape's prim start
 	 * @param UsedMorphTargetNames - Names that the newly created FUsdBlendShapes cannot have (this function will also add the names of the newly created FUsdBlendShapes to it)
 	 * @param OutBlendShapes - Where the newly created blend shapes will be added to
 	 * @return Whether the conversion was successful or not.
 	 */
+	USDUTILITIES_API bool ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes );
+	USDUTILITIES_API bool ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, int32 LODIndex, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes );
+	UE_DEPRECATED( 5.1, "AdditionalTransform is no longer used, please use the other overloads that don't receive it as a parameter." )
 	USDUTILITIES_API bool ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes );
+	UE_DEPRECATED( 5.1, "AdditionalTransform is no longer used, please use the other overloads that don't receive it as a parameter." )
 	USDUTILITIES_API bool ConvertBlendShape( const pxr::UsdSkelBlendShape& UsdBlendShape, const FUsdStageInfo& StageInfo, int32 LODIndex, const FTransform& AdditionalTransform, uint32 PointIndexOffset, TSet<FString>& UsedMorphTargetNames, UsdUtils::FBlendShapeMap& OutBlendShapes );
 
 	/**
 	 * Extracts skeletal mesh data fro UsdSkinningQuery, and places the results in SkelMeshImportData.
 	 * @param UsdSkinningQuery - SkinningQuery with the data to convert
-	 * @param AdditionalTransform - Additional transform to apply to the vertices of the mesh
+	 * @param SkeletonQuery - Query object for the skeleton this mesh is bound to
+	 * @param AdditionalTransform - Additional transform to apply to the vertices of the mesh (Note: No longer used, even in the deprecated overload of this function)
 	 * @param SkelMeshImportData - Output parameter that will be filled with the converted data
 	 * @param MaterialAssignments - Output parameter that will be filled with the material assignment data extracted from UsdSkinningQuery
 	 * @param MaterialToPrimvarsUVSetNames - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates for this mesh, and which UVIndex materials will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). This is used to pick which primvars will become UV sets.
 	 * @param RenderContext - Render context to use when parsing the skinned mesh's materials (e.g. '' for universal, or 'mdl', or 'unreal', etc.)
+	 * @param MaterialPurpose - Material purpose to use when parsing the skinned Mesh prim's material bindings
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext );
+	USDUTILITIES_API bool ConvertSkinnedMesh(
+		const pxr::UsdSkelSkinningQuery& UsdSkinningQuery,
+		const pxr::UsdSkelSkeletonQuery& SkeletonQuery,
+		FSkeletalMeshImportData& SkelMeshImportData,
+		TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments,
+		const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
+		const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext,
+		const pxr::TfToken& MaterialPurpose = pxr::UsdShadeTokens->allPurpose
+	);
+	UE_DEPRECATED( 5.1, "Please use the other overload that also receives the relevant UsdSkelSkeletonQuery object." )
+	USDUTILITIES_API bool ConvertSkinnedMesh(
+		const pxr::UsdSkelSkinningQuery& UsdSkinningQuery,
+		const FTransform& AdditionalTransform,
+		FSkeletalMeshImportData& SkelMeshImportData,
+		TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments,
+		const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames,
+		const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext,
+		const pxr::TfToken& MaterialPurpose = pxr::UsdShadeTokens->allPurpose
+	);
 
 	/**
 	 * Will extract animation data from the animation source of InUsdSkeletonQuery's skeleton, and populate OutSkeletalAnimationAsset with the data.
@@ -159,6 +195,7 @@ namespace UsdToUnreal
 	 * @param InSkinningTargets - Skinned meshes that use the skeleton of InUsdSkeletonQuery. Required to fetch the blend shape ordering of each mesh. Optional (can be nullptr to ignore)
 	 * @param InBlendShapes - Converted blend shape data that will be used to interpret blend shape weights as morph target weight float curves. Optional (can be nullptr to ignore)
 	 * @param InInterpretLODs - Whether we try parsing animation data from all LODs of skinning meshes that are inside LOD variant sets
+	 * @param RootMotionPrim - Optional prim whose transform animation will be concatenaded into the root bone's regular joint animation
 	 * @param OutSkeletalAnimationAsset - Output parameter that will be filled with the converted data
 	 * @param OutStartOffsetSeconds - Optional output parameter that will be filled with the offset in seconds of when this UAnimSequence asset should be played since the start of its layer
 	 *								  to match the intended composed animation. The baked UAnimSequence will only contain the range between the first and last joint and/or blend shape
@@ -166,7 +203,15 @@ namespace UsdToUnreal
 	 *                                use this offset when animating USkeletalMeshComponents, and those drive their UAnimSequences with seconds.
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery, const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets, const UsdUtils::FBlendShapeMap* InBlendShapes, bool bInInterpretLODs, UAnimSequence* OutSkeletalAnimationAsset, float* OutStartOffsetSeconds=nullptr);
+	USDUTILITIES_API bool ConvertSkelAnim(
+		const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery,
+		const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets,
+		const UsdUtils::FBlendShapeMap* InBlendShapes,
+		bool bInInterpretLODs,
+		const pxr::UsdPrim& RootMotionPrim,
+		UAnimSequence* OutSkeletalAnimationAsset,
+		float* OutStartOffsetSeconds=nullptr
+	);
 
 	/**
 	 * Builds a USkeletalMesh and USkeleton from the imported data in SkelMeshImportData
@@ -218,6 +263,35 @@ namespace UnrealToUsd
 	 * @return Whether the conversion was successful or not.
 	 */
 	USDUTILITIES_API bool ConvertAnimSequence( UAnimSequence* AnimSequence, pxr::UsdPrim& SkelAnimPrim );
+
+	/**
+	 * Plays the provided Section in the background, driving its ControlRig and baking to USD the animated bones and
+	 * curves end result.
+	 * @param InSection - The section to bake;
+	 * @param InTransform - A time transform to apply to the baked data before writing out;
+	 * @param InMovieScene - The MovieScene that contains InSection (we can't access via the Outer chain from this RTTI
+	 *                       module);
+	 * @param IMovieScenePlayer - The player to drive the InSection with (e.g. a Sequencer instance);
+	 * @param InRefSkeleton - Skeleton that describes the target Skeleton prim bone structure to use (the control rig
+	 *                        may have an arbitrary bone hierarchy, but we always want to write bones compatible with
+	 *                        the target UsdSkelRoot and its child prims);
+	 * @param InSkelRoot - The SkelRoot that we're writing to (in some cases we need to update Mesh prims, and only
+	 *                     the meshes within this SkelRoot will be updated);
+	 * @param OutSkelAnimPrim - The SkelAnimation prim to receive the baked data;
+	 * @param InBlendShapeMap - Optional map describing the stage blend shapes, in case baking of the rig's animation
+	 *                          curves is desired;
+	 * @return Whether the conversion was successful or not.
+	 */
+	USDUTILITIES_API bool ConvertControlRigSection(
+		UMovieSceneControlRigParameterSection* InSection,
+		const FMovieSceneSequenceTransform& InTransform,
+		UMovieScene* InMovieScene,
+		IMovieScenePlayer* InPlayer,
+		const FReferenceSkeleton& InRefSkeleton,
+		pxr::UsdPrim& InSkelRoot,
+		pxr::UsdPrim& OutSkelAnimPrim,
+		const UsdUtils::FBlendShapeMap* InBlendShapeMap = nullptr
+	);
 }
 
 #endif // #if USE_USD_SDK && WITH_EDITOR

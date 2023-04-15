@@ -190,7 +190,7 @@ bool FDisplayClusterRootActorDetailsCustomization::RebuildNodeIdOptionsList()
 	// Fill combobox with the options
 	NodeIdOptions.Reset();
 	NodeIdOptions.Emplace(NodeIdOptionNone);
-	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& Node : ConfigurationData->Cluster->Nodes)
+	for (const TPair<FString, TObjectPtr<UDisplayClusterConfigurationClusterNode>>& Node : ConfigurationData->Cluster->Nodes)
 	{
 		if (!Node.Key.IsEmpty())
 		{

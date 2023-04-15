@@ -40,6 +40,15 @@ void SLevelSnapshotsEditorResults::Construct(const FArguments& InArgs, ULevelSna
 	OnRefreshResultsHandle = InEditorData->OnRefreshResults.AddSP(this, &SLevelSnapshotsEditorResults::RefreshResults, false);
 	
 	FMenuBuilder ShowOptionsMenuBuilder = BuildShowOptionsMenu();
+	
+	FSlateFontInfo SnapshotNameTextFont = FAppStyle::Get().GetFontStyle("Bold");
+	SnapshotNameTextFont.Size = 16;
+
+	FSlateFontInfo SelectedActorCountTextFont = FAppStyle::Get().GetFontStyle("Bold");
+	SelectedActorCountTextFont.Size = 14;
+	
+	FSlateFontInfo MiscActorCountTextFont = FAppStyle::Get().GetFontStyle("Regular");
+	MiscActorCountTextFont.Size = 10;
 
 	ChildSlot
 	[
@@ -68,7 +77,7 @@ void SLevelSnapshotsEditorResults::Construct(const FArguments& InArgs, ULevelSna
 			[
 				SAssignNew(SelectedSnapshotNamePtr, STextBlock)
 				.Text(DefaultNameText)
-				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 16))
+				.Font(SnapshotNameTextFont)
 			]
 		]	
 		
@@ -175,7 +184,7 @@ void SLevelSnapshotsEditorResults::Construct(const FArguments& InArgs, ULevelSna
 					.AutoHeight()
 					[
 						SAssignNew(SelectedActorCountText, STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 14))
+						.Font(SelectedActorCountTextFont)
 						.Justification(ETextJustify::Right)
 					]
 
@@ -183,7 +192,7 @@ void SLevelSnapshotsEditorResults::Construct(const FArguments& InArgs, ULevelSna
 					.AutoHeight()
 					[
 						SAssignNew(MiscActorCountText, STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+						.Font(MiscActorCountTextFont)
 						.Justification(ETextJustify::Right)
 					]
 				]
@@ -323,9 +332,9 @@ TOptional<ULevelSnapshot*> SLevelSnapshotsEditorResults::GetSelectedLevelSnapsho
 	return ensure(EditorDataPtr.IsValid()) ? EditorDataPtr->GetActiveSnapshot() : TOptional<ULevelSnapshot*>();
 }
 
-void SLevelSnapshotsEditorResults::OnSnapshotSelected(const TOptional<ULevelSnapshot*>& InLevelSnapshot)
+void SLevelSnapshotsEditorResults::OnSnapshotSelected(ULevelSnapshot* InLevelSnapshot)
 {	
-	if (InLevelSnapshot.IsSet() && InLevelSnapshot.GetValue())
+	if (InLevelSnapshot)
 	{
 		UpdateSnapshotNameText(InLevelSnapshot);
 		
@@ -491,10 +500,17 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 			}
 
 			UObject* WorldObject = Group->GetWorldObject();
-
 			if (!ensureMsgf(WorldObject,
 				TEXT("%hs: WorldObject is not valid. Group name: %s"), __FUNCTION__, *Group->GetDisplayName().ToString()))
 			{
+				return;
+			}
+			
+			if (Group->GetWidgetCheckedState() == ECheckBoxState::Unchecked)
+			{
+				SelectionMap.RemoveObjectPropertiesFromMap(WorldObject);
+				SelectionMap.RemoveComponentSelection(Cast<AActor>(WorldObject));
+				SelectionMap.RemoveCustomEditorSubobjectToRecreate(WorldObject, Group->GetSnapshotObject());
 				return;
 			}
 
@@ -511,7 +527,7 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 			}
 			
 			FPropertySelection CheckedNodeFieldPaths;
-			if (const FPropertySelection* PropertySelection = SelectionMap.GetSelectedProperties(WorldObject))
+			if (const FPropertySelection* PropertySelection = SelectionMap.GetObjectSelection(WorldObject).GetPropertySelection())
 			{
 				// Make a copy of the property selection. If a node is unchecked, we'll remove it from the copy.
 				CheckedNodeFieldPaths = *PropertySelection;
@@ -521,7 +537,6 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 
 			UE::LevelSnapshots::FAddedAndRemovedComponentInfo NewComponentSelection;
 			const UE::LevelSnapshots::FAddedAndRemovedComponentInfo* OldComponentSelection = SelectionMap.GetObjectSelection(WorldObject).GetComponentSelection();
-
 			if (OldComponentSelection)
 			{
 				NewComponentSelection.SnapshotComponentsToAdd = OldComponentSelection->SnapshotComponentsToAdd;
@@ -583,8 +598,6 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 
 			if (UncheckedChildPropertyNodes.Num())
 			{
-				SelectionMap.RemoveObjectPropertiesFromMap(WorldObject);
-
 				for (const FLevelSnapshotsEditorResultsRowPtr& ChildRow : UncheckedChildPropertyNodes)
 				{
 					if (ChildRow.IsValid())
@@ -595,7 +608,11 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 					}
 				}
 
-				if (!CheckedNodeFieldPaths.IsEmpty())
+				if (CheckedNodeFieldPaths.IsEmpty())
+				{
+					SelectionMap.RemoveObjectPropertiesFromMap(WorldObject);
+				}
+				else
 				{
 					SelectionMap.AddObjectProperties(WorldObject, CheckedNodeFieldPaths);
 				}
@@ -652,29 +669,19 @@ void SLevelSnapshotsEditorResults::BuildSelectionSetFromSelectedPropertiesInEach
 	// Added actors
 	for (const FLevelSnapshotsEditorResultsRowPtr& Group : TreeViewAddedActorGroupObjects)
 	{
-		if (Group.IsValid())
+		if (Group.IsValid() && Group->GetWidgetCheckedState() != ECheckBoxState::Checked)
 		{
-			if (Group->GetWidgetCheckedState() != ECheckBoxState::Unchecked)
-			{
-				// Add to PropertyMap
-				if (AActor* WorldActor = Cast<AActor>(Group->GetWorldObject()))
-				{
-					PropertySelectionMap.AddNewActorToDespawn(WorldActor);
-				}
-			}
+			AActor* WorldActor = Cast<AActor>(Group->GetWorldObject());
+			PropertySelectionMap.RemoveNewActorToDespawn(WorldActor);
 		}
 	}
 
 	// Removed actors
 	for (const FLevelSnapshotsEditorResultsRowPtr& Group : TreeViewRemovedActorGroupObjects)
 	{
-		if (Group.IsValid())
+		if (Group.IsValid() && Group->GetWidgetCheckedState() != ECheckBoxState::Checked)
 		{
-			if (Group->GetWidgetCheckedState() != ECheckBoxState::Unchecked)
-			{
-				// Add to PropertyMap
-				PropertySelectionMap.AddDeletedActorToRespawn(Group->GetObjectPath());
-			}
+			PropertySelectionMap.RemoveDeletedActorToRespawn(Group->GetObjectPath());
 		}
 	}
 
@@ -833,16 +840,13 @@ void SLevelSnapshotsEditorResults::GenerateTreeView(const bool bSnapshotHasChang
 	FlushMemory(!bSnapshotHasChanged);
 	
 	UFilteredResults* FilteredResults = EditorDataPtr->GetFilterResults(); 
-	const TWeakObjectPtr<ULevelSnapshotFilter>& UserFilters = FilteredResults->GetUserFilters();
-
 	FilteredResults->UpdateFilteredResults(EditorDataPtr->GetEditorWorld());
 
 	FilterListData = FilteredResults->GetFilteredData();
-	
 	SplitterManagerPtr = MakeShared<FLevelSnapshotsEditorResultsSplitterManager>(FLevelSnapshotsEditorResultsSplitterManager());
 
 	// Create root headers
-	if (FilterListData.GetModifiedActors_AllowedByFilter().Num())
+	if (FilterListData.HasAnyModifiedActors())
 	{
 		FLevelSnapshotsEditorResultsRowPtr ModifiedActorsHeader = MakeShared<FLevelSnapshotsEditorResultsRow>(
 			FLevelSnapshotsEditorResultsRow(FText::GetEmpty(), FLevelSnapshotsEditorResultsRow::TreeViewHeader, ECheckBoxState::Checked, SharedThis(this)));
@@ -851,8 +855,8 @@ void SLevelSnapshotsEditorResults::GenerateTreeView(const bool bSnapshotHasChang
 			LOCTEXT("ColumnName_CurrentValue", "Current Value"),
 			LOCTEXT("ColumnName_ValueToRestore", "Value to Restore")
 			});
-
-		if (GenerateTreeViewChildren_ModifiedActors(ModifiedActorsHeader, UserFilters.Get()))
+		
+		if (GenerateTreeViewChildren_ModifiedActors(ModifiedActorsHeader))
 		{
 			TreeViewRootHeaderObjects.Add(ModifiedActorsHeader);
 		}
@@ -903,50 +907,38 @@ void SLevelSnapshotsEditorResults::GenerateTreeView(const bool bSnapshotHasChang
 	ExecuteResultsViewSearchOnAllActors(GetSearchStringFromSearchInputField());
 }
 
-bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_ModifiedActors(FLevelSnapshotsEditorResultsRowPtr ModifiedActorsHeader, ULevelSnapshotFilter* UserFilters)
+bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_ModifiedActors(FLevelSnapshotsEditorResultsRowPtr ModifiedActorsHeader)
 {
 	check(ModifiedActorsHeader);
 	
-	const TSet<TWeakObjectPtr<AActor>>& ActorsToConsider = FilterListData.GetModifiedActors_AllowedByFilter();
-	TSet<FSoftObjectPath> EvaluatedObjects;
-
-	for (const TWeakObjectPtr<AActor>& WeakWorldActor : ActorsToConsider)
+	FilterListData.ForEachModifiedActor([this, &ModifiedActorsHeader](AActor* WorldActor)
 	{
-		AActor* WorldActor = WeakWorldActor.IsValid() ? WeakWorldActor.Get() : nullptr;
-		if (!ensure(WorldActor) || !UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(WorldActor))
+		if (!UE::LevelSnapshots::Restorability::IsActorDesirableForCapture(WorldActor))
 		{
-			continue;
-		}
-
-		// Get remaining properties after filter
-		if (UserFilters)
-		{
-			FilterListData.ApplyFilterToFindSelectedProperties(WorldActor, UserFilters);
+			return;
 		}
 
 		const FPropertySelectionMap& ModifiedSelectedActors = FilterListData.GetModifiedEditorObjectsSelectedProperties_AllowedByFilter();
 		if (!ModifiedSelectedActors.HasChanges(WorldActor))
 		{
-			continue;
+			return;
 		}
 
-		TWeakObjectPtr<AActor> WeakSnapshotActor = FilterListData.GetSnapshotCounterpartFor(WorldActor);
-
-		const FString& ActorName = WorldActor->GetActorLabel();
 
 		// Create group
+		const FString& ActorName = WorldActor->GetActorLabel();
 		FLevelSnapshotsEditorResultsRowPtr NewActorGroup = MakeShared<FLevelSnapshotsEditorResultsRow>(
 			FLevelSnapshotsEditorResultsRow(
-				FText::FromString(ActorName), FLevelSnapshotsEditorResultsRow::ModifiedActorGroup, ECheckBoxState::Checked, SharedThis(this), ModifiedActorsHeader));
-		
+				FText::FromString(ActorName),
+				FLevelSnapshotsEditorResultsRow::ModifiedActorGroup, ECheckBoxState::Checked,
+				SharedThis(this),
+				ModifiedActorsHeader)
+				);
+		TWeakObjectPtr<AActor> WeakSnapshotActor = FilterListData.GetSnapshotCounterpartFor(WorldActor);
 		NewActorGroup->InitActorRow(WeakSnapshotActor.IsValid() ? WeakSnapshotActor.Get() : nullptr, WorldActor);
-
 		ModifiedActorsHeader->AddToChildRows(NewActorGroup);
 		
 		TreeViewModifiedActorGroupObjects.Add(NewActorGroup);
-
-		// Cache search terms using the desired leaf properties for each object newly added to ModifiedActorsSelectedProperties this loop
-		FString NewCachedSearchTerms = WorldActor->GetHumanReadableName();
 
 		struct Local
 		{
@@ -958,7 +950,7 @@ bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_ModifiedActors(FLeve
 				{
 					for (UObject* SubObject : SubObjects)
 					{
-						if (const FPropertySelection* SubObjectProperties = InSelectionMap.GetSelectedProperties(SubObject))
+						if (const FPropertySelection* SubObjectProperties = InSelectionMap.GetObjectSelection(SubObject).GetPropertySelection())
 						{
 							NewCachedSearchTerms += " " + SubObject->GetName();
 							for (const TFieldPath<FProperty>& LeafProperty : SubObjectProperties->GetSelectedLeafProperties())
@@ -972,8 +964,10 @@ bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_ModifiedActors(FLeve
 				}
 			}
 		};
-
-		if (const FPropertySelection* ActorProperties = ModifiedSelectedActors.GetSelectedProperties(WorldActor))
+		
+		// Cache search terms using the desired leaf properties for each object newly added to ModifiedActorsSelectedProperties this loop
+		FString NewCachedSearchTerms = WorldActor->GetHumanReadableName();
+		if (const FPropertySelection* ActorProperties = ModifiedSelectedActors.GetObjectSelection(WorldActor).GetPropertySelection())
 		{
 			for (const TFieldPath<FProperty>& LeafProperty : ActorProperties->GetSelectedLeafProperties())
 			{
@@ -982,9 +976,8 @@ bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_ModifiedActors(FLeve
 		}
 
 		Local::RecursivelyIterateOverSubObjectsAndReturnSearchTerms(WorldActor, ModifiedSelectedActors, NewCachedSearchTerms);
-		
 		NewActorGroup->SetCachedSearchTerms(NewCachedSearchTerms);
-	}
+	});
 
 	return TreeViewModifiedActorGroupObjects.Num() > 0;
 }
@@ -1016,25 +1009,25 @@ bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_AddedActors(FLevelSn
 
 bool SLevelSnapshotsEditorResults::GenerateTreeViewChildren_RemovedActors(FLevelSnapshotsEditorResultsRowPtr RemovedActorsHeader)
 {
-	check(RemovedActorsHeader);
-	check (EditorDataPtr.IsValid());
-	check (EditorDataPtr->GetActiveSnapshot().IsSet());
+	if (!ensure(RemovedActorsHeader && EditorDataPtr.IsValid() && EditorDataPtr->GetActiveSnapshot() != nullptr))
+	{
+		return false;
+	}
 	
-	TObjectPtr<ULevelSnapshot> ActiveSnapshot = EditorDataPtr->GetActiveSnapshot().GetValue();
-	check(ActiveSnapshot);
-	
+	const TObjectPtr<ULevelSnapshot> ActiveSnapshot = EditorDataPtr->GetActiveSnapshot();
 	for (const FSoftObjectPath& ActorPath : FilterListData.GetRemovedOriginalActorPaths_AllowedByFilter())
 	{
-		FString ActorName = ActiveSnapshot->GetActorLabel(ActorPath);
-		
-		// Create group
+		const FString ActorName = ActiveSnapshot->GetActorLabel(ActorPath);
 		FLevelSnapshotsEditorResultsRowPtr NewActorRow = MakeShared<FLevelSnapshotsEditorResultsRow>(
-			FLevelSnapshotsEditorResultsRow(
-				FText::FromString(ActorName), FLevelSnapshotsEditorResultsRow::RemovedActorToAdd, ECheckBoxState::Checked, SharedThis(this), RemovedActorsHeader));
+			FText::FromString(ActorName),
+			FLevelSnapshotsEditorResultsRow::RemovedActorToAdd,
+			ECheckBoxState::Checked,
+			SharedThis(this),
+			RemovedActorsHeader
+		);
+		
 		NewActorRow->InitRemovedActorRow(ActorPath);
-
 		RemovedActorsHeader->AddToChildRows(NewActorRow);
-
 		TreeViewRemovedActorGroupObjects.Add(NewActorRow);
 	}
 

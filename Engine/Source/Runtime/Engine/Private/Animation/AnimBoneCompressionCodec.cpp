@@ -3,6 +3,8 @@
 #include "Animation/AnimBoneCompressionCodec.h"
 #include "Animation/AnimBoneCompressionSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimBoneCompressionCodec)
+
 UAnimBoneCompressionCodec::UAnimBoneCompressionCodec(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, Description(TEXT("None"))
@@ -43,7 +45,16 @@ FString UAnimBoneCompressionCodec::GetCodecDDCHandle() const
 }
 
 #if WITH_EDITORONLY_DATA
+void UAnimBoneCompressionCodec::PopulateDDCKey(const UE::Anim::Compression::FAnimDDCKeyArgs& KeyArgs, FArchive& Ar)
+{
+}
+
+void UAnimBoneCompressionCodec::PopulateDDCKey(const UAnimSequenceBase& AnimSeq, FArchive& Ar)
+{
+}
+
 void UAnimBoneCompressionCodec::PopulateDDCKey(FArchive& Ar)
 {
 }
 #endif
+

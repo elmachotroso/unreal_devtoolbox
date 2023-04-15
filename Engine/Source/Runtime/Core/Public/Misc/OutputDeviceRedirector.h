@@ -2,17 +2,20 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/OutputDevice.h"
 #include "Containers/Array.h"
-#include "Containers/UnrealString.h"
+#include "Containers/ContainerAllocationPolicies.h"
+#include "CoreTypes.h"
+#include "Logging/LogVerbosity.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/OutputDevice.h"
+#include "Templates/PimplPtr.h"
 #include "UObject/NameTypes.h"
 
 /*-----------------------------------------------------------------------------
 FOutputDeviceRedirector.
 -----------------------------------------------------------------------------*/
 
-class FLogAllocator;
+namespace UE::Private { struct FOutputDeviceRedirectorState; }
 
 /** The type of lines buffered by secondary threads. */
 struct CORE_API FBufferedLine
@@ -28,8 +31,7 @@ struct CORE_API FBufferedLine
 	const ELogVerbosity::Type Verbosity;
 	bool bExternalAllocation;
 
-	FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1, FLogAllocator* ExternalAllocator = nullptr);
-	FBufferedLine(const TCHAR* InData, const FLazyName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1, FLogAllocator* ExternalAllocator = nullptr);
+	FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1);
 
 	FBufferedLine(FBufferedLine& InBufferedLine, EBufferedLineInit Unused)
 		: Data(InBufferedLine.Data)
@@ -48,179 +50,145 @@ struct CORE_API FBufferedLine
 	~FBufferedLine();
 };
 
+enum class EOutputDeviceRedirectorFlushOptions : uint32
+{
+	None = 0,
+
+	/**
+		* Flush asynchronously when possible.
+		*
+		* When this flag is set and there is a dedicated primary logging thread, the flush function returns immediately.
+		* Otherwise, the flush function does not return until the requested type of flush is complete.
+		*/
+	Async = 1 << 0,
+};
+
+ENUM_CLASS_FLAGS(EOutputDeviceRedirectorFlushOptions);
+
 /**
-* Class used for output redirection to allow logs to show
-*/
-class CORE_API FOutputDeviceRedirector : public FOutputDevice
+ * Class used for output redirection to allow logs to show in multiple output devices.
+ */
+class CORE_API FOutputDeviceRedirector final : public FOutputDevice
 {
 public:
-
-	typedef TArray<FOutputDevice*, TInlineAllocator<16> > TLocalOutputDevicesArray;
-
-private:
-	enum { InlineLogEntries = 16 };
-
-	/** A FIFO of lines logged by non-master threads. */
-	TArray<FBufferedLine, TInlineAllocator<InlineLogEntries>> BufferedLines;
-
-	/** A FIFO backlog of messages logged before the editor had a chance to intercept them. */
-	TArray<FBufferedLine> BacklogLines;
-
-	/** Array of output devices to redirect to using buffering mechanism */
-	TArray<FOutputDevice*> BufferedOutputDevices;
-
-	/** Array of output devices that can redirected to without bufffering */
-	TArray<FOutputDevice*> UnbufferedOutputDevices;
-
-	/** The master thread ID.  Logging from other threads will be buffered for processing by the master thread. */
-	uint32 MasterThreadID;
-
-	/** Whether backlogging is enabled. */
-	bool bEnableBacklog;
-
-	FLogAllocator* BufferedLinesAllocator;
-
-	/** Objects used for synchronization via a scoped lock */
-	FCriticalSection	SynchronizationObject;
-	FCriticalSection	BufferSynchronizationObject;
-	FCriticalSection	OutputDevicesMutex;
-	FThreadSafeCounter	OutputDevicesLockCounter;
-
-	/**
-	* The unsynchronized version of FlushThreadedLogs.
-	* Assumes that the caller holds a lock on SynchronizationObject.
-	* @param bUseAllDevices - if true this method will use all output devices
-	*/
-	void InternalFlushThreadedLogs(TLocalOutputDevicesArray& InBufferedDevices, TLocalOutputDevicesArray& InUnbufferedDevices, bool bUseAllDevices);
-	void InternalFlushThreadedLogs(bool bUseAllDevices);
-
-	/** Locks OutputDevices arrays so that nothing can be added or removed from them */
-	void LockOutputDevices(TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices);
-
-	/** Unlocks OutputDevices arrays */
-	void UnlockOutputDevices();
-
-	friend struct FOutputDevicesLock;
-
-	/** Helper struct for scope locking OutputDevices arrays */
-	struct FOutputDevicesLock
-	{
-		FOutputDeviceRedirector* Redirector;
-		FOutputDevicesLock(FOutputDeviceRedirector* InRedirector, TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices)
-			: Redirector(InRedirector)
-		{
-			Redirector->LockOutputDevices(OutBufferedDevices, OutUnbufferedDevices);
-		}
-		~FOutputDevicesLock()
-		{
-			Redirector->UnlockOutputDevices();
-		}
-	};
-
-	void EmptyBufferedLines();
-
-	template<class T>
-	void SerializeImpl(const TCHAR* Data, ELogVerbosity::Type Verbosity, T& CategoryName, double Time);
-
-public:
+	UE_DEPRECATED(5.1, "TLocalOutputDevicesArray is being removed. Use TArray<FOutputDevice*, TInlineAllocator<16>>.")
+	typedef TArray<FOutputDevice*, TInlineAllocator<16>> TLocalOutputDevicesArray;
 
 	/** Initialization constructor. */
-	explicit FOutputDeviceRedirector(FLogAllocator* Allocator = nullptr);
+	FOutputDeviceRedirector();
 
-	/**
-	* Get the GLog singleton
-	*/
+	/** Get the GLog singleton. */
 	static FOutputDeviceRedirector* Get();
 
 	/**
-	* Adds an output device to the chain of redirections.
-	*
-	* @param OutputDevice	output device to add
-	*/
+	 * Adds an output device to the chain of redirections.
+	 *
+	 * @param OutputDevice   Output device to add.
+	 */
 	void AddOutputDevice(FOutputDevice* OutputDevice);
 
 	/**
-	* Removes an output device from the chain of redirections.
-	*
-	* @param OutputDevice	output device to remove
-	*/
+	 * Removes an output device from the chain of redirections.
+	 *
+	 * @param OutputDevice   Output device to remove.
+	 */
 	void RemoveOutputDevice(FOutputDevice* OutputDevice);
 
 	/**
-	* Returns whether an output device is currently in the list of redirectors.
-	*
-	* @param	OutputDevice	output device to check the list against
-	* @return	true if messages are currently redirected to the the passed in output device, false otherwise
-	*/
+	 * Returns whether an output device is in the list of redirections.
+	 *
+	 * @param OutputDevice   Output device to check the list against.
+	 * @return true if messages are currently redirected to the the passed in output device, false otherwise.
+	 */
 	bool IsRedirectingTo(FOutputDevice* OutputDevice);
 
 	/** Flushes lines buffered by secondary threads. */
-	virtual void FlushThreadedLogs();
+	void FlushThreadedLogs(EOutputDeviceRedirectorFlushOptions Options = EOutputDeviceRedirectorFlushOptions::None);
+
+	/** See Panic. */
+	UE_DEPRECATED(5.1, "Use Panic() when the caller is handling a crash, otherwise use FlushThreadedLogs().")
+	void PanicFlushThreadedLogs() { Panic(); }
 
 	/**
-	*	Flushes lines buffered by secondary threads.
-	*	Only used if a background thread crashed and we needed to push the callstack into the log.
-	*/
-	virtual void PanicFlushThreadedLogs();
+	 * Serializes the current backlog to the specified output device.
+	 * @param OutputDevice   Output device that will receive the current backlog.
+	 */
+	void SerializeBacklog(FOutputDevice* OutputDevice);
 
 	/**
-	* Serializes the current backlog to the specified output device.
-	* @param OutputDevice	- Output device that will receive the current backlog
-	*/
-	virtual void SerializeBacklog(FOutputDevice* OutputDevice);
+	 * Enables or disables the backlog.
+	 *
+	 * @param bEnable   Starts saving a backlog if true, disables and discards any backlog if false.
+	 */
+	void EnableBacklog(bool bEnable);
 
 	/**
-	* Enables or disables the backlog.
-	* @param bEnable	- Starts saving a backlog if true, disables and discards any backlog if false
-	*/
-	virtual void EnableBacklog(bool bEnable);
+	 * Sets the current thread to be the thread that redirects logs to buffered output devices.
+	 *
+	 * The current thread can redirect to buffered output devices without buffering, and becomes
+	 * responsible for flushing buffered logs from secondary threads. Logs from secondary threads
+	 * will not be redirected unless the current thread periodically flushes threaded logs.
+	 */
+	void SetCurrentThreadAsPrimaryThread();
+
+	UE_DEPRECATED(5.1, "Use SetCurrentThreadAsPrimaryThread().")
+	inline void SetCurrentThreadAsMasterThread() { SetCurrentThreadAsPrimaryThread(); }
 
 	/**
-	* Sets the current thread to be the master thread that prints directly
-	* (isn't queued up)
-	*/
-	virtual void SetCurrentThreadAsMasterThread();
+	 * Starts a dedicated primary thread that redirects logs to buffered output devices.
+	 *
+	 * A thread will not be started for certain configurations or platforms, or when threading is disabled.
+	 *
+	 * @return true if a dedicated primary logging thread is running, false otherwise.
+	 */
+	bool TryStartDedicatedPrimaryThread();
 
 	/**
-	* Serializes the passed in data via all current output devices.
-	*
-	* @param	Data	Text to log
-	* @param	Event	Event name used for suppression purposes
-	*/
-	virtual void Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category, const double Time) override;
+	 * Serializes the passed in data via all current output devices.
+	 *
+	 * @param Data   Text to log.
+	 * @param Event  Event name used for suppression purposes.
+	 */
+	void Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const FName& Category, const double Time) final;
 
 	/**
-	* Serializes the passed in data via all current output devices.
-	*
-	* @param	Data	Text to log
-	* @param	Event	Event name used for suppression purposes
-	*/
-	virtual void Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category) override;
+	 * Serializes the passed in data via all current output devices.
+	 *
+	 * @param Data   Text to log.
+	 * @param Event  Event name used for suppression purposes.
+	 */
+	void Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const FName& Category) final;
 	
-	/** Same as Serialize() but FName creation. Only needed to support 
-	*
-	*/
+	/** Same as Serialize(). */
+	void RedirectLog(const FName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data);
 	void RedirectLog(const FLazyName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data);
 
-	void RedirectLog(const FName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data);
+	/** Passes on the flush request to all current output devices. */
+	void Flush() final;
 
 	/**
-	* Passes on the flush request to all current output devices.
-	*/
-	void Flush() override;
+	 * Attempts to set the calling thread as the panic thread and enable panic mode.
+	 *
+	 * Only one thread can be the panic thread. Subsequent calls from other threads are ignored.
+	 * Only redirects logs to panic-safe output devices from this point forward.
+	 * Makes the calling thread the primary log thread as well.
+	 * Flushes buffered logs to panic-safe output devices.
+	 * Flushes panic-safe output devices.
+	 */
+	void Panic();
 
 	/**
-	* Closes output device and cleans up. This can't happen in the destructor
-	* as we might have to call "delete" which cannot be done for static/ global
-	* objects.
-	*/
-	void TearDown() override;
+	 * Closes output device and cleans up.
+	 *
+	 * This can't happen in the destructor as we might have to call "delete" which cannot be done for static/global objects.
+	 */
+	void TearDown() final;
 
 	/**
-	* Determine if backlog is enabled
-	*/
-	bool IsBacklogEnabled() const
-	{
-		return bEnableBacklog;
-	}
+	 * Determine if the backlog is enabled.
+	 */
+	bool IsBacklogEnabled() const;
+
+private:
+	TPimplPtr<UE::Private::FOutputDeviceRedirectorState> State;
 };

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DSP/Flanger.h"
+#include "DSP/FloatArrayMath.h"
 
 namespace Audio
 {
@@ -81,6 +82,6 @@ namespace Audio
 			ScratchBuffer[SampleIndex] = DelayBuffer.ProcessAudioSample(InBuffer[SampleIndex]);
 		}
 
-		BufferWeightedSumFast(ScratchBuffer, DelayedSignalLevel, InBuffer, NonDelayedSignalLevel, OutBuffer);
+		ArrayWeightedSum(ScratchBuffer, DelayedSignalLevel, InBuffer, NonDelayedSignalLevel, OutBuffer);
 	}
 }

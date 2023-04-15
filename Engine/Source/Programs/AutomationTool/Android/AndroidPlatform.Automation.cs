@@ -28,6 +28,139 @@ public class AndroidPlatform : Platform
     private const string TargetAndroidLocation = "obb/";
 	private const string TargetAndroidTemp = "/data/local/tmp/";
 
+	public class AdbCreatedProcess : AutomationTool.IProcessResult
+	{
+		private readonly object StopSyncObject = new object();
+		IProcessResult AdbLogProcess;
+		string LogPath;
+		string PackageName;
+		string DeviceName;
+		int LogFileProcessExitCode = 0;
+		bool bStopped = false;
+
+		public AdbCreatedProcess(
+				IProcessResult InAdbLogProcess,
+				string InLogPath,
+				string InPackageName,
+				string InDeviceName)
+		{
+			AdbLogProcess = InAdbLogProcess;
+			LogPath = InLogPath;
+			PackageName = InPackageName;
+			DeviceName = InDeviceName;
+			ProcessManager.AddProcess(this);
+		}
+
+		~AdbCreatedProcess()
+		{
+			ProcessManager.RemoveProcess(this);
+		}
+
+		public void StopProcess(bool KillDescendants = true)
+		{
+			lock (StopSyncObject)
+			{
+				if (!bStopped)
+				{
+					AndroidPlatform.RunAdbCommand(DeviceName, "shell am force-stop " + PackageName);
+					if (!AdbLogProcess.HasExited)
+					{
+						AdbLogProcess.StopProcess(KillDescendants);
+					}
+					DumpDeviceOutputToLogFiles();
+					bStopped = true;
+				}
+			}
+		}
+
+		public bool HasExited
+		{
+			get
+			{
+				if (!bStopped && (AdbLogProcess.HasExited || !IsPackageRunningOnDevice()))
+				{
+					StopProcess();
+				}
+				return bStopped;
+			}
+		}
+
+		public string GetProcessName()
+		{
+			return String.Format("{0}@{1}", PackageName, DeviceName);
+		}
+
+		public void OnProcessExited()
+		{
+		}
+
+		public void DisposeProcess()
+		{
+			AdbLogProcess.DisposeProcess();
+		}
+
+		public void StdOut(object sender, DataReceivedEventArgs e)
+		{
+		}
+
+		public void StdErr(object sender, DataReceivedEventArgs e)
+		{
+		}
+
+		public int ExitCode
+		{
+			get { return LogFileProcessExitCode; }
+			set { LogFileProcessExitCode = value; }
+		}
+
+		public string Output
+		{
+			get { return AdbLogProcess.Output; }
+		}
+
+		public Process ProcessObject
+		{
+			get { return AdbLogProcess.ProcessObject; }
+		}
+
+		public void WaitForExit()
+		{
+			while (!AdbLogProcess.HasExited && IsPackageRunningOnDevice())
+			{
+				Thread.Sleep(100);
+			}
+			StopProcess();
+		}
+
+		public FileReference WriteOutputToFile(string FileName)
+		{
+			return AdbLogProcess.WriteOutputToFile(FileName);
+		}
+
+		private bool IsPackageRunningOnDevice()
+		{
+			ERunOptions Options = ERunOptions.Default | ERunOptions.SpewIsVerbose | ERunOptions.NoLoggingOfRunCommand;
+			IProcessResult Result = AndroidPlatform.RunAdbCommand(DeviceName, "shell ps", null, Options);
+			string ProcessList = Result.Output;
+			bool bIsProcessRunning = ProcessList.Contains(PackageName);
+			return bIsProcessRunning;
+		}
+
+		private void DumpDeviceOutputToLogFiles()
+		{
+			string SanitizedDeviceName = DeviceName.Replace(":", "_");
+			string LogFilename = Path.Combine(LogPath, "devicelog" + SanitizedDeviceName + ".log");
+			string ServerLogFilename = Path.Combine(CmdEnv.LogFolder, "devicelog" + SanitizedDeviceName + ".log");
+			ERunOptions Options = ERunOptions.Default & ~ERunOptions.AllowSpew;
+			IProcessResult LogFileProcess = RunAdbCommand(DeviceName, "logcat -d", null, Options);
+			string AllOutput = LogFileProcess.Output;
+			File.WriteAllText(LogFilename, AllOutput);
+			File.WriteAllText(ServerLogFilename, AllOutput);
+
+			ExitCode = LogFileProcess.ExitCode;
+		}
+	}
+
 	public AndroidPlatform()
 		: base(UnrealTargetPlatform.Android)
 	{
@@ -39,7 +172,7 @@ public class AndroidPlatform : Platform
 	{
 		UEBuildPlatformSDK AndroidSDK = UEBuildPlatformSDK.GetSDKForPlatform("Android");
 
-		return new string[] { AndroidSDK.GetMainVersion() };
+		return AndroidSDK != null ? new string[] { AndroidSDK.GetMainVersion() } : Array.Empty<string>();
 	}
 
 	public override bool GetSDKInstallCommand(out string Command, out string Params, ref bool bRequiresPrivilegeElevation, ref bool bCreateWindow, ITurnkeyContext TurnkeyContext)
@@ -78,25 +211,36 @@ public class AndroidPlatform : Platform
 
 	private static string GetAndroidStudioExe()
 	{
-		if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Linux)
+		if (OperatingSystem.IsLinux())
 		{
 			string UserHome = Environment.GetEnvironmentVariable("HOME");
 			string AndroidStudioExe = Path.Combine(UserHome, "android-studio", "bin", "studio.sh");
 
 			return AndroidStudioExe;
 		}
-		else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
+		else if (OperatingSystem.IsMacOS())
 		{
-			// TODO
-			return "";
+
+			string AndroidStudioExe = "/Applications/Android Studio.app";
+			if (Directory.Exists(AndroidStudioExe))
+			{
+				return AndroidStudioExe;
+			}
+
+			string UserHome = Environment.GetEnvironmentVariable("HOME");
+			AndroidStudioExe = Path.Combine(UserHome, "Applications", "Android Studio.app");
+
+			return AndroidStudioExe;
 		}
 
-		// Win64
+		Debug.Assert(OperatingSystem.IsWindows());
+
 		string DefaultAndroidStudioInstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Android", "Android Studio");
 		string RegValue = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Android Studio", "Path", null) as string;
 		string AndroidStudioInstallDir = RegValue == null ? DefaultAndroidStudioInstallDir : RegValue;
 		return Path.Combine(AndroidStudioInstallDir, "bin", "studio64.exe");
 	}
+
 	private static string GetSdkDir()
 	{
 		string AndroidHome = Environment.GetEnvironmentVariable("ANDROID_HOME");
@@ -105,20 +249,45 @@ public class AndroidPlatform : Platform
 			return AndroidHome;
 		}
 
-		if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Linux)
+		if (OperatingSystem.IsLinux())
 		{
 			string UserHome = Environment.GetEnvironmentVariable("HOME");
 			string AndroidSdkPath = Path.Combine(UserHome, "Android", "Sdk");
 
 			return AndroidSdkPath;
 		}
-		else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
+		else if (OperatingSystem.IsMacOS())
 		{
-			// TODO
-			return "";
+			string BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bash_profile");
+			if (!File.Exists(BashProfilePath))
+			{
+				// Try .bashrc if didn't fine .bash_profile
+				BashProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".bashrc");
+			}
+			if (File.Exists(BashProfilePath))
+			{
+				string[] BashProfileContents = File.ReadAllLines(BashProfilePath);
+
+				// Walk backwards so we keep the last export setting instead of the first
+				string SdkKey = "ANDROID_HOME";
+				for (int LineIndex = BashProfileContents.Length - 1; LineIndex >= 0; --LineIndex)
+				{
+					if (BashProfileContents[LineIndex].StartsWith("export " + SdkKey + "="))
+					{
+						string PathVar = BashProfileContents[LineIndex].Split
+('=')[1].Replace("\"", "");
+Log.TraceInformation("ANDROID_HOME = {0}", PathVar);
+						return PathVar;
+					}
+
+				}
+			}
+
+			return Environment.GetEnvironmentVariable("ANDROID_HOME");
 		}
 
-		// Win64
+		Debug.Assert(OperatingSystem.IsWindows());
+
 		string DefaultSdkDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk");
 		string RegValue = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Android", "SdkPath", null) as string;
 		return RegValue == null ? DefaultSdkDir : RegValue;
@@ -126,24 +295,22 @@ public class AndroidPlatform : Platform
 
 	public override bool UpdateHostPrerequisites(BuildCommand Command, ITurnkeyContext TurnkeyContext, bool bVerifyOnly)
 	{
-		// @todo turnkey: Handle Mac
-		if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
-		{
-			return false;
-		}
-
 		string AndroidStudioExe = GetAndroidStudioExe();
 		string SdkDir = GetSdkDir();
 
-		bool bIsInstalled = File.Exists(AndroidStudioExe) && Directory.Exists(SdkDir);
+		bool bIsMac = (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac);
+		bool bHaveAndroidStudio = (bIsMac && Directory.Exists(AndroidStudioExe)) || 
+					(!bIsMac && FileExists(AndroidStudioExe));
+
+		bool bIsInstalled = bHaveAndroidStudio && Directory.Exists(SdkDir);
 
 		// if we are only verifying, just return the status, and if it's installed, we are done!
 		if (bVerifyOnly || bIsInstalled)
 		{
-			if (!File.Exists(AndroidStudioExe))
+			if (!bHaveAndroidStudio)
 			{
 				TurnkeyContext.ReportError("Android Studio is not installed correctly.");
-	}
+			}
 			if (!Directory.Exists(SdkDir))
 			{
 				TurnkeyContext.ReportError("Android SDK directory is not set correctly.");
@@ -151,7 +318,7 @@ public class AndroidPlatform : Platform
 			return bIsInstalled;
 		}
 
-		if (!File.Exists(AndroidStudioExe))
+		if (!bHaveAndroidStudio)
 		{
 			// get AS installer
 			string OutputPath = TurnkeyContext.RetrieveFileSource("AndroidStudio");
@@ -171,7 +338,7 @@ public class AndroidPlatform : Platform
 
 			if (OutputPath == null)
 			{
-				TurnkeyContext.PauseForUser("Unable to find Android Studio installer. Please download and install Android Studio 3.5.3 from https://developer.android.com/studio/archive before continuing.\n\nMake sure to use the Run Android Studio and complete the first-time setup!\n\nChoose all default options unless you know what you are doing.");
+				TurnkeyContext.PauseForUser("Unable to find Android Studio installer. Please download and install Android Studio 4.0.2 from https://developer.android.com/studio/archive before continuing.\n\nMake sure to use the Run Android Studio and complete the first-time setup!\n\nFollow the steps to install command-line tools (latest):\nhttps://docs.unrealengine.com/5.0/en-US/how-to-setup-up-android-sdk-and-ndk-for-your-unreal-engine-development-environment");
 			}
 			else
 			{
@@ -193,11 +360,63 @@ public class AndroidPlatform : Platform
 				}
 				else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
 				{
-					// TODO
+
+					string UserHome = Environment.GetEnvironmentVariable("HOME");
+					string SourceApp = Path.Combine(OutputPath, "Android Studio.app");
+
+					int ExitCode = TurnkeyContext.RunExternalCommand("/usr/bin/hdiutil", "attach " + OutputPath, false, true, true);
+
+					if (ExitCode != 0)
+					{
+						TurnkeyContext.ReportError($"Android Studio installer failed. ExitCode = {ExitCode}");
+						return false;
+					}
+
+					string AndroidStudioVolume = "";
+					foreach (string Volume in Directory.GetDirectories("/Volumes"))
+
+					{
+						if (Volume.Contains("Android Studio"))
+						{
+							AndroidStudioVolume = Volume;
+							break;
+						}
+					}
+					if (AndroidStudioVolume == "")
+					{
+						TurnkeyContext.ReportError($"Android Studio installer failed. DMG did not mount");
+						return false;
+					}
+
+					string SourcePath = Path.Combine(AndroidStudioVolume, "Android Studio.app");
+					string DestPath = Path.Combine(UserHome, "Applications") + "/";
+					if (SourcePath.Contains(" "))
+					{
+						SourcePath = "\"" + SourcePath + "\"";
+					}
+					if (DestPath.Contains(" "))
+					{
+						DestPath = "\"" + DestPath + "\"";
+					}
+
+					ExitCode = TurnkeyContext.RunExternalCommand("/bin/cp", "-R " + SourcePath + " " + DestPath, false, true, true);
+
+					if (AndroidStudioVolume.Contains(" "))
+					{
+						AndroidStudioVolume = "\"" + AndroidStudioVolume + "\"";
+					}
+					int ExitCode2 = TurnkeyContext.RunExternalCommand("/usr/bin/hdiutil", "detach " + AndroidStudioVolume, false, true, true);
+
+					// give error for cp, but can ignore detach failure
+					if (ExitCode != 0)
+					{
+						TurnkeyContext.ReportError($"Android Studio installer failed. ExitCode = {ExitCode}");
+						return false;
+					}
 				}
 				else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
 				{
-					TurnkeyContext.PauseForUser("Running the Android Studio installer, and then Android Studio for first-time setup!\n\nChoose all default options unless you know what you are doing.");
+					TurnkeyContext.PauseForUser("Running the Android Studio installer, and then Android Studio for first-time setup!\n\nFollow the steps to install command-line tools (latest):\nhttps://docs.unrealengine.com/5.0/en-US/how-to-setup-up-android-sdk-and-ndk-for-your-unreal-engine-development-environment");
 					int ExitCode = TurnkeyContext.RunExternalCommand(OutputPath, "/S", false, true, true);
 					//				Utils.RunLocalProcessAndReturnStdOut(OutputPath, "", out ExitCode, true);
 
@@ -215,23 +434,26 @@ public class AndroidPlatform : Platform
 				}
 
 				// re-query for AS location
-				TurnkeyContext.RunExternalCommand(GetAndroidStudioExe(), "", false, true, false);
+				TurnkeyContext.RunExternalCommand(GetAndroidStudioExe(), "", false, true, bIsMac);
 			}
 		}
 		else
 		{
-			TurnkeyContext.PauseForUser("The Sdk directory was not found. Running the Android Studio to perform first-time setup.\n\nChoose all default options unless you know what you are doing.");
+			TurnkeyContext.PauseForUser("The Sdk directory was not found. Running the Android Studio to perform first-time setup.\n\nFollow the steps to install command-line tools (latest):\nhttps://docs.unrealengine.com/5.0/en-US/how-to-setup-up-android-sdk-and-ndk-for-your-unreal-engine-development-environment");
 
-			TurnkeyContext.RunExternalCommand(AndroidStudioExe, "", false, true, false);
+			TurnkeyContext.RunExternalCommand(AndroidStudioExe, "", false, true, bIsMac);
 		}
 
 		// check to see if the installation worked. If so, continue on!
 		AndroidStudioExe = GetAndroidStudioExe();
 		SdkDir = GetSdkDir();
 
-		bIsInstalled = File.Exists(AndroidStudioExe) && Directory.Exists(SdkDir);
+		bHaveAndroidStudio = (bIsMac && Directory.Exists(AndroidStudioExe)) || 
+					(!bIsMac && FileExists(AndroidStudioExe));
 
-		if (!File.Exists(AndroidStudioExe))
+		bIsInstalled = bHaveAndroidStudio && Directory.Exists(SdkDir);
+
+		if (!bHaveAndroidStudio)
 		{
 			TurnkeyContext.ReportError("Android Studio is not installed correctly, after attempted installation.");
 		}
@@ -547,12 +769,14 @@ public class AndroidPlatform : Platform
 		return PluginExtras;
 	}
 
-	private bool UsingAndroidFileServer(DeploymentContext SC, out bool bEnablePlugin, out string AFSToken, out bool bIsShipping, out bool bIncludeInShipping, out bool bAllowExternalStartInShipping)
+	private bool UsingAndroidFileServer(ProjectParams Params, DeploymentContext SC, out bool bEnablePlugin, out string AFSToken, out bool bIsShipping, out bool bIncludeInShipping, out bool bAllowExternalStartInShipping)
 	{
-		UnrealTargetConfiguration TargetConfiguration = SC.StageTargetConfigurations[0];
+		FileReference RawProjectPath = SC != null ? SC.RawProjectPath : Params.RawProjectPath;
+		UnrealTargetPlatform TargetPlatform = SC != null ? SC.StageTargetPlatform.PlatformType : Params.ClientTargetPlatforms[0].Type;
+		UnrealTargetConfiguration TargetConfiguration = SC != null ? SC.StageTargetConfigurations[0] : Params.ClientConfigsToBuild[0];
 		bIsShipping = TargetConfiguration == UnrealTargetConfiguration.Shipping;
 
-		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(SC.RawProjectPath), SC.StageTargetPlatform.PlatformType);
+		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(RawProjectPath), TargetPlatform);
 		if (!Ini.GetBool("/Script/AndroidFileServerEditor.AndroidFileServerRuntimeSettings", "bEnablePlugin", out bEnablePlugin))
 		{
 			bEnablePlugin = true;
@@ -789,7 +1013,7 @@ public class AndroidPlatform : Platform
 		bool bIsShipping;
 		bool bAFSIncludeInShipping;
 		bool bAFSAllowExternalStartInShipping;
-		UsingAndroidFileServer(SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping);
+		UsingAndroidFileServer(Params, SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping);
 
 		if (bAFSEnablePlugin && !bPackageDataInsideApk)
 		{
@@ -1302,7 +1526,7 @@ public class AndroidPlatform : Platform
 				OBBInstallCommand = bNoObbInstall ? AFSCommand + " deletefile '^mainobb'" : AFSCommand + " push " + Path.GetFileName(ObbName) + " '^mainobb'";
 				PatchInstallCommand = bNoPatchInstall ? AFSCommand + " deletefile '^patchobb'" : AFSCommand + " push " + Path.GetFileName(PatchName) + " '^patchobb'";
 				Overflow1InstallCommand = bNoOverflow1Install ? AFSCommand + " deletefile '^overflow1obb'" : AFSCommand + " push " + Path.GetFileName(Overflow1Name) + " '^overflow1obb'";
-				Overflow1InstallCommand = bNoOverflow2Install ? AFSCommand + " deletefile '^overflow2obb'" : AFSCommand + " push " + Path.GetFileName(Overflow2Name) + " '^overflow2obb'";
+				Overflow2InstallCommand = bNoOverflow2Install ? AFSCommand + " deletefile '^overflow2obb'" : AFSCommand + " push " + Path.GetFileName(Overflow2Name) + " '^overflow2obb'";
 			}
 
 			LogInformation("Writing shell script for install with {0}", bPackageDataInsideApk ? "data in APK" : "separate obb");
@@ -1387,7 +1611,7 @@ public class AndroidPlatform : Platform
 				OBBInstallCommand = bNoObbInstall ? AFSCommand + " deletefile \"^mainobb\"" : AFSCommand + " push " + Path.GetFileName(ObbName) + " \"^mainobb\"";
 				PatchInstallCommand = bNoPatchInstall ? AFSCommand + " deletefile \"^patchobb\"" : AFSCommand + " push " + Path.GetFileName(PatchName) + " \"^patchobb\"";
 				Overflow1InstallCommand = bNoOverflow1Install ? AFSCommand + " deletefile \"^overflow1obb\"" : AFSCommand + " push " + Path.GetFileName(Overflow1Name) + " \"^overflow1obb\"";
-				Overflow1InstallCommand = bNoOverflow2Install ? AFSCommand + " deletefile \"^overflow2obb\"" : AFSCommand + " push " + Path.GetFileName(Overflow2Name) + " \"^overflow2obb\"";
+				Overflow2InstallCommand = bNoOverflow2Install ? AFSCommand + " deletefile \"^overflow2obb\"" : AFSCommand + " push " + Path.GetFileName(Overflow2Name) + " \"^overflow2obb\"";
 			}
 
 			LogInformation("Writing bat for install with {0}", bPackageDataInsideApk ? "data in APK" : "separate OBB");
@@ -1571,7 +1795,7 @@ public class AndroidPlatform : Platform
 		bool bIsShipping;
 		bool bAFSIncludeInShipping;
 		bool bAFSAllowExternalStartInShipping;
-		UsingAndroidFileServer(SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping);
+		UsingAndroidFileServer(Params, SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping);
 		bool bUseAFS = bAFSEnablePlugin && !bPackageDataInsideApk;
 
 		List<string> AddedObbFiles = new List<string>();
@@ -1802,7 +2026,7 @@ public class AndroidPlatform : Platform
 		}
 	}
 
-	private static string GetAdbCommandLine(ProjectParams Params, string SerialNumber, string Args)
+	private static string GetAdbCommandLine(string SerialNumber, string Args)
 	{
 	    if (string.IsNullOrEmpty(SerialNumber) == false)
 		{
@@ -1837,20 +2061,25 @@ public class AndroidPlatform : Platform
 
 	public static IProcessResult RunAdbCommand(ProjectParams Params, string SerialNumber, string Args, string Input = null, ERunOptions Options = ERunOptions.Default, bool bShouldLogCommand = false)
 	{
+		return RunAdbCommand(SerialNumber, Args, Input, Options, bShouldLogCommand);
+	}
+
+	private static IProcessResult RunAdbCommand(string SerialNumber, string Args, string Input = null, ERunOptions Options = ERunOptions.Default, bool bShouldLogCommand = false)
+	{
 		string AdbCommand = Environment.ExpandEnvironmentVariables("%ANDROID_HOME%/platform-tools/adb" + (RuntimePlatform.IsWindows ? ".exe" : ""));
 		if (Options.HasFlag(ERunOptions.AllowSpew) || Options.HasFlag(ERunOptions.SpewIsVerbose))
 		{
 			LastSpewFilename = "";
-			return Run(AdbCommand, GetAdbCommandLine(Params, SerialNumber, Args), Input, Options, SpewFilterCallback: new ProcessResult.SpewFilterCallbackType(ADBSpewFilter));
+			return Run(AdbCommand, GetAdbCommandLine(SerialNumber, Args), Input, Options, SpewFilterCallback: new ProcessResult.SpewFilterCallbackType(ADBSpewFilter));
 		}
-		return Run(AdbCommand, GetAdbCommandLine(Params, SerialNumber, Args), Input, Options);
+		return Run(AdbCommand, GetAdbCommandLine(SerialNumber, Args), Input, Options);
 	}
 
 	private string RunAndLogAdbCommand(ProjectParams Params, string SerialNumber, string Args, out int SuccessCode)
 	{
 		string AdbCommand = Environment.ExpandEnvironmentVariables("%ANDROID_HOME%/platform-tools/adb" + (RuntimePlatform.IsWindows ? ".exe" : ""));
 		LastSpewFilename = "";
-		return RunAndLog(CmdEnv, AdbCommand, GetAdbCommandLine(Params, SerialNumber, Args), out SuccessCode, SpewFilterCallback: new ProcessResult.SpewFilterCallbackType(ADBSpewFilter));
+		return RunAndLog(CmdEnv, AdbCommand, GetAdbCommandLine(SerialNumber, Args), out SuccessCode, SpewFilterCallback: new ProcessResult.SpewFilterCallbackType(ADBSpewFilter));
 	}
 
 	public override void GetConnectedDevices(ProjectParams Params, out List<string> Devices)
@@ -1999,7 +2228,7 @@ public class AndroidPlatform : Platform
 		bool bIsShipping;
 		bool bAFSIncludeInShipping;
 		bool bAFSAllowExternalStartInShipping;
-		if (UsingAndroidFileServer(SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping))
+		if (UsingAndroidFileServer(Params, SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping))
 		{
 			return RetrieveDeployedManifestsAFS(Params, SC, DeviceName, out UFSManifests, out NonUFSManifests, AFSToken);
 		}
@@ -3176,7 +3405,7 @@ public class AndroidPlatform : Platform
 		bool bAFSAllowExternalStartInShipping;
 
 		// Pick the proper deploy method
-		if (UsingAndroidFileServer(SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping))
+		if (UsingAndroidFileServer(Params, SC, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping))
 		{
 			DeployAndroidFileServer(Params, SC, AFSToken);
 		}
@@ -3276,11 +3505,7 @@ public class AndroidPlatform : Platform
 
 			int StoreVersionOffset = 0;
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(SC.RawProjectPath), SC.StageTargetPlatform.PlatformType);
-			if (ApkName.Contains("-armv7-"))
-			{
-				Ini.GetInt32("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "StoreVersionOffsetArmV7", out StoreVersionOffset);
-			}
-			else if (ApkName.Contains("-arm64-"))
+			if (ApkName.Contains("-arm64-"))
 			{
 				Ini.GetInt32("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "StoreVersionOffsetArm64", out StoreVersionOffset);
 			}
@@ -3550,19 +3775,70 @@ public class AndroidPlatform : Platform
 		return DeviceArch;
 	}
 
+	private bool DeployClientCmdLineAFS(ProjectParams Params, string DeviceName, string PackageName, string AFSToken, string ClientCmdLine)
+	{
+		AndroidFileClient client = new AndroidFileClient(DeviceName);
+		if (!client.OpenConnection())
+		{
+			Log.TraceInformation("DeployClientCmdLine: Trying to start file server {0}", PackageName);
+			if (!client.StartServer(PackageName, AFSToken))
+			{
+				Log.TraceInformation("DeployClientCmdLine: Failed to start server {0}, ignoring client command line", PackageName);
+				return false;
+			}
+		}
+
+		// verify connection to the correct server
+		string DevicePackageName = client.Query("^packagename");
+		if (DevicePackageName != PackageName)
+		{
+			Log.TraceInformation("DeployClientCmdLine: Connected to wrong server {0}, trying again", DevicePackageName);
+			client.TerminateServer();
+
+			Log.TraceInformation("DeployClientCmdLine: Trying to start file server {0}", PackageName);
+			if (!client.StartServer(PackageName, AFSToken))
+			{
+				Log.TraceInformation("DeployClientCmdLine: Failed to start server {0}, ignoring client command line", PackageName);
+				return false;
+			}
+		}
+
+		Log.TraceInformation("Writing ClientCmdLine to remote ^commandfile: {0}", ClientCmdLine);
+		client.FileWriteString(ClientCmdLine, "^commandfile");
+		client.TerminateServer();
+		client.CloseConnection();
+		return true;
+	}
+
+	private bool DeployClientCmdLineADB(ProjectParams Params, string DeviceName, string PackageName, string ClientCmdLine)
+	{
+		string DeviceStorageQueryCommand = GetStorageQueryCommand();
+		IProcessResult StorageResult = RunAdbCommand(Params, DeviceName, DeviceStorageQueryCommand, null, ERunOptions.AppMustExist);
+		string StorageLocation = StorageResult.Output.Trim();
+		string RemoteDir = StorageLocation + "/UnrealGame/" + Params.ShortProjectName;
+		string ClientCmdLineTmpFile = Path.GetTempFileName();
+		string ClientCmdLineRemoteFile = RemoteDir + "/UECommandLine.txt";
+		File.WriteAllText(ClientCmdLineTmpFile, ClientCmdLine);
+		Log.TraceInformation("Pushing ClientCmdLine to remote file {0}: {1}", ClientCmdLineRemoteFile, ClientCmdLine);
+		RunAdbCommand(DeviceName, String.Format("push {0} {1}", ClientCmdLineTmpFile, ClientCmdLineRemoteFile));
+		File.Delete(ClientCmdLineTmpFile);
+		return true;
+	}
+
+	public override void ModifyFileHostAddresses(List<string> HostAddresses)
+	{
+		HostAddresses.Insert(0, "127.0.0.1");
+	}
+
 	public override IProcessResult RunClient(ERunOptions ClientRunFlags, string ClientApp, string ClientCmdLine, ProjectParams Params)
 	{
 		IProcessResult Result = null;
-		//make a copy of the device names, we'll be working through them
-		List<string> DeviceNames = new List<string>();
-		//same with the package names
-		List<string> PackageNames = new List<string>();
+
+		string LogPath = Path.Combine(Params.BaseStageDirectory, "Android\\logs");
+		Directory.CreateDirectory(LogPath);
 
 		foreach (string DeviceName in Params.DeviceNames)
 		{
-			//save the device name
-			DeviceNames.Add(DeviceName);
-
 			//get the package name and save that
 			string DeviceArchitecture = GetBestDeviceArchitecture(Params, DeviceName);
 
@@ -3579,7 +3855,6 @@ public class AndroidPlatform : Platform
 			{
 				throw new AutomationException(ExitCode.Error_AppNotFound, "Failed to find application " + ApkName);
 			}
-			
 
 			// run aapt to get the name of the intent
 			string PackageName = GetPackageInfo(ApkName, false);
@@ -3588,87 +3863,42 @@ public class AndroidPlatform : Platform
 				throw new AutomationException(ExitCode.Error_FailureGettingPackageInfo, "Failed to get package name from " + ClientApp);
 			}
 
-			PackageNames.Add(PackageName);
+			// push ClientCmdLine args as a file to the device to override the stage/apk command line
+			{
+				bool bAFSEnablePlugin;
+				string AFSToken;
+				bool bIsShipping;
+				bool bAFSIncludeInShipping;
+				bool bAFSAllowExternalStartInShipping;
+				if (UsingAndroidFileServer(Params, null, out bAFSEnablePlugin, out AFSToken, out bIsShipping, out bAFSIncludeInShipping, out bAFSAllowExternalStartInShipping))
+				{
+					DeployClientCmdLineAFS(Params, DeviceName, PackageName, AFSToken, ClientCmdLine);
+				}
+				else
+				{
+					DeployClientCmdLineADB(Params, DeviceName, PackageName, ClientCmdLine);
+				}
+			}
 
 			// Message back to the Unreal Editor to correctly set the app id for each device
-			Console.WriteLine("Running Package@Device:{0}@{1}", PackageName, DeviceName);
+			CommandUtils.LogInformation("Running Package@Device:{0}@{1}", PackageName, DeviceName);
 
 			// clear the log for the device
-			RunAdbCommand(Params, DeviceName, "logcat -c");
+			RunAdbCommand(DeviceName, "logcat -c");
 
 			// start the app on device!
 			string CommandLine = "shell am start -n " + PackageName + "/" + GetLaunchableActivityName();
-			RunAdbCommand(Params, DeviceName, CommandLine, null, ClientRunFlags);
+			RunAdbCommand(DeviceName, CommandLine);
 
-			// save the output to the staging directory
-			string LogPath = Path.Combine(Params.BaseStageDirectory, "Android\\logs");
-			Directory.CreateDirectory(LogPath);
-		}
+			// wait before getting the process list with "adb shell ps" from AdbCreatedProcess
+			// on some devices the list is not yet ready
+			Thread.Sleep(2000);
 
-		//now check if each device still has the game running, and time out if it's taking too long
-		DateTime StartTime = DateTime.Now;
-		int TimeOutSeconds = Params.RunTimeoutSeconds;
-
-		// wait before getting the process list with "adb shell ps"
-		// on some devices the list is not yet ready
-		Thread.Sleep(2000);
-
-		while (DeviceNames.Count > 0)
-		{
-			for(int DeviceIndex = 0; DeviceIndex < DeviceNames.Count; DeviceIndex++)
-			{
-				string DeviceName = DeviceNames[DeviceIndex];
-				
-				//replace the port name in the case of deploy while adb is using wifi
-				string SanitizedDeviceName = DeviceName.Replace(":", "_");
-
-				bool FinishedRunning = false;
-				IProcessResult ProcessesResult = RunAdbCommand(Params, DeviceName, "shell ps", null, ERunOptions.SpewIsVerbose);
-
-				string RunningProcessList = ProcessesResult.Output;
-				if (!RunningProcessList.Contains(PackageNames[DeviceIndex]))
-				{
-					FinishedRunning = true;
-				}
-
-				Thread.Sleep(1000);
-
-				if(!FinishedRunning)
-				{
-					TimeSpan DeltaRunTime = DateTime.Now - StartTime;
-					if ((DeltaRunTime.TotalSeconds > TimeOutSeconds) && (TimeOutSeconds != 0))
-					{
-						LogInformation("Device: " + DeviceName + " timed out while waiting for run to finish");
-						FinishedRunning = true;
-					}
-				}
-
-				//log the results, then clear out the device from our list
-				if(FinishedRunning)
-				{
-					// this is just to get the ue log to go to the output
-					RunAdbCommand(Params, DeviceName, "logcat -d -s UE debug Debug DEBUG");
-
-					// get the log we actually want to save
-					IProcessResult LogFileProcess = RunAdbCommand(Params, DeviceName, "logcat -d", null, ERunOptions.AppMustExist);
-
-					string LogPath = Path.Combine(Params.BaseStageDirectory, "Android\\logs");
-					string LogFilename = Path.Combine(LogPath, "devicelog" + SanitizedDeviceName + ".log");
-					string ServerLogFilename = Path.Combine(CmdEnv.LogFolder, "devicelog" + SanitizedDeviceName + ".log");
-
-					File.WriteAllText(LogFilename, LogFileProcess.Output);
-					File.WriteAllText(ServerLogFilename, LogFileProcess.Output);
-
-					if (Result == null)
-					{
-						Result = LogFileProcess;
-					}
-					DeviceNames.RemoveAt(DeviceIndex);
-					PackageNames.RemoveAt(DeviceIndex);
-
-					--DeviceIndex;
-				}
-			}
+			// Start logging process and return immediately.
+			// Stdout from the title is continuosly emitted to stdout in UAT.
+			// When process is done the AdbCreatedProcess wrapper will save the output to the log directories
+			Result = RunAdbCommand(DeviceName, "logcat -s UE debug Debug DEBUG", null, ClientRunFlags | ERunOptions.NoWaitForExit);
+			Result = new AdbCreatedProcess(Result, LogPath, PackageName, DeviceName);
 		}
 
 		return Result;
@@ -3732,7 +3962,7 @@ public class AndroidPlatform : Platform
 
 	public override void StripSymbols(FileReference SourceFile, FileReference TargetFile)
 	{
-		AndroidExports.StripSymbols(SourceFile, TargetFile);
+		AndroidExports.StripSymbols(SourceFile, TargetFile, Log.Logger);
 	}
 }
 

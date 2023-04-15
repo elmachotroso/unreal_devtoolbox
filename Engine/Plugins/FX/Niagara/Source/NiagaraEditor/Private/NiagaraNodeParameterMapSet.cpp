@@ -18,6 +18,8 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBox.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeParameterMapSet)
+
 #define LOCTEXT_NAMESPACE "NiagaraNodeParameterMapSet"
 
 UNiagaraNodeParameterMapSet::UNiagaraNodeParameterMapSet() : UNiagaraNodeParameterMapBase()
@@ -121,7 +123,7 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin*& NewPin)
 
 		//GetDefault<UEdGraphSchema_Niagara>()->PinToNiagaraVariable()
 		NewPin->PinName = NewUniqueName;
-		NewPin->PinFriendlyName = FText::FromName(NewPin->PinName);
+		NewPin->PinFriendlyName = FText::AsCultureInvariant(NewPin->PinName.ToString());
 		NewPin->PinType.PinSubCategory = UNiagaraNodeParameterMapBase::ParameterPinSubCategory;
 		
 		// If dragging from a function or other non-namespaced parent node, we should 
@@ -132,8 +134,8 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin*& NewPin)
 			constexpr bool bNeedsValue = false;
 			FNiagaraVariable PinVariable = Schema->PinToNiagaraVariable(NewPin, bNeedsValue);
 			constexpr bool bIsStaticSwitch = false;
-			UNiagaraScriptVariable* ScriptVar = GetNiagaraGraph()->AddParameter(PinVariable, bIsStaticSwitch);
-			NewPin->PinName = ScriptVar->Variable.GetName();
+			GetNiagaraGraph()->AddParameter(PinVariable, bIsStaticSwitch);
+			NewPin->PinName = PinVariable.GetName();
 		}
 	}
 
@@ -353,3 +355,4 @@ void UNiagaraNodeParameterMapSet::PostLoad()
 }
 
 #undef LOCTEXT_NAMESPACE
+

@@ -4,6 +4,8 @@
 #include "UObject/Package.h"
 #include "AudioDevice.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SynthComponentGranulator)
+
 UGranularSynth::UGranularSynth(const FObjectInitializer& ObjInitializer)
 	: Super(ObjInitializer)
 	, bIsLoaded(false)
@@ -112,7 +114,7 @@ void UGranularSynth::SetSoundWave(USoundWave* InSoundWave)
 		GranulatedSoundWave = InSoundWave;
 		bIsLoaded = false;
 
-		if (InSoundWave)
+		if (InSoundWave && InSoundWave->GetLoadingBehavior(/*bCheckSoundClasses*/ false) == ESoundWaveLoadingBehavior::ForceInline)
 		{
 			TFunction<void(const USoundWave * SoundWave, const Audio::FSampleBuffer & SampleBuffer)> OnLoaded
 				= [this](const USoundWave * SoundWave, const Audio::FSampleBuffer & SampleBuffer)

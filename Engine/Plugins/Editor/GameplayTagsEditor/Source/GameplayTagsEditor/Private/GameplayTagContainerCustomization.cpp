@@ -9,12 +9,28 @@
 #include "Editor.h"
 #include "PropertyHandle.h"
 #include "DetailWidgetRow.h"
+#include "GameplayTagsEditorModule.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "EditorFontGlyphs.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "GameplayTagContainerCustomization"
+
+TSharedRef<IPropertyTypeCustomization> FGameplayTagContainerCustomizationPublic::MakeInstance()
+{
+	return MakeInstanceWithOptions({});
+}
+
+TSharedRef<IPropertyTypeCustomization> FGameplayTagContainerCustomizationPublic::MakeInstanceWithOptions(const FGameplayTagContainerCustomizationOptions& Options)
+{
+	return MakeShareable(new FGameplayTagContainerCustomization(Options));
+}
+
+FGameplayTagContainerCustomization::FGameplayTagContainerCustomization(const FGameplayTagContainerCustomizationOptions& InOptions):
+	Options(InOptions)
+{}
 
 void FGameplayTagContainerCustomization::CustomizeHeader(TSharedRef<class IPropertyHandle> InStructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
@@ -153,7 +169,7 @@ TSharedRef<ITableRow> FGameplayTagContainerCustomization::MakeListViewWidget(TSh
 		SNew(SBorder)
 		.OnMouseButtonDown(this, &FGameplayTagContainerCustomization::OnSingleTagMouseButtonPressed, TagName)
 		.Padding(0.0f)
-		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
+		.BorderImage(FAppStyle::GetBrush("NoBorder"))
 		[
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
@@ -164,12 +180,12 @@ TSharedRef<ITableRow> FGameplayTagContainerCustomization::MakeListViewWidget(TSh
 				SNew(SButton)
 				.IsEnabled(!StructPropertyHandle->IsEditConst())
 				.ContentPadding(FMargin(0))
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Danger")
+				.ButtonStyle(FAppStyle::Get(), "FlatButton.Danger")
 				.ForegroundColor(FSlateColor::UseForeground())
 				.OnClicked(this, &FGameplayTagContainerCustomization::OnRemoveTagClicked, *Item.Get())
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
 					.Text(FEditorFontGlyphs::Times)
 				]
 			]
@@ -198,6 +214,30 @@ FReply FGameplayTagContainerCustomization::OnSingleTagMouseButtonPressed(const F
 			FText::Format(LOCTEXT("SingleTagSearchForReferencesTooltip", "Find references to the tag {0}"), FText::AsCultureInvariant(TagName)),
 			FSlateIcon(),
 			SearchForReferencesAction);
+		
+		if (StructPropertyHandle)
+		{
+			FUIAction CopyAction = FUIAction(FExecuteAction::CreateSP(this, &FGameplayTagContainerCustomization::OnCopyTag, TagName));
+			FUIAction PasteAction = FUIAction(FExecuteAction::CreateSP(this, &FGameplayTagContainerCustomization::OnPasteTag),FCanExecuteAction::CreateSP(this, &FGameplayTagContainerCustomization::CanPaste));
+			
+			if (CopyAction.IsBound() && PasteAction.IsBound())
+			{
+				FMenuEntryParams CopyContentParams;
+				CopyContentParams.LabelOverride = NSLOCTEXT("PropertyView", "CopyProperty", "Copy");
+				CopyContentParams.ToolTipOverride = FText::Format(LOCTEXT("SingleTagCopyTooltip", "Copy tag {0}"), FText::AsCultureInvariant(TagName));
+				CopyContentParams.IconOverride = FSlateIcon(FCoreStyle::Get().GetStyleSetName(), "GenericCommands.Copy");
+				CopyContentParams.DirectActions = CopyAction;
+				MenuBuilder.AddMenuEntry(CopyContentParams);
+
+				FMenuEntryParams PasteContentParams;
+				PasteContentParams.LabelOverride = NSLOCTEXT("PropertyView", "PasteProperty", "Paste");
+				PasteContentParams.ToolTipOverride = FText::Format(LOCTEXT("SingleTagPasteTooltip", "Paste tag {0}"), FText::AsCultureInvariant(TagName));
+				PasteContentParams.IconOverride = FSlateIcon(FCoreStyle::Get().GetStyleSetName(), "GenericCommands.Paste");
+				PasteContentParams.DirectActions = PasteAction;
+				MenuBuilder.AddMenuEntry(PasteContentParams);
+			}
+		}
+		
 		MenuBuilder.EndSection();
 
 		// Spawn context menu
@@ -286,7 +326,9 @@ TSharedRef<SWidget> FGameplayTagContainerCustomization::GetListContent()
 		.ReadOnly(bReadOnly)
 		.TagContainerName(StructPropertyHandle->GetPropertyDisplayName().ToString())
 		.OnTagChanged(this, &FGameplayTagContainerCustomization::RefreshTagList)
-		.PropertyHandle(StructPropertyHandle);
+		.PropertyHandle(StructPropertyHandle)
+		.ForceHideAddNewTag(Options.bForceHideAddTag)
+		.ForceHideAddNewTagSource(Options.bForceHideAddTagSource);
 
 	LastTagWidget = TagWidget;
 
@@ -351,7 +393,59 @@ void FGameplayTagContainerCustomization::PostRedo( bool bSuccess )
 
 FGameplayTagContainerCustomization::~FGameplayTagContainerCustomization()
 {
+	// Forcibly close the popup to avoid crashes later
+	if (EditButton.IsValid() && EditButton->IsOpen())
+	{
+		EditButton->SetIsOpen(false);
+	}
+
 	GEditor->UnregisterForUndo(this);
+}
+
+void FGameplayTagContainerCustomization::OnCopyTag(FString TagName)
+{
+	FPlatformApplicationMisc::ClipboardCopy(*TagName);
+}
+
+void FGameplayTagContainerCustomization::OnPasteTag()
+{
+	FString TagName;
+	FPlatformApplicationMisc::ClipboardPaste(TagName);
+	
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TagName), false);
+
+	if (Tag.IsValid())
+	{
+		TArray<FString> NewValues;
+		SGameplayTagWidget::EnumerateEditableTagContainersFromPropertyHandle(StructPropertyHandle.ToSharedRef(), [&Tag, &NewValues](const SGameplayTagWidget::FEditableGameplayTagContainerDatum& EditableTagContainer)
+		{
+			FGameplayTagContainer TagContainerCopy;
+			if (const FGameplayTagContainer* Container = EditableTagContainer.TagContainer)
+			{
+				TagContainerCopy = *Container;
+			}
+			TagContainerCopy.AddTag(Tag);
+
+			NewValues.Add(TagContainerCopy.ToString());
+			return true;
+		});
+
+		{
+			FScopedTransaction Transaction(LOCTEXT("PasteGameplayTagFromContainer", "Paste Gameplay Tag"));
+			StructPropertyHandle->SetPerObjectValues(NewValues);
+		}
+
+		RefreshTagList();
+	}
+}
+
+bool FGameplayTagContainerCustomization::CanPaste()
+{
+	FString TagName;
+	FPlatformApplicationMisc::ClipboardPaste(TagName);
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(TagName), false);
+
+	return Tag.IsValid();
 }
 
 #undef LOCTEXT_NAMESPACE

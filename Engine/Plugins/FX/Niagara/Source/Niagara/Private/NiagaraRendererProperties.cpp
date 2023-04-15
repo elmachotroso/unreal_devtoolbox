@@ -9,7 +9,12 @@
 #include "NiagaraSettings.h"
 #include "NiagaraSystem.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "Materials/MaterialInterface.h"
 #include "Styling/SlateIconFinder.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraRendererProperties)
+
+#define LOCTEXT_NAMESPACE "UNiagaraRendererProperties"
 
 void FNiagaraRendererLayout::Initialize(int32 NumVariables)
 {
@@ -100,6 +105,125 @@ void FNiagaraRendererLayout::Finalize()
 	);
 }
 
+//////////////////////////////////////////////////////////////////////////
+
+#if WITH_EDITORONLY_DATA
+void FNiagaraRendererMaterialParameters::GetFeedback(TArrayView<UMaterialInterface*> Materials, TArray<FNiagaraRendererFeedback>& OutWarnings) const
+{
+	TArray<bool> AttributeBindingsValid;
+	TArray<bool> ScalarParametersValid;
+	TArray<bool> VectorParametersValid;
+	TArray<bool> TextureParametersValid;
+	AttributeBindingsValid.AddDefaulted(AttributeBindings.Num());
+	ScalarParametersValid.AddDefaulted(ScalarParameters.Num());
+	VectorParametersValid.AddDefaulted(VectorParameters.Num());
+	TextureParametersValid.AddDefaulted(TextureParameters.Num());
+
+	TArray<FMaterialParameterInfo> TempParameterInfo;
+	TArray<FGuid> TempParameterIds;
+	auto ContainsParameter =
+		[&TempParameterInfo](FName InName)
+		{
+			for ( const FMaterialParameterInfo& Parameter : TempParameterInfo )
+			{
+				if (Parameter.Name == InName)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+	for (UMaterialInterface* Material : Materials)
+	{
+		if (Material == nullptr)
+		{
+			continue;
+		}
+		
+		if (AttributeBindingsValid.Num() > 0 || ScalarParametersValid.Num() > 0)
+		{
+			Material->GetAllScalarParameterInfo(TempParameterInfo, TempParameterIds);
+			for (int32 i = 0; i < AttributeBindings.Num(); ++i)
+			{
+				AttributeBindingsValid[i] |= ContainsParameter(AttributeBindings[i].MaterialParameterName);
+			}
+			for (int32 i = 0; i < ScalarParameters.Num(); ++i)
+			{
+				ScalarParametersValid[i] |= ContainsParameter(ScalarParameters[i].MaterialParameterName);
+			}
+		}
+		if (AttributeBindingsValid.Num() > 0 || VectorParametersValid.Num() > 0)
+		{
+			Material->GetAllVectorParameterInfo(TempParameterInfo, TempParameterIds);
+			for (int32 i = 0; i < AttributeBindings.Num(); ++i)
+			{
+				AttributeBindingsValid[i] |= ContainsParameter(AttributeBindings[i].MaterialParameterName);
+			}
+			for (int32 i = 0; i < VectorParameters.Num(); ++i)
+			{
+				VectorParametersValid[i] |= ContainsParameter(VectorParameters[i].MaterialParameterName);
+			}
+		}
+		if (AttributeBindingsValid.Num() > 0 || TextureParametersValid.Num() > 0)
+		{
+			Material->GetAllTextureParameterInfo(TempParameterInfo, TempParameterIds);
+			for (int32 i=0; i < AttributeBindings.Num(); ++i)
+			{
+				AttributeBindingsValid[i] |= ContainsParameter(AttributeBindings[i].MaterialParameterName);
+			}
+			for (int32 i = 0; i < TextureParameters.Num(); ++i)
+			{
+				TextureParametersValid[i] |= ContainsParameter(TextureParameters[i].MaterialParameterName);
+			}
+		}
+	}
+
+	for (int32 i=0; i < AttributeBindingsValid.Num(); ++i)
+	{
+		if (AttributeBindingsValid[i] == false)
+		{
+			OutWarnings.Emplace(
+				FText::Format(LOCTEXT("AttributeBindingMissingDesc", "AttributeBinding '{0}' could not be found in the renderer materials.  We will still create the MID which may be unnecessary."), FText::FromName(AttributeBindings[i].MaterialParameterName)),
+				FText::Format(LOCTEXT("AttributeBindingMissing", "AttributeBinding '{0}' not found on materials."), FText::FromName(AttributeBindings[i].MaterialParameterName))
+			);
+		}
+	}
+	for (int32 i = 0; i < ScalarParametersValid.Num(); ++i)
+	{
+		if (ScalarParametersValid[i] == false)
+		{
+			OutWarnings.Emplace(
+				FText::Format(LOCTEXT("ScalarParameterMissingDesc", "ScalarParameter '{0}' could not be found in the renderer materials.  We will still create the MID which may be unnecessary."), FText::FromName(ScalarParameters[i].MaterialParameterName)),
+				FText::Format(LOCTEXT("ScalarParameterMissing", "ScalarParameter '{0}' not found on materials."), FText::FromName(ScalarParameters[i].MaterialParameterName))
+			);
+		}
+	}
+	for (int32 i = 0; i < VectorParametersValid.Num(); ++i)
+	{
+		if (VectorParametersValid[i] == false)
+		{
+			OutWarnings.Emplace(
+				FText::Format(LOCTEXT("VectorParameterMissingDesc", "VectorParameter '{0}' could not be found in the renderer materials.  We will still create the MID which may be unnecessary."), FText::FromName(VectorParameters[i].MaterialParameterName)),
+				FText::Format(LOCTEXT("VectorParameterMissing", "VectorParameter '{0}' not found on materials."), FText::FromName(VectorParameters[i].MaterialParameterName))
+			);
+		}
+	}
+	for (int32 i = 0; i < TextureParametersValid.Num(); ++i)
+	{
+		if (TextureParametersValid[i] == false)
+		{
+			OutWarnings.Emplace(
+				FText::Format(LOCTEXT("TextureParameterMissingDesc", "TextureParameter '{0}' could not be found in the renderer materials.  We will still create the MID which may be unnecessary."), FText::FromName(TextureParameters[i].MaterialParameterName)),
+				FText::Format(LOCTEXT("TextureParameterMissing", "TextureParameter '{0}' not found on materials."), FText::FromName(TextureParameters[i].MaterialParameterName))
+			);
+		}
+	}
+}
+#endif //WITH_EDITORONLY_DATA
+
+//////////////////////////////////////////////////////////////////////////
+
 #if WITH_EDITORONLY_DATA
 bool UNiagaraRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
@@ -161,7 +285,7 @@ FNiagaraVariable UNiagaraRendererProperties::GetBoundAttribute(const FNiagaraVar
 	return FNiagaraVariable();
 }
 
-void UNiagaraRendererProperties::GetRendererFeedback(UNiagaraEmitter* InEmitter,	TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings,	TArray<FNiagaraRendererFeedback>& OutInfo) const
+void UNiagaraRendererProperties::GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings,	TArray<FNiagaraRendererFeedback>& OutInfo) const
 {
 	TArray<FText> Errors;
 	TArray<FText> Warnings;
@@ -191,7 +315,7 @@ FText UNiagaraRendererProperties::GetWidgetDisplayName() const
 	return GetClass()->GetDisplayNameText();
 }
 
-void UNiagaraRendererProperties::RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const UNiagaraEmitter* InEmitter)
+void UNiagaraRendererProperties::RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter)
 {
 	// Handle the renaming of generic renderer bindings...
 	for (const FNiagaraVariableAttributeBinding* AttributeBinding : AttributeBindings)
@@ -201,7 +325,7 @@ void UNiagaraRendererProperties::RenameVariable(const FNiagaraVariableBase& OldV
 			Binding->RenameVariableIfMatching(OldVariable, NewVariable, InEmitter, GetCurrentSourceMode());
 	}
 }
-void UNiagaraRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable,const UNiagaraEmitter* InEmitter)
+void UNiagaraRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable,const FVersionedNiagaraEmitter& InEmitter)
 {
 	// Handle the reset to defaults of generic renderer bindings
 	for (const FNiagaraVariableAttributeBinding* AttributeBinding : AttributeBindings)
@@ -287,7 +411,7 @@ uint32 UNiagaraRendererProperties::ComputeMaxUsedComponents(const FNiagaraDataSe
 	return MaxNumComponents;
 }
 
-void UNiagaraRendererProperties::GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraRendererProperties*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
+void UNiagaraRendererProperties::GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraRendererProperties*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const
 {
 	UClass* Class = GetClass();
 
@@ -310,7 +434,7 @@ void UNiagaraRendererProperties::GetAssetTagsForContext(const UObject* InAsset, 
 			FString Key = Class->GetName();
 			Key.ReplaceInline(TEXT("Niagara"), TEXT(""));
 			Key.ReplaceInline(TEXT("Properties"), TEXT(""));
-			NumericKeys.Add(*Key) = NumInstances;
+			NumericKeys.Add(FName(Key)) = NumInstances;
 		}
 	}
 }
@@ -378,26 +502,26 @@ void UNiagaraRendererProperties::PostEditChangeProperty(struct FPropertyChangedE
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	if (UNiagaraEmitter* Emitter = GetTypedOuter<UNiagaraEmitter>())
+	if (FVersionedNiagaraEmitterData* EmitterData = GetEmitterData())
 	{
 		// Check for properties changing that invalidate the current script compilation for the emitter
 		bool bNeedsRecompile = false;
 		if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UNiagaraRendererProperties, MotionVectorSetting))
 		{
-			if (Emitter->GraphSource)
+			if (EmitterData->GraphSource)
 			{
-				Emitter->GraphSource->MarkNotSynchronized(TEXT("Renderer MotionVectorSetting changed"));
+				EmitterData->GraphSource->MarkNotSynchronized(TEXT("Renderer MotionVectorSetting changed"));
 			}
 			bNeedsRecompile = true;
 		}
 
 		if (bNeedsRecompile)
 		{
-			UNiagaraSystem::RequestCompileForEmitter(Emitter);
+			UNiagaraSystem::RequestCompileForEmitter(GetOuterEmitter());
 		}
 
 		// Just in case we changed something that needs static params, refresh that cached list.
-		Emitter->RebuildRendererBindings();
+		EmitterData->RebuildRendererBindings(*GetOuterEmitter().Emitter);
 	}
 
 }
@@ -411,7 +535,8 @@ void UNiagaraRendererProperties::SetIsEnabled(bool bInIsEnabled)
 #if WITH_EDITORONLY_DATA
 		// Changing the enabled state will add or remove its renderer binding data stored on the emitters RenderBindings
 		// parameter store, so we need to reset to clear any binding references or add new ones
-		if (UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>())
+		FVersionedNiagaraEmitter SrcEmitter = GetOuterEmitter();
+		if (SrcEmitter.Emitter)
 		{
 			FNiagaraSystemUpdateContext(SrcEmitter, true);
 		}
@@ -423,29 +548,46 @@ void UNiagaraRendererProperties::SetIsEnabled(bool bInIsEnabled)
 
 void UNiagaraRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)
 {
-	UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>();
-	if (SrcEmitter)
+	FVersionedNiagaraEmitter SrcEmitter = GetOuterEmitter();
+	if (SrcEmitter.Emitter)
 	{
 		for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
 		{
 			((FNiagaraVariableAttributeBinding*)Binding)->CacheValues(SrcEmitter, InSourceMode);
 		}
 
+		RendererEnabledBinding.CacheValues(SrcEmitter, InSourceMode);
+
 #if WITH_EDITORONLY_DATA
 		// If we added or removed any valid bindings to a non-particle source during editing, we need to reset to prevent hazards and
 		// to ensure new ones get bound by the simulation
 		if (bFromPropertyEdit)
 		{
-			if (SrcEmitter)
-			{
-				// We may need to refresh internal variables because this may be the first binding to it, so request a recompile as that will pull data 
-				// into the right place.
-				UNiagaraSystem::RequestCompileForEmitter(SrcEmitter);
-			}
+			// We may need to refresh internal variables because this may be the first binding to it, so request a recompile as that will pull data 
+			// into the right place.
+			UNiagaraSystem::RequestCompileForEmitter(GetOuterEmitter());
 			FNiagaraSystemUpdateContext Context(SrcEmitter, true);
 		}
 #endif
 	}
+}
+
+FVersionedNiagaraEmitterData* UNiagaraRendererProperties::GetEmitterData() const
+{
+	if (UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>())
+	{
+		return SrcEmitter->GetEmitterData(OuterEmitterVersion);
+	}
+	return nullptr;
+}
+
+FVersionedNiagaraEmitter UNiagaraRendererProperties::GetOuterEmitter() const
+{
+	if (UNiagaraEmitter* SrcEmitter = GetTypedOuter<UNiagaraEmitter>())
+	{
+		return FVersionedNiagaraEmitter(SrcEmitter, OuterEmitterVersion);
+	}
+	return FVersionedNiagaraEmitter();
 }
 
 bool UNiagaraRendererProperties::NeedsPreciseMotionVectors() const
@@ -459,3 +601,24 @@ bool UNiagaraRendererProperties::NeedsPreciseMotionVectors() const
 	
 	return MotionVectorSetting == ENiagaraRendererMotionVectorSetting::Precise;
 }
+
+bool UNiagaraRendererProperties::IsSortHighPrecision(ENiagaraRendererSortPrecision SortPrecision)
+{
+	if (SortPrecision == ENiagaraRendererSortPrecision::Default)
+	{
+		return GetDefault<UNiagaraSettings>()->DefaultSortPrecision == ENiagaraDefaultSortPrecision::High;
+	}
+	return SortPrecision == ENiagaraRendererSortPrecision::High;
+}
+
+bool UNiagaraRendererProperties::IsGpuTranslucentThisFrame(ENiagaraRendererGpuTranslucentLatency Latency)
+{
+	if (Latency == ENiagaraRendererGpuTranslucentLatency::ProjectDefault)
+	{
+		return GetDefault<UNiagaraSettings>()->DefaultGpuTranslucentLatency == ENiagaraDefaultGpuTranslucentLatency::Immediate;
+	}
+	return Latency == ENiagaraRendererGpuTranslucentLatency::Immediate;
+}
+
+#undef LOCTEXT_NAMESPACE
+

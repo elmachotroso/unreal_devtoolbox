@@ -31,7 +31,6 @@
 
 #include "StaticMeshCompiler.h"
 
-
 TSharedPtr<FImportProgressive3D> FImportProgressive3D::ImportProgressive3DInst;
 
 TSharedPtr<FImportProgressive3D> FImportProgressive3D::Get()
@@ -114,11 +113,11 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 	if (bIsNormal)
 	{
 		FString MeshPath = AssetMetaData.meshList[0].path;
-		FAssetData AssetMeshData = AssetRegistry.GetAssetByObjectPath(FName(*MeshPath));
+		FAssetData AssetMeshData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(MeshPath));
 		FSoftObjectPath ItemToStream = AssetMeshData.ToSoftObjectPath();
 		if (!AssetMeshData.IsValid()) return;
 
-		FBridgeDragDrop::Instance->OnAddProgressiveStageDataDelegate.ExecuteIfBound(AssetMeshData, ImportData->AssetId, nullptr);
+		FBridgeDragDropHelper::Instance->OnAddProgressiveStageDataDelegate.ExecuteIfBound(AssetMeshData, ImportData->AssetId, AssetMetaData.assetType, nullptr);
 
 		Streamable.RequestAsyncLoad(ItemToStream, FStreamableDelegate::CreateRaw(this, &FImportProgressive3D::HandleNormalAssetLoad, AssetMeshData, AssetMetaData, LocationOffset));
 
@@ -143,10 +142,10 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 
 		FString MeshPath = AssetMetaData.meshList[0].path;
 		PreviewDetails[ImportData->AssetId]->PreviewMeshPath = MeshPath;
-		FAssetData PreviewMeshData = AssetRegistry.GetAssetByObjectPath(FName(*MeshPath));
+		FAssetData PreviewMeshData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(MeshPath));
 		FString MInstancePath = AssetMetaData.materialInstances[0].instancePath ;
 		
-		FAssetData MInstanceData = AssetRegistry.GetAssetByObjectPath(FName(*MInstancePath));
+		FAssetData MInstanceData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(MInstancePath));
 		FSoftObjectPath ItemToStream = PreviewMeshData.ToSoftObjectPath();
 		
 		if (!MInstanceData.IsValid()) return;		
@@ -158,10 +157,10 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 
 		Streamable.RequestAsyncLoad(ItemToStream, FStreamableDelegate::CreateRaw(this, &FImportProgressive3D::HandlePreviewInstanceLoad, MInstanceData, ImportData->AssetId));
 
-		FString AssetPath = PreviewMeshData.ObjectPath.ToString();
+		FString AssetPath = PreviewMeshData.GetObjectPathString();
 		FAssetData DraggedAssetData = FAssetData(LoadObject<UStaticMesh>(nullptr, *AssetPath));
 
-		FBridgeDragDrop::Instance->OnAddProgressiveStageDataDelegate.ExecuteIfBound(DraggedAssetData, ImportData->AssetId, nullptr);
+		FBridgeDragDropHelper::Instance->OnAddProgressiveStageDataDelegate.ExecuteIfBound(DraggedAssetData, ImportData->AssetId, AssetMetaData.assetType, nullptr);
 	}
 	else if (ImportData->ProgressiveStage == 2)
 	{
@@ -177,7 +176,7 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 		}
 
 		
-		FAssetData AlbedoData = AssetRegistry.GetAssetByObjectPath(FName(*AlbedoPath));
+		FAssetData AlbedoData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(AlbedoPath));
 		FSoftObjectPath ItemToStream = AlbedoData.ToSoftObjectPath();
 
 		if (!AlbedoData.IsValid()) return;
@@ -200,7 +199,7 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 		}
 		
 		
-		FAssetData NormalData = AssetRegistry.GetAssetByObjectPath(FName(*NormalPath));
+		FAssetData NormalData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(NormalPath));
 		FSoftObjectPath ItemToStream = NormalData.ToSoftObjectPath();
 
 		if (!NormalData.IsValid()) return;
@@ -214,7 +213,7 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 		bool bWaitNaniteConversion = false;
 		FString MeshPath = AssetMetaData.meshList[0].path;
 
-		FAssetData HighMeshData = AssetRegistry.GetAssetByObjectPath(FName(*MeshPath));
+		FAssetData HighMeshData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(MeshPath));
 		if (ImportData->AssetType == TEXT("3d") && ImportData->AssetTier==0 && AssetMetaData.assetSubType == TEXT("singleMesh"))
 		{
 			bWaitNaniteConversion = true;
@@ -224,7 +223,7 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 
 		if (!HighMeshData.IsValid()) return;
 
-		FAssetData PreviewMeshData = AssetRegistry.GetAssetByObjectPath(FName(*MeshPath));
+		FAssetData PreviewMeshData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(MeshPath));
 
 		Streamable.RequestAsyncLoad(ItemToStream, FStreamableDelegate::CreateRaw(this, &FImportProgressive3D::HandleHighAssetLoad, HighMeshData, ImportData->AssetId, AssetMetaData, bWaitNaniteConversion));
 	}
@@ -262,7 +261,10 @@ void FImportProgressive3D::HandleHighAssetLoad(FAssetData HighAssetData, FString
 		UE_LOG(LogTemp, Error, TEXT("Data build complete..."));
 	});*/
 
-	AssetUtils::ConvertToVT(AssetMetaData);
+	if (AssetMetaData.assetType != TEXT("3dplant"))
+	{
+		AssetUtils::ConvertToVT(AssetMetaData);
+	}
 
 	if (FMaterialUtils::ShouldOverrideMaterial(AssetMetaData.assetType))
 	{
@@ -270,6 +272,11 @@ void FImportProgressive3D::HandleHighAssetLoad(FAssetData HighAssetData, FString
 		UMaterialInstanceConstant* OverridenInstance = FMaterialUtils::CreateMaterialOverride(AssetMetaData);
 		FMaterialUtils::ApplyMaterialInstance(AssetMetaData, OverridenInstance);
 		
+	}
+	else if (AssetUtils::IsVTEnabled() && AssetMetaData.assetType != TEXT("3dplant"))
+	{
+		UMaterialInstanceConstant* OverridenInstance = FMaterialUtils::CreateMaterialOverride(AssetMetaData);
+		FMaterialUtils::ApplyMaterialInstance(AssetMetaData, OverridenInstance);
 	}
 
 	AssetUtils::ManageImportSettings(AssetMetaData);
@@ -318,7 +325,7 @@ void FImportProgressive3D::SwitchHigh(FAssetData HighAssetData, FString AssetID)
 	for (AActor* StaticMeshActor : FoundActors)
 	{
 		TArray<UStaticMeshComponent*> MeshComponents;
-		StaticMeshActor->GetComponents<UStaticMeshComponent>(MeshComponents);
+		StaticMeshActor->GetComponents(MeshComponents);
 		UStaticMesh* InstanceMesh = MeshComponents[0]->GetStaticMesh();
 
 		if (InstanceMesh->GetPathName() == PreviewDetails[AssetID]->PreviewMeshPath)

@@ -4,17 +4,20 @@
 #include "Stats/StatsMisc.h"
 #include "EngineDefines.h"
 #include "Engine/Blueprint.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/ObjectLibrary.h"
 #include "AbilitySystemLog.h"
 #include "UObject/UObjectIterator.h"
 #include "DataRegistrySubsystem.h"
+#include "HAL/IConsoleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ScalableFloat)
 
 #if WITH_EDITOR
 #include "EditorReimportHandler.h"
 #endif
 
-bool FScalableFloat::EvaluateCurveAtLevel(float& OutValue, const FRealCurve*& OutCurve, float Level, const FString& ContextString) const
+bool FScalableFloat::EvaluateCurveAtLevel(float& OutValue, const FRealCurve*& OutCurve, float Level, const FString& ContextString, bool bWarnIfInvalid) const
 {
 	if (!Curve.RowName.IsNone())
 	{
@@ -32,7 +35,7 @@ bool FScalableFloat::EvaluateCurveAtLevel(float& OutValue, const FRealCurve*& Ou
 			// Cache not valid, look at sources
 			if (Curve.CurveTable)
 			{
-				CachedCurve = OutCurve = Curve.GetCurve(ContextString);
+				CachedCurve = OutCurve = Curve.GetCurve(ContextString, bWarnIfInvalid);
 				LocalCachedCurveID = GlobalCachedCurveID;
 			}
 			else if (RegistryType.IsValid())
@@ -69,8 +72,34 @@ bool FScalableFloat::EvaluateCurveAtLevel(float& OutValue, const FRealCurve*& Ou
 		else
 		{
 			// Has row name but no curve, this is an error but fallback to raw value
+			if (bWarnIfInvalid && !Curve.CurveTable)
+			{
+				// CurveTable case is handled in GetCurve above
+				if (RegistryType.IsValid())
+				{
+					// This can happen if the data registry hasn't loaded yet so don't warn by default
+					ABILITY_LOG(Verbose, TEXT("FScalableFloat could not find curve for DataRegistryId %s:%s (%s)."), *RegistryType.ToString(), *Curve.RowName.ToString(), *ContextString);
+				}
+				else
+				{
+					ABILITY_LOG(Warning, TEXT("FScalableFloat has no CurveTable or DataRegistry for row %s (%s)."), *Curve.RowName.ToString(), *ContextString);
+				}
+			}
+
 			OutValue = Value;
 			return false;
+		}
+	}
+	else if (bWarnIfInvalid)
+	{
+		// These cases are errors, but fallback to no curve case for compatibility
+		if (RegistryType.IsValid())
+		{
+			ABILITY_LOG(Warning, TEXT("FScalableFloat has no row for DataRegistry %s (%s)."), *RegistryType.ToString(), *ContextString);
+		}
+		else if (Curve.CurveTable)
+		{
+			ABILITY_LOG(Warning, TEXT("FScalableFloat has no row for CurveTable %s (%s)."), *Curve.CurveTable->GetPathName(), *ContextString);
 		}
 	}
 
@@ -86,7 +115,8 @@ float FScalableFloat::GetValueAtLevel(float Level, const FString* ContextString)
 	const FRealCurve* FoundCurve;
 	static const FString DefaultContextString = TEXT("FScalableFloat::GetValueAtLevel");
 
-	EvaluateCurveAtLevel(OutFloat, FoundCurve, Level, ContextString ? *ContextString : DefaultContextString);
+	// Only print warnings if we have a useful context string
+	EvaluateCurveAtLevel(OutFloat, FoundCurve, Level, ContextString != nullptr ? *ContextString : DefaultContextString, ContextString != nullptr);
 
 	return OutFloat;
 }
@@ -141,9 +171,17 @@ bool FScalableFloat::IsValid() const
 {
 	float OutFloat;
 	const FRealCurve* FoundCurve;
-	static const FString DefaultContextString = TEXT("FScalableFloat::GetValueAtLevel");
+	static const FString DefaultContextString = TEXT("FScalableFloat::IsValid");
 
-	return EvaluateCurveAtLevel(OutFloat, FoundCurve, 1.f, DefaultContextString);
+	return EvaluateCurveAtLevel(OutFloat, FoundCurve, 0.f, DefaultContextString, false);
+}
+
+bool FScalableFloat::IsValidWithWarnings(const FString& ContextString) const
+{
+	float OutFloat;
+	const FRealCurve* FoundCurve;
+
+	return EvaluateCurveAtLevel(OutFloat, FoundCurve, 0.f, ContextString, true);
 }
 
 bool FScalableFloat::SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot)
@@ -198,13 +236,15 @@ bool FScalableFloat::operator!=(const FScalableFloat& Other) const
 	return ((Other.Curve != Curve) || (Other.RegistryType != RegistryType) || (Other.Value != Value));
 }
 
-void FScalableFloat::operator=(const FScalableFloat& Src)
+FScalableFloat& FScalableFloat::operator=(const FScalableFloat& Src)
 {
 	Value = Src.Value;
 	Curve = Src.Curve;
 	RegistryType = Src.RegistryType;
 	LocalCachedCurveID = Src.LocalCachedCurveID;
 	CachedCurve = Src.CachedCurve;
+
+	return *this;
 }
 
 
@@ -444,3 +484,4 @@ FAutoConsoleCommand FindCoefficientScalableFloatsCommand(
 );
 
 #endif
+

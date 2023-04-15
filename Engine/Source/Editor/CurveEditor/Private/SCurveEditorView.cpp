@@ -1,15 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCurveEditorView.h"
-#include "ICurveEditorBounds.h"
+
+#include "Containers/Map.h"
+#include "CurveDataAbstraction.h"
+#include "CurveDrawInfo.h"
 #include "CurveEditor.h"
-#include "ICurveEditorModule.h"
-#include "CurveEditorScreenSpace.h"
-#include "CurveModel.h"
-#include "CurveEditorSnapMetrics.h"
-#include "SCurveEditorPanel.h"
-#include "CurveEditorSettings.h"
 #include "CurveEditorHelpers.h"
+#include "CurveEditorScreenSpace.h"
+#include "CurveEditorSelection.h"
+#include "CurveEditorSettings.h"
+#include "CurveModel.h"
+#include "Curves/KeyHandle.h"
+#include "Curves/RichCurve.h"
+#include "HAL/PlatformCrt.h"
+#include "ICurveEditorBounds.h"
+#include "Layout/Geometry.h"
+#include "Math/Color.h"
+#include "Misc/AssertionMacros.h"
+#include "SCurveEditorPanel.h"
+#include "Templates/Tuple.h"
+#include "Templates/UnrealTemplate.h"
 
 SCurveEditorView::SCurveEditorView()
 	: bPinned(0)
@@ -188,23 +199,6 @@ void SCurveEditorView::GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParam
 					CurveSpace.ValueToScreen(Point.Get<1>())
 				)
 			);
-		}
-
-		// In order to work around a bug in slate's line rendering, detect sharp corners and inject an additional 1 pixel segment
-		for (int Index = 1; Index < Params.InterpolatingPoints.Num() - 1; ++Index)
-		{
-			FVector2D Line2 = Params.InterpolatingPoints[Index + 1] - Params.InterpolatingPoints[Index];
-			if (Line2.SizeSquared() > 1.0f)
-			{
-				Line2.Normalize();
-				FVector2D Line1 = Params.InterpolatingPoints[Index] - Params.InterpolatingPoints[Index - 1];
-				Line1.Normalize();
-				if (FVector2D::DotProduct(Line1, Line2) <= 0.5f)
-				{
-					Params.InterpolatingPoints.Insert(Params.InterpolatingPoints[Index] + Line2, Index + 1);
-					++Index;
-				}
-			}
 		}
 
 		TArray<FKeyHandle> VisibleKeys;

@@ -3,6 +3,7 @@
 #include "LevelInstanceActorDetails.h"
 #include "LevelInstancePivotDetails.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
+#include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceActor.h"
 #include "PackedLevelActor/PackedLevelActor.h"
 #include "LevelInstanceEditorSettings.h"
@@ -10,6 +11,7 @@
 #include "Editor.h"
 #include "EditorModeManager.h"
 #include "EditorModeRegistry.h"
+#include "FileHelpers.h"
 #include "LevelInstanceEditorMode.h"
 #include "LevelInstanceEditorModeCommands.h"
 #include "LevelEditorMenuContext.h"
@@ -38,18 +40,24 @@
 #include "SNewLevelInstanceDialog.h"
 #include "MessageLogModule.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "WorldPartition/WorldPartitionConverter.h"
 
 IMPLEMENT_MODULE( FLevelInstanceEditorModule, LevelInstanceEditor );
 
 #define LOCTEXT_NAMESPACE "LevelInstanceEditor"
 
+DEFINE_LOG_CATEGORY_STATIC(LogLevelInstanceEditor, Log, All);
+
 namespace LevelInstanceMenuUtils
 {
-	bool IsExperimentalSettingEnabled(ALevelInstance* LevelInstance)
+	bool IsExperimentalSettingEnabled(ILevelInstanceInterface* LevelInstance)
 	{
-		if (LevelInstance->IsA<APackedLevelActor>() && !GetDefault<UEditorExperimentalSettings>()->bPackedLevelActor)
+		if (APackedLevelActor* Actor = Cast<APackedLevelActor>(LevelInstance))
 		{
-			return false;
+			if (!GetDefault<UEditorExperimentalSettings>()->bPackedLevelActor)
+			{
+				return false;
+			}
 		}
 
 		return GetDefault<UEditorExperimentalSettings>()->bLevelInstance;
@@ -67,15 +75,16 @@ namespace LevelInstanceMenuUtils
 		return Section;
 	}
 
-	void CreateEditMenuEntry(FToolMenuSection& Section, ALevelInstance* LevelInstance, AActor* ContextActor, bool bSingleEntry)
+	void CreateEditMenuEntry(FToolMenuSection& Section, ILevelInstanceInterface* LevelInstance, AActor* ContextActor, bool bSingleEntry)
 	{
 		FToolUIAction LevelInstanceEditAction;
 		FText EntryDesc;
-		const bool bCanEdit = LevelInstance->CanEdit(&EntryDesc);
+		AActor* LevelInstanceActor = CastChecked<AActor>(LevelInstance);
+		const bool bCanEdit = LevelInstance->CanEnterEdit(&EntryDesc);
 
 		LevelInstanceEditAction.ExecuteAction.BindLambda([LevelInstance, ContextActor](const FToolMenuContext&)
 		{
-			LevelInstance->Edit(ContextActor);
+			LevelInstance->EnterEdit(ContextActor);
 		});
 		LevelInstanceEditAction.CanExecuteAction.BindLambda([bCanEdit](const FToolMenuContext&)
 		{
@@ -85,44 +94,41 @@ namespace LevelInstanceMenuUtils
 		FText EntryLabel = bSingleEntry ? LOCTEXT("EditLevelInstances", "Edit") : FText::FromString(LevelInstance->GetWorldAsset().GetAssetName());
 		if (bCanEdit)
 		{
-			EntryDesc = FText::Format(LOCTEXT("LevelInstanceName", "{0}:{1}"), FText::FromString(LevelInstance->GetActorLabel()), FText::FromString(LevelInstance->GetWorldAssetPackage()));
+			EntryDesc = FText::Format(LOCTEXT("LevelInstanceName", "{0}:{1}"), FText::FromString(LevelInstanceActor->GetActorLabel()), FText::FromString(LevelInstance->GetWorldAssetPackage()));
 		}
 		Section.AddMenuEntry(NAME_None, EntryLabel, EntryDesc, FSlateIcon(), LevelInstanceEditAction);
 	}
 
-	void CreateEditSubMenu(UToolMenu* Menu, TArray<ALevelInstance*> LevelInstanceHierarchy, AActor* ContextActor)
+	void CreateEditSubMenu(UToolMenu* Menu, TArray<ILevelInstanceInterface*> LevelInstanceHierarchy, AActor* ContextActor)
 	{
 		FToolMenuSection& Section = Menu->AddSection(NAME_None, LOCTEXT("LevelInstanceContextEditSection", "Context"));
-		for (ALevelInstance* LevelInstance : LevelInstanceHierarchy)
+		for (ILevelInstanceInterface* LevelInstance : LevelInstanceHierarchy)
 		{
 			CreateEditMenuEntry(Section, LevelInstance, ContextActor, false);
 		}
 	}
 		
-	void MoveSelectionToLevelInstance(ALevelInstance* DestinationLevelInstance)
+	void MoveSelectionToLevelInstance(ILevelInstanceInterface* DestinationLevelInstance)
 	{
-		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = DestinationLevelInstance->GetLevelInstanceSubsystem())
+		TArray<AActor*> ActorsToMove;
+		ActorsToMove.Reserve(GEditor->GetSelectedActorCount());
+		for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
 		{
-			TArray<AActor*> ActorsToMove;
-			ActorsToMove.Reserve(GEditor->GetSelectedActorCount());
-			for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
+			if (AActor* Actor = Cast<AActor>(*It))
 			{
-				if (AActor* Actor = Cast<AActor>(*It))
-				{
-					ActorsToMove.Add(Actor);
-				}
+				ActorsToMove.Add(Actor);
 			}
-			
-			LevelInstanceSubsystem->MoveActorsTo(DestinationLevelInstance, ActorsToMove);
 		}
+
+		DestinationLevelInstance->MoveActorsTo(ActorsToMove);
 	}
 		
 	void CreateEditMenu(UToolMenu* Menu, AActor* ContextActor)
 	{
 		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextActor->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
-			TArray<ALevelInstance*> LevelInstanceHierarchy;
-			LevelInstanceSubsystem->ForEachLevelInstanceAncestorsAndSelf(ContextActor, [&LevelInstanceHierarchy](ALevelInstance* AncestorLevelInstance)
+			TArray<ILevelInstanceInterface*> LevelInstanceHierarchy;
+			LevelInstanceSubsystem->ForEachLevelInstanceAncestorsAndSelf(ContextActor, [&LevelInstanceHierarchy](ILevelInstanceInterface* AncestorLevelInstance)
 			{
 				if (IsExperimentalSettingEnabled(AncestorLevelInstance))
 				{
@@ -149,10 +155,10 @@ namespace LevelInstanceMenuUtils
 			}
 		}
 	}
-		
+
 	void CreateCommitDiscardMenu(UToolMenu* Menu, AActor* ContextActor)
 	{
-		ALevelInstance* LevelInstanceEdit = nullptr;
+		ILevelInstanceInterface* LevelInstanceEdit = nullptr;
 		if (ContextActor)
 		{
 			if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextActor->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
@@ -174,18 +180,18 @@ namespace LevelInstanceMenuUtils
 			FToolMenuSection& Section = CreateLevelSection(Menu);
 
 			FText CommitTooltip;
-			const bool bCanCommit = LevelInstanceEdit->CanCommit(&CommitTooltip);
+			const bool bCanCommit = LevelInstanceEdit->CanExitEdit(/*bDiscardEdits=*/false, &CommitTooltip);
 
 			FToolUIAction CommitAction;
-			CommitAction.ExecuteAction.BindLambda([LevelInstanceEdit](const FToolMenuContext&) { LevelInstanceEdit->Commit(); });
+			CommitAction.ExecuteAction.BindLambda([LevelInstanceEdit](const FToolMenuContext&) { LevelInstanceEdit->ExitEdit(/*bDiscardEdits=*/false); });
 			CommitAction.CanExecuteAction.BindLambda([bCanCommit](const FToolMenuContext&) { return bCanCommit; });
 			Section.AddMenuEntry(NAME_None, LOCTEXT("LevelInstanceCommitLabel", "Commit"), CommitTooltip, FSlateIcon(), CommitAction);
 
 			FText DiscardTooltip;
-			const bool bCanDiscard = LevelInstanceEdit->CanDiscard(&DiscardTooltip);
+			const bool bCanDiscard = LevelInstanceEdit->CanExitEdit(/*bDiscardEdits=*/true, &DiscardTooltip);
 
 			FToolUIAction DiscardAction;
-			DiscardAction.ExecuteAction.BindLambda([LevelInstanceEdit](const FToolMenuContext&) { LevelInstanceEdit->Discard(); });
+			DiscardAction.ExecuteAction.BindLambda([LevelInstanceEdit](const FToolMenuContext&) { LevelInstanceEdit->ExitEdit(/*bDiscardEdits=*/true); });
 			DiscardAction.CanExecuteAction.BindLambda([bCanDiscard](const FToolMenuContext&) { return bCanDiscard; });
 			Section.AddMenuEntry(NAME_None, LOCTEXT("LevelInstanceDiscardLabel", "Discard"), DiscardTooltip, FSlateIcon(), DiscardAction);
 		}
@@ -193,7 +199,7 @@ namespace LevelInstanceMenuUtils
 
 	void CreateSetCurrentMenu(UToolMenu* Menu, AActor* ContextActor)
 	{
-		ALevelInstance* LevelInstanceEdit = nullptr;
+		ILevelInstanceInterface* LevelInstanceEdit = nullptr;
 		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextActor->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
 			LevelInstanceEdit = LevelInstanceSubsystem->GetEditingLevelInstance();
@@ -202,12 +208,12 @@ namespace LevelInstanceMenuUtils
 			{
 				FToolUIAction LevelInstanceSetCurrentAction;
 				LevelInstanceSetCurrentAction.ExecuteAction.BindLambda([LevelInstanceEdit](const FToolMenuContext&)
-					{
-						LevelInstanceEdit->SetCurrent();
-					});
+				{
+					LevelInstanceEdit->SetCurrent();
+				});
 
 				FToolMenuSection& Section = CreateLevelSection(Menu);
-				Section.AddMenuEntry(NAME_None, LOCTEXT("LevelInstanceSetCurrent", "Set Current Level"), TAttribute<FText>(), FSlateIcon(), LevelInstanceSetCurrentAction);
+				Section.AddMenuEntry(TEXT("LevelInstanceSetCurrent"), LOCTEXT("LevelInstanceSetCurrent", "Set Current Level"), TAttribute<FText>(), FSlateIcon(), LevelInstanceSetCurrentAction);
 			}
 		}
 	}
@@ -216,7 +222,7 @@ namespace LevelInstanceMenuUtils
 	{
 		if (GEditor->GetSelectedActorCount() > 0)
 		{
-			ALevelInstance* LevelInstanceEdit = nullptr;
+			ILevelInstanceInterface* LevelInstanceEdit = nullptr;
 			ULevelInstanceSubsystem* LevelInstanceSubsystem = GEditor->GetEditorWorldContext().World()->GetSubsystem<ULevelInstanceSubsystem>();
 			if (LevelInstanceSubsystem)
 			{
@@ -249,7 +255,7 @@ namespace LevelInstanceMenuUtils
 					});
 
 				FToolMenuSection& Section = CreateLevelSection(Menu);
-				Section.AddMenuEntry(NAME_None, LOCTEXT("LevelInstanceMoveSelectionTo", "Move Selection to"), TAttribute<FText>(), FSlateIcon(), LevelInstanceMoveSelectionAction);
+				Section.AddMenuEntry(TEXT("LevelInstanceMoveSelectionTo"), LOCTEXT("LevelInstanceMoveSelectionTo", "Move Selection to"), TAttribute<FText>(), FSlateIcon(), LevelInstanceMoveSelectionAction);
 
 			}
 		}
@@ -284,26 +290,42 @@ namespace LevelInstanceMenuUtils
 		const bool bForceExternalActors = LevelInstanceSubsystem->GetWorld()->IsPartitionedWorld();
 		FNewLevelInstanceParams& DialogParams = NewLevelInstanceDialog->GetCreationParams();
 		DialogParams.Type = CreationType;
+		DialogParams.bAlwaysShowDialog = GetDefault<ULevelInstanceEditorPerProjectUserSettings>()->bAlwaysShowDialog;
+		DialogParams.PivotType = GetDefault<ULevelInstanceEditorPerProjectUserSettings>()->PivotType;
+		DialogParams.PivotActor = DialogParams.PivotType == ELevelInstancePivotType::Actor ? ActorsToMove[0] : nullptr;
 		DialogParams.HideCreationType();
 		DialogParams.SetForceExternalActors(bForceExternalActors);
 		NewLevelInstanceWindow->SetContent(NewLevelInstanceDialog);
 
-		FSlateApplication::Get().AddModalWindow(NewLevelInstanceWindow.ToSharedRef(), MainFrameModule.GetParentWindow());
-
-
-		if (NewLevelInstanceDialog->ClickedOk())
+		if (GetDefault<ULevelInstanceEditorPerProjectUserSettings>()->bAlwaysShowDialog)
+		{
+			FSlateApplication::Get().AddModalWindow(NewLevelInstanceWindow.ToSharedRef(), MainFrameModule.GetParentWindow());
+		}
+		
+		if (!GetDefault<ULevelInstanceEditorPerProjectUserSettings>()->bAlwaysShowDialog || NewLevelInstanceDialog->ClickedOk())
 		{
 			FNewLevelInstanceParams CreationParams(NewLevelInstanceDialog->GetCreationParams());
+			ULevelInstanceEditorPerProjectUserSettings::UpdateFrom(CreationParams);
 
 			FNewLevelDialogModule& NewLevelDialogModule = FModuleManager::LoadModuleChecked<FNewLevelDialogModule>("NewLevelDialog");
 			FString TemplateMapPackage;
 			bool bOutIsPartitionedWorld = false;
 			const bool bShowPartitionedTemplates = false;
-			if (!GetMutableDefault<ULevelInstanceEditorSettings>()->TemplateMapInfos.Num() || NewLevelDialogModule.CreateAndShowTemplateDialog(MainFrameModule.GetParentWindow(), LOCTEXT("LevelInstanceTemplateDialog", "Choose Level Instance Template..."), GetMutableDefault<ULevelInstanceEditorSettings>()->TemplateMapInfos, TemplateMapPackage, bShowPartitionedTemplates, bOutIsPartitionedWorld))
+			ULevelInstanceEditorSettings* LevelInstanceEditorSettings = GetMutableDefault<ULevelInstanceEditorSettings>();
+			if (!LevelInstanceEditorSettings->TemplateMapInfos.Num() || NewLevelDialogModule.CreateAndShowTemplateDialog(MainFrameModule.GetParentWindow(), LOCTEXT("LevelInstanceTemplateDialog", "Choose Level Instance Template..."), GetMutableDefault<ULevelInstanceEditorSettings>()->TemplateMapInfos, TemplateMapPackage, bShowPartitionedTemplates, bOutIsPartitionedWorld))
 			{
 				UPackage* TemplatePackage = !TemplateMapPackage.IsEmpty() ? LoadPackage(nullptr, *TemplateMapPackage, LOAD_None) : nullptr;
 				
 				CreationParams.TemplateWorld = TemplatePackage ? UWorld::FindWorldInPackage(TemplatePackage) : nullptr;
+				
+				if (!LevelInstanceEditorSettings->LevelInstanceClassName.IsEmpty())
+				{
+					UClass* LevelInstanceClass = LoadClass<AActor>(nullptr, *LevelInstanceEditorSettings->LevelInstanceClassName, nullptr, LOAD_NoWarn);
+					if (LevelInstanceClass && LevelInstanceClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()))
+					{
+						CreationParams.LevelInstanceClass = LevelInstanceClass;
+					}
+				}
 
 				if (!LevelInstanceSubsystem->CreateLevelInstanceFrom(ActorsToMove, CreationParams))
 				{
@@ -325,7 +347,7 @@ namespace LevelInstanceMenuUtils
 				if (GetDefault<UEditorExperimentalSettings>()->bLevelInstance)
 				{
 					Section.AddMenuEntry(
-						NAME_None,
+						TEXT("CreateLevelInstance"),
 						FText::Format(LOCTEXT("CreateFromSelectionLabel", "Create {0}..."), StaticEnum<ELevelInstanceCreationType>()->GetDisplayNameTextByValue((int64)ELevelInstanceCreationType::LevelInstance)),
 						TAttribute<FText>(),
 						FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.LevelInstance"),
@@ -335,7 +357,7 @@ namespace LevelInstanceMenuUtils
 				if (GetDefault<UEditorExperimentalSettings>()->bPackedLevelActor)
 				{
 					Section.AddMenuEntry(
-						NAME_None,
+						TEXT("CreatePackedLevelBlueprint"),
 						FText::Format(LOCTEXT("CreateFromSelectionLabel", "Create {0}..."), StaticEnum<ELevelInstanceCreationType>()->GetDisplayNameTextByValue((int64)ELevelInstanceCreationType::PackedLevelActor)),
 						TAttribute<FText>(),
 						FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.PackedLevelActor"),
@@ -345,13 +367,11 @@ namespace LevelInstanceMenuUtils
 		}
 	}
 		
-	void CreateBreakSubMenu(UToolMenu* Menu, ALevelInstance* ContextLevelInstance)
+	void CreateBreakSubMenu(UToolMenu* Menu, TArray<ILevelInstanceInterface*> BreakableLevelInstances)
 	{
 		static int32 BreakLevels = 1;
 
-		check(ContextLevelInstance);
-
-		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextLevelInstance->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
+		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GEditor->GetEditorWorldContext().World()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
 			FToolMenuSection& Section = Menu->AddSection(NAME_None, LOCTEXT("LevelInstanceBreakSection", "Break Level Instance"));
 			TSharedRef<SWidget> MenuWidget =
@@ -381,66 +401,69 @@ namespace LevelInstanceMenuUtils
 				[
 					SNew(SButton)
 					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
-					.OnClicked_Lambda([ContextLevelInstance, LevelInstanceSubsystem]() 
+					.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+					.OnClicked_Lambda([BreakableLevelInstances, LevelInstanceSubsystem]() 
+					{
+						const FText LevelInstanceBreakWarning = FText::Format(LOCTEXT("BreakingLevelInstance", "You are about to break {0} level instance(s). This action cannot be undone. Are you sure ?"),  FText::FromString(FString::FromInt(BreakableLevelInstances.Num())));
+						if (FMessageDialog::Open(EAppMsgType::YesNo, LevelInstanceBreakWarning) == EAppReturnType::Yes)
 						{
-							const FText LevelInstanceBreakWarning = LOCTEXT("BreakingLevelInstance", "You are about to break the level instance. This action cannot be undone. Are you sure ?");
-							if (FMessageDialog::Open(EAppMsgType::YesNo, LevelInstanceBreakWarning) == EAppReturnType::Yes)
+							for (ILevelInstanceInterface* LevelInstance : BreakableLevelInstances)
 							{
-								LevelInstanceSubsystem->BreakLevelInstance(ContextLevelInstance, BreakLevels);
+								LevelInstanceSubsystem->BreakLevelInstance(LevelInstance, BreakLevels);
 							}
-							return FReply::Handled();
-						})
-					.Text(LOCTEXT("BreakLevelInstances_BreakLevelInstanceButton", "Break Level Instance"))
+						}
+						return FReply::Handled();
+					})
+					.Text(LOCTEXT("BreakLevelInstances_BreakLevelInstanceButton", "Break Level Instance(s)"))
 				];
 
 			Section.AddEntry(FToolMenuEntry::InitWidget("SetBreakLevels", MenuWidget, FText::GetEmpty(), false));
 		}
 	}
 
-	void CreateBreakMenu(UToolMenu* Menu, AActor* ContextActor)
+	void CreateBreakMenu(UToolMenu* Menu)
 	{
-		check(ContextActor);
-
-		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextActor->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
+		if(ULevelInstanceSubsystem* LevelInstanceSubsystem = GEditor->GetEditorWorldContext().World()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
-			ALevelInstance* ContextLevelInstance = nullptr;
-
-			// Find the top level LevelInstance
-			LevelInstanceSubsystem->ForEachLevelInstanceAncestorsAndSelf(ContextActor, [LevelInstanceSubsystem, ContextActor, &ContextLevelInstance](ALevelInstance* Ancestor)
+			TArray<ILevelInstanceInterface*> BreakableLevelInstances;
+			if (GEditor->GetSelectedActorCount() > 0)
+			{
+				for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
 				{
-					if (Ancestor->GetLevel() == ContextActor->GetWorld()->GetCurrentLevel())
+					if (ILevelInstanceInterface* LevelInstance = Cast<ILevelInstanceInterface>(*It))
 					{
-						ContextLevelInstance = Ancestor;
-						return false;
+						if (IsExperimentalSettingEnabled(LevelInstance) && !LevelInstanceSubsystem->IsEditingLevelInstance(LevelInstance) && !LevelInstanceSubsystem->LevelInstanceHasLevelScriptBlueprint(LevelInstance))
+						{
+							BreakableLevelInstances.Add(LevelInstance);
+						}	
 					}
-					return true;
-				});
+				}
+			}
 
-			if (ContextLevelInstance && IsExperimentalSettingEnabled(ContextLevelInstance) && !ContextLevelInstance->IsEditing() && !LevelInstanceSubsystem->LevelInstanceHasLevelScriptBlueprint(ContextLevelInstance))
+			if (BreakableLevelInstances.Num())
 			{
 				FToolMenuSection& Section = CreateLevelSection(Menu);
-
 				Section.AddSubMenu(
 					"BreakLevelInstances",
 					LOCTEXT("BreakLevelInstances", "Break..."),
 					TAttribute<FText>(),
-					FNewToolMenuDelegate::CreateStatic(&CreateBreakSubMenu, ContextLevelInstance)
+					FNewToolMenuDelegate::CreateStatic(&CreateBreakSubMenu, BreakableLevelInstances)
 				);
 			}
 		}
+
 	}
 
 	void CreatePackedBlueprintMenu(UToolMenu* Menu, AActor* ContextActor)
 	{
 		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = ContextActor->GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
 		{
-			ALevelInstance* ContextLevelInstance = nullptr;
+			ILevelInstanceInterface* ContextLevelInstance = nullptr;
 
 			// Find the top level LevelInstance
-			LevelInstanceSubsystem->ForEachLevelInstanceAncestorsAndSelf(ContextActor, [LevelInstanceSubsystem, ContextActor, &ContextLevelInstance](ALevelInstance* Ancestor)
+			LevelInstanceSubsystem->ForEachLevelInstanceAncestorsAndSelf(ContextActor, [LevelInstanceSubsystem, ContextActor, &ContextLevelInstance](ILevelInstanceInterface* Ancestor)
 			{
-				if (Ancestor->GetLevel() == ContextActor->GetWorld()->GetCurrentLevel())
+				if (CastChecked<AActor>(Ancestor)->GetLevel() == ContextActor->GetWorld()->GetCurrentLevel())
 				{
 					ContextLevelInstance = Ancestor;
 					return false;
@@ -454,7 +477,7 @@ namespace LevelInstanceMenuUtils
 				;
 				if (APackedLevelActor* PackedLevelActor = Cast<APackedLevelActor>(ContextLevelInstance))
 				{
-					if (TSoftObjectPtr<UBlueprint> BlueprintAsset = PackedLevelActor->BlueprintAsset)
+					if (TSoftObjectPtr<UBlueprint> BlueprintAsset = PackedLevelActor->GetClass()->ClassGeneratedBy)
 					{
 						FToolUIAction UIAction;
 						UIAction.ExecuteAction.BindLambda([ContextLevelInstance, BlueprintAsset](const FToolMenuContext& MenuContext)
@@ -484,12 +507,12 @@ namespace LevelInstanceMenuUtils
 		
 		virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
 		{
-			return InClass && InClass->IsChildOf(ALevelInstance::StaticClass()) && !InClass->IsChildOf(APackedLevelActor::StaticClass()) && !InClass->HasAnyClassFlags(CLASS_Deprecated);
+			return InClass && InClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()) && !InClass->IsChildOf(APackedLevelActor::StaticClass()) && !InClass->HasAnyClassFlags(CLASS_Deprecated);
 		}
 
 		virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef< const IUnloadedBlueprintData > InUnloadedClassData, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
 		{
-			return InUnloadedClassData->IsChildOf(ALevelInstance::StaticClass()) && !InUnloadedClassData->IsChildOf(APackedLevelActor::StaticClass())  && !InUnloadedClassData->HasAnyClassFlags(CLASS_Deprecated);
+			return InUnloadedClassData->ImplementsInterface(ULevelInstanceInterface::StaticClass()) && !InUnloadedClassData->IsChildOf(APackedLevelActor::StaticClass())  && !InUnloadedClassData->HasAnyClassFlags(CLASS_Deprecated);
 		}
 	};
 
@@ -523,8 +546,9 @@ namespace LevelInstanceMenuUtils
 
 		if (UBlueprint* NewBlueprint = Cast<UBlueprint>(AssetTools.CreateAssetWithDialog(AssetName, PackagePath, UBlueprint::StaticClass(), BlueprintFactory, FName("Create LevelInstance Blueprint"))))
 		{
-			ALevelInstance* CDO = CastChecked<ALevelInstance>(NewBlueprint->GeneratedClass->GetDefaultObject());
-			CDO->SetWorldAsset(LevelInstancePtr);
+			AActor* CDO = NewBlueprint->GeneratedClass->GetDefaultObject<AActor>();
+			ILevelInstanceInterface* LevelInstanceCDO = CastChecked<ILevelInstanceInterface>(CDO);
+			LevelInstanceCDO->SetWorldAsset(LevelInstancePtr);
 			FBlueprintEditorUtils::MarkBlueprintAsModified(NewBlueprint);
 			
 			FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
@@ -534,13 +558,16 @@ namespace LevelInstanceMenuUtils
 		}		
 	}
 
-	void CreateBlueprintFromMenu(UToolMenu* Menu, UWorld* WorldAsset)
+	void CreateBlueprintFromMenu(UToolMenu* Menu, FAssetData WorldAsset)
 	{
 		FToolMenuSection& Section = CreateLevelSection(Menu);
 		FToolUIAction UIAction;
 		UIAction.ExecuteAction.BindLambda([WorldAsset](const FToolMenuContext& MenuContext)
 		{
-			CreateBlueprintFromWorld(WorldAsset);
+			if (UWorld* World = Cast<UWorld>(WorldAsset.GetAsset()))
+			{
+				CreateBlueprintFromWorld(World);
+			}
 		});
 
 		Section.AddMenuEntry(
@@ -549,6 +576,90 @@ namespace LevelInstanceMenuUtils
 			TAttribute<FText>(),
 			TAttribute<FSlateIcon>(),
 			UIAction);
+	}
+
+	void AddPartitionedStreamingSupportFromWorld(UWorld* WorldAsset)
+	{
+		if (WorldAsset->GetStreamingLevels().Num())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AddPartitionedLevelInstanceStreamingSupportError_SubLevels", "Cannot convert this world has it contains sublevels."));
+			return;
+		}
+
+		if (WorldAsset->WorldType != EWorldType::Inactive)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AddPartitionedLevelInstanceStreamingSupportError_Loaded", "Cannot convert this world has it's already loaded in the editor."));
+			return;
+		}
+
+		bool bSuccess = false;
+		UWorld* World = GEditor->GetEditorWorldContext().World();
+		ULevelInstanceSubsystem::ResetLoadersForWorldAsset(WorldAsset->GetPackage()->GetName());
+
+		FWorldPartitionConverter::FParameters Parameters;
+		Parameters.bConvertSubLevels = false;
+		Parameters.bEnableStreaming = false;
+		Parameters.bCanBeUsedByLevelInstance = true;
+		Parameters.bUseActorFolders = true;
+
+		if (FWorldPartitionConverter::Convert(WorldAsset, Parameters))
+		{
+			TArray<UPackage*> PackagesToSave = WorldAsset->PersistentLevel->GetLoadedExternalObjectPackages();
+			TSet<UPackage*> PackagesToSaveSet(PackagesToSave);
+
+			PackagesToSaveSet.Add(WorldAsset->GetPackage());
+
+			const bool bPromptUserToSave = false;
+			const bool bSaveMapPackages = true;
+			const bool bSaveContentPackages = true;
+			const bool bFastSave = false;
+			const bool bNotifyNoPackagesSaved = false;
+			const bool bCanBeDeclined = true;
+
+			if (FEditorFileUtils::SaveDirtyPackages(bPromptUserToSave, bSaveMapPackages, bSaveContentPackages, bFastSave, bNotifyNoPackagesSaved, bCanBeDeclined, nullptr, [&PackagesToSaveSet](UPackage* PackageToSave) { return !PackagesToSaveSet.Contains(PackageToSave); }))
+			{
+				bSuccess = true;
+				for (UPackage* PackageToSave : PackagesToSave)
+				{
+					if (PackageToSave->IsDirty())
+					{
+						UE_LOG(LogLevelInstanceEditor, Error, TEXT("Package '%s' failed to save"), *PackageToSave->GetName());
+						bSuccess = false;
+						break;
+					}
+				}
+			}
+		}
+
+		if (!bSuccess)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AddPartitionedLevelInstanceStreamingSupportError", "An error occured when adding partitioned level instance streaming support, check logs for details.."));
+		}
+	}
+
+	void AddPartitionedStreamingSupportFromMenu(UToolMenu* Menu, FAssetData WorldAsset)
+	{
+		FName WorldAssetName = WorldAsset.PackageName;
+		if (!ULevel::GetIsLevelPartitionedFromPackage(WorldAssetName) || !ULevel::GetPartitionedLevelCanBeUsedByLevelInstanceFromPackage(WorldAssetName))
+		{
+			FToolMenuSection& Section = CreateLevelSection(Menu);
+			FToolUIAction UIAction;
+			UIAction.ExecuteAction.BindLambda([WorldAsset](const FToolMenuContext& MenuContext)
+			{
+				if (UWorld* World = Cast<UWorld>(WorldAsset.GetAsset()))
+				{
+					AddPartitionedStreamingSupportFromWorld(World);
+				}
+			});
+
+			Section.AddMenuEntry(
+				"AddPartitionedStreamingSupportFromMenu",
+				LOCTEXT("AddPartitionedStreamingSupportFromMenu", "Add Partitioned Streaming Support"),
+				TAttribute<FText>(),
+				TAttribute<FSlateIcon>(),
+				UIAction
+			);
+		}
 	}
 };
 
@@ -687,7 +798,7 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 		{
 			// Use the actor under the cursor if available (e.g. right-click menu).
 			// Otherwise use the first selected actor if there's one (e.g. Actor pulldown menu or outliner).
-			AActor* ContextActor = LevelEditorMenuContext->HitProxyActor;
+			AActor* ContextActor = LevelEditorMenuContext->HitProxyActor.Get();
 			if (!ContextActor && GEditor->GetSelectedActorCount() != 0)
 			{
 				ContextActor = Cast<AActor>(GEditor->GetSelectedActors()->GetSelectedObject(0));
@@ -697,7 +808,6 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 			{
 				LevelInstanceMenuUtils::CreateEditMenu(ToolMenu, ContextActor);
 				LevelInstanceMenuUtils::CreateCommitDiscardMenu(ToolMenu, ContextActor);
-				LevelInstanceMenuUtils::CreateBreakMenu(ToolMenu, ContextActor);
 				LevelInstanceMenuUtils::CreatePackedBlueprintMenu(ToolMenu, ContextActor);
 				LevelInstanceMenuUtils::CreateSetCurrentMenu(ToolMenu, ContextActor);
 			}
@@ -705,6 +815,7 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 			LevelInstanceMenuUtils::CreateMoveSelectionToMenu(ToolMenu);
 		}
 
+		LevelInstanceMenuUtils::CreateBreakMenu(ToolMenu);
 		LevelInstanceMenuUtils::CreateCreateMenu(ToolMenu);
 	};
 
@@ -731,14 +842,16 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 			{
 				if (UContentBrowserAssetContextMenuContext* AssetMenuContext = ToolMenu->Context.FindContext<UContentBrowserAssetContextMenuContext>())
 				{
-					if (AssetMenuContext->SelectedObjects.Num() != 1)
+					if (AssetMenuContext->SelectedAssets.Num() != 1)
 					{
 						return;
 					}
-					// World is already loaded by the AssetContextMenu code
-					if (UWorld* WorldAsset = Cast<UWorld>(AssetMenuContext->SelectedObjects[0].Get()))
+
+					const FAssetData& WorldAsset = AssetMenuContext->SelectedAssets[0];
+					if (AssetMenuContext->SelectedAssets[0].IsInstanceOf<UWorld>())
 					{
 						LevelInstanceMenuUtils::CreateBlueprintFromMenu(ToolMenu, WorldAsset);
+						LevelInstanceMenuUtils::AddPartitionedStreamingSupportFromMenu(ToolMenu, WorldAsset);
 					}
 				}
 			}

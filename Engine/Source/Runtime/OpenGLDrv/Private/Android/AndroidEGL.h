@@ -36,6 +36,7 @@ struct FPlatformOpenGLContext
 	GLuint		DefaultVertexArrayObject;
 	GLuint		BackBufferResource;
 	GLenum		BackBufferTarget;
+	GLuint		DummyFrameBuffer;
 
 	FPlatformOpenGLContext()
 	{
@@ -50,6 +51,7 @@ struct FPlatformOpenGLContext
 		DefaultVertexArrayObject = 0;
 		BackBufferResource = 0;
 		BackBufferTarget = 0;
+		DummyFrameBuffer = 0;
 	}
 };
 
@@ -79,6 +81,8 @@ public:
 	void InitSurface(bool bUseSmallSurface, bool bCreateWndSurface);
 	void InitRenderSurface(bool bUseSmallSurface, bool bCreateWndSurface);
 	void InitSharedSurface(bool bUseSmallSurface);
+	void UpdateBuffersTransform();
+	bool IsOfflineSurfaceRequired();
 
 	void GetDimensions(uint32& OutWidth, uint32& OutHeight);
 	
@@ -95,7 +99,6 @@ public:
 	void AcquireCurrentRenderingContext();
 	void ReleaseContextOwnership();
 
-	GLuint GetOnScreenColorRenderBuffer();
 	GLuint GetResolveFrameBuffer();
 	bool IsCurrentContextValid();
 	EGLContext  GetCurrentContext(  );

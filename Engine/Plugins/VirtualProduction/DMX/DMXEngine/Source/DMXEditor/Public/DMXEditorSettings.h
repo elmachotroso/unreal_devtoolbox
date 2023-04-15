@@ -9,6 +9,29 @@
 #include "DMXEditorSettings.generated.h"
 
 
+/** Settings for the Fixture Patch List */
+USTRUCT()
+struct FDMXMVRFixtureListSettings
+{
+	GENERATED_BODY()
+
+	/** Width of the Fixture ID column */
+	UPROPERTY()
+	float FixtureIDColumnWidth = 0.f;
+
+	/** With of the Fixture Type column */
+	UPROPERTY()
+	float FixtureTypeColumnWidth = 0.f;
+
+	/** With of the Mode column */
+	UPROPERTY()
+	float ModeColumnWidth = 0.f;
+
+	/** With of the Patch column */
+	UPROPERTY()
+	float PatchColumnWidth = 0.f;
+};
+
 /** Settings for the Fixture Type Functions Editor */
 USTRUCT()
 struct FDMXFixtureTypeFunctionsEditorSettings
@@ -97,6 +120,23 @@ UCLASS(Config = DMXEditor, DefaultConfig, meta = (DisplayName = "DMXEditor"))
 class UDMXEditorSettings : public UObject
 {
 	GENERATED_BODY()
+
+	// GDTF
+public:
+	UPROPERTY(Config)
+	FString LastGDTFImportPath;
+
+
+	// MVR
+public:
+	UPROPERTY(Config)
+	FString LastMVRImportPath;
+
+	UPROPERTY(Config)
+	FString LastMVRExportPath;
+
+	UPROPERTY(Config)
+	FDMXMVRFixtureListSettings MVRFixtureListSettings;
 
 	// Fixture Type Functions Editor
 public:

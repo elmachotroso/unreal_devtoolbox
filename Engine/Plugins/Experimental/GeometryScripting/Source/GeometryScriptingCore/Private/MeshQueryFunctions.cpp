@@ -9,6 +9,8 @@
 #include "MeshBoundaryLoops.h"
 #include "Selections/MeshConnectedComponents.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MeshQueryFunctions)
+
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshQueryFunctions"
@@ -56,6 +58,11 @@ ReturnType SimpleMeshUVSetQuery(UDynamicMesh* Mesh, int32 UVSetIndex, bool& bIsV
 
 
 
+
+FString UGeometryScriptLibrary_MeshQueryFunctions::GetMeshInfoString(UDynamicMesh* TargetMesh)
+{
+	return SimpleMeshQuery<FString>(TargetMesh, FString(TEXT("Mesh is Null")), [&](const FDynamicMesh3& Mesh) { return Mesh.MeshInfoString(); });
+}
 
 
 bool UGeometryScriptLibrary_MeshQueryFunctions::GetIsDenseMesh( UDynamicMesh* TargetMesh )
@@ -389,3 +396,4 @@ int UGeometryScriptLibrary_MeshQueryFunctions::GetNumExtendedPolygroupLayers( UD
 
 
 #undef LOCTEXT_NAMESPACE
+

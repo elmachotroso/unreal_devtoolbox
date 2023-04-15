@@ -2,11 +2,18 @@
 
 
 #include "K2Node_GetEnumeratorNameAsString.h"
-#include "EdGraphSchema_K2.h"
-#include "Kismet/KismetNodeHelperLibrary.h"
-#include "BlueprintNodeSpawner.h"
-#include "EditorCategoryUtils.h"
+
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "BlueprintNodeSpawner.h"
+#include "EdGraphSchema_K2.h"
+#include "EditorCategoryUtils.h"
+#include "Internationalization/Internationalization.h"
+#include "Kismet/KismetNodeHelperLibrary.h"
+#include "Misc/AssertionMacros.h"
+#include "Styling/AppStyle.h"
+#include "UObject/Class.h"
+
+struct FLinearColor;
 
 UK2Node_GetEnumeratorNameAsString::UK2Node_GetEnumeratorNameAsString(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -33,7 +40,7 @@ FText UK2Node_GetEnumeratorNameAsString::GetNodeTitle(ENodeTitleType::Type Title
 
 FSlateIcon UK2Node_GetEnumeratorNameAsString::GetIconAndTint(FLinearColor& OutColor) const
 {
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Enum_16x");
+	static FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "GraphEditor.Enum_16x");
 	return Icon;
 }
 

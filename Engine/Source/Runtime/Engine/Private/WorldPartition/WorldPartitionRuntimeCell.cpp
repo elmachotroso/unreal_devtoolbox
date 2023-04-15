@@ -4,89 +4,120 @@
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionDebugHelper.h"
 #include "WorldPartition/WorldPartitionRuntimeSpatialHash.h"
+#include "WorldPartition/WorldPartitionRuntimeCellOwner.h"
 #include "WorldPartition/WorldPartitionLevelStreamingPolicy.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/DataLayer/DataLayersID.h"
 #include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionRuntimeCell)
 
 int32 UWorldPartitionRuntimeCell::StreamingSourceCacheEpoch = 0;
 
 UWorldPartitionRuntimeCell::UWorldPartitionRuntimeCell(const FObjectInitializer& ObjectInitializer)
-: Super(ObjectInitializer)
-, bIsAlwaysLoaded(false)
-, Priority(0)
-, CachedMinSourcePriority((uint8)EStreamingSourcePriority::Lowest)
-, CachedSourceInfoEpoch(INT_MIN)
+	: Super(ObjectInitializer)
+	, bIsAlwaysLoaded(false)
+	, ContentBounds(ForceInit)
+	, Priority(0)
+	, CachedMinSourcePriority((uint8)EStreamingSourcePriority::Lowest)
+	, CachedSourceInfoEpoch(INT_MIN)
 #if !UE_BUILD_SHIPPING
-, DebugStreamingPriority(-1.f)
-#endif
-{}
+	, DebugStreamingPriority(-1.f)
+#endif	
+{
+	check(HasAnyFlags(RF_ClassDefaultObject) || GetOuter()->Implements<UWorldPartitionRuntimeCellOwner>());
+}
 
 #if WITH_EDITOR
-void UWorldPartitionRuntimeCell::SetDataLayers(const TArray<const UDataLayer*>& InDataLayers)
+bool UWorldPartitionRuntimeCell::NeedsActorToCellRemapping() const
+{
+	// When cooking, always loaded cells content is moved to persistent level (see PopulateGeneratorPackageForCook)
+	return !(IsAlwaysLoaded() && IsRunningCookCommandlet());
+}
+
+void UWorldPartitionRuntimeCell::SetDataLayers(const TArray<const UDataLayerInstance*>& InDataLayerInstances)
 {
 	check(DataLayers.IsEmpty());
-	DataLayers.Reserve(InDataLayers.Num());
-	for (const UDataLayer* DataLayer : InDataLayers)
+	DataLayers.Reserve(InDataLayerInstances.Num());
+	for (const UDataLayerInstance* DataLayerInstance : InDataLayerInstances)
 	{
-		check(DataLayer->IsRuntime());
-		DataLayers.Add(DataLayer->GetFName());
+		check(DataLayerInstance->IsRuntime());
+		DataLayers.Add(DataLayerInstance->GetDataLayerFName());
 	}
 	DataLayers.Sort([](const FName& A, const FName& B) { return A.ToString() < B.ToString(); });
 	UpdateDebugName();
 }
 
-void UWorldPartitionRuntimeCell::SetDebugInfo(FIntVector InCoords, FName InGridName)
+void UWorldPartitionRuntimeCell::SetDebugInfo(int64 InCoordX, int64 InCoordY, int64 InCoordZ, FName InGridName)
 {
-	Coords = InCoords;
-	GridName = InGridName;
+	DebugInfo.CoordX = InCoordX;
+	DebugInfo.CoordY = InCoordY;
+	DebugInfo.CoordZ = InCoordZ;
+	DebugInfo.GridName = InGridName;
+	UpdateDebugName();
+}
+
+void UWorldPartitionRuntimeCell::SetGridName(FName InGridName)
+{
+	DebugInfo.GridName = InGridName;
 	UpdateDebugName();
 }
 
 void UWorldPartitionRuntimeCell::UpdateDebugName()
 {
 	TStringBuilder<512> Builder;
-	Builder += GridName.ToString();
+	Builder += DebugInfo.GridName.ToString();
 	Builder += TEXT("_");
-	Builder += FString::Printf(TEXT("L%d_X%d_Y%d"), Coords.Z, Coords.X, Coords.Y);
+	Builder += FString::Printf(TEXT("L%d_X%d_Y%d"), DebugInfo.CoordZ, DebugInfo.CoordX, DebugInfo.CoordY);
 	int32 DataLayerCount = DataLayers.Num();
 
-	const AWorldDataLayers* WorldDataLayers = GetOuterUWorldPartition()->GetWorld()->GetWorldDataLayers();
-	TArray<const UDataLayer*> DataLayerObjects;
-	if (WorldDataLayers && (DataLayerCount > 0))
+	const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetCellOwner()->GetOuterWorld());
+	TArray<const UDataLayerInstance*> DataLayerObjects;
+	if (DataLayerSubsystem && DataLayerCount > 0)
 	{
 		Builder += TEXT(" DL[");
 		for (int i = 0; i < DataLayerCount; ++i)
 		{
-			const UDataLayer* DataLayer = WorldDataLayers->GetDataLayerFromName(DataLayers[i]);
+			const UDataLayerInstance* DataLayer = DataLayerSubsystem->GetDataLayerInstance(DataLayers[i]);
 			DataLayerObjects.Add(DataLayer);
-			Builder += DataLayer->GetDataLayerLabel().ToString();
+			Builder += DataLayer->GetDataLayerShortName();
 			Builder += TEXT(",");
 		}
 		Builder += FString::Printf(TEXT("ID:%X]"), FDataLayersID(DataLayerObjects).GetHash());
 	}
-	DebugName = Builder.ToString();
+	DebugInfo.Name = Builder.ToString();
+}
+
+void UWorldPartitionRuntimeCell::DumpStateLog(FHierarchicalLogArchive& Ar)
+{
+	Ar.Printf(TEXT("Actor Count: %d"), GetActorCount());
+	Ar.Printf(TEXT("MinMaxZ: %s"), *GetMinMaxZ().ToString());
 }
 
 #endif
 
-bool UWorldPartitionRuntimeCell::CacheStreamingSourceInfo(const UWorldPartitionRuntimeCell::FStreamingSourceInfo& Info) const
+bool UWorldPartitionRuntimeCell::ShouldResetStreamingSourceInfo() const
 {
-	bool bWasCacheDirtied = false;
-	if (CachedSourceInfoEpoch != UWorldPartitionRuntimeCell::StreamingSourceCacheEpoch)
-	{
-		CachedSourceInfoEpoch = UWorldPartitionRuntimeCell::StreamingSourceCacheEpoch;
-		bWasCacheDirtied = true;
-		CachedSourcePriorityWeights.Reset();
-	}
-
-	static_assert((uint8)EStreamingSourcePriority::Lowest == 255);
-	CachedSourcePriorityWeights.Add(1.f - ((float)Info.Source.Priority / 255.f));
-
-	// If cache was dirtied, use value, else use minimum with existing cached value
-	CachedMinSourcePriority = bWasCacheDirtied ? (uint8)Info.Source.Priority : FMath::Min((uint8)Info.Source.Priority, CachedMinSourcePriority);
-	return bWasCacheDirtied;
+	return CachedSourceInfoEpoch != StreamingSourceCacheEpoch;
 }
+
+void UWorldPartitionRuntimeCell::ResetStreamingSourceInfo() const
+{
+	check(ShouldResetStreamingSourceInfo());
+	CachedSourcePriorityWeights.Reset();
+	CachedMinSourcePriority = MAX_uint8;
+	CachedSourceInfoEpoch = StreamingSourceCacheEpoch;
+}
+
+void UWorldPartitionRuntimeCell::AppendStreamingSourceInfo(const FWorldPartitionStreamingSource& Source, const FSphericalSector& SourceShape) const
+{
+	static_assert((uint8)EStreamingSourcePriority::Lowest == 255);
+	CachedSourcePriorityWeights.Add(1.f - ((float)Source.Priority / 255.f));
+	CachedMinSourcePriority = FMath::Min((uint8)Source.Priority, CachedMinSourcePriority);
+}
+
+void UWorldPartitionRuntimeCell::MergeStreamingSourceInfo() const
+{}
 
 int32 UWorldPartitionRuntimeCell::SortCompare(const UWorldPartitionRuntimeCell* Other) const
 {
@@ -98,20 +129,47 @@ int32 UWorldPartitionRuntimeCell::SortCompare(const UWorldPartitionRuntimeCell* 
 
 bool UWorldPartitionRuntimeCell::IsDebugShown() const
 {
-	return FWorldPartitionDebugHelper::IsDebugRuntimeHashGridShown(GridName) &&
+	return FWorldPartitionDebugHelper::IsDebugRuntimeHashGridShown(DebugInfo.GridName) &&
 		   FWorldPartitionDebugHelper::IsDebugStreamingStatusShown(GetStreamingStatus()) &&
 		   FWorldPartitionDebugHelper::AreDebugDataLayersShown(DataLayers) &&
-		   FWorldPartitionDebugHelper::IsDebugCellNameShown(DebugName);
+		   FWorldPartitionDebugHelper::IsDebugCellNameShown(DebugInfo.Name);
 }
 
 FLinearColor UWorldPartitionRuntimeCell::GetDebugStreamingPriorityColor() const
 {
 #if !UE_BUILD_SHIPPING
-	if ((CachedSourceInfoEpoch == UWorldPartitionRuntimeCell::StreamingSourceCacheEpoch) &&
-		(DebugStreamingPriority >= 0.f && DebugStreamingPriority <= 1.f))
+	if (DebugStreamingPriority >= 0.f && DebugStreamingPriority <= 1.f)
 	{
 		return FWorldPartitionDebugHelper::GetHeatMapColor(1.f - DebugStreamingPriority);
 	}
 #endif
 	return FLinearColor::Transparent;
+}
+
+TArray<const UDataLayerInstance*> UWorldPartitionRuntimeCell::GetDataLayerInstances() const
+{
+	if (const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
+	{
+		return DataLayerSubsystem->GetDataLayerInstances(GetDataLayers());
+	}
+
+	return TArray<const UDataLayerInstance*>();
+}
+
+bool UWorldPartitionRuntimeCell::ContainsDataLayer(const UDataLayerAsset* DataLayerAsset) const
+{
+	if (const UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
+	{
+		if (const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerAsset))
+		{
+			return ContainsDataLayer(DataLayerInstance);
+		}
+	}
+
+	return false;
+}
+
+bool UWorldPartitionRuntimeCell::ContainsDataLayer(const UDataLayerInstance* DataLayerInstance) const
+{
+	return GetDataLayers().Contains(DataLayerInstance->GetDataLayerFName());
 }

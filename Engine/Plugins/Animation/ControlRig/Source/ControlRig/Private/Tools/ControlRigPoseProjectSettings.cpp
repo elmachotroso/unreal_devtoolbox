@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Tools/ControlRigPoseProjectSettings.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigPoseProjectSettings)
+
 UControlRigPoseProjectSettings::UControlRigPoseProjectSettings()
 {
 	FDirectoryPath RootSaveDir;
- 	RootSaveDir.Path = TEXT("/Game/ControlRig/Pose");
+ 	RootSaveDir.Path = TEXT("ControlRig/Pose");
 	RootSaveDirs.Add(RootSaveDir);
 }
 
@@ -17,3 +19,4 @@ TArray<FString> UControlRigPoseProjectSettings::GetAssetPaths() const
 	}
 	return Paths;
 }
+

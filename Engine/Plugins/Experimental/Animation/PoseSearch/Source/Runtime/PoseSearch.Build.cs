@@ -9,21 +9,8 @@ public class PoseSearch : ModuleRules
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
-			"Eigen"
-		);
-
-		PublicIncludePaths.AddRange(
-			new string[]
-			{
-				System.IO.Path.Combine(ModuleDirectory, "Public"),
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				System.IO.Path.Combine(ModuleDirectory, "Private"),
-			}
+			"Eigen",
+			"nanoflann"
 		);
 
 		PublicDependencyModuleNames.AddRange(
@@ -35,7 +22,8 @@ public class PoseSearch : ModuleRules
 				"AnimationCore",
 				"TraceLog",
 				"AnimGraphRuntime",
-				"DynamicPlayRate"
+				"GameplayTags",
+				"MotionTrajectory"
 			}
 		);
 
@@ -47,5 +35,14 @@ public class PoseSearch : ModuleRules
 				"Engine"
 			}
 		);
+
+		if (Target.bCompileAgainstEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"DerivedDataCache"
+				}
+			);
+		}
 	}
 }

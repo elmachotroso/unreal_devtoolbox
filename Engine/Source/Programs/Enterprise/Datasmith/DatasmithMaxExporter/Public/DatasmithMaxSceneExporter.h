@@ -7,6 +7,7 @@
 
 class Animatable;
 enum class EMaxLightClass;
+class IDatasmithElement;
 class IDatasmithActorElement;
 class IDatasmithAreaLightElement;
 class IDatasmithCameraActorElement;
@@ -19,6 +20,7 @@ class IDatasmithPostProcessElement;
 class IDatasmithPostProcessVolumeElement;
 class IDatasmithScene;
 class IDatasmithTransformAnimationElement;
+class IDatasmithMetaDataElement;
 class INode;
 class INodeTab;
 class CameraObject;
@@ -31,6 +33,12 @@ class Texmap;
 class ToneOperator;
 
 enum EStaticMeshExportMode : uint8;
+
+
+namespace DatasmithMaxDirectLink
+{
+	class FLightNodeConverter;
+}
 
 /**
  * Lights may have multiple default orientation depending on their shape and type. 
@@ -53,17 +61,14 @@ public:
 	static bool ExportActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Node, const TCHAR* Name, float UnitMultiplier);
 	static void ExportMeshActor(TSharedRef< IDatasmithScene > DatasmithScene,  TSet<uint16>& SupportedChannels, INode* Node, const TCHAR* MeshName,
 		float UnitMultiplier, bool bPivotIsBakedInGeometry, Mtl* StaticMeshMtl, const EStaticMeshExportMode& ExportMode);
-	static TSharedRef< IDatasmithActorElement > ExportHierarchicalInstanceStaticMeshActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Node, INode* CustomMeshNode, const TCHAR* Label, TSet<uint16>& SupportedChannels, Mtl* StaticMeshMtl, const TArray<Matrix3>* Instances,
-		const TCHAR* MeshName, float UnitMultiplier, const EStaticMeshExportMode& ExportMode, TSharedPtr< IDatasmithActorElement >& OutInversedHISMActor );
-	static bool WriteXMLLightActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Parent, INode* Node, const TCHAR* Name, float UnitMultiplier);
 	static bool ExportCameraActor(TSharedRef< IDatasmithScene > DatasmithScene, INode* Parent, INodeTab Instances, int InstanceIndex, const TCHAR* Name, float UnitMultiplier);
 	static void WriteEnvironment(TSharedRef< IDatasmithScene > DatasmithScene, bool bOnlySelection);
 	static void ExportToneOperator(TSharedRef< IDatasmithScene > DatasmithScene);
-	static void ExportAnimation(TSharedRef< IDatasmithLevelSequenceElement > LevelSequence, INode* Node, const TCHAR* ActorName, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams = FMaxLightCoordinateConversionParams());
+	static void ExportAnimation(TSharedRef< IDatasmithLevelSequenceElement > LevelSequence, INode* ParentNode, INode* Node, const TCHAR* ActorName, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams = FMaxLightCoordinateConversionParams());
 
 	static FString GetActualPath(const TCHAR* OriginalPath);
 
-	static FString GetRandomSubMaterial(Mtl* Material, FVector RandomSeed);
+	static Mtl* GetRandomSubMaterial(Mtl* Material, FVector3f RandomSeed);
 
 	/**
 	 * Extract the Node to Object transform in UE coordinates
@@ -76,25 +81,26 @@ public:
 	static FTransform GetPivotTransform(INode* Node, float UnitMultiplier);
 	static void MaxToUnrealCoordinates(Matrix3 Matrix, FVector& Translation, FQuat& Rotation, FVector& Scale, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams = FMaxLightCoordinateConversionParams());
 
+	static TSharedPtr< IDatasmithLightActorElement > CreateLightElementForNode(INode* Node, const TCHAR* Name);
+	static bool ParseLight(DatasmithMaxDirectLink::FLightNodeConverter&, INode* Node, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene);
+
+	static TSharedPtr<IDatasmithMetaDataElement> ParseUserProperties(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, TSharedRef< IDatasmithScene > DatasmithScene);
+
 private:
 	/* Return the physical scale for the unitless light */
 	static float GetLightPhysicalScale();
 
 	static int GetSeedFromMaterial(Mtl* Material);
 
-	static void ParseMaterialForMeshActor(Mtl* Material, TSharedRef< IDatasmithMeshActorElement >& MeshActor, TSet<uint16>& SupportedChannels, FVector RandomSeed);
-	
-	static TSharedPtr< IDatasmithLightActorElement > CreateLightElementForNode(INode* Node, const TCHAR* Name);
 	static bool ParseActor(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, float UnitMultiplier, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParseLight(INode* Node, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene);
 	static bool ParseLightObject(LightObject& Light, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParseCoronaLight(LightObject& Light, TSharedRef< IDatasmithAreaLightElement > AreaLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParsePhotometricLight(LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
+	static bool ParseCoronaLight(DatasmithMaxDirectLink::FLightNodeConverter&, LightObject& Light, TSharedRef< IDatasmithAreaLightElement > AreaLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
+	static bool ParsePhotometricLight(DatasmithMaxDirectLink::FLightNodeConverter& Converter, LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
 	static bool ParseVRayLight(LightObject& Light, TSharedRef< IDatasmithAreaLightElement > AreaLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
 	static bool ParseVRayLightPortal(LightObject& Light, TSharedRef< IDatasmithLightmassPortalElement > LightPortalElement, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParseVRayLightIES(LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParseLightParameters(EMaxLightClass LightClass, LightObject& Light, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene);
+	static bool ParseVRayLightIES(DatasmithMaxDirectLink::FLightNodeConverter&, LightObject& Light, TSharedRef< IDatasmithPointLightElement > PointLightElement, TSharedRef< IDatasmithScene > DatasmithScene);
+	static bool ParseLightParameters(DatasmithMaxDirectLink::FLightNodeConverter&, EMaxLightClass LightClass, LightObject& Light, TSharedRef< IDatasmithLightActorElement > LightElement, TSharedRef< IDatasmithScene > DatasmithScene);
 	static bool ProcessLightTexture(TSharedRef< IDatasmithLightActorElement > LightElement, Texmap* LightTexture, TSharedRef< IDatasmithScene > DatasmithScene);
-	static void ParseUserProperties(INode* Node, TSharedRef< IDatasmithActorElement > ActorElement, TSharedRef< IDatasmithScene > DatasmithScene);
-	static bool ParseTransformAnimation(INode* Node, TSharedRef< IDatasmithTransformAnimationElement > AnimationElement, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams);
+	static bool ParseTransformAnimation(INode* ParentNode, INode* Node, TSharedRef< IDatasmithTransformAnimationElement > AnimationElement, float UnitMultiplier, const FMaxLightCoordinateConversionParams& LightParams);
+	static void ParseSun(INode* Node, TSharedRef<IDatasmithLightActorElement> LightElement);
 };

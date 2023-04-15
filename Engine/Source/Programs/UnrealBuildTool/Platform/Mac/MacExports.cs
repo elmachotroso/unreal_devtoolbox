@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -61,25 +62,13 @@ namespace UnrealBuildTool
 					"BenchmarkTool",
 					"BlankProgram",
 					"BuildPatchTool",
+					"ShaderCompileWorker",
 					"UnrealClient",
 					"UnrealGame", 
 					"UnrealServer",
 					"UnrealHeaderTool", 
 					"UnrealPak"
 				};
-			}
-		}
-
-		/// <summary>
-		/// Returns the current list of types that currently have no chance of building for Apple Silicon regardless
-		/// of what their project says
-		/// </summary>
-		/// <returns></returns>
-		static public IEnumerable<TargetType> TargetTypesDeniedForAppleSilicon
-		{
-			get
-			{
-				return new[] { TargetType.Editor };
 			}
 		}
 
@@ -103,7 +92,7 @@ namespace UnrealBuildTool
 			{
 				if (!IsRunningUnderRosettaVar.HasValue)
 				{
-					string TranslatedOutput = Utils.RunLocalProcessAndReturnStdOut("/usr/sbin/sysctl", "sysctl");
+					string TranslatedOutput = Utils.RunLocalProcessAndReturnStdOut("/usr/sbin/sysctl", "sysctl", null);
 					IsRunningUnderRosettaVar = TranslatedOutput.Contains("sysctl.proc_translated: 1");
 				}
 
@@ -122,7 +111,7 @@ namespace UnrealBuildTool
 				if (!IsRunningOnAppleArchitectureVar.HasValue)
 				{
 					// On an m1 mac this appears to be where the brand is.
-					string BrandOutput = Utils.RunLocalProcessAndReturnStdOut("/usr/sbin/sysctl", "-n machdep.cpu.brand_string");
+					string BrandOutput = Utils.RunLocalProcessAndReturnStdOut("/usr/sbin/sysctl", "-n machdep.cpu.brand_string", null);
 					IsRunningOnAppleArchitectureVar = BrandOutput.Contains("Apple") || IsRunningUnderRosetta;
 				}
 
@@ -135,9 +124,10 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="SourceFile">The input file</param>
 		/// <param name="TargetFile">The output file</param>
-		public static void StripSymbols(FileReference SourceFile, FileReference TargetFile)
+		/// <param name="Logger"></param>
+		public static void StripSymbols(FileReference SourceFile, FileReference TargetFile, ILogger Logger)
 		{
-			MacToolChain ToolChain = new MacToolChain(null, MacToolChainOptions.None);
+			MacToolChain ToolChain = new MacToolChain(null, ClangToolChainOptions.None, Logger);
 			ToolChain.StripSymbols(SourceFile, TargetFile);
 		}		
 	}

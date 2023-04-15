@@ -15,6 +15,7 @@
 #include "Animation/AnimNodeBase.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/BlendSpace.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimNode_SequencePlayer.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
@@ -25,8 +26,9 @@
 
 UE_TRACE_CHANNEL_DEFINE(AnimationChannel);
 
-UE_TRACE_EVENT_BEGIN(Animation, TickRecord)
+UE_TRACE_EVENT_BEGIN(Animation, TickRecord2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
 	UE_TRACE_EVENT_FIELD(uint64, AssetId)
 	UE_TRACE_EVENT_FIELD(int32, NodeId)
@@ -48,8 +50,9 @@ UE_TRACE_EVENT_BEGIN(Animation, SkeletalMesh2, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(int32[], ParentIndices)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Animation, SkeletalMeshComponent2)
+UE_TRACE_EVENT_BEGIN(Animation, SkeletalMeshComponent3)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, ComponentId)
 	UE_TRACE_EVENT_FIELD(uint64, MeshId)
 	UE_TRACE_EVENT_FIELD(float[], ComponentToWorld)
@@ -184,16 +187,6 @@ UE_TRACE_EVENT_BEGIN(Animation, AnimSequencePlayer)
 	UE_TRACE_EVENT_FIELD(uint16, FrameCounter)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Animation, BlendSpacePlayer)
-	UE_TRACE_EVENT_FIELD(uint64, Cycle)
-	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
-	UE_TRACE_EVENT_FIELD(uint64, BlendSpaceId)
-	UE_TRACE_EVENT_FIELD(int32, NodeId)
-	UE_TRACE_EVENT_FIELD(float, PositionX)
-	UE_TRACE_EVENT_FIELD(float, PositionY)
-	UE_TRACE_EVENT_FIELD(float, PositionZ)
-UE_TRACE_EVENT_END()
-
 UE_TRACE_EVENT_BEGIN(Animation, StateMachineState)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
@@ -209,8 +202,9 @@ UE_TRACE_EVENT_BEGIN(Animation, Name, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Animation, Notify)
+UE_TRACE_EVENT_BEGIN(Animation, Notify2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
 	UE_TRACE_EVENT_FIELD(uint64, AssetId)
 	UE_TRACE_EVENT_FIELD(uint64, NotifyId)
@@ -220,14 +214,16 @@ UE_TRACE_EVENT_BEGIN(Animation, Notify)
 	UE_TRACE_EVENT_FIELD(uint8, NotifyEventType)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Animation, SyncMarker)
+UE_TRACE_EVENT_BEGIN(Animation, SyncMarker2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
 	UE_TRACE_EVENT_FIELD(uint32, NameId)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Animation, Montage)
+UE_TRACE_EVENT_BEGIN(Animation, Montage2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
 	UE_TRACE_EVENT_FIELD(uint64, MontageId)
 	UE_TRACE_EVENT_FIELD(uint32, CurrentSectionNameId)
@@ -243,6 +239,17 @@ UE_TRACE_EVENT_BEGIN(Animation, Sync)
 	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
 	UE_TRACE_EVENT_FIELD(int32, SourceNodeId)
 	UE_TRACE_EVENT_FIELD(uint32, GroupNameId)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Animation, PoseWatch)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(double, RecordingTime)
+	UE_TRACE_EVENT_FIELD(uint64, AnimInstanceId)
+	UE_TRACE_EVENT_FIELD(uint64, PoseWatchId)
+	UE_TRACE_EVENT_FIELD(float[], WorldTransform)
+	UE_TRACE_EVENT_FIELD(float[], BoneTransforms)
+	UE_TRACE_EVENT_FIELD(uint16[], RequiredBones)
+	UE_TRACE_EVENT_FIELD(bool, bIsEnabled)
 UE_TRACE_EVENT_END()
 
 // Object annotations used for tracing
@@ -422,22 +429,23 @@ void FAnimTrace::OutputAnimTickRecord(const FAnimationBaseContext& InContext, co
 			BlendSpaceFilteredPositionY = InTickRecord.BlendSpace.BlendFilter->GetFilterLastOutput().Y;
 		}
 
-		UE_TRACE_LOG(Animation, TickRecord, AnimationChannel)
-			<< TickRecord.Cycle(FPlatformTime::Cycles64())
-			<< TickRecord.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-			<< TickRecord.AssetId(FObjectTrace::GetObjectId(InTickRecord.SourceAsset))
-			<< TickRecord.NodeId(InContext.GetCurrentNodeId())
-			<< TickRecord.BlendWeight(InTickRecord.EffectiveBlendWeight)
-			<< TickRecord.PlaybackTime(PlaybackTime)
-			<< TickRecord.RootMotionWeight(InTickRecord.RootMotionWeightModifier)
-			<< TickRecord.PlayRate(InTickRecord.PlayRateMultiplier)
-			<< TickRecord.BlendSpacePositionX(BlendSpacePositionX)
-			<< TickRecord.BlendSpacePositionY(BlendSpacePositionY)
-			<< TickRecord.BlendSpaceFilteredPositionX(BlendSpaceFilteredPositionX)
-			<< TickRecord.BlendSpaceFilteredPositionY(BlendSpaceFilteredPositionY)
-			<< TickRecord.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
-			<< TickRecord.Looping(InTickRecord.bLooping)
-			<< TickRecord.IsBlendSpace(bIsBlendSpace);
+		UE_TRACE_LOG(Animation, TickRecord2, AnimationChannel)
+			<< TickRecord2.Cycle(FPlatformTime::Cycles64())
+			<< TickRecord2.RecordingTime(FObjectTrace::GetWorldElapsedTime(AnimInstance->GetWorld()))
+			<< TickRecord2.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
+			<< TickRecord2.AssetId(FObjectTrace::GetObjectId(InTickRecord.SourceAsset))
+			<< TickRecord2.NodeId(InContext.GetCurrentNodeId())
+			<< TickRecord2.BlendWeight(InTickRecord.EffectiveBlendWeight)
+			<< TickRecord2.PlaybackTime(PlaybackTime)
+			<< TickRecord2.RootMotionWeight(InTickRecord.RootMotionWeightModifier)
+			<< TickRecord2.PlayRate(InTickRecord.PlayRateMultiplier)
+			<< TickRecord2.BlendSpacePositionX(BlendSpacePositionX)
+			<< TickRecord2.BlendSpacePositionY(BlendSpacePositionY)
+			<< TickRecord2.BlendSpaceFilteredPositionX(BlendSpaceFilteredPositionX)
+			<< TickRecord2.BlendSpaceFilteredPositionY(BlendSpaceFilteredPositionY)
+			<< TickRecord2.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
+			<< TickRecord2.Looping(InTickRecord.bLooping)
+			<< TickRecord2.IsBlendSpace(bIsBlendSpace);
 	}
 }
 
@@ -537,7 +545,7 @@ void FAnimTrace::OutputSkeletalMeshComponent(const USkeletalMeshComponent* InCom
 	if(BoneCount > 0 || CurveCount > 0)
 	{
 		TRACE_OBJECT(InComponent);
-		TRACE_SKELETAL_MESH(InComponent->SkeletalMesh);
+		TRACE_SKELETAL_MESH(InComponent->GetSkeletalMeshAsset());
 
 		TArray<float>& CurveValues = FAnimTraceScratchBuffers::Get().CurveValues;
 		CurveValues.Reset();
@@ -560,16 +568,17 @@ void FAnimTrace::OutputSkeletalMeshComponent(const USkeletalMeshComponent* InCom
 			}
 		}
 
-		UE_TRACE_LOG(Animation, SkeletalMeshComponent2, AnimationChannel)
-			<< SkeletalMeshComponent2.Cycle(FPlatformTime::Cycles64())
-			<< SkeletalMeshComponent2.ComponentId(FObjectTrace::GetObjectId(InComponent))
-			<< SkeletalMeshComponent2.MeshId(FObjectTrace::GetObjectId(InComponent->SkeletalMesh))
-			<< SkeletalMeshComponent2.ComponentToWorld(reinterpret_cast<const float*>(&InComponent->GetComponentToWorld()), sizeof(FTransform) / sizeof(float))
-			<< SkeletalMeshComponent2.Pose(reinterpret_cast<const float*>(InComponent->GetComponentSpaceTransforms().GetData()), BoneCount * (sizeof(FTransform) / sizeof(float)))
-			<< SkeletalMeshComponent2.CurveIds(CurveIds.GetData(), CurveIds.Num())
-			<< SkeletalMeshComponent2.CurveValues(CurveValues.GetData(), CurveValues.Num())
-			<< SkeletalMeshComponent2.LodIndex((uint16)InComponent->GetPredictedLODLevel())
-			<< SkeletalMeshComponent2.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(InComponent));
+		UE_TRACE_LOG(Animation, SkeletalMeshComponent3, AnimationChannel)
+			<< SkeletalMeshComponent3.Cycle(FPlatformTime::Cycles64())
+			<< SkeletalMeshComponent3.RecordingTime(FObjectTrace::GetWorldElapsedTime(InComponent->GetWorld()))
+			<< SkeletalMeshComponent3.ComponentId(FObjectTrace::GetObjectId(InComponent))
+			<< SkeletalMeshComponent3.MeshId(FObjectTrace::GetObjectId(InComponent->GetSkeletalMeshAsset()))
+			<< SkeletalMeshComponent3.ComponentToWorld(reinterpret_cast<const float*>(&InComponent->GetComponentToWorld()), sizeof(FTransform) / sizeof(float))
+			<< SkeletalMeshComponent3.Pose(reinterpret_cast<const float*>(InComponent->GetComponentSpaceTransforms().GetData()), BoneCount * (sizeof(FTransform) / sizeof(float)))
+			<< SkeletalMeshComponent3.CurveIds(CurveIds.GetData(), CurveIds.Num())
+			<< SkeletalMeshComponent3.CurveValues(CurveValues.GetData(), CurveValues.Num())
+			<< SkeletalMeshComponent3.LodIndex((uint16)InComponent->GetPredictedLODLevel())
+			<< SkeletalMeshComponent3.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(InComponent));
 	}
 }
 
@@ -723,7 +732,7 @@ void FAnimTrace::OutputAnimNodeAttribute(const FAnimInstanceProxy& InTargetProxy
 		<< AnimNodeAttribute.NameId(NameId);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, bool InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, bool InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -744,13 +753,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueBool, AnimationChannel)
 		<< AnimNodeValueBool.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueBool.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueBool.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueBool.NodeId(NodeIndex)
 		<< AnimNodeValueBool.Value(InValue)
 		<< AnimNodeValueBool.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueBool.Key(InKey);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, int32 InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, int32 InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -771,13 +780,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueInt, AnimationChannel)
 		<< AnimNodeValueInt.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueInt.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueInt.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueInt.NodeId(NodeIndex)
 		<< AnimNodeValueInt.Value(InValue)
 		<< AnimNodeValueInt.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueInt.Key(InKey);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, float InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, float InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -798,13 +807,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueFloat, AnimationChannel)
 		<< AnimNodeValueFloat.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueFloat.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueFloat.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueFloat.NodeId(NodeIndex)
 		<< AnimNodeValueFloat.Value(InValue)
 		<< AnimNodeValueFloat.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueFloat.Key(InKey);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const FVector2D& InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const FVector2D& InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -820,7 +829,7 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueVector2D, AnimationChannel)
 		<< AnimNodeValueVector2D.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueVector2D.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueVector2D.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueVector2D.NodeId(NodeIndex)
 		<< AnimNodeValueVector2D.ValueX(InValue.X)
 		<< AnimNodeValueVector2D.ValueY(InValue.Y)
 		<< AnimNodeValueVector2D.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
@@ -828,13 +837,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 }
 
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const FRotator& Value)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const FRotator& Value)
 {
 	const FVector VectorValue(Value.Roll, Value.Pitch, Value.Yaw);
-	OutputAnimNodeValue(InContext, InKey, VectorValue);
+	OutputAnimNodeValue(InContext, NodeIndex, InKey, VectorValue);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const FVector& InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const FVector& InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -855,7 +864,7 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueVector, AnimationChannel)
 		<< AnimNodeValueVector.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueVector.AnimInstanceId(FObjectTrace::GetObjectId(InContext.AnimInstanceProxy->GetAnimInstanceObject()))
-		<< AnimNodeValueVector.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueVector.NodeId(NodeIndex)
 		<< AnimNodeValueVector.ValueX(InValue.X)
 		<< AnimNodeValueVector.ValueY(InValue.Y)
 		<< AnimNodeValueVector.ValueZ(InValue.Z)
@@ -863,7 +872,7 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 		<< AnimNodeValueVector.Key(InKey);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const FName& InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const FName& InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -887,13 +896,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueString, AnimationChannel)
 		<< AnimNodeValueString.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueString.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueString.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueString.NodeId(NodeIndex)
 		<< AnimNodeValueString.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueString.Key(InKey)
 		<< AnimNodeValueString.Value(Value, ValueLength);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const TCHAR* InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const TCHAR* InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -914,13 +923,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueString, AnimationChannel)
 		<< AnimNodeValueString.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueString.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueString.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueString.NodeId(NodeIndex)
 		<< AnimNodeValueString.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueString.Key(InKey)
 		<< AnimNodeValueString.Value(InValue);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const UObject* InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const UObject* InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -942,13 +951,13 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueObject, AnimationChannel)
 		<< AnimNodeValueObject.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueObject.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueObject.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueObject.NodeId(NodeIndex)
 		<< AnimNodeValueObject.Value(FObjectTrace::GetObjectId(InValue))
 		<< AnimNodeValueObject.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueObject.Key(InKey);
 }
 
-void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, const TCHAR* InKey, const UClass* InValue)
+void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, uint32 NodeIndex, const TCHAR* InKey, const UClass* InValue)
 {
 	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
 	if (!bChannelEnabled)
@@ -970,7 +979,7 @@ void FAnimTrace::OutputAnimNodeValue(const FAnimationBaseContext& InContext, con
 	UE_TRACE_LOG(Animation, AnimNodeValueClass, AnimationChannel)
 		<< AnimNodeValueClass.Cycle(FPlatformTime::Cycles64())
 		<< AnimNodeValueClass.AnimInstanceId(FObjectTrace::GetObjectId(AnimInstance))
-		<< AnimNodeValueClass.NodeId(InContext.GetCurrentNodeId())
+		<< AnimNodeValueClass.NodeId(NodeIndex)
 		<< AnimNodeValueClass.Value(FObjectTrace::GetObjectId(InValue))
 		<< AnimNodeValueClass.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(AnimInstance))
 		<< AnimNodeValueClass.Key(InKey);
@@ -1075,15 +1084,16 @@ void FAnimTrace::OutputAnimNotify(UAnimInstance* InAnimInstance, const FAnimNoti
 
 	const uint32 NameId = OutputName(InNotifyEvent.NotifyName);
 
-	UE_TRACE_LOG(Animation, Notify, AnimationChannel)
-		<< Notify.Cycle(FPlatformTime::Cycles64())
-		<< Notify.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
-		<< Notify.AssetId(FObjectTrace::GetObjectId(NotifyAsset))
-		<< Notify.NotifyId(FObjectTrace::GetObjectId(NotifyObject))
-		<< Notify.NameId(NameId)
-		<< Notify.Time(InNotifyEvent.GetTime())
-		<< Notify.Duration(InNotifyEvent.GetDuration())
-		<< Notify.NotifyEventType((uint8)InEventType);
+	UE_TRACE_LOG(Animation, Notify2, AnimationChannel)
+		<< Notify2.Cycle(FPlatformTime::Cycles64())
+		<< Notify2.RecordingTime(FObjectTrace::GetWorldElapsedTime(InAnimInstance->GetWorld()))
+		<< Notify2.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
+		<< Notify2.AssetId(FObjectTrace::GetObjectId(NotifyAsset))
+		<< Notify2.NotifyId(FObjectTrace::GetObjectId(NotifyObject))
+		<< Notify2.NameId(NameId)
+		<< Notify2.Time(InNotifyEvent.GetTime())
+		<< Notify2.Duration(InNotifyEvent.GetDuration())
+		<< Notify2.NotifyEventType((uint8)InEventType);
 }
 
 void FAnimTrace::OutputAnimSyncMarker(UAnimInstance* InAnimInstance, const FPassedMarker& InPassedSyncMarker)
@@ -1103,10 +1113,11 @@ void FAnimTrace::OutputAnimSyncMarker(UAnimInstance* InAnimInstance, const FPass
 
 	const uint32 NameId = OutputName(InPassedSyncMarker.PassedMarkerName);
 
-	UE_TRACE_LOG(Animation, SyncMarker, AnimationChannel)
-		<< SyncMarker.Cycle(FPlatformTime::Cycles64())
-		<< SyncMarker.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
-		<< SyncMarker.NameId(NameId);
+	UE_TRACE_LOG(Animation, SyncMarker2, AnimationChannel)
+		<< SyncMarker2.Cycle(FPlatformTime::Cycles64())
+		<< SyncMarker2.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
+		<< SyncMarker2.RecordingTime(FObjectTrace::GetWorldElapsedTime(InAnimInstance->GetWorld()))
+		<< SyncMarker2.NameId(NameId);
 }
 
 void FAnimTrace::OutputMontage(UAnimInstance* InAnimInstance, const FAnimMontageInstance& InMontageInstance)
@@ -1130,16 +1141,17 @@ void FAnimTrace::OutputMontage(UAnimInstance* InAnimInstance, const FAnimMontage
 		const uint32 CurrentSectionNameId = OutputName(InMontageInstance.GetCurrentSection());
 		const uint32 NextSectionNameId = OutputName(InMontageInstance.GetNextSection());
 
-		UE_TRACE_LOG(Animation, Montage, AnimationChannel)
-			<< Montage.Cycle(FPlatformTime::Cycles64())
-			<< Montage.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
-			<< Montage.MontageId(FObjectTrace::GetObjectId(InMontageInstance.Montage))
-			<< Montage.CurrentSectionNameId(CurrentSectionNameId)
-			<< Montage.NextSectionNameId(NextSectionNameId)
-			<< Montage.Weight(InMontageInstance.GetWeight())
-			<< Montage.DesiredWeight(InMontageInstance.GetDesiredWeight())
-			<< Montage.Position(InMontageInstance.GetPosition())
-			<< Montage.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(InAnimInstance));
+		UE_TRACE_LOG(Animation, Montage2, AnimationChannel)
+			<< Montage2.Cycle(FPlatformTime::Cycles64())
+			<< Montage2.RecordingTime(FObjectTrace::GetWorldElapsedTime(InAnimInstance->GetWorld()))
+			<< Montage2.AnimInstanceId(FObjectTrace::GetObjectId(InAnimInstance))
+			<< Montage2.MontageId(FObjectTrace::GetObjectId(InMontageInstance.Montage))
+			<< Montage2.CurrentSectionNameId(CurrentSectionNameId)
+			<< Montage2.NextSectionNameId(NextSectionNameId)
+			<< Montage2.Weight(InMontageInstance.GetWeight())
+			<< Montage2.DesiredWeight(InMontageInstance.GetDesiredWeight())
+			<< Montage2.Position(InMontageInstance.GetPosition())
+			<< Montage2.FrameCounter(FObjectTrace::GetObjectWorldTickCounter(InAnimInstance));
 	}
 }
 
@@ -1166,6 +1178,34 @@ void FAnimTrace::OutputSync(const FAnimInstanceProxy& InSourceProxy, int32 InSou
 		<< Sync.AnimInstanceId(FObjectTrace::GetObjectId(InSourceProxy.GetAnimInstanceObject()))
 		<< Sync.SourceNodeId(InSourceNodeId)
 		<< Sync.GroupNameId(GroupNameId);
+}
+
+void FAnimTrace::OutputPoseWatch(const FAnimInstanceProxy& InSourceProxy, int32 InPoseWatchId, const TArray<FTransform>& BoneTransforms, const TArray<FBoneIndexType>& RequiredBones, const FTransform& WorldTransform, const bool bIsEnabled)
+{
+	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AnimationChannel);
+	if (!bChannelEnabled)
+	{
+		return;
+	}
+
+	if (CANNOT_TRACE_OBJECT(InSourceProxy.GetSkelMeshComponent()))
+	{
+		return;
+	}
+
+	const UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(InSourceProxy.GetAnimInstanceObject());
+
+	TRACE_OBJECT(InSourceProxy.GetAnimInstanceObject());
+
+	UE_TRACE_LOG(Animation, PoseWatch, AnimationChannel)
+		<< PoseWatch.Cycle(FPlatformTime::Cycles64())
+		<< PoseWatch.RecordingTime(FObjectTrace::GetWorldElapsedTime(AnimInstance->GetWorld()))
+		<< PoseWatch.AnimInstanceId(FObjectTrace::GetObjectId(InSourceProxy.GetAnimInstanceObject()))
+		<< PoseWatch.PoseWatchId(InPoseWatchId)
+		<< PoseWatch.WorldTransform(reinterpret_cast<const float*>(&WorldTransform), sizeof(FTransform) / sizeof(float))
+		<< PoseWatch.BoneTransforms(reinterpret_cast<const float*>(BoneTransforms.GetData()), BoneTransforms.Num() * (sizeof(FTransform) / sizeof(float)))
+		<< PoseWatch.RequiredBones(RequiredBones.GetData(), RequiredBones.Num())
+		<< PoseWatch.bIsEnabled(bIsEnabled);
 }
 
 #endif

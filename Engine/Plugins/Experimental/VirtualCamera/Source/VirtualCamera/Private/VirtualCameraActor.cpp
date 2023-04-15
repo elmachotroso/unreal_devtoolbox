@@ -29,8 +29,8 @@
 #include "VCamComponent.h"
 
 #if WITH_EDITOR
-#include "AssetData.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/UserWidget.h"
 #include "Editor.h"
 #include "EditorSupportDelegates.h"
@@ -268,6 +268,7 @@ void AVirtualCameraActor::SetTrackedActorForFocus_Implementation(AActor* InActor
 
 void AVirtualCameraActor::SetFocusVisualization_Implementation(bool bInShowFocusVisualization)
 {
+#if WITH_EDITOR
 	UCineCameraComponent* CineCamera = GetCineCameraComponent();
 	if (CineCamera)
 	{
@@ -278,6 +279,7 @@ void AVirtualCameraActor::SetFocusVisualization_Implementation(bool bInShowFocus
 		}
 		CineCamera->FocusSettings.bDrawDebugFocusPlane = bInShowFocusVisualization;
 	}
+#endif
 }
 
 void AVirtualCameraActor::SetBeforeSetVirtualCameraTransformDelegate_Implementation(const FPreSetVirtualCameraTransform& InDelegate)
@@ -324,7 +326,7 @@ void AVirtualCameraActor::BeginPlay()
 	Super::BeginPlay();
 
 	UVirtualCameraSubsystem* SubSystem = GEngine->GetEngineSubsystem<UVirtualCameraSubsystem>();
-	if (!SubSystem->GetVirtualCameraController())
+	if (SubSystem && !SubSystem->GetVirtualCameraController())
 	{
 		SubSystem->SetVirtualCameraController(this);
 	}
@@ -463,7 +465,11 @@ bool AVirtualCameraActor::StopStreaming()
 			LevelEditorModule.OnMapChanged().RemoveAll(this);
 			if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(AssetRegistryName))
 			{
-				AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
+				IAssetRegistry* AssetRegistry = AssetRegistryModule->TryGet();
+				if (AssetRegistry)
+				{
+					AssetRegistry->OnAssetRemoved().RemoveAll(this);
+				}
 			}
 			FEditorSupportDelegates::PrepareToCleanseEditorObject.RemoveAll(this);
 			GEditor->OnBlueprintPreCompile().RemoveAll(this);
@@ -659,7 +665,11 @@ void AVirtualCameraActor::SaveSettings()
 	SaveGameInstance->CameraSettings.FocalLength = CineCamera->CurrentFocalLength;
 	SaveGameInstance->CameraSettings.Aperture = CineCamera->CurrentAperture;
 	SaveGameInstance->CameraSettings.bAllowFocusVisualization = bAllowFocusVisualization;
+#if WITH_EDITORONLY_DATA
 	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = CineCamera->FocusSettings.DebugFocusPlaneColor;
+#else
+	SaveGameInstance->CameraSettings.DebugFocusPlaneColor = FColor();
+#endif
 
 	// Save filmback settings
 	SaveGameInstance->CameraSettings.FilmbackName = CineCamera->GetFilmbackPresetName();
@@ -699,10 +709,12 @@ void AVirtualCameraActor::LoadSettings()
 
 	bAllowFocusVisualization = SaveGameInstance->CameraSettings.bAllowFocusVisualization;
 
+#if WITH_EDITORONLY_DATA
 	if (SaveGameInstance->CameraSettings.DebugFocusPlaneColor != FColor())
 	{
 		CineCamera->FocusSettings.DebugFocusPlaneColor = SaveGameInstance->CameraSettings.DebugFocusPlaneColor;
 	}
+#endif
 
 	CineCamera->SetCurrentFocalLength(SaveGameInstance->CameraSettings.FocalLength);
 	CineCamera->CurrentAperture = SaveGameInstance->CameraSettings.Aperture;

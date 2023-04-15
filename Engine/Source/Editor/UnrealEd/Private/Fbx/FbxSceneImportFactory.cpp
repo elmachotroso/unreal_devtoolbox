@@ -20,6 +20,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/Material.h"
 #include "Engine/Texture.h"
+#include "Factories/FbxFactory.h"
 #include "Factories/FbxAnimSequenceImportData.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
 #include "Factories/FbxStaticMeshImportData.h"
@@ -35,7 +36,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/DirectionalLightComponent.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "CineCameraComponent.h"
@@ -46,7 +47,7 @@
 #include "Logging/TokenizedMessage.h"
 #include "FbxImporter.h"
 #include "Misc/FbxErrors.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "Fbx/SSceneImportNodeTreeView.h"
 #include "SFbxSceneOptionWindow.h"
@@ -124,6 +125,7 @@ bool GetFbxSceneImportOptions(UnFbx::FFbxImporter* FbxImporter
 	GlobalImportSettings->ImportTranslation = FVector(0);
 	GlobalImportSettings->ImportRotation = FRotator(0);
 	GlobalImportSettings->ImportUniformScale = 1.0f;
+	GlobalImportSettings->DistanceFieldResolutionScale = 1.0f;
 
 	GlobalImportSettings->bConvertScene = true;
 	GlobalImportSettings->bConvertSceneUnit = true;
@@ -387,8 +389,8 @@ void FetchFbxCameraInScene(UnFbx::FFbxImporter *FbxImporter, FbxNode* ParentNode
 			}
 			CameraInfo->UniqueId = CameraAttribute->GetUniqueID();
 
-			float FieldOfView;
-			float FocalLength;
+			FbxDouble FieldOfView;
+			FbxDouble FocalLength;
 
 			if (CameraAttribute->GetApertureMode() == FbxCamera::eFocalLength)
 			{
@@ -401,16 +403,16 @@ void FetchFbxCameraInScene(UnFbx::FFbxImporter *FbxImporter, FbxNode* ParentNode
 				FocalLength = CameraAttribute->ComputeFocalLength(FieldOfView);
 			}
 
-			CameraInfo->AspectWidth = CameraAttribute->AspectWidth.Get();
-			CameraInfo->AspectHeight = CameraAttribute->AspectHeight.Get();
-			CameraInfo->NearPlane = CameraAttribute->NearPlane.Get();
-			CameraInfo->FarPlane = CameraAttribute->FarPlane.Get();
-			CameraInfo->ProjectionPerspective = CameraAttribute->ProjectionType.Get() == FbxCamera::ePerspective;
-			CameraInfo->OrthoZoom = CameraAttribute->OrthoZoom.Get();
-			CameraInfo->FieldOfView = FieldOfView;
-			CameraInfo->FocalLength = FocalLength;
-			CameraInfo->ApertureWidth = CameraAttribute->GetApertureWidth();
-			CameraInfo->ApertureHeight = CameraAttribute->GetApertureHeight();
+			CameraInfo->AspectWidth				= static_cast<float>(CameraAttribute->AspectWidth.Get());
+			CameraInfo->AspectHeight			= static_cast<float>(CameraAttribute->AspectHeight.Get());
+			CameraInfo->NearPlane				= static_cast<float>(CameraAttribute->NearPlane.Get());
+			CameraInfo->FarPlane				= static_cast<float>(CameraAttribute->FarPlane.Get());
+			CameraInfo->ProjectionPerspective	= CameraAttribute->ProjectionType.Get() == FbxCamera::ePerspective;
+			CameraInfo->OrthoZoom				= static_cast<float>(CameraAttribute->OrthoZoom.Get());
+			CameraInfo->FieldOfView				= static_cast<float>(FieldOfView);
+			CameraInfo->FocalLength				= static_cast<float>(FocalLength);
+			CameraInfo->ApertureWidth			= static_cast<float>(CameraAttribute->GetApertureWidth());
+			CameraInfo->ApertureHeight			= static_cast<float>(CameraAttribute->GetApertureHeight());
 			SceneInfoPtr->CameraInfo.Add(CameraInfo->UniqueId, CameraInfo);
 		}
 	}
@@ -759,7 +761,7 @@ UObject *FFbxAttributeInfo::GetContentObject()
 	{
 		ContentPackage->FullyLoad();
 	}
-	ContentObject = FindObjectSafe<UObject>(ANY_PACKAGE, *AssetName);
+	ContentObject = FindFirstObject<UObject>(*AssetName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("FFbxAttributeInfo::GetContentObject()"));
 	if (ContentObject != nullptr)
 	{
 		if (ContentObject->HasAnyFlags(RF_Transient) || !IsValid(ContentObject))
@@ -915,6 +917,10 @@ bool UFbxSceneImportFactory::FactoryCanImport(const FString& Filename)
 	return false;
 }
 
+TArray<FString> UFbxSceneImportFactory::GetFormats() const
+{
+	return UFbxFactory::GetFbxFormats(this);
+}
 
 TSharedPtr<FFbxNodeInfo> GetNodeInfoPtrById(TArray<TSharedPtr<FFbxNodeInfo>> &HierarchyInfo, uint64 SearchId)
 {

@@ -9,7 +9,8 @@
 
 #include "Algo/Transform.h"
 #include "Animation/DebugSkelMeshComponent.h"
-#include "AssetData.h"
+#include "AssetRegistry/AssetData.h"
+#include "Async/Async.h"
 #include "ClothingAsset.h"
 #include "ClothingSystemEditorInterfaceModule.h"
 #include "ComponentReregisterContext.h"
@@ -56,6 +57,13 @@
 #include "Misc/CoreMisc.h"
 #include "Toolkits/AssetEditorToolkitMenuContext.h"
 #include "MeshMergeModule.h"
+#include "AssetToolsModule.h"
+#include "DetailLayoutBuilder.h"
+#include "IAssetTools.h"
+#include "SkeletalMeshEditorContextMenuContext.h"
+#include "Styling/AppStyle.h"
+#include "InterchangeAssetImportData.h"
+#include "InterchangeManager.h"
 
 const FName SkeletalMeshEditorAppIdentifier = FName(TEXT("SkeletalMeshEditorApp"));
 
@@ -149,22 +157,6 @@ bool FSkeletalMeshEditor::OnRequestClose()
 				continue;
 			}
 			
-			//Do not prevent exiting if we are not using the skeletal mesh build workflow
-			if (!SkeletalMesh->IsLODImportedDataBuildAvailable(LODIndex))
-			{
-				if (!LODInfo->bHasBeenSimplified && !SkeletalMesh->IsReductionActive(LODIndex))
-				{
-					continue;
-				}
-				//Do not prevent exit if the generated LOD is base on a LODModel not using the skeletalmesh build workflow
-				int32 ReduceBaseLOD = LODInfo->ReductionSettings.BaseLOD;
-				if(!IsReductionParentBaseLODUseSkeletalMeshBuildWorkflow(SkeletalMesh, ReduceBaseLOD))
-				{
-					continue;
-				}
-				
-			}
-
 			bool bValidLODSettings = false;
 			if (SkeletalMesh->GetLODSettings() != nullptr)
 			{
@@ -228,7 +220,7 @@ void FSkeletalMeshEditor::RegisterTabSpawners(const TSharedRef<class FTabManager
 		)
 		.SetDisplayName(LOCTEXT("ToolboxTab", "Toolbox"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Modes" ));
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Modes" ));
 
 	FAssetEditorToolkit::RegisterTabSpawners(InTabManager);
 }
@@ -242,8 +234,11 @@ void FSkeletalMeshEditor::InitSkeletalMeshEditor(const EToolkitMode::Type Mode, 
 {
 	SkeletalMesh = InSkeletalMesh;
 
+	FPersonaToolkitArgs PersonaToolkitArgs;
+	PersonaToolkitArgs.OnPreviewSceneSettingsCustomized = FOnPreviewSceneSettingsCustomized::FDelegate::CreateSP(this, &FSkeletalMeshEditor::HandleOnPreviewSceneSettingsCustomized);
+	
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
-	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InSkeletalMesh);
+	PersonaToolkit = PersonaModule.CreatePersonaToolkit(InSkeletalMesh, PersonaToolkitArgs);
 
 	PersonaToolkit->GetPreviewScene()->SetDefaultAnimationMode(EPreviewSceneDefaultAnimationMode::ReferencePose);
 
@@ -279,11 +274,6 @@ void FSkeletalMeshEditor::InitSkeletalMeshEditor(const EToolkitMode::Type Mode, 
 	// Set up mesh click selection
 	PreviewScene->RegisterOnMeshClick(FOnMeshClick::CreateSP(this, &FSkeletalMeshEditor::HandleMeshClick));
 	PreviewScene->SetAllowMeshHitProxies(true);
-	if(PreviewScene->GetPreviewMeshComponent())
-	{
-		PreviewScene->GetPreviewMeshComponent()->bSelectable = PreviewScene->AllowMeshHitProxies();
-		PreviewScene->GetPreviewMeshComponent()->MarkRenderStateDirty();
-	}
 
 	// Make sure we get told when the editor mode changes so we can switch to the appropriate tab
 	// if there's a toolbox available.
@@ -417,10 +407,13 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 		{
 			if (USkeletalMesh* FoundSkeletalMesh = SkeletalMeshEditor->SkeletalMesh)
 			{
-				UFbxSkeletalMeshImportData* SkeletalMeshImportData = Cast<UFbxSkeletalMeshImportData>(FoundSkeletalMesh->GetAssetImportData());
-				if (SkeletalMeshImportData)
+				if (UFbxSkeletalMeshImportData* SkeletalMeshImportData = Cast<UFbxSkeletalMeshImportData>(FoundSkeletalMesh->GetAssetImportData()))
 				{
 					SkeletalMeshImportData->ImportContentType = SourceFileIndex == 0 ? EFBXImportContentType::FBXICT_All : SourceFileIndex == 1 ? EFBXImportContentType::FBXICT_Geometry : EFBXImportContentType::FBXICT_SkinningWeights;
+					SkeletalMeshEditor->HandleReimportMeshWithNewFile(SourceFileIndex);
+				}
+				else if (UInterchangeAssetImportData* InterchangeImportData = Cast<UInterchangeAssetImportData>(FoundSkeletalMesh->GetAssetImportData()))
+				{
 					SkeletalMeshEditor->HandleReimportMeshWithNewFile(SourceFileIndex);
 				}
 			}
@@ -438,7 +431,7 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 				"ReimportGeometryContentLabel",
 				LOCTEXT("ReimportGeometryContentLabel", "Geometry"),
 				LOCTEXT("ReimportGeometryContentLabelTooltipTooltip", "Reimport Geometry Only"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 				FToolMenuExecuteAction::CreateLambda(ReimportMeshWithNewFileAction, 1)
 			);
 
@@ -446,7 +439,7 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 				"ReimportSkinningAndWeightsContentLabel",
 				LOCTEXT("ReimportSkinningAndWeightsContentLabel", "Skinning And Weights"),
 				LOCTEXT("ReimportSkinningAndWeightsContentLabelTooltipTooltip", "Reimport Skinning And Weights Only"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 				FToolMenuExecuteAction::CreateLambda(ReimportMeshWithNewFileAction, 2)
 			);
 		}
@@ -463,27 +456,28 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 				if (SkeletalMeshImportData)
 				{
 					SkeletalMeshImportData->ImportContentType = SourceFileIndex == 0 ? EFBXImportContentType::FBXICT_All : SourceFileIndex == 1 ? EFBXImportContentType::FBXICT_Geometry : EFBXImportContentType::FBXICT_SkinningWeights;
-					if (bReimportAll)
+				}
+
+				if (bReimportAll)
+				{
+					if (bWithNewFile)
 					{
-						if (bWithNewFile)
-						{
-							SkeletalMeshEditor->HandleReimportAllMeshWithNewFile(SourceFileIndex);
-						}
-						else
-						{
-							SkeletalMeshEditor->HandleReimportAllMesh(SourceFileIndex);
-						}
+						SkeletalMeshEditor->HandleReimportAllMeshWithNewFile(SourceFileIndex);
 					}
 					else
 					{
-						if (bWithNewFile)
-						{
-							SkeletalMeshEditor->HandleReimportMeshWithNewFile(SourceFileIndex);
-						}
-						else
-						{
-							SkeletalMeshEditor->HandleReimportMesh(SourceFileIndex);
-						}
+						SkeletalMeshEditor->HandleReimportAllMesh(SourceFileIndex);
+					}
+				}
+				else
+				{
+					if (bWithNewFile)
+					{
+						SkeletalMeshEditor->HandleReimportMeshWithNewFile(SourceFileIndex);
+					}
+					else
+					{
+						SkeletalMeshEditor->HandleReimportMesh(SourceFileIndex);
 					}
 				}
 			}
@@ -521,7 +515,7 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 							NAME_None,
 							ReimportLabel,
 							ReimportLabelTooltip,
-							FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
+							FSlateIcon(FAppStyle::GetAppStyleSetName(), "ContentBrowser.AssetActions.ReimportAsset"),
 							FToolMenuExecuteAction::CreateLambda(ReimportAction, SourceFileIndex, bReimportAll, bWithNewFile)
 						);
 					}
@@ -624,15 +618,15 @@ void FSkeletalMeshEditor::ExtendToolbar()
 	const FToolMenuInsert SectionInsertLocation("Asset", EToolMenuInsertType::After);
 
 	{
-		ToolMenu->AddDynamicSection("Persona", FNewToolBarDelegateLegacy::CreateLambda([](FToolBarBuilder& ToolbarBuilder, UToolMenu* InMenu)
+		ToolMenu->AddDynamicSection("Persona", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InToolMenu)
 		{
-			TSharedPtr<FSkeletalMeshEditor> SkeletalMeshEditor = GetSkeletalMeshEditor(InMenu->Context);
+			TSharedPtr<FSkeletalMeshEditor> SkeletalMeshEditor = GetSkeletalMeshEditor(InToolMenu->Context);
 			if (SkeletalMeshEditor.IsValid() && SkeletalMeshEditor->PersonaToolkit.IsValid())
 			{
 				FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 				FPersonaModule::FCommonToolbarExtensionArgs Args;
 				Args.bPreviewMesh = false;
-				PersonaModule.AddCommonToolbarExtensions(ToolbarBuilder, SkeletalMeshEditor->PersonaToolkit.ToSharedRef(), Args);
+				PersonaModule.AddCommonToolbarExtensions(InToolMenu, Args);
 			}
 		}), SectionInsertLocation);
 	}
@@ -753,112 +747,6 @@ bool FSkeletalMeshEditor::ProcessCommandBindings(const FKeyEvent& InKeyEvent) co
 	return ISkeletalMeshEditor::ProcessCommandBindings(InKeyEvent);
 }
 
-
-void FSkeletalMeshEditor::FillMeshClickMenu(FMenuBuilder& MenuBuilder, HActor* HitProxy, const FViewportClick& Click)
-{
-	UDebugSkelMeshComponent* MeshComp = GetPersonaToolkit()->GetPreviewMeshComponent();
-
-	// Must have hit something, but if the preview is invalid, bail
-	if(!MeshComp)
-	{
-		return;
-	}
-
-	const int32 LodIndex = MeshComp->GetPredictedLODLevel();
-	const int32 SectionIndex = HitProxy->SectionIndex;
-
-	TSharedRef<SWidget> InfoWidget = SNew(SBox)
-		.HAlign(HAlign_Fill)
-		.VAlign(VAlign_Fill)
-		.Padding(FMargin(2.5f, 5.0f, 2.5f, 0.0f))
-		[
-			SNew(SBorder)
-			.HAlign(HAlign_Fill)
-			.VAlign(VAlign_Fill)
-			//.Padding(FMargin(0.0f, 10.0f, 0.0f, 0.0f))
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SBox)
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("CurveEd.LabelFont"))
-				.Text(FText::Format(LOCTEXT("MeshClickMenu_SectionInfo", "LOD{0} - Section {1}"), LodIndex, SectionIndex))
-				]
-			]
-		];
-
-
-	MenuBuilder.AddWidget(InfoWidget, FText::GetEmpty(), true, false);
-
-	MenuBuilder.BeginSection(TEXT("MeshClickMenu_Asset"), LOCTEXT("MeshClickMenu_Section_Asset", "Asset"));
-	{
-		FUIAction Action;
-		Action.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FSkeletalMeshEditor::CanApplyClothing, LodIndex, SectionIndex);
-
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("MeshClickMenu_AssetApplyMenu", "Apply Clothing Data..."),
-			LOCTEXT("MeshClickMenu_AssetApplyMenu_ToolTip", "Select clothing data to apply to the selected section."),
-			FNewMenuDelegate::CreateSP(this, &FSkeletalMeshEditor::FillApplyClothingAssetMenu, LodIndex, SectionIndex),
-			Action,
-			TEXT(""),
-			EUserInterfaceActionType::Button
-			);
-
-		Action.ExecuteAction = FExecuteAction::CreateSP(this, &FSkeletalMeshEditor::OnRemoveClothingAssetMenuItemClicked, LodIndex, SectionIndex);
-		Action.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FSkeletalMeshEditor::CanRemoveClothing, LodIndex, SectionIndex);
-
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("MeshClickMenu_RemoveClothing", "Remove Clothing Data"),
-			LOCTEXT("MeshClickMenu_RemoveClothing_ToolTip", "Remove the currently assigned clothing data."),
-			FSlateIcon(),
-			Action
-			);
-			
-		Action.ExecuteAction = FExecuteAction();
-		Action.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FSkeletalMeshEditor::CanCreateClothing, LodIndex, SectionIndex);
-
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("MeshClickMenu_CreateClothing_Label", "Create Clothing Data from Section"),
-			LOCTEXT("MeshClickMenu_CreateClothing_ToolTip", "Create a new clothing data using the selected section as a simulation mesh"),
-			FNewMenuDelegate::CreateSP(this, &FSkeletalMeshEditor::FillCreateClothingMenu, LodIndex, SectionIndex),
-			Action,
-			TEXT(""),
-			EUserInterfaceActionType::Button
-			);
-
-		Action.CanExecuteAction = FCanExecuteAction::CreateSP(this, &FSkeletalMeshEditor::CanCreateClothingLod, LodIndex, SectionIndex);
-
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("MeshClickMenu_CreateClothingNewLod_Label", "Create Clothing LOD from Section"),
-			LOCTEXT("MeshClickMenu_CreateClothingNewLod_ToolTip", "Create a clothing simulation mesh from the selected section and add it as a LOD to existing clothing data."),
-			FNewMenuDelegate::CreateSP(this, &FSkeletalMeshEditor::FillCreateClothingLodMenu, LodIndex, SectionIndex),
-			Action,
-			TEXT(""),
-			EUserInterfaceActionType::Button
-		);
-
-
-		if (SkeletalMesh != nullptr && SkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(LodIndex))
-		{
-			const FSkeletalMeshLODInfo* SkeletalMeshLODInfo = SkeletalMesh->GetLODInfo(LodIndex);
-			if (SkeletalMeshLODInfo != nullptr)
-			{
-				FUIAction ActionRemoveSection;
-				ActionRemoveSection.ExecuteAction = FExecuteAction::CreateSP(this, &FSkeletalMeshEditor::OnRemoveSectionFromLodAndBelowMenuItemClicked, LodIndex, SectionIndex);
-
-				MenuBuilder.AddMenuEntry(
-					FText::Format(LOCTEXT("MeshClickMenu_RemoveSectionFromLodAndBelow", "Generate section {1} up to LOD {0}"), LodIndex, SectionIndex),
-					FText::Format(LOCTEXT("MeshClickMenu_RemoveSectionFromLodAndBelow_Tooltip", "Generated LODs will use section {1} up to LOD {0}, and ignore it for lower quality LODs"), LodIndex, SectionIndex),
-					FSlateIcon(),
-					ActionRemoveSection
-				);
-			}
-		}
-	}
-	MenuBuilder.EndSection();
-}
 
 void FSkeletalMeshEditor::OnRemoveSectionFromLodAndBelowMenuItemClicked(int32 LodIndex, int32 SectionIndex)
 {
@@ -1237,18 +1125,151 @@ void FSkeletalMeshEditor::ExtendMenu()
 	ISkeletalMeshEditorModule& SkeletalMeshEditorModule = FModuleManager::GetModuleChecked<ISkeletalMeshEditorModule>("SkeletalMeshEditor");
 	AddMenuExtender(SkeletalMeshEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 
+	FToolMenuOwnerScoped OwnerScoped(this);
+
 	UToolMenu* AssetMenu = UToolMenus::Get()->ExtendMenu("MainFrame.MainMenu.Asset");
-	FToolMenuSection& AssetSection = AssetMenu->FindOrAddSection("AssetEditorActions");
-	const FName SkeletalMeshToolkitName = GetToolkitFName();
-	FToolMenuEntry& Entry = AssetSection.AddDynamicEntry("AssetManagerEditorSkeletalMeshCommands", FNewToolMenuSectionDelegate::CreateLambda([SkeletalMeshToolkitName](FToolMenuSection& InSection)
-		{
-			UAssetEditorToolkitMenuContext* MenuContext = InSection.FindContext<UAssetEditorToolkitMenuContext>();
-			if (MenuContext && MenuContext->Toolkit.IsValid() && MenuContext->Toolkit.Pin()->GetToolkitFName() == SkeletalMeshToolkitName)
+	{
+		FToolMenuSection& AssetSection = AssetMenu->FindOrAddSection("AssetEditorActions");
+		const FName SkeletalMeshToolkitName = GetToolkitFName();
+		FToolMenuEntry& Entry = AssetSection.AddDynamicEntry("AssetManagerEditorSkeletalMeshCommands", FNewToolMenuSectionDelegate::CreateLambda([SkeletalMeshToolkitName](FToolMenuSection& InSection)
 			{
-				InSection.AddMenuEntry(FSkeletalMeshEditorCommands::Get().BakeMaterials);
+				UAssetEditorToolkitMenuContext* MenuContext = InSection.FindContext<UAssetEditorToolkitMenuContext>();
+				if (MenuContext && MenuContext->Toolkit.IsValid() && MenuContext->Toolkit.Pin()->GetToolkitFName() == SkeletalMeshToolkitName)
+				{
+					InSection.AddMenuEntry(FSkeletalMeshEditorCommands::Get().BakeMaterials);
+				}
 			}
-		}
-	));
+		));
+	}
+
+	UToolMenu* ViewportMenu = UToolMenus::Get()->RegisterMenu("SkeletalMeshEditor.MeshContextMenu");
+	{
+		FToolMenuSection& AssetSection = ViewportMenu->AddSection("Asset", LOCTEXT("MeshClickMenu_Section_Asset", "Asset"));
+		AssetSection.AddDynamicEntry("DynamicAssetEntries", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+		{
+			if (USkeletalMeshEditorContextMenuContext* MenuContext = InSection.FindContext<USkeletalMeshEditorContextMenuContext>())
+			{
+				const int32 LodIndex = MenuContext->LodIndex;
+				const int32 SectionIndex = MenuContext->SectionIndex;
+
+				TSharedRef<SWidget> InfoWidget = SNew(SBox)
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
+					.Padding(FMargin(2.5f, 5.0f, 2.5f, 0.0f))
+					[
+						SNew(SBorder)
+						.HAlign(HAlign_Fill)
+						.VAlign(VAlign_Fill)
+						//.Padding(FMargin(0.0f, 10.0f, 0.0f, 0.0f))
+						.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+						[
+							SNew(SBox)
+							.HAlign(HAlign_Center)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Font(FAppStyle::GetFontStyle("CurveEd.LabelFont"))
+								.Text(FText::Format(LOCTEXT("MeshClickMenu_SectionInfo", "LOD{0} - Section {1}"), LodIndex, SectionIndex))
+							]
+						]
+					];
+
+				InSection.AddEntry(FToolMenuEntry::InitWidget("InfoWidget", InfoWidget, FText::GetEmpty(), true, false, true));
+			}
+		}));
+
+		FToolMenuSection& ClothSection = ViewportMenu->AddSection("Clothing", LOCTEXT("MeshClickMenu_Section_Clothing", "Clothing"));
+		ClothSection.AddDynamicEntry("DynamicClothingEntries", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+		{
+			if (USkeletalMeshEditorContextMenuContext* MenuContext = InSection.FindContext<USkeletalMeshEditorContextMenuContext>())
+			{
+				TSharedPtr<FSkeletalMeshEditor> Editor = GetSkeletalMeshEditor(InSection.Context);
+				if(Editor.IsValid())
+				{
+					const int32 LodIndex = MenuContext->LodIndex;
+					const int32 SectionIndex = MenuContext->SectionIndex;
+
+					InSection.AddSubMenu(
+						"ApplyClothing",
+						LOCTEXT("MeshClickMenu_AssetApplyMenu", "Apply Clothing Data..."),
+						LOCTEXT("MeshClickMenu_AssetApplyMenu_ToolTip", "Select clothing data to apply to the selected section."),
+						FNewToolMenuChoice(FNewMenuDelegate::CreateSP(Editor.Get(), &FSkeletalMeshEditor::FillApplyClothingAssetMenu, LodIndex, SectionIndex)),
+						FToolUIActionChoice(FUIAction(
+							FExecuteAction(),
+							FCanExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::CanApplyClothing, LodIndex, SectionIndex)
+						)),
+						EUserInterfaceActionType::Button
+					);
+
+					InSection.AddMenuEntry(
+						"RemoveClothing",
+						LOCTEXT("MeshClickMenu_RemoveClothing", "Remove Clothing Data"),
+						LOCTEXT("MeshClickMenu_RemoveClothing_ToolTip", "Remove the currently assigned clothing data."),
+						FSlateIcon(),
+						FToolUIActionChoice(FUIAction(
+							FExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::OnRemoveClothingAssetMenuItemClicked, LodIndex, SectionIndex),
+							FCanExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::CanRemoveClothing, LodIndex, SectionIndex)
+						))
+					);
+
+					InSection.AddSubMenu(
+						"CreateClothing",
+						LOCTEXT("MeshClickMenu_CreateClothing_Label", "Create Clothing Data from Section"),
+						LOCTEXT("MeshClickMenu_CreateClothing_ToolTip", "Create a new clothing data using the selected section as a simulation mesh"),
+						FNewToolMenuChoice(FNewMenuDelegate::CreateSP(Editor.Get(), &FSkeletalMeshEditor::FillCreateClothingMenu, LodIndex, SectionIndex)),
+						FToolUIActionChoice(FUIAction(
+							FExecuteAction(),
+							FCanExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::CanCreateClothing, LodIndex, SectionIndex)
+						)),
+						EUserInterfaceActionType::Button
+					);
+
+					InSection.AddSubMenu(
+						"CreateClothingLOD",
+						LOCTEXT("MeshClickMenu_CreateClothingNewLod_Label", "Create Clothing LOD from Section"),
+						LOCTEXT("MeshClickMenu_CreateClothingNewLod_ToolTip", "Create a clothing simulation mesh from the selected section and add it as a LOD to existing clothing data."),
+						FNewToolMenuChoice(FNewMenuDelegate::CreateSP(Editor.Get(), &FSkeletalMeshEditor::FillCreateClothingLodMenu, LodIndex, SectionIndex)),
+						FToolUIActionChoice(FUIAction(
+							FExecuteAction(),
+							FCanExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::CanCreateClothingLod, LodIndex, SectionIndex)
+						)),
+						EUserInterfaceActionType::Button
+					);
+				}
+			}
+		}));
+		
+		FToolMenuSection& LODSection = ViewportMenu->AddSection("LOD", LOCTEXT("MeshClickMenu_Section_LOD", "LOD"));
+		LODSection.AddDynamicEntry("DynamicLODEntries", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+		{
+			if (USkeletalMeshEditorContextMenuContext* MenuContext = InSection.FindContext<USkeletalMeshEditorContextMenuContext>())
+			{
+				TSharedPtr<FSkeletalMeshEditor> Editor = GetSkeletalMeshEditor(InSection.Context);
+				if (Editor.IsValid())
+				{
+					const int32 LodIndex = MenuContext->LodIndex;
+					const int32 SectionIndex = MenuContext->SectionIndex;
+
+					if (Editor->SkeletalMesh != nullptr && Editor->SkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(LodIndex))
+					{
+						const FSkeletalMeshLODInfo* SkeletalMeshLODInfo = Editor->SkeletalMesh->GetLODInfo(LodIndex);
+						if (SkeletalMeshLODInfo != nullptr)
+						{
+							InSection.AddMenuEntry(
+								"RemoveSectionFromLodAndBelow",
+								FText::Format(LOCTEXT("MeshClickMenu_RemoveSectionFromLodAndBelow", "Generate section {1} up to LOD {0}"), LodIndex, SectionIndex),
+								FText::Format(LOCTEXT("MeshClickMenu_RemoveSectionFromLodAndBelow_Tooltip", "Generated LODs will use section {1} up to LOD {0}, and ignore it for lower quality LODs"), LodIndex, SectionIndex),
+								FSlateIcon(),
+								FToolUIActionChoice(FUIAction(
+									FExecuteAction::CreateSP(Editor.Get(), &FSkeletalMeshEditor::OnRemoveSectionFromLodAndBelowMenuItemClicked, LodIndex, SectionIndex)
+								))
+							);
+						}
+					}
+				}
+			}
+		}));
+	}
 }
 
 void FSkeletalMeshEditor::BakeMaterials()
@@ -1329,14 +1350,59 @@ UObject* FSkeletalMeshEditor::HandleGetAsset()
 
 bool FSkeletalMeshEditor::HandleReimportMeshInternal(int32 SourceFileIndex /*= INDEX_NONE*/, bool bWithNewFile /*= false*/)
 {
-	FScopedSuspendAlternateSkinWeightPreview ScopedSuspendAlternateSkinnWeightPreview(SkeletalMesh);
 	bool bResult = false;
+	//Interchange reimport are asynchronous
+	if (UInterchangeAssetImportData* AssetImportData = Cast<UInterchangeAssetImportData>(SkeletalMesh->GetAssetImportData()))
 	{
-		FScopedSkeletalMeshPostEditChange ScopedPostEditChange(SkeletalMesh);
-		// Reimport the asset
-		bResult = FReimportManager::Instance()->Reimport(SkeletalMesh, true, true, TEXT(""), nullptr, SourceFileIndex, bWithNewFile);
-		// Refresh skeleton tree
-		SkeletonTree->Refresh();
+		UE::Interchange::FAssetImportResultRef Result = FReimportManager::Instance()->ReimportAsync(SkeletalMesh, true, true, TEXT(""), nullptr, SourceFileIndex, bWithNewFile);
+		
+		Result->OnDone([SkeletonTreePtr = SkeletonTree, WeakSkeletalMesh = TWeakObjectPtr<USkeletalMesh>(SkeletalMesh)](UE::Interchange::FImportResult& Result)
+			{
+				auto ResetComponent = [SkeletonTreePtr, WeakSkeletalMesh]()
+				{
+					FScopedSuspendAlternateSkinWeightPreview ScopedSuspendAlternateSkinnWeightPreview(WeakSkeletalMesh.Get());
+					{
+						constexpr bool bCallPostEditChange = false;
+						constexpr bool bReregisterComponents = true;
+						FScopedSkeletalMeshPostEditChange ScopedPostEditChange = FScopedSkeletalMeshPostEditChange(WeakSkeletalMesh.Get(), bCallPostEditChange, bReregisterComponents);
+						// Refresh skeleton tree
+						SkeletonTreePtr->Refresh();
+					}
+				};
+
+				if (IsInGameThread())
+				{
+					ResetComponent();
+				}
+				else
+				{
+					Async(EAsyncExecution::TaskGraphMainThread, MoveTemp(ResetComponent));
+				}
+			});
+		
+		if (Result->GetStatus() == UE::Interchange::FImportResult::EStatus::Done)
+		{
+			const TArray<UInterchangeResult*>& Results = Result->GetResults()->GetResults();
+			for (const UInterchangeResult* InterchangeResult : Results)
+			{
+				if (InterchangeResult->IsA<UInterchangeResultError_ReimportFail>())
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+	else
+	{
+		FScopedSuspendAlternateSkinWeightPreview ScopedSuspendAlternateSkinnWeightPreview(SkeletalMesh);
+		{
+			FScopedSkeletalMeshPostEditChange ScopedPostEditChange(SkeletalMesh);
+			// Reimport the asset
+			bResult = FReimportManager::Instance()->Reimport(SkeletalMesh, true, true, TEXT(""), nullptr, SourceFileIndex, bWithNewFile);
+			// Refresh skeleton tree
+			SkeletonTree->Refresh();
+		}
 	}
 	return bResult;
 }
@@ -1442,6 +1508,15 @@ void FSkeletalMeshEditor::HandleReimportAllMeshWithNewFile(int32 SourceFileIndex
 	}
 }
 
+void FSkeletalMeshEditor::HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBuilder& DetailBuilder)
+{
+	DetailBuilder.HideCategory("Mesh");
+	DetailBuilder.HideCategory("Physics");
+	// in mesh editor, we hide preview mesh section and additional mesh section
+	// sometimes additional meshes are interfering with preview mesh, it is not a great experience
+	DetailBuilder.HideCategory("Additional Meshes");
+}
+
 bool FSkeletalMeshEditor::IsMeshSectionSelectionChecked() const
 {
 	return GetPersonaToolkit()->GetPreviewScene()->AllowMeshHitProxies();
@@ -1454,21 +1529,24 @@ void FSkeletalMeshEditor::HandleMeshClick(HActor* HitProxy, const FViewportClick
 	{
 		Component->SetSelectedEditorSection(HitProxy->SectionIndex);
 		Component->PushSelectionToProxy();
-	}
 
-	if(Click.GetKey() == EKeys::RightMouseButton)
-	{
-		FMenuBuilder MenuBuilder(true, nullptr);
+		if(Click.GetKey() == EKeys::RightMouseButton)
+		{
+			USkeletalMeshEditorContextMenuContext* MenuContext = NewObject<USkeletalMeshEditorContextMenuContext>();
+			MenuContext->LodIndex = Component->GetPredictedLODLevel();
+			MenuContext->SectionIndex = HitProxy->SectionIndex;
 
-		FillMeshClickMenu(MenuBuilder, HitProxy, Click);
+			FToolMenuContext ToolMenuContext(MenuContext);
+			InitToolMenuContext(ToolMenuContext);
 
-		FSlateApplication::Get().PushMenu(
-			FSlateApplication::Get().GetActiveTopLevelWindow().ToSharedRef(),
-			FWidgetPath(),
-			MenuBuilder.MakeWidget(),
-			FSlateApplication::Get().GetCursorPos(),
-			FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu)
-			);
+			FSlateApplication::Get().PushMenu(
+				FSlateApplication::Get().GetActiveTopLevelWindow().ToSharedRef(),
+				FWidgetPath(),
+				UToolMenus::Get()->GenerateWidget("SkeletalMeshEditor.MeshContextMenu", ToolMenuContext),
+				FSlateApplication::Get().GetCursorPos(),
+				FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu)
+				);
+		}
 	}
 }
 

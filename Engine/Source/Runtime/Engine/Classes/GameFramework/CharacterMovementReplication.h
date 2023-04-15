@@ -7,6 +7,10 @@
 #include "Engine/NetSerialization.h"
 #include "Serialization/BitWriter.h"
 #include "Containers/BitArray.h"
+#if UE_WITH_IRIS
+#include "Iris/Serialization/IrisObjectReferencePackageMap.h"
+#endif
+
 #include "CharacterMovementReplication.generated.h"
 
 class UPackageMap;
@@ -54,6 +58,11 @@ struct ENGINE_API FCharacterNetworkSerializationPackedBits
 	// TInlineAllocator used with TBitArray takes the number of 32-bit dwords, but the define is in number of bits, so convert here by dividing by 32.
 	TBitArray<TInlineAllocator<CHARACTER_SERIALIZATION_PACKEDBITS_RESERVED_SIZE / NumBitsPerDWORD>> DataBits;
 
+#if UE_WITH_IRIS
+	// Since this struct uses custom serialization path we need to explicitly capture object references, this is managed by the use of a custom packagemap.
+	UIrisObjectReferencePackageMap::FObjectReferenceArray ObjectReferences;
+#endif
+
 private:
 	UPackageMap* SavedPackageMap;
 };
@@ -99,9 +108,9 @@ public:
 		, Location(ForceInitToZero)
 		, ControlRotation(ForceInitToZero)
 		, CompressedMoveFlags(0)
+		, MovementMode(0)
 		, MovementBase(nullptr)
 		, MovementBaseBoneName(NAME_None)
-		, MovementMode(0)
 	{
 	}
 	
@@ -135,9 +144,9 @@ public:
 	FRotator ControlRotation;
 	uint8 CompressedMoveFlags;
 
+	uint8 MovementMode;
 	class UPrimitiveComponent* MovementBase;
 	FName MovementBaseBoneName;
-	uint8 MovementMode;
 };
 
 

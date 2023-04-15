@@ -2,12 +2,15 @@
 
 #include "GroomAssetPhysics.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GroomAssetPhysics)
+
 FHairSolverSettings::FHairSolverSettings()
 {
 	EnableSimulation = false;
 	NiagaraSolver = EGroomNiagaraSolvers::AngularSprings;
 	SubSteps = 5;
 	IterationCount = 5;
+	GravityPreloading = 0.0f;
 }
 
 FHairExternalForces::FHairExternalForces()
